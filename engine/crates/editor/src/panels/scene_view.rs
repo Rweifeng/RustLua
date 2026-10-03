@@ -2042,37 +2042,9 @@ impl EditorApp {
         let mode = self.tool_mode();
         let mut requested: Option<SceneTool> = None;
         ui.scope_builder(egui::UiBuilder::new().max_rect(tools_rect), |ui| {
-            // right_to_left：先画的 widget 贴右边缘，保证 "轴心" 紧贴视图右边界。
+            // right_to_left：先画的 widget 贴右边缘，保证工具条紧贴视图右边界。
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // 轴心（最右）
-                if matches!(
-                    tool,
-                    SceneTool::Move | SceneTool::Rotate | SceneTool::Scale | SceneTool::Select
-                ) && ui
-                    .selectable_label(
-                        self.gizmo_pivot == crate::scene_interaction::GizmoPivot::Center,
-                        self.gizmo_pivot.label(),
-                    )
-                    .on_hover_text("Gizmo 轴心：实体原点 / 选中内容包围盒中心（点击切换）")
-                    .clicked()
-                {
-                    self.gizmo_pivot = self.gizmo_pivot.toggled();
-                }
-                // 世界/局部
-                if matches!(
-                    tool,
-                    SceneTool::Move | SceneTool::Rotate | SceneTool::Scale | SceneTool::Select
-                ) && ui
-                    .selectable_label(
-                        self.gizmo_space == crate::scene_interaction::GizmoSpace::Local,
-                        self.gizmo_space.label(),
-                    )
-                    .on_hover_text("Gizmo 变换空间：世界轴 / 实体局部轴（点击切换）")
-                    .clicked()
-                {
-                    self.gizmo_space = self.gizmo_space.toggled();
-                }
-                ui.separator();
+                // 世界/轴心不在这里——它们在左上角状态胶囊那一行（见下方）。
                 // 工具按钮：rev() 后视觉顺序仍是 选择|移动|旋转|缩放|▦（从左到右）
                 for candidate in mode.tools().iter().rev() {
                     let label = match candidate {
@@ -2096,32 +2068,63 @@ impl EditorApp {
         if let Some(tool) = requested {
             self.set_scene_tool(tool);
         }
-        // RustLua-②c：2D workspace 状态胶囊——视图/吸附/像素网格的**显式**状态。
-        // 验收"复杂贴片与视图"的可观察性：贴片时知道自己吸附步长与网格开关，
-        // 而不是只能从工具栏 checkbox 猜。只在 2D 视图下显示。
-        if self.scene_view_mode == crate::SceneViewMode::View2D {
+        // RustLua-②c：左上角状态胶囊——2D 下回显视图/吸附/像素网格的**显式**状态，
+        // 外加 Gizmo 空间/轴心切换（原先贴在右上角工具条尾部，挪到这里与状态同侧）。
+        let gizmo_toggle_visible = matches!(
+            self.scene_tool(),
+            SceneTool::Move | SceneTool::Rotate | SceneTool::Scale | SceneTool::Select
+        );
+        let is_2d = self.scene_view_mode == crate::SceneViewMode::View2D;
+        if is_2d || gizmo_toggle_visible {
             let status_rect = egui::Rect::from_min_size(
                 egui::pos2(rect.left() + 4.0, rect.top() + 4.0),
-                egui::vec2(260.0, 26.0),
+                egui::vec2(380.0, 26.0),
             );
             ui.scope_builder(egui::UiBuilder::new().max_rect(status_rect), |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("2D").strong());
-                    ui.separator();
-                    if self.snap_enabled {
-                        // 位移步长与**角度**步长各报各的（M27-02）：一个 0.5 不代表旋转也吸附。
-                        ui.label(format!(
-                            "吸附 {} · {:.0}°",
-                            self.snap_step, self.snap_angle_step
-                        ));
-                    } else {
-                        ui.label("无吸附");
+                    if is_2d {
+                        ui.label(egui::RichText::new("2D").strong());
+                        ui.separator();
+                        if self.snap_enabled {
+                            // 位移步长与**角度**步长各报各的（M27-02）：一个 0.5 不代表旋转也吸附。
+                            ui.label(format!(
+                                "吸附 {} · {:.0}°",
+                                self.snap_step, self.snap_angle_step
+                            ));
+                        } else {
+                            ui.label("无吸附");
+                        }
+                        ui.separator();
+                        if self.show_pixel_grid {
+                            ui.label("像素网格");
+                        } else {
+                            ui.label("无网格");
+                        }
+                        if gizmo_toggle_visible {
+                            ui.separator();
+                        }
                     }
-                    ui.separator();
-                    if self.show_pixel_grid {
-                        ui.label("像素网格");
-                    } else {
-                        ui.label("无网格");
+                    if gizmo_toggle_visible {
+                        if ui
+                            .selectable_label(
+                                self.gizmo_space == crate::scene_interaction::GizmoSpace::Local,
+                                self.gizmo_space.label(),
+                            )
+                            .on_hover_text("Gizmo 变换空间：世界轴 / 实体局部轴（点击切换）")
+                            .clicked()
+                        {
+                            self.gizmo_space = self.gizmo_space.toggled();
+                        }
+                        if ui
+                            .selectable_label(
+                                self.gizmo_pivot == crate::scene_interaction::GizmoPivot::Center,
+                                self.gizmo_pivot.label(),
+                            )
+                            .on_hover_text("Gizmo 轴心：实体原点 / 选中内容包围盒中心（点击切换）")
+                            .clicked()
+                        {
+                            self.gizmo_pivot = self.gizmo_pivot.toggled();
+                        }
                     }
                 });
             });

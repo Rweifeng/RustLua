@@ -1,11 +1,14 @@
-//! 中央 Scene/Game 工作区工具栏：Play/Stop、视图切换、吸附、对齐、缩放。
+//! 中央 Scene/Game 工作区工具栏（Unity 式分层）：
+//! 常驻 = Play 控制、设计分辨率、3D/UI、吸附+步长、缩放；
+//! 次要功能收进下拉 = 工具（对齐/等间距）、排序（Sprite）、覆盖层（辅助线等开关）。
 //! Undo/Redo 通过快捷键 Ctrl+Z / Ctrl+Y 触发（见 main.rs）。
 //! 工具按钮（Select/Move/Rotate/Scale）在 Scene 视图右上角的小面板中（见 scene_view.rs）。
+//! Scene/Game 切换由 dock 页签与"窗口"菜单承担，工具栏不再重复放按钮。
 
 use crate::EditorApp;
 use crate::panels::scene_view::{SCENE_ZOOM_MAX, SCENE_ZOOM_MIN};
 use crate::util::{icon_button, icon_toggle, pause_resume_icon, pause_resume_icon_button};
-use crate::{AlignMode, SceneViewMode, WorkspaceTab};
+use crate::{AlignMode, SceneViewMode};
 use eframe::egui;
 
 impl EditorApp {
@@ -96,29 +99,6 @@ impl EditorApp {
                     }
                 });
             ui.separator();
-            // M27-00 阶段 1：视图切换 = 聚焦到对应 dock 标签（`workspace_tab` 由标签
-            // 渲染时写回），不再直接改状态——否则 dock 与工具栏会互相追。
-            if icon_toggle(
-                ui,
-                self.workspace_tab == WorkspaceTab::Scene,
-                "◫",
-                "场景工作区",
-            )
-            .clicked()
-            {
-                self.focus_workspace_tab(WorkspaceTab::Scene);
-            }
-            if icon_toggle(
-                ui,
-                self.workspace_tab == WorkspaceTab::Game,
-                "▣",
-                "游戏工作区",
-            )
-            .clicked()
-            {
-                self.focus_workspace_tab(WorkspaceTab::Game);
-            }
-            ui.separator();
             // 单一 3D 切换：默认 2D，点亮进入 3D，取消回到 2D。
             if icon_toggle(
                 ui,
@@ -158,88 +138,118 @@ impl EditorApp {
                 self.scene_view_fit_pending = true;
             }
             if self.scene_view_mode == SceneViewMode::Widget {
-                ui.separator();
-                if ui.button("New Widget").clicked() {
-                    self.request_document_change(crate::actions::PendingChange::CreateWidget {
-                        name: "New Widget".to_owned(),
-                    });
-                }
-                ui.label("控件（点击创建 / 拖到画布）");
-                // 5b：统一走 create_widget_at_center，与拖放创建共用同一路径。
-                // M27-01：拖拽载荷换成 `DropPayload::Widget`——与资源/实体的拖放同一类型，
-                // 落点矩阵（`dnd::plan`）才能对四种来源用同一张表。
-                for kind in crate::dnd::WIDGET_PALETTE {
-                    if ui.button(*kind).clicked() {
-                        self.create_widget_at_center(kind);
+                // Unity 式分层：调色板收进「控件」下拉，不再整排常驻工具栏。
+                ui.menu_button("控件", |ui| {
+                    if ui.button("New Widget").clicked() {
+                        self.request_document_change(crate::actions::PendingChange::CreateWidget {
+                            name: "New Widget".to_owned(),
+                        });
+                        ui.close();
                     }
-                    ui.dnd_drag_source(
-                        egui::Id::new(("widget_palette", kind)),
-                        crate::dnd::DropPayload::Widget(kind),
-                        |ui| ui.small("↕"),
-                    );
-                }
+                    ui.separator();
+                    // 5b：统一走 create_widget_at_center，与拖放创建共用同一路径。
+                    // M27-01：拖拽载荷换成 `DropPayload::Widget`——与资源/实体的拖放同一类型，
+                    // 落点矩阵（`dnd::plan`）才能对四种来源用同一张表。
+                    for kind in crate::dnd::WIDGET_PALETTE {
+                        let source = ui.dnd_drag_source(
+                            egui::Id::new(("widget_palette", kind)),
+                            crate::dnd::DropPayload::Widget(kind),
+                            |ui| ui.button(*kind),
+                        );
+                        if source.inner.clicked() {
+                            self.create_widget_at_center(kind);
+                            ui.close();
+                        }
+                        if source.response.drag_started() {
+                            // 拖拽起步就收起下拉，浮层不再挡住画布落点。
+                            ui.close();
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("点击创建 / 拖到画布");
             }
             ui.separator();
+            // Unity 式分层：常驻只留高频项（吸附开关），步长收进「▾」弹层（Unity Snap Settings 同构）。
             ui.checkbox(&mut self.snap_enabled, "吸附");
-            ui.checkbox(&mut self.show_scene_guides, "辅助线");
-            ui.checkbox(&mut self.show_safe_area, "Safe Area");
-            ui.checkbox(&mut self.show_pixel_grid, "像素网格");
-            ui.checkbox(&mut self.show_performance_panel, "性能")
-                .on_hover_text("性能面板（独立弹窗：帧/面板/命令耗时、缓存与队列计数）");
-            // M19-03：出口/地点只读覆盖层 + 两个可开关的生产工具窗口。
-            ui.checkbox(&mut self.show_domain_overlay, "出口/地点");
-            if icon_toggle(
+            // 三角是画笔画的，不是 `▾` 字形（字体缺它，会渲染成豆腐块）。
+            let snap_steps_button = crate::util::chevron_down_button(
                 ui,
-                self.show_domain_data_panel,
-                "域",
-                "领域数据面板（Lua 校验 / PersistId / 出口地点）",
-            )
-            .clicked()
-            {
-                self.show_domain_data_panel = !self.show_domain_data_panel;
+                "吸附步长：位移（世界单位）/ 旋转（度），共用左侧开关",
+            );
+            egui::Popup::menu(&snap_steps_button).show(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label("位移步长");
+                    ui.add(
+                        egui::DragValue::new(&mut self.snap_step)
+                            .range(0.05..=10.0)
+                            .speed(0.05),
+                    );
+                    ui.label("世界单位");
+                });
+                // M27-02：旋转**角度**吸附。与位移吸附共用同一个开关，但单位必须是度数——
+                // 拿 0.5 的位移步长当角度用（0.5°）不叫吸附，叫抖。
+                ui.horizontal(|ui| {
+                    ui.label("旋转步长");
+                    ui.add(
+                        egui::DragValue::new(&mut self.snap_angle_step)
+                            .range(1.0..=90.0)
+                            .speed(1.0)
+                            .suffix("°"),
+                    );
+                });
+            });
+            ui.menu_button("工具", |ui| {
+                if ui.button("对齐到网格").clicked() {
+                    self.align_selected(AlignMode::Grid);
+                    ui.close();
+                }
+                if ui.button("水平对齐").clicked() {
+                    self.align_selected(AlignMode::H);
+                    ui.close();
+                }
+                if ui.button("垂直对齐").clicked() {
+                    self.align_selected(AlignMode::V);
+                    ui.close();
+                }
+                ui.separator();
+                if ui.button("水平等间距").clicked() {
+                    self.distribute_selected(true);
+                    ui.close();
+                }
+                if ui.button("垂直等间距").clicked() {
+                    self.distribute_selected(false);
+                    ui.close();
+                }
+            });
+            // Sprite 排序是 2D 精灵专属，Widget 画布上没有作用对象，直接不出现。
+            if self.scene_view_mode != SceneViewMode::Widget {
+                ui.menu_button("排序", |ui| {
+                    if ui.button("Sprite 排序层级 -1").clicked() {
+                        self.nudge_selected_sprite_order(-1);
+                        ui.close();
+                    }
+                    if ui.button("Sprite 排序层级 +1").clicked() {
+                        self.nudge_selected_sprite_order(1);
+                        ui.close();
+                    }
+                    if ui.button("按 Y 重排 Sprite 排序").clicked() {
+                        self.sort_selected_sprites_by_y(true);
+                        ui.close();
+                    }
+                });
             }
-            ui.add(
-                egui::DragValue::new(&mut self.snap_step)
-                    .range(0.05..=10.0)
-                    .speed(0.05)
-                    .prefix(" "),
-            )
-            .on_hover_text("位移吸附步长（世界单位）");
-            // M27-02：旋转**角度**吸附。与位移吸附共用同一个开关，但单位必须是度数——
-            // 拿 0.5 的位移步长当角度用（0.5°）不叫吸附，叫抖。
-            ui.add(
-                egui::DragValue::new(&mut self.snap_angle_step)
-                    .range(1.0..=90.0)
-                    .speed(1.0)
-                    .prefix(" ")
-                    .suffix("°"),
-            )
-            .on_hover_text("旋转角度吸附步长（度），与左侧的吸附开关共用");
-            if icon_button(ui, "⊞", "对齐到网格").clicked() {
-                self.align_selected(AlignMode::Grid);
-            }
-            if icon_button(ui, "↔", "水平对齐").clicked() {
-                self.align_selected(AlignMode::H);
-            }
-            if icon_button(ui, "↕", "垂直对齐").clicked() {
-                self.align_selected(AlignMode::V);
-            }
-            if icon_button(ui, "⇔", "水平等间距").clicked() {
-                self.distribute_selected(true);
-            }
-            if icon_button(ui, "⇕", "垂直等间距").clicked() {
-                self.distribute_selected(false);
-            }
-            ui.separator();
-            if icon_button(ui, "−", "Sprite 排序层级 -1").clicked() {
-                self.nudge_selected_sprite_order(-1);
-            }
-            if icon_button(ui, "＋", "Sprite 排序层级 +1").clicked() {
-                self.nudge_selected_sprite_order(1);
-            }
-            if icon_button(ui, "⇅", "按 Y 重排 Sprite 排序").clicked() {
-                self.sort_selected_sprites_by_y(true);
-            }
+            ui.menu_button("覆盖层", |ui| {
+                ui.checkbox(&mut self.show_scene_guides, "辅助线");
+                ui.checkbox(&mut self.show_safe_area, "Safe Area");
+                ui.checkbox(&mut self.show_pixel_grid, "像素网格");
+                ui.checkbox(&mut self.show_performance_panel, "性能")
+                    .on_hover_text("性能面板（独立弹窗：帧/面板/命令耗时、缓存与队列计数）");
+                // M19-03：出口/地点只读覆盖层 + 两个可开关的生产工具窗口。
+                ui.checkbox(&mut self.show_domain_overlay, "出口/地点");
+                ui.checkbox(&mut self.show_domain_data_panel, "领域数据面板")
+                    .on_hover_text("Lua 校验 / PersistId / 出口地点");
+            });
             ui.separator();
             let zoom_before_slider = self.scene_zoom;
             ui.add(

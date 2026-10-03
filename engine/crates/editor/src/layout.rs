@@ -85,7 +85,7 @@ impl Default for EditorLayout {
             panel_widths: BTreeMap::from([
                 (PANEL_RESOURCE.to_owned(), 200.0),
                 (PANEL_HIERARCHY.to_owned(), 240.0),
-                (PANEL_INSPECTOR.to_owned(), 360.0),
+                (PANEL_INSPECTOR.to_owned(), 320.0),
                 (PANEL_CONSOLE.to_owned(), 150.0),
             ]),
             panel_visible: BTreeMap::from([
@@ -664,7 +664,7 @@ mod tests {
         let layout = load.layout();
         assert_eq!(layout.scene_zoom, 3.0);
         assert_eq!(layout.workspace_tab, "scene", "缺失字段回落默认");
-        assert_eq!(layout.panel_width(PANEL_INSPECTOR), 360.0);
+        assert_eq!(layout.panel_width(PANEL_INSPECTOR), 320.0);
         assert!(layout.panel_is_visible(PANEL_CONSOLE));
         let _ = std::fs::remove_dir_all(root);
     }
@@ -690,7 +690,7 @@ mod tests {
         let load = load_layout(&root);
         assert!(matches!(load, LayoutLoad::Loaded(_)), "{load:?}");
         let layout = load.layout();
-        assert_eq!(layout.panel_width(PANEL_INSPECTOR), 360.0);
+        assert_eq!(layout.panel_width(PANEL_INSPECTOR), 320.0);
         assert!(layout.panel_is_visible(PANEL_CONSOLE));
         assert_eq!(layout.scene_zoom, 1.0);
         assert_eq!(layout.preview_resolution, (1280, 720));

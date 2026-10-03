@@ -67,7 +67,7 @@ impl DockTab {
 /// 这样"升级首帧布局与旧版一致"这条验收不依赖用户当前窗口大小。
 const SIZE_RESOURCE: f32 = 200.0;
 const SIZE_HIERARCHY: f32 = 240.0;
-const SIZE_INSPECTOR: f32 = 360.0;
+const SIZE_INSPECTOR: f32 = 320.0;
 const SIZE_CONSOLE: f32 = 150.0;
 const NOMINAL_WIDTH: f32 = 1280.0;
 const NOMINAL_HEIGHT: f32 = 720.0;
@@ -469,6 +469,11 @@ pub(crate) fn show_workspace(context: &egui::Context, editor: &mut EditorApp) {
         return;
     };
     sync_visibility(&mut dock_state, editor);
+    // 上一帧面板 body 里发出的聚焦请求（如工具栏 Play 自动切 Game）：树已放回、
+    // 可见性已同步（标签被隐藏过时先补回再聚焦），画之前补应用。
+    if let Some(tab) = editor.pending_workspace_focus.take() {
+        focus_workspace_tab(&mut dock_state, tab);
+    }
     egui::CentralPanel::default().show(context, |ui| {
         // 这六个面板是常驻视图：可见性只有 View 菜单一个来源，标签上不提供关闭/折叠按钮
         // （关掉的面板下一帧会被 [`sync_visibility`] 补回主表面）。附带一条硬理由：
@@ -808,6 +813,39 @@ mod tests {
             .find_active_focused()
             .map(|(_, tab)| *tab);
         assert_eq!(active, Some(DockTab::Game));
+    }
+
+    /// 面板 body 绘制中（dock 树被 `show_workspace` 取走）点工具栏 Play：聚焦请求
+    /// 必须挂起、下一帧补应用——否则 `workspace_tab` 会被 Scene 标签的写回冲掉，
+    /// "Play 自动切 Game"整条失效（M27-00 把工具栏搬进 dock 后留下的死角）。
+    #[test]
+    fn a_focus_requested_during_draw_applies_next_frame() {
+        let mut app = sample_app();
+        draw_once(&mut app, NOMINAL_WIDTH, NOMINAL_HEIGHT);
+        // 模拟 body 里的调用时机：树正被取走。
+        let saved = app.dock_state.take();
+        app.focus_workspace_tab(WorkspaceTab::Game);
+        assert_eq!(
+            app.pending_workspace_focus,
+            Some(WorkspaceTab::Game),
+            "树不在时必须挂起"
+        );
+        app.dock_state = saved;
+        draw_once(&mut app, NOMINAL_WIDTH, NOMINAL_HEIGHT);
+        let mut state = app.dock_state.take().expect("帧末必须放回 dock 树");
+        assert_eq!(
+            state
+                .main_surface_mut()
+                .find_active_focused()
+                .map(|(_, tab)| *tab),
+            Some(DockTab::Game),
+            "挂起的聚焦请求必须下一帧生效"
+        );
+        assert_eq!(
+            app.workspace_tab,
+            WorkspaceTab::Game,
+            "写回必须停在 Game，不能被 Scene 冲掉"
+        );
     }
 
     /// 整帧渲染（合成帧，不依赖 GPU）：真实面板内容必须画进 dock 标签里。

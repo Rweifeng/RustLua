@@ -247,6 +247,26 @@ pub(crate) fn pause_resume_icon_button(
     }
 }
 
+/// 画笔绘制"下三角"的小按钮：弹层入口（吸附步长等）。
+/// 不用 `▾` 字形的原因与 [`pause_resume_icon_button`] 的 `❚❚` 一样——字体缺字形渲染成豆腐块。
+pub(crate) fn chevron_down_button(ui: &mut Ui, tooltip: &str) -> Response {
+    let size = egui::vec2(20.0, 24.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let visuals = ui.style().interact(&response);
+    ui.painter().rect_filled(rect, 3.0, visuals.bg_fill);
+    let center = rect.center();
+    ui.painter().add(egui::Shape::convex_polygon(
+        vec![
+            egui::pos2(center.x - 4.0, center.y - 2.0),
+            egui::pos2(center.x + 4.0, center.y - 2.0),
+            egui::pos2(center.x, center.y + 3.0),
+        ],
+        visuals.fg_stroke.color,
+        egui::Stroke::NONE,
+    ));
+    response.on_hover_text(tooltip)
+}
+
 #[cfg(windows)]
 pub(crate) fn choose_project_directory() -> Option<PathBuf> {
     use std::ffi::OsString;

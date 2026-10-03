@@ -451,6 +451,9 @@ struct EditorApp {
     /// `None` 只出现在渲染期间：`DockArea` 与 `TabViewer` 都要可变借用 `EditorApp`，
     /// 树被搬到局部变量，帧末放回（见 `dock::show_workspace`）。
     dock_state: Option<egui_dock::DockState<crate::dock::DockTab>>,
+    /// dock 树被 `show_workspace` 临时取走时（面板 body 绘制中）发出的聚焦请求，
+    /// 帧末放回树时补应用（工具栏 Play → 自动切 Game 就走这条路）。
+    pending_workspace_focus: Option<WorkspaceTab>,
     /// 上一次观察到的 dock 结构指纹（M27-00 阶段 2 的变化检测）。
     /// `None` = 还没登记基线（刚装完一棵树）：下一帧只登记、不算"用户改了布局"，
     /// 于是打开项目本身不会写盘。
@@ -1149,6 +1152,7 @@ impl EditorApp {
             document: ProjectDocument::open(project.clone()),
             project,
             dock_state: Some(crate::dock::default_dock_state()),
+            pending_workspace_focus: None,
             dock_signature: None,
             dock_dirty_since: None,
             tree: SceneTreeState::new(),
@@ -1593,6 +1597,9 @@ impl EditorApp {
         self.workspace_tab = tab;
         if let Some(dock_state) = self.dock_state.as_mut() {
             crate::dock::focus_workspace_tab(dock_state, tab);
+        } else {
+            // 面板 body 绘制中（dock 树被 `show_workspace` 取走）：只能挂起，帧末补应用。
+            self.pending_workspace_focus = Some(tab);
         }
     }
 
@@ -2784,7 +2791,7 @@ mod layout_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// 面板布局：左侧资源(200)+层级(190)、右侧属性(360)、中央。验证在多种窗口
+    /// 面板布局：左侧资源(200)+层级(190)、右侧属性(320)、中央。验证在多种窗口
     /// 宽度下，中央面板（Scene/Game 视图所在）都不与右侧属性面板重叠。
     #[test]
     fn central_panel_does_not_overlap_inspector_at_any_width() {
@@ -2810,7 +2817,7 @@ mod layout_tests {
                 });
             let mut inspector_rect = egui::Rect::NOTHING;
             egui::SidePanel::right("t_inspector")
-                .default_width(360.0)
+                .default_width(320.0)
                 .show(&ctx, |ui| {
                     inspector_rect = ui.max_rect();
                 });

@@ -253,7 +253,7 @@ impl EditorApp {
                         .map_or_else(|| "自定义".to_owned(), |action| action.label.clone());
                     let mut choice = selected_label;
                     ui.horizontal(|ui| {
-                        ui.add_sized([110.0, 18.0], egui::Label::new("预设").truncate());
+                        ui.add_sized([84.0, 18.0], egui::Label::new("预设").truncate());
                         ui.add_enabled_ui(!playing, |ui| {
                             egui::ComboBox::from_id_salt(egui::Id::new((
                                 "schema_component_action",
@@ -295,7 +295,8 @@ impl EditorApp {
             }
             let widget = field_widget(row.kind, row.field);
             let row_inner = ui.horizontal(|ui| {
-                ui.add_sized([110.0, 18.0], egui::Label::new(row.field).truncate());
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.add_sized([84.0, 18.0], egui::Label::new(row.field).truncate());
                 if row.is_unset() {
                     ui.weak("未设置");
                 }
@@ -472,7 +473,7 @@ impl EditorApp {
                             .add_enabled(
                                 !playing,
                                 egui::TextEdit::singleline(&mut buffer.text)
-                                    .desired_width(170.0)
+                                    .desired_width(130.0)
                                     .hint_text(row.hint.clone()),
                             )
                             .on_hover_text(row.hint.as_str());
@@ -532,11 +533,11 @@ impl EditorApp {
                     }
                 }
                 if !row.required {
-                    ui.weak("可选");
+                    ui.weak(egui::RichText::new("可选").small());
                 }
                 // 多选混合值：显示提示，但输入框仍以主选中的值为基准（提交写全部目标）。
                 if row.mixed {
-                    ui.weak("混合");
+                    ui.weak(egui::RichText::new("混合").small());
                 }
                 // 引用必须存在：资源索引里找不到时给醒目提示（仍允许写入）。
                 if row.missing_asset {
