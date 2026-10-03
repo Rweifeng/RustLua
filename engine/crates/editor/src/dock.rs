@@ -503,6 +503,13 @@ impl TabViewer for DockTabViewer<'_> {
         tab.title().into()
     }
 
+    /// egui_dock 默认给每个标签体套一层双向 `ScrollArea`，全部关掉：Scene/Game 画布是
+    /// "适配视口"的内容且自带缩放，外层滚动条只会碍事；其余面板内部各自已有
+    /// `ScrollArea::vertical()`，外层这层只会多出一条重复的横向滚动条。
+    fn scroll_bars(&self, _tab: &Self::Tab) -> [bool; 2] {
+        [false, false]
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
         let editor = &mut *self.0;
         let started = std::time::Instant::now();

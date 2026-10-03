@@ -756,6 +756,11 @@ struct EditorApp {
     /// 确认窗内「保存并继续」保存失败：保留 pending（文档保持 dirty、不切换），
     /// 弹窗内显示失败原因并允许重试或放弃。
     pending_save_failed: bool,
+    /// E06：用户已在确认窗里批准关闭（「保存并继续」或「放弃并继续」）。
+    /// 我们发的 `ViewportCommand::Close` 会再次触发 `CloseRequested`，而"放弃"路径
+    /// 文档仍是 dirty——`guard_close_request` 必须凭此标志放行，否则重新弹窗，
+    /// 「放弃并继续」永远关不掉（保存路径靠 dirty 被清侥幸走通）。
+    quit_approved: bool,
     /// Game View 输入快照的跨帧状态（M11-02）：held 按键/鼠标跨帧保留，
     /// `just_pressed`/`just_released` 边沿只在模拟帧边界消费一次，失焦/Play-Stop 时清空。
     preview_input_state: InputSnapshot,
@@ -1317,6 +1322,7 @@ impl EditorApp {
             plugin_status: Vec::new(),
             pending_document_change: None,
             pending_save_failed: false,
+            quit_approved: false,
             last_metadata_key: None,
             preview_input_state: InputSnapshot::default(),
             hierarchy_clipboard: None,
@@ -1983,6 +1989,10 @@ impl EditorApp {
     fn guard_close_request(&mut self, context: &egui::Context) {
         let close_requested = context.input(|input| input.viewport().close_requested());
         if !close_requested {
+            return;
+        }
+        if self.quit_approved {
+            // 确认窗已裁决放行：这次 CloseRequested 就是我们自己发的 Close 的回声。
             return;
         }
         if self.pending_document_change.is_some() {

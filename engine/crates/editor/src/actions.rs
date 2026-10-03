@@ -319,6 +319,9 @@ impl EditorApp {
         if let Some(change) = self.pending_document_change.take() {
             self.pending_save_failed = false;
             if matches!(change, PendingChange::QuitEditor) {
+                // Close 会再触发一次 CloseRequested（放弃路径文档仍 dirty），
+                // 凭此标志让 guard_close_request 放行，否则重新弹窗关不掉。
+                self.quit_approved = true;
                 context.send_viewport_cmd(egui::ViewportCommand::Close);
             } else {
                 self.perform_pending_change(change);
@@ -4151,6 +4154,29 @@ mod tests {
             "放弃后应切到请求的场景"
         );
         assert!(!app.document.current_scene.as_ref().unwrap().is_dirty());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 回归：「放弃并继续」退出时文档仍 dirty，我们发的 Close 会再触发一次
+    /// CloseRequested；必须置 `quit_approved` 让 guard 放行，否则重新弹窗、永远关不掉。
+    #[test]
+    fn e06_quit_discard_approves_close_echo() {
+        let (mut app, root) = open_sample_production("e06-quit-discard");
+        app.document.current_scene.as_mut().unwrap().mark_dirty();
+        app.pending_document_change = Some(PendingChange::QuitEditor);
+
+        let resolved = app.resolve_pending_change(&test_context(), PendingDecision::Discard);
+        assert!(resolved);
+        assert!(app.pending_document_change.is_none());
+        assert!(
+            app.quit_approved,
+            "确认退出后必须放行自己触发的 CloseRequested"
+        );
+        assert!(
+            app.document.current_scene.as_ref().unwrap().is_dirty(),
+            "放弃路径不保存：文档保持 dirty 直到进程退出"
+        );
 
         let _ = fs::remove_dir_all(root);
     }
