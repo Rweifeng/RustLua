@@ -845,7 +845,14 @@ if ($Mvp -or $MvpOnly) {
         # Z 格挡正/背/不格挡三档对照（10→3 / 10→10 / 10→10，日志 damage/absorbed）、每 60 步扣一笔与
         # 内力不足自动落防、倒地即落防且 capture 不含 guard、30/120Hz 同一节奏、底座分派负例、
         # 十一条数据负例、HUD 两个新原因的中文词条与动作表 dash/guard 两行。
-        "jhyt_m34_skills"
+        "jhyt_m34_skills",
+        # M34-05 茶棚门：膳房拒收茶饮配方（no_station/no_building/station_level 三种理由各钉一格，
+        # 含 HUD 中文词条）、23:50 开工 20 分钟跨到次日 00:10（未到点收不到、到了点一次收走，
+        # 茶叶 2 → 茶汤 1 实数）、社交乘子 ×1 → ×1.1（茶棚 2 级）→ ×1.2（当日饮茶）与
+        # 8→8/6/10 三档具体分数、第二杯 tea_today 不扣物、同日礼物限次不被乘子绕开、
+        # 存读档后茶汤库存/tea_day 锚点/茶棚历史最高等级三者一致、拆了茶棚门不重新锁上、
+        # 七条数据负例走 validate_data（与 game --check 同一批校验器）。
+        "jhyt_m34_teahouse"
     )
     $exampleDir = Join-Path $engineRoot "crates\game\examples"
 
