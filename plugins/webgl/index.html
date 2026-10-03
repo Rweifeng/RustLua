@@ -16,7 +16,7 @@
   <script>window.__RUSTLUA_FONT = '__FONT_PATH__';</script>
   <script src="./web-runtime.js"></script>
   <script type="module">
-    import init, { start, lua_boot, lua_do_string, lua_call_global, lua_register_js_callback, lua_missing_globals, lua_execute_main } from './pkg/game_web.js';
+    import init, { start, lua_boot, lua_do_string, lua_call_global, lua_register_js_callback, lua_missing_globals, lua_execute_main, lua_api_surface_json, host_api_module_names_json } from './pkg/game_web.js';
     const publishName = __PUBLISH_NAME_JSON__;
     const status = document.getElementById('status');
     const markBoot = (state, detail) => {
@@ -81,7 +81,8 @@
         // fengari-web.js 已从发布包移除。
         window.__RUSTLUA_LUA_BRIDGE = {
           lua_boot, lua_do_string, lua_call_global,
-          lua_register_js_callback, lua_missing_globals, lua_execute_main
+          lua_register_js_callback, lua_missing_globals, lua_execute_main,
+          lua_api_surface_json, host_api_module_names_json
         };
         await window.rustluaRunLuaGame(status);
         status.textContent = publishName + ' - Lua running (mlua-wasm)';

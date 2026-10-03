@@ -3,14 +3,19 @@
 //! 用法：
 //! - `cargo run -q -p engine --example dump_lua_api` —— 打印到 stdout（人读/临时核对）
 //! - `cargo run -q -p engine --example dump_lua_api -- --write` —— 写回
-//!   `src/core/api_surface_snapshot/lua_api_surface.json`（WP11 拆分期间每改一处 API 都要跑）
+//!   `crates/rustlua-scripting/src/api_surface_snapshot/lua_api_surface.json`
+//!   （WP11 拆分期间每改一处 API 都要跑）
 //!
 //! 事实源是运行期 `_G`，不是任何手抄清单：见 `crate::core::script::LUA_API_PROBE`。
 
 use engine::core::script::{LUA_API_PROBE, LuaRuntime};
 
-/// 基线相对 `crates/engine` 清单文件的路径（与 `include_str!` 指向同一份）。
-const BASELINE_REL: &str = "src/core/api_surface_snapshot/lua_api_surface.json";
+/// 基线相对 `crates/engine` 清单文件的路径。
+///
+/// 必须与 `api_surface_snapshot` 门 `include_str!` 的那一份指向同一个文件——WP11 拆分把基线
+/// 挪进了 `rustlua-scripting`，这里的 `src/core/...` 没跟着改，于是 `--write` 一直在
+/// panic（目录不存在），基线只能手改。
+const BASELINE_REL: &str = "../rustlua-scripting/src/api_surface_snapshot/lua_api_surface.json";
 
 fn main() {
     let write = std::env::args().skip(1).any(|arg| arg == "--write");

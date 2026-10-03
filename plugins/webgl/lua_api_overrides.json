@@ -36,10 +36,12 @@
     },
     {
       "module": "input",
-      "note": "平台性差异，必须保留：web 没有手柄设备，补丁镜像桌面 `ActionMap::with_defaults` 的**键盘**部分（省略 GamepadAxis/GamepadButton），`action_repeat` 取「一次边沿 = 一步」语义（web 没有按住重复的设备时钟）。",
+      "note": "平台性差异，必须保留：web 没有手柄设备，补丁镜像桌面 `ActionMap::with_defaults` 的**键盘**部分（省略 GamepadAxis/GamepadButton），`action_repeat` 取「一次边沿 = 一步」语义（web 没有按住重复的设备时钟）。本分组只列**函数式**定义点；`input = { … }` 那张表里还有 15 个键（`axis`/`is_down`/`just_pressed`/`just_released`/`pressed`/`released`/`virtual_key`…），抽取式看不到它们——这条表是**整表替换**，引擎注册 37 个函数、补丁回露 22 个，另加 `web-runtime.js:2366` 那个 `for _, api in ipairs({audio, input})` 补洞循环给的 `load_settings`/`save_settings`（第三种不可见定义，别把它当成还在），剩下 14 个（`last_device`/`nav_settings`/`pad_*`/`rebind`/`rumble`/`set_action_map`…）在 web 上是 nil 且不进控制台，游戏侧 `type(x)==\"function\"` 的守卫会安静跳过（实测 `hints.lua:221` 的设备提示分支在 web 恒不执行）。整表替换的逐名登记与过期检测属于 L2 的已知缺口（docs/51），本轮把 `input.action`/`input.action_released`（按住态与抬起边沿，L3 契约 `input.action.no_device` 报缺的那两条）先按函数式补上。",
       "apis": [
+        "input.action",
         "input.action_axis",
         "input.action_pressed",
+        "input.action_released",
         "input.action_repeat",
         "input.actions",
         "input.bindings"
@@ -82,7 +84,7 @@
     },
     {
       "module": "tag",
-      "note": "补丁版状态存 `__rustlua_tags`（空值删键、删空袋），引擎版存 `EntityState.tags`。**后果**：只在 web 上 `tag.set` 的数据，任何读引擎侧状态的消费者（存档/快照/运行期面板）都看不到。",
+      "note": "补丁版状态存 `__rustlua_tags`（空值删键、删空袋），引擎版存 `EntityState.tags`。**后果**：只在 web 上 `tag.set` 的数据，任何读引擎侧状态的消费者（存档/快照/运行期面板）都看不到。2026-10-03 补上 `tag.get` 的存活校验（与 `tag.set`/`light.get` 同一句 `__rustlua_require_alive`）：未知实体在桌面是**错误**，web 此前返回空标签袋，调用方的 `pcall` 判据整体失真（L3 契约 `tag.get.unknown_entity`）。",
       "apis": [
         "tag.get",
         "tag.set"
@@ -90,7 +92,7 @@
     },
     {
       "module": "ui",
-      "note": "平台性差异，必须保留：web 的屏幕 UI 由 Canvas 2D 适配层绘制（引擎版依赖 wgpu 提交与 GPU 侧字体度量），26 个 ui 函数里含 `measure_text`、焦点环、滚动这一批。这一组是 docs/62「Web 是第二套实现」的主要来源。",
+      "note": "平台性差异，必须保留：web 的屏幕 UI 由 Canvas 2D 适配层绘制（引擎版依赖 wgpu 提交与 GPU 侧字体度量），26 个 ui 函数里含 `measure_text`、焦点环、滚动这一批。这一组是 docs/62「Web 是第二套实现」的主要来源。2026-10-03：`scroll_extents`/`scroll_to_visible`/`scroll_offset`/`scroll_close` 改成引擎 `ScrollState` 的等价实现（偏移钳到 [0, max(0, total−view)]、返回「是否真的动了」、偏移一律浮点、未登记尺寸时 `scroll_offset` 返回 nil 与引擎的 Option 同形），不再是自由发挥；`ui = {}` 整表替换丢掉的 `scroll_open`/`scroll_by`/`scroll_lines`/`scroll_page`/`scroll_max`/`scroll_visible` 仍是 nil。",
       "apis": [
         "ui.bar",
         "ui.circle",

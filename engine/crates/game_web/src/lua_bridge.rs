@@ -10,6 +10,8 @@
 //! | `lua_call_global` | 调 Lua 全局函数，返回字符串 | `callGlobal(L, name, args)` |
 //! | `lua_register_js_callback` | JS 回调注册成 Lua 全局 | `installLuaAudioBridge` 的 `registerLuaFunction` |
 //! | `lua_missing_globals` | 查宿主全局缺失清单 | `missingHostGlobals(L)` |
+//! | `host_api_module_names_json` | 桌面基线的模块表名字清单（内嵌常量） | 手抄的 `ENGINE_HOST_GLOBALS` |
+//! | `lua_api_surface_json` | 运行期真实 `_G` 的「模块表→函数名」表面 | harness 的 API 一致性断言 |
 //!
 //! 值协议（与 fengari 版逐项对齐）：
 //! - 参数：JSON 数组（string/number/boolean/null），Rust 侧转 Lua 值；
@@ -187,8 +189,12 @@ pub fn lua_call_global(name: &str, args_json: &str) -> Result<Option<String>, Js
             return Ok(None);
         };
         let args = parse_args_json(lua, args_json)?;
+        // 必须是 `MultiValue`：`Vec<Value>` 会被 mlua 按 Serialize 当成**一个 table 参数**，
+        // 于是 Lua 侧永远只收到 `...` = 一张表（实测 `n=1 type=table`，连 `[]` 都是）。
+        // fengari 时代这里逐个 push，所以迁移后 JS→Lua 的带参调用（`__rustlua_export_state(false)`
+        // 等）语义全变，但形状上不报错——只是 Lua 函数拿到的是表而不是值。
         let result: mlua::Value = function
-            .call(args)
+            .call(mlua::MultiValue::from_vec(args))
             .map_err(|e| JsValue::from_str(&format!("lua call {name}: {e}")))?;
         Ok(mlua_value_to_string(result))
     })
@@ -256,6 +262,58 @@ pub fn lua_missing_globals(names_json: &str) -> Result<String, JsValue> {
         }
         serde_json::to_string(&missing)
             .map_err(|e| JsValue::from_str(&format!("serialize missing globals: {e}")))
+    })
+}
+
+/// 桌面侧的 Lua API 面基线，**编译期内嵌**进 wasm。
+///
+/// 这份文件同时被 `api_surface_snapshot` 的桌面快照门钉住（41 张模块表 / 275 个函数）。
+/// 内嵌的理由是消灭手抄：`web-runtime.js` 原先自己列一份宿主全局名单，漏掉的名字既拿不到
+/// 缺失代理、也不在诊断里露面，于是脚本以"取 nil"的姿态崩掉、根因看起来像脚本写错
+///（`camera2d` 事故的同一类；实测这份手抄名单已经少 4 个真实模块表）。
+const PC_API_BASELINE: &str =
+    include_str!("../../rustlua-scripting/src/api_surface_snapshot/lua_api_surface.json");
+
+/// 桌面基线里的**模块表名字**清单（JSON 数组字符串）。
+///
+/// 静态数据（不读 Lua 状态），因此 `lua_boot` 之前就能调用；web 侧用它决定给哪些全局装
+/// "自报家门"的缺失代理、在哪些真实宿主表上装缺失方法陷阱。
+#[wasm_bindgen]
+pub fn host_api_module_names_json() -> String {
+    let parsed: serde_json::Value = serde_json::from_str(PC_API_BASELINE)
+        .expect("内嵌的桌面 API 基线（lua_api_surface.json）解析失败");
+    let tables = parsed["tables"]
+        .as_array()
+        .expect("内嵌基线的 tables 应为数组");
+    let mut names: Vec<String> = tables
+        .iter()
+        .map(|table| {
+            table["name"]
+                .as_str()
+                .expect("内嵌基线的模块名应为字符串")
+                .to_owned()
+        })
+        .collect();
+    names.sort();
+    serde_json::to_string(&names).expect("模块名清单序列化失败")
+}
+
+/// 运行期真实 `_G` 的 API 表面（JSON 字符串），探针复用桌面快照门的 `LUA_API_PROBE`。
+///
+/// 用同一个常量而不是各写一份枚举逻辑，是这套一致性门的立足点：两侧"什么算一个 API"
+/// 必须定义相同，否则对拍出来的差异全是枚举口径差异。
+#[wasm_bindgen]
+pub fn lua_api_surface_json() -> Result<String, JsValue> {
+    LUA_RUNTIME.with(|slot| {
+        let guard = slot.borrow();
+        let runtime = guard
+            .as_ref()
+            .ok_or_else(|| JsValue::from_str("lua bridge: runtime not booted"))?;
+        let surface = runtime
+            .eval_json(engine::core::script::LUA_API_PROBE)
+            .map_err(|e| JsValue::from_str(&format!("lua api surface probe: {e}")))?;
+        serde_json::to_string(&surface)
+            .map_err(|e| JsValue::from_str(&format!("serialize api surface: {e}")))
     })
 }
 

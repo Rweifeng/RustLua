@@ -75,7 +75,8 @@ function runBridge() {
   // 3. 新增导出存在（lib.rs 风险点：此前"新增导出"在 no-modules 下静默 undefined）
   const names = Object.keys(glue).filter(n => n.indexOf('__') !== 0).sort();
   const bridgeNames = ['lua_boot', 'lua_boot_with_reader', 'lua_do_string', 'lua_call_global',
-    'lua_register_js_callback', 'lua_missing_globals', 'lua_execute_main', 'start', 'start_wechat'];
+    'lua_register_js_callback', 'lua_missing_globals', 'lua_execute_main',
+    'lua_api_surface_json', 'host_api_module_names_json', 'start', 'start_wechat'];
   for (const n of bridgeNames) {
     assert(typeof glue[n] === 'function', `export ${n} is callable`);
   }
@@ -151,6 +152,29 @@ function runBridge() {
     assert(false, 'lua_call_global missing failed: ' + e);
   }
 
+  // 10b. 参数编解码契约：JS 数组 = **多个 Lua 参数**，而不是"一个 table 参数"。
+  // 这条曾经实测是坏的：`function.call(Vec<Value>)` 被 mlua 按 Serialize 收成一张表，
+  // 于是 `lua_call_global('__x', '["a",42]')` 在 Lua 侧是 `n=1 type=table`，连 `'[]'` 也
+  // 收到一个空表。形状上不报错、语义全变（`__rustlua_export_state(false)` 拿到的是 truthy 的表）。
+  try {
+    glue.lua_do_string(
+      "function __arity(...) local t = {} for i = 1, select('#', ...) do t[i] = type(select(i, ...)) end"
+      + " local first = select(1, ...) return select('#', ...) .. ':' .. table.concat(t, ',') .. ':' .. tostring(first) end",
+      'test-arity');
+    const arityCases = [
+      ['[]', '0::nil', 'no args yields zero params'],
+      ['["hello"]', '1:string:hello', 'string arg'],
+      ['["a",42,true]', '3:string,number,boolean:a', 'mixed args spread'],
+      ['[false]', '1:boolean:false', 'boolean false is not nil'],
+    ];
+    for (const [args, want, label] of arityCases) {
+      const got = glue.lua_call_global('__arity', args);
+      assert(got === want, `${label}: ${args} -> ${JSON.stringify(got)} (want ${JSON.stringify(want)})`);
+    }
+  } catch (e) {
+    assert(false, 'arg protocol failed: ' + e);
+  }
+
   // 11. 缺失全局清单（lua_missing_globals）
   try {
     const missing = JSON.parse(glue.lua_missing_globals(JSON.stringify(['input', 'audio', 'totally_missing'])));
@@ -184,5 +208,41 @@ function runBridge() {
   } catch (e) {
     const text = String((e && e.message) || e);
     assert(text.indexOf('kaboom') >= 0, `lua error propagates (${text})`);
+  }
+
+  // 14. Web↔PC API 一致性门 · L1「注册层锁」。
+  // wasm 里的 Lua 注册层必须与桌面基线**逐字相等**：`lua_bridge.rs` 的 boot_runtime 调的是
+  // 桌面同一个 `LuaRuntime::new()`（`runtime.rs` 无条件 `api::register_all`），所以这张表
+  // 现在是等价的——本断言的作用是把"等价"锁成不可回退：将来谁给某个 API 模块加
+  // `cfg(not(wasm32))`、或漏注册一张表，这里当场红（而不是等到游戏在 web 上取 nil）。
+  // 探针两侧共用 `LUA_API_PROBE`，所以差异只可能是真差异，不是枚举口径差异。
+  try {
+    const moduleNames = JSON.parse(glue.host_api_module_names_json());
+    assert(Array.isArray(moduleNames) && moduleNames.length > 0 &&
+      moduleNames.indexOf('ui') >= 0 && moduleNames.indexOf('camera3d') >= 0,
+      `host_api_module_names_json 给出桌面基线模块表（${moduleNames.length} 张）`);
+    const live = JSON.parse(glue.lua_api_surface_json());
+    const baselinePath = join(repoRoot, 'engine', 'crates', 'rustlua-scripting', 'src',
+      'api_surface_snapshot', 'lua_api_surface.json');
+    const baseline = JSON.parse(readFileSync(baselinePath, 'utf8'));
+    const toMap = (surface) => new Map(
+      surface.tables.map((table) => [table.name, [...table.funcs].sort().join(',')])
+    );
+    const liveMap = toMap(live), pcMap = toMap(baseline);
+    const issues = [];
+    for (const [name, funcs] of pcMap) {
+      if (!liveMap.has(name)) { issues.push(`模块表 ${name} 在 wasm 里没注册（桌面有 ${funcs.split(',').length} 个函数）`); continue; }
+      if (liveMap.get(name) !== funcs) {
+        const a = new Set(funcs.split(',')), b = new Set(liveMap.get(name).split(','));
+        issues.push(`${name} 函数集不同：桌面缺 [${[...b].filter((x) => !a.has(x)).join(' ')}] wasm 多 [${[...a].filter((x) => !b.has(x)).join(' ')}]`);
+      }
+    }
+    for (const name of liveMap.keys()) if (!pcMap.has(name)) issues.push(`wasm 多出模块表 ${name}`);
+    assert(issues.length === 0,
+      issues.length
+        ? `wasm 注册层与桌面基线不一致（${issues.length} 处）:\n    ` + issues.join('\n    ')
+        : `wasm 注册层 == 桌面基线（${pcMap.size} 张表 / ${[...pcMap.values()].reduce((n, v) => n + v.split(',').length, 0)} 个函数）`);
+  } catch (e) {
+    assert(false, `api surface exports failed: ${e}`);
   }
 }

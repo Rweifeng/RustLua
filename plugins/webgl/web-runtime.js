@@ -139,6 +139,15 @@
         pivot_y: Number.isFinite(pivot[1]) ? pivot[1] : 0.5,
       };
     }
+    if (entity.components.Camera) {
+      // 相机组件：`projection=orthographic;center=x,y;zoom=z;bounds=min_x,min_y,max_x,max_y`。
+      // 原生与 web 共用同一份视觉口径（docs/51 §2.2：zoom=2 对标星露谷）。
+      // bounds 与地图矩形一致，computeCamera 直接按地图尺寸夹取即可，无需单独解析。
+      const p = parseProps(entity.components.Camera);
+      entity.camera = {
+        zoom: Number(p.zoom) > 0 ? Number(p.zoom) : 1,
+      };
+    }
     // 场景静态 UI：`UiLayout` 给出屏幕矩形（设计分辨率 1280x720），
     // `Image`/`Text` 给出要画的内容。菜单、HUD 底图、按钮都走这条路径，
     // 不是 Lua 每帧的 `ui.*` 调用。
@@ -212,6 +221,12 @@
     const state = {
       keys: {},
       just: {},
+      // 键盘**抬起边沿**（`input.just_released` / `input.released` / `input.action_released`）。
+      // 与 `just` 对称、每帧随快照清空：引擎的 `InputSnapshot` 里 pressed/released 是两个
+      // 独立集合（见上面的 `mouseUp` 注释），而此前 web 只把按下边沿送进 Lua，抬起边沿根本没
+      // 有来源——补丁层因此没法实现 `action_released`，L3 契约的 `input.action.no_device`
+      // 直接报「缺宿主 API」。让 `up` 真真存在，才有资格谈"和桌面同语义"。
+      up: {},
       mouse: {},
       mouseJust: {},
       // 鼠标**抬起边沿**（`input.mouse_just_released`）。与 `mouseJust` 分开：引擎
@@ -222,6 +237,10 @@
       pressCursor: [0, 0],
       lastCursor: [0, 0],
       cursorDelta: [0, 0],
+      // 滚轮累计增量，**两个分量**（引擎 `InputState::scroll_event(dx, dy)` 与
+      // `input.scroll_delta()` 返回的 `{x, y}` 表同形；此前只攒 deltaY 且当标量交给
+      // Lua，形状就与桌面不同）。浏览器 `wheel` 事件本身就带 deltaX（横向滚轮/触控板）。
+      scrollX: 0,
       scroll: 0
     };
     const keyName = event => {
@@ -236,7 +255,12 @@
       state.keys[key] = true;
       if (['space', 'up', 'down', 'left', 'right'].includes(key)) event.preventDefault();
     });
-    window.addEventListener('keyup', event => { state.keys[keyName(event)] = false; });
+    window.addEventListener('keyup', event => {
+      const key = keyName(event);
+      // 按下过才算一次抬起边沿：宿主可能补发没按过的 keyup，与下面 `mouseup` 同一判据。
+      if (state.keys[key]) state.up[key] = true;
+      state.keys[key] = false;
+    });
     canvas.addEventListener('mousedown', event => {
        const button = event.button === 2 ? 'right' : 'left';
        // 每次 mousedown 都记按下边沿（不只首按）：多指场景里第二根手指按按钮也必须产生
@@ -267,6 +291,7 @@
       state.cursor = [(event.clientX - rect.left - fitOx) / fitS, (event.clientY - rect.top - fitOy) / fitS];
     });
     canvas.addEventListener('wheel', event => {
+      state.scrollX += event.deltaX;
       state.scroll += event.deltaY;
       event.preventDefault();
     }, { passive: false });
@@ -276,10 +301,12 @@
         state.lastCursor = [state.cursor[0], state.cursor[1]];
         const horizontal = (state.keys.d || state.keys.right ? 1 : 0) - (state.keys.a || state.keys.left ? 1 : 0);
          const vertical = (state.keys.s || state.keys.down ? 1 : 0) - (state.keys.w || state.keys.up ? 1 : 0);
-        const out = { axis_x: horizontal, axis_y: vertical, keys: state.keys, just: state.just, mouse: state.mouse, mouse_just: state.mouseJust, mouse_just_released: state.mouseUp, cursor: state.cursor, press_cursor: state.pressCursor, cursor_delta: state.cursorDelta, scroll: state.scroll };
+        const out = { axis_x: horizontal, axis_y: vertical, keys: state.keys, just: state.just, released: state.up, mouse: state.mouse, mouse_just: state.mouseJust, mouse_just_released: state.mouseUp, cursor: state.cursor, press_cursor: state.pressCursor, cursor_delta: state.cursorDelta, scroll: [state.scrollX, state.scroll] };
         state.just = {};
+        state.up = {};
         state.mouseJust = {};
         state.mouseUp = {};
+        state.scrollX = 0;
         state.scroll = 0;
         return out;
       }
@@ -558,10 +585,14 @@
   function computeCamera(sceneState, viewportW, viewportH) {
     let map = null;
     let player = null;
+    let camZoom = 1;
     for (const entity of sceneState.entities.values()) {
       if (entity.alive === false) continue;
       if (!map && entity.tilemap && entity.tilemap.width > 0 && entity.tilemap.height > 0) {
         map = entity.tilemap;
+      }
+      if (entity.camera && Number(entity.camera.zoom) > 0) {
+        camZoom = Number(entity.camera.zoom);
       }
       if (!player && entity.transform) {
         const name = String(entity.name || '');
@@ -573,8 +604,10 @@
     if (!map) return null;
     const mapW = map.width * map.tile_size;
     const mapH = map.height * map.tile_size;
-    const halfW = viewportW / 2;
-    const halfH = viewportH / 2;
+    // 半视口按 zoom 缩放（与原生 Camera2D::visible_extent = 视口/2/zoom 一致）：
+    // zoom=2 时可见域 = 640×360 世界单位（20×11.25 格），屏幕 tile 64px。
+    const halfW = viewportW / 2 / camZoom;
+    const halfH = viewportH / 2 / camZoom;
     let cx = mapW / 2;
     let cy = mapH / 2;
     if (player && player.transform) {
@@ -584,7 +617,7 @@
     const clampAxis = (value, min, max) => (min > max ? (min + max) / 2 : Math.max(min, Math.min(max, value)));
     cx = clampAxis(cx, halfW, mapW - halfW);
     cy = clampAxis(cy, halfH, mapH - halfH);
-    return { x: cx, y: cy };
+    return { x: cx, y: cy, zoom: camZoom };
   }
 
   // 场景文字实体隐藏集：title_menu 把按钮标签接管为脚本绘制（ui.scene_text_visible(false)），
@@ -623,10 +656,11 @@
     const toCanvas = (wx, wy) => {
       if (!camera) return { x: wx, y: wy };
       return {
-        x: 640 + (wx - camera.x),
-        y: 360 - (wy - camera.y),
+        x: 640 + (wx - camera.x) * camera.zoom,
+        y: 360 - (wy - camera.y) * camera.zoom,
       };
     };
+    const camZoom = camera ? camera.zoom : 1;
 
     const tilemapEntity = Array.from(sceneState.entities.values()).find(entity => entity.tilemap);
     if (tilemapEntity) {
@@ -646,11 +680,11 @@
             const tileIndex = tile - 1;
             const sx = (tileIndex % columns) * map.tile_size;
             const sy = Math.floor(tileIndex / columns) * map.tile_size;
-            ctx.drawImage(tileset, sx, sy, map.tile_size, map.tile_size, cell.x, cell.y, map.tile_size, map.tile_size);
+            ctx.drawImage(tileset, sx, sy, map.tile_size, map.tile_size, cell.x, cell.y, map.tile_size * camZoom, map.tile_size * camZoom);
           } else {
             const solid = map.solid[i] === '1';
             ctx.fillStyle = solid ? '#334155' : '#1f2937';
-            ctx.fillRect(cell.x, cell.y, map.tile_size - 1, map.tile_size - 1);
+            ctx.fillRect(cell.x, cell.y, map.tile_size * camZoom - 1, map.tile_size * camZoom - 1);
           }
         }
       }
@@ -674,25 +708,34 @@
       // 必须走按需加载，否则 NPC/敌人只会画成一个色块圆点。
       const sprite = clip ? ensureTexture(images, pending, clip.sheet) : (entity.sprite ? ensureTexture(images, pending, entity.sprite.texture) : null);
       // 世界实体走相机变换（与瓦片同一套）。锚点按 Sprite.pivot（原生默认 0.5,0.5；
-      // 静态建筑/物件 0,0 = 左下贴地向上长）：画布上沿 = 中心点 - pivot×尺寸。
-      // 变换里 y 已反向，无需再翻转贴图本身。
+      // 静态建筑/物件 0,0 = **世界里**左下贴地向上长，与 sprite.rs 的
+      // `local_corners`（x∈[-pivot.x*w,(1-pivot.x)*w]、y∈[-pivot.y*h,(1-pivot.y)*h]）
+      // 同一套约定）。变换里 y 已反向，无需再翻转贴图本身。
+      //
+      // 画布 y 向下、世界 y 向上 ⇒ "锚点 → 画布上沿"的距离是 **(1 - pivot.y) × 高**：
+      //   * pivot.y=0（静态建筑/木牌/树等 134 处）：上沿 = 锚点 - 整高，贴图底边压在锚点上；
+      //   * pivot.y=0.5（角色/NPC 默认）：上沿 = 锚点 - 半高，等价于中心对齐；
+      //   * pivot.y=1：上沿 = 锚点，贴图自锚点向下挂。
+      // 曾经写成 `p.y - pivot.y * 高`，等价于把 pivot.y 当"从画布上沿量"，于是
+      // 0,0 的建筑被整体下移**一整张贴图高度**（实机 2026-10-03：山庄里建筑全部偏移，
+      // 药庐/练功房/仓房/木牌/树全部压在药田里；原生渲染与场景数据都是底左锚点）。
       const p = toCanvas(pos.x, pos.y);
       const pivotX = entity.sprite && entity.sprite.pivot_x !== undefined ? entity.sprite.pivot_x : 0.5;
       const pivotY = entity.sprite && entity.sprite.pivot_y !== undefined ? entity.sprite.pivot_y : 0.5;
-      const dx = p.x - pivotX * size;
-      const dy = p.y - pivotY * sizeY;
+      const dx = p.x - pivotX * size * camZoom;
+      const dy = p.y - (1 - pivotY) * sizeY * camZoom;
       if (sprite && clip) {
         // frame 是**帧序号**（Lua 侧按引擎 current_frame 算好回写），不是累计 tick：
         // 引擎的 current_frame_uv 只取条带首行（frame/cols, 0），所以 sy 恒为 0。
         const index = Math.max(0, Math.floor(Number(entity.animation.frame) || 0));
         const sx = (index % Math.max(1, clip.cols)) * size;
-        ctx.drawImage(sprite, sx, 0, size, size, dx, dy, size, sizeY);
+        ctx.drawImage(sprite, sx, 0, size, size, dx, dy, size * camZoom, sizeY * camZoom);
       } else if (sprite) {
-        ctx.drawImage(sprite, dx, dy, size, sizeY);
+        ctx.drawImage(sprite, dx, dy, size * camZoom, sizeY * camZoom);
       } else {
         ctx.fillStyle = entityColor(entity);
         ctx.beginPath();
-        ctx.arc(p.x, p.y, Math.max(6, size / 2), 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, Math.max(6, size / 2) * camZoom, 0, Math.PI * 2);
         ctx.fill();
       }
     }
@@ -786,7 +829,7 @@ __rustlua_save = {}
 -- 同帧注入、下一帧被清空，input.action_axis 恒为 0（引擎侧踩过同一个坑）。
 __rustlua_virtual_keys = {}
 __rustlua_virtual_just = {}
-__rustlua_input = { axis_x = 0, axis_y = 0, keys = {}, just = {}, mouse = {}, mouse_just = {}, mouse_just_released = {}, cursor = {0, 0}, cursor_delta = {0, 0}, scroll = 0 }
+__rustlua_input = { axis_x = 0, axis_y = 0, keys = {}, just = {}, released = {}, mouse = {}, mouse_just = {}, mouse_just_released = {}, cursor = {0, 0}, cursor_delta = {0, 0}, scroll = {0, 0} }
 log ={ info = function(v) print('[lua] ' .. tostring(v)) end, warn = function(v) print('[lua warn] ' .. tostring(v)) end, error = function(v) print('[lua error] ' .. tostring(v)) end, debug = function(v) print('[lua debug] ' .. tostring(v)) end }
 time = { delta = function() return 1 / 60 end }
 -- 引擎物理键名 → web 键名：native 引擎的动作表用 keyw/keya/keyj...（core/input.rs 的
@@ -803,7 +846,15 @@ local function __rustlua_virtual_name(key)
   if name == 'cancel' then return 'escape' end
   return name
 end
-input = { axis = function(name) name = tostring(name or 'x'):lower(); if name == 'x' or name == 'horizontal' then return __rustlua_input.axis_x or 0 end; if name == 'y' or name == 'vertical' then return __rustlua_input.axis_y or 0 end; return 0 end, is_down = function(key) return __rustlua_input.keys[tostring(key):lower()] == true end, just_pressed = function(key) return __rustlua_input.just[tostring(key):lower()] == true end, mouse_is_down = function(button) return __rustlua_input.mouse[tostring(button or 0)] == true end, mouse_just_pressed = function(button) return __rustlua_input.mouse_just[tostring(button or 0)] == true end, cursor_position = function() return __rustlua_input.cursor or {0, 0} end, press_position = function() return __rustlua_input.press_cursor or __rustlua_input.cursor or {0, 0} end, cursor_delta = function() return __rustlua_input.cursor_delta or {0, 0} end, scroll_delta = function() return __rustlua_input.scroll or 0 end, mouse_just_released = function(button) return __rustlua_input.mouse_just_released and __rustlua_input.mouse_just_released[tostring(button or 0)] == true end, virtual_key = function(key, down) local name = __rustlua_virtual_name(key); if down then __rustlua_virtual_keys[name] = true else __rustlua_virtual_keys[name] = nil end; if __rustlua_input.keys then __rustlua_input.keys[name] = down and true or false end end, virtual_pressed = function(key) local name = __rustlua_virtual_name(key); __rustlua_virtual_keys[name] = true; __rustlua_virtual_just[name] = true; if __rustlua_input.keys then __rustlua_input.keys[name] = true end; if __rustlua_input.just then __rustlua_input.just[name] = true end end }
+-- 这张表是**整表替换**引擎注册的 input（37 个函数），所以写在这里的每一个函数都是
+-- 补丁层自己的实现：漏一个名字，web 上它就是 nil（不是代理、不在控制台留痕，游戏侧
+-- type(x)=="function" 的守卫会安静地跳过——input.last_device 就这样让 hints.lua
+-- 的设备提示在 web 上从来没跑过）。抬起边沿一族（just_released/released/
+-- action_released）此前整族缺失：JS 侧的 keyup 只写按住态、没送边沿进 Lua。现在
+-- 快照带 released（createWebInput 的 state.up），而触摸宿主（微信）没有 keyup，
+-- 抬起边沿从 virtual_key 的 true→false 变化里取，与 just 同一条纪律：只在发生
+-- 这一帧可见一次，不跨帧重放。
+input = { axis = function(name) name = tostring(name or 'x'):lower(); if name == 'x' or name == 'horizontal' then return (__rustlua_input.axis_x or 0) + 0.0 end; if name == 'y' or name == 'vertical' then return (__rustlua_input.axis_y or 0) + 0.0 end; return 0.0 end, is_down = function(key) return __rustlua_input.keys[tostring(key):lower()] == true end, just_pressed = function(key) return __rustlua_input.just[tostring(key):lower()] == true end, just_released = function(key) return __rustlua_input.released[tostring(key):lower()] == true end, pressed = function(key) return __rustlua_input.just[tostring(key):lower()] == true end, released = function(key) return __rustlua_input.released[tostring(key):lower()] == true end, mouse_is_down = function(button) return __rustlua_input.mouse[tostring(button or 0)] == true end, mouse_just_pressed = function(button) return __rustlua_input.mouse_just[tostring(button or 0)] == true end, cursor_position = function() return __rustlua_input.cursor or {0, 0} end, press_position = function() return __rustlua_input.press_cursor or __rustlua_input.cursor or {0, 0} end, cursor_delta = function() return __rustlua_input.cursor_delta or {0, 0} end, scroll_delta = function() local s = __rustlua_input.scroll; return { s[1] + 0.0, s[2] + 0.0 } end, mouse_just_released = function(button) return __rustlua_input.mouse_just_released and __rustlua_input.mouse_just_released[tostring(button or 0)] == true end, virtual_key = function(key, down) local name = __rustlua_virtual_name(key); local was_down = __rustlua_input.keys and __rustlua_input.keys[name] == true; if down then __rustlua_virtual_keys[name] = true else __rustlua_virtual_keys[name] = nil end; if __rustlua_input.keys then __rustlua_input.keys[name] = down and true or false end; if not down and was_down then __rustlua_input.released[name] = true end end, virtual_pressed = function(key) local name = __rustlua_virtual_name(key); __rustlua_virtual_keys[name] = true; __rustlua_virtual_just[name] = true; if __rustlua_input.keys then __rustlua_input.keys[name] = true end; if __rustlua_input.just then __rustlua_input.just[name] = true end end }
 -- 每帧把上一帧注入的虚拟键并回新快照（宿主在帧首刚整份替换过 __rustlua_input）。
 -- 按下边沿（virtual_pressed）只在**被消费的这一帧**可见一次，读完即清——与引擎
 -- 「边沿只在一个快照周期内为真」一致；重发边沿会让 action_pressed 系动作连发。
@@ -811,6 +862,7 @@ function __rustlua_apply_virtual_input()
   if type(__rustlua_input) ~= 'table' then return end
   if type(__rustlua_input.keys) ~= 'table' then __rustlua_input.keys = {} end
   if type(__rustlua_input.just) ~= 'table' then __rustlua_input.just = {} end
+  if type(__rustlua_input.released) ~= 'table' then __rustlua_input.released = {} end
   for name in pairs(__rustlua_virtual_keys) do __rustlua_input.keys[name] = true end
   -- 按下边沿不跨帧重放：input.virtual_pressed 注入当帧已把键写进 __rustlua_input.just，
   -- 这里若再把 __rustlua_virtual_just 并入 just，toggle 类动作（inventory/quest/pause 等绑定
@@ -1939,7 +1991,7 @@ function doString(L, source, name) {
     }
   }
 
-  // 引擎里存在、但 web 运行时**未实现**的宿主全局清单。
+  // 引擎里存在的宿主全局清单——**从桌面 API 基线派生，不是手抄**。
   //
   // 为什么必须有这份清单：下面的 `hostCompat` 会把名单里缺的全局换成"自报家门"的代理，
   // 而 `missingHostGlobals()` 用**同一份名单**判断"这条路径到底缺哪些 API"。
@@ -1947,31 +1999,50 @@ function doString(L, source, name) {
   // `attempt to index a nil value (global 'x')`，而诊断清单里**一个字都不提**它，
   // 于是根因看起来像"游戏脚本写错了"，而不是"这个平台没有这个 API"。
   //
-  // `camera2d`（2026-09-23 补）：桌面引擎有、web/微信两边都没有。它此前**不**在名单里，
-  // 于是第一个用到它的脚本会以"取 nil"的姿态炸掉，且 `missing-host-api` 通道保持沉默
-  // （实测：`examples/game_jhyt` 的 `world/camera_view.lua` 在微信形态点「开始新游戏」后
-  // 启动失败）。**给引擎新增宿主能力后，这里要一起想**：要么实现它，要么列进这份名单，
-  // 让平台缺口在诊断里可见。
-  const ENGINE_HOST_GLOBALS = [
-    'animation', 'animation3d', 'app', 'asset', 'audio', 'calendar', 'camera', 'camera2d',
-    'clock', 'container', 'data', 'day', 'entity', 'event', 'grid', 'health', 'input',
-    'interact', 'inv', 'item', 'light', 'log', 'map', 'mesh', 'particles', 'physics',
-    'physics3d', 'save', 'scene', 'shop', 'sprite', 'tag', 'tilemap', 'time', 'transform',
-    'transform3d', 'ui'
-  ];
+  // `camera2d`（2026-09-23 事故）就是这个坑：它当时不在手抄名单里，于是第一个用到它的脚本
+  // 以"取 nil"的姿态炸掉且诊断通道保持沉默（`examples/game_jhyt` 的 `world/camera_view.lua`
+  // 在微信形态点「开始新游戏」后启动失败）。名单本身后来又被证实少 4 个真实模块表
+  //（`camera3d` / `quad` / `visibility` / `world_text`）。
+  //
+  // 现在名单来自 wasm 内嵌的桌面基线（`lua_bridge.rs` 的 `host_api_module_names_json`，
+  // `include_str!` 的是 `api_surface_snapshot/lua_api_surface.json`——与桌面快照门同一份文件）。
+  // **给引擎新增宿主能力后不需要再想这里**：基线一变，web 侧的代理覆盖面自动跟着变。
+  let hostGlobalsCache = null;
+  function engineHostGlobals() {
+    // 静态数据（不碰 Lua 状态），所以 lua_boot 之前可用；取一次就缓存。
+    if (hostGlobalsCache) return hostGlobalsCache;
+    const bridge = window.__RUSTLUA_LUA_BRIDGE;
+    if (!bridge) throw new Error('wasm lua bridge not loaded');
+    const raw = bridge.host_api_module_names_json();
+    const names = JSON.parse(raw);
+    if (!Array.isArray(names) || names.length === 0) {
+      throw new Error('宿主全局清单为空（内嵌的桌面 API 基线形态不对）');
+    }
+    hostGlobalsCache = names;
+    return names;
+  }
 
-  function missingHostGlobals(L) {
-    // WP10 迁移：经 wasm 桥一次查出缺失清单（bridge 内部遍历全局表）。
+  function missingHostGlobals(hostGlobals) {
+    // 经 wasm 桥一次查出缺失清单（bridge 内部遍历全局表）。
     const bridge = window.__RUSTLUA_LUA_BRIDGE;
     if (!bridge) return [];
     try {
-      const raw = bridge.lua_missing_globals(JSON.stringify(ENGINE_HOST_GLOBALS));
+      const raw = bridge.lua_missing_globals(JSON.stringify(hostGlobals));
       return JSON.parse(raw || '[]');
     } catch (error) {
       console.warn('[lua bridge] missing globals probe failed:', error);
       return [];
     }
   }
+
+  // 活体 API 表面：运行期真实 `_G` 的「模块表→函数名」，探针与桌面快照门**同一个常量**
+  // （`LUA_API_PROBE`）。harness 拿它和提交进仓库的 web 基线对拍，防止 web 侧表面悄悄漂移
+  // 或基线腐烂。只在被调用时执行，正常游戏路径不付出代价。
+  window.__rustlua_export_api_surface = function () {
+    const bridge = window.__RUSTLUA_LUA_BRIDGE;
+    if (!bridge) throw new Error('wasm lua bridge not loaded');
+    return JSON.parse(bridge.lua_api_surface_json());
+  };
 
   function markBoot(state, detail) {
     const body = document.body || document.documentElement;
@@ -2045,7 +2116,8 @@ function doString(L, source, name) {
     const L = null;
     installLuaAudioBridge();
     try {
-      const hostCompat = ENGINE_HOST_GLOBALS.map(name => `if ${name} == nil then ${name} = __rustlua_missing_host_global(${luaQuote(name)}) end`).join('\n');
+      const hostGlobals = engineHostGlobals();
+      const hostCompat = hostGlobals.map(name => `if ${name} == nil then ${name} = __rustlua_missing_host_global(${luaQuote(name)}) end`).join('\n');
       // 引擎里有、web 运行时没实现的宿主 API：**不再静默变成空表**。
       // 旧写法（if map == nil then map = {} end）把"未实现的全局"伪装成一张空表，
       // 于是 `map.current()` 报的是 `attempt to call a nil value (field 'current')`——
@@ -2158,6 +2230,10 @@ function event.off(name, callback) return event.unsubscribe(name, callback) end
 -- 实体标签（引擎 tag.get/set 同构）：id → { key = value }；空 value 删除键、删空袋。
 __rustlua_tags = {}
 function tag.get(id, key)
+  -- 存活校验（引擎 tag.get 的 require_alive）：未知实体是**错误**而不是返回 nil。
+  -- 缺了它，读一个不存在的实体会拿到空标签袋，调用方的 pcall 判据整体失真
+  -- （L3 契约 tag.get.unknown_entity：PC ok=false / web 曾 ok=true）。
+  __rustlua_require_alive(tonumber(id))
   local bag = __rustlua_tags[tonumber(id)]
   if not bag then return nil end
   return bag[tostring(key)]
@@ -2297,18 +2373,16 @@ for _, api in ipairs({audio, input}) do
 end
 `;
       const genericCompat = `
--- clock 兜底（WP10 批 A 之后补）：批 A 把 clock 编译进 wasm，web 侧由
--- registerHostTable('clock') 注册成真实 fengari 全局；但微信侧 __RUSTLUA_HOST_API 未接线
--- （wasm 桥不可用）时 clock 是 nil，直接 function clock.xxx 会
--- attempt to index a nil value (global 'clock') 把启动打崩（实测：微信开发者工具）。
--- 先给一张空表兜底，now/set/set_rate 用 Lua 侧游戏时间（day 默认从 1 起，与批 B 前
--- 真实设备一致）；pause/add/sleep_to_morning 未实现时由 missing 代理自报。
--- calendar/day/app 保持 missing 代理（批 B 前的真实设备行为，游戏可容忍）。
-clock = clock or {}
-local rate, currentDay, minute = 0, 1, 0
-function clock.set_rate(value) rate = assert(tonumber(value)) end
-function clock.set(dayValue, minuteValue) currentDay = dayValue; minute = minuteValue end
-function clock.now() return {day=currentDay, minute=minute, minute_of_day=minute} end
+-- clock 兜底已**删除**（L3 行为契约实测出来的，见 scripts/web-api-contract.js）：
+-- 它写于"微信侧 wasm 桥未接线、clock 是 nil"的年代（WP10 批 A 之前）。今天 wasm VM 里
+-- clock 由 api::register_all 注册，与桌面**同一份 Rust 实现**（L1 注册层锁实测 41 表 / 275 函数
+-- 逐项相同），于是这段变成了纯粹的**有损重复**：把引擎版覆盖成只有 day/minute/minute_of_day，
+-- 少掉 hour/paused/rate（Lua 读到 nil 且不报错），并且 set/add 不做引擎的参数校验与跨天钳位
+-- （契约实测：clock.set(0,0) 桌面拒绝、补丁接受；clock.add(-9999) 桌面钳到 day=2/minute=0、
+-- 补丁原样留着 minute=30；clock.sleep_to_morning() 桌面 day=6/minute=360、补丁 day=183/minute=1000）。
+-- 保留它挡不住任何东西：两边都**没有**自动推进——web 的帧循环从不叫 LuaRuntime::step，
+-- 引擎版与补丁版一样只在游戏自己调用时才变。真要补的是那个缺口（见 docs/51「web 时间基」）。
+-- calendar/day/app 继续由 missing 代理自报（补丁层没有覆盖它们）。
 -- 动作层（引擎 core/input.rs 的 ActionMap::with_defaults 与 InputState::action_axis）。
 -- 这里镜像默认绑定的**键盘**部分：web 平台没有手柄设备，引擎默认表里的
 -- GamepadAxis/GamepadButton 项在 web 侧无对应输入，故省略；虚拟摇杆由适配层映射成
@@ -2339,6 +2413,21 @@ function input.action_repeat(action)
   return false
 end
 function input.bindings(action) local result = {}; for i,k in ipairs(bindings[tostring(action)] or {}) do result[i]=k end; return result end
+-- 按住态（引擎 action_is_down）与抬起边沿（引擎 action_just_released）。
+-- input.action 此前**整族缺失**（补丁层那张 input = { … } 是整表替换，漏名即 nil），
+-- action_released 则是 L3 契约 input.action.no_device 报"缺宿主 API"的那一条。
+function input.action(action)
+  for _,key in ipairs(bindings[tostring(action)] or {}) do
+    if __rustlua_input and __rustlua_input.keys and __rustlua_input.keys[key] then return true end
+  end
+  return false
+end
+function input.action_released(action)
+  for _,key in ipairs(bindings[tostring(action)] or {}) do
+    if __rustlua_input and __rustlua_input.released and __rustlua_input.released[key] then return true end
+  end
+  return false
+end
 function input.action_pressed(action)
   for _,key in ipairs(bindings[tostring(action)] or {}) do
     if __rustlua_input and __rustlua_input.just and __rustlua_input.just[key] then return true end
@@ -2349,14 +2438,16 @@ end
 -- **首参是负方向**动作，所以垂直轴写作 action_axis("move_down", "move_up")：
 -- 写成 ("move_up","move_down") 会让按键方向整体反号（引擎测试里有这条断言）。
 function input.action_axis(negative, positive)
-  local value = 0
+  -- 引擎侧返回 f64（action_axis），Lua 里必须是**浮点**：整数 0 与浮点 0.0 在
+  -- tostring 下不同（0 / 0.0），契约按字符串逐行对拍。
+  local value = 0.0
   for _,key in ipairs(bindings[tostring(negative)] or {}) do
     if __rustlua_input and __rustlua_input.keys and __rustlua_input.keys[key] then value = value - 1 end
   end
   for _,key in ipairs(bindings[tostring(positive)] or {}) do
     if __rustlua_input and __rustlua_input.keys and __rustlua_input.keys[key] then value = value + 1 end
   end
-  if value < -1 then return -1 elseif value > 1 then return 1 end
+  if value < -1 then return -1.0 elseif value > 1 then return 1.0 end
   return value
 end
 function input.actions()
@@ -2430,29 +2521,62 @@ ui.focus_close = function(id)
   focus_rings[tostring(id)] = nil
   return true
 end
--- 列表滚动（panel_nav.window 用）：尺寸登记 + 偏移计算；缺 API 时 panel_nav 恒返回 1。
+-- 列表滚动（panel_nav.window 用）：状态与算法都镜像引擎的 ScrollState
+-- （rustlua-ui/src/ui_navigation.rs 的 max_offset / scroll_extents / scroll_to_visible）：
+-- 偏移钳在 [0, max(0, total − view)]；scroll_to_visible 只在"目标行真在视口外"时才动，
+-- 返回**是否真的动了**；scroll_extents 返回钳制后的偏移而不是 true。此前补丁版把 y 直接
+-- 当成偏移写进去，于是没有登记尺寸（引擎的 or_default 建出 view=total=0 ⇒ max_offset=0）
+-- 时 web 上"滚到可见"会把偏移设成任意值，与桌面分叉（L3 契约 ui.scroll.lifecycle：
+-- PC offset=0.0 / web 曾 offset=30）。偏移一律浮点——引擎侧是 f32，契约逐行比字符串。
 local scroll_state = {}
+local function scroll_new() return { view = 0.0, total = 0.0, offset = 0.0 } end
+local function scroll_max(s)
+  local max = (s.total or 0.0) - (s.view or 0.0)
+  if max < 0.0 then max = 0.0 end
+  return max
+end
 ui.scroll_extents = function(id, view_h, total_h)
-  local s = scroll_state[tostring(id)] or { view = 0, total = 0, offset = 0 }
-  s.view = tonumber(view_h) or 0
-  s.total = tonumber(total_h) or 0
+  local s = scroll_state[tostring(id)] or scroll_new()
+  s.view = (tonumber(view_h) or 0) + 0.0
+  s.total = (tonumber(total_h) or 0) + 0.0
+  local max = scroll_max(s)
+  if s.offset > max then s.offset = max end
+  if s.offset < 0.0 then s.offset = 0.0 end
   scroll_state[tostring(id)] = s
-  return true
+  return s.offset
 end
 ui.scroll_to_visible = function(id, y, h)
-  local s = scroll_state[tostring(id)] or { view = 0, total = 0, offset = 0 }
-  s.offset = math.max(0, tonumber(y) or 0)
+  local s = scroll_state[tostring(id)] or scroll_new()
+  local item_top = (tonumber(y) or 0) + 0.0
+  local item_bottom = item_top + math.max(0, tonumber(h) or 0)
+  local view_bottom = s.offset + (s.view or 0.0)
+  local target
+  if item_top < s.offset then
+    target = item_top
+  elseif item_bottom > view_bottom then
+    target = item_bottom - (s.view or 0.0)
+  else
+    -- 已经可见：引擎版同样用 entry().or_default() 建/留状态，只是不改偏移。
+    scroll_state[tostring(id)] = s
+    return false
+  end
+  local max = scroll_max(s)
+  if target < 0.0 then target = 0.0 elseif target > max then target = max end
+  local before = s.offset
+  s.offset = target
   scroll_state[tostring(id)] = s
-  return true
+  return s.offset ~= before
 end
 ui.scroll_offset = function(id)
   local s = scroll_state[tostring(id)]
-  if not s then return 0 end
-  return s.offset or 0
+  if not s then return nil end
+  return s.offset
 end
 ui.scroll_close = function(id)
-  scroll_state[tostring(id)] = nil
-  return true
+  local key = tostring(id)
+  local had = scroll_state[key] ~= nil
+  scroll_state[key] = nil
+  return had
 end
 `;
       // 先记下"这一侧到底缺哪些宿主全局"，再装兼容层——顺序不能反：`hostCompat` 会把缺的
@@ -2474,18 +2598,18 @@ end
       // 误标成缺失，脚本判能力时得到错误结论。
       doString(L, luaPrelude(sceneState, knownScenes) + '\n' + preload, 'engine-host-prelude');
       doString(L, methodCompat + '\n' + genericCompat, 'engine-host-method-compat');
-      const eagerlyMissingGlobals = missingHostGlobals(L);
+      const eagerlyMissingGlobals = missingHostGlobals(hostGlobals);
       const missingGlobalTable = '__rustlua_missing_globals = {' +
         eagerlyMissingGlobals.map(name => `[${luaQuote(name)}]=true`).join(',') + '}';
       doString(L, missingApiCompat + '\n' + missingGlobalTable + '\n' + hostCompat, 'engine-host-compat');
       // 在**真正的宿主表**上装缺失方法陷阱（放在 methodCompat 之后：那批默认实现
       // 必须先落地，否则陷阱会让 `if not api.load_settings` 之类的探测误判为"有"）。
-      doString(L, ENGINE_HOST_GLOBALS.map(name => `__rustlua_trap_host_table(${luaQuote(name)}, ${name})`).join('\n'), 'engine-host-table-traps');
+      doString(L, hostGlobals.map(name => `__rustlua_trap_host_table(${luaQuote(name)}, ${name})`).join('\n'), 'engine-host-table-traps');
       // WP10 迁移：main.lua 不再由 JS fetch 后注入，改经 wasm 桥读 vfs 预加载表
       // + pack 解码执行（与桌面/微信压缩包语义一致；执行前全部宿主补丁已在位）。
       bridge.lua_execute_main();
     } catch (error) {
-      const missing = missingHostGlobals(L);
+      const missing = missingHostGlobals(hostGlobals);
       const detail = 'missing engine host API: ' + missing.join(', ');
       markBoot('failed', detail);
       throw new Error(String((error && error.message) || error) + ' [' + detail + ']');

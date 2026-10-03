@@ -87,3 +87,54 @@ fn lua_api_surface_matches_baseline() {
         current.len()
     );
 }
+
+/// L3 行为契约的**桌面侧**基线（与 `crates/engine/examples/run_lua_contract.rs` 同一份 Lua）。
+const CONTRACT: &str = include_str!("lua_api_contract.lua");
+const CONTRACT_TRANSCRIPT: &str = include_str!("lua_api_contract_transcript.txt");
+
+/// 契约在活体桌面上跑出来的 transcript 必须等于提交进仓库的那份。
+///
+/// 为什么名字门不够：`lua_api_surface_matches_baseline` 只保证**注册层**两边同名同形，
+/// 而 web 的 57 个补丁覆盖点改的是**行为**（`clock.now()` 少三个字段就是实测的一例），
+/// 名字对拍一个字都抓不到。这份 transcript 把"两侧理应相同"的语义钉成文本，
+/// web 侧（`node scripts/wechat-minigame-harness.js <发布目录> --check-api-contract`）
+/// 对的是**同一份基线**，所以 PC↔Web 的等价是传递性的，不需要另写一套"web 期望值"。
+#[test]
+fn lua_api_contract_matches_transcript() {
+    let runtime = LuaRuntime::new().expect("lua vm");
+    runtime
+        .lua()
+        .load(CONTRACT)
+        .set_name("lua_api_contract.lua")
+        .exec()
+        .expect("契约用例加载失败");
+    let value = runtime.eval_json("__contract_run()").expect("契约执行失败");
+    let current = value.as_str().expect("契约应返回字符串").trim_end();
+    let baseline = CONTRACT_TRANSCRIPT.trim_end();
+    if current == baseline {
+        return;
+    }
+    // 逐行报差异：一行一条用例，行号即用例位置，改完能直接定位是哪条语义变了。
+    let mut issues = Vec::new();
+    let mut current_lines = current.lines();
+    let mut baseline_lines = baseline.lines();
+    for index in 1.. {
+        match (current_lines.next(), baseline_lines.next()) {
+            (None, None) => break,
+            (lhs, rhs) => {
+                if lhs != rhs {
+                    issues.push(format!(
+                        "L{index} 基线 {:?} / 当前 {:?}",
+                        rhs.unwrap_or("<行数少>"),
+                        lhs.unwrap_or("<行数多>")
+                    ));
+                }
+            }
+        }
+    }
+    panic!(
+        "L3 行为契约与基线 transcript 不一致（重生成：cargo test -p rustlua-scripting 之后跑 \
+         cargo run -q -p engine --example run_lua_contract -- --write）：\n{}",
+        issues.join("\n")
+    );
+}

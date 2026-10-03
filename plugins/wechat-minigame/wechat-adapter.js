@@ -2629,7 +2629,11 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         lua_call_global: result.host.lua_call_global,
         lua_register_js_callback: result.host.lua_register_js_callback,
         lua_missing_globals: result.host.lua_missing_globals,
-        lua_execute_main: result.host.lua_execute_main
+        lua_execute_main: result.host.lua_execute_main,
+        // API 一致性门用（见 web-runtime.js 的 engineHostGlobals / __rustlua_export_api_surface）：
+        // 前者给"桌面有哪些宿主全局"的唯一来源，后者导出运行期真实 _G 的表面。
+        lua_api_surface_json: result.host.lua_api_surface_json,
+        host_api_module_names_json: result.host.host_api_module_names_json
       };
       wasmState.luaBridge = 'ok';
     } catch (error) {
