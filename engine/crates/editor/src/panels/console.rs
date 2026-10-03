@@ -1,8 +1,7 @@
-//! 行4 控制台：实时日志（LogSink）+ Lua 运行输出 + 诊断。
+//! 行4 控制台：实时日志（LogSink）+ 编辑器提示 + Play 预览诊断。
 
 use crate::{ConsoleLogLevelFilter, ConsoleTab, EditorApp};
 use eframe::egui;
-use engine::core::script::{LuaRuntime, ScriptDiagnostic};
 
 /// 左侧分类导航图标（egui 内嵌 emoji 字体渲染）。
 const EDITOR_LOG_ICON: &str = "⚙";
@@ -31,12 +30,8 @@ enum ConsoleSource {
     Sink,
     /// 编辑器侧提示。
     Notice,
-    /// Lua 控制台输出。
-    Output,
     /// Game View / UI 预览诊断。
     Preview,
-    /// 脚本诊断。
-    Script,
 }
 
 /// 一行控制台内容：来源 + 源行号 + 该源行内的子行号（源行含换行时按物理行拆开）。
@@ -61,9 +56,7 @@ struct ConsoleRowKey {
     level: Option<ConsoleLogLevelFilter>,
     sink_generation: u64,
     notice_len: usize,
-    output_len: usize,
     preview_len: usize,
-    script_len: usize,
 }
 
 /// 缓存的行索引。文本本身仍留在各自的有界缓冲里，这里只持有 (来源, 序号)。
@@ -86,9 +79,7 @@ impl ConsoleRowCache {
 struct ConsoleSources {
     sink: Vec<String>,
     notices: Vec<String>,
-    output: Vec<String>,
     preview: Vec<(String, ConsoleLogLevel)>,
-    script: Vec<String>,
 }
 
 impl ConsoleSources {
@@ -96,9 +87,7 @@ impl ConsoleSources {
         match source {
             ConsoleSource::Sink => self.sink.get(index).map(String::as_str),
             ConsoleSource::Notice => self.notices.get(index).map(String::as_str),
-            ConsoleSource::Output => self.output.get(index).map(String::as_str),
             ConsoleSource::Preview => self.preview.get(index).map(|(line, _)| line.as_str()),
-            ConsoleSource::Script => self.script.get(index).map(String::as_str),
         }
     }
 
@@ -112,15 +101,10 @@ impl ConsoleSources {
                 .notices
                 .get(index)
                 .map_or(ConsoleLogLevel::Info, |line| log_level(line)),
-            ConsoleSource::Output => self
-                .output
-                .get(index)
-                .map_or(ConsoleLogLevel::Info, |line| output_level(line)),
             ConsoleSource::Preview => self
                 .preview
                 .get(index)
                 .map_or(ConsoleLogLevel::Info, |(_, level)| *level),
-            ConsoleSource::Script => ConsoleLogLevel::Error,
         }
     }
 }
@@ -134,7 +118,7 @@ impl EditorApp {
         // 并且用 `exact_height` **钉死**。
         //
         // 为什么不用 `default_height`：egui 的 `TopBottomPanel` 把「内容矩形」存成下一帧的
-        // 高度。控制台内部是「日志滚动区 + 输入行」两级布局，滚动区会把内容矩形顶出分配高度，
+        // 高度。控制台内部是「表头行 + 日志滚动区」两级布局，滚动区会把内容矩形顶出分配高度，
         // 于是每帧放大 ~2px（`内容变高 → 面板变高 → 可用高度变大`），实测 60 帧后画布被吃掉
         // 一百多像素。`exact_height` 切断这条正反馈；代价是面板不再可拖动改高（面板尺寸本来
         // 也不参与布局持久化——`capture_layout` 只写可见性，所以重启后本来也回默认高度）。
@@ -158,13 +142,6 @@ impl EditorApp {
             ui.separator();
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
-                    let project_name = self
-                        .project
-                        .root
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("项目");
-                    ui.heading(format!("控制台 — {project_name}"));
                     ui.add(
                         egui::TextEdit::singleline(&mut self.console_filter)
                             .desired_width(160.0)
@@ -172,7 +149,6 @@ impl EditorApp {
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("清空").clicked() {
-                            self.clear_console();
                             self.log_sink.clear();
                             self.console_notices.clear();
                         }
@@ -199,9 +175,7 @@ impl EditorApp {
                     });
                 });
                 // 滚动区填满剩余空间，面板高度保持固定，仅滚动内部内容。
-                let row_height = console_row_height(ui);
-                let input_row_budget = row_height + ui.spacing().item_spacing.y;
-                let log_height = (ui.available_height() - input_row_budget).max(row_height);
+                let log_height = ui.available_height();
                 egui::ScrollArea::vertical()
                     .id_salt("console_log_body")
                     .auto_shrink([false; 2])
@@ -210,44 +184,7 @@ impl EditorApp {
                     .show(ui, |ui| {
                         self.draw_console_log_body(ui);
                     });
-                // 输入固定在滚动区**下方**：日志滚到哪一行都不影响输入，
-                // 也避免长日志把输入顶出可见范围。
-                self.draw_console_input_row(ui);
             });
-        });
-    }
-
-    /// 控制台输入行（docs/25 §10「输入行 + 执行（或 Enter）在内嵌 VM 执行 Lua」）。
-    ///
-    /// 回显 `> <源码>` / `<结果>`，结果与错误都落到 `console_output`，因此复用
-    /// 既有的分类 / 级别 / 过滤索引，不需要第二套展示路径。
-    fn draw_console_input_row(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Lua");
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut self.console_input)
-                    .desired_width(240.0)
-                    .hint_text("输入 Lua 表达式或语句，Enter 执行…"),
-            );
-            let entered =
-                response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-            let run = ui.button("执行").clicked();
-            if entered || run {
-                self.run_console_command();
-                // 命令执行完仍把焦点留在输入行：连续输入不必每次重新点一下。
-                response.request_focus();
-            }
-            // 「运行选中脚本」按 docs/25 §10 用 Inspector 当前的 Lua 路径；
-            // 没有引用时按钮置灰（而不是点了才报错）。VM 由该方法按需创建。
-            let has_script = !self.lua_script.trim().is_empty();
-            if ui
-                .add_enabled(has_script, egui::Button::new("运行选中脚本"))
-                .on_hover_text("先运行脚本，再调用一次 update 调试入口")
-                .on_disabled_hover_text("Inspector 中先填入 Lua 脚本路径（如 scripts/player.lua）")
-                .clicked()
-            {
-                self.run_selected_script();
-            }
         });
     }
 
@@ -278,12 +215,7 @@ impl EditorApp {
         let filter = self.console_filter.trim().to_lowercase();
         let tab = self.console_tab;
         let level_filter = self.console_log_level_filter;
-        // 诊断需要 &mut 解析，先收集成自有文本（数量远小于日志行）。
-        let script_diagnostics: Vec<String> = self
-            .console_diagnostics()
-            .iter()
-            .map(format_diagnostic)
-            .collect();
+        // 预览诊断需要按 kind 定级，先收集成自有文本（数量远小于日志行）。
         let preview_diagnostics: Vec<(String, ConsoleLogLevel)> = self
             .preview_diagnostics
             .diagnostics()
@@ -302,9 +234,7 @@ impl EditorApp {
         let sources = ConsoleSources {
             sink: self.log_sink.snapshot(),
             notices: self.console_notices.clone(),
-            output: self.console_output.clone(),
             preview: preview_diagnostics,
-            script: script_diagnostics,
         };
         let key = ConsoleRowKey {
             tab: Some(tab),
@@ -312,9 +242,7 @@ impl EditorApp {
             level: Some(level_filter),
             sink_generation: self.log_sink.generation(),
             notice_len: sources.notices.len(),
-            output_len: sources.output.len(),
             preview_len: sources.preview.len(),
-            script_len: sources.script.len(),
         };
         let row_count =
             self.rebuild_console_rows_if_needed(&key, &sources, tab, &filter, level_filter);
@@ -373,97 +301,6 @@ impl EditorApp {
         self.console_rows_cache.rows = rows;
         self.console_rows_cache.valid = true;
         row_count
-    }
-
-    fn ensure_lua_runtime(&mut self) -> Result<&mut LuaRuntime, String> {
-        if self.lua_runtime.is_none() {
-            self.lua_runtime = Some(LuaRuntime::new().map_err(|error| error.to_string())?);
-        }
-        self.lua_runtime
-            .as_mut()
-            .ok_or_else(|| "Lua VM 未初始化".to_owned())
-    }
-
-    fn run_console_command(&mut self) {
-        let source = self.console_input.trim().to_owned();
-        if source.is_empty() {
-            return;
-        }
-        let result = self.ensure_lua_runtime().and_then(|runtime| {
-            runtime
-                .execute_console(&source)
-                .map_err(|error| error.to_string())
-        });
-        match result {
-            // docs/25 §10：回显 `> <源码>`，下一物理行是结果；结果为空白就不留空行。
-            Ok(value) => {
-                let value = value.trim_end();
-                if value.is_empty() {
-                    self.push_console_output(format!("> {source}"));
-                } else {
-                    self.push_console_output(format!("> {source}\n{value}"));
-                }
-            }
-            Err(error) => {
-                self.status = error.clone();
-                self.push_console_output(format!("> {source}\n错误：{error}"));
-            }
-        }
-        self.console_input.clear();
-    }
-
-    fn clear_console(&mut self) {
-        self.console_output.clear();
-        if let Some(runtime) = self.lua_runtime.as_mut() {
-            runtime.clear_diagnostics();
-        }
-    }
-
-    fn run_selected_script(&mut self) {
-        let script = self.lua_script.trim().to_owned();
-        if script.is_empty() {
-            self.status = "当前实体没有 Lua 脚本引用".to_owned();
-            return;
-        }
-        let path = self.project.root.join(&script);
-        // 先判存在：路径写错时给「文件不存在」而不是引擎内部的加载错误。
-        if !path.is_file() {
-            let message = format!("Lua 脚本不存在：{}", path.display());
-            self.status = message.clone();
-            self.push_console_output(format!("运行 {script}\n错误：{message}"));
-            return;
-        }
-        // VM 按需创建（与输入行同一条路径），因此这里不再要求 VM 已经存在。
-        let result = self.ensure_lua_runtime().and_then(|runtime| {
-            runtime
-                .execute_project_script(&path)
-                .and_then(|_| runtime.call_update_debug())
-                .map_err(|error| error.to_string())
-        });
-        match result {
-            Ok(value) => {
-                self.status = format!("Lua 脚本运行成功：{script}");
-                let value = value.trim_end();
-                if value.is_empty() {
-                    self.push_console_output(format!("运行 {script}"));
-                } else {
-                    self.push_console_output(format!("运行 {script}\n{value}"));
-                }
-            }
-            Err(error) => {
-                self.status = error.clone();
-                self.push_console_output(format!("运行 {script}\n错误：{error}"));
-            }
-        }
-    }
-
-    fn console_diagnostics(&mut self) -> Vec<ScriptDiagnostic> {
-        let filter = self.console_filter.trim().to_owned();
-        let Some(runtime) = self.lua_runtime.as_mut() else {
-            return Vec::new();
-        };
-        runtime.set_debug_filter((!filter.is_empty()).then_some(filter));
-        runtime.diagnostics()
     }
 }
 
@@ -525,17 +362,15 @@ fn build_console_rows(
     for (source, count) in [
         (ConsoleSource::Sink, sources.sink.len()),
         (ConsoleSource::Notice, sources.notices.len()),
-        (ConsoleSource::Output, sources.output.len()),
         (ConsoleSource::Preview, sources.preview.len()),
-        (ConsoleSource::Script, sources.script.len()),
     ] {
         for index in 0..count {
             let Some(line) = sources.line(source, index) else {
                 continue;
             };
-            // 分类过滤（与重构前逐分支语义一一对应，全部 10 种组合都显式列出）：
+            // 分类过滤（逐分支语义显式列出）：
             // - 编辑器日志：非 Lua 的 tracing 行 + 编辑器提示 + 预览诊断；
-            // - Lua 日志：Lua target 的 tracing 行 + 控制台输出 + 脚本诊断。
+            // - Lua 日志：Lua target 的 tracing 行。
             let lua_line = is_lua_log_line(line);
             let included = match (tab, source) {
                 (ConsoleTab::Editor, ConsoleSource::Sink) => !lua_line,
@@ -544,10 +379,6 @@ fn build_console_rows(
                 (ConsoleTab::Lua, ConsoleSource::Notice) => false,
                 (ConsoleTab::Editor, ConsoleSource::Preview) => true,
                 (ConsoleTab::Lua, ConsoleSource::Preview) => false,
-                (ConsoleTab::Editor, ConsoleSource::Output) => false,
-                (ConsoleTab::Lua, ConsoleSource::Output) => true,
-                (ConsoleTab::Editor, ConsoleSource::Script) => false,
-                (ConsoleTab::Lua, ConsoleSource::Script) => true,
             };
             if !included || !level_filter.matches(sources.level(source, index)) {
                 continue;
@@ -584,16 +415,6 @@ fn console_row_text(sources: &ConsoleSources, tab: ConsoleTab, row: ConsoleRowRe
     text.split('\n').nth(row.sub)
 }
 
-fn output_level(line: &str) -> ConsoleLogLevel {
-    if line.contains("错误：") || line.contains("Error") || line.contains("error") {
-        ConsoleLogLevel::Error
-    } else if line.contains("警告：") || line.contains("Warning") || line.contains("warning") {
-        ConsoleLogLevel::Warning
-    } else {
-        ConsoleLogLevel::Info
-    }
-}
-
 fn text_matches_filter(line: &str, filter: &str) -> bool {
     filter.is_empty() || line.to_lowercase().contains(filter)
 }
@@ -622,153 +443,57 @@ fn draw_log_line(ui: &mut egui::Ui, line: &str, level: ConsoleLogLevel) -> egui:
     response
 }
 
-fn format_diagnostic(diagnostic: &ScriptDiagnostic) -> String {
-    let location = diagnostic
-        .line
-        .map_or_else(|| "未知行".to_owned(), |line| format!("第 {line} 行"));
-    let base = format!(
-        "[{}] {} {}：{}（重复 {} 次）",
-        diagnostic.phase,
-        diagnostic.path.display(),
-        location,
-        diagnostic.message,
-        diagnostic.occurrences
-    );
-    match suggest_action(diagnostic) {
-        Some(action) => format!("{base}\n    建议：{action}"),
-        None => base,
-    }
-}
-
-/// M11-05 / R-09：为脚本诊断提供启发式建议动作，让错误"可定位来源 + 可采取动作"。
-/// 基于诊断阶段与消息关键字给出可执行的下一步，而非仅堆叠错误文本。
-fn suggest_action(diagnostic: &ScriptDiagnostic) -> Option<String> {
-    let message = diagnostic.message.to_lowercase();
-    let action = match diagnostic.phase.as_str() {
-        "load"
-            if message.contains("找不到")
-                || message.contains("无法打开")
-                || message.contains("no such file") =>
-        {
-            "检查脚本文件是否存在，及路径与项目根目录的相对关系是否正确"
-        }
-        "load" => "检查 Lua 语法与脚本加载路径（脚本需能单独解析）",
-        "runtime" if message.contains("attempt to") || message.contains("nil") => {
-            "检查实体/变量是否已初始化——避免对 nil 调用方法或索引"
-        }
-        "runtime"
-            if message.contains("invalid")
-                || message.contains("无效")
-                || message.contains("缺失") =>
-        {
-            "检查实体引用的资源/组件路径是否存在且有效"
-        }
-        "runtime" => "检查脚本运行时逻辑与实体引用",
-        "api" => "检查 API 名称、参数类型与返回值约定",
-        _ => return None,
-    };
-    Some(action.into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    fn diagnostic(phase: &str, message: &str) -> ScriptDiagnostic {
-        ScriptDiagnostic {
-            path: PathBuf::from("scripts/main.lua"),
-            phase: phase.to_owned(),
-            message: message.to_owned(),
-            line: Some(7),
-            stack_trace: String::new(),
-            occurrences: 1,
-        }
-    }
-
-    /// M11-05：加载/运行/API 各阶段诊断都能给出建议动作，且输出包含阶段、路径、行与消息。
-    #[test]
-    fn diagnostics_include_phase_path_line_and_suggestion() {
-        let cases = [
-            ("load", "无法打开文件 scripts/player.lua"),
-            ("load", "unexpected symbol near 'end'"),
-            ("runtime", "attempt to index a nil value"),
-            ("runtime", "无效的纹理资源 assets/tex.png"),
-            ("runtime", "boom at 42"),
-            ("api", "unknown field 'speed'"),
-        ];
-        for (phase, message) in cases {
-            let diagnostic = diagnostic(phase, message);
-            let formatted = format_diagnostic(&diagnostic);
-            assert!(formatted.contains(&format!("[{phase}]")));
-            assert!(formatted.contains("scripts/main.lua"));
-            assert!(formatted.contains("第 7 行"));
-            assert!(formatted.contains(message), "{formatted} 应包含消息");
-            assert!(
-                suggest_action(&diagnostic).is_some(),
-                "{phase}/{message} 应给出建议动作"
-            );
-        }
-    }
-
-    #[test]
-    fn unknown_diagnostic_has_no_suggestion_but_stays_structured() {
-        let diagnostic = diagnostic("mystery", "weird");
-        assert!(suggest_action(&diagnostic).is_none());
-        let formatted = format_diagnostic(&diagnostic);
-        assert!(formatted.contains("[mystery] scripts/main.lua 第 7 行"));
-        assert!(!formatted.contains("建议"));
-    }
 
     /// 索引构建：分类 + 级别 + 过滤 + 物理行拆分的组合语义。
     #[test]
     fn console_row_index_respects_tab_level_filter_and_multiline() {
         let sources = ConsoleSources {
             sink: vec![
-                "2026-01-01T00:00:00Z  INFO editor: [editor] ready".to_owned(),
-                "2026-01-01T00:00:00Z  WARN script: Lua log.warn message=low health".to_owned(),
+                "2026-01-01T00:00:00Z  INFO editor: [editor] ready\nsecond line".to_owned(),
+                "2026-01-01T00:00:00Z ERROR script: Lua log.error message=low health".to_owned(),
                 "2026-01-01T00:00:01Z ERROR editor: [editor] failed".to_owned(),
             ],
             notices: vec!["Scene View 回读完成".to_owned()],
-            output: vec!["> print(1)\n1".to_owned()],
             preview: vec![("layout overflow".to_owned(), ConsoleLogLevel::Warning)],
-            script: vec!["[runtime] scripts/main.lua 第 3 行：boom（重复 1 次）".to_owned()],
         };
 
-        // 编辑器分类 + 全部级别：sink 的非 Lua 行 ×2 + notice + Game View 预览诊断；
-        // 控制台输出与脚本诊断不进该分类（与重构前的分类语义一致）。
+        // 编辑器分类 + 全部级别：sink 的非 Lua 行（首行多行拆 2 物理行）+ notice + 预览诊断。
         let editor =
             build_console_rows(&sources, ConsoleTab::Editor, "", ConsoleLogLevelFilter::All);
-        assert_eq!(editor.len(), 4, "editor tab: 2 sink + 1 notice + 1 preview");
+        assert_eq!(
+            editor.len(),
+            5,
+            "editor tab: 3 sink physical + 1 notice + 1 preview"
+        );
         assert_eq!(editor[0], ConsoleRowRef::new(ConsoleSource::Sink, 0, 0));
-        assert_eq!(editor[1], ConsoleRowRef::new(ConsoleSource::Sink, 2, 0));
-        assert_eq!(editor[2], ConsoleRowRef::new(ConsoleSource::Notice, 0, 0));
-        assert_eq!(editor[3], ConsoleRowRef::new(ConsoleSource::Preview, 0, 0));
-
-        // Lua 分类：script sink 行 + 输出（多行拆 2 行）+ 脚本诊断；
-        // 编辑器提示与预览诊断只在编辑器分类出现（保持重构前的分类语义）。
-        let lua = build_console_rows(&sources, ConsoleTab::Lua, "", ConsoleLogLevelFilter::All);
-        assert_eq!(lua.len(), 4, "lua tab: 1 sink + 2 output + 1 script");
-        assert_eq!(lua[0], ConsoleRowRef::new(ConsoleSource::Sink, 1, 0));
-        assert_eq!(lua[1], ConsoleRowRef::new(ConsoleSource::Output, 0, 0));
-        assert_eq!(lua[2], ConsoleRowRef::new(ConsoleSource::Output, 0, 1));
-        assert_eq!(lua[3], ConsoleRowRef::new(ConsoleSource::Script, 0, 0));
+        assert_eq!(editor[1], ConsoleRowRef::new(ConsoleSource::Sink, 0, 1));
+        assert_eq!(editor[2], ConsoleRowRef::new(ConsoleSource::Sink, 2, 0));
+        assert_eq!(editor[3], ConsoleRowRef::new(ConsoleSource::Notice, 0, 0));
+        assert_eq!(editor[4], ConsoleRowRef::new(ConsoleSource::Preview, 0, 0));
         // 多行源行的第二行文本按子行解析。
         assert_eq!(
-            console_row_text(&sources, ConsoleTab::Lua, lua[2]),
-            Some("1")
+            console_row_text(&sources, ConsoleTab::Editor, editor[1]),
+            Some("second line")
         );
+
+        // Lua 分类：只有 Lua target 的 sink 行（提示与预览诊断只进编辑器分类）。
+        let lua = build_console_rows(&sources, ConsoleTab::Lua, "", ConsoleLogLevelFilter::All);
+        assert_eq!(lua.len(), 1, "lua tab: 1 sink");
+        assert_eq!(lua[0], ConsoleRowRef::new(ConsoleSource::Sink, 1, 0));
         // Lua sink 行显示时裁掉 tracing 前缀。
         assert_eq!(
             console_row_text(&sources, ConsoleTab::Lua, lua[0]),
             Some("low health")
         );
 
-        // 级别过滤：Lua 分类只看 Error → 只剩脚本诊断。
+        // 级别过滤：Lua 分类只看 Error → 只剩那条 ERROR sink 行。
         let errors =
             build_console_rows(&sources, ConsoleTab::Lua, "", ConsoleLogLevelFilter::Error);
         assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].source, ConsoleSource::Script);
+        assert_eq!(errors[0].source, ConsoleSource::Sink);
 
         // 过滤词命中 Lua 消息体（而不是整条 tracing 前缀）。
         let filtered = build_console_rows(
@@ -790,9 +515,7 @@ mod tests {
             level: Some(ConsoleLogLevelFilter::All),
             sink_generation: 1,
             notice_len: 0,
-            output_len: 0,
             preview_len: 0,
-            script_len: 0,
         };
         assert_eq!(
             base,
@@ -819,7 +542,7 @@ mod tests {
                 ..base.clone()
             },
             ConsoleRowKey {
-                output_len: 1,
+                notice_len: 1,
                 ..base.clone()
             },
         ] {

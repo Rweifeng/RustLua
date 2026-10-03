@@ -865,7 +865,8 @@ mod tests {
             show_workspace(context, &mut app);
         });
         let text = collect_text(&output);
-        assert!(text.contains("控制台 — "), "控制台面板没画出来：{text}");
+        // 控制台面板无标题行：用表头的「清空」按钮判定面板画出来了。
+        assert!(text.contains("清空"), "控制台面板没画出来：{text}");
         assert!(
             text.contains("dock 阶段 1 探针"),
             "控制台内容没有画进 dock 标签：{text}"

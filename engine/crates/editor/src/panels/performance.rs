@@ -411,7 +411,6 @@ fn gauge_label(name: &str) -> String {
         "history_redo_len" => "重做栈深度",
         "history_dropped_entries" => "丢弃的历史条数",
         "log_sink_lines" => "日志行数",
-        "console_output_lines" => "控制台输出行数",
         "console_notice_lines" => "控制台提示行数",
         "console_rows_indexed" => "控制台索引行数",
         "resource_entries" => "资源条目",

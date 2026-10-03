@@ -132,6 +132,12 @@ fn temp_root(label: &str) -> PathBuf {
 
 /// Minimal project description for a headless app instance.
 fn baseline_app(document: SceneDocument) -> EditorApp {
+    baseline_app_with_sink(document, 512)
+}
+
+/// 同 [`baseline_app`]，但自定日志 sink 容量：控制台体量场景需要 sink 深度与灌入量同级
+/// （sink 是控制台行的唯一来源）。
+fn baseline_app_with_sink(document: SceneDocument, sink_capacity: usize) -> EditorApp {
     let mut app = EditorApp::new(
         editor::ProjectInfo {
             root: std::env::temp_dir().join("rustlua-editor-baseline-project"),
@@ -139,7 +145,7 @@ fn baseline_app(document: SceneDocument) -> EditorApp {
             directories: Vec::new(),
         },
         None,
-        LogSink::new(512),
+        LogSink::new(sink_capacity),
     );
     // Private-field access is available because this module lives in the same crate.
     app.document.current_scene = Some(document);
@@ -307,25 +313,6 @@ pub(crate) fn run_baseline() -> BaselineReport {
     // 4. Console and log volume: 100k lines stay bounded.
     {
         let lines = build_console_fixture(FixtureSize::Large.spec().console_lines);
-        let iterations = 3;
-        let mut samples = Vec::with_capacity(iterations);
-        let mut retained = 0;
-        for _ in 0..iterations {
-            let mut app = baseline_app(SceneDocument::new_scene("console"));
-            let started = Instant::now();
-            for line in &lines {
-                app.push_console_output(line.clone());
-            }
-            samples.push(started.elapsed().as_secs_f32() * 1000.0);
-            retained = app.console_output.len();
-        }
-        scenarios.push(summarize(
-            "console_push_100k_bounded",
-            &samples,
-            vec![format!("retained_lines={retained} cap=10000")],
-            retained <= 10_000 && retained > 0,
-        ));
-
         let sink = LogSink::new(500);
         let started = Instant::now();
         for line in &lines {
@@ -635,23 +622,20 @@ pub(crate) fn run_baseline() -> BaselineReport {
 
     // 12. Headless UI frame cost of the Console panel with 100k pushed log lines.
     //
-    // Bounded storage (10k retained) plus a cached row index plus virtual scrolling: the
+    // Bounded storage (sink retains 10k) plus a cached row index plus virtual scrolling: the
     // scenario asserts only viewport rows are drawn, so "100k console entries" cannot freeze
     // the main thread by construction, and records the frame cost for the plan's budget.
     {
         let lines = build_console_fixture(FixtureSize::Large.spec().console_lines);
-        let mut app = baseline_app(SceneDocument::new_scene("console_panel"));
+        let mut app = baseline_app_with_sink(SceneDocument::new_scene("console_panel"), 10_000);
         app.project_loaded = true;
+        // fixture 行是非 Lua 的 tracing 行，落在编辑器分类的 sink 来源。
         for line in &lines {
-            app.push_console_output(line.clone());
-        }
-        // 编辑器分类同时展示 tracing sink 行（这里注入同样的量级）。
-        for line in lines.iter().take(500) {
             app.log_sink.push(line.clone());
         }
         app.console_log_level_filter = ConsoleLogLevelFilter::All;
-        app.console_tab = ConsoleTab::Lua;
-        let retained = app.console_output.len();
+        app.console_tab = ConsoleTab::Editor;
+        let retained = app.log_sink.snapshot().len();
         let context = eframe::egui::Context::default();
         let screen = eframe::egui::Rect::from_min_size(
             eframe::egui::pos2(0.0, 0.0),
@@ -690,7 +674,7 @@ pub(crate) fn run_baseline() -> BaselineReport {
             &samples,
             vec![
                 format!(
-                    "pushed_lines={} retained_output={retained} (cap 10000)",
+                    "pushed_lines={} retained_sink={retained} (cap 10000)",
                     lines.len()
                 ),
                 format!("indexed_rows={indexed}"),
@@ -817,9 +801,9 @@ pub(crate) fn run_baseline() -> BaselineReport {
                         let mut console_app =
                             baseline_app(SceneDocument::new_scene("console_gate"));
                         console_app.console_log_level_filter = ConsoleLogLevelFilter::All;
-                        console_app.console_tab = ConsoleTab::Lua;
+                        console_app.console_tab = ConsoleTab::Editor;
                         for line in build_console_fixture(200) {
-                            console_app.push_console_output(line);
+                            console_app.log_sink.push(line);
                         }
                         for _ in 0..3 {
                             let raw = eframe::egui::RawInput {

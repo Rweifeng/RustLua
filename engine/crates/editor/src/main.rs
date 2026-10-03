@@ -54,7 +54,6 @@ use engine::core::{
     math3d::Vec3,
     preview_diagnostics::DiagnosticCollector,
     scene::SceneEntityId,
-    script::LuaRuntime,
     texture::{TextureAsset, TextureColorSpace},
     tilemap::Tilemap,
     transform::Transform3D,
@@ -467,10 +466,7 @@ struct EditorApp {
     /// 资源右键"重命名…"的进行中状态：`(原路径, 输入缓冲)`（第 44 轮 P1）。
     resource_rename: Option<(PathBuf, String)>,
     resources_filter: String,
-    lua_runtime: Option<LuaRuntime>,
-    console_input: String,
-    console_output: Vec<String>,
-    /// 编辑器侧提示（如 Scene View 回读状态），与 Lua 控制台输出分开，显示在“编辑器日志”分类。
+    /// 编辑器侧提示（如 Scene View 回读状态），显示在“编辑器日志”分类。
     console_notices: Vec<String>,
     /// 控制台行索引缓存（按分类/过滤/级别/来源代数失效），配合固定行高虚拟滚动。
     console_rows_cache: crate::panels::console::ConsoleRowCache,
@@ -1165,9 +1161,6 @@ impl EditorApp {
             selected_resource: None,
             resource_rename: None,
             resources_filter: String::new(),
-            lua_runtime: None,
-            console_input: String::new(),
-            console_output: Vec::new(),
             console_notices: Vec::new(),
             console_rows_cache: Default::default(),
             console_filter: String::new(),
@@ -1913,7 +1906,6 @@ impl EditorApp {
         let redo_len = self.history.redo_len() as f64;
         let dropped = self.history.dropped_entries() as f64;
         let log_lines = self.log_sink.snapshot().len() as f64;
-        let console_lines = self.console_output.len() as f64;
         let notices = self.console_notices.len() as f64;
         let console_rows = self.console_rows_cache.len() as f64;
         let resource_entries = self.resources.entries().len() as f64;
@@ -1930,7 +1922,6 @@ impl EditorApp {
         profiler.set_gauge("history_redo_len", redo_len);
         profiler.set_gauge("history_dropped_entries", dropped);
         profiler.set_gauge("log_sink_lines", log_lines);
-        profiler.set_gauge("console_output_lines", console_lines);
         profiler.set_gauge("console_notice_lines", notices);
         profiler.set_gauge("console_rows_indexed", console_rows);
         profiler.set_gauge("resource_entries", resource_entries);
@@ -1949,17 +1940,8 @@ impl EditorApp {
         profiler.set_gauge("thumbnail_cache_entries", self.thumbnails.len() as f64);
     }
 
-    fn push_console_output(&mut self, line: impl Into<String>) {
-        const MAX_CONSOLE_LINES: usize = 10_000;
-        self.console_output.push(line.into());
-        if self.console_output.len() > MAX_CONSOLE_LINES {
-            let overflow = self.console_output.len() - MAX_CONSOLE_LINES;
-            self.console_output.drain(..overflow);
-        }
-    }
-
     fn push_console_notice(&mut self, line: impl Into<String>) {
-        // 编辑器侧提示走独立缓冲，避免混进 Lua 控制台输出（“游戏 Lua 日志”分类）。
+        // 编辑器侧提示走独立缓冲，避免混进 tracing 日志（“编辑器日志”分类）。
         self.console_notices.push(line.into());
         const MAX_CONSOLE_LINES: usize = 500;
         if self.console_notices.len() > MAX_CONSOLE_LINES {

@@ -138,7 +138,6 @@ impl EditorApp {
                     self.project_settings = Default::default();
                     self.history.clear();
                     self.autosave.reset();
-                    self.lua_runtime = None;
                     self.play_session = None;
                     // E03 项目切换：整个文档被替换，清空统一选择模型。
                     self.selection.clear(editor::SelectionSource::Playback);
