@@ -839,7 +839,13 @@ if ($Mvp -or $MvpOnly) {
         # 精确到步（第 120 步第一口/600 步正好 5 口 15 点/到期图标收掉/换图不清/读档必清/
         # DOT 不给硬直与无敌帧/再咬只刷新不重置跳表）、DOT 致死走同一套战败流程、
         # 分片与快挂时钟同 5 跳 + 源码扫真实时间、十条数据负例。
-        "jhyt_m34_status"
+        "jhyt_m34_status",
+        # M34-04 招式扩充门：docs/33 §6.1 追风步/守心诀两行与 data/skills.lua 逐格比对（秒×60=固定步）、
+        # 真实按键 H 走满 3 格 + 扣 15 内力 + 15 步无敌吃掉一整刀、贴墙夹到可走格（一格不通不收钱不进冷却）、
+        # Z 格挡正/背/不格挡三档对照（10→3 / 10→10 / 10→10，日志 damage/absorbed）、每 60 步扣一笔与
+        # 内力不足自动落防、倒地即落防且 capture 不含 guard、30/120Hz 同一节奏、底座分派负例、
+        # 十一条数据负例、HUD 两个新原因的中文词条与动作表 dash/guard 两行。
+        "jhyt_m34_skills"
     )
     $exampleDir = Join-Path $engineRoot "crates\game\examples"
 
