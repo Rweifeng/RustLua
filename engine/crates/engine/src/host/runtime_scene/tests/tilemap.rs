@@ -1,6 +1,7 @@
 //! 原 `mod tilemap_chunk_tests`（WP12 阶段 1 纯搬运；源行段 5066–5345）。
 
 use super::*;
+use crate::host::runtime_scene::tilemap::{build_all_chunks, rebuild_dirty_chunks};
 
 /// 整层平铺参考实现：与 [`build_chunk`] 同公式，顺序 = 行主序（y 外层 x 内层）。
 /// 它是 WP4 ④ 的"像素等价"证明的单元级替身——chunk 化后的展平序列必须逐项相等。

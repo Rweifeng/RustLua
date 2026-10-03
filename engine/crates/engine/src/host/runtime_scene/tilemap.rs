@@ -5,15 +5,19 @@
 //! 本文件的分块构建调用，保持私有。类型 `CachedTilemapLayer` / `CachedTileSprite` / `TileChunk`
 //! 仍定义在 `mod.rs`（它们被 `RuntimeScene` 的私有字段持有），本文件靠 `use super::{...}` 取用。
 
+use std::{collections::HashMap, fs, path::PathBuf};
+
 use crate::core::{
-    camera::{CameraBounds, OrthoTerms},
+    camera::{CameraBounds, OrthoTerms, Viewport},
+    entity::EntityId,
+    hierarchy::GlobalTransform,
     sprite_batch::{OverlayVertexSink, SpriteDrawBatch, WorldSpriteVertexSink, ndc_from_screen},
     tilemap::Tilemap,
     transform::{Transform, Vec2},
 };
-use crate::host::frame::WorldSpriteVertex;
+use crate::host::frame::{OverlayVertex, WorldSpriteVertex};
 
-use super::{CachedTileSprite, CachedTilemapLayer, TileChunk};
+use super::{CachedTileSprite, CachedTilemapLayer, RuntimeScene, TileChunk, texture_id_of};
 
 /// WP4 ④ chunk 级脏重建：瓦片块边长（格数）。块行主序拼接 == 原整层行主序。
 pub(super) const TILE_CHUNK_SIZE: usize = 32;
@@ -377,4 +381,191 @@ pub(super) fn sort_world_ranges(
     }
     *vertices = rebuilt;
     *draws = rebuilt_draws;
+}
+
+impl RuntimeScene {
+    /// Deduplicates a texture asset path and returns its id for batch items.
+    pub(super) fn texture_id(&mut self, path: &str) -> u32 {
+        texture_id_of(
+            path,
+            &self.assets,
+            &mut self.texture_paths,
+            &mut self.texture_lookup,
+            &mut self.texture_handles,
+        )
+    }
+
+    /// 纹理像素尺寸（惰性、按 path 缓存），仅供九宫格 UV 计算。只读 PNG 头，
+    /// 不做全量解码。路径解析与渲染器一致（`project_root.join(path)`，无根则用
+    /// 原始路径），并走与纹理加载相同的 pack/decode 解包。读取失败 → `None` →
+    /// 回退单四边形。
+    pub(super) fn texture_dimensions(&mut self, path: &str) -> Option<(u32, u32)> {
+        if let Some(dims) = self.texture_dims.get(path) {
+            return Some(*dims);
+        }
+        let resolved = self
+            .project_root
+            .as_ref()
+            .map(|root| root.join(path))
+            .unwrap_or_else(|| PathBuf::from(path));
+        let dims = fs::read(&resolved)
+            .ok()
+            .and_then(|bytes| crate::core::pack::decode(&bytes).ok())
+            .and_then(|bytes| {
+                image::ImageReader::new(std::io::Cursor::new(bytes))
+                    .with_guessed_format()
+                    .ok()?
+                    .into_dimensions()
+                    .ok()
+            });
+        if let Some(dims) = dims {
+            self.texture_dims.insert(path.to_owned(), dims);
+        }
+        dims
+    }
+
+    /// Builds the 2D mesh for all Tilemap components using a tilemap-specific
+    /// hot path that precomputes shared camera/rotation terms once per frame.
+    ///
+    /// 缓存命中时**不克隆地图**：把上一帧的缓存整体取出，命中的条目直接移动进新缓存，
+    /// 只有真正变化的地图才克隆重建。旧实现每帧为每个 Tilemap 克隆整张地图，100×100
+    /// 实测每帧 8.5 MB 分配（`wp0-v4` 的 tilemap 阶梯）。
+    pub(super) fn append_tilemap_vertices(
+        &mut self,
+        vertices: &mut Vec<OverlayVertex>,
+        world_vertices: &mut Vec<WorldSpriteVertex>,
+        overlay_draws: &mut Vec<SpriteDrawBatch>,
+        world_draws: &mut Vec<SpriteDrawBatch>,
+        viewport: Viewport,
+    ) -> anyhow::Result<()> {
+        let Ok(camera) = OrthoTerms::new(self.camera, viewport) else {
+            // 相机退化（zoom 非正等）时不产瓦片顶点：与精灵路径一致，等宿主修好相机再画。
+            return Ok(());
+        };
+        // WP4 ④：视口外瓦片只在 `vertices()` 之外还被用到时不剔除（不存在这种调用），
+        // 因此这里直接取运行时开关；关掉即像素对拍用的"整层全画"档。
+        let cull = self.tilemap_culling;
+        // WP6：世界 Sprite 深度通道打开时，瓦片层也产出**世界坐标**顶点（与精灵一致），
+        // 因此它同样参与深度测试——此前只有精灵有世界顶点，瓦片会被挡在通道外面。
+        let world_pass = self.world_sprite_depth;
+        // 与世界 Sprite 同一条规矩：世界通道的可见域由宿主声明的世界视图决定，有 3D 内容时
+        // 一律不按 2D 相机裁剪（宁可多画，绝不误丢）。
+        let cull_bounds = if cull && world_pass && !self.world_view_has_3d_content() {
+            self.camera.visible_world_bounds(viewport).ok()
+        } else {
+            None
+        };
+        {
+            let RuntimeScene {
+                script,
+                tilemap_cache,
+                texture_paths,
+                texture_lookup,
+                assets,
+                texture_handles,
+                ..
+            } = self;
+            let mut previous = std::mem::take(tilemap_cache);
+            let mut next_cache = HashMap::with_capacity(previous.len());
+            let mut failure: Option<anyhow::Error> = None;
+            let inherit = self.spatial_active;
+            script.with_world(|world| {
+                // WP2：瓦片层挂在**世界**位置上（继承开启时读传播结果，关闭时读局部值）。
+                // 缓存比较用的也是同一个值，因此开关切换会让缓存自然失效、不会画在旧位置。
+                let mut collect = |entity: EntityId, transform: &Transform, tilemap: &Tilemap| {
+                    if failure.is_some() {
+                        return;
+                    }
+                    let texture = texture_id_of(
+                        &tilemap.texture,
+                        assets,
+                        texture_paths,
+                        texture_lookup,
+                        texture_handles,
+                    );
+                    let mut layer = match previous.remove(&entity) {
+                        Some(layer)
+                            if layer.tilemap == *tilemap
+                                && layer.transform.scale == transform.scale =>
+                        {
+                            // 命中：瓦片与缩放都没变。`center_offset` 相对层原点，
+                            // 与 position/rotation 无关——只同步 transform，不重建任何块。
+                            layer
+                        }
+                        Some(mut layer)
+                            if layer.tilemap.width == tilemap.width
+                                && layer.tilemap.height == tilemap.height =>
+                        {
+                            // 未命中但**尺寸相同**：逐块比对 tiles 切片，只重建变化的块
+                            // （scale 变化时脏重建会把每一块都判为变化，等于整层重建）。
+                            let rebuilt =
+                                rebuild_dirty_chunks(&mut layer, tilemap, transform.scale);
+                            if rebuilt > 0 {
+                                tracing::debug!(
+                                    target: "scene",
+                                    "tilemap chunk rebuild: {} chunk(s)",
+                                    rebuilt
+                                );
+                            }
+                            layer.tilemap = tilemap.clone();
+                            layer
+                        }
+                        // 尺寸不同（室外 40×23 → 室内 20×12 换图）或首次出现：整层重建。
+                        // 不能走 `rebuild_dirty_chunks`——它按旧层的 chunk 网格
+                        // （`oy..oy+h`、`ox..ox+w` 可达旧图的 40×23）去索引**新图**的
+                        // `tiles`（宽只有 20、len 240），会越界 panic。
+                        _ => match build_all_chunks(*transform, tilemap.clone()) {
+                            Ok(layer) => layer,
+                            Err(error) => {
+                                failure = Some(error);
+                                return;
+                            }
+                        },
+                    };
+                    layer.transform = *transform;
+                    // 预留本层顶点容量：`Vec::new()` 一路翻倍到 6 万顶点会额外搬上兆字节
+                    // （`wp0-v4` tilemap 阶梯实测的每帧分配里，增长churn 占约 1.9 MB）。
+                    if world_pass {
+                        world_vertices.reserve(layer.total * 6);
+                        world_draws.reserve(1);
+                        append_tilemap_layer_world(
+                            world_vertices,
+                            world_draws,
+                            texture,
+                            &layer,
+                            cull_bounds,
+                        );
+                    } else {
+                        vertices.reserve(layer.total * 6);
+                        overlay_draws.reserve(1);
+                        append_tilemap_layer(
+                            vertices,
+                            overlay_draws,
+                            texture,
+                            camera,
+                            &layer,
+                            cull,
+                        );
+                    }
+                    next_cache.insert(entity, layer);
+                };
+                if inherit {
+                    world.for_each2::<GlobalTransform, Tilemap>(|entity, global, tilemap| {
+                        if let Some(plane) = global.plane() {
+                            collect(entity, &plane, tilemap);
+                        }
+                    });
+                } else {
+                    world.for_each2::<Transform, Tilemap>(|entity, transform, tilemap| {
+                        collect(entity, transform, tilemap);
+                    });
+                }
+            }); // 先提交已处理部分，再报错：出错帧不清空整张缓存，下一帧能继续复用。
+            *tilemap_cache = next_cache;
+            if let Some(message) = failure {
+                return Err(message);
+            }
+        }
+        Ok(())
+    }
 }

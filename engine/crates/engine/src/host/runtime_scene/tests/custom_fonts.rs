@@ -7,6 +7,7 @@
 
 use super::*;
 use crate::core::scene::Scene;
+use std::fs;
 
 /// 场景 Text 指定自定义字体时：该字体 key 出现在 SceneMesh 的自定义图集
 /// 上报与纹理路径里；默认文本在短文本场景改走矢量路径。用临时项目根存放

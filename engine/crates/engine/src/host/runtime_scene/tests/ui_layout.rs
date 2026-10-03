@@ -9,6 +9,7 @@
 
 use super::*;
 use crate::core::scene::Scene;
+use std::fs;
 
 /// 九宫格：带 `nine_slice` 的 Image 应渲染为 3×3 共 9 格（54 顶点），而非
 /// 单四边形（6 顶点）。用真实按钮纹理（192×64）验证 UV 分片路径。
