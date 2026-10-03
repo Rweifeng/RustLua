@@ -242,9 +242,14 @@ function Assert-WeChatPackageVolume {
     $mainBytes = if ($Form -eq "subpackage") { $TotalBytes - $PackBytes } else { $TotalBytes }
     if ($Form -eq "subpackage") {
         if ($mainBytes -gt 4MB) {
+            # 出路 ① 的方向**必须写对**：主包 = launcher − pack/，而 mainpack/（首屏资源）是**算进主包**的，
+            # 所以"把更多资源列进首屏清单"是加大主包的那一手——曾经就这么写反过，超限的人照着做只会更超。
             throw ((("微信小游戏主包超限: {0:N0} KB > 4,096 KB（主包 = launcher 总量 {1:N0} KB − 分包 pack/ {2:N0} KB）。" +
-                "出路（按优先级）：① 把更多资源列进首屏清单搬到 mainpack/（清单变大 ⇒ 主包变大、分包变小，" +
-                "两侧此消彼长）；② 改用 -AssetPack remote -RemotePackBaseUrl <CDN> 把重资源移出包内。") -f `
+                "出路（按优先级）：① **收窄**首屏清单（--include 前缀去掉非首屏目录、或让启动场景少引用资源）——" +
+                "被排除的资源留在 pack/ 分包里，主包变小、分包变大；注意列进清单是**反方向**，会让主包更大。" +
+                "② 改用 -AssetPack remote -RemotePackBaseUrl <CDN> 把重资源移出包内。" +
+                "（pack/ 里 Lua 的注释已由 scripts/strip-lua-comments.mjs 在构建期剥掉 ~283 KB，" +
+                "剩下的基本是真内容；编译侧 opt-level=z + lto=fat + codegen-units=1 + terser 也已全部生效。）") -f `
                 ($mainBytes / 1KB), ($TotalBytes / 1KB), ($PackBytes / 1KB)) + $Suffix)
         }
         # 单个普通分包：官方 2023-10 起不再限 4MB（微信官方《分包加载》：主包 ≤ 4M、
@@ -400,10 +405,30 @@ try {
         # `-Oz` 后 **2,743,359 → 2,424,516 字节（省 311 KB）**，`wasm_host_ok … exports=121
         # globals=0 bridge_exports=7` 照旧过。pc/editor 不受影响（不走这条分支），代码速度换体积
         # 这笔账只记在 web 平台头上。
+        #
+        # 体积（2026-10-03 复核）：profile 的 `lto = false` + `codegen-units = 16` 会把跨 crate 的
+        # 死代码留在二进制里。`bc9ac8f Sprite Atlas 打包` 给 rustlua-assets 新挂 `image` 后，落包
+        # wasm 从 2,436 KB（ff036cb）涨到 2,705 KB，主包随之逼近 4,096 KB 门——而打包侧能动的只有
+        # 编译开关：同一条 wasm 分支再覆盖 `lto = "fat"` + `codegen-units = 1`，同一份代码 `-Oz`
+        # + 剥 global 后 **2,729 → 2,330 KB**（本次发布产物实测 `pkg/game_web_bg.wasm` 2,347 KB），
+        # `verify-wasm-host.mjs --platform=wechat-minigame` 仍报
+        # `wasm_host_ok … exports=121 globals=0 bridge_exports=7`
+        # （手工复现：`cd engine; $env:CARGO_PROFILE_RELEASE_LTO="fat";
+        # $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS="1"` 后照本分支那三行环境变量编 game_web）。
+        # 代价：wasm 构建从并行 16 单元退成单单元，本机增量约 100 s。EH 口径没动——仍是 1.88 产物的
+        # 纯 try_table，binaryen 133 的 `-Oz` 照旧保留；这只在本机 V8 验过，真机 WXWebAssembly 要靠
+        # scripts/verify-wechat-minigame.ps1。
+        # **纠正一条当时的结论**：那句"主包 4,269 KB 顶穿 4,096 KB"是用 `du -sk` 算的，对 700 个
+        # 小文件虚高数百 KB；体积门看的是文件**字节和**（`wechat_minigame_package_ok` 那行），
+        # 真实主包从未超限（当前 3,635 KB / 88.7%）。口径见 docs/52 §6.1。
         $savedStrip = $env:CARGO_PROFILE_RELEASE_STRIP
         $env:CARGO_PROFILE_RELEASE_STRIP = "none"
         $savedOptLevel = $env:CARGO_PROFILE_RELEASE_OPT_LEVEL
         $env:CARGO_PROFILE_RELEASE_OPT_LEVEL = "z"
+        $savedLto = $env:CARGO_PROFILE_RELEASE_LTO
+        $env:CARGO_PROFILE_RELEASE_LTO = "fat"
+        $savedCodegenUnits = $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS
+        $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1"
         $savedEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
@@ -416,6 +441,10 @@ try {
         else { $env:CARGO_PROFILE_RELEASE_STRIP = $savedStrip }
         if ($null -eq $savedOptLevel) { Remove-Item Env:\CARGO_PROFILE_RELEASE_OPT_LEVEL -ErrorAction SilentlyContinue }
         else { $env:CARGO_PROFILE_RELEASE_OPT_LEVEL = $savedOptLevel }
+        if ($null -eq $savedLto) { Remove-Item Env:\CARGO_PROFILE_RELEASE_LTO -ErrorAction SilentlyContinue }
+        else { $env:CARGO_PROFILE_RELEASE_LTO = $savedLto }
+        if ($null -eq $savedCodegenUnits) { Remove-Item Env:\CARGO_PROFILE_RELEASE_CODEGEN_UNITS -ErrorAction SilentlyContinue }
+        else { $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = $savedCodegenUnits }
         if ($LASTEXITCODE -ne 0) {
             throw @"
 WASM build failed ($Platform)。
@@ -459,6 +488,44 @@ WASM build failed ($Platform)。
     & $assetc @assetcArgs
     if ($LASTEXITCODE -ne 0) { throw "assetc package failed." }
 
+    # Lua 注释剥离（仅 web 平台；紧随 assetc 之后、首屏切分与代码包改名之前）：
+    # 微信主包 4,096 KB 是硬门，当前实测 3,635 KB / 88.7%（`wechat_minigame_package_ok` 那行的字节和口径，
+    # 别用 du——它对本工程 700 个小文件虚高数百 KB，见 docs/52 §6.1）。**编译侧**的杠杆已全部用完
+    # （wasm：opt-level=z + lto=fat + codegen-units=1 + wasm-opt -Oz + --remove-name-section；JS：terser），
+    # 所以余量只能从**内容侧**买：主包里的 Lua 共 862 KB，其中 283 KB 是给人看的注释
+    # （实测 `node scripts/strip-lua-comments.mjs <pack> --json`）。玩家不会读发布包里的注释，
+    # 这是这批体积里唯一完全不改变运行时行为的减法。
+    # 两条必须由工具一起满足的约束（见该文件头注释）：
+    #   · 同步重写 manifest.txt 的字节数与 FNV-1a-64——运行时逐条校验清单，只改文件不改清单
+    #     等于首屏每个脚本都校验失败；
+    #   · **保留行数**（剥文字留换行）——发布包里 Lua 栈回溯的行号仍要能对着仓库源码读。
+    # 源工程 `examples/<game>/scripts/**.lua` 一个字都不改，改的只是 pack/ 里的产物副本。
+    # PC 平台不剥：桌面包没有体积门，而"pack 内容与源文件逐字节相同"在排查时很有用。
+    if ($isWebPlatform) {
+        $stripLuaTool = Join-Path $PSScriptRoot "strip-lua-comments.mjs"
+        if (-not (Test-Path -LiteralPath $stripLuaTool)) {
+            throw "缺少 Lua 注释剥离脚本: $stripLuaTool（主包体积靠它，发布不能在没有它的情况下继续）"
+        }
+        $nodeForStripLua = Get-Command node -ErrorAction SilentlyContinue
+        if (-not $nodeForStripLua) { throw "Lua 注释剥离需要 node" }
+        # 与首屏清单那一手同一个坑：工具正常也会往 stderr 写**拒绝原因**（清单复现不了、
+        # 某个文件词法不成形），而 PS 5.1 在 Stop 下会把原生程序的 stderr 变成终止性错误，
+        # 让"工具拒绝"和"工具崩了"看起来一模一样。这里临时降级、合流，只看退出码。
+        $savedEapStrip = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $stripLuaOutput = & $nodeForStripLua.Source $stripLuaTool $packRoot "--write" 2>&1
+            $stripLuaExit = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $savedEapStrip
+        }
+        if ($stripLuaExit -ne 0) {
+            throw ("Lua 注释剥离失败（exit {0}）: {1}" -f $stripLuaExit, (($stripLuaOutput | ForEach-Object { "$_" }) -join ' '))
+        }
+        Write-Host (($stripLuaOutput | ForEach-Object { "$_" }) -join ' ') -ForegroundColor DarkGray
+    }
+
     # 微信小游戏：音频统一为 MP3 格式（InnerAudioContext 在 iOS 和 Android 均支持，
     # 不再需要 OGG+WAV 双格式）。源文件已是 MP3，assetc 直接复制到 pack/，无需转换。
     if ($Platform -eq "wechat-minigame") {
@@ -486,6 +553,13 @@ WASM build failed ($Platform)。
         if (-not (Test-Path -LiteralPath $wasmInput)) {
             throw "wasm artifact missing: $wasmInput"
         }
+        # wasm-bindgen CLI 在这里**就地补齐**，而不是只依赖上面构建分支里的解析结果：
+        # 那句解析写在 `if ($SkipBuild) { … } else { <构建> }` 的 else 里，于是
+        # `-SkipBuild` + web 平台必然带着一个空的 $wasmBindgenCli 走到下面的 `& $wasmBindgenCli`，
+        # 报"管道元素中的 '&' 后面的表达式生成无效的对象"（实测 2026-10-03）——
+        # 而这条错误离真正的原因隔了几百行，看起来像产物坏了。跳过构建不代表可以跳过工具解析。
+        if (-not $wasmBindgenCli) { $wasmBindgenCli = Resolve-WasmBindgenCli -Provision }
+        if (-not $wasmBindgenCli) { throw "wasm-bindgen CLI（版本需与 Cargo.lock 的 wasm-bindgen 一致）解析失败。" }
         if ($Platform -eq "webgl") {
             # 浏览器：`--target web` 的 **ES Module** 胶水，由 index.html 的 `<script type=module>` 加载。
             # --remove-name-section：release 构建为保留 target_features 段关闭了 strip，name
@@ -546,6 +620,31 @@ WASM build failed ($Platform)。
                 # 这个坑又回来了，而且会以"启动照常、wasm 静默缺席"的形态出现。
                 throw "no-modules glue shape changed: 'script_src = new URL(document.currentScript.src, ...)' not found in $gluePath. 小游戏宿主没有 currentScript/location，请重新确认这条降级要不要保留（见本文件注释）。"
             }
+            # 第二个**必需**的胶水补丁：wasm-bindgen 的 call guard 读的 Global 导出，会被下面的
+            # Global 剔除步骤一起拿掉。
+            #
+            # 每个导出函数的开头都被插了 `__wbg_call_guard()`，它无条件读
+            #   __wbg_terminated_addr ??= wasm.__instance_terminated.value / 4;
+            # 而 `strip-wasm-globals.mjs` 剔除 wasm 的**全部** Global 导出（iOS 的 WXWebAssembly
+            # 不支持 Global 导出，docs/52 R12）——那个名字在 `wasm` 上根本不存在，于是
+            # **第一次跨 wasm 调用**就抛
+            #   TypeError: Cannot read properties of undefined (reading 'value')
+            # 实测 2026-10-03：微信包 boot=failed，形态是"实例化成功（111 项导出）→ 宿主桥 error →
+            # 一帧都不跑"，即 `hostApi=error:Cannot read properties of undefined (reading 'value')`。
+            # 修法：global 缺席时守卫直接返回。它回答的是"实例已终止就别再调了"，读不到标记时
+            # 本来就无从判断；同份胶水里的 abort hook 自己就包在 try/catch 内，说明 wasm-bindgen
+            # 也把这类读取当可选路径。webgl 分支不需要补：那边不做 Global 剔除，导出是真的。
+            $glueText = [System.IO.File]::ReadAllText($gluePath)
+            $guardNeedle = "__wbg_terminated_addr ??= wasm.__instance_terminated.value / 4;"
+            if ($glueText.Contains($guardNeedle)) {
+                $glueText = $glueText.Replace($guardNeedle, "if (!wasm.__instance_terminated) return; $guardNeedle")
+                [System.IO.File]::WriteAllText($gluePath, $glueText, (New-Object System.Text.UTF8Encoding($false)))
+                Write-Host "==> Patched no-modules glue: wasm-bindgen call guard tolerates the stripped Global exports"
+            }
+            else {
+                # 守卫换了写法同样响亮失败：静默放过等于微信包退回"装得进来、一调就死"。
+                throw "no-modules glue shape changed: '__wbg_terminated_addr ??= wasm.__instance_terminated.value' not found in $gluePath. 这句读取依赖 Global 导出，而下面的步骤会把它们全部剔掉（iOS）——请重新确认守卫要不要补、怎么补（见本文件注释）。"
+            }
             # **必须补上 CommonJS 导出**：`--target no-modules` 的产物是一句
             #   let wasm_bindgen = (function (exports) { … })({ __proto__: null });
             # 顶层 `let` 是**脚本作用域**绑定，不挂全局、也不是 `module.exports`，
@@ -558,8 +657,11 @@ WASM build failed ($Platform)。
             Optimize-WasmBin (Join-Path $pkgRoot "game_web_bg.wasm")
             # iOS 的 WXWebAssembly 不支持 Global 导出（docs/52 R12 尾段），带 Global 的模块
             # 会被整块拒绝。当前 wasm-bindgen 会把 __abort_handler/__instance_terminated
-            # 塞进 Export 段，实测 JS 胶水完全不读它们（`__wbg_call_guard` 一条也没落进
-            # game_web.js）——从 Export 段削掉、Global 定义本身留着，模块仍然自洽。
+            # 塞进 Export 段——从 Export 段削掉、Global 定义本身留着，模块仍然自洽。
+            # **但胶水确实读它们**（2026-10-03 实测纠正本注释的旧口径"一条也没落进 game_web.js"）：
+            # `__wbg_call_guard` 读 `wasm.__instance_terminated.value`，abort hook 读
+            # `wasm.__abort_handler.value`。所以剔除 Global 必须和上面那条守卫补丁成对出现，
+            # 两者任一单独缺失都会让微信包"实例化成功、第一次调用就死"。
             # 只作用在微信分支；webgl 保留原样（浏览器都支持 Global）。
             $stripGlobals = Join-Path $PSScriptRoot "wasm-lua\strip-wasm-globals.mjs"
             if (-not (Test-Path -LiteralPath $stripGlobals)) {

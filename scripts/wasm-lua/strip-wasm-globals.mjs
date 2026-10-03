@@ -2,10 +2,18 @@
 //
 // ## 为什么要
 // iOS 上的 `WXWebAssembly` 不支持 Global 导出（docs/52 R12 尾段口径）。当前 wasm-bindgen
-// 产物会导出 `__abort_handler` / `__instance_terminated` 两个内部 global，JS 胶水实测
-// `grep` 里根本不引用（`__wbg_call_guard` 等 helper 名字一条也没落进 game_web.js），
-// 也就是说它们是"只出现在导出面、无人读"的死导出——把 Export 段里这两条剔掉不会破坏
-// 任何运行时行为，但能让 iOS 的 WXWebAssembly 不再撞上 Global 支持缺失那条硬约束。
+// 产物会导出 `__abort_handler` / `__instance_terminated` 两个内部 global。
+//
+// ## 一条**成对**的约束（2026-10-03 实测纠正本文件旧口径）
+// 这里曾写过"JS 胶水根本不引用它们、剔掉不破坏任何运行时行为"——那是错的：
+// 胶水的 `__wbg_call_guard()`（每个导出函数开头都调）无条件读
+//   `__wbg_terminated_addr ??= wasm.__instance_terminated.value / 4;`
+// 于是剔掉 Global 导出后，**第一次跨 wasm 调用**就抛
+//   `TypeError: Cannot read properties of undefined (reading 'value')`
+// 微信包整体 boot=failed（症状：实例化成功、宿主桥 error、一帧不跑）。
+// 现在由 `scripts/package.ps1` 的微信分支在构建期给那句加缺席短路（global 读不到就跳过守卫——
+// 它答的是"实例已终止就别再调"，读不到标记时本来也无从判断；同份胶水的 abort hook 自己就包在
+// try/catch 里）。**剔 Global 与该补丁必须成对存在**：只留一个就是死包。
 //
 // ## 它做什么
 // * 解析 wasm section 头（magic+version + 若干 [id][LEB128 size][payload]），
