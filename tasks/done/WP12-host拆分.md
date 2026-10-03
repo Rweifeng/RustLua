@@ -1,6 +1,6 @@
 # 任务：WP12 `host/` 模块拆分（两个上帝文件 → 子目录）
 
-- **状态**：待认领（BACKLOG）
+- **状态**：已验收并归档（阶段 0–4d 九刀 + 两笔收口，2026-10-03；实现记录见 §14）
 - **优先级**：P1（`docs/62` §6 已登记两项，本文件把它们合成一个工作包）
 - **前置**：无。可独立开工，不依赖 P0 的 PBR/HDR（但 PBR/HDR **应当**在本工作包之后启动，理由见 §1）
 - **关联文档**：`docs/62`（成熟引擎差距分析）§1.1/§6、`docs/60`（全面复盘与优化项清单）§3/§4、`docs/54`（2D/3D 统一）
@@ -219,7 +219,7 @@ host/
 | **4a** | `renderer.rs` → `renderer/mod.rs`；`mod tests` 搬 `renderer/tests.rs`；`targets.rs` / `timestamp.rs` | 低 | §7 快速组 |
 | **4b** | `renderer/`：`gpu_mesh.rs` / `gpu_texture.rs` / `arena.rs` / `readout.rs` | 中 | §7 全量 + 3D golden |
 | **4c** | `renderer/passes.rs`（`render_passes` 446 行**原样搬**，不拆函数）、`world_sprite.rs` | 中 | §7 全量 + 全部 golden |
-| **4d** | `renderer/construct.rs`（`new_async` 1,106 行原样搬） | 低（纯搬） | §7 全量 |
+| **4d** | `renderer/construct.rs`（三个构造入口那一段 1,106 行原样搬，其中 `new_async` 自己 1,070 行） | 低（纯搬） | §7 全量 |
 
 **顺序上的两条硬规矩**：
 
@@ -275,7 +275,8 @@ git diff --name-only <阶段起点>..HEAD -- engine/crates/editor engine/crates/
 
 - **不改任何算法、不合并重复、不修可疑实现**。发现的问题逐条记进 §12，另开任务。
 - **不做子结构体分解**（不把 `Renderer` 的 90 个字段切成 `GpuCache` / `ReadbackRing` / `TimestampRing`）。收益是把"上帝对象"变成几个小对象，代价是**每一处 `self.x` 都要改**（数千个访问点），diff 不再能证明"纯移动"。要做另开工作包，且必须在本次拆分之后。
-- **不拆函数体**：`render_passes`（446）/ `new_async`（1,106）/ `vertices`（600）/ `register_builtin_frame_systems`（309）**原样搬**。
+- **不拆函数体**：`render_passes`（446）/ 构造入口那一段（1,106，其中 `new_async` 自己 1,070）/
+  `vertices`（600）/ `register_builtin_frame_systems`（309）**原样搬**。
 - **不动 `gamepad.rs` / `frame.rs` / `shader.rs` / `keymap.rs` / `sample_project.rs`**（后两者已在合理规模；`gamepad.rs` 1,599 行可另议）。
 - **不改 `docs/`**：本工作包不新增编号文档，只在完成后把结论追加进 `CHANGELOG.md` 与相关任务的实现记录。
 
@@ -443,14 +444,16 @@ git diff --name-only <阶段起点>..HEAD -- engine/crates/editor engine/crates/
 | 4d 第三刀 | `2b707a2` | `2057aeb` | 1,818 → 701 |
 | 收口：实现记录 + 三处失效路径 | `2057aeb` | `4ed3217` | 不搬代码（两处 `.rs` 改动都是注释） |
 | 收口补：本节复现命令改成能直接跑 | `4ed3217` | `9ade721` | 只改本文件 |
+| 归档：`plan/`→`done/` + 六处路径引用 | `9ade721` | **`git log --grep="WP12 归档"`**（见 §14.9 第 5 项） | 只改注释与台账，零代码 |
 
 任一刀可单独 `git revert`。4c/4d 的父文件行数由证明脚本一并输出（"源 2,754 行覆盖 927 行"、
 "源 1,819 行覆盖 1,102 行"），与上表一致。
 
-最后一行的两笔**不在 CHANGELOG 的回滚档清单里**（那份只列搬运的九刀），这里是全包的完整 commit 集：
+上表最后三行**不在 CHANGELOG 的回滚档清单里**（那份只列搬运的九刀），这里是全包的完整 commit 集：
 `4ed3217` 碰的 7 个文件 = 本计划 + `CHANGELOG.md` + 三处 `docs/` 路径 + 两处 `.rs` 注释
-（§14.9 第 1、2、3 项），`9ade721` 只碰本计划文件。两者都不改任何运行时行为，也都不会被
-误当成"第十刀"——它们没有父文件行数，因为没搬任何东西。
+（§14.9 第 1、2、3 项），`9ade721` 只碰本计划文件，归档那笔碰的是六处路径引用 + 本文件
+（§14.9 第 5 项）。三者都不改任何运行时行为，也都不该被误当成"第十刀"——它们没有父文件行数，
+因为没搬任何东西。
 
 一处对不上是**故意的**：3c 那行写 `1,748 → 772`，而 §14.1 的表里 `runtime_scene/mod.rs` 现在是
 **776**。差的 4 行是收口时修 rustdoc 短链接那次改动（两个链接改成全路径 + 一条说明为什么必须写
@@ -532,6 +535,15 @@ cargo doc --no-deps --workspace --lib        # warnings are errors（verify 里�
 - `pub_surface_ok items=2131 moved_into_submodules=6`——与阶段 0 基线（2,125 项）逐项同路径同种类，
   多出的 6 条是**定义搬进子模块后新增的 rustdoc 页面**，原路径仍可解析（脚本对这一类有专门计数，
   私有项若被放宽成 `pub` 会再多一条锚点页 ⇒ 本包 61 处 `pub(super)` 就是被这道门兜住的，见 §14.3）。
+  **这条门买不到什么（对 §6 守卫 1 的偏差，逐条写清）**：§6 原话承诺基线含"函数签名形态"，实际
+  `scripts/engine-pub-surface.mjs` 抓的是**每个文档页面的 `kind + 完整路径`**与**类型页锚点**
+  （`method|host::renderer::Renderer::new` 这类），**不含签名**。原因是签名要从 rustdoc 的
+  JSON 输出取，那需要 nightly（`--output-format json`），而本包裁定不引入新依赖也不依赖 nightly
+  （事实源直接用已有的 `cargo doc --no-deps --workspace --lib` 产物）。签名漂移由另外两层兜：
+  `editor`/`game`/`assetc`/`game_web` 四个宿主 crate 的工作区编译（它们是唯一的外部调用方，
+  §7 那条"必须为空"的 diff 证明连调用点都没动），以及 `engine/crates/engine/tests/host_pub_surface.rs`
+  的存在性 pin 测试。**所以这条门能证明的是"路径与归属没变"，不是"参数类型没变"**——后者的证据
+  是"没有任何一处外部代码被改过"，不是符号面本身。
 - `lua_api_docs_ok tables=41 funcs=275 stubs=275 documented=0`（再生成是 no-op）。
 - `web_api_overrides_ok overrides=56 modules=11 wholesale=23 dropped=76 invented=3 referenced=8`。
 - `check_docs_ok docs=58 game_docs=24 h1=84 links=299 ps1_bom_ok=29 ps1_parse_ok=29`。
@@ -741,13 +753,25 @@ rustfmt 在 `pub(super)` 存在时会把 `fn f(a: A, b: B)` 折成每参数一�
 4. **临时物**：`%TEMP%/wp12/`（脚本、spec、before 快照、日志、golden/baseline 报告目录）
    在收口 commit 之后删除；`artifacts/baselines/` 里本次新跑的报告按该目录既有惯例留在本机
    （只有 `README.md`、`engine-pub-surface.json`、`wp0-3d-stress.committed.json` 入库）。
-5. **归档这一步本包没做**：按 `tasks/README.md` 的生命周期，验收通过的任务要从 `plan/` 移进
-   `done/`。这一步**刻意留到下一批**：`tasks/README.md` 当前有另一路未提交的在途改动
-   （它的 `plan/` 条目正指向 `plan/WP12-host拆分.md`，还把本包写成"待认领"），移动文件会让
-   那个链接变死链（`check-docs.ps1` 会扫 `tasks/README.md`，死链接必判红），而修它就得
-   替别人提交它的改动。所以下一个人要做的是：`git mv tasks/plan/WP12-host拆分.md tasks/done/` +
-   把 `tasks/README.md` 的 `plan/` 条目改成"已归档 `done/WP12-host拆分`" +
-   把 `CHANGELOG.md` 本条里的路径一起改过去。
+5. **归档（收口之后单独一笔，不在搬运的九刀里）**：按 `tasks/README.md` 的生命周期，验收通过的
+   任务要从 `plan/` 移进 `done/`。这一步当时**刻意没做**，因为 `tasks/README.md` 上有另一路未提交的
+   在途改动（它的 `plan/` 条目正指向本文件，还把本包写成"待认领"），先移动文件会让那个链接变死链
+   （`check-docs.ps1` 会扫 `tasks/README.md`，死链接必判红），而修它就得替别人提交别人的改动。
+   对方那笔台账落地后（`138956e`）障碍消失，归档已做完：
+   `git mv tasks/plan/WP12-host拆分.md tasks/done/` ⇒ `done/` 151 → **152** 份、`plan/` 回到空目录
+   （`docs/00-project-charter.md` 里"`tasks/plan/` 已清空"那句因此重新成立，本包没动章程——
+   **但章程 §末条那句"146 份"已经过期**，那是本包之前几批归档累积留下的旧数，改它属于台账维护者的
+   活，不在 WP12 的范围）。路径引用共 6 处，全部一起改到 `tasks/done/`：
+   `tasks/README.md` 的 `plan/` 条目（改成"已归档"+ 计数）、`CHANGELOG.md` 本条的链接、
+   `host/runtime_scene/tests/mod.rs` 与 `host/runtime_scene/tilemap.rs` 的可见性依据注释、
+   `scripts/engine-pub-surface.mjs` 的边界注释（顺手把它指错的"§13"改成 §14.4，那节现在补了
+   这条门到底买不到什么，见上面④），以及本文件自己的 §14.9 第 5 项。
+   顺手结掉两处**数字标签错位**：§5 的 4d 行与 §8 的"不拆函数体"清单都写作 `new_async` 1,106 行，
+   而 1,106 实测是**构造段三个入口合起来**那段（§2.3 的行段 574–1,679）；`new_async` 自己
+   **1,070 行**（`construct.rs` 共 1,143 行，从第 73 行 `async fn new_async(` 到文件末尾）。
+   两处已改成"1,106，其中 `new_async` 1,070"的写法，数字本身没变，变的是它挂的名字。
+   复现：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-docs.ps1` → `check_docs_ok`
+   （它同时扫 `tasks/README.md` 与 `docs/`，死链一条不留）。
 6. **§14.3 的 61 处逐文件实测**（收口时重跑，与本节上面那份账逐格相同）：
    `renderer/` = `arena.rs` 2 + `gpu_mesh.rs` 2 + `gpu_texture.rs` 6 + `targets.rs` 4 +
    `timestamp.rs` 6 + `world_sprite.rs` 10 = **30**（`construct.rs`/`passes.rs`/`readback.rs` 为 0）；

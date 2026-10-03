@@ -2,7 +2,7 @@
 //! `#[cfg(test)] mod`（100 项测试）。断言、造数据与读盘路径一律没改——测试走
 //! `crate::core::games_dir()`（= `CARGO_MANIFEST_DIR` 向上三级 = 仓库根），与源文件位置无关。
 //!
-//! 可见性依据（`tasks/plan/WP12-host拆分.md` §3.1.5）：本目录里的每个模块都是
+//! 可见性依据（`tasks/done/WP12-host拆分.md` §3.1.5）：本目录里的每个模块都是
 //! `runtime_scene` 的后代，`use super::*;` 的 glob 会把父模块的**私有项**一并带下来，
 //! 所以搬迁没有把任何私有 helper 改成 `pub`。原 `mod sdf_tests` 顶部三个被多个域文件
 //! 共用的 helper 提到本模块，域文件同样靠 `use super::*;` 取到它们。

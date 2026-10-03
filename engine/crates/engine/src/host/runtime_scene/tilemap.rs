@@ -1,6 +1,6 @@
 //! 瓦片映射的顶点构建与 chunk 级脏重建（WP12 阶段 2 从 `runtime_scene.rs` 原样搬出）。
 //!
-//! 可见性依据（`tasks/plan/WP12-host拆分.md` §3.1.4）：这里只有被 `RuntimeScene` 的每帧路径调用的
+//! 可见性依据（`tasks/done/WP12-host拆分.md` §3.1.4）：这里只有被 `RuntimeScene` 的每帧路径调用的
 //! 入口标 `pub(super)`（私有域 = `runtime_scene`，父与全部兄弟子模块可用）；`build_chunk` 只被
 //! 本文件的分块构建调用，保持私有。类型 `CachedTilemapLayer` / `CachedTileSprite` / `TileChunk`
 //! 仍定义在 `mod.rs`（它们被 `RuntimeScene` 的私有字段持有），本文件靠 `use super::{...}` 取用。

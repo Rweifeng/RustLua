@@ -17,7 +17,7 @@
 // 退出码沿用本仓库口径：0=通过；1=判红（或基线缺失）；3=环境受限（没找到 rustdoc 产物，
 // 打印原因，绝不把"跳过"说成"通过"）。
 //
-// 已知边界（记录在 tasks/plan/WP12-host拆分.md §13）：这份账抓的是**路径与项的种类/归属**，
+// 已知边界（记录在 tasks/done/WP12-host拆分.md §14.4 的④）：这份账抓的是**路径与项的种类/归属**，
 // 不含函数签名。签名由 `editor`/`game`/`game_web`/`assetc` 的工作区编译与
 // `engine/crates/engine/tests/host_pub_surface.rs` 的存在性 pin 一起兜住。
 import { readdirSync, readFileSync, existsSync, writeFileSync, statSync, mkdirSync } from 'node:fs';
