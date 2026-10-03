@@ -3,7 +3,7 @@
 //! Loads `examples/game_jhyt/scripts/main.lua` into a bare `LuaRuntime` and
 //! reproduces the M19-02 acceptance paths:
 //!
-//! - ①音频：16 个自研合成 OGG 存在（OggS+Vorbis 容器检查、非空；采样率/位深/声道由生成器保证）；Lua 侧
+//! - ①音频：16 个自研合成 MP3 存在（ID3/MPEG 帧头检查、非空；采样率/位深/声道由生成器保证）；Lua 侧
 //!   `audio.play/music/stop_music/volume` 与 `audio.sfx/play_bgm` 调用路径
 //!   在无音频设备时也不抛错（pcall 静默降级），同一曲目不重启。
 //! - ②HUD 文案包含生命/体力/内力/时间/天气/金钱/快捷栏字段。
@@ -41,7 +41,7 @@ const SFX_CLIPS: [&str; 12] = [
     "sfx_quest",
     "sfx_sleep",
     "sfx_craft",
-    // M22：面板选中项变化播 ui_move（panel_nav.lua 调用；目录有 ui_move.ogg）。
+    // M22：面板选中项变化播 ui_move（panel_nav.lua 调用；目录有 ui_move.mp3）。
     "ui_move",
 ];
 
@@ -61,15 +61,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let save_path = fresh_save_path(&project, "jhyt_m19_ui.sav");
     let project_arg = project.clone();
 
-    banner("M19-02a 音频资源：16 个 OGG 存在（OggS+Vorbis 容器检查、非空）+ 调用路径不抛错");
+    banner("M19-02a 音频资源：16 个自研合成 MP3 存在（ID3/MPEG 帧头检查、非空）+ 调用路径不抛错");
     let audio_dir = project.join("assets").join("audio");
     let mut clips = 0;
     for name in BGM_CLIPS.iter().chain(SFX_CLIPS.iter()) {
-        let path = audio_dir.join(format!("{name}.ogg"));
-        let info = inspect_ogg(&path)?;
+        let path = audio_dir.join(format!("{name}.mp3"));
+        let info = inspect_mp3(&path)?;
         println!(
-            "{name}.ogg bytes={} vorbis={} container=OggS",
-            info.bytes, info.vorbis
+            "{name}.mp3 bytes={} id3={} frame_sync={}",
+            info.bytes, info.id3, info.frame_sync
         );
         clips += 1;
     }
@@ -710,33 +710,60 @@ require('ui.text_fit').fit('一二三四五六七八九十', 14, 60), 14) <= 60)
 
 // ---------- helpers ----------
 
-/// OGG 容器与 Vorbis 标识自检（M19-02 同步 .ogg，2026-09-27）。
+/// MP3 容器自检（2026-10-01 音频统一 MP3 后取代当年的 OGG 检查）。
 ///
-/// 注意口径：OGG（Vorbis）是压缩容器，**无解码器**时无法在 Rust 侧复核
-/// 22050Hz/16-bit/单声道与振幅——这些参数由生成器 `tools/gen_audio.py`
-/// （WAV 22050/16/单 → OGG 转码保持）保证；这里独立复核的是：
-/// 文件存在且非空（> 1KB）、OggS 魔数、Vorbis 标识（首页 `\x01vorbis`）。
-struct OggInfo {
+/// 注意口径与 OGG 时代一致：MP3 是压缩容器，**无解码器**时无法在 Rust 侧复核
+/// 采样率/位深/声道与振幅——这些参数由生成器 `tools/gen_audio.py` 保证；
+/// 这里独立复核的是：文件存在且非空（> 1KB）、有 ID3v2 头或 MPEG 帧同步，
+/// 且帧同步字段是合法组合（版本/层位非 0、码率与采样下标不是保留值）。
+struct Mp3Info {
     bytes: u64,
-    vorbis: bool,
+    id3: bool,
+    frame_sync: bool,
 }
 
-fn inspect_ogg(path: &Path) -> Result<OggInfo, Box<dyn std::error::Error>> {
+/// ID3v2 标签头的 4 字节 synchsafe 大小（每字节只用低 7 位）。
+fn id3v2_size(bytes: &[u8]) -> usize {
+    if bytes.len() < 10 || &bytes[0..3] != b"ID3" {
+        return 0;
+    }
+    ((bytes[6] as usize) << 21)
+        | ((bytes[7] as usize) << 14)
+        | ((bytes[8] as usize) << 7)
+        | (bytes[9] as usize)
+}
+
+/// 一个合法 MPEG 音频帧头：0xFF 前 3 位同步 + 版本位非 0 + 层位非 0 +
+/// 码率/采样下标不是全 1 或全 0（这两者在 MPEG 规范里是保留值）。
+fn mp3_frame_header(bytes: &[u8]) -> bool {
+    bytes.windows(4).any(|w| {
+        w[0] == 0xFF
+            && (w[1] & 0xE0) == 0xE0
+            && (w[1] & 0x18) != 0
+            && (w[1] & 0x06) != 0
+            && (w[2] & 0xF0) != 0xF0
+            && (w[2] & 0xF0) != 0
+            && (w[2] & 0x0C) != 0x0C
+    })
+}
+
+fn inspect_mp3(path: &Path) -> Result<Mp3Info, Box<dyn std::error::Error>> {
     let bytes = fs::read(path).map_err(|e| format!("missing {}: {e}", path.display()))?;
-    if bytes.len() < 64 || &bytes[0..4] != b"OggS" {
-        return Err(format!("bad OggS header: {}", path.display()).into());
-    }
-    let vorbis = bytes.windows(7).any(|w| w == b"\x01vorbis");
-    if !vorbis {
-        return Err(format!("no vorbis identification header: {}", path.display()).into());
-    }
-    // 非空阈值：1KB 以上（静音/损坏的短文件会卡在更小尺寸）。
     if bytes.len() < 1024 {
-        return Err(format!("ogg too small: {} ({} bytes)", path.display(), bytes.len()).into());
+        return Err(format!("mp3 too small: {} ({} bytes)", path.display(), bytes.len()).into());
     }
-    Ok(OggInfo {
+    let id3 = bytes.starts_with(b"ID3");
+    // 只在前 8 KB 里找帧头：ID3v2 标签之后的第一个帧必然落在这一窗口内。
+    let start = (id3v2_size(&bytes) + if id3 { 10 } else { 0 }).min(bytes.len());
+    let window = &bytes[start..bytes.len().min(start + 8192)];
+    let frame_sync = mp3_frame_header(window);
+    if !frame_sync {
+        return Err(format!("no mpeg frame header: {}", path.display()).into());
+    }
+    Ok(Mp3Info {
         bytes: bytes.len() as u64,
-        vorbis,
+        id3,
+        frame_sync,
     })
 }
 

@@ -18,6 +18,7 @@ local audio = require("core.audio")
 local M = {}
 
 local STATE_KEY = "crafting"
+local STATE_VERSION = 1
 local MINUTES_PER_DAY = 1440
 
 local jobs = {} -- building_key → job
@@ -34,6 +35,20 @@ local function now_abs()
   return (day - 1) * MINUTES_PER_DAY + minute
 end
 
+-- 版本门：`version` 此前只写不校验，schema 变更后旧数据会被按新格式静默读入。
+-- 无数据（nil）静默跳过；有数据但版本不认识 → warn + 拒绝（与 building.lua 同一口径）。
+local function version_ok(data, where)
+  if type(data) ~= "table" then
+    return false
+  end
+  if tonumber(data.version) == STATE_VERSION then
+    return true
+  end
+  log.warn("[crafting] " .. where .. " 版本不匹配：" .. tostring(data.version)
+    .. "，当前 " .. STATE_VERSION .. "，本次不恢复")
+  return false
+end
+
 local function persist()
   local saved = {}
   for key, job in pairs(jobs) do
@@ -46,13 +61,13 @@ local function persist()
       output_count = job.output_count
     }
   end
-  map.state(STATE_KEY, { version = 1, jobs = saved })
+  map.state(STATE_KEY, { version = STATE_VERSION, jobs = saved })
 end
 
 local function load_state()
   jobs = {}
   local saved = map.state(STATE_KEY)
-  if type(saved) ~= "table" then
+  if not version_ok(saved, "map.state") then
     return
   end
   for key, job in pairs(saved.jobs or {}) do
@@ -290,7 +305,7 @@ function M.reset()
   jobs = {}
   loaded = false
   current_map = nil
-  map.state(STATE_KEY, { version = 1, jobs = {} })
+  map.state(STATE_KEY, { version = STATE_VERSION, jobs = {} })
 end
 
 function M.capture()
@@ -305,12 +320,12 @@ function M.capture()
       output_count = job.output_count
     }
   end
-  return { version = 1, jobs = out }
+  return { version = STATE_VERSION, jobs = out }
 end
 
 function M.restore(data)
-  if type(data) ~= "table" then
-    return
+  if not version_ok(data, "snapshot") then
+    return false, "bad_version"
   end
   jobs = {}
   for key, job in pairs(data.jobs or {}) do

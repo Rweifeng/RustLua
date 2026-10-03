@@ -29,6 +29,7 @@ local M = {}
 
 local TILE = 32
 local STATE_KEY = "buildings"
+local STATE_VERSION = 1
 local SORTING = "sorting_layer=world;order=1"
 
 -- 运行期
@@ -256,6 +257,21 @@ local function spawn(rec)
   end
 end
 
+-- 版本门：map.state 与存档快照都写着 `version`，但此前**只写不校验**——schema
+-- 变更后旧数据会被当成新格式静默读入（字段缺失走默认，看着像"存档没坏"其实丢了建筑）。
+-- 口径与引擎的 `save_version` 门一致：不认识的版本一律拒绝、绝不猜。
+local function version_ok(data, where)
+  if type(data) ~= "table" then
+    return false
+  end
+  if tonumber(data.version) == STATE_VERSION then
+    return true
+  end
+  log.warn("[building] " .. where .. " 版本不匹配：" .. tostring(data.version)
+    .. "，当前 " .. STATE_VERSION .. "，本次不恢复")
+  return false
+end
+
 local function persist()
   local list = {}
   for _, key in ipairs(order) do
@@ -271,7 +287,7 @@ local function persist()
       }
     end
   end
-  map.state(STATE_KEY, { version = 1, seq = seq, list = list })
+  map.state(STATE_KEY, { version = STATE_VERSION, seq = seq, list = list })
 end
 
 local function load_state()
@@ -279,7 +295,7 @@ local function load_state()
   order = {}
   seq = 0
   local saved = map.state(STATE_KEY)
-  if type(saved) ~= "table" then
+  if not version_ok(saved, "map.state") then
     return
   end
   seq = tonumber(saved.seq) or 0
@@ -493,21 +509,23 @@ function M.reset()
   seq = 0
   build_mode = false
   selected = nil
-  map.state(STATE_KEY, { version = 1, seq = 0, list = {} })
+  map.state(STATE_KEY, { version = STATE_VERSION, seq = 0, list = {} })
 end
 
 function M.capture()
   return {
-    version = 1,
+    version = STATE_VERSION,
     seq = seq,
     list = M.list()
   }
 end
 
 -- restore 只写内存与 map.state，随后按当前地图重放视觉（实体判活，安全幂等）
+-- 版本不匹配返回 `false, "bad_version"`：save_manager 会据此回滚整批恢复，
+-- 而不是让建筑记录停在"按旧 schema 猜读出来"的空/半状态。
 function M.restore(data)
-  if type(data) ~= "table" then
-    return
+  if not version_ok(data, "snapshot") then
+    return false, "bad_version"
   end
   records = {}
   order = {}

@@ -34,6 +34,15 @@ const TEN_AM: i64 = 600;
 const START_SEED_LINGZHI: f64 = 8.0;
 /// 新档初始稻种数（同上，M19-01 由 3 调到 4）。
 const START_SEED_RICE: f64 = 4.0;
+/// `data/shops.lua` 的商店条数。`1cd624b`（2026-10-01）把示例工程从单店扩到三家
+/// （云泽村货摊 / 韩氏铁铺 / 阿七食摊），本常量随之从 1 调到 3。
+/// 新增商店时必须同步本常量并补该店自己的营业时间/库存断言——下面第 ② 条把常量
+/// 钉在 `data/shops.lua` 的实际条数上，改了数据不改用例就会红（与 m24 的白名单同思路）。
+const SHOP_COUNT: f64 = 3.0;
+/// 数 `data/shops.lua` 的顶层商店键（排除 `version` 字段）。
+const SHOP_DATA_COUNT_LUA: &str = "(function() local n = 0 \
+     for k in pairs(require('data.shops')) do if k ~= 'version' then n = n + 1 end end \
+     return n end)()";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args()
@@ -57,7 +66,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     click_button(&mut runtime, "BtnStart")?;
     assert_scene_is(&mut runtime, "manor")?;
     assert_mode(&mut runtime, "Playing")?;
-    assert_num(&mut runtime, "#(require('systems.shop').ids())", 1.0)?;
+    assert_num(&mut runtime, "#(require('systems.shop').ids())", SHOP_COUNT)?;
+    // ② 把上一条的常量钉回数据源：注册数必须等于 `data/shops.lua` 的实际条数，
+    // 否则"加了商店但用例不知道"就会悄悄绿着过去。
+    assert_num(&mut runtime, SHOP_DATA_COUNT_LUA, SHOP_COUNT)?;
     assert_str(
         &mut runtime,
         "require('systems.shop').get('zhao_stall').name",
@@ -80,7 +92,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // M18-02 起货摊额外上架 timber；2026-09-27 Alpha 作物扩展再上架 4 种新种子
     // （seed_radish/seed_herb/seed_polygonum/seed_ginseng），共 8 项；buys 同步 +4
-    // （radish/herb/polygonum/ginseng）→ 6 项。新增项都在列表末尾，[2] 索引不受影响。
+    // （radish/herb/polygonum/ginseng）→ 6 项，其后 `1cd624b` 又把 `iron_ore` 加进收购
+    // 列表 → 7 项（该 commit 扩到三家店时漏更新了这里）。
+    // 新增项都在列表末尾，[2] 索引不受影响。
     assert_num(
         &mut runtime,
         "#(require('systems.shop').stock('zhao_stall'))",
@@ -89,7 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(
         &mut runtime,
         "#(require('systems.shop').buys('zhao_stall'))",
-        6.0,
+        7.0,
     )?;
     assert_validate(&mut runtime, "systems.shop")?;
     assert_validate(&mut runtime, "world.quest")?;
@@ -578,8 +592,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     println!(
-        "jhyt_m17_shop_ok project={} shops=1 money={} seed_lingzhi={} rice={} energy={}",
+        // `shops` 必须是运行期读回来的实际注册数，不能写死——上一版这里硬编 `shops=1`，
+        // 工程扩到三家店之后，这行**通过日志**给出的读数与断言的事实相反（假读数）。
+        "jhyt_m17_shop_ok project={} shops={} money={} seed_lingzhi={} rice={} energy={}",
         project.display(),
+        query_num(&mut second, "return #(require('systems.shop').ids())")? as i64,
         query_num(&mut second, "return require('core.state').money")?,
         query_num(&mut second, "return inv.count('player', 'seed_lingzhi')")?,
         query_num(&mut second, "return inv.count('player', 'rice')")?,

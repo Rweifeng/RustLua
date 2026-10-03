@@ -35,6 +35,11 @@ use std::{
 const ARENA_SPAWN: (f32, f32) = (304.0, 176.0);
 /// 10:00：沈青萝在云泽村医馆（复用 M17-03 的对话驱动时刻）。
 const TEN_AM: i64 = 600;
+/// 关系注册表条目数（data/relationships.lua）。
+const RELATIONSHIP_COUNT: f64 = 10.0;
+/// 直接从数据源数条目，防止 npc_ids() 与注册表悄悄分叉。
+const RELATIONSHIP_DATA_COUNT_LUA: &str = "(function() local n = 0 \
+     for _ in pairs(require('data.relationships').npcs) do n = n + 1 end return n end)()";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args()
@@ -64,10 +69,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_mode(&mut runtime, "Playing")?;
     // boot_game → validate_content 已聚合 data.relationships.validate_all（失败会 error）。
     assert_validate(&mut runtime, "data.relationships")?;
+    // 关系注册表规模随 v0.2 内容批增长（7 → 10 位 NPC），断言钉回 data/relationships 条目数。
     assert_num(
         &mut runtime,
         "#(require('data.relationships').npc_ids())",
-        7.0,
+        RELATIONSHIP_COUNT,
+    )?;
+    assert_num(
+        &mut runtime,
+        RELATIONSHIP_DATA_COUNT_LUA,
+        RELATIONSHIP_COUNT,
     )?;
     assert_num(
         &mut runtime,

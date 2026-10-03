@@ -821,7 +821,10 @@ if ($Mvp -or $MvpOnly) {
         "jhyt_m30_cjk_text",
         "jhyt_m31_pc_release",
         # M32 相机收口：相机跟随玩家 + 取景由场景 bounds 锁在地图内（含换图后重绑 bounds）。
-        "jhyt_m32_camera"
+        "jhyt_m32_camera",
+        # M34-00 存档负向门：map.state/快照版本门会红、provider 报错整批回滚、
+        # 100 次磁盘往返逐字段不漂移（soak 的成功路径门只断言"没炸"，踩不到失败分支）。
+        "jhyt_m34_save_gates"
     )
     $exampleDir = Join-Path $engineRoot "crates\game\examples"
 

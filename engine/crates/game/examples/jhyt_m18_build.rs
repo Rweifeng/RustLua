@@ -28,6 +28,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// 建筑注册表条目数（data/buildings.lua：药庐/仓房/茶棚/铁匠炉/膳房）。
+const BUILDING_COUNT: f64 = 5.0;
+/// 直接从数据源数条目，防止 ids() 与注册表悄悄分叉。
+const BUILDING_DATA_COUNT_LUA: &str = "(function() local n = 0 \
+     for _ in pairs(require('data.buildings').buildings) do n = n + 1 end return n end)()";
+/// 药庐（station='herb') 的配方条数（data/recipes.lua）。
+const HERB_RECIPE_COUNT: f64 = 3.0;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args()
         .nth(1)
@@ -54,7 +62,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_mode(&mut runtime, "Playing")?;
     assert_validate(&mut runtime, "data.buildings")?;
     assert_validate(&mut runtime, "data.recipes")?;
-    assert_num(&mut runtime, "#(require('data.buildings').ids())", 3.0)?;
+    // 注册表规模随内容批次增长（v0.2 加茶棚/膳房），断言钉回 data/buildings.lua 的条目数。
+    assert_num(
+        &mut runtime,
+        "#(require('data.buildings').ids())",
+        BUILDING_COUNT,
+    )?;
+    assert_num(&mut runtime, BUILDING_DATA_COUNT_LUA, BUILDING_COUNT)?;
     assert_num(
         &mut runtime,
         "require('data.buildings').get('herb_hut').w",
@@ -68,7 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(
         &mut runtime,
         "#(require('data.recipes').for_station('herb'))",
-        2.0,
+        HERB_RECIPE_COUNT,
     )?;
     assert_str(
         &mut runtime,

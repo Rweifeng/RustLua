@@ -79,6 +79,21 @@ local function refreshed(node, record)
   return (current_day() - (tonumber(record.day) or 0)) >= days
 end
 
+-- 版本门：`state_version` 此前只写不校验，schema 变更后旧数据会被按新格式静默读入。
+-- 字段名与 building/crafting 的 `version` 不同，但**不改名**——改名会作废现有存档，
+-- 这里只做校验。无数据（nil）静默跳过；有数据但版本不认识 → warn + 拒绝。
+local function version_ok(data, where)
+  if type(data) ~= "table" then
+    return false
+  end
+  if tonumber(data.state_version) == STATE_VERSION then
+    return true
+  end
+  log.warn("[gather] " .. where .. " 版本不匹配：" .. tostring(data.state_version)
+    .. "，当前 " .. STATE_VERSION .. "，本次不恢复")
+  return false
+end
+
 local function persist()
   local nodes = {}
   for id, record in pairs(gathered) do
@@ -96,7 +111,7 @@ function M.ensure_loaded(map_id)
   loaded_map = target
   gathered = {}
   local saved = map.state(STATE_KEY)
-  if type(saved) == "table" and type(saved.nodes) == "table" then
+  if version_ok(saved, "map.state") and type(saved.nodes) == "table" then
     for id, record in pairs(saved.nodes) do
       if type(id) == "string" and type(record) == "table" then
         gathered[id] = { day = tonumber(record.day) or 0 }
@@ -409,7 +424,10 @@ end
 -- 只写内存与 map.state（实体由调用方重放；本模块不持有实体 id）
 function M.restore(data)
   gathered = {}
-  if type(data) == "table" and type(data.nodes) == "table" then
+  if not version_ok(data, "snapshot") then
+    return false, "bad_version"
+  end
+  if type(data.nodes) == "table" then
     for id, record in pairs(data.nodes) do
       if type(id) == "string" and type(record) == "table" then
         gathered[id] = { day = tonumber(record.day) or 0 }

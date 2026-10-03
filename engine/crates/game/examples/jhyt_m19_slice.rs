@@ -1098,10 +1098,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "#(require('systems.gather').nodes('mountain_path')) >= 3 and 1 or 0",
         1.0,
     )?;
-    // 任务 9 条 = M19-01 的 8 条 + M28（计划 G3）追加的猎获订单 order_hunt；
-    // 对话仍是 3 条（order_hunt 复用林小满那一条对话文件，不新增 speaker）。
-    assert_num(&mut second, "#(require('world.quest').ids())", 9.0)?;
-    assert_num(&mut second, "#(require('world.dialogue').ids())", 3.0)?;
+    // 任务/对话条数用**下限**而不是等号（同本章①的 assert_at_least 口径）：
+    // 这一章的意图是"垂直切片的内容底线还在"，等号会把每次内容批都变成门的假红——
+    // 上一次红的是 `= 9`/`= 3`，而 v0.2 内容批（1cd624b）早已扩到 15/6。
+    // 注册表与加载器是否一致由 jhyt_m17_dialogue 的等号断言负责（那条才是契约门）。
+    assert_at_least(
+        &mut second,
+        "#(require('world.quest').ids())",
+        "at least:15",
+        "任务",
+    )?;
+    assert_at_least(
+        &mut second,
+        "#(require('world.dialogue').ids())",
+        "at least:6",
+        "对话",
+    )?;
     println!(
         "jhyt_m19_slice_ok project={} day={} orders={} mainline=true money={} lingzhi={} gather_nodes={}",
         project.display(),
