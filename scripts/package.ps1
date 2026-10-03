@@ -645,6 +645,61 @@ WASM build failed ($Platform)。
                 # 守卫换了写法同样响亮失败：静默放过等于微信包退回"装得进来、一调就死"。
                 throw "no-modules glue shape changed: '__wbg_terminated_addr ??= wasm.__instance_terminated.value' not found in $gluePath. 这句读取依赖 Global 导出，而下面的步骤会把它们全部剔掉（iOS）——请重新确认守卫要不要补、怎么补（见本文件注释）。"
             }
+            # 微信的 WXWebAssembly 没有 WebAssembly.Tag / WebAssembly.Exception 构造器，
+            # wasm-bindgen 0.2 的胶水会在**求值期** `new WebAssembly.Tag(...)`，导致 require 即崩。
+            # strip-wasm-tags.mjs 已经把 wasm 的 tag 导入剔掉、throw 指令替换成 unreachable，
+            # 这里把胶水侧对应的 Tag 构造、Exception 包装、tag 引用一起简化掉：
+            #   * 删掉两行 `const ... = new WebAssembly.Tag(...)`（求值期就 ReferenceError）
+            #   * 删掉 __wbg_get_imports 里的 tag 字段（wasm 已经不导入它们了）
+            #   * wrapError 改成直接透传（不再包 WebAssembly.Exception）
+            #   * __wbg_handle_catch 简化（不再 instanceof WebAssembly.Exception 判断）
+            #   * __wbg___wbindgen_throw 改成直接 throw Error（不再包 Exception）
+            # 成对约束见 strip-wasm-tags.mjs 头部注释。
+            $glueText = [System.IO.File]::ReadAllText($gluePath)
+            # 1) 删掉两行 Tag 构造
+            $glueText = $glueText -replace '(?m)^\s*const __wbindgen_jstag_polyfill = new WebAssembly\.Tag\(\{ parameters: \[''externref''\] \}\);\s*\r?\n?', ''
+            $glueText = $glueText -replace '(?m)^\s*const __wbindgen_wrapped_jstag = new WebAssembly\.Tag\(\{ parameters: \[''externref''\] \}\);\s*\r?\n?', ''
+            # 2) 删掉 __wbg_get_imports 里的 tag 字段
+            $glueText = $glueText -replace '(?m)^\s*__wbindgen_jstag: __wbindgen_jstag_polyfill,\s*\r?\n?', ''
+            $glueText = $glueText -replace '(?m)^\s*__wbindgen_wrapped_jstag: __wbindgen_wrapped_jstag,\s*\r?\n?', ''
+            # 3) wrapError 改成直接透传
+            $wrapErrorOld = 'function wrapError(f, args) {
+        try {
+            return f.apply(this, args);
+        } catch (e) {
+            if (e instanceof WebAssembly.Exception) throw e;
+            throw new WebAssembly.Exception(__wbindgen_jstag_polyfill, [e], { traceStack: true });
+        }
+    }'
+            $wrapErrorNew = 'function wrapError(f, args) {
+        return f.apply(this, args);
+    }'
+            $glueText = $glueText.Replace($wrapErrorOld, $wrapErrorNew)
+            # 4) __wbg_handle_catch 简化
+            $handleCatchOld = 'function __wbg_handle_catch(e) {
+        if (e instanceof WebAssembly.Exception && e.is(__wbindgen_wrapped_jstag)) {
+            throw e.getArg(__wbindgen_wrapped_jstag, 0);
+        }
+        getInt32ArrayMemory0()[__wbg_terminated_addr] = 1;
+        __wbg_call_abort_hook();
+        throw e;
+    }'
+            $handleCatchNew = 'function __wbg_handle_catch(e) {
+        getInt32ArrayMemory0()[__wbg_terminated_addr] = 1;
+        __wbg_call_abort_hook();
+        throw e;
+    }'
+            $glueText = $glueText.Replace($handleCatchOld, $handleCatchNew)
+            # 5) __wbg___wbindgen_throw 改成直接 throw Error
+            $throwOld = '__wbg___wbindgen_throw_41e9ee4f547fc59a: function() { return wrapError(function (arg0, arg1) {
+                throw new WebAssembly.Exception(__wbindgen_wrapped_jstag, [new Error(getStringFromWasm0(arg0, arg1))]);
+            }, arguments); },'
+            $throwNew = '__wbg___wbindgen_throw_41e9ee4f547fc59a: function() { return wrapError(function (arg0, arg1) {
+                throw new Error(getStringFromWasm0(arg0, arg1));
+            }, arguments); },'
+            $glueText = $glueText.Replace($throwOld, $throwNew)
+            [System.IO.File]::WriteAllText($gluePath, $glueText, (New-Object System.Text.UTF8Encoding($false)))
+            Write-Host "==> Patched no-modules glue: removed WebAssembly.Tag/Exception usage for WeChat WXWebAssembly compatibility"
             # **必须补上 CommonJS 导出**：`--target no-modules` 的产物是一句
             #   let wasm_bindgen = (function (exports) { … })({ __proto__: null });
             # 顶层 `let` 是**脚本作用域**绑定，不挂全局、也不是 `module.exports`，
@@ -654,6 +709,28 @@ WASM build failed ($Platform)。
             $glueText = [System.IO.File]::ReadAllText($gluePath)
             $glueText += "`n// 微信分支：补 CommonJS 导出（见 scripts/package.ps1）。no-modules 产物只声明了顶层 let，`n// 不挂全局也不是 module.exports，直接 require 会拿到空对象。`nmodule.exports = wasm_bindgen;`n"
             [System.IO.File]::WriteAllText($gluePath, $glueText, (New-Object System.Text.UTF8Encoding($false)))
+            # 第三条**必需**的胶水依赖清单：胶水里出现的每一个 `WebAssembly.<名字>` 都必须由
+            # `wasm-bridge.js` 的 facade 转发得到（宿主只给 `WXWebAssembly` 域名，标准全局缺席）。
+            # 这条不是假设：2026-10-03 开发者工具实测 `[wasm=glue-missing/WXWebAssembly
+            # detail=WebAssembly is not defined]`——胶水的两条 tag 导入在**求值期**就要
+            # `new WebAssembly.Tag(...)`，而本机 Node 有真全局，所以本机全绿、工具里起不来。
+            # 现在 bridge 转发 Tag/Exception/Memory/Table/Global，`instantiate`/`Instance` 由路径通道的
+            # shim 提供，`Module`/`initSync` 只在字节通道里用（那条自己会先判宿主有没有）。
+            # 这里把"胶水又新读了一个我们没转发的标准域名"变成发布期错误，而不是下一次真机/工具启动错误。
+            $facadeCovered = @(
+                "Tag", "Exception", "Memory", "Table", "Global",           # wasm-bridge.js 的 GLUE_EVAL_CTORS
+                "instantiate", "Instance", "Module", "instantiateStreaming" # 通道逻辑自己覆盖的两条
+            )
+            $usedNames = @([regex]::Matches($glueText, "WebAssembly\.([A-Za-z_][\w$]*)") |
+                ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+            $uncovered = @($usedNames | Where-Object { $facadeCovered -notcontains $_ })
+            if ($uncovered.Count -gt 0) {
+                throw ("no-modules 胶水读了 facade 未转发的标准 WebAssembly 域名：{0}（清单里已覆盖 {1}）。" -f `
+                    ($uncovered -join ','), ($facadeCovered -join ',')) +
+                    " 小游戏宿主只有 WXWebAssembly、没有标准 WebAssembly 全局，运行时会在 require 胶水时抛 ReferenceError。" +
+                    " 要么在 plugins/wechat-minigame/wasm-bridge.js 的 GLUE_EVAL_CTORS 里补转发，要么把这条用法从胶水里去掉，并同步这里的清单。"
+            }
+            Write-Host ("==> Checked no-modules glue WebAssembly surface: {0}" -f (($usedNames | Sort-Object) -join ',')) -ForegroundColor DarkGray
             Optimize-WasmBin (Join-Path $pkgRoot "game_web_bg.wasm")
             # iOS 的 WXWebAssembly 不支持 Global 导出（docs/52 R12 尾段），带 Global 的模块
             # 会被整块拒绝。当前 wasm-bindgen 会把 __abort_handler/__instance_terminated
@@ -684,6 +761,29 @@ WASM build failed ($Platform)。
                     $wasmForStrip, (($stripOutput | ForEach-Object { "$_" }) -join ' '))
             }
             Write-Host (($stripOutput | Where-Object { $_ -match '^strip_wasm_globals_ok' } | Select-Object -First 1)) -ForegroundColor DarkGray
+            # 微信的 WXWebAssembly 没有 WebAssembly.Tag 构造器，wasm-bindgen 0.2 的产物会导入
+            # 两个 tag（__wbindgen_jstag / __wbindgen_wrapped_jstag），实测 polyfill 也被拒绝。
+            # strip-wasm-tags.mjs 把 tag 导入从 Import 段剔掉，同时把 Code 段里引用被删 tag 的
+            # throw/throw_ref 替换成 unreachable、try_table 降级成普通 block。
+            # 成对约束：胶水侧的 Tag 构造、Exception 包装、tag 引用已经在上面的补丁里简化掉。
+            $stripTags = Join-Path $PSScriptRoot "wasm-lua\strip-wasm-tags.mjs"
+            if (-not (Test-Path -LiteralPath $stripTags)) {
+                throw "缺少 wasm Tag 剔除脚本: $stripTags（发布不能在没有它的情况下继续）"
+            }
+            $savedEapStripTags = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try {
+                $stripTagsOutput = & $nodeForStrip.Source $stripTags $wasmForStrip $wasmForStrip 2>&1
+                $stripTagsExit = $LASTEXITCODE
+            }
+            finally {
+                $ErrorActionPreference = $savedEapStripTags
+            }
+            if ($stripTagsExit -ne 0) {
+                throw ("wasm Import 段 Tag 剔除失败（{0}）：{1}" -f `
+                    $wasmForStrip, (($stripTagsOutput | ForEach-Object { "$_" }) -join ' '))
+            }
+            Write-Host (($stripTagsOutput | Where-Object { $_ -match '^strip_wasm_tags_ok' } | Select-Object -First 1)) -ForegroundColor DarkGray
         }
         # wasm 产物必须**真的能被宿主的 WebAssembly 实现接受**（两个 web 平台都在发布期验一次）。
         # 这条守卫把四类回归挡在发布期，而不是等产物上线：

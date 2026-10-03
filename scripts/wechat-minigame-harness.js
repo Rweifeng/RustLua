@@ -120,6 +120,11 @@ let noFrames = false;
   // 极旧基础库）。契约：wasm 失败不得影响 Lua 启动——clock 走 Lua 兜底（web-runtime 的
   // genericCompat）、boot 照常成功、适配层必须显式报告 __RUSTLUA_HOST_API 未接线。
   let noWasm = false;
+  // `--wasm-tag-polyfill-probe`：把"WXWebAssembly 收到 JS 伪造的 tag 时接不接受"这个
+  // 决定性问题做成机检守卫（见 wasm-bridge.js:91 的"关键验证点"）。用一份只导入单个 tag
+  // 的极小 wasm 走宿主那条**路径式 instantiate**，分别喂 PolyfillTag（JS 对象）与真
+  // WebAssembly.Tag，打印 `polyfill_tag_probe=` / `real_tag_probe=` 两个读数。
+  let wasmTagPolyfillProbe = false;
   // L3 行为契约对拍（可选，默认关）：把桌面基线那份 `lua_api_contract.lua` 经 bridge
   // 注进**这个已打完补丁的活体 Lua 状态**跑一遍，与 PC transcript 逐行对拍。
   // 判据是返回值形状，不是名字——名字两边都在（L2 清单 54 个覆盖点，
@@ -177,6 +182,7 @@ if (argv[i] === '--no-frames') noFrames = true;
     else if (argv[i] === '--subpackage-delay-frames' && argv[i + 1]) subpackageDelayFrames = Math.max(0, Number(argv[++i]) || 0);
     else if (argv[i] === '--expect-pack-failure') expectPackFailure = true;
     else if (argv[i] === '--no-wasm') noWasm = true;
+    else if (argv[i] === '--wasm-tag-polyfill-probe') wasmTagPolyfillProbe = true;
     else if (argv[i] === '--check-api-contract') checkApiContract = true;
     else if (argv[i] === '--probe-host-api' && argv[i + 1]) {
       for (const item of String(argv[++i]).split(',')) {
@@ -1085,6 +1091,14 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
   // 早期这里写的是 `globalThis.WXWebAssembly = globalThis.WebAssembly`，于是本机验证走的是
   // 字节 initSync——那条通道在小游戏上根本不存在，结果"本机全绿、工具里起不来"。
   // 现在只给 instantiate（**不**给 Module/Instance 构造器），路径按代码包根解析。
+  //
+  // 同一类的第二个缺口（2026-10-03 开发者工具实测）：宿主**不给标准 `WebAssembly` 全局**，
+  // 只有 `WXWebAssembly` 域名。而胶水的 `--target no-modules` 产物在**求值期**就写
+  //   const __wbindgen_jstag_polyfill = new WebAssembly.Tag({ parameters: ['externref'] });
+  // 那两条 tag 是 wasm 的导入（56 条导入 = 54 function + 2 tag），Node 有真全局所以本机不响，
+  // 工具里塌成 `[wasm=glue-missing/WXWebAssembly detail=WebAssembly is not defined]`。
+  // 所以这份假宿主也要**把标准全局摘掉**（下面 install 之后 delete），并按真机形态给出 Tag/Exception：
+  // 有就转、没有就别造——伪造的 tag 在 instantiate 时必被宿主拒，那才是诚实的模拟。
   function makeWxWebAssembly(packageRoot) {
     const real = globalThis.WebAssembly;
     return {
@@ -1100,7 +1114,10 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       },
       Memory: real.Memory,
       Table: real.Table,
-      Global: real.Global
+      Global: real.Global,
+      // 胶水的 tag 导入与 `wrapError` 要这两个；`real` 是摘掉标准全局**之前**抓下的 V8 实现。
+      Tag: real.Tag,
+      Exception: real.Exception
     };
   }
   // wasm-bridge 据此实例化 wasm 核心并导出 HostApi 构造器，适配层把实例挂到
@@ -1111,9 +1128,59 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
   // 要模拟"宿主真缺 wasm"，两个入口都必须清掉。
   if (!noWasm) {
     globalThis.WXWebAssembly = makeWxWebAssembly(root);
+    // 复刻开发者工具的域名形态：只留 WXWebAssembly。判据在最后的 `wasm=` 证据字段里
+    // （`facade=native=…+polyfilled=…` 只有标准全局确实缺席时才会出现）。
+    try { delete globalThis.WebAssembly; } catch (_) { }
+    if (typeof globalThis.WebAssembly !== 'undefined') {
+      fail('无法从 globalThis 摘掉标准 WebAssembly：harness 复刻不了开发者工具"只有 WXWebAssembly 域名"的形态，'
+        + '这条用例的判据会失去牙齿');
+    }
   } else {
     try { delete globalThis.WXWebAssembly; } catch (_) { }
     try { delete globalThis.WebAssembly; } catch (_) { }
+  }
+  // Tag polyfill 探针（`--wasm-tag-polyfill-probe`）：把 wasm-bridge.js:91 记的那个"关键
+  // 验证点"变成机检读数——宿主那条**路径式 instantiate** 收到 imports 里的 tag 值时，
+  // 是接受 JS 伪造对象、还是要求真实的 WebAssembly.Tag？
+  //   接受 ⇒ facade 转发就能救，不必剥 wasm 的 tag 导入段；
+  //   拒绝 ⇒ 只能让 wasm 根本不导入 tag（剥二进制 / 源头消除），bridge 侧的 PolyfillTag 无解。
+  // 用一份只导入单个 tag 的极小模块（下面这 56 字节，module './t.js' 的 '__t'）走真实宿主
+  // 通道。同时给一条**真 tag 的正对照**：真 tag 必须能过，否则说明探针本身接错了、读数会撒谎。
+  // 复刻要点：这里用的是 WXWebAssembly 域名（标准全局已被摘掉），与开发者工具同形。
+  // 真机判定：把同一个包在开发者工具里跑一次，读这两行就知道设备引擎落在哪一侧——
+  // 本机 V8 只是其中一个 spec 引擎，它的读数不等于微信引擎，但能证明"探针非空转"。
+  if (wasmTagPolyfillProbe && !noWasm) {
+    const TAG_PROBE_WASM = Buffer.from(
+      '0061736d0100000001090260016f006000017f020f01062e2f742e6a73035f5f7404000003020101070601026f6b00000a0601040041010b',
+      'hex');
+    // 与 wasm-bridge.js 的 PolyfillTag 同形：一个带 parameter() 的普通 JS 对象，
+    // 但**不是** WebAssembly.Tag 的实例——正是要问宿主认不认它。
+    function ProbePolyfillTag(descriptor) { this._params = (descriptor && descriptor.parameters) || []; }
+    ProbePolyfillTag.prototype.parameter = function (i) { return this._params[i] || null; };
+    const probeRel = '__tag_probe.wasm';
+    const probeAbs = path.join(root, probeRel);
+    const tagProbeLine = async (importsFor) => {
+      try {
+        await globalThis.WXWebAssembly.instantiate(probeRel, importsFor);
+        return 'accepted';
+      } catch (error) {
+        return 'rejected[' + String((error && error.message) || error).replace(/\s+/g, ' ').trim().slice(0, 120) + ']';
+      }
+    };
+    try {
+      fs.writeFileSync(probeAbs, TAG_PROBE_WASM);
+      const realTagCtor = globalThis.WXWebAssembly.Tag;
+      const polyfillVerdict = await tagProbeLine({ './t.js': { __t: new ProbePolyfillTag({ parameters: ['externref'] }) } });
+      let realVerdict = 'unavailable';
+      if (typeof realTagCtor === 'function') {
+        realVerdict = await tagProbeLine({ './t.js': { __t: new realTagCtor({ parameters: ['externref'] }) } });
+      }
+      console.log(`polyfill_tag_probe=${polyfillVerdict} real_tag_probe=${realVerdict} (harness 复刻: 只给 WXWebAssembly 域名、路径式 instantiate)`);
+    } catch (probeError) {
+      console.log(`polyfill_tag_probe=probe-error[${String((probeError && probeError.message) || probeError).slice(0, 120)}]`);
+    } finally {
+      try { fs.unlinkSync(probeAbs); } catch (_) { }
+    }
   }
   if (debugOverlay) stats.storage.set('rustlua_debug_overlay', '1');
   // 看门狗超时走存储注入（适配层读 rustlua_boot_timeout_ms）：默认 10s，卡死用例压到 1s 左右，
@@ -2458,6 +2525,13 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       // WebAssembly 之后——那正是"本机全绿、开发者工具里起不来"的成因，所以把它钉死。
       failures.push(`wasm 实例化用的通道是 ${wasmDiag.channel}（期望 path-instantiate）：`
         + '宿主只提供 instantiate(代码包路径, imports)，字节通道在真机上不存在');
+    } else if (wasmDiag.facade === 'host-standard' || !wasmDiag.facade) {
+      // 域名判据（与上面通道判据同一类）：harness 已把标准 `WebAssembly` 全局摘掉，所以胶水
+      // 求值期读的必须是 wasm-bridge 转发出来的 facade。这里看到 `host-standard`（或缺失）
+      // 只可能是"标准全局其实还在"——那条路径在开发者工具里必崩（实测 2026-10-03 的
+      // `glue-missing / WebAssembly is not defined`），本机绿也就成了假绿。
+      failures.push('wasm 的 WebAssembly 域名来自宿主标准全局（facade=' + (wasmDiag.facade || 'none')
+        + '），但 harness 已把它摘掉以复刻开发者工具形态：说明 facade 转发这条路径没被真的走到');
     }
 
     console.error = originalError;
@@ -2484,7 +2558,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         ` entry=${packEntryError ? 'FAIL' : 'ok'}` +
         ` loading_bar=${drawnTexts.some((text) => text.includes('正在下载资源')) ? 'ok' : 'none'}`
       : ` subpackage=none subpackage_loads=${stats.subpackageLoads}`;
-    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} stick_key=w key_bridge=ArrowUp exemption_probe=${exemptionProbe} ${contractEvidence || 'api_contract=not-requested'} wasm=${wasmDiag ? (wasmDiag.status + ':' + wasmDiag.hostApi + ':' + (wasmDiag.channel || 'none')) : 'no-diag'}${remoteEvidence}`);
+    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} stick_key=w key_bridge=ArrowUp exemption_probe=${exemptionProbe} ${contractEvidence || 'api_contract=not-requested'} wasm=${wasmDiag ? (wasmDiag.status + ':' + wasmDiag.hostApi + ':' + (wasmDiag.channel || 'none') + ':' + (wasmDiag.facade || 'none')) : 'no-diag'}${remoteEvidence}`);
     return 0;
   }).catch((error) => {
     console.error = originalError;

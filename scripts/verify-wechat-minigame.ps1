@@ -414,6 +414,30 @@ if (-not $SkipRuntime) {
     }
     Write-Host $noWasmOk -ForegroundColor DarkGray
 
+    # 1a3) Tag polyfill 探针（决定性守卫）：wasm-bridge.js 的 PolyfillTag 能不能顶替宿主缺失的
+    #      WebAssembly.Tag，把带 tag 导入的 wasm 实例化起来？这条决定"要不要剥 wasm 二进制"。
+    #      harness 用一份只导入单个 tag 的极小模块走宿主那条路径式 instantiate，同时给一条
+    #      **真 tag 正对照**（真 tag 必须过，否则说明探针接错、读数会撒谎——正是历史上"本机全绿、
+    #      工具里起不来"的来源：默认用例转发的是 V8 真 Tag，从没真正测过 polyfill 路径）。
+    #      本机读到的 `polyfill_tag_probe=rejected[...tag import requires a WebAssembly.Tag]` 证明
+    #      "只靠 JS polyfill 顶不住 tag 导入"，因此 strip-wasm-tags 的剥二进制必须留在链路里。
+    #      真机/开发者工具同一次读数即为设备裁决：若哪天变成 accepted，才能考虑退役剥二进制方案。
+    $tagProbeArgs = @("--frames", "30", "--wasm-tag-polyfill-probe")
+    if ($isThinPack) { $tagProbeArgs += @("--remote", "thin", "--remote-root", $assetPackDir) }
+    $tagProbeCase = Invoke-HarnessCase -ExtraArgs $tagProbeArgs -Label "wasm-tag-polyfill-probe"
+    if ($tagProbeCase.ExitCode -ne 0) { throw "tag polyfill 探针用例失败（--wasm-tag-polyfill-probe, exit $($tagProbeCase.ExitCode)）" }
+    $tagProbeLine = $tagProbeCase.Lines | Where-Object { $_ -match "polyfill_tag_probe=" } | Select-Object -First 1
+    if (-not $tagProbeLine) {
+        throw "tag polyfill 探针未输出 polyfill_tag_probe= 读数（探针没被真正驱动，这条守卫形同虚设）"
+    }
+    # 正对照必须是 accepted：否则探针的 instantiate 通道本身是坏的，rejected 读数的方向性就不可信。
+    if (-not ($tagProbeLine -match "real_tag_probe=accepted")) {
+        throw ("tag polyfill 探针的正对照没通过（real_tag_probe 不是 accepted）——探针接错，读数不可信：{0}" -f $tagProbeLine)
+    }
+    Write-Host $tagProbeLine -ForegroundColor DarkGray
+    # 汇总成紧凑 token 附到最终 package_ok 行：polyfill=rejected 是"必须剥二进制"的机检凭据。
+    $tagPolyfillVerdict = if ($tagProbeLine -match "polyfill_tag_probe=(\w+)") { $matches[1] } else { "unknown" }
+
     # 1b) 分包形态专项（新形态的核心承诺，四条各自钉住一件事）：
     #     · 形态自证：声明有且仅有 1 个 root=pack 的分包、入口 pack/game.js 可执行、
     #       首屏读取全部走主包 mainpack/（= 首屏不需要分包就绪）；
@@ -694,8 +718,8 @@ if (-not $SkipRuntime) {
     elseif ($isThinPack) { " thin_case=ok" }
     else { "" }
     $remoteField = if ($isSubpackagePack) { "remote_fallback=n/a(分包形态不带远端配置)" } else { "remote_fallback=ok" }
-    Write-Host ("wechat_minigame_package_ok files={0} runtime=ok path_styles={1} asset_pack={2} {3} negatives={4} host_globals=ok,locked render_selfcheck=ok play_path=ok,touch_stick=ok{5}" -f `
-        $required.Count, ($pathStyles -join ','), $formName, $remoteField, (($negativeCases + @("image-src-frozen", "image-src-prototype", "image-callback-bridge", "boot-stall", "host-document-frozen")) -join ','), $formEvidence) -ForegroundColor Green
+    Write-Host ("wechat_minigame_package_ok files={0} runtime=ok path_styles={1} asset_pack={2} {3} negatives={4} tag_polyfill_probe={6} host_globals=ok,locked render_selfcheck=ok play_path=ok,touch_stick=ok{5}" -f `
+        $required.Count, ($pathStyles -join ','), $formName, $remoteField, (($negativeCases + @("image-src-frozen", "image-src-prototype", "image-callback-bridge", "boot-stall", "host-document-frozen")) -join ','), $formEvidence, $tagPolyfillVerdict) -ForegroundColor Green
     if ($remoteOkLine) { Write-Host $remoteOkLine -ForegroundColor DarkGray }
 } else {
     Write-Host ("wechat_minigame_package_ok files={0} runtime=skipped" -f $required.Count) -ForegroundColor Yellow
