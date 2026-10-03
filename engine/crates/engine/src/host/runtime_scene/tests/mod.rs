@@ -16,6 +16,8 @@ use crate::core::{
     math3d::Vec3,
     quad::Quad,
     resource_kind::ResourceKind,
+    scheduler::{ScheduleStage, SchedulerError, System},
+    script::ScriptErrorPolicy,
     sprite::Sprite,
     transform::Transform3D,
     ui::{UiImage, UiText},

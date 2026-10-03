@@ -6,11 +6,15 @@
 //! `sprite_screen_rect` 被 UI 点击目标收集调用，故标 `pub(super)`。
 
 use crate::core::{
-    camera::{Camera2D, CameraSelection, OrthoTerms},
+    camera::{Camera2D, CameraSelection, OrthoTerms, Viewport},
     entity::EntityId,
     sprite::Sprite,
     transform::{Transform, Vec2},
 };
+
+// 阶段 3c 把 2D 相机的三条方法（同步/生效载荷/步进）接进本文件：类型定义仍在 mod.rs，
+// 固有 impl 块按模块分散即可。
+use super::RuntimeScene;
 
 /// 世界里声明的第一台**启用**的 2D 相机（`Camera projection=orthographic`），没有则 `None`。
 ///
@@ -126,4 +130,115 @@ pub(super) fn sprite_screen_rect(
         max[1] = max[1].max(screen.y);
     }
     Some((min, [max[0] - min[0], max[1] - min[1]]))
+}
+
+impl RuntimeScene {
+    /// 换图后同步 2D 相机：重新读新场景声明的 `Camera`，并把 **bounds 换成新地图的**。
+    ///
+    /// 为什么需要它：`process_scene_transition` 会**重建整个世界**（`ScriptState::world =
+    /// World::new()` 后重新实例化），于是切图时场景声明的相机是**新的一份** `Camera2D`；
+    /// 而宿主只在 `init`（启动场景）时读过一次 `declared_camera`。结果是"声明的相机只在
+    /// 启动场景生效"——每张玩法地图各声明一份 bounds 的工程（`examples/game_jhyt`）里，
+    /// 只有开工那张图受约束，之后所有地图的相机都退回"无 bounds"。
+    ///
+    /// 只取 `bounds`，**不取 center/zoom**：换图时相机姿态的权威是每帧的 `camera2d.*`
+    /// 请求，把它重置回新场景的作者中心会在换图那一帧闪一下（与"场景声明的相机是**初始**
+    /// 相机，不是第二份姿态真源"这条既有裁定一致）。新 bounds 在同一个固定步里就会被
+    /// `step_camera2d` 夹取，因此不会渲染出越界的一帧。
+    pub(super) fn sync_camera_from_scene(&mut self) {
+        // 拆分批 9：同步的是**当前生效**那台的 bounds（显式选中优先，否则声明的第一台）——
+        // 脚本显式选了另一台 2D 相机时，换图不该把它的 bounds 换成"第一台"的。
+        let Some(declared) = self.effective_camera_2d_payload() else {
+            return;
+        };
+        if self.camera.bounds != declared.bounds {
+            tracing::info!(
+                target: "render",
+                scene = ?self.script.scene_name(),
+                bounds = ?declared.bounds,
+                "[render] 2D camera bounds refreshed from the new scene"
+            );
+        }
+        self.camera.bounds = declared.bounds;
+    }
+
+    /// 拆分批 9：**本帧生效**的 2D 相机载荷（显式选中优先，否则排序序第一台启用的正交相机）。
+    ///
+    /// 与 `active_camera3d` 是同一条规则的两个投影分支：同一个 `CameraSelection`、同样的
+    /// `enabled` 回退与告警。区别只在"谁拥有运动"——2D 的 center/zoom 之后由
+    /// `Camera2dController`（跟随/死区/平滑/抖动/脚本请求）继续决定。
+    pub(super) fn effective_camera_2d_payload(&self) -> Option<Camera2D> {
+        let selection = CameraSelection {
+            active: self.script.active_camera().map(|id| id.index() as u64),
+        };
+        self.script.with_world(|world| {
+            selected_camera_2d_in(world, selection)
+                .map(|(_, payload)| payload)
+                // 没有选中 2D 相机（未选择 / 选中的是透视相机）时，换图同步的 bounds 取自
+                // 场景声明的第一台启用正交相机 —— 与 `init` 的初始种子同一口径。
+                .or_else(|| declared_camera_2d_in(world))
+        })
+    }
+
+    /// 每帧推进 2D 相机控制器：解析跟随目标的世界位置 → 控制器算 center → 复用瓦片图
+    /// 那套 `constrained_camera_center` 做 bounds 钳制（避免出现两套夹取规则）。
+    ///
+    /// 不跟随时控制器原样返回当前中心，因此 `camera2d.set` 的效果不会被覆盖。
+    pub(super) fn step_camera2d(&mut self, delta_seconds: f32) {
+        // 拆分批 9：`camera.set_active` 是**一条**选择链——它选中的正交相机就是 2D 相机的来源。
+        // 选中项**变化**时采用一次它的**载荷**（center/zoom/rotation/bounds）；同一台不再重复采用。
+        //
+        // 为什么"变化时才采用"而不是"每帧取生效载荷"：2D 的 center/zoom 之后归控制器（跟随/死区/
+        // 平滑/抖动/请求），每帧重读作者写的初始值会把控制器算出的取景逐帧抹平——`camera2d.follow`
+        // 与 `shake` 会静默失效。为什么"选中的是透视相机时不重置"：切换 3D 相机是常见操作，
+        // 它绝不该把 2D 取景弹回作者值（见 `selected_camera_2d_in` 的语义说明）。
+        let selection = CameraSelection {
+            active: self.script.active_camera().map(|id| id.index() as u64),
+        };
+        let source = self
+            .script
+            .with_world(|world| selected_camera_2d_in(world, selection));
+        match source {
+            Some((id, payload)) if Some(id) != self.adopted_camera_2d_source => {
+                self.adopted_camera_2d_source = Some(id);
+                tracing::info!(
+                    target: "render",
+                    center = ?payload.center,
+                    zoom = payload.zoom,
+                    "[render] 2D camera adopted from the entity selected by camera.set_active"
+                );
+                self.camera = payload;
+            }
+            Some(_) => {} // 同一台：不重复采用（否则每帧把控制器的取景抹平）
+            None => self.adopted_camera_2d_source = None, // 选择离开 2D 相机 ⇒ 之后再选中会重新采用
+        }
+        // WP5：请求消费、跟随、advance、bounds 钳制的**次序**现在固定在
+        // `Camera2dController::resolve_camera` 内部，宿主不再自己拼这套顺序，也不会出现
+        // "宿主与控制器各夹一次 bounds"的分叉。
+        let follow = self
+            .script
+            .camera2d_controller(|controller| controller.follow_target());
+        let desired = follow.and_then(|entity| {
+            self.script.with_world(|world| {
+                // WP2：跟随目标跟的是**世界**位置（父链下的子实体会跟着父一起动）。
+                crate::core::hierarchy::world_transform_2d(world, entity)
+                    .ok()
+                    .flatten()
+                    .map(|transform| transform.position)
+            })
+        });
+        let viewport = Viewport::new(
+            self.viewport_width.max(1) as f32,
+            self.viewport_height.max(1) as f32,
+        )
+        .unwrap_or_else(|_| Viewport::new(1.0, 1.0).expect("1x1 viewport is valid"));
+        let current = self.camera;
+        self.camera = self.script.camera2d_controller_mut(|controller| {
+            controller.resolve_camera(current, desired, viewport, delta_seconds)
+        });
+        // 回填真实状态：`camera2d.get` 必须读到宿主实际在用的值。
+        let (center, zoom) = (self.camera.center, self.camera.zoom);
+        self.script
+            .camera2d_controller_mut(|controller| controller.report(center, zoom));
+    }
 }
