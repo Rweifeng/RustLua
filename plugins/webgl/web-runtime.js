@@ -556,7 +556,7 @@
     }
   }
 
-  function drawUi(ctx, uiText, images, pending) {
+  function drawUi(ctx, uiText, images, pending, sceneUiEntities, suppressSceneText) {
     const ui = parseUiLines(uiText);
     LAST_UI_SUMMARY = ui.panels.map(item => (item.shape === 1 ? 'C:' : 'P:') + item.id)
       .concat(ui.images.map(item => 'I:' + item.id + ':' + item.texture), ui.bars.map(item => 'B:' + item.id), ui.texts.map(item => 'X:' + item.id))
@@ -589,6 +589,10 @@
       ctx.fillStyle = uiColor(bar.r, bar.g, bar.b, 1);
       ctx.fillRect(bar.x, bar.y, Math.max(0, bar.w * bar.ratio), bar.h);
     }
+    // 场景底图趟：原生在动态 panel/image/bar 之后画场景 UI 图（见 drawSceneUiEntity）。
+    for (const entity of sceneUiEntities || []) {
+      drawSceneUiEntity(ctx, entity, images, pending, suppressSceneText, 'image');
+    }
     for (const text of ui.texts) {
       const size = text.size > 0 ? text.size : 20;
       const scale = text.scale > 0 ? text.scale : 1;
@@ -596,6 +600,10 @@
       ctx.textBaseline = 'top';
       ctx.fillStyle = '#ffffff';
       ctx.fillText(text.text, text.x, text.y);
+    }
+    // 场景文字趟：原生的文字管线在场景图之上，故排在场景底图趟之后。
+    for (const entity of sceneUiEntities || []) {
+      drawSceneUiEntity(ctx, entity, images, pending, suppressSceneText, 'text');
     }
     return ui.panels.length + ui.images.length + ui.bars.length + ui.texts.length;
   }
@@ -610,11 +618,15 @@
 
   // 场景静态 UI 实体（UiLayout + Image/Text）。九宫格按目标矩形拉伸绘制：
   // 发布包的按钮/条框都是规则矩形，拉伸的视觉误差可接受。
-  function drawSceneUiEntity(ctx, entity, images, pending, suppressText) {
+  // `pass` 拆 'image' / 'text' 两趟：原生 push_scene_ui（mesh_ui.rs）先画场景图、
+  // 再画场景字，且**整趟排在动态 UI 的 panel/image/bar 之后**（文字管线更在其上）。
+  // 合成一趟会让场景底图垫在动态 UI 下面——标题菜单的按钮底图盖不住选中态 hover 图，
+  // hover 中心的浅色块就露成一条半透白条（PC 无此条，2026-10-05 实机对照）。
+  function drawSceneUiEntity(ctx, entity, images, pending, suppressText, pass) {
     const rect = entity.uiRect;
     if (!rect || rect.w <= 0 || rect.h <= 0) return false;
     let drew = false;
-    if (entity.image && entity.image.texture) {
+    if (pass === 'image' && entity.image && entity.image.texture) {
       const texture = ensureTexture(images, pending, entity.image.texture);
       if (texture) {
         ctx.globalAlpha = entity.image.color[3] === undefined ? 1 : entity.image.color[3];
@@ -630,7 +642,7 @@
     // 这张表不重建 ⇒ 切图后 HudTitle/HudHint 取不到矩形、被静默跳过。web 侧按同一口径处理，
     // 否则场景文字与 Lua HUD 的文字叠成两层（实机 2026-10-04：左上角"山庄 · 药田垂直切片"
     // 与"目标 …"重影）。
-    if (entity.text && entity.text.value && !suppressText && !p2SceneTextHidden.has(String(entity.name || ''))) {
+    if (pass === 'text' && entity.text && entity.text.value && !suppressText && !p2SceneTextHidden.has(String(entity.name || ''))) {
       ctx.font = entity.text.size + 'px ' + GAME_FONT;
       ctx.textBaseline = 'top';
       ctx.fillStyle = colorCss(entity.text.color);
@@ -928,10 +940,8 @@
       }
     }
 
-    // 屏幕空间 UI（菜单底图/按钮/标签）按 UiLayout 的屏幕矩形绘制，排在世界内容之后。
-    for (const entity of screenUiEntities) {
-      drawSceneUiEntity(ctx, entity, images, pending, sceneState.sceneTextSuppressed === true);
-    }
+    // 屏幕空间 UI（菜单底图/按钮/标签）不再在这里画：原生把它排在动态 UI 之后、
+    // 文字管线之下，交给 drawUi 的两趟（见 drawSceneUiEntity 的 pass 说明）。
 
     if (typeof window !== 'undefined' && window.__RUSTLUA_DEBUG) {
       ctx.fillStyle = '#d0d7e2';
@@ -946,7 +956,7 @@
     // 动态 UI（面板/按钮/文字）也必须在 contain 变换**内**绘制：它与场景共用 1280×720
     // 设计坐标系。若在 restore 之后画，微信窗口比例≠16:9 时动态 UI 按原始设计坐标铺在
     // 画布左上（未缩放居中），与场景错位分离（1785×832 实机截图）。
-    const uiCount = drawUi(ctx, uiText, images, pending);
+    const uiCount = drawUi(ctx, uiText, images, pending, screenUiEntities, sceneState.sceneTextSuppressed === true);
     ctx.restore();
     return uiCount;
   }
