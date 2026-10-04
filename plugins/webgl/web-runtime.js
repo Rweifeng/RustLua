@@ -130,13 +130,21 @@
       const height = size[1] > 0 ? size[1] : width;
       // 锚点 pivot（原生 Sprite 默认 0.5,0.5；静态建筑/物件写 `pivot=0,0` = 左下贴地、向上生长）。
       // 不解析 pivot 会按中心点画在坐标上，建筑整体偏移半个身位（且与翻转前的画法不一致）。
-      const pivot = String(p.pivot || '').split(',').map(Number);
+      // **缺字段时必须留空数组，不能对空串 split**：`Number('') === 0`，于是
+      // `String(undefined || '').split(',').map(Number)` 得到 `[0]`（不是 NaN），
+      // 主角这种不写 pivot 的 Sprite 会被当成 (0, 0.5) ⇒ 贴图整体右移半个身位，
+      // 与居中的 Collider 描边错开一半（实机 2026-10-04 截图）。
+      const pivot = p.pivot === undefined ? [] : String(p.pivot).split(',').map(Number);
       entity.sprite = {
         texture: p.texture || '',
         size: width,
         size_y: height,
         pivot_x: Number.isFinite(pivot[0]) ? pivot[0] : 0.5,
         pivot_y: Number.isFinite(pivot[1]) ? pivot[1] : 0.5,
+        // 排序层与层内次序：原生按 `SpriteSorting::effective_layer` = 层秩×1000 + order 分桶
+        // （rustlua-render/src/sprite.rs）。不解析就等于所有实体同层，只能按 id 画。
+        layer: String(p.sorting_layer || 'default'),
+        order: Number(p.order) || 0,
       };
     }
     if (entity.components.Collider) {
@@ -288,6 +296,23 @@
       if (state.keys[key]) state.up[key] = true;
       state.keys[key] = false;
     });
+    // 事件坐标 → 设计坐标（1280×720）。两级：
+    //   ① CSS 像素 → 画布像素：rect 是布局尺寸、canvas.width 是后备缓冲，浏览器里
+    //      两者必然不等（差 dpr 与窗口比例）。缺这一步等于把 CSS 像素当设计像素用，
+    //      实测 530×557 窗口里画布视觉中心算成 (265,279) 而不是 (640,360)，越靠右下
+    //      偏得越多——虚拟摇杆/按钮与"点哪块地"整条命中链一起错位。
+    //   ② 画布像素 → 设计坐标：与 drawScene 的 contain 变换互逆（(x - ox) / s）。
+    // 微信适配层的 getBoundingClientRect 桩直接返回 canvas 物理尺寸，①恒等于 1，
+    // 所以这一级对小游戏是安全的空操作。
+    const eventToDesign = event => {
+      const rect = canvas.getBoundingClientRect();
+      const px = (event.clientX - rect.left) * (rect.width > 0 ? canvas.width / rect.width : 1);
+      const py = (event.clientY - rect.top) * (rect.height > 0 ? canvas.height / rect.height : 1);
+      const fitS = Math.min(canvas.width / 1280, canvas.height / 720);
+      const fitOx = (canvas.width - 1280 * fitS) / 2;
+      const fitOy = (canvas.height - 720 * fitS) / 2;
+      return [(px - fitOx) / fitS, (py - fitOy) / fitS];
+    };
     canvas.addEventListener('mousedown', event => {
        const button = event.button === 2 ? 'right' : 'left';
        // 每次 mousedown 都记按下边沿（不只首按）：多指场景里第二根手指按按钮也必须产生
@@ -295,12 +320,7 @@
        // 按下位置单独记进 press_cursor：光标可能正跟手（摇杆），虚拟控件按按下位置命中测试。
        state.mouseJust[button] = true;
        state.mouse[button] = true;
-       const rect = canvas.getBoundingClientRect();
-       // 画布坐标 → 设计坐标：与 drawScene 的 contain 变换互逆（(x - ox) / s）。
-       const fitS = Math.min(canvas.width / 1280, canvas.height / 720);
-       const fitOx = (canvas.width - 1280 * fitS) / 2;
-       const fitOy = (canvas.height - 720 * fitS) / 2;
-       state.pressCursor = [(event.clientX - rect.left - fitOx) / fitS, (event.clientY - rect.top - fitOy) / fitS];
+       state.pressCursor = eventToDesign(event);
      });
      window.addEventListener('mouseup', event => {
        const button = event.button === 2 ? 'right' : 'left';
@@ -310,12 +330,7 @@
        state.mouse[button] = false;
      });
     canvas.addEventListener('mousemove', event => {
-      const rect = canvas.getBoundingClientRect();
-      // 画布坐标 → 设计坐标（与 drawScene 的 contain 变换互逆）。
-      const fitS = Math.min(canvas.width / 1280, canvas.height / 720);
-      const fitOx = (canvas.width - 1280 * fitS) / 2;
-      const fitOy = (canvas.height - 720 * fitS) / 2;
-      state.cursor = [(event.clientX - rect.left - fitOx) / fitS, (event.clientY - rect.top - fitOy) / fitS];
+      state.cursor = eventToDesign(event);
     });
     canvas.addEventListener('wheel', event => {
       state.scrollX += event.deltaX;
@@ -595,7 +610,7 @@
 
   // 场景静态 UI 实体（UiLayout + Image/Text）。九宫格按目标矩形拉伸绘制：
   // 发布包的按钮/条框都是规则矩形，拉伸的视觉误差可接受。
-  function drawSceneUiEntity(ctx, entity, images, pending) {
+  function drawSceneUiEntity(ctx, entity, images, pending, suppressText) {
     const rect = entity.uiRect;
     if (!rect || rect.w <= 0 || rect.h <= 0) return false;
     let drew = false;
@@ -608,7 +623,14 @@
         drew = true;
       }
     }
-    if (entity.text && entity.text.value && !p2SceneTextHidden.has(String(entity.name || ''))) {
+    // 场景自带的 Text 只在**启动场景**里画：原生的屏幕 UI 布局节点表 `ui_scene_nodes`
+    // 在 `RuntimeScene::init` 里按启动场景建一次（engine/src/host/runtime_scene/scene.rs:480
+    // 是唯一写入点，字段在 mod.rs:187，读取在 mesh_ui.rs:122），而 Lua 的 scene.load /
+    // map.goto 重建整个 ECS world 后只紧跟一个相机同步系统（schedule.rs:189 与 :206），
+    // 这张表不重建 ⇒ 切图后 HudTitle/HudHint 取不到矩形、被静默跳过。web 侧按同一口径处理，
+    // 否则场景文字与 Lua HUD 的文字叠成两层（实机 2026-10-04：左上角"山庄 · 药田垂直切片"
+    // 与"目标 …"重影）。
+    if (entity.text && entity.text.value && !suppressText && !p2SceneTextHidden.has(String(entity.name || ''))) {
       ctx.font = entity.text.size + 'px ' + GAME_FONT;
       ctx.textBaseline = 'top';
       ctx.fillStyle = colorCss(entity.text.color);
@@ -676,6 +698,107 @@
     } catch (e) { /* 兼容层缺失时保持空集 */ }
   }
 
+  // 层名 → 秩，与原生 `sorting_layer_rank`（rustlua-render/src/sprite.rs:105）逐项一致；
+  // 未知层名回退 default=0（原生同样回退）。
+  const SORT_LAYER_RANK = { background: -2, world: -1, default: 0, actor: 1, foreground: 2, ui: 3 };
+  function entitySortKey(entity) {
+    const sprite = entity.sprite;
+    let rank = 0;
+    if (sprite && sprite.layer) {
+      const mapped = SORT_LAYER_RANK[String(sprite.layer).trim().toLowerCase()];
+      if (mapped !== undefined) rank = mapped;
+    }
+    const order = sprite ? Math.max(-999, Math.min(999, sprite.order || 0)) : 0;
+    return rank * 1000 + order;
+  }
+
+  // 碰撞描边自检：把玩家看不见的那一层（实心格 + 实体 Collider）显形，用来直接对图判断
+  // "阻挡到底压不压在建筑上"。坐标复用 drawScene 传入的 toCanvas/camZoom，与实体绘制
+  // 同一口径 ⇒ 两边一旦错位，错位来自数据，不是这里的换算。
+  function drawColliderOverlay(ctx, sceneState, toCanvas, camZoom) {
+    let cells = 0;
+    let bodies = 0;
+    ctx.save();
+    ctx.lineWidth = 1;
+    for (const entity of sceneState.entities.values()) {
+      const map = entity.alive ? entity.tilemap : null;
+      if (!map) continue;
+      const origin = entity.transform || { x: 0, y: 0 };
+      const ts = map.tile_size || 32;
+      const side = ts * camZoom;
+      ctx.fillStyle = 'rgba(239,68,68,0.30)';
+      ctx.strokeStyle = 'rgba(248,113,113,0.85)';
+      for (let y = 0; y < map.height; y += 1) {
+        for (let x = 0; x < map.width; x += 1) {
+          if (map.solid[y * map.width + x] !== '1') continue;
+          // 与瓦片绘制同一个锚点约定：单元格上沿 = 世界 (y+1)*ts（画布 y 向下）。
+          const cell = toCanvas(origin.x + x * ts, origin.y + (y + 1) * ts);
+          ctx.fillRect(cell.x, cell.y, side, side);
+          ctx.strokeRect(cell.x, cell.y, side, side);
+          cells += 1;
+        }
+      }
+      // 地图矩形外圈：Lua 侧 `__rustlua_cell_solid` 把越界也当实心，所以图外那圈空气墙
+      // 必须画出来，否则表现为"边界凭空挡人"。
+      const left = toCanvas(origin.x, origin.y + map.height * ts);
+      const right = toCanvas(origin.x + map.width * ts, origin.y);
+      ctx.strokeStyle = 'rgba(250,204,21,0.9)';
+      ctx.strokeRect(left.x, left.y, right.x - left.x, right.y - left.y);
+    }
+
+    ctx.font = '11px sans-serif';
+    for (const entity of sceneState.entities.values()) {
+      const sprite = entity.alive && !entity.uiRect ? entity.sprite : null;
+      if (!sprite) continue;
+      const pos = entity.transform || { x: 0, y: 0 };
+      const sizeY = sprite.size_y ? sprite.size_y : sprite.size;
+      const pivotX = sprite.pivot_x !== undefined ? sprite.pivot_x : 0.5;
+      const pivotY = sprite.pivot_y !== undefined ? sprite.pivot_y : 0.5;
+      const p = toCanvas(pos.x, pos.y);
+      ctx.strokeStyle = 'rgba(74,222,128,0.8)';
+      ctx.strokeRect(p.x - pivotX * sprite.size * camZoom,
+        p.y - (1 - pivotY) * sizeY * camZoom,
+        sprite.size * camZoom, sizeY * camZoom);
+    }
+
+    for (const entity of sceneState.entities.values()) {
+      const col = entity.alive ? entity.collider : null;
+      if (!col) continue;
+      bodies += 1;
+      const pos = entity.transform || { x: 0, y: 0 };
+      const c = toCanvas(pos.x + (col.ox || 0), pos.y + (col.oy || 0));
+      const hx = (col.hx || 0) * camZoom;
+      const hy = (col.hy || 0) * camZoom;
+      const sensor = col.sensor === true;
+      ctx.strokeStyle = sensor ? 'rgba(168,85,247,0.95)' : 'rgba(34,211,238,0.95)';
+      ctx.fillStyle = sensor ? 'rgba(168,85,247,0.18)' : 'rgba(34,211,238,0.18)';
+      // 方框 = web 真正会挡的形状（`__rustlua_blocked_at` 只用 hx/hy 做 AABB），
+      // 圆 = 原生侧 ball 的形状；两者只在四角差出半格，分开画才看得出差别。
+      ctx.fillRect(c.x - hx, c.y - hy, hx * 2, hy * 2);
+      ctx.strokeRect(c.x - hx, c.y - hy, hx * 2, hy * 2);
+      if (col.shape === 'ball') {
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, hx, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.fillStyle = 'rgba(34,211,238,0.95)';
+      ctx.fillText(String(entity.name || ('#' + entity.id)), c.x + hx + 3, c.y - hy - 3);
+    }
+
+    // 图例贴在**左上引导文字的下一行**、与它们同一左边缘（x=16、textBaseline=top）：
+    // 目标行占 layout.ROW.goals_y=8（17px）、动作反馈行占 feedback_y=36（18px），
+    // 行距 28 → 图例取 64，是这两行之下第一条空行。原先画在顶部居中（y=12）与目标行
+    // 完全交错，两边都读不出整句。
+    ctx.fillStyle = '#d0d7e2';
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText('碰撞描边 实心格=' + cells + ' 阻挡体=' + bodies +
+      ' ｜ 红=实心格 黄=地图边界(图外也挡) 青=Collider(ball 另画原生圆) 紫=sensor 绿=Sprite 占位',
+      16, 64);
+    ctx.restore();
+  }
+
   function drawScene(ctx, sceneState, images, projectName, uiText, pending) {
     const canvas = ctx.canvas;
     // 等比适配（contain）：设计画布 1280×720 → 实际 canvas（窗口/屏幕物理像素）。
@@ -735,15 +858,19 @@
       }
     }
 
-    const ordered = Array.from(sceneState.entities.values()).sort((a, b) => a.id - b.id);
-    for (const entity of ordered) {
-      if (!entity.alive) continue;
-      // 场景静态 UI（菜单底图/按钮/标签）按 UiLayout 的屏幕矩形绘制。
-      if (entity.uiRect) {
-        drawSceneUiEntity(ctx, entity, images, pending);
-        continue;
-      }
-      if (entity.tilemap) continue;
+    // 两趟绘制：世界实体按原生的 (层秩, order) 排，屏幕空间 UI 单独一趟画在最后。
+    // 原先是"全部实体按 id 一趟"，于是门楼（world, order=5）被角色（actor）压在下面、
+    // 菜单底图（id 小）会被后画的世界贴图盖住——原生侧它们分属不同的 sorting layer。
+    const worldEntities = [];
+    const screenUiEntities = [];
+    for (const entity of sceneState.entities.values()) {
+      if (!entity.alive || entity.tilemap) continue;
+      if (entity.uiRect) screenUiEntities.push(entity);
+      else worldEntities.push(entity);
+    }
+    worldEntities.sort((a, b) => (entitySortKey(a) - entitySortKey(b)) || (a.id - b.id));
+    screenUiEntities.sort((a, b) => a.id - b.id);
+    for (const entity of worldEntities) {
       const pos = entity.transform || { x: 0, y: 0 };
       const size = entity.sprite ? entity.sprite.size : 24;
       // 非方形贴图（场景里 size 写成 `160x128`）：源帧仍按方格切，目标矩形按实际高画。
@@ -785,10 +912,20 @@
       }
     }
 
+    // 屏幕空间 UI（菜单底图/按钮/标签）按 UiLayout 的屏幕矩形绘制，排在世界内容之后。
+    for (const entity of screenUiEntities) {
+      drawSceneUiEntity(ctx, entity, images, pending, sceneState.sceneTextSuppressed === true);
+    }
+
     if (typeof window !== 'undefined' && window.__RUSTLUA_DEBUG) {
       ctx.fillStyle = '#d0d7e2';
       ctx.font = '14px sans-serif';
       ctx.fillText('Project: ' + projectName + ' | Scene: ' + sceneState.name + ' | Lua update running', 12, 704);
+    }
+    // 逐帧读全局，所以控制台里 `window.__RUSTLUA_DEBUG_COLLIDERS = true` 立刻生效、
+    // 不用刷新（微信侧没有 location，只能走这条）。
+    if (typeof window !== 'undefined' && window.__RUSTLUA_DEBUG_COLLIDERS) {
+      drawColliderOverlay(ctx, sceneState, toCanvas, camZoom);
     }
     // 动态 UI（面板/按钮/文字）也必须在 contain 变换**内**绘制：它与场景共用 1280×720
     // 设计坐标系。若在 restore 之后画，微信窗口比例≠16:9 时动态 UI 按原始设计坐标铺在
@@ -1781,33 +1918,72 @@ function ui.panel_get(id) return __rustlua_ui_panels[id] end
 function ui.image_get(id) return __rustlua_ui_images[id] end
 function ui.get(id) return __rustlua_ui_texts[id] end
 function ui.grid(...) return true end
+-- 宽度实测走 JS 的 measureText（注册见 __rustlua_text_js_measure），与原生同一支字体。
+-- 每帧几十次跨 wasm 回调不划算，按「字号|文本」缓存；HUD 文案每帧都变（时间/坐标），
+-- 所以封顶 512 条就整表丢弃——宁可重测也不无界涨。估算结果**不进缓存**：字体是异步
+-- 加载的，把「字体没就绪时量出的 0」钉住会让所有居中永久偏掉。
+__rustlua_text_measure_cache = {}
+__rustlua_text_measure_count = 0
 function ui.measure_text(text, size)
   local s = tostring(text or '')
+  local px = tonumber(size) or 16
+  local hit = __rustlua_text_measure_cache[px .. '|' .. s]
+  if hit then return { width = hit, height = px } end
+  local width = nil
+  if __rustlua_text_js_measure then
+    -- pcall 兜底：JS 回调要跨 wasm 边界，宿主缺 measureText 时宁可退回估算，也不能让
+    -- 这条所有 UI 文字居中/截断都经过的函数抛错。
+    local ok, measured = pcall(__rustlua_text_js_measure, s, px)
+    if ok then width = tonumber(measured) end
+  end
+  if width and width > 0 then
+    if __rustlua_text_measure_count > 512 then
+      __rustlua_text_measure_cache = {}
+      __rustlua_text_measure_count = 0
+    end
+    __rustlua_text_measure_cache[px .. '|' .. s] = width
+    __rustlua_text_measure_count = __rustlua_text_measure_count + 1
+    return { width = width, height = px }
+  end
   local count = 0
   for _ in s:gmatch('[^\\128-\\191]') do count = count + 1 end
-  local px = tonumber(size) or 16
   return { width = count * px * 0.6, height = px }
+end
+-- 层序契约：**同类型内按 id 字典序**绘制，与原生引擎逐项一致。Rust 侧 UiState 的
+-- texts/bars/panels/images 四个 store 都是 BTreeMap<String, _>（script/mod.rs），
+-- push_ui_images 直接对 images.values() 顺序遍历（mesh_ui.rs），所以 PC/编辑器的
+-- 层序就是 id 升序。Lua 的 pairs 是哈希序，不排序时 web 每帧都可能换层（表现为
+-- 背包底图盖住图标、摇杆关闭盘随机消失）。两侧字符串同为 UTF-8 字节序，等价。
+local function sorted_ids(store)
+  local ids = {}
+  for id in pairs(store) do ids[#ids + 1] = id end
+  table.sort(ids)
+  return ids
 end
 function __rustlua_export_ui()
   local rows = {}
   local function num(v) return tostring(v or 0) end
   local function flat(v) return string.gsub(tostring(v or ''), '[\\t\\r\\n]', ' ') end
-  for id, p in pairs(__rustlua_ui_panels) do
+  for _, id in ipairs(sorted_ids(__rustlua_ui_panels)) do
+    local p = __rustlua_ui_panels[id]
     if p.visible then
       rows[#rows + 1] = 'P\\t' .. flat(id) .. '\\t' .. num(p.x) .. '\\t' .. num(p.y) .. '\\t' .. num(p.w) .. '\\t' .. num(p.h) .. '\\t' .. num(p.r) .. '\\t' .. num(p.g) .. '\\t' .. num(p.b) .. '\\t' .. num(p.a) .. '\\t' .. num(p.shape or 0)
     end
   end
-  for id, i in pairs(__rustlua_ui_images) do
+  for _, id in ipairs(sorted_ids(__rustlua_ui_images)) do
+    local i = __rustlua_ui_images[id]
     if i.visible then
       rows[#rows + 1] = 'I\\t' .. flat(id) .. '\\t' .. num(i.x) .. '\\t' .. num(i.y) .. '\\t' .. num(i.w) .. '\\t' .. num(i.h) .. '\\t' .. flat(i.texture) .. '\\t' .. num(i.r) .. '\\t' .. num(i.g) .. '\\t' .. num(i.b) .. '\\t' .. flat(i.slice or '')
     end
   end
-  for id, b in pairs(__rustlua_ui_bars) do
+  for _, id in ipairs(sorted_ids(__rustlua_ui_bars)) do
+    local b = __rustlua_ui_bars[id]
     if b.visible then
       rows[#rows + 1] = 'B\\t' .. flat(id) .. '\\t' .. num(b.x) .. '\\t' .. num(b.y) .. '\\t' .. num(b.w) .. '\\t' .. num(b.h) .. '\\t' .. num(b.ratio) .. '\\t' .. num(b.r) .. '\\t' .. num(b.g) .. '\\t' .. num(b.b)
     end
   end
-  for id, t in pairs(__rustlua_ui_texts) do
+  for _, id in ipairs(sorted_ids(__rustlua_ui_texts)) do
+    local t = __rustlua_ui_texts[id]
     if t.visible then
       rows[#rows + 1] = 'X\\t' .. flat(id) .. '\\t' .. num(t.x) .. '\\t' .. num(t.y) .. '\\t' .. num(t.size) .. '\\t' .. num(t.scale) .. '\\t' .. flat(t.text)
     end
@@ -1905,6 +2081,34 @@ function __rustlua_move_with_collision(id, dx, dy)
   __rustlua_transforms[id] = p
 end
 
+-- 穿透恢复（原生由 Rapier 负责，web 侧必须自己补上，否则缺这一半就不算"同一套手感"）。
+-- 为什么需要：击退/落点判定用的是**中心点所在格**（combat.lua 的 cell_blocked →
+-- tilemap.is_solid），而这里的移动积分用的是完整 AABB。于是"中心格空、但 24x24 的箱子
+-- 压进邻格"的落点会把实体嵌进实心格；嵌进去以后每个候选位置都判阻挡 ⇒ 一步也动不了
+-- （实机 2026-10-04：被怪物打一下，退进药田边的墙里卡死出不来）。
+-- 做法：八方向由近及远找第一个 AABB 不阻挡的位置，最多外推 64 世界单位（两个格）。
+-- 只在"当前确实嵌着"时才有搜索开销，出来即停。
+function __rustlua_unstick(id)
+  local p = __rustlua_transforms[id]
+  if not p then return false end
+  local x, y = p.x or 0, p.y or 0
+  if not __rustlua_blocked_at(id, x, y) then return false end
+  for step = 2, 64, 2 do
+    local tries = {
+      { x + step, y }, { x - step, y }, { x, y + step }, { x, y - step },
+      { x + step, y + step }, { x + step, y - step }, { x - step, y + step }, { x - step, y - step },
+    }
+    for _, t in ipairs(tries) do
+      if not __rustlua_blocked_at(id, t[1], t[2]) then
+        p.x, p.y = t[1], t[2]
+        __rustlua_transforms[id] = p
+        return true
+      end
+    end
+  end
+  return false
+end
+
 -- 每帧把 Lua 侧的场景状态交给渲染器（syncLuaScene 解析）。
 --   step=false 用于 on_create 之后的"只看不改"快照：不推进速度积分与动画帧，
 --   否则一次切换会白白多走一帧动画。
@@ -1916,6 +2120,10 @@ function __rustlua_export_state(step)
   __rustlua_ops = {}
   local advance = step ~= false
   if advance then
+    -- 穿透恢复排在位移**之前**：嵌在格里的实体先出来，这一帧的 WASD 才有效。
+    for id in pairs(__rustlua_colliders or {}) do
+      if __rustlua_alive[id] == true then __rustlua_unstick(id) end
+    end
     for id, v in pairs(__rustlua_velocity) do
       if __rustlua_alive[id] == true then
         __rustlua_move_with_collision(id, (v.x or 0) * time.delta(), (v.y or 0) * time.delta())
@@ -2417,6 +2625,26 @@ function doString(L, source, name) {
     bridge.lua_boot();
     const L = null;
     installLuaAudioBridge(knownAudio);
+    // `ui.measure_text` 用**真正绘制文字的那支字体、同一个 2D 上下文**量宽，与原生同源
+    // （api/ui.rs → render::text::measure_text 用项目字体度量）。原先 Lua 侧按
+    // 「0.6 × 字号 × 字数」估算，而全角中文实际占 1 em ⇒ 估出的是真宽的 60%，凡是
+    // 「用宽度反推左缘」的绘制都会偏：虚拟按钮标签（x = cx - half_width）实测右偏 7px
+    // （18px 两字，36 真宽 vs 21.6 估宽）。量不到时（回调未装/字体未就绪返回 0）
+    // Lua 侧仍退回估算，行为不比原来差。
+    bridge.lua_register_js_callback('__rustlua_text_js_measure', function (text, px) {
+      const size = Number(px);
+      if (!Number.isFinite(size) || size <= 0) return [0];
+      // 量不出来只能返回 0 让 Lua 退回估算，**不能抛**：ui.measure_text 被所有居中/截断
+      // 用着，一处宿主缺口会变成满屏文字错位。真机 2D 上下文不保证有 measureText
+      // （微信真机连 TextEncoder/WebAssembly 都缺过，工具绿不等于真机绿）。
+      try {
+        ctx.font = size + 'px ' + GAME_FONT;
+        const width = ctx.measureText(String(text == null ? '' : text)).width;
+        return [Number.isFinite(width) ? width : 0];
+      } catch (error) {
+        return [0];
+      }
+    });
     try {
       const hostGlobals = engineHostGlobals();
       const hostCompat = hostGlobals.map(name => `if ${name} == nil then ${name} = __rustlua_missing_host_global(${luaQuote(name)}) end`).join('\n');
@@ -2937,6 +3165,9 @@ end
     async function applySceneSwitch(name) {
       try {
         const next = parseScene(await fetchText('pack/scenes/' + name + '.scene'));
+        // 经 Lua 换进来的场景不再画场景自带的 Text（原生侧布局快照已失效），详见
+        // drawSceneUiEntity 的 suppressText 分支。
+        next.sceneTextSuppressed = true;
         const nextImages = await loadSceneImages(next);
         doString(L, sceneBindings(next), 'engine-host-scene');
         sceneState = next;
@@ -3386,7 +3617,11 @@ end
             body.setAttribute('data-rustlua-ui-summary', String(LAST_UI_SUMMARY).slice(0, 400));
           }
         }
-        if (status && result) status.textContent = result;
+        // update() 的返回值是开发者读数（无头验收读 data-* 属性，不读这里）。常驻写进
+        // DOM 等于在游戏画面上盖一条不随 contain 缩放的调试文字——浏览器发布包里它和
+        // HUD 叠在一起，微信侧却没有，就成了"UI 显示不一样"。只在显式开 __RUSTLUA_DEBUG
+        // 时才写。
+        if (status && result && typeof window !== 'undefined' && window.__RUSTLUA_DEBUG) status.textContent = result;
         markBoot('running', sceneState.name);
       } catch (error) {
         console.error(error);

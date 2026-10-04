@@ -14,6 +14,40 @@
   <canvas id="rustlua-canvas"></canvas>
   <div id="status">Loading __PUBLISH_NAME__...</div>
   <script>window.__RUSTLUA_FONT = '__FONT_PATH__';</script>
+  <script>
+    // 后备缓冲（canvas.width/height）必须跟随**布局尺寸 × dpr**。
+    // wasm 入口 start() 只把它钉成一次 1280×720，而 CSS 是 100vw×100vh：两者一旦不等，
+    // 浏览器就对画布做非等比拉伸（实测 530×557 窗口：横 0.414、纵 0.774，圆变椭圆、
+    // 文字发糊），并且 web-runtime 的 contain 适配退化成 fitS=1 的空操作（那条路径本来
+    // 就是为"画布 ≠ 设计比例"准备的）。微信小游戏侧由 wechat-adapter 设成物理像素，
+    // 这里补浏览器侧的同一件事。
+    window.__rustluaSyncCanvasSize = function () {
+      var canvas = document.getElementById('rustlua-canvas');
+      if (!canvas) return;
+      // 布局盒为 0（后台标签页 / 尚未布局 / 视口 0×0）时必须直接跳过：写 0 会被下面的
+      // Math.max(1,…) 兜成 1×1，整张画布就此塌掉（实测：浏览器面板切后台后画面全空）。
+      var cw = canvas.clientWidth, ch = canvas.clientHeight;
+      if (!(cw > 0) || !(ch > 0)) return;
+      var dpr = window.devicePixelRatio || 1;
+      var w = Math.max(1, Math.round(cw * dpr));
+      var h = Math.max(1, Math.round(ch * dpr));
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+    };
+    window.__rustluaSyncCanvasSize();
+    window.addEventListener('resize', window.__rustluaSyncCanvasSize);
+    // 调试开关（两者都可在控制台即时改，标志每帧读一次）：
+    //   ?rustlua-debug=1     左上加载行 + 底部 "Project/Scene/Lua update running"
+    //   ?rustlua-colliders=1 碰撞描边：实心格 / 地图边界 / Collider / Sprite 占位
+    (function () {
+      var params = new URLSearchParams(location.search);
+      var enabled = function (name) {
+        var value = params.get(name);
+        return value !== null && value !== '0' && value !== 'false';
+      };
+      window.__RUSTLUA_DEBUG = enabled('rustlua-debug');
+      window.__RUSTLUA_DEBUG_COLLIDERS = enabled('rustlua-colliders');
+    })();
+  </script>
   <script src="./web-runtime.js"></script>
   <script type="module">
     import init, { start, lua_boot, lua_do_string, lua_call_global, lua_register_js_callback, lua_missing_globals, lua_execute_main, lua_api_surface_json, host_api_module_names_json } from './pkg/game_web.js';
@@ -76,6 +110,8 @@
       try {
         await init();
         await start('rustlua-canvas', publishName);
+        // start() 里会把后备缓冲设成设计尺寸 1280×720，必须在它之后再接管尺寸。
+        window.__rustluaSyncCanvasSize();
         // WP10 迁移（fengari → mlua-wasm）：wasm Lua 桥挂到全局，web-runtime.js 的
         // Lua 交互（建运行时/注入补丁/调全局/注册 JS 回调/查缺失全局）全部经它完成。
         // fengari-web.js 已从发布包移除。
@@ -85,7 +121,10 @@
           lua_api_surface_json, host_api_module_names_json
         };
         await window.rustluaRunLuaGame(status);
-        status.textContent = publishName + ' - Lua running (mlua-wasm)';
+        // 启动成功后收起这行加载文案：留着就是盖在游戏画面左上的一条调试字。
+        // 失败分支不动（那时它是玩家唯一能看到的报错出口）。
+        if (window.__RUSTLUA_DEBUG) status.textContent = publishName + ' - Lua running (mlua-wasm)';
+        else status.hidden = true;
         markBoot('ok', publishName);
       } catch (error) {
         console.error(error);
