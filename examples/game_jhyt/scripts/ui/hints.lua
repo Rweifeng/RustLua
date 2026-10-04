@@ -1,10 +1,10 @@
--- hints.lua：键鼠 / 手柄两套操作说明与菜单导航手感（M20-09 → M22）。
+-- hints.lua：键鼠 / 手柄两套操作说明与菜单导航手感（M20-09 → M22 → 帮助页）。
 --
--- 为什么单独一个模块：顶部 HUD 提示在各模式下由 `ui.input` 画，但**面板底部提示**
--- 由各面板自己画（`world.dialogue`、`systems.shop`、`ui.inventory_ui`、`ui.quest_ui`、
--- `ui.pause_menu`）。这些面板不能 require `ui.input`（`input → dialogue` 会成环），
--- 因此把「设备判定 + 键位命名 + 提示组装 + 导航手感」放在这里：它只依赖引擎的
--- `input` API，不依赖任何面板，谁都能安全引用。
+-- 为什么单独一个模块：完整的操作说明现在收进**帮助页**（`ui.pause_menu`，`M.guide_rows`），
+-- 不再常驻在 HUD 上；而**面板底部提示**由各面板自己画（`world.dialogue`、`systems.shop`、
+-- `ui.inventory_ui`、`ui.quest_ui`、`ui.pause_menu`）。这些面板不能 require `ui.input`
+-- （`input → dialogue` 会成环），因此把「设备判定 + 键位命名 + 提示组装 + 导航手感」
+-- 放在这里：它只依赖引擎的 `input` API，不依赖任何面板，谁都能安全引用。
 --
 -- 两件事：
 --   * 设备判定：引擎在**真实按下边沿**时记录最近使用的设备
@@ -392,47 +392,33 @@ local HINT_GROUPS = {
   },
 }
 
--- 指定设备的单行操作说明；该设备没有任何绑定 → 空串（调用方回退）。
-function M.hint_for_device(device)
-  local groups = HINT_GROUPS[device]
+-- 指定设备的键位表（帮助页用）：`HINT_GROUPS` 的每一项 → 一行 `{ label, keys }`。
+-- 按键名从**当前绑定**推导（与底部面板提示同一套来源），所以玩家改键后帮助自动跟着变。
+-- 该设备一个绑定都没有 → 空表（调用方自行回落另一套设备）。
+function M.guide_rows(device)
+  local target = device or M.device()
+  local groups = HINT_GROUPS[target]
+  local rows = {}
   if not groups then
-    return ""
+    return rows
   end
-  local parts = {}
   for _, entry in ipairs(groups) do
-    local labels = {}
-    if entry.literal_gamepad and device == DEVICE_GAMEPAD then
-      labels[1] = entry.literal_gamepad
+    local keys
+    if entry.literal_gamepad and target == DEVICE_GAMEPAD then
+      keys = entry.literal_gamepad
     else
-      for _, action in ipairs(entry.actions or {}) do
-        local label = M.binding_label(action, device)
-        if label and not labels[label] then
-          labels[#labels + 1] = label
-        end
-      end
+      keys = M.binding_labels(entry.actions, target, entry.separator or " / ")
     end
-    if #labels > 0 then
-      parts[#parts + 1] = table.concat(labels, entry.separator or "") .. " " .. entry.label
+    if keys and keys ~= "" then
+      rows[#rows + 1] = { label = entry.label, keys = keys, device = target }
     end
   end
-  return table.concat(parts, " · ")
+  return rows
 end
 
--- 单行键位提示（当前设备优先；该设备无绑定则回退另一套；都为空给兜底文案）。
-function M.key_hints(device)
-  local target = device or M.device()
-  local other = DEVICE_KEYBOARD
-  if target == DEVICE_KEYBOARD then
-    other = DEVICE_GAMEPAD
-  end
-  local text = M.hint_for_device(target)
-  if text == "" then
-    text = M.hint_for_device(other)
-  end
-  if text == "" then
-    return "无可用按键绑定（可在项目设置 → 输入里改键）"
-  end
-  return text
+-- 设备名的中文写法（帮助页的段落标题用）。
+function M.device_label(device)
+  return (device or M.device()) == DEVICE_GAMEPAD and "手柄" or "键鼠"
 end
 
 -- 面板底部提示：**同一句文案按设备二选一**。

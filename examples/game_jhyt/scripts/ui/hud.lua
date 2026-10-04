@@ -1,9 +1,14 @@
 -- hud.lua：《江湖有田》HUD 与提示反馈（M19-02）。
 --
 -- 职责（验收项①：HUD 显示生命、体力、内力、时间、天气、金钱和快捷栏）：
---   * 右上状态面板：生命(气血)/体力/内力/时间(天·季·时:分)/天气/金钱/地图/快捷栏
---   * 左下提示区：state.last_action → 可读中文反馈 + 新手引导当前步骤
---   * 顶部键位提示
+--   * 右上状态面板（6 行）：① 生命(气血) ② 体力 + 内力 ③ 时间(天·季·时:分) + 天气
+--     ④ 金钱 ⑤ 武器 + 工具 ⑥ 种子 + 数量
+--     （地图名不再进面板：场景自带的 `HudTitle` 已在左上角显示同一份名字）
+--   * 左上角两行：七日目标行（贴顶）+ 动作反馈行（state.last_action → 可读中文）
+--   * 底部通栏一行：新手引导当前步骤（只在引导十步内出现；文案最长，只有通栏装得下）
+--
+-- 这里**不画操作说明**：常驻的键位通栏被撤下（画面下半部留给世界），完整键位表在
+-- 暂停菜单的「帮助」页（`ui.pause_menu`，数据源 `ui.hints.guide_rows`）。
 --
 -- 绘制统一走 `ui/ui_text.lua`（M30）：它在绘制的同时登记"文字 + 字号 + 可用宽度"，
 -- 于是"有没有溢出面板"变成可机器验收的不变量（`ui_text.audit()`）；本文件因此不再
@@ -32,28 +37,31 @@ local M = {}
 
 -- 状态面板几何（横屏：右侧信息栏顶部，与对话面板同栏、上下排布）。
 -- 竖屏曾改到**底部通栏**（竖屏宽度只有 720，右上角放不下"面板 + 资源条 + 反馈行"）；
--- 2026-09-27 转横屏：信息栏右置（880..1280），面板与对话/反馈行共用一栏。
+-- 2026-09-27 转横屏：信息栏右置（980..1280），面板与对话/反馈行共用一栏。
 local PANEL = layout.PANEL.hud_info
--- 状态面板行距/字号（M32 后的可读性重构：5 行 14px → 4 行 18px）。
--- 4 行 × 28px + 顶部 10px = 122px，正好装进 124px 高的面板；字号从 14 提到 18，
--- 覆盖"底部信息看不清"的诉求。行数/字号是 `jhyt_m19_ui`/`jhyt_m30_cjk_text`
--- 的验收面（`status_lines()` 恰好 4 条、`hud:keys` 字号 16），改动要同步那两处断言。
+-- 状态面板行距/字号：**6 行 × 28px + 顶部 10px = 178 ≤ 面板高 180**，字号 18。
+-- 拆到 6 行的目的是"每行都装得下原始文案"：18px 下六行里最长的一行实测 241.1px
+-- （`第999天 冬 12:00 · 天气 晴`），预算 262px（`PANEL_TEXT_W`）留 21px 余量。
+-- 行数/字号是 `jhyt_m19_ui`/`jhyt_m30_cjk_text` 的验收面（`status_lines()` 恰好 6 条、
+-- 逐条按 `PANEL_TEXT_W` 量原始文案），改动要同步那两处断言。
 local LINE_H = 28
 local LINE_FONT = 18
-local PANEL_LINES = 4
+local PANEL_LINES = 6
 -- 每行左侧的"分类色块"（引擎文字没有着色通道，用色块做视觉分组）：
--- ① 状态=绿 ② 时间/天气=金 ③ 金钱/地图=蓝 ④ 快捷栏=紫。
+-- ① 生命=绿 ② 体力/内力=青 ③ 时间/天气=金 ④ 金钱=蓝 ⑤ 武器=紫 ⑥ 种子=棕。
 local CHIP = { w = 6, h = 16, gap = 4 }
 local CHIP_COLORS = {
   { r = 0.36, g = 0.82, b = 0.45 },
+  { r = 0.42, g = 0.78, b = 0.72 },
   { r = 0.95, g = 0.76, b = 0.30 },
   { r = 0.38, g = 0.66, b = 0.96 },
   { r = 0.78, g = 0.56, b = 0.96 },
+  { r = 0.82, g = 0.62, b = 0.42 },
 }
 -- 面板顶部的金色细条（与色块同色系，让"底栏"有明确的收口）。
 local ACCENT = { h = 3, r = 0.93, g = 0.75, b = 0.35, a = 0.9 }
 -- docs/48 ui 换肤接线：状态行图标（行号 → skin key；无图标行为 nil）。
-local LINE_ICONS = { [1] = "hud_icon_hp", [3] = "hud_icon_coin" }
+local LINE_ICONS = { [1] = "hud_icon_hp", [2] = "hud_icon_stamina", [4] = "hud_icon_coin" }
 -- 状态图标注册表（8 张全列出；绘制按真实状态是否存在）。
 local STATUS_ICONS = {
   poison = "hud_status_poison",
@@ -86,7 +94,6 @@ local function active_status_keys()
 end
 -- 可用文字宽度：面板内左右各留 12，再扣除色块与间距（整行行宽为设计宽两侧各留 24）。
 local PANEL_TEXT_W = PANEL.w - 24 - CHIP.w - CHIP.gap - 4
-local ROW_TEXT_W = PANEL.w - 24  -- 横屏右栏行宽预算 = 面板宽 − 边距（竖屏曾用全宽 row_width）
 
 local WEATHER_TEXT = { sunny = "晴", rainy = "雨" }
 local SEASON_TEXT = { spring = "春", summer = "夏", autumn = "秋", winter = "冬" }
@@ -290,7 +297,8 @@ local function hp_text()
   return "生命(气血) " .. tostring(combat.player_hp()) .. "/" .. tostring(combat.player_max_hp())
 end
 
--- 快捷栏：当前武器 / 选中工具 / 选中种子 + 数量。
+-- 快捷栏拆成两行（武器+工具 / 种子+数量）：合起来最长可达 296px（四个 4 字物品名），
+-- 面板预算只有 262px；拆开后两行各自最坏 247 / 167，都留得住余量。
 local function hotbar_lines()
   local eq = equipment()
   local weapon = item_name(eq.weapon) or "空手"
@@ -301,9 +309,8 @@ local function hotbar_lines()
     seed_count = tonumber(inv.count(state.inventory, state.selected_seed)) or 0
   end
   return {
-    "快捷栏",
     "武器 " .. weapon .. " · 工具 " .. tool,
-    "种子 " .. seed .. " x" .. tostring(seed_count)
+    "种子 " .. seed .. " x" .. tostring(seed_count),
   }
 end
 
@@ -317,20 +324,23 @@ local BAR
 
 -- 状态面板逐行文案（headless 验收直接读这里，保证与绘制同源）。
 --
--- M32 竖版后改为 4 行（**信息一条不少**，只是把"快捷栏/武器/工具/种子"四行压缩成一行）：
---   ① 生命(气血) + 体力 + 内力      ② 时间 + 天气
---   ③ 金钱 + 地图                   ④ 快捷栏（武器 + 工具 + 种子）
--- 合并的是显示，不是数据：`ui_text.audit()` 仍逐行按真实字宽量 PANEL_TEXT_W 的预算。
+-- 6 行、每行最多两个字段（M33 的"零截断"改版：原先 4 行里两行实测超预算，
+-- 玩家看到的省略号就是这么来的）：
+--   ① 生命(气血)          ② 体力 + 内力        ③ 时间 + 天气
+--   ④ 金钱                ⑤ 武器 + 工具        ⑥ 种子 + 数量
+-- 地图名不在这里（场景自带的 `HudTitle` 已显示），"快捷栏"这一标签也不再出现——
+-- 它只是给下面两行起头，占了 43px 预算却不带任何数值。
+-- 每行的**原始**文案都要 ≤ `PANEL_TEXT_W`，由 `ui_text.audit()` 逐条量真实字宽。
 function M.status_lines()
   local hotbar = hotbar_lines()
-  local lines = {
-    hp_text() .. " · 体力 " .. tostring(state.energy) .. " · 内力 " .. tostring(state.inner_power),
-    "时间 " .. clock_text() .. " · 天气 " .. weather_text(),
-    "金钱 " .. tostring(state.money) .. " 文 · 地图 "
-      .. tostring((maps.get(map.current() or scene.reload()) or {}).display or "未知"),
-    "快捷栏 " .. tostring(hotbar[2] or "武器 - · 工具 -") .. " · " .. tostring(hotbar[3] or "种子 -"),
+  return {
+    hp_text(),
+    "体力 " .. tostring(state.energy) .. " · 内力 " .. tostring(state.inner_power),
+    clock_text() .. " · 天气 " .. weather_text(),
+    "金钱 " .. tostring(state.money) .. " 文",
+    tostring(hotbar[1] or "武器 空手 · 工具 无"),
+    tostring(hotbar[2] or "种子 无 x0"),
   }
-  return lines
 end
 
 -- 单行 HUD 文案（update() 返回值 / headless 断言用）。建造模式下追加
@@ -338,7 +348,7 @@ end
 -- `input.update():match('building')` 依赖这里的 `building` 字面量）。
 function M.text()
   local lines = M.status_lines()
-  -- M32：状态行合并成 4 行后，单行摘要直接由这 4 行拼（不再按下标取第 5..9 行）。
+  -- 单行摘要由这 6 行拼接（`input.update()` 的返回值、headless 断言读的是它）。
   local text = table.concat(lines, " · ")
   local building = require("systems.building")
   if building.build_mode() then
@@ -450,7 +460,6 @@ end
 
 local function clear_dynamic()
   ui_text.hide_all("hud", {
-    "hud:keys",
     "hud:feedback",
     "hud:tutorial",
     "hud:goals"
@@ -460,19 +469,13 @@ local function clear_dynamic()
   end
 end
 
--- 键位提示兜底：调用方（input.lua）传入**当前设备**的那一套说明
--- （`input.key_hints()`，M20-09：键鼠/手柄二选一）；缺省时用键鼠静态文案。
-local DEFAULT_KEYS =
-    "WASD 移动 · E 交互 · J 攻击 · K 武学 · G 送礼 · T 睡觉 · Q 修炼 · B 建造 · I 背包 · L 任务 · P 暂停"
-
--- 每帧重绘：状态面板 + 资源条 + 键位提示 + 提示区。`key_hints` 为空时用静态兜底。
+-- 每帧重绘：状态面板 + 资源条 + 提示区。
 --
--- M32 竖版的两条位置规则（都有机器检查，不靠自觉）：
---   * 状态面板在底部通栏（1020..1144），对话面板在它**正上方**（800..1000）——
---     `layout.CONTEXT.gameplay` 把两者放在同一同屏组里，`layout.audit()` 断言不重叠，
---     因此说话时状态照样可见（竖屏底部一块通栏放得下"对话框 + 状态行"，不必二选一）。
---   * 键位提示固定在最底一行（y=1246），它在状态面板之下，与任何面板都不冲突；
---     横屏时它在 y=8、与 scene 的 HudTitle（y 20..44）叠字，竖版顺手修掉了。
+-- 两条位置规则（都有机器检查，不靠自觉）：
+--   * 状态面板在右侧信息栏顶部，对话面板在它下方 —— `layout.CONTEXT.gameplay` 把两者
+--     放进同一同屏组，`layout.audit()` 断言不重叠，因此说话时状态照样可见。
+--   * 屏上不常驻操作说明（见文件头）：原本的世界底部键位通栏已收进暂停菜单的「帮助」页，
+--     底部一行让回给世界与触屏按钮簇。
 -- docs/48 ui 换肤接线：建造预览图标（ghost_ok 可放置 / ghost_bad 冲突）。
 -- building.preview 是逻辑 footprint（headless 验收用），这里的图标是它的可视反馈，
 -- 画在资源条右侧（状态图标竖排的第三行位）。
@@ -519,7 +522,7 @@ local function draw_skill_bar()
   end
 end
 
-function M.draw(key_hints)
+function M.draw()
   local x, y, w, h = PANEL.x, PANEL.y, PANEL.w, PANEL.h
   local in_dialogue = state.is_mode("Dialogue")
   -- HUD 每帧重绘：同时重开自己那一轮文字登记（M30）。登记表即"本帧画面上有哪些文字、
@@ -569,25 +572,6 @@ function M.draw(key_hints)
     end
   end
 
-  local hint = key_hints
-  if type(hint) ~= "string" or hint == "" then
-    hint = DEFAULT_KEYS
-  end
-  -- 键位提示在世界底部通栏一行（右栏 280px 放不下 11 个键位项——收窄后
-  -- 断行会把「J 攻击」这类标签拆成两行，jhyt_m20_gamepad 的键鼠说明断言会拦）。
-  -- 通栏宽 = 设计宽 − 两侧边距，11 项整行放得下；y 取 ROW.bottom_y − 24，行高 16
-  -- 落在 666..682；七日目标/动作反馈在左上角（8/36），与它互不重叠。
-  ui_text.draw_wrapped(
-    "hud",
-    "hud:keys",
-    layout.ROW.top_x,
-    layout.ROW.bottom_y - 24,
-    16.0,
-    layout.row_width(),
-    1,
-    hint
-  )
-
   if in_dialogue then
     ui_text.hide("hud", "hud:feedback")
     ui_text.hide("hud", "hud:tutorial")
@@ -595,21 +579,22 @@ function M.draw(key_hints)
   else
     local feedback = M.feedback_line()
     if feedback ~= "" then
-      ui_text.draw("hud", "hud:feedback", layout.ROW.top_x, layout.ROW.feedback_y, 18.0, layout.row_width(), feedback)
+      ui_text.draw("hud", "hud:feedback", layout.ROW.top_x, layout.ROW.feedback_y, 18.0, layout.top_row_width(), feedback)
     else
       ui_text.hide("hud", "hud:feedback")
     end
     -- 七日目标（M27）：放在反馈行上方，不占引导行（两者可同时可见）。字号 15→17。
     local goals = M.goals_line()
     if goals ~= "" then
-      ui_text.draw("hud", "hud:goals", layout.ROW.top_x, layout.ROW.goals_y, 17.0, layout.row_width(), goals)
+      ui_text.draw("hud", "hud:goals", layout.ROW.top_x, layout.ROW.goals_y, 17.0, layout.top_row_width(), goals)
     else
       ui_text.hide("hud", "hud:goals")
     end
-    -- 新手引导行：放在资源条**下方**（右栏：面板 8..132、资源条 138..192、引导行 198）。
+    -- 新手引导行走**底部通栏**（`ROW.tutorial_y`），不放右栏：右栏预算 276px 而
+    -- 最长一条引导实测 648px，画出来只剩半句指令（省略号把"按 E 装备"裁掉了）。
     local prompt = tutorial.prompt()
     if prompt then
-      ui_text.draw("hud", "hud:tutorial", PANEL.x, BAR.y0 + BAR.row * 3 + 6, 16.0, ROW_TEXT_W, prompt)
+      ui_text.draw("hud", "hud:tutorial", layout.ROW.top_x, layout.ROW.tutorial_y, 16.0, layout.top_row_width(), prompt)
     else
       ui_text.hide("hud", "hud:tutorial")
     end

@@ -156,14 +156,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     banner("M19-02b HUD：生命/体力/内力/时间/天气/金钱/快捷栏字段");
+    // 验收项①的口径是"这些数据在 HUD 上看得见"，不是"字段名逐个印成标签"：
+    // M33 把面板拆成 6 行后，时间行写作 `第1天 春 00:00`（不再打"时间"二字），
+    // 地图名改由场景自带的 `HudTitle` 显示，"快捷栏"这个纯标签也不再生占预算——
+    // 因此这里改成"标签词表 + 时刻格式"两路检查，数据一条不少。
     assert_str(
         &mut runtime,
         "(function() local t = require('ui.hud').text(); \
-          for _, w in ipairs({ '生命', '体力', '内力', '时间', '天气', '金钱', '快捷栏', '武器', '种子', '地图' }) do \
-            if not t:find(w, 1, true) then return 'missing:' .. w end end return 'ok' end)()",
+          for _, w in ipairs({ '生命', '体力', '内力', '天气', '金钱', '武器', '工具', '种子' }) do \
+            if not t:find(w, 1, true) then return 'missing:' .. w end end \
+          if not t:find('第%d+天') then return 'missing:day' end \
+          if not t:find('%d+:%d%d') then return 'missing:clock' end \
+          return 'ok' end)()",
         "ok",
     )?;
-    assert_num(&mut runtime, "#(require('ui.hud').status_lines())", 4.0)?;
+    assert_num(&mut runtime, "#(require('ui.hud').status_lines())", 6.0)?;
     let hud_line = query_str(&mut runtime, "require('ui.hud').text()")?;
     println!("hud.text() = {hud_line}");
     // update() 返回值仍携带 HUD 文案（既有 headless 断言的兼容面）。
@@ -351,12 +358,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_mode(&mut runtime, "Pause")?;
     // M21 主角形象：暂停菜单新增「形象」行（原 5 行 → 6 行），
     // 标签带当前形象的中文名，按确认在该行轮换形象。
-    assert_num(&mut runtime, "#(require('ui.pause_menu').rows())", 6.0)?;
+    // M33：再加「帮助」行（原 6 行 → 7 行）——常驻 HUD 的键位通栏撤下后，
+    // 完整操作说明住在这页里（`jhyt_m30_cjk_text` 断言它真的画出来了）。
+    assert_num(&mut runtime, "#(require('ui.pause_menu').rows())", 7.0)?;
     assert_str(
         &mut runtime,
         "(function() for _, r in ipairs(require('ui.pause_menu').rows()) do \
            if r.key == 'appearance' then return r.label end end; return 'missing' end)()",
         "形象  青衫少侠",
+    )?;
+    assert_str(
+        &mut runtime,
+        "(function() for _, r in ipairs(require('ui.pause_menu').rows()) do \
+           if r.key == 'help' then return r.label end end; return 'missing' end)()",
+        "帮助",
     )?;
     assert_str(
         &mut runtime,

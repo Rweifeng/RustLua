@@ -130,9 +130,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(poller.backend_name(), "scripted");
 
     banner("M20-09 UI 操作说明两套：键鼠显示键位说明、手柄显示手柄说明（按最近使用的设备切换）");
-    // 顶部提示（HUD `hud:keys`）与 `input.key_hints()` 同源，直接断言渲染出的文案。
-    let hint_reader =
-        "(function() local t = ui.get('hud:keys'); return t and tostring(t.text) or 'nil' end)()";
+    // M33 起操作说明不再常驻 HUD（`hud:keys` 通栏已撤下），家在这两处：
+    //   * 数据 = 暂停菜单「帮助」页的行表 `pause_menu.help_rows()`（标签/值两列，
+    //     值取自当前绑定，与页面绘制同一来源）；
+    //   * "确实画到屏幕上"由 `jhyt_m30_cjk_text` 读 `pse:h:row1` 钉住。
+    // 这里把两列拼回断言用的字符串（`值 标签`），口径与原通栏一致。
+    let hint_reader = "(function() local out = {}; \
+        for _, row in ipairs(require('ui.pause_menu').help_rows()) do \
+          if row.kind == 'key' then \
+            out[#out + 1] = tostring(row.value) .. ' ' .. tostring(row.label) \
+          end \
+        end; \
+        return table.concat(out, ' | ') end)()";
     // ① 键鼠一套：WASD / E / J…（从当前绑定推导）。
     assert_str_why(
         &mut runtime,

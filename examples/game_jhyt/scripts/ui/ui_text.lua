@@ -76,10 +76,13 @@ function M.reset(owner)
 end
 
 --- 单行文字：按真实字宽裁剪到 `budget` 内再绘制（返回实际画出的文字）。
+--- 同时登记**原始**文案（`raw`）：`audit()` 靠 `raw != text` 认出"画面上是省略号"。
+--- 只登记裁剪后的那一份时，超宽文案永远量得过预算——门就是这么漏牙的（M33）。
 function M.draw(owner, id, x, y, size, budget, text)
-  local fitted = text_fit.fit(text, size, budget)
+  local raw = tostring(text or "")
+  local fitted = text_fit.fit(raw, size, budget)
   ui.text_at(id, x, y, fitted, 1.0, size)
-  records[owner][id] = { text = fitted, size = size, budget = budget, x = x, y = y }
+  records[owner][id] = { text = fitted, raw = raw, size = size, budget = budget, x = x, y = y }
   return fitted
 end
 
@@ -101,18 +104,25 @@ function M.draw_exact(owner, id, x, y, size, budget, text)
   return value
 end
 
---- 逐条量宽：返回 `{ checked, bad = {...}, worst }`。验收与运行期自检共用同一实现。
+--- 逐条量宽：返回 `{ checked, bad = {...}, clipped = {...}, worst }`。验收与运行期自检共用同一实现。
 --- 判定：① 字体缺字 ② 字号 < 11px（`docs/42` §1 的可读性下限，随验收一起检查）
 --- ③ 实际宽度 > 登记的可用宽度（多行文字逐行量）。
+--- ④ `clipped`：**登记时就被裁过**的条目（原始文案宽于预算，画面上是省略号）。
+---    它不并进 `bad`，因为"内容长度不可控"的详情类文案（物品描述、对话正文）本来就
+---    靠裁剪收在框里；门要守的是**定长文案不许裁**（HUD 行、面板行），那由验收点名断言。
 function M.audit()
   local checked = 0
   local bad = {}
+  local clipped = {}
   local worst = 0
   for owner, owned in pairs(records) do
     for id, rec in pairs(owned) do
       checked = checked + 1
       if rec.size < 11 then
         bad[#bad + 1] = owner .. "/" .. id .. ":font=" .. tostring(rec.size)
+      end
+      if rec.raw ~= nil and rec.raw ~= rec.text then
+        clipped[#clipped + 1] = string.format("%s/%s:%s", owner, id, rec.raw)
       end
       for line in tostring(rec.text):gmatch("[^\n]+") do
         local measured = ui.measure_text(line, rec.size)
@@ -138,7 +148,8 @@ function M.audit()
     end
   end
   table.sort(bad)
-  return { checked = checked, bad = bad, worst = worst }
+  table.sort(clipped)
+  return { checked = checked, bad = bad, clipped = clipped, worst = worst }
 end
 
 return M

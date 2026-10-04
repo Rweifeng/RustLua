@@ -195,7 +195,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_mode(&mut runtime, "Pause")?;
     // M19-02 回归：主菜单行数（设置页是子页，不改变主菜单行数）。
     // M21 主角形象：主菜单新增「形象」行 → 5 项变 6 项，音量行索引 3 → 4。
-    assert_num(&mut runtime, "#(require('ui.pause_menu').rows())", 6.0)?;
+    // M33：再加「帮助」行（6 → 7）——帮助排在音量**之后**，所以这里的 select(4) 索引不动。
+    assert_num(&mut runtime, "#(require('ui.pause_menu').rows())", 7.0)?;
     lua(&mut runtime, "require('ui.pause_menu').select(4)")?;
     assert_str(&mut runtime, "require('ui.pause_menu').item()", "volume")?;
     press(&mut runtime, KeyCode::Space)?;
@@ -314,8 +315,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "false",
     )?;
     assert_mode(&mut runtime, "Pause")?;
-    // M21：主菜单 6 行（新增「形象」行）。
-    assert_num(&mut runtime, "#(require('ui.pause_menu').rows())", 6.0)?;
+    // M21：主菜单 7 行（新增「形象」行 + M33 的「帮助」行）。
+    assert_num(&mut runtime, "#(require('ui.pause_menu').rows())", 7.0)?;
     lua(&mut runtime, "require('ui.pause_menu').select(0)")?;
     press(&mut runtime, KeyCode::Space)?;
     assert_mode(&mut runtime, "Playing")?;

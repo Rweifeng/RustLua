@@ -106,12 +106,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "false",
     )?;
     // `ui.text_get`：绘制后能读回文字与字号（验收读回口径）。
-    assert_num(&mut rt, "ui.text_get('hud:keys').size", 16.0)?;
+    // 读的是暂停菜单「帮助」页的小标题行（`pse:h:row1` = `操作 · 键鼠` / `操作 · 手柄`）：
+    // 操作说明已从 HUD 底部通栏撤下（M33），HUD 上不再有键位文字，帮助页是它的新家。
+    lua(
+        &mut rt,
+        "local pm = require('ui.pause_menu'); pm.open(); pm.open_help()",
+    )?;
     assert_str(
         &mut rt,
-        "tostring(ui.text_get('hud:keys').text:find('移动', 1, true) ~= nil)",
+        "tostring(require('ui.pause_menu').help_active())",
         "true",
     )?;
+    assert_num(&mut rt, "ui.text_get('pse:h:row1').size", 18.0)?;
+    assert_str(
+        &mut rt,
+        "tostring(ui.text_get('pse:h:row1').text:find('操作', 1, true) ~= nil)",
+        "true",
+    )?;
+    // 帮助页画完，紧接着 HUD 的引导行也必须能整行读回（曾经被右栏 276px 裁掉半句）。
+    assert_str(
+        &mut rt,
+        "tostring(ui.text_get('hud:tutorial').text:find('按 E', 1, true) ~= nil)",
+        "true",
+    )?;
+    // 换页必须收掉上一页的元素：动态文本跨帧持久，只画新页会让主菜单的标题与
+    // 七行菜单叠在帮助页同一块面板上（实机表现为两页文字重影，且没有任何报错）。
+    assert_str(
+        &mut rt,
+        "tostring(ui.text_get('pse:title').visible == false)",
+        "true",
+    )?;
+    assert_str(
+        &mut rt,
+        "tostring(ui.text_get('pse:row1').visible == false)",
+        "true",
+    )?;
+    // 返回主菜单后反向同理：帮助页整页收掉、主菜单重新画出来。
+    lua(
+        &mut rt,
+        "local pm = require('ui.pause_menu'); pm.help_close()",
+    )?;
+    assert_str(
+        &mut rt,
+        "tostring(ui.text_get('pse:h:row1').visible == false)",
+        "true",
+    )?;
+    assert_str(&mut rt, "tostring(ui.text_get('pse:row1').visible)", "true")?;
+    lua(&mut rt, "local pm = require('ui.pause_menu'); pm.close()")?;
 
     // ---------------- ② 语料与首包字符覆盖 ----------------
     banner("M30-02② 全量语料无缺字 + 运行时字符 ⊆ 首包字体子集（char_collect）");
@@ -156,6 +197,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M30-03③ 逐面板排版审计：真实字宽量宽，零溢出/零缺字/≥11px");
     // HUD（每帧重绘 → `ui.ui_text` 登记表就是"本帧画了什么、各自可用多宽"）。
     let hud_checked = assert_layout_clean(&mut rt, "HUD", 4)?;
+    // 桌面侧的平台门（M33）：`app.platform()='desktop'` 时触屏控件必须整个收掉——
+    // 登记表里不该有 `vp` 这个 owner，也不该有摇杆/按钮的元素。
+    // （反向口径"触屏上必须画得出来"不在这里：native headless 报告不了 webgl，
+    // 由 web harness 与 `scripts/wechat-minigame-harness.js` 在真机/浏览器侧守。）
+    assert_str(&mut rt, "tostring(app.platform())", "desktop")?;
+    assert_str(
+        &mut rt,
+        "tostring(require('ui.ui_text').recorded().vp == nil)",
+        "true",
+    )?;
+    assert_str(
+        &mut rt,
+        "tostring(require('ui.virtual_pad').available())",
+        "false",
+    )?;
     // 背包：物品行 + 详情 + 提示。
     lua(&mut rt, "require('ui.inventory_ui').open()")?;
     let bp_checked = assert_layout_clean(&mut rt, "背包", 3)?;
@@ -264,13 +320,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("场景 Text 存在 {}px 字号（下限 11px）", scene_min).into());
     }
     // Lua 侧：扫描全部 `ui_text.draw*` 调用，取第 5 个实参（size），必须是数字且 ≥ 11；
-    // `skipped == 0` 是自检项——解析不了就报错，不能"看起来扫过了"。
-    let (draw_calls, skipped, lua_min) = lua_font_sizes(&project.join("scripts"))?;
+    // 清单为空是自检项——解析不了就报错，不能"看起来扫过了"。
+    let (draw_calls, unresolved, lua_min) = lua_font_sizes(&project.join("scripts"))?;
     if draw_calls < 30 {
         return Err(format!("只扫到 {draw_calls} 个 ui_text.draw* 调用（≥30）").into());
     }
-    if skipped != 0 {
-        return Err(format!("有 {skipped} 个绘制调用的字号没能解析（自检失败）").into());
+    if !unresolved.is_empty() {
+        return Err(format!(
+            "有 {} 个绘制调用的字号没能解析（自检失败）：{}",
+            unresolved.len(),
+            unresolved.join(" | ")
+        )
+        .into());
     }
     if lua_min < MIN_FONT_SIZE {
         return Err(format!("Lua 绘制存在 {}px 字号（下限 11px）", lua_min).into());
@@ -288,15 +349,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ---------------- ⑥ 审计的牙齿与换行规则 ----------------
-    banner("M30-06⑥ 负例：溢出/缺字/过小字号必须各报一条；换行遵守标点禁则");
-    // 审计必须能报错：塞进一条超宽串、一条含 emoji、一条 10px 字号（owner="probe"）。
+    banner("M30-06⑥ 负例：溢出/缺字/过小字号/截断必须各报一条；换行遵守标点禁则");
+    // 审计必须能报错：塞进一条超宽串、一条含 emoji、一条 10px 字号（owner="probe"），
+    // 再加一条**被裁成省略号**的（`draw` 走 `text_fit.fit`，画面上"看着正常"但少了后半句）。
     lua(
         &mut rt,
         "local ui_text = require('ui.ui_text'); \
          ui_text.begin('probe'); \
          ui_text.draw_exact('probe', 'probe:overflow', 0, 0, 15.0, 10.0, '一二三四五六七八九十'); \
          ui_text.draw_exact('probe', 'probe:missing', 0, 0, 15.0, 999.0, '江湖🙂'); \
-         ui_text.draw_exact('probe', 'probe:font', 0, 0, 10.0, 999.0, '小')",
+         ui_text.draw_exact('probe', 'probe:font', 0, 0, 10.0, 999.0, '小'); \
+         ui_text.draw('probe', 'probe:clip', 0, 0, 15.0, 60.0, '一二三四五六七八九十')",
     )?;
     let probe_bad = query_num(&mut rt, "#require('tools.text_audit').audit().bad")? as usize;
     if probe_bad != 3 {
@@ -317,6 +380,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
            return 'ok' end)()",
         "ok",
     )?;
+    // 截断这条牙也要能咬：只有 `probe:clip` 一条被裁，且报出的是**原始**文案（不是省略号串）。
+    let probe_clip_count =
+        query_num(&mut rt, "#require('tools.text_audit').audit().clipped")? as usize;
+    let probe_clipped = query_str(
+        &mut rt,
+        "table.concat(require('tools.text_audit').audit().clipped, ' | ')",
+    )?;
+    if probe_clip_count != 1 {
+        return Err(format!(
+            "截断审计应只有 probe:clip 一条（画面上的行都放得下）：{probe_clipped}"
+        )
+        .into());
+    }
+    if !probe_clipped.contains("probe:clip") || !probe_clipped.contains("一二三四五六七八九十")
+    {
+        return Err(format!("截断审计没有咬到 probe:clip：{probe_clipped}").into());
+    }
     lua(&mut rt, "require('ui.ui_text').reset('probe')")?;
     assert_layout_clean(&mut rt, "负例清理后", 4)?;
     // 换行：宽度不超、标点不落行首、行数上限 + 省略号收尾。
@@ -382,7 +462,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// 断言"当前画面文字零溢出/零缺字/字号达标"，并返回量宽条数（下限 `min_checked`）。
+/// 断言"当前画面文字零溢出/零缺字/**零截断**/字号达标"，并返回量宽条数（下限 `min_checked`）。
+///
+/// `clipped`（原始文案被裁成省略号）单独判：`bad` 只抓"画到框外面"，而省略号是另一种
+/// 坏味道——文字**看着没溢出**，玩家却读不到被裁掉的后半句（HUD 引导行曾经整条被右栏
+/// 276px 预算吃掉一半，画面上一切正常）。这一轮把"零截断"也变成门。
 fn assert_layout_clean(
     rt: &mut LuaRuntime,
     label: &str,
@@ -393,9 +477,16 @@ fn assert_layout_clean(
         rt,
         "table.concat(require('tools.text_audit').audit().bad, ' | ')",
     )?;
+    let clipped = query_str(
+        rt,
+        "table.concat(require('tools.text_audit').audit().clipped, ' | ')",
+    )?;
     let worst = query_num(rt, "require('tools.text_audit').audit().worst")?;
     if !bad.is_empty() {
         return Err(format!("{label} 排版审计失败：{bad}").into());
+    }
+    if !clipped.is_empty() {
+        return Err(format!("{label} 有文案被裁成省略号（原始文案超出预算）：{clipped}").into());
     }
     if checked < min_checked {
         return Err(format!("{label} 只量到 {checked} 条文字（≥{min_checked}）").into());
@@ -441,11 +532,12 @@ fn scene_font_sizes(project: &Path) -> Result<(usize, f64), Box<dyn std::error::
     Ok((count, if count == 0 { 0.0 } else { min }))
 }
 
-/// Lua 绘制调用的字号扫描：返回（调用数，未能解析数，最小字号）。
+/// Lua 绘制调用的字号扫描：返回（调用数，未能解析的调用清单，最小字号）。
 ///
 /// 扫描对象是 `scripts/**/*.lua` 里所有 `ui_text.draw` / `draw_wrapped` / `draw_exact`
 /// 调用：取顶层逗号切分后的第 5 个实参（`owner, id, x, y, size, …`）。
-fn lua_font_sizes(root: &Path) -> Result<(usize, usize, f64), Box<dyn std::error::Error>> {
+/// 清单里带 `文件:行号`，否则"有 2 个没解析出来"这种报错要人回头逐个 grep。
+fn lua_font_sizes(root: &Path) -> Result<(usize, Vec<String>, f64), Box<dyn std::error::Error>> {
     let mut files = Vec::new();
     collect_lua_files(root, &mut files)?;
     files.sort();
@@ -458,7 +550,7 @@ fn lua_font_sizes(root: &Path) -> Result<(usize, usize, f64), Box<dyn std::error
         global_constants = lua_font_constants(&fs::read_to_string(&layout_module)?);
     }
     let mut calls = 0usize;
-    let mut skipped = 0usize;
+    let mut unresolved: Vec<String> = Vec::new();
     let mut min = f64::MAX;
     for path in files {
         // 注释里也会出现 `ui_text.draw(...)`（本模块的用法说明就是），先剥注释再扫描。
@@ -473,6 +565,7 @@ fn lua_font_sizes(root: &Path) -> Result<(usize, usize, f64), Box<dyn std::error
         let mut cursor = 0usize;
         while let Some(found) = source[cursor..].find("ui_text.draw") {
             let start = cursor + found;
+            let source_line = source[..start].lines().count();
             let Some(open) = source[start..].find('(').map(|offset| start + offset) else {
                 break;
             };
@@ -505,7 +598,11 @@ fn lua_font_sizes(root: &Path) -> Result<(usize, usize, f64), Box<dyn std::error
                 index += 1;
             }
             if index >= bytes.len() {
-                skipped += 1;
+                unresolved.push(format!(
+                    "{}:{} 调用的括号没有闭合",
+                    path.display(),
+                    source_line
+                ));
                 break;
             }
             let args = split_top_level(&source[open + 1..index]);
@@ -522,12 +619,20 @@ fn lua_font_sizes(root: &Path) -> Result<(usize, usize, f64), Box<dyn std::error
                         min = size;
                     }
                 }
-                None => skipped += 1,
+                // `draw_wrapped` 的字号在第 5 位、`draw` 也在第 5 位；解析不出来就报名字，
+                // 不允许"看起来扫过了"。
+                None => unresolved.push(format!(
+                    "{}:{} 第 5 个实参解析不出字号：{:?}（已知常量 {} 个）",
+                    path.display(),
+                    source_line,
+                    size,
+                    constants.len()
+                )),
             }
             cursor = index + 1;
         }
     }
-    Ok((calls, skipped, if calls == 0 { 0.0 } else { min }))
+    Ok((calls, unresolved, if calls == 0 { 0.0 } else { min }))
 }
 
 /// `scripts/**` 里直接调用 `ui.text_at` 的处数（`ui/ui_text.lua` 自己除外）。
@@ -592,6 +697,40 @@ fn lua_number_constants(source: &str) -> std::collections::BTreeMap<String, f64>
 /// 自然命中，不需要再去追别名链。解析不出来的引用仍计入 `skipped`（自检保持有牙齿）。
 fn lua_font_constants(source: &str) -> std::collections::BTreeMap<String, f64> {
     let mut map = lua_number_constants(source);
+    // 字号还允许写成"可读下限 + 随几何缩放"：`local cfont = math.max(11, c_radius * 0.62)`
+    // （触屏按钮里的字随圆半径变，但永不低于 11px）。这里登记那个**下限**——它正是这道门
+    // 要保证的最小值；不认这种写法的话，动态字号就只能从检查里漏掉（漏掉=零报错的坏行为）。
+    for line in source.lines() {
+        let Some(rest) = line.trim().strip_prefix("local ") else {
+            continue;
+        };
+        let Some((name, value)) = rest.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        {
+            continue;
+        }
+        let Some(inner) = value
+            .trim()
+            .strip_prefix("math.max(")
+            .and_then(|s| s.strip_suffix(')'))
+        else {
+            continue;
+        };
+        let Some(floor) = inner
+            .split(',')
+            .next()
+            .and_then(|first| first.trim().parse::<f64>().ok())
+        else {
+            continue;
+        };
+        map.insert(name.to_string(), floor);
+    }
     // 截取 `M.BOX = {` 起始的整块（从 `{` 到配对的 `}`）。
     let Some(anchor) = source.find("M.BOX = {") else {
         return map;

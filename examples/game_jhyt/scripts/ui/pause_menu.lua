@@ -1,14 +1,19 @@
--- pause_menu.lua：《江湖有田》暂停菜单（M19-02 建立，M20-02 追加「设置」页）。
+-- pause_menu.lua：《江湖有田》暂停菜单（M19-02 建立，M20-02 追加「设置」页，
+-- M33 追加「帮助」页）。
 --
 -- 暂停由 M16-01 状态机保证（mode = Pause：input.update 早退，移动与世界冻结）。
 -- 主菜单项（纯键盘：W/S 或方向键选择、空格确认、+/- 主音量、Esc/P 继续）：
---   继续游戏 / 保存进度 / 读取进度 / 音量 / 返回标题
+--   继续游戏 / 保存进度 / 读取进度 / 形象 / 音量 / 帮助 / 返回标题
 --
 -- 主菜单的「音量」行按空格（或确认）进入**设置页**（M20-02）：
 --   主音量 / BGM / 音效 / 界面音效（-/+ 或左右方向键调整，改动立刻生效）
 --   / 保存设置（写回 <project>/settings.toml 的 [audio] 段）/ 返回
 -- 设置页里 Esc 返回主菜单，P 直接继续游戏。分组音量以 settings.toml 为准，
 -- 主音量同时随存档 provider "audio" 持久化（M19-02）。
+--
+-- 「帮助」行按确认进入**帮助页**（M33）：完整键位表 + 玩法说明。操作说明原先常驻
+-- HUD 底部通栏（M20-09），占玩法画面，现在收进这一页；页内是静态行表（没有选择环），
+-- 确认/取消都返回主菜单。
 --
 -- 选择移动复用引擎 `ui.focus_*` 焦点环（core/ui_navigation.rs，M20-02），
 -- 方向键到边界环绕；引擎缺少该 API 时退回既有的取模语义。
@@ -52,6 +57,14 @@ local function settings_hint_line()
     { keyboard = back_label, gamepad = back_label, label = "返回" },
   })
 end
+
+-- 帮助页底部只有一条动作（任何键都返回），提示跟着当前绑定写。
+local function help_hint_line()
+  local back_label = hints.binding_labels({ "cancel" })
+  return hints.panel_line({
+    { keyboard = back_label, gamepad = back_label, label = "返回" },
+  })
+end
 -- M21 主角形象系统：形象行的显示名与轮换都走 player/appearances。
 local player = require("player.player")
 local appearances = require("data.appearances")
@@ -60,7 +73,7 @@ local M = {}
 
 local PANEL = layout.PANEL.pause
 local ROW_H = 44
-local ITEMS = { "resume", "save", "load", "appearance", "volume", "title" }
+local ITEMS = { "resume", "save", "load", "appearance", "volume", "help", "title" }
 local LABEL = {
   resume = "继续游戏",
   save = "保存进度",
@@ -68,8 +81,33 @@ local LABEL = {
   -- 形象行的显示名由 row_label 动态拼成「形象  青衫少侠」（M21 主角形象系统）
   appearance = "形象",
   volume = "音量",
+  help = "帮助",
   title = "返回标题"
 }
+
+-- 帮助页：原先常驻 HUD 底部通栏的键位说明搬到这里（完整说明不占玩法画面）。
+-- 键位表来自 `hints.guide_rows`（按**当前绑定**推导，改键后自动同步），
+-- 玩法说明是静态文案，因此本页**没有选择环**：确认与取消都返回主菜单。
+local HELP_NOTES = {
+  { "劳作", "翻土 / 播种 / 浇水 / 收获消耗体力，体力不足只能休息" },
+  { "作息", "睡觉结束当日：作物成长一天、体力回满、自动存档" },
+  { "战斗", "武学招式消耗内力，普攻伤害随武器加成" },
+  { "改键", "工程 settings.toml 的 [input] 段可改绑，本页键名随绑定更新" },
+}
+-- 触屏形态（WebGL / 微信）没有键盘，键位表在那上面是噪声，因此换成"摇杆 + 圆钮"
+-- 的说明（与 `layout.TOUCH` 画在屏幕上的控件同一套名字）。
+local HELP_TOUCH = {
+  { "移动", "左下摇杆" },
+  { "动作", "右下圆钮：交互 / 攻击 / 背包 / 任务 / 暂停" },
+  { "菜单", "面板打开时右下换成十字键与确定" },
+  { "关闭", "面板右上角的关闭按钮" },
+}
+local HELP_ROW_H = 28
+local HELP_FONT = 18.0
+-- 键位/说明的"值"列起始偏移：标签列与值列各用自己的宽度预算（都过排版门）。
+local HELP_VALUE_DX = 108
+-- 帮助页行数的清理上界（实际行数 = 2 个小标题 + 键位行 + 4 条玩法说明）。
+local HELP_ROW_CAP = 20
 
 -- 设置页（M20-02）：四路音量 + 保存 + 返回。
 local SETTINGS_ITEMS = { "master", "bgm", "sfx", "ui", "save", "back" }
@@ -87,13 +125,35 @@ local STEP = 0.05
 local FOCUS = "pse:focus"
 local SETTINGS_FOCUS = "pse:settings:focus"
 
--- 主菜单状态：{ index, msg }；设置页状态：{ index, msg }；nil = 未打开。
+-- 主菜单状态：{ index, msg }；设置页状态：{ index, msg }；帮助页状态：{}；nil = 未打开。
 local ui_state = nil
 local settings_state = nil
+local help_state = nil
 
 -- 前向声明（设置页关/清理由文件后半段实现；Lua 词法作用域只认已声明的 local）。
 local clear_ui
 local clear_settings_ui
+local clear_help_ui
+
+-- 上一页的名字（"menu"/"settings"/"help"）。`ui.panel` / `ui.text_at` 画出的元素**跨帧持久**，
+-- 只有 `ui.clear` / `ui.hide` 才收得掉；而每帧的 `M.render()` 只画当前页，于是"进入子页"
+-- 这件事本身不清旧页 → 主菜单的标题与七行文字会留在帮助页/设置页同一块面板上（重叠、无报错）。
+-- 因此把清理收在渲染入口的**换页那一刻**：每帧的重复渲染不再付清理代价，新增子页也不会漏清。
+local rendered_page = nil
+
+local function switch_page(page)
+  if rendered_page == page then
+    return
+  end
+  if rendered_page == "menu" then
+    clear_ui()
+  elseif rendered_page == "settings" then
+    clear_settings_ui()
+  elseif rendered_page == "help" then
+    clear_help_ui()
+  end
+  rendered_page = page
+end
 
 function M.row_limit()
   return #ITEMS
@@ -379,6 +439,23 @@ function clear_settings_ui()
   ui_text.reset("pse")
 end
 
+-- 帮助页清理：行数随绑定变化（改键后某套设备可能少一行），因此按**上界**清理——
+-- `ui.hide` 对没画过的 id 是幂等的（引擎侧只是标不可见）。
+function clear_help_ui()
+  for _, id in ipairs({ "pse:h:box", "pse:h:skin_bg", "pse:h:rule", "pse:h:sel",
+    "pse:h:divider", "pse:h:seal", "pse:h:close", "pse:h:key_hint" }) do
+    ui.clear(id)
+  end
+  for _, id in ipairs({ "pse:h:title", "pse:h:hint" }) do
+    ui_text.hide("pse", id)
+  end
+  for i = 1, HELP_ROW_CAP do
+    ui_text.hide("pse", "pse:h:row" .. i)
+    ui_text.hide("pse", "pse:h:val" .. i)
+  end
+  ui_text.reset("pse")
+end
+
 function M.select(index)
   if not ui_state then
     return false
@@ -391,13 +468,16 @@ function M.select(index)
   return true
 end
 
--- 主菜单选择移动（W/S 或方向键）；设置页打开时转发到设置页。
+-- 主菜单选择移动（W/S 或方向键）；设置页打开时转发到设置页，帮助页无选择环。
 function M.move(delta)
   if not ui_state then
     return false
   end
   if settings_state then
     return M.settings_move(delta)
+  end
+  if help_state then
+    return false
   end
   local step = math.floor(tonumber(delta) or 0)
   if step == 0 then
@@ -465,6 +545,101 @@ local function draw_frame(id_prefix, title, row_fill)
   return x, y, w, h
 end
 
+-- ---------- 帮助页 ----------
+
+function M.help_active()
+  return help_state ~= nil
+end
+
+-- 触屏形态判定：懒 require `ui.virtual_pad`（它只依赖 layout/state，与本模块无环），
+-- 取不到或 `available()` 为假都按键鼠/手柄表显示——画面上没有圆钮时不该教人点圆钮。
+local function touch_host()
+  local ok, vp = pcall(require, "ui.virtual_pad")
+  return ok and type(vp) == "table" and vp.available() == true
+end
+
+-- 帮助页的行表：小标题 +「标签 / 值」两列。静态表（没有选择环，因此不建焦点环）。
+-- 键位来自 `hints.guide_rows`：当前设备优先，该设备一个绑定都没有时回落另一套
+-- （手柄没连时 `guide_rows("gamepad")` 为空，这里显示键鼠表而不是空白页）。
+function M.help_rows()
+  local rows = {}
+  if touch_host() then
+    rows[#rows + 1] = { kind = "section", text = "触屏操作" }
+    for _, entry in ipairs(HELP_TOUCH) do
+      rows[#rows + 1] = { kind = "key", label = entry[1], value = entry[2] }
+    end
+  else
+    local device = hints.device()
+    local guide = hints.guide_rows(device)
+    if #guide == 0 then
+      device = device == "gamepad" and "keyboard" or "gamepad"
+      guide = hints.guide_rows(device)
+    end
+    rows[#rows + 1] = { kind = "section", text = "操作 · " .. hints.device_label(device) }
+    for _, entry in ipairs(guide) do
+      rows[#rows + 1] = { kind = "key", label = entry.label, value = entry.keys }
+    end
+  end
+  rows[#rows + 1] = { kind = "section", text = "玩法" }
+  for _, entry in ipairs(HELP_NOTES) do
+    rows[#rows + 1] = { kind = "key", label = entry[1], value = entry[2] }
+  end
+  return rows
+end
+
+function M.open_help()
+  if not ui_state then
+    return false
+  end
+  if settings_state then
+    M.settings_close()
+  end
+  help_state = {}
+  audio.ui("ui_click")
+  M.render()
+  return true
+end
+
+function M.help_close()
+  if not help_state then
+    return false
+  end
+  help_state = nil
+  clear_help_ui()
+  audio.ui("ui_cancel")
+  M.render()
+  return true
+end
+
+-- 帮助页绘制：键位两列 + 玩法说明 + 底部一行返回提示。
+function M.render_help()
+  if not help_state then
+    return false
+  end
+  local ROW_W = layout.list_width(PANEL)
+  switch_page("help")
+  ui_text.begin("pse")
+  local rows = M.help_rows()
+  local x, y, w, h = draw_frame("pse:h", "帮助", nil)
+  for i = 1, #rows do
+    local row = rows[i]
+    local row_y = y + BOX.list_dy + (i - 1) * HELP_ROW_H
+    if row.kind == "section" then
+      ui_text.draw("pse", "pse:h:row" .. i, x + BOX.list_dx, row_y, HELP_FONT, ROW_W, row.text)
+    else
+      -- 标签列与值列各拿一份预算：值列多长取决于玩家怎么改键，两列分开才量得准
+      -- （合成一列时超宽只会画成省略号，画面上看不出排版坏了）。
+      ui_text.draw("pse", "pse:h:row" .. i, x + BOX.list_dx, row_y, HELP_FONT, HELP_VALUE_DX - 8, row.label)
+      ui_text.draw("pse", "pse:h:val" .. i, x + BOX.list_dx + HELP_VALUE_DX, row_y, HELP_FONT,
+        w - BOX.list_dx * 2 - HELP_VALUE_DX - 8, row.value)
+    end
+  end
+  -- docs/48 ui 换肤接线：提示条背景与主菜单/设置页同款。
+  skin.panel("pse:h:key_hint", x + BOX.title_dx, y + h + BOX.hint_dy - 6, ROW_W, BOX.hint_font + 12, "key_hint")
+  ui_text.draw("pse", "pse:h:hint", x + BOX.title_dx, y + h + BOX.hint_dy, BOX.hint_font, ROW_W, help_hint_line())
+  return true
+end
+
 function M.render()
   if not ui_state then
     return false
@@ -472,7 +647,11 @@ function M.render()
   if settings_state then
     return M.render_settings()
   end
+  if help_state then
+    return M.render_help()
+  end
   local ROW_W = layout.list_width(PANEL)
+  switch_page("menu")
   ui_text.begin("pse")
   local rows = M.rows()
   -- 选中行的底衬矩形（列表从 y+BOX.list_dy 起，行高 ROW_H）。
@@ -499,6 +678,7 @@ function M.render_settings()
   end
   local ROW_W = layout.list_width(PANEL)
   sync_settings_focus()
+  switch_page("settings")
   ui_text.begin("pse")
   local rows = M.settings_rows()
   local sel_y = PANEL.y + BOX.list_dy + settings_state.index * ROW_H
@@ -613,6 +793,11 @@ function M.confirm()
   if settings_state then
     return M.settings_confirm()
   end
+  if help_state then
+    -- 帮助页是静态行表：确认与取消一样返回主菜单。
+    M.help_close()
+    return true, "help_back"
+  end
   local key = M.item()
   if key == "resume" then
     M.close()
@@ -627,6 +812,10 @@ function M.confirm()
     -- 音量行上按确认＝打开设置页（M20-02：四路音量 ± + 保存）。
     M.open_settings()
     return true, "settings"
+  elseif key == "help" then
+    -- 帮助页（M33）：完整操作说明收在这里，HUD 上不再常驻键位通栏。
+    M.open_help()
+    return true, "help"
   elseif key == "appearance" then
     -- M21 主角形象：按确认轮换到下一个可选形象（立刻重挂序列帧），
     -- 结果写进 state.appearance → 随存档持久化。
@@ -651,6 +840,7 @@ end
 function M.open()
   ui_state = { index = 0, msg = nil }
   settings_state = nil
+  help_state = nil
   state.set_mode("Pause")
   audio.ui("ui_click")
   M.render()
@@ -663,8 +853,11 @@ function M.close()
   end
   ui_state = nil
   settings_state = nil
+  help_state = nil
   clear_ui()
   clear_settings_ui()
+  clear_help_ui()
+  rendered_page = nil
   nav.close(FOCUS)
   nav.close(SETTINGS_FOCUS)
   nav.close(SETTINGS_SCROLL)
@@ -678,8 +871,11 @@ end
 function M.reset()
   ui_state = nil
   settings_state = nil
+  help_state = nil
   clear_ui()
   clear_settings_ui()
+  clear_help_ui()
+  rendered_page = nil
   return true
 end
 

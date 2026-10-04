@@ -151,13 +151,13 @@ local function heal_mode()
 end
 
 -- 每帧收尾：推进引导 → 绘制 HUD → 返回单行调试文案。
--- 顶部键位提示从**当前绑定**推导（改键后提示同步变化，见 M.key_hints）。
+-- HUD 不画操作说明（键位表在暂停菜单的「帮助」页，见 `ui.pause_menu`）。
 local function frame()
   tutorial.on_action(state.last_action)
   -- M27：目标计数只认"动作变化"（goals 内部做边沿检测），
   -- 因此同一个 last_action 不会在后续每一帧重复计数。
   goals.on_action(state.last_action)
-  hud.draw(M.key_hints())
+  hud.draw()
   virtual_pad.draw()
   return hud.text()
 end
@@ -340,7 +340,10 @@ end
 local function update_pause()
   player.stop()
   if input.action_pressed("cancel") then
-    if pause_menu.settings_active() then
+    -- 逐层返回：帮助页 / 设置页 → 主菜单，主菜单 → 玩法。
+    if pause_menu.help_active() then
+      pause_menu.help_close()
+    elseif pause_menu.settings_active() then
       pause_menu.settings_close()
     else
       pause_menu.close()
@@ -394,16 +397,6 @@ end
 -- 测试/调试用：强制某套说明（`"keyboard"`/`"gamepad"`），`nil` 恢复自动检测。
 function M.set_device(device)
   return hints.set_device(device)
-end
-
--- 指定设备的单行操作说明（该设备无绑定 → 空串）。
-function M.hint_for_device(device)
-  return hints.hint_for_device(device)
-end
-
--- 单行键位提示（当前设备优先；无绑定回退另一套；都为空给兜底文案）。
-function M.key_hints(device)
-  return hints.key_hints(device)
 end
 
 -- 面板底部提示：同一句文案按设备二选一（`{ keyboard = "...", gamepad = "..." }`）。
@@ -472,7 +465,7 @@ function M.update()
         combat.respawn()
       end
     end
-    hud.draw(M.key_hints())
+    hud.draw()
     return "战败 · 按 R 重新开始"
   end
 
@@ -481,7 +474,7 @@ function M.update()
   if not combat.player_can_act() then
     player.stop()
     state.last_action = "hurt"
-    hud.draw(M.key_hints())
+    hud.draw()
     return "受击僵直 · " .. tostring(require("systems.combat").player_hurt_frames()) .. " 步"
   end
 

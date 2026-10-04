@@ -388,12 +388,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "assets/art/ui/hud/ui_weather_sun.png",
     )?;
     // HUD 文本仍然与天气一致（文本与画面同源，M26 的映射不受影响）。
-    // 状态行第 2 行是"时间/天气"行，因此这里取该行的天气片段
-    // （`天气 晴`）而不是整行字面量——否则改版式就要改断言，断言的意图本来是"文本与天气一致"。
+    // 天气片段在状态行里的**行号**会随改版式移动（M33 拆成 6 行后落在第 3 行），
+    // 所以这里跨行找 `天气 ×`：断言的意图本来是"文本与天气一致"，不是"天气在第几行"。
     assert_str(
         &mut rt,
-        "(function() local line = require('ui.hud').status_lines()[2]; \
-           return tostring(line:match('天气%s*%S+')) end)()",
+        "(function() local found; \
+           for _, line in ipairs(require('ui.hud').status_lines()) do \
+             local piece = line:match('天气%s*%S+') \
+             if piece then found = piece end \
+           end; \
+           return tostring(found) end)()",
         "天气 晴",
     )?;
     println!("④ 雨天遮罩 + 雨图标；晴天遮罩清除并换成晴图标");

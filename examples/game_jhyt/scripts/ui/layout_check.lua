@@ -145,6 +145,28 @@ function M.validate_all()
     end
   end
 
+  -- ④ 触屏控件的平台门：桌面**不该画**摇杆与虚拟按钮，触屏宿主**必须画**。
+  --     两边都守是因为这一条两侧都会静默坏：桌面画着按钮只是难看（键鼠用不到），
+  --     触屏没了按钮则是**玩不了**。判定源是 `app.platform()`——不能用"宿主有没有
+  --     `input.virtual_key`"，那四个 API 在所有宿主统一注册，探能力恒为真。
+  --     宿主报告不了平台（旧 wasm 里还没有 `app.platform`）时**跳过**：这里返回错误
+  --     会让 web 启动直接失败（`validate_data` 是启动门），而"检查不了"不是数据错误。
+  if type(app) == "table" and type(rawget(app, "platform")) == "function" then
+    local ok_pad, pad = pcall(require, "ui.virtual_pad")
+    if ok_pad and type(pad) == "table" and type(pad.available) == "function" then
+      local platform = tostring(app.platform())
+      local drawn = pad.available() == true
+      if platform == "desktop" and drawn then
+        issues[#issues + 1] = "ui.virtual_pad 在桌面平台（app.platform()='desktop'）仍然可用/会绘制：摇杆与虚拟按钮该收掉"
+      elseif platform ~= "desktop" and not drawn then
+        issues[#issues + 1] = string.format(
+          "ui.virtual_pad 在触屏平台（app.platform()='%s'）却判定为不可用：屏上没有摇杆与按钮，触屏无法操作",
+          platform
+        )
+      end
+    end
+  end
+
   return #issues == 0, issues
 end
 
