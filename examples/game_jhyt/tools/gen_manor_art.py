@@ -10,6 +10,7 @@
 
     assets/art/tilesets/manor/manor_ground.png   6 列 × 32px（地表，1..6 列语义见下）
     assets/art/tilesets/manor/manor_farm.png     6 列 × 32px（农田 overlay）
+    assets/art/tilesets/manor/manor_farm_moist.png 6 列 × 32px（湿度层，仅第 1 列有内容）
     assets/art/tilesets/manor/_preview.png       两套 tileset 放大预览（带标签）
     assets/art/buildings/manor_house.png         正房 224×224（7×7 格）
     assets/art/buildings/manor_shed.png          柴房 160×128（5×4 格）
@@ -385,6 +386,47 @@ def farm_stubble(seed=122):
         cv.vline(x, 16, 19, STRAW_DARK)
         cv.vline(x + 1, 24, 27, STRAW)
     return cv
+
+
+def farm_moist_mark(seed=133):
+    """湿度层第 1 列（值 1 = 当日已浇）：只画四角湿痕与水滴，中心留空。
+
+    为什么单开一张图而不给 FarmGrid 加"湿版"作物贴图：引擎的 tile 值上限是 6
+    （`core/tilemap.rs` 的 `TILE_PALETTE` 长 6，UV 按 6 列切），而 FarmGrid 六列已被
+    干垦/湿垦/苗/生长/成熟/稻茬占满，"三阶段 × 干湿"要 8 槽塞不下。湿态因此画成
+    叠在 FarmGrid 之上的独立一层（半透明，不遮作物），而不是新增列。
+    """
+    cv = Canvas(TILE, TILE)
+    rim = (22, 32, 44, 116)
+    corner = (18, 27, 38, 150)
+    dash = (26, 38, 50, 74)
+    # 四周 2px 湿边：把"土色变深"读在边界上，作物所在的中部完全留给 FarmGrid 贴图。
+    for x in range(TILE):
+        for y in (0, 1, TILE - 2, TILE - 1):
+            cv.set(x, y, rim)
+    for y in range(2, TILE - 2):
+        for x in (0, 1, TILE - 2, TILE - 1):
+            cv.set(x, y, rim)
+    # 四角加深：让湿痕有"积在角落"的体积感。
+    for cx, cy in ((0, 0), (TILE - 4, 0), (0, TILE - 4), (TILE - 4, TILE - 4)):
+        cv.rect(cx, cy, cx + 3, cy + 3, corner)
+    # 垄沟位置上的短横段：与 FarmGrid 的三道垄（y=5/13/21/29）同排，读作沟里渗水。
+    for y in (6, 14, 22):
+        for x in range(3, TILE - 5, 6):
+            cv.rect(x, y, x + 2, y + 1, dash)
+    rnd = hash_stream(seed)
+    for _ in range(4):
+        x = 2 + rnd(TILE - 6)
+        y = 2 + rnd(TILE - 8)
+        cv.rect(x, y + 1, x + 1, y + 3, (86, 140, 190, 205))
+        cv.set(x, y, (86, 140, 190, 205))
+        cv.set(x + 1, y + 2, (178, 214, 238, 230))
+    return cv
+
+
+def farm_moist_tiles():
+    """湿度层 tileset：只有第 1 列有内容，其余 5 列全透明占位（列数必须是 6）。"""
+    return [farm_moist_mark()] + [Canvas(TILE, TILE) for _ in range(TILE_COLUMNS - 1)]
 
 
 def ground_tiles():
@@ -769,8 +811,10 @@ def generate(quiet=False):
     farm_tile_list = farm_tiles()
     ground_sheet = pack_tileset(ground)
     farm_sheet = pack_tileset(farm_tile_list)
+    moist_sheet = pack_tileset(farm_moist_tiles())
     write_png(os.path.join(TILE_DIR, "manor_ground.png"), ground_sheet)
     write_png(os.path.join(TILE_DIR, "manor_farm.png"), farm_sheet)
+    write_png(os.path.join(TILE_DIR, "manor_farm_moist.png"), moist_sheet)
     write_png(os.path.join(TILE_DIR, "_preview.png"), build_tiles_preview(ground, farm_tile_list))
 
     for name, sprite in buildings().items():
@@ -785,6 +829,7 @@ def generate(quiet=False):
     if not quiet:
         print(f"tileset  manor_ground.png {ground_sheet.w}x{ground_sheet.h} (6 列)")
         print(f"tileset  manor_farm.png   {farm_sheet.w}x{farm_sheet.h} (6 列)")
+        print(f"tileset  manor_farm_moist.png {moist_sheet.w}x{moist_sheet.h} (6 列，仅第 1 列有内容)")
         for name, sprite in sorted(all_sprites.items()):
             print(f"sprite   manor_{name}.png {sprite.w}x{sprite.h}")
         print(f"preview  {TILE_DIR}/_preview.png, {BUILDING_DIR}/_preview.png")
@@ -797,6 +842,7 @@ def check():
     for path, want_w, want_h in (
         (os.path.join(TILE_DIR, "manor_ground.png"), TILE * TILE_COLUMNS, TILE),
         (os.path.join(TILE_DIR, "manor_farm.png"), TILE * TILE_COLUMNS, TILE),
+        (os.path.join(TILE_DIR, "manor_farm_moist.png"), TILE * TILE_COLUMNS, TILE),
     ):
         if not os.path.exists(path):
             issues.append("missing " + path)

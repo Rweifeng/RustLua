@@ -224,6 +224,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     press(&mut rt, KeyCode::KeyE)?;
     assert_str(&mut rt, "require('core.state').last_action", "water_rice")?;
     assert_num(&mut rt, "require('core.state').energy", 55.0)?;
+    // 湿度层（FarmMoist，叠在 FarmGrid 之上）：有作物的地块浇水当天 tile 不变
+    // （tile_for 看的是 watered_days，播种当天仍是 3=苗期），"今天浇过"只能由这一层表达。
+    // 三块都浇 → 湿痕恰 3 格；未浇的格子保持 0。
+    for (cx, cy) in [(fx, fy), (fx2, fy2), (rx, ry)] {
+        assert_num(&mut rt, &tile_of("FarmGrid", cx, cy), 3.0)?;
+        assert_num(&mut rt, &tile_of("FarmMoist", cx, cy), 1.0)?;
+    }
+    assert_num(&mut rt, &moist_count_expr(), 3.0)?;
+    // 日结算把 watered_today 清零 → 湿痕撤掉，同时 watered_days 进 1（tile 3→4 生长期）。
+    // 真日结算发生在 §8 睡觉时，但那会儿人在云泽村（无 FarmGrid/FarmMoist），
+    // 撤痕这条只能在 manor 里直接调 settle_day 覆盖。
+    lua(&mut rt, "require('systems.farm').settle_day()")?;
+    for (cx, cy) in [(fx, fy), (fx2, fy2), (rx, ry)] {
+        assert_num(&mut rt, &tile_of("FarmGrid", cx, cy), 4.0)?;
+        assert_num(&mut rt, &tile_of("FarmMoist", cx, cy), 0.0)?;
+    }
+    assert_num(&mut rt, &moist_count_expr(), 0.0)?;
     assert_num(&mut rt, "require('systems.farm').stats().planted", 3.0)?;
     assert_num(&mut rt, "require('core.state').labor_minutes", 90.0)?;
     // 新手引导第①~③步已按真实路径推进（主线一段的「翻一块药田」目标即以此为锚点）。
@@ -1385,6 +1402,24 @@ fn strike_boar(runtime: &mut LuaRuntime) -> Result<(), Box<dyn std::error::Error
         KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
     )?;
     Ok(())
+}
+
+/// 取某张 Tilemap（按实体名）指定格的 tile 值表达式；实体不存在时给 -1，断言即红。
+fn tile_of(name: &str, cx: i64, cy: i64) -> String {
+    format!(
+        "(function() local id = entity.find('{name}'); \
+         if not id then return -1 end; return tilemap.get_cell(id, {cx}, {cy}) or 0 end)()"
+    )
+}
+
+/// 农田矩形内湿痕（FarmMoist tile==1）格数表达式；湿度层缺失同样给 -1。
+fn moist_count_expr() -> String {
+    "(function() local id = entity.find('FarmMoist'); \
+     if not id then return -1 end; local n = 0; \
+     for y = 4, 13 do for x = 14, 33 do \
+       if (tilemap.get_cell(id, x, y) or 0) == 1 then n = n + 1 end \
+     end end; return n end)()"
+        .to_owned()
 }
 
 /// 扫描农田矩形，返回第一个未开垦且有指定作物土地类型的地块（确定性）。

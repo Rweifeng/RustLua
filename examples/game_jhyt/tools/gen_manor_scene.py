@@ -15,6 +15,7 @@
 列映射（与 farm.lua / gen_manor_art.py 一致，**不可随意改**）：
   manor_ground：1=草地 2=夯土 3=石板路 4=院墙 5=青瓦 6=水
   manor_farm：  1=已耕 2=已耕+浇水 3=苗期 4=生长期 5=成熟 6=稻茬(保留)
+  manor_farm_moist（第三层 FarmMoist，画在 FarmGrid 之上、只占第 1 列）：1=当日已浇
   * farm.lua 用 `GroundMap tile == 2` 判定可开垦；overlay 列语义由 farm.lua 的 tile_for() 决定。
 
 布局（cell，0-index，y 朝上，含端点）：
@@ -54,6 +55,9 @@ GRASS, DIRT, STONE, WALL, ROOF, WATER = 1, 2, 3, 4, 5, 6
 
 GROUND_TEXTURE = "assets/art/tilesets/manor/manor_ground.png"
 FARM_TEXTURE = "assets/art/tilesets/manor/manor_farm.png"
+# 湿度层（叠在 FarmGrid 之上）：只有第 1 列有内容（1=当日已浇的半透明湿痕）。
+# 单开一层而不是给 manor_farm 加"湿版"列，原因见 gen_manor_art.py 的 farm_moist_mark。
+MOIST_TEXTURE = "assets/art/tilesets/manor/manor_farm_moist.png"
 TILE = 32
 
 # ---- 分区 ----
@@ -333,6 +337,16 @@ def build_scene(ground, solid):
     lines.append(camera_line(camera_id, W, H))
     lines.append(transform_line(camera_id, 0.0, 0.0))
     lines.append(f"entity_meta\t{camera_id}\trole\tgame_camera")
+    # 湿度层（最后一张 Tilemap）：id 必须大于 FarmGrid(2)——原生按 ECS 插入序、web 按
+    # entity id 升序排 tilemap 批次，两者都把这张画在 FarmGrid 之上，湿痕才不会压住作物。
+    moist_id = camera_id + 1
+    lines.append(f"entity\t{moist_id}\tFarmMoist")
+    lines.append(transform_line(moist_id, 0.0, 0.0))
+    lines.append(
+        f"component\t{moist_id}\tTilemap\ttile_size=32x32;width={W};height={H};texture={MOIST_TEXTURE}"
+        f";tiles={empty};solid={empty}"
+    )
+    lines.append(f"entity_meta\t{moist_id}\trole\tfarm_moist_tilemap")
     return "\n".join(lines) + "\n"
 
 

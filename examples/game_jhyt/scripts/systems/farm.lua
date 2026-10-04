@@ -6,6 +6,9 @@
 --   * FarmGrid 是 manor.scene 里第二张 Tilemap（entity.find("FarmGrid")），
 --     tiles 初值全 0（空=透出 GroundMap 的夯土 DIRT），运行期本模块写 overlay。
 --     manor_farm tileset 列：1=翻土 2=已耕已浇(深色) 3=苗期 4=生长期 5=成熟。
+--   * FarmMoist 是第三张 Tilemap（id 大于 FarmGrid，故压在作物之上），只有第 1 列
+--     有内容（半透明湿痕）。有作物的地块 tile 值由 watered_days 决定、当日浇水不改
+--     tile，所以"今天浇过水"这件事只能由这一层表达（watered_today → 1）。
 --   * grid.facing_cell(x,y,facing,size) 返回 {1=cx,2=cy} 一基数组。
 --   * 地块明细数据（作物 id、已浇、有效成长日）存 map.state("farm_plots")，
 --     切场景/读档后由本模块重绘到 FarmGrid；tile 只是渲染，不单独持久化。
@@ -34,6 +37,7 @@ local TILE = 32
 
 local ground_id = nil -- GroundMap（地表判定：翻土只能在 DIRT 上）
 local farm_id = nil -- FarmGrid（overlay tile 渲染）
+local moist_id = nil -- FarmMoist（湿度层，画在 FarmGrid 之上；可缺，缺则不画湿痕）
 local width, height = 0, 0
 
 -- map.state 持久键
@@ -188,6 +192,15 @@ local function tile_for(p)
   return 3 -- 苗期（含播种当天）
 end
 
+-- 由地块数据推导湿度层 tile 值（1=当日已浇的湿痕，0=无）。
+-- 只管有作物的地块：空地（已垦未种）FarmGrid 第 2 列本身就是"湿土"，再叠一层是重复表达。
+local function moist_for(p)
+  if p and p.crop and p.watered_today then
+    return 1
+  end
+  return 0
+end
+
 -- 全量重绘 FarmGrid（切场景恢复 / 日结算后调用）
 -- 防御：farm_id 是模块级缓存，跨场景切换后旧实体 id 可能已被回收/复用
 -- （M18-04 章节 j 实测 `entity has no tilemap`）。判活 + tilemap.get 双重校验，
@@ -199,10 +212,14 @@ local function redraw_all()
   if not entity.is_alive(farm_id) or not tilemap.get(farm_id) then
     return
   end
+  local has_moist = moist_id and entity.is_alive(moist_id) and tilemap.get(moist_id)
   for cx = FARM.x0, FARM.x1 do
     for cy = FARM.y0, FARM.y1 do
-      local v = tile_for(plot_at(cx, cy))
-      tilemap.set_cell(farm_id, cx, cy, v)
+      local p = plot_at(cx, cy)
+      tilemap.set_cell(farm_id, cx, cy, tile_for(p))
+      if has_moist then
+        tilemap.set_cell(moist_id, cx, cy, moist_for(p))
+      end
     end
   end
 end
@@ -459,6 +476,7 @@ function M.init()
   end
   ground_id = entity.find("GroundMap")
   farm_id = entity.find("FarmGrid")
+  moist_id = entity.find("FarmMoist")
   local g = ground_id and tilemap.get(ground_id)
   local f = farm_id and tilemap.get(farm_id)
   local w = (g and g.width) or (f and f.width) or 0
@@ -467,6 +485,7 @@ function M.init()
     log.warn("[farm] 未找到 GroundMap/FarmGrid，农田功能不可用")
     width, height = 0, 0
     farm_id = nil
+    moist_id = nil
     return false
   end
   width, height = w, h
