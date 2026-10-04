@@ -2057,7 +2057,21 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       const match = worldSummary.match(new RegExp(name + '=([^\\s]*)'));
       return match ? match[1] : '';
     };
+    // 瓦片层自对账：`tilemaps=画/声明` 两个读数来自两条独立代码路径（渲染循环实际遍历的层数
+    // / Lua 注册表里的层数），所以它抓的是"overlay 层整层没进画面"这一类静默差异——山庄的
+    // FarmGrid 种田层曾被"只取第一张 Tilemap"的老写法丢掉，PC 有、web/微信无（实机 2026-10-04）。
+    // 字段缺失（产物是旧运行时或这条自报被删）同样算红，不降级成"没数据所以放行"。
+    const tileLayers = worldSummary.match(/tilemaps=(\d+)\/(\d+)/);
+    if (worldSummary && !tileLayers) {
+      failures.push(`运行时没有自报瓦片层数（data-rustlua-world=${worldSummary}）`);
+    } else if (tileLayers && Number(tileLayers[1]) !== Number(tileLayers[2])) {
+      failures.push(`瓦片层只遍历了 ${tileLayers[1]} 层，Lua 侧声明 ${tileLayers[2]} 层` +
+        '（有一整层 overlay 根本没进画面：种田/浇水会表现为"数据在动、画面不变"）');
+    }
     if (driveNewGame) {
+      if (tileLayers && !(Number(tileLayers[2]) >= 1)) {
+        failures.push(`玩法场景一张 Tilemap 都没有（tilemaps=${tileLayers[0]}）——地表/换图数据没进渲染侧`);
+      }
       if (!worldSummary) {
         failures.push('--drive-new-game 后 data-rustlua-world 是空的（运行时没有自报世界状态）');
       } else {

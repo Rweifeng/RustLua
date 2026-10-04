@@ -277,6 +277,17 @@ $uiElements = if ($dom -match 'data-rustlua-ui-elements="(\d+)"' -and $Matches.C
 # `scripts/wechat-minigame-harness.js --drive-new-game ...` 里——两个 web 平台共用同一份
 # `web-runtime.js`，字段含义完全一致，所以这里读到的世界状态可以直接对照它。
 $world = if ($dom -match 'data-rustlua-world="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "" }
+# 瓦片层自对账：`tilemaps=画/声明` 是运行时每帧写的两个**独立来源**读数（渲染循环实际遍历的
+# 层数 / Lua 侧注册表里的层数）。它抓的是"overlay 层整层没进画面"这一类静默差异——山庄的
+# FarmGrid 种田层曾被"只取第一张 Tilemap"的老写法丢掉，PC 有、web 无（实机 2026-10-04）。
+# 字段缺失（产物是旧运行时、或这条自报被删）同样算红：世界自报都在，读数却少一项，
+# 说明门与产物错位，不能降级成"没数据所以放行"。
+$tileDrawn = $null
+$tileDeclared = $null
+if ($world -match 'tilemaps=(\d+)/(\d+)' -and $Matches.Count -gt 1) {
+    $tileDrawn = [int]$Matches[1]
+    $tileDeclared = [int]$Matches[2]
+}
 # P0-①：`?rustlua-drive=auto` 的剧本结果。`done` = 确认 → 进玩法地图 → 位移非零全部发生；
 # `failed` 时 detail 给出卡在哪一步（场景没切换 / 没有玩家位置 / 位移为 0）。
 $driveState = if ($dom -match 'data-rustlua-drive="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "absent" }
@@ -323,6 +334,7 @@ $summary = [ordered]@{
     drawnSamples   = $drawnRaw
     uiElements     = $uiElements
     world          = $world
+    tileLayers     = if ($null -eq $tileDrawn) { "absent" } else { "$tileDrawn/$tileDeclared" }
     drive          = $driveState
     driveDetail    = $driveStateDetail
     driveJhyt      = if ($DriveJhyt) { $driveState } else { "not-requested" }
@@ -342,6 +354,8 @@ Write-Log "boot=$boot missing_host_api=$($missingNames.Count) detail=$detail" $(
 Write-Log "status text: $statusText"
 Write-Log "drawn samples: $(if ($null -eq $drawnRaw) { 'unknown' } else { $drawnRaw }) ui elements: $(if ($null -eq $uiElements) { 'unknown' } else { $uiElements })"
 Write-Log "world: $(if ([string]::IsNullOrWhiteSpace($world)) { '(未自报)' } else { $world })"
+Write-Log "tile_layers: $(if ($null -eq $tileDrawn) { 'absent' } else { "$tileDrawn/$tileDeclared" })" `
+    $(if ($null -eq $tileDrawn) { "Yellow" } elseif ($tileDrawn -ne $tileDeclared) { "Red" } else { "Green" })
 if ($Drive) {
     Write-Log "drive: $driveState detail: $driveStateDetail" $(if ($driveState -eq "done") { "Green" } else { "Yellow" })
 }
@@ -362,6 +376,25 @@ if ($drawnRaw -eq 0) {
     # 启动成功但没有画面：这正是"页面能跑却黑屏"的典型症状，必须显式失败。
     Write-Log "webgl_bundle_blank boot=$boot detail=canvas has no painted pixels" Red
     Exit-With 1
+}
+
+if (-not [string]::IsNullOrWhiteSpace($world)) {
+    if ($null -eq $tileDrawn) {
+        # 世界自报在、读数缺一项 = 运行时与门版本错位（字段被删或产物是旧版），不静默放行。
+        Write-Log "webgl_bundle_tile_layers_missing detail=no tilemaps= field in world report world=$world" Red
+        Exit-With 1
+    }
+    if ($tileDrawn -ne $tileDeclared) {
+        # 渲染循环遍历的层数 ≠ Lua 注册表里的层数 ⇒ 有一整层瓦片根本没进画面（种田/浇水
+        # 这类 overlay 会表现为"数据在动、画面不变"）。
+        Write-Log "webgl_bundle_tile_layers_mismatch drawn=$tileDrawn declared=$tileDeclared world=$world" Red
+        Exit-With 1
+    }
+    if (($Drive -or $DriveJhyt) -and $tileDeclared -lt 1) {
+        # 剧本已经进了玩法地图，那里至少该有一张地表瓦片层；0 层 = 场景没带瓦片或换图没落地。
+        Write-Log "webgl_bundle_tile_layers_empty detail=gameplay scene has no tilemap layer world=$world" Red
+        Exit-With 1
+    }
 }
 
 if ($Drive -and $driveState -ne "done") {

@@ -799,6 +799,10 @@
     ctx.restore();
   }
 
+  // 渲染侧本帧实际遍历到的 Tilemap 层数（与 Lua 侧 `__rustlua_tilemap_layers` 配对自报，
+  // 见世界摘要里的 `tilemaps=画/声明`）。
+  let tileLayersDrawn = 0;
+
   function drawScene(ctx, sceneState, images, projectName, uiText, pending) {
     const canvas = ctx.canvas;
     // 等比适配（contain）：设计画布 1280×720 → 实际 canvas（窗口/屏幕物理像素）。
@@ -830,8 +834,16 @@
     };
     const camZoom = camera ? camera.zoom : 1;
 
-    const tilemapEntity = Array.from(sceneState.entities.values()).find(entity => entity.tilemap);
-    if (tilemapEntity) {
+    // 原生 `append_tilemap_vertices`（frame_data.rs 的 "Tile maps draw first (layer 0)"）遍历
+    // 的是**每一个**挂 Tilemap 的实体，山庄就有两张：GroundMap(1) 夯土打底、FarmGrid(2) 农田
+    // overlay。原先只 `.find()` 第一张 ⇒ 翻土/浇水/出苗在 web 上整层不可见（PC 有，实测
+    // 2026-10-04）。层序按 entity id 升序 = 场景文件里的出现序，与原生那条 ECS 迭代序在
+    // "后声明的层 id 更大"时同序（山庄/云泽村都是这个写法）。
+    const tilemapEntities = Array.from(sceneState.entities.values())
+      .filter(entity => entity.alive && entity.tilemap)
+      .sort((a, b) => a.id - b.id);
+    tileLayersDrawn = tilemapEntities.length;
+    for (const tilemapEntity of tilemapEntities) {
       const map = tilemapEntity.tilemap;
       const origin = tilemapEntity.transform || { x: 0, y: 0 };
       // 地表贴图可能被 Lua 的 tilemap.set_texture 换掉（换季/换图），不能只靠
@@ -842,9 +854,13 @@
         for (let x = 0; x < map.width; x += 1) {
           const i = y * map.width + x;
           const tile = Number(map.tiles[i] || 0);
+          // 瓦片值 0 = **不画**（原生 `build_chunk`：tilemap.rs:40 的 `if cell == 0 { continue }`），
+          // 不是画底色。FarmGrid 初值 920 格全 0，靠的正是"空格透出下层夯土"；这里一旦补底色，
+          // overlay 会把打底那张整个糊掉。纯色格只留给"瓦片有值但贴图还没解出"的首帧兜底。
+          if (tile === 0) continue;
           // 单元格世界矩形 [y*ts, (y+1)*ts]；画布以单元格**上沿**为锚点直绘，无需翻转贴图。
           const cell = toCanvas(origin.x + x * map.tile_size, origin.y + (y + 1) * map.tile_size);
-          if (tileset && tile > 0) {
+          if (tileset) {
             const tileIndex = tile - 1;
             const sx = (tileIndex % columns) * map.tile_size;
             const sy = Math.floor(tileIndex / columns) * map.tile_size;
@@ -2179,6 +2195,23 @@ function __rustlua_world_summary()
       .. (machine and ('/' .. tostring(machine.current)) or '')
   end
   return table.concat(parts, ' ')
+end
+
+-- Tilemap 层数在 **Lua 侧**的读数。渲染侧每帧另报它实际遍历了几层，两个一比就看得出
+-- "场景声明了 overlay 层、渲染器却整层没画"——web 的 FarmGrid 种田层就被只取第一张的
+-- 老写法静默丢掉过（PC 有、web 无，实机 2026-10-04）。两边必须分开取：同一个循环既画
+-- 又计数的话，这个数永远自洽。
+function __rustlua_tilemap_layers()
+  local n = 0
+  for id in pairs(__rustlua_tilemaps or {}) do
+    -- 只数活着的：渲染侧对 entity.destroy 掉的层不再遍历，两边口径必须一致。
+    if __rustlua_alive[id] == true then
+      n = n + 1
+    end
+  end
+  -- 桥的 lua_call_global 只字符串化**返回值是字符串**的调用（见上面 callGlobal 的协议注释），
+  -- 所以这里交出去的是 tostring 后的数，不是裸数字。
+  return tostring(n)
 end
 `;
   }
@@ -3611,10 +3644,13 @@ end
           // 世界状态（场景实体数/地图/落点/存活实体数/主角坐标与当前动画）每帧刷新：
           // 宿主诊断覆盖层与无头验收都读它，"游戏在跑但世界是空的"这类问题不必再猜。
           // scene=/drawn= 由 JS 侧补（场景里声明的实体数、渲染器侧的主角位置），其余由 Lua 侧给。
+          // tilemaps=画/声明 是**两个独立来源**（渲染循环遍历数 / Lua 注册表数），专门盯
+          // "overlay 瓦片层整层没进画面"这一类静默差异（山庄 FarmGrid 种田层，实机 2026-10-04）。
           const drawnPlayer = rendererPlayerState(sceneState);
           const world = 'scene=' + (sceneState.declared || sceneState.entities.size) + ' '
             + String(callGlobal(L, '__rustlua_world_summary') || '')
-            + (drawnPlayer ? ' drawn=' + drawnPlayer : '');
+            + (drawnPlayer ? ' drawn=' + drawnPlayer : '')
+            + ' tilemaps=' + tileLayersDrawn + '/' + (String(callGlobal(L, '__rustlua_tilemap_layers') || '0').trim() || '0');
           body.setAttribute('data-rustlua-world', world.slice(0, 300));
           // ui-now 每帧写**真实** UI 元素数（诊断/剧本判定用；ui-elements 仍 30 帧一更，
           // 只服务宿主诊断覆盖层的低频采样，剧本靠 ui-now 拿到当帧真值）。
