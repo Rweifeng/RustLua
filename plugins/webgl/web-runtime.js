@@ -1759,6 +1759,14 @@ animation = {
     __rustlua_require_alive(id)
     local a = __rustlua_animations[id]
     if not a then error('entity has no animation', 2) end
+    -- 与引擎 AnimationStateMachine::set_state 同构（rustlua-animation/src/animation.rs:266）：
+    -- **片段同名只返回 false，不动 time/ended/frame**；判同名的顺序也在判未知片段之前。
+    -- 游戏侧是"每帧幂等设一次当前片段"的写法（scripts/player/player.lua:285 依赖这条语义，
+    -- 注释里写的"同状态时引擎返回 false"就是它），这里无条件重置时钟等于把动画钉在第 0 帧：
+    -- web 上行走与待机全部定格、贴图照常画，所以既不报错也看不出宿主哪里坏了。
+    if name == a.current then
+      return false
+    end
     local clip = a.clips and a.clips[name]
     if not clip then error('unknown animation clip: ' .. tostring(name), 2) end
     a.current, a.time, a.ended, a.frame = name, 0, false, 0

@@ -248,6 +248,44 @@ cases['light.get.unknown_entity'] = function()
   return 'ok=' .. tostring(pcall(function() light.get(999999) end))
 end
 
+-- ---- animation：幂等 set 的语义（真实分叉已钉住过一次，见下面的注释）----
+--
+-- 游戏侧的写法是**每帧幂等设一次当前片段**（examples/game_jhyt/scripts/player/player.lua 的
+-- `pcall(animation.set, pid, clip)`），它依赖的是引擎 `AnimationStateMachine::set_state`
+-- （rustlua-animation/src/animation.rs:266）的两条性质：同名 → 返回 `false` **且不动时钟**，
+-- 换名 → 返回 `true` 并把 `time/ended/frame` 清零。宿主补丁当初写成"无条件重置后返回 true"，
+-- 于是 web 上行走与待机全部定格在第 0 帧：贴图照常画、`pcall` 吞掉一切，既不报错也看不出
+-- 宿主哪里坏了——正是本门要抓的那类"名字都在、语义分叉"。
+-- 时钟不能从脚本推进（两侧都没有 `animation.step`），所以"不动时钟"这半边靠 `frame=0` 与
+-- `set_same=false` 这对读数间接钉住：补丁只要重置，`set_same` 那一列先红。
+
+cases['animation.set.idempotent'] = function()
+  local id = entity.spawn()
+  local spec = 'default=c_idle;clip:c_idle:assets/c.png:4:8:true;clip:c_walk:assets/c.png:4:8:true'
+  local attached = animation.attach(id, spec)
+  local current_after_attach = animation.get(id)
+  local first = animation.set(id, 'c_walk')
+  local second = animation.set(id, 'c_walk')
+  local frame_after_second = animation.frame(id)
+  local unknown = pcall(function() animation.set(id, 'c_missing') end)
+  -- 未知片段两侧都必须拒绝，且拒绝**不能**把当前状态改掉；报错文案两边不同
+  -- （引擎 `unknown animation state: X` / 补丁 `unknown animation clip: X`），所以只断言 ok 与状态。
+  local current_after_unknown = animation.get(id)
+  entity.destroy(id)
+  return 'attach=' .. tostring(attached) .. '/default=' .. tostring(current_after_attach)
+    .. '/set_new=' .. tostring(first) .. '/set_same=' .. tostring(second)
+    .. '/frame=' .. tostring(frame_after_second)
+    .. '/unknown_ok=' .. tostring(unknown) .. '/after_unknown=' .. tostring(current_after_unknown)
+end
+
+cases['animation.attach.empty'] = function()
+  local id = entity.spawn()
+  local ok = pcall(function() animation.attach(id, '') end)
+  local read_after = select(2, pcall(function() return animation.get(id) end))
+  entity.destroy(id)
+  return 'ok=' .. tostring(ok) .. '/get_after=' .. norm_error(read_after)
+end
+
 -- ---- ui：动态 UI 的注册/读回形状（绘制后端不同，这里只契约"表里有没有这项能力"）----
 
 cases['ui.text.set_get'] = function()
