@@ -854,7 +854,7 @@ def toggle(on):
 #
 # 尺寸与 `scripts/ui/layout.lua` 的 `M.TOUCH` 一一对应（1:1 出图，避免非整数缩放糊边）：
 #   stick base 112 = (base_r 52 + 外圈 4) × 2、knob 42 = knob_r 21 × 2、
-#   玩法按钮 104（交互，右下角主键）/88×4（攻击·背包·任务·暂停）= buttons[i].size、
+#   玩法按钮 112（交互，右下主键，与摇杆轨道同径）/88×4（攻击·背包·任务·暂停）= buttons[i].size、
 #   dpad 64 / confirm 80 / close 44。
 # 改 layout 的 size 要回来同步改这里；对不上的表现是"贴图被缩放"（软边），不会报错。
 # ---------------------------------------------------------------------------
@@ -1341,7 +1341,7 @@ def slice_table():
         "touch": [
             ("ui_touch_stick_base", touch_stick_base(), "112x112 摇杆轨道(中空)", None),
             ("ui_touch_stick_knob", touch_stick_knob(), "42x42 摇杆头", None),
-            ("ui_touch_btn_interact", touch_button(104, BAMBOO500), "104x104 交互(右下角主键)", None),
+            ("ui_touch_btn_interact", touch_button(112, BAMBOO500), "112x112 交互(右下主键,与摇杆同径)", None),
             ("ui_touch_btn_attack", touch_button(88, CINNABAR500), "88x88 攻击", None),
             ("ui_touch_btn_bag", touch_button(88, INDIGO500), "88x88 背包", None),
             ("ui_touch_btn_quest", touch_button(88, TOUCH_VIOLET), "88x88 任务", None),
