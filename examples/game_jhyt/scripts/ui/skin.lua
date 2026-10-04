@@ -101,6 +101,18 @@ M.tex = {
   -- settings 设置（2 张）
   toggle_on = { path = DIR .. "settings/ui_toggle_on_9s.png", slice = "8,8,8,8" },
   toggle_off = { path = DIR .. "settings/ui_toggle_off_9s.png", slice = "8,8,8,8" },
+  -- touch 触屏控件（10 张）：直径 = `layout.TOUCH` 各项的 size/base_r 换算，
+  -- 所以**全部按 1:1 画、不走 9-slice**（缩放会糊掉 1px 描边，见 gen_ui_art.py TOUCH 节）。
+  touch_stick_base = { path = DIR .. "touch/ui_touch_stick_base.png" },
+  touch_stick_knob = { path = DIR .. "touch/ui_touch_stick_knob.png" },
+  touch_btn_interact = { path = DIR .. "touch/ui_touch_btn_interact.png" },
+  touch_btn_attack = { path = DIR .. "touch/ui_touch_btn_attack.png" },
+  touch_btn_bag = { path = DIR .. "touch/ui_touch_btn_bag.png" },
+  touch_btn_quest = { path = DIR .. "touch/ui_touch_btn_quest.png" },
+  touch_btn_pause = { path = DIR .. "touch/ui_touch_btn_pause.png" },
+  touch_dpad = { path = DIR .. "touch/ui_touch_dpad.png" },
+  touch_confirm = { path = DIR .. "touch/ui_touch_confirm.png" },
+  touch_close = { path = DIR .. "touch/ui_touch_close.png" },
   -- logo 标题（1 张）
   title_logo = { path = DIR .. "logo/ui_title_logo.png" }
 }

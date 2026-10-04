@@ -1,8 +1,12 @@
 -- virtual_pad.lua：触屏虚拟摇杆 + 虚拟按钮（世界区左右下角）。
 --
--- 几何**不在这里**：坐标、半径、拾取余量、死区全部来自 `ui/layout.lua` 的 `M.TOUCH`
--- （与 `M.PANEL` 同源），并由 `layout.audit_touch()` 守住三条承诺——整圆不越出设计画布、
--- 控件互不重叠、不压右栏文字与底部键位提示。这里只负责"读几何 + 注入虚拟键 + 画"。
+-- 几何**不在这里**：坐标、半径、拾取余量、死区、切图键全部来自 `ui/layout.lua` 的
+-- `M.TOUCH`（与 `M.PANEL` 同源），并由 `layout.audit_touch()` 守住三条承诺——整圆不越出
+-- 设计画布、控件互不重叠、不压右栏文字与底部键位提示。这里只负责"读几何 + 注入虚拟键 + 画"。
+--
+-- 外观分三层（顺序**只依赖图元类型**，见 `M.draw` 头注释）：
+--   `ui.circle` 底衬（按下提亮 + 缺图时的兜底）→ `ui.image` 漆面盘（`ui/skin.lua` 的
+--   touch 组，由 `tools/gen_ui_art.py` 的 TOUCH 节生成）→ `ui_text` 标签。
 --
 -- 为什么不各自手写坐标（曾经就是这么写的，实机截图暴露了两个静默错误）：
 --   * `x = 1180 / r = 46` → 右缘 1226，窗口一旦不是 1280 宽就被切掉；
@@ -15,6 +19,7 @@
 -- 因此本模块不必每帧重发（重发也无害）。
 local ui_text = require("ui.ui_text")
 local layout = require("ui.layout")
+local skin = require("ui.skin")
 -- 面板模式判定（背包/任务/暂停/商店/对话 = 非 Playing）：十字键只在面板模式接管。
 local state = require("core.state")
 
@@ -77,13 +82,15 @@ local panel_active = false
 -- 十字键同屏）。ui.clear 对不存在的 id 安全；文本走 `ui_text.hide`（它会同步
 -- ui.hide + 登记表，直接 ui.clear 不认普通文本条目）。
 local function clear_play_ui()
-  for _, id in ipairs({ "vp:stick_ring", "vp:stick_base", "vp:stick_knob" }) do
+  for _, id in ipairs({
+    "vp:stick_ring", "vp:stick_base", "vp:stick_plate", "vp:stick_knob_bg", "vp:stick_knob",
+  }) do
     ui.clear(id)
   end
   for index = 1, #BUTTONS do
     ui.clear("vp:ring" .. index)
     ui.clear("vp:btn" .. index)
-    ui.clear("vp:hl" .. index)
+    ui.clear("vp:plate" .. index)
     ui_text.hide("vp", "vp:lbl" .. index)
   end
   ui_text.hide("vp", "vp:dbg")
@@ -92,14 +99,27 @@ end
 local function clear_panel_ui()
   ui.clear("vp:close_ring")
   ui.clear("vp:close_btn")
+  ui.clear("vp:close_plate")
   ui_text.hide("vp", "vp:close_x")
   for index = 1, #DPAD_KEYS do
     ui.clear("vp:dring" .. index)
     ui.clear("vp:dbtn" .. index)
+    ui.clear("vp:dplate" .. index)
     ui_text.hide("vp", "vp:dlbl" .. index)
   end
   ui_text.hide("vp", "vp:dbg")
 end
+
+-- 漆面盘：`size` = 直径，按 1:1 画在控件中心（切图本身就是这个直径，缩放会糊掉 1px 描边）。
+-- `art_key` 没登记时 `skin.icon` 自己 no-op，底下那层 `ui.circle` 底衬就是兜底——
+-- 触屏控件"看不见"等于玩不了，所以宁可退回纯色圆盘也不能没有。
+local function draw_plate(id, cx, cy, size, art_key)
+  skin.icon(id, cx - size / 2, cy - size / 2, size, size, art_key)
+end
+
+-- 按下态的光晕圈色（GOLD500 #C9A05A）：circle 是 panel、盘是 image，drawUi 固定
+-- panels 先画 ⇒ 这圈只在盘外那 3px 露出来，正好是"描金边"的位置。
+local HALO = { 0.79, 0.63, 0.35 }
 
 local function in_circle(px, py, cx, cy, r)
   local dx, dy = px - cx, py - cy
@@ -216,8 +236,27 @@ local function host_function(api, name)
   return type(rawget(api, name)) == "function"
 end
 
+-- 这台宿主需不需要屏上触屏控件（= 没有键盘）。
+--
+-- 为什么**不能**用"宿主有没有实现 `input.virtual_key`"来判：那四条 API 由引擎
+-- `api::register_all` 在所有宿主统一注册（wasm 与桌面是同一份实现，L1 注册层锁的正是
+-- "41 表 / 275 函数逐项相同"），桌面也全有 ⇒ 判能力恒为真，桌面版就一直画着摇杆和
+-- 五个大按钮（实测截图：右下半屏被手指控件盖住，而键鼠根本用不到它们）。
+-- 判平台用 `app.platform()`（桌面 `"desktop"`、浏览器/微信 `"webgl"`）。
+--
+-- 判定失败的一侧刻意选在"画"：触屏设备没有键盘，摇杆没了就是**玩不了**；
+-- 而多画一次只是难看。所以只有明确报告 `"desktop"`（或整个 `app.platform` 缺失的
+-- 旧宿主按"报告不了=不是桌面"处理）才收掉。
+local function touch_host()
+  if app == nil or type(rawget(app, "platform")) ~= "function" then
+    return true
+  end
+  return app.platform() ~= "desktop"
+end
+
 function M.available()
-  return host_function(input, "virtual_key")
+  return touch_host()
+    and host_function(input, "virtual_key")
     and host_function(input, "virtual_pressed")
     and host_function(input, "mouse_just_released")
     and host_function(ui, "circle")
@@ -309,7 +348,17 @@ function M.update()
       if len > max then
         dx, dy = dx / len * max, dy / len * max
       end
-      stick_dx, stick_dy = dx, dy
+      -- 杆头的**视觉**偏移单独夹进 `knob_travel`，让它待在轨道切图那个透明孔里
+      -- （两张 ui.image 之间没有顺序保证，重叠就会有一帧被埋，见 `layout.TOUCH.stick`）。
+      -- 方向阈值**必须**继续用上面那份 `base_r` 全行程的 dx/dy：斜向推到底时视觉偏移
+      -- 只剩 25/52 ≈ 48%，拿它比阈值会让对角方向在满推时凭空消失。
+      local vdx, vdy = dx, dy
+      local travel = STICK.knob_travel or max
+      local vlen = math.sqrt(vdx * vdx + vdy * vdy)
+      if vlen > travel then
+        vdx, vdy = vdx / vlen * travel, vdy / vlen * travel
+      end
+      stick_dx, stick_dy = vdx, vdy
       set_dir("up", dy < -STICK_DEADZONE * max)
       set_dir("down", dy > STICK_DEADZONE * max)
       set_dir("left", dx < -STICK_DEADZONE * max)
@@ -338,25 +387,25 @@ function M.draw()
   end
   ui_text.begin("vp")
 
-  -- 面板模式：只画十字键（方向键用 system 灰、中央确定用 primary 绿；按下提亮）
+  -- 面板模式：只画十字键（方向键墨底、中央确定竹青；按下提亮 + 描金光晕）
   -- 与右上角关闭按钮（×）。
   if not state.is_mode("Playing") then
     local cg = close_geometry()
     local c_radius = cg.size / 2
     local c_pressed = close_down
     local c_cc = COLORS.system
-    ui.circle("vp:close_ring", cg.x, cg.y, c_radius + 3, 0.95, 0.95, 0.95, c_pressed and 0.42 or 0.30)
-    ui.circle("vp:close_btn", cg.x, cg.y, c_radius, c_cc[1], c_cc[2], c_cc[3], c_pressed and 0.92 or 0.78)
+    ui.circle("vp:close_ring", cg.x, cg.y, c_radius + 3, HALO[1], HALO[2], HALO[3], c_pressed and 0.62 or 0.16)
+    ui.circle("vp:close_btn", cg.x, cg.y, c_radius, c_cc[1], c_cc[2], c_cc[3], c_pressed and 0.85 or 0.55)
+    draw_plate("vp:close_plate", cg.x, cg.y, cg.size, CLOSE.art)
     local cfont = math.max(11, c_radius * 0.62)
     ui_text.draw("vp", "vp:close_x", cg.x - half_width("×", cfont), cg.y - cfont * 0.5, cfont, cg.size, "×")
     for index, key in ipairs(DPAD_KEYS) do
       local pressed = dpad_down[index]
       local radius = key.size / 2
       local color = (key.key == "confirm") and COLORS.primary or COLORS.system
-      local ring_alpha = pressed and 0.42 or 0.30
-      local body_alpha = pressed and 0.92 or 0.78
-      ui.circle("vp:dring" .. index, key.x, key.y, radius + 3, 0.95, 0.95, 0.95, ring_alpha)
-      ui.circle("vp:dbtn" .. index, key.x, key.y, radius, color[1], color[2], color[3], body_alpha)
+      ui.circle("vp:dring" .. index, key.x, key.y, radius + 3, HALO[1], HALO[2], HALO[3], pressed and 0.62 or 0.16)
+      ui.circle("vp:dbtn" .. index, key.x, key.y, radius, color[1], color[2], color[3], pressed and 0.85 or 0.55)
+      draw_plate("vp:dplate" .. index, key.x, key.y, key.size, key.art)
       local label = key.label or ""
       local font = math.max(11, radius * 0.42)
       ui_text.draw("vp", "vp:dlbl" .. index, key.x - half_width(label, font), key.y - font * 0.5, font, radius * 2, label)
@@ -367,46 +416,46 @@ function M.draw()
     return
   end
 
-  -- 摇杆：亮白外圈（深色地面上也清晰）+ 提亮底圆 + 摇杆头。
-  -- 编辑器实测：旧配色（0.15/0.25/0.55 深灰蓝、alpha 0.45）叠在深灰地面/建筑上几乎隐形，
-  -- 微信深色场景同理。外圈改用亮灰白（对比深色地面靠**亮度差**而非透明度差）。
-  local stick_alpha = stick_active and 0.8 or 0.62
-  ui.circle("vp:stick_ring", STICK.cx, STICK.cy, STICK.base_r + 4, 0.88, 0.88, 0.92, stick_alpha)
-  ui.circle("vp:stick_base", STICK.cx, STICK.cy, STICK.base_r, 0.34, 0.34, 0.40, stick_alpha)
-  ui.circle(
-    "vp:stick_knob",
-    STICK.cx + stick_dx,
-    STICK.cy + stick_dy,
-    STICK.knob_r,
-    0.78, 0.78, 0.86, 0.92
-  )
+  -- 摇杆与按钮的可见性分三层，**层序只依赖图元类型**：
+  --   `ui.circle`（panel）→ `ui.image`（漆面盘）→ `ui_text`（标签）。
+  -- 为什么不能按调用顺序排：`__rustlua_export_ui` 用 Lua `pairs` 遍历四张表
+  -- （web-runtime.js:1930-1948），同一张表内**没有顺序保证**；旧写法把 ring / base /
+  -- knob 三张都画成 circle，全靠哈希序碰巧没翻车。而 drawUi 是 panels → images →
+  -- bars → texts 的固定顺序（web-runtime.js:564-599），跨类型分层就是确定性的。
+  -- 底衬 circle 的第二个身份是**兜底**：切图没加载出来（首帧异步、微信弱网）时，
+  -- 屏上仍有一个能按的深色圆盘。
+  local stick_r = STICK.base_r + 4
+  ui.circle("vp:stick_ring", STICK.cx, STICK.cy, stick_r + 3, HALO[1], HALO[2], HALO[3],
+    stick_active and 0.50 or 0.14)
+  ui.circle("vp:stick_base", STICK.cx, STICK.cy, stick_r, 0.12, 0.14, 0.16,
+    stick_active and 0.52 or 0.34)
+  draw_plate("vp:stick_plate", STICK.cx, STICK.cy, stick_r * 2, STICK.art)
+  -- 杆头：底衬 + 漆面。偏移已在 update 里夹进 `knob_travel`（轨道的透明孔内）。
+  local knob_x, knob_y = STICK.cx + stick_dx, STICK.cy + stick_dy
+  ui.circle("vp:stick_knob_bg", knob_x, knob_y, STICK.knob_r, 0.16, 0.18, 0.21, 0.70)
+  draw_plate("vp:stick_knob", knob_x, knob_y, STICK.knob_r * 2, STICK.knob_art)
 
-  -- 按钮：外圈描边 + 主体 + 左上高光 + 居中标签（按下提亮）。
+  -- 按钮：底衬圆盘（按下提亮）+ 漆面盘 + 描金光晕 + 居中标签。
   for index, btn in ipairs(BUTTONS) do
     local pressed = button_down[index]
     local radius = btn.size / 2
     local color = BUTTON_COLOR[btn.key] or COLORS.system
-    -- 对比度：body 0.55→0.78、ring 0.15→0.30（旧值在编辑器浅色场景上显得"只有轮廓、虚"）
-    local ring_alpha = pressed and 0.42 or 0.30
-    local body_alpha = pressed and 0.92 or 0.78
-    ui.circle("vp:ring" .. index, btn.x, btn.y, radius + 3, 0.95, 0.95, 0.95, ring_alpha)
-    ui.circle("vp:btn" .. index, btn.x, btn.y, radius, color[1], color[2], color[3], body_alpha)
-    ui.circle(
-      "vp:hl" .. index,
-      btn.x - radius * 0.3,
-      btn.y - radius * 0.3,
-      radius * 0.25,
-      1.0, 1.0, 1.0, 0.25
-    )
-    -- 标签：字号随按钮直径缩放（`size × 0.21`，下限 11；见 `layout.TOUCH` 注释）。
-    -- M30 自检只认字面量/可解析常量字号，故按 layout 尺寸换算成每键字面量
-    -- （108/84/72/80/68 → 22/17/15/16/14）；几何全部仍读 `layout.TOUCH.buttons`。
+    ui.circle("vp:ring" .. index, btn.x, btn.y, radius + 3, HALO[1], HALO[2], HALO[3],
+      pressed and 0.62 or 0.16)
+    ui.circle("vp:btn" .. index, btn.x, btn.y, radius, color[1], color[2], color[3],
+      pressed and 0.85 or 0.55)
+    draw_plate("vp:plate" .. index, btn.x, btn.y, btn.size, btn.art)
+    -- 标签：字号 = 直径 × 0.21（下限 11；见 `layout.TOUCH` 注释）。五个按钮现在同为
+    -- 88 直径 ⇒ 字号也统一成 18。M30 自检只认字面量/可解析常量字号，所以写成字面量；
+    -- 几何全部仍读 `layout.TOUCH.buttons`。
+    -- 左缘 = `cx - 实测半宽`：居中依赖 `ui.measure_text` 量得**真宽**——web 宿主原先按
+    -- 「0.6 × 字号 × 字数」估算，两字 18px 估成 21.6 而真宽 36，标签会右偏 7px。
     local b1, b2, b3, b4, b5 = BUTTONS[1], BUTTONS[2], BUTTONS[3], BUTTONS[4], BUTTONS[5]
-    ui_text.draw("vp", "vp:lbl1", b1.x - half_width(b1.label, 22), b1.y - 22 * 0.5, 22, b1.size, b1.label)
-    ui_text.draw("vp", "vp:lbl2", b2.x - half_width(b2.label, 17), b2.y - 17 * 0.5, 17, b2.size, b2.label)
-    ui_text.draw("vp", "vp:lbl3", b3.x - half_width(b3.label, 15), b3.y - 15 * 0.5, 15, b3.size, b3.label)
-    ui_text.draw("vp", "vp:lbl4", b4.x - half_width(b4.label, 16), b4.y - 16 * 0.5, 16, b4.size, b4.label)
-    ui_text.draw("vp", "vp:lbl5", b5.x - half_width(b5.label, 14), b5.y - 14 * 0.5, 14, b5.size, b5.label)
+    ui_text.draw("vp", "vp:lbl1", b1.x - half_width(b1.label, 18), b1.y - 18 * 0.5, 18, b1.size, b1.label)
+    ui_text.draw("vp", "vp:lbl2", b2.x - half_width(b2.label, 18), b2.y - 18 * 0.5, 18, b2.size, b2.label)
+    ui_text.draw("vp", "vp:lbl3", b3.x - half_width(b3.label, 18), b3.y - 18 * 0.5, 18, b3.size, b3.label)
+    ui_text.draw("vp", "vp:lbl4", b4.x - half_width(b4.label, 18), b4.y - 18 * 0.5, 18, b4.size, b4.label)
+    ui_text.draw("vp", "vp:lbl5", b5.x - half_width(b5.label, 18), b5.y - 18 * 0.5, 18, b5.size, b5.label)
   end
 
   if debug_text then

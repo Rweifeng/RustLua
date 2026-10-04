@@ -107,59 +107,84 @@ M.PANEL = {
 --     底部键位提示）的包围盒相交——手指不和文案抢地方。
 --
 -- 落位（设计画布 1280×720，横屏）：
---   * 摇杆在**世界左下角**（左拇指）。世界区 0..1000 内没有 HUD 文字，只有底部
---     键位提示行（y 648..678）且它只占左侧文字宽度（约 x≤690）；
---   * 动作按钮簇在**世界右下角**（右拇指），按 L 形排布：直角交点在**交互**（最大），
---     竖臂沿 x≈1170 向上串「攻击 → 背包」，横臂沿 y=635 向左串「任务 → 暂停」。
---     七日目标/动作反馈两行已挪到**左上角**（右栏腾空），L 整体贴住屏幕右下角：
---     右缘 1229、下缘 689，仍在设计画布 1280×720 内。
+--   * 摇杆在**世界左下角**（左拇指）。世界区 0..1000 内只有底部键位通栏一行；
+--   * 动作按钮簇在**世界右下角**（右拇指），**一排五键、等直径（88）+ 等距（112）**，
+--     整排贴住右下角（右缘/下缘各留 20）：从右往左「交互 → 攻击 → 背包 → 任务 → 暂停」，
+--     整排 x 724..1260、y 612..700，四边都在画布内。
+--     七日目标/动作反馈两行已挪到**左上角**（右栏腾空），底部键位通栏只到 x=696，
+--     所以这一排的左端刚好停在它右边。上一版两行网格里的"上排 y=500"是为了躲
+--     招式栏（234..282）；收成一排后整条带都在 612 以下，那条约束不再存在。
 M.TOUCH = {
   -- 摇杆：底圆 52 + 外圈 4 = 56（按钮簇最近处距摇杆圆心 776，不会误触）。
-  stick = { cx = 150, cy = 585, base_r = 52, knob_r = 21 },
+  -- `hole_r` / `knob_travel` 是**切图契约**，不是可调手感：
+  --   hole_r = 45 → `tools/gen_ui_art.py` 的 `touch_stick_base` 透明孔半径（改了要重出图）；
+  --   knob_travel = 25 → 杆头**视觉**偏移上限。`ui.image` 的多条记录在
+  --   `__rustlua_export_ui` 里走 Lua `pairs`（web-runtime.js:1935），同表内没有绘制顺序
+  --   保证，所以轨道与杆头两张图必须几何上不相交：杆头画出的半径是 18（42 画布留
+  --   描边），18 + 25 = 43 < 45 ⇒ 永远在孔内，谁盖谁都一样。
+  --   手指仍按 `base_r` 全行程推（方向阈值不变），只是杆头到孔边就停。
+  stick = {
+    cx = 150, cy = 585, base_r = 52, knob_r = 21,
+    hole_r = 45, knob_travel = 25,
+    art = "touch_stick_base", knob_art = "touch_stick_knob",
+  },
   -- 拾取半径比视觉半径大 30：手指落在圈外一点也能推杆（触屏手感）。
   stick_grab_extra = 30,
   -- 方向阈值：占最大偏移的比例（0.35 ≈ 推过 1/3 才算该方向）。
   stick_deadzone = 0.35,
   -- 虚拟按钮。size = 直径；半径一律由 `size / 2` 推导（不再两处手抄半径/直径）。
-  -- 触控目标直径都 ≥ 58，两两圆距 ≥ 6px，满足"最小可点面积"与"不误触"。
   --
-  -- 七日目标/动作反馈已挪到左上角，右栏不再限制按钮 x 上界；唯一约束是画布
-  -- 1280×720 与底部键位提示行（hud_keys y 648..678、x 24..696，横臂整体在其右侧）。
-  -- L 形贴右下角：交互在直角交点（最大，最贴右拇指），竖臂向上串「攻击 → 背包」，
-  -- 横臂向左串「任务 → 暂停」，两两圆距 ≥ 6px 不误触。尺寸与上一版一致。
+  -- **一排五键、等直径 88、等距 112（圆间隙 24），整排对齐右下角**：右缘留 20、下缘留 20
+  -- ⇒ 圆心 x = 768/880/992/1104/1216、y = 656，整排占 x 724..1260、y 612..700。
+  -- 从右往左按使用频率排（交互 → 攻击 → 背包 → 任务 → 暂停），「交互」落在右拇指默认位。
+  -- 上一版是两行 3+2 网格；收成一排后底部只剩这一条横带，与底部键位通栏
+  -- （`TOUCH_KEEP_CLEAR.hud_keys`，x ≤ 696）仍不交叠，但**余量只有 28**（圆左缘 724）
+  -- ——再加第六个键（音距 112）就会压上引导文字行，`audit_touch` ③ 直接判红。
+  -- 88 的下限是拇指触点（≈ 9 mm，1280×720 设计空间里约 78 px），间隙 24 保证相邻
+  -- 两键不会同时被按住。
+  --
+  -- `art` = `ui/skin.lua` 的贴图键，**直径必须等于 size**（1:1 出图，非整数缩放会糊边，
+  -- 见 `tools/gen_ui_art.py` 的 TOUCH 节头）。改 size 要同步改生成器并重出切图。
   buttons = {
-    { key = "keye", label = "交互", x = 1175, y = 635, size = 108 },
-    { key = "keyj", label = "攻击", x = 1165, y = 480, size = 84 },
-    { key = "keyi", label = "背包", x = 1175, y = 360, size = 72 },
-    { key = "keyl", label = "任务", x = 1005, y = 635, size = 80 },
-    { key = "keyp", label = "暂停", x = 855, y = 635, size = 68 },
+    { key = "keye", label = "交互", x = 1216, y = 656, size = 88, art = "touch_btn_interact" },
+    { key = "keyj", label = "攻击", x = 1104, y = 656, size = 88, art = "touch_btn_attack" },
+    { key = "keyi", label = "背包", x = 992, y = 656, size = 88, art = "touch_btn_bag" },
+    { key = "keyl", label = "任务", x = 880, y = 656, size = 88, art = "touch_btn_quest" },
+    { key = "keyp", label = "暂停", x = 768, y = 656, size = 88, art = "touch_btn_pause" },
   },
   -- 面板导航十字键（DPad + 中央确定）：只在**面板模式**显示（背包/任务/暂停/商店/对话），
-  -- 与玩法按钮簇（L 形）不同屏，因此 `audit_touch` 按 group 分组：同组才查互不重叠，
-  -- 越界与"不压右栏文字/键位提示"对全部圆生效。中央 ok 直径 80，四方向直径 64，
+  -- 与玩法按钮簇（一排）不同屏，因此 `audit_touch` 按 group 分组：同组才查互不重叠，
+  -- 越界与"不压右栏文字/资源条"对全部圆生效。中央 ok 直径 80，四方向直径 64，
   -- 两两圆心距 84..90（≥ 半径和 + 12）；右缘 1276、下缘 707 都在设计画布内。
-  -- 位置：屏幕右下角（右拇指），与 L 形按钮同区域——面板打开时按钮簇隐藏，DPad 顶替。
+  -- 位置：屏幕右下角（右拇指），与按钮排同区域（玩法排的 y 带与之重叠）——面板打开时
+  -- 按钮簇隐藏、DPad 顶替，所以跨组不查重叠是**有前提的**：面板态必须真的隐藏玩法排。
   dpad = {
     keys = {
-      { dir = "up", label = "上", x = 1160, y = 495, size = 64 },
-      { dir = "down", label = "下", x = 1160, y = 675, size = 64 },
-      { dir = "left", label = "左", x = 1076, y = 585, size = 64 },
-      { dir = "right", label = "右", x = 1244, y = 585, size = 64 },
-      { key = "confirm", label = "确定", x = 1160, y = 585, size = 80 },
+      { dir = "up", label = "上", x = 1160, y = 495, size = 64, art = "touch_dpad" },
+      { dir = "down", label = "下", x = 1160, y = 675, size = 64, art = "touch_dpad" },
+      { dir = "left", label = "左", x = 1076, y = 585, size = 64, art = "touch_dpad" },
+      { dir = "right", label = "右", x = 1244, y = 585, size = 64, art = "touch_dpad" },
+      { key = "confirm", label = "确定", x = 1160, y = 585, size = 80, art = "touch_confirm" },
     },
   },
   -- 关闭按钮（×）：只在面板模式显示，位置 = **当前面板矩形右上角内侧**，不写死——
   -- 由 virtual_pad 按 `rect.x + rect.w - dx, rect.y + dy` 推算（modal 面板与对话面板
   -- 矩形不同）。audit_touch 用 inventory（modal 代表）与 dialogue 两个位置做
   -- 越界 / 不压右栏文字 / 与 DPad 不重叠检查（quest/pause/shop 与 inventory 同矩形）。
-  close = { dx = 56, dy = 64, size = 44 },
+  close = { dx = 56, dy = 64, size = 44, art = "touch_close" },
   -- 按钮配色（语义 → RGB；绘制端只读这里，不再各自硬编码）。
+  --
+  -- 这一层现在只是**底衬圆盘**的颜色（贴图缺失时的兜底 + 透过半透明漆面的一层底色），
+  -- 所以一律取 docs/35 色板压暗一档：`ui.text` 在两个宿主都固定白色（web-runtime.js
+  -- drawUi 里 `fillStyle = '#ffffff'`，没有颜色参数），底衬一旦偏亮，"交互/攻击"就糊。
+  -- 切图上的漆圈色（竹青/朱砂/靛青/紫/云灰）在 `gen_ui_art.py` 的 touch 表里，两处
+  -- 是同一语义的两种介质，不需要逐值相等，但**别把这里改亮**。
   button_color = {
-    primary = { 0.25, 0.55, 0.35 },   -- 交互 / DPad 确定
-    combat = { 0.65, 0.30, 0.25 },    -- 攻击
-    panel = { 0.30, 0.40, 0.60 },     -- 背包
-    log = { 0.45, 0.40, 0.65 },       -- 任务
-    system = { 0.40, 0.40, 0.42 },    -- 暂停 / DPad 方向键
+    primary = { 0.30, 0.42, 0.25 },   -- 交互 / DPad 确定（竹青）
+    combat = { 0.55, 0.22, 0.16 },    -- 攻击（朱砂）
+    panel = { 0.24, 0.35, 0.52 },     -- 背包（靛青）
+    log = { 0.42, 0.33, 0.55 },       -- 任务（紫）
+    system = { 0.24, 0.27, 0.30 },    -- 暂停 / DPad 方向键 / 关闭（墨）
   },
 }
 
@@ -271,11 +296,13 @@ local function circles_overlap(a, b)
   return dx * dx + dy * dy < rr * rr
 end
 
--- 返回 (是否通过, 问题列表)。检查（对应文件头 `M.TOUCH` 的三条承诺）：
+-- 返回 (是否通过, 问题列表)。检查（对应文件头 `M.TOUCH` 的三条承诺 + 切图两条）：
 --   ① 每个控件（摇杆底圆 + 外圈、每个按钮的视觉圆）是设计画布内的**整圆**，
 --      `cx - r >= 0`、`cx + r <= DESIGN_W`、y 同理 —— 越界等于被窗口切掉；
 --   ② 控件两两不重叠（相交即误触）；
---   ③ 控件不与 `M.TOUCH_KEEP_CLEAR` 里右栏文字/资源条/键位提示的包围盒重叠。
+--   ③ 控件不与 `M.TOUCH_KEEP_CLEAR` 里右栏文字/资源条/键位提示的包围盒重叠；
+--   ④ 每个控件的 `art` 键在 `ui/skin.lua` 注册表里真实存在（拼错=静默不画）；
+--   ⑤ 摇杆轨道孔半径与杆头行程自洽（杆头不得压到轨道切图）。
 function M.audit_touch()
   local issues = {}
   local touch = M.TOUCH
@@ -410,6 +437,57 @@ function M.audit_touch()
             target.box.x, target.box.y, target.box.w, target.box.h
           )
         end
+      end
+    end
+  end
+
+  -- ④ 每个控件的切图键必须在 `ui/skin.lua` 的注册表里真实存在。
+  --    为什么值得守：`skin.icon` 对未知 key 是**静默 no-op**（它只能什么都不画），
+  --    于是"改了个拼写"的表现是屏上只剩底衬圆盘、没有任何报错——正是这一族
+  --    "画了但看不见"的老路。
+  -- ⑤ 摇杆轨道/杆头的几何契约（`hole_r`、`knob_travel` 与 gen_ui_art.py 同源）。
+  local art_keys = {}
+  if type(stick) == "table" then
+    art_keys[#art_keys + 1] = { name = "touch.stick.art", key = stick.art }
+    art_keys[#art_keys + 1] = { name = "touch.stick.knob_art", key = stick.knob_art }
+    local hole = tonumber(stick.hole_r) or 0
+    local travel = tonumber(stick.knob_travel) or 0
+    local outer = (tonumber(stick.base_r) or 0) + 4
+    if not (hole > 0 and hole < outer) then
+      issues[#issues + 1] = string.format(
+        "layout.TOUCH.stick.hole_r=%.0f 必须在 0 与视觉外圈 %.0f 之间：轨道（切图里的漆圈）会退化或被切掉",
+        hole, outer
+      )
+    end
+    if travel > hole then
+      issues[#issues + 1] = string.format(
+        "layout.TOUCH.stick.knob_travel=%.0f 大于孔半径 hole_r=%.0f：杆头会压到轨道切图，"
+        .. "而两张 ui.image 没有绘制顺序保证（会被随机埋掉一半）",
+        travel, hole
+      )
+    end
+  end
+  for index, btn in ipairs(touch.buttons or {}) do
+    art_keys[#art_keys + 1] = {
+      name = string.format("touch.buttons[%d](%s).art", index, tostring(btn.label or btn.key)),
+      key = btn.art,
+    }
+  end
+  for index, key in ipairs((touch.dpad or {}).keys or {}) do
+    art_keys[#art_keys + 1] = {
+      name = string.format("touch.dpad.keys[%d](%s).art", index, tostring(key.dir or key.key or key.label)),
+      key = key.art,
+    }
+  end
+  if type(close) == "table" then
+    art_keys[#art_keys + 1] = { name = "touch.close.art", key = close.art }
+  end
+  local ok_skin, skin = pcall(require, "ui.skin")
+  if ok_skin and type(skin) == "table" and type(skin.tex) == "table" then
+    for _, entry in ipairs(art_keys) do
+      if type(entry.key) ~= "string" or skin.tex[entry.key] == nil then
+        issues[#issues + 1] = "layout." .. entry.name .. " 未在 ui/skin.lua 注册（"
+          .. tostring(entry.key) .. "）：`skin.icon` 会静默 no-op，盘就没了"
       end
     end
   end

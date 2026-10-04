@@ -218,6 +218,22 @@
         "common/ui_tab_on_9s.png",
         "common/ui_tab_off_9s.png"
       ]
+    },
+    "touch": {
+      "title": "TOUCH / 触屏控件（摇杆 + 虚拟按钮）",
+      "files": [
+        "touch/ui_touch_stick_base.png",
+        "touch/ui_touch_stick_knob.png",
+        "touch/ui_touch_btn_interact.png",
+        "touch/ui_touch_btn_attack.png",
+        "touch/ui_touch_btn_bag.png",
+        "touch/ui_touch_btn_quest.png",
+        "touch/ui_touch_btn_pause.png",
+        "touch/ui_touch_dpad.png",
+        "touch/ui_touch_confirm.png",
+        "touch/ui_touch_close.png"
+      ],
+      "uses_common": []
     }
   },
   "assets": [
@@ -993,6 +1009,86 @@
         8,
         8
       ]
+    },
+    {
+      "module": "touch",
+      "name": "ui_touch_stick_base",
+      "path": "assets/art/ui/jianghu/touch/ui_touch_stick_base.png",
+      "size": "112x112",
+      "spec": "112x112 摇杆轨道(中空)",
+      "nine_slice": null
+    },
+    {
+      "module": "touch",
+      "name": "ui_touch_stick_knob",
+      "path": "assets/art/ui/jianghu/touch/ui_touch_stick_knob.png",
+      "size": "42x42",
+      "spec": "42x42 摇杆头",
+      "nine_slice": null
+    },
+    {
+      "module": "touch",
+      "name": "ui_touch_btn_interact",
+      "path": "assets/art/ui/jianghu/touch/ui_touch_btn_interact.png",
+      "size": "88x88",
+      "spec": "88x88 交互",
+      "nine_slice": null
+    },
+    {
+      "module": "touch",
+      "name": "ui_touch_btn_attack",
+      "path": "assets/art/ui/jianghu/touch/ui_touch_btn_attack.png",
+      "size": "88x88",
+      "spec": "88x88 攻击",
+      "nine_slice": null
+    },
+    {
+      "module": "touch",
+      "name": "ui_touch_btn_bag",
+      "path": "assets/art/ui/jianghu/touch/ui_touch_btn_bag.png",
+      "size": "88x88",
+      "spec": "88x88 背包",
+      "nine_slice": null
+    },
+    {
+      "module": "touch",
+      "name": "ui_touch_btn_quest",
+      "path": "assets/art/ui/jianghu/touch/ui_touch_btn_quest.png",
+      "size": "88x88",
+      "spec": "88x88 任务",
+      "nine_slice": null
+    },
+    {
+      "module": "touch",
+      "name": "ui_touch_btn_pause",
+      "path": "assets/art/ui/jianghu/touch/ui_touch_btn_pause.png",
+      "size": "88x88",
+      "spec": "88x88 暂停",
+      "nine_slice": null
+    },
+    {
+      "module": "touch",
+      "name": "ui_touch_dpad",
+      "path": "assets/art/ui/jianghu/touch/ui_touch_dpad.png",
+      "size": "64x64",
+      "spec": "64x64 面板十字键",
+      "nine_slice": null
+    },
+    {
+      "module": "touch",
+      "name": "ui_touch_confirm",
+      "path": "assets/art/ui/jianghu/touch/ui_touch_confirm.png",
+      "size": "80x80",
+      "spec": "80x80 面板确定",
+      "nine_slice": null
+    },
+    {
+      "module": "touch",
+      "name": "ui_touch_close",
+      "path": "assets/art/ui/jianghu/touch/ui_touch_close.png",
+      "size": "44x44",
+      "spec": "44x44 面板关闭",
+      "nine_slice": null
     }
   ]
 }

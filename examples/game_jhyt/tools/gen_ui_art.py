@@ -19,6 +19,8 @@
     build/      建筑放置（§8.6）：可放置/冲突的半透明占位格
     save/       存档（§8.7）：存档槽底板、截图占位块
     settings/   设置（§8.8）：开关两态
+    touch/      触屏控件：摇杆轨道/杆头、五个玩法按钮盘、面板十字键与关闭
+                （直径与 `scripts/ui/layout.lua` 的 `M.TOUCH` 逐项相等，见 TOUCH 节头）
 
 另外产出：
     manifest.json           模块 → 文件清单 + 该模块用到的 common 控件（代码侧只读这个）
@@ -100,6 +102,7 @@ CINNABAR = CINNABAR500
 GOLD = GOLD500
 
 QUALITY = [rgb("#B9BDC4"), BAMBOO500, GOLD500, CINNABAR500, rgb("#8B6BB8")]
+TOUCH_VIOLET = rgb("#8B6BB8")   # 任务键（与传世品质同紫，docs/35 §3 之外唯一的新增色）
 
 FONT_LABEL = GOLD300
 FONT_DIM = BAMBOO300
@@ -117,6 +120,7 @@ MODULES = [
     ("build", "BUILD / 建筑放置 (S8.6)"),
     ("save", "SAVE / 存档 (S8.7)"),
     ("settings", "SETTINGS / 设置 (S8.8)"),
+    ("touch", "TOUCH / 触屏控件（摇杆 + 虚拟按钮）"),
 ]
 
 # 每个模块在 docs/35 对应布局里会用到的 common 控件（写进 manifest，代码侧照抄）
@@ -842,6 +846,143 @@ def toggle(on):
 
 
 # ---------------------------------------------------------------------------
+# TOUCH / 触屏控件（虚拟摇杆 + 虚拟按钮）
+#
+# 为什么要出切图而不是继续用 `ui.circle` 叠：圆片是"纯色圆盘 + 白边"，与全游戏的
+# 墨底金线 + 朱砂点睛（docs/44）不是同一套语言，实机截图里触屏控件是唯一的
+# "灰占位符岛"。同时它必须**半透明**（覆盖层控件要透出地面）。
+#
+# 尺寸与 `scripts/ui/layout.lua` 的 `M.TOUCH` 一一对应（1:1 出图，避免非整数缩放糊边）：
+#   stick base 112 = (base_r 52 + 外圈 4) × 2、knob 42 = knob_r 21 × 2、
+#   按钮 108/84/72/80/68 = buttons[i].size、dpad 64 / confirm 80 / close 44。
+# 改 layout 的 size 要回来同步改这里；对不上的表现是"贴图被缩放"（软边），不会报错。
+# ---------------------------------------------------------------------------
+
+
+def with_a(color, value):
+    return (color[0], color[1], color[2], value)
+
+
+def over_px(cv, x, y, color):
+    """source-over 叠色。`Canvas.set` 是直接覆盖，叠第二层时上层 alpha 会变成最终 alpha。"""
+    dst = cv.get(x, y)
+    src_a = color[3] / 255.0
+    inv = 1.0 - src_a
+    cv.set(x, y, (
+        round(color[0] * src_a + dst[0] * inv),
+        round(color[1] * src_a + dst[1] * inv),
+        round(color[2] * src_a + dst[2] * inv),
+        round(color[3] + dst[3] * inv),
+    ))
+
+
+def disc_over(cv, cx, cy, radius, color):
+    for y in range(int(cy - radius) - 1, int(cy + radius) + 2):
+        for x in range(int(cx - radius) - 1, int(cx + radius) + 2):
+            if (x - cx) ** 2 + (y - cy) ** 2 <= radius * radius:
+                over_px(cv, x, y, color)
+
+
+def ring_over(cv, cx, cy, inner, outer, color):
+    for y in range(int(cy - outer) - 1, int(cy + outer) + 2):
+        for x in range(int(cx - outer) - 1, int(cx + outer) + 2):
+            dist = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
+            if inner < dist <= outer:
+                over_px(cv, x, y, color)
+
+
+def rect_over(cv, x0, y0, x1, y1, color):
+    for y in range(int(y0), int(y1) + 1):
+        for x in range(int(x0), int(x1) + 1):
+            over_px(cv, x, y, color)
+
+
+def bevel_ring(cv, cx, cy, inner, outer, light, dark):
+    """外圈斜面：法线朝左上提亮、朝右下压暗（全项目统一的"光源左上 45°"）。"""
+    for y in range(int(cy - outer) - 1, int(cy + outer) + 2):
+        for x in range(int(cx - outer) - 1, int(cx + outer) + 2):
+            dist = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
+            if not (inner < dist <= outer) or dist <= 0:
+                continue
+            aim = (x - cx) / dist + (y - cy) / dist
+            if aim < -0.3:
+                over_px(cv, x, y, light)
+            elif aim > 0.3:
+                over_px(cv, x, y, dark)
+
+
+def touch_button(size, accent, studs=True):
+    """圆形按钮盘：墨漆面 + 彩色漆圈 + 描金 + 铜钉。
+
+    面子必须压暗：`ui.text` 在两个宿主都固定白色（web-runtime.js drawUi 里
+    `fillStyle = '#ffffff'`，没有颜色参数），浅色盘会让"交互/攻击"糊成一片。
+    """
+    cv = Canvas(size, size)
+    cx = cy = (size - 1) / 2.0
+    radius = size / 2.0 - 2                # 视觉半径留 1px + 描边，落在命中圆内
+    band = max(3.0, size * 0.10)           # 彩圈厚度随直径走
+    disc_over(cv, cx, cy, radius, with_a(INK800, 178))
+    ring_over(cv, cx, cy, radius - band, radius, with_a(accent, 205))
+    bevel_ring(cv, cx, cy, radius - band, radius,
+               with_a(shade(accent, 1.45), 130), with_a(shade(accent, 0.55), 150))
+    ring_over(cv, cx, cy, radius - band - 1.4, radius - band, with_a(GOLD500, 165))
+    # 中心再压暗一档：白色标签的对比度全靠这一步
+    disc_over(cv, cx, cy, max(4.0, radius - band - 3.0), with_a(INK900, 60))
+    if studs and size >= 72:
+        mid = radius - band / 2.0
+        for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)):
+            px, py = cx + dx * mid, cy + dy * mid
+            disc_over(cv, px, py, 1.7, with_a(GOLD300, 235))
+            disc_over(cv, px + 0.9, py + 0.9, 1.0, with_a(shade(GOLD500, 0.6), 210))
+    cv.outline(with_a(INK900, 235))
+    return cv
+
+
+def touch_stick_base(size=112):
+    """摇杆底盘：一圈**中空轨道** + 四向金刻度。
+
+    中心必须是全透明的：`ui.image` 的多条记录在 `__rustlua_export_ui` 里走 Lua
+    `pairs` 遍历（web-runtime.js:1935），**没有绘制顺序保证**。底盘与杆头一旦重叠，
+    谁盖谁取决于哈希序，杆头可能某一帧被轨道埋掉。中心留孔 + Lua 侧把杆头的**视觉**
+    行程夹在孔内（`layout.TOUCH.stick.hole_r - knob_r`），两者几何上不相交，
+    顺序就无关了。这也是底盘画成"轨道"而不是"实心圆盘"的真正原因。
+    """
+    cv = Canvas(size, size)
+    cx = cy = (size - 1) / 2.0
+    radius = size / 2.0 - 2                # 54：与 layout 的 base_r 52 + 外圈 4 对齐
+    hole = 45.0                            # = layout.TOUCH.stick.hole_r
+    band = radius - hole                   # 9px 轨道
+    ring_over(cv, cx, cy, hole, radius, with_a(INK800, 186))
+    bevel_ring(cv, cx, cy, hole, radius, with_a(PAPER500, 70), with_a(INK900, 120))
+    # 描金两道：外缘一道、孔缘一道，轨道就成了"铜圈"而不是灰饼
+    ring_over(cv, cx, cy, radius - 1.4, radius, with_a(GOLD500, 175))
+    ring_over(cv, cx, cy, hole, hole + 1.4, with_a(GOLD500, 150))
+    # 四向刻度：跨轨道的短金条 + 指向圆心的朱砂点（静止时也要看得出这是方向杆）
+    for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)):
+        x0, x1 = sorted((cx + dx * hole, cx + dx * radius))
+        y0, y1 = sorted((cy + dy * hole, cy + dy * radius))
+        rect_over(cv, x0 - 1, y0 - 1, x1 + 1, y1 + 1, with_a(GOLD300, 215))
+        px, py = cx + dx * (hole + band / 2.0), cy + dy * (hole + band / 2.0)
+        disc_over(cv, px, py, 1.2, with_a(CINNABAR300, 225))
+    cv.outline(with_a(INK900, 235))
+    return cv
+
+
+def touch_stick_knob(size=42):
+    """摇杆头：墨漆圆头 + 金圈 + 左上高光（跟着拇指走，要最亮）。"""
+    cv = Canvas(size, size)
+    cx = cy = (size - 1) / 2.0
+    radius = size / 2.0 - 2
+    disc_over(cv, cx, cy, radius, with_a(INK700, 235))
+    bevel_ring(cv, cx, cy, radius - 3.0, radius, with_a(PAPER200, 120), with_a(INK900, 150))
+    ring_over(cv, cx, cy, radius - 2.4, radius - 0.6, with_a(GOLD500, 205))
+    disc_over(cv, cx - radius * 0.28, cy - radius * 0.3, radius * 0.34, with_a(PAPER50, 95))
+    disc_over(cv, cx, cy, 2.4, with_a(PAPER200, 225))
+    cv.outline(with_a(INK900, 245))
+    return cv
+
+
+# ---------------------------------------------------------------------------
 # 切图清单：模块 → [(文件名, 画布, 规格标签, 9-slice 边框)]
 # ---------------------------------------------------------------------------
 
@@ -1194,6 +1335,19 @@ def slice_table():
         "settings": [
             ("ui_toggle_on_9s", toggle(True), "44x20 9S 8", (8, 8, 8, 8)),
             ("ui_toggle_off_9s", toggle(False), "44x20 9S 8", (8, 8, 8, 8)),
+        ],
+        # 触屏控件：直径一律等于 `layout.TOUCH` 里的 size（1:1 出图，见本节头注释）
+        "touch": [
+            ("ui_touch_stick_base", touch_stick_base(), "112x112 摇杆轨道(中空)", None),
+            ("ui_touch_stick_knob", touch_stick_knob(), "42x42 摇杆头", None),
+            ("ui_touch_btn_interact", touch_button(88, BAMBOO500), "88x88 交互", None),
+            ("ui_touch_btn_attack", touch_button(88, CINNABAR500), "88x88 攻击", None),
+            ("ui_touch_btn_bag", touch_button(88, INDIGO500), "88x88 背包", None),
+            ("ui_touch_btn_quest", touch_button(88, TOUCH_VIOLET), "88x88 任务", None),
+            ("ui_touch_btn_pause", touch_button(88, CLOUD_DARK), "88x88 暂停", None),
+            ("ui_touch_dpad", touch_button(64, CLOUD_DARK), "64x64 面板十字键", None),
+            ("ui_touch_confirm", touch_button(80, BAMBOO500), "80x80 面板确定", None),
+            ("ui_touch_close", touch_button(44, CINNABAR500, studs=False), "44x44 面板关闭", None),
         ],
     }
     return table
