@@ -80,6 +80,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "inv.count(require('core.state').inventory, 'watering_can')",
         1.0,
     )?;
+    // 槽标签之外，锄头还得有**真实堆叠**：背包的行只来自槽位，只有标签的工具
+    // 一旦被别的装备覆盖就再也选不回来（`docs/45` §6.8）。
+    assert_num(
+        &mut rt,
+        "inv.count(require('core.state').inventory, 'hoe')",
+        1.0,
+    )?;
     assert_str(
         &mut rt,
         "inv.equip_list(require('core.state').inventory).tool",

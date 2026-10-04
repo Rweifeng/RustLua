@@ -42,6 +42,24 @@ end
 
 register_items()
 
+-- 初始工具（非消耗品）：发放（`setup`）与补发（`restore`）共用这一张表，
+-- 免得加一件新工具只改 setup 又踩同一个坑。它们**没有第二条获取途径**——
+-- 商店不售工具、`data/tools.lua` 里没有 `sell` 字段可卖、也没有任务奖励，
+-- 所以缺件即死档（这正是补发成立的前提）。
+local STARTER_TOOLS = {
+  -- 锄头：farm.act 翻土要求 tool 槽装备它。此前新档只给槽位打标签、不发放堆叠，
+  -- 而背包的行只来自槽位 ⇒ 一旦把 tool 槽换成别的工具就再也选不回来。
+  "hoe",
+  -- 水壶（M19-02 补齐 MVP 闭环）：farm.act 浇水要求 tool 槽装备 watering_can，
+  -- 缺它作物永远无法成长，「播种→浇水→睡觉→收获→交付→制作」剧本不可完成。
+  -- 由玩家在背包面板（I → 选中 → E 装备）切换，同时验证背包/装备交互。
+  "watering_can",
+  -- 伐木斧/矿镐（2026-09-27，docs/48 接线）：青云山道松木桩与矿石点 requires
+  -- 引用（`data/gather.lua` wild_timber_1 / wild_ore_1），背包面板装备即可采集。
+  "axe",
+  "pick",
+}
+
 -- 开新档：背包与初始物资（物品定义已在模块加载时登记，这里不再重复）。
 function M.setup()
   inv.create(state.inventory, 20)
@@ -58,16 +76,9 @@ function M.setup()
   -- 也避免一次误种把 MVP 剧本走死。
   inv.add(state.inventory, "seed_rice", 4)
   inv.add(state.inventory, "rice", 2)
-  -- 水壶（M19-02 补齐 MVP 闭环）：farm.act 浇水要求 tool 槽装备 watering_can，
-  -- 而此前没有任何获取途径（商店不售工具、无任务奖励）→ 作物永远无法成长，
-  -- 「播种→浇水→睡觉→收获→交付→制作」剧本不可完成。新档直接发放 1 把，
-  -- 由玩家在背包面板（I → 选中 → E 装备）切换，同时验证背包/装备交互。
-  inv.add(state.inventory, "watering_can", 1)
-  -- 伐木斧/矿镐（2026-09-27，docs/48 接线）：青云山道松木桩与矿石点 requires
-  -- 引用（`data/gather.lua` wild_timber_1 / wild_ore_1）。与 water_can 同先例
-  -- （商店不售工具、无任务奖励）→ 新档直接发放，背包面板装备即可采集。
-  inv.add(state.inventory, "axe", 1)
-  inv.add(state.inventory, "pick", 1)
+  for _, tool in ipairs(STARTER_TOOLS) do
+    inv.add(state.inventory, tool, 1)
+  end
   inv.equip(state.inventory, "tool", "hoe")
 end
 
@@ -208,6 +219,14 @@ function M.restore(data)
   end
   for slot, item_id in pairs(data.equipment or {}) do
     inv.equip(state.inventory, slot, item_id)
+  end
+  -- 补发缺失的初始工具（表与理由见 `STARTER_TOOLS`）。老档的锄头只有 tool 槽标签、
+  -- 没有堆叠，而背包的行只来自槽位 ⇒ 玩家既看不见它也换不回它；连槽引用都被换装
+  -- 覆盖掉的那些档（tool 已是水壶），也只有在这里能救回来。
+  for _, tool in ipairs(STARTER_TOOLS) do
+    if (tonumber(inv.count(state.inventory, tool)) or 0) <= 0 then
+      inv.add(state.inventory, tool, 1)
+    end
   end
 end
 

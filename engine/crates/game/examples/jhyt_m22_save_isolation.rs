@@ -295,6 +295,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "false/missing/missing",
     )?;
 
+    // -----------------------------------------------------------------
+    banner("⑨ 读档补发：初始工具缺件即死档，restore 必须补齐（旧档的锄头形状）");
+    // 老档里锄头只有 tool 槽标签、没有堆叠（`inv.equip` 是纯标签写），而背包面板的
+    // 行来自槽位 ⇒ 玩家选不到锄头。两种坏形状都要自愈：①槽上还指着锄头；
+    // ②槽已被水壶覆盖，锄头连引用都不剩（玩家实际报的那一种）。
+    assert_block(
+        &mut session,
+        "local st = require('core.state')\n\
+         local bag = require('player.inventory')\n\
+         local snap = bag.capture()\n\
+         snap.capacity = 20\n\
+         snap.slots = {}\n\
+         for index = 1, snap.capacity do snap.slots[index] = { item = '', count = 0 } end\n\
+         snap.equipment = { tool = 'hoe' }\n\
+         bag.restore(snap)\n\
+         return tostring(inv.count(st.inventory, 'hoe')) .. '/' \
+           .. tostring(inv.equip_list(st.inventory).tool)",
+        "1/hoe",
+    )?;
+    assert_block(
+        &mut session,
+        "local st = require('core.state')\n\
+         local bag = require('player.inventory')\n\
+         local snap = { capacity = 20, slots = {}, equipment = { tool = 'watering_can' } }\n\
+         for index = 1, snap.capacity do snap.slots[index] = { item = '', count = 0 } end\n\
+         snap.slots[1] = { item = 'watering_can', count = 1 }\n\
+         bag.restore(snap)\n\
+         return tostring(inv.count(st.inventory, 'hoe')) .. '/' \
+           .. tostring(inv.count(st.inventory, 'watering_can'))",
+        "1/1",
+    )?;
+
     println!(
         "jhyt_m22_save_isolation_ok project={} providers=16 rows={} day={}",
         project.display(),

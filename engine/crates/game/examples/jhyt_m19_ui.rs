@@ -245,6 +245,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('core.state').last_action",
         "equip_watering_can",
     )?;
+    // 换回锄头也必须走背包面板（2026-10-04）：`inv.equip` 只给槽位打标签，
+    // 而行只来自槽位——只在新档写标签、不发放堆叠的工具（原先的锄头）在这里
+    // 根本选不到，翻土会永久不可用。这条断言就是那个缺口的回归。
+    let hoe_row = row_of(&mut runtime, "ui.inventory_ui", "hoe")?;
+    press(
+        &mut runtime,
+        KeyCode::from_char(digit(hoe_row)).expect("数字行号必须有对应主键区数字键"),
+    )?;
+    press(&mut runtime, KeyCode::KeyE)?;
+    assert_str(
+        &mut runtime,
+        "inv.equip_list(require('core.state').inventory).tool",
+        "hoe",
+    )?;
+    assert_str(
+        &mut runtime,
+        "require('core.state').last_action",
+        "equip_hoe",
+    )?;
     // 使用：回复药 → 体力 50 → 90（成功路径消耗物品并给反馈文案）。
     let pill_row = row_of(&mut runtime, "ui.inventory_ui", "heal_pill")?;
     press(
