@@ -39,6 +39,10 @@ Thumbs.db
 # Game API build output
 examples/**/builds/
 
+# 第三方游戏的对标参考图（版权不授权再分发；只在本机看，禁止进 assets/ 与发行包）
+# 清单与出处见 examples/game_jhyt/docs/53-江湖有田-星露谷场景分层参考图集.md
+examples/game_jhyt/references/
+
 # Python bytecode cache
 __pycache__/
 *.py[cod]
