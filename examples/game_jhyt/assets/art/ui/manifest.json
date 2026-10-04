@@ -1038,32 +1038,32 @@
       "module": "touch",
       "name": "ui_touch_btn_attack",
       "path": "assets/art/ui/jianghu/touch/ui_touch_btn_attack.png",
-      "size": "88x88",
-      "spec": "88x88 攻击",
+      "size": "68x68",
+      "spec": "68x68 攻击",
       "nine_slice": null
     },
     {
       "module": "touch",
       "name": "ui_touch_btn_bag",
       "path": "assets/art/ui/jianghu/touch/ui_touch_btn_bag.png",
-      "size": "88x88",
-      "spec": "88x88 背包",
+      "size": "68x68",
+      "spec": "68x68 背包",
       "nine_slice": null
     },
     {
       "module": "touch",
       "name": "ui_touch_btn_quest",
       "path": "assets/art/ui/jianghu/touch/ui_touch_btn_quest.png",
-      "size": "88x88",
-      "spec": "88x88 任务",
+      "size": "68x68",
+      "spec": "68x68 任务",
       "nine_slice": null
     },
     {
       "module": "touch",
       "name": "ui_touch_btn_pause",
       "path": "assets/art/ui/jianghu/touch/ui_touch_btn_pause.png",
-      "size": "88x88",
-      "spec": "88x88 暂停",
+      "size": "68x68",
+      "spec": "68x68 暂停",
       "nine_slice": null
     },
     {

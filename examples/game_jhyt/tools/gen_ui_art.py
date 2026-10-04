@@ -854,7 +854,8 @@ def toggle(on):
 #
 # 尺寸与 `scripts/ui/layout.lua` 的 `M.TOUCH` 一一对应（1:1 出图，避免非整数缩放糊边）：
 #   stick base 112 = (base_r 52 + 外圈 4) × 2、knob 42 = knob_r 21 × 2、
-#   玩法按钮 112（交互，右下主键，与摇杆轨道同径）/88×4（攻击·背包·任务·暂停）= buttons[i].size、
+#   玩法按钮 112（交互，右下主键，与摇杆轨道同径）/68×4（攻击·背包·任务·暂停，贴主键左上）
+#     = buttons[i].size（68 < 72 ⇒ `touch_button` 的铜钉按既有守卫自动不画）、
 #   dpad 64 / confirm 80 / close 44。
 # 改 layout 的 size 要回来同步改这里；对不上的表现是"贴图被缩放"（软边），不会报错。
 # ---------------------------------------------------------------------------
@@ -1342,10 +1343,10 @@ def slice_table():
             ("ui_touch_stick_base", touch_stick_base(), "112x112 摇杆轨道(中空)", None),
             ("ui_touch_stick_knob", touch_stick_knob(), "42x42 摇杆头", None),
             ("ui_touch_btn_interact", touch_button(112, BAMBOO500), "112x112 交互(右下主键,与摇杆同径)", None),
-            ("ui_touch_btn_attack", touch_button(88, CINNABAR500), "88x88 攻击", None),
-            ("ui_touch_btn_bag", touch_button(88, INDIGO500), "88x88 背包", None),
-            ("ui_touch_btn_quest", touch_button(88, TOUCH_VIOLET), "88x88 任务", None),
-            ("ui_touch_btn_pause", touch_button(88, CLOUD_DARK), "88x88 暂停", None),
+            ("ui_touch_btn_attack", touch_button(68, CINNABAR500), "68x68 攻击", None),
+            ("ui_touch_btn_bag", touch_button(68, INDIGO500), "68x68 背包", None),
+            ("ui_touch_btn_quest", touch_button(68, TOUCH_VIOLET), "68x68 任务", None),
+            ("ui_touch_btn_pause", touch_button(68, CLOUD_DARK), "68x68 暂停", None),
             ("ui_touch_dpad", touch_button(64, CLOUD_DARK), "64x64 面板十字键", None),
             ("ui_touch_confirm", touch_button(80, BAMBOO500), "80x80 面板确定", None),
             ("ui_touch_close", touch_button(44, CINNABAR500, studs=False), "44x44 面板关闭", None),

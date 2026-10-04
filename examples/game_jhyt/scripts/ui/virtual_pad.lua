@@ -446,16 +446,16 @@ function M.draw()
       pressed and 0.85 or 0.55)
     draw_plate("vp:plate" .. index, btn.x, btn.y, btn.size, btn.art)
     -- 标签：字号 = 直径 × 0.21（下限 11；见 `layout.TOUCH` 注释）。主键「交互」是 112
-    -- 直径 ⇒ 24，其余四键同为 88 ⇒ 18。M30 自检只认字面量/可解析常量字号，所以写成字面量；
+    -- 直径 ⇒ 24，其余四键同为 68 ⇒ 14。M30 自检只认字面量/可解析常量字号，所以写成字面量；
     -- 几何全部仍读 `layout.TOUCH.buttons`。
     -- 左缘 = `cx - 实测半宽`：居中依赖 `ui.measure_text` 量得**真宽**——web 宿主原先按
-    -- 「0.6 × 字号 × 字数」估算，两字 18px 估成 21.6 而真宽 36，标签会右偏 7px。
+    -- 「0.6 × 字号 × 字数」估算，两字 14px 估成 16.8 而真宽 28，标签会右偏 5.6px。
     local b1, b2, b3, b4, b5 = BUTTONS[1], BUTTONS[2], BUTTONS[3], BUTTONS[4], BUTTONS[5]
     ui_text.draw("vp", "vp:lbl1", b1.x - half_width(b1.label, 24), b1.y - 24 * 0.5, 24, b1.size, b1.label)
-    ui_text.draw("vp", "vp:lbl2", b2.x - half_width(b2.label, 18), b2.y - 18 * 0.5, 18, b2.size, b2.label)
-    ui_text.draw("vp", "vp:lbl3", b3.x - half_width(b3.label, 18), b3.y - 18 * 0.5, 18, b3.size, b3.label)
-    ui_text.draw("vp", "vp:lbl4", b4.x - half_width(b4.label, 18), b4.y - 18 * 0.5, 18, b4.size, b4.label)
-    ui_text.draw("vp", "vp:lbl5", b5.x - half_width(b5.label, 18), b5.y - 18 * 0.5, 18, b5.size, b5.label)
+    ui_text.draw("vp", "vp:lbl2", b2.x - half_width(b2.label, 14), b2.y - 14 * 0.5, 14, b2.size, b2.label)
+    ui_text.draw("vp", "vp:lbl3", b3.x - half_width(b3.label, 14), b3.y - 14 * 0.5, 14, b3.size, b3.label)
+    ui_text.draw("vp", "vp:lbl4", b4.x - half_width(b4.label, 14), b4.y - 14 * 0.5, 14, b4.size, b4.label)
+    ui_text.draw("vp", "vp:lbl5", b5.x - half_width(b5.label, 14), b5.y - 14 * 0.5, 14, b5.size, b5.label)
   end
 
   if debug_text then
