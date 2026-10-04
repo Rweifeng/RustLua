@@ -1030,8 +1030,8 @@
       "module": "touch",
       "name": "ui_touch_btn_interact",
       "path": "assets/art/ui/jianghu/touch/ui_touch_btn_interact.png",
-      "size": "88x88",
-      "spec": "88x88 交互",
+      "size": "104x104",
+      "spec": "104x104 交互(右下角主键)",
       "nine_slice": null
     },
     {
