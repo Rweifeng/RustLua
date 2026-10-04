@@ -26,6 +26,7 @@
     },
     {
       "funcs": [
+        "platform",
         "project_root",
         "quit"
       ],

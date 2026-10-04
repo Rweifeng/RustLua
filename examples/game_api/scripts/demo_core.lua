@@ -432,6 +432,10 @@ function M.update()
     -- 目录**解析，跨文件契约校验器必须靠它拼绝对路径，否则会静默跳过检查。
     local project_root = app.project_root()
     log.info("api_core app.project_root -> " .. dash(project_root))
+    -- `app.platform()`：宿主形态标识（桌面 `"desktop"`、wasm（浏览器/微信）`"webgl"`）。
+    -- 用途是"这台设备有没有键盘"：触屏要靠屏上摇杆与虚拟按钮，桌面不需要，
+    -- 所以该判平台，而不是判"宿主有没有实现 `input.virtual_key`"（那条 API 桌面也注册了）。
+    log.info("api_core app.platform -> " .. dash(app.platform()))
 
     -- save：键值 + 任意表 + 槽。这三条读/写路径**都只写内存**（`ScriptState::save_data`）。
     save.write(SAVE_KEY, string.format("frame=%d hp=%.0f", frame, hero_hp))

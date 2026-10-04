@@ -204,6 +204,23 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             Ok(())
         })?,
     )?;
+    // `app.platform()`：宿主形态标识（`"desktop"` / `"webgl"`）。
+    //
+    // 为什么需要它：触屏设备没有键盘，玩法必须靠屏上摇杆与虚拟按钮；桌面/手柄则相反——
+    // 常驻的虚拟控件只会盖住画面。此前 `ui/virtual_pad.lua` 只能按「宿主有没有实现
+    // `input.virtual_key` / `ui.circle`」来判，而这四个 API 由本模块统一注册，桌面也全有，
+    // 于是判定恒为真、桌面版照画摇杆。**能力存在 ≠ 需要触屏控件**，必须要平台标识。
+    // wasm 两条发布路径（浏览器 / 微信小游戏）共用同一运行时，都返回 `"webgl"`。
+    app.set(
+        "platform",
+        lua.create_function(|_, ()| {
+            Ok(if cfg!(target_arch = "wasm32") {
+                "webgl"
+            } else {
+                "desktop"
+            })
+        })?,
+    )?;
     // `app.project_root()`：工程根目录的**绝对路径**（`set_project_root` 写入的值）。
     //
     // 为什么 Lua 需要它：`io.open` 的相对路径按**进程工作目录**解析，而工程根与工作目录
