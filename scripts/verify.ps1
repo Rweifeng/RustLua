@@ -852,7 +852,13 @@ if ($Mvp -or $MvpOnly) {
         # 8→8/6/10 三档具体分数、第二杯 tea_today 不扣物、同日礼物限次不被乘子绕开、
         # 存读档后茶汤库存/tea_day 锚点/茶棚历史最高等级三者一致、拆了茶棚门不重新锁上、
         # 七条数据负例走 validate_data（与 game --check 同一批校验器）。
-        "jhyt_m34_teahouse"
+        "jhyt_m34_teahouse",
+        # M59 UI 预设地基 + dialogue 试点：版面从 Lua 搬进 assets/ui/prefabs/*.ui.json 后，
+        # 逐 id 读回引擎里真正画出来的矩形/文本/字号，与迁移**前**捕获的黄金表逐行相等
+        # （黄金文件来自 HEAD 的旧代码，不是新实现自己吐的数）；另守锚点表与引擎
+        # UiLayoutPreset::ALL 逐值对账、预设能加载且登记进 validate_data 启动门、
+        # 关面板后每个 id 都"不存在或不可见"、`.ui.json` 不命中 assetc 的开发产物裁除。
+        "jhyt_m59_ui_prefab"
     )
     $exampleDir = Join-Path $engineRoot "crates\game\examples"
 

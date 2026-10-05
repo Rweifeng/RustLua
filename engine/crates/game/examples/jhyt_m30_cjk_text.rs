@@ -18,6 +18,9 @@
 //!    遍历 `ui.ui_text` 登记表按真实字宽量宽——零溢出、零缺字、零低于 11px；
 //! ④ 最坏数字：金钱 99999、天数 999、数量 999 等压力值下重绘，仍然零溢出；
 //! ⑤ 字号下限：场景 `Text` 组件与 Lua 绘制调用的字号都 ≥ 11（静态扫描 + 运行时读回）；
+//!    M59 起还有一路**数据侧**读数：UI 预设（`assets/ui/prefabs/*.ui.json`）把字号从源码
+//!    搬进了数据文件，`ui/prefab.lua` 因此是静态扫描的唯一例外（它传 `node.font`，源码里没有
+//!    字面量），例外由"读回每个预设 text 节点比同一条下限 + 加载期 10px 负例"补平；
 //! ⑥ 负例：审计必须**有牙齿**（塞进超宽串/emoji/10px 字号必须各报一条），
 //!    以及换行规则（标点不落行首、行数上限、省略号收尾）。
 //!
@@ -339,6 +342,65 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "  场景 Text {scene_count} 个，最小 {scene_min}px；Lua 绘制 {draw_calls} 处，最小 {lua_min}px"
     );
+    // **数据侧的同一条下限**（M59）：UI 预设把字号从源码搬进了
+    // `assets/ui/prefabs/*.ui.json`，上面那道源码扫描因此看不见它（`prefab.lua` 传的是
+    // `node.font`）。这里读的是**加载并校验之后**的每一个 text 节点，比的是同一条 11px——
+    // 新登记的预设自动进门，不需要谁再改一次这道门。
+    let prefab_fonts = query_str(
+        &mut rt,
+        "(function() local p = require('ui.prefab'); \
+          local count, min = 0, math.huge; \
+          for _, name in ipairs(p.NAMES) do \
+            for _, row in ipairs(p.dump(name)) do \
+              if row.type == 'text' then \
+                count = count + 1; \
+                if type(row.font) ~= 'number' then \
+                  return 'not_a_number:' .. name .. ':' .. tostring(row.id) .. '|0' \
+                end; \
+                if row.font < min then min = row.font end \
+              end \
+            end \
+          end; \
+          if count == 0 then return 'no_prefab_text_nodes|0' end; \
+          return tostring(count) .. '|' .. tostring(min) end)()",
+    )?;
+    let (count_raw, min_raw) = prefab_fonts
+        .split_once('|')
+        .ok_or_else(|| format!("UI 预设字号读数形状不对: {prefab_fonts}"))?;
+    let prefab_text_count: f64 = count_raw
+        .parse()
+        .map_err(|_| format!("UI 预设字号读数形状不对: {prefab_fonts}"))?;
+    let prefab_min_font: f64 = min_raw
+        .parse()
+        .map_err(|_| format!("UI 预设字号读数形状不对: {prefab_fonts}"))?;
+    if prefab_text_count < 1.0 {
+        return Err(format!("UI 预设里没扫到 text 节点（{prefab_fonts}）：例外清单白列").into());
+    }
+    if prefab_min_font < MIN_FONT_SIZE {
+        return Err(format!(
+            "UI 预设存在 {prefab_min_font}px 字号（下限 11px，{} 个 text 节点）",
+            prefab_text_count as usize
+        )
+        .into());
+    }
+    println!(
+        "  UI 预设 text 节点 {} 个，最小 {prefab_min_font}px",
+        prefab_text_count as usize
+    );
+    // 常驻负例：加载期必须**拒绝**低于 11px 的字号节点——上面那条源码扫描的例外只有靠这条
+    // 才不是洞（没有它，把 `check_node` 的下限删掉两侧都会绿）。
+    assert_str(
+        &mut rt,
+        "(function() local p = require('ui.prefab'); \
+          local bad = { prefab_version = 1, name = 'probe', owner = 'probe', root = { \
+            name = 'n', type = 'text', id = 'probe:t', text = '小', font = 10.0, \
+            layout = { preset = 'top_left', \
+              offsets = { left = 0, top = 0, right = 100, bottom = 20 } } } }; \
+          local ok, issues = p.validate('probe', bad); \
+          if ok then return 'accepted' end; \
+          return issues[1]:find('11px') ~= nil and 'caught' or ('wrong:' .. issues[1]) end)()",
+        "caught",
+    )?;
     // 架构规则：`scripts/**` 一律不许直接调 `ui.text_at`（唯一出口是 `ui/ui_text.lua`）。
     // 否则"画了但没登记"的文字会从排版检查里漏掉——那正是零报错的坏行为。
     let raw_sites = raw_text_at_sites(&project.join("scripts"))?;
@@ -537,6 +599,11 @@ fn scene_font_sizes(project: &Path) -> Result<(usize, f64), Box<dyn std::error::
 /// 扫描对象是 `scripts/**/*.lua` 里所有 `ui_text.draw` / `draw_wrapped` / `draw_exact`
 /// 调用：取顶层逗号切分后的第 5 个实参（`owner, id, x, y, size, …`）。
 /// 清单里带 `文件:行号`，否则"有 2 个没解析出来"这种报错要人回头逐个 grep。
+///
+/// **唯一的例外**是 `ui/prefab.lua`（M59 的 UI 预设绘制分发器）：它的字号实参是
+/// `node.font`，值来自 `assets/ui/prefabs/*.ui.json`，源码里根本没有字面量可解析。
+/// 这不是把下限放开——下限改由 ⑤ 的"数据侧扫描 + 加载期负例"两路守（见该小节），
+/// 覆盖面比这里少三处调用还严：预设里 `font` 必须是**数值**且 ≥ 11，否则加载就报错。
 fn lua_font_sizes(root: &Path) -> Result<(usize, Vec<String>, f64), Box<dyn std::error::Error>> {
     let mut files = Vec::new();
     collect_lua_files(root, &mut files)?;
@@ -553,6 +620,9 @@ fn lua_font_sizes(root: &Path) -> Result<(usize, Vec<String>, f64), Box<dyn std:
     let mut unresolved: Vec<String> = Vec::new();
     let mut min = f64::MAX;
     for path in files {
+        if path.file_name().is_some_and(|name| name == "prefab.lua") {
+            continue;
+        }
         // 注释里也会出现 `ui_text.draw(...)`（本模块的用法说明就是），先剥注释再扫描。
         let source = strip_lua_comments(&fs::read_to_string(&path)?);
         // 模块级字号常量（`local LINE_FONT = 14`）+ 版面表常量：字号允许写成常量，

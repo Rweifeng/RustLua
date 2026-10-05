@@ -29,35 +29,25 @@ local nav = require("ui.panel_nav")
 -- M20-09：键鼠/手柄两套操作说明（本模块不 require ui.input，避免 require 环；
 -- 设备判定与绑定命名都在 ui.hints 里，面板自己画底部提示时才不会写死键盘文案）。
 local hints = require("ui.hints")
--- M30：对话正文按真实字宽换行（此前正文既未换行也未裁剪，长句会直接画到面板外面）。
-local ui_text = require("ui.ui_text")
--- M32 竖版：对话面板矩形来自 `ui/layout.lua`（底部通栏，与 HUD 信息区二选一）。
-local layout = require("ui.layout")
+-- M59：对话面板的**版面**（矩形、锚点、行距、字号、贴图键）搬进 UI 预设
+-- `assets/ui/prefabs/dialogue.ui.json`，本文件只喂内容取值（说话人、台词、选项、立绘）。
+-- 调 UI 表现因此不用动玩法代码：改 JSON 里的 offsets/spacing 就够了。
+-- 面板矩形仍指回 `ui/layout.lua`（预设的 `layout_source = "dialogue"`，唯一定义处），
+-- 预设里另写的那一份由 `ui/prefab.lua` 的 `audit()` 逐值对账，两边不一致就报错。
+local prefab = require("ui.prefab")
 -- docs/48 portraits 接线：对话立绘（speaker + 节点 mood → 立绘贴图）。
 local portrait = require("ui.portrait")
--- docs/48 ui 换肤接线：纸面背景/立绘框/标记贴图。
-local skin = require("ui.skin")
 
 local M = {}
 
 local TILE = 32
 local INTERACT_RANGE = 56 -- 世界单位，约 1.75 格
-local OPTION_LIMIT = 5   -- 与 UI 展示槽位、数字键 1..5 一致
+-- 选项**槽位上限**：与数字直选 1..5 同源，也必须与预设里 `options.max` 一致
+-- （`jhyt_m59_ui_prefab` 逐节点对账守住这一条）。
+local OPTION_LIMIT = 5
 
--- 对话面板几何与正文排版预算（`M.render` 里的固定面板；正文最多三行，之后省略号）。
--- M32 竖版：672×200，落在状态面板**正上方**（800..1000 vs 1020..1144，留 20px 缝）。
--- 横屏时它是右下 1000×248；竖屏宽度只有 720，正文可用宽度 = 面板宽 - 2×24 = 624px，
--- 18px 正文一行约 33 个中文字，三行（TEXT_LINES=3）足够放下现有全部台词；
--- 选项三行落在 100..184，与最底一行的提示（y+170）不重叠。
-local BOX = layout.PANEL.dialogue
-local TEXT_FONT = 18.0
-local OPTION_FONT = 18.0
-local PAD = layout.PAD
-local TEXT_W = BOX.w - PAD * 2
-local TEXT_LINES = 3
-local TEXT_DY = 44
-local OPTION_DY = 100
-local OPTION_ROW_H = 28
+-- 对话面板的版面（矩形/锚点/行距/字号/贴图键）在 `assets/ui/prefabs/dialogue.ui.json`：
+-- 调 UI 表现改那份数据，不改本文件（M59）。
 
 local FOCUS = "dlg:focus"
 
@@ -253,22 +243,10 @@ local function cond_ok(cond)
   return true
 end
 
+-- 关面板的收口交给预设：它知道树上**每一个 id**，所以不会再出现"漏清一条 =
+-- 上一段对话的选项还挂在屏幕上"（引擎的 UI 记录是 retained 的，只有切场景才清空）。
 local function clear_ui()
-  ui.clear("dlg:box")
-  ui.clear("dlg:portrait")
-  ui.clear("dlg:portrait_frame")
-  -- 换肤图标走 `ui.image`（跨帧持久）：标记与"继续"箭头也要显式清理。
-  ui.clear("dlg:continue")
-  for i = 1, OPTION_LIMIT do
-    ui.clear("dlg:marker" .. i)
-  end
-  ui_text.hide("dlg", "dlg:speaker")
-  ui_text.hide("dlg", "dlg:text")
-  ui_text.hide("dlg", "dlg:hint")
-  for i = 1, OPTION_LIMIT do
-    ui_text.hide("dlg", "dlg:opt" .. i)
-  end
-  ui_text.reset("dlg")
+  prefab.clear("dialogue")
 end
 
 -- 当前节点可选项（已按 cond 过滤），保持数据顺序。
@@ -376,10 +354,7 @@ end
 
 -- M20-09：底部提示按当前设备二选一（键鼠给键位、手柄给按钮名）。片段从**当前绑定**
 -- 推导（改键后自动同步）：数字直选用本模块自带的 1..OPTION_LIMIT，方向用 move_*。
--- M32 竖版：对话面板是底部通栏 672 宽，提示行按 624px 预算（面板宽 - 两侧内边距）。
--- 横屏右栏 280：提示行预算放宽到 280-16=264（比 PAD*2=24 多给 8px），让
--- 「W/S 或 方向键 选择 · 1/2/3/4/5 直选 ·」两段短语能挤进同一行，2 行即可装完整条。
-local HINT_W = BOX.w - 16
+-- 提示行的**宽度预算**现在写在预设里（`hint` 节点的 rect），不再由本文件猜。
 
 local function digits_label()
   return hints.binding_labels({ "slot_1", "slot_2", "slot_3", "slot_4", "slot_5" }, nil, "/")
@@ -395,7 +370,14 @@ local function hint_line()
   })
 end
 
+-- 选项行的显示文案：编号 + 选中箭头（与迁移前逐字符一致，黄金对账门按 id 比文本）。
+local function option_label(index, entry)
+  local mark = index == selected and "> " or "  "
+  return mark .. tostring(index) .. ". " .. entry.text
+end
+
 -- 绘制对话面板（场景切换会清空动态 UI，故每次换节点/开始都整体重绘）。
+-- 版面取自 UI 预设，这里只喂内容取值：说话人 / 台词 / 选项 / 提示 / 立绘。
 function M.render()
   if not active then
     return false
@@ -406,58 +388,27 @@ function M.render()
     return false
   end
   local speaker = npcs.get(def.speaker)
-  local x, y, w, h = BOX.x, BOX.y, BOX.w, BOX.h
   -- 选项数量随节点/条件变化：重绘时同步焦点环（M20-02）。
   sync_focus()
-  ui_text.begin("dlg")
-  -- 对话面板用深色半透明底（文字是浅色），不用浅色纸面 skin，否则白字看不清。
-  -- docs/48 portraits 接线：speaker 立绘（表情随节点 mood）；立绘框 128×128 与立绘同中心。
+  local options = M.options()
+  local rows = {}
+  for index, entry in ipairs(options) do
+    rows[index] = { text = option_label(index, entry), selected = index == selected }
+  end
+  -- 立绘：表情随节点 mood；无立绘的角色 `texture_for` 返回 nil，预设里那两个节点整帧收口。
+  -- `display_size()` 与有没有立绘无关（预设的锚点偏移要读这两个数值槽），所以照旧无条件取。
   local pw, ph = portrait.display_size()
   local tex = portrait.texture_for(def.speaker, node)
-  if tex then
-    skin.icon("dlg:portrait_frame", x + w / 2 - 64, y - ph - 6 - 16, 128, 128, "portrait_frame")
-    ui.image("dlg:portrait", x + w / 2 - pw / 2, y - ph - 6, pw, ph, tex, 1.0, 1.0, 1.0)
-  end
-  ui.panel("dlg:box", x, y, w, h, 0.10, 0.11, 0.15, 0.92)
-  ui_text.draw("dlg", "dlg:speaker", x + PAD, y + 16, 20.0, TEXT_W, speaker and speaker.name or "")
-  -- 正文按面板宽度换行（最多三行，超出加省略号）：长台词不再画到面板外。
-  ui_text.draw_wrapped("dlg", "dlg:text", x + PAD, y + TEXT_DY, TEXT_FONT, TEXT_W, TEXT_LINES, node.text)
-  local options = M.options()
-  for i = 1, OPTION_LIMIT do
-    local entry = options[i]
-    if entry then
-      local text = tostring(i) .. ". " .. entry.text
-      if i == selected then
-        text = "> " .. text
-      else
-        text = "  " .. text
-      end
-      -- docs/48 ui 换肤接线：选中行左侧画对话标记（8×8）。
-      if i == selected then
-        skin.icon("dlg:marker" .. i, x + PAD - 12, y + OPTION_DY + (i - 1) * OPTION_ROW_H + 6, 8, 8, "dialogue_marker")
-      end
-      ui_text.draw("dlg", "dlg:opt" .. i, x + PAD, y + OPTION_DY + (i - 1) * OPTION_ROW_H, OPTION_FONT, TEXT_W, text)
-    else
-      ui_text.hide("dlg", "dlg:opt" .. i)
-    end
-  end
-  -- 2026-09-27 横屏：右栏对话面板 280 宽 ⇒ 提示行预算 264px（HINT_W=BOX.w-16）。
--- 改 `draw_wrapped` 按真实字宽折行（正常 2 行 530/544，不碰选项行 420..504）；
--- max_lines=3 兜底：窄栏极端文案即使折到 3 行也完整登记（第 3 行向下排，不截断），
--- m20 的"面板提示应含 空格 确认 / Esc 结束"不依赖单行猜宽度。
-  ui_text.draw_wrapped(
-    "dlg",
-    "dlg:hint",
-    x + w - HINT_W - PAD,
-    y + h - 30,
-    layout.BOX.hint_font,
-    HINT_W,
-    3,
-    hint_line()
-  )
-  -- docs/48 ui 换肤接线：右下角"继续"图标（16×16，不压 hint 文案左端）。
-  skin.icon("dlg:continue", x + PAD, y + h - 32, 16, 16, "dialogue_continue")
-  return true
+  return prefab.render("dialogue", {
+    speaker = speaker and speaker.name or "",
+    body = node.text,
+    options = rows,
+    hint = hint_line(),
+    has_portrait = tex ~= nil,
+    portrait_tex = tex,
+    portrait_w = pw,
+    portrait_h = ph,
+  })
 end
 
 function M.start(dialogue_id)

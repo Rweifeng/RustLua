@@ -73,7 +73,16 @@ const COMPONENT_FIELD_PATTERN = /([A-Za-z_][A-Za-z0-9_]*)=/g;
 // 69,367 B（82 文件）降到 58,271 B（15 文件），省 11,096 B —— 在 3,729 KB 的主包里占 0.3%，
 // 改这里**不是**为了过 4MB 线；为的是"首屏清单 = 入口界面要用的"这个契约本身（此前它等价于"全部 UI"）。
 // 需要临时多带某目录时用 --include <pack 相对前缀>，不动这里的默认值。
-const DEFAULT_INCLUDE_PREFIXES = ['assets/art/ui/menu/'];
+//
+// M59 追加 `assets/ui/prefabs/`（UI 预设 JSON，当前 1 个文件 4,209 B）：这一类不是贴图，
+// 而是**启动期就要同步读**的数据文件——`main.lua` 的 `validate_content()` 在 `on_create`
+// 里跑 `validate_data`，而 `ui/prefab.lua` 登记在门里（预设是数据文件，改坏没有语法错误，
+// 只能靠启动门读一遍）。微信分包形态下 `wechatReadFile` 是**同步** `readText`（不 await
+// `ensurePack`，见 wechat-adapter.js 的 lua_boot_with_reader），文件若只躺在分包 pack/ 里，
+// 首帧 boot 就读不到 → `validate_content` 当场 error → 白屏。所以"被启动门读的东西"按定义
+// 就是首屏资源。（web 形态没有这个问题：index.html 先把 manifest.txt 里每个文件取进
+// LUA_RESOURCES 才 boot。）
+const DEFAULT_INCLUDE_PREFIXES = ['assets/art/ui/menu/', 'assets/ui/prefabs/'];
 
 const MANIFEST_HEADER_KEY = 'assetc_manifest';
 

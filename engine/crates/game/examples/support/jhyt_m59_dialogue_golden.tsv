@@ -1,0 +1,102 @@
+gu_changfeng_teach	dlg:box	panel	240.00,450.00,800.00,240.00,0.92
+gu_changfeng_teach	dlg:portrait_frame	image	576.00,332.00,128.00,128.00,assets/art/ui/dialogue/ui_portrait_frame.png
+gu_changfeng_teach	dlg:portrait	image	592.00,348.00,96.00,96.00,assets/art/portraits/gu_changfeng_calm.png
+gu_changfeng_teach	dlg:speaker	text	264.00,466.00,20,顾长风
+gu_changfeng_teach	dlg:text	text	264.00,494.00,18,顾长风负手立于木桩旁：“江湖路远，先把刀法根基打稳。”
+gu_changfeng_teach	dlg:opt1	text	264.00,550.00,18,> 1. 愿随师父走一遍基础三式。
+gu_changfeng_teach	dlg:opt2	text	264.00,578.00,18,  2. 弟子新来乍到，请师父吩咐。
+gu_changfeng_teach	dlg:opt3	text	264.00,606.00,18,  3. 庄中可有要办的差事？
+gu_changfeng_teach	dlg:opt4	text	264.00,634.00,18,  4. 改日再来请教。
+gu_changfeng_teach	dlg:opt5	text	hidden
+gu_changfeng_teach	dlg:marker1	image	252.00,556.00,8.00,8.00,assets/art/ui/dialogue/ui_dialogue_marker.png
+gu_changfeng_teach	dlg:marker2	image	missing
+gu_changfeng_teach	dlg:marker3	image	missing
+gu_changfeng_teach	dlg:marker4	image	missing
+gu_changfeng_teach	dlg:marker5	image	missing
+gu_changfeng_teach	dlg:hint	text	232.00,660.00,14,W/S 或 方向键 选择 · 1/2/3/4/5 直选 · 空格 确认 · Esc 结束
+gu_changfeng_teach	dlg:continue	image	264.00,658.00,16.00,16.00,assets/art/ui/dialogue/ui_dialogue_continue.png
+shen_qingluo_herb	dlg:box	panel	240.00,450.00,800.00,240.00,0.92
+shen_qingluo_herb	dlg:portrait_frame	image	576.00,332.00,128.00,128.00,assets/art/ui/dialogue/ui_portrait_frame.png
+shen_qingluo_herb	dlg:portrait	image	592.00,348.00,96.00,96.00,assets/art/portraits/shen_qingluo_calm.png
+shen_qingluo_herb	dlg:speaker	text	264.00,466.00,20,沈青萝
+shen_qingluo_herb	dlg:text	text	264.00,494.00,18,沈青萝放下药碾：“医馆正缺灵芝入药，客官可愿搭把手？”
+shen_qingluo_herb	dlg:opt1	text	264.00,550.00,18,> 1. 愿为医馆采三株灵芝。
+shen_qingluo_herb	dlg:opt2	text	264.00,578.00,18,  2. 听说药庐常年收灵芝？
+shen_qingluo_herb	dlg:opt3	text	264.00,606.00,18,  3. 改日再说。
+shen_qingluo_herb	dlg:opt4	text	hidden
+shen_qingluo_herb	dlg:opt5	text	hidden
+shen_qingluo_herb	dlg:marker1	image	252.00,556.00,8.00,8.00,assets/art/ui/dialogue/ui_dialogue_marker.png
+shen_qingluo_herb	dlg:marker2	image	missing
+shen_qingluo_herb	dlg:marker3	image	missing
+shen_qingluo_herb	dlg:marker4	image	missing
+shen_qingluo_herb	dlg:marker5	image	missing
+shen_qingluo_herb	dlg:hint	text	232.00,660.00,14,W/S 或 方向键 选择 · 1/2/3/4/5 直选 · 空格 确认 · Esc 结束
+shen_qingluo_herb	dlg:continue	image	264.00,658.00,16.00,16.00,assets/art/ui/dialogue/ui_dialogue_continue.png
+lin_xiaoman_rice	dlg:box	panel	240.00,450.00,800.00,240.00,0.92
+lin_xiaoman_rice	dlg:portrait_frame	image	missing
+lin_xiaoman_rice	dlg:portrait	image	missing
+lin_xiaoman_rice	dlg:speaker	text	264.00,466.00,20,林小满
+lin_xiaoman_rice	dlg:text	text	264.00,494.00,18,林小满在茶垄间直起腰：“客官来得正好，商队托我代收两斗稻谷。”
+lin_xiaoman_rice	dlg:opt1	text	264.00,550.00,18,> 1. 怎么收？
+lin_xiaoman_rice	dlg:opt2	text	264.00,578.00,18,  2. 村里还缺什么野味？
+lin_xiaoman_rice	dlg:opt3	text	264.00,606.00,18,  3. 先去别处看看。
+lin_xiaoman_rice	dlg:opt4	text	hidden
+lin_xiaoman_rice	dlg:opt5	text	hidden
+lin_xiaoman_rice	dlg:marker1	image	252.00,556.00,8.00,8.00,assets/art/ui/dialogue/ui_dialogue_marker.png
+lin_xiaoman_rice	dlg:marker2	image	missing
+lin_xiaoman_rice	dlg:marker3	image	missing
+lin_xiaoman_rice	dlg:marker4	image	missing
+lin_xiaoman_rice	dlg:marker5	image	missing
+lin_xiaoman_rice	dlg:hint	text	232.00,660.00,14,W/S 或 方向键 选择 · 1/2/3/4/5 直选 · 空格 确认 · Esc 结束
+lin_xiaoman_rice	dlg:continue	image	264.00,658.00,16.00,16.00,assets/art/ui/dialogue/ui_dialogue_continue.png
+lu_guizang_truth	dlg:box	panel	240.00,450.00,800.00,240.00,0.92
+lu_guizang_truth	dlg:portrait_frame	image	missing
+lu_guizang_truth	dlg:portrait	image	missing
+lu_guizang_truth	dlg:speaker	text	264.00,466.00,20,陆归藏
+lu_guizang_truth	dlg:text	text	264.00,494.00,18,陆归藏放下留书：“你师叔把线索交给你了？好。把这八两铁锭锻成山庄的门闸，\n司徒魁便进不来。”
+lu_guizang_truth	dlg:opt1	text	264.00,550.00,18,> 1. 师叔可要提点一二？
+lu_guizang_truth	dlg:opt2	text	264.00,578.00,18,  2. 改日再来请教。
+lu_guizang_truth	dlg:opt3	text	hidden
+lu_guizang_truth	dlg:opt4	text	hidden
+lu_guizang_truth	dlg:opt5	text	hidden
+lu_guizang_truth	dlg:marker1	image	252.00,556.00,8.00,8.00,assets/art/ui/dialogue/ui_dialogue_marker.png
+lu_guizang_truth	dlg:marker2	image	missing
+lu_guizang_truth	dlg:marker3	image	missing
+lu_guizang_truth	dlg:marker4	image	missing
+lu_guizang_truth	dlg:marker5	image	missing
+lu_guizang_truth	dlg:hint	text	232.00,660.00,14,W/S 或 方向键 选择 · 1/2/3/4/5 直选 · 空格 确认 · Esc 结束
+lu_guizang_truth	dlg:continue	image	264.00,658.00,16.00,16.00,assets/art/ui/dialogue/ui_dialogue_continue.png
+su_wanqing_sect	dlg:box	panel	240.00,450.00,800.00,240.00,0.92
+su_wanqing_sect	dlg:portrait_frame	image	missing
+su_wanqing_sect	dlg:portrait	image	missing
+su_wanqing_sect	dlg:speaker	text	264.00,466.00,20,苏晚晴
+su_wanqing_sect	dlg:text	text	264.00,494.00,18,苏晚晴捧出掌门信物：“山庄不可一日无主。你若肯接手，便备三颗回气丹以壮行色。”
+su_wanqing_sect	dlg:opt1	text	264.00,550.00,18,> 1. 山庄大事，还需从长计议。
+su_wanqing_sect	dlg:opt2	text	264.00,578.00,18,  2. 改日再谈。
+su_wanqing_sect	dlg:opt3	text	hidden
+su_wanqing_sect	dlg:opt4	text	hidden
+su_wanqing_sect	dlg:opt5	text	hidden
+su_wanqing_sect	dlg:marker1	image	252.00,556.00,8.00,8.00,assets/art/ui/dialogue/ui_dialogue_marker.png
+su_wanqing_sect	dlg:marker2	image	missing
+su_wanqing_sect	dlg:marker3	image	missing
+su_wanqing_sect	dlg:marker4	image	missing
+su_wanqing_sect	dlg:marker5	image	missing
+su_wanqing_sect	dlg:hint	text	232.00,660.00,14,W/S 或 方向键 选择 · 1/2/3/4/5 直选 · 空格 确认 · Esc 结束
+su_wanqing_sect	dlg:continue	image	264.00,658.00,16.00,16.00,assets/art/ui/dialogue/ui_dialogue_continue.png
+xuanhe_vengeance	dlg:box	panel	240.00,450.00,800.00,240.00,0.92
+xuanhe_vengeance	dlg:portrait_frame	image	missing
+xuanhe_vengeance	dlg:portrait	image	missing
+xuanhe_vengeance	dlg:speaker	text	264.00,466.00,20,玄鹤
+xuanhe_vengeance	dlg:text	text	264.00,494.00,18,玄鹤拂尘一摆：“司徒魁三月之内必登山门。你若了此因果，\n便带山魈内丹与三张狼皮来山门候他。”
+xuanhe_vengeance	dlg:opt1	text	264.00,550.00,18,> 1. 徒儿尚未理清真相。
+xuanhe_vengeance	dlg:opt2	text	264.00,578.00,18,  2. 改日再听长老吩咐。
+xuanhe_vengeance	dlg:opt3	text	hidden
+xuanhe_vengeance	dlg:opt4	text	hidden
+xuanhe_vengeance	dlg:opt5	text	hidden
+xuanhe_vengeance	dlg:marker1	image	252.00,556.00,8.00,8.00,assets/art/ui/dialogue/ui_dialogue_marker.png
+xuanhe_vengeance	dlg:marker2	image	missing
+xuanhe_vengeance	dlg:marker3	image	missing
+xuanhe_vengeance	dlg:marker4	image	missing
+xuanhe_vengeance	dlg:marker5	image	missing
+xuanhe_vengeance	dlg:hint	text	232.00,660.00,14,W/S 或 方向键 选择 · 1/2/3/4/5 直选 · 空格 确认 · Esc 结束
+xuanhe_vengeance	dlg:continue	image	264.00,658.00,16.00,16.00,assets/art/ui/dialogue/ui_dialogue_continue.png
