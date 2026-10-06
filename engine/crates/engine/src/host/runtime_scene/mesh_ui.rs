@@ -314,6 +314,10 @@ impl RuntimeScene {
                         position: cell_origin,
                         size: cell_size,
                         color: [cell.color[0], cell.color[1], cell.color[2]],
+                        // 格子贴图这一层**一直**是不透明发射（`cell.color[3]` 只作用于同一格
+                        // 先推的那块底色四边形）。这批只给实体层 `Image` 补 alpha，这里保持旧
+                        // 画面，免得顺手改动背包格子的观感。
+                        alpha: 1.0,
                         space: crate::core::ui::UiLayoutSpace::Screen,
                         anchor: [0.0, 0.0],
                         nine_slice: None,
@@ -476,7 +480,8 @@ impl RuntimeScene {
                     texture: image.texture,
                     position: [rect.x, rect.y],
                     size: [rect.w, rect.h],
-                    color: image.color,
+                    color: [image.color[0], image.color[1], image.color[2]],
+                    alpha: image.color[3],
                     space: crate::core::ui::UiLayoutSpace::Screen,
                     anchor: [0.0, 0.0],
                     nine_slice: image.nine_slice,
@@ -643,7 +648,7 @@ impl RuntimeScene {
             [sw, sh],
             self.ui_reference,
         );
-        let color = [image.color[0], image.color[1], image.color[2], 1.0];
+        let color = [image.color[0], image.color[1], image.color[2], image.alpha];
         // 九宫格路径：把目标矩形拆成 3×3 格。无切片 / 纹理尺寸取不到时回退单四边形。
         if let Some(slice) = image
             .nine_slice

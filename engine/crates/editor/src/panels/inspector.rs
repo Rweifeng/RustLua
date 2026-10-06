@@ -1544,7 +1544,7 @@ impl EditorApp {
                         "Image".to_owned(),
                         engine::core::ui::UiImage {
                             texture: String::new(),
-                            color: [1.0, 1.0, 1.0],
+                            color: [1.0, 1.0, 1.0, 1.0],
                             nine_slice: None,
                         }
                         .to_component_str(),

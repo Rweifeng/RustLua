@@ -425,9 +425,11 @@ pub fn field_text_equal(component: &str, field: &str, left: &str, right: &str) -
         return left == right;
     };
     // 元组字段按下标逐分量比较，避免 `1.0,2` 与 `1,2.0` 被当成不同。
+    // `Color` 也在这一族里：漏了它 `Image.color` 会退化成字符串比较，作者把 `1,1,1` 写成
+    // `1.0,1.0,1.0` 就会在撤销/脏标记里记成一次真实改动。
     if matches!(
         field_schema.kind,
-        FieldKind::Vec2 | FieldKind::Vec3 | FieldKind::Vec4 | FieldKind::Size
+        FieldKind::Vec2 | FieldKind::Vec3 | FieldKind::Vec4 | FieldKind::Color | FieldKind::Size
     ) {
         let separator = if field_schema.kind == FieldKind::Size {
             'x'
@@ -621,6 +623,17 @@ mod tests {
         ));
         assert!(field_text_equal("Sprite", "order", "1", "1"));
         assert!(!field_text_equal("Sprite", "pivot", "0.5,0.5", "0.5,0.6"));
+        // M64a 的 `Image.color` 也走逐分量归一：漏掉 `FieldKind::Color` 就退回逐字比较，
+        // `0.2` 与 `0.20` 这种纯格式差异会被编辑器记成一次真编辑（一条假 Undo）。
+        assert!(field_text_equal(
+            "Image",
+            "color",
+            "0.2,0.3,0.4,0.55",
+            "0.20,0.30,0.40,0.550"
+        ));
+        // 段数不同就是两个值：三段是"省略 alpha"，四段半透明不是它的同义写法。
+        assert!(!field_text_equal("Image", "color", "1,1,1", "1,1,1,1"));
+        assert!(!field_text_equal("Image", "color", "1,1,1", "1,1,1,0.5"));
         // 未注册组件/字段退回逐字比较。
         assert!(!field_text_equal("Nope", "x", "1.0", "1.000"));
         assert!(field_text_equal("Nope", "x", "1.0", "1.0"));

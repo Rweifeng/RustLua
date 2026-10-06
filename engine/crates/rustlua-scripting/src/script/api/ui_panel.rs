@@ -158,6 +158,9 @@ pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) ->
                         position: [x, y],
                         size: [width, height],
                         color: [r, g, b],
+                        // `ui.image` 的 Lua 签名里没有 alpha 参（第 10 参是 slice），
+                        // 这批不动那条 API：动态图片仍恒不透明，alpha 只服务实体层 `Image`。
+                        alpha: 1.0,
                         space: rustlua_ui::ui::UiLayoutSpace::Screen,
                         anchor: [0.0, 0.0],
                         nine_slice,

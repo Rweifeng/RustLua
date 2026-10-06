@@ -184,7 +184,11 @@ component  7  RenderMode  mode=screen
 - `Text`：`text=<esc>;font_size=..;color=r,g,b`
   - `font_size`（px）：像素字号（SDF 字体下 em 高度）；基准
     `UI_TEXT_BASE_PX = 12`。
-- `Image`：`texture=..;color=r,g,b;nine_slice=l,r,t,b`
+  - `color` 只有三段：文字**没有** alpha 通道（淡入淡出走 `ui.*` 动态层，见下）。
+- `Image`：`texture=..;color=r,g,b[,a];nine_slice=l,r,t,b`
+  - `color` 的第四段是整块四边形的不透明度（直接落到顶点的 alpha 上）；省略即不透明，
+    写出端在 alpha=1 时也只写三段，因此仓库既有的 120 行 `color=` 数据不会被保存动作重排。
+    schema 侧用 `FieldKind::Color`（3 或 4 段都合法）而不是 `Vec3`/`Vec4`（那两个判"恰好 N 段"）。
 - `UiLayout`：`anchors=l,t,r,b;offsets=l,t,r,b;min_size=w,h;max_size=w,h;pivot=x,y`
   字段均可省略并使用默认值，但完整几何必须通过本组件表达。
 - `UiEvents`：`event=click;function=on_click`；多条绑定用 `|` 分隔。

@@ -328,7 +328,7 @@ fn collect_dump(
                 "authored\t{name}\timage\t{},{},{}\n",
                 image.texture,
                 nine_slice(&image.nine_slice),
-                rgb(&image.color)
+                tint(&image.color)
             ));
         }
         if !node.events.is_empty() {
@@ -791,6 +791,19 @@ fn xywh(rect: &UiRect) -> String {
 
 fn rgb(color: &[f32; 3]) -> String {
     format!("{:.3},{:.3},{:.3}", color[0], color[1], color[2])
+}
+
+/// `Image` 的着色读数（RGBA）。与 `UiImage::to_component_str` 同一条口径：alpha=1 只印三段
+/// ⇒ 既有黄金表逐字节不动；谁真给门面写半透明，第四段就进表，画面变了门就红
+/// （`Text` 没有 alpha，走 [`rgb`]）。
+fn tint(color: &[f32; 4]) -> String {
+    if color[3] == 1.0 {
+        return rgb(&[color[0], color[1], color[2]]);
+    }
+    format!(
+        "{:.3},{:.3},{:.3},{:.3}",
+        color[0], color[1], color[2], color[3]
+    )
 }
 
 /// 九宫格边进黄金表：它是"这块板子怎么拉伸"的版面数据，丢了不会改矩形、只会改画面。

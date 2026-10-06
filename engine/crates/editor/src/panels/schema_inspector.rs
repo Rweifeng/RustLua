@@ -70,6 +70,7 @@ pub(crate) fn field_widget(kind: FieldKind, field: &str) -> FieldWidget {
             parts: 2,
             size: true,
         },
+        FieldKind::Color => FieldWidget::Color { parts: 4 },
         FieldKind::Vec2 | FieldKind::Vec3 | FieldKind::Vec4 if is_color => FieldWidget::Color {
             parts: match kind {
                 FieldKind::Vec2 => 2,

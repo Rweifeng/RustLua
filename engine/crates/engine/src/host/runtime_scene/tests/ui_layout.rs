@@ -1,6 +1,7 @@
 //! 原 `mod sdf_tests` 里 `ui_layout` 这一域（WP12 阶段 1 纯搬运；源行段 5592–5804）。
 //!
 //! - `nine_slice_image_renders_nine_quads`
+//! - `scene_ui_image_alpha_reaches_the_vertex`
 //! - `scene_ui_text_keeps_layout_origin_once`
 //! - `ui_layout_preview_targets_authored_entity`
 //! - `ui_layout_rects_expose_exact_preview_geometry`
@@ -218,4 +219,68 @@ fn font_prewarm_from_chars_txt() {
     let atlas = load_project_font_atlas(Some(&root)).expect("atlas");
     assert!(atlas.lock().unwrap().version() > 0, "chars.txt 应触发预热");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// 半透明色块（M64a）：作者写的 `color` 第四段必须真的走到**顶点 alpha** 上。
+///
+/// 为什么钉在顶点而不是矩形：发射代码（`mesh_ui.rs` 的 `push_image_quad`）曾经把 alpha
+/// 硬写成 `1.0`，那种回归矩形全对、画面全实。实测（口径：把 `image.alpha` 改回 `1.0` 跑
+/// `cargo test -p engine --lib`）：159 条里只有本条红，另一条红是既有无关红（`prefab.*`
+/// 缺 game_api 演示），所以面板遮罩搬进 `.prefab` 之前这条判定没有任何门会红。
+/// 同一趟里钉住"三段仍是不透明"：仓库 120 行 `Image` 的 `color=` 全是三段，这条一红就是全工程变淡。
+#[test]
+fn scene_ui_image_alpha_reaches_the_vertex() {
+    use crate::core::scene::{Scene, SceneEntityId};
+
+    let mut scene = Scene::new("image-alpha");
+    for (id, name, color, offsets) in [
+        (
+            SceneEntityId(1),
+            "Dim",
+            "0.2,0.3,0.4,0.55",
+            "offsets=0,0,80,60",
+        ),
+        (SceneEntityId(2), "Opaque", "1,1,1", "offsets=0,100,80,160"),
+    ] {
+        scene.add_entity(id, name, None).unwrap();
+        let entity = scene.entities.get_mut(&id).unwrap();
+        // `__white__` 是引擎内置的 1×1 白纹理（`WHITE_TEXTURE_PATH`）：纯色块不需要任何
+        // 项目文件，这个测试因此不依赖样例工程是否存在。
+        entity.components.insert(
+            "Image".to_owned(),
+            format!("texture=__white__;color={color}"),
+        );
+        entity
+            .components
+            .insert("UiLayout".to_owned(), format!("anchors=0,0,0,0;{offsets}"));
+    }
+    let mut runtime = RuntimeScene::from_scene_edit(None, scene).expect("runtime image-alpha");
+    let mesh = runtime.vertices(1280, 720).expect("vertices");
+    // 两块白图共用同一份纹理，会被并成**一个** 12 顶点的批，而不是两个 6 顶点的批，
+    // 所以这里按顶点读数、不按 draw 数找四边形。
+    let colors: Vec<[f32; 4]> = mesh.vertices.iter().map(|v| v.color).collect();
+    let dim: Vec<[f32; 4]> = colors
+        .iter()
+        .copied()
+        .filter(|c| (c[0] - 0.2).abs() < 1e-4)
+        .collect();
+    assert_eq!(
+        dim.len(),
+        6,
+        "半透明那块应出满一个四边形（6 顶点）：{colors:?}"
+    );
+    assert!(
+        dim.iter().all(|c| *c == [0.2, 0.3, 0.4, 0.55]),
+        "第四段必须落到顶点 alpha，rgb 不许被动过：{dim:?}"
+    );
+    let opaque: Vec<[f32; 4]> = colors
+        .iter()
+        .copied()
+        .filter(|c| (c[0] - 1.0).abs() < 1e-4)
+        .collect();
+    assert_eq!(opaque.len(), 6, "不透明那块同样出满一个四边形：{colors:?}");
+    assert!(
+        opaque.iter().all(|c| *c == [1.0, 1.0, 1.0, 1.0]),
+        "三段 `color=` 仍须读成不透明（仓库 120 行 `Image` 数据的形状）：{opaque:?}"
+    );
 }

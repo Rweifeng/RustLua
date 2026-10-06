@@ -273,6 +273,16 @@ pub enum FieldKind {
     Vec2,
     Vec3,
     Vec4,
+    /// `r,g,b` 或 `r,g,b,a` 颜色：**第四段可省**（省略 = 不透明）。
+    ///
+    /// 为什么不复用 `Vec3/Vec4`：那两个是"恰好 N 段"（见 `FieldValue` 解析处的
+    /// `expected {expected} comma-separated numbers`），而实体层 `Image.color` 的存量作者数据
+    /// 全是三段（120 行，口径见 `rustlua-ui::ui::parse_rgba`）、写出端在 alpha=1 时也只写三段
+    /// （`UiImage::to_component_str`）。用 `Vec4` 标注会让这 120 行判成非法，用 `Vec3` 则新写的
+    /// 半透明行进不来——两边各跑过一次反面对照，各红一条样本。
+    /// 也**不能**顺手放宽 `Vec4`：`anchors`/`rotation`/`bounds` 的段数是要害信息（`Quad.color`
+    /// 不属于这一族——它的编码端固定写四段，见 rustlua-render 里 Quad 的 to_component_str）。
+    Color,
     /// `宽x高`（如 `size=16x16`）：Sprite/Tilemap 的尺寸编码与逗号分隔的 Vec2 不同。
     Size,
     Enum,
@@ -289,6 +299,7 @@ impl FieldKind {
             Self::Vec2 => "vec2",
             Self::Vec3 => "vec3",
             Self::Vec4 => "vec4",
+            Self::Color => "color",
             Self::Size => "size",
             Self::Enum => "enum",
         }
@@ -451,6 +462,23 @@ impl FieldSchema {
                 let width = parse_number(width)?;
                 let height = parse_number(height)?;
                 Ok(FieldValue::Tuple(vec![width, height]))
+            }
+            FieldKind::Color => {
+                // 与 `UiImage::from_component_str`/`parse_rgba` 同一口径：3 段或 4 段都合法，
+                // 2 段与 5 段照拒。段数**原样保留**（三段读进来还是三段），否则编辑一次就把
+                // 一整片存量数据重排成四段。
+                let parts: Vec<&str> = raw.split(',').collect();
+                if parts.len() != 3 && parts.len() != 4 {
+                    return Err(fail(format!(
+                        "expected 3 or 4 comma-separated numbers, found {}",
+                        parts.len()
+                    )));
+                }
+                let mut values = Vec::with_capacity(parts.len());
+                for part in parts {
+                    values.push(parse_number(part)?);
+                }
+                Ok(FieldValue::Tuple(values))
             }
             FieldKind::Vec2 | FieldKind::Vec3 | FieldKind::Vec4 => {
                 let expected = match self.kind {
@@ -906,7 +934,9 @@ const REQUIRED_TEXTURE_RULE: FieldRule = FieldRule::ProjectPath {
 
 const IMAGE_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("texture", FieldKind::Text, true).with_rules(&[TEXTURE_RULE]),
-    FieldSchema::new("color", FieldKind::Vec3, false),
+    // RGBA：第四段可省（`UiImage::to_component_str` 在 alpha=1 时只写三段），半透明色块靠它，
+    // 面板底图/遮罩才有得摆。见 [`FieldKind::Color`]。
+    FieldSchema::new("color", FieldKind::Color, false),
     // 九宫格四条边框（纹理像素）：与 `UiImage::from_component_str` 同一口径，负值拒绝。
     // 全零与"省略该字段"**语义相同**（渲染侧用 `any(|v| *v > 0.0)` 过滤，
     // 见 `runtime_scene.rs` 的九宫格分支），因此编辑器把零写出来后引擎再保存会自然收敛回省略。
@@ -2135,6 +2165,14 @@ mod tests {
             // 全零 = 不启用九宫格（渲染侧 `any(|v| *v > 0.0)` 过滤，语义等同省略）。
             ("texture=a.png;color=1,1,1;nine_slice=0,0,0,0", true),
             ("texture=a.png", true),
+            // M64a 的 alpha：`color` 第四段两边**都**要收（schema 侧是新加的
+            // [`FieldKind::Color`]）。段数不是随便放宽：2 段与 5 段两边都拒。
+            // 两条反面对照都实测过：标 `Vec4` 时第一条三段样本红（= 仓库 120 行既有 `Image`
+            // 数据全判非法），标 `Vec3` 时 `color=1,1,1,1` 红（= 新写的半透明行进不来）。
+            ("texture=a.png;color=1,1,1,1", true),
+            ("texture=a.png;color=0.2,0.3,0.4,0.55", true),
+            ("texture=a.png;color=1,1", false),
+            ("texture=a.png;color=1,1,1,1,1", false),
         ];
         for (payload, expected_ok) in image_samples {
             let engine = rustlua_ui::ui::UiImage::from_component_str(payload);

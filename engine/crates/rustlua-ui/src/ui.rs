@@ -85,8 +85,13 @@ impl Default for UiText {
 pub struct UiImage {
     /// Project-relative texture path.
     pub texture: String,
-    /// RGB tint; default white.
-    pub color: [f32; 3],
+    /// RGBA tint; default opaque white。第四段是整块四边形的不透明度，作者串里可以省
+    /// （`color=r,g,b` ⇒ a=1）。
+    ///
+    /// 与动态层 `UiPanel.color`（[`UiPanel`]）同形：那边一直是四段，实体层补齐之后
+    /// "半透明色块"在两层里是同一个写法，web 宿主读的也是这第四段
+    /// （`plugins/webgl/web-runtime.js` 里 `entity.image.color[3]`）。
+    pub color: [f32; 4],
     /// 九宫格边框（纹理像素）`[left, right, top, bottom]`；`None` = 单四边形拉伸（默认）。
     pub nine_slice: Option<[f32; 4]>,
 }
@@ -102,6 +107,10 @@ pub struct DynamicUiImage {
     pub position: [f32; 2],
     pub size: [f32; 2],
     pub color: [f32; 3],
+    /// 整块四边形的不透明度。实体层从 `Image` 的 `color` 第四段带过来（场景 UI 走
+    /// `push_image_quad` 与动态层同一份发射代码，所以这个字段挂在共用类型上）；
+    /// Lua `ui.image` 这一层暂时恒为 1.0。
+    pub alpha: f32,
     pub space: UiLayoutSpace,
     pub anchor: [f32; 2],
     pub nine_slice: Option<[f32; 4]>,
@@ -214,6 +223,30 @@ fn parse_rgb(raw: &str) -> Result<[f32; 3], UiComponentError> {
         parse_number(parts[1])?,
         parse_number(parts[2])?,
     ])
+}
+
+/// Parses an `r,g,b` or `r,g,b,a` color（省略第四段 = 不透明）。
+///
+/// 允许省第四段是**存量数据的形状**：仓库里 120 行 `Image` 的 `color=` 全是三段（口径：
+/// `find examples -name '*.prefab' -o -name '*.scene' | xargs grep -hE '^[a-z]+[[:space:]]+[0-9]+[[:space:]]+Image[[:space:]]'`），
+/// 编码侧因此只在 alpha≠1 时才写第四段（见 [`UiImage::to_component_str`]），两边对称才不会被
+/// 编辑器一保存就整片重排成四段。schema 侧的同一口径是 [`FieldKind::Color`]
+/// （`Vec3/Vec4` 都判"恰好 N 段"，套不上）。
+fn parse_rgba(raw: &str) -> Result<[f32; 4], UiComponentError> {
+    let parts: Vec<&str> = raw.split(',').collect();
+    if parts.len() != 3 && parts.len() != 4 {
+        return Err(UiComponentError::InvalidValue(raw.to_owned()));
+    }
+    let mut color = [
+        parse_number(parts[0])?,
+        parse_number(parts[1])?,
+        parse_number(parts[2])?,
+        1.0,
+    ];
+    if parts.len() == 4 {
+        color[3] = parse_number(parts[3])?;
+    }
+    Ok(color)
 }
 
 /// Canvas 空间 authored → 屏幕像素的每轴缩放：`viewport / reference`。
@@ -428,10 +461,11 @@ impl UiText {
 }
 
 impl UiImage {
-    /// Parses `texture=..;color=r,g,b;nine_slice=l,r,t,b`.
+    /// Parses `texture=..;color=r,g,b[,a];nine_slice=l,r,t,b`（键可省、可乱序；`color`
+    /// 省略第四段 = 不透明）。
     pub fn from_component_str(value: &str) -> Result<Self, UiComponentError> {
         let mut texture = String::new();
-        let mut color = [1.0, 1.0, 1.0];
+        let mut color = [1.0, 1.0, 1.0, 1.0];
         let mut nine_slice: Option<[f32; 4]> = None;
         let mut seen = [false; 1];
         for field in split_fields(value) {
@@ -443,7 +477,7 @@ impl UiImage {
                     texture = raw.to_owned();
                     seen[0] = true;
                 }
-                "color" => color = parse_rgb(raw)?,
+                "color" => color = parse_rgba(raw)?,
                 "nine_slice" => {
                     let parts: Vec<&str> = raw.split(',').collect();
                     if parts.len() != 4 {
@@ -470,6 +504,11 @@ impl UiImage {
     }
 
     /// Encodes back to the component string.
+    ///
+    /// alpha=1 时**只写三段**：仓库里 120 行 `Image` 的 `color=` 全是三段（口径见本文件的
+    /// `parse_rgba`），写出端跟着省，编辑器一保存才不会把这些行整片重排成四段。这条目前只有
+    /// `image_color_omits_alpha_only_when_opaque` 一处守护——三条"看着应该会红"的既有数据门实测
+    /// 全绿（账见 examples/game_jhyt/docs/68 §6）。
     #[must_use]
     pub fn to_component_str(&self) -> String {
         let nine_slice = match self.nine_slice {
@@ -479,9 +518,15 @@ impl UiImage {
             ),
             None => String::new(),
         };
+        if self.color[3] == 1.0 {
+            return format!(
+                "texture={};{nine_slice}color={:.3},{:.3},{:.3}",
+                self.texture, self.color[0], self.color[1], self.color[2],
+            );
+        }
         format!(
-            "texture={};{nine_slice}color={:.3},{:.3},{:.3}",
-            self.texture, self.color[0], self.color[1], self.color[2],
+            "texture={};{nine_slice}color={:.3},{:.3},{:.3},{:.3}",
+            self.texture, self.color[0], self.color[1], self.color[2], self.color[3],
         )
     }
 }
@@ -571,7 +616,7 @@ mod tests {
     fn image_round_trip() {
         let img = UiImage {
             texture: "assets/ui/panel.png".to_owned(),
-            color: [0.5, 0.5, 1.0],
+            color: [0.5, 0.5, 1.0, 1.0],
             nine_slice: None,
         };
         let decoded = UiImage::from_component_str(&img.to_component_str()).expect("valid");
@@ -582,7 +627,7 @@ mod tests {
     fn image_nine_slice_round_trip() {
         let img = UiImage {
             texture: "assets/ui/panel.png".to_owned(),
-            color: [1.0, 1.0, 1.0],
+            color: [1.0, 1.0, 1.0, 1.0],
             nine_slice: Some([8.0, 12.0, 16.0, 20.0]),
         };
         let encoded = img.to_component_str();
@@ -598,7 +643,7 @@ mod tests {
     fn image_nine_slice_absent_when_none() {
         let img = UiImage {
             texture: "assets/ui/panel.png".to_owned(),
-            color: [1.0, 1.0, 1.0],
+            color: [1.0, 1.0, 1.0, 1.0],
             nine_slice: None,
         };
         let encoded = img.to_component_str();
@@ -612,6 +657,57 @@ mod tests {
             UiComponentError::InvalidValue("1,2,3".to_owned())
         );
         assert!(UiImage::from_component_str("texture=a;nine_slice=1,2,3,abc").is_err());
+    }
+
+    #[test]
+    fn image_color_accepts_three_or_four_segments() {
+        // 三段是**存量形状**（仓库里 120 行 `Image` 的 `color=` 都是三段），省略的第四段读成不透明；
+        // 半透明面板才有得写。段数不是随便放宽：2 段与 5 段照样拒。
+        assert_eq!(
+            UiImage::from_component_str("texture=a;color=0.2,0.3,0.4")
+                .expect("三段")
+                .color,
+            [0.2, 0.3, 0.4, 1.0]
+        );
+        assert_eq!(
+            UiImage::from_component_str("texture=a;color=0.2,0.3,0.4,0.55")
+                .expect("四段")
+                .color,
+            [0.2, 0.3, 0.4, 0.55]
+        );
+        assert_eq!(
+            UiImage::from_component_str("texture=a;color=1,1").unwrap_err(),
+            UiComponentError::InvalidValue("1,1".to_owned())
+        );
+        assert_eq!(
+            UiImage::from_component_str("texture=a;color=1,1,1,1,1").unwrap_err(),
+            UiComponentError::InvalidValue("1,1,1,1,1".to_owned())
+        );
+    }
+
+    #[test]
+    fn image_color_omits_alpha_only_when_opaque() {
+        // 这条钉的是"搬版面不动存量数据"：alpha=1 必须编回**三段**，否则每一行既有
+        // `color=` 都会在迁移/保存时被重排成四段（`.scene`/`.prefab` 逐字节幂等判定当场红，
+        // m63 的门面黄金表也整片漂）。真半透明才出现第四段。
+        let opaque = UiImage {
+            texture: "assets/ui/panel.png".to_owned(),
+            color: [0.949, 0.918, 0.847, 1.0],
+            nine_slice: None,
+        };
+        assert_eq!(
+            opaque.to_component_str(),
+            "texture=assets/ui/panel.png;color=0.949,0.918,0.847"
+        );
+        let dimmed = UiImage {
+            texture: "assets/ui/panel.png".to_owned(),
+            color: [0.0, 0.0, 0.0, 0.55],
+            nine_slice: None,
+        };
+        assert_eq!(
+            dimmed.to_component_str(),
+            "texture=assets/ui/panel.png;color=0.000,0.000,0.000,0.550"
+        );
     }
 
     #[test]
