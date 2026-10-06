@@ -139,15 +139,20 @@ impl RuntimeScene {
     /// 并表发生在**解算之前**：矩形、文本 pivot、点击命中框三条读路径都查这张表，
     /// 分两处维护就等于"画的位置和点中的位置可以不一样"。
     ///
-    /// spawn 集没变时（现有全部游戏：空表对空表）这里只有一次 `PartialEq` 比较，
-    /// 不产生分配。槽位被复用（场景 UI 实体先被 `entity.destroy`、随后 spawn 落进同一个槽）
-    /// 时 spawn 的节点覆盖旧的：**旧节点本来就是死实体的**，despawn 时按登记过的键移除，
-    /// 该槽此后没有活实体，移除不会带走仍在世的东西。
+    /// **先比修订号，再取表**：原写法是每帧先 `let spawned = self.script.prefab_ui_nodes();`
+    /// 再 `if spawned == self.applied_prefab_ui_nodes`——克隆发生在比较**之前**，于是
+    /// "没变就早退"只在分配已经付过之后才成立；UI 预设化之后这张表是非空的（每个面板的布局节点
+    /// 都在里头），那份拷贝每帧都付（`docs/60` §10.3 第 2 条）。现在未变时**一次 clone 都不做**。
+    ///
+    /// 槽位被复用（场景 UI 实体先被 `entity.destroy`、随后 spawn 落进同一个槽）时 spawn 的节点
+    /// 覆盖旧的：**旧节点本来就是死实体的**，despawn 时按登记过的键移除，该槽此后没有活实体，
+    /// 移除不会带走仍在世的东西。
     pub(super) fn sync_prefab_ui_nodes(&mut self) {
-        let spawned = self.script.prefab_ui_nodes();
-        if spawned == self.applied_prefab_ui_nodes {
+        let revision = self.script.prefab_ui_nodes_revision();
+        if revision == self.applied_prefab_ui_revision {
             return;
         }
+        let spawned = self.script.prefab_ui_nodes();
         for key in self.applied_prefab_ui_nodes.keys() {
             self.ui_scene_nodes.remove(key);
         }
@@ -156,6 +161,7 @@ impl RuntimeScene {
         }
         self.ui_layout_rects.clear();
         self.applied_prefab_ui_nodes = spawned;
+        self.applied_prefab_ui_revision = revision;
     }
 
     /// Appends Lua-created `ui.panel` quads using the white texture.

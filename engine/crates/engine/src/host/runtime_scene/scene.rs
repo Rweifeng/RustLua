@@ -562,6 +562,7 @@ impl RuntimeScene {
             ui_scene_nodes,
             ui_layout_rects: BTreeMap::new(),
             applied_prefab_ui_nodes: BTreeMap::new(),
+            applied_prefab_ui_revision: 0,
             step_scheduler: Scheduler::new(),
             frame_scheduler: Scheduler::new(),
             step_system_names: Vec::new(),

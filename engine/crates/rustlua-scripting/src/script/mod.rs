@@ -213,6 +213,48 @@ impl EntityNames {
     }
 }
 
+/// 运行期 spawn 的 UI 预设布局节点表 + **修订号**。
+///
+/// 宿主每帧都要先回答"这张表变没变"，才能决定要不要把节点并进自己的场景表。原来的做法是
+/// **整表 clone 出来再 `==`**（`docs/60` §10.3 第 2 条）：表没变时白白复制一份，而表一旦非空
+/// ——UI 预设化之后 `prefab.spawn` 会往里塞每个面板的布局节点——这份拷贝就**每帧都付**，
+/// 而且比较本身也是 O(n)。把修订号与表放进**同一个类型**、改动只能经下面这几个方法，
+/// **修订号不可能忘记自增**（与 `EntityNames` 的反查缓存同一个理由：靠人记必然漂移）。
+///
+/// 修订号单调递增，**不做"内容没变就不加"的优化**：多一次同步只是多付一次合并，漏一次同步
+/// 却会让画面与命中框停在旧版上——两者代价不对称，所以宁多勿漏。
+#[derive(Debug, Default)]
+struct PrefabUiNodes {
+    nodes: BTreeMap<u64, rustlua_ui::ui_scene_layout::UiSceneNode>,
+    revision: u64,
+}
+
+impl PrefabUiNodes {
+    fn clear(&mut self) {
+        self.nodes.clear();
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    fn remove(&mut self, key: &u64) {
+        self.nodes.remove(key);
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    fn extend(&mut self, nodes: BTreeMap<u64, rustlua_ui::ui_scene_layout::UiSceneNode>) {
+        self.nodes.extend(nodes);
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// 给宿主的整表快照（宿主只在修订号变了之后才来取，所以这里 clone 一次是应该付的）。
+    fn snapshot(&self) -> BTreeMap<u64, rustlua_ui::ui_scene_layout::UiSceneNode> {
+        self.nodes.clone()
+    }
+}
+
 /// docs/60 §4.1：`ScriptState` 按领域拆分后的**实体注册域**。
 ///
 /// 场景切换清理走 [`EntityState::clear_for_scene_transition`]——新字段若属于场景
@@ -400,7 +442,10 @@ pub(crate) struct ScriptState {
     /// 宿主每帧解算场景 UI 矩形时把这张表并进自己的快照，于是"画得出"与"点得中"
     /// 对 spawn 的实体同样成立；场景加载那一份走同一个 builder（见
     /// `rustlua_ui::ui_scene_layout::build_ui_scene_nodes`）。
-    prefab_ui_nodes: BTreeMap<u64, rustlua_ui::ui_scene_layout::UiSceneNode>,
+    ///
+    /// 表与**修订号**封在一个类型里（[`PrefabUiNodes`]）：宿主先比修订号，没变就**一次 clone 都不做**
+    /// ——原来的写法是每帧整表 clone 再 `==`，UI 预设化之后那张表是非空的，代价每帧都付。
+    prefab_ui_nodes: PrefabUiNodes,
     /// docs/54 §8-②：最近一次场景加载里**坏的 `parent` 边**（悬空父/自环）的可读描述。
     /// 运行时会把这类边当成"没有父"（容错），因此必须同时可发现，否则子树会静默少一层位移。
     scene_parent_issues: Vec<String>,
@@ -785,11 +830,21 @@ impl LuaRuntime {
     /// UI 矩形前把它并进自己的快照，spawn 出来的 UI 才既画得出也点得中。
     ///
     /// 返回**克隆**而不是引用：`RefCell<ScriptState>` 借用期间脚本不能再借用，而宿主
-    /// 解算布局时还要 `with_world`（同一个 state 的另一个字段）。空表 = 本帧没有任何
-    /// spawn 实例，宿主据此跳过合并、一份现有游戏都不付额外拷贝成本。
+    /// 解算布局时还要 `with_world`（同一个 state 的另一个字段）。
+    ///
+    /// **调用方应当先看 [`Self::prefab_ui_nodes_revision`]**：修订号没变就跳过这一次克隆。
+    /// （原来这里写着"空表 = 不付额外拷贝成本"——**那句话是错的**：宿主是**先**调本方法拿到克隆、
+    /// **再**比较是否为空，所以空表也要先复制一次；宿主侧已改成先比修订号。）
     #[must_use]
     pub fn prefab_ui_nodes(&self) -> BTreeMap<u64, rustlua_ui::ui_scene_layout::UiSceneNode> {
-        self.state.borrow().prefab_ui_nodes.clone()
+        self.state.borrow().prefab_ui_nodes.snapshot()
+    }
+
+    /// [`Self::prefab_ui_nodes`] 的修订号：**只在表真的被动过之后才变**。
+    /// 宿主每帧先比这个数，未变即跳过整表克隆与 `==` 比较（见 `docs/60` §10.3 第 2 条）。
+    #[must_use]
+    pub fn prefab_ui_nodes_revision(&self) -> u64 {
+        self.state.borrow().prefab_ui_nodes.revision()
     }
 
     /// 运行期 spawn 实例的「活实体槽位号 → 实体名」，键空间与 [`Self::prefab_ui_nodes`] 一致。

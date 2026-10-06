@@ -186,8 +186,13 @@ pub struct RuntimeScene {
     pub(crate) ui_scene_nodes: BTreeMap<u64, UiSceneNode>,
     pub(crate) ui_layout_rects: BTreeMap<u64, ResolvedUiNode>,
     /// 已经并进 `ui_scene_nodes` 的**运行期 spawn** 节点（脚本侧报告的那一份的副本）。
-    /// 每帧与脚本的报告比对来判断"spawn/despawn 有没有改动布局"，没变就一个分配都不做。
+    /// 判断"有没有改动"用的是**修订号**（见 [`Self::applied_prefab_ui_revision`]），
+    /// 不是每帧比对这两张表——比对前得先把脚本那侧的表克隆出来，所以原注释里"没变就一个分配
+    /// 都不做"在实现上是**假的**（克隆发生在比较之前，见 `docs/60` §10.3 第 2 条）。
     pub(crate) applied_prefab_ui_nodes: BTreeMap<u64, UiSceneNode>,
+    /// 上一次并表时脚本侧报告的 `prefab_ui_nodes` 修订号：相等即"没变"，宿主**直接早退**，
+    /// 一次 clone 与一次 O(n) 比较都不做。
+    pub(crate) applied_prefab_ui_revision: u64,
     /// 共享帧调度管线（M18-03）：每个固定步执行一次的系统。调度器实例**跨帧保留**
     /// （只在 `run_script_steps` 期间临时借出再放回），因此系统的拓扑执行序只算一次，
     /// 而不是每步重建调度器 + 重算拓扑序——固定步一帧可跑 8 步，这份开销纯属浪费。

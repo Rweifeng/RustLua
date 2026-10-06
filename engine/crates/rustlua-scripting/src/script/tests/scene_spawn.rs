@@ -1,5 +1,28 @@
 use super::*;
 
+/// `docs/60` §10.3 第 2 条：宿主每帧要判断"spawn 出来的 UI 布局节点变没变"。原实现是**整表 clone
+/// 再 `==`**——克隆发生在比较**之前**，而这张表在 UI 预设化之后是非空的（每个面板的布局节点都在里头），
+/// 于是那份拷贝每帧都付。改成比修订号之后，唯一的风险换成**修订号漏增**：漏一次，画面与命中框就停在
+/// 旧版上。这条用例钉两件相反的事：三个改动入口**各加一次**，而**只读快照不加**。
+#[test]
+fn prefab_ui_nodes_revision_bumps_on_every_mutation_and_only_then() {
+    let mut nodes = PrefabUiNodes::default();
+    let start = nodes.revision();
+
+    // 只读不许改修订号——否则宿主每帧都误判"变了"、白克隆一次，正好退回被修掉的那条。
+    let snapshot = nodes.snapshot();
+    assert!(snapshot.is_empty());
+    assert_eq!(nodes.revision(), start, "只读快照不许改修订号");
+
+    // 三个改动入口各加一次。删一个不存在的键也算"动过"：宁多一次同步，不漏一次。
+    nodes.remove(&7);
+    assert_eq!(nodes.revision(), start + 1, "remove 必须自增");
+    nodes.extend(BTreeMap::new());
+    assert_eq!(nodes.revision(), start + 2, "extend 必须自增");
+    nodes.clear();
+    assert_eq!(nodes.revision(), start + 3, "clear 必须自增");
+}
+
 #[test]
 fn instantiated_scene_entities_are_shared_with_lua_movement() {
     use rustlua_scene::scene::Scene;
