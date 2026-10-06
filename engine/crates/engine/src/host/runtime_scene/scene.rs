@@ -395,6 +395,24 @@ impl RuntimeScene {
             .collect()
     }
 
+    /// 本帧真正用于绘制的 UI 矩形，按**实体名**给出。
+    ///
+    /// 名字来自脚本侧那张全局登记表（`entity.find` 用的同一份），所以场景里的实体与运行期
+    /// `prefab.spawn` 出来的实例一律给名——迁移前后载体变了、名字没变，同一份黄金表就能逐 id
+    /// 对账。没有 `UiLayout` 的 UI 实体不参与解算，因此也不出现在这里（与"不会被画"同口径）。
+    pub fn ui_rects_by_name(&mut self, viewport: [f32; 2]) -> BTreeMap<String, UiRect> {
+        self.ensure_scene_ui_layout(viewport);
+        let names = self.script.entity_names_by_slot();
+        names
+            .iter()
+            .filter_map(|(key, name)| {
+                self.ui_layout_rects
+                    .get(key)
+                    .map(|node| (name.clone(), node.rect))
+            })
+            .collect()
+    }
+
     /// 覆盖 project.toml 的文本渲染模式（编辑器保存设置后重建运行时可注入）。
     pub fn set_text_render_mode(&mut self, mode: TextRenderMode) {
         self.text_render_mode = mode;

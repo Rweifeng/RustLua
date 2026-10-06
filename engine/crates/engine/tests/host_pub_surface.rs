@@ -57,6 +57,7 @@ fn pin_paths() {
     let _ = engine::host::RuntimeScene::new_with_layout;
     let _ = engine::host::RuntimeScene::pause_music;
     let _ = engine::host::RuntimeScene::propagate_spatial_now;
+    let _ = engine::host::RuntimeScene::prefab_ui_rects;
     let _ = engine::host::RuntimeScene::quit_requested;
     let _ = engine::host::RuntimeScene::registered_system_names;
     let _ = engine::host::RuntimeScene::reload_scripts;
@@ -103,6 +104,7 @@ fn pin_paths() {
     let _ = engine::host::RuntimeScene::take_spatial_recomputed_total;
     let _ = engine::host::RuntimeScene::take_spatial_skipped_frames;
     let _ = engine::host::RuntimeScene::take_view_filtered;
+    let _ = engine::host::RuntimeScene::ui_rects_by_name;
     let _ = engine::host::RuntimeScene::vertices;
     let _ = engine::host::RuntimeScene::view_filtered;
     let _ = engine::host::RuntimeScene::world_transform_2d_of;

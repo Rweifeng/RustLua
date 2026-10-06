@@ -692,6 +692,20 @@ impl LuaRuntime {
             .collect()
     }
 
+    /// 「活实体槽位号 → 名字」的全量登记（`entity.find` 查的就是这张表，所以场景实体与
+    /// 运行期 `prefab.spawn` 的实例都在里头）。宿主把解算出的 UI 矩形换名报回时用它——
+    /// 同一份黄金表因此能跨"载体是 `.scene` 还是 `.prefab`"对账。
+    #[must_use]
+    pub fn entity_names_by_slot(&self) -> BTreeMap<u64, String> {
+        let state = self.state.borrow();
+        state
+            .entity_state
+            .names
+            .iter()
+            .map(|(name, handle)| (handle.index() as u64, name.clone()))
+            .collect()
+    }
+
     /// Gives the host a read view of runtime Lua-created UI panels/images/grids.
     pub fn with_dynamic_ui<R>(
         &self,
