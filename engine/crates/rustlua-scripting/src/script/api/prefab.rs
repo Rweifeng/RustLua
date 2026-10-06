@@ -129,6 +129,54 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         )?,
     )?;
 
+    let s = Rc::clone(&state);
+    prefab.set(
+        "set_visible",
+        // 隐藏/显示预设里的一个节点及其**整棵子树**（与 Unity `GameObject.SetActive` 同语义：
+        // 子的显隐是相对父的，藏了行根就不必逐个藏行里的图与字）。走的是"这个节点不建布局
+        // 项"这条路，因此画面与点击同时消失——不会出现"看不见的按钮仍能被点中"。
+        // 实体本身不销毁：文字/贴图取值都留着，显示回来不需要重设。
+        lua.create_function(
+            move |_, (handle, name, visible): (i64, String, bool)| -> LuaResult<()> {
+                let mut state = s.lua_borrow_mut()?;
+                crate::script::LuaRuntime::set_prefab_node_visible_state(
+                    &mut state, handle, &name, visible,
+                )
+                .map_err(|error| {
+                    api_error(format!("prefab.set_visible {handle} {name:?}: {error}"))
+                })?;
+                Ok(())
+            },
+        )?,
+    )?;
+
+    let s = Rc::clone(&state);
+    prefab.set(
+        "set_rect",
+        // 写一个节点 `UiLayout` 的四边（offsets），anchors 沿用预设里 authored 的值：
+        // 口径是"四边 = 父矩形 × anchor + offset"，所以默认锚点下这四个数就是父坐标里的
+        // 像素边。列表行、进度条这类"版面在预设里、尺寸由数据决定"的正是它的用途——
+        // 没有它，运行期只能继续用 `ui.panel`/`ui.image` 动态层重画一份。
+        // 改一处，整棵子树跟着位移（宿主按父链解算），不必逐个子节点通知。
+        lua.create_function(
+            move |_,
+                  (handle, name, left, top, right, bottom): (i64, String, f32, f32, f32, f32)|
+                  -> LuaResult<()> {
+                let mut state = s.lua_borrow_mut()?;
+                crate::script::LuaRuntime::set_prefab_node_rect_state(
+                    &mut state,
+                    handle,
+                    &name,
+                    [left, top, right, bottom],
+                )
+                .map_err(|error| {
+                    api_error(format!("prefab.set_rect {handle} {name:?}: {error}"))
+                })?;
+                Ok(())
+            },
+        )?,
+    )?;
+
     lua.globals().set("prefab", prefab)?;
     Ok(())
 }

@@ -865,7 +865,15 @@ if ($Mvp -or $MvpOnly) {
         # 绘制框同源（矩形内派发一次、矩形外零次）、`prefab.set_text` 写的就是渲染读的那份组件
         # （三条误用各自报错点名）、`prefab.despawn` 撤实体也撤布局节点，且门面场景自己的按钮
         # 在 spawn/despawn 前后都照常派发（并表/摘表不许污染场景那份快照）。
-        "jhyt_m61_prefab_runtime"
+        "jhyt_m61_prefab_runtime",
+        # M62 预设实例的运行期写入面：`prefab.set_rect` 写四边之后，宿主本帧真正用于绘制的那份
+        # 矩形跟着变（子节点整棵子树位移、没参与本次写入的节点一动不如一静）、预设里 authored 的
+        # anchors 一个字不动（stretch 通栏不许被降级成左上角定宽）、世界的 UiRectLayout 与画面同一个
+        # 数、命中框就是新矩形（新位置点得到、旧位置点不到）；`prefab.set_visible` 是子树语义且画与
+        # 命中同一次失效（藏行根 ⇒ 行里的图与字一起消失且点不到），显隐相对父（藏父时单独显示子不
+        # 生效），显示回来不必重设矩形、不必重写字；重建只动本实例的键（同屏第二个预设实例不受牵连）；
+        # 两个函数各自的误用（无 UiLayout / 无节点 / 无句柄）全部点名报错，不许静默 no-op。
+        "jhyt_m62_prefab_write"
     )
     $exampleDir = Join-Path $engineRoot "crates\game\examples"
 

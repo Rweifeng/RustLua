@@ -330,7 +330,9 @@
         "despawn",
         "node",
         "root",
+        "set_rect",
         "set_text",
+        "set_visible",
         "spawn"
       ],
       "name": "prefab"
