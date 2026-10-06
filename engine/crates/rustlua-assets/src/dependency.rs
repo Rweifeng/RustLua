@@ -409,25 +409,38 @@ fn cycle_error_text(cycle: &[AssetId]) -> String {
 /// the same terminator set the runtime uses (`;`/`:`/newline). Empty results
 /// (a bare `assets/` before a terminator) are dropped; order is preserved with
 /// duplicates removed.
+///
+/// **`#` 行首的注释不参与扫描**，判定与两个真正的解析器逐字同源：
+/// `Scene::from_text`（`rustlua-scene/src/scene.rs:185`）与 prefab 解析器
+/// （`prefab.rs:227`）都跳过 `line.starts_with('#')`。注释不是数据——此前这里
+/// 扫全文，门面场景的一句中文注释（`examples/game_jhyt/scenes/main.scene:8`
+/// 把 `assets/prefabs/title_menu.prefab` 写进反引号）被读成引用，截出的路径
+/// 带着反引号与全角逗号，`game --check` 于是报"资源缺失"整条判红。图集那条
+/// 路径早就按同一原则处理（见 `atlas_texture_field_is_the_only_edge`）。
 fn extract_scene_assets(text: &str) -> Vec<DependencyRef> {
-    let chars: Vec<char> = text.chars().collect();
     let mut refs = Vec::new();
     let mut seen = HashSet::new();
-    let mut i = 0;
-    while i < chars.len() {
-        if i + 7 <= chars.len() && chars[i..i + 7].iter().collect::<String>() == "assets/" {
-            let mut end = i;
-            while end < chars.len() && !matches!(chars[end], ';' | ':' | '\n' | '\r') {
-                end += 1;
+    for line in text.lines() {
+        if line.starts_with('#') {
+            continue;
+        }
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if i + 7 <= chars.len() && chars[i..i + 7].iter().collect::<String>() == "assets/" {
+                let mut end = i;
+                while end < chars.len() && !matches!(chars[end], ';' | ':' | '\n' | '\r') {
+                    end += 1;
+                }
+                let path: String = chars[i..end].iter().collect();
+                let path = strip_region_suffix(&path);
+                if path != "assets/" && seen.insert(path.to_owned()) {
+                    refs.push(DependencyRef::Asset(PathBuf::from(path)));
+                }
+                i = end;
+            } else {
+                i += 1;
             }
-            let path: String = chars[i..end].iter().collect();
-            let path = strip_region_suffix(&path);
-            if path != "assets/" && seen.insert(path.to_owned()) {
-                refs.push(DependencyRef::Asset(PathBuf::from(path)));
-            }
-            i = end;
-        } else {
-            i += 1;
         }
     }
     refs
@@ -657,6 +670,42 @@ mod tests {
             );
         }
         assert_eq!(assets.len(), 6, "dedup + exact extraction: {assets:?}");
+    }
+
+    #[test]
+    fn scene_comment_lines_do_not_produce_refs() {
+        // 回归：`examples/game_jhyt/scenes/main.scene:8` 是一句中文注释，把预设路径
+        // 写进了反引号并以全角逗号收尾。旧实现扫全文，截出的"引用"带着 ` 与 ，，
+        // 让 `game --check` 报"场景引用的资源缺失"整条判红（HEAD 实测）。
+        // 注释行必须整行跳过，且同文件里的真实引用一个不能少。
+        let scene = "scene_version=2\nname=main\n\
+            # 与它们的 `Text` 标签 / 卷轴贴士 / 版本号）整批搬进 `assets/prefabs/title_menu.prefab`，\n\
+            component 1 Sprite texture=assets/textures/player.png;size=32x32\n";
+        assert_eq!(
+            asset_paths(&extract_refs(scene, ResourceKind::Scene)),
+            vec!["assets/textures/player.png".to_owned()],
+            "注释里的反引号路径不得成边，数据行的引用必须保留"
+        );
+
+        // 预制走同一套扫描：注释行同样跳过。
+        let prefab = "name=demo\n\
+            # 与 `assets/textures/ghost.png` 同一约定\n\
+            component 1 Sprite texture=assets/textures/player.png;size=32x32\n";
+        assert_eq!(
+            asset_paths(&extract_refs(prefab, ResourceKind::Prefab)),
+            vec!["assets/textures/player.png".to_owned()]
+        );
+    }
+
+    #[test]
+    fn comment_only_when_hash_leads_the_line() {
+        // `#` 只在行首才是注释（与 `Scene::from_text` 的 `line.starts_with('#')` 同源）：
+        // 行内的 `#` 是图集区域后缀，不改变"这条引用有效"的判定。
+        let scene = "component 1 Sprite texture=assets/atlases/hero.atlas#walk;size=32x16\n";
+        assert_eq!(
+            asset_paths(&extract_refs(scene, ResourceKind::Scene)),
+            vec!["assets/atlases/hero.atlas".to_owned()]
+        );
     }
 
     #[test]
