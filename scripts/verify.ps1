@@ -958,12 +958,10 @@ if ($Mvp -or $MvpOnly) {
         # 场上主角与每个 NPC 的 order 恒等于 -floor(y/2)、夹在 -999 不溢进相邻层、
         # 特效在 foreground 层永远画在所有角色之后。
         "jhyt_m35_depth_sort",
-        # M59 UI 预设地基 + dialogue 试点：版面从 Lua 搬进 assets/ui/prefabs/*.ui.json 后，
-        # 逐 id 读回引擎里真正画出来的矩形/文本/字号，与迁移**前**捕获的黄金表逐行相等
-        # （黄金文件来自 HEAD 的旧代码，不是新实现自己吐的数）；另守锚点表与引擎
-        # UiLayoutPreset::ALL 逐值对账、预设能加载且登记进 validate_data 启动门、
-        # 关面板后每个 id 都"不存在或不可见"、`.ui.json` 不命中 assetc 的开发产物裁除。
-        "jhyt_m59_ui_prefab",
+        # M59 已退役（M71）：JSON 预设层整体退役（`assets/ui/prefabs/dialogue.ui.json` 删除、
+        # `ui.prefab` 的 JSON render/clear 不再被任何玩法调用），对话面板对账由
+        # `jhyt_m71_dialogue_prefab`（黄金表 34 行，A 态 = 开场对话 gu_changfeng_teach）接管；
+        # 锚点表与引擎 UiLayoutPreset::ALL 的对账由 m71 门 submission_order 实测背书。
         # M61 引擎桥（`.prefab` 作 UI 预设的运行时载体）：`prefab.spawn` 走 VFS 读预设并把
         # `Text`/`Image`/`UiEvents`/`UiLayout` 落进**活世界**，宿主本帧真正用于绘制的那份矩形
         # 逐值等于预设（含父链偏移）、无 `UiLayout` 的 UI 实体不参与解算也不会被画、命中框与
@@ -1004,6 +1002,32 @@ if ($Mvp -or $MvpOnly) {
         # 写死白，所以预设里每条 Text 必须是白（① 的表管不到颜色这一维）。⑤ 跨屏相交必须为空集
         # 才允许整屏搬（实测 0 个 ⇒ 搬进预设不会把别人的块压到底下）。
         "jhyt_m65_shop_prefab"
+        # M66 暂停菜单（ui/pause_menu.lua）三页共用骨架 → 一份 `.prefab` 三页容器互斥的搬运门。
+        # 首跑门红教训：动态层 BTreeMap 按 id 字典序（skin_bg 排在全部同级 image 之后、slot 之前），
+        # 预设槽位须复刻该字典序；cover 段行序跨载体不同源（动态层=类别秩+id 字典序、实体层=类别秩+
+        # 槽位号）→ compare_golden 一律排序后逐行按内容比对。
+        "jhyt_m66_pause_prefab"
+        # M67 背包面板（ui/inventory_ui.lua）全迁一份 `.prefab` 的搬运门。capture 三坑：shown_rows
+        # 按 body≠"hidden" 数行（state 对 hidden 也插条目）；补 query_num 编译 E0425；PowerShell `*>`
+        # 重定向 stdout 炸 NativeCommandError。关键字典序修正：bp:sel_slot 第 5 字符是 'e' → 在 skin_bg
+        # 前被盖；bp:slot1..10 的 'l'>'k' → 在 skin_bg 后不被盖。
+        "jhyt_m67_inventory_prefab"
+        # M68 任务日志（ui/quest_ui.lua）全迁一份 `.prefab` 的搬运门（提速后第一屏，一次通过）。
+        # bullet 二选一：同一矩形叠 Todo/Done 两张 12×12 图 + set_visible 互斥；门 PROBES 用双实体名。
+        "jhyt_m68_quest_prefab"
+        # M69 出货箱（systems/shipping.lua）全迁一份 `.prefab` 的搬运门。顺手修两个既有 bug：
+        # ① inventory_items() 用 ipairs(data) 遍历恒空（slots 稀疏表）→ pairs(data.slots or {})；
+        # ② row 循环缺 else 隐藏分支（行数变少留上一帧字）→ 预设化后行不足即 set_visible false。
+        # 入口是 open_ui 不是 open；无 key_hint 面板、有 close 按钮与条件滚动箭头。
+        "jhyt_m69_shipping_prefab"
+        # M70 常驻 HUD（ui/hud.lua）静态骨架全量搬进 `hud.prefab`（45 实体、部分预设混合载体）的
+        # 搬运门：黄金表 124 行；compare_golden 排序集合比对；坑 = 黄金表首行 UTF-8 BOM 沉底错位。
+        "jhyt_m70_hud_prefab"
+        # M71 对话面板（world/dialogue.lua）全迁一份 `.prefab` 的搬运门（JSON 预设层退役的
+        # 接管门）：黄金表 34 行（A 态 = 开场对话 gu_changfeng_teach，顾长风 4 选项、marker1
+        # 选中、立绘 calm）；capture 一次过；verify 一次绿；部分预设混合载体（立绘本体留
+        # 动态层，贴图随 NPC/mood 变化、引擎无运行期换贴图 API）② 豁免。
+        "jhyt_m71_dialogue_prefab"
         # 阶段2（docs/33 §4.3–4.8、§7.3、§8.3，1.0–1.8）：九个内容系统门。
         # M44 畜牧：6 动物/三类畜舍、未建舍拒养、喂抚好感、吃饱按周期产蛋毛奶肉、
         # 好感≥8 出灵蛋、入箱结算、存档往返。
