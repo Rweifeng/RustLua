@@ -46,3 +46,11 @@ examples/game_jhyt/references/
 # Python bytecode cache
 __pycache__/
 *.py[cod]
+
+# 目验/探针的一次性输出（clippy 读数、离屏截图、tm_probe 系列）。门的本体在
+# engine/crates/**/examples 与 support/ 下，不受这条影响。
+engine/*.txt
+engine/*.png
+
+# 局部门复验用的旁路快照目录（如 .tmp_m66_verify/），一次性、不入库
+/.tmp_*/
