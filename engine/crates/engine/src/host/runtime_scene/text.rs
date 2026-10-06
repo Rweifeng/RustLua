@@ -430,6 +430,15 @@ impl super::RuntimeScene {
                 *mapped
             } else {
                 let Some(glyph) = atlas.glyph_by_id(vertex.glyph_id) else {
+                    // docs/60 §10.7 定性：**整段矢量文字被丢弃且不留痕**——症状与「文字没画出来、
+                    // 日志一个字都没有」完全一样。同一类在 2D 叠加通道那一侧已改成「记账 + 告警」
+                    // （`dropped_draws`），但本函数在上游、拿不到 `RenderFrameMetrics`，
+                    // 所以这里只到 warn 这一层。
+                    tracing::warn!(
+                        target: "render",
+                        glyph_id = vertex.glyph_id,
+                        "[runtime] vector text run dropped: glyph missing from atlas"
+                    );
                     return Ok(false);
                 };
                 let mapped = base_glyph + remap.len() as u32;
