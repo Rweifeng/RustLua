@@ -182,12 +182,17 @@ impl Prefab {
             out.push_str(&format!("meta\t{}\t{}\n", escape(k), escape(v)));
         }
         for e in self.entities.values() {
-            out.push_str(&format!(
-                "entity\t{}\t{}\t{}\n",
-                e.id.0,
-                escape(&e.name),
-                e.parent.map(|p| p.0.to_string()).unwrap_or_default()
-            ));
+            // 根实体**不写空的 parent 段**：与 `.scene` 同一条口径（那边是 3 段或 4 段），
+            // 也躲开尾随制表符——`git diff --check` 与 CI 的 'Diff check' 都判它脏。
+            match e.parent {
+                Some(parent) => out.push_str(&format!(
+                    "entity\t{}\t{}\t{}\n",
+                    e.id.0,
+                    escape(&e.name),
+                    parent.0
+                )),
+                None => out.push_str(&format!("entity\t{}\t{}\n", e.id.0, escape(&e.name))),
+            }
             for (k, v) in &e.components {
                 out.push_str(&format!(
                     "component\t{}\t{}\t{}\n",
@@ -253,17 +258,24 @@ impl Prefab {
                     metadata.insert(unescape(f[1], line_no)?, unescape(f[2], line_no)?);
                 }
                 Some("entity") => {
-                    need(&f, 4, line_no)?;
+                    // 与 `scene.rs` 同一条口径：根实体 3 段、子实体 4 段（parent 可缺省，
+                    // 缺省时不写那个空字段，见 `to_text`）。
+                    if f.len() != 3 && f.len() != 4 {
+                        return Err(PrefabError::Parse {
+                            line: line_no,
+                            reason: format!("entity expected 3 or 4 fields, got {}", f.len()),
+                            path: None,
+                        });
+                    }
                     let id = SceneEntityId(number(f[1], line_no)?);
                     entities.insert(
                         id,
                         SceneEntity {
                             id,
                             name: unescape(f[2], line_no)?,
-                            parent: if f[3].is_empty() {
-                                None
-                            } else {
-                                Some(SceneEntityId(number(f[3], line_no)?))
+                            parent: match f.get(3).copied() {
+                                None | Some("") => None,
+                                Some(raw) => Some(SceneEntityId(number(raw, line_no)?)),
                             },
                             children: Vec::new(),
                             components: BTreeMap::new(),
@@ -552,7 +564,24 @@ mod tests {
             target.entities[&instance.source_to_instance[&SceneEntityId(2)]].components["Transform"],
             "x=9"
         );
-        assert_eq!(Prefab::from_text(&p.to_text()).unwrap(), p);
+        let text = p.to_text();
+        // 根实体是 3 段（不写空的 parent 段）：尾随制表符会被 `git diff --check` 与 CI 的
+        // 'Diff check' 判脏，而 `.scene` 那边本来就允许 3 段——两边必须是同一条口径。
+        assert!(
+            text.lines().any(|line| line == "entity\t1\tRoot"),
+            "根实体行应为 3 段：{text}"
+        );
+        assert!(
+            !text.lines().any(|line| line.ends_with('\t')),
+            "预设文本有行尾制表符：{text}"
+        );
+        assert_eq!(Prefab::from_text(&text).unwrap(), p);
+        // 段数检查没有被放宽成"随便几段"：2 段仍然拒。
+        let two = text.replace("entity\t1\tRoot", "entity\t1");
+        assert!(
+            Prefab::from_text(&two).is_err(),
+            "entity 只有 2 段时必须报错：{two}"
+        );
     }
     #[test]
     fn property_overrides_rewrite_one_field_only() {

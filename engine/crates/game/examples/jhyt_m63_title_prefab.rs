@@ -208,10 +208,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if capture {
         print!("{dump}");
         println!("jhyt_m63_captured lines={}", dump.lines().count());
-        return Ok(());
+    } else {
+        compare_golden(&dump)?;
+        println!("golden_lines={}", dump.lines().count());
     }
-    compare_golden(&dump)?;
-    println!("golden_lines={}", dump.lines().count());
 
     banner("② 标签两层的位置账：谁在画、差多少（决定预设里那三行 Text 写哪个 x）");
     label_pairing(&mut runtime, &rects, &hidden)?;
@@ -238,7 +238,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  实体层 {from_entity} 块、动态层 {from_dynamic} 块、未画 {not_drawn} 块");
 
     banner("④ 层序账：本帧提交的先后（谁盖谁）——搬进/搬出预设前必须先有这张表");
-    layer_order(&mut runtime)?;
+    layer_order(&mut runtime, capture)?;
 
     println!("jhyt_m63_title_prefab_ok project={}", project.display());
     Ok(())
@@ -583,13 +583,16 @@ fn tail(path: &str) -> &str {
 
 /// 某个角色（末段名精确匹配）在本帧提交序列里的首次与末次下标；一次都没有则 `None`。
 /// 一张图可以有多个分段（三块木牌 = 三个分段，中间隔着别的贴图），所以是**区间**不是点。
+///
+/// 命中表先收集再取首末：`next()` + `next_back()` 在"只有一个分段"时会被第一个 `next()`
+/// 吃掉，于是每张单段贴图都读成"本帧没提交"（第一版就是这么把一张好表读成全红的）。
 fn draw_span(mesh: &SceneMesh, name: &str) -> Option<(usize, usize)> {
-    let mut hits = mesh
+    let hits: Vec<usize> = mesh
         .draws
         .iter()
         .enumerate()
         .filter(|(_, draw)| {
-            if name == "<内置白图>" {
+            if name == WHITE_ROLE {
                 // 纯色面板（`ui.panel`）不占贴图槽：既可能是 `texture == 0`，也可能
                 // 命中注册表里的 `__white__`，两种写法都算白图分段。
                 draw.texture == 0 || draw_path(mesh, draw).is_some_and(|path| path == "__white__")
@@ -597,20 +600,74 @@ fn draw_span(mesh: &SceneMesh, name: &str) -> Option<(usize, usize)> {
                 draw_path(mesh, draw).is_some_and(|path| tail(path) == name)
             }
         })
-        .map(|(index, _)| index);
-    Some((hits.next()?, hits.next_back()?))
+        .map(|(index, _)| index)
+        .collect();
+    Some((*hits.first()?, *hits.last()?))
 }
 
-/// 门面上关心的每一块在 `mesh.draws` 里的位置。**下标即先后**（UI 层不写深度，
-/// 后提交的盖住先提交的），①的矩形读数对此完全瞎，所以它单独成一段账。
-fn layer_order(runtime: &mut RuntimeScene) -> Result<(), Box<dyn std::error::Error>> {
+/// 白图（纯色块）在读数表里的角色名：它没有文件名，`mesh.draws` 里以 `texture == 0` 出现。
+const WHITE_ROLE: &str = "<内置白图>";
+
+/// ④ 的期望序列 = **迁移前实测**的本帧提交序（`--capture` 打印可粘贴的这一行）。
+///
+/// 这份表是"一像素没动"在层序维度的那一份账：① 的矩形读数只管形状与内容，对"谁盖谁"完全瞎
+/// ——一块东西搬进/搬出实体层，矩形与贴图可以一个字节都不变，而从此被别人的贴图盖住。
+///
+/// 表里那条**读出来的事实**（不是设计意图）：`title_bg_pixel.png`（1280×720、IHDR 色型 2 =
+/// 无 alpha 通道 ⇒ 逐像素全不透明）排在所有动态层分段之后。也就是说门面今天由脚本画的
+/// 高亮框、hover、四角/分隔/印章，以及同一批里画出来的箭头与标签文字，**全部盖在这张背景底下**。
+/// 三块木牌 `ui_menu_btn_wuxia_9s.png` 实测 18432/18432 像素 alpha=255（含中心），所以压在它
+/// 底下的东西没有"从空隙里透出来"这回事。M63b 只搬家不修这个（搬家与改画面分成两笔，
+/// 见 `docs/66` §10），修它是 M63c 的活。
+const ORDER_GOLDEN: &[&str] = &[
+    WHITE_ROLE,
+    "ui_menu_btn_wuxia_hover_9s.png",
+    "ui_menu_divider_bamboo.png",
+    "ui_menu_ornament_corner_bl.png",
+    "ui_menu_ornament_corner_br.png",
+    "ui_menu_ornament_corner.png",
+    "ui_menu_ornament_corner_tr.png",
+    "ui_menu_seal_jianghu.png",
+    "title_bg_pixel.png",
+    "ui_menu_vignette.png",
+    "ui_menu_ink_band.png",
+    "ui_title_logo.png",
+    "ui_menu_lantern.png",
+    "ui_menu_btn_wuxia_9s.png",
+    "ui_menu_panel_scroll_9s.png",
+];
+
+/// 门面上要点名的角色（末段名），逐个报它在提交序列里的区间。
+const ORDER_ROLES: &[&str] = &[
+    WHITE_ROLE,
+    "ui_menu_btn_wuxia_hover_9s.png",
+    "ui_menu_divider_bamboo.png",
+    "ui_menu_ornament_corner.png",
+    "ui_menu_seal_jianghu.png",
+    "title_bg_pixel.png",
+    "ui_menu_vignette.png",
+    "ui_title_logo.png",
+    "ui_menu_lantern.png",
+    "ui_menu_btn_wuxia_9s.png",
+    "ui_menu_panel_scroll_9s.png",
+];
+
+/// 门面上的层序账。**下标即先后**（UI 层不写深度，后提交的盖住先提交的）。
+fn layer_order(
+    runtime: &mut RuntimeScene,
+    capture: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mesh = runtime.vertices(VIEW_W as u32, VIEW_H as u32)?;
+    let actual: Vec<String> = mesh
+        .draws
+        .iter()
+        .map(|draw| tail(draw_path(&mesh, draw).unwrap_or(WHITE_ROLE)).to_owned())
+        .collect();
     println!("  本帧提交 {} 个分段（先后即画家顺序）：", mesh.draws.len());
     for (index, draw) in mesh.draws.iter().enumerate() {
-        let path = draw_path(&mesh, draw).unwrap_or("<内置白图>");
         println!(
             "  {index:>3}  {:<34} 顶点 {}..{}",
-            tail(path),
+            actual[index],
             draw.start,
             draw.start + draw.count
         );
@@ -621,24 +678,90 @@ fn layer_order(runtime: &mut RuntimeScene) -> Result<(), Box<dyn std::error::Err
             None => println!("  {name:<34} 本帧没提交"),
         }
     }
+    // 诚实标注这条通道的口径：headless 顶点路径这一帧没产出任何文字分段（`mesh.draws` 里
+    // 一张字形图集都没有），所以 ④ 只管图块与纯色块的层序；文字层的先后是代码事实
+    // （`frame_data.rs`：`push_ui_text` 在 `push_scene_ui` 之前），由 §10 写明，不在这道门里。
+    println!("  文字分段：无（这条读数通道这一帧不出文字 ⇒ ④ 只钉图块/色块的层序）");
+    if capture {
+        println!(
+            "  可粘贴的期望序列：{}",
+            actual
+                .iter()
+                .map(|name| format!("\"{name}\",\n"))
+                .collect::<String>()
+                .trim_end()
+        );
+        return Ok(());
+    }
+    let expected: Vec<&str> = ORDER_GOLDEN.to_vec();
+    let got: Vec<&str> = actual.iter().map(String::as_str).collect();
+    if got != expected {
+        let mut diff = Vec::new();
+        for (index, pair) in expected.iter().zip(got.iter()).enumerate() {
+            if pair.0 != pair.1 {
+                diff.push(format!("{index}: 期望 {}、实测 {}", pair.0, pair.1));
+            }
+        }
+        if expected.len() != got.len() {
+            diff.push(format!(
+                "分段数 期望 {}、实测 {}（多/少出来的那几块不在表里）",
+                expected.len(),
+                got.len()
+            ));
+        }
+        return Err(format!(
+            "层序变了：\n  {}\n层序不在①的矩形读数里，所以这是唯一能证明「搬进预设的东西没被谁盖住、\n  也没盖住谁」的账（见本段注释与 docs/66 §10）。",
+            diff.join("\n  ")
+        )
+        .into());
+    }
+    println!("  层序与迁移前实测一致（{} 个分段）", got.len());
+    // 第二轮：**同一个世界里**撤掉再重铺。`entity.spawn()` 优先复用回收槽（LIFO），
+    // 而实体层的绘制先后 = 槽位升序，所以"撤了重铺"完全可能把这一批节点铺成倒序——
+    // 症状是那张 1280×720 无 alpha 的背景图排到最后、整块门面被盖成一张背景。
+    // 脚本用"一个世界里只 spawn 一次"（`M.reset()` 幂等 + `M.hide()` 只在离开门面时撤）
+    // 避开这条路；这一轮就是钉住"真走这条路会发生什么"，别把它当没事。
+    let resawn = respawn_in_same_world(runtime)?;
+    let after: Vec<&str> = resawn.iter().map(String::as_str).collect();
+    if after != expected {
+        let diff: Vec<String> = expected
+            .iter()
+            .zip(after.iter())
+            .enumerate()
+            .filter(|(_, (want, now))| want != now)
+            .map(|(index, (want, now))| format!("{index}: 期望 {want}、重铺后 {now}"))
+            .collect();
+        println!(
+            "  ⚠ 同一世界撤了再铺，层序**翻了**（{} 处不一致）：\n  {}",
+            diff.len(),
+            diff.join("\n  ")
+        );
+        println!(
+            "  ⇒ 结论：预设实例**不能**在同一个世界里撤了重铺（脚本因此 spawn-once）。\
+             这条不是门的失败，是它量到的事实。"
+        );
+    } else {
+        println!("  同一世界撤了再铺：层序不变（回收槽这次没翻顺序）");
+    }
     Ok(())
 }
 
-/// ④ 里要点名的贴图/通道末段名（一次 `--capture` 之后按真实画面补全）。
-const ORDER_ROLES: &[&str] = &[
-    "title_bg_pixel.png",
-    "ui_menu_vignette.png",
-    "ui_menu_ink_band.png",
-    "ui_title_logo.png",
-    "ui_menu_lantern.png",
-    "ui_menu_btn_wuxia_9s.png",
-    "ui_menu_btn_wuxia_hover_9s.png",
-    "ui_menu_panel_scroll_9s.png",
-    "ui_menu_ornament_corner.png",
-    "ui_menu_divider_bamboo.png",
-    "ui_menu_seal_jianghu.png",
-    "<内置白图>",
-];
+/// 在**当前世界**里把门面预设撤掉再重铺（走脚本自己的 `hide()`/`reset()`，不碰引擎），
+/// 然后重读本帧提交序。返回与 `layer_order` 同形状的末段名序列。
+fn respawn_in_same_world(
+    runtime: &mut RuntimeScene,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    runtime.with_script(|script| {
+        script.execute_console("local m = require('ui.title_menu') m.hide() m.reset() return true")
+    })?;
+    frame(runtime)?;
+    let mesh = runtime.vertices(VIEW_W as u32, VIEW_H as u32)?;
+    Ok(mesh
+        .draws
+        .iter()
+        .map(|draw| tail(draw_path(&mesh, draw).unwrap_or(WHITE_ROLE)).to_owned())
+        .collect())
+}
 
 // ---------- 驱动与格式化 ----------
 

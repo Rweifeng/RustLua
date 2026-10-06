@@ -173,8 +173,11 @@ cargo fmt --all -- --check → 29 个文件仍脏，本批 4 个文件已 rustfm
   （`scripts/verify-webgl-bundle.ps1`）下次会读到 42 张表——**未跑**，包也没重打。
   `plugins/webgl/lua_api_overrides.json` 的账是补丁层口径，`prefab` 不在里头，不需要补丁，
   但这条要靠下次真机门证实，不是本批结论。
-- `assets/prefabs/` 还没进 `scripts/first-screen-pack.js` 的首屏清单，`.prefab` 后缀在微信代码包
-  白名单里的行为**没测**（55 号文档 §8 那条"启动门读的东西按定义就是首屏资源"的教训同样适用）。
+- ~~`assets/prefabs/` 还没进 `scripts/first-screen-pack.js` 的首屏清单~~（M63b 已补：新增 5b
+  扫 `assets/prefabs/*.prefab`，预设本体与它 `texture=` 引用的图一起收进首屏包，账见 `docs/67` §5）。
+  `.prefab` 后缀在**打包侧**已实测（`assetc package` `files=1142`，manifest 有
+  `assets/prefabs/title_menu.prefab` 一行）；**微信代码包白名单里的行为仍未测**，web/微信活体的
+  `prefab.spawn` 对拍也没跑（上面那条仍然有效）。
 - 逐预设引用 `CanvasConfig` 还没接：spawn 出来的 UI 用的是宿主当前的画布配置，预设自己声明
   的那份不参与解算。这是作者化 `title_menu` 之前必须补的最后一块（见 §8）。
 - 10k 实体那类分配量测（`wp0-v4` 的口径）没有扩到 spawn 路径。本批只在**逻辑上**保证空表零分配
@@ -182,8 +185,9 @@ cargo fmt --all -- --check → 29 个文件仍脏，本批 4 个文件已 rustfm
 
 ## 8. 下一批
 
-1. `title_menu` 作者化成 `assets/prefabs/title_menu.prefab`，接进运行时，替掉
-   "场景画一遍、Lua 盖一遍"那份现状（`ui.scene_text_visible(...,false)` 那批调用就是替换点）。
+1. ~~`title_menu` 作者化成 `assets/prefabs/title_menu.prefab`~~（M63b 已做，见 `docs/67`；
+   `ui.scene_text_visible(...,false)` 那批调用**没有**被替换掉——三行标签今天仍由脚本每帧画，
+   预设里那三份 `Text` 照抄迁移前场景并保持隐藏，理由见 `docs/67` §6）。
 2. 逐预设 `CanvasConfig` 引用。
 3. 黄金对账门按 55 号 §6 的口径建（id→矩形/文本/字号，黄金表捕获自迁移**前**的 HEAD），
    并把 `assets/prefabs/` 加进微信首屏清单、跑 `assetc package/list/check-deps` 三条。

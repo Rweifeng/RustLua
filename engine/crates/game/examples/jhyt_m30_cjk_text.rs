@@ -17,7 +17,9 @@
 //! ③ 排版审计：逐个打开 HUD / 背包 / 任务 / 暂停（含设置页）/ 商店 / 对话，
 //!    遍历 `ui.ui_text` 登记表按真实字宽量宽——零溢出、零缺字、零低于 11px；
 //! ④ 最坏数字：金钱 99999、天数 999、数量 999 等压力值下重绘，仍然零溢出；
-//! ⑤ 字号下限：场景 `Text` 组件与 Lua 绘制调用的字号都 ≥ 11（静态扫描 + 运行时读回）；
+//! ⑤ 字号下限：作者化载体里的 `Text` 组件（`scenes/*.scene` + M63b 起的
+//!    `assets/prefabs/*.prefab`，两者同一套行格式，只数场景会在搬运后静默变瞎）
+//!    与 Lua 绘制调用的字号都 ≥ 11（静态扫描 + 运行时读回）；
 //!    M59 起还有一路**数据侧**读数：UI 预设（`assets/ui/prefabs/*.ui.json`）把字号从源码
 //!    搬进了数据文件，`ui/prefab.lua` 因此是静态扫描的唯一例外（它传 `node.font`，源码里没有
 //!    字面量），例外由"读回每个预设 text 节点比同一条下限 + 加载期 10px 负例"补平；
@@ -38,7 +40,9 @@ const MIN_FONT_SIZE: f64 = 11.0;
 /// 语料规模下限（收集口径见 `scripts/tools/text_audit.lua`；改数据表会增长，不该缩水）。
 const MIN_CORPUS_TEXTS: usize = 350;
 const MIN_CORPUS_CHARS: usize = 550;
-/// 场景 `Text` 组件数量下限（`scenes/*.scene`；少一个说明场景文件被改坏了）。
+/// 场景 `Text` 组件数量下限（`scenes/*.scene` **加上** `assets/prefabs/*.prefab`；
+/// 少一个说明作者侧的 UI 实体被改坏了，或有一份预设搬进了新载体却没算进这道统计——
+/// M63b 把门面那 17 个实体从 `main.scene` 搬进预设时，就同时踩到了后者）。
 const MIN_SCENE_TEXTS: usize = 21;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -331,13 +335,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // ---------------- ⑤ 字号下限 ----------------
-    banner("M30-05⑤ 字号下限：场景 Text ≥ 11px + Lua 绘制调用字号 ≥ 11px");
+    banner("M30-05⑤ 字号下限：场景/预设 Text ≥ 11px + Lua 绘制调用字号 ≥ 11px");
     let (scene_count, scene_min) = scene_font_sizes(&project)?;
     if scene_count < MIN_SCENE_TEXTS {
-        return Err(format!("场景 Text 组件只有 {scene_count} 个（≥{MIN_SCENE_TEXTS}）").into());
+        return Err(
+            format!("场景与预设的 Text 组件只有 {scene_count} 个（≥{MIN_SCENE_TEXTS}）").into(),
+        );
     }
     if scene_min < MIN_FONT_SIZE {
-        return Err(format!("场景 Text 存在 {}px 字号（下限 11px）", scene_min).into());
+        return Err(format!("场景/预设 Text 存在 {}px 字号（下限 11px）", scene_min).into());
     }
     // Lua 侧：扫描全部 `ui_text.draw*` 调用，取第 5 个实参（size），必须是数字且 ≥ 11；
     // 清单为空是自检项——解析不了就报错，不能"看起来扫过了"。
@@ -357,7 +363,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("Lua 绘制存在 {}px 字号（下限 11px）", lua_min).into());
     }
     println!(
-        "  场景 Text {scene_count} 个，最小 {scene_min}px；Lua 绘制 {draw_calls} 处，最小 {lua_min}px"
+        "  场景/预设 Text {scene_count} 个，最小 {scene_min}px；Lua 绘制 {draw_calls} 处，最小 {lua_min}px"
     );
     // **数据侧的同一条下限**（M59）：UI 预设把字号从源码搬进了
     // `assets/ui/prefabs/*.ui.json`，上面那道源码扫描因此看不见它（`prefab.lua` 传的是
@@ -576,19 +582,44 @@ fn assert_layout_clean(
     Ok(checked)
 }
 
-/// 场景 `Text` 组件的字号统计：返回（数量，最小值）。
+/// 作者侧 `Text` 组件的字号统计：返回（数量，最小值）。
+///
+/// 载体有两个：`scenes/*.scene` 与 `assets/prefabs/*.prefab`（M63b 起门面的 17 个 UI 实体
+/// 住在预设里）。两者是同一套 `component\t…\tText\tfont_size=…` 行格式，只认场景的统计会
+/// 随搬运**静默变瞎**——实测搬完之后场景侧只剩 14 个 Text（原 21），下限那道断言立刻红，
+/// 而字号本身一个都没变。预设与场景同为作者化载体，必须一起数。
 fn scene_font_sizes(project: &Path) -> Result<(usize, f64), Box<dyn std::error::Error>> {
     let mut count = 0usize;
     let mut min = f64::MAX;
-    let mut scenes: Vec<PathBuf> = fs::read_dir(project.join("scenes"))?
+    let mut files: Vec<PathBuf> = fs::read_dir(project.join("scenes"))?
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .filter(|path| path.extension().is_some_and(|ext| ext == "scene"))
         .collect();
-    scenes.sort();
-    for path in scenes {
-        let scene = engine::core::scene::Scene::load(&path)
-            .map_err(|error| format!("{} 读取失败：{error}", path.display()))?;
-        for entity in scene.entities.values() {
+    let prefab_dir = project.join("assets").join("prefabs");
+    if prefab_dir.is_dir() {
+        // 只收一层：预设目录现在是 `assets/prefabs/<name>.prefab` 平铺，将来若要分子目录
+        // 再换递归（这里刻意不递归，避免把开发产物也拖进统计）。
+        files.extend(
+            fs::read_dir(&prefab_dir)?
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|path| path.extension().is_some_and(|ext| ext == "prefab")),
+        );
+    }
+    files.sort();
+    for path in files {
+        let is_prefab = path.extension().is_some_and(|ext| ext == "prefab");
+        let entities = if is_prefab {
+            let text = fs::read_to_string(&path)
+                .map_err(|error| format!("{} 读取失败：{error}", path.display()))?;
+            engine::core::prefab::Prefab::from_text(&text)
+                .map_err(|error| format!("{} 解析失败：{error}", path.display()))?
+                .entities
+        } else {
+            engine::core::scene::Scene::load(&path)
+                .map_err(|error| format!("{} 读取失败：{error}", path.display()))?
+                .entities
+        };
+        for entity in entities.values() {
             let Some(value) = entity.components.get("Text") else {
                 continue;
             };

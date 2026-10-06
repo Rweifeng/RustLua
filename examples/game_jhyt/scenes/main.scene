@@ -1,95 +1,13 @@
 scene_version=2
 name=main
 meta	display_name	江湖有田·主入口门面
-meta	editor.root_order	1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17
 meta	game	jianghu_youtian
 meta	ui_reference_height	720
 meta	ui_reference_width	1280
-entity	1	BgNight
-component	1	Image	texture=assets/art/title/title_bg_pixel.png;color=1.000,1.000,1.000
-component	1	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	1	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.000000,0.000000,1280.000000,720.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity_meta	1	role	menu_background
-entity	2	BgVignette
-component	2	Image	texture=assets/art/ui/menu/ui_menu_vignette.png;color=1.000,1.000,1.000
-component	2	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	2	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.000000,0.000000,1280.000000,720.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity_meta	2	role	menu_vignette
-entity	3	InkBand
-component	3	Image	texture=assets/art/ui/menu/ui_menu_ink_band.png;color=1.000,1.000,1.000
-component	3	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=320.00,80.00,960.00,240.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity_meta	3	role	menu_ink_band
-entity	4	Logo
-component	4	Image	texture=assets/art/ui/logo/ui_title_logo.png;color=1.000,1.000,1.000
-component	4	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	4	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=384.00,80.00,896.00,336.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity_meta	4	role	menu_logo
-entity	5	LanternL
-component	5	Image	texture=assets/art/ui/menu/ui_menu_lantern.png;color=1.000,1.000,1.000
-component	5	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	5	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=280.00,120.00,352.00,248.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity_meta	5	role	menu_lantern
-entity	6	LanternR
-component	6	Image	texture=assets/art/ui/menu/ui_menu_lantern.png;color=1.000,1.000,1.000
-component	6	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	6	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=928.00,120.00,1000.00,248.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity_meta	6	role	menu_lantern
-entity	7	BtnStart
-component	7	Image	texture=assets/art/ui/menu/ui_menu_btn_wuxia_9s.png;color=1.000,1.000,1.000;nine_slice=18,18,18,18
-component	7	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	7	UiEvents	event=click;function=on_click
-component	7	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=460.00,380.00,820.00,444.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity_meta	7	role	menu_button_BtnStart
-entity	8	BtnStartLabel
-component	8	Text	text=开始新游戏;font_size=24.00;color=0.949,0.918,0.847
-component	8	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	8	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=580.00,397.00,700.00,427.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity_meta	8	role	menu_button_label
-entity	9	BtnContinue
-component	9	Image	texture=assets/art/ui/menu/ui_menu_btn_wuxia_9s.png;color=1.000,1.000,1.000;nine_slice=18,18,18,18
-component	9	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	9	UiEvents	event=click;function=on_click
-component	9	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=460.00,460.00,820.00,524.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity_meta	9	role	menu_button_BtnContinue
-entity	10	BtnContinueLabel
-component	10	Text	text=继续江湖;font_size=24.00;color=0.949,0.918,0.847
-component	10	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	10	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=592.00,477.00,688.00,507.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity_meta	10	role	menu_button_label
-entity	11	BtnExit
-component	11	Image	texture=assets/art/ui/menu/ui_menu_btn_wuxia_9s.png;color=1.000,1.000,1.000;nine_slice=18,18,18,18
-component	11	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	11	UiEvents	event=click;function=on_click
-component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=460.00,540.00,820.00,604.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity_meta	11	role	menu_button_BtnExit
-entity	12	BtnExitLabel
-component	12	Text	text=退出江湖;font_size=24.00;color=0.949,0.918,0.847
-component	12	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	12	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=592.00,557.00,688.00,587.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity_meta	12	role	menu_button_label
-entity	13	TipScroll
-component	13	Image	texture=assets/art/ui/menu/ui_menu_panel_scroll_9s.png;color=1.000,1.000,1.000;nine_slice=20,20,20,20
-component	13	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	13	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,600.00,476.00,696.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity_meta	13	role	menu_tip_panel
-entity	14	TipTitle
-component	14	Text	text=江湖小贴士;font_size=20.00;color=0.145,0.165,0.196
-component	14	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	14	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=44.00,612.00,244.00,636.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity_meta	14	role	menu_tip_title
-entity	15	TipBody
-component	15	Text	text=新档先在药田种下第一株灵芝，;font_size=15.00;color=0.145,0.165,0.196
-component	15	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	15	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=44.00,638.00,452.00,658.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity_meta	15	role	menu_tip_body
-entity	16	TipBody2
-component	16	Text	text=三日后再下山去云泽村换些种子。;font_size=15.00;color=0.145,0.165,0.196
-component	16	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	16	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=44.00,660.00,452.00,680.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity_meta	16	role	menu_tip_body
-entity	17	FooterText
-component	17	Text	text=江湖有田 v0.1.0 · RustLua 原型 · 横版;font_size=14.00;color=0.659,0.624,0.541
-component	17	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	17	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=1080.00,690.00,1240.00,710.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity_meta	17	role	menu_footer
+# M63b：门面的 17 个 UI 实体（夜色底图 / 暗角 / 墨带 / 中文木匾 / 两侧灯笼 / 3 块木牌按钮
+# 与它们的 `Text` 标签 / 卷轴贴士 / 版本号）整批搬进 `assets/prefabs/title_menu.prefab`，
+# 由 `scripts/ui/title_menu.lua` 进门面时 `prefab.spawn` 实例化。这里只留场景头与分辨率 meta。
+#
+# 为什么留空而不是把预设的内容再写一遍：那正是这次搬家要消灭的"两份版面"。画面与层序的
+# 对账 = `jhyt_m63_title_prefab`（逐 id 矩形/贴图/字号 + `mesh.draws` 提交序），
+# 版面数据的对账 = 同门的 authored 行，见 `docs/66`。

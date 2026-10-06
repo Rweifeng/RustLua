@@ -19,8 +19,14 @@
 //!   ④ **写得进**：`prefab.set_text` 改的是渲染读的那份 `Text` 组件本身，不是副本；给没有
 //!      `Text` 的节点、不存在的节点/句柄改字都要**报错**，不能静默 no-op；
 //!   ⑤ **收得干净**：`prefab.despawn` 之后实体不在、布局节点也撤了、点击不再派发；
-//!      **场景自带的 UI**（main.scene 的 `BtnStart`）命中框在 spawn 前后都照常——并表/摘表
-//!      若碰坏了宿主那份场景节点快照，这一条会红。
+//!      **别批不受影响**——M63b 起门面自己的 UI 也是 spawn 出来的（`assets/prefabs/title_menu.prefab`），
+//!      同一个世界里因此住着两批实例，本门的两条读数是"本批归零"与"别批逐值不变"（并表/摘表
+//!      若按 index 段批量摘、或碰坏了别批的布局快照，第二条会红）；场景按钮 `BtnStart` 的命中框
+//!      在 spawn 前后都照常派发——它现在正是门面预设实例的矩形，⓪ 因此同时是"迁移没改命中框"的证据；
+//!   ⑥ **换得了场景**：`scene.load` 会把 ECS 世界整个重建，运行期实例随之全部失效，因此实例登记表
+//!      与它的布局节点表必须跟着世界一起清（旧句柄 `despawn` 幂等返回 false、`root`/`node` 点名
+//!      "没有 handle"，本批名字不再出现在矩形读数里——留下的槽位会被新世界的无关实体复用）；
+//!      而门面在回来时要**重新铺一份**（`on_create` → `title_menu.reset()`），矩形与切换前逐值相同。
 //!
 //! Usage:
 //!   cargo run -p game --example jhyt_m61_prefab_runtime [-- <game_jhyt-root>]
@@ -54,7 +60,8 @@ const EXPECTED: &[(&str, [f32; 4])] = &[
 /// `M61Btn` 的矩形中心（③ 的"内"探针）与画面左上角（"外"探针，不在任何 UI 实体的矩形里）。
 const BTN_CENTER: (f64, f64) = (160.0, 630.0);
 const OUTSIDE: (f64, f64) = (40.0, 40.0);
-/// main.scene 的 `BtnStart` 矩形（460,380,820,444）中心：⑤ 用它证明场景 UI 没被污染。
+/// 门面按钮 `BtnStart` 的矩形中心：M63b 起它来自 spawn 的门面预设（矩形与迁移前的
+/// `main.scene` 逐值相同），⑤ 用它证明"撤掉自己那一批"没关掉别批的派发通道。
 const SCENE_BTN_CENTER: (f64, f64) = (640.0, 412.0);
 
 const FIXTURE_FILE: &str = "jhyt_m61_menu.prefab";
@@ -121,6 +128,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("⓪ 基线：场景自己的 UI 命中框（spawn 之前先跑一次，红了就不是这批的锅）");
     click_dispatches(&mut runtime, SCENE_BTN_CENTER, &["BtnStart"], "⓪ 门面基线")?;
     println!("  scene click({SCENE_BTN_CENTER:?}) → [\"BtnStart\"]");
+    // M63b 起门面自己的 UI 也是 spawn 出来的（`assets/prefabs/title_menu.prefab`），
+    // 于是本门的世界里同时住着**两批**实例：门面的 17 个 + 下面 fixture 的 4 个。
+    // 先在这里记下门面那批的原点，⑤ 用它证明 `despawn` 只摘自己那一批。
+    let menu_before = runtime.prefab_ui_rects([VIEW_W, VIEW_H]);
+    println!(
+        "  门面预设实例（spawn 之前）= {} 个：{}",
+        menu_before.len(),
+        rects_summary(&menu_before)
+    );
+    if menu_before.is_empty() {
+        println!("  （门面未用预设：⑤ 的\"别批不受影响\"会退化成\"世界里不该有矩形\"，仍然成立）");
+    }
+    // 本批 fixture 的节点名前缀，②⑤ 用它把两批读数分开。
+    const FIXTURE_PREFIX: &str = "M61";
 
     banner("① 预设文件 → 活世界实体：prefab.spawn / root / node 同源");
     lua_run(
@@ -224,7 +245,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "里没有节点",
         ),
         (
-            format!("prefab.set_text(-7, 'M61Label', 'x')"),
+            "prefab.set_text(-7, 'M61Label', 'x')".to_string(),
             "没有 handle",
         ),
     ] {
@@ -235,7 +256,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("  写入生效，三条误用各自点名");
 
-    banner("⑤ 收得干净：despawn 撤实体也撤布局节点，场景 UI 不受污染");
+    banner("⑤ 收得干净：despawn 只撤自己那一批，别批的实例与矩形一个不少");
     let btn_id = lua_num(&mut runtime, &format!("prefab.node({handle}, 'M61Btn')"))?;
     assert_str(
         &mut runtime,
@@ -258,13 +279,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     frame(&mut runtime)?;
     let after = runtime.prefab_ui_rects([VIEW_W, VIEW_H]);
-    if !after.is_empty() {
-        return Err(format!(
-            "despawn 之后仍有 spawn 实例的布局矩形：{}",
-            rects_summary(&after)
-        )
-        .into());
+    // ⑤-a 本批那 4 个（3 个有矩形 + 无布局的 M61Bare 不在读数里）一个不剩。
+    let mine = rects_matching(&after, |name| name.starts_with(FIXTURE_PREFIX));
+    if !mine.is_empty() {
+        return Err(format!("despawn 之后仍有本批的布局矩形：{}", rects_summary(&mine)).into());
     }
+    // ⑤-b 别批（门面自己的预设实例）一个不少、逐值不变。despawn 走的是"按 handle 记的
+    // 实体清单批量删"，若它按 index 段批量摘布局快照、或把并表的节点整批撤了，红的就是这一条
+    // ——上一版断言的是"世界里不该有矩形"，那在门面也改用预设之后就不再是真相，
+    // 而"只摘自己那一批"才是本门真正要守的东西。
+    let others = rects_matching(&after, |name| !name.starts_with(FIXTURE_PREFIX));
+    assert_same_rects(&menu_before, &others, "despawn 之后别批")?;
+    println!(
+        "  本批撤干净（{} 个矩形归零）；别批 {} 个矩形逐值不变：{}",
+        EXPECTED.len(),
+        others.len(),
+        rects_summary(&others)
+    );
     // despawn 幂等 + 派发通道一起关掉。
     assert_str(
         &mut runtime,
@@ -278,7 +309,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &["BtnStart"],
         "⑤ 门面场景 UI 未被污染",
     )?;
-    println!("  撤干净；场景 UI 命中框仍派发 [\"BtnStart\"]");
+    println!("  本批撤干净；门面预设的按钮命中框仍派发 [\"BtnStart\"]（撤一批没关掉派发通道）");
+
+    banner("⑥ 换场景：实例登记表随世界一起清 —— 旧句柄撤不动也不留幽灵矩形，门面重新铺回来");
+    // 走**真实**切换路径：`scene.load` 只挂起请求，由宿主在步进里应用
+    // （`transition.rs`：换 `World::new()` 并按域清理）。这里原地重载门面那张 `main`——
+    // 重建世界这件事与切去哪张图无关，而原地重载不需要任何玩法前置状态。
+    let handle2 = lua_num(&mut runtime, &format!("prefab.spawn('{fixture_rel}')"))?;
+    frame(&mut runtime)?;
+    if rects_matching(&runtime.prefab_ui_rects([VIEW_W, VIEW_H]), |name| {
+        name.starts_with(FIXTURE_PREFIX)
+    })
+    .is_empty()
+    {
+        return Err("⑥ 第二次 spawn 的实例没解算出矩形：切换之后没有可对比的读数".into());
+    }
+    assert_str(&mut runtime, "scene.load('main')", "true")?;
+    frame(&mut runtime)?;
+    // 旧句柄：登记表已随世界清空 ⇒ `despawn` 是**幂等 false**。不幂等的表现是拿着死句柄去
+    // 新世界上删实体 ⇒ Lua 报错，而报错的位置是"离开门面的那次点击"（M20-09c 的原始红）。
+    assert_str(
+        &mut runtime,
+        &format!("tostring(prefab.despawn({handle2}))"),
+        "false",
+    )?;
+    for expr in [
+        format!("prefab.root({handle2})"),
+        format!("prefab.node({handle2}, 'M61Btn')"),
+    ] {
+        let got = query_err(&mut runtime, &expr)?;
+        if !got.contains("没有 handle") {
+            return Err(format!("{expr} 的错误信息里没有点名失效句柄：实得 {got:?}").into());
+        }
+    }
+    // 幽灵矩形：布局节点表是按**槽位号**索引的，槽位会被新世界的无关实体复用，
+    // 所以旧实例的名字必须一个都不在（留着既不画该画的，又可能顶掉别人的矩形）。
+    let after_switch = runtime.prefab_ui_rects([VIEW_W, VIEW_H]);
+    let ghosts = rects_matching(&after_switch, |name| name.starts_with(FIXTURE_PREFIX));
+    if !ghosts.is_empty() {
+        return Err(format!("换场景之后仍有旧实例的布局矩形：{}", rects_summary(&ghosts)).into());
+    }
+    // 门面自己重新铺回来：`on_create` → `title_menu.reset()` 按**当前世界**重铺一份，
+    // 矩形与切换前逐值相同。脚本只认"句柄非 nil"时这一条是空的（整屏门面消失、一行日志
+    // 没有——最难发现的那种坏），因此它同时是脚本侧失配守住的读数。
+    assert_same_rects(&menu_before, &after_switch, "换场景之后的门面")?;
+    println!(
+        "  旧句柄失效（despawn=false、root/node 各自点名）；门面重新铺回 {} 个矩形",
+        after_switch.len()
+    );
     // 换回门面自己的回调（记录器只在门内有效）。
     lua_run(&mut runtime, "on_click = m61_real_on_click")?;
 
@@ -381,6 +459,53 @@ fn rects_summary(rects: &[(String, UiRect)]) -> String {
         .map(|(name, rect)| format!("{name}=({},{},{},{})", rect.x, rect.y, rect.w, rect.h))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// 按名字筛矩形读数。⑤⑥ 用节点名前缀把"本批"与"别批"分开——同一个世界里现在住着两批
+/// 实例（门面的预设 + 本门的 fixture），"整个世界该是空的"那种断言已经不是真相。
+fn rects_matching<F>(rects: &[(String, UiRect)], f: F) -> Vec<(String, UiRect)>
+where
+    F: Fn(&str) -> bool,
+{
+    rects.iter().filter(|(name, _)| f(name)).cloned().collect()
+}
+
+/// 两次读数之间**同一批**矩形逐值不变：数量、名字集合与四条边都比。顺序不比
+/// （顺序由实体槽位决定，那是 m63 ④ 的账，不是这条的）。
+fn assert_same_rects(
+    want: &[(String, UiRect)],
+    got: &[(String, UiRect)],
+    label: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if got.len() != want.len() {
+        return Err(format!(
+            "{label}的矩形数量从 {} 变成 {}：实得 {}",
+            want.len(),
+            got.len(),
+            rects_summary(got)
+        )
+        .into());
+    }
+    for (name, before) in want {
+        let found = got
+            .iter()
+            .find(|(got_name, _)| got_name == name)
+            .map(|(_, rect)| [rect.x, rect.y, rect.w, rect.h])
+            .ok_or_else(|| format!("{label}少了 {name}"))?;
+        for (axis, (was, now)) in [before.x, before.y, before.w, before.h]
+            .iter()
+            .zip(found.iter())
+            .enumerate()
+        {
+            if (was - now).abs() > EPS {
+                return Err(format!(
+                    "{label}的 {name} 矩形第 {axis} 项（0=x 1=y 2=w 3=h）= {now}，之前是 {was}"
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---------- Lua 取值 ----------

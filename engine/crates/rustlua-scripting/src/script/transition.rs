@@ -45,6 +45,14 @@ impl LuaRuntime {
             state.ui_state.clear_for_scene_transition();
             state.inventory.clear_for_scene_transition();
             state.schema_defs.clear();
+            // M63c：运行期 `prefab.spawn` 的实例登记表与它的布局节点表都是**世界内**状态。
+            // 上面刚把 `state.world` 换成新世界，登记表里的实体句柄因此全部失效，留着有两处后果：
+            // 旧 handle 再 `prefab.despawn` 会拿着死句柄去新世界上删（标题界面点按钮离开时直接
+            // 报错，M20-09c 就是这么红的）；`prefab_ui_nodes` 是按**槽位号**索引的，槽位会被新
+            // 世界的无关实体复用（幽灵布局节点：既画不出该画的，又可能顶掉别人的矩形）。
+            // 句柄计数器**不**复位：复位会让旧 handle 认到新实例。
+            state.prefab_spawns.clear();
+            state.prefab_ui_nodes.clear();
             state.scene_pending_load = None;
             state.scene = Some(name.clone());
             state.active_camera = None;

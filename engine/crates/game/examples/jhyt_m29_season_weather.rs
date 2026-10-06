@@ -55,7 +55,7 @@ const EXPECTED_DEV_ARTIFACTS: usize = 47;
 const EXPECTED_CONTENT_ORPHANS: usize = 2;
 // 2026-10-06 终期回归重扫：阶段2–5 新增引用源（扩展物品 icon、ui/prefab 动态加载、collections/
 // achievements/endings 等新注册表、M59 预设）后 569→913，docs/48 §1 已同步。
-const EXPECTED_REFERENCED: usize = 977;
+const EXPECTED_REFERENCED: usize = 978;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args()
@@ -805,6 +805,19 @@ fn audit_assets(project: &Path) -> Result<Audit, Box<dyn std::error::Error>> {
                 &fs::read_to_string(entry).unwrap_or_default(),
             ));
             corpus.push('\n');
+        }
+    }
+    // UI 预设（`.prefab`）：版面从脚本搬进预设之后，"谁引用了这张图"的答案就写在预设里，
+    // 少读它会让每张只被预设用到的贴图凭空变成"内容缺口"（M63 的
+    // `assets/art/title/title_bg_pixel.png` 是第一个踩到的）。
+    if project.join("assets/prefabs").is_dir() {
+        let mut prefabs = Vec::new();
+        collect_files(&project.join("assets/prefabs"), &mut prefabs)?;
+        for entry in &prefabs {
+            if entry.extension().and_then(|e| e.to_str()) == Some("prefab") {
+                corpus.push_str(&fs::read_to_string(entry).unwrap_or_default());
+                corpus.push('\n');
+            }
         }
     }
     for name in ["project.toml", "settings.toml"] {

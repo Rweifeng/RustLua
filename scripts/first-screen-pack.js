@@ -270,6 +270,41 @@ function buildEntries(packRoot, includePrefixes) {
     }
   }
 
+  // 5b) UI 预设（M63b）：门面的那批 UI 实体从 `scenes/main.scene` 搬进了
+  //     `assets/prefabs/*.prefab`，由脚本在 `on_create` 里 `prefab.spawn` 读进来。
+  //     于是同时变了两件事：
+  //     ① 启动场景不再有 `component` 行 ⇒ 第 5 步的贴图闭包退化成**空集**，
+  //        `assets/art/title/`、`assets/art/ui/logo/` 这些不在保守前缀里的图会**静默**
+  //        离开首屏（微信首帧没有背景与 logo，而构建期一行警告都没有）；
+  //     ② 预设文件本身是启动期同步读的数据文件，与上面 M59 那份 JSON 同理：分包形态下
+  //        `wechatReadFile` 不 await `ensurePack`，文件只躺在 `pack/` 里就是白屏。
+  //     "哪份预设属于门面"由 Lua 里的 `PRESET_PATH` 决定，静态推不出来 ⇒ 与 skin 键同一处理：
+  //     整目录纳入，并把每份预设的 `component` 行算进贴图闭包。`.prefab` 的行格式与 `.scene`
+  //     逐字相同（同是 `component\t<id>\t<Type>\t<value>`），所以 `sceneTextureRefs` 直接复用。
+  //     引用悬空按**警告**处理而不是硬失败：与门面无关的预设（商店/背包）引用分包里的图是正当的。
+  const prefabFiles = [];
+  for (const rel of catalog.keys()) {
+    if (rel.startsWith('assets/prefabs/') && rel.endsWith('.prefab')) prefabFiles.push(rel);
+  }
+  const prefabRefs = new Set();
+  let prefabTextures = 0;
+  for (const rel of prefabFiles) {
+    add(rel);
+    const text = readTextIfPresent(packRoot, rel);
+    if (text === null) continue;
+    for (const ref of sceneTextureRefs(text)) {
+      if (!catalog.has(ref)) {
+        warnings.push('unresolved=' + ref + ' prefab=' + rel);
+        continue;
+      }
+      prefabRefs.add(ref);
+      if (!startupRefs.has(ref)) {
+        add(ref);
+        prefabTextures += 1;
+      }
+    }
+  }
+
   // 6) 保守前缀：运行时按 ui.* 动态绘制的那部分 UI 静态推不出来，整目录纳入。
   for (const prefix of includePrefixes) {
     for (const rel of catalog.keys()) if (rel.startsWith(prefix)) add(rel);
@@ -318,6 +353,9 @@ function buildEntries(packRoot, includePrefixes) {
   // assetc 换了格式就会爆——所以在这里把它变成构建期硬失败，而不是等真机贴图全丢。
   const hostLoaded = new Set();
   for (const rel of startupRefs) if (catalog.has(rel)) hostLoaded.add(rel);
+  // 预设里的图同样是宿主自己按真实文件名加载的（spawn 出来的 `Image.texture` 走 `Image.src`），
+  // 改名会让它读不到 —— 与启动场景同一口径。
+  for (const rel of prefabRefs) hostLoaded.add(rel);
   for (const rel of fontPaths) hostLoaded.add(rel);
   for (const rel of Object.keys(renamed)) {
     if (hostLoaded.has(rel)) {
@@ -328,7 +366,8 @@ function buildEntries(packRoot, includePrefixes) {
 
   return {
     startupScene, mainScript, font, entries, bytes, textures, scripts: scripts.length,
-    fontFiles, warnings, sceneCount: sceneFiles.length, renamed
+    fontFiles, warnings, sceneCount: sceneFiles.length, renamed,
+    prefabCount: prefabFiles.length, prefabTextures
   };
 }
 
@@ -506,6 +545,8 @@ function main() {
     ' textures=' + plan.textures +
     ' fonts=' + plan.fontFiles +
     ' scenes=' + plan.sceneCount +
+    ' prefabs=' + plan.prefabCount +
+    ' prefab_textures=' + plan.prefabTextures +
     ' renamed=' + manifest.renamed_count +
     ' warnings=' + plan.warnings.length
   );
