@@ -166,6 +166,11 @@ function Get-DirSize {
 # 骨架文件（manifest.txt / project.toml）的位置随形态变：分包形态下它们在首屏清单里，
 # 构建期已被搬到 mainpack/，pack/ 里**不该**再有同名副本。
 $skeletonSubdir = if ($isSubpackagePack) { "mainpack" } else { "pack" }
+# wasm 内核的位置同样随形态变：主包 4 MB 门装不下"2.5 MB 内核 + 2 MB 内容"，所以分包形态下
+# 发布脚本把它放进 pack/（那正是分包的意义），full / remote 仍在 pkg/。
+# **两边都只许有一处**：pkg/ 里那份残留不会抛错，只会让主包又超回去（而 4 MB 超限的表现是
+# 上传被拒，本机什么都看不到），所以这里除了"该有的在"还要验"不该的不在"。
+$wasmCoreRelative = if ($isSubpackagePack) { "pack\game_web_bg.wasm" } else { "pkg\game_web_bg.wasm" }
 $required = @(
     "game.js",
     "game.json",
@@ -173,7 +178,7 @@ $required = @(
     "wechat-adapter.js",
     "web-runtime.js",
     "pkg\game_web.js",
-    "pkg\game_web_bg.wasm",
+    $wasmCoreRelative,
     ($skeletonSubdir + "\" + (Resolve-CodePackName "manifest.txt")),
     ($skeletonSubdir + "\" + (Resolve-CodePackName "project.toml")),
     "code-package.json",
@@ -182,6 +187,9 @@ $required = @(
 if ($isSubpackagePack) {
     # 分包形态多两项：路由依据（清单）与分包入口（微信的硬要求）。
     $required += @("mainpack.json", "pack\game.js")
+    if (Test-Path -LiteralPath (Join-Path $root "pkg\game_web_bg.wasm")) {
+        throw "分包形态下 pkg\game_web_bg.wasm 仍在主包里：内核没有被搬进 pack/，主包体积会按旧公式超限（两份同名内核迟早漂移，这里拒绝而不是取其一）"
+    }
 }
 foreach ($file in $required) {
     $full = Join-Path $root $file
@@ -326,10 +334,12 @@ $totalSize = Get-DirSize -Path $root
 $packSize = Get-DirSize -Path (Join-Path $root "pack")
 $subpackageSize = if ($isSubpackagePack) { $packSize } else { 0 }
 $mainSize = $totalSize - $subpackageSize
-# 主包超限的出路按形态给：分包形态的杠杆是"把资源列进首屏清单"（清单变大 ⇒ 主包变大、
-# 分包变小，两侧此消彼长），full 形态只能换形态，thin 形态基本不会超。
+# 主包超限的出路按形态给，**方向必须写对**：主包 = launcher − pack/，而 mainpack/（首屏资源）
+# 是**算进主包**的，所以"把更多资源列进首屏清单"是加大主包的那一手——曾经就这么写反过，
+# 超限的人照着做只会更超（`scripts/package.ps1` 的 `Assert-WeChatPackageVolume` 已改正，
+# 这里曾经是它唯一的反口径副本，两处现在同一个说法）。
 $mainHint = if ($isSubpackagePack) {
-    "把更多资源列进首屏清单 mainpack.json（清单变大 ⇒ 主包变大、分包变小，两侧此消彼长），或改用 -AssetPack remote"
+    "**收窄**首屏清单（--include 前缀去掉非首屏目录，被排除的资源留在 pack/ 分包里：主包变小、分包变大；列进清单是反方向），或改用 -AssetPack remote"
 }
 elseif ($isThinPack) { "pack/ 骨架已经在 512KB 白名单内，若仍超限说明骨架白名单该更新了" }
 else { "改用 -AssetPack subpackage（主包 + 单分包）或 -AssetPack remote 把重资源移出包内" }

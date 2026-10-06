@@ -29,15 +29,16 @@ function Get-BundleMarkerFiles {
     唯一的**有意**差异：清单只收「缺了就跑不起来/验收不了」的条目。像 webgl 的包内双击壳
     `test-webgl.bat` 属于便利项（缺了不影响产物能否运行与验收），因此发布时 `package.ps1` 严格
     要求它、而本清单不要求它 —— 否则今天之前发布过的、仍然完全可验收的包会被发现器挡掉。
-    微信清单在 M32 起**重新要求** `pkg\game_web.js` / `pkg\game_web_bg.wasm`：该平台曾一度
+    微信清单在 M32 起**重新要求** `pkg\game_web.js` / wasm 内核（`game_web_bg.wasm`）：该平台曾一度
     改走"纯 JS + Fengari"（不发行 wasm），M32 起改为随包发行 wasm 核心并在启动时同步实例化
     （见 package.ps1 的微信必需清单与 plugins/wechat-minigame/README.md 的「wasm 核心」）。
     两处清单必须同步——任一处漏改，就会出现"发布脚本拒收、发现器却接受"的假通过。
 
-    微信的平台标记仍是 **8 项**，但其中骨架两项（manifest.txt / project.toml）的**位置随形态变**：
-    分包形态（-AssetPack subpackage）下它们是首屏资源，构建期已被搬到 mainpack/，pack/ 里
-    按设计就不该有——把它们写死成 `pack\` 会把唯一一种主包可直接启动的产物挡在发现之外。
-    所以这两项由 -ArtifactRoot 现场解析（判据仍是"这个文件存在且非空"，强度不变）。
+    微信的平台标记仍是 **8 项**，但其中三项的**位置随形态变**：骨架两项（manifest.txt / project.toml）
+    在分包形态（-AssetPack subpackage）下是首屏资源，构建期已被搬到 mainpack/，pack/ 里
+    按设计就不该有；wasm 内核同理由 `pkg\` 变成 `pack\`（主包 4 MB 装不下它 + 2 MB 内容）。
+    写死任何一处都会把一种能直接验收的产物挡在发现之外，所以三项都由 -ArtifactRoot 现场解析
+    （判据仍是"这个文件存在且非空"，强度不变）。
     #>
     param(
         [Parameter(Mandatory = $true)][string]$Platform,
@@ -66,14 +67,20 @@ function Get-BundleMarkerFiles {
             # wasm 两项与 webgl 同名同义（`--target no-modules` 的 CommonJS 化胶水 + 模块本体），
             # 少任何一个都说明产物与当前发布形态不一致——这也是"发现器只收非它不可的条目"口径下的
             # 必需项：适配层启动时会读它并实例化，缺了 Lua 根本跑不起来。
-            # 前六项在三种资源形态（full / thin / subpackage）下位置都相同，是稳定的平台标记；
-            # 骨架两项的**位置**随形态变（有 mainpack.json 就是分包形态，骨架在 mainpack/，否则在 pack/），
+            # 前六项（含胶水 pkg\game_web.js：它必须留在主包，require 是同步的、等不了分包）在三种
+            # 资源形态（full / thin / subpackage）下位置都相同，是稳定的平台标记；
+            # 骨架两项与 wasm 内核的**位置**随形态变（有 mainpack.json 就是分包形态，骨架在 mainpack/，
+            # 否则在 pack/；内核在分包形态下在 pack/，其余在 pkg/ ——主包 4 MB 门装不下 2.5 MB 内核），
             # **文件名**也可能被改名：微信代码包只上传后缀在白名单内的文件，构建期把 `.toml` 之类
             # 改成 `*.toml.txt`。名字从产物根的 code-package.json 查表得到——不在这儿重算规则，
             # 否则改不改名、查哪张表就会有两处说法（发现器"找不到产物"这种误报最难查）。
+            # 内核跟着位置判形态是有意的**副作用**：搬迁之前的那份分包产物（内核在 pkg/）从此
+            # 不再被发现，不会被当成"当前产物"喂给验收脚本——那正是发现器该干的活。
             $skeleton = "pack"
+            $wasmCore = "pkg\game_web_bg.wasm"
             if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot) -and (Test-Path -LiteralPath (Join-Path $ArtifactRoot "mainpack.json"))) {
                 $skeleton = "mainpack"
+                $wasmCore = "pack\game_web_bg.wasm"
             }
             $resolve = { param([string]$logical) $logical }
             if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {
@@ -98,7 +105,7 @@ function Get-BundleMarkerFiles {
                 "wechat-adapter.js",
                 "web-runtime.js",
                 "pkg\game_web.js",
-                "pkg\game_web_bg.wasm",
+                $wasmCore,
                 ($skeleton + "\" + (& $resolve "manifest.txt")),
                 ($skeleton + "\" + (& $resolve "project.toml"))
             )

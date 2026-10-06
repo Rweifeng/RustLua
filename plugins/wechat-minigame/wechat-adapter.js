@@ -56,9 +56,19 @@
   // 留在 pack/ 里的首屏资源在真机上依然要等分包下载 —— "主包留一部分"这个直觉做法根本不成立。
   var MAINPACK_DIR = 'mainpack/';
   var MAINPACK_MANIFEST = 'mainpack.json';
-// wasm 核心在代码包里的逻辑路径（发布脚本按 `pkg/game_web_bg.wasm` 放置；`.wasm` 在微信
-// 代码包后缀白名单内，因此**不需要**改名，运行时按逻辑路径读取即可）。
-var WASM_MODULE_PATH = 'pkg/game_web_bg.wasm';
+// wasm 核心在代码包里的逻辑路径。**位置随发布形态变**，判据是首屏清单声明没声明分包：
+//   · 分包形态 → `pack/game_web_bg.wasm`（在分包里）。微信主包只有 4 MB，而内核 2.5 MB：
+//     实测 2026-10-06 主包 4,547 KB（内核 + Lua 与首屏内容），超 451 KB —— 内容侧已经压不动，
+//     唯一剩下的杠杆是让内核去分包（逐目录归属见 docs/52「主包构成」）。
+//     **代价是启动次序变了**：实例化必须排在 `wx.loadSubpackage` 之后，标题画面因此也排在
+//     分包下载之后，于是等待画面必须由 JS 自己画（见 startPreBootUi）。
+//   · full / remote 形态 → `pkg/game_web_bg.wasm`（主包）。full 下 pack/ 本身也在主包（搬了
+//     等于没搬），remote 下 pack/ 会被构建期裁成骨架（内核搬过去就没了）。
+// 胶水 `pkg/game_web.js` 三种形态都留在主包：它由 `require('./pkg/game_web.js')` **同步**加载，
+// 进分包要换成"挂载之后再 require"，而那条语义本机证明不了（真机才认），所以不动它。
+// `.wasm` 在微信代码包后缀白名单内（scripts/code-package-rules.js），因此不需要改名。
+var WASM_MODULE_PATH_MAIN = 'pkg/game_web_bg.wasm';
+var WASM_MODULE_PATH_PACK = PACK_PREFIX + 'game_web_bg.wasm';
 // EH 真机探针模块（53 字节，零导入 + 本地 tag 段 + legacy try/catch）：由发布链路写进 pkg/，
 // wasm-bridge 的 probeEHAcceptance 走同一条代码包通道 compile 它，读"设备引擎认不认 wasm EH"。
 var EH_PROBE_PATH = 'pkg/eh-probe.wasm';
@@ -835,6 +845,18 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     return packSubpackageName() !== '';
   }
 
+  // wasm 内核这次到底在**主包**还是在**分包**——启动路径上三处都要用到这个判据
+  // （要不要等分包、屏上写的是哪句话、实例化传哪条路径），所以只在这里算一次。
+  // 判据跟着形态而不是跟着"文件此刻在不在"：分包未挂载时 `pack/game_web_bg.wasm`
+  // 读不到，那正是"要等分包"的信号，不是"退回主包路径"的理由（主包里根本没有它）。
+  function isWasmInPack() {
+    return hasPackSubpackage();
+  }
+
+  function wasmModulePath() {
+    return isWasmInPack() ? WASM_MODULE_PATH_PACK : WASM_MODULE_PATH_MAIN;
+  }
+
   // 进度回调只服务于"给玩家看见还在下"：真机上分包是几十 MB 量级的下载，微信端却**没有**
   // 任何 loading UI（statusElement 是个 no-op 对象），所以这条进度是我们唯一的可见证据。
   function attachPackProgress(task) {
@@ -920,6 +942,43 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       }, PACK_LOAD_TIMEOUT_MS);
     });
     return packReady;
+  }
+
+  // boot 之前的挂载重试（只有"内核在分包里"这一种形态会走到）。
+  //
+  // **为什么现在必须有**：内核在主包时，一次分包下载失败的代价是"玩法场景缺素材"，标题照常出、
+  // 玩家甚至没感觉；内核搬进 pack/ 之后，同一次失败的代价变成"这一次根本进不去"。瞬时网络抖动
+  // 不该把整局启动打死，所以在实例化之前自动再挂一次。
+  // 上限 2 次尝试（= 1 次自动重试）：每次尝试自带 `PACK_LOAD_TIMEOUT_MS`（20 秒）无回调兜底，
+  // 再加一轮就是一分钟起步的进度条。**本机证明不了第二次重试救回的概率**（假包要么挂上要么挂不上，
+  // 没有真机的抖动分布），能给的只有"失败不再一次性致命"这条下限。
+  //
+  // 这里刻意绕过 `packRetryCooldownUntil`：那条 10 秒冷却是**读路径**防重试风暴用的（玩法场景中
+  // 连续几十次 pack/ 读取都会撞上它），而 boot 这条链由自己掌握节奏，等满一个短退避就把冷却清零。
+  // 冷却清零不影响读路径的语义——那里真正的判据是 `packState`，重试成功后它变回 ready。
+  var PACK_BOOT_ATTEMPT_LIMIT = 2;
+  var PACK_BOOT_RETRY_DELAY_MS = 1500;
+  var packBootRetryNotice = '';
+
+  function ensurePackForBoot(remainingRetries) {
+    return ensurePack().then(function (mounted) {
+      if (mounted) {
+        packBootRetryNotice = '';
+        return true;
+      }
+      // absent = 本包压根没声明分包（宿主没有 loadSubpackage / 清单没有 root）：重试没有意义。
+      if (packState === 'absent' || remainingRetries <= 0) {
+        packBootRetryNotice = '';
+        return false;
+      }
+      packBootRetryNotice = '分包下载失败，正在重试（还会再试 ' + remainingRetries + ' 次）…';
+      return new Promise(function (resolve) {
+        setTimeout(resolve, PACK_BOOT_RETRY_DELAY_MS);
+      }).then(function () {
+        packRetryCooldownUntil = 0;
+        return ensurePackForBoot(remainingRetries - 1);
+      });
+    });
   }
 
   function normalizePath(url) {
@@ -1546,8 +1605,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     ctx.restore && ctx.restore();
   }
 
-  // 分包载入失败横幅：整屏错误页会盖掉游戏，而分包失败不该掀翻标题画面——
-  // 所以用一条**常驻红条**说明"资源没下下来，进玩法会缺素材"，并给出重试后的状态。
+  // 分包载入失败横幅。这句话**按形态分两套**，因为失败的后果不一样：
+  //   · 内核在主包（full / remote）：标题画面照常出，只有玩法场景缺素材 ⇒ 一条红条提示；
+  //   · 内核在分包（subpackage）：Lua 执行层就在没挂上的那个文件里，boot 必然失败 ⇒
+  //     必须说清"是这次进不去、重进可以"，而不是让玩家以为游戏还能跑（旧文案在这形态是谎话）。
   function drawPackFailure(ctx) {
     var w = canvas.width;
     var h = canvas.height;
@@ -1558,11 +1619,27 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     ctx.fillRect(0, 38, w, 34);
     ctx.fillStyle = '#fff';
     ctx.font = '20px sans-serif';
-    ctx.fillText('分包（pack）加载失败：进玩法场景会缺素材；游戏从主包照常启动', 12, 63);
+    ctx.fillText(isWasmInPack()
+      ? '分包（pack）加载失败：游戏内核就在这个分包里，本次启动无法继续；重进即可（下载一次永久缓存）'
+      : '分包（pack）加载失败：进玩法场景会缺素材；游戏从主包照常启动', 12, 63);
     ctx.restore && ctx.restore();
   }
 
-  // 每帧回调之后调用：先计数（永远），再按需覆盖层/警示条。
+  // boot 前重试期间的横幅。与失败条同一条位置、不同颜色：这一刻**还没有失败**，红条会让玩家
+  // 以为游戏坏了（而进度条还在动，两者同时出现只会被读成"系统在骗人"）。
+  function drawPackRetryNotice(ctx) {
+    var w = canvas.width;
+    ctx.save && ctx.save();
+    ctx.setTransform && ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = 'rgba(90,60,0,0.9)';
+    ctx.fillRect(0, 38, w, 34);
+    ctx.fillStyle = '#fff';
+    ctx.font = '20px sans-serif';
+    ctx.fillText(packBootRetryNotice || '分包重试中…', 12, 63);
+    ctx.restore && ctx.restore();
+  }
+
   // 现场导出通道。为什么要三条：开发者工具控制台的"上下文"**未必就是游戏全局**——实测
   // 日志明明打了 `适配层已就绪 v…（__RustLuaWechat / __RUSTLUA_DIAG 已注册）`，控制台里
   // `__RUSTLUA_DIAG()` 却报 "is not defined"（`__RustLuaWechat` 同样不可见）。所以除了挂全局，
@@ -1577,6 +1654,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     } catch (e) { /* 存储不可用不影响游戏 */ }
   }
 
+  // 每帧回调之后调用：先计数（永远），再按需覆盖层/警示条。
   function afterFrame() {
     frameCount += 1;
     var needOverlay = debugOverlayEnabled;
@@ -1600,7 +1678,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       bandFailures = imageFailures;
       withAdapterDraw(ctx, drawFailureBand);
     }
-    if (packState === 'failed' && !bootFailed) withAdapterDraw(ctx, drawPackFailure);
+    // 重试期间画琥珀条（`packBootRetryNotice` 非空），落定失败才画红条。
+    if (packState === 'failed' && !bootFailed) {
+      withAdapterDraw(ctx, packBootRetryNotice ? drawPackRetryNotice : drawPackFailure);
+    }
     if (needOverlay) {
       if (overlayFrames === 0) {
         pixelProbeValue = withAdapterDraw(ctx, probePixels);
@@ -1614,6 +1695,62 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         publishDiag();
       }
     }
+  }
+
+  // boot **之前**的等待画面（分包形态专用）。为什么必须由适配层自己驱动：wasm 内核搬进 pack/ 之后，
+  // "能不能进 Lua"取决于分包挂载，而下载期间运行时的帧循环根本还没启动 —— 没人调用 afterFrame，
+  // 那条 `packState === 'loading'` 的进度条一次都不会执行，玩家看到的就是"点开游戏后纯白屏十几秒"
+  // （微信侧没有任何原生 loading UI，statusElement 是 no-op）。
+  //
+  // **两条刻意的约束**（第一版两条都踩了，表现都是"启动 booted 却一帧不跑"）：
+  // ① 驱动只用 `setTimeout`，**不借 `wx.requestAnimationFrame`**：那条队列是运行时的。适配层每帧
+  //    往队尾自取一条，就在帧预算里**抢走游戏自己的帧**（harness 的泵每轮只 shift 一条、并把那条
+  //    计成一帧）；`cancelAnimationFrame` 又不可靠——本仓库 harness 给的句号是"入队时的队列长度"，
+  //    出队却用 `shift()`，句号与槽位从一开始就对不上，取消会 null 掉**别人**的回调（真机句号稳定，
+  //    但这里没必要赌）。`setTimeout` 在两边都是可取消的真实定时器，仍配合标志位停：多跑一次空回调
+  //    无害，取消失败也不会留下活循环。
+  // ② 画的是等待画面自己那一套（进度条 / 重试条 / 失败条），**不调 `afterFrame`**：后者会给
+  //    `frameCount` 加一，而 `frameCount` 正是分包挂载帧的读数来源（`packInfo.mount_frame`，harness
+  //    拿它逐帧对比宿主记录的那次挂载）。让等待画面去推它，等于用被测代码改判据。
+  var preBootUi = { active: false, ticks: 0, id: 0 };
+
+  function drawPreBootWait() {
+    // boot 已判 failed ⇒ 整屏属于错误页，等待画面不许再往上盖（同 afterFrame 的抑制条件）。
+    if (String(bootAttr('data-rustlua-boot') || '') === 'failed') return;
+    var ctx = null;
+    try { ctx = canvas.getContext('2d'); } catch (e) { ctx = null; }
+    if (!ctx) return;
+    if (packState === 'loading') {
+      withAdapterDraw(ctx, drawLoadingBar);
+      return;
+    }
+    if (packState === 'failed') {
+      withAdapterDraw(ctx, packBootRetryNotice ? drawPackRetryNotice : drawPackFailure);
+    }
+  }
+
+  function pumpPreBootFrame() {
+    if (!preBootUi.active) return;
+    preBootUi.ticks += 1;
+    try {
+      drawPreBootWait();
+    } catch (error) {
+      // 等待画面绝不能影响启动本身：画不出来时只留一句告警，继续把分包等到底。
+      warn('wechat-adapter: boot 前等待画面绘制失败 -> ' + hostError(error));
+    }
+    preBootUi.id = setTimeout(pumpPreBootFrame, 16);
+  }
+
+  function startPreBootUi() {
+    if (preBootUi.active) return;
+    preBootUi.active = true;
+    preBootUi.id = setTimeout(pumpPreBootFrame, 16);
+  }
+
+  function stopPreBootUi() {
+    if (!preBootUi.active) return;
+    preBootUi.active = false;
+    try { clearTimeout(preBootUi.id); } catch (error) { /* 停不掉也不该影响启动：运行时随后自己接管画布 */ }
   }
 
   // ---------------------------------------------------------------- 输入桥接
@@ -2402,20 +2539,48 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     }
     // 资源读取自检：分包形态下这三个探针在 mainpack/ 下，验证的正是**路由层本身**。
     probePackReadability();
-    // wasm 核心：主包里的 `pkg/game_web_bg.wasm`（属首屏骨架，不在分包里）。
-    // Lua 执行层就在这个 wasm 里（WP10 迁移后无备用解释器）：加载失败时宿主交互的
-    // 诊断通道（`data-rustlua-wasm` / `__RUSTLUA_DIAG().wasm`）会如实记录，而 `__RUSTLUA_LUA_BRIDGE`
-    // 缺失会让 web-runtime.js 抛 `wasm lua bridge not loaded`（发布形态问题，不降级）。
+    // wasm 核心：分包形态下它是 `pack/game_web_bg.wasm`（在**分包**里），其余形态是
+    // `pkg/game_web_bg.wasm`（主包）。Lua 执行层就在这个 wasm 里（WP10 迁移后无备用解释器）：
+    // 加载失败时宿主交互的诊断通道（`data-rustlua-wasm` / `__RUSTLUA_DIAG().wasm`）会如实记录，
+    // 而 `__RUSTLUA_LUA_BRIDGE` 缺失会让 web-runtime.js 抛 `wasm lua bridge not loaded`
+    // （发布形态问题，不降级）。
     // **它返回 Promise**：小游戏宿主的 `WXWebAssembly.instantiate(代码包路径, imports)` 只有
     // 异步形态，所以这里只发起加载、把它排在 boot 之前完成（见下面的 wasmReady 链）。
-    var wasmReady = loadWasmCoreOnce();
+    var wasmInPack = isWasmInPack();
+    var wasmReady = null;
+    if (wasmInPack) {
+      // 内核在分包里 ⇒ **boot 必须排在分包挂载之后**（次序变了，这是本次搬迁的代价）：
+      // 挂载期间由 JS 自己画进度条，因为运行时还没起来、Lua 一行都没跑。
+      // 挂载失败**不再**是"标题照常出、玩法缺素材"——那时 instantiate 读不到内核，
+      // boot 会失败并走 showBootError；文案由 drawPackFailure 按形态切换。
+      startPreBootUi();
+      wasmReady = ensurePackForBoot(PACK_BOOT_ATTEMPT_LIMIT - 1).then(function (mounted) {
+        if (!mounted) {
+          // 立刻补画一次失败横幅，**再**停帧链：这一刻之后没有人驱动 afterFrame，
+          // 而"分包没挂上"这件事在真机上必须有可见解释（屏幕是唯一通道），不能只剩控制台。
+          // 此刻 `data-rustlua-boot` 还没被判 failed，横幅不会被 afterFrame 的抑制逻辑挡掉。
+          var failCtx = null;
+          try { failCtx = canvas.getContext('2d'); } catch (ctxError) { failCtx = null; }
+          withAdapterDraw(failCtx, drawPackFailure);
+          stopPreBootUi();
+          warn('wechat-adapter: 分包没挂载，而 wasm 内核就在分包里 —— 实例化将失败（path-instantiate-failed），启动到此为止');
+        } else {
+          stopPreBootUi();
+        }
+        return loadWasmCoreOnce();
+      });
+    } else {
+      wasmReady = loadWasmCoreOnce();
+    }
     // 画布与游戏版面的自检：`game.json` 的方向与画布尺寸必须和 `ui/layout.lua` 的设计分辨率
     // 对得上。**为什么值得单独自检**：Lua 面板画在屏幕像素空间、不做缩放，画布尺寸不对的表现是
     // "面板溢出画布"（边缘控件看不见），而这在无头验证里**不会报错**
     // （假 ctx 不裁剪、超界坐标照样计数）→ 只能靠这一行把它变成可读的证据。
     reportViewAgreement();
-    // 分包**后台**载入，**不 await**：首屏资源全在主包里，boot 必须立刻用它们把标题画出来。
-    // 分包只影响"进玩法场景"那一步（那时的 pack/ 读取会 await 它，见 fetchShim / Image.src）。
+    // 分包载入。**内核在分包里时上面已经 await 过同一条 Promise**（这里只是补状态标记，
+    // ensurePack 内部共享同一个 packReady，不会重复下载）；内核在主包时这才是"后台下载"：
+    // 首屏资源全在主包里，boot 不等它，分包只影响"进玩法场景"那一步
+    // （那时的 pack/ 读取会 await 它，见 fetchShim / Image.src）。
     // 失败不能掀翻启动 Promise（见 ensurePack），否则标题已经在屏上却要被整屏错误页盖掉。
     ensurePack().then(function (ok) {      bodyElement.setAttribute('data-rustlua-pack', ok ? 'ready' : packState);
       if (ok) {
@@ -2474,7 +2639,9 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       });
   }
 
-  // WASM 说明（WP10 迁移后）：代码包里发行 `pkg/game_web.js` + `pkg/game_web_bg.wasm`。
+  // WASM 说明（WP10 迁移后）：代码包里发行 `pkg/game_web.js`（胶水，恒在主包）+ wasm 内核本体
+  // （位置随形态变：分包形态在 `pack/game_web_bg.wasm`，其余在 `pkg/game_web_bg.wasm`，
+  //  判据与原因见文件头 WASM_MODULE_PATH_PACK 那段）。
   // 胶水用 **`--target no-modules`** 生成（纯脚本、无 import/export），由 `wasm-bridge.js`
   // 包成 CommonJS。**实例化只能走宿主的代码包路径通道**：微信的 `WXWebAssembly` 只暴露
   // `instantiate(path, imports) -> Promise`，第一个参数**只接受代码包路径字符串**
@@ -2597,7 +2764,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       // 代码包路径读 wasm，适配层不碰那 2.3 MB。
       bridge.loadWasmCore({
         readBytes: readBytes,
-        wasmPath: WASM_MODULE_PATH,
+        wasmPath: wasmModulePath(),
         ehProbePath: EH_PROBE_PATH,
         onEhProbe: function (verdict) {
           ehProbeReadout = verdict;

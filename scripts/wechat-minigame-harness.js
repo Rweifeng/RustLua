@@ -284,8 +284,6 @@ if (argv[i] === '--no-frames') noFrames = true;
   if (expectPackFailure && !declaredPackSubpackage) {
     fail(`--expect-pack-failure 需要发布包声明 pack 分包（当前 game.json 未声明）：${root}`);
   }
-  // fail-once 的第二次尝试由"下一次 pack/ 读取"触发，而默认用例从头到尾只待在标题界面
-  // （首屏资源全在主包，一次 pack/ 读取都不发生）→ 永远不会有第二次尝试，用例会假绿。
   if ((touchStickMove > 0 || attackFrames > 0 || bagFrames > 0 || actionDiskFrames > 0) && !driveNewGame) {
     fail('--touch-stick-move 需要配合 --drive-new-game：可见虚拟摇杆只在玩法地图里接管移动');
   }
@@ -301,9 +299,21 @@ if (argv[i] === '--no-frames') noFrames = true;
     fail('--check-save-persist 需要配合 --drive-new-game：端到端半段要往 save_manager 的 '
       + 'provider 注册表里抓真状态，标题界面上快照恒空，往返一致也证明不了落盘');
   }
-  if (subpackageMode === 'fail-once' && !driveNewGame) {
-    fail('--subpackage fail-once 需要配合 --drive-new-game：重试由"进玩法场景时的 pack/ 读取"触发，' +
-      '只跑标题界面的话第二次尝试根本不会发生，这条用例会假绿');
+  // wasm 内核此刻在**主包**还是**分包**：分包形态下发布脚本把它放进 pack/（主包 4 MB 装不下
+  // 2.5 MB 内核 + 2 MB 内容，见 package.ps1 那次搬运与 docs/52 的主包构成），其余形态仍在 pkg/。
+  // 判据取**磁盘位置**而不是 game.json：这几条不变式要保护的正是"启动次序跟着内核位置变"，
+  // 位置判错就会拿旧语义去验新产物（或反过来），两边都是假绿。
+  // 定义位置在 fail-once 那条 guard 之前：它的"重试由谁触发"跟着内核位置变。
+  const wasmInPack = fs.existsSync(path.join(root, 'pack', 'game_web_bg.wasm'));
+  const isWasmKernelPath = (value) => String(value || '').replace(/^\/+/, '') === 'pack/game_web_bg.wasm';
+  // fail-once 的第二次尝试由谁触发，两种形态不同：
+  //   · 内核在主包（旧语义）：boot 不等分包，重试只能由"进玩法场景后的下一次 pack/ 读取"发起，
+  //     所以必须配合 --drive-new-game，否则永远不会有第二次尝试，用例假绿；
+  //   · 内核在分包：boot 自己就排在挂载之后，适配层在实例化前带一次自动重试（见 wechat-adapter 的
+  //     ensurePackForBoot），标题界面就足以把两次尝试跑完。
+  if (subpackageMode === 'fail-once' && !wasmInPack && !driveNewGame) {
+    fail('--subpackage fail-once 需要配合 --drive-new-game：内核在主包时重试由"进玩法场景时的 ' +
+      'pack/ 读取"触发，只跑标题界面的话第二次尝试根本不会发生，这条用例会假绿');
   }
   // **挂载门**：声明了分包、且没被 --subpackage off 关掉时，未挂载就一律读不到 pack/。
   // 必须由宿主侧强制，而不是靠被测代码自觉——否则"忘了 loadSubpackage 也照样全绿"，
@@ -317,6 +327,9 @@ if (argv[i] === '--no-frames') noFrames = true;
   //   mount 段（启动之后到挂载前）：玩法场景/预加载要用的非首屏资源，被挡是正常的。
   let packDeniedBeforeBoot = 0;
   let packDeniedBeforeMount = 0;
+  // boot 之前读**内核**（`pack/game_web_bg.wasm`）被挂载门挡下的次数。单独记：它既是
+  // "适配层没等分包"的牙齿（正常形态下应为 0），又不该污染上面那条首屏清单判据。
+  let wasmDeniedBeforeMount = 0;
   // `--deny-code-file` 命中次数（按路径），用来证明"这条用例真的把那个文件挡住了"。
   const deniedCodeReads = new Map();
   // `--deny-code-dir` 命中次数（按前缀）。
@@ -1052,7 +1065,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         return task;
       }
       // auto/ok：像真机一样"很快但不同步"地挂上。
-      setTimeout(() => mountPack(pending), 0);
+      setTimeout(() => mountPack(pending, mountTickNow()), 0);
       return task;
     },
     createInnerAudioContext: () => {
@@ -1103,10 +1116,10 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
   let packEntryExports = null;
   let packEntryError = null;
 
-  function mountPack(pending) {
+  function mountPack(pending, currentTick) {
     if (pending.task.aborted) return;
     packMounted = true;
-    packMountFrame = stats.frames;
+    packMountFrame = currentTick;
     // 真机在挂载后会**执行** root 下的 game.js 入口。这里真的 require 一次：只检查"文件存在"
     // 测不出入口里写了非法语句，而那份文件是发布脚本生成的——模板漂移只能在这一步暴露。
     try {
@@ -1125,7 +1138,11 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
 
   // delay 模式由帧循环驱动：这既是"首屏不等分包"的证据（前 N 帧里 pack/ 读不到，标题照常出），
   // 也是进度条唯一能被观察到的窗口（其余模式挂载得太快，一帧都画不到就结束了）。
-  function pumpSubpackage() {
+  // **tick 的币种由调用方给**：内核搬进 pack/ 之后 boot 自己就在等挂载，而主帧循环（见下）要等
+  // boot settle 才开始跑——挂载只由它驱动就成了死锁（实测：delay 用例 30 秒不 settle，最后撞
+  // 20 秒挂载超时）。boot 悬着的那段由下面的 pumpSubpackageDuringBoot 按 16ms 一 tick 顶上，
+  // 语义不变（"第 N 个屏幕 tick 才挂上"），只是那段没有游戏帧可数。
+  function pumpSubpackage(currentTick) {
     if (!pendingMounts.length) return;
     const still = [];
     for (const pending of pendingMounts) {
@@ -1136,11 +1153,30 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         pending.task.__progress({ progress: pending.progress, totalBytesWritten: pending.progress, totalBytesExpectedToWrite: 100 });
       }
       pending.progress = Math.min(100, pending.progress + 25);
-      if (stats.frames >= pending.atFrame) mountPack(pending);
+      if (currentTick >= pending.atFrame) mountPack(pending, currentTick);
       else still.push(pending);
     }
     pendingMounts.length = 0;
     Array.prototype.push.apply(pendingMounts, still);
+  }
+
+  // boot 未结算期间的挂载驱动（见上）。它从"启动 Promise 建好"那一刻起按 16ms 一跳，
+  // boot 一结算就自停，把节奏交回主帧循环。这里**不能**在 `pendingMounts` 为空时自停：
+  // 适配层要到 `start()` 里才调 loadSubpackage，链条比它早起跑，中途停手就等于永不再挂。
+  let preBootTicks = 0;
+  function pumpSubpackageDuringBoot() {
+    if (bootSettledAt >= 0) return;
+    preBootTicks += 1;
+    if (pendingMounts.length) pumpSubpackage(preBootTicks);
+    setTimeout(pumpSubpackageDuringBoot, 16);
+  }
+
+  // 挂载时刻的**币种**：boot 结算前只有驱动 tick（游戏帧循环还没起跑，`stats.frames` 恒 0），
+  // 结算后就是真实帧数。内核搬进 pack/ 之后挂载几乎都落在前一段，所以这里必须按段取值，
+  // 不能像以前那样直接填 `stats.frames`（那会让 `mount_frame=0` 变成"第 0 帧就挂上"的假读数，
+  // 而 delay 用例正是拿这个数判"有没有真的等到第 N 拍"）。
+  function mountTickNow() {
+    return bootSettledAt >= 0 ? stats.frames : preBootTicks;
   }
 
   globalThis.wx = wx;
@@ -1162,11 +1198,33 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
   // 有就转、没有就别造——伪造的 tag 在 instantiate 时必被宿主拒，那才是诚实的模拟。
   function makeWxWebAssembly(packageRoot) {
     const real = globalThis.WebAssembly;
+    // 代码包路径通道的**挂载门**（与 readFileSync 那条同一语义、同一计数器）：真机上
+    // `subpackages[i].root` 目录在挂载前根本不在沙箱里，`WXWebAssembly.instantiate` 拿到
+    // `pack/…` 只会报 no such file。这一条是"wasm 内核搬进 pack/"之后本机唯一的牙齿：
+    // 少了它，适配层就算**完全不 await** `wx.loadSubpackage` 也照样全绿——文件就在磁盘上，
+    // 按代码包根解析读得到，于是"启动次序变了"这件事在质量门里等于没被验过。
+    function rejectIfPackNotMounted(first, isKernel) {
+      const rel = String(first).replace(/^\/+/, '');
+      if (!(subpackageGate && !packMounted && rel.startsWith('pack/'))) return null;
+      if (!probeOnlyMode) {
+        packDeniedBeforeMount++;
+        // **内核那一次不算"首屏清单漏列"的证据**：`packDeniedBeforeBoot` 的判据是"启动期间读的
+        // pack/ 本该切进主包"，而 wasm 内核是这一次搬迁**故意**留在分包里的那个文件——boot 阶段
+        // 读它被挡下是设计如此（那时还没有挂载），把它计进去会让 --subpackage never 这条用例
+        // 在正确的产物上报出"清单漏列"，而这条断言一旦开始误报就没人敢信了。
+        if (isKernel) wasmDeniedBeforeMount++;
+        else if (bootSettledAt < 0) packDeniedBeforeBoot++;
+      }
+      return 'WebAssembly: no such file in the code package: ' + first
+        + '（分包 ' + rel.split('/')[0] + '/ 尚未挂载；宿主必须先等 wx.loadSubpackage 兑现）';
+    }
     return {
       instantiate: function (first, imports) {
         if (typeof first !== 'string') {
           return Promise.reject(new TypeError('WebAssembly.instantiate: first argument must be a string'));
         }
+        const notMounted = rejectIfPackNotMounted(first, isWasmKernelPath(first));
+        if (notMounted) return Promise.reject(new TypeError(notMounted));
         const file = path.join(packageRoot, first.replace(/^\/+/, ''));
         if (!fs.existsSync(file)) {
           return Promise.reject(new TypeError('WebAssembly.instantiate: no such file in the code package: ' + first));
@@ -1180,6 +1238,9 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         if (typeof first !== 'string') {
           return Promise.reject(new TypeError('WebAssembly.compile: first argument must be a string'));
         }
+        // 同一条挂载门：compile 也是"按代码包路径读文件"的宿主通道。
+        const notMountedCompile = rejectIfPackNotMounted(first, isWasmKernelPath(first));
+        if (notMountedCompile) return Promise.reject(new TypeError(notMountedCompile));
         const file = path.join(packageRoot, first.replace(/^\/+/, ''));
         if (!fs.existsSync(file)) {
           return Promise.reject(new TypeError('WebAssembly.compile: no such file in the code package: ' + first));
@@ -1407,6 +1468,8 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     () => { },
     (error) => { bootOutcome.error = error; }
   ).then(() => { bootSettledAt = Date.now(); packMountedAtBootSettle = packMounted; });
+  // 分包的延迟挂载要在 boot 这段就有人驱动（内核在 pack/ 时 boot 自己正等它，主帧循环还没开跑）。
+  if (subpackageGate) setTimeout(pumpSubpackageDuringBoot, 16);
 
   // **启动必须有截止时间**：启动 Promise 既不 resolve 也不 reject 时（例如某张贴图永远
   // 不触发 onload/onerror），早期实现会一直等下去——那既不是"通过"也不是"失败"，
@@ -1536,7 +1599,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       prevDrawnLen = drawnTexts.length;
       // 分包挂载/进度由帧循环驱动（只对 --subpackage delay 有效）：必须在 afterFrame 之后，
       // 这样"这一帧还没挂载"是真的没挂载，`denied_before_mount` 才有意义。
-      pumpSubpackage();
+      pumpSubpackage(stats.frames);
       perFrameDraws.push(stats.drawOps);
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
@@ -1879,6 +1942,14 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       }
       if (!consoleErrors.some((line) => /启动失败/.test(String(line)))) {
         failures.push('--no-wasm 下控制台没有"启动失败"这一行（屏幕之外的可见通道缺失）');
+      }
+    } else if (expectPackFailure && wasmInPack) {
+      // 内核在 pack/ 而分包永远挂不上 ⇒ 没有解释器 ⇒ 启动必须判 failed，与上面 `--no-wasm`
+      // 同一族"响亮失败"契约（0 帧/0 绘制在这里是期望结果，所以那组证据断言按同样条件跳过）。
+      // 这里只判状态，不判"可见"：属性 + 控制台 + 屏幕那三重证据由下面 `--expect-pack-failure`
+      // 那段统一负责，两处各说一半，合起来才是完整的一条降级链。
+      if (bootState !== 'failed') {
+        failures.push(`--expect-pack-failure 且 wasm 内核在 pack/ 下期望 data-rustlua-boot=failed（缺解释器不能报成功），实际 ${bootState}`);
       }
     } else {
       if (bootState !== 'running' && bootState !== 'ok') failures.push(`data-rustlua-boot=${bootState}（期望 running/ok）`);
@@ -3051,7 +3122,12 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     // 下面这组是"**启动成功**"路径的证据断言。`--no-wasm` 走的是响亮失败契约（见上），
     // 那里 0 帧、0 绘制、boot-detail 带 error 全都是**期望结果**，照跑只会把正确的失败
     // 报成用例子断言失败（实测：真错误 `wasm lua bridge not loaded` 被淹没在 6 条派生红字里）。
-    if (!noWasm) {
+    // `--expect-pack-failure` + 内核在 pack/ 是同一类情形，而且更彻底：Lua 执行层本身就是要等
+    // 的那个分包文件，它读不到时 0 帧、0 绘制、没有桥、0 像素全是**唯一正确的结局**。此时照跑
+    // 这组会把"下载失败被如实报告"打成一串派生红字，把真正要看的因果淹掉。换掉的不是放行——
+    // 上面那段已经按更强的要求验了失败必须三重可见（属性 + 控制台 + 屏幕）且 boot 不得是 running，
+    // 下面 wasm 桥那段接着验"失败原因必须点名 pack/game_web_bg.wasm"。
+    if (!noWasm && !(expectPackFailure && wasmInPack)) {
       if (bootOutcome.error) {
         failures.push(`启动 Promise 被拒绝: ${String((bootOutcome.error && bootOutcome.error.message) || bootOutcome.error).slice(0, 200)}`);
       }
@@ -3242,18 +3318,39 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       }
       if (subpackageMode === 'delay') {
         // 帧驱动的延迟挂载：挂载必须真的**等到**第 N 帧，而不是提前挂上。
-        if (packInfo.mount_frame !== packMountFrame) {
+        // 两个"挂载帧"读数不可直接对等，因为币种不同（内核搬进 pack/ 之后这一点才暴露）：
+        //   · 宿主侧 `packMountFrame` 数的是**屏幕 tick**——内核在分包时挂载由 boot 之前那条
+        //     独立驱动推进（主帧循环要等 boot settle 才起跑，见 pumpSubpackageDuringBoot）；
+        //   · 适配侧 `packInfo.mount_frame` 取的是 `frameCount`，也就是**游戏帧**计数。
+        // 内核在主包时两者同币种（挂载发生在跑帧期间），相等是有效证据；内核在分包时相等必然红，
+        // 于是换成更直接的那一条：适配层记到的挂载帧必须是 0 —— 一帧游戏都还没跑分包就挂上了，
+        // 这正好证明"boot 排在挂载之前"。要是它报 6，说明游戏循环在分包就绪前就起来了。
+        if (wasmInPack) {
+          if (packInfo.mount_frame !== 0) {
+            failures.push(`--subpackage delay 且内核在 pack/ 下，适配层却把挂载记在第 ${packInfo.mount_frame} 游戏帧`
+              + `（期望 0：那段时间游戏帧循环还没起跑，boot 正排在挂载后面）。宿主侧记的是第 ${packMountFrame} 个 tick。`);
+          }
+        } else if (packInfo.mount_frame !== packMountFrame) {
           failures.push(`挂载帧不一致：宿主记 ${packMountFrame}，适配层记 ${packInfo.mount_frame}`);
         }
         if (!(packMountFrame >= subpackageDelayFrames)) {
           failures.push(`--subpackage delay ${subpackageDelayFrames} 期望第 ${subpackageDelayFrames} 帧之后才挂载，实际第 ${packMountFrame} 帧`);
         }
-        // "首屏不等分包"的直接证据：启动完成（标题画面已画出来）的那一刻，分包**还没挂上**。
-        // 注意这里刻意**不**用"挂载前有 pack/ 读取被门挡下"作为证据：适配层的 fetchShim 与
+        // 启动完成与挂载的**先后**，判据跟着 wasm 内核的位置变（两种形态验的是相反的一件事）：
+        //   · 内核在主包（full / remote / 旧的分包形态）：验的是"首屏不等分包"——
+        //     启动完成（标题画面已画出来）的那一刻，分包**还没挂上**；
+        //   · 内核在分包（分包形态搬迁后）：验的是"boot 真的等了分包"——启动完成的那一刻
+        //     分包**必须已经挂上**，否则 instantiate 读不到内核，实例化会撞上面那条代码包挂载门。
+        // 两种情形下都刻意**不**用"挂载前有 pack/ 读取被门挡下"作证据：适配层的 fetchShim 与
         // Image.src 都会先 await 分包结算再去读，所以未挂载时根本不会发起读取——没有"被挡"
         // 恰恰说明等待逻辑生效了，反过来断言它反而是错的（第一版就写错了这条）。
         if (packMountedAtBootSettle === null) {
           failures.push('拿不到"启动完成时分包是否已挂载"的记录（启动 Promise 从未 settle）');
+        } else if (wasmInPack) {
+          if (!packMountedAtBootSettle) {
+            failures.push(`--subpackage delay ${subpackageDelayFrames} 下启动在分包挂载之前就 settle 了，`
+              + '而 wasm 内核就在 pack/ 里：那一步实例化读到的内核来自哪里？（适配层没有等分包）');
+          }
         } else if (packMountedAtBootSettle) {
           failures.push(`--subpackage delay ${subpackageDelayFrames} 下分包在启动完成之前就挂上了` +
             '（首屏仍然在等分包，这条用例没有验证到"主包先出画面"）');
@@ -3285,21 +3382,49 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         if (!packBandText) {
           failures.push(`分包失败没有画到屏幕上（真机上玩家只会看到画面缺素材却毫无提示）；画布上已有文本: ${drawnTexts.slice(0, 6).join(' | ') || '（无）'}`);
         }
-        // 失败**不能**掀翻首屏：标题画面已经在主包里画出来了，翻掉就等于把可见的失败变成黑屏。
-        if (bootState !== 'running' && bootState !== 'ok') {
+        // 失败**能不能**掀翻启动，判据同样跟着 wasm 内核的位置变：
+        //   · 内核在主包：分包只是"玩法场景的素材"，标题画面全在主包里，翻掉就等于把一次
+        //     可自愈的下载失败变成黑屏 —— 必须 running/ok；
+        //   · 内核在分包（分包形态搬迁后）：Lua 执行层就是没挂上的那个文件，boot **必然**失败，
+        //     此时还期望 running 就是在要一个谎（实例化读不到内核，桥缺失会让 web-runtime 抛错）。
+        //     这条用例改验"失败是可见且有解释的"：boot 判 failed + 上面那三条可见证据。
+        if (wasmInPack) {
+          if (bootState === 'running' || bootState === 'ok') {
+            failures.push(`分包失败而 wasm 内核就在 pack/ 里，启动却报 ${bootState}：`
+              + '实例化用的内核从哪来？（要么挂载门没挡住，要么适配层读的不是分包里那份）');
+          }
+        } else if (bootState !== 'running' && bootState !== 'ok') {
           failures.push(`分包失败掀翻了启动（data-rustlua-boot=${bootState}）：首屏资源全在主包，标题必须照常出来`);
         }
-        if (!(drawn > 0)) failures.push(`分包失败下首屏没有画出任何内容（data-rustlua-drawn=${drawn}）`);
+        if (!wasmInPack) {
+          if (!(drawn > 0)) failures.push(`分包失败下首屏没有画出任何内容（data-rustlua-drawn=${drawn}）`);
+        }
       }
       if (subpackageMode === 'fail-once') {
-        // 失败后必须能自愈：冷却（用例里压到 0）过后由下一次 pack/ 读取触发重试。
+        // 失败后必须能自愈：内核在主包时由下一次 pack/ 读取触发重试；内核在分包时由 boot 前那条
+        // 自动重试触发（适配层的 ensurePackForBoot，用例里把冷却压到 0）。
         if (!(packMountAttempts >= 2)) {
           failures.push(`--subpackage fail-once 期望至少 2 次挂载尝试，实际 ${packMountAttempts} 次（失败变成了永久瘫痪）`);
         }
         if (!packMounted) failures.push('--subpackage fail-once 下重试没有成功挂载');
+        // 内核在分包时这条用例真正的命题升级了：**首次下载失败不能把这一次启动打死**。
+        // 重试挂上之后实例化才拿得到内核，启动必须照常进 running/ok；这里红就说明
+        // boot 排在挂载之前这件事没成立（或重试没接上同一条 packReady）。
+        if (wasmInPack && bootState !== 'running' && bootState !== 'ok') {
+          failures.push(`--subpackage fail-once：分包第一次下载失败后重试已经挂上（mount_attempts=${packMountAttempts}），`
+            + `启动却停在 ${bootState} —— 一次瞬时下载失败变成整局进不去，这条降级不能接受`);
+        }
       }
       if (!expectPackFailure && subpackageMode !== 'never' && packMounted && packInfo.state !== 'ready') {
         failures.push(`分包已挂载但适配层状态=${packInfo.state}（期望 ready）`);
+      }
+      // 内核被分包挂载门挡下的次数，**成功用例里必须是 0**。这一条是"boot 排在挂载之后"的
+      // 可机器检查形式：适配层要是没等分包就直接实例化，读取会在这里现形（并且拿一次假失败）。
+      // 反过来，`--expect-pack-failure` / `never` 下它必然 > 0（那两个候选路径各撞一次门），
+      // 那里它是期望结果，所以只在成功路径上断言。
+      if (!expectPackFailure && subpackageMode !== 'never' && wasmDeniedBeforeMount > 0) {
+        failures.push(`分包挂载前有 ${wasmDeniedBeforeMount} 次 wasm 内核读取被挡下：适配层在没有等分包结算` +
+          '就去实例化内核（内核就在 pack/ 里，这一步在真机上只能失败）');
       }
     }
     // 包里每个 .js 都必须能按 **script（CommonJS）** 解析：小游戏运行时不支持 ES Module，
@@ -3393,6 +3518,22 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         failures.push('--no-wasm 下 __RUSTLUA_LUA_BRIDGE 不该被挂上（实际 luaBridge=' + wasmDiag.luaBridge
           + '）：那意味着存在第二条 Lua 通道，本用例的"响亮失败"前提不成立');
       }
+    } else if (expectPackFailure && wasmInPack) {
+      // 这条门换向，但换的是**判据**不是方向：分包永远挂不上而内核就在 pack/ 里，实例化必须失败，
+      // 而且必须失败在"读不到那个路径"上。只看 status 非 ok 是不够的——它可能因为完全无关的原因
+      // 失败（桥没复制、facade 装歪了、上传白名单拒了后缀），那样这条用例就什么都没验证，还会把
+      // 真bug 洗成"预期失败"。所以要求失败原因里点名 pack/game_web_bg.wasm。
+      if (!wasmDiag || wasmDiag.status === 'ok') {
+        failures.push('--expect-pack-failure 且 wasm 内核在 pack/ 下实例化却 status='
+          + (wasmDiag ? wasmDiag.status : 'no-diag') + '（分包一个字节都没挂上，内核是从哪读到的？）');
+      } else {
+        const kernelReason = String(wasmDiag.detail || '') + ' ' + JSON.stringify(wasmDiag.attempts || []);
+        if (!/pack\/game_web_bg\.wasm/.test(kernelReason)) {
+          failures.push(`分包失败用例里 wasm 实例化的失败原因没有点名 pack/game_web_bg.wasm（status=${wasmDiag.status}`
+            + ` detail=${String(wasmDiag.detail || '').slice(0, 160)} attempts=${kernelReason.slice(0, 220)}）：`
+            + '它失败在别处，这条用例的因果没成立');
+        }
+      }
     } else if (!wasmDiag || wasmDiag.status !== 'ok' || wasmDiag.hostApi !== 'ok') {
       failures.push('WP10 wasm 宿主桥未就绪（status=' + (wasmDiag ? wasmDiag.status : 'no-diag')
         + ' hostApi=' + (wasmDiag ? wasmDiag.hostApi : 'no-diag') + '）：微信侧 __RUSTLUA_HOST_API 接线未生效');
@@ -3423,14 +3564,17 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     const remoteEvidence = (remoteMode === 'auto' || remoteMode === 'thin') && remoteStats
       ? ` remote_downloads=${remoteStats.remote} remote_bytes=${remoteStats.remoteBytes} verified=${remoteStats.verified} cache_hits=${remoteStats.cache} package_reads=${remoteStats.package} http_requests=${stats.remoteRequests}`
       : '';
-    // 分包证据行：这三个数（挂载次数 / 挂载帧 / 挂载前被挡下的读取次数）是"主包 + 分包"
-    // 这套形态在本机唯一可查的形态证据，缺了它们输出行就只剩一句"跑起来了"。
+    // 分包证据行：这几个数（挂载次数 / 挂载帧 / 挂载前被挡下的素材读取 / 挂载前被挡下的**内核**读取）
+    // 是"主包 + 分包"这套形态在本机唯一可查的形态证据，缺了它们输出行就只剩一句"跑起来了"。
+    // 内核那条单独计数：它量的是一句相反的话——"boot 有没有等分包"，而素材那条量的是
+    // "首屏清单有没有漏列首屏资源"，混在一个计数器里两条判据就都读不出来了。
     const finalPackInfo = adapter.packInfo ? adapter.packInfo() : null;
     const uploadEvidence = ` upload=${uploadedStats().uploaded} upload_denied=${codeReadDenied}` +
       ` font=${stats.fontLoaded ? 'ok' : (stats.fontMissing ? 'missing' : (stats.fontBadMagic ? 'bad-magic' : 'not-requested'))}`;
     const subpackageEvidence = declaredPackSubpackage && finalPackInfo
       ? ` subpackage=pack subpackage_loads=${stats.subpackageLoads} pack_state=${finalPackInfo.state}` +
         ` mount_frame=${packMountFrame} denied_before_mount=${packDeniedBeforeMount} denied_before_boot=${packDeniedBeforeBoot}` +
+        ` wasm_denied_before_mount=${wasmDeniedBeforeMount}` +
         ` progress_events=${finalPackInfo.progress_events} mainpack_reads=${(adapter.firstScreenInfo ? adapter.firstScreenInfo().mainpack_reads : 0)}` +
         ` entry=${packEntryError ? 'FAIL' : 'ok'}` +
         ` loading_bar=${drawnTexts.some((text) => text.includes('正在下载资源')) ? 'ok' : 'none'}`

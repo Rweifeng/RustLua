@@ -239,8 +239,14 @@ examples\<game>\builds\wechat-minigame\<PublishName>\      # 发布根
 运行时用 `wx.loadFont` 注册该子集字体。它在包内的位置随形态变：分包形态下字体属首屏资源，
 在 `mainpack/assets/fonts/`（构建期随 `mainpack.json` 一起切过去）。
 
-**wasm 核心随包分发（M32 起）**：`pkg/game_web.js`（≈40 KB 胶水）+ `pkg/game_web_bg.wasm`
-（`-Oz` 后 ≈2.3 MB）。微信分支**必须**用 `wasm-bindgen --target no-modules` 生成胶水——`--target web`
+**wasm 核心随包分发（M32 起）**：胶水 `pkg/game_web.js`（实测 51,947 字节）+ 内核
+`game_web_bg.wasm`（实测 2,580,513 字节 = 2,520 KB，`-Oz` 后）。**内核的位置随形态变**：
+分包形态下它在 `pack/game_web_bg.wasm`（= 分包里，见下节），full / remote 仍在 `pkg/`——
+理由很直接：微信主包硬上限 4,096 KB，而搬迁前实测主包 4,547 KB（两份读数与复现命令见
+[docs/52](../../docs/52-微信小游戏分包发布.md) 的「主包构成」），内核单个文件就占主包额度的
+六成以上，留在主包就过不了门。胶水必须留在主包，它由
+`require('./pkg/game_web.js')` **同步**加载，进分包要换一套 require 语义。
+微信分支**必须**用 `wasm-bindgen --target no-modules` 生成胶水——`--target web`
 那份是浏览器 ESM（顶层 `export { … }`），小游戏按 CommonJS 解析，加载即报
 `WAGame.js:1 SyntaxError: MiniProgramError Unexpected token 'export'`。
 no-modules 产物是纯脚本（无 import/export，整体包在一个 IIFE 里），由 `wasm-bridge.js` 包成
@@ -255,8 +261,16 @@ CommonJS，再按宿主的 **`instantiate(代码包路径, imports)`（异步）
 
 ## wasm 核心（M32）
 
-代码包里随包发行 `pkg/game_web.js`（`--target no-modules` 胶水）+ `pkg/game_web_bg.wasm`。
-这两样都在**主包**（`pkg/` 不在分包 root 下），因此启动时就能读到，不需要等分包。
+代码包里随包发行 `pkg/game_web.js`（`--target no-modules` 胶水）+ `game_web_bg.wasm`（内核）。
+**两者位置不同**：胶水永远在 `pkg/`（主包，同步 `require`）；内核在分包形态下在 `pack/`（分包），
+其余形态在 `pkg/`。于是启动次序也跟着变：
+
+* 内核在主包（full / remote）：`start()` 直接实例化，分包在后台下载，标题画面不等它；
+* 内核在分包（subpackage）：`start()` 先 `await` 分包挂载（期间由适配层自己驱动帧链画进度条，
+  因为运行时还没起来、Lua 一行都没跑），**挂载成功后**才实例化，然后才出标题画面。
+  挂载失败在实例化前自动重试一次（`ensurePackForBoot`；一次瞬时网络抖动不该把整局启动打死），
+  重试仍失败才判 boot 失败，并把这句话画在屏上：「分包（pack）加载失败：游戏内核就在这个分包里，
+  本次启动无法继续；重进即可」。
 
 **宿主只提供一条通道**（这是本节最重要的事实）：
 
@@ -278,15 +292,19 @@ WXWebAssembly.instantiate(path, imports)  ->  Promise<{module, instance}>
 
 **谁在什么时候加载它**：`wechat-adapter.js` 的 `loadWasmCoreOnce()`，在 `start()` 里
 `probePackReadability()` 之后发起，返回 **Promise**，boot 排在它之后
-（`wasmReady → loadGameFont() → boot()`）。桥接层内部按宿主能力排两条通道，都试、都留证据：
+（`wasmReady → loadGameFont() → boot()`）。内核在分包形态下发起前必须先等分包结算
+（`ensurePackForBoot()`，见上节启动次序），否则那一次 `instantiate` 只能撞墙。桥接层内部按
+宿主能力排两条通道，都试、都留证据。**两条通道读的都是 `wasmModulePath()`**（内核在 `pack/`
+还是 `pkg/` 由首屏清单判形态，不在适配层里写死）：
 
 | 通道 | 做法 | 适用宿主 |
 |---|---|---|
 | `path-instantiate`（首选，异步） | 把代码包路径交给 `WXWebAssembly.instantiate(path, imports)`；`imports` 由胶水自己造——临时把全局 `WebAssembly` 换成一个 shim，丢弃胶水传的第一参数、把第二参数原样转发，宿主返回的 `{module, instance}` 再交回胶水的 `__wbg_finalize_init` | 微信（小游戏唯一公开形态） |
-| `bytes-sync`（兜底，同步） | `readBytes('pkg/game_web_bg.wasm')` → 胶水 `initSync(bytes)` | 有 `Module`/`Instance` 构造器的宿主（本机 Node、标准浏览器） |
+| `bytes-sync`（兜底，同步） | `readBytes(wasmModulePath())` → 胶水 `initSync(bytes)` | 有 `Module`/`Instance` 构造器的宿主（本机 Node、标准浏览器） |
 
-路径通道顺带**省掉把 2.3 MB wasm 读进 JS 堆**那一步。路径候选会试 `pkg/game_web_bg.wasm` 与
-`/pkg/game_web_bg.wasm` 两种写法（前后导斜杠的容忍度按宿主不同），成功的那个进 `path` 证据。
+路径通道顺带**省掉把 2.3 MB wasm 读进 JS 堆**那一步。路径候选会试 `pack/game_web_bg.wasm` 与
+`/pack/game_web_bg.wasm` 两种写法（内核在主包的形态下前缀换成 `pkg/`；前后导斜杠的容忍度按宿主
+不同），成功的那个进 `path` 证据。
 
 **标准 `WebAssembly` 域名由 bridge 按宿主转发**（`GLUE_EVAL_CTORS` → facade）：胶水不止在实例化时
 读它，它在 **require 求值期**就无条件 `new WebAssembly.Tag(...)`——那两条 tag 同时是 wasm 的导入
@@ -349,11 +367,12 @@ wasm 状态不被静默忽略——有四个读取通道：
 harness 自带那份**受限复刻**的 `WXWebAssembly`（见上），所以官方验收本身就覆盖了路径通道：
 
 ```powershell
-# 完整启动路径：期望 wasm=ok:ok:path-instantiate，且 wasm-bridge 那行日志带"路径 pkg/game_web_bg.wasm"
-node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigame\launcher --frames 12
+# 完整启动路径：期望 wasm=ok:ok:path-instantiate，且 wasm-bridge 那行日志带"路径 …/game_web_bg.wasm"
+# （分包形态是 pack/，其余形态是 pkg/ —— 读的是适配层的 `wasmModulePath()`，不是写死的字符串）
+node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigame\launcher --frames 12 --subpackage ok
 
-# wasm 产物本身能否被宿主的 WebAssembly 接受（发布期硬门，同样单独可跑）
-node scripts\wasm-lua\verify-wasm-host.mjs examples\game_jhyt\builds\wechat-minigame\launcher\pkg\game_web_bg.wasm
+# wasm 产物本身能否被宿主的 WebAssembly 接受（发布期硬门，跑在**搬迁之前**的那份产物上）
+node scripts\wasm-lua\verify-wasm-host.mjs examples\game_jhyt\builds\wechat-minigame\launcher\pack\game_web_bg.wasm
 
 # 宿主完全没有 wasm 时的契约：必须响亮失败（boot=failed、Promise reject、控制台有"启动失败"）
 node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigame\launcher --frames 60 --no-wasm
@@ -408,10 +427,13 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
   （`lua_call_global`）、JS 回调注册（`lua_register_js_callback`）、缺失全局（`lua_missing_globals`）、
   工程主脚本执行（`lua_execute_main`）。微信分支与 webgl 共用同一份 wasm，以 `--target no-modules`
   生成 CommonJS 胶水随包发行，由适配层在 boot 之前经宿主的
-  `WXWebAssembly.instantiate('pkg/game_web_bg.wasm', imports)` **异步**实例化（结果含"用了哪条通道"
-  进 `data-rustlua-wasm` / `__RUSTLUA_DIAG().wasm` / 一行启动日志）。实测（`-Oz` 后 2,427,854 字节，导出 109 项
-  含 `lua_boot`…`lua_execute_main`）：
-  `wasm-bridge: 核心实例化成功（WXWebAssembly/path-instantiate，路径 pkg/game_web_bg.wasm，导出 109 项：…）`。
+  `WXWebAssembly.instantiate(wasmModulePath(), imports)` **异步**实例化（`wasmModulePath()`
+  在分包形态给 `pack/game_web_bg.wasm`，其余形态给 `pkg/game_web_bg.wasm`；结果含"用了哪条通道"
+  进 `data-rustlua-wasm` / `__RUSTLUA_DIAG().wasm` / 一行启动日志）。实测（2026-10-06 那份产物：
+  2,580,513 字节，`verify-wasm-host.mjs` 报 `exports=123 bridge_exports=7`，桥接层日志按它自己的
+  口径列 111 项，含 `lua_boot`…`lua_execute_main`）：
+  `wasm-bridge: 核心实例化成功（WXWebAssembly/path-instantiate，路径 pack/game_web_bg.wasm，导出 111 项：…）`。
+  复现：`node scripts\wasm-lua\verify-wasm-host.mjs examples\game_jhyt\builds\wechat-minigame\launcher\pack\game_web_bg.wasm --platform=wechat-minigame`。
   **边界（不要夸大）**：`start()` 是 web-sys 形态（`document`/`window`/`fetch`/`Response`），
   小游戏里跑不了，因此适配层**不调用**它；`start_wechat()`（去 DOM 入口）已写在 Rust 侧但
   **未接线、未验证**（见 `engine/crates/game_web/src/lib.rs` 的状态段）。
