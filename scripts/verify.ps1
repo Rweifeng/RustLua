@@ -304,6 +304,19 @@ if (Test-Path $docsScript) {
         throw "check-docs.ps1 failed (exit code $docsExit)"
     }
 }
+# 静默留痕门：把"已经决定要留痕的点"钉住。测试门守不住"只缺留痕"这类缺陷——见 docs/60 §10.7 的
+# 反面对照（把已修的静默点合并回旧写法，全量测试照样全绿）。纯文件检查、毫秒级，与文档门同段：
+# 放在最前面，`-MvpOnly` 也跑，留痕约定不该被快速路径跳过。
+Write-Step "Silent-failure traces"
+$tracesScript = Join-Path $projectRoot "scripts/check-silent-traces.ps1"
+if (Test-Path $tracesScript) {
+    $tracesOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File $tracesScript
+    $tracesExit = $LASTEXITCODE
+    $tracesOutput | ForEach-Object { Write-Host $_ }
+    if ($tracesExit -ne 0) {
+        throw "check-silent-traces.ps1 failed (exit code $tracesExit)"
+    }
+}
 
 # vendor 补丁基线门：`[patch.crates-io]` 的 5 个 fork 携带 wasm32 必需补丁，升级上游后
 # 极易被覆盖丢失（extern "C-unwind" 回归会令 wasm 上宿主函数返回 Err 的 pcall 崩溃，

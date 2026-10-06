@@ -81,6 +81,10 @@ jobs:
       - name: Local pre-commit hook regression
         working-directory: ${{ github.workspace }}
         run: pwsh -NoProfile -File scripts/test-git-hooks.ps1
+      # 静默留痕门（docs/60 §10.7）：测试门守不住"只缺留痕"的缺陷，用 grep 断言固化读出来的约定。
+      - name: Silent-failure traces
+        working-directory: ${{ github.workspace }}
+        run: pwsh -NoProfile -File scripts/check-silent-traces.ps1
 
   # 编译 + 全量测试（windows）。Release 构建放在测试**之前**：
   # `publish_spawn_end_to_end` 用 `-SkipBuild` 复用 `target/release/game.exe` 做真实的
