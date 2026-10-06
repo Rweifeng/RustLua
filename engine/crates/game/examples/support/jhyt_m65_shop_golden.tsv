@@ -1,0 +1,116 @@
+A	shown	panel/box	panel	160.00,40.00,720.00,640.00,0.100,0.110,0.150,0.940
+A	shown	panel/rule	panel	184.00,92.00,672.00,2.00,0.720,0.750,0.820,0.220
+A	shown	panel/sel	panel	184.00,140.00,672.00,34.00,0.850,0.720,0.420,0.200
+A	shown	img/skin_bg	image	160.00,40.00,720.00,640.00,assets/art/ui/common/ui_panel_main_9s.png,16,16,16,16
+A	shown	img/divider	image	184.00,84.00,672.00,8.00,assets/art/ui/common/ui_divider.png,-
+A	shown	img/seal	image	812.00,58.00,24.00,24.00,assets/art/ui/common/ui_icon_seal.png,-
+A	shown	img/close	image	840.00,58.00,16.00,16.00,assets/art/ui/common/ui_btn_close.png,-
+A	shown	img/tab_buy	image	178.00,94.00,96.00,28.00,assets/art/ui/common/ui_tab_on_9s.png,6,6,6,6
+A	shown	img/tab_sell	image	274.00,94.00,96.00,28.00,assets/art/ui/common/ui_tab_off_9s.png,6,6,6,6
+A	shown	img/step_minus	image	584.00,94.00,24.00,24.00,assets/art/ui/shop/ui_btn_step_minus.png,-
+A	shown	img/step_plus	image	832.00,94.00,24.00,24.00,assets/art/ui/shop/ui_btn_step_plus.png,-
+A	shown	img/scroll_up	image	840.00,96.00,16.00,16.00,assets/art/ui/common/ui_scroll_arrow_up.png,-
+A	shown	img/scroll_down	image	840.00,394.00,16.00,16.00,assets/art/ui/common/ui_scroll_arrow_down.png,-
+A	shown	txt/title	text	184.00,56.00,22.00,云泽村·货摊
+A	shown	txt/money	text	616.00,60.00,16.00,金币 120 文
+A	shown	txt/tab1	text	184.00,98.00,18.00,[购买]
+A	shown	txt/tab2	text	280.00,98.00,18.00, 出售
+A	shown	txt/qty	text	616.00,98.00,18.00,数量 × 1
+A	shown	txt/row1	text	184.00,140.00,18.00,> 1. 稻种  12 文  限购剩余 10
+A	shown	txt/row2	text	184.00,174.00,18.00,  2. 灵芝菌种  25 文  限购剩余 5
+A	shown	txt/row3	text	184.00,208.00,18.00,  3. 回复药  60 文  限购剩余 3
+A	shown	txt/row4	text	184.00,242.00,18.00,  4. 木料  15 文  限购剩余 20
+A	shown	txt/row5	text	184.00,276.00,18.00,  5. 萝卜籽  4 文  限购剩余 10
+A	shown	txt/row6	text	184.00,310.00,18.00,  6. 草药籽  6 文  限购剩余 10
+A	shown	txt/row7	text	184.00,344.00,18.00,  7. 何首乌苗  40 文  限购剩余 3
+A	shown	txt/row8	text	184.00,378.00,18.00,  8. 人参籽  60 文  限购剩余 2
+A	shown	txt/row9	text	184.00,412.00,18.00,  9. 薄荷籽  10 文  限购剩余 10
+A	shown	txt/msg	text	184.00,616.00,16.00,
+A	shown	txt/hint	text	184.00,648.00,14.00,W/S 或 方向键 选择 · 1-9 定位 · F / J 切换买卖 · +/- 数量 · 空格 确认 · Esc 关闭
+B	shown	panel/box	panel	160.00,40.00,720.00,640.00,0.100,0.110,0.150,0.940
+B	shown	panel/rule	panel	184.00,92.00,672.00,2.00,0.720,0.750,0.820,0.220
+B	shown	panel/sel	panel	184.00,1534.00,672.00,34.00,0.850,0.720,0.420,0.200
+B	shown	img/skin_bg	image	160.00,40.00,720.00,640.00,assets/art/ui/common/ui_panel_main_9s.png,16,16,16,16
+B	shown	img/divider	image	184.00,84.00,672.00,8.00,assets/art/ui/common/ui_divider.png,-
+B	shown	img/seal	image	812.00,58.00,24.00,24.00,assets/art/ui/common/ui_icon_seal.png,-
+B	shown	img/close	image	840.00,58.00,16.00,16.00,assets/art/ui/common/ui_btn_close.png,-
+B	shown	img/tab_buy	image	178.00,94.00,96.00,28.00,assets/art/ui/common/ui_tab_on_9s.png,6,6,6,6
+B	shown	img/tab_sell	image	274.00,94.00,96.00,28.00,assets/art/ui/common/ui_tab_off_9s.png,6,6,6,6
+B	shown	img/step_minus	image	584.00,94.00,24.00,24.00,assets/art/ui/shop/ui_btn_step_minus.png,-
+B	shown	img/step_plus	image	832.00,94.00,24.00,24.00,assets/art/ui/shop/ui_btn_step_plus.png,-
+B	shown	img/scroll_up	image	840.00,96.00,16.00,16.00,assets/art/ui/common/ui_scroll_arrow_up.png,-
+B	shown	img/scroll_down	image	840.00,394.00,16.00,16.00,assets/art/ui/common/ui_scroll_arrow_down.png,-
+B	shown	txt/title	text	184.00,56.00,22.00,云泽村·货摊
+B	shown	txt/money	text	616.00,60.00,16.00,金币 120 文
+B	shown	txt/tab1	text	184.00,98.00,18.00,[购买]
+B	shown	txt/tab2	text	280.00,98.00,18.00, 出售
+B	shown	txt/qty	text	616.00,98.00,18.00,数量 × 1
+B	shown	txt/row1	text	184.00,140.00,18.00,  34. 银杏树苗  300 文  限购剩余 5
+B	shown	txt/row2	text	184.00,174.00,18.00,  35. 木料  16 文  限购剩余 20
+B	shown	txt/row3	text	184.00,208.00,18.00,  36. 木料  17 文  限购剩余 20
+B	shown	txt/row4	text	184.00,242.00,18.00,  37. 木料  18 文  限购剩余 20
+B	shown	txt/row5	text	184.00,276.00,18.00,  38. 木料  19 文  限购剩余 20
+B	shown	txt/row6	text	184.00,310.00,18.00,  39. 木料  20 文  限购剩余 20
+B	shown	txt/row7	text	184.00,344.00,18.00,  40. 木料  21 文  限购剩余 20
+B	shown	txt/row8	text	184.00,378.00,18.00,  41. 木料  22 文  限购剩余 20
+B	shown	txt/row9	text	184.00,412.00,18.00,> 42. 木料  23 文  限购剩余 20
+B	shown	txt/msg	text	184.00,616.00,16.00,
+B	shown	txt/hint	text	184.00,648.00,14.00,W/S 或 方向键 选择 · 1-9 定位 · F / J 切换买卖 · +/- 数量 · 空格 确认 · Esc 关闭
+A	cover	panel/box	panel	img/skin_bg
+A	cover	panel/rule	panel	img/skin_bg
+A	cover	panel/sel	panel	img/skin_bg
+A	cover	img/close	image	img/skin_bg
+A	cover	img/divider	image	img/skin_bg
+A	cover	img/scroll_down	image	img/skin_bg
+A	cover	img/scroll_up	image	img/skin_bg
+A	cover	img/seal	image	img/skin_bg
+A	cover	img/skin_bg	image	-
+A	cover	img/step_minus	image	-
+A	cover	img/step_plus	image	-
+A	cover	img/tab_buy	image	-
+A	cover	img/tab_sell	image	-
+A	cover	txt/hint	text	-
+A	cover	txt/money	text	-
+A	cover	txt/msg	text	-
+A	cover	txt/qty	text	-
+A	cover	txt/row1	text	-
+A	cover	txt/row2	text	-
+A	cover	txt/row3	text	-
+A	cover	txt/row4	text	-
+A	cover	txt/row5	text	-
+A	cover	txt/row6	text	-
+A	cover	txt/row7	text	-
+A	cover	txt/row8	text	-
+A	cover	txt/row9	text	-
+A	cover	txt/tab1	text	-
+A	cover	txt/tab2	text	-
+A	cover	txt/title	text	-
+B	cover	panel/box	panel	img/skin_bg
+B	cover	panel/rule	panel	img/skin_bg
+B	cover	panel/sel	panel	-
+B	cover	img/close	image	img/skin_bg
+B	cover	img/divider	image	img/skin_bg
+B	cover	img/scroll_down	image	img/skin_bg
+B	cover	img/scroll_up	image	img/skin_bg
+B	cover	img/seal	image	img/skin_bg
+B	cover	img/skin_bg	image	-
+B	cover	img/step_minus	image	-
+B	cover	img/step_plus	image	-
+B	cover	img/tab_buy	image	-
+B	cover	img/tab_sell	image	-
+B	cover	txt/hint	text	-
+B	cover	txt/money	text	-
+B	cover	txt/msg	text	-
+B	cover	txt/qty	text	-
+B	cover	txt/row1	text	-
+B	cover	txt/row2	text	-
+B	cover	txt/row3	text	-
+B	cover	txt/row4	text	-
+B	cover	txt/row5	text	-
+B	cover	txt/row6	text	-
+B	cover	txt/row7	text	-
+B	cover	txt/row8	text	-
+B	cover	txt/row9	text	-
+B	cover	txt/tab1	text	-
+B	cover	txt/tab2	text	-
+B	cover	txt/title	text	-

@@ -188,12 +188,48 @@ node scripts/check-web-api-overrides.mjs                    # web_api_overrides_
 没跑：`verify.ps1` 全量门与 `--all-features` clippy（工作区里还有另两路在途改动不属本批：
 编辑器面板那一路、微信工具链那一路）。
 
-## 8. 下一批
+## 8. 下一批（本节原有第 1 条是错的结论，已按实测改掉）
 
-1. **M64b：实体层的裁剪 / 滚动**。这是五屏剩下的第二个卡点：shop / quest / shipping 三屏的列表
-   走 `nav.scroll_*`（`ui.scroll_extents` / `scroll_to_visible` / `scroll_offset` / `scroll_close`，
-   例如 `scripts/ui/quest_ui.lua:357`），实体层既没有裁剪矩形也没有滚动偏移。
-   顺带要一起判的还有 `prefab.set_color`（§6 那条"运行期值"边界）。
-2. **补 `prefab.*` 七个 API 在 `examples/game_api` 的演示**，把 §6 最后那条既有红清掉
+**原本写的**："M64b：实体层的裁剪 / 滚动是五屏剩下的第二个卡点：三屏列表走 `nav.scroll_*`，
+实体层既没有裁剪矩形也没有滚动偏移。" —— 这句话把"列表滚动"读成了"像素滚动"，量完发现三屏
+根本没有可裁的对象，所以那一批引擎代码不写。三条证据：
+
+1. **三屏的滚动是整行翻页切片，不是位移**。`scripts/ui/panel_nav.lua:153-186` 的 `M.window`
+   拿 `ScrollState` 只为了算 `first = math.floor(offset / step + 1e-4) + 1`（`:177`），随后
+   `for slot = 1, ROW_LIMIT` 把 `rows[first + slot - 1]` 画在**固定槽位**上
+   （`systems/shop.lua:753-775`、`ui/quest_ui.lua:267-282`、`systems/shipping.lua:493-501`）。
+   偏移恒为 `step` 的整数倍 ⇒ 没有半行、没有像素位移、不会有四边形溢出面板。
+   而 `ui.scroll_*` 是 `ui` 表上的纯状态机（`script/api/ui_nav.rs`，只存 viewport/content/offset），
+   与"画面由哪个载体画"无关，所以搬进预设后 `nav.window` 一行都不用改。
+2. **引擎侧确实零裁剪能力，但用不上**：
+   `grep -rniE "scissor|\.clip\(|clip_rect" engine/crates --include=*.rs` 命中 **4 处，全在 editor 的
+   egui 自己那份**（`dock.rs:540,546`、`panels/scene_view.rs:90,2047`），wgpu 通道与 web 宿主的
+   2D 路径都没有裁剪矩形。补它要同时动顶点生成（按视口切四边形 + 调 UV）、wgpu scissor、web
+   `ctx.clip()` 三处，而 §1 说明这三屏买不到任何东西。
+3. **"逐帧换贴图"和"逐帧改颜色"也不阻塞**：三屏里贴图 key 由状态二选一的只有 3 处
+   （`shop.lua:726-729` 两个页签的 `tab_on`/`tab_off`、`quest_ui.lua:276-277` 的 `bullet_key`），
+   两张 `Image` 叠在同一矩形上用 `prefab.set_visible` 互斥即可，不需要 `set_texture`；
+   逐帧改颜色在这五屏**一处都没有**（`UiText` 结构里根本没有 color 字段——`ui.text_at` 的第 5 参
+   是 scale，见 `script/api/ui.rs:39-58`），所以 `prefab.set_color` 划归 #14 HUD 呼吸高亮那一批。
+
+顺带量到一条**将来会咬人**的事实，先记在这里：`Container`（`kind=vbox|hbox|grid|margin|center`）
+已经接进运行期，不只编辑器预览——宿主 `mesh_ui.rs:123` 与 prefab spawn
+`script/scene_spawn.rs:744` 都走 `resolve_scene_ui_layout`。但
+`rustlua-ui/src/ui_scene_layout.rs:99-106` 的 `preferred_size` 只有带 `Image` 的孩子才读自己的
+`UiLayout`，其余一律 `[64, 64]` ⇒ **纯 `Text` 行进 VBox 会按 64 px 排一行**，而三屏的行距是
+`ROW_H = 34 / 34 / 38`（`shop.lua:51`、`shipping.lua:41`、`quest_ui.lua:56`）。所以本批列表仍
+按"每行一个显式矩形"author，不靠 Container；真要改用 Container 排列表，先补这条尺寸回读。
+
+**下一批顺序**：
+
+1. **补 `prefab.*` 七个 API 在 `examples/game_api` 的演示**，把 §6 最后那条既有红清掉
    （它挡着 `cargo test -p engine --lib` 的干净读数）。
-3. 然后回到 #13：面板五屏逐屏搬，一屏一笔、各配自己的黄金门。
+2. 回到 #13：面板五屏逐屏搬，一屏一笔、各配自己的黄金门。第一屏取 shop（三屏里形状最全：
+   9 行固定槽 + 移动高亮 `set_rect` + 页签双图互斥 + 超页箭头条件显隐）。
+   搬的时候要顺手修一处动态层的既有毛病：`shipping.lua:494` 的循环上界是
+   `math.min(ROW_LIMIT, #rows)` 且**没有 else 隐藏分支**，行数从 9 掉到 3 时第 4~9 行会留着
+   上一帧的字（shop / quest 都有 `else ui_text.hide`，只有 shipping 漏）。
+
+第 2 条已开工：[69-江湖有田-商店屏迁移前黄金对账门](69-江湖有田-商店屏迁移前黄金对账门.md)
+（M65a）交了 shop 的迁移前那份表，顺手在覆盖账里量出这一屏**搬运之前就有的**两条毛病
+（高亮被面板底整块盖住、翻页后高亮跑到画面外），账与复现口径记在 69 §4，修不修另请裁定。
