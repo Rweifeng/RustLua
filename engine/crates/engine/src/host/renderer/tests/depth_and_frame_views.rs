@@ -117,7 +117,7 @@ fn declared_frame_views_own_clear_color_and_overlay_viewport() {
         }))
         .ok()
     else {
-        return; // no GPU available; skip
+        return gpu_skipped("request_adapter");
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
         label: Some("rustlua-view-device"),

@@ -16,7 +16,7 @@ fn non_blocking_readback_eventually_yields_pixels() {
         }))
         .ok()
     else {
-        return; // no GPU available; skip
+        return gpu_skipped("request_adapter");
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
         label: Some("rustlua-test-device"),
@@ -99,7 +99,7 @@ fn failed_readback_mapping_reports_error_and_clears_slot() {
         }))
         .ok()
     else {
-        return; // no GPU available; skip
+        return gpu_skipped("request_adapter");
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
         label: Some("rustlua-test-device"),

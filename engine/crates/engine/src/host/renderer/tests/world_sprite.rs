@@ -22,7 +22,7 @@ fn world_sprite_pass_is_painter_ordered_without_depth_writes() {
         }))
         .ok()
     else {
-        return; // no GPU available; skip
+        return gpu_skipped("request_adapter");
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
         label: Some("rustlua-world-sprite-device"),
@@ -184,7 +184,7 @@ fn world_sprites_and_meshes_occlude_each_other_in_one_view() {
         }))
         .ok()
     else {
-        return; // no GPU available; skip
+        return gpu_skipped("request_adapter");
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
         label: Some("rustlua-mixed-occlusion-device"),

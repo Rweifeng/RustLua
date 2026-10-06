@@ -17,7 +17,7 @@ fn offscreen_renderer_produces_pixels() {
         }))
         .ok()
     else {
-        return; // no GPU available; skip
+        return gpu_skipped("request_adapter");
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
         label: Some("rustlua-test-device"),
@@ -84,7 +84,7 @@ fn tetris_blocks_are_visible_pixels() {
         }))
         .ok()
     else {
-        return; // no GPU available; skip
+        return gpu_skipped("request_adapter");
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
         label: Some("rustlua-tetris-device"),

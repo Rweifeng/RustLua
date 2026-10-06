@@ -21,7 +21,7 @@ fn dropped_draws_are_counted_and_stay_out_of_the_draw_call_count() {
         }))
         .ok()
     else {
-        return; // no GPU available; skip
+        return gpu_skipped("request_adapter");
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
         label: Some("rustlua-test-drop-device"),
@@ -118,7 +118,7 @@ fn render_plan_matches_the_executed_passes_on_a_real_frame() {
         }))
         .ok()
     else {
-        return; // no GPU available; skip
+        return gpu_skipped("request_adapter");
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
         label: Some("rustlua-test-device"),
@@ -269,7 +269,7 @@ fn post_process_pass_changes_pixels_in_the_documented_way() {
         }))
         .ok()
     else {
-        return; // no GPU available; skip
+        return gpu_skipped("request_adapter");
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
         label: Some("rustlua-test-device"),

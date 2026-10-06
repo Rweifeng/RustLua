@@ -61,7 +61,7 @@ fn texture_identity_cache_is_hit_on_the_second_frame() {
         }))
         .ok()
     else {
-        return; // no GPU available; skip
+        return gpu_skipped("request_adapter");
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
         label: Some("rustlua-test-device"),
@@ -194,7 +194,7 @@ fn mesh_identity_cache_is_hit_on_the_second_frame() {
         }))
         .ok()
     else {
-        return; // no GPU available; skip
+        return gpu_skipped("request_adapter");
     };
     let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
         label: Some("rustlua-test-device"),
