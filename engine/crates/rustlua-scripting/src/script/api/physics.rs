@@ -372,6 +372,11 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         "overlap",
         lua.create_function(
             move |lua, (cx, cy, cz, radius, opts): (f32, f32, f32, f32, Option<mlua::Table>)| {
+                // docs/60 §5.2：这一步校验 2D 的 `physics.overlap` 有、3D 此前没有——同名 API
+                // 不该一个守一个放（这是那 3 对"并非同形"里**唯一不影响 API 面**就能补齐的差异）。
+                if !radius.is_finite() || radius < 0.0 {
+                    return Err(api_error("overlap radius must be finite and non-negative"));
+                }
                 let groups = query_groups(opts)?;
                 // P3-③（与 2D 同一处、同一理由）：查询可能要兑现延迟的 BVH 重建，故取可变借用。
                 let mut state = s.lua_borrow_mut()?;

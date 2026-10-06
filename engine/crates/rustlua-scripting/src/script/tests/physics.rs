@@ -15,7 +15,7 @@ fn physics3d_bindings_reject_non_finite_arguments_like_2d_does() {
          assert(not pcall(physics3d.raycast, 0/0, 0, 0, 0, 1, 0, 10), '3D 射线起点 NaN 必须报错')\n\
          assert(not pcall(physics3d.raycast, 0, 0, 0, 0, 1, 0/0, 10), '3D 射线方向 NaN 必须报错')\n\
          assert(not pcall(physics3d.set_position, id, 0/0, 0, 0), '3D set_position NaN 必须报错')\n\
-         assert(not pcall(physics.set_position, id, 0/0, 0), '2D set_position NaN 必须报错（既有契约）')\n\
+         assert(not pcall(physics.set_position, id, 0/0, 0), '2D set_position NaN 必须报错（既有契约）')\n         assert(not pcall(physics3d.overlap, 0, 0, 0, 0/0), '3D overlap 半径 NaN 必须报错（与 2D 同守）')\n         assert(not pcall(physics3d.overlap, 0, 0, 0, -1), '3D overlap 负半径必须报错（与 2D 同守）')\n\
          assert(not pcall(physics.raycast, 0, 0, 0, 1, 0/0), '2D 射线参数 NaN 必须报错（既有契约）')\n\
          function update() return 'ok' end",
     );
