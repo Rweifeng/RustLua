@@ -1,5 +1,30 @@
 use super::*;
 
+/// `docs/60` §5.2 复核：2D/3D 这两对绑定**不是重复，而是有一边漏了**。2D 早就在
+/// `physics.raycast` / `physics.set_position` 里拦下 NaN/Inf，3D 此前一道都没有——于是
+/// 同一件事（把 NaN 喂给 Rapier）只有 2D 守。这条用例把"同名同守"钉住。
+///
+/// 只测**参数校验**这一半：它在 `require_alive` **之前**发生，所以不需要真造出 3D 刚体
+/// 也能走到（用的是不存在的实体 id）。另一半（`set_position` 顺带同步 ECS `Transform3D`）
+/// 需要带 `Collider3d` 的场景实体，留给黄金门与既有 3D 物理测试覆盖。
+#[test]
+fn physics3d_bindings_reject_non_finite_arguments_like_2d_does() {
+    let path = script(
+        "local id = 999999\n\
+         assert(not pcall(physics3d.raycast, 0, 0, 0, 0, 1, 0, 0/0), '3D 射线距离 NaN 必须报错')\n\
+         assert(not pcall(physics3d.raycast, 0/0, 0, 0, 0, 1, 0, 10), '3D 射线起点 NaN 必须报错')\n\
+         assert(not pcall(physics3d.raycast, 0, 0, 0, 0, 1, 0/0, 10), '3D 射线方向 NaN 必须报错')\n\
+         assert(not pcall(physics3d.set_position, id, 0/0, 0, 0), '3D set_position NaN 必须报错')\n\
+         assert(not pcall(physics.set_position, id, 0/0, 0), '2D set_position NaN 必须报错（既有契约）')\n\
+         assert(not pcall(physics.raycast, 0, 0, 0, 1, 0/0), '2D 射线参数 NaN 必须报错（既有契约）')\n\
+         function update() return 'ok' end",
+    );
+    let mut runtime = LuaRuntime::new().unwrap();
+    runtime.execute_project_script(&path).unwrap();
+    assert_eq!(runtime.call_update().unwrap(), "ok");
+    let _ = fs::remove_file(path);
+}
+
 /// WP7 ②：`physics.debug_draw` 只登记请求、由宿主消费，且请求取走即清空
 /// （与 camera2d 的 pending 语义一致——否则开关会在之后每一帧被重复应用）。
 #[test]

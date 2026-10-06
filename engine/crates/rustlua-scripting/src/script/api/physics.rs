@@ -9,6 +9,7 @@ use mlua::Lua;
 use mlua::Result as LuaResult;
 use rustlua_ecs::particle::ParticleEmitter;
 use rustlua_ecs::transform::Transform;
+use rustlua_ecs::transform::Transform3D;
 use rustlua_ecs::transform::Vec2;
 use rustlua_math::math3d::Vec3;
 use std::cell::RefCell;
@@ -293,6 +294,11 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         "set_position",
         lua.create_function(move |_, (id, x, y, z): (i64, f32, f32, f32)| {
             let id = entity_from_lua(id)?;
+            // docs/60 §5.2 复核：这一层校验 2D 有（`physics.set_position`）、3D 此前没有，
+            // 于是 NaN/Inf 会直接推进 Rapier。同名 API 不该一边拦一边放。
+            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                return Err(api_error("physics3d.set_position must be finite"));
+            }
             let mut state = s.lua_borrow_mut()?;
             require_alive(&state, id)?;
             state
@@ -300,6 +306,13 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 .world3d
                 .set_position(id, Vec3::new(x, y, z))
                 .map_err(|error| api_error(error.to_string()))?;
+            // Keep the ECS transform aligned so rendering/Lua reads agree with
+            // the body until the next physics step writes positions back.
+            // （2D 早就这么做；3D 此前漏了，导致 `physics3d.set_position` 之后
+            // 渲染/Lua 读到的位置与刚体不一致，直到下一次 step。）
+            if let Ok(Some(transform)) = state.world.get_mut::<Transform3D>(id) {
+                transform.position = Vec3::new(x, y, z);
+            }
             Ok(())
         })?,
     )?;
@@ -319,8 +332,25 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 f32,
                 Option<mlua::Table>,
             )| {
+                // docs/60 §5.2 复核：2D 的 `physics.raycast` 这里有两道有限性校验，3D 此前
+                // 一道都没有——同一件事（喂 NaN 给 Rapier）不该只有 2D 拦。
+                if !max_distance.is_finite() || max_distance < 0.0 {
+                    return Err(api_error(
+                        "raycast distance must be finite and non-negative",
+                    ));
+                }
+                if !ox.is_finite()
+                    || !oy.is_finite()
+                    || !oz.is_finite()
+                    || !dx.is_finite()
+                    || !dy.is_finite()
+                    || !dz.is_finite()
+                {
+                    return Err(api_error("raycast arguments must be finite"));
+                }
                 let groups = query_groups(opts)?;
-                let state = s.lua_borrow()?;
+                // P3-③（与 2D 同一处、同一理由）：查询可能要兑现延迟的 BVH 重建，故取可变借用。
+                let mut state = s.lua_borrow_mut()?;
                 let hit = state
                     .physics
                     .world3d
@@ -341,7 +371,8 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         lua.create_function(
             move |lua, (cx, cy, cz, radius, opts): (f32, f32, f32, f32, Option<mlua::Table>)| {
                 let groups = query_groups(opts)?;
-                let state = s.lua_borrow()?;
+                // P3-③（与 2D 同一处、同一理由）：查询可能要兑现延迟的 BVH 重建，故取可变借用。
+                let mut state = s.lua_borrow_mut()?;
                 let hits =
                     state
                         .physics

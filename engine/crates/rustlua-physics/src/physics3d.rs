@@ -420,6 +420,11 @@ pub struct PhysicsWorld3d {
     multibody_joints: MultibodyJointSet,
     ccd_solver: CCDSolver,
     query_pipeline: QueryPipeline,
+    /// P3-③（`docs/60` §6.3）：查询 BVH 的**脏标记**。`add_body` / `remove_body` 只置脏，
+    /// 真正重建推迟到下一次查询（`refresh_queries`）或 `step`（Rapier 内部重建）。
+    /// 2D 早就是这样（`physics.rs`），3D 此前是"每次增删立即 `update`"——场景加载时 N 个物体
+    /// 就是 N 次全量重建。
+    query_dirty: bool,
     hooks: NoHooks3d,
     collector: CollisionCollector3d,
     entity_bodies: HashMap<EntityId, RigidBodyHandle>,
@@ -456,6 +461,7 @@ impl PhysicsWorld3d {
             multibody_joints: MultibodyJointSet::new(),
             ccd_solver: CCDSolver::new(),
             query_pipeline: QueryPipeline::new(),
+            query_dirty: false,
             hooks: NoHooks3d,
             collector: CollisionCollector3d::default(),
             entity_bodies: HashMap::new(),
@@ -513,9 +519,11 @@ impl PhysicsWorld3d {
                     .insert_with_parent(builder.build(), body_handle, &mut self.bodies);
             self.collider_entities.insert(collider_handle, entity);
         }
-        // Keep the query pipeline's BVH in sync so ray/overlap queries see
-        // bodies added since the last `step`.
-        self.query_pipeline.update(&self.colliders);
+        // P3-③（docs/60 §6.3）：只置脏，不在这里重建 BVH——批量 add（场景加载）时"每次一遍
+        // 全量重建"纯属浪费（N 个物体 = N 次 O(n) 重建）。兑现点有两个：查询前的
+        // `refresh_queries`（保证"add 之后立刻 raycast 看得见新碰撞体"的既有契约不被延迟破坏），
+        // 以及 `step`（Rapier 在内部重建）。
+        self.query_dirty = true;
         Ok(())
     }
 
@@ -534,7 +542,8 @@ impl PhysicsWorld3d {
             true,
         );
         self.collider_entities.retain(|_, owner| *owner != entity);
-        self.query_pipeline.update(&self.colliders);
+        // P3-③：同上只置脏——删除也常成批发生（场景切换、实体销毁），不该每次重建。
+        self.query_dirty = true;
         Ok(())
     }
 
@@ -631,6 +640,9 @@ impl PhysicsWorld3d {
             &self.hooks,
             &self.collector,
         );
+        // Rapier 在 step 内部（传入 `Some(&mut query_pipeline)` 时）重建查询 BVH，
+        // 脏标记到此已被兑现。（与 2D 逐字同构。）
+        self.query_dirty = false;
         // Contacts accumulate until the host drains them (Lua each frame).
         let events = self
             .collector
@@ -695,10 +707,20 @@ impl PhysicsWorld3d {
         out
     }
 
+    /// P3-③（`docs/60` §6.3）：查询前兑现脏标记——保证"add 之后立刻 raycast 看得见新碰撞体"
+    /// 的既有契约不因延迟重建而破坏。`step()` 里 Rapier 自己会重建，故步过之后无需再动。
+    /// （与 2D 的 `PhysicsWorld::refresh_queries` 逐字同构。）
+    fn refresh_queries(&mut self) {
+        if self.query_dirty {
+            self.query_pipeline.update(&self.colliders);
+            self.query_dirty = false;
+        }
+    }
+
     /// Casts a ray and returns the closest hit entity within `max_distance`.
     /// The direction vector must be non-zero.
     pub fn raycast(
-        &self,
+        &mut self,
         origin: Vec3,
         direction: Vec3,
         max_distance: f32,
@@ -709,7 +731,7 @@ impl PhysicsWorld3d {
     /// 射线查询 + 碰撞分组过滤（与 2D `PhysicsWorld::raycast_filtered` 同一语义：
     /// 两位测试，`None` 保持"全收"的老行为）。
     pub fn raycast_filtered(
-        &self,
+        &mut self,
         origin: Vec3,
         direction: Vec3,
         max_distance: f32,
@@ -725,6 +747,10 @@ impl PhysicsWorld3d {
                 "raycast distance must be finite and non-negative".to_owned(),
             ));
         }
+        // P3-③：查询前兑现脏标记（与 2D 同一处、同一理由）。
+
+        self.refresh_queries();
+
         let ray = Ray::new(
             Point::new(origin.x, origin.y, origin.z),
             Vector::new(direction.x, direction.y, direction.z),
@@ -742,13 +768,13 @@ impl PhysicsWorld3d {
 
     /// Returns every entity whose collider overlaps a sphere centered at
     /// `center` with the given `radius`.
-    pub fn overlap(&self, center: Vec3, radius: f32) -> Vec<EntityId> {
+    pub fn overlap(&mut self, center: Vec3, radius: f32) -> Vec<EntityId> {
         self.overlap_filtered(center, radius, None)
     }
 
     /// 球重叠查询 + 碰撞分组过滤（见 [`PhysicsWorld3d::raycast_filtered`]）。
     pub fn overlap_filtered(
-        &self,
+        &mut self,
         center: Vec3,
         radius: f32,
         groups: Option<(u8, u8)>,
@@ -759,6 +785,8 @@ impl PhysicsWorld3d {
         let shape = SharedShape::ball(radius);
         let shape_pos = Isometry::translation(center.x, center.y, center.z);
         let mut hits = Vec::new();
+        // P3-③：查询前兑现脏标记（与 2D 同一处、同一理由）。
+        self.refresh_queries();
         self.query_pipeline.intersections_with_shape(
             &self.bodies,
             &self.colliders,
@@ -1286,6 +1314,51 @@ mod tests {
         assert!(overlap.contains(&target));
         let empty = world.overlap(Vec3::new(100.0, 100.0, 100.0), 1.0);
         assert!(empty.is_empty());
+    }
+
+    /// `docs/60` §6.3：把 2D 已有的查询脏标记搬到 3D。契约三条，缺一条就会退化成
+    /// "每次增删立即全量重建"（旧行为）或"查询看到旧 BVH"（延迟没兑现）：
+    ///  ① 增删只**置脏**，不在 add/remove 路径里重建；
+    ///  ② 查询前兑现（`raycast` / `overlap` 走同一份 `refresh_queries`），
+    ///     且"add 之后立刻 raycast 看得见新碰撞体"这条既有契约不被延迟破坏；
+    ///  ③ `step` 之后脏标记也算已兑现（Rapier 在内部重建），无需额外一次 update。
+    #[test]
+    fn query_dirty_defers_the_bvh_rebuild_to_the_next_query_or_step() {
+        let mut world = PhysicsWorld3d::new();
+        assert!(!world.query_dirty, "新建世界不该带着脏标记");
+
+        let target = entity(3);
+        world
+            .add_body(target, Vec3::new(0.0, 1.0, 0.0), false, vec![ball(1.0)])
+            .unwrap();
+        assert!(
+            world.query_dirty,
+            "add_body 只置脏——在增删路径里重建正是被修掉的旧行为"
+        );
+
+        // 兑现点 ①：查询。
+        let hit = world
+            .raycast(Vec3::new(0.0, -5.0, 0.0), Vec3::Y, 100.0)
+            .unwrap();
+        assert_eq!(hit, Some(target), "兑现脏标记后必须命中刚加的物体");
+        assert!(!world.query_dirty, "查询之后脏标记必须已兑现");
+
+        // 兑现点 ②：step（Rapier 内部重建）。
+        world
+            .add_body(entity(4), Vec3::new(5.0, 0.0, 0.0), false, vec![ball(1.0)])
+            .unwrap();
+        assert!(world.query_dirty);
+        world.step(1.0 / 60.0);
+        assert!(!world.query_dirty, "step 内部重建过，脏标记必须清掉");
+
+        // 删除路径同样只置脏，且兑现后不再命中被删掉的物体（改了不兑现就会命中旧 BVH）。
+        world.remove_body(target).unwrap();
+        assert!(world.query_dirty, "remove_body 也只置脏");
+        let gone = world
+            .raycast(Vec3::new(0.0, -5.0, 0.0), Vec3::Y, 100.0)
+            .unwrap();
+        assert_eq!(gone, None, "兑现之后射线不该再命中已删除的物体");
+        assert!(!world.query_dirty);
     }
 
     #[test]

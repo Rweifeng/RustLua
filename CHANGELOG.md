@@ -5,6 +5,36 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — §6.3 收口（3D 补上查询脏标记）+ §5.2 的前提经复核不成立
+
+主题：**两条"照抄一遍"的量级，其中一条抄起来发现前提是错的。**
+
+- **§6.3：3D 补上 2D 早就有的 `query_dirty`**。原状是 `add_body` / `remove_body` 每次都立即
+  `query_pipeline.update(...)`——场景加载时 N 个物体就是 N 次全量重建。现在与 2D 同构：增删只**置脏**，
+  查询前由 `refresh_queries()` 兑现，`step` 之后清标记（Rapier 在内部重建）。
+  **不是纯照抄**：3D 的四个查询方法原本是 `&self`（2D 是 `&mut self`），兑现脏标记必须可变，所以签名
+  一起改了，下游 2 处 Lua 绑定（3D 的 `raycast` / `overlap`）随之改取可变借用——顺手把 2D 那句
+  "查询可能要兑现延迟的 BVH 重建，故取可变借用"的注释也补到了 3D 侧。
+  **防回归**：新增白盒用例断言三条契约（增删只置脏 / 查询兑现 / step 也算兑现）。
+  **反面对照**：只把 `raycast_filtered` 里那一行 `refresh_queries()` 去掉 → **三条用例同时红**
+  （新用例 + 既有的 `raycast_and_overlap_queries_name_entities` + 奇偶校验的
+  `physics_parity::queries_hit_colliders_and_respect_groups_in_both_worlds`）——契约是三重覆盖的。
+- **§5.2：账上说余下 5 对绑定"结构完全相同"，逐对读完只有 3 对同形**（`set_velocity` / `overlap` /
+  `raycast`）。另外 2 对（`set_position` / `get_velocity`）**不是重复，而是"有一边漏了"**：2D 拦 NaN/Inf
+  并同步 ECS `Transform`、`get_velocity` 还给数字下标 `[1]/[2]`——3D 三样都没有。于是同一件事"把 NaN
+  喂给 Rapier"只有 2D 守，而且 `physics3d.set_position` 之后渲染/Lua 读到的位置会与刚体不一致直到
+  下一次 step。本轮补了**校验 + ECS `Transform3D` 同步**（不改 API 形状）；**数字下标未补**——那会改
+  运行期 API 面，而 `api_surface_snapshot/*` 正被并发会话改着，不该在此时动它。宏化留给下一轮
+  （现在 4 对已同形，可一次折进宏）。
+- **读数**：`rustlua-physics` **24 通过 0 失败**；`rustlua-scripting` **110 通过**（109 → 110）；
+  `engine --lib` **159 通过**；fmt（仅本次改过的文件）与 clippy（`--all-targets -- -D warnings`）干净；
+  **五个 prefab 门 + `game --check` 全通过**。
+- **账本**：§6.3 由 ◐ 升为 ✅ → **13 已修 / 6 部分修 / 1 已评估决定不做**；§5.2 的**前提被更正**
+  （当初记账时把 2 对行为缺口误标成了"结构重复"）。
+- **诚实边界**：§5.2 补的两项里，**ECS 同步那一半没有专门测试**——它需要带 `Collider3d` 的场景实体，
+  本次只测了参数校验那一半（不需要真造 3D 刚体，校验发生在 `require_alive` 之前），
+  所以用例注释里写明了"另一半留给黄金门与既有 3D 物理测试覆盖"。
+
 ## Unreleased — §5.3 绑定样板：实测后决定不做（4.6% 行数，代价是掉出格式门 + 失去可审计性）
 
 主题：债单里最后一项"该不该做"的**评估结论**。清单原本建议引入 `lua_fn!` 宏消除
