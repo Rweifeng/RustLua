@@ -754,6 +754,29 @@ if (-not $SkipRuntime) {
     if ($stickOkLine -match 'd=0,0') { throw "摇杆链路用例自报位移为 0（主角没动却仍然通过）：$stickOkLine" }
     Write-Host $stickOkLine -ForegroundColor DarkGray
 
+    # 存档落盘（docs/51）：web/微信的 `save` 不是引擎那份 `std::fs` 后端，而是 web-runtime.js
+    # 里 Lua 补丁自己实现的**第三份**（键值行编码 + Lua 任意值长度前缀树 + 宿主存储读写回调）。
+    # 它坏掉的形状是"全部成功、零报错"：`commit` 只改内存，玩家退出即丢进度，控制台一个字不打。
+    # 因此断言落在**用户可见的症状**上：宿主存储里真的有 save_version=2 的 payload、键名与引擎
+    # 对齐（`__blob:`/`__map`/`__mapstate:`/`__map:spawn:`）、排序确定性、缺档/坏档四种损坏各自
+    # 的返回值，以及真实游戏 save_manager 提交上去的字节数。
+    $saveArgs = @("--drive-new-game", "--expect-runtime-spawns", "--check-save-persist", "--frames", "240")
+    if ($isThinPack) { $saveArgs += @("--remote", "thin", "--remote-root", $assetPackDir) }
+    $saveCase = Invoke-HarnessCase -ExtraArgs $saveArgs -Label "save-persist"
+    if ($saveCase.ExitCode -ne 0) { throw "存档落盘用例失败（--drive-new-game --check-save-persist, exit $($saveCase.ExitCode)）" }
+    $saveOkLine = $saveCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_ok" } | Select-Object -First 1
+    if (-not $saveOkLine) { throw "存档落盘用例未输出 wechat_minigame_harness_ok" }
+    # 证据必须带两段字节数：probe= 是隔离探针的 payload，game= 是**真实游戏** save_manager
+    # 提交上去的 payload。只看到 ok 分不清"游戏那条链路真的写到了宿主存储"还是探针自己玩自己。
+    if (-not ($saveOkLine -match 'save_persist="ok,probe=\d+,game=(\d+)"')) {
+        throw "存档落盘用例没有自报 payload 证据（缺少 save_persist=「ok,probe=N,game=M」）：$saveOkLine"
+    }
+    if ([int]$Matches[1] -lt 1000) {
+        throw ("存档落盘用例的**真实游戏** payload 只有 {0} 字节（新档快照应有十几个 provider 键，" +
+            "这个数说明什么都没写进去）" -f $Matches[1])
+    }
+    Write-Host $saveOkLine -ForegroundColor DarkGray
+
     # 远端配置的存在性要自洽：配了必须有、没配必须没有，且内容可解析。
     if ($hasRemoteConfig) {
         $remoteConfig = Get-Content -LiteralPath $remoteConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -773,7 +796,7 @@ if (-not $SkipRuntime) {
     elseif ($isThinPack) { " thin_case=ok" }
     else { "" }
     $remoteField = if ($isSubpackagePack) { "remote_fallback=n/a(分包形态不带远端配置)" } else { "remote_fallback=ok" }
-    Write-Host ("wechat_minigame_package_ok files={0} runtime=ok path_styles={1} asset_pack={2} {3} negatives={4} tag_polyfill_probe={6} eh_probe={7} host_globals=ok,locked render_selfcheck=ok play_path=ok,touch_stick=ok{5}" -f `
+    Write-Host ("wechat_minigame_package_ok files={0} runtime=ok path_styles={1} asset_pack={2} {3} negatives={4} tag_polyfill_probe={6} eh_probe={7} host_globals=ok,locked render_selfcheck=ok play_path=ok,touch_stick=ok,save_persist=ok{5}" -f `
         $required.Count, ($pathStyles -join ','), $formName, $remoteField, (($negativeCases + @("image-src-frozen", "image-src-prototype", "image-callback-bridge", "boot-stall", "host-document-frozen")) -join ','), $formEvidence, $tagPolyfillVerdict, $ehProbeVerdict) -ForegroundColor Green
     if ($remoteOkLine) { Write-Host $remoteOkLine -ForegroundColor DarkGray }
 } else {

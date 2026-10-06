@@ -2307,8 +2307,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       return (value === '' || value === undefined || value === null) ? null : String(value);
     },
     setItem: function (key, value) {
-      try { wx.setStorageSync(String(key), String(value)); }
-      catch (e) { warn('wechat-adapter: 存档写入失败 ' + e); }
+      // 必须把成败**返回**给运行时：只 warn 不上报的话，`save.commit()` 拿到的永远是"写成功"，
+      // 玩家看到的还是"存了但重开没恢复"（与本轮修掉的 shim 静默失败同一个形状）。
+      try { wx.setStorageSync(String(key), String(value)); return true; }
+      catch (e) { warn('wechat-adapter: 存档写入失败 ' + e); return false; }
     },
     removeItem: function (key) { try { wx.removeStorageSync(String(key)); } catch (e) { /* 忽略 */ } },
     clear: function () { try { wx.clearStorageSync(); } catch (e) { /* 忽略 */ } }

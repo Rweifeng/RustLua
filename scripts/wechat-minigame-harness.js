@@ -14,6 +14,9 @@
 //   --check-api-contract      再把 L3 行为契约（PC 那份 lua_api_contract.lua）注入这个活体
 //                             Lua 状态跑一遍，与 PC transcript 逐行对拍；不一致 exit 1
 //   --probe-host-api a,b,c    问活体 Lua 状态"这几条宿主 API 实没实现"（维护豁免表用，只出证据）
+//   --check-save-persist      存档落盘（需配合 --drive-new-game）：往独立槽位写 blob/map.state/落点，
+//                             断言宿主存储里真的出现 save_version=2 的 payload、清内存后 load 读得回来，
+//                             并跑一遍真实 save_manager 的存-清-读往返；证据 save_persist="ok,probe=…,game=…"
 // 退出码：0 通过、1 失败（失败原因打印到 stderr）。
 'use strict';
 
@@ -106,6 +109,14 @@ let noFrames = false;
   let touchStickMove = 0;
   let attackFrames = 0;
   let bagFrames = 0;
+  // 「更多」键 + 动作盘端到端（触摸 → JS 适配层 → virtual_pad → 注入物理键 → 动作层）。
+  let actionDiskFrames = 0;
+  // 帮助页的操作说明按平台分叉：这台宿主是触屏 ⇒ 必须自己选出"屏上控件"那一支并画出来。
+  let checkHelpPage = false;
+  // 角色遮挡跟脚位 Y（M35）：web 是引擎的第二份实现，排序键与合批都是重写的，
+  // 原生门全绿不代表这边也绿 ⇒ 在真实宿主上直接看 drawImage 的先后。
+  let checkDepthOrder = false;
+  let checkSavePersist = false;
   // 分包挂载行为——新发布形态（主包 + 单分包）的核心**宿主语义**，与 `--wx-path-style` 正交：
   //   auto      = 默认。game.json 真的声明了 pack 分包时按"未挂载则读不到 pack/"模拟，并成功挂载
   //   off       = 关掉分包模拟（声明了分包也当普通目录读）——用来把"方言"这一轴单独隔离出来
@@ -181,6 +192,10 @@ if (argv[i] === '--no-frames') noFrames = true;
     else if (argv[i] === '--touch-stick-move' && argv[i + 1]) touchStickMove = Math.max(0, Number(argv[++i]) || 0);
     else if (argv[i] === '--attack' && argv[i + 1]) attackFrames = Math.max(0, Number(argv[++i]) || 0);
     else if (argv[i] === '--bag' && argv[i + 1]) bagFrames = Math.max(0, Number(argv[++i]) || 0);
+    else if (argv[i] === '--action-disk' && argv[i + 1]) actionDiskFrames = Math.max(0, Number(argv[++i]) || 0);
+    else if (argv[i] === '--check-help-page') checkHelpPage = true;
+    else if (argv[i] === '--check-depth-order') checkDepthOrder = true;
+    else if (argv[i] === '--check-save-persist') checkSavePersist = true;
     else if (argv[i] === '--drive-frame' && argv[i + 1]) driveFrame = Math.max(0, Number(argv[++i]) || 0);
     else if (argv[i] === '--subpackage' && argv[i + 1]) subpackageMode = String(argv[++i]);
     else if (argv[i] === '--subpackage-delay-frames' && argv[i + 1]) subpackageDelayFrames = Math.max(0, Number(argv[++i]) || 0);
@@ -271,8 +286,20 @@ if (argv[i] === '--no-frames') noFrames = true;
   }
   // fail-once 的第二次尝试由"下一次 pack/ 读取"触发，而默认用例从头到尾只待在标题界面
   // （首屏资源全在主包，一次 pack/ 读取都不发生）→ 永远不会有第二次尝试，用例会假绿。
-  if ((touchStickMove > 0 || attackFrames > 0 || bagFrames > 0) && !driveNewGame) {
+  if ((touchStickMove > 0 || attackFrames > 0 || bagFrames > 0 || actionDiskFrames > 0) && !driveNewGame) {
     fail('--touch-stick-move 需要配合 --drive-new-game：可见虚拟摇杆只在玩法地图里接管移动');
+  }
+  // 遮挡用例的探针要挂进玩法场景（标题界面没有主角、也没有世界实体在画），
+  // 而且断言看的是**世界精灵那一轮**的 drawImage 先后。
+  if (checkDepthOrder && !driveNewGame) {
+    fail('--check-depth-order 需要配合 --drive-new-game：actor 层探针只在玩法地图里挂得上，'
+      + '标题界面画的是菜单，量不到遮挡');
+  }
+  // 存档探针要读的是**真实游戏状态**：save_manager 的 provider 只在进玩法图后才注册，
+  // 标题界面上 sm.save() 存的是空快照——那样"往返一致"可以靠两边都空来假绿。
+  if (checkSavePersist && !driveNewGame) {
+    fail('--check-save-persist 需要配合 --drive-new-game：端到端半段要往 save_manager 的 '
+      + 'provider 注册表里抓真状态，标题界面上快照恒空，往返一致也证明不了落盘');
   }
   if (subpackageMode === 'fail-once' && !driveNewGame) {
     fail('--subpackage fail-once 需要配合 --drive-new-game：重试由"进玩法场景时的 pack/ 读取"触发，' +
@@ -390,6 +417,10 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
   // 画到屏幕上的**文本**（fillText）。适配层的看门狗自证全靠它：光有 console.error 还不够，
   // "启动超时"必须真的出现在画布上——否则玩家看到的还是一片黑（--expect-boot-stall 用这个）。
   const drawnTexts = [];
+  // 画到屏幕上的**贴图**（drawImage 的 src + 当时帧号）。遮挡顺序（M35）在 web 上不存在
+  // 别的可读出口：`entitySortKey` 排完就直接 drawImage，谁后画只有在这里留得下证据。
+  // 只记 src 字符串（不是 image 对象），免得长用例把整个位图对象留在数组里。
+  const drawnImages = [];
   function parseColor(style) {
     const text = String(style == null ? '' : style).trim();
     let match = /^#([0-9a-f]{6})$/i.exec(text);
@@ -475,6 +506,8 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     // 这条断言就退化成"只有 fillRect 才算数"，`data-rustlua-drawn` 会凭空变小。
     ctx.drawImage = function (image) {
       countDraw(ctx);
+      drawnImages.push({ frame: stats.frames, src: String((image && (image._src || image.src)) || '') });
+      if (drawnImages.length > 20000) drawnImages.splice(0, drawnImages.length - 20000);
       const rest = Array.prototype.slice.call(arguments, 1).map((value) => Number(value) || 0);
       let dx = 0, dy = 0, dw = 0, dh = 0;
       if (rest.length >= 8) { dx = rest[4]; dy = rest[5]; dw = rest[6]; dh = rest[7]; }
@@ -1046,7 +1079,13 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     onTouchStart: noop, onTouchMove: noop, onTouchEnd: noop, onTouchCancel: noop,
     onKeyDown: noop, onKeyUp: noop, onShow: noop, onHide: noop, onMemoryWarning: noop,
     getStorageSync: (key) => (stats.storage.has(String(key)) ? stats.storage.get(String(key)) : ''),
-    setStorageSync: (key, value) => { stats.storage.set(String(key), value); },
+    // stats.failStorage：宿主存储写失败的注入开关（--check-save-persist 的反面对照用）。
+    // 真机上配额满/存储被禁用就是这里这一抛，而适配层的 setItem 会把它吞成 warn——
+    // 运行时只有拿到"明确失败"才不许报 commit=true。
+    setStorageSync: (key, value) => {
+      if (stats.failStorage) throw new Error('simulated wx storage quota failure');
+      stats.storage.set(String(key), value);
+    },
     removeStorageSync: (key) => { stats.storage.delete(String(key)); },
     clearStorageSync: () => { stats.storage.clear(); }
   };
@@ -1451,7 +1490,11 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     // 这些帧从**总预算**里扣：`stats.frames !== frames` 这条断言仍然表示"帧预算跑满了"。
     // --bag 固定开销：打开 35 帧（等 ui-summary %30 刷新）+ 关闭 35 帧；选择阶段另占 bagFrames 帧。
     const bagBudget = bagFrames > 0 ? (35 + bagFrames + 35) : 0;
-    const moveBudget = (driveMove > 0 ? driveMove + 1 : 0) + (touchStickMove > 0 ? touchStickMove + 1 : 0) + (attackFrames > 0 ? attackFrames : 0) + bagBudget;
+    // --action-disk 固定开销：展开盘 10 帧（点「更多」→ 下一帧才画得出九格）+ 点睡觉 + 等天数自报。
+    const diskBudget = actionDiskFrames > 0 ? (13 + actionDiskFrames) : 0;
+    // --check-depth-order 固定开销：正序/反序两段各泵 8 帧（等运行期挂上去的贴图按需加载完）。
+    const depthBudget = checkDepthOrder ? 16 : 0;
+    const moveBudget = (driveMove > 0 ? driveMove + 1 : 0) + (touchStickMove > 0 ? touchStickMove + 1 : 0) + (attackFrames > 0 ? attackFrames : 0) + bagBudget + diskBudget + depthBudget;
     const failures = [];
     // 标题单层断言的口径：drawnTexts 是**跨帧累计**数组（336 行声明后只 push 不重置），
     // 直接 count 会把历史帧的同一标签重复计数（实测 4 次 = 4 帧 × 1 次）。所以只看
@@ -1961,8 +2004,13 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         await new Promise((resolve) => setTimeout(resolve, 0));
         return true;
       };
-      const attackDown = { touches: [{ identifier: 11, clientX: 341, clientY: 369 }], changedTouches: [{ identifier: 11, clientX: 341, clientY: 369 }] };
-      const attackUp = { touches: [], changedTouches: [{ identifier: 11, clientX: 341, clientY: 369 }] };
+      // 圆心 = `layout.TOUCH.buttons[2]`「攻击」(1204,445)，直径 68。
+      // 这一格**必须跟着按钮簇重排走**：2026-10-05 之前写死的 (341,369) 对应设计 (1164,478)，
+      // 按钮改成围绕交互键的左上弧之后那个点落到了「背包」(1134,464) 半径 34 的圈里
+      // （圆心距 33.1）——用例照样绿，因为它只数"按了几次"和 missing-host-api，
+      // 于是这条攻击用例实际一直在按背包。坐标换算口径见下面 --bag 那段注释。
+      const attackDown = { touches: [{ identifier: 11, clientX: 353, clientY: 358 }], changedTouches: [{ identifier: 11, clientX: 353, clientY: 358 }] };
+      const attackUp = { touches: [], changedTouches: [{ identifier: 11, clientX: 353, clientY: 358 }] };
       let presses = 0;
       for (let i = 0; i < attackFrames; i++) {
         if (i % 20 === 0) {
@@ -1987,7 +2035,9 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       }
     }
     // --- 背包按钮端到端 + 面板内十字键选择（用户报"点击背包按钮没有渲染背包UI"的回归）。
-    // 背包按钮画布 (1175,360) ≈ 375×667 屏等比 contain 后 (344,334)（y 恰在等比中心附近不变）：
+    // 背包按钮圆心 = `layout.TOUCH.buttons[3]`「背包」(1134,464)、直径 68；
+    // 375×667 屏等比 contain 后 (332,364)（尺度 375/1280=0.29296875、x 偏移 0、
+    // 上下黑边偏移 y=(667−720×尺度)/2=228.03；换算同 --attack 那段）。
     // 触摸 → 适配层指针事件 → virtual_pad
     // 命中（press_position）→ 注入 keyi → 运行时翻译动作键 'i' → 动作层 inventory →
     // inventory_ui.open() → render()（ui-summary 出现 X:bp:title = 背包面板真的渲染了）。
@@ -2007,8 +2057,8 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         return true;
       };
       const uiSummary = () => String(adapter.getAttribute('data-rustlua-ui-summary') || '');
-      const bagDown = { touches: [{ identifier: 12, clientX: 344, clientY: 334 }], changedTouches: [{ identifier: 12, clientX: 344, clientY: 334 }] };
-      const bagUp = { touches: [], changedTouches: [{ identifier: 12, clientX: 344, clientY: 334 }] };
+      const bagDown = { touches: [{ identifier: 12, clientX: 332, clientY: 364 }], changedTouches: [{ identifier: 12, clientX: 332, clientY: 364 }] };
+      const bagUp = { touches: [], changedTouches: [{ identifier: 12, clientX: 332, clientY: 364 }] };
       // ① 触摸背包按钮 → 打开背包（画布文本证据：bp:title "背包" + 行文本 "1. xxx xN [分类]"）
       const markOpen = drawnTexts.length;
       if (inputHandlers.onTouchStart) inputHandlers.onTouchStart(bagDown);
@@ -2050,6 +2100,74 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       }
       if (!closed) {
         failures.push('面板态触摸关闭按钮（×）后背包面板没有关闭（ui-summary 仍有 bp:title）');
+      }
+    }
+    // --- 「更多」键 + 动作盘端到端（用户报"web/微信不能通过虚拟按钮睡觉"，2026-10-05）。
+    // 「更多」键画布框 (1096,348) 边长 48 → 圆心 (1120,372) ≈ 375×667 屏等比 contain 后 (328,337)；
+    // 盘第 1 格「睡觉」圆心 (782,445) ≈ (229,358)（contain 尺度 375/1280=0.29297，上下留黑边偏移 228.03）。
+    // 触摸 → 适配层指针事件 → virtual_pad.handle_pointer 命中 → 读 `input.bindings('sleep')`
+    // 拿到玩家当前绑的物理键（默认 keyt，**不是写死的**）→ virtual_pressed → 运行时翻译成
+    // 动作 sleep → `ui/input.lua` 的玩法分支 day.sleep() → HUD 状态面板的「第N天」整点跳次日。
+    // 这条是**宿主侧**证据：Rust 侧 jhyt_m19_ui 的 M34-06 只能证"Lua 里注入键能触发动作"，
+    // 证不了发布包那份 JS 把触摸坐标喂给了 handle_pointer、也没把盘点成一击两吃。
+    let actionDiskEvidence = 'not-driven';
+    if (actionDiskFrames > 0) {
+      const pumpDisk = async () => {
+        const callback = rafQueue.shift();
+        if (!callback) return false;
+        callback(Date.now());
+        stats.frames++;
+        perFrameDraws.push(stats.drawOps);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return true;
+      };
+      // 「第N天」在**累计** drawnTexts 里从后往前找最后一处（每帧 HUD 都重画这行）。
+      const dayOf = () => {
+        for (let i = drawnTexts.length - 1; i >= 0; i--) {
+          const match = String(drawnTexts[i]).match(/第(\d+)天/);
+          if (match) return Number(match[1]);
+        }
+        return -1;
+      };
+      const dayBefore = dayOf();
+      const moreDown = { touches: [{ identifier: 16, clientX: 328, clientY: 337 }], changedTouches: [{ identifier: 16, clientX: 328, clientY: 337 }] };
+      const moreUp = { touches: [], changedTouches: [{ identifier: 16, clientX: 328, clientY: 337 }] };
+      const sleepDown = { touches: [{ identifier: 17, clientX: 229, clientY: 358 }], changedTouches: [{ identifier: 17, clientX: 229, clientY: 358 }] };
+      const sleepUp = { touches: [], changedTouches: [{ identifier: 17, clientX: 229, clientY: 358 }] };
+      const markDisk = drawnTexts.length;
+      if (inputHandlers.onTouchStart) inputHandlers.onTouchStart(moreDown);
+      for (let i = 0; i < 3; i++) { if (!(await pumpDisk())) break; }
+      if (inputHandlers.onTouchEnd) inputHandlers.onTouchEnd(moreUp);
+      for (let i = 0; i < 7; i++) { if (!(await pumpDisk())) break; }
+      // 盘展开的证据：九格标签**全部**出现在本窗口新增的画布文本里。
+      // 为什么不是只认「睡觉」一条：`ui/hints.lua` 的帮助表里也有一行 label 就叫「睡觉」，
+      // 单条精确匹配会被别处文案冒充（假绿）。九条一起要，冒充不动。
+      const diskLabels = ['睡觉', '建造', '放置', '运气', '拆除', '升级', '送礼', '选种', '重开'];
+      const diskWindow = () => drawnTexts.slice(markDisk);
+      const diskOpen = diskLabels.every((label) => diskWindow().some((text) => String(text).trim() === label));
+      if (inputHandlers.onTouchStart) inputHandlers.onTouchStart(sleepDown);
+      for (let i = 0; i < 3; i++) { if (!(await pumpDisk())) break; }
+      if (inputHandlers.onTouchEnd) inputHandlers.onTouchEnd(sleepUp);
+      const markSleep = drawnTexts.length;
+      for (let i = 0; i < actionDiskFrames; i++) { if (!(await pumpDisk())) break; }
+      const dayAfter = dayOf();
+      // 「睡觉」标签在**点击之后**的窗口里出现几次：一次 = 格子当场命中（盘收起、只留下
+      // 收起前那一帧）；≈ 帧数 = 盘一直开着、命中测试根本没吃这一指。诊断读数，不参与断言。
+      const sleepLabelAfter = drawnTexts.slice(markSleep).filter((t) => String(t).trim() === '睡觉').length;
+      actionDiskEvidence = 'disk=' + (diskOpen ? 'y' : 'n') + ' day=' + dayBefore + '->' + dayAfter
+        + ' sleep_lbl=' + sleepLabelAfter + '/' + (actionDiskFrames + 3);
+      if (dayBefore < 0) {
+        failures.push('--action-disk 前画布上没有「第N天」这行（HUD 状态面板没画？）：无法用天数当证据');
+      } else if (!diskOpen) {
+        failures.push('触摸「更多」键后动作盘没展开（本帧新增画布文本凑不齐九格标签）：'
+          + '坐标换算或 handle_pointer 的 more 命中断了；缺的标签='
+          + JSON.stringify(diskLabels.filter((label) => !diskWindow().some((text) => String(text).trim() === label)))
+          + ' 新增文本=' + JSON.stringify(diskWindow().slice(-24)));
+      } else if (dayAfter !== dayBefore + 1) {
+        failures.push('触摸动作盘「睡觉」格后天数没有 +1（' + dayBefore + '->' + dayAfter + '）：'
+          + '注入 → 动作 sleep → day.sleep 这条分发没生效（这就是用户报的"触屏睡不了觉"）'
+          + '；' + actionDiskEvidence
+          + ' 睡觉键窗口新增文本=' + JSON.stringify(drawnTexts.slice(markSleep).slice(-24)));
       }
     }
     const worldSummary = String(adapter.getAttribute('data-rustlua-world') || '');
@@ -2225,6 +2343,649 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         ? 'host_api_probe=unavailable:' + (noWasm ? 'no-wasm' : (hostApiProbeError || 'no-lua-bridge'))
         : 'host_api_probe ' + probeHostApi.map((name) => name + '=' + (askedState.get(name) || 'unreported')).join(' ');
       console.log(askedLine);
+    }
+
+    // 帮助页按平台分叉的**活体**证据（`--check-help-page`）。桌面机器验收只能靠
+    // `pause_menu.set_touch(true)` 旁路量到触屏那一支，而这里 `app.platform()` 真的是
+    // `"webgl"`：分叉必须自己选对，而且文字要真的画出来（这一页曾在 web 上是**空白页**，
+    // 起因是宿主 shim 的 `input.bindings()` 返回裸键名，`virtual_pad.available()` 一路
+    // 走到 nil —— 形状不对不报错，只是静默什么都不画）。
+    // 读回的来源是 `ui.ui_text` 的**Lua 侧登记表**，不是 `ui.text_get`：后者在 webgl 宿主
+    // 上连 `.text` 字段都没有（实测读回 `<missing host API ui.text_get.text>`），而登记表
+    // 记的是"这一帧真的调过 `ui.text_at`"+ 原始文案 ⇒ 顺带能查出触屏文案有没有被裁。
+    let helpPageEvidence = 'not-requested';
+    if (checkHelpPage) {
+      if (noWasm || !luaBridge || typeof luaBridge.lua_do_string !== 'function'
+        || typeof luaBridge.lua_call_global !== 'function') {
+        helpPageEvidence = 'unavailable';
+        failures.push('wechat_help_page_unavailable --check-help-page 要求活体 Lua 桥'
+          + '（没有桥就没有任何证据说这一页画得出东西，不放行也不静默）');
+      } else {
+        const helpSource = [
+          'function __rustlua_harness_help_page_check()',
+          '  local pm = require("ui.pause_menu")',
+          '  pm.open()',
+          '  pm.open_help()',
+          '  local keyrows, section = 0, ""',
+          '  for _, row in ipairs(pm.help_rows() or {}) do',
+          "    if row.kind == 'key' then keyrows = keyrows + 1",
+          "    elseif row.kind == 'section' and section == '' then section = tostring(row.text) end",
+          '  end',
+          '  local rec = require("ui.ui_text").recorded().pse or {}',
+          '  local row1, hint, clipped, drawn = rec["pse:h:row1"], rec["pse:h:hint"], 0, 0',
+          '  for _, r in pairs(rec) do',
+          '    drawn = drawn + 1',
+          '    if r.raw and r.text ~= r.raw then clipped = clipped + 1 end',
+          '  end',
+          '  local out = string.format(',
+          "    'platform=%s touch=%s keyrows=%d section=%s row1=%s hint=%s clipped=%d drawn=%d',",
+          "    tostring(type(app) == 'table' and type(rawget(app, 'platform')) == 'function' and app.platform() or '?'),",
+          '    tostring(pm.set_touch(nil)), keyrows, section,',
+          "    tostring(row1 and row1.text or 'nil'),",
+          "    tostring(hint and hint.text or 'nil'), clipped, drawn)",
+          '  pm.help_close()',
+          '  pm.close()',
+          '  return out',
+          'end',
+        ].join('\n');
+        let helpLine = '';
+        try {
+          luaBridge.lua_do_string(helpSource, 'harness-help-page-probe.lua');
+          const helpOut = luaBridge.lua_call_global('__rustlua_harness_help_page_check', '[]');
+          if (typeof helpOut === 'string') helpLine = helpOut;
+        } catch (error) {
+          helpLine = '';
+        }
+        const keyrows = Number((helpLine.match(/keyrows=(\d+)/) || [])[1] || 0);
+        const clipped = Number((helpLine.match(/clipped=(\d+)/) || [])[1] || -1);
+        const drawn = Number((helpLine.match(/drawn=(\d+)/) || [])[1] || 0);
+        const problems = [];
+        if (!helpLine) {
+          problems.push('探针没返回字符串（这一页到底画没画出来，无从判断）');
+        } else {
+          if (!helpLine.includes('touch=true')) problems.push('触屏形态判定为假：这台宿主没有键盘，帮助页却按键鼠表显示');
+          if (!helpLine.includes('section=触屏操作')) problems.push('小标题不是「触屏操作」：分叉没走到触屏那一支');
+          if (keyrows < 7) problems.push(`触屏条目只有 ${keyrows} 行（应 ≥7：摇杆/圆钮/招式/更多/动作盘/面板/动作条）`);
+          if (!helpLine.includes('row1=触屏操作')) problems.push('pse:h:row1 没登记（读回为空）：页面上是空白');
+          if (!helpLine.includes('hint=右上关闭')) problems.push('底部提示不是触屏写法：还在教人按键盘键');
+          if (drawn < 14) problems.push(`帮助页只登记了 ${drawn} 条文字（13 行 + 标题 + 提示）`);
+          if (clipped > 0) problems.push(`触屏文案有 ${clipped} 条被裁成省略号（这台宿主的值列装不下）`);
+        }
+        helpPageEvidence = problems.length ? 'failed' : `ok,${helpLine}`;
+        if (problems.length) {
+          failures.push(`wechat_help_page_failed ${helpLine || '(no probe output)'}:\n  - ` +
+            problems.join('\n  - ') +
+            '\n（触屏说明由 layout.TOUCH 现推，条目名与画在屏上的控件同源；改坏了只有这条会在真宿主上报红）');
+        }
+      }
+    }
+
+    // 角色遮挡跟脚位 Y 的**活体宿主**证据（`--check-depth-order`）。原生那条门
+    // （jhyt_m35_depth_sort）读的是 wgpu 侧 `mesh.draws` 的提交序；web 是引擎的第二份实现
+    // （排序键 `entitySortKey` 与绘制循环都是另写的一份），所以这里只能看**真的画上去的先后**：
+    // 假 ctx 记下的 drawImage src 序列就是这台宿主的实际绘制顺序。
+    // 探针经玩法用的同一条路挂上（`world/depth.lua` 的 attach/tick ⇒ sprite.set），
+    // 只是把 Y 换成了已知值——断的是"Y 变了 ⇒ 画的先后跟着翻"，以及**翻的方向**
+    // （这台引擎世界 +y 朝上 ⇒ y 越小越靠画面下方 = 越近 = 越要后画）。
+    let depthOrderEvidence = 'not-requested';
+    if (checkDepthOrder) {
+      if (noWasm || !luaBridge || typeof luaBridge.lua_do_string !== 'function'
+        || typeof luaBridge.lua_call_global !== 'function') {
+        depthOrderEvidence = 'unavailable';
+        failures.push('wechat_depth_order_unavailable --check-depth-order 要求活体 Lua 桥'
+          + '（没有桥就没有任何证据说明遮挡排对了，不放行也不静默）');
+      } else {
+        const DEPTH_PROBE_SPECS = [
+          'assets/art/characters/player_male/static_s.png',
+          'assets/art/characters/shen_qingluo/static_s.png',
+          'assets/art/characters/zhao_tiesuanpan/static_s.png',
+        ];
+        const depthSource = [
+          'function __rustlua_harness_depth_setup(flip)',
+          '  local depth = require("world.depth")',
+          '  local specs = {',
+          "    'texture=assets/art/characters/player_male/static_s.png;size=64x64;pivot=0.5,0.5;sorting_layer=actor',",
+          "    'texture=assets/art/characters/shen_qingluo/static_s.png;size=64x64;pivot=0.5,0.5;sorting_layer=actor',",
+          "    'texture=assets/art/characters/zhao_tiesuanpan/static_s.png;size=64x64;pivot=0.5,0.5;sorting_layer=actor',",
+          '  }',
+          '  local base = 300',
+          '  local pid = entity.find("JianghuPlayer")',
+          '  if pid then',
+          '    local pos = transform.get(pid)',
+          "    if type(pos) == 'table' then base = pos.y end",
+          '  end',
+          '  local ys = { base - 64, base, base + 64 }',
+          '  if flip == 1 then ys = { base + 64, base, base - 64 } end',
+          '  __rustlua_harness_depth_ids = __rustlua_harness_depth_ids or {}',
+          '  local rows = {}',
+          '  for i = 1, 3 do',
+          '    local id = __rustlua_harness_depth_ids[i]',
+          '    if not id or not entity.is_alive(id) then',
+          "      id = entity.spawn('M35WebProbe' .. i, 'm35.web.probe.' .. i)",
+          '      __rustlua_harness_depth_ids[i] = id',
+          '    end',
+          '    transform.set(id, 640, ys[i])',
+          '    depth.attach(id, specs[i])',
+          '    local got = sprite.get(id)',
+          "    rows[#rows + 1] = string.format('i=%d,y=%.0f,order=%s,layer=%s,tex=%s',",
+          "      i, ys[i], tostring(got and got.order or 'missing'),",
+          "      tostring(got and got.sorting_layer or '?'), tostring(got and got.texture or '?'))",
+          '  end',
+          '  depth.tick()',
+          "  return table.concat(rows, '\\n')",
+          'end',
+          'function __rustlua_harness_depth_cleanup()',
+          '  __rustlua_harness_depth_ids = __rustlua_harness_depth_ids or {}',
+          '  for i = 1, 3 do',
+          '    local id = __rustlua_harness_depth_ids[i]',
+          '    if id and entity.is_alive(id) then entity.destroy(id) end',
+          '  end',
+          '  return "destroyed=3"',
+          'end',
+        ].join('\n');
+        // 一帧的贴图序列：drawnImages 带着当时的帧号，取**最后一段同帧的**就是刚画完那一帧。
+        const lastFrameDraws = () => {
+          if (drawnImages.length === 0) return [];
+          const frame = drawnImages[drawnImages.length - 1].frame;
+          const segment = [];
+          for (let i = drawnImages.length - 1; i >= 0; i--) {
+            if (drawnImages[i].frame !== frame) break;
+            segment.unshift(drawnImages[i].src);
+          }
+          return segment;
+        };
+        // 探针贴图在这一帧的实际先后（找不到 = -1，由调用方判红）。
+        const probePositions = (segment) => DEPTH_PROBE_SPECS
+          .map((path) => segment.reduce((found, src, index) => (src.endsWith(path) ? index : found), -1));
+        const runDepthPhase = async (flip) => {
+          let out = '';
+          try {
+            out = luaBridge.lua_call_global('__rustlua_harness_depth_setup', `[${flip}]`);
+          } catch (error) {
+            return { out: '', error: String((error && error.message) || error).slice(0, 120) };
+          }
+          if (typeof out !== 'string') return { out: '', error: 'probe 没返回字符串' };
+          // 运行期挂上去的贴图不在场景预加载清单里（ensureTexture 按需加载）⇒ 多泵几帧
+          // 等它加载完，再看**最后那一帧**的绘制序。
+          for (let i = 0; i < 8; i++) {
+            const callback = rafQueue.shift();
+            if (!callback) break;
+            callback(Date.now());
+            stats.frames++;
+            perFrameDraws.push(stats.drawOps);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+          return { out, positions: probePositions(lastFrameDraws()) };
+        };
+        const depthProblems = [];
+        try {
+          luaBridge.lua_do_string(depthSource, 'harness-depth-probe.lua');
+        } catch (error) {
+          depthProblems.push(`探针脚本没跑起来：${String((error && error.message) || error).slice(0, 120)}`);
+        }
+        let forward = { out: '', positions: null };
+        let flipped = { out: '', positions: null };
+        if (!depthProblems.length) {
+          forward = await runDepthPhase(0);
+          flipped = await runDepthPhase(1);
+        }
+        try {
+          luaBridge.lua_call_global('__rustlua_harness_depth_cleanup', '[]');
+        } catch (error) { /* 收尾失败不影响断言，探针实体下一张场景也会被 depth.tick 收掉 */ }
+        const checkRows = (phase, rowsText, positions, wantAscending) => {
+          if (!rowsText) {
+            depthProblems.push(`${phase}：探针没有输出（${(forward.error || flipped.error || 'no output')}）`);
+            return;
+          }
+          const rows = rowsText.split('\n');
+          if (rows.length !== 3) {
+            depthProblems.push(`${phase}：只读到 ${rows.length} 行探针读数（应为 3）`);
+            return;
+          }
+          const orders = [];
+          for (const [index, row] of rows.entries()) {
+            const orderField = (row.match(/order=(-?\d+)/) || [])[1];
+            const order = Number(orderField);
+            const y = Number((row.match(/y=(-?\d+)/) || [])[1]);
+            if (orderField === undefined || !Number.isFinite(order)) {
+              depthProblems.push(`${phase} 探针 ${index + 1}：order 读不回来（${row}）——web 的 sprite.get 没有排序层回读，depth 写的东西没人看得见`);
+              return;
+            }
+            if (!row.includes('layer=actor')) {
+              depthProblems.push(`${phase} 探针 ${index + 1}：排序层不是 actor（${row}）`);
+              return;
+            }
+            // 方向钉在这里：引擎的世界 +y 朝上（`screen.y = h/2 - view.y*zoom`），
+            // y 越小 = 画面越靠下 = 越近 = order 越大 = 越后画。写成 +floor(y/2) 不报错，
+            // 症状就是"主角站在 NPC 下方反而被 NPC 盖住"。
+            if (order !== Math.max(-999, Math.min(999, -Math.floor(y / 2)))) {
+              depthProblems.push(`${phase} 探针 ${index + 1}：order=${order} 与脚位 y=${y} 的桶不一致（world/depth.lua 的换算）`);
+              return;
+            }
+            if (!String(row).endsWith(DEPTH_PROBE_SPECS[index])) {
+              depthProblems.push(`${phase} 探针 ${index + 1}：读回的贴图不是它自己那张（${row}）`);
+              return;
+            }
+            orders.push(order);
+          }
+          if (!positions || positions.some((value) => value < 0)) {
+            depthProblems.push(`${phase}：探针贴图没出现在最后一帧的 drawImage 序列里（positions=${JSON.stringify(positions)}）——要么没被画，要么宿主把它们合掉了`);
+            return;
+          }
+          const ascending = positions[0] < positions[1] && positions[1] < positions[2];
+          if (ascending !== wantAscending) {
+            depthProblems.push(`${phase}：实际绘制先后 ${JSON.stringify(positions)}，与"y 越小越靠画面下方、越要最后画"不符`
+              + `（这一段 order 应${wantAscending ? '随探针编号递增' : '随探针编号递减'}、画的先后也必须同向）`
+              + '——说明 web 的排序键没吃 order 或吃反了');
+          }
+        };
+        // 正序段探针 y 递增（base-64 → base+64）= 画面由下往上 = 由近及远
+        // ⇒ order 递减 ⇒ drawImage 里的先后也必须递减（探针 1 最后画）。反序段整个翻过来。
+        checkRows('正序', forward.out, forward.positions, false);
+        checkRows('反序', flipped.out, flipped.positions, true);
+        const orderOf = (text) => String(text).replace(/\s+/g, ' ').slice(0, 160);
+        depthOrderEvidence = depthProblems.length
+          ? 'failed'
+          : `ok,forward=${JSON.stringify(forward.positions)},flipped=${JSON.stringify(flipped.positions)}`;
+        if (depthProblems.length) {
+          failures.push(`wechat_depth_order_failed 正序读数=${orderOf(forward.out)} 反序读数=${orderOf(flipped.out)}:\n  - `
+            + depthProblems.join('\n  - ')
+            + '\n（两个宿主的排序键是两份实现：原生 SpriteSorting::effective_layer、web entitySortKey。'
+            + '原生门全绿不代表这边也绿，这条就是钉"这一台宿主真的按 Y 排"）');
+        }
+      }
+    }
+
+    // web/微信存档**真的落盘**的活体证据（`--check-save-persist`）。
+    // 要钉的故障：引擎版 save.commit/load 走 std::fs，wasm 侧没有写通道，于是这一层的
+    // 宿主补丁早期只留了 `commit = function() return true end` 的占位，而缺的
+    // blob_write/blob_read 会被 hostCompat 的缺失代理换成"可调用、返回真值"的替身——
+    // save_manager.save() 照样打"[save] committed"，玩家重开却什么都没有。
+    // 所以断言分三段：① 四个 API 的**形状**（type 必须是 function，缺失代理是 table）；
+    // ② 值层往返（含制表符/换行/UTF-8 的字符串、整数与浮点的型、稀疏整数键）；
+    // ③ commit 之后**清掉内存**再 load 回来必须与清之前一致——这一步才是"重开"本身，
+    //    同进程里换不掉 Lua 状态，但重开无非就是"新状态读同一份存储"。
+    // 端到端半段走游戏自己的 core/save_manager（provider 注册表抓真状态），
+    // 反面对照三条：从没存过的槽=missing、坏档=corrupt 且内存不动、非法输入在写入点就拒。
+    let savePersistEvidence = 'not-requested';
+    if (checkSavePersist) {
+      if (noWasm || !luaBridge || typeof luaBridge.lua_do_string !== 'function'
+        || typeof luaBridge.lua_call_global !== 'function') {
+        savePersistEvidence = 'unavailable';
+        failures.push('wechat_save_persist_unavailable --check-save-persist 要求活体 Lua 桥'
+          + '（没有桥就没有任何证据说明存档落了盘，不放行也不静默）');
+      } else {
+        const saveProbeSource = [
+          'local function copy_table(t)',
+          '  local out = {}',
+          '  for k, v in pairs(t) do out[k] = v end',
+          '  return out',
+          'end',
+          'local function mtype(v)',
+          '  return math.type(v) or "nil"',
+          'end',
+          'local function same(a, b, path)',
+          '  local at = path or "<root>"',
+          '  if type(a) ~= type(b) then return nil, at .. ": type " .. type(a) .. " vs " .. type(b) end',
+          '  if type(a) ~= "table" then',
+          '    if a ~= b then return nil, at .. ": " .. tostring(a) .. " vs " .. tostring(b) end',
+          '    return true',
+          '  end',
+          '  for k, v in pairs(a) do',
+          '    local ok, why = same(v, b[k], at .. "/" .. tostring(k))',
+          '    if not ok then return nil, why end',
+          '  end',
+          '  for k in pairs(b) do',
+          '    if a[k] == nil then return nil, at .. "/" .. tostring(k) .. ": extra key" end',
+          '  end',
+          '  return true',
+          'end',
+          // 值层探针：跑在**独立槽位**上，玩家默认档一个字节都不动。
+          'function __rustlua_harness_save_probe()',
+          '  local rows = {}',
+          '  local function add(fmt, ...) rows[#rows + 1] = string.format(fmt, ...) end',
+          '  -- ① 形状。缺失代理也是"可调用"的（调用还返回真值替身），所以只试调用抓不到，',
+          '  --    必须比 type()：代理是 table，真实现才是 function。',
+          '  add("shape=%s,%s,%s,%s,%s", type(save.blob_write), type(save.blob_read),',
+          '    type(save.commit), type(save.load), type(save.slot))',
+          '  local snap = { copy_table(__rustlua_save), copy_table(__rustlua_map_state),',
+          '    __rustlua_map_current, __rustlua_map_spawn }',
+          '  save.slot("harness-probe")',
+          '  add("slot_get=%s", tostring(save.slot_get()))',
+          '  add("slot_key=%s", __rustlua_save_storage_key())',
+          '  local function ok_or(reason)',
+          '    return reason and tostring(reason) or "ok"',
+          '  end',
+          '  local KEY = "harness.state"',
+          '  local sample = {',
+          '    day = 3, hp = 72.5, flag = true, cleared = false,',
+          '    name = "江湖有田" .. string.char(9) .. "第二行" .. string.char(10) .. "第三行",',
+          '    plots = { { id = 1, wet = true }, { id = 2, wet = false } },',
+          '    sparse = { [5] = "五号格" },',
+          '    nested = { a = { b = { c = "deep" } } },',
+          '  }',
+          '  add("blob_write=%s", tostring(pcall(save.blob_write, KEY, sample)))',
+          '  local back = save.blob_read(KEY)',
+          '  local same_ok, same_why = same(sample, back, KEY)',
+          '  add("roundtrip_memory=%s/%s", tostring(same_ok), ok_or(same_why))',
+          '  add("numtypes=%s,%s", mtype(back and back.day), mtype(back and back.hp))',
+          '  add("sparse_key=%s", back and back.sparse and mtype(next(back.sparse)) or "?")',
+          '  map.state("harness_plots", { [1] = { wet = true }, [2] = { wet = false } })',
+          '  map.set_spawn(1.25, -3.5)',
+          '  add("map_current_before=%s", tostring(map.current()))',
+          // 新游戏走的是 scene.load("manor") 而不是 map.goto，所以 __rustlua_map_current 本来
+          // 就是 nil（引擎同理，游戏侧 main.lua 用 map.current() or scene.reload() 兜）。
+          // 要钉 __map 这一行的往返，就直接写同名持久键——两边宿主下这条路径完全一致：
+          // 它进 payload，load 之后落到活表而不留在 save 表里。
+          '  save.write("__map", "manor")',
+          '  local called, committed, commit_reason = pcall(save.commit)',
+          '  add("commit=%s/%s/%s", tostring(called), tostring(committed), tostring(commit_reason))',
+          '  -- "重开"：只清内存（save.clear 的引擎语义就是只清内存），再 load 回来。',
+          '  save.clear()',
+          '  add("after_clear=%s/%s", tostring(save.blob_read(KEY)), tostring(map.current()))',
+          '  local lcalled, loaded, load_reason = pcall(save.load)',
+          '  add("load=%s/%s/%s", tostring(lcalled), tostring(loaded), tostring(load_reason))',
+          '  local back2 = save.blob_read(KEY)',
+          '  local same2_ok, same2_why = same(sample, back2, KEY)',
+          '  add("roundtrip_storage=%s/%s", tostring(same2_ok), ok_or(same2_why))',
+          '  local plots_ok, plots_why = same({ [1] = { wet = true }, [2] = { wet = false } },',
+          '    map.state("harness_plots"), "mapstate")',
+          '  add("mapstate=%s/%s", tostring(plots_ok), ok_or(plots_why))',
+          '  local spawn = map.spawn()',
+          '  add("spawn=%s/%s", type(spawn),',
+          '    spawn and string.format("%.3f,%.3f", spawn.x, spawn.y) or "nil")',
+          '  add("map_current_after=%s", tostring(map.current()))',
+          '  add("map_row_not_in_save=%s", tostring(save.read("__map") == nil))',
+          '  -- 反面对照①：从没存过的槽必须是 missing（"从没存过"和"进度丢了"在 UI 上两回事）',
+          '  save.slot("harness absent")',
+          '  local mcalled, mloaded, mreason = pcall(save.load)',
+          '  add("missing=%s/%s/%s", tostring(mcalled), tostring(mloaded), tostring(mreason))',
+          '  -- 反面对照②：坏档必须 corrupt，而且**内存一点不许动**（引擎的原子写同判据）',
+          '  save.slot("harness-corrupt")',
+          '  local ckey = __rustlua_save_storage_key()',
+          '  local TAB = string.char(9)',
+          '  local LF = string.char(10)',
+          '  __rustlua_storage_js_write(ckey, "save_version=2" .. LF .. "foo" .. TAB .. "bar" .. string.char(92) .. "q" .. LF)',
+          '  local ccalled, cloaded, creason = pcall(save.load)',
+          '  add("corrupt_escape=%s/%s", tostring(ccalled and cloaded), tostring(creason))',
+          '  add("memory_intact=%s", tostring(__rustlua_map_state.harness_plots ~= nil))',
+          '  __rustlua_storage_js_write(ckey, "not a save file at all")',
+          '  local gcalled, gloaded, greason = pcall(save.load)',
+          '  add("corrupt_garbage=%s/%s", tostring(gcalled and gloaded), tostring(greason))',
+          '  __rustlua_storage_js_write(ckey, "foo" .. TAB .. "bar" .. LF)',
+          '  local hcalled, hloaded, hreason = pcall(save.load)',
+          '  add("corrupt_header=%s/%s", tostring(hcalled and hloaded), tostring(hreason))',
+          '  __rustlua_storage_js_write(ckey, "save_version=9" .. LF .. "foo" .. TAB .. "bar" .. LF)',
+          '  local vcalled, vloaded, vreason = pcall(save.load)',
+          '  add("corrupt_version=%s/%s", tostring(vcalled and vloaded), tostring(vreason))',
+          '  -- 反面对照③：非法输入在**写入点**就拒，不要留一个读不回来的档',
+          '  add("empty_key=%s", tostring(not pcall(save.write, "", "x")))',
+          '  add("empty_blob_key=%s", tostring(not pcall(save.blob_write, "", {})))',
+          '  add("nan_rejected=%s", tostring(not pcall(save.blob_write, "harness.nan", { v = 0/0 })))',
+          '  add("func_rejected=%s", tostring(not pcall(save.blob_write, "harness.fn", { v = print })))',
+          '  -- 收尾：默认档 + 四张活表原样还回去（payload 留在各自槽位里，由 JS 侧断言后清掉）',
+          '  save.slot(nil)',
+          '  __rustlua_save, __rustlua_map_state = snap[1], snap[2]',
+          '  __rustlua_map_current, __rustlua_map_spawn = snap[3], snap[4]',
+          '  add("restored=%s/%s", tostring(map.current() == snap[3]),',
+          '    tostring(map.state("harness_plots") == nil))',
+          '  return table.concat(rows, "\\n")',
+          'end',
+          // 反面对照④：宿主存储**写失败**时 commit 必须是 false + 原因。真机上配额满就是这一条
+          // （JS 侧把 stats.failStorage 置起来再调本函数）；写失败却报 true 就是本轮修的同一个病。
+          // 两个探针都自己快照/还原那四张表：它们跑在主探针与端到端探针**之后**，
+          // 临时槽位不能把游戏内存留在假档上（同一份状态后面还要用）。
+          'function __rustlua_harness_save_fail_commit()',
+          '  local snap = { copy_table(__rustlua_save), copy_table(__rustlua_map_state),',
+          '    __rustlua_map_current, __rustlua_map_spawn }',
+          '  save.slot("harness-fail")',
+          '  local called, ok, reason = pcall(save.commit)',
+          '  save.slot(nil)',
+          '  __rustlua_save, __rustlua_map_state = snap[1], snap[2]',
+          '  __rustlua_map_current, __rustlua_map_spawn = snap[3], snap[4]',
+          '  return string.format("fail_commit=%s/%s/%s", tostring(called), tostring(ok), tostring(reason))',
+          'end',
+          // 对照④的后半：失败只是**那一次**没写进去，通道本身要还能写、还能按"重开"读回来。
+          'function __rustlua_harness_save_recover()',
+          '  local snap = { copy_table(__rustlua_save), copy_table(__rustlua_map_state),',
+          '    __rustlua_map_current, __rustlua_map_spawn }',
+          '  save.slot("harness-fail")',
+          '  local called, ok, reason = pcall(save.commit)',
+          '  save.clear()',
+          '  local lcalled, loaded = pcall(save.load)',
+          '  save.slot(nil)',
+          '  __rustlua_save, __rustlua_map_state = snap[1], snap[2]',
+          '  __rustlua_map_current, __rustlua_map_spawn = snap[3], snap[4]',
+          '  return string.format("recovered=%s/%s/%s/%s", tostring(called), tostring(ok),',
+          '    tostring(lcalled), tostring(loaded))',
+          'end',
+          // 端到端：走游戏自己的 save_manager（provider 抓的是真玩法状态）。
+          'function __rustlua_harness_save_e2e()',
+          '  local rows = {}',
+          '  local function add(fmt, ...) rows[#rows + 1] = string.format(fmt, ...) end',
+          '  local function copy_table(t)',
+          '    local out = {}',
+          '    for k, v in pairs(t) do out[k] = v end',
+          '    return out',
+          '  end',
+          '  local snap = { copy_table(__rustlua_save), copy_table(__rustlua_map_state),',
+          '    __rustlua_map_current, __rustlua_map_spawn }',
+          '  local sm = require("core.save_manager")',
+          '  local snapshot = sm.capture()',
+          '  if type(snapshot) ~= "table" then return "capture=FAIL" end',
+          '  local before = sm.summary(snapshot)',
+          '  local sections = 0',
+          '  for _ in pairs(snapshot.providers or {}) do sections = sections + 1 end',
+          '  add("providers=%d", sections)',
+          '  add("committed=%s", tostring(sm.save()))',
+          '  add("slot_key=%s", __rustlua_save_storage_key())',
+          '  save.clear()',
+          '  local raw, reason = sm.load_raw()',
+          '  add("load_raw=%s/%s", type(raw), tostring(reason))',
+          '  if type(raw) == "table" then',
+          '    local after = sm.summary(raw)',
+          '    add("day=%d/%d", before.day, after.day)',
+          '    add("minute=%d/%d", before.minute, after.minute)',
+          '    add("farm_plots=%d/%d", before.farm_plots, after.farm_plots)',
+          '    add("map_id=%s/%s", before.map, after.map)',
+          '    add("peek_map=%s", tostring(sm.peek_map()))',
+          '  end',
+          '  __rustlua_save, __rustlua_map_state = snap[1], snap[2]',
+          '  __rustlua_map_current, __rustlua_map_spawn = snap[3], snap[4]',
+          '  add("recommitted=%s", tostring(sm.save()))',
+          '  return table.concat(rows, "\\n")',
+          'end',
+        ].join('\n');
+        const saveProblems = [];
+        let probeEvidenceBytes = 0;
+        let e2eEvidenceBytes = 0;
+        const runProbe = (fn) => {
+          try {
+            const out = luaBridge.lua_call_global(fn, '[]');
+            if (typeof out !== 'string') return { out: '', error: `${fn} 没返回字符串` };
+            return { out, error: '' };
+          } catch (error) {
+            return { out: '', error: String((error && error.message) || error).slice(0, 200) };
+          }
+        };
+        const readField = (text, name) => {
+          const matched = String(text).match(new RegExp('^' + name + '=(.*)$', 'm'));
+          return matched ? matched[1] : null;
+        };
+        let probeOut = '';
+        let e2eOut = '';
+        try {
+          luaBridge.lua_do_string(saveProbeSource, 'harness-save-probe.lua');
+        } catch (error) {
+          saveProblems.push(`探针脚本没跑起来：${String((error && error.message) || error).slice(0, 200)}`);
+        }
+        if (!saveProblems.length) {
+          probeOut = runProbe('__rustlua_harness_save_probe').out;
+          if (!probeOut) {
+            saveProblems.push(`值层探针没有输出（${runProbe('__rustlua_harness_save_probe').error || '空'}）`);
+          }
+          e2eOut = runProbe('__rustlua_harness_save_e2e').out;
+          if (!e2eOut) {
+            saveProblems.push('端到端探针没有输出（游戏侧 core/save_manager 没跑起来？）');
+          }
+        }
+        const expect = (name, want) => {
+          if (saveProblems.length && !probeOut) return;
+          const got = readField(probeOut, name);
+          if (got === null) {
+            saveProblems.push(`${name}：探针没给出这一行`);
+          } else if (want !== undefined && got !== want) {
+            saveProblems.push(`${name}：读数 ${got}，应为 ${want}`);
+          }
+          return got;
+        };
+        const expectPattern = (name, pattern, why) => {
+          const got = expect(name);
+          if (got !== null && !pattern.test(got)) saveProblems.push(`${name}：${got} —— ${why}`);
+          return got;
+        };
+        if (probeOut) {
+          // ① 形状：四个名字必须是真的 function。table = 缺失代理（旧行为），
+          //    它能被调用且返回真值，所以游戏侧只在日志里露一点痕迹，玩家看到的是"存了但没恢复"。
+          expectPattern('shape', /^function,function,function,function,function$/,
+            'save 表的形状不对（table 就是缺失代理顶上的坑，正是"存档静默失败"的根因）');
+          // ② 值层往返 + 型
+          expect('blob_write', 'true');
+          expect('roundtrip_memory', 'true/ok');
+          expect('numtypes', 'integer,float');
+          expect('sparse_key', 'integer');
+          // ③ 清内存 → load 回来（= 重开）
+          expect('commit', 'true/true/nil');
+          expect('after_clear', 'nil/nil');
+          expect('map_current_before', 'nil');
+          expectPattern('load', /^true\/true\/nil$/, 'load 必须返回 true 并带回复活的表');
+          expect('roundtrip_storage', 'true/ok');
+          expect('mapstate', 'true/ok');
+          expect('spawn', 'table/1.250,-3.500');
+          expect('map_current_after', 'manor');
+          expect('map_row_not_in_save', 'true');
+          expect('restored', 'true/true');
+          // 反面对照
+          expect('missing', 'true/false/missing');
+          expectPattern('corrupt_escape', /^false\/corrupt: .*(escape|escaped)/,
+            '未知转义必须整档拒绝（当字面量收下会把写的人骗过去）');
+          expectPattern('corrupt_garbage', /^false\/corrupt: .*missing its separator/,
+            '伪行必须 corrupt（引擎：row is not key<TAB>value）');
+          expectPattern('corrupt_header', /^false\/corrupt: .*missing its version header/,
+            '缺版本头必须 corrupt');
+          expectPattern('corrupt_version', /^false\/corrupt: .*unsupported save version: 9/,
+            '高于当前版本必须拒（引擎：不静默错读、不覆盖原文件）');
+          for (const name of ['empty_key', 'empty_blob_key', 'nan_rejected', 'func_rejected']) {
+            expect(name, 'true');
+          }
+          // 坏档判据的硬约束：四种坏档一律整档拒绝，内存里刚 load 回来的那张
+          // map.state 表必须**还在**（引擎侧对应"原文件保留不覆盖"）。
+          expect('memory_intact', 'true');
+          // payload 侧证：Lua 报的 commit=true 只说明它以为写成了，这里看**宿主存储里真有什么**。
+          const probeKey = readField(probeOut, 'slot_key');
+          const payload = probeKey && stats.storage.get(probeKey);
+          if (!payload || typeof payload !== 'string') {
+            saveProblems.push(`commit 之后宿主存储里没有 ${probeKey} 这个键（值=${JSON.stringify(payload)}）`);
+          } else {
+            const header = 'save_version=2' + String.fromCharCode(10);
+            if (!payload.startsWith(header)) {
+              saveProblems.push(`payload 不以 ${JSON.stringify(header)} 开头（前 40 字节 = ${JSON.stringify(payload.slice(0, 40))}）`);
+            }
+            const rows = payload.slice(header.length).split(String.fromCharCode(10)).filter((row) => row !== '');
+            const keys = rows.map((row) => row.split(String.fromCharCode(9))[0]);
+            for (const needle of ['__blob:harness.state', '__map\t', '__mapstate:harness_plots', '__map:spawn:x']) {
+              if (!payload.includes(needle)) {
+                saveProblems.push(`payload 里缺 ${JSON.stringify(needle)} 这一行（键列表=${JSON.stringify(keys)}）`);
+              }
+            }
+            const sorted = [...keys].sort();
+            if (keys.join('|') !== sorted.join('|')) {
+              saveProblems.push(`payload 行序不稳定（引擎侧是 BTreeMap，这里排过一次）：${JSON.stringify(keys)}`);
+            }
+            probeEvidenceBytes = payload.length;
+          }
+          // 反面对照④：宿主写失败必须**可见**。真机上 `wx.setStorageSync` 会因配额/被禁用而抛，
+          // 而适配层的 localStorage.setItem 把它 warn 成一条日志——运行时只有拿到明确的"失败"
+          // 才不许报 commit=true，否则症状又退回"玩家以为存上了"。
+          const failKey = 'rustlua:save_harness-fail';
+          stats.failStorage = true;
+          const failOut = runProbe('__rustlua_harness_save_fail_commit').out;
+          stats.failStorage = false;
+          const failLine = readField(failOut, 'fail_commit');
+          if (failLine === null) {
+            saveProblems.push(`fail_commit：写失败探针没有输出（${runProbe('__rustlua_harness_save_fail_commit').error || '空'}）`);
+          } else if (failLine !== 'true/false/storage write rejected by host shim') {
+            saveProblems.push(`fail_commit：读数 ${failLine}，应为 true/false/storage write rejected by host shim`
+              + '——宿主写失败却报成功，就是本轮修的"存档静默失败"本身');
+          }
+          if (stats.storage.has(failKey)) {
+            saveProblems.push(`写失败时宿主存储里留下了 ${failKey}（半档比没档更糟）`);
+          }
+          const recoverOut = runProbe('__rustlua_harness_save_recover').out;
+          const recoverLine = readField(recoverOut, 'recovered');
+          if (recoverLine !== 'true/true/true/true') {
+            saveProblems.push(`recovered：读数 ${recoverLine}，应为 true/true/true/true`
+              + '（写失败只作废那一次：通道要还能写，且清内存后 load 读得回来）');
+          }
+          stats.storage.delete(failKey);
+        }
+        if (e2eOut) {
+          const e2e = (name) => readField(e2eOut, name);
+          const sections = Number(e2e('providers') || '0');
+          if (!(sections > 0)) {
+            saveProblems.push(`端到端：provider 注册表里一个都没抓到（providers=${e2e('providers')}）`
+              + '——快照是空的，"往返一致"可以靠两边都空来假绿');
+          }
+          if (e2e('committed') !== 'true') {
+            saveProblems.push(`端到端：save_manager.save() 返回 ${e2e('committed')}，应为 true`);
+          }
+          if (e2e('slot_key') !== 'rustlua:save') {
+            saveProblems.push(`端到端：默认档存储键是 ${e2e('slot_key')}，应为 rustlua:save`);
+          }
+          if (e2e('load_raw') !== 'table/nil') {
+            saveProblems.push(`端到端：清掉内存后 load_raw 读到 ${e2e('load_raw')}，应为 table/nil`
+              + '——"存进去的东西重开读不回来"就是玩家报的那件事');
+          }
+          for (const name of ['day', 'minute', 'farm_plots', 'map_id']) {
+            const pair = String(e2e(name) || '');
+            const [before, after] = pair.split('/');
+            if (before === undefined || after === undefined || before !== after) {
+              saveProblems.push(`端到端：${name} 存前 ${before} / 读回 ${after} 不一致`);
+            }
+          }
+          if (e2e('peek_map') !== 'manor') {
+            saveProblems.push(`端到端：peek_map 给出 ${e2e('peek_map')}，应为 manor（门面「继续」靠它决定切哪张图）`);
+          }
+          if (e2e('recommitted') !== 'true') {
+            saveProblems.push('端到端：收尾的 sm.save() 没成功，默认档可能被留在了坏状态');
+          }
+          const gamePayload = stats.storage.get('rustlua:save');
+          const gameBytes = typeof gamePayload === 'string' ? gamePayload.length : 0;
+          if (gameBytes < 1000) {
+            saveProblems.push(`端到端：默认档 payload 只有 ${gameBytes} 字节（一局真玩法状态远不止）`);
+          } else if (!gamePayload.includes('__blob:jianghu_youtian.state')) {
+            saveProblems.push('端到端：默认档 payload 里没有游戏快照那一行');
+          }
+          e2eEvidenceBytes = gameBytes;
+        } else if (!saveProblems.length) {
+          saveProblems.push('端到端探针没有输出（游戏侧 core/save_manager 没跑起来？）');
+        }
+        // 探针写在独立槽位里，跑完把那几个键清掉：真浏览器上 localStorage 是跨用例留存的，
+        // 留着 harness-corrupt 那种垃圾 payload 会让下一次启动读到假档。
+        for (const [key, value] of [...stats.storage.entries()]) {
+          if (key.startsWith('rustlua:save_harness')) stats.storage.delete(key);
+          void value;
+        }
+        if (saveProblems.length) {
+          savePersistEvidence = 'failed';
+          failures.push(`wechat_save_persist_failed:\n  - ${saveProblems.join('\n  - ')}`
+            + '\n（web/微信的 save 是 plugins/webgl/web-runtime.js 里 Lua 补丁自己实现的第三份后端：'
+            + '引擎走 std::fs，wasm 只有只读 VFS。这条钉的是"commit 真的落到 localStorage / '
+            + 'wx.setStorageSync，load 真的读得回来"，原生 jhyt_smoke 的存档段全绿管不到这里）');
+        } else {
+          savePersistEvidence = `ok,probe=${probeEvidenceBytes},game=${e2eEvidenceBytes}`;
+        }
+      }
     }
 
     // L3 行为契约对拍（`--check-api-contract`）。与 webgl 侧共用**同一个件、同一个表达式**
@@ -2674,7 +3435,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         ` entry=${packEntryError ? 'FAIL' : 'ok'}` +
         ` loading_bar=${drawnTexts.some((text) => text.includes('正在下载资源')) ? 'ok' : 'none'}`
       : ` subpackage=none subpackage_loads=${stats.subpackageLoads}`;
-    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} stick_key=w key_bridge=ArrowUp exemption_probe=${exemptionProbe} ${contractEvidence || 'api_contract=not-requested'} wasm=${wasmDiag ? (wasmDiag.status + ':' + wasmDiag.hostApi + ':' + (wasmDiag.channel || 'none') + ':' + (wasmDiag.facade || 'none')) : 'no-diag'} eh_probe=${wasmDiag && wasmDiag.ehProbe ? String(wasmDiag.ehProbe).replace(/^eh_probe=/, '').split(/[（[ ]/)[0] : 'not-attempted'}${remoteEvidence}`);
+    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} action_disk=${JSON.stringify(actionDiskEvidence)} help_page=${JSON.stringify(helpPageEvidence)} depth_order=${JSON.stringify(depthOrderEvidence)} save_persist=${JSON.stringify(savePersistEvidence)} stick_key=w key_bridge=ArrowUp exemption_probe=${exemptionProbe} ${contractEvidence || 'api_contract=not-requested'} wasm=${wasmDiag ? (wasmDiag.status + ':' + wasmDiag.hostApi + ':' + (wasmDiag.channel || 'none') + ':' + (wasmDiag.facade || 'none')) : 'no-diag'} eh_probe=${wasmDiag && wasmDiag.ehProbe ? String(wasmDiag.ehProbe).replace(/^eh_probe=/, '').split(/[（[ ]/)[0] : 'not-attempted'}${remoteEvidence}`);
     return 0;
   }).catch((error) => {
     console.error = originalError;

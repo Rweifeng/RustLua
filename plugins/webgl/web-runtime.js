@@ -1724,7 +1724,11 @@ sprite = {
     local w, h = size:match('^(%d+)x(%d+)$')
     return {
       texture = spec:match('texture=([^;]+)'),
-      size_x = tonumber(w) or 32, size_y = tonumber(h) or tonumber(w) or 32
+      size_x = tonumber(w) or 32, size_y = tonumber(h) or tonumber(w) or 32,
+      -- 排序层回读与原生 sprite.get 同名同默认值（layer 'default' / order 0）：
+      -- 遮挡跟着脚位 Y 走之后，验收要能原样读回自己写下去的那两个键（M35）。
+      sorting_layer = spec:match('sorting_layer=([^;]+)') or 'default',
+      order = tonumber(spec:match('order=([^;]+)')) or 0
     }
   end
 }
@@ -2024,15 +2028,365 @@ function __rustlua_export_ui()
   end
   return table.concat(rows, '\\n')
 end
+-- ---------------------------------------------------------------------------
+-- 存档（web / 微信宿主）：宿主没有文件系统，落盘出口只有一个字符串槽
+-- （浏览器 localStorage；微信侧由 wechat-adapter 把 localStorage 映射到 wx.setStorageSync）。
+-- 引擎版的 save.commit/load 走 std::fs，wasm 里没有写通道，所以这一层必须自带
+-- **序列化 + 读写通道**，不能像以前那样只留 commit=return true 的占位：占位会让
+-- save_manager.save() 打出"[save] committed"，而玩家重开什么也没回来（缺的
+-- blob_write/blob_read 还会被 hostCompat 的缺失代理换成"可调用且返回真值"的替身，
+-- 于是连报错都没有）。
+--
+-- 落进那个槽的文本是三格套娃，每格只管一件事：
+--   ① 行层：save_version=2 头 + 若干「key TAB value」行，键值逐字符转义。与引擎
+--      rustlua-gameplay/src/save.rs 的 v2 编码同形（反斜杠、换行、回车、制表符以及
+--      其它控制字符写成两字符十六进制转义）。同形买不到"互读文件"（web 拿不到 PC 磁盘），买到的是
+--      **坏档判据一致**：缺版本头、版本过高、伪行、未知转义一律整档拒绝，绝不半读。
+--   ② 值层：blob 与 map.state 的值是任意 Lua 表（引擎侧走 serde_json）。这里用长度
+--      前缀记法而不是 JSON：字符串按字节数取，不必二次转义，少一层就少一类事故。
+--      数字分 i/f 两型，浮点用 %.17g 并强制留小数点以保住浮点型，逐位往返；
+--      nan/inf 直接 error——写进去就读不回来，那是"看起来成功"的又一副面孔。
+--   ③ 表键层：整数键原样回来。引擎的 JSON 会把稀疏整数键退化成字符串键（docs/34 记过），
+--      也就是说 web 比 PC 更保真，游戏侧不必为此写分支。
+-- 反斜杠一律用 string.char(92) 现取：这段 Lua 整段住在 JS 模板字面量里，想让 Lua 源码
+-- 里出现一个反斜杠得在文件里写四遍，改的人必错。
+-- ---------------------------------------------------------------------------
+local __SAVE_BS = string.char(92)
+local __SAVE_TAB = string.char(9)
+local __SAVE_LF = string.char(10)
+local __SAVE_CR = string.char(13)
+local __SAVE_VERSION = 2
+local __SAVE_HEADER = 'save_version='
+local __SAVE_STORAGE_PREFIX = 'rustlua:save'
+local __SAVE_BLOB_PREFIX = '__blob:'
+local __SAVE_MAP_KEY = '__map'
+local __SAVE_MAP_SPAWN_X = '__map:spawn:x'
+local __SAVE_MAP_SPAWN_Y = '__map:spawn:y'
+local __SAVE_MAP_STATE_PREFIX = '__mapstate:'
+__rustlua_save_slot = nil
+
+local function __save_escape(text)
+  return (string.gsub(tostring(text), '[' .. __SAVE_BS .. '%c]', function(ch)
+    if ch == __SAVE_BS then return __SAVE_BS .. __SAVE_BS end
+    if ch == __SAVE_LF then return __SAVE_BS .. 'n' end
+    if ch == __SAVE_CR then return __SAVE_BS .. 'r' end
+    if ch == __SAVE_TAB then return __SAVE_BS .. 't' end
+    return string.format(__SAVE_BS .. __SAVE_BS .. 'x%02x', string.byte(ch))
+  end))
+end
+
+-- 与引擎的 unescape 同判据：未知转义与截断的十六进制转义是**错误**，不是"当字面量收下"。
+-- 静默收下会让写的人以为自己转义过了，读回来却是另一串字节。
+local function __save_unescape(text, line)
+  local function fail(reason)
+    return nil, 'malformed save file at line ' .. line .. ': ' .. reason
+  end
+  if not string.find(text, __SAVE_BS, 1, true) then return text end
+  local parts = {}
+  local i = 1
+  while i <= #text do
+    local ch = string.sub(text, i, i)
+    if ch ~= __SAVE_BS then
+      parts[#parts + 1] = ch
+      i = i + 1
+    else
+      local nxt = string.sub(text, i + 1, i + 1)
+      if nxt == __SAVE_BS then
+        parts[#parts + 1] = __SAVE_BS
+        i = i + 2
+      elseif nxt == 'n' then
+        parts[#parts + 1] = __SAVE_LF
+        i = i + 2
+      elseif nxt == 'r' then
+        parts[#parts + 1] = __SAVE_CR
+        i = i + 2
+      elseif nxt == 't' then
+        parts[#parts + 1] = __SAVE_TAB
+        i = i + 2
+      elseif nxt == 'x' then
+        local hex = string.sub(text, i + 2, i + 3)
+        if not string.match(hex, '^[0-9a-fA-F][0-9a-fA-F]$') then
+          return fail('truncated or invalid hex escape')
+        end
+        parts[#parts + 1] = string.char(tonumber(hex, 16))
+        i = i + 4
+      elseif nxt == '' then
+        return fail('trailing backslash in escaped field')
+      else
+        return fail('unknown escape sequence')
+      end
+    end
+  end
+  return table.concat(parts)
+end
+
+local function __save_encode_rows(rows)
+  local keys = {}
+  for key in pairs(rows) do keys[#keys + 1] = key end
+  -- 引擎侧是 BTreeMap，行序天然稳定；这里排一次，同一份状态两次 commit 才逐字节相同
+  -- （harness 与人工对比 payload 都靠它）。
+  table.sort(keys)
+  local parts = { __SAVE_HEADER .. __SAVE_VERSION .. __SAVE_LF }
+  for _, key in ipairs(keys) do
+    parts[#parts + 1] = __save_escape(key) .. __SAVE_TAB .. __save_escape(rows[key]) .. __SAVE_LF
+  end
+  return table.concat(parts)
+end
+
+-- 返回 (rows) 或 (nil, reason)。reason 直接进 save.load 的 "corrupt: " 前缀。
+local function __save_decode_rows(text)
+  local pending = {}
+  local version
+  local line_no = 0
+  for line in string.gmatch(text .. __SAVE_LF, '([^' .. __SAVE_CR .. __SAVE_LF .. ']*)' .. __SAVE_LF) do
+    line_no = line_no + 1
+    if line ~= '' and not string.match(line, '^%s+$') then
+      local tab = string.find(line, __SAVE_TAB, 1, true)
+      if not tab and string.sub(line, 1, #__SAVE_HEADER) == __SAVE_HEADER then
+        local body = string.sub(line, #__SAVE_HEADER + 1)
+        if not string.match(body, '^%d+$') then
+          return nil, 'malformed save file at line ' .. line_no .. ': version is not an integer'
+        end
+        version = tonumber(body)
+      elseif not tab then
+        return nil, 'malformed save file at line ' .. line_no .. ': row is missing its separator'
+      else
+        pending[#pending + 1] = { line_no, string.sub(line, 1, tab - 1), string.sub(line, tab + 1) }
+      end
+    end
+  end
+  if not version then return nil, 'save file is missing its version header' end
+  if version == 0 or version > __SAVE_VERSION then
+    return nil, 'unsupported save version: ' .. version
+  end
+  local rows = {}
+  for _, entry in ipairs(pending) do
+    local key, value = entry[2], entry[3]
+    if version >= 2 then
+      local unescaped_key, key_reason = __save_unescape(entry[2], entry[1])
+      if not unescaped_key then return nil, key_reason end
+      local unescaped_value, value_reason = __save_unescape(entry[3], entry[1])
+      if not unescaped_value then return nil, value_reason end
+      key, value = unescaped_key, unescaped_value
+    end
+    if key == '' then
+      return nil, 'malformed save file at line ' .. entry[1] .. ': empty key'
+    end
+    rows[key] = value
+  end
+  return rows
+end
+
+local function __save_encode_value(value, path, depth)
+  if depth > 64 then return error('save payload nests deeper than 64 levels at ' .. path, 0) end
+  if value == nil then return 'n' end
+  local kind = type(value)
+  if kind == 'boolean' then return value and 'b1' or 'b0' end
+  if kind == 'number' then
+    if value ~= value or value == math.huge or value == -math.huge then
+      error('save payload at ' .. path .. ' is not a finite number', 0)
+    end
+    if math.type(value) == 'integer' then return 'i' .. tostring(value) .. '#' end
+    local repr = string.format('%.17g', value)
+    if not string.find(repr, '[.eE]') then repr = repr .. '.0' end
+    return 'f' .. repr .. '#'
+  end
+  if kind == 'string' then return 's' .. #value .. ':' .. value end
+  if kind == 'table' then
+    local fields = {}
+    local count = 0
+    for key, item in pairs(value) do
+      local key_kind = type(key)
+      if key_kind ~= 'string' and key_kind ~= 'number' then
+        error('save payload table key at ' .. path .. ' is a ' .. key_kind, 0)
+      end
+      count = count + 1
+      fields[count] = __save_encode_value(key, path .. '/(key)', depth + 1) ..
+        __save_encode_value(item, path .. '/' .. tostring(key), depth + 1)
+    end
+    return 't' .. count .. ':' .. table.concat(fields)
+  end
+  error('save payload at ' .. path .. ' holds a ' .. kind, 0)
+end
+
+local function __save_decode_count(text, i, sep)
+  local j = string.find(text, sep, i, true)
+  if not j then return nil, i, 'missing length terminator' end
+  local body = string.sub(text, i, j - 1)
+  if not string.match(body, '^%d+$') then return nil, i, 'bad length: ' .. body end
+  return tonumber(body), j + 1
+end
+
+-- 约定：成功返回 (value, 下一位)，失败返回 (nil, nil, reason)。所以"是否成功"只看
+-- 第二个返回值——根值是 nil（tag n）也是成功，别拿第一个值当错误位。
+local function __save_decode_value(text, i, depth)
+  if depth > 64 then return nil, nil, 'payload nests too deep' end
+  local tag = string.sub(text, i, i)
+  i = i + 1
+  if tag == '' then return nil, nil, 'payload ended early' end
+  if tag == 'n' then return nil, i end
+  if tag == 'b' then
+    local bit = string.sub(text, i, i)
+    if bit ~= '0' and bit ~= '1' then return nil, nil, 'bad boolean' end
+    return bit == '1', i + 1
+  end
+  if tag == 'i' or tag == 'f' then
+    local j = string.find(text, '#', i, true)
+    if not j then return nil, nil, 'unterminated number' end
+    local num = tonumber(string.sub(text, i, j - 1))
+    if num == nil then return nil, nil, 'bad number' end
+    if tag == 'i' and math.type(num) ~= 'integer' then return nil, nil, 'not an integer literal' end
+    if tag == 'f' and math.type(num) ~= 'float' then return nil, nil, 'not a float literal' end
+    return num, j + 1
+  end
+  if tag == 's' then
+    local len, at, reason = __save_decode_count(text, i, ':')
+    if not len then return nil, nil, reason end
+    if at + len - 1 > #text then return nil, nil, 'string length runs past the payload' end
+    return string.sub(text, at, at + len - 1), at + len
+  end
+  if tag == 't' then
+    local count, at, reason = __save_decode_count(text, i, ':')
+    if not count then return nil, nil, reason end
+    local out = {}
+    i = at
+    for _ = 1, count do
+      local key, after, key_reason = __save_decode_value(text, i, depth + 1)
+      if not after then return nil, nil, key_reason end
+      if key == nil then return nil, nil, 'nil table key' end
+      local value, next_at, value_reason = __save_decode_value(text, after, depth + 1)
+      if not next_at then return nil, nil, value_reason end
+      out[key] = value
+      i = next_at
+    end
+    return out, i
+  end
+  return nil, nil, 'unknown value tag'
+end
+
+local function __save_read_value(text)
+  local value, at, reason = __save_decode_value(text, 1, 0)
+  if not at then return nil, reason or 'unterminated payload' end
+  if at <= #text then return nil, 'trailing bytes after the payload' end
+  return value, nil
+end
+
+-- 槽位 → 存储键，对齐引擎的 save_path_for_slot（默认档不带后缀，具名档把非法字符
+-- 换成下划线并挂在同一个前缀后面）。**导出成全局**：宿主侧（harness / 诊断）要按同一
+-- 条规则算出键名才能读到 payload 做断言，在 JS 里再抄一遍 sanitizer 迟早分叉。
+function __rustlua_save_storage_key()
+  local slot = __rustlua_save_slot
+  if slot == nil then return __SAVE_STORAGE_PREFIX end
+  local safe = (string.gsub(slot, '[^%w%-_]', '_'))
+  if safe == '' then safe = 'default' end
+  return __SAVE_STORAGE_PREFIX .. '_' .. safe
+end
+
 save = {
-  read = function(key) return __rustlua_save[key] end,
-  write = function(key, value) __rustlua_save[key] = tostring(value) end,
-  load = function() return true end,
-  commit = function() return true end,
+  write = function(key, value)
+    key = tostring(key)
+    -- 空键会让整份存档在下次 load 时无法解析（引擎 decode 报 empty key），必须在写入点就拒绝。
+    if key == '' then error('save.write key must not be empty', 0) end
+    __rustlua_save[key] = tostring(value)
+  end,
+  read = function(key) return __rustlua_save[tostring(key)] end,
+  -- blob 与 map.state 都是"值层套进行层"：__rustlua_save 里的一行文本而已，
+  -- commit/load 不必为它们单独开路。
+  blob_write = function(key, value)
+    key = tostring(key)
+    if key == '' then error('save.blob_write key must not be empty', 0) end
+    __rustlua_save[__SAVE_BLOB_PREFIX .. key] = __save_encode_value(value, key, 0)
+  end,
+  blob_read = function(key)
+    local encoded = __rustlua_save[__SAVE_BLOB_PREFIX .. tostring(key)]
+    if encoded == nil then return nil end
+    local decoded, reason = __save_read_value(encoded)
+    if reason then
+      error('save.blob_read ' .. tostring(key) .. ' is corrupt: ' .. reason, 0)
+    end
+    return decoded
+  end,
+  slot = function(name)
+    if name == nil then
+      __rustlua_save_slot = nil
+      return
+    end
+    name = tostring(name)
+    __rustlua_save_slot = (name ~= '') and name or nil
+  end,
+  slot_get = function() return __rustlua_save_slot end,
+  commit = function()
+    if type(__rustlua_storage_js_write) ~= 'function' then
+      log.warn('[save] 宿主存储回调缺失，commit 已放弃')
+      return false, 'no_save_path'
+    end
+    local rows = {}
+    for key, value in pairs(__rustlua_save) do rows[tostring(key)] = tostring(value) end
+    -- 地图状态在 web 侧住在自己的活表里（引擎侧它就躺在 save.data 里）。落盘时按**引擎
+    -- 同名键**写出，读回时按同名键拆回活表，两边各只有一份事实源。
+    if __rustlua_map_current ~= nil then rows[__SAVE_MAP_KEY] = tostring(__rustlua_map_current) end
+    local spawn = __rustlua_map_spawn
+    if type(spawn) == 'table' then
+      local x, y = tonumber(spawn.x), tonumber(spawn.y)
+      if x and y then
+        rows[__SAVE_MAP_SPAWN_X] = string.format('%.17g', x)
+        rows[__SAVE_MAP_SPAWN_Y] = string.format('%.17g', y)
+      end
+    end
+    for name, value in pairs(__rustlua_map_state) do
+      local key = tostring(name)
+      rows[__SAVE_MAP_STATE_PREFIX .. key] =
+        __save_encode_value(value, 'map.state ' .. key, 0)
+    end
+    local payload = __save_encode_rows(rows)
+    local ok, reason = __rustlua_storage_js_write(__rustlua_save_storage_key(), payload)
+    if not ok then
+      log.error('[save] 落盘失败：' .. tostring(reason or 'storage write failed'))
+      return false, reason or 'storage_write_failed'
+    end
+    log.info('[save] committed ' .. __rustlua_save_storage_key() .. ' (' .. #payload .. ' bytes)')
+    return true
+  end,
+  load = function()
+    if type(__rustlua_storage_js_read) ~= 'function' then
+      log.warn('[save] 宿主存储回调缺失，load 已放弃')
+      return false, 'no_save_path'
+    end
+    local text = __rustlua_storage_js_read(__rustlua_save_storage_key())
+    -- 空串是"这个槽里没有档"的唯一形状：payload 再小也带着版本头，不可能为空。
+    if type(text) ~= 'string' or text == '' then return false, 'missing' end
+    local rows, reason = __save_decode_rows(text)
+    if not rows then return false, 'corrupt: ' .. reason end
+    -- 先整档解一遍，再一次性换掉三张活表：任何一行坏掉都整档拒绝，
+    -- 绝不留下一半内存态来自宿主、一半来自上一帧。
+    local next_save, next_state = {}, {}
+    for key, value in pairs(rows) do
+      if key == __SAVE_MAP_KEY or key == __SAVE_MAP_SPAWN_X or key == __SAVE_MAP_SPAWN_Y then
+        -- 拆到下面的三张活表里，不进 __rustlua_save
+      elseif string.sub(key, 1, #__SAVE_MAP_STATE_PREFIX) == __SAVE_MAP_STATE_PREFIX then
+        local name = string.sub(key, #__SAVE_MAP_STATE_PREFIX + 1)
+        local decoded, decode_reason = __save_read_value(value)
+        if decode_reason then
+          return false, 'corrupt: map.state ' .. name .. ' ' .. decode_reason
+        end
+        next_state[name] = decoded
+      else
+        next_save[key] = value
+      end
+    end
+    local spawn_x, spawn_y = tonumber(rows[__SAVE_MAP_SPAWN_X]), tonumber(rows[__SAVE_MAP_SPAWN_Y])
+    __rustlua_save = next_save
+    __rustlua_map_state = next_state
+    __rustlua_map_current = rows[__SAVE_MAP_KEY]
+    __rustlua_map_spawn = (spawn_x and spawn_y) and { x = spawn_x, y = spawn_y } or nil
+    log.info('[save] loaded ' .. __rustlua_save_storage_key())
+    return true
+  end,
   -- 「开始新游戏」必须能丢弃引擎侧持久键：__map / __map:spawn:* / __mapstate:*。
   -- 游戏侧 state.reset() 只清 Lua 表，残留会让新档读回上一局的地图与地图状态
   -- （同进程内「继续 → 玩 → 返回标题 → 开始新游戏」即可复现，main.lua 的注释写着
-  -- 顺序固定：先清引擎键，再让各模块写自己的空快照）。返回清掉的键数，与引擎一致。
+  -- 顺序固定：先清引擎键，再让各模块写自己的空快照）。返回清掉的键数，与引擎一致：
+  -- **只清内存**，槽里的旧 payload 由下一次 commit 整体替换。
   clear = function()
     local removed = 0
     for _ in pairs(__rustlua_save) do removed = removed + 1 end
@@ -2696,6 +3050,49 @@ function doString(L, source, name) {
         return [0];
       }
     });
+    // 存档落盘出口。宿主侧只有一个字符串槽：浏览器是 localStorage，微信由
+    // wechat-adapter 把同名全局映射到 wx.setStorageSync。序列化全在 Lua 侧做完，
+    // 这里只搬字符串——wasm 桥的回调只认基本值（见上面 registerLuaFunction 的注释），
+    // 传不了表。
+    // 读失败一律折算成空串（=「这个槽里没档」），写失败必须把原因带回去：
+    // commit 静默成功就是玩家丢档，lua_api_overrides.json 里那条"存档写回静默失败"
+    // 的分叉代价就是这么来的。
+    const storageSlot = function () {
+      try {
+        return (typeof localStorage === 'object' && localStorage) ? localStorage : null;
+      } catch (error) {
+        // 隐私模式下的 Safari 访问 localStorage 直接抛 SecurityError。
+        return null;
+      }
+    };
+    bridge.lua_register_js_callback('__rustlua_storage_js_write', function (key, text) {
+      const store = storageSlot();
+      if (!store) return [false, 'no_storage'];
+      try {
+        // 微信适配层的 localStorage 是 shim：它把 `wx.setStorageSync` 的异常 warn 之后**吞掉**，
+        // 所以浏览器会抛的配额错误在微信上根本抛不出来。判据改成看返回值——shim 明确返回
+        // false 才算失败（真浏览器的 setItem 返回 undefined，不能当成失败）。
+        if (store.setItem(String(key), String(text)) === false) {
+          return [false, 'storage write rejected by host shim'];
+        }
+        return [true];
+      } catch (error) {
+        const reason = String((error && error.message) || error);
+        // 配额满（QuotaExceededError）与"存储被禁用"是两类故障，日志里必须分得开：
+        // 前者要清档，后者要换宿主通道。
+        return [false, 'storage write failed: ' + reason];
+      }
+    });
+    bridge.lua_register_js_callback('__rustlua_storage_js_read', function (key) {
+      const store = storageSlot();
+      if (!store) return [''];
+      try {
+        const value = store.getItem(String(key));
+        return [typeof value === 'string' ? value : ''];
+      } catch (error) {
+        return [''];
+      }
+    });
     try {
       const hostGlobals = engineHostGlobals();
       const hostCompat = hostGlobals.map(name => `if ${name} == nil then ${name} = __rustlua_missing_host_global(${luaQuote(name)}) end`).join('\n');
@@ -2993,7 +3390,12 @@ function input.action_repeat(action)
   end
   return false
 end
-function input.bindings(action) local result = {}; for i,k in ipairs(bindings[tostring(action)] or {}) do result[i]=k end; return result end
+-- 对外文本必须带引擎的 key: 前缀（native 的 Binding::to_text 形如 key:keyj）：游戏侧
+-- virtual_pad.action_key 与 hints.binding_labels 都按 ^key:(.+)$ 解析，返回裸名会让
+-- 它们一条都匹配不上。微信 harness 实测的代价：招式卡与动作盘九格**全部脱靶**
+-- （点「睡觉」天数不变），因为 action_key 拿到 nil 就静默什么都不做。
+-- 内部匹配仍用裸名（__rustlua_input.just 的键是 keyName() 的产出），只有对外契约对齐引擎。
+function input.bindings(action) local result = {}; for i,k in ipairs(bindings[tostring(action)] or {}) do result[i]='key:'..k end; return result end
 -- 按住态（引擎 action_is_down）与抬起边沿（引擎 action_just_released）。
 -- input.action 此前**整族缺失**（补丁层那张 input = { … } 是整表替换，漏名即 nil），
 -- action_released 则是 L3 契约 input.action.no_device 报"缺宿主 API"的那一条。

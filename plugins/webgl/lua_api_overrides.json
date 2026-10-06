@@ -133,7 +133,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1607
+      "line": 1781
     },
     {
       "module": "animation3d",
@@ -147,7 +147,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1651
+      "line": 1833
     },
     {
       "module": "audio",
@@ -164,7 +164,7 @@
         "settings_path",
         "settings_text"
       ],
-      "line": 1660
+      "line": 1842
     },
     {
       "module": "camera",
@@ -175,7 +175,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1832
+      "line": 2403
     },
     {
       "module": "entity",
@@ -183,7 +183,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 1249
+      "line": 1419
     },
     {
       "module": "grid",
@@ -191,7 +191,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 964
+      "line": 1134
     },
     {
       "module": "health",
@@ -199,7 +199,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 1491
+      "line": 1661
     },
     {
       "module": "input",
@@ -228,7 +228,7 @@
         "nav_settings",
         "set_nav_settings"
       ],
-      "line": 899
+      "line": 1069
     },
     {
       "module": "inv",
@@ -238,7 +238,7 @@
         "open"
       ],
       "referenced": [],
-      "line": 1059
+      "line": 1229
     },
     {
       "module": "log",
@@ -248,7 +248,7 @@
         "debug"
       ],
       "referenced": [],
-      "line": 875
+      "line": 1045
     },
     {
       "module": "map",
@@ -259,7 +259,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1195
+      "line": 1365
     },
     {
       "module": "mesh",
@@ -270,7 +270,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1833
+      "line": 2404
     },
     {
       "module": "particles",
@@ -280,7 +280,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1831
+      "line": 2402
     },
     {
       "module": "physics",
@@ -295,7 +295,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1492
+      "line": 1662
     },
     {
       "module": "physics3d",
@@ -310,23 +310,15 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1537
+      "line": 1707
     },
     {
       "module": "save",
-      "note": "存档键值存在 Lua 侧 __rustlua_save，read/write/commit 走文本路径。dropped=blob_read/blob_write/slot/slot_get：二进制 blob 与槽位 API 在 web 对应的是 Lua 表加 JS 存储，补丁没提供这四个名字。game_jhyt 的两条 blob 调用都用 pcall 包住（core/save_manager.lua:226/268）→ 不崩，但存档写回会静默失败，是这条分叉的真实代价。",
-      "dropped": [
-        "blob_read",
-        "blob_write",
-        "slot",
-        "slot_get"
-      ],
+      "note": "存档在 web/微信侧是**另写的第三份后端**：键值仍存 Lua 侧 __rustlua_save，落盘出口是 localStorage（微信由 wechat-adapter 把同名全局映射到 wx.setStorageSync），payload 与引擎 rustlua-gameplay/src/save.rs 的 v2 编码同形（save_version=2 头 + 逐字符转义的 key<TAB>value 行）。2026-10-05 补上 blob_read/blob_write/slot/slot_get 四个名字，dropped 归零。此前这四个名字走缺失代理——代理可调用且返回真值替身，于是 save_manager.save() 照样打「[save] committed」，玩家重开什么也没回来（微信侧报的「存档功能不生效」就是这条）。值层用长度前缀记法而不是 JSON，比引擎更保真：稀疏整数键原样回来（引擎的 lua_table_to_json 会退化成字符串键，docs/34 记过）。剩下的代价：存档只在**本宿主**内持久，PC 的 .sav 与浏览器 localStorage 互相看不见；commit 是整份 payload 覆写（没有增量）。活体门 scripts/wechat-minigame-harness.js --check-save-persist（形状 + 值层往返 + 清内存再 load = 重开 + missing/corrupt/写入拒绝四组反面对照）。",
+      "dropped": [],
       "invented": [],
-      "referenced": [
-        "blob_read",
-        "blob_write"
-      ],
-      "line": 1810
+      "referenced": [],
+      "line": 2285
     },
     {
       "module": "scene",
@@ -334,7 +326,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 948
+      "line": 1118
     },
     {
       "module": "sprite",
@@ -342,7 +334,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 1540
+      "line": 1710
     },
     {
       "module": "tilemap",
@@ -354,7 +346,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1319
+      "line": 1489
     },
     {
       "module": "time",
@@ -362,7 +354,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 876
+      "line": 1046
     },
     {
       "module": "transform",
@@ -374,7 +366,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1283
+      "line": 1453
     },
     {
       "module": "transform3d",
@@ -384,7 +376,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1308
+      "line": 1478
     },
     {
       "module": "ui",
@@ -413,7 +405,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1712
+      "line": 1894
     }
   ]
 }

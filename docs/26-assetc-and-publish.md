@@ -179,7 +179,13 @@ save_version=2
 - `save.clear()` 丢弃内存中的全部键值；`map.state_clear(name?)` 清理 `__mapstate:*`。
   新游戏必须用它们（连同 `__map:*`/`__blob:*`）确保上一局状态不残留，见
   [18-lua-api.md](18-lua-api.md)。
-- Lua 任意值经 `save.blob_*` 序列化后按键值写入同一存档。
+- Lua 任意值经 `save.blob_*` 序列化后按键值写入同一存档（原生侧是 JSON，稀疏整数键读回会变成
+  字符串键，所以游戏侧快照要稠密输出槽位）。
+- **web/微信不是这份 Rust 实现**：那两个宿主上 `save` 是 `plugins/webgl/web-runtime.js` 里 Lua
+  补丁自己写的第三份后端——行层与本节逐字节同形（含排序键、四种坏档整档拒绝），值层换成
+  **长度前缀树**（比 JSON 更忠实：整数键与整数/浮点之分都保留），落点是 `localStorage` /
+  `wx.setStorageSync`，键名 `rustlua:save` / `rustlua:save_<slot>` 镜像 `save_path_for_slot`。
+  代价与验收见 [51-平台插件适配.md](51-平台插件适配.md)「存档落盘」一节。
 - v1→v2 的读兼容是**读路径**：旧二进制读新档会以 `UnsupportedVersion` 明确拒绝，
   不会静默误读。
 
