@@ -19,11 +19,60 @@ param(
     # + no-modules 桥（game_web Lua 桥）的 Node 验证。退出码 0=通过/1=判红/3=环境受限跳过，
     # 与 -Web 同一哲学：缺 node/wasm32/zig/wasm-bindgen 时显式跳过，绝不把"跳过"当"通过"。
     [switch]$WasmLua,
+    # 快速读数（M66+）：只跑「零成本 + 数据级」的门，跳过编译重活与编辑器实机步骤。
+    # 它与 -Mvp/-MvpOnly/-Benchmarks/-Web/-WasmLua 互斥（混用会让「跳过了什么」说不清），
+    # 归一化与覆盖面见下面 `if ($Quick)` 那段长注释。
+    [switch]$Quick,
     # 限制 cargo 编译并行度与 benchmark rayon 线程池上限，防止完整回归把 CPU/内存打满导致系统崩溃。
     # 未指定时自动取 CPU 核数的一半（最少 2），已足够在 8 核 / 16 GB 机器上把峰值内存与 CPU 占用
     # 控制在安全范围。CI 不受影响（runner 资源固定，可显式传 -MaxJobs 覆盖）。
     [int]$MaxJobs = 0
 )
+
+# ── -Quick：回答「这棵树现在是不是红的」的便宜读数 ─────────────────────────────
+# 为什么需要它：pre-commit hook 只镜像 CI 的 lint job（`git diff --cached --check` + fmt + clippy），
+# 而真正咬人的**数据级工程校验**（`game --check` / `editor --check`：场景引用的资源、脚本语法、
+# `validate_data.lua`、组件 schema）此前只存在于总门里。总门在 8 核 / 16 GB 的开发机上要几十分钟
+# 到几小时，于是「想拿一次读数」的成本高到没人愿意付——代价已经真实发生过：`scenes/main.scene`
+# 的一句中文注释让 `game --check` 判红，这条红在本地 HEAD 里活了 5 个提交才被发现
+# （见 CHANGELOG「场景注释不再冒充依赖」）。`-Quick` 把这一类红的发现成本降到几十秒（热缓存）。
+#
+# 跑什么：文档门、vendor 补丁门、cargo metadata、fmt、Lua API 文档桩、Web API 覆盖清单、
+#         git diff --check、两个判据自测、`game --check`、`editor --check`（两个工程）。
+# 不跑什么（每一步都会在结尾逐个打印出来）：clippy、rustdoc、对外 Rust 符号面门（依赖 rustdoc
+#         产物）、pre-commit hook 回归、全量测试、构建、空间迁移报告、编辑器性能基线、GUI smoke。
+#
+# 本仓库口径是「跳过绝不等于通过」：`-Quick` 的绿灯只能读作「数据级与格式门通过」，
+# 不能读作总门通过——所以它不打印 Quality gate passed，只打印 Quick gate passed (PARTIAL)。
+if ($Quick -and ($Mvp -or $MvpOnly -or $Benchmarks -or $Web -or $WasmLua)) {
+    throw "-Quick 与 -Mvp/-MvpOnly/-Benchmarks/-Web/-WasmLua 不能同时使用：-Quick 的定义就是「只跑便宜的那一档」，混用会让「跳过了什么」说不清。"
+}
+$quick = [bool]$Quick
+# `-Quick` 本次跳过的步骤名：只由 guard 的调用点与下面这三行登记，结尾统一打印。
+# 本仓库不接受「静默跳过」——跳过的每一步都必须在结尾的清单里露面。
+$skippedByQuick = [System.Collections.Generic.List[string]]::new()
+# 清单只在脚本**走到底**时才是完整的（guard 是走到才登记的）。判红时脚本停在半路，
+# 清单必须自曝这一点，否则读者会把"登记了 3 条"误读成"只跳了 3 步"。
+$quickCompleted = $false
+
+# `-Quick` 的跳过判定：返回 $true 表示「这一步本次跳过」，**副作用**是把步骤名登记进
+# `$skippedByQuick`。步骤名写在调用点（也就是 guard 那一行）上，所以清单与 guard 不可能漂移。
+function Test-QuickSkip([string]$Step) {
+    if (-not $script:quick) { return $false }
+    [void]$skippedByQuick.Add($Step)
+    return $true
+}
+
+if ($quick) {
+    # 这三步是编译重活（clippy --all-targets --all-features / 全量测试 / debug+release 构建）。
+    # 复用既有开关跳过，而不是并列写第二套判断逻辑——skip 的语义只留一处定义。
+    $SkipClippy = $true
+    $SkipTests = $true
+    $SkipBuild = $true
+    [void]$skippedByQuick.Add("Clippy (--all-targets --all-features)")
+    [void]$skippedByQuick.Add("Workspace tests (--all-features)")
+    [void]$skippedByQuick.Add("Release build + Debug build")
+}
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -77,7 +126,7 @@ function Write-Step([string]$Message) {
     Write-Host "`n==> $Message" -ForegroundColor Cyan
 }
 
-function Invoke-Checked([string]$File, [string[]]$Arguments) {
+function Invoke-Checked([string]$File, [string[]]$Arguments, [switch]$QuietOutput) {
     $command = "$File $($Arguments -join ' ')"
     Write-Host "> $command" -ForegroundColor DarkGray
 
@@ -86,6 +135,14 @@ function Invoke-Checked([string]$File, [string[]]$Arguments) {
     $output = & $File @Arguments 2>&1
     $exitCode = $LASTEXITCODE
     $ErrorActionPreference = $previousPreference
+
+    # `-QuietOutput`：成功时**不**进 stdout/日志的步骤（目前只有 `cargo metadata`——它往 stdout
+    # 倒的是整份 workspace JSON，几十 KB 机器可读噪音，人读质量日志时只会把真正的红淹掉）。
+    # 判红时照样把捕获到的输出原样打出来：不能出现"失败了却看不到原因"。
+    if ($QuietOutput -and $exitCode -eq 0) {
+        Add-Content -Path $logPath -Value "> $command (ok; $($output.Count) 行输出按 -QuietOutput 抑制)" -Encoding UTF8
+        return
+    }
 
     $output | ForEach-Object {
         $line = $_.ToString()
@@ -267,7 +324,7 @@ if ($runGates) {
 Push-Location $engineRoot
 try {
     Write-Step "Cargo metadata"
-    Invoke-Checked cargo @("metadata", "--no-deps", "--format-version", "1")
+    Invoke-Checked cargo @("metadata", "--no-deps", "--format-version", "1") -QuietOutput
 
     Write-Step "Rust formatting"
     Invoke-Checked cargo @("fmt", "--all", "--", "--check")
@@ -295,51 +352,59 @@ try {
         Invoke-Checked cargo @("clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings")
     }
 
-    # 优化项 10：rustdoc 必须是**零告警**的——失效的 intra-doc 链接是文档站点里点不开的按钮，
-    # 而 `-D warnings` 让"新增一条断链"当场判红（存量已在本批清零）。
-    # `$env.RUSTDOCFLAGS` 只在这一步生效，用 try/finally 复原，避免污染后面的 build/test。
-    Write-Step "Rustdoc (workspace, warnings are errors)"
-    $previousDocFlags = $env:RUSTDOCFLAGS
-    try {
-        $env:RUSTDOCFLAGS = "-D warnings"
-        Invoke-Checked cargo @("doc", "--no-deps", "--workspace", "--lib")
-    } finally {
-        $env:RUSTDOCFLAGS = $previousDocFlags
+    # -Quick 跳过：`cargo doc --workspace` 是编译重活，而紧跟的对外符号面门**依赖它刚生成的产物**
+    # （见上面的 WP12 注释）。跳过 doc 却照跑符号面门，等于拿上一次的旧产物当证据——陈旧证据不算证据。
+    if (-not (Test-QuickSkip "Rustdoc (workspace, warnings are errors) + 对外 Rust 符号面门")) {
+        # 优化项 10：rustdoc 必须是**零告警**的——失效的 intra-doc 链接是文档站点里点不开的按钮，
+        # 而 `-D warnings` 让"新增一条断链"当场判红（存量已在本批清零）。
+        # `$env.RUSTDOCFLAGS` 只在这一步生效，用 try/finally 复原，避免污染后面的 build/test。
+        Write-Step "Rustdoc (workspace, warnings are errors)"
+        $previousDocFlags = $env:RUSTDOCFLAGS
+        try {
+            $env:RUSTDOCFLAGS = "-D warnings"
+            Invoke-Checked cargo @("doc", "--no-deps", "--workspace", "--lib")
+        } finally {
+            $env:RUSTDOCFLAGS = $previousDocFlags
+        }
+
+        # WP12 阶段 0：`engine` 对外 Rust 符号面的基线门。它读的就是上面 `cargo doc` 刚生成的产物
+        # （`engine/target/doc/engine`），所以必须紧跟在那一步之后；判据是"路径 + 项的种类 + 方法还挂在
+        # 哪个类型上"逐项与 `artifacts/baselines/engine-pub-surface.json` 相同。
+        # 抓的是模块拆分这一类事故：`impl` 块搬进 `pub mod` 子模块、`pub use` 漏了一项，都会多/少一条路径。
+        # 缺 node 时按本仓库口径打印原因后跳过，绝不把"跳过"写成通过。
+        Write-Step "Engine public Rust surface"
+        if (Get-Command node -ErrorAction SilentlyContinue) {
+            Invoke-Checked node @((Join-Path $projectRoot "scripts/engine-pub-surface.mjs"), "--check")
+        } else {
+            Write-Host "  [SKIP] 未找到 node：对外 Rust 符号面基线门未运行（不是通过）" -ForegroundColor Yellow
+        }
     }
 
-    # WP12 阶段 0：`engine` 对外 Rust 符号面的基线门。它读的就是上面 `cargo doc` 刚生成的产物
-    # （`engine/target/doc/engine`），所以必须紧跟在那一步之后；判据是"路径 + 项的种类 + 方法还挂在
-    # 哪个类型上"逐项与 `artifacts/baselines/engine-pub-surface.json` 相同。
-    # 抓的是模块拆分这一类事故：`impl` 块搬进 `pub mod` 子模块、`pub use` 漏了一项，都会多/少一条路径。
-    # 缺 node 时按本仓库口径打印原因后跳过，绝不把"跳过"写成通过。
-    Write-Step "Engine public Rust surface"
-    if (Get-Command node -ErrorAction SilentlyContinue) {
-        Invoke-Checked node @((Join-Path $projectRoot "scripts/engine-pub-surface.mjs"), "--check")
-    } else {
-        Write-Host "  [SKIP] 未找到 node：对外 Rust 符号面基线门未运行（不是通过）" -ForegroundColor Yellow
-    }
-
-    # 优化项 11：本地 pre-commit 门自身的回归。fmt/clippy 步查的是代码，这一步查的是
-    # "提交前到底会不会有人被挡住"——hook 的选路、拦截与逃生门逻辑回归了，前面所有步都发现不了。
-    # 它只用临时 git 仓库 + cargo fmt（零依赖、秒级）。退出码沿用本仓库口径：
-    # 0=通过；3=环境受限（缺 git/cargo/sh）打印原因后跳过，绝不把"跳过"说成"通过"；其余=判红。
-    Write-Step "Local pre-commit hook regression"
-    $hookGateScript = Join-Path $projectRoot "scripts/test-git-hooks.ps1"
-    $previousPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    $hookGateOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File $hookGateScript 2>&1
-    $hookGateCode = $LASTEXITCODE
-    $ErrorActionPreference = $previousPreference
-    $hookGateOutput | ForEach-Object {
-        $line = $_.ToString()
-        Write-Host $line
-        Add-Content -Path $logPath -Value $line -Encoding UTF8
-    }
-    if ($hookGateCode -eq 3) {
-        Write-Host "git_hooks_skipped reason=environment_limited exit=3（缺 git/cargo/sh；见上面一行原因）" -ForegroundColor Yellow
-    }
-    elseif ($hookGateCode -ne 0) {
-        throw "Command failed (exit code $hookGateCode): powershell -File $hookGateScript"
+    # -Quick 跳过：这一步量的是 pre-commit hook 自己的选路逻辑，不是这棵树的状态；它会另起临时
+    # git 仓库跑 cargo fmt，与「树是不是红的」无关，故不进快速读数。
+    if (-not (Test-QuickSkip "Local pre-commit hook regression")) {
+        # 优化项 11：本地 pre-commit 门自身的回归。fmt/clippy 步查的是代码，这一步查的是
+        # "提交前到底会不会有人被挡住"——hook 的选路、拦截与逃生门逻辑回归了，前面所有步都发现不了。
+        # 它只用临时 git 仓库 + cargo fmt（零依赖、秒级）。退出码沿用本仓库口径：
+        # 0=通过；3=环境受限（缺 git/cargo/sh）打印原因后跳过，绝不把"跳过"说成"通过"；其余=判红。
+        Write-Step "Local pre-commit hook regression"
+        $hookGateScript = Join-Path $projectRoot "scripts/test-git-hooks.ps1"
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        $hookGateOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File $hookGateScript 2>&1
+        $hookGateCode = $LASTEXITCODE
+        $ErrorActionPreference = $previousPreference
+        $hookGateOutput | ForEach-Object {
+            $line = $_.ToString()
+            Write-Host $line
+            Add-Content -Path $logPath -Value $line -Encoding UTF8
+        }
+        if ($hookGateCode -eq 3) {
+            Write-Host "git_hooks_skipped reason=environment_limited exit=3（缺 git/cargo/sh；见上面一行原因）" -ForegroundColor Yellow
+        }
+        elseif ($hookGateCode -ne 0) {
+            throw "Command failed (exit code $hookGateCode): powershell -File $hookGateScript"
+        }
     }
 
     if (-not $SkipTests) {
@@ -438,92 +503,96 @@ try {
         Pop-Location
     }
 
-    # docs/54 §8-⑧：空间迁移命令必须**每次**都给出可归档的报告 artifact，并且示例工程里
-    # 一个实体都不该被拒（refused=0）、一处旧设计都不该命中（removed=0）。把报告落盘后逐条断言，
-    # 因此"迁移干净"是每次 verify 重新证明的事实，而不是一次性的手工检查。
-    Write-Step "Spatial migration report"
-    Push-Location $projectRoot
-    try {
-        $migrationReportPath = Join-Path $projectRoot "artifacts\baselines\spatial-migration-report.txt"
-        $migrationOutput = & cargo run --quiet --manifest-path "engine/Cargo.toml" -p editor -- --project $defaultGameProject --migrate-spatial --migrate-report $migrationReportPath 2>&1
-        $migrationExit = $LASTEXITCODE
-        $migrationOutput | ForEach-Object { Write-Host $_ }
-        if ($migrationExit -ne 0) {
-            throw "spatial migration dry-run failed (exit code $migrationExit)"
+    # -Quick 跳过：以下三步都是「跑起编辑器进程」的重活（空间迁移报告 / 性能基线 / GUI smoke），
+    # 都要完整构建编辑器。它们量的是能力与性能，不是这棵树当下红不红。
+    if (-not (Test-QuickSkip "Spatial migration report + Editor performance baseline + Editor GUI smoke")) {
+        # docs/54 §8-⑧：空间迁移命令必须**每次**都给出可归档的报告 artifact，并且示例工程里
+        # 一个实体都不该被拒（refused=0）、一处旧设计都不该命中（removed=0）。把报告落盘后逐条断言，
+        # 因此"迁移干净"是每次 verify 重新证明的事实，而不是一次性的手工检查。
+        Write-Step "Spatial migration report"
+        Push-Location $projectRoot
+        try {
+            $migrationReportPath = Join-Path $projectRoot "artifacts\baselines\spatial-migration-report.txt"
+            $migrationOutput = & cargo run --quiet --manifest-path "engine/Cargo.toml" -p editor -- --project $defaultGameProject --migrate-spatial --migrate-report $migrationReportPath 2>&1
+            $migrationExit = $LASTEXITCODE
+            $migrationOutput | ForEach-Object { Write-Host $_ }
+            if ($migrationExit -ne 0) {
+                throw "spatial migration dry-run failed (exit code $migrationExit)"
+            }
+            if (-not (Test-Path -LiteralPath $migrationReportPath)) {
+                throw "spatial migration report was not written: $migrationReportPath"
+            }
+            $migrationText = Get-Content -Raw -LiteralPath $migrationReportPath
+            if ($migrationText -notmatch "spatial_migration_ok") {
+                throw "spatial migration report has no spatial_migration_ok summary line"
+            }
+            if ($migrationText -notmatch "refused=0") {
+                throw "spatial migration report lists refused entities (not losslessly migratable)"
+            }
+            if ($migrationText -notmatch "removed=0") {
+                throw "spatial migration report lists removed legacy designs (docs/30 compatibility table)"
+            }
         }
-        if (-not (Test-Path -LiteralPath $migrationReportPath)) {
-            throw "spatial migration report was not written: $migrationReportPath"
+        finally {
+            Pop-Location
         }
-        $migrationText = Get-Content -Raw -LiteralPath $migrationReportPath
-        if ($migrationText -notmatch "spatial_migration_ok") {
-            throw "spatial migration report has no spatial_migration_ok summary line"
-        }
-        if ($migrationText -notmatch "refused=0") {
-            throw "spatial migration report lists refused entities (not losslessly migratable)"
-        }
-        if ($migrationText -notmatch "removed=0") {
-            throw "spatial migration report lists removed legacy designs (docs/30 compatibility table)"
-        }
-    }
-    finally {
-        Pop-Location
-    }
 
-    # docs/55 阶段 0 / ER-01：编辑器自身的性能基线必须**每次**给出可归档报告，并且每个场景的
-    # 不变量（10k 实体扁平化、100k 日志有界、历史预算、后台扫描、保存/加载往返一致）都要通过。
-    # 命令在有场景不达标时以退出码 2 结束，因此这里既拿到数字也拿到判定。
-    Write-Step "Editor performance baseline"
-    Push-Location $projectRoot
-    try {
-        $editorBaselinePath = Join-Path $projectRoot "artifacts\baselines\editor-baseline.txt"
-        $editorBaselineOutput = & cargo run --quiet --manifest-path "engine/Cargo.toml" -p editor -- --perf-baseline --perf-report $editorBaselinePath 2>&1
-        $editorBaselineExit = $LASTEXITCODE
-        $editorBaselineOutput | ForEach-Object { Write-Host $_ }
-        if ($editorBaselineExit -ne 0) {
-            throw "editor performance baseline failed (exit code $editorBaselineExit); report: $editorBaselinePath"
+        # docs/55 阶段 0 / ER-01：编辑器自身的性能基线必须**每次**给出可归档报告，并且每个场景的
+        # 不变量（10k 实体扁平化、100k 日志有界、历史预算、后台扫描、保存/加载往返一致）都要通过。
+        # 命令在有场景不达标时以退出码 2 结束，因此这里既拿到数字也拿到判定。
+        Write-Step "Editor performance baseline"
+        Push-Location $projectRoot
+        try {
+            $editorBaselinePath = Join-Path $projectRoot "artifacts\baselines\editor-baseline.txt"
+            $editorBaselineOutput = & cargo run --quiet --manifest-path "engine/Cargo.toml" -p editor -- --perf-baseline --perf-report $editorBaselinePath 2>&1
+            $editorBaselineExit = $LASTEXITCODE
+            $editorBaselineOutput | ForEach-Object { Write-Host $_ }
+            if ($editorBaselineExit -ne 0) {
+                throw "editor performance baseline failed (exit code $editorBaselineExit); report: $editorBaselinePath"
+            }
+            if (-not (Test-Path -LiteralPath $editorBaselinePath)) {
+                throw "editor performance baseline report was not written: $editorBaselinePath"
+            }
+            $editorBaselineText = Get-Content -Raw -LiteralPath $editorBaselinePath
+            if ($editorBaselineText -notmatch "result=ok") {
+                throw "editor performance baseline report has no result=ok summary line"
+            }
+            if ($editorBaselineText -notmatch "failed=0") {
+                throw "editor performance baseline report lists failed scenarios"
+            }
         }
-        if (-not (Test-Path -LiteralPath $editorBaselinePath)) {
-            throw "editor performance baseline report was not written: $editorBaselinePath"
+        finally {
+            Pop-Location
         }
-        $editorBaselineText = Get-Content -Raw -LiteralPath $editorBaselinePath
-        if ($editorBaselineText -notmatch "result=ok") {
-            throw "editor performance baseline report has no result=ok summary line"
-        }
-        if ($editorBaselineText -notmatch "failed=0") {
-            throw "editor performance baseline report lists failed scenarios"
-        }
-    }
-    finally {
-        Pop-Location
-    }
 
-    # docs/55 阶段 0「GUI smoke 清单落地」：无窗口的**合成输入整帧**用例（层级点击/多选/范围选、
-    # 键盘快捷键、Scene View 真实指针拖动、未保存保护弹窗、DPI×resize 组合下的行高与画布几何）。
-    # 它覆盖的是"整帧 + 真实 egui 事件路径"，与下面的基线（`--perf-baseline`）互补：
-    # 基线量性能与几何，这里量**交互语义**。有用例失败时退出码为 2。
-    Write-Step "Editor GUI smoke (synthetic full frames)"
-    Push-Location $projectRoot
-    try {
-        $guiSmokePath = Join-Path $projectRoot "artifacts\baselines\editor-gui-smoke.txt"
-        $guiSmokeOutput = & cargo run --quiet --manifest-path "engine/Cargo.toml" -p editor -- --gui-smoke --gui-report $guiSmokePath 2>&1
-        $guiSmokeExit = $LASTEXITCODE
-        $guiSmokeOutput | ForEach-Object { Write-Host $_ }
-        if ($guiSmokeExit -ne 0) {
-            throw "editor GUI smoke failed (exit code $guiSmokeExit); report: $guiSmokePath"
+        # docs/55 阶段 0「GUI smoke 清单落地」：无窗口的**合成输入整帧**用例（层级点击/多选/范围选、
+        # 键盘快捷键、Scene View 真实指针拖动、未保存保护弹窗、DPI×resize 组合下的行高与画布几何）。
+        # 它覆盖的是"整帧 + 真实 egui 事件路径"，与下面的基线（`--perf-baseline`）互补：
+        # 基线量性能与几何，这里量**交互语义**。有用例失败时退出码为 2。
+        Write-Step "Editor GUI smoke (synthetic full frames)"
+        Push-Location $projectRoot
+        try {
+            $guiSmokePath = Join-Path $projectRoot "artifacts\baselines\editor-gui-smoke.txt"
+            $guiSmokeOutput = & cargo run --quiet --manifest-path "engine/Cargo.toml" -p editor -- --gui-smoke --gui-report $guiSmokePath 2>&1
+            $guiSmokeExit = $LASTEXITCODE
+            $guiSmokeOutput | ForEach-Object { Write-Host $_ }
+            if ($guiSmokeExit -ne 0) {
+                throw "editor GUI smoke failed (exit code $guiSmokeExit); report: $guiSmokePath"
+            }
+            if (-not (Test-Path -LiteralPath $guiSmokePath)) {
+                throw "editor GUI smoke report was not written: $guiSmokePath"
+            }
+            $guiSmokeText = Get-Content -Raw -LiteralPath $guiSmokePath
+            if ($guiSmokeText -notmatch "result=ok") {
+                throw "editor GUI smoke report has no result=ok summary line"
+            }
+            if ($guiSmokeText -notmatch "failed=0") {
+                throw "editor GUI smoke report lists failed cases"
+            }
         }
-        if (-not (Test-Path -LiteralPath $guiSmokePath)) {
-            throw "editor GUI smoke report was not written: $guiSmokePath"
+        finally {
+            Pop-Location
         }
-        $guiSmokeText = Get-Content -Raw -LiteralPath $guiSmokePath
-        if ($guiSmokeText -notmatch "result=ok") {
-            throw "editor GUI smoke report has no result=ok summary line"
-        }
-        if ($guiSmokeText -notmatch "failed=0") {
-            throw "editor GUI smoke report lists failed cases"
-        }
-    }
-    finally {
-        Pop-Location
     }
 
     # docs/54 §8-⑨：Web 平台的可重复证据。两层，退出码语义严格区分：
@@ -782,10 +851,29 @@ try {
         }
     }
 
-    Write-Host "`nQuality gate passed. Log: $logPath" -ForegroundColor Green
+    if ($quick) {
+        # 「跳过绝不等于通过」：`-Quick` 的绿灯必须与「跑过全部」区分开——措辞与清单两处一起区分。
+        $quickCompleted = $true
+        Write-Host "`nQuick gate passed (PARTIAL). Log: $logPath" -ForegroundColor Green
+    }
+    else {
+        Write-Host "`nQuality gate passed. Log: $logPath" -ForegroundColor Green
+    }
 }
 finally {
     Pop-Location
+    # 清单放在 finally：红的读数要说清「哪一步红了」，同样也要说清「还有哪些根本没跑」。
+    # 清单由 Test-QuickSkip 的调用点登记，不在这里手写。
+    if ($quick -and $skippedByQuick.Count -gt 0) {
+        Write-Host "  本轮 -Quick 未运行的步骤（跳过不等于通过）：" -ForegroundColor Yellow
+        foreach ($skippedStep in $skippedByQuick) {
+            Write-Host "    [SKIP] $skippedStep" -ForegroundColor Yellow
+        }
+        if (-not $quickCompleted) {
+            Write-Host "  （上面只登记到脚本走到的位置：本轮中途判红，后面的 guard 还没走到，清单并不完整）" -ForegroundColor Yellow
+        }
+        Write-Host "  要拿到可号称「门全绿」的读数：不带 -Quick 跑一次完整 verify.ps1。" -ForegroundColor Yellow
+    }
 }
 }
 

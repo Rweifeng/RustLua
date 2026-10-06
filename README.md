@@ -62,6 +62,7 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 | 目的 | 命令 |
 |---|---|
 | 总门（含 MVP 回归与发布自测） | `scripts\verify.ps1`（快速路径 `-MvpOnly`；`-SkipBuild -SkipClippy` 复用已有构建） |
+| **快速读数：这棵树现在红不红** | `scripts\verify.ps1 -Quick`（文档门 + vendor 门 + fmt + `git diff --check` + `game --check` + `editor --check` 两工程；跳过 clippy/rustdoc/测试/构建/基准/GUI smoke，**跳过的每一步都在结尾逐个打印**——绿灯只读作「数据级与格式门通过」） |
 | 格式 / 静态检查 / 测试 | `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings`、`cargo test --workspace --all-features` |
 | 文档一致性（编号/索引/链接/历史路径/编码） | `scripts\check-docs.ps1` |
 | vendor 补丁基线（wasm 必需补丁逐文件在位 + 版本耦合） | `scripts\check-vendor-patches.ps1` |
