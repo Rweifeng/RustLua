@@ -5,6 +5,36 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 标题屏 `drawn=0` 是量具瞎：harness 的假 ctx 补了仿射变换栈（附独立复算）
+
+- **归因翻案**：`docs/52` §6.2 把这条红记成"标题门面进 `.prefab` 之后的渲染差异"，是错的。三条实测
+  指向量具本身：① 同一次 harness 跑里 `ui_elements=13`、`images: ok=7 fail=0`、每帧绘制调用严格递增
+  （游戏确实在画，贴图一张没失败）；② **同一份产物**在真浏览器过 `verify-webgl-bundle.ps1` 读
+  `drawn samples: 251 ui elements: 13`，`data-rustlua-ui-summary` 与微信侧逐字一致；③ 差的只是口径——
+  运行时每帧先做 contain 适配（`fitS = min(canvas.width/1280, canvas.height/720)`），而假 2D 上下文把
+  `save/restore/translate/scale/setTransform/transform` 一律设成 `noop`，于是绘制记在**设计坐标**
+  （标题元素全在 x=378…1240）、`sampleDrawnPixels` 的窗口开在**设备坐标**（harness 画布 375×667，
+  `fitS=0.293`）⇒ 恒 0。manor 能读到几千纯属"瓦片从设计 x=0 铺起"的歪打正着。反方向同样错：真机被
+  letterbox 裁掉的内容它会算成"有画面"。
+- **改法**：假 ctx 实现真仿射矩阵（`a,b,c,d,e,f` + `save/restore` 压栈，`transform` 按
+  `new = current ∘ arg` 复合），`fillRect`/`drawImage` 入 `painted` 前把矩形四角落过矩阵取轴对齐包围盒；
+  `getImageData` 不过矩阵（真 canvas 的像素回读本就在设备空间）。断言阈值一个字没改。
+- **读数**：标题屏 0→60 转绿；这个 60 与"把同一批矩形按同一套 contain 数学独立重算一遍采样"的结果
+  **逐位相同**（`{"fitS":0.29297,"fitOx":0,"fitOy":228.03,"samples":4720,"expected_drawn":60}`）；
+  比例对照 真浏览器 251/17389=1.44% vs harness 60/4720=1.27%（修前 0%）；manor 侧同一条断言
+  4625→3050（换的是口径不是阈值，设备面积本就 = 设计面积 × `fitS²` = 8.6%）。
+  `verify-wechat-minigame.ps1` 到 case 5 之前共 19 组 `harness_ok/harness_negative_ok`，case 5 之后
+  的 12 个用例逐个手跑全 `exit 0`。
+- **买不到的部分**：假 ctx 不栅格化字形，`fillText` 只进 `drawnTexts` 不产像素 ⇒ 纯文字画面在 harness
+  里依旧读 0；`drawImage` 记的是写死的 `[200,120,60]`、不看位图真实内容 ⇒ `drawn` 只回答"有没有东西
+  画进可视区"，不回答"画得对不对"。2.5 MB 单文件上传上限那条未知也没被这次改动动到。
+- **解锁后新撞上的红（归下一摊）**：gate case 5 `--image-src-frozen`（subpackage 形态）期望"宿主不让
+  改写 `Image.src` ⇒ 响亮失败"，实测 `boot=running`、`接管方式=own-accessor`、`images ok=7`，适配层
+  一句报告都没有。用 `git show HEAD` 版 harness 复跑，红字一字不差 ⇒ 与本修无关，它只是从没被跑到过
+  （case 3 的 `drawn=0` 一直把门挡在它前面）。
+- 回滚档：`scripts/wechat-minigame-harness.js`（假 ctx 变换栈那一段）+ `docs/52` §6.2 的归因更正与新增
+  §6.3 + `plugins/wechat-minigame/README.md` 的 `drawn` 口径条目 + 本文件。
+
 ## Unreleased — 6 条"部分修"的余量逐条量化并给出结论；顺手补掉 3D `overlap` 缺的校验
 
 - **补掉一条真差异**：`physics3d.overlap` 此前**不校验** `radius`（2D 校验有限性与非负）——同名 API

@@ -467,13 +467,61 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
   }
 
   function createRecordingContext() {
+    // 仿射变换栈（真 ctx 的 a,b,c,d,e,f 矩阵）。运行时每帧在 drawScene 里做
+    // `translate(fitOx,fitOy); scale(fitS,fitS)` 的 contain 适配（web-runtime.js 的 fitS =
+    // min(canvas.width/1280, canvas.height/720)），于是**绘制参数在设计空间（1280×720）、
+    // 而 getImageData 永远在设备空间**。原先这里全是 noop ⇒ painted 记的是设计坐标、
+    // sampleDrawnPixels 按设备坐标采样 ⇒ 标题屏（元素全在设计 x≥378，设备画布只有 375 宽）
+    // 恒读 drawn=0，而真浏览器同一份产物读 251。假红之外还有反方向：真机被 letterbox
+    // 裁掉的内容会被算成"有画面"（假绿）。所以补的是**真矩阵**，不是放宽那条断言。
+    let xform = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+    const xformStack = [];
+    const num = (value, fallback) => {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    };
+    // new = current ∘ arg（CanvasRenderingContext2D.transform 的语义：先套当前再套参数）
+    const xformMul = (m, n) => ({
+      a: m.a * n.a + m.c * n.b,
+      b: m.b * n.a + m.d * n.b,
+      c: m.a * n.c + m.c * n.d,
+      d: m.b * n.c + m.d * n.d,
+      e: m.a * n.e + m.c * n.f + m.e,
+      f: m.b * n.e + m.d * n.f + m.f,
+    });
+    // 把设计空间的矩形映成设备空间的轴对齐包围盒（四角变换取 min/max；纯缩放/平移下精确）
+    const mapRect = (x, y, w, h) => {
+      const px = (cx, cy) => ({ x: xform.a * cx + xform.c * cy + xform.e, y: xform.b * cx + xform.d * cy + xform.f });
+      const corners = [px(x, y), px(x + w, y), px(x, y + h), px(x + w, y + h)];
+      const xs = corners.map((p) => p.x);
+      const ys = corners.map((p) => p.y);
+      return {
+        x: Math.min.apply(null, xs), y: Math.min.apply(null, ys),
+        w: Math.max.apply(null, xs) - Math.min.apply(null, xs),
+        h: Math.max.apply(null, ys) - Math.min.apply(null, ys),
+      };
+    };
     const ctx = {
       canvas: null,
       __ops: 0,
       fillStyle: '#000', strokeStyle: '#000', lineWidth: 1, font: '10px sans-serif',
       textAlign: 'left', textBaseline: 'alphabetic', globalAlpha: 1,
-      save: noop, restore: noop, translate: noop, scale: noop, rotate: noop,
-      setTransform: noop, transform: noop, resetTransform: noop, clip: noop,
+      save: () => { xformStack.push({ a: xform.a, b: xform.b, c: xform.c, d: xform.d, e: xform.e, f: xform.f }); },
+      restore: () => { const popped = xformStack.pop(); if (popped) xform = popped; },
+      translate: (tx, ty) => { xform = xformMul(xform, { a: 1, b: 0, c: 0, d: 1, e: num(tx, 0), f: num(ty, 0) }); },
+      scale: (sx, sy) => {
+        const x = num(sx, 1);
+        xform = xformMul(xform, { a: x, b: 0, c: 0, d: num(sy, x), e: 0, f: 0 });
+      },
+      rotate: noop,
+      setTransform: (a, b, c, d, e, f) => {
+        xform = { a: num(a, 1), b: num(b, 0), c: num(c, 0), d: num(d, 1), e: num(e, 0), f: num(f, 0) };
+      },
+      transform: (a, b, c, d, e, f) => {
+        xform = xformMul(xform, { a: num(a, 1), b: num(b, 0), c: num(c, 0), d: num(d, 1), e: num(e, 0), f: num(f, 0) });
+      },
+      resetTransform: () => { xform = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }; },
+      clip: noop,
       beginPath: noop, closePath: noop, moveTo: noop, lineTo: noop, arc: noop, rect: noop,
       fill: noop, stroke: noop,
       fillText: (text) => { drawnTexts.push(String(text)); },
@@ -509,7 +557,8 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       countDraw(ctx);
       const color = parseColor(this && this.fillStyle !== undefined ? this.fillStyle : ctx.fillStyle);
       if (color) {
-        painted.push({ x: Number(x) || 0, y: Number(y) || 0, w: Number(w) || 0, h: Number(h) || 0, color });
+        const r = mapRect(Number(x) || 0, Number(y) || 0, Number(w) || 0, Number(h) || 0);
+        painted.push({ x: r.x, y: r.y, w: r.w, h: r.h, color });
         if (painted.length > 1024) painted.shift();
       }
     };
@@ -530,7 +579,8 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         dw = Number(image && image.width) || 32; dh = Number(image && image.height) || 32;
       }
       if (dw > 0 && dh > 0) {
-        painted.push({ x: dx, y: dy, w: dw, h: dh, color: [200, 120, 60, 255] });
+        const r = mapRect(dx, dy, dw, dh);
+        painted.push({ x: r.x, y: r.y, w: r.w, h: r.h, color: [200, 120, 60, 255] });
         if (painted.length > 1024) painted.shift();
       }
     };
