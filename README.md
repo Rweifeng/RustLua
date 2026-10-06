@@ -63,6 +63,7 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 |---|---|
 | 总门（含 MVP 回归与发布自测） | `scripts\verify.ps1`（快速路径 `-MvpOnly`；`-SkipBuild -SkipClippy` 复用已有构建） |
 | **快速读数：这棵树现在红不红** | `scripts\verify.ps1 -Quick`（文档门 + vendor 门 + fmt + `git diff --check` + `game --check` + `editor --check` 两工程；跳过 clippy/rustdoc/测试/构建/基准/GUI smoke，**跳过的每一步都在结尾逐个打印**——绿灯只读作「数据级与格式门通过」） |
+| 提交前门禁（**只对本次提交负责**） | `git-hooks/pre-commit`（装：`scripts\install-git-hooks.ps1`；体检：`scripts\install-git-hooks.ps1 -Status`）。CI 的 lint job 看的是**这个提交**，所以门禁也只看提交内容：`rustlua.scope` 默认 `commit`（提交之外的失败只点名、按 `PARTIAL` 报告），`= worktree` 恢复"整棵树任何一处失败都拦"的旧口径。细则见 [docs/34](docs/34-质量门与发布清单.md) §3.5 |
 | 格式 / 静态检查 / 测试 | `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings`、`cargo test --workspace --all-features` |
 | 文档一致性（编号/索引/链接/历史路径/编码） | `scripts\check-docs.ps1` |
 | vendor 补丁基线（wasm 必需补丁逐文件在位 + 版本耦合） | `scripts\check-vendor-patches.ps1` |
@@ -87,8 +88,16 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
   [tasks/done/RustLua-game_jhyt-执行计划.md](tasks/done/RustLua-game_jhyt-执行计划.md)；
   引擎全面重构见 [docs/40](docs/40-引擎全面重构计划.md) 与 [docs/54](docs/54-2D3D统一优化方案与现状对比.md)
 
-## 当前状态（M32）
+## 当前状态
 
+> 本节最近一次核对：**2026-10-06**（当时 HEAD `4e5dd12`）。**这一节的规矩**：只写能一条命令复核的事实，或直接
+> 指向权威来源；**不复述会变动的读数**。本节此前停在「M32」而项目已到 M6x——根因就是复述了会变的数字
+> （里程碑号、测试条数），复述一次就过期一次。里程碑与在途工作以 `tasks/plan/` + `git log` 为准，
+> 门禁读数以 `artifacts/logs/quality/` 的日志为准。
+
+- **在途工作**：UI 预设化收口，工作包 `tasks/plan/M65-UI预设化收口-工作包.md` 覆盖 M65–M71
+  （《江湖有田》运行时 UI 从「Lua 动态层手绘」收口到 `.prefab` 预设，逐屏迁移 + 每屏一份黄金对账门）；
+  M59–M65a 已按 `git log` 落地。**这份 README 不追在途进度**——它每天在变，看工作包与日志。
 - **PC 发行已验收**（M31）：干净目录运行、`pack/` 只读、存档与设置写 `<用户数据目录>`
   （`%APPDATA%\<应用名>`，`RUSTLUA_USER_DIR` 可覆盖）、日志写 `<用户数据目录>/logs/`；
   `package.ps1 -SelfTest` 断言隔离目录内无玩家数据。窗口尺寸改由工程声明
@@ -106,15 +115,17 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
   保存路径检测到**外部改动就拒绝写入**（不是提示，是真不写），显式出口是「强制保存」；
   补丁历史原型把 1000 次字段编辑的保留内存从约 398 MB 降到 216 KB（比值 0.054%，且撤销/重做等价）。
 - **示例工程 `game_api` 重建**（[docs/59](docs/59-示例工程game_api与API覆盖率门.md)）：
-  40 个模块表 / 270 个 Lua 函数 / 21 个运行时组件全部有演示；引擎新增一个 Lua 函数，
-  示例工程不补演示就会被覆盖率门判红。
+  **42 个模块表 / 283 个 Lua 函数**（这个数由 `scripts/gen-lua-api-docs.js --check` 与覆盖率门自动守，
+  不靠人记；1.3 版核对时把 README 里过期的 40/270 改正）/ 21 个运行时组件全部有演示；引擎新增一个
+  Lua 函数，示例工程不补演示就会被覆盖率门判红。
 - **组件统一**（第 57 轮）：场景/Prefab 里变换与相机各只有**一个**组件名——`Transform`
   （载荷 `position/rotation/scale`）与 `Camera`（判别字段 `projection=orthographic|perspective`）。
   旧名 `Transform3D`/`Camera2D`/`Camera3D` 与自动迁移逻辑都已删除。**外部老工程需要先跑一次
   一次性迁移工具**：`cd engine && cargo run -p editor --example migrate_project -- --write <项目根>`
   （默认 dry-run）。细节与验收证据见 [docs/56](docs/56-编辑器重构阶段0-1基线与验收.md) §3.52。
-- **健康度**：`cargo test --workspace --all-features` 1328 项通过（0 失败）；clippy 零告警、
-  `cargo fmt --all --check` 干净、26 项 headless MVP 样例与 29 条 GUI smoke 全绿。
+- **健康度**：**不在这里写数字**（此前写"1328 项通过"时是 M32，早已过期且没人更新）。权威读数是
+  最近一次全量 `verify.ps1` 的日志（`artifacts/logs/quality/verify-*.log`，只保留最近 10 份）。
+  想现在就复核：`scripts\verify.ps1 -Quick`（6.6 秒，回答"这棵树现在红不红"，并**逐个打印它跳过了什么**）。
 
 ## 约定
 

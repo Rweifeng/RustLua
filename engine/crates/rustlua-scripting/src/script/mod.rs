@@ -1397,8 +1397,15 @@ fn parse_audio_bus(name: &str) -> LuaResult<AudioBus> {
 
 /// P1-③：`ScriptState` 的重入借用失败从 **RefCell panic** 降级为 Lua 可捕获错误。
 ///
-/// Lua API 闭包统一用 `try_borrow(_mut)` + 本函数收尾：万一 mlua 经 `__index` 等
-/// 元方法重入 Rust，脚本收到一条带原因的 error，宿主进程不再整个崩掉。
+/// Lua API 闭包**应当**用 `try_borrow(_mut)` + 本函数收尾：万一 mlua 经 `__index` 等
+/// 元方法重入 Rust，脚本收到一条带原因的 error，宿主进程不再整个崩掉（wasm/微信上 panic 是
+/// 硬 abort，表现为裸 `unreachable`——这条降级是发布形态的刚需，不是洁癖）。
+///
+/// ⚠️ **2026-10-06 复核：这条"应当"只做到了 61%**。当时实测：`lua_borrow*()` 调用点 **173 处**，
+/// 而直接的 `s.borrow_mut()` **63 处** + `s.borrow()` **46 处**（合计 109 处）仍是 panic 版借用。
+/// 原措辞写的是"统一用"，与代码不符，已改正——**注释不该比代码承诺得多**。
+/// 收口方向与验收办法见 `docs/60` §10 的 §4.3 条（要点：外层与内层都要转，只转一层等于没转；
+/// 最好再用类型把 panic 版借用藏起来，免得下一个绑定又写回 `s.borrow_mut()`）。
 fn reentrant_borrow(error: impl std::fmt::Display) -> mlua::Error {
     mlua::Error::external(format!(
         "script state is already borrowed (reentrant Lua call?): {error}"
@@ -1407,8 +1414,8 @@ fn reentrant_borrow(error: impl std::fmt::Display) -> mlua::Error {
 
 /// P2-③：Lua API 闭包的借用样板收敛（`Rc<RefCell<ScriptState>>` 的扩展方法）。
 ///
-/// 270+ 个绑定共同遵循"借用状态 → 业务逻辑 → 返回"的形状；把借用 + 重入报错
-/// 收进这两方法后，每个绑定只剩一行意图（`s.lua_borrow()?`），样板不再逐处复制。
+/// 270+ 个绑定多半遵循"借用状态 → 业务逻辑 → 返回"的形状；把借用 + 重入报错收进这两方法后，
+/// 每个绑定只剩一行意图（`s.lua_borrow()?`），样板不再逐处复制。**覆盖率见上面的 2026-10-06 复核注**。
 trait LuaStateBorrow {
     fn lua_borrow(&self) -> LuaResult<std::cell::Ref<'_, ScriptState>>;
     fn lua_borrow_mut(&self) -> LuaResult<std::cell::RefMut<'_, ScriptState>>;
