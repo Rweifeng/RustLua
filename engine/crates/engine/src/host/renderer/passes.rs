@@ -20,7 +20,8 @@ use super::world_sprite::SpritePassFilter;
 
 use super::{
     DepthPass, RenderFrameMetrics, RenderOutcome, Renderer, apply_declared_viewport,
-    count_layer_draws, hash_bytes, record_indexed_draw, record_triangle_draw, record_vertex_draw,
+    count_layer_draws, hash_bytes, record_dropped_draw, record_indexed_draw, record_triangle_draw,
+    record_vertex_draw,
 };
 
 impl Renderer {
@@ -476,11 +477,24 @@ impl Renderer {
             pass.set_pipeline(&self.pipeline);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             apply_declared_viewport(&mut pass, overlay_viewport, target);
-            if let Some(font) = &mesh.font_atlas {
-                let _ = self.ensure_font_atlas(font);
+            if let Some(font) = &mesh.font_atlas
+                && self.ensure_font_atlas(font).is_none()
+            {
+                // 原来是 `let _ = ...`：上传失败的后果是 `font_atlas_bind` 一直为 None，
+                // 于是**下面每一个 SDF 文字 draw 都被静默丢弃**——根因必须留在这里。
+                tracing::warn!(
+                    target: "render",
+                    "[runtime] font atlas upload failed; SDF text draws will be dropped this frame"
+                );
             }
             for font in &mesh.custom_font_atlases {
-                let _ = self.ensure_custom_font(&font.key, &font.pixels);
+                if self.ensure_custom_font(&font.key, &font.pixels).is_none() {
+                    tracing::warn!(
+                        target: "render",
+                        key = %font.key,
+                        "[runtime] custom font upload failed; its text draws will be dropped this frame"
+                    );
+                }
             }
             // docs/54 §8-⑤：2D 叠加通道按 `RenderLayer` **分桶**后绘制
             // （World2D → Overlay2D → ScreenUI）。宿主本来就按这个顺序产出顶点，因此像素与
@@ -507,6 +521,15 @@ impl Renderer {
                                 self.sdf_bind_for(draw.texture, &mesh.paths)
                             };
                             let Some(bind) = bind else {
+                                // 画不出来必须留痕（见 `RenderFrameMetrics::dropped_draws`）：
+                                // 静默 `continue` 的后果是"屏幕少一块、日志一个字没有"。
+                                record_dropped_draw(&mut metrics);
+                                tracing::warn!(
+                                    target: "render",
+                                    texture = draw.texture,
+                                    bitmap = draw.bitmap,
+                                    "[runtime] SDF text draw dropped: bind group unavailable"
+                                );
                                 continue;
                             };
                             pass.set_pipeline(&self.pipeline_sdf);
@@ -518,6 +541,17 @@ impl Renderer {
                         let Some(bind) =
                             self.bind_group_for(draw.texture, &mesh.paths, &mesh.path_handles)
                         else {
+                            record_dropped_draw(&mut metrics);
+                            tracing::warn!(
+                                target: "render",
+                                texture = draw.texture,
+                                path = ?draw
+                                    .texture
+                                    .checked_sub(1)
+                                    .and_then(|index| mesh.paths.get(index as usize)),
+                                layer = ?draw.render_layer,
+                                "[runtime] draw dropped: bind group unavailable"
+                            );
                             continue;
                         };
                         pass.set_pipeline(&self.pipeline);

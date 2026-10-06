@@ -2,6 +2,90 @@
 
 use super::*;
 
+/// `docs/60` 复核（2026-10-06）：**画不出来的 draw 必须留痕**。
+///
+/// 通道级早有对账（`RenderPlan::mismatch` → 告警 + `last_frame_passes` 可断言），**draw 级此前是
+/// 静默 `continue`**：症状是"屏幕上少一块、日志里一个字都没有"，而黄金门比的是布局矩形，比不出像素少一块。
+///
+/// 造法是**真的**走那条分支：`sdf = true` 但贴图指向普通资源路径 → `sdf_bind_for` 既不是字体图集、
+/// 也不是 `font://` 路径，于是返回 `None`（**它不像 `bind_group_for` 那样回退白贴图**，所以这里丢得掉）。
+/// `count = 0` 就够：bind 查询发生在 `pass.draw` **之前**，因此不必造合法顶点。
+#[test]
+fn dropped_draws_are_counted_and_stay_out_of_the_draw_call_count() {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let Some(adapter) =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: true,
+        }))
+        .ok()
+    else {
+        return; // no GPU available; skip
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
+        label: Some("rustlua-test-drop-device"),
+        required_features: wgpu::Features::empty(),
+        experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        required_limits: wgpu::Limits::default(),
+        memory_hints: wgpu::MemoryHints::Performance,
+        trace: wgpu::Trace::Off,
+    }))
+    .expect("request test device");
+    let mut renderer = Renderer::new_offscreen(device.clone(), queue, None, false, false)
+        .expect("offscreen renderer");
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("rustlua-test-drop"),
+        size: wgpu::Extent3d {
+            width: 32,
+            height: 32,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mesh = crate::host::frame::SceneMesh {
+        vertices: Vec::new(),
+        draws: vec![crate::host::frame::SceneDraw {
+            texture: 1,
+            start: 0,
+            count: 0,
+            sdf: true,
+            bitmap: false,
+            vector: false,
+            render_layer: rustlua_render::layer::RenderLayer::ScreenUI,
+        }],
+        world_sprites: Vec::new(),
+        world_sprite_draws: Vec::new(),
+        paths: vec!["assets/textures/red-1x1.png".to_owned()],
+        path_handles: Vec::new(),
+        font_atlas: None,
+        custom_font_atlases: Vec::new(),
+        vector_vertices: Vec::new(),
+        vector_glyphs: Vec::new(),
+        vector_segments: Vec::new(),
+    };
+    let outcome = renderer.render_into_texture(&mesh, None, &view, 32, 32);
+    assert!(
+        matches!(outcome, RenderOutcome::Presented),
+        "丢一个 draw 不该让整帧失败"
+    );
+    let metrics = renderer.last_frame_metrics();
+    assert_eq!(
+        metrics.dropped_draws, 1,
+        "拿不到 bind group 的 SDF draw 必须被计数（此前是静默 continue）"
+    );
+    assert_eq!(
+        metrics.draw_calls, 0,
+        "丢弃不计入 draw_calls——两者分账才看得出'计划里有、实际没画'"
+    );
+}
+
 /// docs/54 §4.3：**计划就是实际执行的那一份**。    ///
 /// 单测（`crate::core::render_plan`）只证明计划函数本身的顺序与取舍；这条测试在真实（离屏）渲染
 /// 帧上证明渲染器跑的就是计划里列的通道，一条不多一条不少。此前"这一帧跑了哪些通道"只能

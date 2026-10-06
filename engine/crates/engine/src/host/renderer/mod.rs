@@ -215,10 +215,24 @@ pub struct RenderFrameMetrics {
     pub draw_calls: u64,
     pub instances: u64,
     pub triangles: u64,
+    /// 本帧**被丢弃**的 draw 数（bind group 造不出来时的兜底分支）。
+    ///
+    /// 为什么要单独计数：通道级早就有对账（`RenderPlan::mismatch` → 告警 +
+    /// `last_frame_passes` 可断言），**draw 级没有**——某个 draw 因为贴图/字体图集上传失败而
+    /// 画不出来时，代码只是 `continue`：不计数、不告警，症状是"屏幕上少一块，日志里一个字都没有"。
+    /// 这是本仓最不能接受的失败类型；readback 侧早有同款计数（`ReadbackMetrics::dropped`），
+    /// 这里补齐同一把尺：**`draw_calls` 偏少 + `dropped_draws > 0` 才是"这一帧少了东西"的完整证据**。
+    pub dropped_draws: u64,
 }
 
 fn record_draw_call(metrics: &mut RenderFrameMetrics) {
     metrics.draw_calls += 1;
+}
+
+/// 记一次**画不出来**的 draw。刻意**不加** `draw_calls`：丢弃不是绘制，
+/// 两者分账才能从读数上看出"计划里有、实际没画"。
+fn record_dropped_draw(metrics: &mut RenderFrameMetrics) {
+    metrics.dropped_draws += 1;
 }
 
 /// 本帧某一层有多少段几何（`RenderPlan` 的输入事实之一）。

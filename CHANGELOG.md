@@ -5,6 +5,66 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 渲染器"画不出来"不再静默：draw 级丢弃记账 + 根因告警 + 一条真实帧用例
+
+主题：**通道级早有对账，draw 级没有**。`RenderPlan::mismatch` 会告警、`last_frame_passes` 可直接断言，
+但 `passes.rs` 里两个 `let Some(bind) = ... else { continue }` **既不计数也不告警**；更上游
+`ensure_font_atlas` / `ensure_custom_font` 的返回值还被 `let _ =` 丢掉——**一次字体图集上传失败
+= 所有 SDF 文字静默消失，日志里一个字都没有**。而黄金门比的是**布局矩形**，比不出"像素少一块"。
+
+- **修法**：`RenderFrameMetrics` 新增 **`dropped_draws`**（readback 侧早有 `dropped` 的同款先例，
+  这里只是把同一把尺补到 draw 级）；两个丢弃分支都记账 + `tracing::warn!`（带 texture / path / layer，
+  SDF 分支另带 bitmap 区分 bitmap/MSDF）；字体图集与自定义字体上传失败改为留下**根因**告警。
+  **刻意不计入 `draw_calls`**：两者分账才构成"`draw_calls` 偏少 + `dropped_draws > 0`"这个完整证据。
+- **防回归**：新增真实离屏帧用例，构造 `sdf = true` 但贴图指向普通资源路径的 draw
+  （`sdf_bind_for` **不像** `bind_group_for` 那样回退白贴图，所以这条真的丢得掉）→ 断言
+  `dropped_draws == 1` 且 `draw_calls == 0`。
+  **反面对照**：只摘掉该分支那一行记账 → 用例立刻红（`left: 0, right: 1`）。这条探针同时排除了
+  **"无 GPU 静默跳过"的假绿**——该用例真建了设备（耗时 2s+，而跳过路径是 0s），所以红了就是真红了。
+- **读数**：`engine --lib` **160 通过 0 失败**（159 → 160）；fmt 与 clippy（`--all-targets -- -D warnings`）干净。
+- **顺手记一条未修的相邻问题**（写进 `docs/60` §10.4）：`gpu_texture.rs` 的 `bind_group_for` 用
+  `paths[texture - 1]` **直接下标**（隔壁 `sdf_bind_for` 用的是 `paths.get(...)?`），越界会 panic。
+  越界只可能来自宿主内部 bug（Lua 触不到），"快速失败"可辩护——但它与本条"失败要留痕"的口径不一致，
+  列此待定而不是顺手改掉。
+- **回滚档**：三个文件（`renderer/mod.rs`、`renderer/passes.rs`、`renderer/tests/passes.rs`）+ `docs/60` §10.4。
+## Unreleased — 微信主包被 4 MB 门挡下：wasm 内核搬进 pack/ 分包，boot 改为等挂载
+
+主题：**第一次被微信体积门真拦住的修法**。搬迁前实测 `main=4,547KB main_of_limit=111.0%`（超
+451 KB），而"收窄首屏清单"那条直觉修法方向是反的——首屏清单是把资源**从分包挪进主包**的那张表。
+本轮按"能整块搬走、又不需要重写路由"的唯一候选动手：内核 `game_web_bg.wasm`（实测 2,580,513 字节
+= 2,520 KB，占主包 55%）搬进 `pack/`，胶水 `pkg/game_web.js` **留在主包**（它由同步 `require()`
+加载，而 `WXWebAssembly` 只有异步 `instantiate(路径, imports)`，"搬胶水"要换一套 require 语义）。
+
+- **启动次序随之反转**：原来是"标题画面不等分包"，现在是 `start()` 先 `await` 分包挂载、挂载成功
+  才实例化内核、然后才出标题。等待期间进度条由**适配层自己**用 `setTimeout` 链驱动并自绘——不能用
+  `wx.requestAnimationFrame`（那条队列属于还没起跑的运行时，harness 的 id 与槽位又对不上，实测把
+  游戏的**第一帧回调**取消掉，症状是 `boot=booted / 未执行任何帧 / raf 队列为空`）；也不能调
+  `afterFrame`（它推 `frameCount`，而 `frameCount` 正是被测的挂载帧读数——等于让被测代码改判据）。
+- **失败不再静默**：`ensurePackForBoot` 在实例化前自动重试 1 次（每次尝试自带 20 s 无回调超时），
+  仍失败才判 boot 失败，屏上那句话点名是哪个包（"游戏内核就在这个分包里"）。
+- **门**（四条，每条都跑过反面对照证明它会红）：① 分包形态下 `pkg/game_web_bg.wasm` 存在即拒绝
+  发布（`package.ps1` + 验收脚本各一条；两份同名内核迟早漂移，所以是"拒绝"而不是"取其一"）；
+  ② harness 证据行新增 `wasm_denied_before_mount`，成功用例要求它为 0——把 `await` 摘掉立刻红
+  （"分包挂载前有 2 次 wasm 内核读取被挡下"）；③ 失败用例下 wasm 的失败原因必须**点名**
+  `pack/game_web_bg.wasm`，只判 `status!=ok` 会把无关失败洗成"预期失败"；④ `--subpackage delay`
+  下适配层挂载帧改判"必须为 0 游戏帧"（宿主记的是驱动 tick，两者币种不同，硬相等是假红）。
+  另补 `pumpSubpackageDuringBoot`：boot 悬着那段由它按 16 ms 一 tick 顶上挂载，否则 `delay` 用例
+  结构死锁（挂载等帧、帧等 boot、boot 等挂载，实测 30 s 不 settle 后撞 20 s 超时）。
+- **读数**：`wechat_minigame_static_ok main=2,087KB subpackage=4,689KB total=6,776KB
+  main_of_limit=51.0% subpackage_of_limit=22.9% total_of_limit=33.1%`（复现：
+  `package.ps1 -Platform wechat-minigame -SkipBuild` + `verify-wechat-minigame.ps1 -SkipRuntime`）。
+  分包用例矩阵 `delay / delay-move / never / fail-once` **exit 0**，`ok / no-game-json` 各剩一条与本批
+  无关的既有红（见下）。形态判定全部只看产物本身：`bundle-discovery.ps1` / `verify-*.ps1` 的内核
+  路径按 `mainpack.json` 是否存在切换；启动日志实测 `wasm=ok:ok:path-instantiate` +
+  `核心实例化成功（WXWebAssembly/path-instantiate，路径 pack/game_web_bg.wasm…）`。
+- **本机证明不了的**（写清楚，别当已验证）：单文件 2.5 MB 上传上限（内核现在是 2,520 KB 的**单个
+  文件**，只有上传器/工具面板能给数）、真机 `WXWebAssembly.instantiate` 的分包路径语义、重试的
+  实际救回概率、以及形态选择的必然代价——冷下载时玩家第一眼是进度条而不是标题。
+- **未闭合（阻塞整条微信运行时门）**：`data-rustlua-drawn=0` 这一条红停在通用断言上，**不属于本批**：
+  同一产物加 `--drive-new-game` 进 `manor` 后 `drawn=4720`（取样机制在跑，只有**标题屏**采不到
+  非背景像素）；用 `git show HEAD` 的适配层 / harness 分别回退到旧形态复跑，读数一样是 0；启动
+  日志无任何贴图或读取失败警告。指向标题门面进 `.prefab` 之后的渲染差异，归 prefab 那摊。
+
 ## Unreleased — §6.3 收口（3D 补上查询脏标记）+ §5.2 的前提经复核不成立
 
 主题：**两条"照抄一遍"的量级，其中一条抄起来发现前提是错的。**
