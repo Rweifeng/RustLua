@@ -66,12 +66,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //  seed_polygonum/ginseng/seed_ginseng）= 22
     // + v0.2 炼金/铁匠/厨房扩展 7 条（iron_ore/iron_ingot/cloth/rice_ball/tea_brew/
     //  mountain_herb_soup/qi_pill）= 29。
+    // 阶段2/3（docs/33 1.0 起）：扩展物品（畜牧/钓鱼/矿脉/料理/阶段3）经 items_*.lua
+    // 并入主表供 shipping/recipes/校验统一查询 → 195（数据派生，见 data/items*.lua）。
     let item_count = query_num(
         &mut runtime,
         "(function() local n = 0 for _ in pairs(require('data.items')) do n = n + 1 end return n end)()",
     )?;
-    if item_count != 29.0 {
-        return Err(format!("data/items.lua has {item_count} entries, want 29").into());
+    if item_count != 195.0 {
+        return Err(format!("data/items.lua has {item_count} entries, want 195").into());
     }
 
     banner("② 登记覆盖：任何带 validate_all 的模块都必须登记进 validate_data.lua");

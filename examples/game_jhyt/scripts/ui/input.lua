@@ -3,7 +3,12 @@ local player = require("player.player")
 local interaction = require("systems.interaction")
 local dialogue = require("world.dialogue")
 local shop = require("systems.shop")
+-- docs/33 §4.1.7 出货箱（0.8）：独立 "Shipping" 模式，面板状态与结算都在
+-- systems/shipping.lua；此处只做输入分发（与 Shop 分支同构）。
+local shipping = require("systems.shipping")
 local combat = require("systems.combat")
+-- 玩家按键绑定（招式 ↔ 命名动作）的唯一事实源：这里的出手/轻功/格挡三段都遍历它。
+local skills_data = require("data.skills")
 local building = require("systems.building")
 local relationship = require("player.relationship")
 -- M19-02：HUD/提示、新手引导、三个面板（背包/任务/暂停）与音频。
@@ -142,6 +147,7 @@ local function heal_mode()
     or (state.is_mode("Quest") and not quest_ui.ui_active())
     or (state.is_mode("Pause") and not pause_menu.ui_active())
     or (state.is_mode("Shop") and not shop.ui_active())
+    or (state.is_mode("Shipping") and not shipping.ui_active())
     or (state.is_mode("Dialogue") and not dialogue.is_open())
   if stuck then
     state.set_mode("Playing")
@@ -247,6 +253,39 @@ local function update_shop()
   -- 换页/交易后重绘；若已关闭（close_ui 复位 Playing）则不再绘制。
   if state.is_mode("Shop") then
     shop.render()
+  end
+  return frame()
+end
+
+-- 出货箱态（docs/33 §4.1.7）：冻结移动，Esc/B 关闭、数字键选择、W/S 或方向键/
+-- DPad/摇杆选择、空格/A 确认（放 1 个入箱）。必须在 `not Playing` 早退之前分发。
+local function update_shipping()
+  player.stop()
+  if input.action_pressed("cancel") then
+    shipping.close_ui()
+  else
+    if input.action_pressed("move_up") then
+      shipping.move(-1)
+    elseif input.action_pressed("move_down") then
+      shipping.move(1)
+    else
+      local step = ui_step()
+      if step == "up" then
+        shipping.move_dir("up")
+      elseif step == "down" then
+        shipping.move_dir("down")
+      end
+    end
+    select_by_digit(function(index)
+      shipping.select(index + 1)
+    end, shipping.row_limit())
+    if input.action_pressed("confirm") then
+      shipping.confirm()
+    end
+  end
+  -- 换行/放入后重绘；若已关闭（close_ui 复位 Playing）则不再绘制。
+  if state.is_mode("Shipping") then
+    shipping.render()
   end
   return frame()
 end
@@ -435,6 +474,10 @@ function M.update()
     return update_shop()
   end
 
+  if state.is_mode("Shipping") then
+    return update_shipping()
+  end
+
   if state.is_mode("Inventory") then
     return update_inventory()
   end
@@ -493,35 +536,19 @@ function M.update()
   -- 毫无反馈，玩家只能猜），HUD 按 last_action 出中文提示。
   -- v0.2：追加 3 个高阶武学（弦月斩 V / 铁砂掌 N / 豹跃 M）。键位与 pad 均可
   -- 通过 settings.toml 的 [input] 段改绑。
-  if input.action_pressed("attack") then
-    local ok, reason = combat.player_attack("strike")
-    if not ok then
-      state.last_action = reason
-      audio.play_on("ui", "ui_cancel")
-    end
-  elseif input.action_pressed("skill") then
-    local ok, reason = combat.player_attack("palm_gust")
-    if not ok then
-      state.last_action = reason
-      audio.play_on("ui", "ui_cancel")
-    end
-  elseif input.action_pressed("skill_2") then
-    local ok, reason = combat.player_attack("crescent_slash")
-    if not ok then
-      state.last_action = reason
-      audio.play_on("ui", "ui_cancel")
-    end
-  elseif input.action_pressed("skill_3") then
-    local ok, reason = combat.player_attack("iron_palm")
-    if not ok then
-      state.last_action = reason
-      audio.play_on("ui", "ui_cancel")
-    end
-  elseif input.action_pressed("skill_4") then
-    local ok, reason = combat.player_attack("leopard_step")
-    if not ok then
-      state.last_action = reason
-      audio.play_on("ui", "ui_cancel")
+  --
+  -- 2026-10-05 触屏批：这五段 if/elseif 换成遍历 `data.skills.binding.cast`。
+  -- **行为逐键等价**（顺序不变、一帧只出一招 = 原来的 elseif、失败文案与音效不变），
+  -- 但招式↔动作的对应从此只有数据层一份：HUD 的卡片序与触屏命中测试读同一张表，
+  -- 加一招不用再同步改这里的第四条 elseif（漏改就是"有卡按不出招"的静默坏状态）。
+  for _, entry in ipairs(skills_data.binding.cast) do
+    if input.action_pressed(entry.action) then
+      local ok, reason = combat.player_attack(entry.skill)
+      if not ok then
+        state.last_action = reason
+        audio.play_on("ui", "ui_cancel")
+      end
+      break
     end
   end
 
@@ -529,14 +556,16 @@ function M.update()
   -- 两条都不锁移动，与 J/K 同一手感。判据是分开的：轻功判 pressed（一下一跳），
   -- 格挡判 action 的"此刻按没按"并且**每步都上报**——姿态由 combat.tick 结算，
   -- 输入层只交事实，不在这里维护第二份"盾"的状态。
-  if input.action_pressed("dash") then
-    local ok, reason = combat.player_dash("chase_wind")
+  local dash = skills_data.binding.dash
+  if input.action_pressed(dash.action) then
+    local ok, reason = combat.player_dash(dash.skill)
     if not ok then
       state.last_action = reason
       audio.play_on("ui", "ui_cancel")
     end
   end
-  combat.player_guard(input.action("guard"), "guard_heart")
+  local guard = skills_data.binding.guard
+  combat.player_guard(input.action(guard.action), guard.skill)
 
   -- 送礼输入（M18-04）：G 面向面前 NPC 送出第一件其可收的礼物。
   -- 与 J/K 攻击同样不锁移动（ARPG 习惯）；结果文案进 last_action 供 HUD/验收。

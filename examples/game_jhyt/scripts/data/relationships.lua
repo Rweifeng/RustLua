@@ -60,6 +60,15 @@ M.social = {
   tea_bonus = 0.1
 }
 
+-- 送礼三档偏好的关系分（docs/54 §4.8，2026-10-06 1.4）：
+--   love 爱礼 +40 / like 喜礼 +20 / hate 厌礼 -10。
+-- 与既有 gifts 分制（item→小分值 2..8）正交：gift_preference 命中档位的物品按这里
+-- 结算，未命中才回落到 gifts。既有 gifts 数值逐字不动（阶段 1 锚点）。
+M.pref_points = { love = 40, like = 20, hate = -10 }
+
+-- 生日当天送礼的好感放大倍数（docs/54 §4.8）：只放大正向礼（爱/喜），厌礼不放大。
+M.birthday_gift_multiplier = 3
+
 M.npcs = {
   npc_shen_qingluo = {
     gifts = { lingzhi = 8, rice = 3, heal_pill = 5 }
@@ -86,15 +95,124 @@ M.npcs = {
   -- v0.2 主线四五段与结局新引用的三位 NPC：陆归藏（书房长老，收茶与行气散）、
   -- 阿七（村里少年，收零食野果）、司徒魁（玄冥会执事，敌对立场、不收礼）。
   npc_lu_guizang = {
-    gifts = { tea_brew = 5, herb_tonic = 4 }
+    gifts = { tea_brew = 5, herb_tonic = 4, ginkgo_fruit = 8 }
   },
   npc_a_qi = {
-    gifts = { rice_ball = 3, wild_fruit = 2 }
+    gifts = { rice_ball = 3, wild_fruit = 2, peach = 5, jujube = 4 }
+  },
+  -- 树果（docs/33 §4.1.5，2026-10-05 0.6）：秋收果实可送礼，分值按果价梯度
+  -- （银杏果贵重 8 分、桃子 5 分、红枣 4 分）。林小满爱甜食，加青梅。
+  npc_lin_xiaoman = {
+    gifts = { rice = 2, lingzhi = 2, mume = 4, loquat = 4 }
   },
   npc_situ_kui = {
     gifts = {}
   }
 }
+
+-- 送礼三档偏好表（docs/54 §4.8，2026-10-06 1.4）：npc_id → { loved={...}, liked={...}, hated={...} }。
+-- 物品 id 必须存在于 data.items / data.tools；与该 NPC 既有 gifts 表**互不重叠**
+-- （校验器挡住——重叠会让偏好分覆盖既有小分值，动到阶段 1 断言锚点）。
+-- 不收礼的 NPC（赵铁算盘/玄鹤/司徒魁）三档留空 = 仍不收任何礼。
+M.preferences = {
+  npc_shen_qingluo = {
+    loved = { "ginseng", "polygonum" },
+    liked = { "herb", "gouqi" },
+    hated = { "timber" }
+  },
+  npc_gu_changfeng = {
+    loved = { "qi_pill", "iron_ingot" },
+    liked = { "herb", "mountain_herb_soup" },
+    hated = { "wild_fruit" }
+  },
+  npc_lin_xiaoman = {
+    loved = { "peach", "mulberry" },
+    liked = { "jujube", "wild_fruit" },
+    hated = { "iron_ore" }
+  },
+  npc_han_tieshan = {
+    loved = { "iron_ore", "iron_ingot" },
+    liked = { "boar_meat", "wolf_pelt" },
+    hated = { "peach" }
+  },
+  npc_su_wanqing = {
+    loved = { "chrysanthemum", "plum" },
+    liked = { "gouqi", "tea_leaf" },
+    hated = { "iron_ore" }
+  },
+  npc_lu_guizang = {
+    loved = { "polygonum", "winter_shen" },
+    liked = { "herb", "chrysanthemum" },
+    hated = { "rice" }
+  },
+  npc_a_qi = {
+    loved = { "boar_meat", "wolf_pelt" },
+    liked = { "rice", "mung_bean" },
+    hated = { "herb" }
+  },
+  -- 不收礼的三位（既有 gifts 空表，偏好三档亦空，与"不收礼"语义一致）。
+  npc_zhao_tiesuanpan = { loved = {}, liked = {}, hated = {} },
+  npc_xuanhe = { loved = {}, liked = {}, hated = {} },
+  npc_situ_kui = { loved = {}, liked = {}, hated = {} },
+  -- 阶段 2 新增 6 人。
+  npc_niu_dazhuang = {
+    loved = { "rice", "rice_ball" },
+    liked = { "wild_fruit", "jujube" },
+    hated = { "iron_ore", "herb" }
+  },
+  npc_a_yao = {
+    loved = { "herb", "mint" },
+    liked = { "mung_bean", "cucumber" },
+    hated = { "iron_ore", "timber" }
+  },
+  npc_shi_gandang = {
+    loved = { "boar_meat", "iron_ingot" },
+    liked = { "rice_ball", "heal_pill" },
+    hated = { "chrysanthemum" }
+  },
+  npc_qianduobao = {
+    loved = { "ginkgo_fruit", "polygonum" },
+    liked = { "peach", "loquat" },
+    hated = { "reed" }
+  },
+  npc_guimian = {
+    loved = { "wolf_pelt", "iron_ore" },
+    liked = { "boar_meat", "rice" },
+    hated = { "heal_pill" }
+  },
+  npc_lu_qingfeng = {
+    loved = { "iron_ingot", "qi_pill" },
+    liked = { "boar_meat", "herb" },
+    hated = { "wild_fruit" }
+  }
+}
+
+-- NPC 收某件礼物偏好档（"love"/"like"/"hate"）；未配置返回 nil（回落 gifts 分制）。
+function M.gift_preference(npc_id, item_id)
+  local entry = type(npc_id) == "string" and M.preferences[npc_id] or nil
+  if not entry or type(item_id) ~= "string" then
+    return nil
+  end
+  local function in_list(list)
+    if type(list) ~= "table" then
+      return false
+    end
+    for _, id in ipairs(list) do
+      if id == item_id then
+        return true
+      end
+    end
+    return false
+  end
+  if in_list(entry.loved) then
+    return "love"
+  elseif in_list(entry.liked) then
+    return "like"
+  elseif in_list(entry.hated) then
+    return "hate"
+  end
+  return nil
+end
 
 function M.npc_ids()
   local out = {}
@@ -413,6 +531,50 @@ function M.validate_all()
             end
             if type(points) ~= "number" or points <= 0 then
               issues[#issues + 1] = gift_path .. ": expected positive number"
+            end
+          end
+        end
+      end
+    end
+  end
+
+  -- 送礼三档偏好表（docs/54 §4.8）：npc 必须存在；loved/liked/hated 为数组；
+  -- 物品必须真实存在；且**不得与该 NPC 既有 gifts 表重叠**——重叠会让偏好分（40/20/-10）
+  -- 覆盖既有小分值，动到阶段 1 断言锚点（如陆归藏 tea_brew=5）。
+  if type(M.pref_points) ~= "table" then
+    issues[#issues + 1] = "data/relationships.lua:pref_points: expected object"
+  else
+    for _, key in ipairs({ "love", "like", "hate" }) do
+      if type(M.pref_points[key]) ~= "number" then
+        issues[#issues + 1] = "data/relationships.lua:pref_points." .. key .. ": expected number"
+      end
+    end
+  end
+  if type(M.preferences) ~= "table" then
+    issues[#issues + 1] = "data/relationships.lua:preferences: expected object"
+  else
+    for npc_id, entry in pairs(M.preferences) do
+      local path = "data/relationships.lua:preferences." .. tostring(npc_id)
+      if not npcs.get(npc_id) then
+        issues[#issues + 1] = path .. ": unknown npc (not in data/npcs.lua)"
+      elseif type(entry) ~= "table" then
+        issues[#issues + 1] = path .. ": expected object"
+      else
+        local legacy_gifts = type(M.npcs[npc_id]) == "table" and M.npcs[npc_id].gifts or {}
+        for _, tier in ipairs({ "loved", "liked", "hated" }) do
+          local list = entry[tier]
+          if type(list) ~= "table" then
+            issues[#issues + 1] = path .. "." .. tier .. ": expected array (may be empty)"
+          else
+            for _, item_id in ipairs(list) do
+              local ipath = path .. "." .. tier .. "." .. tostring(item_id)
+              if items[item_id] == nil and tools[item_id] == nil then
+                issues[#issues + 1] = ipath .. ": unknown item (not in data/items.lua or data/tools.lua)"
+              end
+              if type(legacy_gifts) == "table" and legacy_gifts[item_id] ~= nil then
+                issues[#issues + 1] = ipath
+                  .. ": overlaps existing gifts table (would override stage-1 gift_points anchor)"
+              end
             end
           end
         end

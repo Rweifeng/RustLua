@@ -31,12 +31,36 @@ end
 -- **在模块加载时就登记**，而不是等到开新档：引擎 `item.def` 是唯一的显示名查询口
 -- （HUD 的物品名、快捷栏、装备槽都走它），登记必须早于任何显示行为。
 -- `item.define` 幂等（同 id 覆盖），因此热重载后重复登记也无副作用。
+-- 分系统物品扩展注册表（阶段 2 改造）：data/items_<system>.lua 是**可选**模块
+-- （{ items = {...}, tools = {...} }），缺失即跳过、落地后自动纳入——
+-- 各新系统（畜牧/钓鱼/矿脉/料理/创新系统）在并行开发时拥有自己的物品文件，
+-- 避免多人同时改 data/items.lua 造成合并冲突；校验见 data/registry_check.lua
+-- 的 validate_item_extensions（同一套 check_item/check_tool 规则）。
+local ITEM_EXTENSION_MODULES = {
+  "data.items_animal",
+  "data.items_fish",
+  "data.items_mine",
+  "data.items_cooking",
+  "data.items_stage3"
+}
+
 local function register_items()
   for id, definition in pairs(items) do
     item.define(id, definition)
   end
   for id, definition in pairs(require("data.tools")) do
     item.define(id, definition)
+  end
+  for _, module_name in ipairs(ITEM_EXTENSION_MODULES) do
+    local ok, ext = pcall(require, module_name)
+    if ok and type(ext) == "table" then
+      for id, definition in pairs(ext.items or {}) do
+        item.define(id, definition)
+      end
+      for id, definition in pairs(ext.tools or {}) do
+        item.define(id, definition)
+      end
+    end
   end
 end
 

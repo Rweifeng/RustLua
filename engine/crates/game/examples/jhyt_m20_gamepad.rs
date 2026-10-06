@@ -203,8 +203,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "按键盘后应自动切回键鼠说明",
     )?;
     runtime.set_input(InputSnapshot::default());
+    // ④ 触屏形态（WebGL / 微信）：整块说明换成"屏上有哪些控件、点了出什么"，条目从
+    //    `layout.TOUCH` 现推（按钮簇五键、九格动作盘、面板动作条）。桌面运行时
+    //    `app.platform()` 恒为 desktop，没有 `set_touch` 这条旁路，这一支文案在机器
+    //    验收里**一行都读不到**——而它在真机上正是玩家唯一看得到的操作说明。
+    assert_str_why(
+        &mut runtime,
+        "tostring(require('ui.pause_menu').set_touch(true))",
+        "true",
+        "可强制切到触屏说明（验收用）",
+    )?;
+    let touch_hint = query_str(&mut runtime, hint_reader)?;
+    assert_str_why(
+        &mut runtime,
+        "tostring(require('ui.pause_menu').set_touch(nil))",
+        "false",
+        "恢复按平台判定后应回到键鼠说明",
+    )?;
+    for needle in [
+        "左下摇杆 移动",
+        "右下：交互/攻击/背包/任务/暂停 圆钮",
+        "睡觉/建造/放置/运气/拆除/升级/送礼/选种/重开 动作盘",
+        "触屏没有改绑入口",
+    ] {
+        if !touch_hint.contains(needle) {
+            return Err(format!("触屏说明应含 {needle:?}：{touch_hint}").into());
+        }
+    }
+    if touch_hint.contains("W/A/S/D 移动") || touch_hint.contains("E 交互") {
+        return Err(format!("触屏说明里不应出现键位表：{touch_hint}").into());
+    }
     println!("keyboard hint: {keyboard_hint}");
     println!("gamepad  hint: {gamepad_hint}");
+    println!("touch    hint: {touch_hint}");
 
     banner("M20-09b 面板提示两套 + 导航手感可配：对话/商店/背包/任务/暂停按设备换文案");
     // 面板底部提示不能 require `ui.input`（`input → dialogue` 成环），统一走

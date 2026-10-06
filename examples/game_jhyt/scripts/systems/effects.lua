@@ -9,7 +9,9 @@
 --   * 生命周期：一次性特效 ttl = cols/fps 秒，播完由 M.update 自毁
 --     （entity.destroy）；循环特效（poison_motes 毒雾）默认 ttl 1 秒，
 --     调用方可传 ttl_override 控制常驻时长。
---   * 渲染层：sorting_layer=actor + order=50，盖在角色/敌人之上。
+--   * 渲染层：sorting_layer=foreground，盖在所有角色之上。角色（actor 层）的 order
+--     现在由脚位 Y 现算（world/depth.lua，y 越小越靠前），特效不能再借 actor 层
+--     "堆一个 order=50"——那等于把自己塞进同一套 Y 排序里，主角走近就把它盖掉。
 --   * 可查询：M.active() 返回当前活动特效数（headless 断言用）。
 local M = {}
 
@@ -75,7 +77,7 @@ function M.spawn(kind, x, y, ttl_override)
     "texture=" .. fx.texture
       .. ";size=" .. fx.w .. "x" .. fx.h
       .. ";pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000"
-      .. ";sorting_layer=actor;order=50"
+      .. ";sorting_layer=foreground"
   )
   animation.attach(id, clip_str(kind, fx))
   local ttl

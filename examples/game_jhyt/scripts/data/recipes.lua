@@ -57,6 +57,32 @@ M.recipes = {
     minutes = 60,
     min_level = 1
   },
+  -- 洒水器（2026-10-05，docs/33 §4.1.4）：机关类灌溉设施挂铁匠铺；
+  -- 机关洒水器需 forge 2 级（铁匠炉升级链）。产出物品 buy=0/sell=0 不进商店。
+  sprinkler_bamboo_build = {
+    name = "造竹筒引水器",
+    station = "forge",
+    inputs = { { item = "timber", count = 3 } },
+    output = { item = "sprinkler_bamboo", count = 1 },
+    minutes = 60,
+    min_level = 1
+  },
+  sprinkler_waterwheel_build = {
+    name = "造水车洒水器",
+    station = "forge",
+    inputs = { { item = "timber", count = 8 }, { item = "iron_ingot", count = 1 } },
+    output = { item = "sprinkler_waterwheel", count = 1 },
+    minutes = 120,
+    min_level = 1
+  },
+  sprinkler_machine_build = {
+    name = "造机关洒水器",
+    station = "forge",
+    inputs = { { item = "timber", count = 20 }, { item = "iron_ingot", count = 3 } },
+    output = { item = "sprinkler_machine", count = 1 },
+    minutes = 180,
+    min_level = 2
+  },
   -- 膳房：饭团与行药汤。
   kitchen_rice_ball = {
     name = "捏饭团",
@@ -83,6 +109,161 @@ M.recipes = {
     inputs = { { item = "lingzhi", count = 1 }, { item = "herb", count = 2 } },
     output = { item = "mountain_herb_soup", count = 1 },
     minutes = 120,
+    min_level = 2
+  },
+  -- ---- 料理与厨房（2026-10-06，docs/33 §4.7 / docs/54 §4.6，1.3）----
+  -- 全部挂膳房（station="kitchen"）。1 级家常菜以体力回复为主，2 级药膳带
+  -- attack/defense 临时 Buff（days 1..3，经 inventory.use → stats.add_buff）。
+  -- 输入只引用 data.items.lua 已存在物品（rice/lingzhi/ginseng/boar_meat/lotus_seed/
+  -- 四季作物/树果等）；蛋/鱼等畜牧·钓鱼系统产物的配方见文件末补丁说明，本文件未落库。
+  kitchen_rice_congee = {
+    name = "熬白米粥",
+    station = "kitchen",
+    inputs = { { item = "rice", count = 2 } },
+    output = { item = "rice_congee", count = 1 },
+    minutes = 20,
+    min_level = 1
+  },
+  kitchen_stirfry_radish = {
+    name = "清炒萝卜",
+    station = "kitchen",
+    inputs = { { item = "radish", count = 2 } },
+    output = { item = "stirfry_radish", count = 1 },
+    minutes = 30,
+    min_level = 1
+  },
+  kitchen_braised_radish_meat = {
+    name = "萝卜炖肉",
+    station = "kitchen",
+    inputs = { { item = "radish", count = 1 }, { item = "boar_meat", count = 1 } },
+    output = { item = "braised_radish_meat", count = 1 },
+    minutes = 60,
+    min_level = 1
+  },
+  kitchen_stirfry_cabbage = {
+    name = "醋溜白菜",
+    station = "kitchen",
+    inputs = { { item = "cabbage", count = 1 }, { item = "leek", count = 1 } },
+    output = { item = "stirfry_cabbage", count = 1 },
+    minutes = 35,
+    min_level = 1
+  },
+  kitchen_braised_eggplant = {
+    name = "红烧茄子",
+    station = "kitchen",
+    inputs = { { item = "eggplant", count = 2 } },
+    output = { item = "braised_eggplant", count = 1 },
+    minutes = 50,
+    min_level = 1
+  },
+  kitchen_steamed_pumpkin = {
+    name = "清蒸南瓜",
+    station = "kitchen",
+    inputs = { { item = "pumpkin", count = 1 } },
+    output = { item = "steamed_pumpkin", count = 1 },
+    minutes = 45,
+    min_level = 1
+  },
+  kitchen_pumpkin_congee = {
+    name = "南瓜粥",
+    station = "kitchen",
+    inputs = { { item = "pumpkin", count = 1 }, { item = "rice", count = 1 } },
+    output = { item = "pumpkin_congee", count = 1 },
+    minutes = 60,
+    min_level = 1
+  },
+  kitchen_mung_bean_soup = {
+    name = "绿豆汤",
+    station = "kitchen",
+    inputs = { { item = "mung_bean", count = 2 }, { item = "mint", count = 1 } },
+    output = { item = "mung_bean_soup", count = 1 },
+    minutes = 40,
+    min_level = 1
+  },
+  kitchen_laba_congee = {
+    name = "腊八粥",
+    station = "kitchen",
+    inputs = {
+      { item = "rice", count = 1 },
+      { item = "lotus_seed", count = 1 },
+      { item = "jujube", count = 1 },
+      { item = "gouqi", count = 1 }
+    },
+    output = { item = "laba_congee", count = 1 },
+    minutes = 90,
+    min_level = 1
+  },
+  kitchen_osmanthus_cake = {
+    name = "蒸菊花糕",
+    station = "kitchen",
+    inputs = { { item = "rice", count = 2 }, { item = "chrysanthemum", count = 1 } },
+    output = { item = "osmanthus_cake", count = 1 },
+    minutes = 40,
+    min_level = 1
+  },
+  kitchen_fruit_compote = {
+    name = "蜜饯果盘",
+    station = "kitchen",
+    inputs = {
+      { item = "wild_fruit", count = 1 },
+      { item = "jujube", count = 1 },
+      { item = "mume", count = 1 }
+    },
+    output = { item = "fruit_compote", count = 1 },
+    minutes = 30,
+    min_level = 1
+  },
+  kitchen_braised_pork = {
+    name = "红烧肉",
+    station = "kitchen",
+    inputs = { { item = "boar_meat", count = 2 }, { item = "wild_fruit", count = 1 } },
+    output = { item = "braised_pork", count = 1 },
+    minutes = 100,
+    min_level = 1
+  },
+  kitchen_winter_hotpot = {
+    name = "冬暖锅",
+    station = "kitchen",
+    inputs = {
+      { item = "winter_cabbage", count = 1 },
+      { item = "boar_meat", count = 1 },
+      { item = "xueli", count = 1 }
+    },
+    output = { item = "winter_hotpot", count = 1 },
+    minutes = 80,
+    min_level = 1
+  },
+  -- 2 级药膳：带临时 Buff（attack/defense，days 2..3）。
+  kitchen_herb_chicken_soup = {
+    name = "炖药膳鸡汤",
+    station = "kitchen",
+    inputs = {
+      { item = "ginseng", count = 1 },
+      { item = "boar_meat", count = 1 },
+      { item = "gouqi", count = 1 }
+    },
+    output = { item = "herb_chicken_soup", count = 1 },
+    minutes = 150,
+    min_level = 2
+  },
+  kitchen_bone_strength_soup = {
+    name = "炖壮骨汤",
+    station = "kitchen",
+    inputs = { { item = "boar_meat", count = 2 }, { item = "gouqi", count = 1 } },
+    output = { item = "bone_strength_soup", count = 1 },
+    minutes = 120,
+    min_level = 2
+  },
+  kitchen_qi_blood_soup = {
+    name = "煎补血养气汤",
+    station = "kitchen",
+    inputs = {
+      { item = "lingzhi", count = 1 },
+      { item = "ginseng", count = 1 },
+      { item = "jujube", count = 1 }
+    },
+    output = { item = "qi_blood_soup", count = 1 },
+    minutes = 180,
     min_level = 2
   }
 }

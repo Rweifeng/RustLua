@@ -1,8 +1,11 @@
--- virtual_pad.lua：触屏虚拟摇杆 + 虚拟按钮（世界区左右下角）。
+-- virtual_pad.lua：触屏虚拟摇杆 + 虚拟按钮 + 招式卡命中测试（世界区左右下角 / 右栏快捷栏）。
 --
 -- 几何**不在这里**：坐标、半径、拾取余量、死区、切图键全部来自 `ui/layout.lua` 的
 -- `M.TOUCH`（与 `M.PANEL` 同源），并由 `layout.audit_touch()` 守住三条承诺——整圆不越出
 -- 设计画布、控件互不重叠、不压右栏文字与底部键位提示。这里只负责"读几何 + 注入虚拟键 + 画"。
+-- 唯一例外是**招式卡**：那 7 张卡画在 HUD 上，几何与"点它出哪一招"都读 `ui/hud.lua` 的
+-- `skill_slots()`（它再读 `data/skills.binding`）——绘制与命中测试必须是同一份坐标，
+-- 抄第二份就会漂（卡片漂出画布那次就是这么来的）。
 --
 -- 外观分三层（顺序**只依赖图元类型**，见 `M.draw` 头注释）：
 --   `ui.circle` 底衬（按下提亮 + 缺图时的兜底）→ `ui.image` 漆面盘（`ui/skin.lua` 的
@@ -22,6 +25,9 @@ local layout = require("ui.layout")
 local skin = require("ui.skin")
 -- 面板模式判定（背包/任务/暂停/商店/对话 = 非 Playing）：十字键只在面板模式接管。
 local state = require("core.state")
+-- 招式卡几何与"第 i 张卡出哪一招"的唯一来源（`hud.skill_slots()` 读 `data.skills.binding`）。
+-- 方向是 virtual_pad → hud：HUD 从不 require 本模块，没有环。
+local hud = require("ui.hud")
 
 local M = {}
 
@@ -71,6 +77,25 @@ local stick_dx, stick_dy = 0, 0
 local last_dir = { up = false, down = false, left = false, right = false }
 local button_down = {}
 local dpad_down = {}
+-- 招式卡按下态：key = 卡的 index（1 基），value = 按下时解析出的**物理键名**。
+-- 存键名而不是回头再查一次：按住期间玩家改键会让"抬手"释放到另一个键上，那只手指就永远松不掉。
+local card_down = {}
+-- 「更多」键 + 动作盘（M34-06 批 2）。几何全在 `layout.TOUCH.more / .action`（切图直径与
+-- 圆半径的契约由 `layout.audit_touch()` ④⑥⑦ 守着），这里只有**开关态**和按下态。
+local MORE = layout.TOUCH.more
+local ACTION = layout.TOUCH.action or { cols = {}, rows = {}, items = {}, size = 0, art = nil }
+-- 盘是开关：点「更多」展开，点任意一项 = 执行那一件并收起（一次点击一个动作）。
+local action_open = false
+local more_down = false
+-- 与 card_down 同一口径：按下时抓住物理键名，抬手照着它释放。
+local action_down = {}
+-- 上一帧画了多少个盘（收起时要逐 id 收掉：`ui.circle`/`ui.image` 都是宿主侧持久表）。
+local action_drawn = 0
+-- 面板态动作条（M34-06 批 3）：当前面板模式用的那一格阵列（`layout.TOUCH.panel_actions`）。
+local PANEL_ACTIONS = layout.TOUCH.panel_actions
+  or { cols = {}, rows = {}, modes = {}, size = 0, art = nil }
+local panel_action_down = {}
+local panel_drawn = 0
 -- 关闭按钮按下态（只发一次 cancel 边沿；面板关闭即随面板态退出，无需跨帧按住）。
 local close_down = false
 -- 面板模式切换的边沿：只在 玩法↔面板 变化那一帧释放对侧控件的残留按住态。
@@ -93,6 +118,16 @@ local function clear_play_ui()
     ui.clear("vp:plate" .. index)
     ui_text.hide("vp", "vp:lbl" .. index)
   end
+  -- 「更多」键与动作盘（玩法态专属，切面板/关盘都要逐 id 收：它们是宿主侧持久表）。
+  ui.clear("vp:more_card")
+  ui_text.hide("vp", "vp:more_lbl")
+  for index = 1, #(ACTION.items or {}) do
+    ui.clear("vp:act_ring" .. index)
+    ui.clear("vp:act_btn" .. index)
+    ui.clear("vp:act_plate" .. index)
+    ui_text.hide("vp", "vp:act_lbl" .. index)
+  end
+  action_drawn = 0
   ui_text.hide("vp", "vp:dbg")
 end
 
@@ -107,6 +142,13 @@ local function clear_panel_ui()
     ui.clear("vp:dplate" .. index)
     ui_text.hide("vp", "vp:dlbl" .. index)
   end
+  for index = 1, #(PANEL_ACTIONS.cols or {}) * #(PANEL_ACTIONS.rows or {}) do
+    ui.clear("vp:pacting" .. index)
+    ui.clear("vp:pactbtn" .. index)
+    ui.clear("vp:pactplate" .. index)
+    ui_text.hide("vp", "vp:pactlbl" .. index)
+  end
+  panel_drawn = 0
   ui_text.hide("vp", "vp:dbg")
 end
 
@@ -181,6 +223,279 @@ local function button_release(index, key)
   input.virtual_key(key, false)
 end
 
+-- ---------- 招式卡（HUD 快捷栏）的可点逻辑 ----------
+--
+-- 为什么是"点卡片"而不是再加一排武学按钮：卡片本来就在屏上，也本来就在告诉玩家
+-- "我有这几招"，过去它只是一块涂装（和头像框同一性质）。把它变成控件，触屏一次补齐
+-- 7 条动作（5 招 + 轻功 + 格挡），而**一个新按钮都不占**——右下半屏已经被摇杆和五个
+-- 玩法按钮占满，再塞七个小圆就是"手指盖住画面"。
+-- 手感与虚拟按钮一致：按下当帧给一个边沿（`action_pressed` 系立刻出手）+ 按住态跨帧
+-- 保持（格挡只有按住才站得住），抬手统一释放。
+--
+-- 命名动作 → 可注入的物理键名：`input.bindings(action)` 返回 `key:keyj` 这类绑定文本
+-- （`ui/hints.lua` 的按键说明读同一份），剥掉 `key:` 前缀喂给 `input.virtual_key`；
+-- 手柄绑定（pad: / padaxis:）不能经这条通道注入，逐条跳过。
+-- **为什么不写死键名**：写死就是"玩家改键之后触屏还在按老键"，而手机上没有键位可看，
+-- 错了也没有第二条纠正路径（改键面板在暂停菜单里，手机照样能改）。
+local function action_key(action)
+  for _, text in ipairs(input.bindings(action) or {}) do
+    local key = tostring(text):match("^key:(.+)$")
+    if key then
+      return key
+    end
+  end
+  return nil
+end
+
+local function in_rect(px, py, rect)
+  return px >= rect.x and px <= rect.x + rect.w and py >= rect.y and py <= rect.y + rect.h
+end
+
+-- 释放一只按住的卡：按住态与卡底那条描金压痕一起收（压痕是 `ui.bar`，不重画不会自己消失）。
+local function card_release(index)
+  local key = card_down[index]
+  if not key then
+    return
+  end
+  card_down[index] = nil
+  input.virtual_key(key, false)
+  ui.clear("vp:card_press" .. index)
+end
+
+local function release_all_cards()
+  for index in pairs(card_down) do
+    card_release(index)
+  end
+end
+
+-- 招式卡命中测试。返回本次按下命中的**动作名**（没按中 → nil）：无头验收据此断言
+-- "第 i 张卡出第 i 招"，而不是只看"画面好像闪了一下"。
+-- 面板态直接不命中：那时卡片虽然还画在右栏（HUD 每帧都画），点它该做的是列表操作。
+--
+-- **同一帧里按下与抬起都到**（一次快点击的两条边沿挤进同一个 rAF，web/微信的触摸适配层
+-- 就是这么发的）：按下分支当场补一次释放，四个命中测试（卡 / 盘 / 面板条 / 按钮·十字键）
+-- 统一这个口径。不补的话 `*_down[index]` 会一直留着、那只键**永远松不掉**——
+-- 长按格挡从此永久贴住，面板十字键会变成一直往下滚。
+local function hit_test_cards(px, py, pressed, released)
+  if not state.is_mode("Playing") then
+    return nil
+  end
+  local fired = nil
+  for _, slot in ipairs(hud.skill_slots()) do
+    if card_down[slot.index] then
+      if released then
+        card_release(slot.index)
+      elseif slot.hold then
+        -- 按住卡（格挡）每帧重发按住态，与虚拟按钮同一手感；出手类已经吃过边沿，不用重发。
+        input.virtual_key(card_down[slot.index], true)
+      end
+    elseif pressed then
+      local key = in_rect(px, py, slot) and action_key(slot.action) or nil
+      if key then
+        card_down[slot.index] = key
+        input.virtual_pressed(key)
+        input.virtual_key(key, true)
+        if released then
+          card_release(slot.index)
+        end
+        fired = slot.action
+      end
+    end
+  end
+  return fired
+end
+
+-- 「更多」键 + 动作盘（M34-06 批 2）：玩法态剩下 9 条**只有键盘能按**的动作
+-- （睡觉 T / 建造 B / 放置 F / 运气 Q / 拆除 X / 升级 U / 送礼 G / 选种 C / 重开 R）
+-- 从这一颗键进去。注入口径与招式卡完全一致：按下当帧一个边沿（`virtual_pressed`）
+-- + 按住态跨帧保持（`virtual_key`）、抬手释放——这九条全是 `action_pressed` 系的一次性动作。
+-- 键名同样走 `action_key(action)`（读玩家改过的绑定），不写死 keyt/keyb。
+function M.action_slots()
+  local out = {}
+  local index = 0
+  for row = 1, #(ACTION.rows or {}) do
+    for col = 1, #(ACTION.cols or {}) do
+      index = index + 1
+      local item = (ACTION.items or {})[index]
+      if item then
+        out[#out + 1] = {
+          index = index, action = item.action, label = item.label,
+          x = ACTION.cols[col], y = ACTION.rows[row], size = ACTION.size,
+        }
+      end
+    end
+  end
+  return out
+end
+
+-- 盘当前是否展开（无头验收与提示行读它；不改状态）。
+function M.is_action_open()
+  return action_open
+end
+
+local function action_release(index)
+  local key = action_down[index]
+  if not key then
+    return
+  end
+  action_down[index] = nil
+  input.virtual_key(key, false)
+end
+
+local function release_all_actions()
+  for index in pairs(action_down) do
+    action_release(index)
+  end
+end
+
+local function hit_test_actions(px, py, pressed, released)
+  if not state.is_mode("Playing") then
+    return nil
+  end
+  for _, slot in ipairs(M.action_slots()) do
+    if action_down[slot.index] then
+      if released then
+        action_release(slot.index)
+      else
+        input.virtual_key(action_down[slot.index], true)
+      end
+    elseif pressed and action_open
+        and in_circle(px, py, slot.x, slot.y, (tonumber(slot.size) or 0) / 2) then
+      local key = action_key(slot.action)
+      if key then
+        action_down[slot.index] = key
+        input.virtual_pressed(key)
+        input.virtual_key(key, true)
+        if released then
+          action_release(slot.index)
+        end
+        -- 执行完就收起：画面回到"摇杆 + 五键 + 招式卡"，九块盘不常驻盖住世界。
+        action_open = false
+        return slot.action
+      end
+    end
+  end
+  return nil
+end
+
+local function more_rect()
+  local size = tonumber(MORE and MORE.size) or 0
+  return { x = (MORE and MORE.x) or 0, y = (MORE and MORE.y) or 0, w = size, h = size }
+end
+
+-- 面板态动作条（M34-06 批 3）：当前模式（背包/商店/暂停）用的那几格，几何与条目都来自
+-- `layout.TOUCH.panel_actions`。任务与对话没有条目（它们只需要"移动选择 + 确定 + 关闭"，
+-- 三条都已在十字键上），所以这里的 modes 表里没有它们，`panel_action_slots()` 返回空表。
+-- 编号口径与动作盘一致：**按行主序**（index = (row-1)*#cols + col），门与绘制共用同一套。
+function M.panel_action_slots()
+  local out = {}
+  local items = (PANEL_ACTIONS.modes or {})[state.mode] or {}
+  local index = 0
+  for row = 1, #(PANEL_ACTIONS.rows or {}) do
+    for col = 1, #(PANEL_ACTIONS.cols or {}) do
+      index = index + 1
+      local item = items[index]
+      if item then
+        out[#out + 1] = {
+          index = index, action = item.action, label = item.label,
+          x = PANEL_ACTIONS.cols[col], y = PANEL_ACTIONS.rows[row],
+          size = PANEL_ACTIONS.size,
+        }
+      end
+    end
+  end
+  return out
+end
+
+local function panel_action_release(index)
+  local key = panel_action_down[index]
+  if not key then
+    return
+  end
+  panel_action_down[index] = nil
+  input.virtual_key(key, false)
+end
+
+local function release_all_panel_actions()
+  for index in pairs(panel_action_down) do
+    panel_action_release(index)
+  end
+end
+
+local function hit_test_panel_actions(px, py, pressed, released)
+  if state.is_mode("Playing") then
+    return nil
+  end
+  for _, slot in ipairs(M.panel_action_slots()) do
+    if panel_action_down[slot.index] then
+      if released then
+        panel_action_release(slot.index)
+      else
+        input.virtual_key(panel_action_down[slot.index], true)
+      end
+    elseif pressed and in_circle(px, py, slot.x, slot.y, (tonumber(slot.size) or 0) / 2) then
+      local key = action_key(slot.action)
+      if key then
+        panel_action_down[slot.index] = key
+        input.virtual_pressed(key)
+        input.virtual_key(key, true)
+        if released then
+          panel_action_release(slot.index)
+        end
+        return slot.action
+      end
+    end
+  end
+  return nil
+end
+
+local function hit_test_more(px, py, pressed, released)
+  if more_down then
+    if released then
+      more_down = false
+    end
+    return nil
+  end
+  if not state.is_mode("Playing") then
+    return nil
+  end
+  if not pressed or not in_rect(px, py, more_rect()) then
+    return nil
+  end
+  more_down = not released
+  action_open = not action_open
+  if not action_open then
+    release_all_actions()
+  end
+  return "more"
+end
+
+--- 测试注入口：把一个指针事件（位置 + 按下/抬起边沿）走一遍**屏上全部可点控件**——
+--- 招式卡 → 动作盘（开着时）→「更多」键 → 面板动作条（面板态）。走的是 `M.update()` 里同一条代码，差别只在
+--- 坐标由调用方给出、且**不受 `M.available()` 的平台门限制**——无头验收里 `app.platform()`
+--- 报告 `desktop`，`update()` 整条早退，没有这个口子，"点卡片到底能不能出招"就没有任何
+--- 机器验收可证（真实指针事件那条路只有浏览器/微信 harness 能跑）。
+--- 返回命中的**动作名**（`"more"` = 「更多」键本身；没按中 → nil）。
+--- 抬起事件不在任何控件上命中也算"走完三条"：`fired` 只在按下命中时非空，所以释放
+--- 永远会传到每一个控件（按住期间换档/切面板不会漏放键）。
+function M.handle_pointer(px, py, pressed, released)
+  local x, y = tonumber(px) or 0, tonumber(py) or 0
+  local down, up = pressed and true or false, released and true or false
+  local fired = hit_test_cards(x, y, down, up)
+  if fired then
+    return fired
+  end
+  fired = hit_test_actions(x, y, down, up)
+  if fired then
+    return fired
+  end
+  fired = hit_test_more(x, y, down, up)
+  if fired then
+    return fired
+  end
+  return hit_test_panel_actions(x, y, down, up)
+end
+
 -- 十字键：与虚拟按钮同一手感（按下当帧一个边沿 + 按住态跨帧保持）。一次触摸 = 面板内一步
 -- （web 运行时没有 action_repeat，ui_step 回落 action_pressed 只吃边沿，按住不连发）。
 local function dpad_press(index, physical)
@@ -213,6 +528,10 @@ function M.release_all()
   for index, key in ipairs(DPAD_KEYS) do
     dpad_release(index, DPAD_PHYSICAL[key.dir or key.key])
   end
+  release_all_cards()
+  release_all_actions()
+  action_open = false
+  release_all_panel_actions()
 end
 
 -- 开关排障文案（`ax/ay/stick/dx/dy`，默认关闭：会压在左上角世界画面上）。
@@ -297,8 +616,12 @@ function M.update()
       for index, btn in ipairs(BUTTONS) do
         button_release(index, btn.key)
       end
+      release_all_cards()
+      release_all_actions()
+      action_open = false
       clear_play_ui()
     else
+      release_all_panel_actions()
       for index, key in ipairs(DPAD_KEYS) do
         dpad_release(index, DPAD_PHYSICAL[key.dir or key.key])
       end
@@ -313,7 +636,7 @@ function M.update()
         close_down = false
       end
     elseif mouse_pressed and in_circle(press_x, press_y, cg.x, cg.y, cg.size / 2) then
-      close_down = true
+      close_down = not mouse_released
       input.virtual_pressed("cancel")
     end
     for index, key in ipairs(DPAD_KEYS) do
@@ -325,10 +648,19 @@ function M.update()
         end
       elseif mouse_pressed and in_circle(press_x, press_y, key.x, key.y, key.size / 2) then
         dpad_press(index, DPAD_PHYSICAL[key.dir or key.key])
+        if mouse_released then
+          dpad_release(index, DPAD_PHYSICAL[key.dir or key.key])
+        end
       end
     end
+    -- 面板动作条（装备/选种/换页/数量·音量±）：与十字键同一份按下位置，多指可同按。
+    hit_test_panel_actions(press_x, press_y, mouse_pressed, mouse_released)
     return
   end
+
+  -- 玩法区的可点控件（招式卡 → 动作盘 →「更多」键）走**同一条**分发：`M.handle_pointer`
+  -- 的真实路径版本。与摇杆/按钮共用同一份**按下位置**，所以按住摇杆跑位时另一只手照样能出招。
+  M.handle_pointer(press_x, press_y, mouse_pressed, mouse_released)
 
   -- 摇杆：在"底圆 + 拾取余量"内按下即抓住，之后拖出圈也跟随（拇指滑动不脱手）。
   if not stick_active and mouse_pressed
@@ -377,6 +709,9 @@ function M.update()
       end
     elseif mouse_pressed and in_circle(press_x, press_y, btn.x, btn.y, btn.size / 2) then
       button_press(index, btn.key)
+      if mouse_released then
+        button_release(index, btn.key)
+      end
     end
   end
 end
@@ -410,12 +745,33 @@ function M.draw()
       local font = math.max(11, radius * 0.42)
       ui_text.draw("vp", "vp:dlbl" .. index, key.x - half_width(label, font), key.y - font * 0.5, font, radius * 2, label)
     end
+    -- 面板动作条（装备/选种/换页/数量·音量±）：与十字键同三层、同按下提亮。
+    -- 条目少的模式（背包/暂停 2 条）要把上一模式（商店 3 条）多出来的那一格收掉，
+    -- 所以按 `panel_drawn` 补一轮清理——面板之间直接切换时不走 `clear_panel_ui`。
+    local strip = M.panel_action_slots()
+    for index = #strip + 1, panel_drawn do
+      ui.clear("vp:pacting" .. index)
+      ui.clear("vp:pactbtn" .. index)
+      ui.clear("vp:pactplate" .. index)
+      ui_text.hide("vp", "vp:pactlbl" .. index)
+    end
+    panel_drawn = #strip
+    for _, slot in ipairs(strip) do
+      local radius = slot.size / 2
+      local pressed = panel_action_down[slot.index]
+      ui.circle("vp:pacting" .. slot.index, slot.x, slot.y, radius + 3,
+        HALO[1], HALO[2], HALO[3], pressed and 0.62 or 0.16)
+      ui.circle("vp:pactbtn" .. slot.index, slot.x, slot.y, radius,
+        COLORS.action[1], COLORS.action[2], COLORS.action[3], pressed and 0.85 or 0.55)
+      draw_plate("vp:pactplate" .. slot.index, slot.x, slot.y, slot.size, PANEL_ACTIONS.art)
+      ui_text.draw("vp", "vp:pactlbl" .. slot.index,
+        slot.x - half_width(slot.label, 14), slot.y - 14 * 0.5, 14, slot.size, slot.label)
+    end
     if debug_text then
       ui_text.draw("vp", "vp:dbg", 10, 10, 14, 400, "panel-mode")
     end
     return
   end
-
   -- 摇杆与按钮的可见性分三层，**层序只依赖图元类型**：
   --   `ui.circle`（panel）→ `ui.image`（漆面盘）→ `ui_text`（标签）。
   -- 为什么不能按调用顺序排：`__rustlua_export_ui` 用 Lua `pairs` 遍历四张表
@@ -456,6 +812,51 @@ function M.draw()
     ui_text.draw("vp", "vp:lbl3", b3.x - half_width(b3.label, 14), b3.y - 14 * 0.5, 14, b3.size, b3.label)
     ui_text.draw("vp", "vp:lbl4", b4.x - half_width(b4.label, 14), b4.y - 14 * 0.5, 14, b4.size, b4.label)
     ui_text.draw("vp", "vp:lbl5", b5.x - half_width(b5.label, 14), b5.y - 14 * 0.5, 14, b5.size, b5.label)
+  end
+
+  -- 招式卡的按下反馈：卡底一条 4px 描金压痕。
+  -- 为什么是 `ui.bar`：drawUi 的段序是 panels → images → bars → texts（见上面那段），
+  -- 卡片是 `ui.image`，所以 `ui.panel` 高亮会被卡片**埋掉**，而 bar 排在 images 之后、
+  -- texts 之前——正好盖在贴图上面、又不遮招式名。触屏没有任何"按到了"的确认，玩家
+  -- 只会认为这又是一块点不动的涂装（头像框就是这么被问的）。
+  for _, slot in ipairs(hud.skill_slots()) do
+    if card_down[slot.index] then
+      ui.bar("vp:card_press" .. slot.index, slot.x, slot.y + slot.h - 4, slot.w, 4, 1.0,
+        HALO[1], HALO[2], HALO[3])
+    else
+      ui.clear("vp:card_press" .. slot.index)
+    end
+  end
+
+  -- 「更多」键：画在招式栏第二行的空格子里（`layout.TOUCH.more`，与卡片共用同一张
+  -- 九宫格底 ⇒ 玩家一眼归类"这一格也是按的"）。它只在触屏宿主出现：本函数在
+  -- `M.available()` 为假时整条不跑，键盘玩家看到的画面一格都没多。
+  skin.panel("vp:more_card", MORE.x, MORE.y, MORE.size, MORE.size, MORE.art)
+  ui_text.draw("vp", "vp:more_lbl",
+    MORE.x + (MORE.size - half_width(MORE.label, 12)) / 2, MORE.y + 16, 12, MORE.size, MORE.label)
+
+  -- 动作盘（展开时）：与五键同三层（circle 底衬 → image 漆面 → 标签），按下提亮。
+  -- 收起 = 逐 id 收掉：`ui.circle`/`ui.image` 是宿主侧的持久表，不显式清就会在
+  -- 关掉盘之后继续糊在世界画面上（这一族已经踩过两次，见 `clear_play_ui` 头注释）。
+  local slots = action_open and M.action_slots() or {}
+  for index = #slots + 1, action_drawn do
+    ui.clear("vp:act_ring" .. index)
+    ui.clear("vp:act_btn" .. index)
+    ui.clear("vp:act_plate" .. index)
+    ui_text.hide("vp", "vp:act_lbl" .. index)
+  end
+  action_drawn = #slots
+  for _, slot in ipairs(slots) do
+    local radius = slot.size / 2
+    local pressed = action_down[slot.index]
+    ui.circle("vp:act_ring" .. slot.index, slot.x, slot.y, radius + 3,
+      HALO[1], HALO[2], HALO[3], pressed and 0.62 or 0.16)
+    ui.circle("vp:act_btn" .. slot.index, slot.x, slot.y, radius,
+      COLORS.action[1], COLORS.action[2], COLORS.action[3], pressed and 0.85 or 0.55)
+    draw_plate("vp:act_plate" .. slot.index, slot.x, slot.y, slot.size, ACTION.art)
+    -- 字号 14 = 五键副键同档（直径 68 × 0.21）；两字 28px 落在 68 的预算里，M30 不报截断。
+    ui_text.draw("vp", "vp:act_lbl" .. slot.index,
+      slot.x - half_width(slot.label, 14), slot.y - 14 * 0.5, 14, slot.size, slot.label)
   end
 
   if debug_text then

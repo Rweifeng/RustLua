@@ -23,6 +23,7 @@
 local places = require("data.places")
 local npcs = require("data.npcs")
 local characters = require("data.characters")
+local depth = require("world.depth")
 local schedule = require("world.schedule")
 local weather = require("world.weather")
 
@@ -152,12 +153,14 @@ end
 
 -- 挂美术：优先用 data/characters.lua 的序列帧（static_sprite + animation），
 -- 失败则退回 data/npcs.lua 的灰盒 sprite 串。attached 标记决定要不要切状态。
+-- 形象一律经 depth.attach 挂上（= sprite.set + 按脚位 Y 写 order），否则 NPC 之间、
+-- NPC 与主角之间的遮挡只会落在"实体 id 先后"上（web 上就是主角被 NPC 盖住）。
 local function apply_art(actor, id)
   local npc = actor.npc
   local entry = npc.character and characters.get(npc.character) or nil
   if not entry then
     if npc.sprite then
-      local ok, err = pcall(sprite.set, id, npc.sprite)
+      local ok, err = pcall(depth.attach, id, npc.sprite)
       if not ok then
         report(actor, "sprite:" .. npc.persist_id,
           "npc=" .. tostring(npc.name) .. " sprite failed: " .. tostring(err))
@@ -165,7 +168,7 @@ local function apply_art(actor, id)
     end
     return
   end
-  local ok, err = pcall(sprite.set, id, entry.static_sprite.s)
+  local ok, err = pcall(depth.attach, id, entry.static_sprite.s)
   if not ok then
     report(actor, "sprite:" .. npc.persist_id,
       "npc=" .. tostring(npc.name) .. " sprite failed: " .. tostring(err))

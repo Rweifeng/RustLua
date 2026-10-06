@@ -23,6 +23,10 @@
 //!      差值超过 4px 就红，因为那种量级说明两边不是同一坐标口径（M22 的重影差了 17px）。
 //!   ③ 载体记账：逐块报"这一格今天由实体层还是动态层画"。迁移要改的就是这份账——标签与
 //!      静态装饰从动态层搬进实体层，而①的两张表一个字都不许变。
+//!   ④ 层序账：本帧 `mesh.draws` 的提交先后就是画家顺序（UI 层不写深度，后提交的盖住先提交
+//!      的）。①的矩形读数对"画在谁底下"完全瞎：一块东西搬进/搬出预设时矩形可以一个像素都不变
+//!      而从此被别人的贴图盖住。所以搬家之前先把"动态层与实体层谁盖谁"量成一张表，④ 钉住它，
+//!      搬完之后同一张表必须还是同一个形状（见 `docs/66` §10）。
 //!
 //! Usage:
 //!   cargo run -p game --example jhyt_m63_title_prefab [-- <game_jhyt-root>] [--capture]
@@ -38,7 +42,7 @@ use engine::{
         ui_events::UiEvents,
         ui_layout::{UiRect, UiRectLayout},
     },
-    host::RuntimeScene,
+    host::{RuntimeScene, SceneDraw, SceneMesh},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -232,6 +236,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     println!("  实体层 {from_entity} 块、动态层 {from_dynamic} 块、未画 {not_drawn} 块");
+
+    banner("④ 层序账：本帧提交的先后（谁盖谁）——搬进/搬出预设前必须先有这张表");
+    layer_order(&mut runtime)?;
 
     println!("jhyt_m63_title_prefab_ok project={}", project.display());
     Ok(())
@@ -553,6 +560,85 @@ fn label_pairing(
     }
     Ok(())
 }
+
+// ---------- ④ 层序 ----------
+
+/// `SceneDraw.texture` 走的是**约定下标**：`frame_data.rs` 写入时做过 `+1`，`texture == 0`
+/// 是内置白图（`ui.panel` 那种纯色块）。拿 `texture` 直接索引 `paths` 会整体错开一格，
+/// 把每一块认成邻居的贴图——这张表因此会读出"层序是乱的"而排序本身没问题（m35 翻过车）。
+fn draw_path<'a>(mesh: &'a SceneMesh, draw: &SceneDraw) -> Option<&'a str> {
+    if draw.texture == 0 {
+        return None;
+    }
+    mesh.paths
+        .get((draw.texture - 1) as usize)
+        .map(String::as_str)
+}
+
+/// 末段文件名：门面贴图都在 `assets/art/**` 深处，整条路径会把表撑到读不出来。
+/// 内置通道（白图 / 两张字形图集）本来就带 `__…__`，末段即全名。
+fn tail(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// 某个角色（末段名精确匹配）在本帧提交序列里的首次与末次下标；一次都没有则 `None`。
+/// 一张图可以有多个分段（三块木牌 = 三个分段，中间隔着别的贴图），所以是**区间**不是点。
+fn draw_span(mesh: &SceneMesh, name: &str) -> Option<(usize, usize)> {
+    let mut hits = mesh
+        .draws
+        .iter()
+        .enumerate()
+        .filter(|(_, draw)| {
+            if name == "<内置白图>" {
+                // 纯色面板（`ui.panel`）不占贴图槽：既可能是 `texture == 0`，也可能
+                // 命中注册表里的 `__white__`，两种写法都算白图分段。
+                draw.texture == 0 || draw_path(mesh, draw).is_some_and(|path| path == "__white__")
+            } else {
+                draw_path(mesh, draw).is_some_and(|path| tail(path) == name)
+            }
+        })
+        .map(|(index, _)| index);
+    Some((hits.next()?, hits.next_back()?))
+}
+
+/// 门面上关心的每一块在 `mesh.draws` 里的位置。**下标即先后**（UI 层不写深度，
+/// 后提交的盖住先提交的），①的矩形读数对此完全瞎，所以它单独成一段账。
+fn layer_order(runtime: &mut RuntimeScene) -> Result<(), Box<dyn std::error::Error>> {
+    let mesh = runtime.vertices(VIEW_W as u32, VIEW_H as u32)?;
+    println!("  本帧提交 {} 个分段（先后即画家顺序）：", mesh.draws.len());
+    for (index, draw) in mesh.draws.iter().enumerate() {
+        let path = draw_path(&mesh, draw).unwrap_or("<内置白图>");
+        println!(
+            "  {index:>3}  {:<34} 顶点 {}..{}",
+            tail(path),
+            draw.start,
+            draw.start + draw.count
+        );
+    }
+    for name in ORDER_ROLES {
+        match draw_span(&mesh, name) {
+            Some((first, last)) => println!("  {name:<34} 分段 {first}..{last}"),
+            None => println!("  {name:<34} 本帧没提交"),
+        }
+    }
+    Ok(())
+}
+
+/// ④ 里要点名的贴图/通道末段名（一次 `--capture` 之后按真实画面补全）。
+const ORDER_ROLES: &[&str] = &[
+    "title_bg_pixel.png",
+    "ui_menu_vignette.png",
+    "ui_menu_ink_band.png",
+    "ui_title_logo.png",
+    "ui_menu_lantern.png",
+    "ui_menu_btn_wuxia_9s.png",
+    "ui_menu_btn_wuxia_hover_9s.png",
+    "ui_menu_panel_scroll_9s.png",
+    "ui_menu_ornament_corner.png",
+    "ui_menu_divider_bamboo.png",
+    "ui_menu_seal_jianghu.png",
+    "<内置白图>",
+];
 
 // ---------- 驱动与格式化 ----------
 

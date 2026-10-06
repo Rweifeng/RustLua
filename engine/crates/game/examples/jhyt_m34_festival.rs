@@ -73,9 +73,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_scene_is(&mut rt, "manor")?;
 
     // ---------------- ① 112 天逐日扫描 ----------------
-    banner("M34-02① 112 天（四季 × 28 天）逐日：21 个事件日、91 个空日、循环不错位");
+    banner("M34-02① 112 天（四季 × 28 天）逐日：24 个事件日、88 个空日、循环不错位");
     assert_str(&mut rt, "require('data.festivals').season_length", "28")?;
-    assert_num(&mut rt, "#require('data.festivals').festivals", 7.0)?;
+    assert_num(&mut rt, "#require('data.festivals').festivals", 8.0)?;
     // 事件日的**完整清单**：季内窗口写死在数据里，这里按绝对日数逐日扫出来比对。
     // 少一天、多一天、错一天都会在这条断言上红（不是"大概对上了"）。
     let event_days = query_str(
@@ -84,7 +84,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
            for d = 1, 112 do local id = f.id(d); if id ~= '' then out[#out + 1] = tostring(d) end end; \
            return table.concat(out, ',') end)()",
     )?;
-    let expected_days = "8,9,10,15,16,17,36,37,38,43,44,45,64,65,66,71,72,73,99,100,101";
+    let expected_days =
+        "8,9,10,15,16,17,36,37,38,43,44,45,64,65,66,71,72,73,99,100,101,110,111,112";
     if event_days != expected_days {
         return Err(
             format!("节气覆盖的日数清单不符：数据给出 {event_days}，期望 {expected_days}").into(),
@@ -104,11 +105,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
            return table.concat(out, ',') end)()",
     )?;
     let expected_per_id =
-        "chongyang=3,dongzhi=3,duanwu=3,midautumn=3,qingming=3,teafair=3,xiazhi=3";
+        "chongyang=3,chuxi=3,dongzhi=3,duanwu=3,midautumn=3,qingming=3,teafair=3,xiazhi=3";
     if per_id != expected_per_id {
         return Err(format!("每个节气的天数分布不符：{per_id}，期望 {expected_per_id}").into());
     }
-    println!("  112 天里 21 天有事件（每节气 3 天），91 天无事件：{per_id}");
+    println!("  112 天里 24 天有事件（每节气 3 天），88 天无事件：{per_id}");
     // 边界：窗口首尾各错一格。
     for (day, expected) in [
         (7i64, ""),
@@ -133,7 +134,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (98, ""),
         (99, "dongzhi"),
         (102, ""),
-        (112, ""),
+        (109, ""),
+        (110, "chuxi"),
+        (111, "chuxi"),
+        (112, "chuxi"),
     ] {
         assert_str(
             &mut rt,
@@ -141,7 +145,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             expected,
         )?;
     }
-    println!("  窗口边界钉死：7/11/14/18/…/102/112 无事件，8/15/36/43/64/71/99 起事");
+    println!("  窗口边界钉死：7/11/14/18/…/102/109 无事件，8/15/36/43/64/71/99/110 起事");
     // 循环：第 113 天回到春 1；第 120 天 == 第 8 天、第 128 天 == 第 16 天（同判）。
     assert_str(&mut rt, "require('world.festival').id(113)", "")?;
     assert_str(&mut rt, "require('world.festival').id(120)", "teafair")?;
@@ -712,7 +716,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  十条负例跑完，登记表再查一遍仍然干净");
 
     println!(
-        "jhyt_m34_festival_ok project={} event_days=21/112 windows=7x3 \
+        "jhyt_m34_festival_ok project={} event_days=24/112 windows=8x3 \
          teafair_door=locked_when_unbuilt->open_at_level3 tea_order=completed \
          gather=2/4 sell_lingzhi={:.0} drill_sect_rep=10 social_multiplier=1.1 \
          drill_affinity=7 lantern_affinity=9 \
@@ -804,10 +808,16 @@ const NEGATIVE_CASES: [(&str, &str, &str); 10] = [
     ),
     (
         "某一季一个事件都没有",
-        "local f = require('data.festivals').festivals; local s0, s1, s2 = f[7].season, f[7].from, f[7].to; \
+        // 阶段2（1.5）补足除夕后冬季有两个事件（冬至 f[7] + 除夕 f[8]）：要造出"某季
+        // 一个事件都没有"，必须把冬季两个都挪走——f[7]→秋 20-22、f[8]→秋 23-25（不重叠）。
+        "local f = require('data.festivals').festivals; \
+         local s0, s1, s2 = f[7].season, f[7].from, f[7].to; \
+         local t0, t1, t2 = f[8].season, f[8].from, f[8].to; \
          f[7].season = 'autumn'; f[7].from = 20; f[7].to = 22; \
+         f[8].season = 'autumn'; f[8].from = 23; f[8].to = 25; \
          local issues = table.concat((select(2, require('data.festivals').validate_all())) or {}, '\\n'); \
-         f[7].season, f[7].from, f[7].to = s0, s1, s2; return issues",
+         f[7].season, f[7].from, f[7].to = s0, s1, s2; \
+         f[8].season, f[8].from, f[8].to = t0, t1, t2; return issues",
         "has no festival event",
     ),
 ];

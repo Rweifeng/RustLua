@@ -9,20 +9,20 @@
 //!
 //! 现在的实现分三处，本样例逐条钉住：
 //!   * **场景**：每张玩法地图一个 `GameCamera` 实体，`Camera` 组件声明
-//!     `projection=orthographic;center=<地图中心>;zoom=1;bounds=0,0,W*32,H*32`；
+//!     `projection=orthographic;center=<地图中心>;zoom=2;bounds=0,0,W*32,H*32`；
 //!   * **脚本**：`scripts/world/camera_view.lua` 在每次进图后 `camera2d.follow(player)`
 //!     （offset/死区/平滑全 0 ⇒ 玩家始终在视野正中）；
 //!   * **引擎**：每帧渲染前用 `Camera2D::constrained_center` 把相机中心夹到地图内。
 //!
-//! 2026-09-27 转横屏（1280×720）后的几何事实（写清楚，别当成 bug）：
-//!   室外地图 40×23 格 = 1280×736 世界单位，视口 1280×720（第 23 行是补出来的：
-//!   40×22 = 1280×704 比视口矮 16 像素，y 轴夹不住、相机被钉死在地图中心，
-//!   屏幕顶/底会露出 clear color（#0A121F）的深色横条）：
-//!   * **x 轴**：视口宽(1280) == 地图宽(1280) ⇒ 夹取区间退化为单点 [640, 640]，
-//!     相机 x 恒等于 640、**恰好把整幅地图铺满屏幕**（没有左右跟随的余量）；
-//!   * **y 轴**：视口高(720) < 地图高(736) ⇒ 该轴可夹取，区间 [360, 376]——
-//!     跟随余量只有 16 像素，玩家贴地图上下沿时相机各让 8 像素，视野始终在图内。
-//!   * 一句话：**x 轴上"整图恰好铺满 + 不出界"同时成立，y 轴上"跟随 + 不出界"同时成立。**
+//! 2026-09-27 转横屏 + 2026-10 对标星露谷 **zoom=2**（docs/51 §2.2，`camera_view.lua`
+//! 校验器强制每张场景 Camera zoom=2）后的几何事实（写清楚，别当成 bug）：
+//!   室外地图 40×23 格 = 1280×736 世界单位，视口 1280×720、zoom=2 ⇒
+//!   可见世界域 = 640×360 单位（20×11.25 格，屏幕 tile=64px）：
+//!   * **x 轴**：可见宽(640) < 地图宽(1280) ⇒ 夹取区间 [320, 960]——
+//!     玩家在中段时相机精确跟随，贴东西墙时夹到区间端点（约半屏跟随余量）；
+//!   * **y 轴**：可见高(360) < 地图高(736) ⇒ 该轴可夹取，区间 [180, 556]——
+//!     玩家贴地图上下沿时相机各让 180 单位，视野始终在图内。
+//!   * 一句话：**两轴都"跟随 + 不出界"同时成立，x 轴贴墙时留出 320 单位的夹取余量。**
 //!
 //! 为什么用 `RuntimeScene` 而不是裸 `LuaRuntime`：`camera2d.get()` 读的是**宿主每帧
 //! 回填的真实相机**，而"处理请求 → 跟随 → 夹取"这条链在 `RuntimeScene::step_camera2d`
@@ -31,13 +31,14 @@
 //!
 //! 章节：
 //!   ① 门面：玩法地图之外不跟随；
-//!   ② 进图第一帧：相机 x = 地图中心 640（视口宽==地图宽 ⇒ 恰好铺满）、y 夹到区间下界；
-//!   ③ 铺满轴：玩家在地图中段的每个 x 上，相机 x 恒定 640、可见矩形恰好 [0,1280]；
-//!   ④ 不出图（贴东/西墙）：相机 x 仍被"钉"在 640（区间退化为单点），且由四个屏幕角
+//!   ② 进图第一帧：相机 x 精确跟随出生点（528 落在中段区间 [320, 960] 内）、y 夹到区间下界 180；
+//!   ③ 中段跟随：玩家 x 落在 [320, 960] 内时，相机 x == 玩家 x（可见矩形始终在图内）；
+//!   ④ 不出图（贴东/西墙）：相机 x 夹到区间端点 320/960，且由四个屏幕角
 //!      反投影回来的可见矩形仍在 [0,1280]×[0,736] 内（"视野不超出地图边缘"的直接证据）；
-//!   ⑤ 横屏 y 轴事实：地图(736) 比视口(720) 高 ⇒ 该轴可夹取，区间 [360, 376]，
+//!   ⑤ 横屏 y 轴事实：地图(736) 比可见域(360) 高 ⇒ 该轴可夹取，区间 [180, 556]，
 //!      上/中/下三个探针分别钉下界、跟随、钉上界；
-//!   ⑥ 换图：青云山道重绑跟随目标、bounds 换成新地图矩形；20×12 的室内图两轴都退化；
+//!   ⑥ 换图：青云山道重绑跟随目标、bounds 换成新地图矩形（贴东墙夹到 960）；
+//!      20×12 的室内图 x 轴退化钉 320、y 轴玩家出生在区间外夹到下界 180；
 //!   ⑦ 回到门面：取消跟随（不留指向已销毁实体的目标）。
 //!
 //! Usage:
@@ -47,25 +48,30 @@ use engine::core::input::InputSnapshot;
 use engine::host::RuntimeScene;
 use std::{env, path::PathBuf};
 
-/// 设计分辨率 = 发布窗口尺寸 = 相机视口（`zoom=1` 时世界单位与像素 1:1；横屏 1280×720）。
+/// 设计分辨率 = 发布窗口尺寸 = 相机视口（横屏 1280×720）。
 const VIEW_W: f32 = 1280.0;
 const VIEW_H: f32 = 720.0;
+/// 相机 zoom（docs/51 §2.2 + `world/camera_view.lua` 校验器强制 zoom=2，对标星露谷）：
+/// 屏幕 tile=64px、一屏 20×11.25 格。可见世界域 = 视口 / zoom。
+const ZOOM: f32 = 2.0;
+const VIEW_WORLD_W: f32 = VIEW_W / ZOOM; // 640
+const VIEW_WORLD_H: f32 = VIEW_H / ZOOM; // 360
 /// 室外地图 40×23 格 × 32 世界单位（`pixel_kit.camera_line` 与场景 bounds 同源）。
 const MAP_W: f32 = 1280.0;
 const MAP_H: f32 = 736.0;
-/// x 轴可用的相机中心区间 = `[bounds.min.x + 半视口, bounds.max.x - 半视口]`，
+/// x 轴可用的相机中心区间 = `[bounds.min.x + 半可见宽, bounds.max.x - 半可见宽]`，
 /// 即引擎 `Camera2D::constrained_center` 的夹取口径（bounds.min.x = 0）。
-/// **横屏下视口宽 == 地图宽**，区间退化为单点 [640, 640]（无跟随余量，整图恰好铺满）。
-const CENTER_MIN: f32 = VIEW_W / 2.0; // 640
-const CENTER_MAX: f32 = MAP_W - VIEW_W / 2.0; // 640
-/// y 轴同款区间 `[360, 376]`：地图高 736 比视口高 720 多出 16 像素的跟随余量。
-const CENTER_MIN_Y: f32 = VIEW_H / 2.0; // 360
-const CENTER_MAX_Y: f32 = MAP_H - VIEW_H / 2.0; // 376
+/// **横屏 zoom=2**：可见宽 640 < 地图宽 1280 ⇒ 区间 [320, 960]，中段跟随、贴墙夹到两端。
+const CENTER_MIN: f32 = VIEW_WORLD_W / 2.0; // 320
+const CENTER_MAX: f32 = MAP_W - VIEW_WORLD_W / 2.0; // 960
+/// y 轴同款区间 `[180, 556]`：地图高 736 比可见高 360 高出一倍多，上/下各 180 单位余量。
+const CENTER_MIN_Y: f32 = VIEW_WORLD_H / 2.0; // 180
+const CENTER_MAX_Y: f32 = MAP_H - VIEW_WORLD_H / 2.0; // 556
 /// 夹取/投影容差：f32 投影链路有 ~1e-4 量级误差，用 1e-2（远小于一个瓦片 32）。
 const EPS: f32 = 1e-2;
-/// "玩家在视野正中"的容差（横屏 x 轴恰好铺满时恒不成立，仅用于贴墙章节的
-/// "玩家不可能在正中"判定）：相机 x 恒 640，玩家贴墙 x=16/1264 时偏差数百单位，
-/// 用 EPS 即可区分"铺满"与"意外居中"。
+/// "玩家在视野正中"的容差（zoom=2 贴墙时恒不成立，仅用于贴墙章节的
+/// "玩家不可能在正中"判定）：贴墙 x=16/1264 时中心夹到 320/960，偏差数百单位，
+/// 用 EPS 即可区分"夹到边界"与"意外跟随到玩家"。
 const FOLLOW_EPS: f32 = 0.6;
 const DT: f32 = 1.0 / 60.0;
 
@@ -89,7 +95,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("  跟随状态 = {}", title.following);
 
-    banner("② 进入山庄：进图后相机 x = 地图中心 640（视口宽==地图宽，恰好铺满）；y 夹到区间下界");
+    banner(
+        "② 进入山庄：进图后相机跟随出生点（x=528 落在中段夹取区间 [320,960] 内）；y 夹到区间下界",
+    );
     lua_run(&mut runtime, "on_click('BtnStart')")?;
     frame(&mut runtime)?;
     assert_scene(&mut runtime, "manor")?;
@@ -97,7 +105,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !first.following {
         return Err(format!("进图后应处于跟随状态：{first:?}").into());
     }
-    expect_fixed_center_x(&first, "进图第一帧")?;
+    // zoom=2 横屏：可见宽 640 < 地图宽 1280 ⇒ 出生点 x=528 在中段区间内，相机 x 精确跟随
+    // 玩家（夹取区间 [320, 960] 不含 528 之外的边界）；y=112 在区间下界 180 之外 ⇒ 夹到 180。
+    expect_center_x(&first, first.player.0, "进图第一帧")?;
     if (first.center.1 - CENTER_MIN_Y).abs() > EPS {
         return Err(format!(
             "进图第一帧：相机中心 y={:.3}，应夹到 y 区间下界 {}（落点玩家 y≈112，在夹取区间之外）",
@@ -110,37 +120,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         first.player.0, first.player.1, first.center.0, first.center.1, first.zoom
     );
 
-    banner("③ 铺满轴：玩家 x 落在任意中段时，相机 x 恒为 640（视口宽==地图宽，无跟随余量）");
-    // 横屏几何：视口 1280 == 地图 1280 ⇒ 夹取区间退化为单点 640，相机 x 不再跟随玩家
-    // （全图恰好铺满屏幕，没有可夹取余量）。断言口径改为：**相机 x 恒 640** + 可见
-    // 矩形恰好 [0,1280]（"不出图"的直接证据）。若有人把视口改成更宽的窗口（> 地图宽），
-    // 相机 x 会钉在 640 不变、可见矩形 [0,1280] 仍在地图内，本节依旧成立。
+    banner("③ 中段跟随：玩家 x 落在夹取区间 [320, 960] 内时，相机 x 精确跟随玩家");
+    // 横屏 zoom=2 几何：可见宽 640 < 地图宽 1280 ⇒ 夹取区间 [320, 960]，中段内相机中心
+    // = 玩家位置（无死区/无平滑时逐帧精确跟随；传送若被碰撞推出，中心跟随的是玩家**实际**
+    // 落点而非探针目标）。断言口径：**center.x == player.x** + 可见矩形仍在地图内
+    // （"不出图"的直接证据）。若有人把 zoom 改回 1，区间退化为单点 640，
+    // 本节会立刻红——这正是"夹取区间随 zoom 同步收窄"的回归哨。
     for probe in [420.0_f32, 520.0, 640.0, 760.0, 860.0] {
         teleport_player(&mut runtime, probe, 336.0)?;
         let status = step_until_settled(&mut runtime)?;
-        expect_fixed_center_x(&status, &format!("x={probe}"))?;
+        expect_center_x(&status, status.player.0, &format!("x={probe}"))?;
         expect_view_inside(&status, MAP_W, MAP_H, &format!("x={probe}"))?;
         println!(
             "  玩家 x={:>7.3} → center=({:>7.3},{:>7.3}) 可见矩形 x[{:.1},{:.1}]",
             status.player.0,
             status.center.0,
             status.center.1,
-            status.center.0 - VIEW_W / 2.0,
-            status.center.0 + VIEW_W / 2.0
+            status.center.0 - VIEW_WORLD_W / 2.0,
+            status.center.0 + VIEW_WORLD_W / 2.0
         );
     }
 
-    banner("④ 不出图：贴西/东墙时相机 x 仍为 640（区间退化为单点），可见矩形仍在地图内");
-    for (label, x) in [("贴西墙", 16.0_f32), ("贴东墙", 1264.0)] {
+    banner("④ 不出图：贴西/东墙时相机 x 夹到区间端点 320/960，可见矩形仍在地图内");
+    for (label, x, want) in [
+        ("贴西墙", 16.0_f32, CENTER_MIN),
+        ("贴东墙", 1264.0, CENTER_MAX),
+    ] {
         teleport_player(&mut runtime, x, 336.0)?;
         let status = step_until_settled(&mut runtime)?;
-        expect_fixed_center_x(&status, label)?;
+        expect_center_x(&status, want, label)?;
         expect_view_inside(&status, MAP_W, MAP_H, label)?;
-        // 相机 x 恒 640 时玩家**不可能**仍在屏幕正中（贴墙时偏差数百单位）——断言必须
-        // 显式承认它，否则将来有人把 bounds 删掉、相机乱漂，只断言"铺满"的测试照样全绿。
+        // 相机 x 夹在区间端点时玩家**不可能**仍在屏幕正中（贴墙时偏差数百单位）——断言必须
+        // 显式承认它，否则将来有人把 bounds 删掉、相机乱漂，只断言"不出图"的测试照样全绿。
         let centered = (status.player.0 - status.center.0).abs() <= FOLLOW_EPS;
         if centered {
-            return Err(format!("{label}：相机铺满时玩家不可能仍在正中，断言口径有误").into());
+            return Err(format!("{label}：相机夹到端点时玩家不可能仍在正中，断言口径有误").into());
         }
         // 直接证据：把四个屏幕角反投影回世界，可见矩形必须落在地图矩形内。
         let corners = visible_world_rect(&mut runtime)?;
@@ -157,18 +171,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    banner("⑤ 横屏 y 轴事实：地图比视口高 ⇒ y 可夹取，区间 [360, 376]（上钉下界/中跟随/下钉上界）");
-    for (probe_y, want_y, label) in [
-        (112.0_f32, CENTER_MIN_Y, "贴地图上部"),
-        (368.0_f32, 368.0_f32, "地图纵向正中"),
-        (640.0_f32, CENTER_MAX_Y, "贴地图下部"),
+    banner(
+        "⑤ 横屏 y 轴事实：地图比可见域高 ⇒ y 可夹取，区间 [180, 556]（上钉下界/中跟随/下钉上界）",
+    );
+    for (probe_y, want_y, label, follow) in [
+        (112.0_f32, CENTER_MIN_Y, "贴地图上部", false),
+        (368.0_f32, 0.0_f32, "地图纵向正中", true),
+        (640.0_f32, CENTER_MAX_Y, "贴地图下部", false),
     ] {
         teleport_player(&mut runtime, 640.0, probe_y)?;
         let status = step_until_settled(&mut runtime)?;
-        if (status.center.1 - want_y).abs() > EPS {
+        let expected = if follow { status.player.1 } else { want_y };
+        if (status.center.1 - expected).abs() > EPS {
             return Err(format!(
                 "{label}：相机中心 y={:.3}，应为 {:.3}（夹取区间 [{CENTER_MIN_Y}, {CENTER_MAX_Y}]）",
-                status.center.1, want_y
+                status.center.1, expected
             )
             .into());
         }
@@ -176,8 +193,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "  玩家 y={probe_y:>6.1} → center y={:>7.3} 可见区间 y[{:.1},{:.1}]",
             status.center.1,
-            status.center.1 - VIEW_H / 2.0,
-            status.center.1 + VIEW_H / 2.0
+            status.center.1 - VIEW_WORLD_H / 2.0,
+            status.center.1 + VIEW_WORLD_H / 2.0
         );
     }
 
@@ -189,8 +206,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     teleport_player(&mut runtime, 1200.0, 336.0)?;
     let mountain = step_until_settled(&mut runtime)?;
-    // 青云山道也是 1280×736：视口宽==地图宽 ⇒ x 恒 640（与山庄同一退化）。
-    expect_fixed_center_x(&mountain, "mountain_path 贴东墙")?;
+    // 青云山道也是 1280×736、zoom=2 ⇒ x 夹取区间 [320, 960]，贴东墙（x=1200）夹到 960。
+    expect_center_x(&mountain, CENTER_MAX, "mountain_path 贴东墙")?;
     expect_view_inside(&mountain, MAP_W, MAP_H, "mountain_path")?;
     println!(
         "  mountain_path center=({:.3},{:.3}) entity={:?}",
@@ -202,9 +219,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !small.following {
         return Err("室内图应仍处于跟随状态".into());
     }
-    if (small.center.0 - 320.0).abs() > EPS || (small.center.1 - 192.0).abs() > EPS {
+    // 室内 20×12=640×384、zoom=2：可见 640×360 ⇒ x 区间 [320,320] 退化为单点钉 320；
+    // y 区间 [180, 204]，玩家出生 (336,112) 在区间外 ⇒ 夹到 180。
+    if (small.center.0 - 320.0).abs() > EPS || (small.center.1 - 180.0).abs() > EPS {
         return Err(format!(
-            "室内图(20×12=640×384) 相机中心应钉在地图中心 (320,192)：实际 ({:.3},{:.3})",
+            "室内图(20×12=640×384) 相机中心应钉在 (320,180)（x 退化单点、y 夹下界）：实际 ({:.3},{:.3})",
             small.center.0, small.center.1
         )
         .into());
@@ -239,21 +258,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 // ---------- 断言 ----------
 
-/// 相机 x == 地图中心 640（横屏"视口宽==地图宽 ⇒ 恰好铺满"的判定）。
+/// 相机中心 x == 期望值（zoom=2 横屏夹取区间 [320, 960] 内的跟随/端点断言）。
 ///
-/// y 轴地图(736)比视口(720)高，可夹取区间只有 16 像素宽，玩家贴墙时 x 恒 640
-/// 而玩家不可能居中——那是几何事实，所以这里只判 x，y 由 `expect_view_inside`
-/// 与章节 ⑤ 的夹取区间断言负责。
-fn expect_fixed_center_x(
+/// y 轴单独由 `expect_view_inside` 与章节 ⑤ 的夹取区间断言负责。
+fn expect_center_x(
     status: &CameraStatus,
+    want: f32,
     label: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let dx = status.center.0 - MAP_W / 2.0;
+    let dx = status.center.0 - want;
     if dx.abs() > EPS {
         return Err(format!(
-            "{label}：相机中心 x={:.3}，应恒等于地图中心 {}（视口宽==地图宽 ⇒ 恰好铺满）",
-            status.center.0,
-            MAP_W / 2.0
+            "{label}：相机中心 x={:.3}，应等于 {want:.3}（zoom=2 夹取区间 [{CENTER_MIN}, {CENTER_MAX}]）",
+            status.center.0
         )
         .into());
     }
@@ -269,8 +286,8 @@ fn expect_view_inside(
     label: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for (axis, center, span, map) in [
-        ("x", status.center.0, VIEW_W, map_w),
-        ("y", status.center.1, VIEW_H, map_h),
+        ("x", status.center.0, VIEW_WORLD_W, map_w),
+        ("y", status.center.1, VIEW_WORLD_H, map_h),
     ] {
         let half = span / 2.0;
         if map >= span {

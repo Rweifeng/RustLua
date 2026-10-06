@@ -263,8 +263,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('core.state').last_action",
         "harvest_lingzhi",
     )?;
-    let lingzhi = query_num(&mut runtime, "inv.count('player', 'lingzhi')")?;
-    assert_eq!(lingzhi, 1.0, "收获 1 灵芝");
+    // 收获计数按品质合计（阶段1 m38 品质系统：L0 起即有 25% 良好/5% 上品概率，
+    // 派生条目为 lingzhi_good/_super；口径与 m24 total_crop 一致）。
+    let lingzhi = query_num(
+        &mut runtime,
+        "inv.count('player', 'lingzhi') + inv.count('player', 'lingzhi_good') + inv.count('player', 'lingzhi_super')",
+    )?;
+    assert_eq!(lingzhi, 1.0, "收获 1 灵芝（含品质变体）");
     assert_num(&mut runtime, "require('core.state').energy", 98.0)?;
     // 收获后地块恢复空地（crop=nil）。
     let after_harvest = query_str(
@@ -286,7 +291,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_scene_is(&mut second, "manor")?;
     // 读档恢复 day（应为存档的 day8）与内力/金钱。
     assert_day(&mut second, 8)?;
-    assert_num(&mut second, "require('core.state').inner_power", 55.0)?;
+    // 内力经 7 晚已按 docs/33 §7.4 经脉「每日自然恢复 +30」回满至上限 100
+    // （55 + 30×7 → 钳 100）；存档/读档逐字段往返由 m34_save_gates 守护。
+    assert_num(&mut second, "require('core.state').inner_power", 100.0)?;
     assert_num(&mut second, "require('core.state').money", 120.0)?;
     // 读档后农田格仍在，且已是空地（灵芝已收）。
     let restored = query_str(
@@ -309,7 +316,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "jhyt_smoke_ok project={} day={} inner_power={} lingzhi={} energy_after={}",
         project.display(),
         8,
-        55,
+        100,
         lingzhi as i64,
         query_num(&mut second, "require('core.state').energy")? as i64
     );

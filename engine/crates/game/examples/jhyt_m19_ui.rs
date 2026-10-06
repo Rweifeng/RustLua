@@ -180,6 +180,388 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "ok",
     )?;
 
+    // **快捷栏读回真实几何**（2026-10-05）：上面那条 `text()` 只证明"招式这格数据在 HUD
+    // 里看得见"，证明不了"卡片画在哪"。2×4 之前的单行排法把 8 张 48px 卡画到设计 x=1404，
+    // 而 `layout.DESIGN_W` 是 1280 —— 第 6 张被切一半、7/8 完全看不见，**而且两侧都不报错**
+    // （`layout.audit()` 只查 `M.PANEL` 注册过的面板，招式卡是 `ui.image` 不是面板）。
+    // 所以这里读回**画出来的**那几张（`ui.image_get`，与 m29 资源条同一口径），逐张量右缘/下缘。
+    //
+    // 张数的来源从 `data.skills.ids()` 换成 `hud.skill_slots()`：卡片从此按
+    // `data/skills.lua` 的**玩家按键绑定表**排（cast → dash → guard），不再是招式字典序。
+    // 字典序那次扩招把「普攻」排到第 8 张、还把 Boss 专属的「山魈冲撞」画成了玩家的卡，
+    // 而触屏要表达"第 3 张 = 弦月斩"根本没有依据 —— 现在这个依据就是那张表。
+    let skill_bar = query_str(
+        &mut runtime,
+        "(function() local layout = require('ui.layout'); \
+          local slots = require('ui.hud').skill_slots(); \
+          local right, bottom = 0, 0; \
+          for i = 1, #slots do \
+            local img = ui.image_get('hud:skill_card' .. i); \
+            if not img then return 'not_drawn:card' .. i end; \
+            if img.x ~= slots[i].x or img.y ~= slots[i].y then \
+              return 'geometry_mismatch:card' .. i end; \
+            if img.x < 0 or img.y < 0 then return 'negative:card' .. i end; \
+            if img.x + img.width > right then right = img.x + img.width end; \
+            if img.y + img.height > bottom then bottom = img.y + img.height end; \
+          end; \
+          local r, b = math.floor(right), math.floor(bottom); \
+          if r > layout.DESIGN_W or b > layout.DESIGN_H then \
+            return 'overflow:right=' .. r .. ',bottom=' .. b .. \
+              ' canvas=' .. layout.DESIGN_W .. 'x' .. layout.DESIGN_H \
+          end; \
+          return 'ok|cards=' .. #slots .. ',right=' .. r .. ',bottom=' .. b .. \
+            ',canvas=' .. layout.DESIGN_W .. 'x' .. layout.DESIGN_H end)()",
+    )?;
+    if !skill_bar.starts_with("ok|") {
+        return Err(
+            format!("招式快捷栏画到设计画布外（第 6 张起会被窗口切掉）: {skill_bar}").into(),
+        );
+    }
+    println!("skill_bar = {skill_bar}");
+    // HUD 必须为**每一个玩家槽位**都画一张卡（漏一张 = 那一招在触屏上根本没有入口）。
+    let slot_count = query_num(&mut runtime, "#(require('data.skills').player_slots())")? as i64;
+    assert_num(
+        &mut runtime,
+        "#(require('ui.hud').skill_slots())",
+        slot_count as f64,
+    )?;
+    // `hud.reset()` 必须把**画过的每一张**都收掉：曾经只清 1..5 号 id，招式扩到 8 张后
+    // 6..8 在切场景/切模式时留在屏上（贴图不在每帧登记表里，画过就一直在）。
+    assert_str(
+        &mut runtime,
+        "(function() require('ui.hud').reset(); \
+          for i = 1, #require('ui.hud').skill_slots() do \
+            if ui.image_get('hud:skill_card' .. i) then return 'leftover:card' .. i end end; \
+          return 'ok' end)()",
+        "ok",
+    )?;
+    // 收完再画一遍，后面的面板小节仍在玩法态 HUD 上跑。
+    assert_str(
+        &mut runtime,
+        "require('ui.input').update():find('气血', 1, true) ~= nil and 'ok' or 'none'",
+        "ok",
+    )?;
+
+    banner("M34-05 触屏招式卡：点第 i 张 = 注入第 i 项动作，且真的出了它绑的那一招");
+    // 无头宿主没有指针事件，而 `M.update()` 在 `app.platform()` 报告 `desktop` 时整条早退，
+    // 所以这里走 `virtual_pad.handle_pointer()` 这条**测试注入口**：它和 `update()` 共用
+    // 同一段命中测试代码，只是坐标由调用方给、且不受平台门限制。
+    // 每按一张前做三件事（都在 `tap_skill_card` 里），否则这道门会假绿：
+    //   * `set_input(default)` 清掉上一张的**按下边沿**（真实宿主每帧换新快照 = 同一口径；
+    //     不清则 `pressed_keys` 累积，`input.lua` 那条"一帧只出一招"永远命中第 1 张）；
+    //   * `combat.reset()` 清空攻击/位移记录（不清则分辨不出"这张卡出了招"和"上一张的残留"）；
+    //   * `inner_power = 100` 把内力灌满（付不起 → `player_attack` 返回 false，
+    //     那就成了"卡没问题、池子空了"的假红）。
+    for index in 1..=slot_count {
+        let want = query_str(
+            &mut runtime,
+            &format!(
+                "(function() local s = require('ui.hud').skill_slots()[{index}]; \
+                  local def = require('data.skills').get(s.skill); \
+                  return s.action .. '|' .. s.skill .. '|' .. tostring(def.kind) end)()"
+            ),
+        )?;
+        let mut parts = want.split('|');
+        let action = parts.next().unwrap_or_default().to_owned();
+        let skill = parts.next().unwrap_or_default().to_owned();
+        let kind = parts.next().unwrap_or_default().to_owned();
+        // 格挡是"按住才站得住"，所以那一格观测的是姿态本身；其余观测出的那招的 id。
+        let expected = if kind == "guard" {
+            format!("{action}|true")
+        } else {
+            format!("{action}|{skill}")
+        };
+        let got = tap_skill_card(&mut runtime, index)?;
+        if got != expected {
+            return Err(format!(
+                "第 {index} 张招式卡（{want}）注入后没有出对应的招：期望 {expected}，实得 {got}"
+            )
+            .into());
+        }
+        println!("skill_card {index} = {got} (kind={kind})");
+    }
+    println!("touch_skill_cards={slot_count}");
+    // 快点击口径：按下与抬起落在**同一帧**时（web/微信的触摸适配层就是这样——touchStart 与
+    // touchEnd 之间没跑到 rAF，`mouse_just_pressed` 和 `mouse_just_released` 同帧为真），
+    // 命中测试必须当场补一次释放。不补的话 `card_down`/`action_down`/`panel_action_down`
+    // 会一直留着、那只键**永远松不掉**（格挡永久贴住、面板十字键一直往下滚）。
+    // 必须**一族一测、测完就 release_all**：只数"最后一族"是瞎的——下一族的任一次命中都会
+    // 走进 `if *_down then if released then release` 那支，把上一族漏下的键顺手擦掉
+    // （实测：删掉招式卡的同帧补释放，全量末尾读数是 `0|`，删的是门该咬的那一族却看不见）。
+    // 反面对照（2026-10-05，逐族口径）：删掉 `hit_test_cards` 里的 `if released then card_release`
+    // → 招式卡一族报 `1|guard`——其余六张被后一张的命中循环顺手释放掉了，只有最后一张没人接手，
+    // 这正是"永久贴住"的真实形状（长按格挡会一直挡着）。
+    for (family, tap_loop, actions) in [
+        (
+            "招式卡",
+            "for _, slot in ipairs(require('ui.hud').skill_slots()) do \
+               vp.handle_pointer(slot.x + slot.w / 2, slot.y + slot.h / 2, true, true) end",
+            "'attack','skill','skill_2','skill_3','skill_4','dash','guard'",
+        ),
+        (
+            "动作盘",
+            "local m = require('ui.layout').TOUCH.more; \
+               local mx, my = m.x + m.size / 2, m.y + m.size / 2; \
+               for _, slot in ipairs(vp.action_slots()) do \
+                 vp.handle_pointer(mx, my, true, true); \
+                 vp.handle_pointer(slot.x, slot.y, true, true) end",
+            "'sleep','build','place','practice','demolish','use','gift','seed','respawn'",
+        ),
+        (
+            "面板动作条",
+            "local st = require('core.state'); \
+               for _, mode in ipairs({ 'Inventory', 'Shop', 'Pause' }) do \
+                 st.mode = mode; \
+                 for _, slot in ipairs(vp.panel_action_slots()) do \
+                   vp.handle_pointer(slot.x, slot.y, true, true) end end; \
+                 st.mode = 'Playing'",
+            "'interact','seed','place','volume_up','volume_down'",
+        ),
+    ] {
+        let got = query_str(
+            &mut runtime,
+            &format!(
+                "(function() local vp = require('ui.virtual_pad'); \
+                  local held = 0; local names = {{}}; \
+                  {tap_loop}; \
+                  for _, action in ipairs({{ {actions} }}) do \
+                    if input.action(action) then held = held + 1; names[#names + 1] = action end \
+                  end; \
+                  vp.release_all(); \
+                  return held .. '|' .. table.concat(names, ',') end)()"
+            ),
+        )?;
+        if !got.starts_with("0|") {
+            return Err(format!(
+                "{family} 同帧按下+抬起后仍有键处在按住态（那只手指永远松不掉）: {got}"
+            )
+            .into());
+        }
+        println!("coalesced_tap {family} = {got}");
+    }
+
+    banner("M34-06 触屏「更多」键 + 动作盘：九格各自动作、盘随点击展开/收起");
+    // 与批 1 同一个注入口（`virtual_pad.handle_pointer`），差别在对象：「更多」键 + 3×3 动作盘。
+    // **通用口径只测注入**：按下 → 该动作 `down=true` 且其余八格全 `false` → 抬手。
+    // 为什么通用循环故意不跑 `ui.input.update()`：`睡觉` 那格一进分发就 `day.sleep()`，
+    // 而本小节跑在 `set_save_path`（下面的临时档）之前 —— 真跑一次会把开发档写脏。
+    // "注入之后游戏真的做了那件事"由下面两条**显式效果探针**（运气 +5 内力 / 建造翻转建造模式）
+    // 证明；其余七格的效果由各自的键盘门覆盖（m18/m28 按 B/F/X/U/T/C/G/R 逐条断言），
+    // 触屏→动作 与 动作→效果 两段接起来才是"触屏 = 键鼠"。
+    let action_count = query_num(&mut runtime, "#require('ui.virtual_pad').action_slots()")?;
+    if action_count != 9.0 {
+        return Err(format!("动作盘应是 3×3 = 9 格，实得 {action_count}").into());
+    }
+    for index in 1..=action_count as i64 {
+        let want = query_str(
+            &mut runtime,
+            &format!("require('ui.virtual_pad').action_slots()[{index}].action"),
+        )?;
+        let got = tap_action_disk(&mut runtime, index, false)?;
+        let expected = format!("{want}|true|0");
+        if got != expected {
+            return Err(format!(
+                "动作盘第 {index} 格（{want}）注入后动作不对：期望 {expected}，实得 {got}（串键/漏键）"
+            )
+            .into());
+        }
+        println!("action_disk {index} = {got}");
+    }
+    // 「更多」键：点一下展开、再点一下收起（展开态由 `is_action_open()` 报，不靠截图）。
+    let more_toggle = query_str(
+        &mut runtime,
+        "(function() local vp = require('ui.virtual_pad'); local m = require('ui.layout').TOUCH.more; \
+          local cx, cy = m.x + m.size / 2, m.y + m.size / 2; \
+          local first = vp.handle_pointer(cx, cy, true, false); \
+          vp.handle_pointer(cx, cy, false, true); \
+          local opened = tostring(vp.is_action_open()); \
+          vp.handle_pointer(cx, cy, true, false); \
+          vp.handle_pointer(cx, cy, false, true); \
+          return tostring(first) .. '|' .. opened .. '|' .. tostring(vp.is_action_open()) end)()",
+    )?;
+    if more_toggle != "more|true|false" {
+        return Err(format!(
+            "「更多」键开关不对：期望 more|true|false（点一下展开、再点收起），实得 {more_toggle}"
+        )
+        .into());
+    }
+    println!("more_key = {more_toggle}");
+    // 按下一格后盘自动收起（一次点击 = 一个动作，九块盘不常驻盖住世界画面）。
+    let _ = tap_action_disk(&mut runtime, 1, false)?;
+    assert_str(
+        &mut runtime,
+        "tostring(require('ui.virtual_pad').is_action_open())",
+        "false",
+    )?;
+    // 面板态：「更多」与盘全部退出（HUD 在面板态还画着卡片，点它该做列表操作而不是出手）。
+    let more_in_panel = query_str(
+        &mut runtime,
+        "(function() local vp = require('ui.virtual_pad'); local m = require('ui.layout').TOUCH.more; \
+          require('core.state').mode = 'Inventory'; \
+          local fired = vp.handle_pointer(m.x + m.size / 2, m.y + m.size / 2, true, false); \
+          require('core.state').mode = 'Playing'; \
+          return tostring(fired) .. '|' .. tostring(vp.is_action_open()) end)()",
+    )?;
+    if more_in_panel != "nil|false" {
+        return Err(
+            format!("面板态点「更多」不该有反应：期望 nil|false，实得 {more_in_panel}").into(),
+        );
+    }
+    println!("more_in_panel = {more_in_panel}");
+    // 效果探针一（运气，动作盘第 4 格）：内力 +5，与键盘按 Q 同一读数。
+    lua(&mut runtime, "require('core.state').inner_power = 50")?;
+    let _ = tap_action_disk(&mut runtime, 4, true)?;
+    assert_num(&mut runtime, "require('core.state').inner_power", 55.0)?;
+    // 效果探针二（建造，第 2 格）：翻转建造模式，探针后复原。
+    let _ = tap_action_disk(&mut runtime, 2, true)?;
+    assert_str(
+        &mut runtime,
+        "tostring(require('systems.building').build_mode())",
+        "true",
+    )?;
+    let _ = tap_action_disk(&mut runtime, 2, true)?;
+    assert_str(
+        &mut runtime,
+        "tostring(require('systems.building').build_mode())",
+        "false",
+    )?;
+    println!("touch_action_disk=9");
+
+    banner("M34-07 触屏面板动作条：装备/选种/换页/数量·音量± 逐格注入 + 三条真实分发");
+    // 批 3 的对象是**面板态**里"键盘有键、触屏没有入口"的五个动作（E 装备 / C 选种 /
+    // F 换页 / +/- 数量与音量）。它们与动作盘共用一个注入口（`virtual_pad.handle_pointer`），
+    // 差别在**每个模式的格数不同**（背包 2 / 商店 3 / 暂停 2），所以逐模式验三件事：
+    //   ① 格数——模式名一旦拼错，`panel_action_slots()` 返回空表，下面的循环零次也能"绿"；
+    //      反面对照（2026-10-05）：`layout.TOUCH.panel_actions.modes` 里把 `Inventory` 写成
+    //      `InventoryX` → `Inventory 面板动作条应是 2 格，实得 0`（几何门 ⑧ 看不见这个错，
+    //      它按表里**实际有的**模式名遍历，拼错的模式它照样数得出 2 格）。
+    //   ② 编号口径——pad 的格心必须与 `layout.TOUCH.panel_actions` 的 cols×rows **行主序**
+    //      逐格相等，否则几何门查的那些圈和手上点的那些圈不是同一个东西；
+    //   ③ 逐格注入——按下 → 只有这一格的动作 down、同条其余格 0 个 → 抬手。
+    // 通用循环照批 2 的口径不跑分发（分发会动音量/装备/商店页签，留给下面三条显式探针，
+    // 每条探针后复原面板与原值，免得把开发档写脏）。
+    let strips: [(&str, &[&str]); 3] = [
+        ("Inventory", &["interact", "seed"]),
+        ("Shop", &["place", "volume_up", "volume_down"]),
+        ("Pause", &["volume_up", "volume_down"]),
+    ];
+    for (mode, actions) in strips {
+        let count = query_num(
+            &mut runtime,
+            &format!(
+                "(function() local st = require('core.state'); st.mode = '{mode}'; \
+                  local n = #require('ui.virtual_pad').panel_action_slots(); \
+                  st.mode = 'Playing'; return n end)()"
+            ),
+        )?;
+        if count != actions.len() as f64 {
+            return Err(format!(
+                "{mode} 面板动作条应是 {} 格，实得 {count}（模式名拼错=静默没有入口）",
+                actions.len()
+            )
+            .into());
+        }
+        for (offset, want) in actions.iter().enumerate() {
+            let got = tap_panel_strip(&mut runtime, mode, (offset + 1) as i64, false)?;
+            let expected = format!("{want}|true|0");
+            if got != expected {
+                return Err(format!(
+                    "{mode} 动作条第 {} 格（{want}）注入后动作不对：期望 {expected}，实得 {got}（串键/漏键）",
+                    offset + 1
+                )
+                .into());
+            }
+            println!("panel_strip {mode} {} = {got}", offset + 1);
+        }
+    }
+    // ② 行主序对账：第 index 格的圆心 = cols[((index-1) mod #cols)] × rows[((index-1) div #cols)]。
+    // 反面对照（2026-10-05）：把 pad 里的 `cols[col]/rows[row]` 对调成 `cols[row]/rows[col]`
+    // → `mismatch@2`。**买不到的部分**：这张格阵是 2×2 正方形，只把两层循环的**边界**对调
+    // （`row = 1,#cols`）读数完全不变、门照绿——正方形阵列上"行列对调"只有落到取值下标才看得出。
+    let strip_index = query_str(
+        &mut runtime,
+        "(function() local l = require('ui.layout').TOUCH.panel_actions; \
+          local st = require('core.state'); st.mode = 'Shop'; \
+          local slots = require('ui.virtual_pad').panel_action_slots(); st.mode = 'Playing'; \
+          for index = 1, #slots do \
+            local col = ((index - 1) % #l.cols) + 1; \
+            local row = math.floor((index - 1) / #l.cols) + 1; \
+            local slot = slots[index]; \
+            if slot.x ~= l.cols[col] or slot.y ~= l.rows[row] then \
+              return 'mismatch@' .. index \
+            end \
+          end; \
+          return 'ok' end)()",
+    )?;
+    if strip_index != "ok" {
+        return Err(format!(
+            "面板动作条编号与 layout 的 cols×rows 行主序不一致：{strip_index}（画出来的格和点得到的格不是同一批）"
+        )
+        .into());
+    }
+    println!("panel_strip_index = {strip_index}");
+    // 效果探针一（背包「装备」格）：触屏点第 1 格 → 面板真的装备了选中行，
+    // 与 M19-02c 键盘按 E 的读数一致（tool=watering_can / last_action=equip_watering_can）。
+    lua(&mut runtime, "require('ui.inventory_ui').open()")?;
+    let can_row = row_of(&mut runtime, "ui.inventory_ui", "watering_can")?;
+    lua(
+        &mut runtime,
+        &format!("require('ui.inventory_ui').select({})", can_row - 1),
+    )?;
+    let equip_fire = tap_panel_strip(&mut runtime, "Inventory", 1, true)?;
+    if equip_fire != "interact|true|0" {
+        return Err(
+            format!("背包「装备」格注入不对：期望 interact|true|0，实得 {equip_fire}").into(),
+        );
+    }
+    assert_str(
+        &mut runtime,
+        "inv.equip_list(require('core.state').inventory).tool",
+        "watering_can",
+    )?;
+    assert_str(
+        &mut runtime,
+        "require('core.state').last_action",
+        "equip_watering_can",
+    )?;
+    lua(&mut runtime, "require('ui.inventory_ui').close()")?;
+    // 效果探针二（商店「换页」格）：buy → sell（第 1 格 = place，键盘 F 同一动作）。
+    lua(
+        &mut runtime,
+        "require('systems.shop').open_ui('zhao_stall')",
+    )?;
+    assert_str(&mut runtime, "require('systems.shop').tab()", "buy")?;
+    let tab_fire = tap_panel_strip(&mut runtime, "Shop", 1, true)?;
+    if tab_fire != "place|true|0" {
+        return Err(format!("商店「换页」格注入不对：期望 place|true|0，实得 {tab_fire}").into());
+    }
+    assert_str(&mut runtime, "require('systems.shop').tab()", "sell")?;
+    lua(&mut runtime, "require('systems.shop').close_ui()")?;
+    // 效果探针三（暂停「音量+」格）：0.5 → 0.6（+0.1 = `audio.VOLUME_STEP`），探针后回 0.5——
+    // M19-02e 会把主音量随存档写盘，留在这里的不复原值会污染开发档。
+    lua(&mut runtime, "require('core.audio').set_volume(0.5)")?;
+    lua(&mut runtime, "require('ui.pause_menu').open()")?;
+    let volume_before = query_num(&mut runtime, "require('core.audio').volume()")?;
+    let volume_fire = tap_panel_strip(&mut runtime, "Pause", 1, true)?;
+    if volume_fire != "volume_up|true|0" {
+        return Err(
+            format!("暂停「音量+」格注入不对：期望 volume_up|true|0，实得 {volume_fire}").into(),
+        );
+    }
+    let volume_after = query_num(&mut runtime, "require('core.audio').volume()")?;
+    if (volume_after - (volume_before + 0.1)).abs() > 1e-6 {
+        return Err(format!(
+            "音量 + 格未生效（面板分发链路没吃到这个动作）: {volume_before} -> {volume_after}"
+        )
+        .into());
+    }
+    lua(
+        &mut runtime,
+        &format!("require('core.audio').set_volume({volume_before})"),
+    )?;
+    lua(&mut runtime, "require('ui.pause_menu').close()")?;
+    println!("touch_panel_strip=7 dispatch=3");
+
     banner("M19-02c 背包面板：I 打开 → 选择/使用/装备 → 关闭");
     // 预置测试物品：回复药（可使用）+ 水壶（新档自带，可装备到 tool 槽）。
     lua(
@@ -518,13 +900,13 @@ require('ui.text_fit').fit('一二三四五六七八九十', 14, 60), 14) <= 60)
         "abc",
     )?;
 
-    banner("M19-02g 新手引导：幂等推进 + 十步剧本 + 存档往返");
+    banner("M19-02g 新手引导：幂等推进 + 十六步剧本 + 存档往返");
     lua(&mut runtime, "require('ui.tutorial').reset()")?;
     assert_num(&mut runtime, "require('ui.tutorial').index()", 0.0)?;
     assert_str(&mut runtime, "require('ui.tutorial').step().id", "till")?;
     assert_str(
         &mut runtime,
-        "tostring(require('ui.tutorial').prompt():find('引导 1/10', 1, true) ~= nil)",
+        "tostring(require('ui.tutorial').prompt():find('引导 1/16', 1, true) ~= nil)",
         "true",
     )?;
     // 同一步重复触发不重复推进（幂等）。
@@ -601,7 +983,7 @@ require('ui.text_fit').fit('一二三四五六七八九十', 14, 60), 14) <= 60)
         "true",
     )?;
     assert_str(&mut runtime, "require('ui.tutorial').step().id", "craft")?;
-    // 最后一步：制作收取 → 进入终止标记 → 完成并发一次性奖励。
+    // 既有九步链末步：制作收取 → 推进到阶段5 新增「首次种植闭环」教学段第 1 步。
     let pills_before = query_num(
         &mut runtime,
         "inv.count(require('core.state').inventory, 'heal_pill')",
@@ -611,7 +993,53 @@ require('ui.text_fit').fit('一二三四五六七八九十', 14, 60), 14) <= 60)
         "tostring(require('ui.tutorial').on_action('craft_collect_heal_pill'))",
         "true",
     )?;
-    assert_num(&mut runtime, "require('ui.tutorial').index()", 10.0)?;
+    // 0 基索引：craft=8（第 9 步），craft_collect 后推进到 9 = claim_seed（阶段5 新段第 1 步）。
+    assert_num(&mut runtime, "require('ui.tutorial').index()", 9.0)?;
+    assert_str(
+        &mut runtime,
+        "require('ui.tutorial').step().id",
+        "claim_seed",
+    )?;
+    // 阶段5（docs/33 3.2）新增六步：领种子→翻土→播种→浇水→入睡→收获→终止发奖。
+    for (action, next_id) in [
+        ("select_seed_seed_radish", "till_loop"),
+        ("till", "plant_loop"),
+        ("plant_seed_radish", "water_loop"),
+        ("water_radish", "sleep_loop"),
+    ] {
+        assert_str(
+            &mut runtime,
+            &format!("tostring(require('ui.tutorial').on_action('{action}'))"),
+            "true",
+        )?;
+        assert_str(&mut runtime, "require('ui.tutorial').step().id", next_id)?;
+    }
+    assert_str(
+        &mut runtime,
+        "tostring(require('ui.tutorial').on_day_start())",
+        "true",
+    )?;
+    assert_str(
+        &mut runtime,
+        "require('ui.tutorial').step().id",
+        "harvest_loop",
+    )?;
+    assert_str(
+        &mut runtime,
+        "tostring(require('ui.tutorial').on_action('harvest_radish'))",
+        "true",
+    )?;
+    // finish 步骤是瞬态：advance 内 settle 当帧就把索引推到 16 并发奖——此时
+    // `step()` 返回 nil，不能断言 `step().id == "done"`（会对 nil 索引崩溃）。
+    // 直接断言终态：索引封顶 16、状态收尾、发奖幂等。
+    assert_num(&mut runtime, "require('ui.tutorial').index()", 16.0)?;
+    // 已完成后再触发不重复推进（幂等，事件直接拒绝）。
+    assert_str(
+        &mut runtime,
+        "tostring(require('ui.tutorial').on_action('harvest_radish'))",
+        "false",
+    )?;
+    assert_num(&mut runtime, "require('ui.tutorial').index()", 16.0)?;
     assert_str(
         &mut runtime,
         "tostring(require('ui.tutorial').status().active)",
@@ -628,7 +1056,7 @@ require('ui.text_fit').fit('一二三四五六七八九十', 14, 60), 14) <= 60)
         "inv.count(require('core.state').inventory, 'heal_pill')",
         pills_before + 1.0,
     )?;
-    // 重复触发末步不重复发奖。
+    // 已完成后再触发不重复推进/发奖（幂等）。
     assert_str(
         &mut runtime,
         "tostring(require('ui.tutorial').on_action('craft_collect_heal_pill'))",
@@ -663,30 +1091,33 @@ require('ui.text_fit').fit('一二三四五六七八九十', 14, 60), 14) <= 60)
         "ok",
     )?;
     // 建造模式 HUD 文案仍含字面量 building（jhyt_m18_build 的既有断言面）：
-    // 放置一座药庐后站在其下方朝上，预览必然给出 building 冲突。
+    // 放置一座药庐后，在其锚点格再次 can_place 必然冲突 "building"（确定性断言，不依赖
+    // 玩家站位/朝向/碰撞推出——旧写法依赖"站在建筑下方朝上预览"，会随锚点格下方是否为
+    // 可走格而漂移）。
     let (lx, ly) = find_legal_anchor(&mut runtime, "herb_hut")?;
     lua(
         &mut runtime,
         &format!("require('systems.building').place('herb_hut', {lx}, {ly})"),
     )?;
-    lua(
+    assert_str(
         &mut runtime,
         &format!(
-            "require('player.player').teleport({}, {}); require('core.state').facing = 'up'; \
-             require('systems.building').set_build_mode(true)",
-            (lx as f32 + 0.5) * 32.0,
-            (ly as f32 - 0.5) * 32.0
+            "(function() local ok, c = require('systems.building').can_place('herb_hut', {lx}, {ly}); \
+             for _, x in ipairs(c or {{}}) do if x.reason == 'building' then return 'ok' end end \
+             return tostring(ok) end)()"
         ),
-    )?;
-    assert_str(
-        &mut runtime,
-        "require('systems.building').preview('up').conflicts[1].reason",
-        "building",
+        "ok",
     )?;
     // M26：HUD 状态行的建造冲突改为中文（BUILD_REASON 表），不再拼英文 reason 键。
+    // 断言真实渲染面 `hud.feedback_line()`（`build_blocked_<reason>@x,y` → 中文原因；
+    // `input.update()` 的返回值不含反馈行——反馈行是独立 HUD 元素）。
+    lua(
+        &mut runtime,
+        &format!("require('core.state').last_action = 'build_blocked_building@{lx},{ly}'"),
+    )?;
     assert_str(
         &mut runtime,
-        "require('ui.input').update():match('已有建筑') ~= nil and 'ok' or 'none'",
+        "require('ui.hud').feedback_line():match('已有建筑') ~= nil and 'ok' or 'none'",
         "ok",
     )?;
     lua(
@@ -914,6 +1345,120 @@ fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::erro
     runtime.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
+}
+
+/// 点第 `index` 张招式卡（触屏命中测试注入口），返回 `"<动作>|<观测到的那招>"`。
+///
+/// 一次"点击"在这一个 Lua 块里走完（按下 → 一帧输入分发 → 观测 → 抬起），因为只有
+/// `ui.input.update()` 才会把注入的键读成动作；格挡那格额外多走一步 `combat.tick()`
+/// ——姿态是 tick 结算的，不吃 tick 就永远读到 false。
+fn tap_skill_card(
+    runtime: &mut LuaRuntime,
+    index: i64,
+) -> Result<String, Box<dyn std::error::Error>> {
+    runtime.set_input(InputSnapshot::default());
+    query_str(
+        runtime,
+        &format!(
+            "(function() local slot = require('ui.hud').skill_slots()[{index}]; \
+              if not slot then return 'no_slot' end; \
+              require('core.state').inner_power = 100; \
+              require('systems.combat').reset(); \
+              local cx, cy = slot.x + slot.w / 2, slot.y + slot.h / 2; \
+              if require('ui.virtual_pad').handle_pointer(cx, cy, true, false) ~= slot.action then \
+                return 'no_hit' \
+              end; \
+              require('ui.input').update(); \
+              if slot.hold then \
+                require('systems.combat').tick(); \
+                local up = tostring(require('systems.combat').is_guarding()); \
+                require('ui.virtual_pad').handle_pointer(cx, cy, false, true); \
+                require('ui.input').update(); \
+                require('systems.combat').tick(); \
+                if require('systems.combat').is_guarding() then return 'guard_stuck' end; \
+                return slot.action .. '|' .. up \
+              end; \
+              local atk = require('systems.combat').last_attack(); \
+              local dash = require('systems.combat').last_dash(); \
+              local got = 'none'; \
+              if atk then got = tostring(atk.skill) elseif dash then got = tostring(dash.skill) end; \
+              require('ui.virtual_pad').handle_pointer(cx, cy, false, true); \
+              return slot.action .. '|' .. got end)()"
+        ),
+    )
+}
+
+/// 点动作盘第 `index` 格（先点「更多」展开），返回 `"<动作>|<该动作按下>|<其余格按下数>"`。
+/// `dispatch = true` 时多跑一帧 `ui.input.update()`，让游戏侧的分发真的执行这个动作
+/// （只验注入的通用循环传 `false`，见调用处注释）。
+fn tap_action_disk(
+    runtime: &mut LuaRuntime,
+    index: i64,
+    dispatch: bool,
+) -> Result<String, Box<dyn std::error::Error>> {
+    runtime.set_input(InputSnapshot::default());
+    let step = if dispatch {
+        "require('ui.input').update(); "
+    } else {
+        ""
+    };
+    query_str(
+        runtime,
+        &format!(
+            "(function() local vp = require('ui.virtual_pad'); \
+              local m = require('ui.layout').TOUCH.more; \
+              vp.handle_pointer(m.x + m.size / 2, m.y + m.size / 2, true, false); \
+              vp.handle_pointer(m.x + m.size / 2, m.y + m.size / 2, false, true); \
+              if not vp.is_action_open() then return 'not_open' end; \
+              local slot = vp.action_slots()[{index}]; \
+              if not slot then return 'no_slot' end; \
+              local fired = vp.handle_pointer(slot.x, slot.y, true, false); \
+              {step} \
+              local self_down = tostring(input.action(slot.action)); \
+              local others = 0; \
+              for _, s in ipairs(vp.action_slots()) do \
+                if s.action ~= slot.action and input.action(s.action) then others = others + 1 end \
+              end; \
+              vp.handle_pointer(slot.x, slot.y, false, true); \
+              return tostring(fired) .. '|' .. self_down .. '|' .. others end)()"
+        ),
+    )
+}
+
+/// 点面板动作条第 `index` 格，返回 `"<动作>|<该动作按下>|<同条其余格按下数>"`。
+///
+/// 与动作盘的差别只有一处：这一条的格表按 `state.mode` 取（背包/商店/暂停各一条），
+/// 所以块内先把 mode 设成 `mode`、收尾再复位 `Playing`。`dispatch = true` 时面板必须
+/// **真的开着**（`*_ui.open()` / `open_ui()`），否则分发那一帧的 `heal_mode` 会发现
+/// "mode 是面板态但没有面板"而复位，动作被吞掉。
+fn tap_panel_strip(
+    runtime: &mut LuaRuntime,
+    mode: &str,
+    index: i64,
+    dispatch: bool,
+) -> Result<String, Box<dyn std::error::Error>> {
+    runtime.set_input(InputSnapshot::default());
+    let step = if dispatch {
+        "require('ui.input').update(); "
+    } else {
+        ""
+    };
+    query_str(
+        runtime,
+        &format!(
+            "(function() local vp = require('ui.virtual_pad'); local st = require('core.state'); \
+              st.mode = '{mode}'; \
+              local slot = vp.panel_action_slots()[{index}]; \
+              if not slot then return 'no_slot' end; \
+              local fired = vp.handle_pointer(slot.x, slot.y, true, false); {step} \
+              local self_down = tostring(input.action(slot.action)); local others = 0; \
+              for _, s in ipairs(vp.panel_action_slots()) do \
+                if s.action ~= slot.action and input.action(s.action) then others = others + 1 end \
+              end; \
+              vp.handle_pointer(slot.x, slot.y, false, true); st.mode = 'Playing'; \
+              return tostring(fired) .. '|' .. self_down .. '|' .. others end)()"
+        ),
+    )
 }
 
 fn lua(runtime: &mut LuaRuntime, code: &str) -> Result<(), Box<dyn std::error::Error>> {

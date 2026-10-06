@@ -17,11 +17,17 @@ M.version = 1
 -- 与 `player/stats.lua` 的 VALID_STATS 一致（buff.stat 只能是这些）。
 local STATS = { attack = true, defense = true }
 -- 物品分类闭集：新增分类必须同时改这里，否则校验直接报错（宁可吵也不要静默）。
-local ITEM_KINDS = { crop = true, seed = true, consumable = true, material = true }
+-- 阶段 2+ 新增分类（改造计划 §4.3–§4.6/§8.2）：animal_product 畜牧产物、
+-- fish 渔获、ore/gem 矿石与宝石、dish 菜肴、bait 鱼饵、rod 钓竿（工具走 tools）。
+local ITEM_KINDS = { crop = true, seed = true, consumable = true, material = true, fertilizer = true, sprinkler = true, fruit = true, animal_product = true, fish = true, ore = true, gem = true, dish = true, bait = true, rod = true }
 local TOOL_KINDS = { tool = true, weapon = true }
 local SEASONS = { spring = true, summer = true, autumn = true, winter = true }
 local FACINGS = { s = true, n = true, e = true, w = true, se = true, sw = true, ne = true, nw = true }
 local USE_KEYS = { energy = true, inner_power = true, buff = true, social_day = true }
+-- 肥料效果闭集（docs/33 §4.1.3）：quality/growth/yield。
+local FERTILIZER_EFFECTS = { quality = true, growth = true, yield = true }
+-- 洒水器形状闭集（docs/33 §4.1.4）：cross = 十字 4 邻，square = 方阵。
+local SPRINKLER_SHAPES = { cross = true, square = true }
 -- 与 data/gather.lua 相同的地图格边界（cell 0-index，40x22）。
 local MAP_COLUMNS = 40
 local MAP_ROWS = 22
@@ -70,6 +76,55 @@ local function check_item(path, id, definition, issues)
   if definition.kind ~= nil and not ITEM_KINDS[definition.kind] then
     issues[#issues + 1] = path .. ".kind: unknown kind " .. tostring(definition.kind)
       .. " (known: " .. table.concat(sorted_keys(ITEM_KINDS), "/") .. ")"
+  end
+  -- 肥料（docs/33 §4.1.3）：kind=fertilizer 必须带 effect 且只能三选一；
+  -- `systems/farm.lua` 按 effect 分支（quality/growth/yield），脏值会让肥料
+  -- 施了也没效果（静默失效）。
+  if definition.kind == "fertilizer" then
+    if not FERTILIZER_EFFECTS[definition.effect] then
+      issues[#issues + 1] = path .. ".effect: fertilizer requires one of "
+        .. table.concat(sorted_keys(FERTILIZER_EFFECTS), "/")
+    end
+    if type(definition.buy) ~= "number" or definition.buy <= 0 then
+      issues[#issues + 1] = path .. ".buy: fertilizer must be sold at shop (buy > 0)"
+    end
+    if definition.sell ~= nil and definition.sell ~= 0 then
+      issues[#issues + 1] = path .. ".sell: fertilizer must not be buyable back (sell = 0)"
+    end
+  end
+  -- 洒水器（docs/33 §4.1.4）：sprinkler 字段决定清晨自动浇水范围
+  -- （shape = cross 十字 / square 方阵，radius = 1..2）。脏值会让洒水器
+  -- 放了也不浇（静默失效）；buy/sell 必须为 0（仅制作获得，阻断套利）。
+  if definition.kind == "sprinkler" then
+    local spec = definition.sprinkler
+    if type(spec) ~= "table" then
+      issues[#issues + 1] = path .. ".sprinkler: required { shape, radius }"
+    else
+      if not SPRINKLER_SHAPES[spec.shape] then
+        issues[#issues + 1] = path .. ".sprinkler.shape: requires one of "
+          .. table.concat(sorted_keys(SPRINKLER_SHAPES), "/")
+      end
+      if type(spec.radius) ~= "number" or spec.radius < 1 or spec.radius > 2
+        or spec.radius ~= math.floor(spec.radius) then
+        issues[#issues + 1] = path .. ".sprinkler.radius: expected integer 1..2"
+      end
+    end
+    if definition.buy ~= nil and definition.buy ~= 0 then
+      issues[#issues + 1] = path .. ".buy: sprinkler must not be sold at shop (buy = 0)"
+    end
+    if definition.sell ~= nil and definition.sell ~= 0 then
+      issues[#issues + 1] = path .. ".sell: sprinkler must not be buyable back (sell = 0)"
+    end
+  end
+  -- 树果（docs/33 §4.1.5，2026-10-05 0.6）：kind=fruit，可卖（buys 收购）可送礼；
+  -- 无品质档（不走 items 构建式派生）。buy 必须为 0（树上长的不能商店买）。
+  if definition.kind == "fruit" then
+    if type(definition.sell) ~= "number" or definition.sell <= 0 then
+      issues[#issues + 1] = path .. ".sell: fruit must have positive sell price (shop buys it)"
+    end
+    if definition.buy ~= nil and definition.buy ~= 0 then
+      issues[#issues + 1] = path .. ".buy: fruit must not be sold at shop (buy = 0)"
+    end
   end
   local use = definition.use
   if use ~= nil then
@@ -132,43 +187,91 @@ function M.validate_items()
   return #issues == 0, issues
 end
 
+--- 单条工具/武器定义的结构校验（validate_tools 与 validate_item_extensions 共用，
+--- 保证 data/tools.lua 与 data/items_<system>.lua 的 tools 表走同一套规则）。
+local function check_tool(path, id, definition, issues)
+  local items = require("data.items")
+  if type(definition) ~= "table" then
+    issues[#issues + 1] = path .. ": expected object"
+    return
+  end
+  if items[id] ~= nil then
+    issues[#issues + 1] = path .. ": id also exists in data/items.lua (shadowed lookup)"
+  end
+  if not is_non_empty_string(definition.name) then
+    issues[#issues + 1] = path .. ".name: required non-empty string"
+  end
+  if not TOOL_KINDS[definition.kind] then
+    issues[#issues + 1] = path .. ".kind: unknown kind " .. tostring(definition.kind)
+      .. " (known: " .. table.concat(sorted_keys(TOOL_KINDS), "/") .. ")"
+  elseif definition.kind == "tool" then
+    if not is_integer(definition.energy) or definition.energy < 0 then
+      issues[#issues + 1] = path .. ".energy: tool requires integer >= 0"
+    end
+    -- 工具家族（docs/33 §5.4）：family 必须与基础工具 id 一致（hoe/watering_can/
+    -- axe/pick），`systems/farm.lua` 按家族判定装备；脏值会让高阶工具永远
+    -- "没有装备"（need_hoe 兜底）或把斧头当锄头用。
+    if not is_non_empty_string(definition.family) then
+      issues[#issues + 1] = path .. ".family: tool requires non-empty family (docs/33 §5.4)"
+    end
+    -- 工具档位（docs/33 §5.4）：tier 1..5（1=基础，2–5=精铁/寒铁/陨铁/灵铁）。
+    -- `systems/farm.lua` 翻土/浇水按装备工具 tier 减耗，脏值会让减耗静默
+    -- 走基础档（等于升级无效）或越界读取（TIER_COST[6] 为 nil 按 8/4 兜底）。
+    if not is_integer(definition.tier) or definition.tier < 1 or definition.tier > 5 then
+      issues[#issues + 1] = path .. ".tier: tool requires integer 1..5 (docs/33 §5.4)"
+    end
+    if definition.damage ~= nil then
+      issues[#issues + 1] = path .. ".damage: tool must not carry damage (use kind=weapon)"
+    end
+  else
+    if type(definition.damage) ~= "number" or definition.damage < 0 then
+      issues[#issues + 1] = path .. ".damage: weapon requires non-negative number"
+    end
+  end
+  if definition.icon ~= nil and not assets_path(definition.icon) then
+    issues[#issues + 1] = path .. ".icon: expected assets/ path"
+  end
+end
+
 --- tools 注册表：id 不得与物品同名（消费方 `items[id] or tools[id]` 会互相遮蔽），
 --- 工具必须有体力消耗，武器必须有伤害。
 function M.validate_tools()
   local issues = {}
   local tools = require("data.tools")
-  local items = require("data.items")
   if type(tools) ~= "table" then
     return false, { "data/tools.lua: expected table registry" }
   end
   for id, definition in pairs(tools) do
-    local path = "data/tools.lua:" .. tostring(id)
-    if type(definition) ~= "table" then
-      issues[#issues + 1] = path .. ": expected object"
+    check_tool("data/tools.lua:" .. tostring(id), id, definition, issues)
+  end
+  return #issues == 0, issues
+end
+
+--- 分系统物品扩展（阶段 2+）：data/items_<system>.lua 的可选模块
+--- （{ items = {...}, tools = {...} }）与主注册表走同一套字段校验。
+--- 模块缺失 = 对应系统尚未落地，跳过；落地后自动纳入启动门。
+local ITEM_EXTENSION_MODULES = {
+  "data.items_animal",
+  "data.items_fish",
+  "data.items_mine",
+  "data.items_cooking",
+  "data.items_stage3"
+}
+
+function M.validate_item_extensions()
+  local issues = {}
+  for _, module_name in ipairs(ITEM_EXTENSION_MODULES) do
+    local ok, ext = pcall(require, module_name)
+    if not ok then
+      -- 模块缺失：系统未落地或已被移除，跳过（不报错，避免启动门依赖不存在文件）
+    elseif type(ext) ~= "table" then
+      issues[#issues + 1] = module_name .. ": expected module table { items, tools }"
     else
-      if items[id] ~= nil then
-        issues[#issues + 1] = path .. ": id also exists in data/items.lua (shadowed lookup)"
+      for id, definition in pairs(ext.items or {}) do
+        check_item(module_name .. ":" .. tostring(id), id, definition, issues)
       end
-      if not is_non_empty_string(definition.name) then
-        issues[#issues + 1] = path .. ".name: required non-empty string"
-      end
-      if not TOOL_KINDS[definition.kind] then
-        issues[#issues + 1] = path .. ".kind: unknown kind " .. tostring(definition.kind)
-          .. " (known: " .. table.concat(sorted_keys(TOOL_KINDS), "/") .. ")"
-      elseif definition.kind == "tool" then
-        if not is_integer(definition.energy) or definition.energy < 0 then
-          issues[#issues + 1] = path .. ".energy: tool requires integer >= 0"
-        end
-        if definition.damage ~= nil then
-          issues[#issues + 1] = path .. ".damage: tool must not carry damage (use kind=weapon)"
-        end
-      else
-        if type(definition.damage) ~= "number" or definition.damage < 0 then
-          issues[#issues + 1] = path .. ".damage: weapon requires non-negative number"
-        end
-      end
-      if definition.icon ~= nil and not assets_path(definition.icon) then
-        issues[#issues + 1] = path .. ".icon: expected assets/ path"
+      for id, definition in pairs(ext.tools or {}) do
+        check_tool(module_name .. ":" .. tostring(id), id, definition, issues)
       end
     end
   end
@@ -212,6 +315,26 @@ function M.validate_crops()
       if not is_integer(crop.yield) or crop.yield < 1 then
         issues[#issues + 1] = path .. ".yield: expected integer >= 1 (per-plot harvest amount)"
       end
+      -- 再生作物（2026-10-05 四季矩阵）：`regrow_days` 可选，但一旦出现必须是正整数
+      -- ——`systems/farm.lua` 的 `growth_need` 只在 cycles>0 时读取它，脏值会让复熟判定
+      -- 静默走首茬口径（watered_days 直接越过成长天数，等于无限速熟）。
+      if crop.regrow_days ~= nil
+        and (not is_integer(crop.regrow_days) or crop.regrow_days < 1) then
+        issues[#issues + 1] = path .. ".regrow_days: expected integer >= 1 when present"
+      end
+      -- 果树（docs/33 §4.1.5）：tree=true 时 tree_days（成树天数）与
+      -- fruit_season（结果季节）必填合法；脏值会让树永不成熟或非秋可收。
+      if crop.tree then
+        if not is_integer(crop.tree_days) or crop.tree_days < 1 then
+          issues[#issues + 1] = path .. ".tree_days: expected integer >= 1 when tree"
+        end
+        if not is_non_empty_string(crop.fruit_season) then
+          issues[#issues + 1] = path .. ".fruit_season: required non-empty string when tree"
+        elseif not SEASONS[crop.fruit_season] then
+          issues[#issues + 1] = path .. ".fruit_season: unknown season "
+            .. tostring(crop.fruit_season)
+        end
+      end
       if type(crop.season) ~= "table" or #crop.season == 0 then
         issues[#issues + 1] = path .. ".season: expected non-empty array"
       else
@@ -246,8 +369,12 @@ function M.validate_crops()
       else
         local harvest = items[crop.harvest_item]
         if harvest and harvest.kind ~= nil and harvest.kind ~= "crop" then
-          issues[#issues + 1] = path .. ".harvest_item: " .. tostring(crop.harvest_item)
-            .. " has kind " .. tostring(harvest.kind) .. ", expected crop"
+          -- 果树特例（docs/33 §4.1.5）：tree 作物的收获物是树果（kind=fruit，
+          -- 无品质档、不派生），不是常规 crop。
+          if not (crop.tree and harvest.kind == "fruit") then
+            issues[#issues + 1] = path .. ".harvest_item: " .. tostring(crop.harvest_item)
+              .. " has kind " .. tostring(harvest.kind) .. ", expected crop"
+          end
         end
         if crop.sell_price ~= nil and harvest and harvest.sell ~= nil
           and crop.sell_price ~= harvest.sell then
@@ -411,6 +538,92 @@ function M.validate_enemy_art_refs()
   return #issues == 0, issues
 end
 
+--- 品质条目派生（docs/33 §4.1.2，2026-10-05 0.4）：每个 kind=crop 且 sell>0 的
+--- 收获物必须存在 `<id>_good` / `<id>_super` 派生条目，sell 恰为
+--- floor(基础 × 1.25 / 1.6)、buy=0、kind=crop；且品质条目**不进任何商店**
+--- stock/buys（上品是专属用途物品：高级药引/送礼/节日订单，不是套利通道）。
+function M.validate_quality()
+  local issues = {}
+  local items = require("data.items")
+  local shops = require("data.shops")
+  local stock, buys = {}, {}
+  for _, shop in pairs(shops) do
+    if type(shop) == "table" then
+      for _, it in ipairs(shop.stock or {}) do stock[it.item] = true end
+      for _, it in ipairs(shop.buys or {}) do buys[it] = true end
+    end
+  end
+  for id, def in pairs(items) do
+    if def.kind == "crop" and type(def.sell) == "number" and def.sell > 0 then
+      -- 派生条目（<id>_good/_super）本身就是 crop：跳过，不再要求其二次派生
+      -- （否则 cabbage_good 又要 cabbage_good_good，校验无限外推）。
+      -- 注意 Lua pattern 无 `|` 分支语法，必须写两个独立 pattern。
+      if id:match("_good$") or id:match("_super$") then
+        -- 只查它的商店泄漏（派生条目不进任何 stock/buys）
+        if stock[id] or buys[id] then
+          issues[#issues + 1] = "data/items.lua:" .. id .. ": quality crop must not appear in any shop stock/buys"
+        end
+      else
+        for _, suffix in ipairs({ "good", "super" }) do
+          local quality_id = id .. "_" .. suffix
+          local multiplier = suffix == "good" and 1.25 or 1.6
+          local quality = items[quality_id]
+          local path = "data/items.lua:" .. quality_id
+          if type(quality) ~= "table" then
+            issues[#issues + 1] = path .. ": missing quality derivative for crop " .. id
+          else
+            local expected_sell = math.floor(def.sell * multiplier)
+            if quality.sell ~= expected_sell then
+              issues[#issues + 1] = path .. ".sell: expected floor(" .. tostring(def.sell)
+                .. " × " .. tostring(multiplier) .. ") = " .. tostring(expected_sell)
+                .. ", got " .. tostring(quality.sell)
+            end
+            if quality.buy ~= 0 then
+              issues[#issues + 1] = path .. ".buy: quality crop must not be sold at shop (buy=0)"
+            end
+            if quality.kind ~= "crop" then
+              issues[#issues + 1] = path .. ".kind: expected crop"
+            end
+          end
+          if stock[quality_id] or buys[quality_id] then
+            issues[#issues + 1] = path .. ": quality crop must not appear in any shop stock/buys"
+          end
+        end
+      end
+    end
+  end
+  return #issues == 0, issues
+end
+
+--- 洒水器配方闭环（docs/33 §4.1.4，2026-10-05 0.5）：每个 kind=sprinkler 物品
+--- 必须存在产出它的铁匠铺（forge）配方（data/recipes.lua），否则玩家永远无法
+--- 获得该洒水器（物品成为死数据）。
+function M.validate_sprinklers()
+  local issues = {}
+  local items = require("data.items")
+  local recipes = require("data.recipes")
+  for id, def in pairs(items) do
+    if def and def.kind == "sprinkler" then
+      local found = false
+      for recipe_id, recipe in pairs(recipes.recipes or {}) do
+        if recipe and recipe.output and recipe.output.item == id then
+          if recipe.station ~= "forge" then
+            issues[#issues + 1] = "data/recipes.lua:" .. recipe_id
+              .. ": sprinkler " .. id .. " must be crafted at forge station"
+          end
+          found = true
+          break
+        end
+      end
+      if not found then
+        issues[#issues + 1] = "data/items.lua:" .. id
+          .. ": no forge recipe produces this sprinkler (dead item)"
+      end
+    end
+  end
+  return #issues == 0, issues
+end
+
 --- 合并入口：validate_data.lua 只登记这一个模块。
 function M.validate_all()
   local issues = {}
@@ -419,7 +632,10 @@ function M.validate_all()
     M.validate_tools,
     M.validate_crops,
     M.validate_farm,
-    M.validate_enemy_art_refs
+    M.validate_enemy_art_refs,
+    M.validate_quality,
+    M.validate_sprinklers,
+    M.validate_item_extensions
   }) do
     local ok, valid, list = pcall(validator)
     if not ok then

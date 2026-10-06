@@ -64,6 +64,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("草药", "herb"),
         ("何首乌", "polygonum"),
         ("人参", "ginseng"),
+        // 四季作物矩阵扩展（2026-10-05，docs/33 §4.1 0.2 同步 +18）：
+        // 新增作物必须同时出现在这里与 docs/33 作物表，否则行数/逐格比对失败。
+        ("薄荷", "mint"),
+        ("桑葚", "mulberry"),
+        ("青豌豆", "pea"),
+        ("青瓜", "cucumber"),
+        ("绿豆", "mung_bean"),
+        ("夏枯草", "prunella"),
+        ("茄子", "eggplant"),
+        ("南瓜", "pumpkin"),
+        ("枸杞", "gouqi"),
+        ("白菜", "cabbage"),
+        ("菊花", "chrysanthemum"),
+        ("韭葱", "leek"),
+        ("冬麦", "winter_wheat"),
+        ("雪里蕻", "xueli"),
+        ("冬参", "winter_shen"),
+        ("腊梅", "plum"),
+        ("冬白菜", "winter_cabbage"),
+        ("冬青", "evergreen"),
     ];
     if crop_rows.len() != expected_crops.len() {
         return Err(format!(
@@ -172,6 +192,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("草药籽", "seed_herb"),
         ("何首乌苗", "seed_polygonum"),
         ("人参籽", "seed_ginseng"),
+        // 四季作物矩阵扩展（2026-10-05，docs/33 §5.2 0.2 同步 +18）：种子名与
+        // 商品表逐行对应，改任一名称必须同时改本表与文档。
+        ("薄荷籽", "seed_mint"),
+        ("桑葚籽", "seed_mulberry"),
+        ("青豌豆籽", "seed_pea"),
+        ("青瓜籽", "seed_cucumber"),
+        ("绿豆籽", "seed_mung_bean"),
+        ("夏枯草籽", "seed_prunella"),
+        ("茄子籽", "seed_eggplant"),
+        ("南瓜籽", "seed_pumpkin"),
+        ("枸杞籽", "seed_gouqi"),
+        ("白菜籽", "seed_cabbage"),
+        ("菊花籽", "seed_chrysanthemum"),
+        ("韭葱籽", "seed_leek"),
+        ("冬麦籽", "seed_winter_wheat"),
+        ("雪里蕻籽", "seed_xueli"),
+        ("冬参籽", "seed_winter_shen"),
+        ("腊梅籽", "seed_plum"),
+        ("冬白菜籽", "seed_winter_cabbage"),
+        ("冬青籽", "seed_evergreen"),
+        // 肥料（2026-10-05，docs/33 §5.2 0.4 同步 +3）：货摊售卖，不进 buys。
+        ("草药肥", "herb_fertilizer"),
+        ("骨肥", "bone_fertilizer"),
+        ("灵肥", "spirit_fertilizer"),
+        // 果树苗（2026-10-05，docs/33 §5.2 0.6 同步 +5）：货摊售卖，sell=0。
+        ("桃树苗", "seed_peach"),
+        ("青梅树苗", "seed_mume"),
+        ("枇杷树苗", "seed_loquat"),
+        ("枣树苗", "seed_jujube"),
+        ("银杏树苗", "seed_ginkgo"),
     ];
     let mut checked_rows = 0;
     for row in &shop_rows {
@@ -484,6 +534,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("药庐 1→2 级", "herb_hut", 4.0),
         ("库房 1→2 级", "storehouse", 6.0),
         ("茶棚 1→2 级", "tea_shed", 3.0),
+        ("地热药圃 1→2 级", "greenhouse", 6.0),
     ];
     if upgrade_lines.len() < expected_costs.len() {
         return Err(format!(
@@ -577,9 +628,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('core.state').last_action",
         "plant_seed_lingzhi",
     )?;
-    let lingzhi_before = query_num(&mut runtime, "inv.count('player', 'lingzhi')")?;
+    let lingzhi_before = total_crop(&mut runtime, "lingzhi")?;
     grow_and_harvest(&mut runtime, "watering_can", "water_lingzhi")?;
-    let lingzhi_yield = query_num(&mut runtime, "inv.count('player', 'lingzhi')")? - lingzhi_before;
+    let lingzhi_yield = total_crop(&mut runtime, "lingzhi")? - lingzhi_before;
     let documented_lingzhi = query_num(&mut runtime, "require('data.crops').lingzhi.yield")?;
     if (lingzhi_yield - documented_lingzhi).abs() > f64::EPSILON {
         return Err(format!(
@@ -629,9 +680,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('core.state').last_action",
         "plant_seed_rice",
     )?;
-    let rice_before = query_num(&mut runtime, "inv.count('player', 'rice')")?;
+    let rice_before = total_crop(&mut runtime, "rice")?;
     grow_and_harvest(&mut runtime, "watering_can", "water_rice")?;
-    let rice_yield = query_num(&mut runtime, "inv.count('player', 'rice')")? - rice_before;
+    let rice_yield = total_crop(&mut runtime, "rice")? - rice_before;
     let documented_rice = query_num(&mut runtime, "require('data.crops').rice.yield")?;
     if (rice_yield - documented_rice).abs() > f64::EPSILON {
         return Err(format!(
@@ -648,9 +699,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('core.state').last_action",
         "plant_seed_rice",
     )?;
-    let rice_before_two = query_num(&mut runtime, "inv.count('player', 'rice')")?;
+    let rice_before_two = total_crop(&mut runtime, "rice")?;
     grow_and_harvest(&mut runtime, "watering_can", "water_rice")?;
-    let mutated_yield = query_num(&mut runtime, "inv.count('player', 'rice')")? - rice_before_two;
+    let mutated_yield = total_crop(&mut runtime, "rice")? - rice_before_two;
     if (mutated_yield - 3.0).abs() > f64::EPSILON {
         return Err(format!(
             "yield=3 时实际收获 {mutated_yield}；收获数量没有走 data/crops.lua（硬编码？）"
@@ -682,9 +733,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('core.state').last_action",
         "plant_seed_radish",
     )?;
-    let radish_before = query_num(&mut runtime, "inv.count('player', 'radish')")?;
+    let radish_before = total_crop(&mut runtime, "radish")?;
     grow_and_harvest(&mut runtime, "watering_can", "water_radish")?;
-    let radish_yield = query_num(&mut runtime, "inv.count('player', 'radish')")? - radish_before;
+    let radish_yield = total_crop(&mut runtime, "radish")? - radish_before;
     let documented_radish = query_num(&mut runtime, "require('data.crops').radish.yield")?;
     if (radish_yield - documented_radish).abs() > f64::EPSILON {
         return Err(format!(
@@ -1124,6 +1175,17 @@ fn query_num(runtime: &mut LuaRuntime, expr: &str) -> Result<f64, Box<dyn std::e
     value
         .parse::<f64>()
         .map_err(|error| format!("{value:?} is not a number: {error}").into())
+}
+
+/// 统计某收获物的背包总量 = 普通 + 良好 + 上品三条目之和（品质系统
+/// docs/33 §4.1.2：收获可能产出 `<id>_good` / `<id>_super`，数量断言必须合并统计）。
+fn total_crop(runtime: &mut LuaRuntime, crop_id: &str) -> Result<f64, Box<dyn std::error::Error>> {
+    query_num(
+        runtime,
+        &format!(
+            "inv.count('player', '{crop_id}') + inv.count('player', '{crop_id}_good') + inv.count('player', '{crop_id}_super')"
+        ),
+    )
 }
 
 fn assert_str(

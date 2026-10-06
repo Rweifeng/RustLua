@@ -37,6 +37,8 @@ local characters = require("data.characters")
 local places = require("data.places")
 local schedule = require("world.schedule")
 local npc = require("world.npc")
+-- 遮挡顺序：角色（actor 层）的 Sprite order 每帧跟着脚位 Y 重写（见 world/depth.lua 头注释）。
+local depth = require("world.depth")
 local quest = require("world.quest")
 local dialogue = require("world.dialogue")
 local shop = require("systems.shop")
@@ -55,6 +57,27 @@ local enemies_data = require("data.enemies")
 -- buildings_data/recipes_data 纯数据注册表（validate_content 校验入口）。
 local building = require("systems.building")
 local crafting = require("systems.crafting")
+-- 出货箱（docs/33 §4.1.7，0.8）：镖局收单——睡前统一结算 + 出货记录。
+local shipping = require("systems.shipping")
+-- 熟练度（docs/33 §7.1，0.9）：5 线 10 级 + 专精（务农/采药/制药/武学/江湖）。
+local mastery = require("systems.mastery")
+-- 阶段2（docs/33 §4.3–4.8、§7.3、§8.3，1.0–1.8）：畜牧/钓鱼/矿脉/料理/好感事件/
+-- 任务板/图鉴/成就——各系统模块自带 capture/restore/reset/on_day_start，此处接线。
+local animal = require("systems.animal")
+local fishing = require("systems.fishing")
+local mine = require("systems.mine")
+local cooking = require("systems.cooking")
+local relationship_events = require("systems.relationship_events")
+local questboard = require("systems.questboard")
+local collection = require("systems.collection")
+local achievement = require("systems.achievement")
+-- 阶段3（docs/33 §2.1/§4.10/§5.5/§7.4/§8.4/§8.5，1.9–2.4）：经脉修炼/医馆经营与疫情/
+-- 黑市抉择循环/茶会社交/多结局（节气历法是 day 纯派生，无需 require 持久态模块）。
+local meridian = require("systems.meridian")
+local clinic = require("systems.clinic")
+local black_market = require("systems.black_market")
+local tea_party = require("systems.tea_party")
+local endings = require("systems.endings")
 local buildings_data = require("data.buildings")
 local recipes_data = require("data.recipes")
 -- UI/音频/引导（M19-02）：audio 负责选曲与音效，hud 画状态面板，
@@ -152,6 +175,27 @@ local function register_save_providers()
   save_manager.register("building", building.capture, building.restore)
   -- 制作任务（M18-02）：进行中任务随存档恢复，剩余时间由 clock 重新推导。
   save_manager.register("crafting", crafting.capture, crafting.restore)
+  -- 出货箱（docs/33 §4.1.7，0.8）：待结算清单/累计出货/当日记录随存档恢复。
+  save_manager.register("shipping", shipping.capture, shipping.restore)
+  -- 熟练度（docs/33 §7.1，0.9）：5 线 XP 与专精选择随存档恢复。
+  save_manager.register("mastery", mastery.capture, mastery.restore)
+  -- 阶段2（docs/33 §4.3–4.8、§7.3、§8.3，1.0–1.8）：畜牧/钓鱼/矿脉/料理/好感事件/
+  -- 任务板/图鉴/成就各自的持久态随存档恢复。
+  save_manager.register("animal", animal.capture, animal.restore)
+  save_manager.register("fishing", fishing.capture, fishing.restore)
+  save_manager.register("mine", mine.capture, mine.restore)
+  save_manager.register("cooking", cooking.capture, cooking.restore)
+  save_manager.register("relationship_events", relationship_events.capture, relationship_events.restore)
+  save_manager.register("questboard", questboard.capture, questboard.restore)
+  save_manager.register("collection", collection.capture, collection.restore)
+  save_manager.register("achievement", achievement.capture, achievement.restore)
+  -- 阶段3（docs/33 §4.10/§5.5/§7.4/§8.4/§8.5，1.9–2.4）：经脉/医馆/黑市/茶会/结局
+  -- 持久态随档恢复（节气历法是 day 纯派生不入档）。
+  save_manager.register("meridian", meridian.capture, meridian.restore)
+  save_manager.register("clinic", clinic.capture, clinic.restore)
+  save_manager.register("black_market", black_market.capture, black_market.restore)
+  save_manager.register("tea_party", tea_party.capture, tea_party.restore)
+  save_manager.register("endings", endings.capture, endings.restore)
   -- 音频（M19-02）：主音量随存档恢复（BGM 曲目由切图时重新选曲，不入档）。
   audio.register_save()
 end
@@ -209,6 +253,21 @@ local function new_game()
   -- 掉落与战败（M28）：清空待入库袋与战败明细，随机序列回默认种子。
   loot.reset()
   death.reset()
+  -- 阶段2（docs/33 §4.3–4.8、§7.3、§8.3，1.0–1.8）：新档复位各新系统持久态。
+  animal.reset()
+  fishing.reset()
+  mine.reset()
+  cooking.reset()
+  relationship_events.reset()
+  questboard.reset()
+  collection.reset()
+  achievement.reset()
+  -- 阶段3（1.9–2.4）：经脉/医馆/黑市/茶会/结局新档复位（节气纯派生无状态）。
+  meridian.reset()
+  clinic.reset()
+  black_market.reset()
+  tea_party.reset()
+  endings.reset()
   -- 天气与季节表现（M29）：天气抽签种子回默认、季节换图计数清零（贴图由进图时重设）。
   weather.reset()
   season_visual.reset()
@@ -216,6 +275,8 @@ local function new_game()
   camera_view.reset()
   audio.init()
   clock.set(1, 0)
+  -- 任务板（§4.7，1.6）：day 1 播种（日常 3 单 + 季初单），与 on_day_start 同一入口，幂等。
+  questboard.on_day_start()
 end
 
 -- 地图专属初始化：把玩家放到本图出生点、恢复地图 overlay（manor 的农田棋盘），
@@ -254,6 +315,9 @@ local function enter_playable_map(map_id)
   -- 但保留当日限购计数（切图不算新的一天）。
   shop.ensure_target()
   shop.close_ui()
+  -- 出货箱交互目标（docs/33 §4.1.7，0.8）：山庄门口镖局货箱；切图关闭面板。
+  shipping.ensure_target()
+  shipping.close_ui()
   -- UI 面板（M19-02）：切图清掉背包/任务/暂停面板（模式复位见下）。
   inventory_ui.reset()
   quest_ui.reset()
@@ -471,6 +535,8 @@ function update()
     -- 主角形象：input.update 决定了朝向与"是否在走"，之后再切 walk/idle
     -- （顺序不能反，否则动画永远慢一帧）。切图后实体会重建，tick 里会重挂。
     player.tick()
+    -- 位移都落定之后才排遮挡：depth.tick 逐个角色按当前 Y 重写 order（桶位没变就不写）。
+    depth.tick()
     return label
   end
   -- M20-09：门面（标题界面）的手柄/键盘菜单——确认与鼠标点击同走 `on_click`，
@@ -505,10 +571,13 @@ function on_day_start()
   -- ——第 29/57/85 天季节跳变时，进图时换过的地表要跟着换。
   weather.on_day_start()
   season_visual.refresh(current)
-  state.energy = inventory.max_energy()
+  -- 经脉修炼（docs/33 §7.4，1.9）：体力恢复池读经脉上限（无经脉时=inventory.max_energy()=100，
+  -- 与原锚点一致）；内力每日自然恢复 +30、常驻加成在旧 Buff 衰减之后重挂。
+  state.energy = meridian.max_energy()
   state.labor_minutes = 0
   -- 临时 Buff 按游戏日过期（M18-04）：days 递减，归 0 移除。
   stats.on_day_start()
+  meridian.on_day_start()
   -- 新的一天：商店限购刷新（当日已购计数清零）。
   shop.on_day_start()
   -- 采集点刷新（M19-01）：清掉已到刷新期的记录并落盘；未接线时 query/act 的
@@ -527,8 +596,28 @@ function on_day_start()
   if #banked > 0 then
     log.info("入库战利品：" .. loot.pending_text_of(banked))
   end
+  -- 出货箱统一结算（docs/33 §4.1.7，0.8）：白天放入货箱的物品在睡前按 sell 价
+  -- 入账并写出货记录；与掉落入库同理，必须在目标结算之前入账。
+  local shipped = shipping.settle()
+  if shipped and shipped.total > 0 then
+    log.info("镖局收单结算：" .. tostring(shipped.total) .. " 文")
+  end
   -- 七日目标（M27）：日结算 + 推进目标日（奖励与结算结果写 state.vars，随存档）。
   goals.on_day_start()
+  -- 阶段2（1.0–1.8）：畜牧日产出、钓鱼临时钓点刷新、好感事件生日标注、
+  -- 任务板分层换榜、成就日检查（各模块内部幂等）。
+  animal.on_day_start()
+  fishing.on_day_start()
+  relationship_events.on_day_start()
+  questboard.on_day_start()
+  achievement.check_all()
+  -- 阶段3（1.9–2.4）：节气纯派生重算（日志/HUD 只读）、医馆疫情状态机、
+  -- 黑市窗口刷新、茶会冷却解除、多结局达标检查。
+  pcall(function() require("systems.solar_terms").on_day_start() end)
+  clinic.on_day_start()
+  black_market.on_day_start()
+  tea_party.on_day_start()
+  endings.check_all()
   log.info("新的一天：" .. tostring(clock.now().day) .. " @" .. tostring(current))
   save_manager.save()
 end

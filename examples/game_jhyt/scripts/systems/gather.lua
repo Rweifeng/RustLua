@@ -338,6 +338,10 @@ function M.act(facing)
     state.labor_minutes = (state.labor_minutes or 0) + minutes
   end
   state.last_action = "gather_" .. tostring(node.item)
+  -- 熟练度（docs/33 §7.1，0.9）：采集成功计采药线 XP。
+  pcall(function()
+    require("systems.mastery").add_xp("herbalism", 5)
+  end)
   -- 音效（缺文件/无设备静默降级）
   pcall(function()
     require("core.audio").sfx("sfx_harvest")

@@ -28,8 +28,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// 建筑注册表条目数（data/buildings.lua：药庐/仓房/茶棚/铁匠炉/膳房）。
-const BUILDING_COUNT: f64 = 5.0;
+/// 建筑注册表条目数（data/buildings.lua：药庐/仓房/茶棚/铁匠炉/膳房 + 地热药圃 0.7）。
+const BUILDING_COUNT: f64 = 10.0;
 /// 直接从数据源数条目，防止 ids() 与注册表悄悄分叉。
 const BUILDING_DATA_COUNT_LUA: &str = "(function() local n = 0 \
      for _ in pairs(require('data.buildings').buildings) do n = n + 1 end return n end)()";

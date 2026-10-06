@@ -79,10 +79,68 @@ local function validators()
     -- docs/51 §2.2 修订）、且 `bounds` 逐值等于该场景
     -- GroundMap 的真实地图矩形。漂移的表现是"相机取景跑出地图边缘"，但不会有任何报错。
     { "camera_view", require("world.camera_view"), "world.camera_view" },
-    -- M34-02 追加："festivals"（data/festivals.lua）：七条节气事件表。这里守的是
+    -- M34-02 追加："festivals"（data/festivals.lua）：节气事件表（1.5 起 8 条，每季 2）。这里守的是
     -- **时间轴自洽**——同一天不能有两个节气（重叠窗口是纯数据错误，运行时只会静默取第一条）、
     -- 四季每季至少一个事件、效果键必须在白名单内且有对应的消费方模块。
-    { "festivals", require("data.festivals"), "data.festivals" }
+    { "festivals", require("data.festivals"), "data.festivals" },
+    -- 0.9 追加："mastery"（data/mastery.lua + systems/mastery.lua）：熟练度 5 线
+    -- 10 级 + 专精。守的是结构不变量——阈值表恰 10 档、线条目合法、专精 id 全局唯一、
+    -- 每线 5/10 级槽位各恰 2 个候选（2 选 1）。
+    { "mastery", require("systems.mastery"), "systems.mastery" },
+    -- 1.0 追加："animal"（data/animals.lua + systems/animal.lua）：畜牧。守 6 种动物
+    -- 定义合法（畜舍归属/产物 id 存在/周期为正）、畜舍建筑登记在 buildings 里。
+    { "animal", require("systems.animal"), "systems.animal" },
+    -- 1.1 追加："fishing"（data/fish.lua + systems/fishing.lua）：钓鱼。守 4 水域/
+    -- 23 鱼种结构不变量（难度 1..5、归属水域存在、data/fish.sell == items_fish 同名物品 sell）。
+    { "fishing", require("systems.fishing"), "systems.fishing" },
+    -- 1.2 追加："mine"（data/mine.lua + systems/mine.lua）：青云矿脉 30 层。守恰 30 层、
+    -- 电梯层落在 5/10/15/20/25/30、矿石/宝石池引用合法、difficulty 1..10、
+    -- 运行期 current 必须已解锁且入口层恒解锁。
+    { "mine", require("systems.mine"), "systems.mine" },
+    -- 1.3 追加："cooking"（data/items_cooking.lua + systems/cooking.lua）：料理统计薄层。
+    { "cooking", require("systems.cooking"), "systems.cooking" },
+    -- 1.4 追加："relationship_events"（data/relationship_events.lua + systems/relationship_events.lua）：
+    -- ≥30 条好感事件，npc/门槛/奖励物品引用完整性。
+    { "relationship_events", require("systems.relationship_events"), "systems.relationship_events" },
+    -- 1.6 追加："questboard"（data/questboard.lua + systems/questboard.lua）：任务板 3 层。
+    -- 守三层规则（daily/weekly/quarterly 刷新锚点）、22 模板 objective 只引用既有物品。
+    { "questboard", require("systems.questboard"), "systems.questboard" },
+    -- 1.7 追加："collection"（data/collections.lua + systems/collection.lua）：图鉴 6 类。
+    -- 守 6 类齐全非空、类内 id 无重复、作物/药材/菜肴 id 在物品表真实存在、奖励档 50/100 齐全。
+    { "collection", require("systems.collection"), "systems.collection" },
+    -- 1.8 追加："achievements"（data/achievements.lua + systems/achievement.lua）：成就 30。
+    -- 守 id 唯一、谓词类型白名单、奖励只引用既有物品。
+    { "achievements", require("systems.achievement"), "systems.achievement" },
+    -- 1.9 追加："meridian"（data/meridian.lua + systems/meridian.lua）：12 条经脉。
+    -- 守结构不变量——恰 12 条、难度 1..12 唯一、恰 1 根、前置链无环、
+    -- 被动键闭集（attack/defense/energy_max/inner_power_max）、冲穴材料已注册。
+    { "meridian", require("systems.meridian"), "systems.meridian" },
+    -- 2.0 追加："clinic"（data/clinic.lua 病种处方 + 疫情表）：医馆经营与疫情事件。
+    { "clinic", require("data.clinic"), "data.clinic" },
+    -- 2.1 追加："solarterm"（data/solar_terms.lua）：二十四节气注册表。守时间轴自洽——
+    -- 24 个节气每季恰 6 个、季内日 1..28 不撞日、修饰键在白名单内、festival_link 指向真实节日。
+    { "solarterm", require("data.solar_terms"), "data.solar_terms" },
+    -- 2.2 追加："black_market"（data/black_market.lua + systems/black_market.lua）：黑市商品池/抉择事件/声望档位。
+    { "black_market", require("systems.black_market"), "systems.black_market" },
+    -- 2.3 追加："tea_party"（systems/tea_party.lua，委托 data/tea_party.lua 校验话题池/
+    -- 门槛/茶品白名单/结算常数的引用完整性）。
+    { "tea_party", require("systems.tea_party"), "systems.tea_party" },
+    -- 2.4 追加："endings"（data/endings.lua + systems/endings.lua）：多结局 5 条。
+    -- 守 id 唯一、谓词白名单（reputation/mastery_level/day）、阵营/熟练度线引用存在、门槛落在可达区间。
+    { "endings", require("systems.endings"), "systems.endings" },
+    -- 3.3 补登记（m23「登记覆盖」门：凡定义 validate_all 的模块必须登记，否则校验永不运行）：
+    -- 系统侧缺 3 个（shipping 返回字符串自检、clinic、solar_terms），数据侧缺 6 个
+    -- （achievements/endings/black_market/tea_party/relationship_events/mine 的 data 模块
+    -- 各有 validate_all，此前只登记了它们的 systems 孪生）。
+    { "shipping", require("systems.shipping"), "systems.shipping" },
+    { "clinic_sys", require("systems.clinic"), "systems.clinic" },
+    { "solarterm_sys", require("systems.solar_terms"), "systems.solar_terms" },
+    { "achievements_data", require("data.achievements"), "data.achievements" },
+    { "endings_data", require("data.endings"), "data.endings" },
+    { "black_market_data", require("data.black_market"), "data.black_market" },
+    { "tea_party_data", require("data.tea_party"), "data.tea_party" },
+    { "relationship_events_data", require("data.relationship_events"), "data.relationship_events" },
+    { "mine_data", require("data.mine"), "data.mine" }
   }
 end
 

@@ -10,6 +10,10 @@ local M = {
   facing = "down",
   selected_seed = "seed_lingzhi",
   selected_tool = "hoe",
+  -- 选中肥料（docs/33 §4.1.3，0.4）：已垦未种格按 E 施肥；nil = 未选（E 直接播种）。
+  selected_fertilizer = nil,
+  -- 选中洒水器（docs/33 §4.1.4，0.5）：已垦未种格按 E 放置；nil = 未选。
+  selected_sprinkler = nil,
   season = "spring",
   weather = "sunny",
   labor_minutes = 0,
@@ -53,6 +57,8 @@ local VALID_MODES = {
   -- 任务日志面板（M19-02）：只读 UI 模式，与 Inventory 同款语义
   -- （非 Playing 时 input.update 早退，UI 输入不落到世界）。
   Quest = true,
+  -- 出货箱面板（docs/33 §4.1.7，0.8）：与 Shop 同款只读 UI 模式。
+  Shipping = true,
   Transition = true
 }
 

@@ -176,6 +176,10 @@ function M.collect(key)
   jobs[key] = nil
   persist()
   state.last_action = "craft_collect_" .. job.output_item
+  -- 熟练度（docs/33 §7.1，0.9）：制作完成计制药线 XP。
+  pcall(function()
+    require("systems.mastery").add_xp("alchemy", 8)
+  end)
   audio.sfx("sfx_craft")
   return true, job.output_item
 end

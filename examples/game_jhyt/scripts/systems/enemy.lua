@@ -37,6 +37,7 @@ local combat_data = require("data.combat")
 local map_manager = require("world.map_manager")
 -- docs/48 effects 接线：敌人受击闪白。
 local effects = require("systems.effects")
+local depth = require("world.depth")
 
 local M = {}
 
@@ -143,8 +144,16 @@ local function activate(actor)
           "enemy=" .. tostring(actor.enemy.name) .. " art apply failed: " .. tostring(art_err))
       end
     end
-    if not applied and actor.enemy.sprite then
-      pcall(sprite.set, id, actor.enemy.sprite)
+    if applied then
+      -- enemy_art.apply（生成器产物，不改它）已经 sprite.set 过单帧；这里把**同一个串**
+      -- 交给 depth 接管 order，遮挡才跟脚位 Y 走。多写一次组件串只发生在生成实体这一帧。
+      local art = enemy_art.get(actor.enemy.art)
+      local spec = art and (art.static_sprite[actor.facing or "s"] or art.static_sprite.s)
+      if spec then
+        pcall(depth.attach, id, spec)
+      end
+    elseif actor.enemy.sprite then
+      pcall(depth.attach, id, actor.enemy.sprite)
     end
     actor.animated = applied
   end

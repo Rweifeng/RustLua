@@ -352,10 +352,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('core.state').get_var('goals_day_3')",
         "completed",
     )?;
+    // 跨天内力口径（docs/33 §7.4，1.9 经脉接入后）：先走经脉每日自然恢复 +30 并钳到
+    // 内力上限（无经脉=100），随后第 3 天目标日结算发 inner_power=10 奖励（goals.lua）
+    // ——故恢复前若已溢出上限则先钳回 100 再加 10（旧断言 power_before+10 是经脉前的口径）。
     assert_num(
         &mut rt,
         "require('core.state').inner_power",
-        power_before + 10.0,
+        power_before.min(100.0) + 10.0,
     )?;
 
     // ---------------- ⑤ 第 4 天：入山采药两次 ----------------

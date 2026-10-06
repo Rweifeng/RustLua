@@ -56,8 +56,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     click_button(&mut runtime, "BtnStart")?;
     assert_scene_is(&mut runtime, "manor")?;
     assert_mode(&mut runtime, "Playing")?;
-    // 批次 4：新增阿七 / 司徒魁 / 陆归藏 三名 NPC（原 7 名 → 10 名）
-    assert_str(&mut runtime, "#(require('data.npcs').list())", "10")?;
+    // 批次 4：新增阿七 / 司徒魁 / 陆归藏 三名 NPC（原 7 名 → 10 名）；
+    // 阶段2（docs/33 §8.3，1.4）：再扩 6 名 → 16 名。
+    assert_str(&mut runtime, "#(require('data.npcs').list())", "16")?;
     lua(&mut runtime, "return require('world.weather').set('sunny')")?;
     let resolve_check = query_str(
         &mut runtime,
@@ -211,7 +212,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!(
-        "jhyt_m17_npc_ok project={} npcs=7 day={} scene={} sample={}",
+        "jhyt_m17_npc_ok project={} npcs=16 day={} scene={} sample={}",
         project.display(),
         query_i64(&mut second, "clock.now().day")?,
         query_str(&mut second, "scene.reload()")?,

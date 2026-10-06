@@ -94,16 +94,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // （seed_radish/seed_herb/seed_polygonum/seed_ginseng），共 8 项；buys 同步 +4
     // （radish/herb/polygonum/ginseng）→ 6 项，其后 `1cd624b` 又把 `iron_ore` 加进收购
     // 列表 → 7 项（该 commit 扩到三家店时漏更新了这里）。
-    // 新增项都在列表末尾，[2] 索引不受影响。
+    // 阶段2（docs/33 §5.2，1.0 起）：四季种子 24+6、肥料 3、果树苗 5 全部由货摊供应
+    // → stock 34；buys 同步覆盖全部收获物与树果 → 30。新增项都在列表末尾，[2] 不受影响。
     assert_num(
         &mut runtime,
         "#(require('systems.shop').stock('zhao_stall'))",
-        8.0,
+        34.0,
     )?;
     assert_num(
         &mut runtime,
         "#(require('systems.shop').buys('zhao_stall'))",
-        7.0,
+        30.0,
     )?;
     assert_validate(&mut runtime, "systems.shop")?;
     assert_validate(&mut runtime, "world.quest")?;
@@ -210,7 +211,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_mode(&mut runtime, "Shop")?;
     assert_str(&mut runtime, "require('systems.shop').ui_active()", "true")?;
     assert_str(&mut runtime, "require('systems.shop').tab()", "buy")?;
-    assert_num(&mut runtime, "#(require('systems.shop').rows())", 8.0)?;
+    // buy 页行数 = zhao_stall stock 数（34，含阶段2 四季种子/肥料/果树苗）。
+    assert_num(&mut runtime, "#(require('systems.shop').rows())", 34.0)?;
     assert_str(&mut runtime, "require('core.state').last_action", "shop")?;
     // 选第 2 行（seed_lingzhi），数量 +1。
     press(

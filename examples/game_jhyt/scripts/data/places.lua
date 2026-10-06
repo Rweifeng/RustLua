@@ -73,7 +73,16 @@ M.places = {
   village_teafield = { map = "village", cell = { x = 12, y = 13 }, label = "云泽村·茶园" },
   village_pond = { map = "village", cell = { x = 20, y = 14 }, label = "云泽村·池畔" },
   village_shrine = { map = "village", cell = { x = 24, y = 19 }, label = "云泽村·土地庙" },
-  village_dock = { map = "village", cell = { x = 14, y = 19 }, label = "云泽村·渡口" }
+  village_dock = { map = "village", cell = { x = 14, y = 19 }, label = "云泽村·渡口" },
+
+  -- 阶段 2 新增 NPC 住所（docs/54 §4.8，2026-10-06 1.4）：只追加新地点，
+  -- 不动既有地点。格子均落在 village/main 主街（y1..14）或 manor 可行走区内。
+  village_cattle_shed = { map = "village", cell = { x = 8, y = 12 }, label = "云泽村·牛棚" },
+  village_herb_yard = { map = "village", cell = { x = 22, y = 7 }, label = "云泽村·药圃" },
+  village_escort_yard = { map = "village", cell = { x = 18, y = 9 }, label = "云泽村·镖局院" },
+  village_merchant_hall = { map = "village", cell = { x = 14, y = 5 }, label = "云泽村·商会" },
+  village_ghost_alley = { map = "village", cell = { x = 30, y = 14 }, label = "云泽村·暗巷" },
+  manor_sword_hall = { map = "manor", cell = { x = 28, y = 14 }, label = "山庄·演武堂" }
 }
 
 function M.get(name)

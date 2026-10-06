@@ -39,9 +39,50 @@ return {
       { item = "seed_radish", price = 4, limit = 10 },
       { item = "seed_herb", price = 6, limit = 10 },
       { item = "seed_polygonum", price = 40, limit = 3 },
-      { item = "seed_ginseng", price = 60, limit = 2 }
+      { item = "seed_ginseng", price = 60, limit = 2 },
+      -- 四季作物矩阵扩展（2026-10-05，docs/33 §5.2 同步 +18）：
+      -- Alpha 简化：四季种子统一由货摊供应，季节轮作由作物表的 season 字段约束
+      -- （跨季错种会被播种判定拒绝）；季节限购/换季下架留待商店季节机制里程碑。
+      { item = "seed_mint", price = 10, limit = 10 },
+      { item = "seed_mulberry", price = 14, limit = 8 },
+      { item = "seed_pea", price = 15, limit = 10 },
+      { item = "seed_cucumber", price = 18, limit = 8 },
+      { item = "seed_mung_bean", price = 12, limit = 10 },
+      { item = "seed_prunella", price = 20, limit = 5 },
+      { item = "seed_eggplant", price = 16, limit = 10 },
+      { item = "seed_pumpkin", price = 30, limit = 5 },
+      { item = "seed_gouqi", price = 20, limit = 8 },
+      { item = "seed_cabbage", price = 15, limit = 10 },
+      { item = "seed_chrysanthemum", price = 15, limit = 8 },
+      { item = "seed_leek", price = 18, limit = 10 },
+      { item = "seed_winter_wheat", price = 20, limit = 10 },
+      { item = "seed_xueli", price = 15, limit = 10 },
+      { item = "seed_winter_shen", price = 45, limit = 3 },
+      { item = "seed_plum", price = 25, limit = 8 },
+      { item = "seed_winter_cabbage", price = 12, limit = 10 },
+      { item = "seed_evergreen", price = 18, limit = 8 },
+      -- 肥料（docs/33 §4.1.3，2026-10-05 0.4）：货摊售卖，不进 buys（肥料不可
+      -- 卖回，阻断"买肥→卖肥"套利）；价格与设计案 §5.2 一致。
+      { item = "herb_fertilizer", price = 20, limit = 10 },
+      { item = "bone_fertilizer", price = 25, limit = 10 },
+      { item = "spirit_fertilizer", price = 30, limit = 5 },
+      -- 果树苗（docs/33 §4.1.5，2026-10-05 0.6）：货摊售卖，sell=0 阻断
+      -- "买苗卖苗"套利；树苗为长线投资物，limit=5。
+      { item = "seed_peach", price = 150, limit = 5 },
+      { item = "seed_mume", price = 120, limit = 5 },
+      { item = "seed_loquat", price = 180, limit = 5 },
+      { item = "seed_jujube", price = 100, limit = 5 },
+      { item = "seed_ginkgo", price = 300, limit = 5 }
     },
-    buys = { "rice", "lingzhi", "radish", "herb", "polygonum", "ginseng", "iron_ore" }
+    buys = {
+      "rice", "lingzhi", "radish", "herb", "polygonum", "ginseng", "iron_ore",
+      -- 四季作物矩阵扩展（2026-10-05）：新收获物全部由货摊收购，卖价取物品 sell。
+      "mint", "mulberry", "pea", "cucumber", "mung_bean", "prunella", "eggplant",
+      "pumpkin", "gouqi", "cabbage", "chrysanthemum", "leek", "winter_wheat",
+      "xueli", "winter_shen", "plum", "winter_cabbage", "evergreen",
+      -- 树果（docs/33 §4.1.5）：秋收果实由货摊收购（卖价取物品 sell）。
+      "peach", "mume", "loquat", "jujube", "ginkgo_fruit"
+    }
   },
   -- v0.2 韩铁山的铁匠铺：卖铁锭与建筑材料，收铁矿石/麻布/兽皮。
   han_forge = {
@@ -52,7 +93,18 @@ return {
     hours = { open = 540, close = 1020 },
     stock = {
       { item = "iron_ingot", price = 40, limit = 6 },
-      { item = "timber", price = 18, limit = 15 }
+      { item = "timber", price = 18, limit = 15 },
+      -- 工具升级线（docs/33 §5.4，2026-10-05 0.3）：锄/壶 4 阶，售价与设计案
+      -- 一致（500/1500/4000/12000 文/把），limit=1（一人一把，防囤积）；铁铺是
+      -- 高阶工具的唯一购买途径，基础工具仍由新档/补发发放、不进商店。
+      { item = "hoe_iron", price = 500, limit = 1 },
+      { item = "hoe_cold", price = 1500, limit = 1 },
+      { item = "hoe_meteor", price = 4000, limit = 1 },
+      { item = "hoe_spirit", price = 12000, limit = 1 },
+      { item = "water_iron", price = 500, limit = 1 },
+      { item = "water_cold", price = 1500, limit = 1 },
+      { item = "water_meteor", price = 4000, limit = 1 },
+      { item = "water_spirit", price = 12000, limit = 1 }
     },
     buys = { "iron_ore", "cloth", "wolf_pelt", "boar_meat" }
   },

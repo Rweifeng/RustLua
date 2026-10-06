@@ -99,6 +99,83 @@ M.buildings = {
     },
     upgrade_cost = { { item = "timber", count = 4 } },
     station = "kitchen"
+  },
+  -- 地热药圃（docs/33 §4.1.6，2026-10-05 0.7）：2x2 纯建筑（station=nil，同库房）。
+  -- 1 级"地热暖房"解锁温室田四季可种（systems/farm.lua plant_crop 按本建筑
+  -- 等级放宽季节）；2 级"药圃深耕"：温室田收获 +1（farm.lua 以 level>=2 判定）。
+  greenhouse = {
+    name = "地热药圃",
+    w = 2,
+    h = 2,
+    ground_tiles = { 1, 3 },
+    levels = {
+      { sprite = "assets/art/buildings/build_foundation.png", size = "128x64" },
+      { sprite = "assets/art/buildings/build_herb_hut.png", size = "128x112" }
+    },
+    upgrade_cost = { { item = "timber", count = 6 } },
+    station = nil
+  },
+  -- ---- 畜舍（docs/33 §4.4 畜牧 / 药园畜养，2026-10-06 1.0）----
+  -- 三类畜舍均为纯建筑（station=nil，同库房），不接制作设施；systems/animal.lua
+  -- 按本建筑 id（coop/barn/stable）是否建成 + 等级决定领养与容量
+  -- （容量表在 systems/animal.lua，不在本文件加自定义 key——与既有建筑同一纪律）。
+  -- 贴图沿用既有占位（build_foundation/scaffold/storehouse）：畜舍专属美术属
+  -- 阶段 4 美术管线，升级"看不出变化"是已知限制，不是 bug。
+  -- 鸡舍：2x2，养白凤鸡/芦花鸭；1 级容 2、2 级容 4。
+  coop = {
+    name = "鸡舍",
+    w = 2,
+    h = 2,
+    ground_tiles = { 1, 3 },
+    levels = {
+      { sprite = "assets/art/buildings/build_foundation.png", size = "128x64" },
+      { sprite = "assets/art/buildings/build_storehouse.png", size = "128x112" }
+    },
+    upgrade_cost = { { item = "timber", count = 4 } },
+    station = nil
+  },
+  -- 畜棚：3x2，养青山羊/花猪/老黄牛；1 级容 2、2 级容 4。
+  barn = {
+    name = "畜棚",
+    w = 3,
+    h = 2,
+    ground_tiles = { 1, 3 },
+    levels = {
+      { sprite = "assets/art/buildings/build_scaffold.png", size = "128x96" },
+      { sprite = "assets/art/buildings/build_storehouse.png", size = "128x112" }
+    },
+    upgrade_cost = { { item = "timber", count = 6 }, { item = "iron_ingot", count = 2 } },
+    station = nil
+  },
+  -- 马厩：2x2，养青驴（坐骑）；1 级容 1、2 级容 2。
+  stable = {
+    name = "马厩",
+    w = 2,
+    h = 2,
+    ground_tiles = { 1, 3 },
+    levels = {
+      { sprite = "assets/art/buildings/build_foundation.png", size = "128x64" },
+      { sprite = "assets/art/buildings/build_tea_shed.png", size = "112x96" }
+    },
+    upgrade_cost = { { item = "timber", count = 5 }, { item = "iron_ingot", count = 1 } },
+    station = nil
+  },
+  -- 回春堂医馆（docs/54 阶段3「医馆经营与疫情事件」，2026-10-06 2.0）：
+  -- 2x2 纯建筑（station=nil，同库房/畜舍），不接制作设施；systems/clinic.lua 按本
+  -- 建筑 id 是否建成决定能否接诊（treat 未建馆 → no_clinic）。1 级为药庐式铺面，
+  -- 2 级挂回春堂匾（贴图沿用既有占位：医馆专属美术属阶段 4 管线，升级"看不出
+  -- 变化"是已知限制，不是 bug）。
+  clinic = {
+    name = "回春堂医馆",
+    w = 2,
+    h = 2,
+    ground_tiles = { 1, 3 },
+    levels = {
+      { sprite = "assets/art/buildings/build_foundation.png", size = "128x64" },
+      { sprite = "assets/art/buildings/build_herb_hut.png", size = "128x112" }
+    },
+    upgrade_cost = { { item = "timber", count = 4 }, { item = "iron_ingot", count = 2 } },
+    station = nil
   }
 }
 

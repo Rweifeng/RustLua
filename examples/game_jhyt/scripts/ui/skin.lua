@@ -113,6 +113,8 @@ M.tex = {
   touch_dpad = { path = DIR .. "touch/ui_touch_dpad.png" },
   touch_confirm = { path = DIR .. "touch/ui_touch_confirm.png" },
   touch_close = { path = DIR .. "touch/ui_touch_close.png" },
+  -- 动作盘（M34-06 批 2）：9 个生活/建造动作共用这一张，标签由 `ui_text` 各画自己的。
+  touch_btn_action = { path = DIR .. "touch/ui_touch_btn_action.png" },
   -- logo 标题（1 张）
   title_logo = { path = DIR .. "logo/ui_title_logo.png" }
 }

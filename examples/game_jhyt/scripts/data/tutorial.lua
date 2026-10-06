@@ -79,6 +79,46 @@ M.steps = {
     detail = "药庐 station=herb，炼「回复药」需 2 株灵芝、120 游戏分钟；到点再按 E 收取。",
     match = { kind = "action_prefix", value = "craft_collect_" }
   },
+  -- ---- 阶段5「新手引导重做」：首次种植五步闭环（领种子→翻土→播种→浇水→入睡跨天→收获）----
+  -- 对齐 docs/54 §5.6「首次种植完成 ≤5 分钟」：把首次种植拆成可推进、有提示的节点。
+  -- 仅追加在既有链尾（终态 done 之前），既有步骤逐字不动；新步骤只在玩家走完整条
+  -- 既有链（craft 完成）后才出现，新档第 0 步仍是 till，不抢占既有 headless 样例。
+  {
+    id = "claim_seed",
+    prompt = "领种子：按 I 开背包，选中「萝卜种」按 E 备种（快熟两天收）",
+    detail = "首次种植闭环教学段：背包选种即写 state.selected_seed 并触发 select_seed_<seed>。萝卜=2 天快熟教学作物（docs/33 §4.1）。",
+    match = { kind = "action_prefix", value = "select_seed_" }
+  },
+  {
+    id = "till_loop",
+    prompt = "翻土：走到耕地区药田，面向空地按 E 翻一块新地",
+    detail = "耕地区 x24..33（避开温室 x28..33,y8..13）；面向 DIRT 按 E 翻土，锄头须装备，体力 -8。",
+    match = { kind = "action", value = "till" }
+  },
+  {
+    id = "plant_loop",
+    prompt = "播种：面向刚翻好的地再按 E，播下萝卜种",
+    detail = "已垦空地按 E 播种（读 state.selected_seed=seed_radish）；体力 -3。",
+    match = { kind = "action_prefix", value = "plant_" }
+  },
+  {
+    id = "water_loop",
+    prompt = "浇水：切出水壶（I→选中水壶→E 装备），面向苗按 E 浇透",
+    detail = "浇水需 tool 槽装备水壶；雨天自动浇（rain_watered）。体力 -4。",
+    match = { kind = "action_prefix", value = { "water_", "rain_watered" } }
+  },
+  {
+    id = "sleep_loop",
+    prompt = "入睡：按 T 睡到第二天（萝卜需连浇两晚才成熟）",
+    detail = "T 触发 day.sleep → on_day_start：作物按已浇水天数成长 +1、体力回满、自动存档。",
+    match = { kind = "day_start" }
+  },
+  {
+    id = "harvest_loop",
+    prompt = "收获：再浇一次水、睡一觉，萝卜成熟后按 E 采收",
+    detail = "萝卜 growth_days=2：跨天后若未熟，再浇水+入睡一次；成熟按 E 收获（harvest_<item>），首次种植闭环完成。",
+    match = { kind = "action_prefix", value = "harvest_" }
+  },
   {
     id = "done",
     prompt = "引导完成：江湖路远，慢慢来。",

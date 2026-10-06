@@ -346,6 +346,10 @@ function M.sell(shop_id, item_id, count)
   end
   state.money = (tonumber(state.money) or 0) + price * units
   state.last_action = "sell_" .. item_id
+  -- 熟练度（docs/33 §7.1，0.9）：卖出成功计江湖线 XP（交易往来）。
+  pcall(function()
+    require("systems.mastery").add_xp("jianghu", 10)
+  end)
   audio.ui("ui_confirm")
   return true, "ok"
 end

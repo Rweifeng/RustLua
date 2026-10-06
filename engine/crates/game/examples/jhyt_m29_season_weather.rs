@@ -49,8 +49,13 @@ const NOON: i64 = 720;
 /// 2026-09-27 Alpha 作物扩展：+7 图标（radish/seed_radish/seed_herb/polygonum/
 /// seed_polygonum/ginseng/seed_ginseng），herb.png 孤儿随草药落地转已引用 → 569。
 const EXPECTED_DEV_ARTIFACTS: usize = 47;
-const EXPECTED_CONTENT_ORPHANS: usize = 0;
-const EXPECTED_REFERENCED: usize = 569;
+// 2026-10-06 回归：2 个内容缺口均有 §2 决定行（计划登记）——
+//   * assets/art/ui/hud/ui_weather_cloud.png：生成器重新产出、天气闭集无阴天取值（_ 前缀版本已归开发产物）；
+//   * assets/ui/prefabs/dialogue.ui.json：M59 prefab 动态加载（语料只含目录前缀，docs/55 已登记）。
+const EXPECTED_CONTENT_ORPHANS: usize = 2;
+// 2026-10-06 终期回归重扫：阶段2–5 新增引用源（扩展物品 icon、ui/prefab 动态加载、collections/
+// achievements/endings 等新注册表、M59 预设）后 569→913，docs/48 §1 已同步。
+const EXPECTED_REFERENCED: usize = 977;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args()

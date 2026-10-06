@@ -230,6 +230,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pse_checked = assert_layout_clean(&mut rt, "设置页", 3)?;
     lua(&mut rt, "require('ui.pause_menu').settings_close()")?;
     lua(&mut rt, "require('ui.pause_menu').close()")?;
+    // 触屏那一整套文案（帮助页分叉 + 三条面板提示）在桌面运行时**一行都不会被画出来**
+    // （`app.platform()='desktop'` ⇒ `pause_menu` 走键鼠分支），于是"触屏说明装不装得进
+    // 556px 的值列"这种问题门里量不到。`set_touch(true)` 是专门的旁路：这里量的是
+    // 微信/浏览器玩家实际看到的那几行，超宽会被判成截断而不是静静画成省略号。
+    lua(
+        &mut rt,
+        "local pm = require('ui.pause_menu'); pm.set_touch(true); pm.open(); pm.open_help()",
+    )?;
+    let pse_touch = assert_layout_clean(&mut rt, "帮助页(触屏文案)", 8)?;
+    lua(&mut rt, "require('ui.pause_menu').help_close()")?;
+    assert_layout_clean(&mut rt, "暂停菜单(触屏提示)", 3)?;
+    lua(&mut rt, "require('ui.pause_menu').open_settings()")?;
+    assert_layout_clean(&mut rt, "设置页(触屏提示)", 3)?;
+    lua(
+        &mut rt,
+        "local pm = require('ui.pause_menu'); pm.settings_close(); pm.close(); pm.set_touch(nil)",
+    )?;
     // 商店：标题/金额/数量/行/提示（右列只有 176px，长物品名必须被截断）。
     assert_str(
         &mut rt,
@@ -248,7 +265,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     lua(&mut rt, "require('world.dialogue').close(true)")?;
     println!(
         "  量宽条数 hud={hud_checked} bp={bp_checked} qst={qst_checked} pse={pse_checked} \
-         shp={shp_checked} dlg={dlg_checked}"
+         shp={shp_checked} dlg={dlg_checked} 触屏帮助页={pse_touch}"
     );
 
     // ---------------- ④ 最坏数字与压力值 ----------------

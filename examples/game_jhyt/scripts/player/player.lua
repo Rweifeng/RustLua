@@ -1,6 +1,7 @@
 local state = require("core.state")
 local characters = require("data.characters")
 local appearances = require("data.appearances")
+local depth = require("world.depth")
 
 local M = {}
 
@@ -209,7 +210,9 @@ function M.apply()
   end
   -- 保留上次八向朝向（idle 也按最后移动方向站立）；首次/无记录时回退玩法四向
   M.facing = M.facing or M.clip_dir()
-  local sprite_ok, sprite_err = pcall(sprite.set, pid, entry.static_sprite[M.facing])
+  -- 挂形象同时把实体交给 depth 接管 order（遮挡跟脚位 Y 走，见 world/depth.lua）：
+  -- depth.attach 内部就是 sprite.set，所以这里失败的语义与换图前一致。
+  local sprite_ok, sprite_err = pcall(depth.attach, pid, entry.static_sprite[M.facing])
   if not sprite_ok then
     return false, "sprite.set failed: " .. tostring(sprite_err)
   end

@@ -78,6 +78,18 @@
 
 - **版本化键值存储**：`save.load/commit` 原子写盘，`save_version=2` 头（转义行格式，写入口）；**损坏/版本不符被拒绝且不 panic、不覆盖原文件**。读取接受 v1（原始行格式，原样读入、下次保存升级为 v2）与 v2；无版本头 / 版本 0 / 高于当前版本明确拒绝。多行文本、TAB 与 CJK 现在都能安全往返（此前一条含 `\n` 的值会破坏整档行结构）。`save.load()` 返回 `(ok, reason)`，`reason ∈ {"no_save_path","missing","corrupt: <err>"}`，游戏侧据此区分「首启动无档」与「存档损坏」。新增 `save.clear()` 与 `map.state_clear([name])` 供新游戏清理内存键（`main.lua new_game()` 已接线）。
 - **任意值兼容层**：`save.blob_write/blob_read` 走 `__blob:<key>` → JSON 序列化；`lua_table_to_json` 对稀疏整数 key 表会退化为 object、读回后 key 变字符串——**游戏侧快照须稠密输出槽位**（`game_jhyt/scripts/inventory.lua` 已按此实现）。
+- **web/微信上没有这份 Rust 存档后端**（2026-10-05 补齐前是缺口）：wasm 侧只有只读 VFS，落盘出口
+  由 `plugins/webgl/web-runtime.js` 里 Lua 补丁自写（同一套 v2 行格式 + 长度前缀值层，落到
+  `localStorage` / `wx.setStorageSync`）。补齐前游戏侧看到的形状是：`save.blob_write` 在 shim 里
+  就是 `nil`，`M.save()` 静默返回 false（只有日志），而 `save.load()` 无条件 `return true` 谎报
+  "磁盘档已载入"——即玩家报的"存档不生效"。工程侧对此**不需要任何改动**（`save_manager` 的
+  provider 契约没变），但要知道两件事：**落的是宿主本地存储**（清站点数据/换设备/删除小游戏即丢档，
+  无跨端同步），**没有原子写**（半档会被下次 `load` 判成 `corrupt` 并保留原文件，但救不回来）。
+  还有一条对游戏侧有用：**宿主写失败会真的报失败**（`save.commit()` 返回 `false` + 原因，
+  `save_manager.M.save()` 的 `commit_reason` 分支因此在这两个宿主上也会走到，不再只在原生侧）。
+  复现命令与 46 次判定见 [docs/51](../../../docs/51-平台插件适配.md)「存档落盘」一节
+  （`node scripts/wechat-minigame-harness.js … --drive-new-game --check-save-persist` →
+  `save_persist="ok,probe=518,game=15074"`）。
 - **迁移钩子已移除**：兼容层收口 `a7b43a1`（2026-09-06）删除 `decode_with_version`、`save.version()` 与 Lua `on_migrate(from,to)`。旧版本文档 0.2 声称"已交付迁移钩子"**作废**；`scripts/main.lua` 中的 `on_migrate` 已删除（死代码）。版本迁移改由游戏侧快照自带 `version` 字段处理（`save_manager.lua`）。
 - **运行时结构不自动持久化**：背包、时钟、health 等是 `ScriptState` 上的 Rust 结构，不会进 KV 存档；持久化是游戏侧责任。
 

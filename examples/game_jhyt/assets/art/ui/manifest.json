@@ -231,7 +231,8 @@
         "touch/ui_touch_btn_pause.png",
         "touch/ui_touch_dpad.png",
         "touch/ui_touch_confirm.png",
-        "touch/ui_touch_close.png"
+        "touch/ui_touch_close.png",
+        "touch/ui_touch_btn_action.png"
       ],
       "uses_common": []
     }
@@ -1088,6 +1089,14 @@
       "path": "assets/art/ui/jianghu/touch/ui_touch_close.png",
       "size": "44x44",
       "spec": "44x44 面板关闭",
+      "nine_slice": null
+    },
+    {
+      "module": "touch",
+      "name": "ui_touch_btn_action",
+      "path": "assets/art/ui/jianghu/touch/ui_touch_btn_action.png",
+      "size": "68x68",
+      "spec": "68x68 动作盘（睡觉/建造/放置…）",
       "nine_slice": null
     }
   ]

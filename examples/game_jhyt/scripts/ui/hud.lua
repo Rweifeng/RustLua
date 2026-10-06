@@ -21,6 +21,8 @@
 -- input.lua 每帧调用 draw() 与 text()；本模块不 require input（避免 require 环）。
 local state = require("core.state")
 local combat = require("systems.combat")
+-- 招式数据与玩家按键绑定（快捷栏卡序 = `data.skills.binding` 的顺序；与触屏命中测试同源）。
+local skills_data = require("data.skills")
 -- M34-03：状态图标的第一次真实驱动（账本本身不依赖 UI，方向是 HUD → status）。
 local status = require("systems.status")
 local weather = require("world.weather")
@@ -489,36 +491,86 @@ local function draw_build_ghost()
   skin.icon("hud:build_ghost", BAR.x + BAR.w + 10, BAR.y0 + 2 * 20, 24, 24, ghost_key)
 end
 
--- docs/48 ui 换肤接线：招式快捷栏（skill_card 卡底 + 招式图标）。
--- 招式取 `data.skills.ids()` 全表（5 招，与 `skills/` 模块图标一一对应）；
--- 尚未做"已学/未学"限制，栏位即游戏招式索引。画在资源条下方（y234 起，不压引导行）。
+-- docs/48 ui 换肤接线：招式快捷栏（skill_card 卡底 + 招式图标 + 招式名）。
+-- 招式取 `data.skills.binding`（cast → dash → guard），**不是** `M.skills` 的字典序：
+-- 字典序会把「普攻」排到第 8 张，还会把敌人专属的「山魈冲撞」放上玩家的栏。
+-- 画在资源条下方（y296 起，不压引导行）。
+--
+-- **按列数换行，不是无限往右排**：这里曾经写死"一行排到底"，招式从 5 张扩到 8 张之后
+-- 整行宽 404px，右缘到了设计 x=1404，而 `layout.DESIGN_W` 是 1280 ⇒ 第 6 张只有左半张在
+-- 屏内、7/8 完全看不见，**而且没有一门门会红**：`layout.audit()` 只查 `M.PANEL` 注册过的
+-- 面板，招式卡是 `ui.image`。所以每行列数由画布宽度推导（`skill_cols()`），新增招式只会
+-- 往下多一行；真实几何由 `jhyt_m19_ui` 用 `ui.image_get` 读回逐张断言（越界即红）。
+-- 往下加行的余量很薄：第二行下缘 396 距攻击键包围盒上缘 411 只有 15px（`audit_touch` ③
+-- 会红在 `压住 UI 元素 hud_skill_bar`），所以超过 10 招要连同 `layout.TOUCH` 一起复核。
 local SKILL_ICON_KEYS = {
-  basic_blade = "skill_basic_blade",
   chase_wind = "skill_chase_wind",
   guard_heart = "skill_guard_heart",
-  return_palm = "skill_return_palm",
-  breath_qi = "skill_breath_qi",
 }
-local function draw_skill_bar()
-  local ok, skill_data = pcall(require, "data.skills")
-  if not ok or type(skill_data) ~= "table" or type(skill_data.ids) ~= "function" then
-    return
-  end
-  local ids = skill_data.ids()
-  if type(ids) ~= "table" then
-    return
-  end
-  local slot = 48
-  local gap = 4
+-- 卡片几何与 `layout.TOUCH_KEEP_CLEAR.hud_skill_bar` 的包围盒同源（那边是刻意抄的副本，
+-- 挪位置要让校验器报警，所以不 require 回来）。
+local SKILL_SLOT = 48
+local SKILL_GAP = 4
+-- 招式名：12px（`ui_text.audit` 的下限是 11px；3 个汉字量出来 36px，卡宽 48 装得下）。
+local SKILL_NAME_FONT = 12.0
+-- 已画出去多少张：`M.reset()` 与"招式变少"时按这个数把多余的 id 显式收掉。
+-- 贴图不进每帧登记表，画过就一直留在屏上——少这一格就是"砍掉一招、它的卡还在"。
+local skill_slots_drawn = 0
+
+-- 一行放得下几张：从 `BAR.x` 到设计画布右缘，按"卡宽 + 间隔"取整（最后一张不吃间隔）。
+local function skill_cols()
+  local room = layout.DESIGN_W - BAR.x + SKILL_GAP
+  return math.max(1, math.floor(room / (SKILL_SLOT + SKILL_GAP)))
+end
+
+--- 招式卡几何：**绘制与触屏命中测试的唯一出口**。
+--- `ui/virtual_pad.lua` 直接 require 本模块问"第 i 张卡在哪、点它出哪一招"，所以卡片换行、
+--- 挪位置、加招式都不需要同步改触屏那一份（曾经就是两份各写各的，扩招后卡片漂出了画布）。
+--- HUD 不 require virtual_pad / input，没有 require 环。
+--- 字段：`index`（1 基，也是 id 后缀）、`skill`/`action`（来自 `data.skills.binding`）、
+--- `name`、`hold`（true = 按住才生效的格挡）、`x/y/w/h`（设计像素，左上原点）。
+function M.skill_slots()
+  local slots = {}
+  local cols = skill_cols()
   local x0 = BAR.x
   local y0 = BAR.y0 + BAR.row * 3 + 30
-  for i, skill_id in ipairs(ids) do
-    local card_id = "hud:skill_card" .. i
-    skin.panel(card_id, x0 + (i - 1) * (slot + gap), y0, slot, slot, "skill_card")
-    local icon_key = SKILL_ICON_KEYS[skill_id]
+  for index, entry in ipairs(skills_data.player_slots()) do
+    local def = skills_data.get(entry.skill)
+    slots[#slots + 1] = {
+      index = index,
+      skill = entry.skill,
+      action = entry.action,
+      name = def.name or entry.skill,
+      hold = def.kind == "guard",
+      x = x0 + ((index - 1) % cols) * (SKILL_SLOT + SKILL_GAP),
+      y = y0 + math.floor((index - 1) / cols) * (SKILL_SLOT + SKILL_GAP),
+      w = SKILL_SLOT,
+      h = SKILL_SLOT,
+    }
+  end
+  return slots
+end
+
+local function draw_skill_bar()
+  local slots = M.skill_slots()
+  for index = #slots + 1, skill_slots_drawn do
+    ui.clear("hud:skill_card" .. index)
+    ui.clear("hud:skill_icon" .. index)
+    ui_text.hide("hud", "hud:skill_name" .. index)
+  end
+  skill_slots_drawn = #slots
+  for _, slot in ipairs(slots) do
+    local id = slot.index
+    skin.panel("hud:skill_card" .. id, slot.x, slot.y, slot.w, slot.h, "skill_card")
+    local icon_key = SKILL_ICON_KEYS[slot.skill]
     if icon_key then
-      skin.icon("hud:skill_icon" .. i, x0 + (i - 1) * (slot + gap) + 4, y0 + 4, 40, 40, icon_key)
+      -- 图标让位给招式名：24×24 落在卡上半（4..28），名字画在 y+30 起的那一行里。
+      skin.icon("hud:skill_icon" .. id, slot.x + (slot.w - 24) / 2, slot.y + 4, 24, 24, icon_key)
     end
+    local label = slot.name
+    local width = ui.measure_text(label, SKILL_NAME_FONT).width
+    ui_text.draw("hud", "hud:skill_name" .. id,
+      slot.x + (slot.w - width) / 2, slot.y + 30, SKILL_NAME_FONT, slot.w, label)
   end
 end
 
@@ -770,10 +822,13 @@ function M.reset()
     ui.clear(bar.id .. ":frame")
   end
   ui.clear("hud:build_ghost")
-  for i = 1, 5 do
+  -- 招式卡按**实际画过的张数**收，不写死 1..5：写死会让扩招之后的卡片永远留在屏上。
+  for i = 1, skill_slots_drawn do
     ui.clear("hud:skill_card" .. i)
     ui.clear("hud:skill_icon" .. i)
+    ui_text.hide("hud", "hud:skill_name" .. i)
   end
+  skill_slots_drawn = 0
   return true
 end
 

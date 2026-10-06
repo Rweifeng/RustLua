@@ -29,7 +29,8 @@ M.npcs = {
     sprite = "texture=__white__;size=22x22;tint=0.86,0.42,0.55,1.0;sorting_layer=actor",
     speed = 48,
     schedule = "shen_qingluo",
-    faction = "village"
+    faction = "village",
+    birthday = 3
   },
   {
     name = "赵铁算盘",
@@ -39,7 +40,8 @@ M.npcs = {
     sprite = "texture=__white__;size=22x22;tint=0.85,0.68,0.25,1.0;sorting_layer=actor",
     speed = 44,
     schedule = "zhao_tiesuanpan",
-    faction = "village"
+    faction = "village",
+    birthday = 18
   },
   {
     name = "林小满",
@@ -49,7 +51,8 @@ M.npcs = {
     sprite = "texture=__white__;size=22x22;tint=0.42,0.72,0.45,1.0;sorting_layer=actor",
     speed = 44,
     schedule = "lin_xiaoman",
-    faction = "village"
+    faction = "village",
+    birthday = 40
   },
   {
     name = "韩铁山",
@@ -59,7 +62,8 @@ M.npcs = {
     sprite = "texture=__white__;size=24x24;tint=0.55,0.55,0.62,1.0;sorting_layer=actor",
     speed = 40,
     schedule = "han_tieshan",
-    faction = "village"
+    faction = "village",
+    birthday = 62
   },
   -- 山庄
   {
@@ -70,7 +74,8 @@ M.npcs = {
     sprite = "texture=__white__;size=24x24;tint=0.28,0.45,0.62,1.0;sorting_layer=actor",
     speed = 42,
     schedule = "gu_changfeng",
-    faction = "sect"
+    faction = "sect",
+    birthday = 25
   },
   {
     name = "苏晚晴",
@@ -80,7 +85,8 @@ M.npcs = {
     sprite = "texture=__white__;size=22x22;tint=0.55,0.72,0.85,1.0;sorting_layer=actor",
     speed = 52,
     schedule = "su_wanqing",
-    faction = "sect"
+    faction = "sect",
+    birthday = 55
   },
   -- 云游（跨图：山庄 <-> 云泽村）
   {
@@ -91,7 +97,8 @@ M.npcs = {
     sprite = "texture=__white__;size=22x22;tint=0.92,0.92,0.96,1.0;sorting_layer=actor",
     speed = 56,
     schedule = "xuanhe",
-    faction = "sect"
+    faction = "sect",
+    birthday = 80
   },
   -- 批次 4：首发 NPC 扩充（docs/30 §4.2）
   {
@@ -102,7 +109,8 @@ M.npcs = {
     sprite = "texture=__white__;size=22x22;tint=0.70,0.35,0.24,1.0;sorting_layer=actor",
     speed = 56,
     schedule = "a_qi",
-    faction = "village"
+    faction = "village",
+    birthday = 95
   },
   -- 司徒魁是玄冥会执事（敌对立场）：MVP 既无玄冥会阵营，也没有他的产业，
   -- 故 faction 留空 = 不参与任何声望折扣。
@@ -113,7 +121,8 @@ M.npcs = {
     home = "village_alley",
     sprite = "texture=__white__;size=24x24;tint=0.16,0.14,0.19,1.0;sorting_layer=actor",
     speed = 38,
-    schedule = "situ_kui"
+    schedule = "situ_kui",
+    birthday = 108
   },
   {
     name = "陆归藏",
@@ -123,13 +132,94 @@ M.npcs = {
     sprite = "texture=__white__;size=24x24;tint=0.43,0.48,0.45,1.0;sorting_layer=actor",
     speed = 34,
     schedule = "lu_guizang",
-    faction = "sect"
+    faction = "sect",
+    birthday = 15
+  },
+  -- 阶段 2 扩编（docs/54 §4.8，2026-10-06 1.4）：NPC 10 → 16。
+  -- 新增 6 人，与既有 10 人同构（persist_id/home/sprite/speed/schedule/birthday）；
+  -- character 字段省略 = npc.lua 回落白贴图 sprite（立绘/序列帧属阶段 4 美术管线）。
+  {
+    name = "牛大壮",
+    persist_id = "npc_niu_dazhuang",
+    home = "village_cattle_shed",
+    sprite = "texture=__white__;size=24x24;tint=0.62,0.45,0.28,1.0;sorting_layer=actor",
+    speed = 40,
+    schedule = "niu_dazhuang",
+    faction = "village",
+    birthday = 12
+  },
+  {
+    name = "阿药",
+    persist_id = "npc_a_yao",
+    home = "village_herb_yard",
+    sprite = "texture=__white__;size=20x20;tint=0.55,0.75,0.50,1.0;sorting_layer=actor",
+    speed = 54,
+    schedule = "a_yao",
+    faction = "village",
+    birthday = 45
+  },
+  {
+    name = "石敢当",
+    persist_id = "npc_shi_gandang",
+    home = "village_escort_yard",
+    sprite = "texture=__white__;size=24x24;tint=0.45,0.48,0.58,1.0;sorting_layer=actor",
+    speed = 46,
+    schedule = "shi_gandang",
+    faction = "village",
+    birthday = 70
+  },
+  {
+    name = "钱多宝",
+    persist_id = "npc_qianduobao",
+    home = "village_merchant_hall",
+    sprite = "texture=__white__;size=22x22;tint=0.78,0.66,0.30,1.0;sorting_layer=actor",
+    speed = 42,
+    schedule = "qianduobao",
+    faction = "village",
+    birthday = 90
+  },
+  {
+    name = "鬼面",
+    persist_id = "npc_guimian",
+    home = "village_ghost_alley",
+    sprite = "texture=__white__;size=22x22;tint=0.20,0.18,0.24,1.0;sorting_layer=actor",
+    speed = 36,
+    schedule = "guimian",
+    birthday = 105
+  },
+  {
+    name = "陆青峰",
+    persist_id = "npc_lu_qingfeng",
+    home = "manor_sword_hall",
+    sprite = "texture=__white__;size=24x24;tint=0.30,0.50,0.66,1.0;sorting_layer=actor",
+    speed = 52,
+    schedule = "lu_qingfeng",
+    faction = "sect",
+    birthday = 33
   }
 }
 
 function M.get(persist_id)
   for _, npc in ipairs(M.npcs) do
     if npc.persist_id == persist_id then
+      return npc
+    end
+  end
+  return nil
+end
+
+-- 生日循环天数（四季 × 每季 28 天 = 112，与 world/calendar.lua / data/festivals.lua
+-- 同源）。birthday 字段写"循环内第几天 1..112"，跨年按模 112 对齐节气轴。
+M.cycle_days = 4 * (tonumber(require("data.festivals").season_length) or 28)
+
+-- 给定日数今天是谁的生日（纯函数，仿 world/calendar.lua 的 jieqi 模式）：
+-- 不查随机、不写状态、不入存档——(day) → NPC 或 nil，读档/反复调用结论一致。
+-- 缺省参数 = 今天（clock.now().day）。
+function M.birthday_of(day)
+  local d = math.floor(tonumber(day) or (tonumber(clock.now().day) or 1))
+  local within = ((d - 1) % M.cycle_days) + 1
+  for _, npc in ipairs(M.npcs) do
+    if npc.birthday == within then
       return npc
     end
   end
@@ -185,6 +275,15 @@ function M.validate_all()
       end
       if type(npc.speed) ~= "number" or npc.speed <= 0 then
         issues[#issues + 1] = path .. ".speed: expected positive number"
+      end
+      -- 生日（docs/54 §4.8，2026-10-06 1.4）：必须是循环内第几天的整数 1..cycle_days。
+      -- 漏写 = 该 NPC 永远不过生日（生日 ×3 送礼静默失效），与写错节气同一天不报错
+      -- 是同类问题，故在加载期挡住。
+      local birthday = tonumber(npc.birthday)
+      if type(npc.birthday) ~= "number" or npc.birthday ~= math.floor(npc.birthday)
+        or npc.birthday < 1 or npc.birthday > M.cycle_days then
+        issues[#issues + 1] = path .. ".birthday: expected integer 1.."
+          .. tostring(M.cycle_days) .. ", got " .. tostring(npc.birthday)
       end
     end
   end

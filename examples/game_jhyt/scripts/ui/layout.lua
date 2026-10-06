@@ -120,7 +120,8 @@ M.PANEL = {
 --     其余四键 68 直径等分绕在它的左上象限（R=140，极角 90/120/150/180°），详见
 --     `TOUCH.buttons` 上方的推导。整簇 x 1030..1260、y 411..641，四边都在画布内。
 --     七日目标/动作反馈两行已挪到**左上角**（右栏腾空），底部通栏只到 x=680，
---     所以这一簇的左端离它还差 350。上端躲招式栏（296..344）余 67。
+--     所以这一簇的左端离它还差 350。上端躲招式栏（包围盒 992,296 256×100，下缘 396）余 15
+--     ——招式扩到 8 招改成两行之后这条从 67 收紧到 15，见下面 `TOUCH.buttons` 的三条余量。
 M.TOUCH = {
   -- 摇杆：底圆 52 + 外圈 4 = 56（按钮簇最近处＝暂停圆心距摇杆圆心 894，不会误触）。
   -- `hole_r` / `knob_travel` 是**切图契约**，不是可调手感：
@@ -163,17 +164,18 @@ M.TOUCH = {
   -- "78 px ≈ 9 mm"是舒适线不是下限，68 在它下面一档。
   -- 三条余量（动一格会先撞，按紧→松）：
   --   * 键间隙 4.1（上面那条折中的直接后果，本簇真正的紧约束）；
-  --   * 招式栏：最上的攻击包围盒上缘 411 距 `TOUCH_KEEP_CLEAR.hud_skill_bar` 下缘 344 有 67
-  --     （`audit_touch` ③ 查的是**包围盒**不是圆，所以按 411 而不是按圆顶算）。收 R 是把攻击
-  --     **往下**挪，所以这一条随本次改动从 47 变宽到 67，不再是紧约束；
+  --   * 招式栏：最上的攻击包围盒上缘 411 距 `TOUCH_KEEP_CLEAR.hud_skill_bar` 下缘 396 有 15
+  --     （`audit_touch` ③ 查的是**包围盒**不是圆，所以按 411 而不是按圆顶算）。原本这一条是 67
+  --     （招式栏只有 5 张、一行到 344 为止），2026-10-05 扩到 8 招改成两行之后收紧到 15——
+  --     攻击键往下挪 15px 就会压到第二行卡片，临界 y=430（包围盒上缘 = y−34，429 已算相交）；
   --   * 画布：整簇 x 1030..1260、y 411..641，四边都宽（左距引导通栏 x ≤ 680 有 350）。
   -- 反向验过门看着这三条：R 收到 125 ⇒ ② 连报三条邻键重叠（`buttons[2](攻击) 与
   -- buttons[3](背包) 重叠（半径和 68 > 圆心距 64.3，会误触）` + 背包/任务 64.4 + 任务/暂停
   -- 65.3），门 exit 1；攻击单独挪到 (1160,530) ⇒ ② 报
   -- `buttons[1](交互) 与 buttons[2](攻击) 重叠（半径和 90 > 圆心距 70.4，会误触）`；攻击
-  -- 上移到 y=370（包围盒上缘 336 < 344）⇒ ③ 报 `buttons[2](攻击) 压住 UI 元素
-  -- hud_skill_bar（包围盒 992,296 260x48 相交）`。都恢复后绿灯。（③ 的临界在 y=377：
-  -- 包围盒上缘 = y−34，341 已经算相交。）
+  -- 下移到 y=425（包围盒上缘 391 < 招式栏下缘 396）⇒ ③ 报 `buttons[2](攻击) 压住 UI 元素
+  -- hud_skill_bar（包围盒 992,296 256x100 相交）`。都恢复后绿灯。（③ 的临界在 y=430：
+  -- 包围盒上缘 = y−34，429 已经算相交。）
   --
   -- `art` = `ui/skin.lua` 的贴图键，**直径必须等于 size**（1:1 出图，非整数缩放会糊边，
   -- 见 `tools/gen_ui_art.py` 的 TOUCH 节头）。改 size 要同步改生成器并重出切图。
@@ -183,6 +185,67 @@ M.TOUCH = {
     { key = "keyi", label = "背包", x = 1134, y = 464, size = 68, art = "touch_btn_bag" },
     { key = "keyl", label = "任务", x = 1083, y = 515, size = 68, art = "touch_btn_quest" },
     { key = "keyp", label = "暂停", x = 1064, y = 585, size = 68, art = "touch_btn_pause" },
+  },
+  -- 「更多」键（M34-06 批 2）：招式栏第二行的**空位**——每行 5 格、玩家槽位 7 张，
+  -- 第 3 格起是空的。画在那儿而不是再开一块地方：它是"卡片家族"的一员（同一张
+  -- `skill_card` 底、同一套 48 格），玩家一眼归类；而右下半屏已经被摇杆 + 五键占满，
+  -- 第六个圆就是"手指盖住画面"。它是**矩形**，`audit_touch` ①②③ 只审圆，所以
+  -- 由第 ⑥ 条专门守着它整块落在 `TOUCH_KEEP_CLEAR.hud_skill_bar` 里（飘出格子 = 盖字）。
+  more = { x = 1096, y = 348, size = 48, label = "更多", art = "skill_card" },
+  -- 动作盘（点「更多」展开，再点收起）：把玩法态**只剩键盘能按**的 9 条动作收进来
+  -- （睡觉 T / 建造 B / 放置 F / 运气 Q / 拆除 X / 升级 U / 送礼 G / 选种 C / 重开 R）。
+  -- 落位在世界区右下（x 748..968、y 411..631）：左边离摇杆（外圈右缘 206）854、右边离
+  -- 按钮簇（包围盒左缘 1030）62、上边离招式栏（下缘 396）15、下边离引导通栏（上缘 660）29
+  -- ——`audit_touch` ①②③ 三条都按**包围盒**算，所以这四个数是门读数，不是估计。
+  -- 3×3 = 9 格刚好吃完（`audit_touch` ⑦ 要求 `#items == #cols × #rows`，多一项少一项都红）。
+  -- 直径 68 与四颗副键同档：设计 68px ≈ 44.9 CSS px ≈ 7.8 mm，在 iOS HIG 的 44pt 线上。
+  action = {
+    art = "touch_btn_action",
+    size = 68,
+    cols = { 782, 858, 934 },
+    rows = { 445, 521, 597 },
+    items = {
+      { action = "sleep", label = "睡觉" },
+      { action = "build", label = "建造" },
+      { action = "place", label = "放置" },
+      { action = "practice", label = "运气" },
+      { action = "demolish", label = "拆除" },
+      { action = "use", label = "升级" },
+      { action = "gift", label = "送礼" },
+      { action = "seed", label = "选种" },
+      { action = "respawn", label = "重开" },
+    },
+  },
+  -- 面板态动作条（M34-06 批 3）：面板里除了"移动选择 + 确定 + 关闭"，还有几条键鼠动作
+  -- 在触屏上根本没有入口（E 装备 / C 选种 / F 换页 / +/- 数量与音量）。
+  -- 落位：2×2 摆在**面板矩形（160..880）与十字键（1042..1276）之间**那块空档的下半截
+  -- ——列 920/992、行 591/667，包围盒 x 886..1026、y 557..701（四边都在画布内）。
+  -- 为什么不是原计划的"竖排三格从 y=515 起"：`audit_touch` ② 当场把它判红了 ——
+  -- 对话面板的关闭键采样位 (984,514) 半径 22，与 (948,515) 半径 34 的圆心距只有 36，
+  -- 半径和 56 > 36（`会误触`）。往下挪两行、改成 2×2 之后最近的一对是 (992,591)↔关闭键
+  -- 圆心距 77，与十字键左键 (1076,585) 圆心距 84（半径和 66）——四个数都是门读数。
+  -- 每个模式用的格数不同（背包 2 / 商店 3 / 暂停 2），所以 ⑧ 只要求"装得下 4 格"，
+  -- 不像动作盘那样要求正好填满。
+  panel_actions = {
+    art = "touch_btn_action",
+    size = 68,
+    cols = { 920, 992 },
+    rows = { 591, 667 },
+    modes = {
+      Inventory = {
+        { action = "interact", label = "装备" },
+        { action = "seed", label = "选种" },
+      },
+      Shop = {
+        { action = "place", label = "换页" },
+        { action = "volume_up", label = "数量+" },
+        { action = "volume_down", label = "数量−" },
+      },
+      Pause = {
+        { action = "volume_up", label = "音量+" },
+        { action = "volume_down", label = "音量−" },
+      },
+    },
   },
   -- 面板导航十字键（DPad + 中央确定）：只在**面板模式**显示（背包/任务/暂停/商店/对话），
   -- 与玩法按钮簇（一排）不同屏，因此 `audit_touch` 按 group 分组：同组才查互不重叠，
@@ -217,6 +280,7 @@ M.TOUCH = {
     panel = { 0.24, 0.35, 0.52 },     -- 背包（靛青）
     log = { 0.42, 0.33, 0.55 },       -- 任务（紫）
     system = { 0.24, 0.27, 0.30 },    -- 暂停 / DPad 方向键 / 关闭（墨）
+    action = { 0.42, 0.31, 0.23 },    -- 动作盘九键（木作棕 = gen_ui_art.py 的 WOOD_MID）
   },
 }
 
@@ -230,7 +294,7 @@ M.TOUCH = {
 M.TOUCH_KEEP_CLEAR = {
   hud_info = M.PANEL.hud_info,                          -- 状态面板（980,8 300×180，6 行）
   hud_bars = { x = 992, y = 194, w = 160, h = 72 },    -- 三条资源条（18px 行 × 3）
-  hud_skill_bar = { x = 992, y = 296, w = 260, h = 48 }, -- 招式快捷栏（5 × 48 卡）
+  hud_skill_bar = { x = 992, y = 296, w = 256, h = 100 }, -- 招式快捷栏（8 张 48 卡，每行 5 张共 2 行）
   hud_goals = { x = 16, y = 8, w = 760, h = 26 },       -- 七日目标行（左上角，ROW.goals_y）
   hud_feedback = { x = 16, y = 36, w = 520, h = 24 },     -- 动作反馈行（左上角，ROW.feedback_y）
   -- 新手引导行（底部通栏，ROW.tutorial_y）：与撤下的键位通栏同一位置——
@@ -400,6 +464,69 @@ function M.audit_touch()
       }
     end
   end
+  -- 动作盘（M34-06 批 2）：`cols × rows` 的格子 + `items` 一一对应。格子里放不进更多项，
+  -- 少一项就留一个空盘——所以 ⑦ 要求两边**数量相等**，而不是"至少能装下"。
+  -- 归在 `group = "gameplay"`：它与摇杆、按钮簇、招式栏**同屏**，因此 ② 会真查它与
+  -- 那 5 颗键和摇杆外圈是否重叠（右缘列 934 + 34 = 968 < 按钮簇包围盒左缘 1030）。
+  local action = touch.action
+  local action_slots = 0
+  if type(action) == "table" then
+    local a_size = tonumber(action.size) or 0
+    local cols = action.cols or {}
+    local rows = action.rows or {}
+    action_slots = #cols * #rows
+    for r = 1, #rows do
+      for c = 1, #cols do
+        local item = action.items and action.items[(r - 1) * #cols + c]
+        local name = string.format(
+          "touch.action[%d](%s)", (r - 1) * #cols + c,
+          tostring(item and item.action or "empty")
+        )
+        if a_size <= 0 then
+          issues[#issues + 1] = "layout.TOUCH.action.size 必须为正（当前 "
+            .. tostring(action.size) .. "）：半径由 size/2 推导"
+        end
+        circles[#circles + 1] = {
+          name = name, cx = cols[c], cy = rows[r], r = a_size / 2, group = "gameplay",
+        }
+      end
+    end
+  end
+  -- 面板动作条（M34-06 批 3）：每个模式用同一张格阵的前几格，同一时刻只会出现一个模式。仍归 `group =
+  -- "panel"`（要和十字键、关闭键真查重叠），另带一个 `mode` 标签：② 里"两边都有 mode
+  -- 且不相等"才豁免 —— 背包/商店/暂停的同一格位置不算互触。
+  local panel_actions = touch.panel_actions
+  local panel_slots = 0
+  if type(panel_actions) == "table" then
+    local p_cols = panel_actions.cols or {}
+    local p_rows = panel_actions.rows or {}
+    panel_slots = #p_cols * #p_rows
+    local p_size = tonumber(panel_actions.size) or 0
+    if p_size <= 0 then
+      issues[#issues + 1] = "layout.TOUCH.panel_actions.size 必须为正（当前 "
+        .. tostring(panel_actions.size) .. "）：半径由 size/2 推导"
+    end
+    local mode_names = {}
+    for name in pairs(panel_actions.modes or {}) do
+      mode_names[#mode_names + 1] = name
+    end
+    table.sort(mode_names)
+    for _, mode in ipairs(mode_names) do
+      local index = 0
+      for row, cy in ipairs(p_rows) do
+        for col, cx in ipairs(p_cols) do
+          index = index + 1
+          local item = (panel_actions.modes or {})[mode][index]
+          if item then
+            circles[#circles + 1] = {
+              name = string.format("touch.panel_actions.%s[%d](%s)", mode, index, tostring(item.action)),
+              cx = cx, cy = cy, r = p_size / 2, group = "panel", mode = mode,
+            }
+          end
+        end
+      end
+    end
+  end
   -- 关闭按钮：跟随面板矩形，audit 采样 inventory（modal 组代表，quest/pause/shop 同矩形）
   -- 与 dialogue 两个位置；与 DPad 同屏（panel 组），必须都不重叠、不越界、不压右栏文字。
   local close = touch.close
@@ -444,6 +571,8 @@ function M.audit_touch()
       local a, b = circles[i], circles[j]
       if (a.group or "gameplay") ~= (b.group or "gameplay") then
         -- 跨组：玩法控件只在玩法态、十字键只在面板态，永不共屏，跳过重叠检查。
+      elseif a.mode and b.mode and a.mode ~= b.mode then
+        -- 面板动作条的同一格位置轮流给不同面板用（背包/商店/暂停），跨模式不同屏。
       elseif type(a.cx) == "number" and type(b.cx) == "number" and circles_overlap(a, b) then
         issues[#issues + 1] = string.format(
           "layout.%s 与 layout.%s 重叠（半径和 %.0f > 圆心距 %.1f，会误触）",
@@ -527,12 +656,86 @@ function M.audit_touch()
   if type(close) == "table" then
     art_keys[#art_keys + 1] = { name = "touch.close.art", key = close.art }
   end
+  if type(action) == "table" then
+    art_keys[#art_keys + 1] = { name = "touch.action.art", key = action.art }
+  end
+  if type(touch.more) == "table" then
+    art_keys[#art_keys + 1] = { name = "touch.more.art", key = touch.more.art }
+  end
+  if type(panel_actions) == "table" then
+    art_keys[#art_keys + 1] = { name = "touch.panel_actions.art", key = panel_actions.art }
+  end
   local ok_skin, skin = pcall(require, "ui.skin")
   if ok_skin and type(skin) == "table" and type(skin.tex) == "table" then
     for _, entry in ipairs(art_keys) do
       if type(entry.key) ~= "string" or skin.tex[entry.key] == nil then
         issues[#issues + 1] = "layout." .. entry.name .. " 未在 ui/skin.lua 注册（"
           .. tostring(entry.key) .. "）：`skin.icon` 会静默 no-op，盘就没了"
+      end
+    end
+  end
+
+  -- ⑥ 「更多」键是**矩形**，上面三条只审圆，所以这里单独要求它整块落在招式栏的
+  --    包围盒里：这张键借的就是招式栏第二行的空格子，飘出格子就等于盖住右栏文字。
+  local more = touch.more
+  if type(more) ~= "table" then
+    issues[#issues + 1] = "layout.TOUCH.more 必须是 { x, y, size, label, art } 表"
+  else
+    local bar = (M.TOUCH_KEEP_CLEAR or {}).hud_skill_bar
+    local size = tonumber(more.size) or 0
+    if type(bar) ~= "table" then
+      issues[#issues + 1] = "layout.TOUCH_KEEP_CLEAR.hud_skill_bar 缺失：⑥ 无从对照"
+    elseif more.x < bar.x or more.y < bar.y
+        or more.x + size > bar.x + bar.w or more.y + size > bar.y + bar.h then
+      issues[#issues + 1] = string.format(
+        "layout.TOUCH.more (%.0f,%.0f %.0fx%.0f) 不在招式栏包围盒 (%.0f,%.0f %.0fx%.0f) 内："
+        .. "它会盖到右栏别处，而圆的三条检查都不认矩形",
+        more.x or 0, more.y or 0, size, size, bar.x, bar.y, bar.w, bar.h
+      )
+    end
+  end
+  -- ⑦ 动作盘：`items` 与 `cols × rows` 必须一一对应（多一项没有格子、少一项空一格盘）。
+  if type(action) == "table" then
+    local count = #(action.items or {})
+    if count ~= action_slots then
+      issues[#issues + 1] = string.format(
+        "layout.TOUCH.action 有 %d 格（cols×rows）但 %d 项：一一对应才没有空盘或漏项",
+        action_slots, count
+      )
+    end
+    local seen = {}
+    for index, item in ipairs(action.items or {}) do
+      local key = tostring(item.action)
+      if key == "nil" or item.label == nil then
+        issues[#issues + 1] = string.format(
+          "layout.TOUCH.action.items[%d] 必须同时有 action 与 label", index)
+      elseif seen[key] then
+        issues[#issues + 1] = "layout.TOUCH.action.items 里动作 " .. key .. " 出现两次"
+      end
+      seen[key] = true
+    end
+  end
+
+  -- ⑧ 面板动作条：每个模式的条目必须**装得下**（超过 `rows` 就没有格子，静默丢掉一项
+  --    = 那条键鼠动作在触屏上又没有入口，正是这一批要消掉的状态）。
+  if type(panel_actions) ~= "table" then
+    issues[#issues + 1] = "layout.TOUCH.panel_actions 必须是 { art, size, cols, rows, modes } 表"
+  else
+    local mode_names = {}
+    for name in pairs(panel_actions.modes or {}) do
+      mode_names[#mode_names + 1] = name
+    end
+    table.sort(mode_names)
+    if #mode_names == 0 then
+      issues[#issues + 1] = "layout.TOUCH.panel_actions.modes 是空的：面板态没有任何动作入口"
+    end
+    for _, mode in ipairs(mode_names) do
+      local count = #(panel_actions.modes[mode] or {})
+      if count > panel_slots then
+        issues[#issues + 1] = string.format(
+          "layout.TOUCH.panel_actions.%s 有 %d 项但只有 %d 格（cols×rows）：多的那几项画不出来（静默丢动作）",
+          mode, count, panel_slots
+        )
       end
     end
   end

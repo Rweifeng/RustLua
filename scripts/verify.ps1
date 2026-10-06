@@ -813,6 +813,17 @@ if ($Mvp -or $MvpOnly) {
         "jhyt_m22_save_isolation",
         "jhyt_m23_data_validation",
         "jhyt_m24_numeric_alignment",
+        # 阶段1（改造计划 M36–M43）：四季作物矩阵与生产闭环门。此前以单样例方式回归，
+        # 1.0 集成时补登进 MVP 清单（与磁盘 jhyt_*.rs 一一对应，缺一即门红）。
+        "jhyt_m36_regrow",
+        "jhyt_m36_economy_sim",
+        "jhyt_m37_tool_upgrade",
+        "jhyt_m38_fertilizer_quality",
+        "jhyt_m39_sprinkler",
+        "jhyt_m40_fruit_tree",
+        "jhyt_m41_greenhouse",
+        "jhyt_m42_shipping_box",
+        "jhyt_m43_mastery",
         "jhyt_m25_combat_feedback",
         "jhyt_m26_hud_feedback",
         "jhyt_m27_goals",
@@ -853,6 +864,12 @@ if ($Mvp -or $MvpOnly) {
         # 存读档后茶汤库存/tea_day 锚点/茶棚历史最高等级三者一致、拆了茶棚门不重新锁上、
         # 七条数据负例走 validate_data（与 game --check 同一批校验器）。
         "jhyt_m34_teahouse",
+        # M35 遮挡门：运行期 sprite.set 真的写排序层（漏写 = 运行期声明全失效）、
+        # 只把三个 actor 探针的 Y 倒过来绘制序必须整体反转（证明排的是 Y 不是 id/纹理巧合）、
+        # 方向钉死为"y 越小越靠画面下方 = 越近 = 最后画"（世界 +y 朝上，写反了两边门都会绿）、
+        # 场上主角与每个 NPC 的 order 恒等于 -floor(y/2)、夹在 -999 不溢进相邻层、
+        # 特效在 foreground 层永远画在所有角色之后。
+        "jhyt_m35_depth_sort",
         # M59 UI 预设地基 + dialogue 试点：版面从 Lua 搬进 assets/ui/prefabs/*.ui.json 后，
         # 逐 id 读回引擎里真正画出来的矩形/文本/字号，与迁移**前**捕获的黄金表逐行相等
         # （黄金文件来自 HEAD 的旧代码，不是新实现自己吐的数）；另守锚点表与引擎
@@ -866,22 +883,56 @@ if ($Mvp -or $MvpOnly) {
         # （三条误用各自报错点名）、`prefab.despawn` 撤实体也撤布局节点，且门面场景自己的按钮
         # 在 spawn/despawn 前后都照常派发（并表/摘表不许污染场景那份快照）。
         "jhyt_m61_prefab_runtime",
-        # M62 预设实例的运行期写入面：`prefab.set_rect` 写四边之后，宿主本帧真正用于绘制的那份
-        # 矩形跟着变（子节点整棵子树位移、没参与本次写入的节点一动不如一静）、预设里 authored 的
-        # anchors 一个字不动（stretch 通栏不许被降级成左上角定宽）、世界的 UiRectLayout 与画面同一个
-        # 数、命中框就是新矩形（新位置点得到、旧位置点不到）；`prefab.set_visible` 是子树语义且画与
-        # 命中同一次失效（藏行根 ⇒ 行里的图与字一起消失且点不到），显隐相对父（藏父时单独显示子不
-        # 生效），显示回来不必重设矩形、不必重写字；重建只动本实例的键（同屏第二个预设实例不受牵连）；
-        # 两个函数各自的误用（无 UiLayout / 无节点 / 无句柄）全部点名报错，不许静默 no-op。
-        "jhyt_m62_prefab_write",
-        # M63 门面（title_menu）版面搬进一份 `.prefab` 的搬运门：一张表同时钉两层——`shown` 层读的是
-        # 宿主本帧真正用于绘制的矩形（`ui_rects_by_name`：名字换自那张全局实体名表，场景实体与 spawn
-        # 实例因此同源）加上 `ui.*_get` 的动态层读数，迁移前后逐字节相等才谈得上“一像素没动”，而同一块
-        # 东西在实体层与动态层**各画一遍**（M22 修过的重影老毛病）当场红；`authored` 层钉的是“预设里写的
-        # 就是 `.scene` 里原来写的”（anchors/offsets 串、字与字号与色、贴图与九宫格、绑的回调名），矩形
-        # 对上了而九宫格边距丢了也会在这里红；另守标签两层的位置账（场景那份不可见、动态那份才是玩家看到
-        # 的，x 实测差 2px，超 4px 判为两边不是同一坐标口径）与载体归属账（每块只允许一层把它画出来）。
-        "jhyt_m63_title_prefab"
+        # 阶段2（docs/33 §4.3–4.8、§7.3、§8.3，1.0–1.8）：九个内容系统门。
+        # M44 畜牧：6 动物/三类畜舍、未建舍拒养、喂抚好感、吃饱按周期产蛋毛奶肉、
+        # 好感≥8 出灵蛋、入箱结算、存档往返。
+        "jhyt_m44_animal",
+        # M45 钓鱼：4 水域/23 鱼种/3 阶竿、抛竿体力时间消耗、竿阶门槛、季节/时段/天气闸、
+        # 鱼入镖局货箱、存档往返。
+        "jhyt_m45_fishing",
+        # M46 矿脉：30 层/电梯层 5,10,15,20,25,30、逐层下潜解锁+体力扣减、挖矿入包+见底拒绝、
+        # 电梯直达、矿石入箱、存档往返。
+        "jhyt_m46_mine",
+        # M47 料理：膳房建/升级、真实 crafting 链路做菜（扣料→计时→收取）、吃菜体力/内力/Buff
+        # 按日过期、菜入箱结算、存档往返。
+        "jhyt_m47_cooking",
+        # M48 NPC 扩编与好感事件：16 NPC/全员 birthday、送礼三档 +40/+20/-10、生日 ×3、
+        # 43 条门槛 2/5/8 好感事件（once 发奖）、存档往返。
+        "jhyt_m48_npc",
+        # M49 节日补足 8 个（每季 2）：112 天逐日 24 事件日、清明 gather×2、端午 sell_bonus+20
+        # 真实卖出溢价、冬至 exit_closed 回归、除夕纯标签、跨天派生不入档。
+        "jhyt_m49_festival",
+        # M50 任务板 3 层：day1 日常 3 单/季初单、接单→备齐→交单发奖、跨天换榜旧单不残留、
+        # weekly@day7 / quarterly@day29 锚点、存档往返。
+        "jhyt_m50_questboard",
+        # M51 图鉴 6 类：crop24/fish23/ore12/herb11/dish16/enemy9、显式 notify 解锁、
+        # 50%/100% 里程碑奖励各一次、未知 id 拒绝、存档往返。
+        "jhyt_m51_codex",
+        # M52 成就 30：30 条注册/初始无解锁、出货/金钱/熟练度/好感/图鉴/时间/节日/战斗
+        # 八类谓词触发解锁+发奖、隐藏成就未解锁显示 ???、幂等不重复发奖、存档往返。
+        "jhyt_m52_achievement",
+        # 阶段3（docs/33 §2.1/§4.10/§5.5/§7.4/§8.4，1.9–2.3）：五个创新系统门。
+        # M53 经脉修炼：12 经脉/前置链合法、冲穴耗内力+材料按成功率掷骰（失败耗内不涨进度）、
+        # attack/defense 经 stats 常驻、体力/内力上限经 state、on_day_start 内力恢复+重挂、存档往返。
+        "jhyt_m53_meridian",
+        # M54 医馆经营与疫情：建馆/升级/接诊（处方药材→诊费+声望）、药材不足拒绝不写 last_action、
+        # 夏疫触发与诊费乘子上浮、治疫/囤药/闭馆三决策、存档往返。
+        "jhyt_m54_clinic",
+        # M55 节气历法：24 节气（每季 6）逐日命中/无撞日、季内日与 8 节日窗口对照、修饰查询面、
+        # 纯派生（capture/restore/reset 空实现、不入档）。
+        "jhyt_m55_solarterm",
+        # M56 黑市抉择循环：深夜窗口营业、买卖违禁/稀有货、风险掷骰东窗事发、三选抉择、
+        # 黑市声望档位解锁/跌落、存档往返。
+        "jhyt_m56_blackmarket",
+        # M57 茶会社交：2 心门槛邀人、备茶消耗、双话题按阵营/NPC 系数结算好感与声望、
+        # 7 日冷却、存档往返。
+        "jhyt_m57_teaparty",
+        # M58 多结局：5 条结局（归田/入仕/神医/武林/隐世）查询面判定。
+        # 各结局门槛边界（19/20、59/60、549/550XP、111/112天）+ 幂等 + 存档往返 + strict 门绿。
+        "jhyt_m58_ending",
+        # M60 新手引导重做：16 步序/条件合法、新档第 0 步仍为 till（不抢占）、
+        # 真实 farm.act+day.sleep 推进首次种植五步闭环到萝卜成熟收获、strict 门绿。
+        "jhyt_m60_tutorial"
     )
     $exampleDir = Join-Path $engineRoot "crates\game\examples"
 

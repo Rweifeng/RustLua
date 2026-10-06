@@ -226,15 +226,41 @@ function M.reward_once(key, fn)
   return true
 end
 
--- 送礼：NPC 存在且配置了该礼物（否则 not_giftable）、背包持有（否则
+-- 礼物基础分（docs/54 §4.8，2026-10-06 1.4）：偏好档（爱40/喜20/厌-10）优先，
+-- 未命中回落到既有 gifts 小分制（阶段 1 锚点逐字不动）。都不命中返回 nil = 不收礼。
+local function gift_base_points(npc_id, item_id)
+  local pref = data.gift_preference and data.gift_preference(npc_id, item_id)
+  if pref then
+    local pts = data.pref_points and data.pref_points[pref]
+    if type(pts) == "number" then
+      return pts
+    end
+  end
+  return data.gift_points(npc_id, item_id)
+end
+
+-- 今天是该 NPC 生日吗（112 天循环，纯查 clock，不写状态）。
+function M.is_birthday(npc_id)
+  local def = type(npc_id) == "string" and npcs.get(npc_id) or nil
+  if not def or type(def.birthday) ~= "number" then
+    return false
+  end
+  local day = math.floor(tonumber(clock.now().day) or 1)
+  local within = ((day - 1) % npcs.cycle_days) + 1
+  return within == def.birthday
+end
+
+-- 送礼：NPC 存在且收该礼（偏好档或 gifts 命中，否则 not_giftable）、背包持有（否则
 -- not_enough）、当日未送过（否则 gift_today，不扣物不加分）；成功 =
--- 消耗 1 件 + gift_points 加分（来源 gift，事件 = 物品 id）。
+-- 消耗 1 件 + 加分（来源 gift，事件 = 物品 id）。
+-- 生日 ×3（docs/54 §4.8）：只放大正向礼（爱/喜/小分正礼），厌礼负向不放大。
 -- 返回 true,新分数。
 function M.gift(npc_id, item_id)
   if type(npc_id) ~= "string" or not npcs.get(npc_id) then
     return false, "unknown_npc"
   end
-  if type(item_id) ~= "string" or not data.gift_points(npc_id, item_id) then
+  local base = gift_base_points(npc_id, item_id)
+  if type(base) ~= "number" then
     return false, "not_giftable"
   end
   if inv.count(state.inventory, item_id) <= 0 then
@@ -246,7 +272,11 @@ function M.gift(npc_id, item_id)
     return false, "gift_today"
   end
   inv.remove(state.inventory, item_id, 1)
-  local ok, after = M.add(npc_id, data.gift_points(npc_id, item_id), "gift", item_id)
+  local step = base
+  if step > 0 and M.is_birthday(npc_id) then
+    step = step * (tonumber(data.birthday_gift_multiplier) or 3)
+  end
+  local ok, after = M.add(npc_id, step, "gift", item_id)
   if not ok then
     -- NPC 已在上面的入口校验，正常不可达；防御性回滚避免「扣物未加分」。
     inv.add(state.inventory, item_id, 1)

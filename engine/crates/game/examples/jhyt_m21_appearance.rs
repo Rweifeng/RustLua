@@ -102,8 +102,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut runtime,
         "#(animation.clips(entity.find('JianghuPlayer')))",
     )?;
-    if clips != 28 {
-        return Err(format!("主角 clip 数 = {clips}, want 28（4 向 × 7 动作）").into());
+    if clips != 56 {
+        return Err(format!(
+            "主角 clip 数 = {clips}, want 56（8 向 × 7 动作，docs/51 v0.3 由 4 向扩展）"
+        )
+        .into());
     }
 
     banner("M21-01c 移动：walk_<dir> ↔ idle_<dir>，朝向按世界 y 向上换算");
@@ -218,8 +221,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
          pm.close(); \
          return string.format('%d|%s', count, label)",
     )?;
-    if menu != "6|形象  青衫少侠" {
-        return Err(format!("暂停菜单形象行 = {menu:?}, want \"6|形象  青衫少侠\"").into());
+    if menu != "7|形象  青衫少侠" {
+        return Err(format!("暂停菜单形象行 = {menu:?}, want \"7|形象  青衫少侠\"").into());
     }
     // 走到「形象」行按确认 → 轮换到下一个可选形象（男 → 女）。
     let cycled = query_str(

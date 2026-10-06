@@ -11,9 +11,14 @@
 -- 设置页里 Esc 返回主菜单，P 直接继续游戏。分组音量以 settings.toml 为准，
 -- 主音量同时随存档 provider "audio" 持久化（M19-02）。
 --
--- 「帮助」行按确认进入**帮助页**（M33）：完整键位表 + 玩法说明。操作说明原先常驻
+-- 「帮助」行按确认进入**帮助页**（M33）：完整操作说明 + 玩法说明。操作说明原先常驻
 -- HUD 底部通栏（M20-09），占玩法画面，现在收进这一页；页内是静态行表（没有选择环），
 -- 确认/取消都返回主菜单。
+--
+-- 说明**按平台分叉**：PC 那一侧是键位表（键鼠/手柄，按键名从当前绑定推导），触屏
+-- （WebGL/微信）那一侧是"屏上有哪些控件、点了出什么"——那上面根本没有键盘，键位表
+-- 是噪声。触屏条目从 `layout.TOUCH` 现推（`M.touch_help_rows`），三条面板底部提示同
+-- 一分叉（`TOUCH_HINT`）。
 --
 -- 选择移动复用引擎 `ui.focus_*` 焦点环（core/ui_navigation.rs，M20-02），
 -- 方向键到边界环绕；引擎缺少该 API 时退回既有的取模语义。
@@ -35,8 +40,36 @@ local layout = require("ui.layout")
 -- docs/48 ui 换肤接线：面板背景/印章/关闭/音量滑轨贴图。
 local skin = require("ui.skin")
 
+-- 触屏形态判定：懒 require `ui.virtual_pad`（它只依赖 layout/state，与本模块无环），
+-- 取不到或 `available()` 为假都按键鼠/手柄表显示——画面上没有圆钮时不该教人点圆钮。
+--
+-- `forced_touch` 是给验收用的旁路：桌面运行时 `app.platform()` 恒为 `"desktop"`，
+-- 没有这个口子的话，触屏那一整套文案（帮助页 7 行 + 三条面板提示）在任何机器验收里
+-- 都**不会被画到屏幕上**，也就量不到"有没有被裁成省略号"。
+local forced_touch = nil
+
+local function touch_host()
+  if forced_touch ~= nil then
+    return forced_touch
+  end
+  local ok, vp = pcall(require, "ui.virtual_pad")
+  return ok and type(vp) == "table" and vp.available() == true
+end
+
+-- 验收/调试：强制触屏形态文案（`true`/`false`），`nil` 恢复按平台判定。见 `M.set_touch`。
+
+-- 触屏底部提示：这台设备上没有任何一条键盘提示用得上，写成一行屏上真有入口的动作。
+local TOUCH_HINT = {
+  menu = "十字键选择 · 中央确定 · 右上关闭继续",
+  settings = "十字键选择 · 中央确定保存 · 音量± 在右下动作条",
+  help = "右上关闭返回主菜单",
+}
+
 -- 底部提示：按当前设备二选一，按键名从**当前绑定**推导（改键后自动同步）。
 local function hint_line()
+  if touch_host() then
+    return TOUCH_HINT.menu
+  end
   local confirm_label = hints.binding_labels({ "confirm" })
   local continue_label = hints.binding_labels({ "cancel", "pause" })
   return hints.panel_line({
@@ -48,6 +81,9 @@ local function hint_line()
 end
 
 local function settings_hint_line()
+  if touch_host() then
+    return TOUCH_HINT.settings
+  end
   local confirm_label = hints.binding_labels({ "confirm" })
   local back_label = hints.binding_labels({ "cancel" })
   return hints.panel_line({
@@ -60,6 +96,9 @@ end
 
 -- 帮助页底部只有一条动作（任何键都返回），提示跟着当前绑定写。
 local function help_hint_line()
+  if touch_host() then
+    return TOUCH_HINT.help
+  end
   local back_label = hints.binding_labels({ "cancel" })
   return hints.panel_line({
     { keyboard = back_label, gamepad = back_label, label = "返回" },
@@ -92,16 +131,64 @@ local HELP_NOTES = {
   { "劳作", "翻土 / 播种 / 浇水 / 收获消耗体力，体力不足只能休息" },
   { "作息", "睡觉结束当日：作物成长一天、体力回满、自动存档" },
   { "战斗", "武学招式消耗内力，普攻伤害随武器加成" },
+}
+-- 「改键」这条按平台分叉：触屏宿主根本没有 settings.toml 可编辑，把 PC 的改绑说明
+-- 抄给触屏玩家，等于教他做一件在这台设备上做不到的事。
+local HELP_NOTES_KEY = {
   { "改键", "工程 settings.toml 的 [input] 段可改绑，本页键名随绑定更新" },
 }
--- 触屏形态（WebGL / 微信）没有键盘，键位表在那上面是噪声，因此换成"摇杆 + 圆钮"
--- 的说明（与 `layout.TOUCH` 画在屏幕上的控件同一套名字）。
-local HELP_TOUCH = {
-  { "移动", "左下摇杆" },
-  { "动作", "右下圆钮：交互 / 攻击 / 背包 / 任务 / 暂停" },
-  { "菜单", "面板打开时右下换成十字键与确定" },
-  { "关闭", "面板右上角的关闭按钮" },
+local HELP_NOTES_TOUCH = {
+  { "改键", "触屏没有改绑入口，请在 PC 版 settings.toml 改" },
 }
+-- 触屏形态（WebGL / 微信）没有键盘，键位表在那上面是噪声，因此换成"屏上有什么、
+-- 点了出什么"。**条目名一律从 `layout.TOUCH` 现推**（与画在屏幕上的那一套同源）：
+-- 上一版是手抄的"交互 / 攻击 / 背包 / 任务 / 暂停"，按钮簇从 2×2 方块改成左上弧 +
+-- 「更多」+ 九格动作盘之后就和画面不符了——再抄一次还会再错一次。
+local function touch_labels(list, separator)
+  local parts = {}
+  for _, entry in ipairs(list or {}) do
+    local label = entry.label or entry.action or entry.key
+    if label then
+      parts[#parts + 1] = tostring(label)
+    end
+  end
+  return table.concat(parts, separator or "/")
+end
+
+-- 面板动作条的标签**并集**（背包装备/选种、商店换页/数量±、暂停音量±）。`modes` 是
+-- 哈希表，按模式名排序再收，避免每次拼出不同顺序的文案（那样排版门与字体子集都会漂）。
+local function panel_action_labels(panel_actions)
+  local modes = (panel_actions or {}).modes or {}
+  local names = {}
+  for mode in pairs(modes) do
+    names[#names + 1] = mode
+  end
+  table.sort(names)
+  local seen, parts = {}, {}
+  for _, mode in ipairs(names) do
+    for _, entry in ipairs(modes[mode] or {}) do
+      local label = tostring(entry.label or entry.action or "")
+      if label ~= "" and not seen[label] then
+        seen[label] = true
+        parts[#parts + 1] = label
+      end
+    end
+  end
+  return table.concat(parts, "/")
+end
+
+function M.touch_help_rows()
+  local touch = layout.TOUCH or {}
+  return {
+    { "移动", "左下摇杆" },
+    { "圆钮", "右下：" .. touch_labels(touch.buttons) },
+    { "招式", "点右栏卡片出招，格挡那张要按住" },
+    { "更多", "招式栏空格「更多」，点开动作盘" },
+    { "动作盘", touch_labels((touch.action or {}).items) },
+    { "面板", "十字键选择、中央确定、右上关闭" },
+    { "动作条", "面板右下：" .. panel_action_labels(touch.panel_actions) },
+  }
+end
 local HELP_ROW_H = 28
 local HELP_FONT = 18.0
 -- 键位/说明的"值"列起始偏移：标签列与值列各用自己的宽度预算（都过排版门）。
@@ -551,11 +638,14 @@ function M.help_active()
   return help_state ~= nil
 end
 
--- 触屏形态判定：懒 require `ui.virtual_pad`（它只依赖 layout/state，与本模块无环），
--- 取不到或 `available()` 为假都按键鼠/手柄表显示——画面上没有圆钮时不该教人点圆钮。
-local function touch_host()
-  local ok, vp = pcall(require, "ui.virtual_pad")
-  return ok and type(vp) == "table" and vp.available() == true
+-- 触屏形态判定在文件头（`touch_host`）：本模块的三条面板提示与帮助页共用同一个判定。
+function M.set_touch(forced)
+  if forced == nil then
+    forced_touch = nil
+  else
+    forced_touch = forced and true or false
+  end
+  return touch_host()
 end
 
 -- 帮助页的行表：小标题 +「标签 / 值」两列。静态表（没有选择环，因此不建焦点环）。
@@ -563,11 +653,13 @@ end
 -- （手柄没连时 `guide_rows("gamepad")` 为空，这里显示键鼠表而不是空白页）。
 function M.help_rows()
   local rows = {}
+  local notes = HELP_NOTES_KEY
   if touch_host() then
     rows[#rows + 1] = { kind = "section", text = "触屏操作" }
-    for _, entry in ipairs(HELP_TOUCH) do
+    for _, entry in ipairs(M.touch_help_rows()) do
       rows[#rows + 1] = { kind = "key", label = entry[1], value = entry[2] }
     end
+    notes = HELP_NOTES_TOUCH
   else
     local device = hints.device()
     local guide = hints.guide_rows(device)
@@ -582,6 +674,9 @@ function M.help_rows()
   end
   rows[#rows + 1] = { kind = "section", text = "玩法" }
   for _, entry in ipairs(HELP_NOTES) do
+    rows[#rows + 1] = { kind = "key", label = entry[1], value = entry[2] }
+  end
+  for _, entry in ipairs(notes) do
     rows[#rows + 1] = { kind = "key", label = entry[1], value = entry[2] }
   end
   return rows

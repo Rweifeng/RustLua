@@ -35,7 +35,8 @@
 -- 受击反馈的全局部分（玩家无敌帧、敌人默认抵抗）在 `data/combat.lua`；
 -- 本文件只描述"这一招打出去造成什么"。
 --
--- 表顺序无关；skills.lua 按 id 读取。
+-- 表顺序无关；skills.lua 按 id 读取。**唯一例外是 `M.binding.cast`**（文件下方的
+-- 玩家按键绑定）：那一项的顺序就是 HUD 招式卡与触屏命中测试的顺序，不是任意序。
 local M = {}
 
 M.version = 1
@@ -184,6 +185,56 @@ function M.ids()
   return list
 end
 
+-- ---------- 玩家按键绑定：招式 ↔ 命名动作的唯一事实源 ----------
+--
+-- 三个消费方都读这里，不再各抄一份：
+--   * `ui/input.lua`：玩法动作分派（按下哪条动作出哪一招）。
+--   * `ui/hud.lua`：招式快捷栏 —— **这里的顺序就是卡片顺序**。
+--   * `ui/virtual_pad.lua`：触屏命中测试（点第 i 张卡 = 注入第 i 项动作绑定的物理键）。
+--
+-- 为什么要在数据层立这张表：这三处原先各写各的。快捷栏按 `M.ids()` 的**字典序**排卡，
+-- 于是「普攻」落到第 8 张、而敌人专属的「山魈冲撞」（ape_charge）也上了玩家的栏；
+-- 触屏想表达"第 3 张 = 弦月斩"根本没有可信依据（字典序第 3 是弦月斩纯属巧合）。
+-- 顺序进了数据之后，卡片序 = 动作序 = 命中测试序是**同一条事实**，加一招只改这一张表。
+--
+-- 未登记的招式 = 玩家打不出（`ape_charge` 正是：它是 Boss 的冲撞，没有玩家动作）。
+M.binding = {
+  -- 出手类（按下即出招，走 `combat.player_attack`）。顺序 = 快捷栏卡序。
+  cast = {
+    { action = "attack", skill = "strike" },
+    { action = "skill", skill = "palm_gust" },
+    { action = "skill_2", skill = "crescent_slash" },
+    { action = "skill_3", skill = "iron_palm" },
+    { action = "skill_4", skill = "leopard_step" },
+  },
+  -- 轻功：按下即位移，走 `combat.player_dash`（没有判定窗，所以不跟 cast 混一轨）。
+  dash = { action = "dash", skill = "chase_wind" },
+  -- 格挡：**按住**才站得住（判据是按住态而不是按下边沿），因此单独一条、放栏尾。
+  guard = { action = "guard", skill = "guard_heart" },
+}
+
+--- 玩家能打出的招式序（快捷栏卡序 = 触屏卡序）：`cast` 之后接 `dash`、`guard`。
+--- 返回的是新表（每次调用重新拼），调用方可以安全地遍历。
+function M.player_slots()
+  local out = {}
+  for _, entry in ipairs(M.binding.cast) do
+    out[#out + 1] = entry
+  end
+  out[#out + 1] = M.binding.dash
+  out[#out + 1] = M.binding.guard
+  return out
+end
+
+--- 招式 id → 命名动作（敌人专属/未登记的招式返回 nil：触屏据此知道这张卡不该上榜）。
+function M.action_of(id)
+  for _, entry in ipairs(M.player_slots()) do
+    if entry.skill == id then
+      return entry.action
+    end
+  end
+  return nil
+end
+
 local VALID_KINDS = { basic = true, martial = true, movement = true, guard = true }
 
 -- 招式记录里合法的键（写了别的键 = 这个键没有任何消费方，直接判错；与
@@ -206,6 +257,71 @@ local HITBOX_FIELDS = { "windup", "active", "range", "width", "hitstun", "knockb
 --- 按 kind 判断这条招式是否出判定窗（`combat.lua` 的分派也走这一个判据）。
 function M.uses_hitbox(skill)
   return skill ~= nil and (skill.kind == "basic" or skill.kind == "martial")
+end
+
+-- 三类槽位各自允许的 kind：投错的槽位等于"这条动作根本不会出那一下"，
+-- 而它在画面上只是"按了没反应"，没有任何报错 —— 所以只有数据门拦得住。
+local SLOT_KINDS = {
+  cast = "basic|martial",
+  dash = "movement",
+  guard = "guard",
+}
+local SLOT_ALLOWED = {
+  cast = { basic = true, martial = true },
+  dash = { movement = true },
+  guard = { guard = true },
+}
+
+-- 校验一条 `{ action, skill }` 绑定（`M.binding` 的每个槽位走同一段）。
+local function check_slot(issues, slot, entry, path, used_actions, used_skills)
+  if type(entry) ~= "table" then
+    issues[#issues + 1] = path .. ": expected object { action, skill }"
+    return
+  end
+  local action = entry.action
+  if type(action) ~= "string" or action == "" then
+    issues[#issues + 1] = path .. ".action: required non-empty action name"
+  elseif used_actions[action] then
+    issues[#issues + 1] = path .. ".action: 动作 '" .. action
+      .. "' 已被 " .. used_actions[action] .. " 占用（一键两招会让卡序与动作序脱钩）"
+  else
+    used_actions[action] = path
+  end
+  local def = M.skills[entry.skill]
+  if type(def) ~= "table" then
+    issues[#issues + 1] = path .. ".skill: unknown skill id " .. tostring(entry.skill)
+  elseif not SLOT_ALLOWED[slot][def.kind] then
+    issues[#issues + 1] = path .. ".skill: " .. tostring(entry.skill) .. " 是 kind="
+      .. tostring(def.kind) .. "，不能进 " .. slot .. " 槽（该槽只收 " .. SLOT_KINDS[slot] .. "）"
+  end
+  if type(entry.skill) ~= "string" or entry.skill == "" then
+    issues[#issues + 1] = path .. ".skill: required non-empty skill id"
+  elseif used_skills[entry.skill] then
+    issues[#issues + 1] = path .. ".skill: 招式 '" .. entry.skill
+      .. "' 绑了两个动作（" .. used_skills[entry.skill] .. " 与本条），快捷栏会出现两张同一招"
+  else
+    used_skills[entry.skill] = path
+  end
+end
+
+local function validate_binding(issues)
+  if type(M.binding) ~= "table" then
+    issues[#issues + 1] = "data/skills.lua:binding: expected object"
+    return
+  end
+  local used_actions, used_skills = {}, {}
+  if type(M.binding.cast) ~= "table" or #M.binding.cast == 0 then
+    issues[#issues + 1] = "data/skills.lua:binding.cast: expected non-empty array"
+  else
+    for index, entry in ipairs(M.binding.cast) do
+      check_slot(issues, "cast", entry,
+        "data/skills.lua:binding.cast[" .. tostring(index) .. "]", used_actions, used_skills)
+    end
+  end
+  for _, slot in ipairs({ "dash", "guard" }) do
+    check_slot(issues, slot, M.binding[slot],
+      "data/skills.lua:binding." .. slot, used_actions, used_skills)
+  end
 end
 
 function M.validate_all()
@@ -317,6 +433,7 @@ function M.validate_all()
       end
     end
   end
+  validate_binding(issues)
   return #issues == 0, issues
 end
 

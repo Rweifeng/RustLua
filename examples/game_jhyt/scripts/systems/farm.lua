@@ -16,7 +16,11 @@
 -- 作物规则（对齐 docs/33 数值案）：
 --   * 有效成长天数 = 已浇水天数（watered_days）；播种当天浇水不计当日成长。
 --   * 当天播种、未浇不死亡；成熟后停留可采（MVP 不过熟腐烂）。
---   * 体力消耗：翻土 8 / 播种 3 / 浇水 4 / 收获 2（数值案 §3）。
+--   * 体力消耗：翻土/浇水按装备工具档位减耗（docs/33 §5.4：基础锄 8、精铁 6、
+--     寒铁 5、陨铁/灵铁 4；基础壶 4、精铁 3、寒铁/陨铁/灵铁 2），播种 3 / 收获 2。
+--   * 再生作物（crop.regrow_days，2026-10-05 四季矩阵扩展）：成熟收获后**地块保留作物**，
+--     `cycles` 记录已收茬数（首茬为 0）；再浇 `regrow_days` 天水即复熟，可再次收获。
+--     非再生作物行为不变（收获后地块清空，与 M23 口径一致）。
 --   * MVP 取舍：劳作暂不推进时钟（避免与日结算耦合），只耗体力；
 --     时间消耗留待内容阶段接入。
 local state = require("core.state")
@@ -24,10 +28,14 @@ local player = require("player.player")
 local calendar = require("world.calendar")
 local weather = require("world.weather")
 local farm_data = require("data.farm")
+-- 工具档位（docs/33 §5.4 工具升级）：翻土/浇水按装备工具 tier 减耗。
+local tools_data = require("data.tools")
 -- M19-02：劳作音效（只在成功路径播放；缺文件/无设备静默降级）。
 local audio = require("core.audio")
 -- docs/48 effects 接线：翻土/浇水成功挂特效条带（hoe_dust / water_splash）。
 local effects = require("systems.effects")
+-- 熟练度（docs/33 §7.1，0.9）：务农 XP（翻土/播种/收获 +5）与品质/产量/再生钩子。
+local mastery = require("systems.mastery")
 
 local M = {}
 
@@ -48,9 +56,51 @@ local crops = nil
 -- seed_item → crop short id 反查（仅用于旧档兼容归一化）
 local crops_by_seed = nil
 
-local plots = {} -- key = "cx,cy" → { crop=short_id|nil, watered_days=n, watered_today=bool }
+local plots = {} -- key = "cx,cy" → { crop=short_id|nil, watered_days=n, watered_today=bool, cycles=n, fertilizer=item_id|nil, sprinkler=item_id|nil }
 
-local ENERGY_COST = { till = 8, plant = 3, water = 4, harvest = 2 }
+-- 体力消耗（docs/33 §3/§5.4）：播种/收获/施肥固定；翻土/浇水按装备工具档位减耗。
+-- 档位 1 = 基础工具（消耗与 MVP 基线一致，旧档行为不变）；第 3 档封顶下限
+-- （翻土 4、浇水 2），第 4 档不再降，避免"零成本劳动"。
+local ENERGY_COST = { plant = 3, harvest = 2, fertilize = 2 }
+local TIER_COST = {
+  till = { [1] = 8, [2] = 6, [3] = 5, [4] = 4, [5] = 4 },
+  water = { [1] = 4, [2] = 3, [3] = 2, [4] = 2, [5] = 2 },
+}
+
+-- 装备工具档位对应的劳动消耗；工具未注册/无 tier 一律按基础档兜底。
+local function tier_cost(action, tool_id)
+  local def = tools_data and tools_data[tool_id]
+  local tier = (def and def.tier) or 1
+  return TIER_COST[action][tier] or TIER_COST[action][1]
+end
+
+-- 地块已施肥料的效果（docs/33 §4.1.3）：p.fertilizer 存肥料 item id，效果由
+-- data/items.lua 的 effect 字段决定（quality/growth/yield）——数据驱动闭环，
+-- registry_check 已强制该字段三选一，新增肥料无需改本文件。
+local function fertilizer_effect(p)
+  if not (p and p.fertilizer) then
+    return nil
+  end
+  local def = require("data.items")[p.fertilizer]
+  return def and def.effect or nil
+end
+
+-- 成熟所需浇水天数：再生作物已收过茬（cycles > 0）时按 regrow_days 复熟，
+-- 否则按 growth_days 首茬成熟。非再生作物恒用 growth_days（行为不变）。
+-- 骨肥（effect=growth）：所需浇水天数 -1，下限 1（首茬与再生茬同享）。
+-- 深耕专精（mastery 0.9）：再生茬再熟周期再 -1 天，下限 2（首茬不受影响）。
+local function growth_need(p, crop)
+  local need
+  if crop and crop.regrow_days and p.cycles and p.cycles > 0 then
+    need = math.max(2, crop.regrow_days - mastery.farming_bonus().regrow_cut)
+  else
+    need = (crop and crop.growth_days) or 1
+  end
+  if fertilizer_effect(p) == "growth" and need > 1 then
+    need = need - 1
+  end
+  return need
+end
 
 local function plot_key(cx, cy)
   return tostring(cx) .. "," .. tostring(cy)
@@ -69,10 +119,15 @@ local function land_type(cx, cy)
   return nil
 end
 
-local function equipped_tool(expected)
+-- 装备族判定：高阶工具（hoe_iron 等）与基础工具（hoe）同族，装备任意档位都算
+-- "锄头在手"。family 取 data/tools.lua 的 family 字段（与基础工具 id 一致）。
+local function equipped_tool(expected_family)
   local equipped = inv.equip_list(state.inventory) or {}
-  if equipped.tool ~= expected then
-    state.last_action = "need_" .. expected
+  local tool_id = equipped.tool
+  local def = tool_id and tools_data[tool_id]
+  local family = (def and def.family) or tool_id
+  if family ~= expected_family then
+    state.last_action = "need_" .. expected_family
     return false
   end
   return true
@@ -161,7 +216,12 @@ local function plot_put(cx, cy, p)
   saved[plot_key(cx, cy)] = {
     crop = p.crop,
     watered_days = p.watered_days or 0,
-    watered_today = p.watered_today == true
+    watered_today = p.watered_today == true,
+    cycles = p.cycles or 0,
+    fertilizer = p.fertilizer,
+    sprinkler = p.sprinkler,
+    tree_days = p.tree_days,
+    fruited_today = p.fruited_today == true
   }
   map.state(STATE_KEY, saved)
 end
@@ -183,8 +243,8 @@ local function tile_for(p)
     return p.watered_today and 2 or 1 -- 已垦：湿土/干土
   end
   local crop = crops[p.crop]
-  local growth = crop and crop.growth_days or 1
-  if p.watered_days >= growth then
+  local need = growth_need(p, crop)
+  if p.watered_days >= need then
     return 5 -- 成熟
   elseif p.watered_days >= 1 then
     return 4 -- 生长期
@@ -244,19 +304,42 @@ local function season_allowed(crop, season)
   return false
 end
 
+-- 温室（地热药圃，docs/33 §4.1.6）：查询山庄 greenhouse 建筑等级（0 = 未建）。
+-- 1 级解锁温室田四季可种；2 级（药圃深耕）温室田收获 +1。
+local function greenhouse_level()
+  local buildings = require("systems.building")
+  local list = buildings.list()
+  for _, rec in ipairs(list) do
+    if rec.building == "greenhouse" then
+      return rec.level or 1
+    end
+  end
+  return 0
+end
+
 local function plant_crop(p, cx, cy)
   local seed_id, crop = seed_for_selected()
   if not seed_id then
     state.last_action = "no_seed"
     return false
   end
-  if not season_allowed(crop, calendar.current()) then
-    state.last_action = "wrong_season"
-    return false
-  end
-  if crop.land ~= land_type(cx, cy) then
-    state.last_action = "wrong_land"
-    return false
+  local lt = land_type(cx, cy)
+  if lt == "greenhouse" then
+    -- 温室田（docs/33 §4.1.6）：接受任何土地类型的作物；未建地热药圃时
+    -- 仍受季节限制（当季作物可种），建 1 级后四季可种（跨季不再 wrong_season）
+    if greenhouse_level() < 1 and not season_allowed(crop, calendar.current()) then
+      state.last_action = "wrong_season"
+      return false
+    end
+  else
+    if not season_allowed(crop, calendar.current()) then
+      state.last_action = "wrong_season"
+      return false
+    end
+    if crop.land ~= lt then
+      state.last_action = "wrong_land"
+      return false
+    end
   end
   if not spend_energy(ENERGY_COST.plant) then
     return false
@@ -267,9 +350,85 @@ local function plant_crop(p, cx, cy)
   p.watered_days = 0
   p.watered_today = false
   add_labor(10)
+  mastery.add_xp("farming", 5) -- 熟练度（0.9）：播种计务农 XP
   state.last_action = "plant_" .. seed_id
   audio.sfx("sfx_plant")
   return true
+end
+
+-- 收获品质判定（docs/33 §4.1.2，2026-10-05 0.4）：普通/良好/上品 70/25/5；
+-- 草药肥（effect=quality）保底良好——普通档并入良好（良好 95% / 上品 5%）。
+-- 熟练度（0.9）：品质概率随务农等级成长（良好 +2L、上品 +0.5L），药性专精
+-- 额外 +10%/+5%；基础 L=0 时与 0.4 固定值完全一致。
+-- 返回 "normal"/"good"/"super"。
+local function quality_for(p)
+  local bonus = mastery.farming_bonus()
+  if fertilizer_effect(p) == "quality" then
+    local super_chance = bonus.herb_quality and 0.10 or 0.05
+    return math.random() < super_chance and "super" or "good"
+  end
+  local roll = math.random()
+  local good = bonus.good / 100
+  local super = bonus.super / 100
+  if roll < (1 - good - super) then
+    return "normal"
+  elseif roll < (1 - super) then
+    return "good"
+  end
+  return "super"
+end
+
+-- 由地块 key（"cx,cy"）解析坐标；解析失败返回 nil。
+local function parse_key(key)
+  local cx, cy = tostring(key):match("^(-?%d+),(-?%d+)$")
+  if not cx then
+    return nil, nil
+  end
+  return tonumber(cx), tonumber(cy)
+end
+
+-- 洒水器覆盖判定（docs/33 §4.1.4）：shape = cross（十字 4 邻）/ square（方阵），
+-- radius = 1（3×3）/ 2（5×5）。覆盖范围含自身所在格（自身无作物时无效果）。
+local function sprinkler_covers(sprinkler_id, cx, cy, tx, ty)
+  local def = require("data.items")[sprinkler_id]
+  local spec = def and def.sprinkler or nil
+  if not spec then
+    return false
+  end
+  local dx, dy = math.abs(cx - tx), math.abs(cy - ty)
+  local radius = spec.radius or 1
+  if dx > radius or dy > radius then
+    return false
+  end
+  if spec.shape == "cross" then
+    -- 十字：只浇上下左右（曼哈顿距离 1），不浇斜角
+    return (dx + dy) == 1
+  end
+  return true -- square
+end
+
+-- 清晨自动浇水（docs/33 §4.1.4）：对每个洒水器格，把覆盖范围内已种且未浇的
+-- 地块标为当日已浇（等效当日手动浇水，次日结算 +1 成长）。雨天不失效。
+-- 返回是否有地块被浇（供 settle_day 落盘/重绘判断）。
+local function sprinkler_water()
+  local watered = false
+  for key, p in pairs(plots) do
+    if p.sprinkler then
+      local cx, cy = parse_key(key)
+      if cx then
+        for qkey, q in pairs(plots) do
+          if q.crop and not q.watered_today then
+            local qx, qy = parse_key(qkey)
+            if qx and sprinkler_covers(p.sprinkler, cx, cy, qx, qy) then
+              q.watered_today = true
+              watered = true
+            end
+          end
+        end
+      end
+    end
+  end
+  return watered
 end
 
 -- 面向当前玩家面前的格执行劳作（E 键）。facing: up/down/left/right
@@ -364,17 +523,79 @@ function M.act(facing)
       effects.spawn("hoe_dust", (cx + 0.5) * TILE, (cy + 0.5) * TILE)
       return state.last_action
     end
-    -- 成熟 → 收获
-    if p.watered_days >= crop.growth_days then
+    -- 果树（docs/33 §4.1.5）：不浇水/不施肥/无品质档；成树后每年秋季每天
+    -- 结 1 果（当日已采提示）；跨年保留（年年结果）。tree_days 由 settle_day
+    -- 每日 +1（浇水无关），成熟前/非果期/已采当天都直接返回（不会落到浇水）。
+    if crop.tree then
+      if (p.tree_days or 0) < (crop.tree_days or 15) then
+        state.last_action = "tree_growing"
+        return state.last_action
+      end
+      if calendar.current() ~= (crop.fruit_season or "autumn") then
+        state.last_action = "tree_not_fruiting"
+        return state.last_action
+      end
+      if p.fruited_today then
+        state.last_action = "tree_picked"
+        return state.last_action
+      end
+      if not spend_energy(ENERGY_COST.harvest) then
+        return state.last_action
+      end
+      inv.add(state.inventory, crop.harvest_item, crop.yield or 1)
+      p.fruited_today = true
+      add_labor(2)
+      mastery.add_xp("farming", 5) -- 熟练度（0.9）：树收果计务农 XP
+      plot_put(cx, cy, p)
+      state.last_action = "harvest_" .. crop.harvest_item
+      audio.sfx("sfx_harvest")
+      redraw_all()
+      return state.last_action
+    end
+    -- 成熟 → 收获（再生作物保留地块进入下一茬，非再生作物清空地块）
+    if p.watered_days >= growth_need(p, crop) then
       if not spend_energy(ENERGY_COST.harvest) then
         return state.last_action
       end
       local yield_count = crop.yield or 1
-      inv.add(state.inventory, crop.harvest_item, yield_count)
-      p.crop = nil
-      p.watered_days = 0
-      p.watered_today = false
+      -- 熟练度专精（0.9）：精耕 +10%、富饶 +5%（floor 取整，先于灵肥/温室叠加）
+      local yield_pct = mastery.farming_bonus().yield_pct
+      if yield_pct > 0 then
+        yield_count = yield_count + math.floor((crop.yield or 1) * yield_pct / 100)
+      end
+      -- 温室 2 级（药圃深耕，docs/33 §4.1.6）：温室田作物收获 +1（先于灵肥叠加）
+      if land_type(cx, cy) == "greenhouse" and greenhouse_level() >= 2 then
+        yield_count = yield_count + 1
+      end
+      -- 灵肥（effect=yield，docs/33 §4.1.3）：每茬产量 +floor(yield × 0.5)
+      if fertilizer_effect(p) == "yield" then
+        yield_count = yield_count + math.floor((crop.yield or 1) * 0.5)
+      end
+      -- 品质（docs/33 §4.1.2）：普通=基础条目；良好/上品=派生条目
+      -- （<id>_good / <id>_super，不进商店，上品留作专属用途）。
+      -- last_action 保持基础收获名，品质体现在背包条目（HUD/既有断言不漂移）。
+      local quality = quality_for(p)
+      local harvest_item = crop.harvest_item
+      if quality == "good" then
+        harvest_item = crop.harvest_item .. "_good"
+      elseif quality == "super" then
+        harvest_item = crop.harvest_item .. "_super"
+      end
+      inv.add(state.inventory, harvest_item, yield_count)
+      if crop.regrow_days then
+        -- 再生作物：地块保留作物与肥料（多茬同享），进入再生倒计时（cycles +1）
+        p.cycles = (p.cycles or 0) + 1
+        p.watered_days = 0
+        p.watered_today = false
+      else
+        p.crop = nil
+        p.watered_days = 0
+        p.watered_today = false
+        -- 非再生作物收获清空地块 ⇒ 肥料随之消失（docs/33 §4.1.3）
+        p.fertilizer = nil
+      end
       add_labor(3)
+      mastery.add_xp("farming", 5) -- 熟练度（0.9）：收获计务农 XP
       plot_put(cx, cy, p)
       state.last_action = "harvest_" .. crop.harvest_item
       audio.sfx("sfx_harvest")
@@ -396,7 +617,8 @@ function M.act(facing)
     if not equipped_tool("watering_can") then
       return state.last_action
     end
-    if not spend_energy(ENERGY_COST.water) then
+    local equipped = inv.equip_list(state.inventory) or {}
+    if not spend_energy(tier_cost("water", equipped.tool)) then
       return state.last_action
     end
     p.watered_today = true
@@ -411,8 +633,53 @@ function M.act(facing)
     return state.last_action
   end
 
-  -- 已垦（含浇过水）→ 播种（空 DIRT 也可直接播，一步到位）
+  -- 已垦（含浇过水）→ 拆除洒水器（优先）> 施肥 > 放置洒水器 > 播种
   if p then
+    -- 洒水器格：E 拆除（收回背包，地块回到已垦空地）
+    if p.sprinkler then
+      inv.add(state.inventory, p.sprinkler, 1)
+      p.sprinkler = nil
+      add_labor(3)
+      plot_put(cx, cy, p)
+      state.last_action = "remove_sprinkler"
+      audio.sfx("sfx_hoe")
+      redraw_all()
+      return state.last_action
+    end
+    if state.selected_fertilizer and not p.fertilizer then
+      -- 消耗 1 个肥料（docs/33 §4.1.3：买肥→用肥，经济闭环）
+      if inv.count(state.inventory, state.selected_fertilizer) <= 0 then
+        state.last_action = "no_fertilizer"
+        return state.last_action
+      end
+      if not spend_energy(ENERGY_COST.fertilize) then
+        return state.last_action
+      end
+      inv.remove(state.inventory, state.selected_fertilizer, 1)
+      p.fertilizer = state.selected_fertilizer
+      add_labor(5)
+      plot_put(cx, cy, p)
+      state.last_action = "fertilize_" .. state.selected_fertilizer
+      audio.sfx("sfx_plant")
+      redraw_all()
+      return state.last_action
+    end
+    -- 放置洒水器（选中且背包有货，docs/33 §4.1.4）：占格，不可播种/施肥
+    if state.selected_sprinkler then
+      if inv.count(state.inventory, state.selected_sprinkler) <= 0 then
+        state.last_action = "no_sprinkler"
+        return state.last_action
+      end
+      inv.remove(state.inventory, state.selected_sprinkler, 1)
+      p.sprinkler = state.selected_sprinkler
+      state.selected_sprinkler = nil -- 放置即消耗，清选中避免后续误判放置分支
+      add_labor(5)
+      plot_put(cx, cy, p)
+      state.last_action = "place_" .. p.sprinkler
+      audio.sfx("sfx_plant")
+      redraw_all()
+      return state.last_action
+    end
     if plant_crop(p, cx, cy) then
       plot_put(cx, cy, p)
       redraw_all()
@@ -424,11 +691,13 @@ function M.act(facing)
   if not equipped_tool("hoe") then
     return state.last_action
   end
-  if not spend_energy(ENERGY_COST.till) then
+  local equipped = inv.equip_list(state.inventory) or {}
+  if not spend_energy(tier_cost("till", equipped.tool)) then
     return state.last_action
   end
   p = { crop = nil, watered_days = 0, watered_today = false }
   add_labor(15)
+  mastery.add_xp("farming", 5) -- 熟练度（0.9）：翻土计务农 XP
   plot_put(cx, cy, p)
   state.last_action = "till"
   audio.sfx("sfx_hoe")
@@ -446,7 +715,13 @@ function M.settle_day()
   local changed = false
   local reset_water = false
   for key, p in pairs(plots) do
-    if p.crop and p.watered_today then
+    local crop = p.crop and crops[p.crop] or nil
+    if crop and crop.tree then
+      -- 果树（docs/33 §4.1.5）：每日自然成长（不依赖浇水），重置当日已采标记
+      p.tree_days = (p.tree_days or 0) + 1
+      p.fruited_today = false
+      changed = true
+    elseif p.crop and p.watered_today then
       p.watered_days = p.watered_days + 1
       changed = true
     end
@@ -455,7 +730,13 @@ function M.settle_day()
     end
     p.watered_today = false
   end
-  if changed then
+  -- 洒水器（docs/33 §4.1.4，0.5）：新一天清晨自动浇水（等效当日手动浇水；
+  -- 雨天免费浇水语义保留——洒水器不因天气失效）。浇水改变了 watered_today，
+  -- 必须一并落盘/重绘，否则跨场景与重进会丢"已浇"标记。
+  if sprinkler_water() then
+    reset_water = true
+  end
+  if changed or reset_water then
     map.state(STATE_KEY, plots)
   end
   if changed or reset_water then
@@ -497,7 +778,12 @@ function M.init()
         plots[key] = {
           crop = crop_id_for(data.crop),
           watered_days = tonumber(data.watered_days) or 0,
-          watered_today = data.watered_today == true
+          watered_today = data.watered_today == true,
+          cycles = tonumber(data.cycles) or 0,
+          fertilizer = type(data.fertilizer) == "string" and data.fertilizer or nil,
+          sprinkler = type(data.sprinkler) == "string" and data.sprinkler or nil,
+          tree_days = tonumber(data.tree_days) or 0,
+          fruited_today = data.fruited_today == true
         }
       end
     end
@@ -512,7 +798,12 @@ function M.capture()
     snapshot[key] = {
       crop = p.crop,
       watered_days = p.watered_days or 0,
-      watered_today = p.watered_today == true
+      watered_today = p.watered_today == true,
+      cycles = p.cycles or 0,
+      fertilizer = p.fertilizer,
+      sprinkler = p.sprinkler,
+      tree_days = p.tree_days,
+      fruited_today = p.fruited_today == true
     }
   end
   return { plots = snapshot, state_key = STATE_KEY }
@@ -526,7 +817,12 @@ function M.restore(data)
         plots[key] = {
           crop = crop_id_for(p.crop),
           watered_days = tonumber(p.watered_days) or 0,
-          watered_today = p.watered_today == true
+          watered_today = p.watered_today == true,
+          cycles = tonumber(p.cycles) or 0,
+          fertilizer = type(p.fertilizer) == "string" and p.fertilizer or nil,
+          sprinkler = type(p.sprinkler) == "string" and p.sprinkler or nil,
+          tree_days = tonumber(p.tree_days) or 0,
+          fruited_today = p.fruited_today == true
         }
       end
     end
@@ -562,7 +858,7 @@ function M.stats()
     if p.crop then
       planted = planted + 1
       local crop = crops[p.crop]
-      if crop and p.watered_days >= crop.growth_days then
+      if crop and p.watered_days >= growth_need(p, crop) then
         mature = mature + 1
       end
     end

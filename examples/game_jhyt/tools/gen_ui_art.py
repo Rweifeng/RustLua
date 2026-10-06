@@ -1350,6 +1350,10 @@ def slice_table():
             ("ui_touch_dpad", touch_button(64, CLOUD_DARK), "64x64 面板十字键", None),
             ("ui_touch_confirm", touch_button(80, BAMBOO500), "80x80 面板确定", None),
             ("ui_touch_close", touch_button(44, CINNABAR500, studs=False), "44x44 面板关闭", None),
+            # 动作盘（M34-06 批 2）：9 个生活/建造动作共用一张盘，标签各自不同（睡觉/建造…），
+            # 所以这里只需要"第 6 种语义色"而不是 9 张图。漆色取木作棕（建造/放置/升级是工造系），
+            # 与簇内已有的竹青/朱砂/靛青/紫/云灰不撞；直径必须 = layout.TOUCH.action.size（68）。
+            ("ui_touch_btn_action", touch_button(68, WOOD_MID), "68x68 动作盘（睡觉/建造/放置…）", None),
         ],
     }
     return table
