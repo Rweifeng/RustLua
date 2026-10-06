@@ -134,7 +134,11 @@ impl Storage for HashStorage<f32> {
         self.values.get(&entity)
     }
     fn for_each_mut(&mut self, visit: &mut dyn FnMut(EntityId, &mut f32)) {
-        // 与 `World::for_each_mut` 一致：每次调用克隆整份实体表。
+        // `HashStorage` = 替换前的生产模型（HashMap + 排序实体表），这里克隆整份实体表是**旧形状**
+        // 的建模。它并**不**对应 `World::for_each_mut`：后者走的是"移出有序索引再放回"（`mem::take`，
+        // 不克隆），而且自惰性重建补上脏守卫后，稳态帧连重排也不做了（见
+        // `rustlua-ecs/src/world.rs` 的 `ensure_order_mut`）。保留这份克隆是为了让
+        // 「替换前 vs 替换后」两条曲线可比——`for_each_mut_allocs=1` 是旧形状的读数。
         let entities = self.entities.clone();
         for entity in entities {
             if let Some(value) = self.values.get_mut(&entity) {

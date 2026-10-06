@@ -31,6 +31,20 @@ trait ComponentStorage: Any {
     fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
+// 测试专用：有序索引的重排次数。`TypedStorage` 的契约是「稳态帧零重排」，而重排产出的 `order`
+// 与重排前**逐字节相同**（同一批 id、同一个升序结果）——从外部观察不到，只能数次数。
+// 用 `thread_local` 而不是全局计数：`cargo test` 并行跑用例，全局计数会互相污染。
+#[cfg(test)]
+thread_local! {
+    static ORDER_REBUILDS: Cell<u32> = const { Cell::new(0) };
+}
+
+/// 本线程累计的有序索引重排次数（测试用）。
+#[cfg(test)]
+fn order_rebuilds() -> u32 {
+    ORDER_REBUILDS.with(|count| count.get())
+}
+
 /// dense 组件存储 + **惰性重建的有序 id 索引**。
 ///
 /// 两条契约同时满足：`EntityId` 有序遍历（既有 `for_each*` 契约，见
@@ -39,6 +53,10 @@ trait ComponentStorage: Any {
 /// `order` 是 dense 当前 id 的升序副本：插入/删除只**标脏**，下一次有序访问时整体重排一次
 /// （O(n log n)）。稳态帧（无增删）因此零分配、零哈希；这与"插入时二分插入"相比代价低得多
 /// （后者每次插入 O(n) memmove）。
+///
+/// 两条借用路径（`&self` 的 `ensure_order` 与 `&mut self` 的 `ensure_order_mut`）**共用这一条
+/// 契约：先看脏标记**。这条守卫曾经只有 `&self` 那一半有，`for_each_mut` 因此每帧无条件重排——
+/// 「稳态零重排」的回归用例是 `for_each_mut_rebuilds_order_only_when_dirty`。
 struct TypedStorage<T> {
     dense: DenseStorage<T>,
     order: RefCell<Vec<EntityId>>,
@@ -54,8 +72,18 @@ impl<T> TypedStorage<T> {
         }
     }
 
-    /// `&mut self` 路径的重建（不做运行时借用检查）。
-    fn rebuild_order(&mut self) {
+    /// `&mut self` 路径的重建（不做运行时借用检查：`for_each_mut` 要把 `order` **移出**再遍历，
+    /// 不能跨着可变遍历持有 `RefCell` 借用）。
+    ///
+    /// 与 `ensure_order` **共用同一条契约：先看脏标记**。守卫曾经只有 `&self` 那一半有，于是
+    /// `for_each_mut` 在稳态帧每帧做一次 O(n log n) 排序——正好违反 `order` 字段注释写下的
+    /// 「稳态帧零分配」。回归用例：`for_each_mut_rebuilds_order_only_when_dirty`。
+    fn ensure_order_mut(&mut self) {
+        if !self.order_dirty.get() {
+            return;
+        }
+        #[cfg(test)]
+        ORDER_REBUILDS.with(|count| count.set(count.get() + 1));
         let order = self.order.get_mut();
         order.clear();
         order.extend_from_slice(self.dense.entities());
@@ -294,7 +322,7 @@ impl World {
         else {
             return;
         };
-        storage.rebuild_order();
+        storage.ensure_order_mut();
         // 取出有序索引再遍历：避免同时可变借用 `dense` 与不可变借用 `order`。
         // `mem::take` 是移动而不是克隆，遍历结束后放回，稳态帧因此零分配。
         let order = std::mem::take(&mut *storage.order.borrow_mut());
@@ -354,7 +382,7 @@ impl World {
 
 #[cfg(test)]
 mod tests {
-    use super::{World, WorldError};
+    use super::{World, WorldError, order_rebuilds};
     use crate::entity::EntityId;
 
     #[derive(Debug, PartialEq)]
@@ -483,6 +511,62 @@ mod tests {
         expected.push(ids[1]);
         expected.sort_unstable();
         assert_eq!(restored, expected);
+    }
+
+    /// 契约回归：`for_each_mut` 曾**无条件**重排有序索引（`&self` 那一半有脏检查、`&mut` 这半
+    /// 漏了），于是稳态帧每帧白做一次 O(n log n) 排序，正好违反 `TypedStorage` 注释里写下的
+    /// 「稳态帧零分配」。两条断言方向相反、缺一不可：稳态**不许**重排（省掉的是真开销），
+    /// 标脏后**必须**重排（否则读到过期顺序——不许用「干脆不排」换绿灯）。
+    #[test]
+    fn for_each_mut_rebuilds_order_only_when_dirty() {
+        let mut world = World::new();
+        for _ in 0..32 {
+            let entity = world.spawn();
+            world.insert(entity, Health(0)).unwrap();
+        }
+
+        let before = order_rebuilds();
+        world.for_each_mut::<Health>(|_, _| {});
+        assert_eq!(
+            order_rebuilds() - before,
+            1,
+            "标脏后的首次 for_each_mut 必须重排（32 次插入只标脏，不重排就会读到过期顺序）"
+        );
+
+        let settled = order_rebuilds();
+        for _ in 0..16 {
+            world.for_each_mut::<Health>(|_, _| {});
+        }
+        assert_eq!(
+            order_rebuilds(),
+            settled,
+            "稳态帧（无增删）一次都不许重排——契约见 TypedStorage 的 order 字段注释"
+        );
+
+        // 反向保护：插入必须重新标脏并被重建，否则新实体会漏出遍历。
+        let late = world.spawn();
+        world.insert(late, Health(7)).unwrap();
+        let mut seen: Vec<EntityId> = Vec::new();
+        world.for_each_mut::<Health>(|id, health| {
+            seen.push(id);
+            if id == late {
+                assert_eq!(health.0, 7);
+            }
+        });
+        assert_eq!(seen.len(), 33, "新插入的实体必须出现在遍历里");
+        assert!(
+            seen.windows(2).all(|pair| pair[0] < pair[1]),
+            "仍须按 EntityId 升序"
+        );
+        assert_eq!(order_rebuilds() - settled, 1, "插入后必须恰好重排一次");
+
+        // 删除同样要标脏。
+        let after_insert = order_rebuilds();
+        world.remove::<Health>(late).unwrap();
+        let mut count = 0;
+        world.for_each_mut::<Health>(|_, _| count += 1);
+        assert_eq!(count, 32, "已删除的实体不许再出现在遍历里");
+        assert_eq!(order_rebuilds() - after_insert, 1, "删除后必须恰好重排一次");
     }
 
     #[test]
