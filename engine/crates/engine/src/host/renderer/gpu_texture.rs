@@ -106,7 +106,10 @@ impl Renderer {
         if texture == 0 {
             return self.ensure_white();
         }
-        let path = &paths[texture as usize - 1];
+        // 越界不再 panic：隔壁 `sdf_bind_for` 一直是 `paths.get(...)?`，这里跟上同一口径。
+        // 越界只可能来自宿主造 mesh 的内部 bug，返回 `None` 会让它**进 `dropped_draws` 并留下告警**
+        // （见 `passes.rs` 的记账）——比整帧崩掉更有信息量，也不会把游戏一起带走。
+        let path = paths.get(texture.checked_sub(1)? as usize)?;
         if path == WHITE_TEXTURE_PATH {
             return self.ensure_white();
         }

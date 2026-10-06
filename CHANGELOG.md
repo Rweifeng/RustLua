@@ -5,6 +5,16 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 收尾上一笔：越界的贴图下标不再 panic，改走同一条丢弃记账
+
+- `bind_group_for` 之前是 `paths[texture - 1]` **直接下标**（隔壁 `sdf_bind_for` 一直是
+  `paths.get(...)?`），越界**直接 panic**。上一笔刚把 draw 级失败做成"记账 + 告警"，这里就补上同一口径：
+  越界返回 `None` → **进 `dropped_draws` 并留告警**，整帧照出（越界只可能来自宿主造 mesh 的内部 bug，
+  让它留在读数里比把游戏带走更有用）。
+- **反面对照**：把那一行改回直接下标 → 用例立刻 panic
+  （`index out of bounds: the len is 1 but the index is 98`）——证明修前确实是崩、这条用例是有效守卫。
+- 读数：`engine --lib` **160 通过 0 失败**；fmt / clippy（`--all-targets -- -D warnings`）干净。
+- 回滚档：`renderer/gpu_texture.rs` + `renderer/tests/passes.rs`。
 ## Unreleased — 渲染器"画不出来"不再静默：draw 级丢弃记账 + 根因告警 + 一条真实帧用例
 
 主题：**通道级早有对账，draw 级没有**。`RenderPlan::mismatch` 会告警、`last_frame_passes` 可直接断言，

@@ -49,7 +49,7 @@ fn dropped_draws_are_counted_and_stay_out_of_the_draw_call_count() {
         view_formats: &[],
     });
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-    let mesh = crate::host::frame::SceneMesh {
+    let mut mesh = crate::host::frame::SceneMesh {
         vertices: Vec::new(),
         draws: vec![crate::host::frame::SceneDraw {
             texture: 1,
@@ -84,6 +84,23 @@ fn dropped_draws_are_counted_and_stay_out_of_the_draw_call_count() {
         metrics.draw_calls, 0,
         "丢弃不计入 draw_calls——两者分账才看得出'计划里有、实际没画'"
     );
+
+    // 越界的 texture 下标：`bind_group_for` 以前是 `paths[texture - 1]` **直接下标** → panic；
+    // 现在与隔壁 `sdf_bind_for` 同口径返回 None，于是**进 dropped_draws 而不是把整帧带走**。
+    // （把 `sdf` 关掉才会走 `bind_group_for` 那条路；上面那条走的是 `sdf_bind_for`。）
+    mesh.draws[0].sdf = false;
+    mesh.draws[0].texture = 99;
+    let outcome = renderer.render_into_texture(&mesh, None, &view, 32, 32);
+    assert!(
+        matches!(outcome, RenderOutcome::Presented),
+        "越界下标不该 panic，整帧仍要出图"
+    );
+    let metrics = renderer.last_frame_metrics();
+    assert_eq!(
+        metrics.dropped_draws, 1,
+        "越界下标必须被记账为丢弃（修前这里是 panic）"
+    );
+    assert_eq!(metrics.draw_calls, 0);
 }
 
 /// docs/54 §4.3：**计划就是实际执行的那一份**。    ///
