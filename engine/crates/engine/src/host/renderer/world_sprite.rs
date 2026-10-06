@@ -16,7 +16,7 @@ use crate::host::frame::{Scene3d, SceneMesh};
 
 use super::{
     DepthPass, FrameDraw, GpuMaterial, RenderFrameMetrics, Renderer, StaticGroup,
-    apply_declared_viewport, max_model_scale, record_vertex_draw,
+    apply_declared_viewport, max_model_scale, record_dropped_draw, record_vertex_draw,
 };
 use crate::host::frame::WorldSpriteVertex;
 
@@ -193,6 +193,16 @@ impl Renderer {
         for draw in selected {
             let texture = draw.texture_id + 1;
             let Some(bind) = self.bind_group_for(texture, paths, handles) else {
+                // 与 2D 叠加通道同一条口径（`passes.rs`）：**画不出来必须留痕**。
+                // 静默 `continue` 的症状是"世界里少一个 sprite、日志一个字都没有"。
+                record_dropped_draw(metrics);
+                tracing::warn!(
+                    target: "render",
+                    texture,
+                    vertex_start = draw.vertex_start,
+                    vertex_count = draw.vertex_count,
+                    "[runtime] world sprite draw dropped: bind group unavailable"
+                );
                 continue;
             };
             pass.set_bind_group(1, &bind, &[]);
@@ -221,6 +231,15 @@ impl Renderer {
         let instancing_enabled = self.instancing_enabled;
         for drawable in &scene.drawables {
             let Some(cached) = self.cached_mesh(drawable.mesh_handle, &drawable.mesh_path) else {
+                // 这里**刻意只记 debug、不计入 `dropped_draws`**：网格不在缓存绝大多数是
+                // **异步预热的头几帧**（下一帧就有），把它算成"丢了 draw"会让正常帧也报非零，
+                // 反而毁掉那个计数"0 = 这一帧什么都没丢"的含义。真正的**硬失败**（加载失败）
+                // 已在加载侧留痕（`gpu_mesh.rs` 的 `async asset load failed` 告警）。
+                tracing::debug!(
+                    target: "render",
+                    path = %drawable.mesh_path,
+                    "[render] 3D mesh not in cache yet; skipping this frame"
+                );
                 continue;
             };
             for (prim_index, primitive) in cached.primitives.iter().enumerate() {

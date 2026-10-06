@@ -5,6 +5,26 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 世界精灵的丢弃也留痕了；顺带把 9 个"跳过/回退"点逐个定性
+
+主题：**同一类静默失败，换个通道又出现一次**。上一笔修完 2D 叠加通道的 draw 级丢弃记账后，
+按"顺着帧路径找静默的东西"把 `gpu_mesh.rs` / `world_sprite.rs` 的 9 个跳过/回退点逐个读完：
+
+- **只有一处是真静默**：`world_sprite.rs` 的 world sprite 绑定组拿不到时裸 `continue`——世界里少一个
+  sprite，日志一个字都没有。已按同一条口径修（`record_dropped_draw` + `warn!`，带 texture /
+  vertex_start / vertex_count）。
+- **一处是"看着像、其实不该算"**：3D 实体的网格不在缓存时也裸 `continue`，但它绝大多数是**异步预热的
+  头几帧**（下一帧就有），真正的硬失败已在加载侧留痕（`gpu_mesh.rs` 的 `async asset load failed`）。
+  这里改成 `debug!` 而**刻意不计入 `dropped_draws`**——否则正常帧也会非零，把"0 = 这一帧什么都没丢"
+  这个含义毁掉。**这条取舍写进了代码注释**。
+- **其余 6 处合法**：`gpu_mesh.rs` 的三条失败路径**早就都有 `warn!` + fallback**（不是静默）、两处并发去重；
+  `world_sprite.rs` 的"该档无 sprite"（opaque/translucent 分两趟，某一趟为空是正常的）、深度视图选择、
+  清屏取舍、**视锥剔除**（剔除是**应该不画**，不是失败）、无主相机时回落到 `explicit` 矩阵（文档化回退）。
+- 读数：`engine --lib` **160 通过 0 失败**；fmt / clippy（`--all-targets -- -D warnings`）干净。
+- **诚实缺口**：world sprite 那处丢弃**没有正面用例**（要造"贴图 id 越界的 world sprite draw"，
+  而世界精灵通道在不同 `scene3d` 下的计划取舍得先确认），本轮只做到"不回归 + 记账已接上"——
+  与 2D 叠加通道那处**已有正面用例**不对称，已写进 `docs/60` §10.4。
+- 回滚档：`renderer/world_sprite.rs`（两处 + import）+ `docs/60` §10.4 + 本文件。
 ## Unreleased — GPU 用例的"跳过"不再冒充通过：`gpu_skipped` 标记 + `RUSTLUA_REQUIRE_GPU=1` 硬失败
 
 主题：渲染器的 GPU 用例在没有适配器时是裸 `return; // no GPU available; skip`，而 **`cargo test` 对早退的
