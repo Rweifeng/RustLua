@@ -50,14 +50,18 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     entity.set(
         "find",
         lua.create_function(move |_, name: String| {
-            Ok(s.borrow().entity_state.names.get(&name).map(entity_to_lua))
+            Ok(s.lua_borrow()?
+                .entity_state
+                .names
+                .get(&name)
+                .map(entity_to_lua))
         })?,
     )?;
     let s = Rc::clone(&state);
     entity.set(
         "find_id",
         lua.create_function(move |_, persist_id: String| {
-            Ok(s.borrow()
+            Ok(s.lua_borrow()?
                 .entity_state
                 .persist
                 .get(&persist_id)
@@ -70,7 +74,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         "persist_id",
         lua.create_function(move |_, id: i64| {
             let id = entity_from_lua(id)?;
-            Ok(s.borrow()
+            Ok(s.lua_borrow()?
                 .entity_state
                 .persist
                 .iter()
@@ -81,7 +85,9 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     let s = Rc::clone(&state);
     entity.set(
         "is_alive",
-        lua.create_function(move |_, id: i64| Ok(s.borrow().world.is_alive(entity_from_lua(id)?)))?,
+        lua.create_function(move |_, id: i64| {
+            Ok(s.lua_borrow()?.world.is_alive(entity_from_lua(id)?))
+        })?,
     )?;
     let s = Rc::clone(&state);
     entity.set(
@@ -274,7 +280,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     let s = Rc::clone(&state);
     interact.set(
         "get_prompt",
-        lua.create_function(move |_, ()| Ok(s.borrow().entity_state.interact_prompt.clone()))?,
+        lua.create_function(move |_, ()| Ok(s.lua_borrow()?.entity_state.interact_prompt.clone()))?,
     )?;
     lua.globals().set("interact", interact)?;
 

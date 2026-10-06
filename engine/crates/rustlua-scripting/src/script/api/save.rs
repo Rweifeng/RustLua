@@ -25,14 +25,16 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             if key.is_empty() {
                 return Err(api_error("save.write key must not be empty"));
             }
-            s.borrow_mut().save.data.insert(key, value);
+            s.lua_borrow_mut()?.save.data.insert(key, value);
             Ok(())
         })?,
     )?;
     let s = Rc::clone(&state);
     save.set(
         "read",
-        lua.create_function(move |_, key: String| Ok(s.borrow().save.data.get(&key).cloned()))?,
+        lua.create_function(move |_, key: String| {
+            Ok(s.lua_borrow()?.save.data.get(&key).cloned())
+        })?,
     )?;
     // 「开始新游戏」必须能丢弃**引擎侧**的持久键（`__map` / `__map:spawn:*` /
     // `__mapstate:*` / `__blob:*`）。这些键不属于任何游戏侧 provider，若残留，
@@ -60,7 +62,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             let json = lua_value_to_json(value)?;
             let encoded =
                 serde_json::to_string(&json).map_err(|error| api_error(error.to_string()))?;
-            s.borrow_mut()
+            s.lua_borrow_mut()?
                 .save
                 .data
                 .insert(format!("__blob:{key}"), encoded);
@@ -84,7 +86,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     save.set(
         "slot",
         lua.create_function(move |_, slot: Option<String>| {
-            s.borrow_mut().save.slot = slot.filter(|value| !value.is_empty());
+            s.lua_borrow_mut()?.save.slot = slot.filter(|value| !value.is_empty());
             Ok(())
         })?,
     )?;
@@ -92,7 +94,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     save.set(
         "slot_get",
         lua.create_function(move |lua, ()| {
-            let slot = s.borrow().save.slot.clone();
+            let slot = s.lua_borrow()?.save.slot.clone();
             slot.map(|value| lua.create_string(&value).map(Value::String))
                 .transpose()
         })?,
@@ -144,7 +146,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             };
             match rustlua_gameplay::save::decode(&text) {
                 Ok(data) => {
-                    s.borrow_mut().save.data = data;
+                    s.lua_borrow_mut()?.save.data = data;
                     tracing::info!(target: "save", path = %path.display(), "[save] loaded");
                     Ok((Value::Boolean(true), Value::Nil))
                 }

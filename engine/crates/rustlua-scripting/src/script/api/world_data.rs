@@ -22,7 +22,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             let exists = request_scene_load(&state, &name);
             if exists {
                 drop(state);
-                s.borrow_mut().scene_pending_load = Some(name);
+                s.lua_borrow_mut()?.scene_pending_load = Some(name);
             }
             Ok(exists)
         })?,
@@ -30,7 +30,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     let s = Rc::clone(&state);
     scene.set(
         "reload",
-        lua.create_function(move |_, ()| Ok(s.borrow().scene.clone()))?,
+        lua.create_function(move |_, ()| Ok(s.lua_borrow()?.scene.clone()))?,
     )?;
     lua.globals().set("scene", scene)?;
 
@@ -213,10 +213,10 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 }
                 let encoded =
                     serde_json::to_string(&json).map_err(|error| api_error(error.to_string()))?;
-                s.borrow_mut().save.data.insert(key, encoded);
+                s.lua_borrow_mut()?.save.data.insert(key, encoded);
                 return Ok(Value::Boolean(true));
             }
-            let Some(encoded) = s.borrow().save.data.get(&key).cloned() else {
+            let Some(encoded) = s.lua_borrow()?.save.data.get(&key).cloned() else {
                 return Ok(Value::Nil);
             };
             let json = serde_json::from_str(&encoded)
@@ -274,7 +274,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     asset.set(
         "release",
         lua.create_function(move |_, token: String| {
-            s.borrow_mut().assets.retain(|_, v| v != &token);
+            s.lua_borrow_mut()?.assets.retain(|_, v| v != &token);
             Ok(())
         })?,
     )?;
@@ -312,7 +312,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                     .clone()
                     .ok_or_else(|| api_error("data.load requires a project root"))?
             };
-            if let Some(cached) = s.borrow().data_cache.get(&path) {
+            if let Some(cached) = s.lua_borrow()?.data_cache.get(&path) {
                 return json_to_lua_value(lua, cached);
             }
             let file_path = root.join(&path);
@@ -327,7 +327,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 api_error(format!("data.load {}: {error}", file_path.display()))
             })?;
             validate_data_schema(&s, &path, &json, "load")?;
-            s.borrow_mut().data_cache.insert(path, json.clone());
+            s.lua_borrow_mut()?.data_cache.insert(path, json.clone());
             json_to_lua_value(lua, &json)
         })?,
     )?;
@@ -335,7 +335,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     data.set(
         "reload",
         lua.create_function(move |lua, path: String| {
-            s.borrow_mut().data_cache.remove(&path);
+            s.lua_borrow_mut()?.data_cache.remove(&path);
             let root = {
                 let state = s.lua_borrow()?;
                 state
@@ -355,7 +355,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 api_error(format!("data.reload {}: {error}", file_path.display()))
             })?;
             validate_data_schema(&s, &path, &json, "reload")?;
-            s.borrow_mut().data_cache.insert(path, json.clone());
+            s.lua_borrow_mut()?.data_cache.insert(path, json.clone());
             json_to_lua_value(lua, &json)
         })?,
     )?;
@@ -363,7 +363,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     data.set(
         "cache_clear",
         lua.create_function(move |_, ()| {
-            s.borrow_mut().data_cache.clear();
+            s.lua_borrow_mut()?.data_cache.clear();
             Ok(())
         })?,
     )?;

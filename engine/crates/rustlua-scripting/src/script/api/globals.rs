@@ -44,7 +44,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     let s = Rc::clone(&state);
     time.set(
         "delta",
-        lua.create_function(move |_, ()| Ok(s.borrow().delta_seconds))?,
+        lua.create_function(move |_, ()| Ok(s.lua_borrow()?.delta_seconds))?,
     )?;
     lua.globals().set("time", time)?;
 
@@ -53,7 +53,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     clock.set(
         "now",
         lua.create_function(move |lua, ()| {
-            let clock = &s.borrow().game_clock;
+            let clock = &s.lua_borrow()?.game_clock;
             let now = lua.create_table()?;
             now.set("day", clock.day as i64)?;
             now.set("minute", clock.minute as i64)?;
@@ -80,7 +80,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     clock.set(
         "pause",
         lua.create_function(move |_, paused: bool| {
-            s.borrow_mut().game_clock.paused = paused;
+            s.lua_borrow_mut()?.game_clock.paused = paused;
             Ok(())
         })?,
     )?;
@@ -91,7 +91,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             if !minutes.is_finite() {
                 return Err(api_error("clock.add minutes must be finite"));
             }
-            s.borrow_mut().game_clock.add_minutes(minutes);
+            s.lua_borrow_mut()?.game_clock.add_minutes(minutes);
             Ok(())
         })?,
     )?;
@@ -114,7 +114,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     clock.set(
         "sleep_to_morning",
         lua.create_function(move |_, ()| {
-            let day = s.borrow_mut().game_clock.sleep_to_morning();
+            let day = s.lua_borrow_mut()?.game_clock.sleep_to_morning();
             Ok(day as i64)
         })?,
     )?;
@@ -127,7 +127,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     calendar.set(
         "now",
         lua.create_function(move |lua, ()| {
-            let clock = &s.borrow().game_clock;
+            let clock = &s.lua_borrow()?.game_clock;
             let now = lua.create_table()?;
             now.set("absolute_day", clock.day as i64)?;
             now.set("day", clock.day_of_season() as i64)?;
@@ -186,7 +186,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     day.set(
         "now",
         lua.create_function(move |lua, ()| {
-            let clock = &s.borrow().game_clock;
+            let clock = &s.lua_borrow()?.game_clock;
             let now = lua.create_table()?;
             now.set("day", clock.day as i64)?;
             now.set("minute", clock.minute as i64)?;
@@ -200,7 +200,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     app.set(
         "quit",
         lua.create_function(move |_, ()| {
-            s.borrow_mut().quit_requested = true;
+            s.lua_borrow_mut()?.quit_requested = true;
             Ok(())
         })?,
     )?;

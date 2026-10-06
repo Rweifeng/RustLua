@@ -87,7 +87,7 @@ pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) ->
                 if !finite_color4(color) {
                     return Err(api_error("ui.panel color must be finite"));
                 }
-                s.borrow_mut().ui_state.panels.insert(
+                s.lua_borrow_mut()?.ui_state.panels.insert(
                     id,
                     UiPanel {
                         position: [x, y],
@@ -112,7 +112,7 @@ pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) ->
                 String, f32, f32, f32, f32, f32, f32, f32,
             )| {
                 let color = [r, g, b, a];
-                s.borrow_mut().ui_state.panels.insert(
+                s.lua_borrow_mut()?.ui_state.panels.insert(
                     id,
                     UiPanel {
                         position: [cx - radius, cy - radius],
@@ -151,7 +151,7 @@ pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) ->
                 // docs/48 ui 换肤：可选第 10 参 `slice`（"left,right,top,bottom" 像素边距）
                 // → 九宫格渲染（DynamicUiImage.nine_slice）；空/非法回退普通四边形（向后兼容）。
                 let nine_slice = slice.as_deref().and_then(parse_nine_slice);
-                s.borrow_mut().ui_state.images.insert(
+                s.lua_borrow_mut()?.ui_state.images.insert(
                     id,
                     DynamicUiImage {
                         texture,
@@ -222,7 +222,7 @@ pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) ->
                 let columns = columns as usize;
                 let rows = rows as usize;
                 let cell_count = columns * rows;
-                s.borrow_mut().ui_state.grids.insert(
+                s.lua_borrow_mut()?.ui_state.grids.insert(
                     id,
                     UiGrid {
                         position: [x, y],
@@ -468,11 +468,11 @@ pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) ->
             if index <= 0 {
                 return Err(api_error("ui.drag_end index must be positive"));
             }
-            let drag = s.borrow().ui_state.drag.clone();
+            let drag = s.lua_borrow()?.ui_state.drag.clone();
             let Some(drag) = drag else {
                 return Ok(false);
             };
-            s.borrow_mut().ui_state.drag = None;
+            s.lua_borrow_mut()?.ui_state.drag = None;
             let callback: Value = lua.globals().get("on_drag")?;
             if let Value::Function(function) = callback {
                 function.call::<()>((drag.from_id, drag.from_index as i64, id, index))?;
@@ -498,7 +498,7 @@ pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) ->
     ui.set(
         "drag_cancel",
         lua.create_function(move |_, ()| {
-            s.borrow_mut().ui_state.drag = None;
+            s.lua_borrow_mut()?.ui_state.drag = None;
             Ok(())
         })?,
     )?;

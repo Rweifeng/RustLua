@@ -48,7 +48,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     let s = Rc::clone(&state);
     camera.set(
         "get_active",
-        lua.create_function(move |_, ()| Ok(s.borrow().active_camera.map(entity_to_lua)))?,
+        lua.create_function(move |_, ()| Ok(s.lua_borrow()?.active_camera.map(entity_to_lua)))?,
     )?;
     let s = Rc::clone(&state);
     camera.set(
@@ -247,7 +247,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             if !x.is_finite() || !y.is_finite() {
                 return Err(api_error("camera2d.set must be finite"));
             }
-            s.borrow_mut()
+            s.lua_borrow_mut()?
                 .camera2d
                 .request_center(rustlua_ecs::transform::Vec2::new(x, y));
             Ok(true)
@@ -257,7 +257,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     camera2d.set(
         "get",
         lua.create_function(move |lua, ()| {
-            let center = s.borrow().camera2d.center();
+            let center = s.lua_borrow()?.camera2d.center();
             let table = lua.create_table()?;
             table.set("x", center.x)?;
             table.set("y", center.y)?;
@@ -271,14 +271,14 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             if !zoom.is_finite() || zoom <= 0.0 {
                 return Err(api_error("camera2d.set_zoom must be > 0"));
             }
-            s.borrow_mut().camera2d.request_zoom(zoom);
+            s.lua_borrow_mut()?.camera2d.request_zoom(zoom);
             Ok(true)
         })?,
     )?;
     let s = Rc::clone(&state);
     camera2d.set(
         "get_zoom",
-        lua.create_function(move |_, ()| Ok(s.borrow().camera2d.zoom()))?,
+        lua.create_function(move |_, ()| Ok(s.lua_borrow()?.camera2d.zoom()))?,
     )?;
     // WP4 ⑧：输入统一 screen→world。此前 Lua 只能拿到 `input.cursor_position()` 的**屏幕像素**，
     // 想把点击换成世界坐标就得在脚本里重写一遍相机数学（zoom/center/bounds/rotation 一个都
@@ -340,7 +340,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                     "camera2d.shake needs a finite amplitude and duration > 0",
                 ));
             }
-            s.borrow_mut().camera2d.shake(amplitude, duration);
+            s.lua_borrow_mut()?.camera2d.shake(amplitude, duration);
             Ok(true)
         })?,
     )?;
@@ -390,7 +390,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     camera2d.set(
         "unfollow",
         lua.create_function(move |_, ()| {
-            s.borrow_mut().camera2d.follow(None);
+            s.lua_borrow_mut()?.camera2d.follow(None);
             Ok(true)
         })?,
     )?;

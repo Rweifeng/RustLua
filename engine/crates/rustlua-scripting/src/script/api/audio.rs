@@ -30,7 +30,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     audio.set(
         "volume",
         lua.create_function(move |_, level: f32| {
-            s.borrow_mut().audio.set_volume(level);
+            s.lua_borrow_mut()?.audio.set_volume(level);
             Ok(())
         })?,
     )?;
@@ -52,7 +52,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         "set_bus_volume",
         lua.create_function(move |_, (bus, level): (String, f32)| {
             let bus = parse_audio_bus(&bus)?;
-            s.borrow_mut().audio.set_bus_volume(bus, level);
+            s.lua_borrow_mut()?.audio.set_bus_volume(bus, level);
             Ok(true)
         })?,
     )?;
@@ -61,7 +61,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         "bus_volume",
         lua.create_function(move |_, bus: String| {
             let bus = parse_audio_bus(&bus)?;
-            Ok(s.borrow().audio.bus_volume(bus))
+            Ok(s.lua_borrow()?.audio.bus_volume(bus))
         })?,
     )?;
     let s = Rc::clone(&state);
@@ -69,7 +69,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         "effective_volume",
         lua.create_function(move |_, bus: String| {
             let bus = parse_audio_bus(&bus)?;
-            Ok(s.borrow().audio.effective_volume(bus))
+            Ok(s.lua_borrow()?.audio.effective_volume(bus))
         })?,
     )?;
     let s = Rc::clone(&state);
@@ -77,7 +77,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         "play_on",
         lua.create_function(move |_, (bus, name): (String, String)| {
             let bus = parse_audio_bus(&bus)?;
-            if let Err(error) = s.borrow_mut().audio.play_on(bus, &name) {
+            if let Err(error) = s.lua_borrow_mut()?.audio.play_on(bus, &name) {
                 tracing::warn!(target: "audio", name = %name, bus = bus.key(), error = %error, "[audio] play_on failed");
                 return Ok((false, error.to_string()));
             }
@@ -88,13 +88,13 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     let s = Rc::clone(&state);
     audio.set(
         "settings_text",
-        lua.create_function(move |_, ()| Ok(s.borrow().audio.to_settings_text()))?,
+        lua.create_function(move |_, ()| Ok(s.lua_borrow()?.audio.to_settings_text()))?,
     )?;
     let s = Rc::clone(&state);
     audio.set(
         "apply_settings",
         lua.create_function(move |_, text: String| {
-            match s.borrow_mut().audio.apply_settings_text(&text) {
+            match s.lua_borrow_mut()?.audio.apply_settings_text(&text) {
                 Ok(()) => Ok((true, String::new())),
                 Err(error) => Ok((false, error.to_string())),
             }
@@ -107,7 +107,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     audio.set(
         "settings_path",
         lua.create_function(move |_, ()| {
-            let root = settings_root(&s.borrow());
+            let root = settings_root(&*s.lua_borrow()?);
             Ok(root.map(|root| {
                 ProjectSettings::path_in(&root)
                     .to_string_lossy()
@@ -119,13 +119,13 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     audio.set(
         "load_settings",
         lua.create_function(move |_, ()| {
-            let root = settings_root(&s.borrow());
+            let root = settings_root(&*s.lua_borrow()?);
             let Some(root) = root else {
                 return Ok((false, "no_project_root".to_owned()));
             };
             match ProjectSettings::load_from(&root) {
                 Ok(Some(settings)) => {
-                    settings.apply_to(&mut s.borrow_mut().audio);
+                    settings.apply_to(&mut s.lua_borrow_mut()?.audio);
                     Ok((true, "loaded".to_owned()))
                 }
                 Ok(None) => Ok((false, "missing".to_owned())),
@@ -137,11 +137,11 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     audio.set(
         "save_settings",
         lua.create_function(move |_, ()| {
-            let root = settings_root(&s.borrow());
+            let root = settings_root(&*s.lua_borrow()?);
             let Some(root) = root else {
                 return Ok((false, "no_project_root".to_owned()));
             };
-            let settings = ProjectSettings::from_audio(&s.borrow().audio);
+            let settings = ProjectSettings::from_audio(&s.lua_borrow()?.audio);
             match settings.save_to(&root) {
                 Ok(()) => Ok((true, "saved".to_owned())),
                 Err(error) => Ok((false, error.to_string())),
@@ -163,7 +163,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     audio.set(
         "stop_music",
         lua.create_function(move |_, ()| {
-            s.borrow_mut().audio.stop_music();
+            s.lua_borrow_mut()?.audio.stop_music();
             Ok(())
         })?,
     )?;

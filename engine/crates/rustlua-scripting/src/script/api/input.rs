@@ -47,7 +47,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         "pressed",
         lua.create_function(move |_, key: String| {
             let key = parse_key_strict(&key)?;
-            Ok(s.borrow().input.just_pressed(key))
+            Ok(s.lua_borrow()?.input.just_pressed(key))
         })?,
     )?;
     let s = Rc::clone(&state);
@@ -55,13 +55,13 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         "released",
         lua.create_function(move |_, key: String| {
             let key = parse_key_strict(&key)?;
-            Ok(s.borrow().input.just_released(key))
+            Ok(s.lua_borrow()?.input.just_released(key))
         })?,
     )?;
     let s = Rc::clone(&state);
     input.set(
         "axis",
-        lua.create_function(move |_, axis: String| Ok(s.borrow().input.axis(&axis)))?,
+        lua.create_function(move |_, axis: String| Ok(s.lua_borrow()?.input.axis(&axis)))?,
     )?;
     for (name, mode) in [
         ("mouse_is_down", 0_u8),
@@ -74,7 +74,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             lua.create_function(move |_, button: String| {
                 // P1-④：未知名按钮是**错误**（不再静默落 Other(0)），与键名同口径。
                 let button = parse_mouse_button(&button)?;
-                let input = &s.borrow().input;
+                let input = &s.lua_borrow()?.input;
                 Ok(match mode {
                     0 => input.mouse_is_down(button),
                     1 => input.mouse_just_pressed(button),
@@ -87,7 +87,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     input.set(
         "cursor_position",
         lua.create_function(move |lua, ()| {
-            let p = s.borrow().input.cursor_position();
+            let p = s.lua_borrow()?.input.cursor_position();
             table_vec(lua, p.0 as f32, p.1 as f32)
         })?,
     )?;
@@ -95,7 +95,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     input.set(
         "cursor_delta",
         lua.create_function(move |lua, ()| {
-            let p = s.borrow().input.cursor_delta();
+            let p = s.lua_borrow()?.input.cursor_delta();
             table_vec(lua, p.0 as f32, p.1 as f32)
         })?,
     )?;
@@ -103,7 +103,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     input.set(
         "scroll_delta",
         lua.create_function(move |lua, ()| {
-            let p = s.borrow().input.scroll_delta();
+            let p = s.lua_borrow()?.input.scroll_delta();
             table_vec(lua, p.0, p.1)
         })?,
     )?;
@@ -174,14 +174,18 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     input.set(
         "pad_button",
         lua.create_function(move |_, index: i64| {
-            Ok(s.borrow().input.gamepad_button(index.clamp(0, 255) as u8))
+            Ok(s.lua_borrow()?
+                .input
+                .gamepad_button(index.clamp(0, 255) as u8))
         })?,
     )?;
     let s = Rc::clone(&state);
     input.set(
         "pad_axis",
         lua.create_function(move |_, index: i64| {
-            Ok(s.borrow().input.gamepad_axis(index.clamp(0, 255) as u8))
+            Ok(s.lua_borrow()?
+                .input
+                .gamepad_axis(index.clamp(0, 255) as u8))
         })?,
     )?;
     let s = Rc::clone(&state);
@@ -233,7 +237,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             let Ok(parsed) = Binding::parse(binding.trim()) else {
                 return Ok(false);
             };
-            Ok(s.borrow_mut().action_map.unbind(&name, parsed))
+            Ok(s.lua_borrow_mut()?.action_map.unbind(&name, parsed))
         })?,
     )?;
     let s = Rc::clone(&state);
@@ -241,14 +245,14 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         "reset_bindings",
         lua.create_function(move |_, ()| {
             // 唯一重置入口：绑定是玩家偏好，不随场景切换/读档回滚（ADR-0021）。
-            s.borrow_mut().action_map = ActionMap::with_defaults();
+            s.lua_borrow_mut()?.action_map = ActionMap::with_defaults();
             Ok(())
         })?,
     )?;
     let s = Rc::clone(&state);
     input.set(
         "action_map_text",
-        lua.create_function(move |_, ()| Ok(s.borrow().action_map.to_text()))?,
+        lua.create_function(move |_, ()| Ok(s.lua_borrow()?.action_map.to_text()))?,
     )?;
     let s = Rc::clone(&state);
     input.set(
@@ -302,7 +306,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     input.set(
         "settings_path",
         lua.create_function(move |_, ()| {
-            let root = settings_root(&s.borrow());
+            let root = settings_root(&*s.lua_borrow()?);
             Ok(root.map(|root| {
                 ProjectSettings::path_in(&root)
                     .to_string_lossy()
@@ -314,7 +318,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     input.set(
         "load_settings",
         lua.create_function(move |_, path: Option<String>| {
-            let resolved = resolve_input_settings_path(&s.borrow(), path.as_deref());
+            let resolved = resolve_input_settings_path(&*s.lua_borrow()?, path.as_deref());
             let Some(path) = resolved else {
                 return Ok((false, "no_project_root".to_owned()));
             };
@@ -327,7 +331,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 }
                 Err(error) => {
                     let message = format!("{}: read failed: {error}", path.display());
-                    push_input_diagnostic(&mut s.borrow_mut(), message);
+                    push_input_diagnostic(&mut *s.lua_borrow_mut()?, message);
                     return Ok((false, error.to_string()));
                 }
             };
@@ -335,15 +339,15 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             // M22/W3：读改键的同时把同一个 `[input]` 段的**导航手感**应用到引擎
             //（阈值 + 重复节奏），这样游戏只需 `input.load_settings()` 一次调用即可，
             // 不必再单独调 `apply_nav_settings()`。文件里没有这些键时就是默认手感。
-            s.borrow_mut().nav = rustlua_gameplay::settings::parse_nav_section(&existing);
+            s.lua_borrow_mut()?.nav = rustlua_gameplay::settings::parse_nav_section(&existing);
             // M22/W1：v1 → v2 迁移说明（有损换算逐条），供 `input.migration_notes()`。
-            s.borrow_mut().input_migration_notes = parsed.migration_notes.clone();
+            s.lua_borrow_mut()?.input_migration_notes = parsed.migration_notes.clone();
             match parsed.map {
                 Some(mut map) => {
                     // 文件里没有的动作用默认绑定补齐（新增动作在旧设置文件上仍可玩），
                     // 用户重绑定不被覆盖（`merge_missing` 只补缺失动作）。
                     map.merge_missing(&ActionMap::with_defaults());
-                    s.borrow_mut().action_map = map;
+                    s.lua_borrow_mut()?.action_map = map;
                     Ok((true, "loaded".to_owned()))
                 }
                 None => {
@@ -354,7 +358,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                     if !missing_key {
                         // 内容非法（版本头不符 / 绑定文本非法）才是「回退默认」，
                         // 并留下可定位诊断；缺键只诊断、在位的绑定保持不变。
-                        s.borrow_mut().action_map = ActionMap::with_defaults();
+                        s.lua_borrow_mut()?.action_map = ActionMap::with_defaults();
                     }
                     let mut state = s.lua_borrow_mut()?;
                     let message = if missing_key {
@@ -396,7 +400,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 Ok(()) => Ok((true, "saved".to_owned())),
                 Err(error) => {
                     let message = format!("{}: save failed: {error}", path.display());
-                    push_input_diagnostic(&mut s.borrow_mut(), message);
+                    push_input_diagnostic(&mut *s.lua_borrow_mut()?, message);
                     Ok((false, error.to_string()))
                 }
             }
@@ -410,7 +414,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             // `load_settings` 同源——同一个 `[input]` 段、同一套宽松解析与钳制。
             // 缺省路径 = 工程根。重复节奏自 M22/W3 起是**毫秒**（旧的帧键仍可读，
             // 按 60Hz 换算）。
-            let resolved = resolve_input_settings_path(&s.borrow(), path.as_deref());
+            let resolved = resolve_input_settings_path(&*s.lua_borrow()?, path.as_deref());
             let Some(path) = resolved else {
                 return Ok(None);
             };
@@ -434,7 +438,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         lua.create_function(
             move |_, (threshold, delay_ms, repeat_ms): (f32, u32, u32)| {
                 let nav = NavSettings::new(threshold, delay_ms, repeat_ms);
-                s.borrow_mut().nav = nav;
+                s.lua_borrow_mut()?.nav = nav;
                 Ok((nav.threshold, nav.delay_ms, nav.repeat_ms))
             },
         )?,
@@ -444,14 +448,14 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         "action_repeat",
         // M22/W3：菜单导航的「首次立即 + 按住连发」。时间制（毫秒），因此键盘、DPad、
         // 摇杆在不同帧率下手感一致；只有模拟量绑定会连发（数字键保持一次一步）。
-        lua.create_function(move |_, name: String| Ok(s.borrow_mut().action_repeat(&name)))?,
+        lua.create_function(move |_, name: String| Ok(s.lua_borrow_mut()?.action_repeat(&name)))?,
     )?;
     let s = Rc::clone(&state);
     input.set(
         "last_device",
         // M22/W3：最近一次产生真实输入的设备类别（"keyboard" / "gamepad"）。
         // 引擎在边沿发生时记录，因此 Lua 侧不再需要每帧扫描全部绑定来猜设备。
-        lua.create_function(move |_, ()| Ok(s.borrow().input.last_device().to_text()))?,
+        lua.create_function(move |_, ()| Ok(s.lua_borrow()?.input.last_device().to_text()))?,
     )?;
     let s = Rc::clone(&state);
     input.set(
@@ -459,7 +463,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         // M22/W2：请求震动（左右马达 0..1，毫秒）。这里只登记请求，宿主在帧末交给设备层
         //（`GamepadPoller::rumble` 负责时长上限与到期归零）；无手柄时静默无效。
         lua.create_function(move |_, (low, high, ms): (f32, f32, u32)| {
-            s.borrow_mut().rumble_request = Some((low, high, ms));
+            s.lua_borrow_mut()?.rumble_request = Some((low, high, ms));
             Ok(())
         })?,
     )?;

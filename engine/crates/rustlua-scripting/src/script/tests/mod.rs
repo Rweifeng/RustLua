@@ -32,6 +32,7 @@ mod hot_reload;
 mod input;
 mod particles;
 mod physics;
+mod reentrancy;
 mod sample_project;
 mod save_data;
 mod scene_spawn;

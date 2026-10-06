@@ -51,14 +51,18 @@ pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) ->
     ui.set(
         "focus_close",
         lua.create_function(move |_, id: String| {
-            Ok(s.borrow_mut().ui_state.focus_rings.remove(&id).is_some())
+            Ok(s.lua_borrow_mut()?
+                .ui_state
+                .focus_rings
+                .remove(&id)
+                .is_some())
         })?,
     )?;
     let s = Rc::clone(&state);
     ui.set(
         "focus_count",
         lua.create_function(move |_, id: String| {
-            Ok(s.borrow()
+            Ok(s.lua_borrow()?
                 .ui_state
                 .focus_rings
                 .get(&id)
@@ -139,7 +143,7 @@ pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) ->
     ui.set(
         "scroll_open",
         lua.create_function(move |_, (id, viewport, content): (String, f32, f32)| {
-            s.borrow_mut()
+            s.lua_borrow_mut()?
                 .ui_state
                 .scroll_states
                 .insert(id, ScrollState::new(viewport, content));
@@ -150,7 +154,11 @@ pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) ->
     ui.set(
         "scroll_close",
         lua.create_function(move |_, id: String| {
-            Ok(s.borrow_mut().ui_state.scroll_states.remove(&id).is_some())
+            Ok(s.lua_borrow_mut()?
+                .ui_state
+                .scroll_states
+                .remove(&id)
+                .is_some())
         })?,
     )?;
     let s = Rc::clone(&state);
@@ -167,7 +175,7 @@ pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) ->
     ui.set(
         "scroll_offset",
         lua.create_function(move |_, id: String| {
-            Ok(s.borrow()
+            Ok(s.lua_borrow()?
                 .ui_state
                 .scroll_states
                 .get(&id)
@@ -178,7 +186,7 @@ pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) ->
     ui.set(
         "scroll_max",
         lua.create_function(move |_, id: String| {
-            Ok(s.borrow()
+            Ok(s.lua_borrow()?
                 .ui_state
                 .scroll_states
                 .get(&id)

@@ -20,7 +20,7 @@ pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) ->
     ui.set(
         "text",
         lua.create_function(move |_, (id, text): (String, String)| {
-            s.borrow_mut().ui_state.texts.insert(
+            s.lua_borrow_mut()?.ui_state.texts.insert(
                 id,
                 UiText {
                     text,
@@ -46,7 +46,7 @@ pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) ->
                 Option<f32>,
                 Option<f32>,
             )| {
-                s.borrow_mut().ui_state.texts.insert(
+                s.lua_borrow_mut()?.ui_state.texts.insert(
                     id,
                     UiText {
                         text,
@@ -76,7 +76,7 @@ pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) ->
                 f32,
                 f32,
             )| {
-                s.borrow_mut().ui_state.bars.insert(
+                s.lua_borrow_mut()?.ui_state.bars.insert(
                     id,
                     UiBar {
                         position: [x, y],
@@ -93,7 +93,7 @@ pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) ->
     ui.set(
         "show",
         lua.create_function(move |_, id: String| {
-            s.borrow_mut()
+            s.lua_borrow_mut()?
                 .ui_state
                 .texts
                 .entry(id)

@@ -40,7 +40,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             let stack = definition.get::<Option<i64>>("stack")?.unwrap_or(99).max(1) as u32;
             let buy_price = definition.get::<Option<i64>>("buy")?.unwrap_or(0);
             let sell_price = definition.get::<Option<i64>>("sell")?.unwrap_or(0);
-            s.borrow_mut().inventory.item_defs.insert(
+            s.lua_borrow_mut()?.inventory.item_defs.insert(
                 id.clone(),
                 ItemDefinition {
                     id,
@@ -87,7 +87,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 return Err(api_error("inv.create id must not be empty"));
             }
             let capacity = capacity.unwrap_or(24).max(1) as usize;
-            s.borrow_mut()
+            s.lua_borrow_mut()?
                 .inventory
                 .inventories
                 .insert(id.clone(), Inventory::new(capacity));
@@ -102,7 +102,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 return Err(api_error("inv.hotbar id must not be empty"));
             }
             let capacity = size.unwrap_or(9).max(1) as usize;
-            s.borrow_mut()
+            s.lua_borrow_mut()?
                 .inventory
                 .inventories
                 .insert(id.clone(), Inventory::new(capacity));
@@ -126,7 +126,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     inv.set(
         "exists",
         lua.create_function(move |_, id: String| {
-            Ok(s.borrow().inventory.inventories.contains_key(&id))
+            Ok(s.lua_borrow()?.inventory.inventories.contains_key(&id))
         })?,
     )?;
     let s = Rc::clone(&state);
@@ -268,7 +268,13 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         "swap",
         lua.create_function(
             move |_, (from_id, from_index, to_id, to_index): (String, i64, String, i64)| {
-                swap_inventories(&mut s.borrow_mut(), &from_id, from_index, &to_id, to_index)
+                swap_inventories(
+                    &mut *s.lua_borrow_mut()?,
+                    &from_id,
+                    from_index,
+                    &to_id,
+                    to_index,
+                )
             },
         )?,
     )?;
@@ -285,7 +291,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 Option<i64>,
             )| {
                 move_inventories(
-                    &mut s.borrow_mut(),
+                    &mut *s.lua_borrow_mut()?,
                     &from_id,
                     from_index,
                     &to_id,
@@ -351,7 +357,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         lua.create_function(move |_, (entity_id, capacity): (i64, Option<i64>)| {
             let key = format!("container:{entity_id}");
             let capacity = capacity.unwrap_or(12).max(1) as usize;
-            s.borrow_mut()
+            s.lua_borrow_mut()?
                 .inventory
                 .inventories
                 .insert(key.clone(), Inventory::new(capacity));
@@ -363,7 +369,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         "get",
         lua.create_function(move |_, entity_id: i64| {
             let key = format!("container:{entity_id}");
-            let exists = s.borrow().inventory.inventories.contains_key(&key);
+            let exists = s.lua_borrow()?.inventory.inventories.contains_key(&key);
             if exists { Ok(Some(key)) } else { Ok(None) }
         })?,
     )?;
@@ -372,7 +378,11 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         "close",
         lua.create_function(move |_, entity_id: i64| {
             let key = format!("container:{entity_id}");
-            Ok(s.borrow_mut().inventory.inventories.remove(&key).is_some())
+            Ok(s.lua_borrow_mut()?
+                .inventory
+                .inventories
+                .remove(&key)
+                .is_some())
         })?,
     )?;
     let s = Rc::clone(&state);
@@ -382,7 +392,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             move |_, (entity_id, from_index, to_id, to_index): (i64, i64, String, i64)| {
                 let from_id = format!("container:{entity_id}");
                 move_inventories(
-                    &mut s.borrow_mut(),
+                    &mut *s.lua_borrow_mut()?,
                     &from_id,
                     from_index,
                     &to_id,
@@ -404,7 +414,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         "set_catalog",
         lua.create_function(move |_, (name, spec): (String, Value)| {
             let json = lua_value_to_json(spec)?;
-            s.borrow_mut().inventory.shops.insert(name, json);
+            s.lua_borrow_mut()?.inventory.shops.insert(name, json);
             Ok(true)
         })?,
     )?;

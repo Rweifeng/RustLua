@@ -419,7 +419,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                     }
                 }
                 emitter.validate().map_err(api_error)?;
-                s.borrow_mut()
+                s.lua_borrow_mut()?
                     .particles
                     .burst_with(Vec2::new(x, y), &emitter);
                 Ok(())
@@ -429,7 +429,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     let s = Rc::clone(&state);
     particles.set(
         "count",
-        lua.create_function(move |_, ()| Ok(s.borrow().particles.len() as u32))?,
+        lua.create_function(move |_, ()| Ok(s.lua_borrow()?.particles.len() as u32))?,
     )?;
     lua.globals().set("particles", particles)?;
     Ok(())
