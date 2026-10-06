@@ -15,7 +15,19 @@
 # 注意 CI 那一步写的是 `git diff --check`（工作区 vs 索引），干净检出上恒真；本地这里必须查
 # **暂存区**（`--cached`），否则查的不是将要提交的内容。
 #
-# 两处与 CI 的刻意差异，都是为了别让人绕开 hook：
+# ── 作用域（rustlua.scope，默认 commit）：与 CI 最要紧的一处对齐 ──────────────
+# CI 的 lint job 检查的是**这个提交**（它 checkout 出那个 commit）；而 fmt / clippy 这两条命令
+# 看到的是**整棵工作树**。单人独占一棵树时两者几乎等价，但本仓的实际工作方式是**多会话共享
+# 一棵树**——差别就致命了：别人的在途/未跟踪文件会把**我的**提交挡住，而 CI 对我这个提交是绿的。
+# 假红的代价不是"多等一会儿"，而是训练所有人去按 RUSTLUA_SKIP_PRECOMMIT=1：门禁一旦被习惯性
+# 绕过就名存实亡（docs/34 §6 已经记过一次同款事故：「门禁波动（并行会话）…单跑即过」）。
+#   commit（默认）：只有**本次提交里的**文件才判红；提交之外的失败逐条列出，并按 PARTIAL 措辞
+#                   报告——不冒充"通过"，也不越权替别人的在途活儿判红。
+#   worktree：旧口径，工作树里任何一处失败都拦提交（想把整棵树焊干净时用）。
+#     git config rustlua.scope worktree    ← 切到旧口径
+#     git config --unset rustlua.scope     ← 还原默认
+#
+# 除上面的作用域外，另有两处与 CI 的刻意差异，都是为了别让人绕开 hook：
 #   1. clippy 默认不带 --all-features。本机实测（热缓存）fast 9.0s / full 9.2s，差别在冷缓存
 #      才显现（全 feature 图首轮实测 50.9s）。要对齐 CI：git config rustlua.clippy full
 #      要彻底跳过 clippy（不推荐）：git config rustlua.clippy off
@@ -35,22 +47,73 @@ started=$(date +%s 2>/dev/null || echo "")
 say() { printf '%s\n' "$*"; }
 bad() { printf '%s\n' "$*" >&2; }
 
-# cargo 步骤统一走 step()：dry-run 只打印将要执行的命令（scripts/test-git-hooks.ps1 靠它断言
-# 选路逻辑），真实运行才真的执行。git 步骤不包装——纯 git 操作零成本，测试要的是真结果。
-step() {
+elapsed() {
+	[ -n "$started" ] || { printf ''; return 0; }
+	printf '%s' "$(( $(date +%s) - started ))"
+}
+
+# 跑一条命令并**捕获**输出（stdout+stderr）到 $captured、退出码到 $captured_code。
+# cargo 步骤统一走 capture()：dry-run 只打印将要执行的命令（scripts/test-git-hooks.ps1 靠它
+# 断言选路逻辑），真实运行才真的执行。git 步骤不包装——纯 git 操作零成本，测试要的是真结果。
+# 为什么要捕获而不是直接跑：判红之前得先问一句「失败的文件在本次提交里吗」，那需要读输出。
+capture() {
 	desc=$1
 	shift
 	say "==> $desc"
 	if [ "$dry_run" = "1" ]; then
 		printf 'hook:run %s\n' "$*"
+		captured=""
+		captured_code=0
 		return 0
 	fi
-	"$@"
+	captured=$("$@" 2>&1)
+	captured_code=$?
+	return 0
 }
 
-elapsed() {
-	[ -n "$started" ] || { printf ''; return 0; }
-	printf '%s' "$(( $(date +%s) - started ))"
+# `cargo fmt --all -- --check` 的失败行形如
+#   Diff in \\?\C:\repo\engine\crates\x\src\lib.rs:12:
+# 归一化成仓库相对的 POSIX 路径（engine/crates/x/src/lib.rs），好与 `git diff --cached
+# --name-only` 的输出直接比对：去掉前缀与尾部的 `:行号:`，反斜杠换正斜杠，去掉 UNC 扩展前缀。
+normalize_fmt_path() {
+	path=$(printf '%s' "$1" | sed -e 's|^Diff in ||' -e 's|:[0-9]*:$||')
+	path=$(printf '%s' "$path" | tr '\\' '/')
+	path=${path#'//?/'}
+	case "$path" in
+		"$root"/*) path=${path#"$root"/} ;;
+	esac
+	printf '%s' "$path"
+}
+
+# 归一化后的路径是不是本次暂存的文件之一。先精确比对，再退化到「以 /<暂存路径> 结尾」——
+# 后者吸收盘符大小写（c: vs C:）之类的差异。两个方向都只会**偏严**（多认领一个失败），
+# 不会漏放一个真在提交里的失败。
+fmt_path_is_staged() {
+	while IFS= read -r staged; do
+		[ -n "$staged" ] || continue
+		[ "$staged" = "$1" ] && return 0
+		case "$1" in
+			*"/$staged") return 0 ;;
+		esac
+	done <<EOF
+$staged_rust_files
+EOF
+	return 1
+}
+
+# $captured 里有没有出现本次暂存的 Rust 文件？cargo 在 engine/ 下跑，诊断路径是 `crates/...`
+# 形式，而暂存路径是 `engine/crates/...`，所以比对时去掉 engine/ 前缀。
+captured_names_staged_file() {
+	while IFS= read -r staged; do
+		[ -n "$staged" ] || continue
+		rel=${staged#engine/}
+		case "$captured" in
+			*"$rel"*) return 0 ;;
+		esac
+	done <<EOF
+$staged_rust_files
+EOF
+	return 1
 }
 
 # --- 0. 逃生门 -------------------------------------------------------------
@@ -62,6 +125,44 @@ if [ "$(git config --bool --get rustlua.hooks 2>/dev/null)" = "false" ]; then
 	bad "pre-commit SKIPPED (git config rustlua.hooks=false)：本地门禁已关闭，lint 失败会原样留给 CI。"
 	exit 0
 fi
+
+# --- 0a. 工具前置：缺了会**静默变成跳过**，所以判红 ---------------------------
+# 暂存集筛选（grep）与诊断路径归一化（sed/tr/sort）都靠这几个外部命令。缺了它们，那几行命令替换
+# 只会返回空字符串，hook 于是走进"没碰 Rust 就跳过"的早退分支——看起来一切正常，实际什么都没测。
+# 这不是假设：直接 `sh git-hooks/pre-commit`（绕开了 git 给 hook 准备的 PATH）时 grep 不在，
+# 两次运行都以"没碰 Rust，跳过"通过。按本仓库口径，跑不了的门禁判红而不是放行。
+# 放在最前面（而不是像 cargo 那样放在"没碰 Rust"判断之后）：这属于"hook 根本没法工作"，
+# 与"本次提交没什么要查的"是两件事，不能混在同一个早退里。
+missing_tools=""
+for tool in grep sed tr sort; do
+	command -v "$tool" >/dev/null 2>&1 || missing_tools="$missing_tools $tool"
+done
+if [ -n "$missing_tools" ]; then
+	bad "pre-commit FAILED：PATH 上找不到：$missing_tools"
+	bad "  这些是 hook 自己筛暂存集、归一化诊断路径要用的；缺了会静默退化成「跳过」，所以判红。"
+	bad "  git 执行 hook 时会把自己 usr/bin 放进 PATH，正常提交不会缺；手工调 sh 时才可能缺。"
+	exit 1
+fi
+
+# --- 0b. 作用域（详见头部注释）：默认只对**本次提交**负责 --------------------
+# commit   = 只有本次提交里的文件才判红；提交之外的失败逐条点名 + PARTIAL 措辞。
+# worktree = 旧口径，工作树里任何一处失败都拦提交。
+scope=$(git config --get rustlua.scope 2>/dev/null || true)
+[ -n "$scope" ] || scope=commit
+case "$scope" in
+	commit | worktree) ;;
+	*)
+		bad "note：rustlua.scope=$scope 不是合法值（commit|worktree），按 commit 执行。"
+		scope=commit
+		;;
+esac
+# 本次有没有「提交之外的失败」要报告（只影响措辞，不冒充通过）。
+partial=0
+
+# 暂存集里**只有 .rs** 的那份清单：判「失败在不在本次提交里」时用它。
+# （.toml/.lock 没有格式概念，clippy 诊断也不会指向它们。）
+staged_rust_files=$(git -C "$root" diff --cached --name-only --diff-filter=ACMR |
+	grep -E '^engine/.+\.rs$' || true)
 
 # --- 1. 行尾空白 / 冲突标记（查暂存区，零成本，永远真跑）------------------
 if ! git -C "$root" diff --cached --check; then
@@ -100,13 +201,49 @@ fi
 # 门在 engine/ 里跑（cargo fmt/clippy 都以 workspace 根为 cwd，与 CI 的 working-directory 一致）。
 cd "$root/engine" || exit 1
 
-# --- 3. 格式（与 CI 的 Format 步完全一致）---------------------------------
-if ! step "cargo fmt --all -- --check" cargo fmt --all -- --check; then
-	bad ""
-	bad "pre-commit FAILED：格式检查不通过（CI 的 'Format' 步会同样判红）。"
-	bad "  修复： cd engine && cargo fmt --all   然后重新 git add 被改动的 .rs"
-	bad "  单次跳过： RUSTLUA_SKIP_PRECOMMIT=1 git commit ...（失败留给 CI，别当常规）"
-	exit 1
+# --- 3. 格式（与 CI 的 Format 步同一条命令；拦谁由 rustlua.scope 决定）-------
+capture "cargo fmt --all -- --check" cargo fmt --all -- --check
+if [ "$captured_code" -ne 0 ]; then
+	# 判红之前先分类：失败的文件在不在**本次提交**里。
+	in_commit=""
+	out_of_commit=""
+	while IFS= read -r fmt_line; do
+		case "$fmt_line" in
+			'Diff in '*) ;;
+			*) continue ;;
+		esac
+		fmt_path=$(normalize_fmt_path "$fmt_line")
+		if fmt_path_is_staged "$fmt_path"; then
+			in_commit="${in_commit}${fmt_path}
+"
+		else
+			out_of_commit="${out_of_commit}${fmt_path}
+"
+		fi
+	done <<EOF_FMT
+$captured
+EOF_FMT
+	if [ "$scope" = "worktree" ] || [ -n "$in_commit" ]; then
+		printf '%s\n' "$captured"
+		bad ""
+		bad "pre-commit FAILED：格式检查不通过（CI 的 'Format' 步会同样判红）。"
+		if [ "$scope" = "worktree" ] && [ -z "$in_commit" ]; then
+			bad "  当前 rustlua.scope=worktree：工作树里任何一处失败都拦提交（包括不在本次提交里的）。"
+		else
+			bad "  失败文件在本次提交里："
+			printf '%s' "$in_commit" | sort -u | grep -v '^[[:space:]]*$' | sed 's/^/    /' >&2
+		fi
+		bad "  修复： cd engine && cargo fmt --all   然后重新 git add 被改动的 .rs"
+		bad "  单次跳过： RUSTLUA_SKIP_PRECOMMIT=1 git commit ...（失败留给 CI，别当常规）"
+		exit 1
+	fi
+	# 只有提交之外的失败：不拦这一次提交，但必须点名，并按 PARTIAL 措辞报告（不冒充通过）。
+	partial=1
+	bad "pre-commit note：工作树里有格式不合格的文件，但它们**不在本次提交里**——不拦这一次提交："
+	# cargo fmt 每个 hunk 打一行 `Diff in <文件>`，同一个文件会出现多次，去重后再点名。
+	printf '%s' "$out_of_commit" | sort -u | grep -v '^[[:space:]]*$' | sed 's/^/    /' >&2
+	bad "  判据：CI 的 lint job 检查的是这个提交（checkout 后只看提交内容），所以对这个提交它是绿的。"
+	bad "  要连整棵工作树一起焊干净： git config rustlua.scope worktree"
 fi
 
 # --- 4. clippy（fast 默认；full 与 CI 完全对齐）---------------------------
@@ -134,13 +271,30 @@ else
 	set -- clippy --workspace --all-targets -- -D warnings
 fi
 
-if ! step "$clippy_desc" cargo "$@"; then
-	bad ""
-	bad "pre-commit FAILED：clippy 判红（-D warnings，与 CI 的 'Clippy' 步同口径）。"
-	bad "  上面是 clippy 自己的输出，位置精确到文件与行。"
-	bad "  确认是本地环境问题而非代码问题时的逃生门：RUSTLUA_SKIP_PRECOMMIT=1 git commit ...（失败留给 CI）"
-	exit 1
+capture "$clippy_desc" cargo "$@"
+if [ "$captured_code" -ne 0 ]; then
+	if [ "$scope" = "worktree" ] || captured_names_staged_file; then
+		printf '%s\n' "$captured"
+		bad ""
+		bad "pre-commit FAILED：clippy 判红（-D warnings，与 CI 的 'Clippy' 步同口径）。"
+		if [ "$scope" = "worktree" ] && ! captured_names_staged_file; then
+			bad "  当前 rustlua.scope=worktree：工作树里任何一处失败都拦提交（包括不在本次提交里的）。"
+		fi
+		bad "  上面是 clippy 自己的输出，位置精确到文件与行。"
+		bad "  确认是本地环境问题而非代码问题时的逃生门：RUSTLUA_SKIP_PRECOMMIT=1 git commit ...（失败留给 CI）"
+		exit 1
+	fi
+	# 只有提交之外的失败：诊断里没出现本次提交的文件，不拦，但点名 + PARTIAL。
+	partial=1
+	bad "pre-commit note：clippy 判红，但诊断里没有出现本次提交的文件——不拦这一次提交："
+	printf '%s\n' "$captured" | grep -E '^(error|warning)' | head -n 10 | sed 's/^/    /' >&2
+	bad "  完整诊断： cd engine && cargo clippy --workspace --all-targets -- -D warnings"
+	bad "  要连整棵工作树一起焊干净： git config rustlua.scope worktree"
 fi
 
-say "pre-commit ok: fmt + clippy ($mode) ($(elapsed)s)"
+if [ "$partial" = "1" ]; then
+	say "pre-commit PARTIAL: fmt + clippy ($mode) 只对本次提交负责；工作树里另有提交之外的失败（见上） ($(elapsed)s)"
+else
+	say "pre-commit ok: fmt + clippy ($mode) ($(elapsed)s)"
+fi
 exit 0

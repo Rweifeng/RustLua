@@ -214,6 +214,13 @@ $r = Commit-Hook $repo @{ 'RUSTLUA_HOOKS_DRY_RUN' = '1' }
 Assert-True ($r.Out -match 'note：下列文件的工作区内容与暂存区不同') '暂存/工作区漂移时打印提示'
 Assert-True ($r.Out -match 'engine/crates/fake/src/lib\.rs') '漂移提示点到具体文件'
 
+# A7 非法的 scope 值回落 commit 并报警，而不是静默降级（与 A4 的 clippy 档位同口径）。
+$null = Invoke-Native $git @('-C', $repo, 'config', 'rustlua.scope', 'bogus')
+Set-RepoFile $repo 'engine\crates\fake\src\lib.rs' ($cleanRs + "// A7`n")
+$r = Commit-Staged $repo @{ 'RUSTLUA_HOOKS_DRY_RUN' = '1' }
+Assert-True ($r.Out -match 'rustlua\.scope=bogus 不是合法值') '非法 scope 值显式报警'
+$null = Invoke-Native $git @('-C', $repo, 'config', '--unset', 'rustlua.scope')
+
 Remove-Item -LiteralPath $repo -Recurse -Force
 
 Write-Host '== B. 真拦（不 dry-run：退出码与 HEAD 是否移动才算数）==' -ForegroundColor Cyan
@@ -288,6 +295,71 @@ else {
     Assert-True ($r.Code -ne 0) '缺 cargo 时碰 Rust 的提交判红'
     Assert-True ($r.Out -match '找不到 cargo') '缺 cargo 的原因写在输出里'
 }
+
+# B7 假红消除：**提交之外**的未跟踪未格式化 .rs（= 另一个会话的在途活）不得挡住我的提交。
+# 用 examples/ 下的文件而不是 src/scratch.rs：`cargo fmt --all` 只看**目标的**文件，
+# 摆在 src/ 下但没被 lib.rs 引用的 .rs 根本不会被检查——那会让这条用例空转。
+$null = Invoke-Native $git @('-C', $repo, 'reset', '--quiet', '--hard', 'HEAD')
+Set-RepoFile $repo 'engine\crates\fake\examples\scratch.rs' $uglyRs
+Set-RepoFile $repo 'engine\crates\fake\src\lib.rs' ($cleanRs + "// B7`n")
+$null = Invoke-Native $git @('-C', $repo, 'add', 'engine/crates/fake/src/lib.rs')
+$base = Get-Head $repo
+$r = Commit-Hook $repo
+Assert-True ($r.Code -eq 0) '提交之外的未跟踪未格式化 .rs 不再挡住提交（假红已消除）'
+Assert-True ($r.Out -match '不在本次提交里') '非阻塞情形点名说明失败落在提交之外'
+Assert-True ($r.Out -match 'PARTIAL') '非阻塞的结论按 PARTIAL 措辞，不冒充 ok'
+Assert-True ((Get-Head $repo) -ne $base) '放行确实完成了提交（不是假通过）'
+
+# B8 旧口径可恢复：同一场景下 scope=worktree 必须重新拦住（证明开关真的起作用）。
+Set-RepoFile $repo 'engine\crates\fake\src\lib.rs' ($cleanRs + "// B8`n")
+$null = Invoke-Native $git @('-C', $repo, 'add', 'engine/crates/fake/src/lib.rs')
+$null = Invoke-Native $git @('-C', $repo, 'config', 'rustlua.scope', 'worktree')
+$base = Get-Head $repo
+$r = Commit-Hook $repo
+Assert-True ($r.Code -ne 0) 'rustlua.scope=worktree 时工作树里的失败重新拦提交'
+Assert-True ((Get-Head $repo) -eq $base) '被拦下后 HEAD 未移动'
+$null = Invoke-Native $git @('-C', $repo, 'config', '--unset', 'rustlua.scope')
+
+# B9 反向保护：**暂存区自己**的未格式化 .rs 必须判红，且不许被归到"提交之外"混过去。
+# 场景同时摆一份提交之外的失败，用来验证分类器真的在分辨，而不是"一有失败就放行"。
+Set-RepoFile $repo 'engine\crates\fake\src\lib.rs' ($cleanRs + "// B9 clean`n")
+Set-RepoFile $repo 'engine\crates\fake\examples\ugly_staged.rs' $uglyRs
+$null = Invoke-Native $git @('-C', $repo, 'add', 'engine/crates/fake/src/lib.rs', 'engine/crates/fake/examples/ugly_staged.rs')
+$base = Get-Head $repo
+$r = Commit-Hook $repo
+Assert-True ($r.Code -ne 0) '暂存区自己的未格式化 .rs 仍然判红'
+Assert-True ($r.Out -match '失败文件在本次提交里') '判红时说明失败文件就在本次提交里'
+Assert-True ($r.Out -match 'ugly_staged\.rs') '判红时点到具体文件'
+Assert-True ((Get-Head $repo) -eq $base) '判红后 HEAD 未移动'
+$null = Invoke-Native $git @('-C', $repo, 'rm', '--cached', '--quiet', 'engine/crates/fake/examples/ugly_staged.rs')
+
+# B10 工具前置的**依据**（把前提钉住，而不是假定它）。
+# 实测：git 执行 hook 时会把它自己的 usr/bin 放进 PATH 头部（探针读到 `/usr/bin/grep`，
+# PATH 里出现 `:/usr/bin:`），所以"缺 grep/sed/tr"这种情形**在真实提交里构造不出来**——
+# 先前那版 B10 想构造它，结果红在了别处（`git add --all` 把 B7/B9 残留的未跟踪脏文件一起暂存了）。
+# 于是改成钉住前提本身：哪天 git 不再自带这些工具，这条会先红并指向真正的原因。
+# hook 里的工具前置（0a 段）作为纵深防御留着——手工 `sh git-hooks/pre-commit` 时它真的会红。
+$keptDirs = @()
+$droppedDirs = @()
+foreach ($dir in ($env:PATH -split ';' | Where-Object { $_ })) {
+    $unixHere = @('grep.exe', 'sed.exe', 'tr.exe') | Where-Object { Test-Path -LiteralPath (Join-Path $dir $_) }
+    if ($unixHere) { $droppedDirs += $dir } else { $keptDirs += $dir }
+}
+$noUnixPath = ($keptDirs -join ';')
+$probeRepo = Join-Path $env:TEMP ('git-hooks-path-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Force -Path (Join-Path $probeRepo '.githooks') | Out-Null
+[IO.File]::WriteAllText((Join-Path $probeRepo '.githooks\pre-commit'),
+    "#!/bin/sh`nprintf 'tools: %s %s %s`n' `"`$(command -v grep)`" `"`$(command -v sed)`" `"`$(command -v tr)`"`n",
+    (New-Object Text.UTF8Encoding($false)))
+$null = Invoke-Native $git @('-C', $probeRepo, 'init', '--quiet')
+$null = Invoke-Native $git @('-C', $probeRepo, 'config', 'user.email', 'hook-test@example.com')
+$null = Invoke-Native $git @('-C', $probeRepo, 'config', 'user.name', 'hook-test')
+$null = Invoke-Native $git @('-C', $probeRepo, 'config', 'core.hooksPath', '.githooks')
+Set-Content -LiteralPath (Join-Path $probeRepo 'x.txt') -Value 'x' -Encoding UTF8
+$null = Invoke-Native $git @('-C', $probeRepo, 'add', '--all')
+$r = Invoke-Native $git @('-C', $probeRepo, 'commit', '--quiet', '-m', 'probe') -Environment @{ 'PATH' = $noUnixPath }
+Assert-True ($r.Out -match 'tools: .*grep.*sed.*tr') 'git 执行 hook 时自带 grep/sed/tr（hook 工具前置的依据；这条红了说明该前提变了）'
+Remove-Item -LiteralPath $probeRepo -Recurse -Force
 
 Remove-Item -LiteralPath $repo -Recurse -Force
 

@@ -114,6 +114,10 @@ if (-not $declaredHooksPath) { $declaredHooksPath = '' }
 $hooksOff = (Get-GitText @('-C', $repoRoot, 'config', '--bool', '--get', 'rustlua.hooks'))
 $clippyMode = (Get-GitText @('-C', $repoRoot, 'config', '--get', 'rustlua.clippy'))
 if (-not $clippyMode) { $clippyMode = 'fast（默认）' }
+# 作用域：默认 commit = 只对**本次提交**负责（与 CI 看的东西一致）。见 docs/34 §3.5。
+# 体检必须把它报出来——没人知道存在的开关等于不存在。
+$scopeMode = (Get-GitText @('-C', $repoRoot, 'config', '--get', 'rustlua.scope'))
+if (-not $scopeMode) { $scopeMode = 'commit（默认：只对本次提交负责）' }
 $cargoCmd = Get-Command cargo -ErrorAction SilentlyContinue
 
 $hookFiles = @()
@@ -138,6 +142,7 @@ function Show-State {
     }
     Write-Host "  hooks 目录 = $hooksDirName/，脚本：$(if ($hookFiles.Count) { $hookFiles -join ', ' } else { '(空)' })"
     Write-Host "  clippy 档位 = $clippyMode"
+    Write-Host "  scope 档位 = $scopeMode"
     Write-Host "  rustlua.hooks = $(if ($hooksOff) { $hooksOff } else { '(未设置，即开启)' })"
     Write-Host "  cargo 可用 = $(if ($cargoCmd) { $cargoCmd.Source } else { '否 —— 装了 hook 后碰 Rust 的提交会被判红' })"
     if ($legacyHooks.Count) {
