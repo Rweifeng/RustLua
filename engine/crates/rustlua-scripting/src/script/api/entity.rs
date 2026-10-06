@@ -50,12 +50,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     entity.set(
         "find",
         lua.create_function(move |_, name: String| {
-            Ok(s.borrow()
-                .entity_state
-                .names
-                .get(&name)
-                .copied()
-                .map(entity_to_lua))
+            Ok(s.borrow().entity_state.names.get(&name).map(entity_to_lua))
         })?,
     )?;
     let s = Rc::clone(&state);
@@ -96,7 +91,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             let mut state = s.lua_borrow_mut()?;
             require_alive(&state, id)?;
             state.world.despawn(id).map_err(world_error)?;
-            state.entity_state.names.retain(|_, value| *value != id);
+            state.entity_state.names.remove_entity(id);
             state.entity_state.persist.retain(|_, value| *value != id);
             state.entity_state.health.remove(&id);
             let _ = state.physics.world2d.remove_body(id);

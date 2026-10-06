@@ -889,9 +889,7 @@ impl LuaRuntime {
         spawn: &PrefabSpawn,
     ) -> Result<(), LuaBridgeError> {
         for (name, handle) in &spawn.names {
-            if state.entity_state.names.get(name) == Some(handle) {
-                state.entity_state.names.remove(name);
-            }
+            state.entity_state.names.remove_name_if(name, *handle);
         }
         for handle in &spawn.handles {
             state.prefab_ui_nodes.remove(&(handle.index() as u64));

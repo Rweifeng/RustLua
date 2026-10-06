@@ -1,6 +1,6 @@
 use mlua::{Lua, Result as LuaResult, Value};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
     rc::Rc,
@@ -98,13 +98,131 @@ pub const LUA_API_PROBE: &str = r#"
 end)()
 "#;
 
+// 测试专用：反向名索引的重建次数。契约是「改名才重建、稳态反查零重建」，而重建产出的表与
+// 重建前逐项相同——从外部观察不到，只能数次数（与 `rustlua-ecs` 的 `ORDER_REBUILDS` 同一手法）。
+// 用 thread_local：`cargo test` 并行跑用例，全局计数会互相污染。
+#[cfg(test)]
+thread_local! {
+    static ENTITY_NAME_REBUILDS: Cell<u32> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn entity_name_rebuilds() -> u32 {
+    ENTITY_NAME_REBUILDS.with(|count| count.get())
+}
+
+/// 实体名索引：**正向**（名字 → 实体）是唯一真源，**反向**（实体 → 它的名字们）是惰性派生的缓存。
+///
+/// **为什么要合成一个类型**（`docs/60` §6.1 复核，2026-10-06）：反向查找原本是
+/// `by_name.iter().find(...)` 线性扫，而宿主在**实体循环里**调它（`host/runtime_scene/mesh_ui.rs`
+/// 的 `entity_name`，每个实体一次）→ 实体数 n 时每帧 O(n²)。
+///
+/// 只"再加一张反向表"是不够的——两张表各自维护就一定会漂移，而漂移的后果（名字张冠李戴）
+/// 比慢一点严重得多。所以两个方向由**这一个类型**一起管：改名的入口只有下面这几个方法，
+/// 脏标记在方法里置位，**没有"忘了同步反向表"这种可能**。
+///
+/// 重建策略与 `rustlua-ecs` 的 `TypedStorage::ensure_order` 同构：改动只标脏，
+/// 下一次反查整体重建一次——稳态（无改名）每帧零重建。
+#[derive(Debug, Default)]
+struct EntityNames {
+    /// 名字 → 实体。BTreeMap 的有序性是 `entity_names_by_slot` 这类**确定性输出**的基础。
+    by_name: BTreeMap<String, EntityId>,
+    /// 实体 → 它登记过的名字，按 `by_name` 的键序收集：`first_name` 取第一个，与改造前
+    /// `iter().find` 的结果**逐字相同**（同一实体挂多个名字时这一点尤其重要）。
+    by_entity: RefCell<HashMap<EntityId, Vec<String>>>,
+    reverse_dirty: Cell<bool>,
+}
+
+impl EntityNames {
+    fn clear(&mut self) {
+        self.by_name.clear();
+        self.reverse_dirty.set(true);
+    }
+
+    /// 登记一个名字。语义与改造前的 `BTreeMap::insert` **完全一致**：同名会改指到新实体，
+    /// 而同一实体拿到新名字时**旧名字仍然指向它**（"名字可冲突、可多个"是本表的既有契约，
+    /// 本次只加索引不改语义）。
+    fn insert(&mut self, name: String, id: EntityId) {
+        self.by_name.insert(name, id);
+        self.reverse_dirty.set(true);
+    }
+
+    fn get(&self, name: &str) -> Option<EntityId> {
+        self.by_name.get(name).copied()
+    }
+
+    fn contains_key(&self, name: &str) -> bool {
+        self.by_name.contains_key(name)
+    }
+
+    /// 名字仍指向 `id` 时才摘掉它（`despawn_prefab_state` 用：只摘自己那一份，不误伤别人）。
+    fn remove_name_if(&mut self, name: &str, id: EntityId) {
+        if self.by_name.get(name) == Some(&id) {
+            self.by_name.remove(name);
+            self.reverse_dirty.set(true);
+        }
+    }
+
+    /// 摘掉所有指向 `id` 的名字（实体销毁路径）。
+    fn remove_entity(&mut self, id: EntityId) {
+        let before = self.by_name.len();
+        self.by_name.retain(|_, value| *value != id);
+        if self.by_name.len() != before {
+            self.reverse_dirty.set(true);
+        }
+    }
+
+    /// 按名字有序遍历（`entity_names_by_slot` 等确定性输出的入口）。
+    fn iter_by_name(&self) -> impl Iterator<Item = (&String, &EntityId)> {
+        self.by_name.iter()
+    }
+
+    /// 反查缓存的惰性重建。走 `&self` + 内部可变性——外层 `ScriptState` 的借用方式一字不改
+    /// （所以这几个 getter 不会给 Lua 重入多开一个可变借用的口子）。
+    fn ensure_reverse(&self) {
+        if !self.reverse_dirty.get() {
+            return;
+        }
+        #[cfg(test)]
+        ENTITY_NAME_REBUILDS.with(|count| count.set(count.get() + 1));
+        let mut built: HashMap<EntityId, Vec<String>> = HashMap::new();
+        for (name, id) in &self.by_name {
+            built.entry(*id).or_default().push(name.clone());
+        }
+        *self.by_entity.borrow_mut() = built;
+        self.reverse_dirty.set(false);
+    }
+
+    /// `entity_name` 的实现：与旧 `iter().find` **同结果**（BTreeMap 键序里的第一个）。
+    fn first_name(&self, id: EntityId) -> Option<String> {
+        self.ensure_reverse();
+        self.by_entity
+            .borrow()
+            .get(&id)
+            .and_then(|names| names.first().cloned())
+    }
+
+    /// 该实体的**任一**名字命中谓词即为真（`is_entity_scene_text_hidden` 用：
+    /// 原来是线性扫全表，现在是 O(该实体的名字数)）。
+    fn any_name_matches(&self, id: EntityId, predicate: impl Fn(&str) -> bool) -> bool {
+        self.ensure_reverse();
+        self.by_entity
+            .borrow()
+            .get(&id)
+            .is_some_and(|names| names.iter().any(|name| predicate(name)))
+    }
+}
+
 /// docs/60 §4.1：`ScriptState` 按领域拆分后的**实体注册域**。
 ///
 /// 场景切换清理走 [`EntityState::clear_for_scene_transition`]——新字段若属于场景
 /// 生命周期，加进这里而不是散落的 `state.x.clear()` 行。
 #[derive(Debug, Default)]
 struct EntityState {
-    names: BTreeMap<String, EntityId>,
+    /// 名字索引。**P3-① 复核（docs/60 §6.1，2026-10-06）**：反向查询曾经是线性扫全表，
+    /// 而宿主每帧在实体循环里查一次 → O(n²)。现在正向真源与反向缓存由 [`EntityNames`]
+    /// 一起维护（惰性重建 + 脏标记），反查是 O(1)。
+    names: EntityNames,
     health: HashMap<EntityId, f32>,
     /// Stable project-level entity IDs (`persist_id` → live entity). Distinct
     /// from `names` (display/authoring name, collision-prone): a persist ID is
@@ -656,11 +774,11 @@ impl LuaRuntime {
     #[must_use]
     pub fn is_entity_scene_text_hidden(&self, id: EntityId) -> bool {
         let state = self.state.borrow();
+        // 只扫**这个实体自己的**名字（原来是扫全表每一条），"任一名字命中即隐藏"的语义原样保留。
         state
             .entity_state
             .names
-            .iter()
-            .any(|(name, entity)| *entity == id && state.ui_state.scene_text_hidden.contains(name))
+            .any_name_matches(id, |name| state.ui_state.scene_text_hidden.contains(name))
     }
 
     /// 运行期 spawn 的 UI 预设实体的布局节点（键 = 活实体槽位号）。宿主每帧解算场景
@@ -701,7 +819,7 @@ impl LuaRuntime {
         state
             .entity_state
             .names
-            .iter()
+            .iter_by_name()
             .map(|(name, handle)| (handle.index() as u64, name.clone()))
             .collect()
     }
@@ -825,15 +943,12 @@ impl LuaRuntime {
     /// spawned from a serialized scene keep their scene name; entities spawned
     /// by Lua via `entity.spawn` are registered with the name given at spawn.
     /// Entities never named (or dropped from `names` after despawn) return `None`.
+    ///
+    /// **同一实体挂多个名字时取 `by_name` 键序里的第一个**——这与改造前那条
+    /// `iter().find(...)` 的结果逐字相同；变的只是复杂度（O(n) 线性扫 → O(1) 反查）。
     #[must_use]
     pub fn entity_name(&self, id: EntityId) -> Option<String> {
-        self.state
-            .borrow()
-            .entity_state
-            .names
-            .iter()
-            .find(|(_, registered)| **registered == id)
-            .map(|(name, _)| name.clone())
+        self.state.borrow().entity_state.names.first_name(id)
     }
 
     /// Returns the entity whose `Camera` the passes should use, if Lua selected one with
