@@ -101,13 +101,18 @@ EOF
 	return 1
 }
 
-# $captured 里有没有出现本次暂存的 Rust 文件？cargo 在 engine/ 下跑，诊断路径是 `crates/...`
-# 形式，而暂存路径是 `engine/crates/...`，所以比对时去掉 engine/ 前缀。
+# $captured 里有没有出现本次暂存的 Rust 文件？cargo 在 engine/ 下跑，诊断路径是 `crates\a\b.rs`
+# 形式，而暂存路径是 `engine/crates/a/b.rs`，所以比对时去掉 engine/ 前缀。
+#
+# **必须先归一化反斜杠**：cargo 在 Windows 上打的是 `crates\a\b.rs`，git 给的是 `crates/a/b.rs`，
+# 不归一化就永远比不上——clippy 的失败会被整批误判成"提交之外"，等于 clippy 这一半从没拦过任何东西。
+# （这个假阴性是上一批引入的，用例 B11 专门钉它：暂存一份自己带告警的 .rs，提交必须判红。）
 captured_names_staged_file() {
+	normalized=$(printf '%s' "$captured" | tr '\\' '/')
 	while IFS= read -r staged; do
 		[ -n "$staged" ] || continue
 		rel=${staged#engine/}
-		case "$captured" in
+		case "$normalized" in
 			*"$rel"*) return 0 ;;
 		esac
 	done <<EOF

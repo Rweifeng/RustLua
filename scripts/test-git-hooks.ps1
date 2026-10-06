@@ -361,6 +361,23 @@ $r = Invoke-Native $git @('-C', $probeRepo, 'commit', '--quiet', '-m', 'probe') 
 Assert-True ($r.Out -match 'tools: .*grep.*sed.*tr') 'git 执行 hook 时自带 grep/sed/tr（hook 工具前置的依据；这条红了说明该前提变了）'
 Remove-Item -LiteralPath $probeRepo -Recurse -Force
 
+# B11 反向保护：**本次提交自己**的 clippy 报错必须判红。
+# 这一条来自实测的假阴性：`captured_names_staged_file` 拿 git 的正斜杠暂存路径去比 cargo 在 Windows 上
+# 输出的**反斜杠**诊断路径，永远比不上 → clippy 的失败一律被归成"提交之外"，clippy 这一半等于没拦过。
+# 造法：先清干净残留的未跟踪文件（`reset --hard` 不动它们；B7/B9/B10 留下的脏 .rs 会被 `add --all`
+# 一起暂存，于是红在 fmt 而不是 clippy），再暂存一份带告警的 lib.rs，最后把 clippy 档位切到 fast。
+Set-ClippyMode $repo 'fast'
+$null = Invoke-Native $git @('-C', $repo, 'reset', '--quiet', '--hard', 'HEAD')
+$null = Invoke-Native $git @('-C', $repo, 'clean', '--quiet', '-fd')
+Set-RepoFile $repo 'engine\crates\fake\src\lib.rs' "pub fn value() -> i32 {`n    let unused = 1;`n    42`n}`n"
+Add-All $repo
+$base = Get-Head $repo
+$r = Commit-Hook $repo
+Assert-True ($r.Code -ne 0) '本次提交自己的 clippy 报错必须判红'
+Assert-True ($r.Out -match 'clippy 判红') '判红原因指向 clippy 而不是别处'
+Assert-True ((Get-Head $repo) -eq $base) '判红后 HEAD 未移动'
+Set-ClippyMode $repo 'off'
+
 Remove-Item -LiteralPath $repo -Recurse -Force
 
 Write-Host '== C. 与 CI lint job 的命令口径不漂移 ==' -ForegroundColor Cyan
