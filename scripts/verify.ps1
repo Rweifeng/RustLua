@@ -858,7 +858,14 @@ if ($Mvp -or $MvpOnly) {
         # （黄金文件来自 HEAD 的旧代码，不是新实现自己吐的数）；另守锚点表与引擎
         # UiLayoutPreset::ALL 逐值对账、预设能加载且登记进 validate_data 启动门、
         # 关面板后每个 id 都"不存在或不可见"、`.ui.json` 不命中 assetc 的开发产物裁除。
-        "jhyt_m59_ui_prefab"
+        "jhyt_m59_ui_prefab",
+        # M61 引擎桥（`.prefab` 作 UI 预设的运行时载体）：`prefab.spawn` 走 VFS 读预设并把
+        # `Text`/`Image`/`UiEvents`/`UiLayout` 落进**活世界**，宿主本帧真正用于绘制的那份矩形
+        # 逐值等于预设（含父链偏移）、无 `UiLayout` 的 UI 实体不参与解算也不会被画、命中框与
+        # 绘制框同源（矩形内派发一次、矩形外零次）、`prefab.set_text` 写的就是渲染读的那份组件
+        # （三条误用各自报错点名）、`prefab.despawn` 撤实体也撤布局节点，且门面场景自己的按钮
+        # 在 spawn/despawn 前后都照常派发（并表/摘表不许污染场景那份快照）。
+        "jhyt_m61_prefab_runtime"
     )
     $exampleDir = Join-Path $engineRoot "crates\game\examples"
 

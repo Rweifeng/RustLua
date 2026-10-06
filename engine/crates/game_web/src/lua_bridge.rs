@@ -267,7 +267,7 @@ pub fn lua_missing_globals(names_json: &str) -> Result<String, JsValue> {
 
 /// 桌面侧的 Lua API 面基线，**编译期内嵌**进 wasm。
 ///
-/// 这份文件同时被 `api_surface_snapshot` 的桌面快照门钉住（41 张模块表 / 275 个函数）。
+/// 这份文件同时被 `api_surface_snapshot` 的桌面快照门钉住（42 张模块表 / 281 个函数）。
 /// 内嵌的理由是消灭手抄：`web-runtime.js` 原先自己列一份宿主全局名单，漏掉的名字既拿不到
 /// 缺失代理、也不在诊断里露面，于是脚本以"取 nil"的姿态崩掉、根因看起来像脚本写错
 ///（`camera2d` 事故的同一类；实测这份手抄名单已经少 4 个真实模块表）。

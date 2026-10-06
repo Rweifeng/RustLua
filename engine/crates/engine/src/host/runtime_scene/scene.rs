@@ -377,6 +377,24 @@ impl RuntimeScene {
             .collect()
     }
 
+    /// 运行期 `prefab.spawn` 实例**本帧真正用于绘制**的屏幕矩形，按实体名给出。
+    ///
+    /// 这就是「预设真的画出来了」的可断言读数：`push_scene_ui` 画 quad 用的正是同一批
+    /// `ui_layout_rects`，所以这道读数不是第二套布局计算，而是将渲染消费的那份暴露出来。
+    /// 名字来自脚本侧的 spawn 登记表（槽位号还原不出 `EntityId`，缺 generation）。
+    pub fn prefab_ui_rects(&mut self, viewport: [f32; 2]) -> Vec<(String, UiRect)> {
+        self.ensure_scene_ui_layout(viewport);
+        let names = self.script.prefab_spawn_names();
+        names
+            .iter()
+            .filter_map(|(key, name)| {
+                self.ui_layout_rects
+                    .get(key)
+                    .map(|node| (name.clone(), node.rect))
+            })
+            .collect()
+    }
+
     /// 覆盖 project.toml 的文本渲染模式（编辑器保存设置后重建运行时可注入）。
     pub fn set_text_render_mode(&mut self, mode: TextRenderMode) {
         self.text_render_mode = mode;
@@ -525,6 +543,7 @@ impl RuntimeScene {
             text_render_mode,
             ui_scene_nodes,
             ui_layout_rects: BTreeMap::new(),
+            applied_prefab_ui_nodes: BTreeMap::new(),
             step_scheduler: Scheduler::new(),
             frame_scheduler: Scheduler::new(),
             step_system_names: Vec::new(),

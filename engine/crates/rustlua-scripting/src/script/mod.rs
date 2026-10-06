@@ -227,7 +227,7 @@ struct SaveState {
 }
 
 #[derive(Debug, Default)]
-struct ScriptState {
+pub(crate) struct ScriptState {
     delta_seconds: f32,
     quit_requested: bool,
     input: InputSnapshot,
@@ -273,6 +273,16 @@ struct ScriptState {
     /// 按地图名索引（而不是按场景索引），并刻意跨过
     /// `process_scene_transition` 保留；`schema_defs` 则只跟踪数据文件校验器。
     map_state_schemas: HashMap<String, serde_json::Value>,
+    /// 运行期 `prefab.spawn` 的活实例（handle → 活世界落点）。despawn 与按名查节点都走
+    /// 这张表；刻意不进场景簿记——切图不该把动态 UI 实例当场景实体重生（见
+    /// `scene_spawn::PrefabSpawn` 头注释）。
+    prefab_spawns: HashMap<i64, scene_spawn::PrefabSpawn>,
+    next_prefab_handle: i64,
+    /// 运行期 spawn 出去的 UI 预设实体的**布局节点**（键 = 活实体槽位号）。
+    /// 宿主每帧解算场景 UI 矩形时把这张表并进自己的快照，于是"画得出"与"点得中"
+    /// 对 spawn 的实体同样成立；场景加载那一份走同一个 builder（见
+    /// `rustlua_ui::ui_scene_layout::build_ui_scene_nodes`）。
+    prefab_ui_nodes: BTreeMap<u64, rustlua_ui::ui_scene_layout::UiSceneNode>,
     /// docs/54 §8-②：最近一次场景加载里**坏的 `parent` 边**（悬空父/自环）的可读描述。
     /// 运行时会把这类边当成"没有父"（容错），因此必须同时可发现，否则子树会静默少一层位移。
     scene_parent_issues: Vec<String>,
@@ -651,6 +661,35 @@ impl LuaRuntime {
             .names
             .iter()
             .any(|(name, entity)| *entity == id && state.ui_state.scene_text_hidden.contains(name))
+    }
+
+    /// 运行期 spawn 的 UI 预设实体的布局节点（键 = 活实体槽位号）。宿主每帧解算场景
+    /// UI 矩形前把它并进自己的快照，spawn 出来的 UI 才既画得出也点得中。
+    ///
+    /// 返回**克隆**而不是引用：`RefCell<ScriptState>` 借用期间脚本不能再借用，而宿主
+    /// 解算布局时还要 `with_world`（同一个 state 的另一个字段）。空表 = 本帧没有任何
+    /// spawn 实例，宿主据此跳过合并、一份现有游戏都不付额外拷贝成本。
+    #[must_use]
+    pub fn prefab_ui_nodes(&self) -> BTreeMap<u64, rustlua_ui::ui_scene_layout::UiSceneNode> {
+        self.state.borrow().prefab_ui_nodes.clone()
+    }
+
+    /// 运行期 spawn 实例的「活实体槽位号 → 实体名」，键空间与 [`Self::prefab_ui_nodes`] 一致。
+    /// 宿主把解算出的矩形报回给调用方时用它换名——槽位号还原不出 `EntityId`（缺 generation），
+    /// 因此这里直接给名字，而不是让宿主反查。
+    #[must_use]
+    pub fn prefab_spawn_names(&self) -> BTreeMap<u64, String> {
+        let state = self.state.borrow();
+        state
+            .prefab_spawns
+            .values()
+            .flat_map(|spawn| {
+                spawn
+                    .names
+                    .iter()
+                    .map(|(name, handle)| (handle.index() as u64, name.clone()))
+            })
+            .collect()
     }
 
     /// Gives the host a read view of runtime Lua-created UI panels/images/grids.

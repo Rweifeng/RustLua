@@ -19,6 +19,7 @@ mod globals;
 mod input;
 mod inventory;
 mod physics;
+mod prefab;
 mod renderable;
 mod save;
 mod tilemap;
@@ -41,6 +42,7 @@ pub(super) fn register_all(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaRes
     physics::register(lua, Rc::clone(&state))?;
     audio::register(lua, Rc::clone(&state))?;
     world_data::register(lua, Rc::clone(&state))?;
+    prefab::register(lua, Rc::clone(&state))?;
     // `ui` 表由三段共享：mlua 的 `Table` 是引用语义，克隆只是多一个句柄。
     let ui = lua.create_table()?;
     ui::register(lua, ui.clone(), Rc::clone(&state))?;

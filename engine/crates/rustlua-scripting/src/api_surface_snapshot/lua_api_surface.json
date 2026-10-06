@@ -327,6 +327,16 @@
     },
     {
       "funcs": [
+        "despawn",
+        "node",
+        "root",
+        "set_text",
+        "spawn"
+      ],
+      "name": "prefab"
+    },
+    {
+      "funcs": [
         "get",
         "set"
       ],

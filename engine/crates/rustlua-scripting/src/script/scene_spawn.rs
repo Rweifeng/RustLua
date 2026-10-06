@@ -583,3 +583,112 @@ impl LuaRuntime {
         Ok(id)
     }
 }
+
+/// 一次 `prefab.spawn` 在活世界里的落点：根实体句柄 + 全部实例句柄 + 名字→句柄。
+///
+/// 刻意**不**进 `entity_state.scene_entities`：那张表是"当前场景声明的实体"，随场景加载
+/// 清空并参与切图重生；prefab 实例是运行期动态生成的，混进去会让切图把 UI 实例当场景
+/// 实体重生一遍。名字照旧进 `entity_state.names`（`entity.find` 同源），despawn 时按
+/// 句柄精确摘除——同名实体被实例覆盖时不误删场景那份。
+#[derive(Clone, Debug)]
+pub struct PrefabSpawn {
+    pub root: EntityId,
+    pub handles: Vec<EntityId>,
+    pub(crate) names: BTreeMap<String, EntityId>,
+}
+
+impl LuaRuntime {
+    /// 把一份 `.prefab` 的实体树插进**活世界**（不清场、不动场景簿记）。
+    ///
+    /// 与 `instantiate_scene` 共用 `spawn_entity_components` 这唯一映射点，组件字符串的
+    /// 解析口径不会分叉；parent 边同样第二趟落 `Parent` 组件（子可能先于父 spawn）。
+    pub fn instantiate_prefab(
+        &mut self,
+        prefab: &rustlua_scene::prefab::Prefab,
+    ) -> Result<PrefabSpawn, LuaBridgeError> {
+        let mut state = self.state.borrow_mut();
+        Self::instantiate_prefab_state(&mut state, prefab)
+    }
+
+    pub(crate) fn instantiate_prefab_state(
+        state: &mut ScriptState,
+        prefab: &rustlua_scene::prefab::Prefab,
+    ) -> Result<PrefabSpawn, LuaBridgeError> {
+        let mut map = BTreeMap::new();
+        let mut handles = Vec::with_capacity(prefab.entities.len());
+        let mut names = BTreeMap::new();
+        for (source_id, entity) in &prefab.entities {
+            let handle = Self::spawn_entity_components(
+                state,
+                &entity.name,
+                &entity.components,
+                &entity.resources,
+            )?;
+            map.insert(*source_id, handle);
+            handles.push(handle);
+            if !entity.name.is_empty() {
+                names.insert(entity.name.clone(), handle);
+            }
+        }
+        for (source_id, entity) in &prefab.entities {
+            let Some(&child) = map.get(source_id) else {
+                continue;
+            };
+            let Some(parent) = entity.parent.and_then(|parent| map.get(&parent).copied()) else {
+                continue;
+            };
+            if parent == child {
+                continue;
+            }
+            state
+                .world
+                .insert(child, rustlua_ecs::hierarchy::Parent(parent))
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        let root = map[&prefab.root];
+        // 布局节点登记：宿主画场景 UI 要先按"活实体槽位 → `UiSceneNode`"解析矩形，而这张表
+        // 原本**只在场景加载时**从场景文档建一次。运行期 spawn 的实体不在里头，表现就是
+        // "spawn 返回了句柄、实体真的活着、屏上一个像素都没多"。建节点的规则与场景那份
+        // 同源（同一个 `build_ui_scene_nodes`），只有 key 的来源不同：这里直接用落进世界的
+        // 槽位号，因此父链与宿主的按槽位查找对得上。
+        let nodes = rustlua_ui::ui_scene_layout::build_ui_scene_nodes(
+            prefab
+                .entities
+                .values()
+                .map(|entity| rustlua_ui::ui_scene_layout::UiSceneNodeSource {
+                    key: map[&entity.id].index() as u64,
+                    parent: entity
+                        .parent
+                        .and_then(|parent| map.get(&parent))
+                        .map(|handle| handle.index() as u64),
+                    components: &entity.components,
+                }),
+        );
+        state.prefab_ui_nodes.extend(nodes);
+        Ok(PrefabSpawn {
+            root,
+            handles,
+            names,
+        })
+    }
+
+    /// 拆除一次 prefab 实例：名字按句柄精确摘除，布局节点按槽位摘除，实体逐个 despawn。
+    pub(crate) fn despawn_prefab_state(
+        state: &mut ScriptState,
+        spawn: &PrefabSpawn,
+    ) -> Result<(), LuaBridgeError> {
+        for (name, handle) in &spawn.names {
+            if state.entity_state.names.get(name) == Some(handle) {
+                state.entity_state.names.remove(name);
+            }
+        }
+        for handle in &spawn.handles {
+            state.prefab_ui_nodes.remove(&(handle.index() as u64));
+            state
+                .world
+                .despawn(*handle)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        Ok(())
+    }
+}

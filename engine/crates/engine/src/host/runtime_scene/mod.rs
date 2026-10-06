@@ -30,8 +30,7 @@ use crate::core::{
     text::TextMesh,
     tilemap::Tilemap,
     transform::{Transform, Vec2},
-    ui_layout::UiRectLayout,
-    ui_scene_layout::{ResolvedUiNode, UiSceneNode},
+    ui_scene_layout::{ResolvedUiNode, UiSceneNode, UiSceneNodeSource},
 };
 
 use crate::host::frame::{
@@ -186,6 +185,9 @@ pub struct RuntimeScene {
     pub(crate) text_render_mode: TextRenderMode,
     pub(crate) ui_scene_nodes: BTreeMap<u64, UiSceneNode>,
     pub(crate) ui_layout_rects: BTreeMap<u64, ResolvedUiNode>,
+    /// 已经并进 `ui_scene_nodes` 的**运行期 spawn** 节点（脚本侧报告的那一份的副本）。
+    /// 每帧与脚本的报告比对来判断"spawn/despawn 有没有改动布局"，没变就一个分配都不做。
+    pub(crate) applied_prefab_ui_nodes: BTreeMap<u64, UiSceneNode>,
     /// 共享帧调度管线（M18-03）：每个固定步执行一次的系统。调度器实例**跨帧保留**
     /// （只在 `run_script_steps` 期间临时借出再放回），因此系统的拓扑执行序只算一次，
     /// 而不是每步重建调度器 + 重算拓扑序——固定步一帧可跑 8 步，这份开销纯属浪费。
@@ -468,20 +470,12 @@ fn texture_id_of(
 /// entity slots are allocated in scene iteration order, so layout nodes are
 /// keyed by that order rather than by the scene file's sparse entity ids.
 ///
-/// **只为参与场景 UI 的实体建节点**：带 UI 组件的实体，以及它们的祖先与后代。
-/// 祖先用于解析父链，后代是因为容器的子节点自身可能没有 UI 组件却被容器摆放。
-/// 其余实体（例如上万个纯精灵）不建节点——否则每帧的布局解算会随**总实体数**增长
-/// （`wp0-v4` 实测 10k 纯精灵场景每帧多出 3,339 次分配，正是这张全量节点表造成的）。
+/// "哪些实体参与布局、`preferred_size` 怎么算"这套规则只有**一处**定义：
+/// `crate::core::ui_scene_layout::build_ui_scene_nodes`。运行期 `prefab.spawn` 把同一份
+/// 组件字符串落进活世界后走的是同一个函数（见 `rustlua-scripting` 的 prefab 节点登记），
+/// 于是"场景里会画的 UI，spawn 出来不会画"这种各算一遍的分叉没有落脚的地方。
+/// 这里只剩一层映射：文档实体 id → 活实体槽位序。
 fn build_ui_scene_nodes(scene: &Scene, honor_editor_hidden: bool) -> BTreeMap<u64, UiSceneNode> {
-    /// 决定实体是否参与场景 UI 的组件名。
-    const UI_COMPONENTS: [&str; 6] = [
-        "UiLayout",
-        "Container",
-        "Text",
-        "Image",
-        "UiEvents",
-        "ButtonStates",
-    ];
     let mut id_to_key = BTreeMap::new();
     for entity in scene.entities.values() {
         if honor_editor_hidden && scene.is_entity_hidden_with_ancestors(entity.id) {
@@ -489,76 +483,15 @@ fn build_ui_scene_nodes(scene: &Scene, honor_editor_hidden: bool) -> BTreeMap<u6
         }
         id_to_key.insert(entity.id.0, id_to_key.len() as u64);
     }
-    // 相关集合：UI 实体 + 祖先 + 后代。
-    let mut relevant = HashSet::new();
-    for entity in scene.entities.values() {
-        if UI_COMPONENTS
-            .iter()
-            .any(|name| entity.components.contains_key(*name))
-        {
-            relevant.insert(entity.id.0);
-        }
-    }
-    let mut children: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
-    for entity in scene.entities.values() {
-        if let Some(parent) = entity.parent {
-            children.entry(parent.0).or_default().push(entity.id.0);
-        }
-    }
-    let mut frontier = relevant.iter().copied().collect::<Vec<_>>();
-    while let Some(id) = frontier.pop() {
-        if let Some(entity) = scene.entities.get(&SceneEntityId(id))
-            && let Some(parent) = entity.parent
-            && relevant.insert(parent.0)
-        {
-            frontier.push(parent.0);
-        }
-        if let Some(kids) = children.get(&id) {
-            for kid in kids {
-                if relevant.insert(*kid) {
-                    frontier.push(*kid);
-                }
-            }
-        }
-    }
-    let mut nodes = BTreeMap::new();
-    for entity in scene.entities.values() {
-        if honor_editor_hidden && scene.is_entity_hidden_with_ancestors(entity.id) {
-            continue;
-        }
-        if !relevant.contains(&entity.id.0) {
-            continue;
-        }
-        let Some(&entity_key) = id_to_key.get(&entity.id.0) else {
-            continue;
-        };
-        let layout = entity
-            .components
-            .get("UiLayout")
-            .and_then(|raw| UiRectLayout::from_component_str(raw).ok());
-        let container = entity
-            .components
-            .get("Container")
-            .and_then(|raw| crate::core::ui_layout::ContainerStyle::from_component_str(raw).ok());
-        let preferred_size = if entity.components.contains_key("Image") {
-            layout
-                .as_ref()
-                .map(|layout| layout.resolve([0.0, 0.0]))
-                .map_or([64.0, 64.0], |rect| [rect.w, rect.h])
-        } else {
-            [64.0, 64.0]
-        };
-        nodes.insert(
-            entity_key,
-            UiSceneNode {
+    crate::core::ui_scene_layout::build_ui_scene_nodes(scene.entities.values().filter_map(
+        |entity| {
+            Some(UiSceneNodeSource {
+                key: *id_to_key.get(&entity.id.0)?,
                 parent: entity.parent.and_then(|id| id_to_key.get(&id.0)).copied(),
-                layout,
-                container,
-                preferred_size,
-            },
-        );
-    }
-    nodes
+                components: &entity.components,
+            })
+        },
+    ))
 }
 
 fn startup_scene_path(project_root: &Path) -> String {

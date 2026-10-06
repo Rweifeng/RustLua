@@ -119,6 +119,7 @@ impl RuntimeScene {
     }
 
     pub(super) fn ensure_scene_ui_layout(&mut self, viewport: [f32; 2]) {
+        self.sync_prefab_ui_nodes();
         let (mut resolved, _) = resolve_scene_ui_layout(&self.ui_scene_nodes, viewport);
         // The resolver also gives non-layout roots a preferred-size rect at the
         // origin. That default is for hierarchy traversal; only authored layouts
@@ -131,6 +132,30 @@ impl RuntimeScene {
                     .is_some_and(|node| node.layout.is_some())
         });
         self.ui_layout_rects = resolved;
+    }
+
+    /// 把脚本侧运行期 spawn 的 UI 预设节点并进 `ui_scene_nodes`（键 = 活实体槽位号）。
+    ///
+    /// 并表发生在**解算之前**：矩形、文本 pivot、点击命中框三条读路径都查这张表，
+    /// 分两处维护就等于"画的位置和点中的位置可以不一样"。
+    ///
+    /// spawn 集没变时（现有全部游戏：空表对空表）这里只有一次 `PartialEq` 比较，
+    /// 不产生分配。槽位被复用（场景 UI 实体先被 `entity.destroy`、随后 spawn 落进同一个槽）
+    /// 时 spawn 的节点覆盖旧的：**旧节点本来就是死实体的**，despawn 时按登记过的键移除，
+    /// 该槽此后没有活实体，移除不会带走仍在世的东西。
+    pub(super) fn sync_prefab_ui_nodes(&mut self) {
+        let spawned = self.script.prefab_ui_nodes();
+        if spawned == self.applied_prefab_ui_nodes {
+            return;
+        }
+        for key in self.applied_prefab_ui_nodes.keys() {
+            self.ui_scene_nodes.remove(key);
+        }
+        for (key, node) in &spawned {
+            self.ui_scene_nodes.insert(*key, node.clone());
+        }
+        self.ui_layout_rects.clear();
+        self.applied_prefab_ui_nodes = spawned;
     }
 
     /// Appends Lua-created `ui.panel` quads using the white texture.
