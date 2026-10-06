@@ -515,7 +515,7 @@ impl FieldSchema {
         // （类型错报到类型上，语义错报到规则上）。
         .and_then(|value| {
             for rule in self.rules {
-                rule.check(&value, raw).map_err(&fail)?;
+                rule.check(&value, raw).map_err(fail)?;
             }
             Ok(value)
         })
