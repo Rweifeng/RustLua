@@ -48,6 +48,18 @@
     return parts;
   }
 
+  // 与原生同一个字符串：引擎内建的 1×1 白纹理（`engine/src/host/frame.rs` 的
+  // `WHITE_TEXTURE_PATH`），由 Sprite.tint / Image.color 上色。它**不是文件路径**——
+  // 原生在 `renderer/gpu_texture.rs` 里就地造白纹理，从不查盘，而 web 侧此前没有这条
+  // 分支：`loadImage` 给它拼上 `pack/` 去读一个不存在的文件，于是每个纯色块实体每帧
+  // 失败一次（`ensureTexture` 不缓存失败）——实测 10-06 新包 240 帧内 234 张贴图读取
+  // 失败、整条微信运行时用例红。
+  const WHITE_TEXTURE_PATH = '__white__';
+
+  function isWhiteTexture(path) {
+    return path === WHITE_TEXTURE_PATH;
+  }
+
   function parseScene(text) {
     const entities = new Map();
     let name = 'main';
@@ -145,6 +157,10 @@
         // （rustlua-render/src/sprite.rs）。不解析就等于所有实体同层，只能按 id 画。
         layer: String(p.sorting_layer || 'default'),
         order: Number(p.order) || 0,
+        // tint（原生 `Sprite.tint: [f32;4]`，缺省 [1,1,1,1]，见 sprite.rs:156）：只有
+        // `texture=__white__` 这条路径在 web 上用得到——白图被 tint 乘成纯色块，
+        // 不解析就会全画成白色。
+        tint: p.tint === undefined ? [1, 1, 1, 1] : parseColor(p.tint, [1, 1, 1, 1]),
       };
     }
     if (entity.components.Collider) {
@@ -213,7 +229,7 @@
 
   function loadImage(path) {
     return new Promise(resolve => {
-      if (!path) {
+      if (!path || isWhiteTexture(path)) {
         resolve(null);
         return;
       }
@@ -627,12 +643,21 @@
     if (!rect || rect.w <= 0 || rect.h <= 0) return false;
     let drew = false;
     if (pass === 'image' && entity.image && entity.image.texture) {
-      const texture = ensureTexture(images, pending, entity.image.texture);
-      if (texture) {
-        ctx.globalAlpha = entity.image.color[3] === undefined ? 1 : entity.image.color[3];
-        ctx.drawImage(texture, rect.x, rect.y, rect.w, rect.h);
-        ctx.globalAlpha = 1;
+      if (isWhiteTexture(entity.image.texture)) {
+        // 纯色斑：原生把 Image.color 直接写进顶点（第四段就是 alpha），canvas 2D 里对应
+        // fillStyle 的 RGBA。`colorCss` 只取前三段，所以第四段必须像这里一样显式交出去，
+        // 否则 0.22 的半透明面板会垫成不透明、盖住底下的场景。
+        ctx.fillStyle = colorCss(entity.image.color, entity.image.color[3]);
+        ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
         drew = true;
+      } else {
+        const texture = ensureTexture(images, pending, entity.image.texture);
+        if (texture) {
+          ctx.globalAlpha = entity.image.color[3] === undefined ? 1 : entity.image.color[3];
+          ctx.drawImage(texture, rect.x, rect.y, rect.w, rect.h);
+          ctx.globalAlpha = 1;
+          drew = true;
+        }
       }
     }
     // 场景自带的 Text 只在**启动场景**里画：原生的屏幕 UI 布局节点表 `ui_scene_nodes`
@@ -932,6 +957,12 @@
         ctx.drawImage(sprite, sx, 0, size, size, dx, dy, size * camZoom, sizeY * camZoom);
       } else if (sprite) {
         ctx.drawImage(sprite, dx, dy, size * camZoom, sizeY * camZoom);
+      } else if (!clip && entity.sprite && isWhiteTexture(entity.sprite.texture)) {
+        // 白图 × tint = 纯色方块。原生画的是 tint 乘上 1×1 白纹理的四边形，所以这里
+        // 必须是**方**、且用 Sprite.tint；下面那条圆点是"根本没有贴图字段"的兜底，
+        // 把白图归到兜底就等于把 NPC 的性别/职业配色全丢掉（且颜色按实体名猜）。
+        ctx.fillStyle = colorCss(entity.sprite.tint, entity.sprite.tint[3]);
+        ctx.fillRect(dx, dy, size * camZoom, sizeY * camZoom);
       } else {
         ctx.fillStyle = entityColor(entity);
         ctx.beginPath();
