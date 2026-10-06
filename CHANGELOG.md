@@ -5,6 +5,24 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — §5.2 尾款：`set_velocity` 合成一处，其余三对**不是同形**（实测宏化净 +2 行）
+
+债单说余下 5 对绑定"结构完全相同、约 200 行可消除"。逐行复核后的真相：
+
+- **只有 `set_velocity` 一对真的同形**（都是 `entity_from_lua` → 借 state → `require_alive` → 转发到
+  物理世界），已用**分量重复**合成 `bind_set_velocity_pair!`（`(x, y)` / `(x, y, z)` 两个调用点）。
+  `api_surface_snapshot` 逐字通过——**运行期 API 面一字未变**，这就是"宏化没改行为"的证据。
+- **其余三对并非同形**：`overlap`（2D 校验 `radius`、3D 不校验）、`raycast`（2D 返回
+  `(entity, distance)`、3D 只返回实体）、`set_position`（2D 的 `Transform`/`Vec2` 对 3D 的
+  `Transform3D`/`Vec3`）。宏只能靠"再加参数"把这些差异盖住——**那是把差异藏起来**，比留两份更危险，
+  所以**不做**。这三条差异已逐条写进宏旁的注释与账本。
+- **实测收益要说清**：这一对的宏化让 `physics.rs` 从 **436 → 438 行（净 +2）**——省下 28 行调用点，
+  宏定义加注释 30 行。所以它的价值是**"2D/3D 不再各修一份"**，不是省行数；债单那句"约 200 行可消除"
+  在逐行复核后不成立。
+- 写宏时踩到一个 macro_rules 限制并记进注释：参数类型不能写成 `(i64 $(, f32)+)`——那个重复**不含
+  元变量**，macro_rules 直接报错；改成不写类型、由 `createFuncion` 的 `A: FromLuaMulti` 约束推断。
+- 读数：`rustlua-scripting --lib` **110 通过 0 失败**；fmt / clippy（`--all-targets -- -D warnings`）干净。
+- 回滚档：`script/api/physics.rs` + `docs/60` §5.2 + 本文件。
 ## Unreleased — 关掉那条不对称：世界精灵的丢弃也有正面用例了
 
 上一笔修 `world_sprite.rs` 的静默丢弃时留了个缺口（只有"不回归"，没有正面用例）。这条补上：

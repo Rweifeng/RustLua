@@ -86,6 +86,36 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             )?;
         };
     }
+    // P2-② 尾款（`docs/60` §5.2）：`set_velocity` 这一对 2D/3D 绑定**逐字同形**（都是
+    // entity_from_lua → 借 state → require_alive → 转发到物理世界），只有**分量数**不同，
+    // 用分量重复合成一处。之所以只做这一对——其余三对逐行复核**并非同形**：
+    //   · `overlap`：2D 校验 `radius`，3D **不校验**（同名不同守，见上一轮已记的缺口）；
+    //   · `raycast`：2D 返回 `(entity, distance)`，3D 只返回实体；
+    //   · `set_position`：2D 的 `Transform`/`Vec2` 对上 3D 的 `Transform3D`/`Vec3`；
+    //   · `get_velocity`：数字下标 `[1]/[2]` 只有 2D 有（改它要动运行期 API 面）。
+    // 宏只能靠"再加几个参数"把这些差异盖住——那是**把差异藏起来**，比留两份更危险。
+    macro_rules! bind_set_velocity_pair {
+        ($table:expr, $world:ident, ($($component:ident),+)) => {{
+            let s = Rc::clone(&state);
+            $table.set(
+                "set_velocity",
+                // 不写参数类型：`create_function` 的 `A: FromLuaMulti` 约束会推出来
+                // （分量类型由下面的 `set_velocity` 调用定死）。写显式类型则要在重复里
+                // 带上 `f32`，而那个重复**不含元变量**——macro_rules 不接受。
+                lua.create_function(move |_, (id $(, $component)+)| {
+                    let id = entity_from_lua(id)?;
+                    let mut state = s.lua_borrow_mut()?;
+                    require_alive(&state, id)?;
+                    state
+                        .physics
+                        .$world
+                        .set_velocity(id $(, $component)+)
+                        .map_err(|error| api_error(error.to_string()))?;
+                    Ok(())
+                })?,
+            )?;
+        }};
+    }
     // 命中实体列表 → Lua 数组表（overlap / positions 系查询共用）。
     fn entities_table(
         lua: &Lua,
@@ -187,21 +217,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             },
         )?,
     )?;
-    let s = Rc::clone(&state);
-    physics.set(
-        "set_velocity",
-        lua.create_function(move |_, (id, x, y): (i64, f32, f32)| {
-            let id = entity_from_lua(id)?;
-            let mut state = s.lua_borrow_mut()?;
-            require_alive(&state, id)?;
-            state
-                .physics
-                .world2d
-                .set_velocity(id, x, y)
-                .map_err(|error| api_error(error.to_string()))?;
-            Ok(())
-        })?,
-    )?;
+    bind_set_velocity_pair!(physics, world2d, (x, y));
     let s = Rc::clone(&state);
     physics.set(
         "get_velocity",
@@ -255,21 +271,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     // scene `Collider3d` components and positions sync to `Transform3D`.
 
     let physics3d = lua.create_table()?;
-    let s = Rc::clone(&state);
-    physics3d.set(
-        "set_velocity",
-        lua.create_function(move |_, (id, x, y, z): (i64, f32, f32, f32)| {
-            let id = entity_from_lua(id)?;
-            let mut state = s.lua_borrow_mut()?;
-            require_alive(&state, id)?;
-            state
-                .physics
-                .world3d
-                .set_velocity(id, x, y, z)
-                .map_err(|error| api_error(error.to_string()))?;
-            Ok(())
-        })?,
-    )?;
+    bind_set_velocity_pair!(physics3d, world3d, (x, y, z));
     let s = Rc::clone(&state);
     physics3d.set(
         "get_velocity",
