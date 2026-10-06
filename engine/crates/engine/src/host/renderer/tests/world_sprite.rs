@@ -161,6 +161,33 @@ fn world_sprite_pass_is_painter_ordered_without_depth_writes() {
         [255, 0, 0, 255],
         "不写深度时后画的远处红色会盖住绿色——排序必须由宿主保证"
     );
+
+    // ③ 一条**贴图 id 越界**的世界精灵 draw：绑定组拿不到 → 必须**记账为丢弃**，而不是裸 `continue`。
+    //    这是本轮补的不对称——2D 叠加通道那处丢弃早有正面用例（`passes.rs`），世界精灵这处此前
+    //    只有"不回归"。越界正好也走 `bind_group_for` 的 `paths.get(...)?`（修好前的直接下标会 panic）。
+    mesh.world_sprite_draws
+        .push(crate::core::sprite_batch::SpriteDrawBatch::translucent(
+            99,
+            2,
+            crate::core::layer::RenderLayer::World2D,
+            12,
+            6,
+        ));
+    let still_painted = center_of(&mut renderer, &mesh, &texture);
+    assert_eq!(
+        still_painted,
+        [0, 255, 0, 255],
+        "丢一条越界的 draw 不该影响其余世界精灵的像素"
+    );
+    let metrics = renderer.last_frame_metrics();
+    assert_eq!(
+        metrics.dropped_draws, 1,
+        "越界的 world sprite 贴图必须被记账（此前是裸 continue：世界里少一个 sprite、日志无字）"
+    );
+    assert_eq!(
+        metrics.draw_calls, 2,
+        "丢弃不计入 draw_calls——两条正常 draw 照画"
+    );
 }
 
 /// docs/54 §8-④ 的核心证明：**同一世界视图**里 Sprite 与 Mesh 按深度策略正确互相遮挡。
