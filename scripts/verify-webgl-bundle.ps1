@@ -303,6 +303,18 @@ $sceneVerifyDetail = if ($dom -match 'data-rustlua-scene-verify-detail="([^"]*)"
 # （后端接缝没落地）；`kind=none` = 后端没装上；停在启动场景时 created 至少为 1（标题 BGM）。
 $audioEvidence = if ($dom -match 'data-rustlua-audio="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "absent" }
 
+# 预设文字自对账：`data-rustlua-prefab-text=画/应有` 由 web-runtime.js 每帧写，只统计
+# **运行期 prefab 实例**里带非空 Text 的实体（画的那一半是实际走满 fillText 的）。
+# 为什么单独要这一对读数：`ui-elements`/`ui-now` 数的是 Lua 每帧 `ui.*` 的动态行，屏幕 UI
+# 实体一个都不计入，所以"面板只剩暗底、正文整批不画"在它上面是静默的（实测 2026-10-07
+# 修复前后 drawn=5713 / ui elements=34 逐位相同）。字段缺失同样算红：产物与门错位。
+$prefabTextDrawn = $null
+$prefabTextTotal = $null
+if ($dom -match 'data-rustlua-prefab-text="(\d+)/(\d+)"' -and $Matches.Count -gt 1) {
+    $prefabTextDrawn = [int]$Matches[1]
+    $prefabTextTotal = [int]$Matches[2]
+}
+
 # L3 行为契约结论。报告首行三选一：`web_api_contract_ok cases=N` /
 # `web_api_contract_failed mismatches=N cases=N` / `web_api_contract_unavailable <原因>`。
 # **找不到这三行也必须算红**：那次 node 调用超时时把 DOM 写进了同一个文件，
@@ -366,6 +378,8 @@ if (-not $NoSceneVerify) {
     Write-Log "scene_verify: $sceneVerifyState detail: $sceneVerifyDetail" $(if ($sceneVerifyState -eq "done") { "Green" } else { "Yellow" })
 }
 Write-Log "audio: $audioEvidence" $(if ($audioEvidence -eq "absent") { "Yellow" } else { "Green" })
+Write-Log "prefab_text: $(if ($null -eq $prefabTextDrawn) { 'absent' } else { "$prefabTextDrawn/$prefabTextTotal" })" `
+    $(if ($null -eq $prefabTextDrawn) { "Yellow" } elseif ($prefabTextDrawn -ne $prefabTextTotal) { "Red" } else { "Green" })
 if ($ApiContract) {
     Write-Log "api_contract: $contractVerdict cases=$contractCases report=$contractReportPath" `
         $(if ($contractVerdict -eq "ok") { "Green" } else { "Red" })
@@ -393,6 +407,26 @@ if (-not [string]::IsNullOrWhiteSpace($world)) {
     if (($Drive -or $DriveJhyt) -and $tileDeclared -lt 1) {
         # 剧本已经进了玩法地图，那里至少该有一张地表瓦片层；0 层 = 场景没带瓦片或换图没落地。
         Write-Log "webgl_bundle_tile_layers_empty detail=gameplay scene has no tilemap layer world=$world" Red
+        Exit-With 1
+    }
+}
+
+# 预设文字门。放在 drive 判定**之前**：drive 现在本来就是红的（nav-exit），排在它后面这条
+# 断言永远轮不到跑，就成了摆设。
+if (-not [string]::IsNullOrWhiteSpace($world)) {
+    if ($null -eq $prefabTextDrawn) {
+        Write-Log "webgl_bundle_prefab_text_missing detail=no data-rustlua-prefab-text in dom world=$world" Red
+        Exit-With 1
+    }
+    if ($prefabTextDrawn -ne $prefabTextTotal) {
+        # 预设实例声明了正文却没画满 = 面板只剩暗底（换场景后 sceneTextSuppressed 误伤
+        # prefab 实例就是这一类：set_text 返回 true，屏幕上一个字都没有）。
+        Write-Log "webgl_bundle_prefab_text_suppressed drawn=$prefabTextDrawn expected=$prefabTextTotal world=$world" Red
+        Exit-With 1
+    }
+    if ($DriveJhyt -and $prefabTextTotal -lt 1) {
+        # 剧本已进玩法地图，HUD 预设每帧都在写 HudLine/目标/提示，应有数不可能是 0。
+        Write-Log "webgl_bundle_prefab_text_empty detail=gameplay scene has no prefab text world=$world" Red
         Exit-With 1
     }
 }

@@ -5,6 +5,40 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 换场景后 prefab 正文整批上不了屏：`sceneTextSuppressed` 只该管场景文件声明的实体
+
+- **症状**：webgl/微信宿主进玩法地图后，HUD 与所有面板只剩暗底——`HudBox`/`HudChip1..6`/血条/面板
+  底图照画，`HudLine1-6`、目标、提示、背包容量与行标签、详情正文一个字都没有。表现就是屏幕上几块
+  "黑框"。启动场景（标题屏）完全正常，所以看着像字体或贴图坏了。
+- **归因**：`web-runtime.js` 的 `applySceneSwitch` 给每个换进来的场景置 `sceneTextSuppressed = true`，
+  而 `drawSceneUiEntity` 的文字趟用 `!suppressText` 把**所有**屏幕 UI 实体一起挡掉。这道门的本意只
+  是挡场景文件自带的 `HudTitle/HudHint`（原生 `ui_scene_nodes` 布局快照换场景后不重建，会叠成两层
+  字），但 `prefab.spawn` 出来的实例是 Lua 换场景后重新生成、每帧 `prefab.set_text` 填字的，快照
+  失效与它无关，被连带打死。`set_text` 返回 `true`，画面上却没有那行字——两头都不报错。
+- **改法**：`(!suppressText || entity.prefabHandle !== undefined)`。prefab 实例带 `prefabHandle`、
+  场景文件实体没有，所以豁免精确，原来要挡的重影一个字没放开（左上实测无重影）。
+- **旧门为什么守不住**：`data-rustlua-drawn`/`ui-elements` 只数 Lua 每帧 `ui.*` 的动态行，屏幕 UI
+  实体一个都不计入 ⇒ 修复前后 `drawn samples: 5713 / ui elements: 34` **逐位相同**。
+- **新增读数**：`data-rustlua-prefab-text=画/应有`（每帧），只统计运行期 prefab 实例里带非空 Text
+  的实体。分母**不含**被 `ui.scene_text_visible(name,false)` 逐名接管给脚本绘制的（`title_menu` 的
+  三份 `Btn*Label`）——第一版把这三份算进了分母，微信门立刻报 `4/7`，那是正确行为被冤枉，不是缺陷。
+  `verify-webgl-bundle.ps1`（缺字段/画不满/进图后应有为 0 三条，且排在 drive 判定**之前**，否则 drive
+  本来就红，断言永远轮不到跑）与 `wechat-minigame-harness.js`（与瓦片层自对账同段）各接一条。
+- **读数**：`node scripts/wechat-minigame-harness.js ... --frames 12` 三形态全 `harness_ok`；
+  `verify-webgl-bundle.ps1 -DriveJhyt` 为 `prefab_text: 22/22`。**反面对照**（只回退豁免、保留读数）
+  ⇒ `prefab_text: 0/22` + `[RED] webgl_bundle_prefab_text_suppressed drawn=0 expected=22`，证明这条
+  断言真的盯得住。产物：`builds/{webgl,wechat-minigame/launcher}/web-runtime.js` 由
+  `engine/.tools/terser` 重生成（158,669 B，两包逐字节相同）；重生成前核对过 `terser(HEAD 源码)` 与
+  旧产物 `cmp` 相同，所以没夹带在途改动。
+- **买不到的部分**：这条只回答"该画的 prefab 文字有没有走到 `fillText`"，不回答字画在对的位置、
+  对的尺寸上；假 ctx 不栅格化字形，微信侧 `drawn` 依旧看不见纯文字画面。面板该不该盖住技能图标
+  （换场景后 `screenUiEntities` 按 `id` 升序排，prefab 句柄基数大 → 后画）是另一摊，本修没动。
+- **既有红（与本修无关）**：`verify-webgl-bundle.ps1 -DriveJhyt` 仍红在
+  `drive_jhyt: phase=nav-exit timeout frames=901`，`git show HEAD` 版产物复跑读数一字不差；
+  `verify-wechat-minigame.ps1` case 5 `--image-src-frozen` 同理（上一节已记为"归下一摊"）。
+- 回滚档：`plugins/webgl/web-runtime.js`（豁免条件 + `LAST_PREFAB_TEXT` + `data-rustlua-prefab-text`）
+  + `scripts/verify-webgl-bundle.ps1` + `scripts/wechat-minigame-harness.js` + 本文件。
+
 ## Unreleased — 标题屏 `drawn=0` 是量具瞎：harness 的假 ctx 补了仿射变换栈（附独立复算）
 
 - **归因翻案**：`docs/52` §6.2 把这条红记成"标题门面进 `.prefab` 之后的渲染差异"，是错的。三条实测

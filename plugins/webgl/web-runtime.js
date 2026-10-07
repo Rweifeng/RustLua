@@ -565,6 +565,12 @@
 
   let LAST_UI_SUMMARY = '';
 
+  // 预设文字自报：`{drawn, total}` 只统计**运行期 prefab 实例**里带非空 Text 的实体。
+  // `data-rustlua-ui-elements` 数的是 Lua 每帧 `ui.*` 的动态行，屏幕 UI 实体一个都不计入，
+  // 所以 prefab 文字整批不画时它读数不变（实测 2026-10-07 修复前后 drawn/ui-elements 逐位
+  // 相同）——这道门当时是瞎的。这里单独报一对，无头门就能断言 total>0 且 drawn==total。
+  let LAST_PREFAB_TEXT = { drawn: 0, total: 0 };
+
   // 9-slice 绘制（与引擎 nine_slice_cells 对齐）：corners 固定像素、edges 单向拉伸、
   // center 双向拉伸。slice = "l,r,t,b" 纹理像素；目标比边距和还窄时边距等比收缩。
   function drawNineSliceImage(ctx, tex, dx, dy, dw, dh, sliceStr) {
@@ -603,6 +609,7 @@
 
   function drawUi(ctx, uiText, images, pending, sceneUiEntities, suppressSceneText) {
     const ui = parseUiLines(uiText);
+    LAST_PREFAB_TEXT = { drawn: 0, total: 0 };
     LAST_UI_SUMMARY = ui.panels.map(item => (item.shape === 1 ? 'C:' : 'P:') + item.id)
       .concat(ui.images.map(item => 'I:' + item.id + ':' + item.texture), ui.bars.map(item => 'B:' + item.id), ui.texts.map(item => 'X:' + item.id))
       .join(',');
@@ -647,8 +654,15 @@
       ctx.fillText(text.text, text.x, text.y);
     }
     // 场景文字趟：原生的文字管线在场景图之上，故排在场景底图趟之后。
+    // 分母只数**该画**的：被 `ui.scene_text_visible(name,false)` 逐名接管给脚本绘制的
+    // （title_menu 的三份 Btn*Label，M22 重影修出来的口径）不是缺陷，不能算进"应有"。
     for (const entity of sceneUiEntities || []) {
-      drawSceneUiEntity(ctx, entity, images, pending, suppressSceneText, 'text');
+      const counted = entity.prefabHandle !== undefined && entity.text && entity.text.value
+        && !p2SceneTextHidden.has(String(entity.name || ''));
+      if (counted) LAST_PREFAB_TEXT.total += 1;
+      if (drawSceneUiEntity(ctx, entity, images, pending, suppressSceneText, 'text') && counted) {
+        LAST_PREFAB_TEXT.drawn += 1;
+      }
     }
     return ui.panels.length + ui.images.length + ui.bars.length + ui.texts.length;
   }
@@ -696,7 +710,11 @@
     // 这张表不重建 ⇒ 切图后 HudTitle/HudHint 取不到矩形、被静默跳过。web 侧按同一口径处理，
     // 否则场景文字与 Lua HUD 的文字叠成两层（实机 2026-10-04：左上角"山庄 · 药田垂直切片"
     // 与"目标 …"重影）。
-    if (pass === 'text' && entity.text && entity.text.value && !suppressText && !p2SceneTextHidden.has(String(entity.name || ''))) {
+    // 但**只对场景文件声明的实体成立**：`prefab.spawn` 出来的实例带 `prefabHandle`，是 Lua 换
+    // 场景后重新生成、每帧 `prefab.set_text` 填字的，快照失效与它无关。整趟挡掉会让 hud 的
+    // HudLine1-6 和 inventory/shop/dialogue/pause/quest 六个面板只剩暗底（实机 2026-10-07：
+    // 换场景后 `set_text` 返回 true 而画面上没有那行字，同实例的 Image 却照画）。
+    if (pass === 'text' && entity.text && entity.text.value && (!suppressText || entity.prefabHandle !== undefined) && !p2SceneTextHidden.has(String(entity.name || ''))) {
       ctx.font = entity.text.size + 'px ' + GAME_FONT;
       ctx.textBaseline = 'top';
       ctx.fillStyle = colorCss(entity.text.color);
@@ -4262,6 +4280,8 @@ end
           // ui-now 每帧写**真实** UI 元素数（诊断/剧本判定用；ui-elements 仍 30 帧一更，
           // 只服务宿主诊断覆盖层的低频采样，剧本靠 ui-now 拿到当帧真值）。
           body.setAttribute('data-rustlua-ui-now', String(uiElements));
+          // 预设文字当帧真值（见 LAST_PREFAB_TEXT）：不进 world 串，那条有 300 字符截断。
+          body.setAttribute('data-rustlua-prefab-text', LAST_PREFAB_TEXT.drawn + '/' + LAST_PREFAB_TEXT.total);
           if (frameCount <= 5 || frameCount % 30 === 0) {
             body.setAttribute('data-rustlua-drawn', String(sampleDrawnPixels(ctx)));
             body.setAttribute('data-rustlua-ui-elements', String(uiElements));

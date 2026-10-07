@@ -2307,6 +2307,22 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       failures.push(`瓦片层只遍历了 ${tileLayers[1]} 层，Lua 侧声明 ${tileLayers[2]} 层` +
         '（有一整层 overlay 根本没进画面：种田/浇水会表现为"数据在动、画面不变"）');
     }
+    // 预设文字自对账：`data-rustlua-prefab-text=画/应有` 每帧写，只数**运行期 prefab 实例**
+    // 里带非空 Text 的实体。为什么微信也要盯这一条：`ui-elements`/`drawn` 都不计入屏幕 UI
+    // 实体，所以"面板只剩暗底、正文整批不画"在旧读数上是静默的（webgl 侧实测 2026-10-07
+    // 修复前后 drawn / ui-elements 逐位相同）。两个宿主共用同一份 web-runtime.js，
+    // 换场景后 sceneTextSuppressed 误伤 prefab 实例这条对微信同样成立。
+    // 字段缺失同样算红：产物是旧运行时或这条自报被删，不能降级成"没数据所以放行"。
+    const prefabText = String(adapter.getAttribute('data-rustlua-prefab-text') || '').match(/^(\d+)\/(\d+)$/);
+    if (worldSummary && !prefabText) {
+      failures.push('运行时没有自报预设文字数（data-rustlua-prefab-text）');
+    } else if (prefabText && Number(prefabText[1]) !== Number(prefabText[2])) {
+      failures.push(`预设文字声明 ${prefabText[2]} 条、实际画了 ${prefabText[1]} 条` +
+        '（prefab.set_text 返回 true 却上不了屏：面板只剩暗底，正文整批看不见）');
+    } else if (driveNewGame && prefabText && !(Number(prefabText[2]) >= 1)) {
+      failures.push('--drive-new-game 后玩法场景没有任何预设文字（prefab-text=' + prefabText[0] + '）' +
+        '（HUD 预设每帧都在写 HudLine/目标/提示，应有数不可能是 0）');
+    }
     if (driveNewGame) {
       if (tileLayers && !(Number(tileLayers[2]) >= 1)) {
         failures.push(`玩法场景一张 Tilemap 都没有（tilemaps=${tileLayers[0]}）——地表/换图数据没进渲染侧`);
