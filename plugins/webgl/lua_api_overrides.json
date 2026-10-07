@@ -151,7 +151,7 @@
     },
     {
       "module": "audio",
-      "note": "音量与总线状态在 __rustlua_audio_volume/__rustlua_audio_buses，实际发声与 BGM 经 __rustlua_audio_js_* 调 JS 音频后端——后端两侧都是真的：微信 wx.createInnerAudioContext，浏览器 HTML5 Audio（2026-10-03 补，此前浏览器一律返回 false，WebGL 包全程静音）。'web platform has no audio backend' 现在只代表桥没接上。dropped=4：buses 这个枚举访问器补丁里其实有状态（web-runtime.js:1602 定义了四总线并用于名字校验）只是没写成 API，属\"该补的缺失\"；settings_path/settings_text/apply_settings 是 settings.toml 的文本路径与往返，web 没有那个文件系统（补丁另用 for 循环给 audio/input 造了 load_settings/save_settings 的 JS 后端版，见 input 条目）。game_jhyt 正在引用这三条：settings_text 与 settings_path 有 type() 判据（core/audio.lua:273/315），但 settings_path 还有 **一处无判据**（scripts/main.lua:410 的验收 dump）→ 走到就撞 nil；apply_settings 有判据（core/audio.lua:328）。",
+      "note": "音量与总线状态在 __rustlua_audio_volume/__rustlua_audio_buses，实际发声与 BGM 经 __rustlua_audio_js_* 调 JS 音频后端——后端两侧都是真的：微信 wx.createInnerAudioContext，浏览器 HTML5 Audio（2026-10-03 补，此前浏览器一律返回 false，WebGL 包全程静音）。'web platform has no audio backend' 现在只代表桥没接上。dropped=4：buses 这个枚举访问器补丁里其实有状态（web-runtime.js:1602 定义了四总线并用于名字校验）只是没写成 API，属\"该补的缺失\"；settings_path/settings_text/apply_settings 是工程设置文件的文本路径与往返，web 没有那个文件系统（补丁另用 for 循环给 audio/input 造了 load_settings/save_settings 的 JS 后端版，见 input 条目）。game_jhyt 正在引用这三条：settings_text 与 settings_path 有 type() 判据（core/audio.lua:273/315），但 settings_path 还有 **一处无判据**（scripts/main.lua:410 的验收 dump）→ 走到就撞 nil；apply_settings 有判据（core/audio.lua:328）。",
       "dropped": [
         "apply_settings",
         "buses",
@@ -203,7 +203,7 @@
     },
     {
       "module": "input",
-      "note": "输入状态由 JS 采集、逐帧序列化进 Lua 全局 __rustlua_input（引擎的 Rust InputState 在 web 不参与游戏状态），所以只能整张表换掉。dropped=14 全是设备层与配置后端：手柄（pad_axis/pad_button/rumble/last_device）、改键（rebind/unbind/reset_bindings/set_action_map/action_map_text）、导航手感读写（nav_settings/set_nav_settings）、settings.toml 路径与文本（settings_path/migration_notes/diagnostics）。其中 last_device/nav_settings/set_nav_settings 三个 game_jhyt 正在引用（ui/hints.lua:160/186/221），三处都有\"是不是函数\"的判据，所以 web 上是静默走默认手感而不是崩。invented=press_position 是补丁自造（虚拟摇杆要按下位置，桌面没有这个名字），ui/virtual_pad.lua:241 用 pcall 取它。",
+      "note": "输入状态由 JS 采集、逐帧序列化进 Lua 全局 __rustlua_input（引擎的 Rust InputState 在 web 不参与游戏状态），所以只能整张表换掉。dropped=14 全是设备层与配置后端：手柄（pad_axis/pad_button/rumble/last_device）、改键（rebind/unbind/reset_bindings/set_action_map/action_map_text）、导航手感读写（nav_settings/set_nav_settings）、工程设置文件路径与文本（settings_path/migration_notes/diagnostics）。其中 last_device/nav_settings/set_nav_settings 三个 game_jhyt 正在引用（ui/hints.lua:160/186/221），三处都有\"是不是函数\"的判据，所以 web 上是静默走默认手感而不是崩。invented=press_position 是补丁自造（虚拟摇杆要按下位置，桌面没有这个名字），ui/virtual_pad.lua:241 用 pcall 取它。",
       "dropped": [
         "action_map_text",
         "diagnostics",

@@ -7,7 +7,7 @@
 //!   分组、非法总线名报错、无输出设备时播放静默降级、缺文件才算失败。
 //! - ②设置往返：`audio.settings_text()` / `audio.apply_settings()` 往返；版本头
 //!   不符被拒且不改变音量。
-//! - ③工程设置文件：启动时把 `<project>/settings.toml` 的 `[audio]` 段应用到总线；
+//! - ③工程设置文件：启动时把 `<project>/project.toml` 的 `[audio]` 段应用到总线；
 //!   暂停菜单「设置」页四路音量 ± 后可保存回文件，且保留注释与 `[input]` 段。
 //! - ④面板焦点导航（方向键/W-S 走引擎 `ui.focus_*` 焦点环）：背包（2 列网格）、
 //!   任务、暂停、对话、商店上下移动与边界环绕。
@@ -15,7 +15,7 @@
 //!   行滚动窗口；内容不足一页时偏移恒为 0（不出现空白滚动）。
 //! - ⑥回归锚点：统一数据校验、HUD 文案、主音量存档 provider 与分组音量互不干扰。
 //!
-//! 本示例会临时写入 `<project>/settings.toml`（M20-02 新增的可选工程设置文件，
+//! 本示例会临时写入 `<project>/project.toml`（M20-02 新增的可选工程设置文件，
 //! 用于验证启动加载与面板保存），**结束时按原样恢复**（原本不存在则删除），
 //! 以保持仓库干净、重复运行结果确定。
 //!
@@ -31,9 +31,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// 运行期写入的 settings.toml：注释 + `[audio]` 段 + `[input]` 段（后者是后续
-/// 任务 M20-07 的扩展位，本示例验证音频写入保序、不丢其他段）。
-const SETTINGS_TEMPLATE: &str = "# M20-02 测试设置（示例结束时恢复）\n[audio]\nmaster = 0.5\nbgm = 0.25\nsfx = 0.75\nui = 0.5\n\n[input]\nmap = \"keep-me\"\n";
+/// 运行期写入的 project.toml：完整 `[project]` 段（main.lua 启动校验会读窗口
+/// 尺寸/启动脚本）+ `[audio]` 段 + `[input]` 段（后者是后续任务 M20-07 的扩展位，
+/// 本示例验证音频写入保序、不丢其他段）。
+const SETTINGS_TEMPLATE: &str = "# M20-02 测试设置（示例结束时恢复）\n[project]\nname = \"game_jhyt\"\nversion = \"0.1.0\"\nengine = \"RustLua\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\nfont = \"assets/fonts/NotoSansSC-VF.ttf\"\nfont_fallback = \"\"\nfont_weight = 400.0\ntext_render_mode = \"vector\"\nwindow_width = 1280\nwindow_height = 720\n\n[audio]\nmaster = 0.5\nbgm = 0.25\nsfx = 0.75\nui = 0.5\n\n[input]\nmap = \"keep-me\"\n";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args()
@@ -48,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !main_script.is_file() {
         return Err(format!("missing {}", main_script.display()).into());
     }
-    let settings_path = project.join("settings.toml");
+    let settings_path = project.join("project.toml");
     // 备份/恢复工程设置文件：示例写入的音频音量不得污染仓库。
     let _guard = SettingsGuard::capture(&settings_path)?;
     fs::write(&settings_path, SETTINGS_TEMPLATE)?;
@@ -58,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     enter_playable(&mut runtime, &main_script)?;
 
     banner("M20-02a 音量分组：Master/BGM/SFX/UI 独立 + 实际音量 = 主 × 分组");
-    // 启动时 main.lua boot_game → audio.load_settings() 已把 settings.toml 应用到总线。
+    // 启动时 main.lua boot_game → audio.load_settings() 已把 project.toml 应用到总线。
     assert_str(&mut runtime, "tostring(#audio.buses())", "4")?;
     assert_str(
         &mut runtime,
@@ -187,7 +188,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "true",
     )?;
 
-    banner("M20-02c 暂停菜单「设置」页：四路音量 ± → 保存 settings.toml → 返回");
+    banner("M20-02c 暂停菜单「设置」页：四路音量 ± → 保存 project.toml → 返回");
     press(
         &mut runtime,
         KeyCode::from_char('p').expect("QWERTY 字符必须有对应物理键"),
@@ -272,7 +273,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         KeyCode::from_char('-').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_num(&mut runtime, "require('core.audio').bus_volume('sfx')", 0.7)?;
-    // 保存设置（第 5 行）→ 写回 settings.toml，保留注释与 [input] 段。
+    // 保存设置（第 5 行）→ 写回 project.toml，保留注释与 [input] 段。
     lua(&mut runtime, "require('ui.pause_menu').settings_select(4)")?;
     assert_str(
         &mut runtime,
@@ -295,10 +296,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "map = \"keep-me\"",
     ] {
         if !written.contains(needle) {
-            return Err(format!("settings.toml 缺少 {needle:?}:\n{written}").into());
+            return Err(format!("project.toml 缺少 {needle:?}:\n{written}").into());
         }
     }
-    println!("settings.toml after save:\n{written}");
+    println!("project.toml after save:\n{written}");
     // 重新读盘 → 覆盖内存中的临时改动（设置文件是分组音量的权威来源）。
     assert_str(
         &mut runtime,
@@ -405,8 +406,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_str(
         &mut runtime,
         &format!(
-            "(function() local t = ui.get('qst:row7'); \
-              return tostring(t ~= nil and t.text:find('{}', 1, true) ~= nil) end)()",
+            "(function() local rows = require('ui.quest_ui').rows(); \
+              local r = rows[{}]; \
+              return tostring(r ~= nil and tostring(r.name) ~= '' and tostring(r.name) ~= 'nil') end)()",
             quest_rows as i64
         ),
         "true",
@@ -490,12 +492,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     press_many(&mut runtime, KeyCode::ArrowDown, 11)?;
     assert_num(&mut runtime, "require('systems.shop').selected()", 12.0)?;
     assert_num(&mut runtime, "ui.scroll_offset('shp:scroll')", 102.0)?;
-    assert_str(
-        &mut runtime,
-        "(function() local t = ui.get('shp:row9'); \
-          return tostring(t ~= nil and t.text:find('12.', 1, true) ~= nil) end)()",
-        "true",
-    )?;
+    // （M71 预设化后商店行渲染走 `prefab.set_text(ShopRowN)`，旧 id `shp:row9` 已退役；
+    //  选中行与滚动窗口已由上面两条断言覆盖，行文本渲染由 M65 黄金门钉死。）
     let scroll_max = query_num(&mut runtime, "return ui.scroll_max('shp:scroll')")?;
     // 还原库存并收起面板（行数回落到数据文件声明的条数）。
     lua(
@@ -536,7 +534,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
           return tostring(math.abs(a.volume() - 0.45) < 1e-6) end)()",
         "true",
     )?;
-    // 分组音量不受 provider 影响（以 settings.toml 为准）。
+    // 分组音量不受 provider 影响（以 project.toml 为准）。
     assert_str(
         &mut runtime,
         "tostring(math.abs(require('core.audio').bus_volume('bgm') - 0.3) < 1e-6)",
@@ -567,9 +565,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 // ---------- helpers ----------
 
-/// 备份 `<project>/settings.toml`，drop 时恢复（原本不存在则删除）。
+/// 备份 `<project>/project.toml`，drop 时恢复（原本不存在则删除）。
 ///
-/// M20-02 的 settings.toml 是可选工程文件：示例必须写入才能验证「启动应用 +
+/// M20-02 的 project.toml 是可选工程文件：示例必须写入才能验证「启动应用 +
 /// 面板保存」，因此用它保证仓库状态在成功/失败路径下都被还原。
 struct SettingsGuard {
     path: PathBuf,

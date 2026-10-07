@@ -6,6 +6,7 @@
 
 use crate::core::{
     camera::{Camera2D, RenderView, Viewport},
+    entity::EntityId,
     hierarchy::SpatialReport,
     math3d::Mat4,
     par::Parallelism,
@@ -14,9 +15,34 @@ use crate::core::{
     scene::SceneEntityId,
     transform::Transform3D,
     transform::{Transform, Vec2},
+    world::World,
 };
 
 use super::{PhysicsStageOrder, RuntimeScene};
+
+/// 按运行时句柄读实体**自己的**局部变换：`Transform3D` 优先，其次能无损压平的 2D
+/// [`Transform`]；两者都没有 ⇒ `None`。
+///
+/// 这是 [`RuntimeScene::local_transform_of`] 的实现体，宿主的批量读数
+/// （`RuntimeScene::scene_entity_local_transforms`）走同一条回退链——两处各写一次
+/// "3D 优先"的判断，迟早给出两个不一样的答案。
+pub(super) fn local_transform_in(
+    world: &World,
+    entity: EntityId,
+) -> Option<crate::core::spatial_transform::LocalTransform> {
+    if let Ok(Some(transform)) = world.get::<Transform3D>(entity) {
+        return Some(crate::core::spatial_transform::LocalTransform::from_3d(
+            *transform,
+        ));
+    }
+    world
+        .get::<Transform>(entity)
+        .ok()
+        .flatten()
+        .and_then(|transform| {
+            crate::core::spatial_transform::LocalTransform::from_2d(*transform).ok()
+        })
+}
 
 impl RuntimeScene {
     /// docs/54 §4.1：按**场景实体 id** 读运行时局部变换，**用统一的 `LocalTransform` 表示**。
@@ -31,20 +57,8 @@ impl RuntimeScene {
         entity: SceneEntityId,
     ) -> Option<crate::core::spatial_transform::LocalTransform> {
         let runtime = self.script.scene_entity_handle(entity)?;
-        self.script.with_world(|world| {
-            if let Ok(Some(transform)) = world.get::<Transform3D>(runtime) {
-                return Some(crate::core::spatial_transform::LocalTransform::from_3d(
-                    *transform,
-                ));
-            }
-            world
-                .get::<Transform>(runtime)
-                .ok()
-                .flatten()
-                .and_then(|transform| {
-                    crate::core::spatial_transform::LocalTransform::from_2d(*transform).ok()
-                })
-        })
+        self.script
+            .with_world(|world| local_transform_in(world, runtime))
     }
 
     /// docs/54 §4.1：把统一的 `LocalTransform` 写回该实体**自己的空间**。

@@ -91,12 +91,12 @@ RustLua <flags> [12B nonce] <payload>
 1. Release 构建（`cargo build --workspace --release`；web 平台改为 `cargo build -p game_web --release --target wasm32-unknown-unknown` + `wasm-bindgen`）。
 2. `assetc package` 生成数据包 `pack/`（按平台）。
 3. 复制运行器到发布目录：
-   - **pc**：`game.exe` + `pack/` + `release.toml` + `run.txt` + `deps.txt` + `build-info.txt`。
+   - **pc**：`game.exe` + `pack/` + `run.txt` + `deps.txt` + `build-info.txt`。
      字体**在包内**（`pack/assets/fonts/NotoSansSC-VF.ttf`）：PC 不把 17 MB 完整字体复制到发布根，
-     运行时以 `pack/` 为工程根、按 `settings.toml` 的 `font` 路径读取（`package.ps1` 会在打包时
+     运行时以 `pack/` 为工程根、按 `project.toml` 的 `font` 路径读取（`package.ps1` 会在打包时
      真查这一条；发布根下的 `fonts/` 只有 webgl 的 `index.html` 需要）。
    - **webgl**：`index.html`（由 `plugins/webgl/index.html` 模板替换工程名/字体路径生成）+ `web-runtime.js` + `pkg/game_web.js` + `pkg/game_web_bg.wasm` + `pkg/fengari-web.js` + `fonts/` + `pack/`。
-   - **wechat-minigame**：`game.js` + `wechat-adapter.js` + `game.json` + `project.config.json` + `web-runtime.js` + `pkg/fengari-web.js` + `pack/` + `release.toml` + `run.txt` + `deps.txt` + `build-info.txt`；
+   - **wechat-minigame**：`game.js` + `wechat-adapter.js` + `game.json` + `project.config.json` + `web-runtime.js` + `pkg/fengari-web.js` + `pack/` + `run.txt` + `deps.txt` + `build-info.txt`；
      默认形态（`-AssetPack subpackage`）下另有 `mainpack.json` + `mainpack/`（主包侧首屏资源）+ `pack/game.js`（分包入口）。
      平台文件来自 `plugins/wechat-minigame/`；发布脚本会检查入口/配置/资源齐全、拒绝混入 `game.exe`/`index.html`、**拒绝任何非 CommonJS 脚本**（小游戏不支持 ES Module）、并强制**主包 ≤ 4 MB / 单分包 ≤ 4 MB / 总计 ≤ 20 MB**。
      不发行 wasm-bindgen 产物（浏览器 ESM 胶水，小游戏用不到也解析不了）；字体只分发 assetc 子集化产物。
@@ -107,7 +107,7 @@ RustLua <flags> [12B nonce] <payload>
      资源形态三选一，详见 [微信小游戏分包发布](52-微信小游戏分包发布.md) 与
      [plugins/wechat-minigame/README.md](../plugins/wechat-minigame/README.md)。
 4. 用 `game.exe --pack <pack> --check` 做无窗口完整性校验（退出码 0 = 通过）；`-SelfTest` 把包复制到带空格的临时目录再校验，验证目录隔离（无源码/无 target 依赖）。web 平台的 `-SelfTest` 改为断言静态产物齐全，并（小游戏）在隔离目录里跑一次无头运行时验证。
-5. 生成 `release.toml`（`publish_name`）、`run.txt`（运行说明）、`build-info.txt`（引擎版本、toolchain、内容清单）。
+5. 生成 `run.txt`（运行说明）、`build-info.txt`（引擎版本、toolchain、内容清单）。发布包判定标记由包内 `project.toml` 的 `release = true` 承担（旧 `release.toml` 已退役）：`package.ps1` 从工程根复制 `project.toml` 进 `pack/`（工程源需带 `release = true`），`-PublishName` 自定义发布名时向包内副本追加 `publish_name` 键。
 
 **平台差异**：web 平台共用 `plugins/webgl/web-runtime.js`，该 JS 运行时只读明文 `pack/`，因此 `-Encrypt`/`-Compress` 仅对 PC 有效；对 web 平台传这两个开关会被脚本直接拒绝（避免产出跑不起来的包）。
 
@@ -212,8 +212,8 @@ save_version=2
 - **回归**：`scripts/test-release-atomic.ps1` 覆盖成功交换、文件占用回滚、交换前失败丢弃、遗留清理四个场景，
   输出 `release_atomic_ok cases=4`。
 
-发布目录布局与 RustLua 资源包格式未变（pc：`game.exe + pack/ + release.toml + run.txt + deps.txt`，
-字体在 `pack/assets/fonts/` 内；webgl 另加 `index.html + pkg/ + web-runtime.js + fonts/`——根下的
+发布目录布局与 RustLua 资源包格式未变（pc：`game.exe + pack/ + run.txt + deps.txt`，
+包内 `project.toml` 带 `release = true` 承担发布判定；字体在 `pack/assets/fonts/` 内；webgl 另加 `index.html + pkg/ + web-runtime.js + fonts/`——根下的
 `fonts/` 只服务 webgl 的 `index.html`）。
 
 ### assetc 打包的输入/输出安全边界（M23）

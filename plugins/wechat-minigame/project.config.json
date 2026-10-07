@@ -16,7 +16,6 @@
       { "type": "file", "value": "run.txt" },
       { "type": "file", "value": "deps.txt" },
       { "type": "file", "value": "build-info.txt" },
-      { "type": "file", "value": "release.toml" },
       { "type": "file", "value": "test-wechat-minigame.bat" }
     ]
   }

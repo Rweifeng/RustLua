@@ -157,21 +157,26 @@ impl ProgressPanel {
             window = window.anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]);
         }
         let response = window.show(context, |ui| {
-            let status = if self.running {
-                "进行中..."
-            } else if self.success {
-                "✔ 完成"
+            let color = if self.success {
+                egui::Color32::LIGHT_GREEN
             } else {
-                "✘ 失败"
+                egui::Color32::LIGHT_RED
             };
-            ui.colored_label(
-                if self.success {
-                    egui::Color32::LIGHT_GREEN
-                } else {
-                    egui::Color32::LIGHT_RED
-                },
-                status,
-            );
+            // 勾/叉由画笔绘制：U+2718 在编辑器的字体链里根本没有字形（渲染成"豆腐块"），
+            // 而 U+2714 只有 emoji-icon-font 覆盖、尺寸跟汉字不齐，所以两种状态统一用画笔。
+            let (icon, status) = if self.running {
+                (None, "进行中...")
+            } else if self.success {
+                (Some(crate::util::DrawIcon::Check), "完成")
+            } else {
+                (Some(crate::util::DrawIcon::Cross), "失败")
+            };
+            ui.horizontal(|ui| {
+                if let Some(icon) = icon {
+                    crate::util::draw_icon_label(ui, icon, color);
+                }
+                ui.colored_label(color, status);
+            });
             if let Some(progress) = self.progress {
                 ui.add(egui::ProgressBar::new(progress.clamp(0.0, 1.0)).show_percentage());
             } else if self.running {

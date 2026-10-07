@@ -1,8 +1,10 @@
-//! 工程级设置文件 `<project>/settings.toml`（M20-02）。
+//! 工程级设置文件 `<project>/project.toml`（M20-02；2026-10-07 起与工程配置
+//! 合并，原 `settings.toml` 退役）。
 //!
-//! 与 `project.toml`（场景/资源/启动配置）分离：本文件保存**玩家/编辑器可改的
-//! 偏好**，当前只定义 `[audio]` 段（BGM/SFX/UI/Master 四路音量）。文件**可选**，
-//! 缺失时全部使用默认值（1.0），不影响启动。
+//! 玩家/编辑器可改的偏好与工程配置共用同一文件：`[project]` 段（场景/资源/启动
+//! 配置）+ `[audio]` 段（BGM/SFX/UI/Master 四路音量）+ `[input]` 段（命名动作
+//! 映射/死区/导航手感）。各段**可选**，缺失时全部使用默认值（音量 1.0、键盘默认
+//! 绑定），不影响启动。
 //!
 //! ```toml
 //! # RustLua 工程设置（由编辑器「项目设置」面板写入；缺失即默认）
@@ -46,8 +48,9 @@ use rustlua_audio::audio::AudioSystem;
 use rustlua_input::input::ActionMap;
 use rustlua_input::input::GamepadDeadzone;
 
-/// 工程设置文件名（相对项目根）。
-pub const SETTINGS_FILE: &str = "settings.toml";
+/// 工程设置文件名（相对项目根；2026-10-07 起与工程配置合并为 `project.toml`，
+/// 原 `settings.toml` 退役）。
+pub const SETTINGS_FILE: &str = "project.toml";
 
 /// 音量所在的段名。
 pub const AUDIO_SECTION: &str = "audio";
@@ -313,7 +316,7 @@ pub struct InputSectionParse {
     /// 解析出的映射；键缺失或内容非法时为 `None`。
     pub map: Option<ActionMap>,
     /// 回退/缺失原因（可直接写进诊断）：`missing_key`、`invalid_escape`、
-    /// 版本头不符或绑定文本非法的原始错误文本（附 `settings.toml:<行号>`）。
+    /// 版本头不符或绑定文本非法的原始错误文本（附 `project.toml:<行号>`）。
     pub reason: Option<String>,
     /// **v1 → v2 迁移诊断**（M22/W1）：文件里写的是 `rustlua-actions-v1` 时，
     /// 每一条有损换算（`key:+` 只能落到 `key:equal`）各一行中文说明；读到 v2 文件
@@ -381,7 +384,7 @@ pub fn parse_input_section(text: &str) -> InputSectionParse {
         },
         Some((line, Err(reason))) => InputSectionParse {
             map: None,
-            reason: Some(format!("settings.toml:{line}: {reason}")),
+            reason: Some(format!("project.toml:{line}: {reason}")),
             migration_notes: Vec::new(),
         },
         None => InputSectionParse {
@@ -584,7 +587,7 @@ fn upsert_input_entries(existing: &str, entries: &[(&str, String)]) -> String {
     result
 }
 
-/// 把 `[input]` 段写入 `<root>/settings.toml`，保留文件其余内容。
+/// 把 `[input]` 段写入 `<root>/project.toml`，保留文件其余内容。
 pub fn save_input_section(root: &Path, map: &ActionMap) -> std::io::Result<PathBuf> {
     let path = ProjectSettings::path_in(root);
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
@@ -635,7 +638,7 @@ pub fn parse_deadzone_section(text: &str) -> GamepadDeadzone {
     )
 }
 
-/// 读取 `<root>/settings.toml` 的死区配置；文件缺失 → 默认值 + 无诊断（首次运行
+/// 读取 `<root>/project.toml` 的死区配置；文件缺失 → 默认值 + 无诊断（首次运行
 /// 的正常路径），读取失败 → 默认值 + 可读原因。
 #[must_use]
 pub fn load_deadzone_section(root: &Path) -> (GamepadDeadzone, Option<String>) {
@@ -652,7 +655,7 @@ pub fn load_deadzone_section(root: &Path) -> (GamepadDeadzone, Option<String>) {
     }
 }
 
-/// 把映射 + 死区写回 `<root>/settings.toml`（保序：其余段/注释/未知键原样保留）。
+/// 把映射 + 死区写回 `<root>/project.toml`（保序：其余段/注释/未知键原样保留）。
 pub fn save_input_settings(
     root: &Path,
     map: &ActionMap,
@@ -809,7 +812,7 @@ pub fn parse_nav_section(text: &str) -> NavSettings {
     )
 }
 
-/// 读取 `<root>/settings.toml` 的导航手感；文件缺失 → 默认值 + 无诊断，
+/// 读取 `<root>/project.toml` 的导航手感；文件缺失 → 默认值 + 无诊断，
 /// 读取失败 → 默认值 + 可读原因（与 [`load_deadzone_section`] 同语义）。
 #[must_use]
 pub fn load_nav_section(root: &Path) -> (NavSettings, Option<String>) {
@@ -1076,14 +1079,14 @@ mod tests {
         assert!(!bad_escape.is_present());
         assert_eq!(
             bad_escape.reason.as_deref(),
-            Some("settings.toml:2: invalid_escape")
+            Some("project.toml:2: invalid_escape")
         );
         // 版本头不符 / 绑定非法 → 明确原因（含文件与行号），不 panic、不静默。
         let bad_version =
             parse_input_section("[input]\nmap = \"rustlua-actions-v0\\ninteract=key:e\"\n");
         assert!(!bad_version.is_present());
         let reason = bad_version.reason.unwrap_or_default();
-        assert!(reason.contains("settings.toml:2"), "{reason}");
+        assert!(reason.contains("project.toml:2"), "{reason}");
         assert!(reason.contains("rustlua-actions-v0"), "{reason}");
         let bad_binding =
             parse_input_section("[input]\nmap = \"rustlua-actions-v1\\ninteract=joystick:1\"\n");
@@ -1195,7 +1198,7 @@ mod tests {
         let (loaded, diagnostic) = load_input_section(&dir);
         assert_eq!(loaded, ActionMap::with_defaults());
         let diagnostic = diagnostic.expect("版本不符必须给诊断");
-        assert!(diagnostic.contains("settings.toml"), "{diagnostic}");
+        assert!(diagnostic.contains("project.toml"), "{diagnostic}");
         assert!(diagnostic.contains("rustlua-actions-v0"), "{diagnostic}");
         assert!(diagnostic.contains("reverting to defaults"), "{diagnostic}");
         // 部分映射 → 默认值补齐缺失动作，用户重绑定不被覆盖。

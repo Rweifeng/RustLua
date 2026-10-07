@@ -11,7 +11,7 @@
 --     （`input.last_device()` → `"keyboard"` / `"gamepad"`）。M22 前这里是每帧扫描
 --     36 个动作的绑定 + 6 轴 + 16 按钮（约 60 次 FFI + 100 次正则），现在是一次查询。
 --     只看「哪个输入在动」，不看手柄是否已连接，所以插着手柄用键盘玩仍显示键鼠说明。
---   * 导航手感：摇杆阈值与「按住后首次延迟 + 重复间隔」可从工程 `settings.toml` 的
+--   * 导航手感：摇杆阈值与「按住后首次延迟 + 重复间隔」可从工程 `project.toml` 的
 --     `[input]` 段配置（`nav_threshold` / `nav_delay_ms` / `nav_repeat_ms`；旧的
 --     `nav_delay_frames` / `nav_repeat_frames` 仍可读，按 60Hz 换算）。M22 起重复节奏
 --     由**引擎**按毫秒执行（`input.action_repeat`），因此 144Hz 与 60Hz 手感一致。
@@ -139,7 +139,7 @@ local PAD_AXES = {
   "RT 扳机",
 }
 
--- ---------- 导航手感（可在 settings.toml 的 [input] 段配置） ----------
+-- ---------- 导航手感（可在 project.toml 的 [input] 段配置） ----------
 
 -- M22：重复节奏用**毫秒**（旧帧键按 60Hz 换算）；默认 350ms / 90ms，与 M20-09 的
 -- 「16 帧 / 8 帧 @60Hz」几乎一致，但不再随帧率漂移。
@@ -152,7 +152,7 @@ local nav = {
   repeat_ms = NAV_DEFAULTS.repeat_ms,
 }
 
--- 把 `input.nav_settings()`（= 工程 settings.toml 的 [input] 段）应用到导航手感，
+-- 把 `input.nav_settings()`（= 工程 project.toml 的 [input] 段）应用到导航手感，
 -- 并**推给引擎**（`input.set_nav_settings`）：阈值成为设备层轴判定阈值，重复节奏供
 -- `input.action_repeat` 使用。引擎未提供这些 API（旧引擎）或文件缺失/非法时保持默认。
 -- 返回生效值。

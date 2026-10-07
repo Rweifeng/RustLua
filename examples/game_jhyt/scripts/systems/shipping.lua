@@ -32,7 +32,7 @@ local audio = require("core.audio")
 local nav = require("ui.panel_nav")
 local ui_text = require("ui.ui_text")
 local layout = require("ui.layout")
-local skin = require("ui.skin")
+-- M69/B6：面板静态骨架搬进 `assets/prefabs/shipping.prefab`，不再 require ui.skin。
 
 local M = {}
 
@@ -94,13 +94,16 @@ local function sell_price(item_id)
 end
 
 local function inventory_items()
-  -- 背包全部非空槽位（按槽位序），供 shippable() 与 UI 列表使用。
+  -- 背包全部非空槽位（`inv.get` 返回 { id, capacity, slots={...}, occupied }，slots 是
+  -- 稀疏表——引擎只对非空槽 set——所以用 pairs 遍历 data.slots。顺序对 shippable 无影响：
+  -- shippable 按物品 id 排序，先收集后排序。**M69 顺手修**：原 `ipairs(data)` 遍历的是
+  -- 返回表本身的数字键（恒空），出货箱 0.8 上线后从未真正列出过可入箱物。）
   local out = {}
   local data = inv.get(state.inventory)
   if type(data) ~= "table" then
     return out
   end
-  for _, slot in ipairs(data) do
+  for _, slot in pairs(data.slots or {}) do
     if slot and slot.item and (tonumber(slot.count) or 0) > 0 then
       out[#out + 1] = { item = slot.item, count = tonumber(slot.count) }
     end
@@ -297,6 +300,7 @@ function M.reset()
   pending, stats, log = {}, {}, {}
   ui_state = nil
   clear_ui()
+  preset_hide()
   nav.close(FOCUS)
   nav.scroll_close(SCROLL)
 end
@@ -318,6 +322,47 @@ local function clear_ui()
     ui_text.hide("ship", "ship:row" .. i)
   end
   ui_text.reset("ship")
+end
+
+-- ---------- 预设（M69/B6） ----------
+-- 静态骨架搬进 `assets/prefabs/shipping.prefab`（对账门 = jhyt_m69_shipping_prefab，黄金表
+-- 46 行钉死迁移前画面），render 只写会变的部分：选中行矩形、金币/待结算/反馈文字、出货行
+-- 文本、滚动箭头的条件显隐与行数不足时的行隐藏。title 与 hint 固定写死在预设。
+-- 开/关屏 = 根节点显隐（`prefab.set_visible` 子树语义），不撤重铺（M63c 教训）。
+local PRESET_PATH = "assets/prefabs/shipping.prefab"
+local preset_handle = nil
+local preset_spawned = false
+
+-- M71 修复：场景切换重建 ECS 世界后旧句柄失效，纯布尔标志漏判 → set_text 报「没有 handle N」；
+-- 改成对句柄真实探活（`prefab.root` 失效句柄抛错，pcall 兜底）。
+local function preset_live()
+  if not preset_handle then
+    return false
+  end
+  local ok, alive = pcall(function() return prefab.root(preset_handle) ~= nil end)
+  return ok and alive == true
+end
+
+local function preset_spawn()
+  if preset_handle and preset_live() then
+    return true
+  end
+  preset_handle = prefab.spawn(PRESET_PATH)
+  preset_spawned = true
+  return true
+end
+
+local function preset_show()
+  preset_spawn()
+  prefab.set_visible(preset_handle, "ShipRoot", true)
+  return true
+end
+
+local function preset_hide()
+  if preset_live() then
+    prefab.set_visible(preset_handle, "ShipRoot", false)
+  end
+  return true
 end
 
 function M.ui_active()
@@ -418,6 +463,7 @@ function M.open_ui()
   state.set_mode("Shipping")
   sync_focus()
   audio.ui("ui_click")
+  preset_show()
   M.render()
   return true
 end
@@ -428,6 +474,7 @@ function M.close_ui()
   end
   ui_state = nil
   clear_ui()
+  preset_hide()
   nav.close(FOCUS)
   nav.scroll_close(SCROLL)
   if state.is_mode("Shipping") then
@@ -444,71 +491,40 @@ function M.render()
   local x, y, w, h = PANEL.x, PANEL.y, PANEL.w, PANEL.h
   local BOX = layout.BOX
   local ROW_W = layout.list_width(PANEL)
-  local TITLE_W = 340.0
-  local RIGHT_W = 240.0
-  ui_text.begin("ship")
-  skin.panel("ship:skin_bg", x, y, w, h, "panel_main")
-  ui.panel("ship:box", x, y, w, h, 0.10, 0.11, 0.15, 0.94)
-  skin.icon("ship:divider", x + BOX.title_dx, y + BOX.title_dy + BOX.title_font + 6, w - BOX.title_dx * 2, 8, "divider")
-  ui.panel("ship:rule", x + BOX.title_dx, y + BOX.title_dy + BOX.title_font + 14, w - BOX.title_dx * 2, 2, 0.72, 0.75, 0.82, 0.22)
-  ui.panel(
-    "ship:sel",
-    x + BOX.list_dx,
-    y + 100 + (ui_state.index - 1) * ROW_H,
-    w - BOX.list_dx * 2,
-    ROW_H,
-    0.85,
-    0.72,
-    0.42,
-    0.20
-  )
-  ui_text.draw("ship", "ship:title", x + BOX.title_dx, y + BOX.title_dy, BOX.title_font, TITLE_W, "镖局货箱 · 睡前结算")
-  skin.icon("ship:seal", x + w - BOX.title_dx - 44, y + BOX.title_dy + 2, 24, 24, "icon_seal")
-  skin.icon("ship:close", x + w - BOX.title_dx - 16, y + BOX.title_dy + 2, 16, 16, "btn_close")
-  ui_text.draw(
-    "ship",
-    "ship:money",
-    x + w - RIGHT_W - BOX.title_dx,
-    y + BOX.corner_y,
-    BOX.corner_font,
-    RIGHT_W,
-    "金币 " .. tostring(state.money) .. " 文"
-  )
-  ui_text.draw(
-    "ship",
-    "ship:sum",
-    x + BOX.title_dx,
-    y + 58,
-    18.0,
-    TITLE_W,
-    "箱内待结算 " .. tostring(M.pending_total()) .. " 文"
-  )
+  sync_focus()
+  preset_spawn()
+  local P = preset_handle
+  -- 选中行底衬：y 随选中行（(index-1)*34）移动；shipping 的 sel 首行是 y+100
+  -- （不是 list_dy=60），矩形 = 迁移前 `ui.panel("ship:sel", …)` 的几何。
+  local sel_top = y + 100 + (ui_state.index - 1) * ROW_H
+  prefab.set_rect(P, "ShipSel", x + BOX.list_dx, sel_top, x + w - BOX.list_dx, sel_top + ROW_H)
+  prefab.set_text(P, "ShipMoney", "金币 " .. tostring(state.money) .. " 文")
+  prefab.set_text(P, "ShipSum", "箱内待结算 " .. tostring(M.pending_total()) .. " 文")
 
   local rows = M.shippable()
-  if #rows > ROW_LIMIT then
-    skin.icon("ship:scroll_up", x + w - BOX.title_dx - 16, y + BOX.list_dy - 4, 16, 16, "scroll_arrow_up")
-    skin.icon("ship:scroll_down", x + w - BOX.title_dx - 16, y + BOX.list_dy + ROW_LIMIT * ROW_H - 12, 16, 16, "scroll_arrow_down")
-  end
-  sync_focus()
+  -- 滚动箭头条件显隐：行数超过一页才画（黄金表 A 态 10 种 > 9 显示）。
+  local scrollable = #rows > ROW_LIMIT
+  prefab.set_visible(P, "ShipScrollUp", scrollable)
+  prefab.set_visible(P, "ShipScrollDown", scrollable)
+
   local first = nav.window(SCROLL, #rows, ROW_LIMIT, ROW_H, ui_state.index)
-  for i = 1, math.min(ROW_LIMIT, #rows) do
+  for i = 1, ROW_LIMIT do
     local row = rows[first + i - 1]
-    local line = tostring(row.item) .. " × " .. tostring(row.have) .. "  单价 " .. tostring(row.price)
-    if i == ui_state.index - first + 1 then
-      line = "→ " .. line
+    local id = "ShipRow" .. i
+    if row then
+      local line = tostring(row.item) .. " × " .. tostring(row.have) .. "  单价 " .. tostring(row.price)
+      if i == ui_state.index - first + 1 then
+        line = "→ " .. line
+      end
+      prefab.set_text(P, id, line)
+      prefab.set_visible(P, id, true)
+    else
+      -- M69/C5 顺手修：原 `for i = 1, math.min(ROW_LIMIT, #rows)` 没有 else 隐藏分支，
+      -- 行数从 9 掉到 3 时第 4~9 行留着上一帧的字；预设化后行不足即隐藏。
+      prefab.set_visible(P, id, false)
     end
-    ui_text.draw("ship", "ship:row" .. i, x + BOX.list_dx, y + BOX.list_dy + (i - 1) * ROW_H, 16.0, ROW_W, line)
   end
-  ui_text.draw("ship", "ship:msg", x + BOX.list_dx, y + h + BOX.msg_dy, 16.0, ROW_W, tostring(ui_state.msg or ""))
-  ui_text.draw(
-    "ship",
-    "ship:hint",
-    x + BOX.list_dx,
-    y + h + BOX.hint_dy,
-    BOX.hint_font,
-    ROW_W,
-    "确认：放入 1 个 · Esc/B：关闭（睡前统一结算）"
-  )
+  prefab.set_text(P, "ShipMsg", tostring(ui_state.msg or ""))
   return true
 end
 

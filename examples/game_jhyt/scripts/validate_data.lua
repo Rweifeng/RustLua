@@ -68,12 +68,9 @@ local function validators()
     -- "skin"（ui/skin.lua，ui 换肤注册表，75 键）：validate_all 校验数量/路径格式/重复。
     { "portrait", require("ui.portrait"), "ui.portrait" },
     { "skin", require("ui.skin"), "ui.skin" },
-    -- M59 追加："prefab"（ui/prefab.lua）：UI 预设（`assets/ui/prefabs/*.ui.json`）的加载与版面不变量。
-    -- 这一条必须在启动门里跑：预设是**数据文件**，改坏了不会有语法错误，表现只会是
-    -- "某个面板少一块/压一行"，而数据文件恰恰是最容易随手改的那一份。
-    -- 读文件走 `data.load`（VFS），不走 `io`——web/微信宿主没有 `io`（`ui/layout_check.lua`
-    -- 的教训：登记一个需要 `io` 的校验器会让两条 web 发布形态的启动当场失败）。
-    { "prefab", require("ui.prefab"), "ui.prefab" },
+    -- M59 追加、M71 退役："prefab"（ui/prefab.lua）：JSON 预设层（`assets/ui/prefabs/*.ui.json`）
+    -- 已整体退役（dialogue.ui.json 删除、NAMES 清空、面板改走运行期 `.prefab`），登记移除。
+    -- 运行期 `.prefab` 的搬运对账由各 jhyt_m6X/m7X 门负责（黄金表钉死迁移前画面）。
     -- M32 相机收口追加："camera_view"（world/camera_view.lua）：每张玩法地图在场景里
     -- 声明的 `Camera` 契约——恰好 1 台、正交投影、`zoom=2`（对标星露谷视觉规格，见
     -- docs/51 §2.2 修订）、且 `bounds` 逐值等于该场景

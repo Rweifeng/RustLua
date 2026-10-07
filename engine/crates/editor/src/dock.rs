@@ -531,7 +531,23 @@ impl TabViewer for DockTabViewer<'_> {
                 // 浮层定位（性能面板等）依赖"工作区矩形"：迁移前取 `CentralPanel` 的响应
                 // 矩形，现在取本标签的内容矩形。
                 editor.workspace_rect = ui.max_rect();
-                editor.draw_workspace_toolbar(ui);
+                // 工具条画在一个把宽度钉到裁剪框的子 ui 里。egui_dock 会在本回调之前
+                // `expand_to_include_rect(available_rect)`（show/leaf.rs 的 ScrollArea 内），
+                // 只要工具条某一帧横向溢出裁剪框，之后每帧可用宽度都停在溢出值、
+                // `horizontal_wrapped` 不再换行，zoom 数值就一直压在右侧属性面板下（窄叶子才
+                // 触发）。给工具条一个宽度=可见裁剪宽度的 scope，换行就按真实可见宽度发生，
+                // 溢出也不会再回灌到父 ui 的可用宽度。
+                // 原点必须留在父 ui 的内容原点：直接把 max_rect 钉成 clip_rect 会把子 ui
+                // 起点推到裁剪框左缘（比标签体内容内缩还左 2~3px），整行工具条因此压过
+                // 标签栏左边界（用户截图实测：工具条 x=25 vs 标签边框 x=27）。
+                let band = ui.available_rect_before_wrap();
+                let band = egui::Rect::from_min_size(
+                    band.min,
+                    egui::vec2(band.width().min(ui.clip_rect().width()), band.height()),
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(band), |ui| {
+                    editor.draw_workspace_toolbar(ui);
+                });
                 ui.separator();
                 match tab {
                     DockTab::Game => editor.draw_game_view(ui),

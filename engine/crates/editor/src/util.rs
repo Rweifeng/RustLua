@@ -19,12 +19,112 @@ mod playback_icon_tests {
 
     /// 图标选择：运行中显示"暂停"（两条竖杠），暂停中显示"继续"（三角形）。
     ///
-    /// 这条测试盯住的是**用户看到的那个按钮**：曾经用 `❚❚` 字形，字体缺字形时渲染成
+    /// 这条测试盯住的是**用户看到的那个按钮**：曾经用 U+275A 双竖杠字形，字体缺字形时渲染成
     /// 两个"豆腐块"（用户截图反馈）；现在两种状态都由画笔按这里的选择绘制。
     #[test]
     fn pause_button_shows_the_opposite_action_icon() {
         assert_eq!(pause_resume_icon(false), PlaybackIcon::Pause);
         assert_eq!(pause_resume_icon(true), PlaybackIcon::Play);
+    }
+}
+
+#[cfg(test)]
+mod draw_icon_tests {
+    use super::{egui, pencil_polygons};
+
+    /// 铅笔几何：笔尖必须在**左下**（那才是写字的那头），笔杆向右上延伸，两块图形都
+    /// 不能越出分配的矩形。这些坐标写反不会有任何编译期信号，只能靠这里钉住。
+    ///
+    /// 矩形刻意取一个**非零原点**：早先的实现只按宽高归一、忘了加原点，铅笔就画到了
+    /// 屏幕左上角，行末看上去像"按钮凭空消失"（目验截图才发现）。
+    #[test]
+    fn pencil_points_down_left_and_stays_in_its_box() {
+        let rect = egui::Rect::from_min_size(egui::pos2(120.0, 45.0), egui::vec2(16.0, 16.0));
+        let (shaft, tip) = pencil_polygons(rect);
+        assert_eq!(shaft.len(), 4, "笔杆是斜放的四边形");
+        assert_eq!(tip.len(), 3, "笔尖是三角形");
+        for point in shaft.iter().chain(tip.iter()) {
+            assert!(rect.contains(*point), "图形越出 {rect:?}：{point:?}");
+        }
+        // 屏幕坐标 y 向下：笔尖是"最靠左、最靠下"的那个点。
+        let tip_point = tip
+            .iter()
+            .min_by(|a, b| a.x.partial_cmp(&b.x).unwrap())
+            .copied()
+            .unwrap();
+        assert!(
+            tip_point.x < shaft.iter().map(|p| p.x).reduce(f32::min).unwrap(),
+            "笔尖没有比笔杆更靠左：{tip_point:?} vs {shaft:?}"
+        );
+        assert!(
+            tip_point.y > shaft.iter().map(|p| p.y).reduce(f32::max).unwrap(),
+            "笔尖没有比笔杆更靠下：{tip_point:?} vs {shaft:?}"
+        );
+        // 笔杆末端应接近矩形右上角（留出的边距不能吃掉半个方框）。
+        let far = shaft
+            .iter()
+            .max_by(|a, b| {
+                (a.x - a.y)
+                    .partial_cmp(&(b.x - b.y))
+                    .unwrap()
+                    .then(a.x.partial_cmp(&b.x).unwrap())
+            })
+            .copied()
+            .unwrap();
+        assert!(
+            far.x > rect.min.x + rect.width() * 0.6,
+            "笔杆没有伸向右上：{far:?}"
+        );
+    }
+
+    /// 豆腐守卫：这几个码位在编辑器的字体链里**没有字形**（实测 cmap：内嵌的
+    /// Ubuntu-Light / Hack / NotoEmoji / emoji-icon-font 加上 `noto-cjk-fallback`
+    /// 均未覆盖），源码里一旦再次出现就必然渲染成"豆腐块"（用户截图反馈的成因）。
+    /// 需要这些图标时走 [`super::DrawIcon`] 的画笔绘制。
+    ///
+    /// 注意这条测试连**注释**一起管：所以注释里要用 `U+2715` 这种码点写法描述它们，
+    /// 免得有人把"文档里的示例字符"抄成真实字面量，而审查者看不出区别。
+    #[test]
+    fn editor_sources_avoid_glyphless_dingbats() {
+        const FORBIDDEN: [char; 4] = ['\u{270E}', '\u{2715}', '\u{2718}', '\u{275A}'];
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut stack = vec![src];
+        let mut offenders = Vec::new();
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.filter_map(|entry| entry.ok()) {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                for (index, line) in text.lines().enumerate() {
+                    for ch in FORBIDDEN {
+                        if line.contains(ch) {
+                            offenders.push(format!(
+                                "{}:{} 出现 U+{:04X}",
+                                path.display(),
+                                index + 1,
+                                ch as u32
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "这些码位没有字形，会渲染成豆腐块：\n{}",
+            offenders.join("\n")
+        );
     }
 }
 
@@ -191,9 +291,9 @@ pub(crate) const fn pause_resume_icon(paused: bool) -> PlaybackIcon {
     }
 }
 
-/// 暂停/继续按钮：**图标用画笔绘制**，不依赖字体里有 `❚` 这类字形。
+/// 暂停/继续按钮：**图标用画笔绘制**，不依赖字体里有 U+275A 这类字形。
 ///
-/// 起因（用户反馈的截图）：原来按钮文字用 `❚❚`（U+275A），而编辑器配置的字体里没有这个
+/// 起因（用户反馈的截图）：原来按钮文字用 U+275A（成对竖杠），而编辑器配置的字体里没有这个
 /// 字形，实际渲染成两个"豆腐块"（缺字方框）。图标用 `ui.painter()` 画出来就与字体无关，
 /// 尺寸/配色仍走 egui 自己的按钮视觉（hover/按下反馈一致）。
 pub(crate) fn pause_resume_icon_button(
@@ -248,7 +348,7 @@ pub(crate) fn pause_resume_icon_button(
 }
 
 /// 画笔绘制"下三角"的小按钮：弹层入口（吸附步长等）。
-/// 不用 `▾` 字形的原因与 [`pause_resume_icon_button`] 的 `❚❚` 一样——字体缺字形渲染成豆腐块。
+/// 不用 `▾` 字形的原因与 [`pause_resume_icon_button`] 的 U+275A 一样——字体缺字形渲染成豆腐块。
 pub(crate) fn chevron_down_button(ui: &mut Ui, tooltip: &str) -> Response {
     let size = egui::vec2(20.0, 24.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
@@ -264,6 +364,113 @@ pub(crate) fn chevron_down_button(ui: &mut Ui, tooltip: &str) -> Response {
         visuals.fg_stroke.color,
         egui::Stroke::NONE,
     ));
+    response.on_hover_text(tooltip)
+}
+
+/// 由画笔绘制的图形标记。这里列出的符号全部来自 Dingbats 区（U+2700–U+27BF），
+/// 而编辑器的字体链（内嵌拉丁字体 + `noto-cjk-fallback`）**没有这些字形**，写成文字
+/// 只会渲染成"豆腐块"（用户截图反馈）。因此这些位置一律按本枚举用画笔绘制，
+/// 与字体安装情况无关。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DrawIcon {
+    /// 斜铅笔：编辑入口（如「打开 Prefab 编辑」）。
+    Pencil,
+    /// 叉：缺失 / 导入失败 / 清除。
+    Cross,
+    /// 勾：成功。
+    Check,
+}
+
+/// 铅笔的两块几何（笔杆四边形 + 笔尖三角形），坐标落在 `rect` 内。
+///
+/// 抽成纯函数是为了让单测能钉住形状：笔尖必须朝左下（那才是"写字的那头"），
+/// 而画笔调用点里的坐标算错了不会有任何编译期信号。**返回绝对坐标**（带 rect 原点）
+/// 也是有意的：只按宽高归一的话，图形会被画到屏幕左上角，面板里一个字都看不见
+/// ——目验截图时踩过一次，所以单测刻意用非零原点的矩形。
+#[must_use]
+pub(crate) fn pencil_polygons(rect: egui::Rect) -> (Vec<egui::Pos2>, Vec<egui::Pos2>) {
+    let (w, h) = (rect.width(), rect.height());
+    let at = |fx: f32, fy: f32| egui::pos2(rect.min.x + fx * w, rect.min.y + fy * h);
+    // 归一化：杆从 (0.34,0.66) 到 (0.72,0.28)，粗 0.16；笔尖收在 (0.22,0.78)。
+    let (h1, h2) = (at(0.34, 0.66), at(0.72, 0.28));
+    let (dx, dy) = (h2.x - h1.x, h2.y - h1.y);
+    let len = (dx * dx + dy * dy).sqrt().max(f32::EPSILON);
+    let (nx, ny) = (-dy / len * 0.08 * w, dx / len * 0.08 * h);
+    let shaft = vec![
+        egui::pos2(h1.x + nx, h1.y + ny),
+        egui::pos2(h2.x + nx, h2.y + ny),
+        egui::pos2(h2.x - nx, h2.y - ny),
+        egui::pos2(h1.x - nx, h1.y - ny),
+    ];
+    let tip = vec![
+        at(0.22, 0.78),
+        egui::pos2(h1.x + nx, h1.y + ny),
+        egui::pos2(h1.x - nx, h1.y - ny),
+    ];
+    (shaft, tip)
+}
+
+/// 在 `rect` 内按 `icon` 画一个图形，颜色由调用方决定。
+fn paint_draw_icon(ui: &mut Ui, rect: egui::Rect, icon: DrawIcon, color: egui::Color32) {
+    let origin = rect.min;
+    let size = rect.size();
+    let at = |fx: f32, fy: f32| egui::pos2(origin.x + fx * size.x, origin.y + fy * size.y);
+    match icon {
+        DrawIcon::Pencil => {
+            let (shaft, tip) = pencil_polygons(rect);
+            ui.painter().add(egui::Shape::convex_polygon(
+                shaft,
+                color,
+                egui::Stroke::NONE,
+            ));
+            ui.painter()
+                .add(egui::Shape::convex_polygon(tip, color, egui::Stroke::NONE));
+        }
+        DrawIcon::Cross => {
+            let stroke = egui::Stroke::new(1.4_f32, color);
+            ui.painter()
+                .line_segment([at(0.28, 0.28), at(0.72, 0.72)], stroke);
+            ui.painter()
+                .line_segment([at(0.72, 0.28), at(0.28, 0.72)], stroke);
+        }
+        DrawIcon::Check => {
+            ui.painter().add(egui::Shape::line(
+                vec![at(0.20, 0.54), at(0.42, 0.74), at(0.80, 0.28)],
+                egui::Stroke::new(1.4_f32, color),
+            ));
+        }
+    }
+}
+
+/// 行内图形标记（不可点击）：宽高取当前正文行高，与同行文字基线对齐。
+pub(crate) fn draw_icon_label(ui: &mut Ui, icon: DrawIcon, color: egui::Color32) {
+    let side = ui
+        .text_style_height(&egui::TextStyle::Body)
+        .clamp(10.0, 20.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(side + 2.0, side), egui::Sense::hover());
+    // 图形居中于分配到的方框，尺寸用行高而不是整个方框，避免勾/叉顶到上下边。
+    let box_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(side, side));
+    paint_draw_icon(ui, box_rect, icon, color);
+}
+
+/// 图形小按钮：外观走 egui 自己的按钮视觉（hover/按下反馈一致），图标由画笔绘制。
+pub(crate) fn draw_icon_button(ui: &mut Ui, icon: DrawIcon, tooltip: &str) -> Response {
+    let height = ui
+        .text_style_height(&egui::TextStyle::Button)
+        .max(ui.spacing().button_padding.y * 2.0)
+        + 2.0;
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2((height + 6.0).min(26.0), height),
+        egui::Sense::click(),
+    );
+    let visuals = ui.style().interact(&response);
+    if response.hovered() || response.is_pointer_button_down_on() {
+        ui.painter()
+            .rect_filled(rect, visuals.corner_radius, visuals.bg_fill);
+    }
+    let side = height - 4.0;
+    let box_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(side, side));
+    paint_draw_icon(ui, box_rect, icon, visuals.fg_stroke.color);
     response.on_hover_text(tooltip)
 }
 

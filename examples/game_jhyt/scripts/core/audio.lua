@@ -10,7 +10,7 @@
 --     分组音量；实际音量 = 主音量 × 分组音量（M20-02）
 --   * `audio.settings_text()` / `audio.apply_settings(text)` 音量设置文本往返
 --   * `audio.load_settings()` / `audio.save_settings()` 读写
---     `<project>/settings.toml` 的 `[audio]` 段（M20-02；文件可选，缺失即默认 1.0）
+--     `<project>/project.toml` 的 `[audio]` 段（M20-02；段可选，缺失即默认 1.0）
 --   * 音频目录固定为 `<project>/assets/audio/`，依次尝试 `<name>.mp3`、`<name>.wav`
 --     与 `<name>.ogg`（本工程只用 .mp3）；无输出设备时引擎只 warn 并静默降级，不影响玩法。
 --
@@ -20,7 +20,7 @@
 --     不得中断玩法逻辑）
 --   * 音效走 SFX 总线、界面音走 UI 总线、BGM 走 BGM 总线（M20-02）
 --   * 主音量随存档持久化（provider "audio" → { volume = 0..1 }）；分组音量以
---     settings.toml 为准（`load_settings`/`save_settings`）
+--     project.toml 为准（`load_settings`/`save_settings`）
 --
 -- 只在「成功路径」播放音效的调用点在各玩法模块里（farm/shop/dialogue/...），
 -- 本模块不反过来 require 它们（避免 require 环）。
@@ -158,8 +158,8 @@ local function engine_set_bus_volume(bus, value)
   return call(audio.set_bus_volume, bus, value)
 end
 
--- 初始化（一次性引导 / 新档）：应用默认主音量与 settings.toml 中的分组音量，
--- 并允许重新选曲。settings.toml 缺失时保持默认（1.0），不报错。
+-- 初始化（一次性引导 / 新档）：应用默认主音量与 project.toml 中的分组音量，
+-- 并允许重新选曲。[audio] 段缺失时保持默认（1.0），不报错。
 function M.init()
   volume = clamp01(volume) or DEFAULT_VOLUME
   engine_set_bus_volume("master", volume)
@@ -267,7 +267,7 @@ function M.adjust_bus_volume(bus, delta)
   return M.bus_volume(bus)
 end
 
--- ---------- 设置文件（settings.toml 的 [audio] 段，M20-02） ----------
+-- ---------- 设置文件（project.toml 的 [audio] 段，M20-02） ----------
 
 function M.settings_path()
   if type(audio) == "table" and type(audio.settings_path) == "function" then
@@ -310,7 +310,7 @@ function M.save_settings()
   return result == true, tostring(detail or (result and "saved" or "error"))
 end
 
--- 音量设置文本往返（不含 settings.toml 的其余段）。
+-- 音量设置文本往返（不含 project.toml 的其余段）。
 function M.settings_text()
   if type(audio) == "table" and type(audio.settings_text) == "function" then
     local ok, text = pcall(audio.settings_text)

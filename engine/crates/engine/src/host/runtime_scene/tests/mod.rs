@@ -93,6 +93,7 @@ mod frame_ledger;
 mod frame_view;
 mod gamepad_input;
 mod render_channels;
+mod runtime_snapshot;
 mod scene_instantiation;
 mod scenes_and_clicks;
 mod schedule;

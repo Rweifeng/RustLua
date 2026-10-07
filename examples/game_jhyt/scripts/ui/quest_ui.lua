@@ -26,8 +26,7 @@ local hints = require("ui.hints")
 local ui_text = require("ui.ui_text")
 -- M32 竖版：面板矩形与行偏移的唯一来源（`ui/layout.lua`）。
 local layout = require("ui.layout")
--- docs/48 ui 换肤接线：面板背景/任务子弹/印章贴图。
-local skin = require("ui.skin")
+-- M68/B5：面板静态骨架搬进 `assets/prefabs/quest.prefab`，不再 require ui.skin。
 
 -- 数字直选 1..9 的按键名（默认只有键盘数字键；未绑定该设备的动作自动跳过）。
 local function digits_label()
@@ -137,6 +136,53 @@ local function clear_ui()
   ui_text.reset("qst")
 end
 
+-- ---------- 预设（M68/B5） ----------
+-- 静态骨架搬进 `assets/prefabs/quest.prefab`（对账门 = jhyt_m68_quest_prefab，黄金表 70 行
+-- 钉死迁移前画面），render 只写会变的部分：选中行矩形、任务行文本、状态/发布者/目标进度、
+-- 提示、空列表与滚动窗口外行的显隐、bullet todo/done 二选一。title 与 msg 固定写死在预设。
+-- 开/关屏 = 根节点显隐（`prefab.set_visible` 子树语义，藏父带子、藏节点不建布局项），
+-- 不撤重铺，避免槽位 LIFO 复用打乱绘制序（M63c 教训）。
+local PRESET_PATH = "assets/prefabs/quest.prefab"
+local preset_handle = nil
+local preset_spawned = false
+
+-- M71 修复：场景切换重建 ECS 世界后旧句柄失效，纯布尔标志漏判 → set_text 报「没有 handle N」；
+-- 改成对句柄真实探活（`prefab.root` 失效句柄抛错，pcall 兜底）。
+local function preset_live()
+  if not preset_handle then
+    return false
+  end
+  local ok, alive = pcall(function() return prefab.root(preset_handle) ~= nil end)
+  return ok and alive == true
+end
+
+local function preset_spawn()
+  if preset_handle and preset_live() then
+    return true
+  end
+  preset_handle = prefab.spawn(PRESET_PATH)
+  preset_spawned = true
+  return true
+end
+
+local function preset_show()
+  preset_spawn()
+  prefab.set_visible(preset_handle, "QuestRoot", true)
+  return true
+end
+
+local function preset_hide()
+  if preset_live() then
+    prefab.set_visible(preset_handle, "QuestRoot", false)
+  end
+  return true
+end
+
+-- 验收（jhyt_m19_ui 面板断言）取 spawn 句柄；open 前为 nil。
+function M.preset_ref()
+  return preset_handle
+end
+
 function M.select(index)
   if not ui_state then
     return false
@@ -235,107 +281,72 @@ function M.render()
   -- 目标列表首行（列表区最后一行之下，留一行间距）。
   local OBJ_Y = y + BOX.list_dy + ROW_LIMIT * ROW_H + 46
   sync_focus()
-  ui_text.begin("qst")
-  -- docs/48 ui 换肤接线：主面板纸面背景（9-slice）叠在纯色兜底之上。
-  skin.panel("qst:skin_bg", x, y, w, h, "panel_main")
-  ui.panel("qst:box", x, y, w, h, 0.10, 0.11, 0.15, 0.94)
-  -- docs/48 ui 换肤接线：标题分隔线用 common 竹纹分隔贴图（叠在原纯色线之上）。
-  skin.icon("qst:divider", x + BOX.title_dx, y + BOX.title_dy + BOX.title_font + 6, w - BOX.title_dx * 2, 8, "divider")
-  ui.panel("qst:rule", x + BOX.title_dx, y + BOX.title_dy + BOX.title_font + 14, w - BOX.title_dx * 2, 2, 0.72, 0.75, 0.82, 0.22)
-  ui.panel(
-    "qst:sel",
-    x + BOX.list_dx,
-    y + BOX.list_dy + ui_state.index * ROW_H,
-    w - BOX.list_dx * 2,
-    ROW_H,
-    0.85,
-    0.72,
-    0.42,
-    0.20
-  )
-  ui_text.draw("qst", "qst:title", x + BOX.title_dx, y + BOX.title_dy, BOX.title_font, ROW_W, "任务日志")
-  -- docs/48 ui 换肤接线：标题右端印章（24×24）。
-  skin.icon("qst:seal", x + w - BOX.title_dx - 24, y + BOX.title_dy + 2, 24, 24, "icon_seal")
+  preset_spawn()
+  local P = preset_handle
+  -- 选中行底衬：y 随选中行（index*38）移动；矩形 = 迁移前 `ui.panel("qst:sel", …)` 的
+  -- 几何（left, top, right, bottom 四边，`prefab.set_rect` 签名）。
+  local sel_top = y + BOX.list_dy + ui_state.index * ROW_H
+  prefab.set_rect(P, "QuestSel", x + BOX.list_dx, sel_top, x + w - BOX.list_dx, sel_top + ROW_H)
 
-  if #rows == 0 then
-    ui_text.draw("qst", "qst:empty", x + BOX.list_dx, y + BOX.list_dy, 18.0, ROW_W, "暂无任务")
-  else
-    ui_text.hide("qst", "qst:empty")
-  end
+  -- 空列表互斥：有任务时隐藏"暂无任务"。
+  prefab.set_visible(P, "QuestEmpty", #rows == 0)
 
   -- 任务超过一页时按选中行滚动窗口（引擎 ScrollState，M20-02）。
   local first = nav.window(SCROLL, #rows, ROW_LIMIT, ROW_H, ui_state.index + 1)
   for slot = 0, ROW_LIMIT - 1 do
-    local id = "qst:row" .. (slot + 1)
+    local row_name = "QuestRow" .. (slot + 1)
+    local todo_name = "QuestBullet" .. (slot + 1) .. "Todo"
+    local done_name = "QuestBullet" .. (slot + 1) .. "Done"
     local index = first + slot
     local row = rows[index]
     if row then
       local label = string.format("%d. %s【%s】", index, row.name, M.state_text(row.state))
       label = (index == ui_state.index + 1) and ("> " .. label) or ("  " .. label)
-      -- docs/48 ui 换肤接线：任务状态子弹（完成 done / 其他 todo，12×12 画在行首左侧）。
-      local bullet_key = row.state == "completed" and "quest_bullet_done" or "quest_bullet_todo"
-      skin.icon("qst:bullet" .. id, x + BOX.list_dx - 18, y + BOX.list_dy + slot * ROW_H + 4, 12, 12, bullet_key)
-      ui_text.draw("qst", id, x + BOX.list_dx, y + BOX.list_dy + slot * ROW_H, 17.0, ROW_W, label)
+      prefab.set_text(P, row_name, label)
+      prefab.set_visible(P, row_name, true)
+      -- 任务状态子弹（完成 done / 其他 todo，12×12 画在行首左侧）：同一矩形叠两张图互斥。
+      local done = row.state == "completed"
+      prefab.set_visible(P, done_name, done)
+      prefab.set_visible(P, todo_name, not done)
     else
-      ui_text.hide("qst", id)
+      prefab.set_visible(P, row_name, false)
+      prefab.set_visible(P, done_name, false)
+      prefab.set_visible(P, todo_name, false)
     end
   end
 
   -- 选中任务详情：发布者 + 目标进度（只读）。
   local row = rows[ui_state.index + 1]
   if row then
-    ui_text.draw(
-      "qst",
-      "qst:state",
-      x + w - STATE_W - BOX.title_dx,
-      y + BOX.corner_y,
-      BOX.corner_font,
-      STATE_W,
-      "状态 " .. M.state_text(row.state)
-    )
-    ui_text.draw(
-      "qst",
-      "qst:giver",
-      x + BOX.list_dx,
-      OBJ_Y - 26,
-      15.0,
-      ROW_W,
-      "发布者 " .. tostring(row.giver_name or "未知")
-    )
-    ui_text.draw_exact("qst", "qst:objtitle", x + BOX.list_dx, OBJ_Y, 15.0, ROW_W, "目标：")
+    prefab.set_text(P, "QuestState", "状态 " .. M.state_text(row.state))
+    prefab.set_text(P, "QuestGiver", "发布者 " .. tostring(row.giver_name or "未知"))
+    prefab.set_text(P, "QuestObjTitle", "目标：")
+    prefab.set_visible(P, "QuestState", true)
+    prefab.set_visible(P, "QuestGiver", true)
+    prefab.set_visible(P, "QuestObjTitle", true)
     local objectives = M.objectives()
     for i = 1, ROW_LIMIT do
       local objective = objectives[i]
-      local id = "qst:obj" .. i
+      local id = "QuestObj" .. i
       if objective then
         local mark = objective.done and "✓" or "…"
         local text = string.format("%s %s %d/%d", mark, tostring(objective.label), objective.current, objective.target)
-        ui_text.draw("qst", id, x + BOX.list_dx + 32, OBJ_Y + i * 26, 15.0, OBJ_W, text)
+        prefab.set_text(P, id, text)
+        prefab.set_visible(P, id, true)
       else
-        ui_text.hide("qst", id)
+        prefab.set_visible(P, id, false)
       end
     end
   else
-    for _, id in ipairs({ "qst:state", "qst:giver", "qst:objtitle" }) do
-      ui_text.hide("qst", id)
-    end
+    prefab.set_visible(P, "QuestState", false)
+    prefab.set_visible(P, "QuestGiver", false)
+    prefab.set_visible(P, "QuestObjTitle", false)
     for i = 1, ROW_LIMIT do
-      ui_text.hide("qst", "qst:obj" .. i)
+      prefab.set_visible(P, "QuestObj" .. i, false)
     end
   end
 
-  ui_text.draw(
-    "qst",
-    "qst:msg",
-    x + BOX.list_dx,
-    y + h + BOX.msg_dy,
-    14.0,
-    ROW_W,
-    "只读面板：任务在对话/交互中接取与交付"
-  )
-    -- docs/48 ui 换肤接线：按键提示条背景（key_hint 9-slice）。
-  skin.panel("qst:key_hint", x + BOX.list_dx, y + h + BOX.hint_dy - 6, ROW_W, BOX.hint_font + 12, "key_hint")
-ui_text.draw("qst", "qst:hint", x + BOX.list_dx, y + h + BOX.hint_dy, BOX.hint_font, ROW_W, hint_line())
+  prefab.set_text(P, "QuestHint", hint_line())
   return true
 end
 
@@ -343,6 +354,7 @@ function M.open()
   ui_state = { index = 0 }
   state.set_mode("Quest")
   audio.ui("ui_click")
+  preset_show()
   M.render()
   return true
 end
@@ -353,6 +365,7 @@ function M.close()
   end
   ui_state = nil
   clear_ui()
+  preset_hide()
   nav.close(FOCUS)
   nav.scroll_close(SCROLL)
   if state.is_mode("Quest") then
@@ -365,6 +378,7 @@ end
 function M.reset()
   ui_state = nil
   clear_ui()
+  preset_hide()
   nav.close(FOCUS)
   nav.scroll_close(SCROLL)
   return true

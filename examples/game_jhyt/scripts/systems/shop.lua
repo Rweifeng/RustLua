@@ -38,8 +38,10 @@ local hints = require("ui.hints")
 local ui_text = require("ui.ui_text")
 -- M32 竖版：面板矩形与行偏移的唯一来源（`ui/layout.lua`）。
 local layout = require("ui.layout")
--- docs/48 ui 换肤接线：面板背景/数量步进/槽框/页签/滚动箭头/关闭/印章贴图。
-local skin = require("ui.skin")
+-- M65/B2 预设化：商店面板已整体搬入 `assets/prefabs/shop.prefab`（对账门 =
+-- `jhyt_m65_shop_prefab`，黄金表 116 行钉死迁移前画面；"搬运不改画面"）。
+-- 面板贴图/几何/字号全部来自预设，脚本运行期只写 `prefab.set_text` / `set_rect` /
+-- `set_visible`，不再画动态层（docs/48 换肤贴图随之并入预设，skin 模块不再需要）。
 
 local M = {}
 
@@ -57,6 +59,10 @@ local SCROLL = "shp:scroll"
 -- 横屏时是"640×440、1280×720 居中"的双列宽面板；竖屏只有 720 宽，于是改为
 -- 单列 9 行（行宽 544px，物品名 + 单价 + 限购/持有都在一行内放得下）。
 local PANEL = layout.PANEL.shop
+
+-- 预设路径与句柄：每世界 spawn 一次（幂等）；换场景世界重建、登记表清空后自动重铺。
+local PRESET_PATH = "assets/prefabs/shop.prefab"
+local shop_handle = nil
 
 -- 每日限购计数：shop_id → { item_id → 已购数量 }。随存档持久化。
 local used = {}
@@ -413,14 +419,49 @@ end
 
 -- ---------- 面板 UI ----------
 
--- 隐藏面板全部动态元素（场景切换会清空动态 UI，重复调用安全）。
+-- 预设实例生命周期：`preset_alive` 用 pcall 探活根——世界重建会清掉实例登记表，
+-- 旧 handle 直接调用是报错不是返回 nil（title_menu 同款 M63c 教训）。打开/关闭 =
+-- 根节点显隐（`set_visible` 子树语义，藏父带子），不撤重铺：频繁开合走
+-- spawn/despawn 会触发槽位 LIFO 复用，打乱绘制序（title_menu.prefab 注释同款警告）。
+local function preset_alive()
+  if not shop_handle then
+    return false
+  end
+  local ok, alive = pcall(function()
+    return prefab.root(shop_handle) ~= nil
+  end)
+  return ok and alive
+end
+
+local function preset_spawn()
+  if not preset_alive() then
+    shop_handle = prefab.spawn(PRESET_PATH)
+  end
+  return shop_handle
+end
+
+local function preset_show()
+  if preset_alive() then
+    prefab.set_visible(shop_handle, "ShopRoot", true)
+  end
+end
+
+local function preset_hide()
+  if preset_alive() then
+    prefab.set_visible(shop_handle, "ShopRoot", false)
+  end
+end
+
+-- 隐藏面板全部元素（场景切换会重建世界，重复调用安全）。
 -- 必须定义在 M.reset 之前：Lua 词法作用域只认「已声明」的 local。
 local function clear_ui()
+  -- M65/B2：面板本体在预设实例里，关闭 = 藏根（子树语义带子）。
+  preset_hide()
+  -- 兼容热重载残留的旧动态层（预设化前 render 画过这些 id）。
   ui.clear("shp:box")
   ui.clear("shp:skin_bg")
   ui.clear("shp:rule")
   ui.clear("shp:sel")
-  -- 换肤贴图走 `ui.image`（跨帧持久）：页签/步进/滚动箭头都要显式清理。
   for _, id in ipairs({ "shp:divider", "shp:seal", "shp:close",
     "shp:tab_buy", "shp:tab_sell", "shp:step_minus", "shp:step_plus",
     "shp:scroll_up", "shp:scroll_down" }) do
@@ -675,7 +716,10 @@ local function hint_line()
   })
 end
 
--- 绘制商店面板（场景切换会清空动态 UI，故每次操作都整体重绘）。
+-- 绘制商店面板：预设实例每世界 spawn 一次（幂等），运行期只改文字/矩形/显隐。
+-- 静态几何（面板矩形、页签/步进/滚动箭头/关闭/印章、文字字号）全部在
+-- `assets/prefabs/shop.prefab`；本函数每帧写的内容与迁移前动态层一致
+-- （对账 = `jhyt_m65_shop_prefab` 黄金表 A/B 两态，逐值复现，bug-for-bug）。
 function M.render()
   if not ui_state then
     return false
@@ -686,73 +730,38 @@ function M.render()
   end
   local x, y, w, h = PANEL.x, PANEL.y, PANEL.w, PANEL.h
   local BOX = layout.BOX
-  -- 排版预算（M32 竖版）：面板宽 592 → 行宽 544；标题独占左半区（300px），
-  -- 右上角的"金币 / 数量"独占右半区（240px），两者不重叠。
-  local ROW_W = layout.list_width(PANEL)
-  local TITLE_W = 300.0
-  local RIGHT_W = 240.0
-  ui_text.begin("shp")
-  -- docs/48 ui 换肤接线：主面板纸面背景（9-slice）叠在纯色兜底之上。
-  skin.panel("shp:skin_bg", x, y, w, h, "panel_main")
-  ui.panel("shp:box", x, y, w, h, 0.10, 0.11, 0.15, 0.94)
-  -- docs/48 ui 换肤接线：标题分隔线用 common 竹纹分隔贴图（叠在原纯色线之上）。
-  skin.icon("shp:divider", x + BOX.title_dx, y + BOX.title_dy + BOX.title_font + 6, w - BOX.title_dx * 2, 8, "divider")
-  ui.panel("shp:rule", x + BOX.title_dx, y + BOX.title_dy + BOX.title_font + 14, w - BOX.title_dx * 2, 2, 0.72, 0.75, 0.82, 0.22)
-  ui.panel(
-    "shp:sel",
-    x + BOX.list_dx,
-    y + 100 + (ui_state.index - 1) * ROW_H,
-    w - BOX.list_dx * 2,
-    ROW_H,
-    0.85,
-    0.72,
-    0.42,
-    0.20
-  )
-  ui_text.draw("shp", "shp:title", x + BOX.title_dx, y + BOX.title_dy, BOX.title_font, TITLE_W, tostring(def.name))
-  -- docs/48 ui 换肤接线：标题右端印章（24×24）与右上关闭按钮（16×16）。
-  skin.icon("shp:seal", x + w - BOX.title_dx - 44, y + BOX.title_dy + 2, 24, 24, "icon_seal")
-  skin.icon("shp:close", x + w - BOX.title_dx - 16, y + BOX.title_dy + 2, 16, 16, "btn_close")
-  ui_text.draw(
-    "shp",
-    "shp:money",
-    x + w - RIGHT_W - BOX.title_dx,
-    y + BOX.corner_y,
-    BOX.corner_font,
-    RIGHT_W,
-    "金币 " .. tostring(state.money) .. " 文"
-  )
-  -- docs/48 ui 换肤接线：购买/出售页签背景（9-slice，选中 on / 未选 off）。
-  skin.panel("shp:tab_buy", x + BOX.title_dx - 6, y + 54, 96, 28,
-    ui_state.tab == "buy" and "tab_on" or "tab_off")
-  skin.panel("shp:tab_sell", x + BOX.title_dx + 90, y + 54, 96, 28,
-    ui_state.tab == "sell" and "tab_on" or "tab_off")
-  ui_text.draw_exact("shp", "shp:tab1", x + BOX.title_dx, y + 58, 18.0, 96.0, ui_state.tab == "buy" and "[购买]" or " 购买 ")
-  ui_text.draw_exact("shp", "shp:tab2", x + BOX.title_dx + 96, y + 58, 18.0, 80.0, ui_state.tab == "sell" and "[出售]" or " 出售 ")
-  -- docs/48 ui 换肤接线：数量步进按钮（24×24）画在数量文本两侧。
-  skin.icon("shp:step_minus", x + w - RIGHT_W - BOX.title_dx - 32, y + 54, 24, 24, "shop_step_minus")
-  skin.icon("shp:step_plus", x + w - BOX.title_dx - 24, y + 54, 24, 24, "shop_step_plus")
-  ui_text.draw(
-    "shp",
-    "shp:qty",
-    x + w - RIGHT_W - BOX.title_dx,
-    y + 58,
-    18.0,
-    RIGHT_W,
-    "数量 × " .. tostring(ui_state.quantity)
-  )
-
-  local rows = M.rows()
-  -- 行数可能超过可视槽位：按选中行滚动窗口（引擎 ScrollState，M20-02）。
-  -- docs/48 ui 换肤接线：超出一页时画上下滚动箭头（列表右侧）。
-  if #rows > ROW_LIMIT then
-    skin.icon("shp:scroll_up", x + w - BOX.title_dx - 16, y + BOX.list_dy - 4, 16, 16, "scroll_arrow_up")
-    skin.icon("shp:scroll_down", x + w - BOX.title_dx - 16, y + BOX.list_dy + ROW_LIMIT * ROW_H - 12, 16, 16, "scroll_arrow_down")
+  local handle = preset_spawn()
+  if not handle then
+    return false
   end
+  -- 页签二选一（叠图互斥：预设里 on/off 两个实体同矩形，脚本控制谁可见）。
+  local buy_tab = ui_state.tab == "buy"
+  prefab.set_visible(handle, "ShopTabBuyOn", buy_tab)
+  prefab.set_visible(handle, "ShopTabBuyOff", not buy_tab)
+  prefab.set_visible(handle, "ShopTabSellOn", not buy_tab)
+  prefab.set_visible(handle, "ShopTabSellOff", buy_tab)
+  -- 滚动箭头：行数超出一页才出现（与迁移前 `if #rows > ROW_LIMIT` 同口径）。
+  local rows = M.rows()
+  local over = #rows > ROW_LIMIT
+  prefab.set_visible(handle, "ShopScrollUp", over)
+  prefab.set_visible(handle, "ShopScrollDown", over)
+  -- 选中高亮：绝对行号矩形。既有画面事实——行号超出 9 槽时 y 落在画面外
+  -- （B 态 sel y=1534）、A 态高亮被 skin_bg 整块盖住，均为迁移前实测行为，
+  -- 照抄进预设，修不修由用户裁定（账记 docs/69）。
+  -- 注意 `prefab.set_rect` 签名是 (left, top, right, bottom) 四边，不是 (x,y,w,h)。
+  local sel_x = x + BOX.list_dx
+  local sel_y = y + 100 + (ui_state.index - 1) * ROW_H
+  prefab.set_rect(handle, "ShopSel", sel_x, sel_y, sel_x + (w - BOX.list_dx * 2), sel_y + ROW_H)
+  -- 文字内容（几何/字号在预设里）。
+  prefab.set_text(handle, "ShopTitle", tostring(def.name))
+  prefab.set_text(handle, "ShopMoney", "金币 " .. tostring(state.money) .. " 文")
+  prefab.set_text(handle, "ShopTabLabel1", buy_tab and "[购买]" or " 购买 ")
+  prefab.set_text(handle, "ShopTabLabel2", buy_tab and " 出售 " or "[出售]")
+  prefab.set_text(handle, "ShopQty", "数量 × " .. tostring(ui_state.quantity))
   sync_focus()
   local first = nav.window(SCROLL, #rows, ROW_LIMIT, ROW_H, ui_state.index)
   for slot = 1, ROW_LIMIT do
-    local id = "shp:row" .. slot
+    local id = "ShopRow" .. slot
     local index = first + slot - 1
     local row = rows[index]
     if row then
@@ -768,14 +777,16 @@ function M.render()
         label = label .. "  持有 " .. tostring(row.have)
       end
       label = (index == ui_state.index) and ("> " .. label) or ("  " .. label)
-      ui_text.draw("shp", id, x + BOX.list_dx, y + 100 + (slot - 1) * ROW_H, 18.0, ROW_W, label)
+      prefab.set_text(handle, id, label)
+      prefab.set_visible(handle, id, true)
     else
-      ui_text.hide("shp", id)
+      -- 空槽位藏行（无矩形 → 探针读不到，等价迁移前 `ui_text.hide`）。
+      prefab.set_visible(handle, id, false)
     end
   end
 
-  ui_text.draw("shp", "shp:msg", x + BOX.list_dx, y + h + BOX.msg_dy, 16.0, ROW_W, tostring(ui_state.msg or ""))
-  ui_text.draw("shp", "shp:hint", x + BOX.list_dx, y + h + BOX.hint_dy, BOX.hint_font, ROW_W, hint_line())
+  prefab.set_text(handle, "ShopMsg", tostring(ui_state.msg or ""))
+  prefab.set_text(handle, "ShopHint", hint_line())
   return true
 end
 
@@ -788,6 +799,8 @@ function M.open_ui(shop_id)
   state.set_mode("Shop")
   clamp_quantity()
   audio.ui("ui_click")
+  -- 关屏只藏根（实例还在），重开先恢复根可见再整屏重写内容。
+  preset_show()
   M.render()
   return true
 end

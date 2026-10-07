@@ -25,7 +25,7 @@ param(
     #                其余资源留在 pack/（声明成 game.json 的 subpackages），运行时按需
     #                wx.loadSubpackage 挂载后本地沙箱读取。零服务器、零备案、零域名白名单。
     #   full       = pack/ 随主包一起分发全部资源（整个包都计入 4MB 主包上限）
-    #   remote     = 瘦首包：pack/ 只留骨架（project.toml.txt/settings.toml.txt/manifest.txt/chars.txt），
+    #   remote     = 瘦首包：pack/ 只留骨架（project.toml.txt/manifest.txt/chars.txt），
     #                重资源全部从远端下载；必须同时给 -RemotePackBaseUrl
     [ValidateSet("full", "subpackage", "remote")]
     [string]$AssetPack = $(if ($Platform -eq "wechat-minigame") { "subpackage" } else { "full" }),
@@ -1055,20 +1055,29 @@ WASM build failed ($Platform)。
             -Destination (Join-Path $distRoot "game.exe") -Force
     }
 
-    # 工程级设置（settings.toml：手柄改键与死区）随包分发：发布包以 pack 目录作为
-    # 工程根，运行器按 `<root>/settings.toml` 读取，否则打包版会回落到键盘默认绑定，
+    # 工程级设置（project.toml 的 [input]/[audio] 段：手柄改键与死区/音量）随包分发：发布包以 pack 目录作为
+    # 工程根，运行器按 `<root>/project.toml` 读取，否则打包版会回落到键盘默认绑定，
     # 出现「编辑器里改好的手柄绑定在发布包里失效」。
-    $settingsSource = Join-Path $gameRoot "settings.toml"
+    $settingsSource = Join-Path $gameRoot "project.toml"
     $settingsPackaged = $false
     if (Test-Path -LiteralPath $settingsSource) {
-        Copy-Item -Path $settingsSource -Destination (Join-Path $packRoot "settings.toml") -Force
+        Copy-Item -Path $settingsSource -Destination (Join-Path $packRoot "project.toml") -Force
         $settingsPackaged = $true
-        Write-Host "==> Packaged settings.toml (input bindings / deadzone)" -ForegroundColor DarkGray
+        Write-Host "==> Packaged project.toml (input bindings / deadzone / audio)" -ForegroundColor DarkGray
     }
 
-    @(
-        "publish_name = `"$PublishName`""
-    ) | Set-Content (Join-Path $distRoot "release.toml") -Encoding UTF8
+    # 发布名：默认 = project.toml 的 name；`-PublishName` 自定义（正式发行名/渠道名）时
+    # 把 `publish_name` 键写进包内 project.toml（引擎的 user_dir/app_name 读它）。
+    # 旧 `release.toml` 已退役——发布包判定由包内 project.toml 的 `release = true` 承担。
+    $projectName = $null
+    if ($settingsPackaged) {
+        $nameLine = Get-Content -LiteralPath $settingsSource | Where-Object { $_ -match '^\s*name\s*=\s*"(.+)"\s*$' } | Select-Object -First 1
+        if ($nameLine -and $nameLine -match '^\s*name\s*=\s*"(.+)"\s*$') { $projectName = $Matches[1] }
+    }
+    if ($null -ne $projectName -and $PublishName -ne $projectName) {
+        Add-Content -LiteralPath (Join-Path $packRoot "project.toml") -Value "publish_name = `"$PublishName`"" -Encoding UTF8
+        Write-Host "==> Injected publish_name = $PublishName into pack/project.toml (differs from project name)" -ForegroundColor DarkGray
+    }
 
     # ------------------------------------------------ 调试残留拦截（全平台，早于所有体积统计）
     # `debug-overlay.txt` 是**开发者工具里排查真机黑屏**用的开关（适配层把它当"开启屏幕自证覆盖层"
@@ -1543,14 +1552,14 @@ WASM build failed ($Platform)。
     if ($Platform -eq "wechat-minigame") {
         # 发布根 = <工程>/builds/<平台>/，里面 launcher/ 是首包、assets/ 是 CDN 资源包（仅 remote 形态）；
         # $distRoot 始终指向 launcher/，所以体积统计/必需文件检查都只看首包。
-        $packageContents = "launcher/: game.js, game.json, project.config.json, wechat-adapter.js, web-runtime.js, pkg/, pack/ (skeleton when thin), release.toml, run.txt, deps.txt"
+        $packageContents = "launcher/: game.js, game.json, project.config.json, wechat-adapter.js, web-runtime.js, pkg/, pack/ (skeleton when thin), run.txt, deps.txt"
         if ($settingsPackaged) {
-            $packageContents = "launcher/: game.js, game.json, project.config.json, wechat-adapter.js, web-runtime.js, pkg/, pack/ (settings.toml), release.toml, run.txt, deps.txt"
+            $packageContents = "launcher/: game.js, game.json, project.config.json, wechat-adapter.js, web-runtime.js, pkg/, pack/ (project.toml, release=true), run.txt, deps.txt"
         }
         if ($isSubpackagePack) {
             # 分包形态的主包 = launcher 自身：首屏资源在 mainpack/，其余在 pack/ 分包里。
             # wasm 内核本体也一起进分包（主包 4 MB 装不下它 + 2 MB 内容），主包只留胶水 pkg/game_web.js。
-            $packageContents = "launcher/: game.js, game.json (subpackages=[pack]), mainpack.json, mainpack/ (首屏资源), pack/ (分包 root，含 game.js 入口与 game_web_bg.wasm 内核), project.config.json, wechat-adapter.js, web-runtime.js, pkg/game_web.js (胶水，内核在分包), release.toml, run.txt, deps.txt"
+            $packageContents = "launcher/: game.js, game.json (subpackages=[pack]), mainpack.json, mainpack/ (首屏资源), pack/ (分包 root，含 game.js 入口与 game_web_bg.wasm 内核), project.config.json, wechat-adapter.js, web-runtime.js, pkg/game_web.js (胶水，内核在分包), run.txt, deps.txt"
         }
         if ($AssetPack -eq "remote") {
             $packageContents = "$packageContents; assets/pack/** = full resource tree for CDN (重资源走远端 $RemotePackBaseUrl)"
@@ -1560,14 +1569,14 @@ WASM build failed ($Platform)。
         }
     }
     elseif ($Platform -eq "webgl") {
-        $packageContents = "index.html, test-webgl.bat, pkg/game_web.js, pkg/game_web_bg.wasm, web-runtime.js, pack/ (data), release.toml, run.txt, deps.txt"
+        $packageContents = "index.html, test-webgl.bat, pkg/game_web.js, pkg/game_web_bg.wasm, web-runtime.js, pack/ (data), run.txt, deps.txt"
         if ($settingsPackaged) {
-            $packageContents = "index.html, test-webgl.bat, pkg/game_web.js, pkg/game_web_bg.wasm, web-runtime.js, pack/ (data, settings.toml), release.toml, run.txt, deps.txt"
+            $packageContents = "index.html, test-webgl.bat, pkg/game_web.js, pkg/game_web_bg.wasm, web-runtime.js, pack/ (data, project.toml, release=true), run.txt, deps.txt"
         }
     }
     else {
         # PC 不复制 17 MB 完整字体到发布根：assetc 已把工程字体打进 pack/（运行时以 pack 为工程根，
-        # 按 settings.toml 的 font 路径读取）。webgl 同样不随包带字体（走浏览器系统字体，
+        # 按 project.toml 的 font 路径读取）。webgl 同样不随包带字体（走浏览器系统字体，
         # `__FONT_PATH__` 为空；见上方 webgl 分支）。只有微信走打包期子集字体（247 KB）。
         # 这条**真的去查**包内字体，而不是只在 build-info.txt 里声称一句——此前那行 `font_check`
         # 对 pc 写的是"fonts/$fontName present and non-empty"，而 pc 的发布根根本没有 fonts/：
@@ -1580,9 +1589,9 @@ WASM build failed ($Platform)。
         if ((Get-Item -LiteralPath $packedPcFont).Length -le 0) {
             throw "PC packaged font is empty: $packedPcFont"
         }
-        $packageContents = "game.exe, pack/ (data, assets/fonts/$fontName), release.toml, run.txt, deps.txt"
+        $packageContents = "game.exe, pack/ (data, assets/fonts/$fontName), run.txt, deps.txt"
         if ($settingsPackaged) {
-            $packageContents = "game.exe, pack/ (data, settings.toml, assets/fonts/$fontName), release.toml, run.txt, deps.txt"
+            $packageContents = "game.exe, pack/ (data, project.toml, release=true, assets/fonts/$fontName), run.txt, deps.txt"
         }
     }
 
@@ -1597,7 +1606,7 @@ WASM build failed ($Platform)。
         "toolchain: $toolchain",
         "contents: $packageContents",
         "font_check: $(if ($Platform -eq 'wechat-minigame') { "$wechatFontRelative (subset, packaged into launcher/)" } elseif ($Platform -eq 'webgl') { "fonts/$fontName present and non-empty (index.html 的字体路径指向它)" } else { "pack/assets/fonts/$fontName present and non-empty（发布根不带完整字体）" })",
-        "settings_check: $(if ($settingsPackaged) { 'settings.toml packaged from project root（微信形态按白名单改名成 settings.toml.txt）' } else { 'no project settings.toml; engine defaults apply' })",
+        "settings_check: $(if ($settingsPackaged) { 'project.toml packaged from project root（微信形态按白名单改名成 project.toml.txt）' } else { 'no [input]/[audio] in project.toml; engine defaults apply' })",
         "player_data: $(if ($Platform -eq 'wechat-minigame') { 'wx storage / USER_DATA_PATH; the code package is read-only' } elseif ($Platform -eq 'webgl') { 'browser storage; no filesystem player data' } else { "$PlayerDataDir (override: RUSTLUA_USER_DIR); pack/ is read-only and never written" })"
     ) | Set-Content (Join-Path $distRoot "build-info.txt") -Encoding UTF8
 
@@ -1634,7 +1643,7 @@ WASM build failed ($Platform)。
         # 而原子交换会把 staging 改名/删除，写 staging 路径等于写一个随后就不存在的目录。
         $wechatRunLines += "9) 无开发者工具时的运行时验证：powershell -NoProfile -File scripts\verify-wechat-minigame.ps1 -BundleRoot `"$finalRoot\launcher`""
         if ($AssetPack -eq "remote") {
-            $wechatRunLines += "10) 本包是**瘦首包**：launcher/pack/ 只含骨架（manifest.txt/chars.txt 原名，project.toml/settings.toml 因后缀不在微信上传白名单而改名为 *.toml.txt），重资源从 $RemotePackBaseUrl 下载，按 pack/manifest.txt 校验后缓存到 USER_DATA_PATH"
+            $wechatRunLines += "10) 本包是**瘦首包**：launcher/pack/ 只含骨架（manifest.txt/chars.txt 原名，project.toml 因后缀不在微信上传白名单而改名为 project.toml.txt），重资源从 $RemotePackBaseUrl 下载，按 pack/manifest.txt 校验后缓存到 USER_DATA_PATH"
             $wechatRunLines += "11) 上传顺序：先把 assets/ 整份传到 CDN（使 packBaseUrl 可用），再上传 launcher/ 作为代码包；两侧不一致时校验和会拒绝下载（不会静默用错资源）"
             $wechatRunLines += "12) 运行时验证要带上资源包：scripts\verify-wechat-minigame.ps1 -BundleRoot `"$finalRoot\launcher`" -AssetPackRoot `"$finalRoot\assets`""
             $wechatRunLines += "13) 本地预览（不用自己起服务）：双击 scripts\serve-wechat-pack.bat，再按上面的方式导入 launcher/"
@@ -1647,7 +1656,7 @@ WASM build failed ($Platform)。
             "1) Serve this directory with an HTTP server, for example: python -m http.server 8000",
             "2) Open http://localhost:8000/index.html in a WebGL2-capable browser",
             "3) Do not open index.html directly from file:// because browsers block WASM/resource fetches",
-            "4) The page title and browser tab title use publish_name from release.toml",
+            "4) The page title and browser tab title use publish_name from project.toml",
             "5) Windows: double-click test-webgl.bat to verify the bundle and serve it on http://127.0.0.1:8137/",
             "   (it finds the repository root by itself; outside a checkout, serve the directory manually as in 1)"
         ) | Set-Content (Join-Path $distRoot "run.txt") -Encoding UTF8

@@ -60,6 +60,8 @@ pub use fonts::{
     load_custom_font_atlas, load_custom_vector_atlas, load_project_font_atlas,
     load_project_vector_atlas,
 };
+// 编辑器 Play 期间的层级同步要用它列出脚本运行期生成的实体（见 `RuntimeScene::runtime_spawned_entities`）。
+pub use scene::RuntimeSpawnedEntity;
 
 /// 本帧的 3D 视图（相机拆分批 8）：`vertices()` **定帧**时解析一次、烘焙一次，同一帧的消费方
 /// （回填给 Lua 的 `camera3d.*`、3D 渲染提取、3D 调试线框）共用它。

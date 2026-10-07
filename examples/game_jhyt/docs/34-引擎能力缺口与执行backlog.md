@@ -69,7 +69,7 @@
 | F-2 | UI 自动布局/滚动容器/键鼠手柄导航 | P2 | ✔（M20-02/M20-06/M20-07/M20-08）：自动布局（`UiRectLayout` + `ContainerKind` + `resolve_scene_ui_layout` + 布局缓存）、**焦点环与滚动状态** `ui_navigation::{FocusRing,ScrollState}`（Lua `ui.focus_*`/`ui.scroll_*`）、**手柄设备层**（XInput，按钮 0..15 / 轴 0..5 契约，死区可配置）、**命名动作映射**（36 个默认动作、`ActionMap` 持久化到 `settings.toml` 的 `[input]` 段）、**编辑器「项目设置 → 输入」重绑定面板**（捕获式改绑、跨动作冲突提示、死区滑块、恢复默认）。剩余：场景级 `Scroll` 容器变体仍缺（滚动由 `ui.scroll_*` + 面板自绘实现，见 `docs/18-lua-api.md`、`docs/33`、`docs/35`） |
 | F-3 | 音频混音（分组音量） | P2 | ✔（M20-02）：`audio.buses/set_bus_volume/bus_volume/effective_volume`（实际音量＝主×分组）、`play_on(bus,name)`、`[audio]` 段随 `settings.toml` 持久化、暂停菜单「设置」页四路音量增减与保存；`game_jhyt` 已走 BGM/SFX/UI 总线（`docs/18-lua-api.md`） |
 | F-4 | 发布原子替换 + 失败回滚 | P2 | ✔（M20-03）：`package.ps1` staging 优先构建 + `Complete-ReleaseSwap` 原子交换（旧内容整体重命名进 `.backup-*`）+ 失败回滚（旧版本原位恢复）+ 遗留 staging/backup 清理 + `-SkipBuild`；独立回归 `scripts/test-release-atomic.ps1` → `release_atomic_ok cases=4` |
-| F-5 | WebGL 真实浏览器集成测试 | P2 | 🚧（M20-04）：已有**真实浏览器契约检查页**（`examples/game_jhyt/web/`）+ `scripts/verify-webgl.ps1` 无头 Edge 断言（manifest/启动场景/首资源/WebGL2/存储降级/缺失 404，实测 `webgl_browser_ok`）；**仍缺** WASM 模块构建与浏览器内完整玩法（本机离线无法安装 `wasm32-unknown-unknown`，见 `docs/32`） |
+| F-5 | WebGL 真实浏览器集成测试 | P2 | 🚧（M20-04）：已有**真实浏览器契约检查页**（`scripts/webgl-contract/`；2026-10-07 从 `examples/game_jhyt/web/` 挪到门旁边——它是仓库的测试资产，不是游戏内容）+ `scripts/verify-webgl.ps1` 无头 Edge 断言（manifest/启动场景/首资源/WebGL2/存储降级/缺失 404，实测 `webgl_browser_ok`）；**仍缺** WASM 模块构建与浏览器内完整玩法（本机离线无法安装 `wasm32-unknown-unknown`，见 `docs/32`） |
 | F-6 | 微信小游戏 | 暂缓 | 仅预留声明（发布枚举/docs 项），无 `wx.*`/game.json 等实现分支，选中按 PC 处理——维持隐藏，不进 MVP |
 
 ## B-2 WorldSnapshot 缺口细化

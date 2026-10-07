@@ -1,0 +1,210 @@
+prefab_version=1
+asset_id=3a7e9d2c-5b81-4f6a-8e2c-94d1a0b7c3f5
+name=QuestLog
+root=1
+# 任务日志面板（`ui/quest_ui.lua`）的 UI 预设：M68/B5 从动态层整块搬来。
+# 对账门 = `jhyt_m68_quest_prefab`：黄金表 70 行（A 态 = 刚打开、16 个注册任务全未接取、
+# 选中第 1 行）钉死迁移前画面，本文件 + quest_ui.lua 的 set_text/set_rect/set_visible
+# 必须逐值复现。
+#
+# 结构：根 QuestRoot（全屏 1280x720）下挂全部叶子（单面板、无子页/页签，无需容器层）。
+# 打开/关闭 = 根节点显隐（`set_visible` 子树语义，藏父带子）；不撤重铺，避免槽位 LIFO
+# 复用打乱绘制序。
+#
+# 行序 = 绘制序 = 实体槽位升序，**复刻迁移前动态层的 id 字典序**
+# （`ScriptState` 是 BTreeMap，`mesh_ui.rs:239` 迭代 `.values()`；门 covering_account 的
+# 实体层排序键 = 槽位号，槽位必须复刻字典序 cover 判定才与黄金表一致）：
+#   白图类（rank-0，字典序）：box → rule → sel
+#   贴图类（rank-1，字典序）：bullet1..bullet7（每行二选一 todo/done，同一矩形叠两张图、
+#     `set_visible` 互斥）→ divider → key_hint → seal → skin_bg（**skin_bg 殿后**，与
+#     shop/pause 同形；bullet/divider/key_hint/seal 全被 skin_bg 整块盖住）
+#   文字类（rank-2，不盖人）：empty → giver → hint → msg → obj1..obj7 → objtitle →
+#     row1..row7 → state → title
+# 黄金表被 skin_bg 整块盖住 13 块：box/rule/sel（色块）+ bullet1-7/divider/key_hint/seal
+# （贴图，字典序在前的）；全部文字看得见。
+#
+# 运行期仍由脚本每帧写的值（不改几何/贴图，只改内容/显隐）：
+#   * `prefab.set_text`：state（状态名随任务）、giver（发布者）、objtitle、obj1..7（目标
+#     进度）、row1..7（任务行，含选中 > 前缀与滚动窗口）、hint（按键名随绑定）
+#   * `prefab.set_rect` ：sel（y 随选中行 index*38 移动）
+#   * `prefab.set_visible`：empty（空列表互斥）、rowN（滚动窗口外隐藏）、bulletN todo/done
+#     二选一（completed → done，否则 todo）、objN（无目标隐藏）、state/giver/objtitle（无
+#     选中行隐藏）
+# title 与 msg 固定写死（"任务日志" / "只读面板…"），render 不再写。
+#
+# 初始可见性：除 bullet done 初始隐藏外全开，由 open → render 同帧 set_visible 覆盖，
+# 无闪帧。
+entity	1	QuestRoot
+component	1	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	1	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.000000,0.000000,1280.000000,720.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	1	role	quest_root
+entity	2	QuestBox	1
+component	2	Image	texture=__white__;color=0.100,0.110,0.150,0.940
+component	2	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	2	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=160.000000,40.000000,880.000000,680.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	3	QuestRule	1
+component	3	Image	texture=__white__;color=0.720,0.750,0.820,0.220
+component	3	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,92.000000,856.000000,94.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	4	QuestSel	1
+component	4	Image	texture=__white__;color=0.850,0.720,0.420,0.200
+component	4	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	4	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,100.000000,856.000000,138.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	4	role	quest_sel
+entity	5	QuestBullet1Todo	1
+component	5	Image	texture=assets/art/ui/quest/ui_quest_bullet_todo.png;color=1.000,1.000,1.000
+component	5	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	5	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=166.000000,104.000000,178.000000,116.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	6	QuestBullet1Done	1
+component	6	Image	texture=assets/art/ui/quest/ui_quest_bullet_done.png;color=1.000,1.000,1.000
+component	6	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	6	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=166.000000,104.000000,178.000000,116.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	6	role	quest_bullet1_done
+entity	7	QuestBullet2Todo	1
+component	7	Image	texture=assets/art/ui/quest/ui_quest_bullet_todo.png;color=1.000,1.000,1.000
+component	7	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	7	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=166.000000,142.000000,178.000000,154.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	8	QuestBullet2Done	1
+component	8	Image	texture=assets/art/ui/quest/ui_quest_bullet_done.png;color=1.000,1.000,1.000
+component	8	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	8	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=166.000000,142.000000,178.000000,154.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	9	QuestBullet3Todo	1
+component	9	Image	texture=assets/art/ui/quest/ui_quest_bullet_todo.png;color=1.000,1.000,1.000
+component	9	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	9	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=166.000000,180.000000,178.000000,192.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	10	QuestBullet3Done	1
+component	10	Image	texture=assets/art/ui/quest/ui_quest_bullet_done.png;color=1.000,1.000,1.000
+component	10	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	10	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=166.000000,180.000000,178.000000,192.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	11	QuestBullet4Todo	1
+component	11	Image	texture=assets/art/ui/quest/ui_quest_bullet_todo.png;color=1.000,1.000,1.000
+component	11	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=166.000000,218.000000,178.000000,230.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	12	QuestBullet4Done	1
+component	12	Image	texture=assets/art/ui/quest/ui_quest_bullet_done.png;color=1.000,1.000,1.000
+component	12	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	12	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=166.000000,218.000000,178.000000,230.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	13	QuestBullet5Todo	1
+component	13	Image	texture=assets/art/ui/quest/ui_quest_bullet_todo.png;color=1.000,1.000,1.000
+component	13	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	13	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=166.000000,256.000000,178.000000,268.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	14	QuestBullet5Done	1
+component	14	Image	texture=assets/art/ui/quest/ui_quest_bullet_done.png;color=1.000,1.000,1.000
+component	14	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	14	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=166.000000,256.000000,178.000000,268.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	15	QuestBullet6Todo	1
+component	15	Image	texture=assets/art/ui/quest/ui_quest_bullet_todo.png;color=1.000,1.000,1.000
+component	15	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	15	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=166.000000,294.000000,178.000000,306.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	16	QuestBullet6Done	1
+component	16	Image	texture=assets/art/ui/quest/ui_quest_bullet_done.png;color=1.000,1.000,1.000
+component	16	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	16	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=166.000000,294.000000,178.000000,306.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	17	QuestBullet7Todo	1
+component	17	Image	texture=assets/art/ui/quest/ui_quest_bullet_todo.png;color=1.000,1.000,1.000
+component	17	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	17	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=166.000000,332.000000,178.000000,344.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	18	QuestBullet7Done	1
+component	18	Image	texture=assets/art/ui/quest/ui_quest_bullet_done.png;color=1.000,1.000,1.000
+component	18	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	18	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=166.000000,332.000000,178.000000,344.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	19	QuestDivider	1
+component	19	Image	texture=assets/art/ui/common/ui_divider.png;color=1.000,1.000,1.000
+component	19	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	19	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,84.000000,856.000000,92.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	20	QuestKeyHint	1
+component	20	Image	texture=assets/art/ui/common/ui_key_hint_9s.png;color=1.000,1.000,1.000;nine_slice=6,6,6,6
+component	20	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	20	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,642.000000,856.000000,668.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	21	QuestSeal	1
+component	21	Image	texture=assets/art/ui/common/ui_icon_seal.png;color=1.000,1.000,1.000
+component	21	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	21	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=832.000000,58.000000,856.000000,82.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	22	QuestSkinBg	1
+component	22	Image	texture=assets/art/ui/common/ui_panel_main_9s.png;color=1.000,1.000,1.000;nine_slice=16,16,16,16
+component	22	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	22	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=160.000000,40.000000,880.000000,680.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	23	QuestEmpty	1
+component	23	Text	text=暂无任务;font_size=18.00;color=1.000,1.000,1.000
+component	23	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	23	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,100.000000,856.000000,118.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	24	QuestGiver	1
+component	24	Text	text=发布者 沈青萝;font_size=15.00;color=1.000,1.000,1.000
+component	24	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	24	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,386.000000,856.000000,401.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	25	QuestHint	1
+component	25	Text	text=W/S 或 上下方向键 选择 · 1-9 定位 · L / Esc / Q 关闭;font_size=14.00;color=1.000,1.000,1.000
+component	25	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	25	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,648.000000,856.000000,662.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	26	QuestMsg	1
+component	26	Text	text=只读面板：任务在对话/交互中接取与交付;font_size=14.00;color=1.000,1.000,1.000
+component	26	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	26	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,616.000000,856.000000,630.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	27	QuestObj1	1
+component	27	Text	text=… 采集灵芝 0/3;font_size=15.00;color=1.000,1.000,1.000
+component	27	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	27	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=216.000000,438.000000,856.000000,453.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	28	QuestObj2	1
+component	28	Text	text=;font_size=15.00;color=1.000,1.000,1.000
+component	28	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	28	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=216.000000,464.000000,856.000000,479.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	29	QuestObj3	1
+component	29	Text	text=;font_size=15.00;color=1.000,1.000,1.000
+component	29	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	29	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=216.000000,490.000000,856.000000,505.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	30	QuestObj4	1
+component	30	Text	text=;font_size=15.00;color=1.000,1.000,1.000
+component	30	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	30	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=216.000000,516.000000,856.000000,531.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	31	QuestObj5	1
+component	31	Text	text=;font_size=15.00;color=1.000,1.000,1.000
+component	31	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	31	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=216.000000,542.000000,856.000000,557.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	32	QuestObj6	1
+component	32	Text	text=;font_size=15.00;color=1.000,1.000,1.000
+component	32	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	32	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=216.000000,568.000000,856.000000,583.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	33	QuestObj7	1
+component	33	Text	text=;font_size=15.00;color=1.000,1.000,1.000
+component	33	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	33	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=216.000000,594.000000,856.000000,609.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	34	QuestObjTitle	1
+component	34	Text	text=目标：;font_size=15.00;color=1.000,1.000,1.000
+component	34	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	34	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,412.000000,856.000000,427.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	35	QuestRow1	1
+component	35	Text	text=> 1. 为医馆采药【未接取】;font_size=17.00;color=1.000,1.000,1.000
+component	35	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	35	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,100.000000,856.000000,117.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	36	QuestRow2	1
+component	36	Text	text=  2. 木桩三式【未接取】;font_size=17.00;color=1.000,1.000,1.000
+component	36	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	36	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,138.000000,856.000000,155.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	37	QuestRow3	1
+component	37	Text	text=  3. 订单·药庐灵芝【未接取】;font_size=17.00;color=1.000,1.000,1.000
+component	37	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	37	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,176.000000,856.000000,193.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	38	QuestRow4	1
+component	38	Text	text=  4. 订单·市集稻米【未接取】;font_size=17.00;color=1.000,1.000,1.000
+component	38	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	38	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,214.000000,856.000000,231.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	39	QuestRow5	1
+component	39	Text	text=  5. 订单·山庄丸药【未接取】;font_size=17.00;color=1.000,1.000,1.000
+component	39	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	39	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,252.000000,856.000000,269.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	40	QuestRow6	1
+component	40	Text	text=  6. 订单·山道猎获【未接取】;font_size=17.00;color=1.000,1.000,1.000
+component	40	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	40	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,290.000000,856.000000,307.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	41	QuestRow7	1
+component	41	Text	text=  7. 订单·春分茶会【未接取】;font_size=17.00;color=1.000,1.000,1.000
+component	41	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	41	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,328.000000,856.000000,345.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	42	QuestState	1
+component	42	Text	text=状态 未接取;font_size=16.00;color=1.000,1.000,1.000
+component	42	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	42	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=616.000000,60.000000,856.000000,76.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	43	QuestTitle	1
+component	43	Text	text=任务日志;font_size=22.00;color=1.000,1.000,1.000
+component	43	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	43	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,56.000000,856.000000,78.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000

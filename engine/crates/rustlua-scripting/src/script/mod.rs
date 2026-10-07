@@ -879,6 +879,36 @@ impl LuaRuntime {
             .collect()
     }
 
+    /// [`Self::entity_names_by_slot`] 的**带代际**版本：给出完整句柄而不是槽位号。
+    ///
+    /// 编辑器 Play 期间要列运行态实体树，那里"槽位复用"是常态（子弹每秒生成/销毁），
+    /// 只给槽位号会把复用槽位上的新实体认成旧实体。
+    #[must_use]
+    pub fn named_entity_handles(&self) -> Vec<(EntityId, String)> {
+        let state = self.state.borrow();
+        state
+            .entity_state
+            .names
+            .iter_by_name()
+            .map(|(name, handle)| (*handle, name.clone()))
+            .collect()
+    }
+
+    /// 「场景实体 id → 运行时句柄」的完整登记表。
+    ///
+    /// 宿主据此判断镜像里的哪一行对应世界里的哪个实体（含反向：某个句柄是不是场景
+    /// 声明的，而不是脚本运行期 spawn 的）。
+    #[must_use]
+    pub fn scene_entity_handles(&self) -> Vec<(SceneEntityId, EntityId)> {
+        self.state
+            .borrow()
+            .entity_state
+            .scene_entities
+            .iter()
+            .map(|(id, handle)| (*id, *handle))
+            .collect()
+    }
+
     /// Gives the host a read view of runtime Lua-created UI panels/images/grids.
     pub fn with_dynamic_ui<R>(
         &self,

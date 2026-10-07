@@ -181,8 +181,7 @@ $required = @(
     $wasmCoreRelative,
     ($skeletonSubdir + "\" + (Resolve-CodePackName "manifest.txt")),
     ($skeletonSubdir + "\" + (Resolve-CodePackName "project.toml")),
-    "code-package.json",
-    "release.toml"
+    "code-package.json"
 )
 if ($isSubpackagePack) {
     # 分包形态多两项：路由依据（清单）与分包入口（微信的硬要求）。

@@ -1,6 +1,6 @@
-//! `project.toml` / `release.toml` 的键读取（工程配置解析的唯一入口）。
+//! `project.toml` 的键读取（工程配置解析的唯一入口）。
 //!
-//! 为什么单独成模块：这些文件是**扁平的 `key = "value"`** 行（见 `examples/*/project.toml`），
+//! 为什么单独成模块：这个文件是**扁平的 `key = "value"`** 行（见 `examples/*/project.toml`），
 //! 引擎只需要按行取值——但取值口径必须只有一份，否则"字体配置怎么解析"与
 //! "发布包名怎么解析"会各写一遍（此前 `host/runtime_scene.rs` 与
 //! `host/runtime_scene.rs` 与拆分前 `core/font.rs`（`project_font`）就各有一份同样的解析器，两边还可能各自漂移）。
@@ -16,7 +16,7 @@ pub fn read_key(root: &Path, key: &str) -> Option<String> {
     read_key_in(&root.join(PROJECT_TOML), key)
 }
 
-/// 任意配置文件（如发布包旁边的 `release.toml`）的单个键。
+/// 任意配置文件（其他工具/模块约定位置的文件）的单个键。
 #[must_use]
 pub fn read_key_in(path: &Path, key: &str) -> Option<String> {
     let text = fs::read_to_string(path).ok()?;
@@ -46,11 +46,19 @@ pub fn project_name(root: &Path) -> Option<String> {
     read_key(root, "name")
 }
 
-/// 发布名（发布包旁边的 `release.toml` 的 `publish_name`）。
+/// 发布名（`project.toml` 的 `publish_name`，缺省回退到 `name`）。
+/// 发布包的应用名/窗口标题都从这里来；`publish_name` 允许与工程名不同
+/// （正式发行名、渠道名），打包脚本在自定义发布名时把它写进包内的 `project.toml`。
 #[must_use]
-pub fn publish_name(pack_root: &Path) -> Option<String> {
-    let parent = pack_root.parent()?;
-    read_key_in(&parent.join(RELEASE_TOML), "publish_name")
+pub fn publish_name(root: &Path) -> Option<String> {
+    read_key(root, "publish_name").or_else(|| read_key(root, "name"))
+}
+
+/// 发布标记（`project.toml` 的 `release`）：`true` 表示该工程按**发布包**布局分发
+/// （`pack/` 目录 + 用户数据目录），取代了旧 `release.toml` 文件的判定作用。
+#[must_use]
+pub fn release_flag(root: &Path) -> bool {
+    read_key(root, "release").is_some_and(|value| value.eq_ignore_ascii_case("true"))
 }
 
 /// 默认窗口尺寸（横屏）：工程未声明 `window_width`/`window_height` 时的回退值。
@@ -119,8 +127,6 @@ fn parse_dimension(raw: &str) -> Option<u32> {
 
 /// 工程配置文件名。
 pub const PROJECT_TOML: &str = "project.toml";
-/// 发布包标记文件名（挨着可执行文件，`pack/` 的上一层）。
-pub const RELEASE_TOML: &str = "release.toml";
 
 #[cfg(test)]
 mod tests {
@@ -150,16 +156,40 @@ mod tests {
     }
 
     #[test]
-    fn project_and_release_files_are_read_from_their_own_locations() {
+    fn project_keys_are_read_from_their_own_locations() {
         let root = temp_dir("release");
         let pack = root.join("pack");
         fs::create_dir_all(&pack).unwrap();
-        fs::write(pack.join(PROJECT_TOML), "name = \"DemoGame\"\n").unwrap();
-        fs::write(root.join(RELEASE_TOML), "publish_name = \"Demo\"\n").unwrap();
+        fs::write(
+            pack.join(PROJECT_TOML),
+            "name = \"DemoGame\"\nrelease = true\n",
+        )
+        .unwrap();
         assert_eq!(project_name(&pack).as_deref(), Some("DemoGame"));
+        assert_eq!(publish_name(&pack).as_deref(), Some("DemoGame"));
+        assert!(release_flag(&pack), "release = true 是发布标记");
+        // publish_name 覆盖 name（正式发行名 ≠ 工程名）。
+        fs::write(
+            pack.join(PROJECT_TOML),
+            "name = \"DemoGame\"\npublish_name = \"Demo\"\n",
+        )
+        .unwrap();
         assert_eq!(publish_name(&pack).as_deref(), Some("Demo"));
         // 缺文件 → 缺失（不是错误）。
         assert_eq!(publish_name(&root), None);
+        assert!(!release_flag(&root), "无 project.toml 不算发布包");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn release_flag_accepts_true_and_rejects_missing_or_false() {
+        let root = temp_dir("release-flag");
+        fs::write(root.join(PROJECT_TOML), "name = \"Dev\"\n").unwrap();
+        assert!(!release_flag(&root), "未声明 release 不是发布包");
+        fs::write(root.join(PROJECT_TOML), "name = \"Dev\"\nrelease = false\n").unwrap();
+        assert!(!release_flag(&root), "release = false 不是发布包");
+        fs::write(root.join(PROJECT_TOML), "name = \"Dev\"\nrelease = TRUE\n").unwrap();
+        assert!(release_flag(&root), "大小写不敏感");
         let _ = fs::remove_dir_all(&root);
     }
 

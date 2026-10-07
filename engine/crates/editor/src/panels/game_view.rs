@@ -309,6 +309,14 @@ impl EditorApp {
         window_focused: bool,
         preview_rect: egui::Rect,
     ) {
+        // 记一笔"本帧 Game 视图已经步进过预览"：切到 Scene 页签就没有这次调用，帧末由
+        // `keep_preview_running_without_game_view` 补一步，游戏不随页签停摆（Unity 语义）。
+        self.preview_stepped_this_frame = true;
+        // 碰撞调试绘制跟随「覆盖层 ▸ 碰撞区域」开关：活体碰撞体 + tilemap solid 格
+        // 由运行时按活相机烘进预览纹理。放在所有早退路径之前，暂停/单步/失焦也保持一致。
+        if let Some(preview) = &mut self.preview {
+            preview.set_collider_debug_draw(self.show_collision_overlay);
+        }
         // 分辨率实时变更：会话尺寸与工具栏选择不一致时原子重建离屏纹理。
         if self
             .preview

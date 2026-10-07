@@ -1,5 +1,8 @@
 [project]
-name = "jianghu_youtian"
+name = "game_jhyt"
+# 发布标记：`true` = 按发布包布局分发（pack/ 目录 + 用户数据目录），取代旧 release.toml。
+# 开发形态（编辑器 Play / 直接跑工程）不受影响——引擎判定还要求项目根目录名是 pack。
+release = true
 version = "0.1.0"
 engine = "RustLua"
 main_script = "scripts/main.lua"
@@ -15,3 +18,26 @@ text_render_mode = "vector"
 #   * 发布窗口由宿主 `game --project` 按 `window_width`/`window_height` 开（1:1，不做缩放）。
 window_width = 1280
 window_height = 720
+
+# ---------------------------------------------------------------------------
+# [input] 玩家可改的输入绑定（2026-10-07 起从 settings.toml 迁入；settings.toml 退役）。
+# 工程级设置文件与 project.toml 合并：引擎 settings 读写（input/audio）都落在
+# 本文件（SETTINGS_FILE=project.toml），改键也可在编辑器「项目设置 → 输入」面板完成
+# （本段即该面板的落点）。
+# ---------------------------------------------------------------------------
+[input]
+# M22/W1 起为物理键格式 v2：键位名与 winit 的 KeyCode 变体名一一对应
+# （key:w → key:keyw、key:1 → key:digit1、key:up → key:arrowup）。
+# 手柄说明：左摇杆绑到移动（move_* = padaxis:1+/- 与 padaxis:0+/-），推杆即可走位；
+# 菜单导航由方向键与 DPad（pad:12..15，见 ui_up/down/left/right）承担——ui_* 已
+# 解绑摇杆轴，避免与移动动作构成输入冲突；交互/攻击/武学/背包/暂停/重开同时绑到
+# 手柄按钮（pad:0/2/3/4/5/8）。
+map = "rustlua-actions-v2\nattack=key:keyj,pad:2\nbuild=key:keyb\ncancel=key:escape,pad:1\nconfirm=key:space,pad:0\ndash=key:keyh\ndemolish=key:keyx\ngift=key:keyg\nguard=key:keyz\ninteract=key:keye,pad:0\ninventory=key:keyi,pad:4\nmove_down=key:keys,padaxis:1-\nmove_left=key:keya,padaxis:0-\nmove_right=key:keyd,padaxis:0+\nmove_up=key:keyw,padaxis:1+\npause=key:keyp,pad:5\nplace=key:keyf\npractice=key:keyq\nquest=key:keyl\nrespawn=key:keyr,pad:8\nseed=key:keyc\nskill=key:keyk,pad:3\nskill_2=key:keyv\nskill_3=key:keyn\nskill_4=key:keym\nsleep=key:keyt\nslot_1=key:digit1\nslot_2=key:digit2\nslot_3=key:digit3\nslot_4=key:digit4\nslot_5=key:digit5\nslot_6=key:digit6\nslot_7=key:digit7\nslot_8=key:digit8\nslot_9=key:digit9\nui_down=key:arrowdown,pad:13\nui_left=key:arrowleft,pad:14\nui_right=key:arrowright,pad:15\nui_up=key:arrowup,pad:12\nuse=key:keyu\nvolume_down=key:minus\nvolume_up=key:equal"
+stick_deadzone = 0.15
+trigger_deadzone = 0.05
+# 菜单导航手感（M22/W3 起用毫秒）：左摇杆阈值 / 按住后首次重复延迟 / 重复间隔。
+# 阈值越小越灵敏；延迟与间隔决定长按时的滚动节奏（这里刻意保留 M20-09 的
+# 60fps 手感：16 帧 ≈ 267ms、8 帧 ≈ 133ms，而不是新的默认 350/90）。
+nav_threshold = 0.5
+nav_delay_ms = 267
+nav_repeat_ms = 133

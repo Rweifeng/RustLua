@@ -411,21 +411,43 @@ impl RuntimeScene {
         }
         for (position, text, scale) in visible {
             let use_vector = self.should_render_vector(None, scale, text.chars().count());
-            if !use_vector
-                || !self.push_vector_text_run(
-                    vector_vertices,
-                    vector_glyphs,
-                    vector_segments,
-                    &text,
-                    position,
-                    scale,
-                    [1.0, 1.0, 1.0],
-                    None,
-                    width,
-                    height,
-                )?
-            {
-                let (mesh, is_sdf) = self.layout_text(&text, position, scale, [1.0, 1.0, 1.0])?;
+            let vector_ok = match self.push_vector_text_run(
+                vector_vertices,
+                vector_glyphs,
+                vector_segments,
+                &text,
+                position,
+                scale,
+                [1.0, 1.0, 1.0],
+                None,
+                width,
+                height,
+            ) {
+                Ok(ok) => ok,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "render",
+                        text = %text,
+                        error = %error,
+                        "[runtime] overlay text vector run error, falling back"
+                    );
+                    false
+                }
+            };
+            if !use_vector || !vector_ok {
+                let (mesh, is_sdf) = match self.layout_text(&text, position, scale, [1.0, 1.0, 1.0])
+                {
+                    Ok(result) => result,
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "render",
+                            text = %text,
+                            error = %error,
+                            "[runtime] overlay text layout failed, skipping"
+                        );
+                        continue;
+                    }
+                };
                 let is_bitmap = mesh.bitmap;
                 let text_vertices = text_to_ndc(mesh, is_sdf, width, height);
                 let font_key = if is_sdf {
@@ -513,6 +535,15 @@ impl RuntimeScene {
             texts
         });
         self.view_filtered.set(self.view_filtered.get() + filtered);
+        // TEMP DEBUG: 定位 ECS UiText 不渲染问题
+        tracing::warn!(
+            target: "render",
+            texts_count = texts.len(),
+            filtered = filtered,
+            vector_atlas = self.vector_atlas.is_some(),
+            font_atlas = self.font_atlas.is_some(),
+            "[debug] push_scene_ui texts collected"
+        );
         // 关键：先把本帧全部文本的字形预热进图集，再逐条构建网格。若在排版过程
         // 中才光栅化，图集会增长（1024→2048…）；`FontAtlas::grow` 只重缩放已缓存
         // 字形的归一化 UV，不会修正已经写进顶点缓冲的 UV，于是同一帧内先构建的
@@ -600,23 +631,60 @@ impl RuntimeScene {
                 // `layout_text` already emits absolute screen-space vertices;
                 // adding the layout origin again would displace scene text by
                 // its full top-left position (the visible "text ran away" bug).
-                if use_vector
-                    && self.push_vector_text_run(
-                        vector_vertices,
-                        vector_glyphs,
-                        vector_segments,
-                        &text.text,
-                        position,
-                        text.effective_scale(),
-                        text.color,
-                        Some(&text.font),
-                        width,
-                        height,
-                    )?
-                {
+                // P3：单条文字排版失败（缺字形/字体图集未就绪）不得中断整帧场景 UI——
+                // 否则面板里第一个缺字的 Text 会让后续所有文字连同按钮一起消失，
+                // 症状与「字体没加载」一模一样但日志一个字都没有。
+                let vector_ok = match self.push_vector_text_run(
+                    vector_vertices,
+                    vector_glyphs,
+                    vector_segments,
+                    &text.text,
+                    position,
+                    text.effective_scale(),
+                    text.color,
+                    Some(&text.font),
+                    width,
+                    height,
+                ) {
+                    Ok(ok) => ok,
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "render",
+                            text = %text.text,
+                            error = %error,
+                            "[runtime] vector text run error, falling back to SDF"
+                        );
+                        false
+                    }
+                };
+                if use_vector && vector_ok {
+                    tracing::warn!(
+                        target: "render",
+                        text = %text.text,
+                        "vector OK"
+                    );
                     continue;
                 }
-                let (mesh, is_sdf, font_key) = self.layout_scene_text(&text, position)?;
+                tracing::warn!(
+                    target: "render",
+                    text = %text.text,
+                    use_vector = use_vector,
+                    vector_ok = vector_ok,
+                    "vector fell through to SDF"
+                );
+                let (mesh, is_sdf, font_key) = match self.layout_scene_text(&text, position) {
+                    Ok(result) => result,
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "render",
+                            text = %text.text,
+                            entity = ?id,
+                            error = %error,
+                            "[runtime] scene UI text layout failed, skipping"
+                        );
+                        continue;
+                    }
+                };
                 let is_bitmap = mesh.bitmap;
                 let text_vertices = text_to_ndc(mesh, is_sdf, width, height);
                 self.push_text_run(

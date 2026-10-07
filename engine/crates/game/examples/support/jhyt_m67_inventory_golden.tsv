@@ -1,0 +1,70 @@
+A	shown	panel/box	panel	160.00,40.00,720.00,640.00,0.100,0.110,0.150,0.940
+A	shown	panel/rule	panel	184.00,92.00,672.00,2.00,0.720,0.750,0.820,0.220
+A	shown	panel/sel	panel	184.00,100.00,672.00,40.00,0.850,0.720,0.420,0.200
+A	shown	img/skin_bg	image	160.00,40.00,720.00,640.00,assets/art/ui/common/ui_panel_main_9s.png,16,16,16,16
+A	shown	img/divider	image	184.00,84.00,672.00,8.00,assets/art/ui/common/ui_divider.png,-
+A	shown	img/seal	image	832.00,58.00,24.00,24.00,assets/art/ui/common/ui_icon_seal.png,-
+A	shown	img/sel_slot	image	772.00,100.00,40.00,40.00,assets/art/ui/common/ui_slot_selected_9s.png,-
+A	shown	img/quality	image	814.00,100.00,40.00,40.00,assets/art/ui/backpack/ui_quality_frame_0.png,-
+A	hidden	img/slot1	image	-
+A	shown	img/slot2	image	162.00,142.00,16.00,16.00,assets/art/ui/common/ui_slot_9s.png,-
+A	shown	img/slot3	image	162.00,182.00,16.00,16.00,assets/art/ui/common/ui_slot_9s.png,-
+A	shown	img/slot4	image	162.00,222.00,16.00,16.00,assets/art/ui/common/ui_slot_9s.png,-
+A	shown	img/slot5	image	162.00,262.00,16.00,16.00,assets/art/ui/common/ui_slot_9s.png,-
+A	hidden	img/slot6	image	-
+A	hidden	img/slot7	image	-
+A	hidden	img/slot8	image	-
+A	hidden	img/slot9	image	-
+A	hidden	img/slot10	image	-
+A	shown	img/key_hint	image	184.00,642.00,672.00,26.00,assets/art/ui/common/ui_key_hint_9s.png,6,6,6,6
+A	shown	txt/title	text	184.00,56.00,22.00,背包
+A	shown	txt/cap	text	580.00,60.00,16.00,容量 5/20 · 负重 18
+A	hidden	txt/empty	text	-
+A	shown	txt/detail	text	184.00,584.00,14.00,江南常见作物。
+A	shown	txt/msg	text	184.00,616.00,16.00,
+A	shown	txt/hint	text	184.00,648.00,14.00,W/S 或 上下方向键 选择 · 1-9 定位 · U 使用 · E 装备 · C 选种子 · I / Esc 关闭
+A	shown	txt/row1	text	184.00,100.00,16.00,> 1. 稻谷 x3  [作物]
+A	shown	txt/row2	text	184.00,140.00,16.00,2. 稻种 x5  [种子]
+A	shown	txt/row3	text	184.00,180.00,16.00,3. 锄头 x1  [工具]
+A	shown	txt/row4	text	184.00,220.00,16.00,4. 灵芝菌种 x8  [种子]
+A	shown	txt/row5	text	184.00,260.00,16.00,5. 水壶 x1  [工具]
+A	hidden	txt/row6	text	-
+A	hidden	txt/row7	text	-
+A	hidden	txt/row8	text	-
+A	hidden	txt/row9	text	-
+A	hidden	txt/row10	text	-
+A	cover	panel/box	panel	img/skin_bg
+A	cover	panel/rule	panel	img/skin_bg
+A	cover	panel/sel	panel	img/skin_bg
+A	cover	img/divider	image	img/skin_bg
+A	cover	img/key_hint	image	img/skin_bg
+A	cover	img/quality	image	img/skin_bg
+A	cover	img/seal	image	img/skin_bg
+A	cover	img/sel_slot	image	img/skin_bg
+A	cover	img/skin_bg	image	-
+A	cover	img/slot2	image	-
+A	cover	img/slot3	image	-
+A	cover	img/slot4	image	-
+A	cover	img/slot5	image	-
+A	cover	txt/cap	text	-
+A	cover	txt/detail	text	-
+A	cover	txt/empty	text	-
+A	cover	txt/hint	text	-
+A	cover	txt/msg	text	-
+A	cover	txt/row1	text	-
+A	cover	txt/row10	text	-
+A	cover	txt/row2	text	-
+A	cover	txt/row3	text	-
+A	cover	txt/row4	text	-
+A	cover	txt/row5	text	-
+A	cover	txt/row6	text	-
+A	cover	txt/row7	text	-
+A	cover	txt/row8	text	-
+A	cover	txt/row9	text	-
+A	cover	img/slot1	image	-
+A	cover	img/slot10	image	-
+A	cover	img/slot6	image	-
+A	cover	img/slot7	image	-
+A	cover	img/slot8	image	-
+A	cover	img/slot9	image	-
+A	cover	txt/title	text	-

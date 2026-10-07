@@ -4,7 +4,7 @@
 //! 因此这里也采用同样语义的宽松解析，保存时**保序**替换已存在键并原样保留未知
 //! 键与注释（`[project]` 表头无结构含义，仅作标题）。
 //!
-//! M20-02 追加「音频」小节：编辑 `<project>/settings.toml` 的 `[audio]` 段四路
+//! M20-02 追加「音频」小节：编辑 `<project>/project.toml` 的 `[audio]` 段四路
 //! 音量（主/BGM/音效/界面），与运行期 `audio` Lua API 共用引擎
 //! `engine::core::settings::ProjectSettings` 的读写实现（保序、未知段原样保留）。
 //!
@@ -52,7 +52,7 @@ pub(crate) struct ProjectSettingsUi {
     pub(crate) font_fallback: String,
     pub(crate) font_weight: f32,
     pub(crate) text_render_mode: &'static str,
-    /// 音频分组音量（M20-02，`settings.toml` 的 `[audio]` 段）；0..=1。
+    /// 音频分组音量（M20-02，`project.toml` 的 `[audio]` 段）；0..=1。
     pub(crate) audio_master: f32,
     pub(crate) audio_bgm: f32,
     pub(crate) audio_sfx: f32,
@@ -206,7 +206,7 @@ fn font_keys_from(content: &str) -> (String, String, Option<f32>, String) {
     (font, fallback, weight, text_render_mode)
 }
 
-/// 把 `<project>/settings.toml` 的 `[audio]` 段读进面板缓冲。
+/// 把 `<project>/project.toml` 的 `[audio]` 段读进面板缓冲。
 ///
 /// 文件缺失（可选文件）→ 保持引擎默认 1.0；读取失败 → 返回可读原因（面板提示，
 /// 不 panic）。文件内非法数值由 `ProjectSettings::from_toml` 忽略并回落默认值。
@@ -251,13 +251,34 @@ pub(crate) fn audio_settings_from(ui: &ProjectSettingsUi) -> ProjectSettings {
     settings
 }
 
-/// 保存音频小节到 `<project>/settings.toml`；失败返回可读原因（面板提示）。
+/// 保存音频小节到 `<project>/project.toml`；失败返回可读原因（面板提示）。
 pub(crate) fn save_audio_settings(ui: &ProjectSettingsUi, root: &Path) -> Result<(), String> {
     let root = strip_verbatim_prefix(root);
     let path = ProjectSettings::path_in(&root);
     audio_settings_from(ui)
         .save_to(&root)
         .map_err(|error| format!("保存 {} 失败：{error}", path.display()))
+}
+
+/// 音频小节需不需要写回：**缓冲与磁盘上的当前值不同**才需要。
+///
+/// 为什么不是无条件写：面板的「保存」按钮同时保存项目 / 输入 / 音频三件事，而
+/// `ProjectSettings::save_to` 是**无条件 upsert 整段**的——音频一个字没动也会给工程
+/// 文件添一段全默认的 `[audio]`（`examples/game_jhyt/project.toml` 就是这么长出来的
+/// 4 行，用户当场发现并问"这段能删吗"）。
+///
+/// 判据取"值是否真的变了"而不是"用户有没有点过音量控件"：后者要新状态，而且"点开又
+/// 改回原值"依然是不该写的。与**磁盘**比对还顺带管住另一种情况——面板打开后文件被
+/// 外部改过时，以磁盘为准，不覆盖别人刚写的值。缺文件/缺段 ⇒ 引擎默认 1.0，因此
+/// "全默认 + 文件里没有这段" ⇔ 不写（语义完全一致：缺段本来就是默认值）。
+///
+/// 读不出来（路径是目录、权限问题等）时按**需要写**处理：宁可多写一次，也不因为一次
+/// 读失败把用户刚改的音量静默丢掉（旧行为就是不比对直接写）。
+pub(crate) fn audio_section_needs_write(ui: &ProjectSettingsUi, root: &Path) -> bool {
+    match ProjectSettings::load_from(&strip_verbatim_prefix(root)) {
+        Ok(current) => current.unwrap_or_default() != audio_settings_from(ui),
+        Err(_) => true,
+    }
 }
 
 impl EditorApp {
@@ -276,7 +297,7 @@ impl EditorApp {
                 settings.message = format!("读取 {} 失败：{error}", path.display());
             }
         }
-        // M20-02：音频小节来自独立的 settings.toml（缺失即默认值）。
+        // M20-02：音频小节来自独立的 project.toml（缺失即默认值）。
         if let Err(error) = load_audio_into(settings, &root) {
             if settings.message.is_empty() {
                 settings.message = error;
@@ -285,7 +306,7 @@ impl EditorApp {
                 settings.message.push_str(&error);
             }
         }
-        // M20-08：输入小节（动作绑定 + 死区）同样来自 settings.toml 的 `[input]` 段。
+        // M20-08：输入小节（动作绑定 + 死区）同样来自 project.toml 的 `[input]` 段。
         // 非法内容会回退默认并给出可定位诊断（追加到同一提示区，不覆盖音频提示）。
         if let Some(diagnostic) = settings.input.load(&root) {
             if settings.message.is_empty() {
@@ -434,7 +455,7 @@ impl EditorApp {
                         ui.end_row();
                     });
                 ui.separator();
-                // ---- M20-08：输入（动作绑定 + 死区，settings.toml 的 [input] 段）----
+                // ---- M20-08：输入（动作绑定 + 死区，project.toml 的 [input] 段）----
                 self.draw_input_bindings_section(ui, &root);
                 ui.separator();
                 let missing = missing_asset_paths(&self.project_settings, &self.project.root);
@@ -465,7 +486,7 @@ impl EditorApp {
     /// M20-08「输入」小节：逐动作绑定列表 + 捕获式改绑 + 冲突提示 + 死区 + 恢复默认。
     ///
     /// 所有编辑先落在 `ProjectSettingsUi::input` 缓冲里，点「保存」才写
-    /// `<project>/settings.toml` 的 `[input]` 段（保序，见引擎 `upsert_input_settings`）。
+    /// `<project>/project.toml` 的 `[input]` 段（保序，见引擎 `upsert_input_settings`）。
     fn draw_input_bindings_section(&mut self, ui: &mut egui::Ui, root: &Path) {
         ui.label("输入（按键 / 手柄）");
         ui.label(input_bindings::settings_path(root));
@@ -632,9 +653,13 @@ impl EditorApp {
             return;
         }
         // M20-02：音频小节同样只在「保存」时落盘。`open_project_settings` 会把
-        // `settings.toml` 的 `[audio]` 读进缓冲，这里必须对称写回，否则面板上改动的
-        // 音量永远只停在内存里（重新打开就被旧值覆盖）。
-        if let Err(error) = save_audio_settings(&self.project_settings, &root) {
+        // `project.toml` 的 `[audio]` 读进缓冲，这里必须对称写回，否则面板上改动的
+        // 音量永远只停在内存里（重新打开就被旧值覆盖）。但**值没变就不写**：这个按钮
+        // 顺手保存项目/输入两件事，无脑 upsert 会给工程文件添一段没人改过的默认
+        // `[audio]`（见 `audio_section_needs_write`）。
+        if audio_section_needs_write(&self.project_settings, &root)
+            && let Err(error) = save_audio_settings(&self.project_settings, &root)
+        {
             self.project_settings.message = error;
             return;
         }
@@ -864,7 +889,7 @@ mod tests {
     fn audio_section_loads_parses_and_saves_round_trip() {
         let root = temp_project("round-trip");
         std::fs::write(
-            root.join("settings.toml"),
+            root.join("project.toml"),
             "# 玩家设置\n[audio]\nmaster = 0.5\nbgm = 0.25\n# 注释保留\nsfx = 0.75\nui = bad\n\n[input]\nmap = \"keep-me\"\n",
         )
         .unwrap();
@@ -879,7 +904,7 @@ mod tests {
         ui.audio_bgm = 0.4;
         ui.audio_ui = 0.6;
         save_audio_settings(&ui, &root).unwrap();
-        let text = std::fs::read_to_string(root.join("settings.toml")).unwrap();
+        let text = std::fs::read_to_string(root.join("project.toml")).unwrap();
         assert!(text.contains("# 玩家设置"), "{text}");
         assert!(text.contains("# 注释保留"), "{text}");
         assert!(text.contains("bgm = 0.4"), "{text}");
@@ -891,6 +916,96 @@ mod tests {
         assert_eq!(reloaded.audio_ui, 0.6);
         assert_eq!(reloaded.audio_master, 0.5);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 用户报障的形态：`examples/game_jhyt/project.toml` 在 working tree 里凭空长出
+    /// 4 行全默认的 `[audio]` —— 只因为「项目设置 → 保存」顺手保存了音频小节，而那一半
+    /// 过去是**无条件** upsert。这里把"点了保存之后文件里多了什么"钉住：
+    /// 值没变 ⇒ 一个字都不写（缺段也不新建），值变了 ⇒ 照旧写、其余段与注释原样保留。
+    #[test]
+    fn saving_project_settings_does_not_add_a_default_audio_section() {
+        let root = temp_project("no-default-noise");
+        // 只有注释、一个未知键与 [input] 段的工程设置文件（音频用引擎默认 1.0）。
+        std::fs::write(
+            root.join("project.toml"),
+            "# 玩家设置\ncustom = \"keep-me\"\n\n[input]\nstick_deadzone = 0.15\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("project.toml"),
+            "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let mut app = EditorApp::new(
+            editor::ProjectInfo {
+                root: root.clone(),
+                version: "test".into(),
+                directories: Vec::new(),
+            },
+            None,
+            engine::core::logging::LogSink::new(64),
+        );
+
+        app.open_project_settings();
+        app.save_project_settings();
+        let text = std::fs::read_to_string(root.join("project.toml")).unwrap();
+        assert!(
+            !text.contains("[audio]"),
+            "音频值一个字没改，「保存」却给工程文件添了一段默认 [audio]：\n{text}"
+        );
+        // 其余内容（注释、未知键、[input] 段）不受影响。
+        assert!(text.contains("# 玩家设置"), "{text}");
+        assert!(text.contains("custom = \"keep-me\""), "{text}");
+        assert!(text.contains("[input]"), "{text}");
+
+        // 真的改了音频值 ⇒ 必须落盘（否则面板上改的音量只停在内存里）。
+        app.project_settings.audio_bgm = 0.4;
+        assert!(
+            audio_section_needs_write(&app.project_settings, &root),
+            "改了值还是判定「不用写」，面板上的音量就永远落不了盘"
+        );
+        app.save_project_settings();
+        let text = std::fs::read_to_string(root.join("project.toml")).unwrap();
+        assert!(text.contains("[audio]"), "{text}");
+        assert!(text.contains("bgm = 0.4"), "{text}");
+        assert!(text.contains("# 玩家设置"), "{text}");
+        assert!(text.contains("custom = \"keep-me\""), "{text}");
+
+        // 落盘后缓冲与磁盘一致 ⇒ 再保存一次不该再写（判据本身即被测对象）。
+        app.open_project_settings();
+        assert!(
+            !audio_section_needs_write(&app.project_settings, &root),
+            "值已与磁盘一致，仍判定要写：等于每次点保存都重写一遍设置文件"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 「值没变不写」的边界：**缺文件**同样不该被创建（全默认 = 引擎默认）；而读不出来
+    /// （路径是目录）时按"需要写"处理——宁可多写一次，也不静默丢掉玩家刚改的音量。
+    #[test]
+    fn audio_write_decision_handles_missing_and_unreadable_files() {
+        let root = temp_project("audio-write-decision");
+        let untouched = ProjectSettingsUi::default();
+        assert!(
+            !audio_section_needs_write(&untouched, &root),
+            "连 project.toml 都没有、四路又都是默认值：不该为了写默认值创建这个文件"
+        );
+
+        let changed = ProjectSettingsUi {
+            audio_master: 0.5,
+            ..ProjectSettingsUi::default()
+        };
+        assert!(audio_section_needs_write(&changed, &root));
+
+        // project.toml 是目录 ⇒ 读取失败 ⇒ 按需要写处理（旧行为：直接写并报错）。
+        let broken = temp_project("audio-write-unreadable");
+        std::fs::create_dir_all(broken.join("project.toml")).unwrap();
+        assert!(
+            audio_section_needs_write(&untouched, &broken),
+            "读不出来时不能判定为「没变」：那会把显式改动静默吞掉"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&broken);
     }
 
     #[test]
@@ -911,10 +1026,10 @@ mod tests {
         assert_eq!(settings.volume(AudioBus::Ui), 0.5);
         ui.audio_master = 0.8;
 
-        // 写失败（settings.toml 是目录）→ 返回可读原因而不是 panic。
-        std::fs::create_dir_all(root.join("settings.toml")).unwrap();
+        // 写失败（project.toml 是目录）→ 返回可读原因而不是 panic。
+        std::fs::create_dir_all(root.join("project.toml")).unwrap();
         let error = save_audio_settings(&ui, &root).unwrap_err();
-        assert!(error.contains("settings.toml"), "{error}");
+        assert!(error.contains("project.toml"), "{error}");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

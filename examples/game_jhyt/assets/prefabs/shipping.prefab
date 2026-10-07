@@ -1,0 +1,131 @@
+prefab_version=1
+asset_id=5c9e1f4a-8d2b-4e7a-9f3c-b1d6a2e8c4f7
+name=Shipping
+root=1
+# 出货箱面板（`systems/shipping.lua`）的 UI 预设：M69/B6 从动态层整块搬来。
+# 对账门 = `jhyt_m69_shipping_prefab`：黄金表 46 行（A 态 = 刚打开、背包 10 种可卖物
+# 各 1 个、选中第 1 行、滚动箭头显示）钉死迁移前画面，本文件 + shipping.lua render 的
+# set_text/set_rect/set_visible 必须逐值复现。
+#
+# 结构：根 ShipRoot（全屏 1280x720）下挂全部叶子（单面板，无子页/页签，无需容器层）。
+# 打开/关闭 = 根节点显隐（`set_visible` 子树语义，藏父带子）；不撤重铺，避免槽位 LIFO
+# 复用打乱绘制序。
+#
+# 行序 = 绘制序 = 实体槽位升序，**复刻迁移前动态层的 id 字典序**：
+#   白图类（rank-0，字典序）：box → rule → sel
+#   贴图类（rank-1，字典序）：close → divider → scroll_down → scroll_up → seal →
+#     skin_bg（**skin_bg 殿后**，与 shop/pause/quest 同形；close/divider/scroll_down/
+#     scroll_up/seal 的字典序全在 skin_bg 前，被 skin_bg 整块盖住）
+#   文字类（rank-2，不盖人）：hint → money → msg → row1..row9 → sum → title
+# 黄金表被 skin_bg 整块盖住 8 块：box/rule/sel（色块）+ close/divider/scroll_down/
+# scroll_up/seal（贴图，字典序在前的）；全部文字看得见。
+#
+# 运行期仍由脚本每帧写的值（不改几何/贴图，只改内容/显隐）：
+#   * `prefab.set_text`：money（金币随 state.money）、sum（箱内待结算随 pending_total）、
+#     msg（确认反馈）、row1..9（出货行，含选中 → 前缀与滚动窗口）
+#   * `prefab.set_rect` ：sel（y 随选中行 (index-1)*34 移动，shipping 的 sel 首行是
+#     y+100，不是 list_dy=60）
+#   * `prefab.set_visible`：scroll_up/scroll_down（仅 #rows > ROW_LIMIT(9) 显示）、
+#     rowN（行数不足时隐藏——**M69/C5 顺手修**：原 `shipping.lua:494` 的循环没有 else
+#     隐藏分支，行数从 9 掉到 3 时第 4~9 行会留着上一帧的字）
+# title 与 hint 固定写死（"镖局货箱 · 睡前结算" / "确认：放入 1 个 · Esc/B：关闭
+# （睡前统一结算）"），render 不再写。
+#
+# 初始可见性：全开，由 open → render 同帧 set_visible/set_text 覆盖，无闪帧。
+entity	1	ShipRoot
+component	1	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	1	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.000000,0.000000,1280.000000,720.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	1	role	shipping_root
+entity	2	ShipBox	1
+component	2	Image	texture=__white__;color=0.100,0.110,0.150,0.940
+component	2	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	2	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=160.000000,40.000000,880.000000,680.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	3	ShipRule	1
+component	3	Image	texture=__white__;color=0.720,0.750,0.820,0.220
+component	3	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,92.000000,856.000000,94.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	4	ShipSel	1
+component	4	Image	texture=__white__;color=0.850,0.720,0.420,0.200
+component	4	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	4	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,140.000000,856.000000,174.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	4	role	shipping_sel
+entity	5	ShipClose	1
+component	5	Image	texture=assets/art/ui/common/ui_btn_close.png;color=1.000,1.000,1.000
+component	5	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	5	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=840.000000,58.000000,856.000000,74.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	6	ShipDivider	1
+component	6	Image	texture=assets/art/ui/common/ui_divider.png;color=1.000,1.000,1.000
+component	6	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	6	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,84.000000,856.000000,92.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	7	ShipScrollDown	1
+component	7	Image	texture=assets/art/ui/common/ui_scroll_arrow_down.png;color=1.000,1.000,1.000
+component	7	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	7	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=840.000000,394.000000,856.000000,410.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	8	ShipScrollUp	1
+component	8	Image	texture=assets/art/ui/common/ui_scroll_arrow_up.png;color=1.000,1.000,1.000
+component	8	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	8	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=840.000000,96.000000,856.000000,112.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	9	ShipSeal	1
+component	9	Image	texture=assets/art/ui/common/ui_icon_seal.png;color=1.000,1.000,1.000
+component	9	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	9	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=812.000000,58.000000,836.000000,82.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	10	ShipSkinBg	1
+component	10	Image	texture=assets/art/ui/common/ui_panel_main_9s.png;color=1.000,1.000,1.000;nine_slice=16,16,16,16
+component	10	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	10	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=160.000000,40.000000,880.000000,680.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	11	ShipHint	1
+component	11	Text	text=确认：放入 1 个 · Esc/B：关闭（睡前统一结算）;font_size=14.00;color=1.000,1.000,1.000
+component	11	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,648.000000,856.000000,662.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	12	ShipMoney	1
+component	12	Text	text=金币 120 文;font_size=16.00;color=1.000,1.000,1.000
+component	12	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	12	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=616.000000,60.000000,856.000000,76.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	13	ShipMsg	1
+component	13	Text	text=;font_size=16.00;color=1.000,1.000,1.000
+component	13	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	13	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,616.000000,856.000000,632.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	14	ShipRow1	1
+component	14	Text	text=;font_size=16.00;color=1.000,1.000,1.000
+component	14	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	14	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,100.000000,856.000000,116.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	15	ShipRow2	1
+component	15	Text	text=;font_size=16.00;color=1.000,1.000,1.000
+component	15	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	15	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,134.000000,856.000000,150.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	16	ShipRow3	1
+component	16	Text	text=;font_size=16.00;color=1.000,1.000,1.000
+component	16	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	16	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,168.000000,856.000000,184.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	17	ShipRow4	1
+component	17	Text	text=;font_size=16.00;color=1.000,1.000,1.000
+component	17	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	17	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,202.000000,856.000000,218.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	18	ShipRow5	1
+component	18	Text	text=;font_size=16.00;color=1.000,1.000,1.000
+component	18	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	18	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,236.000000,856.000000,252.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	19	ShipRow6	1
+component	19	Text	text=;font_size=16.00;color=1.000,1.000,1.000
+component	19	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	19	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,270.000000,856.000000,286.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	20	ShipRow7	1
+component	20	Text	text=;font_size=16.00;color=1.000,1.000,1.000
+component	20	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	20	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,304.000000,856.000000,320.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	21	ShipRow8	1
+component	21	Text	text=;font_size=16.00;color=1.000,1.000,1.000
+component	21	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	21	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,338.000000,856.000000,354.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	22	ShipRow9	1
+component	22	Text	text=;font_size=16.00;color=1.000,1.000,1.000
+component	22	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	22	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,372.000000,856.000000,388.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	23	ShipSum	1
+component	23	Text	text=箱内待结算 0 文;font_size=18.00;color=1.000,1.000,1.000
+component	23	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	23	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,98.000000,856.000000,116.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	24	ShipTitle	1
+component	24	Text	text=镖局货箱 · 睡前结算;font_size=22.00;color=1.000,1.000,1.000
+component	24	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	24	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,56.000000,856.000000,78.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000

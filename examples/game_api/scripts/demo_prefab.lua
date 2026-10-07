@@ -1,10 +1,15 @@
--- api_prefab：**预制体（Prefab）是编辑器侧的特性**——`assets/prefabs/*.prefab` 是一份可复用的
--- 实体子树，编辑器把它的实例写进场景，并在实例实体上留下 `prefab.root` /
--- `prefab.source` / `prefab.source_id` 三条**实体元数据**（本场景的 4 只史莱姆就是两个源
--- 各实例化两次，见 `scenes/api_prefab.scene` 的 `entity_meta` 行）。
+-- api_prefab：**两个不相干的 prefab 概念**要分清——
 --
--- 运行期**没有** prefab API：Lua 看到的只是普通实体，`entity.find` / `sprite` / `animation` /
--- `transform` 照常生效。这个演示想说明的正是这条边界——"预制体在编辑期复用，运行期没有特殊身份"。
+-- 1. **编辑期预制体**：`assets/prefabs/*.prefab` 是一份可复用的实体子树，编辑器把它的实例
+--    写进场景，并在实例实体上留下 `prefab.root` / `prefab.source` / `prefab.source_id` 三条
+--    **实体元数据**（本场景的 4 只史莱姆就是两个源各实例化两次，见
+--    `scenes/api_prefab.scene` 的 `entity_meta` 行）。运行期 Lua 看到的只是普通实体，
+--    `entity.find` / `sprite` / `animation` / `transform` 照常生效——这一段在上面。
+--
+-- 2. **运行期 `prefab` 表**（M61 起）：把 `.prefab` 实体树**实例化进活世界**，是 UI 预设的
+--    运行时载体（`game_jhyt` 的门面/面板迁移就是这么做）。`prefab.spawn` 返回句柄，用句柄
+--    读写实例：`root` / `node` 取实体 id，`set_text` / `set_rect` / `set_visible` 改数据，
+--    `despawn` 收干净。这一段在下面，按 4 / 5 / 6 / 7 键驱动。
 local api = require("api_demo")
 
 local M = {}
@@ -12,6 +17,21 @@ local M = {}
 local instances = {}
 local elapsed = 0
 local action = "ready"
+
+-- ---------------- 运行期 `prefab` 表（M65-A1 补） ----------------
+
+-- `assets/prefabs/demo_ui.prefab`：根 + 一块半透明色板（`DemoBox`）+ 一行文字（`DemoLabel`）。
+local prefab_handle = nil
+local prefab_alive = false
+local box_visible = true
+local runtime_action = "ready"
+local last_set_text = ""
+
+local function spawn_runtime_prefab()
+    prefab_handle = prefab.spawn("assets/prefabs/demo_ui.prefab")
+    prefab_alive = true
+    return prefab_handle
+end
 
 local function tint(id, r, g, b)
     -- `sprite.set` 用与场景**同一套组件串语法**：改色 = 重写 tint 段。
@@ -45,6 +65,14 @@ function M.on_create()
         end
     end
     log.info(string.format("api_prefab: %d prefab instances found", #instances))
+
+    -- 运行期 `prefab` 表：spawn 一次，后面用 4/5/6/7 键驱动写入。
+    -- （故意包一层 pcall：这份演示在"三个宿主都有 prefab 表"之前先跑起来，
+    --  失败也把原因打进状态行而不是让整局起不来。）
+    local ok, err = pcall(spawn_runtime_prefab)
+    if not ok then
+        runtime_action = "spawn failed: " .. tostring(err)
+    end
 end
 
 function M.update()
@@ -85,18 +113,82 @@ function M.update()
         end
     end
 
-    api.status(
-        string.format(
-            "%d instances from 2 prefab sources - last action: %s - %s at (%.0f, %.0f) - sprite %s",
-            #instances,
-            action,
-            instances[1] and instances[1].name or "?",
-            first_x,
-            first_y,
-            first_id and sprite.get(first_id).texture or "(none)"
-        )
+    -- 运行期 `prefab` 表：4/5/6/7 驱动（`game_jhyt` 面板迁移同款用法）。
+    -- `root` / `node` 每帧读一次：它们取的是"本实例"的实体 id（`prefab.node` 按名查、
+    -- 与 `entity.find` 查的全局名字表不是同一张表）。
+    local root_id = nil
+    local label_id = nil
+    if prefab_alive then
+        root_id = prefab.root(prefab_handle)
+        label_id = prefab.node(prefab_handle, "DemoLabel")
+        if input.just_pressed("4") then
+            last_set_text = string.format("set_text #%d", math.floor(elapsed))
+            prefab.set_text(prefab_handle, "DemoLabel", last_set_text)
+            runtime_action = "set_text"
+        elseif input.just_pressed("5") then
+            prefab.set_rect(prefab_handle, "DemoBox", 400, 280, 880, 440)
+            runtime_action = "set_rect"
+        elseif input.just_pressed("6") then
+            box_visible = not box_visible
+            prefab.set_visible(prefab_handle, "DemoBox", box_visible)
+            runtime_action = box_visible and "set_visible(true)" or "set_visible(false)"
+        elseif input.just_pressed("7") then
+            local removed = prefab.despawn(prefab_handle)
+            prefab_alive = false
+            spawn_runtime_prefab()
+            runtime_action =
+                string.format("despawn=%s then respawn (new handle %d)", tostring(removed), prefab_handle)
+        end
+    end
+
+    api.hint(
+        "1/2/3 tint & resync editor prefab instances - 4 set_text - 5 set_rect - "
+            .. "6 set_visible - 7 despawn+respawn - "
+            .. api.KEYS_BACK
     )
-    return string.format("api_prefab_ok instances=%d action=%s", #instances, action)
+    if prefab_alive then
+        api.status(
+            string.format(
+                "%d instances - %s at (%.0f, %.0f) | prefab handle=%d root=%d label=%s "
+                    .. "box_visible=%s last_set_text=%s",
+                #instances,
+                instances[1] and instances[1].name or "?",
+                first_x,
+                first_y,
+                prefab_handle,
+                root_id or -1,
+                label_id or -1,
+                tostring(box_visible),
+                last_set_text
+            )
+        )
+    else
+        api.status(
+            string.format(
+                "%d instances from 2 prefab sources - last action: %s - %s at (%.0f, %.0f) - sprite %s",
+                #instances,
+                action,
+                instances[1] and instances[1].name or "?",
+                first_x,
+                first_y,
+                first_id and sprite.get(first_id).texture or "(none)"
+            )
+        )
+    end
+    return string.format(
+        "api_prefab_ok instances=%d action=%s runtime=%s handle=%d",
+        #instances,
+        action,
+        runtime_action,
+        prefab_alive and prefab_handle or -1
+    )
+end
+
+function M.on_destroy()
+    if prefab_alive then
+        prefab.despawn(prefab_handle)
+        prefab_alive = false
+    end
 end
 
 return M

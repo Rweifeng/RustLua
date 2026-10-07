@@ -79,7 +79,7 @@ fn audio_lua_settings_text_round_trips_and_rejects_bad_version() {
     assert_eq!(why, "true");
 }
 
-/// M20-02：工程设置文件 `<project>/settings.toml` 的读写入口。
+/// M20-02：工程设置文件 `<project>/project.toml`（[audio]/[input] 段）的读写入口。
 #[test]
 fn audio_lua_project_settings_load_and_save() {
     let root = std::env::temp_dir().join(format!(
@@ -92,7 +92,7 @@ fn audio_lua_project_settings_load_and_save() {
     ));
     fs::create_dir_all(&root).unwrap();
     fs::write(
-        root.join("settings.toml"),
+        root.join("project.toml"),
         "# 说明\n[audio]\nmaster = 0.5\nbgm = 0.25\nsfx = 0.75\nui = 0.5\n\n[input]\nmap = \"keep\"\n",
     )
     .unwrap();
@@ -101,7 +101,7 @@ fn audio_lua_project_settings_load_and_save() {
     let path = runtime
         .execute_console("assert(audio.settings_path() ~= nil); return audio.settings_path()")
         .unwrap();
-    assert!(path.ends_with("settings.toml"), "{path}");
+    assert!(path.ends_with("project.toml"), "{path}");
     runtime
         .execute_console(
             "assert(select(1, audio.load_settings()) == true)\n\
@@ -112,7 +112,7 @@ fn audio_lua_project_settings_load_and_save() {
              return 'ok'",
         )
         .unwrap();
-    let text = fs::read_to_string(root.join("settings.toml")).unwrap();
+    let text = fs::read_to_string(root.join("project.toml")).unwrap();
     assert!(text.contains("# 说明"), "{text}");
     assert!(text.contains("map = \"keep\""), "{text}");
     assert!(text.contains("ui = 0.9"), "{text}");

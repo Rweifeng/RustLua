@@ -106,7 +106,7 @@ impl PreviewSession {
         // 手动 Stop）；容错后错误进结构化诊断与计数、预览继续跑，与 `game.exe` 同一档。
         // 无头样例/soak 不设这一档，因此"脚本报错必须判红"的验收语义不变（见 docs/64）。
         runtime.set_script_error_policy(ScriptErrorPolicy::Contain);
-        // M20-08：把项目 `settings.toml` 的 `[input]` 手柄死区应用到 Play 预览的设备后端
+        // M20-08：把项目 `project.toml` 的 `[input]` 手柄死区应用到 Play 预览的设备后端
         // （与独立 game 宿主 `game_app` 同一入口；文件缺失/无 `[input]` 段 → 引擎默认
         // 0.15/0.05，读取失败只记日志不中断 Play）。
         let (deadzone, deadzone_diagnostic) =
@@ -192,6 +192,13 @@ impl PreviewSession {
         self.runtime.set_ui_reference(reference);
     }
 
+    /// 碰撞体调试绘制开关（透传到运行时，2D+3D 同开）。开启后**活体**碰撞体与
+    /// tilemap solid 格由运行时按当前相机烘进预览帧，Game 视图无需额外坐标换算即可看到。
+    pub(crate) fn set_collider_debug_draw(&mut self, enabled: bool) {
+        self.runtime.set_collider_debug_draw(enabled);
+        self.runtime.set_collider_debug_draw_3d(enabled);
+    }
+
     /// 当前 egui 预览纹理（就绪帧）；`None` 表示尚无回读结果。
     pub(crate) fn texture_id(&self) -> Option<egui::TextureId> {
         match &self.preview_texture {
@@ -235,6 +242,12 @@ impl PreviewSession {
         visit: impl FnOnce(&mut engine::core::script::LuaRuntime) -> R,
     ) -> R {
         self.runtime.with_script(visit)
+    }
+
+    /// 只读借用预览的运行时：Play 期间的层级同步要从**活世界**取真值回灌镜像文档
+    /// （见 `crate::play_sync`）。读数方法本身都是 `&self`，不需要放宽成 `&mut`。
+    pub(crate) fn runtime(&self) -> &RuntimeScene {
+        &self.runtime
     }
 
     /// 暂停 BGM（编辑器暂停时调用）。

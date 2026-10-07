@@ -6,7 +6,11 @@
 #      * 不可用（离线环境常见）→ **明确跳过** wasm 模块构建（不伪造通过），
 #        改为执行浏览器侧集成契约检查（资源获取/解析、WebGL2 能力、存储降级、
 #        缺失资源诊断），并在日志与摘要中标注差异。
-#   2. 组装 web 包（assetc 打包 + 契约检查页）。
+#   2. 组装 web 包（assetc 打包 + 契约检查页 `scripts/webgl-contract/`）。
+#      * 契约页属于**仓库的测试资产**，不放在游戏工程里：它原先在
+#        `examples/game_jhyt/web/`，于是（a）游戏工程目录下多出一个非游戏内容的目录、
+#        （b）本脚本换一个 `-ProjectRoot` 就找不到页面。现在与门放在一起，源路径不再跟
+#        `-ProjectRoot` 走。
 #   3. 用 Node 静态服务器 + Edge 无头浏览器（--dump-dom）执行检查并断言 DOM 结果。
 #   4. 记录支持浏览器、构建产物、运行日志与已知限制到 artifacts/logs/webgl/。
 #
@@ -122,8 +126,8 @@ Write-Log "==> Package project data (assetc package)" Cyan
 & $assetc package $gameRoot -o (Join-Path $bundleRoot "pack")
 if ($LASTEXITCODE -ne 0) { throw "assetc package failed" }
 
-Copy-Item -LiteralPath (Join-Path $gameRoot "web\index.html") -Destination (Join-Path $bundleRoot "index.html") -Force
-Copy-Item -LiteralPath (Join-Path $gameRoot "web\web-check.js") -Destination (Join-Path $bundleRoot "web-check.js") -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "webgl-contract\index.html") -Destination (Join-Path $bundleRoot "index.html") -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "webgl-contract\web-check.js") -Destination (Join-Path $bundleRoot "web-check.js") -Force
 
 $manifestPath = Join-Path $bundleRoot "pack\manifest.txt"
 $aManifest = Join-Path $bundleRoot "pack\project.toml"

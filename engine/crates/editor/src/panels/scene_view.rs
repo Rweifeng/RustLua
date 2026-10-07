@@ -5,6 +5,8 @@ use crate::geometry::{
     parse_transform, polygon_intersects_rect, rotated_contains, rotated_corners,
 };
 use crate::panels::tilemap_tools::{CellRect, TileFill, copy_region, fill_rect, paste_region};
+use crate::play_sync::{game_screen_texture, panel_scene_document};
+use crate::preview_session::PreviewSession;
 use crate::scene_interaction::{InteractionEvent, ToolPhase};
 use crate::scene_resize;
 use crate::util::icon_toggle;
@@ -20,6 +22,7 @@ use engine::core::{
     camera::{Camera3D, DEFAULT_3D_CLEAR, FrameViews, Ray3, RenderView, Viewport},
     light::Light,
     math3d::{Quat, Vec3},
+    physics::ColliderDesc,
     scene::{SceneEntity, SceneEntityId},
     sprite::SpriteComponent,
     text::{TextAtlas, TextLayout, TextStyle},
@@ -82,8 +85,14 @@ impl EditorApp {
             self.draw_scene_view_3d(ui);
             return;
         }
-        let (response, painter) =
-            ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
+        // 画布宽度钉回本标签裁剪框：`available_size` 在窄叶子下可能被上一帧的横向溢出撑大
+        // （egui_dock 的 `expand_to_include_rect` 会把溢出宽度回灌进可用矩形，见 `dock::show`
+        // 里给工具条套 clip scope 的那段）。若照原样 allocate，画布右边界越出裁剪框、并把
+        // 更大的可用宽度喂给下一帧，形成正反馈——变换工具条/zoom 数值随之被属性面板盖住。
+        let clip_width = ui.clip_rect().width();
+        let avail = ui.available_size();
+        let desired = egui::vec2(avail.x.min(clip_width), avail.y);
+        let (response, painter) = ui.allocate_painter(desired, egui::Sense::click_and_drag());
         let rect = response.rect;
         // docs/55 阶段 0：把本帧画布矩形公开给 GUI smoke（合成指针事件要打在真实画布上，
         // 并且要用面板自己的坐标换算把实体中心变成屏幕点）。
@@ -257,7 +266,7 @@ impl EditorApp {
         }
         // 在包围框内显示游戏画面（设计分辨率 + 游戏相机 + UI 覆盖层）：
         // 实际 UI 随包围框缩放/平移（包围框 world 映射）。
-        if let Some(id) = self.scene_screen_tex_id {
+        if let Some(id) = self.game_screen_texture_id() {
             let frame = design_resolution_frame(
                 rect,
                 self.scene_state.pan,
@@ -425,7 +434,7 @@ impl EditorApp {
                 }
             }
             // Phase 5d：为选中的 Container 实体绘制 padding 可视化。
-            if let Some(scene) = self.document.current_scene.as_ref() {
+            if let Some(scene) = panel_scene_document(&self.play_session, &self.document) {
                 for entity in entities.iter() {
                     if !self.selection.contains(entity.id) {
                         continue;
@@ -489,6 +498,9 @@ impl EditorApp {
         // M19-03：领域数据只读覆盖层（当前地图的出口 / 地点 / 出生格）。绘制在
         // Tile 网格之上、实体选中框之下，与既有 UI 布局/网格共用同一坐标换算。
         self.draw_domain_overlay(&painter, rect, scale);
+        // 调试覆盖层：画出场景里**所有**碰撞区域（Tilemap solid 格 + 实体 Collider），
+        // 与选中无关，供跑地图调试用。开关在 View ▸ 碰撞区域(调试)。
+        self.draw_collision_overlay(&painter, rect, scale);
         if let Some(context) = tilemap_context.as_ref()
             && self.scene_tool() == SceneTool::TilePaint
         {
@@ -551,7 +563,7 @@ impl EditorApp {
                 self.scene_state.padding_handle = Some(handle);
                 // 存储初始 padding 和外框供拖动计算使用。
                 if let Some(primary) = self.selection.primary()
-                    && let Some(scene) = self.document.current_scene.as_ref()
+                    && let Some(scene) = panel_scene_document(&self.play_session, &self.document)
                     && let Some(scene_entity) = scene.scene.entities.get(&primary)
                     && let Some(container_raw) = scene_entity.components.get("Container")
                     && let Ok(style) =
@@ -1006,7 +1018,7 @@ impl EditorApp {
         }
         let primary = self.selection.primary()?;
         let entity = entities.iter().find(|e| e.id == primary)?;
-        let scene = self.document.current_scene.as_ref()?;
+        let scene = panel_scene_document(&self.play_session, &self.document)?;
         let scene_entity = scene.scene.entities.get(&primary)?;
         let container_raw = scene_entity.components.get("Container")?;
         let style =
@@ -1112,7 +1124,7 @@ impl EditorApp {
         pixels_per_point: f32,
     ) -> Vec<SceneBoxedEntity> {
         self.ensure_scene_runtime();
-        let scene = self.document.current_scene.as_ref();
+        let scene = panel_scene_document(&self.play_session, &self.document);
         let scene_state = &self.scene_state;
         let scene_zoom = self.scene_zoom;
         let pan = scene_state.pan;
@@ -1256,6 +1268,18 @@ impl EditorApp {
                     ui: Some(ui),
                 });
             } else {
+                // 运行期生成的 UI 行没有可解析的版面：镜像只回灌结构与姿态，`UiLayout` 的
+                // anchors/offsets 与 `Text`/`Image` 的贴合都不在其中，按姿态画出来的框会把
+                // 整屏 UI 全叠在世界原点——那是**假框**（18 个节点叠成一坨），比不画更误导。
+                // 这一行的真值看设计分辨率框里那张游戏画面（Play 期间就是 Game 视图那一帧），
+                // 行本身照样在层级里可选、属性面板里可读姿态。计数不为零即"这里确实少画了"。
+                if e.metadata
+                    .contains_key(editor::runtime_sync::RUNTIME_UI_META)
+                {
+                    self.profiler
+                        .bump("scene_2d_runtime_ui_rows_without_payload");
+                    continue;
+                }
                 let (center, size) =
                     entity_2d_screen_box(e, rect, pan, scene_zoom, transform, pixels_per_point);
                 entities.push(SceneBoxedEntity {
@@ -1346,7 +1370,7 @@ impl EditorApp {
             egui::StrokeKind::Outside,
         );
         painter.text(
-            rect.left_top() + egui::vec2(4.0, 34.0),
+            rect.left_top() + egui::vec2(4.0, self.scene_overlay_bottom_offset + 4.0),
             egui::Align2::LEFT_TOP,
             format!("设计分辨率 {w}×{h}"),
             egui::FontId::proportional(13.0),
@@ -1359,11 +1383,13 @@ impl EditorApp {
     /// 组件字符串只在文档变化时解析一次；用宽容编译，坏组件只丢自己并留下诊断，
     /// 不会让整个 3D 视图空白。
     pub(crate) fn ensure_scene_view_3d_typed(&mut self) {
-        let revision = self.document.current_scene.as_ref().map(|doc| doc.revision);
+        let revision =
+            panel_scene_document(&self.play_session, &self.document).map(|doc| doc.revision);
         if self.scene_view_3d_typed.revision == revision {
             return;
         }
-        let (entities, diagnostics) = match self.document.current_scene.as_ref() {
+        let (entities, diagnostics) = match panel_scene_document(&self.play_session, &self.document)
+        {
             Some(scene) => {
                 let (typed, diagnostics) = TypedScene::compile_v2_lenient(&scene.scene);
                 let entities = typed
@@ -2012,7 +2038,7 @@ impl EditorApp {
         {
             return Some(world);
         }
-        let scene = self.document.current_scene.as_ref()?;
+        let scene = panel_scene_document(&self.play_session, &self.document)?;
         editor::document_space::world_transform_3d(&scene.scene, id)
     }
 
@@ -2031,8 +2057,12 @@ impl EditorApp {
     /// Tile 画笔，Move 的提示在 Widget 模式里也说明了它改的是锚点/偏移。
     fn draw_scene_tool_panel(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         let width = 430.0;
+        // 画布矩形在窄叶子下可能溢出本标签的裁剪框（见 `dock::show` 里钉宽的那段）：
+        // 工具条若贴着 `rect.right()` 摆放，右侧的 缩放/▦ 会落到裁剪框外、被属性面板盖住。
+        // 贴右边界改按裁剪框取，保证整条工具条始终落在可见区内。
+        let right_edge = rect.right().min(ui.clip_rect().right());
         let tools_rect = egui::Rect::from_min_size(
-            egui::pos2(rect.right() - width - 4.0, rect.top() + 4.0),
+            egui::pos2(right_edge - width - 4.0, rect.top() + 4.0),
             egui::vec2(width, 26.0),
         );
         // 本帧工具条的屏幕矩形：性能面板的默认位置与它**不得相交**（用户报的重叠就是这两块
@@ -2041,7 +2071,7 @@ impl EditorApp {
         let tool = self.scene_tool();
         let mode = self.tool_mode();
         let mut requested: Option<SceneTool> = None;
-        ui.scope_builder(egui::UiBuilder::new().max_rect(tools_rect), |ui| {
+        let tools_response = ui.scope_builder(egui::UiBuilder::new().max_rect(tools_rect), |ui| {
             // right_to_left：先画的 widget 贴右边缘，保证工具条紧贴视图右边界。
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // 世界/轴心不在这里——它们在左上角状态胶囊那一行（见下方）。
@@ -2068,6 +2098,7 @@ impl EditorApp {
         if let Some(tool) = requested {
             self.set_scene_tool(tool);
         }
+        let tools_row_width = tools_response.response.rect.width();
         // RustLua-②c：左上角状态胶囊——2D 下回显视图/吸附/像素网格的**显式**状态，
         // 外加 Gizmo 空间/轴心切换（原先贴在右上角工具条尾部，挪到这里与状态同侧）。
         let gizmo_toggle_visible = matches!(
@@ -2076,67 +2107,89 @@ impl EditorApp {
         );
         let is_2d = self.scene_view_mode == crate::SceneViewMode::View2D;
         if is_2d || gizmo_toggle_visible {
+            // 两条带子一个贴左一个贴右、宽度按内容走：画布窄到装不下两者时，
+            // 「轴心」会和「选择」叠成乱码（1024 窗实测）。装不下就把状态行下移一行
+            // （与 TilePaint 第二行的 +32 同构）。工具条宽度本帧量得到，状态行宽度用
+            // 上一帧量到的值（首帧按 0 算、走单行，下一帧收敛）。
+            let needed = 4.0 + self.scene_status_row_width + 8.0 + tools_row_width + 4.0;
+            let status_top = if rect.width() < needed {
+                rect.top() + 32.0
+            } else {
+                rect.top() + 4.0
+            };
             let status_rect = egui::Rect::from_min_size(
-                egui::pos2(rect.left() + 4.0, rect.top() + 4.0),
+                egui::pos2(rect.left() + 4.0, status_top),
                 egui::vec2(380.0, 26.0),
             );
-            ui.scope_builder(egui::UiBuilder::new().max_rect(status_rect), |ui| {
-                ui.horizontal(|ui| {
-                    if is_2d {
-                        ui.label(egui::RichText::new("2D").strong());
-                        ui.separator();
-                        if self.snap_enabled {
-                            // 位移步长与**角度**步长各报各的（M27-02）：一个 0.5 不代表旋转也吸附。
-                            ui.label(format!(
-                                "吸附 {} · {:.0}°",
-                                self.snap_step, self.snap_angle_step
-                            ));
-                        } else {
-                            ui.label("无吸附");
-                        }
-                        ui.separator();
-                        if self.show_pixel_grid {
-                            ui.label("像素网格");
-                        } else {
-                            ui.label("无网格");
+            let status_response =
+                ui.scope_builder(egui::UiBuilder::new().max_rect(status_rect), |ui| {
+                    // `horizontal_centered` 而不是 `horizontal`：后者只按 `interact_size.y`（18）
+                    // 起行，18 高的标签会贴在这条 26 高带子的顶上，比右侧真正居中的 24 高
+                    // 图标按钮高 4px。前者按整条带子居中，两组才在同一条水平线上。
+                    ui.horizontal_centered(|ui| {
+                        if is_2d {
+                            ui.label(egui::RichText::new("2D").strong());
+                            ui.separator();
+                            if self.snap_enabled {
+                                // 位移步长与**角度**步长各报各的（M27-02）：一个 0.5 不代表旋转也吸附。
+                                ui.label(format!(
+                                    "吸附 {} · {:.0}°",
+                                    self.snap_step, self.snap_angle_step
+                                ));
+                            } else {
+                                ui.label("无吸附");
+                            }
+                            ui.separator();
+                            if self.show_pixel_grid {
+                                ui.label("像素网格");
+                            } else {
+                                ui.label("无网格");
+                            }
+                            if gizmo_toggle_visible {
+                                ui.separator();
+                            }
                         }
                         if gizmo_toggle_visible {
-                            ui.separator();
+                            if ui
+                                .selectable_label(
+                                    self.gizmo_space == crate::scene_interaction::GizmoSpace::Local,
+                                    self.gizmo_space.label(),
+                                )
+                                .on_hover_text("Gizmo 变换空间：世界轴 / 实体局部轴（点击切换）")
+                                .clicked()
+                            {
+                                self.gizmo_space = self.gizmo_space.toggled();
+                            }
+                            if ui
+                                .selectable_label(
+                                    self.gizmo_pivot
+                                        == crate::scene_interaction::GizmoPivot::Center,
+                                    self.gizmo_pivot.label(),
+                                )
+                                .on_hover_text(
+                                    "Gizmo 轴心：实体原点 / 选中内容包围盒中心（点击切换）",
+                                )
+                                .clicked()
+                            {
+                                self.gizmo_pivot = self.gizmo_pivot.toggled();
+                            }
                         }
-                    }
-                    if gizmo_toggle_visible {
-                        if ui
-                            .selectable_label(
-                                self.gizmo_space == crate::scene_interaction::GizmoSpace::Local,
-                                self.gizmo_space.label(),
-                            )
-                            .on_hover_text("Gizmo 变换空间：世界轴 / 实体局部轴（点击切换）")
-                            .clicked()
-                        {
-                            self.gizmo_space = self.gizmo_space.toggled();
-                        }
-                        if ui
-                            .selectable_label(
-                                self.gizmo_pivot == crate::scene_interaction::GizmoPivot::Center,
-                                self.gizmo_pivot.label(),
-                            )
-                            .on_hover_text("Gizmo 轴心：实体原点 / 选中内容包围盒中心（点击切换）")
-                            .clicked()
-                        {
-                            self.gizmo_pivot = self.gizmo_pivot.toggled();
-                        }
-                    }
+                    });
                 });
-            });
+            self.scene_status_row_width = status_response.response.rect.width();
+            self.scene_overlay_bottom_offset = status_top - rect.top() + 26.0;
+        } else {
+            self.scene_overlay_bottom_offset = 0.0;
         }
         // M19-03 Tile 生产工具第二行：编辑模式 + 区域剪贴板状态（仅 TilePaint 工具下显示）。
         if self.scene_tool() != SceneTool::TilePaint {
             return;
         }
         let tile_tools_rect = egui::Rect::from_min_size(
-            egui::pos2(rect.right() - width - 4.0, rect.top() + 32.0),
+            egui::pos2(right_edge - width - 4.0, rect.top() + 32.0),
             egui::vec2(width, 26.0),
         );
+        self.scene_overlay_bottom_offset = self.scene_overlay_bottom_offset.max(58.0);
         ui.scope_builder(egui::UiBuilder::new().max_rect(tile_tools_rect), |ui| {
             ui.horizontal(|ui| {
                 for mode in [
@@ -2168,6 +2221,92 @@ impl EditorApp {
                 }
             });
         });
+    }
+
+    /// 调试覆盖层：把当前场景里**所有**碰撞区域画在 2D Scene 视图上。
+    ///
+    /// 与只画选中图、且要开 `preview_collision` 的 [`Self::draw_tilemap_overlay`] 不同，
+    /// 这里遍历整张场景、与选中无关，一次看清"哪里会挡人"：
+    /// ① 每个 `Tilemap` 实体的 solid 格（红色实心）；
+    /// ② 每个带 `Collider` 组件实体的 2D 碰撞体轮廓（sensor 蓝、普通橙）。
+    /// 碰撞体轮廓按实体姿态（平移 + 旋转）变换到世界，与运行时 debug_draw 同口径
+    /// （不叠加 scale——和 `ColliderDebugShape::wireframe_segments` 一致）。
+    fn draw_collision_overlay(&self, painter: &egui::Painter, rect: egui::Rect, ppp: f32) {
+        if !self.show_collision_overlay {
+            return;
+        }
+        let Some(scene) = self.current_scene() else {
+            return;
+        };
+        let pan = self.scene_state.pan;
+        let zoom = self.scene_zoom;
+        let ppp = ppp.max(1.0e-3);
+
+        let solid_fill = egui::Color32::from_rgba_unmultiplied(220, 70, 70, 70);
+        let solid_stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(255, 110, 110));
+
+        for entity in scene.scene.entities.values() {
+            let transform = self
+                .scene_state
+                .preview
+                .get(&entity.id)
+                .copied()
+                .or_else(|| {
+                    entity
+                        .components
+                        .get("Transform")
+                        .and_then(|value| parse_transform(value))
+                })
+                .unwrap_or_default();
+
+            // ① Tilemap 的 solid 层（地图碰撞格）。旋转的 Tilemap 暂不画（与 TilePaint 同限制）。
+            if let Some(raw) = entity.components.get("Tilemap")
+                && let Ok(map) = Tilemap::from_component_str(raw)
+                && transform.rotation.abs() <= 0.001
+            {
+                for y in 0..map.height {
+                    for x in 0..map.width {
+                        if !map.solid[y * map.width + x] {
+                            continue;
+                        }
+                        let cell =
+                            tilemap_cell_screen_rect(rect, pan, zoom, ppp, transform, &map, x, y);
+                        painter.rect_filled(cell, 0.0, solid_fill);
+                        painter.rect_stroke(cell, 0.0, solid_stroke, egui::StrokeKind::Inside);
+                    }
+                }
+            }
+
+            // ② 实体 Collider（2D 物理碰撞体轮廓）。
+            if let Some(raw) = entity.components.get("Collider")
+                && let Ok(desc) = ColliderDesc::from_component_str(raw)
+            {
+                let (sin, cos) = transform.rotation.to_radians().sin_cos();
+                // 世界点 = 实体平移 + 旋转 ·（碰撞体 offset + 局部轮廓点）。只取 f32 分量重建
+                // 本地 `Vec2`，避免 physics 与 engine 两处 `Vec2` 别名在签名上打架。
+                let to_world = |lx: f32, ly: f32| -> Vec2 {
+                    let ox = desc.offset.x + lx;
+                    let oy = desc.offset.y + ly;
+                    Vec2::new(
+                        transform.position_x + ox * cos - oy * sin,
+                        transform.position_y + ox * sin + oy * cos,
+                    )
+                };
+                let stroke = egui::Stroke::new(
+                    1.5_f32,
+                    if desc.sensor {
+                        egui::Color32::from_rgb(120, 200, 240)
+                    } else {
+                        egui::Color32::from_rgb(240, 170, 80)
+                    },
+                );
+                for (a, b) in desc.shape.wireframe_edges() {
+                    let pa = scene_view_world_to_panel(rect, pan, zoom, ppp, to_world(a.x, a.y));
+                    let pb = scene_view_world_to_panel(rect, pan, zoom, ppp, to_world(b.x, b.y));
+                    painter.line_segment([pa, pb], stroke);
+                }
+            }
+        }
     }
 
     fn selected_tilemap_context(&self) -> Option<TilemapPaintContext> {
@@ -2684,7 +2823,8 @@ impl EditorApp {
         if width == 0 || height == 0 {
             return;
         }
-        let revision = self.document.current_scene.as_ref().map(|doc| doc.revision);
+        let revision =
+            panel_scene_document(&self.play_session, &self.document).map(|doc| doc.revision);
         // Gizmo/拖拽预览变化需每帧重渲染；否则仅在修订/尺寸/相机变化时重渲染。
         let preview_active = !self.scene_state.preview3d_transform.is_empty();
         // 交互期（拖拽预览活动）降半分辨率渲染，空闲恢复全分辨率。
@@ -2694,14 +2834,17 @@ impl EditorApp {
             (width, height)
         };
         let cache = self.scene_view_cache_3d;
-        if scene_view_3d_cache_hit(
-            cache,
-            render_w,
-            render_h,
-            revision,
-            self.editor_camera,
-            preview_active,
-        ) {
+        // Play 期间也每帧重渲染：镜像里的姿态逐帧在变，而修订号只在结构变化时 bump。
+        if !self.is_playing()
+            && scene_view_3d_cache_hit(
+                cache,
+                render_w,
+                render_h,
+                revision,
+                self.editor_camera,
+                preview_active,
+            )
+        {
             self.drain_readback_3d(ctx);
             return;
         }
@@ -2790,13 +2933,14 @@ impl EditorApp {
     ///
     /// `pub(crate)`：拖动预览的提交层（`crate::scene_drag`）在推进第一帧预览前也要它。
     pub(crate) fn ensure_scene_runtime(&mut self) {
-        let revision = self.document.current_scene.as_ref().map(|doc| doc.revision);
+        let revision =
+            panel_scene_document(&self.play_session, &self.document).map(|doc| doc.revision);
         // 已按此 revision 尝试过（无论成功失败）则不再重建，避免持久失败时每帧重试。
         if self.scene_runtime_revision == revision {
             return;
         }
         self.scene_runtime = None;
-        let Some(scene) = self.document.current_scene.as_ref() else {
+        let Some(scene) = panel_scene_document(&self.play_session, &self.document) else {
             self.scene_runtime_revision = revision;
             return;
         };
@@ -2840,11 +2984,15 @@ impl EditorApp {
         if width == 0 || height == 0 {
             return;
         }
-        let revision = self.document.current_scene.as_ref().map(|doc| doc.revision);
+        let revision =
+            panel_scene_document(&self.play_session, &self.document).map(|doc| doc.revision);
         let camera = (self.scene_state.pan, self.scene_zoom);
         let cache = self.scene_view_cache_2d;
-        let previewing =
-            !self.scene_state.preview.is_empty() || !self.scene_state.preview_ui.is_empty();
+        // Play 期间每帧重画：镜像里的姿态逐帧在变，而修订号只在结构变化时才 bump，
+        // 只拿它当"要不要重画"的依据会让 Scene 视图停在进 Play 那一刻。
+        let previewing = self.is_playing()
+            || !self.scene_state.preview.is_empty()
+            || !self.scene_state.preview_ui.is_empty();
         if !previewing
             && cache.size == (width, height)
             && cache.revision == revision
@@ -2957,18 +3105,45 @@ impl EditorApp {
         log_scene_view_frame(started, render_size, "2D");
     }
 
+    /// 设计分辨率包围框里那格"游戏画面"该显示哪张纹理。
+    ///
+    /// Play 期间它是 **Game 视图正在显示的那一帧**（`PreviewSession` 的预览纹理）：镜像文档
+    /// 只带结构 + 姿态（`runtime_sync::upsert_spawned_rows` 新建的行除 `Transform` 与名字外
+    /// 没有 `Image`/`Text`/`UiLayout` 载荷——见 docs/56 §3.53 的诚实边界），拿它重画一遍只会
+    /// 得到一块空白；而 Game 视图那一帧本来就是"游戏此刻的真值"，两者同源才叫同步。
+    /// 编辑期间沿用编辑运行时渲染出来的 `scene_screen_tex_id`。
+    fn game_screen_texture_id(&self) -> Option<egui::TextureId> {
+        game_screen_texture(
+            self.is_playing(),
+            self.preview.as_ref().and_then(PreviewSession::texture_id),
+            self.scene_screen_tex_id,
+        )
+    }
+
     /// 渲染游戏画面（设计分辨率 + 游戏相机 + UI 覆盖层）到离屏纹理，并注册为原生
     /// egui 纹理，供 Scene 视图在设计分辨率包围框内显示。内容未变化（修订/设计
     /// 分辨率未动）时跳过渲染；失败时保留上一帧（诊断由编辑器视图负责）。
     fn render_scene_screen(&mut self, ctx: &egui::Context) {
-        let revision = self.document.current_scene.as_ref().map(|doc| doc.revision);
+        // Play 期间这一格走的是 [`Self::game_screen_texture_id`] 那张预览纹理，**不再**用
+        // 无脚本的镜像运行时重画一遍：那既是错的数据（见上），也是白付的渲染成本
+        // （docs/57：Debug 下每帧 90~240ms，直接把预览的固定步挤掉）。缓存键清掉是为了
+        // Stop 之后第一帧必定重画编辑运行时那份——否则会命中 Play 前那次的老纹理。
+        if self.is_playing() {
+            self.scene_screen_cache_key = None;
+            return;
+        }
+        let revision =
+            panel_scene_document(&self.play_session, &self.document).map(|doc| doc.revision);
         let (dw, dh) = self.preview_resolution;
         if dw == 0 || dh == 0 {
             return;
         }
         let key = revision.map(|r| (r, self.preview_resolution));
-        let previewing =
-            !self.scene_state.preview.is_empty() || !self.scene_state.preview_ui.is_empty();
+        // Play 期间每帧重画：镜像里的姿态逐帧在变，而修订号只在结构变化时才 bump，
+        // 只拿它当"要不要重画"的依据会让 Scene 视图停在进 Play 那一刻。
+        let previewing = self.is_playing()
+            || !self.scene_state.preview.is_empty()
+            || !self.scene_state.preview_ui.is_empty();
         if !previewing && self.scene_screen_cache_key == key && self.scene_screen_tex_id.is_some() {
             return;
         }
@@ -5938,6 +6113,66 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// 运行期生成的 **UI** 行在 2D 画布上不画姿态位置的假框：镜像只回灌结构与姿态，
+    /// `UiLayout` 的 anchors/offsets 不在其中，按姿态画会把整屏 UI 全叠在世界原点。
+    /// 只有姿态的运行期世界实体（子弹）照旧有框，而且"少画"必须记数——不能静默。
+    #[test]
+    fn runtime_ui_rows_are_not_boxed_in_the_2d_canvas() {
+        let mut app = interaction_app();
+        let ui_row = SceneEntityId(996);
+        let world_row = SceneEntityId(997);
+        {
+            let scene = &mut app.document.current_scene.as_mut().unwrap().scene;
+            for (id, name, ui) in [
+                (ui_row, "RuntimePanel", true),
+                (world_row, "RuntimeBullet", false),
+            ] {
+                scene.add_entity(id, name, None).unwrap();
+                let entity = scene.entities.get_mut(&id).unwrap();
+                entity.components.insert(
+                    "Transform".to_owned(),
+                    "position=120,80,0;rotation=0,0,0,1;scale=1,1,1".to_owned(),
+                );
+                entity.metadata.insert(
+                    editor::runtime_sync::RUNTIME_HANDLE_META.to_owned(),
+                    id.0.to_string(),
+                );
+                if ui {
+                    entity.metadata.insert(
+                        editor::runtime_sync::RUNTIME_UI_META.to_owned(),
+                        "true".to_owned(),
+                    );
+                }
+            }
+        }
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        app.game_camera_2d_center = Vec2::new(0.0, 0.0);
+        let before = app
+            .profiler
+            .counter("scene_2d_runtime_ui_rows_without_payload");
+        let entities = app.collect_scene_2d_entities(
+            rect,
+            &crate::panels::hierarchy::HierarchyFilter::default(),
+            1.0,
+        );
+
+        assert!(
+            !entities.iter().any(|entity| entity.id == ui_row),
+            "运行期 UI 行被画成了姿态假框"
+        );
+        assert!(
+            entities.iter().any(|entity| entity.id == world_row),
+            "只有姿态的世界实体照旧该有包围框"
+        );
+        assert_eq!(
+            app.profiler
+                .counter("scene_2d_runtime_ui_rows_without_payload")
+                - before,
+            1,
+            "少画了一行却不记数，等于把'看不见'变成静默行为"
+        );
+    }
+
     #[test]
     fn sample_project_prefab_drop_instantiates_prefab_metadata() {
         let root = copy_sample_project("prefab-drop");
@@ -6034,5 +6269,63 @@ mod tests {
             "reopened scene should preserve collision paint"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    /// Scene 视图浮层那一行：左上角状态胶囊与右上角工具条要在同一条水平线上。
+    ///
+    /// 左侧原先走 `ui.horizontal`——egui 给它的首行高度是 `spacing.interact_size.y`
+    /// （默认 18），不理会浮层那条 26 高的带子，于是 18 高的标签贴顶摆着，
+    /// 中心比右侧真正居中的 24 高图标按钮高 4px（用户截图反馈的"没对齐"）。
+    #[test]
+    fn overlay_status_row_shares_one_vertical_center() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../examples/game_api");
+        let project = open_project(&root).expect("打开样板工程");
+        let mut app = EditorApp::new(project, None, LogSink::new(16));
+        let context = egui::Context::default();
+        // 行高是字体量出来的：不装中文回退字体，中文标签会比真实情况矮，测的是另一套数。
+        crate::util::configure_cjk_fallback(&context);
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1600.0, 900.0),
+            )),
+            ..Default::default()
+        };
+        let output = context.run(raw, |context| {
+            crate::dock::show_workspace(context, &mut app)
+        });
+        // 两条带子都要真的量到：`scene_tools_rect` 只有画过一帧才有值。
+        let band = app.scene_tools_rect.expand(2.0);
+        let mut framed = Vec::new();
+        for clipped in &output.shapes {
+            if let egui::Shape::Rect(shape) = &clipped.shape {
+                let rect = shape.rect;
+                let center = rect.center();
+                if (14.0..=30.0).contains(&rect.height())
+                    && app.workspace_rect.x_range().contains(center.x)
+                    && band.contains(center)
+                {
+                    framed.push(rect);
+                }
+            }
+        }
+        // 右侧工具条的按钮是 24 高，左侧状态胶囊的标签是 18 高——两组都得在场，
+        // 否则这条断言会退化成"只检查了一组自己跟自己齐"。
+        // （未选中的 `selectable_label` 背景透明、不落 Shape，所以左侧只要求量到 1 个。）
+        let tall = framed.iter().filter(|r| r.height() >= 22.0).count();
+        let short = framed.len() - tall;
+        assert!(tall >= 2, "没量到右上角工具条按钮：{framed:?}");
+        assert!(short >= 1, "没量到左上角状态胶囊：{framed:?}");
+        let min = framed
+            .iter()
+            .fold(f32::INFINITY, |acc, r| acc.min(r.center().y));
+        let max = framed
+            .iter()
+            .fold(f32::NEG_INFINITY, |acc, r| acc.max(r.center().y));
+        assert!(
+            max - min < 1.0,
+            "浮层一行的外框中心散布 {min:.1}..{max:.1}（差 {:.1}），左右两组没对齐",
+            max - min
+        );
     }
 }

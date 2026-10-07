@@ -191,13 +191,14 @@ impl EditorApp {
         ui.separator();
         // P1：字段搜索（多词 AND，匹配组件名/字段名/路径/当前值）。过滤词只影响本面板的
         // 呈现，不改文档；清空即回到全部字段。
-        // 用 right-to-left 布局：✕ 按钮先画（靠右），TextEdit 后画并用 INFINITY 占满剩余宽度。
+        // 用 right-to-left 布局：清除按钮先画（靠右），TextEdit 后画并用 INFINITY 占满剩余宽度。
         // 之前按 available_width()-34 算固定 desired_width，但 egui 的 desired_width 只是"期望"，
         // 输入文字比这个宽度长时 TextEdit 的内容 galley 会反过来撑大自身，导致输入框越长越宽。
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
             // 空时也在按钮位分配 0 宽占位：保持 TextEdit 的 widget 序号稳定（同 hierarchy 搜索框）。
             if !self.inspector_field_filter.is_empty()
-                && ui.small_button("✕").on_hover_text("清空搜索").clicked()
+                && crate::util::draw_icon_button(ui, crate::util::DrawIcon::Cross, "清空搜索")
+                    .clicked()
             {
                 self.inspector_field_filter.clear();
             } else {
@@ -531,6 +532,18 @@ impl EditorApp {
                             pending =
                                 Some((row.component.to_owned(), row.field.to_owned(), chosen));
                         }
+                    }
+                    // 「定位」：在资源面板里选中并滚到这个引用指向的条目。
+                    // `missing_asset`（含 `__white__` 这类内置哨兵）在索引里没有对应行，
+                    // 所以不画按钮——那一行右侧的 ⚠ 已经把原因说清了。
+                    if !row.missing_asset
+                        && !buffer.text.trim().is_empty()
+                        && ui
+                            .small_button("定位")
+                            .on_hover_text("在资源面板里选中该资源并滚动到它所在的位置")
+                            .clicked()
+                    {
+                        self.request_resource_locate(&buffer.text);
                     }
                 }
                 if !row.required {
@@ -1351,7 +1364,7 @@ mod tests {
                 "texture=assets/textures/ui/panel.png;color=1,1,1".to_owned(),
             );
 
-        // 控件类型：颜色走取色器、九宫格走四个 DragValue（与手写面板同级或更好）。
+        // 控件类型：颜色走取色器（RGBA 四段，见 M64a）、九宫格走四个 DragValue（与手写面板同级或更好）。
         let rows = app.schema_field_rows();
         let color = rows
             .iter()
@@ -1359,7 +1372,7 @@ mod tests {
             .expect("Image.color 行");
         assert_eq!(
             field_widget(color.kind, color.field),
-            FieldWidget::Color { parts: 3 }
+            FieldWidget::Color { parts: 4 }
         );
         let slice = rows
             .iter()

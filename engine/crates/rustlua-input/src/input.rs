@@ -41,7 +41,7 @@ macro_rules! define_key_codes {
             ///
             /// 是变体名的小写字面量（`KeyE` → `"keye"`、`Digit1` → `"digit1"`、
             /// `ArrowUp` → `"arrowup"`、`Space` → `"space"`）：与 winit 的 Debug 名
-            /// 一一对应，稳定无歧义；小写形式写进 `settings.toml` 后也更接近玩家在
+            /// 一一对应，稳定无歧义；小写形式写进 `project.toml` 后也更接近玩家在
             /// `input.is_down("keye")` 里手写的名字（解析侧大小写不敏感）。
             ///
             /// 文本必须**逐字等于变体名的小写**，由下面的常量断言在编译期强制：
@@ -1594,7 +1594,7 @@ pub const AXIS_DIGITAL_OFF: f32 = 0.4;
 /// 滞回宽度：可配置进入阈值时，退出阈值 = 进入阈值 − 本常量（下限 0）。
 pub const AXIS_HYSTERESIS: f32 = AXIS_DIGITAL_ON - AXIS_DIGITAL_OFF;
 
-/// 摇杆/扳机死区（M20-08：可在 `settings.toml` 的 `[input]` 段读写；默认值仍是
+/// 摇杆/扳机死区（M20-08：可在 `project.toml` 的 `[input]` 段读写；默认值仍是
 /// [`crate::input::STICK_DEADZONE`] / [`crate::input::TRIGGER_DEADZONE`]）。
 ///
 /// 语义与 [`apply_stick_deadzone`] / [`apply_stick_deadzone_radial`] /

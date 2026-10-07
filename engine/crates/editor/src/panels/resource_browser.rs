@@ -53,6 +53,9 @@ impl EditorApp {
                     tree,
                 });
             });
+        // 定位请求是一次性的：这一趟没画出那一行（面板被关掉、目录没展开到底）也不能
+        // 把它留给下一帧，否则日后会莫名跳到一个毫不相关的条目上。
+        self.pending_resource_locate = None;
         // 缩略图后台解码未完成时持续重绘，否则 egui 空闲不画、缩略图永远出不来。
         if self.thumbnail_worker.has_pending() {
             context.request_repaint_after(std::time::Duration::from_millis(32));
@@ -157,19 +160,32 @@ impl EditorApp {
             let child_prefix = format!("{prefix}{name}/");
             // 用完整目录路径做折叠状态 id，避免不同层级同名目录互相串状态。
             let id = ui.make_persistent_id(("resource_tree", child_prefix.as_str()));
-            egui::CollapsingHeader::new(name)
+            // 「定位」目标在这一支里：本帧强制展开（下一帧起由 egui 记住的展开态接管，
+            // 用户照样能把它折回去）。
+            let forced_open = self.pending_resource_locate.as_ref().is_some_and(|target| {
+                target
+                    .to_string_lossy()
+                    .replace('\\', "/")
+                    .starts_with(child_prefix.as_str())
+            });
+            let header = egui::CollapsingHeader::new(name)
                 .id_salt(id)
-                .default_open(depth <= 1)
-                .show(ui, |ui| {
-                    self.draw_resource_tree(
-                        ui,
-                        child,
-                        &child_prefix,
-                        depth + 1,
-                        context,
-                        resource_to_open,
-                    );
-                });
+                .default_open(depth <= 1);
+            let header = if forced_open {
+                header.open(Some(true))
+            } else {
+                header
+            };
+            header.show(ui, |ui| {
+                self.draw_resource_tree(
+                    ui,
+                    child,
+                    &child_prefix,
+                    depth + 1,
+                    context,
+                    resource_to_open,
+                );
+            });
         }
         for entry in &node.files {
             self.draw_resource_entry(ui, entry, context, resource_to_open);
@@ -251,8 +267,17 @@ impl EditorApp {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| path_string.clone());
         let marker = status_marker(entry.status);
+        // 「定位」目标就是这一行：先走一次正常点选（选中语义与手动点击完全一致），
+        // 再把行滚进视口——列表早已滚过去时选中态在视口外等于没定位。
+        let locating = self
+            .pending_resource_locate
+            .as_ref()
+            .is_some_and(|target| target == &entry.path);
+        if locating {
+            self.select_resource(entry.path.clone());
+        }
         let is_selected = self.selected_resource.as_ref() == Some(&entry.path);
-        if crate::dnd::referenceable(entry.kind) {
+        let located_response = if crate::dnd::referenceable(entry.kind) {
             // 纹理/模型/预制体：可拖放到场景（纹理/预制体带缩略图）。
             // 可拖的家族判定与落点矩阵共用 `dnd::referenceable`（同一份事实源）。
             let payload = crate::dnd::DropPayload::Asset(path_string.clone());
@@ -266,8 +291,8 @@ impl EditorApp {
                     // 缩略图后台解码中：用同宽占位，避免行宽随加载进度跳动。
                     ui.add_space(20.0);
                 }
-                if let Some((icon, color)) = marker {
-                    ui.colored_label(color, icon);
+                if let Some((marker, color)) = marker {
+                    draw_status_marker(ui, &marker, color);
                 }
                 let response = ui.selectable_label(is_selected, &file_name);
                 if response.clicked() {
@@ -276,26 +301,49 @@ impl EditorApp {
                 if response.double_clicked() && entry.kind == ResourceKind::Prefab {
                     *resource_to_open = Some(entry.path.clone());
                 }
-                ui.dnd_drag_source(
-                    egui::Id::new(("texture_drag", path_string.as_str())),
-                    payload,
+                // 行尾控件右对齐。右缘取**可见裁剪框**而不是 available 宽度：dock 的
+                // ScrollArea 会把内容宽度撑到最长那一行（1193 项资源里总有超长文件名），
+                // 贴 available 右缘等于贴到视口之外——第一版就是这么写的，目验时铅笔
+                // "消失"在看不见的地方。`Align::Min` 让控件顶端与文字齐平（侧轴是 y）。
+                let band_left = ui.cursor().min.x;
+                let band = egui::Rect::from_min_size(
+                    ui.cursor().min,
+                    egui::vec2(
+                        (ui.clip_rect().right() - ui.spacing().item_spacing.x - band_left).max(0.0),
+                        ui.available_height(),
+                    ),
+                );
+                ui.scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(band)
+                        .layout(egui::Layout::right_to_left(egui::Align::Min)),
                     |ui| {
-                        ui.small("::");
+                        if entry.kind == ResourceKind::Prefab
+                            && crate::util::draw_icon_button(
+                                ui,
+                                crate::util::DrawIcon::Pencil,
+                                "打开 Prefab 编辑",
+                            )
+                            .clicked()
+                        {
+                            *resource_to_open = Some(entry.path.clone());
+                        }
+                        ui.dnd_drag_source(
+                            egui::Id::new(("texture_drag", path_string.as_str())),
+                            payload,
+                            |ui| {
+                                ui.small("::");
+                            },
+                        );
                     },
                 );
-                if entry.kind == ResourceKind::Prefab
-                    && ui
-                        .small_button("✎")
-                        .on_hover_text("打开 Prefab 编辑")
-                        .clicked()
-                {
-                    *resource_to_open = Some(entry.path.clone());
-                }
-            });
+                locating.then_some(response)
+            })
+            .inner
         } else {
             ui.horizontal(|ui| {
-                if let Some((icon, color)) = marker {
-                    ui.colored_label(color, icon);
+                if let Some((marker, color)) = marker {
+                    draw_status_marker(ui, &marker, color);
                 }
                 let response = ui.selectable_label(is_selected, &file_name);
                 if response.clicked() {
@@ -309,7 +357,12 @@ impl EditorApp {
                 response.context_menu(|ui| {
                     self.draw_resource_context_menu(ui, entry);
                 });
-            });
+                locating.then_some(response)
+            })
+            .inner
+        };
+        if let Some(response) = located_response {
+            response.scroll_to_me(Some(egui::Align::Center));
         }
         if let Some(error) = &entry.error {
             ui.small(egui::RichText::new(error).color(egui::Color32::RED));
@@ -545,15 +598,37 @@ impl EditorApp {
 
 /// 资源状态图标：健康状态（Ready/Discovered）不打扰，问题状态给彩色标记，
 /// 便于一眼看出「为什么还没导入/为何是断链」。
-fn status_marker(status: ResourceState) -> Option<(&'static str, egui::Color32)> {
+///
+/// 图形标记一律由画笔绘制：U+2715（叉）在编辑器的字体链里没有字形，写成文字会渲染成
+/// "豆腐块"（同 U+270E 铅笔，见 [`crate::util::DrawIcon`]）；`▲` 与「断链」确有字形，保持文字。
+fn status_marker(status: ResourceState) -> Option<(StatusMarker, egui::Color32)> {
+    use crate::util::DrawIcon;
     match status {
         ResourceState::Ready | ResourceState::Discovered => None,
-        ResourceState::Stale => Some(("▲", egui::Color32::YELLOW)),
-        ResourceState::Missing | ResourceState::Orphaned => Some(("✕", egui::Color32::GRAY)),
-        ResourceState::ImportFailed => Some(("✕", egui::Color32::RED)),
-        ResourceState::Invalid => Some(("断链", egui::Color32::RED)),
+        ResourceState::Stale => Some((StatusMarker::Text("▲"), egui::Color32::YELLOW)),
+        ResourceState::Missing | ResourceState::Orphaned => {
+            Some((StatusMarker::Icon(DrawIcon::Cross), egui::Color32::GRAY))
+        }
+        ResourceState::ImportFailed => {
+            Some((StatusMarker::Icon(DrawIcon::Cross), egui::Color32::RED))
+        }
+        ResourceState::Invalid => Some((StatusMarker::Text("断链"), egui::Color32::RED)),
         // 瞬态状态不会出现在浏览器条目中。
         ResourceState::ImportQueued | ResourceState::Importing | ResourceState::Removed => None,
+    }
+}
+
+enum StatusMarker {
+    Icon(crate::util::DrawIcon),
+    Text(&'static str),
+}
+
+fn draw_status_marker(ui: &mut egui::Ui, marker: &StatusMarker, color: egui::Color32) {
+    match marker {
+        StatusMarker::Icon(icon) => crate::util::draw_icon_label(ui, *icon, color),
+        StatusMarker::Text(text) => {
+            ui.colored_label(color, *text);
+        }
     }
 }
 
@@ -982,6 +1057,55 @@ mod tests {
             app.selected_resource,
             Some(PathBuf::from("assets/hero.png"))
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 属性面板「定位」按钮的 shell 侧契约：字段里的引用 → 资源索引里的条目 + 一次定位请求。
+    ///
+    /// 四条断言各挡一种走偏：反斜杠没归一（Windows 上写的引用照样要点得动）、
+    /// `#区域名` 没剥（图集引用应定位到图集那一行）、过滤词挡住那一行却没收窄
+    /// （请求登记了但面板画不出那行）、引用找不到照样登记（面板白跳一趟）。
+    #[test]
+    fn request_resource_locate_pins_the_entry_and_narrows_the_filter() {
+        let root = temp_project_root("locate");
+        fs::create_dir_all(root.join("assets/textures")).unwrap();
+        fs::write(root.join("assets/textures/slime_green.png"), b"png").unwrap();
+        fs::create_dir_all(root.join("assets/atlases")).unwrap();
+        fs::write(root.join("assets/atlases/hero.atlas"), b"atlas_version=1\n").unwrap();
+        // 资源索引同步建好（`refresh_resources` 是后台线程，本用例只测 shell 的解析与登记）。
+        let mut browser = editor::ResourceBrowserState::new();
+        browser.refresh(&root).unwrap();
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.resources = browser;
+
+        app.request_resource_locate("assets\\textures\\slime_green.png");
+        assert_eq!(
+            app.pending_resource_locate,
+            Some(PathBuf::from("assets/textures/slime_green.png"))
+        );
+        assert!(app.resources_filter.is_empty(), "过滤词本来为空不该被动");
+        assert!(app.status.contains("已定位资源"), "{:?}", app.status);
+
+        app.pending_resource_locate = None;
+        app.resources_filter = "player".to_owned();
+        app.request_resource_locate("assets/textures/slime_green.png");
+        assert_eq!(app.resources_filter, "slime_green.png");
+
+        app.pending_resource_locate = None;
+        app.request_resource_locate("assets/atlases/hero.atlas#walk");
+        assert_eq!(
+            app.pending_resource_locate,
+            Some(PathBuf::from("assets/atlases/hero.atlas"))
+        );
+
+        app.pending_resource_locate = None;
+        app.request_resource_locate("assets/textures/ghost.png");
+        assert!(
+            app.pending_resource_locate.is_none(),
+            "索引里没有的引用不得登记请求"
+        );
+        assert!(app.status.contains("找不到"), "{:?}", app.status);
         let _ = fs::remove_dir_all(root);
     }
 

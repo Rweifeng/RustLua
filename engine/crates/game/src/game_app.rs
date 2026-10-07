@@ -374,7 +374,7 @@ impl ApplicationHandler for GameApp {
                         return;
                     }
                 };
-                // M20-08：把手柄死区（`settings.toml` 的 `[input]` 段）应用到设备后端。
+                // M20-08：把手柄死区（`project.toml` 的 `[input]` 段）应用到设备后端。
                 // 文件缺失 → 引擎默认 0.15/0.05；读取失败只记日志。P3：发布包读的是
                 // **用户数据目录**里的那份设置（`user_dir::data_roots`），与 Lua 侧的
                 // `input.settings_path()` 同源，否则会出现"面板显示一套、设备用另一套"。

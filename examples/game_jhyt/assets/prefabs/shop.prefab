@@ -1,0 +1,157 @@
+prefab_version=1
+asset_id=9f7d3c5a-2b91-4e8d-b3a6-71c4f5a02e88
+name=Shop
+root=1
+# 商店门面（`systems/shop.lua` 的 `M.render`）的 UI 预设：M65/B2 从动态层整块搬来。
+# 对账门 = `jhyt_m65_shop_prefab`：黄金表 116 行（58 shown + 58 cover）钉死迁移前
+# 画面，本文件 + shop.lua 的 set_text/set_rect/set_visible 必须逐值复现（搬运不改画面）。
+#
+# 行序 = 绘制序：宿主按实体槽位升序提交 UI 分段（`world.for_each::<UiImage>` 走
+# `TypedStorage::order`，`spawn()` 顺序拿槽），所以这份文件里"谁在前"就是"谁在下面"。
+# 层序契约（docs/65/66）：实体层整体画在动态层**之上**，面板全部元素（含 skin_bg）都在
+# 实体层，`img/skin_bg` 必须是实体 10 号（rank-1 贴图段里倒数第二），才能像迁移前一样
+# 整块盖住 box/rule/sel/close/divider/seal/scroll_*（黄金表 cover 列逐条核对）。
+#
+# 行序分段（与迁移前动态层 id 序一致，见 `collect_state` 的 rank/order 排序）：
+#   1   ShopRoot       —— 根（**全画布矩形 0,0,1280,720**；子节点 UiLayout 的 offsets 是
+#                         相对父矩形，根铺满画布后子节点直接写绝对屏幕坐标，与
+#                         title_menu.prefab 同一约定；关屏 = `set_visible(root,false)` 藏整棵子树）
+#   2-4 ShopBox/ShopRule/ShopSel —— rank-0 白图段（box 全屏纯色底、rule 分隔线、sel 高亮）
+#   5-16 贴图段（rank-1，动态 id 序）：close < divider < scroll_down < scroll_up < seal
+#        < skin_bg < step_minus < step_plus < tab_buy < tab_sell（on/off 叠图互斥）
+#   17-32 文字段（rank-2，动态 id 序）：hint < money < msg < qty < row1..row9 < tab1
+#        < tab2 < title
+#
+# 运行期仍由脚本每帧写的值（不改几何/贴图，只改内容）：
+#   * `prefab.set_text`：title/money/tab1/tab2/qty/row1-9/msg/hint（文字内容）
+#   * `prefab.set_rect` ：sel（选中行绝对行号，B 态行号 > 9 时 y 在画面外，bug-for-bug）
+#   * `prefab.set_visible`：tab on/off 互斥、scroll 箭头（超一页）、空行 rowN
+# 打开/关闭 = 根节点显隐（`set_visible` 子树语义，藏父带子）；不撤重铺，避免槽位
+# LIFO 复用打乱绘制序（title_menu.prefab 同款警告）。
+entity	1	ShopRoot
+component	1	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	1	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.000000,0.000000,1280.000000,720.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	2	ShopBox	1
+component	2	Image	texture=__white__;color=0.100,0.110,0.150,0.940
+component	2	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	2	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=160.000000,40.000000,880.000000,680.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	3	ShopRule	1
+component	3	Image	texture=__white__;color=0.720,0.750,0.820,0.220
+component	3	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,92.000000,856.000000,94.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	4	ShopSel	1
+component	4	Image	texture=__white__;color=0.850,0.720,0.420,0.200
+component	4	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	4	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,140.000000,856.000000,174.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	5	ShopClose	1
+component	5	Image	texture=assets/art/ui/common/ui_btn_close.png;color=1.000,1.000,1.000
+component	5	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	5	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=840.000000,58.000000,856.000000,74.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	6	ShopDivider	1
+component	6	Image	texture=assets/art/ui/common/ui_divider.png;color=1.000,1.000,1.000
+component	6	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	6	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,84.000000,856.000000,92.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	7	ShopScrollDown	1
+component	7	Image	texture=assets/art/ui/common/ui_scroll_arrow_down.png;color=1.000,1.000,1.000
+component	7	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	7	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=840.000000,394.000000,856.000000,410.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	8	ShopScrollUp	1
+component	8	Image	texture=assets/art/ui/common/ui_scroll_arrow_up.png;color=1.000,1.000,1.000
+component	8	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	8	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=840.000000,96.000000,856.000000,112.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	9	ShopSeal	1
+component	9	Image	texture=assets/art/ui/common/ui_icon_seal.png;color=1.000,1.000,1.000
+component	9	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	9	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=812.000000,58.000000,836.000000,82.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	10	ShopSkinBg	1
+component	10	Image	texture=assets/art/ui/common/ui_panel_main_9s.png;color=1.000,1.000,1.000;nine_slice=16,16,16,16
+component	10	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	10	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=160.000000,40.000000,880.000000,680.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	11	ShopStepMinus	1
+component	11	Image	texture=assets/art/ui/shop/ui_btn_step_minus.png;color=1.000,1.000,1.000
+component	11	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=584.000000,94.000000,608.000000,118.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	12	ShopStepPlus	1
+component	12	Image	texture=assets/art/ui/shop/ui_btn_step_plus.png;color=1.000,1.000,1.000
+component	12	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	12	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=832.000000,94.000000,856.000000,118.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	13	ShopTabBuyOn	1
+component	13	Image	texture=assets/art/ui/common/ui_tab_on_9s.png;color=1.000,1.000,1.000;nine_slice=6,6,6,6
+component	13	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	13	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=178.000000,94.000000,274.000000,122.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	14	ShopTabBuyOff	1
+component	14	Image	texture=assets/art/ui/common/ui_tab_off_9s.png;color=1.000,1.000,1.000;nine_slice=6,6,6,6
+component	14	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	14	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=178.000000,94.000000,274.000000,122.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	15	ShopTabSellOn	1
+component	15	Image	texture=assets/art/ui/common/ui_tab_on_9s.png;color=1.000,1.000,1.000;nine_slice=6,6,6,6
+component	15	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	15	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=274.000000,94.000000,370.000000,122.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	16	ShopTabSellOff	1
+component	16	Image	texture=assets/art/ui/common/ui_tab_off_9s.png;color=1.000,1.000,1.000;nine_slice=6,6,6,6
+component	16	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	16	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=274.000000,94.000000,370.000000,122.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	17	ShopHint	1
+component	17	Text	text=W/S 选择 · F 切换买卖 · +/- 数量 · 空格 确认 · Esc 关闭;font_size=14.00;color=1.000,1.000,1.000
+component	17	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	17	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,648.000000,856.000000,668.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	18	ShopMoney	1
+component	18	Text	text=金币 120 文;font_size=16.00;color=1.000,1.000,1.000
+component	18	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	18	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=616.000000,60.000000,856.000000,84.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	19	ShopMsg	1
+component	19	Text	text=;font_size=16.00;color=1.000,1.000,1.000
+component	19	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	19	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,616.000000,856.000000,640.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	20	ShopQty	1
+component	20	Text	text=数量 × 1;font_size=18.00;color=1.000,1.000,1.000
+component	20	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	20	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=616.000000,98.000000,856.000000,122.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	21	ShopRow1	1
+component	21	Text	text=> 1. 稻种  12 文  限购剩余 10;font_size=18.00;color=1.000,1.000,1.000
+component	21	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	21	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,140.000000,856.000000,174.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	22	ShopRow2	1
+component	22	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	22	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	22	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,174.000000,856.000000,208.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	23	ShopRow3	1
+component	23	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	23	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	23	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,208.000000,856.000000,242.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	24	ShopRow4	1
+component	24	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	24	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	24	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,242.000000,856.000000,276.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	25	ShopRow5	1
+component	25	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	25	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	25	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,276.000000,856.000000,310.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	26	ShopRow6	1
+component	26	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	26	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	26	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,310.000000,856.000000,344.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	27	ShopRow7	1
+component	27	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	27	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	27	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,344.000000,856.000000,378.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	28	ShopRow8	1
+component	28	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	28	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	28	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,378.000000,856.000000,412.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	29	ShopRow9	1
+component	29	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	29	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	29	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,412.000000,856.000000,446.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	30	ShopTabLabel1	1
+component	30	Text	text=[购买];font_size=18.00;color=1.000,1.000,1.000
+component	30	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	30	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,98.000000,280.000000,122.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	31	ShopTabLabel2	1
+component	31	Text	text= 出售 ;font_size=18.00;color=1.000,1.000,1.000
+component	31	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	31	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=280.000000,98.000000,360.000000,122.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	32	ShopTitle	1
+component	32	Text	text=云泽村·货摊;font_size=22.00;color=1.000,1.000,1.000
+component	32	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	32	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,56.000000,484.000000,86.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000

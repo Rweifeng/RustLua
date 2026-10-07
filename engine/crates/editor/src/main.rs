@@ -13,6 +13,7 @@ mod import;
 mod menu;
 mod panels;
 mod perf_baseline;
+mod play_sync;
 mod preview_session;
 mod publish;
 mod scene_drag;
@@ -463,6 +464,10 @@ struct EditorApp {
     tree: SceneTreeState,
     resources: ResourceBrowserState,
     selected_resource: Option<PathBuf>,
+    /// 属性面板「定位」按钮发出的一次性请求（目标 = 资源索引里的条目路径）：
+    /// 资源面板下一趟绘制里展开祖先目录、选中并滚到那一行。
+    /// 只登记不立刻执行，是因为两个面板的绘制先后顺序不固定。
+    pending_resource_locate: Option<PathBuf>,
     /// 资源右键"重命名…"的进行中状态：`(原路径, 输入缓冲)`（第 44 轮 P1）。
     resource_rename: Option<(PathBuf, String)>,
     resources_filter: String,
@@ -491,6 +496,17 @@ struct EditorApp {
     /// Play 模式状态机（Pause/Step/Restart + 固定步计划，docs/55 ER-10）。
     play: editor::PlayController,
     play_session: Option<PlaySession>,
+    /// 上一次把预览世界回灌进运行态镜像文档的时刻（30Hz 节流；非 Play 时为 `None`）。
+    play_sync_at: Option<Instant>,
+    /// 最近一次回灌得到的「文档行 → 活局部变换」表：Scene 视图绘制前用它把编辑运行时
+    /// 推到当前姿态（结构没变时修订号不动，运行时不会自己重建）。
+    play_scene_transforms: Vec<(
+        SceneEntityId,
+        engine::core::spatial_transform::LocalTransform,
+    )>,
+    /// Game 视图本帧是否已经步进过预览：帧末据此决定要不要补一次空输入步进
+    /// （切到 Scene 页签时游戏不该停摆）。每帧在 `update` 开头复位。
+    preview_stepped_this_frame: bool,
     history: editor::CommandService,
     recovery: RecoveryManager,
     autosave: AutoSaveController,
@@ -548,6 +564,12 @@ struct EditorApp {
     pub(crate) perf_panel_rect: egui::Rect,
     /// 本帧 Scene 视图右上角工具条（选择/移动/旋转/缩放）的屏幕矩形。
     pub(crate) scene_tools_rect: egui::Rect,
+    /// 上一帧 Scene 左上角状态胶囊行的内容宽度：窄叶子下决定状态行是否下移一行
+    /// （首帧为 0，按单行画，下一帧收敛）。
+    pub(crate) scene_status_row_width: f32,
+    /// 上一帧 Scene 浮层行（状态胶囊 / TilePaint 第二行）相对画布顶的最大底边偏移：
+    /// 设计分辨率标注的 y 跟着它走，避免和下沉的状态行叠字。
+    pub(crate) scene_overlay_bottom_offset: f32,
     /// docs/55 阶段 0：真实窗口 GUI/GPU 证据运行器（`RUSTLUA_EDITOR_GUI_EVIDENCE=<目录>`）。
     /// 生产运行为 `None`，每帧只多一次 `Option` 判断。
     gui_evidence: Option<crate::gui_evidence::GuiEvidence>,
@@ -564,6 +586,9 @@ struct EditorApp {
     show_scene_guides: bool,
     show_safe_area: bool,
     show_pixel_grid: bool,
+    /// 调试覆盖层开关：把当前场景里**所有**碰撞区域（Tilemap solid 格 + 实体 Collider）
+    /// 画在 2D Scene 视图上，与选中无关，供跑地图调试用。唯一写入口是 View 菜单。
+    show_collision_overlay: bool,
     /// 性能面板（独立弹窗）是否打开；数字本身由 `panels::performance` 绘制。
     show_performance_panel: bool,
     snap_enabled: bool,
@@ -1159,6 +1184,7 @@ impl EditorApp {
             tree: SceneTreeState::new(),
             resources: ResourceBrowserState::new(),
             selected_resource: None,
+            pending_resource_locate: None,
             resource_rename: None,
             resources_filter: String::new(),
             console_notices: Vec::new(),
@@ -1184,6 +1210,9 @@ impl EditorApp {
             ),
             play: editor::PlayController::new(),
             play_session: None,
+            play_sync_at: None,
+            play_scene_transforms: Vec::new(),
+            preview_stepped_this_frame: false,
             history: editor::CommandService::new(editor::CommandService::DEFAULT_MAX_ENTRIES),
             recovery,
             autosave: AutoSaveController::new(Duration::from_secs(10)),
@@ -1204,6 +1233,8 @@ impl EditorApp {
             hierarchy_filter_rect: egui::Rect::NOTHING,
             perf_panel_rect: egui::Rect::NOTHING,
             scene_tools_rect: egui::Rect::NOTHING,
+            scene_status_row_width: 0.0,
+            scene_overlay_bottom_offset: 30.0,
             workspace_rect: egui::Rect::NOTHING,
             gui_evidence: None,
             gui_evidence_failed: false,
@@ -1214,6 +1245,7 @@ impl EditorApp {
             show_scene_guides: false,
             show_safe_area: false,
             show_pixel_grid: false,
+            show_collision_overlay: false,
             show_performance_panel: false,
             snap_enabled: false,
             snap_step: 0.5,
@@ -1556,6 +1588,43 @@ impl EditorApp {
         self.selected_resource = Some(path.clone());
         self.selection.clear(editor::SelectionSource::None);
         self.delete_target = DeleteTarget::Resource(path);
+    }
+
+    /// 属性面板「定位」按钮：把字段里的资源引用换成资源索引中的条目，登记一次定位请求。
+    ///
+    /// 真正让它出现在视口里的是资源面板（`draw_resource_browser_body`）：展开祖先目录、
+    /// 选中那一行、滚到可见。选中走 [`EditorApp::select_resource`]，与在面板里点那一行
+    /// **同一套语义**——属性面板随即切成该资源的详情（带预览），实体选区清空。
+    fn request_resource_locate(&mut self, reference: &str) {
+        // 图集引用带 `#区域名`（`hero.atlas#walk`），定位到图集本体那一行。
+        let relative = reference
+            .split('#')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .replace('\\', "/");
+        let Some(entry) = self
+            .resources
+            .entries()
+            .iter()
+            .find(|entry| entry.path_string() == relative)
+            .cloned()
+        else {
+            self.status = format!("工程内找不到该资源：{relative}");
+            return;
+        };
+        // 过滤词把这一行挡住了就收窄成文件名：那一行画不出来，展开与滚动都无从谈起。
+        let filter = self.resources_filter.trim().to_ascii_lowercase();
+        if !filter.is_empty() && !relative.to_ascii_lowercase().contains(&filter) {
+            self.resources_filter = entry
+                .path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+        }
+        let located = entry.path_string();
+        self.pending_resource_locate = Some(entry.path);
+        self.status = format!("已定位资源：{located}");
     }
 
     fn clear_resource_selection(&mut self) {
@@ -2146,6 +2215,9 @@ impl EditorApp {
         // Editor Profiler（docs/55 P0）：帧起点 + 本帧各面板/命令耗时。
         let frame_started = Instant::now();
         self.profiler.begin_frame(frame_started);
+        // 复位"本帧谁步进过预览"：Game 视图绘制时会调 `update_preview` 置真；到帧末还是假
+        // 就说明这帧没画 Game，需要补一步，否则切到 Scene 页签游戏就停了。
+        self.preview_stepped_this_frame = false;
         // E06：用户点窗口 X / Alt+F4 —— 若当前文档 dirty，阻止关闭并弹确认窗
         // （确认「保存并继续 / 放弃并继续」后再真正 Close；「取消」保持原状态）。
         self.guard_close_request(context);
@@ -2176,6 +2248,11 @@ impl EditorApp {
         // is visible; playback time never writes back to the scene document.
         let delta_seconds = context.input(|input| input.stable_dt).max(0.0);
         self.advance_ui_animation_preview(delta_seconds);
+        // Play：把预览活世界回灌进运行态镜像文档，层级/属性/Scene 视图因此跟着游戏走
+        // （脚本 `entity.spawn` 的行会出现、`entity.destroy` 的行会消失、位置是活值）。
+        self.sync_runtime_document_from_preview();
+        // 回灌得到的活姿态要在本帧落到 Scene 视图的编辑运行时上（修订号没变时它不会重建）。
+        self.push_play_transforms_to_scene_runtime();
         if self.project_loaded
             && let Some(doc) = self.document.current_scene.as_ref()
         {
@@ -2309,6 +2386,8 @@ impl EditorApp {
         if let Some(note) = self.sweep_dnd_frame() {
             self.status = note;
         }
+        // Play 且本帧没人步进过预览（Game 页签没显示）：补一次空输入步进，游戏不因切页停摆。
+        self.keep_preview_running_without_game_view(context);
         // 面板可见性/工作台/视图变化后自动落盘布局（一次小文件原子写，仅在真正变化时发生）。
         self.maybe_persist_layout_on_change();
         // 帧末汇总：帧耗时 + 会话级 gauge（历史深度/日志行数/资源条目/队列）。

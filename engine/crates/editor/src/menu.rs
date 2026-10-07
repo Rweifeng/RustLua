@@ -162,6 +162,7 @@ pub(crate) enum MenuAction {
     TogglePixelGrid,
     ToggleSceneGuides,
     ToggleSafeArea,
+    ToggleCollisionOverlay,
     ToggleSnap,
     SaveLayout,
     ResetLayout,
@@ -191,6 +192,9 @@ const FILE_MENU: &[MenuRow] = &[
             .gate(MenuGate::ProjectLoaded),
     ),
     MenuRow::Separator,
+    MenuRow::Item(
+        MenuItem::new("项目设置…", MenuAction::ProjectSettings).gate(MenuGate::ProjectLoaded),
+    ),
     MenuRow::Item(MenuItem::new("发布项目…", MenuAction::PublishProject)),
     MenuRow::Separator,
     MenuRow::Item(MenuItem::new("退出", MenuAction::Quit)),
@@ -243,10 +247,6 @@ const EDIT_MENU: &[MenuRow] = &[
         MenuItem::new("暂停 / 继续", MenuAction::PlayTogglePause).gate(MenuGate::ProjectLoaded),
     ),
     MenuRow::Item(MenuItem::new("单帧步进", MenuAction::PlayStep).gate(MenuGate::ProjectLoaded)),
-    MenuRow::Separator,
-    MenuRow::Item(
-        MenuItem::new("项目设置…", MenuAction::ProjectSettings).gate(MenuGate::ProjectLoaded),
-    ),
 ];
 
 const ASSETS_MENU: &[MenuRow] = &[
@@ -319,6 +319,10 @@ const WINDOW_MENU: &[MenuRow] = &[
     MenuRow::Item(MenuItem::new("像素网格", MenuAction::TogglePixelGrid)),
     MenuRow::Item(MenuItem::new("场景参考线", MenuAction::ToggleSceneGuides)),
     MenuRow::Item(MenuItem::new("安全区", MenuAction::ToggleSafeArea)),
+    MenuRow::Item(MenuItem::new(
+        "碰撞区域(调试)",
+        MenuAction::ToggleCollisionOverlay,
+    )),
     MenuRow::Item(MenuItem::new("网格吸附", MenuAction::ToggleSnap)),
     MenuRow::Separator,
     MenuRow::Item(MenuItem::new("保存布局", MenuAction::SaveLayout).shortcut("Ctrl+Shift+L")),
@@ -649,6 +653,9 @@ impl EditorApp {
             MenuAction::TogglePixelGrid => self.show_pixel_grid = !self.show_pixel_grid,
             MenuAction::ToggleSceneGuides => self.show_scene_guides = !self.show_scene_guides,
             MenuAction::ToggleSafeArea => self.show_safe_area = !self.show_safe_area,
+            MenuAction::ToggleCollisionOverlay => {
+                self.show_collision_overlay = !self.show_collision_overlay;
+            }
             MenuAction::ToggleSnap => self.snap_enabled = !self.snap_enabled,
             MenuAction::SaveLayout => self.persist_layout(),
             MenuAction::ResetLayout => self.reset_layout_to_default(),
@@ -870,6 +877,10 @@ mod tests {
         let grid = app.show_pixel_grid;
         app.run_menu_action(MenuAction::TogglePixelGrid);
         assert_ne!(app.show_pixel_grid, grid);
+
+        let collision = app.show_collision_overlay;
+        app.run_menu_action(MenuAction::ToggleCollisionOverlay);
+        assert_ne!(app.show_collision_overlay, collision);
     }
 
     /// 中央视图的守卫：两个不能同时关掉，关到最后一个时只留提示、不改状态。

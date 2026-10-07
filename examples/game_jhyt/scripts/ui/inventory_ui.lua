@@ -28,8 +28,7 @@ local hints = require("ui.hints")
 local ui_text = require("ui.ui_text")
 -- M32 竖版：面板矩形与行偏移的唯一来源（`ui/layout.lua`）。
 local layout = require("ui.layout")
--- docs/48 ui 换肤接线：面板背景/槽框/品质框/印章贴图。
-local skin = require("ui.skin")
+-- M67/B4：面板静态骨架搬进 `assets/prefabs/inventory.prefab`，不再 require ui.skin。
 
 -- 数字直选 1..9 的按键名（默认只有键盘数字键；未绑定该设备的动作自动跳过）。
 local function digits_label()
@@ -230,6 +229,53 @@ local function clear_ui()
   ui_text.reset("bp")
 end
 
+-- ---------- 预设（M67/B4） ----------
+-- 静态骨架搬进 `assets/prefabs/inventory.prefab`（对账门 = jhyt_m67_inventory_prefab，
+-- 黄金表 70 行钉死迁移前画面），render 只写会变的部分：选中行矩形、行文本、容量/负重、
+-- 详情/消息/提示、空背包与空槽的显隐。title 固定写死在预设里，不再逐帧写。
+-- 开/关屏 = 根节点显隐（`prefab.set_visible` 子树语义，藏父带子、藏节点不建布局项），
+-- 不撤重铺，避免槽位 LIFO 复用打乱绘制序（M63c 教训）。
+local PRESET_PATH = "assets/prefabs/inventory.prefab"
+local preset_handle = nil
+local preset_spawned = false
+
+-- M71 修复：场景切换重建 ECS 世界后旧句柄失效，纯布尔标志漏判 → set_text 报「没有 handle N」；
+-- 改成对句柄真实探活（`prefab.root` 失效句柄抛错，pcall 兜底）。
+local function preset_live()
+  if not preset_handle then
+    return false
+  end
+  local ok, alive = pcall(function() return prefab.root(preset_handle) ~= nil end)
+  return ok and alive == true
+end
+
+local function preset_spawn()
+  if preset_handle and preset_live() then
+    return true
+  end
+  preset_handle = prefab.spawn(PRESET_PATH)
+  preset_spawned = true
+  return true
+end
+
+local function preset_show()
+  preset_spawn()
+  prefab.set_visible(preset_handle, "InvRoot", true)
+  return true
+end
+
+local function preset_hide()
+  if preset_live() then
+    prefab.set_visible(preset_handle, "InvRoot", false)
+  end
+  return true
+end
+
+-- 验收（jhyt_m19_ui 面板断言）取 spawn 句柄；open 前为 nil。
+function M.preset_ref()
+  return preset_handle
+end
+
 -- ---------- 操作 ----------
 
 -- 选择：index 为 0 基序号（0 = 第一项）；越界返回 false。
@@ -388,66 +434,40 @@ function M.render()
   local rows = snapshot.slots
   -- 行数会随物品变化：每次重绘同步焦点环项数（保持当前选择）。
   sync_focus()
-  ui_text.begin("bp")
-  -- docs/48 ui 换肤接线：主面板纸面背景（9-slice）叠在纯色兜底之上。
-  skin.panel("bp:skin_bg", x, y, w, h, "panel_main")
-  ui.panel("bp:box", x, y, w, h, 0.10, 0.11, 0.15, 0.94)
-  -- 标题下的分隔线 + 选中行的底衬（竖版单列，靠底衬定位"当前选中哪一行"）。
-  -- docs/48 ui 换肤接线：标题分隔线用 common 竹纹分隔贴图（叠在原纯色线之上）。
-  skin.icon("bp:divider", x + BOX.title_dx, y + BOX.title_dy + BOX.title_font + 6, w - BOX.title_dx * 2, 8, "divider")
-  ui.panel("bp:rule", x + BOX.title_dx, y + BOX.title_dy + BOX.title_font + 14, w - BOX.title_dx * 2, 2, 0.72, 0.75, 0.82, 0.22)
-  ui.panel(
-    "bp:sel",
-    x + BOX.list_dx,
-    y + BOX.list_dy + ui_state.index * ROW_H,
-    w - BOX.list_dx * 2,
-    ROW_H,
-    0.85,
-    0.72,
-    0.42,
-    0.20
-  )
-  ui_text.draw("bp", "bp:title", x + BOX.title_dx, y + BOX.title_dy, BOX.title_font, layout.list_width(PANEL), "背包")
-  -- docs/48 ui 换肤接线：标题右端印章（24×24）。
-  skin.icon("bp:seal", x + w - BOX.title_dx - 24, y + BOX.title_dy + 2, 24, 24, "icon_seal")
+  preset_spawn()
+  local P = preset_handle
+  -- 选中行底衬：y 随选中行（index*40）移动；矩形 = 迁移前 `ui.panel("bp:sel", …)` 的
+  -- 几何（left, top, right, bottom 四边，`prefab.set_rect` 签名）。
+  local sel_top = y + BOX.list_dy + ui_state.index * ROW_H
+  prefab.set_rect(P, "InvSel", x + BOX.list_dx, sel_top, x + w - BOX.list_dx, sel_top + ROW_H)
   -- 容量/负重：标题行右半区（竖版面板宽 592，右半区仍有 300px 以上）。
-  ui_text.draw(
-    "bp",
-    "bp:cap",
-    x + w - 300,
-    y + BOX.corner_y,
-    BOX.corner_font,
-    276.0,
+  prefab.set_text(
+    P,
+    "InvCap",
     "容量 " .. tostring(snapshot.occupied) .. "/" .. tostring(snapshot.capacity)
       .. " · 负重 " .. tostring(snapshot.weight)
   )
 
-  if #rows == 0 then
-    ui_text.draw("bp", "bp:empty", x + BOX.list_dx, y + BOX.list_dy + ROW_H, 18.0, layout.list_width(PANEL), "（空）")
-  else
-    ui_text.hide("bp", "bp:empty")
-  end
+  -- 空背包互斥：有物品时隐藏"（空）"。
+  prefab.set_visible(P, "InvEmpty", #rows == 0)
 
   for i = 0, ROW_LIMIT - 1 do
-    local id = "bp:row" .. (i + 1)
     local row = rows[i + 1]
+    local row_name = "InvRow" .. (i + 1)
+    local slot_name = "InvSlot" .. (i + 1)
     if row then
-      local col = math.floor(i / ROWS_PER_COL)
-      local line = math.floor(i % ROWS_PER_COL)
       local kind = KIND_TEXT[M.kind_of(row.item)] or "物品"
       local label = string.format("%d. %s x%d  [%s]", i + 1, M.name_of(row.item), row.count, kind)
       if i == ui_state.index then
         label = "> " .. label
       end
-      -- 列宽（M32）：单列时整行可用 `w - 2*24`（行尾只留一个内边距）。
-      local col_w = col == 0 and (w - COL_X[1] - 24) or layout.list_width(PANEL)
-      -- docs/48 ui 换肤接线：非选中行槽框（16×16，画在行首左外侧；选中行另有 slot_selected）。
-      if i ~= ui_state.index then
-        skin.icon("bp:slot" .. (i + 1), x + COL_X[col + 1] - 22, y + BOX.list_dy + line * ROW_H + 2, 16, 16, "slot")
-      end
-      ui_text.draw("bp", id, x + COL_X[col + 1], y + BOX.list_dy + line * ROW_H, 16.0, col_w, label)
+      prefab.set_text(P, row_name, label)
+      prefab.set_visible(P, row_name, true)
+      -- 非选中行画槽框；选中行不画（右侧另有 slot_selected 槽框）。
+      prefab.set_visible(P, slot_name, i ~= ui_state.index)
     else
-      ui_text.hide("bp", id)
+      prefab.set_visible(P, row_name, false)
+      prefab.set_visible(P, slot_name, false)
     end
   end
 
@@ -465,18 +485,22 @@ function M.render()
       or ""
     local seed = def.kind == "seed" and (" · 设为种子（" .. tostring(seed_key or "") .. "）") or ""
     local text = tostring(def.description or "") .. effect .. equip .. seed
-    -- docs/48 ui 换肤接线：选中行的槽框（slot_selected）与品质框（凡品，40×40 原尺寸）。
-  skin.icon("bp:sel_slot", x + w - BOX.list_dx - 84, y + BOX.list_dy + ui_state.index * ROW_H + (ROW_H - 40) / 2, 40, 40, "slot_selected")
-  skin.icon("bp:quality", x + w - BOX.list_dx - 42, y + BOX.list_dy + ui_state.index * ROW_H + (ROW_H - 40) / 2, 40, 40, "quality_frame_0")
-  ui_text.draw("bp", "bp:detail", x + BOX.list_dx, y + h + BOX.detail_dy, 14.0, layout.list_width(PANEL), text)
+    prefab.set_text(P, "InvDetail", text)
+    prefab.set_visible(P, "InvDetail", true)
+    -- 选中行右侧：槽框（slot_selected）与品质框（40×40 原尺寸），y 随选中行移动。
+    local side_top = sel_top + (ROW_H - 40) / 2
+    prefab.set_rect(P, "InvSelSlot", x + w - BOX.list_dx - 84, side_top, x + w - BOX.list_dx - 84 + 40, side_top + 40)
+    prefab.set_rect(P, "InvQuality", x + w - BOX.list_dx - 42, side_top, x + w - BOX.list_dx - 42 + 40, side_top + 40)
+    prefab.set_visible(P, "InvSelSlot", true)
+    prefab.set_visible(P, "InvQuality", true)
   else
-    ui_text.hide("bp", "bp:detail")
+    prefab.set_visible(P, "InvDetail", false)
+    prefab.set_visible(P, "InvSelSlot", false)
+    prefab.set_visible(P, "InvQuality", false)
   end
 
-  ui_text.draw("bp", "bp:msg", x + BOX.list_dx, y + h + BOX.msg_dy, 16.0, layout.list_width(PANEL), tostring(ui_state.msg or ""))
-  -- docs/48 ui 换肤接线：按键提示条背景（key_hint 9-slice）。
-  skin.panel("bp:key_hint", x + BOX.list_dx, y + h + BOX.hint_dy - 6, layout.list_width(PANEL), BOX.hint_font + 12, "key_hint")
-  ui_text.draw("bp", "bp:hint", x + BOX.list_dx, y + h + BOX.hint_dy, BOX.hint_font, layout.list_width(PANEL), hint_line())
+  prefab.set_text(P, "InvMsg", tostring(ui_state.msg or ""))
+  prefab.set_text(P, "InvHint", hint_line())
   return true
 end
 
@@ -486,6 +510,7 @@ function M.open()
   ui_state = { index = 0, msg = nil }
   state.set_mode("Inventory")
   audio.ui("ui_click")
+  preset_show()
   M.render()
   return true
 end
@@ -496,6 +521,7 @@ function M.close()
   end
   ui_state = nil
   clear_ui()
+  preset_hide()
   nav.close(FOCUS)
   if state.is_mode("Inventory") then
     state.set_mode("Playing")
@@ -507,6 +533,7 @@ end
 function M.reset()
   ui_state = nil
   clear_ui()
+  preset_hide()
   nav.close(FOCUS)
   return true
 end

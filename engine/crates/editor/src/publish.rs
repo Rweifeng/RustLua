@@ -90,10 +90,12 @@ impl EditorApp {
         let script = strip_verbatim(&found);
         let project_root = strip_verbatim(&self.project.root);
         let publish_name = normalize_publish_name(&self.publish.name, &self.project.root);
+        // 发布脚本 package.ps1 把产物直接发布到 <工程>/builds/<平台>（$finalRoot），
+        // 不会再生成 <平台>/<发布名> 子目录；「打开目录」必须指向真实产物根，
+        // 否则 ShellExecuteW 对不存在的路径静默失败，按钮点了没反应。
         let package_dir = project_root
             .join("builds")
-            .join(self.publish.platform.script_value())
-            .join(&publish_name);
+            .join(self.publish.platform.script_value());
         let (tx, rx) = channel();
         spawn_publish(
             PublishRequest {

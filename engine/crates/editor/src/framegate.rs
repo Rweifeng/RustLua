@@ -1598,6 +1598,54 @@ fn case_dock_panel_visibility_and_layout_persistence() -> Vec<Check> {
     checks
 }
 
+/// 用例：属性面板「定位」请求在**真实帧**里落到资源面板那一行。
+///
+/// 这条交互是跨面板两段接线（Inspector 只登记 `pending_resource_locate`，展开目录/选中/滚动
+/// 由资源面板那趟绘制消费），拆开各测一半都测不到"失联"。目标刻意放在第三层目录
+/// （默认只展开顶层），于是"那一行被选中"本身就证明祖先目录被强制展开过、叶子真被画出来了。
+fn case_locate_resource_in_browser() -> Vec<Check> {
+    let mut smoke = GuiSmoke::new("locate-resource", egui::vec2(1280.0, 720.0), 1.0);
+    let target = "assets/ui/portrait/slime.png";
+    fs::create_dir_all(smoke.root.join("assets/ui/portrait")).expect("建目标目录");
+    fs::write(smoke.root.join(target), b"png").expect("写目标图");
+    let mut browser = editor::ResourceBrowserState::new();
+    browser
+        .refresh(&smoke.root)
+        .expect("同步建好资源索引（后台刷新会把用例拖成时序题）");
+    let mut checks = Vec::new();
+    smoke.idle(4);
+    smoke.app.resources = browser;
+
+    smoke.app.pending_resource_locate = Some(PathBuf::from(target));
+    smoke.frame();
+    checks.push(Check::new(
+        "inspector/locating_a_reference_selects_its_row_in_the_browser",
+        smoke.app.selected_resource == Some(PathBuf::from(target))
+            && smoke.app.pending_resource_locate.is_none(),
+        format!(
+            "选中={:?}；未消费的请求={:?}；状态={:?}",
+            smoke.app.selected_resource, smoke.app.pending_resource_locate, smoke.app.status
+        ),
+    ));
+
+    // 请求没命中任何条目（引用指向已删除的文件）：同一帧也必须把它吃掉，
+    // 否则下次打开资源面板会莫名跳到别的行上。
+    smoke.app.selected_resource = None;
+    smoke.app.pending_resource_locate = Some(PathBuf::from("assets/ui/portrait/ghost.png"));
+    smoke.frame();
+    checks.push(Check::new(
+        "inspector/an_unmatched_locate_request_does_not_linger",
+        smoke.app.pending_resource_locate.is_none() && smoke.app.selected_resource.is_none(),
+        format!(
+            "选中={:?}；未消费的请求={:?}",
+            smoke.app.selected_resource, smoke.app.pending_resource_locate
+        ),
+    ));
+
+    smoke.cleanup();
+    checks
+}
+
 /// 跑完整套 GUI smoke（`--gui-smoke` 与单元测试共用同一条路径）。
 pub(crate) fn run_all() -> SmokeReport {
     let mut checks = Vec::new();
@@ -1611,6 +1659,7 @@ pub(crate) fn run_all() -> SmokeReport {
     checks.extend(case_drop_asset_on_hierarchy_row());
     checks.extend(case_reparent_entity_on_hierarchy_row());
     checks.extend(case_external_dropped_files());
+    checks.extend(case_locate_resource_in_browser());
     checks.extend(case_dock_panel_visibility_and_layout_persistence());
     checks.extend(case_dpi_and_resize_matrix());
     checks.extend(case_resize_keeps_state_consistent());

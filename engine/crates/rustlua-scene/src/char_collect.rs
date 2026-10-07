@@ -1,10 +1,11 @@
 //! 打包时字符收集：扫描项目场景的 `Text` 组件与 Lua 字符串字面量，产出去重的
 //! 字符集，供运行时预生成 MSDF 字形（首包字体），避免首帧文字卡顿。
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::scene::Scene;
+use crate::prefab::Prefab;
+use crate::scene::{Scene, SceneEntity, SceneEntityId};
 use rustlua_ui::ui::UiText;
 
 /// 常用中文标点（多数 CJK 字体都覆盖）。
@@ -20,19 +21,20 @@ pub fn collect_project_chars(root: &Path) -> String {
     chars.push_str(CJK_PUNCTUATION);
 
     // 场景 / 预制体的 Text 组件。
+    // .scene 走 Scene::load，.prefab 走 Prefab::load——两者首行版本字段不同
+    // （scene_version= vs prefab_version=），混着 load 会全部 Err 被静默跳过，
+    // 导致 UI 预设上的硬编码文字（菜单标题、帮助说明、按键提示等）漏进字体子集。
     for path in walk_files(root, &["scenes", "assets/prefabs"], &["scene", "prefab"]) {
-        if let Ok(scene) = Scene::load(&path) {
-            for entity in scene.entities.values() {
-                if let Some(value) = entity.components.get("Text")
-                    && let Ok(ui) = UiText::from_component_str(value)
-                {
-                    chars.push_str(&ui.text);
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        match ext {
+            "prefab" => {
+                if let Ok(prefab) = Prefab::load(&path) {
+                    collect_text_entities(&prefab.entities, &mut chars);
                 }
-                // WP4：世界文字的字符同样要进首包字形子集，否则发布包缺字。
-                if let Some(value) = entity.components.get("WorldText")
-                    && let Ok(text) = crate::world_text::WorldText::from_component_str(value)
-                {
-                    chars.push_str(&text.text.text);
+            }
+            _ => {
+                if let Ok(scene) = Scene::load(&path) {
+                    collect_text_entities(&scene.entities, &mut chars);
                 }
             }
         }
@@ -44,6 +46,24 @@ pub fn collect_project_chars(root: &Path) -> String {
         }
     }
     dedup(&chars)
+}
+
+/// 从一批实体（Scene 或 Prefab 的 entities）里抽取 Text / WorldText 组件的文字，
+/// 追加到字符集。
+fn collect_text_entities(entities: &BTreeMap<SceneEntityId, SceneEntity>, chars: &mut String) {
+    for entity in entities.values() {
+        if let Some(value) = entity.components.get("Text")
+            && let Ok(ui) = UiText::from_component_str(value)
+        {
+            chars.push_str(&ui.text);
+        }
+        // WP4：世界文字的字符同样要进首包字形子集，否则发布包缺字。
+        if let Some(value) = entity.components.get("WorldText")
+            && let Ok(text) = crate::world_text::WorldText::from_component_str(value)
+        {
+            chars.push_str(&text.text.text);
+        }
+    }
 }
 
 /// 提取 Lua 源码里所有字符串字面量包含的字符（用于预生成字形）。
@@ -261,8 +281,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn collects_prefab_text_not_just_scene() {
+        // 回归：.prefab 文件首行是 prefab_version=1，不是 scene_version=，
+        // 之前统一用 Scene::load 会直接 Err，UI 预设上的硬编码文字全部漏进字体子集。
+        let root = temp_dir();
+        std::fs::create_dir_all(root.join("assets/prefabs")).unwrap();
+        std::fs::write(
+            root.join("assets/prefabs/menu.prefab"),
+            "prefab_version=1\nasset_id=5f2c81a7-9d4b-4e6a-b1c8-72e3d90f4a6b\nname=Menu\nroot=1\n\
+             entity\t1\tRoot\n\
+             component\t1\tText\ttext=继续江湖;font_size=24.00;color=1,1,1\n",
+        )
+        .unwrap();
+        // 先确认 Prefab::load 能成功解析（否则静默 Err 又会漏字）。
+        let prefab =
+            Prefab::load(root.join("assets/prefabs/menu.prefab")).expect("prefab should parse");
+        assert!(
+            prefab
+                .entities
+                .values()
+                .any(|e| e.components.contains_key("Text"))
+        );
+        let chars = collect_project_chars(&root);
+        assert!(
+            chars.contains('继')
+                && chars.contains('续')
+                && chars.contains('江')
+                && chars.contains('湖'),
+            "prefab Text 里的汉字必须进字符集（got: {:?})",
+            chars
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn temp_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("rustlua_char_collect_{}", std::process::id()));
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir =
+            std::env::temp_dir().join(format!("rustlua_char_collect_{}_{}", std::process::id(), n));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }

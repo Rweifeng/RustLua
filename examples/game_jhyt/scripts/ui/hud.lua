@@ -460,17 +460,6 @@ end
 
 -- ---------- 绘制 ----------
 
-local function clear_dynamic()
-  ui_text.hide_all("hud", {
-    "hud:feedback",
-    "hud:tutorial",
-    "hud:goals"
-  })
-  for i = 1, PANEL_LINES do
-    ui_text.hide("hud", "hud:line" .. i)
-  end
-end
-
 -- 每帧重绘：状态面板 + 资源条 + 提示区。
 --
 -- 两条位置规则（都有机器检查，不靠自觉）：
@@ -504,6 +493,7 @@ end
 -- 往下加行的余量很薄：第二行下缘 396 距攻击键包围盒上缘 411 只有 15px（`audit_touch` ③
 -- 会红在 `压住 UI 元素 hud_skill_bar`），所以超过 10 招要连同 `layout.TOUCH` 一起复核。
 local SKILL_ICON_KEYS = {
+  strike = "skill_basic_blade",
   chase_wind = "skill_chase_wind",
   guard_heart = "skill_guard_heart",
 }
@@ -516,6 +506,75 @@ local SKILL_NAME_FONT = 12.0
 -- 已画出去多少张：`M.reset()` 与"招式变少"时按这个数把多余的 id 显式收掉。
 -- 贴图不进每帧登记表，画过就一直留在屏上——少这一格就是"砍掉一招、它的卡还在"。
 local skill_slots_drawn = 0
+
+-- M70/B7 预设化：常驻 HUD 的静态骨架（面板/色块/头像框/行图标/资源条框+图标/招式卡底/
+-- 天气双图/雨罩/结局横幅/文字槽位）搬进 `assets/prefabs/hud.prefab`，运行期元素
+-- （资源条 fill 宽度、状态图标、招式图标/名、建造幽灵）留动态层。HUD 常驻不关屏，
+-- 预设 spawn 一次、根常 shown；每帧只写内容（set_text）与显隐（set_visible）/宽度（set_rect）。
+local PRESET_PATH = "assets/prefabs/hud.prefab"
+local preset_handle = nil
+local preset_spawned = false
+
+-- M71 修复：场景切换重建 ECS 世界后旧句柄失效，纯布尔标志会漏判 →
+-- `prefab.set_text` 报「没有 handle N」并被 lua-guard 停用回调（HUD 每帧 draw 首当其冲）；
+-- 改成对句柄做真实探活（`prefab.root` 失效句柄抛错，pcall 兜底）。
+local function preset_live()
+  if not preset_handle then
+    return false
+  end
+  local ok, alive = pcall(function() return prefab.root(preset_handle) ~= nil end)
+  return ok and alive == true
+end
+
+local function preset_spawn()
+  if preset_handle and preset_live() then
+    return true
+  end
+  preset_handle = prefab.spawn(PRESET_PATH)
+  preset_spawned = true
+  return true
+end
+
+local function preset_visible(name, visible)
+  if not preset_handle then
+    return false
+  end
+  local ok = pcall(prefab.set_visible, preset_handle, name, visible)
+  if not ok then
+    preset_handle = nil
+    preset_spawned = false
+  end
+  return ok
+end
+
+local function preset_text(name, text)
+  local ok, err = pcall(prefab.set_text, preset_handle, name, tostring(text or ""))
+  if not ok then
+    -- 实例失效（场景切换重建 ECS 后旧句柄的实体 id 可能被新世界复用，`prefab.root`
+    -- 探活会误判活着——只有真正写 `Text` 组件时才发现组件不对）：置空句柄，
+    -- 下一帧 `preset_spawn` 重新实例化。常驻 HUD 不 despawn，靠这条自愈。
+    preset_handle = nil
+    preset_spawned = false
+  end
+  return ok
+end
+
+local function preset_rect(name, x, y, w, h)
+  if not preset_handle then
+    return false
+  end
+  local ok = pcall(prefab.set_rect, preset_handle, name, x, y, x + w, y + h)
+  if not ok then
+    preset_handle = nil
+    preset_spawned = false
+  end
+  return ok
+end
+
+-- 验收（jhyt_m19_ui 招式卡实体存在性断言）取 spawn 句柄；draw 前为 nil。
+function M.preset_ref()
+  return preset_handle
+end
 
 -- 一行放得下几张：从 `BAR.x` 到设计画布右缘，按"卡宽 + 间隔"取整（最后一张不吃间隔）。
 local function skill_cols()
@@ -554,14 +613,17 @@ end
 local function draw_skill_bar()
   local slots = M.skill_slots()
   for index = #slots + 1, skill_slots_drawn do
-    ui.clear("hud:skill_card" .. index)
+    -- 卡底在预设（HudSkillCardN），这里只收动态部分：图标与招式名。
     ui.clear("hud:skill_icon" .. index)
     ui_text.hide("hud", "hud:skill_name" .. index)
+  end
+  -- M70/B7：卡底（`HudSkillCard1..8`）在预设，按实际槽数显隐；图标/名留动态层。
+  for index = 1, 8 do
+    preset_visible("HudSkillCard" .. index, index <= #slots)
   end
   skill_slots_drawn = #slots
   for _, slot in ipairs(slots) do
     local id = slot.index
-    skin.panel("hud:skill_card" .. id, slot.x, slot.y, slot.w, slot.h, "skill_card")
     local icon_key = SKILL_ICON_KEYS[slot.skill]
     if icon_key then
       -- 图标让位给招式名：24×24 落在卡上半（4..28），名字画在 y+30 起的那一行里。
@@ -577,13 +639,12 @@ end
 function M.draw()
   local x, y, w, h = PANEL.x, PANEL.y, PANEL.w, PANEL.h
   local in_dialogue = state.is_mode("Dialogue")
-  -- HUD 每帧重绘：同时重开自己那一轮文字登记（M30）。登记表即"本帧画面上有哪些文字、
-  -- 各自可用多宽"，验收遍历它逐条量宽（`ui_text.audit()`），无需在验收里重抄几何。
+  preset_spawn()
+  -- 动态层的招式名仍走 `ui_text` 登记（M30 排版检查的剩余条目）：重开自己那一轮。
   ui_text.begin("hud")
-  -- HUD 文字是浅色，用深色半透明底；不用浅色纸面 skin（否则浅底浅字看不清）。
-  -- docs/48 ui 换肤接线：头像框（48×48）浮在面板左侧。
-  skin.icon("hud:avatar_frame", x - 56, y + 8, 48, 48, "hud_avatar_frame")
-  -- docs/48 ui 换肤接线：激活状态图标（竖排 16×16，画在资源条右侧区外）。
+  -- M70/B7：静态骨架（头像框/面板底/收口条/分类色块/行图标/资源条框/条图标/招式卡底/
+  -- 天气双图/雨罩/结局横幅）在预设里，不再逐帧画；每帧只写内容与显隐/宽度。
+  -- 状态图标（贴图种类随激活状态）留动态层：激活画、未激活显式收。
   local statuses = active_status_keys()
   local drawn = {}
   for index, key in ipairs(statuses) do
@@ -600,60 +661,43 @@ function M.draw()
       ui.clear("hud:status_" .. key)
     end
   end
-  ui.panel("hud:box", x, y, w, h, 0.08, 0.09, 0.12, 0.62)
-  -- 金色收口条（面板顶部 3px），与行内分类色块同色系。
-  ui.panel("hud:accent", x, y, w, ACCENT.h, ACCENT.r, ACCENT.g, ACCENT.b, ACCENT.a)
   local lines = M.status_lines()
   for i = 1, PANEL_LINES do
-    local id = "hud:line" .. i
-    local line = lines[i]
-    local color = CHIP_COLORS[i]
-    if line then
-      -- 分类色块 + 文字：色块在 x+12 处，文字起点让出色块（x+12+CHIP.w+gap）。
-      ui.panel("hud:chip" .. i, x + 12, y + 10 + (i - 1) * LINE_H + (LINE_H - CHIP.h) / 2,
-        CHIP.w, CHIP.h, color.r, color.g, color.b, 0.95)
-      -- docs/48 ui 换肤接线：行图标（12×12，画在色块左外侧，不压文字）。
-      local line_key = LINE_ICONS[i]
-      if line_key then
-        skin.icon("hud:line_icon" .. i, x + 6, y + 10 + (i - 1) * LINE_H + (LINE_H - 12) / 2, 12, 12, line_key)
-      end
-      ui_text.draw("hud", id, x + 12 + CHIP.w + CHIP.gap, y + 10 + (i - 1) * LINE_H, LINE_FONT, PANEL_TEXT_W, line)
-    else
-      ui.clear("hud:chip" .. i)
-      ui_text.hide("hud", id)
-    end
+    preset_text("HudLine" .. i, lines[i] or "")
   end
 
   if in_dialogue then
-    ui_text.hide("hud", "hud:feedback")
-    ui_text.hide("hud", "hud:tutorial")
-    ui_text.hide("hud", "hud:goals")
+    preset_visible("HudFeedback", false)
+    preset_visible("HudTutorial", false)
+    preset_visible("HudGoals", false)
   else
     local feedback = M.feedback_line()
     if feedback ~= "" then
-      ui_text.draw("hud", "hud:feedback", layout.ROW.top_x, layout.ROW.feedback_y, 18.0, layout.top_row_width(), feedback)
+      preset_text("HudFeedback", feedback)
+      preset_visible("HudFeedback", true)
     else
-      ui_text.hide("hud", "hud:feedback")
+      preset_visible("HudFeedback", false)
     end
     -- 七日目标（M27）：放在反馈行上方，不占引导行（两者可同时可见）。字号 15→17。
     local goals = M.goals_line()
     if goals ~= "" then
-      ui_text.draw("hud", "hud:goals", layout.ROW.top_x, layout.ROW.goals_y, 17.0, layout.top_row_width(), goals)
+      preset_text("HudGoals", goals)
+      preset_visible("HudGoals", true)
     else
-      ui_text.hide("hud", "hud:goals")
+      preset_visible("HudGoals", false)
     end
     -- 新手引导行走**底部通栏**（`ROW.tutorial_y`），不放右栏：右栏预算 276px 而
     -- 最长一条引导实测 648px，画出来只剩半句指令（省略号把"按 E 装备"裁掉了）。
     local prompt = tutorial.prompt()
     if prompt then
-      ui_text.draw("hud", "hud:tutorial", layout.ROW.top_x, layout.ROW.tutorial_y, 16.0, layout.top_row_width(), prompt)
+      preset_text("HudTutorial", prompt)
+      preset_visible("HudTutorial", true)
     else
-      ui_text.hide("hud", "hud:tutorial")
+      preset_visible("HudTutorial", false)
     end
   end
-  -- 天气可见变化 + 三条资源条：与状态面板同帧绘制（晴天清掉遮罩、条形按真实比例）。
-  -- 直调、不套 `pcall`：套上 `pcall` 只会把"函数名写错/取值非法"变成"画面上什么都没有、
-  -- 日志里也没有一行错误"——M29 用前向声明修掉的正是这个坑。
+  -- 天气可见变化 + 三条资源条 + 建造预览 + 招式栏 + 结局横幅：静态骨架在预设，
+  -- 这里只写宽度（set_rect）、互斥显隐（set_visible）与动态元素（图标/名/幽灵）。
   draw_bars()
   -- docs/48 ui 换肤接线：建造预览图标 + 招式快捷栏（都画在资源条下方/右侧）。
   draw_build_ghost()
@@ -679,16 +723,17 @@ function draw_ending_banner()
   local key = state.get_var("ending")
   local banner = (type(key) == "string") and ENDING_BANNERS[key] or nil
   if not banner then
-    ui.clear("hud:ending_box")
-    ui_text.hide("hud", "hud:ending_title")
-    ui_text.hide("hud", "hud:ending_line")
+    preset_visible("HudEndingBox", false)
+    preset_visible("HudEndingTitle", false)
+    preset_visible("HudEndingLine", false)
     return
   end
-  local bx = (layout.DESIGN_W - ENDING_BANNER_BOX.w) / 2
-  local by = math.floor(layout.DESIGN_H * 0.34)
-  ui.panel("hud:ending_box", bx, by, ENDING_BANNER_BOX.w, ENDING_BANNER_BOX.h, 0.06, 0.07, 0.10, 0.90)
-  ui_text.draw("hud", "hud:ending_title", bx + 16, by + 12, 22.0, ENDING_BANNER_BOX.w - 32, banner.title)
-  ui_text.draw_wrapped("hud", "hud:ending_line", bx + 16, by + 44, 16.0, ENDING_BANNER_BOX.w - 32, 3, banner.line)
+  -- M70/B7：横幅底/标题/正文在预设（几何写死：bx=(1280-520)/2、by=floor(720*0.34)）。
+  preset_text("HudEndingTitle", banner.title)
+  preset_text("HudEndingLine", banner.line)
+  preset_visible("HudEndingBox", true)
+  preset_visible("HudEndingTitle", true)
+  preset_visible("HudEndingLine", true)
 end
 
 -- 资源条（M29 / 阶段五 P1）：生命 / 体力 / 内力三条 9-slice 条。
@@ -739,14 +784,12 @@ end
 function draw_bars()
   local ratios = M.bar_ratios()
   local values = { ratios.hp, ratios.stamina, ratios.neili }
-  -- docs/48 ui 换肤接线：三条资源条的行首图标（16×16）。
-  local bar_icons = { "hud_icon_hp", "hud_icon_stamina", "hud_icon_neili" }
+  -- M70/B7：条框（HudBarFrame1..3）与行首图标（HudBarIcon1..3）在预设，这里只按真实
+  -- 比值写填充宽度（HudBarFill1..3，`set_rect` 四边签名）。宽度变化仍是"真的反映数值"。
   for index, bar in ipairs(BARS) do
     local y = BAR.y0 + (index - 1) * BAR.row
-    skin.icon(bar.id .. ":icon", BAR.x - 22, y + 1, 16, 16, bar_icons[index])
-    ui.image(bar.id .. ":frame", BAR.x, y, BAR.w, BAR.h, BAR.frame, 1, 1, 1)
     local fill = math.max(1, math.floor(BAR.w * values[index] + 0.5))
-    ui.image(bar.id, BAR.x, y, fill, BAR.h, bar.fill, 1, 1, 1)
+    preset_rect("HudBarFill" .. index, BAR.x, y, fill, BAR.h)
   end
   return true
 end
@@ -778,53 +821,22 @@ local WEATHER_ICONS = {
 local RAIN_ICON = { id = "hud:weather_icon", size = 20, x = layout.DESIGN_W - 28, y = 6 }
 
 function draw_weather_visual()
-  if weather.is_rainy() then
-    ui.panel(
-      RAIN_OVERLAY.id,
-      0,
-      0,
-      RAIN_OVERLAY.w,
-      RAIN_OVERLAY.h,
-      RAIN_OVERLAY.r,
-      RAIN_OVERLAY.g,
-      RAIN_OVERLAY.b,
-      RAIN_OVERLAY.a
-    )
-  else
-    ui.clear(RAIN_OVERLAY.id)
-  end
-  -- 天气图标：取值只有晴/雨两种，直接按取值取图（写错取值就会当场报错，不做兜底图标）。
-  ui.image(
-    RAIN_ICON.id,
-    RAIN_ICON.x,
-    RAIN_ICON.y,
-    RAIN_ICON.size,
-    RAIN_ICON.size,
-    WEATHER_ICONS[weather.current()],
-    1,
-    1,
-    1
-  )
+  local rainy = weather.is_rainy()
+  -- M70/B7：全屏雨罩（HudRain）与天气图标（HudWeatherSun/Rain 同一矩形叠图、互斥显隐）
+  -- 在预设；每帧按天气取值切换，晴天把雨罩与雨图标收掉。
+  preset_visible("HudRain", rainy)
+  preset_visible("HudWeatherSun", not rainy)
+  preset_visible("HudWeatherRain", rainy)
   return true
 end
 
--- 场景切换 / 新档：清掉 HUD 动态元素（模式由调用方复位）。
+-- 场景切换 / 新档：清掉 HUD 动态元素（模式由调用方复位）。静态骨架在预设、由每帧
+-- draw 重写内容，reset 只收动态层（建造幽灵/招式图标/招式名登记）。
 function M.reset()
-  clear_dynamic()
-  ui.clear(RAIN_OVERLAY.id)
-  ui.clear(RAIN_ICON.id)
-  ui.clear("hud:accent")
-  for i = 1, PANEL_LINES do
-    ui.clear("hud:chip" .. i)
-  end
-  for _, bar in ipairs(BARS) do
-    ui.clear(bar.id)
-    ui.clear(bar.id .. ":frame")
-  end
   ui.clear("hud:build_ghost")
-  -- 招式卡按**实际画过的张数**收，不写死 1..5：写死会让扩招之后的卡片永远留在屏上。
+  -- 招式卡底在预设（set_visible 由 draw 管）；图标与名按**实际画过的张数**收，不写死
+  -- 1..5：写死会让扩招之后的图标/名永远留在屏上。
   for i = 1, skill_slots_drawn do
-    ui.clear("hud:skill_card" .. i)
     ui.clear("hud:skill_icon" .. i)
     ui_text.hide("hud", "hud:skill_name" .. i)
   end

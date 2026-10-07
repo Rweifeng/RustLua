@@ -199,11 +199,11 @@ examples\<game>\builds\wechat-minigame\<PublishName>\      # 发布根
     ├── mainpack.json         # 首屏清单：构建/运行时/harness 三方共用的路由依据
     ├── code-package.json     # 改名映射：逻辑路径 → 会随代码包上传的宿主文件名（见下）
     ├── mainpack\             # 首屏资源（在**主包**里，启动即用，不等分包）
-    │   └── manifest.txt, chars.txt, project.toml.txt, settings.toml.txt,
+    │   └── manifest.txt, chars.txt, project.toml.txt,
     │       scripts\**（逐个改名为 *.lua.txt）, assets\fonts\**, …
     ├── pack\                 # 分包 root（3,011 KB），目录下所有文件都进分包
     │   └── game.js           # 分包入口（微信硬要求；挂载后由宿主执行）
-    └── release.toml, run.txt, deps.txt, build-info.txt
+    └── run.txt, deps.txt, build-info.txt
 ```
 
 **可选形态（`remote`）**：发布根下是 `launcher\` + `assets\` 两个兄弟目录——`assets\` 是资源包
@@ -454,7 +454,7 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
   启动时会输出一行自检，例如：
 
   ```
-  wechat-adapter: 资源读取自检 manifest.txt=ok@mainpack project.toml=ok@mainpack settings.toml=ok@mainpack（路径形式: main=root-relative pack=root-relative，分包状态: ready）
+  wechat-adapter: 资源读取自检 manifest.txt=ok@mainpack project.toml=ok@mainpack（路径形式: main=root-relative pack=root-relative，分包状态: ready）
   ```
 
   - 三个 =ok → 路径与挂载都正常（`@mainpack` 表示这一项按首屏清单被路由到了**主包** `mainpack/`，

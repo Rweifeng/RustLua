@@ -25,7 +25,7 @@ local virtual_pad = require("ui.virtual_pad")
 -- input.lua：《江湖有田》输入分发（M16 → M20-08）。
 --
 -- M20-08：从「物理键直读」迁移到**命名动作**（引擎 `core/input.rs` 的
--- `ActionMap`），玩家可以在编辑器「项目设置 → 输入」或 settings.toml 的
+-- `ActionMap`），玩家可以在编辑器「项目设置 → 输入」或 project.toml 的
 -- `[input]` 段整体改键。迁移原则是**逐键等价**：
 --
 --   * 键盘默认绑定与迁移前完全一致：WASD 移动、E 交互/装备、J 普攻、K 武学、
@@ -45,7 +45,7 @@ local M = {}
 
 local MOVE_SPEED = 140 -- 世界单位/秒（32px 格 → 约 4.4 格/秒）
 
--- 导航手感（摇杆阈值 + 按住连发节奏）由 `ui.hints` 持有并可被工程 settings.toml 的
+-- 导航手感（摇杆阈值 + 按住连发节奏）由 `ui.hints` 持有并可被工程 project.toml 的
 -- `[input]` 段覆盖（`nav_threshold` / `nav_delay_ms` / `nav_repeat_ms`，旧的帧键仍可读）；
 -- 启动时 `apply_nav_settings()` 把它推给引擎（`input.set_nav_settings`），引擎负责
 -- 轴判定阈值与连发计时，Lua 侧不再自己数帧。
@@ -54,7 +54,7 @@ local MOVE_SPEED = 140 -- 世界单位/秒（32px 格 → 约 4.4 格/秒）
 -- 底部提示时需要同一套逻辑，而它们不能 require 本模块（`input → dialogue` 会成环）。
 local hints = require("ui.hints")
 
--- 把 `input.nav_settings()`（= 工程 settings.toml 的 [input] 段）应用到导航手感。
+-- 把 `input.nav_settings()`（= 工程 project.toml 的 [input] 段）应用到导航手感。
 function M.apply_nav_settings()
   return hints.apply_nav_settings()
 end
@@ -535,7 +535,7 @@ function M.update()
   -- M25：失败原因写进 last_action（此前返回值被丢弃 → 内力不足/冷却中按下去
   -- 毫无反馈，玩家只能猜），HUD 按 last_action 出中文提示。
   -- v0.2：追加 3 个高阶武学（弦月斩 V / 铁砂掌 N / 豹跃 M）。键位与 pad 均可
-  -- 通过 settings.toml 的 [input] 段改绑。
+  -- 通过 project.toml 的 [input] 段改绑。
   --
   -- 2026-10-05 触屏批：这五段 if/elseif 换成遍历 `data.skills.binding.cast`。
   -- **行为逐键等价**（顺序不变、一帧只出一招 = 原来的 elseif、失败文案与音效不变），
@@ -643,7 +643,7 @@ end
 -- M20-08：把引擎的**命名动作设置**入口转出给 `main.lua`（启动时应用玩家改键）。
 -- 语义与 `audio.load_settings` 对齐：文件缺失/缺 `[input]` 段 → `false` + 原因且
 -- **保留当前绑定**（即引擎默认，键盘行为与迁移前逐键等价）；版本头/绑定非法 →
--- 引擎侧回退默认并写入可定位诊断。`path` 省略时用 `<project_root>/settings.toml`。
+-- 引擎侧回退默认并写入可定位诊断。`path` 省略时用 `<project_root>/project.toml`。
 function M.load_settings(path)
   return input.load_settings(path)
 end

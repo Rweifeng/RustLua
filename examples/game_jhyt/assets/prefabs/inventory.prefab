@@ -1,0 +1,179 @@
+prefab_version=1
+asset_id=8d2f4c1a-7b6e-4a9f-9c3d-51e8b2f0a476
+name=Inventory
+root=1
+# 背包面板（`ui/inventory_ui.lua`）的 UI 预设：M67/B4 从动态层整块搬来。
+# 对账门 = `jhyt_m67_inventory_prefab`：黄金表 70 行（A 态 = 刚打开、背包 5 件、选中第 1 行）
+# 钉死迁移前画面，本文件 + inventory_ui.lua 的 set_text/set_rect/set_visible 必须逐值复现。
+#
+# 结构：根 InvRoot（全屏 1280x720）下挂全部叶子（单面板、无子页/页签，无需容器层）。
+# 打开/关闭 = 根节点显隐（`set_visible` 子树语义，藏父带子）；不撤重铺，避免槽位 LIFO
+# 复用打乱绘制序。
+#
+# 行序 = 绘制序 = 实体槽位升序，**复刻迁移前动态层的 id 字典序**
+# （`ScriptState` 是 BTreeMap，`mesh_ui.rs:239` 迭代 `.values()`；门 covering_account 的
+# 实体层排序键 = 槽位号，槽位必须复刻字典序 cover 判定才与黄金表一致）：
+#   白图类（rank-0，字典序）：box → rule → sel
+#   贴图类（rank-1，字典序）：divider → key_hint → quality → seal → **sel_slot → skin_bg**
+#     → slot1..slot10
+#     （注意 `bp:sel_slot` 第 5 字符 'e' < `bp:skin_bg` 的 'k' ⇒ **sel_slot 在 skin_bg 前、
+#     被 skin_bg 盖**；`bp:slot1..10` 的 'l' > 'k' ⇒ 在 skin_bg 后、不被盖——与 shop/pause
+#     的"skin_bg 殿后"不同，本屏字典序是 sel_slot 殿在 skin_bg 前、slot 殿在 skin_bg 后）
+#   文字类（rank-2，不盖人）：cap → detail → empty → hint → msg → row1..row10 → title
+# 黄金表被 skin_bg 整块盖住 8 块：box/rule/sel（色块）+ divider/key_hint/quality/seal/
+# sel_slot（贴图，字典序在前的）；slot2-5 与全部文字看得见。
+#
+# 运行期仍由脚本每帧写的值（不改几何/贴图，只改内容/显隐）：
+#   * `prefab.set_text`：cap（容量/负重）、detail（物品说明）、msg、hint（按键名随绑定）、
+#     row1..10（行文本，含选中 > 前缀与空槽隐藏）
+#   * `prefab.set_rect` ：sel / sel_slot / quality（y 随选中行 index*40 移动）
+#   * `prefab.set_visible`：empty（空背包互斥，列表整体藏）、rowN（有物品）、slotN（非选中
+#     且有物品；选中行不画槽、右侧画 sel_slot+quality）、detail（有选中行）
+# title 固定写死（"背包"，render 不再写）。
+#
+# 初始可见性全开，由 open → render 同帧 set_visible 覆盖，无闪帧。
+entity	1	InvRoot
+component	1	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	1	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.000000,0.000000,1280.000000,720.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	1	role	inv_root
+entity	2	InvBox	1
+component	2	Image	texture=__white__;color=0.100,0.110,0.150,0.940
+component	2	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	2	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=160.000000,40.000000,880.000000,680.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	3	InvRule	1
+component	3	Image	texture=__white__;color=0.720,0.750,0.820,0.220
+component	3	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,92.000000,856.000000,94.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	4	InvSel	1
+component	4	Image	texture=__white__;color=0.850,0.720,0.420,0.200
+component	4	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	4	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,100.000000,856.000000,140.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	4	role	inv_sel
+entity	5	InvDivider	1
+component	5	Image	texture=assets/art/ui/common/ui_divider.png;color=1.000,1.000,1.000
+component	5	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	5	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,84.000000,856.000000,92.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	6	InvKeyHint	1
+component	6	Image	texture=assets/art/ui/common/ui_key_hint_9s.png;color=1.000,1.000,1.000;nine_slice=6,6,6,6
+component	6	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	6	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,642.000000,856.000000,668.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	7	InvQuality	1
+component	7	Image	texture=assets/art/ui/backpack/ui_quality_frame_0.png;color=1.000,1.000,1.000
+component	7	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	7	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=814.000000,100.000000,854.000000,140.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	8	InvSeal	1
+component	8	Image	texture=assets/art/ui/common/ui_icon_seal.png;color=1.000,1.000,1.000
+component	8	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	8	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=832.000000,58.000000,856.000000,82.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	9	InvSelSlot	1
+component	9	Image	texture=assets/art/ui/common/ui_slot_selected_9s.png;color=1.000,1.000,1.000
+component	9	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	9	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=772.000000,100.000000,812.000000,140.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	10	InvSkinBg	1
+component	10	Image	texture=assets/art/ui/common/ui_panel_main_9s.png;color=1.000,1.000,1.000;nine_slice=16,16,16,16
+component	10	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	10	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=160.000000,40.000000,880.000000,680.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	11	InvSlot1	1
+component	11	Image	texture=assets/art/ui/common/ui_slot_9s.png;color=1.000,1.000,1.000
+component	11	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=162.000000,102.000000,178.000000,118.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	12	InvSlot2	1
+component	12	Image	texture=assets/art/ui/common/ui_slot_9s.png;color=1.000,1.000,1.000
+component	12	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	12	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=162.000000,142.000000,178.000000,158.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	13	InvSlot3	1
+component	13	Image	texture=assets/art/ui/common/ui_slot_9s.png;color=1.000,1.000,1.000
+component	13	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	13	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=162.000000,182.000000,178.000000,198.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	14	InvSlot4	1
+component	14	Image	texture=assets/art/ui/common/ui_slot_9s.png;color=1.000,1.000,1.000
+component	14	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	14	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=162.000000,222.000000,178.000000,238.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	15	InvSlot5	1
+component	15	Image	texture=assets/art/ui/common/ui_slot_9s.png;color=1.000,1.000,1.000
+component	15	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	15	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=162.000000,262.000000,178.000000,278.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	16	InvSlot6	1
+component	16	Image	texture=assets/art/ui/common/ui_slot_9s.png;color=1.000,1.000,1.000
+component	16	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	16	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=162.000000,302.000000,178.000000,318.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	17	InvSlot7	1
+component	17	Image	texture=assets/art/ui/common/ui_slot_9s.png;color=1.000,1.000,1.000
+component	17	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	17	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=162.000000,342.000000,178.000000,358.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	18	InvSlot8	1
+component	18	Image	texture=assets/art/ui/common/ui_slot_9s.png;color=1.000,1.000,1.000
+component	18	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	18	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=162.000000,382.000000,178.000000,398.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	19	InvSlot9	1
+component	19	Image	texture=assets/art/ui/common/ui_slot_9s.png;color=1.000,1.000,1.000
+component	19	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	19	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=162.000000,422.000000,178.000000,438.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	20	InvSlot10	1
+component	20	Image	texture=assets/art/ui/common/ui_slot_9s.png;color=1.000,1.000,1.000
+component	20	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	20	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=162.000000,462.000000,178.000000,478.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	21	InvCap	1
+component	21	Text	text=容量 5/20 · 负重 18;font_size=16.00;color=1.000,1.000,1.000
+component	21	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	21	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=580.000000,60.000000,856.000000,76.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	22	InvDetail	1
+component	22	Text	text=江南常见作物。;font_size=14.00;color=1.000,1.000,1.000
+component	22	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	22	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,584.000000,856.000000,598.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	23	InvEmpty	1
+component	23	Text	text=（空）;font_size=18.00;color=1.000,1.000,1.000
+component	23	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	23	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,140.000000,856.000000,158.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	24	InvHint	1
+component	24	Text	text=W/S 或 上下方向键 选择 · 1-9 定位 · U 使用 · E 装备 · C 选种子 · I / Esc 关闭;font_size=14.00;color=1.000,1.000,1.000
+component	24	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	24	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,648.000000,856.000000,662.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	25	InvMsg	1
+component	25	Text	text=;font_size=16.00;color=1.000,1.000,1.000
+component	25	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	25	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,616.000000,856.000000,632.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	26	InvRow1	1
+component	26	Text	text=> 1. 稻谷 x3  [作物];font_size=16.00;color=1.000,1.000,1.000
+component	26	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	26	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,100.000000,856.000000,116.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	27	InvRow2	1
+component	27	Text	text=2. 稻种 x5  [种子];font_size=16.00;color=1.000,1.000,1.000
+component	27	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	27	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,140.000000,856.000000,156.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	28	InvRow3	1
+component	28	Text	text=3. 锄头 x1  [工具];font_size=16.00;color=1.000,1.000,1.000
+component	28	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	28	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,180.000000,856.000000,196.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	29	InvRow4	1
+component	29	Text	text=4. 灵芝菌种 x8  [种子];font_size=16.00;color=1.000,1.000,1.000
+component	29	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	29	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,220.000000,856.000000,236.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	30	InvRow5	1
+component	30	Text	text=5. 水壶 x1  [工具];font_size=16.00;color=1.000,1.000,1.000
+component	30	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	30	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,260.000000,856.000000,276.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	31	InvRow6	1
+component	31	Text	text=;font_size=16.00;color=1.000,1.000,1.000
+component	31	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	31	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,300.000000,856.000000,316.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	32	InvRow7	1
+component	32	Text	text=;font_size=16.00;color=1.000,1.000,1.000
+component	32	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	32	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,340.000000,856.000000,356.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	33	InvRow8	1
+component	33	Text	text=;font_size=16.00;color=1.000,1.000,1.000
+component	33	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	33	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,380.000000,856.000000,396.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	34	InvRow9	1
+component	34	Text	text=;font_size=16.00;color=1.000,1.000,1.000
+component	34	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	34	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,420.000000,856.000000,436.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	35	InvRow10	1
+component	35	Text	text=;font_size=16.00;color=1.000,1.000,1.000
+component	35	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	35	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,460.000000,856.000000,476.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	36	InvTitle	1
+component	36	Text	text=背包;font_size=22.00;color=1.000,1.000,1.000
+component	36	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	36	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,56.000000,856.000000,78.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000

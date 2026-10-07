@@ -10,8 +10,15 @@
 | WASM 入口 | `engine/crates/game_web/src/lib.rs` | `start(canvas_id, title)`：设置画布与标题，按固定路径 `fetch` 资源 |
 | 资源包 | `<release>/pack/` | 由 `assetc package` 产出；含 `manifest.txt`、`project.toml`、`scenes/`、`scripts/`、`assets/`、`chars.txt` |
 | 发布页 | `scripts/package.ps1 -Platform webgl` | 生成 `index.html` + `web-runtime.js` + `pkg/`（wasm-bindgen 输出） |
-| 浏览器契约检查 | `examples/game_jhyt/web/{index.html,web-check.js}` | 在真实浏览器中验证 WebGL 集成依赖的平台契约 |
+| 浏览器契约检查 | `scripts/webgl-contract/{index.html,web-check.js}` | 在真实浏览器中验证 WebGL 集成依赖的平台契约 |
 | 验收脚本 | `scripts/verify-webgl.ps1` | 组装 web 包 → 本地静态服务器 → 无头浏览器断言 → 记录日志 |
+
+契约检查页是**仓库的测试资产，不是游戏内容**：它原先放在 `examples/game_jhyt/web/`，
+于是（a）游戏工程目录下多出一个不属于任何游戏子系统的目录，（b）`verify-webgl.ps1`
+换一个 `-ProjectRoot` 就找不到页面（源路径跟着工程走）。现在它与门放在一起
+（`scripts/webgl-contract/`），由 `verify-webgl.ps1` 按 `$PSScriptRoot` 拷进检查包根目录。
+**不要因为"游戏工程里没有这个目录"就把它当残留删掉**——删了 `verify.ps1 -Web` 会判红
+（`Copy-Item` 失败 → 脚本 `trap` → exit 1）。
 
 WASM 入口读取的资源路径（契约，改动需同步 `web-check.js`）：
 

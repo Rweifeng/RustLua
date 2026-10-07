@@ -9,8 +9,11 @@
 //!
 //! | 形态 | 判定 | 存档 | 玩家设置 |
 //! |---|---|---|---|
-//! | 发布包 | 项目根是 `<exe>/pack`（旁边有 `release.toml`）或 `--pack` | `<用户数据目录>/save.sav` | `<用户数据目录>/settings.toml` |
-//! | 开发工程 | 其余情况 | `<project>/.data/save.sav` | `<project>/settings.toml` |
+//! | 发布包 | 项目根是 `<exe>/pack`（其内 `project.toml` 带 `release = true`）或 `--pack` | `<用户数据目录>/save.sav` | `<用户数据目录>/project.toml` |
+//! | 开发工程 | 其余情况 | `<project>/.data/save.sav` | `<project>/project.toml` |
+//!
+//! 玩家设置与工程配置共用 `project.toml`（2026-10-07 起，原 `settings.toml` 退役：
+//! `[input]`/`[audio]` 段随 `project.toml` 一起打包与 seed，见 `SETTINGS_FILE`）。
 //!
 //! 开发工程保留工程内路径是因为编辑器与验收样例要能直接检查这些文件（改键面板、
 //! `jhyt_m20_*` 的 settings 往返断言）；发布包一律走用户目录。
@@ -29,7 +32,7 @@ use std::{
 /// 覆盖用户数据目录根的环境变量（测试/便携分发）。
 pub const USER_DIR_ENV: &str = "RUSTLUA_USER_DIR";
 
-/// 应用名兜底（`project.toml`/`release.toml` 都没给名字时）。
+/// 应用名兜底（`project.toml` 没给 `publish_name`/`name` 时）。
 pub const DEFAULT_APP_NAME: &str = "rustlua-game";
 
 /// 存档与玩家设置的根目录（见模块文档的表）。
@@ -37,7 +40,7 @@ pub const DEFAULT_APP_NAME: &str = "rustlua-game";
 pub struct DataRoots {
     /// 存档目录：`save.sav`、`save_<slot>.sav` 写在这里。
     pub save_dir: PathBuf,
-    /// 玩家设置目录：`settings.toml` 读写的根。
+    /// 玩家设置目录：`project.toml` 读写的根。
     pub settings_dir: PathBuf,
     /// 是否按发布包处理（决定上面两个字段是用户目录还是工程内路径）。
     pub packaged: bool,
@@ -52,10 +55,10 @@ impl DataRoots {
         self.save_dir.join("save.sav")
     }
 
-    /// 玩家设置文件路径。
+    /// 玩家设置文件路径（与工程配置共用 `project.toml`，原 `settings.toml` 退役）。
     #[must_use]
     pub fn settings_file(&self) -> PathBuf {
-        self.settings_dir.join("settings.toml")
+        self.settings_dir.join("project.toml")
     }
 
     /// 运行期日志目录（`game.log`、`crash.log`）。
@@ -69,8 +72,8 @@ impl DataRoots {
     }
 }
 
-/// 判定"项目根是发布包"：目录名是 `pack` 且旁边有 `release.toml`，或调用方
-/// （`game --pack`）明确说是。
+/// 判定"项目根是发布包"：目录名是 `pack` 且其内 `project.toml` 带 `release = true`，
+/// 或调用方（`game --pack`）明确说是。
 #[must_use]
 pub fn is_release_pack(project_root: &Path, explicit_pack: bool) -> bool {
     if explicit_pack {
@@ -82,18 +85,15 @@ pub fn is_release_pack(project_root: &Path, explicit_pack: bool) -> bool {
     if !named_pack {
         return false;
     }
-    project_root
-        .parent()
-        .is_some_and(|parent| parent.join("release.toml").is_file())
+    super::project_config::release_flag(project_root)
 }
 
-/// 应用名：优先发布包的 `release.toml` 的 `publish_name`，其次 `project.toml`
-/// 的 `name`，最后 [`DEFAULT_APP_NAME`]。结果会做文件名安全化（只留 ASCII
+/// 应用名：优先 `project.toml` 的 `publish_name`，其次 `name`，最后
+/// [`DEFAULT_APP_NAME`]。结果会做文件名安全化（只留 ASCII
 /// 字母数字、`-`、`_`，其余换成 `-`）。
 #[must_use]
 pub fn app_name(project_root: &Path) -> String {
     let raw = super::project_config::publish_name(project_root)
-        .or_else(|| super::project_config::project_name(project_root))
         .unwrap_or_else(|| DEFAULT_APP_NAME.to_owned());
     sanitize_component(&raw)
 }
@@ -159,8 +159,9 @@ fn platform_data_dir() -> PathBuf {
     env::temp_dir().join("rustlua-user")
 }
 
-/// 首次运行时把发布包里的 `settings.toml` 复制到用户目录作为**默认值**，
-/// 之后用户目录里的文件就是唯一真相（升级发布包不会覆盖玩家的改键/音量）。
+/// 首次运行时把发布包里的 `project.toml`（含 `[input]`/`[audio]` 段）复制到用户
+/// 目录作为**默认值**，之后用户目录里的文件就是唯一真相（升级发布包不会覆盖玩家
+/// 的改键/音量）。
 ///
 /// 返回 `Ok(true)` 表示这次真的播种了。用户文件已存在 → `Ok(false)`（不动它）。
 /// 目录创建或复制失败返回错误（调用方决定是警告还是失败，不静默吞掉）。
@@ -172,7 +173,7 @@ pub fn seed_settings(roots: &DataRoots, pack_root: &Path) -> Result<bool> {
     if target.is_file() {
         return Ok(false);
     }
-    let source = pack_root.join("settings.toml");
+    let source = pack_root.join("project.toml");
     if !source.is_file() {
         return Ok(false);
     }
@@ -233,17 +234,17 @@ mod tests {
         root
     }
 
-    /// 造一个"发布包安装目录"：`<install>/pack` + 旁边 `release.toml`，返回 pack 目录。
+    /// 造一个"发布包安装目录"：`<install>/pack`，其内 `project.toml` 带
+    /// `release = true` 与 `publish_name`（正式发行名 ≠ 工程名），返回 pack 目录。
     fn install_pack(tag: &str, publish_name: &str) -> PathBuf {
         let install = temp_root(tag);
         let pack = install.join("pack");
         fs::create_dir_all(&pack).unwrap();
         fs::write(
-            install.join("release.toml"),
-            format!("publish_name = \"{publish_name}\"\n"),
+            pack.join("project.toml"),
+            format!("name = \"DemoGame\"\npublish_name = \"{publish_name}\"\nrelease = true\n"),
         )
         .unwrap();
-        fs::write(pack.join("project.toml"), "name = \"DemoGame\"\n").unwrap();
         pack
     }
 
@@ -260,14 +261,14 @@ mod tests {
         let base = temp_root("devbase");
         let roots = data_roots_at(&root, false, &base);
         assert!(!roots.packaged);
-        assert_eq!(roots.settings_file(), root.join("settings.toml"));
+        assert_eq!(roots.settings_file(), root.join("project.toml"));
         assert_eq!(roots.save_file(), root.join(".cache").join("save.sav"));
         assert!(!roots.save_dir.starts_with(&base), "开发工程不碰用户目录");
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// 发布包：`<exe>/pack` + 旁边 `release.toml` ⇒ 用户数据目录，且**不写进程序目录**。
+    /// 发布包：`<exe>/pack` 且其内 `project.toml` 带 `release = true` ⇒ 用户数据目录，且**不写进程序目录**。
     #[test]
     fn release_pack_writes_into_the_user_data_directory() {
         let pack = install_pack("pack", "Demo");
@@ -292,7 +293,7 @@ mod tests {
     }
 
     /// `--pack` 明确指定时即使目录不叫 `pack` 也按发布包处理；目录名叫 `pack`
-    /// 但旁边没有 `release.toml`（例如开发时手动 `assetc package` 的输出）按开发工程处理。
+    /// 但 `project.toml` 没带 `release = true`（例如开发时手动 `assetc package` 的输出）按开发工程处理。
     #[test]
     fn pack_detection_requires_release_marker_or_explicit_flag() {
         let root = temp_root("detect");
@@ -300,16 +301,20 @@ mod tests {
         fs::create_dir_all(&pack).unwrap();
         assert!(!is_release_pack(&pack, false));
         assert!(is_release_pack(&pack, true));
-        fs::write(root.join("release.toml"), "publish_name = \"Demo\"\n").unwrap();
         fs::write(
             root.join(crate::project_config::PROJECT_TOML),
             "name = \"Demo\"\n",
         )
         .unwrap();
+        fs::write(
+            pack.join(crate::project_config::PROJECT_TOML),
+            "name = \"Demo\"\nrelease = true\n",
+        )
+        .unwrap();
         assert!(is_release_pack(&pack, false));
         assert!(!is_release_pack(&root, false), "非 pack 目录不算发布包");
         // 显式 `--pack` 且目录不叫 pack：仍按发布包处理。应用名退回 `project.toml`
-        // 的 name——这个布局下没有与 `pack/` 同级的 `release.toml` 标记可读。
+        // 的 name——这个布局下发布标记在 pack 内、根目录没有可读标记。
         let base = temp_root("detectbase");
         let explicit = data_roots_at(&root, true, &base);
         assert!(explicit.packaged);
@@ -318,22 +323,30 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// 首次运行播种设置：包里的 `settings.toml` → 用户目录；此后用户文件是唯一真相，
-    /// 再次调用（模拟升级发布包）**不得**覆盖玩家改过的设置。
+    /// 首次运行播种设置：包里的 `project.toml`（含 `[input]`/`[audio]` 段）→ 用户目录；
+    /// 此后用户文件是唯一真相，再次调用（模拟升级发布包）**不得**覆盖玩家改过的设置。
     #[test]
     fn first_run_seeds_settings_and_never_overwrites_user_edits() {
         let pack = install_pack("seed", "Demo");
-        fs::write(pack.join("settings.toml"), "[audio]\nmusic = 0.5\n").unwrap();
+        fs::write(
+            pack.join("project.toml"),
+            "release = true\n[audio]\nmusic = 0.5\n",
+        )
+        .unwrap();
         let base = temp_root("seedbase");
         let roots = data_roots_at(&pack, false, &base);
         assert!(seed_settings(&roots, &pack).unwrap(), "首次运行应播种");
         assert_eq!(
             fs::read_to_string(roots.settings_file()).unwrap(),
-            "[audio]\nmusic = 0.5\n"
+            "release = true\n[audio]\nmusic = 0.5\n"
         );
         // 玩家改了设置，发布包也换了默认值 → 用户文件必须原样保留。
         fs::write(roots.settings_file(), "[audio]\nmusic = 0.1\n").unwrap();
-        fs::write(pack.join("settings.toml"), "[audio]\nmusic = 0.9\n").unwrap();
+        fs::write(
+            pack.join("project.toml"),
+            "release = true\n[audio]\nmusic = 0.9\n",
+        )
+        .unwrap();
         assert!(
             !seed_settings(&roots, &pack).unwrap(),
             "已有用户文件不再播种"
@@ -343,10 +356,10 @@ mod tests {
             "[audio]\nmusic = 0.1\n",
             "升级不得覆盖玩家设置"
         );
-        // 开发工程不播种：工程内的 settings.toml 就是玩家设置本身。
+        // 开发工程不播种：工程内的 project.toml 就是玩家设置本身。
         let dev = temp_root("seeddev");
         fs::write(dev.join("project.toml"), "name = \"Demo\"\n").unwrap();
-        fs::write(dev.join("settings.toml"), "[audio]\nmusic = 0.5\n").unwrap();
+        fs::write(dev.join("project.toml"), "[audio]\nmusic = 0.5\n").unwrap();
         let dev_roots = data_roots_at(&dev, false, &base);
         assert!(!seed_settings(&dev_roots, &dev).unwrap());
         let _ = fs::remove_dir_all(install_of(&pack));
@@ -354,11 +367,12 @@ mod tests {
         let _ = fs::remove_dir_all(&dev);
     }
 
-    /// 包内没有 `settings.toml` 时不播种（不能凭空造文件）；存档目录按需创建；
+    /// 包内没有 `project.toml` 时不播种（不能凭空造文件）；存档目录按需创建；
     /// 应用名做文件名安全化（发布名含空格/非 ASCII 时不能生成有问题的路径）。
     #[test]
     fn seeding_is_skipped_without_defaults_and_save_dir_is_created() {
         let pack = install_pack("sanitize", "江湖 有田");
+        let _ = fs::remove_file(pack.join("project.toml"));
         let base = temp_root("sanitizebase");
         let roots = data_roots_at(&pack, false, &base);
         assert!(!seed_settings(&roots, &pack).unwrap(), "包内无默认设置");
@@ -400,9 +414,10 @@ mod tests {
     #[test]
     fn missing_names_fall_back_to_default_app_name() {
         let root = temp_root("noname");
-        fs::create_dir_all(root.join("pack")).unwrap();
-        fs::write(root.join("release.toml"), "# empty\n").unwrap();
-        assert_eq!(app_name(&root.join("pack")), DEFAULT_APP_NAME);
+        let pack = root.join("pack");
+        fs::create_dir_all(&pack).unwrap();
+        fs::write(pack.join("project.toml"), "release = true\n# empty\n").unwrap();
+        assert_eq!(app_name(&pack), DEFAULT_APP_NAME);
         assert_eq!(sanitize_component("   "), DEFAULT_APP_NAME);
         assert_eq!(sanitize_component("a b"), "a-b");
         let _ = fs::remove_dir_all(&root);

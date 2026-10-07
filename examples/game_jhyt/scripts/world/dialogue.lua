@@ -29,12 +29,14 @@ local nav = require("ui.panel_nav")
 -- M20-09：键鼠/手柄两套操作说明（本模块不 require ui.input，避免 require 环；
 -- 设备判定与绑定命名都在 ui.hints 里，面板自己画底部提示时才不会写死键盘文案）。
 local hints = require("ui.hints")
--- M59：对话面板的**版面**（矩形、锚点、行距、字号、贴图键）搬进 UI 预设
--- `assets/ui/prefabs/dialogue.ui.json`，本文件只喂内容取值（说话人、台词、选项、立绘）。
--- 调 UI 表现因此不用动玩法代码：改 JSON 里的 offsets/spacing 就够了。
--- 面板矩形仍指回 `ui/layout.lua`（预设的 `layout_source = "dialogue"`，唯一定义处），
--- 预设里另写的那一份由 `ui/prefab.lua` 的 `audit()` 逐值对账，两边不一致就报错。
-local prefab = require("ui.prefab")
+-- M71：对话面板的**版面**（矩形、锚点、行距、字号、贴图键）搬进运行期预设
+-- `assets/prefabs/dialogue.prefab`（对账门 = jhyt_m71_dialogue_prefab，黄金表 34 行
+-- 钉死迁移前画面），本文件只喂内容取值（说话人、台词、选项、提示、立绘）。
+-- 开/关屏 = 根节点显隐（`prefab.set_visible` 子树语义），不撤重铺（M63c 教训）。
+-- 立绘本体留动态层 `ui.image`：贴图随 NPC/mood 运行期变化，引擎无运行期换贴图 API
+-- （A6 裁定叠图互斥不适用，立绘是整图路径不是二选一）。
+-- `prefab.*` 是引擎注入的全局运行期预设 API（spawn/set_visible/set_text），
+-- 不再 require `ui.prefab`（JSON 预设层，M71 退役）。
 -- docs/48 portraits 接线：对话立绘（speaker + 节点 mood → 立绘贴图）。
 local portrait = require("ui.portrait")
 
@@ -43,11 +45,11 @@ local M = {}
 local TILE = 32
 local INTERACT_RANGE = 56 -- 世界单位，约 1.75 格
 -- 选项**槽位上限**：与数字直选 1..5 同源，也必须与预设里 `options.max` 一致
--- （`jhyt_m59_ui_prefab` 逐节点对账守住这一条）。
+-- （`jhyt_m71_dialogue_prefab` 逐节点对账守住这一条）。
 local OPTION_LIMIT = 5
 
--- 对话面板的版面（矩形/锚点/行距/字号/贴图键）在 `assets/ui/prefabs/dialogue.ui.json`：
--- 调 UI 表现改那份数据，不改本文件（M59）。
+-- 对话面板的版面（矩形/锚点/行距/字号/贴图键）在 `assets/prefabs/dialogue.prefab`：
+-- 调 UI 表现改那份数据，不改本文件（M71）。
 
 local FOCUS = "dlg:focus"
 
@@ -243,10 +245,60 @@ local function cond_ok(cond)
   return true
 end
 
--- 关面板的收口交给预设：它知道树上**每一个 id**，所以不会再出现"漏清一条 =
+-- M71：静态版式搬进 `assets/prefabs/dialogue.prefab`（对账门 = jhyt_m71_dialogue_prefab，
+-- 黄金表 34 行钉死迁移前画面），render 只写会变的部分：说话人/台词/选项/提示文本、
+-- 选中行 marker 互斥、推进箭头显隐；立绘本体留动态层（贴图随 NPC/mood 变化）。
+-- 开/关屏 = 根节点显隐（`prefab.set_visible` 子树语义，藏父带子、藏节点不建布局项），
+-- 不撤重铺，避免槽位 LIFO 复用打乱绘制序（M63c 教训）。
+local PRESET_PATH = "assets/prefabs/dialogue.prefab"
+local preset_handle = nil
+local preset_spawned = false
+
+-- M71 修复：场景切换重建 ECS 世界后旧句柄失效，纯布尔标志漏判 → set_text 报「没有 handle N」；
+-- 改成对句柄真实探活（`prefab.root` 失效句柄抛错，pcall 兜底）。
+local function preset_live()
+  if not preset_handle then
+    return false
+  end
+  local ok, alive = pcall(function() return prefab.root(preset_handle) ~= nil end)
+  return ok and alive == true
+end
+
+local function preset_spawn()
+  if preset_handle and preset_live() then
+    return true
+  end
+  preset_handle = prefab.spawn(PRESET_PATH)
+  preset_spawned = true
+  return true
+end
+
+local function preset_show()
+  preset_spawn()
+  prefab.set_visible(preset_handle, "DlgRoot", true)
+  return true
+end
+
+local function preset_hide()
+  if preset_live() then
+    prefab.set_visible(preset_handle, "DlgRoot", false)
+  end
+  return true
+end
+
+-- 验收（jhyt_m19_ui 对话断言）取 spawn 句柄；start 前为 nil。
+function M.preset_ref()
+  return preset_handle
+end
+
+-- 关面板的收口交给预设：藏根 = 整面板连同所有 id 一起收掉，不会再出现"漏清一条 =
 -- 上一段对话的选项还挂在屏幕上"（引擎的 UI 记录是 retained 的，只有切场景才清空）。
+-- 立绘是跨帧持久的 `ui.image`，也要显式收掉。
 local function clear_ui()
-  prefab.clear("dialogue")
+  if preset_live() then
+    prefab.set_visible(preset_handle, "DlgRoot", false)
+  end
+  ui.clear("dlg:portrait")
 end
 
 -- 当前节点可选项（已按 cond 过滤），保持数据顺序。
@@ -377,7 +429,8 @@ local function option_label(index, entry)
 end
 
 -- 绘制对话面板（场景切换会清空动态 UI，故每次换节点/开始都整体重绘）。
--- 版面取自 UI 预设，这里只喂内容取值：说话人 / 台词 / 选项 / 提示 / 立绘。
+-- 静态版式取自预设（`assets/prefabs/dialogue.prefab`），这里只喂内容取值：
+-- 说话人 / 台词 / 选项 / 提示 / 立绘（立绘是动态层 `ui.image`，贴图随 NPC/mood 变化）。
 function M.render()
   if not active then
     return false
@@ -391,24 +444,41 @@ function M.render()
   -- 选项数量随节点/条件变化：重绘时同步焦点环（M20-02）。
   sync_focus()
   local options = M.options()
-  local rows = {}
-  for index, entry in ipairs(options) do
-    rows[index] = { text = option_label(index, entry), selected = index == selected }
+  -- 静态版式在预设里，开屏/重绘只喂会变的部分。
+  preset_show()
+  local P = preset_handle
+  prefab.set_text(P, "DlgSpeaker", speaker and speaker.name or "")
+  prefab.set_text(P, "DlgBody", node.text or "")
+  prefab.set_text(P, "DlgHint", hint_line())
+  -- 选项行 + 选中箭头互斥（同一矩形叠 marker 图，选中行显、其余藏；行数不足的槽位
+  -- 整行隐藏，选项 label 里的 `> ` 前缀与迁移前逐字符一致）。
+  local last = 0
+  for index = 1, OPTION_LIMIT do
+    local opt_name = "DlgOpt" .. index
+    local mark_name = "DlgMarker" .. index
+    local entry = options[index]
+    if entry then
+      last = index
+      prefab.set_text(P, opt_name, option_label(index, entry))
+      prefab.set_visible(P, opt_name, true)
+    else
+      prefab.set_visible(P, opt_name, false)
+    end
+    prefab.set_visible(P, mark_name, entry ~= nil and index == selected)
   end
-  -- 立绘：表情随节点 mood；无立绘的角色 `texture_for` 返回 nil，预设里那两个节点整帧收口。
-  -- `display_size()` 与有没有立绘无关（预设的锚点偏移要读这两个数值槽），所以照旧无条件取。
+  -- 推进箭头：还有可选项才显（终节点无选项、结束收口）；A 态开场有 4 选项常显。
+  prefab.set_visible(P, "DlgContinue", last > 0)
+  -- 立绘：表情随节点 mood；无立绘的角色 `texture_for` 返回 nil，整帧收掉。
+  -- `display_size()` 恒 96×96（预设的立绘矩形按它算，黄金表钉死 592,348,96×96），
+  -- 照旧无条件取。`ui.image` 跨帧持久，无立绘时显式 `ui.clear` 收干净。
   local pw, ph = portrait.display_size()
   local tex = portrait.texture_for(def.speaker, node)
-  return prefab.render("dialogue", {
-    speaker = speaker and speaker.name or "",
-    body = node.text,
-    options = rows,
-    hint = hint_line(),
-    has_portrait = tex ~= nil,
-    portrait_tex = tex,
-    portrait_w = pw,
-    portrait_h = ph,
-  })
+  if tex then
+    ui.image("dlg:portrait", 592, 348, pw, ph, tex, 1.0, 1.0, 1.0)
+  else
+    ui.clear("dlg:portrait")
+  end
+  return true
 end
 
 function M.start(dialogue_id)

@@ -80,6 +80,35 @@
     return { name, entities, declared };
   }
 
+  // .prefab 与 .scene 同构（entity/component 行），但带 parent 列（第三列）与 root= 头部。
+  // 渲染只需要 UiLayout/Image/Text（offsets 是绝对屏幕坐标，UI 布局不依赖父子边），
+  // parent 仅用于 `prefab.set_visible` 的子树显隐语义。
+  function parsePrefab(text) {
+    const entities = new Map();
+    let rootId = null;
+    for (const line of text.split(/\r?\n/)) {
+      const parts = line.split('\t');
+      if (parts[0] === 'entity') {
+        const id = Number(parts[1]);
+        entities.set(id, {
+          id,
+          sourceId: id,
+          name: parts[2] || '',
+          parent: parts[3] !== undefined && parts[3] !== '' ? Number(parts[3]) : null,
+          alive: true,
+          components: {},
+        });
+      } else if (parts[0] === 'component') {
+        const entity = entities.get(Number(parts[1]));
+        if (entity) entity.components[parts[2]] = parts.slice(3).join('\t');
+      }
+    }
+    const rootLine = text.split(/\r?\n/).find(line => line.startsWith('root='));
+    if (rootLine) rootId = Number(rootLine.slice(5));
+    for (const entity of entities.values()) applyComponents(entity);
+    return { entities, rootId };
+  }
+
   // 组件串 → 实体字段。**parseScene 与运行期 `sprite.set` / `animation.attach` 共用这一份**：
   // 引擎里这两条 API 收的正是同一种组件串（`Sprite=..` / `Animation=..`，见
   // core/script.rs 的 sprite.set 与 animation.attach），各写一份解析必然漂移。
@@ -918,6 +947,9 @@
     const screenUiEntities = [];
     for (const entity of sceneState.entities.values()) {
       if (!entity.alive || entity.tilemap) continue;
+      // 预设子树显隐（`prefab.set_visible` 子树语义）：隐藏的节点不进入绘制趟，
+      // 与原生侧「被隐藏的整棵子树一个布局项都不建」同一口径。
+      if (entity.prefabHidden) continue;
       if (entity.uiRect) screenUiEntities.push(entity);
       else worldEntities.push(entity);
     }
@@ -1066,6 +1098,24 @@ for _, id in pairs(__rustlua_names) do __rustlua_alive[id] = true end`;
     return `
 ${sceneBindings(sceneState)}
 __rustlua_save = {}
+-- prefab 七 API 的 web 模拟：Rust 侧的 prefab.spawn 把实体建进引擎 ECS，而 web 渲染
+-- 只认 Lua 模拟侧（__rustlua_* 表 + sceneState），两条链不通，预设 UI 就整屏不画。
+-- 这里用 JS 桥（__rustlua_prefab_*，注册见 rustluaRunLuaGame）在渲染侧建实体。
+-- 语义与引擎一致：spawn 返回句柄；root/node 返回实体 id（无效句柄返回 nil，探活用
+-- pcall(root ~= nil) 判死；引擎版对死句柄抛错，pcall 同样兜底）；set_visible 子树显隐。
+prefab = {
+  spawn = function(path)
+    local h = __rustlua_prefab_spawn(tostring(path))
+    if h == nil then return nil end
+    return h
+  end,
+  despawn = function(h) return __rustlua_prefab_despawn(h) == true end,
+  root = function(h) return __rustlua_prefab_root(h) end,
+  node = function(h, name) return __rustlua_prefab_node(h, tostring(name)) end,
+  set_text = function(h, name, text) return __rustlua_prefab_set_text(h, tostring(name), tostring(text or '')) == true end,
+  set_visible = function(h, name, visible) return __rustlua_prefab_set_visible(h, tostring(name), visible ~= false) == true end,
+  set_rect = function(h, name, l, t, r, b) return __rustlua_prefab_set_rect(h, tostring(name), tonumber(l), tonumber(t), tonumber(r), tonumber(b)) == true end,
+}
 -- 虚拟键（触屏摇杆/虚拟按钮注入）是**跨帧保持**的按住态：引擎 InputSnapshot::
 -- inherit_virtual_keys 每帧把上一份快照的虚拟键集合并入新快照。宿主每帧都整份替换
 -- __rustlua_input（设备层重新采样），不并回来就会退化成「摇杆能动、角色不动」——
@@ -3011,6 +3061,13 @@ function doString(L, source, name) {
 
   window.rustluaRunLuaGame = async function (status) {
     if (!window.__RUSTLUA_LUA_BRIDGE) throw new Error('wasm lua bridge not loaded (fengari execution layer removed)');
+    // prefab 模拟的 JS 侧状态：`.prefab` 文本缓存（manifest 预载）+ 句柄 → 实例表。
+    // 实例实体直接进 sceneState（UiLayout/Image/Text 同场景实体一条渲染路径），
+    // 换场景时整表清空（引擎 world 重建，预设实例随之销毁）。
+    const prefabCache = {};
+    const prefabInstances = new Map();
+    let nextPrefabHandle = 1;
+    const PREFAB_SLOT = 1000;
     const bridge = window.__RUSTLUA_LUA_BRIDGE;
     const project = await fetchText('pack/project.toml');
     const startup = keyValue(project, 'startup_scene', 'scenes/main.scene');
@@ -3038,6 +3095,11 @@ function doString(L, source, name) {
       }
       // 音频文件名集合给音频后端做"在不在"的同步判据（浏览器没有 accessSync）。
       if (path && path.startsWith('assets/audio/')) knownAudio.add(path);
+      // 预设文件整包预载：`prefab.spawn` 是同步调用（Lua 侧没有 await），不能运行期
+      // 再 fetch——启动时按 manifest 一次性读进缓存，spawn 只查表。
+      if (path && path.startsWith('assets/prefabs/') && path.endsWith('.prefab')) {
+        prefabCache[path] = await fetchText('pack/' + path);
+      }
       if (path && path.startsWith('scripts/') && path.endsWith('.lua')) {
         const name = path.slice('scripts/'.length, -'.lua'.length).replace(/\//g, '.');
         modules[name] = await fetchText('pack/' + path);
@@ -3061,6 +3123,105 @@ function doString(L, source, name) {
     bridge.lua_boot();
     const L = null;
     installLuaAudioBridge(knownAudio);
+    // prefab 七 API 的 JS 桥：Lua 侧 prefab 表（luaPrelude 里的模拟）调这些回调，
+    // 在渲染侧（sceneState）直接建/改预设实体。回调返回数组 = Lua 多返回值。
+    bridge.lua_register_js_callback('__rustlua_prefab_spawn', function (path) {
+      path = String(path || '');
+      const text = prefabCache[path] || prefabCache['assets/prefabs/' + path.replace(/^.*prefabs\//, '')];
+      if (!text) return [null];
+      const parsed = parsePrefab(text);
+      const handle = nextPrefabHandle++;
+      const base = handle * PREFAB_SLOT;
+      const entities = new Map();
+      const names = new Map();
+      let rootWebId = null;
+      for (const [srcId, src] of parsed.entities) {
+        const webId = base + srcId;
+        const entity = {
+          id: webId,
+          sourceId: srcId,
+          name: src.name,
+          parent: src.parent === null ? null : base + src.parent,
+          alive: true,
+          components: src.components,
+          prefabHandle: handle,
+          prefabHidden: false,
+        };
+        applyComponents(entity);
+        sceneState.entities.set(webId, entity);
+        entities.set(webId, entity);
+        if (src.name) names.set(src.name, webId);
+        if (srcId === parsed.rootId) rootWebId = webId;
+      }
+      prefabInstances.set(handle, { entities, names, rootWebId });
+      return [handle];
+    });
+    bridge.lua_register_js_callback('__rustlua_prefab_despawn', function (handle) {
+      const inst = prefabInstances.get(Number(handle));
+      if (!inst) return [false];
+      for (const webId of inst.entities.keys()) sceneState.entities.delete(webId);
+      prefabInstances.delete(Number(handle));
+      return [true];
+    });
+    bridge.lua_register_js_callback('__rustlua_prefab_root', function (handle) {
+      const inst = prefabInstances.get(Number(handle));
+      return inst ? [inst.rootWebId] : [null];
+    });
+    bridge.lua_register_js_callback('__rustlua_prefab_node', function (handle, name) {
+      const inst = prefabInstances.get(Number(handle));
+      if (!inst) return [null];
+      const webId = inst.names.get(String(name));
+      return webId ? [webId] : [null];
+    });
+    bridge.lua_register_js_callback('__rustlua_prefab_set_text', function (handle, name, text) {
+      const inst = prefabInstances.get(Number(handle));
+      if (!inst) return [false];
+      const webId = inst.names.get(String(name));
+      if (!webId) return [false];
+      const entity = sceneState.entities.get(webId);
+      if (!entity) return [false];
+      const value = String(text == null ? '' : text);
+      const old = String(entity.components.Text || '');
+      entity.components.Text = old.replace(/text=[^;]*/, 'text=' + value);
+      if (!entity.text) {
+        applyComponents(entity);
+      } else {
+        entity.text.value = value;
+      }
+      return [true];
+    });
+    bridge.lua_register_js_callback('__rustlua_prefab_set_visible', function (handle, name, visible) {
+      const inst = prefabInstances.get(Number(handle));
+      if (!inst) return [false];
+      const webId = inst.names.get(String(name));
+      if (!webId) return [false];
+      const v = visible !== false;
+      const stack = [webId];
+      while (stack.length) {
+        const cur = stack.pop();
+        const entity = sceneState.entities.get(cur);
+        if (!entity) continue;
+        entity.prefabHidden = !v;
+        for (const [id, e] of inst.entities) {
+          if (e.parent === cur) stack.push(id);
+        }
+      }
+      return [true];
+    });
+    bridge.lua_register_js_callback('__rustlua_prefab_set_rect', function (handle, name, l, t, r, b) {
+      const inst = prefabInstances.get(Number(handle));
+      if (!inst) return [false];
+      const webId = inst.names.get(String(name));
+      if (!webId) return [false];
+      const entity = sceneState.entities.get(webId);
+      if (!entity) return [false];
+      const left = Number(l), top = Number(t), right = Number(r), bottom = Number(b);
+      entity.uiRect = { x: left, y: top, w: right - left, h: bottom - top };
+      if (entity.components.UiLayout) {
+        entity.components.UiLayout = String(entity.components.UiLayout).replace(/offsets=[^;]*/, 'offsets=' + left + ',' + top + ',' + right + ',' + bottom);
+      }
+      return [true];
+    });
     // `ui.measure_text` 用**真正绘制文字的那支字体、同一个 2D 上下文**量宽，与原生同源
     // （api/ui.rs → render::text::measure_text 用项目字体度量）。原先 Lua 侧按
     // 「0.6 × 字号 × 字数」估算，而全角中文实际占 1 em ⇒ 估出的是真宽的 60%，凡是
@@ -3655,6 +3816,9 @@ end
         const nextImages = await loadSceneImages(next);
         doString(L, sceneBindings(next), 'engine-host-scene');
         sceneState = next;
+        // 引擎换场景整张 world 重建，prefab 实例随之销毁：渲染侧同步清空，
+        // 否则旧场景的预设实体（句柄已死）会残留在 sceneState 里继续画。
+        prefabInstances.clear();
         images = nextImages;
         pendingTextures.clear();
         callGlobal(L, 'on_create');

@@ -74,15 +74,20 @@ const COMPONENT_FIELD_PATTERN = /([A-Za-z_][A-Za-z0-9_]*)=/g;
 // 改这里**不是**为了过 4MB 线；为的是"首屏清单 = 入口界面要用的"这个契约本身（此前它等价于"全部 UI"）。
 // 需要临时多带某目录时用 --include <pack 相对前缀>，不动这里的默认值。
 //
-// M59 追加 `assets/ui/prefabs/`（UI 预设 JSON，当前 1 个文件 4,209 B）：这一类不是贴图，
-// 而是**启动期就要同步读**的数据文件——`main.lua` 的 `validate_content()` 在 `on_create`
-// 里跑 `validate_data`，而 `ui/prefab.lua` 登记在门里（预设是数据文件，改坏没有语法错误，
-// 只能靠启动门读一遍）。微信分包形态下 `wechatReadFile` 是**同步** `readText`（不 await
-// `ensurePack`，见 wechat-adapter.js 的 lua_boot_with_reader），文件若只躺在分包 pack/ 里，
-// 首帧 boot 就读不到 → `validate_content` 当场 error → 白屏。所以"被启动门读的东西"按定义
-// 就是首屏资源。（web 形态没有这个问题：index.html 先把 manifest.txt 里每个文件取进
-// LUA_RESOURCES 才 boot。）
-const DEFAULT_INCLUDE_PREFIXES = ['assets/art/ui/menu/', 'assets/ui/prefabs/'];
+// M59 追加、M71 退役 `assets/ui/prefabs/`：JSON 预设层已整体退役（dialogue.ui.json 删除、
+// `ui/prefab.lua` 的 validate 登记移除），目录为空不再首屏携带。运行期 `.prefab`
+// （assets/prefabs/*.prefab）由 `on_create` 里 `prefab.spawn` 走 VFS 读，不属于首屏清单。
+//
+// M71 追加 `assets/art/ui/hud/` 与 `assets/art/ui/skills/`：HUD 是**常驻**界面，其动态层
+// （状态图标 hud_status_*、资源条图标 hud_icon_*、头像框、招式卡图标）由 `ui.image` 每帧
+// 绘制，静态推不出来也不在 `.prefab` 的贴图闭包里；首屏不带 = PC/小游戏发布后 HUD 图标
+// 全部缺失（2026-10-06 PC 实测：招式卡图标空白）。其余局内面板目录（common/backpack/
+// shop/quest/settings/save/dialogue/touch）只在面板打开时绘制，仍留在分包。
+const DEFAULT_INCLUDE_PREFIXES = [
+  'assets/art/ui/menu/',
+  'assets/art/ui/hud/',
+  'assets/art/ui/skills/'
+];
 
 const MANIFEST_HEADER_KEY = 'assetc_manifest';
 

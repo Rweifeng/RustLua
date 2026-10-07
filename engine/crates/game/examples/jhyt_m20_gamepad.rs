@@ -15,14 +15,14 @@
 //! - ⑥对话与商店的手柄导航（DPad = ui_up/ui_down + 摇杆按住重复）与 A 确认、
 //!   B 取消；
 //! - ⑦战斗：手柄 X 普攻、Y 武学（内力消耗）、战败后 Back 键重开；
-//! - ⑧`settings.toml` 往返：改绑 → `input.save_settings()`（保留 `[audio]` 段与
+//! - ⑧`project.toml` 往返：改绑 → `input.save_settings()`（保留 `[audio]` 段与
 //!   注释）→ 新 runtime 启动时 `input.load_settings()` 生效；跑完仓库不残留；
 //! - ⑨断连（`GamepadFrame::disconnected()`）清空按钮与轴、不粘键、可重连；
 //! - ⑩编辑器预览等价路径：**每帧全新 `InputSnapshot`**（只桥接键鼠，不跨帧保留
 //!   手柄）时，摇杆持续推住仍每帧都有输入，松杆即停；
 //! - ⑪UI 操作说明两套：键鼠显示键位说明、手柄显示手柄说明，按最近使用的设备切换。
 //!
-//! 本示例用 `SettingsGuard` 备份/恢复 `<project>/settings.toml`（示例必须写入才
+//! 本示例用 `SettingsGuard` 备份/恢复 `<project>/project.toml`（示例必须写入才
 //! 能验证启动应用与保序写回），并在成功/失败路径下都还原仓库状态。
 //!
 //! 真实手柄的「设备 ↔ 动作层」由 M20-06 的 XInput 后端与设备层单测覆盖，本示例
@@ -45,9 +45,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// 示例写入的设置文件模板：注释 + `[audio]` 段 + **部分** `[input]` 映射
-/// （缺的动作由引擎默认值补齐，验证「旧设置文件仍可玩」）。
-const SETTINGS_TEMPLATE: &str = "# M20-08 手柄验收设置（示例结束时按原样恢复）\n[audio]\nmaster = 0.5\nbgm = 0.25\n\n[input]\nmap = \"rustlua-actions-v1\\ninteract=key:e\"\n";
+/// 示例写入的设置文件模板：完整 `[project]` 段（窗口尺寸/启动脚本等，main.lua
+/// 启动校验会读） + `[audio]` 段 + **部分** `[input]` 映射（缺的动作由引擎默认值
+/// 补齐，验证「旧设置文件仍可玩」）。
+const SETTINGS_TEMPLATE: &str = "# M20-08 手柄验收设置（示例结束时按原样恢复）\n[project]\nname = \"game_jhyt\"\nversion = \"0.1.0\"\nengine = \"RustLua\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\nfont = \"assets/fonts/NotoSansSC-VF.ttf\"\nfont_fallback = \"\"\nfont_weight = 400.0\ntext_render_mode = \"vector\"\nwindow_width = 1280\nwindow_height = 720\n\n[audio]\nmaster = 0.5\nbgm = 0.25\n\n[input]\nmap = \"rustlua-actions-v1\\ninteract=key:e\"\n";
 
 /// 药田起步点（与 `jhyt_smoke` 一致）：格 (16,3)，朝上面前 (16,4) 落在药田内。
 const FARM_START: (f32, f32) = (528.0, 112.0);
@@ -78,9 +79,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !main_script.is_file() {
         return Err(format!("missing {}", main_script.display()).into());
     }
-    let settings_path = project.join("settings.toml");
+    let settings_path = project.join("project.toml");
     let settings_existed = settings_path.exists();
-    // 备份/恢复 settings.toml：示例写入的绑定不得污染仓库（与 jhyt_m20_audio 同套路）。
+    // 备份/恢复 project.toml：示例写入的绑定不得污染仓库（与 jhyt_m20_audio 同套路）。
     let guard = SettingsGuard::capture(&settings_path)?;
     fs::write(&settings_path, SETTINGS_TEMPLATE)?;
 
@@ -239,16 +240,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M20-09b 面板提示两套 + 导航手感可配：对话/商店/背包/任务/暂停按设备换文案");
     // 面板底部提示不能 require `ui.input`（`input → dialogue` 成环），统一走
-    // `ui.hints`：这里断言渲染出的实际文案，而不是断言函数返回值。
-    let panel_reader =
-        "(function() local t = ui.get('dlg:hint'); return t and tostring(t.text) or 'nil' end)()";
-    lua(
-        &mut runtime,
-        "require('world.dialogue').start('gu_changfeng_teach')",
-    )?;
+    // `ui.hints`。M71 预设化后提示经 `prefab.set_text(P,"DlgHint",hint_line())`
+    // 写入预设节点（渲染内容由 m71 黄金门按 id 对账），旧动态 id 已不存在；
+    // 这里断言提示文案生成逻辑本身：同一份片段按设备产出两套文案。
+    let hint_spec = "{ { keyboard = 'W/S', alt_keyboard = '方向键', gamepad = '左摇杆/DPad', label = '选择' }, { keyboard = '1/2/3/4/5', gamepad = '1/2/3/4/5', label = '直选' }, { keyboard = '空格', gamepad = 'A', label = '确认' }, { keyboard = 'Esc', gamepad = 'B', label = '结束' } }";
     lua(&mut runtime, "require('ui.hints').set_device('keyboard')")?;
-    lua(&mut runtime, "require('world.dialogue').render()")?;
-    let keyboard_panel = query_str(&mut runtime, panel_reader)?;
+    let keyboard_panel = query_str(
+        &mut runtime,
+        &format!("require('ui.hints').panel_line({hint_spec})"),
+    )?;
     for needle in [
         "W/S 或 方向键 选择",
         "1/2/3/4/5 直选",
@@ -260,8 +260,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     lua(&mut runtime, "require('ui.hints').set_device('gamepad')")?;
-    lua(&mut runtime, "require('world.dialogue').render()")?;
-    let gamepad_panel = query_str(&mut runtime, panel_reader)?;
+    let gamepad_panel = query_str(
+        &mut runtime,
+        &format!("require('ui.hints').panel_line({hint_spec})"),
+    )?;
     for needle in ["左摇杆/DPad 选择", "A 确认", "B 结束"] {
         if !gamepad_panel.contains(needle) {
             return Err(format!("手柄面板提示应含 {needle:?}：{gamepad_panel}").into());
@@ -274,8 +276,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("dialogue hint (gamepad):  {gamepad_panel}");
     // 切换设备只影响下一帧绘制，收尾前恢复自动检测。
     lua(&mut runtime, "require('ui.hints').set_device(nil)")?;
-    lua(&mut runtime, "require('world.dialogue').close(true)")?;
-    // 导航手感：settings.toml 的 [input] 三行会被启动 `apply_nav_settings()` 应用。
+    // 导航手感：project.toml 的 [input] 三行会被启动 `apply_nav_settings()` 应用。
     assert_num(&mut runtime, "input.nav_settings().threshold", 0.5)?;
     // M22/W3：重复节奏改成毫秒（旧的帧键仍可读，按 60Hz 换算）。
     assert_num(&mut runtime, "input.nav_settings().delay_ms", 350.0)?;
@@ -343,7 +344,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('ui.input').nav_settings().repeat_ms",
         16.0,
     )?;
-    // 恢复示例模板（后续章节仍按 M20-08 的 settings.toml 预期断言）。
+    // 恢复示例模板（后续章节仍按 M20-08 的 project.toml 预期断言）。
     fs::write(&settings_path, SETTINGS_TEMPLATE)?;
     lua(&mut runtime, "require('ui.input').apply_nav_settings()")?;
 
@@ -354,7 +355,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_str(&mut runtime, "input.bindings('interact')[1]", "key:keye")?;
     assert_num(&mut runtime, "#input.bindings('move_up')", 1.0)?;
     assert_str(&mut runtime, "input.bindings('move_up')[1]", "key:keyw")?;
-    // 玩家改键（settings.toml 的 [input] 段就是这份映射）：手柄按钮/轴 + 摇杆。
+    // 玩家改键（project.toml 的 [input] 段就是这份映射）：手柄按钮/轴 + 摇杆。
     for (action, binding) in [
         ("move_up", "padaxis:1+"),
         ("move_down", "padaxis:1-"),
@@ -791,12 +792,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pad.stick(0.0, 0.0);
     pad_tick(&mut runtime, &mut poller, &mut snapshot)?;
 
-    banner("M20-08h settings.toml 往返：保存绑定（保序）→ 新 runtime 启动应用");
+    banner("M20-08h project.toml 往返：保存绑定（保序）→ 新 runtime 启动应用");
     assert_str_why(
         &mut runtime,
         "select(1, input.save_settings())",
         "true",
-        "保存到 <project>/settings.toml",
+        "保存到 <project>/project.toml",
     )?;
     let written = fs::read_to_string(&settings_path)?;
     for needle in [
@@ -812,13 +813,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "respawn=pad:8",
     ] {
         if !written.contains(needle) {
-            return Err(format!("settings.toml 缺少 {needle:?}:\n{written}").into());
+            return Err(format!("project.toml 缺少 {needle:?}:\n{written}").into());
         }
     }
     if written.contains("ui_up=padaxis:1+") {
         return Err("解绑的 ui_up 轴绑定不应被写回".into());
     }
-    println!("settings.toml after save:\n{written}");
+    println!("project.toml after save:\n{written}");
     // 新 runtime：main.lua 的 boot_game → input.load_settings() 应用玩家改键，
     // 因此无需再 rebind，手柄 A 直接就能在药田翻土。
     let save_path2 = fresh_save_path(&project, "jhyt_m20_gamepad_boot.sav");
@@ -838,7 +839,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 玩家改键落盘后，文件里的版本头必须是 v2（读 v1 写 v2）。
     let booted_settings = fs::read_to_string(&settings_path)?;
     if !booted_settings.contains("rustlua-actions-v2") {
-        return Err(format!("settings.toml 应已升级到 v2 版本头：\n{booted_settings}").into());
+        return Err(format!("project.toml 应已升级到 v2 版本头：\n{booted_settings}").into());
     }
     assert_str(&mut booted, "input.diagnostics()[1]", "nil")?;
     lua(
@@ -1142,7 +1143,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 于是 W/S 在门面上**完全没反应**（提示与行为不一致）。面板都是「先 move_* 再
     // 退回 ui_step」，这里补齐同一条约定。
     //
-    // 前置：第 ⑫ 章把移动改绑到左摇杆并写进了 `settings.toml`，本运行时是按那份
+    // 前置：第 ⑫ 章把移动改绑到左摇杆并写进了 `project.toml`，本运行时是按那份
     // 文件启动的（`move_up = padaxis:1+`）。先复位到默认绑定，才谈得上「默认 W/S」。
     lua(&mut title, "input.reset_bindings()")?;
     assert_str_why(
@@ -1243,11 +1244,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "duration=0 应立即停止"
     );
 
-    // 收尾：恢复 settings.toml（原本不存在则删除），删除临时存档。
+    // 收尾：恢复 project.toml（原本不存在则删除），删除临时存档。
     drop(guard);
     if settings_path.exists() != settings_existed {
         return Err(format!(
-            "settings.toml 残留状态不符：存在={} 期望={settings_existed}",
+            "project.toml 残留状态不符：存在={} 期望={settings_existed}",
             settings_path.exists()
         )
         .into());
@@ -1423,7 +1424,7 @@ fn pad_press(
 
 // ---------- helpers ----------
 
-/// 备份 `<project>/settings.toml`，drop 时恢复（原本不存在则删除）。
+/// 备份 `<project>/project.toml`，drop 时恢复（原本不存在则删除）。
 struct SettingsGuard {
     path: PathBuf,
     original: Option<String>,

@@ -1,3 +1,9 @@
+//! **M71 退役声明**：JSON 预设层已整体退役——`assets/ui/prefabs/dialogue.ui.json` 删除、
+//! `ui/prefab.lua` 的 `NAMES` 清空、`validate_data` 登记移除、`first-screen-pack.js` 首屏
+//! 前缀移除，本门（依赖 `ui.prefab` 的 JSON render/audit）不再可跑，已从 `verify.ps1` 移除。
+//! 对话面板的对账由 `jhyt_m71_dialogue_prefab`（运行期 `.prefab` + 黄金表 34 行）接管，
+//! 锚点表与引擎的对账由 m71 门 `submission_order` 实测背书。本文件保留作历史记录。
+//!
 //! Headless acceptance drive for M59《江湖有田》UI 预设（prefab）地基 + `dialogue` 试点。
 //!
 //! 这一道门守的是"把版面从 Lua 搬进 JSON 之后，画面一个像素都没变"。

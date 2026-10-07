@@ -4,15 +4,15 @@
 //! 覆盖四类"发布出去才算数"的缺陷/契约（每条都能独立验收）：
 //!
 //! 1. **存档与玩家设置写进程序目录**：发布包装到 `C:\Program Files\...` 时对普通
-//!    用户不可写；即使可写，重装/卸载即丢档。现在发布包形态（`<exe>/pack` +
-//!    同级 `release.toml`，或 `game --pack`）把 `save.sav` 与 `settings.toml`
-//!    都写到用户数据目录（`%APPDATA%\<app>`，可用 `RUSTLUA_USER_DIR` 覆盖），
-//!    **发布包内的字节一个都不改**。开发工程形态不变（设置留工程根、存档进
-//!    `<project>/.cache`），编辑器与既有验收样例因此不受影响。
-//! 2. **升级覆盖玩家设置**：首次运行把包内 `settings.toml` 播种为默认值，之后
+//!    用户不可写；即使可写，重装/卸载即丢档。现在发布包形态（`<exe>/pack` 内
+//!    `project.toml` 带 `release = true`，或 `game --pack`）把 `save.sav` 与
+//!    `project.toml`（玩家设置）都写到用户数据目录（`%APPDATA%\<app>`，可用
+//!    `RUSTLUA_USER_DIR` 覆盖），**发布包内的字节一个都不改**。开发工程形态不变
+//!    （设置留工程根、存档进 `<project>/.cache`），编辑器与既有验收样例因此不受影响。
+//! 2. **升级覆盖玩家设置**：首次运行把包内 `project.toml` 播种为默认值，之后
 //!    用户目录那份是唯一真相——再次播种（= 换发布包）不得覆盖玩家改键/音量。
 //! 3. **设备后端与 Lua 面板读到不同的设置**：手柄死区由 Rust 侧从
-//!    `settings.toml` 读，改键/音量由 Lua 侧读写；两处必须同一个根，否则
+//!    `project.toml` 读，改键/音量由 Lua 侧读写；两处必须同一个根，否则
 //!    "面板显示一套、设备用另一套"。
 //! 4. **发布包内容与设备环境不能靠猜**：本示例直接检查真实发布目录的形态与
 //!    卫生（无 `.cache`/存档/`.staging-*` 残留）、真机手柄槽位采样结果、
@@ -43,19 +43,17 @@ const RELEASE_REL: &str = "builds/pc";
 /// 发布包必须存在的条目（`game.exe` 在上一级）。
 ///
 /// 字体在**包内**（`pack/assets/fonts/…`）而不是发布根：PC 形态不复制 17 MB 完整字体到发布根
-/// （见 `scripts/package.ps1` 的 pc 分支），运行时以 `pack/` 为工程根、按 `settings.toml` 的
+/// （见 `scripts/package.ps1` 的 pc 分支），运行时以 `pack/` 为工程根、按 `project.toml` 的
 /// `font` 路径读取；发布根下的 `fonts/` 只有 webgl 的 `index.html` 需要。此前这里按 webgl
 /// 的布局要求根下字体，于是**一条正确的 pc 发布反而过不了这个门**。
 const REQUIRED_RELEASE_ENTRIES: &[&str] = &[
     "game.exe",
-    "release.toml",
     "run.txt",
     "build-info.txt",
     "deps.txt",
     "pack/project.toml",
     "pack/manifest.txt",
     "pack/chars.txt",
-    "pack/settings.toml",
     "pack/assets/fonts/NotoSansSC-VF.ttf",
     "pack/scripts/main.lua",
     "pack/scripts/ui/ui_text.lua",
@@ -122,7 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pack_roots = user_dir::data_roots(&pack, false);
     if !pack_roots.packaged {
         return Err(
-            "release layout (<exe>/pack + release.toml) must be detected as packaged".into(),
+            "release layout (<exe>/pack with release=true in project.toml) must be detected as packaged".into(),
         );
     }
     if pack_roots.save_dir.starts_with(&pack) || pack_roots.settings_dir.starts_with(&pack) {
@@ -149,7 +147,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if dev_roots.packaged {
         return Err("source project must not be treated as a release pack".into());
     }
-    let expect_dev_settings = project.join("settings.toml");
+    let expect_dev_settings = project.join("project.toml");
     let expect_dev_save = project.join(".cache").join("save.sav");
     if dev_roots.settings_file() != expect_dev_settings || dev_roots.save_file() != expect_dev_save
     {
@@ -168,14 +166,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let install = work.join("install");
     let fake_pack = install.join("pack");
     copy_project_plane(&project, &fake_pack)?;
+    // 自定义发布名（正式发行名 ≠ 工程名）写进包内 project.toml；发布判定靠复制过来的
+    // `release = true` 标记（取代旧 release.toml）。
     fs::write(
-        install.join("release.toml"),
-        "publish_name = \"jhyt-acceptance\"\n",
+        fake_pack.join("project.toml"),
+        format!(
+            "{}\npublish_name = \"jhyt-acceptance\"\n",
+            fs::read_to_string(fake_pack.join("project.toml"))?
+        ),
     )?;
     let fake_roots = user_dir::data_roots(&fake_pack, false);
-    let pack_settings_before = fs::read(fake_pack.join("settings.toml"))?;
+    let pack_settings_before = fs::read(fake_pack.join("project.toml"))?;
     if !user_dir::seed_settings(&fake_roots, &fake_pack)? {
-        return Err("first run must seed settings.toml from the release pack".into());
+        return Err("first run must seed project.toml from the release pack".into());
     }
     if fs::read(fake_roots.settings_file())? != pack_settings_before {
         return Err("seeded settings must equal the packaged defaults".into());
@@ -187,12 +190,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let edited = set_toml_key(&seeded, "stick_deadzone", "0.33");
     let edited = set_toml_key(&edited, "trigger_deadzone", "0.11");
     if edited == seeded {
-        return Err("settings.toml must already declare stick_deadzone/trigger_deadzone".into());
+        return Err("project.toml must already declare stick_deadzone/trigger_deadzone".into());
     }
     fs::write(fake_roots.settings_file(), edited)?;
     fs::write(
-        fake_pack.join("settings.toml"),
-        "[audio]\nmaster = 0.9\nbgm = 0.9\nsfx = 0.9\nui = 0.9\n",
+        fake_pack.join("project.toml"),
+        "release = true\n[audio]\nmaster = 0.9\nbgm = 0.9\nsfx = 0.9\nui = 0.9\n",
     )?;
     if user_dir::seed_settings(&fake_roots, &fake_pack)? {
         return Err("upgrade must not re-seed over the player's settings".into());
@@ -233,8 +236,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !fs::read_to_string(fake_roots.settings_file())?.contains("interact=key:keyf") {
         return Err("rebound key must be written into the user data directory".into());
     }
-    // 发布包里的 `settings.toml` 只允许是包自带的默认值：玩家改键/死区一律不进包。
-    let pack_settings_after = fs::read_to_string(fake_pack.join("settings.toml"))?;
+    // 发布包里的 `project.toml` 只允许是包自带的默认值：玩家改键/死区一律不进包。
+    let pack_settings_after = fs::read_to_string(fake_pack.join("project.toml"))?;
     if pack_settings_after.contains("interact=key:keyf")
         || pack_settings_after.contains("stick_deadzone")
     {
@@ -372,10 +375,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if cjk < 500 {
         return Err(format!("packaged charset looks truncated: cjk={cjk}").into());
     }
-    let settings_text = fs::read_to_string(pack.join("settings.toml"))?;
+    let settings_text = fs::read_to_string(pack.join("project.toml"))?;
     // 发布默认设置必须自带 `[input]`（改键 + 死区）：玩家的改键/死区都在这两行上生效；
     // `[audio]` 段由首次 `audio.save_settings()` 建立，不要求随包发布。
-    // M22/W1：随包发布的是 v2 物理键文本（工程 `settings.toml` 里 `interact=key:keye`）。
+    // M22/W1：随包发布的是 v2 物理键文本（工程 `project.toml` 里 `interact=key:keye`）。
     for needle in [
         "[input]",
         "stick_deadzone",
@@ -383,7 +386,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "interact=key:keye",
     ] {
         if !settings_text.contains(needle) {
-            return Err(format!("packaged settings.toml must ship {needle}").into());
+            return Err(format!("packaged project.toml must ship {needle}").into());
         }
     }
     let run_text = fs::read_to_string(release.join("run.txt"))?;
@@ -516,7 +519,7 @@ fn extract_json_field(text: &str, key: &str) -> Option<String> {
     Some(value[..end].trim().to_owned())
 }
 
-/// 改写 `settings.toml` 里某个键的值（保留缩进与其余行）。键必须已存在——
+/// 改写 `project.toml` 里某个键的值（保留缩进与其余行）。键必须已存在——
 /// 这是"玩家在面板上改设置"的等价操作，键不存在说明发布默认值不完整。
 fn set_toml_key(text: &str, key: &str, value: &str) -> String {
     let prefix = format!("{key} =");
@@ -559,13 +562,11 @@ fn temp_dir(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(dir)
 }
 
-/// 复制"发布包脚本面"（project.toml + settings.toml + scripts/**）到临时发布包。
+/// 复制"发布包脚本面"（project.toml + scripts/**）到临时发布包。
 /// 只复制脚本与数据：本示例不渲染、不需要纹理/场景资源。
 fn copy_project_plane(project: &Path, pack: &Path) -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(pack)?;
-    for file in ["project.toml", "settings.toml"] {
-        fs::copy(project.join(file), pack.join(file))?;
-    }
+    fs::copy(project.join("project.toml"), pack.join("project.toml"))?;
     copy_tree(&project.join("scripts"), &pack.join("scripts"))?;
     Ok(())
 }

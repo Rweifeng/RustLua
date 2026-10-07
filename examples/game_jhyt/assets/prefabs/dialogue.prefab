@@ -1,0 +1,113 @@
+prefab_version=1
+asset_id=7a4c2d91-5e8b-4f31-a6c7-19d8b3e2f450
+name=Dialogue
+root=1
+# 对话面板（`world/dialogue.lua`）的 UI 预设：M71/B8 从 JSON 预设层
+# （`prefab.render` + `assets/ui/prefabs/dialogue.ui.json`）迁到运行期 `.prefab`。
+# 对账门 = `jhyt_m71_dialogue_prefab`：黄金表 34 行（A 态 = 开场对话 gu_changfeng_teach、
+# 顾长风 4 选项、marker1 选中、立绘 calm）钉死迁移前画面，本文件 + dialogue.lua 的
+# set_text/set_visible + 动态层立绘必须逐值复现。
+#
+# 结构：根 DlgRoot（全屏 1280x720，开/关 = 根显隐）下挂全部叶子。
+# 行序 = 绘制序 = 实体槽位升序，按迁移前 JSON 的 root.children 顺序
+# （box → portrait_frame → speaker → body → 每行 marker→label → hint → continue）。
+# 覆盖账 0 块被盖（面板底半透明、立绘框镂空、箭头/标记不压别的块），槽位序不敏感。
+#
+# 分层（同 M70 HUD 部分预设混合载体，② 豁免）：
+#   * **实体层（静态版式）**：面板底 / 立绘框 / 说话人 / 台词 / 5 行选项 / 5 个选中箭头 /
+#     底部提示 / 推进箭头。
+#   * **动态层（运行期喂）**：立绘本体 `ui.image`（贴图随 NPC/mood 变化，引擎无运行期
+#     换贴图 API，A6 裁定）。
+#
+# 运行期仍由脚本写的值（不改几何/贴图，只改内容/显隐）：
+#   * `prefab.set_text`：speaker、body、opt1..5、hint
+#   * `prefab.set_visible`：marker1..5（仅选中行）、optN（无该选项隐藏）、
+#     continue（后续节点推进箭头，A 态常显）
+#   * `ui.image`：dlg:portrait（立绘，无立绘角色整帧不画）
+# 预设内 Text 初始为空，由 render 填；golden 比对发生在 render 之后。
+#
+# 初始可见性：全开，由 start → render 同帧 set_visible/set_text 覆盖，无闪帧。
+entity	1	DlgRoot
+component	1	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	1	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.000000,0.000000,1280.000000,720.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	1	role	dlg_root
+entity	2	DlgBox	1
+component	2	Image	texture=__white__;color=0.100,0.110,0.150,0.920
+component	2	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	2	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=240.000000,450.000000,1040.000000,690.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	2	role	panel
+entity	3	DlgPortraitFrame	1
+component	3	Image	texture=assets/art/ui/dialogue/ui_portrait_frame.png;color=1.000,1.000,1.000,1.000
+component	3	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=576.000000,332.000000,704.000000,460.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	3	role	portrait_frame
+entity	4	DlgSpeaker	1
+component	4	Text	text=;font_size=20.000000;color=1.000,1.000,1.000
+component	4	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	4	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=264.000000,466.000000,1040.000000,486.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	4	role	speaker
+entity	5	DlgBody	1
+component	5	Text	text=;font_size=18.000000;color=1.000,1.000,1.000
+component	5	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	5	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=264.000000,494.000000,1040.000000,548.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	5	role	body
+entity	6	DlgOpt1	1
+component	6	Text	text=;font_size=18.000000;color=1.000,1.000,1.000
+component	6	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	6	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=264.000000,550.000000,1016.000000,568.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	6	role	option1
+entity	7	DlgOpt2	1
+component	7	Text	text=;font_size=18.000000;color=1.000,1.000,1.000
+component	7	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	7	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=264.000000,578.000000,1016.000000,596.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	7	role	option2
+entity	8	DlgOpt3	1
+component	8	Text	text=;font_size=18.000000;color=1.000,1.000,1.000
+component	8	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	8	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=264.000000,606.000000,1016.000000,624.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	8	role	option3
+entity	9	DlgOpt4	1
+component	9	Text	text=;font_size=18.000000;color=1.000,1.000,1.000
+component	9	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	9	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=264.000000,634.000000,1016.000000,652.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	9	role	option4
+entity	10	DlgOpt5	1
+component	10	Text	text=;font_size=18.000000;color=1.000,1.000,1.000
+component	10	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	10	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=264.000000,662.000000,1016.000000,680.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	10	role	option5
+entity	11	DlgMarker1	1
+component	11	Image	texture=assets/art/ui/dialogue/ui_dialogue_marker.png;color=1.000,1.000,1.000,1.000
+component	11	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=252.000000,556.000000,260.000000,564.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	11	role	marker1
+entity	12	DlgMarker2	1
+component	12	Image	texture=assets/art/ui/dialogue/ui_dialogue_marker.png;color=1.000,1.000,1.000,1.000
+component	12	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	12	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=252.000000,584.000000,260.000000,592.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	12	role	marker2
+entity	13	DlgMarker3	1
+component	13	Image	texture=assets/art/ui/dialogue/ui_dialogue_marker.png;color=1.000,1.000,1.000,1.000
+component	13	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	13	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=252.000000,612.000000,260.000000,620.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	13	role	marker3
+entity	14	DlgMarker4	1
+component	14	Image	texture=assets/art/ui/dialogue/ui_dialogue_marker.png;color=1.000,1.000,1.000,1.000
+component	14	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	14	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=252.000000,640.000000,260.000000,648.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	14	role	marker4
+entity	15	DlgMarker5	1
+component	15	Image	texture=assets/art/ui/dialogue/ui_dialogue_marker.png;color=1.000,1.000,1.000,1.000
+component	15	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	15	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=252.000000,668.000000,260.000000,676.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	15	role	marker5
+entity	16	DlgHint	1
+component	16	Text	text=;font_size=14.000000;color=1.000,1.000,1.000
+component	16	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	16	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=232.000000,660.000000,1016.000000,702.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	16	role	hint
+entity	17	DlgContinue	1
+component	17	Image	texture=assets/art/ui/dialogue/ui_dialogue_continue.png;color=1.000,1.000,1.000,1.000
+component	17	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	17	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=264.000000,658.000000,280.000000,674.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	17	role	continue

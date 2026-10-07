@@ -8,17 +8,19 @@
 use crate::core::{
     asset_handle::{AssetHandle, AssetRecord, AssetStore},
     camera::{Camera2D, OrthoTerms, Viewport},
+    entity::EntityId,
     font::FontAtlas,
-    hierarchy::SpatialReport,
+    hierarchy::{Parent, SpatialReport},
     layer::RenderLayer,
     par::Parallelism,
     physics::PhysicsAuthority,
     scene::{Scene, SceneEntityId},
     scheduler::Scheduler,
     script::LuaRuntime,
+    spatial_transform::LocalTransform,
     sprite_batch::SpriteBatch,
     tilemap::Tilemap,
-    transform::{Transform, Vec2},
+    transform::{Transform, Transform3D, Vec2},
     ui::UI_REFERENCE_SIZE,
     ui_layout::{UiRect, UiRectLayout},
 };
@@ -51,8 +53,8 @@ impl RuntimeScene {
 
     /// P3：显式声明"这是发布包"（`game --pack`）。决定存档与玩家设置写到哪里——
     /// 发布包 → 用户数据目录（`%APPDATA%\<app>`），开发工程 → 工程内。
-    /// 不显式声明时 `user_dir::is_release_pack` 仍能凭 `<exe>/pack` + `release.toml`
-    /// 认出双击启动的发布包。
+    /// 不显式声明时 `user_dir::is_release_pack` 仍能凭 `<exe>/pack` 内 `project.toml` 的
+    /// `release = true` 认出双击启动的发布包。
     pub fn new_with_layout(project_root: Option<&Path>, packaged: bool) -> anyhow::Result<Self> {
         let scene = load_runtime_scene(project_root);
         Self::init(project_root, scene, true, packaged)
@@ -413,6 +415,128 @@ impl RuntimeScene {
             .collect()
     }
 
+    /// 「场景实体 id → 句柄编码」登记表（见 [`Self::runtime_spawned_entities`] 的父边）。
+    ///
+    /// 运行期实体的父可能是文档里的行，宿主拿这张表把句柄反解成镜像里的行号。
+    pub fn scene_entity_handles(&self) -> Vec<(SceneEntityId, u64)> {
+        self.script
+            .scene_entity_handles()
+            .into_iter()
+            .map(|(id, handle)| (id, encode_handle(handle)))
+            .collect()
+    }
+
+    /// 声明实体（场景文档里的行）**此刻在运行时里的局部变换**，按文档 id 给出。
+    ///
+    /// 只列「登记过句柄且仍活着」的实体，一次世界借用读完，供编辑器 Play 期间逐行回灌
+    /// 镜像文档。两种"不在表里"含义不同，宿主用 [`Self::scene_entity_handles`] 区分：
+    ///
+    /// - 登记过句柄却不在这里 ⇒ 被脚本 `entity.destroy` 销毁了，镜像里那一行该摘掉；
+    /// - 从没登记过句柄 ⇒ 编辑期新增、还没实例化过，那是编辑态自己的行，不该动。
+    pub fn scene_entity_local_transforms(&self) -> Vec<(SceneEntityId, LocalTransform)> {
+        let registered = self.script.scene_entity_handles();
+        self.script.with_world(|world| {
+            registered
+                .into_iter()
+                .filter(|(_, handle)| world.is_alive(*handle))
+                .filter_map(|(id, handle)| {
+                    super::spatial::local_transform_in(world, handle).map(|local| (id, local))
+                })
+                .collect()
+        })
+    }
+
+    /// 运行期由脚本生成、**不属于场景文档**的实体清单（编辑器 Play 期间的层级同步用）。
+    ///
+    /// 候选取「登记过名字的 ∪ 带 2D/3D 变换的」：`entity.spawn` 不传名字时没有名字，
+    /// 但它一定带 `Transform`；反过来只有组件的特殊实体也能靠名字进表。
+    /// 声明实体不在此列——镜像里已经有它们的行，重复列一遍会变成两行。
+    ///
+    /// 姿态取实体**自己的** `Transform`/`Transform3D` 分量（局部值），与 `.scene` 文档里
+    /// `Transform` 组件串的口径一致——镜像回灌是逐行原样写回，不做世界→局部反解；父链组合
+    /// 交给编辑运行时按文档自己的空间语义再算一遍，两侧因此不会各解一次而错位。
+    ///
+    /// `ui` 标出带 UI 组件的那些：它们的**版面在组件里而不在姿态里**（`UiLayout` 的
+    /// anchors/offsets、`Text` 的锚点），而编辑器镜像只回灌姿态与结构，因此画布上认不出
+    /// 它们的框——这一位就是给编辑器"别拿姿态画一个假框"用的判据（见 docs/56 §3.53）。
+    ///
+    /// 顺序按句柄升序（槽位先、代际后），同一份世界两次调用给出同一份表。
+    pub fn runtime_spawned_entities(&self) -> Vec<RuntimeSpawnedEntity> {
+        let named = self.script.named_entity_handles();
+        let declared: HashSet<u64> = self
+            .script
+            .scene_entity_handles()
+            .into_iter()
+            .map(|(_, handle)| encode_handle(handle))
+            .collect();
+        let names: HashMap<u64, String> = named
+            .iter()
+            .map(|(handle, name)| (encode_handle(*handle), name.clone()))
+            .collect();
+        let mut out = Vec::new();
+        self.script.with_world(|world| {
+            // 「这一位是 UI 实体」的判据取自**活世界里的组件类型**，不是名字或路径的启发式：
+            // 界面实体的版面数据只存在组件里，镜像认不出它，标注因此必须来自同一个世界。
+            let mut ui_handles: HashSet<u64> = HashSet::new();
+            for handle in world.entities_with::<UiRectLayout>() {
+                ui_handles.insert(encode_handle(handle));
+            }
+            for handle in world.entities_with::<crate::core::ui::UiImage>() {
+                ui_handles.insert(encode_handle(handle));
+            }
+            for handle in world.entities_with::<crate::core::ui::UiText>() {
+                ui_handles.insert(encode_handle(handle));
+            }
+            let mut candidates: Vec<EntityId> = named.iter().map(|(handle, _)| *handle).collect();
+            candidates.extend(world.entities_with::<Transform>());
+            candidates.extend(world.entities_with::<Transform3D>());
+            candidates.sort_unstable();
+            candidates.dedup();
+            for handle in candidates {
+                let key = encode_handle(handle);
+                if !world.is_alive(handle) || declared.contains(&key) {
+                    continue;
+                }
+                let name = names
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_else(|| format!("entity.{}", handle.index()));
+                let (position, rotation, scale) =
+                    match super::spatial::local_transform_in(world, handle) {
+                        Some(local) => (
+                            [
+                                local.translation.x,
+                                local.translation.y,
+                                local.translation.z,
+                            ],
+                            [
+                                local.rotation.x,
+                                local.rotation.y,
+                                local.rotation.z,
+                                local.rotation.w,
+                            ],
+                            [local.scale.x, local.scale.y, local.scale.z],
+                        ),
+                        None => ([0.0; 3], [0.0, 0.0, 0.0, 1.0], [1.0; 3]),
+                    };
+                let parent = match world.get::<Parent>(handle) {
+                    Ok(Some(parent)) => Some(encode_handle(parent.0)),
+                    _ => None,
+                };
+                out.push(RuntimeSpawnedEntity {
+                    handle: key,
+                    name,
+                    parent,
+                    ui: ui_handles.contains(&key),
+                    position,
+                    rotation,
+                    scale,
+                });
+            }
+        });
+        out
+    }
+
     /// 覆盖 project.toml 的文本渲染模式（编辑器保存设置后重建运行时可注入）。
     pub fn set_text_render_mode(&mut self, mode: TextRenderMode) {
         self.text_render_mode = mode;
@@ -595,4 +719,36 @@ impl RuntimeScene {
         scene.register_builtin_frame_systems();
         Ok(scene)
     }
+}
+
+/// ECS 句柄的稳定编码：高 32 位是槽位、低 32 位是代际。
+///
+/// 编辑器要把它当字典键用（跨帧认出"还是同一个运行期实体"），而 `EntityId` 本身不是
+/// 宿主 API 的一部分，因此这里只交出编码后的整数。`pub(crate)`：测试用同一个编码器算
+/// 期望值，避免断言与生产各写一份编码。
+pub(crate) fn encode_handle(handle: EntityId) -> u64 {
+    (u64::from(handle.index()) << 32) | u64::from(handle.generation())
+}
+
+/// 一条运行期生成实体的快照（见 [`RuntimeScene::runtime_spawned_entities`]）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeSpawnedEntity {
+    /// 句柄编码，跨帧稳定；槽位被复用时代际不同，因此不会认错人。
+    pub handle: u64,
+    /// 登记名（`entity.spawn(name, ...)` / prefab 实例名）；没登记时是 `entity.<槽位>`。
+    pub name: String,
+    /// 父实体的句柄编码。父可能是场景声明的实体——宿主用「声明实体句柄表」把它对回文档行。
+    pub parent: Option<u64>,
+    /// 这个实体带 UI 组件（`UiLayout`/`Image`/`Text`）吗——即它的版面在**组件里**而不在姿态里。
+    ///
+    /// 编辑器镜像只回灌结构 + 姿态，因此这一位为真时画布上算不出它的矩形；消费方
+    /// （`editor` 的 Scene 视图）据此**不画**一个姿态位置的假框，把"它在哪儿"交给
+    /// 设计分辨率框里那张真游戏画面。
+    pub ui: bool,
+    /// 实体**自己**的局部姿态（`position=..;rotation=..;scale=..` 那一套，见
+    /// [`crate::core::spatial_transform::TRANSFORM_COMPONENT`]：2D/3D 在文档里共用这一个组件名）。
+    pub position: [f32; 3],
+    /// 四元数 `x,y,z,w`。
+    pub rotation: [f32; 4],
+    pub scale: [f32; 3],
 }

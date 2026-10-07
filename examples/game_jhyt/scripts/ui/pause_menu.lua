@@ -7,8 +7,8 @@
 --
 -- 主菜单的「音量」行按空格（或确认）进入**设置页**（M20-02）：
 --   主音量 / BGM / 音效 / 界面音效（-/+ 或左右方向键调整，改动立刻生效）
---   / 保存设置（写回 <project>/settings.toml 的 [audio] 段）/ 返回
--- 设置页里 Esc 返回主菜单，P 直接继续游戏。分组音量以 settings.toml 为准，
+--   / 保存设置（写回 <project>/project.toml 的 [audio] 段）/ 返回
+-- 设置页里 Esc 返回主菜单，P 直接继续游戏。分组音量以 project.toml 为准，
 -- 主音量同时随存档 provider "audio" 持久化（M19-02）。
 --
 -- 「帮助」行按确认进入**帮助页**（M33）：完整操作说明 + 玩法说明。操作说明原先常驻
@@ -37,8 +37,8 @@ local hints = require("ui.hints")
 local ui_text = require("ui.ui_text")
 -- M32 竖版：面板矩形来自 `ui/layout.lua`（唯一定义处，改版式只改那一处）。
 local layout = require("ui.layout")
--- docs/48 ui 换肤接线：面板背景/印章/关闭/音量滑轨贴图。
-local skin = require("ui.skin")
+-- M66/B3 预设化：本模块已不画动态层（面板/贴图/字号全部来自 pause_menu.prefab），
+-- skin 模块随之不再 require（docs/48 换肤贴图已并入预设）。
 
 -- 触屏形态判定：懒 require `ui.virtual_pad`（它只依赖 layout/state，与本模块无环），
 -- 取不到或 `available()` 为假都按键鼠/手柄表显示——画面上没有圆钮时不该教人点圆钮。
@@ -132,13 +132,13 @@ local HELP_NOTES = {
   { "作息", "睡觉结束当日：作物成长一天、体力回满、自动存档" },
   { "战斗", "武学招式消耗内力，普攻伤害随武器加成" },
 }
--- 「改键」这条按平台分叉：触屏宿主根本没有 settings.toml 可编辑，把 PC 的改绑说明
+-- 「改键」这条按平台分叉：触屏宿主根本没有 project.toml 可编辑，把 PC 的改绑说明
 -- 抄给触屏玩家，等于教他做一件在这台设备上做不到的事。
 local HELP_NOTES_KEY = {
-  { "改键", "工程 settings.toml 的 [input] 段可改绑，本页键名随绑定更新" },
+  { "改键", "工程 project.toml 的 [input] 段可改绑，本页键名随绑定更新" },
 }
 local HELP_NOTES_TOUCH = {
-  { "改键", "触屏没有改绑入口，请在 PC 版 settings.toml 改" },
+  { "改键", "触屏没有改绑入口，请在 PC 版 project.toml 改" },
 }
 -- 触屏形态（WebGL / 微信）没有键盘，键位表在那上面是噪声，因此换成"屏上有什么、
 -- 点了出什么"。**条目名一律从 `layout.TOUCH` 现推**（与画在屏幕上的那一套同源）：
@@ -222,23 +222,80 @@ local clear_ui
 local clear_settings_ui
 local clear_help_ui
 
--- 上一页的名字（"menu"/"settings"/"help"）。`ui.panel` / `ui.text_at` 画出的元素**跨帧持久**，
--- 只有 `ui.clear` / `ui.hide` 才收得掉；而每帧的 `M.render()` 只画当前页，于是"进入子页"
--- 这件事本身不清旧页 → 主菜单的标题与七行文字会留在帮助页/设置页同一块面板上（重叠、无报错）。
--- 因此把清理收在渲染入口的**换页那一刻**：每帧的重复渲染不再付清理代价，新增子页也不会漏清。
+-- M66/B3 预设化：暂停菜单整体收口为 `assets/prefabs/pause_menu.prefab`（对账门 =
+-- `jhyt_m66_pause_prefab`，黄金表 570 行钉死迁移前画面；"搬运不改画面"）。
+-- 面板贴图/几何/字号全部来自预设，脚本运行期只写 `prefab.set_text` / `set_rect` /
+-- `set_visible`，不再画动态层（docs/48 换肤贴图随之并入预设，skin 模块不再需要）。
+-- 必须定义在 switch_page / draw_frame 之前：Lua 词法作用域只认「已声明」的 local。
+local PRESET_PATH = "assets/prefabs/pause_menu.prefab"
+local pause_handle = nil
+
+-- 页面容器实体名（三页共面板，换页 = 容器显隐，子树语义带子）。
+local PAGE_ROOTS = {
+  menu = "PsePageMenu",
+  settings = "PsePageSettings",
+  help = "PsePageHelp",
+}
+
+-- 页面标题/选中底衬实体名（`draw_frame` 按 id_prefix 映射）。
+local PAGE_ENTITIES = {
+  ["pse"] = { title = "PseTitle", sel = "PseSel" },
+  ["pse:s"] = { title = "PseSTitle", sel = "PseSSel" },
+  ["pse:h"] = { title = "PseHTitle", sel = nil },
+}
+
+-- 根节点显隐（`set_visible` 子树语义，藏父带子），不撤重铺：频繁开合走
+-- spawn/despawn 会触发槽位 LIFO 复用，打乱绘制序（title_menu.prefab 注释同款警告）。
+local function preset_alive()
+  if not pause_handle then
+    return false
+  end
+  local ok, alive = pcall(function()
+    return prefab.root(pause_handle) ~= nil
+  end)
+  return ok and alive
+end
+
+local function preset_spawn()
+  if not preset_alive() then
+    pause_handle = prefab.spawn(PRESET_PATH)
+  end
+  return pause_handle
+end
+
+local function preset_show()
+  if preset_alive() then
+    prefab.set_visible(pause_handle, "PauseRoot", true)
+  end
+end
+
+local function preset_hide()
+  if preset_alive() then
+    prefab.set_visible(pause_handle, "PauseRoot", false)
+  end
+end
+
+-- 验收（jhyt_m19_ui 面板断言）取 spawn 句柄；open 前为 nil。
+function M.preset_ref()
+  return pause_handle
+end
+
+-- 换页：只显示当前页容器（三页互斥；重复调用幂等）。
+local function preset_page(page)
+  for key, root in pairs(PAGE_ROOTS) do
+    prefab.set_visible(pause_handle, root, key == page)
+  end
+end
+
+-- M66/B3：换页 = `preset_page`（三页容器互斥显隐）。上一页的名字仍记在
+-- `rendered_page` 里，语义不变；预设化后不再清动态层（旧页内容整棵藏掉）。
 local rendered_page = nil
 
 local function switch_page(page)
   if rendered_page == page then
     return
   end
-  if rendered_page == "menu" then
-    clear_ui()
-  elseif rendered_page == "settings" then
-    clear_settings_ui()
-  elseif rendered_page == "help" then
-    clear_help_ui()
-  end
+  preset_page(page)
   rendered_page = page
 end
 
@@ -404,7 +461,7 @@ function M.settings_adjust(delta)
   M.render()
   return true
 end
--- 保存设置到 <project>/settings.toml（[audio] 段；其余段原样保留）。
+-- 保存设置到 <project>/project.toml（[audio] 段；其余段原样保留）。
 function M.settings_save()
   local ok, detail = audio.save_settings()
   local msg
@@ -485,6 +542,8 @@ function M.rows()
   return out
 end
 
+-- M66/B3：面板本体在预设实例里（藏根/藏页走 `set_visible`，见 M.close / switch_page）；
+-- 下面只兜底热重载残留的旧动态层（预设化前 render 画过这些 id）。
 function clear_ui()
   ui.clear("pse:box")
   ui.clear("pse:skin_bg")
@@ -504,6 +563,7 @@ function clear_ui()
 end
 
 function clear_settings_ui()
+  -- M66/B3：同 clear_ui（旧动态层兜底；本页本体在预设实例里）。
   ui.clear("pse:s:box")
   ui.clear("pse:s:skin_bg")
   ui.clear("pse:s:rule")
@@ -528,6 +588,7 @@ end
 
 -- 帮助页清理：行数随绑定变化（改键后某套设备可能少一行），因此按**上界**清理——
 -- `ui.hide` 对没画过的 id 是幂等的（引擎侧只是标不可见）。
+-- M66/B3：同 clear_ui（旧动态层兜底；本页本体在预设实例里）。
 function clear_help_ui()
   for _, id in ipairs({ "pse:h:box", "pse:h:skin_bg", "pse:h:rule", "pse:h:sel",
     "pse:h:divider", "pse:h:seal", "pse:h:close", "pse:h:key_hint" }) do
@@ -586,48 +647,19 @@ end
 
 -- 面板内部几何：标题 / 分隔线 / 列表 / 消息 / 提示统一取自 `layout.BOX`（M32 竖版）。
 local BOX = layout.BOX
-local RULE_H = 2
--- 分隔线与行底衬：极淡的白，只做"标题 / 列表"的分层，不抢内容。
-local RULE_COLOR = { 0.72, 0.75, 0.82, 0.22 }
-local ROW_FILL_SELECTED = { 0.85, 0.72, 0.42, 0.20 }
 
 -- 面板骨架：背板 + 标题 + 标题下的分隔线。返回 (x, y, w, h)。
+-- M66/B3：骨架/贴图全部静态在预设（box/rule/skin_bg/divider/seal/close/key_hint 实体），
+-- 这里只写运行期可变的两处：标题文字（set_text）与选中行底衬矩形（set_rect）。
 local function draw_frame(id_prefix, title, row_fill)
   local x, y, w, h = PANEL.x, PANEL.y, PANEL.w, PANEL.h
-  -- docs/48 ui 换肤接线：主面板纸面背景（9-slice）叠在纯色兜底之上。
-  skin.panel(id_prefix .. ":skin_bg", x, y, w, h, "panel_main")
-  ui.panel(id_prefix .. ":box", x, y, w, h, 0.08, 0.09, 0.12, 0.96)
-  -- docs/48 ui 换肤接线：标题分隔线用 common 竹纹分隔贴图（叠在原纯色线之上）。
-  skin.icon(id_prefix .. ":divider", x + BOX.title_dx, y + BOX.title_dy + BOX.title_font + 6, w - BOX.title_dx * 2, 8, "divider")
-  ui.panel(
-    id_prefix .. ":rule",
-    x + BOX.title_dx,
-    y + BOX.title_dy + BOX.title_font + 14,
-    w - BOX.title_dx * 2,
-    RULE_H,
-    RULE_COLOR[1],
-    RULE_COLOR[2],
-    RULE_COLOR[3],
-    RULE_COLOR[4]
-  )
-  ui_text.draw("pse", id_prefix .. ":title", x + BOX.title_dx, y + BOX.title_dy, BOX.title_font, w - BOX.title_dx * 2, title)
-  -- docs/48 ui 换肤接线：标题右端印章（24×24）与右上关闭按钮（16×16）。
-  skin.icon(id_prefix .. ":seal", x + w - BOX.title_dx - 44, y + BOX.title_dy + 2, 24, 24, "icon_seal")
-  skin.icon(id_prefix .. ":close", x + w - BOX.title_dx - 16, y + BOX.title_dy + 2, 16, 16, "btn_close")
-  if row_fill then
-    ui.panel(
-      id_prefix .. ":sel",
-      x + BOX.list_dx,
-      row_fill[1],
-      w - BOX.list_dx * 2,
-      row_fill[2],
-      ROW_FILL_SELECTED[1],
-      ROW_FILL_SELECTED[2],
-      ROW_FILL_SELECTED[3],
-      ROW_FILL_SELECTED[4]
-    )
-  else
-    ui.clear(id_prefix .. ":sel")
+  local handle = pause_handle
+  local names = PAGE_ENTITIES[id_prefix]
+  if names and names.title then
+    prefab.set_text(handle, names.title, title)
+  end
+  if row_fill and names and names.sel then
+    prefab.set_rect(handle, names.sel, x + BOX.list_dx, row_fill[1], x + w - BOX.list_dx, row_fill[1] + row_fill[2])
   end
   return x, y, w, h
 end
@@ -711,27 +743,29 @@ function M.render_help()
   if not help_state then
     return false
   end
-  local ROW_W = layout.list_width(PANEL)
+  local handle = preset_spawn()
   switch_page("help")
-  ui_text.begin("pse")
   local rows = M.help_rows()
   local x, y, w, h = draw_frame("pse:h", "帮助", nil)
-  for i = 1, #rows do
+  -- 行表写到预设的 20 行槽（键盘形态 17 行）：section 行只有标签、值槽隐藏；
+  -- 行数不足 20 时多余槽隐藏（行数随设备/绑定浮动，槽位固定，HELP_ROW_CAP 同原上界）。
+  for i = 1, HELP_ROW_CAP do
     local row = rows[i]
-    local row_y = y + BOX.list_dy + (i - 1) * HELP_ROW_H
-    if row.kind == "section" then
-      ui_text.draw("pse", "pse:h:row" .. i, x + BOX.list_dx, row_y, HELP_FONT, ROW_W, row.text)
+    if row == nil then
+      prefab.set_visible(handle, "PseHRow" .. i, false)
+      prefab.set_visible(handle, "PseHVal" .. i, false)
+    elseif row.kind == "section" then
+      prefab.set_text(handle, "PseHRow" .. i, row.text)
+      prefab.set_visible(handle, "PseHRow" .. i, true)
+      prefab.set_visible(handle, "PseHVal" .. i, false)
     else
-      -- 标签列与值列各拿一份预算：值列多长取决于玩家怎么改键，两列分开才量得准
-      -- （合成一列时超宽只会画成省略号，画面上看不出排版坏了）。
-      ui_text.draw("pse", "pse:h:row" .. i, x + BOX.list_dx, row_y, HELP_FONT, HELP_VALUE_DX - 8, row.label)
-      ui_text.draw("pse", "pse:h:val" .. i, x + BOX.list_dx + HELP_VALUE_DX, row_y, HELP_FONT,
-        w - BOX.list_dx * 2 - HELP_VALUE_DX - 8, row.value)
+      prefab.set_text(handle, "PseHRow" .. i, row.label)
+      prefab.set_text(handle, "PseHVal" .. i, row.value)
+      prefab.set_visible(handle, "PseHRow" .. i, true)
+      prefab.set_visible(handle, "PseHVal" .. i, true)
     end
   end
-  -- docs/48 ui 换肤接线：提示条背景与主菜单/设置页同款。
-  skin.panel("pse:h:key_hint", x + BOX.title_dx, y + h + BOX.hint_dy - 6, ROW_W, BOX.hint_font + 12, "key_hint")
-  ui_text.draw("pse", "pse:h:hint", x + BOX.title_dx, y + h + BOX.hint_dy, BOX.hint_font, ROW_W, help_hint_line())
+  prefab.set_text(handle, "PseHHint", help_hint_line())
   return true
 end
 
@@ -745,24 +779,20 @@ function M.render()
   if help_state then
     return M.render_help()
   end
-  local ROW_W = layout.list_width(PANEL)
+  local handle = preset_spawn()
   switch_page("menu")
-  ui_text.begin("pse")
   local rows = M.rows()
   -- 选中行的底衬矩形（列表从 y+BOX.list_dy 起，行高 ROW_H）。
   local sel_y = PANEL.y + BOX.list_dy + ui_state.index * ROW_H
   local x, y, w, h = draw_frame("pse", "暂停", { sel_y, ROW_H })
   for i = 1, #ITEMS do
-    local id = "pse:row" .. i
     local row = rows[i]
     local label = row and row.label or ""
     label = (i - 1 == ui_state.index) and ("> " .. label) or ("  " .. label)
-    ui_text.draw("pse", id, x + BOX.list_dx, y + BOX.list_dy + (i - 1) * ROW_H, 18.0, ROW_W, label)
+    prefab.set_text(handle, "PseRow" .. i, label)
   end
-  ui_text.draw("pse", "pse:msg", x + BOX.title_dx, y + h + BOX.msg_dy, 15.0, ROW_W, tostring(ui_state.msg or ""))
-  -- docs/48 ui 换肤接线：按键提示条背景（key_hint 9-slice）。
-  skin.panel("pse:key_hint", x + BOX.title_dx, y + h + BOX.hint_dy - 6, ROW_W, BOX.hint_font + 12, "key_hint")
-  ui_text.draw("pse", "pse:hint", x + BOX.title_dx, y + h + BOX.hint_dy, BOX.hint_font, ROW_W, hint_line())
+  prefab.set_text(handle, "PseMsg", tostring(ui_state.msg or ""))
+  prefab.set_text(handle, "PseHint", hint_line())
   return true
 end
 
@@ -771,49 +801,36 @@ function M.render_settings()
   if not settings_state then
     return false
   end
-  local ROW_W = layout.list_width(PANEL)
+  local handle = preset_spawn()
   sync_settings_focus()
   switch_page("settings")
-  ui_text.begin("pse")
   local rows = M.settings_rows()
   local sel_y = PANEL.y + BOX.list_dy + settings_state.index * ROW_H
   local x, y, w, h = draw_frame("pse:s", "设置", { sel_y, ROW_H })
   for i = 1, #SETTINGS_ITEMS do
-    local id = "pse:s:row" .. i
     local row = rows[i]
     local label = row and row.label or ""
     label = (i - 1 == settings_state.index) and ("> " .. label) or ("  " .. label)
-    ui_text.draw("pse", id, x + BOX.list_dx, y + BOX.list_dy + (i - 1) * ROW_H, 18.0, ROW_W, label)
-    -- docs/48 ui 换肤接线：音量行的滑轨 + 手柄（四路音量各自真实 bus 值，master/bgm/sfx/ui）。
+    prefab.set_text(handle, "PseSRow" .. i, label)
     local bus = SETTINGS_ITEMS[i]
     if bus == "save" then
-      -- docs/48 ui 换肤接线：存档槽（save_slot 9s，48×24）画在"保存"行尾 + 主按钮（btn_primary）。
-      skin.panel("pse:s:slot", x + w - BOX.list_dx - 148, y + BOX.list_dy + (i - 1) * ROW_H + 2, 96, 24, "save_slot")
-      skin.panel("pse:s:btn_save", x + w - BOX.list_dx - 48, y + BOX.list_dy + (i - 1) * ROW_H + 2, 40, 24, "btn_primary")
+      -- 存档槽 + 主按钮静态在预设（PseSSlot / PseSBtnSave）。
     elseif bus == "back" then
-      -- docs/48 ui 换肤接线：返回行尾副按钮（btn_secondary）。
-      skin.panel("pse:s:btn_back", x + w - BOX.list_dx - 48, y + BOX.list_dy + (i - 1) * ROW_H + 2, 40, 24, "btn_secondary")
+      -- 返回副按钮静态在预设（PseSBtnBack）。
     elseif bus ~= "save" and bus ~= "back" then
-      local row_y = y + BOX.list_dy + (i - 1) * ROW_H + (ROW_H - 8) / 2
-      skin.panel("pse:s:track" .. i, x + w - BOX.list_dx - 116, row_y, 116, 8, "slider_track")
+      -- 滑轨不画（skin.panel("slider_track") 因 slider_track 无 slice 从不绘制，画面
+      -- 里从来没有它）；只有手柄随音量比例横向移动（`set_rect` 四边签名）。
       local ratio = audio.bus_volume(bus)
       if type(ratio) ~= "number" then
         ratio = 0.5
       end
-      skin.icon(
-        "pse:s:handle" .. i,
-        x + w - BOX.list_dx - 116 + math.floor(ratio * 100),
-        row_y - 2,
-        12,
-        12,
-        "slider_handle"
-      )
+      local handle_x = x + w - BOX.list_dx - 116 + math.floor(ratio * 100)
+      local row_y = y + BOX.list_dy + (i - 1) * ROW_H + (ROW_H - 8) / 2
+      prefab.set_rect(handle, "PseSHandle" .. i, handle_x, row_y - 2, handle_x + 12, row_y + 10)
     end
   end
-  ui_text.draw("pse", "pse:s:msg", x + BOX.title_dx, y + h + BOX.msg_dy, 15.0, ROW_W, tostring(settings_state.msg or ""))
-  -- docs/48 ui 换肤接线：按键提示条背景（key_hint 9-slice）。
-  skin.panel("pse:s:key_hint", x + BOX.title_dx, y + h + BOX.hint_dy - 6, ROW_W, BOX.hint_font + 12, "key_hint")
-  ui_text.draw("pse", "pse:s:hint", x + BOX.title_dx, y + h + BOX.hint_dy, BOX.hint_font, ROW_W, settings_hint_line())
+  prefab.set_text(handle, "PseSMsg", tostring(settings_state.msg or ""))
+  prefab.set_text(handle, "PseSHint", settings_hint_line())
   return true
 end
 
@@ -938,6 +955,8 @@ function M.open()
   help_state = nil
   state.set_mode("Pause")
   audio.ui("ui_click")
+  -- M66/B3：开面板 = 根可见（首次 open 时 render 里才 spawn，spawn 默认可见）。
+  preset_show()
   M.render()
   return true
 end
@@ -952,6 +971,8 @@ function M.close()
   clear_ui()
   clear_settings_ui()
   clear_help_ui()
+  -- M66/B3：关面板 = 藏整棵预设子树（三页一起藏，省得逐页清）。
+  preset_hide()
   rendered_page = nil
   nav.close(FOCUS)
   nav.close(SETTINGS_FOCUS)
@@ -970,6 +991,7 @@ function M.reset()
   clear_ui()
   clear_settings_ui()
   clear_help_ui()
+  preset_hide()
   rendered_page = nil
   return true
 end

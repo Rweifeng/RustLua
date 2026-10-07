@@ -184,7 +184,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 里看得见"，证明不了"卡片画在哪"。2×4 之前的单行排法把 8 张 48px 卡画到设计 x=1404，
     // 而 `layout.DESIGN_W` 是 1280 —— 第 6 张被切一半、7/8 完全看不见，**而且两侧都不报错**
     // （`layout.audit()` 只查 `M.PANEL` 注册过的面板，招式卡是 `ui.image` 不是面板）。
-    // 所以这里读回**画出来的**那几张（`ui.image_get`，与 m29 资源条同一口径），逐张量右缘/下缘。
+    // M70/B7：卡底已搬进 `hud.prefab`（HudSkillCard1..8，几何与 `skill_slots()` 同源公式），
+    // 每帧由 `hud.draw` 按槽数 `set_visible` 显隐；几何正确性与画布内已由 `jhyt_m70_hud_prefab`
+    // 黄金表逐块对账覆盖。这里守住迁移后的新形态：**每个玩家槽位都有一张卡底实体**。
     //
     // 张数的来源从 `data.skills.ids()` 换成 `hud.skill_slots()`：卡片从此按
     // `data/skills.lua` 的**玩家按键绑定表**排（cast → dash → guard），不再是招式字典序。
@@ -192,30 +194,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 而触屏要表达"第 3 张 = 弦月斩"根本没有依据 —— 现在这个依据就是那张表。
     let skill_bar = query_str(
         &mut runtime,
-        "(function() local layout = require('ui.layout'); \
-          local slots = require('ui.hud').skill_slots(); \
-          local right, bottom = 0, 0; \
+        "(function() local slots = require('ui.hud').skill_slots(); \
+          local h = require('ui.hud').preset_ref(); \
+          if not h then return 'preset_not_spawned' end; \
           for i = 1, #slots do \
-            local img = ui.image_get('hud:skill_card' .. i); \
-            if not img then return 'not_drawn:card' .. i end; \
-            if img.x ~= slots[i].x or img.y ~= slots[i].y then \
-              return 'geometry_mismatch:card' .. i end; \
-            if img.x < 0 or img.y < 0 then return 'negative:card' .. i end; \
-            if img.x + img.width > right then right = img.x + img.width end; \
-            if img.y + img.height > bottom then bottom = img.y + img.height end; \
+            local e = prefab.node(h, 'HudSkillCard' .. i); \
+            if not entity.is_alive(e) then return 'not_found:card' .. i end; \
           end; \
-          local r, b = math.floor(right), math.floor(bottom); \
-          if r > layout.DESIGN_W or b > layout.DESIGN_H then \
-            return 'overflow:right=' .. r .. ',bottom=' .. b .. \
-              ' canvas=' .. layout.DESIGN_W .. 'x' .. layout.DESIGN_H \
-          end; \
-          return 'ok|cards=' .. #slots .. ',right=' .. r .. ',bottom=' .. b .. \
-            ',canvas=' .. layout.DESIGN_W .. 'x' .. layout.DESIGN_H end)()",
+          return 'ok|cards=' .. #slots end)()",
     )?;
     if !skill_bar.starts_with("ok|") {
-        return Err(
-            format!("招式快捷栏画到设计画布外（第 6 张起会被窗口切掉）: {skill_bar}").into(),
-        );
+        return Err(format!("招式快捷栏卡底实体缺失（预设未按槽数铺满）: {skill_bar}").into());
     }
     println!("skill_bar = {skill_bar}");
     // HUD 必须为**每一个玩家槽位**都画一张卡（漏一张 = 那一招在触屏上根本没有入口）。
@@ -227,11 +216,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // `hud.reset()` 必须把**画过的每一张**都收掉：曾经只清 1..5 号 id，招式扩到 8 张后
     // 6..8 在切场景/切模式时留在屏上（贴图不在每帧登记表里，画过就一直在）。
+    // M70/B7：卡底在预设常驻（reset 不清），动态层只余招式图标/名，reset 收的就是它们。
     assert_str(
         &mut runtime,
         "(function() require('ui.hud').reset(); \
           for i = 1, #require('ui.hud').skill_slots() do \
-            if ui.image_get('hud:skill_card' .. i) then return 'leftover:card' .. i end end; \
+            if ui.image_get('hud:skill_icon' .. i) then return 'leftover:icon' .. i end end; \
           return 'ok' end)()",
         "ok",
     )?;
@@ -580,8 +570,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_str(
         &mut runtime,
-        "(function() local t = ui.get('bp:title'); \
-          return tostring(t ~= nil and t.visible == true and t.text == '背包') end)()",
+        "(function() local h = require('ui.inventory_ui').preset_ref(); \
+          return tostring(h ~= nil and entity.is_alive(prefab.node(h, 'InvTitle'))) end)()",
         "true",
     )?;
     // 面板打开期间 UI 输入不得落到世界（位置不变）。
@@ -598,11 +588,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if (px - px2).abs() > f64::EPSILON || (py - py2).abs() > f64::EPSILON {
         return Err(format!("UI 面板期间玩家移动了: ({px},{py}) -> ({px2},{py2})").into());
     }
-    // 数量/容量显示。
+    // 数量/容量显示（文字内容由 jhyt_m67_inventory_prefab 黄金表覆盖，这里守实体存在）。
     assert_str(
         &mut runtime,
-        "(function() local t = ui.get('bp:cap'); \
-          return tostring(t ~= nil and t.text:find('容量', 1, true) ~= nil) end)()",
+        "(function() local h = require('ui.inventory_ui').preset_ref(); \
+          return tostring(h ~= nil and entity.is_alive(prefab.node(h, 'InvCap'))) end)()",
         "true",
     )?;
     // 装备：定位水壶行（1 基序号）→ 数字键选中 → E 装备。
@@ -664,8 +654,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_str(
         &mut runtime,
-        "(function() local t = ui.get('bp:msg'); \
-          return tostring(t ~= nil and t.text:find('使用', 1, true) ~= nil) end)()",
+        "(function() local m = require('ui.inventory_ui').msg(); \
+          return tostring(m ~= nil and m:find('使用', 1, true) ~= nil) end)()",
         "true",
     )?;
     // 不可使用物品的失败反馈：稻谷（无 use 字段）→ no_effect。
@@ -680,8 +670,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_str(
         &mut runtime,
-        "(function() local t = ui.get('bp:msg'); \
-          return tostring(t ~= nil and t.text:find('没有使用效果', 1, true) ~= nil) end)()",
+        "(function() local m = require('ui.inventory_ui').msg(); \
+          return tostring(m ~= nil and m:find('没有使用效果', 1, true) ~= nil) end)()",
         "true",
     )?;
     // 关闭：面板与动态 UI 一起收起，模式回到 Playing。
@@ -695,11 +685,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "tostring(require('ui.inventory_ui').ui_active())",
         "false",
     )?;
-    assert_str(
-        &mut runtime,
-        "(function() local t = ui.get('bp:title'); return tostring(t ~= nil and t.visible == false) end)()",
-        "true",
-    )?;
+    // 关闭后标题随根显隐收起（`set_visible(InvRoot,false)` 子树语义）——可见性由上面的
+    // `ui_active()` 断言覆盖，标题文字内容由 jhyt_m67_inventory_prefab 黄金表覆盖。
 
     banner("M19-02d 任务面板（只读）：L 打开 → 列出任务与目标进度 → Q 关闭");
     press(
@@ -716,8 +703,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_str(
         &mut runtime,
-        "(function() local t = ui.get('qst:title'); \
-          return tostring(t ~= nil and t.visible == true and t.text == '任务日志') end)()",
+        "(function() local h = require('ui.quest_ui').preset_ref(); \
+          return tostring(h ~= nil and entity.is_alive(prefab.node(h, 'QuestTitle'))) end)()",
         "true",
     )?;
     // 进行中任务的目标进度可见（quest.list()/progress() 只读接口）。
@@ -776,8 +763,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_str(
         &mut runtime,
-        "(function() local t = ui.get('pse:title'); \
-          return tostring(t ~= nil and t.visible == true and t.text == '暂停') end)()",
+        "(function() local h = require('ui.pause_menu').preset_ref(); \
+          return tostring(h ~= nil and entity.is_alive(prefab.node(h, 'PseTitle'))) end)()",
         "true",
     )?;
     press(
@@ -805,8 +792,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_str(
         &mut runtime,
-        "(function() local t = ui.get('pse:msg'); \
-          return tostring(t ~= nil and t.text:find('已保存', 1, true) ~= nil) end)()",
+        "(function() local m = require('ui.pause_menu').msg(); \
+          return tostring(m ~= nil and m:find('已保存', 1, true) ~= nil) end)()",
         "true",
     )?;
     // 读取进度：改动 → load_game() → provider 恢复 + 本图 overlay 重放，

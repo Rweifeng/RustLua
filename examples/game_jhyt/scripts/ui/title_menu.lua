@@ -49,6 +49,12 @@ local FOCUS = "title:menu"
 -- 就是让它们从此盖住背景图——那是改画面，不是搬家。层序这一笔的账见 `docs/67` §2。
 local PRESET_PATH = "assets/prefabs/title_menu.prefab"
 local menu_handle = nil
+-- 「门面激活」标志：reset（进门面）置 true、hide（离开门面）置 false。
+-- M71 修复：`scene.load` 是异步排队，过渡帧里 `scene.reload()` 尚未返回目标场景，
+-- `main.lua` 的 `is_playable` 判定会误走门面分支 → `render()` 的 `preset_spawn`
+-- （preset_alive 因 hide 已归零而返回 false）把刚 hide 撤掉的实例**重新 spawn**，
+-- 于是切进山庄后 title_menu 的 18 个实体与 HUD 重叠。render 在非激活态直接返回，
+-- 过渡帧不再重铺；回到门面由 `reset()` 重新置活并铺实例。
 
 -- 实例是否还属于**当前这个世界**。句柄非 nil 不等于实例还在：`scene.load` 会把 ECS 世界
 -- 整个重建（`transition.rs`），运行期实例的实体随之全部失效，引擎那边也按同一口径把实例
@@ -232,6 +238,7 @@ end
 -- 撤之前先验实例还在（`preset_alive`）：换场景会重建世界，实例连同引擎的登记表一起没了，
 -- 此时再 despawn 就是拿旧句柄去删别的东西；而归零无论如何都要做，否则回来时不再铺。
 function M.hide()
+  menu_active = false
   clear()
   if preset_alive() then
     prefab.despawn(menu_handle)
@@ -285,6 +292,11 @@ end
 -- 现在的单一来源 = 脚本这一层；实体层那份只是留着数据（`docs/66` §4 记的 2px x 差与米色就
 -- 存在它身上），选中箭头画在它左边缘之外（位置就是原先 `> ` 所在处）。
 function M.render()
+  -- 过渡帧防重铺：hide 撤掉后（离开门面）render 一律不画、不 spawn；
+  -- 回到门面由 reset() 重新置活。
+  if not menu_active then
+    return false
+  end
   local index = M.index()
   local anim = M.anim()
   ui_text.begin("title")
@@ -369,10 +381,16 @@ end
 
 -- 进入/离开门面时复位（场景切换会清空动态 UI，选中项也回到第一项）。
 function M.reset()
+  menu_active = true
   selected = 1
   pop_timer = 0
   pulse_phase = 0
-  preset_spawn()
+  -- 只在门面场景铺预设实例：`boot_game → new_game()` 的历史全局复位也会调 `reset()`，
+  -- 若在山庄等玩法场景里 spawn，title 实体层（UiLayout 每帧由引擎绘制）会一直叠在 HUD 上
+  -- （M71 重叠 bug 的第二层根因）。进门面（on_create 门面分支）时 `scene.reload()` 为 "main"。
+  if scene.reload() == "main" then
+    preset_spawn()
+  end
   clear()
   nav.open(FOCUS, #OPTIONS, 1)
   nav.select(FOCUS, 1)

@@ -1,0 +1,21 @@
+prefab_version=1
+asset_id=7f3a1c2e-9b4d-4f61-8c2a-5e9d0b7a3f11
+name=DemoUi
+root=1
+# 运行期 `prefab` 表演示（`demo_prefab.lua` 第二部分）：一份最小的 UI 预设。
+# 根 + 一块半透明色板（`Image texture=__white__`，RGBA 第四段 = 不透明度）+ 一行文字。
+#
+# 行序 = 绘制序：宿主按实体槽位升序提交 UI 分段（`world.for_each::<UiImage>` 走
+# `TypedStorage::order`，`prefab.spawn` 顺序拿槽），所以"谁在前"就是"谁在下面"。
+# `entity` 的 id 列必须保持递增且与行序一致，换序就是换画面。
+entity	1	DemoRoot
+component	1	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	1	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.00,0.00,1280.00,720.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	2	DemoBox	1
+component	2	Image	texture=__white__;color=0.100,0.110,0.150,0.940
+component	2	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	2	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=440.00,300.00,840.00,420.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	3	DemoLabel	1
+component	3	Text	text=prefab runtime demo;font_size=24.00;color=1.000,1.000,1.000
+component	3	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=520.00,330.00,760.00,360.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000

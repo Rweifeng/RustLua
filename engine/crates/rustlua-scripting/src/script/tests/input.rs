@@ -371,7 +371,7 @@ fn input_action_settings_round_trip_and_version_fallback() {
             .as_nanos()
     ));
     fs::create_dir_all(&root).unwrap();
-    let settings_path = root.join("settings.toml");
+    let settings_path = root.join("project.toml");
     fs::write(
         &settings_path,
         "# 玩家设置\n[audio]\nmaster = 0.5\nbgm = 0.25\nsfx = 1.0\nui = 1.0\n",
@@ -382,7 +382,7 @@ fn input_action_settings_round_trip_and_version_fallback() {
     let path = runtime
         .execute_console("assert(input.settings_path() ~= nil); return input.settings_path()")
         .unwrap();
-    assert!(path.ends_with("settings.toml"), "{path}");
+    assert!(path.ends_with("project.toml"), "{path}");
     // 改绑 → 写盘 → 读盘：设置文件里的映射与内存映射相等。
     runtime
         .execute_console(
@@ -440,7 +440,7 @@ fn input_action_settings_round_trip_and_version_fallback() {
              return list[#list]",
         )
         .unwrap();
-    assert!(raw.contains("settings.toml"), "{raw}");
+    assert!(raw.contains("project.toml"), "{raw}");
     // 非法绑定文本 → 同样回退默认并给可定位原因。
     runtime
         .execute_console(
@@ -562,19 +562,19 @@ fn settings_root_redirects_player_settings_out_of_the_release_package() {
     fs::create_dir_all(&user).unwrap();
     // 发布包自带一份默认设置（首次运行由宿主播种到用户目录）。
     fs::write(
-        pack.join("settings.toml"),
+        pack.join("project.toml"),
         "[audio]\nmaster = 0.5\nbgm = 0.25\nsfx = 1.0\nui = 1.0\n",
     )
     .unwrap();
 
     let mut runtime = LuaRuntime::new().unwrap();
     runtime.set_project_root(pack.clone());
-    // 未设置设置根 → 仍是开发工程形态：读写工程内的 settings.toml。
+    // 未设置设置根 → 仍是开发工程形态：读写工程内的 project.toml。
     assert_eq!(
         runtime
             .execute_console("return input.settings_path()")
             .unwrap(),
-        pack.join("settings.toml").to_string_lossy()
+        pack.join("project.toml").to_string_lossy()
     );
     // 指向用户目录（发布包形态）。
     runtime.set_settings_root(user.clone());
@@ -582,13 +582,13 @@ fn settings_root_redirects_player_settings_out_of_the_release_package() {
         runtime
             .execute_console("return input.settings_path()")
             .unwrap(),
-        user.join("settings.toml").to_string_lossy()
+        user.join("project.toml").to_string_lossy()
     );
     assert_eq!(
         runtime
             .execute_console("return audio.settings_path()")
             .unwrap(),
-        user.join("settings.toml").to_string_lossy()
+        user.join("project.toml").to_string_lossy()
     );
     // 改键 + 音量落盘 → 都写进用户目录，发布包目录保持原样。
     runtime
@@ -599,11 +599,11 @@ fn settings_root_redirects_player_settings_out_of_the_release_package() {
              return 'ok'",
         )
         .unwrap();
-    let user_text = fs::read_to_string(user.join("settings.toml")).unwrap();
+    let user_text = fs::read_to_string(user.join("project.toml")).unwrap();
     assert!(user_text.contains("interact=key:keyf"), "{user_text}");
     assert!(user_text.contains("[audio]"), "{user_text}");
     assert_eq!(
-        fs::read_to_string(pack.join("settings.toml")).unwrap(),
+        fs::read_to_string(pack.join("project.toml")).unwrap(),
         "[audio]\nmaster = 0.5\nbgm = 0.25\nsfx = 1.0\nui = 1.0\n",
         "发布包不得被写入玩家设置"
     );

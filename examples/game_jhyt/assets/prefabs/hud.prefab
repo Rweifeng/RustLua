@@ -1,0 +1,217 @@
+prefab_version=1
+asset_id=5f2c81a7-9d4b-4e6a-b1c8-72e3d90f4a6b
+name=Hud
+root=1
+# 常驻 HUD（`ui/hud.lua`）的 UI 预设：M70/B7 从动态层**部分**搬来。
+# 对账门 = `jhyt_m70_hud_prefab`：黄金表 124 行（A 态 = 山庄开局、金钱 120/体力 100/
+# 内力 50、晴天、无状态、无结局）钉死迁移前画面，本文件 + hud.lua 的 set_text/set_rect/
+# set_visible 必须逐值复现。
+#
+# 结构：根 HudRoot（全屏 1280x720，常驻不隐藏）下挂全部叶子。HUD 没有"打开/关闭"，
+# 根常 shown；结局横幅/雨罩/反馈行等在脚本里逐帧 set_visible 控制。
+#
+# 部分预设（工作包 B7）：**只搬静态骨架**（面板/色块/图标/卡底/文字槽位），运行期元素
+# （资源条 fill 宽度、状态图标、招式图标/名、建造幽灵）留在动态层由脚本每帧写。
+#
+# 行序 = 绘制序 = 实体槽位升序，**复刻迁移前动态层的 id 字典序**
+# （`ScriptState` 是 BTreeMap，`mesh_ui.rs:239` 迭代 `.values()`；门 covering_account 的
+# 实体层排序键 = 槽位号，槽位必须复刻字典序 cover 判定才与黄金表一致）：
+#   白图类（rank-0，字典序）：accent → box → chip1..6 → ending_box → rain
+#   贴图类（rank-1，字典序）：avatar_frame → **bar_hp 组（fill → frame → icon）** →
+#     bar_neili 组 → bar_stamina 组 → line_icon1/2/4 → skill_card1..8 → weather_sun/rain
+#     （**fill 在 frame 前**：动态层 id `hud:bar_hp` < `hud:bar_hp:frame`，fill 先画、
+#     frame 边框盖在填充上；槽位若反过来，fill 会盖死边框，黄金表 cover 段就红了）
+#   文字类（rank-2，不盖人）：ending_line → ending_title → feedback → goals → line1..6 →
+#     tutorial
+# 黄金表被盖住 3 块：bar_fill1/2/3 被各自 bar_frame 整块盖住（同矩形、边框九宫格在上）；
+# 其余全部看得见。
+#
+# 运行期仍由脚本每帧写的值（不改几何/贴图，只改内容/显隐/宽度）：
+#   * `prefab.set_text`：line1..6（状态行）、feedback、goals、tutorial、ending_title/line
+#   * `prefab.set_rect` ：bar_fill1..3（宽度随 hp/stamina/neili 比值）
+#   * `prefab.set_visible`：weather_sun/rain 互斥（晴天 sun、雨天 rain）、ending_box/
+#     ending_title/ending_line（结局出现才开）、feedback（无动作隐藏）、skill_card8/rain
+#     （A 态隐藏；skill_card8 只画已绑定的 7 张）
+# 预设内 Text 初始为空，由 render 每帧填；golden 比对发生在 render 之后。
+#
+# 初始可见性：全开，由 draw → 同帧 set_visible/set_text 覆盖，无闪帧。
+entity	1	HudRoot
+component	1	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	1	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.000000,0.000000,1280.000000,720.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	1	role	hud_root
+entity	2	HudAccent	1
+component	2	Image	texture=__white__;color=0.930,0.750,0.350,0.900
+component	2	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	2	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=980.000000,8.000000,1280.000000,11.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	3	HudBox	1
+component	3	Image	texture=__white__;color=0.080,0.090,0.120,0.620
+component	3	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=980.000000,8.000000,1280.000000,188.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	4	HudChip1	1
+component	4	Image	texture=__white__;color=0.360,0.820,0.450,0.950
+component	4	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	4	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,24.000000,998.000000,40.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	5	HudChip2	1
+component	5	Image	texture=__white__;color=0.420,0.780,0.720,0.950
+component	5	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	5	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,52.000000,998.000000,68.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	6	HudChip3	1
+component	6	Image	texture=__white__;color=0.950,0.760,0.300,0.950
+component	6	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	6	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,80.000000,998.000000,96.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	7	HudChip4	1
+component	7	Image	texture=__white__;color=0.380,0.660,0.960,0.950
+component	7	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	7	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,108.000000,998.000000,124.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	8	HudChip5	1
+component	8	Image	texture=__white__;color=0.780,0.560,0.960,0.950
+component	8	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	8	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,136.000000,998.000000,152.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	9	HudChip6	1
+component	9	Image	texture=__white__;color=0.820,0.620,0.420,0.950
+component	9	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	9	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,164.000000,998.000000,180.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	10	HudEndingBox	1
+component	10	Image	texture=__white__;color=0.060,0.070,0.100,0.900
+component	10	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	10	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=380.000000,244.000000,900.000000,340.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	11	HudRain	1
+component	11	Image	texture=__white__;color=0.160,0.220,0.340,0.220
+component	11	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.000000,0.000000,1280.000000,720.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	12	HudAvatarFrame	1
+component	12	Image	texture=assets/art/ui/hud/ui_hud_avatar_frame.png;color=1.000,1.000,1.000
+component	12	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	12	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=924.000000,16.000000,972.000000,64.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	13	HudBarFill1	1
+component	13	Image	texture=assets/art/ui/hud/ui_bar_fill_hp.png;color=1.000,1.000,1.000
+component	13	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	13	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,194.000000,1152.000000,212.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	14	HudBarFrame1	1
+component	14	Image	texture=assets/art/ui/hud/ui_bar_frame_9s.png;color=1.000,1.000,1.000
+component	14	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	14	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,194.000000,1152.000000,212.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	15	HudBarIcon1	1
+component	15	Image	texture=assets/art/ui/hud/ui_icon_hp.png;color=1.000,1.000,1.000
+component	15	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	15	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=970.000000,195.000000,986.000000,211.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	16	HudBarFill3	1
+component	16	Image	texture=assets/art/ui/hud/ui_bar_fill_neili.png;color=1.000,1.000,1.000
+component	16	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	16	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,242.000000,1072.000000,260.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	17	HudBarFrame3	1
+component	17	Image	texture=assets/art/ui/hud/ui_bar_frame_9s.png;color=1.000,1.000,1.000
+component	17	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	17	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,242.000000,1152.000000,260.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	18	HudBarIcon3	1
+component	18	Image	texture=assets/art/ui/hud/ui_icon_neili.png;color=1.000,1.000,1.000
+component	18	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	18	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=970.000000,243.000000,986.000000,259.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	19	HudBarFill2	1
+component	19	Image	texture=assets/art/ui/hud/ui_bar_fill_stamina.png;color=1.000,1.000,1.000
+component	19	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	19	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,218.000000,1152.000000,236.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	20	HudBarFrame2	1
+component	20	Image	texture=assets/art/ui/hud/ui_bar_frame_9s.png;color=1.000,1.000,1.000
+component	20	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	20	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,218.000000,1152.000000,236.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	21	HudBarIcon2	1
+component	21	Image	texture=assets/art/ui/hud/ui_icon_stamina.png;color=1.000,1.000,1.000
+component	21	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	21	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=970.000000,219.000000,986.000000,235.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	22	HudLineIcon1	1
+component	22	Image	texture=assets/art/ui/hud/ui_icon_hp.png;color=1.000,1.000,1.000
+component	22	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	22	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=986.000000,26.000000,998.000000,38.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	23	HudLineIcon2	1
+component	23	Image	texture=assets/art/ui/hud/ui_icon_stamina.png;color=1.000,1.000,1.000
+component	23	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	23	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=986.000000,54.000000,998.000000,66.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	24	HudLineIcon4	1
+component	24	Image	texture=assets/art/ui/hud/ui_icon_coin.png;color=1.000,1.000,1.000
+component	24	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	24	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=986.000000,110.000000,998.000000,122.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	25	HudSkillCard1	1
+component	25	Image	texture=assets/art/ui/skills/ui_skill_card_9s.png;color=1.000,1.000,1.000;nine_slice=8,8,8,8
+component	25	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	25	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,296.000000,1040.000000,344.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	26	HudSkillCard2	1
+component	26	Image	texture=assets/art/ui/skills/ui_skill_card_9s.png;color=1.000,1.000,1.000;nine_slice=8,8,8,8
+component	26	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	26	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=1044.000000,296.000000,1092.000000,344.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	27	HudSkillCard3	1
+component	27	Image	texture=assets/art/ui/skills/ui_skill_card_9s.png;color=1.000,1.000,1.000;nine_slice=8,8,8,8
+component	27	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	27	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=1096.000000,296.000000,1144.000000,344.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	28	HudSkillCard4	1
+component	28	Image	texture=assets/art/ui/skills/ui_skill_card_9s.png;color=1.000,1.000,1.000;nine_slice=8,8,8,8
+component	28	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	28	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=1148.000000,296.000000,1196.000000,344.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	29	HudSkillCard5	1
+component	29	Image	texture=assets/art/ui/skills/ui_skill_card_9s.png;color=1.000,1.000,1.000;nine_slice=8,8,8,8
+component	29	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	29	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=1200.000000,296.000000,1248.000000,344.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	30	HudSkillCard6	1
+component	30	Image	texture=assets/art/ui/skills/ui_skill_card_9s.png;color=1.000,1.000,1.000;nine_slice=8,8,8,8
+component	30	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	30	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,348.000000,1040.000000,396.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	31	HudSkillCard7	1
+component	31	Image	texture=assets/art/ui/skills/ui_skill_card_9s.png;color=1.000,1.000,1.000;nine_slice=8,8,8,8
+component	31	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	31	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=1044.000000,348.000000,1092.000000,396.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	32	HudSkillCard8	1
+component	32	Image	texture=assets/art/ui/skills/ui_skill_card_9s.png;color=1.000,1.000,1.000;nine_slice=8,8,8,8
+component	32	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	32	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=1096.000000,348.000000,1144.000000,396.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	33	HudWeatherSun	1
+component	33	Image	texture=assets/art/ui/hud/ui_weather_sun.png;color=1.000,1.000,1.000
+component	33	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	33	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=1252.000000,6.000000,1272.000000,26.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	34	HudWeatherRain	1
+component	34	Image	texture=assets/art/ui/hud/ui_weather_rain.png;color=1.000,1.000,1.000
+component	34	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	34	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=1252.000000,6.000000,1272.000000,26.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	35	HudEndingLine	1
+component	35	Text	text=;font_size=16.00;color=1.000,1.000,1.000
+component	35	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	35	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=396.000000,288.000000,884.000000,312.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	36	HudEndingTitle	1
+component	36	Text	text=;font_size=22.00;color=1.000,1.000,1.000
+component	36	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	36	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=396.000000,256.000000,884.000000,284.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	37	HudFeedback	1
+component	37	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	37	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	37	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=16.000000,36.000000,966.000000,60.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	38	HudGoals	1
+component	38	Text	text=;font_size=17.00;color=1.000,1.000,1.000
+component	38	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	38	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=16.000000,8.000000,966.000000,30.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	39	HudLine1	1
+component	39	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	39	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	39	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=1002.000000,18.000000,1264.000000,46.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	40	HudLine2	1
+component	40	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	40	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	40	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=1002.000000,46.000000,1264.000000,74.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	41	HudLine3	1
+component	41	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	41	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	41	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=1002.000000,74.000000,1264.000000,102.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	42	HudLine4	1
+component	42	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	42	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	42	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=1002.000000,102.000000,1264.000000,130.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	43	HudLine5	1
+component	43	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	43	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	43	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=1002.000000,130.000000,1264.000000,158.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	44	HudLine6	1
+component	44	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	44	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	44	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=1002.000000,158.000000,1264.000000,186.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	45	HudTutorial	1
+component	45	Text	text=;font_size=16.00;color=1.000,1.000,1.000
+component	45	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	45	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=16.000000,666.000000,966.000000,686.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000

@@ -51,12 +51,21 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 .world
                 .insert(id, SpriteAsset(texture_path))
                 .map_err(world_error)?;
+            // 排序层必须与 `Sprite` 同批写入：渲染侧读的是独立的 `SpriteSorting` 组件
+            // （`runtime_scene/frame_data.rs`），漏写就等于运行期声明的 `sorting_layer=` /
+            // `order=` 全部失效，精灵落进"遍历序号"兜底桶。场景加载路径
+            // （`script/scene_spawn.rs`）一直是写的，两条路径不一致时 web（直接解析组件串）
+            // 与原生就会给出两套遮挡顺序。
+            state
+                .world
+                .insert(id, component.sorting.clone())
+                .map_err(world_error)?;
             Ok(())
         })?,
     )?;
-    // 运行期读回渲染用的贴图/尺寸：`sprite.set` 会同时写 Sprite 组件与 SpriteAsset，
-    // 验收驱动与工具需要能确认"实体上现在真的是哪张图"（M21 主角形象切换、
-    // NPC/敌人形象诊断），否则只能间接猜测。纹理解析顺序与渲染一致：
+    // 运行期读回渲染用的贴图/尺寸/排序层：`sprite.set` 会同时写 Sprite、SpriteAsset 与
+    // SpriteSorting 三个组件，验收驱动与工具需要能确认"实体上现在真的是哪张图、排在哪儿"
+    // （M21 主角形象切换、NPC/敌人形象诊断），否则只能间接猜测。纹理解析顺序与渲染一致：
     // Animation 的当前 clip sheet 优先，没有动画时用 SpriteAsset。
     let s = Rc::clone(&state);
     sprite.set(
@@ -95,6 +104,15 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 .map_err(world_error)?
             {
                 table.set("animation_sheet", machine.current_clip().sheet.clone())?;
+            }
+            // 排序层用组件串同名键回读（`sorting_layer` / `order`），脚本可以原样 round-trip。
+            if let Some(sorting) = state
+                .world
+                .get::<rustlua_render::sprite::SpriteSorting>(id)
+                .map_err(world_error)?
+            {
+                table.set("sorting_layer", sorting.layer.clone())?;
+                table.set("order", sorting.order)?;
             }
             Ok(table)
         })?,

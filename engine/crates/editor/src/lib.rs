@@ -4,6 +4,7 @@ pub mod layout;
 pub mod perf_fixture;
 pub mod play_control;
 pub mod prefab_graph;
+pub mod runtime_sync;
 pub mod schema_audit;
 
 pub use play_control::{

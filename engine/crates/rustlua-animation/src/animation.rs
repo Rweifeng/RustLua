@@ -367,9 +367,20 @@ impl AnimationStateMachine {
     ///
     /// docs/54 §4.4：帧 → UV 这条规则现在只有一处定义——`AnimationClip::tracks()` 的
     /// `SpriteRegion` 轨道。这里采样它，因此"轨道视图"与"渲染真正用的 UV"不可能分家。
+    ///
+    /// **循环在这里折回**：`PropertyTrack::sample` 的契约是"晚于最后一个关键帧 ⇒ 取最后一个，
+    /// 循环由调用方按 `duration` 折回"（轨道本身不管循环策略）。不折回的后果是循环片段播完
+    /// 第一圈后 UV 永久定在末帧——`current_frame()` 有 `% cols` 因此 Lua 看到的帧号仍在跳，
+    /// 只有真正上屏的图像卡住，所以这条缺陷只在原生路径暴露（web 宿主的帧号是 Lua 侧自算的）。
     #[must_use]
     pub fn current_frame_uv(&self) -> (Vec2, Vec2) {
-        let time = self.time;
+        let clip = self.current_clip();
+        let duration = clip.duration();
+        let time = if clip.looped && duration > 0.0 {
+            self.time % duration
+        } else {
+            self.time
+        };
         // 采样**缓存**的轨道（不再每次现算）：帧 → UV 这条规则仍然只有一处定义。
         if let Some(crate::animation_track::TrackValue::Region { uv_min, uv_max }) = self
             .tracks
@@ -541,8 +552,19 @@ mod tests {
             assert!(steps < 1000, "advance 没有推进时间（测试自身失效）");
             let time = machine.time();
             let (uv_min, uv_max) = machine.current_frame_uv();
+            // 轨道本身不管循环（`PropertyTrack::sample` 的契约：超范围一律夹紧到末帧），
+            // 折回是调用方的责任，因此这里也要按折回后的时刻采样才可比。
+            let duration = clip.duration();
+            let track_time = if clip.looped && duration > 0.0 {
+                time % duration
+            } else {
+                time
+            };
             match tracks
-                .sample(crate::animation_track::TrackTarget::SpriteRegion, time)
+                .sample(
+                    crate::animation_track::TrackTarget::SpriteRegion,
+                    track_time,
+                )
                 .expect("sample")
                 .as_ref()
             {
@@ -553,11 +575,21 @@ mod tests {
                     assert_eq!(
                         (uv_min.x, uv_min.y, uv_max.x, uv_max.y),
                         (track_min.x, track_min.y, track_max.x, track_max.y),
-                        "t={time} 时轨道采样与渲染用的 UV 必须一致"
+                        "t={time}（轨道时刻 {track_time}）时轨道采样与渲染用的 UV 必须一致"
                     );
                 }
                 other => panic!("expected region, got {other:?}"),
             }
+            // **独立判据**：上面那条对拍两边同源（都来自这条轨道），单独留着抓不到回绕缺失
+            // ——原生 PC 上待机动画播完第一圈就定格的正是这个。这里改成和 `current_frame()`
+            // 对拍：帧号那条路径一直有 `% cols`，两者不同源，回绕一旦缺失就在这里红。
+            let frame = machine.current_frame();
+            let cols = clip.cols as f32;
+            assert_eq!(
+                (uv_min.x, uv_max.x),
+                (frame as f32 / cols, (frame + 1) as f32 / cols),
+                "t={time} 时上屏的 UV 必须是第 {frame} 帧（循环片段跨圈后不能定在末帧）"
+            );
         }
         // 片段是 4 帧 @4fps = 1 秒一圈；1/32 秒步长 ⇒ 每圈 32 步，2.5 秒因此跨过两圈以上。
         assert!(steps >= 64, "扫描至少要跨两圈循环（实际 {steps} 步）");

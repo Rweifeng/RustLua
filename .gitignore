@@ -1,5 +1,7 @@
 # Rust build output
 engine/target/
+# 诊断/临时构建用的旁路 target 目录（如 target-diag）
+engine/target-*/
 xtask/target/
 
 # On-demand toolchain cache: zig (wasm 侧 Lua C 编译需要)，由 scripts/zig-toolchain.ps1 下载

@@ -235,7 +235,19 @@ end
 
 cases['input.bindings.shape'] = function()
   local first = action_names()
-  return 'n=' .. #input.bindings(first)
+  local list = input.bindings(first)
+  -- 绑定文本必须带**设备前缀**（key: / mouse: / pad: / padaxis:，引擎的
+  -- Binding::to_text）。游戏侧触屏注入（ui/virtual_pad.lua 的 action_key）与
+  -- 键位提示（ui/hints.lua 的 binding_labels）都按 `^key:(.+)$` 解析它：
+  -- 前缀一丢，招式快捷栏与动作盘九格在 web/微信上**静默全部脱靶**
+  -- （action_key 拿到 nil 就什么都不做，没有报错也没有日志）。
+  local prefix = ''
+  for _, text in ipairs(list) do
+    if prefix == '' then
+      prefix = tostring(text):match('^([%a]+):') or 'bare'
+    end
+  end
+  return 'n=' .. #list .. ',prefix=' .. prefix
 end
 
 -- ---- tag / light：需要活体实体，两侧都应当拒绝（错误文本必须一致）----

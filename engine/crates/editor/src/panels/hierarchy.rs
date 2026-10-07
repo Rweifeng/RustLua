@@ -429,6 +429,11 @@ impl EditorApp {
         // 场景文件集成：标题 + 「+」创建菜单 + 当前场景保存状态。
         ui.horizontal(|ui| {
             ui.heading("层级");
+            // Play：这份树是**运行态镜像**（脚本 spawn/destroy 会改它，Stop 后回到编辑文档），
+            // 标出来免得作者以为改行会写进场景文件。
+            if self.is_playing() {
+                ui.colored_label(egui::Color32::from_rgb(120, 200, 255), "运行态");
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if let Some(document) = self.current_scene() {
                     if document.dirty {
@@ -486,14 +491,15 @@ impl EditorApp {
         //
         // docs/55 阶段 0：把输入框矩形记进探针，GUI smoke 才能用**真实指针事件**把焦点
         // 打进文本框（"输入焦点"是计划 §8 质量门枚举的一项：键入时快捷键不得抢键）。
-        // right-to-left：✕ 先画靠右，TextEdit 后画用 INFINITY 占满剩余宽度。
+        // right-to-left：清除按钮先画靠右，TextEdit 后画用 INFINITY 占满剩余宽度。
         // 之前按 available_width()-34 算 desired_width，输入文字比这个宽时 TextEdit
         // 的内容 galley 会反向撑大自身，导致输入框越输越宽（与 schema_inspector 同一问题）。
         let filter_response = ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
             // 空时也在按钮位分配 0 宽占位：保持 TextEdit 的 widget 序号稳定，
-            // 否则输入首字符时 ✕ 按钮出现会让 TextEdit 序号 +1，egui 视为新控件而丢焦点。
+            // 否则输入首字符时清除按钮出现会让 TextEdit 序号 +1，egui 视为新控件而丢焦点。
             if !self.hierarchy_filter.is_empty()
-                && ui.small_button("✕").on_hover_text("清空过滤").clicked()
+                && crate::util::draw_icon_button(ui, crate::util::DrawIcon::Cross, "清空过滤")
+                    .clicked()
             {
                 self.hierarchy_filter.clear();
             } else {
@@ -637,7 +643,11 @@ impl EditorApp {
         let filter_active = !parsed_filter.is_empty();
         let mut out = Vec::new();
         let (revision, entity_count, match_count) = {
-            let Some(document) = self.document.current_scene.as_ref() else {
+            // Play 期间行模型读**运行态镜像**（脚本 spawn/destroy 的行只有回灌进镜像后才
+            // 在这里出现）；编辑期间它与 `document.current_scene` 是同一份。
+            let Some(document) =
+                crate::play_sync::panel_scene_document(&self.play_session, &self.document)
+            else {
                 self.hierarchy_visible_cache = HierarchyVisibleCache::default();
                 return;
             };
@@ -1191,12 +1201,15 @@ impl EditorApp {
         } = row;
         // 只提取本行需要的字段（旧实现整份文档 clone，10k 行即 10k 次全量克隆）。
         // 组件名也一起取：`type:` 过滤词要参与"这一行自己是否命中"的高亮判断。
+        //
+        // 这份行数据必须与**行模型**同源（`ensure_hierarchy_rows` 走 `panel_scene_document`）：
+        // Play 期间行模型读运行态镜像，而运行期 `entity.spawn`/`prefab.spawn` 生成的行在
+        // 编辑文档里根本不存在——这里若继续只认 `document.current_scene`，那些行会被静默
+        // 跳过、画不出来，层级看起来就是空的（空场景 + 整屏运行期 UI 的工程必现）。
         let (name, ui_root, is_3d, lower_components) = {
-            let Some(entity) = self
-                .document
-                .current_scene
-                .as_ref()
-                .and_then(|scene| scene.scene.entities.get(&id))
+            let Some(entity) =
+                crate::play_sync::panel_scene_document(&self.play_session, &self.document)
+                    .and_then(|document| document.scene.entities.get(&id))
             else {
                 return;
             };

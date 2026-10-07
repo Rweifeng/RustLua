@@ -65,8 +65,11 @@ fn pin_paths() {
     let _ = engine::host::RuntimeScene::renderable_conflicts;
     let _ = engine::host::RuntimeScene::resume_music;
     let _ = engine::host::RuntimeScene::run_script_steps;
+    let _ = engine::host::RuntimeScene::runtime_spawned_entities;
     let _ = engine::host::RuntimeScene::scene_3d;
     let _ = engine::host::RuntimeScene::scene_3d_with_camera;
+    let _ = engine::host::RuntimeScene::scene_entity_handles;
+    let _ = engine::host::RuntimeScene::scene_entity_local_transforms;
     let _ = engine::host::RuntimeScene::scene_parent_issues;
     let _ = engine::host::RuntimeScene::script_diagnostics;
     let _ = engine::host::RuntimeScene::script_disabled_callbacks;
@@ -133,6 +136,8 @@ fn pin_paths() {
     let _: Option<engine::host::ReadbackStatus> = None;
     let _: Option<engine::host::RenderFrameMetrics> = None;
     let _: Option<engine::host::RenderOutcome> = None;
+    let _: Option<engine::host::RuntimeScene> = None;
+    let _: Option<engine::host::RuntimeSpawnedEntity> = None;
     let _: Option<engine::host::ScriptErrorPolicy> = None;
 }
 

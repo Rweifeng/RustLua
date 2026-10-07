@@ -1,0 +1,414 @@
+prefab_version=1
+asset_id=c0a8b3f6-5d31-4a7e-9b2d-81f6e4a03c77
+name=PauseMenu
+root=1
+# 暂停菜单（`ui/pause_menu.lua`）的 UI 预设：M66/B3 从动态层整块搬来，三页共面板。
+# 对账门 = `jhyt_m66_pause_prefab`：黄金表 570 行（A 主菜单 / B 设置 / C 帮助三态 ×
+# shown+cover）钉死迁移前画面，本文件 + pause_menu.lua 的 set_text/set_rect/set_visible
+# 必须逐值复现（搬运不改画面）。
+#
+# 结构：根 PauseRoot 下三个**页面容器**（PsePageMenu / PsePageSettings / PsePageHelp），
+# 换页 = `prefab.set_visible` 容器（子树语义藏整页）；同一帧只有一页可见，三页互斥。
+# 页面容器只有 Transform（无布局/无绘制组件），不参与提交序。
+#
+# 行序 = 绘制序：宿主按实体槽位升序提交 UI 分段。每页内部行序**复刻迁移前动态层的
+# id 字典序**（`ScriptState` 是 BTreeMap，`mesh_ui.rs:239` 迭代 `.values()`；门
+# covering_account 的实体层排序键 = 槽位号，所以槽位必须复刻字典序才能让 cover 判定
+# 与黄金表一致）：
+#   白图类（rank-0，字典序）：box → rule → sel（帮助页无 sel）
+#   贴图类（rank-1，字典序）：close → divider → key_hint → seal → skin_bg
+#     （B 页多 btn_back → btn_save → handle1..4，且 **slot 在 skin_bg 之后**——
+#       迁移前 slot 的 id 字典序在 skin_bg 后，所以只有 slot 不被 skin_bg 盖）
+#   文字类（rank-2，不盖人，顺序只影响提交序不影响 cover）：hint/msg/rows/title/vals
+# 这样 skin_bg（唯一不透明贴图 `ui_panel_main_9s.png`，能盖人）排在同页所有会被盖的
+# 元素之后：A 态盖 7 块（box/rule/sel/close/divider/key_hint/seal）、B 态 13 块、
+# C 态 6 块，slot 除外——与黄金表 cover 列逐条一致。
+#
+# 运行期仍由脚本每帧写的值（不改几何/贴图，只改内容）：
+#   * `prefab.set_text`：title/rows/msg/hint（文字内容，含音量百分比、选中前缀 >、帮助键名）
+#   * `prefab.set_rect` ：sel（选中行 y 随 index 移动）、设置页 handle（音量比例 → x 移动）
+#   * `prefab.set_visible`：三页容器互斥；帮助页 section 行无值（val 隐藏）、行数不足 20 的槽隐藏
+# 打开/关闭 = 根节点显隐（`set_visible` 子树语义，藏父带子）；不撤重铺，避免槽位
+# LIFO 复用打乱绘制序（title_menu.prefab / shop.prefab 同款警告）。
+#
+# 故意**不在**这份预设里的：设置页四路滑轨 track（`skin.panel("slider_track")` 因 skin.lua
+# 里 slider_track 无 slice 而从不绘制——迁移前画面里就没有它，搬进来就是改画面）。
+entity	1	PauseRoot
+component	1	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	1	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.000000,0.000000,1280.000000,720.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	1	role	pause_root
+# ---------- A 页容器：主菜单（黄金表 A 态；白图 box/rule/sel → 贴图 close/divider/key_hint/seal/skin_bg） ----------
+entity	2	PsePageMenu	1
+component	2	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	3	PseBox	2
+component	3	Image	texture=__white__;color=0.080,0.090,0.120,0.960
+component	3	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=160.000000,40.000000,880.000000,680.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	4	PseRule	2
+component	4	Image	texture=__white__;color=0.720,0.750,0.820,0.220
+component	4	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	4	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,92.000000,856.000000,94.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	5	PseSel	2
+component	5	Image	texture=__white__;color=0.850,0.720,0.420,0.200
+component	5	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	5	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,100.000000,856.000000,144.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	5	role	pse_sel
+entity	6	PseClose	2
+component	6	Image	texture=assets/art/ui/common/ui_btn_close.png;color=1.000,1.000,1.000
+component	6	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	6	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=840.000000,58.000000,856.000000,74.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	7	PseDivider	2
+component	7	Image	texture=assets/art/ui/common/ui_divider.png;color=1.000,1.000,1.000
+component	7	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	7	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,84.000000,856.000000,92.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	8	PseKeyHint	2
+component	8	Image	texture=assets/art/ui/common/ui_key_hint_9s.png;color=1.000,1.000,1.000;nine_slice=6,6,6,6
+component	8	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	8	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,642.000000,856.000000,668.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	9	PseSeal	2
+component	9	Image	texture=assets/art/ui/common/ui_icon_seal.png;color=1.000,1.000,1.000
+component	9	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	9	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=812.000000,58.000000,836.000000,82.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	10	PseSkinBg	2
+component	10	Image	texture=assets/art/ui/common/ui_panel_main_9s.png;color=1.000,1.000,1.000;nine_slice=16,16,16,16
+component	10	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	10	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=160.000000,40.000000,880.000000,680.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	11	PseHint	2
+component	11	Text	text=W/S 或 方向键 选择 · 空格 确认 · +/- 主音量 · Esc / P 继续;font_size=14.00;color=1.000,1.000,1.000
+component	11	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,648.000000,856.000000,678.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	12	PseMsg	2
+component	12	Text	text=;font_size=15.00;color=1.000,1.000,1.000
+component	12	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	12	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,616.000000,856.000000,646.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	13	PseRow1	2
+component	13	Text	text=> 继续游戏;font_size=18.00;color=1.000,1.000,1.000
+component	13	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	13	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,100.000000,856.000000,130.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	14	PseRow2	2
+component	14	Text	text=  保存进度;font_size=18.00;color=1.000,1.000,1.000
+component	14	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	14	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,144.000000,856.000000,174.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	15	PseRow3	2
+component	15	Text	text=  读取进度;font_size=18.00;color=1.000,1.000,1.000
+component	15	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	15	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,188.000000,856.000000,218.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	16	PseRow4	2
+component	16	Text	text=  形象  青衫少侠;font_size=18.00;color=1.000,1.000,1.000
+component	16	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	16	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,232.000000,856.000000,262.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	17	PseRow5	2
+component	17	Text	text=  音量  100%（- / +）;font_size=18.00;color=1.000,1.000,1.000
+component	17	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	17	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,276.000000,856.000000,306.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	18	PseRow6	2
+component	18	Text	text=  帮助;font_size=18.00;color=1.000,1.000,1.000
+component	18	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	18	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,320.000000,856.000000,350.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	19	PseRow7	2
+component	19	Text	text=  返回标题;font_size=18.00;color=1.000,1.000,1.000
+component	19	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	19	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,364.000000,856.000000,394.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	20	PseTitle	2
+component	20	Text	text=暂停;font_size=22.00;color=1.000,1.000,1.000
+component	20	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	20	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,56.000000,856.000000,86.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ---------- B 页容器：设置（黄金表 B 态；slot 字典序在 skin_bg 后，是唯一不被 skin_bg 盖的贴图） ----------
+entity	21	PsePageSettings	1
+component	21	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	22	PseSBox	21
+component	22	Image	texture=__white__;color=0.080,0.090,0.120,0.960
+component	22	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	22	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=160.000000,40.000000,880.000000,680.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	23	PseSRule	21
+component	23	Image	texture=__white__;color=0.720,0.750,0.820,0.220
+component	23	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	23	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,92.000000,856.000000,94.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	24	PseSSel	21
+component	24	Image	texture=__white__;color=0.850,0.720,0.420,0.200
+component	24	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	24	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,100.000000,856.000000,144.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity_meta	24	role	pse_s_sel
+entity	25	PseSBtnBack	21
+component	25	Image	texture=assets/art/ui/common/ui_btn_secondary_9s.png;color=1.000,1.000,1.000;nine_slice=8,8,8,8
+component	25	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	25	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=808.000000,322.000000,848.000000,346.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	26	PseSBtnSave	21
+component	26	Image	texture=assets/art/ui/common/ui_btn_primary_9s.png;color=1.000,1.000,1.000;nine_slice=8,8,8,8
+component	26	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	26	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=808.000000,278.000000,848.000000,302.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	27	PseSClose	21
+component	27	Image	texture=assets/art/ui/common/ui_btn_close.png;color=1.000,1.000,1.000
+component	27	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	27	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=840.000000,58.000000,856.000000,74.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	28	PseSDivider	21
+component	28	Image	texture=assets/art/ui/common/ui_divider.png;color=1.000,1.000,1.000
+component	28	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	28	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,84.000000,856.000000,92.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	29	PseSHandle1	21
+component	29	Image	texture=assets/art/ui/common/ui_slider_handle.png;color=1.000,1.000,1.000
+component	29	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	29	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=840.000000,116.000000,852.000000,128.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	30	PseSHandle2	21
+component	30	Image	texture=assets/art/ui/common/ui_slider_handle.png;color=1.000,1.000,1.000
+component	30	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	30	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=840.000000,160.000000,852.000000,172.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	31	PseSHandle3	21
+component	31	Image	texture=assets/art/ui/common/ui_slider_handle.png;color=1.000,1.000,1.000
+component	31	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	31	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=840.000000,204.000000,852.000000,216.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	32	PseSHandle4	21
+component	32	Image	texture=assets/art/ui/common/ui_slider_handle.png;color=1.000,1.000,1.000
+component	32	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	32	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=840.000000,248.000000,852.000000,260.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	33	PseSKeyHint	21
+component	33	Image	texture=assets/art/ui/common/ui_key_hint_9s.png;color=1.000,1.000,1.000;nine_slice=6,6,6,6
+component	33	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	33	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,642.000000,856.000000,668.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	34	PseSSeal	21
+component	34	Image	texture=assets/art/ui/common/ui_icon_seal.png;color=1.000,1.000,1.000
+component	34	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	34	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=812.000000,58.000000,836.000000,82.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	35	PseSSkinBg	21
+component	35	Image	texture=assets/art/ui/common/ui_panel_main_9s.png;color=1.000,1.000,1.000;nine_slice=16,16,16,16
+component	35	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	35	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=160.000000,40.000000,880.000000,680.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	36	PseSSlot	21
+component	36	Image	texture=assets/art/ui/save/ui_save_slot_9s.png;color=1.000,1.000,1.000;nine_slice=8,8,8,8
+component	36	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	36	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=708.000000,278.000000,804.000000,302.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	37	PseSHint	21
+component	37	Text	text=W/S 或 方向键 选择 · +/- 或 左右方向键 调整音量 · 空格 确认/保存 · Esc 返回;font_size=14.00;color=1.000,1.000,1.000
+component	37	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	37	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,648.000000,856.000000,678.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	38	PseSMsg	21
+component	38	Text	text=;font_size=15.00;color=1.000,1.000,1.000
+component	38	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	38	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,616.000000,856.000000,646.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	39	PseSRow1	21
+component	39	Text	text=> 主音量  100%（- / +）;font_size=18.00;color=1.000,1.000,1.000
+component	39	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	39	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,100.000000,856.000000,130.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	40	PseSRow2	21
+component	40	Text	text=  BGM  100%（- / +）;font_size=18.00;color=1.000,1.000,1.000
+component	40	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	40	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,144.000000,856.000000,174.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	41	PseSRow3	21
+component	41	Text	text=  音效  100%（- / +）;font_size=18.00;color=1.000,1.000,1.000
+component	41	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	41	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,188.000000,856.000000,218.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	42	PseSRow4	21
+component	42	Text	text=  界面音效  100%（- / +）;font_size=18.00;color=1.000,1.000,1.000
+component	42	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	42	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,232.000000,856.000000,262.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	43	PseSRow5	21
+component	43	Text	text=  保存设置;font_size=18.00;color=1.000,1.000,1.000
+component	43	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	43	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,276.000000,856.000000,306.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	44	PseSRow6	21
+component	44	Text	text=  返回;font_size=18.00;color=1.000,1.000,1.000
+component	44	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	44	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,320.000000,856.000000,350.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	45	PseSTitle	21
+component	45	Text	text=设置;font_size=22.00;color=1.000,1.000,1.000
+component	45	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	45	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,56.000000,856.000000,86.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# ---------- C 页容器：帮助（黄金表 C 态；无 sel，行数随设备浮动，开满 20 槽，键盘形态 17 行） ----------
+entity	46	PsePageHelp	1
+component	46	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity	47	PseHBox	46
+component	47	Image	texture=__white__;color=0.080,0.090,0.120,0.960
+component	47	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	47	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=160.000000,40.000000,880.000000,680.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	48	PseHRule	46
+component	48	Image	texture=__white__;color=0.720,0.750,0.820,0.220
+component	48	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	48	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,92.000000,856.000000,94.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	49	PseHClose	46
+component	49	Image	texture=assets/art/ui/common/ui_btn_close.png;color=1.000,1.000,1.000
+component	49	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	49	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=840.000000,58.000000,856.000000,74.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	50	PseHDivider	46
+component	50	Image	texture=assets/art/ui/common/ui_divider.png;color=1.000,1.000,1.000
+component	50	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	50	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,84.000000,856.000000,92.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	51	PseHKeyHint	46
+component	51	Image	texture=assets/art/ui/common/ui_key_hint_9s.png;color=1.000,1.000,1.000;nine_slice=6,6,6,6
+component	51	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	51	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,642.000000,856.000000,668.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	52	PseHSeal	46
+component	52	Image	texture=assets/art/ui/common/ui_icon_seal.png;color=1.000,1.000,1.000
+component	52	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	52	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=812.000000,58.000000,836.000000,82.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	53	PseHSkinBg	46
+component	53	Image	texture=assets/art/ui/common/ui_panel_main_9s.png;color=1.000,1.000,1.000;nine_slice=16,16,16,16
+component	53	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	53	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=160.000000,40.000000,880.000000,680.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	54	PseHHint	46
+component	54	Text	text=Esc 返回;font_size=14.00;color=1.000,1.000,1.000
+component	54	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	54	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,648.000000,856.000000,678.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	55	PseHRow1	46
+component	55	Text	text=操作 · 键鼠;font_size=18.00;color=1.000,1.000,1.000
+component	55	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	55	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,100.000000,748.000000,130.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	56	PseHRow2	46
+component	56	Text	text=移动;font_size=18.00;color=1.000,1.000,1.000
+component	56	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	56	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,128.000000,748.000000,158.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	57	PseHRow3	46
+component	57	Text	text=交互;font_size=18.00;color=1.000,1.000,1.000
+component	57	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	57	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,156.000000,748.000000,186.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	58	PseHRow4	46
+component	58	Text	text=攻击;font_size=18.00;color=1.000,1.000,1.000
+component	58	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	58	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,184.000000,748.000000,214.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	59	PseHRow5	46
+component	59	Text	text=武学;font_size=18.00;color=1.000,1.000,1.000
+component	59	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	59	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,212.000000,748.000000,242.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	60	PseHRow6	46
+component	60	Text	text=送礼;font_size=18.00;color=1.000,1.000,1.000
+component	60	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	60	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,240.000000,748.000000,270.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	61	PseHRow7	46
+component	61	Text	text=睡觉;font_size=18.00;color=1.000,1.000,1.000
+component	61	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	61	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,268.000000,748.000000,298.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	62	PseHRow8	46
+component	62	Text	text=修炼;font_size=18.00;color=1.000,1.000,1.000
+component	62	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	62	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,296.000000,748.000000,326.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	63	PseHRow9	46
+component	63	Text	text=建造;font_size=18.00;color=1.000,1.000,1.000
+component	63	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	63	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,324.000000,748.000000,354.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	64	PseHRow10	46
+component	64	Text	text=背包;font_size=18.00;color=1.000,1.000,1.000
+component	64	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	64	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,352.000000,748.000000,382.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	65	PseHRow11	46
+component	65	Text	text=任务;font_size=18.00;color=1.000,1.000,1.000
+component	65	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	65	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,380.000000,748.000000,410.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	66	PseHRow12	46
+component	66	Text	text=暂停;font_size=18.00;color=1.000,1.000,1.000
+component	66	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	66	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,408.000000,748.000000,438.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	67	PseHRow13	46
+component	67	Text	text=玩法;font_size=18.00;color=1.000,1.000,1.000
+component	67	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	67	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,436.000000,748.000000,466.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	68	PseHRow14	46
+component	68	Text	text=劳作;font_size=18.00;color=1.000,1.000,1.000
+component	68	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	68	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,464.000000,748.000000,494.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	69	PseHRow15	46
+component	69	Text	text=作息;font_size=18.00;color=1.000,1.000,1.000
+component	69	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	69	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,492.000000,748.000000,522.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	70	PseHRow16	46
+component	70	Text	text=战斗;font_size=18.00;color=1.000,1.000,1.000
+component	70	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	70	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,520.000000,748.000000,550.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	71	PseHRow17	46
+component	71	Text	text=改键;font_size=18.00;color=1.000,1.000,1.000
+component	71	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	71	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,548.000000,748.000000,578.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	72	PseHRow18	46
+component	72	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	72	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	72	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,576.000000,748.000000,606.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	73	PseHRow19	46
+component	73	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	73	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	73	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,604.000000,748.000000,634.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	74	PseHRow20	46
+component	74	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	74	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	74	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,632.000000,748.000000,662.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	75	PseHTitle	46
+component	75	Text	text=帮助;font_size=22.00;color=1.000,1.000,1.000
+component	75	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	75	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=184.000000,56.000000,856.000000,86.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	76	PseHVal1	46
+component	76	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	76	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	76	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=292.000000,100.000000,856.000000,130.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	77	PseHVal2	46
+component	77	Text	text=W/A/S/D;font_size=18.00;color=1.000,1.000,1.000
+component	77	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	77	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=292.000000,128.000000,856.000000,158.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	78	PseHVal3	46
+component	78	Text	text=E;font_size=18.00;color=1.000,1.000,1.000
+component	78	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	78	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=292.000000,156.000000,856.000000,186.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	79	PseHVal4	46
+component	79	Text	text=J;font_size=18.00;color=1.000,1.000,1.000
+component	79	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	79	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=292.000000,184.000000,856.000000,214.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	80	PseHVal5	46
+component	80	Text	text=K;font_size=18.00;color=1.000,1.000,1.000
+component	80	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	80	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=292.000000,212.000000,856.000000,242.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	81	PseHVal6	46
+component	81	Text	text=G;font_size=18.00;color=1.000,1.000,1.000
+component	81	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	81	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=292.000000,240.000000,856.000000,270.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	82	PseHVal7	46
+component	82	Text	text=T;font_size=18.00;color=1.000,1.000,1.000
+component	82	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	82	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=292.000000,268.000000,856.000000,298.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	83	PseHVal8	46
+component	83	Text	text=Q;font_size=18.00;color=1.000,1.000,1.000
+component	83	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	83	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=292.000000,296.000000,856.000000,326.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	84	PseHVal9	46
+component	84	Text	text=B;font_size=18.00;color=1.000,1.000,1.000
+component	84	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	84	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=292.000000,324.000000,856.000000,354.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	85	PseHVal10	46
+component	85	Text	text=I;font_size=18.00;color=1.000,1.000,1.000
+component	85	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	85	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=292.000000,352.000000,856.000000,382.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	86	PseHVal11	46
+component	86	Text	text=L;font_size=18.00;color=1.000,1.000,1.000
+component	86	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	86	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=292.000000,380.000000,856.000000,410.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	87	PseHVal12	46
+component	87	Text	text=P;font_size=18.00;color=1.000,1.000,1.000
+component	87	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	87	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=292.000000,408.000000,856.000000,438.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	88	PseHVal13	46
+component	88	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	88	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	88	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=292.000000,436.000000,856.000000,466.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	89	PseHVal14	46
+component	89	Text	text=翻土 / 播种 / 浇水 / 收获消耗体力，体力不足只能休息;font_size=18.00;color=1.000,1.000,1.000
+component	89	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	89	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=292.000000,464.000000,856.000000,494.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	90	PseHVal15	46
+component	90	Text	text=睡觉结束当日：作物成长一天、体力回满、自动存档;font_size=18.00;color=1.000,1.000,1.000
+component	90	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	90	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=292.000000,492.000000,856.000000,522.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	91	PseHVal16	46
+component	91	Text	text=武学招式消耗内力，普攻伤害随武器加成;font_size=18.00;color=1.000,1.000,1.000
+component	91	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	91	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=292.000000,520.000000,856.000000,550.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	92	PseHVal17	46
+component	92	Text	text=工程 settings.toml 的 [input] 段可改绑，本页键名随绑定更新;font_size=18.00;color=1.000,1.000,1.000
+component	92	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	92	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=292.000000,548.000000,856.000000,578.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	93	PseHVal18	46
+component	93	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	93	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	93	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=292.000000,576.000000,856.000000,606.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	94	PseHVal19	46
+component	94	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	94	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	94	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=292.000000,604.000000,856.000000,634.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	95	PseHVal20	46
+component	95	Text	text=;font_size=18.00;color=1.000,1.000,1.000
+component	95	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	95	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=292.000000,632.000000,856.000000,662.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000

@@ -342,19 +342,19 @@ local function boot_game(map_id)
   end
   inventory.setup()
   register_save_providers()
-  -- M20-02：把 <project>/settings.toml 的 `[audio]` 段应用到音量总线（主/BGM/
+  -- M20-02：把 <project>/project.toml 的 `[audio]` 段应用到音量总线（主/BGM/
   -- 音效/界面）。文件可选，缺失时保持引擎默认；失败只记日志不中断启动。
   -- 游戏内改动由暂停菜单「设置」页显式写回（`audio.save_settings()`）。
   local settings_ok, settings_detail = audio.load_settings()
   log.info(
-    "[audio] settings.toml: " .. tostring(settings_ok) .. " (" .. tostring(settings_detail) .. ")"
+    "[audio] project.toml: " .. tostring(settings_ok) .. " (" .. tostring(settings_detail) .. ")"
   )
-  -- M20-08：把 <project>/settings.toml 的 `[input]` 段（玩家改键）应用到命名动作
+  -- M20-08：把 <project>/project.toml 的 `[input]` 段（玩家改键）应用到命名动作
   -- 映射。语义同 `audio.load_settings`：文件缺失/缺 `[input]` 段 → 保留当前绑定
   -- （即引擎默认，键盘行为与迁移前逐键一致）；版本/绑定非法 → 回退默认 + 诊断。
   local bindings_ok, bindings_detail = input.load_settings()
   log.info(
-    "[input] settings.toml: " .. tostring(bindings_ok) .. " (" .. tostring(bindings_detail) .. ")"
+    "[input] project.toml: " .. tostring(bindings_ok) .. " (" .. tostring(bindings_detail) .. ")"
   )
   -- M20-09 / M22：同一份 `[input]` 段里的菜单导航手感（摇杆阈值 + 按住连发节奏）也在
   -- 启动应用一次，并推给引擎（引擎按毫秒执行连发，与帧率无关）；缺文件/缺键/脏值由
@@ -408,7 +408,7 @@ function on_create()
   -- 文件缺失/非法时 `load_settings` 返回 false 且保留当前绑定，不打扰玩家。
   local bindings_ok, bindings_detail = input.load_settings()
   log.info(
-    "[input] settings.toml: " .. tostring(bindings_ok) .. " (" .. tostring(bindings_detail) .. ")"
+    "[input] project.toml: " .. tostring(bindings_ok) .. " (" .. tostring(bindings_detail) .. ")"
   )
   input.apply_nav_settings()
   -- 标题菜单（手柄/键盘导航）：复位到第一项并重建焦点环。
@@ -461,7 +461,7 @@ function jianghu_status()
     tutorial_steps = #(tutorial_data.steps or {}),
     bgm = audio.current_bgm(),
     volume = audio.volume(),
-    -- M20-02：音量分组与 settings.toml 路径（只读；暂停设置页写入）。
+    -- M20-02：音量分组与 project.toml 路径（只读；暂停设置页写入）。
     buses = {
       master = audio.bus_volume("master"),
       bgm = audio.bus_volume("bgm"),

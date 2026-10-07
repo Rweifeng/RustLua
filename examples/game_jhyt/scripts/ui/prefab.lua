@@ -53,7 +53,10 @@ M.VERSION = 1
 -- 工程内的预设清单。**必须显式登记**（与玩法用例进 `verify.ps1` 同一套纪律）：
 -- 启动门 `validate_all()` 遍历这张表逐个 load+校验，漏登记的预设就是一份"从没被任何
 -- 检查读过的数据文件"——改坏了要到玩家点开那个面板才炸。
-M.NAMES = { "dialogue" }
+-- M71：JSON 预设层**整体退役**——唯一登记 `dialogue`（dialogue.ui.json）已删除，
+-- 对话面板改走运行期 `.prefab`（assets/prefabs/dialogue.prefab，对账门
+-- jhyt_m71_dialogue_prefab）；本表清空，audit 遍历空表恒绿。
+M.NAMES = {}
 
 -- 锚点预设表（与引擎 `UiLayoutPreset::anchors()` 逐值一致）。漂移的表现是"编辑器画一套、
 -- 运行时画另一套"，所以这张表由 `jhyt_m59_ui_prefab` 与引擎源码逐值对账。

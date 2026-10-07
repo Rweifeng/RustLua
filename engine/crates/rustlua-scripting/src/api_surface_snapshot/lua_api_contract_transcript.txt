@@ -17,7 +17,7 @@ event.off_alias | count=0
 event.unsubscribe.by_callback | count=1
 input.action.no_device | pressed=false/released=false/axis=0.0/repeat=false
 input.actions.list | n=36/names(attack,build,cancel,confirm,demolish,gift,interact,inventory,move_down,move_left,move_right,move_up,pause,place,practice,quest,respawn,seed,skill,sleep,slot_1,slot_2,slot_3,slot_4,slot_5,slot_6,slot_7,slot_8,slot_9,ui_down,ui_left,ui_right,ui_up,use,volume_down,volume_up)
-input.bindings.shape | n=1
+input.bindings.shape | n=1,prefix=key
 interact.prompt_roundtrip | got=按 E 拾取/cleared=nil
 interact.query.negative_radius | ok=false
 item.def.missing | nil=nil

@@ -1,0 +1,70 @@
+A	shown	panel/box	panel	160.00,40.00,720.00,640.00,0.100,0.110,0.150,0.940
+A	shown	panel/rule	panel	184.00,92.00,672.00,2.00,0.720,0.750,0.820,0.220
+A	shown	panel/sel	panel	184.00,100.00,672.00,38.00,0.850,0.720,0.420,0.200
+A	shown	img/skin_bg	image	160.00,40.00,720.00,640.00,assets/art/ui/common/ui_panel_main_9s.png,16,16,16,16
+A	shown	img/divider	image	184.00,84.00,672.00,8.00,assets/art/ui/common/ui_divider.png,-
+A	shown	img/seal	image	832.00,58.00,24.00,24.00,assets/art/ui/common/ui_icon_seal.png,-
+A	shown	img/key_hint	image	184.00,642.00,672.00,26.00,assets/art/ui/common/ui_key_hint_9s.png,6,6,6,6
+A	shown	img/bullet1	image	166.00,104.00,12.00,12.00,assets/art/ui/quest/ui_quest_bullet_todo.png,-
+A	shown	img/bullet2	image	166.00,142.00,12.00,12.00,assets/art/ui/quest/ui_quest_bullet_todo.png,-
+A	shown	img/bullet3	image	166.00,180.00,12.00,12.00,assets/art/ui/quest/ui_quest_bullet_todo.png,-
+A	shown	img/bullet4	image	166.00,218.00,12.00,12.00,assets/art/ui/quest/ui_quest_bullet_todo.png,-
+A	shown	img/bullet5	image	166.00,256.00,12.00,12.00,assets/art/ui/quest/ui_quest_bullet_todo.png,-
+A	shown	img/bullet6	image	166.00,294.00,12.00,12.00,assets/art/ui/quest/ui_quest_bullet_todo.png,-
+A	shown	img/bullet7	image	166.00,332.00,12.00,12.00,assets/art/ui/quest/ui_quest_bullet_todo.png,-
+A	shown	txt/title	text	184.00,56.00,22.00,任务日志
+A	shown	txt/state	text	616.00,60.00,16.00,状态 未接取
+A	shown	txt/giver	text	184.00,386.00,15.00,发布者 沈青萝
+A	shown	txt/objtitle	text	184.00,412.00,15.00,目标：
+A	hidden	txt/empty	text	-
+A	shown	txt/msg	text	184.00,616.00,14.00,只读面板：任务在对话/交互中接取与交付
+A	shown	txt/hint	text	184.00,648.00,14.00,W/S 或 上下方向键 选择 · 1-9 定位 · L / Esc / Q 关闭
+A	shown	txt/row1	text	184.00,100.00,17.00,> 1. 为医馆采药【未接取】
+A	shown	txt/row2	text	184.00,138.00,17.00,  2. 木桩三式【未接取】
+A	shown	txt/row3	text	184.00,176.00,17.00,  3. 订单·药庐灵芝【未接取】
+A	shown	txt/row4	text	184.00,214.00,17.00,  4. 订单·市集稻米【未接取】
+A	shown	txt/row5	text	184.00,252.00,17.00,  5. 订单·山庄丸药【未接取】
+A	shown	txt/row6	text	184.00,290.00,17.00,  6. 订单·山道猎获【未接取】
+A	shown	txt/row7	text	184.00,328.00,17.00,  7. 订单·春分茶会【未接取】
+A	shown	txt/obj1	text	216.00,438.00,15.00,… 采集灵芝 0/3
+A	hidden	txt/obj2	text	-
+A	hidden	txt/obj3	text	-
+A	hidden	txt/obj4	text	-
+A	hidden	txt/obj5	text	-
+A	hidden	txt/obj6	text	-
+A	hidden	txt/obj7	text	-
+A	cover	panel/box	panel	img/skin_bg
+A	cover	panel/rule	panel	img/skin_bg
+A	cover	panel/sel	panel	img/skin_bg
+A	cover	img/bullet1	image	img/skin_bg
+A	cover	img/bullet2	image	img/skin_bg
+A	cover	img/bullet3	image	img/skin_bg
+A	cover	img/bullet4	image	img/skin_bg
+A	cover	img/bullet5	image	img/skin_bg
+A	cover	img/bullet6	image	img/skin_bg
+A	cover	img/bullet7	image	img/skin_bg
+A	cover	img/divider	image	img/skin_bg
+A	cover	img/key_hint	image	img/skin_bg
+A	cover	img/seal	image	img/skin_bg
+A	cover	img/skin_bg	image	-
+A	cover	txt/empty	text	-
+A	cover	txt/giver	text	-
+A	cover	txt/hint	text	-
+A	cover	txt/msg	text	-
+A	cover	txt/obj1	text	-
+A	cover	txt/obj2	text	-
+A	cover	txt/obj3	text	-
+A	cover	txt/obj4	text	-
+A	cover	txt/obj5	text	-
+A	cover	txt/obj6	text	-
+A	cover	txt/obj7	text	-
+A	cover	txt/objtitle	text	-
+A	cover	txt/row1	text	-
+A	cover	txt/row2	text	-
+A	cover	txt/row3	text	-
+A	cover	txt/row4	text	-
+A	cover	txt/row5	text	-
+A	cover	txt/row6	text	-
+A	cover	txt/row7	text	-
+A	cover	txt/state	text	-
+A	cover	txt/title	text	-

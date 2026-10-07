@@ -467,8 +467,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   function probePackReadability() {
     var probes = [
       { path: PACK_PREFIX + 'manifest.txt', shape: function (t) { return typeof t === 'string' && t.length > 0; } },
-      { path: PACK_PREFIX + 'project.toml', shape: looksLikeToml },
-      { path: PACK_PREFIX + 'settings.toml', shape: looksLikeToml }
+      { path: PACK_PREFIX + 'project.toml', shape: looksLikeToml }
     ];
     var report = [];
     for (var i = 0; i < probes.length; i++) {

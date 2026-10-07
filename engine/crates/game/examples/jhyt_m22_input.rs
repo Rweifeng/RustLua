@@ -245,7 +245,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "tostring(select(1, input.save_settings()))",
         "true",
     )?;
-    let settings_path = settings_root.join("settings.toml");
+    let settings_path = settings_root.join("project.toml");
     let written = fs::read_to_string(&settings_path)?;
     for required in [
         "[input]",
@@ -255,7 +255,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "ui_up=key:arrowup,padaxis:1+,pad:12",
     ] {
         if !written.contains(required) {
-            return Err(format!("写出的 settings.toml 缺少 {required:?}：\n{written}").into());
+            return Err(format!("写出的 project.toml 缺少 {required:?}：\n{written}").into());
         }
     }
     // 文本必须等于当前内存映射的 `to_text`（宿主/脚本/磁盘三者同源）。
@@ -571,11 +571,11 @@ fn v1_settings_block(map: &str) -> String {
     format!("# 玩家设置\n[input]\nmap = \"{map}\"\n")
 }
 
-/// 从 settings.toml 文本里取出 `map` 行的 TOML 转义文本并还原换行。
+/// 从 project.toml 文本里取出 `map` 行的 TOML 转义文本并还原换行。
 fn extract_map_line(text: &str) -> Result<String, Box<dyn std::error::Error>> {
     let start = text
         .find("map = \"")
-        .ok_or("settings.toml 里没有 map = \"…\"")?
+        .ok_or("project.toml 里没有 map = \"…\"")?
         + "map = \"".len();
     let rest = &text[start..];
     let end = rest.find('"').ok_or("map 行的引号未闭合")?;
