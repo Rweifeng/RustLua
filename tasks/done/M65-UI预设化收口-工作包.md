@@ -1,3 +1,12 @@
+# 任务：M65 UI 预设化收口（工作包，覆盖 M65–M71）
+
+- 任务 ID：M65-UI预设化收口-工作包
+- 状态：**收口完成并归档**——《江湖有田》运行时 UI 从「Lua 动态层手绘」收口到 `.prefab` 预设，七屏逐屏迁移、每屏一份黄金对账门（M65 shop / M66 pause / M67 inventory / M68 quest / M69 shipping / M70 hud / M71 dialogue）
+- 归档日期：2026-10-07（由 `tasks/plan/` 移入 `tasks/done/`，文件名不变）
+- 落地记录：里程碑实现见 `git log` 的 M59–M71 批次与 CHANGELOG 的 Unreleased 段，逐屏读数见各门的黄金表；下面的三笔是归档前的收口尾巴（配置整合两笔 + 回归红修复一笔）
+- 未闭合项：`builds/` 内的 PC / 微信发布产物仍是配置迁移前的旧包，下次 `package.ps1` 重发自动带上 `project.toml`（含 `[input]`/`[audio]` 段）与新 seed 逻辑
+
+---
 
 **settings.toml → project.toml 配置整合（✅ 2026-10-07）**：用户要求把 `settings.toml` 的整个 `[input]` 段（map + 死区 + 导航，含 Bug4 的 move padaxis）迁到 `project.toml`，然后删除 `settings.toml`。
 - 引擎：`SETTINGS_FILE` 常量 settings.toml → **project.toml**（一处辐射 input/audio 全部读写；upsert 逻辑保留其余段，对 project.toml 的 [project] 段天然兼容）；`user_dir.rs` settings_file() 与 seed_settings 源都改为 project.toml（发布首次运行从 pack 复制 project.toml → 用户目录）；package.ps1 settings 打包段改打包 project.toml（微信改名 project.toml.txt 已有）；微信 wechat-adapter 自检探针删 settings.toml 行；editor「项目设置」面板读写切 project.toml；Lua 注释/用户可见文本（改键说明、main.lua 日志、audio/input/hints/pause_menu）全部同步。

@@ -95,9 +95,9 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 > （里程碑号、测试条数），复述一次就过期一次。里程碑与在途工作以 `tasks/plan/` + `git log` 为准，
 > 门禁读数以 `artifacts/logs/quality/` 的日志为准。
 
-- **在途工作**：UI 预设化收口，工作包 `tasks/plan/M65-UI预设化收口-工作包.md` 覆盖 M65–M71
-  （《江湖有田》运行时 UI 从「Lua 动态层手绘」收口到 `.prefab` 预设，逐屏迁移 + 每屏一份黄金对账门）；
-  M59–M65a 已按 `git log` 落地。**这份 README 不追在途进度**——它每天在变，看工作包与日志。
+- **在途工作**：UI 预设化收口（M65–M71，《江湖有田》运行时 UI 从「Lua 动态层手绘」收口到 `.prefab` 预设，
+  逐屏迁移 + 每屏一份黄金对账门）已于 2026-10-07 归档 `tasks/done/M65-UI预设化收口-工作包.md`，
+  `tasks/plan/` 当前为空。**这份 README 不追在途进度**——它每天在变，看 `tasks/plan/` 与 `git log`。
 - **PC 发行已验收**（M31）：干净目录运行、`pack/` 只读、存档与设置写 `<用户数据目录>`
   （`%APPDATA%\<应用名>`，`RUSTLUA_USER_DIR` 可覆盖）、日志写 `<用户数据目录>/logs/`；
   `package.ps1 -SelfTest` 断言隔离目录内无玩家数据。窗口尺寸改由工程声明
