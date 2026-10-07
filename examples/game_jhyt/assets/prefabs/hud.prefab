@@ -3,7 +3,7 @@ asset_id=5f2c81a7-9d4b-4e6a-b1c8-72e3d90f4a6b
 name=Hud
 root=1
 # 常驻 HUD（`ui/hud.lua`）的 UI 预设：M70/B7 从动态层**部分**搬来。
-# 对账门 = `jhyt_m70_hud_prefab`：黄金表 124 行（A 态 = 山庄开局、金钱 120/体力 100/
+# 对账门 = `jhyt_m70_hud_prefab`：黄金表 136 行（A 态 = 山庄开局、金钱 120/体力 100/
 # 内力 50、晴天、无状态、无结局）钉死迁移前画面，本文件 + hud.lua 的 set_text/set_rect/
 # set_visible 必须逐值复现。
 #

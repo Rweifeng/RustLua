@@ -1034,7 +1034,7 @@ if ($Mvp -or $MvpOnly) {
         # 入口是 open_ui 不是 open；无 key_hint 面板、有 close 按钮与条件滚动箭头。
         "jhyt_m69_shipping_prefab"
         # M70 常驻 HUD（ui/hud.lua）静态骨架全量搬进 `hud.prefab`（45 实体、部分预设混合载体）的
-        # 搬运门：黄金表 124 行；compare_golden 排序集合比对；坑 = 黄金表首行 UTF-8 BOM 沉底错位。
+        # 搬运门：黄金表 136 行；compare_golden 排序集合比对；坑 = 黄金表首行 UTF-8 BOM 沉底错位。
         "jhyt_m70_hud_prefab"
         # M71 对话面板（world/dialogue.lua）全迁一份 `.prefab` 的搬运门（JSON 预设层退役的
         # 接管门）：黄金表 34 行（A 态 = 开场对话 gu_changfeng_teach，顾长风 4 选项、marker1

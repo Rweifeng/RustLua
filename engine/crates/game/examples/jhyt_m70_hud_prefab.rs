@@ -442,7 +442,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         print!("{dump}");
         println!("jhyt_m70_captured lines={}", dump.lines().count());
     } else {
-        std::fs::write("C:\\GitHub\\RustLua\\.tmp_m70_got_dump.txt", &dump).unwrap_or_default();
         compare_golden(&dump)?;
         println!("golden_lines={}", dump.lines().count());
     }
