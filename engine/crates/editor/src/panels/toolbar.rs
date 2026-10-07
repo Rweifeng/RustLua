@@ -11,6 +11,9 @@ use crate::util::{icon_button, icon_toggle, pause_resume_icon, pause_resume_icon
 use crate::{AlignMode, SceneViewMode};
 use eframe::egui;
 
+/// 缩放滑条的轨道宽度：egui 默认 100pt 在工具栏里太占位，收窄到能稳定拖动即可。
+const ZOOM_SLIDER_WIDTH: f32 = 60.0;
+
 impl EditorApp {
     pub(crate) fn draw_workspace_toolbar(&mut self, ui: &mut egui::Ui) {
         // 自动换行：窗口/面板较窄时控件折行显示，避免溢出到右侧属性面板区域。
@@ -256,10 +259,15 @@ impl EditorApp {
             });
             ui.separator();
             let zoom_before_slider = self.scene_zoom;
-            ui.add(
-                egui::Slider::new(&mut self.scene_zoom, SCENE_ZOOM_MIN..=SCENE_ZOOM_MAX)
-                    .text("Zoom"),
-            );
+            // spacing 改动只在 scope 内生效，否则会连带改窄本面板其它滑条。
+            ui.scope(|ui| {
+                ui.spacing_mut().slider_width = ZOOM_SLIDER_WIDTH;
+                ui.add(egui::Slider::new(
+                    &mut self.scene_zoom,
+                    SCENE_ZOOM_MIN..=SCENE_ZOOM_MAX,
+                ))
+                .on_hover_text("场景缩放");
+            });
             self.set_scene_zoom_centered(zoom_before_slider, self.scene_zoom);
         });
         // 自定义分辨率输入行。
