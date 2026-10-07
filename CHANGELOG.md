@@ -5,6 +5,66 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 预设骨架画在动态层之上：招式图标被不透明卡底整块埋掉
+
+- **症状**：编辑器 Play 的 HUD 上，7 张招式卡只有中文名、没有图标；右上角那个头像框是空的。
+  两条不同账：图标是**绘制序**缺陷——M66–M71 把卡底搬进预设之后就在，两个宿主（原生 + web）
+  一起瞎，而状态层读数照样自报 `shown`；头像框是 docs/45 第 10 条的欠账 ②（从来没有一张主角脸）。
+- **根因**：`push_scene_ui` 把场景/预设实体 UI（`Image`+`Text`+`Button`）**整趟**排在 Lua 动态层
+  之后提交。预设卡底 `ui_skill_card_9s.png` 主体全不透明，于是压在它上面的 24×24 动态
+  `ui.image` 招式图标被逐像素盖掉。web 侧 `drawUi` 是同一条规则的另一份实现，同样反着排。
+- **改法**：原生把那一趟拆成两半——`push_scene_ui_images` 提到 `push_ui_panels` **之前**（骨架在下），
+  `push_scene_ui_text` 仍留**最后**（`prewarm_frame_glyphs` 必须是本帧最后一个会撑大字体图集的人：
+  图集增长只重缩放已缓存字形的 UV、不回改已写进顶点缓冲的 UV，所以文字趟挪不动）；布局解算
+  由调用方每帧做一次（`ensure_scene_ui_layout`，否则求解翻倍）。web 侧 `drawUi` 把预设图趟
+  挪到函数开头，文字趟留末尾，与原生同一口径。
+- **门模型补了"层"这一维**：7 张预设黄金门的 `covering_account` 从"谁盖谁"升级为
+  `slot_of(role, reading)` 六档（实体图 0 < 动态面板 1 < 动态图 2 < 动态字 3 < 实体字 4 < 缺席 5），
+  档内再排序（动态层按 id 字典序、实体层按槽位升序）。原来那条 `submission_order`（"白图段必须在
+  贴图段之前"）在整屏同层下只是槽位序的产物、不是层序规则，留着会在任何一屏重刷表时假红 ⇒
+  6 张面板屏改成**只报段序读数、不做背书**；真正钉层序的是 `jhyt_m63` 的段序表和 `jhyt_m70`
+  新增的层档腿（卡底与图标都必须在场且卡底先提交，缺任一边判"前置塌了"、宁可红）。
+- **实测**：`jhyt_m70` 层档读数 = 预设卡底段 `#28` 在动态招式图标段 `#31` 之前提交（本帧 38 个分段）。
+  离屏 1280×720 采样 6 格 24×24 图标区的颜色直方图：改前每格都是 `#262C33=576/576`（纯卡底、
+  图标 0 像素），改后同点位卡底色降到 346–515/576，也就是每格露出 61–230 个图标色像素
+  （`#C9A05A`/`#E8C49A`/`#A9C28F` 这些正是生成器那批招式图的配色）。
+- **反面对照（三条各自红过一次）**：①把 `push_scene_ui_images` 挪回 `push_ui_text` 之后 ⇒
+  `jhyt_m70` 报 `Error: "③ 的分层规则被实测否了：预设卡底段 #36 在动态招式图标段 #15 之后提交"`、
+  exit=1，还原后回绿（golden 138 行）；②注释掉 `hud.lua` 的 `draw_avatar_face()` ⇒ 同一门红在
+  golden 第 70 行（`hidden` 对不上 `shown`）；③把微信 launcher 的 `web-runtime.js` 换成
+  HEAD 那份（未修的 `drawUi`）⇒ `--check-ui-layer-order` 报 `14/14 组"卡底压图标"：卡底 #986
+  画在图标 #949 之后`、exit=1。微信侧修好的读数：
+  `ui_layer_order="ok,card_ops=72,icon_ops=7,overlap_pairs=14,last_card=1041,first_icon=1026"`。
+- **头像（欠账 ②）**：`tools/gen_portraits_art.py` 的 `PORTRAIT_IDS` 补 `player_male`/`player_female`
+  × 3 表情 = 6 张 128×128 立绘（调色板与发型直接复用 `gen_character_sprites.CHARACTERS`，所以头像
+  和场景里那个小人是同一个人；15 张既有 NPC 立绘逐字节未变）。`ui/portrait.lua` `SHEETS` 15→21；
+  `ui/hud.lua` 每帧按 `state.appearance` 取 calm 那张画成动态 `ui.image("hud:avatar_face", 928, 20, 40, 40)`
+  ——矩形是预设 `HudAvatarFrame`（924,16,972,64）内缩 4px，正好落在金线以内，框与脸互不遮挡。
+  留动态层而不进预设：贴图是运行期取值（`jianghu_set_appearance` 能换形象、随存档持久化），
+  引擎没有运行期换贴图 API，与对话立绘同一个理由。docs/48 §1 已引用 978→**984**、
+  `m29` 的 `EXPECTED_REFERENCED` 同步。
+- **买不到的部分**：①这条增量在**今天量不到**——`jhyt_m29` 的 §1 资源审计在走到之前先红在雨天
+  遮罩那一腿（`ui.panel_get('hud:rain')` 读不到：M70/B7 把雨罩搬进预设 `HudRain` 后那个动态面板
+  已不存在，`RAIN_OVERLAY` 常量还留在 `hud.lua` 里没人用），所以 984 是算出来的，修那条的人会
+  直接看到实测数；②微信全门跑不到我这条 leg——门在 leg 5（`--image-src-frozen` 本该响亮失败却
+  `boot=running`）就 throw，而我的用例排在 leg 8 之后；那条红是既有的，用 HEAD 的 harness + HEAD 的
+  运行时打同一 launcher 复现出**逐字相同**的两行失败，与本次改动无关，我这条 leg 的证据是上面
+  直接 node 跑的读数与反面对照；③`verify-webgl-bundle.ps1 -DriveJhyt` 同样红在既有的
+  `phase=nav-exit timeout`（HEAD 运行时在临时目录里复现同一读数）；④屏幕目验只覆盖了 HUD
+  （离屏采样 + `m70` 读数），另外六屏没有逐屏看像素；⑤六张面板屏的 `cover` 行**没有**重刷——
+  层维改动只让 `m70` 表体 +2 行和 `m63` 的段序常量重刷，其余表一个字节没动，这本身也是"层维
+  只影响这一处"的旁证。
+- 顺带记下的既有红/残留（本次不修，只报）：`jhyt_m66` 第 562 行 golden 期望"工程 settings.toml 的
+  [input] 段…"，而 `pause_menu.lua:138` 现在写的是 `project.toml`（`68ffcde` 引入的文案漂移）；
+  `mesh_ui.rs` 里三条 `TEMP DEBUG` 的 `tracing::warn!` 也是 HEAD 既有。
+- 回滚档：`engine/crates/engine/src/host/runtime_scene/{frame_data.rs,mesh_ui.rs}`、
+  `plugins/webgl/web-runtime.js`、`engine/crates/game/examples/jhyt_m6{3,5,6,7,8,9}_*_prefab.rs` +
+  `jhyt_m7{0,1}_*_prefab.rs` + `support/jhyt_m70_hud_golden.tsv`、`jhyt_m29_season_weather.rs`、
+  `scripts/{verify.ps1,verify-wechat-minigame.ps1,wechat-minigame-harness.js,gen-api-showcase-index.ps1}`、
+  `examples/game_jhyt/{scripts/ui/hud.lua,scripts/ui/portrait.lua,tools/gen_portraits_art.py,assets/art/portraits/player_*.png}`、
+  `engine/crates/engine/src/host/sample_project.rs`、`examples/game_jhyt/docs/{45,48}*.md`、本文件。
+
+
 ## Unreleased — 搬门关掉写死绝对路径的调试残留：跑一次门不再脏仓库根
 
 - **症状**：`git status` 在跑完 `jhyt_m70_hud_prefab` 后总挂一条 `?? .tmp_m70_got_dump.txt`

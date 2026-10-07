@@ -11,17 +11,21 @@
 //!     招式槽、查表动态画）、
 //!     招式名（x 随 `measure_text` 居中，预设 Text 定死 x 会偏）、建造幽灵图标（两态切换）。
 //!   * **② 整屏同层对 HUD 豁免**：部分预设 = 静态骨架在实体层、动态元素留动态层，混合是
-//!     设计意图。实体层整体画在动态层之下（`frame_data.rs:869-883`），所以文字/图标/fill
-//!     永远盖在面板/框/卡之上——与迁移前"后画的盖先画的"同向。
+//!     设计意图。而"混合"能成立的前提是**层序**：实体层的图先提交、垫在动态层之下
+//!     （`frame_data.rs` 的 `push_scene_ui_images` → `push_ui_*` → `push_ui_text` →
+//!     `push_scene_ui_text`），所以图标/名/fill 永远盖在面板/框/卡之上。顺序反了时不透明的
+//!     卡底会把 24×24 招式图标整块埋掉，而①②的读数照样"shown"（实机 2026-10-07）。
 //!
 //! 门守的是**搬运不改画面**，五段账：
 //!   ① 逐 id 黄金对账（单状态 `A` = 山庄开局、金钱 120/体力 100/内力 50、晴天、无状态、
 //!      无结局）：每块一条 `shown` 行，读数与载体无关——同一块东西由动态层画还是由预设
 //!      实例画，印出来必须是同一串字节。两块都在画 = 重影，当场红。
 //!   ② 载体记账（打印用；部分预设混合载体是设计意图，不做整屏同层断言）。
-//!   ③ 覆盖账：谁盖住谁，跨载体可比。实体层 order = 槽位号（"000000NN" 字符串比较永远在
-//!      "hud:xxx" 之前 ⇒ 同类别内实体块排在动态块前 ⇒ 动态块"后画在上"，与 frame_data
-//!      实测一致）。预期 A 态：bar_frame1..3 被 bar_fill1..3 整块盖住（同矩形），其余看得见。
+//!   ③ 覆盖账：谁盖住谁，跨载体可比。**先分层、层内再分类别**：实体图 → 动态 panel →
+//!      动态 image → 动态 text → 实体字（这五档就是 `frame_data.rs` 的提交档，由
+//!      [`submission_order`] 拿真实 `mesh.draws` 序列背书）。只按"色块→贴图→文字"排是
+//!      错的：那等于假设实体层与动态层按类别交错，而它们是先层后类。
+//!      预期 A 态：bar_frame1..3 被 bar_fill1..3 整块盖住（同矩形），其余看得见。
 //!   ④ 文字着色：预设 Text 的 `color` 必须就是白。
 //!   ⑤ 跨屏相交：HUD 是常驻层，本门用**全画布**判"别人的动态块"——A 态只有 HUD 自己
 //!      （`hud:` 前缀排除）、触屏在 desktop 不画，相交应为 0。
@@ -348,6 +352,10 @@ const PROBES: &[Probe] = &[
     probe("img/skill_icon6", "hud:skill_icon6", &[], Kind::Image),
     probe("img/skill_icon7", "hud:skill_icon7", &[], Kind::Image),
     probe("img/skill_icon8", "hud:skill_icon8", &[], Kind::Image),
+    // 主角头像：脸是动态层 `ui.image`（贴图随 `state.appearance` 变，引擎无运行期换贴图 API），
+    // 框在预设（`img/avatar` 那条）。这条钉的是"框里真的有一张脸、且落在金线以内"——
+    // docs/45 欠账 ② 从 M70 那批就挂着，空框只会在这一格上从 hidden 变 shown。
+    probe("img/avatar_face", "hud:avatar_face", &[], Kind::Image),
     probe("img/build_ghost", "hud:build_ghost", &[], Kind::Image),
     probe("txt/skill_name1", skill_name_probes!("1"), &[], Kind::Text),
     probe("txt/skill_name2", skill_name_probes!("2"), &[], Kind::Text),
@@ -446,7 +454,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("golden_lines={}", dump.lines().count());
     }
 
-    submission_order(&mut runtime)?;
+    submission_order(&mut runtime, &state_a)?;
 
     banner("④ 文字着色：动态层写死白 ⇒ 预设里每条 Text 必须也是白");
     text_colors(&mut runtime)?;
@@ -816,7 +824,7 @@ fn same_layer_screen(carriers: &[(String, Carrier)]) -> Result<(), Box<dyn std::
             .map(|(role, _)| role.as_str())
             .collect();
         return Err(format!(
-            "这一屏半搬了：既有实体层的块又有动态层的块（{}）。实体层整体画在动态层之上，\
+            "这一屏半搬了：既有实体层的块又有动态层的块（{}）。实体层的图整体画在动态层之下、动态块浮在骨架之上，\
              半搬等于改层序（②）",
             mixed.join(" ")
         )
@@ -834,21 +842,41 @@ fn covering_account(
     tag: &str,
     dump: &mut String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // 类别秩：色块（内置白图）→ 贴图块 → 文字。这一维两边**共用**，由 `frame_data.rs:869-883`
-    // 的 push 顺序决定（`push_ui_panels` → `push_ui_images` → `push_ui_grids` → `push_ui_bars`
-    // → `push_ui_text`），并由 [`submission_order`] 拿真实提交序列对过一次账。
-    // 类别内序才是两套载体不同的地方：动态层 = id 字典序（`ScriptState` 是 BTreeMap，
-    // `mesh_ui.rs:239` 迭代 `.values()`），实体层 = 槽位升序（预设行序）。
-    let rank = |reading: &Reading| match reading.texture.as_str() {
-        "__white__" => 0,
-        _ if !reading.texture.is_empty() => 1,
-        _ => 2,
+    // 提交档：**先分层、层内再分类别**，与 `frame_data.rs` 的 push 次序一一对应
+    // （`push_scene_ui_images` → `push_ui_panels` → `push_ui_images` → `push_ui_grids`
+    // → `push_ui_bars` → `push_ui_text` → `push_scene_ui_text`）。
+    // 旧模型只有"色块 → 贴图 → 文字"一维，那等于假设两层按类别交错提交；实测不是，
+    // 而错的方向正好是把"实体卡底埋掉动态图标"这种事故看成合理（实机 2026-10-07）。
+    // 档内序才是两套载体不同的地方：动态层 = id 字典序（`ScriptState` 是 BTreeMap，
+    // `mesh_ui.rs` 迭代 `.values()`），实体层 = 槽位升序（预设行序）。
+    let slot_of = |role: &str, reading: &Reading| -> u8 {
+        match reading.carrier {
+            Carrier::Entity => {
+                if kind_of_role(role) == Kind::Text {
+                    4
+                } else {
+                    0
+                }
+            }
+            Carrier::Dynamic => match kind_of_role(role) {
+                Kind::Panel => 1,
+                Kind::Image => 2,
+                Kind::Text => 3,
+            },
+            // 这一帧根本没画：排在最后，反正 `rect` 为 None 谁也盖不住它。
+            Carrier::Absent => 5,
+        }
     };
     let mut order: Vec<(&'static str, Reading)> = state
         .iter()
         .map(|(role, reading)| (*role, reading.clone()))
         .collect();
-    order.sort_by(|(_, a), (_, b)| rank(a).cmp(&rank(b)).then(a.order.cmp(&b.order)));
+    order.sort_by(|(role_a, a), (role_b, b)| {
+        slot_of(role_a, a)
+            .cmp(&slot_of(role_b, b))
+            .then(a.order.cmp(&b.order))
+            .then_with(|| role_a.cmp(role_b))
+    });
     let mut covered = 0;
     for (index, (role, reading)) in order.iter().enumerate() {
         let covers: Vec<&str> = match reading.rect {
@@ -884,16 +912,32 @@ fn covering_account(
 
 /// 黄金表第二列 `cover` 行的种类列取值（保持四列结构，别让读表的人按种类筛时空一格）。
 fn kind_of(role: &str) -> &'static str {
+    kind_of_role(role).tag()
+}
+
+/// ③ 的分层判据要看种类（实体层的图与字分属首尾两档），所以这里要的是 `Kind` 本身。
+fn kind_of_role(role: &str) -> Kind {
     PROBES
         .iter()
         .find(|probe| probe.role == role)
-        .map_or("?", |probe| probe.kind.tag())
+        .map_or(Kind::Image, |probe| probe.kind)
 }
 
 /// ③ 的排序规则不能只是"我读了 push 顺序得出的推断"：这里拿宿主**真正提交的序列**
-/// （`mesh.draws`，下标即画家顺序）证一次——内置白图那一段必须排在
-/// `ui_panel_main_9s.png`（`bp:skin_bg` 用的整屏不透明九宫格）之前。
-fn submission_order(runtime: &mut RuntimeScene) -> Result<(), Box<dyn std::error::Error>> {
+/// （`mesh.draws`，下标即画家顺序）证三档。
+///
+/// * **层档**（这条是 2026-10-07 那次事故的正面证据）：预设卡底 `ui_skill_card_9s.png`
+///   那一段必须排在动态招式图标（`ui_skill_*.png`）之前。反了的话卡底把 24×24 的图标
+///   整块埋掉，而①的读数照样是 `shown`——只有这条会红。
+/// * **实体层内档**：`ui_bar_fill_hp.png` 在 `ui_bar_frame_9s.png` 之前（预设行序 = 槽位序，
+///   ③ 里"fill 被 frame 盖住"那三行靠它背书，与 ECS 实际迭代序不一致就会红）。
+/// * **动态层内档**：内置白图（`ui.panel`）在贴图（`ui.image`）之前。HUD 的 A 态没有动态
+///   白板块，而 mesh 里的白图段分不清"动态 panel"与"预设里的 `__white__` 色块"，所以这一档
+///   要先用 ① 的读数确认有动态 panel 才跑；确认不了就照实说"这次没量到"，不拿实体色块冒充。
+fn submission_order(
+    runtime: &mut RuntimeScene,
+    state: &State,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mesh = runtime.vertices(VIEW_W as u32, VIEW_H as u32)?;
     let first = |role: &str| {
         mesh.draws.iter().position(|draw| {
@@ -904,30 +948,89 @@ fn submission_order(runtime: &mut RuntimeScene) -> Result<(), Box<dyn std::error
             }
         })
     };
+    let index_of = |label: &str, found: Option<usize>| {
+        found.map_or_else(|| "无".to_owned(), |index| format!("#{index}({label})"))
+    };
     let white = first(WHITE_ROLE);
     let skin = first(SKIN_TEXTURE);
+    let card = first(CARD_TEXTURE);
+    let fill = first(BAR_FILL_TEXTURE);
+    let icon = mesh.draws.iter().position(|draw| {
+        draw_path(&mesh, draw)
+            .is_some_and(|path| tail(path).starts_with("ui_skill_") && tail(path) != CARD_TEXTURE)
+    });
     println!(
-        "  本帧提交 {} 个分段：白图段 {}、{SKIN_TEXTURE} 段 {}",
+        "  本帧提交 {} 个分段：卡底段 {}、fill 段 {}、招式图标段 {}、白图段 {}、{SKIN_TEXTURE} 段 {}",
         mesh.draws.len(),
-        white.map_or("无".to_owned(), |index| format!("#{index}")),
-        skin.map_or("无".to_owned(), |index| format!("#{index}")),
+        index_of("实体图", card),
+        index_of("实体图", fill),
+        index_of("动态图", icon),
+        index_of("白图·层不定", white),
+        index_of("实体图", skin),
     );
-    match (white, skin) {
-        (Some(white), Some(skin)) if white < skin => {
-            println!("  ⇒ 实测类别序与 ③ 用的规则一致（色块 #{white} 在贴图 #{skin} 之前提交）")
+    // 层档：卡底与图标都得在场，且卡底先提交。缺任意一边就是"前置塌了"，宁可红。
+    match (card, icon) {
+        (Some(card), Some(icon)) if card < icon => {
+            println!(
+                "  ⇒ 层档实测一致：预设卡底 #{card} 在动态招式图标 #{icon} 之前提交（骨架在下）"
+            )
         }
-        (Some(white), Some(skin)) => {
+        (Some(card), Some(icon)) => {
             return Err(format!(
-                "③ 的排序规则被实测否了：白图段 #{white} 在 {SKIN_TEXTURE} 段 #{skin} **之后**提交，\
-                 而 ③ 按`色块 → 贴图`算覆盖表（frame_data.rs 的 push 顺序与提交顺序不一致，先查合并批的那一步）"
+                "③ 的分层规则被实测否了：预设卡底段 #{card} 在动态招式图标段 #{icon} **之后**提交，\
+                 不透明卡底会把图标整块埋掉（查 frame_data.rs 里 push_scene_ui_images 的位置，\
+                 它必须在 push_ui_* 之前）"
             )
             .into());
         }
-        _ => {
-            println!(
-                "  ⚠ 这一帧没同时拿到白图段与 {SKIN_TEXTURE} 段 ⇒ 覆盖表只按规则排，这次没有实测背书"
-            );
+        (card, icon) => {
+            return Err(format!(
+                "层档量不到：卡底段 {}、招式图标段 {}。招式图标不画才是这次要防的事故，\
+                 所以这里缺任何一边都判红（A 态应有 7 张已绑招式的图标）",
+                card.map_or("缺".to_owned(), |index| format!("#{index}")),
+                icon.map_or("缺".to_owned(), |index| format!("#{index}")),
+            )
+            .into());
         }
+    }
+    match (fill, skin) {
+        (Some(fill), Some(skin)) if fill < skin => println!(
+            "  ⇒ 实体层内档一致：bar_fill #{fill} 在 bar_frame #{skin} 之前提交（③ 那三行「被盖住」的依据）"
+        ),
+        (Some(fill), Some(skin)) => {
+            return Err(format!(
+                "③ 的槽位序被实测否了：bar_fill #{fill} 在 {SKIN_TEXTURE} 段 #{skin} **之后**提交，\
+                 而 ③ 按预设行序（槽位升序）排实体层内档"
+            )
+            .into());
+        }
+        _ => println!("  ⚠ 这一帧没同时拿到 fill 段与 {SKIN_TEXTURE} 段 ⇒ 实体层内档没有实测背书"),
+    }
+    // 动态层内档要"这一帧真有动态色块"才量得到：mesh 里 `texture == 0` 的段既可能是
+    // `ui.panel`（动态层），也可能是预设里 `Image texture=__white__` 的色块（实体层），
+    // 单看提交序列分不开。所以先拿 ① 的读数确认有动态 panel，再比白图段与贴图段——
+    // 不加这道确认就会拿实体色块去"背书"动态档序，那是假绿。
+    let dynamic_panels = state
+        .iter()
+        .filter(|(role, reading)| {
+            reading.carrier == Carrier::Dynamic && kind_of_role(role) == Kind::Panel
+        })
+        .count();
+    match (white, icon) {
+        _ if dynamic_panels == 0 => println!(
+            "  ⚠ 这一帧没有动态色块（`ui.panel` 0 块）⇒ 动态层内档量不到，这次没有实测背书"
+        ),
+        (Some(white), Some(icon)) if white < icon => {
+            println!("  ⇒ 动态层内档一致：色块 #{white} 在贴图 #{icon} 之前提交")
+        }
+        (Some(white), Some(icon)) => {
+            return Err(format!(
+                "③ 的动态层类别序被实测否了：白图段 #{white} 在贴图段 #{icon} **之后**提交，\
+                 而 ③ 按`panel → image`算动态层内档（frame_data.rs 的 push 顺序与提交顺序不一致，先查合并批的那一步）"
+            )
+            .into());
+        }
+        _ => println!("  ⚠ 这一帧没同时拿到白图段与贴图段 ⇒ 动态层内档没有实测背书"),
     }
     Ok(())
 }
@@ -945,8 +1048,12 @@ fn draw_path<'a>(mesh: &'a SceneMesh, draw: &SceneDraw) -> Option<&'a str> {
 
 /// 纯色块（`ui.panel`）在提交序列里的角色名：它没有文件名，以 `texture == 0` 出现。
 const WHITE_ROLE: &str = "<内置白图>";
-/// HUD 里一个真实贴图段（③ 的实测背书用它）：资源条框。
+/// HUD 里一个真实贴图段（③ 的实测背书用它）：资源条框，实体层、按预设行序排在 fill 之后。
 const SKIN_TEXTURE: &str = "ui_bar_frame_9s.png";
+/// 实体层（预设）的招式卡底：主体全不透明，层档反了就会把动态招式图标整块埋掉。
+const CARD_TEXTURE: &str = "ui_skill_card_9s.png";
+/// 同为实体层、槽位在卡框之前的贴图段：③ 里「fill 被 frame 盖住」那三行的排序依据。
+const BAR_FILL_TEXTURE: &str = "ui_bar_fill_hp.png";
 
 /// `outer` 是否整块盖住 `inner`（含边界相等：同矩形就是全盖）。
 fn contains(outer: &UiRect, inner: &UiRect) -> bool {

@@ -16,6 +16,10 @@
 配色直接复用 `gen_character_sprites.CHARACTERS` 的调色板与发型字段，
 保证"头像与场景里那个小人长得是同一个人"。
 
+主角两张（`player_male` / `player_female`）不进对话（说话人永远是 NPC），它们是 HUD
+右上角 48×48 头像框里那张脸（`ui/hud.lua` 取 `state.appearance` + calm）——立绘与小人同源，
+换形象时头像跟着换。
+
 依赖：Python 3 标准库 + pixel_kit.py + gen_manor_art.py + gen_character_sprites.py + cjk_text.py。
 """
 
@@ -50,6 +54,11 @@ PORTRAIT_IDS = [
     ("zhao_tiesuanpan", "赵铁算盘"),
     ("a_qi", "阿七"),
     ("situ_kui", "司徒魁"),
+    # 主角（docs/45 欠账 ②：HUD 右上角只有 48×48 空框）。形象可由
+    # `jianghu_set_appearance` 换、随存档持久化，所以两个形象都要有脸，
+    # 否则换到青衣女侠时头像框又空回去。
+    ("player_male", "青衫少侠"),
+    ("player_female", "青衣女侠"),
 ]
 
 

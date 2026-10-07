@@ -57,6 +57,7 @@ A	shown	img/skill_icon5	image	1212.00,300.00,24.00,24.00,assets/art/ui/skills/ui
 A	shown	img/skill_icon6	image	1004.00,352.00,24.00,24.00,assets/art/ui/skills/ui_skill_chase_wind.png,-
 A	shown	img/skill_icon7	image	1056.00,352.00,24.00,24.00,assets/art/ui/skills/ui_skill_guard_heart.png,-
 A	hidden	img/skill_icon8	image	-
+A	shown	img/avatar_face	image	928.00,20.00,40.00,40.00,assets/art/portraits/player_male_calm.png,-
 A	hidden	img/build_ghost	image	-
 A	shown	txt/skill_name1	text	1003.00,326.00,12.00,普攻
 A	shown	txt/skill_name2	text	1048.50,326.00,12.00,千风掌
@@ -95,6 +96,7 @@ A	cover	img/skill_card5	image	-
 A	cover	img/skill_card6	image	-
 A	cover	img/skill_card7	image	-
 A	cover	img/weather	image	-
+A	cover	img/avatar_face	image	-
 A	cover	img/skill_icon1	image	-
 A	cover	img/skill_icon2	image	-
 A	cover	img/skill_icon3	image	-
@@ -102,6 +104,13 @@ A	cover	img/skill_icon4	image	-
 A	cover	img/skill_icon5	image	-
 A	cover	img/skill_icon6	image	-
 A	cover	img/skill_icon7	image	-
+A	cover	txt/skill_name1	text	-
+A	cover	txt/skill_name2	text	-
+A	cover	txt/skill_name3	text	-
+A	cover	txt/skill_name4	text	-
+A	cover	txt/skill_name5	text	-
+A	cover	txt/skill_name6	text	-
+A	cover	txt/skill_name7	text	-
 A	cover	txt/goals	text	-
 A	cover	txt/line1	text	-
 A	cover	txt/line2	text	-
@@ -118,13 +127,6 @@ A	cover	txt/feedback	text	-
 A	cover	panel/rain	panel	-
 A	cover	img/skill_card8	image	-
 A	cover	img/skill_icon8	image	-
-A	cover	txt/skill_name1	text	-
-A	cover	txt/skill_name2	text	-
-A	cover	txt/skill_name3	text	-
-A	cover	txt/skill_name4	text	-
-A	cover	txt/skill_name5	text	-
-A	cover	txt/skill_name6	text	-
-A	cover	txt/skill_name7	text	-
 A	cover	txt/skill_name8	text	-
 A	cover	img/status_bleed	image	-
 A	cover	img/status_buff	image	-

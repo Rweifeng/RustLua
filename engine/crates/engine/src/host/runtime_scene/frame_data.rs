@@ -866,6 +866,14 @@ impl RuntimeScene {
         // 编辑器场景视图置 render_ui_overlay=false：UI 由 egui 在设计分辨率包围框内
         // 绘制布局框，跳过此 NDC 覆盖层避免冲突。
         if self.render_ui_overlay {
+            // 实体层两趟共用同一份解算结果，每帧只算一次（`push_scene_ui_*` 不再自行解算，
+            // 否则布局求解翻倍）。
+            self.ensure_scene_ui_layout([width.max(1) as f32, height.max(1) as f32]);
+            // **骨架在下**：预设/场景实体的 `Image` 先提交，动态层（panel/image/grid/bar/text）
+            // 画在它之上。M66–M71 六屏迁移的前提就是这条不变式；顺序反了时卡底
+            // （`ui_skill_card_9s.png` 主体全不透明）会整块埋掉压在它上面的 24×24 招式图标
+            // ——两个宿主一起瞎，而状态层读数照样"shown"（实机 2026-10-07）。
+            self.push_scene_ui_images(&mut vertices, &mut draws, width, height)?;
             self.push_ui_panels(&mut vertices, &mut draws, width, height)?;
             self.push_ui_images(&mut vertices, &mut draws, width, height)?;
             self.push_ui_grids(&mut vertices, &mut draws, width, height)?;
@@ -879,8 +887,9 @@ impl RuntimeScene {
                 width,
                 height,
             )?;
-            // Scene-node UI components (Text / Image / Button) drawn on very top.
-            self.push_scene_ui(
+            // 场景文字仍在最最后：`prewarm_frame_glyphs` 必须是本帧最后一个会撑大字体
+            // 图集的人（图集增长不回改已写入顶点的 UV）。
+            self.push_scene_ui_text(
                 &mut vertices,
                 &mut draws,
                 &mut vector_vertices,

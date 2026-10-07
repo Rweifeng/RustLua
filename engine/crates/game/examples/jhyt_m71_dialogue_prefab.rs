@@ -612,7 +612,7 @@ fn same_layer_screen(carriers: &[(String, Carrier)]) -> Result<(), Box<dyn std::
             .map(|(role, _)| role.as_str())
             .collect();
         return Err(format!(
-            "这一屏半搬了：既有实体层的块又有动态层的块（{}）。实体层整体画在动态层之上，\
+            "这一屏半搬了：既有实体层的块又有动态层的块（{}）。实体层的图整体画在动态层之下、动态块浮在骨架之上，\
              半搬等于改层序（②）",
             mixed.join(" ")
         )
@@ -630,21 +630,41 @@ fn covering_account(
     tag: &str,
     dump: &mut String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // 类别秩：色块（内置白图）→ 贴图块 → 文字。这一维两边**共用**，由 `frame_data.rs:869-883`
-    // 的 push 顺序决定（`push_ui_panels` → `push_ui_images` → `push_ui_grids` → `push_ui_bars`
-    // → `push_ui_text`），并由 [`submission_order`] 拿真实提交序列对过一次账。
-    // 类别内序才是两套载体不同的地方：动态层 = id 字典序（`ScriptState` 是 BTreeMap，
-    // `mesh_ui.rs:239` 迭代 `.values()`），实体层 = 槽位升序（预设行序）。
-    let rank = |reading: &Reading| match reading.texture.as_str() {
-        "__white__" => 0,
-        _ if !reading.texture.is_empty() => 1,
-        _ => 2,
+    // 提交档：**先分层、层内再分类别**，与 `frame_data.rs` 的 push 次序一一对应
+    // （`push_scene_ui_images` → `push_ui_panels` → `push_ui_images` → `push_ui_grids`
+    // → `push_ui_bars` → `push_ui_text` → `push_scene_ui_text`）。
+    // 旧模型只有"色块 → 贴图 → 文字"一维，那等于假设两层按类别交错提交；实测不是，
+    // 而错的方向正好是把"实体卡底埋掉动态图标"这种事故看成合理（实机 2026-10-07）。
+    // 档内序才是两套载体不同的地方：动态层 = id 字典序（`ScriptState` 是 BTreeMap，
+    // `mesh_ui.rs` 迭代 `.values()`），实体层 = 槽位升序（预设行序）。
+    let slot_of = |role: &str, reading: &Reading| -> u8 {
+        match reading.carrier {
+            Carrier::Entity => {
+                if kind_of_role(role) == Kind::Text {
+                    4
+                } else {
+                    0
+                }
+            }
+            Carrier::Dynamic => match kind_of_role(role) {
+                Kind::Panel => 1,
+                Kind::Image => 2,
+                Kind::Text => 3,
+            },
+            // 这一帧根本没画：排在最后，反正 `rect` 为 None 谁也盖不住它。
+            Carrier::Absent => 5,
+        }
     };
     let mut order: Vec<(&'static str, Reading)> = state
         .iter()
         .map(|(role, reading)| (*role, reading.clone()))
         .collect();
-    order.sort_by(|(_, a), (_, b)| rank(a).cmp(&rank(b)).then(a.order.cmp(&b.order)));
+    order.sort_by(|(role_a, a), (role_b, b)| {
+        slot_of(role_a, a)
+            .cmp(&slot_of(role_b, b))
+            .then(a.order.cmp(&b.order))
+            .then_with(|| role_a.cmp(role_b))
+    });
     let mut covered = 0;
     for (index, (role, reading)) in order.iter().enumerate() {
         let covers: Vec<&str> = match reading.rect {
@@ -680,15 +700,24 @@ fn covering_account(
 
 /// 黄金表第二列 `cover` 行的种类列取值（保持四列结构，别让读表的人按种类筛时空一格）。
 fn kind_of(role: &str) -> &'static str {
+    kind_of_role(role).tag()
+}
+
+/// ③ 的分层判据要看种类（实体层的图与字分属首尾两档），所以这里要的是 `Kind` 本身。
+fn kind_of_role(role: &str) -> Kind {
     PROBES
         .iter()
         .find(|probe| probe.role == role)
-        .map_or("?", |probe| probe.kind.tag())
+        .map_or(Kind::Image, |probe| probe.kind)
 }
 
-/// ③ 的排序规则不能只是"我读了 push 顺序得出的推断"：这里拿宿主**真正提交的序列**
-/// （`mesh.draws`，下标即画家顺序）证一次——内置白图那一段必须排在
-/// `ui_panel_main_9s.png`（`bp:skin_bg` 用的整屏不透明九宫格）之前。
+/// ③ 的覆盖表按"层档 → 档内槽位"排，档序是引擎不变式（`frame_data.rs`：
+/// `push_scene_ui_images` 在 `push_ui_*` 之前）。这条**只报**本帧的段序读数
+/// （`mesh.draws`，下标即画家顺序）做对照，不再充当 ③ 的背书：这一屏是整屏同层（②），
+/// 内置白图与 `ui_panel_main_9s.png` 同属"实体图"那一档，档内按预设槽位排，所以
+/// "白图在贴图之前"是槽位序的产物而不是规则来源——把它当规则去断言，有人挪一行预设就会假红。
+/// 真正钉"骨架在下、动态在上"的是 jhyt_m63 的整段段序表与 jhyt_m70 的层档腿：面板屏按 ⑤
+/// 的前提本来就没有与骨架相交的动态块，层序在这一屏没有可判别的对，量不到就照实说。
 fn submission_order(runtime: &mut RuntimeScene) -> Result<(), Box<dyn std::error::Error>> {
     let mesh = runtime.vertices(VIEW_W as u32, VIEW_H as u32)?;
     let first = |role: &str| {
@@ -703,31 +732,16 @@ fn submission_order(runtime: &mut RuntimeScene) -> Result<(), Box<dyn std::error
     let white = first(WHITE_ROLE);
     let skin = first(SKIN_TEXTURE);
     println!(
-        "  本帧提交 {} 个分段：白图段 {}、{SKIN_TEXTURE} 段 {}",
+        "  本帧提交 {} 个分段：白图段 {}、{SKIN_TEXTURE} 段 {}（只报读数，不当背书，见函数注释）",
         mesh.draws.len(),
         white.map_or("无".to_owned(), |index| format!("#{index}")),
         skin.map_or("无".to_owned(), |index| format!("#{index}")),
     );
-    match (white, skin) {
-        (Some(white), Some(skin)) if white < skin => {
-            println!("  ⇒ 实测类别序与 ③ 用的规则一致（色块 #{white} 在贴图 #{skin} 之前提交）")
-        }
-        (Some(white), Some(skin)) => {
-            return Err(format!(
-                "③ 的排序规则被实测否了：白图段 #{white} 在 {SKIN_TEXTURE} 段 #{skin} **之后**提交，\
-                 而 ③ 按`色块 → 贴图`算覆盖表（frame_data.rs 的 push 顺序与提交顺序不一致，先查合并批的那一步）"
-            )
-            .into());
-        }
-        _ => {
-            println!(
-                "  ⚠ 这一帧没同时拿到白图段与 {SKIN_TEXTURE} 段 ⇒ 覆盖表只按规则排，这次没有实测背书"
-            );
-        }
+    if white.is_none() || skin.is_none() {
+        println!("  ⚠ 这一帧没同时拿到白图段与 {SKIN_TEXTURE} 段 ⇒ 段序读数只有一半");
     }
     Ok(())
 }
-
 /// `SceneDraw.texture` 走的是**约定下标**（`frame_data.rs` 写入时 `+1`，`texture == 0` 是内置
 /// 白图），直接索引 `paths` 会整体错开一格（m35 翻过车）。
 fn draw_path<'a>(mesh: &'a SceneMesh, draw: &SceneDraw) -> Option<&'a str> {

@@ -34,6 +34,9 @@ local ui_text = require("ui.ui_text")
 local layout = require("ui.layout")
 -- docs/48 ui 换肤接线：面板背景/行图标/状态图标/条图标贴图。
 local skin = require("ui.skin")
+-- 主角头像（docs/45 欠账 ②）：贴图与对话立绘同源（`ui/portrait.lua`，同一批生成器出的
+-- 128×128 立绘），按 `state.appearance` 取那张脸。
+local portrait = require("ui.portrait")
 
 local M = {}
 
@@ -75,6 +78,14 @@ local STATUS_ICONS = {
   weather = "hud_status_weather",
   festival = "hud_status_festival"
 }
+-- 主角头像（docs/45 欠账 ②：右上角那个 48×48 框一直是空的）。
+--
+-- 矩形 = 预设 `HudAvatarFrame`（offsets 924,16,972,64）**内缩 4px**：框的木边 + 金线正好占掉
+-- 外圈 4px，脸落在金线以内 ⇒ 两边互不遮挡，谁压谁都不会咬掉对方的像素（这条是"为什么不进
+-- 预设"之外还要钉的一维：改框的几何就得同步改这里）。
+-- 为什么留动态层：贴图是**运行期取值**（`jianghu_set_appearance` 能换形象、随存档持久化），
+-- 引擎没有运行期换贴图 API —— 与对话立绘同一个理由（见 `world/dialogue.lua` 的 `dlg:portrait`）。
+local AVATAR = { id = "hud:avatar_face", x = 928, y = 20, size = 40 }
 -- 当前真实激活的状态键（有玩法来源的才返回；其余状态机制未实现 → 不画但已就绪）。
 local function active_status_keys()
   local out = {}
@@ -640,10 +651,24 @@ local function draw_skill_bar()
   end
 end
 
+local function draw_avatar_face()
+  local tex = portrait.texture_for(state.appearance, nil)
+  if tex then
+    ui.image(AVATAR.id, AVATAR.x, AVATAR.y, AVATAR.size, AVATAR.size, tex, 1.0, 1.0, 1.0)
+    return true
+  end
+  -- 换到没有立绘的形象时必须显式收掉：`ui.image` 是跨帧持久的，上一帧的脸会一直留在框里
+  -- （对话立绘同坑，见 `world/dialogue.lua` 的 `ui.clear("dlg:portrait")`）。
+  ui.clear(AVATAR.id)
+  return false
+end
+
 function M.draw()
   local x, y, w, h = PANEL.x, PANEL.y, PANEL.w, PANEL.h
   local in_dialogue = state.is_mode("Dialogue")
   preset_spawn()
+  -- 主角头像：脸随 `state.appearance` 取（详见 `AVATAR` 常量注释）。
+  draw_avatar_face()
   -- 动态层的招式名仍走 `ui_text` 登记（M30 排版检查的剩余条目）：重开自己那一轮。
   ui_text.begin("hud")
   -- M70/B7：静态骨架（头像框/面板底/收口条/分类色块/行图标/资源条框/条图标/招式卡底/
@@ -838,6 +863,7 @@ end
 -- draw 重写内容，reset 只收动态层（建造幽灵/招式图标/招式名登记）。
 function M.reset()
   ui.clear("hud:build_ghost")
+  ui.clear(AVATAR.id)
   -- 招式卡底在预设（set_visible 由 draw 管）；图标与名按**实际画过的张数**收，不写死
   -- 1..5：写死会让扩招之后的图标/名永远留在屏上。
   for i = 1, skill_slots_drawn do

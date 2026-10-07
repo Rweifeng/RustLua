@@ -786,6 +786,28 @@ if (-not $SkipRuntime) {
     }
     Write-Host $saveOkLine -ForegroundColor DarkGray
 
+    # UI 两层的绘制序（实机 2026-10-07）：预设卡底 `ui_skill_card_9s.png` 主体全不透明，一旦
+    # 画在动态招式图标之后就把 24×24 的图标整块埋掉——两个宿主一起瞎，而状态层读数照样自报
+    # "图标存在"。原生侧由 jhyt_m70 的 submission_order 钉 `mesh.draws` 下标；web 的 drawUi 是
+    # 另写的一份循环，所以这里读**假 ctx 记下的真实 drawImage 先后 + 落点矩形**，只比几何上
+    # 真的压在卡里的图标（同一张卡皮还被触摸层「更多」按钮复用，按全局序号判会假红）。
+    $uiLayerArgs = @("--drive-new-game", "--expect-runtime-spawns", "--check-ui-layer-order", "--frames", "240")
+    if ($isThinPack) { $uiLayerArgs += @("--remote", "thin", "--remote-root", $assetPackDir) }
+    $uiLayerCase = Invoke-HarnessCase -ExtraArgs $uiLayerArgs -Label "ui-layer-order"
+    if ($uiLayerCase.ExitCode -ne 0) { throw "UI 分层序用例失败（--drive-new-game --check-ui-layer-order, exit $($uiLayerCase.ExitCode)）" }
+    $uiLayerOkLine = $uiLayerCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_ok" } | Select-Object -First 1
+    if (-not $uiLayerOkLine) { throw "UI 分层序用例未输出 wechat_minigame_harness_ok" }
+    # overlap_pairs 是这条门的"有没有在量东西"：招式栏 7 格，少于 7 组重叠就是前置塌了
+    # （布局改了/卡底没生成），宁可红也不要空过。
+    if (-not ($uiLayerOkLine -match 'ui_layer_order="ok,card_ops=(\d+),icon_ops=(\d+),overlap_pairs=(\d+)')) {
+        throw "UI 分层序用例没有自报重叠对数证据（缺少 ui_layer_order=「ok,card_ops=…,icon_ops=…,overlap_pairs=…」）：$uiLayerOkLine"
+    }
+    if ([int]$Matches[3] -lt 7 -or [int]$Matches[2] -lt 7) {
+        throw ("UI 分层序用例只量到 {0} 组重叠、{1} 张图标（招式栏应有 7 格，图标与卡底都得够 7）" +
+            "——前置不成立，这条门等于没跑") -f $Matches[3], $Matches[2]
+    }
+    Write-Host $uiLayerOkLine -ForegroundColor DarkGray
+
     # 远端配置的存在性要自洽：配了必须有、没配必须没有，且内容可解析。
     if ($hasRemoteConfig) {
         $remoteConfig = Get-Content -LiteralPath $remoteConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json

@@ -55,7 +55,11 @@ const EXPECTED_DEV_ARTIFACTS: usize = 47;
 const EXPECTED_CONTENT_ORPHANS: usize = 2;
 // 2026-10-06 终期回归重扫：阶段2–5 新增引用源（扩展物品 icon、ui/prefab 动态加载、collections/
 // achievements/endings 等新注册表、M59 预设）后 569→913，docs/48 §1 已同步。
-const EXPECTED_REFERENCED: usize = 978;
+// 2026-10-07 主角头像：`gen_portraits_art.py` 补 player_male/player_female × 3 表情 = +6 张，
+// 全部以字面路径入 `ui/portrait.lua` ⇒ 978→984。**这条增量没跑过实测**：本样例在走到这条审计
+// 之前就先红在雨天遮罩那一腿（`ui.panel_get('hud:rain')` 读不到——M70/B7 把雨罩搬进预设之后
+// `hud:rain` 这个动态面板已不存在），修那一条时请顺手核对这里是不是 984。
+const EXPECTED_REFERENCED: usize = 984;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args()

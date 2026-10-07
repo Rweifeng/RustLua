@@ -17,6 +17,9 @@
 //   --check-save-persist      存档落盘（需配合 --drive-new-game）：往独立槽位写 blob/map.state/落点，
 //                             断言宿主存储里真的出现 save_version=2 的 payload、清内存后 load 读得回来，
 //                             并跑一遍真实 save_manager 的存-清-读往返；证据 save_persist="ok,probe=…,game=…"
+//   --check-ui-layer-order  UI 两层的绘制序（需配合 --drive-new-game）：取最后一帧假 ctx 记下的
+//                             drawImage src 序列，断言预设卡底（ui_skill_card_9s.png）整批排在
+//                             动态招式图标（ui_skill_*.png）之前——反了图标就被不透明卡底埋掉。
 // 退出码：0 通过、1 失败（失败原因打印到 stderr）。
 'use strict';
 
@@ -116,6 +119,7 @@ let noFrames = false;
   // 角色遮挡跟脚位 Y（M35）：web 是引擎的第二份实现，排序键与合批都是重写的，
   // 原生门全绿不代表这边也绿 ⇒ 在真实宿主上直接看 drawImage 的先后。
   let checkDepthOrder = false;
+  let checkUiLayerOrder = false;
   let checkSavePersist = false;
   // 分包挂载行为——新发布形态（主包 + 单分包）的核心**宿主语义**，与 `--wx-path-style` 正交：
   //   auto      = 默认。game.json 真的声明了 pack 分包时按"未挂载则读不到 pack/"模拟，并成功挂载
@@ -195,6 +199,7 @@ if (argv[i] === '--no-frames') noFrames = true;
     else if (argv[i] === '--action-disk' && argv[i + 1]) actionDiskFrames = Math.max(0, Number(argv[++i]) || 0);
     else if (argv[i] === '--check-help-page') checkHelpPage = true;
     else if (argv[i] === '--check-depth-order') checkDepthOrder = true;
+    else if (argv[i] === '--check-ui-layer-order') checkUiLayerOrder = true;
     else if (argv[i] === '--check-save-persist') checkSavePersist = true;
     else if (argv[i] === '--drive-frame' && argv[i + 1]) driveFrame = Math.max(0, Number(argv[++i]) || 0);
     else if (argv[i] === '--subpackage' && argv[i + 1]) subpackageMode = String(argv[++i]);
@@ -292,6 +297,12 @@ if (argv[i] === '--no-frames') noFrames = true;
   if (checkDepthOrder && !driveNewGame) {
     fail('--check-depth-order 需要配合 --drive-new-game：actor 层探针只在玩法地图里挂得上，'
       + '标题界面画的是菜单，量不到遮挡');
+  }
+  // UI 分层序量的就是**玩法 HUD**：卡底是 hud.prefab 的实体图、招式图标是动态层
+  // `ui.image`，两者只在进图之后同帧共存（标题界面的对应_pair 是按钮底 vs hover，同一不变式）。
+  if (checkUiLayerOrder && !driveNewGame) {
+    fail('--check-ui-layer-order 需要配合 --drive-new-game：不进玩法地图就没有 hud.prefab 卡底'
+      + '与动态招式图标的同帧序列，量不到分层');
   }
   // 存档探针要读的是**真实游戏状态**：save_manager 的 provider 只在进玩法图后才注册，
   // 标题界面上 sm.save() 存的是空快照——那样"往返一致"可以靠两边都空来假绿。
@@ -580,6 +591,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       }
       if (dw > 0 && dh > 0) {
         const r = mapRect(dx, dy, dw, dh);
+        drawnImages[drawnImages.length - 1].rect = r;
         painted.push({ x: r.x, y: r.y, w: r.w, h: r.h, color: [200, 120, 60, 255] });
         if (painted.length > 1024) painted.shift();
       }
@@ -1607,7 +1619,10 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     const diskBudget = actionDiskFrames > 0 ? (13 + actionDiskFrames) : 0;
     // --check-depth-order 固定开销：正序/反序两段各泵 8 帧（等运行期挂上去的贴图按需加载完）。
     const depthBudget = checkDepthOrder ? 16 : 0;
-    const moveBudget = (driveMove > 0 ? driveMove + 1 : 0) + (touchStickMove > 0 ? touchStickMove + 1 : 0) + (attackFrames > 0 ? attackFrames : 0) + bagBudget + diskBudget + depthBudget;
+    // --check-ui-layer-order 固定开销：泵 8 帧等 hud.prefab 卡底与招式图标都真按需加载完，
+    // 再看**最后一帧**的先后（这些贴图不在场景预加载清单里，头几帧可能只有卡底）。
+    const uiLayerBudget = checkUiLayerOrder ? 8 : 0;
+    const moveBudget = (driveMove > 0 ? driveMove + 1 : 0) + (touchStickMove > 0 ? touchStickMove + 1 : 0) + (attackFrames > 0 ? attackFrames : 0) + bagBudget + diskBudget + depthBudget + uiLayerBudget;
     const failures = [];
     // 标题单层断言的口径：drawnTexts 是**跨帧累计**数组（336 行声明后只 push 不重置），
     // 直接 count 会把历史帧的同一标签重复计数（实测 4 次 = 4 帧 × 1 次）。所以只看
@@ -2572,6 +2587,21 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       }
     }
 
+    // 一帧的贴图序列：drawnImages 带着当时的帧号，取**最后一段同帧的**就是刚画完那一帧。
+    // `lastFrameSegment` 给整条记录（src + 落点矩形），`lastFrameDraws` 只要 src 序列。
+    // 两条序门共用（`--check-depth-order` 量世界精灵、`--check-ui-layer-order` 量 UI 分层）。
+    const lastFrameSegment = () => {
+      if (drawnImages.length === 0) return [];
+      const frame = drawnImages[drawnImages.length - 1].frame;
+      const segment = [];
+      for (let i = drawnImages.length - 1; i >= 0; i--) {
+        if (drawnImages[i].frame !== frame) break;
+        segment.unshift(drawnImages[i]);
+      }
+      return segment;
+    };
+    const lastFrameDraws = () => lastFrameSegment().map((op) => op.src);
+
     // 角色遮挡跟脚位 Y 的**活体宿主**证据（`--check-depth-order`）。原生那条门
     // （jhyt_m35_depth_sort）读的是 wgpu 侧 `mesh.draws` 的提交序；web 是引擎的第二份实现
     // （排序键 `entitySortKey` 与绘制循环都是另写的一份），所以这里只能看**真的画上去的先后**：
@@ -2635,17 +2665,6 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
           '  return "destroyed=3"',
           'end',
         ].join('\n');
-        // 一帧的贴图序列：drawnImages 带着当时的帧号，取**最后一段同帧的**就是刚画完那一帧。
-        const lastFrameDraws = () => {
-          if (drawnImages.length === 0) return [];
-          const frame = drawnImages[drawnImages.length - 1].frame;
-          const segment = [];
-          for (let i = drawnImages.length - 1; i >= 0; i--) {
-            if (drawnImages[i].frame !== frame) break;
-            segment.unshift(drawnImages[i].src);
-          }
-          return segment;
-        };
         // 探针贴图在这一帧的实际先后（找不到 = -1，由调用方判红）。
         const probePositions = (segment) => DEPTH_PROBE_SPECS
           .map((path) => segment.reduce((found, src, index) => (src.endsWith(path) ? index : found), -1));
@@ -2745,6 +2764,70 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
             + '\n（两个宿主的排序键是两份实现：原生 SpriteSorting::effective_layer、web entitySortKey。'
             + '原生门全绿不代表这边也绿，这条就是钉"这一台宿主真的按 Y 排"）');
         }
+      }
+    }
+
+    // UI 两层的**活体宿主**绘制序证据（`--check-ui-layer-order`）。原生那条门
+    // （jhyt_m70 的 submission_order）读的是 wgpu 侧 `mesh.draws` 的下标；web 的 drawUi
+    // 是另写的一份循环，所以要单独钉"这台宿主也把预设骨架垫在动态层之下"。
+    // 要防的故障（实机 2026-10-07）：卡底 `ui_skill_card_9s.png`（主体全不透明，九宫格 9 笔）
+    // 画在动态招式图标（`ui_skill_*.png`，24×24）之后 ⇒ 图标整块被埋，两个宿主一起瞎，
+    // 而状态层读数照样自报"图标存在"。这条只看真的先后，不看自报。
+    let uiLayerOrderEvidence = 'not-requested';
+    if (checkUiLayerOrder) {
+      for (let i = 0; i < 8; i++) {
+        const callback = rafQueue.shift();
+        if (!callback) break;
+        callback(Date.now());
+        stats.frames++;
+        perFrameDraws.push(stats.drawOps);
+      }
+      const ops = lastFrameSegment();
+      if (process.env.WECHAT_UI_ORDER_DUMP) {
+        require('fs').writeFileSync(process.env.WECHAT_UI_ORDER_DUMP,
+          ops.map((op, index) => `${index}\t${op.src}\t${op.rect ? `${op.rect.x},${op.rect.y},${op.rect.w},${op.rect.h}` : '-'}`
+            + '\n').join('') + '\n');
+      }
+      const CARD = 'ui_skill_card_9s.png';
+      const cards = ops.map((op, index) => ({ op, index })).filter((item) => String(item.op.src).endsWith(CARD));
+      // 招式图标与卡底同在 skills/ 目录、前缀也一样，必须把卡底本身排除。
+      const icons = ops.map((op, index) => ({ op, index })).filter((item) => /ui_skill_(?!card_9s)/.test(String(item.op.src)));
+      const overlaps = (a, b) => a && b && a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+      // 只比**几何上真的压在卡里**的那几张图标：同一张 `ui_skill_card_9s.png` 还被触摸层的
+      // 「更多」按钮当底用（layout.lua 的 more.art），那笔画在动态层末尾、与招式栏不相干，
+      // 按"最后一笔卡 < 第一笔图标"去判会把它算进来 ⇒ 假红。遮挡判据是矩形，不是全局序号。
+      const pairs = [];
+      for (const icon of icons) {
+        for (const card of cards) {
+          if (overlaps(card.op.rect, icon.op.rect)) pairs.push({ card, icon });
+        }
+      }
+      const problems = [];
+      if (ops.length === 0) {
+        problems.push('最后一帧没有任何 drawImage 记录（帧循环或贴图加载没起来，前置不成立）');
+      } else if (cards.length === 0) {
+        problems.push(`最后一帧（${ops.length} 笔）里找不到卡底 ${CARD}：hud.prefab 没生成或没进玩法图，前置不成立`);
+      } else if (icons.length === 0) {
+        problems.push('最后一帧里一张招式图标都没有：招式栏没解锁或 skin 的 skill_* 图标键没注册，前置不成立（不是绘制序）');
+      } else if (pairs.length < icons.length) {
+        problems.push(`${icons.length} 张招式图标里只有 ${pairs.length} 张与卡底矩形重叠：布局变了或卡底没生成，`
+          + '这条门量不到遮挡（前置不成立，宁可判红也不要空过）');
+      } else {
+        const bad = pairs.filter((pair) => !(pair.card.index < pair.icon.index));
+        if (bad.length) {
+          const first = bad[0];
+          problems.push(`${bad.length}/${pairs.length} 组"卡底压图标"：卡底 #${first.card.index} 画在图标 #${first.icon.index} **之后**`
+            + ` ⇒ 图标被不透明卡底整块埋掉（卡底落点 ${JSON.stringify(first.card.op.rect)}、图标 ${JSON.stringify(first.icon.op.rect)}）。`
+            + '预设骨架必须垫在动态层之下：web-runtime.js drawUi 的场景图趟要排在 panel/image/bar 之前');
+        }
+      }
+      uiLayerOrderEvidence = problems.length
+        ? 'failed'
+        : `ok,card_ops=${cards.length},icon_ops=${icons.length},overlap_pairs=${pairs.length},last_card=${cards[cards.length - 1].index},first_icon=${icons[0].index}`;
+      if (problems.length) {
+        failures.push(`wechat_ui_layer_order_failed ${uiLayerOrderEvidence}:\n  - ` + problems.join('\n  - ')
+          + '\n（两宿主的 UI 循环是两份实现：原生 frame_data.rs 的 push 次序、web drawUi 的循环次序。'
+          + '原生门全绿不代表这边也绿，这条钉的就是"这一台宿主真的把骨架垫在下面"）');
       }
     }
 
@@ -3660,7 +3743,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         ` entry=${packEntryError ? 'FAIL' : 'ok'}` +
         ` loading_bar=${drawnTexts.some((text) => text.includes('正在下载资源')) ? 'ok' : 'none'}`
       : ` subpackage=none subpackage_loads=${stats.subpackageLoads}`;
-    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} prefab_text=${adapter.getAttribute('data-rustlua-prefab-text') || 'none'} prefab_slice=${adapter.getAttribute('data-rustlua-prefab-slice') || 'none'} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} action_disk=${JSON.stringify(actionDiskEvidence)} help_page=${JSON.stringify(helpPageEvidence)} depth_order=${JSON.stringify(depthOrderEvidence)} save_persist=${JSON.stringify(savePersistEvidence)} stick_key=w key_bridge=ArrowUp exemption_probe=${exemptionProbe} ${contractEvidence || 'api_contract=not-requested'} wasm=${wasmDiag ? (wasmDiag.status + ':' + wasmDiag.hostApi + ':' + (wasmDiag.channel || 'none') + ':' + (wasmDiag.facade || 'none')) : 'no-diag'} eh_probe=${wasmDiag && wasmDiag.ehProbe ? String(wasmDiag.ehProbe).replace(/^eh_probe=/, '').split(/[（[ ]/)[0] : 'not-attempted'}${remoteEvidence}`);
+    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} prefab_text=${adapter.getAttribute('data-rustlua-prefab-text') || 'none'} prefab_slice=${adapter.getAttribute('data-rustlua-prefab-slice') || 'none'} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} action_disk=${JSON.stringify(actionDiskEvidence)} help_page=${JSON.stringify(helpPageEvidence)} depth_order=${JSON.stringify(depthOrderEvidence)} ui_layer_order=${JSON.stringify(uiLayerOrderEvidence)} save_persist=${JSON.stringify(savePersistEvidence)} stick_key=w key_bridge=ArrowUp exemption_probe=${exemptionProbe} ${contractEvidence || 'api_contract=not-requested'} wasm=${wasmDiag ? (wasmDiag.status + ':' + wasmDiag.hostApi + ':' + (wasmDiag.channel || 'none') + ':' + (wasmDiag.facade || 'none')) : 'no-diag'} eh_probe=${wasmDiag && wasmDiag.ehProbe ? String(wasmDiag.ehProbe).replace(/^eh_probe=/, '').split(/[（[ ]/)[0] : 'not-attempted'}${remoteEvidence}`);
     return 0;
   }).catch((error) => {
     console.error = originalError;

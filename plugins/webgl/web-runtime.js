@@ -623,6 +623,12 @@
     LAST_UI_SUMMARY = ui.panels.map(item => (item.shape === 1 ? 'C:' : 'P:') + item.id)
       .concat(ui.images.map(item => 'I:' + item.id + ':' + item.texture), ui.bars.map(item => 'B:' + item.id), ui.texts.map(item => 'X:' + item.id))
       .join(',');
+    // 预设骨架趟：**先画**，垫在动态层之下（对齐原生 frame_data.rs 的 push_scene_ui_images
+    // → push_ui_* 顺序）。顺序反了时不透明的卡底 `ui_skill_card_9s.png` 会整块埋掉压在它
+    // 上面的 24×24 招式图标，两个宿主一起瞎（实机 2026-10-07，PC 侧同样复现）。
+    for (const entity of sceneUiEntities || []) {
+      drawSceneUiEntity(ctx, entity, images, pending, suppressSceneText, 'image');
+    }
     for (const panel of ui.panels) {
       ctx.fillStyle = uiColor(panel.r, panel.g, panel.b, panel.a);
       // shape=1（引擎 UiPanel.shape）：在外接矩形内画填充圆。半径取 min(w,h)/2，
@@ -651,10 +657,7 @@
       ctx.fillStyle = uiColor(bar.r, bar.g, bar.b, 1);
       ctx.fillRect(bar.x, bar.y, Math.max(0, bar.w * bar.ratio), bar.h);
     }
-    // 场景底图趟：原生在动态 panel/image/bar 之后画场景 UI 图（见 drawSceneUiEntity）。
-    for (const entity of sceneUiEntities || []) {
-      drawSceneUiEntity(ctx, entity, images, pending, suppressSceneText, 'image');
-    }
+    // 场景底图趟已挪到本函数开头（骨架在下、动态层在上）。
     for (const text of ui.texts) {
       const size = text.size > 0 ? text.size : 20;
       const scale = text.scale > 0 ? text.scale : 1;
@@ -685,12 +688,14 @@
     return 'rgba(' + r + ',' + g + ',' + b + ',' + a + ')';
   }
 
-  // 场景静态 UI 实体（UiLayout + Image/Text）。九宫格按目标矩形拉伸绘制：
-  // 发布包的按钮/条框都是规则矩形，拉伸的视觉误差可接受。
-  // `pass` 拆 'image' / 'text' 两趟：原生 push_scene_ui（mesh_ui.rs）先画场景图、
-  // 再画场景字，且**整趟排在动态 UI 的 panel/image/bar 之后**（文字管线更在其上）。
-  // 合成一趟会让场景底图垫在动态 UI 下面——标题菜单的按钮底图盖不住选中态 hover 图，
-  // hover 中心的浅色块就露成一条半透白条（PC 无此条，2026-10-05 实机对照）。
+  // 场景静态 UI 实体（UiLayout + Image/Text）。九宫格走 3×3 切片，与原生
+  // `Image.nine_slice` 的解析结果同一份来源。
+  // `pass` 拆 'image' / 'text' 两趟，与原生 frame_data.rs 的提交序一一对齐：
+  //   预设图（骨架，最下）→ 动态 panel/image/bar → 动态字 → 预设字（最上）。
+  // 文字趟留在最后不是绘制偏好：原生 `prewarm_frame_glyphs` 必须是本帧最后一个会
+  // 撑大字体图集的人（图集增长只重缩放已缓存字形的 UV，不回改已写进顶点缓冲的 UV），
+  // 所以场景字挪不到动态文字之前；web 侧跟同一口径，避免两宿主分层不一致。
+  // （2026-10-05 那次"合成一趟会让场景底图盖不住 hover"的前提已随 PC 侧绘制序修正消失。）
   function drawSceneUiEntity(ctx, entity, images, pending, suppressText, pass) {
     const rect = entity.uiRect;
     if (!rect || rect.w <= 0 || rect.h <= 0) return false;
@@ -1043,8 +1048,8 @@
       }
     }
 
-    // 屏幕空间 UI（菜单底图/按钮/标签）不再在这里画：原生把它排在动态 UI 之后、
-    // 文字管线之下，交给 drawUi 的两趟（见 drawSceneUiEntity 的 pass 说明）。
+    // 屏幕空间 UI（菜单底图/按钮/标签）不再在这里画：它由 drawUi 的两趟按原生提交序
+    // 承担（预设图在动态层之下、预设字在动态字之上，见 drawSceneUiEntity 的 pass 说明）。
 
     if (typeof window !== 'undefined' && window.__RUSTLUA_DEBUG) {
       ctx.fillStyle = '#d0d7e2';

@@ -45,11 +45,15 @@ $out.Add('scene_version=2')
 $out.Add('name=index')
 $rootIds = @('1','2')
 $body = New-Object System.Collections.Generic.List[string]
-# 背景**不是场景实体**。场景里的 `Image`/`Text` 永远画在 Lua 动态 UI **之上**
-# （`runtime_scene.rs`：`push_ui_panels/images/grids/bars/text` 之后才 `push_scene_ui`），
-# 因此铺满屏幕的场景背景会把标题/状态/提示行整片盖住。背景改由 `scripts/demo_index.lua`
-# 用 `ui.panel("menu_backdrop", …)` 画：动态面板在同批里排最前（id 字典序），
-# 既压不住卡片，也不会被动态文本盖住。这条约束有门兜底（`sample_project_shared_overlay_is_not_covered`）。
+# 背景**不是场景实体**（历史决定，这里记下它当年的前提与今天还剩哪一半）：
+# 2026-10-07 之前 `push_scene_ui` 排在全部 `push_ui_*` 之后 ⇒ 场景里的 `Image`/`Text` 一律画在
+# Lua 动态 UI **之上**，铺满屏幕的场景背景会把标题/状态/提示行整片盖住。现在图趟挪到了动态层
+# 之下（`push_scene_ui_images` → `push_ui_*` → `push_scene_ui_text`），文字趟仍在最最后 ⇒
+# "场景 `Text` 盖住动态 UI"这半仍然成立，背景这一半已经翻过来。
+# 保留动态面板而不搬回场景实体：一搬就要改 `.scene` 字节、把一屏已迁的层序重排一遍，而它今天
+# 买不到任何好处；`ui.panel` 在动态批里排最前（id 字典序），既压不住卡片，也不会被动态文本盖住。
+# 这条约束有门兜底（`sample_project_shared_overlay_is_not_covered`，其注释写明它仍按大面积相交
+# 一刀切：黄金读数分不清那块矩形落在哪一档，宁可严)。
 $body.Add("entity`t1`tTitle")
 $body.Add("component`t1`tText`ttext=RustLua API Showcase;font_size=30.00;color=0.950,0.870,0.500")
 $body.Add("component`t1`tTransform`t$identity")

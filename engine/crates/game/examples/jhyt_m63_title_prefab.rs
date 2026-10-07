@@ -613,13 +613,21 @@ const WHITE_ROLE: &str = "<内置白图>";
 /// 这份表是"一像素没动"在层序维度的那一份账：① 的矩形读数只管形状与内容，对"谁盖谁"完全瞎
 /// ——一块东西搬进/搬出实体层，矩形与贴图可以一个字节都不变，而从此被别人的贴图盖住。
 ///
-/// 表里那条**读出来的事实**（不是设计意图）：`title_bg_pixel.png`（1280×720、IHDR 色型 2 =
-/// 无 alpha 通道 ⇒ 逐像素全不透明）排在所有动态层分段之后。也就是说门面今天由脚本画的
-/// 高亮框、hover、四角/分隔/印章，以及同一批里画出来的箭头与标签文字，**全部盖在这张背景底下**。
-/// 三块木牌 `ui_menu_btn_wuxia_9s.png` 实测 18432/18432 像素 alpha=255（含中心），所以压在它
-/// 底下的东西没有"从空隙里透出来"这回事。M63b 只搬家不修这个（搬家与改画面分成两笔，
-/// 见 `docs/66` §10），修它是 M63c 的活。
+/// 表里这条**读出来的事实**（不是设计意图）：预设那 7 张图（`title_bg_pixel.png`、
+/// `ui_menu_vignette.png`、三块木牌 `ui_menu_btn_wuxia_9s.png` 等）整批排在动态层分段**之前**，
+/// 也就是门面今天由脚本画的高亮框、hover、四角/分隔/印章全部盖在这张背景之上。
+/// 三块木牌 `ui_menu_btn_wuxia_9s.png` 实测 18432/18432 像素 alpha=255（含中心），`title_bg_pixel.png`
+/// 是 IHDR 色型 2（无 alpha 通道 ⇒ 逐像素全不透明）——正因为它们不透明，**谁先提交**就是
+/// 决定性的：M63b 搬家时这条序是反的（预设整批最后画 ⇒ 背景把脚本的高亮/hover/印章全埋掉，
+/// 实测 `title:seal` 区域只剩夜空色），修它=这次把 `push_scene_ui_images` 挪到 `push_ui_*` 之前。
 const ORDER_GOLDEN: &[&str] = &[
+    "title_bg_pixel.png",
+    "ui_menu_vignette.png",
+    "ui_menu_ink_band.png",
+    "ui_title_logo.png",
+    "ui_menu_lantern.png",
+    "ui_menu_btn_wuxia_9s.png",
+    "ui_menu_panel_scroll_9s.png",
     WHITE_ROLE,
     "ui_menu_btn_wuxia_hover_9s.png",
     "ui_menu_divider_bamboo.png",
@@ -628,13 +636,6 @@ const ORDER_GOLDEN: &[&str] = &[
     "ui_menu_ornament_corner.png",
     "ui_menu_ornament_corner_tr.png",
     "ui_menu_seal_jianghu.png",
-    "title_bg_pixel.png",
-    "ui_menu_vignette.png",
-    "ui_menu_ink_band.png",
-    "ui_title_logo.png",
-    "ui_menu_lantern.png",
-    "ui_menu_btn_wuxia_9s.png",
-    "ui_menu_panel_scroll_9s.png",
 ];
 
 /// 门面上要点名的角色（末段名），逐个报它在提交序列里的区间。
@@ -680,7 +681,8 @@ fn layer_order(
     }
     // 诚实标注这条通道的口径：headless 顶点路径这一帧没产出任何文字分段（`mesh.draws` 里
     // 一张字形图集都没有），所以 ④ 只管图块与纯色块的层序；文字层的先后是代码事实
-    // （`frame_data.rs`：`push_ui_text` 在 `push_scene_ui` 之前），由 §10 写明，不在这道门里。
+    // （`frame_data.rs`：预设图趟在 `push_ui_*` 之前、预设文字趟在 `push_ui_text` 之后，
+    // 后者受字体图集约束不能前挪），由 §10 写明，不在这道门里。
     println!("  文字分段：无（这条读数通道这一帧不出文字 ⇒ ④ 只钉图块/色块的层序）");
     if capture {
         println!(

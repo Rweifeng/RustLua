@@ -471,22 +471,18 @@ impl RuntimeScene {
         Ok(())
     }
 
-    /// Pushes scene-node UI components (`Text` / `Image` / `Button`) as NDC
-    /// overlay quads on top of the Lua UI. Order: images, buttons, then text.
-    /// Buttons render by composing the same image/text helpers used elsewhere.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn push_scene_ui(
+    /// 预设/场景实体 `Image` 趟（静态骨架）。**必须在动态层 `push_ui_*` 之前提交**：
+    /// M66–M71 六屏迁移的前提就是"骨架在下、脚本每帧写的元素在上"，顺序反了卡底
+    /// （`ui_skill_card_9s.png` 全不透明）会整块埋掉压在它上面的 24×24 招式图标。
+    /// 布局由调用方每帧解算一次（`ensure_scene_ui_layout`），这里不再重复解算。
+    pub(super) fn push_scene_ui_images(
         &mut self,
         vertices: &mut Vec<OverlayVertex>,
         draws: &mut Vec<SceneDraw>,
-        vector_vertices: &mut Vec<FrameVectorTextVertex>,
-        vector_glyphs: &mut Vec<VectorGlyphSnapshot>,
-        vector_segments: &mut Vec<VectorSegmentSnapshot>,
         width: u32,
         height: u32,
     ) -> anyhow::Result<()> {
         let viewport = [width.max(1) as f32, height.max(1) as f32];
-        self.ensure_scene_ui_layout(viewport);
         // docs/54 §4.2：实体身份的 UI 吃 **overlay 视图**的可见遮罩；按名字注册的画布 UI
         // （面板/血条/网格）不是实体，因此不受遮罩影响。
         let overlay_mask = self.view_overlay_mask;
@@ -517,6 +513,27 @@ impl RuntimeScene {
                 self.push_image_quad(vertices, draws, width, height, &image)?;
             }
         }
+        self.view_filtered.set(self.view_filtered.get() + filtered);
+        Ok(())
+    }
+
+    /// 预设/场景实体 `Text` 趟：仍然**最后**提交。`prewarm_frame_glyphs` 必须是本帧最后一个
+    /// 会撑大字体图集的人——图集增长只重缩放已缓存字形的 UV、不回改已写进顶点缓冲的 UV，
+    /// 所以这一趟不能挪到动态层文字（`push_ui_text`）之前。
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn push_scene_ui_text(
+        &mut self,
+        vertices: &mut Vec<OverlayVertex>,
+        draws: &mut Vec<SceneDraw>,
+        vector_vertices: &mut Vec<FrameVectorTextVertex>,
+        vector_glyphs: &mut Vec<VectorGlyphSnapshot>,
+        vector_segments: &mut Vec<VectorSegmentSnapshot>,
+        width: u32,
+        height: u32,
+    ) -> anyhow::Result<()> {
+        let viewport = [width.max(1) as f32, height.max(1) as f32];
+        let overlay_mask = self.view_overlay_mask;
+        let mut filtered = 0usize;
         let texts: Vec<(EntityId, UiText)> = self.script.with_world(|world| {
             let mut texts = Vec::new();
             world.for_each::<UiText>(|id, text| {
@@ -535,15 +552,6 @@ impl RuntimeScene {
             texts
         });
         self.view_filtered.set(self.view_filtered.get() + filtered);
-        // TEMP DEBUG: 定位 ECS UiText 不渲染问题
-        tracing::warn!(
-            target: "render",
-            texts_count = texts.len(),
-            filtered = filtered,
-            vector_atlas = self.vector_atlas.is_some(),
-            font_atlas = self.font_atlas.is_some(),
-            "[debug] push_scene_ui texts collected"
-        );
         // 关键：先把本帧全部文本的字形预热进图集，再逐条构建网格。若在排版过程
         // 中才光栅化，图集会增长（1024→2048…）；`FontAtlas::grow` 只重缩放已缓存
         // 字形的归一化 UV，不会修正已经写进顶点缓冲的 UV，于是同一帧内先构建的
@@ -658,20 +666,8 @@ impl RuntimeScene {
                     }
                 };
                 if use_vector && vector_ok {
-                    tracing::warn!(
-                        target: "render",
-                        text = %text.text,
-                        "vector OK"
-                    );
                     continue;
                 }
-                tracing::warn!(
-                    target: "render",
-                    text = %text.text,
-                    use_vector = use_vector,
-                    vector_ok = vector_ok,
-                    "vector fell through to SDF"
-                );
                 let (mesh, is_sdf, font_key) = match self.layout_scene_text(&text, position) {
                     Ok(result) => result,
                     Err(error) => {
