@@ -64,6 +64,44 @@
   `examples/game_jhyt/{scripts/ui/hud.lua,scripts/ui/portrait.lua,tools/gen_portraits_art.py,assets/art/portraits/player_*.png}`、
   `engine/crates/engine/src/host/sample_project.rs`、`examples/game_jhyt/docs/{45,48}*.md`、本文件。
 
+## Unreleased — 引擎图标统一：齿轮 + Lua「L」，窗口图标与三个 exe 的文件图标同源
+
+- **症状**：编辑器标题栏/任务栏是 eframe 的默认白底「e」，`game.exe` 的标题栏是 Windows
+  默认应用图标，而 `editor.exe`/`game.exe`/`assetc.exe` 在 Explorer 里是白纸——四个入口四种
+  身份，发布包里看不出这是同一个引擎。
+- **改法**：新增 `engine/tools/gen_engine_icon.py`（纯标准库：SDF 栅格化 + 4× 超采样，
+  **一张规格表**同时出窗口图标 `engine/assets/engine_icon.png`（256²）和多尺寸
+  `engine/assets/engine_icon.ico`（16/24/32/48/256，≤48 走 32bpp DIB、256 走内嵌 PNG），
+  外加 5 档 × 明暗两行的目验拼图）。带两条门：`--check` 的字节幂等（复算不一致就红），
+  以及"字必须整个收进齿轮内孔"的设计约束（`glyph_max_extent()` 0.189 < `GEAR_HOLE` 0.205，
+  负面对照 `GLYPH_HW=0.075` 当场 FAIL）。接线三处：编辑器走
+  `ViewportBuilder::with_icon`（eframe 内部按 `SM_CXICON`/`SM_CXSMICON` 各做一次 Lanczos3，
+  所以直接喂 256 那张）；`game` 走 `Window::default_attributes().with_window_icon(...)`，
+  按主显 DPI 自己把 256 缩到 `16 × scale_factor`——**winit 只发一次
+  `WM_SETICON(ICON_SMALL)` 且按 HICON 原尺寸交给 DWM**，直接喂 256 会把齿和 1.3px 的笔画糊掉；
+  三个 bin crate 各一行 `include!("../../tools/winicon_build.rs")`，用 rc.exe（找不到退回
+  `engine/.tools` 里的 `zig rc`）把 .ico 编成 .res 交给 `link.exe`。
+- **失败口径是两档**：没找到资源编译器只 `cargo:warning` 后跳过（缺的只是 Explorer 里那个文件
+  图标，不该让没装 SDK 的人编不过）；找到了但编译失败直接 panic（那是我们的 .rc/.ico 坏了）。
+  非 `-windows-msvc` 目标早退（gnu 要 windres，本仓库没那个目标）。
+- **新增核验工具** `engine/tools/check_exe_icon.py`：build.rs 只能证明"rc 编出了 .res 并交给了
+  链接器"，`link.exe` 收下不等于 PE 里真有 `RT_GROUP_ICON`，所以它把图标**从资源目录读回来**
+  与入库 .ico 逐字节对账。读数（仓库根）：
+  `PYTHONIOENCODING=utf-8 py engine/tools/check_exe_icon.py engine/target/{debug,release}/{editor,game,assetc}.exe`
+  → 六个产物全 `OK ... RT_GROUP_ICON + 5 张 RT_ICON（16/24/32/48/256px），逐字节等于 engine/assets/engine_icon.ico`。
+  两条反面对照都红：把 .ico 第 3 项的 imageOffset 挪 1 字节 →
+  `FAIL editor.exe：32px 像素字节与入库 .ico 不一致`；拿无图标的 `C:\Windows\System32\ping.exe` →
+  `FAIL ... 没有 RT_GROUP_ICON`。生成器侧：`--check` 报 `OK ... 规格指纹 cf39e8e2be6e`
+  （PNG 7,874 B、ICO 25,432 B）。
+- **买不到的部分**：①OS 画的标题栏/任务栏图标没做屏幕目验——`gui_evidence` 只 dump egui 客户区，
+  能给的只有目验拼图和"从 PE 读回的字节"；②Explorer 的图标缓存会在原地显示旧图标，同一台机器上
+  要换目录看或重启 explorer 才可信，这条我没验；③非 msvc 目标与"没有资源编译器"那条分支只看了
+  代码路径，没产过物；④16px 档的 L 只有约 1.3 像素粗，是被"整个收进内孔"压出来的取舍，比之前那版
+  大字 L 弱。
+- 回滚档：`engine/tools/gen_engine_icon.py`、`engine/tools/check_exe_icon.py`、
+  `engine/tools/winicon_build.rs`、`engine/assets/engine_icon*`、
+  `engine/crates/{editor,game,assetc}/build.rs`、`engine/crates/editor/src/main.rs`、
+  `engine/crates/game/src/game_app.rs`、本文件。
 
 ## Unreleased — 搬门关掉写死绝对路径的调试残留：跑一次门不再脏仓库根
 

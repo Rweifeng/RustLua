@@ -17,7 +17,7 @@ use winit::{
     dpi::PhysicalSize,
     event::{ElementState, WindowEvent},
     event_loop::ActiveEventLoop,
-    window::{Window, WindowId},
+    window::{Icon, Window, WindowId},
 };
 
 use engine::host::{
@@ -308,6 +308,28 @@ impl GameApp {
     }
 }
 
+/// 标题栏图标：和编辑器用同一张 `engine/assets/engine_icon.png`
+///（出图：`py engine/tools/gen_engine_icon.py`，规格表只有一份）。
+///
+/// 为什么不直接把 256² 喂给 winit：winit 在 Windows 上只发一次
+/// `WM_SETICON(ICON_SMALL)`，且按 HICON 的**原始尺寸**交给 DWM 塞进标题栏那个
+/// `SM_CXSMICON`（= 16 × DPI）的槽里；256→16 一步缩到底会把齿轮的齿和 1.3px 的笔画
+/// 糊成一团。eframe 内部自己按 SM_CXSMICON 做过 Lanczos3，所以编辑器可以直接喂 256，
+/// 这里是裸 winit，得自己按 DPI 出图。
+///
+/// 任务栏大图标与 exe 文件图标不走这条路径——它们读 build.rs 嵌进 PE 的那份多尺寸
+/// `engine_icon.ico`，Windows 会自己挑合身的档位。
+fn window_icon(scale_factor: f64) -> Icon {
+    let side = (16.0 * scale_factor).round().clamp(16.0, 256.0) as u32;
+    let master = image::load_from_memory(include_bytes!("../../../assets/engine_icon.png"))
+        .expect("内置图标 engine/assets/engine_icon.png 解析失败，跑 gen_engine_icon.py 重出")
+        .to_rgba8();
+    let scaled =
+        image::imageops::resize(&master, side, side, image::imageops::FilterType::Lanczos3);
+    // from_rgba 只校验长度 == 边长²×4，这里必然成立；真失败说明图源被改坏。
+    Icon::from_rgba(scaled.into_raw(), side, side).expect("winit 拒绝了内置图标")
+}
+
 impl ApplicationHandler for GameApp {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -326,8 +348,13 @@ impl ApplicationHandler for GameApp {
             }
             None => engine::core::project_config::DEFAULT_WINDOW_SIZE,
         };
+        let scale_factor = event_loop
+            .primary_monitor()
+            .map(|monitor| monitor.scale_factor())
+            .unwrap_or(1.0);
         let attributes = Window::default_attributes()
             .with_title(&self.window_title)
+            .with_window_icon(Some(window_icon(scale_factor)))
             .with_inner_size(PhysicalSize::new(window_width, window_height));
         tracing::info!(
             target: "game",

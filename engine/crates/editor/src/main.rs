@@ -394,9 +394,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     let log_sink = LogSink::new(500);
     let _ = engine::core::logging::init_logging_with_sink(&log_path, None, Some(log_sink.clone()));
     // 编辑器主窗口：初始按常规编辑尺寸打开（默认 800x600 过小）。
+    // 标题栏/任务栏图标走引擎共用那张 PNG（出图：engine/tools/gen_engine_icon.py，
+    // exe 文件图标由 build.rs 从同一张规格表出的 engine_icon.ico 嵌进 PE 资源），
+    // 不换掉的话就是 eframe 默认的白底「e」。源图 256² 是刻意的：eframe 在 Windows 上按
+    // SM_CXICON/SM_CXSMICON 各做一次 Lanczos3 缩放，源图给小了任务栏图标会糊。
+    // 解析失败只可能是入库 PNG 坏了——直接崩，而不是静默退回默认的「e」。
+    let window_icon =
+        eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/engine_icon.png"))
+            .expect("内置图标 engine/assets/engine_icon.png 解析失败，跑 gen_engine_icon.py 重出");
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
-        viewport: eframe::egui::ViewportBuilder::default().with_inner_size([1280.0, 720.0]),
+        viewport: eframe::egui::ViewportBuilder::default()
+            .with_inner_size([1280.0, 720.0])
+            .with_icon(window_icon),
         ..Default::default()
     };
     // docs/55 阶段 0：真实窗口的证据/soak 运行器跑在 App 里，App 由 eframe 持有并在关窗时
