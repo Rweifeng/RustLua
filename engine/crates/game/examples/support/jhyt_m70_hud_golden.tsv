@@ -50,7 +50,13 @@ A	hidden	img/status_stealth	image	-
 A	hidden	img/status_weather	image	-
 A	hidden	img/status_festival	image	-
 A	shown	img/skill_icon1	image	1004.00,300.00,24.00,24.00,assets/art/ui/skills/ui_skill_basic_blade.png,-
-A	hidden	img/skill_icon2	image	-
+A	shown	img/skill_icon2	image	1056.00,300.00,24.00,24.00,assets/art/ui/skills/ui_skill_palm_gust.png,-
+A	shown	img/skill_icon3	image	1108.00,300.00,24.00,24.00,assets/art/ui/skills/ui_skill_crescent_slash.png,-
+A	shown	img/skill_icon4	image	1160.00,300.00,24.00,24.00,assets/art/ui/skills/ui_skill_iron_palm.png,-
+A	shown	img/skill_icon5	image	1212.00,300.00,24.00,24.00,assets/art/ui/skills/ui_skill_leopard_step.png,-
+A	shown	img/skill_icon6	image	1004.00,352.00,24.00,24.00,assets/art/ui/skills/ui_skill_chase_wind.png,-
+A	shown	img/skill_icon7	image	1056.00,352.00,24.00,24.00,assets/art/ui/skills/ui_skill_guard_heart.png,-
+A	hidden	img/skill_icon8	image	-
 A	hidden	img/build_ghost	image	-
 A	shown	txt/skill_name1	text	1003.00,326.00,12.00,普攻
 A	shown	txt/skill_name2	text	1048.50,326.00,12.00,千风掌
@@ -90,6 +96,12 @@ A	cover	img/skill_card6	image	-
 A	cover	img/skill_card7	image	-
 A	cover	img/weather	image	-
 A	cover	img/skill_icon1	image	-
+A	cover	img/skill_icon2	image	-
+A	cover	img/skill_icon3	image	-
+A	cover	img/skill_icon4	image	-
+A	cover	img/skill_icon5	image	-
+A	cover	img/skill_icon6	image	-
+A	cover	img/skill_icon7	image	-
 A	cover	txt/goals	text	-
 A	cover	txt/line1	text	-
 A	cover	txt/line2	text	-
@@ -105,7 +117,7 @@ A	cover	txt/ending_title	text	-
 A	cover	txt/feedback	text	-
 A	cover	panel/rain	panel	-
 A	cover	img/skill_card8	image	-
-A	cover	img/skill_icon2	image	-
+A	cover	img/skill_icon8	image	-
 A	cover	txt/skill_name1	text	-
 A	cover	txt/skill_name2	text	-
 A	cover	txt/skill_name3	text	-

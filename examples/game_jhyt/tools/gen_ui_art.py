@@ -642,6 +642,50 @@ def skill_icon(kind):
                 angle = step / 28.0 * 6.28318
                 cv.set(16 + int(radius * math.cos(angle)), 16 + int(radius * math.sin(angle)), color)
         cv.set(16, 16, INDIGO500)
+    elif kind == "palm_gust":
+        import math
+
+        skin = rgb("#E8C49A")
+        # 千风掌：右侧一掌推出，左侧四道同心风弧逐层收短——"千风"读的是弧的层数，
+        # 不画五指，免得与回风掌/铁砂掌同骨架、三张并排看像同一式。
+        fill_ellipse(cv, 25, 16, 5, 7, skin)
+        for index, radius in enumerate((20, 16, 12, 8)):
+            color = INDIGO500 if index % 2 == 0 else INDIGO300
+            for step in range(16):
+                angle = -0.85 + step / 15.0 * 1.7
+                x = 30 - int(radius * math.cos(angle))
+                y = 16 - int(radius * math.sin(angle) * 0.9)
+                if 0 <= x <= 31 and 0 <= y <= 31 and not cv.opaque(x, y):
+                    cv.set(x, y, color)
+    elif kind == "crescent_slash":
+        import math
+
+        # 两段同心圆弧相减 = 月牙：外刃 IRON、内缘 IRON_DARK，两端各留一粒火花。
+        for step in range(30):
+            angle = -1.15 + step / 29.0 * 2.6
+            cos, sin = math.cos(angle), math.sin(angle)
+            cv.set(16 + int(11 * cos), 17 - int(11 * sin), IRON)
+            cv.set(16 + int(8 * cos), 17 - int(8 * sin), IRON_DARK)
+        cv.set(5, 27, PAPER50)
+        cv.set(26, 7, PAPER50)
+    elif kind == "iron_palm":
+        # 正掌（与回风掌同骨架：五指各留一缝，靠描边分开）：铁色掌面 + 两粒铁砂 + 朱色腕带。
+        fill_ellipse(cv, 16, 20, 7, 6, IRON)
+        for x in (10, 13, 16, 19, 22):
+            cv.vline(x, 8, 17, IRON)
+            cv.set(x, 8, IRON_DARK)
+        cv.set(13, 20, IRON_DARK)
+        cv.set(18, 22, IRON_DARK)
+        cv.rect(12, 27, 20, 29, CINNABAR)
+    elif kind == "leopard_step":
+        # 豹掌印：掌垫在下、四趾各留缝排成弧；左侧两道 GOLD 横线是"跃"的来路。
+        fill_ellipse(cv, 18, 21, 7, 6, GOLD500)
+        for toe_x, toe_y in ((9, 15), (13, 9), (20, 7), (26, 12)):
+            fill_ellipse(cv, toe_x, toe_y, 3, 3, GOLD500)
+        for spot_x, spot_y in ((16, 20), (21, 22), (18, 25)):
+            cv.set(spot_x, spot_y, CINNABAR900)
+        cv.hline(2, 8, 22, GOLD300)
+        cv.hline(1, 6, 27, GOLD300)
     cv.outline(INK)
     return cv
 
@@ -1319,12 +1363,17 @@ def slice_table():
         ],
         "skills": [
             ("ui_skill_card_9s", skill_card(), "128x64 9S 8", (8, 8, 8, 8)),
-            # 批次 4：五式招式图标（docs/30 §8.2）
+            # 批次 4：五式招式图标（docs/30 §8.2）；后四式跟 `data/skills.lua` 的现阵容对齐
+            # （`palm_gust`/`crescent_slash`/`iron_palm`/`leopard_step`，HUD 卡底要显示它们）。
             ("ui_skill_basic_blade", skill_icon("basic_blade"), "32x32 基础刀法", None),
             ("ui_skill_chase_wind", skill_icon("chase_wind"), "32x32 追风步", None),
             ("ui_skill_guard_heart", skill_icon("guard_heart"), "32x32 守心诀", None),
             ("ui_skill_return_palm", skill_icon("return_palm"), "32x32 回风掌", None),
             ("ui_skill_breath_qi", skill_icon("breath_qi"), "32x32 养气诀", None),
+            ("ui_skill_palm_gust", skill_icon("palm_gust"), "32x32 千风掌", None),
+            ("ui_skill_crescent_slash", skill_icon("crescent_slash"), "32x32 弦月斩", None),
+            ("ui_skill_iron_palm", skill_icon("iron_palm"), "32x32 铁砂掌", None),
+            ("ui_skill_leopard_step", skill_icon("leopard_step"), "32x32 豹跃", None),
         ],
         "build": [
             ("ui_build_ghost_ok", ghost_cell(True), "32x32", None),

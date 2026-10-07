@@ -164,7 +164,11 @@
         "skills/ui_skill_chase_wind.png",
         "skills/ui_skill_guard_heart.png",
         "skills/ui_skill_return_palm.png",
-        "skills/ui_skill_breath_qi.png"
+        "skills/ui_skill_breath_qi.png",
+        "skills/ui_skill_palm_gust.png",
+        "skills/ui_skill_crescent_slash.png",
+        "skills/ui_skill_iron_palm.png",
+        "skills/ui_skill_leopard_step.png"
       ],
       "uses_common": [
         "common/ui_panel_main_9s.png",
@@ -946,6 +950,38 @@
       "path": "assets/art/ui/jianghu/skills/ui_skill_breath_qi.png",
       "size": "32x32",
       "spec": "32x32 养气诀",
+      "nine_slice": null
+    },
+    {
+      "module": "skills",
+      "name": "ui_skill_palm_gust",
+      "path": "assets/art/ui/jianghu/skills/ui_skill_palm_gust.png",
+      "size": "32x32",
+      "spec": "32x32 千风掌",
+      "nine_slice": null
+    },
+    {
+      "module": "skills",
+      "name": "ui_skill_crescent_slash",
+      "path": "assets/art/ui/jianghu/skills/ui_skill_crescent_slash.png",
+      "size": "32x32",
+      "spec": "32x32 弦月斩",
+      "nine_slice": null
+    },
+    {
+      "module": "skills",
+      "name": "ui_skill_iron_palm",
+      "path": "assets/art/ui/jianghu/skills/ui_skill_iron_palm.png",
+      "size": "32x32",
+      "spec": "32x32 铁砂掌",
+      "nine_slice": null
+    },
+    {
+      "module": "skills",
+      "name": "ui_skill_leopard_step",
+      "path": "assets/art/ui/jianghu/skills/ui_skill_leopard_step.png",
+      "size": "32x32",
+      "spec": "32x32 豹跃",
       "nine_slice": null
     },
     {

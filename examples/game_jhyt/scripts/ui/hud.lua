@@ -494,6 +494,10 @@ end
 -- 会红在 `压住 UI 元素 hud_skill_bar`），所以超过 10 招要连同 `layout.TOUCH` 一起复核。
 local SKILL_ICON_KEYS = {
   strike = "skill_basic_blade",
+  palm_gust = "skill_palm_gust",
+  crescent_slash = "skill_crescent_slash",
+  iron_palm = "skill_iron_palm",
+  leopard_step = "skill_leopard_step",
   chase_wind = "skill_chase_wind",
   guard_heart = "skill_guard_heart",
 }

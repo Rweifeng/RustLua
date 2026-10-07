@@ -5,6 +5,42 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 招式图标补齐：`SKILL_ICON_KEYS` 从 3/7 到 7/7（走生成器出图，不凭空画）
+
+- **症状**：HUD 招式栏 7 张卡里只有 3 张有图标（普攻/追风步/守心诀），千风掌、弦月斩、铁砂掌、
+  豹跃四格是空卡底。`docs/45` §"它买不到的部分 ①" 从 M70 那批就登记过这条，并写明补法要
+  走 `docs/35`/`docs/48` 的生成器出图，不在那条里凭空画——本批就是那笔欠账。
+- **改法**：`tools/gen_ui_art.py` 的 `skill_icon()` 加四个 kind（`palm_gust` 同心风弧 + 立掌、
+  `crescent_slash` 双弧相减的月牙刃、`iron_palm` 铁色正掌 + 朱腕带、`leopard_step` 豹掌印 +
+  速度线），skills 模块 6 → 10 张、全套切图 96 张；`ui/skin.lua` 登记四个 key、
+  `ui/hud.lua` 的 `SKILL_ICON_KEYS` 补齐到 7 式。图标名跟数据层的招式 id 对齐
+  （**`leopard_step` 而不是"豹跃"的直译**：第一版按 `leopard_leap` 命名，查 `M.binding.cast`
+  才发现真实 id，改名重出）。
+- **重出是幂等的**：`py tools/gen_ui_art.py` 会重写全部切图 + manifest + 两张预览，跑完
+  `git status` 只有 4 张新增 + `manifest.json`/两张 `_preview_*.png` 三处变化，其余 92 张
+  既有 PNG 逐字节不变 ⇒ 生成器仍然可复现，没有夹带别人的手改。
+- **原生门跟着记账**：`jhyt_m70_hud_prefab` 的图标探针原本只有 `skill_icon1..2`（那两条就是
+  当时的现状），现按 `txt/skill_name1..8` 的排法补到 `skill_icon1..8`，黄金表 124 → 136 行；
+  第 52-58 行是七张各不相同的贴图路径，第 59 行 `hidden`（第 8 格没有招式槽，那儿画的是触屏
+  「更多」键）。**先红后刷**：加映射不改表时它红在
+  `黄金对账第 65 行不一致：期望 A\thidden\timg/skill_icon2`，说明这条门真的盯得住卡底内容。
+- **读数**：`verify-webgl-bundle.ps1 -DriveJhyt` ⇒ `ui elements: 34 → 38`（四张新动态图标，
+  这条读数只数动态层所以看得见本批）、`prefab_slice: 81/9`、`prefab_text: 22/22`；
+  `verify-wechat-minigame.ps1` ⇒ 19 条 `harness_ok`、`prefab_slice` 标题屏 `36/4` / 玩法图 `63/7`。
+  两包用 `package.ps1 -SkipBuild` 重打（webgl 与 launcher 的 `web-runtime.js` 仍是 159,148 B
+  逐字节相同；微信 `main_kb=2,091 / 51.0%`、`total_kb=6,786 / 33.1%`），pack 里 10 张招式贴图齐全。
+- **买不到的部分**：黄金表只记"这一格画了哪张路径"，不记图标长得对不对——贴错图（把铁砂掌
+  挂成弦月斩）它照样绿；图标是 32×32 源画进 24×24 卡位，web 侧走 canvas 平滑、原生走 wgpu
+  采样，缩放观感本来就有差，本批没做像素比对；`docs/30` §8.2 还写着旧的五式阵容，与
+  `M.binding` 的七式已经漂移（那是文档账，不在本批里改）。
+- **既有红（与本批无关，都验过）**：`jhyt_m23_data_validation`（`ui.prefab defines validate_all
+  but is not registered`——那两个文件都在 HEAD 状态、本批没碰）、`jhyt_m30_cjk_text`
+  （`pse:h:row1 size=12 want 18`——把本批的 `hud.lua`/`skin.lua` 临时还原成 HEAD 复跑，同样红）、
+  `drive_jhyt nav-exit timeout`、微信 case 5 `--image-src-frozen`。
+- 回滚档：`examples/game_jhyt/tools/gen_ui_art.py` + `assets/art/ui/{skills/*.png,manifest.json,
+  _preview_*.png}` + `scripts/ui/{skin.lua,hud.lua}` + `docs/45` +
+  `engine/crates/game/examples/jhyt_m70_hud_prefab.rs` + `support/jhyt_m70_hud_golden.tsv` + 本文件。
+
 ## Unreleased — 预设贴图的 `nine_slice` 解析完没人读：屏幕 UI 整张拉伸
 
 - **症状**：webgl/微信宿主上，凡是由 `.prefab` 声明的面板与卡底都"边框糊成一大片、里面发黑"——

@@ -7,7 +7,8 @@
 //!     填充+图标/天气图标（晴雨二选一叠图互斥）/8 张招式卡底/全屏雨罩/结局横幅底/6 行状态
 //!     文字/反馈行/目标行/引导行/结局两行。
 //!   * **留动态层（脚本每帧写）**：资源条 fill 宽度（`set_rect` 随比值）、状态图标竖排
-//!     （贴图种类随激活状态，A 态无状态全隐藏）、招式图标（只有 2 招有图，查表动态画）、
+//!     （贴图种类随激活状态，A 态无状态全隐藏）、招式图标（现阵容 7 招各有图，第 8 格没有
+//!     招式槽、查表动态画）、
 //!     招式名（x 随 `measure_text` 居中，预设 Text 定死 x 会偏）、建造幽灵图标（两态切换）。
 //!   * **② 整屏同层对 HUD 豁免**：部分预设 = 静态骨架在实体层、动态元素留动态层，混合是
 //!     设计意图。实体层整体画在动态层之下（`frame_data.rs:869-883`），所以文字/图标/fill
@@ -336,8 +337,17 @@ const PROBES: &[Probe] = &[
         &[],
         Kind::Image,
     ),
+    // 招式图标：与 `txt/skill_name1..8` 同样排满 8 格。曾经只有 1..2 两条，因为
+    // `SKILL_ICON_KEYS` 只映射了 2 招；现阵容 7 招全部有图（第 8 格没有招式槽，那里画的是
+    // 触屏的「更多」键），表体按格数记账，将来加/减映射都会在这里显形。
     probe("img/skill_icon1", "hud:skill_icon1", &[], Kind::Image),
     probe("img/skill_icon2", "hud:skill_icon2", &[], Kind::Image),
+    probe("img/skill_icon3", "hud:skill_icon3", &[], Kind::Image),
+    probe("img/skill_icon4", "hud:skill_icon4", &[], Kind::Image),
+    probe("img/skill_icon5", "hud:skill_icon5", &[], Kind::Image),
+    probe("img/skill_icon6", "hud:skill_icon6", &[], Kind::Image),
+    probe("img/skill_icon7", "hud:skill_icon7", &[], Kind::Image),
+    probe("img/skill_icon8", "hud:skill_icon8", &[], Kind::Image),
     probe("img/build_ghost", "hud:build_ghost", &[], Kind::Image),
     probe("txt/skill_name1", skill_name_probes!("1"), &[], Kind::Text),
     probe("txt/skill_name2", skill_name_probes!("2"), &[], Kind::Text),

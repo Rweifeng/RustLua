@@ -85,13 +85,17 @@ M.tex = {
   -- quest 任务（2 张）
   quest_bullet_todo = { path = DIR .. "quest/ui_quest_bullet_todo.png" },
   quest_bullet_done = { path = DIR .. "quest/ui_quest_bullet_done.png" },
-  -- skills 武学（6 张）
+  -- skills 武学（10 张：卡底 + 7 式现役招式图标 + 旧阵容的回风掌/养气诀）
   skill_card = { path = DIR .. "skills/ui_skill_card_9s.png", slice = "8,8,8,8" },
   skill_basic_blade = { path = DIR .. "skills/ui_skill_basic_blade.png" },
   skill_chase_wind = { path = DIR .. "skills/ui_skill_chase_wind.png" },
   skill_guard_heart = { path = DIR .. "skills/ui_skill_guard_heart.png" },
   skill_return_palm = { path = DIR .. "skills/ui_skill_return_palm.png" },
   skill_breath_qi = { path = DIR .. "skills/ui_skill_breath_qi.png" },
+  skill_palm_gust = { path = DIR .. "skills/ui_skill_palm_gust.png" },
+  skill_crescent_slash = { path = DIR .. "skills/ui_skill_crescent_slash.png" },
+  skill_iron_palm = { path = DIR .. "skills/ui_skill_iron_palm.png" },
+  skill_leopard_step = { path = DIR .. "skills/ui_skill_leopard_step.png" },
   -- build 建筑放置（2 张）
   build_ghost_ok = { path = DIR .. "build/ui_build_ghost_ok.png" },
   build_ghost_bad = { path = DIR .. "build/ui_build_ghost_bad.png" },
