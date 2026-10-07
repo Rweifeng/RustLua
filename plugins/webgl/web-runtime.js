@@ -570,17 +570,21 @@
   // 所以 prefab 文字整批不画时它读数不变（实测 2026-10-07 修复前后 drawn/ui-elements 逐位
   // 相同）——这道门当时是瞎的。这里单独报一对，无头门就能断言 total>0 且 drawn==total。
   let LAST_PREFAB_TEXT = { drawn: 0, total: 0 };
+  // 预设九宫格自报：`{cells, entities}` = 走过 3×3 切片路径的 drawImage 次数 / 声明了
+  // `nine_slice` 且边距非全零的场景 UI 贴图实体数（判据与原生 `mesh_ui.rs:729` 同一条）。
+  // 门断的是"到底切没切"：整张拉伸时 cells 恒为 entities（每实体 1 次），切片时是它的 2~9 倍。
+  let LAST_PREFAB_SLICE = { cells: 0, entities: 0 };
 
   // 9-slice 绘制（与引擎 nine_slice_cells 对齐）：corners 固定像素、edges 单向拉伸、
   // center 双向拉伸。slice = "l,r,t,b" 纹理像素；目标比边距和还窄时边距等比收缩。
   function drawNineSliceImage(ctx, tex, dx, dy, dw, dh, sliceStr) {
     const tw = tex.naturalWidth || tex.width;
     const th = tex.naturalHeight || tex.height;
-    if (!(tw > 0) || !(th > 0)) return;
+    if (!(tw > 0) || !(th > 0)) return 0;
     const parts = String(sliceStr || '').split(',').map(Number);
     if (parts.length !== 4 || parts.some(v => !Number.isFinite(v) || v < 0)) {
       ctx.drawImage(tex, dx, dy, dw, dh);
-      return;
+      return 1;
     }
     let [l, r, t, b] = parts;
     // 目标比左右边距和还窄时等比压缩边距（与 Rust dst_col_f 逻辑一致）。
@@ -601,15 +605,21 @@
       [l, th - b, sw, b, dx + l, dy + t + dhc, dwc, b],           // bottom edge
       [tw - r, th - b, r, b, dx + l + dwc, dy + t + dhc, r, b],    // BR
     ];
+    let made = 0;
     for (const c of cells) {
       if (c[6] <= 0 || c[7] <= 0 || c[2] <= 0 || c[3] <= 0) continue;
       ctx.drawImage(tex, c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]);
+      made += 1;
     }
+    // 返回实际发的 drawImage 次数：预设九宫格自报（LAST_PREFAB_SLICE）要拿它和"该切的实体数"
+    // 对账——退化成整张拉伸时这里是 1，门就能看见。
+    return made;
   }
 
   function drawUi(ctx, uiText, images, pending, sceneUiEntities, suppressSceneText) {
     const ui = parseUiLines(uiText);
     LAST_PREFAB_TEXT = { drawn: 0, total: 0 };
+    LAST_PREFAB_SLICE = { cells: 0, entities: 0 };
     LAST_UI_SUMMARY = ui.panels.map(item => (item.shape === 1 ? 'C:' : 'P:') + item.id)
       .concat(ui.images.map(item => 'I:' + item.id + ':' + item.texture), ui.bars.map(item => 'B:' + item.id), ui.texts.map(item => 'X:' + item.id))
       .join(',');
@@ -697,7 +707,19 @@
         const texture = ensureTexture(images, pending, entity.image.texture);
         if (texture) {
           ctx.globalAlpha = entity.image.color[3] === undefined ? 1 : entity.image.color[3];
-          ctx.drawImage(texture, rect.x, rect.y, rect.w, rect.h);
+          // 九宫格：原生在 `mesh_ui.rs:727` 用 `Image.nine_slice` 把目标矩形拆成 3×3 格
+          // （角部固定纹理像素、边单向拉伸、中心双向拉伸），`push_scene_ui` 也把这个字段
+          // 带给了场景/预设实体（`mesh_ui.rs:515`）。web 侧此前解析完就没人读，整张贴图
+          // 拉进目标矩形：96×96 的 `ui_panel_main_9s` 画进 720×640 时 16 px 的边框被吹成
+          // 约 120 px，128×64 的招式卡压进方形卡底——面板"边框糊一大片、里面发黑"（实机 2026-10-07）。
+          const slice = entity.image.nineSlice;
+          if (slice && slice.length === 4 && slice.every(v => Number.isFinite(v) && v >= 0)
+            && slice.some(v => v > 0)) {
+            LAST_PREFAB_SLICE.entities += 1;
+            LAST_PREFAB_SLICE.cells += drawNineSliceImage(ctx, texture, rect.x, rect.y, rect.w, rect.h, slice.join(','));
+          } else {
+            ctx.drawImage(texture, rect.x, rect.y, rect.w, rect.h);
+          }
           ctx.globalAlpha = 1;
           drew = true;
         }
@@ -4282,6 +4304,7 @@ end
           body.setAttribute('data-rustlua-ui-now', String(uiElements));
           // 预设文字当帧真值（见 LAST_PREFAB_TEXT）：不进 world 串，那条有 300 字符截断。
           body.setAttribute('data-rustlua-prefab-text', LAST_PREFAB_TEXT.drawn + '/' + LAST_PREFAB_TEXT.total);
+          body.setAttribute('data-rustlua-prefab-slice', LAST_PREFAB_SLICE.cells + '/' + LAST_PREFAB_SLICE.entities);
           if (frameCount <= 5 || frameCount % 30 === 0) {
             body.setAttribute('data-rustlua-drawn', String(sampleDrawnPixels(ctx)));
             body.setAttribute('data-rustlua-ui-elements', String(uiElements));

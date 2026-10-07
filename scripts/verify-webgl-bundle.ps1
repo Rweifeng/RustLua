@@ -315,6 +315,16 @@ if ($dom -match 'data-rustlua-prefab-text="(\d+)/(\d+)"' -and $Matches.Count -gt
     $prefabTextTotal = [int]$Matches[2]
 }
 
+# 预设九宫格自报（data-rustlua-prefab-slice=切片次数/该切实体数）。原生把 Image.nine_slice
+# 拆成 3×3 格（mesh_ui.rs:727），web 侧曾解析完就没人读、整张拉伸：面板边框吹糊、卡片压扁
+# （实机 2026-10-07）。这条断"切没切"：没切时 cells == 实体数（每实体一次 drawImage）。
+$prefabSliceCells = $null
+$prefabSliceEntities = $null
+if ($dom -match 'data-rustlua-prefab-slice="(\d+)/(\d+)"' -and $Matches.Count -gt 1) {
+    $prefabSliceCells = [int]$Matches[1]
+    $prefabSliceEntities = [int]$Matches[2]
+}
+
 # L3 行为契约结论。报告首行三选一：`web_api_contract_ok cases=N` /
 # `web_api_contract_failed mismatches=N cases=N` / `web_api_contract_unavailable <原因>`。
 # **找不到这三行也必须算红**：那次 node 调用超时时把 DOM 写进了同一个文件，
@@ -380,6 +390,8 @@ if (-not $NoSceneVerify) {
 Write-Log "audio: $audioEvidence" $(if ($audioEvidence -eq "absent") { "Yellow" } else { "Green" })
 Write-Log "prefab_text: $(if ($null -eq $prefabTextDrawn) { 'absent' } else { "$prefabTextDrawn/$prefabTextTotal" })" `
     $(if ($null -eq $prefabTextDrawn) { "Yellow" } elseif ($prefabTextDrawn -ne $prefabTextTotal) { "Red" } else { "Green" })
+Write-Log "prefab_slice: $(if ($null -eq $prefabSliceCells) { 'absent' } else { "$prefabSliceCells/$prefabSliceEntities" })" `
+    $(if ($null -eq $prefabSliceCells) { "Yellow" } elseif ($prefabSliceEntities -gt 0 -and $prefabSliceCells -lt ($prefabSliceEntities * 2)) { "Red" } else { "Green" })
 if ($ApiContract) {
     Write-Log "api_contract: $contractVerdict cases=$contractCases report=$contractReportPath" `
         $(if ($contractVerdict -eq "ok") { "Green" } else { "Red" })
@@ -427,6 +439,20 @@ if (-not [string]::IsNullOrWhiteSpace($world)) {
     if ($DriveJhyt -and $prefabTextTotal -lt 1) {
         # 剧本已进玩法地图，HUD 预设每帧都在写 HudLine/目标/提示，应有数不可能是 0。
         Write-Log "webgl_bundle_prefab_text_empty detail=gameplay scene has no prefab text world=$world" Red
+        Exit-With 1
+    }
+    if ($null -eq $prefabSliceCells) {
+        Write-Log "webgl_bundle_prefab_slice_missing detail=no data-rustlua-prefab-slice in dom world=$world" Red
+        Exit-With 1
+    }
+    if ($prefabSliceEntities -gt 0 -and $prefabSliceCells -lt ($prefabSliceEntities * 2)) {
+        # 声明了 nine_slice 却每实体只发一次 drawImage = 整张拉伸，边框与原生不一致。
+        Write-Log "webgl_bundle_prefab_slice_flat cells=$prefabSliceCells entities=$prefabSliceEntities world=$world" Red
+        Exit-With 1
+    }
+    if ($DriveJhyt -and $prefabSliceEntities -lt 1) {
+        # 玩法场景的 HudSkillCard1..8 声明了 nine_slice=8,8,8,8，走切片的实体数不可能是 0。
+        Write-Log "webgl_bundle_prefab_slice_empty detail=gameplay scene draws no nine_slice world=$world" Red
         Exit-With 1
     }
 }

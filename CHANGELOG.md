@@ -5,6 +5,45 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 预设贴图的 `nine_slice` 解析完没人读：屏幕 UI 整张拉伸
+
+- **症状**：webgl/微信宿主上，凡是由 `.prefab` 声明的面板与卡底都"边框糊成一大片、里面发黑"——
+  标题屏的三份 `ui_menu_btn_wuxia_9s`、玩法 HUD 的 `HudSkillCard1..8`、背包/商店/暂停的
+  `ui_panel_main_9s` 尤其明显。Lua 侧 `skin.panel()` 走 `ui.image` 的第 10 参那条 9-slice 是好的，
+  所以只有"预设里的图"看着不对，容易被读成贴图坏了。
+- **归因**：`web-runtime.js:246` 把 `Image.nine_slice` 解析进 `entity.image.nineSlice` 之后
+  **全文件再没有第二个引用点**（`grep -n nineSlice` 只有那一行），`drawSceneUiEntity` 的贴图趟直接
+  `ctx.drawImage(texture, rect.x, rect.y, rect.w, rect.h)` 把整张拉进目标矩形。原生不是这么画的：
+  `mesh_ui.rs:727-775` 用 `nine_slice_cells` 把目标矩形拆成 3×3（角部固定纹理像素、边单向拉伸、
+  中心双向拉伸），`push_scene_ui`（`mesh_ui.rs:515`）把这个字段一并带给场景/预设实体。
+  量化：`ui_panel_main_9s.png` 是 96×96、边距 16 px，画进 720×640 的面板矩形时 16 px 边框被吹成
+  约 120 px；`ui_skill_card_9s.png` 是 128×64（2:1），压进方形卡底 ⇒ 卡框横向挤扁。
+- **改法**：预设贴图趟改走已有的 `drawNineSliceImage`（动态层本来就用它），判据与原生同一条
+  （四个边距有限、非负、且至少一个 > 0）；`drawNineSliceImage` 顺带返回实发的 `drawImage` 次数。
+- **新增读数**：`data-rustlua-prefab-slice=切片次数/该切实体数`（每帧）。上一条刚立过教训——
+  `drawn`/`ui-elements` 不计屏幕 UI 实体，所以"整张拉伸"在那两条读数上是**完全静默**的，这次直接
+  报一对。两条门各接三条：缺字段红、`cells < entities*2` 红（= 每实体只发一次 drawImage）、
+  进玩法图后 `entities == 0` 红；webgl 侧仍排在 drive 判定之前。
+- **读数**：`verify-webgl-bundle.ps1 -DriveJhyt` ⇒ `prefab_slice: 81/9`、`prefab_text: 22/22`；
+  `verify-wechat-minigame.ps1` ⇒ 19 条 `harness_ok`，标题屏 `prefab_slice=36/4`、
+  `--drive-new-game` 后 `63/7`（7 张卡 × 9 格，逐格对得上）。活体浏览器同一读数
+  （`36/4` → 进图 `63/7`），标题屏与山庄图各存一张截图目验边框。**反面对照**：把该分支换回
+  单张 `drawImage` ⇒ 微信门 exit=1，报"声明 nine_slice 的预设贴图 4 个只发了 0 次 drawImage"。
+  产物：`builds/{webgl,wechat-minigame/launcher}/web-runtime.js` 由 `engine/.tools/terser` 重生成
+  （158,669 → 159,148 B，+479，两包逐字节相同）；重打包前核对过上一节的产物字节，没夹带在途改动。
+- **买不到的部分**：这条只断"切没切"，不断边距数值对不对、也不断切出来的九格落在哪——
+  现网所有 `nine_slice` 都是 `l=r=t=b` 的对称值，所以"边距顺序写反"这类错它抓不到；也没有与原生
+  做像素比对（原生是 wgpu 三角、web 是 canvas 2D，本来就对不齐）。卡底中心发黑**另一半**原因是
+  内容缺口：`hud.lua:495-499` 的 `SKILL_ICON_KEYS` 只覆盖 7 个绑定招式里的 3 个，另外 4 个
+  （`palm_gust`/`crescent_slash`/`iron_palm`/`leopard_leap`）既没有映射也没有对应贴图，PC 侧
+  golden `jhyt_m70_hud_golden.tsv:52-53` 早就把 `img/skill_icon2` 记成 `hidden`——那不是宿主缺陷，
+  本修没动，要补的是美术与映射表。
+- **既有红（与本修无关）**：`drive_jhyt: phase=nav-exit timeout frames=901`、微信 case 5
+  `--image-src-frozen`（前几节已记为"归下一摊"）。
+- 回滚档：`plugins/webgl/web-runtime.js`（`drawSceneUiEntity` 贴图趟 + `LAST_PREFAB_SLICE` +
+  `drawNineSliceImage` 返回值 + `data-rustlua-prefab-slice`）+ `scripts/verify-webgl-bundle.ps1` +
+  `scripts/wechat-minigame-harness.js` + 本文件。
+
 ## Unreleased — 换场景后 prefab 正文整批上不了屏：`sceneTextSuppressed` 只该管场景文件声明的实体
 
 - **症状**：webgl/微信宿主进玩法地图后，HUD 与所有面板只剩暗底——`HudBox`/`HudChip1..6`/血条/面板

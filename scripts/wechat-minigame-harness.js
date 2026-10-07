@@ -2323,6 +2323,21 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       failures.push('--drive-new-game 后玩法场景没有任何预设文字（prefab-text=' + prefabText[0] + '）' +
         '（HUD 预设每帧都在写 HudLine/目标/提示，应有数不可能是 0）');
     }
+    // 预设九宫格自对账：`data-rustlua-prefab-slice=切片次数/该切实体数`。原生在 `mesh_ui.rs:727`
+    // 起把 Image.nine_slice 拆成 3×3 格（角部固定纹理像素、边单向拉伸），web 侧此前解析完
+    // （`web-runtime.js:246`）就没人读，整张拉进目标矩形：96×96 的面板块画进 720×640 时
+    // 16 px 边框吹成约 120 px、128×64 的招式卡压进方卡底（实机 2026-10-07 的"面板黑底+卡黑方块"）。
+    // 这条只断"切没切"，不断边距数值对不对（后者要靠 cells/entities 的倍数区间反推）。
+    const prefabSlice = String(adapter.getAttribute('data-rustlua-prefab-slice') || '').match(/^(\d+)\/(\d+)$/);
+    if (worldSummary && !prefabSlice) {
+      failures.push('运行时没有自报预设九宫格数（data-rustlua-prefab-slice）');
+    } else if (prefabSlice && Number(prefabSlice[2]) > 0 && Number(prefabSlice[1]) < Number(prefabSlice[2]) * 2) {
+      failures.push(`声明 nine_slice 的预设贴图 ${prefabSlice[2]} 个只发了 ${prefabSlice[1]} 次 drawImage` +
+        '（没走 3×3 切片、整张拉伸：面板边框糊成一大片、卡片被压扁，与原生不一致）');
+    } else if (driveNewGame && prefabSlice && !(Number(prefabSlice[2]) >= 1)) {
+      failures.push('--drive-new-game 后没有任何贴图走九宫格（prefab-slice=' + prefabSlice[0] + '）' +
+        '（HUD 的 HudSkillCard1..8 声明了 nine_slice=8,8,8,8，应有数不可能是 0）');
+    }
     if (driveNewGame) {
       if (tileLayers && !(Number(tileLayers[2]) >= 1)) {
         failures.push(`玩法场景一张 Tilemap 都没有（tilemaps=${tileLayers[0]}）——地表/换图数据没进渲染侧`);
@@ -3645,7 +3660,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         ` entry=${packEntryError ? 'FAIL' : 'ok'}` +
         ` loading_bar=${drawnTexts.some((text) => text.includes('正在下载资源')) ? 'ok' : 'none'}`
       : ` subpackage=none subpackage_loads=${stats.subpackageLoads}`;
-    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} action_disk=${JSON.stringify(actionDiskEvidence)} help_page=${JSON.stringify(helpPageEvidence)} depth_order=${JSON.stringify(depthOrderEvidence)} save_persist=${JSON.stringify(savePersistEvidence)} stick_key=w key_bridge=ArrowUp exemption_probe=${exemptionProbe} ${contractEvidence || 'api_contract=not-requested'} wasm=${wasmDiag ? (wasmDiag.status + ':' + wasmDiag.hostApi + ':' + (wasmDiag.channel || 'none') + ':' + (wasmDiag.facade || 'none')) : 'no-diag'} eh_probe=${wasmDiag && wasmDiag.ehProbe ? String(wasmDiag.ehProbe).replace(/^eh_probe=/, '').split(/[（[ ]/)[0] : 'not-attempted'}${remoteEvidence}`);
+    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} prefab_text=${adapter.getAttribute('data-rustlua-prefab-text') || 'none'} prefab_slice=${adapter.getAttribute('data-rustlua-prefab-slice') || 'none'} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} action_disk=${JSON.stringify(actionDiskEvidence)} help_page=${JSON.stringify(helpPageEvidence)} depth_order=${JSON.stringify(depthOrderEvidence)} save_persist=${JSON.stringify(savePersistEvidence)} stick_key=w key_bridge=ArrowUp exemption_probe=${exemptionProbe} ${contractEvidence || 'api_contract=not-requested'} wasm=${wasmDiag ? (wasmDiag.status + ':' + wasmDiag.hostApi + ':' + (wasmDiag.channel || 'none') + ':' + (wasmDiag.facade || 'none')) : 'no-diag'} eh_probe=${wasmDiag && wasmDiag.ehProbe ? String(wasmDiag.ehProbe).replace(/^eh_probe=/, '').split(/[（[ ]/)[0] : 'not-attempted'}${remoteEvidence}`);
     return 0;
   }).catch((error) => {
     console.error = originalError;
