@@ -15,6 +15,7 @@
 --   * exit           当前地图出口触发格
 --   * farm_plot      该格已有开垦/作物（farm.plots）
 --   * building       与既有建筑 footprint 重叠
+--   * player_here    玩家自己站在这一格（建上去会把自己封在 solid 里）
 --
 -- 实体纪律（吸取 farm.lua 陈旧 farm_id 的教训）：所有缓存实体 id 使用前
 -- `entity.is_alive` 判活；restore 只写内存与 map.state，视觉统一走 on_enter。
@@ -129,10 +130,26 @@ local function ensure_farm()
   return farm or nil
 end
 
+-- 玩家自己站的那一格。footprint 落上去会被 `apply_terrain` 打成 solid，等于把自己
+-- 砌进墙里（引擎没有脱困逻辑）：实测玩家按 B→F 建出的畜棚正好盖住自己脚下。
+local function player_cell_key()
+  local pid = player.ensure()
+  if not pid then
+    return nil
+  end
+  local pos = transform.get(pid)
+  if not pos then
+    return nil
+  end
+  local cell = grid.world_to_cell(pos.x, pos.y, TILE)
+  return key_of(cell[1], cell[2])
+end
+
 -- 单格冲突判定；返回 reason 或 nil。顺序固定 → 输出确定。
--- 优先级：越界 > 农田地块 > 既有建筑 > 地表 > 阻挡 > 出口 > 道路。
--- （农田建在夯土上，若不先判 farm_plot 会被 ground 掩盖，预览就说不清原因。）
-local function cell_conflict(def, cx, cy, exits)
+-- 优先级：越界 > 农田地块 > 既有建筑 > 玩家站位 > 地表 > 阻挡 > 出口 > 道路。
+-- （农田建在夯土上，若不先判 farm_plot 会被 ground 掩盖，预览就说不清原因。
+-- 玩家站位排在 ground 之前：站在能建的地表上才是这一条会命中的场景。）
+local function cell_conflict(def, cx, cy, exits, occupied)
   if not bounds_ok(cx, cy) then
     return "out_of_bounds"
   end
@@ -141,6 +158,9 @@ local function cell_conflict(def, cx, cy, exits)
   end
   if cell_owner(cx, cy) then
     return "building"
+  end
+  if occupied == key_of(cx, cy) then
+    return "player_here"
   end
   local allowed = false
   for _, tile in ipairs(def.ground_tiles or {}) do
@@ -173,9 +193,10 @@ function M.can_place(building_id, cx, cy)
   end
   ensure_farm()
   local exits = exit_cells()
+  local occupied = player_cell_key()
   local conflicts = {}
   for _, cell in ipairs(footprint_of(def, cx, cy)) do
-    local reason = cell_conflict(def, cell.x, cell.y, exits)
+    local reason = cell_conflict(def, cell.x, cell.y, exits, occupied)
     if reason then
       conflicts[#conflicts + 1] = { x = cell.x, y = cell.y, reason = reason }
     end

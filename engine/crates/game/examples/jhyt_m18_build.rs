@@ -501,6 +501,73 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "build_mode_off",
     )?;
 
+    banner("M18-02h′ 建造模式提示行上屏 + 不许把建筑盖在自己脚下");
+    // 玩家实测卡点（七日目标「炼成 1 剂药并收取」0/3）：`set_build_mode` 默认选中字典序
+    // 第一座（畜棚），而 `建造[畜棚] …` 这句此前**只**进 `hud.text()`（headless 单行摘要），
+    // 屏上四类文字槽里没有它。于是照引导「按 B → F 放置药庐」按下去只会反复建出畜棚，
+    // 面向它按 E 得到「没有对应设施」，而玩家没有任何线索知道自己选错了。
+    // 这里钉两件事：① 建造模式下提示行要带当前选中的建筑名和切换键位；② 换选要跟。
+    press(
+        &mut runtime,
+        KeyCode::from_char('b').expect("QWERTY 字符必须有对应物理键"),
+    )?;
+    assert_str(
+        &mut runtime,
+        "(function() local line = require('ui.hud').feedback_line(); \
+           if not line:find('建造%[药庐%]') then return 'name:' .. line end \
+           if not line:find('Q') then return 'key:' .. line end \
+           return 'ok' end)()",
+        "ok",
+    )?;
+    // 换选（Q = practice 动作）之后同一行要跟着改成新建筑：引导第⑨步就靠这句把玩家带到药庐。
+    assert_str(
+        &mut runtime,
+        "(function() require('systems.building').cycle_selected(); \
+           local line = require('ui.hud').feedback_line(); \
+           if line:find('建造%[药庐%]') then return '没换:' .. line end \
+           if not line:find('建造%[膳房%]') then return '换成什么:' .. line end \
+           return 'ok' end)()",
+        "ok",
+    )?;
+    lua(
+        &mut runtime,
+        "require('systems.building').set_selected('herb_hut')",
+    )?;
+    // 盖住自己不许建：footprint 落上去会被 `apply_terrain` 打成 solid，等于把玩家砌进墙里
+    // （引擎没有脱困逻辑）。实测存档里玩家坐标正落在自己建出的畜棚 3×2 格中心。
+    // 玩家此刻在合法锚点下方一格（见 M18-02h 的 teleport），那一格就是锚点格本身。
+    assert_str(
+        &mut runtime,
+        "(function() local b = require('systems.building'); \
+           local pos = transform.get(require('player.player').ensure()); \
+           local c = grid.world_to_cell(pos.x, pos.y, 32); \
+           local ok, conf = b.can_place('herb_hut', c[1], c[2]); \
+           if ok then return 'still_ok' end \
+           for _, e in ipairs(conf) do \
+             if e.x == c[1] and e.y == c[2] and e.reason == 'player_here' then return 'ok' end end \
+           return 'reason:' .. tostring(conf[1] and conf[1].reason) .. '@' \
+             .. tostring(conf[1] and conf[1].x) .. ',' .. tostring(conf[1] and conf[1].y) end)()",
+        "ok",
+    )?;
+    assert_str(
+        &mut runtime,
+        "(function() local b = require('systems.building'); \
+           local pos = transform.get(require('player.player').ensure()); \
+           local c = grid.world_to_cell(pos.x, pos.y, 32); \
+           return tostring((b.place('herb_hut', c[1], c[2]))) end)()",
+        "false",
+    )?;
+    // 中文反馈：新冲突键不能把英文原值摆给玩家（与 M26 同一口径）。
+    assert_str(
+        &mut runtime,
+        "require('ui.hud').feedback('player_here')",
+        "自己站在这一格",
+    )?;
+    press(
+        &mut runtime,
+        KeyCode::from_char('b').expect("QWERTY 字符必须有对应物理键"),
+    )?;
+
     banner("M18-02i 纯数据扩展：运行期新增建筑 + 配方，无需改 Rust 核心");
     lua(
         &mut runtime,

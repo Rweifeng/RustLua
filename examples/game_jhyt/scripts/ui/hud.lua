@@ -200,6 +200,7 @@ local ACTION_TEXT = {
   -- 但单独出现时也要有中文，否则诊断输出里会露出英文键。
   farm_plot = "已有农田",
   building = "已有建筑",
+  player_here = "自己站在这一格",
   ground = "地表不允许建造",
   solid = "已有阻挡",
   exit = "挡住出口",
@@ -258,6 +259,7 @@ local BUILD_REASON = {
   road = "压在道路上",
   farm_plot = "已有农田",
   building = "已有建筑",
+  player_here = "自己站在这一格",
   unknown_building = "未知建筑"
 }
 
@@ -356,6 +358,29 @@ function M.status_lines()
   }
 end
 
+-- 建造模式状态短语：`建造[药庐] 可放置 4 格` / `建造[畜棚] 占用冲突 已有建筑@x,y`。
+-- 两个消费者：`M.text()`（headless 断言读的单行摘要）和 `feedback_line()`（真正上屏的
+-- 提示行）。此前只有前者带这句，于是玩家开着建造模式在屏幕上**看不到自己选的是哪座
+-- 建筑**（`set_build_mode` 默认选中字典序第一座 = 畜棚），按 F 只会反复建出畜棚。
+local function build_verdict()
+  local building = require("systems.building")
+  local preview = building.preview(state.facing)
+  local def = preview.building and require("data.buildings").get(preview.building)
+  local cells = #preview.cells
+  local verdict
+  if not preview.building then
+    verdict = "未选建筑"
+  elseif preview.ok then
+    verdict = "可放置 " .. tostring(cells) .. " 格"
+  else
+    local first = preview.conflicts[1]
+    -- M26：冲突原因用中文（此前直接把 `solid`/`farm_plot` 这类英文键拼给玩家看）。
+    verdict = "占用冲突 " .. (first and (BUILD_REASON[first.reason] or first.reason) or "?")
+      .. (first and ("@" .. tostring(first.x) .. "," .. tostring(first.y)) or "")
+  end
+  return "建造[" .. tostring(def and def.name or "?") .. "] " .. verdict
+end
+
 -- 单行 HUD 文案（update() 返回值 / headless 断言用）。建造模式下追加
 -- footprint 预览：可放置 / 逐格冲突的首个原因（M18-02 验收项①的既有断言
 -- `input.update():match('building')` 依赖这里的 `building` 字面量）。
@@ -365,21 +390,7 @@ function M.text()
   local text = table.concat(lines, " · ")
   local building = require("systems.building")
   if building.build_mode() then
-    local preview = building.preview(state.facing)
-    local def = preview.building and require("data.buildings").get(preview.building)
-    local cells = #preview.cells
-    local verdict
-    if not preview.building then
-      verdict = "未选建筑"
-    elseif preview.ok then
-      verdict = "可放置 " .. tostring(cells) .. " 格"
-    else
-      local first = preview.conflicts[1]
-      -- M26：冲突原因用中文（此前直接把 `solid`/`farm_plot` 这类英文键拼给玩家看）。
-      verdict = "占用冲突 " .. (first and (BUILD_REASON[first.reason] or first.reason) or "?")
-        .. (first and ("@" .. tostring(first.x) .. "," .. tostring(first.y)) or "")
-    end
-    text = text .. " · 建造[" .. tostring(def and def.name or "?") .. "] " .. verdict
+    text = text .. " · " .. build_verdict()
   end
   return text
 end
@@ -450,10 +461,19 @@ function M.feedback(action)
   return UNKNOWN_LABEL .. value .. UNKNOWN_SUFFIX
 end
 
--- 提示区文案（左下一行）。
+-- 提示区文案（左下一行）。建造模式下**追加**（不是顶掉）当前选中的建筑与键位：
+-- 原有的 `build_blocked_*` 中文冲突原因要留给 `jhyt_m19_ui` 那类按子串的断言能读到。
 function M.feedback_line()
   local text = M.feedback(state.last_action)
-  if text == "" or text == "待机" or text == "移动" then
+  if text == "待机" or text == "移动" then
+    text = ""
+  end
+  local ok, building = pcall(require, "systems.building")
+  if ok and type(building) == "table" and building.build_mode() then
+    local hint = build_verdict() .. "（Q 换建筑 · F 放置）"
+    text = text == "" and hint or (text .. " · " .. hint)
+  end
+  if text == "" then
     return ""
   end
   return "› " .. text
