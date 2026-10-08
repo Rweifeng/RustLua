@@ -5,6 +5,81 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 中文终于不是压在像素美术上的平滑字：Fusion Pixel 点阵接入，顺带修掉一道"搬完家就变瞎"的排版门（M72-03）
+
+- **症状（`docs/71` 第 3 项，观感收益最大的一条）**：`project.toml` 写的是
+  `text_render_mode = "vector"` + `NotoSansSC-VF.ttf`，中文走 `ab_glyph`→MSDF，一律带抗锯齿灰边；
+  同一屏的地表是硬像素，文字却是软的，两边一对照就"像 demo"。引擎当时只有 `auto/vector/sdf` 三档，
+  **没有"外部位图字体"这条路**——着色器里那条硬阈值档（`shader.rs` 的 `sdf==2` + Nearest 采样）
+  今天只服务内置 ASCII 5×7。
+- **字体入库（授权有一处必须纠正的错）**：缝合像素字体 Fusion Pixel **12px monospaced zh-Hans**，
+  release tag `2026.09.25`。表结构核验（纯 stdlib 读 sfnt 目录）：`glyf` 有 / `CFF ` 无、
+  `unitsPerEm=1200`（12px 网格 = 100 units 一格）、无 `EBDT/EBLC` 位图表、无 `fvar/gvar`、
+  `fsType=4`（允许嵌入+子集化）、advance 只有 600/1200 两档（半角/全角，PUA 的 3000 那 4 个字形
+  工程取不到）。⚠ **不是 MIT**：GitHub API 的 `license.spdx_id=MIT` 说的是**源码仓库**，
+  发布包内附的是 `OFL.txt`，TTF 的 nameID 13/14 自证 **SIL Open Font License 1.1**；
+  上游版权行**没有** Reserved Font Name，所以子集化后改名不受条款 3 约束，而衍生品必须继续 OFL-1.1。
+  台账与 `docs/71` 已按 OFL-1.1 回写，许可证正文 + 核验记录随字体入库
+  （`examples/game_jhyt/assets/fonts/LICENSE-FusionPixel.txt`，条款 2 要求每份副本带着）。
+- **体积**：子集 597,932 B（上游全量 7,040,712 B / 原用的 Noto 17,773,244 B = **1/29.7**），
+  `jhyt_m72_pixel_font` ④ 的实测读数：工程用到的字符 **1,605 个**（`char_collect` 侧计数 1,606 个）、
+  缺字 0、空字模 0。复现：
+  `cargo run -q -p engine --example subset_project_font -- examples/game_jhyt --source engine/crates/editor/fonts/FusionPixel-12px-Monospaced-zhHans.ttf`
+  （按当前 `char_collect` 收字重裁并**原地覆盖** `project.toml` 的 `font =`；`--source` 必须给全量字体，
+  给成目标本身会直接拒——子集不可逆）。
+  **上游全量那份 7 MB 不入库**（仓里已有一份 17.7 MB 的 Noto 做对照，再加一份
+  纯子集源不值）：`jhyt_m72_pixel_font` 需要它时**报错并打印取回命令**，不静默跳过。
+- **点阵身份判定按"栅格化覆盖率恰好二值"，不按轮廓坐标 GCD**：plan 原本想用 GCD（更省），
+  实测**判据失效**——470 个字形里 429 个 GCD=100，另有 35 个带非整数坐标、6 个落在 50/25/10/2 的
+  更细网格上，整体 GCD 被拉到 1。现由 `rustlua-render/src/font.rs::detect_pixel_size` 栅格两档探针
+  （设计像素与 `RASTER_SCALE/2`，尺度无关）判身份，命中即把 `raster_scale` 从 96 改成设计像素高度
+  （12），布局据此算 `tex_scale`。写死 96 的表现是"点阵显示成 8 倍大"。
+- **两条只有真跑一帧才暴露的洞**：
+  ① `mesh_ui.rs` 的 UI 文字通道按 `forced_vector` 无条件走矢量档——像素字被矢量重采样，硬边又糊回去；
+  现加 `is_pixel_font` 挡板（`use_vector &&` 那条）。这条是单测逼出来的：断言"UI 文字段的四边形
+  顶点总数"时先失败在 **510 顶点**（预设骨架也在这段）而不是预期的 24，说明探针根本没隔离到文字；
+  收窄到 24 顶点后，同一测在旧实现下红、新实现下绿（`pixel_font_stays_out_of_the_vector_channel_even_in_forced_vector_mode`）。
+  ② 整数吸附必须**逐边独立**取整：`x0=round(x+s0)`、`x1=round(x+s1)` 各自吸附，
+  四边角全整数 ⇒ 每个 texel 恰好被一个设备像素采到。
+- **验收门**：`jhyt_m72_pixel_font`（已登记进 `scripts/verify.ps1`）
+  ① 字体身份（子集与全量同判 12px、Noto 判不出来）② 真跑一帧走 `sdf=2` 阈值档：85 个 UI 字形四边形
+  亮 texel=3111 / 全暗=4966 / **灰阶=0**，反面对照同一批字在 Noto/MSDF 档灰阶成片
+  （'山' 3603 个灰阶 texel vs 点阵档 0）③ 1:1 覆盖：12px 下逐 texel 采样次数恒为 1，
+  把 0..1 的分数偏移全扫一遍只有 0 能全 1 ④ 缺字：用到的 1,605 字逐字断言覆盖且有点阵，
+  🙂 判为缺字并仍画得出 39 个亮 texel 的占位方框 ⑤ 预算：全部工程字一次性预热 0.01s
+  （两次跑 0.01/0.02s，量级远小于"首帧卡顿"这条线）、图集 1024×1024，
+  点阵汉字单元 11×11 texel（同字 MSDF 档 75×87 = 54 倍面积）。
+  复现：`cargo run -q -p game --example jhyt_m72_pixel_font`
+- **顺手关掉另一条已经瞎掉的门（`jhyt_m30_cjk_text`）**：症状是"帮助页小标题 12px，want 18"。
+  根因不是字号，是**载体搬家**：M66/B3 把暂停菜单从动态层（`ui_text.draw*`）搬进实体层
+  （`.prefab` + `prefab.set_text`）之后，这道门读的 `ui.text_get(...)` 只剩 `ui.hide` 留下的
+  **默认值占位**（12px、`visible=false` 且永远如此），另一条 `hud:tutorial` 那个 id 更是早已不存在
+  ——断言在跑，但量的不是画面。修法是**一份登记表两种载体**：新增 `ui_text.record(owner,id,size,budget,text)`
+  （只登记宽度契约、不产生绘制调用），面板搬进预设后仍然按迁移前那批预算被量宽；门的读回改走实体层
+  （`entity.find` 换 `EntityId` → `UiText` 组件拿文字/字号，`prefab_ui_nodes` 是否含该键 = 这一帧画不画）。
+  读数变化：量宽条数 `pse` 由 7 回到 **16**、帮助页 **33** 条此前**完全量不到**；
+  `场景/预设 Text 168 个最小 14px`、`Lua 登记 28 处最小 11px`。
+  ⑤ 的字号扫描同时覆盖两种载体（`draw*` 字号在第 5 实参、`record` 在第 3），按**整段函数名**匹配——
+  `ui_text.recorded()`（登记表访问器）含 `record` 前缀，按前缀匹配会把它当成一处登记调用并报解析失败；
+  报错现在带 `文件:行号`。M71 退役 JSON 预设层之后，⑤ 的数据侧那道不再要求"至少一个 text 节点"
+  （那是要求一具尸体呼吸），改判"登记数与节点数不能一侧非 0"。
+- **五处反面对照（都是实测，不是推理）**：① 把 `pause_menu.lua` 里一条 `ui_text.record` 注释掉 ⇒
+  `只扫到 27 个 ui_text 登记调用（draw*/record，≥28）`；② 往退役的 `ui.prefab.NAMES` 里塞一份无 text
+  节点的预设 ⇒ `UI 预设登记了 1 份却一个 text 节点都没扫到`；③ 把预设里一条 `Text` 的 `font_size`
+  改成 10.00 ⇒ `场景/预设 Text 存在 10px 字号（下限 11px）`；④ 把 `PseHRow1` 改成 16.00 ⇒
+  `PseHRow1 字号 = 16，want 18`（证明 ① 读的是真组件不是占位）；⑤ 把换页的
+  `prefab.set_visible(handle, root, key == page)` 改成恒 `true` ⇒
+  `帮助页打开时主菜单的行还在画：两页文字重影`。
+- **未验证 / 已知红（都写明复现口径）**：非整数倍字号（14/18/22px 相对 12px 设计像素）下
+  85 个四边形里 **80 个**不在 1:1 档，点阵被重排——归 M72-10「全 UI 换像素字」一并解决；
+  HUD 在 M70 搬进预设时没补 `ui_text.record`，那批文案今天仍量不到，
+  所以 `MIN_REGISTERED_TEXT_SITES` 只能从 30 降到 28（补齐后**上调**，不许留在这个数）；
+  `jhyt_m31_pc_release` 红在 `release layout ... must be detected as packaged`，原因是
+  `examples/game_jhyt/builds/pc` 是**加 `release = true` 之前**打的旧包（该目录 gitignore，不入库），
+  复跑 `powershell -File scripts/package.ps1 -Platform pc` 即消——归 M72-12 的打包/目验一轮做，
+  本轮不重打（`scripts/package.ps1` 此刻被 M73-00 改着）；三宿主目验按桌面形态与两个 web 形态的
+  开发运行时完成，**微信真机与正式包未验**。
+
 ## Unreleased — tilemap 只能寻址 6 列 1 行：图集寻址、`.scene` 编码迁移与三宿主解算对齐（M72-01）
 
 - **症状**：M72 第 2 轮美术照搬星露谷的图块规范画完，塞进游戏仍像 demo。根因不在画笔：
