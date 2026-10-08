@@ -3,16 +3,20 @@
 
 用法：工程根目录 python tools/gen_manor_scene.py
 
-美术：地表用 tools/gen_manor_art.py 产出的 6 列像素 tileset，
-建筑/道具用同工具产出的独立 sprite（引擎 sprite 不能选 UV 区域，所以一件一张图）。
-改布局改本文件，改画面改 gen_manor_art.py，两边都跑一次即可复现。
+美术：地表图集由 `tools/gen_terrain_tiles.py` 产出（12 列 × 9 行，逻辑瓦 + autotile），
+农田/湿度两张仍是 `gen_manor_art.py` 的 6 列 tileset；建筑/道具用同工具产出的独立 sprite
+（引擎 sprite 不能选 UV 区域，所以一件一张图）。改布局改本文件，改画面改上面两个工具。
 
-引擎 Tilemap 组件约定（scene_version=2，见 engine core/tilemap.rs）：
-  tile_size=WxH;width=W;height=H;texture=PATH;tiles=<row-major 0..6>;solid=<row-major 0/1>
-  * tile 值 0 = 空，1..6 = tileset 第 N 列（引擎 TILE_PALETTE 写死 6 列，不能加第 7 列）；
-  * UV-U = (N-1)/6..N/6，UV-V 恒为整幅 0..1 → tileset 必须正好 6 列宽、高度 32；
-  * 单格 32 世界单位，y 朝上；索引 index = y*width+x（row-major，y 为行、row 0 在最底）。
-列映射（与 farm.lua / gen_manor_art.py 一致，**不可随意改**）：
+引擎 Tilemap 组件约定（scene_version=2，见 engine crates/rustlua-ecs/src/tilemap.rs）：
+  tile_size=WxH;width=W;height=H;texture=PATH;tiles_format=1;atlas_cols=N;atlas_rows=M;
+  tiles=<逗号分隔的图集索引，row-major，row 0 在最底>;solid=<row-major 0/1>
+  开逻辑瓦时再追加 `tile_kinds=K;variant_count=1;autotile=1`（+ 稀疏 `tints`/`tints_rgb`）。
+  * `tiles_format=0`（旧编码）是一格一个 ASCII 数字、图集固定 6 列且 V 方向整幅拉伸——
+    M72-01 已经把它换掉，因为 6 列寻址不到多行图集，也表达不了"一格 = 一种材质"；
+  * 地表层现在存的是 **kind id**（1..6），运行期由 `Tilemap::resolve_atlas_index` 按
+    4-bit 邻居掩码解成图集条目（位序 bit0=y-1、bit1=x+1、bit2=y+1、bit3=x-1）；
+  * 单格 32 世界单位，y 朝上；索引 index = y*width+x。
+列映射（与 farm.lua / gen_terrain_tiles.py 的 terrain_ramp.json 一致，**不可随意改**）：
   manor_ground：1=草地 2=夯土 3=石板路 4=院墙 5=青瓦 6=水
   manor_farm：  1=已耕 2=已耕+浇水 3=苗期 4=生长期 5=成熟 6=稻茬(保留)
   manor_farm_moist（第三层 FarmMoist，画在 FarmGrid 之上、只占第 1 列）：1=当日已浇
@@ -44,6 +48,10 @@ from character_art import player_art  # noqa: E402  主角形象（与 manifest 
 # M32：`Transform` 的统一形态序列化器（场景数据门只认这一种写法）。
 from pixel_kit import transform_line as spawn_transform  # noqa: E402
 from pixel_kit import camera_line  # noqa: E402  场景 2D 相机（取景锁在地图内）
+# M72-04：地表是逻辑瓦 + autotile + tint，条目算术/串格式/抖动/撒布全走公共层，
+# 与 `set_terrain_autotile.py`（就地改盘上场景）共用同一份实现。
+import terrain_kit as tk  # noqa: E402
+from set_terrain_autotile import freeze_cells, jitter, scatter_tints  # noqa: E402
 
 # 地图尺寸（maps.lua 的 spawn/exit 边界校验按 40x23 处理，不要改）。
 # 23 行是为横屏 1280×720 设计视口定的：40×22 = 1280×704 比屏幕矮 16 像素，
@@ -59,6 +67,8 @@ FARM_TEXTURE = "assets/art/tilesets/manor/manor_farm.png"
 # 单开一层而不是给 manor_farm 加"湿版"列，原因见 gen_manor_art.py 的 farm_moist_mark。
 MOIST_TEXTURE = "assets/art/tilesets/manor/manor_farm_moist.png"
 TILE = 32
+# 农田层与湿度层仍是"6 列 × 1 行"的老图集（M72-04 只重做地表；农田归 M72-08）。
+FARM_ATLAS_COLS, FARM_ATLAS_ROWS = 6, 1
 
 # ---- 分区 ----
 HOUSE = {"x0": 2, "x1": 8, "y0": 5, "y1": 11}          # 正房（solid）
@@ -239,7 +249,6 @@ def sprite_line(entity_id, texture, width, height, layer, order):
 
 
 def build_scene(ground, solid):
-    tile_str = row_major(ground)
     solid_str = row_major(solid)
     lines = []
     lines.append("scene_version=2")
@@ -253,12 +262,22 @@ def build_scene(ground, solid):
     # 由 `ui/layout_check.lua` 在 `--check` 与启动期守住）。
     lines.append("meta\tui_reference_height\t720")
     lines.append("meta\tui_reference_width\t1280")
-    # 1 地表
+    # 1 地表：逻辑瓦 + autotile + per-tile tint（口径见 `terrain_kit.py` 与 M72-04）。
+    # 与 `set_terrain_autotile.py` 用同一套抖动与撒布，所以"重跑生成器"和"就地重排盘上
+    # 场景"得到同一个字节序列——这两件事不一致过一次，M72-01 迁编码时才撞出对拍假差异。
+    table = tk.load_ramp()
+    cells = [ground[y][x] for y in range(H) for x in range(W)]
+    cells, _ = jitter(cells, solid_str, W, H,
+                      freeze_cells([(FARM["x0"], FARM["y0"], FARM["x1"], FARM["y1"])], W, H))
+    tints = scatter_tints(W, H, [tint_id for tint_id, _ in tk.ground_tints(table)])
     lines.append("entity\t1\tGroundMap")
     lines.append(transform_line(1, 0.0, 0.0))
     lines.append(
-        f"component\t1\tTilemap\ttile_size=32x32;width={W};height={H};texture={GROUND_TEXTURE}"
-        f";tiles={tile_str};solid={solid_str}"
+        "component\t1\tTilemap\t"
+        + tk.tilemap_component(TILE, W, H, GROUND_TEXTURE, cells, solid_str,
+                               table["cols"], table["rows"],
+                               tile_kinds=table["kind_count"], tints=tints,
+                               tints_rgb=tk.tints_rgb_string(table))
     )
     lines.append("entity_meta\t1\trole\tground_tilemap")
     # 2 FarmGrid 覆盖耕地 overlay（初始全空，运行期 farm.lua 写 tile/meta）
@@ -266,8 +285,9 @@ def build_scene(ground, solid):
     lines.append("entity\t2\tFarmGrid")
     lines.append(transform_line(2, 0.0, 0.0))
     lines.append(
-        f"component\t2\tTilemap\ttile_size=32x32;width={W};height={H};texture={FARM_TEXTURE}"
-        f";tiles={empty};solid={empty}"
+        "component\t2\tTilemap\t"
+        + tk.tilemap_component(TILE, W, H, FARM_TEXTURE, [0] * (W * H), empty,
+                               FARM_ATLAS_COLS, FARM_ATLAS_ROWS)
     )
     lines.append("entity_meta\t2\trole\tfarm_tilemap")
     # 3..N 建筑与道具：pivot=(0,0) → transform 即贴图左下角世界坐标
@@ -306,8 +326,11 @@ def build_scene(ground, solid):
     title_id = next_id
     lines.append(f"entity\t{title_id}\tHudTitle")
     lines.append(
+        # 这两行 UiLayout 的数值以**盘上场景为准**（UI 那几轮直接在 .scene 上收过尺寸）。
+        # 生成器必须跟着改，否则重跑一次就把 HUD 弹回旧版——M72-04 的对拍就是靠
+        # "生成器输出 == 盘上场景"这条成立的。
         f"component\t{title_id}\tUiLayout\tanchors=0.0000,0.0000,0.0000,0.0000;"
-        "offsets=24.00,20.00,672.00,44.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000"
+        "offsets=24.00,12.00,500.00,36.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000"
     )
     lines.append(
         f"component\t{title_id}\tText\ttext=山庄 · 药田垂直切片;font_size=18.00;color=0.949,0.918,0.847"
@@ -317,10 +340,10 @@ def build_scene(ground, solid):
     hint_id = next_id + 1
     lines.append(f"entity\t{hint_id}\tHudHint")
     lines.append(
-        # 地图自带操作提示放在**地图标题正下方**（与其它地图同一套坐标）；M32 竖版：
-        # 宽度收到 672（720 - 2×24），底部信息区整块留给 HUD 的动态反馈/目标/键位行。
+        # 地图自带操作提示放在**地图标题正下方**（与其它地图同一套坐标）；数值以盘上场景
+        # 为准（见上面 HudTitle 那条注释），底部信息区整块留给 HUD 的动态反馈/键位行。
         f"component\t{hint_id}\tUiLayout\tanchors=0.0000,0.0000,0.0000,0.0000;"
-        "offsets=24.00,50.00,672.00,72.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000"
+        "offsets=24.00,40.00,560.00,64.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000"
     )
     lines.append(
         f"component\t{hint_id}\tText\ttext=WASD 移动 · E 朝面前格劳作 · T 睡觉到清晨 · Q 吐纳练功 · J 普攻 · K 武学"
@@ -343,8 +366,9 @@ def build_scene(ground, solid):
     lines.append(f"entity\t{moist_id}\tFarmMoist")
     lines.append(transform_line(moist_id, 0.0, 0.0))
     lines.append(
-        f"component\t{moist_id}\tTilemap\ttile_size=32x32;width={W};height={H};texture={MOIST_TEXTURE}"
-        f";tiles={empty};solid={empty}"
+        f"component\t{moist_id}\tTilemap\t"
+        + tk.tilemap_component(TILE, W, H, MOIST_TEXTURE, [0] * (W * H), empty,
+                               FARM_ATLAS_COLS, FARM_ATLAS_ROWS)
     )
     lines.append(f"entity_meta\t{moist_id}\trole\tfarm_moist_tilemap")
     return "\n".join(lines) + "\n"

@@ -1,35 +1,39 @@
 # -*- coding: utf-8 -*-
-"""《江湖有田》山庄主场景美术生成：地表 tileset + 建筑/道具 sprite。
+"""《江湖有田》山庄主场景美术生成：农田/湿度 overlay + 建筑/道具 sprite。
 
 用法（工程根目录 examples/game_jhyt 下运行）：
 
-    python tools/gen_manor_art.py            # 生成全部（tileset + 建筑 + 预览）
+    python tools/gen_manor_art.py            # 生成全部（overlay + 建筑 + 预览）
     python tools/gen_manor_art.py --check    # 只校验已生成资源
 
 产出：
 
-    assets/art/tilesets/manor/manor_ground.png   6 列 × 32px（地表，1..6 列语义见下）
     assets/art/tilesets/manor/manor_farm.png     6 列 × 32px（农田 overlay）
     assets/art/tilesets/manor/manor_farm_moist.png 6 列 × 32px（湿度层，仅第 1 列有内容）
-    assets/art/tilesets/manor/_preview.png       两套 tileset 放大预览（带标签）
+    assets/art/tilesets/manor/_preview.png       两张 overlay 放大预览（带标签）
     assets/art/buildings/manor_house.png         正房 224×224（7×7 格）
     assets/art/buildings/manor_shed.png          柴房 160×128（5×4 格）
     assets/art/buildings/manor_gate.png          南门 96×96（3×3 格）
     assets/art/buildings/_preview.png            建筑/道具放大预览（带标签）
     assets/art/props/manor_*.png                 水井/水缸/草堆/晒谷架/木牌/竹篱/竹丛/老树
 
-引擎硬约束（写死在本工具里，改前先改引擎）：
+**地表不在这里**：`manor_ground.png`（12 列 × 9 行的逻辑瓦 + 边缘过渡图集）自 M72-04 起
+由 `tools/gen_terrain_tiles.py` 产出，色阶口径是 `tools/terrain_ramp.json`。本工具只从同一
+张表取色画建筑与道具，所以两边永远是一个世界。
 
-  * `core/tilemap.rs` 的 `TILE_PALETTE` 只有 **6 项**：tile 值 1..6 对应 tileset 的第 1..6 列，
-    UV-U = (n-1)/6..n/6，UV-V 恒为 0..1。**所以 tileset 必须正好 6 列、高度 32**，
-    第 7 列永远采不到，高度不是 32 会被拉伸。
+引擎约束（改前先对齐 `crates/rustlua-ecs/src/tilemap.rs`）：
+
+  * Tilemap 按组件里声明的 `atlas_cols/atlas_rows` 切 UV（`tiles_format=1`），贴图尺寸必须
+    正好等于 `cols×rows×tile`。本工具的 overlay 是恒等寻址（一格一列、无过渡块），所以
+    仍是 6 列 × 1 行；改列数要连 `manor.scene` 里那两行一起改。
+    （旧口径"`TILE_PALETTE` 写死 6 列、V 方向整幅拉伸"已在 M72-01 废掉。）
   * `scripts/systems/farm.lua` 判定"可开垦"用的是 **GroundMap tile == 2（夯土）**，
     且 overlay 列语义固定：1=已垦干土 2=已垦湿土 3=苗期 4=生长期 5=成熟。
     这两条不能改，否则农田玩法直接坏掉。
   * 建筑/道具的碰撞来自 GroundMap 的 solid 位（不是 sprite），
     所以"看起来实心"的 sprite 必须在 scene 的 solid 串里标 1。
 
-依赖：Python 3 标准库 + 同目录 pixel_kit.py。
+依赖：Python 3 标准库 + 同目录 pixel_kit.py + terrain_kit.py（色阶表）。
 """
 
 import argparse
@@ -48,53 +52,72 @@ from pixel_kit import (  # noqa: E402  (path 插入后才能 import)
     text_width,
 )
 from cjk_text import draw_plaque, prewarm  # noqa: E402  中文匾额（GDI+ 栅格化）
+import terrain_kit as tk  # noqa: E402  M72-04 色阶表：地表五族 + 通用四色的唯一口径
 
 TILE = 32
-TILE_COLUMNS = 6  # 引擎 TILE_PALETTE 长度，不可改
+# 农田/湿度两张 tileset 的列数。它现在只是**本工具与场景组件的约定**：引擎按组件里声明的
+# `atlas_cols/atlas_rows` 切 UV（M72-01 起），所以改这个数必须同时改 `manor.scene` 里那两行。
+TILE_COLUMNS = 6
 
 # ---------------------------------------------------------------------------
-# 色板（与 docs/35 的基础色同源，白天山庄色调）
+# 色板（地表五族 + 通用四色从 `terrain_ramp.json` 取，其余是本工具自有的装饰色）
 # ---------------------------------------------------------------------------
 
-INK = rgb("#1F2328")          # 统一描边
-PAPER = rgb("#F2EAD8")        # paper/50
-PAPER_DIM = rgb("#D8CDB2")    # paper/200
-GOLD = rgb("#C9A05A")         # gold/500
-GOLD_LIGHT = rgb("#E4C078")   # gold/300
-CINNABAR = rgb("#C3452F")     # cinnabar/500
+# M72-04 把色阶定成了机器可读的一张表：`tools/terrain_ramp.json`。凡是被地表图集用到的
+# 颜色，一律从表里取，**生成器里不再现写 hex**——否则改一档明度要同时改两处，迟早分叉。
+# 索引 = 该族"深→浅"的第几档；"深→浅"本身由 `gen_terrain_tiles.check()` 断言单调。
+RAMP = tk.load_ramp()
 
-GRASS = rgb("#5E7C46")
-GRASS_DARK = rgb("#4A6636")
-GRASS_LIGHT = rgb("#6F8F52")
-GRASS_HI = rgb("#7FA35E")
 
-DIRT = rgb("#7C5C3E")
-DIRT_DARK = rgb("#63482F")
-DIRT_LIGHT = rgb("#8F6E4A")
-DIRT_WET = rgb("#4E3A26")
+def ramp(family, index):
+    """色阶表里某材质族的一档（0=最深）。表里没有这一族就直接报错，不兜底。"""
+    return rgb(tk.family_hexes(RAMP, family)[index])
 
-STONE = rgb("#8E8B80")
-STONE_LIGHT = rgb("#A5A197")
-STONE_DARK = rgb("#6E6B62")
-STONE_MORTAR = rgb("#5C5A52")
+
+def utility(name):
+    """色阶表 `utility` 里的通用色（墨/纸/金/木）。"""
+    return rgb(RAMP["utility"][name])
+
+
+INK = utility("ink")            # 统一描边
+PAPER = utility("paper")        # paper/50
+PAPER_DIM = rgb("#D8CDB2")      # paper/200
+GOLD = utility("gold")          # gold/500
+GOLD_LIGHT = rgb("#E4C078")     # gold/300
+CINNABAR = rgb("#C3452F")       # cinnabar/500
+
+GRASS = ramp("grass", 1)
+GRASS_DARK = ramp("grass", 0)
+GRASS_LIGHT = ramp("grass", 2)
+GRASS_HI = ramp("grass", 3)
+
+DIRT = ramp("dirt", 2)
+DIRT_DARK = ramp("dirt", 1)
+DIRT_LIGHT = ramp("dirt", 3)
+DIRT_WET = ramp("dirt", 0)
+
+STONE = ramp("stone", 2)
+STONE_LIGHT = ramp("stone", 3)
+STONE_DARK = ramp("stone", 1)
+STONE_MORTAR = ramp("stone", 0)
 
 PLASTER = rgb("#C9C1B0")
 PLASTER_DARK = rgb("#AFA795")
 
-TILE_ROOF = rgb("#3E4A52")
-TILE_ROOF_LIGHT = rgb("#55626B")
-TILE_ROOF_DARK = rgb("#2C363C")
-TILE_RIDGE = rgb("#4A5560")
+TILE_ROOF = ramp("roof", 1)
+TILE_ROOF_LIGHT = ramp("roof", 3)
+TILE_ROOF_DARK = ramp("roof", 0)
+TILE_RIDGE = ramp("roof", 2)
 
 WOOD = rgb("#8A6A46")
 WOOD_LIGHT = rgb("#A6855C")
 WOOD_MID = rgb("#6B4F3A")
-WOOD_DARK = rgb("#4A3628")
+WOOD_DARK = utility("wood")
 
-WATER_DEEP = rgb("#2F4E6B")
-WATER = rgb("#3E6485")
-WATER_LIGHT = rgb("#5D82A0")
-WATER_HI = rgb("#7FA3D4")
+WATER_DEEP = ramp("water", 0)
+WATER = ramp("water", 1)
+WATER_LIGHT = ramp("water", 2)
+WATER_HI = ramp("water", 3)
 
 BAMBOO = rgb("#789262")
 BAMBOO_LIGHT = rgb("#A9C28F")
@@ -179,137 +202,12 @@ def tiled_roof(canvas, polygon_rows, column=16):
 
 
 # ---------------------------------------------------------------------------
-# 地表 tileset（6 列 × 32px）
+# 农田 overlay tileset（6 列 × 32px）
+#
+# 地表五族（草/土/石/墙/瓦/水）不在这个文件里：M72-04 起由 `gen_terrain_tiles.py` 按
+# `terrain_ramp.json` 画成 12 列 × 9 行的逻辑瓦图集（含 16 格边缘过渡）。本工具只留农田
+# 与湿度两张 overlay——它们是恒等寻址（一格一列，没有过渡块），所以列数仍是 6。
 # ---------------------------------------------------------------------------
-
-
-def tile_grass(seed=11):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, GRASS)
-    rnd = hash_stream(seed)
-    for _ in range(26):
-        cv.set(rnd(TILE), rnd(TILE), GRASS_DARK)
-    for _ in range(18):
-        cv.set(rnd(TILE), rnd(TILE), GRASS_LIGHT)
-    # 草簇：3px 的 v 形
-    for _ in range(4):
-        x = 3 + rnd(TILE - 8)
-        y = 3 + rnd(TILE - 8)
-        cv.set(x, y, GRASS_HI)
-        cv.set(x - 1, y + 1, GRASS_LIGHT)
-        cv.set(x + 1, y + 1, GRASS_LIGHT)
-    # 零星小花（米白/旧金），低频避免重复时扎眼
-    if rnd(2) == 0:
-        x = 6 + rnd(TILE - 12)
-        y = 6 + rnd(TILE - 12)
-        cv.set(x, y, PAPER)
-        cv.set(x + 1, y, GOLD_LIGHT)
-    return cv
-
-
-def tile_dirt(seed=22):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, DIRT)
-    rnd = hash_stream(seed)
-    for _ in range(30):
-        cv.set(rnd(TILE), rnd(TILE), DIRT_DARK)
-    for _ in range(20):
-        cv.set(rnd(TILE), rnd(TILE), DIRT_LIGHT)
-    # 土块：2×1 暗底 + 亮顶（大块夯土整片重复时要靠这个撑住质感）
-    for _ in range(9):
-        x = 2 + rnd(TILE - 6)
-        y = 2 + rnd(TILE - 6)
-        cv.rect(x, y, x + 2, y + 1, DIRT_DARK)
-        cv.hline(x, x + 2, y - 1, DIRT_LIGHT)
-    for _ in range(6):
-        x = 1 + rnd(TILE - 3)
-        y = 1 + rnd(TILE - 3)
-        cv.set(x, y, STONE_MORTAR)
-        cv.set(x + 1, y, DIRT_LIGHT)
-    return cv
-
-
-def tile_stone(seed=33):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, STONE)
-    tones = [STONE, STONE_LIGHT, STONE, shade(STONE, 0.94)]
-    index = 0
-    for sy in (0, 16):
-        for sx in (0, 16):
-            cv.rect(sx + 1, sy + 1, sx + 14, sy + 14, tones[index % len(tones)])
-            index += 1
-    # 石板缝
-    cv.vline(0, 0, TILE - 1, STONE_MORTAR)
-    cv.vline(16, 0, TILE - 1, STONE_MORTAR)
-    cv.hline(0, TILE - 1, 0, STONE_MORTAR)
-    cv.hline(0, TILE - 1, 16, STONE_MORTAR)
-    rnd = hash_stream(seed)
-    for _ in range(16):
-        cv.set(rnd(TILE), rnd(TILE), STONE_DARK)
-    for _ in range(10):
-        cv.set(rnd(TILE), rnd(TILE), STONE_LIGHT)
-    return cv
-
-
-def tile_wall(seed=44):
-    """院墙：薄压顶瓦 + 错缝石砌墙身，方向通用（做地图包围边）。
-
-    早期版本用"白灰墙身 + 大压顶"，同一列逐格重复时会形成刺眼的横向亮带；
-    现在压顶只占 4px、墙身用错缝石砌 + 噪点，四个方向的边界都不会"闪条纹"。
-    """
-    cv = Canvas(TILE, TILE)
-    # 薄压顶
-    cv.rect(0, 0, TILE - 1, 1, shade(TILE_ROOF_DARK, 0.85))
-    cv.rect(0, 2, TILE - 1, 5, TILE_ROOF)
-    cv.hline(0, TILE - 1, 3, TILE_ROOF_LIGHT)
-    cv.hline(0, TILE - 1, 6, shade(TILE_ROOF_DARK, 0.9))
-    # 错缝石砌墙身
-    cv.rect(0, 7, TILE - 1, 27, STONE_DARK)
-    for y in (7, 15, 23):
-        cv.hline(0, TILE - 1, y, STONE_MORTAR)
-    for index, y in enumerate((8, 16, 24)):
-        offset = 0 if index % 2 == 0 else 8
-        for x in range(offset, TILE, 16):
-            cv.vline(x, y, min(y + 6, 27), STONE_MORTAR)
-    rnd = hash_stream(seed)
-    for _ in range(26):
-        cv.set(rnd(TILE), 8 + rnd(19), shade(STONE_DARK, 0.88))
-    for _ in range(14):
-        cv.set(rnd(TILE), 8 + rnd(19), STONE)
-    # 墙脚阴影
-    cv.rect(0, 28, TILE - 1, TILE - 1, shade(STONE_DARK, 0.72))
-    return cv
-
-
-def tile_roof(seed=55):
-    """青瓦屋面（第 5 列）：保留与 village 一致的"瓦顶"语义。"""
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, TILE_ROOF)
-    for x in range(0, TILE, 4):
-        cv.vline(x, 0, TILE - 1, TILE_ROOF_LIGHT)
-        cv.vline(x + 1, 0, TILE - 1, TILE_ROOF_DARK)
-    for y in (0, 15, 31):
-        cv.hline(0, TILE - 1, y, TILE_ROOF_DARK)
-    cv.hline(0, TILE - 1, 1, TILE_ROOF_LIGHT)
-    speckle(cv, 0, 0, TILE - 1, TILE - 1, shade(TILE_ROOF, 0.9), 20, seed)
-    return cv
-
-
-def tile_water(seed=66):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, WATER)
-    cv.hline(0, TILE - 1, 0, WATER_DEEP)
-    # 波纹：横向弧线 + 高光点
-    for y in (6, 15, 24):
-        for x in range(2, TILE - 2, 8):
-            cv.set(x, y, WATER_LIGHT)
-            cv.set(x + 1, y - 1, WATER_LIGHT)
-            cv.set(x + 2, y, WATER_LIGHT)
-            cv.set(x + 3, y + 1, WATER_HI)
-    rnd = hash_stream(seed)
-    for _ in range(14):
-        cv.set(rnd(TILE), 2 + rnd(TILE - 4), WATER_DEEP)
-    return cv
 
 
 def tile_farm(base, furrow, wet=False, seed=77):
@@ -425,12 +323,8 @@ def farm_moist_mark(seed=133):
 
 
 def farm_moist_tiles():
-    """湿度层 tileset：只有第 1 列有内容，其余 5 列全透明占位（列数必须是 6）。"""
+    """湿度层 tileset：只有第 1 列有内容，其余 5 列全透明占位（列数须与组件声明一致）。"""
     return [farm_moist_mark()] + [Canvas(TILE, TILE) for _ in range(TILE_COLUMNS - 1)]
-
-
-def ground_tiles():
-    return [tile_grass(), tile_dirt(), tile_stone(), tile_wall(), tile_roof(), tile_water()]
 
 
 def farm_tiles():
@@ -445,7 +339,7 @@ def farm_tiles():
 
 
 def pack_tileset(tiles):
-    assert len(tiles) == TILE_COLUMNS, "tileset 必须正好 6 列（引擎 TILE_PALETTE 长度）"
+    assert len(tiles) == TILE_COLUMNS, f"tileset 必须正好 {TILE_COLUMNS} 列"
     sheet = Canvas(TILE * TILE_COLUMNS, TILE)
     for index, tile in enumerate(tiles):
         sheet.blit(tile, index * TILE, 0)
@@ -755,21 +649,26 @@ def write_png(path, canvas):
         handle.write(canvas.to_png())
 
 
-def build_tiles_preview(ground, farm_tile_list, scale=4):
-    labels = ["GRASS", "DIRT", "STONE", "WALL", "ROOF", "WATER",
-              "TILLED", "WATERED", "SPROUT", "GROWING", "RIPE", "STUBBLE"]
+def build_tiles_preview(farm_tile_list, moist_tile_list, scale=4):
+    """两张 overlay 的放大预览：农田 6 列 + 湿度第 1 列。
+
+    地表不再出现在这里——它的预览是 `gen_terrain_tiles.py` 产的 `_ground_preview.png`，
+    那张带 16 格边缘过渡，按"6 列一行一瓦"的老排法已经画不下了。
+    """
+    labels = (["TILLED", "WATERED", "SPROUT", "GROWING", "RIPE", "STUBBLE"]
+              + ["MOIST-1"])
+    rows = list(enumerate(farm_tile_list)) + [(None, moist_tile_list[0])]
     tile = TILE * scale
     label_w = text_width("WATERED", 1) + 10
     width = label_w + tile + 8
     row_h = tile + 4
-    height = 20 + 12 * row_h + 8
+    height = 20 + len(rows) * row_h + 8
     cv = Canvas(width, height)
     cv.rect(0, 0, width - 1, height - 1, rgb("#14171A"))
-    draw_text(cv, 4, 4, "MANOR TILESETS 32PX X4", GOLD_LIGHT, 1)
-    for index in range(12):
-        y = 20 + index * row_h
-        draw_text(cv, 4, y + tile // 2 - 2, labels[index], BAMBOO_LIGHT, 1)
-        source = ground[index] if index < 6 else farm_tile_list[index - 6]
+    draw_text(cv, 4, 4, "MANOR OVERLAYS 32PX X4", GOLD_LIGHT, 1)
+    for row, (index, source) in enumerate(rows):
+        y = 20 + row * row_h
+        draw_text(cv, 4, y + tile // 2 - 2, labels[row], BAMBOO_LIGHT, 1)
         cv.rect(label_w - 1, y - 1, label_w + tile, y + tile, rgb("#262C33"))
         cv.blit(source.scaled(scale), label_w, y)
     return cv
@@ -807,15 +706,14 @@ def build_prop_preview(sprites, scale=2):
 def generate(quiet=False):
     # 中文招牌先批量栅格化（一次 PowerShell 调用，避免逐字调用）
     prewarm([("山庄", 12, "pixel", True), ("山庄", 13, "pixel", True), ("药田", 11, "pixel", True)])
-    ground = ground_tiles()
     farm_tile_list = farm_tiles()
-    ground_sheet = pack_tileset(ground)
+    moist_tile_list = farm_moist_tiles()
     farm_sheet = pack_tileset(farm_tile_list)
-    moist_sheet = pack_tileset(farm_moist_tiles())
-    write_png(os.path.join(TILE_DIR, "manor_ground.png"), ground_sheet)
+    moist_sheet = pack_tileset(moist_tile_list)
     write_png(os.path.join(TILE_DIR, "manor_farm.png"), farm_sheet)
     write_png(os.path.join(TILE_DIR, "manor_farm_moist.png"), moist_sheet)
-    write_png(os.path.join(TILE_DIR, "_preview.png"), build_tiles_preview(ground, farm_tile_list))
+    write_png(os.path.join(TILE_DIR, "_preview.png"),
+              build_tiles_preview(farm_tile_list, moist_tile_list))
 
     for name, sprite in buildings().items():
         write_png(os.path.join(BUILDING_DIR, f"manor_{name}.png"), sprite)
@@ -827,7 +725,6 @@ def generate(quiet=False):
     write_png(os.path.join(BUILDING_DIR, "_preview.png"), build_prop_preview(all_sprites))
 
     if not quiet:
-        print(f"tileset  manor_ground.png {ground_sheet.w}x{ground_sheet.h} (6 列)")
         print(f"tileset  manor_farm.png   {farm_sheet.w}x{farm_sheet.h} (6 列)")
         print(f"tileset  manor_farm_moist.png {moist_sheet.w}x{moist_sheet.h} (6 列，仅第 1 列有内容)")
         for name, sprite in sorted(all_sprites.items()):
@@ -840,7 +737,6 @@ def check():
 
     issues = []
     for path, want_w, want_h in (
-        (os.path.join(TILE_DIR, "manor_ground.png"), TILE * TILE_COLUMNS, TILE),
         (os.path.join(TILE_DIR, "manor_farm.png"), TILE * TILE_COLUMNS, TILE),
         (os.path.join(TILE_DIR, "manor_farm_moist.png"), TILE * TILE_COLUMNS, TILE),
     ):
@@ -849,7 +745,9 @@ def check():
             continue
         width, height, _, _ = decode_png(path)
         if (width, height) != (want_w, want_h):
-            issues.append(f"{path}: {width}x{height} != {want_w}x{want_h}（引擎要求正好 6 列 × 32px）")
+            # 尺寸必须等于"组件声明的 atlas_cols/atlas_rows × 32"，否则引擎按声明切 UV 会错位。
+            issues.append(f"{path}: {width}x{height} != {want_w}x{want_h}"
+                          f"（须与 manor.scene 里声明的 {TILE_COLUMNS} 列 × 1 行一致）")
     for name in buildings():
         path = os.path.join(BUILDING_DIR, f"manor_{name}.png")
         if not os.path.exists(path):

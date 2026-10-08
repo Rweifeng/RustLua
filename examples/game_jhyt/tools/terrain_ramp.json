@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "source": "docs/57-江湖有田-Style-Bible.md 1.1 锁定色板 + 1.2 色阶契约",
+  "comment": [
+    "地表图集唯一的取色来源：tools/gen_terrain_tiles.py 与验收门都读这张表，",
+    "生成器里不许再写 hex 字面量（M72-04 设计要点 2）。",
+    "levels 一律按 sRGB 相对亮度**递增**排列（深档=接触/缝隙 → 亮档=左上受光），",
+    "门按这个顺序复核亮度单调性；每族档数 >=3 是 M72-04 的色阶门判据。",
+    "utility 是跨族通用的墨/纸/金/木（金以外的 wood 取 57 1.1 的 wood/700，用来画土块里的枯枝），",
+    "允许出现在地表里但不计入材质族色阶档数。"
+  ],
+  "tile_px": 32,
+  "atlas": {
+    "cols": 12,
+    "rows": 9,
+    "comment": [
+      "条目寻址与引擎 `Tilemap::resolve_atlas_index` 同构（M72-02）：",
+      "kind 的满块瓦在 entry = 1 + (kind-1)（autotile 关掉时的恒等档，也是 arena 复用的那 6 格）；",
+      "kind 的 16 格过渡块在 entry = 1 + kinds + (kind-1)*16 + mask（variant_count=1）；",
+      "mask 位序 bit0=y-1(下沿) bit1=x+1(右沿) bit2=y+1(上沿) bit3=x-1(左沿)，按 index 命名不按方位。",
+      "6 kinds * (1 + 16) = 102 条，12*9=108 容得下，尾部 103..108 留全透明（越界不许画错格）。"
+    ]
+  },
+  "kinds": [
+    { "id": 1, "name": "grass", "family": "grass", "meaning": "草地（farm.lua 不可垦）" },
+    { "id": 2, "name": "dirt", "family": "dirt", "meaning": "夯土（farm.lua 用 tile==2 判可开垦，不可改）" },
+    { "id": 3, "name": "stone", "family": "stone", "meaning": "石板路（building.lua 用 tile==3 判道路）" },
+    { "id": 4, "name": "wall", "family": "stone", "meaning": "院墙（三段式，色取自石族 + 草族草帽顶）" },
+    { "id": 5, "name": "roof", "family": "roof", "meaning": "青瓦（manor 地表层不铺，保留 6 列语义）" },
+    { "id": 6, "name": "water", "family": "water", "meaning": "水（solid，池岸走过渡块）" }
+  ],
+  "families": {
+    "grass": ["#4A6636", "#5E7C46", "#6F8F52", "#7FA35E"],
+    "dirt": ["#4E3A26", "#63482F", "#7C5C3E", "#8F6E4A"],
+    "stone": ["#5C5A52", "#6E6B62", "#8E8B80", "#A5A197"],
+    "water": ["#2F4E6B", "#3E6485", "#5D82A0", "#7FA3D4"],
+    "roof": ["#2C363C", "#3E4A52", "#4A5560", "#55626B"],
+    "hedge": ["#004030", "#005030", "#1E5B38", "#2E6B45"]
+  },
+  "utility": {
+    "ink": "#1F2328",
+    "paper": "#F2EAD8",
+    "gold": "#C9A05A",
+    "wood": "#4A3628"
+  },
+  "ground_tints": [
+    {
+      "id": 1,
+      "name": "shaded",
+      "rgba": [0.96, 0.98, 1.0, 1.0],
+      "comment": "顶点色是乘法：这一档把整格往冷暗压 3-4%，读作地块的阴面。"
+    },
+    {
+      "id": 2,
+      "name": "sunlit",
+      "rgba": [1.03, 1.02, 0.99, 1.0],
+      "comment": "反向往暖亮抬 2-3%（通道会夹到 255），两档夹着白档就是 docs/53 §2 要的同族三档。"
+    }
+  ]
+}

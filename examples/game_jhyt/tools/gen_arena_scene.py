@@ -3,14 +3,18 @@
 
 用法：工程根目录 python tools/gen_arena_scene.py
 
-美术：地表复用山庄 6 列 tileset（`assets/art/tilesets/manor/manor_ground.png`，
-列语义与三场景共用：1=草地 2=夯土 3=石板路 4=院墙 5=青瓦 6=水），
+美术：地表复用山庄图集 `assets/art/tilesets/manor/manor_ground.png`（M72-04 起重做为
+12 列 × 9 行的逻辑瓦图集；本场景按**恒等寻址**只取六族满块档），
+列语义与三场景共用：1=草地 2=夯土 3=石板路 4=院墙 5=青瓦 6=水。
 建筑/道具复用山庄与云泽村的通用 sprite（引擎 sprite 不能选 UV 区域，一件一张图）。
-改布局改本文件，跑一次即可复现；画面想换再动 gen_manor_art.py。
+改布局改本文件，跑一次即可复现；画面想换再动 `gen_terrain_tiles.py`（地表）或
+`gen_manor_art.py`（建筑/道具）。
 
-引擎 Tilemap 约定（scene_version=2，见 engine core/tilemap.rs）：
-  tile_size=WxH;width=W;height=H;texture=PATH;tiles=<row-major 0..6>;solid=<row-major 0/1>
-  * tile 值 0 = 空，1..6 = tileset 第 N 列（引擎 TILE_PALETTE 写死 6 列）；
+引擎 Tilemap 约定（scene_version=2，见 engine crates/rustlua-ecs/src/tilemap.rs）：
+  tile_size=WxH;width=W;height=H;texture=PATH;tiles_format=1;atlas_cols=N;atlas_rows=M;
+  tiles=<逗号分隔的图集索引，row-major，row 0 在最底>;solid=<row-major 0/1>
+  * tile 值 0 = 空；不开 `tile_kinds/autotile` 时条目号就是图集索引（恒等寻址）；
+  * 贴图尺寸必须正好等于 `atlas_cols × atlas_rows × tile`，否则切 UV 错位；
   * 单格 32 世界单位，y 朝上，row 0 在最底。
 
 **战斗验收锚点（不可移动）**：headless 验收 `jhyt_m18_combat` 硬编码了
@@ -41,6 +45,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from character_art import player_art  # noqa: E402  主角形象（与 manifest 同源）
 from pixel_kit import camera_line  # noqa: E402  场景 2D 相机（取景锁在地图内）
+# M72-04：Tilemap 组件串的字段顺序/编码由 `terrain_kit` 单点产出，与山庄生成器同源。
+import terrain_kit as tk  # noqa: E402
 import re
 
 # 地图尺寸：与山庄/云泽村一致（40×23 = 1280×736，盖过横屏一屏 720；
@@ -52,6 +58,9 @@ TILE = 32
 GRASS, DIRT, STONE, WALL, ROOF, WATER = 1, 2, 3, 4, 5, 6
 
 GROUND_TEXTURE = "assets/art/tilesets/manor/manor_ground.png"
+# 图集行列：与 `terrain_ramp.json` 的 atlas 段一致（12×9 = 108 格，六族满块档 + 过渡块）。
+# 演武场只取前 6 格（满块档），但**声明必须与贴图实际尺寸对得上**，否则引擎切 UV 会错位。
+ARENA_ATLAS_COLS, ARENA_ATLAS_ROWS = 12, 9
 
 # ---- 分区 ----
 YARD = {"x0": 1, "x1": 19, "y0": 1, "y1": 12}        # 演武坪（石板）
@@ -198,6 +207,11 @@ def row_major(grid):
     return "".join(str(grid[y][x]) for y in range(H) for x in range(W))
 
 
+def cells_row_major(grid):
+    """同一份展开，但留给 `tk.tilemap_component` 拼逗号分隔的 `tiles=`（新编码）。"""
+    return [grid[y][x] for y in range(H) for x in range(W)]
+
+
 def transform_line(entity_id, x, y):
     # M32：统一的 Transform 形态由 `pixel_kit.transform_line` 单点产出
     # （引擎读侧只认 position/rotation/scale，2D 旧形态已删除；见该函数注释）。
@@ -225,8 +239,11 @@ def build_scene(ground, solid):
         "meta\tui_reference_width\t1280",
         "entity\t1\tGroundMap",
         transform_line(1, 0.0, 0.0),
-        f"component\t1\tTilemap\ttile_size=32x32;width={W};height={H};texture={GROUND_TEXTURE}"
-        f";tiles={row_major(ground)};solid={row_major(solid)}",
+        # 恒等寻址（不开 tile_kinds/autotile）：tiles 直接就是图集条目号 = kind id，
+        # 采到的是每种材质的"满块档"。演武场要的是干净平整的演武坪，不要草叶压边。
+        "component\t1\tTilemap\t"
+        + tk.tilemap_component(TILE, W, H, GROUND_TEXTURE, cells_row_major(ground),
+                               row_major(solid), ARENA_ATLAS_COLS, ARENA_ATLAS_ROWS),
         "entity_meta\t1\trole\tground_tilemap",
     ]
     next_id = 2
@@ -262,7 +279,7 @@ def build_scene(ground, solid):
     lines.append(f"entity\t{title_id}\tHudTitle")
     lines.append(
         f"component\t{title_id}\tUiLayout\tanchors=0.0000,0.0000,0.0000,0.0000;"
-        "offsets=24.00,20.00,672.00,44.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000"
+        "offsets=24.00,12.00,500.00,36.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000"
     )
     lines.append(
         f"component\t{title_id}\tText\ttext={HUD_TITLE};font_size=18.00;color=0.949,0.918,0.847"
@@ -272,10 +289,10 @@ def build_scene(ground, solid):
     hint_id = next_id + 1
     lines.append(f"entity\t{hint_id}\tHudHint")
     lines.append(
-        # 地图自带操作提示放在**地图标题正下方**（y=50）；M32 竖版：宽度收到 672，
-        # 底部信息区整块留给 HUD 的动态反馈/目标/键位行。
+        # 地图自带操作提示放在**地图标题正下方**；两行 UiLayout 的数值以盘上场景为准
+        # （与 `gen_manor_scene.py` 同一套坐标，重跑生成器不得把 HUD 弹回旧版）。
         f"component\t{hint_id}\tUiLayout\tanchors=0.0000,0.0000,0.0000,0.0000;"
-        "offsets=24.00,50.00,672.00,72.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000"
+        "offsets=24.00,40.00,560.00,64.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000"
     )
     lines.append(
         f"component\t{hint_id}\tText\ttext={HUD_HINT};font_size=14.00;color=0.850,0.900,1.000"
