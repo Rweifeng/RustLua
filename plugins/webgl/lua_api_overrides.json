@@ -133,7 +133,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1781
+      "line": 2449
     },
     {
       "module": "animation3d",
@@ -147,7 +147,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1833
+      "line": 2501
     },
     {
       "module": "audio",
@@ -164,7 +164,7 @@
         "settings_path",
         "settings_text"
       ],
-      "line": 1842
+      "line": 2510
     },
     {
       "module": "camera",
@@ -175,7 +175,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 2403
+      "line": 3071
     },
     {
       "module": "entity",
@@ -183,7 +183,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 1419
+      "line": 1889
     },
     {
       "module": "grid",
@@ -191,7 +191,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 1134
+      "line": 1604
     },
     {
       "module": "health",
@@ -199,7 +199,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 1661
+      "line": 2329
     },
     {
       "module": "input",
@@ -228,7 +228,7 @@
         "nav_settings",
         "set_nav_settings"
       ],
-      "line": 1069
+      "line": 1539
     },
     {
       "module": "inv",
@@ -238,7 +238,7 @@
         "open"
       ],
       "referenced": [],
-      "line": 1229
+      "line": 1699
     },
     {
       "module": "log",
@@ -248,7 +248,7 @@
         "debug"
       ],
       "referenced": [],
-      "line": 1045
+      "line": 1515
     },
     {
       "module": "map",
@@ -259,7 +259,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1365
+      "line": 1835
     },
     {
       "module": "mesh",
@@ -270,7 +270,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 2404
+      "line": 3072
     },
     {
       "module": "particles",
@@ -280,7 +280,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 2402
+      "line": 3070
     },
     {
       "module": "physics",
@@ -295,7 +295,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1662
+      "line": 2330
     },
     {
       "module": "physics3d",
@@ -310,7 +310,15 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1707
+      "line": 2375
+    },
+    {
+      "module": "prefab",
+      "note": "prefab 七个 API 在 web 上必须整表重写：Rust 侧 prefab.spawn 把实体建进引擎 ECS，而 web 渲染只认 Lua 模拟侧（__rustlua_* 表 + sceneState），两条链不通，预设 UI 就整屏不画。这里经 JS 桥（__rustlua_prefab_*，注册见 rustluaRunLuaGame）在渲染侧建实体，语义与引擎一致：spawn 返回句柄，root/node 对死句柄返回 nil（引擎版抛错，pcall 同样兜底），set_visible 走子树显隐，set_rect 改绝对屏幕四边。dropped=0：七个函数全部重写，没有引擎侧名字在 web 上变成 nil。",
+      "dropped": [],
+      "invented": [],
+      "referenced": [],
+      "line": 1495
     },
     {
       "module": "save",
@@ -318,7 +326,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 2285
+      "line": 2953
     },
     {
       "module": "scene",
@@ -326,7 +334,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 1118
+      "line": 1588
     },
     {
       "module": "sprite",
@@ -334,11 +342,11 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 1710
+      "line": 2378
     },
     {
       "module": "tilemap",
-      "note": "格子数据、texture 与索引走 __rustlua_tilemap_of/__rustlua_cell_index，变更经 __rustlua_emit 广播。dropped=create/get_meta/set_meta（都未被发包工程引用）。set_solid 2026-10-03 已实现：与 set_cell 同构改 Lua 侧 solid 串并广播 Z 行，让渲染侧 map.solid 与 Lua 的碰撞表同步；同时补上了 web 侧缺失的格碰撞（__rustlua_move_with_collision：带 Collider 的实体按分轴子步在 solid 格前停住，几何对齐引擎 solid_cell_colliders 的静态 cuboid）。此前 web 上主角能穿过院墙/水面/屋基，放/拆建筑也不改碰撞（building.lua 的 apply_terrain 在 web 上调用的是缺失代理）。",
+      "note": "格子数据、texture 与索引走 __rustlua_tilemap_of/__rustlua_cell_index，变更经 __rustlua_emit 广播。dropped=create/get_meta/set_meta（都未被发包工程引用）。set_solid 2026-10-03 已实现：与 set_cell 同构改 Lua 侧 solid 串并广播 Z 行，让渲染侧 map.solid 与 Lua 的碰撞表同步；同时补上了 web 侧缺失的格碰撞（__rustlua_move_with_collision：带 Collider 的实体按分轴子步在 solid 格前停住，几何对齐引擎 solid_cell_colliders 的静态 cuboid）。此前 web 上主角能穿过院墙/水面/屋基，放/拆建筑也不改碰撞（building.lua 的 apply_terrain 在 web 上调用的是缺失代理）。M72-01/02：格子从「一格一个 ASCII 数字的字符串」改成**数字数组** cells（图集索引可以大于 9），图集布局按声明的 atlas_cols×atlas_rows 解算而不是从贴图宽度反推；set_atlas/set_kinds 广播 L 行、set_tint/clear_tint 广播 I/J 行。解算（FNV 变体 + 4-bit 邻居掩码 + autotile 块）在 Lua、JS 两侧各有一份镜像，与 Rust 的 rustlua-ecs/src/tilemap.rs 逐位一致——2026-10-08 用同一批 15 张图 / 750 格对拍过，三份实现输出完全相同（含 variant_count 非 2 的幂的情况：Lua 的 % 是带符号下取模，必须经 u64_mod 修正才等价于 Rust 的 u64 取模）。",
       "dropped": [
         "create",
         "get_meta",
@@ -346,7 +354,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1489
+      "line": 2055
     },
     {
       "module": "time",
@@ -354,7 +362,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 1046
+      "line": 1516
     },
     {
       "module": "transform",
@@ -366,7 +374,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1453
+      "line": 1923
     },
     {
       "module": "transform3d",
@@ -376,7 +384,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1478
+      "line": 1948
     },
     {
       "module": "ui",
@@ -405,7 +413,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1894
+      "line": 2562
     }
   ]
 }

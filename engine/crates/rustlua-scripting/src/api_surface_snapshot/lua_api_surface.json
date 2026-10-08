@@ -388,16 +388,23 @@
     },
     {
       "funcs": [
+        "atlas_index",
+        "autotile_mask",
+        "clear_tint",
         "create",
         "find_path",
         "get",
         "get_cell",
         "get_meta",
         "is_solid",
+        "set_atlas",
         "set_cell",
+        "set_kinds",
         "set_meta",
         "set_solid",
-        "set_texture"
+        "set_texture",
+        "set_tint",
+        "tint"
       ],
       "name": "tilemap"
     },

@@ -89,14 +89,23 @@ foreach ($root in $docRoots) {
 foreach ($doc in $allDocs) {
     $dir = Split-Path -Parent $doc
     $text = Get-Utf8Text $doc
-    foreach ($m in [regex]::Matches($text, '\]\(([^)\s]+)\)')) {
+    # CommonMark 允许 `<目标>` 包尖括号（含空格的路径靠它才写得下）。旧正则
+    # `\]\(([^)\s]+)\)` 会把尖括号一起当路径捕获，Windows 上 `Test-Path "..…收口与执行基线.md>"`
+    # 直接抛 ArgumentException，而本脚本开头是 `$ErrorActionPreference = "Stop"`——于是链接之后
+    # 的索引可达/历史路径/UTF-8 三类检查整段没跑，输出只剩一条异常，看起来却像"就这一个问题"。
+    foreach ($m in [regex]::Matches($text, '\]\(\s*(?:<([^>]*)>|([^)\s]+)?)\s*\)')) {
         $target = $m.Groups[1].Value
+        if (-not $target) { $target = $m.Groups[2].Value }
         if ($target -match '^(https?:|mailto:|#)') { continue }
         $clean = ($target -split '#')[0]
         if ($clean.Length -eq 0) { continue }
         $linkCount++
         $resolved = Join-Path $dir $clean
-        if (-not (Test-Path $resolved)) {
+        # 兜底：文件名里的非法字符（`*` `?` `[` 之类）同样让 Test-Path 抛异常。这里按
+        # "链接不可解析"记 issue 而不是崩门。
+        $exists = $false
+        try { $exists = Test-Path -LiteralPath $resolved } catch { $exists = $false }
+        if (-not $exists) {
             $rel = $doc.Substring($repoRoot.Length).TrimStart("\")
             $issues.Add("${rel}: 相对链接指向不存在的路径 -> $target")
         }

@@ -2,6 +2,7 @@
 
 use crate::ComponentClipboard;
 use crate::EditorApp;
+use crate::panels::tilemap_tools;
 use crate::util::strip_verbatim_prefix;
 use editor::{Collider3dFields, InspectorError, InspectorState};
 use eframe::egui;
@@ -727,16 +728,85 @@ impl EditorApp {
                             if self.tilemap.map.solid.len() != target_len {
                                 self.tilemap.map.solid.resize(target_len, false);
                             }
-                            // RustLua-②a：Tile Palette——可视化瓦片调色板（0=擦除 + TILE_PALETTE 6 色）。
-                            // 取代"画笔=数字 DragValue"的盲选：色块即瓦片，点击即选，当前画笔描白边。
+                            // M72-02：per-tile tint 与 tiles 同长（0 = 不染色）。
+                            // 漏了这一句，改网格尺寸会让序列化端的长度校验直接报错。
+                            if self.tilemap.map.tint_ids.len() != target_len {
+                                self.tilemap.map.tint_ids.resize(target_len, 0);
+                            }
+                            // M72-01：图集布局。列/行数**显式**填写，不从贴图尺寸反推——
+                            // 反推会让"图里有几列"变成美术文件的隐式契约，重排一次贴图
+                            // 就整张地图静默错位（宁可编辑器里多敲两个数字）。
                             ui.horizontal(|ui| {
+                                ui.label("图集");
+                                ui.add(
+                                    egui::DragValue::new(&mut self.tilemap.map.atlas_cols)
+                                        .range(1..=64)
+                                        .suffix(" 列"),
+                                );
+                                ui.add(
+                                    egui::DragValue::new(&mut self.tilemap.map.atlas_rows)
+                                        .range(1..=64)
+                                        .suffix(" 行"),
+                                );
+                            });
+                            // M72-02：逻辑瓦模式。关掉时格子存图集条目号（旧图的行为），
+                            // 打开后存 kind id，由邻居掩码 + 确定性哈希现算条目。
+                            ui.horizontal(|ui| {
+                                ui.label("逻辑瓦");
+                                ui.add(
+                                    egui::DragValue::new(&mut self.tilemap.map.tile_kinds)
+                                        .range(1..=64)
+                                        .suffix(" 种"),
+                                );
+                                ui.add(
+                                    egui::DragValue::new(&mut self.tilemap.map.variant_count)
+                                        .range(1..=16)
+                                        .suffix(" 变体"),
+                                );
+                            });
+                            let mut layout_error: Option<String> = None;
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut self.tilemap.map.autotile, "自动瓦片(4-bit)");
+                                if ui
+                                    .button(
+                                        "重排变体种子",
+                                    )
+                                    .clicked()
+                                {
+                                    // 种子决定同一 kind 下选哪个变体；换种子 = 换一批
+                                    // 摆放，但**同一种子永远得到同一张图**（见 tilemap.rs）。
+                                    self.tilemap.map.variant_seed = self
+                                        .tilemap
+                                        .map
+                                        .variant_seed
+                                        .wrapping_mul(1_664_525)
+                                        .wrapping_add(1_013_904_223);
+                                }
+                                ui.label(format!("seed={}", self.tilemap.map.variant_seed));
+                            });
+                            if let Err(error) = self.tilemap.map.validate_layout() {
+                                layout_error = Some(error.to_string());
+                            }
+                            if let Some(error) = &layout_error {
+                                ui.label(
+                                    egui::RichText::new(format!("布局不合法：{error}"))
+                                        .color(egui::Color32::from_rgb(240, 130, 90)),
+                                );
+                            }
+                            // RustLua-②a + M72-01/02：Tile Palette——槽位数随布局走，
+                            // 不再是写死的 6 色。逻辑瓦模式下槽位是 kind（见 brush_label），
+                            // 让美术刷的是"草地"而不是"图集第 3 格"，autotile 才不会被绕过。
+                            let brush_max = tilemap_tools::max_brush(&self.tilemap.map);
+                            if self.tilemap.brush > brush_max {
+                                self.tilemap.brush = brush_max;
+                            }
+                            ui.horizontal_wrapped(|ui| {
                                 ui.label("调色板");
-                                for tile in 0..=6_u8 {
+                                for tile in 0..=brush_max {
+                                    let [r, g, b, _] = tilemap_tools::debug_swatch(tile);
                                     let color = if tile == 0 {
                                         egui::Color32::from_gray(42)
                                     } else {
-                                        let [r, g, b, _] =
-                                            engine::core::tilemap::TILE_PALETTE[(tile - 1) as usize];
                                         egui::Color32::from_rgba_unmultiplied(
                                             (r * 255.0) as u8,
                                             (g * 255.0) as u8,
@@ -746,11 +816,14 @@ impl EditorApp {
                                     };
                                     let selected = self.tilemap.brush == tile;
                                     let swatch = egui::Button::new(
-                                        egui::RichText::new(if tile == 0 { "×" } else { "" })
-                                            .color(egui::Color32::from_gray(200)),
+                                        egui::RichText::new(
+                                            tilemap_tools::brush_label(&self.tilemap.map, tile),
+                                        )
+                                        .size(10.0)
+                                        .color(egui::Color32::from_gray(220)),
                                     )
                                     .fill(color)
-                                    .min_size(egui::vec2(22.0, 22.0))
+                                    .min_size(egui::vec2(30.0, 22.0))
                                     .stroke(if selected {
                                         egui::Stroke::new(2.0_f32, egui::Color32::WHITE)
                                     } else {
@@ -760,7 +833,10 @@ impl EditorApp {
                                         self.tilemap.brush = tile;
                                     }
                                 }
-                                ui.add(egui::DragValue::new(&mut self.tilemap.brush).range(0..=6));
+                                ui.add(
+                                    egui::DragValue::new(&mut self.tilemap.brush)
+                                        .range(0..=brush_max),
+                                );
                             });
                             ui.horizontal(|ui| {
                                 ui.checkbox(&mut self.tilemap.paint_collision, "画碰撞层");
@@ -783,33 +859,41 @@ impl EditorApp {
                                                 let index = y * self.tilemap.map.width + x;
                                                 let value = self.tilemap.map.tiles[index];
                                                 let solid = self.tilemap.map.solid[index];
+                                                // 悬停说明"存的是什么 → 画的是图集第几格"：
+                                                // autotile/变体下这两个数不同，不写清楚美术
+                                                // 没法判断边界瓦摆得对不对（M72-02 §设计要点 1）。
+                                                let resolved =
+                                                    self.tilemap.map.resolve_atlas_index(x, y);
                                                 let label = if self.tilemap.paint_collision {
-                                                    if solid { "■" } else { "·" }
+                                                    if solid { "■".to_owned() } else { "·".to_owned() }
                                                 } else if value == 0 {
-                                                    "·"
+                                                    "·".to_owned()
                                                 } else {
-                                                    match value {
-                                                        1 => "1",
-                                                        2 => "2",
-                                                        3 => "3",
-                                                        4 => "4",
-                                                        5 => "5",
-                                                        _ => "6",
-                                                    }
+                                                    value.to_string()
                                                 };
-                                                if ui
-                                                    .add_sized(
-                                                        [18.0, 18.0],
-                                                        egui::Button::new(label),
-                                                    )
-                                                    .clicked()
-                                                {
+                                                let cell = ui.add_sized(
+                                                    [18.0, 18.0],
+                                                    egui::Button::new(label),
+                                                );
+                                                // `on_hover_text` 吃掉 Response，先拿到
+                                                // 点击用的那一份。
+                                                let cell = if value != 0 {
+                                                    cell.on_hover_text(format!(
+                                                        "格 ({x},{y})：存 {value} → 图集条目 {resolved}"
+                                                    ))
+                                                } else {
+                                                    cell
+                                                };
+                                                if cell.clicked() {
                                                     if self.tilemap.paint_collision {
                                                         self.tilemap.map.solid[index] =
                                                             !self.tilemap.map.solid[index];
                                                     } else {
                                                         self.tilemap.map.tiles[index] =
-                                                            self.tilemap.brush.min(6);
+                                                            tilemap_tools::clamp_brush(
+                                                                &self.tilemap.map,
+                                                                self.tilemap.brush,
+                                                            );
                                                     }
                                                     // E08：连续点击/按住连画只在帧内直写文档，
                                                     // 松手由帧尾提交边界收敛为一条 Undo。

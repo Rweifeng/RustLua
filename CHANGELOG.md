@@ -5,6 +5,40 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — tilemap 只能寻址 6 列 1 行：图集寻址、`.scene` 编码迁移与三宿主解算对齐（M72-01）
+
+- **症状**：M72 第 2 轮美术照搬星露谷的图块规范画完，塞进游戏仍像 demo。根因不在画笔：
+  一张图集**只能有 6 列、且只能有 1 行**——`tile_uv(column)` 的 y 恒为 `0.0..1.0`，
+  列数真源是 `TILE_PALETTE` 那个字面 `6`，`set_cell` 与解析器双双拒绝 `value > 6`。
+- **最贵的一块不是 UV，是序列化**：`to_component_str` 每格只写**一个 ASCII 数字**，
+  解析端 `to_digit(10)` ⇒ `.scene` 格式**表达不了 >9**。字段类型 `tiles: Vec<u8>` 本来有
+  0..255 的空间，是编码把它压成了十进制的一位。
+- **改法**：① 组件新增显式声明的 `tiles_format`/`atlas_cols`/`atlas_rows`，**不从贴图尺寸
+  反推**（隐式推法让"贴图里有几列"变成美术文件的隐式契约，改一下 PNG 尺寸就静默重排整张
+  地图）；② `tiles_format=1` 用逗号分隔十进制，写出端恒写 1，`tiles_format=0` 仍能读且语义
+  不变（6 列切 U、V 整幅拉伸、只认 `1..=6`）；③ 未知键一律报错，`tile_kind=` 少个 s 不许
+  静默当 false；④ 同一份解算在三个宿主各写一遍并**对拍**：Rust 是真源，`web-runtime.js`
+  里的 Lua 宿主补丁自带一份 Lua 镜像 + 一份 JS 镜像，逐帧用 `L`/`I`/`J` 三种 op 行同步；
+  ⑤ 编辑器笔刷上界改由布局算（`max_brush`/`clamp_brush`），调试色板不再拿 6 色当列数真源；
+  ⑥ 迁移工具 `tilemap_resave` 只重写 `Tilemap` 那一行载荷、其余字节原样回写（含 CRLF），幂等。
+- **实测**：判据是**像素一样**而不是"看起来一样"——7 张带 Tilemap 的场景重存前后
+  `py tools/preview_scene.py` 合成图 SHA-256 逐字节相同（7/7），换用迁移前的旧工具复算仍相同。
+  新门 `jhyt_m72_tileset_atlas` 绿（12×8 图集 18 格逐格对上子矩形、索引 0 不产 quad、
+  `manor_cells=920`），内建两处反面对照，另跑一次**外置**对照：临时工程里把 `atlas_cols=6`
+  改成 2 ⇒ 门红在 §⑤ 并点名 `tile cell index 4 is out of atlas range`。三宿主解算对拍
+  15 张随机地图 / 750 格（恒等、纯变体、纯 autotile、变体+autotile 四档）0 处不一致，
+  变体序号另跑 1600 格 0 处不一致——这一条逼出了 Lua 的 `%` 是带符号 floor-mod、
+  必须补 `u64_mod` 的坑。十条 prefab 黄金表逐道读数：九绿一红（`jhyt_m66` 红在陈旧黄金表，
+  HEAD 上即如此，归因写在 `tasks/plan/M72-01-*.md`）。新增七个 `tilemap.*` API 的演示补齐，
+  `sample_project` 11 道全绿。
+- **顺手两条**：`scripts/check-docs.ps1` 的链接扫描把 CommonMark 合法的 `](<含空格路径>)`
+  整串当路径喂给 `Test-Path`，在 `$ErrorActionPreference="Stop"` 下**崩掉整道门**——它后面的
+  索引可达/历史路径/UTF-8 三类检查从来没跑过；L3 行为契约门在 `core.autocrlf=true` 的克隆上
+  假红，`.gitattributes` 给 api_surface 快照目录钉 `text eol=lf`。
+- **回滚档**：两笔——`engine`/`web`/docs/台账/门 一笔，7 张 `.scene` 重存单独一笔。
+  旧编码仍可读，所以**只回滚代码不会坏数据**；只回滚数据会让新代码读到 6×1 布局（同样正确）。
+  无存档格式变更（`.save` 不写 Tilemap 载荷）。
+
 ## Unreleased — 建造模式看不见自己选的是哪座：七日炼药目标卡死
 
 - **症状**：第 7 天目标「炼成 1 剂药并收取」停在 0/3，提示区写着「没有对应设施」。存档里

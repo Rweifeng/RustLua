@@ -39,6 +39,10 @@ local FARM_W, FARM_H, FARM_TILE = 4, 3, 32
 local FARM_POS = { x = 384, y = 32 }
 -- 菜地视觉：1..6 = tileset 的列（见 assets/textures/tileset.png）。
 local TILE_DRY, TILE_WET = 1, 2
+-- 这张占位图集的布局声明（M72-01）：6 列 × 1 行。格子值的上界从此由布局算出。
+local FARM_ATLAS_COLS, FARM_ATLAS_ROWS = 6, 1
+-- 浇水后的湿地染色（M72-02 的 per-tile tint，顶点色**乘法**染色）：偏冷的 0.72/0.84/1.0。
+local TINT_WET = { r = 0.72, g = 0.84, b = 1.0 }
 -- 沿路径推进的节拍：每 6 个固定步走一格（约 0.1s/格 @60Hz），看得清但不会一晃而过。
 local STEP_FRAMES = 6
 -- `grid.facing_cell` 的 facing 参数：四个方向词 + n/s/e 三个短码，每帧轮换一个。
@@ -136,11 +140,13 @@ local function plant()
         for cx = 0, FARM_W - 1 do
             mark(cx, cy, "crop", "wheat")
             mark(cx, cy, "watered", "1")
+            tilemap.set_tint(farm_id, cx, cy, TINT_WET.r, TINT_WET.g, TINT_WET.b)
         end
     end
 end
 
 --- 收获：空 value 删掉 `watered` 键，`get_meta` 读回就是 nil（区分"键不存在"与"值是空串"）。
+--- 顺手把染色一起撤掉——`clear_tint` 之后 `tint` 读回的是白色（无染色 = 恒等乘法）。
 local function harvest()
     if not live(farm_id) then
         return
@@ -151,6 +157,7 @@ local function harvest()
         for cx = 0, FARM_W - 1 do
             mark(cx, cy, "crop", "")
             mark(cx, cy, "watered", "")
+            tilemap.clear_tint(farm_id, cx, cy)
         end
     end
 end
@@ -285,6 +292,12 @@ local function seed_farm()
     tilemap.set_texture(farm_id, "assets/textures/tileset.png")
     local pos = transform.get(farm_id)
     transform.set(farm_id, FARM_POS.x, FARM_POS.y, pos.rotation, pos.scale_x, pos.scale_y)
+    -- M72-01/02：图集寻址与格子语义由数据声明，不再从贴图尺寸反推。这张占位图集一直是
+    -- 6 列 1 行的画法，所以显式声明 6×1 画面不变；声明成装不下现有格子的布局会当场报错。
+    tilemap.set_atlas(farm_id, FARM_ATLAS_COLS, FARM_ATLAS_ROWS)
+    -- (kinds, variant_count, autotile) = (6, 1, false) 是恒等档：格子值**就是**图集条目号，
+    -- 与菜地现有画法同义。开变体或 autotile 后格子值改成逻辑瓦 kind（见 docs/16）。
+    tilemap.set_kinds(farm_id, FARM_ATLAS_COLS, 1, false)
     paint_farm()
     mark(0, 0, "crop", "wheat")
     mark(0, 0, "watered", "1")
@@ -354,10 +367,17 @@ function M.update()
     local terrain = last_terrain
     if live(farm_id) and grid.in_bounds(g.cx, g.cy, FARM_W, FARM_H) then
         local info = tilemap.get(farm_id)
-        terrain = string.format("cell(%d,%d)=%d solid=%s %s", g.cx, g.cy,
+        -- 解算的只读视图：`atlas_index` 是本帧真正取样哪个图集条目（0 = 什么都不画），
+        -- `autotile_mask` 是该格四个方向的同 kind 邻居位（bit0=y-1、bit1=x+1、bit2=y+1、
+        -- bit3=x-1，越界算"没有邻居"），`tint` 是顶点色。恒等档下三者都该是"直读"的结果。
+        local entry = tilemap.atlas_index(farm_id, g.cx, g.cy)
+        local mask = tilemap.autotile_mask(farm_id, g.cx, g.cy)
+        local wash = tilemap.tint(farm_id, g.cx, g.cy)
+        terrain = string.format("cell(%d,%d)=%d solid=%s %s atlas=%d mask=%d tint=(%.2f,%.2f,%.2f,%.2f)",
+            g.cx, g.cy,
             tilemap.get_cell(farm_id, g.cx, g.cy),
             tostring(tilemap.is_solid(farm_id, g.cx, g.cy)),
-            crop_tag(g.cx, g.cy))
+            crop_tag(g.cx, g.cy), entry, mask, wash.r, wash.g, wash.b, wash.a)
         last_terrain = terrain
         if info.texture ~= nil then
             terrain = terrain .. " tex=" .. tostring(info.texture)

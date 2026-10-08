@@ -8,12 +8,23 @@
 
 渲染规则（严格照引擎实现，用来发现"数据和美术对不上"的问题）：
 
-  * Tilemap：cell (cx,cy) 覆盖世界 x∈[cx*32,(cx+1)*32]、y∈[cy*32,(cy+1)*32]，row 0 在最底；
-    屏幕 y 向下，所以屏幕行 = (height-1-cy)。tile 值 n(1..6) 取 tileset 第 n 列，
-    即纹理区域 x∈[(n-1)*32, n*32)、**V 方向整幅拉伸到格子高度**
-    （core/tilemap.rs tile_uv 只按 6 列切 U，V 恒为 0..1）。
+  * Tilemap 有两种编码，都认：
+      - `tiles_format=0`（旧）：一格一个 ASCII 数字，图集固定 6 列 1 行、V 方向整幅拉伸；
+      - `tiles_format=1`（M72-01）：逗号分隔十进制图集索引，列数/行数由
+        `atlas_cols` / `atlas_rows` 显式声明（引擎不从贴图尺寸反推，这里也不反推）。
+    cell (cx,cy) 覆盖世界 x∈[cx*32,(cx+1)*32]、y∈[cy*32,(cy+1)*32]，row 0 在最底；
+    屏幕 y 向下，所以屏幕行 = (height-1-cy)。图集条目 n 取第
+    `col=(n-1)%cols`、`row=(n-1)//cols` 个子矩形（行 0 在**贴图顶部**，与地图行 0 在底部
+    是两回事——这正是引擎 autotile 位序按 index 命名而不是按方位命名的原因）。
+  * 逻辑瓦模式（M72-02，`autotile=1` 或 `variant_count>1`）：格子里存的是 kind id，
+    渲染时由「邻居掩码 + 确定性 FNV-1a 哈希」解析成图集条目。这段解算与
+    `engine/crates/rustlua-ecs/src/tilemap.rs` 的 `resolve_atlas_index` **逐位一致**，
+    改任何一边都必须同步另一边，否则预览图与实机不一致（本文件的存在意义就是发现这种不一致）。
   * Sprite：pivot=(0,0) 时 transform 即左下角；图像顶行对应 quad 顶部。
     `__white__` 内建贴图按 tint 画成半透明占位块，便于看玩家/NPC 站位。
+  * per-tile tint（M72-02）：`tints=<cellIndex>:<tintId>,...`（稀疏，只记非白格），
+    `tints_rgb=r,g,b,a|r,g,b,a|...` 是调色表；顶点色是**乘法**染色，这里用
+    `tint_rect` 逐像素相乘复刻同一个语义（不做半透明叠加近似）。
   * 排序：tilemap 先画，sprite 后画；sprite 之间按 sorting_layer 档位 ×1000 + order 排序。
 
 依赖：Python 3 标准库 + 同目录 pixel_kit.py。
@@ -37,6 +48,17 @@ LAYER_RANK = {
 }
 
 TILE = 32
+# 与 Rust 侧同名常量必须一致（`tilemap.rs` 的 AUTOTILE_SLOTS / FNV 参数 / 两个盐）。
+AUTOTILE_SLOTS = 16
+VARIANT_HASH_OFFSET = 0xcbf29ce484222325
+VARIANT_HASH_PRIME = 0x00000100000001B3
+MIX_AXIS_X = 0x9E3779B97F4A7C15
+MIX_AXIS_Y = 0xBF58476D1CE4E5B9
+U64_MASK = (1 << 64) - 1
+# 旧编码的"没有图集信息"时的默认布局（DEFAULT_ATLAS_COLS/ROWS）。
+DEFAULT_ATLAS_COLS = 6
+DEFAULT_ATLAS_ROWS = 1
+LEGACY_KIND_LIMIT = 6
 
 
 def parse_fields(value):
@@ -113,6 +135,151 @@ class TextureCache:
         return canvas
 
 
+def _mix_u64(state, value):
+    """一次 FNV-1a 混合（把 value 按**小端 8 字节**逐字节喂进去）。"""
+    mixed = state
+    for index in range(8):
+        byte = (value >> (8 * index)) & 0xFF
+        mixed = ((mixed ^ byte) * VARIANT_HASH_PRIME) & U64_MASK
+    return mixed
+
+
+def variant_for(cells, width, height, x, y, seed, variant_count):
+    """确定性变体序号：与 Rust `Tilemap::variant_for` 同一份哈希与盐顺序。"""
+    if variant_count < 2:
+        return 0
+    hash_state = VARIANT_HASH_OFFSET
+    for value in (x, y, seed, MIX_AXIS_X, MIX_AXIS_Y):
+        hash_state = _mix_u64(hash_state, value)
+    return hash_state % variant_count
+
+
+def autotile_mask(cells, width, height, x, y):
+    """4-bit 邻居掩码：位 0 = y-1、位 1 = x+1、位 2 = y+1、位 3 = x-1。
+
+    越界当作"没有邻居"（地图边就是暴露的边界，不是内部瓦），与 Rust 侧一致。
+    """
+    own = cells[y * width + x]
+    mask = 0
+    for bit, (dx, dy) in enumerate(((0, -1), (1, 0), (0, 1), (-1, 0))):
+        nx, ny = x + dx, y + dy
+        if nx < 0 or ny < 0 or nx >= width or ny >= height:
+            continue
+        neighbor = cells[ny * width + nx]
+        if neighbor != 0 and neighbor == own:
+            mask |= 1 << bit
+    return mask
+
+
+def resolve_atlas_index(layout, cells, x, y):
+    """格子值 → 图集条目号（0 = 什么都不画）。逐分支对照 Rust 的 resolve_atlas_index。"""
+    cell = cells[y * layout["width"] + x]
+    if cell == 0:
+        return 0
+    autotile = layout["autotile"]
+    variants = layout["variant_count"]
+    if not autotile and variants <= 1:
+        return cell
+    kind = cell
+    if kind > layout["tile_kinds"]:
+        return 0
+    span = max(1, variants)
+    base_span = layout["tile_kinds"] * span
+    capacity = layout["atlas_cols"] * layout["atlas_rows"]
+    if autotile:
+        index = 1 + base_span + (kind - 1) * AUTOTILE_SLOTS + \
+            autotile_mask(cells, layout["width"], layout["height"], x, y) % AUTOTILE_SLOTS
+    else:
+        index = 1 + (kind - 1) * span + variant_for(
+            cells, layout["width"], layout["height"],
+            x, y, layout["variant_seed"], span)
+    return index if index <= capacity else 0
+
+
+def tile_layout(fields, errors, name):
+    """把 Tilemap 组件串里的布局信息读成一份渲染用的 layout dict（含两种编码的差异）。"""
+    width = int(fields["width"])
+    height = int(fields["height"])
+    fmt = int(fields.get("tiles_format", "0") or 0)
+    raw = fields.get("tiles", "")
+    if fmt == 0:
+        if not all(ch.isdigit() for ch in raw):
+            errors.append(f"{name}: 旧编码 tiles 含非数字字符 {raw[:12]!r}")
+        cells = [int(ch) for ch in raw]
+        cols = int(fields.get("atlas_cols", DEFAULT_ATLAS_COLS) or DEFAULT_ATLAS_COLS)
+        rows = int(fields.get("atlas_rows", DEFAULT_ATLAS_ROWS) or DEFAULT_ATLAS_ROWS)
+    elif fmt == 1:
+        cells = [int(part) for part in raw.split(",") if part.strip() != ""]
+        cols = int(fields["atlas_cols"])
+        rows = int(fields["atlas_rows"])
+    else:
+        errors.append(f"{name}: 不支持的 tiles_format={fmt}（引擎只认 0/1）")
+        cells, cols, rows = [], DEFAULT_ATLAS_COLS, DEFAULT_ATLAS_ROWS
+    kinds = int(fields.get("tile_kinds", "0") or 0) or LEGACY_KIND_LIMIT
+    variants = int(fields.get("variant_count", "1") or 1)
+    autotile = fields.get("autotile", "") in ("1", "true")
+    layout = {
+        "width": width,
+        "height": height,
+        "format": fmt,
+        "cells": cells,
+        "atlas_cols": cols,
+        "atlas_rows": rows,
+        "tile_kinds": kinds,
+        "variant_count": variants,
+        "autotile": autotile,
+        "variant_seed": int(fields.get("variant_seed", "0") or 0),
+        # 逻辑瓦模式下格子的上界是 kind 数，直接寻址模式下是图集条目数。
+        "max_id": kinds if (autotile or variants > 1) else cols * rows,
+        "capacity": cols * rows,
+    }
+    tints = [0] * (width * height)
+    for entry in fields.get("tints", "").split(","):
+        if not entry:
+            continue
+        index, tint_id = entry.split(":")
+        tints[int(index)] = int(tint_id)
+    layout["tints"] = tints
+    table = []
+    for entry in fields.get("tints_rgb", "").split("|"):
+        if not entry:
+            continue
+        parts = [float(p) for p in entry.split(",")]
+        if len(parts) != 4:
+            errors.append(f"{name}: tints_rgb 条目必须是 r,g,b,a：{entry!r}")
+            continue
+        table.append(parts)
+    layout["tint_table"] = table
+    return layout
+
+
+def tint_color(layout, index):
+    tint_id = layout["tints"][index] if index < len(layout["tints"]) else 0
+    if tint_id == 0:
+        return None
+    if tint_id > len(layout["tint_table"]):
+        return None
+    return layout["tint_table"][tint_id - 1]
+
+
+def tint_rect(canvas, x, y, w, h, tint):
+    """逐像素乘法染色：与引擎「顶点色 × 贴图色」一致，不是半透明叠加。
+
+    `pixel_kit.Canvas.rect` 是裸覆盖（15 个生成器脚本依赖这个语义），所以染色
+    在这个文件里自己做，不去改公共 rect。
+    """
+    r, g, b, a = tint
+    for dy in range(h):
+        for dx in range(w):
+            color = canvas.get(x + dx, y + dy)
+            if color[3] == 0:
+                continue
+            canvas.set(x + dx, y + dy, (
+                int(color[0] * r), int(color[1] * g),
+                int(color[2] * b), max(0, min(255, int(color[3] * a))),
+            ))
+
+
 def render(scene_path, root, scale=1, grid=False, only_layers=None):
     header, entities = parse_scene(scene_path)
     tilemaps = [e for e in entities if "Tilemap" in e["components"]]
@@ -137,46 +304,83 @@ def render(scene_path, root, scale=1, grid=False, only_layers=None):
     # 1) Tilemaps（文件顺序）
     for entity in tilemaps:
         fields = parse_fields(entity["components"]["Tilemap"])
+        name = entity["name"]
         texture_path = fields.get("texture", "")
-        tiles = fields.get("tiles", "")
+        layout = tile_layout(fields, errors, name)
+        tw, th = layout["width"], layout["height"]
+        cells = layout["cells"]
         solid = fields.get("solid", "")
-        tw = int(fields["width"])
-        th = int(fields["height"])
-        if len(tiles) != tw * th:
-            errors.append(f"{entity['name']}: tiles 长度 {len(tiles)} != {tw}x{th}")
+        if len(cells) != tw * th:
+            errors.append(f"{name}: tiles 数量 {len(cells)} != {tw}x{th}")
+            continue
         if len(solid) != tw * th:
-            errors.append(f"{entity['name']}: solid 长度 {len(solid)} != {tw}x{th}")
-        for value in tiles:
-            if not value.isdigit() or int(value) > 6:
-                errors.append(f"{entity['name']}: tiles 含非法列号 {value!r}（引擎只支持 0..6）")
+            errors.append(f"{name}: solid 长度 {len(solid)} != {tw}x{th}")
+        for index, value in enumerate(cells):
+            if value > layout["max_id"]:
+                errors.append(
+                    f"{name}: 格 {index} 的 tile 值 {value} 越界"
+                    f"（{'逻辑瓦 kind' if layout['autotile'] or layout['variant_count'] > 1 else '图集条目'}"
+                    f"上界 {layout['max_id']}）"
+                )
+                break
+            if value != 0 and resolve_atlas_index(layout, cells, index % tw, index // tw) == 0:
+                errors.append(
+                    f"{name}: 格 {index} 解析不到图集条目（atlas {layout['atlas_cols']}x"
+                    f"{layout['atlas_rows']} 装不下这套布局）"
+                )
                 break
         texture = textures.get(texture_path)
         if texture is None:
-            errors.append(f"{entity['name']}: 贴图缺失 {texture_path}")
+            errors.append(f"{name}: 贴图缺失 {texture_path}")
             continue
-        if texture.w != 6 * int(float(fields["tile_size"].split("x")[0])):
+        if texture.w != layout["atlas_cols"] * tile_w:
             errors.append(
-                f"{entity['name']}: tileset 宽 {texture.w} != 6*{tile_w}"
-                "（引擎固定按 6 列切 U，多余列采不到）"
+                f"{name}: tileset 宽 {texture.w} != atlas_cols({layout['atlas_cols']})*{tile_w}"
+                "（列数由组件串显式声明，与贴图对不上就是错位）"
             )
-        if texture.h != tile_h:
-            notes.append(
-                f"[note] {entity['name']}: tileset 高 {texture.h} != {tile_h}，"
-                "按引擎规则整幅拉伸到格子高度"
-            )
+        if texture.h != layout["atlas_rows"] * tile_h:
+            if layout["format"] == 0 and layout["atlas_rows"] == 1:
+                notes.append(
+                    f"[note] {name}: 旧编码 tileset 高 {texture.h} != {tile_h}，"
+                    "按引擎规则整幅拉伸到格子高度"
+                )
+            else:
+                errors.append(
+                    f"{name}: tileset 高 {texture.h} != atlas_rows({layout['atlas_rows']})*{tile_h}"
+                    "（新编码不再拉伸 V，行数必须与贴图行数一致）"
+                )
+                continue
+        sub_w = texture.w // layout["atlas_cols"]
+        sub_h = max(1, texture.h // layout["atlas_rows"]) if layout["atlas_rows"] else texture.h
         drawn = 0
         for cy in range(th):
             for cx in range(tw):
-                value = int(tiles[cy * tw + cx])
-                if value <= 0:
+                entry = resolve_atlas_index(layout, cells, cx, cy)
+                if entry <= 0:
                     continue
                 drawn += 1
-                blit_region(
-                    canvas, texture,
-                    (value - 1) * tile_w, 0, tile_w, texture.h,
-                    cx * tile_w, (height - 1 - cy) * tile_h, tile_w, tile_h,
-                )
-        notes.append(f"{entity['name']}: tilemap {tw}x{th} 贴图 {texture_path} 画出 {drawn} 格")
+                position = entry - 1
+                col = position % layout["atlas_cols"]
+                row = position // layout["atlas_cols"]
+                dst_x = cx * tile_w
+                dst_y = (height - 1 - cy) * tile_h
+                if layout["format"] == 0 and layout["atlas_rows"] == 1:
+                    # 旧引擎的 tile_uv 只按 6 列切 U，V 恒为整幅 → 复刻"拉伸"行为。
+                    blit_region(canvas, texture, col * tile_w, 0, tile_w, texture.h,
+                                dst_x, dst_y, tile_w, tile_h)
+                else:
+                    blit_region(canvas, texture, col * sub_w, row * sub_h, sub_w, sub_h,
+                                dst_x, dst_y, tile_w, tile_h)
+                tint = tint_color(layout, cy * tw + cx)
+                if tint is not None:
+                    tint_rect(canvas, dst_x, dst_y, tile_w, tile_h, tint)
+        notes.append(
+            f"{name}: tilemap {tw}x{th} fmt={layout['format']} "
+            f"atlas={layout['atlas_cols']}x{layout['atlas_rows']}"
+            f"{' autotile' if layout['autotile'] else ''}"
+            f"{' variants=' + str(layout['variant_count']) if layout['variant_count'] > 1 else ''}"
+            f" 贴图 {texture_path} 画出 {drawn} 格"
+        )
 
     # 2) Sprites（按 layer/order 排序，稳定）
     sprites = []

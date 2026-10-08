@@ -320,10 +320,12 @@ struct CachedTileSprite {
     center_offset: Vec2,
     uv_min: Vec2,
     uv_max: Vec2,
+    /// M72-02：逐格 tint（顶点色）。无 tint 的格是 `[1,1,1,1]`，与旧的硬编码常量一致。
+    tint: [f32; 4],
 }
 
-/// 分量级相等：测试里用 ssert_eq! 对比 chunk 化展平与整层平铺参考
-/// （Vec2 未实现 PartialEq，此处按分量逐一比较——数值由同一公式算出，精确相等）。
+/// 分量级相等：测试里按分量逐一比较（Vec2 未实现 PartialEq，数值由同一公式
+/// 算出故精确相等）。M72-02 后 tint 也是产出像素的一部分，同样纳入比较。
 impl PartialEq for CachedTileSprite {
     fn eq(&self, other: &Self) -> bool {
         self.center_offset.x == other.center_offset.x
@@ -332,6 +334,7 @@ impl PartialEq for CachedTileSprite {
             && self.uv_min.y == other.uv_min.y
             && self.uv_max.x == other.uv_max.x
             && self.uv_max.y == other.uv_max.y
+            && self.tint == other.tint
     }
 }
 

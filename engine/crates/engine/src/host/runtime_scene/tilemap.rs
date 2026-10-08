@@ -25,6 +25,9 @@ pub(super) const TILE_CHUNK_SIZE: usize = 32;
 /// 构建一个块（`ox/oy` = 块左上角格坐标，`w/h` = 实际块尺寸，边缘块可能不满）。
 /// 与整层平铺构建的唯一区别是范围限定在块内；`center_offset` 语义不变
 /// （相对层原点、预乘 `scale`——因此 `scale` 变化必须整层重建，见 [`rebuild_dirty_chunks`]）。
+///
+/// M72-01/02：格值 → 图集条目走 `resolve_atlas_index`（自动瓦片/变体在里层解算，
+/// 关闭时是恒等映射，旧图逐格等价），UV 走 `atlas_uv`（多行多列），顶点色走 `tint_at`。
 fn build_chunk(
     tilemap: &Tilemap,
     ox: usize,
@@ -36,11 +39,11 @@ fn build_chunk(
     let mut sprites = Vec::new();
     for y in oy..(oy + h) {
         for x in ox..(ox + w) {
-            let cell = tilemap.tiles[y * tilemap.width + x];
-            if cell == 0 {
+            let entry = tilemap.resolve_atlas_index(x, y);
+            if entry == 0 {
                 continue;
             }
-            let (uv_min, uv_max) = Tilemap::tile_uv(cell);
+            let (uv_min, uv_max) = tilemap.atlas_uv(entry);
             let center_offset = Vec2::new(
                 (x as f32 + 0.5) * tilemap.tile_size.x * scale.x,
                 (y as f32 + 0.5) * tilemap.tile_size.y * scale.y,
@@ -49,6 +52,7 @@ fn build_chunk(
                 center_offset,
                 uv_min,
                 uv_max,
+                tint: tilemap.tint_at(x, y),
             });
         }
     }
@@ -90,32 +94,41 @@ pub(super) fn build_all_chunks(
     })
 }
 
-/// 逐块脏重建：只重建 `tiles` 切片变化的块；`scale` 变化时所有块都要重建
+/// 逐块脏重建：只重建 `tiles`/`tint_ids` 切片变化的块；`scale` 变化时所有块都要重建
 /// （`center_offset` 预乘了 scale）。返回重建的块数。`solid`/`meta` 变化不触发
 /// 重建——它们不参与 sprite 生成，像素结果不变（由 2D golden 像素等价兜底）。
+///
+/// M72-02 自动瓦片的脏判定要**外扩一格**：一格的图集条目由它的四个邻格决定，
+/// 改 A 格会连带改变相邻块里贴着边界的那一格的解算结果。`tint_ids` 只影响顶点色、
+/// 不影响 UV，因此按同一区域一起比对（它没有邻格依赖，不需要外扩）。
 pub(super) fn rebuild_dirty_chunks(
     layer: &mut CachedTilemapLayer,
     tilemap: &Tilemap,
     scale: Vec2,
 ) -> usize {
     let old = &layer.tilemap;
+    let halo = usize::from(tilemap.autotile);
     let mut rebuilt = 0usize;
     let mut total = 0usize;
     for chunk in &mut layer.chunks {
         let scale_changed = layer.transform.scale != scale;
-        // 逐行段比较：row-major 的 	iles 里块区域**不是连续切片**（块宽 < 层宽时
+        // 逐行段比较：row-major 的 tiles 里块区域**不是连续切片**（块宽 < 层宽时
         // 跨行），按块内每行 [y*width+ox, y*width+ox+w) 分段比对才覆盖真实区域。
-        let mut tiles_changed = false;
-        for y in chunk.oy..(chunk.oy + chunk.h) {
-            if old.tiles[y * old.width + chunk.ox..y * old.width + chunk.ox + chunk.w]
-                != tilemap.tiles
-                    [y * tilemap.width + chunk.ox..y * tilemap.width + chunk.ox + chunk.w]
+        let mut dirty = false;
+        for y in chunk.oy.saturating_sub(halo)..=(chunk.oy + chunk.h).min(tilemap.height - 1) {
+            let row_start = chunk.ox.saturating_sub(halo);
+            let row_end = (chunk.ox + chunk.w).min(tilemap.width - 1);
+            let stride = tilemap.width;
+            if old.tiles[y * stride + row_start..=y * stride + row_end]
+                != tilemap.tiles[y * stride + row_start..=y * stride + row_end]
+                || old.tint_ids[y * stride + chunk.ox..y * stride + chunk.ox + chunk.w]
+                    != tilemap.tint_ids[y * stride + chunk.ox..y * stride + chunk.ox + chunk.w]
             {
-                tiles_changed = true;
+                dirty = true;
                 break;
             }
         }
-        if scale_changed || tiles_changed {
+        if scale_changed || dirty {
             let rebuilt_chunk = build_chunk(tilemap, chunk.ox, chunk.oy, chunk.w, chunk.h, scale);
             total += rebuilt_chunk.sprites.len();
             *chunk = rebuilt_chunk;
@@ -199,7 +212,7 @@ pub(super) fn append_tilemap_layer<V: OverlayVertexSink>(
                 [tile.uv_max.x, tile.uv_max.y],
                 [tile.uv_min.x, tile.uv_max.y],
             ];
-            let tint = [1.0; 4];
+            let tint = tile.tint;
             let vertex = |corner: usize| {
                 V::from_ndc(
                     ndc_from_screen(positions[corner], viewport),
@@ -294,7 +307,7 @@ pub(super) fn append_tilemap_layer_world<V: WorldSpriteVertexSink>(
                 [tile.uv_max.x, tile.uv_max.y],
                 [tile.uv_min.x, tile.uv_max.y],
             ];
-            let tint = [1.0; 4];
+            let tint = tile.tint;
             let vertex = |corner: usize| {
                 V::from_world(
                     [positions[corner][0], positions[corner][1], 0.0],

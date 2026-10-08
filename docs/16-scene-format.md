@@ -175,6 +175,91 @@ component  7  RenderMode  mode=screen
 布尔字段只接受 `true`/`false`，拼错**报错**而不是静默当 false（`ccd` 被静默关掉会让高速子弹
 重新穿墙且毫无线索）。2D 的 `Tilemap` 实体仍会自动生成静态单元格碰撞体，不需要写 `Collider`。
 
+## 瓦片映射 `Tilemap`（M72-01 / M72-02）
+
+`Tilemap` 也是 `key=value;` 编码，字段顺序固定为
+`tile_size` → `width` → `height` → `texture` → `tiles_format` → `atlas_cols` → `atlas_rows`
+→ `tile_kinds` → `variant_count` → `autotile` → `variant_seed` → `tiles` → `solid`
+→（仅在有染色时）`tints` → `tints_rgb`。写出端只写这些，读入端**未知键一律报错**
+（`tile_kind=` 少写一个 s 被静默忽略，症状是"逻辑瓦全变成图集索引"，画面会错得很难看）。
+
+```text
+component  1  Tilemap  tile_size=32x32;width=40;height=23;texture=assets/art/tilesets/manor/manor_ground.png;tiles_format=1;atlas_cols=6;atlas_rows=1;tiles=4,4,4,3,...;solid=0001...
+```
+
+### 两种 tiles 编码
+
+| `tiles_format` | 写法 | 一格能表达的值 |
+| --- | --- | --- |
+| `0`（旧，仍能读） | 一个 ASCII 数字，无分隔符 | `0..9`，实际受旧图集 6 列限制为 `0..6` |
+| `1`（当前） | 逗号分隔十进制 | `0..atlas_cols*atlas_rows` |
+
+- `0` 表示空格，两种编码同义。
+- 写出端**恒写 `1`**：旧串读进来重存即升级，数据本身逐字段不变（唯一变的是版本号）。
+- 迁移工具：`cargo run -p game --example tilemap_resave --release -- [<project-root>...]`，
+  只重写 `component\t<id>\tTilemap\t<载荷>` 这一行，其余行按原始字节回写（含 CRLF）。
+  幂等，重跑得到同一份字节。
+- 迁移正确性的判据不是"看起来一样"而是**像素一样**：
+  `py tools/preview_scene.py scenes/<name>.scene` 在迁移前后必须逐字节相同。
+
+### 图集寻址：`atlas_cols` / `atlas_rows`
+
+条目 `n`（1 起）取图集里第 `col=(n-1) % cols`、`row=(n-1) // cols` 个子矩形，
+UV = `[col/cols, row/rows] .. [(col+1)/cols, (row+1)/rows]`。
+
+- **显式声明，不从贴图尺寸反推**：改贴图尺寸就静默重排所有格子，等于把整张地图换一遍。
+  代价是"贴图几列"由数据说话，`py tools/preview_scene.py` 会拿 `atlas_cols*tile_size`
+  与 PNG 实际宽高对账，对不上直接报错。
+- `atlas_rows == 1` 时 V 恰好是 `0..1`，与旧实现的"整幅拉伸"数值相同——所以旧图集在新代码下
+  不需要重新导出。
+- `TILE_PALETTE`（`engine/crates/rustlua-ecs/src/tilemap.rs`）现在只是**没有贴图时的调试色板**，
+  不再是列数真源。
+
+### 格子值的两种语义：图集索引 / 逻辑瓦
+
+由 `autotile` 与 `variant_count` 决定，`engine/crates/rustlua-ecs/src/tilemap.rs`
+`Tilemap::resolve_atlas_index` 一处解算：
+
+- `autotile=0` 且 `variant_count<=1`（默认）：格子值**就是**图集条目号，恒等映射。
+  仓库里所有既有场景与 Lua `tilemap.get_cell/set_cell` 的调用点都在这一档，语义未变。
+- 否则格子值是**逻辑瓦 kind**（`1..tile_kinds`），图集按下面布局排：
+
+```text
+条目 0                = 空格
+1 .. kinds*V          = 每种瓦的 V 个纯变体（V = max(variant_count,1)）
+kinds*V+1 + (kind-1)*16 + mask  = 该瓦的 4-bit 自动瓦片过渡槽
+```
+
+- **变体序号**必须是跨进程可复现的：FNV-1a 覆盖 `(x, y, variant_seed, 两个轴盐)`，
+  常量是 `VARIANT_HASH_OFFSET` / `VARIANT_HASH_PRIME` / `MIX_AXIS_X` / `MIX_AXIS_Y`。
+  **不许换成 `std` 的 `DefaultHasher`**——它按进程播种，症状是地表每帧抖一次，
+  所有画面比对门全红。改这四个常量中的任何一个 = 全图重排。
+- **掩码位序按 index 命名，不按方位命名**：地图的 row 0 在**最底**，图集的 row 0 在**最顶**，
+  "上邻居"在两个坐标系里指向相反的方向。位 0 = `y-1`、位 1 = `x+1`、位 2 = `y+1`、位 3 = `x-1`；
+  越界当作"没有邻居"。同 kind 才算邻居。
+- `variant_seed` 会序列化：编辑器与运行时读同一个值，否则预览图与实机不一致。
+
+### 每格染色 `tints` / `tints_rgb`
+
+顶点色是**乘法**染色（`engine/crates/engine/src/host/runtime_scene/tilemap.rs` 的
+`append_tilemap_layer` / `append_tilemap_layer_world` 都把 `Tilemap::tint_at` 写进顶点色）。
+存储是稀疏的：
+
+- `tints=<cellIndex>:<tintId>,...`——只记**不是白色**的格子，`tintId` 指向调色表；
+- `tints_rgb=r,g,b,a|r,g,b,a|...`——调色表，下标 1 起。
+
+不用定长数字串是因为 920 格的地图为了 16 格阴影要写 920 个数字，而数字串把 tint id
+卡死在 `0..9`。`cellIndex` 越界、`tintId` 超出调色表长度都**报错**，不做截断。
+Lua 侧入口：`tilemap.set_tint(id, x, y, r, g, b[, a])` / `tilemap.clear_tint(id, x, y)`。
+
+### 相关的验证入口
+
+```powershell
+cargo run -p game --example jhyt_m72_tileset_atlas --release   # 多行寻址 + 编码迁移 + 旧语义不变
+cargo run -p game --example tilemap_resave --release            # 重存工程内所有 .scene
+py tools/preview_scene.py scenes/manor.scene                    # 迁移前后的像素级对账（在工程根运行）
+```
+
 ## UI 组件字符串（屏幕空间）
 
 屏幕空间 UI 组件（`Text` / `Image` / `UiLayout` / `UiEvents`）同样用

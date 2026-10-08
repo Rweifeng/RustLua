@@ -117,7 +117,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let seed_buy: i64 = parts[2].parse()?;
         let harvest_sell: i64 = parts[3].parse()?;
         let seed_sell: i64 = parts[4].parse()?;
-        if profit < PROFIT_MIN || profit > PROFIT_MAX {
+        if !(PROFIT_MIN..=PROFIT_MAX).contains(&profit) {
             return Err(format!(
                 "{crop_id} 首茬利润/天 = {profit:.2}，应在 [{PROFIT_MIN}, {PROFIT_MAX}]（docs/33 §5.3）"
             )

@@ -109,6 +109,258 @@
     return { entities, rootId };
   }
 
+  // ---- Tilemap 的图集解算（M72-01/02）----
+  // 与 `engine/crates/rustlua-ecs/src/tilemap.rs` **逐位一致**：条目布局、4-bit 邻居掩码的
+  // 位序、FNV-1a 的参数与盐顺序都抄那一份。任何一边改了没同步另一边，web 与原生就各画各的
+  // （M72-12 三宿主目验会把它当"美术问题"查半天）。
+  // 掩码位序按 **index** 而不是按方位命名：地图 row 0 在**最底**，图集 row 0 在**最顶**，
+  // 同一句"上邻居"在两个坐标系里指向相反方向。
+  const AUTOTILE_SLOTS = 16;
+  const U64_MASK = (1n << 64n) - 1n;
+  const VARIANT_HASH_OFFSET = 0xcbf29ce484222325n;
+  const VARIANT_HASH_PRIME = 0x100000001b3n;
+  const MIX_AXIS_X = 0x9e3779b97f4a7c15n;
+  const MIX_AXIS_Y = 0xbf58476d1ce4e5b9n;
+  const DEFAULT_ATLAS_COLS = 6;
+  const DEFAULT_ATLAS_ROWS = 1;
+  const LEGACY_KIND_LIMIT = 6;
+
+  function mixU64(state, value) {
+    let mixed = state;
+    for (let index = 0; index < 8; index += 1) {
+      const byte = (value >> BigInt(8 * index)) & 0xffn;
+      mixed = ((mixed ^ byte) * VARIANT_HASH_PRIME) & U64_MASK;
+    }
+    return mixed;
+  }
+
+  // 确定性变体序号：绝不能用 Math.random / 每帧变化的种子，那等于地表每帧抖一次。
+  function variantFor(map, x, y) {
+    const count = map.variant_count;
+    if (count < 2) return 0;
+    let hash = VARIANT_HASH_OFFSET;
+    for (const value of [BigInt(x), BigInt(y), BigInt(map.variant_seed), MIX_AXIS_X, MIX_AXIS_Y]) {
+      hash = mixU64(hash, value);
+    }
+    return Number(hash % BigInt(count));
+  }
+
+  function autotileMask(map, x, y) {
+    const cells = map.cells;
+    const own = cells[y * map.width + x] || 0;
+    let mask = 0;
+    const offsets = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+    for (let bit = 0; bit < offsets.length; bit += 1) {
+      const nx = x + offsets[bit][0];
+      const ny = y + offsets[bit][1];
+      // 越界 = 没有邻居（地图边就是暴露的边界，不是内部瓦）。同 kind 才算邻居。
+      if (nx < 0 || ny < 0 || nx >= map.width || ny >= map.height) continue;
+      const neighbor = cells[ny * map.width + nx] || 0;
+      if (neighbor !== 0 && neighbor === own) mask |= 1 << bit;
+    }
+    return mask;
+  }
+
+  function maxTileId(map) {
+    if (map.autotile || map.variant_count > 1) return Math.max(1, map.tile_kinds);
+    return map.atlas_cols * map.atlas_rows;
+  }
+
+  function resolveAtlasIndex(map, x, y) {
+    const cell = map.cells[y * map.width + x] || 0;
+    if (cell === 0) return 0;
+    if (!map.autotile && map.variant_count <= 1) return cell;
+    const kind = cell;
+    if (kind > map.tile_kinds) return 0;
+    const span = Math.max(1, map.variant_count);
+    const capacity = map.atlas_cols * map.atlas_rows;
+    let index;
+    if (map.autotile) {
+      index = 1 + map.tile_kinds * span + (kind - 1) * AUTOTILE_SLOTS
+        + (autotileMask(map, x, y) % AUTOTILE_SLOTS);
+    } else {
+      index = 1 + (kind - 1) * span + variantFor(map, x, y);
+    }
+    return index <= capacity ? index : 0;
+  }
+
+  // 解算结果按布局缓存：10 万格档每帧重算 BigInt 哈希会把帧时间吃光，而"布局没变 ⇒ 解算
+  // 没变"是这条门的结构事实。`cells` 被改写（op C）或布局被改写（op L）时版本 +1，缓存作废。
+  function layoutKey(map) {
+    return [
+      map.width, map.height, map.atlas_cols, map.atlas_rows, map.tile_kinds,
+      map.variant_count, map.autotile ? 1 : 0, map.variant_seed, map.resolveVersion || 0,
+    ].join('|');
+  }
+
+  function resolvedEntries(map) {
+    const key = layoutKey(map);
+    if (map.resolved && map.resolved.key === key) return map.resolved.entries;
+    const entries = new Array(map.width * map.height);
+    for (let y = 0; y < map.height; y += 1) {
+      for (let x = 0; x < map.width; x += 1) {
+        entries[y * map.width + x] = resolveAtlasIndex(map, x, y);
+      }
+    }
+    map.resolved = { key, entries };
+    return entries;
+  }
+
+  function tintAt(map, index) {
+    const id = (map.tint_ids && map.tint_ids[index]) || 0;
+    if (id === 0) return null;
+    const color = map.tint_table && map.tint_table[id - 1];
+    return Array.isArray(color) && color.length === 4 ? color : null;
+  }
+
+  function blankTintIds(length, previous) {
+    const ids = new Array(length).fill(0);
+    if (Array.isArray(previous)) {
+      for (let i = 0; i < Math.min(length, previous.length); i += 1) ids[i] = previous[i] || 0;
+    }
+    return ids;
+  }
+
+  function parseTintTable(raw, previous) {
+    if (raw === undefined) return Array.isArray(previous) ? previous.slice() : [];
+    const table = [];
+    for (const entry of String(raw).split('|')) {
+      if (!entry) continue;
+      const parts = entry.split(',').map((part) => Number(part));
+      // 与 Rust 侧同一条硬规则：不是四段就整串报错，不截断也不补默认值。
+      if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part))) {
+        throw new Error(`tints_rgb entries must be r,g,b,a: ${entry}`);
+      }
+      table.push(parts);
+    }
+    return table;
+  }
+
+  function applySparseTints(map, raw) {
+    if (raw === undefined) return;
+    for (const entry of String(raw).split(',')) {
+      if (!entry) continue;
+      const [cell, id] = entry.split(':');
+      const index = Number(cell);
+      const tintId = Number(id);
+      if (!Number.isInteger(index) || index < 0 || index >= map.tint_ids.length) {
+        throw new Error(`tints cell index ${cell} is out of range`);
+      }
+      if (!Number.isInteger(tintId) || tintId < 0 || tintId > map.tint_table.length) {
+        throw new Error(`tints id ${id} has no entry in tints_rgb`);
+      }
+      map.tint_ids[index] = tintId;
+    }
+  }
+
+  // 离屏画布：三个宿主各有一套（浏览器 `document.createElement`、小游戏 `wx.createCanvas`、
+  // 部分环境只有 `OffscreenCanvas`）。这里必须**探到能用为止**，因为适配层的
+  // `document.createElement('canvas')` 返回的是没有 `getContext` 的桩对象（见
+  // `plugins/wechat-minigame/wechat-adapter.js`），只看 `typeof document` 会拿到废画布。
+  // 另一条硬约束：`wx.createCanvas()` **首次**调用返回的是上屏画布（适配层已经用它拿主画布，
+  // 但不保证命中那条路径），第二次起才是离屏。所以拿到候选后还要和主画布比一次身份——
+  // 万一相等，用它等于每格把整屏擦掉。
+  function createOffscreenCanvas(width, height, mainCanvas) {
+    const candidates = [];
+    if (typeof OffscreenCanvas === 'function') candidates.push(() => new OffscreenCanvas(width, height));
+    if (typeof document !== 'undefined' && typeof document.createElement === 'function') {
+      candidates.push(() => document.createElement('canvas'));
+    }
+    if (typeof wx !== 'undefined' && typeof wx.createCanvas === 'function') {
+      candidates.push(() => wx.createCanvas());
+    }
+    for (const create of candidates) {
+      let canvas = null;
+      try {
+        canvas = create();
+      } catch (error) {
+        continue;
+      }
+      if (!canvas || canvas === mainCanvas) continue;
+      canvas.width = width;
+      canvas.height = height;
+      const context = typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null;
+      if (context) return context;
+    }
+    return null;
+  }
+
+  // 逐格染色的画布实现。引擎的语义是「贴图色 × 顶点色」（着色器里的乘法混合），画布 2D
+  // 没有逐像素乘法，所以两趟复合：
+  //   1. `multiply` 填充：不透明格子得到 Ct×Cm（与引擎一致）；透明格子会被填上一层填充色；
+  //   2. `destination-in` 重采样原格子：把 alpha 乘回去，同时把第 1 步漏进透明区的颜色擦掉。
+  // 二值 alpha 的图集（本项目所有瓦片图）下与引擎逐像素一致；抗锯齿边缘像素按画布的复合
+  // 公式仍有极小偏差，这是画布 2D 的限制而非这里的近似选择，写在这里免得被当成美术问题。
+  // 结果按「贴图 + 源格 + 染色色」缓存：一层通常只有几种染色色（季节/阴影），每格新建
+  // 画布等于每帧几百次分配。
+  const tintedTileCache = new Map();
+  const TINTED_TILE_CACHE_LIMIT = 512;
+
+  function tintedTileContext(tileset, sx, sy, sw, sh, tint, mainCanvas) {
+    const key = `${sx},${sy},${sw},${sh}|${tint.slice(0, 3).join(',')}|${tint[3]}`;
+    const bySource = tintedTileCache.get(tileset) || new Map();
+    const cached = bySource.get(key);
+    if (cached) return cached;
+    const context = createOffscreenCanvas(Math.max(1, Math.round(sw)), Math.max(1, Math.round(sh)), mainCanvas);
+    if (!context) return null;
+    context.drawImage(tileset, sx, sy, sw, sh, 0, 0, context.canvas.width, context.canvas.height);
+    context.globalCompositeOperation = 'multiply';
+    context.fillStyle = `rgb(${Math.round(tint[0] * 255)},${Math.round(tint[1] * 255)},${Math.round(tint[2] * 255)})`;
+    context.fillRect(0, 0, context.canvas.width, context.canvas.height);
+    context.globalCompositeOperation = 'destination-in';
+    context.drawImage(tileset, sx, sy, sw, sh, 0, 0, context.canvas.width, context.canvas.height);
+    if (tint[3] < 1) {
+      // 染色的 alpha 也乘进顶点的 alpha（引擎：a = 贴图 a × 顶点 a）。
+      context.globalAlpha = Math.max(0, tint[3]);
+      context.fillRect(0, 0, context.canvas.width, context.canvas.height);
+      context.globalAlpha = 1;
+    }
+    context.globalCompositeOperation = 'source-over';
+    // 上限按「同一张贴图」计：条目数 = 源格数 × 染色色数，正常一张图集几十条就够，
+    // 超了说明数据在无限增长（比如把逐帧变化的色送进来），整张贴图的缓存一起丢。
+    if (bySource.size >= TINTED_TILE_CACHE_LIMIT) bySource.clear();
+    bySource.set(key, context);
+    tintedTileCache.set(tileset, bySource);
+    return context;
+  }
+
+  function drawTintedTile(ctx, tileset, sx, sy, sw, sh, tint, dx, dy, dw, dh) {
+    const tinted = tintedTileContext(tileset, sx, sy, sw, sh, tint, ctx.canvas);
+    // 宿主给不出离屏画布时退化成**不染色**直绘：宁可少一层染色，也不能把主画布当离屏用。
+    if (!tinted) {
+      ctx.drawImage(tileset, sx, sy, sw, sh, dx, dy, dw, dh);
+      return;
+    }
+    ctx.drawImage(tinted.canvas, 0, 0, tinted.canvas.width, tinted.canvas.height, dx, dy, dw, dh);
+  }
+
+  // Lua 侧的 tilemap 镜像：只交**数据**字段。`resolved`（解算缓存）与稠密的零值
+  // `tint_ids` 不进 Lua 启动串——前者是渲染器每帧重算用的，后者在没有染色时全是 0，
+  // 而 Lua 侧读的都是 `m.tint_ids[i] or 0`，稀疏表语义等价、串长短一半以上。
+  function luaTilemapMirror(map) {
+    const tints = {};
+    for (let index = 0; index < map.tint_ids.length; index += 1) {
+      if (map.tint_ids[index]) tints[index + 1] = map.tint_ids[index];
+    }
+    return {
+      tile_size: map.tile_size,
+      width: map.width,
+      height: map.height,
+      texture: map.texture,
+      cells: map.cells,
+      solid: map.solid,
+      tiles_format: map.tiles_format,
+      atlas_cols: map.atlas_cols,
+      atlas_rows: map.atlas_rows,
+      tile_kinds: map.tile_kinds,
+      variant_count: map.variant_count,
+      autotile: map.autotile,
+      variant_seed: map.variant_seed,
+      tint_ids: tints,
+      tint_table: map.tint_table,
+    };
+  }
+
   // 组件串 → 实体字段。**parseScene 与运行期 `sprite.set` / `animation.attach` 共用这一份**：
   // 引擎里这两条 API 收的正是同一种组件串（`Sprite=..` / `Animation=..`，见
   // core/script.rs 的 sprite.set 与 animation.attach），各写一份解析必然漂移。
@@ -135,14 +387,46 @@
       const p = parseProps(entity.components.Tilemap);
       const tileSize = String(p.tile_size || '32x32').split('x').map(Number);
       const previous = entity.tilemap || {};
+      const width = Number(p.width || previous.width || 0);
+      const height = Number(p.height || previous.height || 0);
+      // 两种 tiles 编码（docs/16 §瓦片映射）：
+      //   `tiles_format=0`（旧）：一格一个 ASCII 数字，无分隔符，表达不了 >9；
+      //   `tiles_format=1`（当前）：逗号分隔十进制图集索引。
+      // 存成数字数组而不是字符串：字符串只能一格一个字符，而渲染与 Lua 都要按**值**读写。
+      const format = Number(p.tiles_format || 0);
+      let cells;
+      if (p.tiles === undefined) {
+        cells = (previous.cells || []).slice();
+      } else if (format >= 1) {
+        cells = String(p.tiles).split(',').map((part) => Number(part) || 0);
+      } else {
+        cells = Array.from(String(p.tiles)).map((ch) => Number(ch) || 0);
+      }
+      const atlasCols = Number(p.atlas_cols || previous.atlas_cols || DEFAULT_ATLAS_COLS);
+      const atlasRows = Number(p.atlas_rows || previous.atlas_rows || DEFAULT_ATLAS_ROWS);
+      const variantCount = Math.max(1, Number(p.variant_count || previous.variant_count || 1));
+      // 没有 tile_kinds 的串只可能是旧图：旧编码里格子值恒 ≤ 6（一个图集列一个条目）。
+      const tileKinds = Number(p.tile_kinds || 0) || LEGACY_KIND_LIMIT;
       entity.tilemap = {
         tile_size: tileSize[0] || 32,
-        width: Number(p.width || previous.width || 0),
-        height: Number(p.height || previous.height || 0),
+        width,
+        height,
         texture: p.texture || previous.texture || '',
-        tiles: String(p.tiles !== undefined ? p.tiles : (previous.tiles || '')),
+        cells,
         solid: String(p.solid !== undefined ? p.solid : (previous.solid || '')),
+        tiles_format: format,
+        atlas_cols: atlasCols > 0 ? atlasCols : DEFAULT_ATLAS_COLS,
+        atlas_rows: atlasRows > 0 ? atlasRows : DEFAULT_ATLAS_ROWS,
+        tile_kinds: tileKinds,
+        variant_count: variantCount,
+        autotile: p.autotile === '1' || p.autotile === 'true' || previous.autotile === true,
+        variant_seed: Number(p.variant_seed || previous.variant_seed || 0),
+        // per-tile tint：稀疏存储。`tints=<cellIndex>:<tintId>,...` + `tints_rgb=r,g,b,a|...`。
+        tint_ids: blankTintIds(width * height, previous.tint_ids),
+        tint_table: parseTintTable(p.tints_rgb, previous.tint_table),
+        resolveVersion: previous.resolveVersion || 0,
       };
+      applySparseTints(entity.tilemap, p.tints);
     }
     if (entity.components.Animation) {
       // clip 字段顺序是 **name:sheet:cols:fps:looped**（引擎 AnimationClip::from_component_str），
@@ -404,9 +688,11 @@
   //   R  spawn（运行期实体，渲染器必须先认识它）
   //   S  sprite.set（Sprite 组件串）        X  animation.attach（Animation 组件串）
   //   C  tilemap.set_cell                   U  tilemap.set_texture
+  //   L  tilemap.set_atlas / set_kinds      I  tilemap.set_tint    J  tilemap.clear_tint
+  //   Z  tilemap.set_solid
   //   D  destroy                            T  Transform
   //   A  动画当前 clip + **帧序号**（不是累计 tick，引擎 current_frame 的算法在 Lua 侧）
-  // 结构行（R/S/X/C/U/D）由 op 列表一次性发出，T/A 每帧对存活实体重发。
+  // 结构行（R/S/X/C/U/L/I/J/Z/D）由 op 列表一次性发出，T/A 每帧对存活实体重发。
   function syncLuaScene(sceneState, text) {
     for (const line of String(text || '').split(/\r?\n/)) {
       if (!line) continue;
@@ -443,14 +729,60 @@
         entity.components.Animation = parts.slice(2).join('\t');
         applyComponents(entity);
       } else if (parts[0] === 'C') {
-        // 单字符编码与引擎一致（Tilemap::to_component_str 的 char::from(b'0' + cell)）。
+        // 格子值 = **图集条目**（默认布局）或**逻辑 kind**（autotile/变体布局），语义由
+        // 布局决定，解算在 `resolveAtlasIndex` 里做。这里只写原始格子值。
         const map = entity.tilemap;
         const x = Number(parts[2]);
         const y = Number(parts[3]);
         if (!map || !Number.isFinite(x) || !Number.isFinite(y)) continue;
         const index = y * map.width + x;
-        if (index < 0 || index >= map.tiles.length) continue;
-        map.tiles = map.tiles.slice(0, index) + String.fromCharCode(48 + (Number(parts[4]) || 0)) + map.tiles.slice(index + 1);
+        if (index < 0 || index >= map.cells.length) continue;
+        const value = Math.max(0, Math.min(255, Math.floor(Number(parts[4]) || 0)));
+        if (map.cells[index] === value) continue;
+        map.cells[index] = value;
+        // 解算缓存按版本作废：一格变，autotile 下邻格的掩码也可能跟着变，整层重算
+        // 才是不出错的口径（原生侧是脏块重建 + 掩码外圈，同一件事）。
+        map.resolveVersion = (map.resolveVersion || 0) + 1;
+      } else if (parts[0] === 'L') {
+        // `tilemap.set_atlas` / `tilemap.set_kinds`（M72-01/02 的布局声明）。整行是
+        // `L\t<id>\t<cols>\t<rows>\t<kinds>\t<variants>\t<autotile>\t<seed>`。
+        const map = entity.tilemap;
+        if (!map) continue;
+        const cols = Math.floor(Number(parts[2]) || 0);
+        const rows = Math.floor(Number(parts[3]) || 0);
+        if (cols > 0) map.atlas_cols = cols;
+        if (rows > 0) map.atlas_rows = rows;
+        map.tile_kinds = Math.max(0, Math.floor(Number(parts[4]) || 0));
+        map.variant_count = Math.max(1, Math.floor(Number(parts[5]) || 1));
+        map.autotile = parts[6] === '1' || parts[6] === 'true';
+        map.variant_seed = Math.floor(Number(parts[7]) || 0);
+        map.resolveVersion = (map.resolveVersion || 0) + 1;
+      } else if (parts[0] === 'I') {
+        // 逐格染色（M72-02）：`I\t<id>\t<x>\t<y>\t<r>\t<g>\t<b>\t<a>`。传**颜色**而不是
+        // 调色板序号：序号是存储细节，两侧各自去重即可，交换序号只会把两侧的对齐问题
+        // 暴露到画面上（原生 `set_tint` 也是在引擎侧分配的）。
+        const map = entity.tilemap;
+        const x = Number(parts[2]);
+        const y = Number(parts[3]);
+        if (!map || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+        const index = y * map.width + x;
+        if (index < 0 || index >= map.tint_ids.length) continue;
+        const color = [Number(parts[4]), Number(parts[5]), Number(parts[6]), Number(parts[7])];
+        if (color.some((part) => !Number.isFinite(part))) continue;
+        let tintId = map.tint_table.findIndex((existing) => existing.join(',') === color.join(','));
+        if (tintId < 0) {
+          map.tint_table.push(color);
+          tintId = map.tint_table.length - 1;
+        }
+        map.tint_ids[index] = tintId + 1;
+      } else if (parts[0] === 'J') {
+        // `tilemap.clear_tint`：`J\t<id>\t<x>\t<y>`（0 = 不画染色，回到贴图原色）。
+        const map = entity.tilemap;
+        const x = Number(parts[2]);
+        const y = Number(parts[3]);
+        if (!map || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+        const index = y * map.width + x;
+        if (index >= 0 && index < map.tint_ids.length) map.tint_ids[index] = 0;
       } else if (parts[0] === 'Z') {
         // `tilemap.set_solid`（运行期放置/拆除建筑）：Lua 侧的碰撞表与渲染侧的
         // `map.solid` 必须同步，否则"放置的建筑不挡路"（两侧数据分叉）。
@@ -960,11 +1292,18 @@
       // 地表贴图可能被 Lua 的 tilemap.set_texture 换掉（换季/换图），不能只靠
       // 场景载入时预加载的那一张，走按需加载（首帧未解出时先退化成纯色格）。
       const tileset = ensureTexture(images, pending, map.texture);
-      const columns = tileset ? Math.max(1, Math.floor(tileset.width / map.tile_size)) : 1;
+      // 图集按**声明的 cols×rows** 等分，不再从贴图宽度反推列数（M72-01 的原生侧同条
+      // 规则）：反推出来的列数与场景声明不一致时，画面只是"换个瓦片"，没人会发现数据
+      // 错了。解算后的条目（`resolvedEntries`）才是真正要采样的格子。
+      const cols = Math.max(1, map.atlas_cols);
+      const rows = Math.max(1, map.atlas_rows);
+      const entries = resolvedEntries(map);
+      const cellWidth = tileset ? tileset.width / cols : map.tile_size;
+      const cellHeight = tileset ? tileset.height / rows : map.tile_size;
       for (let y = 0; y < map.height; y += 1) {
         for (let x = 0; x < map.width; x += 1) {
           const i = y * map.width + x;
-          const tile = Number(map.tiles[i] || 0);
+          const tile = entries[i];
           // 瓦片值 0 = **不画**（原生 `build_chunk`：tilemap.rs:40 的 `if cell == 0 { continue }`），
           // 不是画底色。FarmGrid 初值 920 格全 0，靠的正是"空格透出下层夯土"；这里一旦补底色，
           // overlay 会把打底那张整个糊掉。纯色格只留给"瓦片有值但贴图还没解出"的首帧兜底。
@@ -973,9 +1312,14 @@
           const cell = toCanvas(origin.x + x * map.tile_size, origin.y + (y + 1) * map.tile_size);
           if (tileset) {
             const tileIndex = tile - 1;
-            const sx = (tileIndex % columns) * map.tile_size;
-            const sy = Math.floor(tileIndex / columns) * map.tile_size;
-            ctx.drawImage(tileset, sx, sy, map.tile_size, map.tile_size, cell.x, cell.y, map.tile_size * camZoom, map.tile_size * camZoom);
+            const sx = (tileIndex % cols) * cellWidth;
+            const sy = Math.floor(tileIndex / cols) * cellHeight;
+            const tint = tintAt(map, i);
+            if (tint) {
+              drawTintedTile(ctx, tileset, sx, sy, cellWidth, cellHeight, tint, cell.x, cell.y, map.tile_size * camZoom, map.tile_size * camZoom);
+            } else {
+              ctx.drawImage(tileset, sx, sy, cellWidth, cellHeight, cell.x, cell.y, map.tile_size * camZoom, map.tile_size * camZoom);
+            }
           } else {
             const solid = map.solid[i] === '1';
             ctx.fillStyle = solid ? '#334155' : '#1f2937';
@@ -1103,7 +1447,7 @@
     for (const entity of sceneState.entities.values()) {
       names[entity.name] = entity.id;
       if (entity.transform) transforms[entity.id] = entity.transform;
-      if (entity.tilemap) tilemaps[entity.id] = entity.tilemap;
+      if (entity.tilemap) tilemaps[entity.id] = luaTilemapMirror(entity.tilemap);
       if (entity.animation) animations[entity.id] = entity.animation;
       if (entity.collider) colliders[entity.id] = entity.collider;
     }
@@ -1612,13 +1956,117 @@ __rustlua_cell_index = function(m, x, y)
   if not x or not y or x < 0 or y < 0 or x >= m.width or y >= m.height then return nil end
   return math.floor(y) * m.width + math.floor(x) + 1
 end
+-- ---- Tilemap 图集解算的 Lua 侧镜像（M72-01/02）----
+-- 与引擎的 rustlua-ecs/src/tilemap.rs 同一套：条目布局、掩码位序、FNV 常数。
+-- 常数写成**带符号十进制**而不是 0xcbf2…：那个字面量超出 i64，写法在不同 Lua 版本上
+-- 的宽容度不一样，而这里要的只是同一串位（u64 与 i64 是同一 64 位，只是解释不同）。
+local AUTOTILE_SLOTS = 16
+local VARIANT_HASH_OFFSET = -3750763034362895579
+local VARIANT_HASH_PRIME = 1099511628211
+local MIX_AXIS_X = -7046029254386353131
+local MIX_AXIS_Y = -4658895280553007687
+local TWO64_MOD = {}
+-- **无符号**取模。Lua 的 % 是带符号的下取模，而 Rust 侧是 u64 取模：variant_count
+-- 不是 2 的幂时两者会给出不同结果（-1 对 3：Lua 得 2、u64 得 0），于是 web 与原生
+-- 各选各的变体——同一张图在两个宿主上长得不一样，还全都"自洽"。
+local function u64_mod(value, n)
+  if n <= 0 then return 0 end
+  if value >= 0 then return value % n end
+  local shift = TWO64_MOD[n]
+  if not shift then
+    local p = 1 % n
+    for _ = 1, 64 do p = (p * 2) % n end
+    TWO64_MOD[n] = p
+    shift = p
+  end
+  return (value % n + shift) % n
+end
+local function as_int(value)
+  -- 位运算要求整数：Lua 侧传进来的坐标/种子经常是 float（3.0 而不是 3），
+  -- 3.0 >> 8 会直接报错，而 JS 那边所有值天生是 double。
+  return math.floor(tonumber(value) or 0)
+end
+__rustlua_variant_for = function(m, x, y)
+  local count = m.variant_count or 1
+  if count < 2 then return 0 end
+  local hash = VARIANT_HASH_OFFSET
+  for _, value in ipairs({ as_int(x), as_int(y), as_int(m.variant_seed), MIX_AXIS_X, MIX_AXIS_Y }) do
+    for shift = 0, 56, 8 do
+      hash = (hash ~ ((value >> shift) & 0xff)) * VARIANT_HASH_PRIME
+    end
+  end
+  return u64_mod(hash, count)
+end
+__rustlua_autotile_mask = function(m, x, y)
+  x, y = as_int(x), as_int(y)
+  local own = (m.cells and m.cells[y * m.width + x + 1]) or 0
+  local mask = 0
+  -- 位序按 **index**：地图 row 0 在最底、图集 row 0 在最顶，"上邻居"在两个坐标系里
+  -- 指向相反方向，所以这里写的是 bit0=y-1、bit1=x+1、bit2=y+1、bit3=x-1。
+  local offsets = { { 0, -1 }, { 1, 0 }, { 0, 1 }, { -1, 0 } }
+  for bit = 1, 4 do
+    local nx, ny = x + offsets[bit][1], y + offsets[bit][2]
+    if nx >= 0 and ny >= 0 and nx < m.width and ny < m.height then
+      local neighbor = (m.cells and m.cells[ny * m.width + nx + 1]) or 0
+      -- 越界 = 没有邻居；同 kind 才算邻居（引擎里 own==0 时掩码恒 0）。
+      if neighbor ~= 0 and neighbor == own then mask = mask | (1 << (bit - 1)) end
+    end
+  end
+  return mask
+end
+__rustlua_max_tile_id = function(m)
+  if m.autotile or (m.variant_count or 1) > 1 then
+    return math.max(1, m.tile_kinds or 0)
+  end
+  return (m.atlas_cols or 6) * (m.atlas_rows or 1)
+end
+__rustlua_atlas_index = function(m, x, y)
+  local id = (m.cells and m.cells[y * m.width + x + 1]) or 0
+  if id == 0 then return 0 end
+  if not m.autotile and (m.variant_count or 1) <= 1 then return id end
+  local kind = id
+  if kind > (m.tile_kinds or 0) then return 0 end
+  local span = math.max(1, m.variant_count or 1)
+  local capacity = (m.atlas_cols or 6) * (m.atlas_rows or 1)
+  local index
+  if m.autotile then
+    index = 1 + (m.tile_kinds or 0) * span + (kind - 1) * AUTOTILE_SLOTS
+      + (__rustlua_autotile_mask(m, x, y) % AUTOTILE_SLOTS)
+  else
+    index = 1 + (kind - 1) * span + __rustlua_variant_for(m, x, y)
+  end
+  return index <= capacity and index or 0
+end
+-- 布局整行重发（set_atlas / set_kinds 都改的是同一份布局）：一行带全部七个字段，
+-- 比"哪个字段变了发哪几个"少一类两侧对齐问题。
+function __rustlua_emit_layout(m, id)
+  __rustlua_emit('L\t' .. id .. '\t' .. (m.atlas_cols or 6) .. '\t' .. (m.atlas_rows or 1)
+    .. '\t' .. (m.tile_kinds or 0) .. '\t' .. (m.variant_count or 1)
+    .. '\t' .. (m.autotile and 1 or 0) .. '\t' .. (m.variant_seed or 0))
+end
+__rustlua_tint_at = function(m, x, y)
+  local i = __rustlua_cell_index(m, x, y)
+  local tint_id = i and m.tint_ids and m.tint_ids[i] or 0
+  local color = tint_id > 0 and m.tint_table and m.tint_table[tint_id] or nil
+  -- 未染色的格子读回**白**（引擎 tint_at 的 [1,1,1,1]：乘法下白 = 不变）。
+  return { r = color and color[1] or 1, g = color and color[2] or 1,
+    b = color and color[3] or 1, a = color and color[4] or 1 }
+end
 tilemap = {
   -- 引擎的 tilemap.get 带 texture（season_visual 靠它判断"是否已是目标地表"，
-  -- 少了这个字段就会每帧重复写组件、网格反复重建）。
+  -- 少了这个字段就会每帧重复写组件、网格反复重建）。图集布局（M72-01/02）也在同一张
+  -- 表里读回：数据驱动的美术脚本要能检查"格子按几列几行寻址"，而不只是知道用了哪张贴图。
   get = function(id)
     local m = __rustlua_tilemap_of(id)
     if not m then return nil end
-    return { width = m.width, height = m.height, tile_size = m.tile_size, texture = m.texture }
+    return {
+      width = m.width, height = m.height, tile_size = m.tile_size, texture = m.texture,
+      tiles_format = m.tiles_format or 0,
+      atlas_cols = m.atlas_cols or 6, atlas_rows = m.atlas_rows or 1,
+      tile_kinds = m.tile_kinds or 0, variant_count = m.variant_count or 1,
+      autotile = m.autotile == true, variant_seed = m.variant_seed or 0,
+      max_tile_id = __rustlua_max_tile_id(m),
+    }
   end,
   is_solid = function(id, x, y)
     local m = __rustlua_tilemap_of(id)
@@ -1632,7 +2080,7 @@ tilemap = {
     if not m then error('entity has no tilemap', 2) end
     local i = __rustlua_cell_index(m, x, y)
     if not i then return 0 end
-    return tonumber(string.sub(m.tiles, i, i)) or 0
+    return m.cells[i] or 0
   end,
   set_cell = function(id, x, y, value)
     local m = __rustlua_tilemap_of(id)
@@ -1640,13 +2088,63 @@ tilemap = {
     local cx, cy = math.floor(tonumber(x) or -1), math.floor(tonumber(y) or -1)
     local i = __rustlua_cell_index(m, cx, cy)
     if not i then error('tilemap cell (' .. tostring(x) .. ', ' .. tostring(y) .. ') is out of bounds', 2) end
+    -- 越界的格子值当场报错（引擎 Tilemap::set_cell 的 InvalidCellIndex）：写 7 进一张
+    -- 6 列 1 行的图集，下一格读回来是 7、画出来是空的，静默写进去等于把问题留给画面。
+    local code = math.floor(tonumber(value) or 0)
+    if code < 0 or code > __rustlua_max_tile_id(m) then
+      error('tile cell index ' .. code .. ' is out of atlas range', 2)
+    end
     -- Lua 侧自身也要跟着变：tilemap.get_cell 必须读到刚写进去的值（farm 依赖它
     -- 判断「这块地已经锄过了」，只发渲染 op 会让两边数据分叉）。
-    -- 单字符编码与引擎一致（Tilemap::to_component_str 的 char::from(b'0' + cell)）。
-    local code = math.floor(tonumber(value) or 0)
-    m.tiles = string.sub(m.tiles, 1, i - 1) .. string.char(48 + code) .. string.sub(m.tiles, i + 1)
-    __rustlua_emit('C\t' .. id .. '\t' .. cx .. '\t' .. cy .. '\t' .. tostring(value))
+    m.cells[i] = code
+    __rustlua_emit('C\t' .. id .. '\t' .. cx .. '\t' .. cy .. '\t' .. code)
     return true
+  end,
+  -- 图集布局声明（M72-01）：tilemap.set_atlas(id, cols, rows)。显式声明，不从贴图
+  -- 尺寸反推——贴图被重新缩放时反推会静默重排每一个格子。
+  set_atlas = function(id, cols, rows)
+    local m = __rustlua_tilemap_of(id)
+    if not m then error('entity has no tilemap', 2) end
+    local c, r = math.floor(tonumber(cols) or 0), math.floor(tonumber(rows) or 0)
+    if c < 1 or r < 1 then error('tileset atlas must have at least one column and one row', 2) end
+    m.atlas_cols, m.atlas_rows = c, r
+    __rustlua_emit_layout(m, id)
+    return true
+  end,
+  -- 逻辑 kind 布局（M72-02）：tilemap.set_kinds(id, kinds, variants, autotile?, seed?)。
+  -- 格子值的意思随布局改变（1..kinds 的逻辑 kind ↔ 图集条目），值本身不动。
+  set_kinds = function(id, kinds, variants, autotile, seed)
+    local m = __rustlua_tilemap_of(id)
+    if not m then error('entity has no tilemap', 2) end
+    local k = math.floor(tonumber(kinds) or 0)
+    local v = math.max(1, math.floor(tonumber(variants) or 1))
+    if k < 0 then error('tile_kinds must not be negative', 2) end
+    m.tile_kinds, m.variant_count = k, v
+    m.autotile = autotile == true
+    if seed ~= nil then m.variant_seed = math.floor(tonumber(seed) or 0) end
+    -- 与引擎 validate_layout 同一条硬规则：块放不下图集就报错，不画"少几格"的画面。
+    local needed = k * (math.max(1, v) + 16 * (m.autotile and 1 or 0))
+    if needed > m.atlas_cols * m.atlas_rows then
+      error('tileset atlas is too small: layout needs ' .. needed .. ' entries but has '
+        .. (m.atlas_cols * m.atlas_rows), 2)
+    end
+    __rustlua_emit_layout(m, id)
+    return true
+  end,
+  -- 本格这帧实际采样哪个图集条目（0 = 不画）。只读解算结果，供门与脚本断言确定性。
+  atlas_index = function(id, x, y)
+    local m = __rustlua_tilemap_of(id)
+    if not m then error('entity has no tilemap', 2) end
+    local cx, cy = math.floor(tonumber(x) or -1), math.floor(tonumber(y) or -1)
+    if not __rustlua_cell_index(m, cx, cy) then return 0 end
+    return __rustlua_atlas_index(m, cx, cy)
+  end,
+  autotile_mask = function(id, x, y)
+    local m = __rustlua_tilemap_of(id)
+    if not m then error('entity has no tilemap', 2) end
+    local cx, cy = math.floor(tonumber(x) or -1), math.floor(tonumber(y) or -1)
+    if not __rustlua_cell_index(m, cx, cy) then return 0 end
+    return __rustlua_autotile_mask(m, cx, cy)
   end,
   -- 阻挡层改写（建筑放置/拆除走这里）：引擎侧会重建该图的静态刚体
   -- （refresh_tilemap_physics），web 侧同样要**当场**影响移动——Lua 的碰撞表
@@ -1670,6 +2168,50 @@ tilemap = {
     m.texture = path
     __rustlua_emit('U\t' .. id .. '\t' .. path)
     return true
+  end,
+  -- 逐格染色（M72-02 的四季/阴湿地表与阴影压暗）：语义是**乘法**（顶点色 × 贴图色），
+  -- 不是半透明叠加。相同颜色复用同一个序号（引擎 register_tint 的幂等），否则一层
+  -- 季节色会往调色板里塞几百份重复项。
+  set_tint = function(id, x, y, r, g, b, a)
+    local m = __rustlua_tilemap_of(id)
+    if not m then error('entity has no tilemap', 2) end
+    local cx, cy = math.floor(tonumber(x) or -1), math.floor(tonumber(y) or -1)
+    local i = __rustlua_cell_index(m, cx, cy)
+    if not i then error('tilemap cell (' .. tostring(x) .. ', ' .. tostring(y) .. ') is out of bounds', 2) end
+    local color = { tonumber(r) or 1, tonumber(g) or 1, tonumber(b) or 1, tonumber(a) or 1 }
+    m.tint_table = m.tint_table or {}
+    m.tint_ids = m.tint_ids or {}
+    local tint_id = 0
+    for k = 1, #m.tint_table do
+      local c = m.tint_table[k]
+      if c[1] == color[1] and c[2] == color[2] and c[3] == color[3] and c[4] == color[4] then
+        tint_id = k
+        break
+      end
+    end
+    if tint_id == 0 then
+      tint_id = #m.tint_table + 1
+      m.tint_table[tint_id] = color
+    end
+    m.tint_ids[i] = tint_id
+    __rustlua_emit('I\t' .. id .. '\t' .. cx .. '\t' .. cy .. '\t'
+      .. color[1] .. '\t' .. color[2] .. '\t' .. color[3] .. '\t' .. color[4])
+    return true
+  end,
+  clear_tint = function(id, x, y)
+    local m = __rustlua_tilemap_of(id)
+    if not m then error('entity has no tilemap', 2) end
+    local cx, cy = math.floor(tonumber(x) or -1), math.floor(tonumber(y) or -1)
+    local i = __rustlua_cell_index(m, cx, cy)
+    if not i then error('tilemap cell (' .. tostring(x) .. ', ' .. tostring(y) .. ') is out of bounds', 2) end
+    if m.tint_ids then m.tint_ids[i] = nil end
+    __rustlua_emit('J\t' .. id .. '\t' .. cx .. '\t' .. cy)
+    return true
+  end,
+  tint = function(id, x, y)
+    local m = __rustlua_tilemap_of(id)
+    if not m then error('entity has no tilemap', 2) end
+    return __rustlua_tint_at(m, math.floor(tonumber(x) or -1), math.floor(tonumber(y) or -1))
   end,
   -- A* 寻路（引擎 core/tilemap.rs 的 Map::find_path 同构）：返回 **1 基** 的
   -- {x=,y=} 格数组（含起终点），走不通返回 nil + 原因字符串。

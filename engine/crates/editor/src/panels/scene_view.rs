@@ -4,7 +4,9 @@ use crate::EditorApp;
 use crate::geometry::{
     parse_transform, polygon_intersects_rect, rotated_contains, rotated_corners,
 };
-use crate::panels::tilemap_tools::{CellRect, TileFill, copy_region, fill_rect, paste_region};
+use crate::panels::tilemap_tools::{
+    CellRect, TileFill, clamp_brush, copy_region, fill_rect, paste_region,
+};
 use crate::play_sync::{game_screen_texture, panel_scene_document};
 use crate::preview_session::PreviewSession;
 use crate::scene_interaction::{InteractionEvent, ToolPhase};
@@ -2592,7 +2594,7 @@ impl EditorApp {
             }
         } else {
             TileFill {
-                value: Some(self.tilemap.brush.min(6)),
+                value: Some(clamp_brush(&self.tilemap.map, self.tilemap.brush)),
                 solid: None,
             }
         };
@@ -2645,7 +2647,11 @@ impl EditorApp {
         if self.tilemap.paint_collision {
             self.tilemap.map.solid[index] = !erase;
         } else {
-            self.tilemap.map.tiles[index] = if erase { 0 } else { self.tilemap.brush.min(6) };
+            self.tilemap.map.tiles[index] = if erase {
+                0
+            } else {
+                clamp_brush(&self.tilemap.map, self.tilemap.brush)
+            };
         }
     }
 

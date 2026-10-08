@@ -1113,15 +1113,21 @@ const COLLIDER_3D_FIELDS: &[FieldSchema] = &[
 ];
 
 /// `Tilemap::to_component_str`：
-/// `tile_size=<宽x高>;width=..;height=..;texture=..;tiles=..;solid=..`
+/// `tile_size=<宽x高>;width=..;height=..;texture=..;tiles_format=..;atlas_cols=..;
+///  atlas_rows=..;tiles=..;solid=..`（用 autotile/变体/着色时再带
+///  `tile_kinds`/`variant_count`/`autotile`/`variant_seed`/`tints`/`tints_rgb`）
 ///
 /// required 判定：`tile_size`/`width`/`height`/`tiles`/`solid` 缺席时解析器分别报
 /// `missing tile_size` / `missing width` / … → **required**；`texture` 缺席时回退
 /// [`crate::tilemap::DEFAULT_TILESET`] → **optional**。
 ///
-/// `tiles`/`solid` 是**逐格字符序列**（`tiles` 用 `0`-`6`、`solid` 用 `0`/`1`，行优先），
+/// `tiles`/`solid` 是**逐格序列**（`tiles` 自 M72-01 起是逗号分隔十进制图集索引，
+/// `tiles_format=0` 的旧串是逐格单个数字；`solid` 恒为 `0`/`1` 字符），行优先，
 /// 不是整数也不是向量，所以只能是 `Text`；"长度 = `width × height`"是跨字段规则，
 /// schema 模型表达不了（由引擎解析器的 `LengthMismatch` 兜底）。
+///
+/// 图集寻址与 autotile 字段全部 **optional**：缺席即 6 列 × 1 行、无变体、无 autotile —
+/// 与 M72-01 之前的所有场景同义，所以旧串不会因新字段被判缺。
 ///
 /// 规则：
 /// - `tile_size`/`width`/`height`/`tiles`/`solid` 的非负：解析器的 `tile_size` 必须是正数、
@@ -1136,8 +1142,17 @@ const TILEMAP_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("width", FieldKind::Int, true).with_rules(&[FieldRule::NonNegative]),
     FieldSchema::new("height", FieldKind::Int, true).with_rules(&[FieldRule::NonNegative]),
     FieldSchema::new("texture", FieldKind::Text, false).with_rules(&[REQUIRED_TEXTURE_RULE]),
+    FieldSchema::new("tiles_format", FieldKind::Int, false).with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("atlas_cols", FieldKind::Int, false).with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("atlas_rows", FieldKind::Int, false).with_rules(&[FieldRule::NonNegative]),
     FieldSchema::new("tiles", FieldKind::Text, true).with_rules(&[FieldRule::NonEmpty]),
     FieldSchema::new("solid", FieldKind::Text, true).with_rules(&[FieldRule::NonEmpty]),
+    FieldSchema::new("tile_kinds", FieldKind::Int, false).with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("variant_count", FieldKind::Int, false).with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("autotile", FieldKind::Bool, false),
+    FieldSchema::new("variant_seed", FieldKind::Int, false).with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("tints", FieldKind::Text, false),
+    FieldSchema::new("tints_rgb", FieldKind::Text, false),
 ];
 
 /// `ContainerStyle::to_component_str`：`Container` 自动布局样式（E17）。

@@ -38,6 +38,173 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             t.set("width", map.width)?;
             t.set("height", map.height)?;
             t.set("texture", map.texture.clone())?;
+            // M72-01/02: the atlas layout is part of the tilemap's public contract —
+            // gates and data-driven art scripts must be able to read (and check) how
+            // cell ids address the tileset, not just which texture they sample.
+            t.set("tiles_format", map.tiles_format)?;
+            t.set("atlas_cols", map.atlas_cols)?;
+            t.set("atlas_rows", map.atlas_rows)?;
+            t.set("tile_kinds", map.tile_kinds)?;
+            t.set("variant_count", map.variant_count)?;
+            t.set("autotile", map.autotile)?;
+            t.set("variant_seed", map.variant_seed)?;
+            t.set("max_tile_id", map.max_tile_id())?;
+            Ok(mlua::Value::Table(t))
+        })?,
+    )?;
+    // `tilemap.set_atlas(id, cols, rows)` declares how many columns/rows the
+    // tileset packs. Explicit rather than derived from the texture size: a
+    // resized PNG must never silently re-map every cell.
+    let s = Rc::clone(&state);
+    tilemap.set(
+        "set_atlas",
+        lua.create_function(move |_, (id, cols, rows): (i64, usize, usize)| {
+            let id = entity_from_lua(id)?;
+            let mut state = s.lua_borrow_mut()?;
+            require_alive(&state, id)?;
+            let map = state
+                .world
+                .get_mut::<Tilemap>(id)
+                .map_err(world_error)?
+                .ok_or_else(|| api_error("entity has no tilemap"))?;
+            map.atlas_cols = cols;
+            map.atlas_rows = rows;
+            map.validate_layout()
+                .map_err(|error| api_error(error.to_string()))?;
+            Ok(())
+        })?,
+    )?;
+    // `tilemap.set_kinds(id, kinds, variant_count, autotile?, seed?)` switches a
+    // map between direct atlas indexing (M72-01) and logical-tile resolution
+    // (M72-02). Cells keep storing ids; only their meaning changes:
+    //   * `variant_count == 1 && !autotile` -> id **is** the atlas entry index.
+    //   * otherwise -> id is a logical kind (1..=kinds) resolved per cell by
+    //     variant hash and neighbour mask.
+    let s = Rc::clone(&state);
+    tilemap.set(
+        "set_kinds",
+        lua.create_function(
+            move |_,
+                  (id, kinds, variants, autotile, seed): (
+                i64,
+                usize,
+                usize,
+                Option<bool>,
+                Option<u32>,
+            )| {
+                let id = entity_from_lua(id)?;
+                let mut state = s.lua_borrow_mut()?;
+                require_alive(&state, id)?;
+                let map = state
+                    .world
+                    .get_mut::<Tilemap>(id)
+                    .map_err(world_error)?
+                    .ok_or_else(|| api_error("entity has no tilemap"))?;
+                map.tile_kinds = kinds;
+                map.variant_count = variants;
+                map.autotile = autotile.unwrap_or(false);
+                if let Some(seed) = seed {
+                    map.variant_seed = seed;
+                }
+                map.validate_layout()
+                    .map_err(|error| api_error(error.to_string()))?;
+                Ok(())
+            },
+        )?,
+    )?;
+    // `tilemap.atlas_index(id, x, y)` -> the tileset entry a cell samples this
+    // frame (`0` = nothing drawn). Read-only view of the resolution the
+    // renderer uses, so gates can assert determinism without reading pixels.
+    let s = Rc::clone(&state);
+    tilemap.set(
+        "atlas_index",
+        lua.create_function(move |_, (id, x, y): (i64, usize, usize)| {
+            let id = entity_from_lua(id)?;
+            let state = s.lua_borrow()?;
+            require_alive(&state, id)?;
+            let Some(map) = state.world.get::<Tilemap>(id).map_err(world_error)? else {
+                return Err(api_error("entity has no tilemap"));
+            };
+            Ok(map.resolve_atlas_index(x, y))
+        })?,
+    )?;
+    // `tilemap.autotile_mask(id, x, y)` -> 4-bit neighbour mask (see `TileNeighbor`).
+    let s = Rc::clone(&state);
+    tilemap.set(
+        "autotile_mask",
+        lua.create_function(move |_, (id, x, y): (i64, usize, usize)| {
+            let id = entity_from_lua(id)?;
+            let state = s.lua_borrow()?;
+            require_alive(&state, id)?;
+            let Some(map) = state.world.get::<Tilemap>(id).map_err(world_error)? else {
+                return Err(api_error("entity has no tilemap"));
+            };
+            Ok(map.autotile_mask(x, y))
+        })?,
+    )?;
+    // `tilemap.set_tint(id, x, y, r, g, b, a?)` paints one cell's vertex color
+    // (season/moisture wash and shadow darkening, M72-02/06);
+    // `tilemap.clear_tint(id, x, y)` untints it again.
+    let s = Rc::clone(&state);
+    tilemap.set(
+        "set_tint",
+        lua.create_function(
+            move |_, (id, x, y, r, g, b, a): (i64, usize, usize, f32, f32, f32, Option<f32>)| {
+                let id = entity_from_lua(id)?;
+                let mut state = s.lua_borrow_mut()?;
+                require_alive(&state, id)?;
+                let map = state
+                    .world
+                    .get_mut::<Tilemap>(id)
+                    .map_err(world_error)?
+                    .ok_or_else(|| api_error("entity has no tilemap"))?;
+                let color = [r, g, b, a.unwrap_or(1.0)];
+                if map.tint_at(x, y) != color {
+                    // A cell reuses the map's existing entry rather than growing
+                    // the palette with a duplicate of an equal color.
+                    let tint_id = map
+                        .register_tint(color)
+                        .map_err(|error| api_error(error.to_string()))?;
+                    map.set_tint(x, y, tint_id)
+                        .map_err(|error| api_error(error.to_string()))?;
+                }
+                Ok(())
+            },
+        )?,
+    )?;
+    let s = Rc::clone(&state);
+    tilemap.set(
+        "clear_tint",
+        lua.create_function(move |_, (id, x, y): (i64, usize, usize)| {
+            let id = entity_from_lua(id)?;
+            let mut state = s.lua_borrow_mut()?;
+            require_alive(&state, id)?;
+            let map = state
+                .world
+                .get_mut::<Tilemap>(id)
+                .map_err(world_error)?
+                .ok_or_else(|| api_error("entity has no tilemap"))?;
+            map.set_tint(x, y, 0)
+                .map_err(|error| api_error(error.to_string()))?;
+            Ok(())
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    tilemap.set(
+        "tint",
+        lua.create_function(move |lua, (id, x, y): (i64, usize, usize)| {
+            let id = entity_from_lua(id)?;
+            let state = s.lua_borrow()?;
+            require_alive(&state, id)?;
+            let Some(map) = state.world.get::<Tilemap>(id).map_err(world_error)? else {
+                return Err(api_error("entity has no tilemap"));
+            };
+            let [r, g, b, a] = map.tint_at(x, y);
+            let t = lua.create_table()?;
+            t.set("r", r)?;
+            t.set("g", g)?;
+            t.set("b", b)?;
+            t.set("a", a)?;
             Ok(mlua::Value::Table(t))
         })?,
     )?;

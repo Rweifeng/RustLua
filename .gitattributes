@@ -8,3 +8,9 @@
 # 只钉 hooks，不加 `* text=auto`：那会把仓库里既有 CRLF 文件（scripts/*.ps1 是
 # UTF-8 BOM + CRLF，与 PS 5.1 控制台口径一致）一次性改写成满屏脏 diff。
 git-hooks/* text eol=lf
+
+# L3 行为契约的基线 transcript 必须是 LF：门把 `include_str!` 读到的**工作区文件**与
+# 当场生成的输出逐字符比对，而生成侧写的是 `\n`。core.autocrlf=true 的 Windows 克隆会把
+# 检出的 .txt 变成 CRLF，于是这条门在干净仓库上也红，且失败信息里一个字符都看不出差别
+# （整份 33 行"全都不一致"）。同一类坑在黄金表上已经踩过一次（BOM 沉底错位）。
+engine/crates/rustlua-scripting/src/api_surface_snapshot/*.txt text eol=lf

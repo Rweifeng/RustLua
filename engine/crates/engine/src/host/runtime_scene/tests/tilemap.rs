@@ -9,11 +9,11 @@ fn flat_sprites(tilemap: &Tilemap, scale: Vec2) -> Vec<CachedTileSprite> {
     let mut sprites = Vec::new();
     for y in 0..tilemap.height {
         for x in 0..tilemap.width {
-            let cell = tilemap.tiles[y * tilemap.width + x];
-            if cell == 0 {
+            let entry = tilemap.resolve_atlas_index(x, y);
+            if entry == 0 {
                 continue;
             }
-            let (uv_min, uv_max) = Tilemap::tile_uv(cell);
+            let (uv_min, uv_max) = tilemap.atlas_uv(entry);
             let center_offset = Vec2::new(
                 (x as f32 + 0.5) * tilemap.tile_size.x * scale.x,
                 (y as f32 + 0.5) * tilemap.tile_size.y * scale.y,
@@ -22,6 +22,7 @@ fn flat_sprites(tilemap: &Tilemap, scale: Vec2) -> Vec<CachedTileSprite> {
                 center_offset,
                 uv_min,
                 uv_max,
+                tint: tilemap.tint_at(x, y),
             });
         }
     }
