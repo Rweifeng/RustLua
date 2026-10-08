@@ -239,11 +239,11 @@ M.TOUCH = {
       Shop = {
         { action = "place", label = "换页" },
         { action = "volume_up", label = "数量+" },
-        { action = "volume_down", label = "数量−" },
+        { action = "volume_down", label = "数量-" },
       },
       Pause = {
         { action = "volume_up", label = "音量+" },
-        { action = "volume_down", label = "音量−" },
+        { action = "volume_down", label = "音量-" },
       },
     },
   },

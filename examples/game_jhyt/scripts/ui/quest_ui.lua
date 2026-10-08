@@ -329,7 +329,7 @@ function M.render()
       local objective = objectives[i]
       local id = "QuestObj" .. i
       if objective then
-        local mark = objective.done and "✓" or "…"
+        local mark = objective.done and "●" or "…"
         local text = string.format("%s %s %d/%d", mark, tostring(objective.label), objective.current, objective.target)
         prefab.set_text(P, id, text)
         prefab.set_visible(P, id, true)

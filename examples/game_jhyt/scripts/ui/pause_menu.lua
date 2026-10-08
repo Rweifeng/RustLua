@@ -226,6 +226,8 @@ local clear_help_ui
 -- `jhyt_m66_pause_prefab`，黄金表 570 行钉死迁移前画面；"搬运不改画面"）。
 -- 面板贴图/几何/字号全部来自预设，脚本运行期只写 `prefab.set_text` / `set_rect` /
 -- `set_visible`，不再画动态层（docs/48 换肤贴图随之并入预设，skin 模块不再需要）。
+-- 但每一行同时 `ui_text.record` 进宽度登记表：载体换了，`jhyt_m30_cjk_text` 的量宽门
+-- 仍然只有那一个入口——搬家之后不登记，门就静默量不到这一页（触屏说明最长，最该量）。
 -- 必须定义在 switch_page / draw_frame 之前：Lua 词法作用域只认「已声明」的 local。
 local PRESET_PATH = "assets/prefabs/pause_menu.prefab"
 local pause_handle = nil
@@ -657,6 +659,7 @@ local function draw_frame(id_prefix, title, row_fill)
   local names = PAGE_ENTITIES[id_prefix]
   if names and names.title then
     prefab.set_text(handle, names.title, title)
+    ui_text.record("pse", id_prefix .. ":title", BOX.title_font, w - BOX.title_dx * 2, title)
   end
   if row_fill and names and names.sel then
     prefab.set_rect(handle, names.sel, x + BOX.list_dx, row_fill[1], x + w - BOX.list_dx, row_fill[1] + row_fill[2])
@@ -745,10 +748,16 @@ function M.render_help()
   end
   local handle = preset_spawn()
   switch_page("help")
+  local ROW_W = layout.list_width(PANEL)
+  ui_text.begin("pse")
   local rows = M.help_rows()
   local x, y, w, h = draw_frame("pse:h", "帮助", nil)
   -- 行表写到预设的 20 行槽（键盘形态 17 行）：section 行只有标签、值槽隐藏；
   -- 行数不足 20 时多余槽隐藏（行数随设备/绑定浮动，槽位固定，HELP_ROW_CAP 同原上界）。
+  -- 每行同时 `ui_text.record`：载体在实体层，宽度审计却只有登记表这一个入口，
+  -- 不登记就是"面板搬完家、量宽的门静默瞎掉"（触屏那套说明最长，正是最该量的一页）。
+  -- 标签列与值列各拿一份预算（与预设化之前同一口径）：值列多长取决于玩家怎么改键，
+  -- 两列分开才量得准。
   for i = 1, HELP_ROW_CAP do
     local row = rows[i]
     if row == nil then
@@ -758,14 +767,19 @@ function M.render_help()
       prefab.set_text(handle, "PseHRow" .. i, row.text)
       prefab.set_visible(handle, "PseHRow" .. i, true)
       prefab.set_visible(handle, "PseHVal" .. i, false)
+      ui_text.record("pse", "pse:h:row" .. i, HELP_FONT, ROW_W, row.text)
     else
       prefab.set_text(handle, "PseHRow" .. i, row.label)
       prefab.set_text(handle, "PseHVal" .. i, row.value)
       prefab.set_visible(handle, "PseHRow" .. i, true)
       prefab.set_visible(handle, "PseHVal" .. i, true)
+      ui_text.record("pse", "pse:h:row" .. i, HELP_FONT, HELP_VALUE_DX - 8, row.label)
+      ui_text.record("pse", "pse:h:val" .. i, HELP_FONT,
+        w - BOX.list_dx * 2 - HELP_VALUE_DX - 8, row.value)
     end
   end
   prefab.set_text(handle, "PseHHint", help_hint_line())
+  ui_text.record("pse", "pse:h:hint", BOX.hint_font, ROW_W, help_hint_line())
   return true
 end
 
@@ -781,6 +795,8 @@ function M.render()
   end
   local handle = preset_spawn()
   switch_page("menu")
+  local ROW_W = layout.list_width(PANEL)
+  ui_text.begin("pse")
   local rows = M.rows()
   -- 选中行的底衬矩形（列表从 y+BOX.list_dy 起，行高 ROW_H）。
   local sel_y = PANEL.y + BOX.list_dy + ui_state.index * ROW_H
@@ -790,9 +806,12 @@ function M.render()
     local label = row and row.label or ""
     label = (i - 1 == ui_state.index) and ("> " .. label) or ("  " .. label)
     prefab.set_text(handle, "PseRow" .. i, label)
+    ui_text.record("pse", "pse:row" .. i, 18.0, ROW_W, label)
   end
   prefab.set_text(handle, "PseMsg", tostring(ui_state.msg or ""))
+  ui_text.record("pse", "pse:msg", 15.0, ROW_W, tostring(ui_state.msg or ""))
   prefab.set_text(handle, "PseHint", hint_line())
+  ui_text.record("pse", "pse:hint", BOX.hint_font, ROW_W, hint_line())
   return true
 end
 
@@ -804,6 +823,8 @@ function M.render_settings()
   local handle = preset_spawn()
   sync_settings_focus()
   switch_page("settings")
+  local ROW_W = layout.list_width(PANEL)
+  ui_text.begin("pse")
   local rows = M.settings_rows()
   local sel_y = PANEL.y + BOX.list_dy + settings_state.index * ROW_H
   local x, y, w, h = draw_frame("pse:s", "设置", { sel_y, ROW_H })
@@ -812,6 +833,7 @@ function M.render_settings()
     local label = row and row.label or ""
     label = (i - 1 == settings_state.index) and ("> " .. label) or ("  " .. label)
     prefab.set_text(handle, "PseSRow" .. i, label)
+    ui_text.record("pse", "pse:s:row" .. i, 18.0, ROW_W, label)
     local bus = SETTINGS_ITEMS[i]
     if bus == "save" then
       -- 存档槽 + 主按钮静态在预设（PseSSlot / PseSBtnSave）。
@@ -830,7 +852,9 @@ function M.render_settings()
     end
   end
   prefab.set_text(handle, "PseSMsg", tostring(settings_state.msg or ""))
+  ui_text.record("pse", "pse:s:msg", 15.0, ROW_W, tostring(settings_state.msg or ""))
   prefab.set_text(handle, "PseSHint", settings_hint_line())
+  ui_text.record("pse", "pse:s:hint", BOX.hint_font, ROW_W, settings_hint_line())
   return true
 end
 

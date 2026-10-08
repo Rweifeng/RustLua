@@ -74,7 +74,7 @@ M.fish = {
   lakecarp = { id = "lakecarp", name = "青鱼", water = "mountain_lake", season = { "autumn" }, hours = nil, difficulty = 2, sell = 35 },
   grasscarp = { id = "grasscarp", name = "草鱼", water = "mountain_lake", season = { "summer", "autumn" }, hours = nil, difficulty = 2, sell = 28 },
   perch = { id = "perch", name = "鲈鱼", water = "mountain_lake", season = { "spring", "autumn" }, hours = { from = 1020, to = 1320 }, difficulty = 3, sell = 45 },
-  mandarin = { id = "mandarin", name = "鳜鱼", water = "mountain_lake", season = { "spring", "summer" }, hours = { from = 420, to = 720 }, difficulty = 3, sell = 55 },
+  mandarin = { id = "mandarin", name = "桂鱼", water = "mountain_lake", season = { "spring", "summer" }, hours = { from = 420, to = 720 }, difficulty = 3, sell = 55 },
   trout = { id = "trout", name = "虹鳟", water = "mountain_lake", season = { "autumn", "winter" }, hours = { from = 420, to = 720 }, difficulty = 3, sell = 60 },
   silverfish = { id = "silverfish", name = "银鱼", water = "mountain_lake", season = { "spring" }, hours = { from = 1320, to = 1440 }, difficulty = 3, sell = 50 },
   eel = { id = "eel", name = "鳗鱼", water = "mountain_lake", season = { "summer" }, hours = { from = 1320, to = 1440 }, difficulty = 3, sell = 65 },

@@ -4,7 +4,10 @@
 //! RGB 取 median 再经 fwidth 解码，直角/笔画末梢保持锐利、任意缩放不失真
 //! （TextMeshPro 同源方案）。
 
-use ab_glyph::{Font, FontArc, FontVec, Outline, OutlineCurve, Point, VariableFont};
+use ab_glyph::{
+    Font, FontArc, FontVec, Glyph, Outline, OutlineCurve, OutlinedGlyph, Point, PxScaleFactor,
+    VariableFont,
+};
 use bymsdfgen_core::{
     Bitmap, DistanceMapping, GeneratorConfig, Projection, Range, SdfTransformation, generate_sdf,
     geometry::{Contour, EdgeSegment, Shape},
@@ -27,6 +30,26 @@ const MAX_ATLAS_SIZE: u32 = 4096;
 /// 到 `[0,1]`（边缘 median=0.5），shader 的 fwidth 解码在任意字号下都保持
 /// ~1px 渐变。
 const PAD: i32 = 8;
+/// 像素字体（硬边点阵）栅格的 gutter：1 texel 透明边，防止 Nearest 采样在四边形
+/// 边界外溢到相邻单元。MSDF 的 `PAD` 是距离带宽度，点阵没有距离带，只需要防溢。
+const PIXEL_PAD: u32 = 1;
+/// 像素字体探测的候选 em 尺寸（px/em）下界与上界。
+/// 下界 8：再小的 CJK 点阵不可读，且探针覆盖像素数不足以判别。
+/// 上界 24：常见像素字的设计高度都在 8–24 之间（Fusion Pixel 12px、Zpix 12px）。
+const PIXEL_PROBE_MIN_PX: f32 = 8.0;
+const PIXEL_PROBE_MAX_PX: f32 = 24.0;
+/// 判定的最小样本：至少要这么多字形有非零覆盖，且**每个字形平均**点亮到
+/// `em² / PIXEL_PROBE_MIN_FILL_DIVISOR` 个 texel 以上，否则一次"全二值"只是没测到东西。
+///
+/// 亮度下限必须按 em 面积归一，不能写绝对 texel 数：实测 Fusion Pixel 的**子集**（发布
+/// 形态）里 `国`/`鼎` 不在收字范围内 → 探针只剩 6 个字形，12px 档总覆盖 188 texel，
+/// 绝对下限 200 判不过，检测就滑到下一个二值档 24px（= 设计像素的 2 倍），整条点阵路的
+/// `raster_scale` 跟着错。子集与全量必须判出同一个值，所以这里用尺度无关的占比判据。
+const PIXEL_PROBE_MIN_GLYPHS: usize = 4;
+const PIXEL_PROBE_MIN_FILL_DIVISOR: usize = 16;
+/// 探测用探针字符：密集 CJK + 半角 + 全角标点。像素字体的判别力主要来自
+/// 密集 CJK（笔画多 → 边界多 → 非整数网格时必然出现部分覆盖像素）。
+const PIXEL_PROBE_CHARS: [char; 8] = ['国', '露', '鼎', '藏', '8', 'A', '，', '。'];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VectorSegment {
@@ -46,6 +69,9 @@ pub struct VectorGlyph {
 pub struct FontVectorAtlas {
     font: FontArc,
     fallback: Option<FontArc>,
+    /// 与 `FontAtlas::is_pixel_font` 同一条判据：像素字体的轮廓是点阵矩形，矢量
+    /// 路径会把它们 AA 重采样成灰边，因此渲染层要据此退回点阵档。
+    pixel: Option<f32>,
     cached: HashMap<char, VectorGlyph>,
     by_id: Vec<VectorGlyph>,
     missing: HashSet<char>,
@@ -66,13 +92,28 @@ impl FontVectorAtlas {
     }
 
     pub fn new(font: FontArc, fallback: Option<FontArc>) -> Self {
+        let pixel = detect_pixel_size(&font);
         Self {
             font,
             fallback,
+            pixel,
             cached: HashMap::new(),
             by_id: Vec::new(),
             missing: HashSet::new(),
         }
+    }
+
+    /// 主字体是否被判为像素字体（与 `FontAtlas::is_pixel_font` 同一判据、同一字体
+    /// 字节）。矢量渲染会把点阵轮廓 AA 成灰边，所以为真时渲染层必须放弃矢量档。
+    #[must_use]
+    pub const fn is_pixel_font(&self) -> bool {
+        self.pixel.is_some()
+    }
+
+    /// 像素字体的设计像素高度（`None` = 不是像素字体）。
+    #[must_use]
+    pub const fn pixel_design_px(&self) -> Option<f32> {
+        self.pixel
     }
 
     /// Ascent in em, matching `FontAtlas::ascent_em` so vector and MSDF text
@@ -420,6 +461,9 @@ pub struct FontAtlas {
     font: FontArc,
     /// 后备字体：主字体缺的字形（glyph_id == 0）用它动态生成补充。
     fallback: Option<FontArc>,
+    /// `Some(设计像素高度)` = 像素字体（硬边点阵，1 texel = 1 设计像素）；
+    /// `None` = 平滑字体，走 MSDF。见 [`detect_pixel_size`]。
+    pixel: Option<f32>,
     width: u32,
     height: u32,
     pixels: Vec<u8>,
@@ -456,9 +500,11 @@ impl FontAtlas {
 
     fn new(font: FontArc, fallback: Option<FontArc>) -> Self {
         let size = INITIAL_ATLAS_SIZE;
+        let pixel = detect_pixel_size(&font);
         Self {
             font,
             fallback,
+            pixel,
             width: size,
             height: size,
             pixels: vec![0; (size * size * 4) as usize],
@@ -468,6 +514,27 @@ impl FontAtlas {
             version: 0,
             dirty: false,
         }
+    }
+
+    /// 字形栅格的 em 尺寸（px/em）：MSDF 是 [`RASTER_SCALE`]，像素字体是它的设计
+    /// 像素高度（1 texel = 1 设计像素）。布局侧的 `tex_scale` 必须由这个值算，
+    /// 不能写死 `RASTER_SCALE`（写死会让点阵字形显示成 8 倍大小）。
+    #[must_use]
+    pub fn raster_scale(&self) -> f32 {
+        self.pixel.unwrap_or(RASTER_SCALE)
+    }
+
+    /// `true` = 主字体被判为像素字体（硬边点阵），字形单元按 1 texel/设计像素栅格，
+    /// 文字 mesh 走 `sdf=2` 阈值档 + Nearest 采样。
+    #[must_use]
+    pub const fn is_pixel_font(&self) -> bool {
+        self.pixel.is_some()
+    }
+
+    /// 像素字体的设计像素高度（`None` = 不是像素字体）。
+    #[must_use]
+    pub const fn pixel_design_px(&self) -> Option<f32> {
+        self.pixel
     }
 
     /// 字形所属字体：主字体有该字用主字体，否则用后备字体，再否则主字体（.notdef）。
@@ -520,11 +587,12 @@ impl FontAtlas {
         self.font.descent_unscaled() / self.font.units_per_em().unwrap_or(1000.0)
     }
 
-    /// Horizontal advance in px at `RASTER_SCALE` without rasterizing the glyph
-    /// (used for whitespace, which has no outline / SDF cell).
+    /// Horizontal advance in px at [`FontAtlas::raster_scale`] without rasterizing
+    /// the glyph (used for whitespace, which has no outline / SDF cell).
     pub fn advance(&self, character: char) -> f32 {
         let (font, glyph_id) = self.font_for(character);
-        font.h_advance_unscaled(glyph_id) / font.units_per_em().unwrap_or(1000.0) * RASTER_SCALE
+        font.h_advance_unscaled(glyph_id) / font.units_per_em().unwrap_or(1000.0)
+            * self.raster_scale()
     }
 
     /// 只读度量探针（同一字体/后备字体，不复制字节、不光栅化）。
@@ -578,7 +646,7 @@ impl FontAtlas {
         if let Some(metrics) = self.cached.get(&character) {
             return Ok(*metrics);
         }
-        let glyph = rasterize_glyph(&self.font, &self.fallback, character);
+        let glyph = rasterize_glyph(&self.font, &self.fallback, character, self.pixel);
         self.insert_rasterized(glyph)
     }
 
@@ -599,6 +667,7 @@ impl FontAtlas {
         }
         let font = self.font.clone();
         let fallback = self.fallback.clone();
+        let pixel = self.pixel;
         // Phase A（并行）：光栅化全部字形，不触碰图集状态。按核数分块，避免
         // 每字形一线程的调度开销（CJK 预热数百字形时明显）。
         let workers = std::thread::available_parallelism()
@@ -617,7 +686,7 @@ impl FontAtlas {
                 handles.push(scope.spawn(move || {
                     block
                         .into_iter()
-                        .map(|ch| rasterize_glyph(&font, &fallback, ch))
+                        .map(|ch| rasterize_glyph(&font, &fallback, ch, pixel))
                         .collect()
                 }));
             }
@@ -760,9 +829,15 @@ struct PrewarmedGlyph {
     advance: f32,
 }
 
-/// 解析字形所属字体（主字体缺失 → 后备字体 → 主字体 .notdef）并光栅化 MSDF。
+/// 解析字形所属字体（主字体缺失 → 后备字体 → 主字体 .notdef）并光栅化。
+/// `pixel = Some(设计像素高度)` 走硬边点阵（1 texel = 1 设计像素），`None` 走 MSDF。
 /// 与 `FontAtlas::font_for` 选择逻辑一致；只读字体数据，可跨线程调用。
-fn rasterize_glyph(font: &FontArc, fallback: &Option<FontArc>, character: char) -> PrewarmedGlyph {
+fn rasterize_glyph(
+    font: &FontArc,
+    fallback: &Option<FontArc>,
+    character: char,
+    pixel: Option<f32>,
+) -> PrewarmedGlyph {
     let primary_id = font.glyph_id(character);
     let (face, glyph_id) = if primary_id.0 != 0 {
         (font, primary_id)
@@ -777,15 +852,31 @@ fn rasterize_glyph(font: &FontArc, fallback: &Option<FontArc>, character: char) 
         (font, primary_id)
     };
     let units_per_em = face.units_per_em().unwrap_or(1000.0);
-    let advance = face.h_advance_unscaled(glyph_id) / units_per_em * RASTER_SCALE;
-    // 打包矩形 = 字形像素包围盒 + 2*PAD 边距。
-    let (rect_w, rect_h) = match face.outline(glyph_id) {
-        Some(outline) => glyph_rect_size(&outline, units_per_em),
-        None => placeholder_rect_size(),
-    };
-    let (rgba, cell_rect, bounds) = match face.outline(glyph_id) {
-        Some(outline) => rasterize_msdf(&outline, rect_w, rect_h, units_per_em),
-        None => placeholder_msdf(rect_w, rect_h),
+    let scale = pixel.unwrap_or(RASTER_SCALE);
+    let advance = face.h_advance_unscaled(glyph_id) / units_per_em * scale;
+    let outline = face.outline(glyph_id);
+    let (rect_w, rect_h, rgba, cell_rect, bounds) = match (pixel, outline) {
+        (Some(design_px), Some(outline)) => {
+            let (rect_w, rect_h) = pixel_rect_size(&outline, units_per_em, design_px);
+            let (rgba, cell_rect, bounds) =
+                rasterize_pixel(&outline, rect_w, rect_h, units_per_em, design_px);
+            (rect_w, rect_h, rgba, cell_rect, bounds)
+        }
+        (None, Some(outline)) => {
+            let (rect_w, rect_h) = glyph_rect_size(&outline, units_per_em);
+            let (rgba, cell_rect, bounds) = rasterize_msdf(&outline, rect_w, rect_h, units_per_em);
+            (rect_w, rect_h, rgba, cell_rect, bounds)
+        }
+        (Some(design_px), None) => {
+            let side = pixel_placeholder_size(design_px);
+            let (rgba, cell_rect, bounds) = placeholder_pixel(side);
+            (side, side, rgba, cell_rect, bounds)
+        }
+        (None, None) => {
+            let (rect_w, rect_h) = placeholder_rect_size();
+            let (rgba, cell_rect, bounds) = placeholder_msdf(rect_w, rect_h);
+            (rect_w, rect_h, rgba, cell_rect, bounds)
+        }
     };
     PrewarmedGlyph {
         character,
@@ -814,6 +905,264 @@ fn glyph_rect_size(outline: &Outline, units_per_em: f32) -> (u32, u32) {
 fn placeholder_rect_size() -> (u32, u32) {
     let side = RASTER_SCALE as u32 + PAD as u32 * 2;
     (side, side)
+}
+
+/// 像素字体缺字占位方框的边长（设计像素，含 gutter）。
+fn pixel_placeholder_size(design_px: f32) -> u32 {
+    (design_px.round().max(1.0) as u32) + PIXEL_PAD * 2
+}
+
+/// 点阵字形在单元矩形里的整数设备像素包围盒（相对笔，y 向下）。
+///
+/// 不复用 `rasterize_msdf` 的"字形居中 + 非整数偏移"摆位：居中偏移本身是小数
+/// （`(rect - 字形宽)/2`），点阵一旦落在半 texel 上就不再是点阵。这里把字形贴在
+/// `(PIXEL_PAD, PIXEL_PAD)`，包围盒取栅格器自己的 `px_bounds`（保守整数盒）。
+fn pixel_px_bounds(outline: &Outline, units_per_em: f32, design_px: f32) -> ab_glyph::Rect {
+    let factor = PxScaleFactor {
+        horizontal: design_px / units_per_em,
+        vertical: design_px / units_per_em,
+    };
+    outline.px_bounds(factor, ab_glyph::point(0.0, 0.0))
+}
+
+/// 像素字体的打包矩形 = 整数包围盒 + `2*PIXEL_PAD` gutter。
+fn pixel_rect_size(outline: &Outline, units_per_em: f32, design_px: f32) -> (u32, u32) {
+    let b = pixel_px_bounds(outline, units_per_em, design_px);
+    (
+        (b.max.x - b.min.x).max(0.0) as u32 + PIXEL_PAD * 2,
+        (b.max.y - b.min.y).max(0.0) as u32 + PIXEL_PAD * 2,
+    )
+}
+
+/// Rasterizes a pixel-font glyph as a **hard-edged 1-bit block**: one texel per
+/// design pixel, coverage quantized at 0.5, value written to all of RGB (A=255)
+/// so the existing atlas format and the shader's `sdf == 2` threshold branch
+/// (`median(rgb) >= 0.5`) apply unchanged.
+///
+/// 覆盖阈值不会把本就该亮的像素压暗：实测 Fusion Pixel 12px 在 12 px/em 栅格下
+/// 471 个工程用字的覆盖值**只有 0.0 与 1.0 两档**（最大偏差 0.000000，见
+/// `tasks/plan/M72-03`），同一份字体在 `RASTER_SCALE=96` 下有 5876 个部分覆盖像素。
+fn rasterize_pixel(
+    outline: &Outline,
+    width: u32,
+    height: u32,
+    units_per_em: f32,
+    design_px: f32,
+) -> (Vec<u8>, [f32; 4], [f32; 4]) {
+    let factor = PxScaleFactor {
+        horizontal: design_px / units_per_em,
+        vertical: design_px / units_per_em,
+    };
+    let origin = outline.px_bounds(factor, ab_glyph::point(0.0, 0.0));
+    let w = width as usize;
+    let h = height as usize;
+    let mut pixels = vec![0u8; w * h * 4];
+    // alpha 整块写满（与 MSDF 档同口径：A 恒 255，信息只在 RGB 三通道）。
+    // 否则 gutter 会留 A=0，图集上传后"alpha 直方图"就混进了与点阵无关的一档。
+    for pixel in pixels.chunks_mut(4) {
+        pixel[3] = 255;
+    }
+    // 把字形整数包围盒的左上角落在单元 (PIXEL_PAD, PIXEL_PAD) 上。
+    let position = ab_glyph::point(
+        PIXEL_PAD as f32 - origin.min.x,
+        PIXEL_PAD as f32 - origin.min.y,
+    );
+    let outlined = OutlinedGlyph::new(
+        Glyph {
+            id: ab_glyph::GlyphId(0),
+            scale: design_px.into(),
+            position,
+        },
+        outline.clone(),
+        factor,
+    );
+    let block = outlined.px_bounds();
+    let block_w = block.max.x - block.min.x;
+    let block_h = block.max.y - block.min.y;
+    outlined.draw(|x, y, coverage| {
+        // 回调给的 (x,y) 是块内索引，落到单元坐标要加块的左上角（即 PIXEL_PAD）。
+        // 越界只可能是浮点误差（包围盒本来就是保守整数盒），丢弃而不是扩容，
+        // 保证矩形尺寸与打包器一致。
+        let cx = block.min.x.round() + x as f32;
+        let cy = block.min.y.round() + y as f32;
+        if cx < 0.0 || cy < 0.0 || cx >= width as f32 || cy >= height as f32 {
+            return;
+        }
+        let value = if coverage >= 0.5 { 255 } else { 0 };
+        let off = ((cy as usize) * w + cx as usize) * 4;
+        pixels[off..off + 3].fill(value);
+    });
+    let cell_rect = [
+        PIXEL_PAD as f32,
+        PIXEL_PAD as f32,
+        PIXEL_PAD as f32 + block_w,
+        PIXEL_PAD as f32 + block_h,
+    ];
+    // 相对笔的设备像素包围盒：position 只是单元内摆位，几何位置来自原点盒。
+    let bounds = [
+        origin.min.x,
+        origin.min.y,
+        origin.min.x + block_w,
+        origin.min.y + block_h,
+    ];
+    (pixels, cell_rect, bounds)
+}
+
+/// 缺失字形（点阵档）：画一个 1 texel 粗的空心方框。
+fn placeholder_pixel(side: u32) -> (Vec<u8>, [f32; 4], [f32; 4]) {
+    let w = side as usize;
+    let h = side as usize;
+    let mut pixels = vec![0u8; w * h * 4];
+    for pixel in pixels.chunks_mut(4) {
+        pixel[3] = 255;
+    }
+    let inner = side.saturating_sub(PIXEL_PAD * 2 + 1);
+    let write = |pixels: &mut Vec<u8>, x: u32, y: u32| {
+        let off = ((y as usize) * w + x as usize) * 4;
+        pixels[off] = 255;
+        pixels[off + 1] = 255;
+        pixels[off + 2] = 255;
+        pixels[off + 3] = 255;
+    };
+    for index in 0..side {
+        write(&mut pixels, index, 0);
+        write(&mut pixels, index, h as u32 - 1);
+        write(&mut pixels, 0, index);
+        write(&mut pixels, w as u32 - 1, index);
+    }
+    let rect = [
+        PIXEL_PAD as f32,
+        PIXEL_PAD as f32,
+        PIXEL_PAD as f32 + inner as f32 + 1.0,
+        PIXEL_PAD as f32 + inner as f32 + 1.0,
+    ];
+    (pixels, rect, rect)
+}
+
+/// 判定主字体是不是**像素字体**，并返回它的设计像素高度（em 尺寸）。
+///
+/// 判据是实测的，不是猜名字也不是取轮廓坐标 GCD：对 8..=24 的每个整数 em 尺寸，
+/// 把探针字形按 `1 texel = 1 em/d` 栅格化，要求**每个像素的覆盖值恰好是 0 或 1**
+/// （量化容差 [`COVERAGE_QUANTUM`]，ab_glyph 栅格器按 1/64 量化）。第一个满足的
+/// 尺寸就是该字体的设计像素高度。
+///
+/// 为什么不能用"轮廓坐标 GCD"：实测 Fusion Pixel 12px 的 470 个字形里只有 429 个
+/// 的坐标 GCD 是 100（=1 设计像素），35 个带非整数坐标、6 个落在 50/25/10/2 的
+/// 更细网格上——GCD 的众数能选对，但个别字形会把整体 GCD 拉到 1，判定直接失效。
+///
+/// 实测对照（同一条判据）：
+/// - Fusion Pixel 12px Monospaced zhHans（unitsPerEm 1200、36417 字形、无 fvar）：
+///   8→2378、10→4456、**12→0**、16→2417、20→5583、24→2488 个部分覆盖像素 → 判为像素字体，d=12。
+/// - Noto Sans SC VF（unitsPerEm 1000）：6..=192 每个尺寸都有 ≥25970 个部分覆盖
+///   像素 → 判不出来 → 走 MSDF（现状不变）。
+/// - 上面那份 12px 的子集（1605 字形，`国`/`鼎` 不在收字内）：12 档仍全二值、总覆盖
+///   188 texel（6 个字形）→ 判 d=12。绝对样本下限（曾经的 200）在这里会判不过而滑到
+///   24 档，所以样本量按 em 面积归一 + 探针从字体自己的 cmap 补（见 [`probe_glyphs`]）。
+fn detect_pixel_size(font: &FontArc) -> Option<f32> {
+    let units = font.units_per_em()?;
+    if !units.is_finite() || units <= 0.0 {
+        return None;
+    }
+    let probes = probe_glyphs(font);
+    let mut design_px = PIXEL_PROBE_MIN_PX;
+    while design_px <= PIXEL_PROBE_MAX_PX {
+        if pixel_size_is_binary(font, &probes, units, design_px) {
+            return Some(design_px);
+        }
+        design_px += 1.0;
+    }
+    None
+}
+
+/// 探针字符集：优先固定表（密集 CJK + 半角 + 全角标点，对非整数网格最敏感）；子集字体
+/// 常缺其中几个字，就从这份字体自己的 cmap 里补 —— 先补 CJK，仍不足再补任意非空白字符。
+/// 不补的话样本量会被子集化削掉（实测同一款字体全量判 12、子集判 24），开发形态与发布
+/// 形态就会一边点阵一边平滑。
+fn probe_glyphs(font: &FontArc) -> Vec<char> {
+    let want = PIXEL_PROBE_CHARS.len().max(PIXEL_PROBE_MIN_GLYPHS);
+    let mut picked: Vec<char> = PIXEL_PROBE_CHARS
+        .iter()
+        .copied()
+        .filter(|character| font.glyph_id(*character).0 != 0)
+        .collect();
+    if picked.len() >= want {
+        return picked;
+    }
+    let mut cjk: Vec<char> = Vec::new();
+    let mut other: Vec<char> = Vec::new();
+    for (glyph_id, character) in font.codepoint_ids() {
+        if glyph_id.0 == 0 || character.is_whitespace() || picked.contains(&character) {
+            continue;
+        }
+        let code = character as u32;
+        if (0x4E00..=0x9FFF).contains(&code) {
+            if cjk.len() < want {
+                cjk.push(character);
+            }
+        } else if other.len() < want {
+            other.push(character);
+        }
+        if cjk.len() >= want && other.len() >= want {
+            break;
+        }
+    }
+    picked.extend(cjk.into_iter().chain(other).take(want - picked.len()));
+    picked
+}
+
+/// 覆盖量化容差：ab_glyph 栅格器输出 1/64 的整数倍，实测最小的"真软像素"是
+/// 3/64 = 0.046875，所以任何落在 `(0, 1/64)` 的容差都判得一样准。
+const COVERAGE_QUANTUM: f32 = 1.0 / 64.0;
+
+/// `design_px` 档下探针字形是否全部硬边二值（且样本量够，避免空字形蒙混过关）。
+///
+/// 样本量按 em 面积归一（见 [`PIXEL_PROBE_MIN_FILL_DIVISOR`] 处的实测说明），这样同一份
+/// 字体的全量与子集（探针字符可能被裁掉几个）会判出同一个设计像素高度。
+fn pixel_size_is_binary(font: &FontArc, probes: &[char], units: f32, design_px: f32) -> bool {
+    let factor = PxScaleFactor {
+        horizontal: design_px / units,
+        vertical: design_px / units,
+    };
+    let mut sampled = 0usize;
+    let mut covered = 0usize;
+    for character in probes {
+        let glyph_id = font.glyph_id(*character);
+        if glyph_id.0 == 0 {
+            continue;
+        }
+        let Some(outline) = font.outline(glyph_id) else {
+            continue;
+        };
+        if outline.curves.is_empty() {
+            continue;
+        }
+        let outlined = OutlinedGlyph::new(
+            Glyph {
+                id: glyph_id,
+                scale: design_px.into(),
+                position: ab_glyph::point(0.0, 0.0),
+            },
+            outline,
+            factor,
+        );
+        let mut glyph_covered = 0usize;
+        let mut soft = false;
+        outlined.draw(|_x, _y, coverage| {
+            if coverage > COVERAGE_QUANTUM && coverage < 1.0 - COVERAGE_QUANTUM {
+                soft = true;
+            }
+            if coverage > 0.5 {
+                glyph_covered += 1;
+            }
+        });
+        if soft {
+            return false;
+        }
+        sampled += 1;
+        covered += glyph_covered;
+    }
+    sampled >= PIXEL_PROBE_MIN_GLYPHS
+        && covered * PIXEL_PROBE_MIN_FILL_DIVISOR >= sampled * (design_px * design_px) as usize
 }
 
 /// Rasterizes a glyph outline (design space, Y-up) into an MSDF rect
@@ -998,6 +1347,124 @@ mod tests {
         }
         assert!(atlas.probe().covers('江'));
         assert!(!atlas.covers('🙂'));
+    }
+
+    /// 测试字体：Fusion Pixel 12px Monospaced zhHans（真点阵字体，上游全量文件）。
+    fn pixel_font() -> Vec<u8> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/editor/fonts/FusionPixel-12px-Monospaced-zhHans.ttf");
+        std::fs::read(&path)
+            .unwrap_or_else(|error| panic!("测试字体缺失或不可读 {}: {error}", path.display()))
+    }
+
+    /// 判别实测：同一条判据（见 `detect_pixel_size`）下点阵字体给出设计高度 12，
+    /// 平滑字体判不出来。矢量缓存共用这个判定，渲染层据此放弃矢量档。
+    #[test]
+    fn detects_pixel_font_and_leaves_smooth_font_on_msdf() {
+        let atlas = FontAtlas::load(&pixel_font()).unwrap();
+        assert!(atlas.is_pixel_font());
+        assert_eq!(atlas.pixel_design_px(), Some(12.0));
+        assert_eq!(atlas.raster_scale(), 12.0);
+        assert!(
+            FontVectorAtlas::load(&pixel_font())
+                .unwrap()
+                .is_pixel_font()
+        );
+
+        let smooth = FontAtlas::load(&test_font()).unwrap();
+        assert!(!smooth.is_pixel_font());
+        assert_eq!(smooth.raster_scale(), RASTER_SCALE);
+        assert_eq!(smooth.pixel_design_px(), None);
+        assert!(!FontVectorAtlas::load(&test_font()).unwrap().is_pixel_font());
+    }
+
+    /// 点阵档的每一 texel 只能全亮或全暗（RGB ∈ {0,255}），且几何量全是整数——
+    /// 布局侧的整数吸附只有在本就是整数时才算生效（非整数即丢档，见 M72-03 反面对照）。
+    #[test]
+    fn pixel_glyph_raster_is_binary_and_geometry_integral() {
+        let font =
+            load_font_with_weight(&pixel_font(), DEFAULT_FONT_WEIGHT, "字体解析失败").unwrap();
+        for character in ['山', '庄', '炼', '药', 'A', '8'] {
+            let glyph = rasterize_glyph(&font, &None, character, Some(12.0));
+            let expected = (glyph.width * glyph.height * 4) as usize;
+            assert_eq!(glyph.rgba.len(), expected, "{character:?} 矩形尺寸不符");
+            assert!(
+                glyph.rgba.iter().all(|value| *value == 0 || *value == 255),
+                "{character:?} 点阵档出现灰阶"
+            );
+            assert!(
+                glyph.rgba.chunks(4).all(|pixel| pixel[3] == 255),
+                "{character:?} alpha 未写满"
+            );
+            let lit = glyph.rgba.chunks(4).filter(|pixel| pixel[0] == 255).count();
+            assert!(lit > 10, "{character:?} 亮点过少：{lit}");
+            let non_integral = glyph
+                .cell_rect
+                .iter()
+                .chain(glyph.bounds.iter())
+                .filter(|value| value.fract() != 0.0)
+                .count();
+            assert_eq!(non_integral, 0, "{character:?} 几何量非整数");
+            assert_eq!(
+                glyph.cell_rect,
+                [
+                    1.0,
+                    1.0,
+                    glyph.width as f32 - 1.0,
+                    glyph.height as f32 - 1.0
+                ],
+                "{character:?} 点阵块没有居中在 1 texel gutter 内"
+            );
+            assert!(
+                glyph.advance.fract() == 0.0,
+                "{character:?} advance 非整数：{}",
+                glyph.advance
+            );
+        }
+    }
+
+    /// 同一字体在 `RASTER_SCALE` 档栅格化必然产生灰阶：证明上面那条「全 0/255」
+    /// 是在测点阵档，而不是在测字体本身有多简单。
+    #[test]
+    fn same_pixel_font_is_not_binary_at_msdf_scale() {
+        let font =
+            load_font_with_weight(&pixel_font(), DEFAULT_FONT_WEIGHT, "字体解析失败").unwrap();
+        let glyph = rasterize_glyph(&font, &None, '山', None);
+        let greys = glyph
+            .rgba
+            .chunks(4)
+            .filter(|pixel| pixel[0] != 0 && pixel[0] != 255)
+            .count();
+        assert!(
+            greys > 100,
+            "MSDF 档下应有大量中间值（实测对照），实际 {greys}"
+        );
+    }
+
+    /// 同一款像素字体的**子集**（发布形态）必须判出与全量相同的设计像素高度。
+    ///
+    /// 这条钉的是探针样本量：子集常把固定探针表里的密集 CJK 裁掉几个，绝对 texel 数下限
+    /// 就会在真正的 12px 档判不过、滑到下一个二值档（实测 24px = 设计像素的 2 倍），
+    /// 于是开发形态点阵、发布形态按 2 倍栅格画，两者字号看着一样但笔画厚度差一倍。
+    #[test]
+    fn subset_of_a_pixel_font_judges_the_same_design_px() {
+        let full = pixel_font();
+        // 探针表里的四个密字（国露鼎藏）一个都不收，把样本量压到最难看的情形。
+        let subset = crate::font_subset::subset_ttf(&full, "山庄炼药甲乙丙丁戊己").expect("子集化");
+        let subset_atlas = FontAtlas::load(&subset).unwrap();
+        assert_eq!(
+            subset_atlas.pixel_design_px(),
+            FontAtlas::load(&full).unwrap().pixel_design_px(),
+            "子集与全量判出不同的点阵档"
+        );
+        assert_eq!(subset_atlas.pixel_design_px(), Some(12.0));
+        // 反面对照：补不出足够样本时宁可判"不是像素字"，也不许猜一个错的档。
+        let starved = crate::font_subset::subset_ttf(&full, "，。").expect("子集化");
+        assert_eq!(
+            FontAtlas::load(&starved).unwrap().pixel_design_px(),
+            None,
+            "探针样本不足时应退回 MSDF 档，而不是猜一个设计像素高度"
+        );
     }
 
     #[test]

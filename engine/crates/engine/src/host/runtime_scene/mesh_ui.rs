@@ -411,29 +411,33 @@ impl RuntimeScene {
         }
         for (position, text, scale) in visible {
             let use_vector = self.should_render_vector(None, scale, text.chars().count());
-            let vector_ok = match self.push_vector_text_run(
-                vector_vertices,
-                vector_glyphs,
-                vector_segments,
-                &text,
-                position,
-                scale,
-                [1.0, 1.0, 1.0],
-                None,
-                width,
-                height,
-            ) {
-                Ok(ok) => ok,
-                Err(error) => {
-                    tracing::warn!(
-                        target: "render",
-                        text = %text,
-                        error = %error,
-                        "[runtime] overlay text vector run error, falling back"
-                    );
-                    false
-                }
-            };
+            // 路径判定为 false 时**不能**调用 push_vector_text_run：顶点只要进了
+            // vector_vertices 就会被矢量通道画出来，于是像素字体在同一帧里被点阵档
+            // 与轮廓档各画一遍（双层字形互相错位），而日志一个字都没有。
+            let vector_ok = use_vector
+                && match self.push_vector_text_run(
+                    vector_vertices,
+                    vector_glyphs,
+                    vector_segments,
+                    &text,
+                    position,
+                    scale,
+                    [1.0, 1.0, 1.0],
+                    None,
+                    width,
+                    height,
+                ) {
+                    Ok(ok) => ok,
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "render",
+                            text = %text,
+                            error = %error,
+                            "[runtime] overlay text vector run error, falling back"
+                        );
+                        false
+                    }
+                };
             if !use_vector || !vector_ok {
                 let (mesh, is_sdf) = match self.layout_text(&text, position, scale, [1.0, 1.0, 1.0])
                 {
@@ -642,30 +646,33 @@ impl RuntimeScene {
                 // P3：单条文字排版失败（缺字形/字体图集未就绪）不得中断整帧场景 UI——
                 // 否则面板里第一个缺字的 Text 会让后续所有文字连同按钮一起消失，
                 // 症状与「字体没加载」一模一样但日志一个字都没有。
-                let vector_ok = match self.push_vector_text_run(
-                    vector_vertices,
-                    vector_glyphs,
-                    vector_segments,
-                    &text.text,
-                    position,
-                    text.effective_scale(),
-                    text.color,
-                    Some(&text.font),
-                    width,
-                    height,
-                ) {
-                    Ok(ok) => ok,
-                    Err(error) => {
-                        tracing::warn!(
-                            target: "render",
-                            text = %text.text,
-                            error = %error,
-                            "[runtime] vector text run error, falling back to SDF"
-                        );
-                        false
-                    }
-                };
-                if use_vector && vector_ok {
+                // 与 `push_ui_text`/世界文字同一牙齿：use_vector=false 时不能生成矢量档
+                // 顶点，否则像素字体会被点阵与轮廓两条通道各画一遍。
+                let vector_ok = use_vector
+                    && match self.push_vector_text_run(
+                        vector_vertices,
+                        vector_glyphs,
+                        vector_segments,
+                        &text.text,
+                        position,
+                        text.effective_scale(),
+                        text.color,
+                        Some(&text.font),
+                        width,
+                        height,
+                    ) {
+                        Ok(ok) => ok,
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "render",
+                                text = %text.text,
+                                error = %error,
+                                "[runtime] vector text run error, falling back to SDF"
+                            );
+                            false
+                        }
+                    };
+                if vector_ok {
                     continue;
                 }
                 let (mesh, is_sdf, font_key) = match self.layout_scene_text(&text, position) {

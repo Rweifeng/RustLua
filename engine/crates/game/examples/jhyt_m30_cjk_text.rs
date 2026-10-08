@@ -23,6 +23,8 @@
 //!    M59 起还有一路**数据侧**读数：UI 预设（`assets/ui/prefabs/*.ui.json`）把字号从源码
 //!    搬进了数据文件，`ui/prefab.lua` 因此是静态扫描的唯一例外（它传 `node.font`，源码里没有
 //!    字面量），例外由"读回每个预设 text 节点比同一条下限 + 加载期 10px 负例"补平；
+//!    M71 把这一层整体退役（`ui.prefab.NAMES` 清空）后，数据侧那道改判"登记数与节点数
+//!    不能一侧非 0"，退役是真退役而不是门瞎了（见 ⑤ 小节注释）；
 //! ⑥ 负例：审计必须**有牙齿**（塞进超宽串/emoji/10px 字号必须各报一条），
 //!    以及换行规则（标点不落行首、行数上限、省略号收尾）。
 //!
@@ -30,8 +32,10 @@
 //!   cargo run -p game --example jhyt_m30_cjk_text [-- <game_jhyt-root>]
 
 use engine::core::{
+    entity::EntityId,
     input::{InputSnapshot, KeyCode},
     script::LuaRuntime,
+    ui::UiText,
 };
 use std::{env, fs, path::Path, path::PathBuf};
 
@@ -44,6 +48,12 @@ const MIN_CORPUS_CHARS: usize = 550;
 /// 少一个说明作者侧的 UI 实体被改坏了，或有一份预设搬进了新载体却没算进这道统计——
 /// M63b 把门面那 17 个实体从 `main.scene` 搬进预设时，就同时踩到了后者）。
 const MIN_SCENE_TEXTS: usize = 21;
+/// Lua 侧登记调用下限（`ui_text.draw*` 17 处 + `ui_text.record` 11 处 = 28，2026-10-08 实测）。
+/// 只许涨不许跌：少一处登记 = 少一条被宽度与字号审计量到的文案。
+/// 原值是 30（那时暂停菜单的 11 行还都画在动态层），M66/B3 把它们换成实体层载体后
+/// 动态层只剩 17 处——`record` 补回 11 处，总数仍比迁移前少 2 处（HUD 在 M70 搬进预设时
+/// 没有补登记，那批文案今天量不到，见本包 未完成项 与 `tasks/plan/M72-10`）。
+const MIN_REGISTERED_TEXT_SITES: usize = 28;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args()
@@ -112,8 +122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "tostring(pcall(function() return ui.measure_text('x', 0) end))",
         "false",
     )?;
-    // `ui.text_get`：绘制后能读回文字与字号（验收读回口径）。
-    // 读的是暂停菜单「帮助」页的小标题行（`pse:h:row1` = `操作 · 键鼠` / `操作 · 手柄`）：
+    // 读回口径：暂停菜单「帮助」页的小标题行（`PseHRow1` = `操作 · 键鼠` / `操作 · 手柄`）。
     // 操作说明已从 HUD 底部通栏撤下（M33），HUD 上不再有键位文字，帮助页是它的新家。
     lua(
         &mut rt,
@@ -124,41 +133,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "tostring(require('ui.pause_menu').help_active())",
         "true",
     )?;
-    assert_num(&mut rt, "ui.text_get('pse:h:row1').size", 18.0)?;
-    assert_str(
-        &mut rt,
-        "tostring(ui.text_get('pse:h:row1').text:find('操作', 1, true) ~= nil)",
-        "true",
-    )?;
+    let (row1_text, row1_size, row1_drawn) = scene_text(&mut rt, "PseHRow1")?;
+    if !row1_drawn {
+        return Err(
+            "帮助页小标题 PseHRow1 这一帧没画（页容器没显示，或 set_visible 没打开该行）".into(),
+        );
+    }
+    if (row1_size - 18.0).abs() > 1e-6 {
+        return Err(format!("PseHRow1 字号 = {row1_size}，want 18").into());
+    }
+    if !row1_text.contains("操作") {
+        return Err(format!("PseHRow1 文字 = {row1_text:?}，不含「操作」").into());
+    }
     // 帮助页画完，紧接着 HUD 的引导行也必须能整行读回（曾经被右栏 276px 裁掉半句）。
-    assert_str(
-        &mut rt,
-        "tostring(ui.text_get('hud:tutorial').text:find('按 E', 1, true) ~= nil)",
-        "true",
-    )?;
+    let (tutorial_text, _, tutorial_drawn) = scene_text(&mut rt, "HudTutorial")?;
+    if !tutorial_drawn {
+        return Err("HUD 引导行 HudTutorial 这一帧没画：读回口径没有可断言的东西".into());
+    }
+    if !tutorial_text.contains("按 E") {
+        return Err(format!("HudTutorial 文字 = {tutorial_text:?}，不含「按 E」").into());
+    }
     // 换页必须收掉上一页的元素：动态文本跨帧持久，只画新页会让主菜单的标题与
     // 七行菜单叠在帮助页同一块面板上（实机表现为两页文字重影，且没有任何报错）。
-    assert_str(
-        &mut rt,
-        "tostring(ui.text_get('pse:title').visible == false)",
-        "true",
-    )?;
-    assert_str(
-        &mut rt,
-        "tostring(ui.text_get('pse:row1').visible == false)",
-        "true",
-    )?;
+    // 预设化后三页互斥走 `prefab.set_visible` 的子树语义，因此牙齿在实体层的节点表里。
+    let (_, _, menu_row_drawn) = scene_text(&mut rt, "PseRow1")?;
+    if menu_row_drawn {
+        return Err("帮助页打开时主菜单的行还在画：两页文字重影".into());
+    }
     // 返回主菜单后反向同理：帮助页整页收掉、主菜单重新画出来。
     lua(
         &mut rt,
         "local pm = require('ui.pause_menu'); pm.help_close()",
     )?;
-    assert_str(
-        &mut rt,
-        "tostring(ui.text_get('pse:h:row1').visible == false)",
-        "true",
-    )?;
-    assert_str(&mut rt, "tostring(ui.text_get('pse:row1').visible)", "true")?;
+    let (_, _, help_row_drawn) = scene_text(&mut rt, "PseHRow1")?;
+    if help_row_drawn {
+        return Err("关闭帮助页后帮助页的行还在画：换页没收到上一页".into());
+    }
+    let (menu_row_text, _, menu_row_drawn) = scene_text(&mut rt, "PseRow1")?;
+    if !menu_row_drawn {
+        return Err(format!("回到主菜单后 PseRow1 没画（文字 = {menu_row_text:?}）").into());
+    }
     lua(&mut rt, "local pm = require('ui.pause_menu'); pm.close()")?;
 
     // ---------------- ② 语料与首包字符覆盖 ----------------
@@ -335,7 +349,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // ---------------- ⑤ 字号下限 ----------------
-    banner("M30-05⑤ 字号下限：场景/预设 Text ≥ 11px + Lua 绘制调用字号 ≥ 11px");
+    banner("M30-05⑤ 字号下限：场景/预设 Text ≥ 11px + Lua 登记调用（draw*/record）字号 ≥ 11px");
     let (scene_count, scene_min) = scene_font_sizes(&project)?;
     if scene_count < MIN_SCENE_TEXTS {
         return Err(
@@ -345,73 +359,102 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if scene_min < MIN_FONT_SIZE {
         return Err(format!("场景/预设 Text 存在 {}px 字号（下限 11px）", scene_min).into());
     }
-    // Lua 侧：扫描全部 `ui_text.draw*` 调用，取第 5 个实参（size），必须是数字且 ≥ 11；
-    // 清单为空是自检项——解析不了就报错，不能"看起来扫过了"。
-    let (draw_calls, unresolved, lua_min) = lua_font_sizes(&project.join("scripts"))?;
-    if draw_calls < 30 {
-        return Err(format!("只扫到 {draw_calls} 个 ui_text.draw* 调用（≥30）").into());
+    // Lua 侧：扫描全部 `ui_text` 登记调用（动态层 `draw*` 与实体层 `record`），取各自的
+    // 字号实参，必须是数字且 ≥ 11；清单为空是自检项——解析不了就报错，不能"看起来扫过了"。
+    // 下限的来龙去脉写在 `MIN_REGISTERED_TEXT_SITES` 的文档里（一句话：只许涨不许跌）。
+    let (registered_calls, unresolved, lua_min, lua_min_site) =
+        lua_font_sizes(&project.join("scripts"))?;
+    if registered_calls < MIN_REGISTERED_TEXT_SITES {
+        return Err(format!(
+            "只扫到 {registered_calls} 个 ui_text 登记调用（draw*/record，≥{MIN_REGISTERED_TEXT_SITES}）"
+        )
+        .into());
     }
     if !unresolved.is_empty() {
         return Err(format!(
-            "有 {} 个绘制调用的字号没能解析（自检失败）：{}",
+            "有 {} 个登记调用的字号没能解析（自检失败）：{}",
             unresolved.len(),
             unresolved.join(" | ")
         )
         .into());
     }
     if lua_min < MIN_FONT_SIZE {
-        return Err(format!("Lua 绘制存在 {}px 字号（下限 11px）", lua_min).into());
+        return Err(
+            format!("Lua 登记调用存在 {lua_min}px 字号（下限 11px）：{lua_min_site}",).into(),
+        );
     }
     println!(
-        "  场景/预设 Text {scene_count} 个，最小 {scene_min}px；Lua 绘制 {draw_calls} 处，最小 {lua_min}px"
+        "  场景/预设 Text {scene_count} 个，最小 {scene_min}px；Lua 登记 {registered_calls} 处，最小 {lua_min}px"
     );
     // **数据侧的同一条下限**（M59）：UI 预设把字号从源码搬进了
     // `assets/ui/prefabs/*.ui.json`，上面那道源码扫描因此看不见它（`prefab.lua` 传的是
     // `node.font`）。这里读的是**加载并校验之后**的每一个 text 节点，比的是同一条 11px——
-    // 新登记的预设自动进门，不需要谁再改一次这道门。
+    // 预设只要存在，下限就自动进门，不需要谁再改一次这道门。
+    //
+    // **M71 把这一层整体退役了**（`p.NAMES` 清空、`dialogue.ui.json` 改走运行期
+    // `.prefab`），所以这里现在量到的是「登记 0 份、text 节点 0 个」。**不把它当成失败**
+    // （那等于要求一具尸体还活着），而是把「登记数与 text 节点数必须同时为 0 或同时非 0」
+    // 立成断言：往 `NAMES` 里加一份预设却忘了它该过字号门，这里立刻红。
     let prefab_fonts = query_str(
         &mut rt,
         "(function() local p = require('ui.prefab'); \
-          local count, min = 0, math.huge; \
+          local names, count, min = #p.NAMES, 0, math.huge; \
           for _, name in ipairs(p.NAMES) do \
             for _, row in ipairs(p.dump(name)) do \
               if row.type == 'text' then \
                 count = count + 1; \
                 if type(row.font) ~= 'number' then \
-                  return 'not_a_number:' .. name .. ':' .. tostring(row.id) .. '|0' \
+                  return 'not_a_number:' .. name .. ':' .. tostring(row.id) .. '|0|0' \
                 end; \
                 if row.font < min then min = row.font end \
               end \
             end \
           end; \
-          if count == 0 then return 'no_prefab_text_nodes|0' end; \
-          return tostring(count) .. '|' .. tostring(min) end)()",
+          return tostring(names) .. '|' .. tostring(count) .. '|' .. tostring(min) end)()",
     )?;
-    let (count_raw, min_raw) = prefab_fonts
-        .split_once('|')
-        .ok_or_else(|| format!("UI 预设字号读数形状不对: {prefab_fonts}"))?;
+    let (names_raw, count_raw, min_raw) = match prefab_fonts.split_once('|') {
+        Some((head, tail)) => match tail.split_once('|') {
+            Some((count, min)) => (head, count, min),
+            None => return Err(format!("UI 预设字号读数形状不对: {prefab_fonts}").into()),
+        },
+        None => return Err(format!("UI 预设字号读数形状不对: {prefab_fonts}").into()),
+    };
+    let prefab_names: f64 = names_raw
+        .parse()
+        .map_err(|_| format!("UI 预设字号读数形状不对: {prefab_fonts}"))?;
     let prefab_text_count: f64 = count_raw
         .parse()
         .map_err(|_| format!("UI 预设字号读数形状不对: {prefab_fonts}"))?;
-    let prefab_min_font: f64 = min_raw
-        .parse()
-        .map_err(|_| format!("UI 预设字号读数形状不对: {prefab_fonts}"))?;
-    if prefab_text_count < 1.0 {
-        return Err(format!("UI 预设里没扫到 text 节点（{prefab_fonts}）：例外清单白列").into());
-    }
-    if prefab_min_font < MIN_FONT_SIZE {
+    if prefab_names > 0.0 && prefab_text_count < 1.0 {
         return Err(format!(
-            "UI 预设存在 {prefab_min_font}px 字号（下限 11px，{} 个 text 节点）",
-            prefab_text_count as usize
+            "UI 预设登记了 {prefab_names:.0} 份却一个 text 节点都没扫到（{prefab_fonts}）：例外清单白列"
         )
         .into());
     }
-    println!(
-        "  UI 预设 text 节点 {} 个，最小 {prefab_min_font}px",
-        prefab_text_count as usize
-    );
-    // 常驻负例：加载期必须**拒绝**低于 11px 的字号节点——上面那条源码扫描的例外只有靠这条
-    // 才不是洞（没有它，把 `check_node` 的下限删掉两侧都会绿）。
+    if prefab_names < 1.0 {
+        println!(
+            "  UI 预设（JSON 层，M71 退役）登记 0 份、text 节点 0 个；字号下限由实体层扫描 + 加载期负例守"
+        );
+    } else {
+        let prefab_min_font: f64 = min_raw
+            .parse()
+            .map_err(|_| format!("UI 预设字号读数形状不对: {prefab_fonts}"))?;
+        if prefab_min_font < MIN_FONT_SIZE {
+            return Err(format!(
+                "UI 预设存在 {prefab_min_font}px 字号（下限 11px，{} 个 text 节点）",
+                prefab_text_count as usize
+            )
+            .into());
+        }
+        println!(
+            "  UI 预设 text 节点 {} 个（登记 {prefab_names:.0} 份），最小 {prefab_min_font}px",
+            prefab_text_count as usize
+        );
+    }
+    // 常驻负例：加载期必须**拒绝**低于 11px 的字号节点——`lua_font_sizes` 放过
+    // `ui/prefab.lua`（它传 `node.font`，源码里没有字面量可解析）只有靠这条才不是洞
+    // （没有它，把 `check_node` 的下限删掉两侧都会绿）。JSON 层退役之后这条仍然跑：
+    // 它守的是"这条路重新启用时下限还在不在"，而不是一份当前数据。
     assert_str(
         &mut rt,
         "(function() local p = require('ui.prefab'); \
@@ -541,7 +584,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
          collected={} missing=0 elements={total_elements} \
          hud={hud_checked}/{hud_stress}/{hud_day999} bp={bp_checked} qst={qst_checked} \
          pse={pse_checked} shp={shp_checked} dlg={dlg_checked} \
-         scene_text={scene_count}@{scene_min}px lua_draw={draw_calls}@{lua_min}px",
+         scene_text={scene_count}@{scene_min}px lua_text={registered_calls}@{lua_min}px",
         collected.len()
     );
     Ok(())
@@ -642,17 +685,28 @@ fn scene_font_sizes(project: &Path) -> Result<(usize, f64), Box<dyn std::error::
     Ok((count, if count == 0 { 0.0 } else { min }))
 }
 
-/// Lua 绘制调用的字号扫描：返回（调用数，未能解析的调用清单，最小字号）。
+/// ⑤ 的 Lua 侧读数：（登记调用数，解析不出字号的清单，最小字号，最小字号出处 `文件:行号`）。
+/// 起名字而不是把四元组写在签名里，是因为 `clippy::type_complexity` 会把后者判成"复杂类型"，
+/// 而这条门恰好是唯一一处要把四个读数一起交回调用方的地方（清单必须能顶掉自检）。
+type LuaFontReading = (usize, Vec<String>, f64, String);
+
+/// Lua 登记调用的字号扫描，读数见 [`LuaFontReading`]。
 ///
-/// 扫描对象是 `scripts/**/*.lua` 里所有 `ui_text.draw` / `draw_wrapped` / `draw_exact`
-/// 调用：取顶层逗号切分后的第 5 个实参（`owner, id, x, y, size, …`）。
+/// 扫描对象是 `scripts/**/*.lua` 里所有 `ui_text` 的**登记**调用：
+/// `draw` / `draw_wrapped` / `draw_exact`（动态层：画 + 登记，字号是第 5 个实参）与
+/// `record`（实体层载体：字由 `prefab.set_text` 写进 `Text` 组件，这里只登记宽度契约，
+/// 字号是第 3 个实参）。两种载体共用同一条下限——面板搬进预设之后，如果这里只认
+/// `draw*`，"搬家"就等于把 11px 下限静默放开。
 /// 清单里带 `文件:行号`，否则"有 2 个没解析出来"这种报错要人回头逐个 grep。
 ///
 /// **唯一的例外**是 `ui/prefab.lua`（M59 的 UI 预设绘制分发器）：它的字号实参是
 /// `node.font`，值来自 `assets/ui/prefabs/*.ui.json`，源码里根本没有字面量可解析。
 /// 这不是把下限放开——下限改由 ⑤ 的"数据侧扫描 + 加载期负例"两路守（见该小节），
 /// 覆盖面比这里少三处调用还严：预设里 `font` 必须是**数值**且 ≥ 11，否则加载就报错。
-fn lua_font_sizes(root: &Path) -> Result<(usize, Vec<String>, f64), Box<dyn std::error::Error>> {
+/// M71 把 JSON 预设层整体退役（`NAMES` 清空），所以这两路今天量到的是空集；数据侧那道
+/// 因此不断言"至少一个 text 节点"，而是断言"登记数与节点数不能一侧非 0"——想重新启用
+/// 这条路的人依然会被门问住，而不会因为尸体没有呼吸而红。
+fn lua_font_sizes(root: &Path) -> Result<LuaFontReading, Box<dyn std::error::Error>> {
     let mut files = Vec::new();
     collect_lua_files(root, &mut files)?;
     files.sort();
@@ -664,9 +718,12 @@ fn lua_font_sizes(root: &Path) -> Result<(usize, Vec<String>, f64), Box<dyn std:
     if layout_module.is_file() {
         global_constants = lua_font_constants(&fs::read_to_string(&layout_module)?);
     }
-    let mut calls = 0usize;
-    let mut unresolved: Vec<String> = Vec::new();
-    let mut min = f64::MAX;
+    // `min` 必须从 `f64::MAX` 起：`Default` 给的是 0.0，于是"任何字号都不比它小"，
+    // ⑤ 的读数就永远是 0px（这条在 derive(Default) 上踩过一次，注释留在这里防第二次）。
+    let mut stat = FontSizeStat {
+        min: f64::MAX,
+        ..Default::default()
+    };
     for path in files {
         if path.file_name().is_some_and(|name| name == "prefab.lua") {
             continue;
@@ -679,78 +736,142 @@ fn lua_font_sizes(root: &Path) -> Result<(usize, Vec<String>, f64), Box<dyn std:
         for (name, value) in lua_font_constants(&source) {
             constants.insert(name, value);
         }
-        let bytes = source.as_bytes();
-        let mut cursor = 0usize;
-        while let Some(found) = source[cursor..].find("ui_text.draw") {
-            let start = cursor + found;
-            let source_line = source[..start].lines().count();
-            let Some(open) = source[start..].find('(').map(|offset| start + offset) else {
-                break;
-            };
-            // 找到与之匹配的右括号（跳过字符串字面量里的括号）。
-            let mut depth = 0usize;
-            let mut index = open;
-            let mut in_string: Option<u8> = None;
-            while index < bytes.len() {
-                let ch = bytes[index];
-                match in_string {
-                    Some(quote) => {
-                        if ch == b'\\' {
-                            index += 1;
-                        } else if ch == quote {
-                            in_string = None;
-                        }
-                    }
-                    None => match ch {
-                        b'\'' | b'"' => in_string = Some(ch),
-                        b'(' => depth += 1,
-                        b')' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                break;
-                            }
-                        }
-                        _ => {}
-                    },
-                }
-                index += 1;
-            }
-            if index >= bytes.len() {
-                unresolved.push(format!(
-                    "{}:{} 调用的括号没有闭合",
-                    path.display(),
-                    source_line
-                ));
-                break;
-            }
-            let args = split_top_level(&source[open + 1..index]);
-            calls += 1;
-            let size = args.get(4).map(|arg| arg.trim().to_string());
-            let resolved = size.as_deref().and_then(|raw| {
-                raw.parse::<f64>()
-                    .ok()
-                    .or_else(|| constants.get(raw).copied())
-            });
-            match resolved {
-                Some(size) => {
-                    if size < min {
-                        min = size;
-                    }
-                }
-                // `draw_wrapped` 的字号在第 5 位、`draw` 也在第 5 位；解析不出来就报名字，
-                // 不允许"看起来扫过了"。
-                None => unresolved.push(format!(
-                    "{}:{} 第 5 个实参解析不出字号：{:?}（已知常量 {} 个）",
-                    path.display(),
-                    source_line,
-                    size,
-                    constants.len()
-                )),
-            }
-            cursor = index + 1;
-        }
+        // 逐个 `ui_text.<名>(...)` 调用取字号（名字精确匹配，见 `REGISTERED_FONT_SIZE_ARGS`）。
+        scan_registered_calls(&source, &path, &constants, &mut stat)?;
     }
-    Ok((calls, unresolved, if calls == 0 { 0.0 } else { min }))
+    Ok((
+        stat.calls,
+        stat.unresolved,
+        if stat.calls == 0 { 0.0 } else { stat.min },
+        stat.min_site,
+    ))
+}
+
+/// `ui_text` 的登记函数 → 字号实参在第几个（0 起）。
+///
+/// `draw` / `draw_wrapped` / `draw_exact` 画在**动态层**（`owner, id, x, y, size, …`），
+/// 字号在第 5 位；`record` 的载体是**实体层**（`.prefab` 的 `Text` 组件由
+/// `prefab.set_text` 写），位置由预设里的 `UiLayout` 决定、脚本里没有 x/y 可传，
+/// 所以字号在第 3 位。
+///
+/// 名字必须**整段相等**：`ui_text.recorded()`（登记表的只读访问器）含 `record` 这个前缀，
+/// 按前缀匹配会把它当成一处登记调用、然后在第 3 个实参上报解析不出字号（实踩过）。
+const REGISTERED_FONT_SIZE_ARGS: &[(&str, usize)] = &[
+    ("draw", 4),
+    ("draw_wrapped", 4),
+    ("draw_exact", 4),
+    ("record", 2),
+];
+
+/// ⑤ 的累计量：登记调用数、解析不出字号的清单、最小字号（带 `文件:行号`，
+/// 否则"最小 0px"这种读数要人回头逐个 grep）。
+#[derive(Default)]
+struct FontSizeStat {
+    calls: usize,
+    unresolved: Vec<String>,
+    min: f64,
+    min_site: String,
+}
+
+/// 扫一份 Lua 源码里的每一个登记调用：顶层第 `size_arg`（0 起）个实参必须能解析出字号，
+/// 解析不出就带 `文件:行号` 进清单——不允许"看起来扫过了"。
+fn scan_registered_calls(
+    source: &str,
+    path: &Path,
+    constants: &std::collections::BTreeMap<String, f64>,
+    stat: &mut FontSizeStat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = source.as_bytes();
+    let is_ident_byte = |ch: u8| ch.is_ascii_alphanumeric() || ch == b'_' || ch == b'.';
+    let mut cursor = 0usize;
+    while let Some(found) = source[cursor..].find("ui_text.") {
+        let start = cursor + found;
+        let name_start = start + "ui_text.".len();
+        let mut name_end = name_start;
+        while name_end < bytes.len() && is_ident_byte(bytes[name_end]) {
+            name_end += 1;
+        }
+        // `ui_text.` 后面可能再跟一层（`ui_text.audit`），也允许空白后才是左括号。
+        let name = source[name_start..name_end].trim_end();
+        let Some(&(_, size_arg)) = REGISTERED_FONT_SIZE_ARGS.iter().find(|(n, _)| *n == name)
+        else {
+            cursor = name_end;
+            continue;
+        };
+        let Some(open) = source[name_end..].find('(').map(|offset| name_end + offset) else {
+            cursor = name_end;
+            continue;
+        };
+        // 调用后面第一个左括号必须属于这次调用本身：中间若换了行/出现别的标记就跳过
+        // （`is_ident_byte` 已把 `recorded`、`draw_x` 这类长名字整段吃掉，这里只管空白）。
+        if source[name_end..open].chars().any(|ch| !ch.is_whitespace()) {
+            cursor = name_end;
+            continue;
+        }
+        let source_line = source[..start].lines().count();
+        // 找到与之匹配的右括号（跳过字符串字面量里的括号）。
+        let mut depth = 0usize;
+        let mut index = open;
+        let mut in_string: Option<u8> = None;
+        while index < bytes.len() {
+            let ch = bytes[index];
+            match in_string {
+                Some(quote) => {
+                    if ch == b'\\' {
+                        index += 1;
+                    } else if ch == quote {
+                        in_string = None;
+                    }
+                }
+                None => match ch {
+                    b'\'' | b'"' => in_string = Some(ch),
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                },
+            }
+            index += 1;
+        }
+        if index >= bytes.len() {
+            stat.unresolved.push(format!(
+                "{}:{} 调用的括号没有闭合",
+                path.display(),
+                source_line
+            ));
+            break;
+        }
+        let args = split_top_level(&source[open + 1..index]);
+        stat.calls += 1;
+        let size = args.get(size_arg).map(|arg| arg.trim().to_string());
+        let resolved = size.as_deref().and_then(|raw| {
+            raw.parse::<f64>()
+                .ok()
+                .or_else(|| constants.get(raw).copied())
+        });
+        match resolved {
+            Some(size) => {
+                if size < stat.min {
+                    stat.min = size;
+                    stat.min_site = format!("{}:{}", path.display(), source_line);
+                }
+            }
+            None => stat.unresolved.push(format!(
+                "{}:{} 第 {} 个实参解析不出字号：{:?}（已知常量 {} 个）",
+                path.display(),
+                source_line,
+                size_arg + 1,
+                size,
+                constants.len()
+            )),
+        }
+        cursor = index + 1;
+    }
+    Ok(())
 }
 
 /// `scripts/**` 里直接调用 `ui.text_at` 的处数（`ui/ui_text.lua` 自己除外）。
@@ -1001,6 +1122,43 @@ fn fresh_save_path(project: &Path, file: &str) -> PathBuf {
     let path = dir.join(file);
     let _ = fs::remove_file(&path);
     path
+}
+
+/// 读回**实体层**（`.prefab` 实例）里一个 `Text` 节点：`(文字, 字号, 这一帧画不画)`。
+///
+/// 为什么不读 `ui.text_get`（这条门原本的做法）：M66/B3 把暂停菜单、M70 把 HUD 搬进预设
+/// 之后，画面上的行由 `prefab.set_text` 写进场景的 `Text` 组件，动态层那些 id 只剩
+/// `ui_text.hide` 留下的占位——`ui.hide` 走 `entry(id).or_insert(默认)`，于是它的字号恒为
+/// 基准 12、可见性恒为 false，`ui.text_get` 再也断言不到画面上的任何东西（`hud:tutorial`
+/// 那个 id 干脆已经不存在，读回是 nil）。继续留着这些断言，门会绿得没有牙齿。
+///
+/// "画不画"看的是 `prefab_ui_nodes`：`prefab.set_visible(name, false)` 藏掉的整棵子树
+/// **一个布局节点都不建**（`scene_spawn.rs` 的口径——拿不到矩形就既不画也不产点击目标），
+/// 所以节点在表里 = 这一帧真在画，与"看不见的按钮仍能被点中"互斥。
+fn scene_text(
+    runtime: &mut LuaRuntime,
+    name: &str,
+) -> Result<(String, f64, bool), Box<dyn std::error::Error>> {
+    let raw = query_str(runtime, &format!("return tostring(entity.find('{name}'))"))?;
+    let Ok(raw) = raw.parse::<f64>() else {
+        return Err(format!("实体层找不到节点 {name:?}（entity.find 返回 {raw:?}）").into());
+    };
+    let raw = raw as u64;
+    let id = EntityId::from_raw((raw >> 32) as u32, raw as u32);
+    let drawn = runtime
+        .prefab_ui_nodes()
+        .contains_key(&u64::from(id.index()));
+    let text = runtime.with_world(|world| {
+        world
+            .get::<UiText>(id)
+            .ok()
+            .flatten()
+            .map(|component| (component.text.clone(), f64::from(component.font_size)))
+    });
+    let Some((text, size)) = text else {
+        return Err(format!("节点 {name:?} 没有 Text 组件").into());
+    };
+    Ok((text, size, drawn))
 }
 
 fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {

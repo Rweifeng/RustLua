@@ -13,6 +13,10 @@
 --
 -- `owner`（第一个参数）是"绘制者"名字：每个模块每次重绘先 `begin(owner)`，
 -- 只清掉自己的旧登记；HUD 每帧重绘不会把面板的登记一起清空。
+--
+-- 载体有两种，登记只有一种：动态层（`draw*` 顺手调 `ui.text_at`）与实体层
+-- （`.prefab` 的 `Text` 组件 + `prefab.set_text`，见 `record`）。面板搬进预设之后，
+-- 宽度审计必须照旧量到它——否则搬家 = 门变瞎。
 local text_fit = require("ui.text_fit")
 
 local M = {}
@@ -84,6 +88,24 @@ function M.draw(owner, id, x, y, size, budget, text)
   ui.text_at(id, x, y, fitted, 1.0, size)
   records[owner][id] = { text = fitted, raw = raw, size = size, budget = budget, x = x, y = y }
   return fitted
+end
+
+--- 只登记、不绘制（实体层载体用）：文字由 `.prefab` 的 `Text` 组件画（`prefab.set_text`），
+--- 但"这条文字超没超出它的列"仍然要有人量。
+---
+--- 为什么必须有这一条：M66/B3 把暂停菜单、M70 把 HUD 搬进预设之后，`draw`/`draw_exact`
+--- 这三条会调 `ui.text_at` 的路不再是那些行的载体，登记表里就只剩"动态层还留着几条"——
+--- 排版审计对搬过家的面板静默变瞎（零报错的坏行为，正是本模块存在的理由要防的东西）。
+--- 与 `draw_exact` 的两点差别：① 不调 `ui.text_at`（免得同一行在动态层再画一遍）；
+--- ② 登记的是原文，因此 `raw == text` 永不计截断——实体层**不会**把超宽文案收成省略号，
+--- 超出预算就直接叠到邻居身上，那种情况由 `audit()` 的溢出判据（③）报红，比省略号更该红。
+function M.record(owner, id, size, budget, text)
+  local value = tostring(text or "")
+  if not records[owner] then
+    M.begin(owner)
+  end
+  records[owner][id] = { text = value, raw = value, size = size, budget = budget }
+  return value
 end
 
 --- 多行文字（按宽度换行，最多 `max_lines` 行，超出用省略号）：对话正文用。

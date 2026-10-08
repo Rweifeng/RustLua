@@ -161,19 +161,29 @@ impl super::RuntimeScene {
     }
 
     /// 决定一段文本的首选渲染路径；矢量图集不可用时渲染层仍会回退 SDF。
+    ///
+    /// 像素字体（硬边点阵）是例外：无论 `text_render_mode` 为何都不走矢量档。
+    /// 矢量着色器对轮廓做解析求覆盖 + AA，会把 1 texel 宽的点阵笔画糊成灰边，
+    /// 字形也就失去了像素字体的意义（判据见 `FontVectorAtlas::is_pixel_font`）。
     pub(crate) fn should_render_vector(
-        &self,
+        &mut self,
         font_asset: Option<&str>,
         scale: f32,
         chars: usize,
     ) -> bool {
         match self.text_render_mode {
-            TextRenderMode::Vector => true,
-            TextRenderMode::Sdf => false,
+            TextRenderMode::Vector => {}
+            TextRenderMode::Sdf => return false,
             TextRenderMode::Auto => {
-                font_asset.is_none_or(str::is_empty) && scale >= 2.0 && chars <= 32
+                if !(font_asset.is_none_or(str::is_empty) && scale >= 2.0 && chars <= 32) {
+                    return false;
+                }
             }
         }
+        let pixel = self
+            .ensure_vector_font(font_asset.unwrap_or_default())
+            .is_some_and(|atlas| atlas.lock().expect("vector atlas lock").is_pixel_font());
+        !pixel
     }
 
     /// Measures scene-node UI text with the same backend choice as rendering.

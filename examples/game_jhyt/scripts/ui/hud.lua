@@ -476,7 +476,7 @@ function M.feedback_line()
   if text == "" then
     return ""
   end
-  return "› " .. text
+  return "> " .. text
 end
 
 -- 七日目标行（左上角第一行；M27）。目标线走完（`goals.prompt()` 返回空串）时这一行不画，

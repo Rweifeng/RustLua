@@ -1,33 +1,50 @@
-//! 临时工具：按项目**实际用到的字符**重新子集化示例工程的主字体（用完即删）。
+//! 按项目**实际用到的字符**重新子集化 `project.toml` 里声明的主字体。
 //!
-//! 工程的 `assets/fonts/NotoSansSC-VF.ttf` 是发布流程（`assetc package`）用同一套
-//! `char_collect` + `font_subset` 生成的子集。示例工程重建后文案变了，旧子集缺字会
-//! 在屏幕上显示成方框（`ui.measure_text(...).missing_count > 0` 就是这条判据）。
+//! 发布流程（`assetc package`）用同一套 `char_collect` + `font_subset` 生成子集，这里做的是
+//! **仓库里那份工程字体**：文案变了以后旧子集会缺字，屏幕上显示成方框
+//! （`ui.measure_text(...).missing_count > 0` 就是这条判据）。
 //!
-//! 用法：`cargo run -q -p engine --example subset_project_font -- <project-root>`
+//! `--source` 指全量字体（`engine/crates/editor/fonts/` 那一类），目标取 `project.toml` 的
+//! `font =`。两者必须是不同文件：子集不可逆（`subset_ttf` 会丢掉 `gvar/fvar` 与全部未用字形），
+//! 拿子集再子集一次就把源字体毁了，所以这里直接拒。
+//!
+//! 用法：`cargo run -q -p engine --example subset_project_font -- <project-root> --source <full.ttf>`
 use std::{fs, path::PathBuf};
 
-use engine::core::{char_collect::collect_project_chars, font_subset::subset_ttf};
+use engine::core::{
+    char_collect::collect_project_chars, font::project_font, font_subset::subset_ttf,
+};
 
-fn main() {
-    let root = PathBuf::from(
-        std::env::args()
-            .nth(1)
-            .expect("usage: subset_project_font <project-root>"),
-    );
-    let source_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../editor/fonts/NotoSansSC-VF.ttf");
-    let target = root.join("assets/fonts/NotoSansSC-VF.ttf");
+fn main() -> Result<(), String> {
+    let mut args = std::env::args().skip(1);
+    let root = args.next().ok_or_else(|| {
+        "usage: subset_project_font <project-root> --source <full.ttf>".to_owned()
+    })?;
+    let root = PathBuf::from(root);
+    let source = match args.next().as_deref() {
+        Some("--source") => PathBuf::from(args.next().ok_or("--source 后面要跟路径")?),
+        Some(other) => return Err(format!("未知参数 {other}（应为 --source <full.ttf>）")),
+        None => return Err("必须用 --source 指明全量字体".to_owned()),
+    };
+    let target = root.join(project_font::primary_path(&root));
+    if target == source {
+        return Err(format!(
+            "源与目标是同一个文件 {}：子集不可逆，第二次子集会把源字体毁掉",
+            target.display()
+        ));
+    }
 
     let chars = collect_project_chars(&root);
-    let source = fs::read(&source_path).expect("read source font");
+    let source_bytes = fs::read(&source).map_err(|error| format!("read {source:?}: {error}"))?;
     let before = fs::metadata(&target).map(|meta| meta.len()).unwrap_or(0);
-    let subset = subset_ttf(&source, &chars).expect("subset font");
-    fs::write(&target, &subset).expect("write subset font");
+    let subset = subset_ttf(&source_bytes, &chars)?;
+    fs::write(&target, &subset).map_err(|error| format!("write {target:?}: {error}"))?;
     println!(
-        "subset_project_font_ok chars={} before={}B after={}B",
+        "subset_project_font_ok chars={} before={before}B after={}B source={} target={}",
         chars.chars().count(),
-        before,
-        subset.len()
+        subset.len(),
+        source.display(),
+        target.display(),
     );
+    Ok(())
 }

@@ -293,7 +293,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_str(
         &mut rt,
         "require('ui.hud').feedback_line()",
-        "› 中毒了，气血在流失",
+        "> 中毒了，气血在流失",
     )?;
     // 同类再挂一次：只刷新持续时间（条目数仍是 1）。
     assert_str(

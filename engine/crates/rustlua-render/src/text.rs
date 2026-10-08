@@ -124,7 +124,8 @@ pub struct TextMesh {
     /// 高度是 em 盒高度 `ascent + |descent| + (行数-1) × 行高`
     /// （M30 起修正；此前少算了 descender）。与 [`measure_text`] 完全同口径。
     pub size: [f32; 2],
-    /// `true` 表示此 mesh 由 `build_bitmap`（内置 5×7 位图字模）生成，
+    /// `true` 表示此 mesh 是**硬边点阵**：由 `build_bitmap`（内置 5×7 位图字模）或
+    /// 像素字体（[`FontAtlas::is_pixel_font`]，1 texel = 1 设计像素）生成，
     /// 渲染侧会以 Nearest 采样 + MSDF 阈值化（`sdf=2`）处理，
     /// 与小字号 SDF 路径（`sdf=1`，Linear + smoothstep）区分。
     pub bitmap: bool,
@@ -430,8 +431,12 @@ impl TextLayout {
         let ascent = font.ascent_em();
         let descent = font.descent_em();
         let base_px = EM_PX * style.scale;
-        // 1 屏幕像素对应的图集 texel 数（display size = base_px，atlas 光栅 64px）。
-        let tex_scale = base_px / crate::font::RASTER_SCALE;
+        // 1 屏幕像素对应的图集 texel 数（display size = base_px）。图集栅格尺寸由
+        // 字体自己决定：MSDF 是 RASTER_SCALE=96 px/em，像素字体是 1 texel/设计像素
+        // （实测 12 px/em），写死 96 会把点阵字形放大成 8 倍。
+        let raster_scale = font.raster_scale();
+        let pixel = font.is_pixel_font();
+        let tex_scale = base_px / raster_scale;
         let line_height = EM_PX * style.scale * LINE_HEIGHT_EM + style.line_spacing;
         let mut x = origin[0];
         let mut y = origin[1] + ascent * base_px;
@@ -463,10 +468,19 @@ impl TextLayout {
             let v0 = metrics.uv[1] + rect[1] / atlas_h;
             let u1 = metrics.uv[0] + rect[2] / atlas_w;
             let v1 = metrics.uv[1] + rect[3] / atlas_h;
-            let glyph_w = (rect[2] - rect[0]) * tex_scale;
-            let glyph_h = (rect[3] - rect[1]) * tex_scale;
-            let x0 = x + metrics.bounds[0] * tex_scale;
-            let y0 = y + metrics.bounds[1] * tex_scale;
+            let mut glyph_w = (rect[2] - rect[0]) * tex_scale;
+            let mut glyph_h = (rect[3] - rect[1]) * tex_scale;
+            let mut x0 = x + metrics.bounds[0] * tex_scale;
+            let mut y0 = y + metrics.bounds[1] * tex_scale;
+            if pixel {
+                // 整数吸附：点阵的一个 texel 必须正好盖住整数个设备像素。次像素
+                // 定位下 Nearest 采样会把边界 texel 采到两次（或零次），字形边缘
+                // 出现"抖一格"，判据见 `jhyt_m72_pixel_font` 的 1:1 覆盖计数。
+                x0 = x0.round();
+                y0 = y0.round();
+                glyph_w = glyph_w.round();
+                glyph_h = glyph_h.round();
+            }
             let x1 = x0 + glyph_w;
             let y1 = y0 + glyph_h;
             let quad = [
@@ -504,7 +518,9 @@ impl TextLayout {
                 // `measure_ui_text` 的高度因此都比实际字形矮一截。
                 (y - descent * base_px - origin[1]).max(0.0),
             ],
-            bitmap: false,
+            // 像素字体的字形是 1 bit/texel 的点阵，必须走阈值档（`sdf=2`）+ Nearest
+            // 采样；若仍按 MSDF（`sdf=1`）做 smoothstep，点阵会被插值成灰边。
+            bitmap: pixel,
         })
     }
 }
