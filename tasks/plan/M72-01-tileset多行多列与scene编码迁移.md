@@ -239,5 +239,14 @@
 - 变体哈希的四个常量（`VARIANT_HASH_OFFSET` / `VARIANT_HASH_PRIME` / `MIX_AXIS_X` /
   `MIX_AXIS_Y`）现在是**跨宿主契约**：Lua 镜像与 JS 镜像各自手写了一份，改任何一个
   等于全图重排，三处必须同步（门只保证解算一致，不保证你记得改另两份）。
+- **`f89790f0` 更新了运行期 API 快照与对外符号面却没跑两个基线生成器**：新增七个 `tilemap.*`
+  API 让待补文档桩从基线 275 涨到 282，`node scripts/gen-lua-api-docs.js --check` 当场红；
+  同一批公开的常量/枚举（`AUTOTILE_SLOTS`、`DEFAULT_ATLAS_*`、`TILES_FORMAT_*`、`VARIANT_HASH_*`）
+  又让 `node scripts/engine-pub-surface.mjs --check` 红在 `added=8`。两笔债都在 M72-02 还清
+  （七个函数的说明补上、桩数落回 275，16 个模块 `绑定：<file>:<line>` 的行号漂移再生成进来；
+  符号面基线跑 `--update` 到 2192 项），读数与逐条归因见
+  `tasks/plan/M72-02-per-tile-tint与确定性变体与autotile.md` §验收证据。
+  **口径补一句**：改 `.scene`/渲染之外的公开 Rust 符号时，`cargo doc`、`gen-lua-api-docs.js`、
+  `engine-pub-surface.mjs` 这三道是连着的，只跑 clippy + test 会漏。
 - `jhyt_m66_pause_prefab` 的陈旧黄金表、`docs/32` 的悬空 `../scripts/README.md` 链接、
   `custom_fonts` 的 SDF/vector 分流断言，三条既有红都登记在 M72-13 收口，见上表归因。

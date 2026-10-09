@@ -93,6 +93,26 @@ const fn mix_u64(state: u64, value: u64) -> u64 {
     mixed
 }
 
+/// splitmix64's avalanche step, applied to the FNV state before the modulo.
+///
+/// **Why this exists**: FNV-1a's low bits have a period of the modulus itself, and
+/// `variant_count` is a small power of two in practice. Raw `hash % 4` over a grid
+/// came out as `3,2,1,0,3,2,1,0` per row shifted by one each row — a perfect 4×4
+/// lattice. Deterministic, yes, but it renders as machine-stamped diagonal stripes,
+/// which is the exact artifact variants exist to remove. Mixing the high bits down
+/// first costs nothing and keeps the result a pure function of `(x, y, seed)`.
+///
+/// Mirrored verbatim in `plugins/webgl/web-runtime.js` (JS `BigInt` + the Lua host
+/// shim) and `examples/game_jhyt/tools/preview_scene.py`; Lua needs the logical
+/// shift helper because its `>>` sign-extends.
+const fn avalanche(value: u64) -> u64 {
+    let stage = value ^ (value >> 30);
+    let stage = stage.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    let stage = stage ^ (stage >> 27);
+    let stage = stage.wrapping_mul(0x94d0_49bb_1331_11eb);
+    stage ^ (stage >> 31)
+}
+
 /// A rectangular grid of tiles.
 ///
 /// `tiles` holds a row-major **tile id** per cell (`0` = empty). By default that
@@ -259,7 +279,8 @@ impl Tilemap {
         )
     }
 
-    /// Deterministic variant index for a cell: FNV-1a over `(x, y, seed)`.
+    /// Deterministic variant index for a cell: FNV-1a over `(x, y, seed)`,
+    /// avalanched (splitmix64 finalizer) before the modulo.
     ///
     /// Same inputs always return the same value, in-process and across runs —
     /// that is what makes variants safe to bake into scene data and pixel
@@ -279,7 +300,7 @@ impl Tilemap {
         ] {
             hash = mix_u64(hash, value);
         }
-        (hash % self.variant_count as u64) as usize
+        (avalanche(hash) % self.variant_count as u64) as usize
     }
 
     /// 4-bit autotile mask of a cell: which of the four index-adjacent cells
@@ -1100,6 +1121,56 @@ mod tests {
         map.set_cell(0, 0, 4).unwrap();
         assert_eq!(map.resolve_atlas_index(0, 0), 4);
         assert_eq!(map.atlas_uv(4), Tilemap::tile_uv(4));
+    }
+
+    /// 变体序号的**黄金表**：8×4 格、`variant_seed = 0x1234_5678`、`variant_count = 4`。
+    /// 这张表就是"改哈希 = 全图重排"的那道闸——动了四个常量或 `avalanche` 的任何一步，
+    /// 这里立刻红。表值同时是另外三份镜像（`plugins/webgl/web-runtime.js` 的 JS 与 Lua、
+    /// `examples/game_jhyt/tools/preview_scene.py`）的对照基准。
+    const VARIANT_GOLDEN: [[u8; 8]; 4] = [
+        [0, 2, 2, 1, 3, 1, 0, 3],
+        [3, 2, 2, 0, 2, 1, 3, 2],
+        [1, 1, 1, 0, 3, 1, 1, 3],
+        [3, 1, 2, 0, 3, 2, 1, 1],
+    ];
+
+    #[test]
+    fn variant_indices_are_pinned_by_the_hash_constants() {
+        let mut map = Tilemap::new(Vec2::new(32.0, 32.0), 8, 4).unwrap();
+        map.atlas_cols = 16;
+        map.atlas_rows = 8;
+        map.tile_kinds = 4;
+        map.variant_count = 4;
+        map.variant_seed = 0x1234_5678;
+        map.validate_layout().unwrap();
+        for (y, row) in VARIANT_GOLDEN.iter().enumerate() {
+            for (x, &want) in row.iter().enumerate() {
+                assert_eq!(
+                    map.variant_for(x, y) as u8,
+                    want,
+                    "variant_for({x},{y}) 漂了：哈希常量或 avalanche 被改过，全图会重排"
+                );
+            }
+        }
+        // 反面对照（内建）：没有 avalanche 的原始 FNV 余数在这张表的第一行是
+        // `3,2,1,0,3,2,1,0`——逐列周期 4 的点阵（确定性有，质感没有，正是变体要消灭的
+        // 那种机器斜纹）。这条断言钉的是"点阵还在原始路径上"，也就是 avalanche 确实
+        // 加在了取模之前；有人把 avalanche 挪走或改到别处，这条会先于黄金表说清是哪一侧变了。
+        let raw_first_row: Vec<u64> = (0..8u64)
+            .map(|x| {
+                let mut hash = VARIANT_HASH_OFFSET;
+                for value in [x, 0u64, u64::from(map.variant_seed), MIX_AXIS_X, MIX_AXIS_Y] {
+                    hash = mix_u64(hash, value);
+                }
+                hash % 4
+            })
+            .collect();
+        assert_eq!(
+            raw_first_row,
+            vec![3, 2, 1, 0, 3, 2, 1, 0],
+            "原始 FNV 余数的第一行不再是周期 4 的点阵：哈希本体被改过，\
+             黄金表与三份镜像都要重新对账"
+        );
     }
 
     #[test]

@@ -234,10 +234,18 @@ kinds*V+1 + (kind-1)*16 + mask  = 该瓦的 4-bit 自动瓦片过渡槽
   常量是 `VARIANT_HASH_OFFSET` / `VARIANT_HASH_PRIME` / `MIX_AXIS_X` / `MIX_AXIS_Y`。
   **不许换成 `std` 的 `DefaultHasher`**——它按进程播种，症状是地表每帧抖一次，
   所有画面比对门全红。改这四个常量中的任何一个 = 全图重排。
+- FNV-1a 之后还要过一遍 **splitmix64 的收尾混洗**（`avalanche`：`>>30 · *A · >>27 · *B · >>31`）
+  再取模。这一步不是美化：原始 FNV 的低比特周期等于模数，`variant_count=4` 时第一行就是
+  `3,2,1,0,3,2,1,0` 的周期点阵——确定性有、质感没有。
 - **掩码位序按 index 命名，不按方位命名**：地图的 row 0 在**最底**，图集的 row 0 在**最顶**，
   "上邻居"在两个坐标系里指向相反的方向。位 0 = `y-1`、位 1 = `x+1`、位 2 = `y+1`、位 3 = `x-1`；
   越界当作"没有邻居"。同 kind 才算邻居。
 - `variant_seed` 会序列化：编辑器与运行时读同一个值，否则预览图与实机不一致。
+- **容量对账**：这套布局占用 `tile_kinds * (max(variant_count,1) + 16*autotile)` 个条目，
+  必须 `<= atlas_cols * atlas_rows`，少一列就是**加载报错**而不是画错（`Tilemap::validate_layout`）。
+  恒等寻址那一档不做这项检查（占用记为 0），因为它本来就没有扩容。
+- 解算结果超出容量时返回 `0`（不画）。宁可行空，也不要画成邻居的美术——后者在场景里
+  看起来"只是某块田花纹不对"，查起来是整图寻址表错位。
 
 ### 每格染色 `tints` / `tints_rgb`
 
@@ -252,12 +260,22 @@ kinds*V+1 + (kind-1)*16 + mask  = 该瓦的 4-bit 自动瓦片过渡槽
 卡死在 `0..9`。`cellIndex` 越界、`tintId` 超出调色表长度都**报错**，不做截断。
 Lua 侧入口：`tilemap.set_tint(id, x, y, r, g, b[, a])` / `tilemap.clear_tint(id, x, y)`。
 
+- 调色表按**颜色全等去重**（`Tilemap::register_tint`），同一个颜色重复注册拿回同一个 id；
+  上限 255 个颜色，超了**报错**。
+- 没染色的格子读回 `[1,1,1,1]`（乘法单位元），不是 `[0,0,0,0]`。
+- 首版只有两个来源用这条路：**季节/湿润的整体色调**与**阴影压暗**。逐格手涂没有编辑器 UI
+  支撑，因此没做。
+
 ### 相关的验证入口
 
 ```powershell
 cargo run -p game --example jhyt_m72_tileset_atlas --release   # 多行寻址 + 编码迁移 + 旧语义不变
 cargo run -p game --example tilemap_resave --release            # 重存工程内所有 .scene
 py tools/preview_scene.py scenes/manor.scene                    # 迁移前后的像素级对账（在工程根运行）
+cargo run -p game --example jhyt_m72_tile_variant_determinism --release  # 变体跨帧确定 + 哈希常量钉死
+cargo run -p game --example jhyt_m72_autotile_mask --release             # 4-bit 掩码解出的条目 == 真画出来的
+cargo run -p game --example jhyt_m72_tile_tint --release                 # 染色落到顶点色（读 mesh 不读像素）
+node scripts/check-tile-hash-parity.mjs                         # web 宿主的 JS/Lua 镜像与 Rust 金标逐位一致
 ```
 
 ## UI 组件字符串（屏幕空间）
