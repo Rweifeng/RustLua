@@ -8,7 +8,7 @@
 
 ## `particles.burst(x: f32, y: f32, count: u32, options: Option<mlua::Table>)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/physics.rs:363`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/physics.rs:401`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -19,7 +19,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `particles.count()`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/physics.rs:430`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/physics.rs:468`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 

@@ -283,7 +283,6 @@ impl FontProbe {
 pub mod project_font {
     use super::{DEFAULT_FONT_WEIGHT, FontProbe};
     use rustlua_infra::project_config;
-    use std::fs;
     use std::path::Path;
 
     /// `project.toml` 的单个键（`key = "value"`，去引号、忽略 BOM 与缩进）。
@@ -318,7 +317,7 @@ pub mod project_font {
     #[must_use]
     pub fn read_bytes(root: &Path) -> Option<(Vec<u8>, Option<Vec<u8>>)> {
         let decode = |path: &Path| {
-            let bytes = fs::read(path).ok()?;
+            let bytes = read_project_file(path)?;
             rustlua_infra::pack::decode(&bytes).ok()
         };
         let primary = decode(&root.join(primary_path(root)))?;
@@ -330,6 +329,15 @@ pub mod project_font {
     pub fn load_probe(root: &Path) -> Result<FontProbe, String> {
         let (primary, fallback) = read_bytes(root).ok_or_else(|| "字体文件缺失".to_owned())?;
         FontProbe::load_with_fallback_and_weight(&primary, fallback.as_deref(), weight(root))
+    }
+
+    /// 读一个工程文件并解码：走 `rustlua_infra::vfs::read_resource`（**唯一资源加载通道**）。
+    ///
+    /// Web/微信上工程是打包随宿主资源表走的，`std::fs` 恒失败——字体因此"文件缺失"，
+    /// 下游就是 `ui.measure_text` 报"工程字体不可用"。桌面无 provider 时这条通道就是
+    /// `std::fs` + 解码，行为不变。
+    fn read_project_file(path: &Path) -> Option<Vec<u8>> {
+        rustlua_infra::vfs::read_resource(path).ok()
     }
 }
 
@@ -670,32 +678,45 @@ impl FontAtlas {
         let pixel = self.pixel;
         // Phase A（并行）：光栅化全部字形，不触碰图集状态。按核数分块，避免
         // 每字形一线程的调度开销（CJK 预热数百字形时明显）。
-        let workers = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4)
-            .min(unique.len())
-            .max(1);
-        let chunk = unique.len().div_ceil(workers);
-        let glyphs: Vec<PrewarmedGlyph> = std::thread::scope(|scope| {
-            let mut handles: Vec<std::thread::ScopedJoinHandle<'_, Vec<PrewarmedGlyph>>> =
-                Vec::with_capacity(workers);
-            for block in unique.chunks(chunk) {
-                let font = font.clone();
-                let fallback = fallback.clone();
-                let block = block.to_vec();
-                handles.push(scope.spawn(move || {
-                    block
-                        .into_iter()
-                        .map(|ch| rasterize_glyph(&font, &fallback, ch, pixel))
-                        .collect()
-                }));
-            }
-            // 按块序 join 后扁平化，保持 chars 原始顺序（打包布局与逐字预热一致）。
-            handles
-                .into_iter()
-                .flat_map(|handle| handle.join().ok().into_iter().flatten())
-                .collect()
-        });
+        //
+        // **wasm 上必须串行**：`std::thread::scope` 在 `wasm32-unknown-unknown` 上直接 panic
+        // （`std/thread/scoped.rs` 的 `unreachable`）——wasm 里没有任何线程，连"起不来就降级"
+        // 的机会都没有。并行只影响建图集的耗时，不改变字形内容与顺序（Phase B 仍按 chars
+        // 顺序打包，布局逐字节不变）。
+        #[cfg(target_arch = "wasm32")]
+        let glyphs: Vec<PrewarmedGlyph> = unique
+            .iter()
+            .map(|&ch| rasterize_glyph(&font, &fallback, ch, pixel))
+            .collect();
+        #[cfg(not(target_arch = "wasm32"))]
+        let glyphs: Vec<PrewarmedGlyph> = {
+            let workers = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+                .min(unique.len())
+                .max(1);
+            let chunk = unique.len().div_ceil(workers);
+            std::thread::scope(|scope| {
+                let mut handles: Vec<std::thread::ScopedJoinHandle<'_, Vec<PrewarmedGlyph>>> =
+                    Vec::with_capacity(workers);
+                for block in unique.chunks(chunk) {
+                    let font = font.clone();
+                    let fallback = fallback.clone();
+                    let block = block.to_vec();
+                    handles.push(scope.spawn(move || {
+                        block
+                            .into_iter()
+                            .map(|ch| rasterize_glyph(&font, &fallback, ch, pixel))
+                            .collect()
+                    }));
+                }
+                // 按块序 join 后扁平化，保持 chars 原始顺序（打包布局与逐字预热一致）。
+                handles
+                    .into_iter()
+                    .flat_map(|handle| handle.join().ok().into_iter().flatten())
+                    .collect()
+            })
+        };
         // Phase B（串行）：按 chars 顺序打包进图集，布局与逐字预热一致。
         let mut count = 0;
         for glyph in glyphs {

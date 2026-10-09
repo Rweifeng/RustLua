@@ -1,0 +1,37 @@
+[package]
+name = "gpu-web-probe"
+version = "0.1.0"
+edition = "2021"
+authors = ["RustLua project"]
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+# 只做 spike：产物是给浏览器直接 import 的 wasm 模块，不需要被任何 crate 链接进来。
+crate-type = ["cdylib"]
+
+[dependencies]
+# 探针是"浏览器里的一段异步问答"，所以它需要 wasm 侧的 Future 执行器（wasm-bindgen-futures）
+# 和 DOM 句柄（web-sys）；这两者在产品代码里由宿主提供，这里必须自带。
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "Window",
+    "console",
+] }
+# `features = ["webgl"]`：**必须显式打开**。wgpu 的 default 在 wasm32 上只含 `webgpu`，
+# 而本探针的核心问题恰恰是"只有 WebGL2 的浏览器上会发生什么"，不打开这个特性就完全测不到
+# GL 后端（`Backends::GL` 会退化成空后端集）。
+wgpu = { version = "27", features = ["webgl"] }
+# 探针结论要能被宿主当数据读，所以结果统一序列化成 JSON 字符串。
+serde_json = "1"
+# M73-00 WP5 第一片：探针要驱动**真正的** `engine` 渲染器（不是另写一个玩具渲染器），
+# 所以依赖 engine 并显式打开 GL 后端。这个方向是安全的：出货产物 `game_web` 不依赖本 crate
+# （`cargo tree -p game_web` 有门在查），所以 engine+webgl 不会被拉进发布包。
+# 注意**不要**在 wasm 目标上 `cargo build --workspace`：同一构建里特性会合并，
+# 那时 `game_web` 会跟着拿到 `engine/webgl`（+139 KB）。门脚本一律按 `-p` 构建。
+engine = { path = "../engine", features = ["webgl"] }

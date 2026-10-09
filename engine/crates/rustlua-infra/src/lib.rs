@@ -6,6 +6,7 @@ pub mod paths;
 pub mod performance;
 pub mod preview_diagnostics;
 pub mod project_config;
+pub mod save_slot;
 pub mod time_step;
 pub mod user_dir;
 pub mod vfs;

@@ -21,6 +21,52 @@ const port = Number(process.argv[2]);
 const outFile = process.argv[3];
 const mode = process.argv[4] || 'boot';
 const timeoutSec = Number(process.argv[5] || 120);
+// 可选：落定后截一张 PNG（argv[6]）。用 `Page.captureScreenshot` 抓**合成后的页面**，
+// 这是唯一能拿到 GPU 画布内容的路子：WebGL 画布默认 `preserveDrawingBuffer:false`，
+// 合成之后用 JS 读（`toDataURL`/`getImageData`）拿到的是空白，而合成器里还留着最后一帧。
+// 位置参数一律用 `-` 表示「未提供」：PowerShell 向原生程序传参时会**丢掉空字符串**，
+// 后面所有参数就会错位一格。这不是洁癖——本轮实测踩到：`-KeyProbe` 的 `1` 落到了 shot 的位置，
+// 于是探针静默不跑，而脚本照样 exit 0（最难查的那种失败）。
+const argAt = (index) => {
+  const value = process.argv[index];
+  return !value || value === '-' ? '' : value;
+};
+const shotFile = argAt(6);
+// 可选第二张：把 GPU 画布临时藏掉后再拍一张（argv[7]）。
+//
+// 这是"两层画面一致性"唯一可控的比较法：同一次运行、同一时刻，一张是"GPU 层 + 底下的
+// Canvas2D 层"，另一张是"只有 Canvas2D 层"。两次运行分别取图会因为动画相位不同而不可能比。
+const shotUnderFile = argAt(7);
+// 关于"合成按键"：`Input.dispatchKeyEvent` 那条 CDP 注入路，本轮之前实测过**进不了**页面的输入
+// 状态（`data-rustlua-input="frames=N bits=0"`、`input_edges=0`），而页面**内部**的剧本
+// （`?rustlua-drive=jhyt` → `dispatchDriveKey`）同一条事件路径却有效（`bits=60`、`input_edges=13`）。
+// 所以"输入进模拟"这件事，正常产物的验法是用 `verify-webgl-bundle.ps1 -Gpu2d -DriveJhyt`。
+//
+// 但那个结论只覆盖"注入能不能进 **JS 世界**的输入状态"。WP6-04 之后还有一问：
+// **Rust 侧自己装的 DOM 监听器收到没有**——而 Rust-only 宿主（`-StubJsRuntime`）里没有
+// `web-runtime.js`，页内剧本根本不存在，只能用页内派发。所以这里加的开关走
+// `Runtime.evaluate` + `window.dispatchEvent(new KeyboardEvent(...))`（DOM 标准语义下必然
+// 送达 `addEventListener`），并把 `dom_events`（收到几个事件）与 `input_edges`（落到模拟几个边沿）
+// **分开记**：两者一起看才知道失败在"没收到"还是"收到了没应用"。
+const keyProbe = argAt(8) === '1';
+// 读到第几帧才算"落定"（0 = 不等）。确定性输入剧本按**帧号**触发，而状态属性每 STATUS_EVERY 帧
+// 才写一次、模式落定时刻又取决于浏览器调度 ⇒ 不等到目标帧，读到哪一帧就是碰运气：
+// 实测同一条命令两次分别读到 frames=30（正好在按键那一刻，世界还没变）与 frames=240（已生效）。
+const settleFrames = Number(argAt(9) || 0) || 0;
+// 存档槽探针：从**浏览器侧**独立读一次 `localStorage`，看 Rust 到底有没有把存档写进平台槽。
+// 只信 wasm 自己回报的 `commit=true` 不够——那可能只是"自己觉得写成功了"。
+// 找不到 `rustlua:save*`（或 payload 不是存档格式）时用退出码 3 报红，由驱动翻成明确的门失败。
+const storageProbe = argAt(10) === '1';
+// 音频探针（`any` / `none` / `-`）：从**浏览器侧**数 Rust 建出来的 `<audio>` 元素与错误数组。
+// 为什么要有独立探针：wasm 自己报的 `audio=N` 是"我以为我请求了"。真正"浏览器收到并开始加载"
+// 的证据只在页面里（`__rustluaAudioElements`），自动播放策略的拒绝也在那里（`__rustluaAudioErrors`）。
+// `any` = 必须至少有 1 个元素（证明平台通道真的走通）；`none` = 一个都不能有（对照）。
+const audioProbe = argAt(11) || '-';
+console.log('[cdp] raw argv: ' + JSON.stringify(process.argv.slice(2)));
+console.log(
+  '[cdp] argv: mode=' + (process.argv[4] || '') + ' shot=' + (shotFile ? 'yes' : 'no') +
+    ' keyProbe=' + keyProbe + ' settleFrames=' + settleFrames + ' storageProbe=' + storageProbe
+);
 const pollMs = 1500;
 const fs = require('fs');
 const apiContract = require('./web-api-contract.js');
@@ -45,6 +91,19 @@ function settled(dom, mode) {
   }
   if (mode === 'drive') {
     const s = stateOf(dom, 'data-rustlua-drive');
+    return s === 'done' || s === 'failed' ? s : '';
+  }
+  // GPU 后端探针（scripts/gpu-web-probe.ps1）：探针页面自己不玩 Lua、不 boot 游戏，
+  // 只把 wgpu 的 WebGL2 能力写成 data-gpu-probe。判据与 scene/drive 同款：
+  // 落定即可（done/failed 都算落定，红绿由调用方看 JSON 决定）。
+  if (mode === 'gpu-probe') {
+    const s = stateOf(dom, 'data-gpu-probe');
+    return s === 'done' || s === 'failed' ? s : '';
+  }
+  // 渲染探针（同一脚本的 `-Stage render`）：让**真正的 engine 渲染器**在 WebGL2 上离屏出一帧，
+  // 把像素与帧计数写成 data-render-probe。与 gpu-probe 一样只看落定，判据在 .ps1 里。
+  if (mode === 'render-probe') {
+    const s = stateOf(dom, 'data-render-probe');
     return s === 'done' || s === 'failed' ? s : '';
   }
   return '';
@@ -101,19 +160,211 @@ async function runContract(send) {
 }
 
 async function findPage() {
+  // 探针两阶段各有自己的页面文件名（能力探针 index.html / 渲染探针 render.html）；
+  // 其余模式（boot/scene/drive/contract）都跑 index.html。按模式挑文件名，而不是只认
+  // index.html——否则新页面会被判成"CDP 不可用"（exit 2），看起来像环境问题。
+  const pageFile = mode === 'render-probe' ? 'render.html' : 'index.html';
   // Chrome 启动后 /json/list 才可用；最多等 20 秒（首次启动可能较慢）。
   for (let i = 0; i < 40; i++) {
     try {
       const res = await fetch(`http://127.0.0.1:${port}/json/list`);
       const list = await res.json();
       const page = list.find(
-        (t) => t.type === 'page' && t.url.includes('index.html') && t.webSocketDebuggerUrl
+        (t) => t.type === 'page' && t.url.includes(pageFile) && t.webSocketDebuggerUrl
       );
       if (page) return page;
     } catch (e) { /* 端口还没起来，继续等 */ }
     await sleep(500);
   }
   return null;
+}
+
+/// 落定后真的按几下键，读"宿主收到几个事件"与"落到模拟几个边沿"。
+async function runKeyProbe(send) {
+  const read = async () => {
+    const r = await send('Runtime.evaluate', {
+      expression: 'document.body ? (document.body.getAttribute("data-rustlua-gpu") || "") : ""',
+      returnByValue: true,
+    });
+    const state = r && r.result && typeof r.result.value === 'string' ? r.result.value : '';
+    const num = (name) => {
+      const m = new RegExp(name + '=(\\d+)').exec(state);
+      return m ? m[1] : '?';
+    };
+    return {
+      frames: Number(num('frames')),
+      dom_events: num('dom_events'),
+      input_edges: num('input_edges'),
+      raw: state,
+    };
+  };
+  // 状态属性**不是每帧写的**（宿主每 STATUS_EVERY 帧刷一次），所以按键之后必须等到下一次刷新
+  // 才能读到新值——否则读到的是旧快照，看起来就像"事件没到"。这是本轮实际踩到的第二次误判。
+  const readFresh = async (sinceFrames) => {
+    const deadline = Date.now() + 6000;
+    let last = await read();
+    while (Date.now() < deadline && last.frames < sinceFrames + 20) {
+      await sleep(200);
+      last = await read();
+    }
+    return last;
+  };
+  const before = await read();
+  // 先自测"页内派发到底有没有送到 window 上的监听器"：这一步把"浏览器没送达"与
+  // "Rust 侧监听器没装上"分清楚。两者都会表现为 `dom_events` 不变，但修法完全不同。
+  const delivery = await send('Runtime.evaluate', {
+    expression:
+      '(function(){var hits=0;var f=function(){hits++;};window.addEventListener("keydown",f);' +
+      'window.dispatchEvent(new KeyboardEvent("keydown",{key:"w",code:"KeyW",bubbles:true}));' +
+      'document.dispatchEvent(new KeyboardEvent("keydown",{key:"w",code:"KeyW",bubbles:true}));' +
+      'window.removeEventListener("keydown",f);return hits;})()',
+    returnByValue: true,
+  });
+  console.log(
+    '[cdp] key probe: in-page delivery self-test hits=' +
+      (delivery && delivery.result ? delivery.result.value : '?')
+  );
+  const dispatch = async (type) =>
+    send('Runtime.evaluate', {
+      expression:
+        'window.dispatchEvent(new KeyboardEvent("' + type + '", {key: "w", code: "KeyW", ' +
+        'keyCode: 87, which: 87, bubbles: true}))',
+      returnByValue: true,
+    });
+  // 按住一段时间再松开：一步固定步长要能观察到，且要能区分"按下边沿"与"按住状态"。
+  for (let i = 0; i < 12; i++) {
+    await dispatch('keydown');
+    await sleep(80);
+  }
+  const held = await readFresh(before.frames);
+  for (let i = 0; i < 6; i++) {
+    await dispatch('keyup');
+    await sleep(80);
+  }
+  await sleep(400);
+  const after = await readFresh(held.frames);
+  console.log(
+    '[cdp] key probe: frames ' + before.frames + ' -> ' + held.frames + ' -> ' + after.frames +
+      ' ; dom_events ' + before.dom_events + ' -> ' + held.dom_events + ' -> ' + after.dom_events +
+      ' ; input_edges ' + before.input_edges + ' -> ' + after.input_edges
+  );
+}
+
+/// 从浏览器侧独立读平台存档槽（`localStorage` 里 `rustlua:save*` 那几条）。
+///
+/// 为什么要在**浏览器侧**读、而不是只看 wasm 报的 `commit=true`：那是"自己说自己写成功了"。
+/// 平台槽是这段代码唯一的落盘通道，只有从外面读一眼才能证明字**真的**进去了。
+/// 顺带核格式：引擎写的 payload 必须与旧运行时同格式（`save_version=` 开头），
+/// 否则"换了通道，旧档读不出来"这件事会一直藏着。
+async function runStorageProbe(send) {
+  const r = await send('Runtime.evaluate', {
+    expression:
+      '(function(){try{var out=[];for(var i=0;i<localStorage.length;i++){' +
+      'var k=localStorage.key(i);if(!k||k.indexOf("rustlua:save")!==0)continue;' +
+      'var v=localStorage.getItem(k)||"";' +
+      'out.push(k+"="+v.length+"hdr:"+(v.indexOf("save_version=")===0?"ok":"bad"));}return out.join(",");}' +
+      'catch(e){return "error:"+e;}})()',
+    returnByValue: true,
+  });
+  const summary = r && r.result && typeof r.result.value === 'string' ? r.result.value : '';
+  console.log('[cdp] storage probe: ' + (summary || '(no rustlua:save entry)'));
+  if (!summary || summary.indexOf('rustlua:save') !== 0) {
+    console.log('[cdp] storage probe FAILED: 平台槽里没有 rustlua:save 条目');
+    return 3;
+  }
+  if (summary.indexOf('hdr:ok') < 0) {
+    console.log('[cdp] storage probe FAILED: 存档 payload 不是引擎/旧运行时同格式（缺 save_version= 头）');
+    return 3;
+  }
+  return 0;
+}
+
+/// 从浏览器侧数 Rust 侧建出来的音频元素（`__rustluaAudioElements`）。
+///
+/// 这个探针回答的是"平台音频通道到底通没通"：元素在、`src` 对、`paused=false` ⇒ 浏览器
+/// 真的开始加载/播放了。`__rustluaAudioErrors` 里的内容是最常见的"没声音"原因
+/// （自动播放策略 `NotAllowedError`），必须能被看见，而不是让游戏静悄悄无声。
+async function runAudioProbe(send, expect) {
+  const r = await send('Runtime.evaluate', {
+    expression:
+      '(function(){try{var els=window.__rustluaAudioElements||null;' +
+      'var errs=window.__rustluaAudioErrors||[];' +
+      'var count=els?els.length:0;var rows=[];' +
+      'for(var i=0;i<count;i++){var e=els[i]||{};' +
+      'rows.push(String(e.src||"?")+"|paused="+String(e.paused)+"|loop="+String(e.loop)+"|vol="+String(e.volume));}' +
+      'return "elements="+count+" errors="+errs.length+(errs.length?(" ["+errs.join(" ; ")+"]"):"")+' +
+      '(rows.length?(" "+rows.join(" ")):"");}catch(e){return "error:"+e;}})()',
+    returnByValue: true,
+  });
+  const summary = r && r.result && typeof r.result.value === 'string' ? r.result.value : '';
+  console.log('[cdp] audio probe (' + expect + '): ' + summary);
+  const count = Number((summary.match(/elements=(\d+)/) || [])[1] || 0);
+  if (expect === 'any' && count < 1) {
+    console.log('[cdp] audio probe FAILED: 浏览器侧一个音频元素都没有（平台通道没走到）');
+    return 4;
+  }
+  if (expect === 'none' && count > 0) {
+    console.log('[cdp] audio probe FAILED: 对照运行里不该有音频元素，实际 ' + count + ' 个');
+    return 4;
+  }
+  return 0;
+}
+
+async function captureShot(send, file, underFile) {
+  if (!file) return;
+  // 若页面在跑 GPU 宿主（`data-rustlua-gpu`），等它把帧数推上去再拍：那条属性从第 1 帧就开始写，
+  // 而首帧含一次性建图集/建管线——拍首帧等于拍半成品，与"稳态画面"不是一回事。
+  // 没跑 GPU 宿主（纯 Canvas2D）时这里立刻返回，不影响老流程。
+  const shotDeadline = Date.now() + 20000;
+  while (Date.now() < shotDeadline) {
+    let state = '';
+    try {
+      const r = await send('Runtime.evaluate', {
+        expression: 'document.body ? (document.body.getAttribute("data-rustlua-gpu") || "") : ""',
+        returnByValue: true,
+      });
+      state = r && r.result && typeof r.result.value === 'string' ? r.result.value : '';
+    } catch (e) { /* 页面可能在忙，下一轮再试 */ }
+    if (!state) break;
+    const m = /presented frames=(\d+)/.exec(state);
+    if (m && Number(m[1]) >= 60) {
+      console.log('[cdp] gpu frames settled for shot: ' + m[0]);
+      break;
+    }
+    await sleep(500);
+  }
+  try {
+    const shot = await send('Page.captureScreenshot', { format: 'png', fromSurface: true });
+    if (shot && shot.data) {
+      fs.writeFileSync(file, Buffer.from(shot.data, 'base64'));
+      console.log('[cdp] screenshot written: ' + file);
+    } else {
+      console.log('[cdp] screenshot empty');
+    }
+    if (underFile) {
+      // 藏掉 GPU 画布，露出底下的 Canvas2D 层，再拍一张。用 JS 改样式而不是改产物：
+      // 产物里一行都不动，比较的是**同一份代码在同一次运行里的两层**。
+      const hide = await send('Runtime.evaluate', {
+        expression: '(function(){var c=document.getElementById("rustlua-gpu-canvas");' +
+          'if(!c)return "no-canvas";c.style.display="none";return "hidden";})()',
+        returnByValue: true,
+      });
+      console.log('[cdp] gpu canvas: ' + (hide && hide.result ? hide.result.value : '?'));
+      await sleep(600);
+      const under = await send('Page.captureScreenshot', { format: 'png', fromSurface: true });
+      if (under && under.data) {
+        fs.writeFileSync(underFile, Buffer.from(under.data, 'base64'));
+        console.log('[cdp] under-layer screenshot written: ' + underFile);
+      }
+      await send('Runtime.evaluate', {
+        expression: '(function(){var c=document.getElementById("rustlua-gpu-canvas");' +
+          'if(c)c.style.display="";return "restored";})()',
+        returnByValue: true,
+      });
+    }
+  } catch (e) {
+    console.log('[cdp] screenshot failed: ' + e);
+  }
 }
 
 async function main() {
@@ -124,6 +375,7 @@ async function main() {
   }
   const ws = new WebSocket(page.webSocketDebuggerUrl);
   let msgId = 0;
+  let consoleLines = 0;
   const pending = new Map();
   const send = (method, params) =>
     new Promise((resolve, reject) => {
@@ -136,12 +388,34 @@ async function main() {
     if (msg.id && pending.has(msg.id)) {
       pending.get(msg.id).resolve(msg.result);
       pending.delete(msg.id);
+      return;
+    }
+    // 页面侧的报错就是**诊断证据**，必须留住：wasm 的 panic/abort 不走 DOM，
+    // 只在控制台留一行；不采集它，"引擎卡死"与"引擎炸了"在 dump 里长得一模一样。
+    if (msg.method === 'Runtime.consoleAPICalled') {
+      const args = (msg.params.args || [])
+        .map((a) => (a.value !== undefined ? a.value : a.description || a.type))
+        .join(' ');
+      if (consoleLines++ < 200) console.log('[console.' + msg.params.type + '] ' + args);
+      return;
+    }
+    if (msg.method === 'Runtime.exceptionThrown') {
+      const d = msg.params.exceptionDetails || {};
+      if (consoleLines++ < 200) console.log('[exception] ' + (d.exception?.description || d.text || ''));
+      return;
+    }
+    if (msg.method === 'Log.entryAdded') {
+      const e = msg.params.entry || {};
+      if (consoleLines++ < 200) console.log('[log.' + e.level + '] ' + (e.text || ''));
     }
   };
   await new Promise((resolve, reject) => {
     ws.onopen = resolve;
     ws.onerror = () => reject(new Error('websocket connect failed'));
   });
+  // 打开控制台/异常/浏览器日志三条事件流（页面加载之前的报错靠 Log 兜住）。
+  try { await send('Runtime.enable', {}); } catch (e) { /* 老版本可能不支持，不影响主流程 */ }
+  try { await send('Log.enable', {}); } catch (e) { /* 同上 */ }
 
   const deadline = Date.now() + timeoutSec * 1000;
   let lastDom = '';
@@ -162,8 +436,47 @@ async function main() {
           const code = await runContract(send);
           process.exit(code);
         }
-        fs.writeFileSync(outFile, dom, 'utf8');
         console.log('[cdp] ' + mode + ' settled: ' + outcome);
+        // 确定性剧本/世界查询：等到目标帧再写 DOM。
+        // 为什么必须在**写文件之前**等：驱动断言的是这份 DOM 里的 `data-rustlua-gpu` 读数，
+        // 而它在落定瞬间可能还停在按键那一帧（见 `settleFrames` 的注释）。
+        if (settleFrames > 0) {
+          const gpuDeadline = Date.now() + 15000;
+          let reached = '';
+          while (Date.now() < gpuDeadline) {
+            let state = '';
+            try {
+              const r = await send('Runtime.evaluate', {
+                expression: 'document.body ? (document.body.getAttribute("data-rustlua-gpu") || "") : ""',
+                returnByValue: true,
+              });
+              state = r && r.result && typeof r.result.value === 'string' ? r.result.value : '';
+            } catch (e) { /* 页面可能在忙，下一轮再试 */ }
+            const m = /frames=(\d+)/.exec(state);
+            if (m && Number(m[1]) >= settleFrames) { reached = m[0]; break; }
+            await sleep(200);
+          }
+          console.log('[cdp] readout settle: ' + (reached || 'timeout(>= ' + settleFrames + ' frames)'));
+          try {
+            const r = await send('Runtime.evaluate', {
+              expression: 'document.body ? document.body.outerHTML : ""',
+              returnByValue: true,
+            });
+            if (r && r.result && typeof r.result.value === 'string' && r.result.value) dom = r.result.value;
+          } catch (e) { /* 保持落定那一份 DOM */ }
+        }
+        fs.writeFileSync(outFile, dom, 'utf8');
+        await captureShot(send, shotFile, shotUnderFile);
+        if (keyProbe) await runKeyProbe(send);
+        // 存档槽探针放在最后：它不改页面状态，也不影响截图/按键读数。
+        if (storageProbe) {
+          const code = await runStorageProbe(send);
+          if (code !== 0) process.exit(code);
+        }
+        if (audioProbe !== '-') {
+          const code = await runAudioProbe(send, audioProbe);
+          if (code !== 0) process.exit(code);
+        }
         process.exit(0);
       }
     }

@@ -164,3 +164,19 @@ mod backend {
 }
 
 pub use backend::{is_file, metadata, read};
+
+/// 读一个工程资源并解码——**引擎里读工程文件的唯一入口**。
+///
+/// 为什么要有这一层（而不是各处自己 `fs::read` + `pack::decode`）：
+/// 1. **优先级只有一份判据**：provider 优先、桌面无 provider 时回落 `std::fs`（就是 [`read`]
+///    自己的语义）。各处若自己"先 `fs::read` 再 vfs"，桌面上一旦装了 provider 就会被文件系统
+///    抢先，与"provider 优先"相反——Web 上恰好看不出来（`std::fs` 恒失败），是一处只在
+///    宿主环境下才现形的分叉。
+/// 2. **解码不漏**：provider 返回的是**未解码**字节（与 `std::fs::read` 一致，见模块头），
+///    压缩/加密由 [`crate::pack::decode`] 统一处理；明文原样返回，所以重复解码安全。
+///
+/// 读不到与解码失败都是 `Err`（不再让调用方各自 `.ok()` 吞掉原因）。
+pub fn read_resource(path: &Path) -> io::Result<Vec<u8>> {
+    let bytes = read(path)?;
+    crate::pack::decode(&bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}

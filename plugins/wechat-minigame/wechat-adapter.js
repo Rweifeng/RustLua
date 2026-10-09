@@ -112,7 +112,11 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   var strategyLogged = { main: false, pack: false };
 
   var readStrategies = [
-    { name: 'user-data', apply: function (p) { return userRoot ? userRoot + '/' + p : null; } },
+    // 用户目录缓存：路径必须与**写入**走同一个函数（writeCache → cachePathFor）。
+    // 这里原本自己拼 `userRoot + '/' + p`，于是"写在新路径、读在旧路径"——带发布标识的新
+    // 缓存永远读不到，而**不带标识的旧缓存永远被读到**，正是"换了版本真机还是老样子"的
+    // 最后一段链路（cachePathFor 加标识只改了一半，另一半在这里）。
+    { name: 'user-data', apply: function (p) { return cachePathFor(p); } },
     { name: 'root-relative', apply: function (p) { return p; } },
     { name: 'leading-slash', apply: function (p) { return '/' + p; } },
     { name: 'dot-prefix', apply: function (p) { return './' + p; } },
@@ -533,8 +537,82 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     return remoteConfig.packBaseUrl + path.slice(PACK_PREFIX.length);
   }
 
+  // 缓存路径 = 用户目录 + **发布标识** + 逻辑路径。
+  //
+  // 为什么必须带发布标识（修的是"发布新版本后旧缓存永久遮蔽新内容"）：
+  // 缓存键原本只有逻辑路径（`user-data/pack/scripts/x.lua`），而 `readWithStrategies` 里
+  // user-data 是**第一候选**、命中即返回 —— 校验只在**新下载**时发生。于是同一个文件名
+  // 在发布新版本后仍然命中上一版的缓存：改了 Lua、换了贴图，真机上还是老样子，而且不会
+  // 自愈（玩家不清缓存就永远修不好）。把发布标识编进目录名，这一版一变整批路径就变，
+  // 旧缓存自然失效（并且能整目录清掉，见 pruneStaleCacheRoot）。
+  //
+  // 为什么用**发布级**而不是**逐文件**标识：逐文件的目录名会让一次发布把文件散进几十个
+  // `v-<hash>/` 里，"清掉上一版"就没有可删的单元了（只剩遍历删单文件）。
+  // 清单（`相对路径 size 校验和`）本身逐行列了这批资源的全部内容，哈希它就等价于
+  // "这批资源变了没有"。
+  //
+  // 清单不可得时（老产物/清单没打进包）返回旧的不带标识路径：宁可回到旧行为，
+  // 也不要因为"算不出键"而把整批缓存判成未命中、每次启动重下全部素材。
   function cachePathFor(path) {
-    return userRoot ? userRoot + '/' + path : null;
+    if (!userRoot) return null;
+    // 清单**永远**走不带标识的路径：它必须在"还不知道标识"的时候就能读写。
+    // 远端形态下 ensureManifest 的顺序是"先下载并落盘清单 → 再据它算标识"，若清单也带标识，
+    // 落盘时就会用**上一版**清单算出的键（那时新清单还没读进来），于是新清单被写进旧键目录、
+    // 下一轮又读回旧清单——标识永远停在上一版，新内容永远不会被下载（比"旧缓存遮蔽"更硬）。
+    if (path === PACK_PREFIX + 'manifest.txt') return userRoot + '/' + path;
+    var key = releaseKey();
+    if (!key) return userRoot + '/' + path;
+    return userRoot + '/v-' + key + '/' + path;
+  }
+
+  var releaseKeyMemo = null;
+  var releaseKeyResolved = false;
+
+  function releaseKey() {
+    if (releaseKeyResolved) return releaseKeyMemo;
+    releaseKeyResolved = true;
+    var manifest = loadManifestChecksums();
+    if (!manifest || !manifestText) return null;
+    releaseKeyMemo = fnv1a64Text(manifestText);
+    pruneStaleCacheRoot(userRoot + '/v-' + releaseKeyMemo);
+    return releaseKeyMemo;
+  }
+
+  // 新清单落地后必须把**由旧清单派生的一切**作废（校验表、清单原文、发布标识）。
+  // 不作废的后果不是"稍微不准"，而是发布标识永远停在上一版：所有资源继续按旧键读写，
+  // 新内容永远不会被下载。失败标记也一并清掉——那可能是"清单还没下下来"时的误判。
+  function resetManifestDerived() {
+    manifestChecksums = null;
+    manifestText = null;
+    checksumLookupFailed = false;
+    releaseKeyMemo = null;
+    releaseKeyResolved = false;
+  }
+
+  // 上一版目录不再被任何读取命中，但它**仍然占着用户目录配额**（远端形态下那可能是
+  // 几 MB 的贴图与音频）。每次启动按"本次用到的发布标识"清一次旧的，把占用收敛到
+  // 一代以内，而不是让每一版都永久留在盘上。
+  //
+  // 只删**我们自己写下的那个目录**（storage 里的标记）：绝不按 `v-*` 通配去猜，
+  // 免得把玩家目录里别的东西当垃圾删掉。
+  var CACHE_ROOT_KEY = 'rustlua_asset_cache_root';
+  var prunedRoot = null;
+
+  function pruneStaleCacheRoot(currentRoot) {
+    if (!currentRoot || prunedRoot === currentRoot) return;
+    prunedRoot = currentRoot;
+    var previous = safeCall(wx, 'getStorageSync', CACHE_ROOT_KEY);
+    var fs = fsManager();
+    if (previous && typeof previous === 'string' && previous !== currentRoot
+      && previous.indexOf(userRoot + '/v-') === 0 && fs && typeof fs.rmdirSync === 'function') {
+      try {
+        fs.rmdirSync(previous, true);
+        log('wechat-adapter: 已清理上一版资源缓存 ' + previous);
+      } catch (error) {
+        warn('wechat-adapter: 清理上一版资源缓存失败 ' + previous + ' -> ' + hostError(error));
+      }
+    }
+    try { if (typeof wx.setStorageSync === 'function') wx.setStorageSync(CACHE_ROOT_KEY, currentRoot); } catch (error) { /* 存不下就算了 */ }
   }
 
   // FNV-1a 64：与 assetc 的清单校验保持一致（清单里是 16 位十六进制）。
@@ -565,22 +643,54 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     return pad8(hi) + pad8(lo);
   }
 
+  // 文本 → 同口径的 64 位指纹。只用于**缓存命名空间**（"清单变没变"），与 assetc 的
+  // 字节级校验无关，所以按 UTF-16 码元拆字节即可，不必做真正的 UTF-8 编码。
+  function fnv1a64Text(text) {
+    var bytes = new Uint8Array(text.length * 2);
+    for (var i = 0; i < text.length; i++) {
+      var code = text.charCodeAt(i);
+      bytes[i * 2] = code & 0xff;
+      bytes[i * 2 + 1] = (code >>> 8) & 0xff;
+    }
+    return fnv1a64Hex(bytes);
+  }
+
   // 清单：`相对路径\tsize\tfnv1a(16 位十六进制)`，首行是 assetc_manifest。
+  //
+  // `checksumLoading` 是**重入保护**，不是优化：这个函数自己要通过 readText 读
+  // `pack/manifest.txt`，而读取的候选里包含用户目录缓存 —— 缓存路径又要先算出发布标识，
+  // 而发布标识来自这份清单。不设这道闸就是无限递归（读清单 → 算缓存路径 → 读清单）。
+  // 加载期间 `releaseKey` 返回 null，清单自己走**不带标识**的路径。
+  var checksumLoading = false;
+  var manifestText = null;
   function loadManifestChecksums() {
     if (manifestChecksums || checksumLookupFailed) return manifestChecksums;
-    var text = readText(PACK_PREFIX + 'manifest.txt');
-    if (!text) { checksumLookupFailed = true; return null; }
-    var map = {};
-    var lines = text.split('\n');
-    for (var i = 0; i < lines.length; i++) {
-      var parts = lines[i].replace(/\r$/, '').split('\t');
-      if (parts.length < 3) continue;
-      var size = parseInt(parts[1], 10);
-      if (isNaN(size)) continue;
-      map[parts[0]] = { size: size, checksum: parts[2] };
+    if (checksumLoading) return null;
+    checksumLoading = true;
+    try {
+      var text = readText(PACK_PREFIX + 'manifest.txt');
+      if (!text) {
+        // 远端形态下"现在读不到清单"不等于"永远没有清单"：ensureManifest 随后会把它下下来。
+        // 在这里 latch 住会让 ensureManifest 直接短路返回 —— 清单永远不下载、校验永远无据可依、
+        // 发布标识永远是空（每次都按旧路径读写）。只有"根本不会有远端"时才记这次失败。
+        if (!remoteConfig) checksumLookupFailed = true;
+        return null;
+      }
+      var map = {};
+      var lines = text.split('\n');
+      for (var i = 0; i < lines.length; i++) {
+        var parts = lines[i].replace(/\r$/, '').split('\t');
+        if (parts.length < 3) continue;
+        var size = parseInt(parts[1], 10);
+        if (isNaN(size)) continue;
+        map[parts[0]] = { size: size, checksum: parts[2] };
+      }
+      manifestText = text;
+      manifestChecksums = map;
+      return map;
+    } finally {
+      checksumLoading = false;
     }
-    manifestChecksums = map;
-    return map;
   }
 
   function verifyDownloaded(path, buffer) {
@@ -736,6 +846,9 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         assetStats.remoteFailed += 1;
         warn('wechat-adapter: 远端下载成功但无法写入缓存 ' + path + '（本轮仍会用它，下次会重新下载）');
       }
+      // 清单换了就是把整批资源换了：由它派生的校验表与发布标识必须立刻作废重算
+      // （否则发布标识停在上一版，后面所有资源继续按旧键读写）。
+      if (path === PACK_PREFIX + 'manifest.txt') resetManifestDerived();
       assetStats.remote += 1;
       assetStats.remoteBytes += bytes.length;
       updateAssetMarkers();
@@ -1400,9 +1513,17 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       boot: bootAttr('data-rustlua-boot') || 'unknown',
       boot_detail: String(bootAttr('data-rustlua-boot-detail') || '').slice(0, 120),
       boot_marks: bootMarkTargetName(),
-      drawn: bootAttr('data-rustlua-drawn') || '0',
-      ui_elements: bootAttr('data-rustlua-ui-elements') || '0',
-      world: String(bootAttr('data-rustlua-world') || '').slice(0, 200),
+      // `off` 而不是 `0`：这几个读数由运行时的诊断开关决定写不写（web-runtime.js 的
+      // DIAGNOSTICS_ON，发布默认关）。把它们缺省成 0 会让现场报告看起来像"启动了但什么都没画"
+      // ——那正好是这套诊断要区分的故障，不能由诊断自己伪造出来。
+      drawn: bootAttr('data-rustlua-drawn') || 'off',
+      ui_elements: bootAttr('data-rustlua-ui-elements') || 'off',
+      world: String(bootAttr('data-rustlua-world') || '').slice(0, 200) || 'off',
+      timing: bootAttr('data-rustlua-timing') || 'off',
+      // 输入批量协议（`RLFI`）的落地读数，**常驻**（运行时那三个数是 JS 侧计数器、不额外跨界）。
+      // 微信侧看不到浏览器 DevTools，这一条是"输入到底有没有送到 Lua"的现场唯一凭据：
+      // `bits` 恒为 0 = 宿主与 wasm 的位语义不一致；`unmapped` 非空 = 键名落不进线路表。
+      input: bootAttr('data-rustlua-input') || 'off',
       document_shim: shimReports.document ? {
         replaced: shimReports.document.replaced,
         patched: shimReports.document.patched,
@@ -2176,6 +2297,49 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     return mapped;
   }
 
+  // 逻辑资源 → 交给**宿主自己加载**的接口（Image.src / InnerAudioContext.src）的路径。
+  //
+  // 与 patchImageSrc 的三步同源（主体路由 → 分包挂载 → 远端落缓存），但这里是**同步**的：
+  // 音频的 play() 是同步 API（Lua 侧 audio.play 要一个即时结果），没法像贴图那样等 Promise
+  // 再改 src。所以判据换成"现在够不够得着"：
+  //   * 用户目录缓存命中 → 用绝对缓存路径（远端形态下包内确实没有这个文件）；
+  //   * 包内命中（mainpack/ 或 pack/，含已探明的方言）→ 用那个宿主路径；
+  //   * 包内没有但配了远端 → **直接把远端 URL 交给宿主**：InnerAudioContext 支持网络资源，
+  //     不必先下载落盘（贴图那条必须先下载，是因为宿主自己加载时没有"远端回落到缓存"的能力）。
+  //     口径与远端形态既有前提一致：那条路本来就要配 downloadFile 域名白名单。
+  //   * 分包还没挂载 → 报 `pending`：这不是"文件不存在"，只是"现在够不着"，调用方**不得**
+  //     据此把它记成永久缺失（记了之后挂载完成这个音效整局都不再尝试）。
+  // 探测一律用 accessSync（只问存在性、不读内容）：音频动辄上兆，用"读一遍字节"当存在性
+  // 判据会让每次播放都白读一遍。
+  function probeHostFile(path) {
+    var fs = fsManager();
+    // 探测不了就**不下结论**（返回 null，调用方按"假定存在"处理）：宁可让宿主去报真实的
+    // 加载错误，也不要因为探针缺席而把一份本来好好的资源判成不存在。
+    if (!fs || typeof fs.accessSync !== 'function') return null;
+    try { fs.accessSync(path); return true; } catch (error) { return false; }
+  }
+
+  function assetSrcFor(path) {
+    var normalized = normalizePath(path);
+    var cached = cachePathFor(normalized);
+    if (cached && probeHostFile(cached) === true) {
+      return { src: cached, source: 'cache', pending: false };
+    }
+    var subject = hostSrcFor(normalized);
+    if (probeHostFile(subject) !== false) {
+      return { src: subject, source: 'package', pending: false };
+    }
+    if (needsPackMount(normalized)) {
+      return { src: subject, source: 'pending', pending: true };
+    }
+    if (loadRemoteConfig()) {
+      return { src: remoteUrlFor(normalized), source: 'remote', pending: false };
+    }
+    // 包内没有、远端也没配：把**正确的包内路径**交出去，让宿主按真实情况报错
+    // （而不是我们静默吞掉，也不是交一个历史上猜出来的错误路径）。
+    return { src: subject, source: 'missing', pending: false };
+  }
+
   // Image.src 是**宿主自己加载**的接口：我们只能给它一个宿主能访问的路径，
   // 而且无法像 fetch 那样"读不到就回落到远端"。
   // 资源移出包内（瘦首包/远端回落）时，直接把 `pack/x.png` 交给宿主只会静默 onerror
@@ -2470,10 +2634,29 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   var BOOT_TIMEOUT_KEY = 'rustlua_boot_timeout_ms';
   var bootStartedAt = 0;
   var bootWatchdog = null;
+  // 当前启动阶段。看门狗原本只会说"启动超时：Lua 主循环没有起来"，而卡在**分包下载**、
+  // **wasm 实例化**与卡在 Lua 首帧是三件完全不同的事（前者与游戏逻辑毫无关系），
+  // 现场只拿到同一句话等于没拿到线索。阶段写进 DOM 属性，真机与无头都能读。
+  var bootPhase = 'init';
+
+  function setBootPhase(phase) {
+    bootPhase = phase;
+    bodyElement.setAttribute('data-rustlua-boot-phase', phase);
+  }
 
   function bootTimeoutMs() {
     var value = parseInt(safeCall(wx, 'getStorageSync', BOOT_TIMEOUT_KEY), 10);
     return value > 0 ? value : BOOT_TIMEOUT_MS;
+  }
+
+  // wasm 实例化超时单独一个键：它与"Lua 主循环没起来"是两件事，判定阈值也该能分开调
+  // （分包刚挂载完就实例化，字节在本地，15 秒还很宽裕；慢设备上可以现场放大）。
+  var WASM_TIMEOUT_MS = 15000;
+  var WASM_TIMEOUT_KEY = 'rustlua_wasm_timeout_ms';
+
+  function wasmTimeoutMs() {
+    var value = parseInt(safeCall(wx, 'getStorageSync', WASM_TIMEOUT_KEY), 10);
+    return value > 0 ? value : WASM_TIMEOUT_MS;
   }
 
   function stallHint() {
@@ -2493,7 +2676,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
 
   function reportBootStall() {
     var elapsed = Math.round((Date.now() - bootStartedAt) / 1000);
-    var message = '启动超时 ' + elapsed + 's：Lua 主循环没有起来。' + stallHint();
+    var wasmNote = (bootPhase === 'wasm' || bootPhase === 'pack')
+      ? ' wasm=' + wasmState.status + (wasmState.source ? '/' + wasmState.source : '')
+      : '';
+    var message = '启动超时 ' + elapsed + 's（阶段 ' + bootPhase + '）' + wasmNote + '：' + stallHint();
     console.error('[wechat-adapter] ' + message + ' 现场：' + JSON.stringify(diagSnapshot()));
     publishDiag();
     showBootError(message);
@@ -2504,6 +2690,13 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     if (started) return Promise.resolve(false);
     started = true;
     bodyElement.setAttribute('data-rustlua-adapter', 'ready');
+    // 看门狗从**这一行**就开始计时，覆盖"分包下载 → wasm 实例化 → 字体 → Lua boot"整条链。
+    // 原来的写法是在 wasmReady 兑现**之后**才 arm：宿主如果有一步既不 success 也不 fail
+    // （WXWebAssembly.instantiate 与 loadSubpackage 真机上都出现过这种半死状态），
+    // 卡在那里的现场是黑屏 + 0 error + 连超时提示都没有——最难查的一种。
+    bootStartedAt = Date.now();
+    setBootPhase('pack');
+    if (!bootWatchdog) bootWatchdog = setTimeout(reportBootStall, bootTimeoutMs());
     // 必须在 ensurePack 之前读：它决定"分包加载失败是否致命"。
     loadRemoteConfig();
     updateAssetMarkers();
@@ -2516,6 +2709,12 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       warn('wechat-adapter: 覆盖层开关读取失败 -> ' + hostError(error));
     }
     if (debugOverlayEnabled) {
+      // 覆盖层要读运行时每帧自报的那些 `data-rustlua-*` 属性（世界状态/预设文字/九宫格切片），
+      // 而它们在发布包里默认不写（那是每帧两次跨 wasm 边界的 Lua 调用加若干次 setAttribute，
+      // 见 web-runtime.js 的 DIAGNOSTICS_ON）。覆盖层是调试工具，它开启时就把诊断一并打开，
+      // 否则覆盖层会显示成"世界=空、文字=0/0"——一个看起来像游戏坏了、其实是自己没要数据的现场。
+      // 时序成立：这里仍在 boot() 之前，而 web-runtime.js 是在 boot 里才加载的。
+      g.__RUSTLUA_DIAGNOSTICS = true;
       log('wechat-adapter: 渲染自证覆盖层已开启（覆盖层不会随游戏画面清屏消失）');
       // boot 之前先做一次像素读写自检：证明"这张画布此刻可读可写"。
       // 注意：这里画的图案会被 boot 自己的清屏擦掉，所以**不能**把"上屏自证"押在这上面，
@@ -2566,9 +2765,11 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         } else {
           stopPreBootUi();
         }
+        setBootPhase('wasm');
         return loadWasmCoreOnce();
       });
     } else {
+      setBootPhase('wasm');
       wasmReady = loadWasmCoreOnce();
     }
     // 画布与游戏版面的自检：`game.json` 的方向与画布尺寸必须和 `ui/layout.lua` 的设计分辨率
@@ -2596,15 +2797,16 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       .then(function () {
         // wasm（= Lua 执行层）挂载完成之后才允许 boot：`window.__RUSTLUA_LUA_BRIDGE` 必须在
         // web-runtime.js 走到 Lua 之前存在，否则报的是"桥缺失"这种发布形态错误。
+        setBootPhase('font');
         return loadGameFont();
       })
       .then(function () {
-        bootStartedAt = Date.now();
-        bootWatchdog = setTimeout(reportBootStall, bootTimeoutMs());
+        setBootPhase('lua-boot');
         return boot(statusElement);
       })
       .then(function () {
         if (bootWatchdog) { clearTimeout(bootWatchdog); bootWatchdog = null; }
+        setBootPhase('running');
         log('wechat-adapter: 启动完成');
         // 关键：**启动完成后立刻**画一次自证图案，不依赖帧循环。真机上最常见的黑屏就是
         // "流程走完、一帧都没画"，那时只有这一次留痕能证明"像素上得了屏"（实测：
@@ -2761,6 +2963,17 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       }
       // readBytes 只喂字节通道（有 Module/Instance 的宿主）；路径通道由宿主自己按
       // 代码包路径读 wasm，适配层不碰那 2.3 MB。
+      // 实例化超时：宿主**既不 resolve 也不 reject** 时（真机上出现过），启动链会永远停在
+      // 这一步——屏幕黑着、日志一条没有、也没有任何超时（看门狗虽然会报，但那是"卡住了"，
+      // 而这里能给出"卡在哪条通道"）。超时后按实例化失败结算，让启动走失败路径报出原因。
+      var settled = false;
+      var timer = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        finish({ status: 'instantiate-timeout', detail: '宿主 ' + wasmTimeoutMs() + 'ms 内未返回（既不成功也不失败）' });
+        warn('wechat-adapter: wasm 实例化超时（' + wasmTimeoutMs() + 'ms）——按失败结算，启动会报出原因');
+        resolve(wasmState);
+      }, wasmTimeoutMs());
       bridge.loadWasmCore({
         readBytes: readBytes,
         wasmPath: wasmModulePath(),
@@ -2773,6 +2986,9 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         },
         log: log
       }).then(function (result) {
+        if (settled) return; // 已被超时结算：不再覆盖状态，也不再重复 resolve
+        settled = true;
+        clearTimeout(timer);
         if (result.ok) {
           // 顺序要紧：attachWasmBridge 把 luaBridge/hostApi 写在 wasmState 上，
           // 必须等 finish 换好对象之后再挂，否则诊断里这两个字段会被丢掉。
@@ -2789,6 +3005,15 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
             + '——Lua 执行层在 wasm 里（WP10 迁移后无备用解释器），`__RUSTLUA_LUA_BRIDGE` 缺失会让'
             + ' web-runtime.js 抛硬错误（发布形态问题，不降级）；"包里带了 wasm 却没装上"正是这种问题');
         }
+        resolve(wasmState);
+      }, function (error) {
+        // 桥接层 reject 也要结算：原来的写法没有这条分支，rejection 会一路冒到 start()，
+        // 现场只剩一句笼统的启动失败，而"哪条通道、为什么"全在 wasmState 里没被写进去。
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        finish({ status: 'bridge-rejected', detail: hostError(error) });
+        warn('wechat-adapter: wasm 桥接层 reject -> ' + hostError(error));
         resolve(wasmState);
       });
     });
@@ -2828,7 +3053,19 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       window.__RUSTLUA_LUA_BRIDGE = {
         lua_boot: function () { return result.host.lua_boot_with_reader(wechatReadFile); },
         lua_do_string: result.host.lua_do_string,
+        // 逐帧写 `__rustlua_dt` 用（不编译 chunk）。**门面是显式白名单**：Rust 侧加了导出
+        // 却忘了加到这里，运行时就会拿到 undefined——真机上是"启动即失败"，
+        // 而报错原文只有一句 is not a function。见 plugins/webgl/index.html 同一份门面。
+        lua_set_number: result.host.lua_set_number,
+        // 每帧输入批量线格式（`RLFI`）：取代"每帧拼一段 Lua 源码再编译"。
+        // 与 webgl 那份门面必须同步（同一份 web-runtime.js 跑在两个平台上，
+        // 少一项就是"这个平台启动即失败"）。
+        lua_input_frame: result.host.lua_input_frame,
+        input_frame_layout_json: result.host.input_frame_layout_json,
         lua_call_global: result.host.lua_call_global,
+        // 无参无返回的全局钩子（每步的虚拟键注入 / 边沿清理）：取代
+        // `doString("__rustlua_apply_virtual_input()")` 那种"为调无参函数而编译源码"的写法。
+        lua_call_global_void: result.host.lua_call_global_void,
         lua_register_js_callback: result.host.lua_register_js_callback,
         lua_missing_globals: result.host.lua_missing_globals,
         lua_execute_main: result.host.lua_execute_main,
@@ -2862,6 +3099,9 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     boot: bootAttributes,
     fetch: fetchShim,
     readText: readText,
+    // 宿主自己加载的接口（音频等）要的路径：主体路由 + 方言 + 远端 URL 一起算好。
+    // 贴图那条走 patchImageSrc 改写 src，音频没有可改写的对象，只能问这里。
+    assetSrcFor: assetSrcFor,
     ensurePack: ensurePack,
     probePackReadability: probePackReadability,
     // 分包形态的形态入口：清单（路由依据）与分包状态。harness 的断言直接读这两个，
@@ -2911,6 +3151,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     remoteStats: function () { return assetStats; },
     // 供测试直接核对 FNV-1a 实现与 assetc 清单一致（不需要真的走一次远端下载）。
     checksumOf: function (bytes) { return fnv1a64Hex(bytes); },
+    // 远端缓存的**发布标识**与缓存路径：无头验证用它核对"换一版资源后旧缓存不再被命中"
+    // （这条规则只看行为很难测——要真的下载两次；看路径则一眼可判）。
+    releaseKey: releaseKey,
+    cachePathFor: cachePathFor,
     loadGameFont: loadGameFont,
     showBootError: showBootError,
     start: start,

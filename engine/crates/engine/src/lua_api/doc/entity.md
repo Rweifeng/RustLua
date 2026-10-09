@@ -8,7 +8,7 @@
 
 ## `entity.destroy(id: i64)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/entity.rs:92`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/entity.rs:104`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -19,7 +19,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `entity.find(name: String)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/entity.rs:50`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/entity.rs:52`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -30,7 +30,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `entity.find_id(persist_id: String)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/entity.rs:62`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/entity.rs:63`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -41,7 +41,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `entity.is_alive(id: i64)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/entity.rs:87`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/entity.rs:91`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -52,7 +52,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `entity.persist_id(id: i64)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/entity.rs:74`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/entity.rs:75`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -63,7 +63,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `entity.spawn(name: Option<String>, persist_id: Option<String>)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/entity.rs:21`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/entity.rs:23`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 

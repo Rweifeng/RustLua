@@ -96,7 +96,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.focus_count(id: String)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:58`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:62`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -107,7 +107,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.focus_cycle(id: String, forward: Option<bool>)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:124`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:128`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -118,7 +118,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.focus_index(id: String)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:83`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:87`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -129,7 +129,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.focus_move(id: String, direction: String)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:98`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:102`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -151,7 +151,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.focus_select(id: String, index: i64)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:69`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:73`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -327,7 +327,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.scroll_by(id: String, delta: f32)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:189`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:197`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -338,7 +338,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.scroll_close(id: String)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:150`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:154`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -349,7 +349,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.scroll_extents(id: String, viewport: f32, content: f32)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:157`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:165`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -360,7 +360,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.scroll_lines(id: String, lines: f32, line_height: f32)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:198`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:206`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -371,7 +371,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.scroll_max(id: String)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:178`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:186`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -382,7 +382,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.scroll_offset(id: String)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:167`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:175`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -393,7 +393,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.scroll_open(id: String, viewport: f32, content: f32)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:139`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:143`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -404,7 +404,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.scroll_page(id: String, pages: f32)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:207`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:215`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -415,7 +415,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.scroll_to_visible(id: String, item_top: f32, item_height: f32)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:216`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:224`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -426,7 +426,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.scroll_visible(id: String)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:225`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/ui_nav.rs:233`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 

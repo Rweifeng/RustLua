@@ -939,6 +939,19 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
   }
 
   const rafQueue = [];
+  // 人工泵帧用的**虚拟时钟**：每泵一帧推进恰好一个 60Hz 帧。
+  //
+  // 为什么不能再用 `Date.now()`：运行时的帧循环自 2026-10-08 起按真实流逝时间决定
+  // 本帧跑几个固定步（修掉"逻辑速度绑死刷新率"），而这里的泵帧循环每轮只等一个
+  // `setTimeout(0)`（实测间隔 <1ms），真实墙钟根本攒不满一个固定步 —— 照旧传
+  // `Date.now()` 会让逻辑饿死、全部驱动用例原地不动。测试本来就不该依赖墙钟：
+  // 这里显式声明"一泵 = 一帧 60Hz"，运行时的累积器因此每泵恰好推进一步。
+  const HARNESS_FRAME_MS = 1000 / 60;
+  let harnessClockMs = 0;
+  function nextFrameClockMs() {
+    harnessClockMs += HARNESS_FRAME_MS;
+    return harnessClockMs;
+  }
   const wx = {
     env: { USER_DATA_PATH: userRoot },
     getSystemInfoSync: () => ({ windowWidth: 375, windowHeight: 667, pixelRatio: 1, platform: wxPlatform, system: 'node' }),
@@ -1430,6 +1443,11 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
   const consoleLogs = [];
   console.log = (...args) => { consoleLogs.push(args.map(String).join(' ')); originalLog(...args); };
 
+  // 画面自检（data-rustlua-drawn）走全画布像素回读，发布默认关闭（web-runtime.js 的
+  // DIAGNOSTICS_ON）——那是给验收看的读数，玩家设备不该为它每 30 帧读一次像素。
+  // harness 是验收方，显式打开；否则本文件里全部 `drawn > 0` 断言都会读到 0。
+  globalThis.__RUSTLUA_DIAGNOSTICS = true;
+
   // 宿主自带残缺全局（微信开发者工具的壳）必须在 require(game.js) **之前**装好：
   // 适配层在模块加载时就会安装自己的 shim。
   if (hostDocument || hostWindowMode) {
@@ -1639,7 +1657,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       }
       const callback = rafQueue.shift();
       if (!callback) break;
-      callback(Date.now());
+      callback(nextFrameClockMs());
       stats.frames++;
       // 标题断言放在 driveFrame-1 帧（标题最后完整帧）：确认帧（i===driveFrame）的 update
       // 已消费标题 UI（切场景隐藏标签），该帧新增"开始新游戏"为 0 条，断言会误报。
@@ -2038,7 +2056,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       const pump = async () => {
         const callback = rafQueue.shift();
         if (!callback) return false;
-        callback(Date.now());
+        callback(nextFrameClockMs());
         stats.frames++;
         perFrameDraws.push(stats.drawOps);
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2088,7 +2106,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       const pump = async () => {
         const callback = rafQueue.shift();
         if (!callback) return false;
-        callback(Date.now());
+        callback(nextFrameClockMs());
         stats.frames++;
         perFrameDraws.push(stats.drawOps);
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2134,7 +2152,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       const pump = async () => {
         const callback = rafQueue.shift();
         if (!callback) return false;
-        callback(Date.now());
+        callback(nextFrameClockMs());
         stats.frames++;
         perFrameDraws.push(stats.drawOps);
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2186,7 +2204,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       const pumpBag = async () => {
         const callback = rafQueue.shift();
         if (!callback) return false;
-        callback(Date.now());
+        callback(nextFrameClockMs());
         stats.frames++;
         perFrameDraws.push(stats.drawOps);
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2251,7 +2269,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       const pumpDisk = async () => {
         const callback = rafQueue.shift();
         if (!callback) return false;
-        callback(Date.now());
+        callback(nextFrameClockMs());
         stats.frames++;
         perFrameDraws.push(stats.drawOps);
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2681,7 +2699,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
           for (let i = 0; i < 8; i++) {
             const callback = rafQueue.shift();
             if (!callback) break;
-            callback(Date.now());
+            callback(nextFrameClockMs());
             stats.frames++;
             perFrameDraws.push(stats.drawOps);
             await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2778,7 +2796,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       for (let i = 0; i < 8; i++) {
         const callback = rafQueue.shift();
         if (!callback) break;
-        callback(Date.now());
+        callback(nextFrameClockMs());
         stats.frames++;
         perFrameDraws.push(stats.drawOps);
       }

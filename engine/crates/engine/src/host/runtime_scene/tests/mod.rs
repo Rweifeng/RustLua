@@ -89,6 +89,7 @@ fn frame_view_scene(
 mod animation_layers;
 mod camera_physics;
 mod custom_fonts;
+mod frame_extraction;
 mod frame_ledger;
 mod frame_view;
 mod gamepad_input;

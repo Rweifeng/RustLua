@@ -535,6 +535,11 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
     "世界里真的有人、主角真的在动"完全是两件事——前者全绿而后者全空时，画面就是一张
     背景图，而日志里一句错都没有。`渲染侧=` 是**渲染器自己**记住的坐标，与 Lua 世界的坐标
     并列显示，两者不一致就是回写通道（Lua → 渲染器）断了。
+    这一行属于**诊断读数**，发布包默认不写（每帧两次跨 wasm 边界的 Lua 调用，没有发布期消费方，
+    见 `plugins/webgl/README.md` 的画面自检一节）：**适配层在开启渲染自证覆盖层时会自动把诊断打开**
+    （`start()` 里置 `g.__RUSTLUA_DIAGNOSTICS`），所以覆盖层读到的一定是数据而不是空串；
+    反过来，`__RUSTLUA_DIAG().world` 在没有覆盖层也没有诊断的发布包里会显示 `off`——
+    那是"没采样"，不是"世界是空的"（`drawn` / `ui_elements` 同此口径）。
   - **`drawn` 数的是设备空间的覆盖，不是设计空间**：无头 harness 的假 2D 上下文带一条真仿射矩阵
     （`translate/scale/transform/setTransform` 复合 + `save/restore` 压栈），`fillRect`/`drawImage`
     入账前把矩形四角落过矩阵。原因是运行时每帧先做 contain 适配

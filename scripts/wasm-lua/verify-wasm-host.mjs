@@ -68,7 +68,20 @@ const required = [
   'lua_boot',
   'lua_boot_with_reader',
   'lua_do_string',
+  // M73-00：逐帧写 `__rustlua_dt` 走它（不再编译 chunk）。运行时**启动第 0 帧**就会调，
+  // 所以它是硬依赖：缺了就是"启动即失败"，而且报错原文只有 is not a function。
+  // 放进这里，漏加 `#[wasm_bindgen]`（或门面白名单没同步）在打包前就会被拦住。
+  'lua_set_number',
+  // M73-00：每帧输入批量线格式（`RLFI`）。同样是硬依赖——运行时**第一个固定步**就会调
+  // `input_frame_layout_json` 建打包器、随后每步调 `lua_input_frame`；缺任一个都会让
+  // "启动后一有输入就失败"。两者一起放，是因为漏一个与漏两个的症状完全一样。
+  'lua_input_frame',
+  'input_frame_layout_json',
   'lua_call_global',
+  // M73-00：**无参无返回**的全局钩子（每步的虚拟键注入 / 一次性边沿清理）走它，取代
+  // `doString("__rustlua_apply_virtual_input()")`。运行时**每个固定步**都调，缺了就是
+  // "启动后一按键就失败"，所以同样按硬依赖放进清单。
+  'lua_call_global_void',
   'lua_register_js_callback',
   'lua_missing_globals',
   'lua_execute_main',

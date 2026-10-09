@@ -116,33 +116,124 @@
   // 掩码位序按 **index** 而不是按方位命名：地图 row 0 在**最底**，图集 row 0 在**最顶**，
   // 同一句"上邻居"在两个坐标系里指向相反方向。
   const AUTOTILE_SLOTS = 16;
-  const U64_MASK = (1n << 64n) - 1n;
-  const VARIANT_HASH_OFFSET = 0xcbf29ce484222325n;
-  const VARIANT_HASH_PRIME = 0x100000001b3n;
-  const MIX_AXIS_X = 0x9e3779b97f4a7c15n;
-  const MIX_AXIS_Y = 0xbf58476d1ce4e5b9n;
+  // u64 一律用 **[hi, lo] 两个无符号 32 位**表示，不用 BigInt 字面量：微信上传器的解析器只到
+  // ES2019，`1n` 会让**整包上传被拒**（官方报 `Identifier directly after number`，
+  // 见 scripts/check-upload-ecma.mjs；此前被 no-modules 胶水守卫的失败掩盖，2026-10-08 才暴露）。
+  // 值与 Lua 垫片、Rust 侧逐位一致，由 scripts/check-tile-hash-parity.mjs 与
+  // scripts/web-u64-hash-test.js 两侧对拍钉住。
+  const VARIANT_HASH_OFFSET = [0xcbf29ce4, 0x84222325];
+  const VARIANT_HASH_PRIME = [0x00000100, 0x000001b3];
+  const MIX_AXIS_X = [0x9e3779b9, 0x7f4a7c15];
+  const MIX_AXIS_Y = [0xbf58476d, 0x1ce4e5b9];
   const DEFAULT_ATLAS_COLS = 6;
   const DEFAULT_ATLAS_ROWS = 1;
   const LEGACY_KIND_LIMIT = 6;
 
-  function mixU64(state, value) {
-    let mixed = state;
-    for (let index = 0; index < 8; index += 1) {
-      const byte = (value >> BigInt(8 * index)) & 0xffn;
-      mixed = ((mixed ^ byte) * VARIANT_HASH_PRIME) & U64_MASK;
+  // 64×64 → 低 64 位。按 16 位分段：每段乘积 < 2^32、累加 < 2^34，全程落在 2^53 内精确。
+  // 结果写进调用方给的 2 元数组（`out[0]`=高 32、`out[1]`=低 32）而不是返回新数组：
+  // 内层循环每格要乘 8 次，热路径上不该分配（旧实现用 BigInt，每次乘都分配）。
+  // 进位**必须**用 `Math.floor(x / 0x10000)`：c1/c2 会超过 2^32，而 `>>>` 先做 ToUint32，
+  // 会把高位进位丢掉（2026-10-08 实测：这样写 20 万次随机乘法里 7% 结果偏高/偏低一个字）。
+  const U64_MUL_SCRATCH = [0, 0];
+  function mulU64(aHi, aLo, bHi, bLo, out) {
+    const a0 = aLo & 0xffff, a1 = aLo >>> 16, a2 = aHi & 0xffff, a3 = aHi >>> 16;
+    const b0 = bLo & 0xffff, b1 = bLo >>> 16, b2 = bHi & 0xffff, b3 = bHi >>> 16;
+    const c0 = a0 * b0;
+    const c1 = Math.floor(c0 / 0x10000) + a0 * b1 + a1 * b0;
+    const c2 = Math.floor(c1 / 0x10000) + a0 * b2 + a1 * b1 + a2 * b0;
+    // 只留低 64 位，所以 a1*b3 / a2*b2 / a3*b1 这些进第 5 个字的项直接丢。
+    const c3 = Math.floor(c2 / 0x10000) + a0 * b3 + a1 * b2 + a2 * b1 + a3 * b0;
+    out[0] = ((c3 & 0xffff) << 16 | (c2 & 0xffff)) >>> 0;
+    out[1] = ((c1 & 0xffff) << 16 | (c0 & 0xffff)) >>> 0;
+    return out;
+  }
+
+  // 64 位逻辑右移（我们的输入都被掩成无符号，不存在算术右移的分支）。
+  function shiftRightU64(hi, lo, shift) {
+    if (shift <= 0) return [hi >>> 0, lo >>> 0];
+    if (shift < 32) return [hi >>> shift, ((lo >>> shift) | (hi << (32 - shift))) >>> 0];
+    return [0, hi >>> (shift - 32)];
+  }
+
+  // 把整数拆成低 64 位。x/y/seed 都从 JSON 进来，量级远小于 2^53；负数按补码，
+  // 与旧实现 `BigInt(-5) >> 0 & 0xff` 的取字节语义一致（算术右移 + 掩码 = 补码低位）。
+  function splitU64(value) {
+    if (typeof value !== 'number' || !isFinite(value) || Math.floor(value) !== value) {
+      // 旧实现在这里会 `BigInt(1.5)` / `BigInt(undefined)` 抛错：保持"响亮失败"，
+      // 不要悄悄算出一个数字——那会让两张地图用同一个哈希而没人知道。
+      throw new Error('tile variant hash needs integer inputs, got ' + String(value));
     }
-    return mixed;
+    const negative = value < 0;
+    const magnitude = negative ? -value : value;
+    const lo = magnitude % 0x100000000;
+    const hi = Math.floor(magnitude / 0x100000000) % 0x100000000;
+    if (!negative) return [hi, lo];
+    return [
+      ((~hi >>> 0) + (lo === 0 ? 1 : 0)) >>> 0,
+      (-lo) >>> 0,
+    ];
+  }
+
+  function mixU64(hi, lo, valueHi, valueLo) {
+    let mixedHi = hi, mixedLo = lo;
+    for (let index = 0; index < 8; index += 1) {
+      const byte = index < 4
+        ? (valueLo >>> (index * 8)) & 0xff
+        : (valueHi >>> ((index - 4) * 8)) & 0xff;
+      mixedLo = (mixedLo ^ byte) >>> 0;
+      mulU64(mixedHi, mixedLo, VARIANT_HASH_PRIME[0], VARIANT_HASH_PRIME[1], U64_MUL_SCRATCH);
+      mixedHi = U64_MUL_SCRATCH[0];
+      mixedLo = U64_MUL_SCRATCH[1];
+    }
+    return [mixedHi, mixedLo];
   }
 
   // 确定性变体序号：绝不能用 Math.random / 每帧变化的种子，那等于地表每帧抖一次。
+  // avalanche（splitmix64 的收尾混洗）不是可选的美化：原始 FNV 的低比特周期等于模数，
+  // variant_count=4 时取模结果在第一行就是 3,2,1,0,3,2,1,0 的周期点阵——确定性有、质感没有。
+  const AVALANCHE_MUL_A = [0xbf58476d, 0x1ce4e5b9];
+  const AVALANCHE_MUL_B = [0x94d049bb, 0x133111eb];
+
+  function avalanche(hi, lo) {
+    let shifted = shiftRightU64(hi, lo, 30);
+    let stageHi = (hi ^ shifted[0]) >>> 0, stageLo = (lo ^ shifted[1]) >>> 0;
+    mulU64(stageHi, stageLo, AVALANCHE_MUL_A[0], AVALANCHE_MUL_A[1], U64_MUL_SCRATCH);
+    stageHi = U64_MUL_SCRATCH[0];
+    stageLo = U64_MUL_SCRATCH[1];
+    shifted = shiftRightU64(stageHi, stageLo, 27);
+    stageHi = (stageHi ^ shifted[0]) >>> 0;
+    stageLo = (stageLo ^ shifted[1]) >>> 0;
+    mulU64(stageHi, stageLo, AVALANCHE_MUL_B[0], AVALANCHE_MUL_B[1], U64_MUL_SCRATCH);
+    stageHi = U64_MUL_SCRATCH[0];
+    stageLo = U64_MUL_SCRATCH[1];
+    shifted = shiftRightU64(stageHi, stageLo, 31);
+    return [(stageHi ^ shifted[0]) >>> 0, (stageLo ^ shifted[1]) >>> 0];
+  }
+
+  // 64 位对小数取模：从高 16 位起逐段取模，避免 `hi * 2^32` 冲出 2^53。
+  function modU64Small(hi, lo, divisor) {
+    let mod = 0;
+    mod = (mod * 0x10000 + (hi >>> 16)) % divisor;
+    mod = (mod * 0x10000 + (hi & 0xffff)) % divisor;
+    mod = (mod * 0x10000 + (lo >>> 16)) % divisor;
+    mod = (mod * 0x10000 + (lo & 0xffff)) % divisor;
+    return mod;
+  }
+
   function variantFor(map, x, y) {
     const count = map.variant_count;
     if (count < 2) return 0;
-    let hash = VARIANT_HASH_OFFSET;
-    for (const value of [BigInt(x), BigInt(y), BigInt(map.variant_seed), MIX_AXIS_X, MIX_AXIS_Y]) {
-      hash = mixU64(hash, value);
+    const seed = splitU64(map.variant_seed);
+    const axisX = splitU64(x);
+    const axisY = splitU64(y);
+    let hashHi = VARIANT_HASH_OFFSET[0], hashLo = VARIANT_HASH_OFFSET[1];
+    for (const value of [axisX, axisY, seed, MIX_AXIS_X, MIX_AXIS_Y]) {
+      const mixed = mixU64(hashHi, hashLo, value[0], value[1]);
+      hashHi = mixed[0];
+      hashLo = mixed[1];
     }
-    return Number(hash % BigInt(count));
+    const mixed = avalanche(hashHi, hashLo);
+    return modU64Small(mixed[0], mixed[1], count);
   }
 
   function autotileMask(map, x, y) {
@@ -295,10 +386,32 @@
   // 画布等于每帧几百次分配。
   const tintedTileCache = new Map();
   const TINTED_TILE_CACHE_LIMIT = 512;
+  // 外层预算：外层键是**图集 Image 对象**，而 loadImage 每次都 new Image（没有跨场景的贴图缓存），
+  // 于是每换一次场景、每出现一张带染色的图集，就多一条**永远不再被使用**的外层条目——每条
+  // 还各自持有最多 TINTED_TILE_CACHE_LIMIT 张离屏画布。此前只有"同一张贴图内部"的上限，
+  // 外层没有任何上限，反复切图会一路把离屏画布留在内存里（症状是长跑后内存只涨不落）。
+  // 这里按插入序淘汰最旧的图集（Map 保序），再配合换场景时的显式释放。
+  const TINTED_TILESET_CACHE_LIMIT = 8;
+
+  // 换场景时调用：`images` 整批换成新 loadImage 的结果，旧图集对象不会再被 drawTintedTile
+  // 用到，缓存里的离屏画布必须跟着放掉（否则就是上面那条只涨不落的保留链）。
+  function releaseTintedTileCache() {
+    tintedTileCache.clear();
+  }
 
   function tintedTileContext(tileset, sx, sy, sw, sh, tint, mainCanvas) {
     const key = `${sx},${sy},${sw},${sh}|${tint.slice(0, 3).join(',')}|${tint[3]}`;
-    const bySource = tintedTileCache.get(tileset) || new Map();
+    let bySource = tintedTileCache.get(tileset);
+    if (!bySource) {
+      bySource = new Map();
+      tintedTileCache.set(tileset, bySource);
+      // 超预算时淘汰最旧的图集条目（连同它名下全部离屏画布一起丢）。
+      while (tintedTileCache.size > TINTED_TILESET_CACHE_LIMIT) {
+        const oldest = tintedTileCache.keys().next();
+        if (oldest.done) break;
+        tintedTileCache.delete(oldest.value);
+      }
+    }
     const cached = bySource.get(key);
     if (cached) return cached;
     const context = createOffscreenCanvas(Math.max(1, Math.round(sw)), Math.max(1, Math.round(sh)), mainCanvas);
@@ -320,7 +433,6 @@
     // 超了说明数据在无限增长（比如把逐帧变化的色送进来），整张贴图的缓存一起丢。
     if (bySource.size >= TINTED_TILE_CACHE_LIMIT) bySource.clear();
     bySource.set(key, context);
-    tintedTileCache.set(tileset, bySource);
     return context;
   }
 
@@ -880,6 +992,30 @@
   // 画面自检：采样 canvas 像素，统计“非背景色”的采样点数量。用于回答
   // “页面启动了但没有画面”这类问题——`data-rustlua-boot=running` 只说明 Lua 在跑，
   // 不代表真的画出了东西。返回 -1 表示像素不可读（canvas 被跨域贴图污染）。
+  // 验收/诊断开关（**发布默认关闭**）。
+  //
+  // 为什么要有这个开关：`data-rustlua-drawn` 是"页面启动了但没画面"的唯一判据，但它靠
+  // 全画布 `getImageData` 得来 —— 高 DPR 画布上那是一次 GPU 同步读回 + `width*height*4`
+  // 的临时内存，而它在发布包里**没有任何消费方**（玩家不看 DOM 属性，验收脚本才看）。
+  // 此前它无条件每 30 帧跑一次，等于把一份只在验收时有用的开销常驻在玩家设备上。
+  // 所以：验收入口显式打开（URL `?rustlua-diagnostics=1` 或 `window.__RUSTLUA_DIAGNOSTICS`），
+  // 发布包不做像素回读。`__RUSTLUA_DEBUG` 也认——那是既有的"我要看诊断"开关。
+  const DIAGNOSTICS_ON = (function () {
+    try {
+      // 读 globalThis 而不是 window：微信宿主里 window 是适配层补出来的壳，而 harness 是
+      // 在 Node 主 realm 里跑 game.js（那里的真全局是 globalThis）；浏览器里两者是同一个对象。
+      const scopes = [];
+      if (typeof globalThis !== 'undefined') scopes.push(globalThis);
+      if (typeof window !== 'undefined' && window !== globalThis) scopes.push(window);
+      for (let i = 0; i < scopes.length; i += 1) {
+        if (scopes[i].__RUSTLUA_DIAGNOSTICS || scopes[i].__RUSTLUA_DEBUG) return true;
+      }
+      if (typeof location !== 'undefined' && typeof location.search === 'string'
+        && location.search.indexOf('rustlua-diagnostics=1') >= 0) return true;
+    } catch (error) { /* 宿主不提供全局/location：按关闭处理 */ }
+    return false;
+  })();
+
   function sampleDrawnPixels(ctx) {
     try {
       const width = ctx.canvas.width;
@@ -1511,9 +1647,10 @@ prefab = {
 -- 同帧注入、下一帧被清空，input.action_axis 恒为 0（引擎侧踩过同一个坑）。
 __rustlua_virtual_keys = {}
 __rustlua_virtual_just = {}
-__rustlua_input = { axis_x = 0, axis_y = 0, keys = {}, just = {}, released = {}, mouse = {}, mouse_just = {}, mouse_just_released = {}, cursor = {0, 0}, cursor_delta = {0, 0}, scroll = {0, 0} }
+__rustlua_input = { axis_x = 0, axis_y = 0, keys = {}, just = {}, released = {}, mouse = {}, mouse_just = {}, mouse_just_released = {}, cursor = {0, 0}, press_cursor = {0, 0}, cursor_delta = {0, 0}, scroll = {0, 0} }
 log ={ info = function(v) print('[lua] ' .. tostring(v)) end, warn = function(v) print('[lua warn] ' .. tostring(v)) end, error = function(v) print('[lua error] ' .. tostring(v)) end, debug = function(v) print('[lua debug] ' .. tostring(v)) end }
-time = { delta = function() return 1 / 60 end }
+__rustlua_dt = 1 / 60
+time = { delta = function() return __rustlua_dt end }
 -- 引擎物理键名 → web 键名：native 引擎的动作表用 keyw/keya/keyj...（core/input.rs 的
 -- ActionMap），web 的动作层（下方 bindings 表）用 w/a/j...。虚拟控件
 -- （ui/virtual_pad.lua）注入的是引擎名，不翻译就永远命中不了任何动作（微信实测：
@@ -1552,6 +1689,20 @@ function __rustlua_apply_virtual_input()
   -- 一帧（微信实机"点击背包按钮没有渲染背包UI"的根因）。__rustlua_virtual_just 仅作注入登记，
   -- 清空即可，不写回 just。
   __rustlua_virtual_just = {}
+end
+-- 一个 rAF 回调可能推进**多个**固定步（追帧）。一次性边沿（just/released/鼠标边沿/
+-- 光标与滚轮增量）只能在首个固定步里可见一次——否则同一帧的补步会把 just_pressed 类动作
+-- 重复触发（引擎侧同一条纪律：run_pipelines 在 step == 0 时调 finish_frame，注释原话是
+-- "catch-up steps in the same frame don't re-fire just_pressed actions"）。
+function __rustlua_finish_step_input()
+  local inp = __rustlua_input
+  if type(inp) ~= 'table' then return end
+  inp.just = {}
+  inp.released = {}
+  inp.mouse_just = {}
+  inp.mouse_just_released = {}
+  inp.cursor_delta = { 0, 0 }
+  inp.scroll = { 0, 0 }
 end
 -- 场景与地图宿主 API。引擎事实（core/script.rs 的 scene.load / map.goto）：
 --   * 切换是**排队的**：写 save_data["__map"]、记录 __map:spawn:x/y、把名字排进
@@ -1965,6 +2116,8 @@ local VARIANT_HASH_OFFSET = -3750763034362895579
 local VARIANT_HASH_PRIME = 1099511628211
 local MIX_AXIS_X = -7046029254386353131
 local MIX_AXIS_Y = -4658895280553007687
+local AVALANCHE_MUL_A = -4658895280553007687
+local AVALANCHE_MUL_B = -7723592293110705685
 local TWO64_MOD = {}
 -- **无符号**取模。Lua 的 % 是带符号的下取模，而 Rust 侧是 u64 取模：variant_count
 -- 不是 2 的幂时两者会给出不同结果（-1 对 3：Lua 得 2、u64 得 0），于是 web 与原生
@@ -1986,6 +2139,20 @@ local function as_int(value)
   -- 3.0 >> 8 会直接报错，而 JS 那边所有值天生是 double。
   return math.floor(tonumber(value) or 0)
 end
+-- **逻辑**右移：Lua 的 >> 给负数补符号位，而 Rust 侧是 u64 的零填充右移。同一个位串
+-- 用算术右移会多出一串 1，avalanche 混完就分家——web 与原生各画各的地表。
+local function lshr(value, bits)
+  return (value >> bits) & ((1 << (64 - bits)) - 1)
+end
+-- 雪崩（splitmix64 的最后一步）。不混直接取模的话，count 是 2 的幂时 FNV 低位是周期的，
+-- 变体会排成整齐的点阵（count=4 第一行 3,2,1,0,3,2,1,0），看着就是假的地表。
+local function avalanche(value)
+  local stage = value ~ lshr(value, 30)
+  stage = stage * AVALANCHE_MUL_A
+  stage = stage ~ lshr(stage, 27)
+  stage = stage * AVALANCHE_MUL_B
+  return stage ~ lshr(stage, 31)
+end
 __rustlua_variant_for = function(m, x, y)
   local count = m.variant_count or 1
   if count < 2 then return 0 end
@@ -1995,7 +2162,7 @@ __rustlua_variant_for = function(m, x, y)
       hash = (hash ~ ((value >> shift) & 0xff)) * VARIANT_HASH_PRIME
     end
   end
-  return u64_mod(hash, count)
+  return u64_mod(avalanche(hash), count)
 end
 __rustlua_autotile_mask = function(m, x, y)
   x, y = as_int(x), as_int(y)
@@ -3317,11 +3484,29 @@ end
     }
     syncAudioMarker();
 
-    // 候选 src：微信宿主对不同路径形式的接受程度不一致（分包根相对等），
-    // 与 wechat-adapter.js 的 readStrategies 同理，逐个尝试（pack/ 是资源根）。
-    function srcCandidates(name) {
+    // 候选 src（微信）：**优先问适配层**（wechat-adapter 的 assetSrcFor）。
+    //
+    // 为什么不能自己拼 'pack/...'：分包形态下首屏音频在构建期被**搬**进 mainpack/（搬运不是
+    // 复制），远端形态下整个资源目录都不在包里——两种情况下 'pack/assets/audio/x.mp3' 都指向
+    // 一个不存在的文件，症状是"画面正常但没声音"，除了 onError 之外没有任何线索。
+    // 适配层同时知道主体路由（mainpack/pack）、代码包改名（hostFileFor）与远端配置，
+    // 是这三件事唯一的判据来源；这里再拼一遍等于把同一套规则实现两遍、迟早漂移。
+    //
+    // 适配层缺席（老产物）时才回落到历史上的三种包内写法。
+    function wechatAudioCandidates(name) {
       const logical = 'assets/audio/' + name + '.mp3';
-      return ['pack/' + logical, logical, './pack/' + logical];
+      const adapter = (typeof globalThis !== 'undefined') ? globalThis.__RustLuaWechat : null;
+      if (adapter && typeof adapter.assetSrcFor === 'function') {
+        try {
+          const routed = adapter.assetSrcFor('pack/' + logical);
+          if (routed && routed.src) {
+            return { list: [routed.src], source: routed.source || 'adapter', pending: !!routed.pending };
+          }
+        } catch (error) {
+          // 适配层探测抛错：回落到包内写法——多试三条路径比"直接判定没有这个音效"更容易查。
+        }
+      }
+      return { list: ['pack/' + logical, logical, './pack/' + logical], source: 'legacy', pending: false };
     }
     function fileExists(path) {
       if (!isWechat) return false;
@@ -3332,11 +3517,22 @@ end
         return true;
       } catch (error) { return false; }
     }
+    // 解析结果按音效名缓存：适配层的 assetSrcFor 每次都要做一次 accessSync 探测，
+    // 而同一个音效在整局里会被反复播放（走路声、点击声），不缓存就是每播一次探一次。
+    const wechatAudioSrcCache = new Map();
     function resolveSrc(name) {
       if (!isWechat) return null;
-      const list = srcCandidates(name);
-      for (let i = 0; i < list.length; i += 1) {
-        if (fileExists(list[i])) return list[i];
+      const cached = wechatAudioSrcCache.get(name);
+      if (cached) return cached;
+      const routed = wechatAudioCandidates(name);
+      for (let i = 0; i < routed.list.length; i += 1) {
+        // 适配层给的路径已经过路由与存在性探测（远端形态下更是个 URL，问不了 accessSync），
+        // 只有回落路径才需要在这里自己探。
+        if (routed.source !== 'legacy' || fileExists(routed.list[i])) {
+          const hit = { src: routed.list[i], source: routed.source, pending: routed.pending };
+          wechatAudioSrcCache.set(name, hit);
+          return hit;
+        }
       }
       return null;
     }
@@ -3350,9 +3546,12 @@ end
       }
       return null;
     }
+    // 返回 `{ src, source, pending }` 或 null：src 是交给宿主的路径，source/pending 只服务
+    // 诊断（"到底走的缓存、包内还是远端"是排查音频缺失的第一个问题）。
     function resolveAnySrc(name) {
       if (missing.has(name)) return null;
-      return isWechat ? resolveSrc(name) : (isBrowser ? browserSrc(name) : null);
+      if (!isWechat) return isBrowser ? { src: browserSrc(name), source: 'browser', pending: false } : null;
+      return resolveSrc(name);
     }
     function destroyCtx(ctx) {
       // 先立"已释放"标记：下面摘 src 会 load()，浏览器规范里"没有 src 的 load()"会
@@ -3421,7 +3620,8 @@ end
       });
     }
     function playOn(bus, name) {
-      const src = resolveAnySrc(name);
+      const resolved = resolveAnySrc(name);
+      const src = resolved && resolved.src;
       if (!src) {
         if (!isWechat && !isBrowser) return { ok: false, reason: 'web platform has no audio backend' };
         return { ok: false, reason: isWechat ? 'audio file not found: ' + name : 'no .mp3/.wav/.ogg clip found for ' + name };
@@ -3479,7 +3679,8 @@ end
       return { ok: true, src: src };
     }
     function music(name) {
-      const src = resolveAnySrc(name);
+      const resolved = resolveAnySrc(name);
+      const src = resolved && resolved.src;
       if (!src) {
         if (!isWechat && !isBrowser) return { ok: false, reason: 'web platform has no audio backend' };
         return { ok: false, reason: isWechat ? 'audio file not found: ' + name : 'no .mp3/.wav/.ogg clip found for ' + name };
@@ -3571,6 +3772,157 @@ function doString(L, source, name) {
     }
   }
 
+  // 直接写 Lua 全局数值（不编译源码）。热路径每帧、每个固定步都要改 `__rustlua_dt`，
+  // 走 doString 等于每次都编译一小段源码——见 lua_bridge.rs 的 `lua_set_number`。
+  function setLuaNumber(name, value) {
+    const bridge = window.__RUSTLUA_LUA_BRIDGE;
+    if (!bridge) throw new Error('wasm lua bridge not loaded');
+    // 导出缺席时**说清楚是哪一边旧**。运行时与 wasm 由同一次打包一起产出，正常不会错配；
+    // 真错配了（宿主缓存了旧 web-runtime.js、或产物换了一半）原本只会得到一句
+    // "lua_set_number is not a function"，而这句话指不出"该重发哪一半"。
+    // 不做静默兜底：那会把"产物换了一半"这种发布故障降级成"帧率有点怪"。
+    if (typeof bridge.lua_set_number !== 'function') {
+      throw new Error('wasm 缺 lua_set_number 导出：web-runtime.js 比同目录的 wasm 新，'
+        + '两者必须来自同一次打包（检查宿主是否缓存了旧运行时，或产物只换了一半）');
+    }
+    bridge.lua_set_number(name, value);
+  }
+
+  // 调一个**无参无返回**的 Lua 全局钩子（每步的输入钩子就是这种形状）。
+  //
+  // 这两个钩子（`__rustlua_apply_virtual_input` / `__rustlua_finish_step_input`）以前是
+  // `doString(L, '__rustlua_apply_virtual_input()')`——**每个固定步都为同一段固定源码编译一次**，
+  // 而它没有参数、没有返回值，编译纯属浪费（一次分配 + 一次解释执行）。Lua 侧那两份实现仍是
+  // 唯一事实源，这里只是不再为"调它"付编译费。见 lua_bridge.rs 的 `lua_call_global_void`。
+  //
+  // 与 `setLuaNumber` 同一口径：导出缺席时说清楚是哪一边旧，不做静默兜底
+  // （兜底会把"产物换了一半"降级成"虚拟按键偶尔不生效"，那是最难查的一类症状）。
+  function callLuaHook(name) {
+    const bridge = window.__RUSTLUA_LUA_BRIDGE;
+    if (!bridge) throw new Error('wasm lua bridge not loaded');
+    if (typeof bridge.lua_call_global_void !== 'function') {
+      throw new Error('wasm 缺 lua_call_global_void 导出：web-runtime.js 比同目录的 wasm 新，'
+        + '两者必须来自同一次打包（检查宿主是否缓存了旧运行时，或产物只换了一半）');
+    }
+    try {
+      bridge.lua_call_global_void(name);
+    } catch (error) {
+      throw new Error(String((error && error.message) || error));
+    }
+  }
+
+  // ---- 每帧输入的批量线格式（`RLFI`）：打包器 ----
+  //
+  // 替代"每帧把快照拼成一段 Lua 源码、再 `lua_do_string` 编译执行"（`__rustlua_input = {…}`）。
+  // 那条路在 wasm 上实测 **10.4 µs + 2,648 B Lua 垃圾/帧**，其中 87–88% 花在"编译 + 跨界编组"，
+  // 真正建表只占 1.32 µs——每帧让 Lua 解析一段它早就会解析的字面量是纯浪费。
+  //
+  // 布局与键表**由 wasm 给出**（`input_frame_layout_json`），这里不手写任何偏移：
+  // 偏移写错一个字在 JS 里不会报错，只会让某个字段读到另一个字段的值（"相机偶尔跳一下"）。
+  //
+  // 与 `setLuaNumber` 同一口径：**不做静默兜底**。导出缺席只可能是"产物换了一半"
+  // （宿主缓存了旧运行时 / 只重发了一半），那属于发布故障；顺手退回旧协议会把它降级成
+  // "手感有点怪"，恰好是最难查的一类。
+  let inputFramePacker = null;
+  function getInputFramePacker() {
+    if (inputFramePacker) return inputFramePacker;
+    const bridge = window.__RUSTLUA_LUA_BRIDGE;
+    if (!bridge) throw new Error('wasm lua bridge not loaded');
+    if (typeof bridge.input_frame_layout_json !== 'function'
+      || typeof bridge.lua_input_frame !== 'function') {
+      throw new Error('wasm 缺输入批量导出（input_frame_layout_json / lua_input_frame）：'
+        + 'web-runtime.js 与 wasm 必须来自同一次打包（检查宿主是否缓存了旧运行时）');
+    }
+    const layout = JSON.parse(bridge.input_frame_layout_json());
+    const off = layout.offsets;
+    const keySlots = new Map();
+    layout.key_names.forEach((name, index) => keySlots.set(name, index));
+    const mouseSlots = new Map();
+    layout.mouse_names.forEach((name, index) => mouseSlots.set(name, index));
+    // 复用同一块缓冲：每帧零分配是这次改造的目的之一，逐帧 new Uint8Array 会把省下的又还回去。
+    const buffer = new Uint8Array(layout.wire_len);
+    const view = new DataView(buffer.buffer);
+    // 头（magic/版本/flags）建的时候写一次就够，逐帧重写只是白花时间。
+    for (let index = 0; index < layout.magic.length; index += 1) {
+      view.setUint8(off.magic + index, layout.magic.charCodeAt(index));
+    }
+    view.setUint16(off.version, layout.version, true);
+    view.setUint16(off.flags, 0, true);
+    let frameIndex = 0;
+    let appliedFrames = 0;
+    let appliedBits = 0;
+    // 落不进键表的键名：**统计而不是静默丢弃**。"某个键按了没反应"必须能一眼看出
+    // 是"宿主没送到"还是"送到的名字线格式不认"。
+    const unmappedKeys = new Set();
+    const words = [0, 0, 0, 0];
+    // 128 位位图拆成 4 个 u32 小端字写：**不能用 `setBigUint64`**——它要 BigInt（ES2020），
+    // 而微信上传器只到 ES2019（M73-00 就因为 BigInt 字面量整包被拒过一次）。
+    function writeBitset(base, slots, source, wordCount) {
+      for (let index = 0; index < wordCount; index += 1) words[index] = 0;
+      for (const name in source) {
+        if (source[name] !== true) continue;
+        const slot = slots.get(name);
+        if (slot === undefined) {
+          if (slots === keySlots) unmappedKeys.add(name);
+          continue;
+        }
+        words[slot >>> 5] |= (1 << (slot & 31)) >>> 0;
+      }
+      for (let index = 0; index < wordCount; index += 1) {
+        view.setUint32(base + index * 4, words[index] >>> 0, true);
+      }
+    }
+    function writePair(base, pair) {
+      view.setFloat64(base, Array.isArray(pair) ? Number(pair[0]) || 0 : 0, true);
+      view.setFloat64(base + 8, Array.isArray(pair) ? Number(pair[1]) || 0 : 0, true);
+    }
+    inputFramePacker = {
+      pack(snapshot) {
+        view.setUint32(off.frame, frameIndex >>> 0, true);
+        frameIndex = (frameIndex + 1) >>> 0;
+        view.setFloat64(off.axis, Number(snapshot.axis_x) || 0, true);
+        view.setFloat64(off.axis + 8, Number(snapshot.axis_y) || 0, true);
+        writePair(off.cursor, snapshot.cursor);
+        writePair(off.press_cursor, snapshot.press_cursor);
+        writePair(off.cursor_delta, snapshot.cursor_delta);
+        writePair(off.scroll, snapshot.scroll);
+        writeBitset(off.keys_held, keySlots, snapshot.keys, 4);
+        writeBitset(off.keys_pressed, keySlots, snapshot.just, 4);
+        writeBitset(off.keys_released, keySlots, snapshot.released, 4);
+        writeBitset(off.mouse_held, mouseSlots, snapshot.mouse, 2);
+        writeBitset(off.mouse_just, mouseSlots, snapshot.mouse_just, 2);
+        writeBitset(off.mouse_just_released, mouseSlots, snapshot.mouse_just_released, 2);
+        return buffer;
+      },
+      // 一次跨界搬完整帧。返回值是 wasm 侧真的改了几位——恒为 0 说明两边对
+      // "这一帧该变哪些位"的理解不一致（不同源的第一手线索）。
+      apply() {
+        const touched = bridge.lua_input_frame(buffer);
+        appliedFrames += 1;
+        appliedBits += touched >>> 0;
+        return touched >>> 0;
+      },
+      stats() {
+        return 'frames=' + appliedFrames + ' bits=' + appliedBits
+          + ' unmapped=' + unmappedKeys.size
+          + (unmappedKeys.size > 0 ? '(' + Array.from(unmappedKeys).slice(0, 8).join(',') + ')' : '');
+      }
+    };
+    return inputFramePacker;
+  }
+
+  // 把一帧输入送进 Lua（一次跨界）。调用点只有一个：固定步循环之前。
+  function applyInputFrame(snapshot) {
+    const packer = getInputFramePacker();
+    packer.pack(snapshot);
+    return packer.apply();
+  }
+
+  // 输入批量读数的常驻项（见调用点的说明）。打包器没建 = 本帧还没跑过固定步。
+  function inputStatsReadout() {
+    return inputFramePacker ? inputFramePacker.stats() : 'off';
+  }
+
   // 引擎里存在的宿主全局清单——**从桌面 API 基线派生，不是手抄**。
   //
   // 为什么必须有这份清单：下面的 `hostCompat` 会把名单里缺的全局换成"自报家门"的代理，
@@ -3637,8 +3989,12 @@ function doString(L, source, name) {
     // 协议与 fengari 版 `lua_isstring ? tostring : null` 逐项一致。
     const bridge = window.__RUSTLUA_LUA_BRIDGE;
     if (!bridge) return null;
+    // 无参调用（`update`、`__rustlua_export_ui`…）传**空串**而不是 `'[]'`：Rust 侧把空串
+    // 直接当成"没有参数"，省掉一次 JSON 解析——热路径上每帧有 4~5 次这样的调用，
+    // 而解析既花时间又在每次调用上产生一份小垃圾。`[]` 仍然接受（见 lua_bridge.rs）。
+    const noArgs = args === undefined || args === null || args.length === 0;
     try {
-      const value = bridge.lua_call_global(name, JSON.stringify(args || []));
+      const value = bridge.lua_call_global(name, noArgs ? '' : JSON.stringify(args));
       // wasm-bindgen 对 Ok(None) 返回 undefined；协议层统一归一成 null（fengari 版语义）。
       return value === undefined ? null : value;
     } catch (error) {
@@ -3664,7 +4020,12 @@ function doString(L, source, name) {
     // 场景可切换 ⇒ 这两项必须可重新赋值（切图时整体换掉）。
     let sceneState = parseScene(sceneText);
     const canvas = document.getElementById('rustlua-canvas');
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    // `willReadFrequently` 只在**真的会反复读像素**时开（即诊断/验收）。
+    // 它对浏览器是一句明确承诺"这块画布会被反复 getImageData"，代价是把画布退化成 CPU 后备
+    // （跳过 GPU 加速）——发布包里唯一的读像素就是画面自检，而那已被 DIAGNOSTICS_ON 关掉，
+    // 于是无条件打开等于让每一帧的绘制都走软件光栅化，换不到任何发布期收益。
+    // 全文件只有 sampleDrawnPixels 一处 getImageData，所以这里与那个开关同源即可。
+    const ctx = canvas.getContext('2d', DIAGNOSTICS_ON ? { willReadFrequently: true } : undefined);
     if (!ctx) throw new Error('2D canvas context is not available');
     const webInput = createWebInput(canvas);
     let images = await loadSceneImages(sceneState);
@@ -4407,6 +4768,8 @@ end
         // 否则旧场景的预设实体（句柄已死）会残留在 sceneState 里继续画。
         prefabInstances.clear();
         images = nextImages;
+        // 旧图集对象已随这次替换出局，染色缓存里的离屏画布跟着释放（见 releaseTintedTileCache）。
+        releaseTintedTileCache();
         pendingTextures.clear();
         callGlobal(L, 'on_create');
         // 换场景后的 on_create 会重新落位、挂形象、生成 NPC —— 与启动路径同理，
@@ -4788,8 +5151,71 @@ end
       }
     }
 
-    function frame() {
+    // 固定时间步（与引擎 `rustlua-infra::FixedTimeStep` 同语义：60Hz + 有界追帧 + 丢弃超额）。
+    //
+    // 为什么必须这样：此前**每个 rAF 回调固定推进一次 update**，而 `time.delta()` 恒为 1/60，
+    // 于是逻辑速度直接绑死在显示器刷新率上——30Hz 半速、120Hz 倍速。现在由真实流逝时间
+    // 决定这一帧要跑几个固定步，逻辑速度与刷新率解耦。
+    //
+    // 追帧上限之后的时间**丢弃**而不是无限补步：切后台/长卡顿回来时游戏时间"跳过"，
+    // 而不是补跑上千步把主线程拖死（桌面 `game_app.rs` 取 `FixedTimeStep::new(60, 8)`）。
+    const FIXED_STEPS_PER_SECOND = 60;
+    const FIXED_DELTA = 1 / FIXED_STEPS_PER_SECOND;
+    const MAX_CATCH_UP_STEPS = 8;
+    // 浮点 1 ulp 的宽容度。这是**有意偏离** Rust 的严格 `>=`（见 time_step.rs 的 while 条件）：
+    // 那边的 elapsed 是被直接构造出来的（`1.0/60.0` 与 `1.0/60.0` 逐位相等），而这里的
+    // elapsed 来自 `performance.now()` 两次读数之差再除以 1000，"正好一帧"常常落在
+    // `1/60` 的最后一个二进制位**之下**。严格比较下它会退成 0 步、靠累积器下一帧补上
+    // （平均速率仍然正确、不会停摆），代价是步数在 0/1 之间抖动；这里加一个远小于
+    // 任何真实帧间隔的容差，让"恰好一帧"稳定判成 1 步。误判上限是每帧丢 1e-9 秒。
+    const STEP_EPSILON = 1e-9;
+    let stepAccumulator = 0;
+    let lastFrameTime = null;
+    let droppedSteps = 0;
+    let resetClockNextFrame = false;
+
+    // 返回本帧要执行的固定步数（Rust `FixedTimeStep::advance` 的等价物）。
+    function advanceFixedSteps(elapsedSeconds) {
+      stepAccumulator += Math.max(0, elapsedSeconds);
+      let steps = 0;
+      while (stepAccumulator >= FIXED_DELTA - STEP_EPSILON && steps < MAX_CATCH_UP_STEPS) {
+        stepAccumulator -= FIXED_DELTA;
+        steps += 1;
+      }
+      if (stepAccumulator < 0) stepAccumulator = 0;
+      if (stepAccumulator >= FIXED_DELTA) {
+        const excess = Math.floor(stepAccumulator / FIXED_DELTA + STEP_EPSILON);
+        if (excess > 0) {
+          stepAccumulator -= excess * FIXED_DELTA;
+          if (stepAccumulator < 0) stepAccumulator = 0;
+          droppedSteps += excess;
+        }
+      }
+      return steps;
+    }
+
+    // 切后台时不保留时间债：回到前台的第一帧按"一个固定步"起算，而不是把
+    // 挂起的几十秒当成一次巨大的 elapsed 灌进累积器。
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) resetClockNextFrame = true;
+      });
+    }
+
+    function frame(timestamp) {
       try {
+        // 本帧真实流逝时间。没有时间戳（被宿主手工泵帧）或刚从后台回来时，
+        // 按**一个固定步**起算：这条路径必须与"真实 rAF"区分开，否则测试宿主的
+        // 零间隔泵帧会把逻辑饿死（累积器永远攒不满一个固定步）。
+        let elapsedSeconds;
+        const hasTimestamp = typeof timestamp === 'number' && isFinite(timestamp);
+        if (!hasTimestamp || lastFrameTime === null || resetClockNextFrame) {
+          elapsedSeconds = FIXED_DELTA;
+          resetClockNextFrame = false;
+        } else {
+          elapsedSeconds = Math.max(0, (timestamp - lastFrameTime) / 1000);
+        }
+        if (hasTimestamp) lastFrameTime = timestamp;
         // 切换在途：只重绘当前画面（表现上"画面不跳"），**不推 update**——新场景数据
         // 尚未就绪时跑 Lua 只会拿到半初始化状态。rAF 链保持不断，切换完成后自动恢复。
         if (sceneSwitch === 'loading') {
@@ -4824,38 +5250,85 @@ end
         stepDrive();
         if (typeof window !== 'undefined') window.__frameCounter = (window.__frameCounter || 0) + 1;
         if (driveJhyt && typeof stepDriveJhyt === 'function') stepDriveJhyt();
-        doString(L, '__rustlua_input = ' + luaValue(webInput.snapshot()), '__rustlua_input');
-        // 快照是**整份替换**的（设备层每帧重新采样），虚拟键必须在替换**之后**并回来——
-        // 顺序反了就等于没注入。对应引擎侧 `InputSnapshot::inherit_virtual_keys`。
-        doString(L, '__rustlua_apply_virtual_input()', '__rustlua_virtual_input');
-        const result = callGlobal(L, 'update');
+
+        // ---- 固定步阶段（游戏逻辑）：与引擎 run_script_steps 的 step pipeline 同构 ----
+        // 输入快照每帧只采一次（设备层重新采样），所有固定步共用同一份——引擎也是把
+        // 同一个 `InputSnapshot`（clone）交给每一步。
+        const steps = advanceFixedSteps(elapsedSeconds);
+        // 只保留**最后一个**固定步的 update 返回值：诊断文字要的是"这一刻"的读数，
+        // 不是补步过程中的中间值。
+        let result = null;
+        if (steps > 0) {
+          // 输入快照每帧只采一次（设备层重新采样），所有固定步共用同一份——引擎也是把同一个
+          // `InputSnapshot`（clone）交给每一步。快照在这里就**打包成二进制并送进 Lua**（一次跨界）：
+          // 送进去的是"原地改常驻表"的指令，不是一段要被编译的源码。
+          applyInputFrame(webInput.snapshot());
+          for (let step = 0; step < steps; step++) {
+            if (step === 1) {
+              // 首个固定步之后吃掉一次性边沿：补步不得重放 just_pressed。
+              callLuaHook('__rustlua_finish_step_input');
+            }
+            // 虚拟键必须在**批量落地之后**并回来——顺序反了就等于没注入。
+            // 对应引擎侧 `InputSnapshot::inherit_virtual_keys`。
+            callLuaHook('__rustlua_apply_virtual_input');
+            setLuaNumber('__rustlua_dt', FIXED_DELTA);
+            result = callGlobal(L, 'update');
+          }
+        }
+
+        // ---- 帧级阶段：每个 rAF 回调只跑一次，与引擎的 frame pipeline 同构 ----
+        // 速度积分与动画推进用的是**本帧实际推进的模拟时间**（steps × 固定步长），
+        // 与引擎 `let elapsed = delta_seconds * steps as f32` 同一口径；被丢弃的追帧时间
+        // 不该让实体多走一截。steps==0（帧率高于逻辑步）时按 0 推进，但状态导出照常做，
+        // 否则高刷屏上会有帧拿到过期状态。
+        setLuaNumber('__rustlua_dt', FIXED_DELTA * steps);
         syncLuaScene(sceneState, callGlobal(L, '__rustlua_export_state'));
         refreshSceneTextHidden(L);
         uiElements = drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__rustlua_export_ui'), pendingTextures);
         frameCount += 1;
         const body = document.body || document.documentElement;
         if (body) {
-          // 世界状态（场景实体数/地图/落点/存活实体数/主角坐标与当前动画）每帧刷新：
-          // 宿主诊断覆盖层与无头验收都读它，"游戏在跑但世界是空的"这类问题不必再猜。
-          // scene=/drawn= 由 JS 侧补（场景里声明的实体数、渲染器侧的主角位置），其余由 Lua 侧给。
-          // tilemaps=画/声明 是**两个独立来源**（渲染循环遍历数 / Lua 注册表数），专门盯
-          // "overlay 瓦片层整层没进画面"这一类静默差异（山庄 FarmGrid 种田层，实机 2026-10-04）。
-          const drawnPlayer = rendererPlayerState(sceneState);
-          const world = 'scene=' + (sceneState.declared || sceneState.entities.size) + ' '
-            + String(callGlobal(L, '__rustlua_world_summary') || '')
-            + (drawnPlayer ? ' drawn=' + drawnPlayer : '')
-            + ' tilemaps=' + tileLayersDrawn + '/' + (String(callGlobal(L, '__rustlua_tilemap_layers') || '0').trim() || '0');
-          body.setAttribute('data-rustlua-world', world.slice(0, 300));
-          // ui-now 每帧写**真实** UI 元素数（诊断/剧本判定用；ui-elements 仍 30 帧一更，
-          // 只服务宿主诊断覆盖层的低频采样，剧本靠 ui-now 拿到当帧真值）。
-          body.setAttribute('data-rustlua-ui-now', String(uiElements));
-          // 预设文字当帧真值（见 LAST_PREFAB_TEXT）：不进 world 串，那条有 300 字符截断。
-          body.setAttribute('data-rustlua-prefab-text', LAST_PREFAB_TEXT.drawn + '/' + LAST_PREFAB_TEXT.total);
-          body.setAttribute('data-rustlua-prefab-slice', LAST_PREFAB_SLICE.cells + '/' + LAST_PREFAB_SLICE.entities);
-          if (frameCount <= 5 || frameCount % 30 === 0) {
-            body.setAttribute('data-rustlua-drawn', String(sampleDrawnPixels(ctx)));
-            body.setAttribute('data-rustlua-ui-elements', String(uiElements));
-            body.setAttribute('data-rustlua-ui-summary', String(LAST_UI_SUMMARY).slice(0, 400));
+          // 固定步读数：`steps` 是本帧实际跑的 update 次数、`dropped` 是累计被丢弃的
+          // 追帧步数。刷新率无关性只能靠这两个数在真机上自证——"30Hz 半速 / 120Hz 倍速"
+          // 这类回归不会让任何断言变红，却会让手感与动画速度全错（见 docs/32 的时间基一节）。
+          // **这一条常驻**：三个数字、无跨边界调用，而"真机自证"要求不开任何开关就能读。
+          body.setAttribute('data-rustlua-timing', 'steps=' + steps
+            + ' dropped=' + droppedSteps
+            + ' acc=' + stepAccumulator.toFixed(4));
+          // 输入批量读数的**常驻**项，与 timing 同一理由：M73-00 把每帧输入协议整个换成了
+          // 二进制批量（旧的"每帧编译一段源码"已删除），"协议真的在落地"必须能在真机上不开
+          // 任何开关读到。三个数都是 JS 侧计数器（不额外跨界）：`bits` 恒为 0 就是
+          // "宿主与 wasm 对哪些位该变的理解不一致"的第一手线索；`unmapped` 列出落不进键表的
+          // 键名——"某个键按了没反应"要能一眼分辨是"宿主没送到"还是"线格式不认这个名"。
+          body.setAttribute('data-rustlua-input', inputStatsReadout());
+          // 以下读数只在显式开启诊断时写（见 DIAGNOSTICS_ON）。它们不只是字符串拼接：
+          // world 那一行里有**两次跨 wasm 边界的 Lua 调用**（`__rustlua_world_summary`、
+          // `__rustlua_tilemap_layers`，各自要回一个字符串），加上 rendererPlayerState 的遍历
+          // 与多次 setAttribute。发布包里这些属性没有任何消费方（玩家不看 DOM 属性；微信的
+          // 诊断覆盖层是调试工具，它开启时适配层会替我们把诊断打开）——于是这份开销是纯支出。
+          if (DIAGNOSTICS_ON) {
+            // 世界状态（场景实体数/地图/落点/存活实体数/主角坐标与当前动画）：
+            // 宿主诊断覆盖层与无头验收都读它，"游戏在跑但世界是空的"这类问题不必再猜。
+            // scene=/drawn= 由 JS 侧补（场景里声明的实体数、渲染器侧的主角位置），其余由 Lua 侧给。
+            // tilemaps=画/声明 是**两个独立来源**（渲染循环遍历数 / Lua 注册表数），专门盯
+            // "overlay 瓦片层整层没进画面"这一类静默差异（山庄 FarmGrid 种田层，实机 2026-10-04）。
+            const drawnPlayer = rendererPlayerState(sceneState);
+            const world = 'scene=' + (sceneState.declared || sceneState.entities.size) + ' '
+              + String(callGlobal(L, '__rustlua_world_summary') || '')
+              + (drawnPlayer ? ' drawn=' + drawnPlayer : '')
+              + ' tilemaps=' + tileLayersDrawn + '/' + (String(callGlobal(L, '__rustlua_tilemap_layers') || '0').trim() || '0');
+            body.setAttribute('data-rustlua-world', world.slice(0, 300));
+            // ui-now 每帧写**真实** UI 元素数（诊断/剧本判定用；ui-elements 仍 30 帧一更，
+            // 只服务宿主诊断覆盖层的低频采样，剧本靠 ui-now 拿到当帧真值）。
+            body.setAttribute('data-rustlua-ui-now', String(uiElements));
+            // 预设文字当帧真值（见 LAST_PREFAB_TEXT）：不进 world 串，那条有 300 字符截断。
+            body.setAttribute('data-rustlua-prefab-text', LAST_PREFAB_TEXT.drawn + '/' + LAST_PREFAB_TEXT.total);
+            body.setAttribute('data-rustlua-prefab-slice', LAST_PREFAB_SLICE.cells + '/' + LAST_PREFAB_SLICE.entities);
+            if (frameCount <= 5 || frameCount % 30 === 0) {
+              body.setAttribute('data-rustlua-drawn', String(sampleDrawnPixels(ctx)));
+              body.setAttribute('data-rustlua-ui-elements', String(uiElements));
+              body.setAttribute('data-rustlua-ui-summary', String(LAST_UI_SUMMARY).slice(0, 400));
+            }
           }
         }
         // update() 的返回值是开发者读数（无头验收读 data-* 属性，不读这里）。常驻写进

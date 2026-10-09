@@ -35,6 +35,10 @@ pub const USER_DIR_ENV: &str = "RUSTLUA_USER_DIR";
 /// 应用名兜底（`project.toml` 没给 `publish_name`/`name` 时）。
 pub const DEFAULT_APP_NAME: &str = "rustlua-game";
 
+/// wasm 的**虚拟**用户数据根（见 [`platform_data_dir`]）：平台没有文件系统，
+/// 但存档/设置的路径推导要有地方落，用一个固定虚拟路径代替 `temp_dir()`（那句在 wasm 上是 panic）。
+const WASM_DATA_ROOT: &str = "/rustlua-user";
+
 /// 存档与玩家设置的根目录（见模块文档的表）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataRoots {
@@ -142,6 +146,17 @@ pub fn data_base() -> PathBuf {
 }
 
 fn platform_data_dir() -> PathBuf {
+    // wasm 没有文件系统，而且这里不是"读不到"而是**直接 panic**：std 的 unsupported 实现里
+    // `temp_dir()` 就是 `panic!("no filesystem on this platform")`。Web/微信上 `cfg!(windows)`
+    // 为假、`HOME` / `XDG_DATA_HOME` 也都不存在，于是必然走到下面那句 `env::temp_dir()`——
+    // 场景一启动就 abort（wasm trap），宿主的加载状态永远停在"开始加载"。
+    //
+    // 给一个**虚拟根**：存档/设置的路径推导照旧走同一套逻辑（目录名、`save.sav` 等都不变），
+    // 真正的持久化由宿主的 vfs provider 决定（Web 上就是资源表 / JS 侧存档通道）。
+    // 这样"平台差异"只在这一个函数里，别处不必到处 `cfg`。
+    if cfg!(target_arch = "wasm32") {
+        return PathBuf::from(WASM_DATA_ROOT);
+    }
     if cfg!(windows) {
         for key in ["APPDATA", "LOCALAPPDATA"] {
             if let Some(value) = env::var_os(key).filter(|value| !value.is_empty()) {

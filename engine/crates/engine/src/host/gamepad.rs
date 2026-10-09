@@ -34,6 +34,13 @@
 //! 消除漂移，动作判定阈值沿用 `crate::core::input` 的 0.5。
 
 use crate::core::input::{AxisDirection, InputSnapshot};
+// 时钟必须走 `web-time`（与渲染器 `passes.rs` 同一处理）：`wasm32-unknown-unknown` 的 std
+// 把 `Instant::now()` 实现在 `sys/pal/unsupported/time.rs` 上，是**直接 panic**。
+// 这里踩到的原因是"每帧"：`expire_rumble` 由 `poll_into` 调用，而 `poll_into` 在
+// `RuntimeScene::run_script_steps` 里——wasm 上只要推进一帧就炸，而且炸在"手柄震动到期"
+// 这种与画面无关的功能上（第 14 轮就是这么被拦下来的）。
+// `web-time` 在原生上就是 `std::time::Instant` 的再导出，零行为变化。
+use web_time::Instant;
 
 // M22（W5）：死区值类型与纯函数已下沉到 `crate::core::input`（core 不再反向依赖 host）。
 // 这里保留重导出，既有 `host::gamepad::{GamepadDeadzone, MAX_DEADZONE, ...}` 路径
@@ -538,7 +545,7 @@ pub struct GamepadPoller {
     /// 轴判定进入阈值（M22/W3，可由 `[input] nav_threshold` 配置）。
     axis_threshold: f32,
     /// 每个槽位的震动到期时间（M22/W2）。
-    rumble_until: [Option<std::time::Instant>; GAMEPAD_SLOT_COUNT],
+    rumble_until: [Option<Instant>; GAMEPAD_SLOT_COUNT],
     /// 槽位是否**出现过真实输入**（按钮按下或轴偏移；M22/W2）。
     ///
     /// 用于避开「连接着但从未有输入」的槽位：XInput 下可能存在占位/虚拟设备（或手柄处于
@@ -667,13 +674,13 @@ impl GamepadPoller {
             return;
         }
         self.rumble_until[slot] =
-            Some(std::time::Instant::now() + std::time::Duration::from_millis(u64::from(millis)));
+            Some(Instant::now() + std::time::Duration::from_millis(u64::from(millis)));
         tracing::debug!(target: "input", slot, low, high, millis, "[gamepad] rumble");
     }
 
     /// 到期归零（每帧由 [`Self::poll_into`] 调用）。
     fn expire_rumble(&mut self) {
-        let now = std::time::Instant::now();
+        let now = Instant::now();
         for slot in 0..GAMEPAD_SLOT_COUNT {
             if let Some(deadline) = self.rumble_until[slot]
                 && now >= deadline

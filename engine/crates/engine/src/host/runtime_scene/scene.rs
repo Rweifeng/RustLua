@@ -608,7 +608,13 @@ impl RuntimeScene {
             }
             script.set_save_path(roots.save_file());
             let script_path = root.join("scripts/main.lua");
-            if script_path.is_file() {
+            // 存在性判断要**先看文件系统，再看 vfs**：Web/微信上发布包在宿主的资源表里，
+            // `Path::is_file()`（std::fs）恒为 false，于是"跑工程脚本"会静默不发生——
+            // 表现成"脚本没生效"，实则是这里把门关着。判两次比"哪个平台用哪个"更稳：
+            // 桌面走前半句就短路，Web 走后半句，两边判定一致。
+            let script_exists =
+                script_path.is_file() || crate::core::vfs::read(&script_path).is_ok();
+            if script_exists {
                 script.execute_project_script(&script_path)?;
             } else {
                 tracing::info!(target: "script", path = %script_path.display(), "[script] game project has no scripts/main.lua; script runtime idle");

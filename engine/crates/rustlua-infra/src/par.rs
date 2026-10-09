@@ -95,6 +95,12 @@ impl Parallelism {
     /// 对 `len` 个元素实际会用的线程数（已计入串行退化条件）。
     #[must_use]
     pub const fn effective_threads(self, len: usize) -> usize {
+        // wasm32-unknown-unknown 上没有任何线程：`std::thread::scope` 在那里直接 panic
+        // （`std/thread/scoped.rs` 的 `unreachable`），**没有"起不来就降级"的机会**。
+        // 所以并行度在这里就被压成串行——不管调用方传了多大的线程数。
+        if cfg!(target_arch = "wasm32") {
+            return 1;
+        }
         if self.threads < 2 || len < self.min_items {
             return 1;
         }

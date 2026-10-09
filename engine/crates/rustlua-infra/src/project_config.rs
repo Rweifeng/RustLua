@@ -8,7 +8,7 @@
 //! 取值规则：按行 trim（含 BOM），匹配 `<key> =` 前缀，去掉两侧引号与空白；
 //! 空值视为缺失（`None`）——"键存在但为空"不能当成一个有效配置。
 
-use std::{fs, path::Path};
+use std::path::Path;
 
 /// `project.toml` 的单个键。
 #[must_use]
@@ -19,8 +19,17 @@ pub fn read_key(root: &Path, key: &str) -> Option<String> {
 /// 任意配置文件（其他工具/模块约定位置的文件）的单个键。
 #[must_use]
 pub fn read_key_in(path: &Path, key: &str) -> Option<String> {
-    let text = fs::read_to_string(path).ok()?;
-    parse_key(&text, key)
+    parse_key(&read_text(path)?, key)
+}
+
+/// 读配置文本：走 [`crate::vfs::read_resource`]——provider 优先、桌面回落文件系统。
+///
+/// 为什么要这一层：Web/微信上工程是**打包**随宿主资源表走的，`std::fs` 恒失败，于是
+/// `project.toml` 里的配置在 Web 上整条读不到——"字体配在哪""启动场景是哪个"都退化成缺省值。
+/// 第七片撞到的就是它的下游：`ui.measure_text` 报"工程字体不可用"。
+fn read_text(path: &Path) -> Option<String> {
+    let bytes = crate::vfs::read_resource(path).ok()?;
+    String::from_utf8(bytes).ok()
 }
 
 /// 从已读入的文本里取键（测试与调用方已有文本时用）。
@@ -131,6 +140,7 @@ pub const PROJECT_TOML: &str = "project.toml";
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let dir =

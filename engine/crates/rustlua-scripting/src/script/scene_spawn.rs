@@ -55,6 +55,8 @@ impl LuaRuntime {
         scene: &Scene,
         honor_editor_hidden: bool,
     ) -> Result<usize, LuaBridgeError> {
+        // 实例化也是一段"卡住就致命"的同步工作（组件装配会触发每实体脚本），周期从这一刻清零。
+        crate::script::progress::arm();
         let mut state = self.state.borrow_mut();
         state.scene = Some(scene.name.clone());
         state.entity_state.scene_entities.clear();

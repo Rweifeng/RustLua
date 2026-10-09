@@ -8,6 +8,18 @@ use crate::core::math3d::Mat4;
 use super::{GpuMaterial, Renderer, joint_palette_data, next_2d_vertex_capacity};
 
 impl Renderer {
+    /// 本设备上"存储缓冲"用法位：没有存储缓冲的设备（WebGL2）返回空位集。
+    ///
+    /// 规则只该有一处：构造期（`construct.rs` 的 `instance_arena`）与这里的扩容都按它取，
+    /// 免得出现"构造时没带 STORAGE、扩容时又带上了"这种只在扩容后才炸的分叉。
+    fn storage_usage(&self) -> wgpu::BufferUsages {
+        if self.storage_capable {
+            wgpu::BufferUsages::STORAGE
+        } else {
+            wgpu::BufferUsages::empty()
+        }
+    }
+
     /// P0-①：把一块 uniform 数据写入材质/调色板帧级环形缓冲，返回
     /// （所属缓冲句柄, 起始偏移, 字节数）。句柄单独返回是为了覆盖"本帧中途扩容"
     /// 的情形：扩容前已写出的块仍在旧缓冲里，旧句柄克隆保证它们存活且指向正确。
@@ -41,7 +53,9 @@ impl Renderer {
             self.instance_arena = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("rustlua-instance-models-frame-arena"),
                 size: grown,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                // 与构造期同一条规则：没有存储缓冲的设备上就不带 STORAGE 用法
+                // （这条路径只在能力足够时才会被走到，但规则只该有一处）。
+                usage: self.storage_usage() | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
             offset = 0;

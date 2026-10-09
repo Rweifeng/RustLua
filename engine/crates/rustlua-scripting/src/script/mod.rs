@@ -16,6 +16,7 @@ use std::{
 mod api;
 mod error;
 mod guard;
+mod progress;
 mod require;
 mod runtime;
 mod scene_spawn;
@@ -30,6 +31,7 @@ pub use guard::{
     BudgetSlot, CallbackBudget, ContainOutcome, DEFAULT_CALLBACK_ERROR_LIMIT, EntityHook,
     ScriptErrorPolicy, ScriptGuard,
 };
+pub use progress::{DEFAULT_INSTRUCTION_BUDGET, ScriptProgress, script_progress};
 pub use require::{install_web_require, read_project_script};
 pub use values::entity_lua_id;
 
@@ -514,7 +516,18 @@ impl ScriptState {
             .project_root
             .clone()
             .ok_or_else(|| LuaBridgeError::Api("no project root configured".to_owned()))?;
+        // 这一步 = 读工程字体 + 建度量探针（Web 上还要先解包），是 `ui.measure_text` 的**首次**
+        // 调用成本。第一帧卡顿的归因全靠这个读数：把它记成一条日志（wasm 侧经 `wasm_log` 进
+        // 控制台），就不必再靠"首帧总耗时"反推到底是字体、脚本还是渲染。
+        let started = web_time::Instant::now();
         let probe = rustlua_render::font::project_font::load_probe(&root).ok();
+        tracing::info!(
+            target: "render",
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            ok = probe.is_some(),
+            root = %root.display(),
+            "[render] font probe loaded"
+        );
         self.font_probe = Some(probe.clone());
         Ok(probe)
     }

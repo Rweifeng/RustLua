@@ -8,7 +8,7 @@
 
 ## `save.blob_read(key: String)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/save.rs:71`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/save.rs:73`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -19,7 +19,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `save.blob_write(key: String, value: Value)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/save.rs:54`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/save.rs:56`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -30,7 +30,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `save.clear()`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/save.rs:43`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/save.rs:45`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -41,7 +41,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `save.commit()`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/save.rs:101`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/save.rs:103`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -52,7 +52,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `save.load()`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/save.rs:122`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/save.rs:124`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -74,7 +74,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `save.slot(slot: Option<String>)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/save.rs:84`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/save.rs:86`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -85,7 +85,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `save.slot_get()`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/save.rs:92`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/save.rs:94`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 

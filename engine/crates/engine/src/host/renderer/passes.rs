@@ -13,7 +13,12 @@ use crate::core::{
     render_plan::{FrameFacts, RenderPass, RenderPlan},
 };
 use crate::host::frame::{Scene3d, SceneMesh};
-use std::time::Instant;
+// M73-00 WP5：时钟必须走 `web-time` 而不是 `std::time`。`wasm32-unknown-unknown` 的 std
+// 落在 `sys/pal/unsupported` 上，`Instant::now()` 会**直接 panic**（"time not implemented on
+// this platform"，见 std 源码 `sys/time/unsupported.rs`）——渲染器是第一个真在 wasm 上被调用的
+// 引擎子系统，帧计时（`cpu_frame_us`）就会踩到它。`web-time` 在原生上**就是** `std::time::Instant`
+// 的再导出（类型相同、行为为零变化），在 wasm 上换成 `performance.now()`。
+use web_time::Instant;
 use wgpu::SurfaceError;
 
 use super::world_sprite::SpritePassFilter;
@@ -241,13 +246,24 @@ impl Renderer {
             .main
             .and_then(RenderView::matrix)
             .or_else(|| scene3d.and_then(|scene| scene.view.matrix()));
+        // 设备没有存储缓冲时（WebGL2 就是这样），3D 网格/阴影这两条路在构造期就没建出真管线
+        // （见 `construct.rs` 的 `storage_capable`）。这里**不取帧内 3D draw**：`FrameFacts` 随之
+        // 为假，通道计划里就不会有 `Shadow`/`DepthOpaque`，因此那条占位管线不可能被绑上。
+        // 代价必须可见：丢弃的 draw 记进 `metrics.dropped_draws`（构造期另有一条告警）。
+        let mut dropped_3d_draws = 0u64;
         let frame_draws = if let Some(scene) = scene3d {
-            self.update_3d_uniforms(scene, main_matrix);
-            self.frame_3d_draws(scene)
+            if self.storage_capable {
+                self.update_3d_uniforms(scene, main_matrix);
+                self.frame_3d_draws(scene)
+            } else {
+                dropped_3d_draws = scene.drawables.len() as u64;
+                Vec::new()
+            }
         } else {
             Vec::new()
         };
         let mut metrics = RenderFrameMetrics::default();
+        metrics.dropped_draws += dropped_3d_draws;
         for draw in &frame_draws {
             record_indexed_draw(
                 &mut metrics,
@@ -289,9 +305,14 @@ impl Renderer {
             world_2d_draws: count_layer_draws(mesh, RenderLayer::World2D),
             overlay_2d_draws: count_layer_draws(mesh, RenderLayer::Overlay2D),
             screen_ui_draws: count_layer_draws(mesh, RenderLayer::ScreenUI),
-            vector_text: !mesh.vector_vertices.is_empty(),
+            vector_text: !mesh.vector_vertices.is_empty() && self.storage_capable,
             post_process: post_process.is_some(),
         });
+        // 矢量文字同理：能力不足时不声明该通道（计划里没有 ⇒ 不会绑占位管线），
+        // 但顶点数要记成丢弃，否则就是"屏幕上少了字、日志里一个字都没有"。
+        if !self.storage_capable && !mesh.vector_vertices.is_empty() {
+            metrics.dropped_draws += 1;
+        }
         let mut executed: Vec<RenderPass> = Vec::with_capacity(plan.len());
         if plan.contains(RenderPass::Clear)
             && let Some(clear) = clear
@@ -504,14 +525,31 @@ impl Renderer {
             // docs/54 §4.3：`Legacy2DOverlay`（World2D + Overlay2D 两个桶）与 `ScreenUI` 是计划里
             // 两条**独立通道**，因此这里按通道分桶；两者共用一次 `begin_render_pass`（同一条管线，
             // 拆成两个 pass 只多 CPU 开销、不写像素）。
+            //
+            // **保序合并（本片新增）**：相邻的、贴图与管线完全相同的 draw 合成**一次** `pass.draw`。
+            // 能合的前提只有一条硬事实：顶点在同一个缓冲里**首尾相接**（
+            // `start + count == 下一个 draw 的 start`），且键 =（贴图下标, 是否 SDF, 是否位图）相等。
+            // 满足时合并后的光栅化与逐个画**逐字节相同**：三角形顺序、混合顺序都没变，
+            // 所以这不是"为了快牺牲正确性"，而是把本来就该是一次提交的东西合成一次。
+            // 为什么值得：2D 主路径原来**每个 `SceneDraw` 一次 draw call**，一千个相邻精灵就是
+            // 一千次提交。`draw_calls` 与设备无关，软件光栅上也能量（本片读数就是这么取的）。
             for stage in [RenderPass::Legacy2DOverlay, RenderPass::ScreenUI] {
                 if !plan.contains(stage) {
                     continue;
                 }
+                let mut batch: Option<OverlayBatch> = None;
                 for layer in stage.overlay_layers() {
                     for index in layer_indices(&mesh.draws, |draw| draw.render_layer, *layer) {
                         let draw = &mesh.draws[index];
-                        if draw.sdf {
+                        // 解析绑定组可能**改变贴图缓存**（异步加载在这一帧内完成上传）。键相同但
+                        // 缓存变了，两次解析结果就可能是"白兜底"与"真贴图"两种——合并会把后者画成
+                        // 前者。所以纪元一变就先冲刷批次：批次内的 draw 保证在同一个解析纪元里，
+                        // 于是键相同 ⇒ 绑定的贴图内容相同。
+                        let epoch = self.texture_epoch();
+                        if batch.as_ref().is_some_and(|batch| batch.epoch != epoch) {
+                            flush_overlay_batch(&mut pass, &mut metrics, &mut batch);
+                        }
+                        let (key, bind) = if draw.sdf {
                             // 文本绘制：共用 pipeline_sdf（shader 按顶点 sdf 值分支）。
                             // bitmap（sdf=2）：Nearest 采样 + MSDF 阈值化，小字号清晰。
                             // MSDF（sdf=1）：Linear 采样 + smoothstep AA，大字号平滑。
@@ -532,34 +570,63 @@ impl Renderer {
                                 );
                                 continue;
                             };
-                            pass.set_pipeline(&self.pipeline_sdf);
-                            pass.set_bind_group(0, &bind, &[]);
-                            pass.draw(draw.start..draw.start + draw.count, 0..1);
-                            record_vertex_draw(&mut metrics, draw.count);
-                            continue;
-                        }
-                        let Some(bind) =
-                            self.bind_group_for(draw.texture, &mesh.paths, &mesh.path_handles)
-                        else {
-                            record_dropped_draw(&mut metrics);
-                            tracing::warn!(
-                                target: "render",
-                                texture = draw.texture,
-                                path = ?draw
-                                    .texture
-                                    .checked_sub(1)
-                                    .and_then(|index| mesh.paths.get(index as usize)),
-                                layer = ?draw.render_layer,
-                                "[runtime] draw dropped: bind group unavailable"
-                            );
-                            continue;
+                            (
+                                OverlayBatchKey {
+                                    texture: draw.texture,
+                                    sdf: true,
+                                    bitmap: draw.bitmap,
+                                },
+                                bind,
+                            )
+                        } else {
+                            let Some(bind) =
+                                self.bind_group_for(draw.texture, &mesh.paths, &mesh.path_handles)
+                            else {
+                                record_dropped_draw(&mut metrics);
+                                tracing::warn!(
+                                    target: "render",
+                                    texture = draw.texture,
+                                    path = ?draw
+                                        .texture
+                                        .checked_sub(1)
+                                        .and_then(|index| mesh.paths.get(index as usize)),
+                                    layer = ?draw.render_layer,
+                                    "[runtime] draw dropped: bind group unavailable"
+                                );
+                                continue;
+                            };
+                            (
+                                OverlayBatchKey {
+                                    texture: draw.texture,
+                                    sdf: false,
+                                    bitmap: draw.bitmap,
+                                },
+                                bind,
+                            )
                         };
-                        pass.set_pipeline(&self.pipeline);
-                        pass.set_bind_group(0, &bind, &[]);
-                        pass.draw(draw.start..draw.start + draw.count, 0..1);
-                        record_vertex_draw(&mut metrics, draw.count);
+                        let extends = batch.as_ref().is_some_and(|batch| {
+                            batch.key == key && batch.start + batch.count == draw.start
+                        });
+                        if !extends {
+                            flush_overlay_batch(&mut pass, &mut metrics, &mut batch);
+                            pass.set_pipeline(if key.sdf {
+                                &self.pipeline_sdf
+                            } else {
+                                &self.pipeline
+                            });
+                            pass.set_bind_group(0, &bind, &[]);
+                            batch = Some(OverlayBatch {
+                                key,
+                                start: draw.start,
+                                count: draw.count,
+                                epoch,
+                            });
+                        } else if let Some(batch) = batch.as_mut() {
+                            batch.count += draw.count;
+                        }
                     }
                 }
+                flush_overlay_batch(&mut pass, &mut metrics, &mut batch);
                 executed.push(stage);
             }
         }
@@ -661,5 +728,60 @@ impl Renderer {
         self.last_frame_plan = plan;
         self.last_frame_passes = executed;
         metrics
+    }
+    /// 贴图**解析纪元**：这一组计数只要不变，同一个贴图键在这帧里就解析到同一份内容。
+    ///
+    /// 为什么需要它（而不是直接比较 `wgpu::BindGroup`）：wgpu 27 的 `BindGroup` 没有身份查询
+    /// （`global_id` 是更晚版本才有的），而"同键同绑定"恰恰是 2D 保序合并的安全前提。
+    /// 换个角度想：绑定组只可能因为**缓存被写入**而改变——异步解码完成后的上传（`textures` 变长）、
+    /// 自定义字体图集上传（`custom_fonts` 变长）、内建字体图集首次绑定（布尔翻转）。
+    /// 这三件事覆盖了 `bind_group_for`/`sdf_bind_for` 的全部可变来源，所以把它们当纪元就够：
+    /// 纪元不变 ⇒ 键相同 ⇒ 内容相同。
+    ///
+    /// 注意这里**故意**不含 `texture_identity_hits/misses`：那两个是诊断计数，命中与否不改变结果。
+    fn texture_epoch(&self) -> (usize, usize, bool) {
+        (
+            self.textures.len(),
+            self.custom_fonts.len(),
+            self.font_atlas_bind.is_some(),
+        )
+    }
+}
+
+/// 2D 保序合并的键：**决定管线与绑定组的那几项**。
+///
+/// 只有这三项相同、且顶点首尾相接，两次 draw 才能合成一次提交。`bitmap` 与 `sdf` 都必须在键里：
+/// 前者换绑定组（Nearest vs Linear 采样），后者换管线（SDF shader vs 普通 2D shader）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct OverlayBatchKey {
+    texture: u32,
+    sdf: bool,
+    bitmap: bool,
+}
+
+/// 当前正在累积的 2D 批次：键 + 顶点区间 + **解析纪元**。
+///
+/// 纪元是安全的另一半：同一个键在不同纪元下可能解析到不同内容（异步贴图恰好在这一帧完成上传，
+/// 前一次拿到白兜底、后一次拿到真贴图）。批次内只允许同一纪元，于是"键相同"就真的意味着
+/// "绑定的贴图内容相同"。
+struct OverlayBatch {
+    key: OverlayBatchKey,
+    start: u32,
+    count: u32,
+    epoch: (usize, usize, bool),
+}
+
+/// 冲刷当前 2D 批次：一次 `pass.draw` 覆盖整段**连续**顶点，并记一次 draw call。
+///
+/// 注意管线/绑定组是在**开批**时设的（见调用点），这里只提交绘制——所以冲刷本身不改状态，
+/// 这也是"合并不改像素"的实现保证：状态切换只发生在键变化处，而那些位置本来就要切。
+fn flush_overlay_batch(
+    pass: &mut wgpu::RenderPass<'_>,
+    metrics: &mut RenderFrameMetrics,
+    batch: &mut Option<OverlayBatch>,
+) {
+    if let Some(batch) = batch.take() {
+        pass.draw(batch.start..batch.start + batch.count, 0..1);
+        record_vertex_draw(metrics, batch.count);
     }
 }

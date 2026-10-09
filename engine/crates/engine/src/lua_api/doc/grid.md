@@ -8,7 +8,7 @@
 
 ## `grid.cell_to_world(cx: i32, cy: i32, tile_size: f32)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:247`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:414`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -19,7 +19,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `grid.facing_cell(x: f32, y: f32, facing: String, tile_size: f32)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:255`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:422`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -30,7 +30,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `grid.in_bounds(cx: i32, cy: i32, width: usize, height: usize)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:265`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:432`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -41,7 +41,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `grid.world_to_cell(x: f32, y: f32, tile_size: f32)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:239`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:406`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 

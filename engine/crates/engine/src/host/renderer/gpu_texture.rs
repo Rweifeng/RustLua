@@ -15,7 +15,7 @@ use crate::host::frame::{
 };
 use std::path::PathBuf;
 
-use super::{CustomFontUpload, Renderer, hash_bytes};
+use super::{CustomFontUpload, LoadedTexture, Renderer, hash_bytes};
 
 impl Renderer {
     pub(super) fn ensure_vector_buffer_capacity(
@@ -444,6 +444,64 @@ impl Renderer {
             },
         );
         Some(())
+    }
+
+    /// 把一个**已经在内存里**的 RGBA8 贴图登记进 2D 贴图缓存。
+    ///
+    /// 为什么需要这个入口：2D 贴图原本只有一条来路——`texture_paths` 里查不到就按路径
+    /// `std::fs::read`（就是下面 `bind_group_for` 的末段）。web/微信上没有文件系统，那条路必然
+    /// 落到白兜底，于是"图集/精灵能不能画对"在浏览器里**无从验证**：画出来是白的，而白色恰好
+    /// 也是"什么都没有"的样子。有了它，宿主（web 运行时、图集打包器、探针）可以把已经在内存
+    /// 里的像素交进来——之后照常把 `key` 放进 `SceneMesh::paths`、用 1-based 下标引用，
+    /// 解析路径一行都不用改。
+    ///
+    /// 同一个 `key` 重复上传是**原地替换**（槽位不变）：已经按资源身份缓存过该槽位的绘制仍然
+    /// 有效。这对流式图集是必须的——图集更新不该让所有已缓存的身份失效。
+    pub fn upload_texture_rgba8(
+        &mut self,
+        key: &str,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+    ) -> anyhow::Result<u32> {
+        let asset = TextureAsset::from_rgba8(width, height, rgba.to_vec(), TextureColorSpace::Srgb)
+            .map_err(|error| {
+                anyhow::anyhow!("RGBA8 贴图尺寸不合法（{width}x{height}）: {error}")
+            })?;
+        self.register_texture_asset(key, &asset)
+    }
+
+    /// PNG（或打包格式）**字节** → 2D 贴图缓存的公开入口：web 端手里只有字节，没有文件可读，
+    /// 解码是唯一的路。语义与 [`Self::upload_texture_rgba8`] 完全相同（含原地替换）。
+    pub fn upload_texture_png(&mut self, key: &str, bytes: &[u8]) -> anyhow::Result<u32> {
+        let asset = TextureAsset::from_png_bytes(bytes, TextureColorSpace::Srgb)
+            .map_err(|error| anyhow::anyhow!("贴图字节解码失败（{key}）: {error}"))?;
+        self.register_texture_asset(key, &asset)
+    }
+
+    /// 两个公开入口的共用实现：上传 GPU 资源 + 按 `key` 登记/替换槽位，返回槽位号。
+    fn register_texture_asset(&mut self, key: &str, asset: &TextureAsset) -> anyhow::Result<u32> {
+        let bind_group = self
+            .upload_texture(asset, key)
+            .ok_or_else(|| anyhow::anyhow!("贴图 GPU 上传失败（{key}）"))?;
+        let slot = if let Some(&slot) = self.texture_paths.get(key) {
+            self.textures[slot].bind_group = bind_group;
+            slot
+        } else {
+            self.textures.push(LoadedTexture { bind_group });
+            let slot = self.textures.len() - 1;
+            self.texture_paths.insert(key.to_owned(), slot);
+            slot
+        };
+        tracing::info!(
+            target: "render",
+            key,
+            width = asset.width(),
+            height = asset.height(),
+            slot,
+            "[render] 2D texture uploaded from memory"
+        );
+        Ok(slot as u32)
     }
 
     pub(super) fn upload_texture(

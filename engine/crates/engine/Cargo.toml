@@ -6,14 +6,33 @@ authors.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# WebGL2（wasm 上的 GL 后端）开关。默认**关**，理由见下面 wgpu 依赖那段注释：打开它会给每个
+# 依赖 engine 的 wasm 产物加 3.33 MB 原始体积。WP5 把 web 渲染路径接上时，由那一条路径开。
+webgl = ["wgpu/webgl"]
+
 [dependencies]
 anyhow.workspace = true
 thiserror.workspace = true
 bytemuck.workspace = true
 tracing.workspace = true
 pollster = "0.4"
+# `webgl` **不能无条件开**：wgpu 在 wasm 上默认只给了 `webgpu`（`cargo tree -e features
+# --target wasm32-unknown-unknown` 里没有 `webgl`），而 WebGPU 至今不是所有目标都有——
+# **微信小游戏没有 WebGPU**，只打 default 的产物在微信上根本起不来渲染。
+# 但后端不该由"恰好依赖了 engine"的产物替所有人埋单，所以它做成**按需特性**：由真正要画的
+# 那条路径（WP5 的 web 渲染路径）显式开启。
+# 代价实测（同一次 A/B，`cargo build -p game_web --release --target wasm32-unknown-unknown`，
+# 其余输入不变）：默认 8,711,933 字节 → `-F engine/webgl` 8,851,119 字节，**+139,186 字节（+1.6%）**。
+# 现在没有任何 wasm 代码在用 GL 后端，game_web 也就没开它。
 wgpu = "27"
 winit = "0.30"
+# WP5：`wasm32-unknown-unknown` 的 std 落在 `sys/pal/unsupported`，`Instant::now()` 会 panic
+# （"time not implemented on this platform"）；渲染器在 wasm 上跑起来后帧计时就会踩到它。
+# `web-time` 在原生上**就是** `std::time::Instant` 的再导出（同类型、零行为变化），
+# 在 wasm 上换成 `performance.now()`。它已经在 Cargo.lock 里（winit 的 wasm 依赖拉的），
+# 所以这里加它不引入任何新的下载/版本。
+web-time = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 getrandom.workspace = true
 
@@ -36,6 +55,12 @@ rustlua-infra.workspace = true
 [dev-dependencies]
 # wp0_*_golden examples 仍直接依赖（core 拆分后 serde_json 已随模块迁到子 crate）
 serde_json = "1"
+
+# `web_surface`：wasm 上从画布建 surface 需要 JS 对象句柄。
+# 只取 `wasm-bindgen`（`JsValue`）而**不**取 `web-sys`：引擎这层不该认识 DOM 类型，
+# `HtmlCanvasElement → JsValue` 的转换由本来就依赖 web-sys 的宿主做。
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
 
 # M20-06：桌面手柄设备轮询。原计划的 gilrs 在本机离线环境下无法解析
 # （crates 已缓存但索引不可用，见任务文档），改用已在依赖树中的 windows-sys

@@ -15,6 +15,7 @@ use crate::script::error::{LuaBridgeError, ScriptDebugger, bridge_error_parts};
 use crate::script::guard::{
     BudgetSlot, ContainOutcome, EntityHook, ScriptErrorPolicy, ScriptGuard,
 };
+use crate::script::progress;
 use crate::script::require::{
     file_fingerprint, install_encoded_require_searcher, read_project_script,
 };
@@ -38,6 +39,11 @@ impl LuaRuntime {
             .action_map
             .merge_missing(&ActionMap::with_defaults());
         api::register_all(&lua, Rc::clone(&state))
+            .map_err(|error| LuaBridgeError::Init(error.to_string()))?;
+        // 心跳 + 指令预算：**每个 Lua 状态都装**（工程脚本、每实体脚本各自一份状态）。
+        // 默认给足余量（见 `DEFAULT_INSTRUCTION_BUDGET`）：正常脚本撞不到它，
+        // 而 `while true do end` 会被换成一条带 `源:行` 的报错——同步宿主上这是"页面别死"的唯一护栏。
+        progress::install(&lua, progress::DEFAULT_INSTRUCTION_BUDGET)
             .map_err(|error| LuaBridgeError::Init(error.to_string()))?;
         Ok(Self {
             lua,
@@ -315,6 +321,12 @@ impl LuaRuntime {
         let candidate = Lua::new();
         api::register_all(&candidate, Rc::clone(&self.state))
             .map_err(|error| LuaBridgeError::Init(error.to_string()))?;
+        // 候选状态是**新造的 Lua 状态**，不带 `LuaRuntime::new()` 装过的那套钩子——而
+        // `execute_project_script` 恰恰是在它上面跑工程脚本的（wasm 上卡死的那一段就是这里）。
+        // 所以钩子必须在**这里**装：预算沿用当前值，周期从这一刻清零。
+        progress::install(&candidate, progress::budget())
+            .map_err(|error| LuaBridgeError::Init(error.to_string()))?;
+        progress::arm();
         // Let Lua `require` resolve sibling modules relative to the project
         // script directory (e.g. `require("player")` -> `scripts/player.lua`).
         if let Ok(package) = candidate.globals().get::<Table>("package")
@@ -345,6 +357,8 @@ impl LuaRuntime {
     /// 结构化诊断与预算后返回 `Ok("")`，让宿主继续跑（见 [`ScriptErrorPolicy`]）。
     /// 连续报错达到上限的回调会被**停用**——此后不再进 Lua，日志也不会被同一个错误淹没。
     pub fn call_update(&self) -> Result<String, LuaBridgeError> {
+        // 每个 `update` 回调一个周期：预算是"这一段不许无限跑"，不是"这一局不许跑够 N 条"。
+        progress::arm();
         let path = self
             .current_path
             .clone()
@@ -365,24 +379,20 @@ impl LuaRuntime {
             self.state.borrow_mut().last_update_micros = 0;
             return Ok(String::new());
         };
-        // wasm32-unknown-unknown 的 std 不实现 Instant（unsupported.rs 直接 panic）；
-        // 耗时统计只在桌面有意义（宿主性能面板），wasm 侧记 0 并跳过计时。
-        #[cfg(not(target_arch = "wasm32"))]
-        let started = std::time::Instant::now();
+        // 计时用 `web_time`：wasm32-unknown-unknown 的 std 不实现 `Instant`（unsupported.rs
+        // 直接 panic），`web_time` 在原生上就是它的再导出，所以两边**同一段代码**即可。
+        //
+        // 以前这里是 `#[cfg(not(target_arch = "wasm32"))]` + wasm 侧记 0，那是"std 时钟会炸"
+        // 时代的权宜：后果是 Web 上性能读数里 Lua `update` 的成本**永远是 0**，
+        // 于是"每帧逻辑贵在哪"没法回答（本轮的前提就是修掉它）。
+        let started = web_time::Instant::now();
         let result = update.call(()).map_err(|error| LuaBridgeError::Runtime {
             path,
             reason: error.to_string(),
         });
         // 失败也要记账：否则"Lua 抛错的那一帧"在性能面板上看起来是零成本。
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.state.borrow_mut().last_update_micros =
-                u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            self.state.borrow_mut().last_update_micros = 0;
-        }
+        self.state.borrow_mut().last_update_micros =
+            u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
         match result {
             Ok(value) => {
                 self.guard.borrow_mut().record_success(BudgetSlot::Update);

@@ -1,6 +1,9 @@
 //! Lightweight runtime performance sampling for the game loop.
 
-use std::time::Instant;
+// 时钟必须走 `web-time`：`wasm32-unknown-unknown` 的 std 把 `Instant::now()` 实现成 panic
+// （`sys/pal/unsupported/time.rs`）。这份采样器是游戏主循环建的，wasm 上只要建一次就会炸。
+// 原生上 `web-time::Instant` 就是 `std::time::Instant` 的再导出，零行为变化。
+use web_time::Instant;
 
 /// Latest rolling performance values exposed to the debug overlay.
 #[derive(Debug, Clone, Copy, PartialEq)]

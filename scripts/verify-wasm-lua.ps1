@@ -204,17 +204,25 @@ $spikeExit = Invoke-NodeScript $nodeFlags (Join-Path $scriptDir "run-spike.mjs")
 Write-Log "==> verify-no-modules-bridge.mjs"
 $bridgeExit = Invoke-NodeScript $nodeFlags (Join-Path $scriptDir "verify-no-modules-bridge.mjs") $glueDir
 
-Write-Log "==> 汇总: spike_exit=$spikeExit bridge_exit=$bridgeExit"
+# ---------- 4. 输入批量线格式的语义对拍 ----------
+# 新协议（`RLFI` 批量二进制）必须与旧协议（每帧编译源码）逐步等价：两边都从出厂源码里抽
+# （旧的序列化器 / 新的打包器），配上真 wasm。省下的开销容易量，语义漂移不会自己变红。
+Write-Log "==> input-frame-abi-test.mjs"
+$abiExit = Invoke-NodeScript $nodeFlags (Join-Path $scriptDir "input-frame-abi-test.mjs") $glueDir
 
-# 任一为 3（输入缺失/环境受限）且无真失败 → 整体按环境受限跳过。
-if (($spikeExit -eq 3 -or $bridgeExit -eq 3) -and $spikeExit -ne 1 -and $bridgeExit -ne 1) {
+Write-Log "==> 汇总: spike_exit=$spikeExit bridge_exit=$bridgeExit abi_exit=$abiExit"
+
+# 任一为 3（输入缺失/环境受限）且无真失败 → 整体按环境受限跳过；其余非零一律判红。
+$exits = @($spikeExit, $bridgeExit, $abiExit)
+$realFailures = @($exits | Where-Object { $_ -ne 0 -and $_ -ne 3 })
+if (($exits -contains 3) -and ($realFailures.Count -eq 0)) {
     Write-Log "wasm_lua_skipped reason=node_input_missing" Yellow
     Exit-With 3
 }
-if ($spikeExit -ne 0 -or $bridgeExit -ne 0) {
-    Write-Log "wasm_lua_FAILED spike_exit=$spikeExit bridge_exit=$bridgeExit" Red
+if ($realFailures.Count -gt 0) {
+    Write-Log "wasm_lua_FAILED spike_exit=$spikeExit bridge_exit=$bridgeExit abi_exit=$abiExit" Red
     Exit-With 1
 }
 
-Write-Log "wasm_lua_ok spike=pass bridge=pass" Green
+Write-Log "wasm_lua_ok spike=pass bridge=pass abi=pass" Green
 Exit-With 0

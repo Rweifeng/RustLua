@@ -356,8 +356,39 @@ try {
         # 它抓的是"名字两边都在、行为分叉"这一类，与下面的浏览器/产物层门（需要真跑起来）不重叠。
         Write-Step "Web API override inventory"
         Invoke-Checked node @((Join-Path $projectRoot "scripts/check-web-api-overrides.mjs"))
+        # M72-02 的跨宿主哈希契约：变体序号与 autotile 掩码是"同一串位运算的四份实现"（Rust、
+        # web 的 JS、web 内嵌的 Lua 垫片、`tools/preview_scene.py`）。抄错一个字符不会崩，只会让
+        # web 与原生各画各的地表，而 M72-12 的三宿主目验会把它当美术问题查半天。Rust 那两份由
+        # `cargo test -p rustlua-ecs variant` 与两条 M72-02 门钉住（同一组金标数字）；这一步钉 JS
+        # 的 56 格解算，并把 Lua 垫片里的 6 个常数与 JS 侧逐条对上（两段同在一份文件里，静态即可判定）。
+        Write-Step "Tile atlas hash parity (web JS mirror vs Rust golden)"
+        Invoke-Checked node @((Join-Path $projectRoot "scripts/check-tile-hash-parity.mjs"))
+        # M73-00：两条**不需要 wasm 产物**的运行时回归门。它们是"改坏了看不出来、而且要
+        # 等一次完整微信打包才能发现"的那类规则的唯一快速判据，因此和上面几条同层：每次质量门都跑。
+        #   ① 资源路由：主体 mainpack/pack、远端 URL、远端缓存的发布标识与旧版清理。
+        #      抓的是"首屏音频指向不存在的 pack/ 路径"与"换版本后旧缓存永久遮蔽新内容"。
+        #   ② wasm 兜底通道：首选通道失败/抛错时必须真的用兜底通道的结果，而不是一律判失败。
+        Write-Step "WeChat asset routing (adapter unit)"
+        Invoke-Checked node @((Join-Path $projectRoot "scripts/wechat-asset-routing-test.js"))
+        Write-Step "WeChat wasm bridge fallback (unit)"
+        Invoke-Checked node @((Join-Path $projectRoot "scripts/wasm-bridge-fallback-test.js"))
+        #   ③ 固定时间步：把 `advanceFixedSteps` 从 web-runtime.js **抽出源码**直接跑，
+        #      判据对齐 Rust `FixedTimeStep::advance`（追帧上限/整数步丢弃/长跑不漂移/高刷与低刷）。
+        #      "逻辑速度与刷新率解耦"全靠它，写错不会崩、只会慢半拍或快半拍。
+        Write-Step "Web fixed timestep (unit)"
+        Invoke-Checked node @((Join-Path $projectRoot "scripts/web-fixed-step-test.js"))
+        #   ④ 64 位变体哈希：把出厂的 BigInt 实现换成"两个 32 位字"的手写算术（ES2019 上传门要求），
+        #      正确性靠**旧实现留作 oracle** 逐位对拍——写错只会让地表换个样子，不会崩。
+        #      顺带守住"四个变体都出现、第一行不是周期点阵"这两条它存在的理由。
+        Write-Step "Web u64 tile variant hash (oracle parity)"
+        Invoke-Checked node @((Join-Path $projectRoot "scripts/web-u64-hash-test.js"))
+        #   ⑤ 输入线格式键表：批量 ABI 把键名从"每帧上线"变成"位图 + 固定键表"，于是多了一个
+        #      静默失效面——游戏绑定了某个键而键表里没有它，那个键就永远收不到。静态对三份来源
+        #      （Rust 键表 / 预置层 bindings / 宿主 DOM 键名归一），构建前即可判红。
+        Write-Step "Input frame ABI key table (static parity)"
+        Invoke-Checked node @((Join-Path $projectRoot "scripts/check-input-abi-parity.mjs"))
     } else {
-        Write-Host "  [SKIP] 未找到 node：Lua API 文档桩门与 Web API 覆盖清单门未运行（不是通过）" -ForegroundColor Yellow
+        Write-Host "  [SKIP] 未找到 node：Lua API 文档桩门、Web API 覆盖清单门、图集哈希 parity 门、微信资源路由门、wasm 兜底通道门、固定时间步门、u64 哈希对拍门与输入键表门未运行（不是通过）" -ForegroundColor Yellow
     }
 
     # M72-05 装饰散布的**确定性**门。事实源在 Python（`tools/decor_kit.py` 的 `scatter()`），所以这条
@@ -791,6 +822,44 @@ try {
                 Write-Host "webgl_bundle_ok boot=$($bundlePayload.boot) wasm_bytes=$($bundlePayload.wasmBytes) drawn=$($bundlePayload.drawnSamples) ui=$($bundlePayload.uiElements) missing_host_api=$($bundlePayload.missingCount) scene_verify=$($bundlePayload.sceneVerify)" -ForegroundColor Green
             }
 
+            # ②′ wgpu 的 WebGL2 后端能力门（WP2 的 GPU 后端技术验证，已进门）：
+            # 上面 ①（verify-webgl.ps1）只证明**页面**能拿到 `getContext('webgl2')`；这一步证明
+            # **wgpu 自己**能在这条后端上建 surface、拿适配器、建设备、清屏并读回像素。
+            # 两者是不同的东西：wgpu 27 在 wasm 上默认**不带** GL 后端（default 只给 webgpu），
+            # `Instance::new(&Default::default())` 在浏览器里可能一个适配器都拿不到。
+            # 这门直接量 WP5（GPU 2D 渲染器）的地基，地基塌了不该等到渲染器写完才发现。
+            # 0=通过；1=真回归；3=这台机器给不出 WebGL2 画布（打印原因后跳过）。
+            $gpuProbeScript = Join-Path $projectRoot "scripts/gpu-web-probe.ps1"
+            $gpuRun = & $runWebEvidence $gpuProbeScript "gpu-probe"
+            $gpuExit = $gpuRun.ExitCode
+            if ($gpuExit -eq 1) {
+                throw "wgpu WebGL2 backend check FAILED (gpu-web-probe.ps1 exit 1; 见 gate-gpu-probe-*.log)"
+            }
+            if ($gpuExit -ne 0) {
+                Write-Host "gpu_probe_skipped reason=environment_limited exit=$gpuExit (无头实例给不出 WebGL2 画布)" -ForegroundColor Yellow
+            }
+            else {
+                Write-Host "gpu_probe_ok (wgpu 在 WebGL2 后端上建 surface/适配器/设备并可读回)" -ForegroundColor Green
+            }
+
+            # ②′ 渲染器门（WP5 第一片）：上面 ② 证明"wgpu 的 GL 后端能用"，这一步证明
+            # **本仓那台按 WebGPU 规格写的渲染器**在 WebGL2 上能把一帧画对——真
+            # `engine::host::Renderer` 离屏渲染 + 像素按解析期望值精确对拍 + 帧计数对账
+            # （draw_calls/triangles/dropped_draws）。能力探针过了不代表渲染器过了：
+            # 管线翻译、绑定组布局、深度附件、构造期的存储缓冲都是后者才有的坑。
+            # 0=通过；1=真回归（含"构造期被设备拒绝"这种已知未完成态）；3=给不出 WebGL2 画布。
+            $renderProbeRun = & $runWebEvidence $gpuProbeScript "render-probe" -ExtraArgs @("-Stage", "render")
+            $renderProbeExit = $renderProbeRun.ExitCode
+            if ($renderProbeExit -eq 1) {
+                throw "engine renderer on WebGL2 FAILED (gpu-web-probe.ps1 -Stage render exit 1; 见 gate-render-probe-*.log)"
+            }
+            if ($renderProbeExit -ne 0) {
+                Write-Host "render_probe_skipped reason=environment_limited exit=$renderProbeExit (无头实例给不出 WebGL2 画布)" -ForegroundColor Yellow
+            }
+            else {
+                Write-Host "render_probe_ok (真渲染器在 WebGL2 上离屏出帧且像素精确)" -ForegroundColor Green
+            }
+
             # ③′ 完整玩法剧本门（P0-②）：verify-webgl-bundle -DriveJhyt 驱动 URL
             # `?rustlua-drive=jhyt`，在真实浏览器里跑完"标题确认 → 新游戏(manor) →
             # 移动 → 背包/任务面板开合 → 山庄↔云泽村真实场景切换 → 回山庄"的完整玩法
@@ -1082,6 +1151,28 @@ if ($Mvp -or $MvpOnly) {
         # 6×1 与整幅拉伸 V 且只认 1..=6，重存后带 `tiles_format=1` 与逗号编码；发布数据侧
         # 关掉视口剔除后"渲染格数 == 逐格数出的非空格数"（920）。
         "jhyt_m72_tileset_atlas"
+        # M72-02 确定性变体门：8×4/kind1/variant_count=4/seed=0x12345678 的 32 格变体序号逐格等于
+        # 金标（与 `rustlua-ecs` 的单测、`preview_scene.py`、web 的 JS+Lua 镜像同一串位）；100 帧
+        # 条目序列与 UV 序列逐元素全等；恒等档 id 就是条目、切变体后落进自己那块；反面对照内建
+        # 两处——门自带一份**不做雪崩收尾**的 FNV 参考实现并断言它的第一行正是 `3,2,1,0,3,2,1,0`
+        # 的周期点阵（少了收尾就是在"确定地画一张马赛克"），以及 §⑥ 把 web 宿主的 Lua 解算镜像
+        # 原样喂进真 VM 重解 32 格（镜像里种子 +1 必须换表，否则同值是空的）。
+        "jhyt_m72_tile_variant_determinism"
+        # M72-02 4-bit autotile 门：8×8 草嵌 4×4 土的 64 格邻居掩码逐格对手写位序表（bit0=y-1、
+        # bit1=x+1、bit2=y+1、bit3=x-1，按 index 命名）；内芯 0b1111 必须取块内最后一格（满块瓦），
+        # 条目布局 `1+kinds*span+(kind-1)*16+mask` 两块互不越界；地图四角当暴露边界；挖一格空洞
+        # 只让两个邻居各少一位、填回逐格复原；一路到渲染的 64 格 UV 等于算术结果。反面对照：
+        # 抹掉 bit0 后土块顶行必须 4/4 全变且底行 0 格（plan 点名的"红在顶排交界格"），抹掉 bit2
+        # 顶行必须 0 格，互换两个列位顶行必须恰好 2 格错位；§⑧ 再用 web 的 Lua 垫片重解整张图
+        # （全草图的 36 个内部格必须读到 0b1111+条目 18，证明它真在读邻居）。
+        "jhyt_m72_autotile_mask"
+        # M72-02 per-tile tint 门：tint 表幂等（同色复用一个 id）、未染色格 `tint_at` 读回白、
+        # 稀疏载荷 `tints=<cellIndex>:<tintId>` + `tints_rgb` 序列化往返逐格同色；overlay 与
+        # 世界深度**两条通道**各 6 个顶点都带上那格的颜色；alpha 原样进第 4 分量；`clear_tint`
+        # 当帧回白且其他格颜色不动、组件侧 `tilemap.tint` 与顶点色同一份。反面对照：把渲染侧
+        # 的 tint 改回硬编码白，"非白格数 = 染色格数"这条正好红（实测 0）；只改世界通道那一处时
+        # §② 仍绿、§③ 红 —— 两个赋值点各自被看着。
+        "jhyt_m72_tile_tint"
         # M72-03 像素中文字模门：① 工程子集与全量上游字体同判 12px 点阵（`raster_scale=12`），
         # Noto 判不出来，且图集与矢量缓存两处判定一致（`should_render_vector` 读的就是后者）；
         # ② 真跑一帧 jhyt 场景：UI 字形四边形全落 sdf=2 阈值档、矢量通道顶点数必须 0（这条就是

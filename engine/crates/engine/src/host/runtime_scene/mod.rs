@@ -521,7 +521,20 @@ fn load_runtime_scene(project_root: Option<&Path>) -> Scene {
     project_root
         .and_then(|root| {
             let scene_path = startup_scene_path(root);
-            Scene::load(root.join(scene_path)).ok()
+            let full = root.join(scene_path);
+            // 先走文件系统（桌面工程/发布包解包目录的常规路径，语义一个字都不改）。
+            Scene::load(&full)
+                .or_else(|error| {
+                    // 没有 `std::fs` 的宿主（web / 微信小游戏）：场景字节在宿主的资源表里，
+                    // 经 `vfs` provider 取。**这不是"第二条解析实现"**——同样落在
+                    // `Scene::from_packed_bytes` → `from_text`，所以两条路读出来的场景一致。
+                    // 失败时保留**第一次**的错误（它才是"文件到底在不在"的答案）。
+                    match crate::core::vfs::read(&full) {
+                        Ok(bytes) => Scene::from_packed_bytes(&full, &bytes),
+                        Err(_) => Err(error),
+                    }
+                })
+                .ok()
         })
         // Standalone engine mode uses this engine-owned diagnostic scene and never
         // probes the current directory for game files.
@@ -542,7 +555,10 @@ fn load_runtime_scene(project_root: Option<&Path>) -> Scene {
                 .get_mut(&SceneEntityId(1))
                 .unwrap()
                 .components
-                .insert("Sprite".into(), "assets/textures/red-1x1.png".into());
+                .insert(
+                    "Sprite".into(),
+                    "texture=assets/textures/red-1x1.png".into(),
+                );
             scene
         })
 }

@@ -7,6 +7,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# 时钟：wasm 上 std 的 Instant::now() 是 panic 路径；web-time 在 wasm 走 performance.now()、原生就是 std。
+web-time = "1"
 thiserror.workspace = true
 serde_json = "1"
 rustlua-math = { path = "../rustlua-math" }

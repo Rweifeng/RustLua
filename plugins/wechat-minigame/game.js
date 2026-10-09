@@ -9,8 +9,9 @@
 //
 // WP10 迁移（fengari → mlua-wasm）：Lua 执行层在 wasm 侧 mlua（LuaRuntime 桥），
 // pkg/fengari-web.js 已从发布包移除；Lua 交互经 __RUSTLUA_LUA_BRIDGE（lua_boot /
-// lua_do_string / lua_call_global / lua_register_js_callback / lua_missing_globals /
-// lua_execute_main）完成。
+// lua_do_string / lua_set_number / lua_call_global / lua_call_global_void /
+// lua_input_frame / input_frame_layout_json / lua_register_js_callback /
+// lua_missing_globals / lua_execute_main）完成。
 //
 // 注意：`web-runtime.js` 与 webgl 发布**是同一份文件**（由 scripts/package.ps1 从
 // plugins/webgl/ 复制），因此两个平台的游戏逻辑不会各自漂移。

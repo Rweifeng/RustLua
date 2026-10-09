@@ -74,8 +74,9 @@ function runBridge() {
 
   // 3. 新增导出存在（lib.rs 风险点：此前"新增导出"在 no-modules 下静默 undefined）
   const names = Object.keys(glue).filter(n => n.indexOf('__') !== 0).sort();
-  const bridgeNames = ['lua_boot', 'lua_boot_with_reader', 'lua_do_string', 'lua_call_global',
-    'lua_register_js_callback', 'lua_missing_globals', 'lua_execute_main',
+  const bridgeNames = ['lua_boot', 'lua_boot_with_reader', 'lua_do_string', 'lua_set_number',
+    'lua_input_frame', 'input_frame_layout_json',
+    'lua_call_global', 'lua_call_global_void', 'lua_register_js_callback', 'lua_missing_globals', 'lua_execute_main',
     'lua_api_surface_json', 'host_api_module_names_json', 'start', 'start_wechat'];
   for (const n of bridgeNames) {
     assert(typeof glue[n] === 'function', `export ${n} is callable`);

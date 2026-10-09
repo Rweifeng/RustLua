@@ -72,6 +72,31 @@ pub(super) fn entity_from_lua(value: i64) -> Result<EntityId, mlua::Error> {
     Ok(EntityId::from_raw(index, generation))
 }
 
+/// 宽容版解码：**不是句柄形态**的整数返回 `None`，而不是报错。
+///
+/// 只给"谓词/查询"用（`entity.is_alive`、`entity.persist_id`）。为什么必须宽容：
+/// 实体 id 会被工程**存进自己的数据**（`map.state("buildings")` 里的 `rec.entity` → 随存档落盘），
+/// 而 web 旧运行时的实体 id 是 `1, 2, 3…` 这种小整数（它的 Lua 预置表自己发号，
+/// `web-runtime.js:2027`）。玩家带着旧运行时的存档进来时，`is_alive(1)` 若抛错，工程里遍地是
+/// `if rec.entity and entity.is_alive(rec.entity) then` 的写法 ⇒ 脚本当场报错、建筑与地块的
+/// 实体链接全部恢复失败。返回 `false` 则退化成"这个实体不在了"，工程走它既有的重建分支——
+/// 与旧运行时语义一致（旧运行时的 `is_alive` 对未知 id 就是 `false`）。
+///
+/// **不要**拿它做写操作的前置解码：`transform.set` 之类必须继续用严格版
+/// （改动一个不存在的实体是 bug，要当场报出来）。
+#[must_use]
+pub(super) fn entity_from_lua_lenient(value: i64) -> Option<EntityId> {
+    if value < 0 {
+        return None;
+    }
+    let raw = value as u64;
+    let generation = raw as u32;
+    if generation == 0 {
+        return None;
+    }
+    Some(EntityId::from_raw((raw >> 32) as u32, generation))
+}
+
 /// Lua 侧实体 id 的编码（`index << 32 | generation`）。
 ///
 /// 宿主在需要把一个实体交给 Lua（生成脚本、注入参数、测试对拍）时必须用同一份编码；

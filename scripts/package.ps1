@@ -17,6 +17,11 @@ param(
     # M20-03: reuse existing release binaries (skip cargo builds) so repeated
     # publishes are fast and the staging/swap/rollback flow can be verified.
     [switch]$SkipBuild,
+    # M73-00 WP5 第五片：web 产物带上 GPU 渲染路径（`game_web --features gpu2d`，
+    # 含 wgpu 的 WebGL2 后端）。**默认关**：它会让每个 web 产物都背上这段代码
+    # （体积账见 engine/Cargo.toml 的 webgl 段），而运行时还要页面上带
+    # `?rustlua-gpu=1` 才会真的走 GPU——默认仍是既有 Canvas2D 路径。
+    [switch]$Gpu2d,
     # 微信小游戏：资源远端回落基址（包内读不到时才用）。留空 = 纯包内，不落配置文件。
     # 例：-RemotePackBaseUrl http://127.0.0.1:8787/pack/（配 scripts/serve-pack.ps1 本地测试）
     [string]$RemotePackBaseUrl = "",
@@ -469,7 +474,12 @@ try {
         $savedEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
-            cargo $wasmToolchain build -p game_web --release --target wasm32-unknown-unknown -q 2>&1 | Out-Null
+            # M73-00 WP5 第五片：`-Gpu2d` 时才把 wgpu 的 GL 后端与 `game_web` 的 GPU 宿主编进产物。
+            # **默认关**：打开会让每个 web 产物都背上这段代码（体积账见 `engine/Cargo.toml`
+            # 的 webgl 段），而 GPU 路径目前只在页面 URL 带 `?rustlua-gpu=1` 时才启用。
+            $wasmFeatures = @()
+            if ($Gpu2d) { $wasmFeatures = @("--features", "gpu2d") }
+            cargo $wasmToolchain build -p game_web --release --target wasm32-unknown-unknown @wasmFeatures -q 2>&1 | Out-Null
         }
         finally {
             $ErrorActionPreference = $savedEap
@@ -687,9 +697,18 @@ WASM build failed ($Platform)。
                 [System.IO.File]::WriteAllText($gluePath, $glueText, (New-Object System.Text.UTF8Encoding($false)))
                 Write-Host "==> Patched no-modules glue: wasm-bindgen call guard tolerates the stripped Global exports"
             }
+            elseif (-not $glueText.Contains('__instance_terminated')) {
+                # 形态变了：wasm-bindgen 0.2.129 在**纯 try_table**（rustc 1.88）产物上不再生成这段
+                # call guard——胶水根本不读 `__instance_terminated`，所以没有可补的东西。
+                # 依据（2026-10-08 实测）：`--target no-modules --no-typescript --remove-name-section`
+                # 的产物里 call_guard / __instance_terminated / WebAssembly.Tag 全是 0 处，
+                # 与**上一次成功打包**的发布产物（2026-09-30 的 launcher/pkg/game_web.js）形态一致。
+                # 注意区分"没有读"与"换了写法读"：下面 else 分支才是后者，仍然响亮失败。
+                Write-Host "==> Checked no-modules glue: no call guard present (glue reads no stripped Global), nothing to patch"
+            }
             else {
                 # 守卫换了写法同样响亮失败：静默放过等于微信包退回"装得进来、一调就死"。
-                throw "no-modules glue shape changed: '__wbg_terminated_addr ??= wasm.__instance_terminated.value' not found in $gluePath. 这句读取依赖 Global 导出，而下面的步骤会把它们全部剔掉（iOS）——请重新确认守卫要不要补、怎么补（见本文件注释）。"
+                throw "no-modules glue shape changed: '__wbg_terminated_addr ??= wasm.__instance_terminated.value' not found in $gluePath，但胶水**确实引用了** __instance_terminated。这句读取依赖 Global 导出，而下面的步骤会把它们全部剔掉（iOS）——请重新确认守卫要不要补、怎么补（见本文件注释）。"
             }
             # 微信的 WXWebAssembly 没有 WebAssembly.Tag / WebAssembly.Exception 构造器，
             # wasm-bindgen 0.2 的胶水会在**求值期** `new WebAssembly.Tag(...)`，导致 require 即崩。

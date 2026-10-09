@@ -9,7 +9,6 @@
 use crate::core::font::{FontAtlas, FontVectorAtlas, project_font};
 use crate::host::frame::FontHandle;
 use std::{
-    fs,
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -19,15 +18,26 @@ pub fn load_project_vector_atlas(
     project_root: Option<&Path>,
 ) -> Option<Arc<Mutex<FontVectorAtlas>>> {
     let root = project_root?;
-    let primary = fs::read(root.join(project_font::primary_path(root))).ok()?;
-    let primary = crate::core::pack::decode(&primary).ok()?;
-    let fallback = project_font::fallback_path(root).and_then(|path| {
-        let bytes = fs::read(root.join(path)).ok()?;
-        crate::core::pack::decode(&bytes).ok()
-    });
+    let primary = read_project_bytes(&root.join(project_font::primary_path(root)))?;
+    let fallback =
+        project_font::fallback_path(root).and_then(|path| read_project_bytes(&root.join(path)));
     FontVectorAtlas::load_with_fallback(&primary, fallback.as_deref())
         .ok()
         .map(|atlas| Arc::new(Mutex::new(atlas)))
+}
+
+/// 工程文件是否存在：走 `vfs::is_file`（provider 优先；桌面无 provider 时就是 `Path::is_file`）。
+fn project_file_exists(path: &Path) -> bool {
+    crate::core::vfs::is_file(path)
+}
+
+/// 读工程文件并解码：走 `vfs::read_resource`（**唯一资源加载通道**）。
+///
+/// 与 `rustlua-infra::project_config::read_text`、`rustlua-render::font::project_font::read_bytes`
+/// 共用同一条通道：provider 优先、桌面回落 `std::fs`，再统一解码。Web/微信上工程随宿主资源表走，
+/// `std::fs` 恒失败——没有这条通道，字体与配置都读不到。
+fn read_project_bytes(path: &Path) -> Option<Vec<u8>> {
+    crate::core::vfs::read_resource(path).ok()
 }
 
 /// 加载项目字体并包装为可跨运行时共享的图集（MSDF 字形按需生成，共享后只生成
@@ -35,23 +45,25 @@ pub fn load_project_vector_atlas(
 /// 缺省字重是 Regular（400）。
 pub fn load_project_font_atlas(project_root: Option<&Path>) -> Option<Arc<Mutex<FontAtlas>>> {
     let root = project_root?;
+    // 首帧文字的全部成本都在这一个函数里，所以按阶段计时（读数进 `tracing`，wasm 侧经
+    // `wasm_log` 落到控制台）：读盘/解包 → 建图集（解析字体）→ 预热（光栅化字符）。
+    // 三段的相对大小决定了下一步该优化谁——而不是猜。
+    let started = web_time::Instant::now();
     let primary_path = {
         let path = root.join(project_font::primary_path(root));
-        path.is_file().then_some(path)
+        project_file_exists(&path).then_some(path)
     }?;
-    let primary_bytes = fs::read(&primary_path).ok()?;
-    let primary_bytes = crate::core::pack::decode(&primary_bytes).ok()?;
+    let primary_bytes = read_project_bytes(&primary_path)?;
     // 可选后备字体（project.toml `font_fallback` 键），用于主字体缺失的字形。
     let fallback_bytes = project_font::fallback_path(root)
         .and_then(|font| {
             let path = root.join(font);
-            path.is_file().then_some(path)
+            project_file_exists(&path).then_some(path)
         })
-        .and_then(|path| {
-            let bytes = fs::read(&path).ok()?;
-            crate::core::pack::decode(&bytes).ok()
-        });
+        .and_then(|path| read_project_bytes(&path));
     let font_weight = project_font::weight(root);
+    let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let build_started = web_time::Instant::now();
     let mut atlas = match FontAtlas::load_with_fallback_and_weight(
         &primary_bytes,
         fallback_bytes.as_deref(),
@@ -63,10 +75,15 @@ pub fn load_project_font_atlas(project_root: Option<&Path>) -> Option<Arc<Mutex<
             return None;
         }
     };
+    let build_ms = build_started.elapsed().as_secs_f64() * 1000.0;
     tracing::info!(
         target: "render",
         path = %primary_path.display(),
         weight = font_weight,
+        decode_ms,
+        build_ms,
+        primary_bytes = primary_bytes.len(),
+        fallback_bytes = fallback_bytes.as_ref().map_or(0, Vec::len),
         "[render] font atlas ready"
     );
     // 首包预热：把打包时收集的字符清单（chars.txt）预生成进图集，首帧文字不卡。
@@ -77,16 +94,19 @@ pub fn load_project_font_atlas(project_root: Option<&Path>) -> Option<Arc<Mutex<
 /// 从项目根 `chars.txt`（打包时由 assetc 生成）读取字符并预热字形。
 /// MSDF 光栅化跨线程并行，debug 构建下显著加速（ui_demo 135 字从 ~2.3s 降到 ~0.3s）。
 fn prewarm_font_atlas(root: &Path, atlas: &mut FontAtlas) {
-    let Ok(bytes) = fs::read(root.join("chars.txt")) else {
-        return;
-    };
-    let Ok(bytes) = crate::core::pack::decode(&bytes) else {
+    let Some(bytes) = read_project_bytes(&root.join("chars.txt")) else {
         return;
     };
     let text = String::from_utf8_lossy(&bytes);
+    let started = web_time::Instant::now();
     let count = atlas.prewarm(text.chars());
     if count > 0 {
-        tracing::info!(target: "render", count, "[render] font prewarmed {count} chars");
+        tracing::info!(
+            target: "render",
+            count,
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            "[render] font prewarmed {count} chars"
+        );
     }
 }
 
@@ -98,12 +118,9 @@ pub fn load_custom_vector_atlas(
     if font_asset.trim().is_empty() {
         return None;
     }
-    let bytes = fs::read(root.join(font_asset)).ok()?;
-    let bytes = crate::core::pack::decode(&bytes).ok()?;
-    let fallback = project_font::fallback_path(root).and_then(|path| {
-        let bytes = fs::read(root.join(path)).ok()?;
-        crate::core::pack::decode(&bytes).ok()
-    });
+    let bytes = read_project_bytes(&root.join(font_asset))?;
+    let fallback =
+        project_font::fallback_path(root).and_then(|path| read_project_bytes(&root.join(path)));
     FontVectorAtlas::load_with_fallback(&bytes, fallback.as_deref())
         .ok()
         .map(|atlas| Arc::new(Mutex::new(atlas)))
@@ -118,21 +135,17 @@ pub fn load_custom_font_atlas(project_root: Option<&Path>, font_asset: &str) -> 
         return None;
     }
     let path = root.join(font_asset);
-    if !path.is_file() {
+    if !project_file_exists(&path) {
         return None;
     }
-    let bytes = fs::read(&path).ok()?;
-    let bytes = crate::core::pack::decode(&bytes).ok()?;
+    let bytes = read_project_bytes(&path)?;
     // 与默认字体一致地附上项目后备字体，缺字时回退（如拉丁字体不含 CJK）。
     let fallback_bytes = project_font::fallback_path(root)
         .and_then(|font| {
             let path = root.join(font);
-            path.is_file().then_some(path)
+            project_file_exists(&path).then_some(path)
         })
-        .and_then(|path| {
-            let bytes = fs::read(&path).ok()?;
-            crate::core::pack::decode(&bytes).ok()
-        });
+        .and_then(|path| read_project_bytes(&path));
     let font_weight = project_font::weight(root);
     let atlas = match FontAtlas::load_with_fallback_and_weight(
         &bytes,

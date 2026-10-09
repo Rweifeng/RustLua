@@ -5,8 +5,13 @@ use std::{
     collections::{BinaryHeap, HashMap, HashSet},
     fmt,
     panic::{AssertUnwindSafe, catch_unwind},
-    time::{Duration, Instant},
+    time::Duration,
 };
+// 时钟必须走 `web-time`：`wasm32-unknown-unknown` 的 std 把 `Instant::now()` 实现成 panic
+// （`sys/pal/unsupported/time.rs`），而调度器**每步**都要给每个系统计时——wasm 上只要推进一帧就炸。
+// 原生上 `web-time::Instant` 就是 `std::time::Instant` 的再导出，零行为变化。
+// 渲染器（`host/renderer/passes.rs`）与手柄层（`host/gamepad.rs`）已按同一写法改过。
+use web_time::Instant;
 
 use crate::world::World;
 

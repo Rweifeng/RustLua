@@ -49,7 +49,7 @@ pub use rustlua_assets::{
 };
 
 // ── rustlua-audio ──
-pub use rustlua_audio::audio;
+pub use rustlua_audio::{audio, sink as audio_sink};
 
 // ── rustlua-input ──
 pub use rustlua_input::input;
@@ -63,7 +63,7 @@ pub use rustlua_scripting::script;
 // ── rustlua-infra ──
 pub use rustlua_infra::{
     editor_plugins, logging, par, paths, performance, preview_diagnostics, project_config,
-    time_step, user_dir, vfs, window,
+    save_slot, time_step, user_dir, vfs, window,
 };
 
 // ── infra convenience re-exports ──

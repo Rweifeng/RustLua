@@ -9,11 +9,27 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
+# WebGL2 的 GPU 渲染路径（`gpu_host`）：把引擎渲染器接到画布上。
+#
+# **默认关**，与 `engine/webgl` 同一口径：打开会把 wgpu 的 GL 后端编进发布产物
+# （`engine/Cargo.toml` 的 webgl 段记着 ≈+139 KB 起）。谁要它谁显式打开：
+# `scripts/package.ps1 -Gpu2d`（并把页面 URL 带上 `?rustlua-gpu=1`）。
+[features]
+gpu2d = ["dep:wgpu", "wgpu/webgl"]
+
 [dependencies]
 anyhow.workspace = true
 engine = { path = "../engine" }
+# 每帧输入线格式（`RLFI` 批量 ABI）：布局与键表只有这一份，JS 侧经
+# `input_frame_layout_json()` 取，避免两处各写一份偏移。
+rustlua-frame-abi.workspace = true
+# GPU 宿主解预加载资源里的贴图：`start()` 存的是**打包原始字节**，
+# 必须走与引擎同一套 `pack::decode`（见 `lua_bridge::first_png_resource`）。
+rustlua-infra.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# GPU 渲染器句柄。`optional` + `gpu2d` 特性：默认不进产物。
+wgpu = { version = "27", optional = true }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
@@ -23,12 +39,21 @@ web-sys = { version = "0.3", features = [
     "Document",
     "Element",
     "HtmlCanvasElement",
+    # 平台音频出口：浏览器侧用 `document.createElement('audio')` 播放。
+    "HtmlAudioElement",
+    # GPU 路径要自己造一张画布并贴样式（`gpu_host::create_gpu_canvas`）：
+    # 一张 canvas 只能有一个上下文，2D 运行时已经拿走了游戏画布。
+    "HtmlElement",
+    "Node",
+    "Location",
     "Request",
     "RequestInit",
     "RequestMode",
     "Response",
     "WebGl2RenderingContext",
     "Window",
+    # 平台存档槽：`localStorage`（微信侧由 wechat-adapter 映射到 wx 存储）。
+    "Storage",
     "console",
 ] }
 # wasm Lua 桥（lua_bridge.rs）直接使用 mlua 类型：必须与 engine 同一 feature 集，
@@ -36,3 +61,8 @@ web-sys = { version = "0.3", features = [
 mlua = { version = "0.11", features = ["lua54", "vendored"] }
 # wasm Lua 桥的 JSON 参数/返回值编解码（lua_bridge.rs）。
 serde_json = "1"
+# wasm 侧的 `tracing` 出口（`wasm_log`）：引擎的字体/资源/渲染诊断全走 `tracing`，
+# 宿主此前没装订阅者，那些行在浏览器里被静默丢掉——上一轮排查字体时只能靠 DOM 属性反推。
+tracing.workspace = true
+# 宿主自己的计时（启动耗时、首步耗时）：wasm 上 `std::time::Instant::now()` 是 panic 路径。
+web-time = "1"

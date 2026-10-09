@@ -8,7 +8,7 @@
 
 ## `shop.price(name: String, item_id: String)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/inventory.rs:412`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/inventory.rs:422`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -19,7 +19,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `shop.set_catalog(name: String, spec: Value)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/inventory.rs:403`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/inventory.rs:413`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 

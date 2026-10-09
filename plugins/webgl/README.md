@@ -58,7 +58,24 @@ wasm 核心之前的历史产物挡在发现之外，否则一个「index.html �
 
 ## 画面自检
 
-`verify-webgl-bundle.ps1` 除了断言 `data-rustlua-boot`，还读取运行时写入的画布采样：
+`verify-webgl-bundle.ps1` 除了断言 `data-rustlua-boot`，还读取运行时写入的画布采样。
+
+**这些读数默认不写**（`web-runtime.js` 的 `DIAGNOSTICS_ON`）：它们要么是全画布 `getImageData`
+（一次 GPU 同步读回 + `width×height×4` 临时内存），要么每帧两次跨 wasm 边界的 Lua 调用，
+而发布包里没有任何消费方。要读就先打开诊断：
+
+- URL 加 `?rustlua-diagnostics=1`，或设置 `window.__RUSTLUA_DIAGNOSTICS = true`（`__RUSTLUA_DEBUG` 同样认）；
+- 两个验收入口（`verify-webgl-bundle.ps1`、微信 harness）**已显式打开**，所以照常跑门即可；
+- 例外：`data-rustlua-timing`（`steps=`/`dropped=`/`acc=`）**常驻**——三个数字、无跨界调用，
+  而"刷新率无关性"要在真机上不开任何开关就能自证。
+- 同样**常驻**的还有 `data-rustlua-input`（`frames=`/`bits=`/`unmapped=`）：每帧输入走的是
+  `RLFI` 批量二进制（一次跨界、原地改常驻表），这三个数都是 JS 侧计数器、不额外跨界，
+  却是"输入协议真的在落地"的唯一免开关读数：
+  `bits` 恒为 0 说明宿主与 wasm 对"这一帧该变哪些位"理解不一致；
+  `unmapped` 列出行不进线路键表的键名（`unmapped=0` 才说明宿主送来的键名线路表全认得）——
+  "某个键按了没反应"因此能一眼分辨是"宿主没送到"还是"线格式不认这个名"。
+
+打开后可见的读数：
 
 - `data-rustlua-drawn`：非背景色采样点数量。`-1` 表示像素不可读，`0` 表示"启动了但黑屏"（判定失败）。
 - `data-rustlua-ui-elements` / `data-rustlua-ui-summary`：当前帧由 Lua `ui.*` 绘制的元素数量与 id 摘要。

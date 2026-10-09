@@ -20,6 +20,10 @@ rustlua-animation = { path = "../rustlua-animation" }
 rustlua-render = { path = "../rustlua-render" }
 rustlua-physics = { path = "../rustlua-physics" }
 rustlua-ui = { path = "../rustlua-ui" }
+# 时钟：wasm32-unknown-unknown 上 `std::time::Instant::now()` 是 panic 路径（与 ecs/infra、gamepad
+# 同一颗雷）；`web-time` 在原生上就是它的再导出，零行为变化。
+# 用途：`ui.measure_text` 首次调用要读 + 解析工程字体，那一段耗时必须能量出来。
+web-time = "1"
 rustlua-assets = { path = "../rustlua-assets" }
 rustlua-audio = { path = "../rustlua-audio" }
 rustlua-input = { path = "../rustlua-input" }

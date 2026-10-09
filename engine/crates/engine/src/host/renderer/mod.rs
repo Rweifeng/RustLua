@@ -368,6 +368,14 @@ pub struct Renderer {
     vector_segment_cache: Vec<u8>,
     vector_glyph_hash: u64,
     vector_segment_hash: u64,
+    /// 设备**有没有存储缓冲**（WebGL2 上是 0）。构造期由 `device.limits()` 定下，之后不变。
+    ///
+    /// 为什么要有这个字段：`construct.rs` 里三处存储缓冲（矢量文字的两个绑定、3D 材质的实例
+    /// 矩阵、实例环）在 `max_storage_buffers_per_shader_stage = 0` 的设备上**建不出来**，
+    /// 而校验错误在 wasm 上会把进程 abort。所以按能力决定"建什么"，并把结论留在这里给渲染侧用：
+    /// `passes.rs` 据此**不声明**矢量文字与 3D 两个通道（计划里就没有，就不会绑到占位管线），
+    /// 同时把丢弃的 draw 记进 `dropped_draws`——少画东西而日志里一个字都没有，是本仓最不接受的失败。
+    storage_capable: bool,
     font_atlas_uploaded_version: u64,
     font_atlas_uploaded_hash: u64,
     /// Per-Text custom font atlases uploaded on demand (key = `font://...` id).

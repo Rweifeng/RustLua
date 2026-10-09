@@ -175,3 +175,102 @@ fn lua_quad_round_trips_and_validates() {
     assert_eq!(runtime.call_update().unwrap(), "ok");
     let _ = fs::remove_file(path);
 }
+
+/// WP6-09：实体句柄的**跨运行时歧义**，以及谓词对**退化值**的边界语义。
+///
+/// 背景：`entity`/`transform` 这套在 web 旧运行时里是它自己用 Lua 预置表实现的
+/// （`web-runtime.js:2040-2098`），旧运行时的实体 id 是**从 1 开始的小整数**
+/// （`web-runtime.js:2027`）；而工程的持久化写法是 `map.state("buildings")` 里存 `rec.entity`
+/// （`building.lua:265`）、读档时 `if rec.entity and entity.is_alive(rec.entity) then`
+/// （`building.lua:244/255`）。引擎的句柄是 `index << 32 | generation` 且
+/// `INITIAL_GENERATION = 1` ⇒ **引擎自己第一个实体就是 id 1**，与外来小整数逐位重合、无法区分。
+///
+/// 这条钉住两件**实测**得到的事实（都不是推断——第一版断言"小整数会抛错"就是错的，
+/// 是浏览器里的真工程世界把它否证掉的）：
+/// ① **退化值**（`generation == 0` 的 `0` / `2^32`、负数）在**查询**里只能是 `false`/`nil`：
+///    它们不是任何实体的句柄，以前会抛 `invalid entity id`，把"没有实体"变成脚本崩溃
+///    （存档里的哨兵值 `0` / `-1` 就会踩到）；
+/// ② **写**操作对同样的值继续报错——改动一个不存在的实体是 bug，必须当场报出来。
+#[test]
+fn entity_predicates_return_false_for_degenerate_handles_but_writers_still_error() {
+    let mut runtime = LuaRuntime::new().unwrap();
+    assert_eq!(
+        runtime
+            .execute_console("return tostring(entity.is_alive(0))")
+            .unwrap(),
+        "false"
+    );
+    assert_eq!(
+        runtime
+            .execute_console("return tostring(entity.is_alive(4294967296))")
+            .unwrap(),
+        "false",
+        "高位为 0 的 2^32 是 generation == 0 的退化句柄"
+    );
+    assert_eq!(
+        runtime
+            .execute_console("return tostring(entity.is_alive(-1))")
+            .unwrap(),
+        "false"
+    );
+    assert_eq!(
+        runtime
+            .execute_console("return tostring(entity.persist_id(0))")
+            .unwrap(),
+        "nil"
+    );
+    let error = runtime
+        .execute_console("transform.set(0, 0, 0)")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("invalid entity id"),
+        "写操作必须仍然报错，实际：{error}"
+    );
+}
+
+/// ① 与旧运行时的**歧义**：引擎首个实体的 Lua 句柄就是 `1`，于是旧存档里的 `1` 会**指向它**
+/// （而旧运行时里那个 `1` 很可能是另一个实体）。这不是本片能修的——除非改句柄编码，
+/// 而那会破坏现有 Rust 侧存档里已经写下的句柄——所以本片只把它**变得可见、可断言**，
+/// 并作为"退休 JS 世界"要单独决策的一项记录在计划里（旧档里的实体引用要么迁移、
+/// 要么工程改用 `persist_id` 字符串引用）。
+#[test]
+fn first_entity_handle_collides_with_foreign_small_ids() {
+    let mut runtime = LuaRuntime::new().unwrap();
+    let report = runtime
+        .execute_console(
+            "local id = entity.spawn('First')\n\
+             return tostring(id) .. '/' .. tostring(entity.is_alive(id)) .. '/' .. tostring(entity.is_alive(1))",
+        )
+        .unwrap();
+    assert_eq!(
+        report, "1/true/true",
+        "首个实体的句柄是 1：外来小整数 id 与它无法区分（旧存档的实体引用因此可能指向别的实体）"
+    );
+}
+
+/// 同名 API 的往返语义（工程 `npc.lua` / `enemy.lua` / `effects.lua` 走的正是这条路）：
+/// `spawn(name, persist_id)` → `find` / `find_id` / `persist_id` → `destroy` 之后三者全部失效；
+/// 重复注册 `persist_id` 要报错（旧运行时同一条规则：`persist_id already in use`）。
+#[test]
+fn entity_lifecycle_matches_the_web_prelude_round_trip() {
+    let mut runtime = LuaRuntime::new().unwrap();
+    let report = runtime
+        .execute_console(
+            "local id = entity.spawn('Npc', 'npc_1')\n\
+             local same = entity.find('Npc') == id and entity.find_id('npc_1') == id\n\
+             local named = entity.persist_id(id) == 'npc_1'\n\
+             local alive = entity.is_alive(id)\n\
+             entity.destroy(id)\n\
+             local gone = (not entity.is_alive(id)) and entity.find('Npc') == nil and entity.find_id('npc_1') == nil\n\
+             return table.concat({ tostring(same), tostring(named), tostring(alive), tostring(gone) }, '/')",
+        )
+        .unwrap();
+    assert_eq!(report, "true/true/true/true");
+
+    let error = runtime
+        .execute_console("local a = entity.spawn(nil, 'dup')\nlocal b = entity.spawn(nil, 'dup')")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("persist_id already in use"), "实际：{error}");
+}

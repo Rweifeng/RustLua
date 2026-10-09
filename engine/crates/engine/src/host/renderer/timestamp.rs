@@ -6,6 +6,7 @@
 //! 模块即可，字段一个都不用动。
 
 use super::Renderer;
+use web_time::Instant;
 
 /// One asynchronous whole-frame GPU timestamp readback.
 pub(super) struct TimestampSlot {
@@ -142,12 +143,12 @@ impl Renderer {
         if self.timestamp_state != GpuTimestampState::Ready {
             return None;
         }
-        let deadline = std::time::Instant::now() + timeout;
+        let deadline = Instant::now() + timeout;
         loop {
             if let Some(value) = self.poll_gpu_timestamp() {
                 return Some(value);
             }
-            if std::time::Instant::now() >= deadline {
+            if Instant::now() >= deadline {
                 return None;
             }
             let _ = self.device.poll(wgpu::PollType::Wait {

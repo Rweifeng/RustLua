@@ -21,9 +21,11 @@ use wgpu::DeviceDescriptor;
 mod capacity_and_caches;
 mod depth_and_frame_views;
 mod offscreen_and_tetris;
+mod overlay_batching;
 mod passes;
 mod readback;
 mod render_metrics;
+mod texture_upload;
 mod world_sprite;
 
 /// GPU 用例在**没有适配器**时的显式跳过。原来这里写的是裸 `return;` 加一句 `// no GPU available; skip` 注释。

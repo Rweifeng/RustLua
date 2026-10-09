@@ -17,6 +17,9 @@ pub mod runtime_scene;
 #[cfg(test)]
 mod sample_project;
 pub mod shader;
+/// wasm 上"从画布建 `wgpu::Surface`"的唯一实现（web 宿主与探针共用，见模块注释）。
+#[cfg(target_arch = "wasm32")]
+pub mod web_surface;
 
 pub use frame::{
     BoundsSource, OverlayVertex, Scene3d, Scene3dBounds, Scene3dDrawable, SceneDraw, SceneMesh,

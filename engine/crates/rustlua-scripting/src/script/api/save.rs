@@ -110,7 +110,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             };
             let path = save_path_for_slot(&path, state.save.slot.as_deref());
             let text = encode_save(&state.save.data);
-            let result = atomic_write(&path, &text);
+            let result = store_save(&path, state.save.slot.as_deref(), &text);
             match &result {
                 Ok(()) => tracing::info!(target: "save", path = %path.display(), "[save] committed"),
                 Err(error) => {
@@ -136,7 +136,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 ));
             };
             let path = save_path_for_slot(&path, slot.as_deref());
-            let Ok(text) = std::fs::read_to_string(&path) else {
+            let Ok(text) = load_save(&path, slot.as_deref()) else {
                 // 还没有存档不是错误；但必须与「存档已损坏」区分开，否则玩家与
                 // 诊断面板无法判断进度是真的没了还是从没存过。
                 return Ok((
@@ -165,4 +165,27 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     lua.globals().set("save", save)?;
 
     Ok(())
+}
+
+/// 存档落盘：**装了平台槽就走槽**，否则走文件系统。
+///
+/// 为什么必须分叉：wasm 上没有可写的 `std::fs`，`atomic_write` 在那里必然失败——于是
+/// `save.commit()` 恒返回 `false`、玩家进度永远存不下来（web 的旧运行时里那段注释写的
+/// 就是这件事）。槽的键与旧运行时同一把（`rustlua:save[_<slot>]`，见
+/// [`rustlua_infra::save_slot::storage_key`]），所以切到这条通道之后**已有存档仍然读得到**。
+fn store_save(path: &std::path::Path, slot: Option<&str>, text: &str) -> Result<(), String> {
+    if rustlua_infra::save_slot::is_installed() {
+        return rustlua_infra::save_slot::write(&rustlua_infra::save_slot::storage_key(slot), text);
+    }
+    atomic_write(path, text).map_err(|error| error.to_string())
+}
+
+/// 存档读回：与 [`store_save`] 同一条分叉规则（`Err` 一律按"还没有存档"处理，与原来
+/// `read_to_string` 失败同语义）。
+fn load_save(path: &std::path::Path, slot: Option<&str>) -> Result<String, ()> {
+    if rustlua_infra::save_slot::is_installed() {
+        return rustlua_infra::save_slot::read(&rustlua_infra::save_slot::storage_key(slot))
+            .ok_or(());
+    }
+    std::fs::read_to_string(path).map_err(|_| ())
 }

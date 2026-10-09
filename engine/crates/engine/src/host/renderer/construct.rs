@@ -70,6 +70,30 @@ impl Renderer {
         ))
     }
 
+    /// [`Self::new_offscreen`] 的**异步**版本，供没有阻塞能力的宿主使用（web）。
+    ///
+    /// 为什么需要另开一个入口：`new_offscreen` 用 `pollster::block_on` 驱动，而
+    /// `wasm32-unknown-unknown` 上 `thread::park_timeout` 未实现——一旦 `new_async` 里
+    /// 任何一个 await 点没有在首次 poll 就绪，它就会 panic。浏览器里正确的形态是**由调用方
+    /// await**（wasm-bindgen 的 `async fn` 导出会变成 Promise，正好接上 JS 微任务）。
+    /// 原生侧行为一字不变：`new_offscreen` 仍是同一段 `new_async`，只是这里把等待方式交给调用方。
+    pub async fn new_offscreen_async(
+        device: Device,
+        queue: Queue,
+        project_root: Option<PathBuf>,
+        cull_enabled: bool,
+        instancing_enabled: bool,
+    ) -> anyhow::Result<Self> {
+        Self::new_async(
+            None,
+            Some((device, queue)),
+            project_root,
+            cull_enabled,
+            instancing_enabled,
+        )
+        .await
+    }
+
     async fn new_async(
         window: Option<Arc<Window>>,
         external_device: Option<(Device, Queue)>,
@@ -167,6 +191,27 @@ impl Renderer {
             };
             (device, queue, None, format, config, "offscreen".to_owned())
         };
+        // 设备有没有存储缓冲（WebGL2 / 任何 downlevel 设备上都是 0）。构造路径上有三处要用它：
+        // 矢量文字的两个绑定、3D 材质的实例矩阵、以及实例环。不该建的去建**不是**"功能少一点"，
+        // 而是在 `create_bind_group_layout` 上直接吃一条校验错误——wgpu 对未被 error scope 捕获的
+        // 校验错误走默认 handler，wasm 上是 `panic=abort`，整个渲染器就此死掉。
+        // 所以这里按**设备能力**（而不是按平台 `cfg`）分叉：原生桌面照旧，web 走"没有这两条路"的构造。
+        let storage_capable = device.limits().max_storage_buffers_per_shader_stage > 0;
+        let storage_usage = if storage_capable {
+            wgpu::BufferUsages::STORAGE
+        } else {
+            wgpu::BufferUsages::empty()
+        };
+        // 实例化本身也吃存储缓冲（逐实例模型矩阵），能力不足时把参数一并关掉：
+        // 这是"同一件事的两条实现里选不需要存储缓冲的那条"，不是少画。
+        let instancing_enabled = instancing_enabled && storage_capable;
+        if !storage_capable {
+            // 一次告警，而不是每帧：每帧的信号在 `dropped_draws` 上（少画东西而日志里一个字
+            // 都没有，是本仓最不能接受的失败类型）。
+            tracing::warn!(target: "game",
+                "设备没有存储缓冲（max_storage_buffers_per_shader_stage=0，WebGL2 即如此）：\
+                 矢量文字与 3D 网格/阴影两条路不构造，它们的 draw 会计入 dropped_draws");
+        }
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("rustlua-texture-bind-group-layout"),
@@ -365,31 +410,37 @@ impl Renderer {
             multiview: None,
             cache: None,
         });
+        // 矢量文字的两个绑定是**片元存储缓冲**，能力不足时这里就是空布局（合法），
+        // 对应的管线也换成占位管线（见下面 `vector_pipeline`）。
+        let mut vector_entries: Vec<wgpu::BindGroupLayoutEntry> = Vec::new();
+        if storage_capable {
+            vector_entries.extend([
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ]);
+        }
         let vector_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("rustlua-vector-text-bind-group-layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
+                entries: &vector_entries,
             });
         let vector_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("rustlua-vector-text-pipeline-layout"),
@@ -400,56 +451,60 @@ impl Renderer {
             label: Some("rustlua-vector-text-shader"),
             source: wgpu::ShaderSource::Wgsl(VECTOR_TEXT_SHADER.into()),
         });
-        let vector_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("rustlua-vector-text-pipeline"),
-            layout: Some(&vector_layout),
-            vertex: wgpu::VertexState {
-                module: &vector_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<VectorTextVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 0,
-                            shader_location: 0,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 8,
-                            shader_location: 1,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Uint32,
-                            offset: 16,
-                            shader_location: 2,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x4,
-                            offset: 20,
-                            shader_location: 3,
-                        },
-                    ],
-                }],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &vector_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            multiview: None,
-            cache: None,
-        });
+        let vector_pipeline = if storage_capable {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("rustlua-vector-text-pipeline"),
+                layout: Some(&vector_layout),
+                vertex: wgpu::VertexState {
+                    module: &vector_shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<VectorTextVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x2,
+                                offset: 0,
+                                shader_location: 0,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x2,
+                                offset: 8,
+                                shader_location: 1,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Uint32,
+                                offset: 16,
+                                shader_location: 2,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x4,
+                                offset: 20,
+                                shader_location: 3,
+                            },
+                        ],
+                    }],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &vector_shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                multiview: None,
+                cache: None,
+            })
+        } else {
+            placeholder_pipeline(&device, format, "rustlua-vector-text-placeholder-pipeline")
+        };
         let vector_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("rustlua-vector-text-vertex-buffer"),
             size: 1024 * 1024,
@@ -459,13 +514,13 @@ impl Renderer {
         let vector_glyph_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("rustlua-vector-text-glyph-buffer"),
             size: 64 * 1024,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: storage_usage | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let vector_segment_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("rustlua-vector-text-segment-buffer"),
             size: 1024 * 1024,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: storage_usage | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -474,59 +529,67 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // 材质布局 5 个绑定里有 1 个是**存储缓冲**（`binding 2` = 逐实例模型矩阵，给实例化用）。
+        // 能力不足时不放它：布局本身仍然合法（原生那条路完全不变），而依赖它的管线会走占位
+        // （见下面的 `mesh_pipeline` / `shadow_pipeline`），3D 通道在 `passes.rs` 里也不再声明。
+        let mut material_entries: Vec<wgpu::BindGroupLayoutEntry> = vec![
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(32),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(
+                        (crate::core::mesh3d::MAX_BONES * 64) as u64,
+                    ),
+                },
+                count: None,
+            },
+        ];
+        if storage_capable {
+            material_entries.push(wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(64),
+                },
+                count: None,
+            });
+        }
+        material_entries.extend([
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ]);
         let material_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("rustlua-material3d-bind-group-layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(32),
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(
-                                (crate::core::mesh3d::MAX_BONES * 64) as u64,
-                            ),
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(64),
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
+                entries: &material_entries,
             });
         // 首帧 uniform 的初值：相机矩阵按**目标视口**算（宽高比只从视口来，拆分批 7）。
         let initial_viewport = Viewport::new(config.width as f32, config.height as f32)?;
@@ -594,7 +657,7 @@ impl Renderer {
         let instance_arena = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("rustlua-instance-models-frame-arena"),
             size: FRAME_ARENA_INITIAL_BYTES,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: storage_usage | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let albedo_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -695,67 +758,74 @@ impl Renderer {
             bind_group_layouts: &[&camera_bind_group_layout, &material_bind_group_layout],
             push_constant_ranges: &[],
         });
-        let mesh_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("rustlua-mesh3d-pipeline"),
-            layout: Some(&mesh_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &mesh_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<crate::core::mesh3d::MeshVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x3,
-                            offset: 0,
-                            shader_location: 0,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x3,
-                            offset: 12,
-                            shader_location: 1,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 24,
-                            shader_location: 2,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Uint32x4,
-                            offset: 32,
-                            shader_location: 3,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x4,
-                            offset: 48,
-                            shader_location: 4,
-                        },
-                    ],
-                }],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &mesh_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: Some(depth_stencil_state(
-                DepthPass::Mesh3d,
-                wgpu::DepthBiasState::default(),
-            )),
-            multisample: Default::default(),
-            multiview: None,
-            cache: None,
-        });
+        let mesh_pipeline = if storage_capable {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("rustlua-mesh3d-pipeline"),
+                layout: Some(&mesh_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &mesh_shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<crate::core::mesh3d::MeshVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 0,
+                                shader_location: 0,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 12,
+                                shader_location: 1,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x2,
+                                offset: 24,
+                                shader_location: 2,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Uint32x4,
+                                offset: 32,
+                                shader_location: 3,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x4,
+                                offset: 48,
+                                shader_location: 4,
+                            },
+                        ],
+                    }],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &mesh_shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: Some(depth_stencil_state(
+                    DepthPass::Mesh3d,
+                    wgpu::DepthBiasState::default(),
+                )),
+                multisample: Default::default(),
+                multiview: None,
+                cache: None,
+            })
+        } else {
+            // 3D 网格管线的着色器无条件声明了 `instance_models` 存储绑定，而布局在能力不足时
+            // 不含它 ⇒ 真管线建不出来（校验错误）。占位管线永远不该被绑定：
+            // `passes.rs` 在能力不足时不声明 3D 通道，并把丢弃的 draw 记进 `dropped_draws`。
+            placeholder_pipeline(&device, format, "rustlua-mesh3d-placeholder-pipeline")
+        };
         let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rustlua-shadow-shader"),
             source: wgpu::ShaderSource::Wgsl(SHADOW_SHADER.into()),
@@ -766,62 +836,67 @@ impl Renderer {
                 bind_group_layouts: &[&shadow_bind_group_layout, &material_bind_group_layout],
                 push_constant_ranges: &[],
             });
-        let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("rustlua-shadow-pipeline"),
-            layout: Some(&shadow_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shadow_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<crate::core::mesh3d::MeshVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x3,
-                            offset: 0,
-                            shader_location: 0,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x3,
-                            offset: 12,
-                            shader_location: 1,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 24,
-                            shader_location: 2,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Uint32x4,
-                            offset: 32,
-                            shader_location: 3,
-                        },
-                        wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x4,
-                            offset: 48,
-                            shader_location: 4,
-                        },
-                    ],
-                }],
-            },
-            fragment: None,
-            primitive: wgpu::PrimitiveState {
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: Some(depth_stencil_state(
-                DepthPass::Shadow,
-                wgpu::DepthBiasState {
-                    constant: 2,
-                    slope_scale: 2.0,
-                    clamp: 0.0,
+        let shadow_pipeline = if storage_capable {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("rustlua-shadow-pipeline"),
+                layout: Some(&shadow_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shadow_shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<crate::core::mesh3d::MeshVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 0,
+                                shader_location: 0,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x3,
+                                offset: 12,
+                                shader_location: 1,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x2,
+                                offset: 24,
+                                shader_location: 2,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Uint32x4,
+                                offset: 32,
+                                shader_location: 3,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x4,
+                                offset: 48,
+                                shader_location: 4,
+                            },
+                        ],
+                    }],
                 },
-            )),
-            multisample: Default::default(),
-            multiview: None,
-            cache: None,
-        });
+                fragment: None,
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: Some(depth_stencil_state(
+                    DepthPass::Shadow,
+                    wgpu::DepthBiasState {
+                        constant: 2,
+                        slope_scale: 2.0,
+                        clamp: 0.0,
+                    },
+                )),
+                multisample: Default::default(),
+                multiview: None,
+                cache: None,
+            })
+        } else {
+            // 见 `mesh_pipeline`：阴影着色器同样声明了实例矩阵存储绑定，能力不足时走占位。
+            placeholder_pipeline(&device, format, "rustlua-shadow-placeholder-pipeline")
+        };
         let depth_view = Self::create_depth_view(&device, config.width, config.height);
         let depth_init = (config.width, config.height);
         let timestamp_enabled = device.features().contains(
@@ -1070,6 +1145,7 @@ impl Renderer {
             vector_segment_cache: Vec::new(),
             vector_glyph_hash: 0,
             vector_segment_hash: 0,
+            storage_capable,
             font_atlas_uploaded_version: u64::MAX,
             font_atlas_uploaded_hash: 0,
             custom_fonts: HashMap::new(),
@@ -1140,4 +1216,66 @@ impl Renderer {
             post_process_size: (0, 0),
         })
     }
+}
+
+/// 设备能力不足时给"吃存储缓冲"的管线槽位填一条**占位管线**（矢量文字 / 3D 网格 / 阴影）。
+///
+/// 为什么要占位而不是把字段改成 `Option`：那三个字段在 `passes.rs`、`gpu_texture.rs`、
+/// `arena.rs`、`world_sprite.rs` 和全部原生测试里被引用一百多次，`Option` 化会让整个渲染器
+/// 的签名扩散开，而收益只是"少画一条本来就不该画的路径"。占位管线是合法对象、几乎零成本，
+/// 而且**不可能**画出看起来对的东西：顶点着色器只吐一个退化点，片元写全 0（含 alpha），
+/// 即使被误绑也只是什么都没画。
+///
+/// 它永远不该被绑定——由 `passes.rs` 的 `storage_capable` 守卫保证（能力不足时计划里就没有
+/// 矢量文字与 3D 两个通道，同时把丢弃的 draw 记进 `dropped_draws`）。
+fn placeholder_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    label: &str,
+) -> wgpu::RenderPipeline {
+    const PLACEHOLDER_SHADER: &str = r#"
+@vertex
+fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+}
+"#;
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: wgpu::ShaderSource::Wgsl(PLACEHOLDER_SHADER.into()),
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some(label),
+        bind_group_layouts: &[],
+        push_constant_ranges: &[],
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: Default::default(),
+        multiview: None,
+        cache: None,
+    })
 }

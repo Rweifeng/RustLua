@@ -655,6 +655,18 @@ function loadWasmCore(options) {
       if (!first.summarized) attempts.push(first);
       return fallback().then(function (second) {
         if (!second.ok && !second.summarized) attempts.push(second);
+        // 兜底成功就是成功：曾经这里无条件返回 `{ failed: [first, second] }`，
+        // 于是"首选通道被拒、兜底通道装上"这个本该成功的组合仍报启动失败
+        // （下面的 `result.ok` 分支永远进不去）。首选通道的失败仍留在 attempts 里，
+        // 排查时不会丢证据——只是它不再决定成败。
+        if (second.ok) {
+          second.fallbackFrom = {
+            channel: first.channel || primaryChannel,
+            reason: first.reason,
+            detail: first.detail || '',
+          };
+          return second;
+        }
         return { failed: [first, second] };
       });
     })
@@ -664,6 +676,13 @@ function loadWasmCore(options) {
           + (result.path ? '，路径 ' + result.path : '')
           + (result.bytes ? '，' + result.bytes + ' 字节' : '')
           + '，导出 ' + result.exports.length + ' 项：' + result.exports.join(',') + '）');
+        // 兜底通道装上时，首选通道的拒绝原因必须留痕：它通常意味着宿主能力面与预期
+        // 不符（例如路径通道被拒），排查时这是最早的一个信号，不能因为"最后成功了"丢掉。
+        if (result.fallbackFrom) {
+          log('wasm-bridge: 首选通道 ' + result.fallbackFrom.channel + ' 被拒（'
+            + result.fallbackFrom.reason + '：' + result.fallbackFrom.detail + '），已由兜底通道 '
+            + result.channel + ' 装上');
+        }
         // host = 胶水函数（wasm-bindgen `--target no-modules` 的导出载体）：调用方可用
         // `new host.HostApi(name)` 实例化宿主桥挂到 `window.__RUSTLUA_HOST_API`（WP10 微信侧接线）。
         return {
@@ -673,6 +692,7 @@ function loadWasmCore(options) {
           path: result.path || null,
           exports: result.exports,
           bytes: result.bytes || null,
+          fallbackFrom: result.fallbackFrom || null,
           // 标准域名从哪来：转发了 WXWebAssembly 的哪些构造器，或宿主自己就有标准全局。
           facade: facade
             ? ('native=' + facade.native.join('+')

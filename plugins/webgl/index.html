@@ -50,7 +50,7 @@
   </script>
   <script src="./web-runtime.js"></script>
   <script type="module">
-    import init, { start, lua_boot, lua_do_string, lua_call_global, lua_register_js_callback, lua_missing_globals, lua_execute_main, lua_api_surface_json, host_api_module_names_json } from './pkg/game_web.js';
+    import init, { start, lua_boot, lua_do_string, lua_set_number, lua_input_frame, input_frame_layout_json, lua_call_global, lua_call_global_void, lua_register_js_callback, lua_missing_globals, lua_execute_main, lua_api_surface_json, host_api_module_names_json } from './pkg/game_web.js';
     const publishName = __PUBLISH_NAME_JSON__;
     const status = document.getElementById('status');
     const markBoot = (state, detail) => {
@@ -115,8 +115,16 @@
         // WP10 迁移（fengari → mlua-wasm）：wasm Lua 桥挂到全局，web-runtime.js 的
         // Lua 交互（建运行时/注入补丁/调全局/注册 JS 回调/查缺失全局）全部经它完成。
         // fengari-web.js 已从发布包移除。
+        // `lua_set_number`：逐帧写 `__rustlua_dt` 用（不编译 chunk）。**这份门面是显式白名单**，
+        // 与 plugins/wechat-minigame/wechat-adapter.js 里的那份必须同步：Rust 侧加了 wasm 导出
+        // 却漏了这里，运行时就拿到 undefined，表现为"启动即失败"。
+        // `lua_input_frame` / `input_frame_layout_json`：每帧输入批量线格式（`RLFI`）用，
+        // 取代"每帧拼一段 Lua 源码再编译"。
+        // `lua_call_global_void`：**无参无返回**的全局钩子（每步的虚拟键/边沿清理）用，
+        // 取代 `doString("__rustlua_apply_virtual_input()")` 那种"为调一个无参函数而编译源码"。
         window.__RUSTLUA_LUA_BRIDGE = {
-          lua_boot, lua_do_string, lua_call_global,
+          lua_boot, lua_do_string, lua_set_number, lua_call_global, lua_call_global_void,
+          lua_input_frame, input_frame_layout_json,
           lua_register_js_callback, lua_missing_globals, lua_execute_main,
           lua_api_surface_json, host_api_module_names_json
         };

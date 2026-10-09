@@ -216,6 +216,12 @@ impl AudioSystem {
     /// 返回 `Ok(())` 表示**播放请求已被接受**：无输出设备时静默降级（M19-02
     /// 策略，只记日志），不视为失败；只有缺文件/解码失败等才返回错误。
     pub fn play_on(&mut self, bus: AudioBus, name: &str) -> Result<(), AudioError> {
+        // 装了平台音频出口就**整段交给它**：wasm 上既没有可读文件系统也没有 cpal 设备，
+        // 下面那条"读字节 → 解码 → 送设备"的路在那里必然失败（见 `sink` 模块文档）。
+        // 平台自己知道怎么用 URL 加载（浏览器 `HTMLAudioElement` / 微信 `InnerAudioContext`）。
+        if crate::sink::is_installed() {
+            return self.play_via_sink(bus, name, false);
+        }
         let bytes = self.sound_bytes(name)?;
         let volume = self.effective_volume(bus);
         self.ensure_device()?;
@@ -244,6 +250,10 @@ impl AudioSystem {
     ///
     /// 与 [`Self::play_on`] 一致：无输出设备时静默降级（不报错），缺文件才失败。
     pub fn play_music(&mut self, name: &str) -> Result<(), AudioError> {
+        // 与 `play_on` 同一条分叉：装了平台出口就交给平台（它自己会循环）。
+        if crate::sink::is_installed() {
+            return self.play_via_sink(AudioBus::Bgm, name, true);
+        }
         let bytes = self.sound_bytes(name)?;
         self.ensure_device()?;
         // 停掉当前音乐再起新曲目。
@@ -264,6 +274,31 @@ impl AudioSystem {
         self.music_sink = Some(sink);
         tracing::info!(target: "audio", name, "[audio] music started (refill loop)");
         Ok(())
+    }
+
+    /// 把一次播放交给平台出口（[`crate::sink`]）。
+    ///
+    /// 失败一律记成 [`AudioError::Device`]：`play_on` 的既有契约里"设备/平台这类问题"就是它
+    /// （缺文件才是 `Io`）。这里刻意**不新增错误变体**——`AudioError` 是公开枚举，
+    /// 加变体等于改公共面，而这一层目前没有调用方需要区分"平台失败"与"设备失败"。
+    fn play_via_sink(
+        &mut self,
+        bus: AudioBus,
+        name: &str,
+        looping: bool,
+    ) -> Result<(), AudioError> {
+        let volume = self.effective_volume(bus);
+        let request = crate::sink::AudioRequest {
+            name,
+            bus,
+            volume,
+            asset_dir: self.asset_dir.as_deref(),
+            looping,
+        };
+        crate::sink::play(request).map_err(|error| {
+            tracing::warn!(target: "audio", name, bus = bus.key(), error = %error, "[audio] platform sink failed");
+            AudioError::Device(format!("platform audio sink: {error}"))
+        })
     }
 
     /// 曲尾续播钩子：宿主**每帧**调用一次。当前 BGM 自然播完（`Sink::empty`）后
@@ -298,6 +333,13 @@ impl AudioSystem {
 
     /// Stops any looping background music.
     pub fn stop_music(&mut self) {
+        // 装了平台出口就交给它：wasm 上 rodio 的 sink 根本不存在（`music_sink` 恒为 None），
+        // 于是切图时的 `audio.stop_music()` 会退化成 no-op —— 旧 BGM 继续响，比"没声音"更难查。
+        if crate::sink::is_installed() {
+            crate::sink::stop_music();
+            self.music_bytes = None;
+            return;
+        }
         self.music_bytes = None;
         if let Some(music) = self.music_sink.take() {
             music.stop();
@@ -306,6 +348,10 @@ impl AudioSystem {
     }
     /// Pauses the looping background music（编辑器暂停时调用；不释放 sink，恢复时继续）。
     pub fn pause_music(&self) {
+        if crate::sink::is_installed() {
+            crate::sink::pause_music();
+            return;
+        }
         if let Some(music) = self.music_sink.as_ref() {
             music.pause();
             tracing::debug!(target: "audio", "[audio] music paused");
@@ -314,6 +360,10 @@ impl AudioSystem {
 
     /// Resumes a previously paused looping background music sink。
     pub fn resume_music(&self) {
+        if crate::sink::is_installed() {
+            crate::sink::resume_music();
+            return;
+        }
         if let Some(music) = self.music_sink.as_ref() {
             music.play();
             tracing::debug!(target: "audio", "[audio] music resumed");

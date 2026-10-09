@@ -7,7 +7,9 @@ use crate::script::LuaStateBorrow;
 use crate::script::ScriptState;
 use crate::script::UiText;
 use crate::script::error::{api_error, world_error};
-use crate::script::values::{entity_from_lua, entity_to_lua, require_alive};
+use crate::script::values::{
+    entity_from_lua, entity_from_lua_lenient, entity_to_lua, require_alive,
+};
 use mlua::Lua;
 use mlua::Result as LuaResult;
 use rustlua_ecs::transform::Transform;
@@ -73,7 +75,10 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     entity.set(
         "persist_id",
         lua.create_function(move |_, id: i64| {
-            let id = entity_from_lua(id)?;
+            // 查询用宽容解码：旧运行时存档里的 id（1、2、3…）不该让脚本报错，返回 nil 即可。
+            let Some(id) = entity_from_lua_lenient(id) else {
+                return Ok(None);
+            };
             Ok(s.lua_borrow()?
                 .entity_state
                 .persist
@@ -86,7 +91,13 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     entity.set(
         "is_alive",
         lua.create_function(move |_, id: i64| {
-            Ok(s.lua_borrow()?.world.is_alive(entity_from_lua(id)?))
+            // 谓词**绝不能抛错**：`generation == 0` 的整数（旧运行时的实体 id、以及存档里
+            // 遗留的值）在引擎里不是合法句柄，但"不合法"在这里的语义就是"不在了"。
+            // 旧运行时同名字段对未知 id 也返回 false；两边一致，读旧档才不会炸。
+            let Some(id) = entity_from_lua_lenient(id) else {
+                return Ok(false);
+            };
+            Ok(s.lua_borrow()?.world.is_alive(id))
         })?,
     )?;
     let s = Rc::clone(&state);
