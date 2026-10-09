@@ -3,9 +3,22 @@ asset_id=5f2c81a7-9d4b-4e6a-b1c8-72e3d90f4a6b
 name=Hud
 root=1
 # 常驻 HUD（`ui/hud.lua`）的 UI 预设：M70/B7 从动态层**部分**搬来。
-# 对账门 = `jhyt_m70_hud_prefab`：黄金表 136 行（A 态 = 山庄开局、金钱 120/体力 100/
+# 对账门 = `jhyt_m70_hud_prefab`：黄金表 138 行（A 态 = 山庄开局、金钱 120/体力 100/
 # 内力 50、晴天、无状态、无结局）钉死迁移前画面，本文件 + hud.lua 的 set_text/set_rect/
 # set_visible 必须逐值复现。
+#
+# M72-09 换九宫格切图：本文件的 `texture=__white__` 从 10 块减到 **1 块** =
+# `HudRain`（**保留清单**：全屏雨罩的语义就是一张纯色半透明遮罩，任何带描边/圆角的
+# 九宫格铺满 1280×720 都会把边框拉成满屏的一条粗框，没有对应的视觉意图）。其余 9 块：
+#   * `HudBox`/`HudEndingBox` → `common/ui_panel_main_9s.png`（96²，边距 16,16,16,16），
+#     染色原样保留（a=0.620 / 0.900）。alpha < 0.99 ⇒ 门的"能盖人"判定仍算不透明以外的
+#     那一档，覆盖账不因这两块漂移；与弹窗（shop/pause/…）用的是同一张面板底。
+#   * `HudAccent` → 新切图 `hud/ui_hud_accent_9s.png`（16×3，边距 4,4,1,1：金轨两端的
+#     收口暗柱），color 给 1,1,1（导轨本来就不透明，没有可染的 alpha）。
+#   * `HudChip1..6` → 新切图 `hud/ui_hud_chip_9s.png`（8×8，边距 2,2,2,2：一条可染色的
+#     立体小标签），× 各行类别色（alpha 0.950 原样保留）。**边距取 2 而不是 common 那批
+#     的 6**：目标只有 6×16，左右各 6 > 6 时 `nine_slice_cells` 按比例缩边距、缩到最后
+#     中间可拉伸区宽度归零 ⇒ 整块塌成边框。
 #
 # 结构：根 HudRoot（全屏 1280x720，常驻不隐藏）下挂全部叶子。HUD 没有"打开/关闭"，
 # 根常 shown；结局横幅/雨罩/反馈行等在脚本里逐帧 set_visible 控制。
@@ -16,13 +29,19 @@ root=1
 # 行序 = 绘制序 = 实体槽位升序，**复刻迁移前动态层的 id 字典序**
 # （`ScriptState` 是 BTreeMap，`mesh_ui.rs:239` 迭代 `.values()`；门 covering_account 的
 # 实体层排序键 = 槽位号，槽位必须复刻字典序 cover 判定才与黄金表一致）：
-#   白图类（rank-0，字典序）：accent → box → chip1..6 → ending_box → rain
+#   白图类（rank-0，字典序）：**box → accent** → chip1..6 → ending_box → rain
 #   贴图类（rank-1，字典序）：avatar_frame → **bar_hp 组（fill → frame → icon）** →
 #     bar_neili 组 → bar_stamina 组 → line_icon1/2/4 → skill_card1..8 → weather_sun/rain
 #     （**fill 在 frame 前**：动态层 id `hud:bar_hp` < `hud:bar_hp:frame`，fill 先画、
 #     frame 边框盖在填充上；槽位若反过来，fill 会盖死边框，黄金表 cover 段就红了）
 #   文字类（rank-2，不盖人）：ending_line → ending_title → feedback → goals → line1..6 →
 #     tutorial
+#   **box ↔ accent 换序（slot2/slot3 对调）是本文件唯一一处行序改动，属 M72-09 预期的
+#   画面变化**：迁移前两块都是半透明白图（accent a=0.900、box a=0.620），谁先画在画面上
+#   分不出来；换成切图后金轨是不透明的，若仍排在面板底之前，面板底那圈木质边框会以 62%
+#   压在金轨上、把收口糊掉。这处改动**黄金表量不出来**（两块互不包含 ⇒ cover 行仍是两个
+#   `-`，而 `compare_golden` 比的是排序后的行多集合），背书改在 `submission_order` 的
+#   "导轨档"：`ui_panel_main_9s` 段必须早于 `ui_hud_accent_9s` 段提交，反了当场红。
 # 黄金表被盖住 3 块：bar_fill1/2/3 被各自 bar_frame 整块盖住（同矩形、边框九宫格在上）；
 # 其余全部看得见。
 #
@@ -39,40 +58,40 @@ entity	1	HudRoot
 component	1	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	1	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.000000,0.000000,1280.000000,720.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity_meta	1	role	hud_root
-entity	2	HudAccent	1
-component	2	Image	texture=__white__;color=0.930,0.750,0.350,0.900
+entity	2	HudBox	1
+component	2	Image	texture=assets/art/ui/common/ui_panel_main_9s.png;color=0.080,0.090,0.120,0.620;nine_slice=16,16,16,16
 component	2	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	2	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=980.000000,8.000000,1280.000000,11.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-entity	3	HudBox	1
-component	3	Image	texture=__white__;color=0.080,0.090,0.120,0.620
+component	2	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=980.000000,8.000000,1280.000000,188.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	3	HudAccent	1
+component	3	Image	texture=assets/art/ui/hud/ui_hud_accent_9s.png;color=1.000,1.000,1.000;nine_slice=4,4,1,1
 component	3	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=980.000000,8.000000,1280.000000,188.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	3	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=980.000000,8.000000,1280.000000,11.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	4	HudChip1	1
-component	4	Image	texture=__white__;color=0.360,0.820,0.450,0.950
+component	4	Image	texture=assets/art/ui/hud/ui_hud_chip_9s.png;color=0.360,0.820,0.450,0.950;nine_slice=2,2,2,2
 component	4	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	4	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,24.000000,998.000000,40.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	5	HudChip2	1
-component	5	Image	texture=__white__;color=0.420,0.780,0.720,0.950
+component	5	Image	texture=assets/art/ui/hud/ui_hud_chip_9s.png;color=0.420,0.780,0.720,0.950;nine_slice=2,2,2,2
 component	5	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	5	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,52.000000,998.000000,68.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	6	HudChip3	1
-component	6	Image	texture=__white__;color=0.950,0.760,0.300,0.950
+component	6	Image	texture=assets/art/ui/hud/ui_hud_chip_9s.png;color=0.950,0.760,0.300,0.950;nine_slice=2,2,2,2
 component	6	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	6	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,80.000000,998.000000,96.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	7	HudChip4	1
-component	7	Image	texture=__white__;color=0.380,0.660,0.960,0.950
+component	7	Image	texture=assets/art/ui/hud/ui_hud_chip_9s.png;color=0.380,0.660,0.960,0.950;nine_slice=2,2,2,2
 component	7	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	7	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,108.000000,998.000000,124.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	8	HudChip5	1
-component	8	Image	texture=__white__;color=0.780,0.560,0.960,0.950
+component	8	Image	texture=assets/art/ui/hud/ui_hud_chip_9s.png;color=0.780,0.560,0.960,0.950;nine_slice=2,2,2,2
 component	8	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	8	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,136.000000,998.000000,152.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	9	HudChip6	1
-component	9	Image	texture=__white__;color=0.820,0.620,0.420,0.950
+component	9	Image	texture=assets/art/ui/hud/ui_hud_chip_9s.png;color=0.820,0.620,0.420,0.950;nine_slice=2,2,2,2
 component	9	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	9	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,164.000000,998.000000,180.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	10	HudEndingBox	1
-component	10	Image	texture=__white__;color=0.060,0.070,0.100,0.900
+component	10	Image	texture=assets/art/ui/common/ui_panel_main_9s.png;color=0.060,0.070,0.100,0.900;nine_slice=16,16,16,16
 component	10	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	10	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=380.000000,244.000000,900.000000,340.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	11	HudRain	1

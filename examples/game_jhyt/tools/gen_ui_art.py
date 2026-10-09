@@ -701,6 +701,44 @@ def hud_avatar_frame():
     return cv
 
 
+def hud_chip():
+    """8×8，9-slice 2,2,2,2：行分类色标（HUD 状态面板左缘的 6×16 竖条）。
+
+    **近纯白的底色是这张切图的存在理由**：实体层 Image 的 `color` 是乘法染色
+    （docs/68），白底 × 分类色 = 分类色本色，而描边与明暗用灰阶，染完自动变成
+    同色系的深浅 ⇒ 六行各染一色仍读得出分组，但不再是一个纯色矩形。
+    边距取 2px 而不是 common 那批的 6px：目标只有 6px 宽，6+6>6 会让整块塌成
+    边框（`nine_slice_cells` 按比例压角，中心的分类色一格都不剩）。
+    """
+    cv = Canvas(8, 8)
+    core = rgb("#EDEDED")   # ×0.93：比本色暗一档
+    light = rgb("#FFFFFF")  # 左上受光 = 本色
+    dark = rgb("#9E9E9E")   # ×0.62：右下背光
+    cv.rect(0, 0, 7, 7, core)
+    cv.hline(1, 6, 1, light)
+    cv.vline(1, 1, 6, light)
+    cv.hline(1, 6, 6, dark)
+    cv.vline(6, 1, 6, dark)
+    frame(cv, 0, 0, 7, 7, INK900, 1)
+    return cv
+
+
+def hud_accent():
+    """16×3，9-slice 4,4,1,1：金色收口轨（面板顶沿）。
+
+    行方向 1:1（目标高 3px 正好吃下上高光/中本色/下暗影三行，不会被竖向拉伸糊掉），
+    列方向中间平色横拉、两端 4px 是带端帽的收头。金值取自 GOLD300/GOLD500/WOOD700
+    （docs/35 §3 色板，与 panel_main 的金角码同源），所以预设里这一条不再靠染色。
+    """
+    cv = Canvas(16, 3)
+    cv.rect(0, 0, 15, 2, GOLD500)
+    cv.hline(0, 15, 0, GOLD300)
+    cv.hline(0, 15, 2, WOOD700)
+    for x in (0, 15):
+        cv.vline(x, 0, 2, INK900)
+    return cv
+
+
 # ---------------------------------------------------------------------------
 # backpack / 背包
 # ---------------------------------------------------------------------------
@@ -1340,6 +1378,8 @@ def slice_table():
             ("ui_status_weather", status_icon("weather"), "16x16 天气", None),
             ("ui_status_festival", status_icon("festival"), "16x16 节日", None),
             ("ui_hud_avatar_frame", hud_avatar_frame(), "48x48", None),
+            ("ui_hud_chip_9s", hud_chip(), "8x8 9S 2 可染色分类色标", (2, 2, 2, 2)),
+            ("ui_hud_accent_9s", hud_accent(), "16x3 9S 4,4,1,1 金色收口轨", (4, 4, 1, 1)),
         ],
         "backpack": [
             ("ui_quality_frame_0", quality_frame(0), "40x40 凡品", None),

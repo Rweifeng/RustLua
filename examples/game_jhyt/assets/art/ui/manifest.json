@@ -78,7 +78,9 @@
         "hud/ui_status_stealth.png",
         "hud/ui_status_weather.png",
         "hud/ui_status_festival.png",
-        "hud/ui_hud_avatar_frame.png"
+        "hud/ui_hud_avatar_frame.png",
+        "hud/ui_hud_chip_9s.png",
+        "hud/ui_hud_accent_9s.png"
       ],
       "uses_common": [
         "common/ui_panel_main_9s.png",
@@ -802,6 +804,32 @@
       "size": "48x48",
       "spec": "48x48",
       "nine_slice": null
+    },
+    {
+      "module": "hud",
+      "name": "ui_hud_chip_9s",
+      "path": "assets/art/ui/jianghu/hud/ui_hud_chip_9s.png",
+      "size": "8x8",
+      "spec": "8x8 9S 2 可染色分类色标",
+      "nine_slice": [
+        2,
+        2,
+        2,
+        2
+      ]
+    },
+    {
+      "module": "hud",
+      "name": "ui_hud_accent_9s",
+      "path": "assets/art/ui/jianghu/hud/ui_hud_accent_9s.png",
+      "size": "16x3",
+      "spec": "16x3 9S 4,4,1,1 金色收口轨",
+      "nine_slice": [
+        4,
+        4,
+        1,
+        1
+      ]
     },
     {
       "module": "backpack",

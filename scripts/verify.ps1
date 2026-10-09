@@ -1136,7 +1136,12 @@ if ($Mvp -or $MvpOnly) {
         # 入口是 open_ui 不是 open；无 key_hint 面板、有 close 按钮与条件滚动箭头。
         "jhyt_m69_shipping_prefab"
         # M70 常驻 HUD（ui/hud.lua）静态骨架全量搬进 `hud.prefab`（45 实体、部分预设混合载体）的
-        # 搬运门：黄金表 136 行；compare_golden 排序集合比对；坑 = 黄金表首行 UTF-8 BOM 沉底错位。
+        # 搬运门：黄金表 138 行（此前这里写的 136 是抄来的、没人量过）；compare_golden 排序集合比对；
+        # 坑 = 黄金表首行 UTF-8 BOM 沉底错位。
+        # M72-09 换九宫格切图后本门加了两处口径：① 的 Panel 读数多 `texture,nine_slice` 两列
+        # （否则"画面真的换了贴图"在黄金表里不可见），③ 的不透明判定改成"贴图在表里 **且**
+        # Image 染色 alpha ≥ 0.99"（色与图相乘），另加一档实测「导轨档」= 面板底必须提交在金轨之前
+        # （slot2/3 对调是黄金表量不到的行序变化，背书只在这档上）。
         "jhyt_m70_hud_prefab"
         # M71 对话面板（world/dialogue.lua）全迁一份 `.prefab` 的搬运门（JSON 预设层退役的
         # 接管门）：黄金表 34 行（A 态 = 开场对话 gu_changfeng_teach，顾长风 4 选项、marker1

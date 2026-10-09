@@ -16,6 +16,15 @@
 //!     `push_scene_ui_text`），所以图标/名/fill 永远盖在面板/框/卡之上。顺序反了时不透明的
 //!     卡底会把 24×24 招式图标整块埋掉，而①②的读数照样"shown"（实机 2026-10-07）。
 //!
+//! M72-09（HUD 换九宫格切图）改了两处读数口径，都不放宽"搬运不改画面"：
+//!   * 面板块的读数形状从 `x,y,w,h,r,g,b,a` 长成 `x,y,w,h,texture,nine_slice,r,g,b,a`，与
+//!     贴图块同形。动态层的 `ui.panel` 没有贴图维，按语义补 `__white__,-`，两侧仍同串字节。
+//!     "色块的贴图必须是内置白图"那条旧约束就此取消——它守的是 M70 那一刻的形状，而本包
+//!     要的就是把它换成真图；换完之后钉住它的是黄金表。
+//!   * `__white__` 保留清单：`HudRain`（全屏雨罩）。**一块都不许再新增**——它现在只有这一
+//!     个取值，任何新增都是把没切图的东西糊成色块（复现：`grep -c 'texture=__white__'
+//!     examples/game_jhyt/assets/prefabs/hud.prefab` ⇒ 1）。
+//!
 //! 门守的是**搬运不改画面**，五段账：
 //!   ① 逐 id 黄金对账（单状态 `A` = 山庄开局、金钱 120/体力 100/内力 50、晴天、无状态、
 //!      无结局）：每块一条 `shown` 行，读数与载体无关——同一块东西由动态层画还是由预设
@@ -25,7 +34,11 @@
 //!      动态 image → 动态 text → 实体字（这五档就是 `frame_data.rs` 的提交档，由
 //!      [`submission_order`] 拿真实 `mesh.draws` 序列背书）。只按"色块→贴图→文字"排是
 //!      错的：那等于假设实体层与动态层按类别交错，而它们是先层后类。
-//!      预期 A 态：bar_frame1..3 被 bar_fill1..3 整块盖住（同矩形），其余看得见。
+//!      预期 A 态：bar_frame1..3 被 bar_fill1..3 整块盖住（同矩形），其余看得见。M72-09 把
+//!      面板块换成真切图后这一维**不该动**：面板底染色 0.620、色标 0.950 都 < `OPAQUE_ALPHA`
+//!      ⇒ 仍算盖不住人；金轨虽然 alpha=1.000 且不透明，但 300×3 整块包含不了任何东西。
+//!      它与面板底的**先后**是③ 量不到的（两块互不包含），改由 [`submission_order`] 的
+//!      导轨档实测背书。
 //!   ④ 文字着色：预设 Text 的 `color` 必须就是白。
 //!   ⑤ 跨屏相交：HUD 是常驻层，本门用**全画布**判"别人的动态块"——A 态只有 HUD 自己
 //!      （`hud:` 前缀排除）、触屏在 desktop 不画，相交应为 0。
@@ -384,9 +397,13 @@ const fn probe(
 /// ③ 里"这块贴图中心实测不透明"的清单与口径（同 m65 门：只有整块矩形都被采样到不透明的
 /// 贴图才进这张表；边缘有透明的图标不进，因为"盖住别人"要的是它压住的那片像素真的不
 /// 透明）。实测：`ui_bar_frame_9s` 中心 A=255；三条 `ui_bar_fill_*` 中心 A=255（与 frame
-/// 同矩形 ⇒ 整块盖住 frame）；天气图标中心 A=255。面板底是 `ui.panel` 色块（半透明，不盖
-/// 人）；行图标/头像框/条图标边缘透明不进表。
-const OPAQUE_NOTE: &str = "贴图中心 alpha=255 才算能盖人（见 m65 门常量注释的复现命令）";
+/// 同矩形 ⇒ 整块盖住 frame）；天气图标中心 A=255。M72-09 换进来的三张按同口径实测
+/// （复现：`python -c "…pixel_kit.decode_png…"` 取中心像素 alpha，见下方注释）：
+/// `ui_panel_main_9s` 中心 RGBA=(31,35,40,**255**)、`ui_hud_accent_9s` 中心 (201,160,90,
+/// **255**)、`ui_hud_chip_9s` 中心 (237,237,237,**255**)，三张整图 min alpha 都是 255。
+/// 进表不等于就会盖人：`Reading::opaque` 还要看 Image 染色 alpha（色与图相乘），
+/// 面板底 0.620 / 色标 0.950 因此仍算"盖不住人"。行图标/头像框/条图标边缘透明不进表。
+const OPAQUE_NOTE: &str = "贴图中心 alpha=255 **且** Image 染色 alpha ≥ 0.99 才算能盖人（见 m65 门常量注释的复现命令）";
 const OPAQUE_TEXTURES: &[&str] = &[
     "ui_bar_frame_9s.png",
     "ui_bar_fill_hp.png",
@@ -394,9 +411,12 @@ const OPAQUE_TEXTURES: &[&str] = &[
     "ui_bar_fill_neili.png",
     "ui_weather_sun.png",
     "ui_weather_rain.png",
+    "ui_panel_main_9s.png",
+    "ui_hud_accent_9s.png",
+    "ui_hud_chip_9s.png",
     "__white__",
 ];
-/// `__white__` 还要再看 RGBA 第四段（半透明色块盖不住人）。
+/// 白图与真图一律再看 RGBA 第四段：染色 alpha 与贴图 alpha 相乘才是落到帧上的不透明度。
 const OPAQUE_ALPHA: f32 = 0.99;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -522,13 +542,15 @@ struct Reading {
 }
 
 impl Reading {
-    /// 能不能盖住别人：贴图在 [`OPAQUE_TEXTURES`] 里，且（若是白图）alpha ≥ `OPAQUE_ALPHA`。
+    /// 能不能盖住别人：贴图在 [`OPAQUE_TEXTURES`] 里，**且** Image 染色的 alpha ≥
+    /// `OPAQUE_ALPHA`（染色与贴图相乘，0.62 的面板底盖不住任何东西，即使它已是真贴图）。
+    /// 动态层 `ui.image` 没有 alpha 可给 ⇒ `rgba` 为空，按不透明处理。
     fn opaque(&self) -> bool {
         let tail = self.texture.rsplit('/').next().unwrap_or(&self.texture);
         if !OPAQUE_TEXTURES.contains(&tail) {
             return false;
         }
-        if tail != "__white__" {
+        if self.rgba.is_empty() {
             return true;
         }
         self.rgba
@@ -651,13 +673,19 @@ fn entity_reading(
     });
     let body = match probe.kind {
         Kind::Panel => {
-            if texture != "__white__" {
-                return Some(mismatch(
-                    probe,
-                    format!("色块的贴图不是内置白图而是 {texture}"),
-                ));
-            }
-            format!("{},{rgba}", xywh(&rect))
+            let Some(image) = &node.image else {
+                return Some(mismatch(probe, "色块没有 Image 组件".to_owned()));
+            };
+            // M72-09 起面板块允许带真贴图（面板底/色标/金轨），读数形状与贴图块对齐：
+            // `x,y,w,h,texture,nine_slice,r,g,b,a`。内置白图仍是合法取值（保留清单里
+            // 那块雨罩走的就是它）。
+            format!(
+                "{},{},{},{}",
+                xywh(&rect),
+                texture,
+                nine_slice(&image.nine_slice),
+                rgba
+            )
         }
         Kind::Image => {
             if rgba.ends_with(",1.000") || rgba.ends_with(",1.0") {
@@ -752,6 +780,14 @@ fn dynamic_reading(runtime: &mut RuntimeScene, probe: &Probe) -> Result<Option<R
             let head: Vec<&str> = parts.by_ref().take(5).collect();
             let slice = parts.next().unwrap_or("-");
             format!("{},{}", head.join(","), slice)
+        }
+        Kind::Panel if !hidden => {
+            // `ui.panel` 没有贴图维：它语义上就是内置白图、没有九宫格。补成与实体层
+            // 同一形状（`x,y,w,h,__white__,-,r,g,b,a`），这样"同一块东西由谁画"两侧
+            // 印出来的仍是同一串字节，M72-09 换真贴图后这条不变。
+            let mut parts = text.splitn(5, ',');
+            let head: Vec<&str> = parts.by_ref().take(4).collect();
+            format!("{},__white__,-,{}", head.join(","), parts.next().unwrap_or(""))
         }
         _ if !hidden => text.clone(),
         _ => "hidden".to_owned(),
@@ -931,6 +967,9 @@ fn kind_of_role(role: &str) -> Kind {
 ///   整块埋掉，而①的读数照样是 `shown`——只有这条会红。
 /// * **实体层内档**：`ui_bar_fill_hp.png` 在 `ui_bar_frame_9s.png` 之前（预设行序 = 槽位序，
 ///   ③ 里"fill 被 frame 盖住"那三行靠它背书，与 ECS 实际迭代序不一致就会红）。
+/// * **导轨档（M72-09）**：`ui_panel_main_9s.png` 在 `ui_hud_accent_9s.png` 之前——面板底
+///   slot2、金轨 slot3 那次对调是③ 与① 都量不到的一处画面改动（两块互不包含，黄金表比的
+///   又是排序后的行多集合），只有这条会红。
 /// * **动态层内档**：内置白图（`ui.panel`）在贴图（`ui.image`）之前。HUD 的 A 态没有动态
 ///   白板块，而 mesh 里的白图段分不清"动态 panel"与"预设里的 `__white__` 色块"，所以这一档
 ///   要先用 ① 的读数确认有动态 panel 才跑；确认不了就照实说"这次没量到"，不拿实体色块冒充。
@@ -960,13 +999,15 @@ fn submission_order(
             .is_some_and(|path| tail(path).starts_with("ui_skill_") && tail(path) != CARD_TEXTURE)
     });
     println!(
-        "  本帧提交 {} 个分段：卡底段 {}、fill 段 {}、招式图标段 {}、白图段 {}、{SKIN_TEXTURE} 段 {}",
+        "  本帧提交 {} 个分段：卡底段 {}、fill 段 {}、招式图标段 {}、白图段 {}、{SKIN_TEXTURE} 段 {}、面板底段 {}、金轨段 {}",
         mesh.draws.len(),
         index_of("实体图", card),
         index_of("实体图", fill),
         index_of("动态图", icon),
         index_of("白图·层不定", white),
         index_of("实体图", skin),
+        index_of("实体图", first(PANEL_TEXTURE)),
+        index_of("实体图", first(RAIL_TEXTURE)),
     );
     // 层档：卡底与图标都得在场，且卡底先提交。缺任意一边就是"前置塌了"，宁可红。
     match (card, icon) {
@@ -1005,6 +1046,31 @@ fn submission_order(
             .into());
         }
         _ => println!("  ⚠ 这一帧没同时拿到 fill 段与 {SKIN_TEXTURE} 段 ⇒ 实体层内档没有实测背书"),
+    }
+    // 导轨档（M72-09）：不透明金轨必须提交在面板底**之后**（画在它上面）。这一档 ③ 的
+    // 覆盖账量不到（两块互不包含 ⇒ cover 行是 `-`），黄金表也量不到（行序对调不改行的
+    // 多集合），反了的话面板底的木质边框会以 62% 糊住金轨、门照样绿——所以这里量实测。
+    let panel = first(PANEL_TEXTURE);
+    let rail = first(RAIL_TEXTURE);
+    match (panel, rail) {
+        (Some(panel), Some(rail)) if panel < rail => println!(
+            "  ⇒ 导轨档一致：面板底 {PANEL_TEXTURE} #{panel} 在金轨 {RAIL_TEXTURE} #{rail} 之前提交（轨浮在面上）"
+        ),
+        (Some(panel), Some(rail)) => {
+            return Err(format!(
+                "M72-09 的行序被实测否了：面板底段 #{panel} 在金轨段 #{rail} **之后**提交，\
+                 半透明面板底会糊住不透明金轨（查 hud.prefab 的 slot2/slot3，box 必须在 accent 之前）"
+            )
+            .into());
+        }
+        (panel, rail) => {
+            return Err(format!(
+                "导轨档量不到：面板底段 {}、金轨段 {}。这两块在 A 态都是常驻 shown，缺一边说明贴图没换上或换错了",
+                panel.map_or("缺".to_owned(), |index| format!("#{index}")),
+                rail.map_or("缺".to_owned(), |index| format!("#{index}")),
+            )
+            .into());
+        }
     }
     // 动态层内档要"这一帧真有动态色块"才量得到：mesh 里 `texture == 0` 的段既可能是
     // `ui.panel`（动态层），也可能是预设里 `Image texture=__white__` 的色块（实体层），
@@ -1054,6 +1120,12 @@ const SKIN_TEXTURE: &str = "ui_bar_frame_9s.png";
 const CARD_TEXTURE: &str = "ui_skill_card_9s.png";
 /// 同为实体层、槽位在卡框之前的贴图段：③ 里「fill 被 frame 盖住」那三行的排序依据。
 const BAR_FILL_TEXTURE: &str = "ui_bar_fill_hp.png";
+/// M72-09 的面板底（实体层 slot2）：导轨档的下半。
+const PANEL_TEXTURE: &str = "ui_panel_main_9s.png";
+/// M72-09 的金色收口轨（实体层 slot3）：导轨档的上半。这两块的**行序对调**是本包唯一的
+/// 画面改动，而③ 的覆盖账量不到它（300×3 与 300×180 互不包含 ⇒ cover 行两边都是 `-`，
+/// `compare_golden` 又按排序后的行多集合比），所以拿实测提交序背书。
+const RAIL_TEXTURE: &str = "ui_hud_accent_9s.png";
 
 /// `outer` 是否整块盖住 `inner`（含边界相等：同矩形就是全盖）。
 fn contains(outer: &UiRect, inner: &UiRect) -> bool {
