@@ -141,3 +141,9 @@
    红，连带 `engine-pub-surface.mjs --check` 基线差 6 条。排除这两处后：fmt 干净、
    clippy（`--exclude gpu-web-probe`）零告警、`cargo test -p rustlua-ecs --lib` 151 绿、
    Lua API 文档桩门 / 图集哈希 parity 门 / Web API 覆盖清单门 / `check-docs.ps1` 全绿。
+9. **本包红掉了一条 M72-01 的门，当时没跑它**：`jhyt_m72_tileset_atlas` ⑤ 断言"山庄地面每格
+   V 上限 = 1.0"，那是 6×1 图集（`atlas_rows=1` ⇒ V 整幅拉伸）的特例；本包把地面换成 12×9
+   之后这条门必然红。上面第 8 条那轮回归跑的是 fmt/clippy/test/doc/哈希 parity，**没跑
+   76 条 headless 门**，所以漏了。已在 M72-05 §6 记录并修成"按声明的行数分带"
+   （rows=1 时退化回 0..1，语义不变；920 格读数一致）。口径教训：改地表编码的包，
+   验收清单必须点名 `jhyt_m72_tileset_atlas`。

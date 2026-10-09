@@ -19,7 +19,8 @@
 //!          引擎不许把"贴图其实只有一行"这件事静默吞掉；
 //!   ④ 旧编码不许被迁移改动语义：`tiles_format=0` 的组件串读回来仍是"按 6 列切 U、
 //!      V 整幅拉伸 0..1"，且仍只认 1..=6；
-//!   ⑤ 随场景发布的数据真的在新编码上：山庄地面 `tiles_format=1 / atlas 6×1`，
+//!   ⑤ 随场景发布的数据真的在新编码上：山庄地面 `tiles_format=1`，格子按声明的
+//!      `atlas_cols × atlas_rows` 分带（M72-04 起这张地面是 12×9，更早是 6×1 整幅拉伸），
 //!      而且**渲染出来的格子数 = Lua 逐格数出来的非空格数**（这条同时兜住 chunk 脏重建与
 //!      "逗号编码读漏一格"两类事故）。
 //!
@@ -276,11 +277,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into());
     }
-    if ground_quads.iter().any(|(_, max)| max[1] != 1.0) {
-        return Err(format!(
-            "{texture} 有格子的 V 上限不是 1.0：6×1 图集（atlas_rows=1）仍该整幅拉伸，迁移不许改这个"
-        )
-        .into());
+    // V 的口径跟着**实际行数**走，不写死 1.0：`atlas_rows == 1` 时"整幅拉伸 0..1"就是
+    // 6×1 数据的语义，`atlas_rows > 1` 时每格只该占 1/rows 的一条带。M72-04 把山庄地面换成
+    // 12×9 图集之后，这条门红在"V 上限不是 1.0"上——那是门把自己的特例当成了通则。
+    let v_band = 1.0 / atlas_rows as f32;
+    for (min, max) in &ground_quads {
+        if (max[1] - min[1] - v_band).abs() > 1e-4 {
+            return Err(format!(
+                "{texture} 有格子的 V 跨度不是 1/{atlas_rows:.0} = {v_band:.6}：{:?}..{:?}（行没切匀）",
+                min[1], max[1]
+            )
+            .into());
+        }
+        if (min[1] * atlas_rows as f32).fract() > 1e-4
+            || (max[1] * atlas_rows as f32).fract() > 1e-4
+        {
+            return Err(format!(
+                "{texture} 有格子的 V 边线没落在 {atlas_rows:.0} 等分线上：{:?}..{:?}",
+                min[1], max[1]
+            )
+            .into());
+        }
     }
     if ground_quads
         .iter()
@@ -289,7 +306,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("{texture} 有格子的 U 起点没落在 {atlas_cols} 等分线上").into());
     }
     println!(
-        "  {texture}: fmt=1 atlas={atlas_cols}x{atlas_rows} 网格 {width}x{height}，非空格与绘制格同为 {}，V 仍整幅拉伸",
+        "  {texture}: fmt=1 atlas={atlas_cols}x{atlas_rows} 网格 {width}x{height}，非空格与绘制格同为 {}，V 按 {atlas_rows:.0} 行分带",
         ground_quads.len()
     );
 

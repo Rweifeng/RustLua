@@ -360,6 +360,33 @@ try {
         Write-Host "  [SKIP] 未找到 node：Lua API 文档桩门与 Web API 覆盖清单门未运行（不是通过）" -ForegroundColor Yellow
     }
 
+    # M72-05 装饰散布的**确定性**门。事实源在 Python（`tools/decor_kit.py` 的 `scatter()`），所以这条
+    # 只能在 Python 侧跑——Rust 侧的 `jhyt_m72_scatter_decor` 钉的是数量、层带、渲染与物理，读的是
+    # 盘上结果，"换种子会不会跟着变"它管不着。三段各判一件事：同种子两次逐字节相同（真确定）、
+    # 换种子内容必须变（否则散布根本没读 seed，上面那个"相同"是空的）、盘上装饰段 == 现算段
+    # （有人手改了装饰、或改了地表却没重撒，红在这里而不是等目验发现）。
+    # 路径一律给绝对值：这份工具的输入按 `__file__` 定位，在哪个 cwd 下跑都是同一份结果（曾经不是——
+    # places.lua 走的是相对 cwd 的默认路径，换目录跑就静默少一份留白输入，见 gen_manor_scene 的注释）。
+    # 缺 python 时按本仓库口径打印原因后跳过，绝不把"跳过"写成通过。
+    Write-Step "Decor scatter determinism (python)"
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        # Windows 控制台默认代码页是 GBK，工具输出的中文在编码不匹配时抛 UnicodeEncodeError——
+        # 那是门自己的环境问题，不是散布判红。
+        $env:PYTHONIOENCODING = "utf-8"
+        # 碎屑库自己的门：24 张 PNG 条目齐全、尺寸 == 目录、每个不透明像素都在 `terrain_ramp.json`
+        # 覆盖的色族里、alpha 只有 0/255。Rust 那条只比尺寸与明度档，"手改过一张图的像素"只有这里看得见。
+        Invoke-Checked python @(
+            (Join-Path $projectRoot "examples/game_jhyt/tools/gen_decor_art.py"), "--check"
+        )
+        Invoke-Checked python @(
+            (Join-Path $projectRoot "examples/game_jhyt/tools/set_scatter_decor.py"),
+            (Join-Path $projectRoot "examples/game_jhyt/scenes/manor.scene"),
+            "--check"
+        )
+    } else {
+        Write-Host "  [SKIP] 未找到 python：装饰库色表门与装饰散布确定性门未运行（不是通过）" -ForegroundColor Yellow
+    }
+
     if (-not $SkipClippy) {
         Write-Step "Clippy"
         Invoke-Checked cargo @("clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings")
@@ -1079,6 +1106,18 @@ if ($Mvp -or $MvpOnly) {
         # 反面对照内建三处——合成"草地嵌 8×8 规则土块"必须报出 >5 格直边（旧图几何读法），
         # 草族整族压成单档必须让色阶门红，从门内色表删掉 #6F8F52 必须点名它。
         "jhyt_m72_manor_terrain"
+        # M72-05 装饰散布门：manor 从前只有 15 个非幽灵 sprite（"画面几乎没有东西"）。① 结构契约：
+        # 175 件 `role=decor` 各恰好 Sprite+Transform、**无 Collider**、层名 world、order 只取碎屑 -30
+        # /中景 12 两档，声明尺寸 == 门内手抄目录 == PNG 实测（三方），12 种形状一种都没白画；
+        # ② 每屏对象：640×360 世界单位窗口以 8px 滑过全图取中位数 ≥40（判 median 不判 min——药田
+        # 200 格按玩法契约必须留白，最坏那一屏 89% 是空的）；③ 关掉视口剔除后 mesh 的装饰 quad
+        # == 文件件数，开剔除后 == 门按 `sprite_may_be_visible` 同判据数出的件数，且两数必须不同
+        # （相同即"剔除没生效、第二条断言是空的"）；④ 层带：碎屑压在所有 world sprite 之前、中景
+        # 压在树/竹之下；⑤ 每件装饰在**运行期刚体位置**查一次 physics.overlap，取到装饰贴图 = 0。
+        # 反面对照四处——目录副本改 1px 即红、装饰改进 actor 带即红（走同一个 band_violations）、
+        # 散布换种子必须变（Python 侧 `set_scatter_decor.py --check`）、⑤ 的正向对照拿带 collider 的
+        # 实体真取到命中且含其自身（否则那个 0 可能只是查询在空转）。
+        "jhyt_m72_scatter_decor"
         # 阶段2（docs/33 §4.3–4.8、§7.3、§8.3，1.0–1.8）：九个内容系统门。
         # M44 畜牧：6 动物/三类畜舍、未建舍拒养、喂抚好感、吃饱按周期产蛋毛奶肉、
         # 好感≥8 出灵蛋、入箱结算、存档往返。

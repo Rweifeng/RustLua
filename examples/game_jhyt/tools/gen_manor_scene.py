@@ -2,6 +2,7 @@
 """《江湖有田》山庄主场景生成（scenes/manor.scene）
 
 用法：工程根目录 python tools/gen_manor_scene.py
+对拍/试跑请用 `--out .temp/xxx.scene`——盘上场景已和生成器分叉，默认路径会直接覆盖手调内容。
 
 美术：地表图集由 `tools/gen_terrain_tiles.py` 产出（12 列 × 9 行，逻辑瓦 + autotile），
 农田/湿度两张仍是 `gen_manor_art.py` 的 6 列 tileset；建筑/道具用同工具产出的独立 sprite
@@ -38,13 +39,22 @@
   manor_study(24,10) manor_sword_ground(26,12) manor_forge(28,12) manor_practice(30,14)
   manor_garden(10,16) manor_dock(16,19)
 """
+import argparse
 import os
 
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# 工程根（`examples/game_jhyt`）。**事实输入**（places.lua 这类决定留白契约的数据）按这里定位，
+# 不跟着 cwd 走：写死的相对路径会让人以为工具是确定性的，其实它在换个目录跑的时候就少了一份输入。
+# 输出路径（`--out`）保持相对 cwd，那是给人用的。
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 from character_art import player_art  # noqa: E402  主角形象（与 manifest 同源）
+# M72-05：装饰散布的单一实现。这里与 `set_scatter_decor.py`（就地改盘上场景）必须共用它，
+# 否则"重跑生成器"会抹掉盘上场景的装饰段——M72-04 就是靠这条对拍成立的。
+import decor_kit as dk  # noqa: E402
 # M32：`Transform` 的统一形态序列化器（场景数据门只认这一种写法）。
 from pixel_kit import transform_line as spawn_transform  # noqa: E402
 from pixel_kit import camera_line  # noqa: E402  场景 2D 相机（取景锁在地图内）
@@ -222,6 +232,20 @@ def build_solid(ground):
     return solid
 
 
+def decor_reserved():
+    """M72-05 的玩法留白：返回 (两带共同的硬留白, 只挡中景带的留白)。
+
+    输入全部来自本文件的布局常量与 `data/places.lua`，所以 `set_scatter_decor.py` 只要
+    import 这里，两条路就必然撒出同一段装饰（为什么药田是硬的、道具/NPC 只挡中景，
+    口径写在 `decor_kit.hard_exclude` 与 `mid_avoid`）。
+    """
+    places = [(cx, cy) for _, cx, cy in read_manor_place_cells()]
+    props = [(prop["cell"][0], prop["cell"][1]) for prop in PROPS]
+    keys = [(SPAWN["x"], SPAWN["y"]), (GATE_SPUR["x"], GATE_SPUR["y0"])]
+    farm = (FARM["x0"], FARM["y0"], FARM["x1"], FARM["y1"])
+    return (dk.hard_exclude(W, H, farm), dk.mid_avoid(W, H, props, places, keys))
+
+
 def cell_to_world(cx, cy):
     """cell 左下角世界坐标（y 朝上，row 0 在最底）"""
     return (cx + 0.5) * TILE, (cy + 0.5) * TILE
@@ -371,6 +395,14 @@ def build_scene(ground, solid):
                                FARM_ATLAS_COLS, FARM_ATLAS_ROWS)
     )
     lines.append(f"entity_meta\t{moist_id}\trole\tfarm_moist_tilemap")
+    # M72-05：装饰散布。id 从 `moist_id + 1` 起**追加在末尾**，一个既有 id 都不动——
+    # 挪 id 会让 Lua 侧 `entity.find` 与黄金表全部重排，而装饰是纯加法。
+    # 输入用**抖动后**的格子图（盘上就是这个），不然"生成器看到的草/土分布"与实机不一致。
+    jittered = [cells[y * W:(y + 1) * W] for y in range(H)]
+    exclude, avoid = decor_reserved()
+    placements = dk.scatter(W, H, jittered, solid, exclude, mid_avoid=avoid)
+    lines.extend(dk.decor_lines(moist_id + 1, placements, table,
+                                lambda cell: tints.get(cell[1] * W + cell[0], 0)))
     return "\n".join(lines) + "\n"
 
 
@@ -388,13 +420,20 @@ def reachable_from(solid, start):
     return seen
 
 
-def read_manor_place_cells(path=os.path.join("scripts", "data", "places.lua")):
+def read_manor_place_cells(
+    path=os.path.join(PROJECT_ROOT, "scripts", "data", "places.lua"),
+):
     """从 data/places.lua 里抠出 map = "manor" 的地点格（契约校验用，不执行 Lua）。"""
     import re
 
-    cells = []
     if not os.path.exists(path):
-        return cells
+        raise FileNotFoundError(
+            f"{path} 读不到：places.lua 的地点格是散布的**留白输入**，宽容地当成"
+            "「一个地点也没有」继续跑，草就撒到 NPC 门口（改这里之前正是这么漏的——"
+            "默认路径跟着 cwd 走，从 `engine/` 下跑 `--check` 时 exists 为假、静默返回空表，"
+            "盘上 24 行对不上却看不出为什么）"
+        )
+    cells = []
     with open(path, encoding="utf-8") as handle:
         for line in handle:
             match = re.match(
@@ -438,10 +477,16 @@ def self_check(ground, solid):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="从零装配 scenes/manor.scene")
+    parser.add_argument("--out", default=os.path.join("scenes", "manor.scene"),
+                        help="写出路径。**对拍请指到 .temp**：盘上的 manor.scene 已和生成器分叉"
+                             "（M72-04「未完成项」第 6 条：entity 21/24/25 的 Transform 是之后手调的），"
+                             "直接覆盖会抹掉那批改动——装饰段用 tools/set_scatter_decor.py 就地改。")
+    args = parser.parse_args()
     ground = build_tiles()
     solid = build_solid(ground)
     text = build_scene(ground, solid)
-    out = os.path.join("scenes", "manor.scene")
+    out = args.out
     with open(out, "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
     print(f"wrote {out} ({W}x{H}, {len(PROPS)} 个建筑/道具实体)")

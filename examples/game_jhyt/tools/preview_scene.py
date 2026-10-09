@@ -17,9 +17,10 @@
     `col=(n-1)%cols`、`row=(n-1)//cols` 个子矩形（行 0 在**贴图顶部**，与地图行 0 在底部
     是两回事——这正是引擎 autotile 位序按 index 命名而不是按方位命名的原因）。
   * 逻辑瓦模式（M72-02，`autotile=1` 或 `variant_count>1`）：格子里存的是 kind id，
-    渲染时由「邻居掩码 + 确定性 FNV-1a 哈希」解析成图集条目。这段解算与
-    `engine/crates/rustlua-ecs/src/tilemap.rs` 的 `resolve_atlas_index` **逐位一致**，
-    改任何一边都必须同步另一边，否则预览图与实机不一致（本文件的存在意义就是发现这种不一致）。
+    渲染时由「邻居掩码 + 确定性 FNV-1a 哈希（再做 splitmix64 雪崩收尾再取模）」解析成图集条目。
+    这段解算与 `engine/crates/rustlua-ecs/src/tilemap.rs` 的 `resolve_atlas_index` **逐位一致**，
+    改任何一边都必须同步另一边（另两份镜像在 `plugins/webgl/web-runtime.js` 的 JS 与 Lua 垫片里），
+    否则预览图与实机不一致（本文件的存在意义就是发现这种不一致）。
   * Sprite：pivot=(0,0) 时 transform 即左下角；图像顶行对应 quad 顶部。
     `__white__` 内建贴图按 tint 画成半透明占位块，便于看玩家/NPC 站位。
   * per-tile tint（M72-02）：`tints=<cellIndex>:<tintId>,...`（稀疏，只记非白格），
@@ -55,6 +56,9 @@ VARIANT_HASH_PRIME = 0x00000100000001B3
 MIX_AXIS_X = 0x9E3779B97F4A7C15
 MIX_AXIS_Y = 0xBF58476D1CE4E5B9
 U64_MASK = (1 << 64) - 1
+# avalanche（splitmix64 收尾混洗）的两个乘子；0xBF58…与 MIX_AXIS_Y 同值是 splitmix 的巧合。
+AVALANCHE_MUL_A = 0xBF58476D1CE4E5B9
+AVALANCHE_MUL_B = 0x94D049BB133111EB
 # 旧编码的"没有图集信息"时的默认布局（DEFAULT_ATLAS_COLS/ROWS）。
 DEFAULT_ATLAS_COLS = 6
 DEFAULT_ATLAS_ROWS = 1
@@ -144,14 +148,23 @@ def _mix_u64(state, value):
     return mixed
 
 
+def _avalanche(value):
+    """splitmix64 的雪崩收尾：原始 FNV 的低比特周期等于模数，直接取模会变体排成点阵。"""
+    stage = (value ^ (value >> 30)) & U64_MASK
+    stage = (stage * AVALANCHE_MUL_A) & U64_MASK
+    stage = (stage ^ (stage >> 27)) & U64_MASK
+    stage = (stage * AVALANCHE_MUL_B) & U64_MASK
+    return (stage ^ (stage >> 31)) & U64_MASK
+
+
 def variant_for(cells, width, height, x, y, seed, variant_count):
-    """确定性变体序号：与 Rust `Tilemap::variant_for` 同一份哈希与盐顺序。"""
+    """确定性变体序号：与 Rust `Tilemap::variant_for` 同一份哈希、盐顺序与收尾混洗。"""
     if variant_count < 2:
         return 0
     hash_state = VARIANT_HASH_OFFSET
     for value in (x, y, seed, MIX_AXIS_X, MIX_AXIS_Y):
         hash_state = _mix_u64(hash_state, value)
-    return hash_state % variant_count
+    return _avalanche(hash_state) % variant_count
 
 
 def autotile_mask(cells, width, height, x, y):
@@ -389,13 +402,18 @@ def render(scene_path, root, scale=1, grid=False, only_layers=None):
             continue
         fields = parse_fields(entity["components"]["Sprite"])
         transform = parse_fields(entity["components"]["Transform"])
+        # `.scene` 的 Transform 是规范串 `position=x,y,z;rotation=...;scale=...`（9 位小数，
+        # 见 pixel_kit.transform_line 与引擎的 to_component_str），**没有** `x=`/`y=` 两个字段。
+        # 早先这里读 `transform.get("x")` 恒取默认 0，于是所有 sprite 都画在 (0,0)——
+        # 症状是"道具全堆在地图左下角"，而地表照常，所以只看过地表的预览不会发现。
+        px, py = (transform.get("position", "0,0,0").split(",") + ["0", "0"])[:2]
         layer = fields.get("sorting_layer", "default")
         order = int(float(fields.get("order", "0") or 0))
         sprites.append({
             "entity": entity,
             "fields": fields,
-            "x": float(transform.get("x", 0.0)),
-            "y": float(transform.get("y", 0.0)),
+            "x": float(px),
+            "y": float(py),
             "layer": layer,
             "order": order,
             "index": index,
