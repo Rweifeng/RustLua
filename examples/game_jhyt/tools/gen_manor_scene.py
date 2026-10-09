@@ -55,6 +55,11 @@ from character_art import player_art  # noqa: E402  主角形象（与 manifest 
 # M72-05：装饰散布的单一实现。这里与 `set_scatter_decor.py`（就地改盘上场景）必须共用它，
 # 否则"重跑生成器"会抹掉盘上场景的装饰段——M72-04 就是靠这条对拍成立的。
 import decor_kit as dk  # noqa: E402
+# M72-06 C 段：地面投影贴片的单一实现（这里与 `set_cast_shadows.py` 同一条 `build()`）。
+import set_cast_shadows as cs  # noqa: E402
+# M72-06：前景遮断拆层的单一实现。这里（从零生成）与 `set_foreground_occluders.py`
+# （就地改盘上场景）必须走同一条 `plan()`+`apply_patch()`，否则重跑生成器会静默丢掉那 5 件。
+import set_foreground_occluders as fo  # noqa: E402
 # M32：`Transform` 的统一形态序列化器（场景数据门只认这一种写法）。
 from pixel_kit import transform_line as spawn_transform  # noqa: E402
 from pixel_kit import camera_line  # noqa: E402  场景 2D 相机（取景锁在地图内）
@@ -403,6 +408,21 @@ def build_scene(ground, solid):
     placements = dk.scatter(W, H, jittered, solid, exclude, mid_avoid=avoid)
     lines.extend(dk.decor_lines(moist_id + 1, placements, table,
                                 lambda cell: tints.get(cell[1] * W + cell[0], 0)))
+    # M72-06：前景遮断拆层（树冠/屋顶）。这里与 `set_foreground_occluders.py`（就地改盘上
+    # 场景）**共用同一条 `plan()`+`apply_patch()` 代码路径**，不是"各自实现一遍看起来一样"：
+    # 遮断块的存在感极低（拼回去画面逐字节相同），一旦重跑生成器把这一段抹掉，
+    # 盘上只是"前景没了"，没有任何一张图会报错。
+    fo.assert_id_band_free(lines)
+    base_updates, occluders = fo.plan(lines, fo.lk.load())
+    lines = fo.apply_patch(lines, base_updates, occluders)
+    # M72-06 C 段：建筑/树/道具的地面投影贴片。同一条理由——与 `set_cast_shadows.py`
+    # 共用 `build()`+`apply_patch()`，并且贴片 PNG 也走同一条 `write_art`（内容没变不重写）。
+    # 必须在 `fo.apply_patch` **之后**：贴片按拆层后的本体贴图算落地行，也按拆层后的
+    # 实体排除树冠/屋顶块（空中块不配自己的投影）。
+    cs.assert_id_band_free(lines)
+    shadows, canvases = cs.build(lines, cs.lk.load(), cs.load_art(lines))
+    lines = cs.apply_patch(lines, cs.shadow_lines(shadows))
+    cs.write_art(canvases, ".")
     return "\n".join(lines) + "\n"
 
 

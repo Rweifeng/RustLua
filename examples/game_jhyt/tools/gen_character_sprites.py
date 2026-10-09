@@ -35,7 +35,13 @@ import argparse
 import json
 import os
 import struct
+import sys
 import zlib
+from functools import lru_cache
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import light_kit as lk  # noqa: E402  脚下接触阴影的偏移/颜色/透明度事实源在 data/lighting.lua
 
 # ---------------------------------------------------------------------------
 # 常量
@@ -71,7 +77,6 @@ ACTIONS = {
 
 # 色板锚点（与 docs/35-UI资源设计 §3 同源）
 INK = (0x1F, 0x23, 0x28, 255)
-SHADOW = (0x1F, 0x23, 0x28, 70)
 WOOD = (0x8A, 0x6A, 0x46, 255)
 WOOD_DARK = (0x4A, 0x36, 0x28, 255)
 IRON = (0xC8, 0xCC, 0xD4, 255)
@@ -127,6 +132,17 @@ class Canvas:
             for x in range(other.w):
                 c = other.get(x, y)
                 if c[3] > 0:
+                    self.set(x, y, c)
+
+    def blit_behind(self, other):
+        """把 other 只写进 self 的**透明像素**——"贴在已有内容后面"。
+
+        脚下接触阴影用这条：镜像整帧之后再盖，偏移方向才不会被翻转（见 `render_action`）。
+        """
+        for y in range(other.h):
+            for x in range(other.w):
+                c = other.get(x, y)
+                if c[3] > 0 and not self.opaque(x, y):
                     self.set(x, y, c)
 
     def outline(self, color=INK):
@@ -543,15 +559,47 @@ def cloth_light(ch):
 # ---------------------------------------------------------------------------
 
 
+# 接触阴影的**形状**：脚底那一格的扁椭圆，三条水平线（画布 y 向下，行 29–31 = 导出 58–63）。
+# 这里只描述椭圆自己；**往右下挪多少不在这里**——那是光向契约，读 `data/lighting.lua` 的
+# `actor_shadow` 段（见 `shadow_style`），生成器里不留第二份偏移。
+SHADOW_ELLIPSE = {
+    False: ((CX - 6, CX + 6, 31), (CX - 7, CX + 7, 30), (CX - 5, CX + 5, 29)),
+    True: ((CX - 10, CX + 8, 31), (CX - 11, CX + 9, 30), (CX - 9, CX + 7, 29)),
+}
+
+
+@lru_cache(maxsize=1)
+def shadow_style():
+    """`((r, g, b, a), shift_x, shift_rows)` ← lighting.lua 的 `actor_shadow`。
+
+    缓存一次就够：全角色 + 全动作要画上千帧，而事实源是磁盘上的静态表。
+    """
+    spec = lk.load()["actor_shadow"]
+    color = spec["color"]
+    return (
+        (int(color["r"]), int(color["g"]), int(color["b"]), int(spec["alpha"])),
+        int(spec["shift_x"]),
+        int(spec["shift_rows"]),
+    )
+
+
 def draw_shadow(cv, fallen=False):
-    if fallen:
-        cv.hline(CX - 10, CX + 8, 31, SHADOW)
-        cv.hline(CX - 11, CX + 9, 30, SHADOW)
-        cv.hline(CX - 9, CX + 7, 29, SHADOW)
-        return
-    cv.hline(CX - 6, CX + 6, 31, SHADOW)
-    cv.hline(CX - 7, CX + 7, 30, SHADOW)
-    cv.hline(CX - 5, CX + 5, 29, SHADOW)
+    """按光向落位画脚下接触阴影（画布 y 向下；偏移取自 lighting.lua）。"""
+    color, shift_x, shift_rows = shadow_style()
+    for x0, x1, y in SHADOW_ELLIPSE[fallen]:
+        cv.hline(x0 + shift_x, x1 + shift_x, y + shift_rows, color)
+
+
+def shadow_canvas(fallen=False):
+    """单独一张接触阴影，**不在 render_frame 里烘进身体**。
+
+    为什么单独一张：负 x 朝向（w/sw/nw）是把整帧 `mirrored()` 出来的，烘进去的
+    `shift_x` 会在这些朝向上翻成"往左上投影"，而 `lighting.lua` 的 `actor_shadow`
+    门只认 `shift_x >= 0`。所以镜像之后再用 `blit_behind` 盖上去（脚赢，阴影只补透明像素）。
+    """
+    out = Canvas()
+    draw_shadow(out, fallen)
+    return out
 
 
 def draw_legs(cv, ch, facing, lay, o):
@@ -1067,9 +1115,8 @@ POSES = {
 
 
 def render_frame(ch, facing, pose):
-    """渲染单帧：阴影 → 后景配件 → 身体 → 轮廓 → 前景配件/道具。"""
+    """渲染单帧：后景配件 → 身体 → 轮廓 → 前景配件/道具（**不含脚下阴影**，见 `shadow_canvas`）。"""
     final = Canvas()
-    draw_shadow(final, fallen=bool(pose.get("lying")))
     if pose.get("lying"):
         body = Canvas()
         draw_fallen(body, ch, facing)
@@ -1096,6 +1143,15 @@ def clip_frames(action, role):
     return len(POSES[action][role])
 
 
+def stamp_shadow(frame, pose):
+    """整帧（**镜像之后**）盖上接触阴影：只写透明像素，所以脚永远压住阴影。
+
+    顺序是要点而不是风格：先烘进帧里再镜像，`shift_x` 会在 w/sw/nw 上翻成"往左上跑"。
+    """
+    frame.blit_behind(shadow_canvas(bool(pose.get("lying"))))
+    return frame
+
+
 def render_action(ch, action, facing):
     poses = POSES[action][ch["role"]]
     # 负 x 朝向（w/sw/nw）以对应正 x 朝向为基准，渲染后整体水平镜像
@@ -1105,7 +1161,7 @@ def render_action(ch, action, facing):
         frame = render_frame(ch, base, pose)
         if base != facing:
             frame = frame.mirrored()
-        frames.append(frame)
+        frames.append(stamp_shadow(frame, pose))
     return frames
 
 

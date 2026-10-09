@@ -14,7 +14,7 @@ component	2	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.00
 component	2	Tilemap	tile_size=32x32;width=40;height=23;texture=assets/art/tilesets/manor/manor_farm.png;tiles_format=1;atlas_cols=6;atlas_rows=1;tiles=0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0;solid=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 entity_meta	2	role	farm_tilemap
 entity	3	ManorHouse
-component	3	Sprite	texture=assets/art/buildings/manor_house.png;size=224x224;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=0
+component	3	Sprite	texture=assets/art/buildings/manor_house_body.png;size=224x97;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=0
 component	3	Transform	position=64.000000000,160.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	3	role	building
 entity_meta	3	cell	2,5
@@ -59,17 +59,17 @@ component	11	Transform	position=416.000000000,160.000000000,0.000000000;rotation
 entity_meta	11	role	prop
 entity_meta	11	cell	13,5
 entity	12	ManorTreeWest
-component	12	Sprite	texture=assets/art/props/manor_tree.png;size=64x88;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
+component	12	Sprite	texture=assets/art/props/manor_tree_trunk.png;size=64x48;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
 component	12	Transform	position=96.000000000,608.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	12	role	prop
 entity_meta	12	cell	3,19
 entity	13	ManorTreeNorth
-component	13	Sprite	texture=assets/art/props/manor_tree.png;size=64x88;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
+component	13	Sprite	texture=assets/art/props/manor_tree_trunk.png;size=64x48;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
 component	13	Transform	position=800.000000000,640.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	13	role	prop
 entity_meta	13	cell	25,20
 entity	14	ManorTreeEast
-component	14	Sprite	texture=assets/art/props/manor_tree.png;size=64x88;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
+component	14	Sprite	texture=assets/art/props/manor_tree_trunk.png;size=64x48;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
 component	14	Transform	position=1216.000000000,608.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	14	role	prop
 entity_meta	14	cell	38,19
@@ -84,7 +84,7 @@ component	16	Transform	position=864.000000000,608.000000000,0.000000000;rotation
 entity_meta	16	role	prop
 entity_meta	16	cell	27,19
 entity	17	ManorTreeSoutheast
-component	17	Sprite	texture=assets/art/props/manor_tree.png;size=64x88;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
+component	17	Sprite	texture=assets/art/props/manor_tree_trunk.png;size=64x48;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
 component	17	Transform	position=1184.000000000,480.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	17	role	prop
 entity_meta	17	cell	37,15
@@ -854,3 +854,87 @@ entity	205	Decor_Pebbles_205
 component	205	Sprite	texture=assets/art/decor/decor_pebbles.png;size=16x7;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=-30
 component	205	Transform	position=1223.000000000,657.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	205	role	decor
+entity	5001	ManorHouseRoof
+component	5001	Sprite	texture=assets/art/buildings/manor_house_roof.png;size=224x127;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=foreground;order=-100
+component	5001	Transform	position=64.000000000,257.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5001	role	occluder
+entity	5002	ManorTreeWestCanopy
+component	5002	Sprite	texture=assets/art/props/manor_tree_canopy.png;size=64x40;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=foreground;order=-100
+component	5002	Transform	position=96.000000000,656.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5002	role	occluder
+entity	5003	ManorTreeNorthCanopy
+component	5003	Sprite	texture=assets/art/props/manor_tree_canopy.png;size=64x40;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=foreground;order=-100
+component	5003	Transform	position=800.000000000,688.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5003	role	occluder
+entity	5004	ManorTreeEastCanopy
+component	5004	Sprite	texture=assets/art/props/manor_tree_canopy.png;size=64x40;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=foreground;order=-100
+component	5004	Transform	position=1216.000000000,656.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5004	role	occluder
+entity	5005	ManorTreeSoutheastCanopy
+component	5005	Sprite	texture=assets/art/props/manor_tree_canopy.png;size=64x40;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=foreground;order=-100
+component	5005	Transform	position=1184.000000000,528.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5005	role	occluder
+entity	5101	ManorHouseShadow
+component	5101	Sprite	texture=assets/art/shadows/blob_223x61.png;size=223x61;pivot=0.000,0.000;tint=0.122,0.137,0.157,0.280;sorting_layer=world;order=-20
+component	5101	Transform	position=75.000000000,123.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5101	role	cast_shadow
+entity	5102	ManorShedShadow
+component	5102	Sprite	texture=assets/art/shadows/blob_137x37.png;size=137x37;pivot=0.000,0.000;tint=0.122,0.137,0.157,0.280;sorting_layer=world;order=-20
+component	5102	Transform	position=145.000000000,462.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5102	role	cast_shadow
+entity	5103	ManorGateShadow
+component	5103	Sprite	texture=assets/art/shadows/blob_91x25.png;size=91x25;pivot=0.000,0.000;tint=0.122,0.137,0.157,0.280;sorting_layer=world;order=-20
+component	5103	Transform	position=487.000000000,-16.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5103	role	cast_shadow
+entity	5104	ManorTreeWestShadow
+component	5104	Sprite	texture=assets/art/shadows/blob_29x13.png;size=29x13;pivot=0.000,0.000;tint=0.122,0.137,0.157,0.280;sorting_layer=world;order=-20
+component	5104	Transform	position=119.000000000,598.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5104	role	cast_shadow
+entity	5105	ManorTreeNorthShadow
+component	5105	Sprite	texture=assets/art/shadows/blob_29x13.png;size=29x13;pivot=0.000,0.000;tint=0.122,0.137,0.157,0.280;sorting_layer=world;order=-20
+component	5105	Transform	position=823.000000000,630.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5105	role	cast_shadow
+entity	5106	ManorTreeEastShadow
+component	5106	Sprite	texture=assets/art/shadows/blob_29x13.png;size=29x13;pivot=0.000,0.000;tint=0.122,0.137,0.157,0.280;sorting_layer=world;order=-20
+component	5106	Transform	position=1239.000000000,598.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5106	role	cast_shadow
+entity	5107	ManorBambooWestShadow
+component	5107	Sprite	texture=assets/art/shadows/blob_41x13.png;size=41x13;pivot=0.000,0.000;tint=0.122,0.137,0.157,0.280;sorting_layer=world;order=-20
+component	5107	Transform	position=293.000000000,631.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5107	role	cast_shadow
+entity	5108	ManorBambooEastShadow
+component	5108	Sprite	texture=assets/art/shadows/blob_41x13.png;size=41x13;pivot=0.000,0.000;tint=0.122,0.137,0.157,0.280;sorting_layer=world;order=-20
+component	5108	Transform	position=869.000000000,599.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5108	role	cast_shadow
+entity	5109	ManorTreeSoutheastShadow
+component	5109	Sprite	texture=assets/art/shadows/blob_29x13.png;size=29x13;pivot=0.000,0.000;tint=0.122,0.137,0.157,0.280;sorting_layer=world;order=-20
+component	5109	Transform	position=1207.000000000,470.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5109	role	cast_shadow
+entity	5110	ManorBambooSoutheastShadow
+component	5110	Sprite	texture=assets/art/shadows/blob_41x13.png;size=41x13;pivot=0.000,0.000;tint=0.122,0.137,0.157,0.280;sorting_layer=world;order=-20
+component	5110	Transform	position=1029.000000000,503.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5110	role	cast_shadow
+entity	5111	BuildTrainingHallShadow
+component	5111	Sprite	texture=assets/art/shadows/blob_145x37.png;size=145x37;pivot=0.000,0.000;tint=0.122,0.137,0.157,0.280;sorting_layer=world;order=-20
+component	5111	Transform	position=645.000000000,489.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5111	role	cast_shadow
+entity	5112	BuildStorehouseShadow
+component	5112	Sprite	texture=assets/art/shadows/blob_129x35.png;size=129x35;pivot=0.000,0.000;tint=0.122,0.137,0.157,0.280;sorting_layer=world;order=-20
+component	5112	Transform	position=837.000000000,458.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5112	role	cast_shadow
+entity	5113	BuildHerbHutShadow
+component	5113	Sprite	texture=assets/art/shadows/blob_129x35.png;size=129x35;pivot=0.000,0.000;tint=0.122,0.137,0.157,0.280;sorting_layer=world;order=-20
+component	5113	Transform	position=517.000000000,426.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5113	role	cast_shadow
+entity	5114	BuildTeaShedShadow
+component	5114	Sprite	texture=assets/art/shadows/blob_111x29.png;size=111x29;pivot=0.000,0.000;tint=0.122,0.137,0.157,0.280;sorting_layer=world;order=-20
+component	5114	Transform	position=37.000000000,558.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5114	role	cast_shadow
+entity	5115	BuildForgeStandShadow
+component	5115	Sprite	texture=assets/art/shadows/blob_111x29.png;size=111x29;pivot=0.000,0.000;tint=0.122,0.137,0.157,0.280;sorting_layer=world;order=-20
+component	5115	Transform	position=389.000000000,558.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5115	role	cast_shadow
+entity	5116	BuildScaffoldShadow
+component	5116	Sprite	texture=assets/art/shadows/blob_131x33.png;size=131x33;pivot=0.000,0.000;tint=0.122,0.137,0.157,0.280;sorting_layer=world;order=-20
+component	5116	Transform	position=515.000000000,590.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5116	role	cast_shadow

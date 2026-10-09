@@ -83,11 +83,30 @@ def strip_decor(lines):
     return kept, len(decor_ids)
 
 
+def reserved_ids(lines):
+    """别的工具挂在固定段上的实体 id：M72-06 的 `role=occluder`（5001+）与
+    `role=cast_shadow`（5101+）。"""
+    roles = ("occluder", "cast_shadow")
+    return {
+        line.split("\t")[1]
+        for line in lines
+        if len(line.split("\t")) == 4 and line.split("\t")[0] == "entity_meta"
+        and line.split("\t")[2] == "role" and line.split("\t")[3] in roles
+    }
+
+
 def next_id(lines):
+    """装饰段的起始 id：**跳过别的工具的保留段**（见 `reserved_ids`）。
+
+    不跳的话，前景遮断实体（5001..5005）会把装饰起点从 31 顶到 5006，于是"往盘上加
+    5 件纯美术实体"会让 175 件装饰**整体改号**，`--check` 的逐字节对拍红在一个跟装饰
+    毫无关系的改动上——这条是加完遮断段实测撞出来的（700 行不同）。
+    """
+    skip = reserved_ids(lines)
     highest = 0
     for line in lines:
         fields = line.split("\t")
-        if fields[0] == "entity" and fields[1].isdigit():
+        if fields[0] == "entity" and fields[1].isdigit() and fields[1] not in skip:
             highest = max(highest, int(fields[1]))
     return highest + 1
 

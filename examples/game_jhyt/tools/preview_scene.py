@@ -22,7 +22,9 @@
     改任何一边都必须同步另一边（另两份镜像在 `plugins/webgl/web-runtime.js` 的 JS 与 Lua 垫片里），
     否则预览图与实机不一致（本文件的存在意义就是发现这种不一致）。
   * Sprite：pivot=(0,0) 时 transform 即左下角；图像顶行对应 quad 顶部。
-    `__white__` 内建贴图按 tint 画成半透明占位块，便于看玩家/NPC 站位。
+    `tint=r,g,b,a` 与引擎同样按**乘法 + src-over** 作用在贴图像素上（见 `blit_region`），
+    纯白贴片（M72-06 的地面投影）靠它才看得见暗与透。`__white__` 内建贴图按 tint 画成
+    半透明占位块，便于看玩家/NPC 站位。
   * per-tile tint（M72-02）：`tints=<cellIndex>:<tintId>,...`（稀疏，只记非白格），
     `tints_rgb=r,g,b,a|r,g,b,a|...` 是调色表；顶点色是**乘法**染色，这里用
     `tint_rect` 逐像素相乘复刻同一个语义（不做半透明叠加近似）。
@@ -111,15 +113,36 @@ def parse_scene(path):
     return header, entities
 
 
-def blit_region(dst, src, sx, sy, sw, sh, dx, dy, dw, dh):
-    """把 src 的 (sx,sy,sw,sh) 区域按最近邻缩放到 (dx,dy,dw,dh)。"""
+def blit_region(dst, src, sx, sy, sw, sh, dx, dy, dw, dh, tint=None):
+    """把 src 的 (sx,sy,sw,sh) 区域按最近邻缩放到 (dx,dy,dw,dh)。
+
+    `tint` = sprite 的顶点色（r,g,b,a 各 0..1）：引擎语义是**贴图色 × 顶点色**再 src-over
+    混合。不传就是直接覆盖（既有预览逐字节不变）。少了这一步，投影贴片在预览里会画成一
+    块白——它的 PNG 是**纯白**的，暗与透全在 `shadow_tint` 里（docs/57 §1.3 的软边门），
+    而"影子朝右下、没盖住角色"这类只能靠眼睛验收的判断，正是要在验收图里看的东西。
+    """
     for oy in range(dh):
         ysrc = sy + min(sh - 1, int(oy * sh / dh))
         for ox in range(dw):
             xsrc = sx + min(sw - 1, int(ox * sw / dw))
             color = src.get(xsrc, ysrc)
-            if color[3] > 0:
-                dst.set(dx + ox, dy + oy, color)
+            if tint is None:
+                if color[3] > 0:
+                    dst.set(dx + ox, dy + oy, color)
+                continue
+            alpha = color[3] * tint[3]
+            if alpha <= 0:
+                continue
+            # 夹到 255：装饰的 tint 有 1.030 这种**大于 1** 的档（顶点色可以提亮），
+            # 而 `Canvas.set` 写的是 bytes —— 越界直接 ValueError。引擎侧是 u8 饱和转换。
+            shaded = tuple(min(255, int(color[i] * tint[i])) for i in range(3))
+            if alpha >= 255:
+                dst.set(dx + ox, dy + oy, shaded + (255,))
+                continue
+            below = dst.get(dx + ox, dy + oy)
+            f = alpha / 255.0
+            mixed = tuple(int(shaded[i] * f + below[i] * (1.0 - f)) for i in range(3))
+            dst.set(dx + ox, dy + oy, mixed + (255,))
 
 
 class TextureCache:
@@ -449,8 +472,10 @@ def render(scene_path, root, scale=1, grid=False, only_layers=None):
         if texture is None:
             errors.append(f"{sprite['entity']['name']}: 贴图缺失 {texture_path}")
             continue
+        parts = [float(part) for part in fields.get("tint", "1,1,1,1").split(",")]
+        tint = tuple(parts) if any(abs(part - 1.0) > 1e-6 for part in parts) else None
         blit_region(canvas, texture, 0, 0, texture.w, texture.h,
-                    int(left), int(top_screen), int(size_x), int(size_y))
+                    int(left), int(top_screen), int(size_x), int(size_y), tint)
         notes.append(
             f"{sprite['entity']['name']}: {os.path.basename(texture_path)} "
             f"cell=({left / tile_w:.2f},{bottom / tile_h:.2f}) "

@@ -2,12 +2,22 @@
 ================================================================
 
 本目录字体文件（2026-10-08 起是**子集**，不是上游全量文件）
-    FusionPixel-12px-Monospaced-zhHans.ttf      597,932 字节
-    SHA-256 4ab5e8d75d7b096e2a979c89532d43599b4c3810f75291388a1dae76117b9aa0
-    cmap 覆盖 1,606 个码位（`char_collect` 收到的工程用字全部命中，
+    FusionPixel-12px-Monospaced-zhHans.ttf      599,264 字节
+    SHA-256 a0f5cf701013e759826c6f8a8b5e63703ab050b8c425acaad7c71a28d1d7e1d2
+    cmap 覆盖 1,612 个码位（`char_collect` 收到的工程用字全部命中，
     `jhyt_m72_pixel_font` ④ 逐字断言"字体覆盖 + 点阵非空"）
     子集化=不可逆（`gvar/fvar` 与全部未用字形被丢弃），所以下游改动后要按 §上游与下载
     取回全量字体重裁一次，别拿这份子集当源（`subset_project_font` 会直接拒）。
+
+重裁记录
+    2026-10-08 首裁：cmap 1,606（597,932 字节 / SHA-256 4ab5e8d75d7b096e2a979c89532d43599b4c3810f75291388a1dae76117b9aa0）
+    2026-10-09 M72-06 重裁：cmap 1,612（+6 字，全部来自新增的 `scripts/data/lighting.lua`
+        里 `err()` 的中文文案——`char_collect` 收的是**全部 Lua 字符串字面量**，校验脚本报错
+        那句也算工程用字，不重裁就会撞上 `jhyt_m72_pixel_font` ④ 的缺字红）
+        增的 6 个码位：U+53C8 又 / U+6EA2 溢 / U+7279 特 / U+79E9 秩 / U+96F6 零 / U+989C 颜。
+        逐码位核对过：新子集 cmap = 首裁 cmap ∪ 上面 6 个，**一个都没少**（只增不减）。
+    命令：cargo run -q -p engine --example subset_project_font -- examples/game_jhyt
+          --source engine/crates/editor/fonts/FusionPixel-12px-Monospaced-zhHans.ttf
 
 开发期全量字体（**不入库**，只放在本地开发目录）
     engine/crates/editor/fonts/FusionPixel-12px-Monospaced-zhHans.ttf

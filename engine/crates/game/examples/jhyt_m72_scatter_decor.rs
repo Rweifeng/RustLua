@@ -22,7 +22,9 @@
 //!      任何非装饰 sprite，中景档必须低于树/竹。反面对照：把一件装饰提到树的 order，本节必须红。
 //!   ⑤ 装饰不参与物理：每件装饰实体在**运行期的刚体位置**各做一遍圆查询，取到装饰贴图的次数必须为
 //!      0，并另打一发带 collider 的实体作正向对照（`physics.overlap` 走 Rapier 的碰撞体宽相，装饰
-//!      一旦长出 collider，玩家就会在草地上被一块"看不见的石头"挡住）。
+//!      一旦长出 collider，玩家就会在草地上被一块"看不见的石头"挡住）。命中按**实体 id 分类**：
+//!      归 GroundMap 的是地表实心格按格生成的静态碰撞体（`scene_spawn.rs` 的
+//!      `solid_cell_colliders`），认不出的必须为 0。
 //!
 //! 目录（`CATALOG`）在门里是**手抄副本**，故意的：门的职责是"生成器画出的 PNG 与它声明的
 //! 尺寸、场景里写的尺寸必须是同一个"，如果门去解析 `decor_kit.py` 就变成那份表自己跟自己一致。
@@ -359,23 +361,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &format!(
             r#"(function()
                  local names = {{{}}}
-                 local probed, bad, foreign = 0, 0, 0
+                 local map = entity.find('GroundMap')
+                 if not map or map == 0 then return '-1 0 0 0' end
+                 local probed, bad, ground, other = 0, 0, 0, 0
                  for _, name in ipairs(names) do
                    local id = entity.find(name)
                    if id and id ~= 0 then
                      probed = probed + 1
                      local t = transform.get(id)
-                     for _, other in ipairs(physics.overlap(t.x, t.y, 4)) do
-                       local ok, s = pcall(sprite.get, other)
-                       if ok and s and string.find(s.texture or '', 'assets/art/decor/', 1, true) then
-                         bad = bad + 1
+                     for _, o in ipairs(physics.overlap(t.x, t.y, 4)) do
+                       if o == map then
+                         ground = ground + 1
                        else
-                         foreign = foreign + 1
+                         local ok, s = pcall(sprite.get, o)
+                         if ok and s and string.find(s.texture or '', '{DECOR_PREFIX}', 1, true) then
+                           bad = bad + 1
+                         else
+                           other = other + 1
+                         end
                        end
                      end
                    end
                  end
-                 return string.format('%d %d %d', probed, bad, foreign)
+                 return string.format('%d %d %d %d', probed, bad, ground, other)
                end)()"#,
             names
                 .iter()
@@ -384,7 +392,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .join(",")
         ),
     )?;
-    let [probed, hits, foreign] = three_numbers(&report, ["probed", "bad", "foreign"])?;
+    let [probed, hits, ground, other] = numbers(&report, ["probed", "bad", "ground", "other"])?;
+    if probed < 0 {
+        return Err(
+            "运行期找不到 GroundMap：分不出\"地表的按格碰撞体\"与\"别的东西\"，\
+             下面那句 0 就没有对照"
+                .into(),
+        );
+    }
     if probed as usize != decor.len() {
         return Err(format!(
             "只有 {probed}/{} 件装饰在运行期查得到实体，上面的循环其余都在原地跳过：\
@@ -397,6 +412,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!(
             "{hits} 次圆查询在装饰的刚体位置取到了带装饰贴图的实体：装饰长出了碰撞体。玩家会在\
              草地上被一块看不见的石头挡住，而 `solid` 串里根本没有这一格"
+        )
+        .into());
+    }
+    // 命中分类要落到"打到的是谁"，不是只数个数：`physics.overlap` 在 manor 里必然打到东西
+    // （地表 tilemap 的每个实心格都挂着一个按格生成的静态 cuboid，见 `scene_spawn.rs` 的
+    // `solid_cell_colliders`，`jhyt_m72_foreground_occlusion` §④ 逐格探针读数 360/360）。
+    // 上一版把这批命中在文案里写成"地表 tilemap 的实心格"，靠的是推断；现在按实体 id 比出来：
+    // 归给 GroundMap 的 = ground，剩下的必须为 0，否则就是有第三个碰撞体来源混进装饰堆里。
+    if other != 0 {
+        return Err(format!(
+            "{other} 次命中既不是装饰贴图、也不是 GroundMap：装饰带里冒出了第三个碰撞体来源，\
+             本节的分类不再覆盖全部命中，得先认出它是谁"
         )
         .into());
     }
@@ -447,9 +474,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
     println!(
-        "  {} 件装饰各查一次 physics.overlap（都在运行期的刚体位置），命中装饰贴图的次数 = 0、\
-         命中别物的次数 = {foreign}（地表 tilemap 的实心格）；同一套查询打到 {name} 的刚体位置取到 \
-         {hits_on_solid} 个命中且含其自身（正向对照，非空转）",
+        "  {} 件装饰各查一次 physics.overlap（都在运行期的刚体位置），命中装饰贴图的次数 = 0；\
+         命中别物的 {ground} 次按实体 id 认出全部是 GroundMap（= 实心格按格生成的地表碰撞体，\
+         与装饰无关），认不出的 0 次；同一套查询打到 {name} 的刚体位置取到 {hits_on_solid} 个命中\
+         且含其自身（正向对照，非空转）",
         decor.len(),
         name = solid.name
     );
@@ -569,28 +597,25 @@ fn parse_fields(value: &str) -> BTreeMap<String, String> {
 
 /// 把 Lua 空白分隔的三个读数拆成整数；少一个就报错，**不静默补 0**——
 /// 补 0 会把"那段 Lua 根本没跑完"读成"断言成立"。
-fn three_numbers(text: &str, labels: [&str; 3]) -> Result<[i64; 3], Box<dyn std::error::Error>> {
+fn numbers<const N: usize>(
+    text: &str,
+    labels: [&str; N],
+) -> Result<[i64; N], Box<dyn std::error::Error>> {
     let fields: Vec<&str> = text.split_whitespace().collect();
-    if fields.len() != 3 {
+    if fields.len() != N {
         return Err(format!(
-            "读回 {fields:?}，应有 3 个数（{}）：Lua 那段没跑完",
+            "读回 {fields:?}，应有 {N} 个数（{}）：Lua 那段没跑完",
             labels.join(", ")
         )
         .into());
     }
-    let values: Result<Vec<i64>, _> = fields
-        .iter()
-        .zip(labels)
-        .map(|(field, label)| {
-            field
-                .parse::<i64>()
-                .map_err(|error| format!("{label} 读回 {field:?} 不是整数：{error}"))
-        })
-        .collect();
-    match values?[..] {
-        [a, b, c] => Ok([a, b, c]),
-        _ => unreachable!("长度已在上面钉成 3"),
+    let mut values = [0i64; N];
+    for (index, (field, label)) in fields.iter().zip(labels).enumerate() {
+        values[index] = field
+            .parse::<i64>()
+            .map_err(|error| format!("{label} 读回 {field:?} 不是整数：{error}"))?;
     }
+    Ok(values)
 }
 
 fn png_size(project: &Path, path: &str) -> Result<(u32, u32), Box<dyn std::error::Error>> {

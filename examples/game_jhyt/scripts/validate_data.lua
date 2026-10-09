@@ -137,7 +137,11 @@ local function validators()
     { "black_market_data", require("data.black_market"), "data.black_market" },
     { "tea_party_data", require("data.tea_party"), "data.tea_party" },
     { "relationship_events_data", require("data.relationship_events"), "data.relationship_events" },
-    { "mine_data", require("data.mine"), "data.mine" }
+    { "mine_data", require("data.mine"), "data.mine" },
+    -- M72-06 追加："lighting"（data/lighting.lua）：全局光向与投影/遮挡契约的唯一数据源。
+    -- 这里守的是**符号约定**（左上光源 ⇒ 阴影向量落在屏幕右下象限）与取值区间：光向写反不会
+    -- 报错，只会让所有影子朝左上飘，而"影子方向不一致"在画面上读起来像"光源有好几个"。
+    { "lighting", require("data.lighting"), "data.lighting" }
   }
 end
 

@@ -98,6 +98,15 @@ class Canvas:
                 out.set(self.w - 1 - x, y, self.get(x, y))
         return out
 
+    def sliced(self, x0, y0, x1, y1):
+        """按闭区间裁一块。**宽度/x 原点必须留住**：M72-06 把树拆成树干+树冠两块时，
+        两块共用同一个 x 原点才能靠 Transform 差一个 y 严丝合缝对回去。"""
+        out = Canvas(x1 - x0 + 1, y1 - y0 + 1)
+        for y in range(y0, y1 + 1):
+            for x in range(x0, x1 + 1):
+                out.set(x - x0, y - y0, self.get(x, y))
+        return out
+
     def to_png(self):
         raw = bytearray()
         stride = self.w * 4

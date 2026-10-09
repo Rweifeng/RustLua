@@ -51,6 +51,7 @@ from gen_character_sprites import (  # noqa: E402  复用人形骨架与姿态�
     POSE_IDLE,
     POSE_WALK6,
     render_frame,
+    stamp_shadow,
 )
 
 OUT_DIR = os.path.join("assets", "art", "enemies")
@@ -423,7 +424,8 @@ def render_action(entry, action, facing):
         base = MIRROR_DIR.get(facing, facing)
         for pose in poses:
             frame = render_frame(entry, base, pose)
-            frames.append(frame.mirrored() if base != facing else frame)
+            frame = frame.mirrored() if base != facing else frame
+            frames.append(stamp_shadow(frame, pose))
         return frames
     # 非人形骨架只画 s/n/e/w：斜向归一到侧身朝向（se/ne→e，sw/nw→w）
     side = {"se": "e", "ne": "e", "sw": "w", "nw": "w"}.get(facing, facing)

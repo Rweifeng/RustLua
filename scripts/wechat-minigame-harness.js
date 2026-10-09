@@ -20,6 +20,15 @@
 //   --check-ui-layer-order  UI 两层的绘制序（需配合 --drive-new-game）：取最后一帧假 ctx 记下的
 //                             drawImage src 序列，断言预设卡底（ui_skill_card_9s.png）整批排在
 //                             动态招式图标（ui_skill_*.png）之前——反了图标就被不透明卡底埋掉。
+//   --check-depth-order     角色遮挡跟脚位 Y（需配合 --drive-new-game）：三件 actor 层探针按已知 Y
+//                             挂上，取最后一帧假 ctx 记下的 drawImage src 序列，断言"Y 变了 ⇒ 画的
+//                             先后跟着翻"以及翻的方向（原生对应门是 jhyt_m35_depth_sort）。
+//   --check-foreground-order 前景/投影两条**层带**（需配合 --drive-new-game）：三件探针分别落
+//                             world+投影 order、actor、foreground+遮断 order（两个 order 当场从玩法
+//                             自己的 data/lighting.lua 读，不在门里抄第二份），断言画的先后按层带走；
+//                             再看盘上真的 16 张投影贴片全排在主角之前、5 件遮断物全排在主角之后；
+//                             反面对照只改层名不改 order，必须翻过来——翻不过来就说明起作用的是
+//                             order 而不是层带，那 sorting_layer 在这台宿主上就是死数据。
 // 退出码：0 通过、1 失败（失败原因打印到 stderr）。
 'use strict';
 
@@ -119,6 +128,9 @@ let noFrames = false;
   // 角色遮挡跟脚位 Y（M35）：web 是引擎的第二份实现，排序键与合批都是重写的，
   // 原生门全绿不代表这边也绿 ⇒ 在真实宿主上直接看 drawImage 的先后。
   let checkDepthOrder = false;
+  // 前景遮断与投影贴片这两条**层带**（foreground / world+负 order）在这台宿主上到底生不生效
+  // （M72-06）。与上面那条同理：web 的排序键与绘制循环是另写的一份，只能看 drawImage 的先后。
+  let checkForegroundOrder = false;
   let checkUiLayerOrder = false;
   let checkSavePersist = false;
   // 分包挂载行为——新发布形态（主包 + 单分包）的核心**宿主语义**，与 `--wx-path-style` 正交：
@@ -199,6 +211,7 @@ if (argv[i] === '--no-frames') noFrames = true;
     else if (argv[i] === '--action-disk' && argv[i + 1]) actionDiskFrames = Math.max(0, Number(argv[++i]) || 0);
     else if (argv[i] === '--check-help-page') checkHelpPage = true;
     else if (argv[i] === '--check-depth-order') checkDepthOrder = true;
+    else if (argv[i] === '--check-foreground-order') checkForegroundOrder = true;
     else if (argv[i] === '--check-ui-layer-order') checkUiLayerOrder = true;
     else if (argv[i] === '--check-save-persist') checkSavePersist = true;
     else if (argv[i] === '--drive-frame' && argv[i + 1]) driveFrame = Math.max(0, Number(argv[++i]) || 0);
@@ -297,6 +310,10 @@ if (argv[i] === '--no-frames') noFrames = true;
   if (checkDepthOrder && !driveNewGame) {
     fail('--check-depth-order 需要配合 --drive-new-game：actor 层探针只在玩法地图里挂得上，'
       + '标题界面画的是菜单，量不到遮挡');
+  }
+  if (checkForegroundOrder && !driveNewGame) {
+    fail('--check-foreground-order 需要配合 --drive-new-game：层带读数比的是**主角**与盘上贴片、'
+      + '遮断物的绘制先后，标题界面里三样都没有');
   }
   // UI 分层序量的就是**玩法 HUD**：卡底是 hud.prefab 的实体图、招式图标是动态层
   // `ui.image`，两者只在进图之后同帧共存（标题界面的对应_pair 是按钮底 vs hover，同一不变式）。
@@ -888,7 +905,13 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
   //  两种报错的差别正是当初判断"代码包这条路根本没通"的线索）。
   function codePackageDenyReason(abs) {
     const rel = path.relative(root, abs).split(path.sep).join('/');
-    if (rel.startsWith('..')) return null; // 不在产物里，交给调用方
+    // `path.isAbsolute(rel)` 是 Windows 上的另一条"不在产物里"：跨盘时 `path.relative`
+    // 不会给 `..` 前缀，而是**直接返回绝对路径**（E: 上的产物 + C: 上的临时目录 = 常态）。
+    // 少了这一半，`wx.downloadFile` 落进系统临时目录的字节会被当成产物内的代码包路径，
+    // 后缀（.toml/.png/.ttf/.scene）不在上传白名单 ⇒ 'permission denied' ⇒ 适配层报
+    // `pack/project.toml HTTP 404`，而本地服务其实给的是 200（实测：把 TEMP 指到发布目录
+    // 同盘就绿、指到别的盘必红——故障与产物内容无关，纯是这台机器的盘符）。
+    if (rel.startsWith('..') || path.isAbsolute(rel)) return null; // 不在产物里，交给调用方
     const uploaded = loadUploadedSet();
     if (uploaded.has(rel)) return null;
     if (fs.existsSync(abs)) {
@@ -1637,10 +1660,13 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     const diskBudget = actionDiskFrames > 0 ? (13 + actionDiskFrames) : 0;
     // --check-depth-order 固定开销：正序/反序两段各泵 8 帧（等运行期挂上去的贴图按需加载完）。
     const depthBudget = checkDepthOrder ? 16 : 0;
+    // --check-foreground-order 固定开销：正序/反面对照/还原三段各泵 8 帧（同 depth 那条的理由：
+    // 探针贴图是运行期挂上去的，头几帧可能还没加载完，只看**最后一帧**的先后）。
+    const foregroundBudget = checkForegroundOrder ? 24 : 0;
     // --check-ui-layer-order 固定开销：泵 8 帧等 hud.prefab 卡底与招式图标都真按需加载完，
     // 再看**最后一帧**的先后（这些贴图不在场景预加载清单里，头几帧可能只有卡底）。
     const uiLayerBudget = checkUiLayerOrder ? 8 : 0;
-    const moveBudget = (driveMove > 0 ? driveMove + 1 : 0) + (touchStickMove > 0 ? touchStickMove + 1 : 0) + (attackFrames > 0 ? attackFrames : 0) + bagBudget + diskBudget + depthBudget + uiLayerBudget;
+    const moveBudget = (driveMove > 0 ? driveMove + 1 : 0) + (touchStickMove > 0 ? touchStickMove + 1 : 0) + (attackFrames > 0 ? attackFrames : 0) + bagBudget + diskBudget + depthBudget + foregroundBudget + uiLayerBudget;
     const failures = [];
     // 标题单层断言的口径：drawnTexts 是**跨帧累计**数组（336 行声明后只 push 不重置），
     // 直接 count 会把历史帧的同一标签重复计数（实测 4 次 = 4 帧 × 1 次）。所以只看
@@ -2785,6 +2811,235 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       }
     }
 
+    // 前景压人与投影落点的**活体宿主**证据（`--check-foreground-order`，M72-06）。
+    // 原生那条门（`jhyt_m72_foreground_occlusion` §④⑥）读的是 wgpu 侧 `mesh.draws` 的下标；
+    // web 的排序键 `entitySortKey`（= 层秩×1000 + 夹到 ±999 的 order）与绘制循环是另写的一份，
+    // 所以"层带在这台宿主上到底生不生效"只能看**真的画上去的先后**。三段各钉一件事：
+    //   1. 三件探针（world 投影带 / actor / foreground 遮断带）——两个 order 数值当场从玩法自己
+    //      的事实源 `data/lighting.lua` 读，不在这里抄第二份（抄了就等于门与数据各说各话）；
+    //   2. 场景里**真**的那 16 张投影贴片与 5 件遮断物——用 min/max 判"每一张贴片都排在主角之前、
+    //      每一件遮断物都排在主角之后"；同 src 出现几件不影响，同带的实例必然同侧；
+    //   3. 反面对照：把遮断带探针的 `sorting_layer` 从 foreground 改成 world、**order 一字节不动**
+    //      ⇒ 它必须翻到主角之前。翻不过来就说明先后是 order 决定的、层带是死数据。
+    // 探针贴图刻意挑 `village_*` 三张：manor 里一件实体都不用它们——同一个 src 出现两次就没法谈
+    // "谁盖住谁"，所以每件探针的 src 在本帧**必须恰好出现一次**（多一条也算红，不静默取第一条）。
+    let foregroundOrderEvidence = 'not-requested';
+    if (checkForegroundOrder) {
+      if (noWasm || !luaBridge || typeof luaBridge.lua_do_string !== 'function'
+        || typeof luaBridge.lua_call_global !== 'function') {
+        foregroundOrderEvidence = 'unavailable';
+        failures.push('wechat_foreground_order_unavailable --check-foreground-order 要求活体 Lua 桥'
+          + '（层带的读数要运行期 sprite.get 与真实绘制序列两边同时给，没桥就是零断言，不放行也不静默）');
+      } else {
+        const FOREGROUND_PROBES = [
+          { name: 'shadow', tex: 'assets/art/buildings/village_shop.png' },
+          { name: 'actor', tex: 'assets/art/buildings/village_clinic.png' },
+          { name: 'occluder', tex: 'assets/art/buildings/village_forge.png' },
+        ];
+        // 盘上真贴片的 src 形状（`tools/set_cast_shadows.py` 的 `blob_<宽>x<高>`）与遮断物两张。
+        const CAST_TEXTURE = /\/art\/shadows\/blob_[0-9]+x[0-9]+\.png$/;
+        const OCCLUDER_TEXTURE = /\/(manor_house_roof|manor_tree_canopy)\.png$/;
+        const foregroundSource = [
+          'function __rustlua_harness_foreground_setup(flip)',
+          '  local lk = require("data.lighting")',
+          '  local specs = {',
+          "    shadow = 'texture=assets/art/buildings/village_shop.png;size=64x64;pivot=0,0;"
+          + "sorting_layer=world;order=' .. lk.cast_shadow.order,",
+          "    actor = 'texture=assets/art/buildings/village_clinic.png;size=64x64;pivot=0,0;"
+          + "sorting_layer=actor;order=0',",
+          "    occluder = 'texture=assets/art/buildings/village_forge.png;size=64x64;pivot=0,0;"
+          + "sorting_layer=foreground;order=' .. lk.foreground_order.occluder,",
+          '  }',
+          '  if flip == 1 then',
+          "    specs.occluder = specs.occluder:gsub('sorting_layer=foreground', 'sorting_layer=world')",
+          '  end',
+          '  __rustlua_harness_foreground_ids = __rustlua_harness_foreground_ids or {}',
+          '  local rows = {}',
+          '  -- Lua 不能直接给表构造器取下标（`{"a"}[1]` 是语法错），先落成局部表',
+          '  local names = { "shadow", "actor", "occluder" }',
+          '  for i = 1, 3 do',
+          '    local name = names[i]',
+          '    local id = __rustlua_harness_foreground_ids[name]',
+          '    if not id or not entity.is_alive(id) then',
+          "      id = entity.spawn('M72WebProbe' .. name, 'm72.web.probe.' .. name)",
+          '      __rustlua_harness_foreground_ids[name] = id',
+          '    end',
+          '    transform.set(id, 4096, 4096)',
+          '    sprite.set(id, specs[name])',
+          '    local got = sprite.get(id)',
+          "    rows[#rows + 1] = string.format('probe=%s,tex=%s,layer=%s,order=%s',",
+          "      name, tostring(got and got.texture or '?'),",
+          "      tostring(got and got.sorting_layer or '?'), tostring(got and got.order or '?'))",
+          '  end',
+          '  local pid = entity.find("JianghuPlayer")',
+          '  if not pid then',
+          "    return table.concat(rows, '\\n') .. '\\nplayer=missing'",
+          '  end',
+          '  local pgot = sprite.get(pid)',
+          "  rows[#rows + 1] = string.format('player_tex=%s,player_layer=%s,player_order=%s',",
+          "    tostring(pgot and pgot.texture or '?'),",
+          "    tostring(pgot and pgot.sorting_layer or '?'), tostring(pgot and pgot.order or '?'))",
+          '  -- 事实源自己那一行的读数也打出来：探针用的 order 必须与它同源，否则上面三段是在比两份数',
+          "  rows[#rows + 1] = string.format('lighting=cast:%d,occluder:%d,effect:%d,reach:%s',",
+          '    lk.cast_shadow.order, lk.foreground_order.occluder, lk.foreground_order.effect,',
+          '    tostring(lk.shadow_reach))',
+          "  return table.concat(rows, '\\n')",
+          'end',
+          'function __rustlua_harness_foreground_cleanup()',
+          '  for _, id in pairs(__rustlua_harness_foreground_ids or {}) do',
+          '    if id and entity.is_alive(id) then entity.destroy(id) end',
+          '  end',
+          '  __rustlua_harness_foreground_ids = {}',
+          '  return "destroyed=3"',
+          'end',
+        ].join('\n');
+        const foregroundProblems = [];
+        try {
+          luaBridge.lua_do_string(foregroundSource, 'harness-foreground-probe.lua');
+        } catch (error) {
+          foregroundProblems.push(`探针脚本没跑起来：${String((error && error.message) || error).slice(0, 160)}`);
+        }
+        // 跑一段：setup(flip) → 泵 8 帧（运行期挂上去的贴图走按需加载，头几帧可能只有别的）→ 取最后一帧。
+        const runForegroundPhase = async (flip) => {
+          let out = '';
+          try {
+            out = luaBridge.lua_call_global('__rustlua_harness_foreground_setup', `[${flip}]`);
+          } catch (error) {
+            return { out: '', error: String((error && error.message) || error).slice(0, 160) };
+          }
+          if (typeof out !== 'string') return { out: '', error: '探针没返回字符串' };
+          for (let i = 0; i < 8; i++) {
+            const callback = rafQueue.shift();
+            if (!callback) break;
+            callback(nextFrameClockMs());
+            stats.frames++;
+            perFrameDraws.push(stats.drawOps);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+          const segment = lastFrameDraws();
+          const allIndices = (test) => segment
+            .map((src, index) => (test(src) ? index : -1))
+            .filter((index) => index >= 0);
+          return {
+            out,
+            probes: FOREGROUND_PROBES.map((probe) => allIndices((src) => src.endsWith(probe.tex))),
+            player: allIndices((src) => /\/characters\/player_male\//.test(src)),
+            cast: allIndices((src) => CAST_TEXTURE.test(src)),
+            occluder: allIndices((src) => OCCLUDER_TEXTURE.test(src)),
+          };
+        };
+        let plain = { out: '', probes: null };
+        let flipped = { out: '', probes: null };
+        let restored = { out: '', probes: null };
+        if (!foregroundProblems.length) {
+          plain = await runForegroundPhase(0);
+          flipped = await runForegroundPhase(1);
+          restored = await runForegroundPhase(0);
+        }
+        try {
+          luaBridge.lua_call_global('__rustlua_harness_foreground_cleanup', '[]');
+        } catch (error) { /* 收尾失败不影响断言：探针实体下一张场景也会被 depth.tick 之外的存活检查收掉 */ }
+        // 行数：3 探针 + 主角 + 事实源 = 5。少一行就是有一件探针没挂上或主角不在这个场景里。
+        const probeRows = (phase) => {
+          if (!phase.out) {
+            foregroundProblems.push(`${phase.name}：探针没有输出（${phase.error || 'no output'}）`);
+            return null;
+          }
+          const rows = phase.out.split('\n');
+          if (rows.length !== 5) {
+            foregroundProblems.push(`${phase.name}：只读到 ${rows.length} 行探针读数（应为 5：三件探针 + 主角 + 事实源）`);
+            return null;
+          }
+          return rows;
+        };
+        const singleIndex = (list, label, phaseName) => {
+          if (!list || list.length !== 1) {
+            foregroundProblems.push(`${phaseName}：${label}在本帧出现 ${list ? list.length : 0} 次（必须恰好 1 次）`
+              + '——0 次说明它根本没被画，多次说明 src 与场景实体撞了，两种情况下"谁先谁后"都无从谈起');
+            return null;
+          }
+          return list[0];
+        };
+        const checkPhase = (name, phase, wantOccluderBefore) => {
+          phase.name = name;
+          const rows = probeRows(phase);
+          if (!rows) return null;
+          if (rows[4].includes('player=missing')) {
+            foregroundProblems.push(`${name}：玩法场景里没有 JianghuPlayer（${rows[4]}）——主角不在场就没有"压住谁"这条参照`);
+            return null;
+          }
+          // 探针的层与 order 必须与事实源同源，否则第 1 段比的是一份抄件。
+          const lightingLine = rows[4];
+          const castOrder = Number((lightingLine.match(/cast:(-?\d+)/) || [])[1]);
+          const occluderOrder = Number((lightingLine.match(/occluder:(-?\d+)/) || [])[1]);
+          if (!Number.isFinite(castOrder) || !Number.isFinite(occluderOrder)) {
+            foregroundProblems.push(`${name}：读不到 data/lighting.lua 的分带数值（${lightingLine}）`);
+            return null;
+          }
+          const readback = [rows[0], rows[1], rows[2]].map((row) => ({
+            layer: (row.match(/layer=([^,]+)/) || [])[1],
+            order: Number((row.match(/order=(-?\d+)/) || [])[1]),
+          }));
+          const band = [
+            ['shadow', 'world', castOrder],
+            ['actor', 'actor', 0],
+            ['occluder', wantOccluderBefore ? 'world' : 'foreground', occluderOrder],
+          ];
+          for (const [index, expected] of band.entries()) {
+            if (readback[index].layer !== expected[1] || readback[index].order !== expected[2]) {
+              foregroundProblems.push(`${name}：${expected[0]} 探针读回 layer=${readback[index].layer}、`
+                  + `order=${readback[index].order}，应为 ${expected[1]}、${expected[2]}`
+                  + '（order 与 data/lighting.lua 同源；探针串写错了就没有任何东西在被检）');
+              return null;
+            }
+          }
+          const shadowIdx = singleIndex(phase.probes[0], '投影带探针', name);
+          const actorIdx = singleIndex(phase.probes[1], 'actor 探针', name);
+          const occluderIdx = singleIndex(phase.probes[2], '遮断带探针', name);
+          const playerIdx = singleIndex(phase.player, '主角贴图', name);
+          if ([shadowIdx, actorIdx, occluderIdx, playerIdx].some((value) => value === null)) return null;
+          // 第 1 段：探针之间的先后必须与层秩一致。
+          if (wantOccluderBefore) {
+            if (!(occluderIdx < shadowIdx && shadowIdx < actorIdx)) {
+              foregroundProblems.push(`${name}：改成 world 之后实际先后 occluder=${occluderIdx}、shadow=${shadowIdx}、`
+                + `actor=${actorIdx}——两件都该在 actor 之前（同带内 order −100 < −20，所以 occluder 还该在 shadow 之前）`);
+            }
+          } else if (!(shadowIdx < actorIdx && actorIdx < occluderIdx)) {
+            foregroundProblems.push(`${name}：探针先后 shadow=${shadowIdx}、actor=${actorIdx}、occluder=${occluderIdx}，`
+              + '不按 world < actor < foreground ⇒ 这台宿主的 entitySortKey 没吃 sorting_layer，'
+              + '前景压人与投影垫底在 web 上都不成立');
+          }
+          // 第 2 段：真实场景数据必须与第 1 段同向（探针只证明机制，这条证明机制吃的是盘上的东西）。
+          if (!phase.cast.length || !phase.occluder.length) {
+            foregroundProblems.push(`${name}：最后一帧里没有盘上的投影贴片（${phase.cast.length} 张）`
+              + `或遮断物（${phase.occluder.length} 件）——manor 没进对的那张图，或贴片实体没被画`);
+            return null;
+          }
+          const castMax = Math.max(...phase.cast);
+          const occluderMin = Math.min(...phase.occluder);
+          if (!(castMax < playerIdx && playerIdx < occluderMin)) {
+            foregroundProblems.push(`${name}：真实读数 贴片最后一张=${castMax}、主角=${playerIdx}、`
+              + `遮断物第一张=${occluderMin}，不是"贴片全在前、遮断物全在后"`);
+            return null;
+          }
+          return { shadowIdx, actorIdx, occluderIdx, playerIdx, castMax, occluderMin };
+        };
+        const plainRead = checkPhase('正序', plain, false);
+        const flippedRead = checkPhase('反面对照', flipped, true);
+        const restoredRead = checkPhase('还原', restored, false);
+        foregroundOrderEvidence = foregroundProblems.length
+          ? 'failed'
+          : `ok,probes=${JSON.stringify(plainRead)},flipped=${JSON.stringify(flippedRead)},`
+            + `restored=${JSON.stringify(restoredRead)},cast_textures=${plain.cast.length}`;
+        if (foregroundProblems.length) {
+          failures.push(`wechat_foreground_order_failed:\n  - ${foregroundProblems.join('\n  - ')}`
+            + '\n（两个宿主的排序键是两份实现：原生 SpriteSorting::effective_layer、web entitySortKey。'
+            + '原生门 §④⑥ 全绿不代表这边也绿；这条钉的是"层带（sorting_layer）在这台宿主上真的决定先后"，'
+            + '而反面对照只改层名、不改 order，所以它排除了"其实是 order 在起作用、层带是死数据"这一种假绿）');
+        }
+      }
+    }
+
     // UI 两层的**活体宿主**绘制序证据（`--check-ui-layer-order`）。原生那条门
     // （jhyt_m70 的 submission_order）读的是 wgpu 侧 `mesh.draws` 的下标；web 的 drawUi
     // 是另写的一份循环，所以要单独钉"这台宿主也把预设骨架垫在动态层之下"。
@@ -3761,7 +4016,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         ` entry=${packEntryError ? 'FAIL' : 'ok'}` +
         ` loading_bar=${drawnTexts.some((text) => text.includes('正在下载资源')) ? 'ok' : 'none'}`
       : ` subpackage=none subpackage_loads=${stats.subpackageLoads}`;
-    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} prefab_text=${adapter.getAttribute('data-rustlua-prefab-text') || 'none'} prefab_slice=${adapter.getAttribute('data-rustlua-prefab-slice') || 'none'} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} action_disk=${JSON.stringify(actionDiskEvidence)} help_page=${JSON.stringify(helpPageEvidence)} depth_order=${JSON.stringify(depthOrderEvidence)} ui_layer_order=${JSON.stringify(uiLayerOrderEvidence)} save_persist=${JSON.stringify(savePersistEvidence)} stick_key=w key_bridge=ArrowUp exemption_probe=${exemptionProbe} ${contractEvidence || 'api_contract=not-requested'} wasm=${wasmDiag ? (wasmDiag.status + ':' + wasmDiag.hostApi + ':' + (wasmDiag.channel || 'none') + ':' + (wasmDiag.facade || 'none')) : 'no-diag'} eh_probe=${wasmDiag && wasmDiag.ehProbe ? String(wasmDiag.ehProbe).replace(/^eh_probe=/, '').split(/[（[ ]/)[0] : 'not-attempted'}${remoteEvidence}`);
+    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} prefab_text=${adapter.getAttribute('data-rustlua-prefab-text') || 'none'} prefab_slice=${adapter.getAttribute('data-rustlua-prefab-slice') || 'none'} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} action_disk=${JSON.stringify(actionDiskEvidence)} help_page=${JSON.stringify(helpPageEvidence)} depth_order=${JSON.stringify(depthOrderEvidence)} foreground_order=${JSON.stringify(foregroundOrderEvidence)} ui_layer_order=${JSON.stringify(uiLayerOrderEvidence)} save_persist=${JSON.stringify(savePersistEvidence)} stick_key=w key_bridge=ArrowUp exemption_probe=${exemptionProbe} ${contractEvidence || 'api_contract=not-requested'} wasm=${wasmDiag ? (wasmDiag.status + ':' + wasmDiag.hostApi + ':' + (wasmDiag.channel || 'none') + ':' + (wasmDiag.facade || 'none')) : 'no-diag'} eh_probe=${wasmDiag && wasmDiag.ehProbe ? String(wasmDiag.ehProbe).replace(/^eh_probe=/, '').split(/[（[ ]/)[0] : 'not-attempted'}${remoteEvidence}`);
     return 0;
   }).catch((error) => {
     console.error = originalError;

@@ -194,11 +194,15 @@ def scatter(width, height, ground, solid, exclude, seed=DECOR_SEED, mid_avoid=fr
     return out
 
 
-def sprite_line(entity_id, texture, width, height, order, tint):
-    """字段顺序与引擎 `Sprite::to_component_str` 逐字符一致（对拍靠这条）。"""
+def sprite_line(entity_id, texture, width, height, order, tint, layer=SORTING_LAYER):
+    """字段顺序与引擎 `Sprite::to_component_str` 逐字符一致（对拍靠这条）。
+
+    `layer` 默认 `world`（装饰就用它）；M72-06 的前景遮断块传 `foreground`——**同一行
+    格式器**，否则"字段顺序"这条对拍契约就有了第二个版本。
+    """
     return (
         f"component\t{entity_id}\tSprite\ttexture={texture};size={width}x{height};"
-        f"pivot=0.000,0.000;tint={tint};sorting_layer={SORTING_LAYER};order={order}"
+        f"pivot=0.000,0.000;tint={tint};sorting_layer={layer};order={order}"
     )
 
 

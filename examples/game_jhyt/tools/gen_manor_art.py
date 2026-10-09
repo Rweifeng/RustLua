@@ -642,6 +642,66 @@ TILE_DIR = os.path.join("assets", "art", "tilesets", "manor")
 BUILDING_DIR = os.path.join("assets", "art", "buildings")
 PROP_DIR = os.path.join("assets", "art", "props")
 
+# ---------------------------------------------------------------------------
+# M72-06 拆两层：落地那一截留 `world`，上半张挂 `foreground` 当遮断物
+# ---------------------------------------------------------------------------
+# 行号是**图像行**（0 = 顶行）。世界 +y 朝上 ⇒ 顶行是世界最高处，所以"上半张"的
+# Transform y = 本体 y + 本体高，两块共用同一个 x 原点。
+# 切点不是美学选择，两处各有实测出处：
+#   * 老树：切在第 39/40 行之间（树冠 = 顶 40 行）。**这一条是遮挡门量出来的**：树冠每多
+#     带走一行，玩家可达位置里的最大覆盖率就往上涨（§④ 扫窗实测：顶 40 行 → 0.604、
+#     顶 57 行 → 0.861，见 `lighting.occlusion.max_cover_ratio` 的那一段；0.604 是脚下接触
+#     阴影改成"镜像后盖章"（C-1）之后重量的，0.861 是当时那一档的读数、未在新画法下复测，
+#     两者不同基线但差值量级（≈0.26）不受这一档漂移影响）。57 行那一档
+#     切在"侧叶团下沿 + 树干顶 3 行"，按行拼回去最干净，但画面上人在树冠里只剩一条边；
+#     反过来 26 行读成"人站在树前面"。三档渲染出来对着看取的是中间那档：露腿、头在树后。
+#     代价只有两块分块 PNG 与 `manor.scene` 里那 5 件实体——整张 `manor_tree.png` 一个字节
+#     没动，所以引用整图的 village / combat_arena 不受影响。
+#   * 正房：檐口那一条是 `rect(6, 118, 217, 126)`，第 126 行是檐底；切在 127 ⇒
+#     屋顶整块（正脊、鸱吻、出挑檐口）进 foreground，墙身+台基留 world。这条没被覆盖率
+#     判过死刑：屋顶最深 0.307，是全场第二浅的一处。
+# **两块的重叠带**：无论切在哪，两块都是原图**按行切开**的，所以有一条恒可判的等式：
+#   **两块按行拼回去 == 原图逐字节**（见 check()，门 §③ 是它的第二份独立实现）。
+# **为什么前景块用 `foreground` 而不是按 Y 折进 actor 带**：折 Y 要给每张静态美术
+# 各配一份"按脚位算 order"的运行期逻辑（见 `scripts/world/depth.lua` 只做 actor），
+# 而本包要的是"树冠/屋顶能压住人"这一条最小可画面效果。代价是可量化的：玩家站在
+# 树的**南侧**（本该在人前面）时也会被树冠压到一块——这条由遮挡门按
+# `lighting.lua` 的 `occlusion.max_cover_ratio` 钉住上限，不是靠目测放行。
+LAYER_SPLITS = {
+    "tree": (PROP_DIR, (("canopy", 0, 39), ("trunk", 40, 87))),
+    "house": (BUILDING_DIR, (("roof", 0, 126), ("body", 127, 223))),
+}
+
+
+def split_paths(name):
+    """`manor_<name>_<part>.png` 的两块（top, bottom）——门侧与工具侧都从这里取切点，
+    所以"场景里那两个实体"和"盘上那两张图"不可能各按一套行号切。"""
+    out = []
+    directory, parts = LAYER_SPLITS[name]
+    for part, y0, y1 in parts:
+        out.append((os.path.join(directory, f"manor_{name}_{part}.png"), y0, y1))
+    return out
+
+
+def write_splits(sprites):
+    """把拆层块写盘。**原图继续保留并继续被使用**：`village.scene` 与
+    `combat_arena.scene` 还在引用整张 `manor_tree.png`，删掉就是那两张图缺文件；
+    而两块本来就由原图按行切出，同源 ⇒ 不会漂移。"""
+    written = []
+    for name, sprite in sorted(sprites.items()):
+        if name not in LAYER_SPLITS:
+            continue
+        pieces = split_paths(name)
+        # 切点必须铺满原图：留一行空白就是"拼回去少一行"，画面上是树冠比树干高一截。
+        if pieces[0][1] != 0 or pieces[-1][2] != sprite.h - 1 \
+                or any(pieces[i][2] + 1 != pieces[i + 1][1] for i in range(len(pieces) - 1)):
+            raise SystemExit(f"[FAIL] manor_{name} 切分没铺满 0..{sprite.h - 1}：{pieces}")
+        for path, y0, y1 in pieces:
+            write_png(path, sprite.sliced(0, y0, sprite.w - 1, y1))
+            written.append((name, path, y1 - y0 + 1))
+    return written
+
+
 
 def write_png(path, canvas):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -723,13 +783,51 @@ def generate(quiet=False):
     all_sprites = dict(buildings())
     all_sprites.update(props())
     write_png(os.path.join(BUILDING_DIR, "_preview.png"), build_prop_preview(all_sprites))
+    splits = write_splits(all_sprites)
 
     if not quiet:
         print(f"tileset  manor_farm.png   {farm_sheet.w}x{farm_sheet.h} (6 列)")
         print(f"tileset  manor_farm_moist.png {moist_sheet.w}x{moist_sheet.h} (6 列，仅第 1 列有内容)")
         for name, sprite in sorted(all_sprites.items()):
             print(f"sprite   manor_{name}.png {sprite.w}x{sprite.h}")
+        for name, path, rows in splits:
+            print(f"split    {path} {rows} 行（manor_{name} 按行切出）")
         print(f"preview  {TILE_DIR}/_preview.png, {BUILDING_DIR}/_preview.png")
+
+
+def check_splits():
+    """拆层对拍：两块按行拼回去必须与原图**逐字节相同**。
+
+    为什么值得一条等式而不是"两张都在"：拆层的承诺是"画面一个像素不变，只是多了一条
+    遮挡带"。若之后只改了原图（调色、加一层叶）而忘了重切，盘上就同时存在两套行——
+    画面上是"树冠比树干宽一圈"或"屋顶浮在半空"，而两张图各自都"存在且尺寸合法"，
+    任何按文件存在性判的门都测不出来。
+    """
+    from pixel_kit import decode_png
+
+    issues = []
+    for name, (directory, _) in sorted(LAYER_SPLITS.items()):
+        original = os.path.join(directory, f"manor_{name}.png")
+        if not os.path.exists(original):
+            issues.append("missing " + original)
+            continue
+        width, height, _, buffer = decode_png(original)
+        rebuilt = bytearray(height * width * 4)
+        for path, y0, y1 in split_paths(name):
+            if not os.path.exists(path):
+                issues.append(f"missing {path}（跑一次 tools/gen_manor_art.py）")
+                continue
+            piece_w, piece_h, _, piece = decode_png(path)
+            if (piece_w, piece_h) != (width, y1 - y0 + 1):
+                issues.append(f"{path}: {piece_w}x{piece_h} != {width}x{y1 - y0 + 1}"
+                              "（拆层只切行：宽度与 x 原点不变，两块才共用同一个 Transform.x）")
+                continue
+            start = y0 * width * 4
+            rebuilt[start:start + len(piece)] = piece
+        if bytes(rebuilt) != bytes(buffer):
+            diff = sum(1 for a, b in zip(rebuilt, buffer) if a != b)
+            issues.append(f"manor_{name}: 两块拼回去与原图差 {diff} 字节——原图改过而拆层没重切")
+    return issues
 
 
 def check():
@@ -756,6 +854,7 @@ def check():
         path = os.path.join(PROP_DIR, f"manor_{name}.png")
         if not os.path.exists(path):
             issues.append("missing " + path)
+    issues.extend(check_splits())
     return issues
 
 

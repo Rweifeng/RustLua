@@ -30,6 +30,20 @@ local function order_for(y)
   return order
 end
 
+-- M72-06 C-3：**Y 排序容差的显式定义**。`docs/53` §5 记的是"遮挡规则从 1–2 张截图推不出来"，
+-- 所以下面第 1 条是**推断规则**（等实机参考再校），但它必须给数：不给数就只能靠目验，而目验不会红。
+--   1. **容差 = `STEP` 本身（2 世界单位）**。脚位 y 差 < STEP 的两个 actor 落进同一个 order 桶，
+--      先后由渲染器的稳定次键（实体插入序）决定 ⇒ 这一档**不许**被读成"谁在前谁在后"，美术与
+--      玩法都不能依赖它；差 ≥ STEP 才要求绘制顺序稳定翻转（`jhyt_m72_foreground_occlusion` 门 §⑧
+--      两侧各测一次：Δy=1 → order 一字不变、Δy=2 → 恰好翻一桶）。
+--   2. **静态物件不参与 Y 折**。主键是 `层秩 × 1000 + order`（world −1 < actor +1 < foreground +2，
+--      见 `rustlua-render/src/sprite.rs` 的 `sorting_layer_rank`），所以人恒画在所有 world 物件
+--      **之后**：站在房子北边不会被房子盖住。这是设计，不是 bug——要压住人只有一条路，把悬空的
+--      那上半张登记进 foreground（M72-06 B 段那 5 件遮断物）。
+--   3. **foreground 恒压人、不看 y**，所以整张图进 foreground 会连"站在它南边的人"一起盖掉。
+--      这条就是第 2 点必须拆层的原因，也是 `data/lighting.lua` 的 `occlusion.max_cover_ratio`
+--      要钉住覆盖率上界的原因（拆到顶 57 行时最深 0.861，人被吞得只剩一条边）。
+--
 -- 按实体当前 Y 重写 Sprite 串。只在桶位变化时才调 sprite.set。
 -- 追加的 `;order=` 一定赢过作者串里同名的字段：组件串解析是"后写的覆盖先写的"。
 local function apply(id, record)
