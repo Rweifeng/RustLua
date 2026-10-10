@@ -16,8 +16,8 @@
 盘上的装饰段"必须逐字节相同——这条由 `jhyt_m72_scatter_decor` 的门钉住，不是靠人记得。
 
 留白输入为什么按场景点名：它读的是那张图的**布局常量**（农田矩形、出生点、NPC 地点格、
-道具格），这些东西 manor 和 village 一个都不共用。机制（哈希、带宽、避讳规则）在
-`decor_kit` 里共享，输入必须来自场景自己，否则村子的草会撒在山庄的药田里。
+道具格），这些东西 manor / village / mountain_path 一个都不共用。机制（哈希、带宽、避讳
+规则）在 `decor_kit` 里共享，输入必须来自场景自己，否则村子的草会撒在山庄的药田里。
 
 幂等：先按 `entity_meta role decor` 把旧的装饰实体整段删掉，再按当前盘上的地表重撒。
 地表本身（`tiles`/`solid`/`tints`）一个字节都不改，所以碰撞、寻路、places 契约不受影响。
@@ -43,6 +43,7 @@ DECOR_ROLE = "decor"
 RESERVED_BY_SCENE = {
     "manor": "gen_manor_scene",
     "village": "gen_village_scene",
+    "mountain_path": "gen_mountain_scene",
 }
 
 

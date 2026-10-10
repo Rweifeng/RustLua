@@ -47,7 +47,10 @@ if (Test-Path $sceneDir) {
     $scenes = Get-ChildItem $sceneDir -Filter *.scene | ForEach-Object { $_.BaseName }
     # scene id -> tileset 目录映射（实测目录名，见 docs/58 §1.1）
     $tileMap = @{
-        "manor"="manor"; "village"="village"; "mountain_path"="mountain";
+        "manor"="manor"; "village"="village";
+        # 山道目录随 M72-11 的逻辑瓦图集改名：tilesets/mountain（6 列直接寻址）→
+        # tilesets/mountain_path（12x9 autotile）。留着旧名会把一个已删的目录算成 MISSING。
+        "mountain_path"="mountain_path";
         "cold_spring_cave"="cave"; "interior_herb"="interior_herb";
         "interior_forge"="interior_forge"
     }

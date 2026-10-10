@@ -48,14 +48,21 @@ M.places = {
   -- 草地上，一滴水都没有。改的是格不是键名，`schedules/lu_guizang.lua` 不用动。
   manor_dock = { map = "manor", cell = { x = 35, y = 3 }, label = "山庄·渡口" },
 
-  -- 青云山道 mountain_path（批次 2；由 tools/gen_wilds_scene.py 生成并自检可达性）
-  mountain_gate = { map = "mountain_path", cell = { x = 19, y = 2 }, label = "青云山·山门" },
+  -- 青云山道 mountain_path（批次 2；由 tools/gen_mountain_scene.py 生成并自检可达性）
+  -- 山门地点格从 (19,2) 挪到 (19,3)（M72-11）：(19,2) 与出口格 `mountain_to_village`
+  -- (19,1) 四邻相邻，而出口 query 既接受"站在出口格上"也接受"面向的那一格是出口"，
+  -- priority 20 高于对话/商店 10 ⇒ 站在那一格按 E 只会下山，打不开山门说明牌。
+  -- (19,3) 在山门贴图（x18..21 & y0..2）正北的碎石路上，可走可达。
+  mountain_gate = { map = "mountain_path", cell = { x = 19, y = 3 }, label = "青云山·山门" },
   mountain_teashed = { map = "mountain_path", cell = { x = 15, y = 8 }, label = "青云山·茶棚" },
   mountain_camp = { map = "mountain_path", cell = { x = 31, y = 6 }, label = "青云山·贼寨" },
   mountain_bridge = { map = "mountain_path", cell = { x = 25, y = 11 }, label = "青云山·溪桥" },
   mountain_herbs = { map = "mountain_path", cell = { x = 12, y = 12 }, label = "青云山·药草丛" },
   mountain_ore = { map = "mountain_path", cell = { x = 28, y = 18 }, label = "青云山·矿石堆" },
-  mountain_cave_mouth = { map = "mountain_path", cell = { x = 21, y = 20 }, label = "青云山·洞口" },
+  -- 洞口地点格从 (21,20) 挪到 (21,19)（M72-11）：旧格与出口 `mountain_to_cave` (22,20)
+  -- 四邻相邻（同上一条 priority 抢占的理由），而新图把火把 TorchB 立在 (21,20)——`root`
+  -- 道具把那格标成实心，NPC 站在那里走不出来。两条都是硬错，一次改对。
+  mountain_cave_mouth = { map = "mountain_path", cell = { x = 21, y = 19 }, label = "青云山·洞口" },
 
   -- 寒泉洞 cold_spring_cave（批次 2）
   cave_entry = { map = "cold_spring_cave", cell = { x = 10, y = 3 }, label = "寒泉洞·洞口" },

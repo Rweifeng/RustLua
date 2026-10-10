@@ -92,23 +92,28 @@ M.nodes = {
     requires = "hoe",
     respawn_days = 1
   },
-  -- 莲子塘 (29,5)：对应 scenes/mountain_path.scene 的 LotusPond 道具格。
-  -- 玩家可站 (32,5)/(34,5)/(33,4)/(33,6) 面向它；次日刷新（与药草一致）。
+  -- 莲子塘：挪到西涧东头 (7,15)，对应 scenes/mountain_path.scene 的 LotusPond 道具格。
+  -- 旧格 (29,5) 有三重假账（M72-11 实测）：*那一带是东岸台地，一滴水都没有*——莲蓬长在
+  -- 草地上；注释写的可站格 (32,5)/(34,5) 与它差着 3-5 格，`facing_cell` 只认 4 邻，
+  -- 那一套站位**根本采不到这一格**；而 (29,5) 在旧图上是可走格，玩家能直接踩进莲叶里。
+  -- 新格在西涧水面（`GORGE` x2..7 & y14..15，实心）：临水格由 `decor_kit.DECOR_ON_SOLID`
+  -- 允许、采集格由 `facing_cell` 允许"格本身实心"，可站邻格是涧东岸 (8,15)。
   {
     id = "wild_lotus_1",
     map = "mountain_path",
-    cell = { x = 29, y = 5 },
+    cell = { x = 7, y = 15 },
     item = "lotus_seed",
     count = 2,
     minutes = 20,
     respawn_days = 1
   },
-  -- 芦苇丛 (5,13)：对应 scenes/mountain_path.scene 的 ReedPatch 道具格。
-  -- 断桥西侧河岸；玩家可站 (4,13)/(6,13)/(5,12)/(5,14) 面向它；次日刷新。
+  -- 芦苇丛：挪到涧东岸 (8,14)，对应 ReedPatch 道具格。
+  -- 旧格 (5,13) 整片在旧西崖里（x2..7 & y10..13 是岩壁），四个邻格全实心 ⇒ 生境（不临水）
+  -- 与可达性（采不到）两边都不成立，这一格的货永久消失。新格西邻 (7,14) 就是涧水。
   {
     id = "wild_reed_1",
     map = "mountain_path",
-    cell = { x = 5, y = 13 },
+    cell = { x = 8, y = 14 },
     item = "reed",
     count = 3,
     minutes = 15,
@@ -125,12 +130,13 @@ M.nodes = {
     minutes = 20,
     respawn_days = 1
   },
-  -- 野果树 (6,16)：对应 scenes/mountain_path.scene 的 WildFruitTree 道具格（野谷丛西侧）。
-  -- 玩家可站 (5,16)/(7,16)/(6,15)/(6,17) 面向它；次日刷新（果树年年结果）。
+  -- 野果树：挪到西岸走廊 (8,17)，对应 WildFruitTree 道具格（芦苇丛正北、松树 PineB 北侧）。
+  -- 旧格 (6,16) 与旧芦苇同病：x2..7 & y16..20 是西崖（岩壁实心），四邻全实心 ⇒ 采不到。
+  -- 新格可站邻格 (8,16)/(9,17)，都在走廊上（可走）。
   {
     id = "wild_fruit_1",
     map = "mountain_path",
-    cell = { x = 6, y = 16 },
+    cell = { x = 8, y = 17 },
     item = "wild_fruit",
     count = 2,
     minutes = 15,

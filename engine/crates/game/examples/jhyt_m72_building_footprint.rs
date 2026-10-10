@@ -9,7 +9,7 @@
 //! > 再挖掉**门洞**。（2026-10-09 裁定：本体∪屋顶并集实心，屋顶那几格反过来也必须实心。）
 //!
 //! `tools/building_kit.py` 是这条规则的实现，`python tools/building_kit.py scenes/<图>.scene
-//! --check` 已经在 verify 的 Python 段里跑（山庄、云泽村各一条）。本门是它的**第二份独立实现**：
+//! --check` 已经在 verify 的 Python 段里跑（山庄、云泽村、青云山道各一条）。本门是它的**第二份独立实现**：
 //! 门不 import Python，自己解 `.scene` 文本、自己解 PNG 的 alpha 通道、自己算紧包围盒。
 //! 两份算法都说"缺 0 悬空 0"才算成立——只有一份实现时，"对拍"对的是它自己。
 //!
@@ -226,7 +226,52 @@ const VILLAGE: Scene = Scene {
     ],
 };
 
-const SCENES: &[Scene] = &[MANOR, VILLAGE];
+/// 山道（M72-11 第三档）：与另两张跑**同一套判据**，只有名单是这张图的。
+/// 名单每一条都能在 `building_kit.SCENES["mountain_path"]` / `layer_kit.LAYER_SPLITS`
+/// / `data/maps.lua` 找到出处；`gen_mountain_scene.py` 的自检判的是可达性那一份，
+/// 两边手抄是为了"两份实现逐格相同"才算证据（M72-07 的裁定）。
+const MOUNTAIN: Scene = Scene {
+    name: "mountain_path",
+    file: "scenes/mountain_path.scene",
+    ground_texture: "assets/art/tilesets/mountain_path/mountain_path_ground.png",
+    // `data/maps.lua` 的 mountain_path.spawn：山门洞里那格，也是村→山道的落点。
+    spawn: (19, 2),
+    // 山门那两个洞：(19,1) 是 `mountain_to_village` 的出口格，(19,2) 是它北邻、
+    // 出生点本身。128×96 的门楼压 x18..21 三行，实测只有中间那一列是洞（0.156）。
+    openings: &[("MountainGate", 19, 1), ("MountainGate", 19, 2)],
+    // 山石 48×32 横占两格：只标锚点等于右半边看得见却穿得过。
+    box_props: &["BoulderA", "BoulderB"],
+    // 栈道是过溪的唯一通道（溪水 x23..27 只在 y10..11 断开）：标成实心就把东岸的
+    // 贼寨、矿石堆与寒泉洞入口整块封死。
+    walk_props: &["Boardwalk"],
+    // 这条落在西岸走廊那棵松树上：64×88 按框标会连树冠那几格一起标墙，而树冠是 M72-11
+    // 的遮断件（画在 foreground、人本来就从树底下走过去）——与山庄那丛竹梢同一类错。
+    quad_probe: "PineB",
+    splits: &[
+        Split {
+            base: "PineA",
+            occluder: "PineACanopy",
+            full: "assets/art/props/wilds_pine.png",
+        },
+        Split {
+            base: "PineB",
+            occluder: "PineBCanopy",
+            full: "assets/art/props/wilds_pine.png",
+        },
+        Split {
+            base: "PineC",
+            occluder: "PineCCanopy",
+            full: "assets/art/props/wilds_pine.png",
+        },
+        Split {
+            base: "TeaShed",
+            occluder: "TeaShedRoof",
+            full: "assets/art/buildings/wilds_tea_shed.png",
+        },
+    ],
+};
+
+const SCENES: &[Scene] = &[MANOR, VILLAGE, MOUNTAIN];
 
 /// 场景里一个 sprite 实体的门侧视图。
 #[derive(Clone, Debug)]

@@ -208,7 +208,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut rt,
         "(function() local gy = entity.find('GroundMap'); \
            return tilemap.get(gy).texture end)()",
-        "assets/art/tilesets/mountain/mountain_ground.png",
+        "assets/art/tilesets/mountain_path/mountain_path_ground.png",
     )?;
     // 回山庄：春天地表；跨天到第 29 天（夏）后必须换成夏天贴图。
     goto_map(&mut rt, "manor", MANOR_POS)?;

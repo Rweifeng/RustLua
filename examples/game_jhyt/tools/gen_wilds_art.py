@@ -8,25 +8,39 @@
 
 产出：
 
-    assets/art/tilesets/mountain/mountain_ground.png  6 列 × 32px（山道地表）
+    （山道地表**不在本文件出图**：M72-11 起归 `gen_terrain_tiles.py --scene mountain_path`，
+      产出 `assets/art/tilesets/mountain_path/mountain_path_ground.png` 12×9 图集）
     assets/art/tilesets/cave/cave_ground.png          6 列 × 32px（洞窟地表）
     assets/art/buildings/wilds_*.png                  山门 / 栈道 / 茶棚 / 营寨 / 断桥
-    assets/art/props/wilds_*.png                      松树 / 岩石 / 藤蔓 / 火把 / 路牌 / 营火 / 木箱
-    assets/art/gather/wilds_*.png                     8 种采集物（野果丛 / 药草 / 柴薪 / 矿石 / 雪莲 / 芦苇 / 莲蓬 / 毒草）
-    assets/art/tilesets/{mountain,cave}/_preview.png  地表 4× 预览
+    assets/art/props/wilds_*.png                      松树 / 山石 / 藤蔓 / 火把 / 路牌 / 营火 / 木箱 / 树桩
+    assets/art/gather/wilds_*.png                     9 种采集物（野果丛 / 药草 / 柴薪 / 矿石 / 雪莲 / 芦苇 / 莲蓬 / 毒草 / 茶树丛）
+    assets/art/tilesets/cave/_preview.png              洞窟地表 4× 预览
     assets/art/buildings/_wilds_preview.png           建筑道具 2× 预览
     assets/art/gather/_preview.png                    采集物 3× 预览（中文名）
+    assets/art/props/wilds_pine_{canopy,trunk}.png     松树按行切的两块（切点见 `layer_kit`）
+    assets/art/buildings/wilds_tea_shed_{roof,body}.png 茶棚按行切的两块
+
+拆层（M72-11）：`wilds_pine` 与 `wilds_tea_shed` 两张整图归本文件切，切点登记在
+`layer_kit.LAYER_SPLITS`（`stems_of("gen_wilds_art")`），`generate()` 末尾按行切出
+`*_canopy/_trunk`、`*_roof/_body` 四张分块，`check()` 连带跑 `check_splits()` 的逐字节等式。
+整张原图**不删也不改**：场景生成器登记的就是整图，装配时由 `set_foreground_occluders`
+把它换成 body 块并另挂一件 canopy/roof；而原图正是 `check_splits` 那条等式的被减数。
 
 对应 docs/31 §3.1 的"山林 2 套 / 洞窟 1 套"与 §7.1 的采集区域；
 对应 docs/30 §7.1 的四种采集区域（村外湿地 / 青云山道 / 青云山腰 / 寒泉洞）。
 
-列语义（每个地图一套自己的 tileset，引擎写死 6 列）：
-  mountain：1=林地草地 2=碎石土路 3=石阶 4=岩壁 5=竹林地 6=溪水
-  cave    ：1=洞底石地 2=碎石堆 3=暗河水 4=洞壁 5=矿脉 6=冰晶地
+kind 语义（两套地表各有各的一张图）：
+  cave    ：`cave/cave_ground.png` 6 列 × 32px 直接寻址（本文件出图）——
+            1=洞底石地 2=碎石堆 3=暗河水 4=洞壁 5=矿脉 6=冰晶地
+  mountain：`mountain_path/mountain_path_ground.png` 12×9 图集 + autotile，由
+            `gen_terrain_tiles.py --scene mountain_path` 出图，色阶只从 `tools/terrain_ramp.json`
+            的 `scenes.mountain_path` 取——1=落叶松林地 2=碎石土路 3=石阶 4=岩壁 5=竹林地 6=溪水
+            （洞窟换金标是它自己那一包： kinds 仍按引擎写死的 6 列，只是那张图不在这里画）
 
 文字：路牌 / 山门匾额 / 茶棚幌子 / 营寨旗 都用**中文**（走 tools/cjk_text.py 的 GDI+ 栅格化）。
 
-依赖：Python 3 标准库 + pixel_kit.py + gen_manor_art.py（通用绘制）+ cjk_text.py（中文）。
+依赖：Python 3 标准库 + pixel_kit.py + gen_manor_art.py（通用绘制）+ cjk_text.py（中文）
++ layer_kit.py（拆层登记表）。
 """
 
 import argparse
@@ -39,23 +53,16 @@ from pixel_kit import Canvas, draw_text, hash_stream, mix, rgb, shade, text_widt
 from gen_manor_art import (  # noqa: E402
     BAMBOO, BAMBOO_DARK, BAMBOO_LIGHT, CINNABAR, GOLD, GOLD_LIGHT, INK, PAPER, PAPER_DIM,
     STONE, STONE_DARK, STONE_LIGHT, STONE_MORTAR, TILE, TILE_ROOF, TILE_ROOF_DARK,
-    TILE_ROOF_LIGHT, WATER, WATER_HI, WATER_LIGHT, WOOD, WOOD_DARK, WOOD_LIGHT, WOOD_MID,
+    TILE_ROOF_LIGHT, WATER, WOOD, WOOD_DARK, WOOD_LIGHT, WOOD_MID,
     fill_ellipse, roof_rows, tiled_roof, wood_post,
 )
-from cjk_text import draw_cjk, prewarm  # noqa: E402
+from cjk_text import draw_cjk, draw_plaque, prewarm  # noqa: E402
+import layer_kit as layers  # noqa: E402  拆层登记表（松树/茶棚哪一行是切点、归谁切）
 
 # 山道色板
-FOREST = rgb("#4E6A3E")
 FOREST_DARK = rgb("#3C5430")
-FOREST_LIGHT = rgb("#5F7C4A")
-GRAVEL = rgb("#8A8072")
-GRAVEL_DARK = rgb("#6B6357")
-GRAVEL_LIGHT = rgb("#A2988A")
 STAIR = rgb("#948C7C")
 STAIR_DARK = rgb("#6E675B")
-CLIFF = rgb("#5C5750")
-CLIFF_DARK = rgb("#403C37")
-CLIFF_LIGHT = rgb("#736D64")
 ROCK = rgb("#6E6B62")
 ROCK_LIGHT = rgb("#8A867C")
 ROCK_DARK = rgb("#4E4B44")
@@ -82,111 +89,6 @@ TILE_DIR = os.path.join("assets", "art", "tilesets")
 BUILDING_DIR = os.path.join("assets", "art", "buildings")
 PROP_DIR = os.path.join("assets", "art", "props")
 GATHER_DIR = os.path.join("assets", "art", "gather")
-
-
-# ---------------------------------------------------------------------------
-# 山道地表
-# ---------------------------------------------------------------------------
-
-
-def tile_forest(seed=311):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, FOREST)
-    rnd = hash_stream(seed)
-    for _ in range(30):
-        cv.set(rnd(TILE), rnd(TILE), FOREST_DARK)
-    for _ in range(20):
-        cv.set(rnd(TILE), rnd(TILE), FOREST_LIGHT)
-    for _ in range(4):
-        x = 4 + rnd(TILE - 9)
-        y = 4 + rnd(TILE - 9)
-        cv.set(x, y, VINE)
-        cv.set(x - 1, y + 1, BAMBOO_DARK)
-        cv.set(x + 1, y + 1, VINE)
-    for _ in range(3):  # 松针落叶
-        x = 4 + rnd(TILE - 8)
-        y = 4 + rnd(TILE - 8)
-        cv.hline(x, x + 2, y, PINE_DARK)
-    return cv
-
-
-def tile_gravel(seed=322):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, GRAVEL)
-    rnd = hash_stream(seed)
-    for _ in range(34):
-        cv.set(rnd(TILE), rnd(TILE), GRAVEL_DARK)
-    for _ in range(24):
-        cv.set(rnd(TILE), rnd(TILE), GRAVEL_LIGHT)
-    for _ in range(6):  # 碎石块
-        x = 2 + rnd(TILE - 7)
-        y = 2 + rnd(TILE - 7)
-        cv.rect(x, y, x + 2, y + 1, ROCK)
-        cv.hline(x, x + 2, y - 1, ROCK_LIGHT)
-    return cv
-
-
-def tile_stairs(seed=333):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, STAIR)
-    for step, y in enumerate(range(0, TILE, 8)):
-        cv.rect(0, y, TILE - 1, y + 5, shade(STAIR, 1.08) if step % 2 == 0 else STAIR)
-        cv.hline(0, TILE - 1, y + 6, STAIR_DARK)
-        cv.hline(0, TILE - 1, y + 7, shade(STAIR, 0.82))
-    rnd = hash_stream(seed)
-    for _ in range(16):
-        cv.set(rnd(TILE), rnd(TILE), STAIR_DARK)
-    return cv
-
-
-def tile_cliff(seed=344):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, CAVE_WALL if False else CLIFF)
-    rnd = hash_stream(seed)
-    for _ in range(30):
-        cv.set(rnd(TILE), rnd(TILE), CLIFF_DARK)
-    for _ in range(18):
-        cv.set(rnd(TILE), rnd(TILE), CLIFF_LIGHT)
-    for _ in range(4):  # 岩缝
-        x = 3 + rnd(TILE - 8)
-        y = 3 + rnd(TILE - 10)
-        cv.vline(x, y, y + 5 + rnd(4), CLIFF_DARK)
-    cv.hline(0, TILE - 1, 0, CLIFF_DARK)
-    return cv
-
-
-def tile_bamboo_floor(seed=355):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, FOREST_DARK)
-    rnd = hash_stream(seed)
-    for _ in range(26):
-        cv.set(rnd(TILE), rnd(TILE), FOREST)
-    for x in range(2, TILE, 9):  # 落竹
-        y = 3 + rnd(18)
-        cv.vline(x, y, y + 6, BAMBOO)
-        cv.set(x, y - 1, BAMBOO_LIGHT)
-    for _ in range(3):
-        x = 4 + rnd(TILE - 10)
-        y = 4 + rnd(TILE - 10)
-        cv.set(x, y, BAMBOO_LIGHT)
-        cv.set(x + 1, y + 1, BAMBOO)
-    return cv
-
-
-def tile_mountain_stream(seed=366):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, rgb("#3E6485"))
-    for y in (5, 13, 21, 29):
-        for x in range(2, TILE - 3, 6):
-            cv.set(x, y, WATER_LIGHT)
-            cv.set(x + 1, y - 1, rgb("#B8D2F0"))
-            cv.set(x + 2, y, WATER_LIGHT)
-    rnd = hash_stream(seed)
-    for _ in range(18):
-        cv.set(rnd(TILE), rnd(TILE), rgb("#2F4E6B"))
-    for _ in range(8):
-        cv.set(rnd(TILE), rnd(TILE), WATER_HI)
-    return cv
 
 
 # ---------------------------------------------------------------------------
@@ -278,11 +180,6 @@ def tile_ice(seed=466):
     return cv
 
 
-def mountain_tiles():
-    return [tile_forest(), tile_gravel(), tile_stairs(), tile_cliff(),
-            tile_bamboo_floor(), tile_mountain_stream()]
-
-
 def cave_tiles():
     return [tile_cave_floor(), tile_cave_rubble(), tile_dark_water(), tile_cave_wall(),
             tile_ore_vein(), tile_ice()]
@@ -301,27 +198,50 @@ def pack(tiles):
 
 
 def build_mountain_gate():
-    """山门 128×96：木牌坊 + 匾额「青云山」。"""
+    """山门 128×96：木牌坊 + 额枋匾「青云山」+ **真门洞**（M72-11 重画）。
+
+    这张图被**两张**场景引用，所以它得同时把两条通道都留出来（贴图左下角在 cell 时，
+    图像行 0..31 = cell y+2、32..63 = y+1、64..95 = y；列 0..31 = x，依此类推）：
+
+      * 山道 `building_kit.SCENES["mountain_path"].openings["MountainGate"]` 压在 (18,0)：
+        出口格 (19,1)(20,1) = 行 32..63 × 列 32..95 是通道，(19,2)(20,2) = 行 0..31 的中间
+        两格是门前的檐下；出生点 (19,2) 就在其中一格。
+      * 村侧北山门 `SCENES["village"].openings["VillageMountainGate"]` 压在 (9,20)：那张图
+        的通道是**最底一行** (10,20) = 行 64..95 × 列 32..63，上面两行是门楼的身与顶。
+
+    旧版把「青云山」匾画在行 38..62、列 34..94 的通道正中（实测不透明占比 0.940）：
+    山道侧玩家看到的是一扇关着的门，走不过去。现在匾挂在**额枋**（行 16..31，走
+    `cjk_text.draw_plaque` 这一处共用实现，与云泽村牌楼/各铺面招牌同一套木底金边），
+    通道行 32..63 只留一道檐内阴影。改后两处门洞各自实测 0.156 ≤ `HOLE_MAX_OPAQUE_RATIO`
+    （0.35）：山道 (19,1) 与村 (10,20) 都是"檐口 4 行 + `outline()` 外扩的 1 行" = 5/32。
+    紧包围盒还是行 0..95 × 列 1..126（屋顶起翘够到行 0、台基够到行 95、列 2..125），
+    所以村侧那 12 格占地 / 11 格实心一字未动，`village.scene` 的 solid 串不受影响。
+    """
     cv = Canvas(128, 96)
-    rows = roof_rows(6, 30, 20, 108, 6, 122)
+    # 屋顶（行 0..15，全在两条通道之上）：正脊 + 两端起翘，檐口收在行 14/15
+    rows = roof_rows(3, 13, 22, 106, 8, 120)
     tiled_roof(cv, rows, column=12)
-    cv.rect(16, 2, 112, 12, TILE_ROOF_LIGHT)
-    cv.hline(16, 112, 2, TILE_ROOF)
-    cv.rect(6, 0, 18, 12, TILE_ROOF_DARK)
-    cv.rect(110, 0, 122, 12, TILE_ROOF_DARK)
-    cv.rect(2, 28, 125, 34, TILE_ROOF_DARK)
-    wood_post(cv, 12, 34, 26, 92)
-    wood_post(cv, 102, 34, 116, 92)
-    # 匾额：木底 + 中文
-    cv.rect(34, 38, 94, 62, WOOD_DARK)
-    cv.rect(36, 40, 92, 60, WOOD_MID)
-    cv.hline(36, 92, 40, GOLD)
-    cv.hline(36, 92, 59, GOLD)
-    draw_cjk(cv, 0, 0, "青云山", size=14, color=PAPER, outline=INK) if False else None
-    text = _cjk("青云山", 14, PAPER)
-    cv.blit(text, 63 - text.w // 2, 51 - text.h // 2)
-    cv.rect(4, 92, 124, 95, STONE)
-    cv.hline(4, 124, 92, STONE_LIGHT)
+    cv.rect(20, 2, 108, 4, TILE_ROOF_LIGHT)
+    cv.hline(20, 108, 2, TILE_ROOF)
+    cv.rect(2, 0, 16, 9, TILE_ROOF_DARK)
+    cv.rect(112, 0, 126, 9, TILE_ROOF_DARK)
+    cv.hline(2, 125, 14, TILE_ROOF_DARK)
+    cv.hline(2, 125, 15, shade(TILE_ROOF_DARK, 0.8))
+    # 额枋 + 匾「青云山」（行 16..31）：山道侧那是门楼的脸、村侧那是门楼的身，都该画满
+    cv.rect(6, 16, 121, 31, WOOD_MID)
+    cv.hline(6, 121, 16, WOOD_LIGHT)
+    cv.hline(6, 121, 31, WOOD_DARK)
+    draw_plaque(cv, 30, 17, 97, 30, "青云山", size=12)
+    # 檐内阴影：通道顶上一道，读成"门里有进深"。它连同 outline 外扩的那一行是门洞里
+    # 唯一的不透明像素（5/32 = 0.156），再厚就把通道糊死了。
+    cv.rect(32, 32, 95, 35, shade(INK, 1.6))
+    # 立柱：列 6..20 / 107..121 —— 落在 cell x 与 x+3 两格，通道那两格中间没有柱
+    wood_post(cv, 6, 32, 20, 91)
+    wood_post(cv, 107, 32, 121, 91)
+    # 石台基（行 92..95）：村侧的通道格就是被这一条压着的
+    cv.rect(2, 92, 125, 95, STONE)
+    cv.hline(2, 125, 92, STONE_LIGHT)
+    cv.hline(2, 125, 95, STONE_MORTAR)
     cv.outline(INK)
     return cv
 
@@ -537,8 +457,29 @@ def prop_crate():
     return cv
 
 
+def prop_stump():
+    """树桩 32×28：`gather.lua:wild_timber_1`（松木桩）的标志物。
+
+    盘上 `TreeStump`（id 32）以前引的是整张 `wilds_pine.png` 并按 64×88 声明——一棵完整的
+    松树标成"木桩"，玩家对着树冠找采伐点。采伐点得有自己的图。
+    """
+    cv = Canvas(32, 28)
+    cv.rect(8, 12, 23, 26, WOOD_DARK)            # 桩身
+    for x in (10, 15, 20):                       # 树皮竖纹
+        cv.vline(x, 15, 26, shade(WOOD_DARK, 0.8))
+    fill_ellipse(cv, 16, 12, 7, 4, WOOD_MID)     # 断面
+    fill_ellipse(cv, 16, 12, 4, 2, WOOD_LIGHT)   # 年轮
+    cv.set(16, 12, WOOD_DARK)
+    cv.hline(8, 23, 26, shade(WOOD_DARK, 0.8))   # 桩脚
+    for x, y in ((5, 24), (25, 23), (27, 25)):   # 脚边苔
+        cv.set(x, y, BAMBOO_DARK)
+        cv.set(x + 1, y, BAMBOO)
+    cv.outline(INK)
+    return cv
+
+
 # ---------------------------------------------------------------------------
-# 采集物（8 种）
+# 采集物（9 种）
 # ---------------------------------------------------------------------------
 
 
@@ -637,6 +578,27 @@ def gather_poison_herb():
     return cv
 
 
+def gather_tea_bush():
+    """茶树丛 32×26：`gather.lua:wild_tea_1` 的标志物。
+
+    以前 `TeaGrove` 复用的是 `wilds_herb.png`（药草丛），而 `HerbCluster` 就在同一张图里
+    七格之外——同一屏上两棵一模一样的灌木，一个采灵芝一个采茶叶。茶丛的形状语言是
+    **矮、宽、剪平**（采茶要够得着），药草是**直茎高挑**，两者必须一眼分得开。
+    """
+    cv = Canvas(32, 26)
+    fill_ellipse(cv, 16, 15, 12, 8, BAMBOO_DARK)
+    fill_ellipse(cv, 16, 14, 10, 6, BAMBOO)
+    cv.hline(8, 24, 8, BAMBOO_LIGHT)          # 剪平的顶
+    for x in (10, 16, 22):
+        cv.vline(x, 9, 11, BAMBOO_LIGHT)      # 顶上一茬嫩梢
+    for x, y in ((12, 14), (19, 16), (25, 18)):
+        cv.set(x, y, PAPER)                   # 茶花（白花是"这是茶树"最省的一笔）
+        cv.set(x + 1, y, PAPER_DIM)
+    cv.hline(9, 23, 24, rgb("#5A4632"))       # 根部土线
+    cv.outline(INK)
+    return cv
+
+
 # ---------------------------------------------------------------------------
 # 输出
 # ---------------------------------------------------------------------------
@@ -657,6 +619,7 @@ PROPS = [
     ("wilds_signpost", prop_signpost, "路牌 山道"),
     ("wilds_campfire", prop_campfire, "营火"),
     ("wilds_crate", prop_crate, "木箱"),
+    ("wilds_stump", prop_stump, "树桩"),
 ]
 
 GATHERS = [
@@ -668,7 +631,11 @@ GATHERS = [
     ("wilds_reed", gather_reed_bed, "芦苇丛"),
     ("wilds_lotus", gather_lotus_pod, "莲蓬"),
     ("wilds_poison_herb", gather_poison_herb, "毒草丛"),
+    ("wilds_tea_bush", gather_tea_bush, "茶树丛"),
 ]
+
+# 本生成器该切的拆层件（松树、茶棚）：`layer_kit.LAYER_SPLITS` 那张表的视图。
+WILDS_STEMS = layers.stems_of("gen_wilds_art")
 
 
 def write_png(path, canvas):
@@ -718,16 +685,14 @@ def build_sprite_preview(entries, title, scale=2, cols=4):
 
 def generate(quiet=False):
     # 中文先一次性渲染（GDI+ 批量调用，避免每段文字一次 PowerShell）
-    prewarm([("青云山", 14, "pixel", True), ("茶", 14, "pixel", True),
+    prewarm([("青云山", 12, "pixel", True), ("茶", 14, "pixel", True),
              ("寨", 16, "pixel", True), ("山道", 13, "pixel", True)] +
             [(display, 11, "pixel", True) for _, _, display in BUILDINGS + PROPS + GATHERS])
-    mountain = mountain_tiles()
     cave = cave_tiles()
-    write_png(os.path.join(TILE_DIR, "mountain", "mountain_ground.png"), pack(mountain))
+    # 山道地表**不在这里出图**（M72-11）：金标规范下图集的唯一产出点是
+    # `gen_terrain_tiles.py --scene mountain_path`（12×9 + 只从 `terrain_ramp.json` 取色），
+    # 这里再画一张 6×1 会把那张门直接压红。寒泉洞等到它自己那一包再换。
     write_png(os.path.join(TILE_DIR, "cave", "cave_ground.png"), pack(cave))
-    write_png(os.path.join(TILE_DIR, "mountain", "_preview.png"),
-              build_tiles_preview(mountain, "MOUNTAIN PATH 32PX X4",
-                                  ["FOREST", "GRAVEL", "STAIRS", "CLIFF", "BAMBOO", "STREAM"]))
     write_png(os.path.join(TILE_DIR, "cave", "_preview.png"),
               build_tiles_preview(cave, "COLD SPRING CAVE 32PX X4",
                                   ["FLOOR", "RUBBLE", "DARKWATER", "WALL", "ORE VEIN", "ICE"]))
@@ -752,10 +717,14 @@ def generate(quiet=False):
               build_sprite_preview(built + props, "MOUNTAIN BUILDINGS + PROPS X2"))
     write_png(os.path.join(GATHER_DIR, "_preview.png"),
               build_sprite_preview(gathers, "GATHERABLES X3", scale=3, cols=4))
+    # 整图刚落盘就按行切出分块：分块与整图同源同刻（`check_splits` 逐字节对拍）。
+    splits = layers.write_splits(WILDS_STEMS)
     if not quiet:
         for name, canvas, display in built + props + gathers:
             print(f"  {name}.png {canvas.w}x{canvas.h}  {display}")
-        print("  2 tilesets + 3 previews")
+        for stem, path, rows in splits:
+            print(f"  split {path} {rows} 行")
+        print("  1 tileset + 2 previews")
 
 
 EXPECTED = {
@@ -771,6 +740,7 @@ EXPECTED = {
     "wilds_signpost": (40, 48),
     "wilds_campfire": (48, 40),
     "wilds_crate": (32, 28),
+    "wilds_stump": (32, 28),
     "wilds_berry": (32, 32),
     "wilds_herb": (32, 32),
     "wilds_firewood": (40, 32),
@@ -779,6 +749,7 @@ EXPECTED = {
     "wilds_reed": (32, 40),
     "wilds_lotus": (32, 32),
     "wilds_poison_herb": (32, 32),
+    "wilds_tea_bush": (32, 26),
 }
 
 
@@ -786,7 +757,9 @@ def check():
     from pixel_kit import decode_png
 
     issues = []
-    for folder, name in ((TILE_DIR, "mountain/mountain_ground"), (TILE_DIR, "cave/cave_ground")):
+    # 只点寒泉洞那一张：山道地表现在归 `gen_terrain_tiles.py --scene mountain_path --check`
+    # （它有 12×9 结构、取色与四边收口三条判据，这张表里的手写 hex 判不了那三样）。
+    for folder, name in ((TILE_DIR, "cave/cave_ground"),):
         path = os.path.join(folder, name + ".png")
         if not os.path.exists(path):
             issues.append("missing " + path)
@@ -804,12 +777,14 @@ def check():
         width, height, _, _ = decode_png(path)
         if (width, height) != (want_w, want_h):
             issues.append(f"{path}: {width}x{height} != {want_w}x{want_h}")
-    for path in (os.path.join(TILE_DIR, "mountain", "_preview.png"),
-                 os.path.join(TILE_DIR, "cave", "_preview.png"),
+    for path in (os.path.join(TILE_DIR, "cave", "_preview.png"),
                  os.path.join(BUILDING_DIR, "_wilds_preview.png"),
                  os.path.join(GATHER_DIR, "_preview.png")):
         if not os.path.exists(path):
             issues.append("missing " + path)
+    # 拆层对拍**查整张表**（manor/village/build 那几件也一起）：谁改了山道原图而没重切，
+    # 只跑本工具的 --check 也当场红，不必几个生成器都跑过一遍。
+    issues.extend(layers.check_splits())
     return issues
 
 
@@ -823,7 +798,7 @@ def main():
             for problem in problems:
                 print("[FAIL]", problem)
             raise SystemExit(1)
-        print(f"[OK] 批次 2 校验通过（2 tileset + {len(BUILDINGS)} 建筑 + {len(PROPS)} 道具 + {len(GATHERS)} 采集物）")
+        print(f"[OK] 批次 2 校验通过（1 tileset + {len(BUILDINGS)} 建筑 + {len(PROPS)} 道具 + {len(GATHERS)} 采集物 + 拆层 {len(WILDS_STEMS)} 件）")
         return
     generate()
 

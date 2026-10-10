@@ -54,7 +54,12 @@ OBJECT_WINDOW = (20, 11.25)
 # 写上这个数是怎么来的（户外按 plan 的 ≥40；室内要按分档另定）。
 MIN_DECOR_OBJECTS = {
     "manor": 40,    # plan §验收方式：户外主场景 ≥40；实测 median 41（min 7 是药田留白那一屏）
+    # 复现：`python tools/scene_readings.py scenes/<图>.scene` 读"每屏可见装饰"那一行。
+    # village 实测 326 件、min/median/max = 58/94/128（没有整块留白的地块，所以 min 就高）。
     "village": 40,
+    # mountain_path 实测 253 件、min/median/max = 45/84/109（M72-11）：竹林地（kind 5）在
+    # `decor_kit.BASE_P` 里权重 0（竹叶画在瓦里），那是**故意**的少，不是漏撒。
+    "mountain_path": 40,
 }
 
 # ---------------------------------------------------------------------------

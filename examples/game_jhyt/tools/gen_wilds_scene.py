@@ -1,26 +1,32 @@
 # -*- coding: utf-8 -*-
-"""《江湖有田》批次 2 场景装配：青云山道 + 寒泉洞（scenes/mountain_path.scene / cold_spring_cave.scene）。
+"""《江湖有田》批次 2 场景装配：寒泉洞（scenes/cold_spring_cave.scene）。
 
-用法：工程根目录 python tools/gen_wilds_scene.py
+用法：工程根目录 `examples/game_jhyt` 下
 
-美术：`tools/gen_wilds_art.py` 产出的 mountain / cave 两套 6 列 tileset + 山道建筑道具 + 采集物。
+    python tools/gen_wilds_scene.py
+
+**本文件现在只出寒泉洞那一张**。青云山道以前也住在这里，M72-11 起搬到
+`tools/gen_mountain_scene.py`——那张图要接金标管线（逻辑瓦 autotile、按贴图不透明像素真算
+的 solid、拆层遮断、地面投影、确定性装饰散布），而这里的表是"6 列直接寻址 + 每件手填
+`solid_cells`"，两套口径塞在一个文件里只会让改山道的人跑错生成器（盘上确实出现过：山道
+的 HUD 与采集物是手工调的，重跑本文件把那批改动抹掉、还把 BanditCamp 搬回溪中央）。
+
+寒泉洞本身**还没**升到金标口径：它仍用 6×1 图集直接寻址与手填占地，是 M72-11 剩下那几张
+图里的一张（plan §铺量顺序：洞穴要按 §风险 另定每屏对象分档，工具不替它猜数）。
 
 地图与列语义：
-  mountain_path  40×23  1=林地草地 2=碎石土路 3=石阶 4=岩壁 5=竹林地 6=溪水
   cold_spring_cave 20×12  1=洞底石地 2=碎石堆 3=暗河水 4=洞壁 5=矿脉 6=冰晶地
 
-布局：
-  山道：南侧山门（接云泽村）→ 碎石路 + 两段石阶向西折上山 → 溪水（南北向）→
-        木桥（y10..11）通向东岸山贼营寨 → 茶棚在中途 → 东北洞口进寒泉洞。
-  洞窟：20×12 小型副本，暗河水潭 + 矿脉洞壁 + 冰晶地，洞口在南侧。
+布局：20×12 小型副本，暗河水潭在西南、冰晶地在东南、碎石堆与矿脉在北边，洞口在南侧。
 
 契约（每次生成自检，失败非零退出）：
-  1. 两张图的 spawn / exit 必须可走，且地表是各自定义的"路/地面"；
-  2. data/places.lua 里属于这两张图的地点格必须可走且从 spawn 可达；
-  3. 桥面（跨溪）必须可走，否则东岸营寨与采集点被切断；
-  4. 建筑/道具的 solid 不得落在墙/水格上。
+  1. spawn / exit 必须可走，且从 spawn 可达；
+  2. data/places.lua 里属于本图的地点格必须可走且从 spawn 可达；
+  3. 道具的 solid 不得把出口或地点格封死（`solid_cells` 手填，改一件就要重跑自检）；
+  4. 每件 sprite 声明的 `size=` 必须与贴图像素一致（不一致只会被引擎悄悄拉伸，不报错）。
 
-依赖：Python 3 标准库 + pixel_kit.py（图片尺寸交叉校验）+ 本工具的布局表。
+依赖：Python 3 标准库 + `pixel_kit.py`（图片尺寸交叉校验、Transform/Camera 行）+
+`terrain_kit.py`（Tilemap 字段顺序，与引擎 `to_component_str` 逐字符一致）。
 """
 
 import argparse
@@ -31,7 +37,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from character_art import player_art  # noqa: E402  主角形象（与 manifest 同源）
-
+import terrain_kit as tk  # noqa: E402  Tilemap 那一行的字段顺序只有一份
 from pixel_kit import decode_png  # noqa: E402
 # M32：`Transform` 的统一形态序列化器（场景数据门只认这一种写法）。
 from pixel_kit import transform_line as spawn_transform  # noqa: E402
@@ -39,21 +45,8 @@ from pixel_kit import camera_line  # noqa: E402  场景 2D 相机（取景锁在
 
 TILE = 32
 
-# 列映射（两张图各自一套，引擎写死 6 列）
-GRASS, DIRT, STONE, WALL, ROOF, WATER = 1, 2, 3, 4, 5, 6
-
-MOUNTAIN = {
-    "name": "mountain_path",
-    "display": "江湖有田·青云山道",
-    "title": "青云山道 · 采药与护送",
-    "texture": "assets/art/tilesets/mountain/mountain_ground.png",
-    # 23 行是为横屏 1280×720 设计视口定的：40×22 = 1280×704 比屏幕矮 16 像素，
-    # 相机夹到地图下沿后顶/底仍露出 clear color（#0A121F）的深色横条。
-    "w": 40, "h": 23,
-    "spawn": (19, 2),
-    "exit": (19, 1),
-    "path_tile": DIRT,
-}
+# 列映射（洞窟一套，图集 6 列 × 1 行、直接寻址）
+GRASS, DIRT, WATER, WALL, ORE, ICE = 1, 2, 3, 4, 5, 6
 
 CAVE = {
     "name": "cold_spring_cave",
@@ -66,91 +59,9 @@ CAVE = {
     "path_tile": GRASS,   # 洞底石地
 }
 
-
-def rect(region):
-    x0, y0, x1, y1 = region
-    return [(x, y) for y in range(y0, y1 + 1) for x in range(x0, x1 + 1)]
-
-
-# ---------------------------------------------------------------------------
-# 山道
-# ---------------------------------------------------------------------------
-
-MOUNTAIN_PATH_SEGMENTS = [
-    # (x0, y0, x1, y1) 碎石路
-    (18, 1, 21, 6),
-    (14, 6, 21, 7),
-    (10, 7, 13, 15),
-    (10, 15, 20, 19),
-    (20, 17, 23, 20),
-]
-MOUNTAIN_STAIRS = [
-    (10, 7, 21, 8),
-    (10, 14, 20, 15),
-]
-MOUNTAIN_STREAM = (23, 4, 27, 19)
-# 木桥必须**跨满整条溪**（x23..27）才能接上两岸：早期写成 (24,10,26,11)，
-# 结果桥面被水包围成了孤岛，places.lua:mountain_bridge 直接报不可达。
-MOUNTAIN_BRIDGE = (23, 10, 27, 11)
-MOUNTAIN_BAMBOO = [(2, 3, 8, 9), (30, 16, 37, 20)]
-MOUNTAIN_CLIFFS = [(2, 10, 7, 20), (30, 1, 37, 5), (33, 6, 37, 9)]
-
-MOUNTAIN_BUILDINGS = [
-    {"name": "MountainGate", "texture": "assets/art/buildings/wilds_mountain_gate.png",
-     "size": (128, 96), "cell": (18, 0), "order": 5,
-     "solid_cells": [(18, 1), (18, 2), (20, 1), (20, 2)]},
-    {"name": "TeaShed", "texture": "assets/art/buildings/wilds_tea_shed.png",
-     "size": (128, 80), "cell": (14, 9), "order": 0, "solid": (14, 17, 9, 10)},
-    {"name": "BanditCamp", "texture": "assets/art/buildings/wilds_bandit_camp.png",
-     "size": (160, 96), "cell": (29, 7), "order": 0, "solid": (29, 33, 7, 9)},
-    {"name": "BrokenBridge", "texture": "assets/art/buildings/wilds_broken_bridge.png",
-     "size": (128, 48), "cell": (3, 14), "order": 10, "solid_cells": []},
-]
-
-MOUNTAIN_PROPS = [
-    {"name": "Boardwalk", "texture": "assets/art/buildings/wilds_boardwalk.png",
-     "size": (128, 64), "cell": (23, 10), "order": 12, "solid_cells": []},
-    {"name": "PineA", "texture": "assets/art/props/wilds_pine.png", "size": (64, 88),
-     "cell": (9, 3), "order": 20, "solid_cells": [(9, 3)]},
-    {"name": "PineB", "texture": "assets/art/props/wilds_pine.png", "size": (64, 88),
-     "cell": (14, 16), "order": 20, "solid_cells": []},
-    {"name": "PineC", "texture": "assets/art/props/wilds_pine.png", "size": (64, 88),
-     "cell": (35, 14), "order": 20, "solid_cells": [(35, 14)]},
-    {"name": "BoulderA", "texture": "assets/art/props/wilds_boulder.png", "size": (48, 32),
-     "cell": (11, 12), "order": 20, "solid_cells": []},
-    {"name": "BoulderB", "texture": "assets/art/props/wilds_boulder.png", "size": (48, 32),
-     "cell": (19, 13), "order": 20, "solid_cells": []},
-    {"name": "VineA", "texture": "assets/art/props/wilds_vine.png", "size": (32, 64),
-     "cell": (7, 12), "order": 20, "solid_cells": []},
-    {"name": "VineB", "texture": "assets/art/props/wilds_vine.png", "size": (32, 64),
-     "cell": (31, 2), "order": 20, "solid_cells": []},
-    {"name": "TorchA", "texture": "assets/art/props/wilds_torch.png", "size": (24, 56),
-     "cell": (17, 5), "order": 20, "solid_cells": []},
-    {"name": "TorchB", "texture": "assets/art/props/wilds_torch.png", "size": (24, 56),
-     "cell": (22, 18), "order": 20, "solid_cells": []},
-    {"name": "Signpost", "texture": "assets/art/props/wilds_signpost.png", "size": (40, 48),
-     "cell": (21, 5), "order": 20, "solid_cells": [(21, 5)]},
-    {"name": "Campfire", "texture": "assets/art/props/wilds_campfire.png", "size": (48, 40),
-     "cell": (30, 11), "order": 20, "solid_cells": [(30, 11)]},
-    {"name": "Crate", "texture": "assets/art/props/wilds_crate.png", "size": (32, 28),
-     "cell": (33, 10), "order": 20, "solid_cells": [(33, 10)]},
-    # 采集物
-    {"name": "Berry", "texture": "assets/art/gather/wilds_berry.png", "size": (32, 32),
-     "cell": (9, 16), "order": 22, "solid_cells": [(9, 16)]},
-    {"name": "HerbCluster", "texture": "assets/art/gather/wilds_herb.png", "size": (32, 32),
-     "cell": (12, 11), "order": 22, "solid_cells": [(12, 11)]},
-    {"name": "Firewood", "texture": "assets/art/gather/wilds_firewood.png", "size": (40, 32),
-     "cell": (15, 3), "order": 22, "solid_cells": [(15, 3)]},
-    {"name": "OreRock", "texture": "assets/art/gather/wilds_ore.png", "size": (40, 32),
-     "cell": (28, 17), "order": 22, "solid_cells": [(28, 17)]},
-    {"name": "PoisonHerb", "texture": "assets/art/gather/wilds_poison_herb.png", "size": (32, 32),
-     "cell": (29, 15), "order": 22, "solid_cells": [(29, 15)]},
-]
-
-# ---------------------------------------------------------------------------
-# 寒泉洞
-# ---------------------------------------------------------------------------
-
+# 洞窟地表：**没有** `entity_meta role decor` 那一段，也没有遮断/投影——金标管线还没接它。
+# id 段因此是本文件唯一的分配者：1 GroundMap、2..N 道具、然后玩家/标题/提示/相机、最后
+# `CAVE_EXTRAS`（盘上手工追加在相机之后的那批，见它的注释）。
 CAVE_DARKWATER = [(2, 2, 5, 5)]
 CAVE_ICE = [(13, 2, 17, 5)]
 CAVE_RUBBLE = [(4, 8, 8, 9)]
@@ -173,37 +84,19 @@ CAVE_PROPS = [
      "cell": (13, 9), "order": 20, "solid_cells": [(13, 9)]},
 ]
 
+# 登记在**相机之后**的那批实体：以前是手工 `Edit` 追加到文件尾的（b3132ac4 横屏方案A 那笔），
+# 于是重跑本工具就会把它们整段抹掉——而盘上没有任何一张图会报错，只是 `interior_stove.png`
+# 从"被引用"变成孤儿。现在按同一段、同一个 id 登记进来，重跑 = 盘上。
+# `Stove` 在资源接线清单里的作用就是让家具图集有一处真实引用（docs/48），不是装饰。
+CAVE_EXTRAS = [
+    {"name": "Stove", "texture": "assets/art/furniture/interior_stove.png", "size": (48, 40),
+     "cell": (10, 6), "order": 10, "role": "furniture", "solid_cells": []},
+]
 
-def build_mountain():
-    w, h = MOUNTAIN["w"], MOUNTAIN["h"]
-    ground = [[GRASS] * w for _ in range(h)]
-    for region in MOUNTAIN_BAMBOO:
-        for (x, y) in rect((region[0], region[1], region[2], region[3])):
-            ground[y][x] = ROOF if False else 5  # 5 = 竹林地
-    for region in MOUNTAIN_CLIFFS:
-        for (x, y) in rect(region):
-            ground[y][x] = WALL
-    for region in MOUNTAIN_PATH_SEGMENTS:
-        for (x, y) in rect(region):
-            ground[y][x] = DIRT
-    for region in MOUNTAIN_STAIRS:
-        for (x, y) in rect(region):
-            ground[y][x] = STONE
-    for region in (MOUNTAIN_STREAM,):
-        for (x, y) in rect(region):
-            ground[y][x] = WATER
-    # 木桥：溪水上铺石板 → 可走（必须在溪水之后写）
-    for (x, y) in rect(MOUNTAIN_BRIDGE):
-        ground[y][x] = STONE
-    # 外圈崖壁（底部两行都是崖壁：h 22→23 时原下沿 h-2 保持墙，新行压在最底）
-    for x in range(w):
-        ground[0][x] = WALL
-        ground[h - 2][x] = WALL
-        ground[h - 1][x] = WALL
-    for y in range(h):
-        ground[y][0] = WALL
-        ground[y][w - 1] = WALL
-    return ground
+
+def rect(region):
+    x0, y0, x1, y1 = region
+    return [(x, y) for y in range(y0, y1 + 1) for x in range(x0, x1 + 1)]
 
 
 def build_cave():
@@ -211,15 +104,15 @@ def build_cave():
     ground = [[GRASS] * w for _ in range(h)]
     for region in CAVE_DARKWATER:
         for (x, y) in rect(region):
-            ground[y][x] = 3  # 暗河水
+            ground[y][x] = WATER  # 暗河水
     for region in CAVE_ICE:
         for (x, y) in rect(region):
-            ground[y][x] = 6  # 冰晶地
+            ground[y][x] = ICE  # 冰晶地
     for region in CAVE_RUBBLE:
         for (x, y) in rect(region):
             ground[y][x] = DIRT  # 碎石堆
     for (x, y) in CAVE_ORE_WALLS:
-        ground[y][x] = 5  # 矿脉（洞壁上的矿）
+        ground[y][x] = ORE  # 矿脉（洞壁上的矿）
     for x in range(w):
         ground[0][x] = WALL
         ground[h - 1][x] = WALL
@@ -229,41 +122,16 @@ def build_cave():
     return ground
 
 
-def build_solid(ground, buildings, props, w, h, walk_overrides=()):
-    solid = [[0] * w for _ in range(h)]
-    for y in range(h):
-        for x in range(w):
-            if ground[y][x] == WALL or ground[y][x] in (WATER, 3) and ground[y][x] != DIRT:
-                pass
-    # 上面的写法不直观：明确按"墙/水实心，其余可走"处理
-    for y in range(h):
-        for x in range(w):
-            value = ground[y][x]
-            solid[y][x] = 1 if value == WALL else 0
-    # 水：两张图里 tile==6 是溪水，tile==3 在洞窟是暗河水（但在山道是石阶）
-    for y in range(h):
-        for x in range(w):
-            if ground[y][x] == WATER:
-                solid[y][x] = 1
-    for (x, y) in walk_overrides:
-        solid[y][x] = 0
-    for entry in buildings + props:
-        cells = rect(entry["solid"]) if "solid" in entry else entry.get("solid_cells", [])
-        for (x, y) in cells:
-            solid[y][x] = 1
-    # 洞窟暗河水单独标实心（列语义与山道不同）
-    return solid
-
-
 def build_cave_solid(ground, props):
+    """洞壁与暗河水天然实心，其余按道具手填 `solid_cells`（金标口径见模块 docstring）。"""
     w, h = CAVE["w"], CAVE["h"]
     solid = [[0] * w for _ in range(h)]
     for y in range(h):
         for x in range(w):
             value = ground[y][x]
-            if value == WALL or value == 3:   # 洞壁 / 暗河水
+            if value == WALL or value == WATER:
                 solid[y][x] = 1
-    for entry in props:
+    for entry in props + CAVE_EXTRAS:
         for (x, y) in entry.get("solid_cells", []):
             solid[y][x] = 1
     return solid
@@ -286,7 +154,25 @@ def sprite_line(entity_id, texture, width, height, layer, order):
     )
 
 
-def build_scene(meta, ground, solid, entities, w, h):
+def entity_lines(entity_id, entry):
+    """一件 sprite 的四行（实体名/Sprite/Transform/两条 entity_meta）。
+
+    `CAVE_PROPS` 与 `CAVE_EXTRAS` 走同一个函数：分段只是为了 id 顺序，不是为了两套写法。
+    """
+    cell_x, cell_y = entry["cell"]
+    width, height = entry["size"]
+    return [
+        f"entity\t{entity_id}\t{entry['name']}",
+        sprite_line(entity_id, entry["texture"], width, height,
+                    entry.get("layer", "world"), entry["order"]),
+        transform_line(entity_id, float(cell_x * TILE), float(cell_y * TILE)),
+        f"entity_meta\t{entity_id}\trole\t{entry.get('role', 'prop')}",
+        f"entity_meta\t{entity_id}\tcell\t{cell_x},{cell_y}",
+    ]
+
+
+def build_scene(meta, ground, solid, entities, extras, w, h):
+    cells = [ground[y][x] for y in range(h) for x in range(w)]
     lines = [
         "scene_version=2",
         f"name={meta['name']}",
@@ -298,21 +184,17 @@ def build_scene(meta, ground, solid, entities, w, h):
         "meta\tui_reference_width\t1280",
         "entity\t1\tGroundMap",
         transform_line(1, 0.0, 0.0),
-        f"component\t1\tTilemap\ttile_size=32x32;width={w};height={h};texture={meta['texture']}"
-        f";tiles={row_major(ground, w, h)};solid={row_major(solid, w, h)}",
+        # 字段顺序走 `terrain_kit.tilemap_component`（引擎 `Tilemap::to_component_str` 的
+        # 同一份顺序）。以前这里自写一条 f-string 用 `tiles=4444…` 的定宽数字串，而盘上早就
+        # 是 `tiles_format=1` + 逗号分隔 + `atlas_cols/rows`（e26a0508 那笔重编码），于是
+        # "重跑生成器"会把新编码退回旧编码——引擎两种都读得懂，所以不报错，只是下次对拍全是假差异。
+        "component\t1\tTilemap\t" + tk.tilemap_component(
+            TILE, w, h, meta["texture"], cells, row_major(solid, w, h), 6, 1),
         "entity_meta\t1\trole\tground_tilemap",
     ]
     next_id = 2
     for entry in entities:
-        role = "building" if entry in MOUNTAIN_BUILDINGS else "prop"
-        cell_x, cell_y = entry["cell"]
-        width, height = entry["size"]
-        lines.append(f"entity\t{next_id}\t{entry['name']}")
-        lines.append(sprite_line(next_id, entry["texture"], width, height,
-                                 entry.get("layer", "world"), entry["order"]))
-        lines.append(transform_line(next_id, float(cell_x * TILE), float(cell_y * TILE)))
-        lines.append(f"entity_meta\t{next_id}\trole\t{role}")
-        lines.append(f"entity_meta\t{next_id}\tcell\t{cell_x},{cell_y}")
+        lines.extend(entity_lines(next_id, entry))
         next_id += 1
     player_id = next_id
     spawn_x, spawn_y = meta["spawn"]
@@ -363,6 +245,10 @@ def build_scene(meta, ground, solid, entities, w, h):
     lines.append(camera_line(camera_id, w, h))
     lines.append(transform_line(camera_id, 0.0, 0.0))
     lines.append(f"entity_meta\t{camera_id}\trole\tgame_camera")
+    next_id = camera_id + 1
+    for entry in extras:
+        lines.extend(entity_lines(next_id, entry))
+        next_id += 1
     return "\n".join(lines) + "\n"
 
 
@@ -434,46 +320,20 @@ def walkable_summary(solid, w, h):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="生成青云山道与寒泉洞场景")
+    parser = argparse.ArgumentParser(description="生成寒泉洞场景（山道见 gen_mountain_scene.py）")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
     problems = []
     os.makedirs("scenes", exist_ok=True)
 
-    # ---- 山道 ----
-    ground = build_mountain()
-    w, h = MOUNTAIN["w"], MOUNTAIN["h"]
-    solid = build_solid(ground, MOUNTAIN_BUILDINGS, MOUNTAIN_PROPS, w, h)
-    entities = MOUNTAIN_BUILDINGS + MOUNTAIN_PROPS
-    text = build_scene(MOUNTAIN, ground, solid, entities, w, h)
-    with open(os.path.join("scenes", "mountain_path.scene"), "w", encoding="utf-8", newline="\n") as f:
-        f.write(text)
-    walk = reachable(solid, MOUNTAIN["spawn"], w, h)
-    for label, cell in (("spawn", MOUNTAIN["spawn"]), ("exit", MOUNTAIN["exit"])):
-        if solid[cell[1]][cell[0]]:
-            problems.append(f"mountain {label} {cell} 是 solid")
-        elif cell not in walk:
-            problems.append(f"mountain {label} {cell} 从 spawn 不可达")
-    for (x, y) in rect(MOUNTAIN_BRIDGE):
-        if solid[y][x]:
-            problems.append(f"mountain 木桥 ({x},{y}) 是 solid")
-    for name, x, y in read_place_cells("mountain_path"):
-        if solid[y][x]:
-            problems.append(f"places.lua:{name} ({x},{y}) 是 solid")
-        elif (x, y) not in walk:
-            problems.append(f"places.lua:{name} ({x},{y}) 不可达")
-    problems += check_texture_sizes(entities)
-    print(f"wrote scenes/mountain_path.scene ({w}x{h}, {len(MOUNTAIN_BUILDINGS)} 建筑 + "
-          f"{len(MOUNTAIN_PROPS)} 道具)")
-
-    # ---- 寒泉洞 ----
     ground = build_cave()
     w, h = CAVE["w"], CAVE["h"]
     solid = build_cave_solid(ground, CAVE_PROPS)
-    text = build_scene(CAVE, ground, solid, CAVE_PROPS, w, h)
-    with open(os.path.join("scenes", "cold_spring_cave.scene"), "w", encoding="utf-8", newline="\n") as f:
-        f.write(text)
+    text = build_scene(CAVE, ground, solid, CAVE_PROPS, CAVE_EXTRAS, w, h)
+    with open(os.path.join("scenes", "cold_spring_cave.scene"), "w",
+              encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
     walk = reachable(solid, CAVE["spawn"], w, h)
     for label, cell in (("spawn", CAVE["spawn"]), ("exit", CAVE["exit"])):
         if solid[cell[1]][cell[0]]:
@@ -485,21 +345,18 @@ def main():
             problems.append(f"places.lua:{name} ({x},{y}) 是 solid")
         elif (x, y) not in walk:
             problems.append(f"places.lua:{name} ({x},{y}) 不可达")
-    problems += check_texture_sizes(CAVE_PROPS)
-    print(f"wrote scenes/cold_spring_cave.scene ({w}x{h}, {len(CAVE_PROPS)} 道具)")
+    problems += check_texture_sizes(CAVE_PROPS + CAVE_EXTRAS)
+    print(f"wrote scenes/cold_spring_cave.scene ({w}x{h}, {len(CAVE_PROPS)} 道具 + "
+          f"{len(CAVE_EXTRAS)} 家具)")
 
     if problems:
         for problem in problems:
             print("[FAIL]", problem)
         raise SystemExit(1)
-    print("契约自检 ok：山道 spawn/exit/木桥 + 洞窟 spawn/exit")
+    print("契约自检 ok：洞窟 spawn/exit/places")
     if not args.quiet:
-        print("山道可走区间（同步 data/places.lua 注释用）：")
-        for line in walkable_summary(solid if False else build_solid(build_mountain(),
-                                                                    MOUNTAIN_BUILDINGS,
-                                                                    MOUNTAIN_PROPS,
-                                                                    MOUNTAIN["w"], MOUNTAIN["h"]),
-                                     MOUNTAIN["w"], MOUNTAIN["h"]):
+        print("洞窟可走区间（同步 data/places.lua 注释用）：")
+        for line in walkable_summary(solid, w, h):
             print(line)
 
 

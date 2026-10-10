@@ -80,7 +80,7 @@ M.maps = {
       }
     }
   },
-  -- 青云山道：采集、敌人、护送任务（docs/30 §10.1），由 tools/gen_wilds_scene.py 生成
+  -- 青云山道：采集、敌人、护送任务（docs/30 §10.1），由 tools/gen_mountain_scene.py 生成
   mountain_path = {
     display = "江湖有田·青云山道",
     title = "青云山道 · 采药与护送",

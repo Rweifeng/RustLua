@@ -467,6 +467,171 @@ def paint_village_wall_edges(canvas, seed, mask, pal, ctx):
 
 
 # ---------------------------------------------------------------------------
+# 青云山道（M72-11 第二张铺量的图）
+#
+# 身份差别写在 `terrain_ramp.json:scenes.mountain_path` 的 meaning 里，画法上的差别是：
+# 山庄的绿是"人造园艺 + 晒场"，村是"阔叶山谷"，山道是**针叶林下**——所以地面母题是松针、
+# 片岩碎块、凿痕石阶、层理岩壁与竹叶层，一条直线铺装都不许出现。
+# ---------------------------------------------------------------------------
+
+
+def paint_mountain_grass(canvas, rand, pal, ctx):
+    """针叶林下林地：冷绿草皮上落松针，苔斑只给最亮一档（读起来是"潮"，不是"花"）。"""
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["mid"])
+    _speckles(canvas, rand, [pal["deep"], pal["dark"], pal["light"]], 170)
+    for _ in range(6):  # 松针：一根 3~4px 的斜针，下面压一根同族暗档
+        x, y = 2 + rand(TILE - 5), 2 + rand(TILE - 5)
+        length = 3 + rand(2)
+        canvas.hline(x, x + length, y, ctx["utility"]["wood"])
+        canvas.hline(x, x + length - 1, y + 1, pal["deep"])
+    for _ in range(2):
+        x, y = 3 + rand(TILE - 8), 3 + rand(TILE - 8)
+        canvas.rect(x, y, x + 3, y + 2, pal["light"])
+        canvas.set(x + 1, y, pal["mid"])
+    for _ in range(2):  # 一撮硬草
+        x, y = 2 + rand(TILE - 4), 5 + rand(TILE - 8)
+        canvas.vline(x, y - 3, y, pal["dark"])
+        canvas.set(x - 1, y - 2, pal["light"])
+
+
+def paint_mountain_scree(canvas, rand, pal, ctx):
+    """碎石土路：踩实土里嵌**扁的**片岩碎块（村溪卵是圆的，这里的读感是"硌脚"）。"""
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["mid"])
+    _speckles(canvas, rand, [pal["deep"], pal["dark"], pal["light"]], 140)
+    for _ in range(7):
+        x, y = 1 + rand(TILE - 4), 1 + rand(TILE - 4)
+        width = 2 + rand(3)
+        canvas.rect(x, y, x + width, y + 1, ctx["paving"]["dark"])
+        canvas.hline(x, x + width, y, ctx["paving"]["light"])
+        canvas.set(x + width, y + 1, ctx["paving"]["deep"])
+    for _ in range(2):  # 冲沟：斜着走的一条暗痕，雨水把碎石往下带
+        x, y = 2 + rand(TILE - 8), 6 + rand(TILE - 12)
+        for step in range(5):
+            canvas.set(x + step, y - step, pal["deep"])
+
+
+def paint_mountain_granite(canvas, rand, pal, ctx):
+    """石阶：两条大条石上下叠，上一层的顶行走最亮档——那是"踩上去的阶面"。"""
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["deep"])
+    ys = (0, 13 + rand(6), TILE - 1)
+    for row in range(2):
+        y0, y1 = ys[row] + 1, ys[row + 1] - 1
+        canvas.rect(0, y0, TILE - 1, y1, pal["mid"] if row else pal["light"])
+        canvas.hline(0, TILE - 1, y0, pal["light"] if row else pal["mid"])
+        canvas.hline(0, TILE - 1, y1, pal["dark"])
+    for _ in range(3):  # 凿痕：断续的竖点，一亮一暗交替才读得出是錾子活的方向
+        x, y = 2 + rand(TILE - 5), 2 + rand(TILE - 8)
+        canvas.vline(x, y, y + 2, pal["dark"] if rand(2) else pal["light"])
+
+
+def paint_mountain_cliff(canvas, rand, pal, ctx):
+    """岩壁本体：水平层理 + **竖向节理**，缝里生苔。
+
+    第一版只画层理（整条亮档/暗档横跨 32 像素、每格独立随机），274 格铺开后读成"瓦楞铁皮"
+    而不是山岩——离屏预览目验抓出来的（`.temp/mp_preview.png`，M72-11 山道段）。
+    两处修法：① 亮暗档之间垫 `mid`，把相邻层的对比从 light↔dark 降到 light↔mid；
+    ② 每层再砍 1–2 道竖向节理（`deep` 竖线 + 右侧一列 `light` 高光），层理因此被切成石块，
+    读感从"条纹"变"凿面"。苔仍只在暗档层顶。
+    """
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["mid"])
+    y = 0
+    index = 0
+    while y < TILE:
+        height = 4 + rand(4)
+        bottom = min(TILE - 1, y + height - 1)
+        face = pal["light"] if index % 2 else pal["mid"]
+        canvas.rect(0, y, TILE - 1, bottom, face)
+        canvas.hline(0, TILE - 1, bottom, pal["deep"])
+        for x in range(2, TILE, 5 + rand(4)):
+            canvas.set(x, y + rand(max(1, bottom - y)), pal["mid"])
+        joints = 1 + rand(2)
+        for joint in range(joints):  # 竖向节理：把这一层切成两三块
+            jx = 3 + joint * (TILE // (joints + 1)) + rand(4)
+            if jx >= TILE - 1:
+                continue
+            canvas.vline(jx, y, bottom - 1, pal["deep"])
+            if jx + 1 < TILE:  # 节理右壁接光：一条竖线不读成裂缝，配上右壁才读成"劈开的石面"
+                canvas.vline(jx + 1, y, bottom - 1, pal["light"] if index % 2 else pal["mid"])
+        if index % 2:  # 苔只长在暗档那一层的顶上（阴面才留得住水）
+            canvas.hline(1 + rand(6), 1 + rand(6) + 3, y, ctx["families"]["grass"]["light"])
+        y = bottom + 1
+        index += 1
+
+
+def paint_mountain_cliff_edges(canvas, seed, mask, pal, ctx):
+    """岩壁收口：顶沿是苔草、墙脚是塌下来的碎石坡、两端是墨线断点。
+
+    山庄院墙顶是草帽沿、村庄白墙顶是黛瓦压顶，这里顶沿直接是**林下的草**——山道的墙不是
+    砌出来的，是凿出来的，所以"墙顶"就是山体表面接住落土的那一条。
+    """
+    exposed = tk.mask_edges(mask)
+    grass, scree = ctx["families"]["grass"], ctx["families"]["scree"]
+    if "top" in exposed:
+        for x in range(TILE):
+            depth = 3 + (seed + x) % 3
+            canvas.rect(x, 0, x, depth - 1, grass["dark"])
+            canvas.set(x, 0, grass["light"])
+            if (seed + x * 7) % 5 == 0:
+                canvas.set(x, depth, grass["mid"])
+    if "bottom" in exposed:
+        for x in range(TILE):
+            depth = 2 + (seed + x * 3) % 3
+            for d in range(depth):
+                canvas.set(x, TILE - 1 - d, scree["dark"] if d else scree["light"])
+    for bit, edge in ((3, "left"), (1, "right")):
+        if edge in exposed:
+            coord = EDGE_COORD[edge]
+            for t in range(TILE):
+                canvas.set(*coord(t, 0), pal["deep"])
+                canvas.set(*coord(t, 1), pal["dark"])
+                if (seed + t * 11) % 6:
+                    canvas.set(*coord(t, 2), ctx["utility"]["ink"])
+
+
+def paint_mountain_bamboo(canvas, rand, pal, ctx):
+    """竹林地：黄绿落叶层 + 两条横走竹鞭 + 一撇一撇的竹叶。"""
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["mid"])
+    _speckles(canvas, rand, [pal["deep"], pal["dark"], pal["light"]], 160)
+    for row in (8, 22):
+        y = row + (rand(3) - 1)
+        # 竹鞭走**断线**而不是满宽 2 像素实线：满宽实线在 89 格铺开后就成了一把尺子，
+        # 读不出"地里横走的根茎"（山道目验抓出来的第二条，同 paint_mountain_cliff 那个毛病）。
+        start = rand(4)
+        for x in range(start, TILE):
+            if (x - start) % 4 == 3:
+                continue
+            canvas.set(x, y, ctx["utility"]["wood"])
+            canvas.set(x, y + 1, pal["deep"])
+        for x in range(3, TILE, 9):
+            canvas.set(x, y, pal["light"])
+    for _ in range(4):
+        x, y = 2 + rand(TILE - 6), 4 + rand(TILE - 8)
+        canvas.set(x, y, pal["light"])
+        canvas.set(x + 1, y - 1, pal["dark"])
+        canvas.set(x + 2, y - 2, pal["deep"])
+
+
+def paint_mountain_stream(canvas, rand, pal, ctx):
+    """山涧：比村溪急——水口白带更密、露出的圆石更大。"""
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["dark"])
+    _speckles(canvas, rand, [pal["deep"]], 60)
+    for row in (4, 12, 20, 28):
+        x = rand(4)
+        while x < TILE - 5:
+            width = 4 + rand(4)
+            y = row + (rand(3) - 1)
+            right = min(TILE - 1, x + width)
+            canvas.hline(x, right, y, pal["mid"])
+            canvas.hline(x + 1, right, y - 1, pal["light"])
+            x += width + 2 + rand(4)
+    for _ in range(3):
+        x, y = 2 + rand(TILE - 6), 2 + rand(TILE - 6)
+        canvas.rect(x, y, x + 2, y + 2, ctx["paving"]["dark"])
+        canvas.hline(x, x + 2, y, ctx["paving"]["light"])
+        canvas.set(x + 2, y + 2, ctx["paving"]["deep"])
+
+
+# ---------------------------------------------------------------------------
 # 配方表与单瓦装配
 # ---------------------------------------------------------------------------
 #
@@ -585,9 +750,20 @@ VILLAGE_EDGES = {"grass": _edge_soil, "dirt": _edge_soil, "stone": _edge_stone,
                  "wall": paint_village_wall_edges, "roof": _edge_roof,
                  "water": _edge_water}
 
+# 山道的 kind 5 走自家画法（竹林地是地面，不是瓦垄），所以这里不复用 `_base_roof`；
+# 边收口反过来复用 `_edge_soil`——落叶层与土路的沿读起来是同一件事：软面压住硬面。
+MOUNTAIN_BASE = {"grass": paint_mountain_grass, "dirt": paint_mountain_scree,
+                 "stone": paint_mountain_granite, "wall": paint_mountain_cliff,
+                 "roof": paint_mountain_bamboo, "water": paint_mountain_stream}
+
+MOUNTAIN_EDGES = {"grass": _edge_soil, "dirt": _edge_soil, "stone": _edge_stone,
+                  "wall": paint_mountain_cliff_edges, "roof": _edge_soil,
+                  "water": _edge_water}
+
 SCENE_RECIPES = {
     "manor": (MANOR_BASE, MANOR_EDGES),
     "village": (VILLAGE_BASE, VILLAGE_EDGES),
+    "mountain_path": (MOUNTAIN_BASE, MOUNTAIN_EDGES),
 }
 
 

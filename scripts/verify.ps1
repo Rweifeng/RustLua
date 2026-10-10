@@ -409,41 +409,38 @@ try {
         Invoke-Checked python @(
             (Join-Path $projectRoot "examples/game_jhyt/tools/gen_decor_art.py"), "--check"
         )
-        Invoke-Checked python @(
-            (Join-Path $projectRoot "examples/game_jhyt/tools/set_scatter_decor.py"),
-            (Join-Path $projectRoot "examples/game_jhyt/scenes/manor.scene"),
-            "--check"
-        )
-        # M72-11 铺量：`building_kit.py` 是"每格 solid 都要有可视依据"这条规则的**实现**，
-        # 而 `jhyt_m72_building_footprint` 是它的第二份独立实现（Rust 不 import Python）。
-        # 这里跑的是实现自己的对拍：现算的应实心格集必须 == 盘上 `solid` 串（缺 0 悬空 0）。
-        # 为什么两张图都要——`solid` 同时是物理（每个实心格一个静态 cuboid），手改一格、
-        # 或改了建筑贴图却没重跑 `--apply`，都只有这条能在目验之前抓住。
+        # 逐图三条门，一张图一轮跑齐：散布确定性 → 建筑占地 solid 对拍 → 逐图量化读数。
         #
-        # 同一条循环里再跑 `scene_readings.py --gate`：plan §验收方式 要求**逐图**量化
-        # （同屏可见瓦种类 ≥24、每屏装饰 median ≥40），而 `jhyt_m72_manor_terrain` 按设计只管
-        # manor 那张图集、`jhyt_m72_scatter_decor` 只管 manor 那份散布。这条是"任意一张图都能
-        # 判"的那一份，判据常量与那两扇门同名同值。分档表 `MIN_DECOR_OBJECTS` 里没有的场景
-        # 直接红（室内/洞穴要按 plan §风险 另定分档，工具不替它猜）。
-        foreach ($solidScene in @("manor", "village")) {
+        # ① `set_scatter_decor.py --check`：盘上装饰段 == 按当前地表现算的装饰段（M72-05 只有
+        #    manor 一条（204 件），village 326 件、mountain_path 245 件都比它多，而
+        #    `decor_kit.CATALOG` 是所有图共用的形状库——改了库没重撒，红在这里而不是等目验发现）。
+        # ② `building_kit.py --check`：M72-11 铺量——"每格 solid 都要有可视依据"这条规则的**实现**，
+        #    而 `jhyt_m72_building_footprint` 是它的第二份独立实现（Rust 不 import Python）。
+        #    现算的应实心格集必须 == 盘上 `solid` 串（缺 0 悬空 0）。为什么每张图都要——`solid`
+        #    同时是物理（每个实心格一个静态 cuboid），手改一格、或改了建筑贴图却没重跑
+        #    `--apply`，都只有这条能在目验之前抓住。
+        # ③ `scene_readings.py --gate`：plan §验收方式 要求**逐图**量化（同屏可见瓦种类 ≥24、
+        #    每屏装饰 median ≥40），而 `jhyt_m72_manor_terrain` 按设计只管 manor 那张图集、
+        #    `jhyt_m72_scatter_decor` 只管 manor 那份散布。这条是"任意一张图都能判"的那一份，
+        #    判据常量与那两扇门同名同值。分档表 `MIN_DECOR_OBJECTS` 里没有的场景直接红
+        #    （室内/洞穴要按 plan §风险 另定分档，工具不替它猜）。
+        foreach ($decorScene in @("manor", "village", "mountain_path")) {
+            Invoke-Checked python @(
+                (Join-Path $projectRoot "examples/game_jhyt/tools/set_scatter_decor.py"),
+                (Join-Path $projectRoot "examples/game_jhyt/scenes/$decorScene.scene"),
+                "--check"
+            )
             Invoke-Checked python @(
                 (Join-Path $projectRoot "examples/game_jhyt/tools/building_kit.py"),
-                (Join-Path $projectRoot "examples/game_jhyt/scenes/$solidScene.scene"),
+                (Join-Path $projectRoot "examples/game_jhyt/scenes/$decorScene.scene"),
                 "--check"
             )
             Invoke-Checked python @(
                 (Join-Path $projectRoot "examples/game_jhyt/tools/scene_readings.py"),
-                (Join-Path $projectRoot "examples/game_jhyt/scenes/$solidScene.scene"),
+                (Join-Path $projectRoot "examples/game_jhyt/scenes/$decorScene.scene"),
                 "--gate"
             )
         }
-        # 村庄也走一遍散布确定性门（上面那条只测 manor）：village 有 326 件装饰、比 manor 还多，
-        # 而 `decor_kit.CATALOG` 是两张图共用的形状库——改了库没重撒，红在这里。
-        Invoke-Checked python @(
-            (Join-Path $projectRoot "examples/game_jhyt/tools/set_scatter_decor.py"),
-            (Join-Path $projectRoot "examples/game_jhyt/scenes/village.scene"),
-            "--check"
-        )
     } else {
         Write-Host "  [SKIP] 未找到 python：装饰库色表门、装饰散布确定性门、建筑占地 solid 对拍门与逐图量化读数门未运行（不是通过）" -ForegroundColor Yellow
     }

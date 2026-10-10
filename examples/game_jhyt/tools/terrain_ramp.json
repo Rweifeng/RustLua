@@ -83,6 +83,31 @@
         "plaster": ["#8F8878", "#B3AC9C", "#D8D2C4", "#EDE6D6"],
         "slate": ["#223038", "#33424D", "#455766", "#5C7080"]
       }
+    },
+    "mountain_path": {
+      "display_name": "青云山道（山脊林径）",
+      "source": "tools/gen_mountain_scene.py 头注的 kind 语义（1 林地草地 2 碎石土路 3 石阶 4 岩壁 5 竹林地 6 溪水）+ docs/42 批次 2 山道段",
+      "comment": [
+        "kind 编号语义与另两图不同一处：5 号（顶层叫 roof 的那列）在山道**真铺在地表**（竹林地；格数随布局漂，读数取 `gen_mountain_scene.py` 印的 kind 直方图，这里钉死它就是一笔假账），",
+        "而山庄/村庄那两图它只是占位。编号不许动（引擎与 farm.lua/building.lua 认的是编号），",
+        "所以这里只换族名：roof → bamboo_floor。"
+      ],
+      "uses": ["grass", "scree", "granite", "cliff", "bamboo_floor", "water"],
+      "kinds": [
+        { "id": 1, "name": "grass", "family": "grass", "meaning": "针叶林下林地（冷绿的草 + 落松针 + 苔斑）" },
+        { "id": 2, "name": "dirt", "family": "scree", "meaning": "碎石土路（踩实土里嵌片岩碎块，不是村庄那种沙土）" },
+        { "id": 3, "name": "stone", "family": "granite", "meaning": "石阶（冷灰整石凿面 + 踏步亮沿）" },
+        { "id": 4, "name": "wall", "family": "cliff", "meaning": "岩壁（层理片岩，上沿走苔、端面断墨）" },
+        { "id": 5, "name": "roof", "family": "bamboo_floor", "meaning": "竹林地（黄绿落竹叶层；山道把它当地表铺，见 comment）" },
+        { "id": 6, "name": "water", "family": "water", "meaning": "山涧（比村溪更急，浅滩白石更多）" }
+      ],
+      "families": {
+        "grass": ["#2F4A33", "#3E5C3F", "#50704C", "#648459"],
+        "scree": ["#6A6156", "#847B6C", "#9A917F", "#AEA591"],
+        "granite": ["#5C646E", "#78808B", "#9098A4", "#A7AFBA"],
+        "cliff": ["#474441", "#63605A", "#7E7A71", "#969186"],
+        "bamboo_floor": ["#6B6533", "#888143", "#A09A54", "#B8B26B"]
+      }
     }
   },
   "crops": {

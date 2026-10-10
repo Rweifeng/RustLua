@@ -52,12 +52,12 @@ component	9	Transform	position=336.000000000,112.000000000,0.000000000;rotation=
 entity_meta	9	role	player_spawn
 entity_meta	9	persistent	true
 entity	10	HudTitle
-component	10	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,12.00,500.00,36.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	10	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,20.00,672.00,44.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 component	10	Text	text=寒泉洞 · 第一章线索;font_size=18.00;color=0.949,0.918,0.847
 component	10	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	10	role	hud_title
 entity	11	HudHint
-component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,40.00,560.00,64.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=24.00,50.00,672.00,72.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 component	11	Text	text=WASD 移动 · E 交互(采集/出口) · T 睡觉 · Q 吐纳 · J 普攻 · K 武学;font_size=14.00;color=0.850,0.900,1.000
 component	11	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	11	role	hud_hint

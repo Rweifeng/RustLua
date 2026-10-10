@@ -3,14 +3,15 @@
 
 M72-06 建、当时住在 `gen_manor_art.py` 里（那批图确实都是山庄的）。M72-11 铺量时搬出来，
 因为这张表从一开始就不是"山庄的表"而是**全项目的表**：键是整图文件名（stem），值带目录，
-所以 `build_*`（归 `gen_interior_art`）和村庄的屋宇（归 `gen_village_art`）本来就同在一张表里。
+所以 `build_*`（归 `gen_interior_art`）、村庄的屋宇（归 `gen_village_art`）与山道的松树/茶棚
+（归 `gen_wilds_art`）本来就同在一张表里。
 再往 manor 那个文件里加别的场景的 stem，就等于把"这套规范只属于山庄"写进目录结构——
 后续六张图会一直撞见它。
 
 三个使用方，都只认这一处：
 
-  * 画整图的那个生成器（`gen_manor_art` / `gen_interior_art` / `gen_village_art`）在自己
-    收尾时调 `split_stem()` 重切分块 ⇒ 分块与整图同源同刻；
+  * 画整图的那个生成器（`gen_manor_art` / `gen_interior_art` / `gen_village_art` /
+    `gen_wilds_art`）在自己收尾时调 `split_stem()` 重切分块 ⇒ 分块与整图同源同刻；
   * `set_foreground_occluders.py` 从 `splits_registry()` 取"哪个实体该拆、遮断件叫什么"；
   * `check_splits()` 是盘上对拍：**两块按行拼回去 == 原图逐字节**（`gen_*_art.py --check`
     与 Rust 遮挡门 §③ 各守一份）。
@@ -87,10 +88,22 @@ LAYER_SPLITS = {
     "village_house_a": (BUILDING_DIR, (("roof", 0, 51), ("body", 52, 95))),
     "village_house_b": (BUILDING_DIR, (("roof", 0, 48), ("body", 49, 95))),
     "village_shrine": (BUILDING_DIR, (("roof", 0, 28), ("body", 29, 63))),
+    # 山道两件（M72-11 接山道时补）：
+    #   * 松树**照 `manor_tree` 同一行、同一档**切，不是按松树的叶团下沿另定一个切点——
+    #     `lighting.occlusion.max_cover_ratio` 那个 0.604 是在"顶 40 行"这个切点上量的，
+    #     两张都是 64×88 的树用同一行，遮挡门量的才是同一件事。松树的第三个叶团下沿在
+    #     行 64，所以它留在 body 侧：人从松树底下走过去时露腿，与山庄老树同读法。
+    #   * 茶棚切在檐口收边那一行（`build_tea_shed` 的 `hline(2, 125, 34)` 是茅顶最底一行）
+    #     ⇒ 行 0..34 进 foreground、行 35..79 的棚身/立柱/茶案留 world。
+    # `wilds_mountain_gate` **不拆**（同 `village_gate`：它是通道不是屋子，拆出个"屋顶"
+    # 会把额枋画到人脸前面）；`wilds_bandit_camp`/`wilds_boardwalk`/`wilds_broken_bridge`
+    # 也不拆：敞棚木栅与桥面没有"压住人的顶"。
+    "wilds_pine": (PROP_DIR, (("canopy", 0, 39), ("trunk", 40, 87))),
+    "wilds_tea_shed": (BUILDING_DIR, (("roof", 0, 34), ("body", 35, 79))),
 }
 
 # 遮断实体的名字后缀（也是门侧认"哪块是遮断物"的标识）。树是"冠"，其余都是"顶"。
-OCCLOUDER_SUFFIX = {"manor_tree": "Canopy"}
+OCCLOUDER_SUFFIX = {"manor_tree": "Canopy", "wilds_pine": "Canopy"}
 
 # 谁画整图，谁就在自己收尾时重切那张图的分块：分块只有一个来源（这张表）、一个动作
 # （`split_stem`），不存在"另一套行号"。按 stem 前缀认归属——村庄的屋宇叫 `village_*`，
@@ -98,6 +111,7 @@ OCCLOUDER_SUFFIX = {"manor_tree": "Canopy"}
 OWNER_BY_PREFIX = (
     ("village_", "gen_village_art"),
     ("build_", "gen_interior_art"),
+    ("wilds_", "gen_wilds_art"),
 )
 DEFAULT_OWNER = "gen_manor_art"
 

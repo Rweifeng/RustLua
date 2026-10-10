@@ -173,6 +173,16 @@
   所以这是一份陈旧黄金表：`settings.toml → project.toml` 改名时没重 bless。
   本包不顺手 bless 别人门里的表（改的是"期望"而不是"实现"，会把真实的文案漂移洗掉），
   登记给 M72-13 台账收口。
+  〔2026-10-10 更正〕**这条不在 M72-13 结，已由 `fd3b4cb3`（M72-03 换点阵字模那一笔）重 bless 收掉**：
+  `git show HEAD:engine/crates/game/examples/support/jhyt_m66_pause_golden.tsv | sed -n '278p'` 现在写
+  `工程 project.toml 的 [input] 段可改绑…`，与 `examples/game_jhyt/scripts/ui/pause_menu.lua:138` 逐字相同。
+  实跑判据（净检出副本，不是工作树）：
+  `mkdir -p .temp/m7213close/head && git archive HEAD examples/game_jhyt | tar -x -C .temp/m7213close/head` 后
+  `cd engine && cargo run --quiet -p game --example jhyt_m66_pause_prefab -- ../.temp/m7213close/head/examples/game_jhyt`
+  ⇒ `jhyt_m66_pause_prefab_ok`、**exit=0**。归属证据：
+  `git log --oneline -S'工程 settings.toml 的 [input] 段可改绑' -- <该 tsv>` 返回 `68ffcdef`（写下旧值那一笔）与
+  `fd3b4cb3`（改掉它那一笔）；`-S` 不给方向、两者也非父子（`git rev-parse --short fd3b4cb3^` = `14b85136`），
+  所以"是 `fd3b4cb3` 收的口"钉的是 `git show --stat fd3b4cb3` 里那条 `support/jhyt_m66_pause_golden.tsv | 88 +--`。
 - [x] `cargo test -p rustlua-ecs` ⇒ 150 passed / 0 failed。
 - [x] `cargo test -p engine --lib` ⇒ **168 passed / 1 failed**，唯一一条红是
   `host::runtime_scene::tests::custom_fonts::text_render_mode_forces_vector_or_sdf_for_custom_fonts`
@@ -180,6 +190,16 @@
   **已证为 HEAD 既有红**：在 `HEAD`（`2b2eb5c7`）另开的干净 worktree 里、用独立的
   `CARGO_TARGET_DIR` 单跑这条测试 ⇒ 同样 panic。本包的改动面与文字/SDF 路径无交集
   （`git diff --name-only HEAD` 不含 `renderer/`、`text`、字体或 shader 任何文件）。
+  〔2026-10-10 更正〕**这条同样已由 `fd3b4cb3` 收掉，不欠 M72-13**：
+  `cd engine && cargo test --quiet -p engine --lib custom_fonts` ⇒ **5 passed / 0 failed**，
+  点名用 `-- --list` 复核，`text_render_mode_forces_vector_or_sdf_for_custom_fonts` 在这 5 条里；
+  全量 `cargo test --quiet -p engine --lib` ⇒ **179 passed / 0 failed**（对照本条当时的 168/1）。
+  归属判据：`git merge-base --is-ancestor 2b2eb5c7 fd3b4cb3` 成立（收口那笔在本包 HEAD 之后），
+  且 `git show --stat fd3b4cb3` 含 `runtime_scene/tests/custom_fonts.rs | 100 +++`。
+  **这一跑的口径要说清**：它读的是共享工作树上的 engine 源码，没有做 HEAD 抽取；把结论钉住的两条判据是
+  `git status --porcelain -- engine/crates/engine/src/host/runtime_scene/tests/custom_fonts.rs` 为空
+  （测试文件即 HEAD 那份）且 `git status --porcelain -- engine/crates/engine/src` **只有**
+  `host/runtime_scene/tilemap.rs` 一条（与文字/SDF 通道无交集）。
   计划里预言的 `sample_project_demos_cover_every_lua_api` **不是既有红，而是本包欠的账**：
   新增七个 API 后它精确报缺这七个 ⇒ 已补演示
   （`examples/game_api/scripts/demo_tilemap.lua`：菜地 `set_atlas(6,1)` +
@@ -220,6 +240,16 @@
   **HEAD 上同样成立**（在 `2b2eb5c7` 的干净 worktree 里跑 HEAD 版脚本，
   得到同一条 `issues=1`；`examples/game_jhyt/scripts/README.md` 从来没写过）。
   这条红登记给 M72-13（台账收口），不在本包补别人的文档。
+  〔2026-10-10 更正〕**这条现在不红了，但当时那条读数不是假账——是时间范围**：
+  `git cat-file -e 2b2eb5c7:examples/game_jhyt/scripts/README.md` 当场 `fatal: … not in '2b2eb5c7'` ✓
+  （所以 `issues=1` 在本包的 HEAD 上确实成立），而 `fb204abd`（"文档回写 M72-03 …
+  顺手找回我删掉的两个文件"）在本包的 HEAD **之后**把它补进了库
+  （`git merge-base --is-ancestor 2b2eb5c7 fb204abd` ⇒ 成立）。
+  当前 HEAD 实跑 `powershell -NoProfile -File scripts/check-docs.ps1` ⇒
+  `check_docs_ok docs=58 game_docs=46 h1=106 links=408 ps1_bom_ok=33 ps1_parse_ok=33`，**exit=0**（零 issue）。
+  本条由 M72-13 实测销账，不需要谁再补文档。
+  **顺带把上面那句"从来没写过"收紧**：`git log --diff-filter=A -- <该 README>` 给出 `05bdc62c`（最早写下）
+  与 `fb204abd`（删掉后找回），所以准确说法是"**在 `2b2eb5c7` 这个 commit 上不存在**"，不是"从未写过"。
 
 ## 未完成项 / 已知限制
 
@@ -250,3 +280,11 @@
   `engine-pub-surface.mjs` 这三道是连着的，只跑 clippy + test 会漏。
 - `jhyt_m66_pause_prefab` 的陈旧黄金表、`docs/32` 的悬空 `../scripts/README.md` 链接、
   `custom_fonts` 的 SDF/vector 分流断言，三条既有红都登记在 M72-13 收口，见上表归因。
+  〔2026-10-10 更正〕**三条都已不在 HEAD 上，但没有一条是 M72-13 修的**——本包这句话把收口人写错了：
+  ① `jhyt_m66_pause_prefab` 由 `fd3b4cb3`（M72-03）重 bless，净检出副本实跑 ⇒ exit=0；
+  ② `docs/32` 那条链接由 `fb204abd` 找回 README 而自然闭合，`check-docs.ps1` ⇒ exit=0 零 issue；
+  ③ `custom_fonts` 的分流断言由 `fd3b4cb3` 一并改实现 + 补测试（`custom_fonts.rs` +100 行），
+  `cargo test --quiet -p engine --lib custom_fonts` ⇒ 5 passed / 0 failed，
+  全量 `cargo test --quiet -p engine --lib` ⇒ **179 passed / 0 failed**（本包当时是 168 passed / 1 failed）。
+  M72-13 本轮只做了**复测与销账**（三条命令与读数逐条写在本文件「验收证据」的两处〔2026-10-10 更正〕里），
+  所以这条登记从此刻起作废，不要再按"待 M72-13"读。
