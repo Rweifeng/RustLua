@@ -224,21 +224,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     press(&mut rt, KeyCode::KeyE)?;
     assert_str(&mut rt, "require('core.state').last_action", "water_rice")?;
     assert_num(&mut rt, "require('core.state').energy", 55.0)?;
-    // 湿度层（FarmMoist，叠在 FarmGrid 之上）：有作物的地块浇水当天 tile 不变
-    // （tile_for 看的是 watered_days，播种当天仍是 3=苗期），"今天浇过"只能由这一层表达。
-    // 三块都浇 → 湿痕恰 3 格；未浇的格子保持 0。
-    for (cx, cy) in [(fx, fy), (fx2, fy2), (rx, ry)] {
-        assert_num(&mut rt, &tile_of("FarmGrid", cx, cy), 3.0)?;
+    // 三层分工（M72-08）：FarmGrid 只画土面（1=犁地 2=干涸），FarmMoist 画当日湿痕，
+    // CropGrid 画作物阶段（lingzhi 在图集第 1 行 → 苗期 entry 1；rice 第 2 行 → entry 9）。
+    // 三块都浇 → 湿痕恰 3 格；未浇的格子保持 0。实体没绑上时 tile_of 给 -1，断言即红。
+    for (cx, cy, entry) in [(fx, fy, 1.0), (fx2, fy2, 1.0), (rx, ry, 9.0)] {
+        assert_num(&mut rt, &tile_of("FarmGrid", cx, cy), 1.0)?;
         assert_num(&mut rt, &tile_of("FarmMoist", cx, cy), 1.0)?;
+        assert_num(&mut rt, &tile_of("CropGrid", cx, cy), entry)?;
     }
     assert_num(&mut rt, &moist_count_expr(), 3.0)?;
-    // 日结算把 watered_today 清零 → 湿痕撤掉，同时 watered_days 进 1（tile 3→4 生长期）。
-    // 真日结算发生在 §8 睡觉时，但那会儿人在云泽村（无 FarmGrid/FarmMoist），
-    // 撤痕这条只能在 manor 里直接调 settle_day 覆盖。
+    // 日结算把 watered_today 清零 → 撤湿痕、土面转"干涸"。作物阶段按
+    // watered_days/成熟天数 线性铺档，只浇满 1 天还跨不出第 1 档（5 档铺 7 天是设计），
+    // 这里只要求它仍画在同一格；逐日推进由 jhyt_m72_crop_stages 门对拍。
     lua(&mut rt, "require('systems.farm').settle_day()")?;
-    for (cx, cy) in [(fx, fy), (fx2, fy2), (rx, ry)] {
-        assert_num(&mut rt, &tile_of("FarmGrid", cx, cy), 4.0)?;
+    for (cx, cy, entry) in [(fx, fy, 1.0), (fx2, fy2, 1.0), (rx, ry, 9.0)] {
+        assert_num(&mut rt, &tile_of("FarmGrid", cx, cy), 2.0)?;
         assert_num(&mut rt, &tile_of("FarmMoist", cx, cy), 0.0)?;
+        assert_num(&mut rt, &tile_of("CropGrid", cx, cy), entry)?;
     }
     assert_num(&mut rt, &moist_count_expr(), 0.0)?;
     assert_num(&mut rt, "require('systems.farm').stats().planted", 3.0)?;

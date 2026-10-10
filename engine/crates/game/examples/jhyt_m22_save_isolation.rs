@@ -179,7 +179,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "water_lingzhi",
     )?;
     assert_plot_crop(&mut session, PLOT_CELL, "lingzhi")?;
-    assert_farm_tile(&mut session, 3)?; // 苗期
+    // M72-08 分层：土面 = 犁地(1)（当日浇过水），作物 = 灵芝图集第 1 行苗期(entry 1)。
+    assert_farm_tile(&mut session, "FarmGrid", 1)?;
+    assert_farm_tile(&mut session, "CropGrid", 1)?;
     assert_num(
         &mut session,
         "inv.count('player', 'seed_lingzhi')",
@@ -211,7 +213,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_num(&mut session, "inv.count('player', 'lingzhi')", 0.0)?;
     assert_plot_crop(&mut session, PLOT_CELL, "nil")?;
-    assert_farm_tile(&mut session, 0)?; // overlay 抹回空
+    assert_farm_tile(&mut session, "FarmGrid", 0)?; // 土面抹回空
+    assert_farm_tile(&mut session, "CropGrid", 0)?; // 作物层不留幽灵苗
     assert_num(&mut session, "require('systems.farm').stats().tilled", 0.0)?;
     let gather_nodes = query_str(
         &mut session,
@@ -515,16 +518,17 @@ fn assert_plot_days(
     Ok(())
 }
 
-/// FarmGrid overlay tile 值（0 = 无 overlay）。这是玩家真正看见的东西：
-/// 只清 map.state 而不重绘会留下"看得见但存不下"的幽灵农田。
+/// 农田图层（FarmGrid 土面 / CropGrid 作物）某格的 tile 值（0 = 空）。这是玩家真正
+/// 看见的东西：只清 map.state 而不重绘会留下"看得见但存不下"的幽灵农田。
 fn assert_farm_tile(
     runtime: &mut LuaRuntime,
+    layer: &str,
     expected: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let raw = query_str(
         runtime,
         &format!(
-            "local grid = entity.find('FarmGrid')\n\
+            "local grid = entity.find('{layer}')\n\
              if not grid then return '-1' end\n\
              return tostring(tilemap.get_cell(grid, {PLOT_X}, {PLOT_Y}))"
         ),
@@ -533,7 +537,7 @@ fn assert_farm_tile(
         .parse()
         .map_err(|error| format!("{raw:?} is not an integer: {error}"))?;
     if got != expected {
-        return Err(format!("FarmGrid({PLOT_X},{PLOT_Y}) = {got}, want {expected}").into());
+        return Err(format!("{layer}({PLOT_X},{PLOT_Y}) = {got}, want {expected}").into());
     }
     Ok(())
 }

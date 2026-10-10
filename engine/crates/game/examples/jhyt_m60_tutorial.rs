@@ -100,11 +100,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_status_step(&mut rt, "claim_seed")?;
 
-    // 领种子：发教学萝卜种、选中它（等同背包 choose_seed：写 selected_seed + select_seed_）。
+    // 真实购买种子，不能由测试注入库存；不验证步行/UI 或五分钟新手指标。
+    assert_num(
+        &mut rt,
+        "inv.count(require('core.state').inventory, 'seed_radish')",
+        0.0,
+    )?;
+    lua(&mut rt, "clock.set(1, 720)")?;
     lua(
         &mut rt,
-        "inv.add(require('core.state').inventory, 'seed_radish', 2) \
-         require('core.state').selected_seed = 'seed_radish' \
+        "assert(require('systems.shop').buy('zhao_stall', 'seed_radish', 2))",
+    )?;
+    assert_num(&mut rt, "require('core.state').money", 112.0)?;
+    assert_num(
+        &mut rt,
+        "inv.count(require('core.state').inventory, 'seed_radish')",
+        2.0,
+    )?;
+    // 选中它（等同背包 choose_seed：写 selected_seed + select_seed_）。
+    lua(
+        &mut rt,
+        "require('core.state').selected_seed = 'seed_radish' \
          require('core.state').last_action = 'select_seed_seed_radish' \
          require('ui.tutorial').on_action(require('core.state').last_action)",
     )?;

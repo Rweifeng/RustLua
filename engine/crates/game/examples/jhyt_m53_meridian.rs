@@ -308,7 +308,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     println!("  capture/restore 往返：任/督/肺三脉与 attack+1/defense+1 恢复 ✓");
 
-    banner("⑩ 模块 validate_all 空 + 数据校验门（strict）整条链路后依然通过");
+    banner("⑩ 动态上限回归：消耗品/打坐不得把经脉后的资源压回 100");
+    let recovery = query_str(
+        &mut runtime,
+        "return require('tools.numeric_audit').check_recovery()",
+    )?;
+    if recovery != "numeric_recovery_ok cases=13" {
+        return Err(format!("恢复规则回归失败: {recovery:?}").into());
+    }
+    println!("  {recovery}");
+
+    banner("⑪ 模块 validate_all 空 + 数据校验门（strict）整条链路后依然通过");
     let report = query_str(
         &mut runtime,
         "return require('systems.meridian').validate_all()",
