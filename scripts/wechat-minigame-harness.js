@@ -71,6 +71,11 @@ let noFrames = false;
   // 模拟"宿主连 Image.src 都不让改写"的基础库：用于验证适配层在远端模式下
   // **响亮失败**（而不是静默丢贴图），以及包内完整时的容忍行为。
   let frozenImageSrc = false;
+  // 冻结用例的**自证探针**：只统计不猜测——setter 被调用了几次、第一个实例的 own 描述符后来
+  // 是否还是我们那份（setter 身份比对）、现在 `configurable` 是什么。第 54 轮在这条用例上耗了两轮
+  // 推理都没定位（排除压缩、排除"抛了没打出来"），所以把判据直接做成读数打出来。
+  let frozenSrcSets = 0;
+  let frozenSrcProbe = null;
   // 模拟微信基础库的 Image 形态：`src` 是**原型上的** class 访问器（实例上没有 own 描述符）。
   // 只看 own 描述符的适配层会静默退化成 `image._src = value`，宿主永远不开始加载 →
   // 启动卡死 + 黑屏 + 0 error（这正是实测踩到的开发者工具黑屏）。
@@ -182,10 +187,28 @@ let noFrames = false;
   // 以 `RUSTLUA_DIAG <json>` 打到 stdout，供人工核对 shim 补齐状态（document_shim 的
   // replaced/patched/blocked/missing/hostKeys）、wasm 段、eh_probe 等。默认关，不影响任何门读数。
   let dumpDiag = false;
+  // `--gpu-probe`：打开适配层的引擎画布探针（`globalThis.__RUSTLUA_GPU_PROBE = true`，
+  // 见 wechat-adapter.js 的 probeEngineCanvas）。默认关 ⇒ 自报里 `engine_probe=off`，
+  // 与生产口径一致；打开后才有 `unavailable`（内核没编 GPU 路径）/`ok`/`failed`。
+  let gpuProbe = false;
+  // `--engine-host`：打开适配层的**引擎宿主**（`globalThis.__RUSTLUA_ENGINE_HOST = true`，见
+  // wechat-adapter.js 的 engineHostStart）。与探针分开：探针只回答"能不能起渲染栈"，宿主是
+  // "真的起一个并按帧出帧"。默认关 ⇒ 自报里 `engine_host=off`（与生产口径一致）。
+  let engineHost = false;
+  // `--engine-host-tick`：让**宿主**接管 Lua 固定步（`tick: "lua"`）。默认关 —— 老 JS 世界每帧
+  // 也在跑固定步，两边同时跑就是把世界推进两次。打开它才能验"宿主推进模拟"这条路。
+  let engineHostTick = false;
+let engineHostOffAt = 0; // WP7-94：第 N 帧把"谁推进世界"的标记还回运行时（0 = 不还）
+let rafFrameCount = 0; // WP7-94：路径无关的帧计数（每帧都经过 rAF 垫片）
   const hostStubs = {};
   for (let i = 1; i < argv.length; i++) {
     if (argv[i] === '--frames' && argv[i + 1]) frames = Number(argv[++i]) || 12;
 if (argv[i] === '--no-frames') noFrames = true;
+    else if (argv[i] === '--gpu-probe') gpuProbe = true;
+    else if (argv[i] === '--engine-host') engineHost = true;
+    else if (argv[i] === '--engine-host-tick') { engineHost = true; engineHostTick = true; }
+    // WP7-94：接管→交还往返用例。只改那个全局标记，**不碰** engineHostFinish（宿主收尾语义不动）。
+    else if (argv[i] === '--engine-host-off-at' && argv[i + 1]) { engineHost = true; engineHostTick = true; engineHostOffAt = Math.max(0, Number(argv[++i]) || 0); }
     else if (argv[i] === '--wx-path-style' && argv[i + 1]) { wxPathStyle = String(argv[++i]); wxPathStyleGiven = true; }
     else if (argv[i] === '--wx-platform' && argv[i + 1]) wxPlatform = String(argv[++i]);
     else if (argv[i] === '--remote' && argv[i + 1]) remoteMode = String(argv[++i]);
@@ -271,8 +294,8 @@ if (argv[i] === '--no-frames') noFrames = true;
   if (!['root', 'slash', 'sub-root', 'no-utf8', 'missing-pack'].includes(wxPathStyle)) {
     fail(`未知的 --wx-path-style: ${wxPathStyle}`);
   }
-  if (!['off', 'auto', 'thin', 'corrupt', 'down', 'png-fail'].includes(remoteMode)) {
-    fail(`未知的 --remote: ${remoteMode}`);
+  if (!['off', 'auto', 'thin', 'corrupt', 'down', 'png-fail', 'silent'].includes(remoteMode)) {
+    fail(`未知的 --remote: ${remoteMode}（可选 off / auto / thin / corrupt / down / png-fail / silent）`);
   }
   if (!['', 'stub', 'frozen', 'locked'].includes(hostDocument)) {
     fail(`未知的 --host-document: ${hostDocument}（可选 stub / frozen / locked）`);
@@ -283,8 +306,8 @@ if (argv[i] === '--no-frames') noFrames = true;
   if (!['', 'offscreen'].includes(hostCanvasMode)) {
     fail(`未知的 --host-canvas: ${hostCanvasMode}（可选 offscreen）`);
   }
-  if (!['auto', 'off', 'ok', 'never', 'delay', 'fail-once'].includes(subpackageMode)) {
-    fail(`未知的 --subpackage: ${subpackageMode}（可选 auto / off / ok / never / delay / fail-once）`);
+  if (!['auto', 'off', 'ok', 'never', 'delay', 'fail-once', 'silent'].includes(subpackageMode)) {
+    fail(`未知的 --subpackage: ${subpackageMode}（可选 auto / off / ok / never / delay / fail-once / silent）`);
   }
   // 分包声明：直接读发布包里的 game.json，判据与适配层的 hasPackSubpackage 一致。
   const declaredPackSubpackage = (() => {
@@ -333,6 +356,19 @@ if (argv[i] === '--no-frames') noFrames = true;
   // 位置判错就会拿旧语义去验新产物（或反过来），两边都是假绿。
   // 定义位置在 fail-once 那条 guard 之前：它的"重试由谁触发"跟着内核位置变。
   const wasmInPack = fs.existsSync(path.join(root, 'pack', 'game_web_bg.wasm'));
+  // 第四形态（`package.ps1 -WasmInSubpackage`）：**内核在分包 + 重资源在远端**。它故意让两种资源
+  // 来源共存（内核/骨架在分包里，重资源在 CDN），所以下面几条"首屏必须全在主包"的旧不变式对它
+  // 都不成立，必须换成这一形态的等价物（否则好产物会被自己的回归门判红——第 53 轮就撞在这上面）。
+  // 判据全部取**产物自带的标记**，不猜：远端配置存在 + mainpack.json 的 entries 为空 + 内核在 pack/。
+  let mainpackEntriesForForm = null;
+  try {
+    mainpackEntriesForForm = JSON.parse(fs.readFileSync(path.join(root, 'mainpack.json'), 'utf8')).entries;
+  } catch (error) {
+    mainpackEntriesForForm = null;
+  }
+  const hasRemoteConfigForForm = fs.existsSync(path.join(root, 'remote-assets.json'));
+  const wasmInPackRemote = wasmInPack && hasRemoteConfigForForm &&
+    Array.isArray(mainpackEntriesForForm) && mainpackEntriesForForm.length === 0;
   const isWasmKernelPath = (value) => String(value || '').replace(/^\/+/, '') === 'pack/game_web_bg.wasm';
   // fail-once 的第二次尝试由谁触发，两种形态不同：
   //   · 内核在主包（旧语义）：boot 不等分包，重试只能由"进玩法场景后的下一次 pack/ 读取"发起，
@@ -372,7 +408,9 @@ if (argv[i] === '--no-frames') noFrames = true;
   }
   // 远端模式下包内**读不到** pack/：这正是回落要覆盖的场景。显式传了方言则以传入为准。
   // thin 模式**不能**禁用包内读取——它要验证的正是"包内骨架优先、重资源才走远端"。
-  if (remoteMode !== 'off' && remoteMode !== 'thin' && remoteMode !== 'png-fail' && !wxPathStyleGiven) wxPathStyle = 'missing-pack';
+  // silent 同理（第 78 轮）：它模拟的就是"包内骨架在、重资源那一次下载挂起"，所以也不能
+  // 把包内读取整体禁掉，否则挂起会发生在骨架那一步，验的就不是"重资源远端"这条链了。
+  if (remoteMode !== 'off' && remoteMode !== 'thin' && remoteMode !== 'png-fail' && remoteMode !== 'silent' && !wxPathStyleGiven) wxPathStyle = 'missing-pack';
   if (remoteMode === 'thin' && !remoteRoot) {
     fail('--remote thin 需要 --remote-root <资源包目录>（内含 pack/，即导出的 CDN 目录）');
   }
@@ -414,6 +452,15 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     if (remoteMode === 'down') {
       // 127.0.0.1:1 无人监听 → 连接立即被拒，用来验证"失败要快、且要大声"。
       remote.baseUrl = 'http://127.0.0.1:1/pack/';
+    } else if (remoteMode === 'silent') {
+      // silent（第 78 轮）：**CDN 挂起** —— 宿主收下 request/downloadFile 却永不回调
+      // （onProgressUpdate 也不投递）。既不起本地服务（请求根本到不了那一步），也不需要
+      // 真的网络：两个 mock 在发起前就返回 task。
+      // 关键细节：`remote-assets.json` 里的 `timeoutMs` 必须**大于用例的截止时间**，
+      // 否则"挂起"会被客户端自己的超时终结（默认配置写的是 3000ms）—— 那就不叫挂起了。
+      // 这里给 120s，配合用例的 `--boot-timeout-ms 1000` 正好是"看门狗先响、客户端还没放弃"。
+      remote.baseUrl = 'http://127.0.0.1:1/pack/';
+      remote.silentTimeoutMs = 120000;
     } else {
       const { createPackServer } = require(path.join(__dirname, 'pack-server.js'));
       const corruptPath = 'pack/project.toml';
@@ -439,7 +486,8 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
 
   function configureRemote() {
     if (!remote.baseUrl) return;
-    fs.writeFileSync(remote.configPath, JSON.stringify({ packBaseUrl: remote.baseUrl, verifyChecksum: true, timeoutMs: 3000 }, null, 2));
+    const timeoutMs = remote.silentTimeoutMs || 3000;
+    fs.writeFileSync(remote.configPath, JSON.stringify({ packBaseUrl: remote.baseUrl, verifyChecksum: true, timeoutMs }, null, 2));
   }
 
   function restoreRemoteConfig() {
@@ -979,6 +1027,23 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     env: { USER_DATA_PATH: userRoot },
     getSystemInfoSync: () => ({ windowWidth: 375, windowHeight: 667, pixelRatio: 1, platform: wxPlatform, system: 'node' }),
     createCanvas: () => (hostCanvasMode === 'offscreen' ? offscreenCanvas : canvas),
+    // `--gpu-probe` / `--engine-host` 专用：真机上"离屏 GL 画布"的官方入口是
+    // `wx.createOffscreenCanvas({type:'webgl'})`。只有带这两个开关的用例才提供它，好让适配层的
+    // 引擎画布探针/引擎宿主各自拿到一张**专用**画布去问 wasm；不提供时适配层必须拒绝在主画布上
+    // 试（一张画布只能有一个上下文），如实报 no-probe-canvas / no-host-canvas。
+    // 既有用例（不带这两个开关）的 wx 表面与读数一字不动。
+    ...(gpuProbe || engineHost ? {
+      createOffscreenCanvas: (opts) => ({
+        width: (opts && Number(opts.width)) || 1,
+        height: (opts && Number(opts.height)) || 1,
+        getContext(kind) {
+          // 假宿主不给 GL：真实设备上这一条正是要回答的问题（`--gpu-probe` 的读数会如实写 failed）。
+          if (kind !== '2d') return null;
+          if (!this.__ctx) { this.__ctx = createRecordingContext(); this.__ctx.canvas = this; }
+          return this.__ctx;
+        }
+      })
+    } : {}),
     createImage: () => {
       const image = { onload: null, onerror: null, width: 0, height: 0, _src: '' };
       // `configurable: true`：真机上 wx.createImage() 返回的是 JS 层对象，适配层可以给它加一个
@@ -988,6 +1053,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         configurable: !frozenImageSrc,
         get() { return image._src; },
         set(value) {
+          if (frozenImageSrc) frozenSrcSets++;   // 冻结用例的自证：我们这份 setter 到底被调用了几次
           image._src = String(value);
           pendingImageSrcs.add(image._src);
           // **必须走宿主受限读取**（resolveHostPath），不能直接从磁盘捞：
@@ -1039,6 +1105,10 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         Object.setPrototypeOf(image, Object.create(Object.prototype, { src: srcDescriptor }));
       } else {
         Object.defineProperty(image, 'src', srcDescriptor);
+        // 冻结用例：留下第一个实例与**原始 setter** 的引用，供用例里比对"适配层有没有把它换掉"。
+        if (frozenImageSrc && !frozenSrcProbe) {
+          frozenSrcProbe = { image, originalSet: srcDescriptor.set, originalGet: srcDescriptor.get };
+        }
       }
       return image;
     },
@@ -1095,6 +1165,9 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     downloadFile: (options) => {
       stats.remoteAttempts++;
       const task = { aborted: false, abort() { this.aborted = true; }, onProgressUpdate: noop };
+      // `--remote silent`：收下调用、永不回调（CDN 挂起）。必须在发起前返回，
+      // 否则连接被拒会立刻变成 fail —— 那就成了 `--remote down`。
+      if (remoteMode === 'silent') return task;
       httpGet(options.url).then((result) => {
         if (task.aborted) return;
         if (result.statusCode !== 200) {
@@ -1126,6 +1199,8 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     request: (options) => {
       stats.remoteAttempts++;
       const task = { aborted: false, abort() { this.aborted = true; } };
+      // 同 downloadFile：`--remote silent` 下永不回调（远端骨架读取也一起挂起）。
+      if (remoteMode === 'silent') return task;
       httpGet(options.url).then((result) => {
         if (task.aborted) return;
         if (result.statusCode !== 200) {
@@ -1156,6 +1231,12 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         setTimeout(() => failPack(pending, 'mock(' + subpackageMode + ')'), 0);
         return task;
       }
+      // silent（第 77 轮）：宿主收下 loadSubpackage 却**永不回调**——onProgressUpdate 也一次不投递。
+      // 这是弱网/CDN 挂起在真机上的样子（卡住、但没有任何异常），也是 `--image-src-silent`
+      // **已经造不出**的那种卡死：分包形态下内核就在 pack/ 里，boot 必须等这条下载，
+      // 而贴图根本不在 boot 的等待集合里（实测：7 张贴图挂着，boot 照样 settle ⇒ 用例空转）。
+      // 所以"让启动卡住"这件事在分包形态下只有一个可靠的着力点：这条下载。
+      if (subpackageMode === 'silent') return task;
       // delay：交给帧循环在第 N 帧挂载（见 pumpSubpackage）。
       if (subpackageMode === 'delay') {
         pending.atFrame = subpackageDelayFrames;
@@ -1185,7 +1266,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       return ctx;
     },
     loadFont: hostLoadFont,
-    requestAnimationFrame: (callback) => { rafQueue.push(callback); return rafQueue.length; },
+    requestAnimationFrame: (callback) => { rafQueue.push(callback); rafFrameCount++; if (engineHostOffAt > 0 && rafFrameCount === engineHostOffAt) { globalThis.__RUSTLUA_ENGINE_HOST_OWNS_TICK = false; console.log("wechat_minigame_harness_handback frame=" + rafFrameCount); } return rafQueue.length; },
     cancelAnimationFrame: (id) => { if (id > 0) rafQueue[id - 1] = null; },
     onTouchStart: noop, onTouchMove: noop, onTouchEnd: noop, onTouchCancel: noop,
     onKeyDown: noop, onKeyUp: noop, onShow: noop, onHide: noop, onMemoryWarning: noop,
@@ -1471,6 +1552,17 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
   // harness 是验收方，显式打开；否则本文件里全部 `drawn > 0` 断言都会读到 0。
   globalThis.__RUSTLUA_DIAGNOSTICS = true;
 
+  // 引擎画布探针（`--gpu-probe`）：必须在 require(game.js) **之前**置位，适配层在启动链里
+  // 就要读它（`probeEngineCanvas` 的开关判定）。默认不置 ⇒ 与生产口径一致（探针不跑）。
+  if (gpuProbe) globalThis.__RUSTLUA_GPU_PROBE = true;
+
+  // 引擎宿主（`--engine-host`）：同样必须在这里（`require(game.js)` 之前）置位——适配层启动链
+  // 里就判定开关。默认不置 ⇒ 生产口径（`engine_host=off`）。
+  if (engineHost) globalThis.__RUSTLUA_ENGINE_HOST = true;
+  // 宿主接管固定步的开关必须**同时**置位（只在 --engine-host-tick 时）：单独打开它没有意义，
+  // 而"宿主在跑 + 老世界也在跑"正是要避免的组合。
+  if (engineHostTick) globalThis.__RUSTLUA_ENGINE_HOST_TICK = true;
+
   // 宿主自带残缺全局（微信开发者工具的壳）必须在 require(game.js) **之前**装好：
   // 适配层在模块加载时就会安装自己的 shim。
   if (hostDocument || hostWindowMode) {
@@ -1613,6 +1705,16 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       `；适配层诊断 ${logs.length} 条:\n    ${logs.length ? logs.join('\n    ') : '（无）'}`);
   }
 
+  if (expectBootStall) {
+    // 这次"卡死"根本没造出来：boot 在截止时间前就正常结算了。**必须显式说出来**，
+    // 否则调用方只看得到"没有输出 negative_ok"，会把"用例空转"误判成"看门狗坏了"（本轮实测）。
+    // 第四形态（重资源走远端、先落本地缓存）就是这样：宿主收下 src 却不回调时 boot 仍会结算。
+    console.log('wechat_minigame_harness_negative_vacuous case=boot-stall reason=boot_settled_before_deadline' +
+      ' pending_images=' + pendingImageSrcs.size + ' images_loaded=' + stats.imagesLoaded +
+      ' image_failures=' + stats.imageFailures + ' frames=' + stats.frames +
+      ' boot=' + (globalThis.__RustLuaWechat && globalThis.__RustLuaWechat.getAttribute('data-rustlua-boot')));
+  }
+
   // 键盘/触摸事件桥接自检（不依赖游戏语义）：注册监听后模拟触摸/键盘，确认事件真的到达运行时宿主。
   const windowTarget = globalThis.window;
   windowTarget.addEventListener('keydown', (event) => { drawnEvents.push(String(event.key)); });
@@ -1740,6 +1842,16 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       // 这里显式标注而不是静默跳过——否则输出行里 binary=none 会被读成"漏验了"。
       var binaryFailure = null;
       binaryProbe = 'skipped(pack-unreachable)';
+    } else if (noWasm) {
+      // 第 49 轮：`--no-wasm` 这条用例的**契约**是"宿主没有解释器 ⇒ 响亮失败且可归因"，
+      // 游戏按设计根本不会启动（实测该用例 `boot=failed`、`frames=0`）。此时"包内/资源包里有没有
+      // PNG"与被测契约无关；而瘦首包的 `pack/` 本来就只有骨架，于是它会退化成
+      // `发布包 pack/ 里没有 PNG，无法验证二进制读取` 这条**假失败**把整个用例判死
+      // （实测：驱动 `verify-wechat-minigame.ps1` 因此报 `wasm 缺失时未按契约响亮失败`，
+      // 而同一个用例只要补上 `--remote thin --remote-root <资源包>` 就 exit 0 且 ok 行带
+      // `wasm=no-webassembly`）。显式标注，而不是静默跳过。
+      var binaryFailure = null;
+      binaryProbe = 'skipped(no-wasm)';
     } else if (!binaryPath) {
       var binaryFailure = probeFromPack
         ? '资源包里没有 PNG，无法验证二进制读取'
@@ -1772,19 +1884,77 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     // （--expect-image-band 交给下面的"警示条"用例：那里关心的是"屏幕有没有自证"。）
     if ((remoteMode === 'corrupt' || remoteMode === 'down') && !expectImageBand) {
       const negativeFailures = [];
-      if (!bootOutcome.error && (bootState === 'running' || bootState === 'ok')) {
-        negativeFailures.push(`期望启动失败，但 boot=${bootState}（启动 Promise 也未 reject）`);
+      // 第 49 轮：`corrupt` 与 `down` 的"响亮失败"不是同一句话，不能共用一条断言。
+      //   · `down`（远端不可达）：连 wasm 内核都取不到 ⇒ 适配层必须**中止启动**并上报失败。
+      //     实测 `negative_ok case=remote-unreachable boot=failed download_attempts=2
+      //     remote_failed=2 elapsed_ms=58`。
+      //   · `corrupt`（字节被翻转、长度不变）：被测契约是"**校验和**必须把它拦下"。
+      //     实测（同一产物、同一条用例）会出现两种结果：驱动那一跑 `boot=running`（脏字节被
+      //     用上了），单跑那一跑 `boot=failed` 但 `checksumMismatch=0`——**两种都不是"拦下"**。
+      //     所以这里只对 `down` 断言"必须启动失败"；`corrupt` 断言"必须被校验和拦下"，
+      //     并且这个断言现在会如实变红（见下面 checksumMismatch 那条），而不是被
+      //     "boot 必须失败"这条与之无关的断言掩盖过去。
+      const caughtByChecksum = !!(remoteStats && Number(remoteStats.checksumMismatch) >= 1);
+      if (remoteMode === 'down') {
+        if (!bootOutcome.error && (bootState === 'running' || bootState === 'ok')) {
+          negativeFailures.push(`期望启动失败，但 boot=${bootState}（启动 Promise 也未 reject）`);
+        }
+        if (!bootOutcome.error) negativeFailures.push('启动 Promise 没有 reject，无法确认失败被上报');
+      } else if (!caughtByChecksum) {
+        // 到了这里说明脏字节**没被**校验和拦下：要么被当成好文件用了（boot 继续跑），
+        // 要么是因为别的原因失败（那是巧合，不是校验和生效）。两种情况都必须报出来。
+        negativeFailures.push(`期望校验和不符被拦下（boot=${bootState}、启动是否 reject=${!!bootOutcome.error}），` +
+          `实际 checksumMismatch=${remoteStats ? remoteStats.checksumMismatch : 'n/a'}`);
+      } else {
+        // **第 51 轮**：光有 `checksumMismatch>=1` 还不够——那只是适配层**内部**的计数。适配层用
+        // `console.warn` 报"已丢弃这个文件"，而 harness 把 warn 收进 `consoleWarns` 数组后**只在几处
+        // 定向断言里读**（不打印）⇒ 若没人断言这条告警，"拦下了"这件事在门里就没有第二份证据，
+        // 告警哪天丢了也不会红。这里把它钉住：拦下必须伴随一条指名该文件的丢弃告警。
+        const discardWarn = consoleWarns.find((line) => /远端文件未通过清单校验，已丢弃/.test(String(line)));
+        if (!discardWarn) {
+          negativeFailures.push('校验和计到了不符，但适配层没有报出"已丢弃该文件"的告警' +
+            `（consoleWarns 里找不到；共收 ${consoleWarns.length} 条 warn）`);
+        }
       }
-      if (!bootOutcome.error) negativeFailures.push('启动 Promise 没有 reject，无法确认失败被上报');
       if (!remoteStats) {
         negativeFailures.push('适配层没有暴露远端统计');
       } else if (remoteMode === 'corrupt') {
         // 服务端只翻转 1 个字节且长度不变：能被拦下才说明校验和真的生效（而不是靠大小检查）。
-        if (remoteStats.checksumMismatch < 1) negativeFailures.push(`期望校验和不符被拦下，实际 checksumMismatch=${remoteStats.checksumMismatch}`);
+        if (remoteStats.checksumMismatch < 1) {
+          // 这里不再重复报"期望被拦下"（上面已经报过），只补上"未校验"的计数证据。
+          // **第 50 轮**：`checksumUnverified` 与 `unverifiedSamples` 是关键——第 49 轮实测
+          // 180 次下载里 4 次走的是"压根没请求校验"这条路（含被篡改的 `pack/project.toml`），
+          // 当时这个区别在读数上不可见（`checksumMismatch` 只记"校验了但内容不符"）。
+          // 现在把"次数 + 被点名的路径"一起打进消息，否则只会看到一句"没拦下"而不知道是谁。
+          const unverified = Number(remoteStats.checksumUnverified || 0);
+          const samples = Array.isArray(remoteStats.unverifiedSamples) && remoteStats.unverifiedSamples.length
+            ? ` 未校验样本=${remoteStats.unverifiedSamples.join(',')}`
+            : '';
+          negativeFailures.push(`checksumMismatch=${remoteStats.checksumMismatch}（未拦下）；` +
+            `remote_downloads=${remoteStats.remote} verified=${remoteStats.verified} ` +
+            `checksumUnverified=${unverified}${samples}`);
+        }
         // 关键：被拒绝的文件**不能留在缓存里**。早期实现让宿主直接下到缓存路径，
-        // 结果"已丢弃"只是口头上的，后续读取照样命中脏文件（实测被这条断言抓到）。
-        const poisoned = path.join(userRoot, 'pack', 'project.toml');
-        if (fs.existsSync(poisoned)) negativeFailures.push(`被篡改的文件仍留在缓存里: ${poisoned}`);
+        // 结果"已丢弃"只是口头上的，后续读取照样命中脏文件。
+        // 第 49 轮修：原检查只看 `userRoot/pack/project.toml`，而适配层的缓存实际落在
+        // `userRoot/v-<发布标识>/pack/…`（实测日志里的 `…/v-f86ccb36fb1fa765/pack/…`）——
+        // 也就是说这条断言在旧布局之后**永远不会命中**，是个空转的门。现在按
+        // "缓存里的字节 vs 资源包里的真字节"逐字节判，两种布局都覆盖得到。
+        const trueProjectToml = path.join(remoteServeRoot, 'pack', 'project.toml');
+        const poisonedCandidates = [path.join(userRoot, 'pack', 'project.toml')];
+        try {
+          for (const name of fs.readdirSync(userRoot)) {
+            if (/^v-/.test(name)) poisonedCandidates.push(path.join(userRoot, name, 'pack', 'project.toml'));
+          }
+        } catch (error) { /* userRoot 不可读就不加候选 */ }
+        for (const candidate of poisonedCandidates) {
+          if (!fs.existsSync(candidate)) continue;
+          try {
+            if (!fs.readFileSync(candidate).equals(fs.readFileSync(trueProjectToml))) {
+              negativeFailures.push(`被篡改的文件仍留在缓存里: ${candidate}`);
+            }
+          } catch (error) { /* 任一侧读不到就不判 */ }
+        }
       } else if (remoteStats.remoteFailed < 1) {
         negativeFailures.push(`期望远端下载失败被记录，实际 remoteFailed=${remoteStats.remoteFailed}`);
       }
@@ -1795,7 +1965,11 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       if (negativeFailures.length) {
         fail(`远端回落反向用例未按预期失败（--remote ${remoteMode}）:\n  - ${negativeFailures.join('\n  - ')}`);
       }
-      console.log(`wechat_minigame_harness_negative_ok case=${remoteMode === 'corrupt' ? 'checksum-corrupt' : 'remote-unreachable'} boot=${bootState} download_attempts=${stats.remoteAttempts} checksum_mismatch=${remoteStats ? remoteStats.checksumMismatch : 'n/a'} remote_failed=${remoteStats ? remoteStats.remoteFailed : 'n/a'} elapsed_ms=${elapsedMs}`);
+      // `discard_warns`：把"拦下必须伴随指名丢弃告警"这条断言**自证不空**——上一条断言只在
+      // `checksumMismatch>=1` 时才有意义，光看它绿不能排除"断言写错了/永远为真"。这个计数直接打出来：
+      // 被拦下时它必须 >=1，一旦适配层不再报这条告警，读数与断言会同时变红。
+      const discardWarnCount = consoleWarns.filter((line) => /远端文件未通过清单校验，已丢弃/.test(String(line))).length;
+      console.log(`wechat_minigame_harness_negative_ok case=${remoteMode === 'corrupt' ? 'checksum-corrupt' : 'remote-unreachable'} boot=${bootState} download_attempts=${stats.remoteAttempts} checksum_mismatch=${remoteStats ? remoteStats.checksumMismatch : 'n/a'} discard_warns=${discardWarnCount} remote_failed=${remoteStats ? remoteStats.remoteFailed : 'n/a'} elapsed_ms=${elapsedMs}`);
       if (remote.server) await remote.server.close();
       return 0;
     }
@@ -1912,6 +2086,26 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       // （首屏贴图被切到 mainpack/，运行时要的是 pack/ 前缀）——不改写就是整批丢图。
       const expectFailure = remoteMode !== 'off' || (declaredPackSubpackage && fs.existsSync(path.join(root, 'mainpack.json')));
       const patchLog = consoleErrors.find((line) => /不允许改写 Image.src/.test(String(line)));
+      // 自证读数（无论断言与否都打出来）：这条用例连续两轮"说不清到底发生了什么"，
+      // 所以把"我们那份 setter 被调了几次 / own 描述符还在不在 / configurable 是多少"直接落成读数。
+      if (frozenSrcProbe) {
+        let probeDesc = null;
+        try { probeDesc = Object.getOwnPropertyDescriptor(frozenSrcProbe.image, 'src'); } catch (error) { probeDesc = null; }
+        const setterStillHarness = !!(probeDesc && probeDesc.set === frozenSrcProbe.originalSet);
+        console.log('[harness] frozen-src 探针: sets=' + frozenSrcSets +
+          ' own_descriptor=' + (probeDesc ? 'yes' : 'no') +
+          ' setter_still_harness=' + (setterStillHarness ? 'yes' : 'no') +
+          ' configurable=' + (probeDesc ? String(probeDesc.configurable) : 'n/a') +
+          ' src_now=' + JSON.stringify(String(frozenSrcProbe.image.src || '')) +
+          ' images_loaded=' + stats.imagesLoaded + ' image_failures=' + stats.imageFailures +
+          ' boot=' + bootState +
+          // 快照（上面那个 boot=）是启动结算那一刻读的；这里再读一次**实时**属性，
+          // 否则"适配层后来把 boot 判失败了"与"根本没判"在读数上长得一样（第 54 轮的教训）。
+          ' boot_live=' + String(adapter.getAttribute('data-rustlua-boot')) +
+          ' detail_live=' + JSON.stringify(String(adapter.getAttribute('data-rustlua-boot-detail') || '').slice(0, 60)));
+      } else {
+        console.log('[harness] frozen-src 探针: 宿主没有走 wx.createImage（探针未挂上）');
+      }
       if (expectFailure) {
         if (!patchLog) frozenFailures.push('适配层没有报告"不允许改写 Image.src"，问题是静默的');
         if (!bootOutcome.error && (bootState === 'running' || bootState === 'ok')) {
@@ -2453,8 +2647,14 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     // 2026-10-03 清过一轮：`ui.focus_open`/`focus_select`/`focus_index`/`focus_move`/
     // `focus_close`、`ui.scroll_close`、`input.action_repeat` 七条**早已在 web-runtime.js
     // 里实现**，却还留在表里（控制台永远抓不到它们，见下面的活体探测为什么必须存在）。
+    //
+    // 2026-10-04 再清一轮（第 76 轮）：`input.nav_settings` / `input.set_nav_settings` /
+    // `input.last_device` 三条现在也**已经在 web-runtime.js 里实现**，是下面那段**活体探测**
+    // 当场抓出来的（`stale=3`）——这正是它存在的意义：留在表里等于向读表的人宣布
+    // "平台缺这些 API"，而事实不缺。注意 `input.last_device` 仍会走**降级**登记
+    // （它给不出真实设备名），但"降级"（实现很弱）与"缺失"（根本没有）是两条读数，
+    // 混在一张表里会让缺失清单失去意义。
     const MISSING_HOST_API_ALLOWED = new Set([
-      'input.nav_settings', 'input.set_nav_settings', 'input.last_device',
       // 注：`camera2d`（web / 微信运行时没有 2D 相机控制器）**不在**这张表里，也不需要——
       // 游戏侧 `scripts/world/camera_view.lua` 查宿主启动期算好的缺失全局清单
       // （`__rustlua_missing_globals`）判能力，命中就直接跳过整条相机逻辑，**不碰代理**，
@@ -3582,7 +3782,13 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     // `--expect-pack-failure` 是**故意**让分包永远挂不上的用例：那时 pack/ 一个字节都读不到，
     // "没读 pack/ 就失败" 这条在这里无从满足（它由 `--remote` 系列用例负责）。跳过它的同时，
     // 上面那组"失败必须三重可见 + 首屏照常"的断言全部照跑——不是放行，是换一套更强的要求。
-    if (stats.packReads <= 0 && !expectPackFailure) failures.push('没有从 pack/ 读取任何文件');
+    //
+    // `--no-wasm` 同理（第 76 轮补）：没有解释器时适配层按契约**响亮失败**、运行时根本没起来，
+    // "读没读 pack/" 是那次失败的**后果**而不是缺陷。这个用例要的证据是 wasm 诊断可归因
+    // （`wasm=no-webassembly` + boot 失败原因指名 wasm 桥），不是包读取。此前这里没排除
+    // no-wasm ⇒ 用例从"响亮失败"变成"harness 自己红"，与验收脚本
+    // （verify-wechat-minigame.ps1 第 454-466 行"要 exit 0 + 自报 no-webassembly"）的契约相反。
+    if (stats.packReads <= 0 && !expectPackFailure && !noWasm) failures.push('没有从 pack/ 读取任何文件');
 
     // --- 真机代码包模型的收口断言（这一组是"本机全绿、真机启动失败"的直接对症药）
     // ① 产物里不得有"会被上传白名单拒掉、又没被 packOptions.ignore 豁免"的文件。
@@ -3631,9 +3837,11 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     // 读不到，而上层只报 HTTP 404，根因是路径形式/挂载差异）。探明失败 = 后续读资源必挂。
     // `missing-pack` 用例是**故意**让宿主拒绝一切 pack/ 路径（模拟整个 pack 都不在包内），
     // 此时本来就探不明——只有远端可走，所以那种用例下不要求探明结果。
+    // `--no-wasm` 同理（第 76 轮补）：没有解释器时运行时按契约响亮失败，路径形式压根没走到
+    // 探测那一步。这条与上面"没读 pack/"是一对，同一个原因、同一个修法。
     const strategies = adapter.readStrategies ? adapter.readStrategies() : { main: adapter.readStrategy(), pack: adapter.readStrategy() };
     const readStrategy = strategies.pack;
-    if (!readStrategy && wxPathStyle !== 'missing-pack' && !expectPackFailure) {
+    if (!readStrategy && wxPathStyle !== 'missing-pack' && !expectPackFailure && !noWasm) {
       failures.push(`未能探明可用的代码包路径形式（--wx-path-style ${wxPathStyle}）`);
     }
     // `Image.src` 的接管方式必须自证：基础库把它定义在**原型**上，只看 own 描述符的实现会
@@ -3687,15 +3895,22 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       }
       if (packEntryError) failures.push(`分包入口 pack/game.js 不是可执行的 CommonJS: ${packEntryError}`);
       if (stats.subpackageLoads < 1) failures.push('分包形态没有调用过 wx.loadSubpackage（分包永远不会被挂载）');
-      if (subpackageMode !== 'never' && !packMounted) {
+      if (subpackageMode !== 'never' && subpackageMode !== 'silent' && !packMounted) {
         failures.push(`--subpackage ${subpackageMode} 下分包没有挂载成功（attempts=${packMountAttempts}）`);
       }
       // **首屏必须全在主包**：启动期间（标题画面上屏之前）的每一次 pack/ 读取都必须命中主包。
       // 被挂载门挡下的那几次就是"首屏清单漏列"的直接探针——漏了就是标题白屏 + 一片 onerror，
       // 而且这条是**本机唯一**抓得住漏列的地方（真机上表现为"首屏要等下载"）。
-      if (packDeniedBeforeBoot > 0) {
+      if (packDeniedBeforeBoot > 0 && !wasmInPackRemote) {
         failures.push(`启动期间有 ${packDeniedBeforeBoot} 次 pack/ 读取被未挂载的分包挡下` +
           '（首屏清单 mainpack.json 漏列了首屏需要的资源——它本该被切到主包 mainpack/）');
+      }
+      else if (wasmInPackRemote && packDeniedBeforeBoot > packDeniedBeforeMount) {
+        // 本形态**故意**让 boot 排在挂载之后（内核就在分包里），所以"启动期间被挡"是设计内的。
+        // 这里改验它的等价物：被挡的读取必须**全部发生在挂载之前**——`denied_before_boot` 里若出现
+        // 挂载之后的那部分，说明"等挂载"没有覆盖到某条路径，那才是真缺陷。
+        failures.push(`挂载后仍有 ${packDeniedBeforeBoot - packDeniedBeforeMount} 次 pack/ 读取被挡下` +
+          '（本形态要求"等分包"覆盖启动期的每一次 pack/ 读取）');
       }
       // 非首屏资源必须真的触发过挂载（否则"分包"只是个摆设，玩法场景的资源读不到）。
       if (driveNewGame && subpackageMode !== 'never' && stats.subpackageLoads < 1) {
@@ -3706,9 +3921,25 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
       if (!firstScreenInfo || firstScreenInfo.form !== 'mainpack+pack') {
         failures.push(`适配层没有读到首屏清单 mainpack.json（form=${firstScreenInfo && firstScreenInfo.form}）`);
       } else {
-        if (!(firstScreenInfo.entries > 0)) failures.push('首屏清单是空的（首屏资源无从留在主包）');
-        if (!(firstScreenInfo.mainpack_reads > 0)) {
-          failures.push('没有任何一次读取走主包 mainpack/（首屏清单没生效，首屏会退化成等分包下载）');
+        if (wasmInPackRemote) {
+          // 第四形态：entries **按设计为空**（首屏资源在 CDN，包内没有 mainpack/ 可路由）。旧的
+          // "首屏必须全在主包"换成这一形态的等价物：清单必须真的声明 pack 分包、且不许出现首屏条目
+          // ——出现就说明打包脚本给错了清单（"半 remote 半分包"的产物正是要靠这几条抓出来）。
+          // "首屏可用"本身仍由全局断言兜着（标题渲染、贴图零失败、帧数与像素读数）。
+          const subpackageInfo = adapter.packInfo ? adapter.packInfo() : null;
+          if (!subpackageInfo || !subpackageInfo.declared || subpackageInfo.name !== 'pack') {
+            failures.push('本形态要求首屏清单声明 subpackage_root=pack（适配层必须据此去挂分包）' +
+              `：declared=${subpackageInfo && subpackageInfo.declared} name=${JSON.stringify(subpackageInfo && subpackageInfo.name)}`);
+          }
+          if (firstScreenInfo.entries > 0) {
+            failures.push(`本形态的 mainpack.json 不该有首屏条目（实际 ${firstScreenInfo.entries} 条：` +
+              'remote 的首屏资源在 CDN，有条目就意味着本该走远端的资源被算进了包内路由）');
+          }
+        } else {
+          if (!(firstScreenInfo.entries > 0)) failures.push('首屏清单是空的（首屏资源无从留在主包）');
+          if (!(firstScreenInfo.mainpack_reads > 0)) {
+            failures.push('没有任何一次读取走主包 mainpack/（首屏清单没生效，首屏会退化成等分包下载）');
+          }
         }
       }
     } else {
@@ -3794,8 +4025,14 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
           failures.push(`--subpackage delay ${subpackageDelayFrames} 下分包在启动完成之前就挂上了` +
             '（首屏仍然在等分包，这条用例没有验证到"主包先出画面"）');
         }
-        if (packDeniedBeforeBoot > 0) {
+        if (packDeniedBeforeBoot > 0 && !wasmInPackRemote) {
           failures.push(`启动期间有 ${packDeniedBeforeBoot} 次 pack/ 读取被未挂载的分包挡下（首屏清单漏列）`);
+        }
+        else if (wasmInPackRemote && packDeniedBeforeBoot > packDeniedBeforeMount) {
+          // --subpackage delay + 第四形态：boot 本来就在等挂载，"启动期间被挡"是设计内的；
+          // 该验的是"被挡的全部发生在挂载之前"（等分包必须覆盖启动期的每一次 pack/ 读取）。
+          failures.push(`（--subpackage delay）挂载后仍有 ${packDeniedBeforeBoot - packDeniedBeforeMount} 次 ` +
+            'pack/ 读取被挡下（本形态要求"等分包"覆盖启动期的每一次 pack/ 读取）');
         }
         // 进度条：真机上这是玩家唯一能看到的等待证据，必须真的消费了进度并画到画布上。
         if (!(packInfo.progress_events > 0)) {
@@ -3854,14 +4091,14 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
             + `启动却停在 ${bootState} —— 一次瞬时下载失败变成整局进不去，这条降级不能接受`);
         }
       }
-      if (!expectPackFailure && subpackageMode !== 'never' && packMounted && packInfo.state !== 'ready') {
+      if (!expectPackFailure && subpackageMode !== 'never' && subpackageMode !== 'silent' && packMounted && packInfo.state !== 'ready') {
         failures.push(`分包已挂载但适配层状态=${packInfo.state}（期望 ready）`);
       }
       // 内核被分包挂载门挡下的次数，**成功用例里必须是 0**。这一条是"boot 排在挂载之后"的
       // 可机器检查形式：适配层要是没等分包就直接实例化，读取会在这里现形（并且拿一次假失败）。
       // 反过来，`--expect-pack-failure` / `never` 下它必然 > 0（那两个候选路径各撞一次门），
       // 那里它是期望结果，所以只在成功路径上断言。
-      if (!expectPackFailure && subpackageMode !== 'never' && wasmDeniedBeforeMount > 0) {
+      if (!expectPackFailure && subpackageMode !== 'never' && subpackageMode !== 'silent' && wasmDeniedBeforeMount > 0) {
         failures.push(`分包挂载前有 ${wasmDeniedBeforeMount} 次 wasm 内核读取被挡下：适配层在没有等分包结算` +
           '就去实例化内核（内核就在 pack/ 里，这一步在真机上只能失败）');
       }
@@ -3893,9 +4130,25 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     if (!mouseBridge.some((entry) => entry.startsWith('move:'))) failures.push(`触摸未派发 canvas mousemove（实际: ${JSON.stringify(mouseBridge)}）`);
     if (!mouseBridge.includes('up')) failures.push(`触摸未把 mouseup 派发到 window（实际: ${JSON.stringify(mouseBridge)}）`);
     if (!drawnEvents.includes('ArrowUp')) failures.push(`微信键盘事件未桥接（实际: ${JSON.stringify(drawnEvents)}）`);
-    if (fontFamily !== 'WeChatHarnessFont') failures.push(`字体未注册（fontFamily=${fontFamily}）`);
+    // 第 49 轮：字体注册要游戏真的启动去请求字体（瘦首包还必须先下到远端那一份）。
+    // `--no-wasm` 下没有解释器、游戏不会启动，这条断言只会产出与契约无关的假失败
+    // （实测 `字体未注册（fontFamily=null）`），所以整个跳过并在输出行里显式标注。
+    if (!noWasm && fontFamily !== 'WeChatHarnessFont') failures.push(`字体未注册（fontFamily=${fontFamily}）`);
     const fatalLogs = consoleErrors.filter((line) => /Lua runtime failed|startup failed|missing engine host API|traceback/i.test(String(line)));
     if (fatalLogs.length) failures.push(`运行期报错: ${fatalLogs.slice(0, 2).join(' | ')}`);
+
+    // --- WP7-13：固定步时钟的权威必须**说清在哪一边** ---
+    // 新产物：宿主 wasm 持有（`lua_bridge.rs`，内部是 `rustlua_infra::FixedTimeStep`）；
+    // 旧产物：wasm 侧没有该导出，运行时退回 JS 累积器。**两种都允许**（旧产物仍要能跑），
+    // 但"什么都不说"不允许——静默退回正是这次搬迁要消灭的东西，也是这类分叉最容易藏身的地方。
+    const fixedClockLine = consoleLogs.concat(consoleWarns).find((line) =>
+      /固定步时钟由宿主 wasm 持有|lua_fixed_frame 导出/.test(String(line)));
+    // 只在宿主**真的跑起来**时才要求这条声明：`--no-wasm` 这类"预期启动失败"的用例
+    // 根本走不到帧循环（wasm 都没有），也就没有"权威在哪一边"可言。
+    const hostRanFrames = !bootOutcome.error && (bootState === 'running' || bootState === 'ok');
+    if (hostRanFrames && !fixedClockLine) {
+      failures.push('没有说明固定步时钟的权威在哪一边（既没有"由宿主 wasm 持有"，也没有"没有 lua_fixed_frame 导出"）');
+    }
 
     // --- 远端证据：包内读不到（auto）或只留骨架（thin）时，重资源必须真的下载、校验、复用。
     if (remoteMode === 'auto' || remoteMode === 'thin') {
@@ -3906,6 +4159,17 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         if (remoteStats.remote < 1) failures.push(`没有从远端取得任何文件（remote=${remoteStats.remote}）`);
         if (remoteStats.remoteBytes < 1024) failures.push(`远端下载字节数异常偏小（remoteBytes=${remoteStats.remoteBytes}）`);
         if (remoteStats.checksumMismatch !== 0) failures.push(`校验和不符 ${remoteStats.checksumMismatch} 次`);
+        // **第 51 轮**：远端形态下"下载了但**没校验**"必须是 0。钉这条不是锦上添花——第 49/50 轮实测过
+        // 一整类缺陷：清单读取时机不对（读清单时远端配置还没加载 ⇒ latch）会让**所有**远端文件静默走
+        // "未校验放行"（含被翻转一个字节的 `pack/project.toml`），而当时的读数上完全看不出来
+        // （`checksumMismatch` 只记"校验了但内容不符"）。第 51 轮修掉根因后这里应为 0，且一旦回归必红。
+        const unverifiedPositive = Number(remoteStats.checksumUnverified || 0);
+        if (unverifiedPositive !== 0) {
+          const samples = Array.isArray(remoteStats.unverifiedSamples) && remoteStats.unverifiedSamples.length
+            ? `；样本=${remoteStats.unverifiedSamples.join(',')}`
+            : '';
+          failures.push(`有 ${unverifiedPositive} 个远端文件未校验就放行${samples}`);
+        }
         if (remoteStats.verified < 1) failures.push('没有任何文件通过清单校验（校验没真正跑起来）');
         if (stats.cacheWrites < 1) failures.push('没有写入任何缓存文件');
         if (remoteStats.cache < 1) failures.push(`没有命中过缓存（cache=${remoteStats.cache}，说明每次读都重新下载）`);
@@ -3920,7 +4184,13 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         }
         if (thin) {
           // 瘦首包的核心契约：骨架走包内（证明"包内优先"不是口号），重资源才走远端。
-          if (remoteStats.package < 1) failures.push(`瘦首包应从包内读到骨架文件，实际 package=${remoteStats.package}`);
+          // 例外一：分包不可达的用例（`--subpackage never` / `--expect-pack-failure`）——骨架随
+          // 分包一起取不到正是**被测的行为本身**；不加这个例外会让正确产物被判红（实测踩过）。
+          // 例外二：内核入分包 + 重资源远端的第四形态（`wasmInPackRemote`）在 `never` 下同理。
+          const packUnreachableByDesign = expectPackFailure || subpackageMode === 'never' || subpackageMode === 'silent';
+          if (!packUnreachableByDesign && remoteStats.package < 1) {
+            failures.push(`瘦首包应从包内读到骨架文件，实际 package=${remoteStats.package}`);
+          }
           // 骨架在**代码包**里的名字要查改名映射：`.toml` 不在微信上传白名单内，构建期已改成
           // `project.toml.txt`（见 scripts/code-package-rules.js）。这里刻意用磁盘事实去核实
           // "改名确实落地了"，所以查的是产物根目录，而不是经过真机模型的那条读取路径。
@@ -4001,7 +4271,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     restoreRemoteConfig();
     if (remote.server) await remote.server.close();
     const remoteEvidence = (remoteMode === 'auto' || remoteMode === 'thin') && remoteStats
-      ? ` remote_downloads=${remoteStats.remote} remote_bytes=${remoteStats.remoteBytes} verified=${remoteStats.verified} cache_hits=${remoteStats.cache} package_reads=${remoteStats.package} http_requests=${stats.remoteRequests}`
+      ? ` remote_downloads=${remoteStats.remote} remote_bytes=${remoteStats.remoteBytes} verified=${remoteStats.verified} checksum_unverified=${remoteStats.checksumUnverified || 0} cache_hits=${remoteStats.cache} package_reads=${remoteStats.package} http_requests=${stats.remoteRequests}`
       : '';
     // 分包证据行：这几个数（挂载次数 / 挂载帧 / 挂载前被挡下的素材读取 / 挂载前被挡下的**内核**读取）
     // 是"主包 + 分包"这套形态在本机唯一可查的形态证据，缺了它们输出行就只剩一句"跑起来了"。
@@ -4009,7 +4279,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     // "首屏清单有没有漏列首屏资源"，混在一个计数器里两条判据就都读不出来了。
     const finalPackInfo = adapter.packInfo ? adapter.packInfo() : null;
     const uploadEvidence = ` upload=${uploadedStats().uploaded} upload_denied=${codeReadDenied}` +
-      ` font=${stats.fontLoaded ? 'ok' : (stats.fontMissing ? 'missing' : (stats.fontBadMagic ? 'bad-magic' : 'not-requested'))}`;
+      ` font=${noWasm ? 'skipped(no-wasm)' : (stats.fontLoaded ? 'ok' : (stats.fontMissing ? 'missing' : (stats.fontBadMagic ? 'bad-magic' : 'not-requested')))}`;
     const subpackageEvidence = declaredPackSubpackage && finalPackInfo
       ? ` subpackage=pack subpackage_loads=${stats.subpackageLoads} pack_state=${finalPackInfo.state}` +
         ` mount_frame=${packMountFrame} denied_before_mount=${packDeniedBeforeMount} denied_before_boot=${packDeniedBeforeBoot}` +
@@ -4018,7 +4288,19 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
         ` entry=${packEntryError ? 'FAIL' : 'ok'}` +
         ` loading_bar=${drawnTexts.some((text) => text.includes('正在下载资源')) ? 'ok' : 'none'}`
       : ` subpackage=none subpackage_loads=${stats.subpackageLoads}`;
-    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} prefab_text=${adapter.getAttribute('data-rustlua-prefab-text') || 'none'} prefab_slice=${adapter.getAttribute('data-rustlua-prefab-slice') || 'none'} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} action_disk=${JSON.stringify(actionDiskEvidence)} help_page=${JSON.stringify(helpPageEvidence)} depth_order=${JSON.stringify(depthOrderEvidence)} foreground_order=${JSON.stringify(foregroundOrderEvidence)} ui_layer_order=${JSON.stringify(uiLayerOrderEvidence)} save_persist=${JSON.stringify(savePersistEvidence)} stick_key=w key_bridge=ArrowUp exemption_probe=${exemptionProbe} ${contractEvidence || 'api_contract=not-requested'} wasm=${wasmDiag ? (wasmDiag.status + ':' + wasmDiag.hostApi + ':' + (wasmDiag.channel || 'none') + ':' + (wasmDiag.facade || 'none')) : 'no-diag'} eh_probe=${wasmDiag && wasmDiag.ehProbe ? String(wasmDiag.ehProbe).replace(/^eh_probe=/, '').split(/[（[ ]/)[0] : 'not-attempted'}${remoteEvidence}`);
+    // 引擎画布探针是**异步**落位的（适配层故意不 await 它，免得拖住启动）⇒ 打自报前等它一次，
+    // 否则读数字段会停在 `off`/空，看起来像"没接线"。异常已在适配层转成 `failed`，这里不再抛。
+    if (typeof globalThis.__RUSTLUA_ENGINE_PROBE === 'function') {
+      try { await globalThis.__RUSTLUA_ENGINE_PROBE(); } catch (error) { /* 见适配层 failed 分支 */ }
+    }
+    // 引擎宿主同样异步落位（建 wgpu 栈），打自报前等它一次。离线假宿主没有 GL ⇒ 期望就是
+    // `failed`（GPU 档）或 `unavailable`（默认档）；`running` 只能由真机/带 GL 的宿主给出。
+    // **入口名必须与开关名不同**（开关 `__RUSTLUA_ENGINE_HOST`、入口 `…_READY`）：第一版复用同名，
+    // 适配层加载时把开关置的 `true` 覆盖成函数 ⇒ 开关永远读成 off（差分实验抓到的那个现象）。
+    if (typeof globalThis.__RUSTLUA_ENGINE_HOST_READY === 'function') {
+      try { await globalThis.__RUSTLUA_ENGINE_HOST_READY(); } catch (error) { /* 见适配层 failed 分支 */ }
+    }
+    console.log(`wechat_minigame_harness_ok path_style=${wxPathStyle} read_strategy=${readStrategy} frames=${stats.frames} draw_ops=${stats.drawOps} draws_per_frame=${perFrameDraws.length > 0 ? perFrameDraws[0] : 0} drawn=${drawn} ui_elements=${uiElements} prefab_text=${adapter.getAttribute('data-rustlua-prefab-text') || 'none'} prefab_slice=${adapter.getAttribute('data-rustlua-prefab-slice') || 'none'} pack_reads=${stats.packReads} images=${stats.imagesLoaded} binary=${binaryProbe} audio_ctx=${stats.audioCreated} audio_played=${stats.audioPlayed} audio_srcs=${JSON.stringify(stats.audioSrcs.slice(0, 8))}${uploadEvidence}${subpackageEvidence} read_strategies=main:${strategies.main || 'none'}/pack:${strategies.pack || 'none'} font=${fontFamily} boot=${bootState} world=${JSON.stringify(worldSummary.replace(/\s+/g, ' '))} move=${JSON.stringify(moveEvidence)} touch_stick=${JSON.stringify(touchStickEvidence)} attack=${JSON.stringify(attackEvidence)} bag=${JSON.stringify(bagEvidence)} action_disk=${JSON.stringify(actionDiskEvidence)} help_page=${JSON.stringify(helpPageEvidence)} depth_order=${JSON.stringify(depthOrderEvidence)} foreground_order=${JSON.stringify(foregroundOrderEvidence)} ui_layer_order=${JSON.stringify(uiLayerOrderEvidence)} save_persist=${JSON.stringify(savePersistEvidence)} stick_key=w key_bridge=ArrowUp exemption_probe=${exemptionProbe} engine_probe=${adapter.getAttribute('data-rustlua-engine-probe') || 'none'} engine_probe_reason=${JSON.stringify(String((((adapter.diag && adapter.diag()) || {}).engine_probe || {}).reason || '').slice(0, 200))} engine_host=${((adapter.diag && adapter.diag()) || {}).engine_host ? String((((adapter.diag() || {}).engine_host) || {}).status || 'none') : 'none'} timing=${JSON.stringify(String(adapter.getAttribute('data-rustlua-timing') || 'none'))} engine_host_source=${String((((adapter.diag && adapter.diag()) || {}).engine_host || {}).source || 'none')} engine_host_frames=${Number((((adapter.diag && adapter.diag()) || {}).engine_host || {}).frames || 0)} engine_host_presented=${Number((((adapter.diag && adapter.diag()) || {}).engine_host || {}).presented || 0)} engine_host_steps=${Number((((adapter.diag && adapter.diag()) || {}).engine_host || {}).steps || 0)} engine_host_reason=${JSON.stringify(String((((adapter.diag && adapter.diag()) || {}).engine_host || {}).reason || '').slice(0, 200))} engine_host_abi=${String((((adapter.diag && adapter.diag()) || {}).engine_host || {}).abi || 'none')} engine_host_tick=${String((((adapter.diag && adapter.diag()) || {}).engine_host || {}).tick || 'none')} engine_host_tick_conflict=${((((adapter.diag && adapter.diag()) || {}).engine_host || {}).tick_conflict) ? 'yes' : 'no'} engine_host_sim_steps=${Number((((adapter.diag && adapter.diag()) || {}).engine_host || {}).sim_steps || 0)} engine_host_runtime_fixed_frames=${Number((((adapter.diag && adapter.diag()) || {}).engine_host || {}).runtime_fixed_frames || 0)} engine_host_runtime_run_steps=${Number((((adapter.diag && adapter.diag()) || {}).engine_host || {}).runtime_run_steps || 0)} engine_host_runtime_input_frames=${Number((((adapter.diag && adapter.diag()) || {}).engine_host || {}).runtime_input_frames || 0)} export_readout=${JSON.stringify(String(adapter.getAttribute('data-rustlua-export') || 'none'))} engine_host_input_applied=${Number((((adapter.diag && adapter.diag()) || {}).engine_host || {}).input_applied || 0)} ${contractEvidence || 'api_contract=not-requested'} wasm=${wasmDiag ? (wasmDiag.status + ':' + wasmDiag.hostApi + ':' + (wasmDiag.channel || 'none') + ':' + (wasmDiag.facade || 'none')) : 'no-diag'} eh_probe=${wasmDiag && wasmDiag.ehProbe ? String(wasmDiag.ehProbe).replace(/^eh_probe=/, '').split(/[（[ ]/)[0] : 'not-attempted'}${remoteEvidence}`);
     return 0;
   }).catch((error) => {
     console.error = originalError;

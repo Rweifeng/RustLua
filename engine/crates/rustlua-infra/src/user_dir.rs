@@ -209,7 +209,16 @@ pub fn seed_settings(roots: &DataRoots, pack_root: &Path) -> Result<bool> {
 }
 
 /// 创建存档目录（发布包首次运行的用户目录、开发工程的 `.cache` 都可能还不存在）。
+///
+/// **没有文件系统的宿主（web / 微信小游戏）直接跳过**：`cfg!(target_arch = "wasm32")`
+/// 覆盖这两个平台；装了平台存档槽（[`crate::save_slot::is_installed`]，localStorage
+/// 一类）时同样跳过——存档根本不落文件系统，目录不存在也不需要存在。此前这一步在
+/// wasm 上必失败并打一条 `无法创建存档目录 … operation not supported on this platform`
+/// 的警告（第 47 轮实测）。桌面**不装**槽，所以桌面行为一个字不变。
 pub fn ensure_save_dir(roots: &DataRoots) -> Result<()> {
+    if cfg!(target_arch = "wasm32") || crate::save_slot::is_installed() {
+        return Ok(());
+    }
     fs::create_dir_all(&roots.save_dir).map_err(|error| {
         Error::other(format!(
             "无法创建存档目录 {}: {error}（可用 {USER_DIR_ENV} 指定其他位置）",

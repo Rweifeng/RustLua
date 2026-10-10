@@ -88,6 +88,161 @@ pub fn latest_frame_input() -> rustlua_frame_abi::FrameInput {
     LATEST_FRAME.with(|slot| *slot.borrow())
 }
 
+// ---------------------------------------------------------------- 固定步时钟（WP7-13）
+//
+// 这套逻辑原本整份在 `plugins/webgl/web-runtime.js` 里：`stepAccumulator` / `STEP_EPSILON` /
+// `MAX_CATCH_UP_STEPS` / `droppedSteps`。而引擎的 GPU 独跑路径（`RuntimeScene::run_script_steps`）
+// 用的是 `rustlua_infra::FixedTimeStep` —— 同一份产物里两套定步长实现，任何一处调整都会让两条链
+// 的步数分叉，而分叉在读数上只表现为"某个平台的动画快一点/慢一点"，极难定位。
+//
+// 搬进来之后**权威只剩一份**（现在是 `rustlua_infra::frame_clock::FrameClock`），JS 侧不再持有
+// 累积器，每帧只问一句"这一帧跑几步"。常量与 JS 旧实现逐条对齐（60 Hz / 最多 8 步 / 1e-9 落帧容差）
+// ⇒ 这是**行为等价的状态搬迁**，不是顺手改玩法：两个平台的步进口径因此不可能再漂移。
+//
+// WP7-53 起这一层换成 `FrameClock`：它把 `FixedTimeStep` 的算术再包一层**策略**——夹住秒级间隔
+// （切标签页/断点/长 GC）、计数被夹的帧、容忍"正好一帧"的子 ulp 偏差。微信侧的引擎宿主
+// （`host_runtime.rs`）用的是**同一个**策略模块 ⇒ "两个宿主步进节奏一致"从此是结构保证，不是约定。
+// 正常帧上两者逐位相同（间隔远小于上限、容差同值）；只有畸形间隔的记账方式变了（同样是 8 步封顶，
+// 但丢弃量与累积器不再把挂起的几十秒算进去）。
+
+/// 每秒固定步数（与 JS `FIXED_STEPS_PER_SECOND`、引擎定步长一致）。
+const FIXED_STEPS_PER_SECOND: u32 = 60;
+/// 单帧最多追几步（与 JS `MAX_CATCH_UP_STEPS` 一致）：超过就丢弃，避免死亡螺旋。
+const MAX_CATCH_UP_STEPS: u32 = 8;
+/// 单帧接受的**墙钟**上限（秒）：切标签页/断点/长 GC 会送来秒级间隔，先夹住再谈追帧。
+const MAX_FRAME_SECONDS: f64 = 0.25;
+/// 落帧容差：浏览器的 `elapsed` 来自两次 `performance.now()` 读数之差，"正好一帧"常落在
+/// `1/60` 最后几个二进制位**之下**。严格 `>=` 会把它判成 0 步、靠下一帧补上（平均速率仍对、
+/// 不会停摆），代价是步数在 0/1 之间抖动。取远小于任何真实帧间隔的值：误判上限是每帧 1e-9 秒。
+/// （与 `frame_clock::FRAME_INTERVAL_TOLERANCE_SECONDS` 同值的本地副本；这里显式传一遍，
+///   是为了让"这套常量与 JS 旧实现逐条对齐"这件事在本文件里仍然一眼可查。）
+const STEP_EPSILON_SECONDS: f64 = 1e-9;
+
+thread_local! {
+    /// 固定步时钟（`boot_runtime` 会重置：换 Lua 世界等于换一次时间基准）。
+    static FIXED_CLOCK: RefCell<Option<rustlua_infra::frame_clock::FrameClock>> =
+        const { RefCell::new(None) };
+}
+
+fn with_fixed_clock<R>(f: impl FnOnce(&mut rustlua_infra::frame_clock::FrameClock) -> R) -> R {
+    FIXED_CLOCK.with(|slot| {
+        let mut guard = slot.borrow_mut();
+        if guard.is_none() {
+            // `new` 只在频率/追帧上限/上限秒数为 0 时报错，而这三个都是本文件里的非零常量。
+            let mut clock = rustlua_infra::frame_clock::FrameClock::new(
+                FIXED_STEPS_PER_SECOND,
+                MAX_CATCH_UP_STEPS,
+                MAX_FRAME_SECONDS,
+            )
+            .expect("fixed-step constants are non-zero");
+            // 容差取自 `frame_clock` 的常量本身（两处不同源就会悄悄分叉，而分叉只表现为
+            // "某个平台的动画快一点/慢一点"）。
+            debug_assert_eq!(
+                STEP_EPSILON_SECONDS,
+                rustlua_infra::frame_clock::FRAME_INTERVAL_TOLERANCE_SECONDS
+            );
+            *guard = Some(clock.with_tolerance(STEP_EPSILON_SECONDS));
+        }
+        f(guard.as_mut().expect("just initialised"))
+    })
+}
+
+/// 推进固定步时钟，返回**本帧要执行的 update 次数**（JS 旧 `advanceFixedSteps()` 的等价物）。
+///
+/// 累积器、追帧上限、丢帧计数全部留在宿主：JS 拿到的只有"跑几步"这一个数，
+/// 因此当帧率抖动（高刷屏、被后台节流、弱网掉帧）时，两个平台的补偿行为由同一份代码决定。
+#[wasm_bindgen]
+pub fn lua_fixed_frame(elapsed_seconds: f64) -> u32 {
+    with_fixed_clock(|clock| clock.plan(elapsed_seconds).steps)
+}
+
+/// 累计被丢弃的固定步数（追帧上限之外的、为避免死亡螺旋而丢弃的步数）。诊断用，只读。
+#[wasm_bindgen]
+pub fn lua_fixed_steps_dropped() -> u32 {
+    with_fixed_clock(|clock| clock.total_dropped_steps().min(u64::from(u32::MAX)) as u32)
+}
+
+/// 当前累积器余量（秒）。诊断/自证用，只读。
+#[wasm_bindgen]
+pub fn lua_fixed_accumulator_seconds() -> f64 {
+    with_fixed_clock(|clock| clock.accumulator_seconds())
+}
+
+/// 丢弃部分时间、不保留时间债：切后台再回前台时，那一帧按"一个固定步"起算，
+/// 而不是把挂起的几十秒当成一次巨大的 elapsed 灌进累积器（JS 旧 `resetClockNextFrame` 的等价物）。
+#[wasm_bindgen]
+pub fn lua_fixed_reset_clock() {
+    with_fixed_clock(|clock| clock.reset_accumulator());
+}
+
+/// 跑**一个**固定步。这段顺序就是 `plugins/webgl/web-runtime.js` 固定步阶段里的那三句
+/// （`__rustlua_apply_virtual_input()` → `__rustlua_dt = delta` → `update()`），搬进 Rust 的
+/// 理由是"引擎宿主"要自己驱动定步长：微信侧一旦由 Rust 的帧循环推进模拟，就不能再靠 JS 手写这段
+/// 顺序——两份实现就是两份漂移。
+///
+/// 与 JS 的顺序逐条对齐，其中两条是踩过坑的：
+/// * **虚拟键必须在输入批量落地之后**并回来（顺序反了等于没注入）；
+/// * `__rustlua_dt` 必须写在 `update()` **之前**（脚本在 update 里读的是这一帧的步长）。
+///
+/// 返回 `update()` 的字符串化结果（`None` = 它没返回字符串），与 `lua_call_global` 同协议。
+#[wasm_bindgen]
+pub fn lua_fixed_step(delta_seconds: f64) -> Result<Option<String>, JsValue> {
+    lua_call_global_void("__rustlua_apply_virtual_input")?;
+    lua_set_number("__rustlua_dt", delta_seconds)?;
+    lua_call_global("update", "")
+}
+
+/// 连续跑 `steps` 个固定步，返回实际跑的步数（= 入参，便于调用方直接记账）。
+///
+/// `step == 1` 时先吃掉一次性边沿（`__rustlua_finish_step_input`）：补步**不得重放**
+/// `just_pressed`，否则一帧补两步就会让"按一下"变成"按两下"。这条与 JS 里的同一处判断严格对齐。
+///
+/// 连续跑 `steps` 个固定步，返回**最后一个** `update()` 的字符串化结果
+/// （`None` = 没跑，或它没返回字符串）。
+///
+/// 返回"最后一个脚本返回值"而不是步数：调用方本来就知道自己传了几步，而**这一刻**的脚本返回值
+/// 是需要被报出来的读数（`web-runtime.js` 把它写进 `data-rustlua-script-result`，诊断与门都读它）。
+/// 旧 JS 循环当年也是"只保留最后一个固定步的返回值"——补步过程中的中间值没有意义。
+///
+/// 调用方自己已经规划好步数时用这个入口（引擎宿主就是这么用的：它用自己的帧时钟算出 `steps`，
+/// 再让这里跑）；`elapsed` 的规划留在调用方，避免同一份时间被规划两次。
+#[wasm_bindgen]
+pub fn lua_fixed_run_steps(steps: u32, delta_seconds: f64) -> Result<Option<String>, JsValue> {
+    let mut last = None;
+    for step in 0..steps {
+        if step == 1 {
+            lua_call_global_void("__rustlua_finish_step_input")?;
+        }
+        last = lua_fixed_step(delta_seconds)?;
+    }
+    Ok(last)
+}
+
+/// JS 侧问引擎："当前世界里这个名字对应哪个**引擎句柄**？"
+///
+/// 返回 Lua 侧的句柄编码（`index << 32 | generation`），查不到或那个名字指向的实体已经不在世时返回 **0**
+/// （0 的 `generation == 0`，在引擎里本来就不是合法句柄，拿它当"没有"没有歧义）。
+///
+/// 为什么需要它：webgl/微信的 JS 宿主（`plugins/webgl/web-runtime.js`）有一套自己的 Lua 世界，
+/// `entity` / `sprite` / `transform` / `tilemap` / `animation` 这些全局表都被它覆盖，实体 id 用的是
+/// **`.scene` 文件里的作者 id**；而它没有覆盖的 API（`quad` / `mesh` / `light` / `world_text`）
+/// 会落到引擎上，于是作者 id 被当成引擎句柄解包。第 60 轮实测到的那条报错就是这么来的：
+/// 场景里写着 `entity\t13\tScaleBar`，`13` 被解码成 `EntityId(0:g13)`（`index = 13 >> 32 = 0`、
+/// `generation = 13`）⇒ `invalid entity id`。
+///
+/// 有了这个出口，JS 宿主可以在生成 Lua 绑定表时**先问引擎要真句柄**，两个 id 空间就从"各说各话"
+/// 变成"以引擎为准"；引擎不认识这个名字时它给 0，调用方交 `nil`——比一个用不了的数字好得多。
+#[wasm_bindgen]
+pub fn lua_entity_handle(name: &str) -> i64 {
+    LUA_RUNTIME.with(|slot| {
+        let borrowed = slot.borrow();
+        let Some(runtime) = borrowed.as_ref() else {
+            return 0;
+        };
+        runtime.entity_handle_lua(name).unwrap_or(0)
+    })
+}
+
 /// 把 JS 预加载资源表写进全局（`start()` 在 fetch 预加载后调用）。
 pub fn set_resources(resources: std::collections::HashMap<String, Vec<u8>>) {
     LUA_RESOURCES.with(|slot| *slot.borrow_mut() = Some(resources));
@@ -289,6 +444,8 @@ fn boot_runtime(
     LUA_RUNTIME.with(|slot| *slot.borrow_mut() = Some(runtime));
     // 新状态 = 新常驻输入表：旧差分基准会让"这一帧该松开哪些键"算错。
     INPUT_PREVIOUS.with(|slot| *slot.borrow_mut() = rustlua_frame_abi::FrameInput::new());
+    // 新 Lua 世界 = 新时间基准：重新 boot 时丢掉累积器里的时间债（与 JS 侧 `resetClockNextFrame` 同义）。
+    FIXED_CLOCK.with(|slot| *slot.borrow_mut() = None);
     Ok(())
 }
 
@@ -365,6 +522,32 @@ pub fn lua_do_string(source: &str, chunkname: &str) -> Result<(), JsValue> {
 /// 每帧（每个固定步）编译一小段源码来改这个数，那是纯浪费；这里直接写全局表。
 #[wasm_bindgen]
 pub fn lua_set_number(name: &str, value: f64) -> Result<(), JsValue> {
+
+/// 把**一批** Lua 全局设为数值（一次跨界；语义与逐个 `lua_set_number` 完全一致）。
+///
+/// 存在理由：相机三元组每帧要写三个数，逐个写就是 3 次跨语言往返；它们同一瞬间、同一批语义，
+/// 合并成一次没有语义风险。**注意**：不同时间点的写入（例如固定步之前的 `dt`）不能并进来——
+/// 那会改变脚本读到的时机（脚本在推进前读 `dt`、在绘制时读相机值）。
+///
+/// 入参是 `[[name, value], ...]` 的 JSON 数组；解析失败与设置失败都带具名错误，不做静默兜底。
+#[wasm_bindgen]
+pub fn lua_set_numbers(pairs_json: &str) -> Result<(), JsValue> {
+    let pairs: Vec<(String, f64)> = serde_json::from_str(pairs_json)
+        .map_err(|e| JsValue::from_str(&format!("lua set globals: bad json: {e}")))?;
+    LUA_RUNTIME.with(|slot| {
+        let guard = slot.borrow();
+        let runtime = guard
+            .as_ref()
+            .ok_or_else(|| JsValue::from_str("lua bridge: runtime not booted"))?;
+        let globals = runtime.lua().globals();
+        for (name, value) in pairs {
+            globals
+                .set(name.as_str(), value)
+                .map_err(|e| JsValue::from_str(&format!("lua set global {name}: {e}")))?;
+        }
+        Ok(())
+    })
+}
     LUA_RUNTIME.with(|slot| {
         let guard = slot.borrow();
         let runtime = guard

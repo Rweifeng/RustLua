@@ -5,7 +5,7 @@
 //! 本文件的分块构建调用，保持私有。类型 `CachedTilemapLayer` / `CachedTileSprite` / `TileChunk`
 //! 仍定义在 `mod.rs`（它们被 `RuntimeScene` 的私有字段持有），本文件靠 `use super::{...}` 取用。
 
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf};
 
 use crate::core::{
     camera::{CameraBounds, OrthoTerms, Viewport},
@@ -421,7 +421,9 @@ impl RuntimeScene {
             .as_ref()
             .map(|root| root.join(path))
             .unwrap_or_else(|| PathBuf::from(path));
-        let dims = fs::read(&resolved)
+        // 与贴图加载同一条通道：wasm 上没有文件系统，裸 `fs::read` 恒 `ENOSYS`，
+        // 拿不到尺寸就会退化成单四边形（第 45 轮：manor 的地表 tileset 正在失败清单里）。
+        let dims = crate::core::vfs::read(&resolved)
             .ok()
             .and_then(|bytes| crate::core::pack::decode(&bytes).ok())
             .and_then(|bytes| {

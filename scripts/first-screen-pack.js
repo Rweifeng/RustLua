@@ -151,6 +151,18 @@ function sceneTextureRefs(text) {
   return refs;
 }
 
+// 引擎内置资源哨兵：以 `__name__` 形式出现，由渲染器**就地合成**，本来就不占资源清单。
+//
+// 现在只有白纹理：`WHITE_TEXTURE_PATH = "__white__"`（引擎 `render/frame.rs`），纯色块
+// （`Image texture=__white__;color=…`，UI 面板/HUD 就这么用）不需要任何贴图文件。
+// 以前这里把启动场景里的 `__white__` 当成**悬空引用**直接拒绝发布，于是"场景里只要有一个
+// 没贴图的纯色 Quad"就永远发不出微信包 —— `examples/game_api` 实测就是这么卡住的
+// （`first_screen_pack_warn 启动场景 scenes/index.scene 引用的贴图不在资源清单里: __white__`）。
+// 用双下划线约定而不是只认一个常量：将来同类哨兵（引擎自己画的默认资源）不必再回来改这里。
+function isEngineBuiltinRef(ref) {
+  return ref === '__white__' || /^__[a-z0-9_]+__$/.test(ref);
+}
+
 // ------------------------------------------------------------------ 输入
 
 // 递归扫描 pack/ 的**实际文件**，以磁盘为权威。
@@ -255,6 +267,8 @@ function buildEntries(packRoot, includePrefixes) {
     sceneRefsByScene.set(rel, refs);
     for (const ref of refs) {
       if (catalog.has(ref)) continue;
+      // 引擎内置哨兵不是文件：它由渲染器合成，清单里没有**才是对的**（见 isEngineBuiltinRef）。
+      if (isEngineBuiltinRef(ref)) continue;
       // 首屏引用悬空 = 发出去的包注定缺图，绝不允许。
       if (rel === startupScene) {
         throw new Error(

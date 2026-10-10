@@ -369,6 +369,50 @@ packer.pack(takeSnapshot(inputState()));
 const statsText = factory.inputStatsReadout();
 check('表外键名被计数', /unmapped=[1-9]/.test(statsText) && statsText.includes('dead'), statsText);
 
+// ---- 固定步执行序（WP7-56）：顺序只有 wasm 一份实现，所以**顺序本身**必须可断言 ----
+// 以前这段顺序写在 `web-runtime.js` 的 JS 循环里（虚拟键 → `__rustlua_dt` → `update()`，首个固定步
+// 之后吃一次性边沿）。WP7-56 把那份 JS 循环整份删掉，只剩 `lua_bridge.rs::lua_fixed_run_steps`
+// 一份 ⇒ 顺序被改错**不会让任何东西变红**：表现只是"按键偶尔不生效""逻辑慢一拍""点一次触发两次"。
+// 这里在 Lua 侧记录调用序列，把顺序本身变成契约。
+{
+  for (const name of ['lua_fixed_frame', 'lua_fixed_run_steps', 'lua_fixed_step',
+    'lua_fixed_steps_dropped', 'lua_fixed_accumulator_seconds', 'lua_fixed_reset_clock']) {
+    check(`固定步导出 ${name} 在胶水上`, typeof glue[name] === 'function');
+  }
+  // 0 步不碰 Lua：纯记账（返回 `None` ⇒ 胶水上就是 undefined）。这条顺带保证"没有 update 的
+  // 世界里也能安全问一句"。
+  check('0 步不执行任何 Lua', glue.lua_fixed_run_steps(0, 1 / 60) === undefined);
+
+  glue.lua_do_string([
+    "__seq = ''",
+    '__updates = 0',
+    "__dt_ok = '?'",
+    "function __rustlua_apply_virtual_input() __seq = __seq .. 'A' end",
+    "function __rustlua_finish_step_input() __seq = __seq .. 'F' end",
+    "function update() __updates = __updates + 1 __seq = __seq .. 'U' __dt_ok = (__rustlua_dt == 1/60) and '1' or '0' return 'ok' end",
+    "function __probe() return __seq .. '|' .. __updates .. '|' .. __dt_ok end",
+  ].join('\n'), 'fixed-step-seq');
+
+  const last = glue.lua_fixed_run_steps(3, 1 / 60);
+  const trace = String(glue.lua_call_global('__probe', '') || '');
+  // 返回的是**最后一个** update 的返回值（`data-rustlua-script-result` 要的就是"这一刻"），
+  // 不是步数——步数由调用方自己知道，而脚本返回值只有这里能带回来。
+  check('run_steps 返回最后一个 update 的结果', last === 'ok', `last=${last}`);
+  // `AUFAUAU` = 第 0 步(虚拟键→update)、第 1 步(边沿→虚拟键→update)、第 2 步(虚拟键→update)。
+  check('每步顺序 = 虚拟键 → __rustlua_dt → update()，且补步只在第 1 步后吃一次边沿',
+    trace.startsWith('AUFAUAU|3|'), trace);
+  check('一次性边沿不得被每一步重放', (trace.match(/F/g) || []).length === 1, trace);
+  check('脚本看到的 __rustlua_dt 是 double 的 1/60（不是 f32 取整后的另一个数）',
+    trace.endsWith('|1'), trace);
+
+  // 单步入口就是"一步"：顺序与上面每一步完全一致，且**不吃**边沿。
+  glue.lua_do_string("__seq = '' __updates = 0", 'fixed-step-reset');
+  const single = glue.lua_fixed_step(1 / 60);
+  const singleTrace = String(glue.lua_call_global('__probe', '') || '');
+  check('lua_fixed_step 跑一步、返回 update 的结果、不吃边沿', single === 'ok' && singleTrace.startsWith('AU|1|'),
+    `single=${single} trace=${singleTrace}`);
+}
+
 console.log(`\nRESULT: ${passed} passed, ${failures.length} failed`);
 if (failures.length > 0) {
   console.error('input_frame_abi_FAILED');

@@ -39,13 +39,10 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     map.set(
         "goto",
         lua.create_function(move |_, (name, x, y): (String, Option<f32>, Option<f32>)| {
-            let root = {
+            let exists = {
                 let state = s.lua_borrow()?;
-                state.project_root.clone()
+                crate::script::scene_file_exists(&state, &name)
             };
-            let exists = root
-                .as_ref()
-                .is_some_and(|root| root.join("scenes").join(format!("{name}.scene")).is_file());
             if !exists {
                 return Ok(false);
             }
@@ -72,13 +69,10 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     map.set(
         "go",
         lua.create_function(move |_, (name, x, y): (String, Option<f32>, Option<f32>)| {
-            let root = {
+            let exists = {
                 let state = s.lua_borrow()?;
-                state.project_root.clone()
+                crate::script::scene_file_exists(&state, &name)
             };
-            let exists = root
-                .as_ref()
-                .is_some_and(|root| root.join("scenes").join(format!("{name}.scene")).is_file());
             if !exists {
                 return Ok(false);
             }
@@ -105,13 +99,10 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     map.set(
         "enter",
         lua.create_function(move |_, (name, x, y): (String, f32, f32)| {
-            let root = {
+            let exists = {
                 let state = s.lua_borrow()?;
-                state.project_root.clone()
+                crate::script::scene_file_exists(&state, &name)
             };
-            let exists = root
-                .as_ref()
-                .is_some_and(|root| root.join("scenes").join(format!("{name}.scene")).is_file());
             if !exists {
                 return Ok(false);
             }

@@ -170,6 +170,14 @@ local function demo_sprite()
     end
 
     local before = sprite.get(player)
+    if before == nil then
+        -- `need(PLAYER)` 只保证**实体存在**，不保证它带 Sprite 组件：引擎侧 `sprite.get` 读的是
+        -- `components["Sprite"]`，缺了就是 nil。这里按本文件既有约定（`need()` 缺实体时也只写原因、
+        -- 不崩）处理——否则整条 update 会抛，读数上只剩一句 `index a nil value`，
+        -- "这个场景本来就没有精灵"与"脚本坏了"就分不开了。
+        last_note = "sprite.get 返回 nil：实体 " .. tostring(player) .. " 没有 Sprite 组件（本场景不适用该演示）"
+        return last_note
+    end
     sprite_swapped = not sprite_swapped
     local texture = "assets/textures/player.png"
     if sprite_swapped then

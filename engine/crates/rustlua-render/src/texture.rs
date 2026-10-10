@@ -27,7 +27,12 @@ impl TextureAsset {
         color_space: TextureColorSpace,
     ) -> Result<Self, TextureError> {
         let path = path.as_ref();
-        let bytes = std::fs::read(path).map_err(|reason| TextureError::Read {
+        // 经 `vfs` 取字节（**不是** `std::fs::read`）：wasm 上没有文件系统，裸读恒
+        // `ENOSYS`——第 45 轮在 jhyt webgl 产物上实测：场景切换后按需加载的 34 张贴图
+        // 全部落到 `could not read PNG …: operation not supported on this platform`
+        // 并回退成内建白贴图，玩法画面成了一张白屏。桌面无 provider 时 `vfs::read`
+        // 就是 `fs::read`，行为不变；解码那一步（`pack::decode` → `from_png_bytes`）不动。
+        let bytes = rustlua_infra::vfs::read(path).map_err(|reason| TextureError::Read {
             path: path.display().to_string(),
             reason: reason.to_string(),
         })?;

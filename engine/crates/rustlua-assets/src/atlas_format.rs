@@ -14,7 +14,7 @@
 //! 渲染层 `SpriteAtlas::from_definition` 构造时由 `AtlasError` 拒绝；本层只拦语法、
 //! 零尺寸、空名与缺字段。同名 region 后写覆盖先写（对齐 `SpriteAtlas::insert`）。
 
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{collections::BTreeMap, path::Path};
 
 /// 当前唯一的 `.atlas` 文本格式版本。
 pub const ATLAS_FORMAT_VERSION: u32 = 1;
@@ -180,7 +180,14 @@ impl AtlasDefinition {
     /// `.atlas` 在包里保持明文；它引用的纹理才需要 [`rustlua_infra::pack::decode`]。
     pub fn load(path: impl AsRef<Path>) -> Result<Self, AtlasFormatError> {
         let path = path.as_ref();
-        let text = fs::read_to_string(path).map_err(|error| AtlasFormatError::Io {
+        // 经 `vfs` 读（**不是** `fs::read_to_string`）：wasm 上没有文件系统，裸读恒
+        // `ENOSYS`。`.atlas` 在包里保持明文（见上一条注释），所以这里只取原始字节、
+        // 不做 `pack::decode`；语义与 `fs::read_to_string` 一致（非 UTF-8 报错）。
+        let bytes = rustlua_infra::vfs::read(path).map_err(|error| AtlasFormatError::Io {
+            path: path.display().to_string(),
+            reason: error.to_string(),
+        })?;
+        let text = String::from_utf8(bytes).map_err(|error| AtlasFormatError::Io {
             path: path.display().to_string(),
             reason: error.to_string(),
         })?;

@@ -22,7 +22,7 @@
   var g = typeof globalThis !== 'undefined' ? globalThis : this;
   // 版本号会打进日志和 __RUSTLUA_DIAG()：开发者工具会缓存代码包，
   // "有没有报错" 分不清旧包新包，只有版本号能分清（实测踩过）。
-  var ADAPTER_VERSION = '0.7.2+clean-console';
+  var ADAPTER_VERSION = '0.7.5+engine-probe';
   var wx = g.wx;
   if (!wx) {
     throw new Error('wechat-adapter: 未找到全局 wx —— 本文件只能在微信小游戏运行时中加载');
@@ -97,6 +97,16 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   function warn() {
     if (typeof console !== 'undefined' && console.warn) console.warn.apply(console, arguments);
   }
+  // 响亮失败必须走 console.error 这一档：harness 的负向用例只收 console.error（收 console.warn 的
+  // 那份只做统计、不打到输出里），真机的日志面板同理。用 warn 会被"降级为告警"的语义吞掉，
+  // 用裸 throw 则会落进调用方的 Promise 里被吞掉（实测：`new Image()` 在 Promise 执行器里，
+  // 抛出的异常只让那个 Promise 变 rejected，屏幕上少一批贴图、日志里一条都没有）。
+  // **名字不能叫 `error`**：调用点多半在 `catch (error)` 里，那个形参会把同名助手遮蔽掉，
+  // 于是 `error(msg)` 变成"调用一个错误对象"，抛 TypeError、什么都打不出来（第 54 轮踩过，
+  // 表现是"加了日志但行为一点没变"）。
+  function logError() {
+    if (typeof console !== 'undefined' && console.error) console.error.apply(console, arguments);
+  }
 
   // ---------------------------------------------------------------- 文件系统
 
@@ -132,13 +142,23 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 进而去等一个本不该等的下载（首屏白屏），正是分包形态要消除的东西。
   var firstScreen = null;
   var firstScreenLoaded = false;
+  // 清单**正在加载**的窗口。加载期间不得走 `user-data`（远端缓存）候选：缓存路径要先算
+  // **发布标识**，发布标识要读 `pack/manifest.txt`，而 manifest.txt 该读主包还是分包
+  // **取决于正在加载的这份清单** —— 一个闭环。闭环里的内层调用看到的是
+  // "firstScreenLoaded=true 而 firstScreen=null"，于是原样去打 `pack/manifest.txt`；
+  // 分包形态下这个文件已经被切到 mainpack/，读取在分包挂载前被挡。
+  // 2026-10-09 实测（无头 harness，分包形态）：启动期 6 次被挡全部来自这条链
+  // （栈：readText → loadManifestChecksums → releaseKey）。
+  var firstScreenLoading = false;
   var mainpackReads = 0;
 
   function loadFirstScreenManifest() {
     if (firstScreenLoaded) return firstScreen;
     firstScreenLoaded = true;
+    firstScreenLoading = true;
     var text = null;
     try { text = readText(MAINPACK_MANIFEST); } catch (error) { text = null; }
+    firstScreenLoading = false;
     if (!text) return null;
     var parsed = null;
     try { parsed = JSON.parse(text); } catch (error) {
@@ -290,6 +310,143 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     return subject.indexOf(PACK_PREFIX) === 0 ? 'pack' : 'main';
   }
 
+  // ---- 宿主 FS 的**路由包装**：让所有读者共用同一张首屏清单 ----------------------
+  //
+  // 分包形态把首屏文件切到 mainpack/，判断"该读主包还是分包"的依据只有一条
+  // （isFirstScreenPath）。过去它只在「适配层自己的读取通道」（readWithStrategies）里生效，
+  // 而 `plugins/webgl/web-runtime.js` 在微信侧是直接调
+  // `wx.getFileSystemManager().readFileSync('pack/…')` 的——**整条路由被绕过**。
+  // 2026-10-09 实测（分包形态、无头 harness）：启动期它问 `pack/manifest.txt` 六次，全部在
+  // 分包挂载前被宿主的挂载门挡下；同一时刻适配层自检读的是 `mainpack/manifest.txt`、报
+  // `ok@mainpack`。两条读者、两套语义，正是"同一份 runtime 跑两平台"要消除的裂缝。
+  //
+  // 约定（每条都是为了"宁可原样失败，也不改变语义"）：
+  //   · 只处理 `pack/` 开头的路径，其余一律原样转给宿主；
+  //   · 只接管**同步**通道（readFileSync / accessSync）：异步 readFile 的失败走回调，
+  //     替它决定"要不要重试"会把宿主的错误文案换掉，得不偿失；
+  //   · 路由候选**全失败就回落原调用**，让宿主自己报错（无清单 / full / remote 形态纯直通）；
+  //   · 只包一次（`__rustluaRouted`），且内部一律调用**未包装**的原函数 ⇒ 不会递归。
+  var fsRouteInstalled = false;
+  var fsRouteWrapped = false;
+  var fsRouteHits = 0;
+  var fsRouteMisses = 0;
+  // 已包装过的宿主 FS 对象。**标记不写在宿主对象上**：无头 harness 会枚举 FileSystemManager
+  // 的成员，遇到未实现的名字直接判失败（"不能让它静默降级"）——这条守卫是对的，所以包装状态
+  // 只能记在这边（见 scripts/wechat-minigame-harness.js 的宿主方法枚举）。
+  var fsRouteObjects = [];
+  // 诊断用：`fsRouteSkipped` = 有人读了 `pack/…` 却**没有路由可言**（清单没读到）；`fsRouteTried` =
+  // 真的按候选表找过。两者必须分开——只报命中数时，"清单没加载"和"候选全失败"长得一模一样。
+  var fsRouteSkipped = 0;
+  var fsRouteTried = 0;
+
+  // 逻辑路径（`pack/<x>`）的路由候选：与 readWithStrategies 同一张策略表、同一个 `user-data`
+  // 特例（缓存键用**逻辑路径**，理由见那里的注释），顺序也一致。
+  function routedCandidates(path) {
+    var subjects = readSubjects(path);
+    var list = [];
+    for (var s = 0; s < subjects.length; s++) {
+      var ordered = orderStrategies(preferredStrategy[strategyKeyOf(subjects[s])]);
+      for (var j = 0; j < ordered.length; j++) {
+        // 见 firstScreenLoading 的注释：清单加载期间算不出缓存路径（要发布标识、要 manifest.txt），
+        // 强行算就是那个闭环，所以这一窗口里跳过 user-data。
+        if (ordered[j].name === 'user-data' && firstScreenLoading) continue;
+        var candidate = ordered[j].apply(ordered[j].name === 'user-data' ? path : subjects[s]);
+        if (candidate && list.indexOf(candidate) < 0) list.push(candidate);
+      }
+    }
+    return list;
+  }
+
+  function shouldRouteFsPath(path) {
+    if (typeof path !== 'string' || path.indexOf(PACK_PREFIX) !== 0) return false;
+    // 清单没读到 ⇒ 没有路由可言（full / remote 形态正是这条路），保持宿主语义。
+    if (!loadFirstScreenManifest()) { fsRouteSkipped += 1; return false; }
+    fsRouteTried += 1;
+    return true;
+  }
+
+  function wrapFsRouting(fs) {
+    if (!fs || fsRouteObjects.indexOf(fs) >= 0) return false;
+    var origRead = typeof fs.readFileSync === 'function' ? fs.readFileSync : null;
+    var origAccess = typeof fs.accessSync === 'function' ? fs.accessSync : null;
+    if (!origRead && !origAccess) return false;
+    if (origRead) {
+      fs.readFileSync = function (path, encoding) {
+        var direct = function (target) {
+          return encoding === undefined ? origRead.call(fs, target) : origRead.call(fs, target, encoding);
+        };
+        if (!shouldRouteFsPath(path)) return direct(path);
+        var list = routedCandidates(path);
+        for (var i = 0; i < list.length; i++) {
+          try {
+            var value = direct(list[i]);
+            if (value !== null && value !== undefined) { fsRouteHits += 1; return value; }
+          } catch (error) { /* 试下一条候选 */ }
+        }
+        fsRouteMisses += 1;
+        // 全部失败：原样再问一次宿主，让错误文案与未包装时**完全一致**。
+        return direct(path);
+      };
+    }
+    if (origAccess) {
+      fs.accessSync = function (path) {
+        if (!shouldRouteFsPath(path)) return origAccess.call(fs, path);
+        var list = routedCandidates(path);
+        for (var i = 0; i < list.length; i++) {
+          try { origAccess.call(fs, list[i]); fsRouteHits += 1; return undefined; } catch (error) { /* 下一条 */ }
+        }
+        fsRouteMisses += 1;
+        return origAccess.call(fs, path);
+      };
+    }
+    fsRouteObjects.push(fs);
+    return true;
+  }
+
+  // 包在 `wx.getFileSystemManager` 这一层（而不是某一次返回的对象上）：宿主每次返回新对象时
+  // 包装依然生效。返回对象做缓存，保证同一宿主对象对应同一个包装（身份稳定，便于现场排查）。
+  function installFsRouting() {
+    if (fsRouteInstalled) return fsRouteWrapped;
+    fsRouteInstalled = true;
+    var original = null;
+    try { if (typeof wx.getFileSystemManager === 'function') original = wx.getFileSystemManager; } catch (error) { original = null; }
+    if (!original) return false;
+    var seen = [];
+    function routedManager() {
+      var fs = original.call(wx);
+      if (!fs) return fs;
+      for (var i = 0; i < seen.length; i++) if (seen[i].raw === fs) return seen[i].routed;
+      try { wrapFsRouting(fs); } catch (error) { /* 宿主对象不可写：原样交回 */ }
+      seen.push({ raw: fs, routed: fs });
+      return fs;
+    }
+    try {
+      wx.getFileSystemManager = routedManager;
+      fsRouteWrapped = true;
+    } catch (error) {
+      // 宿主不许改写：退回"包住当前这一个实例"。功能等价，只是宿主若每次返回新对象就漏掉。
+      try { fsRouteWrapped = wrapFsRouting(original.call(wx)); } catch (error2) { fsRouteWrapped = false; }
+    }
+    // 清单**在这里就加载**（原来只在第一次 pack/ 读取时惰性加载）：启动期最早的几次
+    // `pack/…` 读取（web-runtime.js 一进来就问 manifest.txt）会赶在清单加载之前发生，
+    // 那些读取只能按原样打到宿主上、在分包挂载前被挡。实测（2026-10-09，分包形态无头 harness）：
+    // 6 次被挡里有 2 次属于这一类，`fs_route.skipped_no_manifest` 就是它的计数。
+    // 读的是主包里的 mainpack.json（不带 pack/ 前缀、不经过路由），所以不会递归。
+    try { loadFirstScreenManifest(); } catch (error) { /* 读不到就维持"无清单"语义 */ }
+    return fsRouteWrapped;
+  }
+
+  function fsRouteInfo() {
+    return {
+      installed: fsRouteInstalled,
+      wrapped: fsRouteWrapped,
+      tried: fsRouteTried,
+      skipped_no_manifest: fsRouteSkipped,
+      hits: fsRouteHits,
+      misses: fsRouteMisses
+    };
+  }
+
   function fsManager() {
     return safeCall(wx, 'getFileSystemManager');
   }
@@ -325,6 +482,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         // 而用户目录缓存的键是**逻辑路径**（`cachePathFor(logical)` 与远端 URL 都按逻辑路径算）。
         // 早先把两者混为一谈 → 远端下载写 `http://usr/pack/scripts/x.lua`，缓存候选却去找
         // `http://usr/pack/scripts/x.lua.txt`，于是"下载成功了却永远读不到"（瘦首包形态实测踩到）。
+        //
+        // 清单加载期间跳过它：`cachePathFor` 要算发布标识、发布标识要读 `pack/manifest.txt`，
+        // 而 manifest.txt 读哪一侧取决于正在加载的清单（见 firstScreenLoading 的注释）。
+        if (ordered[j].name === 'user-data' && firstScreenLoading) continue;
         var candidate = ordered[j].apply(ordered[j].name === 'user-data' ? path : subjects[s]);
         if (!candidate) continue;
         try {
@@ -440,6 +601,11 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 资源来源统计：用于证明"素材到底来自包内还是远端"（证据可查，而不是只看启动成功）。
   var assetStats = {
     package: 0, cache: 0, remote: 0, remoteBytes: 0, remoteFailed: 0, verified: 0, checksumMismatch: 0,
+    // `checksumUnverified`：**下载了但没有拿清单校验**的次数。第 49 轮实测：一次启动 180 次远端下载里
+    // 有 4 次走的是这条放行路径，其中就有被翻转一个字节的 `pack/project.toml`（脏字节被写进缓存、
+    // 被当成好文件继续用），而当时既不计数也不告警——`checksumMismatch` 只记"校验了但内容不符"，
+    // 不记"压根没校验"。所以这个数必须单独存在，否则整类问题在读数上不可见。
+    checksumUnverified: 0, unverifiedSamples: [],
     // 贴图成败必须能自证：ok/fail 由宿主的 onload/onerror 计数，未供应 = 我们明知包内没有、
     // 远端也没拿到就交给宿主（必然失败）。samples 只留前几条，方便在现场日志里直接看到路径。
     imageLoaded: 0, imageFailed: 0, imageMissing: 0, imageCacheLoadFailed: 0, imageFailureSamples: []
@@ -673,7 +839,15 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         // 远端形态下"现在读不到清单"不等于"永远没有清单"：ensureManifest 随后会把它下下来。
         // 在这里 latch 住会让 ensureManifest 直接短路返回 —— 清单永远不下载、校验永远无据可依、
         // 发布标识永远是空（每次都按旧路径读写）。只有"根本不会有远端"时才记这次失败。
-        if (!remoteConfig) checksumLookupFailed = true;
+        //
+        // **第 51 轮修正**：判"根本不会有远端"不能只看 `!remoteConfig` —— 远端配置是**惰性**加载的，
+        // 启动自检与缓存路径解析都会在它加载**之前**先读一次清单，那一刻 `!remoteConfig` 为真但并不是
+        // "没有远端"。按 `!remoteConfig` latch 会形成**自锁**：`ensureManifest()` 见标记即直接返回
+        // （实测读数 `manifest=0 lookupFailed=1 download=0 loading=0`）⇒ 清单永远不下载 ⇒ 而唯一能清这个
+        // 标记的 `resetManifestDerived()` 只在**清单下载完成**时调用 ⇒ 标记永远为真 ⇒ 该会话里所有远端口
+        // 资源都无据可依（实测首屏三个文件被静默放行，其中就有被翻转一个字节的 `pack/project.toml`）。
+        // 正确判据是"配置**已经加载过**且确实为空"：`remoteConfigLoaded && !remoteConfig`。
+        if (remoteConfigLoaded && !remoteConfig) checksumLookupFailed = true;
         return null;
       }
       var map = {};
@@ -693,12 +867,35 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     }
   }
 
+  // 记一笔"没校验就放行"。**必须可见**：第 49 轮实测这条路静默吃掉了 4/180 次下载（含被篡改的
+  // `pack/project.toml`），而当时日志里连一句"未校验"都没有——`verifyDownloaded` 上面那句注释
+  // 承诺过"下面会记一笔'未校验'"，实际并不存在。samples 只留前几条，避免刷屏。
+  function noteUnverified(path, reason) {
+    assetStats.checksumUnverified += 1;
+    // 第 51 轮：把"为什么清单不可得"直接量出来。`loadManifestChecksums()` 与 `ensureManifest()` 都会在
+    // 标志为真时**直接返回不下载**（前者靠 checksumLookupFailed，后者也靠它），所以"清单未就绪"至少有
+    // 三种互斥成因：①压根没下载过（D=0）、②正在下载中（D=1）、③被失败标记短路（F=1）。
+    // 三者对应的修法完全不同，日志里必须能区分，不能只写"未就绪"。
+    var flags = 'manifest=' + (manifestChecksums ? 1 : 0) + ' lookupFailed=' + (checksumLookupFailed ? 1 : 0)
+      + ' download=' + (manifestDownload ? 1 : 0) + ' loading=' + (checksumLoading ? 1 : 0)
+      + ' configLoaded=' + (remoteConfigLoaded ? 1 : 0);
+    var detailed = reason + '［' + flags + '］';
+    if (assetStats.unverifiedSamples.length < 8) assetStats.unverifiedSamples.push(path + ':' + detailed);
+    warn('wechat-adapter: 未校验就放行 ' + path + '（' + detailed + '）');
+  }
+
   function verifyDownloaded(path, buffer) {
     if (!remoteConfig.verifyChecksum) return true;
     var manifest = loadManifestChecksums();
-    if (!manifest) return true; // 清单不可得时不阻断，但下面会记一笔"未校验"
+    if (!manifest) {
+      noteUnverified(path, '清单未就绪');
+      return true;
+    }
     var entry = manifest[path.slice(PACK_PREFIX.length)];
-    if (!entry) return true;
+    if (!entry) {
+      noteUnverified(path, '清单里没有这一项');
+      return true;
+    }
     var bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
     if (bytes.length !== entry.size) {
       assetStats.checksumMismatch += 1;
@@ -827,6 +1024,13 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 同一路径并发只下载一次。
   function downloadToCache(path, verify) {
     var url = remoteUrlFor(path);
+    // 第 50 轮插桩：`verify=false` 按设计只该出现在**清单自己**身上（它没有可对照的清单项）。
+    // 非清单文件走到这里，说明调用方压根没请求校验（第 49 轮实测的形态：`pack/project.toml`
+    // 在 `pack/manifest.txt` **之前**就被下下来了）——那种情况下 `verifyDownloaded` 根本不会被调用，
+    // 所以只在它里面计数是不够的，这里必须也报一笔，才能指认"是哪条路绕过了校验"。
+    if (!verify && remoteConfig && remoteConfig.verifyChecksum && path !== PACK_PREFIX + 'manifest.txt') {
+      noteUnverified(path, '这条下载路径没有请求校验');
+    }
     return downloadOnce(url).then(function (target) {
       var bytes = readHostFile(target);
       if (!bytes) {
@@ -1244,6 +1448,451 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 是否与 wx.createCanvas() 返回的是同一个对象（true 时说明"首次调用"语义被我们用对了）。
   var canvasIsCreated = !!(createdCanvas && canvas === createdCanvas);
 
+  // ── 微信侧 GL 能力读数（WP8 的设备验证仪器）────────────────────────────────
+  // 为什么要有它：引擎的真渲染器是 wgpu/WebGL2（`gpu_host.rs`：`Backends::GL` +
+  // `downlevel_webgl2_defaults()`），而"微信小游戏给不给 WebGL2"直接决定 WP8 在微信上能不能
+  // 沿用同一条渲染通道。这个问题**只能在真机/开发者工具里**回答，所以把它做成随启动诊断回传的
+  // 读数（进 `diagSnapshot().gl`），而不是留在文档里的猜测。
+  //
+  // 两条硬约束：
+  //   ① **绝不用主画布试 GL**：一张画布只能有一个上下文（WP5 实测），在主画布上
+  //      `getContext('webgl2')` 会把已经拿到的 2d 上下文毁掉，画面直接黑。
+  //   ② 只用宿主声明过的入口：`wx.createOffscreenCanvas({type:'webgl'})` 优先（微信官方给的离屏
+  //      GL 画布入口），拿不到才退回"再调一次 `wx.createCanvas()`"（首次之外的调用返回离屏画布）；
+  //      两者都拿不到就如实留 `note`，不猜。
+  // 两种 GL 版本各用**各自的**探针画布：失败的类型在实现里可能把画布锁给第一个请求，共用一张会让
+  // "webgl2 不支持"顺带污染"webgl 也不支持"的结论。
+  var glCapability = null;
+
+  function glLimits(gl) {
+    var out = { version: '', max_texture: 0, max_renderbuffer: 0, renderer: '' };
+    try {
+      out.version = String(gl.getParameter(gl.VERSION) || '');
+      out.max_texture = Number(gl.getParameter(gl.MAX_TEXTURE_SIZE)) || 0;
+      out.max_renderbuffer = Number(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE)) || 0;
+      var dbg = gl.getExtension ? gl.getExtension('WEBGL_debug_renderer_info') : null;
+      if (dbg && dbg.UNMASKED_RENDERER_WEBGL) {
+        out.renderer = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '');
+      }
+    } catch (error) { /* 读数拿不全不影响启动 */ }
+    return out;
+  }
+
+  function glProbeCanvas(info) {
+    if (typeof wx.createOffscreenCanvas === 'function') {
+      try {
+        var off = wx.createOffscreenCanvas({ type: 'webgl', width: 1, height: 1 });
+        if (off && typeof off.getContext === 'function') {
+          info.source = 'wx.createOffscreenCanvas';
+          return off;
+        }
+      } catch (error) { info.note = info.note || 'createOffscreenCanvas-threw'; }
+    }
+    var again = null;
+    try { again = safeCall(wx, 'createCanvas'); } catch (error) { again = null; }
+    if (!again || typeof again.getContext !== 'function') {
+      info.note = info.note || 'no-probe-canvas';
+      return null;
+    }
+    if (again === canvas) {
+      info.main_canvas_skipped = true;
+      info.note = info.note || 'probe-canvas-is-main';
+      return null;
+    }
+    info.source = info.source || 'wx.createCanvas(offscreen)';
+    return again;
+  }
+
+  // ── 引擎侧画布能力探针（WP8 第二片：把 WP7-50 的 wasm 导出接到真实调用点）────────────
+  // 与上面 `glCapability` 的分工必须说清楚，否则两个读数会被混着读：
+  //   * `glCapability` 问的是"**宿主**给不给 WebGL2"（JS 层：`canvas.getContext('webgl2')`）；
+  //   * 这里问的是"**引擎自己**能不能在这张画布上起渲染栈"——走 wasm 里的 `probe_canvas_host`
+  //     （wgpu instance → surface → adapter → 能力），也就是 WP8 真正要用的那条通道。
+  // 两者结论不一致是有意义的：宿主给 WebGL2 而引擎起不来 = wgpu/后端的问题；反之 = 宿主限制。
+  //
+  // 导出只存在于带 `gpu2d` 特性的内核（`package.ps1 -Gpu2d`）。默认档没有 ⇒ 状态如实写
+  // `unavailable`，**不是失败**："没编进去"与"编进去但宿主机不给"必须能分开读。
+  //
+  // 开关默认**关**：这条探针会真的去建 wgpu 实例/表面/适配器，属于要显式要求的动作。
+  // 打开方式（二选一）：`globalThis.__RUSTLUA_GPU_PROBE === true`，或
+  // `wx.setStorageSync('rustlua_gpu_probe', 1)`（真机上现场排查用后者）。
+  var engineProbe = { status: 'off', reason: '', reports: [], source: '' };
+  var engineProbePromise = null;
+  var engineHostRef = null;
+
+  function engineProbeEnabled() {
+    try { if (globalThis.__RUSTLUA_GPU_PROBE === true) return true; } catch (error) { /* 无全局对象 */ }
+    try {
+      if (typeof wx.getStorageSync === 'function') {
+        var stored = wx.getStorageSync('rustlua_gpu_probe');
+        if (stored === true || stored === 1 || stored === '1') return true;
+      }
+    } catch (error) { /* 存储不可用不影响结论 */ }
+    return false;
+  }
+
+  // 专用 GPU 画布（探针与引擎宿主共用）。**每次调用都新开一张**，理由两条：
+  //   ① 一张画布只能有一个上下文——绝不能用主画布（2d），否则画面直接黑；
+  //   ② 两次探测/宿主之间也不能共用：JS 层探针可能已经在旧画布上拿过 webgl2 上下文，
+  //      wgpu 再取会拿到同一个上下文，把两边结论耦在一起（一个失败会污染另一个）。
+  function dedicatedGpuCanvas(info, width, height) {
+    if (typeof wx.createOffscreenCanvas === 'function') {
+      try {
+        var off = wx.createOffscreenCanvas({ type: 'webgl', width: width, height: height });
+        if (off && typeof off.getContext === 'function') { info.source = 'wx.createOffscreenCanvas'; return off; }
+      } catch (error) { info.note = info.note || 'createOffscreenCanvas-threw'; }
+    }
+    var again = null;
+    try { again = safeCall(wx, 'createCanvas'); } catch (error) { again = null; }
+    if (!again || typeof again.getContext !== 'function' || again === canvas) {
+      info.note = info.note || (again === canvas ? 'probe-canvas-is-main' : 'no-probe-canvas');
+      return null;
+    }
+    info.source = 'wx.createCanvas(offscreen)';
+    return again;
+  }
+
+  function engineProbeCanvas(info) {
+    return dedicatedGpuCanvas(info, 16, 16);
+  }
+
+  function probeEngineCanvas() {
+    if (engineProbePromise) return engineProbePromise;
+    // **所有出口都必须写完读数**：状态写进 `data-rustlua-engine-probe`、理由进 diag、并打一行日志。
+    // 第一版把 `off`/`unavailable` 做成了"提前 return 什么都不写"——结果验证侧读到的是
+    // `engine_probe=none`，与"这段代码根本没接线"完全同形。诊断读数不许有这种哑口。
+    var started = Date.now();
+    var finish = function () {
+      try { bodyElement.setAttribute('data-rustlua-engine-probe', engineProbe.status); }
+      catch (error) { /* 属性写不进去不影响结论 */ }
+      log('wechat-adapter: 引擎画布探针 status=' + engineProbe.status + ' source=' + (engineProbe.source || 'none') +
+        ' ms=' + (Date.now() - started) + ' reason=' + (engineProbe.reason || ''));
+      return engineProbe;
+    };
+    if (!engineProbeEnabled()) {
+      engineProbe.status = 'off';
+      engineProbe.reason = 'switch-off';
+      engineProbePromise = Promise.resolve(finish());
+      return engineProbePromise;
+    }
+    var host = engineHostRef;
+    var exportFn = (host && typeof host.probe_canvas_host === 'function') ? host.probe_canvas_host : null;
+    if (!exportFn) {
+      // 两种"没有导出"必须分开读：内核没编 GPU 路径（unavailable）vs 内核还没加载完（not-loaded，
+      // 说明调用时机错了——第一版就是在这里踩的：同步调用时 `engineHostRef` 还是 null）。
+      engineProbe.status = host ? 'unavailable' : 'failed';
+      engineProbe.reason = host ? 'kernel-without-gpu2d' : 'kernel-not-loaded-yet';
+      engineProbePromise = Promise.resolve(finish());
+      return engineProbePromise;
+    }
+    var info = { source: '', note: '' };
+    var target = engineProbeCanvas(info);
+    engineProbe.source = info.source;
+    if (!target) {
+      engineProbe.status = 'failed';
+      engineProbe.reason = 'no-probe-canvas:' + (info.note || 'unknown');
+      engineProbePromise = Promise.resolve(finish());
+      return engineProbePromise;
+    }
+    var collect = function (line) { engineProbe.reports.push(String(line).slice(0, 300)); };
+    engineProbePromise = Promise.resolve()
+      .then(function () { return exportFn(target, collect); })
+      .then(function (summary) {
+        engineProbe.status = 'ok';
+        engineProbe.reason = String(summary || '').slice(0, 300);
+        return engineProbe;
+      })
+      .catch(function (error) {
+        // 失败原因**原样**带出来（wasm 侧是 `probe: …` 具名原因，见 `gpu_host.rs`）：
+        // 现场只靠这一行区分"宿主机不给 WebGL2"与"我们的路径有问题"。
+        engineProbe.status = 'failed';
+        engineProbe.reason = String((error && error.message) || error).slice(0, 300);
+        return engineProbe;
+      })
+      .then(finish);
+    return engineProbePromise;
+  }
+
+  // 给验证侧一个可 await 的入口（harness 在打完自报前会等它落位）。真机不需要它。
+  try { globalThis.__RUSTLUA_ENGINE_PROBE = probeEngineCanvas; } catch (error) { /* 无全局对象 */ }
+
+  // ── 引擎宿主（WP8 主线·第二片）：真的起一个宿主，并按帧驱动它 ────────────────────────
+  // 与探针的分工：探针只回答"能不能起渲染栈"；这里**起一个宿主**并按帧 `engine_host_frame`，
+  // 于是微信侧第一次有"引擎自己在画布上出帧"的能力（清屏 + 呈现，状态按帧回报）。
+  //
+  // 开关默认**关**（`globalThis.__RUSTLUA_ENGINE_HOST === true`，或
+  // `wx.setStorageSync('rustlua_engine_host', 1)`）——它每帧多一次 GPU 提交，属于要显式要求的动作。
+  //
+  // 输入走**同一份** `RLFI` 批量：适配层把运行时的 `lua_input_frame` 包一层，把那一帧的批量
+  // 原样记下来再转给宿主（不发明第二套输入协议）。运行时的调用与 afterFrame 的顺序决定这是
+  // "本帧"还是"上一帧"的输入——诊断用途无所谓，真接模拟时再看这个顺序。
+  var engineHost = {
+    status: 'off', reason: '', source: '', begin: '', frames: 0, steps: 0,
+    presented: 0, failed: 0, clamped: 0, inputApplied: 0, lastState: null,
+    // 定长 ABI（WP7-55）：每帧搬一个 Float64Array，不再每帧 JSON.parse。
+    abi: '', abiVersion: 0, slot: null, out: null,
+    // 宿主是否负责跑 Lua 固定步；以及"老 JS 世界也在跑"的冲突读数。
+    tick: false, tickConflict: false, simSteps: 0, tickFailures: 0, runtimeFixedFrames: 0,
+    // `runtimeRunSteps` 才是"运行时**真的**跑了固定步"的证据：`lua_fixed_frame` 只是每帧问步数
+    // （宿主接管时也照样问），拿它当冲突证据会把"正常"误判成"双步"——WP7-57 修的就是这个。
+    runtimeRunSteps: 0,
+    // 运行时这一局注入过多少次输入批量（= 帧数）：WP7-58 用它钉"输入只有一个所有者"。
+    runtimeInputFrames: 0
+  };
+  // WP7-58：宿主不再接收输入批量（注入归运行时），所以这个"留给宿主的那一份"彻底删掉——
+  // 留着它就是留着第二个所有者。
+  var engineHostPromise = null;
+  var engineHostLastMs = 0;
+  var engineHostMinMs = 0;
+
+  function engineHostEnabled() {
+    try { if (globalThis.__RUSTLUA_ENGINE_HOST === true) return true; } catch (error) { /* 无全局对象 */ }
+    try {
+      if (typeof wx.getStorageSync === 'function') {
+        var stored = wx.getStorageSync('rustlua_engine_host');
+        if (stored === true || stored === 1 || stored === '1') return true;
+      }
+    } catch (error) { /* 存储不可用不影响结论 */ }
+    return false;
+  }
+
+  // 宿主的**第二个**开关：谁跑 Lua 的固定步。默认关，因为老 JS 世界每帧也在跑
+  // （`lua_fixed_frame` + 自己的 update 循环）；两边同时跑就是把世界推进两次。
+  // 打开它 = "引擎宿主拥有整个世界"那条路，接线到生产路径时要连老世界的 tick 一起关。
+  function engineHostTickEnabled() {
+    try { if (globalThis.__RUSTLUA_ENGINE_HOST_TICK === true) return true; } catch (error) { /* 无全局对象 */ }
+    try {
+      if (typeof wx.getStorageSync === 'function') {
+        var stored = wx.getStorageSync('rustlua_engine_host_tick');
+        if (stored === true || stored === 1 || stored === '1') return true;
+      }
+    } catch (error) { /* 存储不可用不影响结论 */ }
+    return false;
+  }
+
+  // 「谁在推进世界」的**唯一**标记：运行时（`web-runtime.js`）每帧读它。
+  // 宿主起不来/降级时必须由这里清掉 —— 否则"宿主死了"会表现成"世界冻住"（脚本还在画，
+  // 但 update 再也不跑），而这类"画面正常、逻辑不动"的故障最难查。
+  function engineHostOwnsTick(on) {
+    try { globalThis.__RUSTLUA_ENGINE_HOST_OWNS_TICK = !!on; } catch (error) { /* 无全局对象 */ }
+    if (!on) {
+      try { globalThis.__RUSTLUA_ENGINE_HOST_STEPS = 0; } catch (error) { /* 无全局对象 */ }
+    }
+  }
+
+  function engineHostFinish() {
+    try { bodyElement.setAttribute('data-rustlua-engine-host', engineHost.status); }
+    catch (error) { /* 属性写不进去不影响结论 */ }
+    log('wechat-adapter: 引擎宿主 status=' + engineHost.status + ' source=' + (engineHost.source || 'none') +
+      ' frames=' + engineHost.frames + ' steps=' + engineHost.steps + ' presented=' + engineHost.presented +
+      (engineHost.reason ? ' reason=' + engineHost.reason : ''));
+    return engineHost;
+  }
+
+  function engineHostStart() {
+    if (engineHostPromise) return engineHostPromise;
+    if (!engineHostEnabled()) {
+      engineHost.status = 'off';
+      engineHost.reason = 'switch-off';
+      engineHostPromise = Promise.resolve(engineHostFinish());
+      return engineHostPromise;
+    }
+    var host = engineHostRef;
+    var exportFn = (host && typeof host.engine_host_begin === 'function') ? host.engine_host_begin : null;
+    if (!exportFn) {
+      engineHost.status = host ? 'unavailable' : 'failed';
+      engineHost.reason = host ? 'kernel-without-gpu2d' : 'kernel-not-loaded-yet';
+      engineHostPromise = Promise.resolve(engineHostFinish());
+      return engineHostPromise;
+    }
+    var info = { source: '', note: '' };
+    // 宿主画布按**上屏尺寸**开（它要负责整屏呈现），而不是探针那种 16×16 的连通性画布。
+    var width = Math.max(1, Math.round(screenWidth * (pixelRatio || 1)));
+    var height = Math.max(1, Math.round(screenHeight * (pixelRatio || 1)));
+    var target = dedicatedGpuCanvas(info, width, height);
+    engineHost.source = info.source;
+    if (!target) {
+      engineHost.status = 'failed';
+      engineHost.reason = 'no-host-canvas:' + (info.note || 'unknown');
+      engineHostPromise = Promise.resolve(engineHostFinish());
+      return engineHostPromise;
+    }
+    var tickWanted = engineHostTickEnabled();
+    var options = JSON.stringify({
+      updates_per_second: 60,
+      max_catch_up_steps: 8,
+      max_frame_seconds: 0.25,
+      canvas_width: width,
+      canvas_height: height,
+      // `tick: 'lua'` = 由宿主推进 Lua 固定步。老 JS 世界每帧也在跑，两边同时跑 =
+      // 世界推进两次 ⇒ 只有显式打开第二个开关才走这条路，并打一行警告。
+      tick: tickWanted ? 'lua' : 'none'
+    });
+    if (tickWanted) {
+      log('wechat-adapter: 引擎宿主将接管固定步（tick=lua）——运行时会因此停掉自己的固定步；'
+        + '若宿主起不来，这个标记会被清掉（世界不会冻住）');
+    }
+    // 先按"没接管"起：只有 begin **成功**之后才把这个标记交给宿主。中途任何失败路径
+    // （画布、设备、管线）都不需要各自记着清标记——它们本来就没设置过。
+    engineHostOwnsTick(false);
+    var report = function (line) { log('wechat-adapter: 引擎宿主 ' + String(line).slice(0, 300)); };
+    engineHostPromise = Promise.resolve()
+      .then(function () { return exportFn(target, options, report); })
+      .then(function (summary) {
+        engineHost.status = 'running';
+        engineHost.begin = String(summary || '').slice(0, 400);
+        engineHost.tick = tickWanted;
+        // 到这里宿主**真的起来了**（设备、管线、布局都拿到了）：如果它是来接固定步的，
+        // 现在才把"世界由它推进"的标记交给它。放在 `.catch` **之前**，所以后面任何失败都会走
+        // 下面的降级路径清掉标记。
+        if (tickWanted) engineHostOwnsTick(true);
+        engineHostLastMs = Date.now();
+        engineHostMinMs = engineHostLastMs;
+        // 定长 ABI 的布局由 wasm 给（`engine_host_frame_layout_json`）：偏移只有这一份来源，
+        // 适配层不再自己维护字段表——两边各写一份就是"字段错位但都看着正常"的老路。
+        return engineHostFrameAbi();
+      })
+      .catch(function (error) {
+        engineHost.status = 'failed';
+        engineHost.reason = String((error && error.message) || error).slice(0, 300);
+        // 宿主没了 ⇒ 标记必须还回去，否则世界会冻在"脚本还在画、update 不再跑"的状态。
+        engineHostOwnsTick(false);
+        return engineHost;
+      })
+      .then(engineHostFinish);
+    return engineHostPromise;
+  }
+
+  // 取一次布局并建"槽位名 → 下标"的表；拿不到就具名失败（不退回 JSON：同一份产物里
+  // 两个入口同时存在，退回等于把"版本不匹配"藏起来）。
+  function engineHostFrameAbi() {
+    var host = engineHostRef;
+    if (!host || typeof host.engine_host_frame_layout_json !== 'function' ||
+      typeof host.engine_host_frame_into !== 'function') {
+      engineHost.status = 'failed';
+      engineHost.reason = 'host: frame-abi-missing（wasm 侧没有定长帧 ABI：engine_host_frame_layout_json / engine_host_frame_into）';
+      return engineHost;
+    }
+    var layout;
+    try {
+      layout = JSON.parse(host.engine_host_frame_layout_json());
+    } catch (error) {
+      engineHost.status = 'failed';
+      engineHost.reason = 'host: frame-abi-json: ' + String((error && error.message) || error).slice(0, 200);
+      return engineHost;
+    }
+    var slot = {};
+    for (var i = 0; i < layout.slots.length; i++) slot[layout.slots[i]] = i;
+    if (!(layout.len > 0) || layout.slots.length !== layout.len) {
+      engineHost.status = 'failed';
+      engineHost.reason = 'host: frame-abi-shape: len=' + layout.len + ' slots=' + layout.slots.length;
+      return engineHost;
+    }
+    engineHost.slot = slot;
+    engineHost.out = new Float64Array(layout.len);
+    engineHost.abi = String(layout.abi || '');
+    engineHost.abiVersion = Number(layout.version) || 0;
+    return engineHost;
+  }
+
+  // 每帧驱动宿主。**任何异常都必须降级成 failed 并停帧**：这是诊断通道，不许把游戏主循环掀翻。
+  function engineHostDriveFrame() {
+    if (engineHost.status !== 'running') return;
+    var host = engineHostRef;
+    if (!host || typeof host.engine_host_frame_into !== 'function' || !engineHost.slot) return;
+    var now = Date.now();
+    var dtMs = Math.max(0, now - engineHostLastMs);
+    engineHostLastMs = now;
+    // 输入批量**不转交**：注入归运行时（WP7-58），宿主只推进固定步。传 undefined 让宿主如实
+    // 报"没注入过"——定长 ABI 里的 `input_applied` 恒为 0，这就是"宿主不是第二个注入者"的证据。
+    // 「一个世界只能有一个 tick」：宿主接管固定步之后，运行时**不许**再跑固定步。
+    // 证据必须是"真的跑了"（`runtimeRunSteps`），不是"问了步数"——`lua_fixed_frame` 每帧都会问
+    // （宿主接管时也照样问，才能拿到丢帧读数），拿它当证据会把正常态误判成双步（WP7-57 修的）。
+    // 一旦真的同时跑：判 failed + 把标记还给运行时（宁可回到"老世界单跑"，也不要双步或冻住）。
+    if (engineHost.tick && engineHost.runtimeRunSteps > 0) {
+      engineHost.tickConflict = true;
+      engineHost.status = 'failed';
+      engineHost.reason = 'host: tick-conflict: 运行时与宿主同时推进世界（runtime_run_steps=' +
+        engineHost.runtimeRunSteps + '）';
+      engineHostOwnsTick(false);
+      engineHostFinish();
+      return;
+    }
+    try {
+      var written = host.engine_host_frame_into(dtMs, undefined, engineHost.out);
+      if (written !== engineHost.out.length) {
+        throw new Error('宿主帧 ABI 长度不符：写入 ' + written + '，布局 ' + engineHost.out.length);
+      }
+      var at = engineHost.slot;
+      var out = engineHost.out;
+      engineHost.frames += 1;
+      engineHost.steps += out[at.steps];
+      engineHost.presented = out[at.presented_total];
+      engineHost.failed = out[at.failed_presents];
+      engineHost.inputApplied = out[at.input_applied];
+      engineHost.simSteps = out[at.tick_steps_total];
+      engineHost.tickFailures = out[at.tick_failures];
+      if (out[at.clamped] === 1) engineHost.clamped += 1;
+      // 宿主刚推进了几步：运行时的**帧级**阶段（相机抖动、`__rustlua_dt`、动画积分）要按它来，
+      // 否则那些"每帧一次"的量会因为运行时自己的 steps=0 而停摆。
+      if (engineHost.tick) {
+        try { globalThis.__RUSTLUA_ENGINE_HOST_STEPS = out[at.steps]; } catch (error) { /* 无全局对象 */ }
+      }
+      // 只留一小撮字段供 diag 用（不再是整份 JSON）。
+      engineHost.lastState = {
+        frame_index: out[at.frame_index],
+        steps: out[at.steps],
+        delta_ms: out[at.delta_ms],
+        accumulated_ms: out[at.accumulated_ms],
+        dropped_total: out[at.dropped_total],
+        tick_steps_total: out[at.tick_steps_total]
+      };
+    } catch (error) {
+      engineHost.status = 'failed';
+      engineHost.reason = String((error && error.message) || error).slice(0, 300);
+      // 降级 ⇒ 把 tick 还给运行时（否则世界会冻住：脚本照画，update 不再跑）。
+      engineHostOwnsTick(false);
+      engineHostFinish();
+    }
+  }
+
+  // 给验证侧一个可 await 的入口（harness 打完自报前会等它落位）。真机不需要它。
+  // **入口名必须与开关名不同**：第一版这里复用了 `__RUSTLUA_ENGINE_HOST`（开关名），
+  // 于是模块加载时这句赋值把 harness 置的 `true` 覆盖成了函数 ⇒ `=== true` 恒假 ⇒
+  // 开关永远读成 `switch-off`。两个开关一起开的差分实验一眼劈开了这个现象：同一进程里
+  // 探针 `unavailable`、宿主 `switch-off`。探针当初用两个名字（`__RUSTLUA_GPU_PROBE` 开关 /
+  // `__RUSTLUA_ENGINE_PROBE` 入口）是对的，这里照抄那个命名纪律。
+  try { globalThis.__RUSTLUA_ENGINE_HOST_READY = engineHostStart; } catch (error) { /* 无全局对象 */ }
+
+  function probeGlCapability() {
+    if (glCapability) return glCapability;
+    var info = {
+      probed: false, source: '', webgl2: false, webgl: false,
+      main_canvas_skipped: false, note: '', limits: null
+    };
+    // 先落位：diagSnapshot 会被多处调用，探测只做一次（也顺手挡住递归）。
+    glCapability = info;
+    var tryContext = function (kind) {
+      var target = glProbeCanvas(info);
+      if (!target) return null;
+      try { return target.getContext(kind) || null; } catch (error) { return null; }
+    };
+    var gl2 = tryContext('webgl2');
+    if (gl2) {
+      info.probed = true;
+      info.webgl2 = true;
+      info.limits = glLimits(gl2);
+    } else {
+      var gl1 = tryContext('webgl');
+      if (gl1) {
+        info.probed = true;
+        info.webgl = true;
+        info.limits = glLimits(gl1);
+      }
+    }
+    return info;
+  }
+
   // 画布跟随窗口**物理**尺寸（CSS 逻辑 × dpr）：微信把画布 fill 铺满窗口，画布若与窗口
   // 比例不一致就会被**非等比拉伸**（开发者工具预览 1380×652 下横 1.08×、纵 0.91×，
   // 画面拉伸 + 字体发糊的直接根因）。渲染端（web-runtime.js drawScene）把 1280×720
@@ -1507,6 +2156,42 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       canvas_style: (canvas.style && canvas.style.width) ? (canvas.style.width + 'x' + canvas.style.height) : 'none',
       screen: screenWidth + 'x' + screenHeight + '@' + pixelRatio,
       ctx: ctxKind,
+      // 微信侧 GL 能力（WP8 的设备验证仪器）：`probed=false` 且 `note=probe-canvas-is-main`
+      // 表示"宿主只肯给已经用作 2d 的那张画布"，此时**故意不探测**——一张画布只能有一个上下文。
+      gl: probeGlCapability(),
+      // 引擎侧画布探针（WP8 第二片）：`off` = 开关没开；`unavailable` = 内核没编进 GPU 路径；
+      // `ok`/`failed` = 真的问过引擎（`failed` 里带 wasm 侧的具名原因）。默认关 ⇒ 生产读数恒为 `off`。
+      engine_probe: {
+        status: engineProbe.status,
+        source: engineProbe.source || 'none',
+        reason: engineProbe.reason || '',
+        reports: engineProbe.reports.slice(0, 4)
+      },
+      // 引擎宿主（WP8 主线第二片）：与探针分开报——探针回答"能不能起渲染栈"，宿主回答
+      // "起来之后每帧真的出了多少帧/走了多少固定步"。`running` 才有 frames/presented 的增量。
+      engine_host: {
+        status: engineHost.status,
+        source: engineHost.source || 'none',
+        reason: engineHost.reason || '',
+        begin: engineHost.begin || '',
+        frames: engineHost.frames,
+        steps: engineHost.steps,
+        presented: engineHost.presented,
+        failed_presents: engineHost.failed,
+        clamped_frames: engineHost.clamped,
+        input_applied: engineHost.inputApplied,
+        // WP7-55：定长帧 ABI + "谁在跑固定步"。
+        abi: engineHost.abi || 'none',
+        abi_version: engineHost.abiVersion,
+        tick: engineHost.tick ? 'lua' : 'none',
+        tick_conflict: engineHost.tickConflict,
+        sim_steps: engineHost.simSteps,
+        tick_failures: engineHost.tickFailures,
+        runtime_fixed_frames: engineHost.runtimeFixedFrames,
+        runtime_run_steps: engineHost.runtimeRunSteps,
+        runtime_input_frames: engineHost.runtimeInputFrames,
+        last_state: engineHost.lastState || null
+      },
       pixel_probe: pixelProbeValue,
       frames: frameCount,
       version: ADAPTER_VERSION,
@@ -1558,6 +2243,9 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       // 画布 vs 工程声明尺寸（横版方案A）：agree=false 就是"版面会溢出画布"。
       view_agreement: viewAgreement,
       read_strategy: preferredStrategy.pack || '(未探明)',
+      // 宿主 FS 的路由包装状态：hits=0 而产物是分包形态 ⇒ 说明这次启动没有任何读者走路由
+      // （首屏读取全靠适配层自己的通道，或者清单没读到），与 `layout.entries` 一起看。
+      fs_route: fsRouteInfo(),
       remote: remoteConfig ? (remoteConfig.packBaseUrl + ' remote=' + stats.remote + ' failed=' + stats.remoteFailed) : 'off',
       image_samples: (stats.imageFailureSamples || []).slice(0, 4),
       // 发布形态（主包 / 分包）、首屏清单规模、以及有多少次读取真的走了主包 mainpack/。
@@ -1777,6 +2465,13 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 每帧回调之后调用：先计数（永远），再按需覆盖层/警示条。
   function afterFrame() {
     frameCount += 1;
+    // 引擎宿主每帧驱动。**必须在下面的提前 return 之前**：那段"没什么要画就 return"是
+    // 覆盖层/警示条的逻辑，与宿主出帧无关（宿主关了就是空操作）。
+    if (engineHost.status === 'running') engineHostDriveFrame();
+    // 需要改写 Image.src 却改不动时，每帧重申 failed：`data-rustlua-boot` 的权威读者是**宿主 body**
+    // （见 bootAttr 的取值顺序），运行时会在启动过程中往同一个元素写 running，
+    // 只在标记那一刻写一次会被后写的盖掉（实测：写完仍读到 boot=running）。
+    if (srcRewriteFatalMessage) restampSrcRewriteFatal();
     var needOverlay = debugOverlayEnabled;
     var imageFailures = (assetStats.imageFailed || 0) + (assetStats.imageMissing || 0);
     var needPackUi = packState === 'loading' || packState === 'failed';
@@ -2486,6 +3181,47 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     return 'wechat-adapter: ' + prefix + '，' + tail;
   }
 
+  // 需要改写 src 却改不动的**收尾**：光抛不够。这个 throw 落进运行时 `new Image()` 的
+  // **Promise 执行器**里，异常被吞掉后屏幕上只是"少一批贴图"，而 `data-rustlua-boot` 仍是 running
+  // ——失败看起来像成功（实测：harness 的冻结用例正是这样判它"静默丢图"）。
+  // 所以走与启动失败同一套证据：console.error（harness 与真机日志面板都认这一档）
+  // + `data-rustlua-boot=failed`（诊断/回归门读的就是它）+ 错误页 + 像素探针。
+  // **写标记必须写宿主那个元素**：`bootAttr()` 的取值顺序是"宿主 body/documentElement → 内部 stub"，
+  // 只写 stub 会被运行时的 running 盖掉（实测：写完仍读到 boot=running）。
+  var srcRewriteFatalMessage = '';
+
+  function writeBootMark(name, value) {
+    var targets = [];
+    try {
+      var host = documentTarget && (documentTarget.body || documentTarget.documentElement);
+      if (host && typeof host.setAttribute === 'function') targets.push(host);
+    } catch (e) { /* 宿主 document 形态不可预期 */ }
+    if (bodyElement && typeof bodyElement.setAttribute === 'function') targets.push(bodyElement);
+    for (var i = 0; i < targets.length; i++) {
+      try { targets[i].setAttribute(name, String(value)); } catch (error) { /* 逐个尝试，写不进去就算了 */ }
+    }
+  }
+
+  function restampSrcRewriteFatal() {
+    if (!srcRewriteFatalMessage) return;
+    try {
+      writeBootMark('data-rustlua-boot', 'failed');
+      writeBootMark('data-rustlua-boot-detail', srcRewriteFatalMessage.slice(0, 400));
+    } catch (error) { /* 重申标记失败绝不能影响帧循环 */ }
+  }
+
+  function markSrcRewriteFatal(message) {
+    logError(message);
+    srcRewriteFatalMessage = String(message);
+    restampSrcRewriteFatal();
+    try {
+      showBootError(message);
+      drawStartupProbe();
+    } catch (overlayError) {
+      // 覆盖层/错误页失败绝不能再抛一次：那会把真正的失败原因顶掉。
+    }
+  }
+
   function patchImageSrc(image) {
     if (!image) return image;
     // 计数与 src 接管互不依赖：先装计数，任何一条路径都不会漏掉"贴图到底成没成"。
@@ -2495,7 +3231,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       // 接管不了的两种后果完全不同：包内完整的包照常能加载（宿主自己读 pack/），
       // 需要改写 src 的形态则必然静默丢图甚至卡在启动上——那种情况必须响亮失败（README §已知边界）。
       if (requiresSrcRewrite()) {
-        throw new Error(srcRewriteErrorMessage('无法把 Image.src 交给宿主（own/原型访问器与 setSrc 都没有）'));
+        // 消息里必须带"不允许改写 Image.src"这一串（harness 的冻结用例靠它判定"响亮"）。
+        var noWriterMessage = srcRewriteErrorMessage('不允许改写 Image.src：宿主既没有可写的 src 访问器，也没有 setSrc');
+        markSrcRewriteFatal(noWriterMessage);
+        throw new Error(noWriterMessage);
       }
       warn('wechat-adapter: 无法接管 Image.src（宿主既没有可写的 src 访问器，也没有 setSrc），按原样交给宿主');
       return image;
@@ -2569,7 +3308,9 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       // （本机的无头 harness 就因为"直接从磁盘读文件"而长期把这种缺失测成绿色）。
       // 包内完整的包（full 形态）不依赖改写，只告警即可，不能因此让游戏起不来。
       if (requiresSrcRewrite()) {
-        throw new Error(srcRewriteErrorMessage('宿主不允许改写 Image.src（' + hostError(error) + '）'));
+        var srcBlockedMessage = srcRewriteErrorMessage('宿主不允许改写 Image.src（' + hostError(error) + '）');
+        markSrcRewriteFatal(srcBlockedMessage);
+        throw new Error(srcBlockedMessage);
       }
       warn('wechat-adapter: 无法改写 Image.src 的路径形式 -> ' + hostError(error));
     }
@@ -2777,6 +3518,16 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     // "面板溢出画布"（边缘控件看不见），而这在无头验证里**不会报错**
     // （假 ctx 不裁剪、超界坐标照样计数）→ 只能靠这一行把它变成可读的证据。
     reportViewAgreement();
+    // 引擎侧画布探针：只在显式要求时跑（默认关），且**不 await**——它要建 wgpu 栈，不该拖住启动。
+    // **必须挂在 `wasmReady` 之后**：`engineHostRef` 是 `attachWasmBridge` 里存的，而这一步在
+    // 内核实例化 Promise 内部；在这里同步调用会让探针拿到 null 宿主、把 gpu2d 内核误报成
+    // `unavailable`（第一版就是这么错的，靠 `kernel-not-loaded-yet` 这个新状态暴露出来）。
+    wasmReady.then(function () {
+      try { probeEngineCanvas(); } catch (error) { /* 探针自身绝不掀翻启动 */ }
+      // 引擎宿主：同样挂在 `wasmReady` 之后（要 `engineHostRef`），同样**不 await**——
+      // 建 wgpu 栈不该拖住启动；`running` 之后由 afterFrame 每帧驱动。
+      try { engineHostStart(); } catch (error) { /* 宿主自身绝不掀翻启动 */ }
+    });
     // 分包载入。**内核在分包里时上面已经 await 过同一条 Promise**（这里只是补状态标记，
     // ensurePack 内部共享同一个 packReady，不会重复下载）；内核在主包时这才是"后台下载"：
     // 首屏资源全在主包里，boot 不等它，分包只影响"进玩法场景"那一步
@@ -3041,6 +3792,9 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     //（pack/ 明文，vfs provider 原样交给引擎 pack::decode）。
     // 导出缺失时保持"未就绪"状态（boot 会如实报错），不参与 success 判定。
     if (!result.host) { wasmState.luaBridge = 'no-glue-export'; wasmState.hostApi = 'no-glue-export'; return; }
+    // 引擎侧画布探针要用同一个胶水对象上的 `probe_canvas_host`（只在 `gpu2d` 档存在）。
+    // 存引用而不是现在就探测：探测是显式开关驱动的动作，且不该拖住启动。
+    engineHostRef = result.host;
     try {
       // wasm 侧 vfs 的路径形如 `/project/scripts/main.lua`；适配层 readText 只认
       // `pack/` 前缀的逻辑路径（readSubjects 据此路由到 mainpack/ 首屏清单 + 改名表
@@ -3057,12 +3811,48 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         // 却忘了加到这里，运行时就会拿到 undefined——真机上是"启动即失败"，
         // 而报错原文只有一句 is not a function。见 plugins/webgl/index.html 同一份门面。
         lua_set_number: result.host.lua_set_number,
+        // WP7-79：**批量数值**（一次跨界写多个全局，相机三元组每帧走这里）。
+        // 门面是显式白名单 ⇒ 这里少一行，运行时就会拿到 undefined（真机上是"启动即失败"）。
+        lua_set_numbers: result.host.lua_set_numbers,
         // 每帧输入批量线格式（`RLFI`）：取代"每帧拼一段 Lua 源码再编译"。
         // 与 webgl 那份门面必须同步（同一份 web-runtime.js 跑在两个平台上，
         // 少一项就是"这个平台启动即失败"）。
-        lua_input_frame: result.host.lua_input_frame,
+        // WP7-58：**输入注入的唯一所有者是运行时**（设备层在它那边），所以这里只记账、
+        // **不**再转交给宿主。转交等于给同一批输入造第二个所有者：宿主接管固定步时，
+        // 同一帧输入会被注入两次（各自看着都正常，只有手感不对）；而"运行时跳过 + 宿主也没拿到"
+        // 的组合更糟——第 88 轮就留下了那个 bug（`hostTick` 时整段跳过 ⇒ 宿主拿到 undefined
+        // ⇒ 整局对按键没反应）。这批计数就是门用来钉"注入恰好来自一处"的证据。
+        lua_input_frame: function (bytes) {
+          engineHost.runtimeInputFrames += 1;
+          return result.host.lua_input_frame(bytes);
+        },
         input_frame_layout_json: result.host.input_frame_layout_json,
         lua_call_global: result.host.lua_call_global,
+        // WP7-13：固定步时钟的权威在宿主 wasm（`lua_bridge.rs`，内部是
+        // `rustlua_infra::FrameClock`——与引擎宿主同一个策略模块）。JS 每帧只问"这一帧跑几步"，
+        // 不再自持累积器——两个平台的追帧/丢帧口径因此不可能漂移。
+        // 这里**包一层**只为一个读数：宿主接管固定步之后老世界还在跑的话，世界会被推进两次，
+        // 而"两边各自都正常"的读数完全看不出这件事（见 engineHost.tickConflict）。
+        lua_fixed_frame: function (elapsedSeconds) {
+          engineHost.runtimeFixedFrames += 1;
+          return result.host.lua_fixed_frame(elapsedSeconds);
+        },
+        // WP7-56：固定步的**执行**（虚拟键 → `__rustlua_dt` → `update()`）只有 wasm 一份实现，
+        // 运行时的固定步阶段直接调它。桥白名单是**逐个列名**的，所以 wasm 侧每多一个运行时依赖的
+        // 导出，这里与 `plugins/webgl/index.html` 的名单都必须同步——漏一个的表现是
+        // `data-rustlua-boot=failed` + 一行"wasm 缺 lua_fixed_run_steps 导出"（具名，好定位；
+        // 这正是第 87 轮踩到的那次）。
+        // WP7-57：包一层计数——**这个**才是"运行时真的推进了世界"的证据（`lua_fixed_frame` 只是
+        // 每帧问步数）。宿主接管固定步时这里若还被调用，就是双步 ⇒ 判 failed 并把 tick 还回去。
+        lua_fixed_run_steps: function (steps, deltaSeconds) {
+          engineHost.runtimeRunSteps += 1;
+          return result.host.lua_fixed_run_steps(steps, deltaSeconds);
+        },
+        lua_fixed_steps_dropped: result.host.lua_fixed_steps_dropped,
+        lua_fixed_accumulator_seconds: result.host.lua_fixed_accumulator_seconds,
+        lua_fixed_reset_clock: result.host.lua_fixed_reset_clock,
+    // WP7-30：JS 宿主问引擎要"这个名字对应的引擎句柄"（两个 id 空间的换算口）。
+    lua_entity_handle: result.host.lua_entity_handle,
         // 无参无返回的全局钩子（每步的虚拟键注入 / 边沿清理）：取代
         // `doString("__rustlua_apply_virtual_input()")` 那种"为调无参函数而编译源码"的写法。
         lua_call_global_void: result.host.lua_call_global_void,
@@ -3136,6 +3926,11 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     },
     readStrategy: function () { return preferredStrategy.pack; },
     readStrategies: function () { return { main: preferredStrategy.main, pack: preferredStrategy.pack }; },
+    // 宿主 FS 路由包装的状态与命中数（无头验证拿它证明"这次启动真的走了路由"，而不是只看门是否变绿）。
+    fsRouteInfo: fsRouteInfo,
+    // 微信侧 GL 能力（webgl2 / webgl / 上限）：WP8 要在微信上接引擎渲染器，先得知道宿主给不给
+    // WebGL2。真机/开发者工具里执行 `__RustLuaWechat.glCapability()` 即可拿到同一份读数。
+    glCapability: probeGlCapability,
     // 渲染自证：开发者工具控制台里可直接 `__RUSTLUA_DIAG()` 复制一份现场快照
     // （主画布来源、像素回读、帧数、贴图成败、远端状态、wasm 核心状态）。
     diag: diagSnapshot,
@@ -3165,6 +3960,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     // 供自动化测试判定启动结果（plugins/wechat-minigame/README.md §验证）
     isBootOk: function () { return bootAttr('data-rustlua-boot') === 'ok'; }
   };
+  // 路由包装必须早于**任何**读者：`game.js` 的顺序是 adapter → web-runtime.js → adapter.start()，
+  // 而 web-runtime.js 自己在启动期就会直接问 wx 要 `pack/manifest.txt`。在这里装，正好在
+  // `start()` 之前、也在模块加载完的同一拍里。
+  var fsRouted = installFsRouting();
   g.__RustLuaWechat = api;
   // 开发者工具控制台可直接调用：`__RUSTLUA_DIAG()` / `__RustLuaWechat.canvasInfo()`。
   g.__RUSTLUA_DIAG = diagSnapshot;
@@ -3182,7 +3981,8 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   } catch (e) { wxBridge = 'fail:' + hostError(e); }
   // 这一行是"现场跑的到底是哪一版适配层"的唯一凭据：代码包会被开发者工具缓存，
   // 光看"有没有报错"分不清旧包新包（实测踩过）。控制台搜 `适配层已就绪` 即可确认版本。
-  log('wechat-adapter: 适配层已就绪 v' + ADAPTER_VERSION + '（__RustLuaWechat / __RUSTLUA_DIAG 已注册；wx 通道=' + wxBridge + '）');
+  log('wechat-adapter: 适配层已就绪 v' + ADAPTER_VERSION + '（__RustLuaWechat / __RUSTLUA_DIAG 已注册；wx 通道=' + wxBridge +
+    '；宿主 FS 路由=' + (fsRouted ? 'on' : 'off') + '）');
   publishDiag();
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })();

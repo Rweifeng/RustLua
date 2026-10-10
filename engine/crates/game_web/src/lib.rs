@@ -24,6 +24,12 @@ mod gpu_host;
 #[cfg(all(target_arch = "wasm32", feature = "gpu2d"))]
 mod rust_scene;
 
+/// WP8 引擎宿主骨架：调用方把**自己的**画布递进来，wasm 侧建 surface/device 并按
+/// `rustlua_infra::frame_clock` 的固定步长策略逐步 + 呈现（微信没有 document/window，
+/// 这条通道不碰任何浏览器构造器）。与 `gpu_host` 一样只在 `gpu2d` 档存在。
+#[cfg(all(target_arch = "wasm32", feature = "gpu2d"))]
+mod host_runtime;
+
 /// 平台音频出口：wasm 上没有可读文件系统也没有音频设备，播放交给浏览器/微信的
 /// "用 URL 播放"通道（浏览器 `HTMLAudioElement`、微信 `InnerAudioContext`）。
 #[cfg(target_arch = "wasm32")]

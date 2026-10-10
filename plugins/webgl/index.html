@@ -50,7 +50,7 @@
   </script>
   <script src="./web-runtime.js"></script>
   <script type="module">
-    import init, { start, lua_boot, lua_do_string, lua_set_number, lua_input_frame, input_frame_layout_json, lua_call_global, lua_call_global_void, lua_register_js_callback, lua_missing_globals, lua_execute_main, lua_api_surface_json, host_api_module_names_json } from './pkg/game_web.js';
+    import init, { start, lua_boot, lua_do_string, lua_set_number, lua_set_numbers, lua_input_frame, input_frame_layout_json, lua_call_global, lua_call_global_void, lua_register_js_callback, lua_missing_globals, lua_execute_main, lua_api_surface_json, host_api_module_names_json, lua_fixed_frame, lua_fixed_run_steps, lua_fixed_steps_dropped, lua_fixed_accumulator_seconds, lua_fixed_reset_clock, lua_entity_handle } from './pkg/game_web.js';
     const publishName = __PUBLISH_NAME_JSON__;
     const status = document.getElementById('status');
     const markBoot = (state, detail) => {
@@ -123,12 +123,50 @@
         // `lua_call_global_void`：**无参无返回**的全局钩子（每步的虚拟键/边沿清理）用，
         // 取代 `doString("__rustlua_apply_virtual_input()")` 那种"为调一个无参函数而编译源码"。
         window.__RUSTLUA_LUA_BRIDGE = {
-          lua_boot, lua_do_string, lua_set_number, lua_call_global, lua_call_global_void,
+          lua_boot, lua_do_string, lua_set_number, lua_set_numbers, lua_call_global, lua_call_global_void,
           lua_input_frame, input_frame_layout_json,
           lua_register_js_callback, lua_missing_globals, lua_execute_main,
-          lua_api_surface_json, host_api_module_names_json
+          lua_api_surface_json, host_api_module_names_json,
+          // WP7-13：固定步时钟的权威在宿主 wasm（`rustlua_infra::frame_clock::FrameClock`）。
+          // 与 plugins/wechat-minigame/wechat-adapter.js 的同一份门面**必须同步**：
+          // 少一项在真机上的表现就是"这个平台启动即失败"。
+          // WP7-56：`lua_fixed_run_steps` 是固定步的**执行**（虚拟键 → `__rustlua_dt` → `update()`，
+          // 首个固定步后吃一次性边沿）——顺序只有 wasm 一份实现，运行时的固定步阶段直接调它。
+          lua_fixed_frame, lua_fixed_run_steps, lua_fixed_steps_dropped, lua_fixed_accumulator_seconds, lua_fixed_reset_clock,
+      // WP7-30：JS 宿主问引擎要"这个名字对应的引擎句柄"。JS 世界用 .scene 的作者 id 当实体 id，
+      // 而引擎按 index<<32|generation 解包，两个空间必须在这里换算（否则 quad/mesh/light/world_text
+      // 会拿到无效句柄：实测作者 id 13 ⇒ EntityId(0:g13)）。
+      lua_entity_handle
         };
-        await window.rustluaRunLuaGame(status);
+        // ---- M73-00 WP7-13：旧 JS 世界**默认不再**作为第二宿主启动 ----
+        // `start()` 已经让引擎独占这一帧：引擎自带 Lua 状态、自己的定步长循环
+        // （`RuntimeScene::run_script_steps`）与 GPU 呈现。而 `web-runtime.js` 那套是
+        // **另一套完整的宿主**：自建第二个 Lua 状态、自己在 JS 里 parse 场景、自己一个
+        // 60 Hz 追帧循环、自己画到同一张 2D canvas。两者在同一份产物里并行 ⇒ 每帧双份
+        // 模拟 + 双份绘制。
+        //
+        // 实测证据（第 48 轮，同一产物）：不 stub 时 `-DriveJhyt` 能跑出
+        // `phase=nav-exit timeout phase=nav-exit frames=901 world=manor …` 这种明细，
+        // 而那段文字**只由 `web-runtime.js` 写**（`jhytFail`/`markDrive`）⇒ 旧世界确实活着；
+        // 同时 `-StubJsRuntime`（整个 JS 世界不启动）产出的画面与不 stub 时**逐字节相同**
+        // ⇒ 玩家看到的一直是引擎的画面，JS 世界那份是纯冗余。
+        //
+        // 迁移期保留显式开关：URL `?rustlua-js-host=1`（或启动前 `window.__RUSTLUA_JS_HOST = true`）
+        // 仍然启动旧世界——`-Drive` / `-DriveJhyt` 两条 JS 侧验收通道现在要带这个开关。
+        const jsHostRequested = (() => {
+          try {
+            if (window.__RUSTLUA_JS_HOST === true) return true;
+            const flag = new URLSearchParams(window.location.search).get('rustlua-js-host');
+            return flag === '1' || flag === 'true';
+          } catch (error) {
+            return false;
+          }
+        })();
+        if (jsHostRequested && typeof window.rustluaRunLuaGame === 'function') {
+          await window.rustluaRunLuaGame(status);
+        } else {
+          console.log('[host] legacy JS world skipped (engine host owns the frame)');
+        }
         // 启动成功后收起这行加载文案：留着就是盖在游戏画面左上的一条调试字。
         // 失败分支不动（那时它是玩家唯一能看到的报错出口）。
         if (window.__RUSTLUA_DEBUG) status.textContent = publishName + ' - Lua running (mlua-wasm)';

@@ -21,8 +21,29 @@ use rustlua_input::input::Binding;
 use rustlua_input::input::KeyCode;
 use std::cell::RefCell;
 use std::fs;
+use std::path::Path;
 use std::rc::Rc;
 // WP11-USE:END
+
+/// 读工程设置文本（`project.toml` 的 `[input]` 段）：**读路径一律经 `rustlua_infra::vfs`**，
+/// 与 `require::read_project_script` 同一条路，并顺带做发布包解码（明文原样返回）。
+///
+/// 为什么不能直接 `std::fs::read_to_string`：wasm 上 `std::fs` 恒为 `ENOSYS`
+/// （`operation not supported on this platform`）⇒ 设置读不到 ⇒ **项目自定义动作绑定整表丢失**
+/// （只剩默认绑定），游戏里的键位映射在浏览器/小游戏里静默失效。实测（WP7-11）：
+/// `[input] /project/project.toml: read failed: operation not supported on this platform`
+/// 之后 `input.action_pressed("quest")` 恒假，而 `ui/quest_ui.lua` 的 `M.open()` 会无条件
+/// `state.set_mode("Quest")`——即"按键按了、游戏没反应"。
+///
+/// 桌面语义不变：没有装 provider 时 [`rustlua_infra::vfs::read`] 自己回落 `std::fs`，
+/// 文件不存在仍是 `NotFound`（调用方的"首次运行"分支照旧）。
+///
+/// `pub(super)`：同级的 `audio` 也要读同一个 `project.toml`（`[audio]` 段），
+/// 用同一把尺子比各写一份更难写错（第 47 轮）。
+pub(super) fn read_settings_text(path: &Path) -> std::io::Result<String> {
+    let bytes = rustlua_infra::vfs::read_resource(path)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
 
 pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
     let input = lua.create_table()?;
@@ -322,7 +343,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             let Some(path) = resolved else {
                 return Ok((false, "no_project_root".to_owned()));
             };
-            let existing = match fs::read_to_string(&path) {
+            let existing = match read_settings_text(&path) {
                 Ok(text) => text,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     // 文件不存在：保留当前绑定（不是错误），返回 false + "missing"
@@ -418,7 +439,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             let Some(path) = resolved else {
                 return Ok(None);
             };
-            let nav = match fs::read_to_string(&path) {
+            let nav = match read_settings_text(&path) {
                 Ok(text) => rustlua_gameplay::settings::parse_nav_section(&text),
                 // 文件缺失/不可读 → 默认手感（首次运行的正常路径）。
                 Err(_) => NavSettings::DEFAULT,

@@ -878,6 +878,28 @@ impl LuaRuntime {
             .collect()
     }
 
+    /// 「名字 → **引擎句柄**」，按 Lua 侧编码（`index << 32 | generation`）返回；查不到或那个
+    /// 名字指向的实体已经不在世 ⇒ `None`。
+    ///
+    /// 存在的理由：webgl/微信的 JS 宿主有自己的一套 Lua 世界（`web-runtime.js` 的 `entity` 表覆盖了
+    /// 引擎的同名 API），它用 **`.scene` 文件里的作者 id** 当实体 id。于是同一份工程里出现两个 id 空间，
+    /// 一旦某个 API 没被 JS 宿主覆盖（`quad` 就是），作者 id 就会以**引擎句柄**的身份被解包：
+    /// 第 60 轮实测到 `entity\t13\tScaleBar` 的作者 id `13` 被解码成 `EntityId(0:g13)`
+    /// （`index = 13 >> 32 = 0`、`generation = 13`）⇒ `invalid entity id`。
+    ///
+    /// 有了它，JS 宿主可以在**生成 Lua 绑定表**时先问引擎要真句柄，两个世界就从"各说各话"变成
+    /// "以引擎为准"；引擎不认识这个名字时给出 `None`（调用方退回 `nil`），而不是一个用不了的数字。
+    #[must_use]
+    pub fn entity_handle_lua(&self, name: &str) -> Option<i64> {
+        let state = self.state.borrow();
+        let handle = state.entity_state.names.get(name)?;
+        // 与 `entity.find` 同一条教条：只交活着的句柄。
+        state
+            .world
+            .is_alive(handle)
+            .then(|| values::entity_to_lua(handle))
+    }
+
     /// 「活实体槽位号 → 名字」的全量登记（`entity.find` 查的就是这张表，所以场景实体与
     /// 运行期 `prefab.spawn` 的实例都在里头）。宿主把解算出的 UI 矩形换名报回时用它——
     /// 同一份黄金表因此能跨"载体是 `.scene` 还是 `.prefab`"对账。
@@ -1288,13 +1310,27 @@ fn save_path_for_slot(path: &Path, slot: Option<&str>) -> PathBuf {
     path.with_file_name(format!("save_{safe}.sav"))
 }
 
+/// 工程里某个场景文件的路径（`<project_root>/scenes/<name>.scene`）。
+pub(crate) fn scene_file_path(state: &ScriptState, name: &str) -> Option<PathBuf> {
+    state
+        .project_root
+        .as_ref()
+        .map(|root| root.join("scenes").join(format!("{name}.scene")))
+}
+
+/// 场景文件是否存在。**必须经 [`rustlua_infra::vfs`]**：wasm 上没有文件系统，
+/// 资源 provider 才是唯一真相，`Path::is_file()` 在那里恒假——后果是**每一次**
+/// 场景切换被静默忽略（第 45 轮在 jhyt 的 webgl 产物上实测：标题界面确认后
+/// `[map] scene file not found; load ignored name=manor`，画面停在 95.9% 单色的
+/// 空白页，玩法系统一次都不跑）。桌面无 provider 时回落文件系统，行为不变。
+pub(crate) fn scene_file_exists(state: &ScriptState, name: &str) -> bool {
+    scene_file_path(state, name).is_some_and(|path| rustlua_infra::vfs::is_file(&path))
+}
+
 /// Queues a scene load when the scene file exists; mirrors `scene.load` so
 /// `map.goto` can share the same validation without duplicating it.
 fn request_scene_load(state: &ScriptState, name: &str) -> bool {
-    let exists = state
-        .project_root
-        .as_ref()
-        .is_some_and(|root| root.join("scenes").join(format!("{name}.scene")).is_file());
+    let exists = scene_file_exists(state, name);
     if exists {
         tracing::info!(target: "scene", name = %name, "[map] scene transition queued");
     } else {

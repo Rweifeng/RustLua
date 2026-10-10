@@ -234,7 +234,11 @@ pub fn load_atlas(
         path: resolved_texture.display().to_string(),
         reason,
     };
-    let bytes = std::fs::read(&resolved_texture).map_err(|error| io_error(error.to_string()))?;
+    // 同 `TextureAsset::load_png`：wasm 上没有 `std::fs`，图集贴图必须经 `vfs` 取
+    // （桌面无 provider 时行为不变）。图集定义文本那一步在
+    // `rustlua_assets::atlas_format::AtlasDefinition::load` 里同样走 `vfs`。
+    let bytes =
+        rustlua_infra::vfs::read(&resolved_texture).map_err(|error| io_error(error.to_string()))?;
     let bytes = rustlua_infra::pack::decode(&bytes).map_err(io_error)?;
     let (width, height) = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()

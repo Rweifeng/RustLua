@@ -10,7 +10,7 @@
     },
     {
       "module": "clock",
-      "note": "fengari 时代的兜底覆盖，WP10 批 A 之后 wasm 已带真实现，**属于该删的死覆盖**。实测行为已分叉：引擎版 `clock.now()` 返回 day,hour,minute,minute_of_day,paused,rate，补丁版只返回 day,minute,minute_of_day（少 hour/paused/rate，Lua 侧读到 nil 且不报错）。",
+      "note": "**【已删除】**（删除说明与被删理由见 plugins/webgl/web-runtime.js 的 genericCompat 段；删除依据是 scripts/web-api-contract.js 的行为契约实测）。原为 fengari 时代的兜底覆盖，WP10 批 A 之后 wasm 已带真实现，**属于该删的死覆盖**。实测行为已分叉：引擎版 `clock.now()` 返回 day,hour,minute,minute_of_day,paused,rate，补丁版只返回 day,minute,minute_of_day（少 hour/paused/rate，Lua 侧读到 nil 且不报错）。",
       "apis": []
     },
     {
@@ -25,7 +25,7 @@
     },
     {
       "module": "event",
-      "note": "补丁版把订阅表存在 Lua 侧 `__rustlua_events`（emit 时快照遍历），引擎版存在 `ScriptState`。语义按引擎源码逐条对齐过，但没有自动化保证——回调顺序、重入 emit 这类差异只能靠契约用例钉。",
+      "note": "**【已有契约用例】**（`lua_api_contract.lua` 的 event.emit.order / event.emit.payload / event.off_alias / event.unsubscribe.by_callback；桌面基线 transcript 第 14–17 行有这四行）。原注：补丁版把订阅表存在 Lua 侧 `__rustlua_events`（emit 时快照遍历），引擎版存在 `ScriptState`。语义按引擎源码逐条对齐过，但没有自动化保证——回调顺序、重入 emit 这类差异只能靠契约用例钉。",
       "apis": [
         "event.emit",
         "event.off",

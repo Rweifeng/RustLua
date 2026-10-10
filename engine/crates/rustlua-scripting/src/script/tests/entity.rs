@@ -274,3 +274,81 @@ fn entity_lifecycle_matches_the_web_prelude_round_trip() {
         .to_string();
     assert!(error.contains("persist_id already in use"), "实际：{error}");
 }
+
+/// `entity.find` 的**交出契约**：只交活着的句柄——死句柄交成 `nil`，而不是让调用方在使用点
+/// 吃一句 `invalid entity id`。这是上面那条"退化句柄在查询里只能是 false/nil"教条的另一半：
+/// 查询侧不该把"不在了"变成脚本崩溃。
+///
+/// 第 58 轮在 webgl 产物上实测到反例：`ScaleBar` 在场景里**确实存在**（`main.scene` 里 3 处声明）、
+/// 脚本每次调用都**重新** `entity.find`（没有跨帧缓存），却拿到一个代际已过期的句柄，
+/// 直到真正使用时才被引擎拒掉（`invalid entity id: EntityId(0:g13)`）。
+/// 名字表里留着一个已经死掉的句柄是可能的：**换世界的那条路不止一条**
+/// （`process_scene_transition` 会清名字表，而 JS 宿主自己那套场景切换走的是另一条路），
+/// 所以"查找"这一侧必须自己把住。
+#[test]
+fn entity_find_never_hands_out_a_dead_handle() {
+    let mut runtime = LuaRuntime::new().unwrap();
+    assert_eq!(
+        runtime
+            .execute_console(
+                "local id = entity.spawn('Hero')\n\
+                 return tostring(entity.find('Hero') == id)",
+            )
+            .unwrap(),
+        "true",
+        "正常路径：名字查得到，且就是刚 spawn 的那个句柄"
+    );
+
+    // 绕过 `entity.destroy`（它会顺手清名字表），直接把实体从世界里摘掉——复刻实测到的状态：
+    // **名字表里留着死句柄**。
+    let removed = runtime.with_world_mut(|world| {
+        let ids = world.entities_with::<Transform>();
+        ids.into_iter()
+            .filter(|id| world.despawn(*id).is_ok())
+            .count()
+    });
+    assert!(removed >= 1, "至少要摘掉一个实体，否则这条用例什么也没验");
+
+    assert_eq!(
+        runtime
+            .execute_console("return tostring(entity.find('Hero') ~= nil)")
+            .unwrap(),
+        "false",
+        "死活校验：名字表里指向死句柄的项必须交成 nil"
+    );
+}
+
+/// `entity_handle_lua`：给 JS 宿主用的「名字 → **引擎句柄**」出口（Lua 侧编码 `index << 32 | generation`）。
+///
+/// 它存在的理由是两个 id 空间必须能换算（计划 WP7-30）：JS 世界用 `.scene` 的作者 id 当实体 id，
+/// 而引擎按 `index << 32 | generation` 解包——实测 `entity\t13\tScaleBar` 的作者 id `13`
+/// 被解成 `EntityId(0:g13)`，`quad.get` 直接报 `invalid entity id`。这条用例钉两件事：
+/// 出口给出的编码与 Lua 侧**逐位一致**（否则换算出来的句柄还是错的），以及死句柄不许从它漏出去。
+#[test]
+fn entity_handle_lua_matches_the_lua_side_encoding_and_hides_dead_handles() {
+    let mut runtime = LuaRuntime::new().unwrap();
+    let lua_handle = runtime
+        .execute_console("return tostring(entity.spawn('Hero'))")
+        .unwrap()
+        .parse::<i64>()
+        .expect("spawn 必须给出一个可解析的 Lua 句柄");
+    assert_eq!(
+        runtime.entity_handle_lua("Hero"),
+        Some(lua_handle),
+        "出口必须给出与 Lua 侧逐位一致的编码"
+    );
+    assert_eq!(runtime.entity_handle_lua("Nope"), None, "不认识的名字给 None");
+
+    let removed = runtime.with_world_mut(|world| {
+        let ids = world.entities_with::<Transform>();
+        ids.into_iter()
+            .filter(|id| world.despawn(*id).is_ok())
+            .count()
+    });
+    assert!(removed >= 1, "至少要摘掉一个实体，否则这条用例什么也没验");
+    assert_eq!(
+        runtime.entity_handle_lua("Hero"),
+        None,
+        "死句柄不许从这个出口漏给 JS 宿主"
+    );
+}

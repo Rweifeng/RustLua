@@ -1186,3 +1186,111 @@ async fn run_inner(canvas_id: &str, scene_path: &str) -> Result<String, String> 
     });
     Ok(opening)
 }
+
+/// 宿主画布能力探针（WP8 微信半边第一片）：**不碰 `window`/`document`/`location`**，
+/// 直接拿调用方给的那张画布问引擎"能不能在这上面起渲染栈"。
+///
+/// ## 它为什么存在
+///
+/// 微信小游戏里没有浏览器那套宿主：`HTMLCanvasElement` 不是那个构造器，而
+/// [`gpu_host_run`] 是先 `document.get_element_by_id(canvas_id)` 再
+/// `dyn_into::<HtmlCanvasElement>()`——`dyn_into` **会**做构造器判定，小游戏里必然失败
+/// （见 `lib.rs` 里 [`crate::start_wechat`] 的说明）。而引擎真正需要的那一步
+/// （`engine::host::web_surface::canvas_surface(&instance, &JsValue)`）本来就只收**原始对象**。
+/// 所以"能不能在小游戏上沿用同一条渲染通道"这个问题，可以在**不引入任何浏览器构造器依赖**的
+/// 前提下，由引擎自己回答——这也正是唯一能在真机上被回答的问题。
+///
+/// ## 契约（与 `plugins/wechat-minigame/wechat-adapter.js` 的 `glCapability` 同一族）
+///
+/// * **输入**：一个画布对象（`JsValue`，用 `unchecked_into` 收下 ⇒ 只做属性/方法访问，
+///   不做构造器判定；普通对象也能进），外加 `report(message)` 回报。
+/// * **绝不静默**：成功返回摘要（适配器名/后端/设备类型/画布尺寸/格式是否匹配），
+///   失败返回 `probe: …` 开头的**具名**原因（不返回 `undefined`、不挂起）。
+/// * **硬约束（调用方负责）**：只允许传**专用**画布。一张画布只能有一个上下文，把主画布
+///   传进来会毁掉它已有的 2D 上下文（`wechat-adapter.js` 1457-1462 行记过这条实测）。
+/// * 本函数**只建实例/表面/适配器**并读能力，不建设备、不建渲染器、不画帧——
+///   因此它可以在小游戏宿主里安全地先跑一次，作为"要不要往这条路上投资"的判据。
+#[wasm_bindgen]
+pub async fn probe_canvas_host(gpu_canvas: JsValue, report: js_sys::Function) -> Result<String, JsValue> {
+    match probe_canvas_host_inner(gpu_canvas, &report).await {
+        Ok(summary) => Ok(summary),
+        Err(error) => {
+            let text = format!("probe: {error}");
+            // 失败既要抛给调用方，也要走同一条回报通道：真机上控制台不可靠，
+            // 适配层收下的这行才是可读证据。
+            let _ = report.call1(&JsValue::NULL, &JsValue::from_str(&text));
+            Err(JsValue::from_str(&text))
+        }
+    }
+}
+
+async fn probe_canvas_host_inner(
+    gpu_canvas: JsValue,
+    report: &js_sys::Function,
+) -> Result<String, String> {
+    if gpu_canvas.is_null() || gpu_canvas.is_undefined() {
+        return Err("no canvas（调用方没有给出画布对象）".to_owned());
+    }
+    // `unchecked_into` 是这一片的全部要点：不触发 wasm-bindgen 的构造器判定。
+    let canvas: web_sys::HtmlCanvasElement = gpu_canvas.clone().unchecked_into();
+    // **直接读**宽高，不能走 `canvas_size`：那个函数对 0 尺寸有回退（`FALLBACK_SIZE`），
+    // 于是"画布没建好"会被静默换成设计分辨率，这里就永远查不出来（我自己第一版就写成
+    // 用 canvas_size 判定，结果那个分支是死代码——本用例把它抓了出来）。
+    let (width, height) = (canvas.width(), canvas.height());
+    if width == 0 || height == 0 {
+        // 0 尺寸的 surface 配置在 wgpu 里无效：与其让它到下面报一句难懂的校验错，
+        // 不如在这里具名拒绝（读数是"画布没建好"，不是"GPU 不可用"）。
+        return Err(format!("canvas {width}x{height}（尺寸为 0）"));
+    }
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::GL,
+        ..Default::default()
+    });
+    let surface = engine::host::web_surface::canvas_surface(&instance, &gpu_canvas)
+        .map_err(|error| format!("canvas_surface: {error}"))?;
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+        })
+        .await
+        .map_err(|error| format!("request_adapter: {error}"))?;
+    let info = adapter.get_info();
+    let capabilities = surface.get_capabilities(&adapter);
+    // 渲染器的颜色附件格式是构造时烘死的（`GpuHost::new` 同一口径），所以这里也要回答
+    // "这个宿主给不给它"——否则"能建表面"会被误读成"能画"。
+    let wanted = wgpu::TextureFormat::Rgba8UnormSrgb;
+    let format_ok = capabilities.formats.contains(&wanted);
+    let summary = format!(
+        "canvas {width}x{height}; adapter={} backend={:?} device={:?}; formats=[{}]; srgb={}; present_modes={}",
+        info.name,
+        info.backend,
+        info.device_type,
+        capabilities
+            .formats
+            .iter()
+            .map(|format| format!("{format:?}"))
+            .collect::<Vec<_>>()
+            .join(","),
+        if format_ok { "yes" } else { "no" },
+        capabilities.present_modes.len()
+    );
+    report
+        .call1(&JsValue::NULL, &JsValue::from_str(&summary))
+        // 回报通道自己抛错时也要说清是哪一步。这里**不**引 `js_error_text`：它是内层模块的
+        // 私有函数，跨层引用会把"这条路径只依赖调用方给的画布与回调"这个边界搞乱。
+        .map_err(|error| {
+            format!(
+                "report: {}",
+                error.as_string().unwrap_or_else(|| format!("{error:?}"))
+            )
+        })?;
+    if !format_ok {
+        return Err(format!(
+            "画布不提供 {wanted:?}（给的是 {:?}）；渲染器的目标格式尚未参数化",
+            capabilities.formats
+        ));
+    }
+    Ok(summary)
+}

@@ -41,6 +41,12 @@ param(
     # 断言 `data-rustlua-drive=done` 且 detail 含全部里程碑。
     # 与 -Drive 互斥（两者都写 data-rustlua-drive）；带本开关时自动关闭 scene-verify
     # （首帧重载当前场景会干扰剧本的标题确认阶段）。
+    #
+    # **本开关驱动的是旧 JS 世界**（`web-runtime.js` 的 `stepDriveJhyt`，`data-rustlua-drive`
+    # 只有它写）。第 48 轮起旧 JS 世界**默认不启动**（引擎已独占这一帧），所以本开关（以及
+    # `-Drive`）必须同时带 `-UrlQuery 'rustlua-js-host=1'` 才有人来写这个属性：
+    # 不带它时读数是 `drive=absent` 并判失败（实测 `[RED] … boot=ok drive=absent`）。
+    # 引擎侧的等价验收通道是 `-WorldDo` / `-WorldExpr` / `-InputScript`（不依赖 JS 世界）。
     [switch]$DriveJhyt,
     # 关掉场景切换防回归门（默认 ON）：仅当产物里没有可 reload 的启动场景时才关。
     [switch]$NoSceneVerify,
@@ -103,7 +109,10 @@ param(
     # 调用方（`verify.ps1 -Web`）用它拿退出码：`Start-Process -PassThru -RedirectStandardOutput`
     # 返回的进程对象上 `ExitCode` 是 **$null**（本轮实测），而 `[int]$null` 会静默变成 0——
     # "包起不来"于是被当成"通过"。因此由子进程自己把结果写进这个文件。
-    [string]$StatusFile = ""
+    [string]$StatusFile = "",
+    # 追加到页面 URL 的**原始**查询串（例如 `rustlua-js-host=1`）。迁移期验收旧 JS 世界
+    # （`web-runtime.js`）是否被显式叫回来时用——它默认已不再作为第二宿主启动。
+    [string]$UrlQuery = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -122,6 +131,51 @@ trap {
     Exit-With 1
 }
 $workspaceRoot = Split-Path -Parent $PSScriptRoot
+# 前置语法自检：webgl 运行时是一大段**嵌在 JS 模板里的 Lua**，模板一旦被提前闭合（Lua 注释里
+# 写了反引号）或写出模板不允许的转义（八进制 \239），`node --check` 立刻报错，但整条打包链路
+# 不替我们查这一步 —— 现象是页面白屏/红灯，得从运行日志反推。本项目已经重复 5 次
+# （第 60/62/67/70/71 轮，每次都是"看起来无害的一行注释"）。放在最前面：语法错了就地报错，
+# 不浪费一整个"打包 + CDP 验收"周期（约 7 分钟）。
+$runtimeSource = Join-Path $workspaceRoot "plugins\webgl\web-runtime.js"
+if (Test-Path -LiteralPath $runtimeSource) {
+    $nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+    if ($nodeCommand) {
+        # 本脚本开头把 $ErrorActionPreference 设成 Stop：原生命令的 stderr 经 `2>&1` 会变成
+        # 终止错误，于是 node --check 的报错会先被上面的 trap 拦成一句通用 abort（实测：只剩
+        # "@line 143"，真正原因反而丢了）。所以这一段临时放宽偏好，自己看退出码。
+        $savedPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        $syntaxOutput = & $nodeCommand.Source --check $runtimeSource 2>&1
+        $syntaxCode = $LASTEXITCODE
+        $ErrorActionPreference = $savedPreference
+        if ($syntaxCode -ne 0) {
+            $syntaxText = ($syntaxOutput | Out-String).Trim()
+            # 这里只能用 `Write-Host`（单参数）：`Write-Log` 在本文件更下面才定义，函数要先定义后调用。
+            Write-Host "[RED] webgl_runtime_syntax_error detail=$syntaxText"
+            Write-Host "[RED] 修好 plugins\webgl\web-runtime.js 的语法再验（模板里的 Lua 注释不能用反引号；八进制转义要加倍）"
+            Exit-With 1
+        }
+        # `node --check` 只管**配对**的反引号：Lua 注释里单个反引号会立刻炸（上面那条拦得住），
+        # 但**成对**出现在两条注释里时 JS 照样通过 —— 模板被当成"带表达式的模板串"，
+        # 里面的 Lua 注释文本被当成 JS 表达式，Lua 侧拿到的是残缺片段，页面照常启动、
+        # 行为却莫名不同（最难查的一类）。所以再做一次机械扫描：Lua 注释行里不许有反引号。
+        $runtimeLines = Get-Content -LiteralPath $runtimeSource -Encoding UTF8
+        $backtickLines = @()
+        for ($i = 0; $i -lt $runtimeLines.Count; $i++) {
+            $trimmed = $runtimeLines[$i].Trim()
+            if ($trimmed.StartsWith('--') -and $trimmed.Contains([char]96)) {
+                $backtickLines += ($i + 1)
+            }
+        }
+        if ($backtickLines.Count -gt 0) {
+            Write-Host "[RED] webgl_runtime_lua_comment_backtick lines=$($backtickLines -join ',') count=$($backtickLines.Count)"
+            Write-Host "[RED] Lua 注释（-- 开头的行）里不能用反引号：JS 模板会把它当模板边界（成对时 node --check 也不报错）"
+            Exit-With 1
+        }
+    } else {
+        Write-Host "[YELLOW] 跳过前端语法自检：本机没有 node（web-runtime.js 的模板闭合/转义问题只能在运行期暴露）"
+    }
+}
 . (Join-Path $PSScriptRoot "bundle-discovery.ps1")
 if ([string]::IsNullOrWhiteSpace($BundleRoot)) {
     # 不写死游戏工程：自动发现本机唯一的合格 webgl 产物（诊断由 bundle-discovery 打印）。
@@ -216,12 +270,81 @@ if (-not $node) {
     Exit-With 2
 }
 
+# ---- 服务闸门：**必须证明服务的就是待验产物**（M73-00 第 57 轮实测过一次静默错验） ----
+#
+# 实测经过：第 31 轮遗留的一个后台任务还在跑，它的 `serve-static.js` 占着**默认端口 8137**
+# 服务的是 `examples\game_api\builds\webgl`；这次为正确产物起的服务**绑定失败**，而失败既没
+# 被检查也没进日志判据，浏览器于是被那个残留服务应答 —— 于是"验证"的读数（`project bytes=329`
+# 与 `demo_main.lua` 的报错）说的是**另一个产物**，眼看就要得出"webgl 侧红了"的错结论。
+# 下面三道闸把它变成响亮的失败，而不是靠"端口号应该没别人用"这种假设：
+#   ① 起服务前端口必须空闲（占用则报出占用者的命令行，连 PID 一起）；
+#   ② 起服务后等它就绪；进程已退出（典型就是 EADDRINUSE）或始终不应答 ⇒ 抛，并附服务日志尾部；
+#   ③ 就绪后核对一个**金丝雀文件**：HTTP 取回的字节与本地待验产物逐字节同 SHA256
+#      ⇒ "服务根 == 待验产物根"由证据自证。三道闸只加断言，不放宽任何既有判据。
+function Get-PortListener([int]$PortNumber) {
+    $conn = Get-NetTCPConnection -LocalPort $PortNumber -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $conn) { return $null }
+    $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$($conn.OwningProcess)" -ErrorAction SilentlyContinue
+    $cmd = if ($proc -and $proc.CommandLine) { $proc.CommandLine } else { "(命令行不可读)" }
+    return [pscustomobject]@{ Pid = $conn.OwningProcess; CommandLine = $cmd }
+}
+
+$portOwner = Get-PortListener $Port
+if ($portOwner) {
+    throw ("端口 $Port 已被占用（PID=$($portOwner.Pid)）：$($portOwner.CommandLine)" +
+        " —— 很可能是上一次运行/后台任务残留的静态服务。静默复用它会让验证读到**另一个产物**，" +
+        "因此这里直接失败：先结束它，或用 -Port 指定一个空闲端口。")
+}
+
+$serveLogPath = Join-Path $logRoot "bundle-serve-$stamp.log"
+$serveErrPath = Join-Path $logRoot "bundle-serve-$stamp.log.err"
 $server = Start-Process -FilePath $node.Source `
     -ArgumentList @((Join-Path $PSScriptRoot "serve-static.js"), $bundle, "$Port") `
     -PassThru -WindowStyle Hidden `
-    -RedirectStandardOutput (Join-Path $logRoot "bundle-serve-$stamp.log") `
-    -RedirectStandardError (Join-Path $logRoot "bundle-serve-$stamp.log.err")
-Start-Sleep -Milliseconds 1200
+    -RedirectStandardOutput $serveLogPath `
+    -RedirectStandardError $serveErrPath
+
+# ② 就绪等待（而不是"睡 1.2 秒然后假设它在跑"）：最多 15 秒，进程退出立即判红。
+$canaryRel = $null
+foreach ($candidate in @("pack/project.toml", "build-info.txt", "index.html")) {
+    $localCandidate = Join-Path $bundle ($candidate -replace '/', '\')
+    if (Test-Path -LiteralPath $localCandidate) { $canaryRel = $candidate; break }
+}
+if (-not $canaryRel) {
+    throw "待验产物里找不到任何可用的金丝雀文件（pack/project.toml、build-info.txt、index.html 都不在）：$bundle"
+}
+$serveReady = $false
+$readyDeadline = (Get-Date).AddSeconds(15)
+while ((Get-Date) -lt $readyDeadline) {
+    if ($server.HasExited) {
+        $tail = @()
+        foreach ($p in @($serveLogPath, $serveErrPath)) { if (Test-Path -LiteralPath $p) { $tail += (Get-Content -LiteralPath $p -Encoding UTF8 -ErrorAction SilentlyContinue | Select-Object -Last 6) } }
+        throw ("静态服务启动后立即退出（exit=$($server.ExitCode)）——典型原因是端口被占。" +
+            "服务日志尾部：`n" + ($tail -join "`n"))
+    }
+    try {
+        $probe = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/$canaryRel" -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+        if ($probe.StatusCode -eq 200) { $serveReady = $true; break }
+    } catch {
+        Start-Sleep -Milliseconds 250
+    }
+}
+if (-not $serveReady) {
+    $tail = @()
+    foreach ($p in @($serveLogPath, $serveErrPath)) { if (Test-Path -LiteralPath $p) { $tail += (Get-Content -LiteralPath $p -Encoding UTF8 -ErrorAction SilentlyContinue | Select-Object -Last 6) } }
+    throw ("静态服务在端口 $Port 上 15 秒内没有就绪（$canaryRel 取不到）。服务日志尾部：`n" + ($tail -join "`n"))
+}
+
+# ③ 身份核对：HTTP 字节 vs 本地字节，SHA256 必须相等。
+$servedCanary = Join-Path $logRoot "served-canary-$stamp.bin"
+Invoke-WebRequest -Uri "http://127.0.0.1:$Port/$canaryRel" -UseBasicParsing -OutFile $servedCanary -TimeoutSec 10 -ErrorAction Stop
+$localHash = (Get-FileHash -LiteralPath (Join-Path $bundle ($canaryRel -replace '/', '\')) -Algorithm SHA256).Hash
+$servedHash = (Get-FileHash -LiteralPath $servedCanary -Algorithm SHA256).Hash
+if ($localHash -ne $servedHash) {
+    throw ("服务根与待验产物**不是同一份**：$canaryRel 本地 SHA256=$localHash，HTTP 取回 SHA256=$servedHash" +
+        "（服务根=$bundle，端口=$Port）——这正是「验证读到另一个产物」的形态，拒绝继续。")
+}
+Write-Log "serve identity ok: $canaryRel 与待验产物逐字节一致（SHA256 $($localHash.Substring(0,16))…，端口 $Port）"
 
 $queryBits = @()
 if ($Drive -and $DriveJhyt) {
@@ -261,6 +384,7 @@ if ($SimScene) {
 # DIAGNOSTICS_ON）：验收要读这个数，就必须显式打开。这对**产品行为零影响**——
 # 它只决定"要不要为了给验收看而每 30 帧读一次像素"。
 $queryBits += "rustlua-diagnostics=1"
+if ($UrlQuery -ne "") { $queryBits += $UrlQuery }
 $url = "http://127.0.0.1:$Port/index.html"
 if ($queryBits.Count -gt 0) { $url += "?" + ($queryBits -join "&") }
 $domPath = Join-Path $logRoot "bundle-dom-$stamp.html"
@@ -330,6 +454,15 @@ function Invoke-HeadlessDom([string]$HeadlessFlag, [string]$ModeOverride = "", [
     $cdpEcho = @(& node $cdpScript $cdpPort $outTarget $waitMode $TimeoutSeconds $shotArg $underArg $probeArg $settleArg $probeStorageArg $probeAudioArg)
     $cdpExit = $LASTEXITCODE
     foreach ($cdpLine in $cdpEcho) { Write-Log "cdp: $cdpLine" }
+    # M73-00 第 58 轮：把页面**自报的宿主形态**与**自报的产物身份**留下来给门用。
+    #
+    # 为什么必须读它：webgl 页面按既有设计**默认不启动 JS 世界**（页面自己打
+    # `[host] legacy JS world skipped (engine host owns the frame)`），而场景门 / 剧本门 /
+    # 世界读数 / 诊断像素全部**由 JS 宿主写**。宿主缺席时这些门没有写者，把它们判红
+    # 就是默认路径上一盏永远亮着的红灯——真正的回归反而会被这盏灯盖住。
+    # 反过来，**请求了** JS 宿主却仍自报 skipped，那是真的坏，必须红。
+    $script:pageHostSkipped = [bool]($cdpEcho | Where-Object { $_ -match 'legacy JS world skipped' })
+    $script:pageStartedLine = ($cdpEcho | Where-Object { $_ -match 'RustLua WebGL/WASM started' } | Select-Object -First 1)
     # 收尾：杀本脚本启动的浏览器**全部进程** + 清理 CDP profile（无头实例不会自己退出）。
     # 按唯一 user-data-dir 路径匹配命令行，精确杀本实例的进程树——绝不按进程名一网打尽
     # （开发机上还有用户自己的浏览器）；taskkill /T 对 Edge 的启动器/子进程不可靠。
@@ -351,7 +484,11 @@ function Invoke-HeadlessDom([string]$HeadlessFlag, [string]$ModeOverride = "", [
         Write-Log "webgl_bundle_save_slot_failed 平台存档槽里没有可读的存档（见上面 storage probe 行）" Red
         Exit-With 1
     }
-    if (Test-Path -LiteralPath $outTarget) { return Get-Content -LiteralPath $outTarget -Raw } else { return "" }
+    # **必须显式 -Encoding UTF8**：DOM dump 是 UTF-8，而 PS 5.1 的 `Get-Content` 默认按 ANSI
+    # （本机 cp936）解码 ⇒ 来自 DOM 的**中文一律变乱码**（第 67 轮实测：`返回 nil：实体 2 没有
+    # Sprite 组件` 被读成 `杩斿洖 nil锛氬疄浣?2 …`）。乱码不是"显示问题"：读数无法引用、无法 grep、
+    # 也无法与脚本源码对照，等于把一条刚修好的证据通道又堵回去。
+    if (Test-Path -LiteralPath $outTarget) { return Get-Content -LiteralPath $outTarget -Raw -Encoding UTF8 } else { return "" }
 }
 
 $dom = Invoke-HeadlessDom "--headless"
@@ -389,6 +526,35 @@ if ($detail -match 'missing engine host API:\s*([^\]]*)' -and $Matches.Count -gt
 }
 # 画面自检：`data-rustlua-drawn` 是运行时对 canvas 采样得到的“非背景像素采样点”数量。
 # `-1` = 像素不可读（跨域贴图污染），`0` = 启动了但真的什么都没画出来。
+# 宿主**方法级**缺失清单：`data-rustlua-missing-api`（逗号分隔）。与上面那份"模块级缺失"
+# 互补——模块表存在但方法缺失时（例如 `particles.count`）只有这一份说得清；而陷阱代理会把
+# 缺失方法顶成"可调用且返回一张表"，症状因此离原因很远（实测：`%d` 收到表）。
+$missingApiPaths = @()
+if ($dom -match 'data-rustlua-missing-api="([^"]*)"' -and $Matches.Count -gt 0) {
+    $missingApiPaths = @($Matches[1].Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
+# 宿主**降级**清单：`data-rustlua-degraded`（逗号分隔）。与上面那份"缺口"是两件事，分开列：
+#   缺口 = 宿主**没有**这个方法（陷阱代理顶成"可调用且返回一张表"，症状离原因很远）⇒ 要补实现；
+#   降级 = 我们**有**实现但语义弱于引擎（只记录开关、恒空表…）⇒ 要么补真实现，要么在设计上接受
+#          并保持**可断言**（所以它走 DOM + console.log，而不是只有 console.warn——warn 不进日志）。
+$degradedApiPaths = @()
+if ($dom -match 'data-rustlua-degraded="([^"]*)"' -and $Matches.Count -gt 0) {
+    $degradedApiPaths = @($Matches[1].Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
+# 脚本自己画的具名 UI 文本（`data-rustlua-ui-texts`，`名字=文本`，多行用字面 `\n` 连接）。
+# **为什么读它**：剧本把「每个 API 模块这一帧干了什么」聚合成一行文本画在 canvas 上——
+# DOM 里没有、宿主 API 也查不到，于是"剧本跑到第几节、哪一节报错"过去只能靠"崩在哪一行"反推
+# （第 62~66 轮就是这么一轮一个缺口地往前挪的）。有了这条读数，一次运行就能看到全部小节的结果。
+$uiTexts = if ($dom -match 'data-rustlua-ui-texts="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "" }
+$uiTexts = $uiTexts -replace '&quot;', '"' -replace '&amp;', '&' -replace '\\n', ' | '
+# 剧本 `update()` 的返回值（`data-rustlua-script-result`）：`demo_main` 的返回值就是"本帧每个 API
+# 小节各干了什么"的聚合串。它比具名文本更直接——一句话读完整个剧本的推进结果。
+$scriptResult = if ($dom -match 'data-rustlua-script-result="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "" }
+$scriptResult = $scriptResult -replace '&quot;', '"' -replace '&amp;', '&' -replace '&lt;', '<' -replace '&gt;', '>'
+# 键位权威（`data-rustlua-bindings`）：工程 project.toml 的 [input].map 与运行时硬编码键位表是
+# **两处真相**，启动后由宿主写一行读数说明"这一局以谁为准、多少动作只能靠回退"。
+# 为什么值得读：键位错了不会崩、不会报缺 API，只会"按了没反应"——最难自查的一类差异。
+$bindingsInfo = if ($dom -match 'data-rustlua-bindings="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "" }
 $drawnRaw = if ($dom -match 'data-rustlua-drawn="(-?\d+)"' -and $Matches.Count -gt 0) { [int]$Matches[1] } else { $null }
 $uiElements = if ($dom -match 'data-rustlua-ui-elements="(\d+)"' -and $Matches.Count -gt 0) { [int]$Matches[1] } else { $null }
 # 世界状态自报：`scene=/map=/alive=/player=@x,y/clip`（+ 渲染侧 `drawn=`）。
@@ -426,6 +592,52 @@ $sceneVerifyDetail = if ($dom -match 'data-rustlua-scene-verify-detail="([^"]*)"
 # 不判定**，与微信 harness 的 audio_ctx/audio_played 同口径。absent = 产物还是旧版运行时
 # （后端接缝没落地）；`kind=none` = 后端没装上；停在启动场景时 created 至少为 1（标题 BGM）。
 $audioEvidence = if ($dom -match 'data-rustlua-audio="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "absent" }
+
+# ---- M73-00 第 58 轮：宿主形态与产物身份（都由页面自报，用来决定"哪些门有写者"） ----
+#
+# `$jsHostRequested`：本次是否**要求**JS 宿主（URL 门户 `rustlua-js-host=1`）。
+# `$jsHostSkipped`：页面自报"旧 JS 世界被跳过、引擎宿主独占这一帧"。
+# 四种组合里只有"要求了却仍被跳过"是坏消息；"没要求 + 自报跳过"是**预期形态**，
+# 这时 JS 宿主专属的门（场景门/剧本门/世界读数/诊断）没有写者，不能判红，
+# 改由下面那条更强的引擎侧断言（页面自报的产物身份）来兜底。
+$jsHostRequested = $url -match '[?&]rustlua-js-host=1(?:&|$)'
+$jsHostSkipped = [bool]$script:pageHostSkipped
+if ($jsHostRequested -and $jsHostSkipped) {
+    Write-Log "webgl_bundle_jshost_contradiction：请求了 JS 宿主（rustlua-js-host=1），但页面自报 legacy JS world skipped ⇒ 宿主开关坏了" Red
+    Exit-With 1
+}
+if ($jsHostSkipped) {
+    Write-Log "[跳过] JS 宿主专属的门（场景切换/剧本/世界读数/像素诊断）：本次未请求 JS 宿主，页面自报 legacy JS world skipped（引擎宿主独占这一帧）⇒ 这些门没有写者，不是回归" Yellow
+}
+
+# 产物身份自证（**引擎侧、更强的一条**）：页面自报的 `RustLua WebGL/WASM started: <名字>; …`
+# 必须与待验产物 `build-info.txt` 里的 `publish_name` 一致。第 57 轮遇到过"验证读到另一个产物"，
+# 那时靠 `pack/project.toml` 的 SHA256 抓到了服务根；这条把**页面那侧**也钉住：
+# 浏览器真的在跑这份产物，而不是别的产物/别的标签页。名字取不到、对不上，都算红。
+$pageIdentity = $null
+$pageStartupScene = $null
+if ($script:pageStartedLine -and $script:pageStartedLine -match 'started:\s*([^;]+);') { $pageIdentity = $Matches[1].Trim() }
+if ($script:pageStartedLine -and $script:pageStartedLine -match 'startup_scene=([^;]+);') { $pageStartupScene = $Matches[1].Trim() }
+$bundlePublishName = $null
+$buildInfoPath = Join-Path $bundle "build-info.txt"
+if (Test-Path -LiteralPath $buildInfoPath) {
+    $publishLine = Get-Content -LiteralPath $buildInfoPath -Encoding UTF8 -ErrorAction SilentlyContinue |
+        Where-Object { $_ -match '^\s*publish_name\s*:' } | Select-Object -First 1
+    if ($publishLine -and $publishLine -match ':\s*(\S+)\s*$') { $bundlePublishName = $Matches[1] }
+}
+if (-not $pageIdentity) {
+    Write-Log "webgl_bundle_page_identity_missing：页面没有自报产物身份（RustLua WebGL/WASM started: …）⇒ 无法证明浏览器跑的是待验产物" Red
+    Exit-With 1
+}
+if ($bundlePublishName -and $pageIdentity -ne $bundlePublishName) {
+    Write-Log "webgl_bundle_page_identity_mismatch：页面自报=$pageIdentity，待验产物 publish_name=$bundlePublishName" Red
+    Exit-With 1
+}
+if (-not $pageStartupScene) {
+    Write-Log "webgl_bundle_page_startup_scene_missing：页面自报里没有 startup_scene ⇒ 引擎没有报出启动场景" Red
+    Exit-With 1
+}
+Write-Log "page identity ok: $pageIdentity（startup_scene=$pageStartupScene，与待验产物 build-info.txt 一致）"
 
 # 预设文字自对账：`data-rustlua-prefab-text=画/应有` 由 web-runtime.js 每帧写，只统计
 # **运行期 prefab 实例**里带非空 Text 的实体（画的那一半是实际走满 fillText 的）。
@@ -476,6 +688,13 @@ $summary = [ordered]@{
     detail         = $detail
     missingCount   = $missingNames.Count
     missingHostApi = ($missingNames -join ';')
+    missingApiPathCount = $missingApiPaths.Count
+    missingApiPaths = ($missingApiPaths -join ';')
+    degradedApiPathCount = $degradedApiPaths.Count
+    degradedApiPaths = ($degradedApiPaths -join ';')
+    uiTexts = $uiTexts
+    scriptResult = $scriptResult
+    bindingsInfo = $bindingsInfo
     statusText     = $statusText
     drawnSamples   = $drawnRaw
     uiElements     = $uiElements
@@ -496,6 +715,14 @@ $summary = [ordered]@{
 }
 $summary | ConvertTo-Json | Set-Content -Path (Join-Path $logRoot "bundle-summary-$stamp.json") -Encoding UTF8
 
+Write-Log "missing_api_paths=$($missingApiPaths.Count)$(if ($missingApiPaths.Count -gt 0) { ': ' + ($missingApiPaths -join ', ') })" $(if ($missingApiPaths.Count -eq 0) { "Green" } else { "Yellow" })
+# 降级读数用 Yellow（它本身不算失败，但必须是**看得见**的事实：不能只有 console.warn，
+# 那条通道 harness 抓不到，于是"没触发"与"没抓到"分不开——第 65 轮的教训）。
+Write-Log "degraded_api_paths=$($degradedApiPaths.Count)$(if ($degradedApiPaths.Count -gt 0) { ': ' + ($degradedApiPaths -join ', ') })" $(if ($degradedApiPaths.Count -eq 0) { "Green" } else { "Yellow" })
+# 脚本自报的具名 UI 文本：这是"剧本这一帧到底说了什么"的直接读数（过去读不到，只能反推崩溃行号）。
+Write-Log "script_ui_texts$(if ([string]::IsNullOrWhiteSpace($uiTexts)) { '(空)' } else { '' }): $uiTexts"
+Write-Log "script_result$(if ([string]::IsNullOrWhiteSpace($scriptResult)) { '(空)' } else { '' }): $scriptResult"
+Write-Log "key_bindings$(if ([string]::IsNullOrWhiteSpace($bindingsInfo)) { '(无读数)' } else { '' }): $bindingsInfo"
 Write-Log "boot=$boot missing_host_api=$($missingNames.Count) detail=$detail" $(if ($boot -eq "ok") { "Green" } else { "Yellow" })
 Write-Log "status text: $statusText"
 Write-Log "drawn samples: $(if ($null -eq $drawnRaw) { 'unknown' } else { $drawnRaw }) ui elements: $(if ($null -eq $uiElements) { 'unknown' } else { $uiElements })"
@@ -542,8 +769,22 @@ if (-not [string]::IsNullOrWhiteSpace($world)) {
     }
     if (($Drive -or $DriveJhyt) -and $tileDeclared -lt 1) {
         # 剧本已经进了玩法地图，那里至少该有一张地表瓦片层；0 层 = 场景没带瓦片或换图没落地。
-        Write-Log "webgl_bundle_tile_layers_empty detail=gameplay scene has no tilemap layer world=$world" Red
-        Exit-With 1
+        #
+        # **但先看清页面在哪张图上**：同一份产物连跑两次，实测一次红一次绿 —— 红的那次
+        # `script_result: index_open scene=main`、`world=scene=34 map=index tilemaps=0/0`，
+        # 即剧本**还停在启动场景（菜单）**、根本没走进玩法场景；绿的另一次是
+        # `world=scene=22 map=main tilemaps=1/1`。两者产物字节相同 ⇒ 这是等待器落定时机造成的
+        # 抖动，不是玩法场景缺层。所以：观测到的场景 == 页面启动场景时，判黄跳过并写明原因
+        # （`startup_scene` 从页面自报身份里取；取不到就保持原来的红灯，不静默放行）。
+        $observedScene = if ($world -match 'map=([^\s]+)') { $Matches[1] } else { "" }
+        # 页面自报的启动场景形如 `scenes/index.scene`（见上面 page identity 那段）。
+        $startupScene = if ($pageStartupScene -match 'scenes/([^\./]+)\.scene') { $Matches[1] } else { "" }
+        if ($observedScene -ne "" -and $startupScene -ne "" -and $observedScene -eq $startupScene) {
+            Write-Log ("[跳过] 瓦片层门：页面仍在启动场景 '$observedScene'（剧本尚未进入玩法场景）world=$world") Yellow
+        } else {
+            Write-Log "webgl_bundle_tile_layers_empty detail=gameplay scene has no tilemap layer world=$world" Red
+            Exit-With 1
+        }
     }
 }
 
@@ -582,15 +823,47 @@ if (-not [string]::IsNullOrWhiteSpace($world)) {
 }
 
 if ($Drive -and $driveState -ne "done") {
-    # P0-①：请求了"完整剧本"却没跑完——无论 boot 是否 ok，都是验收失败。
-    Write-Log "webgl_bundle_drive_failed boot=$boot drive=$driveState detail=$driveStateDetail world=$world" Red
-    Exit-With 1
+    # P0-①：请求了"完整剧本"（标题确认 → 进玩法地图 → 位移非零）却没跑完 ⇒ 验收失败。
+    # 唯一例外：本次**没要求** JS 宿主（页面自报 skipped）⇒ 剧本门没有写者。
+    #
+    # **为什么不按工程名/工程类型跳过**（第 75 轮改动）：这里以前写着
+    # `elseif ($pageIdentity -and $pageIdentity -notmatch 'jhyt')`，即"名字里没有 jhyt 就跳过"。
+    # 它与"运行时到底做了什么"无关：多一个展示型工程就掉进假红，而玩法工程真的没响应 confirm
+    # 时又会被当成"不是玩法工程"**静默跳过**（假绿，最坏的一种）。第 74 轮我把它换成
+    # "页面自报没观察到场景切换就跳过"，**实测仍然不够**：game_api 的启动场景**确实**消费了
+    # confirm（场景切到 main），卡在后面"按住的键不驱动玩家位移" ⇒ 仍会走进跳过分支。
+    # 根因是运行时**原理上分不出**这两件事：「这个工程本来就没有可走动玩法」与「可走动玩法坏了」
+    # 在观测上完全一样（都是"没有输入驱动的位移"）。既然观测分不出，就不许猜 ——
+    # 门保持严格：任何失败一律 RED，并把**观测到的数据**与**该找谁**写进消息。
+    if ($jsHostSkipped) {
+        Write-Log "[跳过] 剧本门（-Drive）：JS 宿主未参与，没有写者（引擎侧身份断言已通过）。要真跑剧本请显式请求 JS 宿主：-UrlQuery 「rustlua-js-host=1」" Yellow
+    } else {
+        # 按页面自报的 detail 说明**卡在哪一步**（这是信息，不是判决）。三种形态：
+        #   · 没观察到场景切换 ⇒ 启动场景不消费 confirm（展示型工程常见）
+        #   · 没有玩家坐标     ⇒ 进入的场景里读不到 player
+        #   · 位移为 0         ⇒ 有玩家，但按住的键不驱动它
+        $where = "（按页面自报的数据未能定位到具体阶段）"
+        if ($driveStateDetail -match 'scene switch did not happen') {
+            $where = "（卡在『确认→进玩法地图』：按 2 帧空格并等待后未观察到任何场景切换 ⇒ 该工程的启动场景不消费 confirm）"
+        } elseif ($driveStateDetail -match 'no player position observed') {
+            $where = "（卡在『进玩法地图』：场景里读不到 player=…@x,y ⇒ 该场景没有可读的玩家实体）"
+        } elseif ($driveStateDetail -match 'd=0,0') {
+            $where = "（卡在『位移非零』：读到了玩家，但按住的键没有驱动它移动）"
+        }
+        Write-Log "webgl_bundle_drive_failed boot=$boot drive=$driveState detail=$driveStateDetail world=$world $where" Red
+        Write-Log "[提示] -Drive 是**玩法工程**的门（要求确认键进得了玩法地图、且方向键能驱动玩家位移）。没有可走动玩法的展示型工程请改用不带 -Drive 的验收 + lua-do/WorldDo 断言来验输入链路；玩法动线用 -DriveJhyt" Yellow
+        Exit-With 1
+    }
 }
 
 if ($DriveJhyt -and $driveState -ne "done") {
     # P0-②：请求了"完整玩法剧本"却没跑完（卡在某个里程碑或超时）——无论 boot 是否 ok，都是验收失败。
-    Write-Log "webgl_bundle_drivejhyt_failed boot=$boot drive=$driveState detail=$driveStateDetail world=$world" Red
-    Exit-With 1
+    if ($jsHostSkipped) {
+        Write-Log "[跳过] 玩法剧本门（-DriveJhyt）：JS 宿主未参与，没有写者。要真跑剧本请显式请求 JS 宿主：-UrlQuery 「rustlua-js-host=1」" Yellow
+    } else {
+        Write-Log "webgl_bundle_drivejhyt_failed boot=$boot drive=$driveState detail=$driveStateDetail world=$world" Red
+        Exit-With 1
+    }
 }
 
 # M73-00 WP5 第五片：GPU 自检放**场景切换门之前**。理由是实测的：GPU 画布若抢走 2D 上下文，
@@ -679,8 +952,18 @@ if (-not $NoSceneVerify -and $sceneVerifyState -ne "done") {
     # 症状）就是这类问题。absent/in-flight/failed 三种都算失败，因为都意味着
     # applySceneSwitch 的 fetch → parse → on_create 全流程没有干净跑完。
     # 带 `-Gpu2d` 时把 GPU 自报一起打出来：两者同框才判得清是谁把谁弄死的。
-    Write-Log "webgl_bundle_scene_verify_failed boot=$boot scene_verify=$sceneVerifyState detail=$sceneVerifyDetail world=$world gpu=$gpuState" Red
-    Exit-With 1
+    #
+    # 第 58 轮的唯一例外：这个门由 **JS 宿主**写（页面里的 `[scene-verify] …`）。本次**没要求**
+    # JS 宿主、且页面自报 `legacy JS world skipped`（引擎宿主独占这一帧）时，这个门没有写者
+    # ⇒ 不能判红，否则默认路径（玩家实际拿到的形态）上永远是一盏亮着的红灯。
+    # 这时改由上面那条**更强**的引擎侧断言兜底：页面自报的 publish_name 必须与待验产物一致、
+    # 且必须报出 startup_scene。
+    if ($jsHostSkipped) {
+        Write-Log "[跳过] 场景切换门：JS 宿主未参与（页面自报 legacy JS world skipped）⇒ 该门没有写者；引擎侧身份与启动场景断言已通过（page=$pageIdentity startup_scene=$pageStartupScene）" Yellow
+    } else {
+        Write-Log "webgl_bundle_scene_verify_failed boot=$boot scene_verify=$sceneVerifyState detail=$sceneVerifyDetail world=$world gpu=$gpuState" Red
+        Exit-With 1
+    }
 }
 
 if ($ApiContract -and $contractVerdict -ne "ok") {

@@ -16,6 +16,12 @@ param(
     # 资源包（CDN 导出）目录：瘦首包（-AssetPack remote）必须给，
     # 否则包内 pack/ 只有骨架，运行时验证读不到重资源。
     [string]$AssetPackRoot = "",
+    # 玩法驱动（微信侧没有 URL 旋钮，用 harness 的宿主驱动）：点开始新游戏 → 按住方向键 →
+    # 断言主角坐标真的变了。拆旧 JS 世界（WP8）之前必须先有这条机器判据。
+    [switch]$DriveJhyt,
+    # 要求这份产物必须带 GPU 内核（`package.ps1 -Gpu2d` 打的那份）：引擎画布探针必须走到
+    # `failed` + 引擎原文 `probe: …`，报 `unavailable` 直接判失败（避免"我以为是 GPU 档"）。
+    [switch]$ExpectGpuKernel,
     # 只做静态检查（没有 node 时使用）。
     [switch]$SkipRuntime
 )
@@ -87,13 +93,29 @@ if (Test-Path -LiteralPath $gameJsonPathEarly) {
 $mainPackManifestPath = Join-Path $root "mainpack.json"
 $hasMainPackManifest = Test-Path -LiteralPath $mainPackManifestPath
 $isSubpackagePack = $packDeclaredAsSubpackage -and $hasMainPackManifest
+# 第四种形态（第 53 轮，`package.ps1 -WasmInSubpackage`）：**remote + 内核入分包**。
+# 它故意让两种资源来源共存：内核与骨架在分包里，重资源在 CDN。判据全部取产物自带的标记，
+# 不猜：①分包已声明且有清单；②清单 entries **为空**（remote 的首屏资源在 CDN，没有包内路由）；
+# ③有 remote-assets.json；④内核确实在 pack/ 里（在 pkg/ 就还是"内核在主包"的旧 remote 形态）。
+# ①②单独出现 = 分包形态，②③④单独出现 = 旧 remote 形态，都保持原来的互斥断言。
+$mainPackEntries = @()
+if ($hasMainPackManifest) {
+    try { $mainPackEntries = @((Get-Content -LiteralPath $mainPackManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json).entries) }
+    catch { $mainPackEntries = @() }
+}
+$isWasmInPackRemote = $isSubpackagePack -and $hasRemoteConfig -and
+    ($mainPackEntries.Count -eq 0) -and (Test-Path -LiteralPath (Join-Path $root "pack\game_web_bg.wasm"))
 # 三形态互斥的兜底断言：分包形态的资源全在包里，出现远端配置就说明产物是两种形态混出来的——
 # 那时适配层会走 CDN 回落，"包内读到了"永远掩盖"分包根本没挂载上"。
-if ($isSubpackagePack -and $hasRemoteConfig) {
+if ($isSubpackagePack -and $hasRemoteConfig -and -not $isWasmInPackRemote) {
     throw "分包形态不得带 remote-assets.json（它属于 -AssetPack remote）：两种资源来源混在一个包里会让失败互相掩盖"
 }
-if ($isSubpackagePack -and $isThinPack) {
+if ($isSubpackagePack -and $isThinPack -and -not $isWasmInPackRemote) {
     throw "产物同时具有分包与瘦首包的特征（pack/ 无资源目录 + remote-assets.json + 分包声明 + mainpack.json），无法判定形态"
+}
+if ($isWasmInPackRemote) {
+    # 这一形态**同时**要打开两条轴：内核在分包（要等挂载）+ 重资源在远端（要带 --remote thin）。
+    $isThinPack = $true
 }
 if ($packDeclaredAsSubpackage -and -not $hasMainPackManifest) {
     throw "game.json 声明了 pack 分包，但主包侧首屏清单 mainpack.json 不存在：首屏资源没有切到主包，真机上会先等分包下载"
@@ -163,11 +185,12 @@ function Get-DirSize {
     return $sum
 }
 
-# 骨架文件（manifest.txt / project.toml）的位置随形态变：分包形态下它们在首屏清单里，
-# 构建期已被搬到 mainpack/，pack/ 里**不该**再有同名副本。
-$skeletonSubdir = if ($isSubpackagePack) { "mainpack" } else { "pack" }
-# wasm 内核的位置同样随形态变：主包 4 MB 门装不下"2.5 MB 内核 + 2 MB 内容"，所以分包形态下
-# 发布脚本把它放进 pack/（那正是分包的意义），full / remote 仍在 pkg/。
+# 骨架文件（manifest.txt / project.toml）的位置随形态变：**经典**分包形态（首屏切到 mainpack/）
+# 下它们在 mainpack/ 里，构建期已被搬过去，pack/ 里**不该**再有同名副本；
+# 而"remote + 内核入分包"（第 53 轮）没有切分首屏，骨架仍留在 pack/（也就是分包里）。
+$skeletonSubdir = if ($isSubpackagePack -and -not $isWasmInPackRemote) { "mainpack" } else { "pack" }
+# wasm 内核的位置同样随形态变：主包 4 MB 门装不下内核，所以内核入分包时它在 pack/ 里
+# （经典分包形态与 remote + -WasmInSubpackage 都是），full / remote（内核在主包）仍在 pkg/。
 # **两边都只许有一处**：pkg/ 里那份残留不会抛错，只会让主包又超回去（而 4 MB 超限的表现是
 # 上传被拒，本机什么都看不到），所以这里除了"该有的在"还要验"不该的不在"。
 $wasmCoreRelative = if ($isSubpackagePack) { "pack\game_web_bg.wasm" } else { "pkg\game_web_bg.wasm" }
@@ -421,6 +444,10 @@ if (-not $SkipRuntime) {
         # 瘦首包：方言用例同时跑真实远端（否则包内只剩骨架，重资源读不到必然失败）。
         # harness 会临时改写 remote-assets.json 指向它自己起的本地服务，用完恢复发布用配置。
         $caseArgs = @("--wx-path-style", $style)
+        # WP7-88：把 L3 行为契约接进七步门。此前它只在"手工跑 harness 时带上开关"才会执行
+        # （离线可跑、无需浏览器，33 条用例逐行对桌面基线），门里却一直没有它 —— 于是"两边名字都在、
+        # 但返回值形状/状态归属分叉"这类缺陷，门抓不到。
+        $caseArgs += @("--check-api-contract")
         if ($isThinPack) { $caseArgs += @("--remote", "thin", "--remote-root", $assetPackDir) }
         # 分包形态：方言用例必须**同时**把挂载这一轴显式打开（--subpackage ok），否则
         # "哪一档方言配哪一种分包行为"就说不清了，用例之间会互相掩盖。
@@ -433,6 +460,284 @@ if (-not $SkipRuntime) {
     }
     $probeLine = $case.Lines | Where-Object { $_ -match "资源读取自检" } | Select-Object -First 1
     if ($probeLine) { Write-Host $probeLine -ForegroundColor DarkGray }
+
+    # 1a3) 引擎画布探针（WP8 第二片：把 wasm 的 `probe_canvas_host` 接到真实调用点）。
+    #      两条各钉一件事：
+    #      · 生产口径：不带开关时必须 `engine_probe=off`——探针默认关，老路径一行不动；
+    #      · 开关通路：结论必须**按产物档位**落在两种具名结果之一（"没编进去"与"编进去但宿主机
+    #        不给"必须能分开读，否则现场拿到空读数不知道该往哪查）：
+    #          默认档内核 ⇒ `unavailable` + `kernel-without-gpu2d`；
+    #          GPU 档内核 ⇒ `failed` + 以 `probe: ` 开头的**引擎原文**（离线宿主不给 GL，
+    #                        这条正证明画布真的送到了 wgpu）。
+    #      也就是说：**同一条断言**在两种产物上都成立，`-Gpu2d` 产物（package.ps1 -Gpu2d）跑本脚本
+    #      就自动覆盖 GPU 档；要强制要求"这份产物必须带 GPU 内核"就加 `-ExpectGpuKernel`。
+    $probeOffLine = $case.Lines | Where-Object { $_ -match "engine_probe=" } | Select-Object -First 1
+    if (-not ($probeOffLine -match 'engine_probe=off')) {
+        throw ("生产口径下引擎画布探针必须是 off（默认关），实际：{0}" -f $probeOffLine)
+    }
+    $gpuProbeCase = Invoke-HarnessCase -ExtraArgs @("--frames", "30", "--gpu-probe") -Label "gpu-probe-switch"
+    if ($gpuProbeCase.ExitCode -ne 0) { throw ("--gpu-probe 用例失败（exit {0}）" -f $gpuProbeCase.ExitCode) }
+    $gpuProbeOk = $gpuProbeCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_ok" } | Select-Object -First 1
+    if (-not $gpuProbeOk) { throw "gpu-probe-switch 用例未输出 wechat_minigame_harness_ok" }
+    $probeStatus = if ($gpuProbeOk -match '(?:^|\s)engine_probe=(\S+)') { $matches[1] } else { "缺失" }
+    $probeReason = if ($gpuProbeOk -match 'engine_probe_reason="([^"]*)"') { $matches[1] } else { "" }
+    switch ($probeStatus) {
+        "unavailable" {
+            if ($probeReason -notmatch '^kernel-without-gpu2d$') {
+                throw ("unavailable 必须带具名理由 kernel-without-gpu2d，实际：{0}" -f $probeReason)
+            }
+            if ($ExpectGpuKernel) {
+                throw "本产物没编 GPU 内核（unavailable），但调用方要求了 -ExpectGpuKernel：请用 package.ps1 -Gpu2d 重新打包"
+            }
+        }
+        "failed" {
+            if ($probeReason -notmatch '^probe: ') {
+                throw ("GPU 档内核的失败必须带引擎原文（以 'probe: ' 开头），实际：{0}" -f $probeReason)
+            }
+        }
+        "ok" { throw "离线的假宿主不该给出 ok（探针读数可疑）：{0}" -f $gpuProbeOk }
+        default { throw ("开探针后必须落在 unavailable/failed 之一，实际 status={0}" -f $probeStatus) }
+    }
+    Write-Host ("引擎画布探针：status={0} reason={1}" -f $probeStatus, $probeReason) -ForegroundColor DarkGray
+
+    # 1a4) 引擎宿主（WP8 主线第二片：真的起一个宿主并按帧驱动它）。
+    #      同样两条，同样**按产物档位**落在两种具名结果之一：
+    #        · 生产口径：不带开关时必须 `engine_host=off`（每帧多一次 GPU 提交，默认关）；
+    #        · 开关通路：默认档内核 ⇒ `unavailable` + `kernel-without-gpu2d`；
+    #                    GPU 档内核 ⇒ `failed` + 以 `host: ` 开头的**引擎原文**（离线假宿主不给 GL，
+    #                    这条正证明宿主画布真的送到了 wgpu）。
+    #      `running` 只能由真机/带 GL 的宿主给出 ⇒ 在这里出现就是读数可疑，直接判失败。
+    $hostOffLine = $case.Lines | Where-Object { $_ -match "engine_host=" } | Select-Object -First 1
+    if (-not ($hostOffLine -match '(?:^|\s)engine_host=off')) {
+        throw ("生产口径下引擎宿主必须是 off（默认关），实际：{0}" -f $hostOffLine)
+    }
+    $hostCase = Invoke-HarnessCase -ExtraArgs @("--frames", "30", "--engine-host") -Label "engine-host-switch"
+    if ($hostCase.ExitCode -ne 0) { throw ("--engine-host 用例失败（exit {0}）" -f $hostCase.ExitCode) }
+    $hostOk = $hostCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_ok" } | Select-Object -First 1
+    if (-not $hostOk) { throw "engine-host-switch 用例未输出 wechat_minigame_harness_ok" }
+    $hostStatus = if ($hostOk -match '(?:^|\s)engine_host=(\S+)') { $matches[1] } else { "缺失" }
+    $hostSource = if ($hostOk -match '(?:^|\s)engine_host_source=(\S+)') { $matches[1] } else { "缺失" }
+    $hostReason = if ($hostOk -match 'engine_host_reason="([^"]*)"') { $matches[1] } else { "" }
+    switch ($hostStatus) {
+        "unavailable" {
+            if ($hostReason -notmatch '^kernel-without-gpu2d$') {
+                throw ("unavailable 必须带具名理由 kernel-without-gpu2d，实际：{0}" -f $hostReason)
+            }
+            if ($ExpectGpuKernel) {
+                throw "本产物没编 GPU 内核（unavailable），但调用方要求了 -ExpectGpuKernel：请用 package.ps1 -Gpu2d 重新打包"
+            }
+        }
+        "failed" {
+            if ($hostReason -notmatch '^host: ') {
+                throw ("GPU 档内核的失败必须带引擎原文（以 'host: ' 开头），实际：{0}" -f $hostReason)
+            }
+        }
+        "running" { throw "离线的假宿主不该给出 running（宿主读数可疑）：{0}" -f $hostOk }
+        default { throw ("开启引擎宿主后必须落在 unavailable/failed 之一，实际 status={0}" -f $hostStatus) }
+    }
+    Write-Host ("引擎宿主：status={0} source={1} reason={2}" -f $hostStatus, $hostSource, $hostReason) -ForegroundColor DarkGray
+
+    # 1a5) 宿主接管固定步（WP7-55）：这条路**必须**显式开关才走，因为老 JS 世界每帧也在跑固定步
+    #      （两边同时跑 = 世界被推进两次）。这里钉两件事：
+    #        · 生产口径：宿主不接管（`engine_host_tick=none`）——默认绝不允许出现第二个 tick；
+    #        · 开关通路：`--engine-host-tick` 之下结论仍必须落在 unavailable/failed 之一
+    #          （离线宿主的期望结果不变），并且如实报出"谁在跑固定步"。
+    if ($hostOffLine -notmatch 'engine_host_tick=none') {
+        throw ("生产口径下引擎宿主不得接管固定步（必须是 engine_host_tick=none），实际：{0}" -f $hostOffLine)
+    }
+    $hostTickCase = Invoke-HarnessCase -ExtraArgs @("--frames", "30", "--engine-host-tick") -Label "engine-host-tick"
+    if ($hostTickCase.ExitCode -ne 0) { throw ("--engine-host-tick 用例失败（exit {0}）" -f $hostTickCase.ExitCode) }
+    $hostTickOk = $hostTickCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_ok" } | Select-Object -First 1
+    if (-not $hostTickOk) { throw "engine-host-tick 用例未输出 wechat_minigame_harness_ok" }
+    $tickStatus = if ($hostTickOk -match '(?:^|\s)engine_host=(\S+)') { $matches[1] } else { "缺失" }
+    $tickReason = if ($hostTickOk -match 'engine_host_reason="([^"]*)"') { $matches[1] } else { "" }
+
+    # WP7-90：**单一 tick 所有者**不变式 —— 两个开关用例此前只查"宿主落在哪个具名结果"，
+    # 没查"世界有没有被推进两次"。接管/交还（WP8）的前提正是这条：任何时刻只有一个 tick 拥有者，
+    # 输入注入只在**运行时**那条路径上发生一次（否则两套状态各推一步，症状是"帧数对但世界跑快了"）。
+    # 三条都取自已报字段，判据是**具名取值**而不是"看起来正常"。
+    function Assert-SingleTickOwner([string]$line, [string]$label) {
+        if ($line -notmatch 'engine_host_tick_conflict=(\S+)') { throw ($label + "：自报里缺 engine_host_tick_conflict") }
+        $conflict = $matches[1]
+        if ($conflict -ne 'no') { throw ($label + "：tick 冲突=" + $conflict + "（有两个 tick 拥有者 ⇒ 世界会被推进两次）") }
+        if ($line -notmatch 'engine_host_input_applied=(\d+)') { throw ($label + "：自报里缺 engine_host_input_applied") }
+        if ($matches[1] -ne '0') { throw ($label + "：宿主也注入了输入（input_applied=" + $matches[1] + "）⇒ 输入被应用两次") }
+        if ($line -notmatch 'engine_host_tick=(\S+)') { throw ($label + "：自报里缺 engine_host_tick") }
+        $owner = $matches[1]
+        if (($owner -ne 'none') -and ($owner -ne 'runtime') -and ($owner -ne 'host')) { throw ($label + "：engine_host_tick 不是具名值：" + $owner) }
+        Write-Host ("    [单一tick] " + $label + "：conflict=no input_applied=0 tick=" + $owner) -ForegroundColor DarkGray
+    }
+    Assert-SingleTickOwner $hostOk "engine-host-switch"
+    Assert-SingleTickOwner $hostTickOk "engine-host-tick"
+
+    # WP7-94：**接管 → 交还**往返（离线能证的部分）。第 15 帧把"谁推进世界"的标记还回运行时，
+    # 之后必须：① 只有运行时在推进（timing 段以 tick=runtime 收尾）；② 没有第二个 tick 拥有者；
+    # ③ 宿主没有替运行时注入输入。触发点挂在 rAF 垫片的语句位置 ⇒ 与是否被驱动无关
+    # （第 127 轮的失败正是因为放在了驱动路径的泵帧循环里，GPU 档 move=not-driven 触发不到）。
+    # **离线限制**：离线档位下宿主从未 running（unavailable/failed），所以本用例证明的是
+    # "标记语义与推进归属正确"，**不是**"真宿主交还"——后者属设备侧。
+    $handbackCase = Invoke-HarnessCase -ExtraArgs @("--frames", "30", "--engine-host-off-at", "15") -Label "engine-host-handback"
+    if ($handbackCase.ExitCode -ne 0) { throw ("--engine-host-off-at 用例失败（exit " + $handbackCase.ExitCode + "）") }
+    $handbackOk = $handbackCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_ok" } | Select-Object -First 1
+    if (-not $handbackOk) { throw "engine-host-handback 用例未输出 wechat_minigame_harness_ok" }
+    $handbackLog = $handbackCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_handback" } | Select-Object -First 1
+    if (-not $handbackLog) { throw "往返用例没有真的交还（日志里没有 wechat_minigame_harness_handback）—— 开关没生效" }
+    Assert-SingleTickOwner $handbackOk "engine-host-handback"
+    if ($handbackOk -notmatch 'timing="[^"]*tick=runtime') {
+        throw ("交还后世界必须由运行时推进（timing 段应以 tick=runtime 收尾），实际：" + ([regex]::Match($handbackOk, 'timing="[^"]*"').Value))
+    }
+    Write-Host ("    [交还] " + $handbackLog.Trim() + "；timing=" + ([regex]::Match($handbackOk, 'timing="[^"]*"').Value)) -ForegroundColor DarkGray
+
+
+    $tickAbi = if ($hostTickOk -match '(?:^|\s)engine_host_abi=(\S+)') { $matches[1] } else { "缺失" }
+    switch ($tickStatus) {
+        "unavailable" {
+            if ($tickReason -notmatch '^kernel-without-gpu2d$') {
+                throw ("unavailable 必须带具名理由 kernel-without-gpu2d，实际：{0}" -f $tickReason)
+            }
+        }
+        "failed" {
+            if ($tickReason -notmatch '^host: ') {
+                throw ("GPU 档内核的失败必须带引擎原文（以 'host: ' 开头），实际：{0}" -f $tickReason)
+            }
+        }
+        "running" { throw "离线的假宿主不该给出 running（宿主读数可疑）：{0}" -f $hostTickOk }
+        default { throw ("指定宿主接管固定步后必须落在 unavailable/failed 之一，实际 status={0}" -f $tickStatus) }
+    }
+    Write-Host ("引擎宿主接管固定步：status={0} abi={1} reason={2}" -f $tickStatus, $tickAbi, $tickReason) -ForegroundColor DarkGray
+
+    # 1a6) 「一个世界只能有一个 tick」（WP7-57）。两条断言，缺一条都等于没验：
+    #      · `tick_conflict=no`：宿主接管时运行时不许再跑 update。离线宿主起不来 ⇒ 标记根本没交出去，
+    #        所以这里的 no 恰好证明"起不来 ⇒ 不接管"这条降级路径通了；
+    #      · `runtime_run_steps>0`：证明运行时**确实还在推进世界**。少了它，"标记交出去了但宿主死了"
+    #        会表现成"脚本照画、逻辑不动"——画面正常，最难查。所以宁可用一个非零计数把"世界没冻住"
+    #        写死在这里。
+    foreach ($probe in @([pscustomobject]@{ Name = '生产口径'; Line = $hostOffLine },
+                         [pscustomobject]@{ Name = '--engine-host-tick'; Line = $hostTickOk })) {
+        if ($probe.Line -match 'engine_host_tick_conflict=yes') {
+            throw ("{0}：运行时与宿主同时推进了世界（tick_conflict=yes）——这必须是不可达状态：{1}" -f $probe.Name, $probe.Line)
+        }
+        $runSteps = if ($probe.Line -match 'engine_host_runtime_run_steps=(\d+)') { [int]$matches[1] } else { -1 }
+        if ($runSteps -le 0) {
+            throw ("{0}：运行时的固定步计数应为正（世界必须有人推进），实际 engine_host_runtime_run_steps={1}" -f $probe.Name, $runSteps)
+        }
+        # 常驻读数本身也要被验：`sim=`/`tick=` 是"谁在推进世界"的真机可读证据。离线宿主起不来
+        # ⇒ 推进者必须是 `runtime`（真机上宿主起来时这里会是 `host`，那属于设备侧的读数）。
+        $timing = if ($probe.Line -match 'timing="([^"]*)"') { $matches[1] } else { '' }
+        if ($timing -notmatch 'sim=\d+') {
+            throw ("{0}：data-rustlua-timing 必须带 sim=（本帧真正推进世界的步数），实际：{1}" -f $probe.Name, $timing)
+        }
+        if ($timing -notmatch 'tick=runtime$') {
+            throw ("{0}：离线（宿主起不来）时推进者必须是 runtime，实际：{1}" -f $probe.Name, $timing)
+        }
+        # 1a7) 输入注入也只有一个所有者（WP7-58）：「谁注入输入」必须与「谁推进世界」同源。
+        #      断言两件事：运行时**确实**在注入（>0）；宿主**一次都没**注入（input_applied=0）。
+        #      这两条合起来就是"注入来自恰好一处"。离线宿主起不来 ⇒ input_applied 恒 0 是必然的，
+        #      但这条契约必须写进产物读数里——真机上宿主起来时它才真正开始起作用（那属于设备侧）。
+        $inputFrames = if ($probe.Line -match 'engine_host_runtime_input_frames=(\d+)') { [int]$matches[1] } else { -1 }
+        if ($inputFrames -le 0) {
+            throw ("{0}：运行时必须在注入输入批量（否则整局对按键没反应），实际 engine_host_runtime_input_frames={1}" -f $probe.Name, $inputFrames)
+        }
+        $hostApplied = if ($probe.Line -match 'engine_host_input_applied=(\d+)') { [int]$matches[1] } else { -1 }
+        if ($hostApplied -ne 0) {
+            throw ("{0}：宿主不得注入输入（注入的唯一所有者是运行时），实际 engine_host_input_applied={1}" -f $probe.Name, $hostApplied)
+        }
+        # 1a8) 「恰好一次」的不变量（WP7-58；先测出真实关系再收紧，不从直觉收紧）。
+        #      推进者是运行时（`tick=runtime`）时，注入与推进**同条件**（都是 `steps > 0`）
+        #      ⇒ 两个计数必须相等。这不是"实测凑巧相等"，而是同一条判断的两个分支；
+        #      谁把注入挪进别处，这里立刻红。（真机上宿主接管时两者不再相等——注入每帧都做、
+        #      推进归宿主，所以这条只在 `tick=runtime` 的产物上断言。）
+        if ($timing -match 'tick=runtime$' -and $inputFrames -ne $runSteps) {
+            throw ("{0}：推进者是运行时 ⇒ 注入次数必须等于推进次数，实际 input_frames={1} run_steps={2}" -f `
+                $probe.Name, $inputFrames, $runSteps)
+        }
+        # 1a9) 隐藏文本集跟着状态载荷到达（WP7-59）：帧循环不再每帧单独拉一次。
+        #      这条断言之所以必要，是因为"少一次跨界"和"文字不再被隐藏"在读数上长得一模一样
+        #      （都得看画面）——所以用 pulls 计数把"老路还在不在"变成可断言的数：
+        #      pulls 必须**小于帧数**（正常为 0；只有兼容层覆盖了导出函数才会回退到老路）。
+        $pulls = if ($probe.Line -match 'export_readout="pulls=(\d+)') { [int]$matches[1] } else { -1 }
+        if ($pulls -lt 0) {
+            throw ("{0}：自报里没有 data-rustlua-export 读数（pulls=），无法判断隐藏文本集走的是哪条路" -f $probe.Name)
+        }
+        $framesSeen = if ($probe.Line -match '(?:^|\s)frames=(\d+)') { [int]$matches[1] } else { 0 }
+        if ($framesSeen -le 0) { throw ("{0}：自报里没有 frames= 读数，无法比较 pulls" -f $probe.Name) }
+        if ($pulls -ge $framesSeen) {
+            throw ("{0}：隐藏文本集仍在被每帧单独拉取（pulls={1} >= frames={2}）——状态载荷里的 H 行没生效" -f `
+                $probe.Name, $pulls, $framesSeen)
+        }
+        # 1a10) `T` 行按变化发（WP7-60）。不变量：**全量重发 = 帧数 × 存活实体数**，所以
+        #       `tlines` 必须**严格小于**这个上限，否则说明"按变化发"根本没生效（回到了每帧全发）。
+        #       这条同时把"基线读数真的在采"这件事验了：`state=` 必须是正数。
+        $tlines = if ($probe.Line -match 'export_readout="pulls=\d+ state=(\d+) tlines=(\d+)') { [int]$matches[2] } else { -1 }
+        $stateBytesRead = if ($probe.Line -match 'export_readout="pulls=\d+ state=(\d+)') { [int]$matches[1] } else { -1 }
+        if ($tlines -lt 0 -or $stateBytesRead -lt 0) {
+            throw ("{0}：自报里缺 state=/tlines= 读数（状态载荷基线没在采）" -f $probe.Name)
+        }
+        $entities = if ($probe.Line -match 'scene=(\d+)') { [int]$matches[1] } else { 0 }
+        if ($entities -le 0) { throw ("{0}：world 读数里没有 scene= 实体数，无法判断 tlines 是否真的减少了" -f $probe.Name) }
+        $fullEmit = $framesSeen * $entities
+        # 空 的 空洞陷阱：默认用例跑的是**标题画面**，而标题画面的实体来自 `.scene` 文件、
+        # 由 JS 侧装载，Lua 侧的变换表里一个都没有（world 读数会写 alive=0）⇒ `tlines` 本来是 0，
+        # 于是"0 < 上限"这种断言**无论按变化发有没有生效都会绿**。真正可断言的是**因果关系**：
+        #   · `alive=0` ⇒ 走 Lua 变换通道的实体本来就没有 ⇒ `tlines` 必须是 0（不多不少）；
+        #   · `alive>0` ⇒ 必须 `0 < tlines < 上限`（真的按变化发）。
+        # 严格版另有驱动用例那条路（那时主角真的在走，`tlines` 必然为正）。
+        $alive = if ($probe.Line -match 'alive=(\d+)') { [int]$matches[1] } else { -1 }
+        if ($alive -lt 0) { throw ("{0}：world 读数里没有 alive= 计数，无法判断 tlines=0 是不是「没实体可发」" -f $probe.Name) }
+        if ($alive -eq 0) {
+            if ($tlines -ne 0) {
+                throw ("{0}：Lua 侧没有存活实体（alive=0）却发出了 {1} 行 T——状态载荷的实体来源可疑" -f $probe.Name, $tlines)
+            }
+        } else {
+            if ($tlines -le 0) {
+                throw ("{0}：有 {1} 个存活实体却一行 T 都没发（首帧/换场景也必须各发一次）" -f $probe.Name, $alive)
+            }
+            if ($tlines -ge $fullEmit) {
+                throw ("{0}：T 行看起来仍是每帧全量重发（tlines={1} >= 帧数×实体数={2}）——按变化发没生效" -f `
+                    $probe.Name, $tlines, $fullEmit)
+            }
+        }
+        # 1a11) 状态回写有唯一所有者（WP7-61）。帧循环那次导出**每帧至多一次**：
+        #       以前 3 个调用点各自直调 `__rustlua_export_state`，而它一进来就把 Lua 侧的 op
+        #       队列清空 ⇒ "谁取走了什么"取决于调用顺序。收敛成一个所有者之后，
+        #       `frame=` 计数必须 ≤ 帧数；若有**第二份实现**冒出来，这个数就会超过帧数。
+        #       非空洞的条件：当 `runtime_run_steps == 帧数`（每帧都走到了帧级阶段、没有提前返回）
+        #       时，"至多一次"必须加强成"恰好一次"——否则说明有帧**漏了**导出。
+        $frameExports = [regex]::Match($probe.Line, 'exports=\d+ frame=(\d+)').Groups[1].Value
+        if (-not $frameExports) { throw ("{0}：自报里缺 exports=/frame= 读数（状态回写的所有者没在计数）" -f $probe.Name) }
+        $frameExports = [int]$frameExports
+        if ($frameExports -le 0) { throw ("{0}：帧循环一次状态回写都没发生（所有者没被用上）" -f $probe.Name) }
+        if ($frameExports -gt $framesSeen) {
+            throw ("{0}：状态回写在帧循环里发生了 {1} 次（帧数 {2}）——每帧至多一次，可能出现了第二份实现" -f `
+                $probe.Name, $frameExports, $framesSeen)
+        }
+        if ($runSteps -eq $framesSeen -and $frameExports -ne $framesSeen) {
+            throw ("{0}：每帧都推进了世界（run_steps={1}=帧数）却只导出了 {2} 次状态——有帧漏了回写" -f `
+                $probe.Name, $runSteps, $frameExports)
+        }
+    }
+    $offState = if ($hostOffLine -match 'state=(\d+)') { $matches[1] } else { '?' }
+    $offTlines = if ($hostOffLine -match 'tlines=(\d+)') { $matches[1] } else { '?' }
+    $offFull = ([int]$(if ($hostOffLine -match 'frames=(\d+)') { $matches[1] } else { 0 })) * ([int]$(if ($hostOffLine -match 'scene=(\d+)') { $matches[1] } else { 0 }))
+    $tickState = if ($hostTickOk -match 'state=(\d+)') { $matches[1] } else { '?' }
+    $tickTlines = if ($hostTickOk -match 'tlines=(\d+)') { $matches[1] } else { '?' }
+    $tickFull = ([int]$(if ($hostTickOk -match 'frames=(\d+)') { $matches[1] } else { 0 })) * ([int]$(if ($hostTickOk -match 'scene=(\d+)') { $matches[1] } else { 0 }))
+    Write-Host ("状态载荷基线：生产 state={0} B / tlines={1}（全量上限 {2}）— 接管用例 state={3} B / tlines={4}（上限 {5}）" -f `
+        $offState, $offTlines, $offFull, $tickState, $tickTlines, $tickFull) -ForegroundColor DarkGray
+    # 两处修正（本轮的教训）：① `pulls=` 后面**还有** state=/tlines=，所以模式不能要求右引号
+    # 紧跟数字（否则永远印 `?`——仪器看起来坏了，其实是被测串变长了）；② 不要用 `$matches`
+    # 自动变量：它会被后面任何一次 -match 覆盖。直接取 [regex]::Match 的结果。
+    Write-Host ("状态导出：隐藏文本集单独拉取次数 生产 presses={0} / 接管用例 presses={1}（帧数 {2}/{3}）" -f `
+        [regex]::Match($hostOffLine, 'pulls=(\d+)').Groups[1].Value, `
+        [regex]::Match($hostTickOk, 'pulls=(\d+)').Groups[1].Value, `
+        [regex]::Match($hostOffLine, '(?:^|\s)frames=(\d+)').Groups[1].Value, `
+        [regex]::Match($hostTickOk, '(?:^|\s)frames=(\d+)').Groups[1].Value) -ForegroundColor DarkGray
+    Write-Host ("输入注入的唯一所有者：生产 input_frames={0} / 接管用例 input_frames={1}（宿主 input_applied=0）" -f `
+        $(if ($hostOffLine -match 'engine_host_runtime_input_frames=(\d+)') { $matches[1] } else { '?' }), `
+        $(if ($hostTickOk -match 'engine_host_runtime_input_frames=(\d+)') { $matches[1] } else { '?' })) -ForegroundColor DarkGray
+    Write-Host ("单 tick 与推进者：生产 runtime_run_steps={0} / 接管用例 runtime_run_steps={1}" -f `
+        $(if ($hostOffLine -match 'engine_host_runtime_run_steps=(\d+)') { $matches[1] } else { '?' }), `
+        $(if ($hostTickOk -match 'engine_host_runtime_run_steps=(\d+)') { $matches[1] } else { '?' })) -ForegroundColor DarkGray
 
     # 1a2) wasm 宿主不可用（--no-wasm：模拟开发者工具/极旧基础库没有可用的 WXWebAssembly）：
     #      WP10 之后 wasm **就是** Lua 执行层，缺它必须响亮失败。fengari 时代那条"wasm 失败
@@ -514,15 +819,20 @@ if (-not $SkipRuntime) {
         # 帧预算必须显式抬起来：`--drive-move N` 会从总预算里扣 N+1 帧，而延迟挂载又要等到第 6 帧，
         # 用默认的 $Frames（12）会把帧预算吃光 → 一帧都不跑 → 分包永远挂不上（实测踩过，报"无回调超时"）。
         $subFrames = @("--frames", "120")
+        # 第四形态（remote + 内核入分包，第 53 轮）：分包轴的每条用例都必须**同时**带上远端——
+        # 这一形态的包内只有内核与骨架，重资源在 CDN，不接远端时用例会以"资源 404"失败，
+        # 那测的就不是分包轴而是资源来源了（实测：`subpackage-ok` 不带远端时 boot 拒绝
+        # `pack/scenes/main.scene HTTP 404`）。经典分包形态（资源全在包里）不带远端，保持原样。
+        $subRemoteArgs = if ($isWasmInPackRemote) { @("--remote", "thin", "--remote-root", $assetPackDir) } else { @() }
         $subpackageCases = @(
-            @{ Label = "subpackage-ok"; Args = @("--subpackage", "ok"); Token = "wechat_minigame_harness_ok"; Evidence = 'subpackage=pack' },
-            @{ Label = "subpackage-delay"; Args = ($subFrames + @("--subpackage", "delay", "--subpackage-delay-frames", "6", "--drive-new-game", "--expect-runtime-spawns")); Token = "wechat_minigame_harness_ok"; Evidence = 'loading_bar=ok' },
-            @{ Label = "subpackage-delay-move"; Args = ($subFrames + @("--subpackage", "delay", "--subpackage-delay-frames", "6", "--drive-new-game", "--expect-runtime-spawns", "--drive-move", "20")); Token = "wechat_minigame_harness_ok"; Evidence = 'mount_frame=6' },
-            @{ Label = "subpackage-never"; Args = @("--subpackage", "never", "--expect-pack-failure"); Token = "wechat_minigame_harness_ok"; Evidence = 'pack_state=failed' },
-            @{ Label = "subpackage-fail-once"; Args = ($subFrames + @("--subpackage", "fail-once", "--drive-new-game", "--expect-runtime-spawns")); Token = "wechat_minigame_harness_ok"; Evidence = 'subpackage_loads=2' },
+            @{ Label = "subpackage-ok"; Args = ($subRemoteArgs + @("--subpackage", "ok")); Token = "wechat_minigame_harness_ok"; Evidence = 'subpackage=pack' },
+            @{ Label = "subpackage-delay"; Args = ($subRemoteArgs + $subFrames + @("--subpackage", "delay", "--subpackage-delay-frames", "6", "--drive-new-game", "--expect-runtime-spawns")); Token = "wechat_minigame_harness_ok"; Evidence = 'loading_bar=ok' },
+            @{ Label = "subpackage-delay-move"; Args = ($subRemoteArgs + $subFrames + @("--subpackage", "delay", "--subpackage-delay-frames", "6", "--drive-new-game", "--expect-runtime-spawns", "--drive-move", "20")); Token = "wechat_minigame_harness_ok"; Evidence = 'mount_frame=6' },
+            @{ Label = "subpackage-never"; Args = ($subRemoteArgs + @("--subpackage", "never", "--expect-pack-failure")); Token = "wechat_minigame_harness_ok"; Evidence = 'pack_state=failed' },
+            @{ Label = "subpackage-fail-once"; Args = ($subRemoteArgs + $subFrames + @("--subpackage", "fail-once", "--drive-new-game", "--expect-runtime-spawns")); Token = "wechat_minigame_harness_ok"; Evidence = 'subpackage_loads=2' },
             # 适配层**不得**依赖 `game.json`：它在真机上读不到（平台配置不向 FileSystemManager 开放），
             # 而"要不要挂分包"曾经拿它当唯一判据 → 真机上分包静默不挂（实测）。这条断言把该依赖钉死。
-            @{ Label = "no-game-json-dependency"; Args = @("--frames", "40", "--expect-no-read", "game.json"); Token = "wechat_minigame_harness_ok"; Evidence = 'pack_state=ready' }
+            @{ Label = "no-game-json-dependency"; Args = ($subRemoteArgs + @("--frames", "40", "--expect-no-read", "game.json")); Token = "wechat_minigame_harness_ok"; Evidence = 'pack_state=ready' }
         )
         foreach ($spec in $subpackageCases) {
             $case = Invoke-HarnessCase -ExtraArgs $spec.Args -Label $spec.Label
@@ -533,11 +843,31 @@ if (-not $SkipRuntime) {
                 throw ("分包形态用例缺少证据 '{0}'（{1}）：{2}" -f $spec.Evidence, $spec.Label, $okLine)
             }
             # 首屏清单必须真的生效：mainpack_reads=0 意味着首屏仍在从分包读（退化成"等下载"）。
-            if (-not ($okLine -match 'mainpack_reads=[1-9]')) {
+            # 第四形态（内核在分包 + 重资源远端）没有 mainpack/ 路由，这条改成它自己的等价物：
+            # 清单必须**被读到并声明了 pack 分包**（否则适配层不会去挂分包），而首屏读取允许
+            # 走分包（那是这一形态的设计：内核与骨架都在包里，重资源走远端）。
+            if ($isWasmInPackRemote) {
+                if (-not ($okLine -match 'subpackage=pack')) {
+                    throw ("第四形态用例没有从首屏清单读到 pack 分包声明：{0}" -f $okLine)
+                }
+            }
+            elseif (-not ($okLine -match 'mainpack_reads=[1-9]')) {
                 throw ("分包形态用例没有走主包 mainpack/ 读取（首屏清单没生效）：{0}" -f $okLine)
             }
             # 启动期间不得有 pack/ 读取被未挂载的分包挡下（那正是"清单漏列"的直接症状）。
-            if (-not ($okLine -match 'denied_before_boot=0')) {
+            # 第四形态的等价物：被挡的读取必须**全部发生在挂载之前**（denied_before_boot ≤
+            # denied_before_mount）。若 boot 段还多出挂载之后的那部分，说明"等分包"没覆盖到某条路径。
+            if ($isWasmInPackRemote) {
+                $deniedBoot = if ($okLine -match 'denied_before_boot=(\d+)') { [int]$matches[1] } else { -1 }
+                $deniedMount = if ($okLine -match 'denied_before_mount=(\d+)') { [int]$matches[1] } else { -1 }
+                if ($deniedBoot -lt 0 -or $deniedMount -lt 0) {
+                    throw ("第四形态用例缺少 denied_before_* 读数（无法判断「等分包」是否覆盖启动期）：{0}" -f $okLine)
+                }
+                if ($deniedBoot -gt $deniedMount) {
+                    throw ("第四形态用例在分包挂载**之后**仍有 {0} 次 pack/ 读取被挡下：{1}" -f ($deniedBoot - $deniedMount), $okLine)
+                }
+            }
+            elseif (-not ($okLine -match 'denied_before_boot=0')) {
                 throw ("分包形态用例出现「启动期间读不到 pack/」——首屏清单漏列了首屏资源：{0}" -f $okLine)
             }
             Write-Host $okLine -ForegroundColor DarkGray
@@ -548,12 +878,14 @@ if (-not $SkipRuntime) {
     #    harness 会自己起一个本地静态服务（复用 scripts/pack-server.js），因此这里不依赖外部进程。
     #    瘦首包下这个"完整资源"只能来自导出目录，所以要把 --remote-root 指过去。
     #
-    #    **分包形态不跑这一组**：那一形态按设计就没有 remote-assets.json（发布脚本互斥拒绝），
+    #    **经典分包形态不跑这一组**：那一形态按设计就没有 remote-assets.json（发布脚本互斥拒绝），
     #    硬塞 `--remote auto` 只会得到"包内读不到 + 没有远端配置"的假失败。remote 形态的
     #    回归由 thin/full 形态的产物各自负责（同一次质量门里会分别验证）。
+    #    **第四形态（remote + 内核入分包）反过来**：远端就是它的主路径（重资源全在 CDN），
+    #    这一组必须跑——跳过它等于把校验和、缓存复用、服务不可达这几条守卫全丢掉。
     $remoteOkLine = $null
     $negativeCases = @()
-    if ($isSubpackagePack) {
+    if ($isSubpackagePack -and -not $isWasmInPackRemote) {
         Write-Host "==> 分包形态：跳过远端回落下沉用例（该形态按设计不带 remote-assets.json）" -ForegroundColor DarkGray
     }
     else {
@@ -596,7 +928,13 @@ if (-not $SkipRuntime) {
     #      subpackage → 需要（首屏贴图在 mainpack/，运行时要的是 pack/ 前缀，不改写就是整批丢图）；
     #      full       → 不需要（资源都在 pack/ 原地，宿主自己就能读）。
     $needsSrcRewrite = $isThinPack -or $isSubpackagePack
-    if ($isSubpackagePack) {
+    if ($isWasmInPackRemote) {
+        # 第四形态：需要改写 src 的原因是**重资源在 CDN**（不是 mainpack→pack 前缀），
+        # 所以这条用例必须带远端。不带远端时 boot 会先因"包内只有骨架"404 失败，
+        # 掩盖掉真正要验的那件事（宿主不让改写 src 时必须响亮失败）——实测踩过。
+        $frozenLoudArgs = @("--image-src-frozen", "--remote", "thin", "--remote-root", $assetPackDir)
+    }
+    elseif ($isSubpackagePack) {
         $frozenLoudArgs = @("--image-src-frozen")
     }
     else {
@@ -644,14 +982,42 @@ if (-not $SkipRuntime) {
     #     这是"没有异常、没有错误、就是不动"的一类卡死。启动看门狗必须报警，而且必须
     #     **把"启动超时"画到画布上**——真机/开发者工具里没有控制台，只 console.error 等于
     #     还是黑屏。超时走存储注入压到 1s（默认 10s），否则一条用例要等 10 秒进不了质量门。
+    #
+    # 第 77/78 轮修：只给 `--image-src-silent` **造不出卡死** —— 实测 7 张贴图仍 pending 而 boot
+    # 照样 settle（`images_loaded=0 image_failures=0 boot=booted`）。适配层的启动链是
+    # 「分包挂载 → wasm → 字体（同步）→ Lua boot」，**贴图不在等待集合里**（首屏不等贴图是刻意
+    # 设计）。所以卡死要造在 boot 真等的那一环上，而每个形态"真等的那一环"不同：
+    #   · 分包形态：内核就在 pack/ 里 ⇒ 等分包下载 ⇒ `--subpackage silent`（宿主收下
+    #     loadSubpackage 与进度注册、永不回调）；
+    #   · 瘦首包/远端形态：骨架在包里、重资源在 CDN ⇒ 等那一次下载 ⇒ `--remote silent`
+    #     （宿主收下 request/downloadFile、永不回调；配置里的 timeoutMs 特意放大到 120s，
+    #     否则"挂起"会被客户端自己的 3s 超时终结，那就不是挂起了）。
+    # 两个静默一起给：形态判定取产物自身（`game.json` 分包声明 / `remote-assets.json`），不猜。
     $stallArgs = @("--image-src-silent", "--expect-boot-stall", "--boot-timeout-ms", "1000", "--boot-deadline-ms", "6000")
-    if ($isThinPack) { $stallArgs += @("--remote", "thin", "--remote-root", $assetPackDir) }
+    if ($isSubpackagePack) { $stallArgs += @("--subpackage", "silent") }
+    if ($isThinPack) { $stallArgs += @("--remote", "silent", "--remote-root", $assetPackDir) }
     $stallCase = Invoke-HarnessCase -ExtraArgs $stallArgs -Label "boot-stall-watchdog"
     if ($stallCase.ExitCode -ne 0) { throw "启动卡死时看门狗没有兜住（--image-src-silent --expect-boot-stall, exit $($stallCase.ExitCode)）" }
     if (-not ($stallCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_negative_ok case=boot-stall" })) {
-        throw "启动卡死用例未输出 wechat_minigame_harness_negative_ok case=boot-stall（看门狗自证没有被验证）"
+        $stallVacuous = @($stallCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_negative_vacuous case=boot-stall" })
+        if ($stallVacuous.Count -gt 0) {
+            # 卡死没造出来：boot 在截止时间前就正常结算了。剩下的唯一解释是 **full 形态**
+            # （既没有分包、也没有远端配置）：资源全在代码包里，boot 的等待集合
+            # （分包 → wasm → 字体 → Lua boot）全是本地快速路径，**没有网络等待可静默**。
+            # 这一形态今天覆盖不到看门狗 —— 明写出来，而不是把断言放宽成"空转也通过"。
+            # （分包形态、瘦首包/远端形态都必须真的卡死，否则等于看门狗不再被验证。）
+            if (-not $isSubpackagePack -and -not $isThinPack) {
+                Write-Host "    [跳过] 启动看门狗自证：full 形态 boot 的等待集合里没有可静默的网络资源（$($stallVacuous[0].Trim())）"
+            }
+            else {
+                throw "启动卡死本该发生却没发生，看门狗自证没有被验证：$($stallVacuous[0].Trim())"
+            }
+        }
+        else {
+            throw "启动卡死用例未输出 wechat_minigame_harness_negative_ok case=boot-stall（看门狗自证没有被验证）"
+        }
     }
-    if (-not ($stallCase.Lines | Where-Object { $_ -match "on_screen=yes" })) {
+    elseif (-not ($stallCase.Lines | Where-Object { $_ -match "on_screen=yes" })) {
         throw "启动卡死用例里看门狗只报了警、没画到屏幕上（玩家看到的仍是黑屏）"
     }
 
@@ -683,6 +1049,97 @@ if (-not $SkipRuntime) {
     if ($frozenHost.ExitCode -ne 0) { throw "宿主全局被冻结时未按预期响亮失败（exit $($frozenHost.ExitCode)）" }
     if (-not ($frozenHost.Lines | Where-Object { $_ -match "case=host-document-frozen" })) {
         throw "宿主全局被冻结的用例未输出 wechat_minigame_harness_negative_ok case=host-document-frozen"
+    }
+
+    # 6.5) 玩法驱动（`-DriveJhyt`）：微信侧**没有 URL 旋钮**，所以"点开始新游戏 → 按住方向键
+    #      主角真的走"这条玩法链路一直只有 webgl 的 `-DriveJhyt` 在测。harness 侧的驱动本来就有
+    #      （`--drive-new-game --drive-move N`：标题按确认 → `scene.load` 换场景 → 按住 'w' N 帧 →
+    #      比对 `data-rustlua-world` 里的主角坐标），缺的是验收脚本这条通道。
+    # 为什么它对 WP8 是前置：拆旧 JS 世界之前，必须先有"微信上玩法真的能玩"的机器判据，
+    # 否则拆完只剩"启动没报错"，而玩法是半死的（历史上正是"能进图但不能玩"这种状态全绿过）。
+    # 断言两层，缺一不可（第 77 轮的教训：用例"跑了但没生效"必须变成红灯）：
+    #   ① 用例 exit=0（harness 自己在"一动没动"时会报红）；
+    #   ② 自报里必须真的出现非零位移 `move=… d=dx,dy`，否则说明这段驱动根本没执行。
+    if ($DriveJhyt) {
+        $driveArgs = @("--frames", "120", "--drive-new-game", "--drive-move", "12")
+        if ($isThinPack) { $driveArgs += @("--remote", "thin", "--remote-root", $assetPackDir) }
+        $driveCase = Invoke-HarnessCase -ExtraArgs $driveArgs -Label "drive-gameplay"
+        if ($driveCase.ExitCode -ne 0) { throw "微信侧玩法驱动失败（--drive-new-game --drive-move 12, exit $($driveCase.ExitCode)）" }
+        $driveOk = @($driveCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_ok" })
+        if ($driveOk.Count -eq 0) { throw "玩法驱动用例未输出 wechat_minigame_harness_ok（世界/运动断言没有被验证）" }
+        $moveField = ($driveOk[0] -split 'move=')[1]
+        if (-not $moveField) { throw "玩法驱动用例的自报里没有 move= 字段（驱动没有执行）" }
+        $moveText = ($moveField -split ' touch_stick=')[0].Trim().Trim('"')
+        $dm = [regex]::Match($moveText, 'd=(-?\d+),(-?\d+)')
+        if (-not $dm.Success) { throw "玩法驱动的位移读数无法解析（move=$moveText）" }
+        $dx = [int]$dm.Groups[1].Value; $dy = [int]$dm.Groups[2].Value
+        if (($dx -eq 0) -and ($dy -eq 0)) {
+            throw "玩法驱动：按住方向键 12 帧后主角一动没动（move=$moveText）—— 输入桥接→物理→回写这条链路在微信侧没生效"
+        }
+        Write-Host ("    [玩法] " + $moveText)
+        # WP7-60 的**非空洞**断言落在这里：这条用例真的按了方向键、主角真的在走，所以
+        # Lua 侧的变换表里必然有存活实体在变 ⇒ `tlines` 必须为正，且仍要小于"每帧全量重发"的
+        # 上限（否则说明按变化发没生效，只是恰好这一局没红）。默认用例跑的是标题画面
+        # （`alive=0`，没有走 Lua 变换通道的实体），那里的 `tlines` 只能是 0——两者合起来
+        # 才把"机制生效"和"空洞通过"分开。
+        $driveLine = $driveOk[0]
+        if ($driveLine -match 'export_readout="pulls=\d+ state=(\d+) tlines=(\d+)') {
+            $driveTlines = [int]$matches[2]
+            $driveAlive = if ($driveLine -match 'alive=(\d+)') { [int]$matches[1] } else { 0 }
+            $driveFrames = if ($driveLine -match '(?:^|\s)frames=(\d+)') { [int]$matches[1] } else { 0 }
+            if ($driveAlive -le 0) {
+                throw ("玩法驱动：world 读数里 alive={0}（按变化发的机制在这条用例上仍然空洞）" -f $driveAlive)
+            }
+            if ($driveTlines -le 0) {
+                throw ("玩法驱动：alive={0} 却一行 T 都没发——按变化发的影子表把该发的也吞了" -f $driveAlive)
+            }
+            if ($driveTlines -ge ($driveFrames * $driveAlive)) {
+                throw ("玩法驱动：T 行仍是每帧全量重发（tlines={0} >= 帧数×实体数={1}）——按变化发没生效" -f `
+                    $driveTlines, ($driveFrames * $driveAlive))
+            }
+            Write-Host ("    [状态] tlines={0}（alive={1} 帧数={2}，全量上限 {3}）" -f `
+                $driveTlines, $driveAlive, $driveFrames, ($driveFrames * $driveAlive))
+              # WP7-63：把**进图之后**的载荷基线也印出来（标题画面那组读数不代表真的玩起来的时候）。
+              # 第 91 轮只在这里印了 tlines，于是"进图后状态/UI 载荷多大"一直是个洞——
+              # 而"要不要换二进制批量"正是靠它判定的，所以先补上这个洞。
+              $driveBytes = [regex]::Match($driveLine, 'state=(\d+)').Groups[1].Value
+              $driveUi = [regex]::Match($driveLine, 'ui=(\d+)').Groups[1].Value
+              $driveUiSame = [regex]::Match($driveLine, 'uiSame=(\d+)').Groups[1].Value
+              $driveUiI = [regex]::Match($driveLine, 'uiI=(\d+):(\d+)')
+              Write-Host ("    [载荷] state={0} B / ui={1} B / uiSame={2} 帧 / 图片 {3} 行 {4} B（共 {5} 帧）" -f `
+                  $driveBytes, $driveUi, $driveUiSame, $driveUiI.Groups[1].Value, $driveUiI.Groups[2].Value, $driveFrames)
+              # WP7-64：这两个导出的**实测开销**（微秒累计 + 单帧最大；只在诊断开启时有值）。
+              # 前面几轮量到的是规模（字节/行数），从这里开始量时间——"值不值得优化"要靠它判。
+              $driveStateUs = [regex]::Match($driveLine, 'stateUs=(\d+)').Groups[1].Value
+              $driveUiUs = [regex]::Match($driveLine, 'uiUs=(\d+)').Groups[1].Value
+              $driveStateMax = [regex]::Match($driveLine, 'stateMaxUs=(\d+)').Groups[1].Value
+              $driveUiMax = [regex]::Match($driveLine, 'uiMaxUs=(\d+)').Groups[1].Value
+              Write-Host ("    [开销] state 导出 {0} µs 累计 / 单帧最大 {1} µs；ui 导出 {2} µs 累计 / 单帧最大 {3} µs（{4} 帧）" -f `
+                  $driveStateUs, $driveStateMax, $driveUiUs, $driveUiMax, $driveFrames)
+        # WP7-89：**确定性**断言 —— 同一份输入剧本跑两遍，**画布无关的计数**必须逐项相同。
+        # 为什么它是 WP8 的前置：接管（引擎宿主 / GPU 渲染）之后的 A/B 比较，前提是"同一输入序列 ⇒ 同一读数"；
+        # 否则两遍之间的差异分不清是"接管造成的"还是"这一局本来就不一样"。
+        # 只比计数，不比时间：µs/slow2ms 在本机抖动约 5%，比它等于自找红灯（第 105 轮的测量纪律）。
+        $driveCase2 = Invoke-HarnessCase -ExtraArgs $driveArgs -Label "drive-gameplay-repeat"
+        if ($driveCase2.ExitCode -ne 0) { throw "确定性用例（第二遍）失败（exit $($driveCase2.ExitCode)）" }
+        $driveOk2 = @($driveCase2.Lines | Where-Object { $_ -match "wechat_minigame_harness_ok" })
+        if ($driveOk2.Count -eq 0) { throw "确定性用例（第二遍）未输出 wechat_minigame_harness_ok" }
+        $driveLine2 = $driveOk2[0]
+        $detFields = @('state=(\d+)', 'tlines=(\d+)', 'ui=(\d+)', 'uiSame=(\d+)', 'uiP=(\d+):(\d+)', 'xc=([\d/]+)', 'tiles=([\d/]+)', 'culled=(\d+)', 'drawn=(\d+)', 'draw_ops=(\d+)', 'alive=(\d+)', 'frames=(\d+)')
+        $detDiffs = @()
+        foreach ($detPat in $detFields) {
+            $detA = [regex]::Match($driveLine, $detPat).Value
+            $detB = [regex]::Match($driveLine2, $detPat).Value
+            if ($detA -ne $detB) { $detDiffs += ("{0}: 第一遍 [{1}] / 第二遍 [{2}]" -f $detPat, $detA, $detB) }
+        }
+        if ($detDiffs.Count -gt 0) {
+            throw ("玩法驱动**不确定**：同一份输入剧本两遍读数不同 —— 接管前后的 A/B 无法成立：`n  - " + ($detDiffs -join "`n  - "))
+        }
+        Write-Host ("    [确定性] 同一输入剧本两遍读数逐项相同（{0} 个计数）" -f $detFields.Count)
+        } else {
+
+            throw "玩法驱动：自报里缺 state=/tlines= 读数，无法验证按变化发"
+        }
     }
 
     # 7) 渲染自证：小游戏宿主没有 DOM 控制台，"流程正常但屏幕全黑" 必须能自证。

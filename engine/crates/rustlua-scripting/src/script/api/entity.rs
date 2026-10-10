@@ -52,11 +52,17 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     entity.set(
         "find",
         lua.create_function(move |_, name: String| {
-            Ok(s.lua_borrow()?
-                .entity_state
-                .names
-                .get(&name)
-                .map(entity_to_lua))
+            let state = s.lua_borrow()?;
+            let Some(id) = state.entity_state.names.get(&name) else {
+                return Ok(None);
+            };
+            // **死活校验**：名字表里留着一个已经死掉的句柄是可能的（第 58 轮 webgl 产物上实测到
+            // `invalid entity id: EntityId(0:g13)`——`ScaleBar` 在场景里确实存在、脚本每次调用都
+            // 重新 `entity.find`，但拿到的句柄代际已经过期，直到真正使用时才被引擎拒掉）。
+            // 语义与同文件的 `is_alive` 一致："不合法/不在了"在这里就是 `nil`；
+            // 也与 `persist_id` 的注册路径（那里已经先问 `world.is_alive`）一致。
+            // 返回死句柄没有任何好处：调用方拿它做任何事都只会得到一句 `invalid entity id`。
+            Ok(state.world.is_alive(id).then_some(entity_to_lua(id)))
         })?,
     )?;
     let s = Rc::clone(&state);

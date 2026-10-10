@@ -14,6 +14,292 @@
     return fallback;
   }
 
+  // `[input]` 段的菜单导航手感：与引擎 `parse_nav_section`
+  // （rustlua-gameplay/src/settings.rs:751）逐条同语义 —— 只认 `[input]` 段、同名键取首次出现、
+  // 毫秒键优先于旧帧键（帧键按 60Hz 换算）、数值统一按 `NavSettings::new` 钳制。
+  // 键名与常量一一对应：nav_threshold / nav_delay_ms / nav_repeat_ms / nav_delay_frames /
+  // nav_repeat_frames（settings.rs:71-84）。
+  function parseNavSection(text) {
+    const DEFAULT = { threshold: 0.5, delayMs: 350, repeatMs: 90 };
+    const MAX_MS = 5000;
+    const MIN_REPEAT_MS = 16;
+    let threshold = null;
+    let delayMs = null;
+    let repeatMs = null;
+    let delayFrames = null;
+    let repeatFrames = null;
+    let section = '';
+    // 与引擎同：整数优先，其次按浮点取整（负值按 0）。返回 null 表示"这一行不是合法数值"。
+    const parseNum = (value) => {
+      if (/^\d+$/.test(value)) return Number(value);
+      const f = Number(value);
+      if (!Number.isFinite(f)) return null;
+      return Math.trunc(Math.max(0, f));
+    };
+    for (const raw of String(text || '').split(/\r?\n/)) {
+      const line = raw.trim().replace(/^\uFEFF/, '').trim();
+      if (!line || line.startsWith('#')) continue;
+      if (line.startsWith('[') && line.endsWith(']')) {
+        section = line.slice(1, -1).trim().toLowerCase();
+        continue;
+      }
+      if (section !== 'input') continue;
+      const eq = line.indexOf('=');
+      if (eq < 0) continue;
+      const key = line.slice(0, eq).trim().toLowerCase();
+      const value = line.slice(eq + 1).trim().replace(/^"|"$/g, '');
+      if (key === 'nav_threshold' && threshold === null) {
+        const f = Number(value);
+        if (Number.isFinite(f)) threshold = f;
+      } else if (key === 'nav_delay_ms' && delayMs === null) {
+        delayMs = parseNum(value);
+      } else if (key === 'nav_repeat_ms' && repeatMs === null) {
+        repeatMs = parseNum(value);
+      } else if (key === 'nav_delay_frames' && delayFrames === null) {
+        delayFrames = parseNum(value);
+      } else if (key === 'nav_repeat_frames' && repeatFrames === null) {
+        repeatFrames = parseNum(value);
+      }
+    }
+    // 旧帧键 → 毫秒（60Hz），与 NavSettings::frames_to_ms 同式。
+    const framesToMs = (frames) => Math.round(Math.max(0, frames) * (1000 / 60));
+    const delay = delayMs !== null ? delayMs : (delayFrames !== null ? framesToMs(delayFrames) : DEFAULT.delayMs);
+    const repeat = repeatMs !== null ? repeatMs : (repeatFrames !== null ? framesToMs(repeatFrames) : DEFAULT.repeatMs);
+    const clampedThreshold = Number.isFinite(threshold) ? Math.min(1, Math.max(0, threshold)) : DEFAULT.threshold;
+    return {
+      threshold: clampedThreshold,
+      delayMs: Math.min(delay, MAX_MS),
+      repeatMs: Math.min(Math.max(repeat, MIN_REPEAT_MS), MAX_MS),
+    };
+  }
+
+  // `[input].map` 的解析：与引擎 `parse_input_section`（rustlua-gameplay/src/settings.rs:347）
+  // + `ActionMap::from_text_with_notes`（rustlua-input/src/input.rs:1006）同语义：
+  //   * 只认 `[input]` 段、同名键取首次出现；
+  //   * map 值是 TOML 基本字符串（`\n` 是转义换行），首行是版本头
+  //     （`rustlua-actions-v2`；v1 的键位写作字符名，走同一套换算）；
+  //   * 每行 `action = item,item,…`；条目 `key:<物理键名>` / `mouse:…` / `pad:N` / `padaxis:N±`。
+  // 返回 { bindings, keyed, padOnly, unmapped, header }：bindings 只含**键盘**可用项
+  // （web 没有手柄轮询，pad/mouse 记数但不参与匹配）。
+  function parseInputMap(text) {
+    let section = '';
+    let raw = null;
+    for (const line of String(text || '').split(/\r?\n/)) {
+      const trimmed = line.trim().replace(/^\uFEFF/, '').trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+        section = trimmed.slice(1, -1).trim().toLowerCase();
+        continue;
+      }
+      if (section !== 'input' || raw !== null) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq < 0) continue;
+      if (trimmed.slice(0, eq).trim().toLowerCase() !== 'map') continue;
+      let value = trimmed.slice(eq + 1).trim();
+      if (value.startsWith('"') && value.endsWith('"')) value = value.slice(1, -1);
+      // TOML 基本字符串的转义：本文件只需要 \n（map 的多行就靠它）。
+      raw = value.replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+    }
+    const out = { bindings: {}, keyed: [], padOnly: [], unmapped: [], aliased: [], header: '' };
+    if (raw === null) return out;
+    const lines = raw.split('\n');
+    out.header = (lines.shift() || '').trim();
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq < 0) continue;
+      const action = trimmed.slice(0, eq).trim();
+      const keys = [];
+      let padSeen = false;
+      for (const item of trimmed.slice(eq + 1).split(',')) {
+        const entry = item.trim();
+        if (!entry) continue;
+        if (entry.startsWith('key:')) {
+          const name = entry.slice(4).trim().toLowerCase();
+          const mapped = physicalKeyToName(name);
+          if (mapped === null) out.unmapped.push(name);
+          else {
+            keys.push(mapped);
+            // 有损合并要**计数**：工程绑 `key:shiftleft` 时 web 上右 Shift 也会响应，
+            // 这是宿主能力所限、不是解析错误 —— 但读数里必须看得见它发生过（第 74 轮）。
+            if (physicalKeyIsLossy(name)) out.aliased.push(name);
+            // **物理键语义**：引擎的 `key:equal` 认的是物理键，按下 Shift 也命中
+            // ⇒ 本侧必须同时接受该物理键的两个字符产出（'=' 与 '+'、'-' 与 '_'）。
+            // 硬编码表当年就是成对写的；只取一个会在"按住 Shift 调音量"这类操作上静默失效。
+            if (mapped === '=') keys.push('+');
+            if (mapped === '-') keys.push('_');
+          }
+        } else if (entry.startsWith('pad:') || entry.startsWith('padaxis:') || entry.startsWith('mouse:')) {
+          padSeen = true;
+        } else {
+          out.unmapped.push(entry);
+        }
+      }
+      if (keys.length > 0) {
+        out.bindings[action] = keys;
+        out.keyed.push(action);
+      } else if (padSeen) {
+        out.padOnly.push(action);
+      }
+    }
+    return out;
+  }
+
+  // v2 物理键名（`KeyCode::to_text`，全小写）→ 本侧输入层的键名（`createWebInput` 的
+  // `keyName()`，取自 `event.key` 小写 + 'space'/方向名）。对不上的返回 null 让调用方计入
+  // unmapped —— 不静默当成"没有这个绑定"。
+  // 引擎物理键名 → 本侧键名。**有损**的那些单独列出来（见 LOSSY_PHYSICAL_KEYS）：
+  // 本侧键名取自 `event.key`，它分不出左右修饰键、也分不出小键盘与主键盘同形键
+  // ⇒ 这些名字只能**合并**。合并本身是唯一可行的做法，但不能默默做：
+  // 工程要是绑了 `key:shiftleft`，web 上它同时响应右 Shift —— 这件事必须能被测出来。
+  const SIMPLE_KEY_NAMES = {
+    // 名字与 `event.key` 小写同形，直接放行。
+    space: 'space',
+    escape: 'escape',
+    enter: 'enter',
+    tab: 'tab',
+    backspace: 'backspace',
+    delete: 'delete',
+    home: 'home',
+    end: 'end',
+    pageup: 'pageup',
+    pagedown: 'pagedown',
+    insert: 'insert',
+    capslock: 'capslock',
+    numlock: 'numlock',
+    scrolllock: 'scrolllock',
+    printscreen: 'printscreen',
+    pause: 'pause',
+    contextmenu: 'contextmenu',
+    // 引擎给的是**物理键名**，浏览器 `event.key` 给的是**该键产出的字符**。
+    // 物理键语义（按下 Shift 也算这个键）在这里兑现：等号/减号还要同时接受 '+' 与 '_'，
+    // 由 parseInputMap 补（硬编码表当年就是成对写的）。
+    equal: '=',
+    minus: '-',
+    backquote: '`',
+    bracketleft: '[',
+    bracketright: ']',
+    backslash: '\\',
+    semicolon: ';',
+    quote: "'",
+    comma: ',',
+    period: '.',
+    slash: '/'
+  };
+  // 左右修饰键合并成一个名字，小键盘与主键盘同形键也合并（`event.key` 给的字符一样）。
+  const LOSSY_PHYSICAL_KEYS = {
+    shiftleft: 'shift',
+    shiftright: 'shift',
+    controlleft: 'control',
+    controlright: 'control',
+    altleft: 'alt',
+    altright: 'alt',
+    superleft: 'meta',
+    superright: 'meta',
+    numpadadd: '+',
+    numpadsubtract: '-',
+    numpadmultiply: '*',
+    numpaddivide: '/',
+    numpaddecimal: '.',
+    numpadequal: '=',
+    numpadenter: 'enter'
+  };
+  function physicalKeyToName(name) {
+    if (Object.prototype.hasOwnProperty.call(SIMPLE_KEY_NAMES, name)) return SIMPLE_KEY_NAMES[name];
+    if (Object.prototype.hasOwnProperty.call(LOSSY_PHYSICAL_KEYS, name)) return LOSSY_PHYSICAL_KEYS[name];
+    const digit = name.match(/^digit([0-9])$/);
+    if (digit) return digit[1];
+    const numpad = name.match(/^numpad([0-9])$/);
+    if (numpad) return numpad[1];
+    const arrow = name.match(/^arrow([a-z]+)$/);
+    if (arrow) return arrow[1];
+    const key = name.match(/^key([a-z])$/);
+    if (key) return key[1];
+    // 功能键 F1..F24：`event.key` 就是 'f1' 同形，直接放行。
+    if (/^f([1-9]|1[0-9]|2[0-4])$/.test(name)) return name;
+    // v1 的字符名（`key:e`、`key:1`、`key:up`、`key:+`）与上表同形，走到这里就是单个字符。
+    if (/^[a-z0-9+\-_=]$/.test(name)) {
+      if (name === '+') return '=';
+      return name;
+    }
+    return null;
+  }
+  // 该物理键名是否在 web 上**有损合并**（左右修饰键、小键盘同形键、数字小键盘）。
+  function physicalKeyIsLossy(name) {
+    if (Object.prototype.hasOwnProperty.call(LOSSY_PHYSICAL_KEYS, name)) return true;
+    return /^numpad[0-9]$/.test(name);
+  }
+
+  // 反向映射：本侧键名 → 引擎绑定文本（`Binding::to_text` 形如 `key:keyj`，物理键名全小写）。
+  // 给不出的返回 null，让调用方**报错**而不是造一个假绑定文本（假文本会被游戏侧当真的解析）。
+  function keyNameToBindingText(key) {
+    const name = String(key || '');
+    if (name === 'space') return 'key:space';
+    if (name === 'escape') return 'key:escape';
+    if (name === 'enter') return 'key:enter';
+    if (name === 'tab') return 'key:tab';
+    if (name === 'backspace') return 'key:backspace';
+    if (name === 'delete') return 'key:delete';
+    if (name === 'home' || name === 'end' || name === 'pageup' || name === 'pagedown') return 'key:' + name;
+    // 字符 → 物理键是**多对一**：Shift+等号与等号是同一个物理键，引擎侧都写作 key:equal。
+    if (name === '=' || name === '+') return 'key:equal';
+    if (name === '-' || name === '_') return 'key:minus';
+    if (/^[0-9]$/.test(name)) return 'key:digit' + name;
+    if (/^[a-z]$/.test(name)) return 'key:key' + name;
+    if (name === 'up' || name === 'down' || name === 'left' || name === 'right') return 'key:arrow' + name;
+    // 第 74 轮新增的正向词汇必须**在这里也有反查**，否则两边不对称：扫描表里全认，读回来是空。
+    // 实测症状：工程写 `move_up=key:shiftleft`，`lua_applied=7` 一切正常，但
+    // `input.bindings('move_up')` 返回**空表**（`action_map_text()` 往返同样会把这个动作丢掉）。
+    // 反查用同一张表，按"无歧义优先"的顺序：简单名在前、有损合并名在后（合并名取**左**变体，
+    // 与 winit 的规范写法一致；右变体在 web 上无法区分，已在 parseInputMap 侧计入 aliased）。
+    for (const engine of Object.keys(SIMPLE_KEY_NAMES)) {
+      if (SIMPLE_KEY_NAMES[engine] === name && name !== '=' && name !== '-') return 'key:' + engine;
+    }
+    if (/^f([1-9]|1[0-9]|2[0-4])$/.test(name)) return 'key:' + name;
+    for (const engine of Object.keys(LOSSY_PHYSICAL_KEYS)) {
+      if (LOSSY_PHYSICAL_KEYS[engine] === name) return 'key:' + engine;
+    }
+    // WP7-102：`event.code` 给出的**物理名**（shiftleft/shiftright/…）直接放行。
+    // 没有这一条，keyName 返回物理名后这里会落到 null ⇒ 反而比合并更糟（绑定整条失效）。
+    if (Object.prototype.hasOwnProperty.call(LOSSY_PHYSICAL_KEYS, name)) return 'key:' + name;
+    return null;
+  }
+
+  // 引擎绑定文本 → 本侧键名集合，返回 [kind, ...keys]（kind: key|pad|mouse|invalid）。
+  // pad/mouse 照引擎**算合法**，但本侧没有手柄轮询（鼠标走 mouse_* 一族、不参与动作匹配）
+  // ⇒ keys 为空：调用方据此走"文本合法但本侧匹配不到"的分支并登记降级，不假装它可用。
+  function bindingTextToKeys(text) {
+    const raw = String(text || '').trim();
+    const colon = raw.indexOf(':');
+    if (colon < 0) return ['invalid'];
+    const kind = raw.slice(0, colon).toLowerCase();
+    const value = raw.slice(colon + 1).trim().toLowerCase();
+    if (kind === 'pad' || kind === 'padaxis' || kind === 'mouse') {
+      if (kind === 'pad') return /^[0-9]+$/.test(value) ? ['pad'] : ['invalid'];
+      if (kind === 'padaxis') return /^[0-9]+[+-]$/.test(value) ? ['pad'] : ['invalid'];
+      if (/^(left|right|middle)$/.test(value) || /^other:[0-9]+$/.test(value)) return ['mouse'];
+      return ['invalid'];
+    }
+    if (kind !== 'key') return ['invalid'];
+    const mapped = physicalKeyToName(value);
+    if (mapped === null) return ['invalid'];
+    const keys = [mapped];
+    if (mapped === '=') keys.push('+');
+    if (mapped === '-') keys.push('_');
+    return ['key'].concat(keys);
+  }
+
+  // 把工程键位表编成一小段 Lua 赋值（一次，启动期；不跨帧）。用 luaQuote 保证转义交给唯一实现。
+  function luaBindingsSource(bindings) {
+    const parts = [];
+    for (const action of Object.keys(bindings)) {
+      const keys = bindings[action].map(key => luaQuote(key)).join(', ');
+      parts.push('[' + luaQuote(action) + '] = {' + keys + '}');
+    }
+    return '__rustlua_project_bindings = {' + parts.join(', ') + '}';
+  }
+
   function parseProps(text) {
     const out = {};
     for (const part of String(text || '').split(';')) {
@@ -55,6 +341,10 @@
   // 失败一次（`ensureTexture` 不缓存失败）——实测 10-06 新包 240 帧内 234 张贴图读取
   // 失败、整条微信运行时用例红。
   const WHITE_TEXTURE_PATH = '__white__';
+  // 可见层常量（rustlua-render/src/visibility.rs:26 的 ALL_LAYERS = u32::MAX）。
+  // **缺 Visibility 组件 ≠ 0 层**：引擎 entity_visible_in 对没有组件的实体按 view_mask != 0 判，
+  // 语义是"全可见"，所以这里也用 ALL_LAYERS 表示，绝不能用 0。
+  const ALL_LAYERS = 4294967295;
 
   function isWhiteTexture(path) {
     return path === WHITE_TEXTURE_PATH;
@@ -650,6 +940,34 @@
         color: parseColor(fields.color, [1, 1, 1])
       };
     }
+    // 世界空间文字（场景里的 WorldText 组件 / world_text.attach）：锚在实体的**世界位置**上、
+    // 随相机移动，与屏幕空间的 UI Text（drawUi 那两趟）是两条路。引擎侧结构是
+    // WorldText { text: UiText, offset: [f32;2], centered: bool }——字体字段与 UI Text 同一套。
+    if (entity.components.WorldText) {
+      const fields = parseComponentFields(entity.components.WorldText);
+      const offset = String(fields.offset || '0,0').split(',').map(Number);
+      entity.worldText = {
+        value: fields.text || '',
+        size: Number(fields.font_size) || 24,
+        color: parseColor(fields.color, [1, 1, 1]),
+        offsetX: Number.isFinite(offset[0]) ? offset[0] : 0,
+        offsetY: Number.isFinite(offset[1]) ? offset[1] : 0,
+        centered: fields.centered === 'true' || fields.centered === '1'
+      };
+    } else {
+      // detach 语义：组件真的没了就必须**停止绘制**，而不是留着上一次的副本继续画。
+      delete entity.worldText;
+    }
+    // 可见层组件（visibility，WP7-34）：场景里目前**没有**任何实体写它（typed_scene 的组件表
+    // 还没覆盖 Visibility，见 examples/game_api/scenes/main.scene 的注释），因此这条解析
+    // 是为运行期 visibility.set 补的组件串回读路径；缺组件时保持"全可见"。
+    if (entity.components.Visibility) {
+      const fields = parseComponentFields(entity.components.Visibility);
+      const layers = Number(fields.layers);
+      entity.layers = Number.isFinite(layers) ? (layers >>> 0) : ALL_LAYERS;
+    } else if (entity.layers === undefined) {
+      entity.layers = ALL_LAYERS;
+    }
   }
 
   function loadImage(path) {
@@ -720,11 +1038,16 @@
       scroll: 0
     };
     const keyName = event => {
-       const key = String(event.key || '').toLowerCase();
-       if (key === ' ') return 'space';
-       if (key.startsWith('arrow')) return key.slice(5);
-       return key;
-     };
+      // WP7-102：`event.code` **只**用在"已枚举的有损合并"上（左右修饰键、小键盘同形键），
+      // 其余键名继续沿用 `event.key` —— 键名空间的变化因此是**可枚举、可测试**的。
+      // 改这里必须**同时**看 keyNameToBindingText（名字换算只有一份权威），否则绑定会静默失效。
+      const code = String(event.code || '').toLowerCase();
+      if (code && Object.prototype.hasOwnProperty.call(LOSSY_PHYSICAL_KEYS, code)) return code;
+      const key = String(event.key || '').toLowerCase();
+      if (key === ' ') return 'space';
+      if (key.startsWith('arrow')) return key.slice(5);
+      return key;
+    };
     window.addEventListener('keydown', event => {
       const key = keyName(event);
       if (!state.keys[key]) state.just[key] = true;
@@ -806,10 +1129,26 @@
   //   A  动画当前 clip + **帧序号**（不是累计 tick，引擎 current_frame 的算法在 Lua 侧）
   // 结构行（R/S/X/C/U/L/I/J/Z/D）由 op 列表一次性发出，T/A 每帧对存活实体重发。
   function syncLuaScene(sceneState, text) {
-    for (const line of String(text || '').split(/\r?\n/)) {
+    const payload = String(text || '');
+    // WP7-60：每帧状态载荷的字节数——这是"状态导出要不要换二进制"这个问题的**基线**，
+    // 纯 JS 侧读长度、无额外跨界，所以常驻不心疼（读数只认一个来源）。
+    stateBytes += payload.length;
+    for (const line of payload.split(/\r?\n/)) {
       if (!line) continue;
       const parts = line.split('\t');
       const id = Number(parts[1]);
+      if (parts[0] === 'H') {
+        // 隐藏文本集（WP7-59）：跟状态**同一份载荷**到达，帧循环因此不必再单独拉一次
+        // `__rustlua_export_scene_text_hidden`（每帧少一次跨界 + 少一次 Set 重建）。
+        // **空行同样要覆盖**：脚本把名字恢复可见之后，旧名单必须真的消失。
+        // 它不参与实体解析，所以先处理并 `continue`（`parts[1]` 在这里是名字表，不是 id）。
+        p2SceneTextHidden = new Set();
+        for (const name of (parts[1] ? String(parts[1]).split(',') : [])) {
+          if (name) p2SceneTextHidden.add(name);
+        }
+        sceneTextHiddenFromState = true;
+        continue;
+      }
       if (parts[0] === 'R') {
         // 运行期实体：entity.spawn 只建实体不建外观，后续的 S/X/T 行才把它画出来。
         const existing = sceneState.entities.get(id);
@@ -830,6 +1169,9 @@
       const entity = sceneState.entities.get(id);
       if (!entity) continue;
       if (parts[0] === 'T') {
+        // WP7-60：这里收到几行 T，就是 Lua 侧**真的发了**几行（未变的实体不发）。
+        // 这个计数是门用来证明"按变化发"确实生效的证据：全量重发是 帧数 × 存活实体数。
+        stateTransformLines += 1;
         entity.transform = { x: Number(parts[2] || 0), y: Number(parts[3] || 0), rotation: Number(parts[4] || 0), scale_x: Number(parts[5] || 1), scale_y: Number(parts[6] || 1) };
       } else if (parts[0] === 'A') {
         const previous = entity.animation || { clips: {} };
@@ -837,6 +1179,68 @@
       } else if (parts[0] === 'S') {
         entity.components.Sprite = parts.slice(2).join('\t');
         applyComponents(entity);
+      } else if (parts[0] === 'Q') {
+        // `quad.set`（WP7-30）：与 S 行同构——整串交给同一份 applyComponents，
+        // 缺省字段的默认值由渲染侧那份解析决定，Lua 侧不另立一套。
+        entity.components.Quad = parts.slice(2).join('\t');
+        applyComponents(entity);
+      } else if (parts[0] === 'W') {
+        // world_text.attach / detach：非空串 = 挂上，空串 = 摘掉（"真的移除了"由 Lua 侧返回，
+        // 这里只负责让渲染侧跟着变——空串删组件才会停止绘制）。
+        const spec = parts.slice(2).join('\t');
+        if (spec) {
+          entity.components.WorldText = spec;
+        } else {
+          delete entity.components.WorldText;
+        }
+        applyComponents(entity);
+      } else if (parts[0] === 'V') {
+        // visibility.set：层掩码变了要影响**绘制**——引擎是"不在视图里就不产顶点"，
+        // 不是"画成透明"。0 表示在任何视图里都不画。
+        entity.layers = Number(parts[2]) >>> 0;
+      } else if (parts[0] === 'K') {
+        // 行字母选 K：C 已经被「格子值」占用（见下面那个 C 分支），用它会把瓦片格更新遮蔽掉。
+        // camera.set_active：本侧只有一个"主动相机"概念，用它决定相机变焦的来源。
+        activeCameraId = Number(parts[1]);
+      } else if (parts[0] === 'E') {
+        // camera2d 的**请求**（行字母 E：上面这套 if/else 链里 E 未被占用，插入前已核对）。
+        // `E\t<动词>\t…`：center / zoom / follow / unfollow / shake。请求在这里落成渲染侧状态，
+        // 由 computeCamera 消费，再由宿主每帧把结果回填给 Lua ⇒ 脚本 get 到的就是"渲染用的那份"。
+        const verb = parts[1];
+        if (verb === 'center') {
+          camera2dState.center = { x: Number(parts[2]) || 0, y: Number(parts[3]) || 0 };
+          camera2dState.scripted = true;
+        } else if (verb === 'zoom') {
+          const zoom = Number(parts[2]);
+          if (Number.isFinite(zoom) && zoom > 0) {
+            camera2dState.zoom = zoom;
+            camera2dState.scripted = true;
+          }
+        } else if (verb === 'follow') {
+          camera2dState.followId = parts[2] === '-' || parts[2] === undefined ? null : Number(parts[2]);
+          camera2dState.offsetX = Number(parts[3]) || 0;
+          camera2dState.offsetY = Number(parts[4]) || 0;
+          camera2dState.deadX = Number(parts[5]) || 0;
+          camera2dState.deadY = Number(parts[6]) || 0;
+          camera2dState.smoothing = Number(parts[7]) || 0;
+          // follow(nil) 与 unfollow() 在引擎里是同一件事（api/camera.rs:359 `None => None`）：
+          // 清掉跟随目标，相机**停在原地**——不是"回落到默认启发式"。默认启发式（跟名字像 player
+          // 的实体）只是本侧的既有口径，脚本一旦解除跟随就该停住，否则解除动作看起来毫无效果。
+          if (camera2dState.followId === null) freezeCameraHere();
+          camera2dState.scripted = true;
+        } else if (verb === 'unfollow') {
+          camera2dState.followId = null;
+          freezeCameraHere();
+          camera2dState.scripted = true;
+        } else if (verb === 'shake') {
+          const amp = Number(parts[2]) || 0;
+          const duration = Number(parts[3]) || 0;
+          if (amp > 0 && duration > 0) {
+            camera2dState.shakeAmp = amp;
+            camera2dState.shakeLeft = duration;
+            camera2dState.shakeTotal = duration;
+          }
+        }
       } else if (parts[0] === 'X') {
         entity.components.Animation = parts.slice(2).join('\t');
         applyComponents(entity);
@@ -1228,6 +1632,44 @@
   //   * 夹取规则与原生一致：中心 ∈ [半视口, 地图尺寸 - 半视口]；区间非法（地图比视口短）
   //     时取两条界的中点（横版下地图 704 < 视口 720，y 轴因此钉在地图纵向中心）。
   // 没有 tilemap 的场景（标题门面）返回 null ⇒ 世界元素保持原样（屏幕空间，无翻转无相机）。
+  // 视图遮罩与"是否在本视图内"。引擎侧遮罩来自 RuntimeScene.view_world_mask
+  // （默认 ALL_LAYERS，见 runtime_scene/scene.rs:659），判定见
+  // rustlua-render/src/visibility.rs:117 的 entity_visible_in：
+  // 有组件 ⇒ layers & view_mask != 0；没组件 ⇒ view_mask != 0。
+  // 本侧**没有**设置遮罩的入口，所以恒为 ALL_LAYERS ⇒ 默认情形与引擎逐条一致；
+  // 一旦接入遮罩输入，只需改这一个变量（过滤逻辑已经是引擎语义）。
+  let viewWorldMask = ALL_LAYERS;
+  // 主动相机（「camera.set_active」的 C 行写进来）：null = 脚本没设过，行为与以前完全一致。
+  // 已知差异：本侧只让主动相机决定**变焦**；引擎还会用它的 Transform 当视口中心。
+  // 改中心会动到既有工程（jhyt）的画面，故留到与 jhyt 重新验收时一起做（已记入计划）。
+  let activeCameraId = null;
+  // 剧本 update() 返回值的"高水位"（只记非空）：见下面写 data-rustlua-script-result 的地方。
+  let lastScriptResult = '';
+  // 键位读数的**基础串**（来源/工程动作数/未映射数）：启动期算一次、之后不变；
+  // `data-rustlua-bindings` 每帧诊断时由它 + `__rustlua_binding_probe()` 拼出当帧的编辑族计数。
+  let bindingReadoutBase = '';
+  // 诊断 Lua 通道（rustlua-lua-do）的执行状态：none = 没给这条 URL，ok/error: … = 结果。
+  let luaDoStatus = 'none';
+  // camera2d：脚本请求的**落点状态**（渲染侧是唯一真源）。
+  // 引擎侧 set/set_zoom/follow 是"请求、宿主下一帧消费"（api/camera.rs:240），get/get_zoom 读宿主
+  // 回填的真实值 ⇒ 这里同样把请求落成状态、由 computeCamera 消费，再把结果写回 Lua 的
+  // __rustlua_cam_x / __rustlua_cam_y / __rustlua_cam_zoom。三处（Lua get、渲染、screen↔world）
+  // 因此永远读的是**同一份**数值。
+  // 已知差异（诚实登记）：本侧只实现"跟随 + 中心 + 变焦 + 抖动"四种，不实现 dead_zone/smoothing
+  // 的逐帧平滑（参数收下并记录，但不改变取景），因为默认取景本来就是硬跟随。
+  const camera2dState = {
+    center: null,      // 脚本显式 set(x,y) 的中心；优先于 follow 与默认
+    followId: null,    // 脚本 follow(id) 的目标实体（JS 世界的实体 id）
+    zoom: null,        // 脚本 set_zoom(z)
+    offsetX: 0, offsetY: 0, deadX: 0, deadY: 0, smoothing: 0,
+    shakeAmp: 0, shakeLeft: 0, shakeTotal: 0,
+    scripted: false,   // 脚本是否接管过取景（诊断用：区分"默认取景"与"脚本取景"）
+  };
+  function entityVisibleInView(entity) {
+    if (entity.layers === undefined) return viewWorldMask !== 0;
+    return (entity.layers & viewWorldMask) !== 0;
+  }
+
   function computeCamera(sceneState, viewportW, viewportH) {
     let map = null;
     let player = null;
@@ -1238,7 +1680,10 @@
         map = entity.tilemap;
       }
       if (entity.camera && Number(entity.camera.zoom) > 0) {
-        camZoom = Number(entity.camera.zoom);
+        // 主动相机优先；脚本没调过 set_active（null）时沿用原口径（最后一个带相机的实体）。
+        if (activeCameraId === null || entity.id === activeCameraId) {
+          camZoom = Number(entity.camera.zoom);
+        }
       }
       if (!player && entity.transform) {
         const name = String(entity.name || '');
@@ -1248,6 +1693,10 @@
       }
     }
     if (!map) return null;
+    // 脚本的 camera2d.set_zoom 优先于场景里的 Camera 组件：引擎里两者走同一条相机选择链
+    // （api/camera.rs:28-35 的注释），这里让脚本请求排在组件之后、默认之前。
+    const scriptZoom = Number(camera2dState.zoom);
+    if (camera2dState.zoom !== null && scriptZoom > 0) camZoom = scriptZoom;
     const mapW = map.width * map.tile_size;
     const mapH = map.height * map.tile_size;
     // 半视口按 zoom 缩放（与原生 Camera2D::visible_extent = 视口/2/zoom 一致）：
@@ -1256,25 +1705,226 @@
     const halfH = viewportH / 2 / camZoom;
     let cx = mapW / 2;
     let cy = mapH / 2;
-    if (player && player.transform) {
+    // 取景来源优先级：脚本 camera2d.set 的中心 > 脚本 camera2d.follow 的实体 > 默认口径
+    // （名字像 player 的实体）。前两者都是**脚本意图**，所以脚本一接管就不再走默认启发式——
+    // 否则 `follow(player)` 与"碰巧名字里有 player"两条路径会各自算出不同的取景。
+    const followEntity = camera2dState.followId !== null
+      ? sceneState.entities.get(camera2dState.followId)
+      : null;
+    const scriptTarget = camera2dState.center
+      || (followEntity && followEntity.alive !== false && followEntity.transform ? followEntity.transform : null);
+    if (scriptTarget) {
+      cx = Number(scriptTarget.x) || 0;
+      cy = Number(scriptTarget.y) || 0;
+      if (followEntity && followEntity.transform) {
+        cx += Number(camera2dState.offsetX) || 0;
+        cy += Number(camera2dState.offsetY) || 0;
+      }
+    } else if (player && player.transform) {
       cx = player.transform.x;
       cy = player.transform.y;
     }
     const clampAxis = (value, min, max) => (min > max ? (min + max) / 2 : Math.max(min, Math.min(max, value)));
     cx = clampAxis(cx, halfW, mapW - halfW);
     cy = clampAxis(cy, halfH, mapH - halfH);
+    // camera2d.shake：幅度按剩余时间线性衰减、相位用剩余时间推进（引擎的 shake 同样是衰减包络）。
+    // 抖动加在**夹取之后**：抖动越界是允许的（相机被"晃出"地图边缘正是震屏该有的样子）。
+    if (camera2dState.shakeLeft > 0 && camera2dState.shakeAmp > 0) {
+      const envelope = camera2dState.shakeTotal > 0 ? camera2dState.shakeLeft / camera2dState.shakeTotal : 1;
+      const phase = camera2dState.shakeLeft * 60;
+      cx += Math.sin(phase) * camera2dState.shakeAmp * envelope;
+      cy += Math.cos(phase * 1.3) * camera2dState.shakeAmp * envelope;
+    }
     return { x: cx, y: cy, zoom: camZoom };
+  }
+
+  // 本帧的相机（渲染与脚本共用同一份）。
+  // `frameCameraFresh` 是**本帧新鲜**闸门：只有 refreshFrameCamera 刚算过的那一份才允许被
+  // drawScene 复用。别的绘制路径（不走剧本的直绘帧）看到的是 false ⇒ 照旧现算，
+  // 行为与改动前逐字一致——复用绝不能把"上一帧的相机"画出来。
+  let frameCamera = null;
+  let frameCameraFresh = false;
+  // 每帧在**跑剧本之前**算一次相机，然后：
+  //   * 留给 drawScene 复用（同一帧不再算第二遍，也不会有"脚本读到的"与"画出来的"两份）；
+  //   * 用 lua_set_number 回填给 Lua（三个数，不编译源码、不传 JSON——热路径上每帧都要写）。
+  // 引擎注释（api/camera.rs:240）明说 `get`/`get_zoom` 读的是**宿主每帧回填的真实值**，
+  // 所以回填必须发生在 update **之前**：脚本在 update 里问的相机才是这一帧真正用的那份。
+  function refreshFrameCamera(sceneState) {
+    const cam = computeCamera(sceneState, 1280, 720) || { x: 0, y: 0, zoom: 1 };
+    frameCamera = cam;
+    frameCameraFresh = true;
+    setLuaNumbers([['__rustlua_cam_x', cam.x], ['__rustlua_cam_y', cam.y], ['__rustlua_cam_zoom', cam.zoom]]);
+    return cam;
+  }
+  // drawScene 取相机：本帧新鲜就复用（不重复算第二遍），否则现算（与改动前一致）。
+  function cameraForDraw(sceneState) {
+    if (frameCameraFresh && frameCamera) return frameCamera;
+    return computeCamera(sceneState, 1280, 720);
+  }
+  // 解除跟随时把取景"钉"在当前这一帧的相机位置上（引擎的 unfollow 就是停住不动）。
+  // 用本帧的相机当落点：它已经过地图夹取，所以钉住之后不会又把画面拉出边界。
+  function freezeCameraHere() {
+    if (frameCamera) camera2dState.center = { x: frameCamera.x, y: frameCamera.y };
   }
 
   // 场景文字实体隐藏集：title_menu 把按钮标签接管为脚本绘制（ui.scene_text_visible(false)），
   // 场景里的 Text 实体（BtnStartLabel 等）不再画，避免「场景层 + 脚本层」两层文字重叠。
   let p2SceneTextHidden = new Set();
+  // WP7-59：这一帧的隐藏文本集是不是**跟着状态载荷**（`H` 行）一起来的。
+  // 兼容层如果自己覆盖了 `__rustlua_export_state`，就不会有 `H` 行——那时必须回退到
+  // 单独拉一次（老路），而 `sceneTextHiddenPulls` 会把这件事如实记下来：
+  // "谁还在走老路"要能一眼看出来，而不是靠猜。
+  let sceneTextHiddenFromState = false;
+  let sceneTextHiddenPulls = 0;
+  // WP7-60：状态载荷的基线读数（见 syncLuaScene 里的说明）。
+  let stateBytes = 0;
+  let stateTransformLines = 0;
+  // WP7-61：状态回写的**调用计数**——把"每帧到底导出几次"从"靠人记"变成"可断言的读数"。
+  // 曾经 3 个地方各自直调 `__rustlua_export_state`、5 个地方各自直调 `__rustlua_export_ui`，
+  // 于是"结果有没有被消费""隐藏文本集从哪条路来""一帧会不会导出两次"全都没有单一出口。
+  let stateExports = 0;        // 总次数（快照 + 帧循环）
+  let stateFrameExports = 0;   // 帧循环那次（每帧至多一次 ⇒ 必须 ≤ 帧数）
+  let stateSnapshotExports = 0; // 启动/换场景的只读快照（传 false，不推进积分）
+  let uiBytes = 0;             // UI 载荷的累计字节数（同一帧里唯一没量过的一块）
+  // WP7-62：UI 载荷的形状（按行首类型：P 面板 / I 图片 / B 进度条 / X 文本）。
+  let uiPanelBytes = 0; let uiPanelRows = 0;
+  let uiImageBytes = 0; let uiImageRows = 0;
+  let uiBarBytes = 0; let uiBarRows = 0;
+  let uiTextBytes = 0; let uiTextRows = 0;
+  let uiOtherBytes = 0; let uiOtherRows = 0;
+  // WP7-62：UI 载荷的冗余度（与上一帧逐字节相同的帧数）——决定"变更推送值不值得做"的那个读数。
+  let uiSameFrames = 0;
+  let uiPayloadSeen = false;
+  let uiPayloadLast = '';
+  // WP7-64：两个回写导出的**实测开销**（只在诊断开启时累计）。前面几轮量的是规模（字节/行数），
+  // 从规模推开销只能估；这里直接测时间。`exportNowMs` 优先 `performance.now()`（亚毫秒分辨率），
+  // 退化到 `Date.now()`；`recordExportCost` 只做加法/最大值/慢帧计数，不分配对象。
+  let stateExportMs = 0; let stateExportMsMax = 0;
+  let uiExportMs = 0; let uiExportMsMax = 0;
+  // WP7-66：消费端（解析 + 绘制）单独计时，以及**慢帧分布**——第 96 轮只有一个"单帧最大"，
+  // 不知道多常发生。阈值取一帧预算的八分之一。
+  let drawMs = 0; let drawMsMax = 0;
+  // WP7-74：**跨语言调用计数**——只数真实发生的桥调用（诊断路径不算），把"每帧跨界几次"
+  // 从文字台账变成读数。生产帧路径应当是**常数**：call_global×2（export_state/export_ui）
+  // + fixed_frame + input_frame + set_number(dt)。每帧均摊 = 本计数 / frame，可直接与
+  // "宿主接管后"的同名读数上下对比（见第 105 轮的设备验证限制）。
+  let xcCallGlobal = 0; let xcFixed = 0; let xcInput = 0; let xcSetNum = 0;
+  // WP7-76：按**名字**拆开这两条通道（只统计谁在每帧重复调用）。只在诊断开启时记录，
+  // 生产路径不额外付钱；读数里给一张按次数降序的短表。
+  const xcNames = new Map(); let xcNameGate = false;
+  const xsnNames = new Map();
+  function xcNameText(map) {
+    if (!map || map.size === 0) return "-";
+    const list = [];
+    map.forEach(function (v, k) { list.push(k + ":" + v); });
+    list.sort(function (a, b) { return (parseInt(b.split(":").pop(), 10) || 0) - (parseInt(a.split(":").pop(), 10) || 0); });
+    return list.join("|");
+  }
+  // WP7-80：**门面漏名自证**。桥是宿主适配层的显式白名单（`wechat-adapter.js` 与 `index.html` 各一份），
+  // 漏一项的表现是"真机启动即失败、报错只有一句 is not a function"。这里在 boot 后第一次拼读数时
+  // 把"运行时实际看得见哪些桥导出"记下来 ⇒ 漏名会在读数里直接现形，而不必等到真机。
+  let bridgeProbeText = null;
+  function bridgeProbe() {
+    if (bridgeProbeText !== null) return bridgeProbeText;
+    const names = ["lua_set_number", "lua_set_numbers", "lua_input_frame", "lua_fixed_frame",
+      "lua_fixed_run_steps", "lua_call_global", "input_frame_layout_json"];
+    const br = (typeof window !== "undefined" && window.__RUSTLUA_LUA_BRIDGE) || null;
+    const bad = [];
+    for (let i = 0; i < names.length; i += 1) {
+      if (!br || typeof br[names[i]] === "undefined") bad.push(names[i]);
+    }
+    bridgeProbeText = bad.length === 0 ? "ok" : ("missing:" + bad.join(","));
+    return bridgeProbeText;
+  }
+  // WP7-69：把 drawScene 拆成 tilemap / 实体收集+排序 两段（其余 = 精灵+文本+覆盖层，用 drawUs 减出来）。
+  // 瓦片记"考察/实画"两个计数：考察 = 进到格子循环，实画 = tile ~= 0 真的画了。
+  let tileMs = 0; let collectMs = 0;
+  let tileCellsSeen = 0; let tileCellsDrawn = 0; let tileCellsCulled = 0;
+  const EXPORT_SLOW_MS = 2;
+  let stateSlowFrames = 0; let uiSlowFrames = 0; let drawSlowFrames = 0;
+  function exportNowMs() {
+    return (typeof performance !== 'undefined' && performance && typeof performance.now === 'function')
+      ? performance.now() : Date.now();
+  }
+  function recordExportCost(which, ms) {
+    if (!(ms >= 0)) return;
+    if (which === 'state') {
+      stateExportMs += ms;
+      if (ms > stateExportMsMax) stateExportMsMax = ms;
+      if (ms > EXPORT_SLOW_MS) stateSlowFrames += 1;
+    } else if (which === 'ui') {
+      uiExportMs += ms;
+      if (ms > uiExportMsMax) uiExportMsMax = ms;
+      if (ms > EXPORT_SLOW_MS) uiSlowFrames += 1;
+    } else {
+      drawMs += ms;
+      if (ms > drawMsMax) drawMsMax = ms;
+      if (ms > EXPORT_SLOW_MS) drawSlowFrames += 1;
+    }
+  }
   function refreshSceneTextHidden(L) {
+    sceneTextHiddenPulls += 1;
     p2SceneTextHidden = new Set();
     try {
       const raw = String(callGlobal(L, '__rustlua_export_scene_text_hidden') || '');
       if (raw) raw.split(',').forEach(name => { if (name) p2SceneTextHidden.add(name); });
     } catch (e) { /* 兼容层缺失时保持空集 */ }
+  }
+
+  // WP7-61：世界状态回写的**唯一所有者**。
+  // 只有这一个入口能取走 Lua 侧的 op 队列（`__rustlua_export_state` 一进来就把队列清空），
+  // 所以"谁取走了什么"不再取决于调用点的先后顺序——快照与帧循环走同一条路，只是
+  // `advance=false` 表示"只看一眼、不推进积分与动画"（首帧/换场景不该白走一次模拟）。
+  // 它同时负责隐藏文本集的来源判定（H 行优先、覆盖不了才回退老路）。
+  function exportWorldState(L, state, advance) {
+    stateExports += 1;
+    if (advance) stateFrameExports += 1; else stateSnapshotExports += 1;
+    sceneTextHiddenFromState = false;
+    // `advance` 为真时**不带参数**调用（与改动前的帧循环逐字一致）；为假时传 `[false]`，
+    // 这也是改动前两条快照路径的写法——归一的是调用点，不是语义。
+    // WP7-64：实测这一次导出花多少时间（只在诊断开启时）。
+    const stateT0 = DIAGNOSTICS_ON ? exportNowMs() : 0;
+    const payload = advance
+      ? callGlobal(L, '__rustlua_export_state')
+      : callGlobal(L, '__rustlua_export_state', [false]);
+    if (DIAGNOSTICS_ON) recordExportCost('state', exportNowMs() - stateT0);
+    syncLuaScene(state, payload);
+    if (!sceneTextHiddenFromState) refreshSceneTextHidden(L);
+  }
+
+  // WP7-61：UI 回写的唯一所有者（顺带量出 UI 载荷的字节数——基线一直缺这一块）。
+  // 注：这里必须是 `callGlobal` 直调。改动时用全局字符串替换收敛调用点，**定义体自己也被那条
+  // 模式命中过**，于是这里一度变成 `const payload = exportUiPayload(L);`——语法检查全绿、
+  // 运行时无限递归。教训：全局替换要先框住范围，或者替换完逐处核对定义体。
+  function exportUiPayload(L) {
+    const uiT0 = DIAGNOSTICS_ON ? exportNowMs() : 0;
+    const payload = callGlobal(L, '__rustlua_export_ui');
+    const text = String(payload || '');
+    uiBytes += text.length;
+    // WP7-62：把 UI 载荷**按行首类型**拆开记字节/行数，第一次看清它的形状。
+    // 只扫一遍字符串、**不建任何模型**——零语义，不可能重演第 91 轮"影子状态分家"那类事故。
+    // 行首：P=80 面板 / I=73 图片 / B=66 进度条 / X=88 文本（与 Lua 侧四个循环一一对应）。
+    if (text) {
+      let start = 0;
+      while (start < text.length) {
+        let end = text.indexOf('\n', start);
+        if (end < 0) end = text.length;
+        const kind = text.charCodeAt(start);
+        const len = end - start + 1;
+        if (kind === 80) { uiPanelBytes += len; uiPanelRows += 1; }
+        else if (kind === 73) { uiImageBytes += len; uiImageRows += 1; }
+        else if (kind === 66) { uiBarBytes += len; uiBarRows += 1; }
+        else if (kind === 88) { uiTextBytes += len; uiTextRows += 1; }
+        else { uiOtherBytes += len; uiOtherRows += 1; }
+        start = end + 1;
+      }
+    }
+    // WP7-62：冗余度——这一帧与上一帧**逐字节相同**就记一次（只比较、不缓存模型 ⇒ 零语义）。
+    if (uiPayloadSeen && text === uiPayloadLast) uiSameFrames += 1;
+    uiPayloadSeen = true;
+    uiPayloadLast = text;
+    if (DIAGNOSTICS_ON) recordExportCost('ui', exportNowMs() - uiT0);
+    return payload;
   }
 
   // 层名 → 秩，与原生 `sorting_layer_rank`（rustlua-render/src/sprite.rs:105）逐项一致；
@@ -1399,7 +2049,9 @@
     ctx.translate(fitOx, fitOy);
     ctx.scale(fitS, fitS);
 
-    const camera = computeCamera(sceneState, 1280, 720);
+    // 复用本帧在跑剧本**之前**算好的那份（refreshFrameCamera）；没有本帧新鲜值时（例如不走剧本的
+    // 直绘路径）现算 —— 两条路径都得到同一口径：脚本读到的相机 = 画出来的相机。
+    const camera = cameraForDraw(sceneState);
     // 世界 → 画布（屏幕空间）：x 同向、y 反向（世界朝上 ↔ 画布朝下）。无相机时原样直绘。
     // 注意：这里已在 contain 的 scale 变换**内**，坐标系 = 1280×720 设计空间，视口中心必须用
     // 设计尺寸（640/360）而不是真实 canvas 尺寸——用 canvas.width/2 会把场景中心整体右移、
@@ -1419,9 +2071,10 @@
     // 2026-10-04）。层序按 entity id 升序 = 场景文件里的出现序，与原生那条 ECS 迭代序在
     // "后声明的层 id 更大"时同序（山庄/云泽村都是这个写法）。
     const tilemapEntities = Array.from(sceneState.entities.values())
-      .filter(entity => entity.alive && entity.tilemap)
+      .filter(entity => entity.alive && entity.tilemap && entityVisibleInView(entity))
       .sort((a, b) => a.id - b.id);
     tileLayersDrawn = tilemapEntities.length;
+    const tileT0 = DIAGNOSTICS_ON ? exportNowMs() : 0;
     for (const tilemapEntity of tilemapEntities) {
       const map = tilemapEntity.tilemap;
       const origin = tilemapEntity.transform || { x: 0, y: 0 };
@@ -1436,6 +2089,14 @@
       const entries = resolvedEntries(map);
       const cellWidth = tileset ? tileset.width / cols : map.tile_size;
       const cellHeight = tileset ? tileset.height / rows : map.tile_size;
+      // WP7-72：**复用一个坐标对象**。原来每格调一次 `toCanvas`（每次返回新对象），裁剪后仍有
+      // 287 次/帧；真机 60 fps 下约 1.7 万次/秒的纯 GC 压力。这里把同一条公式就地算、写进同一个
+      // 对象——**裁剪与绘制的调用点一行都不用改**，等价性由"同一公式、同一对象、同一次迭代内
+      // 用完即弃"保证（本循环里没有任何人保留这个对象）。
+      const cell = { x: 0, y: 0 };
+      const camOn = !!camera;
+      const camX = camera ? camera.x : 0;
+      const camY = camera ? camera.y : 0;
       for (let y = 0; y < map.height; y += 1) {
         for (let x = 0; x < map.width; x += 1) {
           const i = y * map.width + x;
@@ -1443,9 +2104,26 @@
           // 瓦片值 0 = **不画**（原生 `build_chunk`：tilemap.rs:40 的 `if cell == 0 { continue }`），
           // 不是画底色。FarmGrid 初值 920 格全 0，靠的正是"空格透出下层夯土"；这里一旦补底色，
           // overlay 会把打底那张整个糊掉。纯色格只留给"瓦片有值但贴图还没解出"的首帧兜底。
+          if (DIAGNOSTICS_ON) tileCellsSeen += 1;
           if (tile === 0) continue;
           // 单元格世界矩形 [y*ts, (y+1)*ts]；画布以单元格**上沿**为锚点直绘，无需翻转贴图。
-          const cell = toCanvas(origin.x + x * map.tile_size, origin.y + (y + 1) * map.tile_size);
+          const cwx = origin.x + x * map.tile_size;
+          const cwy = origin.y + (y + 1) * map.tile_size;
+          // 与 `toCanvas` 逐字等价：无相机时原样直绘；有相机时以 640/360 为中心、y 反向
+          // （camZoom 在无相机时正好是 1，与 `toCanvas` 的 `camera ? camera.zoom : 1` 同源）。
+          cell.x = camOn ? 640 + (cwx - camX) * camZoom : cwx;
+          cell.y = camOn ? 360 - (cwy - camY) * camZoom : cwy;
+          const tileDrawSize = map.tile_size * camZoom;
+          // WP7-71：**视野裁剪**。第 101 轮量到 tilemap 占绘制端约 68%、每帧实画 882 格；
+          // 画布此刻已在开头那次 contain 的 scale 变换**内**（见本函数注释），坐标系 = 1280×720
+          // 设计空间 ⇒ 可见矩形就是 [0,1280]×[0,720]。留**一格余量**：越界不足一格的格子照画，
+          // 于是可见像素逐点不变，也不给"缩放/取整差一点"留边界隐患。
+          if (cell.x + tileDrawSize < -tileDrawSize || cell.y + tileDrawSize < -tileDrawSize
+            || cell.x > 1280 + tileDrawSize || cell.y > 720 + tileDrawSize) {
+            if (DIAGNOSTICS_ON) tileCellsCulled += 1;
+            continue;
+          }
+          if (DIAGNOSTICS_ON) tileCellsDrawn += 1;
           if (tileset) {
             const tileIndex = tile - 1;
             const sx = (tileIndex % cols) * cellWidth;
@@ -1465,13 +2143,18 @@
       }
     }
 
+    if (DIAGNOSTICS_ON) tileMs += exportNowMs() - tileT0;
     // 两趟绘制：世界实体按原生的 (层秩, order) 排，屏幕空间 UI 单独一趟画在最后。
     // 原先是"全部实体按 id 一趟"，于是门楼（world, order=5）被角色（actor）压在下面、
     // 菜单底图（id 小）会被后画的世界贴图盖住——原生侧它们分属不同的 sorting layer。
+    const collectT0 = DIAGNOSTICS_ON ? exportNowMs() : 0;
     const worldEntities = [];
     const screenUiEntities = [];
     for (const entity of sceneState.entities.values()) {
       if (!entity.alive || entity.tilemap) continue;
+      // 世界实体的可见层过滤：不在视图里的实体**不进入绘制趟**（不是画成透明）。
+      // 屏幕空间 UI 走 UI 系统那条路，这里不动它。
+      if (!entityVisibleInView(entity)) continue;
       // 预设子树显隐（`prefab.set_visible` 子树语义）：隐藏的节点不进入绘制趟，
       // 与原生侧「被隐藏的整棵子树一个布局项都不建」同一口径。
       if (entity.prefabHidden) continue;
@@ -1480,6 +2163,7 @@
     }
     worldEntities.sort((a, b) => (entitySortKey(a) - entitySortKey(b)) || (a.id - b.id));
     screenUiEntities.sort((a, b) => a.id - b.id);
+    if (DIAGNOSTICS_ON) collectMs += exportNowMs() - collectT0;
     for (const entity of worldEntities) {
       const pos = entity.transform || { x: 0, y: 0 };
       const size = entity.sprite ? entity.sprite.size : 24;
@@ -1528,6 +2212,22 @@
       }
     }
 
+    // 世界空间文字：锚在实体的**世界位置**上（+ offset），随相机移动——与屏幕空间的
+    // UI Text 是两条路。detach 之后组件被删掉，这里自然就不画了。
+    for (const entity of sceneState.entities.values()) {
+      if (!entity.alive || !entity.worldText || !entity.worldText.value) continue;
+      if (!entityVisibleInView(entity)) continue;
+      const pos = entity.transform || { x: 0, y: 0 };
+      const p = toCanvas(pos.x + entity.worldText.offsetX, pos.y + entity.worldText.offsetY);
+      ctx.font = Math.max(1, entity.worldText.size) * camZoom + 'px ' + GAME_FONT;
+      ctx.fillStyle = colorCss(entity.worldText.color);
+      ctx.textAlign = entity.worldText.centered ? 'center' : 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(entity.worldText.value, p.x, p.y);
+    }
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+
     // 屏幕空间 UI（菜单底图/按钮/标签）不再在这里画：它由 drawUi 的两趟按原生提交序
     // 承担（预设图在动态层之下、预设字在动态字之上，见 drawSceneUiEntity 的 pass 说明）。
 
@@ -1574,22 +2274,90 @@
   // 代码**——换场景时只重绑这四张表并重建存活集合，别的（存档 `__rustlua_save`、地图状态
   // `__rustlua_map_state`、`__map`/`__map:spawn`）都是引擎 `save_data` 里的持久数据，
   // 跨场景必须保留，与引擎一致。
+  // 问引擎要"这个名字对应的引擎句柄"（Lua 编码 `index << 32 | generation`）。返回 0/undefined 表示
+  // 引擎不认识它——多半是"JS 宿主自己切了场景、引擎还停在上一张"（两个世界不同步，见 WP7-30）。
+  // 引擎侧没有这个出口时**只告警一次**并放弃翻译：宁可让那条 API 报"无效句柄"，也不要静默用一个
+  // 编出来的数字。
+  let engineHandleWarned = false;
+  function engineEntityHandle(name) {
+    if (!name) {
+      return 0;
+    }
+    const bridge = (typeof window !== 'undefined' && window.__RUSTLUA_LUA_BRIDGE) || null;
+    if (!bridge || typeof bridge.lua_entity_handle !== 'function') {
+      if (!engineHandleWarned) {
+        engineHandleWarned = true;
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn('web-runtime: wasm 侧没有 lua_entity_handle 导出（产物与运行时版本不一致），'
+            + '实体 id 无法翻译成引擎句柄；引擎侧 API（quad/mesh/light/world_text）会拿到无效句柄');
+        }
+      }
+      return 0;
+    }
+    const handle = bridge.lua_entity_handle(name);
+    return typeof handle === 'number' && handle > 0 ? handle : 0;
+  }
   function sceneBindings(sceneState) {
     const names = {};
     const transforms = {};
     const tilemaps = {};
     const animations = {};
     const colliders = {};
+    // 一等矩形的组件串镜像（quad.get/set 的读侧；Q 行是写侧）。
+    const quads = {};
+    // 世界文字的组件串镜像（world_text.detach 的读侧；W 行是写侧）。
+    const worldTexts = {};
+    // 可见层镜像（visibility.get 的读侧；V 行是写侧）。
+    const layers = {};
+    // 2D 相机镜像：camera.set_active 要用它判断"这个实体到底有没有相机"
+    // （引擎那句 "entity has no camera" 正是这个意思）。
+    const cameras = {};
+    // **实体 id 的两个空间**（第 60 轮实测结论，详见计划 WP7-30）：
+    // 这套 JS 世界用 `.scene` 文件里的**作者 id** 当实体 id（`entity\t13\tScaleBar` ⇒ 13），
+    // 而引擎把 Lua 侧的 i64 按 `index << 32 | generation` 解包 ⇒ 作者 id 13 变成
+    // `EntityId(0:g13)` ⇒ `invalid entity id`。本文件覆盖了 `entity`/`sprite`/`transform`/
+    // `tilemap`/`animation`，所以这些调用走不到引擎；**没有**覆盖的 `quad`/`mesh`/`light`/
+    // `world_text` 会落到引擎上，于是两个 id 空间在这里撞车（第 58/59 轮那条 `:215` 的报错）。
+    // 处理办法：本世界的表仍按作者 id 索引（它自己的 API 要用），另外给出一张
+    // **作者 id → 引擎句柄**的翻译表，供那几个引擎侧 API 在下发前换算。
+    const engineIds = {};
     for (const entity of sceneState.entities.values()) {
       names[entity.name] = entity.id;
+      const handle = engineEntityHandle(entity.name);
+      if (handle) {
+        engineIds[entity.id] = handle;
+      }
       if (entity.transform) transforms[entity.id] = entity.transform;
       if (entity.tilemap) tilemaps[entity.id] = luaTilemapMirror(entity.tilemap);
       if (entity.animation) animations[entity.id] = entity.animation;
       if (entity.collider) colliders[entity.id] = entity.collider;
+      if (entity.camera) cameras[entity.id] = entity.camera;
+      if (entity.components && entity.components.Quad) quads[entity.id] = entity.components.Quad;
+      if (entity.components && entity.components.WorldText) worldTexts[entity.id] = entity.components.WorldText;
+      if (entity.components && entity.components.Visibility) {
+        const spec = parseComponentFields(entity.components.Visibility);
+        const value = Number(spec.layers);
+        if (Number.isFinite(value)) layers[entity.id] = value >>> 0;
+      }
+    }
+    // 诊断（WP7-30 的一次性读数）：映射命中数说明"引擎是否认识这些名字"，出口有无说明产物是否配套。
+    if (typeof console !== 'undefined' && console.log) {
+      const diagBridge = (typeof window !== 'undefined' && window.__RUSTLUA_LUA_BRIDGE) || null;
+      const diagMapped = Object.keys(engineIds).length;
+      console.log('web-runtime: 引擎句柄映射 ' + diagMapped + '/' + sceneState.entities.size
+        + '（场景 ' + sceneState.name + '；出口='
+        + (diagBridge && typeof diagBridge.lua_entity_handle === 'function' ? '有' : '无') + '）');
     }
     return `
 __rustlua_scene_name = ${luaQuote(sceneState.name)}
 __rustlua_names = ${luaValue(names)}
+__rustlua_engine_ids = ${luaValue(engineIds)}
+__rustlua_quads = ${luaValue(quads)}
+__rustlua_world_texts = ${luaValue(worldTexts)}
+__rustlua_layers = ${luaValue(layers)}
+__rustlua_cameras = ${luaValue(cameras)}
+__rustlua_all_layers = 4294967295
+__rustlua_white_texture = ${luaQuote(WHITE_TEXTURE_PATH)}
 __rustlua_transforms = ${luaValue(transforms)}
 __rustlua_tilemaps = ${luaValue(tilemaps)}
 -- 碰撞体表（scene 里的 Collider 组件）：Lua 侧的移动积分靠它决定"谁参与格碰撞"。
@@ -1655,13 +2423,26 @@ time = { delta = function() return __rustlua_dt end }
 -- ActionMap），web 的动作层（下方 bindings 表）用 w/a/j...。虚拟控件
 -- （ui/virtual_pad.lua）注入的是引擎名，不翻译就永远命中不了任何动作（微信实测：
 -- 可见摇杆/按钮全部"按了没反应"）。
+-- 引擎物理键名 → 本侧输入层键名。**查询与注入共用这一条**：
+--   * 查询入口 is_down/just_pressed/just_released/pressed/released 收的是引擎物理键名
+--     （「game_api/scripts/demo_input.lua」 就在用 「keyw」/「arrowleft」/「keyp」），
+--   * 虚拟控件注入的也是引擎名（「ui/virtual_pad.lua」）。
+-- 名字换算只有一份权威实现（宿主 physicalKeyToName ↔ keyNameToBindingText，那份映射同时负责
+-- 解析工程文件的 「[input].map」），Lua 侧问宿主、不自己列表。宿主没给回调（或认不出这个名字）
+-- 就退回小写原名 —— **认不出要透传**，因为补丁层自己的旧调用方传的是裸名（'w'/'space'）。
 local function __rustlua_virtual_name(key)
   local name = tostring(key):lower()
+  local mapper = __rustlua_physical_to_web
+  if type(mapper) == 'function' then
+    local mapped = mapper(name)
+    if type(mapped) == 'string' and mapped ~= '' then return mapped end
+  end
   local letter = name:match('^key([a-z])$')
   if letter then return letter end
   -- native 引擎把"关闭"作为独立物理键 cancel；web 键盘关闭键是 Escape，
   -- bindings.cancel 绑在 'escape' 上。虚拟控件注入 "cancel" 时须翻成 'escape'，
   -- 否则 just["cancel"] 永远不被 action_pressed("cancel") 读到（关闭按钮点了没反应）。
+  -- （宿主映射表里**没有** cancel，所以这一条必须留在本地。）
   if name == 'cancel' then return 'escape' end
   return name
 end
@@ -1673,7 +2454,7 @@ end
 -- 快照带 released（createWebInput 的 state.up），而触摸宿主（微信）没有 keyup，
 -- 抬起边沿从 virtual_key 的 true→false 变化里取，与 just 同一条纪律：只在发生
 -- 这一帧可见一次，不跨帧重放。
-input = { axis = function(name) name = tostring(name or 'x'):lower(); if name == 'x' or name == 'horizontal' then return (__rustlua_input.axis_x or 0) + 0.0 end; if name == 'y' or name == 'vertical' then return (__rustlua_input.axis_y or 0) + 0.0 end; return 0.0 end, is_down = function(key) return __rustlua_input.keys[tostring(key):lower()] == true end, just_pressed = function(key) return __rustlua_input.just[tostring(key):lower()] == true end, just_released = function(key) return __rustlua_input.released[tostring(key):lower()] == true end, pressed = function(key) return __rustlua_input.just[tostring(key):lower()] == true end, released = function(key) return __rustlua_input.released[tostring(key):lower()] == true end, mouse_is_down = function(button) return __rustlua_input.mouse[tostring(button or 0)] == true end, mouse_just_pressed = function(button) return __rustlua_input.mouse_just[tostring(button or 0)] == true end, cursor_position = function() return __rustlua_input.cursor or {0, 0} end, press_position = function() return __rustlua_input.press_cursor or __rustlua_input.cursor or {0, 0} end, cursor_delta = function() return __rustlua_input.cursor_delta or {0, 0} end, scroll_delta = function() local s = __rustlua_input.scroll; return { s[1] + 0.0, s[2] + 0.0 } end, mouse_just_released = function(button) return __rustlua_input.mouse_just_released and __rustlua_input.mouse_just_released[tostring(button or 0)] == true end, virtual_key = function(key, down) local name = __rustlua_virtual_name(key); local was_down = __rustlua_input.keys and __rustlua_input.keys[name] == true; if down then __rustlua_virtual_keys[name] = true else __rustlua_virtual_keys[name] = nil end; if __rustlua_input.keys then __rustlua_input.keys[name] = down and true or false end; if not down and was_down then __rustlua_input.released[name] = true end end, virtual_pressed = function(key) local name = __rustlua_virtual_name(key); __rustlua_virtual_keys[name] = true; __rustlua_virtual_just[name] = true; if __rustlua_input.keys then __rustlua_input.keys[name] = true end; if __rustlua_input.just then __rustlua_input.just[name] = true end end }
+input = { axis = function(name) name = tostring(name or 'x'):lower(); if name == 'x' or name == 'horizontal' then return (__rustlua_input.axis_x or 0) + 0.0 end; if name == 'y' or name == 'vertical' then return (__rustlua_input.axis_y or 0) + 0.0 end; return 0.0 end, is_down = function(key) return __rustlua_input.keys[__rustlua_virtual_name(key)] == true end, just_pressed = function(key) return __rustlua_input.just[__rustlua_virtual_name(key)] == true end, just_released = function(key) return __rustlua_input.released[__rustlua_virtual_name(key)] == true end, pressed = function(key) return __rustlua_input.just[__rustlua_virtual_name(key)] == true end, released = function(key) return __rustlua_input.released[__rustlua_virtual_name(key)] == true end, mouse_is_down = function(button) return __rustlua_input.mouse[tostring(button or 0)] == true end, mouse_just_pressed = function(button) return __rustlua_input.mouse_just[tostring(button or 0)] == true end, cursor_position = function() return __rustlua_input.cursor or {0, 0} end, press_position = function() return __rustlua_input.press_cursor or __rustlua_input.cursor or {0, 0} end, cursor_delta = function() return __rustlua_input.cursor_delta or {0, 0} end, scroll_delta = function() local s = __rustlua_input.scroll; return { s[1] + 0.0, s[2] + 0.0 } end, mouse_just_released = function(button) return __rustlua_input.mouse_just_released and __rustlua_input.mouse_just_released[tostring(button or 0)] == true end, virtual_key = function(key, down) local name = __rustlua_virtual_name(key); local was_down = __rustlua_input.keys and __rustlua_input.keys[name] == true; if down then __rustlua_virtual_keys[name] = true else __rustlua_virtual_keys[name] = nil end; if __rustlua_input.keys then __rustlua_input.keys[name] = down and true or false end; if not down and was_down then __rustlua_input.released[name] = true end end, virtual_pressed = function(key) local name = __rustlua_virtual_name(key); __rustlua_virtual_keys[name] = true; __rustlua_virtual_just[name] = true; if __rustlua_input.keys then __rustlua_input.keys[name] = true end; if __rustlua_input.just then __rustlua_input.just[name] = true end end }
 -- 每帧把上一帧注入的虚拟键并回新快照（宿主在帧首刚整份替换过 __rustlua_input）。
 -- 按下边沿（virtual_pressed）只在**被消费的这一帧**可见一次，读完即清——与引擎
 -- 「边沿只在一个快照周期内为真」一致；重发边沿会让 action_pressed 系动作连发。
@@ -2032,6 +2813,31 @@ function __rustlua_next_entity_id()
   return id
 end
 
+-- 引擎侧 API 的 id 翻译（第 60 轮）：quad / mesh / light / world_text 是本文件**没有**覆盖的
+-- 引擎全局，调用会落到引擎上；而本世界的实体 id 是 .scene 的**作者 id**，被引擎按
+-- index<<32|generation 解包后就成了 EntityId(0:g13) 这种不存在的句柄。这里用元表把
+-- 这些表的**第一个参数**（实体 id）从作者 id 翻成引擎句柄（__rustlua_engine_ids，由场景绑定注入），
+-- 引擎不认识的名字保持原样——让它在引擎里明确报错，而不是被静默翻译成别的实体。
+local __rustlua_host_entity_api = {}
+for _, __api_name in ipairs({ 'quad', 'mesh', 'light', 'world_text' }) do
+  local __host = _G[__api_name]
+  if __host ~= nil then
+    __rustlua_host_entity_api[__api_name] = __host
+    _G[__api_name] = setmetatable({}, {
+      __index = function(_, key)
+        local fn = __host[key]
+        if type(fn) ~= 'function' then return fn end
+        return function(id, ...)
+          if type(id) == 'number' and __rustlua_engine_ids ~= nil then
+            local mapped = __rustlua_engine_ids[id]
+            if mapped ~= nil then id = mapped end
+          end
+          return fn(id, ...)
+        end
+      end,
+    })
+  end
+end
 -- 运行期实体：entity.spawn(name?, persist_id?) 在引擎里是"新开一个只有 Transform 的实体"，
 -- 渲染数据由随后的 sprite.set / animation.attach 补上，所以这里也必须让**渲染器**
 -- 见到这个实体（只写 Lua 侧的表，画面里不会出现任何东西）。
@@ -2494,6 +3300,76 @@ tilemap = {
   end
 }
 health = { get = function(id) return __rustlua_health[id] or 100 end, set = function(id, hp) __rustlua_health[id] = hp end, damage = function(id, amount) __rustlua_health[id] = (health.get(id) or 100) - amount; return __rustlua_health[id] end }
+-- 碰撞体几何（overlap / raycast，WP7-35）。本侧没有物理世界，但 Collider 组件的字段
+-- （shape / ox,oy / hx,hy，解析处见本文件 applyComponents 的 Collider 分支）与引擎的
+-- ColliderDesc::from_component_str 一致，所以这两个查询可以在**同一份数据**上做几何真判：
+--   ball   ⇒ 圆，hx 是半径
+--   cuboid ⇒ 轴对齐矩形，hx/hy 是半长，中心 = transform + offset
+-- sensor **参与**查询（引擎里 sensor 只影响接触解算，不影响查询命中）。
+function __rustlua_collider_center(col, pos)
+  return (pos.x or 0) + (col.ox or 0), (pos.y or 0) + (col.oy or 0)
+end
+
+function __rustlua_circle_hits_collider(cx, cy, r, col, pos)
+  local ex, ey = __rustlua_collider_center(col, pos)
+  local hx, hy = col.hx or 0, col.hy or 0
+  if (col.shape or 'ball') ~= 'cuboid' then
+    local dx, dy, rr = cx - ex, cy - ey, r + hx
+    return dx * dx + dy * dy <= rr * rr
+  end
+  local nx = math.max(ex - hx, math.min(cx, ex + hx))
+  local ny = math.max(ey - hy, math.min(cy, ey + hy))
+  local dx, dy = cx - nx, cy - ny
+  return dx * dx + dy * dy <= r * r
+end
+
+-- 命中返回**最近的正向距离**，未命中返回 nil；起点落在形状内部 ⇒ 0。
+function __rustlua_ray_hits_collider(ox, oy, vx, vy, maxd, col, pos)
+  local ex, ey = __rustlua_collider_center(col, pos)
+  local hx, hy = col.hx or 0, col.hy or 0
+  if (col.shape or 'ball') ~= 'cuboid' then
+    local mx, my = ox - ex, oy - ey
+    local b = mx * vx + my * vy
+    local c = mx * mx + my * my - hx * hx
+    if c <= 0 then
+      return 0
+    end
+    local disc = b * b - c
+    if disc < 0 then
+      return nil
+    end
+    local t = -b - math.sqrt(disc)
+    if t < 0 or t > maxd then
+      return nil
+    end
+    return t
+  end
+  local tmin, tmax = 0, maxd
+  local function slab(origin, dir, lo, hi)
+    if dir == 0 then
+      return origin >= lo and origin <= hi
+    end
+    local t1, t2 = (lo - origin) / dir, (hi - origin) / dir
+    if t1 > t2 then
+      t1, t2 = t2, t1
+    end
+    if t1 > tmin then
+      tmin = t1
+    end
+    if t2 < tmax then
+      tmax = t2
+    end
+    return tmin <= tmax
+  end
+  if not slab(ox, vx, ex - hx, ex + hx) then
+    return nil
+  end
+  if not slab(oy, vy, ey - hy, ey + hy) then
+    return nil
+  end
+  return tmin
+end
+
 physics = {
   -- 场景空间**宽相**：按实体 Transform 位置做圆查询，与 native（core/script.rs
   -- 同名 API）语义一致：返回半径内所有存活实体 id 的 1 基数组（含调用者自己）。
@@ -2522,6 +3398,92 @@ physics = {
     end
     return result
   end,
+  -- 碰撞体查询（引擎走 Rapier，见 api/physics.rs:161）：形状/offset/sensor 都参与。
+  -- 与上面的 positions_in_radius **不是**同一件事：那个只看 Transform 位置，
+  -- 没有碰撞体的实体也会被查到；这个只查碰撞体。
+  overlap = function(x, y, radius, opts)
+    local cx, cy, r = tonumber(x), tonumber(y), tonumber(radius)
+    local finite = function(v) return v ~= nil and v == v and v ~= math.huge and v ~= -math.huge end
+    if not finite(r) or r < 0 then
+      error('overlap radius must be finite and non-negative', 2)
+    end
+    if not finite(cx) or not finite(cy) then
+      error('overlap position must be finite', 2)
+    end
+    -- opts 里的碰撞组（groups）本侧没有对应概念 ⇒ **忽略**（已记录的差异，不是"支持了"）。
+    local result = {}
+    local n = 1
+    for id, col in pairs(__rustlua_colliders or {}) do
+      local pos = __rustlua_transforms[id]
+      if pos and __rustlua_alive[id] and __rustlua_circle_hits_collider(cx, cy, r, col, pos) then
+        result[n] = id
+        n = n + 1
+      end
+    end
+    return result
+  end,
+  -- 射线查询：返回**最近**命中的碰撞体实体，未命中返回 nil（与引擎同形）。
+  -- 方向先归一化；max_distance 是**距离**（与引擎的参数名同义）。
+  raycast = function(x, y, dx, dy, max_distance, opts)
+    local ox, oy, vx, vy, maxd = tonumber(x), tonumber(y), tonumber(dx), tonumber(dy), tonumber(max_distance)
+    local finite = function(v) return v ~= nil and v == v and v ~= math.huge and v ~= -math.huge end
+    if not finite(maxd) or maxd < 0 then
+      error('raycast distance must be finite and non-negative', 2)
+    end
+    if not finite(ox) or not finite(oy) or not finite(vx) or not finite(vy) then
+      error('raycast arguments must be finite', 2)
+    end
+    local len = math.sqrt(vx * vx + vy * vy)
+    if len <= 0 then
+      return nil
+    end
+    vx, vy = vx / len, vy / len
+    local best_id, best_t = nil, nil
+    for id, col in pairs(__rustlua_colliders or {}) do
+      local pos = __rustlua_transforms[id]
+      if pos and __rustlua_alive[id] then
+        local t = __rustlua_ray_hits_collider(ox, oy, vx, vy, maxd, col, pos)
+        if t and (best_t == nil or t < best_t) then
+          best_id, best_t = id, t
+        end
+      end
+    end
+    return best_id
+  end,
+  -- 连续碰撞检测：本侧没有刚体、也没有 CCD ⇒ **只记录开关**（get_ccd 读得回来），
+  -- 不改变碰撞行为。这是已记录的差异，不能当成"CCD 已支持"。
+  set_ccd = function(id, enabled)
+    __rustlua_require_alive(id)
+    __rustlua_record_degraded('physics.set_ccd')
+    __rustlua_ccd = __rustlua_ccd or {}
+    __rustlua_ccd[id] = enabled and true or false
+    return __rustlua_ccd[id]
+  end,
+  get_ccd = function(id)
+    __rustlua_require_alive(id)
+    __rustlua_record_degraded('physics.get_ccd')
+    __rustlua_ccd = __rustlua_ccd or {}
+    return __rustlua_ccd[id] == true
+  end,
+  -- 调试绘制：本侧没有物理调试层 ⇒ 记录开关并**一次性告警**（不假装画出来了）。
+  debug_draw = function(enabled)
+    local value = enabled and true or false
+    __rustlua_record_degraded('physics.debug_draw')
+    if __rustlua_debug_draw_warned ~= true then
+      __rustlua_debug_draw_warned = true
+      if log and log.warn then
+        log.warn('web 世界没有物理调试层：physics.debug_draw 只记录开关，不画碰撞体描边')
+      end
+    end
+    return value
+  end,
+  -- 速度读回：与引擎同形（数值下标 [1]/[2] 与命名键 x/y 都在）。
+  get_velocity = function(id)
+    __rustlua_require_alive(id)
+    local v = __rustlua_velocity[id] or { x = 0, y = 0 }
+    local x, y = v.x or 0, v.y or 0
+    return { x, y, x = x, y = y }
+  end,
   set_velocity = function(id, x, y) __rustlua_velocity[id] = { x = x or 0, y = y or 0 }; return true end,
   -- 2D 传送（引擎 M17-01）：**刚体与 ECS 同步落位**，只改 transform 会被下一帧
   -- 物理回写覆盖成旧位置（player.teleport 的注释里就写着这条）。这里两者都写。
@@ -2537,7 +3499,13 @@ physics = {
     __rustlua_velocity[id] = { x = 0, y = 0 }
     return true
   end,
-  events = function() return {} end
+  -- 帧碰撞事件：本侧没有接触解算 ⇒ 恒空表（形状与引擎一致，差异明写，不返回 nil）。
+  -- 注：这里原先另有一份同名的 events 存根写在表尾，会**覆盖**上面这一份（Lua 同名键取最后），
+  -- 于是实现变成死代码。第 66 轮合并成这一份，并挂上降级标记。
+  events = function()
+    __rustlua_record_degraded('physics.events')
+    return {}
+  end
 }
 physics3d = { set_velocity = function(...) return true end, set_position = function(...) return true end, events = function() return {} end }
 -- 单帧贴图：入参是 Sprite **组件串**（texture=..;size=..），与场景里写的是同一种，
@@ -2565,6 +3533,143 @@ sprite = {
       sorting_layer = spec:match('sorting_layer=([^;]+)') or 'default',
       order = tonumber(spec:match('order=([^;]+)')) or 0
     }
+  end
+}
+-- 一等矩形：quad.get / quad.set，与引擎同名 API（rustlua-scripting/src/script/api/renderable.rs）
+-- 以及 rustlua-render/src/quad.rs 的 from_component_str **同规则**：默认 size=64,64 /
+-- pivot=0.5,0.5 / color=1,1,1,1 / z=0、缺省贴图给 __white__ 哨兵、size 必填、未知字段报错。
+--
+-- 为什么要在这里补：本文件此前**没有**覆盖 quad，于是 quad.* 落到引擎上；而本世界的实体 id 是
+-- .scene 的**作者 id**，引擎按 index<<32|generation 解包 ⇒ 作者 id 13 变成 EntityId(0:g13)
+-- ⇒ invalid entity id（第 60 轮实测，正好是 demo_main.lua:215 那条报错）。
+-- 改动经 Q 行交给渲染侧同一份 applyComponents（与 sprite.set 的 S 行同构）。
+function __rustlua_parse_pair(raw, what)
+  local a, b = raw:match('^%s*(%-?[%d%.]+)%s*,%s*(%-?[%d%.]+)%s*$')
+  if not a then error('invalid quad ' .. what .. ': ' .. raw, 3) end
+  return tonumber(a), tonumber(b)
+end
+
+function __rustlua_parse_quad(spec)
+  local out = {
+    size_x = 64, size_y = 64,
+    pivot_x = 0.5, pivot_y = 0.5,
+    color_r = 1, color_g = 1, color_b = 1, color_a = 1,
+    z = 0, texture = nil, layer = 'default', order = 0
+  }
+  local seen, has_size = false, false
+  for field in tostring(spec):gmatch('[^;]+') do
+    local key, raw = field:match('^%s*([%w_]+)%s*=%s*(.-)%s*$')
+    if key == nil then error('malformed quad field: ' .. field, 3) end
+    seen = true
+    if key == 'size' then
+      out.size_x, out.size_y = __rustlua_parse_pair(raw, 'size')
+      has_size = true
+    elseif key == 'pivot' then
+      out.pivot_x, out.pivot_y = __rustlua_parse_pair(raw, 'pivot')
+    elseif key == 'color' then
+      local parts = {}
+      for value in raw:gmatch('[^,]+') do parts[#parts + 1] = tonumber(value) end
+      if #parts ~= 4 then error('invalid quad color: ' .. raw, 3) end
+      out.color_r, out.color_g, out.color_b, out.color_a = parts[1], parts[2], parts[3], parts[4]
+    elseif key == 'texture' then
+      if raw == '' then error('quad texture must not be empty', 3) end
+      out.texture = raw
+    elseif key == 'z' then
+      local z = tonumber(raw)
+      if z == nil then error('invalid quad z: ' .. raw, 3) end
+      out.z = z
+    elseif key == 'layer' then
+      if raw == '' then error('invalid quad layer: ' .. raw, 3) end
+      out.layer = raw
+    elseif key == 'order' then
+      local order = tonumber(raw)
+      if order == nil or order ~= math.floor(order) then error('invalid quad order: ' .. raw, 3) end
+      out.order = order
+    elseif key == 'flip_x' or key == 'flip_y' then
+      out[key] = (raw == '1' or raw == 'true')
+    else
+      error('unknown quad field: ' .. key, 3)
+    end
+  end
+  if not seen then error('quad component is empty', 3) end
+  if not has_size then error('quad component is missing field: size', 3) end
+  return out
+end
+
+quad = {
+  set = function(id, component)
+    __rustlua_require_alive(id)
+    local spec = tostring(component or '')
+    -- 先按引擎同一份规则校验：不合格的组件串在**改动生效前**就报错，而不是画到一半才失败。
+    __rustlua_parse_quad(spec)
+    __rustlua_quads[id] = spec
+    __rustlua_emit('Q\t' .. id .. '\t' .. spec)
+    return true
+  end,
+  get = function(id)
+    __rustlua_require_alive(id)
+    local spec = __rustlua_quads[id]
+    if not spec then error('entity has no quad', 2) end
+    local value = __rustlua_parse_quad(spec)
+    -- 与引擎一致：没写贴图时给出**实际会采样到**的路径（内置白纹理哨兵）。
+    value.texture = value.texture or __rustlua_white_texture
+    value.component = spec
+    return value
+  end
+}
+-- 世界空间文字：world_text.attach / world_text.detach，与引擎同语义
+-- （rustlua-scripting/src/script/api/renderable.rs 的 attach 恒返回 true、detach 返回"是否真的移除了"）。
+-- 本文件此前**没有**覆盖 world_text ⇒ 它落到引擎上、本世界的作者 id 被当成引擎句柄，
+-- 于是 invalid entity id: EntityId(0:g10)（第 62 轮实测，demo_main.lua:330）。
+-- 组件串就是 UiText 的字段（text / font_size / color）加上 offset 与 centered。
+world_text = {
+  attach = function(id, component)
+    __rustlua_require_alive(id)
+    local spec = tostring(component or '')
+    if spec:match('^%s*$') then error('world_text component must not be empty', 2) end
+    if not spec:match('text=') then error('world_text component is missing field: text', 2) end
+    __rustlua_world_texts[id] = spec
+    __rustlua_emit('W\t' .. id .. '\t' .. spec)
+    return true
+  end,
+  detach = function(id)
+    __rustlua_require_alive(id)
+    local had = __rustlua_world_texts[id] ~= nil
+    __rustlua_world_texts[id] = nil
+    -- 没挂过就不发 op：与引擎一致（remove 没东西可删时什么都不做），也免得每帧白刷一行。
+    if had then __rustlua_emit('W\t' .. id .. '\t') end
+    return had
+  end
+}
+-- 可见层：visibility.get / set / all，与引擎逐条同语义（api/entity.rs:304）：
+--   set 把 layers 当 u32 写入（越界报错）并**返回写入的值**；
+--   get 对**没有**该组件的实体返回 ALL_LAYERS（不是 0）；
+--   all 是常量 u32::MAX（"恢复默认"）。
+-- 本文件此前没有覆盖它 ⇒ 它落到引擎上、本世界的作者 id 被当引擎句柄
+-- （第 63 轮实测 demo_main.lua:356 的 invalid entity id: EntityId(0:g11)）。
+-- 视图遮罩（view_mask）在本侧恒为 ALL_LAYERS（没有设置入口），**默认情形与引擎一致**；
+-- 过滤逻辑已按引擎语义写在渲染侧，将来接入遮罩输入只需改那一个变量。
+visibility = {
+  all = function()
+    return __rustlua_all_layers
+  end,
+  get = function(id)
+    __rustlua_require_alive(id)
+    local value = __rustlua_layers[id]
+    if value == nil then
+      return __rustlua_all_layers
+    end
+    return value
+  end,
+  set = function(id, layers)
+    __rustlua_require_alive(id)
+    local value = tonumber(layers)
+    if value == nil or value < 0 or value > __rustlua_all_layers or value ~= math.floor(value) then
+      error('visibility.set layers must be an integer in 0..=4294967295', 2)
+    end
+    __rustlua_layers[id] = value
+    __rustlua_emit('V\t' .. id .. '\t' .. string.format('%d', value))
+    return value
   end
 }
 -- 序列帧：clip 定义与引擎 AnimationClip 同构（name:sheet:cols:fps:looped）。
@@ -2614,6 +3719,32 @@ function __rustlua_advance_animation(a, delta)
   return frame
 end
 animation = {
+  -- 片段名清单（1 基数组）。引擎按**片段声明顺序**给（machine.clips 的插入序）；Lua 表无序，
+  -- 这里排序后给出确定结果——顺序可能与引擎不同，但每次相同、可断言（差异已记录）。
+  clips = function(id)
+    __rustlua_require_alive(id)
+    local a = __rustlua_animations[id]
+    if not a then error('entity has no animation', 2) end
+    local names = {}
+    for name in pairs(a.clips or {}) do names[#names + 1] = name end
+    table.sort(names)
+    return names
+  end,
+  -- 帧事件：引擎由宿主在推进动画时收集、**取走即清空**（「animation.rs:124」）。
+  -- web 世界不收集帧事件 ⇒ 恒为空表：**形状与引擎一致**（1 基数组），
+  -- 差异明写在这里与 CHANGELOG，而不是静默返回 nil 让调用方崩在索引上。
+  -- 帧事件：本侧不收集 ⇒ 恒空表（形状与引擎一致，差异明写，不返回 nil）。
+  events = function()
+    __rustlua_record_degraded('animation.events')
+    return {}
+  end,
+  -- 当前片段播放时刻（秒），与 animation3d.time 同名同义（「animation.rs:144」）。
+  time = function(id)
+    __rustlua_require_alive(id)
+    local a = __rustlua_animations[id]
+    if not a then error('entity has no animation', 2) end
+    return a.time or 0
+  end,
   get = function(id)
     __rustlua_require_alive(id)
     local a = __rustlua_animations[id]
@@ -2790,6 +3921,27 @@ end
 function ui.panel_get(id) return __rustlua_ui_panels[id] end
 function ui.image_get(id) return __rustlua_ui_images[id] end
 function ui.get(id) return __rustlua_ui_texts[id] end
+-- 引擎 ui.text_get(id)（「api/ui.rs:171」）：读回 ui.text / ui.text_at 建的动态文本，
+-- 返回 {text, x, y, scale, size, visible}；不存在的 id 返回 nil。
+-- 「size」 是**渲染口径**（不是"调用时传了什么"）：未显式给字号时用 「scale × EM_PX」，
+-- 引擎的 EM_PX = 12.0（rustlua_math::text_metrics::TEXT_BASE_PX → rustlua_render::text::EM_PX，
+-- 「text.rs:183/369」）。本侧 ui.text_at(id,x,y,text,scale,size) 存的 size 可能为 nil，
+-- 所以这里必须自己补上乘出来的那个数。
+-- 另外要返回**新表**而不是原表：引擎是新建一张只含这六个字段的表，原表多带字段
+-- （visible=true 之外的内部字段）会让调用方的逐字段比较/序列化出现差异。
+function ui.text_get(id)
+  local t = __rustlua_ui_texts[tostring(id)]
+  if not t then return nil end
+  local scale = t.scale or 1
+  return {
+    text = t.text or '',
+    x = t.x or 0,
+    y = t.y or 0,
+    scale = scale,
+    size = t.size or (scale * 12.0),
+    visible = t.visible and true or false,
+  }
+end
 function ui.grid(...) return true end
 -- 宽度实测走 JS 的 measureText（注册见 __rustlua_text_js_measure），与原生同一支字体。
 -- 每帧几十次跨 wasm 回调不划算，按「字号|文本」缓存；HUD 文案每帧都变（时间/坐标），
@@ -2833,10 +3985,82 @@ local function sorted_ids(store)
   table.sort(ids)
   return ids
 end
-function __rustlua_export_ui()
+-- 具名 UI **文本**的导出（本侧脚本画的字，宿主/验收要能读）。
+-- 动机（第 67 轮）：剧本把「每个 API 模块这一帧干了什么」聚合成一行状态文本，经 ui.text_at 画在
+-- canvas 上——无头验收**读不到**：既不在 DOM 里，也不是宿主能查的 API。于是「剧本跑到第几节、
+-- 哪一节报了错」只能靠「崩在哪一行」反推。这里把具名文本原样导出，验收一次就能读到全部小节的结果。
+-- 换行转义成反斜杠加 n 两个字符：DOM 属性值是单行的，真换行会把读数切碎。
+function __rustlua_export_ui_texts()
   local rows = {}
+  for _, id in ipairs(sorted_ids(__rustlua_ui_texts)) do
+    local t = __rustlua_ui_texts[id]
+    if t.visible and t.text ~= '' then
+      rows[#rows + 1] = tostring(id) .. '=' .. string.gsub(t.text, '[\\r\\n]+', '\\\\n')
+    end
+    if #rows >= 24 then break end
+  end
+  return table.concat(rows, '\\n')
+end
+function __rustlua_export_ui()
   local function num(v) return tostring(v or 0) end
   local function flat(v) return string.gsub(tostring(v or ''), '[\\t\\r\\n]', ' ') end
+  -- WP7-65：**变更推送**（第 96 轮量到这条路径进图约 323 µs/帧、标题画面约 435 µs/帧，
+  -- 而进图后约 96% 的帧 UI 载荷逐字节相同——平均下来绝大部分是白做）。
+  --
+  -- 做法：先走一遍**便宜的签名遍历**（不 tostring、不拼串，只把原值塞进复用表），
+  -- 与上一帧的签名逐项比较；相同就把上一帧那份串**原样**交回去（零分配）。
+  -- 正确性**靠构造保证**：签名覆盖的字段与下面拼串用的字段逐项同序、同默认值
+  -- （P 10 项 / I 10 项 / B 9 项 / X 6 项），所以"签名相同 ⇒ 载荷必然逐字节相同"；
+  -- 反过来"签名不同但载荷相同"只会多拼一次串，**不会漏发**。
+  --
+  -- 与第 91 轮那次被真实回归打回的"按变化发"的区别：那里缓存的是**渲染器持有什么**的推测
+  -- （影子状态，换场景后会与 JS 侧实际值分家，差值永远不会被发出）；这里缓存的**就是载荷本身**，
+  -- 渲染器每帧拿到的仍是完整的一份。所以这条路径不可能出现"少发了一个变化"。
+  local sig = __rustlua_ui_sig
+  if sig == nil then sig = {}; __rustlua_ui_sig = sig end
+  local n = 0
+  local function put(v) n = n + 1; sig[n] = v end
+  for _, id in ipairs(sorted_ids(__rustlua_ui_panels)) do
+    local p = __rustlua_ui_panels[id]
+    if p.visible then
+      put('P'); put(id); put(p.x); put(p.y); put(p.w); put(p.h)
+      put(p.r); put(p.g); put(p.b); put(p.a); put(p.shape or 0)
+    end
+  end
+  for _, id in ipairs(sorted_ids(__rustlua_ui_images)) do
+    local i = __rustlua_ui_images[id]
+    if i.visible then
+      put('I'); put(id); put(i.x); put(i.y); put(i.w); put(i.h)
+      put(i.texture); put(i.r); put(i.g); put(i.b); put(i.slice or '')
+    end
+  end
+  for _, id in ipairs(sorted_ids(__rustlua_ui_bars)) do
+    local b = __rustlua_ui_bars[id]
+    if b.visible then
+      put('B'); put(id); put(b.x); put(b.y); put(b.w); put(b.h)
+      put(b.ratio); put(b.r); put(b.g); put(b.b)
+    end
+  end
+  for _, id in ipairs(sorted_ids(__rustlua_ui_texts)) do
+    local t = __rustlua_ui_texts[id]
+    if t.visible then
+      put('X'); put(id); put(t.x); put(t.y); put(t.size); put(t.scale); put(t.text)
+    end
+  end
+  local cached = __rustlua_ui_payload
+  local prev = __rustlua_ui_sig_prev
+  if cached ~= nil and prev ~= nil and __rustlua_ui_sig_prev_len == n then
+    local same = true
+    for k = 1, n do
+      if sig[k] ~= prev[k] then same = false; break end
+    end
+    if same then return cached end
+  end
+  -- 交换两张签名表（复用、不拷贝）：本帧的新签名成为"上一帧"，旧的那张留作下帧的草稿。
+  __rustlua_ui_sig_prev = sig
+  __rustlua_ui_sig_prev_len = n
+  __rustlua_ui_sig = prev or {}
+  local rows = {}
   for _, id in ipairs(sorted_ids(__rustlua_ui_panels)) do
     local p = __rustlua_ui_panels[id]
     if p.visible then
@@ -2861,7 +4085,10 @@ function __rustlua_export_ui()
       rows[#rows + 1] = 'X\\t' .. flat(id) .. '\\t' .. num(t.x) .. '\\t' .. num(t.y) .. '\\t' .. num(t.size) .. '\\t' .. num(t.scale) .. '\\t' .. flat(t.text)
     end
   end
-  return table.concat(rows, '\\n')
+  -- WP7-65：拼出来的这份串就是下一帧"没变就原样交回"的那一份。
+  local out = table.concat(rows, '\\n')
+  __rustlua_ui_payload = out
+  return out
 end
 -- ---------------------------------------------------------------------------
 -- 存档（web / 微信宿主）：宿主没有文件系统，落盘出口只有一个字符串槽
@@ -3234,8 +4461,152 @@ save = {
     return removed
   end
 }
-particles = { burst = function(...) return true end }
-camera = { set = function(...) return true end, set_active = function(...) return true end }
+particles = {
+  -- 引擎侧 particles 是**真模拟**（「physics.rs:468」的 burst_with + 「count」返回 len）。
+  -- **web 世界没有粒子模拟**：burst 只登记次数、count 恒返回 0。这条差异是**明写**的
+  -- （不是"恰好 0"）：脚本判能力请看「__rustlua_missing_globals」与本文档，
+  -- 将来补真实模拟时改这里并同步本注释——绝不要让它继续以"返回一张表"的姿态骗过调用方。
+  burst = function(...)
+    __rustlua_particle_bursts = (__rustlua_particle_bursts or 0) + 1
+    __rustlua_record_degraded('particles.burst')
+    if __rustlua_particle_warned ~= true then
+      __rustlua_particle_warned = true
+      if log and log.warn then
+        log.warn('web 世界没有粒子模拟：particles.burst 只登记次数，particles.count() 恒为 0')
+      end
+    end
+    return true
+  end,
+  count = function()
+    __rustlua_record_degraded('particles.count')
+    return 0
+  end
+}
+-- 相机（引擎侧 camera 是 **3D** 相机：set_active/active 认 Camera 组件，get/set 只认 camera3d）。
+-- 原先是 { set = function(...) return true end, set_active = ... }——一对**静默空实现**：
+-- 返回 true 却什么都不做，正是本项目最忌的形态（调用方以为相机换了，画面没换）。
+-- 现在按引擎逐条对齐：set_active 要求实体真有 Camera 组件（否则报 "entity has no camera"），
+-- 本侧是 2D 世界、没有 camera3d ⇒ get/set 与引擎同一条报错，而不是假装成功。
+camera = {
+  -- 读取器在引擎里的注册名是 get_active（api/camera.rs:50），返回实体号或 nil；没有 active 这个名字。
+  get_active = function()
+    return __rustlua_active_camera
+  end,
+  set_active = function(id)
+    __rustlua_require_alive(id)
+    if __rustlua_cameras[id] == nil then
+      error('entity has no camera', 2)
+    end
+    __rustlua_active_camera = id
+    __rustlua_emit('K\t' .. id)
+    return true
+  end,
+  get = function(id)
+    __rustlua_require_alive(id)
+    if __rustlua_camera3d[id] == nil then
+      error('entity has no camera3d', 2)
+    end
+    return __rustlua_camera3d[id]
+  end,
+  set = function(id, ...)
+    __rustlua_require_alive(id)
+    if __rustlua_camera3d[id] == nil then
+      error('entity has no camera3d', 2)
+    end
+    return true
+  end
+}
+-- 2D 相机（camera2d）：与引擎逐条同语义（api/camera.rs:242-397）。
+--   * set / set_zoom / follow / unfollow / shake 都只是**请求**，宿主下一帧消费；
+--   * get / get_zoom 读**宿主每帧回填的真实值**（引擎注释明写这条：读的不是脚本自述）。
+--     宿主用 lua_set_number 每帧写 __rustlua_cam_x / __rustlua_cam_y / __rustlua_cam_zoom——
+--     不编译源码、也不跨界传 JSON（热路径上每帧都要写）。
+--   * world_to_screen / screen_to_world / mouse_world 用**渲染侧同一份**换算（1280×720 设计空间，
+--     x = 640 + (wx - camx) * zoom、y = 360 - (wy - camy) * zoom）。写两遍就会分叉，所以这里
+--     只做一次算术，口径与 drawScene 的 toCanvas 逐字一致。
+-- 本轮之前本侧**没有** camera2d：脚本问 get() 会落到引擎那一侧（空场景）⇒ 永远 (0,0)/1.0，
+-- 而画面是 JS 世界渲染的真实场景——不崩、不报错、也不进缺口清单，是典型的"看起来没事"。
+local function __rustlua_cam_finite(value, message)
+  if type(value) ~= 'number' or value ~= value or value == math.huge or value == -math.huge then
+    error(message, 3)
+  end
+  return value
+end
+camera2d = {
+  set = function(x, y)
+    local nx = __rustlua_cam_finite(x, 'camera2d.set must be finite')
+    local ny = __rustlua_cam_finite(y, 'camera2d.set must be finite')
+    __rustlua_emit('E\tcenter\t' .. nx .. '\t' .. ny)
+    return true
+  end,
+  get = function()
+    return { x = __rustlua_cam_x or 0, y = __rustlua_cam_y or 0 }
+  end,
+  set_zoom = function(zoom)
+    local z = __rustlua_cam_finite(zoom, 'camera2d.set_zoom must be > 0')
+    if z <= 0 then error('camera2d.set_zoom must be > 0', 2) end
+    __rustlua_emit('E\tzoom\t' .. z)
+    return true
+  end,
+  get_zoom = function()
+    return __rustlua_cam_zoom or 1
+  end,
+  world_to_screen = function(x, y)
+    local wx = __rustlua_cam_finite(x, 'camera2d.world_to_screen must be finite')
+    local wy = __rustlua_cam_finite(y, 'camera2d.world_to_screen must be finite')
+    local z = __rustlua_cam_zoom or 1
+    return { x = 640 + (wx - (__rustlua_cam_x or 0)) * z, y = 360 - (wy - (__rustlua_cam_y or 0)) * z }
+  end,
+  screen_to_world = function(x, y)
+    local sx = __rustlua_cam_finite(x, 'camera2d.screen_to_world must be finite')
+    local sy = __rustlua_cam_finite(y, 'camera2d.screen_to_world must be finite')
+    local z = __rustlua_cam_zoom or 1
+    if z == 0 then z = 1 end
+    return { x = (__rustlua_cam_x or 0) + (sx - 640) / z, y = (__rustlua_cam_y or 0) - (sy - 360) / z }
+  end,
+  mouse_world = function()
+    local c = (__rustlua_input and __rustlua_input.cursor) or { 0, 0 }
+    local z = __rustlua_cam_zoom or 1
+    if z == 0 then z = 1 end
+    return { x = (__rustlua_cam_x or 0) + ((c[1] or 0) - 640) / z, y = (__rustlua_cam_y or 0) - ((c[2] or 0) - 360) / z }
+  end,
+  shake = function(amplitude, duration)
+    local a = __rustlua_cam_finite(amplitude, 'camera2d.shake needs a finite amplitude and duration > 0')
+    local d = __rustlua_cam_finite(duration, 'camera2d.shake needs a finite amplitude and duration > 0')
+    if d <= 0 then error('camera2d.shake needs a finite amplitude and duration > 0', 2) end
+    __rustlua_emit('E\tshake\t' .. a .. '\t' .. d)
+    return true
+  end,
+  follow = function(id, options)
+    local target = '-'
+    if id ~= nil then
+      __rustlua_require_alive(id)
+      target = tostring(id)
+    end
+    local ox, oy, dx, dy, sm = 0, 0, 0, 0, 0
+    if type(options) == 'table' then
+      local function num(key)
+        local v = options[key]
+        if v == nil then return 0 end
+        local message = 'camera2d.follow options must be finite'
+        if type(v) ~= 'number' or v ~= v or v == math.huge or v == -math.huge then
+          error(message, 3)
+        end
+        return v
+      end
+      ox, oy = num('offset_x'), num('offset_y')
+      dx, dy = num('dead_zone_x'), num('dead_zone_y')
+      sm = num('smoothing')
+      if dx < 0 or dy < 0 then error('camera2d.follow dead zone must be >= 0', 2) end
+    end
+    __rustlua_emit('E\tfollow\t' .. target .. '\t' .. ox .. '\t' .. oy .. '\t' .. dx .. '\t' .. dy .. '\t' .. sm)
+    return true
+  end,
+  unfollow = function()
+    __rustlua_emit('E\tunfollow')
+    return true
+  end,
+}
 mesh = { set = function(...) return true end }
 os = os or {}; os.getenv = function(_) return nil end
 -- ---------------------------------------------------------------------------
@@ -3337,6 +4708,8 @@ end
 --   否则一次切换会白白多走一帧动画。
 -- 行格式：R=spawn（建实体） S=sprite.set（Sprite 组件串） X=animation.attach
 --        C=set_cell  Z=set_solid  U=set_texture  D=destroy  T=Transform  A=动画当前 clip + 帧序号
+--        Q=quad.set（Quad 组件串）
+--        W=world_text.attach/detach（WorldText 组件串；空串=摘掉）
 -- R/D 这类结构变更只发一次（op 列表取走即清）；T/A 每帧对**存活**实体重新发。
 function __rustlua_export_state(step)
   local rows = __rustlua_ops
@@ -3356,6 +4729,13 @@ function __rustlua_export_state(step)
   end
   for id, p in pairs(__rustlua_transforms) do
     if __rustlua_alive[id] == true then
+      -- WP7-60：**这里曾经试过"只在变换变了时才发"（Lua 侧影子表），已被撤掉**，原因记在
+      -- docs 与 CHANGELOG 里，一句话：那条路假设了"我们上次发出去的值 == 渲染器手上持有的值"，
+      -- 而换场景/延迟挂包这类路径会让渲染器的实体被**重新装载**（JS 侧回到场景文件里的初值），
+      -- 影子表却还记着旧值 ⇒ 差一点就永远发不出去。门里的驱动用例当场抓到：
+      -- 「Lua 世界里的主角在 (528,159)，渲染器侧却在 (528,112)（回写通道的 T 行没把位置同步给渲染器）」。
+      -- 结论：**要做这种削减，先把状态回写的所有者收敛成一个**（每帧恰好一次、且结果一定被消费），
+      -- 否则任何"增量发"都是在赌消费者与生产者对同一份状态的理解永不分离。
       rows[#rows + 1] = 'T\t' .. id .. '\t' .. tostring(p.x or 0) .. '\t' .. tostring(p.y or 0) .. '\t' .. tostring(p.rotation or 0) .. '\t' .. tostring(p.scale_x or 1) .. '\t' .. tostring(p.scale_y or 1)
     end
   end
@@ -3364,6 +4744,15 @@ function __rustlua_export_state(step)
       rows[#rows + 1] = 'A\t' .. id .. '\t' .. tostring(a.current or 'idle') .. '\t' .. tostring(a.frame or 0)
     end
   end
+  -- WP7-59：隐藏文本集**并进同一份每帧状态**（同一个 Lua 调用、零额外跨界）。
+  -- 它只在 ui.scene_text_visible(name, false) 时变，但以前是每帧**单独**拉一次
+  -- （每帧 5 次跨界里的第 5 次，而且每次都要重建一个 Set）。
+  -- **空集也要发这一行**：消费侧靠它覆盖旧集合——少发一行，上一次的隐藏名单就会永久
+  -- 留在渲染器里（脚本把文字恢复可见了，屏幕上却还空着）。
+  -- 注：本段在 JS 模板字符串里，注释中不得出现反引号（会截断模板）。
+  local hidden = {}
+  for k in pairs(__rustlua_scene_text_hidden or {}) do hidden[#hidden + 1] = k end
+  rows[#rows + 1] = 'H\t' .. table.concat(hidden, ',')
   return table.concat(rows, '\\n')
 end
 
@@ -3785,31 +5174,30 @@ function doString(L, source, name) {
       throw new Error('wasm 缺 lua_set_number 导出：web-runtime.js 比同目录的 wasm 新，'
         + '两者必须来自同一次打包（检查宿主是否缓存了旧运行时，或产物只换了一半）');
     }
+    xcSetNum += 1;
+    if (DIAGNOSTICS_ON) xsnNames.set(name, (xsnNames.get(name) || 0) + 1);
     bridge.lua_set_number(name, value);
-  }
 
-  // 调一个**无参无返回**的 Lua 全局钩子（每步的输入钩子就是这种形状）。
-  //
-  // 这两个钩子（`__rustlua_apply_virtual_input` / `__rustlua_finish_step_input`）以前是
-  // `doString(L, '__rustlua_apply_virtual_input()')`——**每个固定步都为同一段固定源码编译一次**，
-  // 而它没有参数、没有返回值，编译纯属浪费（一次分配 + 一次解释执行）。Lua 侧那两份实现仍是
-  // 唯一事实源，这里只是不再为"调它"付编译费。见 lua_bridge.rs 的 `lua_call_global_void`。
-  //
-  // 与 `setLuaNumber` 同一口径：导出缺席时说清楚是哪一边旧，不做静默兜底
-  // （兜底会把"产物换了一半"降级成"虚拟按键偶尔不生效"，那是最难查的一类症状）。
-  function callLuaHook(name) {
-    const bridge = window.__RUSTLUA_LUA_BRIDGE;
-    if (!bridge) throw new Error('wasm lua bridge not loaded');
-    if (typeof bridge.lua_call_global_void !== 'function') {
-      throw new Error('wasm 缺 lua_call_global_void 导出：web-runtime.js 比同目录的 wasm 新，'
-        + '两者必须来自同一次打包（检查宿主是否缓存了旧运行时，或产物只换了一半）');
-    }
-    try {
-      bridge.lua_call_global_void(name);
-    } catch (error) {
-      throw new Error(String((error && error.message) || error));
-    }
   }
+// WP7-77：**批量数值入口**（一次跨界写多个全局）。
+//   * 与 `setLuaNumber` 同一口径：导出缺席**不静默兜底**，直接抛——那说明"产物换了一半"；
+//   * 用法限制写在调用处：**只允许合并同一时间点的写入**。相机三个数属于同一瞬间，
+//     而 `dt` 必须在固定步之前写、脚本在推进前读它 ⇒ 它留在自己的时间点，不并进来。
+function setLuaNumbers(pairs) {
+  const bridge = window.__RUSTLUA_LUA_BRIDGE;
+  if (!bridge || typeof bridge.lua_set_numbers !== "function") {
+    throw new Error("wasm 缺 lua_set_numbers 导出：web-runtime.js 比同目录的 wasm 新，"
+      + "请重新打包（scripts/package.ps1）后重试");
+  }
+  // 批量也是一次跨界 ⇒ 计入同一分量（否则读数会"看起来变少"，实则多了一次未计数的调用）。
+  xcSetNum += 1;
+  return bridge.lua_set_numbers(JSON.stringify(pairs));
+}
+
+  // 每步的输入钩子（`__rustlua_apply_virtual_input` / `__rustlua_finish_step_input`）自 WP7-56 起
+  // 由 wasm 的固定步实现直接调用（`lua_bridge.rs::lua_fixed_step`：先钩子、再写 `__rustlua_dt`、
+  // 最后 `update()`）——这里原来那个 `callLuaHook` 包装函数因此整份删除：它的存在理由就是
+  // "别为调一个无参钩子每步编译一段源码"，而那段顺序现在已经搬进 Rust，留着它只会是第二份入口。
 
   // ---- 每帧输入的批量线格式（`RLFI`）：打包器 ----
   //
@@ -3897,6 +5285,7 @@ function doString(L, source, name) {
       // 一次跨界搬完整帧。返回值是 wasm 侧真的改了几位——恒为 0 说明两边对
       // "这一帧该变哪些位"的理解不一致（不同源的第一手线索）。
       apply() {
+        xcInput += 1;
         const touched = bridge.lua_input_frame(buffer);
         appliedFrames += 1;
         appliedBits += touched >>> 0;
@@ -3967,6 +5356,26 @@ function doString(L, source, name) {
     }
   }
 
+  // 宿主缺失 API 清单（方法级，去重有序）：陷阱代理每碰到一个缺失方法就记一笔
+  // （`__rustlua_record_missing`），这里只把它读出来。此前那个导出定义了却**没有任何调用点**，
+  // 于是"缺哪个 API"只能靠"跑到哪儿炸"逐个发现——每个缺口一次浏览器往返。
+  // 现在 boot 读数里直接给出清单，`missing_api_paths=` 一次说清。
+  function missingApiPaths() {
+    const bridge = window.__RUSTLUA_LUA_BRIDGE;
+    if (!bridge) return ['__bridge_absent__'];
+    try {
+      // **通道很关键**：`lua_do_string(source, chunkname)` 返回 `Result<(), JsValue>`——它**拿不到
+      // Lua 返回值**（先试过用它，于是"永远读到空表"，把"清单为空"和"根本读不出来"混成同一种读数，
+      // 白跑一轮）。读 Lua 的值要走 `lua_call_global(name, args_json)`，它返回 `Option<String>`。
+      const raw = bridge.lua_call_global('__rustlua_export_missing_api', '');
+      if (!raw) return [];
+      return String(raw).split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    } catch (error) {
+      // 失败要给**哨兵值**而不是空表：空表是"确认没有缺口"，读失败是"没测出来"，两者不能同形。
+      return ['__probe_error__:' + String((error && error.message) || error).slice(0, 120)];
+    }
+  }
+
   // 活体 API 表面：运行期真实 `_G` 的「模块表→函数名」，探针与桌面快照门**同一个常量**
   // （`LUA_API_PROBE`）。harness 拿它和提交进仓库的 web 基线对拍，防止 web 侧表面悄悄漂移
   // 或基线腐烂。只在被调用时执行，正常游戏路径不付出代价。
@@ -3976,11 +5385,69 @@ function doString(L, source, name) {
     return JSON.parse(bridge.lua_api_surface_json());
   };
 
+  // 宿主**降级**清单：与上面的"缺口"是两件事——缺口是宿主没有这个方法（陷阱代理顶成假表），
+// 降级是我们有实现但语义弱于引擎（只记录开关、恒空表…），且已在代码里明写。
+// 走**同一条**可断言通道（DOM 属性 + console.log），因为 log.warn **不进** harness 日志：
+// 第 65 轮写了告警却一条都没出现，"没触发"与"没抓到"因此分不开。
+// 具名 UI 文本的当帧读数（脚本用 `ui.text_at`/`ui.text` 画在 canvas 上的字）。
+// **为什么必须有一条这样的通道**：剧本把"每个 API 模块这一帧干了什么"聚合成一行文本，
+// 画在 canvas 上——DOM 里没有、宿主 API 也查不到。于是无头验收只能靠"崩在哪一行"反推
+// 剧本跑到第几节、哪一节报错（第 62~66 轮就是这么一轮一个缺口地往前挪的）。
+// 走 Lua 侧导出（`__rustlua_export_ui_texts`），与缺口/降级读数同一套"可断言"纪律。
+function uiTexts(L) {
+  try {
+    // 值通道：`lua_do_string` 拿不到返回值，读 Lua 的值必须走 `callGlobal`（它经 bridge
+    // 的 `lua_call_global` 返回字符串）。第 62 轮在这上面白跑过一轮。
+    return String(callGlobal(L, '__rustlua_export_ui_texts') || '');
+  } catch (error) {
+    return '__probe_error__:' + String((error && error.message) || error).slice(0, 80);
+  }
+}
+
+function degradedApiPaths() {
+  const bridge = window.__RUSTLUA_LUA_BRIDGE;
+  if (!bridge) return ['__bridge_absent__'];
+  try {
+    const raw = bridge.lua_call_global('__rustlua_export_degraded_api', '');
+    if (!raw) return [];
+    return String(raw).split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  } catch (error) {
+    return ['__probe_error__:' + String((error && error.message) || error).slice(0, 120)];
+  }
+}
+
+// 「null」（而不是空串）作初值：**第一次 markBoot 必须打一行**，哪怕是"0 项"——
+  // 空清单与"探针没跑"在日志里必须长得不一样。
+  let lastMissingApiReport = null;
+let lastDegradedReport = null;
+
   function markBoot(state, detail) {
     const body = document.body || document.documentElement;
     if (!body) return;
     body.setAttribute('data-rustlua-boot', state);
     if (detail) body.setAttribute('data-rustlua-boot-detail', String(detail).slice(0, 400));
+    // 每次 boot 状态变化顺带记一次宿主缺失 API 清单：失败时这份读数**直接指出缺哪个方法**，
+    // 而不是只留下"最后崩在哪一行"（`:316` 那条 `%d` 收到表，症状离原因就很远：
+    // 陷阱代理会把缺失方法顶成"可调用且返回一张表"，看起来完全不像"缺一个函数"）。
+    const missingPaths = missingApiPaths();
+    body.setAttribute('data-rustlua-missing-api', missingPaths.join(','));
+    const degradedPaths = degradedApiPaths();
+    body.setAttribute('data-rustlua-degraded', degradedPaths.join(','));
+    const joined = missingPaths.join(', ');
+    // 用 `console.log`（harness 抓得到）且**每次 markBoot 都打**：清单为空也要留下读数，
+    // 否则"这条探针跑过没有"无法从日志自证——这正是上一轮把它写成 `lua_do_string` 后
+    // 白跑一轮的原因。已打印过的内容不重复刷屏。
+    if (joined !== lastMissingApiReport) {
+      lastMissingApiReport = joined;
+      console.log('web-runtime: 宿主缺失 API ' + missingPaths.length + ' 项' + (joined ? '：' + joined : ''));
+    }
+    // 降级清单与缺口清单**同一套自证纪律**：初值 null ⇒ 第一次 markBoot 必定打一行（哪怕 0 项），
+    // 于是"没降级"与"探针没跑"在日志里长得不一样。
+    const degradedJoined = degradedPaths.join(', ');
+    if (degradedJoined !== lastDegradedReport) {
+      lastDegradedReport = degradedJoined;
+      console.log('web-runtime: 宿主降级 API ' + degradedPaths.length + ' 项' + (degradedJoined ? '：' + degradedJoined : ''));
+    }
   }
 
   function callGlobal(L, name, args) {
@@ -3994,6 +5461,8 @@ function doString(L, source, name) {
     // 而解析既花时间又在每次调用上产生一份小垃圾。`[]` 仍然接受（见 lua_bridge.rs）。
     const noArgs = args === undefined || args === null || args.length === 0;
     try {
+      xcCallGlobal += 1;
+      if (DIAGNOSTICS_ON) xcNames.set(name, (xcNames.get(name) || 0) + 1);
       const value = bridge.lua_call_global(name, noArgs ? '' : JSON.stringify(args));
       // wasm-bindgen 对 Ok(None) 返回 undefined；协议层统一归一成 null（fengari 版语义）。
       return value === undefined ? null : value;
@@ -4071,6 +5540,27 @@ function doString(L, source, name) {
     bridge.lua_boot();
     const L = null;
     installLuaAudioBridge(knownAudio);
+    // 绑定文本 ↔ 本侧键名的双向桥：`input.bindings` 的对外契约是引擎的 `key:keyj` 形式，
+    // 而内部匹配用的是 `keyName()` 的裸名（`j`）。两个方向都做成 JS 回调，映射表只有一份
+    // （`physicalKeyToName` / `keyNameToBindingText`），Lua 侧不做字符串换算。
+    // 第一个返回值是**种类**（key|pad|mouse|invalid）：pad/mouse 文本合法但本侧匹配不到，
+    // Lua 侧据此登记降级 —— 不给种类的话，"手柄绑定"与"拼错的绑定"在 Lua 侧长得一模一样。
+    bridge.lua_register_js_callback('__rustlua_keys_from_binding', function (text) {
+      return bindingTextToKeys(text);
+    });
+    bridge.lua_register_js_callback('__rustlua_binding_text', function (key) {
+      return [keyNameToBindingText(key)];
+    });
+    // 物理键名 → 本侧输入层键名（`keyw`→`w`、`digit7`→`7`、`arrowleft`→`left`、`space`→`space`）。
+    // **同一份映射**（physicalKeyToName ↔ keyNameToBindingText）已经负责解析工程文件的 `[input].map`；
+    // 查询入口（is_down/just_pressed/just_released/pressed/released）与注入入口（virtual_key/
+    // virtual_pressed）此前各自用 `tostring(key):lower()`，于是引擎名一律落空 ——
+    // game_api 的 `demo_input.lua` 用 `input.is_down("keyw")`/`input.is_down("arrowleft")`/
+    // `input.just_pressed("keyp")` 这些**物理键名**，在浏览器里全部静默为 false（不报错、不缺 API）。
+    // 认不出的名字返回 null，Lua 侧负责退回原名（透传，不误伤裸名调用方）。
+    bridge.lua_register_js_callback('__rustlua_physical_to_web', function (name) {
+      return physicalKeyToName(String(name).toLowerCase());
+    });
     // prefab 七 API 的 JS 桥：Lua 侧 prefab 表（luaPrelude 里的模拟）调这些回调，
     // 在渲染侧（sceneState）直接建/改预设实体。回调返回数组 = Lua 多返回值。
     bridge.lua_register_js_callback('__rustlua_prefab_spawn', function (path) {
@@ -4279,6 +5769,27 @@ function __rustlua_trap_host_table(name, api)
     })
   end
 end
+-- **降级**（与上面的"缺口"是两件事，绝不能混）：
+--   缺口 = 宿主**没有**这个方法，陷阱代理把它顶成"可调用且返回一张表"（症状离原因很远）；
+--   降级 = 我们**有**实现，但语义比引擎弱（例如"只记录开关、不改变行为"），且已在代码里明写。
+-- 降级也必须**可断言**：只靠 log.warn 是不够的——harness 抓的是 console.log，warn 根本不进日志
+-- （第 65 轮实测：写了告警，日志里一条都没有，于是"没触发"与"没抓到"分不开）。
+__rustlua_degraded_api = {}
+function __rustlua_record_degraded(path)
+  if not __rustlua_degraded_api[path] then
+    __rustlua_degraded_api[path] = true
+  end
+end
+
+function __rustlua_export_degraded_api()
+  local rows = {}
+  for path in pairs(__rustlua_degraded_api) do
+    rows[#rows + 1] = path
+  end
+  table.sort(rows)
+  return table.concat(rows, '\\n')
+end
+
 function __rustlua_export_missing_api()
   local rows = {}
   for path in pairs(__rustlua_missing_api) do rows[#rows + 1] = path end
@@ -4520,6 +6031,283 @@ local bindings = {
   confirm = {'space'}, cancel = {'escape'},
   ui_up = {'up'}, ui_down = {'down'}, ui_left = {'left'}, ui_right = {'right'},
 }
+-- 键位权威：工程 project.toml 的 [input].map 是**权威**，上面这张硬编码表只是"工程没给键盘键位
+-- 时的回退"。引擎侧键位由 ActionMap 决定，Lua 只读；本侧则有两处真相（工程文件 + 这张表），
+-- 必须明确选一处 —— 否则同一个工程在桌面与 web 上会有两套键位。
+-- 宿主在启动时把 map 解析好（parseInputMap）编成 __rustlua_project_bindings 送进来，这里合并。
+-- **逐动作**合并：工程给了键盘键位就用工程的；工程只给了手柄（pad/padaxis）或没提这个动作，
+-- 就保留硬编码键位 —— web 没有手柄轮询，不保留的话那些动作会直接死掉（jhyt 的 move_* 正是
+-- 只绑手柄轴，靠这条回退才能用 WASD 跑起来）。
+function __rustlua_apply_project_bindings()
+  local project = __rustlua_project_bindings
+  if type(project) ~= 'table' then return false end
+  local applied = 0
+  for action, keys in pairs(project) do
+    if type(keys) == 'table' and #keys > 0 then
+      bindings[action] = keys
+      applied = applied + 1
+    end
+  end
+  __rustlua_binding_applied = applied
+  return true
+end
+-- 合并结果的**Lua 侧**读数（宿主启动后读一次）：证明"工程键位真的覆盖进了这张表"，
+-- 而不是只证明了"我们解析了文件"。0 = 完全没覆盖（例如工程没有 [input].map）。
+function __rustlua_binding_applied_probe()
+  return tostring(__rustlua_binding_applied or 0)
+end
+-- 绑定编辑族：与引擎 「api/input.rs:236-295」 逐条对齐。上面那张表是**生效表**（工程 map 覆盖 +
+-- 无手柄回退之后的结果），下面这些函数改的就是它。
+--   * rebind(name, binding) → (ok, reason)。语义是**单一主绑定**：先清空该动作的全部旧绑定，再绑
+--     这一条（要一键多绑定请改工程文件的 map）。解析失败返回 false + 原因且不改动；而"先清空后
+--     绑定"意味着绑定失败时该动作会**空掉** —— 这是引擎的行为，这里照抄（替它「修好」会让两边
+--     又不一致，而这类不一致最贵：同一个脚本在两个宿主上得到不同结论）。
+--   * unbind(name, binding) → bool（解析失败或本来没绑 = false）。
+--   * reset_bindings() → 回到**默认表**（不是工程文件的 map）：本侧默认表就是上面那张硬编码表，
+--     与引擎 ActionMap::with_defaults 的动作与键位一一对应（move_up=w、interact=e …）。
+--   * action_map_text()/set_action_map(text)：v2 文本的无损往返；版本头不符返回 false + 原因且不改动。
+-- pad/mouse 绑定照引擎**算合法**（文本能存、往返无损），但本侧没有手柄轮询 ⇒ 匹配不到，
+-- 登记为降级而不是假装可用。
+__rustlua_binding_defaults = {}
+for __action, __keys in pairs(bindings) do
+  local __copy = {}
+  for i, k in ipairs(__keys) do __copy[i] = k end
+  __rustlua_binding_defaults[__action] = __copy
+end
+__rustlua_binding_overrides = {}
+__rustlua_binding_rebound, __rustlua_binding_unbound, __rustlua_binding_resets = 0, 0, 0
+local function __rustlua_bind_pack(...) return { ... }, select('#', ...) end
+local function __rustlua_binding_parse(text)
+  local packed, count = __rustlua_bind_pack(__rustlua_keys_from_binding(tostring(text or '')))
+  local kind = packed[1]
+  local keys = {}
+  for i = 2, count do keys[#keys + 1] = packed[i] end
+  return kind, keys
+end
+local function __rustlua_binding_texts(action)
+  local out = {}
+  for _, k in ipairs(bindings[tostring(action)] or {}) do
+    local text = __rustlua_binding_text(k)
+    if text then
+      local seen = false
+      for _, existing in ipairs(out) do if existing == text then seen = true; break end end
+      if not seen then out[#out + 1] = text end
+    end
+  end
+  return out
+end
+function input.rebind(action, binding)
+  action = tostring(action or '')
+  binding = tostring(binding or '')
+  if action == '' then return false, 'action name must not be empty' end
+  local kind, keys = __rustlua_binding_parse(binding)
+  if kind == 'invalid' then return false, 'invalid binding: ' .. binding end
+  bindings[action] = nil
+  __rustlua_binding_overrides[action] = binding
+  __rustlua_binding_rebound = __rustlua_binding_rebound + 1
+  if kind == 'pad' or kind == 'mouse' then
+    __rustlua_record_degraded('input.rebind(' .. kind .. ')')
+    return true, ''
+  end
+  if #keys == 0 then return false, 'invalid binding: ' .. binding end
+  bindings[action] = keys
+  return true, ''
+end
+function input.unbind(action, binding)
+  action = tostring(action or '')
+  binding = tostring(binding or '')
+  local kind, keys = __rustlua_binding_parse(binding)
+  if kind == 'invalid' then return false end
+  if kind == 'pad' or kind == 'mouse' then
+    -- 这类绑定在本侧不落到 bindings 里，没有可解绑的键；清掉覆盖记录即算解绑成功。
+    if __rustlua_binding_overrides[action] == binding then
+      __rustlua_binding_overrides[action] = nil
+      __rustlua_binding_unbound = __rustlua_binding_unbound + 1
+      return true
+    end
+    return false
+  end
+  local kept, removed = {}, false
+  for _, k in ipairs(bindings[action] or {}) do
+    local hit = false
+    for _, want in ipairs(keys) do if k == want then hit = true; break end end
+    if hit then removed = true else kept[#kept + 1] = k end
+  end
+  if not removed then return false end
+  bindings[action] = (#kept > 0) and kept or nil
+  __rustlua_binding_unbound = __rustlua_binding_unbound + 1
+  return true
+end
+function input.reset_bindings()
+  for action in pairs(bindings) do bindings[action] = nil end
+  for action, keys in pairs(__rustlua_binding_defaults) do
+    local copy = {}
+    for i, k in ipairs(keys) do copy[i] = k end
+    bindings[action] = copy
+  end
+  __rustlua_binding_overrides = {}
+  __rustlua_binding_resets = __rustlua_binding_resets + 1
+end
+function input.action_map_text()
+  local names = {}
+  for action in pairs(bindings) do names[#names + 1] = action end
+  table.sort(names)
+  local lines = { 'rustlua-actions-v2' }
+  for _, action in ipairs(names) do
+    local texts = __rustlua_binding_texts(action)
+    if #texts > 0 then lines[#lines + 1] = action .. '=' .. table.concat(texts, ',') end
+  end
+  return table.concat(lines, '\\n')
+end
+function input.set_action_map(text)
+  text = tostring(text or '')
+  local lines = {}
+  for line in (text .. '\\n'):gmatch('([^\\n]*)\\n') do lines[#lines + 1] = line end
+  local header = (lines[1] or ''):gsub('^' .. string.char(239, 187, 191), '')
+  header = header:match('^%s*(.-)%s*$') or ''
+  if header ~= 'rustlua-actions-v2' and header ~= 'rustlua-actions-v1' then
+    return false, 'unsupported action map version: ' .. header
+  end
+  -- 先解析到暂存表，出错就**整体不动**（引擎同：版本头/绑定非法时不改当前映射）。
+  local staged = {}
+  for index = 2, #lines do
+    local line = lines[index]:match('^%s*(.-)%s*$')
+    if line ~= '' then
+      local eq = line:find('=', 1, true)
+      if not eq then return false, 'invalid binding: ' .. line end
+      local action = line:sub(1, eq - 1):match('^%s*(.-)%s*$')
+      local list = {}
+      for item in line:sub(eq + 1):gmatch('[^,]+') do
+        local entry = item:match('^%s*(.-)%s*$')
+        if entry ~= '' then
+          local kind, keys = __rustlua_binding_parse(entry)
+          if kind == 'invalid' then return false, 'invalid binding: ' .. entry end
+          for _, k in ipairs(keys) do list[#list + 1] = k end
+        end
+      end
+      staged[action] = list
+    end
+  end
+  for action in pairs(bindings) do bindings[action] = nil end
+  for action, keys in pairs(staged) do bindings[action] = keys end
+  __rustlua_binding_overrides = {}
+  __rustlua_binding_resets = __rustlua_binding_resets + 1
+  return true, ''
+end
+-- 绑定编辑族的读数（宿主每帧诊断时读一次）：证明显式改动**真的落到了生效表**上。
+function __rustlua_binding_probe()
+  local bound, overrides = 0, 0
+  for _ in pairs(bindings) do bound = bound + 1 end
+  for _ in pairs(__rustlua_binding_overrides) do overrides = overrides + 1 end
+  -- 可选尾注：诊断用的 Lua 执行通道（URL rustlua-lua-do=）把断言串写进 __rustlua_binding_do_note，
+  -- 由这里带出去 —— 否则"通道跑了没有、跑出什么"在页面上看不见。
+  local note = __rustlua_binding_do_note
+  return 'bound=' .. bound .. ' rebound=' .. __rustlua_binding_rebound
+    .. ' unbound=' .. __rustlua_binding_unbound .. ' resets=' .. __rustlua_binding_resets
+    .. ' overrides=' .. overrides .. (note and (' | ' .. tostring(note)) or '')
+end
+-- 最近一次产生真实输入的设备类别（引擎 input.last_device ⇒ "keyboard"/"gamepad"）。
+-- 本侧设备层只有键鼠与触摸，**没有手柄轮询**（见上面 bindings 的注释：GamepadAxis/GamepadButton
+-- 在 web 侧无对应输入）⇒ 真值永远是 "keyboard"。这里照实返回并**登记为降级**：
+-- 假装能报 gamepad 会让 UI 提示在手柄接入时永远不切——那比明确登记"做不到"更糟。
+function input.last_device()
+  __rustlua_record_degraded('input.last_device')
+  return __rustlua_last_device or 'keyboard'
+end
+-- 手柄三 API：本侧设备层只有键鼠与触摸，**没有手柄轮询** ⇒ 照引擎的**取值类型**返回"没有手柄"
+-- 的取值（bool / f32 / 静默无效），并登记为降级。返回假数据会让"手柄接上了却没反应"变成一个
+-- 查不出的谜——那比明确登记"做不到"更糟。索引同引擎（钳到 u8 范围）。
+function input.pad_button(index)
+  __rustlua_record_degraded('input.pad_button')
+  return false
+end
+function input.pad_axis(index)
+  __rustlua_record_degraded('input.pad_axis')
+  return 0.0
+end
+-- 引擎的 rumble(low, high, ms) 只登记请求、无手柄时**静默无效**（不报错、不返回）⇒ 本侧同形：
+-- 不报错、不返回，登记降级让"震动请求发过没有"可断言。
+function input.rumble(low, high, ms)
+  __rustlua_record_degraded('input.rumble')
+end
+-- diagnostics()：引擎返回"出错了"的消息数组。本侧最真实的诊断信息就是**已登记的降级路径**
+-- （这台宿主上哪些 API 用的是弱实现）。保持同一形状（字符串数组），游戏侧不需要分支。
+function input.diagnostics()
+  local rows = {}
+  for path in pairs(__rustlua_degraded_api) do
+    rows[#rows + 1] = 'web host: ' .. tostring(path) .. ' uses a reduced implementation'
+  end
+  table.sort(rows)
+  return rows
+end
+-- migration_notes()：引擎的 v1→v2 迁移说明（逐条有损换算），启动时打印一次即可。
+-- 本侧的 map 同样来自工程文件，v1 头时给出引擎那句原文（input.rs 的 from_text_with_notes）。
+function input.migration_notes()
+  if __rustlua_map_header == 'rustlua-actions-v1' then
+    return { '输入映射已从 v1 升级到 v2：键位改为物理键名，写盘后即输出 v2 格式' }
+  end
+  return {}
+end
+-- settings_path()：引擎返回"输入设置所在文件"的解析路径（没有设置根时 nil）。本侧那份设置就在
+-- 打包产物里的 pack/project.toml（启动时已读过，map 与 nav 都从它来）⇒ 如实给出它在包内的路径。
+function input.settings_path()
+  return __rustlua_settings_path
+end
+function input.load_settings(path)
+  if path ~= nil and path ~= '' then
+    __rustlua_record_degraded('input.load_settings(path)')
+    return false, 'read_only_bundle'
+  end
+  -- 启动时已经从 pack/project.toml 应用过绑定与导航手感 ⇒ "效果在位"是如实的；
+  -- 但本侧**不能重新读盘**（浏览器与微信都没有同步文件系统）⇒ 登记降级：
+  -- 运行期换掉那份文件不会重新生效。
+  __rustlua_record_degraded('input.load_settings')
+  return true, 'loaded'
+end
+function input.save_settings(path)
+  -- 打包产物只读、宿主没有同步落盘 ⇒ **不假装 saved**（那会让"改键保存了没有"变成查不出的谎）。
+  -- 形状与引擎一致 (ok, reason)；reason 用 read_only_bundle —— 引擎没有这个词，是**刻意扩展**：
+  -- 宁可给出一个可判定的新原因，也不谎报 saved。
+  __rustlua_record_degraded('input.save_settings')
+  return false, 'read_only_bundle'
+end
+-- 菜单导航手感（引擎 input.nav_settings）：读「<project>/project.toml」的「[input]」段。
+-- 引擎是**同步读盘**，浏览器没有同步文件系统 ⇒ 宿主在启动时就把已经取到的 project.toml
+-- 解析好写进 __rustlua_nav_* 三个全局（见 parseNavSection：段/键名/毫秒优先/钳制与引擎逐条一致），
+-- 这里只是把它读出来 ⇒ 是**真读文件**，不是记一个默认值。
+-- 显式传 path 时返回 nil：本侧不能按任意路径读盘，与引擎"路径解析不出来就返回 nil"同语义。
+function input.nav_settings(path)
+  if path ~= nil and path ~= '' then return nil end
+  return {
+    threshold = __rustlua_nav_threshold or 0.5,
+    delay_ms = __rustlua_nav_delay_ms or 350,
+    repeat_ms = __rustlua_nav_repeat_ms or 90,
+  }
+end
+-- 覆盖导航手感（引擎 input.set_nav_settings）：三个参数都按 NavSettings::new 钳制，
+-- 并**回返钳制后的三元组**（引擎返回 tuple，脚本据此知道真实生效的值）。
+--   * 阈值：非有限 → 默认 0.5，否则钳到 0..1；
+--   * 延迟：上限 5000ms；重复间隔：钳到 16..5000ms（下限约一个 60Hz 逻辑帧）。
+-- 本侧没有手柄模拟量绑定，所以阈值/节奏没有"设备时钟"可驱动是**结构事实**而非遗漏：
+-- 引擎自己也只在模拟量绑定上连发（数字键保持一次一步），见 action_repeat 的实现注记。
+function input.set_nav_settings(threshold, delay_ms, repeat_ms)
+  local t = tonumber(threshold)
+  local d = tonumber(delay_ms)
+  local r = tonumber(repeat_ms)
+  if t == nil or d == nil or r == nil then
+    error('input.set_nav_settings needs three numbers', 2)
+  end
+  local MAX_MS, MIN_REPEAT_MS = 5000, 16
+  if t ~= t or t == math.huge or t == -math.huge then t = 0.5 else
+    if t < 0 then t = 0 elseif t > 1 then t = 1 end
+  end
+  d = math.floor(d); r = math.floor(r)
+  if d < 0 then d = 0 end
+  if d > MAX_MS then d = MAX_MS end
+  if r < MIN_REPEAT_MS then r = MIN_REPEAT_MS elseif r > MAX_MS then r = MAX_MS end
+  __rustlua_nav_active = { threshold = t, delay_ms = d, repeat_ms = r }
+  return t, d, r
+end
 -- 菜单导航连发（引擎 input.action_repeat）：web 端没有"按住重复"的设备时钟，
 -- 语义取"一次边沿 = 一步"（与 DPad 一次触摸 = 一步、M20-08 手感一致），等价于
 -- action_pressed。必须实现而非缺失——missing 代理 __call 恒返回 truthy 替身，
@@ -4530,12 +6318,22 @@ function input.action_repeat(action)
   end
   return false
 end
--- 对外文本必须带引擎的 key: 前缀（native 的 Binding::to_text 形如 key:keyj）：游戏侧
--- virtual_pad.action_key 与 hints.binding_labels 都按 ^key:(.+)$ 解析，返回裸名会让
--- 它们一条都匹配不上。微信 harness 实测的代价：招式卡与动作盘九格**全部脱靶**
--- （点「睡觉」天数不变），因为 action_key 拿到 nil 就静默什么都不做。
--- 内部匹配仍用裸名（__rustlua_input.just 的键是 keyName() 的产出），只有对外契约对齐引擎。
-function input.bindings(action) local result = {}; for i,k in ipairs(bindings[tostring(action)] or {}) do result[i]='key:'..k end; return result end
+-- 对外文本必须是**引擎的物理键名**（native 的 Binding::to_text 形如 key:keyj、key:digit1、
+-- key:arrowup）。游戏侧按这个格式解析：jhyt 「ui/hints.lua」 的 KEYBOARD_KEY_NAMES 表**按物理键名
+-- 索引**（它自己的注释就写着「键位文本是物理键名…所以这张表按物理键名索引」），
+-- ui/virtual_pad.lua 剥掉 key: 前缀后喂给 input.virtual_key（那个入口同样翻译物理键名，
+-- 见 __rustlua_virtual_name）。此前这里手工拼 'key:' .. k，于是吐出的是 key:e / key:7 ——
+-- 前缀对了、**名字不对**：virtual_pad 碰巧还能用（e 经翻译仍是 e），但 hints 那张物理键名表
+-- **一条都命中不了**，按键说明静默变空（不报错、不缺 API，只表现为「面板上没有按键提示」）。
+-- 名字换算只留一份实现（宿主回调 __rustlua_binding_text ↔ keyNameToBindingText），Lua 侧不猜。
+function input.bindings(action)
+  local result, seen = {}, {}
+  for _, k in ipairs(bindings[tostring(action)] or {}) do
+    local text = __rustlua_binding_text(k)
+    if text and not seen[text] then seen[text] = true; result[#result + 1] = text end
+  end
+  return result
+end
 -- 按住态（引擎 action_is_down）与抬起边沿（引擎 action_just_released）。
 -- input.action 此前**整族缺失**（补丁层那张 input = { … } 是整表替换，漏名即 nil），
 -- action_released 则是 L3 契约 input.action.no_device 报"缺宿主 API"的那一条。
@@ -4695,11 +6493,45 @@ ui.scroll_offset = function(id)
   if not s then return nil end
   return s.offset
 end
+-- 引擎 ui.scroll_open(id, viewport, content)（「ui_nav.rs:144」）：**登记**一个滚动区、返回 void。
+-- 与 scroll_extents 的区别：那个改尺寸并保留偏移，这个覆盖式重建（引擎是 insert + ScrollState::new，
+-- 偏移归零）。此前 web 侧缺它，于是脚本"开了滚动区"其实什么都没发生（陷阱代理还把调用变成"成功"）。
+ui.scroll_open = function(id, viewport, content)
+  local s = scroll_new()
+  s.view = (tonumber(viewport) or 0) + 0.0
+  s.total = (tonumber(content) or 0) + 0.0
+  scroll_state[tostring(id)] = s
+end
 ui.scroll_close = function(id)
   local key = tostring(id)
   local had = scroll_state[key] ~= nil
   scroll_state[key] = nil
   return had
+end
+-- 引擎 ui.scroll_max(id)（「api/ui_nav.rs:187」）：max_offset = max(content - viewport, 0)；
+-- **没有这个滚动区时返回 nil**（引擎写的是 「.get(&id).map(ScrollState::max_offset)」），不是 0。
+-- 这个区别不是洁癖：game_api 的 demo_index.lua 写 「ui.scroll_max("api_list") or 0」，
+-- 而此前本侧**没有**这个函数 ⇒ 缺失陷阱把它代理成"可调用且返回一张表"，既不是 nil 也不是
+-- 数字 ⇒ 那一行的 string.format("%.0f") 拿到表 ⇒ 游戏自己抛错 ⇒ 整帧 update 失败 ⇒
+-- **启动失败**（第 75 轮实测：boot=failed detail=bad argument #6 to 'format'）。
+-- 返回 nil 才能让调用方的 「or 0」 生效。
+ui.scroll_max = function(id)
+  local s = scroll_state[tostring(id)]
+  if not s then return nil end
+  return scroll_max(s)
+end
+-- 引擎 ui.scroll_visible(id)（「api/ui_nav.rs:234」）：「{start, stop}」，没有滚动区时 nil。
+-- 字段名是 start/stop 而不是 start/end —— 引擎注释专门写了原因（Lua 里 「end」 是关键字，
+-- 取值必须写 「range['end']」），照抄引擎才不会让脚本写出取不到的字段。
+-- stop 要钳到 content：引擎 visible_range = (offset, min(offset + viewport, content))。
+ui.scroll_visible = function(id)
+  local s = scroll_state[tostring(id)]
+  if not s then return nil end
+  local start = s.offset or 0.0
+  local stop = start + (s.view or 0.0)
+  local total = s.total or 0.0
+  if stop > total then stop = total end
+  return { start = start, stop = stop }
 end
 `;
       // 先记下"这一侧到底缺哪些宿主全局"，再装兼容层——顺序不能反：`hostCompat` 会把缺的
@@ -4728,11 +6560,102 @@ end
       // 在**真正的宿主表**上装缺失方法陷阱（放在 methodCompat 之后：那批默认实现
       // 必须先落地，否则陷阱会让 `if not api.load_settings` 之类的探测误判为"有"）。
       doString(L, hostGlobals.map(name => `__rustlua_trap_host_table(${luaQuote(name)}, ${name})`).join('\n'), 'engine-host-table-traps');
+      // input.nav_settings()：菜单导航手感来自「pack/project.toml」的 [input] 段。
+      // 引擎是**同步读盘**（rustlua-gameplay/src/settings.rs 的 parse_nav_section），浏览器没有同步
+      // 文件系统 ⇒ 启动时把这份**已经取到**的文本解析好、写进 Lua 全局，脚本调用只是读它。
+      // 与引擎逐条同语义：只认 [input] 段（段外同名键不生效）、同名键取首次出现、毫秒键优先于旧帧键
+      // （帧键按 60Hz 换算）、数值统一按 NavSettings::new 钳制（见 parseNavSection）。
+      // **位置有要求**：必须在 `bridge.lua_boot()` 之后（Lua 状态此时才存在）、且在
+      // `lua_execute_main()` 之前——main.lua 里 hints.apply_nav_settings() 会立刻读它。
+      {
+        const nav = parseNavSection(project);
+        setLuaNumber('__rustlua_nav_threshold', nav.threshold);
+        setLuaNumber('__rustlua_nav_delay_ms', nav.delayMs);
+        setLuaNumber('__rustlua_nav_repeat_ms', nav.repeatMs);
+      }
+      // 键位权威：把工程 [input].map 的**键盘**键位编成 Lua 赋值再合并进前奏那张硬编码表，
+      // 由 __rustlua_apply_project_bindings 逐动作覆盖（见前奏里的说明）。
+      // 同样是"启动期一次"，位置与上面的 nav 回填相同：必须在前奏之后、lua_execute_main 之前。
+      const inputMap = parseInputMap(project);
+      // 同一段 chunk 里把两个"环境事实"也交给 Lua：map 的版本头（决定 `input.migration_notes()`
+      // 要不要报 v1→v2 迁移）与设置文件在包内的路径（`input.settings_path()`）。
+      // 放在这里而不是另起一次 doString：启动期少一次跨边界调用，且三者必须同时到位。
+      doString(L, luaBindingsSource(inputMap.bindings) + '\n__rustlua_apply_project_bindings()'
+        + '\n__rustlua_map_header = ' + luaQuote(inputMap.header || '')
+        + '\n__rustlua_settings_path = ' + luaQuote('pack/project.toml'),
+        'engine-host-bindings');
+      // Lua 侧回读：合并**真的**改了几条。只报"我们解析了文件"是不够的——解析对了但没覆盖进表里，
+      // 现象与没实现一模一样（键位照旧来自硬编码表）。这条读数把两件事分开。
+      let appliedCount = '?';
+      try {
+        appliedCount = String(callGlobal(L, '__rustlua_binding_applied_probe') || '0');
+      } catch (error) {
+        appliedCount = 'probe_error';
+      }
+      // 读数（一次性写，之后不再变）：键位到底以谁为准、工程给了多少、多少动作只能靠回退。
+      // 进 DOM 是为了**可断言**——这条差异过去只能靠读源码猜（第 69 轮就是在源码里数出来的）。
+      {
+        const body = document.body || document.documentElement;
+        if (body) {
+          // 来源三态必须分清：工程一个键盘键位都没给（整表都是回退）、部分给了（逐动作回退）、
+          // 全给了（回退用不上）。写成一件事会让"这张表到底谁说了算"看不出来。
+          const source = inputMap.keyed.length === 0
+            ? 'fallback-only'
+            : (inputMap.padOnly.length > 0 ? 'project+fallback' : 'project');
+          // 基础串：启动期只算一次。当帧的编辑族计数（rebound/unbound/resets）由诊断块拼上去
+          // —— rebind 是**运行期**发生的，只写一次的话"改了没有"永远看不出来。
+          bindingReadoutBase = 'source=' + source
+            + ' lua_applied=' + appliedCount
+            + ' header=' + (inputMap.header || 'none')
+            + ' project_keyed=' + inputMap.keyed.length
+            + ' project_pad_only=' + inputMap.padOnly.length
+            + ' project_actions=' + (inputMap.keyed.length + inputMap.padOnly.length)
+            + ' unmapped=' + (inputMap.unmapped.length > 0 ? inputMap.unmapped.slice(0, 8).join('|') : '0')
+            // 有损合并（左右修饰键 / 小键盘同形键）：工程绑 `key:shiftleft` 时 web 上右 Shift
+            // 也会响应。不是解析错误，但必须看得见 —— 读数里给个数 + 名字（截前 6 个）。
+            + ' aliased=' + (inputMap.aliased.length > 0
+              ? inputMap.aliased.length + ':' + inputMap.aliased.slice(0, 6).join('|')
+              : '0');
+          body.setAttribute('data-rustlua-bindings', bindingReadoutBase);
+        }
+      }
       // WP10 迁移：main.lua 不再由 JS fetch 后注入，改经 wasm 桥读 vfs 预加载表
       // + pack 解码执行（与桌面/微信压缩包语义一致；执行前全部宿主补丁已在位）。
       bridge.lua_execute_main();
+      // **诊断专用**的 Lua 执行通道（URL `rustlua-lua-do=<lua 源码>`）：这是引擎侧
+      // `-WorldDo`（URL `rustlua-world-do=`）在 **JS 宿主**上的对等物。在此之前 JS 宿主没有任何
+      // "把一段 Lua 送进这个世界跑"的入口，于是引擎宿主能验的东西（重绑定、设置往返、任意脚本
+      // 断言）在 JS 宿主上只能靠改工程文件或加临时脚本 —— 两者都不该做。
+      // 只读 `location.search`、且**只有诊断开关打开时才认**（发布包既没有这条 URL 也只有
+      // 显式开诊断才会走到这里），执行范围就是这个世界本身：能力等价于游戏脚本自己。
+      // 注意 `search` 是**别的闭包**里的局部名（本文件另有三处同名声明），这里必须自带取值，
+      // 否则每次启动都会抛 ReferenceError —— 这正是 `node --check` 查不出的那类跨闭包自由变量。
+      const luaDoMatch = DIAGNOSTICS_ON
+        ? /[?&]rustlua-lua-do=([^&]*)/.exec(
+          (typeof window !== 'undefined' && window.location && window.location.search) || '')
+        : null;
+      if (luaDoMatch) {
+        const luaDoSource = decodeURIComponent(luaDoMatch[1].replace(/\+/g, ' '));
+        try {
+          doString(L, luaDoSource, 'rustlua-lua-do');
+          luaDoStatus = 'ok';
+        } catch (error) {
+          // 不吞：状态进读数（`data-rustlua-bindings` 的 lua_do= 段），原错也留在控制台。
+          luaDoStatus = 'error: ' + String((error && error.message) || error).slice(0, 200);
+          console.error('[rustlua-lua-do] 执行失败：', String((error && error.message) || error));
+        }
+      }
     } catch (error) {
-      const missing = missingHostGlobals(hostGlobals);
+      // 这里的 hostGlobals 是上面 try 块里的 const：正常路径够得着，异常路径反而会二次抛
+      // 「hostGlobals is not defined」，把真正的错误盖掉（第 66 轮实测：页面只报这一句，
+      // 原始错误其实是前奏里一个 Lua 字符串没闭合）。异常路径的第一原则是让原错露出来，
+      // 探针失败必须退化成哨兵值 + 原错照抛。
+      let missing = ['__probe_error__'];
+      try {
+        if (typeof hostGlobals !== 'undefined') missing = missingHostGlobals(hostGlobals);
+      } catch (ignored) {
+        missing = ['__probe_error__'];
+      }
       const detail = 'missing engine host API: ' + missing.join(', ');
       markBoot('failed', detail);
       throw new Error(String((error && error.message) || error) + ' [' + detail + ']');
@@ -4742,10 +6665,10 @@ end
     // on_create 里就会挂形象/生成 NPC（`sprite.set` + `animation.attach` + `entity.spawn`），
     // 这些是**一次性 op**：不在这里立刻取走，首帧画的就是"还没挂外观"的场景。
     // 传 false = 只取快照、不推进速度与动画帧（首帧不该白走一次积分）。
-    syncLuaScene(sceneState, callGlobal(L, '__rustlua_export_state', [false]));
+    exportWorldState(L, sceneState, false);
     await loadGameFont();
     refreshSceneTextHidden(L);
-    let uiElements = drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__rustlua_export_ui'), pendingTextures);
+    let uiElements = drawScene(ctx, sceneState, images, projectName, exportUiPayload(L), pendingTextures);
     let frameCount = 0;
     // '' 空闲 / 'loading' 切换在途 / 'failed' 切换失败（停链，让失败可见而不是无限重绘）
     let sceneSwitch = '';
@@ -4774,9 +6697,9 @@ end
         callGlobal(L, 'on_create');
         // 换场景后的 on_create 会重新落位、挂形象、生成 NPC —— 与启动路径同理，
         // 立刻取一次快照，别让新场景的第一帧画成"只有场景本体"。
-        syncLuaScene(sceneState, callGlobal(L, '__rustlua_export_state', [false]));
+        exportWorldState(L, sceneState, false);
         refreshSceneTextHidden(L);
-        uiElements = drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__rustlua_export_ui'), pendingTextures);
+        uiElements = drawScene(ctx, sceneState, images, projectName, exportUiPayload(L), pendingTextures);
         markBoot('running', sceneState.name);
         console.log('[lua] 切换场景:', name, '实体', next.entities.size);
         sceneSwitch = '';
@@ -4814,21 +6737,30 @@ end
     try {
       const search = (typeof window !== 'undefined' && window.location && window.location.search) || '';
       if (search.indexOf('rustlua-drive=auto') >= 0) {
+        // 三个**可调旋钮**（第 75 轮加）：剧本的失败原因要能被**造出来**，否则验收门的分支
+        // （跳过 / 红灯）永远只能靠"碰巧遇到"来验证。默认值与原来完全一致。
+        //   rustlua-drive-wait=<帧>        —— 「等场景切换」的上限
+        //   rustlua-drive-move=<键名>      —— 移动阶段按住的键（本侧键名，如 'w'/'a'）
+        //   rustlua-drive-move-frames=<帧> —— 移动阶段的帧预算
+        const knob = (name, fallback) => {
+          const matched = new RegExp('[?&]' + name + '=([^&]*)').exec(search);
+          const value = matched ? Number(decodeURIComponent(matched[1])) : NaN;
+          return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+        };
+        const moveKnob = /[?&]rustlua-drive-move=([^&]*)/.exec(search);
         driveAuto = {
           phase: 'confirm',
           frames: 0,
           confirmFrames: 2,
           sceneBefore: sceneState.name,
-          waitLimit: 150,
-          moveKey: 'w',
-          moveFrames: 12,
+          waitLimit: knob('rustlua-drive-wait', 150),
+          moveKey: moveKnob ? decodeURIComponent(moveKnob[1]).toLowerCase() : 'w',
+          moveFrames: knob('rustlua-drive-move-frames', 12),
           positions: [],
           first: null
         };
       }
     } catch (e) { driveAuto = null; }
-    if (driveAuto) {
-    }
 
     // P0-②：URL `?rustlua-drive=jhyt` 驱动**完整玩法剧本**——与微信 harness 的
     // --drive-new-game/--drive-move/--bag/--quest 同构，但走真实浏览器输入与真实 wasm。
@@ -5159,43 +7091,109 @@ end
     //
     // 追帧上限之后的时间**丢弃**而不是无限补步：切后台/长卡顿回来时游戏时间"跳过"，
     // 而不是补跑上千步把主线程拖死（桌面 `game_app.rs` 取 `FixedTimeStep::new(60, 8)`）。
+    // ---- WP7-13 / WP7-56：固定步的**策略与执行都在宿主 wasm** ----
+    // `lua_bridge.rs::lua_fixed_frame` 内部就是 `rustlua_infra::frame_clock::FrameClock`（与引擎宿主
+    // 同一个策略模块），`lua_fixed_run_steps` 则是**跑一步**的唯一实现（虚拟键 → `__rustlua_dt` →
+    // `update()`）。此前这两件事各有一份 JS 实现（累积器 + 1e-9 落帧容差 + 追帧上限 + 丢帧计数，
+    // 外加每步的那三句调用），同一份产物里两套定步长实现，任一处的调整都会让两条链悄悄分叉。
+    // WP7-56 把 JS 那份**整份删掉**：这两处现在都只有一份实现，没有第二份状态也没有第二份顺序。
     const FIXED_STEPS_PER_SECOND = 60;
     const FIXED_DELTA = 1 / FIXED_STEPS_PER_SECOND;
-    const MAX_CATCH_UP_STEPS = 8;
-    // 浮点 1 ulp 的宽容度。这是**有意偏离** Rust 的严格 `>=`（见 time_step.rs 的 while 条件）：
-    // 那边的 elapsed 是被直接构造出来的（`1.0/60.0` 与 `1.0/60.0` 逐位相等），而这里的
-    // elapsed 来自 `performance.now()` 两次读数之差再除以 1000，"正好一帧"常常落在
-    // `1/60` 的最后一个二进制位**之下**。严格比较下它会退成 0 步、靠累积器下一帧补上
-    // （平均速率仍然正确、不会停摆），代价是步数在 0/1 之间抖动；这里加一个远小于
-    // 任何真实帧间隔的容差，让"恰好一帧"稳定判成 1 步。误判上限是每帧丢 1e-9 秒。
-    const STEP_EPSILON = 1e-9;
-    let stepAccumulator = 0;
+    // 追帧上限之后的时间**丢弃**而不是无限补步：切后台/长卡顿回来时游戏时间"跳过"，
+    // 而不是补跑上千步把主线程拖死（上限本身由宿主 wasm 持有）。
     let lastFrameTime = null;
-    let droppedSteps = 0;
     let resetClockNextFrame = false;
+    let fixedClockViaWasm = null;
+    let droppedSteps = 0;
 
-    // 返回本帧要执行的固定步数（Rust `FixedTimeStep::advance` 的等价物）。
+    // 宿主桥。取不到 `lua_fixed_frame` 说明这份 wasm 是旧产物——**说清楚是哪一边旧**，
+    // 而不是静默退回（与 `lua_set_number` / `lua_call_global` 的导出缺席判定同一套口径）。
+    function fixedClockBridge() {
+      const bridge = (typeof window !== 'undefined' && window.__RUSTLUA_LUA_BRIDGE) || null;
+      return bridge && typeof bridge.lua_fixed_frame === 'function' ? bridge : null;
+    }
+
+    // 返回本帧要执行的固定步数。**不再保留 JS 累积器兜底**：兜底会把"产物换了一半"降级成
+    // "逻辑偶尔慢一拍"，而这正是本项目反复踩的一类症状（与 `setLuaNumber` / `applyInputFrame` /
+    // `callLuaHook` 同一口径：导出缺席就说清楚是哪一边旧）。
+    // WP7-101（注释澄清，无逻辑改动）：这里**不自己攒累加器** —— 累加器与"追赶上限"都只有宿主一份
+    // （`max_catch_up_steps: 8` / `max_frame_seconds: 0.25`，由适配层在建宿主时交给它）。
+    // 本函数只做两件事：向宿主问"这一帧本该走几步"，并在必要时把固定步**执行**交给 wasm。
+    // 拿不到宿主时钟时**抛错**而不是退回 JS 实现 —— 这就是"归一"在结构上的保证。
     function advanceFixedSteps(elapsedSeconds) {
-      stepAccumulator += Math.max(0, elapsedSeconds);
-      let steps = 0;
-      while (stepAccumulator >= FIXED_DELTA - STEP_EPSILON && steps < MAX_CATCH_UP_STEPS) {
-        stepAccumulator -= FIXED_DELTA;
-        steps += 1;
+      const bridge = fixedClockBridge();
+      if (!bridge) {
+        throw new Error('wasm 缺 lua_fixed_frame 导出：web-runtime.js 比同目录的 wasm 新，'
+          + '两者必须来自同一次打包（检查宿主是否缓存了旧运行时，或产物只换了一半）');
       }
-      if (stepAccumulator < 0) stepAccumulator = 0;
-      if (stepAccumulator >= FIXED_DELTA) {
-        const excess = Math.floor(stepAccumulator / FIXED_DELTA + STEP_EPSILON);
-        if (excess > 0) {
-          stepAccumulator -= excess * FIXED_DELTA;
-          if (stepAccumulator < 0) stepAccumulator = 0;
-          droppedSteps += excess;
+      // "跑步"的入口必须同时在：只有步数没有执行等于每帧什么都不发生，而画面上只是"逻辑不动"，
+      // 比报错难查得多。
+      if (typeof bridge.lua_fixed_run_steps !== 'function') {
+        throw new Error('wasm 缺 lua_fixed_run_steps 导出：web-runtime.js 比同目录的 wasm 新，'
+          + '两者必须来自同一次打包（固定步的执行顺序自 WP7-56 起只有 wasm 一份实现）');
+      }
+      if (fixedClockViaWasm === null) {
+        fixedClockViaWasm = true;
+        if (typeof console !== 'undefined' && console.log) {
+          // 前半句是**门断言的原文**（`scripts/wechat-minigame-harness.js` 与计划文档都照它匹配）：
+          // 改掉它等于把"固定步的权威在哪一边"这条自证弄丢，所以只往后**追加**新事实。
+          console.log('web-runtime: 固定步时钟由宿主 wasm 持有'
+            + '（rustlua_infra::frame_clock::FrameClock；固定步的**执行**也在 wasm：'
+            + 'lua_bridge::lua_fixed_run_steps——顺序只有这一份实现）');
         }
       }
-      return steps;
+      // 丢帧计数也读宿主的：读数只认一个来源。
+      if (typeof bridge.lua_fixed_steps_dropped === 'function') {
+        droppedSteps = bridge.lua_fixed_steps_dropped();
+      }
+      xcFixed += 1;
+      return bridge.lua_fixed_frame(elapsedSeconds);
+    }
+
+    // 跑 `steps` 个固定步。顺序（**虚拟键必须在输入批量落地之后**并回来、`__rustlua_dt` 必须写在
+    // `update()` 之前、`step == 1` 后吃掉一次性边沿）只有一份实现：`lua_bridge.rs::lua_fixed_run_steps`。
+    // 步长传 `FIXED_DELTA`（double 的 1/60）而不是 `FrameClock` 的 f32 步长：脚本看见的 dt 必须
+    // 与旧实现逐位一致。
+    function runFixedSteps(steps) {
+      const bridge = fixedClockBridge();
+      if (!bridge) return 0;
+      xcFixed += 1;
+      return bridge.lua_fixed_run_steps(steps, FIXED_DELTA);
+    }
+
+    // 累积器读数同样来自宿主（JS 那份已删）。读数只认一个来源，否则"acc="会变成两个数。
+    function fixedAccumulatorReadout() {
+      const bridge = fixedClockBridge();
+      if (!bridge || typeof bridge.lua_fixed_accumulator_seconds !== 'function') return 'n/a';
+      try {
+        return bridge.lua_fixed_accumulator_seconds().toFixed(4);
+      } catch (error) {
+        return 'err';
+      }
+    }
+
+    // 「谁在推进世界」：引擎宿主（微信侧 `wechat-adapter.js` 的 `engineHostOwnsTick`）接管固定步时，
+    // 运行时**不能再跑 update** —— 两边同时跑就是把世界推进两次，而这种故障两边各自都正常、
+    // 只有画面/手感不对劲。标记由宿主侧负责设置**与清除**：它起不来或降级时会清掉，
+    // 所以"宿主死了 ⇒ 世界冻住（脚本照画、逻辑不动）"这条不会发生。
+    function hostOwnsFixedTick() {
+      try { return typeof window !== 'undefined' && window.__RUSTLUA_ENGINE_HOST_OWNS_TICK === true; }
+      catch (error) { return false; }
+    }
+
+    // 宿主这一帧推进了几步（它跑完自己的固定步后写在全局上）。运行时的**帧级**阶段必须按它算 dt：
+    // 相机抖动、动画积分、`__rustlua_dt` 都是"每帧一次"的量，用运行时自己的 steps（=0）会停摆。
+    function hostFixedSteps() {
+      try {
+        const value = typeof window !== 'undefined' ? window.__RUSTLUA_ENGINE_HOST_STEPS : 0;
+        return Number.isFinite(value) && value > 0 ? Math.min(value, FIXED_STEPS_PER_SECOND) : 0;
+      } catch (error) { return 0; }
     }
 
     // 切后台时不保留时间债：回到前台的第一帧按"一个固定步"起算，而不是把
-    // 挂起的几十秒当成一次巨大的 elapsed 灌进累积器。
+    // 挂起的几十秒当成一次巨大的 elapsed 灌进累积器。宿主侧的累积器**不动**——
+    // 旧实现保留的余量这里也保留，两边的行为逐位等价（因此不调 `lua_fixed_reset_clock`；
+    // 那个导出是给宿主/后续 WP8 用的）。
     if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
       document.addEventListener('visibilitychange', function () {
         if (document.hidden) resetClockNextFrame = true;
@@ -5220,7 +7218,7 @@ end
         // 尚未就绪时跑 Lua 只会拿到半初始化状态。rAF 链保持不断，切换完成后自动恢复。
         if (sceneSwitch === 'loading') {
           refreshSceneTextHidden(L);
-          drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__rustlua_export_ui'), pendingTextures);
+          drawScene(ctx, sceneState, images, projectName, exportUiPayload(L), pendingTextures);
           requestAnimationFrame(frame);
           return;
         }
@@ -5243,7 +7241,7 @@ end
           sceneSwitch = 'loading';
           applySceneSwitch(pendingScene);
           refreshSceneTextHidden(L);
-          drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__rustlua_export_ui'), pendingTextures);
+          drawScene(ctx, sceneState, images, projectName, exportUiPayload(L), pendingTextures);
           requestAnimationFrame(frame);
           return;
         }
@@ -5254,37 +7252,66 @@ end
         // ---- 固定步阶段（游戏逻辑）：与引擎 run_script_steps 的 step pipeline 同构 ----
         // 输入快照每帧只采一次（设备层重新采样），所有固定步共用同一份——引擎也是把
         // 同一个 `InputSnapshot`（clone）交给每一步。
+        // WP7-101（注释澄清，无逻辑改动）：`steps` **不是运行时自己算的**。它来自
+        // `advanceFixedSteps`（见其定义：缺 `lua_fixed_frame` 就抛错，没有第二份累加器），
+        // 也就是**宿主时钟**给出的"这一帧本该走几步"（含丢帧计数与追赶上限 8 步 / 0.25 秒）。
+        // 命名上叫 steps 只是历史；读懂它 = 读懂"固定步只有一个时钟、一份实现（WP7-56）"。
         const steps = advanceFixedSteps(elapsedSeconds);
-        // 只保留**最后一个**固定步的 update 返回值：诊断文字要的是"这一刻"的读数，
-        // 不是补步过程中的中间值。
+        // 宿主接管固定步时，本帧的模拟步数来自**宿主**（它刚跑完自己的固定步并写在全局上）；
+        // 宿主没接管时才等于运行时要跑的步数。相机抖动/帧级 dt 都用 `simSteps`。
+        // 注意：时钟**照问**——`lua_fixed_frame` 是"这一帧本该走几步"的权威读数（含丢帧计数），
+        // 即使世界由宿主推进，这个读数仍然是运行时要报的东西（`data-rustlua-timing`）。
+        const hostTick = hostOwnsFixedTick();
+        const simSteps = hostTick ? hostFixedSteps() : steps;
+        // camera2d：先按**本帧模拟时间**推进抖动包络，再算相机并回填 Lua，最后才跑剧本 ——
+        // 顺序必须是"回填在 update 之前"，否则脚本在 update 里问到的相机是上一帧的。
+        if (camera2dState.shakeLeft > 0) {
+          camera2dState.shakeLeft = Math.max(0, camera2dState.shakeLeft - FIXED_DELTA * simSteps);
+        }
+        refreshFrameCamera(sceneState);
+        // 只保留**最后一个**固定步的 update 返回值：`data-rustlua-script-result` 报的是"这一刻"的
+        // 脚本返回值，不是补步过程中的中间值（与旧 JS 循环同一语义——区别只是现在由
+        // `lua_fixed_run_steps` 把最后一个带回来）。
         let result = null;
-        if (steps > 0) {
-          // 输入快照每帧只采一次（设备层重新采样），所有固定步共用同一份——引擎也是把同一个
-          // `InputSnapshot`（clone）交给每一步。快照在这里就**打包成二进制并送进 Lua**（一次跨界）：
-          // 送进去的是"原地改常驻表"的指令，不是一段要被编译的源码。
+        // **输入注入的唯一所有者是运行时**（设备层就在这边：键盘/触摸/摇杆都在 JS 侧采样）。
+        // 这里每帧采样一次、打包一次、跨界一次；宿主只管跑固定步、**不**注入输入。
+        // 「谁注入输入」必须与「谁推进世界」同源，否则会掉进两个坑，而且两个坑都不报错：
+        //   · 两边都注入 ⇒ 同一批输入被注入两次（各自看着都正常，只有手感不对）；
+        //   · 宿主接管而运行时跳过 ⇒ 输入**根本没被注入**（第 88 轮真的留下了这个 bug：
+        //     `hostTick` 时整段跳过 ⇒ 宿主拿到 undefined ⇒ 整局对按键没反应）。
+        // `steps == 0` 且非宿主接管时不必注入：这一帧不推进世界，旧行为（高刷屏少一次跨界）不变。
+        if (steps > 0 || hostTick) {
+          // 快照在这里**打包成二进制并送进 Lua**（一次跨界）：送进去的是"原地改常驻表"的指令，
+          // 不是一段要被编译的源码。
           applyInputFrame(webInput.snapshot());
-          for (let step = 0; step < steps; step++) {
-            if (step === 1) {
-              // 首个固定步之后吃掉一次性边沿：补步不得重放 just_pressed。
-              callLuaHook('__rustlua_finish_step_input');
-            }
-            // 虚拟键必须在**批量落地之后**并回来——顺序反了就等于没注入。
-            // 对应引擎侧 `InputSnapshot::inherit_virtual_keys`。
-            callLuaHook('__rustlua_apply_virtual_input');
-            setLuaNumber('__rustlua_dt', FIXED_DELTA);
-            result = callGlobal(L, 'update');
-          }
+        }
+        if (!hostTick && steps > 0) {
+          // 每步的三句调用（虚拟键 → `__rustlua_dt` → `update()`，首个固定步后吃一次性边沿）
+          // 自 WP7-56 起只有 wasm 一份实现：`lua_bridge.rs::lua_fixed_run_steps`。
+          // 这里以前是一段等价的 JS 循环，删掉它才是"归一"，而不是"搬了一份新的"。
+          result = runFixedSteps(steps);
         }
 
         // ---- 帧级阶段：每个 rAF 回调只跑一次，与引擎的 frame pipeline 同构 ----
-        // 速度积分与动画推进用的是**本帧实际推进的模拟时间**（steps × 固定步长），
+        // 速度积分与动画推进用的是**本帧实际推进的模拟时间**（simSteps × 固定步长），
         // 与引擎 `let elapsed = delta_seconds * steps as f32` 同一口径；被丢弃的追帧时间
-        // 不该让实体多走一截。steps==0（帧率高于逻辑步）时按 0 推进，但状态导出照常做，
+        // 不该让实体多走一截。simSteps==0（帧率高于逻辑步）时按 0 推进，但状态导出照常做，
         // 否则高刷屏上会有帧拿到过期状态。
-        setLuaNumber('__rustlua_dt', FIXED_DELTA * steps);
-        syncLuaScene(sceneState, callGlobal(L, '__rustlua_export_state'));
-        refreshSceneTextHidden(L);
-        uiElements = drawScene(ctx, sceneState, images, projectName, callGlobal(L, '__rustlua_export_ui'), pendingTextures);
+        setLuaNumber('__rustlua_dt', FIXED_DELTA * simSteps);
+        // WP7-59：隐藏文本集现在**跟着状态一起到**（`H` 行），所以帧循环不再无条件拉它——
+        // 每帧少一次跨界。只有兼容层自己覆盖了 `__rustlua_export_state`（于是没有 `H` 行）
+        // 时才回退到老路；那种情况下 `sceneTextHiddenPulls` 会持续上涨，一眼能看出是谁在走老路。
+        sceneTextHiddenFromState = false;
+        exportWorldState(L, sceneState, true);
+        if (!sceneTextHiddenFromState) refreshSceneTextHidden(L);
+        // WP7-66：**先取载荷、再计时**——否则产出端会被算进消费端，两段就分不开了。
+        const uiPayloadNow = exportUiPayload(L);
+        const drawT0 = DIAGNOSTICS_ON ? exportNowMs() : 0;
+        uiElements = drawScene(ctx, sceneState, images, projectName, uiPayloadNow, pendingTextures);
+        if (DIAGNOSTICS_ON) recordExportCost('draw', exportNowMs() - drawT0);
+        // 本帧新鲜闸门用完即关：下一次 drawScene 必须重新拿到 refreshFrameCamera 算的新值，
+        // 否则"复用"就会悄悄变成"画上一帧的相机"。
+        frameCameraFresh = false;
         frameCount += 1;
         const body = document.body || document.documentElement;
         if (body) {
@@ -5292,15 +7319,48 @@ end
           // 追帧步数。刷新率无关性只能靠这两个数在真机上自证——"30Hz 半速 / 120Hz 倍速"
           // 这类回归不会让任何断言变红，却会让手感与动画速度全错（见 docs/32 的时间基一节）。
           // **这一条常驻**：三个数字、无跨边界调用，而"真机自证"要求不开任何开关就能读。
+          // WP7-57：再补两个读数——`sim=` 是本帧**真正推进世界**的步数（宿主接管时来自宿主），
+          // `tick=` 是谁在推（`host`/`runtime`）。"一个世界只能有一个 tick"因此不开任何开关就能读。
           body.setAttribute('data-rustlua-timing', 'steps=' + steps
             + ' dropped=' + droppedSteps
-            + ' acc=' + stepAccumulator.toFixed(4));
+            + ' acc=' + fixedAccumulatorReadout()
+            + ' sim=' + simSteps
+            + ' tick=' + (hostTick ? 'host' : 'runtime'));
           // 输入批量读数的**常驻**项，与 timing 同一理由：M73-00 把每帧输入协议整个换成了
           // 二进制批量（旧的"每帧编译一段源码"已删除），"协议真的在落地"必须能在真机上不开
           // 任何开关读到。三个数都是 JS 侧计数器（不额外跨界）：`bits` 恒为 0 就是
           // "宿主与 wasm 对哪些位该变的理解不一致"的第一手线索；`unmapped` 列出落不进键表的
           // 键名——"某个键按了没反应"要能一眼分辨是"宿主没送到"还是"线格式不认这个名"。
           body.setAttribute('data-rustlua-input', inputStatsReadout());
+          // WP7-59/60/61：状态回写的读数。和 timing 一样是**纯 JS 计数器**（无跨界、每帧只是拼几个
+          // 数字），所以常驻不心疼。各字段各有用处：
+          //   `pulls`     隐藏文本集是否还在走老路（WP7-59；正常 0/1）
+          //   `state`     状态载荷累计字节数（"要不要换二进制批量"的基线，WP7-60）
+          //   `tlines`    真正发出的 T 行数（全量重发 = 帧数 × 存活实体数，WP7-60）
+          //   `exports`   状态回写总次数 —— `frame` 是帧循环那次，**每帧至多一次**（WP7-61）
+          //   `snapshots` 启动/换场景的只读快照次数（传 false、不推进积分）
+          //   `ui`        UI 载荷累计字节数（同一帧里唯一没量过的一块，WP7-61）
+          body.setAttribute('data-rustlua-export', 'pulls=' + sceneTextHiddenPulls
+            + ' state=' + stateBytes + ' tlines=' + stateTransformLines
+            + ' exports=' + stateExports + ' frame=' + stateFrameExports
+            + ' snapshots=' + stateSnapshotExports + ' ui=' + uiBytes
+            + ' uiP=' + uiPanelRows + ':' + uiPanelBytes
+            + ' uiI=' + uiImageRows + ':' + uiImageBytes
+            + ' uiB=' + uiBarRows + ':' + uiBarBytes
+            + ' uiX=' + uiTextRows + ':' + uiTextBytes
+            + ' uiO=' + uiOtherRows + ':' + uiOtherBytes
+            + ' uiSame=' + uiSameFrames
+            + ' stateUs=' + Math.round(stateExportMs * 1000) + ' stateMaxUs=' + Math.round(stateExportMsMax * 1000)
+            + ' uiUs=' + Math.round(uiExportMs * 1000) + ' uiMaxUs=' + Math.round(uiExportMsMax * 1000)
+            + ' drawUs=' + Math.round(drawMs * 1000) + ' drawMaxUs=' + Math.round(drawMsMax * 1000)
+            + ' slow2ms=s' + stateSlowFrames + '/u' + uiSlowFrames + '/d' + drawSlowFrames
+            + ' tileUs=' + Math.round(tileMs * 1000) + ' collectUs=' + Math.round(collectMs * 1000)
+            + ' tiles=' + tileCellsDrawn + '/' + tileCellsSeen + ' culled=' + tileCellsCulled
+            + ' xlang=' + (xcCallGlobal + xcFixed + xcInput + xcSetNum)
+            + ' xc=' + xcCallGlobal + '/' + xcFixed + '/' + xcInput + '/' + xcSetNum
+            + ' cgName=' + xcNameText(xcNames)
+            + ' snName=' + xcNameText(xsnNames)
+            + ' br=' + bridgeProbe());
           // 以下读数只在显式开启诊断时写（见 DIAGNOSTICS_ON）。它们不只是字符串拼接：
           // world 那一行里有**两次跨 wasm 边界的 Lua 调用**（`__rustlua_world_summary`、
           // `__rustlua_tilemap_layers`，各自要回一个字符串），加上 rendererPlayerState 的遍历
@@ -5318,12 +7378,37 @@ end
               + (drawnPlayer ? ' drawn=' + drawnPlayer : '')
               + ' tilemaps=' + tileLayersDrawn + '/' + (String(callGlobal(L, '__rustlua_tilemap_layers') || '0').trim() || '0');
             body.setAttribute('data-rustlua-world', world.slice(0, 300));
+            // 键位读数：基础串（来源/工程动作数）启动时算好、之后不变；**当帧**的编辑族计数
+            // （bound/rebound/unbound/resets/overrides）与诊断 Lua 通道的结果每帧拼上去。
+            // rebind 是运行期发生的、`rustlua-lua-do` 也是运行期执行的 —— 只写一次的话
+            // "到底改没改、断言跑没跑"在页面上永远看不出来（第 71 轮实测踩到）。
+            // 400 太紧：第 72 轮断言串在 `diag=` 处被截断，证据是**仪器**丢的不是被测对象丢的
+            // （同一根串里已经塞下 8 个 API 的返回值）。放宽到 700，仍远小于属性长度的常识上限。
+            body.setAttribute('data-rustlua-bindings', ((luaDoStatus === 'none'
+              ? bindingReadoutBase
+              : bindingReadoutBase + ' lua_do=' + luaDoStatus)
+              + ' ' + String(callGlobal(L, '__rustlua_binding_probe') || '')).slice(0, 700));
             // ui-now 每帧写**真实** UI 元素数（诊断/剧本判定用；ui-elements 仍 30 帧一更，
             // 只服务宿主诊断覆盖层的低频采样，剧本靠 ui-now 拿到当帧真值）。
             body.setAttribute('data-rustlua-ui-now', String(uiElements));
             // 预设文字当帧真值（见 LAST_PREFAB_TEXT）：不进 world 串，那条有 300 字符截断。
             body.setAttribute('data-rustlua-prefab-text', LAST_PREFAB_TEXT.drawn + '/' + LAST_PREFAB_TEXT.total);
             body.setAttribute('data-rustlua-prefab-slice', LAST_PREFAB_SLICE.cells + '/' + LAST_PREFAB_SLICE.entities);
+    // 具名 UI 文本（脚本用 `ui.text_at`/`ui.text` 画的字）：**这是无头验收唯一能读到**
+    // "剧本这一帧说了什么"的通道。它画在 canvas 上，DOM 里没有、宿主 API 也查不到，
+    // 于是"剧本跑到第几节、哪一节报错"过去只能靠"崩在哪一行"反推（第 67 轮加）。
+    // 文本里的换行已被 Lua 侧转义成 `\n` 两字面字符，所以这里可以安全塞进单行属性值。
+    body.setAttribute('data-rustlua-ui-texts', String(uiTexts(L) || '').slice(0, 600));
+    // 剧本 `update()` 的**返回值**：`demo_main.update` 返回的正是"本帧所有 API 小节各干了什么"
+    // 的聚合串（`demo_main <事实> | <最近一次按键干了什么>`）。它本来就是给开发者看的读数，
+    // 但过去只写进页面上的一个 DOM 文本节点、且要显式开调试才写 ⇒ 无头验收看不到。
+    // 这里让它进可断言的通道：一次运行就能读出"剧本跑到哪一节、那一节返回了什么"。
+    //
+    // 只保留**最后一次非空**值：有些帧 `update` 合法地返回 nil（分支没走到收尾），而 CDP 是在
+    // 落定后抓**一帧**的 DOM ⇒ 直接写当帧值会让读数时有时无（实测同一产物两次运行一次有、一次空）。
+    // 证据通道必须稳定，所以这里记"高水位"，用 `script-result` 属性报出来。
+    if (result) lastScriptResult = String(result).slice(0, 1200);
+    body.setAttribute('data-rustlua-script-result', lastScriptResult);
             if (frameCount <= 5 || frameCount % 30 === 0) {
               body.setAttribute('data-rustlua-drawn', String(sampleDrawnPixels(ctx)));
               body.setAttribute('data-rustlua-ui-elements', String(uiElements));

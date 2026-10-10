@@ -1,4 +1,5 @@
 pub mod editor_plugins;
+pub mod frame_clock;
 pub mod logging;
 pub mod pack;
 pub mod par;

@@ -123,14 +123,23 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             let Some(root) = root else {
                 return Ok((false, "no_project_root".to_owned()));
             };
-            match ProjectSettings::load_from(&root) {
-                Ok(Some(settings)) => {
-                    settings.apply_to(&mut s.lua_borrow_mut()?.audio);
-                    Ok((true, "loaded".to_owned()))
+            // 设置文本经 `vfs` 读（**不是** `ProjectSettings::load_from` 里的
+            // `std::fs::read_to_string`）：wasm 上没有文件系统，裸读恒 `ENOSYS`，这里会
+            // 退化成 `(false, "operation not supported on this platform")`——第 47 轮在
+            // jhyt 的 webgl 产物上实测到 `[audio] project.toml: false (…)`（同一时刻
+            // `[input] project.toml: true (loaded)`，那条已在第 41 轮改好）。
+            // 桌面无 provider 时 `vfs::read_resource` 自己回落 `std::fs`，语义不变。
+            let path = ProjectSettings::path_in(&root);
+            let text = match super::input::read_settings_text(&path) {
+                Ok(text) => text,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok((false, "missing".to_owned()));
                 }
-                Ok(None) => Ok((false, "missing".to_owned())),
-                Err(error) => Ok((false, error.to_string())),
-            }
+                Err(error) => return Ok((false, error.to_string())),
+            };
+            let settings = ProjectSettings::from_toml(&text);
+            settings.apply_to(&mut s.lua_borrow_mut()?.audio);
+            Ok((true, "loaded".to_owned()))
         })?,
     )?;
     let s = Rc::clone(&state);

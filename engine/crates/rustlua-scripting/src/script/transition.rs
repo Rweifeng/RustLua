@@ -31,7 +31,14 @@ impl LuaRuntime {
             .clone()
             .ok_or_else(|| LuaBridgeError::Api("no project root configured".to_owned()))?;
         let path = root.join("scenes").join(format!("{name}.scene"));
-        let scene = Scene::load(&path).map_err(|error| {
+        // 经 `vfs::read` 取字节（**不是** `Scene::load`）：后者的 `fs::read` 在 wasm 上
+        // 读不到任何工程文件——第 45 轮 jhyt webgl 产物上，标题确认触发的切换就死在
+        // 这一步（日志只有 `scene file not found` 与一张空白页）。这里与 `Scene::load`
+        // 的行为逐字节一致：原始字节 + `from_packed_bytes` 解码，桌面路径仍是文件系统。
+        let bytes = rustlua_infra::vfs::read(&path).map_err(|error| {
+            LuaBridgeError::Api(format!("scene {name} failed to load: {error}"))
+        })?;
+        let scene = Scene::from_packed_bytes(&path, &bytes).map_err(|error| {
             LuaBridgeError::Api(format!("scene {name} failed to load: {error}"))
         })?;
         {
