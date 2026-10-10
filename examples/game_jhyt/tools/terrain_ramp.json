@@ -43,6 +43,38 @@
     "gold": "#C9A05A",
     "wood": "#4A3628"
   },
+  "crops": {
+    "atlas": {
+      "cols": 8,
+      "rows": 29,
+      "comment": [
+        "作物图集（M72-08）：一行一种作物，8 列固定槽位 = 5 个生长阶段 + 3 帧收成抖动。",
+        "条目号 = 1 + row*cols + slot（1 基，与引擎 Tilemap::atlas_uv 的 row-major 同构），",
+        "row 由 tools/crop_kit.py 的 CATALOG 顺序决定并生成进 scripts/data/crop_art.lua，",
+        "运行期 farm.lua 只认那份表。232 条 < 255（tile 值是 u8），装得下 29 种。",
+        "株叶的颜色**不在这里**：叶子走地表 grass/hedge 族、木质茎走 utility wood，",
+        "本表只登记果实/穗/花这层'作物身份色'——作物之间靠形态参数分，不靠换 hue。"
+      ]
+    },
+    "families": {
+      "grain_amber": ["#6B5326", "#95712F", "#C39A44", "#E5C277"],
+      "legume_green": ["#2F4A26", "#46662F", "#648C42", "#8FB366"],
+      "cucumber_jade": ["#27463A", "#3A6650", "#5A8C6E", "#83B396"],
+      "gourd_gold": ["#7A4A16", "#A96A20", "#D2952F", "#EFC468"],
+      "nightshade_violet": ["#2C2140", "#452F63", "#664A8C", "#8E72B8"],
+      "brassica_pale": ["#4A5A38", "#687C4E", "#8FA470", "#BCCFA0"],
+      "root_red": ["#5A2230", "#8A3045", "#BC4A60", "#E07E92"],
+      "berry_crimson": ["#6B2418", "#9C3824", "#C85A38", "#E88E60"],
+      "medicine_red": ["#4A1A16", "#7A2A22", "#A8402F", "#D06A52"],
+      "medicine_pale": ["#5A4A32", "#8A7450", "#BDA276", "#E0CCA4"],
+      "blossom_warm": ["#6B5A2A", "#9C8442", "#C7B068", "#EADDB0"],
+      "leaf_cool": ["#26463C", "#3A6A5A", "#589178", "#7FB89C"],
+      "allium_white": ["#4A5448", "#78847A", "#A6B0A4", "#D8DED4"],
+      "tree_peach": ["#7A3246", "#A84C62", "#D2788C", "#EAB0C0"],
+      "tree_mume": ["#4A5A3C", "#6E8050", "#96A870", "#C2D4A0"],
+      "tree_ginkgo": ["#6B5A1E", "#9C8430", "#C7AC48", "#EAD480"]
+    }
+  },
   "ground_tints": [
     {
       "id": 1,

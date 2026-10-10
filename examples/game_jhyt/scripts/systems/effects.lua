@@ -48,6 +48,10 @@ local FX = {
   dash_streak = {
     texture = "assets/art/effects/dash_streak.png",
     cols = 4, fps = 16, looped = false, w = 32, h = 32
+  },
+  harvest_sparkle = {
+    texture = "assets/art/effects/harvest_sparkle.png",
+    cols = 6, fps = 10, looped = false, w = 32, h = 32
   }
 }
 

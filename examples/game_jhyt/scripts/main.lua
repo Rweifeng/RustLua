@@ -531,6 +531,8 @@ function update()
     enemy.tick()
     -- 特效固定步推进：播完自毁（与战斗/敌人同固定步语义）。
     effects.update(1 / 60)
+    -- 收成抖动同样走固定步（M72-08）：4 帧 × 100ms，放完把那一格落回真实地块数据。
+    farm.tick(1 / 60)
     local label = input.update()
     -- 主角形象：input.update 决定了朝向与"是否在走"，之后再切 walk/idle
     -- （顺序不能反，否则动画永远慢一帧）。切图后实体会重建，tick 里会重挂。

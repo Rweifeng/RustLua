@@ -102,6 +102,18 @@
       "world_size": "32x32",
       "trigger": "追风步/轻功位移",
       "animation": "default=dash_streak;clip:dash_streak:assets/art/effects/dash_streak.png:4:16:false"
+    },
+    {
+      "id": "harvest_sparkle",
+      "display": "收成闪光",
+      "sheet": "assets/art/effects/harvest_sparkle.png",
+      "cols": 6,
+      "fps": 10,
+      "looped": false,
+      "frame_px": 32,
+      "world_size": "32x32",
+      "trigger": "farm.lua 收获成功",
+      "animation": "default=harvest_sparkle;clip:harvest_sparkle:assets/art/effects/harvest_sparkle.png:6:10:false"
     }
   ]
 }

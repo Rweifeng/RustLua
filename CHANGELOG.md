@@ -5,6 +5,57 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 29 种作物各有各的长相：122 张阶段图 + 一张 8×29 的 CropGrid，农田三态拆成"土 + 湿痕 × tint"（M72-08）
+
+- **症状**：`docs/57` §4 自评的最大视觉缺口。29 种作物共用 `manor_farm.png`（192×32）里的
+  SPROUT/GROWING/RIPE 三列，**灵芝和稻谷在田里长得一模一样**，而且只有 3 档；
+  `assets/art/crops/` 整个目录不存在（`58` 记 0/29）。所谓"农田三态"实际是两张全幅土面加一块
+  306 B 的近纯色湿润块——浇水这件事在画面上读不出来。
+- **档数按作物类分，不是一刀切**（`docs/33` 生长节奏）：田粮 4 档 ×13、灵药 5 档 ×11、果树 3 档
+  ×5 = **122 张**，全部由 `tools/crop_kit.py` + `tools/gen_crop_art.py` 从 M72-04 那份色阶表出图，
+  不手画。颜色只借一层：`terrain_ramp.json` 新增 `crops.families` **16 个"作物身份色"族**，
+  只覆盖果实/穗/花；叶子仍走 `families.grass/hedge`、木质茎走 `utility.wood`——区分靠形态，
+  不靠 hue。
+- **"别换个色冒充另一种"落成两条互不相干的判据**：① `crop_kit.signature()` 取 21 个形态键
+  （archetype/stages/height/stems/leaf/head/canopy/crown/spacing/accent + 11 个开关，**不含任何
+  颜色**）29 行两两不全等；② 比的是**图集里量化之后的条目字节哈希**——两张画法不同的源图被
+  色阶表吸附成同一格才是真事故，判未量化的单体图会漏掉这一类。门 `jhyt_m72_crop_stages` §①
+  是判据②的第二份实现（自己解 PNG，不 import Python），反面对照把 `rice.stage_2` 配成
+  `lingzhi.stage_2` 必须报红——实测红 1 条并点名"字节完全相同（换个色也没用）"。
+- **渲染载体新开一层，而不是把 `manor_farm` 加宽**：CropGrid（entity 31，`8 列 × 29 行 = 232` 槽，
+  每行 5 个阶段槽 + 3 帧收成抖动槽），瓦值 = 图集条目号（1 基），号只在生成的
+  `scripts/data/crop_art.lua` 里算一处。FarmGrid 退成两列（1=犁地 2=干涸，192×32 → 64×32），
+  湿润**不是第三列**而是 FarmMoist 的半透明叠痕 × M72-02 的 per-tile 顶点色 tint 三档
+  （越浇越淡，撤痕必须同格撤色，否则下一轮串色）。u8 的瓦值顺手给这张表封了顶：8 列最多
+  **31 行**，第 32 种作物必须先减列或另起一张表。
+- **只有收成做动画**（`docs/51` §2.3 明说生长阶段切换保持静态）：4 帧 @100ms 抖动 + `harvest_sparkle`
+  （`effects.lua` 第 9 条带）。门 §④ 逐帧采样 CropGrid：写入帧号 `[7,13,19,25]`（间隔 7/6/6/6，
+  判据 5–7 帧 ≈ 100ms @60fps）、瓦值 `[14,15,16,0]`、第 12 帧闪光在场、播完落回**已垦空地**
+  而不是生土、净收 2 == `crops.lua` 的 `yield`。
+- **数值零改动是有条件的**：`crops.lua` 的 diff 只有 **29 行 `stages`**（24 种 3→4/5、5 果树 1→3），
+  `growth_days`/`yield`/`season`/`price` 一行未动，`stages` 也不参与任何数值计算；
+  `jhyt_m24_numeric_alignment`（crops=24 / rice_yield=2）、`jhyt_m36_regrow`（薄荷首茬 2、二茬 2，
+  地块 `mint|0|1`→`mint|0|2`）、`jhyt_m19_slice`（money=521）改前改后读数一致。代价是 `stages`
+  从此与图集行槽位同源对拍（门 §③ 拿门内手抄表 / `crop_art.lua` / `crops.lua` 三方比），
+  改了图必须改它。
+- **中途被并发写回旧版，于是给三态门补了贴图侧那一半**：`gen_manor_scene.py` 的副本一度回到
+  "FarmGrid 6 列、没有 CropGrid"，`manor_farm.png` 同步飘回 192×32 那张旧表——而运行期读到的
+  瓦值照样对，门当时**全绿**。两件事一起修：① 作物层的取号与列数只写在生成器里（在装饰之前
+  取 id 31，与 M72-07 的 `set_scatter_decor.next_id` 不再互相顶位）；② 门的 §② 分两半，贴图侧
+  校"场景 `atlas_cols` == `farm_soil.lua` 的列数 == 盘上 PNG 宽 ÷ 32"、两列土面**字节不同**
+  （把干涸配成犁地必须红）、湿痕那一列 1024 个像素全有内容而满不透明只有 5 个
+  （≥10% 即判"这等于第三张全幅土面，会把垄沟抹平"）。
+- **回滚档**：单笔 revert。纯新增物是 `assets/art/crops/**`（29 个目录 122 张 + 图集 19,014 B +
+  两张预览）、`tools/crop_kit.py`/`gen_crop_art.py`/`gen_farm_soil.py`、
+  `scripts/data/crop_art.lua`/`farm_soil.lua` 与门 `jhyt_m72_crop_stages.rs`；改动面是
+  `scripts/data/crops.lua`（29 行 `stages`）、`scripts/systems/farm.lua`（三层绘制 + 收成定步长）、
+  `scenes/manor.scene`（CropGrid + 两列土面 + 装饰段顺移一位）、`gen_manor_scene.py`、
+  `terrain_ramp.json`（`crops` 段）、`effects.lua`（第 9 条带）、`verify.ps1` 与 `58` 台账 §3/§14。
+- **已知限制（写给 M72-11/13）**：枯萎态 `stage_wither` 与品质角标未接（按开工时"核心 + 果树 3 态"
+  的范围裁定登记，接的时候优先占行内那 23 个空槽而不是加行）；果树的"成树但未结果"没有独立槽，
+  靠 `farm.lua` 的 `tree_not_fruiting` 逻辑闸拦收获，画面仍读成挂着果的树；32px 画框里的成树比
+  `assets/art/buildings/` 的树屋件小一圈，发行级大果树属外部委托。
+
 ## Unreleased — 常驻 HUD 不再是"半透明色块 + 一条真图"：9 个组件换九宫格切图，遮挡口径跟着换成"色与图相乘"（M72-09）
 
 - **症状**：弹窗用的是达标切图（`common/ui_panel_main_9s.png` 96×96，木框 + 四角金括号），

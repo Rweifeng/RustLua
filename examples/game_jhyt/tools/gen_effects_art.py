@@ -18,6 +18,7 @@
 | `heal_motes` | 治疗提示 | 6 | 32 | 8 | 否 | 使用回复药 / 睡觉恢复 |
 | `poison_motes` | 中毒提示 | 6 | 32 | 6 | 是 | 中毒状态持续期间 |
 | `dash_streak` | 轻功残影 | 4 | 32 | 16 | 否 | 追风步/轻功位移 |
+| `harvest_sparkle` | 收成闪光 | 6 | 32 | 10 | 否 | farm.lua 收获成功（M72-08） |
 
 引擎事实：特效实体同样由 `entity.spawn` 运行期创建，而 Lua 没有挂 Animation 组件的 API
 （docs/36 §8.3），所以条带先按 Animation 约定出好；在引擎补 `animation.attach` 之前，
@@ -243,6 +244,40 @@ def fx_dash_streak():
 # 清单
 # ---------------------------------------------------------------------------
 
+def fx_harvest_sparkle():
+    """收成闪光：金色四尖星炸开 + 谷壳碎屑上抛后消散（docs/51 §2.3 收成反馈）。
+
+    与 hit_spark 的分别：命中火花是**横向**的急爆（5 帧 / 18fps），收成是**向上**的
+    散落（6 帧 / 10fps）——玩家在田里连收十格时，两种节奏一眼就能分出来。
+    """
+    frames = []
+    rnd = hash_stream(919)
+    chaff = [(10 + rnd(12), rnd(2) - 1, 1 + rnd(2)) for _ in range(6)]
+    for index in range(6):
+        cv = Canvas(32, 32)
+        rise = index * 2
+        color = PAPER if index < 2 else (GOLD_LIGHT if index < 4 else GOLD)
+        # 四尖星：横竖两条主焰 + 斜向短焰，第 4 帧后只余焰心
+        span = [10, 12, 11, 8, 5, 2][index]
+        for step in range(-span, span + 1):
+            cv.set(16 + step, 22 - rise, color)
+            cv.set(16, 22 - rise + step, color)
+        diagonal = max(1, span // 2)
+        for step in range(-diagonal, diagonal + 1):
+            cv.set(16 + step, 22 - rise + step, GOLD if index < 3 else GOLD_LIGHT)
+        if index == 0:
+            cv.set(16, 22, PAPER)
+        # 谷壳碎屑：从焰心散开，越飞越高、越飞越稀
+        for base_x, drift, size in chaff:
+            y = 22 - rise - 3 - index * 2 + drift
+            if y < 2 or index > 4:
+                continue
+            for width in range(size):
+                cv.set(base_x + width - index, y, DUST_LIGHT if index < 3 else DUST)
+        frames.append(cv)
+    return frames
+
+
 EFFECTS = [
     ("hoe_dust", "锄地尘土", fx_hoe_dust, 32, 12, False, "farm.lua 翻土成功"),
     ("water_splash", "浇水水花", fx_water_splash, 32, 12, False, "farm.lua 浇水成功"),
@@ -252,6 +287,7 @@ EFFECTS = [
     ("heal_motes", "治疗提示", fx_heal_motes, 32, 8, False, "回复药/睡觉恢复"),
     ("poison_motes", "中毒提示", fx_poison_motes, 32, 6, True, "中毒状态持续期间"),
     ("dash_streak", "轻功残影", fx_dash_streak, 32, 16, False, "追风步/轻功位移"),
+    ("harvest_sparkle", "收成闪光", fx_harvest_sparkle, 32, 10, False, "farm.lua 收获成功"),
 ]
 
 # 特效在世界里的显示尺寸（世界单位）：刀光比格子略大
@@ -264,6 +300,7 @@ WORLD_SIZE = {
     "heal_motes": "32x32",
     "poison_motes": "32x32",
     "dash_streak": "32x32",
+    "harvest_sparkle": "32x32",
 }
 
 

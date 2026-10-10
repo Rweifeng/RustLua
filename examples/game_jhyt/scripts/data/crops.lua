@@ -6,10 +6,13 @@
 -- ——稻谷按设计案应为 2，属于"数据缺字段导致数值静默走兜底"。
 -- 该字段现在由 `data/registry_check.lua` 强制必填（正整数），并由
 -- `jhyt_m24_numeric_alignment` 同时校验"设计案表格 == 本文件"与"真实收获数量 == yield"。
+-- `stages` 是**阶段图张数**（M72-08 起与 `data/crop_art.lua` 的每行槽位数同源对拍）：
+-- 粮食 4、灵药 5、果树 3。它不参与任何数值计算（生长天数看 `growth_days`），
+-- 只决定 CropGrid 把 watered_days 铺成几档——所以改它不会动产量，改了 crop_art 必须改它。
 return {
   lingzhi = {
     name = "灵芝",
-    stages = 3,
+    stages = 5,
     growth_days = 7,
     yield = 1,
     season = { "spring", "summer" },
@@ -20,7 +23,7 @@ return {
   },
   rice = {
     name = "稻谷",
-    stages = 3,
+    stages = 4,
     growth_days = 4,
     yield = 2,
     season = { "spring", "summer", "autumn" },
@@ -33,7 +36,7 @@ return {
   -- 萝卜：快熟教学作物，早期现金流；2 天即收（唯一 2 天作物）。
   radish = {
     name = "萝卜",
-    stages = 3,
+    stages = 4,
     growth_days = 2,
     yield = 2,
     season = { "spring", "summer" },
@@ -45,7 +48,7 @@ return {
   -- 草药：制药原料（§4.2 药粉/内力丹配方待接），也是商店药材（§5.2 草药转正）。
   herb = {
     name = "草药",
-    stages = 3,
+    stages = 5,
     growth_days = 3,
     yield = 2,
     season = { "spring", "summer", "autumn" },
@@ -57,7 +60,7 @@ return {
   -- 何首乌（docs/30 §6.3：8 天）：高价药材，礼物用。
   polygonum = {
     name = "何首乌",
-    stages = 3,
+    stages = 5,
     growth_days = 8,
     yield = 1,
     season = { "spring", "summer", "autumn" },
@@ -69,7 +72,7 @@ return {
   -- 人参（docs/30 §6.3：10 天）：高价药材、主线药材。
   ginseng = {
     name = "人参",
-    stages = 3,
+    stages = 5,
     growth_days = 10,
     yield = 1,
     season = { "spring", "autumn" },
@@ -87,7 +90,7 @@ return {
   -- 薄荷：药圃再生作物，制药与茶饮原料；首茬 3 天，之后每 3 天一茬。
   mint = {
     name = "薄荷",
-    stages = 3,
+    stages = 5,
     growth_days = 3,
     regrow_days = 3,
     yield = 2,
@@ -100,7 +103,7 @@ return {
   -- 桑葚：耕地再生作物，果品；首茬 3 天，之后每 2 天一茬（最快的复熟作物）。
   mulberry = {
     name = "桑葚",
-    stages = 3,
+    stages = 4,
     growth_days = 3,
     regrow_days = 2,
     yield = 2,
@@ -113,7 +116,7 @@ return {
   -- 青豌豆：春耕地豆类，快收。
   pea = {
     name = "青豌豆",
-    stages = 3,
+    stages = 4,
     growth_days = 4,
     yield = 2,
     season = { "spring" },
@@ -126,7 +129,7 @@ return {
   -- 青瓜：夏耕地再生作物，蔬菜；复熟 3 天。
   cucumber = {
     name = "青瓜",
-    stages = 3,
+    stages = 4,
     growth_days = 4,
     regrow_days = 3,
     yield = 2,
@@ -139,7 +142,7 @@ return {
   -- 绿豆：夏耕地豆类，快收。
   mung_bean = {
     name = "绿豆",
-    stages = 3,
+    stages = 4,
     growth_days = 3,
     yield = 2,
     season = { "summer" },
@@ -151,7 +154,7 @@ return {
   -- 夏枯草：夏药圃药材，入药（清肝明目）。
   prunella = {
     name = "夏枯草",
-    stages = 3,
+    stages = 5,
     growth_days = 5,
     yield = 1,
     season = { "summer" },
@@ -163,7 +166,7 @@ return {
   -- 茄子：夏秋两季耕地蔬菜。
   eggplant = {
     name = "茄子",
-    stages = 3,
+    stages = 4,
     growth_days = 5,
     yield = 2,
     season = { "summer", "autumn" },
@@ -176,7 +179,7 @@ return {
   -- 南瓜：秋耕地瓜果，节令食材（重阳宴）。
   pumpkin = {
     name = "南瓜",
-    stages = 3,
+    stages = 4,
     growth_days = 7,
     yield = 1,
     season = { "autumn" },
@@ -188,7 +191,7 @@ return {
   -- 枸杞：秋药圃再生作物，药酒原料；复熟 4 天。
   gouqi = {
     name = "枸杞",
-    stages = 3,
+    stages = 5,
     growth_days = 5,
     regrow_days = 4,
     yield = 2,
@@ -201,7 +204,7 @@ return {
   -- 白菜：秋耕地蔬菜。
   cabbage = {
     name = "白菜",
-    stages = 3,
+    stages = 4,
     growth_days = 5,
     yield = 2,
     season = { "autumn" },
@@ -213,7 +216,7 @@ return {
   -- 菊花：秋药圃花卉，入药与赠礼。
   chrysanthemum = {
     name = "菊花",
-    stages = 3,
+    stages = 5,
     growth_days = 6,
     yield = 1,
     season = { "autumn" },
@@ -225,7 +228,7 @@ return {
   -- 韭葱：秋冬两季耕地蔬菜。
   leek = {
     name = "韭葱",
-    stages = 3,
+    stages = 4,
     growth_days = 6,
     yield = 2,
     season = { "autumn", "winter" },
@@ -238,7 +241,7 @@ return {
   -- 冬麦：冬耕地粮作，冬季主要现金流之一。
   winter_wheat = {
     name = "冬麦",
-    stages = 3,
+    stages = 4,
     growth_days = 6,
     yield = 2,
     season = { "winter" },
@@ -250,7 +253,7 @@ return {
   -- 雪里蕻：冬耕地再生作物，腌菜原料；复熟 4 天。
   xueli = {
     name = "雪里蕻",
-    stages = 3,
+    stages = 4,
     growth_days = 5,
     regrow_days = 4,
     yield = 2,
@@ -263,7 +266,7 @@ return {
   -- 冬参：冬药圃高价药材，冬季药田主力。
   winter_shen = {
     name = "冬参",
-    stages = 3,
+    stages = 5,
     growth_days = 8,
     yield = 1,
     season = { "winter" },
@@ -275,7 +278,7 @@ return {
   -- 腊梅：冬药圃花卉，节气赠礼（霜降后采）。
   plum = {
     name = "腊梅",
-    stages = 3,
+    stages = 5,
     growth_days = 5,
     yield = 1,
     season = { "winter" },
@@ -287,7 +290,7 @@ return {
   -- 冬白菜：冬耕地快熟蔬菜。
   winter_cabbage = {
     name = "冬白菜",
-    stages = 3,
+    stages = 4,
     growth_days = 4,
     yield = 2,
     season = { "winter" },
@@ -299,7 +302,7 @@ return {
   -- 冬青：冬药圃再生作物，常绿药材；复熟 3 天。
   evergreen = {
     name = "冬青",
-    stages = 3,
+    stages = 5,
     growth_days = 4,
     regrow_days = 3,
     yield = 2,
@@ -316,7 +319,7 @@ return {
   -- 既有校验（validate_crops growth_days>=1）通过，实际成长走 tree_days。
   peach = {
     name = "桃树",
-    stages = 1,
+    stages = 3,
     growth_days = 15,
     tree = true,
     tree_days = 15,
@@ -330,7 +333,7 @@ return {
   },
   mume = {
     name = "青梅树",
-    stages = 1,
+    stages = 3,
     growth_days = 15,
     tree = true,
     tree_days = 15,
@@ -344,7 +347,7 @@ return {
   },
   loquat = {
     name = "枇杷树",
-    stages = 1,
+    stages = 3,
     growth_days = 15,
     tree = true,
     tree_days = 15,
@@ -358,7 +361,7 @@ return {
   },
   jujube = {
     name = "枣树",
-    stages = 1,
+    stages = 3,
     growth_days = 15,
     tree = true,
     tree_days = 15,
@@ -372,7 +375,7 @@ return {
   },
   ginkgo = {
     name = "银杏",
-    stages = 1,
+    stages = 3,
     growth_days = 15,
     tree = true,
     tree_days = 15,

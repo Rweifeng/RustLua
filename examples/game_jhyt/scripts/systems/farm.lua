@@ -5,10 +5,15 @@
 --     y=0 是地图最底行，y 增大朝上（世界 +Y 向上）。
 --   * FarmGrid 是 manor.scene 里第二张 Tilemap（entity.find("FarmGrid")），
 --     tiles 初值全 0（空=透出 GroundMap 的夯土 DIRT），运行期本模块写 overlay。
---     manor_farm tileset 列：1=翻土 2=已耕已浇(深色) 3=苗期 4=生长期 5=成熟。
---   * FarmMoist 是第三张 Tilemap（id 大于 FarmGrid，故压在作物之上），只有第 1 列
---     有内容（半透明湿痕）。有作物的地块 tile 值由 watered_days 决定、当日浇水不改
---     tile，所以"今天浇过水"这件事只能由这一层表达（watered_today → 1）。
+--     M72-08 起它**只画土**，manor_farm 两列：1=犁地（新翻的松土）2=干涸（裂缝）。
+--     作物贴图搬去了 CropGrid，三态里的"湿润"搬去了 FarmMoist + 顶点色 tint。
+--   * CropGrid（id 31，画在 FarmMoist 之上）是 8×29 的作物图集层，一格一枚瓦，
+--     瓦值 = `data/crop_art.entry(crop short id, 阶段)`（1 基图集条目号，0=空）。
+--     寻址表由 tools/gen_crop_art.py 生成，与 assets/art/crops/manor_crops.png
+--     和场景里的 atlas_cols/atlas_rows 同源，改一个必须重出另两个。
+--   * FarmMoist 是第三张 Tilemap（id 大于 FarmGrid，故压在土之上、作物之下），只有
+--     第 1 列有内容（半透明湿痕）。当日浇过水 → tile 1 + 按 watered_days 取档的
+--     `tilemap.set_tint` 染色（越浇越淡）；湿痕撤掉时同格 clear_tint。
 --   * grid.facing_cell(x,y,facing,size) 返回 {1=cx,2=cy} 一基数组。
 --   * 地块明细数据（作物 id、已浇、有效成长日）存 map.state("farm_plots")，
 --     切场景/读档后由本模块重绘到 FarmGrid；tile 只是渲染，不单独持久化。
@@ -28,6 +33,10 @@ local player = require("player.player")
 local calendar = require("world.calendar")
 local weather = require("world.weather")
 local farm_data = require("data.farm")
+-- M72-08：农田三态的图集寻址 + 湿痕 tint 档，作物阶段图寻址。
+-- 两张表都由 tools/gen_*.py 生成，运行期只读。
+local farm_soil = require("data.farm_soil")
+local crop_art = require("data.crop_art")
 -- 工具档位（docs/33 §5.4 工具升级）：翻土/浇水按装备工具 tier 减耗。
 local tools_data = require("data.tools")
 -- M19-02：劳作音效（只在成功路径播放；缺文件/无设备静默降级）。
@@ -46,6 +55,7 @@ local TILE = 32
 local ground_id = nil -- GroundMap（地表判定：翻土只能在 DIRT 上）
 local farm_id = nil -- FarmGrid（overlay tile 渲染）
 local moist_id = nil -- FarmMoist（湿度层，画在 FarmGrid 之上；可缺，缺则不画湿痕）
+local crop_id = nil -- CropGrid（作物层，画在 FarmMoist 之上；可缺，缺则只看到土）
 local width, height = 0, 0
 
 -- map.state 持久键
@@ -234,34 +244,87 @@ local function is_dirt(cx, cy)
   return (tilemap.get_cell(ground_id, cx, cy) or 0) == 2
 end
 
--- 由地块数据推导 overlay tile 值（0=无 overlay，透出地表）
+-- 由地块数据推导 FarmGrid 的土面瓦值（0=无 overlay，透出地表夯土）。
+-- 三态里这里只占两态：**犁地 / 干涸**。湿润是 FarmMoist 的叠痕 + tint，不画第三列
+-- ——一列土 + 一层可撤的半透明，比再铺一张全幅贴图省体积，也让"今天浇过"能撤。
+-- 判据：当日浇过（水还在）或从没浇过（新翻的）都算松土；浇过几天又断了水才显裂缝。
 local function tile_for(p)
   if not p then
     return 0
   end
-  if not p.crop then
-    return p.watered_today and 2 or 1 -- 已垦：湿土/干土
+  if p.watered_today or (p.watered_days or 0) == 0 then
+    return farm_soil.tile.tilled
   end
-  local crop = crops[p.crop]
-  local need = growth_need(p, crop)
-  if p.watered_days >= need then
-    return 5 -- 成熟
-  elseif p.watered_days >= 1 then
-    return 4 -- 生长期
-  end
-  return 3 -- 苗期（含播种当天）
+  return farm_soil.tile.dry
 end
 
 -- 由地块数据推导湿度层 tile 值（1=当日已浇的湿痕，0=无）。
--- 只管有作物的地块：空地（已垦未种）FarmGrid 第 2 列本身就是"湿土"，再叠一层是重复表达。
+-- 空垦地块也算：M72-08 起 FarmGrid 第 2 列是"干涸裂缝"，湿痕不再是它的重复表达。
 local function moist_for(p)
-  if p and p.crop and p.watered_today then
+  if p and p.watered_today then
     return 1
   end
   return 0
 end
 
--- 全量重绘 FarmGrid（切场景恢复 / 日结算后调用）
+-- 作物阶段（1 基，对应 data/crop_art.lua 每行的前 N 槽）。
+-- 非果树：把 watered_days 从 0 线性铺到成熟所需天数 need，两端钉死在 1 与 N——
+-- 阶段数 N 由图集给（粮食 4、灵药 5），**不改** need/growth_days 的任何数值口径。
+-- 果树：按 tree_days 三段（苗 / 幼树 / 成树），3 态是 docs/58 果树列的口径。
+local function crop_stage(p, crop)
+  local rec = crop_art.crops[p.crop]
+  if not rec then
+    return 0
+  end
+  if crop and crop.tree then
+    local need = crop.tree_days or 15
+    local days = p.tree_days or 0
+    if days >= need then
+      return 3
+    elseif days * 3 >= need then
+      return 2
+    end
+    return 1
+  end
+  local need = growth_need(p, crop)
+  if need <= 0 then
+    return rec.stages
+  end
+  local grown = math.min(p.watered_days or 0, need)
+  return 1 + math.floor(grown * (rec.stages - 1) / need)
+end
+
+-- 某地块在 CropGrid 上的瓦值（0=空，透出土面）。
+local function crop_for(p)
+  if not (p and p.crop) then
+    return 0
+  end
+  local crop = crops and crops[p.crop]
+  return crop_art.entry(p.crop, crop_stage(p, crop))
+end
+
+-- 画一格（三层各写各的；层缺失就跳过那层）。redraw_all 与收成动画都走这里，
+-- 保证"单格改写"和"全量重绘"对同一份地块数据给出同样的像素。
+local function draw_cell(cx, cy)
+  local p = plot_at(cx, cy)
+  tilemap.set_cell(farm_id, cx, cy, tile_for(p))
+  if moist_id and entity.is_alive(moist_id) and tilemap.get(moist_id) then
+    local m = moist_for(p)
+    tilemap.set_cell(moist_id, cx, cy, m)
+    -- tint 跟着湿痕走：撤痕必须同时撤色，否则下一种在这个位置的作物会莫名发蓝。
+    if m == 0 then
+      tilemap.clear_tint(moist_id, cx, cy)
+    else
+      local rgba = farm_soil.moist_tints[farm_soil.moist_tint_id(p.watered_days or 0)]
+      tilemap.set_tint(moist_id, cx, cy, rgba[1], rgba[2], rgba[3], rgba[4])
+    end
+  end
+  if crop_id and entity.is_alive(crop_id) and tilemap.get(crop_id) then
+    tilemap.set_cell(crop_id, cx, cy, crop_for(p))
+  end
+end
+
+-- 全量重绘三层（切场景恢复 / 日结算后调用）
 -- 防御：farm_id 是模块级缓存，跨场景切换后旧实体 id 可能已被回收/复用
 -- （M18-04 章节 j 实测 `entity has no tilemap`）。判活 + tilemap.get 双重校验，
 -- 失效即视为「本图无农田」直接跳过重绘。
@@ -272,13 +335,60 @@ local function redraw_all()
   if not entity.is_alive(farm_id) or not tilemap.get(farm_id) then
     return
   end
-  local has_moist = moist_id and entity.is_alive(moist_id) and tilemap.get(moist_id)
+  ensure_crops()
   for cx = FARM.x0, FARM.x1 do
     for cy = FARM.y0, FARM.y1 do
-      local p = plot_at(cx, cy)
-      tilemap.set_cell(farm_id, cx, cy, tile_for(p))
-      if has_moist then
-        tilemap.set_cell(moist_id, cx, cy, moist_for(p))
+      draw_cell(cx, cy)
+    end
+  end
+end
+
+-- 收成动画（M72-08）：成熟格在 CropGrid 上连打四格（成熟 → 三帧抖动），每帧 100ms
+-- （docs/51 §2.2 快动作口径），放完按真实地块数据重画那一格。
+-- **只有收成动**：docs/51 §2.3 明说生长阶段切换保持静态——生长是"每天看一眼"的慢事，
+-- 每换一档就抖一下，读不出长了什么，只读出烦。
+local HARVEST_FRAME_SEC = 0.1
+M.HARVEST_FRAME_SEC = HARVEST_FRAME_SEC
+local harvest_anim = {} -- plot_key → { cx, cy, frames = {瓦值}, index = 下一帧, left = 剩余秒 }
+
+local function start_harvest_anim(cx, cy, crop_short, mature_entry)
+  if not crop_id or mature_entry == 0 then
+    return
+  end
+  local frames = { mature_entry }
+  for i = 0, crop_art.shake_slots - 1 do
+    local entry = crop_art.shake_entry(crop_short, i)
+    if entry > 0 then
+      frames[#frames + 1] = entry
+    end
+  end
+  if #frames < 2 then
+    return
+  end
+  tilemap.set_cell(crop_id, cx, cy, frames[1])
+  harvest_anim[plot_key(cx, cy)] = { cx = cx, cy = cy, frames = frames, index = 2, left = HARVEST_FRAME_SEC }
+end
+
+-- 推进收成动画（main.lua update 每帧调，固定 1/60 步）。
+function M.tick(dt)
+  if not next(harvest_anim) then
+    return
+  end
+  if not (crop_id and entity.is_alive(crop_id) and tilemap.get(crop_id)) then
+    harvest_anim = {}
+    return
+  end
+  for key, anim in pairs(harvest_anim) do
+    anim.left = anim.left - (dt or HARVEST_FRAME_SEC)
+    if anim.left > 0 then
+    else
+      anim.left = anim.left + HARVEST_FRAME_SEC
+      if anim.index <= #anim.frames then
+        tilemap.set_cell(crop_id, anim.cx, anim.cy, anim.frames[anim.index])
+        anim.index = anim.index + 1
+      else
+        harvest_anim[key] = nil
+        draw_cell(anim.cx, anim.cy)
       end
     end
   end
@@ -550,6 +660,9 @@ function M.act(facing)
       state.last_action = "harvest_" .. crop.harvest_item
       audio.sfx("sfx_harvest")
       redraw_all()
+      -- 果树同样给抖动 + 闪光：一天一颗果，没有反馈就等于"没采到"。
+      start_harvest_anim(cx, cy, p.crop, crop_for(p))
+      effects.spawn("harvest_sparkle", (cx + 0.5) * TILE, (cy + 0.5) * TILE)
       return state.last_action
     end
     -- 成熟 → 收获（再生作物保留地块进入下一茬，非再生作物清空地块）
@@ -557,6 +670,10 @@ function M.act(facing)
       if not spend_energy(ENERGY_COST.harvest) then
         return state.last_action
       end
+      -- 动画要从"成熟那一格"起手，所以必须在改地块数据之前取到作物与瓦值
+      -- （收获会把 p.crop 清空，事后摇不动）。
+      local harvest_crop = p.crop
+      local mature_entry = crop_for(p)
       local yield_count = crop.yield or 1
       -- 熟练度专精（0.9）：精耕 +10%、富饶 +5%（floor 取整，先于灵肥/温室叠加）
       local yield_pct = mastery.farming_bonus().yield_pct
@@ -600,6 +717,10 @@ function M.act(facing)
       state.last_action = "harvest_" .. crop.harvest_item
       audio.sfx("sfx_harvest")
       redraw_all()
+      -- redraw_all 已把这一格画成"收完的样子"，动画随后覆盖它：先抖四格再落回真值。
+      -- 再生作物落回的是"退回苗期"的作物，非再生落回空土——都不需要额外美术状态。
+      start_harvest_anim(cx, cy, harvest_crop, mature_entry)
+      effects.spawn("harvest_sparkle", (cx + 0.5) * TILE, (cy + 0.5) * TILE)
       return state.last_action
     end
     -- 未成熟 → 浇水
@@ -748,6 +869,7 @@ end
 -- 初始化/恢复（manor.scene on_create 之后调用）。
 -- 读 map.state("farm_plots") 恢复地块明细并重绘 overlay。
 function M.init()
+  harvest_anim = {} -- 换图/重进场景：上一张图里没放完的抖动直接丢（旧 CropGrid 实体已回收）
   crops = require("data.crops")
   crops_by_seed = {}
   for id, def in pairs(crops or {}) do
@@ -758,6 +880,7 @@ function M.init()
   ground_id = entity.find("GroundMap")
   farm_id = entity.find("FarmGrid")
   moist_id = entity.find("FarmMoist")
+  crop_id = entity.find("CropGrid")
   local g = ground_id and tilemap.get(ground_id)
   local f = farm_id and tilemap.get(farm_id)
   local w = (g and g.width) or (f and f.width) or 0
@@ -767,6 +890,7 @@ function M.init()
     width, height = 0, 0
     farm_id = nil
     moist_id = nil
+    crop_id = nil
     return false
   end
   width, height = w, h
@@ -840,6 +964,7 @@ end
 -- 开始新游戏」会读回旧档的开垦地块、作物与浇水天数。
 function M.reset()
   plots = {}
+  harvest_anim = {} -- 旧局的抖动不能继续往新图的格子上写
   map.state(STATE_KEY, {})
   redraw_all()
 end

@@ -21,6 +21,9 @@
   manor_ground：1=草地 2=夯土 3=石板路 4=院墙 5=青瓦 6=水
   manor_farm（FarmGrid 层）：条目语义由 farm.lua 的 tile_for() 决定
   manor_farm_moist（FarmMoist 层，只占第 1 列）：1=当日已浇的半透明湿痕，深浅靠 per-tile tint
+  crops/manor_crops（CropGrid 层，8 列 × 29 行）：瓦值 = 图集条目号（1 基），
+    一行一种作物（5 个阶段槽 + 3 帧收成抖动），号由 `scripts/data/crop_art.lua` 给；
+    29 种 × 8 = 232 条 < 255，因为瓦值是 u8——再加第 32 种必须先减列或另起一张表。
   * farm.lua 用 `GroundMap tile == 2` 判定可开垦；overlay 列语义由 farm.lua 的 tile_for() 决定。
 
 布局（cell，0-index，y 朝上，含端点）：
@@ -81,13 +84,20 @@ W, H = 40, 23
 GRASS, DIRT, STONE, WALL, ROOF, WATER = 1, 2, 3, 4, 5, 6
 
 GROUND_TEXTURE = "assets/art/tilesets/manor/manor_ground.png"
-# 农田层（叠在地表之上，运行期由 farm.lua 画）：6 列图集，条目语义见 farm.lua 的 tile_for。
+# 农田层（叠在地表之上，运行期由 farm.lua 画）：M72-08 起**只有两列**（1=犁地 2=干涸），
+# 出图归 `tools/gen_farm_soil.py`；以前 6 列里那三列 SPROUT/GROWING/RIPE 是"29 种作物
+# 共用一张阶段图"的根因，作物贴图搬去了下面的 CropGrid。
 FARM_TEXTURE = "assets/art/tilesets/manor/manor_farm.png"
-# 湿度层（叠在 FarmGrid 之上）：只有第 1 列有内容，是一张半透明水洗 + 湿边。
+# 湿度层（叠在 FarmGrid 之上）：只有第 1 列有内容，是一张半透明湿痕；深浅不画列，
+# 走 M72-02 的 per-tile 顶点色 tint（档表在 `scripts/data/farm_soil.lua`）。
 MOIST_TEXTURE = "assets/art/tilesets/manor/manor_farm_moist.png"
+# 作物层（叠在湿痕之上）：一行一种作物，8 列 = 5 个阶段槽 + 3 帧收成抖动，
+# 瓦值就是图集条目号（1 基）。寻址表 `scripts/data/crop_art.lua`、出图 `gen_crop_art.py`。
+CROP_TEXTURE = "assets/art/crops/manor_crops.png"
 TILE = 32
-FARM_ATLAS_COLS, FARM_ATLAS_ROWS = 6, 1
-MOIST_ATLAS_COLS, MOIST_ATLAS_ROWS = 6, 1
+FARM_ATLAS_COLS, FARM_ATLAS_ROWS = 2, 1
+MOIST_ATLAS_COLS, MOIST_ATLAS_ROWS = 1, 1
+CROP_ATLAS_COLS, CROP_ATLAS_ROWS = 8, 29
 
 # ---- 分区 ----
 HOUSE = {"x0": 2, "x1": 8, "y0": 5, "y1": 11}          # 正房（本体∪屋顶的格实心）
@@ -441,14 +451,27 @@ def build_scene(ground, solid):
                                MOIST_ATLAS_COLS, MOIST_ATLAS_ROWS)
     )
     lines.append(f"entity_meta\t{moist_id}\trole\tfarm_moist_tilemap")
-    # M72-05：装饰散布。id 从 `moist_id + 1` 起**追加在末尾**，一个既有 id 都不动——
+    # 作物层（最后一张 Tilemap，M72-08）：id 必须大于 FarmMoist——原生按 ECS 插入序、
+    # web 按 entity id 升序，两者都把这张画在湿痕与土面之上。开局全空，运行期由
+    # farm.lua 按 `scripts/data/crop_art.lua` 的条目号写格。
+    crop_id = moist_id + 1
+    lines.append(f"entity\t{crop_id}\tCropGrid")
+    lines.append(transform_line(crop_id, 0.0, 0.0))
+    lines.append(
+        f"component\t{crop_id}\tTilemap\t"
+        + tk.tilemap_component(TILE, W, H, CROP_TEXTURE, [0] * (W * H), empty,
+                               CROP_ATLAS_COLS, CROP_ATLAS_ROWS)
+    )
+    lines.append(f"entity_meta\t{crop_id}\trole\tcrop_tilemap")
+    # M72-05：装饰散布。id 从**装饰段之前的最后一张结构实体**之后起，一个既有 id 都不动——
     # 挪 id 会让 Lua 侧 `entity.find` 与黄金表全部重排，而装饰是纯加法。
+    # （M72-08 在这段之前插了 CropGrid，所以装饰整段顺移一位：这是本包唯一动到的 id。）
     # 输入用**抖动后**的格子图（盘上就是这个），不然"生成器看到的草/土分布"与实机不一致。
     #
     jittered = [cells[y * W:(y + 1) * W] for y in range(H)]
     exclude, avoid = decor_reserved()
     placements = dk.scatter(W, H, jittered, solid, exclude, mid_avoid=avoid)
-    lines.extend(dk.decor_lines(moist_id + 1, placements, table,
+    lines.extend(dk.decor_lines(crop_id + 1, placements, table,
                                 lambda cell: tints.get(cell[1] * W + cell[0], 0)))
     # M72-06：前景遮断拆层（树冠/屋顶）。这里与 `set_foreground_occluders.py`（就地改盘上
     # 场景）**共用同一条 `plan()`+`apply_patch()` 代码路径**，不是"各自实现一遍看起来一样"：
