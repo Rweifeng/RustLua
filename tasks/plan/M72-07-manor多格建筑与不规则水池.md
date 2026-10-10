@@ -231,3 +231,48 @@ M72-06 段、`tasks/plan/M72-06`）不改——那是当时的事实。
    登记不修，见 `57` §1.3 第 8 款、`58` §12.4。
 5. **建筑是 sprite 不是 tile，实体数继续涨**（本包 +12 件遮断/本体改写、装饰 204 件）。性能复测归
    M72-05 登记的后续账，本包只保证"每屏对象中位数"这条观感读数没退。
+
+## 落地记录（2026-10-09，提交 `fe7f0510`）
+
+**提交边界**：57 条路径按路径点名提交，其中 **7 条共享路径走临时索引 index-only 局部暂存**
+（`GIT_INDEX_FILE=.temp/m7207/m7207.index` + `read-tree HEAD` → 干净路径 `git add`、
+污染路径 `hash-object -w --no-filters` + `update-index --cacheinfo`），因为工作树副本压着
+M72-08（作物阶段图 / `CropGrid` / 农田三态出图）与 M72-09（HUD 九宫格）的在制品：
+
+| 路径 | 变体里剥掉了什么 |
+|---|---|
+| `CHANGELOG.md` | 只插本包那一节（47 行）；别包未提交段落留在工作树 |
+| `scripts/verify.ps1` | 只留本包的 footprint 门条目 + 两条更正（19/2 行），不含 `jhyt_m72_crop_stages` |
+| `scripts/wechat-minigame-harness.js` | 只改遮断物计数 5→11 与 `OCCLUDER_TEXTURE` 按后缀认（6/4 行），微信分包那条线不动 |
+| `examples/game_jhyt/docs/58-…资产台账.md` | 只留 §13 与 §0 的 1.4 行（98/14 行），他们的 §14 作物节与 1.5 记录不入库 |
+| `scenes/manor.scene` | 无 `CropGrid` 实体、农田/湿度两张仍是 6 列图集、装饰仍是 31..234 |
+| `tools/gen_manor_scene.py` | 剥掉 CropGrid emission，装饰号段仍从 `moist_id + 1` 起 |
+| `tools/gen_manor_art.py` | 把 M72-08 删掉的农田出图段留在 HEAD 原位——`DIRT/DIRT_WET` 是 `gen_decor_art.py` 的取色源，跟着删当场 `AttributeError` |
+
+**复现读数**（全在剥离版 sandbox 换根跑，8 把门 + 四把就地工具 `--check` 全绿）：
+
+```
+cd engine
+SB=E:/Codex/RustLua/.temp/m7207/sandbox        # HEAD 数据 + 本包剥离版场景
+for g in jhyt_m72_building_footprint jhyt_m72_foreground_occlusion jhyt_m72_scatter_decor \
+         jhyt_m72_manor_terrain jhyt_m72_tile_tint jhyt_m18_build jhyt_m35_depth_sort; do
+  cargo run --quiet -p game --example $g -- "$SB"; done
+# jhyt_m72_autotile_mask 用默认根跑：它按仓库相对路径读 plugins/webgl/web-runtime.js，换根必崩
+cd ../examples/game_jhyt && python tools/building_kit.py scenes/manor.scene --check
+```
+
+生成器对拍（provenance）：sandbox 用**本包提交里**的生成器重画，41 张建筑/道具 + 26 张装饰
+与盘上**逐字节相同**；`manor_farm.png / manor_farm_moist.png / _preview.png` 与 HEAD 逐字节相同
+（即"农田两张仍由本包的 `gen_manor_art.py` 产出"这一条是实测过的，不是推断）。
+
+**索引收尾**：提交后真实索引逐条对齐新 HEAD，`git diff --cached` 为空；M72-08 的
+`crops.lua / farm.lua / manor.scene(CropGrid) / gen_farm_soil.py` 与他包那 20 余条引擎侧改动
+仍在原处，未被本包提交吃掉。
+
+**遗留（如实交下一包）**
+1. `jhyt_m19_slice` / `jhyt_m22_save_isolation` 两条红落在 M72-08 的 `farm.lua` 与农田图集重做上
+   （用 HEAD 数据 + 他们的新门断言必红；本包场景与 HEAD 场景在该处读数一致，药田矩形内 `solid`
+   两边都是 0）⇒ 交 M72-08 收口，不归本包。
+2. 三宿主目验（微信/浏览器/桌面）与 `docs/72..74` 那三条审计门挂 M72-12 / 批收口包。
+3. `gen_farm_soil.py` 落地后，`gen_manor_art.py` 的农田段应整体删除，届时 `gen_decor_art.py`
+   的 `DIRT_WET` 取色源要一起搬——本包把这条写死在提交信息里，免得下一位当成自己的红。
