@@ -11,6 +11,12 @@
 - 当前版本是 `2`，包含 2D 组件、3D 组件和分离的 `UiLayout`。
 - `Scene::from_text` 不做版本迁移。低于 `2` 或高于当前版本的文件都会通过
   `SceneError::UnsupportedVersion` 明确拒绝。
+- **`scene_version` 与 `tiles_format` 是两个互不相同的版本号**（2026-10-10 补，M72-13）：
+  前者是**整份文件**的版本（`scene_version=2`，实测 `scenes/manor.scene` 第一行），后者是**单个
+  `Tilemap` 组件内部**的编码版本（M72-01 引入，取值 `0`/`1`）。所以 M72-01 换瓦片编码
+  **没有也不该**抬 `scene_version`——`from_text` 遇到 `scene_version=3` 会整份拒绝，
+  而老引擎读到 `tiles_format=1` 会按"未知键"报错，两条路都已经把不兼容摆在明面上。
+  仓库内 8 张 `examples/game_jhyt/scenes/*.scene` 现在全是 `scene_version=2` + 组件级 `tiles_format=1`。
 
 实体行支持 3 字段（无父实体，`entity\t<id>\t<name>`）或 4 字段（含父实体）两种写法；序列化时无父实体不再输出空尾字段，避免场景文件产生尾随空白。
 
@@ -175,24 +181,42 @@ component  7  RenderMode  mode=screen
 布尔字段只接受 `true`/`false`，拼错**报错**而不是静默当 false（`ccd` 被静默关掉会让高速子弹
 重新穿墙且毫无线索）。2D 的 `Tilemap` 实体仍会自动生成静态单元格碰撞体，不需要写 `Collider`。
 
-## 瓦片映射 `Tilemap`（M72-01 / M72-02）
+## 瓦片映射 `Tilemap`（M72-01 / M72-02，容量与染色面续于 M72-04 / M72-06 / M72-08）
 
-`Tilemap` 也是 `key=value;` 编码，字段顺序固定为
+`Tilemap` 也是 `key=value;` 编码。**写出端**顺序固定为
 `tile_size` → `width` → `height` → `texture` → `tiles_format` → `atlas_cols` → `atlas_rows`
-→ `tile_kinds` → `variant_count` → `autotile` → `variant_seed` → `tiles` → `solid`
-→（仅在有染色时）`tints` → `tints_rgb`。写出端只写这些，读入端**未知键一律报错**
-（`tile_kind=` 少写一个 s 被静默忽略，症状是"逻辑瓦全变成图集索引"，画面会错得很难看）。
+→ `tiles` → `solid` →（仅逻辑瓦档）`tile_kinds` → `variant_count` →（仅 autotile）`autotile=1`
+→（仅非零）`variant_seed` →（仅有非白格子）`tints` →（仅调色表非空）`tints_rgb`。
+写出端只写这些，读入端**未知键一律报错**（`unknown field: <键>`，`tilemap.rs:961`），
+但**读入不依赖顺序**——解析是一个 `match` 键名的循环，所以手写场景把 `tiles=` 放最后也能加载；
+顺序只对"重存后字节稳定"有意义。
+
+> **〔2026-10-10 更正，M72-13〕**本节此前把顺序写成 `… → atlas_rows → tile_kinds → variant_count →
+> autotile → variant_seed → tiles → solid → …`，即**把逻辑瓦那四个键摆在 `tiles` 之前**。
+> 那是错的：`to_component_str`（`engine/crates/rustlua-ecs/src/tilemap.rs:745-770`）里
+> `tiles`/`solid` 在主 `format!` 内先出，`tile_kinds`/`variant_count`/`autotile`/`variant_seed`
+> 是随后条件性 `push_str` 的。证据是真实场景的键序——HEAD 上 `scenes/manor.scene` 地面层
+> （下面那条）就是 `…;tiles=…;solid=…;tile_kinds=6;variant_count=1;autotile=1;tints=…;tints_rgb=…`。
+> 危害有限但真实：照旧文档手工写场景不会报错（因为顺序无关），而"字段顺序固定"这句是这一节里
+> 唯一一处与实现不符的口径，所以按实测改过来，不改任何代码。
 
 ```text
-component  1  Tilemap  tile_size=32x32;width=40;height=23;texture=assets/art/tilesets/manor/manor_ground.png;tiles_format=1;atlas_cols=6;atlas_rows=1;tiles=4,4,4,3,...;solid=0001...
+component  1  Tilemap  tile_size=32x32;width=40;height=23;texture=assets/art/tilesets/manor/manor_ground.png;tiles_format=1;atlas_cols=12;atlas_rows=9;tiles=4,4,4,4,...;solid=0001...;tile_kinds=6;variant_count=1;autotile=1;tints=0:2,1:2,4:1,5:1,...;tints_rgb=0.96,0.98,1,1|1.03,1.02,0.99,1
 ```
+
+（这一行是 `scenes/manor.scene` 地面层 1 号的真实骨架，只折叠了两处长度：`tiles` 是 920 个逗号分隔值、
+`solid` 是 920 个 0/1 字符、`tints` 是 **618** 个 `格号:色号` 对（40×23 里 618 格被染色，调色表 2 色——
+所以 `tints` 的稀疏存储在这张图上是**收益**而不是负担：定长串要写 920 个数字）。
+`variant_seed` 在 manor 是 0，因此**不写出**。另外三个组件（`2` 农田 `2x1`、`30` 湿润 `1x1`、
+`31` 作物 `8x29`）都是恒等寻址，所以四个逻辑瓦键一个都没有——`atlas_cols=6;atlas_rows=1`
+那种老写法在恒等档仍然合法且逐字节不变，见 §迁移状态。）
 
 ### 两种 tiles 编码
 
 | `tiles_format` | 写法 | 一格能表达的值 |
 | --- | --- | --- |
 | `0`（旧，仍能读） | 一个 ASCII 数字，无分隔符 | `0..9`，实际受旧图集 6 列限制为 `0..6` |
-| `1`（当前） | 逗号分隔十进制 | `0..atlas_cols*atlas_rows` |
+| `1`（当前） | 逗号分隔十进制 | `0..atlas_cols*atlas_rows`，同时受 §两层硬上限 的 **255** 约束 |
 
 - `0` 表示空格，两种编码同义。
 - 写出端**恒写 `1`**：旧串读进来重存即升级，数据本身逐字段不变（唯一变的是版本号）。
@@ -266,6 +290,74 @@ Lua 侧入口：`tilemap.set_tint(id, x, y, r, g, b[, a])` / `tilemap.clear_tint
 - 首版只有两个来源用这条路：**季节/湿润的整体色调**与**阴影压暗**。逐格手涂没有编辑器 UI
   支撑，因此没做。
 
+### 两层硬上限：255 槽与 autotile 的 16 变体（2026-10-10 补口径，M72-13）
+
+"列数可配"不等于"图集无限大"。有两条**结构上锁死**的上限，`.scene` 的编码版本管不到它们：
+
+| 上限 | 值 | 由什么决定 | 越界时的行为 |
+| --- | --- | --- | --- |
+| 单组件图集条目数 | **255**（0 另作空格） | `tiles` 的类型是 `Vec<u8>`（`engine/crates/rustlua-ecs/src/tilemap.rs:137`） | **不是截断**：`tiles=` 走 `part.trim().parse::<u8>()`（:870），第 256 号条目写不进串、加载即失败 |
+| 每种逻辑瓦的过渡槽 | **16** | `AUTOTILE_SLOTS = 16`（:37），掩码取模 `(mask as usize) % AUTOTILE_SLOTS`（:335），4-bit 邻接掩码刚好 16 个形态 | 取模回绕：把 32 种过渡画成 16 种重复，**不报错**，所以只能靠断言而不是靠类型发现 |
+
+两条都不是可调和的参数：
+
+- **容量校验不看 255**。`validate_layout` 只查 `needed = kinds * (max(variant_count,1) + 16*autotile) <= atlas_cols*atlas_rows`（:468），
+  所以声明 `atlas_cols=16;atlas_rows=20`（320 槽）的图集**能过校验**，但 256..320 那一截永远无法寻址。
+  诚实记一句：真写出 >255 的值时，报错句是 `tiles contains a non-numeric entry`——它把"溢出"也算进了"非数字"，
+  诊断时别照着那句话去找标点。
+- **要更多过渡形态就拆 kind，别动常量**。`AUTOTILE_SLOTS` 进了寻址公式
+  `entry = 1 + kinds*span + (kind-1)*AUTOTILE_SLOTS + block`（:374），改它 = 整张寻址表错位 = 全图重排，
+  和 §变体那四个哈希常量同一档危险等级。
+
+### 迁移状态（2026-10-10 按 HEAD 副本逐组件清点，M72-13）
+
+`examples/game_jhyt` 8 张场景里 **7 张带 `Tilemap`（`main.scene` 是门面图、无地面层），共 10 个组件，
+`tiles_format` 全部 == 1**（`jhyt_m72_tileset_atlas` 里那 8 个旧场景也已重存完）。逐组件：
+
+| 场景 | 实体 | 层 / 贴图 | `atlas` | 槽数 | 寻址档位 |
+| --- | --- | --- | --- | --- | --- |
+| `manor` | 1 | 地面 `manor_ground.png` | `12x9` | 108 | 逻辑瓦：`tile_kinds=6;autotile=1` ⇒ 需 `6*(1+16)=102` ≤ 108（**富余 6 槽**） |
+| `manor` | 2 | 农田 `manor_farm.png` | `2x1` | 2 | 恒等（M72-08 退成两列土面后从 6×1 缩小） |
+| `manor` | 30 | 湿润 `manor_farm_moist.png` | `1x1` | 1 | 恒等（只剩一层半透明叠痕，1 格就够） |
+| `manor` | 31 | 作物 `manor_crops.png` | `8x29` | **232** | 恒等，距 255 上限**只剩 23 槽**（`jhyt_m72_crop_stages` 读数 `entries=232 crops=29`，即每作物 8 阶段档） |
+| `combat_arena` | 1 | 地面 | `12x9` | 108 | 恒等（M72-01 换编码时一起扩了行列，未开 autotile） |
+| `cold_spring_cave` / `interior_forge` / `interior_herb` / `mountain_path` / `village` | 各 1 | 地面 | `6x1` | 6 | 恒等——**这是正常的**：这 5 张本来就只用 6 格以内，M72-01 只改了编码、没改图集尺寸 |
+
+三条读法：
+
+0. **本表是 HEAD 副本的清点，不是工作树**：2026-10-10 的工作树上 `village.scene` 已经被**未提交的在制品**
+   改成 `12x9` 且开了 `tile_kinds=6;autotile=1`（和 manor 地面同一档；谁的那一笔本文件不判断），所以照上面那条命令
+   在工作树跑会得到 `12x9` 而不是表里的 `6x1`——**两者不同不是矛盾，是那一笔还没入库**。
+   要复现本表得先换根：`git archive HEAD examples/game_jhyt | tar -x -C <tmp>`（口径同 `examples/game_jhyt/docs/60` §8）。
+
+1. **manor 地面为什么从 `6x1` 变成 `12x9`**：开 autotile 后 6 种瓦要 `6*(1+16)=102` 槽，
+   旧的 `6x1`（6 槽）连"4 种瓦各 16 过渡"都装不下，`validate_layout` 会在**加载期**报
+   `AtlasTooSmall`。所以扩行列不是审美决定，是容量对账逼出来的。
+2. **`8x29` 那张是本轮最接近上限的一块**：作物阶段图每加一列（多一档阶段）就从 232 涨到 261，**直接越过 255**——
+   到那一步只能换寻址档位（转逻辑瓦）或另起一张 Tilemap，不能靠"再扩一行"解决。
+3. **`tints` 目前只有 manor 地面一个组件在用**（季节色调 + 阴影压暗两路来源），其余 9 个组件没有这两个键，
+   序列化时不写空键，所以老场景重存后字节不变。
+
+逐组件复现（在 `examples/game_jhyt/` 工程根跑；打印 `fmt/cols/rows` 与是否带 `tints`）：
+
+```bash
+py -c "
+import glob,os
+for f in sorted(glob.glob('scenes/*.scene')):
+    for l in open(f,encoding='utf-8'):
+        if chr(9)+'Tilemap'+chr(9) in l:
+            p=l.rstrip(chr(10)).split(chr(9)); d=dict(kv.split('=',1) for kv in p[-1].split(';') if '=' in kv)
+            print(os.path.basename(f),'ent='+p[1],'fmt='+d.get('tiles_format'),
+                  'atlas='+d.get('atlas_cols')+'x'+d.get('atlas_rows'),
+                  'kinds='+str(d.get('tile_kinds')),'autotile='+str(d.get('autotile')),
+                  'tints='+('yes' if 'tints' in d else '-'))
+"
+```
+
+**这条清点不是门**：上面 10 行里只有 manor 那 4 个组件被 `jhyt_m72_tileset_atlas` / `jhyt_m72_crop_stages`
+逐值钉住，其余 6 张场景的 `atlas_cols/rows` 没有任何断言在看——把它们改错不会有任何门变红。
+这是本节要如实写下来的"买不到的部分"（对照 `docs/51` §2 的图集预算行）。
+
 ### 相关的验证入口
 
 ```powershell
@@ -275,8 +367,15 @@ py tools/preview_scene.py scenes/manor.scene                    # 迁移前后�
 cargo run -p game --example jhyt_m72_tile_variant_determinism --release  # 变体跨帧确定 + 哈希常量钉死
 cargo run -p game --example jhyt_m72_autotile_mask --release             # 4-bit 掩码解出的条目 == 真画出来的
 cargo run -p game --example jhyt_m72_tile_tint --release                 # 染色落到顶点色（读 mesh 不读像素）
+cargo run -p game --example jhyt_m72_crop_stages --release -- examples/game_jhyt  # 作物阶段图集（8x29=232 槽，离 255 只剩 23）
 node scripts/check-tile-hash-parity.mjs                         # web 宿主的 JS/Lua 镜像与 Rust 金标逐位一致
 ```
+
+**这些门的工程根参数**：`env::args().nth(1)` 缺省时回落到 `games_dir()/game_jhyt`
+（`jhyt_m72_crop_stages.rs:114-118`），**不是**仓库里的 `examples/game_jhyt`。
+所以要测本仓库那份场景就得显式传路径，否则会读到别处安装的同名工程——
+本轮做 HEAD 副本复验时用的正是这一条（`git archive HEAD examples/game_jhyt | tar -x -C <tmp>` 之后
+传 `<tmp>/examples/game_jhyt`），口径与坑见 `examples/game_jhyt/docs/60` §8。
 
 ## UI 组件字符串（屏幕空间）
 
