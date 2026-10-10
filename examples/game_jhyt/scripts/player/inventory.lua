@@ -17,8 +17,8 @@ local M = {}
 local MAX_ENERGY = 100
 local MAX_INNER_POWER = 100
 
--- 上限的只读访问口（M28）：跨天重置（`main.on_day_start`）与战败回庄
--- （`systems/death.lua`）都要把体力/内力拉回上限，不能再各自写死 100。
+-- 基础上限只读口：经脉系统在此基础上聚合加成；勿改成动态值以免循环求值。
+-- 消耗品与跨天恢复读 systems.meridian.max_*；战败恢复暂仍读这里的基础值。
 function M.max_energy()
   return MAX_ENERGY
 end
@@ -144,7 +144,10 @@ function M.use(item_id)
   local energy = tonumber(effect.energy)
   if energy and energy ~= 0 then
     local before = tonumber(state.energy) or 0
-    local after = math.max(0, math.min(MAX_ENERGY, before + energy))
+    -- 经脉可把体力上限提高到 100 以上；恢复物品必须走同一动态上限，
+    -- 否则任脉后服药会把 110 错误压回 100。
+    local energy_max = require("systems.meridian").max_energy()
+    local after = math.max(0, math.min(energy_max, before + energy))
     if after ~= before then
       state.energy = after
       applied = true
@@ -153,7 +156,9 @@ function M.use(item_id)
   local inner_power = tonumber(effect.inner_power)
   if inner_power and inner_power ~= 0 then
     local before = tonumber(state.inner_power) or 0
-    local after = math.max(0, math.min(MAX_INNER_POWER, before + inner_power))
+    -- 心经/三焦经等提高内力上限后，丹药/茶饮也应能恢复到动态上限。
+    local inner_max = require("systems.meridian").max_inner_power()
+    local after = math.max(0, math.min(inner_max, before + inner_power))
     if after ~= before then
       state.inner_power = after
       applied = true

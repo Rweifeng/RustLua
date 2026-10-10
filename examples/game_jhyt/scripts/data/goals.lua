@@ -45,7 +45,7 @@ M.days = {
     hint = "顾长风说过，山庄的药田不能荒着。",
     goals = {
       { id = "d1_till", text = "翻一块药田", match = { kind = "action", value = "till" } },
-      { id = "d1_plant", text = "种下 1 株灵芝", match = { kind = "action_prefix", value = "plant_" } },
+      { id = "d1_plant", text = "种下 1 株作物", match = { kind = "action_prefix", value = "plant_" } },
       { id = "d1_water", text = "给作物浇一次水", match = { kind = "action_prefix", value = "water_" } },
       { id = "d1_sleep", text = "回屋睡到天亮", match = { kind = "day_start" } }
     },
@@ -112,7 +112,7 @@ M.days = {
     hint = "炼出第一剂药，就算在山庄站住了脚。",
     goals = {
       { id = "d7_collect", text = "炼成 1 剂药并收取", match = { kind = "action_prefix", value = "craft_collect_" } },
-      { id = "d7_pill", text = "背包里有 1 剂回气散", match = { kind = "item", value = "heal_pill" } },
+      { id = "d7_pill", text = "背包里有 1 剂回复药", match = { kind = "item", value = "heal_pill" } },
       { id = "d7_sleep", text = "睡满第七夜", match = { kind = "day_start" } }
     },
     reward = { money = 80 }

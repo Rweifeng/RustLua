@@ -1,16 +1,13 @@
 # -*- coding: utf-8 -*-
-"""《江湖有田》山庄主场景美术生成：农田/湿度 overlay + 建筑/道具 sprite。
+"""《江湖有田》山庄主场景美术生成：建筑 / 道具 sprite。
 
 用法（工程根目录 examples/game_jhyt 下运行）：
 
-    python tools/gen_manor_art.py            # 生成全部（overlay + 建筑 + 预览）
+    python tools/gen_manor_art.py            # 生成全部（建筑 + 道具 + 预览）
     python tools/gen_manor_art.py --check    # 只校验已生成资源
 
 产出：
 
-    assets/art/tilesets/manor/manor_farm.png     6 列 × 32px（农田 overlay）
-    assets/art/tilesets/manor/manor_farm_moist.png 6 列 × 32px（湿度层，仅第 1 列有内容）
-    assets/art/tilesets/manor/_preview.png       两张 overlay 放大预览（带标签）
     assets/art/buildings/manor_house.png         正房 224×224（7×7 格）
     assets/art/buildings/manor_shed.png          柴房 160×128（5×4 格）
     assets/art/buildings/manor_gate.png          南门 96×96（3×3 格）
@@ -21,15 +18,15 @@
 由 `tools/gen_terrain_tiles.py` 产出，色阶口径是 `tools/terrain_ramp.json`。本工具只从同一
 张表取色画建筑与道具，所以两边永远是一个世界。
 
+**农田三态也不在这里**：`manor_farm*.png` 自 M72-08 起由 `tools/gen_farm_soil.py` 产出，
+作物阶段图由 `tools/gen_crop_art.py` 产出。搬走的理由是归属而不是审美——M72-07 的在制品
+压在本文件的建筑/屋顶区，农田区若同文件并行改，提交时挑不出自己的 hunk。
+
 引擎约束（改前先对齐 `crates/rustlua-ecs/src/tilemap.rs`）：
 
   * Tilemap 按组件里声明的 `atlas_cols/atlas_rows` 切 UV（`tiles_format=1`），贴图尺寸必须
-    正好等于 `cols×rows×tile`。本工具的 overlay 是恒等寻址（一格一列、无过渡块），所以
-    仍是 6 列 × 1 行；改列数要连 `manor.scene` 里那两行一起改。
-    （旧口径"`TILE_PALETTE` 写死 6 列、V 方向整幅拉伸"已在 M72-01 废掉。）
-  * `scripts/systems/farm.lua` 判定"可开垦"用的是 **GroundMap tile == 2（夯土）**，
-    且 overlay 列语义固定：1=已垦干土 2=已垦湿土 3=苗期 4=生长期 5=成熟。
-    这两条不能改，否则农田玩法直接坏掉。
+    正好等于 `cols×rows×tile`（旧口径"`TILE_PALETTE` 写死 6 列、V 方向整幅拉伸"已在
+    M72-01 废掉）。本工具出的是 sprite 不是 tilemap，所以只有拆层那几处受这条约束。
   * 建筑/道具的碰撞来自 GroundMap 的 solid 位（不是 sprite），
     所以"看起来实心"的 sprite 必须在 scene 的 solid 串里标 1。
 
@@ -56,10 +53,6 @@ from light_kit import grade_toward_light, lit_sides  # noqa: E402  M72-07：贴�
 import terrain_kit as tk  # noqa: E402  M72-04 色阶表：地表五族 + 通用四色的唯一口径
 
 TILE = 32
-# 农田/湿度两张 tileset 的列数。它现在只是**本工具与场景组件的约定**：引擎按组件里声明的
-# `atlas_cols/atlas_rows` 切 UV（M72-01 起），所以改这个数必须同时改 `manor.scene` 里那两行。
-TILE_COLUMNS = 6
-
 
 # ---------------------------------------------------------------------------
 # 色板（地表五族 + 通用四色从 `terrain_ramp.json` 取，其余是本工具自有的装饰色）
@@ -93,10 +86,7 @@ GRASS_DARK = ramp("grass", 0)
 GRASS_LIGHT = ramp("grass", 2)
 GRASS_HI = ramp("grass", 3)
 
-DIRT = ramp("dirt", 2)
-DIRT_DARK = ramp("dirt", 1)
 DIRT_LIGHT = ramp("dirt", 3)
-DIRT_WET = ramp("dirt", 0)
 
 STONE = ramp("stone", 2)
 STONE_LIGHT = ramp("stone", 3)
@@ -225,151 +215,6 @@ def tiled_roof(canvas, polygon_rows, column=16):
             x = int(round(x_top + (x_bottom - x_top) * (i / steps)))
             canvas.set(x, y, near)
             canvas.set(x + 1, y, far)
-
-
-# ---------------------------------------------------------------------------
-# 农田 overlay tileset（6 列 × 32px）
-#
-# 地表五族（草/土/石/墙/瓦/水）不在这个文件里：M72-04 起由 `gen_terrain_tiles.py` 按
-# `terrain_ramp.json` 画成 12 列 × 9 行的逻辑瓦图集（含 16 格边缘过渡）。本工具只留农田
-# 与湿度两张 overlay——它们是恒等寻址（一格一列，没有过渡块），所以列数仍是 6。
-# ---------------------------------------------------------------------------
-
-
-def tile_farm(base, furrow, wet=False, seed=77):
-    """农田底：3 道垄沟（overlay 只在 FarmGrid 上画，其余透出 GroundMap 夯土）。"""
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, base)
-    for y in (5, 13, 21, 29):
-        cv.rect(0, y, TILE - 1, y + 2, furrow)
-        cv.hline(0, TILE - 1, y - 1, shade(base, 1.12) if not wet else DIRT)
-    rnd = hash_stream(seed + (1 if wet else 0))
-    for _ in range(22):
-        cv.set(rnd(TILE), rnd(TILE), shade(base, 0.88))
-    for _ in range(14):
-        cv.set(rnd(TILE), rnd(TILE), shade(base, 1.1))
-    if wet:
-        for y in (4, 12, 20, 28):
-            for x in range(1, TILE - 1, 5):
-                cv.set(x, y, mix(furrow, WATER_DEEP, 0.35))
-    return cv
-
-
-def farm_sprout(seed=88):
-    """苗期：垄沟上 3 株小苗。"""
-    cv = tile_farm(DIRT, DIRT_DARK, seed=seed)
-    rnd = hash_stream(seed)
-    for _ in range(3):
-        x = 4 + rnd(TILE - 10)
-        y = 6 + rnd(TILE - 12)
-        cv.vline(x, y, y + 3, BAMBOO_LIGHT)
-        cv.set(x - 1, y + 1, BAMBOO)
-        cv.set(x + 1, y + 1, BAMBOO)
-        cv.set(x, y - 1, BAMBOO_LIGHT)
-    return cv
-
-
-def farm_growing(seed=99):
-    """生长期：2 株更大的作物。"""
-    cv = tile_farm(DIRT, DIRT_DARK, seed=seed)
-    rnd = hash_stream(seed)
-    for _ in range(2):
-        x = 6 + rnd(TILE - 14)
-        y = 8 + rnd(TILE - 16)
-        cv.vline(x, y, y + 6, LEAF)
-        cv.set(x, y - 1, LEAF_LIGHT)
-        for offset in (0, 2, 4):
-            cv.set(x - 1, y + offset, LEAF_LIGHT)
-            cv.set(x + 1, y + offset + 1, LEAF)
-            cv.set(x - 2, y + offset + 1, LEAF)
-    return cv
-
-
-def farm_ripe(seed=111):
-    """成熟：金色穗头（稻/灵芝的成熟意象）。"""
-    cv = tile_farm(DIRT, DIRT_DARK, seed=seed)
-    rnd = hash_stream(seed)
-    for _ in range(2):
-        x = 6 + rnd(TILE - 14)
-        y = 9 + rnd(TILE - 16)
-        cv.vline(x, y, y + 7, STRAW_DARK)
-        cv.rect(x - 2, y - 3, x + 2, y, STRAW)
-        cv.hline(x - 2, x + 2, y - 3, STRAW_LIGHT)
-        cv.set(x, y - 4, GOLD_LIGHT)
-        cv.set(x - 1, y + 4, STRAW_LIGHT)
-        cv.set(x + 1, y + 5, STRAW_LIGHT)
-    for _ in range(6):
-        cv.set(2 + rnd(TILE - 4), 2 + rnd(TILE - 4), GOLD_LIGHT)
-    return cv
-
-
-def farm_stubble(seed=122):
-    """第 6 列（保留位）：收割后的稻茬，暂未接入玩法。"""
-    cv = tile_farm(DIRT, DIRT_DARK, seed=seed)
-    for x in range(3, TILE - 2, 5):
-        cv.vline(x, 16, 19, STRAW_DARK)
-        cv.vline(x + 1, 24, 27, STRAW)
-    return cv
-
-
-def farm_moist_mark(seed=133):
-    """湿度层第 1 列（值 1 = 当日已浇）：只画四角湿痕与水滴，中心留空。
-
-    为什么单开一张图而不给 FarmGrid 加"湿版"作物贴图：引擎的 tile 值上限是 6
-    （`core/tilemap.rs` 的 `TILE_PALETTE` 长 6，UV 按 6 列切），而 FarmGrid 六列已被
-    干垦/湿垦/苗/生长/成熟/稻茬占满，"三阶段 × 干湿"要 8 槽塞不下。湿态因此画成
-    叠在 FarmGrid 之上的独立一层（半透明，不遮作物），而不是新增列。
-    """
-    cv = Canvas(TILE, TILE)
-    rim = (22, 32, 44, 116)
-    corner = (18, 27, 38, 150)
-    dash = (26, 38, 50, 74)
-    # 四周 2px 湿边：把"土色变深"读在边界上，作物所在的中部完全留给 FarmGrid 贴图。
-    for x in range(TILE):
-        for y in (0, 1, TILE - 2, TILE - 1):
-            cv.set(x, y, rim)
-    for y in range(2, TILE - 2):
-        for x in (0, 1, TILE - 2, TILE - 1):
-            cv.set(x, y, rim)
-    # 四角加深：让湿痕有"积在角落"的体积感。
-    for cx, cy in ((0, 0), (TILE - 4, 0), (0, TILE - 4), (TILE - 4, TILE - 4)):
-        cv.rect(cx, cy, cx + 3, cy + 3, corner)
-    # 垄沟位置上的短横段：与 FarmGrid 的三道垄（y=5/13/21/29）同排，读作沟里渗水。
-    for y in (6, 14, 22):
-        for x in range(3, TILE - 5, 6):
-            cv.rect(x, y, x + 2, y + 1, dash)
-    rnd = hash_stream(seed)
-    for _ in range(4):
-        x = 2 + rnd(TILE - 6)
-        y = 2 + rnd(TILE - 8)
-        cv.rect(x, y + 1, x + 1, y + 3, (86, 140, 190, 205))
-        cv.set(x, y, (86, 140, 190, 205))
-        cv.set(x + 1, y + 2, (178, 214, 238, 230))
-    return cv
-
-
-def farm_moist_tiles():
-    """湿度层 tileset：只有第 1 列有内容，其余 5 列全透明占位（列数须与组件声明一致）。"""
-    return [farm_moist_mark()] + [Canvas(TILE, TILE) for _ in range(TILE_COLUMNS - 1)]
-
-
-def farm_tiles():
-    return [
-        tile_farm(DIRT, DIRT_DARK, seed=77),
-        tile_farm(DIRT_DARK, DIRT_WET, wet=True, seed=78),
-        farm_sprout(),
-        farm_growing(),
-        farm_ripe(),
-        farm_stubble(),
-    ]
-
-
-def pack_tileset(tiles):
-    assert len(tiles) == TILE_COLUMNS, f"tileset 必须正好 {TILE_COLUMNS} 列"
-    sheet = Canvas(TILE * TILE_COLUMNS, TILE)
-    for index, tile in enumerate(tiles):
-        sheet.blit(tile, index * TILE, 0)
-    return sheet
 
 
 # ---------------------------------------------------------------------------
@@ -805,31 +650,6 @@ def write_png(path, canvas):
         handle.write(canvas.to_png())
 
 
-def build_tiles_preview(farm_tile_list, moist_tile_list, scale=4):
-    """两张 overlay 的放大预览：农田 6 列 + 湿度第 1 列。
-
-    地表不再出现在这里——它的预览是 `gen_terrain_tiles.py` 产的 `_ground_preview.png`，
-    那张带 16 格边缘过渡，按"6 列一行一瓦"的老排法已经画不下了。
-    """
-    labels = (["TILLED", "WATERED", "SPROUT", "GROWING", "RIPE", "STUBBLE"]
-              + ["MOIST-1"])
-    rows = list(enumerate(farm_tile_list)) + [(None, moist_tile_list[0])]
-    tile = TILE * scale
-    label_w = text_width("WATERED", 1) + 10
-    width = label_w + tile + 8
-    row_h = tile + 4
-    height = 20 + len(rows) * row_h + 8
-    cv = Canvas(width, height)
-    cv.rect(0, 0, width - 1, height - 1, rgb("#14171A"))
-    draw_text(cv, 4, 4, "MANOR OVERLAYS 32PX X4", GOLD_LIGHT, 1)
-    for row, (index, source) in enumerate(rows):
-        y = 20 + row * row_h
-        draw_text(cv, 4, y + tile // 2 - 2, labels[row], BAMBOO_LIGHT, 1)
-        cv.rect(label_w - 1, y - 1, label_w + tile, y + tile, rgb("#262C33"))
-        cv.blit(source.scaled(scale), label_w, y)
-    return cv
-
-
 def build_prop_preview(sprites, scale=2):
     items = sorted(sprites.items())
     pad = 10
@@ -862,15 +682,6 @@ def build_prop_preview(sprites, scale=2):
 def generate(quiet=False):
     # 中文招牌先批量栅格化（一次 PowerShell 调用，避免逐字调用）
     prewarm([("山庄", 12, "pixel", True), ("山庄", 13, "pixel", True), ("药田", 11, "pixel", True)])
-    farm_tile_list = farm_tiles()
-    moist_tile_list = farm_moist_tiles()
-    farm_sheet = pack_tileset(farm_tile_list)
-    moist_sheet = pack_tileset(moist_tile_list)
-    write_png(os.path.join(TILE_DIR, "manor_farm.png"), farm_sheet)
-    write_png(os.path.join(TILE_DIR, "manor_farm_moist.png"), moist_sheet)
-    write_png(os.path.join(TILE_DIR, "_preview.png"),
-              build_tiles_preview(farm_tile_list, moist_tile_list))
-
     for name, sprite in buildings().items():
         write_png(os.path.join(BUILDING_DIR, f"manor_{name}.png"), sprite)
     for name, sprite in props().items():
@@ -882,13 +693,11 @@ def generate(quiet=False):
     splits = write_splits(MANOR_STEMS)
 
     if not quiet:
-        print(f"tileset  manor_farm.png   {farm_sheet.w}x{farm_sheet.h} (6 列)")
-        print(f"tileset  manor_farm_moist.png {moist_sheet.w}x{moist_sheet.h} (6 列，仅第 1 列有内容)")
         for name, sprite in sorted(all_sprites.items()):
             print(f"sprite   manor_{name}.png {sprite.w}x{sprite.h}")
         for stem, path, rows in splits:
             print(f"split    {path} {rows} 行（{stem} 按行切出）")
-        print(f"preview  {TILE_DIR}/_preview.png, {BUILDING_DIR}/_preview.png")
+        print(f"preview  {BUILDING_DIR}/_preview.png")
 
 
 def check_splits(stems=None):
@@ -930,21 +739,9 @@ def check_splits(stems=None):
 
 
 def check():
-    from pixel_kit import decode_png
-
     issues = []
-    for path, want_w, want_h in (
-        (os.path.join(TILE_DIR, "manor_farm.png"), TILE * TILE_COLUMNS, TILE),
-        (os.path.join(TILE_DIR, "manor_farm_moist.png"), TILE * TILE_COLUMNS, TILE),
-    ):
-        if not os.path.exists(path):
-            issues.append("missing " + path)
-            continue
-        width, height, _, _ = decode_png(path)
-        if (width, height) != (want_w, want_h):
-            # 尺寸必须等于"组件声明的 atlas_cols/atlas_rows × 32"，否则引擎按声明切 UV 会错位。
-            issues.append(f"{path}: {width}x{height} != {want_w}x{want_h}"
-                          f"（须与 manor.scene 里声明的 {TILE_COLUMNS} 列 × 1 行一致）")
+    # 农田两张 overlay 不在这里对拍：M72-08 起由 `gen_farm_soil.py`  own（逐字节比，比尺寸
+    # 等式更强），本工具只出建筑与道具。
     for name in buildings():
         path = os.path.join(BUILDING_DIR, f"manor_{name}.png")
         if not os.path.exists(path):

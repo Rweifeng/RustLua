@@ -633,7 +633,7 @@ function M.update()
   end
 
   if input.action_pressed("practice") then
-    state.inner_power = math.min(100, (state.inner_power or 0) + 5)
+    state.inner_power = math.min(require("systems.meridian").max_inner_power(), (state.inner_power or 0) + 5)
     state.last_action = "practice_breath"
   end
 

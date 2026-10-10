@@ -94,7 +94,7 @@ end
 
 -- 工程根：**不能**用 `scene.reload()`——那在引擎里是"当前场景名"，门面/玩法地图上取值不同，
 -- 而这里要的是"工程目录"。用 `ui/layout_check.lua` 自己在 require 时的模块名反推：
--- `...` 是 `ui.layout_check`，相对路径 `scenes/x.scene` 本来就由宿主按工程根解析，
+-- `...` 是 `ui.layout_check`，相对场景路径本来就由宿主按工程根解析，
 -- 因此直接传相对路径即可（与 `project.toml` 的读法一致）。
 local function read_project_file(relative)
   return read_file(relative)
