@@ -7,11 +7,15 @@
 -- 世界坐标 = (cx + 0.5) * TILE。**每个 cell 必须落在对应地图的可行走格**，
 -- 否则 NPC 会输出"路径端点不可达"诊断（这是刻意的失败可见性）。
 --
--- 可行走格事实（来自 scenes/<map>.scene 的 GroundMap solid 位图，40x22）：
---   * manor  ：x1..38 / y1..20。实心块 = 正房 x2..8&y5..11、柴房 x4..8&y15..18、
---              池塘 x34..38&y4..9、南门立柱 (15,1)(15,2)(17,1)(17,2)，
---              以及 19 格道具占位（水井/水缸/草堆/晒谷架×2/木牌/竹篱×2/树×4/竹×3）；
---              x9..13 为贯通南北的走廊，y=3 的田前石路横通东西。
+-- 可行走格事实（来自 scenes/<map>.scene 的 GroundMap solid 位图，manor 是 40x23）：
+--   * manor  ：x1..38 / y1..20。**solid 不是手填的表**（M72-07 起）：每一格都来自
+--              `tools/building_kit.py` 的一条规则——建筑取"本体∪同名屋顶件的不透明像素
+--              覆盖格 − 门洞"、树/道具取锚点那一格、院墙与池水取瓦自己的 kind——
+--              所以这里不再抄一份会过期的块表。要读数跑
+--              `python tools/building_kit.py scenes/manor.scene`。
+--              已知的硬契约：南门门洞 (16,1)(16,2) 必须是洞（山庄↔云泽村出口），
+--              x9..13 为贯通南北的走廊，y=3 的田前石路横通东西，池塘是不规则岸线
+--              （x34..38 / y3..10，27 格，见 `gen_manor_scene.py` 的 `POND_ROWS`）。
 --              manor 的 solid 由 tools/gen_manor_scene.py 生成，
 --              改布局后必须重跑它（自带 places.lua 可达性契约自检）。
 --   * village：整圈白墙黛瓦院墙；主街/市集广场/中街贯通 y1..14（x1..38 基本全通）。
@@ -36,7 +40,10 @@ M.places = {
   manor_forge = { map = "manor", cell = { x = 28, y = 12 }, label = "山庄·工坊" },
   manor_practice = { map = "manor", cell = { x = 30, y = 14 }, label = "山庄·练功场" },
   manor_garden = { map = "manor", cell = { x = 10, y = 16 }, label = "山庄·后园" },
-  manor_dock = { map = "manor", cell = { x = 16, y = 19 }, label = "山庄·渡口" },
+  -- 渡口从 (16,19) 搬到池塘西南岸 (35,3)：M72-07 把施工演示（地基+脚手架）按盘上真值
+  -- 登记在 x16..19/y19..20，那一格成了建筑占地；而"渡口"本来就该临水，旧格在西北角的
+  -- 草地上，一滴水都没有。改的是格不是键名，`schedules/lu_guizang.lua` 不用动。
+  manor_dock = { map = "manor", cell = { x = 35, y = 3 }, label = "山庄·渡口" },
 
   -- 青云山道 mountain_path（批次 2；由 tools/gen_wilds_scene.py 生成并自检可达性）
   mountain_gate = { map = "mountain_path", cell = { x = 19, y = 2 }, label = "青云山·山门" },

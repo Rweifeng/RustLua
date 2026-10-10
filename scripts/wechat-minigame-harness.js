@@ -26,7 +26,7 @@
 //   --check-foreground-order 前景/投影两条**层带**（需配合 --drive-new-game）：三件探针分别落
 //                             world+投影 order、actor、foreground+遮断 order（两个 order 当场从玩法
 //                             自己的 data/lighting.lua 读，不在门里抄第二份），断言画的先后按层带走；
-//                             再看盘上真的 16 张投影贴片全排在主角之前、5 件遮断物全排在主角之后；
+//                             再看盘上真的 16 张投影贴片全排在主角之前、11 件遮断物全排在主角之后；
 //                             反面对照只改层名不改 order，必须翻过来——翻不过来就说明起作用的是
 //                             order 而不是层带，那 sorting_layer 在这台宿主上就是死数据。
 // 退出码：0 通过、1 失败（失败原因打印到 stderr）。
@@ -2817,7 +2817,7 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
     // 所以"层带在这台宿主上到底生不生效"只能看**真的画上去的先后**。三段各钉一件事：
     //   1. 三件探针（world 投影带 / actor / foreground 遮断带）——两个 order 数值当场从玩法自己
     //      的事实源 `data/lighting.lua` 读，不在这里抄第二份（抄了就等于门与数据各说各话）；
-    //   2. 场景里**真**的那 16 张投影贴片与 5 件遮断物——用 min/max 判"每一张贴片都排在主角之前、
+    //   2. 场景里**真**的那 16 张投影贴片与 11 件遮断物——用 min/max 判"每一张贴片都排在主角之前、
     //      每一件遮断物都排在主角之后"；同 src 出现几件不影响，同带的实例必然同侧；
     //   3. 反面对照：把遮断带探针的 `sorting_layer` 从 foreground 改成 world、**order 一字节不动**
     //      ⇒ 它必须翻到主角之前。翻不过来就说明先后是 order 决定的、层带是死数据。
@@ -2836,9 +2836,11 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
           { name: 'actor', tex: 'assets/art/buildings/village_clinic.png' },
           { name: 'occluder', tex: 'assets/art/buildings/village_forge.png' },
         ];
-        // 盘上真贴片的 src 形状（`tools/set_cast_shadows.py` 的 `blob_<宽>x<高>`）与遮断物两张。
+        // 盘上真贴片的 src 形状（`tools/set_cast_shadows.py` 的 `blob_<宽>x<高>`）与遮断物——
+        // 遮断物按后缀认（`_roof` / `_canopy`），M72-07 把拆层推广到 7 栋建筑后已有 11 件，
+        // 写死两张图名会让 min/max 只量到其中一部分。
         const CAST_TEXTURE = /\/art\/shadows\/blob_[0-9]+x[0-9]+\.png$/;
-        const OCCLUDER_TEXTURE = /\/(manor_house_roof|manor_tree_canopy)\.png$/;
+        const OCCLUDER_TEXTURE = /\/[a-z0-9_]+_(roof|canopy)\.png$/;
         const foregroundSource = [
           'function __rustlua_harness_foreground_setup(flip)',
           '  local lk = require("data.lighting")',

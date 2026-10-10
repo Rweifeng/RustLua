@@ -36,12 +36,14 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pixel_kit import Canvas, draw_text, hash_stream, mix, rgb, shade, text_width  # noqa: E402
+from light_kit import grade_toward_light  # noqa: E402  M72-07：明暗只认 lighting.lua 的 sun
 from gen_manor_art import (  # noqa: E402
     BAMBOO, BAMBOO_DARK, BAMBOO_LIGHT, CINNABAR, GOLD, GOLD_LIGHT, INK, PAPER, PAPER_DIM,
     PLASTER, PLASTER_DARK, STONE, STONE_DARK, STONE_LIGHT, STONE_MORTAR, TILE, TILE_ROOF,
     TILE_ROOF_DARK, TILE_ROOF_LIGHT, WATER, WOOD, WOOD_DARK, WOOD_LIGHT, WOOD_MID,
-    fill_ellipse, roof_rows, tiled_roof, wood_post,
+    fill_ellipse, lattice_window, roof_rows, tiled_roof, wood_post,
 )
+from gen_manor_art import LAYER_SPLITS, OWNER_OF_STEM, split_stem  # noqa: E402  M72-07 拆层表
 from cjk_text import draw_cjk, prewarm, text_canvas  # noqa: E402
 
 TILE_DIR = os.path.join("assets", "art", "tilesets")
@@ -551,7 +553,11 @@ def facility_anvil():
 
 
 def buildable(width, height, roof_color, wall_color, text, *, thatch=False, door=True):
-    """可建造建筑通用外形：屋面 + 墙体 + 匾额（中文）+ 石台基。"""
+    """可建造建筑通用外形：屋面 + 墙体 + 檐下匾额（中文）+ 门两侧木格窗 + 石台基。
+
+    匾挂檐下、窗开在门两侧与门同高：墙带只有 38~51 行，竖着再叠一层放不下（第一版把
+    匾画在 `wall_top+4..wall_top+20`，正好压在门的上半截上，看着像门关着）。
+    """
     cv = Canvas(width, height)
     roof_top = 6
     roof_bottom = max(roof_top + 12, int(height * 0.46))
@@ -572,19 +578,23 @@ def buildable(width, height, roof_color, wall_color, text, *, thatch=False, door
     cv.rect(12, wall_top, width - 13, wall_top + 5, mix(wall_color, INK, 0.25))
     wood_post(cv, 12, wall_top, 19, wall_bottom)
     wood_post(cv, width - 20, wall_top, width - 13, wall_bottom)
+    door_top = wall_bottom - 30
     if door:
+        # 窗先画、匾后画：匾压在窗角上比窗框住匾好看（两者在窄房上只差 1 行）
+        for wx in (22, width - 41):
+            lattice_window(cv, wx, door_top + 4, wx + 18, door_top + 22)
         dx = width // 2 - 12
-        cv.rect(dx, wall_bottom - 30, dx + 24, wall_bottom, WOOD_MID)
-        cv.rect(dx + 2, wall_bottom - 27, dx + 22, wall_bottom, WOOD_DARK)
+        cv.rect(dx, door_top, dx + 24, wall_bottom, WOOD_MID)
+        cv.rect(dx + 2, door_top + 3, dx + 22, wall_bottom, WOOD_DARK)
         cv.set(dx + 6, wall_bottom - 16, GOLD)
         cv.set(dx + 18, wall_bottom - 16, GOLD)
-        plaque(cv, width // 2 - 26, wall_top + 4, width // 2 + 26, wall_top + 20, text, size=12)
-    else:
-        plaque(cv, width // 2 - 26, wall_top + 6, width // 2 + 26, wall_top + 22, text, size=12)
+    plaque(cv, width // 2 - 26, roof_bottom - 2, width // 2 + 26, roof_bottom + 13,
+           text, size=11 if len(text) > 2 else 12)
     cv.rect(6, wall_bottom, width - 7, height - 6, STONE)
     cv.hline(6, width - 7, wall_bottom, STONE_LIGHT)
     cv.hline(6, width - 7, height - 6, STONE_MORTAR)
     cv.rect(width // 2 - 12, height - 6, width // 2 + 12, height - 1, STONE_LIGHT)
+    grade_toward_light(cv)
     cv.outline(INK)
     return cv
 
@@ -601,6 +611,7 @@ def build_foundation():
     for x in (6, 30, 62, 94, 121):   # 放线木桩 + 绳
         wood_post(cv, x - 2, 22, x + 2, 46)
     cv.hline(6, 121, 24, PAPER_DIM)
+    grade_toward_light(cv)
     cv.outline(INK)
     return cv
 
@@ -619,6 +630,7 @@ def build_scaffold():
     for step in range(38):  # 斜撑
         cv.set(6 + step, 44 + step // 2, BAMBOO_DARK)
         cv.set(84 + step // 2, 74 - step, BAMBOO_DARK)
+    grade_toward_light(cv)
     cv.outline(INK)
     return cv
 
@@ -704,6 +716,12 @@ def build_sprite_preview(entries, title, scale=2, cols=4):
     return cv
 
 
+# 本文件画的整图里需要拆层的那几张（M72-07：五座可建造建筑分 body/roof）。地基与脚手架
+# 没有顶，不在这张表里。**切点行号只写在 `gen_manor_art.LAYER_SPLITS` 一处**，
+# 本文件只负责"画完整图就立刻重切自己的分块"。
+BUILD_STEMS = tuple(stem for stem in LAYER_SPLITS if OWNER_OF_STEM[stem] == "gen_interior_art")
+
+
 def generate(quiet=False):
     prewarm([(text, size, "pixel", True)
              for text, size in (("药", 12), ("书", 12), ("药炉", 11), ("茶灶", 11), ("酒坊", 11),
@@ -742,9 +760,14 @@ def generate(quiet=False):
         write_png(os.path.join(BUILDING_DIR, name + ".png"), canvas)
     write_png(os.path.join(BUILDING_DIR, "_buildable_preview.png"),
               build_sprite_preview(builds, "BUILDABLE BUILDINGS X2", cols=3))
+    # 整图刚落盘就按行切出 body/roof：分块与整图同源同刻（`gen_manor_art.check_splits` 逐字节对拍）。
+    splits = [split_stem(stem) for stem in BUILD_STEMS]
     if not quiet:
         print(f"  2 tilesets + {len(FURNITURE)} 家具 + {len(FACILITIES)} 设施 + {len(BUILDABLES)} 可建造")
         print("  5 previews")
+        for stem, pieces in zip(BUILD_STEMS, splits):
+            print(f"  split    {stem}: " + " + ".join(f"{os.path.basename(p)} {rows} 行"
+                                                      for p, rows in pieces))
 
 
 def _pack(tiles):

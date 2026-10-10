@@ -19,8 +19,8 @@
   * 单格 32 世界单位，y 朝上；索引 index = y*width+x。
 列映射（与 farm.lua / gen_terrain_tiles.py 的 terrain_ramp.json 一致，**不可随意改**）：
   manor_ground：1=草地 2=夯土 3=石板路 4=院墙 5=青瓦 6=水
-  manor_farm：  1=已耕 2=已耕+浇水 3=苗期 4=生长期 5=成熟 6=稻茬(保留)
-  manor_farm_moist（第三层 FarmMoist，画在 FarmGrid 之上、只占第 1 列）：1=当日已浇
+  manor_farm（FarmGrid 层）：条目语义由 farm.lua 的 tile_for() 决定
+  manor_farm_moist（FarmMoist 层，只占第 1 列）：1=当日已浇的半透明湿痕，深浅靠 per-tile tint
   * farm.lua 用 `GroundMap tile == 2` 判定可开垦；overlay 列语义由 farm.lua 的 tile_for() 决定。
 
 布局（cell，0-index，y 朝上，含端点）：
@@ -55,6 +55,10 @@ from character_art import player_art  # noqa: E402  主角形象（与 manifest 
 # M72-05：装饰散布的单一实现。这里与 `set_scatter_decor.py`（就地改盘上场景）必须共用它，
 # 否则"重跑生成器"会抹掉盘上场景的装饰段——M72-04 就是靠这条对拍成立的。
 import decor_kit as dk  # noqa: E402
+# M72-07：建筑/道具碰撞的单一实现。这里（从零生成）与 `building_kit.py --apply`
+# （就地改盘上场景的 solid 串）必须走同一条规则，否则"重跑生成器"会把 solid 弹回
+# 按框整片实心——那 24 格悬空碰撞就是这么来的。
+import building_kit as bk  # noqa: E402
 # M72-06 C 段：地面投影贴片的单一实现（这里与 `set_cast_shadows.py` 同一条 `build()`）。
 import set_cast_shadows as cs  # noqa: E402
 # M72-06：前景遮断拆层的单一实现。这里（从零生成）与 `set_foreground_occluders.py`
@@ -66,7 +70,7 @@ from pixel_kit import camera_line  # noqa: E402  场景 2D 相机（取景锁在
 # M72-04：地表是逻辑瓦 + autotile + tint，条目算术/串格式/抖动/撒布全走公共层，
 # 与 `set_terrain_autotile.py`（就地改盘上场景）共用同一份实现。
 import terrain_kit as tk  # noqa: E402
-from set_terrain_autotile import freeze_cells, jitter, scatter_tints  # noqa: E402
+from set_terrain_autotile import freeze_cells, interior_tints, jitter, scatter_tints  # noqa: E402
 
 # 地图尺寸（maps.lua 的 spawn/exit 边界校验按 40x23 处理，不要改）。
 # 23 行是为横屏 1280×720 设计视口定的：40×22 = 1280×704 比屏幕矮 16 像素，
@@ -77,111 +81,164 @@ W, H = 40, 23
 GRASS, DIRT, STONE, WALL, ROOF, WATER = 1, 2, 3, 4, 5, 6
 
 GROUND_TEXTURE = "assets/art/tilesets/manor/manor_ground.png"
+# 农田层（叠在地表之上，运行期由 farm.lua 画）：6 列图集，条目语义见 farm.lua 的 tile_for。
 FARM_TEXTURE = "assets/art/tilesets/manor/manor_farm.png"
-# 湿度层（叠在 FarmGrid 之上）：只有第 1 列有内容（1=当日已浇的半透明湿痕）。
-# 单开一层而不是给 manor_farm 加"湿版"列，原因见 gen_manor_art.py 的 farm_moist_mark。
+# 湿度层（叠在 FarmGrid 之上）：只有第 1 列有内容，是一张半透明水洗 + 湿边。
 MOIST_TEXTURE = "assets/art/tilesets/manor/manor_farm_moist.png"
 TILE = 32
-# 农田层与湿度层仍是"6 列 × 1 行"的老图集（M72-04 只重做地表；农田归 M72-08）。
 FARM_ATLAS_COLS, FARM_ATLAS_ROWS = 6, 1
+MOIST_ATLAS_COLS, MOIST_ATLAS_ROWS = 6, 1
 
 # ---- 分区 ----
-HOUSE = {"x0": 2, "x1": 8, "y0": 5, "y1": 11}          # 正房（solid）
-SHED = {"x0": 4, "x1": 8, "y0": 15, "y1": 18}          # 柴房（solid）
+HOUSE = {"x0": 2, "x1": 8, "y0": 5, "y1": 11}          # 正房（本体∪屋顶的格实心）
+SHED = {"x0": 4, "x1": 8, "y0": 15, "y1": 18}          # 柴房（同上）
 YARD = {"x0": 1, "x1": 12, "y0": 1, "y1": 4}           # 屋前石院（可走）
 FARM = {"x0": 14, "x1": 33, "y0": 4, "y1": 13}         # 药田（可走，须为 DIRT）
-POND = {"x0": 34, "x1": 38, "y0": 4, "y1": 9}          # 池塘（solid）
+# 池塘（M72-07 重做）：**按行手填的不规则岸线**，不再是 `x0..x1 × y0..y1` 的矩形。
+# 形状读数：27 格，外接框 5×8=40 ⇒ 填充率 0.675（旧版 30 格 / 5×6 = 1.000 的完美方盒）。
+# 只许往 x34..38 这一带填：x≤33 是 `farm.lua` 的药田矩形，水一进田就少一格可垦地。
+POND_ROWS = {
+    3: (36, 37),
+    4: (36, 37, 38),
+    5: (35, 36, 37),
+    6: (35, 36, 37, 38),
+    7: (34, 35, 36, 37, 38),
+    8: (34, 35, 36, 37),
+    9: (35, 36, 37, 38),
+    10: (36, 37),
+}
+POND_CELLS = {(x, y) for y, xs in POND_ROWS.items() for x in xs}
+POND = {"x0": 34, "x1": 38, "y0": 3, "y1": 10}         # 外接框（校验与注释用）
+# 石砌岸（M72-07，实现在 `build_tiles`）：水格外一圈 4 邻域刷成石板。两个理由，都不是"好看"：
+#   * 没有它，水↔草直接相邻，autotile 在岸上读成"一摊蓝浮在绿布上"；
+#   * `places.lua:manor_dock` 要一个**站得住的临水格**，石板就是那一格（草也站得住，
+#     但"码头"该是硬地面），而香蒲/石头在石板上也有权重（`decor_kit.CATALOG`）。
+# 石板晒场（M72-07）：晒谷架 + 草堆脚下那一块。晒场必须是硬地（不然谷子摊在草上），
+# 而它顺带把后院那一片"整屏只有草"的窗口打开——`jhyt_m72_manor_terrain` §② 判的是
+# 任意 20×12 窗口的瓦种类，最坏那一屏正好压在这里。
+THRESH = {"x0": 9, "x1": 13, "y0": 8, "y1": 12}        # 可走，石板
 PATH_Y = 3
 PATH = {"x0": 13, "x1": 33}                            # 田前石路
 GATE_SPUR = {"x": 16, "y0": 1, "y1": 2}                # 南门引道（出口格 16,1）
 SPAWN = {"x": 16, "y": PATH_Y}                         # 与 data/maps.lua main.spawn 一致
 
 # ---- 建筑 / 道具 ----
-# texture：gen_manor_art.py 的产物；size 与图片像素 1:1；pivot=(0,0) 即 transform 为左下角。
-# cell：贴图左下角所在 cell（可带 cell_dx/cell_dy 像素微调）；solid：需要标 1 的格。
+# texture：gen_manor_art.py / gen_interior_art.py 的产物；size 与图片像素 1:1；
+# pivot=(0,0) 即 transform 为左下角。cell：贴图左下角所在 cell（可带 cell_dx/cell_dy 微调）。
+#
+# **这里没有 `solid` 字段了**（M72-07）。以前每件手填一串占地格，结果是"视觉多大填多大"
+# 的整框实心 + 一次手挪坐标就留下一片撞空气的悬空格（盘上的药庐/地基从 x33 挪到 x16，
+# solid 串留在原位 ⇒ 24 格隐形墙）。现在占地只认 `building_kit` 的一条规则：
+#   建筑 = 本体∪同名拆层件（屋顶）的**不透明像素**覆盖格 − 门洞；道具 = `entity_meta cell`
+#   那一格（`PROP_COLLISION` 里的横件例外）。改盘用 `building_kit.py --apply`，两条路
+# 算的是同一张表，门 `jhyt_m72_building_footprint` 再独立复算一遍。
 PROPS = [
     {"name": "ManorHouse", "texture": "assets/art/buildings/manor_house.png",
-     "size": (224, 224), "cell": (2, 5), "order": 0, "role": "building",
-     "solid": [(x, y) for y in range(HOUSE["y0"], HOUSE["y1"] + 1)
-               for x in range(HOUSE["x0"], HOUSE["x1"] + 1)]},
+     "size": (224, 224), "cell": (2, 5), "order": 0, "role": "building"},
     {"name": "ManorShed", "texture": "assets/art/buildings/manor_shed.png",
-     "size": (160, 128), "cell": (4, 15), "order": 0, "role": "building",
-     "solid": [(x, y) for y in range(SHED["y0"], SHED["y1"] + 1)
-               for x in range(SHED["x0"], SHED["x1"] + 1)]},
+     "size": (160, 128), "cell": (4, 15), "order": 0, "role": "building"},
+    # 南门：门洞 (16,1)(16,2) 是 `data/maps.lua` 的山庄↔云泽村出口格，声明在
+    # `building_kit.OPENINGS` 里——它必须既"图上真是洞"又"能走到"，两边都建有反查。
     {"name": "ManorGate", "texture": "assets/art/buildings/manor_gate.png",
-     "size": (96, 96), "cell": (15, 0), "order": 5, "role": "building",
-     "solid": [(15, 1), (15, 2), (17, 1), (17, 2)]},  # 门洞 (16,1)(16,2) 保持可走=出口格
+     "size": (96, 96), "cell": (15, 0), "order": 5, "role": "building"},
     {"name": "ManorFence", "texture": "assets/art/props/manor_fence.png",
-     "size": (24, 64), "cell": (13, 1), "cell_dx": 4, "order": 10, "role": "prop",
-     "solid": [(13, 1), (13, 2)]},
+     "size": (24, 64), "cell": (13, 1), "cell_dx": 4, "order": 10, "role": "prop"},
     {"name": "ManorWell", "texture": "assets/art/props/manor_well.png",
-     "size": (32, 42), "cell": (11, 2), "order": 10, "role": "prop",
-     "solid": [(11, 2)]},
+     "size": (32, 42), "cell": (11, 2), "order": 10, "role": "prop"},
     {"name": "ManorJar", "texture": "assets/art/props/manor_jar.png",
-     "size": (24, 30), "cell": (10, 1), "cell_dx": 4, "order": 10, "role": "prop",
-     "solid": [(10, 1)]},
+     "size": (24, 30), "cell": (10, 1), "cell_dx": 4, "order": 10, "role": "prop"},
     {"name": "ManorHaystack", "texture": "assets/art/props/manor_haystack.png",
-     "size": (36, 34), "cell": (10, 8), "order": 10, "role": "prop",
-     "solid": [(10, 8)]},
+     "size": (36, 34), "cell": (10, 8), "order": 10, "role": "prop"},
     {"name": "ManorRack", "texture": "assets/art/props/manor_rack.png",
-     "size": (64, 46), "cell": (11, 10), "order": 10, "role": "prop",
-     "solid": [(11, 10), (12, 10)]},
+     "size": (64, 46), "cell": (11, 10), "order": 10, "role": "prop"},
     {"name": "ManorSign", "texture": "assets/art/props/manor_sign.png",
-     "size": (32, 42), "cell": (13, 5), "order": 10, "role": "prop",
-     "solid": [(13, 5)]},
+     "size": (32, 42), "cell": (13, 5), "order": 10, "role": "prop"},
     {"name": "ManorTreeWest", "texture": "assets/art/props/manor_tree.png",
-     "size": (64, 88), "cell": (3, 19), "order": 20, "role": "prop",
-     "solid": [(3, 19)]},
+     "size": (64, 88), "cell": (3, 19), "order": 20, "role": "prop"},
     {"name": "ManorTreeNorth", "texture": "assets/art/props/manor_tree.png",
-     "size": (64, 88), "cell": (25, 20), "order": 20, "role": "prop",
-     "solid": [(25, 20)]},
+     "size": (64, 88), "cell": (25, 20), "order": 20, "role": "prop"},
     {"name": "ManorTreeEast", "texture": "assets/art/props/manor_tree.png",
-     "size": (64, 88), "cell": (38, 19), "order": 20, "role": "prop",
-     "solid": [(38, 19)]},
+     "size": (64, 88), "cell": (38, 19), "order": 20, "role": "prop"},
     {"name": "ManorBambooWest", "texture": "assets/art/props/manor_bamboo.png",
-     "size": (48, 76), "cell": (9, 20), "order": 20, "role": "prop",
-     "solid": [(9, 20)]},
+     "size": (48, 76), "cell": (9, 20), "order": 20, "role": "prop"},
     {"name": "ManorBambooEast", "texture": "assets/art/props/manor_bamboo.png",
-     "size": (48, 76), "cell": (27, 19), "order": 20, "role": "prop",
-     "solid": [(27, 19)]},
-    # 东南角（池塘南侧空地）补两件，避免右半张地图空荡
+     "size": (48, 76), "cell": (27, 19), "order": 20, "role": "prop"},
+    # 东南角（池塘北侧空地）补两件，避免右半张地图空荡
     # 注：位置在批次 3 加可建造建筑时挪过（原 (22,19)/(35,14)/(12,19)/(36,19) 会被建筑压住）
     {"name": "ManorTreeSoutheast", "texture": "assets/art/props/manor_tree.png",
-     "size": (64, 88), "cell": (37, 15), "order": 20, "role": "prop",
-     "solid": [(37, 15)]},
+     "size": (64, 88), "cell": (37, 15), "order": 20, "role": "prop"},
     {"name": "ManorBambooSoutheast", "texture": "assets/art/props/manor_bamboo.png",
-     "size": (48, 76), "cell": (32, 16), "order": 20, "role": "prop",
-     "solid": [(32, 16)]},
+     "size": (48, 76), "cell": (32, 16), "order": 20, "role": "prop"},
     # ---- 批次 3：可建造建筑（docs/30 §11.2）----
     # 这 5 座是"已建成"状态摆进山庄，用来验收美术与 footprint；
     # 真正的建造玩法（配方/占地规则/施工进度）是独立的玩法任务，见 docs/43。
+    # 药庐与施工演示的 cell 是 M72-04 之后手挪过的（原 (33,14)/(33,19)：那一带要让给
+    # 竹丛与池塘北岸），这里按**盘上真值**登记，别再让生成器把建筑搬回 x33。
     {"name": "BuildTrainingHall", "texture": "assets/art/buildings/build_training_hall.png",
-     "size": (144, 120), "cell": (20, 16), "order": 0, "role": "building",
-     "solid": [(x, y) for y in range(16, 20) for x in range(20, 25)]},
+     "size": (144, 120), "cell": (20, 16), "order": 0, "role": "building"},
     {"name": "BuildStorehouse", "texture": "assets/art/buildings/build_storehouse.png",
-     "size": (128, 112), "cell": (26, 15), "order": 0, "role": "building",
-     "solid": [(x, y) for y in range(15, 19) for x in range(26, 30)]},
+     "size": (128, 112), "cell": (26, 15), "order": 0, "role": "building"},
     {"name": "BuildHerbHut", "texture": "assets/art/buildings/build_herb_hut.png",
-     "size": (128, 112), "cell": (33, 14), "order": 0, "role": "building",
-     "solid": [(x, y) for y in range(14, 18) for x in range(33, 37)]},
+     "size": (128, 112), "cell": (16, 14), "order": 0, "role": "building"},
     {"name": "BuildTeaShed", "texture": "assets/art/buildings/build_tea_shed.png",
-     "size": (112, 96), "cell": (1, 18), "order": 0, "role": "building",
-     "solid": [(x, y) for y in range(18, 21) for x in range(1, 5)]},
+     "size": (112, 96), "cell": (1, 18), "order": 0, "role": "building"},
     {"name": "BuildForgeStand", "texture": "assets/art/buildings/build_forge_stand.png",
-     "size": (112, 104), "cell": (12, 18), "order": 0, "role": "building",
-     "solid": [(x, y) for y in range(18, 21) for x in range(12, 16)]},
+     "size": (112, 104), "cell": (12, 18), "order": 0, "role": "building"},
     # 施工演示：地基（本体）+ 脚手架（叠加层，order 更大所以画在上面）
     {"name": "BuildFoundation", "texture": "assets/art/buildings/build_foundation.png",
-     "size": (128, 64), "cell": (33, 19), "order": 0, "role": "building_site",
-     "solid": [(x, y) for y in range(19, 21) for x in range(33, 37)]},
+     "size": (128, 64), "cell": (16, 19), "order": 0, "role": "building_site"},
     {"name": "BuildScaffold", "texture": "assets/art/buildings/build_scaffold.png",
-     "size": (128, 96), "cell": (33, 19), "order": 1, "role": "building_site",
-     "solid": []},
+     "size": (128, 96), "cell": (16, 19), "order": 1, "role": "building_site"},
 ]
 
 
-def inside(cell, x0, x1, y0, y1):
-    return x0 <= cell[0] <= x1 and y0 <= cell[1] <= y1
+def prop_entity_lines(start_id=3):
+    """PROPS → (实体行, 下一个可用 id)。
+
+    `build_scene` 与 `occupied_cells` 都调这一个函数：算碰撞用的那批 sprite 必须与
+    写进场景的那批是同一批，否则"按图算的占地"与"画出来的房子"会各算各的。
+    """
+    lines = []
+    next_id = start_id
+    for prop in PROPS:
+        cell_x, cell_y = prop["cell"]
+        world_x = cell_x * TILE + prop.get("cell_dx", 0)
+        world_y = cell_y * TILE + prop.get("cell_dy", 0)
+        width, height = prop["size"]
+        lines.append(f"entity\t{next_id}\t{prop['name']}")
+        lines.append(sprite_line(next_id, prop["texture"], width, height,
+                                 prop.get("layer", "world"), prop["order"]))
+        lines.append(transform_line(next_id, float(world_x), float(world_y)))
+        lines.append(f"entity_meta\t{next_id}\trole\t{prop['role']}")
+        lines.append(f"entity_meta\t{next_id}\tcell\t{cell_x},{cell_y}")
+        next_id += 1
+    return lines, next_id
+
+
+def occupied_cells(ground):
+    """每栋建筑/每件道具该实心哪些格——**只认 `building_kit` 这一条规则**。
+
+    拆层要先过一遍 `fo.plan`：占地是"本体∪同名屋顶件"的不透明格并集，而屋顶那件
+    在盘上是独立实体（M72-06），只喂未拆层的 PROPS 会少算正房那一圈屋檐。
+    """
+    lines, _ = prop_entity_lines()
+    updates, occluders = fo.plan(lines, fo.lk.load())
+    patched = fo.apply_patch(lines, updates, occluders)
+    sprites = bk.placed_sprites(bk.read_entities(patched))
+    cells, readings, _ents = bk.visual_and_solid(bk.project_root(), sprites, W, H)
+    native = {(x, y) for y in range(H) for x in range(W)
+              if ground[y][x] in bk.TILE_NATIVE_SOLID}
+    return cells | native, readings
+
+
+def build_solid(ground):
+    """solid 布尔矩阵：`occupied_cells` 的格集换算回来。阻挡行走、且每格都有可视依据。
+
+    旧版在这里按"屋基矩形 + 每件 prop 手填的 solid 串"堆实心，那正是 24 格撞空气的
+    来源：手填的串跟着 sprite 走，sprite 一挪坐标就漏。现在串是算出来的。
+    """
+    cells, readings = occupied_cells(ground)
+    return [[1 if (x, y) in cells else 0 for x in range(W)] for y in range(H)], readings
 
 
 def build_tiles():
@@ -191,19 +248,29 @@ def build_tiles():
     for y in range(YARD["y0"], YARD["y1"] + 1):
         for x in range(YARD["x0"], YARD["x1"] + 1):
             ground[y][x] = STONE
-    # 正房/柴房基底（夯土；sprite 会盖住，只露边缘）
-    for region in (HOUSE, SHED):
-        for y in range(region["y0"], region["y1"] + 1):
-            for x in range(region["x0"], region["x1"] + 1):
-                ground[y][x] = DIRT
+    # 正房/柴房底下**不再刷夯土**（M72-07 设计要点 5）：旧写法给两栋建筑整框刷 DIRT，
+    # 在图上读成"棕色方盒套蓝方盒"，而 DIRT 是 `farm.lua` 的可开垦判据，等于在房子底下
+    # 留了一片能种地的地。建筑盖住的格看不见地表，留草地就行。
     # 药田整块夯土底（可走；farm.lua 靠 tile==2 判定可开垦）
     for y in range(FARM["y0"], FARM["y1"] + 1):
         for x in range(FARM["x0"], FARM["x1"] + 1):
             ground[y][x] = DIRT
-    # 池塘
-    for y in range(POND["y0"], POND["y1"] + 1):
-        for x in range(POND["x0"], POND["x1"] + 1):
-            ground[y][x] = WATER
+    # 池塘：不规则岸线按行填（形状见 `POND_ROWS`），水格天然实心（WATER 在
+    # `building_kit.TILE_NATIVE_SOLID` 里），四邻皆水的内部格再压一档 `shaded` 顶点色
+    # 读深度——见 `build_scene` 里的 `water_depth_tints`。
+    for (x, y) in POND_CELLS:
+        ground[y][x] = WATER
+    # 石砌岸：把水格的 4 邻域里**仍是草地**的那些刷成石板（只认 GRASS，所以既不会
+    # 吃掉药田的 DIRT——那等于少一格可垦地——也不会碰路/墙）。理由见 `POND_CELLS` 上方那条注释。
+    for (x, y) in POND_CELLS:
+        for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+            if 0 <= nx < W and 0 <= ny < H and ground[ny][nx] == GRASS:
+                ground[ny][nx] = STONE
+    # 石板晒场：草堆/晒谷架脚下那一块硬地（见 `THRESH` 的注释）。与正房 x2..8、
+    # 药田 x14..33 都不相交，刷它不会挪动任何已有分区。
+    for y in range(THRESH["y0"], THRESH["y1"] + 1):
+        for x in range(THRESH["x0"], THRESH["x1"] + 1):
+            ground[y][x] = STONE
     # 田前石路 + 南门引道
     for x in range(PATH["x0"], PATH["x1"] + 1):
         ground[PATH_Y][x] = STONE
@@ -218,23 +285,6 @@ def build_tiles():
         ground[y][0] = WALL
         ground[y][W - 1] = WALL
     return ground
-
-
-def build_solid(ground):
-    """solid 布尔矩阵 solid[y][x]：阻挡行走。
-
-    规则：院墙/水/屋舍基底 + 道具占地阻挡；草地/夯土/石板可走。
-    建筑与道具的碰撞必须在这里标（sprite 本身不参与碰撞）。"""
-    solid = [[0] * W for _ in range(H)]
-    for y in range(H):
-        for x in range(W):
-            if ground[y][x] in (WALL, WATER) or inside((x, y), HOUSE["x0"], HOUSE["x1"], HOUSE["y0"], HOUSE["y1"]) \
-                    or inside((x, y), SHED["x0"], SHED["x1"], SHED["y0"], SHED["y1"]):
-                solid[y][x] = 1
-    for prop in PROPS:
-        for (x, y) in prop["solid"]:
-            solid[y][x] = 1
-    return solid
 
 
 def decor_reserved():
@@ -299,6 +349,9 @@ def build_scene(ground, solid):
     cells, _ = jitter(cells, solid_str, W, H,
                       freeze_cells([(FARM["x0"], FARM["y0"], FARM["x1"], FARM["y1"])], W, H))
     tints = scatter_tints(W, H, [tint_id for tint_id, _ in tk.ground_tints(table)])
+    # 池心按**形状**压一档 `shaded`（表里第 1 档就是那档冷暗的）：哈希撒布管"这块地被
+    # 晒到/在阴里"的低频斑驳，这一层管"水在哪里更深"——不规则岸线没有深度就还是块蓝布。
+    tints.update(interior_tints(cells, W, H, WATER, tk.ground_tints(table)[0][0]))
     lines.append("entity\t1\tGroundMap")
     lines.append(transform_line(1, 0.0, 0.0))
     lines.append(
@@ -319,22 +372,10 @@ def build_scene(ground, solid):
                                FARM_ATLAS_COLS, FARM_ATLAS_ROWS)
     )
     lines.append("entity_meta\t2\trole\tfarm_tilemap")
-    # 3..N 建筑与道具：pivot=(0,0) → transform 即贴图左下角世界坐标
-    next_id = 3
-    prop_ids = {}
-    for prop in PROPS:
-        cell_x, cell_y = prop["cell"]
-        world_x = cell_x * TILE + prop.get("cell_dx", 0)
-        world_y = cell_y * TILE + prop.get("cell_dy", 0)
-        width, height = prop["size"]
-        lines.append(f"entity\t{next_id}\t{prop['name']}")
-        lines.append(sprite_line(next_id, prop["texture"], width, height,
-                                 prop.get("layer", "world"), prop["order"]))
-        lines.append(transform_line(next_id, float(world_x), float(world_y)))
-        lines.append(f"entity_meta\t{next_id}\trole\t{prop['role']}")
-        lines.append(f"entity_meta\t{next_id}\tcell\t{cell_x},{cell_y}")
-        prop_ids[prop["name"]] = next_id
-        next_id += 1
+    # 3..N 建筑与道具：pivot=(0,0) → transform 即贴图左下角世界坐标。
+    # 与 `occupied_cells` 走同一个 `prop_entity_lines`，所以占地算的就是画出来的这批。
+    prop_lines, next_id = prop_entity_lines()
+    lines.extend(prop_lines)
     # 玩家本体：场景内可碰撞动态刚体（脚本经 entity.find("JianghuPlayer") 使用）
     player_id = next_id
     spawn_wx, spawn_wy = cell_to_world(SPAWN["x"], SPAWN["y"])
@@ -389,20 +430,21 @@ def build_scene(ground, solid):
     lines.append(camera_line(camera_id, W, H))
     lines.append(transform_line(camera_id, 0.0, 0.0))
     lines.append(f"entity_meta\t{camera_id}\trole\tgame_camera")
-    # 湿度层（最后一张 Tilemap）：id 必须大于 FarmGrid(2)——原生按 ECS 插入序、web 按
-    # entity id 升序排 tilemap 批次，两者都把这张画在 FarmGrid 之上，湿痕才不会压住作物。
+    # 湿度层：id 必须大于 FarmGrid(2)——原生按 ECS 插入序、web 按 entity id 升序排 tilemap
+    # 批次，两者都把这张画在 FarmGrid 之上，湿痕才不会压住土面（作物层在它之上，见下）。
     moist_id = camera_id + 1
     lines.append(f"entity\t{moist_id}\tFarmMoist")
     lines.append(transform_line(moist_id, 0.0, 0.0))
     lines.append(
         f"component\t{moist_id}\tTilemap\t"
         + tk.tilemap_component(TILE, W, H, MOIST_TEXTURE, [0] * (W * H), empty,
-                               FARM_ATLAS_COLS, FARM_ATLAS_ROWS)
+                               MOIST_ATLAS_COLS, MOIST_ATLAS_ROWS)
     )
     lines.append(f"entity_meta\t{moist_id}\trole\tfarm_moist_tilemap")
     # M72-05：装饰散布。id 从 `moist_id + 1` 起**追加在末尾**，一个既有 id 都不动——
     # 挪 id 会让 Lua 侧 `entity.find` 与黄金表全部重排，而装饰是纯加法。
     # 输入用**抖动后**的格子图（盘上就是这个），不然"生成器看到的草/土分布"与实机不一致。
+    #
     jittered = [cells[y * W:(y + 1) * W] for y in range(H)]
     exclude, avoid = decor_reserved()
     placements = dk.scatter(W, H, jittered, solid, exclude, mid_avoid=avoid)
@@ -466,7 +508,7 @@ def read_manor_place_cells(
 
 
 def self_check(ground, solid):
-    """契约自检：出生点/出口/地点格可走，药田是夯土，道具没占墙/水。"""
+    """契约自检：出生点/出口/地点格可走、门洞可站可达、药田是夯土、建筑锚点不泡水。"""
     problems = []
     walk = reachable_from(solid, (SPAWN["x"], SPAWN["y"]))
     checks = [
@@ -489,34 +531,53 @@ def self_check(ground, solid):
                for y in range(FARM["y0"], FARM["y1"] + 1)
                for x in range(FARM["x0"], FARM["x1"] + 1)):
         problems.append("药田矩形里出现非夯土格（farm.lua 靠 tile==2 判定可开垦）")
+    # 门洞：`building_kit.OPENINGS` 声明的洞必须**可站且从出生点走到**——洞画对了但
+    # 被别的东西围死，玩家一样出不去（南门是山庄↔云泽村的出口格，这条断了就切图）。
+    for name, cells in bk.OPENINGS.items():
+        for cell in cells:
+            cx, cy = cell
+            if solid[cy][cx]:
+                problems.append(f"{name} 的门洞 {cell} 又被标成 solid：占地规则与 OPENINGS 打架")
+            elif (cx, cy) not in walk:
+                problems.append(f"{name} 的门洞 {cell} 从出生点不可达")
+    # 建筑锚点（贴图左下角那一格）不许是**水**：锚点在水里就是整栋泡在池子里。
+    # 查锚点而不是查全部占地——屋檐压到院墙那一行是正常的（南门本来就嵌在院墙里、
+    # 脚手架压在墙行上），而"泡水"是只有锚点才会出现的错法。
     for prop in PROPS:
-        for (cx, cy) in prop["solid"]:
-            if ground[cy][cx] in (WATER, WALL):
-                problems.append(f"{prop['name']} 占用了墙/水格 ({cx},{cy})")
+        cx, cy = prop["cell"]
+        if ground[cy][cx] == WATER:
+            problems.append(f"{prop['name']} 的锚点 ({cx},{cy}) 在水格上：整栋泡在池子里")
     return problems
 
 
 def main():
     parser = argparse.ArgumentParser(description="从零装配 scenes/manor.scene")
     parser.add_argument("--out", default=os.path.join("scenes", "manor.scene"),
-                        help="写出路径。**对拍请指到 .temp**：盘上的 manor.scene 已和生成器分叉"
-                             "（M72-04「未完成项」第 6 条：entity 21/24/25 的 Transform 是之后手调的），"
-                             "直接覆盖会抹掉那批改动——装饰段用 tools/set_scatter_decor.py 就地改。")
+                        help="写出路径。M72-07 已把盘上唯一那处分叉（entity 21/24/25 的 "
+                             "Transform 手调）登记回本文件，所以这里默认覆盖盘上是**预期行为**；"
+                             "对拍请指到 .temp，然后与 scenes/manor.scene 逐行 diff。")
     args = parser.parse_args()
     ground = build_tiles()
-    solid = build_solid(ground)
+    solid, readings = build_solid(ground)
     text = build_scene(ground, solid)
     out = args.out
     with open(out, "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
     print(f"wrote {out} ({W}x{H}, {len(PROPS)} 个建筑/道具实体)")
+    for reading in readings:
+        print("   %-20s 视觉 %-3d 格 solid %-3d 格 门洞 %s%s" % (
+            reading["name"], reading["visual"], reading["solid"], reading["openings"] or "-",
+            "（拆层件：" + ",".join(reading["mates"]) + "）" if reading["mates"] else ""))
     problems = self_check(ground, solid)
     if problems:
         for problem in problems:
             print("[FAIL]", problem)
         raise SystemExit(1)
     places = read_manor_place_cells()
-    print(f"契约自检 ok：出生点/出口/药田/道具占位，places.lua {len(places)} 个山庄地点格全部可走且可达")
+    pond = len(POND_CELLS)
+    box = (POND["x1"] - POND["x0"] + 1) * (POND["y1"] - POND["y0"] + 1)
+    print(f"契约自检 ok：出生点/出口/药田/门洞/建筑锚点，places.lua {len(places)} 个山庄地点格全部可走且可达")
+    print(f"   池塘 {pond} 格 / 外接框 {box} 格 ⇒ 填充率 {pond / box:.3f}（旧版 5×6 矩形是 30/30=1.000）")
 
 
 if __name__ == "__main__":

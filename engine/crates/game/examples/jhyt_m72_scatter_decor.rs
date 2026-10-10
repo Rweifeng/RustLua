@@ -88,6 +88,7 @@ const CATALOG: &[(&str, &str, u32, u32, i32)] = &[
     ("Flowers", "decor_flowers", 22, 18, BAND_MID),
     ("Mushroom", "decor_mushroom", 16, 14, BAND_MID),
     ("Reed", "decor_reed", 20, 28, BAND_MID),
+    ("Lily", "decor_lily", 22, 14, BAND_DEBRIS),
 ];
 
 /// `terrain_ramp.json` 的 `ground_tints` + 白档：装饰的顶点色只许照抄地表那三档。
@@ -417,7 +418,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // 命中分类要落到"打到的是谁"，不是只数个数：`physics.overlap` 在 manor 里必然打到东西
     // （地表 tilemap 的每个实心格都挂着一个按格生成的静态 cuboid，见 `scene_spawn.rs` 的
-    // `solid_cell_colliders`，`jhyt_m72_foreground_occlusion` §④ 逐格探针读数 360/360）。
+    // `solid_cell_colliders`，`jhyt_m72_foreground_occlusion` §④ 逐格探针读数 359/359）。
     // 上一版把这批命中在文案里写成"地表 tilemap 的实心格"，靠的是推断；现在按实体 id 比出来：
     // 归给 GroundMap 的 = ground，剩下的必须为 0，否则就是有第三个碰撞体来源混进装饰堆里。
     if other != 0 {

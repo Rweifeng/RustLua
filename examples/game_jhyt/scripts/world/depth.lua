@@ -39,7 +39,8 @@ end
 --   2. **静态物件不参与 Y 折**。主键是 `层秩 × 1000 + order`（world −1 < actor +1 < foreground +2，
 --      见 `rustlua-render/src/sprite.rs` 的 `sorting_layer_rank`），所以人恒画在所有 world 物件
 --      **之后**：站在房子北边不会被房子盖住。这是设计，不是 bug——要压住人只有一条路，把悬空的
---      那上半张登记进 foreground（M72-06 B 段那 5 件遮断物）。
+--      那上半张登记进 foreground（M72-06 B 段起的 4 件树冠，M72-07 把屋顶拆法推广到
+--      柴房与五座可建造建筑后共 11 件）。
 --   3. **foreground 恒压人、不看 y**，所以整张图进 foreground 会连"站在它南边的人"一起盖掉。
 --      这条就是第 2 点必须拆层的原因，也是 `data/lighting.lua` 的 `occlusion.max_cover_ratio`
 --      要钉住覆盖率上界的原因（拆到顶 57 行时最深 0.861，人被吞得只剩一条边）。

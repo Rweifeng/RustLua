@@ -325,6 +325,33 @@ def reed():
     return cv
 
 
+def lily_pad():
+    """睡莲：浮在水面的圆叶 + 一道从叶心切到边缘的 V 形缺口，左上开一朵白花。
+
+    缺口不是装饰，是**认得出来**的那一条：没有它这就是一团绿椭圆，跟草地上的叶堆
+    （`leaf_pile`）在 22px 上无从分辨。缺口切在右侧、花落在左侧，`_r.png` 镜像后
+    两者一起翻，所以两个朝向都读得出"这是睡莲"。
+    """
+    cv = Canvas(22, 14)
+    blob(cv, 10, 7, 10, 6, LEAF, light=LEAF_LIGHT, dark=LEAF_DARK)
+    # V 形缺口：从叶心 (10,7) 向右张开 2px，切到边缘
+    for step in range(11):
+        x = 10 + step
+        y = 7 - step // 6
+        cv.set(x, y, (0, 0, 0, 0))
+        cv.set(x, y + 1, (0, 0, 0, 0))
+    # 叶脉：从叶心放射的三条暗线，圆叶没有脉就读成一块绿饼
+    for dx, dy in ((-6, -3), (-7, 2), (-3, 5), (-8, -1)):
+        for t in range(3):
+            x, y = 10 + dx * t // 3, 7 + dy * t // 3
+            if cv.get(x, y)[3] > 0:
+                cv.set(x, y, LEAF_DARK)
+    for x, y in ((4, 4), (5, 4), (4, 5), (5, 5), (3, 5), (6, 5), (4, 3), (5, 3)):
+        cv.set(x, y, PAPER)
+    cv.set(4, 4, GOLD_LIGHT)
+    return cv
+
+
 SHAPES = {
     "decor_grass_short": grass_short,
     "decor_grass_tuft": grass_tuft,
@@ -338,6 +365,7 @@ SHAPES = {
     "decor_flowers": flowers,
     "decor_mushroom": mushroom,
     "decor_reed": reed,
+    "decor_lily": lily_pad,
 }
 
 

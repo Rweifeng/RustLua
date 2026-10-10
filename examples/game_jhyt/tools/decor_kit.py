@@ -47,8 +47,23 @@ SORTING_LAYER = "world"
 BAND_DEBRIS = -30
 BAND_MID = 12
 
-# 每格的"要不要撒"基线概率。墙/瓦/水面上不可能长东西，直接 0。
-BASE_P = {GRASS: 0.70, DIRT: 0.35, STONE: 0.40, WALL: 0.0, ROOF: 0.0, WATER: 0.0}
+# 每格的"要不要撒"基线概率。墙/瓦上不可能长东西，直接 0；水面（M72-07）只为睡莲开一格——
+# 目录里只有它带 `WATER` 权重，所以这一格不会让草从水里长出来。
+#
+# M72-07 把这三档往上挪了一档，理由不是"想更密"，而是这一包**改的是地面本身**：
+#   * 建筑碰撞按"本体∪屋顶"并集重算后多了 26 格实心（原来能撒草的屋檐外圈），
+#     池塘压了石砌岸、后院铺了石板晒场，两者都是**草地换石板**——
+#     `jhyt_m72_scatter_decor` §② 的每屏中位数因此从 43 掉到 36（门槛 40）。
+#   * 补的方式是挪基线概率，不是挪门槛：草地 0.70→0.75 顶掉被划成实心的那几格；
+#     石板 0.40→0.55 读作"老院子石板缝生苔、夹碎石"（可撒的石板格有 138 个，
+#     这一档实测撒满 43%，剩下的石板仍然干净）；水面 0.55→0.85 是因为 27 格的池子
+#     只有 9 张莲叶时读作"蓝布上撒了几点绿"，睡莲要盖得住池面。
+#   * 改后读数：装饰 204 件、每屏中位数 41（min 7 / max 75），13 种形状全部出现。
+BASE_P = {GRASS: 0.75, DIRT: 0.35, STONE: 0.55, WALL: 0.0, ROOF: 0.0, WATER: 0.85}
+# 实心格一般不撒装饰（撒在墙里/屋里就是看不见），但**水面是实心格里的例外**：
+# `WATER` 在 `building_kit.TILE_NATIVE_SOLID` 里（玩家走不进池塘），而睡莲正该长在水面上。
+# 不加这条例外，睡莲这个条目永远抽不到，画一张没人看的图。
+DECOR_ON_SOLID = (WATER,)
 # 疏密按 2×2 格块走（和 `set_terrain_autotile.scatter_tints` 同一个理由：逐格独立随机
 # 在 32px 网格上读作噪点，成块才读作"这一片草密/那一片秃"）。(上界, 概率系数)
 PATCH_BANDS = ((14, 0.0), (44, 0.55), (85, 1.0), (101, 1.45))
@@ -84,7 +99,12 @@ CATALOG = (
     ("Mushroom", "decor_mushroom", (16, 14), "mid", {GRASS: 4, DIRT: 2}),
     # 香蒲/芦苇：**必须临水**（有 4 邻域水格）。夯土也要能长——池塘四周一圈实测大多是
     # 夯土与石板，只给草地权重的话这个条目一次都不会被抽到（等于白画一张图）。
-    ("Reed", "decor_reed", (20, 28), "mid", {GRASS: 6, DIRT: 4}, "water"),
+    # M72-07 给石板也开一格：池塘压了石砌岸之后，水边那一圈从夯土变成石板，没有这一格
+    # 香蒲就无处可长（它只认 4 邻域有水，不认地表）。
+    ("Reed", "decor_reed", (20, 28), "mid", {GRASS: 6, DIRT: 4, STONE: 4}, "water"),
+    # 睡莲：唯一长**在水面上**的条目（M72-07 的不规则池子）。走碎屑带（order -30）：
+    # 它是水面纹理，不是能挡住谁的物件。
+    ("Lily", "decor_lily", (22, 14), "debris", {WATER: 30}),
 )
 
 
@@ -171,7 +191,9 @@ def scatter(width, height, ground, solid, exclude, seed=DECOR_SEED, mid_avoid=fr
     for y in range(height):
         for x in range(width):
             kind = ground[y][x]
-            if solid[y][x] or kind not in BASE_P or not BASE_P[kind]:
+            if kind not in BASE_P or not BASE_P[kind]:
+                continue
+            if solid[y][x] and kind not in DECOR_ON_SOLID:
                 continue
             if (x, y) in exclude:
                 continue

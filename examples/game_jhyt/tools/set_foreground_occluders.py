@@ -43,8 +43,8 @@ ROLE = "occluder"
 SORTING_LAYER = "foreground"
 # 保留 id 段：见模块 docstring「id 段」。低于此值的都是自然分配的可玩法实体与装饰。
 OCCLUDER_ID_BASE = 5001
-# 遮断实体名后缀（也是门侧认"哪块是遮断物"的标识：`<本体名>Canopy` / `<本体名>Roof`）。
-OCCLOUDER_SUFFIX = {"tree": "Canopy", "house": "Roof"}
+# 遮断实体名后缀在 `gen_manor_art.occluder_suffix`（树是 Canopy、其余是 Roof）：
+# 门侧靠它认"哪块是遮断物"，所以只许有一处定义。
 WHITE_TINT = "1.000,1.000,1.000,1.000"
 
 
@@ -53,20 +53,21 @@ def posix(path):
 
 
 def groups():
-    """`{拆层名: {source, base, occluder, suffix}}`，路径一律 posix（场景里只认正斜杠）。
+    """`{整图名: {source, base, occluder, suffix}}`，路径一律 posix（场景里只认正斜杠）。
 
     `LAYER_SPLITS` 每项是 `(目录, ((部件名, y0, y1), ...))`，且**第 0 项是上半张**
     （图像行号小 = 靠顶 = 世界更高）。本体取末项、遮断取首项——顺序本身就是契约。
+    键是**整图文件名**（`manor_house` / `build_herb_hut`…）：切点、两块路径、遮断后缀
+    全从 `gen_manor_art` 那一处取，本文件不写死任何一个数。
     """
     out = {}
-    for name, (directory, parts) in ga.LAYER_SPLITS.items():
-        pieces = [(posix(os.path.join(directory, f"manor_{name}_{part}.png")), y1 - y0 + 1)
-                  for part, y0, y1 in parts]
-        out[name] = {
-            "source": posix(os.path.join(directory, f"manor_{name}.png")),
+    for stem in ga.LAYER_SPLITS:
+        pieces = [(posix(path), y1 - y0 + 1) for path, y0, y1 in ga.split_paths(stem)]
+        out[stem] = {
+            "source": posix(ga.full_path(stem)),
             "occluder": pieces[0],
             "base": pieces[-1],
-            "suffix": OCCLOUDER_SUFFIX[name],
+            "suffix": ga.occluder_suffix(stem),
         }
     return out
 

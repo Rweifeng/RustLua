@@ -148,6 +148,29 @@ def scatter_tints(width, height, tint_ids):
     return tints
 
 
+def interior_tints(cells, width, height, kind, tint_id):
+    """把**四邻都是 `kind`** 的内部格压成 `tint_id`（M72-07：池心读深度）。
+
+    为什么用顶点色而不是加一张"深水瓦"：autotile 开着时四邻皆同类的内部全部落进
+    同一个图集条目（`tilemap.rs:resolve_atlas_index`），换瓦要动 `terrain_ramp.json`
+    与图集布局——那是 M72-11 铺量时才值得付的账。现成三档（白/shaded/sunlit）里那一档
+    冷的能立刻用，代价是深度差只有 3-4%：池心是"压暗一层"，不是"黑下去一截"。
+
+    返回 {index: tint_id}，由调用方并进 `scatter_tints` 的结果（哈希撒布管低频斑驳，
+    这一层管"按形状给深度"，两者叠着写，后写的赢）。
+    """
+    out = {}
+    for y in range(height):
+        for x in range(width):
+            if cells[y * width + x] != kind:
+                continue
+            around = ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1))
+            if all(0 <= nx < width and 0 <= ny < height
+                   and cells[ny * width + nx] == kind for nx, ny in around):
+                out[y * width + x] = tint_id
+    return out
+
+
 def build_component(fields, cells, tint_ids_by_index, autotile, table):
     """按引擎 `to_component_str` 的字段顺序重排一行组件串（拼串在 `terrain_kit` 里，三个生成器共用）。"""
     return tk.tilemap_component(

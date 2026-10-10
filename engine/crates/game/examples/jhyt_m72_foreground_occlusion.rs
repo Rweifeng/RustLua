@@ -86,6 +86,8 @@ const SETTLE_FRAMES: usize = 8;
 /// 手抄是故意的：门若去解析那份 Python，就变成同一张表自己跟自己一致，"生成器改了切点而场景
 /// 没跟着改"这一类漂移反而查不出来。副本与表飘红时报的是"拼回去不等于整图"或"接缝等式不成立"，
 /// 那正是飘掉的那一条。行号一个都不抄——所有高度都从 PNG 实测，所以"切点铺满原图"是被证明的。
+///
+/// 第 0 行必须是正房（§④ 的"脚下钉子"按 `SPLITS[0]` 取）；余下按实体名查，不靠行号。
 #[derive(Clone, Copy)]
 struct Split {
     base: &'static str,
@@ -102,6 +104,48 @@ const SPLITS: &[Split] = &[
         top: "assets/art/buildings/manor_house_roof.png",
         bottom: "assets/art/buildings/manor_house_body.png",
         occluder: "ManorHouseRoof",
+    },
+    Split {
+        base: "ManorShed",
+        full: "assets/art/buildings/manor_shed.png",
+        top: "assets/art/buildings/manor_shed_roof.png",
+        bottom: "assets/art/buildings/manor_shed_body.png",
+        occluder: "ManorShedRoof",
+    },
+    Split {
+        base: "BuildTrainingHall",
+        full: "assets/art/buildings/build_training_hall.png",
+        top: "assets/art/buildings/build_training_hall_roof.png",
+        bottom: "assets/art/buildings/build_training_hall_body.png",
+        occluder: "BuildTrainingHallRoof",
+    },
+    Split {
+        base: "BuildStorehouse",
+        full: "assets/art/buildings/build_storehouse.png",
+        top: "assets/art/buildings/build_storehouse_roof.png",
+        bottom: "assets/art/buildings/build_storehouse_body.png",
+        occluder: "BuildStorehouseRoof",
+    },
+    Split {
+        base: "BuildHerbHut",
+        full: "assets/art/buildings/build_herb_hut.png",
+        top: "assets/art/buildings/build_herb_hut_roof.png",
+        bottom: "assets/art/buildings/build_herb_hut_body.png",
+        occluder: "BuildHerbHutRoof",
+    },
+    Split {
+        base: "BuildTeaShed",
+        full: "assets/art/buildings/build_tea_shed.png",
+        top: "assets/art/buildings/build_tea_shed_roof.png",
+        bottom: "assets/art/buildings/build_tea_shed_body.png",
+        occluder: "BuildTeaShedRoof",
+    },
+    Split {
+        base: "BuildForgeStand",
+        full: "assets/art/buildings/build_forge_stand.png",
+        top: "assets/art/buildings/build_forge_stand_roof.png",
+        bottom: "assets/art/buildings/build_forge_stand_body.png",
+        occluder: "BuildForgeStandRoof",
     },
     Split {
         base: "ManorTreeWest",
@@ -419,7 +463,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // 反面对照：把两块**上下对调**再拼一遍，必须不等于整图。少了这一条，
     // `joined != rgba(&full)` 有可能只是在比两坨全透明像素（判别力为零）。
-    let tree = SPLITS[1];
+    // 挑树冠：它的两块最"实"，上下颠倒一眼就看得出来。
+    let tree = *SPLITS
+        .iter()
+        .find(|row| row.occluder.ends_with("Canopy"))
+        .ok_or("拆层表里没有树冠行：§③ 的对调对照没有可对调的东西")?;
     let canopy = image_of(&project, tree.top)?;
     let trunk = image_of(&project, tree.bottom)?;
     let full = image_of(&project, tree.full)?;
@@ -573,7 +621,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // 把玩家真的传送到最深那一格，再回读坐标。上面那条逐格探针已经证明 `solid` 位图与物理
-    // 世界是同一张（360/360 实心格有碰撞体、560 空格没有），所以这条落位断言现在真的有牙：
+    // 世界是同一张（359/359 实心格有碰撞体、561 空格没有），所以这条落位断言现在真的有牙：
     // 门按几何判"可达"的点，物理求解器也必须让玩家待得住——两边口径一旦分家（换算方向改了、
     // 有人给 tilemap 加了内缩/外扩），这里就会漂出容差。另外两件小事也靠它兜住：
     //   ① 扫描用的点与绘制序比的是**同一个**点（回读 = 落位，容差内），不是门自己想象的坐标；
@@ -632,13 +680,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         occ.name
     );
 
-    banner("⑤ 反面对照：把四片 canopy 用运行期 sprite.set 改回 world 层，方向必须翻过来");
+    banner("⑤ 反面对照：把所有树冠用运行期 sprite.set 改回 world 层，方向必须翻过来");
     // 走**运行期**而不是临时场景文件：`jhyt_m35_depth_sort` §① 已证明 `sprite.set` 写的
     // sorting_layer/order 在原生真的生效。四片一起改（不是只改一片）：它们共用一张
     // `manor_tree_canopy.png`，只改一片会让同一张贴图散在两个分段里，那时候"下标比较"
-    // 量的就不是层带而是批处理了。
-    let canopy = SPLITS[1];
-    let names: Vec<&str> = SPLITS.iter().skip(1).map(|row| row.occluder).collect();
+    // 量的就不是层带而是批处理了。按**贴图**挑而不是按行号范围：M72-07 之后拆层表里
+    // 还有六件屋顶前景，它们用的是别的图，混进来会让这条断言比的是两批不同的四边形。
+    let canopy = SPLITS
+        .iter()
+        .find(|row| row.occluder.ends_with("Canopy"))
+        .ok_or("拆层表里没有树冠行：§⑤ 的反面对照没有可翻的东西")?;
+    let names: Vec<&str> = SPLITS
+        .iter()
+        .filter(|row| row.top == canopy.top)
+        .map(|row| row.occluder)
+        .collect();
     for name in &names {
         let item = find(&sprites, name)?;
         if item.texture != canopy.top {
@@ -1424,7 +1480,7 @@ fn frame_masks(
 /// solid 是关卡的可行走事实源：`data/places.lua` 的出生点、`tilemap.find_path` 的寻路、
 /// `systems/building.lua` 的占地判定读的都是这一张表，门跟着它们走，不自造一套。
 /// 这一张**同时是物理世界**：`scene_spawn.rs` 的 `solid_cell_colliders` 给每个实心格在
-/// GroundMap 的静态刚体上挂一个 cuboid（见上面那条逐格探针，360/360 命中、空格 0 命中）。
+/// GroundMap 的静态刚体上挂一个 cuboid（见上面那条逐格探针，359/359 命中、空格 0 命中）。
 /// 门的判据比物理严一点——"碰到格边"就算挡住，而 Rapier 只禁穿透——所以门的可达集是
 /// 物理允许位置的**子集**，保守方向，不会把进不去的位置算进来。真正让两者对齐的是 §④
 /// 末尾那条 teleport 落位断言；"全图理论上界"那一列则把位图之外的位置一并扫过，证明

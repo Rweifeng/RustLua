@@ -174,6 +174,49 @@ def sun_angle(sections=None):
     return angle_deg(ux, uy)
 
 
+# ---- 贴图侧：把同一条光向落成一次明度渐变（M72-07）----
+
+
+def lit_sides(sections=None):
+    """哪几面被照亮：`{'top','bottom','left','right'}`。光向量是**行进方向**，取反才是来源。
+
+    `sun = (1, -1)`（世界 +y 朝上）= 光往右下走 = 从**左上**照过来 ⇒ 顶面、左面亮。
+    """
+    ux, uy = sun_vector(sections)
+    return {"left": ux > 0, "right": ux < 0, "top": uy < 0, "bottom": uy > 0}
+
+
+def face_gain(nx, ny, strength=0.09, sections=None):
+    """图上归一化坐标 (nx, ny)（ny 是**图像行**，朝下为正）处的明度乘子。
+
+    点越靠近光源越亮：把 (nx-0.5, 0.5-ny)（换成正朝上的偏移）与"光源方向"点积，
+    所以换一行 `lighting.lua` 的 sun，全图渐变方向跟着翻，贴图里不用改任何数。
+    """
+    ux, uy = sun_vector(sections)
+    return 1.0 + 2.0 * strength * ((nx - 0.5) * -ux + (0.5 - ny) * -uy)
+
+
+def grade_toward_light(canvas, strength=0.09, box=None, sections=None):
+    """对 `box=(x0,y0,x1,y1)`（默认整张图）内的不透明像素做一次光向渐变。
+
+    放在各部件画完之后统一跑，而不是每个部件自己挑亮色：一张贴图只有一条光，
+    屋顶、柱子和台基必须沿同一条渐变走。描边在渐变**之后**再画，墨线才不会忽明忽暗。
+    """
+    x0, y0, x1, y1 = box if box else (0, 0, canvas.w, canvas.h)
+    span_x = max(1, x1 - x0)
+    span_y = max(1, y1 - y0)
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            r, g, b, a = canvas.get(x, y)
+            if a == 0:
+                continue
+            gain = face_gain((x + 0.5 - x0) / span_x, (y + 0.5 - y0) / span_y,
+                             strength=strength, sections=sections)
+            canvas.set(x, y, (min(255, int(round(r * gain))),
+                              min(255, int(round(g * gain))),
+                              min(255, int(round(b * gain))), a))
+
+
 # ---- 取值区间：与 Lua 的 validate_all **同一套边界**，改了那边必须改这里 ----
 
 _RANGE_RULES = (
