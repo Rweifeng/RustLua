@@ -1,47 +1,20 @@
+# M20-08 手柄验收设置（示例结束时按原样恢复）
 [project]
 name = "game_jhyt"
-# 发布标记：`true` = 按发布包布局分发（pack/ 目录 + 用户数据目录），取代旧 release.toml。
-# 开发形态（编辑器 Play / 直接跑工程）不受影响——引擎判定还要求项目根目录名是 pack。
-release = true
 version = "0.1.0"
 engine = "RustLua"
 main_script = "scripts/main.lua"
 startup_scene = "scenes/main.scene"
-font = "assets/fonts/FusionPixel-12px-Monospaced-zhHans.ttf"
-# 后备字体留空：像素点阵与平滑矢量混排会立刻露馅（M72-03 的「只入一款」）。
-# 缺字因此走点阵占位方框，由 `jhyt_m72_pixel_font` ④ 逐字拦住（实测工程用字 1,605 个、缺字 0）。
+font = "assets/fonts/NotoSansSC-VF.ttf"
 font_fallback = ""
 font_weight = 400.0
-# Fusion Pixel 是 12px 硬边点阵：矢量档会对轮廓做 AA 重采样，把 1 texel 的笔画糊成灰边，
-# 所以这里明确写 sdf（字形走 `sdf=2` 阈值档 + Nearest 采样）。
-text_render_mode = "sdf"
-
-# 设计分辨率（M32；2026-09-27 转横屏 1280×720）。`scripts/ui/layout.lua` 的 DESIGN 必须与此一致：
-#   * 场景 UI（`UiLayout`）的作者空间 = 这组尺寸（编辑器按 `meta ui_reference_*` 读同一组值）；
-#   * Lua 动态 UI（`ui.panel`/`ui.image`/`ui.text_at`）是**屏幕像素**空间，取值也按这组尺寸排；
-#   * 发布窗口由宿主 `game --project` 按 `window_width`/`window_height` 开（1:1，不做缩放）。
+text_render_mode = "vector"
 window_width = 1280
 window_height = 720
 
-# ---------------------------------------------------------------------------
-# [input] 玩家可改的输入绑定（2026-10-07 起从 settings.toml 迁入；settings.toml 退役）。
-# 工程级设置文件与 project.toml 合并：引擎 settings 读写（input/audio）都落在
-# 本文件（SETTINGS_FILE=project.toml），改键也可在编辑器「项目设置 → 输入」面板完成
-# （本段即该面板的落点）。
-# ---------------------------------------------------------------------------
+[audio]
+master = 0.5
+bgm = 0.25
+
 [input]
-# M22/W1 起为物理键格式 v2：键位名与 winit 的 KeyCode 变体名一一对应
-# （key:w → key:keyw、key:1 → key:digit1、key:up → key:arrowup）。
-# 手柄说明：左摇杆绑到移动（move_* = padaxis:1+/- 与 padaxis:0+/-），推杆即可走位；
-# 菜单导航由方向键与 DPad（pad:12..15，见 ui_up/down/left/right）承担——ui_* 已
-# 解绑摇杆轴，避免与移动动作构成输入冲突；交互/攻击/武学/背包/暂停/重开同时绑到
-# 手柄按钮（pad:0/2/3/4/5/8）。
-map = "rustlua-actions-v2\nattack=key:keyj,pad:2\nbuild=key:keyb\ncancel=key:escape,pad:1\nconfirm=key:space,pad:0\ndash=key:keyh\ndemolish=key:keyx\ngift=key:keyg\nguard=key:keyz\ninteract=key:keye,pad:0\ninventory=key:keyi,pad:4\nmove_down=key:keys,padaxis:1-\nmove_left=key:keya,padaxis:0-\nmove_right=key:keyd,padaxis:0+\nmove_up=key:keyw,padaxis:1+\npause=key:keyp,pad:5\nplace=key:keyf\npractice=key:keyq\nquest=key:keyl\nrespawn=key:keyr,pad:8\nseed=key:keyc\nskill=key:keyk,pad:3\nskill_2=key:keyv\nskill_3=key:keyn\nskill_4=key:keym\nsleep=key:keyt\nslot_1=key:digit1\nslot_2=key:digit2\nslot_3=key:digit3\nslot_4=key:digit4\nslot_5=key:digit5\nslot_6=key:digit6\nslot_7=key:digit7\nslot_8=key:digit8\nslot_9=key:digit9\nui_down=key:arrowdown,pad:13\nui_left=key:arrowleft,pad:14\nui_right=key:arrowright,pad:15\nui_up=key:arrowup,pad:12\nuse=key:keyu\nvolume_down=key:minus\nvolume_up=key:equal"
-stick_deadzone = 0.15
-trigger_deadzone = 0.05
-# 菜单导航手感（M22/W3 起用毫秒）：左摇杆阈值 / 按住后首次重复延迟 / 重复间隔。
-# 阈值越小越灵敏；延迟与间隔决定长按时的滚动节奏（这里刻意保留 M20-09 的
-# 60fps 手感：16 帧 ≈ 267ms、8 帧 ≈ 133ms，而不是新的默认 350/90）。
-nav_threshold = 0.5
-nav_delay_ms = 267
-nav_repeat_ms = 133
+map = "rustlua-actions-v2\nattack=pad:2\nbuild=key:keyb\ncancel=key:escape,pad:1\nconfirm=key:space,pad:0\ndemolish=key:keyx\ngift=key:keyg\ninteract=pad:0\ninventory=pad:4\nmove_down=padaxis:1-\nmove_left=padaxis:0-\nmove_right=padaxis:0+\nmove_up=padaxis:1+\npause=pad:5\nplace=key:keyf\npractice=key:keyq\nquest=key:keyl\nrespawn=pad:8\nseed=key:keyc\nskill=pad:3\nsleep=key:keyt\nslot_1=key:digit1\nslot_2=key:digit2\nslot_3=key:digit3\nslot_4=key:digit4\nslot_5=key:digit5\nslot_6=key:digit6\nslot_7=key:digit7\nslot_8=key:digit8\nslot_9=key:digit9\nui_down=key:arrowdown,pad:13\nui_left=key:arrowleft,pad:14\nui_right=key:arrowright,pad:15\nui_up=key:arrowup,pad:12\nuse=key:keyu\nvolume_down=key:minus\nvolume_up=key:equal"
