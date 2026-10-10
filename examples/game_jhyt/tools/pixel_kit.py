@@ -9,6 +9,7 @@
   * 世界坐标 y 向上，tile 32 单位，cell (cx,cy) 覆盖世界 x∈[cx*32,(cx+1)*32]、y∈[cy*32,(cy+1)*32]。
 """
 
+import os
 import struct
 import zlib
 
@@ -125,6 +126,13 @@ def encode_png(width, height, raw_rgba):
         + _chunk(b"IDAT", zlib.compress(raw_rgba, 9))
         + _chunk(b"IEND", b"")
     )
+
+
+def write_png(path, canvas):
+    """把画布落成 PNG，顺带建目录。出图侧唯一该写的落盘动作（以前三个工具各抄一遍）。"""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "wb") as handle:
+        handle.write(canvas.to_png())
 
 
 def _chunk(tag, body):

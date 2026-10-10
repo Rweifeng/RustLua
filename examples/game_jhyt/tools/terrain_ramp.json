@@ -43,6 +43,48 @@
     "gold": "#C9A05A",
     "wood": "#4A3628"
   },
+  "scenes": {
+    "comment": [
+      "M72-11：把 manor 的金标规范复制到其余场景时，**机制全共享、只有取色与 kind 归属不同**。",
+      "每个场景一条覆盖：`families`/`utility` 是按族名合并（覆盖同名族、新增族），",
+      "`kinds` 给整个列表就是该场景的 kinds（不给就用顶层默认的 manor 那套）。",
+      "顶层的 families/kinds 因此读作**默认段 = manor**：`load_ramp()` 不带场景就是 M72-04 那张表，",
+      "manor 一个字节都不因本包的泛化而变（由 `gen_terrain_tiles.py --check` 与",
+      "`jhyt_m72_manor_terrain` 逐字节背书）。",
+      "kind 的**编号语义是引擎与数据侧共用的**，不随场景变：2 永远是 farm.lua 判可垦的夯土位、",
+      "3 永远是 building.lua 判道路的铺地位，其余四格各场景自由。覆盖 kinds 时改的是",
+      "family 归属与画法描述，不是编号语义——这条由 `terrain_kit.load_ramp` 硬校验。"
+    ],
+    "manor": {
+      "display_name": "山庄（P1 金标）",
+      "comment": [
+        "kinds/families 都不覆盖，用的就是顶层默认段；这里只声明 uses。",
+        "六族全用是 M72-04 的事实：wall 的草帽沿用 grass 族、暗沿与 hedge 族、",
+        "水陆交界的土岸用 dirt 族、dirt 里的碎石用 stone 族。"
+      ],
+      "uses": ["grass", "dirt", "stone", "water", "roof", "hedge"]
+    },
+    "village": {
+      "display_name": "云泽村（山谷村落）",
+      "source": "docs/39-江湖有田-云泽村场景美术.md §2 + gen_village_art.py 旧村庄专属色",
+      "uses": ["grass", "tea_soil", "flagstone", "plaster", "slate", "water"],
+      "kinds": [
+        { "id": 1, "name": "grass", "family": "grass", "meaning": "山谷野草（比山庄更深更杂，带落叶）" },
+        { "id": 2, "name": "dirt", "family": "tea_soil", "meaning": "茶园与土路（偏沙的踩实土，带耙痕）" },
+        { "id": 3, "name": "stone", "family": "flagstone", "meaning": "青石板街（大块磨损石板 + 车辙）" },
+        { "id": 4, "name": "wall", "family": "plaster", "meaning": "徽派白墙：黛瓦压顶 + 白灰墙 + 青石基" },
+        { "id": 5, "name": "roof", "family": "slate", "meaning": "黛瓦（村庄主色，地表层不铺，保留 6 列语义）" },
+        { "id": 6, "name": "water", "family": "water", "meaning": "溪水（与山庄池塘共用同一族水色，流向不同）" }
+      ],
+      "families": {
+        "grass": ["#425A33", "#547242", "#668454", "#7A9A62"],
+        "tea_soil": ["#6E5836", "#8A7048", "#A08858", "#B5A071"],
+        "flagstone": ["#7C7466", "#A09884", "#B5AD98", "#C6BEA8"],
+        "plaster": ["#8F8878", "#B3AC9C", "#D8D2C4", "#EDE6D6"],
+        "slate": ["#223038", "#33424D", "#455766", "#5C7080"]
+      }
+    }
+  },
   "crops": {
     "atlas": {
       "cols": 8,

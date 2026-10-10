@@ -1,11 +1,16 @@
 # -*- coding: utf-8 -*-
-"""把玩法地图的**地表层**升到逻辑瓦：autotile 载荷 + 犬牙交界（M72-04）。
+"""把玩法地图的**地表层**升到逻辑瓦：autotile 载荷 + 犬牙交界（M72-04 建，M72-11 铺量）。
 
 用法（工程根目录 `examples/game_jhyt` 下）：
 
-    python tools/set_terrain_autotile.py scenes/manor.scene --freeze 14,4,33,13
+    python tools/set_terrain_autotile.py scenes/village.scene --freeze 2,14,33,17
     python tools/set_terrain_autotile.py scenes/manor.scene --freeze 14,4,33,13 --apply
     python tools/set_terrain_autotile.py scenes/combat_arena.scene --identity --apply
+
+对场景数无关：哪一行是地表按 `role=ground_tilemap` 认（`building_kit.ground_line`），
+取哪一档色按场景自己的 `name=` 查（`terrain_ramp.json` 的 `scenes`）。JITTER_* 那套
+语义（只抖草/土、只加路不减路、墙瓦水不动）依赖的是 kind 编号跨场景一致这条硬校验，
+所以本文件不为任何场景写特例。
 
 为什么是"就地改一张已存在的 .scene"而不是重跑 `gen_manor_scene.py`：盘上的 `manor.scene`
 早就和生成器分叉了（建筑/道具/HUD 是之后手工调的），重跑生成器会把那批改动抹掉。
@@ -43,10 +48,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import building_kit as bk  # noqa: E402  "哪一行是地表"与场景键的唯一判法
 import terrain_kit as tk  # noqa: E402
 from pixel_kit import hash_stream  # noqa: E402
 
-GROUND_TEXTURE = "assets/art/tilesets/manor/manor_ground.png"
 # 两遍：第一遍把交界改成邻居的 kind（约 60%），第二遍以第一遍的结果为输入再推一层（约 30%），
 # 于是交界是 1-2 格深的犬牙而不是一条"抖了一格"的直线。
 JITTER_PASSES = (60, 30)
@@ -54,19 +59,14 @@ JITTER_TARGETS = (1, 2)  # 只有草/土会被改写
 JITTER_DONORS = (1, 2, 3)  # 来源可以是草/土/石板：**只加路不减路**
 TINT_PATCH = 2  # tint 按 2×2 格块撒（每格独立会跳成噪点，见 `scatter_tints`）
 NEIGHBOR_ORDER = ((1, 0), (-1, 0), (0, 1), (0, -1))
+# 按**名字**认水 kind，不写数字：`load_ramp` 只保证 kinds 的 id 连续且名字集合一致，
+# 具体哪一号是水是可换序的（换序要连着 data 侧一起改）。见 `terrain_kit.kind_id`。
+WATER_KIND = "water"
 
 
-def find_ground(lines, texture=GROUND_TEXTURE):
-    """返回 (行号, 组件串)。只认地表贴图那一条，别的层（农田/湿润）不碰。"""
-    hits = []
-    for index, line in enumerate(lines):
-        fields = line.split("\t")
-        if len(fields) == 4 and fields[0] == "component" and fields[2] == "Tilemap" \
-                and f"texture={texture}" in fields[3]:
-            hits.append((index, fields))
-    if len(hits) != 1:
-        raise SystemExit(f"[FAIL] 期望恰好一条 {texture} 的 Tilemap，实到 {len(hits)} 条")
-    return hits[0]
+def find_ground(lines):
+    """返回 (行号, 组件串的分段)。按 `role=ground_tilemap` 认，别的层（农田/湿润/作物）不碰。"""
+    return bk.ground_line(lines)
 
 
 def parse_fields(value):
@@ -215,11 +215,14 @@ def main():
                         help="冻结矩形 x0,y0,x1,y1（可重复）：农田区必须冻")
     args = parser.parse_args()
 
-    table = tk.load_ramp()
     with open(args.scene, encoding="utf-8", newline="") as handle:
         content = handle.read()
     newline = "\r\n" if "\r\n" in content else "\n"
     lines = content.replace("\r\n", "\n").split("\n")
+    # 色阶表按场景的 `name=` 取：manor 用顶层默认段，village 用它在 `scenes` 里那一档的
+    # 取色。**机制（图集行列、条目算术、抖动、撒 tint）一张图一张图完全相同**，
+    # 所以这里没有 `--scene` 参数，也不该有——场景自己说它是谁。
+    table = tk.load_ramp(bk.scene_name(lines))
 
     index, fields_line = find_ground(lines)
     fields = parse_fields(fields_line[3])
@@ -243,6 +246,11 @@ def main():
         if len(tint_ids) < 2:
             raise SystemExit("[FAIL] terrain_ramp.json 的 ground_tints 少于 2 档，撒不出明度差")
         tints = scatter_tints(width, height, tint_ids)
+        # 水心按**形状**再压一档深色（M72-07 在生成器里加的那一层，本工具以前没有）：
+        # 少了它，重跑本工具会把盘上池心的那一档冲成白档，而画面差别只有 3-4% 明度、
+        # 没有任何一张图会报错。两条路（`gen_*_scene.build_scene` 与本工具）必须同一段。
+        tints.update(interior_tints(cells, width, height,
+                                    tk.kind_id(table, WATER_KIND), tint_ids[0]))
 
     for value in cells:
         if value < 1 or value > table["kind_count"]:

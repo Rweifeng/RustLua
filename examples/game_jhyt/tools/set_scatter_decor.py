@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""把装饰散布写进一张已存在的 `.scene`（M72-05，就地改、幂等）。
+"""把装饰散布写进一张已存在的 `.scene`（M72-05 建，M72-11 起服务多张图；就地改、幂等）。
 
 用法（工程根目录 `examples/game_jhyt` 下）：
 
-    python tools/set_scatter_decor.py scenes/manor.scene            # 只报告
+    python tools/set_scatter_decor.py scenes/village.scene          # 只报告
     python tools/set_scatter_decor.py scenes/manor.scene --apply    # 写盘
     python tools/set_scatter_decor.py scenes/manor.scene --seed 0x5C0714 --apply   # 换种子对照
 
@@ -12,26 +12,47 @@
 抹掉。本工具**只在文件末尾追加装饰段**，其余字节原样写回，换行风格也跟着保留。
 
 和 `gen_manor_scene.py` 共用 `decor_kit` 的 `scatter()`/`decor_lines()` 与同一份留白输入
-（`gen_manor_scene.decor_reserved()`），所以"生成器产出的装饰段"与"本工具写进盘上的装饰段"
-必须逐字节相同——这条由 `jhyt_m72_scatter_decor` 的门钉住，不是靠人记得。
+（`RESERVED_BY_SCENE` 指向那张图自己的生成器），所以"生成器产出的装饰段"与"本工具写进
+盘上的装饰段"必须逐字节相同——这条由 `jhyt_m72_scatter_decor` 的门钉住，不是靠人记得。
+
+留白输入为什么按场景点名：它读的是那张图的**布局常量**（农田矩形、出生点、NPC 地点格、
+道具格），这些东西 manor 和 village 一个都不共用。机制（哈希、带宽、避讳规则）在
+`decor_kit` 里共享，输入必须来自场景自己，否则村子的草会撒在山庄的药田里。
 
 幂等：先按 `entity_meta role decor` 把旧的装饰实体整段删掉，再按当前盘上的地表重撒。
 地表本身（`tiles`/`solid`/`tints`）一个字节都不改，所以碰撞、寻路、places 契约不受影响。
 
-依赖：Python 3 标准库 + 同目录 `decor_kit.py`、`terrain_kit.py`、`gen_manor_scene.py`。
+依赖：Python 3 标准库 + 同目录 `decor_kit.py`、`terrain_kit.py`、各场景的生成器。
 """
 
 import argparse
+import importlib
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import building_kit as bk  # noqa: E402  "哪一行是地表"与场景键的唯一判法
 import decor_kit as dk  # noqa: E402
-import gen_manor_scene as gm  # noqa: E402  留白输入与地表布局常量的定义处
 import terrain_kit as tk  # noqa: E402
 
 DECOR_ROLE = "decor"
+
+# 场景键 -> 持有那张图布局常量的生成器模块（它必须导出 `decor_reserved()`）。
+# 没登记就红：留白输入静默变成空集，画面照样出图，只是草撒到 NPC 门口。
+RESERVED_BY_SCENE = {
+    "manor": "gen_manor_scene",
+    "village": "gen_village_scene",
+}
+
+
+def reserved_provider(scene):
+    """取这张图的 `decor_reserved()`（返回 (硬留白格集, 只挡中景的格集)）。"""
+    module_name = RESERVED_BY_SCENE.get(scene)
+    if module_name is None:
+        raise SystemExit(f"[FAIL] `set_scatter_decor.RESERVED_BY_SCENE` 里没有场景 {scene!r}："
+                         f"请登记它的生成器模块（那张图的留白输入没有别的来源）")
+    return importlib.import_module(module_name).decor_reserved
 
 
 def parse_fields(value):
@@ -39,17 +60,9 @@ def parse_fields(value):
 
 
 def read_ground(lines):
-    """从盘上场景里取地表层：返回 (行号, 字段表, cells, solid, tints)。"""
-    hits = []
-    for index, line in enumerate(lines):
-        fields = line.split("\t")
-        if len(fields) == 4 and fields[0] == "component" and fields[2] == "Tilemap" \
-                and f"texture={gm.GROUND_TEXTURE}" in fields[3]:
-            hits.append((index, fields))
-    if len(hits) != 1:
-        raise SystemExit(f"[FAIL] 期望恰好一条 {gm.GROUND_TEXTURE} 的 Tilemap，实到 {len(hits)} 条")
-    index, fields_line = hits[0]
-    parsed = parse_fields(fields_line[3])
+    """从盘上场景里取地表层：返回 (行号, 字段表, cells, solid, tints, width, height)。"""
+    index, parts = bk.ground_line(lines)
+    parsed = parse_fields(parts[3])
     fmt = int(parsed.get("tiles_format", "0") or 0)
     raw = parsed["tiles"]
     cells = [int(ch) for ch in raw] if fmt == 0 else [int(p) for p in raw.split(",") if p.strip()]
@@ -128,19 +141,19 @@ def decor_section(lines):
     ]
 
 
-def check(scene, table):
+def check(scene_path, table):
     """确定性、盘上对拍与**反面对照**三件一起测（plan §验收方式）。
 
     反面对照必须红：换种子之后装饰段内容变了。没有这一条，"逐字节相同"其实可以靠
     "两次都产出空段"或者"只比了行数"蒙过去。
     """
-    with open(scene, encoding="utf-8", newline="") as handle:
+    with open(scene_path, encoding="utf-8", newline="") as handle:
         content = handle.read()
     lines = content.replace("\r\n", "\n").split("\n")
     _, _, cells, solid_str, tints, width, height = read_ground(lines)
     ground = [cells[y * width:(y + 1) * width] for y in range(height)]
     solid = [[int(solid_str[y * width + x]) for x in range(width)] for y in range(height)]
-    exclude, avoid = gm.decor_reserved()
+    exclude, avoid = reserved_provider(bk.scene_name(lines))()
 
     def section_for(seed):
         placements = dk.scatter(width, height, ground, solid, exclude,
@@ -187,13 +200,15 @@ def main():
                         help="只测不改：同种子两次一致、换种子必须变、盘上段与重算逐字节相同")
     args = parser.parse_args()
 
-    table = tk.load_ramp()
-    if args.check:
-        raise SystemExit(check(args.scene, table))
     with open(args.scene, encoding="utf-8", newline="") as handle:
         content = handle.read()
     newline = "\r\n" if "\r\n" in content else "\n"
     lines = content.replace("\r\n", "\n").split("\n")
+    # 装饰贴图的取色按场景的色阶档走，留白输入按场景自己的生成器走，两边都听 `name=` 的。
+    scene = bk.scene_name(lines)
+    table = tk.load_ramp(scene)
+    if args.check:
+        raise SystemExit(check(args.scene, table))
 
     _, _, cells, solid_str, tints, width, height = read_ground(lines)
     ground = [cells[y * width:(y + 1) * width] for y in range(height)]
@@ -201,7 +216,7 @@ def main():
     seed = int(args.seed, 0) if args.seed else dk.DECOR_SEED
 
     lines, removed = strip_decor(lines)
-    exclude, avoid = gm.decor_reserved()
+    exclude, avoid = reserved_provider(scene)()
     placements = dk.scatter(width, height, ground, solid, exclude, seed=seed, mid_avoid=avoid)
     start = next_id(lines)
     lines.extend(dk.decor_lines(start, placements, table,

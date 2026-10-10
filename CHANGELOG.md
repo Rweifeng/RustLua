@@ -5,6 +5,71 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 第二张图照金标规范跑通：云泽村从"6 种平色瓦"变成 102 槽 autotile + 326 件散布（M72-11 ①village）
+
+- **这一包是 M72-11 的第一张**：plan 点名 7 张图，本包按"一张做满再一次 commit"只做满 `village`，
+  剩下 5 张真场景 + `combat_arena` 图集解耦 + `main` 门面逐张另提。§目标 的两条硬约束守住了：
+  **规范一字未改**（`docs/51` / `docs/57` 没动），**引擎逻辑一字未改**（`engine/**` 里只有
+  `examples/jhyt_m72_building_footprint.rs` 这一把尺从"只量 manor"改成逐图量）。
+- **症状**：村庄盘上是 `village_ground.png` 192×32（6 列 ×1 行、整幅拉伸），`.scene` 里 `atlas_cols=6`、
+  `autotile=0` ⇒ 一屏只有 6 种瓦、边界全直线；8 栋建筑的"整块 solid"是手填的；屋顶与本体同层，
+  人走到屋前不会被压住；装饰 0 件。
+- **地表**：重做成 384×288 = 12 列 ×9 行 = 108 槽，前六列族本体语义与山庄逐列对齐，第七列起是
+  6 族 ×17 档 autotile 过渡（寻址 102 槽 ≤ 108，也在 `tiles: Vec<u8>` 的 255 硬上限内）。取色全部走
+  `terrain_ramp.json:scenes.village` 的 `tea_soil / flagstone / plaster / slate` 四族，出图侧
+  "每个不透明像素必须出自表内"那条门因此测得到跨场景串色。盘上 kind 直方图
+  `{墙160 草498 石板192 水38 夯土32}`、per-tile tint 非白 618 格。
+- **碰撞不再手填**：`tools/building_kit.py` 按不透明像素紧包围盒算占地、每轴至少压进 1/4 格（8px）才算
+  覆盖；道具分 `root / box / walk` 三档（石桥是 `walk`——按框标实心等于把唯一的过河通道封死）；门洞按
+  规则挖（牌坊 (19,1)(19,2)、山门 (10,20)，每列最低那格实测不透明占比 0.156 ≤ 0.35）。对拍读数
+  `solid 328 == 应实心 328，缺 0 / 悬空 0`；Rust 侧独立复算同一件事：
+  `jhyt_m72_building_footprint_ok scenes=2 … village(solid=328 buildings=8 splits=7 shadows=12)`。
+- **拆层与后处理**：7 栋拆成本体 `world` + 屋顶 `foreground` 遮断件（配对按**实体名前缀**而不是 role，
+  否则屋檐那几格会被判成"悬空碰撞"而删掉实心，人能走进屋里）、12 件地面投影（够不够格不是名单：总高 ×
+  `shadow_reach 0.12` ≥ ¼ 瓦 ⇒ 村里三栋 64px 矮屋落在门槛外不挂）、326 件确定性散布、4 张四季地表变体，
+  合计 379 个实体。
+- **泛化改到的公共件**（都是"原来只认 manor"的硬编码，不是新机制）：新增 `tools/layer_kit.py` 收
+  `LAYER_SPLITS / OWNER_OF_STEM / split_stem`（原先住在 `gen_manor_art` 而被 interior 两份 import）；
+  `building_kit.SCENES`、`set_scatter_decor.RESERVED_BY_SCENE`、`gen_season_variants` 改成按场景档；
+  `gen_manor_art.tiled_roof` 加 `palette` 参数，山庄一侧不传即逐字节原样。
+- **美术把数据逼着改的五处**（"画着一道门却走不进去"级别，不是口味）：`maps.lua` 的 `village_to_forge`
+  出口格 (26,10)→(27,10)（旧值在铁匠铺自己 8 格占地的**里面**）、`forge_to_village` 落点同格；
+  `places.lua` 三个 NPC 家搬出铺面 solid；山门贴图挪一行让它压上北墙、门洞落到出口格；
+  `village_clinic` (5,14)→(8,14)、`village_gate` (19,2)→(19,3)。
+- **新查出来并写进生成器的契约**：`scripts/world/map_manager.lua:register_exit_target` 给出口
+  `priority = 20`，高于对话/商店的 10，而它的 query **既接受"站在出口格上"也接受"面向的那一格是出口格"**
+  ⇒ 地点格与出口格四邻相邻时，按 E 会被切场景抢走。红法实录：`village_clinic` 贴着 `herb_door` (5,13)
+  放时 `jhyt_m18_stats` 当场报 `mode = "Transition", want "Dialogue"`。现在 `gen_village_scene.py`
+  自检第 6 条对每对 (place, exit) 判曼哈顿距离。
+- **台账里的一条假账就地更正**：`docs/58` §1.3 写"金标地表只有 `manor` 一张、剩下 6 套待 M72-11"，
+  本包之后是**两张**（`manor` + `village`），剩下 5 套仍是旧 6×1；同一张表的 village 行从
+  `6×1 / autotile=0` 改成 `12×9 / autotile=1 / tint 618 格`。村庄文档 `docs/39` 的 §2–§6 整段换代，
+  §5 那张分区表的"地表"列换成盘上实测直方图。
+- **提交前自己抓到的一条落后账**：`set_scatter_decor --check` 报"盘上装饰段与重算不一致：3 行不同"
+  （entity 249 盘上 `Decor_MossPatch`、重算 `Decor_Pebbles`）。散布的输入是 tiles/solid/tints 与留白表，
+  而这些在本包后段都改过，段没跟着重跑 ⇒ 是**派生物落后于产出它的表**。按管线顺序重跑
+  `set_scatter_decor / set_foreground_occluders / set_cast_shadows` 三条 `--apply` 后全绿，读数不变
+  （326 件、窗口 58/94/128）；规矩同时写进 `docs/39` §6 与 plan。
+- **新门与登记**：`tools/scene_readings.py` 是"逐图量化读数"那把尺（同屏可见瓦种类 ≥24、每屏装饰
+  median ≥40；分档表 `MIN_DECOR_OBJECTS` 里没登记的场景**直接红**，工具不替室内猜一个数）。
+  `verify.ps1` 的 Python 段现在对 `manor` + `village` 跑 `building_kit --check` + `scene_readings --gate`，
+  另加村庄那条散布确定性门，`[SKIP]` 文案跟着改成四把尺。
+- **读数**：最坏 20×12 窗口 37 种瓦外观（条目 21 + tint 16，判据 ≥24；manor 是 25）；每屏装饰
+  min/median/max = 58/94/128（manor 7/41/75）；592 个非实心格里 589 可达，进不去 3 格
+  （金标 manor 自己 4 片 11 格，所以这条判的是"与金标持平"）。D5 复核对两图都跑：8 片 ≥24 格同条目
+  满块全落在 tint 读不出来的族上（0.29×~0.45×），详见 plan §D5。
+- **红归因（工作树压着别的包，这一步不能省）**：`git archive HEAD` 的数据 + 本包覆盖层做成 `.temp/mine`
+  全量扫 69 条门，红 8 条；这 8 条对**纯 HEAD** 树逐条复跑**同样全红** ⇒ HEAD=OK 而 MINE=RED 的计数为 0。
+  其中 `jhyt_m31_pc_release` 两侧都是隔离树缺 `builds/pc` 的测台产物缺失，不是产品红；工作树里
+  `jhyt_m17_npc` 的红归另一包的 `examples/game_jhyt/project.toml` 换字体（单文件换根复验判出）。
+  两条隔离树都要额外放一份仓库根 `plugins/`，否则 `jhyt_m72_autotile_mask` ⑧ 与
+  `jhyt_m72_tile_variant_determinism` 会报"读不到 `web-runtime.js` 路径"而不是数据红。
+- **没有做的部分写清**：整屏目验在编辑器 / Web / 微信三个宿主这一轮一次没跑，本包只做到原生 headless 门 +
+  桌面宿主预览图，收口在 M72-12；D5 的根因（抬 `ground_tints` 或让 autotile 分支查 `variant_for`）
+  分别属于**规范**与**引擎**，按 §目标 登记不动手，交 M72-12 裁定要不要回炉 M72-07。
+- **回滚档**：revert 本包即回到旧 6×1 村庄 + 手填 solid；色阶表、散布库、拆层表都在，照 `docs/39` §6
+  那串命令可复现，不需要手工回滚二进制。
+
 ## Unreleased — 把"当时绿"和"现在绿"分开：9 份台账/规范回写实测读数，更正三处被当现状读的历史快照（M72-13）
 
 - **症状**：M72 一到九每包都留下了自己的读数，但没有一处负责把它们收回文档。于是同一个数字在

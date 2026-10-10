@@ -43,7 +43,7 @@ from gen_manor_art import (  # noqa: E402
     TILE_ROOF_DARK, TILE_ROOF_LIGHT, WATER, WOOD, WOOD_DARK, WOOD_LIGHT, WOOD_MID,
     fill_ellipse, lattice_window, roof_rows, tiled_roof, wood_post,
 )
-from gen_manor_art import LAYER_SPLITS, OWNER_OF_STEM, split_stem  # noqa: E402  M72-07 拆层表
+from layer_kit import split_stem, stems_of  # noqa: E402  M72-06/11 拆层表（住在 layer_kit）
 from cjk_text import draw_cjk, prewarm, text_canvas  # noqa: E402
 
 TILE_DIR = os.path.join("assets", "art", "tilesets")
@@ -717,9 +717,9 @@ def build_sprite_preview(entries, title, scale=2, cols=4):
 
 
 # 本文件画的整图里需要拆层的那几张（M72-07：五座可建造建筑分 body/roof）。地基与脚手架
-# 没有顶，不在这张表里。**切点行号只写在 `gen_manor_art.LAYER_SPLITS` 一处**，
+# 没有顶，不在这张表里。**切点行号只写在 `layer_kit.LAYER_SPLITS` 一处**，
 # 本文件只负责"画完整图就立刻重切自己的分块"。
-BUILD_STEMS = tuple(stem for stem in LAYER_SPLITS if OWNER_OF_STEM[stem] == "gen_interior_art")
+BUILD_STEMS = stems_of("gen_interior_art")
 
 
 def generate(quiet=False):

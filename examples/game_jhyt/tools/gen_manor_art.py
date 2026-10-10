@@ -47,9 +47,12 @@ from pixel_kit import (  # noqa: E402  (path 插入后才能 import)
     rgb,
     shade,
     text_width,
+    write_png,
 )
 from cjk_text import draw_plaque, prewarm  # noqa: E402  中文匾额（GDI+ 栅格化）
 from light_kit import grade_toward_light, lit_sides  # noqa: E402  M72-07：贴图明暗只认 lighting.lua 的 sun
+import layer_kit as layers  # noqa: E402  M72-06/11：拆层登记表（LAYER_SPLITS）与切块机器
+from layer_kit import BUILDING_DIR, PROP_DIR, check_splits, write_splits  # noqa: E402
 import terrain_kit as tk  # noqa: E402  M72-04 色阶表：地表五族 + 通用四色的唯一口径
 
 TILE = 32
@@ -184,28 +187,33 @@ def roof_rows(top_y, bottom_y, top_x0, top_x1, bottom_x0, bottom_x1):
     return rows
 
 
-def tiled_roof(canvas, polygon_rows, column=16):
+def tiled_roof(canvas, polygon_rows, column=16, palette=None):
     """按行填充瓦面：polygon_rows = [(y, x0, x1), ...]（梯形），再叠瓦垄竖纹。
 
     瓦垄必须沿坡面从正脊连到檐口，所以按"上沿列位置 → 下沿列位置"做线性插值画线；
     直接按行取模画竖线会得到斜网格（试过，像席子不像瓦顶）。
+
+    `palette` 是 (瓦面, 高光, 暗部) 三档（M72-11 加）：默认取山庄的 `roof` 族，村庄的屋宇
+    传自己的 `slate` 族。以前这里写死山庄三档，于是村庄的屋顶是山庄青瓦、正脊与檐口是
+    村庄黛瓦——**同一张图里两种瓦**，而"黛瓦"这个材质在色阶表里只有一个族。参数化之后
+    山庄一侧不传就是原样（逐字节相同），村庄一侧和图集院墙压顶同色。
     """
+    base, light, dark = palette if palette else (TILE_ROOF, TILE_ROOF_LIGHT, TILE_ROOF_DARK)
     for y, x0, x1 in polygon_rows:
-        canvas.hline(x0, x1, y, TILE_ROOF)
+        canvas.hline(x0, x1, y, base)
     for index, (y, x0, x1) in enumerate(polygon_rows):
         phase = index % 3
         if phase == 0:
-            canvas.hline(x0, x1, y, TILE_ROOF_LIGHT)
+            canvas.hline(x0, x1, y, light)
         elif phase == 2:
-            canvas.hline(x0, x1, y, shade(TILE_ROOF, 0.92))
+            canvas.hline(x0, x1, y, shade(base, 0.92))
     if not polygon_rows:
         return
     top_y, top_x0, top_x1 = polygon_rows[0]
     bottom_y, bottom_x0, bottom_x1 = polygon_rows[-1]
     count = max(2, (top_x1 - top_x0) // column)
     steps = max(1, bottom_y - top_y)
-    near, far = ((TILE_ROOF_LIGHT, TILE_ROOF_DARK) if lit_sides()["left"]
-                 else (TILE_ROOF_DARK, TILE_ROOF_LIGHT))
+    near, far = ((light, dark) if lit_sides()["left"] else (dark, light))
     for k in range(1, count):
         t = k / count
         x_top = top_x0 + (top_x1 - top_x0) * t
@@ -526,128 +534,11 @@ def buildings():
 # ---------------------------------------------------------------------------
 
 TILE_DIR = os.path.join("assets", "art", "tilesets", "manor")
-BUILDING_DIR = os.path.join("assets", "art", "buildings")
-PROP_DIR = os.path.join("assets", "art", "props")
 
-# ---------------------------------------------------------------------------
-# M72-06 拆两层：落地那一截留 `world`，上半张挂 `foreground` 当遮断物
-# ---------------------------------------------------------------------------
-# 行号是**图像行**（0 = 顶行）。世界 +y 朝上 ⇒ 顶行是世界最高处，所以"上半张"的
-# Transform y = 本体 y + 本体高，两块共用同一个 x 原点。
-# 切点不是美学选择，两处各有实测出处：
-#   * 老树：切在第 39/40 行之间（树冠 = 顶 40 行）。**这一条是遮挡门量出来的**：树冠每多
-#     带走一行，玩家可达位置里的最大覆盖率就往上涨（§④ 扫窗实测：顶 40 行 → 0.604、
-#     顶 57 行 → 0.861，见 `lighting.occlusion.max_cover_ratio` 的那一段；0.604 是脚下接触
-#     阴影改成"镜像后盖章"（C-1）之后重量的，0.861 是当时那一档的读数、未在新画法下复测，
-#     两者不同基线但差值量级（≈0.26）不受这一档漂移影响）。57 行那一档
-#     切在"侧叶团下沿 + 树干顶 3 行"，按行拼回去最干净，但画面上人在树冠里只剩一条边；
-#     反过来 26 行读成"人站在树前面"。三档渲染出来对着看取的是中间那档：露腿、头在树后。
-#     代价只有两块分块 PNG 与 `manor.scene` 里那 5 件实体——整张 `manor_tree.png` 一个字节
-#     没动，所以引用整图的 village / combat_arena 不受影响。
-#   * 正房：檐口那一条是 `rect(6, 118, 217, 126)`，第 126 行是檐底；切在 127 ⇒
-#     屋顶整块（正脊、鸱吻、出挑檐口）进 foreground，墙身+台基留 world。这条没被覆盖率
-#     判过死刑：屋顶最深 0.307，是全场第二浅的一处。
-#   * 柴房（M72-07）：檐口那条暗边是 `hline(6, 154, 68)`，切在 69 ⇒ 茅草顶进 foreground、
-#     木板墙+柴堆+台基留 world。
-#   * 五座可建造建筑（M72-07）：切点是 `gen_interior_art.buildable()` 的**匾下沿**。那条函数
-#     里 `roof_bottom = max(18, int(height * 0.46))`，匾占 `roof_bottom-2 .. roof_bottom+13`，
-#     所以最后一行屋顶 = `roof_bottom + 13`：屋檐带、正脊、**整块匾额**进 foreground，
-#     门/窗/柱/台基留 world。切在匾中间会把一块匾按行劈成两半（画面上是匾缺一道），
-#     切在檐底 (roof_bottom+2) 又会让匾留在 world、压不住站在匾前的人。
-#     这两个数是**抄来的**（一处写死在表里、一处在画图的函数里），漂移的兜底就是下面那条
-#     逐字节等式：`buildable()` 改了高度或匾的位置，整图变而分块没变 ⇒ 门当场红。
-# **两块的重叠带**：无论切在哪，两块都是原图**按行切开**的，所以有一条恒可判的等式：
-#   **两块按行拼回去 == 原图逐字节**（见 check()，门 §③ 是它的第二份独立实现）。
-# **为什么前景块用 `foreground` 而不是按 Y 折进 actor 带**：折 Y 要给每张静态美术
-# 各配一份"按脚位算 order"的运行期逻辑（见 `scripts/world/depth.lua` 只做 actor），
-# 而本包要的是"树冠/屋顶能压住人"这一条最小可画面效果。代价是可量化的：玩家站在
-# 树的**南侧**（本该在人前面）时也会被树冠压到一块——这条由遮挡门按
-# `lighting.lua` 的 `occlusion.max_cover_ratio` 钉住上限，不是靠目测放行。
-# **键是整图的文件名（stem）**，不是简称：`build_*` 那五张归 `gen_interior_art.py` 画，
-# 但切点与拆层规则只有这一张表——谁画整图谁就调 `split_stem()` 重切自己的分块。
-LAYER_SPLITS = {
-    "manor_tree": (PROP_DIR, (("canopy", 0, 39), ("trunk", 40, 87))),
-    "manor_house": (BUILDING_DIR, (("roof", 0, 126), ("body", 127, 223))),
-    "manor_shed": (BUILDING_DIR, (("roof", 0, 68), ("body", 69, 127))),
-    "build_herb_hut": (BUILDING_DIR, (("roof", 0, 64), ("body", 65, 111))),
-    "build_training_hall": (BUILDING_DIR, (("roof", 0, 68), ("body", 69, 119))),
-    "build_storehouse": (BUILDING_DIR, (("roof", 0, 64), ("body", 65, 111))),
-    "build_tea_shed": (BUILDING_DIR, (("roof", 0, 57), ("body", 58, 95))),
-    "build_forge_stand": (BUILDING_DIR, (("roof", 0, 60), ("body", 61, 103))),
-}
-
-# 遮断实体的名字后缀（也是门侧认"哪块是遮断物"的标识）。树是"冠"，其余都是"顶"。
-OCCLOUDER_SUFFIX = {"manor_tree": "Canopy"}
-
-# 谁画整图，谁就在自己收尾时重切那张图的分块：`build_*` 归 `gen_interior_art.py`，
-# 其余归本文件。分块只有一个来源（这张表）、一个动作（`split_stem`），不存在"另一套行号"。
-OWNER_OF_STEM = {stem: ("gen_interior_art" if stem.startswith("build_") else "gen_manor_art")
-                 for stem in LAYER_SPLITS}
-MANOR_STEMS = tuple(stem for stem in LAYER_SPLITS if OWNER_OF_STEM[stem] == "gen_manor_art")
-
-
-def occluder_suffix(stem):
-    return OCCLOUDER_SUFFIX.get(stem, "Roof")
-
-
-def split_paths(stem):
-    """`<stem>_<part>.png` 的两块（top, bottom）——门侧与工具侧都从这里取切点，
-    所以"场景里那两个实体"和"盘上那两张图"不可能各按一套行号切。"""
-    out = []
-    directory, parts = LAYER_SPLITS[stem]
-    for part, y0, y1 in parts:
-        out.append((os.path.join(directory, f"{stem}_{part}.png"), y0, y1))
-    return out
-
-
-def full_path(stem):
-    directory, _parts = LAYER_SPLITS[stem]
-    return os.path.join(directory, f"{stem}.png")
-
-
-def split_stem(stem):
-    """从**盘上的整图**按行切出分块并写盘。返回 `[(path, 行数)]`。
-
-    为什么从盘上读而不是从内存里的 Canvas 读：`build_*` 那五张由 `gen_interior_art.py` 画，
-    本模块拿不到它们的 Canvas；而"整图 → 分块"这一步本来就只需要那三行行号。从盘上读还
-    白送一条保证：分块与整图同源同刻，不会出现"用旧内存对象切、盘上却是新图"。
-    """
-    from pixel_kit import decode_png, load_canvas
-
-    pieces = split_paths(stem)
-    path = full_path(stem)
-    if not os.path.exists(path):
-        raise SystemExit(f"[FAIL] 整图 {path} 不在：分块无从切起（先跑产出它的那个生成器）")
-    width, height, _channels, _raw = decode_png(path)
-    # 切点必须铺满整图：留一行空白就是"拼回去少一行"，画面上是树冠比树干高一截。
-    if pieces[0][1] != 0 or pieces[-1][2] != height - 1 \
-            or any(pieces[i][2] + 1 != pieces[i + 1][1] for i in range(len(pieces) - 1)):
-        raise SystemExit(f"[FAIL] manor_{stem} 切分没铺满 0..{height - 1}：{pieces}")
-    canvas = load_canvas(path)
-    written = []
-    for piece_path, y0, y1 in pieces:
-        write_png(piece_path, canvas.sliced(0, y0, width - 1, y1))
-        written.append((piece_path, y1 - y0 + 1))
-    return written
-
-
-def write_splits(stems):
-    """把拆层块写盘。**原图继续保留并继续被使用**：`village.scene` 与
-    `combat_arena.scene` 还在引用整张 `manor_tree.png`，删掉就是那两张图缺文件；
-    `data/buildings.lua` 的 `levels[].sprite` 引用的也是整张 `build_*.png`（建造模式摆出来的
-    房子仍是一件），所以本包一张图都没删。而两块本来就由整图按行切出，同源 ⇒ 不会漂移。
-    """
-    out = []
-    for stem in sorted(stems):
-        for path, rows in split_stem(stem):
-            out.append((stem, path, rows))
-    return out
-
-
-def write_png(path, canvas):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as handle:
-        handle.write(canvas.to_png())
+# 拆层（前景遮断）的登记表与切块机器自 M72-11 起住在 `layer_kit.py`：那张表从一开始就是
+# **全项目的表**（键是整图 stem、值带目录，`build_*` 与村庄的屋宇同在一张表里），继续留在
+# 山庄的美术生成器里，后面六张图就会往"manor"这个文件名里塞别人的资产。这里只 import。
+MANOR_STEMS = layers.stems_of("gen_manor_art")
 
 
 def build_prop_preview(sprites, scale=2):
@@ -698,44 +589,6 @@ def generate(quiet=False):
         for stem, path, rows in splits:
             print(f"split    {path} {rows} 行（{stem} 按行切出）")
         print(f"preview  {BUILDING_DIR}/_preview.png")
-
-
-def check_splits(stems=None):
-    """拆层对拍：两块按行拼回去必须与原图**逐字节相同**。
-
-    为什么值得一条等式而不是"两张都在"：拆层的承诺是"画面一个像素不变，只是多了一条
-    遮挡带"。若之后只改了原图（调色、加一层叶）而忘了重切，盘上就同时存在两套行——
-    画面上是"树冠比树干宽一圈"或"屋顶浮在半空"，而两张图各自都"存在且尺寸合法"，
-    任何按文件存在性判的门都测不出来。
-
-    `stems=None` 查**整张表**（含 `build_*` 那五张）：所以只跑本文件的 `--check` 也覆盖得到
-    别人画的那几张图，不必两个生成器都跑过一遍才敢说分块没漂。
-    """
-    from pixel_kit import decode_png
-
-    issues = []
-    for stem in sorted(stems if stems is not None else LAYER_SPLITS):
-        original = full_path(stem)
-        if not os.path.exists(original):
-            issues.append("missing " + original)
-            continue
-        width, height, _, buffer = decode_png(original)
-        rebuilt = bytearray(height * width * 4)
-        for path, y0, y1 in split_paths(stem):
-            if not os.path.exists(path):
-                issues.append(f"missing {path}（跑一次 tools/{OWNER_OF_STEM[stem]}.py）")
-                continue
-            piece_w, piece_h, _, piece = decode_png(path)
-            if (piece_w, piece_h) != (width, y1 - y0 + 1):
-                issues.append(f"{path}: {piece_w}x{piece_h} != {width}x{y1 - y0 + 1}"
-                              "（拆层只切行：宽度与 x 原点不变，两块才共用同一个 Transform.x）")
-                continue
-            start = y0 * width * 4
-            rebuilt[start:start + len(piece)] = piece
-        if bytes(rebuilt) != bytes(buffer):
-            diff = sum(1 for a, b in zip(rebuilt, buffer) if a != b)
-            issues.append(f"{stem}: 两块拼回去与原图差 {diff} 字节——原图改过而拆层没重切")
-    return issues
 
 
 def check():

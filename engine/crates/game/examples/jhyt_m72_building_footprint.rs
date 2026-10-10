@@ -1,4 +1,4 @@
-//! Headless acceptance drive for M72-07：**多格建筑的占地、门洞与拆层不变量**。
+//! Headless acceptance drive for M72-07：**多格建筑的占地、门洞与拆层不变量**（M72-11 起逐图跑）。
 //!
 //! 这一包要消灭的症状是"看得见的是墙脚、看不见的是空气"：建筑贴图是 224×224 的一大张，
 //! 而 quad 是矩形、屋顶是梯形、檐口是斜的——**按框标实心**就会在屋外两步远的地方撞空气，
@@ -8,38 +8,38 @@
 //! > 或者有一个 sprite 的**不透明像素**压在上面；建筑还要把**同名拆层屋顶件**并进并集，
 //! > 再挖掉**门洞**。（2026-10-09 裁定：本体∪屋顶并集实心，屋顶那几格反过来也必须实心。）
 //!
-//! `tools/building_kit.py` 是这条规则的实现，`python tools/building_kit.py scenes/manor.scene
-//! --check` 已经在 verify 的 Python 段里跑。本门是它的**第二份独立实现**：门不 import Python，
-//! 自己解 `.scene` 文本、自己解 PNG 的 alpha 通道、自己算紧包围盒。两份算法都说"缺 0 悬空 0"
-//! 才算成立——只有一份实现时，"对拍"对的是它自己。
+//! `tools/building_kit.py` 是这条规则的实现，`python tools/building_kit.py scenes/<图>.scene
+//! --check` 已经在 verify 的 Python 段里跑（山庄、云泽村各一条）。本门是它的**第二份独立实现**：
+//! 门不 import Python，自己解 `.scene` 文本、自己解 PNG 的 alpha 通道、自己算紧包围盒。
+//! 两份算法都说"缺 0 悬空 0"才算成立——只有一份实现时，"对拍"对的是它自己。
 //!
 //! 章节：
 //!   ① 每格实心都有可视依据：门复算的应实心格集必须与盘上 `solid` 串**逐格相同**
 //!      （缺=0、悬空=0），并报出每栋的视觉格数/实心格数/门洞/拆层件。
 //!      两条反面对照走同一个函数：把一件道具的占地从"单格根碰撞"换成**整个 quad 框**
-//!      必须报出悬空格并点名（这条落在东南那丛竹子上——盘上 10 栋建筑的框与不透明紧包围盒
-//!      逐格相同，贴图都铺满了画框，拿房子做这条对照是空转）；把同名拆层屋顶件从
-//!      并集里摘掉必须报出缺碰撞并点名屋檐格。
+//!      必须报出悬空格并点名（落点逐图点名，见 `Scene::quad_probe`——山庄是东南那丛竹子、
+//!      村里是石桥：两者都是"框里有格画的是能走过去的东西"；拿贴图铺满画框的房子做这条
+//!      对照是空转）；把同名拆层屋顶件从并集里摘掉必须报出缺碰撞并点名屋檐格。
 //!   ② 拆层不变量：每栋建筑占地必须跨多格（≥4），且**拆层前后占地逐格相同**——
 //!      用整图（未拆层）算的格集必须等于"本体∪屋顶"算的格集。这条是拆层这件事
 //!      没有偷偷改变玩法的唯一证据：画面换了、碰撞没换。
 //!   ③ 门洞：声明的洞格必须**不在 solid 里**、贴图在那一格上**真是洞**（不透明占比
 //!      ≤ `HOLE_MAX_OPAQUE_RATIO`），并且从出生点按 4 邻域 BFS **走得到**。
 //!      反面对照：把洞填成实心，可达性必须当场断掉。
-//!   ④ 投影贴片：每栋有体量的建筑都必须挂一件 `<名字>Shadow`（`role=cast_shadow`），
-//!      且画在本体之下；不够格的（`BuildFoundation` 是平地基）必须**没有**——只查前者
-//!      等于允许"给每样东西都糊一块灰"过关。
+//!   ④ 投影贴片：每栋**够格**的建筑都必须挂一件 `<名字>Shadow`（`role=cast_shadow`），
+//!      且画在本体之下；不够格的必须**没有**——只查前者等于允许"给每样东西都糊一块灰"过关。
+//!      "够格"不是名单而是 `lighting.lua` 的两个数（总高 × `shadow_reach` ≥
+//!      `cast_shadow.min_reach_units`），所以山庄的平地基与村里三栋 64px 矮屋走同一条判据。
 //!   ⑤ 运行期对拍：引擎读回来的 `tilemap.is_solid` 位图必须与盘上 `solid` 串逐格相同。
 //!      前四节全在查文件，这一节查"引擎认的是同一张表"——`solid` 同时是物理世界
 //!      （`scene_spawn.rs` 的 `solid_cell_colliders` 每个实心格挂一个静态 cuboid）。
+//!      跑哪几张图由 `SCENES` 表决定（M72-11 铺量时逐图往里加），每张都从门面切过去，
+//!      所以 §⑤ 对的是"引擎真把那张图装进了世界"。
 //!
 //! 用法：
 //!   cargo run --quiet -p game --example jhyt_m72_building_footprint [-- <game_jhyt-root>]
 
-use engine::{
-    core::input::InputSnapshot,
-    host::RuntimeScene,
-};
+use engine::{core::input::InputSnapshot, host::RuntimeScene};
 use image::RgbaImage;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -51,11 +51,9 @@ const VIEW_W: u32 = 1280;
 const VIEW_H: u32 = 720;
 const DT: f32 = 1.0 / 60.0;
 
-const SCENE: &str = "scenes/manor.scene";
-const GROUND_TEXTURE: &str = "assets/art/tilesets/manor/manor_ground.png";
 const TILE: f64 = 32.0;
 
-/// 地表 kind（与 `terrain_ramp.json`、`gen_manor_scene.py` 的列映射同序号）。
+/// 地表 kind（与 `terrain_ramp.json` 的序号一致，七张图共用同一套 kind 语义位）。
 const WALL_KIND: i32 = 4;
 const WATER_KIND: i32 = 6;
 
@@ -65,24 +63,23 @@ const ROOT_ROLE: &str = "prop";
 const SHADOW_ROLE: &str = "cast_shadow";
 const OCCLUDER_LAYER: &str = "foreground";
 
-/// 门洞（`building_kit.OPENINGS` 的手抄副本）：实体名 + 绝对 cell。
-/// 只有南门有洞——它是 `data/maps.lua` 山庄→云泽村出口格 (16,1) 所在。
-const OPENINGS: &[(&str, i32, i32)] = &[("ManorGate", 16, 1), ("ManorGate", 16, 2)];
 /// 声明为洞的格上贴图不透明占比的上限。口径同 `building_kit`：**只查每列最低那一格**
 /// （人站着穿过的那格），它上面那格是屋檐/匾额，本来就该画满。
 const HOLE_MAX_OPAQUE_RATIO: f64 = 0.35;
-/// 出生点 cell（`data/maps.lua` 的 main.spawn，与 `gen_manor_scene.SPAWN` 同源）。
-const SPAWN_CELL: (i32, i32) = (16, 3);
 
 /// 一栋建筑"算多格"的下界。盘上最小的读数 ManorGate = 7 格，4 已经能挡住
 /// "整栋只标锚点那一格"的旧写法，又不会把将来真要做的小亭子判死。
 const MIN_BUILDING_CELLS: usize = 4;
 
-/// 横着占两格的道具（`building_kit.PROP_COLLISION` 的手抄副本）：只标锚点会让另一半
-/// "看得见却穿得过"。
-const BOX_PROPS: [&str; 2] = ["ManorFence", "ManorRack"];
+/// "压进一格"的门槛：每轴至少 1/4 格（8px）。口径同 `building_kit.MIN_CELL_OVERLAP`——
+/// 道具贴图的高宽普遍不是 32 的整数倍，而遮罩描边让紧框比实体多出 1 行像素，那 1 行
+/// 落在相邻格里只占 1/32 高。按"有交集就算"会为这一像素把整格街面判成实心。
+const MIN_CELL_OVERLAP: f64 = TILE / 4.0;
 
-/// 拆层表（`gen_manor_art.LAYER_SPLITS` 的手抄副本）：`(本体实体, 遮断件实体, 整图)`。
+/// 4 邻域偏移（§③ 的 BFS 与"往洞外挪一格起算"共用）。
+const NEIGHBOURS: [(i32, i32); 4] = [(0, 1), (0, -1), (1, 0), (-1, 0)];
+
+/// 拆层表（`layer_kit.LAYER_SPLITS` 的手抄副本）：`(本体实体, 遮断件实体, 整图)`。
 /// 整图路径是 §② 的唯一输入——没有它就没法问"拆层之前那一栋占的是哪几格"。
 struct Split {
     base: &'static str,
@@ -90,43 +87,146 @@ struct Split {
     full: &'static str,
 }
 
-const SPLITS: &[Split] = &[
-    Split {
-        base: "ManorHouse",
-        occluder: "ManorHouseRoof",
-        full: "assets/art/buildings/manor_house.png",
-    },
-    Split {
-        base: "ManorShed",
-        occluder: "ManorShedRoof",
-        full: "assets/art/buildings/manor_shed.png",
-    },
-    Split {
-        base: "BuildTrainingHall",
-        occluder: "BuildTrainingHallRoof",
-        full: "assets/art/buildings/build_training_hall.png",
-    },
-    Split {
-        base: "BuildStorehouse",
-        occluder: "BuildStorehouseRoof",
-        full: "assets/art/buildings/build_storehouse.png",
-    },
-    Split {
-        base: "BuildHerbHut",
-        occluder: "BuildHerbHutRoof",
-        full: "assets/art/buildings/build_herb_hut.png",
-    },
-    Split {
-        base: "BuildTeaShed",
-        occluder: "BuildTeaShedRoof",
-        full: "assets/art/buildings/build_tea_shed.png",
-    },
-    Split {
-        base: "BuildForgeStand",
-        occluder: "BuildForgeStandRoof",
-        full: "assets/art/buildings/build_forge_stand.png",
-    },
-];
+/// **一张图一档**：本门从 M72-07 的"只管山庄"泛化成"逐图跑同一套判据"。
+/// 表里每一条都能在 `building_kit.SCENES` / `layer_kit.LAYER_SPLITS` / `data/maps.lua`
+/// 找到出处——**这里手抄一份是故意的**：门与工具两份实现逐格相同才算成立，
+/// 只有一份实现时"对拍"对的是它自己（M72-07 的裁定，铺量时继续有效）。
+struct Scene {
+    name: &'static str,
+    file: &'static str,
+    ground_texture: &'static str,
+    /// 出生点 cell（`data/maps.lua` 的 `<name>.spawn`）：§③ 的可达性从这里起算。
+    spawn: (i32, i32),
+    /// 门洞（`building_kit.SCENES[name].openings`）：实体名 + 绝对 cell。
+    openings: &'static [(&'static str, i32, i32)],
+    /// 横着占多格的道具（同表 `prop_collision` 的 `box`）：只标锚点会让另一半
+    /// "看得见却穿得过"。
+    box_props: &'static [&'static str],
+    /// 可走的道具（同表 `prop_collision` 的 `walk`）：一格都不许标实心。
+    walk_props: &'static [&'static str],
+    /// 反面对照 A 的落点：一件"按 quad 框算会多出不该实心的格"的道具（各图不同，
+    /// 山庄是竹梢、村里是石桥——见各自那条注释）。
+    quad_probe: &'static str,
+    splits: &'static [Split],
+}
+
+const MANOR: Scene = Scene {
+    name: "manor",
+    file: "scenes/manor.scene",
+    ground_texture: "assets/art/tilesets/manor/manor_ground.png",
+    // `data/maps.lua` 的 main.spawn，与 `gen_manor_scene.SPAWN` 同源。
+    spawn: (16, 3),
+    // 南门那两个洞是 `maps.lua` 山庄→云泽村出口格 (16,1) 所在。
+    openings: &[("ManorGate", 16, 1), ("ManorGate", 16, 2)],
+    box_props: &["ManorFence", "ManorRack"],
+    walk_props: &[],
+    // 竹按"单格根碰撞"只标根那一格，按框标就把竹梢那几格也标成墙，而竹梢是 M72-06
+    // 的遮断件（画在前景、玩家本来就该从竹子底下走过去）。
+    quad_probe: "ManorBambooSoutheast",
+    splits: &[
+        Split {
+            base: "ManorHouse",
+            occluder: "ManorHouseRoof",
+            full: "assets/art/buildings/manor_house.png",
+        },
+        Split {
+            base: "ManorShed",
+            occluder: "ManorShedRoof",
+            full: "assets/art/buildings/manor_shed.png",
+        },
+        Split {
+            base: "BuildTrainingHall",
+            occluder: "BuildTrainingHallRoof",
+            full: "assets/art/buildings/build_training_hall.png",
+        },
+        Split {
+            base: "BuildStorehouse",
+            occluder: "BuildStorehouseRoof",
+            full: "assets/art/buildings/build_storehouse.png",
+        },
+        Split {
+            base: "BuildHerbHut",
+            occluder: "BuildHerbHutRoof",
+            full: "assets/art/buildings/build_herb_hut.png",
+        },
+        Split {
+            base: "BuildTeaShed",
+            occluder: "BuildTeaShedRoof",
+            full: "assets/art/buildings/build_tea_shed.png",
+        },
+        Split {
+            base: "BuildForgeStand",
+            occluder: "BuildForgeStandRoof",
+            full: "assets/art/buildings/build_forge_stand.png",
+        },
+    ],
+};
+
+const VILLAGE: Scene = Scene {
+    name: "village",
+    file: "scenes/village.scene",
+    ground_texture: "assets/art/tilesets/village/village_ground.png",
+    // `data/maps.lua` 的 village.spawn：南门内那一格，也就是村↔山庄的落点。
+    spawn: (19, 2),
+    // 南门 (19,1)(19,2) = 村↔山庄出口；山门 (10,20) = 村↔青云山出口。山门那条按
+    // **数据侧的出口格**放：128×96 的门楼压 x9..12 三行，只有最底一行实测是洞。
+    openings: &[
+        ("VillageGate", 19, 1),
+        ("VillageGate", 19, 2),
+        ("VillageMountainGate", 10, 20),
+    ],
+    box_props: &[
+        "VillageStallA",
+        "VillageStallB",
+        "VillageRockA",
+        "VillageRockB",
+        "VillageMountainGate",
+    ],
+    // 石桥是过河的唯一通道（溪水 y16..17 只在 x24..25 断开）：标成实心就把村北封死。
+    walk_props: &["VillageBridge"],
+    // 村里这条落在石桥上：桥面 64×64 按框标会连标四格，而那四格是**能走的**，
+    // 其中两格还落在溪水里——按视觉外框标实心会把唯一的过河通道变成一堵桥。
+    quad_probe: "VillageBridge",
+    splits: &[
+        Split {
+            base: "VillageClinic",
+            occluder: "VillageClinicRoof",
+            full: "assets/art/buildings/village_clinic.png",
+        },
+        Split {
+            base: "VillageShop",
+            occluder: "VillageShopRoof",
+            full: "assets/art/buildings/village_shop.png",
+        },
+        Split {
+            base: "VillageForge",
+            occluder: "VillageForgeRoof",
+            full: "assets/art/buildings/village_forge.png",
+        },
+        Split {
+            base: "VillageTeaStall",
+            occluder: "VillageTeaStallRoof",
+            full: "assets/art/buildings/village_teastall.png",
+        },
+        Split {
+            base: "VillageHouseA",
+            occluder: "VillageHouseARoof",
+            full: "assets/art/buildings/village_house_a.png",
+        },
+        Split {
+            base: "VillageHouseB",
+            occluder: "VillageHouseBRoof",
+            full: "assets/art/buildings/village_house_b.png",
+        },
+        Split {
+            base: "VillageShrine",
+            occluder: "VillageShrineRoof",
+            full: "assets/art/buildings/village_shrine.png",
+        },
+    ],
+};
+
+const SCENES: &[Scene] = &[MANOR, VILLAGE];
 
 /// 场景里一个 sprite 实体的门侧视图。
 #[derive(Clone, Debug)]
@@ -158,6 +258,15 @@ const RULE_REAL: Rule = Rule {
     ignore_mates: false,
 };
 
+/// 一张图跑完的读数，用于末尾那行汇总。
+struct Tally {
+    scene: &'static str,
+    solid: usize,
+    buildings: usize,
+    splits: usize,
+    shadows: usize,
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args()
         .nth(1)
@@ -167,14 +276,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());
     }
-    let sprites = read_scene(&project.join(SCENE))?;
-    let ground = read_ground(&project.join(SCENE))?;
+    let light = lighting(&project)?;
+    let mut tallies = Vec::new();
+    for scene in SCENES {
+        banner(&format!("{} —— {}", scene.name, scene.file));
+        // 判据**内建反面对照**：每条正向断言都配一条"改坏它必须报红"的对照，
+        // 所以任何一条失手都要当场点名，而不是留到肉眼比读数。
+        match check_scene(&project, scene, &light) {
+            Ok(tally) => tallies.push(tally),
+            Err(error) => {
+                eprintln!(
+                    "\njhyt_m72_building_footprint_failed scene={}\n{error}",
+                    scene.name
+                );
+                return Err(error);
+            }
+        }
+    }
+    for tally in &tallies {
+        println!(
+            "  {:<8} solid {:>3} 格  建筑 {:>2} 栋  拆层 {:>2} 栋  投影 {:>2} 件",
+            tally.scene, tally.solid, tally.buildings, tally.splits, tally.shadows
+        );
+    }
+    println!(
+        "\njhyt_m72_building_footprint_ok scenes={} {}",
+        tallies.len(),
+        tallies
+            .iter()
+            .map(|t| format!(
+                "{}(solid={} buildings={} splits={} shadows={})",
+                t.scene, t.solid, t.buildings, t.splits, t.shadows
+            ))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    Ok(())
+}
+
+fn check_scene(
+    project: &Path,
+    scene: &Scene,
+    light: &Light,
+) -> Result<Tally, Box<dyn std::error::Error>> {
+    let sprites = read_scene(&project.join(scene.file))?;
+    let ground = read_ground(&project.join(scene.file), scene.ground_texture)?;
 
     banner("① 每格实心都有可视依据：门复算 vs 盘上 solid 串");
-    let (want, readings) = footprint(&project, &sprites, &ground, RULE_REAL)?;
+    let (want, readings) = footprint(project, scene, &sprites, &ground, RULE_REAL)?;
     for reading in &readings {
         println!(
-            "   {:<20} 视觉 {:>3} 格 实心 {:>3} 格 门洞 {:<10}{}",
+            "   {:<22} 视觉 {:>3} 格 实心 {:>3} 格 门洞 {:<12}{}",
             reading.name,
             reading.visual,
             reading.solid,
@@ -206,14 +358,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     report_diff(&disk, &want, &native)?;
 
-    // 一条读数，决定下面那条对照该落在谁身上：**quad 框与不透明紧包围盒不同的建筑有几栋**。
-    // 盘上实测是 0——这几张建筑贴图都铺满了自己的画框，对它们来说"按框"与"按像素"同解。
+    // 一条读数，决定下面那条对照该落在谁身上：**按 quad 框算与按不透明像素算占地
+    // 不同的建筑有几栋**。M72-07 那版还没引入 1/4 格门槛，山庄实测 0 栋（"贴图都铺满
+    // 了画框"）；加上 `MIN_CELL_OVERLAP` 之后同一句读数变 2 栋（山庄 BuildTeaShed /
+    // ManorHouse，村里 VillageShrine / VillageTeaStall）——差的不是"贴图没画满"，
+    // 是描边那 1 行像素压进相邻格的那一小条。它只用来挑反面对照 A 的落点，不参与判据。
     let loose: Vec<&str> = sprites
         .iter()
-        .filter(|item| {
-            BUILDING_ROLES.contains(&item.role.as_str()) && item.layer != OCCLUDER_LAYER
+        .filter(|item| BUILDING_ROLES.contains(&item.role.as_str()) && item.layer != OCCLUDER_LAYER)
+        .map(|item| {
+            Ok((
+                item.name.as_str(),
+                quad_cells(item) != cells_of(project, item)?,
+            ))
         })
-        .map(|item| Ok((item.name.as_str(), quad_cells(item) != cells_of(&project, item)?)))
         .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?
         .into_iter()
         .filter(|(_, differs)| *differs)
@@ -229,16 +387,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     );
 
-    // 反面对照 A：**按视觉外框标实心**——本包消灭的正是这个口径。它落在东南那丛竹子上：
-    // 竹按"单格根碰撞"只标根那一格，按框标就把竹梢那几格也标成墙，而竹梢是 M72-06
-    // 的遮断件（画在前景、玩家本来就该从竹子底下走过去）。上一条读数说明为什么不能拿
-    // 房子做这条对照：房子的框与像素同解，照框标不会多出任何格，对照就成了空转。
+    // 反面对照 A：**按视觉外框标实心**——本包消灭的正是这个口径。落点见 `Scene::quad_probe`
+    // 那条注释。上一条读数说明为什么不能拿房子做这条对照：房子的框与像素同解，照框标不会
+    // 多出任何格，对照就成了空转。
     let (boxed, _) = footprint(
-        &project,
+        project,
+        scene,
         &sprites,
         &ground,
         Rule {
-            quad_box: Some("ManorBambooSoutheast"),
+            quad_box: Some(scene.quad_probe),
             ignore_mates: false,
         },
     )?;
@@ -248,20 +406,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .cloned()
         .collect();
     if dangling.is_empty() {
-        return Err(
-            "反面对照失手：把竹子的占地从单格根换成整个 quad 框后仍然报不出悬空格——\
-             说明 §① 的比对根本没在逐格看".into(),
-        );
+        return Err(format!(
+            "反面对照失手：把 {} 的占地换成整个 quad 框后仍然报不出悬空格——\
+             说明 §① 的比对根本没在逐格看",
+            scene.quad_probe
+        )
+        .into());
     }
     println!(
-        "  反面对照 A：竹子按 quad 框算 → 悬空 {} 格，首格 {:?}（多出来那几格画的是\
-         能走过去的竹梢，按规则不该实心）",
+        "  反面对照 A：{} 按 quad 框算 → 悬空 {} 格，首格 {:?}（多出来那几格画的是\
+         能走过去的东西，按规则不该实心）",
+        scene.quad_probe,
         dangling.len(),
         dangling[0]
     );
     // 反面对照 B：把同名拆层屋顶件从并集里摘掉 ⇒ 屋檐那几格必须判成缺碰撞。
     let (body_only, _) = footprint(
-        &project,
+        project,
+        scene,
         &sprites,
         &ground,
         Rule {
@@ -276,7 +438,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if lost.is_empty() {
         return Err(
             "反面对照失手：摘掉拆层屋顶件之后仍然报不出缺碰撞格——屋顶并进并集这条\
-             其实没在参与计算".into(),
+             其实没在参与计算"
+                .into(),
         );
     }
     println!(
@@ -287,15 +450,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("② 拆层不变量：每栋跨多格，且拆层前后占地逐格相同");
     let mut split_checked = 0usize;
-    for split in SPLITS {
+    for split in scene.splits {
         let base = find(&sprites, split.base)?;
         // 拆层件必须真的在场景里：并集口径下它决定屋檐那几格实不实心，
         // 少了那一件，§① 的"缺碰撞"会红成一整片屋檐而不是这一句点名。
-        find(&sprites, split.occluder)?;
         let occluder = find(&sprites, split.occluder)?;
         // 拆层**后**的占地 = 本体 ∪ 屋顶，也就是 §① 采用的那个口径。
-        let mut after = cells_of(&project, base)?;
-        after.extend(cells_of(&project, occluder)?);
+        let mut after = cells_of(project, base)?;
+        after.extend(cells_of(project, occluder)?);
         if after.len() < MIN_BUILDING_CELLS {
             return Err(format!(
                 "{} 只占 {} 格，应 ≥{MIN_BUILDING_CELLS}：多格建筑退回了单格根碰撞的老写法",
@@ -317,7 +479,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             width: 0,
             height: 0,
         };
-        let before = cells_of(&project, &full)?;
+        let before = cells_of(project, &full)?;
         if before != after {
             let only_before: Vec<(i32, i32)> = before.difference(&after).take(4).copied().collect();
             let only_after: Vec<(i32, i32)> = after.difference(&before).take(4).copied().collect();
@@ -333,18 +495,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         split_checked += 1;
     }
     println!(
-        "  {} 栋拆层建筑：占地全部 ≥{MIN_BUILDING_CELLS} 格，且\"整图算的格集 == 本体∪屋顶\"\
+        "  {split_checked} 栋拆层建筑：占地全部 ≥{MIN_BUILDING_CELLS} 格，且\"整图算的格集 == 本体∪屋顶\"\
          （逐格相同，最大一栋 {} 格）",
-        split_checked,
         readings.iter().map(|item| item.visual).max().unwrap_or(0)
     );
 
     banner("③ 门洞：可站、图上真是洞、从出生点走得到");
     let mut walkable = disk.clone();
-    for (owner, cx, cy) in OPENINGS {
+    for (owner, cx, cy) in scene.openings {
         // 洞格必须是**因为规则才被挖掉**的，不是碰巧没标上：先确认它在自己的视觉框里
         // （洞挪了位置而表没跟着改 = 声明与图分叉），再确认盘上那一格真的是空的。
-        let cells = cells_of(&project, find(&sprites, owner)?)?;
+        let cells = cells_of(project, find(&sprites, owner)?)?;
         if !cells.contains(&(*cx, *cy)) {
             return Err(format!(
                 "{owner} 声明的门洞 ({cx},{cy}) 不在它的视觉框里：洞挪了位置而表没跟着改"
@@ -353,7 +514,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         if disk.contains(&(*cx, *cy)) {
             return Err(format!(
-                "门洞 ({cx},{cy}) 在盘上仍是实心格：{owner} 的洞没被挖开，南门是一堵墙"
+                "门洞 ({cx},{cy}) 在盘上仍是实心格：{owner} 的洞没被挖开，那扇门是一堵墙"
             )
             .into());
         }
@@ -362,18 +523,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // 图上真是洞：只查每列最低那一格（人穿过去的那格）。
     let mut lowest: BTreeMap<i32, i32> = BTreeMap::new();
-    for (_, cx, cy) in OPENINGS {
+    for (_, cx, cy) in scene.openings {
         let entry = lowest.entry(*cx).or_insert(*cy);
         if *cy < *entry {
             *entry = *cy;
         }
     }
-    for (owner, cx, cy) in OPENINGS {
+    for (owner, cx, cy) in scene.openings {
         if lowest.get(cx) != Some(cy) {
             continue; // 同一列的上面那格是屋檐/匾额，本来就该画满
         }
         let item = find(&sprites, owner)?;
-        let ratio = hole_opacity(&project, item, (*cx, *cy))?;
+        let ratio = hole_opacity(project, item, (*cx, *cy))?;
         if ratio > HOLE_MAX_OPAQUE_RATIO {
             return Err(format!(
                 "{owner} 门洞 ({cx},{cy}) 的不透明占比 {ratio:.2} > {HOLE_MAX_OPAQUE_RATIO}：\
@@ -383,28 +544,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         println!("   ({cx},{cy}) 贴图实测不透明占比 {ratio:.2} ≤ {HOLE_MAX_OPAQUE_RATIO}");
     }
-    let reached = reachable_from(&ground, &walkable, SPAWN_CELL);
-    for (_, cx, cy) in OPENINGS {
+    let reached = reachable_from(&ground, &walkable, scene.spawn);
+    for (_, cx, cy) in scene.openings {
         if !reached.contains(&(*cx, *cy)) {
             return Err(format!(
-                "门洞 ({cx},{cy}) 从出生点 {SPAWN_CELL:?} 走不到：门是死的，\
-                 山庄↔云泽村的出口格就废在这里"
+                "门洞 ({cx},{cy}) 从出生点 {:?} 走不到：门是死的，\
+                 {} 的出口格就废在这里",
+                scene.spawn, scene.name
             )
             .into());
         }
     }
     println!(
-        "  4 邻域 BFS（只走非实心格）从 {SPAWN_CELL:?} 到得了全部 {} 个洞格，可达 {} 格",
-        OPENINGS.len(),
+        "  4 邻域 BFS（只走非实心格）从 {:?} 到得了全部 {} 个洞格，可达 {} 格",
+        scene.spawn,
+        scene.openings.len(),
         reached.len()
     );
-    // 反面对照：把洞填成实心 ⇒ 出口必须断。
+    // 反面对照：把洞填成实心 ⇒ 出口必须断。**起点不能是洞格本身**：村的南门
+    // (19,1)(19,2) 与 `maps.lua` 的 `village.spawn = (19,2)` 是同一格（人就是从南门口
+    // 走进这张图的），拿出生点起算会让"填洞"当场变成"把出生点砌进墙里"，可达集缩到 0
+    // ——那条既证不了"门是死的"，还会把"门后面那一整片只能穿这扇门走"这类真缺陷混掉。
+    // 所以往洞外挪一格起算，并要求填洞**只让洞格自己**掉出可达集：门是叶子，不是桥。
+    let is_hole = |cell: &(i32, i32)| scene.openings.iter().any(|(_, cx, cy)| (*cx, *cy) == *cell);
+    let start = if is_hole(&scene.spawn) {
+        NEIGHBOURS
+            .iter()
+            .map(|(dx, dy)| (scene.spawn.0 + dx, scene.spawn.1 + dy))
+            .find(|cell| !is_hole(cell) && reached.contains(cell))
+            .ok_or_else(|| {
+                format!(
+                    "{}：出生点 {:?} 就站在门洞里，而它四周除洞格之外没有可走格",
+                    scene.name, scene.spawn
+                )
+            })?
+    } else {
+        scene.spawn
+    };
+    let from_start = reachable_from(&ground, &walkable, start);
     let mut sealed = walkable.clone();
-    for (_, cx, cy) in OPENINGS {
+    for (_, cx, cy) in scene.openings {
         sealed.insert((*cx, *cy));
     }
-    let sealed_reach = reachable_from(&ground, &sealed, SPAWN_CELL);
-    if OPENINGS
+    let sealed_reach = reachable_from(&ground, &sealed, start);
+    if scene
+        .openings
         .iter()
         .any(|(_, cx, cy)| sealed_reach.contains(&(*cx, *cy)))
     {
@@ -412,10 +596,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "反面对照失手：把门洞填成实心之后洞格仍然可达——§③ 的可达性其实没在依赖 solid".into(),
         );
     }
-    println!("  反面对照：把洞格填成实心 → 出口当场断掉（可达集从 {} 缩到 {}）",
-             reached.len(), sealed_reach.len());
+    let lost: Vec<(i32, i32)> = from_start
+        .difference(&sealed_reach)
+        .filter(|cell| !is_hole(cell))
+        .copied()
+        .collect();
+    if !lost.is_empty() {
+        return Err(format!(
+            "反面对照：填上 {} 个洞格之后，洞格之外还掉了 {lost:?}——那扇门是**桥**不是叶子，\
+             它后面那一整片只能穿过这扇门走：把门挖开的那一刻等于把那片地封了",
+            scene.openings.len()
+        )
+        .into());
+    }
+    println!(
+        "  反面对照：从洞外 {start:?} 起算，把洞格填成实心 → 可达集 {} 缩到 {}，\
+         少掉的正好是 {} 个洞格本身（门是叶子不是桥）",
+        from_start.len(),
+        sealed_reach.len(),
+        scene.openings.len()
+    );
 
     banner("④ 投影贴片：够格的每栋都有、不够格的都没有");
+    // 够格**不是名单**，是 `lighting.lua` 那两个数：偏移长度 = 物体总高 × `shadow_reach`，
+    // 不到 `cast_shadow.min_reach_units`（¼ 瓦）的不挂。山庄旧版把"平地基"写成实体名硬例外，
+    // 那等于允许"给每样东西都糊一块灰"靠改名单过关；村里三栋矮屋（铁匠铺/茶棚/土地庙，
+    // 总高都是 64px → reach 7.68）走同一条判据就自动落在门槛之外，不需要新名单。
     let mut shadows = 0usize;
     for item in sprites
         .iter()
@@ -423,20 +629,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let want_shadow = format!("{}Shadow", item.name);
         let found = sprites.iter().find(|other| other.name == want_shadow);
-        let is_flat = item.name == "BuildFoundation"; // 平地基没有体量，不该糊一块灰
-        match found {
-            Some(patch) => {
-                if is_flat {
-                    return Err(format!(
-                        "{want_shadow} 存在，但 {} 是平地基（没有高度）：给它投影等于承认\
-                         \"给每样东西都糊一块灰\"是允许的",
-                        item.name
-                    )
-                    .into());
-                }
+        let eligible = light.reaches(split_total(project, scene, &sprites, item)?);
+        match (eligible, found) {
+            (true, None) => return Err(format!(
+                "{} 没有 {want_shadow}：它的总高够格（reach ≥ {}），本包要求够格的每栋都挂地面投影",
+                item.name, light.min_reach
+            )
+            .into()),
+            (false, Some(_)) => {
+                return Err(format!(
+                    "{want_shadow} 存在，但 {} 的体量不够格（总高 × reach < {}）：给它投影\
+                     等于承认\"给每样东西都糊一块灰\"是允许的",
+                    item.name, light.min_reach
+                )
+                .into());
+            }
+            (false, None) => {
+                println!(
+                    "   {} 无投影：总高不够 ¼ 瓦的体量，贴片只会读成一团脏像素",
+                    item.name
+                );
+            }
+            (true, Some(patch)) => {
                 if patch.role != SHADOW_ROLE {
-                    return Err(format!("{want_shadow} 的 role 是 {:?}，应为 {SHADOW_ROLE:?}",
-                                       patch.role)
+                    return Err(format!(
+                        "{want_shadow} 的 role 是 {:?}，应为 {SHADOW_ROLE:?}",
+                        patch.role
+                    )
                     .into());
                 }
                 if patch.order >= item.order || patch.layer != "world" {
@@ -449,34 +668,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 shadows += 1;
             }
-            None => {
-                if !is_flat {
-                    return Err(format!(
-                        "{} 没有 {want_shadow}：本包要求每栋有体量的建筑都挂地面投影\
-                         （平地基除外，它没有体量）",
-                        item.name
-                    )
-                    .into());
-                }
-                println!("   BuildFoundation 无投影（平地基，够格门槛之外）");
-            }
         }
     }
     let total_patches = sprites
         .iter()
         .filter(|item| item.role == SHADOW_ROLE)
         .count();
-    println!("  {shadows} 栋建筑各有且仅有一件贴片；全图贴片共 {total_patches} 件（含树/竹/脚手架）");
+    println!(
+        "  {shadows} 栋建筑各有且仅有一件贴片；全图贴片共 {total_patches} 件（含树/竹/脚手架）"
+    );
 
     banner("⑤ 运行期对拍：引擎读回的 is_solid 位图 == 盘上 solid 串");
-    let mut runtime = RuntimeScene::new(Some(project.as_path()))?;
-    frame(&mut runtime)?;
-    assert_scene(&mut runtime, "main")?;
-    lua_run(&mut runtime, "on_click('BtnStart')")?;
-    for _ in 0..4 {
-        frame(&mut runtime)?;
-    }
-    assert_scene(&mut runtime, "manor")?;
+    let mut runtime = boot(project, scene)?;
     let live = ground_solid(&mut runtime)?;
     if live.cols != ground.width || live.rows != ground.height {
         return Err(format!(
@@ -509,15 +712,118 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         live_cells.len()
     );
 
-    println!(
-        "\njhyt_m72_building_footprint_ok project={} solid_cells={} buildings={} splits={} shadows={}",
-        project.display(),
-        disk.len(),
-        readings.len(),
-        split_checked,
-        total_patches
-    );
-    Ok(())
+    Ok(Tally {
+        scene: scene.name,
+        solid: disk.len(),
+        buildings: readings.len(),
+        splits: split_checked,
+        shadows: total_patches,
+    })
+}
+
+/// 起一个运行期并把这张图**真的装进世界**：门面 → 山庄，再按需切到目标图。
+/// §⑤ 查的是"引擎认的是同一张表"，所以这一步不能省成读文件。
+fn boot(project: &Path, scene: &Scene) -> Result<RuntimeScene, Box<dyn std::error::Error>> {
+    let mut runtime = RuntimeScene::new(Some(project))?;
+    frame(&mut runtime)?;
+    assert_scene(&mut runtime, "main")?;
+    lua_run(&mut runtime, "on_click('BtnStart')")?;
+    for _ in 0..4 {
+        frame(&mut runtime)?;
+    }
+    if scene.name != "manor" {
+        // 切图走 `scene.load` 那一条异步队列：它只把名字挂进 `scene_pending_load`，
+        // 真正应用发生在 `run_script_steps` 每步管线的 scene transition 那一级
+        // （schedule.rs 里 `process_scene_transition` 就挂在那儿），所以下面的四帧
+        // 就是"等过渡落地"，与玩家踩出口后看到的第一帧等价。
+        lua_run(&mut runtime, &format!("scene.load('{}')", scene.name))?;
+        for _ in 0..4 {
+            frame(&mut runtime)?;
+        }
+    }
+    assert_scene(&mut runtime, scene.name)?;
+    Ok(runtime)
+}
+
+/// 一栋"物体总高"：拆层件按**整图**算（`set_cast_shadows.split_tables` 同一条口径——
+/// 屋顶在空中，但那一栋的体量包含屋顶），没拆层的按自己的图算。
+fn split_total(
+    project: &Path,
+    scene: &Scene,
+    sprites: &[Placed],
+    item: &Placed,
+) -> Result<f64, Box<dyn std::error::Error>> {
+    if item.layer == OCCLUDER_LAYER {
+        return Ok(0.0);
+    }
+    if let Some(split) = scene.splits.iter().find(|split| split.base == item.name) {
+        return Ok(image_of(project, split.full)?.height() as f64);
+    }
+    let _ = sprites;
+    Ok(f64::from(item.height))
+}
+
+// ---------------------------------------------------------------------------
+// 光向与投影够格门槛（`data/lighting.lua` 的第二份读取）
+// ---------------------------------------------------------------------------
+
+/// §④ 的判据输入。四个数全部来自 `lighting.lua`——**不写死、不回退**：光向一改，
+/// "哪些东西够格挂投影"跟着改，硬编码名单必然变成第二套真相（口径同 `light_kit.load`）。
+struct Light {
+    ux: f64,
+    uy: f64,
+    reach: f64,
+    min_reach: f64,
+}
+
+impl Light {
+    /// 总高 h 的物体应投出的偏移长度 = h × `shadow_reach`（角度恒等于 sun）。
+    fn offset_len(&self, height: f64) -> f64 {
+        (self.reach * height) * self.ux.hypot(self.uy)
+    }
+
+    /// 够不够格挂一片贴片：偏移不到 ¼ 瓦时贴片只读成一团脏像素。
+    fn reaches(&self, height: f64) -> bool {
+        self.offset_len(height) >= self.min_reach
+    }
+}
+
+fn lighting(project: &Path) -> Result<Light, Box<dyn std::error::Error>> {
+    let path = project.join("scripts").join("data").join("lighting.lua");
+    let text =
+        std::fs::read_to_string(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let x = lua_number(&text, "dir_x")?;
+    let y = lua_number(&text, "dir_y")?;
+    let length = x.hypot(y);
+    if length == 0.0 {
+        return Err("lighting.lua 的 sun 是零向量：光向不成方向".into());
+    }
+    Ok(Light {
+        ux: x / length,
+        uy: y / length,
+        reach: lua_number(&text, "M.shadow_reach")?,
+        min_reach: lua_number(&text, "min_reach_units")?,
+    })
+}
+
+/// `key = <数字>` 的第一次命中；找不到就报错，不给默认值。
+fn lua_number(text: &str, key: &str) -> Result<f64, Box<dyn std::error::Error>> {
+    let mut rest = text;
+    while let Some(at) = rest.find(key) {
+        let after = &rest[at + key.len()..];
+        if let Some(value) = after.trim_start().strip_prefix('=') {
+            let token: String = value
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || matches!(c, '-' | '+' | '.'))
+                .collect();
+            if let Ok(number) = token.parse::<f64>() {
+                return Ok(number);
+            }
+        }
+        rest = &rest[at + key.len()..];
+    }
+    Err(format!("lighting.lua 里读不到 `{key} = <数字>`：门宁可炸也不回退到默认光向").into())
 }
 
 // ---------------------------------------------------------------------------
@@ -532,15 +838,22 @@ struct Reading {
     mates: Vec<String>,
 }
 
+/// `footprint` 的返回：这件规则下**应实心**的格集 + 每栋建筑的读数。
+type Footprint = (BTreeSet<(i32, i32)>, Vec<Reading>);
+
 fn footprint(
     project: &Path,
+    scene: &Scene,
     sprites: &[Placed],
     ground: &Ground,
     rule: Rule,
-) -> Result<(BTreeSet<(i32, i32)>, Vec<Reading>), Box<dyn std::error::Error>> {
+) -> Result<Footprint, Box<dyn std::error::Error>> {
     let mut solid = BTreeSet::new();
     let mut readings = Vec::new();
-    for item in sprites.iter().filter(|item| BUILDING_ROLES.contains(&item.role.as_str())) {
+    for item in sprites
+        .iter()
+        .filter(|item| BUILDING_ROLES.contains(&item.role.as_str()))
+    {
         if item.layer == OCCLUDER_LAYER {
             continue; // 屋顶那一件在下面按名字配对
         }
@@ -567,26 +880,7 @@ fn footprint(
                 mates.push(other.name.clone());
             }
         }
-        let openings: Vec<(i32, i32)> = OPENINGS
-            .iter()
-            .filter(|(owner, _, _)| *owner == item.name.as_str())
-            .map(|(_, cx, cy)| (*cx, *cy))
-            .collect();
-        let unknown: Vec<(i32, i32)> = openings
-            .iter()
-            .filter(|cell| !cells.contains(cell))
-            .cloned()
-            .collect();
-        if !unknown.is_empty() {
-            return Err(format!(
-                "{} 声明的门洞 {unknown:?} 不在它的视觉框里：洞挪了位置而表没跟着改",
-                item.name
-            )
-            .into());
-        }
-        for cell in &openings {
-            cells.remove(cell);
-        }
+        let openings = declared_openings(scene, &item.name, &mut cells)?;
         readings.push(Reading {
             name: item.name.clone(),
             visual: cells.len() + openings.len(),
@@ -597,32 +891,83 @@ fn footprint(
         solid.extend(cells);
     }
     for item in sprites.iter().filter(|item| item.role == ROOT_ROLE) {
+        // `walk`：整件都能走（石桥是过河的唯一通道）⇒ 一格都不许标。这条放在 `box` 之前，
+        // 因为反面对照 A 会把同一件换成框，两档不能同时命中。
+        if scene.walk_props.contains(&item.name.as_str())
+            && rule.quad_box != Some(item.name.as_str())
+        {
+            continue;
+        }
         // 反面对照 A 的口径：把这一件从"单格根碰撞"换成整个 quad 框。
-        if BOX_PROPS.contains(&item.name.as_str()) || rule.quad_box == Some(item.name.as_str()) {
-            solid.extend(if rule.quad_box == Some(item.name.as_str()) {
+        if scene.box_props.contains(&item.name.as_str())
+            || rule.quad_box == Some(item.name.as_str())
+        {
+            let mut cells = if rule.quad_box == Some(item.name.as_str()) {
                 quad_cells(item)
             } else {
                 cells_of(project, item)?
-            });
+            };
+            // `box` 道具也能声明门洞（`building_kit` 的注释：建筑和 box 道具都能声明）——
+            // 山门那种"石体压三行、中间留一个真洞"的写法，洞不在建筑 role 里。
+            declared_openings(scene, &item.name, &mut cells)?;
+            solid.extend(cells);
             continue;
         }
-        let cell = item.cell.ok_or_else(|| format!(
-            "{} 是 prop 却没有 entity_meta cell：单格根碰撞没有锚点可标",
-            item.name
-        ))?;
+        let cell = item.cell.ok_or_else(|| {
+            format!(
+                "{} 是 prop 却没有 entity_meta cell：单格根碰撞没有锚点可标",
+                item.name
+            )
+        })?;
         solid.insert(cell);
     }
     Ok((
         solid
             .into_iter()
-            .filter(|(x, y)| *x >= 0 && *y >= 0 && (*x as usize) < ground.width && (*y as usize) < ground.height)
+            .filter(|(x, y)| {
+                *x >= 0 && *y >= 0 && (*x as usize) < ground.width && (*y as usize) < ground.height
+            })
             .collect(),
         readings,
     ))
 }
 
+/// 这张图给这件实体声明的门洞：核对它还在视觉框里，然后把洞从格集里挖掉。
+/// "声明与图分叉"（洞挪了位置而表没跟着改）在这一条就红，不留到 §③ 的可达性里
+/// 靠"走不到"间接发现。
+fn declared_openings(
+    scene: &Scene,
+    name: &str,
+    cells: &mut BTreeSet<(i32, i32)>,
+) -> Result<Vec<(i32, i32)>, Box<dyn std::error::Error>> {
+    let openings: Vec<(i32, i32)> = scene
+        .openings
+        .iter()
+        .filter(|(owner, _, _)| *owner == name)
+        .map(|(_, cx, cy)| (*cx, *cy))
+        .collect();
+    let unknown: Vec<(i32, i32)> = openings
+        .iter()
+        .filter(|cell| !cells.contains(cell))
+        .cloned()
+        .collect();
+    if !unknown.is_empty() {
+        return Err(format!(
+            "{name} 声明的门洞 {unknown:?} 不在它的视觉框里：洞挪了位置而表没跟着改"
+        )
+        .into());
+    }
+    for cell in &openings {
+        cells.remove(cell);
+    }
+    Ok(openings)
+}
+
 /// 不透明像素的紧包围盒换算成占地格集（本包的口径）。
-fn cells_of(project: &Path, item: &Placed) -> Result<BTreeSet<(i32, i32)>, Box<dyn std::error::Error>> {
+fn cells_of(
+    project: &Path,
+    item: &Placed,
+) -> Result<BTreeSet<(i32, i32)>, Box<dyn std::error::Error>> {
     let image = image_of(project, &item.texture)?;
     let (w, h) = (image.width() as i64, image.height() as i64);
     let mut box_x0 = w;
@@ -654,8 +999,10 @@ fn cells_of(project: &Path, item: &Placed) -> Result<BTreeSet<(i32, i32)>, Box<d
 }
 
 /// 整个 quad 框覆盖的格（反面对照 A 的口径：视觉多大不看、只看贴图矩形多大）。
+/// 这里**故意不套** `MIN_CELL_OVERLAP`：那一档要证的正是"按框标会把画框里那几格
+/// 连本带利标成墙"，而画框是按 32 的整数倍摆的，框边压过界是常态而不是描边伪影。
 fn quad_cells(item: &Placed) -> BTreeSet<(i32, i32)> {
-    cells_covered((
+    cells_touching((
         item.x,
         item.y,
         item.x + item.width as f64,
@@ -663,7 +1010,22 @@ fn quad_cells(item: &Placed) -> BTreeSet<(i32, i32)> {
     ))
 }
 
+/// 矩形**每轴都至少压进 `MIN_CELL_OVERLAP`** 的那些格（口径同 `building_kit.cells_covered`：
+/// 短边那一格不算覆盖）。
 fn cells_covered(rect: (f64, f64, f64, f64)) -> BTreeSet<(i32, i32)> {
+    let (x0, y0, x1, y1) = rect;
+    cells_touching(rect)
+        .into_iter()
+        .filter(|(cx, cy)| {
+            let ox = (x1.min(f64::from(*cx + 1) * TILE) - x0.max(f64::from(*cx) * TILE)).max(0.0);
+            let oy = (y1.min(f64::from(*cy + 1) * TILE) - y0.max(f64::from(*cy) * TILE)).max(0.0);
+            ox >= MIN_CELL_OVERLAP && oy >= MIN_CELL_OVERLAP
+        })
+        .collect()
+}
+
+/// 矩形**有交集**的格（朴素口径，只给反面对照 A 用）。
+fn cells_touching(rect: (f64, f64, f64, f64)) -> BTreeSet<(i32, i32)> {
     let (x0, y0, x1, y1) = rect;
     let mut out = BTreeSet::new();
     let mut cx = (x0 / TILE).floor() as i32;
@@ -728,9 +1090,10 @@ fn reachable_from(
     seen.insert(start);
     queue.push_back(start);
     while let Some((x, y)) = queue.pop_front() {
-        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+        for (dx, dy) in NEIGHBOURS {
             let next = (x + dx, y + dy);
-            if next.0 < 0 || next.1 < 0
+            if next.0 < 0
+                || next.1 < 0
                 || next.0 as usize >= ground.width
                 || next.1 as usize >= ground.height
                 || seen.contains(&next)
@@ -807,33 +1170,29 @@ impl Ground {
     }
 }
 
-fn read_ground(path: &Path) -> Result<Ground, Box<dyn std::error::Error>> {
+fn read_ground(path: &Path, ground_texture: &str) -> Result<Ground, Box<dyn std::error::Error>> {
     let text = std::fs::read_to_string(path)?;
     let mut hits = Vec::new();
     for line in text.replace("\r\n", "\n").split('\n') {
         let field: Vec<&str> = line.split('\t').collect();
-        if field.len() == 4 && field[0] == "component" && field[2] == "Tilemap"
-            && field[3].contains(&format!("texture={GROUND_TEXTURE}"))
+        if field.len() == 4
+            && field[0] == "component"
+            && field[2] == "Tilemap"
+            && field[3].contains(&format!("texture={ground_texture}"))
         {
             hits.push(field[3].to_owned());
         }
     }
     if hits.len() != 1 {
         return Err(format!(
-            "期望恰好一条 {GROUND_TEXTURE} 的 Tilemap，实到 {} 条",
+            "期望恰好一条 {ground_texture} 的 Tilemap，实到 {} 条",
             hits.len()
         )
         .into());
     }
     let fields = parse_fields(&hits[0]);
-    let width: usize = fields
-        .get("width")
-        .ok_or("Tilemap 没有 width")?
-        .parse()?;
-    let height: usize = fields
-        .get("height")
-        .ok_or("Tilemap 没有 height")?
-        .parse()?;
+    let width: usize = fields.get("width").ok_or("Tilemap 没有 width")?.parse()?;
+    let height: usize = fields.get("height").ok_or("Tilemap 没有 height")?.parse()?;
     let kinds = fields
         .get("tiles")
         .ok_or("Tilemap 没有 tiles")?
@@ -966,8 +1325,8 @@ fn find<'a>(sprites: &'a [Placed], name: &str) -> Result<&'a Placed, Box<dyn std
 fn image_of(project: &Path, rel: &str) -> Result<RgbaImage, Box<dyn std::error::Error>> {
     let path = project.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
     let bytes = std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let image = image::load_from_memory(&bytes)
-        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let image =
+        image::load_from_memory(&bytes).map_err(|error| format!("{}: {error}", path.display()))?;
     Ok(image.to_rgba8())
 }
 

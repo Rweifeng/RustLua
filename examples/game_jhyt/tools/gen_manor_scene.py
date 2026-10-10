@@ -83,7 +83,10 @@ W, H = 40, 23
 # 列映射（写 scene tile 用）
 GRASS, DIRT, STONE, WALL, ROOF, WATER = 1, 2, 3, 4, 5, 6
 
-GROUND_TEXTURE = "assets/art/tilesets/manor/manor_ground.png"
+# 场景键（= `name=` 头 = `data/maps.lua` 的地图键 = `tools/terrain_ramp.json` 的 `scenes` 档名）。
+# `building_kit` 的门洞表/横件碰撞表按它点名取用。
+SCENE = "manor"
+GROUND_TEXTURE = tk.ground_texture(SCENE)
 # 农田层（叠在地表之上，运行期由 farm.lua 画）：M72-08 起**只有两列**（1=犁地 2=干涸），
 # 出图归 `tools/gen_farm_soil.py`；以前 6 列里那三列 SPROUT/GROWING/RIPE 是"29 种作物
 # 共用一张阶段图"的根因，作物贴图搬去了下面的 CropGrid。
@@ -148,7 +151,8 @@ PROPS = [
     {"name": "ManorShed", "texture": "assets/art/buildings/manor_shed.png",
      "size": (160, 128), "cell": (4, 15), "order": 0, "role": "building"},
     # 南门：门洞 (16,1)(16,2) 是 `data/maps.lua` 的山庄↔云泽村出口格，声明在
-    # `building_kit.OPENINGS` 里——它必须既"图上真是洞"又"能走到"，两边都建有反查。
+    # `building_kit.SCENES["manor"].openings` 里——它必须既"图上真是洞"又"能走到"，
+    # 两边都建有反查。
     {"name": "ManorGate", "texture": "assets/art/buildings/manor_gate.png",
      "size": (96, 96), "cell": (15, 0), "order": 5, "role": "building"},
     {"name": "ManorFence", "texture": "assets/art/props/manor_fence.png",
@@ -235,7 +239,7 @@ def occupied_cells(ground):
     updates, occluders = fo.plan(lines, fo.lk.load())
     patched = fo.apply_patch(lines, updates, occluders)
     sprites = bk.placed_sprites(bk.read_entities(patched))
-    cells, readings, _ents = bk.visual_and_solid(bk.project_root(), sprites, W, H)
+    cells, readings, _ents = bk.visual_and_solid(bk.project_root(), sprites, W, H, SCENE)
     native = {(x, y) for y in range(H) for x in range(W)
               if ground[y][x] in bk.TILE_NATIVE_SOLID}
     return cells | native, readings
@@ -554,9 +558,9 @@ def self_check(ground, solid):
                for y in range(FARM["y0"], FARM["y1"] + 1)
                for x in range(FARM["x0"], FARM["x1"] + 1)):
         problems.append("药田矩形里出现非夯土格（farm.lua 靠 tile==2 判定可开垦）")
-    # 门洞：`building_kit.OPENINGS` 声明的洞必须**可站且从出生点走到**——洞画对了但
-    # 被别的东西围死，玩家一样出不去（南门是山庄↔云泽村的出口格，这条断了就切图）。
-    for name, cells in bk.OPENINGS.items():
+    # 门洞：`building_kit.SCENES[scene].openings` 声明的洞必须**可站且从出生点走到**——洞画对
+    # 了但被别的东西围死，玩家一样出不去（南门是山庄↔云泽村的出口格，这条断了就切图）。
+    for name, cells in bk.openings_table(SCENE).items():
         for cell in cells:
             cx, cy = cell
             if solid[cy][cx]:

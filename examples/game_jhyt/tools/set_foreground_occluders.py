@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """把前景遮断块（树冠 / 屋顶）写进一张已存在的 `.scene`（M72-06，就地改、幂等）。
+M72-11 起本文件不含任何场景专有量：认哪几张图、切在哪一行，全看 `layer_kit` 那张表。
 
 用法（工程根目录 `examples/game_jhyt` 下）：
 
@@ -11,7 +12,8 @@
 本体换成"下面那一块"（树干 / 墙身+台基，留在原来的层与 order），并在它上方**多挂一个
 实体**画"上面那一块"（树冠 / 屋顶），层是 `foreground`、order 取 `data/lighting.lua` 的
 `foreground_order.occluder`。两块共用同一个 x，遮断块的 y = 本体 y + 本体高 ⇒
-按行拼回去就是原图（这条等式由 `gen_manor_art.py --check` 钉住）。
+按行拼回去就是原图（这条等式由 `layer_kit.check_splits` 钉住，`gen_manor_art.py --check`
+会连带跑到它）。
 
 为什么是"就地改盘上场景"而不是重跑 `gen_manor_scene.py`：盘上的 `manor.scene` 早就和
 生成器分叉（M72-04「未完成项」记的 HUD/transform 手调），重跑会抹掉那批改动。这条与
@@ -21,11 +23,11 @@
 的话，`set_scatter_decor.py` 重跑时 id 起点会因本工具插进来的实体整体位移，它那条
 "盘上装饰段 == 重算逐字节相同"的对拍就红在跟装饰毫无关系的改动上。
 
-切点、贴图路径、遮断 order **全部从别处取**（`gen_manor_art.LAYER_SPLITS` 与
+切点、贴图路径、遮断 order **全部从别处取**（`layer_kit.LAYER_SPLITS` 与
 `light_kit`），本文件不写死任何一个数：写死就有第二套真相，而漂移的表现是"树冠浮在
 树干上方一截"，不会报错。
 
-依赖：Python 3 标准库 + 同目录 `pixel_kit.py`、`decor_kit.py`、`gen_manor_art.py`、`light_kit.py`。
+依赖：Python 3 标准库 + 同目录 `pixel_kit.py`、`decor_kit.py`、`layer_kit.py`、`light_kit.py`。
 """
 
 import argparse
@@ -35,7 +37,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import decor_kit as dk  # noqa: E402  sprite_line：字段顺序与引擎 `Sprite::to_component_str` 一致
-import gen_manor_art as ga  # noqa: E402  LAYER_SPLITS：切点与原图路径的定义处
+import layer_kit as layers  # noqa: E402  LAYER_SPLITS：切点与原图路径的定义处
 import light_kit as lk  # noqa: E402  foreground_order 的定义处
 from pixel_kit import transform_line  # noqa: E402
 
@@ -43,7 +45,7 @@ ROLE = "occluder"
 SORTING_LAYER = "foreground"
 # 保留 id 段：见模块 docstring「id 段」。低于此值的都是自然分配的可玩法实体与装饰。
 OCCLUDER_ID_BASE = 5001
-# 遮断实体名后缀在 `gen_manor_art.occluder_suffix`（树是 Canopy、其余是 Roof）：
+# 遮断实体名后缀在 `layer_kit.occluder_suffix`（树是 Canopy、其余是 Roof）：
 # 门侧靠它认"哪块是遮断物"，所以只许有一处定义。
 WHITE_TINT = "1.000,1.000,1.000,1.000"
 
@@ -58,16 +60,16 @@ def groups():
     `LAYER_SPLITS` 每项是 `(目录, ((部件名, y0, y1), ...))`，且**第 0 项是上半张**
     （图像行号小 = 靠顶 = 世界更高）。本体取末项、遮断取首项——顺序本身就是契约。
     键是**整图文件名**（`manor_house` / `build_herb_hut`…）：切点、两块路径、遮断后缀
-    全从 `gen_manor_art` 那一处取，本文件不写死任何一个数。
+    全从 `layer_kit` 那一处取，本文件不写死任何一个数。
     """
     out = {}
-    for stem in ga.LAYER_SPLITS:
-        pieces = [(posix(path), y1 - y0 + 1) for path, y0, y1 in ga.split_paths(stem)]
+    for stem in layers.LAYER_SPLITS:
+        pieces = [(posix(path), y1 - y0 + 1) for path, y0, y1 in layers.split_paths(stem)]
         out[stem] = {
-            "source": posix(ga.full_path(stem)),
+            "source": posix(layers.full_path(stem)),
             "occluder": pieces[0],
             "base": pieces[-1],
-            "suffix": ga.occluder_suffix(stem),
+            "suffix": layers.occluder_suffix(stem),
         }
     return out
 

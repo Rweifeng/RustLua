@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""建筑/道具**占位与碰撞**的单一事实源（M72-07）。
+"""建筑/道具**占位与碰撞**的单一事实源（M72-07 建，M72-11 起服务多张图）。
 
 一句话：**每一格 `solid` 都必须有可视依据**——要么那一格的地表本身就是水/墙（瓦自己画的），
 要么有一个 sprite 的**不透明像素**压在那一格上。除此之外一律不许实心。
@@ -14,13 +14,20 @@
     ——本体 quad 与屋顶（`foreground` 遮断件）quad 覆盖的格并集，再挖掉**门洞**。
     层秩 `world(-1) < actor(+1)`（`crates/rustlua-render/src/sprite.rs:105`），
     所以墙永远遮不住站在它后面的人：那些格不实心，玩家就会走进墙里并被画在墙上。
-  * **树/竹/单件道具**（`role=prop`）：**单格根碰撞**——只实心 `entity_meta cell` 那一格，
-    树冠/竹梢那几格由 M72-06 的前景遮断件负责盖人，不该挡人。
+  * **树/竹/单件道具**（`role=prop`）：按 `SCENES[*].prop_collision` 点名的模式判，默认
+    **单格根碰撞**——只实心 `entity_meta cell` 那一格，树冠/竹梢那几格由 M72-06 的前景
+    遮断件负责盖人，不该挡人。横着占几格的（摊位/山石/山门）走 `box`（=建筑那条算法，
+    也认门洞），桥面走 `walk`（可走的美术，一格都不许实心）。
   * **装饰**（`role=decor`）：不参与碰撞（M72-05 定的，`jhyt_m72_scatter_decor` §⑤ 在守）。
 
-**门洞**（`OPENINGS`）是唯一一处"手填"的数据，所以它自带一条反查：声明是洞，
+**门洞**（`SCENES[*].openings`）是唯一一处"手填"的数据，所以它自带一条反查：声明是洞，
 贴图在那几格上就必须**真是洞**（不透明占比 ≤ `HOLE_MAX_OPAQUE_RATIO`），
 而且洞必须与外面可走的地格连通。两边任何一边改了都会当场红，不会静默穿模。
+
+**M72-11 起这是多场景模块**：判据（不透明像素、拆层配对、单格根、门洞反查）一张图一张图
+完全相同，只有三处随场景变——地表贴图、门洞表、横着占两格的道具表。贴图从场景自己的
+`role=ground_tilemap` 那条 Tilemap 读（所以这里不再存 manor 的路径），后两样收在 `SCENES`
+里按场景的 `name=` 取。**没登记的场景当场红**，不会静默用 manor 的门洞去量云泽村。
 
 用法（工程根目录 `examples/game_jhyt` 下）：
 
@@ -40,37 +47,97 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pixel_kit import decode_png  # noqa: E402
 
 TILE = 32
-GROUND_TEXTURE = "assets/art/tilesets/manor/manor_ground.png"
+GROUND_ROLE = "ground_tilemap"
+# "压够一格"的门槛：1/4 格（8px）。见 `cells_covered` 的 docstring。
+MIN_CELL_OVERLAP = TILE // 4
 
 # 地表 kind 编号（与 `gen_manor_scene.py` 的列映射、`data/buildings.lua` 的 ground_tiles 一致）。
 GRASS, DIRT, STONE, WALL, ROOF, WATER = 1, 2, 3, 4, 5, 6
 # 这两族的格**天然实心**：墙与人是瓦画出来的，没有对应的 sprite 实体。
+# 编号语义是引擎与数据侧共用的（`terrain_ramp.json` 的 `scenes[*].kinds` 硬校验同名同序），
+# 所以这一条对每张图都成立，不必按场景分。
 TILE_NATIVE_SOLID = (WALL, WATER)
 
 BUILDING_ROLES = ("building", "building_site")
 ROOT_ROLES = ("prop",)
+# 道具的三种碰撞模式（`root` 是默认，另两种按场景在 `SCENES[*].prop_collision` 里点名）：
+#   * `root` 单格根碰撞——只实心 `entity_meta cell` 那一格（树/竹/井/罐/杆：冠梢那几格
+#     由 M72-06 的遮断件负责盖人，本来就不该挡人）。
+#   * `box`  按视觉框碰撞——本体就横着占几格的东西（篱笆、货架、山石、摊位、山门），
+#             只标锚点会让另一半"看得见却穿得过"。与建筑同一条算法，所以也认门洞。
+#   * `walk` 可走的美术——桥面那一格**必须**能踩上去。它是"看得见但不实心"的唯一一类：
+#             判据说的是"每格实心都得有可视依据"，不是"看得见的都得实心"。
+PROP_MODES = ("root", "box", "walk")
 
 # 遮断件所在的层：它的 quad 也属于建筑的视觉框（见模块 docstring 的第一条判法）。
 OCCLUDER_LAYER = "foreground"
 
-# 门洞：实体名 -> 必须可走的绝对 cell。只有南门有洞（它是 `data/maps.lua`
-# 山庄→云泽村出口格 (16,1) 所在，玩家从村里走进山庄要穿过它）。
-OPENINGS = {
-    "ManorGate": ((16, 1), (16, 2)),
-}
+# 门洞（`openings`）：实体名 -> 必须可走的绝对 cell，建筑和 `box` 道具都能声明。
 # 声明为洞的格上，贴图不透明像素占比的上限。**只查每列最下面那一格**（人站着的那格）：
 # 它上面那格是屋檐/匾额所在，本来就该画满（南门实测 0.91），要求它是洞等于要求门楼没有顶。
 # 0.35 是量出来的：门洞那格重画前 0.94（匾额正好挂在通道上）、重画后 0.00，
 # 而"看着有门其实实心"的写法（药庐那种棕色门板）在 0.86~1.00，中间隔着一条宽缝。
 HOLE_MAX_OPAQUE_RATIO = 0.35
 
-# 道具的碰撞模式：默认 `root`（单格根碰撞，树/竹/井/罐…），下面是两个例外——
-# 它们本体就横着占两格，只标锚点那一格会让另一半"看得见却穿得过"。
-# 盘上对拍：`box` 模式下这两件算出来的格与改前逐格相同（篱 (13,1)(13,2)、架 (11,10)(12,10)）。
-PROP_COLLISION = {
-    "ManorFence": "box",
-    "ManorRack": "box",
+# 每张图专有的三样（判据本身全场景相同，见模块 docstring）：
+#   * `openings`：这张图的门洞格。村庄那两个洞的出处是 `data/maps.lua` 的出口格——
+#     南门 (19,1)(19,2) 是村↔山庄出口，山门 (10,20) 是村↔青云山出口。山门那条按
+#     **数据侧的出口格**放：它压 x9..12 三行（128×96 贴北墙），只有最底一行 (10,20) 实测
+#     是洞（不透明占比 0.156），上面两行是门楼的身与顶（0.94~0.99）。人从 (10,19) 走进去、
+#     在那一格按 E 切图，落点回 (10,19)——所以 (10,20) 必须是可站的洞，而它上面那格
+#     本来就该是实体，否则门楼没有顶。
+#   * `prop_collision`：默认 `root` 之外的例外，逐件点名（写错模式当场红，见 `PROP_MODES`）。
+# 盘上对拍：manor 的 `box` 两件算出来的格与引入 `box` 之前逐格相同（篱 (13,1)(13,2)、
+# 架 (11,10)(12,10)），1/4 格阈值前后 likewise 41 格实心不变。
+SCENES = {
+    "manor": {
+        "openings": {
+            "ManorGate": ((16, 1), (16, 2)),
+        },
+        "prop_collision": {
+            "ManorFence": "box",
+            "ManorRack": "box",
+        },
+    },
+    "village": {
+        "openings": {
+            "VillageGate": ((19, 1), (19, 2)),
+            "VillageMountainGate": ((10, 20),),
+        },
+        "prop_collision": {
+            # 石桥是过河的唯一通道（溪水 y16..17 只在 x24..25 断开）：标成实心就把村北封死。
+            "VillageBridge": "walk",
+            # 摊位 64×40 横占两格（台面真的有两格宽），只标锚点等于右半边能穿过去。
+            "VillageStallA": "box",
+            "VillageStallB": "box",
+            "VillageRockA": "box",
+            "VillageRockB": "box",
+            # 山门 128×96：石体压 11 格、中间留一个真洞（见上面 openings 里那条读数）。
+            "VillageMountainGate": "box",
+        },
+    },
 }
+
+
+def scene_name(lines):
+    """场景键（与 `data/maps.lua` 的地图键、`scenes/<name>.scene` 文件名同一个）。"""
+    for line in lines:
+        if line.startswith("name="):
+            return line.split("=", 1)[1].strip()
+    raise SystemExit("[FAIL] 场景缺 `name=` 头：无法确定它属于哪张图的门洞表")
+
+
+def profile(scene):
+    """取这张图的（门洞表, 道具碰撞表）。没登记就红——用错表比没有表更糟。"""
+    if scene not in SCENES:
+        raise SystemExit(f"[FAIL] `building_kit.SCENES` 里没有场景 {scene!r} 的条目："
+                         f"请登记它的 openings / prop_collision（没有门洞就写空 dict）")
+    return SCENES[scene]
+
+
+def openings_table(scene):
+    """这张图声明的门洞：{实体名: (cell, ...)}。生成器的可达性自检与门洞反查共用它。"""
+    return profile(scene)["openings"]
 
 
 def project_root():
@@ -179,14 +246,23 @@ def opaque_world_rect(root, sprite):
 
 
 def cells_covered(rect):
-    """与世界矩形有交集的所有 cell（开区间比较：只贴到边不算）。"""
+    """不透明像素矩形**压进至少 1/4 格**的那些 cell（两轴各算，短边不算覆盖）。
+
+    为什么不写"与格子有交集就算"：道具贴图的高宽普遍不是 32 的整数倍（摊位 64×40、
+    山石 64×40、招幌 32×56），而 `Canvas.outline()` 沿不透明像素外扩一圈——紧框因此比实体
+    本身多出 1 行像素，那一行落在相邻格里只占 **1/32 高**。按交集判就会为这一像素的棚顶
+    檐边把整格街面标成实心（村庄市集实测：两个摊位各吃掉一格街面 (13,3)/(23,3)）。
+    按"每轴至少压进 `MIN_CELL_OVERLAP`"判：檐边那一行不算，而真正横着占两格的实体
+    （摊位台面、篱笆、山门）照算。山庄 `--check` 在改这条前后逐格相同（41 件实心没动），
+    所以这条不是为村庄开的口子，是把"覆盖"量准。
+    """
     x0, y0, x1, y1 = rect
     out = set()
     for cx in range(int(x0 // TILE), int(-(-x1 // TILE))):
-        if x1 <= cx * TILE:
+        if min(x1, (cx + 1) * TILE) - max(x0, cx * TILE) < MIN_CELL_OVERLAP:
             continue
         for cy in range(int(y0 // TILE), int(-(-y1 // TILE))):
-            if y1 <= cy * TILE:
+            if min(y1, (cy + 1) * TILE) - max(y0, cy * TILE) < MIN_CELL_OVERLAP:
                 continue
             out.add((cx, cy))
     return out
@@ -197,12 +273,41 @@ def cells_covered(rect):
 # ---------------------------------------------------------------------------
 
 
-def visual_and_solid(root, sprites, width, height):
-    """返回 (应实心格, 每栋建筑的读数, 每件的可见格)。"""
+def visual_cells(root, item, sprites):
+    """(一件实体的视觉框格, 它的同名拆层件)。
+
+    同名拆层件：M72-06 把正房拆成 `ManorHouse`(world) + `ManorHouseRoof`(foreground
+    遮断件)，视觉框是两件并集。配对规则是实体名前缀，**不按 role 筛**——
+    屋顶那件的 role 是 `occluder`，按 role 筛会把它漏掉，那 21 格屋檐就会被判成
+    "悬空碰撞"而删掉实心（玩家能走进屋檐里）。`*Shadow` 是投影贴片，必须排除。
+    """
+    cells = cells_covered(opaque_world_rect(root, item))
+    mates = [other for other in sprites
+             if other is not item and other["role"] not in ("decor", "cast_shadow")
+             and other["name"].startswith(item["name"]) and other["name"] != item["name"]]
+    for mate in mates:
+        cells |= cells_covered(opaque_world_rect(root, mate))
+    return cells, mates
+
+
+def declared_openings(item, cells, openings_by_name):
+    """这张图给这件实体声明的门洞（并核对洞还在视觉框里）。"""
+    openings = set(openings_by_name.get(item["name"], ()))
+    unknown = openings - cells
+    if unknown:
+        raise SystemExit(f"[FAIL] {item['name']} 声明的门洞 {sorted(unknown)} "
+                         f"不在它的视觉框里：洞挪了位置而表没跟着改")
+    return openings
+
+
+def visual_and_solid(root, sprites, width, height, scene):
+    """返回 (应实心格, 每栋建筑的读数, 每件的可见格)。`scene` 决定门洞/横件碰撞表。"""
     ents_by_name = {}
     for item in sprites:
         ents_by_name.setdefault(item["name"], []).append(item)
 
+    openings_by_name = openings_table(scene)
+    prop_collision = profile(scene)["prop_collision"]
     solid = set()
     readings = []
     for item in sprites:
@@ -210,31 +315,25 @@ def visual_and_solid(root, sprites, width, height):
             continue
         if item["layer"] == OCCLUDER_LAYER:
             continue  # 屋顶那一件在下面按名字配对
-        box = opaque_world_rect(root, item)
-        cells = cells_covered(box)
-        # 同名拆层件：M72-06 把正房拆成 `ManorHouse`(world) + `ManorHouseRoof`(foreground
-        # 遮断件)，视觉框是两件并集。配对规则是实体名前缀，**不按 role 筛**——
-        # 屋顶那件的 role 是 `occluder`，按 role 筛会把它漏掉，那 21 格屋檐就会被判成
-        # "悬空碰撞"而删掉实心（玩家能走进屋檐里）。`*Shadow` 是投影贴片，必须排除。
-        mates = [other for other in sprites
-                 if other is not item and other["role"] not in ("decor", "cast_shadow")
-                 and other["name"].startswith(item["name"]) and other["name"] != item["name"]]
-        for mate in mates:
-            cells |= cells_covered(opaque_world_rect(root, mate))
-        openings = set(OPENINGS.get(item["name"], ()))
-        unknown = openings - cells
-        if unknown:
-            raise SystemExit(f"[FAIL] {item['name']} 声明的门洞 {sorted(unknown)} "
-                             f"不在它的视觉框里：洞挪了位置而表没跟着改")
+        cells, mates = visual_cells(root, item, sprites)
+        openings = declared_openings(item, cells, openings_by_name)
         solid |= cells - openings
         readings.append({"name": item["name"], "visual": len(cells), "solid": len(cells - openings),
                          "openings": sorted(openings), "mates": [m["name"] for m in mates]})
     for item in sprites:
         if item["role"] not in ROOT_ROLES:
             continue
-        mode = PROP_COLLISION.get(item["name"], "root")
+        mode = prop_collision.get(item["name"], "root")
+        if mode not in PROP_MODES:
+            raise SystemExit(f"[FAIL] {item['name']} 的碰撞模式 {mode!r} 不认识："
+                             f"只许 {PROP_MODES}（写错一个字母就会让一件东西整件没有碰撞）")
+        if mode == "walk":
+            continue
         if mode == "box":
-            solid |= cells_covered(opaque_world_rect(root, item))
+            # 横着占多格的道具与建筑同一条算法：视觉框减门洞。山门那种"石体压着三格、
+            # 中间留一个洞"的东西，只有走这条才既不留悬空碰撞、也不把通道堵死。
+            cells, _mates = visual_cells(root, item, sprites)
+            solid |= cells - declared_openings(item, cells, openings_by_name)
             continue
         if item["cell"] is None:
             raise SystemExit(f"[FAIL] {item['name']} 是 prop 却没有 entity_meta cell："
@@ -244,18 +343,31 @@ def visual_and_solid(root, sprites, width, height):
     return clipped, readings, ents_by_name
 
 
-def ground_component(lines):
-    """(行号, 字段 dict, width, height, kinds, solid 串)。"""
+def ground_line(lines):
+    """(行号, 那一行的 tab 分段)——按 `role=ground_tilemap` 认出地表那张 Tilemap。
+
+    以前各处按贴图路径认（写死 manor），换一个场景就得再写一个常量；而每张玩法图的
+    GroundMap 都带 `entity_meta <id> role ground_tilemap`（七张全一致），按角色认对场景数是零的。
+    "哪一行是地表"这件事只在这里判一次（`set_terrain_autotile.py` 也 import 它）。
+    """
+    ground_ids = {parts[1] for parts in (line.split("\t") for line in lines)
+                  if len(parts) == 4 and parts[0] == "entity_meta" and parts[2] == "role"
+                  and parts[3] == GROUND_ROLE}
     hits = []
     for index, line in enumerate(lines):
         parts = line.split("\t")
         if len(parts) == 4 and parts[0] == "component" and parts[2] == "Tilemap" \
-                and f"texture={GROUND_TEXTURE}" in parts[3]:
-            hits.append((index, _fields(line)))
+                and parts[1] in ground_ids:
+            hits.append((index, parts))
     if len(hits) != 1:
-        raise SystemExit(f"[FAIL] 期望恰好一条 {GROUND_TEXTURE} 的 Tilemap，实到 {len(hits)} 条")
-    index, fields = hits[0]
-    width, height = (int(v) for v in fields["tile_size"].split("x"))
+        raise SystemExit(f"[FAIL] 期望恰好一条 role={GROUND_ROLE} 的 Tilemap，实到 {len(hits)} 条")
+    return hits[0]
+
+
+def ground_component(lines):
+    """(行号, 字段 dict, width, height, kinds, solid 串)。"""
+    index, parts = ground_line(lines)
+    fields = _fields("\t".join(parts))
     width = int(fields["width"])
     height = int(fields["height"])
     kinds = [int(v) for v in fields["tiles"].split(",") if v.strip() != ""]
@@ -272,7 +384,7 @@ def analyse(scene_path, root=None):
     lines = open(scene_path, encoding="utf-8").read().splitlines()
     index, _fields_, width, height, kinds, solid = ground_component(lines)
     sprites = placed_sprites(read_entities(lines))
-    expected, readings, _ = visual_and_solid(root, sprites, width, height)
+    expected, readings, _ = visual_and_solid(root, sprites, width, height, scene_name(lines))
     on_disk = {(i % width, i // width) for i, ch in enumerate(solid) if ch == "1"}
     native = {(i % width, i // width) for i, k in enumerate(kinds) if k in TILE_NATIVE_SOLID}
     want = expected | native
@@ -313,10 +425,11 @@ def opening_holes(scene_path, root=None):
     """
     root = root or project_root()
     lines = open(scene_path, encoding="utf-8").read().splitlines()
+    openings_by_name = profile(scene_name(lines))["openings"]
     sprites = placed_sprites(read_entities(lines))
     out = []
     for item in sprites:
-        cells = OPENINGS.get(item["name"], ())
+        cells = openings_by_name.get(item["name"], ())
         if not cells:
             continue
         lowest = {}

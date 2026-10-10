@@ -40,17 +40,102 @@ EDGE_BY_BIT = {
 }
 
 
-def load_ramp(path=RAMP_PATH):
-    """读色阶表（唯一取色来源）。返回原表 dict，另附解析好的 `*_rgb` 字段。"""
+# 顶层 families/kinds/utility 这一段读作**默认场景**（= manor，M72-04 那张表）。
+# 其余场景在 `scenes` 里各给一条覆盖：只换取色与 kind 归属，图集排布、条目算术、
+# 掩码位序、容量口径这些机制全共享——M72-11 复制的是这套机制，不是那些 hex。
+DEFAULT_SCENE = "manor"
+
+
+def _validate_family(levels, name, scene):
+    if len(levels) < 3:
+        raise ValueError(f"[{scene}] 色阶族 {name!r} 只有 {len(levels)} 档，规范下限是 3 档")
+    colors = [rgb(hex_value) for hex_value in levels]
+    lights = [luminance(color) for color in colors]
+    if any(lights[i] >= lights[i + 1] for i in range(len(lights) - 1)):
+        raise ValueError(f"[{scene}] 色阶族 {name!r} 不是深→浅单调：{levels}")
+
+
+def load_ramp(scene=DEFAULT_SCENE, path=RAMP_PATH):
+    """读某个场景的色阶表（唯一取色来源）。返回原表 dict，另附解析好的字段。
+
+    合并规则：`families`/`utility` 按名字覆盖或新增，`kinds` 给了就整份替换。
+    合并完立刻校验，不许把畸形表带到出图侧去：
+
+      * kind id 必须 1..N 连续不重号——**引擎与 farm.lua/building.lua 认的就是这个号**
+        （2 永远是可垦夯土位、3 永远是道路铺地位），场景只能改画法不能改语义位；
+      * kind 的**名字集合**必须与默认段相同（grass/dirt/stone/wall/roof/water）：
+        出图侧的画法配方按名字分派，改名等于悄悄换配方；
+      * `uses` 必填，且必须包住每个 kind 的族——它才是"本场景图集允许出现哪些族色"的口径。
+        校验用色集按 `uses` 收口而不是按整张表：否则 village 的图集画上山庄的夯土色，
+        "每个不透明像素必须出自表内"这条门就测不出来（跨场景串色正是本包要防的）。
+    """
     with open(path, encoding="utf-8") as handle:
-        table = json.load(handle)
-    if table.get("version") != 1:
-        raise ValueError(f"terrain_ramp.json version 不认：{table.get('version')!r}")
+        raw = json.load(handle)
+    if raw.get("version") != 1:
+        raise ValueError(f"terrain_ramp.json version 不认：{raw.get('version')!r}")
+    scenes = raw.get("scenes", {})
+    if scene not in scenes:
+        raise KeyError(f"色阶表里没有场景 {scene!r}，可用：{sorted(scenes)}")
+    profile = scenes[scene]
+
+    table = dict(raw)
+    table["scene"] = scene
+    table["display_name"] = profile.get("display_name", scene)
+    families = dict(raw["families"])
+    families.update(profile.get("families", {}))
+    utility = dict(raw["utility"])
+    utility.update(profile.get("utility", {}))
+    kinds = profile.get("kinds", raw["kinds"])
+
+    ids = sorted(int(entry["id"]) for entry in kinds)
+    if ids != list(range(1, len(kinds) + 1)):
+        raise ValueError(f"[{scene}] kinds 的 id 必须是 1..{len(kinds)} 连续不重号，实到 {ids}")
+    names = {entry["name"] for entry in kinds}
+    base_names = {entry["name"] for entry in raw["kinds"]}
+    if names != base_names:
+        raise ValueError(f"[{scene}] kinds 的名字集合必须与默认段一致，差异："
+                         f"多 {sorted(names - base_names)} 少 {sorted(base_names - names)}")
+    uses = profile.get("uses")
+    if not uses:
+        raise ValueError(f"[{scene}] 色阶表必须声明 uses（本场景地表图集允许用哪些族）")
+    for name in uses:
+        if name not in families:
+            raise KeyError(f"[{scene}] uses 声明了族 {name!r}，色阶表里没有这一族")
+    for entry in kinds:
+        family = entry["family"]
+        if family not in uses:
+            raise ValueError(f"[{scene}] kind {entry['id']}（{entry['name']}）挂在族 {family!r}，"
+                             f"但 uses 没包住它——图集会画出没有归属的色")
+        if family not in families:
+            raise KeyError(f"[{scene}] kind {entry['id']} 的族 {family!r} 不在色阶表里")
+    for name, levels in families.items():
+        _validate_family(levels, name, scene)
+
+    table["families"] = families
+    table["utility"] = utility
+    table["kinds"] = kinds
+    table["uses"] = list(uses)
     table["tile"] = int(table["tile_px"])
     table["cols"] = int(table["atlas"]["cols"])
     table["rows"] = int(table["atlas"]["rows"])
-    table["kind_count"] = len(table["kinds"])
+    table["kind_count"] = len(kinds)
     return table
+
+
+def scenes(path=RAMP_PATH):
+    """表里登记了哪些场景（铺量时逐个点名，不靠目录猜）。"""
+    with open(path, encoding="utf-8") as handle:
+        return sorted(name for name in json.load(handle).get("scenes", {})
+                      if name != "comment")
+
+
+def ground_texture(scene):
+    """`.scene` 里 `texture=` 字段用的地表图集相对路径（**正斜杠**，与 assets/ 下其它引用一致）。
+
+    M72-11 铺量后这是场景生成器、出图器、四季变体、门共用的唯一命名口径：以前每张图
+    在自己文件里写一遍 `assets/art/tilesets/<scene>/<scene>_ground.png`，改名就会只改一处。
+    """
+    return f"assets/art/tilesets/{scene}/{scene}_ground.png"
 
 
 def family_levels(table, family):
@@ -79,25 +164,42 @@ def ramp_is_monotonic(table, family):
 
 
 def allowed_colors(table):
-    """允许出现在地表图集中的全部不透明色：六族色阶 + 通用墨/纸/金/木。
+    """允许出现在该场景地表图集里的全部不透明色：`uses` 里那几族的色阶 + 通用墨/纸/金/木。
+
+    为什么按 `uses` 收口（见 `load_ramp` 的注释）：色阶表是**跨场景的调色库**，
+    某个场景的图集只该用它声明的那几族。整表放行等于让"village 画上 manor 的夯土色"
+    这种跨场景串色变成合法像素，而门要求报 0 的就是这件事。
 
     返回 **RGB 三元组**集合：PNG 里读出来的像素是 RGBA，比对一律先切 `[:3]`，
     这里若带 alpha 就会变成"每个不透明像素都越表"的假阳性。
     """
     colors = set()
-    for levels in table["families"].values():
-        for hex_value in levels:
+    for family in table.get("uses", table["families"]):
+        for hex_value in table["families"][family]:
             colors.add(rgb(hex_value)[:3])
     for hex_value in table["utility"].values():
         colors.add(rgb(hex_value)[:3])
     return colors
 
 
-def kind_of(table, kind_id):
+def kind_of(table, kind_id_value):
     for entry in table["kinds"]:
-        if int(entry["id"]) == kind_id:
+        if int(entry["id"]) == kind_id_value:
             return entry
-    raise KeyError(f"色阶表里没有 kind {kind_id}")
+    raise KeyError(f"色阶表里没有 kind {kind_id_value}")
+
+
+def kind_id(table, name):
+    """按**名字**取某个 kind 的编号（`water` → 6）。
+
+    跨场景写逻辑时别拿数字：`load_ramp` 校验的是"名字集合一致 + id 连续"，同一张档里
+    id 6 未必还是水（换序是允许的，只要语义位跟着 data 侧一起改）。要按形状找水格
+    （`interior_tints`、岸线、湿痕）就该说"这张档里那个叫 water 的 kind"。
+    """
+    for entry in table["kinds"]:
+        if entry["name"] == name:
+            return int(entry["id"])
+    raise KeyError(f"[{table.get('scene')}] 色阶表的 kinds 里没有 {name!r}")
 
 
 def entry_base(table, kind_id):
