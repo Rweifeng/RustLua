@@ -130,7 +130,7 @@ RustLua <flags> [12B nonce] <payload>
      资源形态三选一，详见 [微信小游戏分包发布](52-微信小游戏分包发布.md) 与
      [plugins/wechat-minigame/README.md](../plugins/wechat-minigame/README.md)。
 4. 用 `game.exe --pack <pack> --check` 做无窗口完整性校验（退出码 0 = 通过）；`-SelfTest` 把包复制到带空格的临时目录再校验，验证目录隔离（无源码/无 target 依赖）。web 平台的 `-SelfTest` 改为断言静态产物齐全，并（小游戏）在隔离目录里跑一次无头运行时验证。
-5. 生成 `run.txt`（运行说明）、`build-info.txt`（引擎版本、toolchain、内容清单）。发布包判定标记由包内 `project.toml` 的 `release = true` 承担（旧 `release.toml` 已退役）：`package.ps1` 从工程根复制 `project.toml` 进 `pack/`（工程源需带 `release = true`），`-PublishName` 自定义发布名时向包内副本追加 `publish_name` 键。
+5. 生成 `run.txt`（运行说明）、`build-info.txt`（引擎版本、toolchain、内容清单）。发布包判定标记由包内 `project.toml` 的 `release = true` 承担（旧 `release.toml` 已退役）：`package.ps1` 从工程根复制 `project.toml` 进 `pack/`，随后**由脚本向包内副本追加** `release = true`（工程源那份不带、也不该带这个键——它是发布形态标记，不是开发配置），追加后立刻回读该文件，读不到就 `throw`；`-PublishName` 自定义发布名时再追加 `publish_name` 键。只有 pc 形态注入：webgl/微信没有文件系统（`user_dir::platform_data_dir` 在 wasm 上是虚拟根 `/rustlua-user`），翻开 packaged 形态等于换掉它们 settings 的落点。第 4 步的 `game --check` 会打印 `player_data_roots packaged=… save_dir=… settings_dir=…`，发布后**必须看这一行**：2026-10-07 退役 `release.toml` 时漏了注入，PC 包实测以 `packaged=false` 运行（存档/日志写进 `pack/.cache`，`%APPDATA%\<app>\project.toml` 的玩家设置与首次播种整条不走），而当时的 build-info 文案已硬编码写着 `release=true`。
 
 **平台差异**：web 平台共用 `plugins/webgl/web-runtime.js`，该 JS 运行时只读明文 `pack/`，因此 `-Encrypt`/`-Compress` 仅对 PC 有效；对 web 平台传这两个开关会被脚本直接拒绝（避免产出跑不起来的包）。
 

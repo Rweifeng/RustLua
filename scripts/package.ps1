@@ -1187,9 +1187,10 @@ WASM build failed ($Platform)。
     # 工程根，运行器按 `<root>/project.toml` 读取，否则打包版会回落到键盘默认绑定，
     # 出现「编辑器里改好的手柄绑定在发布包里失效」。
     $settingsSource = Join-Path $gameRoot "project.toml"
+    $packSettings = Join-Path $packRoot "project.toml"
     $settingsPackaged = $false
     if (Test-Path -LiteralPath $settingsSource) {
-        Copy-Item -Path $settingsSource -Destination (Join-Path $packRoot "project.toml") -Force
+        Copy-Item -Path $settingsSource -Destination $packSettings -Force
         $settingsPackaged = $true
         Write-Host "==> Packaged project.toml (input bindings / deadzone / audio)" -ForegroundColor DarkGray
     }
@@ -1203,8 +1204,30 @@ WASM build failed ($Platform)。
         if ($nameLine -and $nameLine -match '^\s*name\s*=\s*"(.+)"\s*$') { $projectName = $Matches[1] }
     }
     if ($null -ne $projectName -and $PublishName -ne $projectName) {
-        Add-Content -LiteralPath (Join-Path $packRoot "project.toml") -Value "publish_name = `"$PublishName`"" -Encoding UTF8
+        Add-Content -LiteralPath $packSettings -Value "publish_name = `"$PublishName`"" -Encoding UTF8
         Write-Host "==> Injected publish_name = $PublishName into pack/project.toml (differs from project name)" -ForegroundColor DarkGray
+    }
+
+    # 发布标记要写进**包内**那份 project.toml（不是工程根那份）：双击 game.exe 时
+    # `game::cli::find_project_root` 取 `<exe>/pack`，`user_dir::is_release_pack` 读的就是这个
+    # 文件里的 `release = true`。缺这一个键整包退化成开发工程：存档/日志写进安装目录
+    # （装在 `C:\Program Files` 时不可写＝静默丢档），`%APPDATA%\<app>\project.toml` 的玩家设置
+    # 与首次播种整条不走，重装即覆盖玩家改键。2026-10-07 退役 release.toml 时这条注入漏了。
+    # 追加而不是重写整份：引擎侧读 project.toml 全是按行取键、不看表段
+    # （`project_config::parse_key`、`settings::from_toml`），键落在 `[input]` 之后照样读得到。
+    # 只在 pc 形态注入：webgl/微信没有文件系统（`platform_data_dir` 在 wasm 上是虚拟根
+    # `/rustlua-user`），翻开 packaged 形态等于换掉它们 settings 的落点，要单独验。
+    $releaseMarked = $false
+    if ($settingsPackaged -and ($Platform -eq "pc")) {
+        if (-not (Select-String -LiteralPath $packSettings -Pattern '^\s*release\s*=\s*true\s*$' -Quiet)) {
+            Add-Content -LiteralPath $packSettings -Value "release = true" -Encoding UTF8
+        }
+        # 反查真实产物：写不进就说写不进，别让 build-info 空头承诺 release=true。
+        if (-not (Select-String -LiteralPath $packSettings -Pattern '^\s*release\s*=\s*true\s*$' -Quiet)) {
+            throw "pack/project.toml 缺 `release = true` 标记，这个包会被当成开发工程运行（存档写进安装目录、玩家设置不生效）: $packSettings"
+        }
+        $releaseMarked = $true
+        Write-Host "==> Marked pack/project.toml with release = true (player data -> $PlayerDataDir)" -ForegroundColor DarkGray
     }
 
     # ------------------------------------------------ 调试残留拦截（全平台，早于所有体积统计）
@@ -1715,7 +1738,7 @@ WASM build failed ($Platform)。
         # $distRoot 始终指向 launcher/，所以体积统计/必需文件检查都只看首包。
         $packageContents = "launcher/: game.js, game.json, project.config.json, wechat-adapter.js, web-runtime.js, pkg/, pack/ (skeleton when thin), run.txt, deps.txt"
         if ($settingsPackaged) {
-            $packageContents = "launcher/: game.js, game.json, project.config.json, wechat-adapter.js, web-runtime.js, pkg/, pack/ (project.toml, release=true), run.txt, deps.txt"
+            $packageContents = "launcher/: game.js, game.json, project.config.json, wechat-adapter.js, web-runtime.js, pkg/, pack/ (project.toml), run.txt, deps.txt"
         }
         if ($isSubpackagePack) {
             # 分包形态的主包 = launcher 自身：首屏资源在 mainpack/，其余在 pack/ 分包里。
@@ -1732,7 +1755,7 @@ WASM build failed ($Platform)。
     elseif ($Platform -eq "webgl") {
         $packageContents = "index.html, test-webgl.bat, pkg/game_web.js, pkg/game_web_bg.wasm, web-runtime.js, pack/ (data), run.txt, deps.txt"
         if ($settingsPackaged) {
-            $packageContents = "index.html, test-webgl.bat, pkg/game_web.js, pkg/game_web_bg.wasm, web-runtime.js, pack/ (data, project.toml, release=true), run.txt, deps.txt"
+            $packageContents = "index.html, test-webgl.bat, pkg/game_web.js, pkg/game_web_bg.wasm, web-runtime.js, pack/ (data, project.toml), run.txt, deps.txt"
         }
     }
     else {
@@ -1752,7 +1775,7 @@ WASM build failed ($Platform)。
         }
         $packageContents = "game.exe, pack/ (data, assets/fonts/$fontName), run.txt, deps.txt"
         if ($settingsPackaged) {
-            $packageContents = "game.exe, pack/ (data, project.toml, release=true, assets/fonts/$fontName), run.txt, deps.txt"
+            $packageContents = "game.exe, pack/ (data, project.toml$(if ($releaseMarked) { ', release=true' }), assets/fonts/$fontName), run.txt, deps.txt"
         }
     }
 
@@ -1767,7 +1790,7 @@ WASM build failed ($Platform)。
         "toolchain: $toolchain",
         "contents: $packageContents",
         "font_check: $(if ($Platform -eq 'wechat-minigame') { "$wechatFontRelative (subset, packaged into launcher/)" } elseif ($Platform -eq 'webgl') { "fonts/$fontName present and non-empty (index.html 的字体路径指向它)" } else { "pack/assets/fonts/$fontName present and non-empty（发布根不带完整字体）" })",
-        "settings_check: $(if ($settingsPackaged) { 'project.toml packaged from project root（微信形态按白名单改名成 project.toml.txt）' } else { 'no [input]/[audio] in project.toml; engine defaults apply' })",
+        "settings_check: $(if ($settingsPackaged) { "project.toml packaged from project root$(if ($releaseMarked) { ' + release = true marker read back from pack/project.toml' } else { '（无 release 标记：webgl/微信宿主没有文件系统，按包内工程根读取）' })；微信形态按白名单改名成 project.toml.txt" } else { 'no [input]/[audio] in project.toml; engine defaults apply' })",
         "player_data: $(if ($Platform -eq 'wechat-minigame') { 'wx storage / USER_DATA_PATH; the code package is read-only' } elseif ($Platform -eq 'webgl') { 'browser storage; no filesystem player data' } else { "$PlayerDataDir (override: RUSTLUA_USER_DIR); pack/ is read-only and never written" })"
     ) | Set-Content (Join-Path $distRoot "build-info.txt") -Encoding UTF8
 
