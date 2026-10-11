@@ -79,6 +79,19 @@ assetc_manifest=1\tassetc-package-2
 必须保守处理的动态引用；WebGL 启动按入口闭包预载，闭包遇到动态/缺失依赖或旧包无此索引时
 全量预载，避免静态分析漏项改变同步 Lua/VFS 的可见资源。Lua `require` 仍同步，因此脚本会全部纳入入口集合。
 
+两条容易写错、一写错就退化成"全量预载"的换算，写在这里备查：
+
+- **点号模块名是路径分隔符**：`require("data.buildings")` 指的是 `scripts/data/buildings.lua`
+  （换算只有一份定义：[`module_path`](../engine/crates/rustlua-assets/src/dependency.rs)）。
+  拼成 `scripts/data.buildings.lua` 会让**每一条 `require` 边都连不上**，于是所有被 require 的模块
+  都被标 opaque（真实工程实测：155 个 Lua 里 83 个，`full_fallback=true`、预载集 == 清单全集）。
+- **`audio.*` 不参与 opaque 判定**：音频由宿主在播放时按名字取回（浏览器拼
+  `pack/assets/audio/<name>.mp3` 走 HTTP、微信走适配层路由），不读同步 VFS 预载表。
+  把它算进"必须证明完整"的同步读取里，会让每个放过音效的脚本都拖垮预载集。
+
+opaque 只留给"索引确实证明不了"的引用；**目录常量 + 变量名拼出的路径不算**——`"assets/ui/prefabs/"`
+这类前缀能按包内命中展开成确定的边，命中集为空则说明运行期同样读不到，两种情况都不需要回退全量。
+
 ## 3. 发布资源编码（RustLua）
 
 编码文件布局（[pack.rs](../engine/crates/rustlua-infra/src/pack.rs)，ADR-0015）：

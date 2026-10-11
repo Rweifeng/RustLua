@@ -478,6 +478,97 @@ fn extract_atlas_texture(text: &str) -> Vec<DependencyRef> {
 /// 当字节索引切片）。
 const SCENE_LOAD: [char; 10] = ['s', 'c', 'e', 'n', 'e', '.', 'l', 'o', 'a', 'd'];
 
+/// `prefab.spawn` / `data.load` / `data.reload` / `asset.load` 的**实参就是资源路径**，
+/// 而这个路径在游戏脚本里常常经由同文件常量（`local PRESET_PATH = "assets/…"`）传入。
+/// 这种写法静态上其实完全可证：本函数只在**实参自己就是字符串字面量**时产出边，变量实参
+/// 交给 `write_dependency_index` 的同文件常量化处理；两者都证不出来时才返回名字，
+/// 由调用方标 opaque（全量预载兜底）。
+///
+/// 为什么值得单独扫一遍：本仓八个界面都用 `prefab.spawn(PRESET_PATH)`，而那些
+/// `PRESET_PATH` 就是字面量——只按"文件里出现过 `prefab.spawn`"就判 opaque，
+/// 等于把已经证过的依赖再标一次"无法证明"。
+pub fn scan_path_call_args(text: &str) -> Vec<String> {
+    const CALLS: [&str; 4] = ["prefab.spawn", "data.load", "data.reload", "asset.load"];
+    let mut unresolved = Vec::new();
+    for call in CALLS {
+        let mut search = 0;
+        while let Some(offset) = text[search..].find(call) {
+            let start = search + offset + call.len();
+            search = start;
+            let argument = match call_argument(text, start) {
+                Some(argument) => argument,
+                None => continue,
+            };
+            if quote_trimmed(argument).is_some() {
+                // 字面量实参：路径引用由 `lua_string_refs` 的 `assets/` 分支产出
+                // （本文件的 `extract_refs` 已包含它），这里不再重复产出一条。
+                continue;
+            }
+            if !unresolved.iter().any(|seen| seen == argument) {
+                unresolved.push(argument.to_owned());
+            }
+        }
+    }
+    unresolved
+}
+
+/// `prefab.spawn` 这类调用的实参文本：`prefab.spawn(x)` → `x`，`prefab.spawn "x"` → `"x"`，
+/// 无实参或无函数调用括号时返回 `None`（`f` 指向调用名末尾）。
+fn call_argument(text: &str, f: usize) -> Option<&str> {
+    let rest = text.get(f..)?;
+    let trimmed = rest.trim_start();
+    let after = match trimmed.strip_prefix('(') {
+        Some(after) => after,
+        // 无括号形态只接字符串字面量（Lua 的 `f "x"`），其他一律不猜。
+        None => return trimmed.starts_with(['"', '\'']).then_some(trimmed),
+    };
+    let mut depth = 1usize;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (index, c) in after.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if let Some(open) = quote {
+            if c == '\\' {
+                escaped = true;
+            } else if c == open {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' => quote = Some(c),
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(after[..index].trim());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 整串就是一个字符串字面量时返回去掉引号的正文，否则 `None`
+/// （拼接、table 字段、变量一律不算字面量）。
+fn quote_trimmed(argument: &str) -> Option<&str> {
+    let trimmed = argument.trim();
+    let mut chars = trimmed.chars();
+    let quote = match chars.next() {
+        Some(quote @ ('"' | '\'')) => quote,
+        _ => return None,
+    };
+    if !trimmed.ends_with(quote) || trimmed.len() < 2 {
+        return None;
+    }
+    let body = &trimmed[1..trimmed.len() - 1];
+    (!body.contains(quote)).then_some(body)
+}
+
 /// Scans Lua source with a quote-aware state machine: `--` comments are skipped
 /// to end of line, and references are only read from string literals (or from
 /// `scene.load(<variable>)`, which is recorded as [`DependencyRef::Dynamic`]).
@@ -575,13 +666,19 @@ fn lua_context(chars: &[char], quote_index: usize) -> String {
 
 /// Detects `scene.load(<variable>)` and records the argument as [`DependencyRef::Dynamic`]
 /// so the graph acknowledges the reference without resolving it.
+///
+/// 例外：实参区域里出现字面量场景名时（游戏里最常见的路由写法就是
+/// `scene.load(maps.get(target) and target or "manor")`——查表命中用表里的名字，
+/// 未命中用兜底字面量），那个名字是**可证的真依赖**，因此产出场景名而不是 opaque。
+/// 主脚本因此不必为一句"查表 + 兜底"把整包拖成全量预载。
 fn scene_load_dynamic(chars: &[char], start: usize) -> Option<DependencyRef> {
     let mut j = start + "scene.load".len();
     while j < chars.len() && chars[j].is_whitespace() {
         j += 1;
     }
     let mut arg_start = j;
-    if j < chars.len() && chars[j] == '(' {
+    let open = j < chars.len() && chars[j] == '(';
+    if open {
         j += 1;
         while j < chars.len() && chars[j].is_whitespace() {
             j += 1;
@@ -600,7 +697,65 @@ fn scene_load_dynamic(chars: &[char], start: usize) -> Option<DependencyRef> {
     }
     let name: String = chars[arg_start..end].iter().collect();
     let name = name.trim_end_matches([')', ',', ';']).to_owned();
+    if open && let Some(scene) = scene_literal_in_call(chars, start) {
+        return Some(DependencyRef::SceneName(scene));
+    }
     (!name.is_empty()).then_some(DependencyRef::Dynamic(name))
+}
+
+/// `scene.load(` 之后的整段实参文本里出现的**第一个**字符串字面量（配平括号截取）。
+///
+/// 只取一个是有意的保守：多分支字面量里挑任意一个都不能证明"全部"可达，但
+/// `a and b or "literal"` 这个最普遍形态的兜底分支恰好就是唯一的那个字面量，
+/// 取它既不多算也不少算；真正的多分支路由仍会因为主分支是变量而落回 opaque。
+fn scene_literal_in_call(chars: &[char], start: usize) -> Option<String> {
+    let mut j = start + "scene.load".len();
+    while j < chars.len() && chars[j].is_whitespace() {
+        j += 1;
+    }
+    if j >= chars.len() || chars[j] != '(' {
+        return None;
+    }
+    j += 1;
+    let mut depth = 1usize;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut literal = String::new();
+    while j < chars.len() {
+        let c = chars[j];
+        if escaped {
+            escaped = false;
+            if quote.is_some() {
+                literal.push(c);
+            }
+            j += 1;
+            continue;
+        }
+        if let Some(open) = quote {
+            match c {
+                '\\' => escaped = true,
+                c if c == open => {
+                    return (!literal.trim().is_empty()).then(|| literal.trim().to_owned());
+                }
+                _ => literal.push(c),
+            }
+            j += 1;
+            continue;
+        }
+        match c {
+            '"' | '\'' => quote = Some(c),
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    None
 }
 
 /// Turns a Lua string literal plus its call context into references: `require`
@@ -624,6 +779,23 @@ fn lua_string_refs(context: &str, content: &str) -> Vec<DependencyRef> {
 
 fn is_ident_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '.'
+}
+
+/// 模块名 → 包内脚本路径。**点号是路径分隔符，不是文件名的一部分**：
+/// `require("data.buildings")` 指的是 `scripts/data/buildings.lua`。
+///
+/// 这个换算以前只存在于宿主侧（`web-runtime.js` 装载 `package.preload` 前把
+/// `scripts/a/b.lua` 记成 `a.b`），索引侧却写成 `format!("scripts/{name}.lua")`——
+/// 于是 `data.buildings` 被拼成 `scripts/data.buildings.lua`，一个包内不存在的路径，
+/// **`require` 的边一条都连不上**：155 个 Lua 里 55 个被 require 的文件全被标 opaque，
+/// 主脚本一出发就回退全量预载。换算放在这里，两侧共用一个定义。
+pub fn module_path(name: &str) -> String {
+    format!("scripts/{}.lua", name.replace('.', "/"))
+}
+
+/// 场景名 → 包内场景路径（与 `scene.load("manor")` 的取值口径一致）。
+pub fn scene_path(name: &str) -> String {
+    format!("scenes/{name}.scene")
 }
 
 #[cfg(test)]
@@ -780,6 +952,75 @@ mod tests {
             })
             .collect();
         assert_eq!(dynamic, vec!["state.scene_name"], "变量参数记录为动态");
+    }
+
+    #[test]
+    fn lua_scene_load_fallback_literal_is_a_real_edge() {
+        // 游戏里最常见的路由写法：查表命中用表里的名字，未命中用兜底字面量。
+        // 兜底那支是可证的真依赖；整句都算 Dynamic 会让主脚本被标 opaque。
+        let lua = "return scene.load(maps.get(target) and target or \"manor\")\n";
+        let refs = extract_refs(lua, ResourceKind::LuaScript);
+        let scenes: Vec<_> = refs
+            .iter()
+            .filter_map(|reference| match reference {
+                DependencyRef::SceneName(name) => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(scenes, vec!["manor"], "{refs:?}");
+        assert!(
+            !refs
+                .iter()
+                .any(|reference| matches!(reference, DependencyRef::Dynamic(_))),
+            "兜底字面量可证时不再记 Dynamic：{refs:?}"
+        );
+
+        // 纯变量、且实参里没有任何字面量场景名：仍然记 Dynamic（保守回退）。
+        let lua = "scene.load(maps.route_of(target))\n";
+        let refs = extract_refs(lua, ResourceKind::LuaScript);
+        assert!(
+            refs.iter()
+                .any(|reference| matches!(reference, DependencyRef::Dynamic(_))),
+            "{refs:?}"
+        );
+    }
+
+    #[test]
+    fn path_call_args_are_literal_or_unresolved() {
+        // 字面量实参（含同文件常量那种）由 assets 字面量分支产边，这里不重复报；
+        // 只有真证不出来的实参才返回给调用方，由它决定 opaque。
+        let lua = "local P = \"assets/prefabs/hud.prefab\"\n\
+            prefab.spawn(P)\n\
+            prefab.spawn(\"assets/prefabs/shop.prefab\")\n\
+            prefab.spawn(preset_name)\n\
+            data.load(DIR .. name)\n";
+        assert_eq!(
+            scan_path_call_args(lua),
+            vec![
+                // 常量实参也原样返回：常量解析在依赖索引那一侧（它才知道包内有哪些文件），
+                // 这一层只负责"实参文本不是字面量"这一件事。
+                "P".to_owned(),
+                "preset_name".to_owned(),
+                "DIR .. name".to_owned(),
+            ]
+        );
+        // 无括号的字面量形态同样是"已解析"，不进 unresolved。
+        assert!(scan_path_call_args("prefab.spawn \"assets/x.prefab\"\n").is_empty());
+        // 嵌套表参不越界：外层括号配平后只取到最外层实参文本。
+        assert_eq!(
+            scan_path_call_args("data.load(table.concat({ DIR, name }))\n"),
+            vec!["table.concat({ DIR, name })".to_owned()]
+        );
+    }
+
+    #[test]
+    fn module_and_scene_names_become_package_paths() {
+        // 点号是分隔符：这是 `require` 边能不能连上的唯一依据，写错一个字符
+        // 就会让整条 require 链静默消失（表现为索引里全是 opaque）。
+        assert_eq!(module_path("data.buildings"), "scripts/data/buildings.lua");
+        assert_eq!(module_path("core.state"), "scripts/core/state.lua");
+        assert_eq!(module_path("validate_data"), "scripts/validate_data.lua");
+        assert_eq!(scene_path("manor"), "scenes/manor.scene");
     }
 
     #[test]

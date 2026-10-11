@@ -182,6 +182,24 @@
   `verify-wasm-host.mjs --platform=webgl` 通过；`verify-webgl-bundle.ps1` 的 `scene_verify=done`、
   `check-docs` 的 `ps1_bom_ok=33 ps1_parse_ok=33` 同轮全绿。
 
+## Unreleased — WebGL 发布包不再全量预载：`require` 边修复 + 三类 opaque 误报收口
+
+- **症状**：WebGL 产物启动时必然打印 `[resources] full preload fallback: opaque reference at scripts/main.lua`，
+  随后 `selected==manifest`——按需预载这套机制在真实工程上等于没生效（1370 项全进资源表）。
+- **根因两处，都不在运行时**：①依赖索引把点号模块名拼成了 `scripts/data.buildings.lua` 这类**包内不存在**
+  的路径（正确是 `scripts/data/buildings.lua`），于是**每一条 `require` 边都连不上**，被 require 的模块
+  全被标 opaque；②opaque 判定过宽——`audio.` 子串（音频由宿主按名字取回，不读同步 VFS）、
+  `prefab.spawn` 的**同文件字面量常量**实参、`scene.load(x and x or "manor")` 的兜底字面量，
+  这三类本来都可证。
+- **改法**：换算收成一份定义（`module_path` / `scene_path`，`rustlua-assets` 与 `assetc` 共用）；
+  新增同文件字面量常量表、目录前缀按包内命中展开、`scene.load` 兜底字面量识别；`audio.` 退出触发表。
+  opaque 只留给确实证明不了的引用（例：`data.load(DIR .. name)` 而 `assets/ui/prefabs/` 下无命中）。
+- **实测**（`examples/game_jhyt`，重打 assetc 索引 + 按 `resource_index` 算法实算）：opaque 88 → **0**、
+  边源 38 → **107**、`full_fallback=false`、预载 1361/1370，少预载 336,412 B（5.65%）——省下的是
+  6 张只经动态路由进入的场景，宿主按需 fetch，行为不变。
+- **回滚档**：改动只在打包器与静态扫描（`engine/crates/{assetc,rustlua-assets}`），运行时一行未动；
+  旧包（无此索引或格式不符）仍走全量预载，行为逐字不变。
+
 ## Unreleased — 第二张图照金标规范跑通：云泽村从"6 种平色瓦"变成 102 槽 autotile + 326 件散布（M72-11 ①village）
 
 - **这一包是 M72-11 的第一张**：plan 点名 7 张图，本包按"一张做满再一次 commit"只做满 `village`，
