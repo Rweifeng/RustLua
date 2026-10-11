@@ -48,6 +48,14 @@ impl fmt::Display for PublishPlatform {
     }
 }
 
+/// 微信小游戏 appid 在 `project.toml` 里的键名。
+///
+/// 为什么放 `project.toml` 而不是编辑器自己的偏好文件：appid 是**这个工程**的身份
+/// （一个小程序对应一个 appid），换台机器打开同一个工程应当还是它；而微信开发者工具
+/// 导入的 `project.config.json` 每次发布都由 `plugins/wechat-minigame/` 模板重新生成，
+/// 只有工程配置能活过重新打包。appid 本身会随包分发，不是密钥。
+pub(crate) const WECHAT_APPID_KEY: &str = "wechat_appid";
+
 /// 发布面板的全部 UI 状态（P1 EditorApp 瘦身：从 `EditorApp` 5 个散字段收敛）。
 #[derive(Clone, Debug)]
 pub(crate) struct PublishState {
@@ -56,17 +64,40 @@ pub(crate) struct PublishState {
     pub(crate) name: String,
     pub(crate) compress: bool,
     pub(crate) encrypt: bool,
+    /// 微信小游戏 appid（仅 `platform == WechatMiniGame` 时展示，随工程缓存）。
+    pub(crate) wechat_appid: String,
+    /// 本次会话里用户是否编辑过 appid 栏（没编辑过就不往工程配置里回写）。
+    pub(crate) appid_edited: bool,
+    /// 最近一次 appid 落盘的结果提示（空串表示无话可说）。
+    pub(crate) message: String,
 }
 
 impl PublishState {
     pub(crate) fn new(project_root: &Path) -> Self {
-        Self {
+        let mut state = Self {
             show_panel: false,
             platform: PublishPlatform::Pc,
-            name: default_publish_name(project_root),
+            name: String::new(),
             compress: false,
             encrypt: false,
-        }
+            wechat_appid: String::new(),
+            appid_edited: false,
+            message: String::new(),
+        };
+        state.reseed(project_root);
+        state
+    }
+
+    /// 换工程后按**新工程**的配置重新播种「发布名 / appid」（平台、压缩等会话选择保留）。
+    ///
+    /// 为什么必须重新播种：`EditorApp::new` 只在启动时跑一次，而项目导入是就地替换
+    /// `self.project`（`import.rs`）。不重播的话面板里还是上一个工程的值，
+    /// 用户点一下发布或关面板就把旧工程的 appid/发布名写进了新工程的 `project.toml`。
+    pub(crate) fn reseed(&mut self, project_root: &Path) {
+        self.name = default_publish_name(project_root);
+        self.wechat_appid = read_wechat_appid(project_root);
+        self.appid_edited = false;
+        self.message.clear();
     }
 }
 
@@ -90,6 +121,14 @@ impl EditorApp {
         let script = strip_verbatim(&found);
         let project_root = strip_verbatim(&self.project.root);
         let publish_name = normalize_publish_name(&self.publish.name, &self.project.root);
+        // 微信 appid：发布前先把面板里的值记进工程配置（记不进去也不挡发布——
+        // 内存里的值照样传给脚本，只是下次打开工程要重填）。
+        let wechat_appid = if self.publish.platform == PublishPlatform::WechatMiniGame {
+            self.commit_wechat_appid();
+            self.publish.wechat_appid.trim().to_owned()
+        } else {
+            String::new()
+        };
         // 发布脚本 package.ps1 把产物直接发布到 <工程>/builds/<平台>（$finalRoot），
         // 不会再生成 <平台>/<发布名> 子目录；「打开目录」必须指向真实产物根，
         // 否则 ShellExecuteW 对不存在的路径静默失败，按钮点了没反应。
@@ -103,6 +142,7 @@ impl EditorApp {
                 project_root,
                 platform: self.publish.platform,
                 publish_name,
+                wechat_appid,
                 compress: self.publish.compress,
                 encrypt: self.publish.encrypt,
                 skip_build: false,
@@ -117,6 +157,109 @@ impl EditorApp {
             None,
         );
     }
+
+    /// 把面板里的微信 appid 记进 `<工程>/project.toml`。
+    ///
+    /// 只在**用户真的编辑过**这一栏时写：面板字段是启动/换工程时从文件播种的，没编辑过
+    /// 就提交，会把"播种失败/播种自另一个工程"的空值当成用户意图写回去，静默清掉别人
+    /// 已经存好的 appid（实测踩过：切项目后关面板，`wechat_appid` 被覆成 `""`）。
+    /// 提交点有三处（失焦、关面板、点发布），都走这里。
+    pub(crate) fn commit_wechat_appid(&mut self) {
+        if self.publish.platform != PublishPlatform::WechatMiniGame || !self.publish.appid_edited {
+            return;
+        }
+        match write_wechat_appid(&self.project.root, &self.publish.wechat_appid) {
+            Ok(_) => self.publish.message.clear(),
+            Err(error) => self.publish.message = error,
+        }
+    }
+}
+
+/// 读工程已缓存的微信 appid（未配置返回空串）。
+pub(crate) fn read_wechat_appid(project_root: &Path) -> String {
+    read_project_toml(project_root)
+        .and_then(|text| rustlua_infra::project_config::parse_key(&text, WECHAT_APPID_KEY))
+        .unwrap_or_default()
+}
+
+/// 写微信 appid 到 `<工程>/project.toml`，返回「是否真的改了文件」。
+///
+/// 空值写成 `wechat_appid = ""` 而不是删行：读取侧把空值视为缺失，删行则要动别人的文件结构。
+fn write_wechat_appid(project_root: &Path, appid: &str) -> Result<bool, String> {
+    let path = project_root.join("project.toml");
+    let text = read_project_toml(project_root).ok_or_else(|| {
+        format!(
+            "无法读写工程配置，微信 appid 未缓存：{}",
+            display_path(&path)
+        )
+    })?;
+    let appid = appid.trim();
+    if read_wechat_appid(project_root).as_str() == appid {
+        return Ok(false);
+    }
+    let updated = put_wechat_appid(&text, appid);
+    if updated == text {
+        return Ok(false);
+    }
+    fs::write(&path, updated)
+        .map_err(|error| format!("微信 appid 写入 {} 失败：{error}", display_path(&path)))?;
+    Ok(true)
+}
+
+/// 把 `wechat_appid` 落在 **`[project]` 段内**。
+///
+/// 为什么不能用 `panels::project_settings::upsert_project_toml`（它缺失键时追加到文件末尾）：
+/// 真实工程的 `project.toml` 普遍以 `[audio]`/`[input]` 段结尾，追加进去就成了
+/// `input.wechat_appid` —— 我方按行扁平扫描照样读得到，但任何真正的 TOML 解析方都会读到
+/// 错的段（第一版就这么把 appid 写进了 `game_jhyt` 的 `[input]` 里）。
+///
+/// 顺带自愈：先把**任意位置**的旧 `wechat_appid` 行删掉再插到 `[project]` 段末，
+/// 所以上面那批被写坏的工程，用户重新填一次 appid 就会被搬回正确的段。
+/// 没有 `[project]` 表头的工程（纯扁平键）退回追加到文件末尾。
+fn put_wechat_appid(content: &str, appid: &str) -> String {
+    let line = format!("{WECHAT_APPID_KEY} = \"{appid}\"");
+    let had_newline = content.ends_with('\n');
+    let kept: Vec<String> = content
+        .lines()
+        .filter(|raw| !line_is_wechat_appid(raw))
+        .map(str::to_owned)
+        .collect();
+    let mut section_end = None;
+    let mut in_project = false;
+    for (index, raw) in kept.iter().enumerate() {
+        let trimmed = raw.trim().trim_start_matches('\u{feff}');
+        if trimmed.starts_with('[') {
+            if in_project {
+                break;
+            }
+            in_project = trimmed == "[project]";
+            continue;
+        }
+        // 注释与空行不算"段内最后一项"，但段存在时它们之后插入仍是段内，故记段头兜底。
+        if in_project && !trimmed.is_empty() && !trimmed.starts_with('#') {
+            section_end = Some(index + 1);
+        }
+    }
+    let mut lines = kept;
+    let insert_at = section_end.unwrap_or(lines.len());
+    lines.insert(insert_at, line);
+    let mut result = lines.join("\n");
+    if had_newline || content.is_empty() {
+        result.push('\n');
+    }
+    result
+}
+
+/// 某行是否为 `wechat_appid =`（去前导空白/BOM 后判断；注释行以 `#` 开头不会命中）。
+fn line_is_wechat_appid(line: &str) -> bool {
+    let trimmed = line.trim().trim_start_matches('\u{feff}');
+    trimmed
+        .strip_prefix(WECHAT_APPID_KEY)
+        .is_some_and(|rest| rest.starts_with(" ="))
+}
+
+fn read_project_toml(project_root: &Path) -> Option<String> {
+    fs::read_to_string(project_root.join("project.toml")).ok()
 }
 
 /// 定位发布脚本 `scripts/package.ps1`。
@@ -206,6 +349,8 @@ struct PublishRequest {
     project_root: PathBuf,
     platform: PublishPlatform,
     publish_name: String,
+    /// 微信小游戏 appid；非微信平台传空串（脚本侧因此保持模板的 `touristappid`）。
+    wechat_appid: String,
     compress: bool,
     encrypt: bool,
     /// 测试专用：复用 `target/release` 既有产物（`-SkipBuild`），正式发布传 false。
@@ -225,6 +370,7 @@ fn spawn_publish(request: PublishRequest, tx: Sender<ProgressEvent>) {
         project_root,
         platform,
         publish_name,
+        wechat_appid,
         compress,
         encrypt,
         skip_build,
@@ -240,6 +386,10 @@ fn spawn_publish(request: PublishRequest, tx: Sender<ProgressEvent>) {
         command.arg("-ProjectRoot").arg(&project_root);
         command.arg("-Platform").arg(platform.script_value());
         command.arg("-PublishName").arg(&publish_name);
+        // appid 只在微信小游戏平台传（非微信传的是空串，且脚本侧只有微信分支消费它）。
+        if platform == PublishPlatform::WechatMiniGame && !wechat_appid.trim().is_empty() {
+            command.arg("-WechatAppId").arg(wechat_appid.trim());
+        }
         if compress {
             command.arg("-Compress");
         }
@@ -413,6 +563,7 @@ mod publish_tests {
                 project_root,
                 platform: PublishPlatform::Pc,
                 publish_name: "examples".to_owned(),
+                wechat_appid: String::new(),
                 compress: false,
                 encrypt: false,
                 // 测试走 `-SkipBuild`：复用 target/release 产物，避免在单元测试里
@@ -485,5 +636,132 @@ mod publish_tests {
         for pair in stages.windows(2) {
             assert!(pair[1] >= pair[0], "阶段进度应单调递增");
         }
+    }
+
+    fn temp_project(tag: &str, toml: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("rustlua-publish-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("project.toml"), toml).unwrap();
+        dir
+    }
+
+    #[test]
+    fn wechat_appid_seeds_publish_state_from_project_toml() {
+        let root = temp_project(
+            "appid-seed",
+            "name = \"DemoGame\"\nwechat_appid = \"wx7091f1cf872130bb\"\n",
+        );
+        let state = PublishState::new(&root);
+        assert_eq!(state.wechat_appid, "wx7091f1cf872130bb");
+        // 未声明该键 → 空串（面板据此显示空输入，而不是 "None"）。
+        let bare = temp_project("appid-bare", "name = \"DemoGame\"\n");
+        assert_eq!(PublishState::new(&bare).wechat_appid, "");
+        fs::remove_dir_all(&root).ok();
+        fs::remove_dir_all(&bare).ok();
+    }
+
+    #[test]
+    fn wechat_appid_write_is_idempotent_and_keeps_other_lines() {
+        let root = temp_project(
+            "appid-write",
+            "# 工程配置\nname = \"DemoGame\"\nstartup_scene = \"scenes/main.scene\"\n",
+        );
+        // 首次写入 → 追加，且注释与既有键原样保留。
+        assert!(write_wechat_appid(&root, " wx7091f1cf872130bb ").unwrap());
+        let text = fs::read_to_string(root.join("project.toml")).unwrap();
+        assert!(text.contains("# 工程配置"), "{text}");
+        assert!(
+            text.contains("startup_scene = \"scenes/main.scene\""),
+            "{text}"
+        );
+        assert!(
+            text.contains("wechat_appid = \"wx7091f1cf872130bb\""),
+            "写入前应去首尾空白：{text}"
+        );
+        // 同值再提交 → 不动文件（否则每次失焦都重刷工程配置）。
+        assert!(!write_wechat_appid(&root, "wx7091f1cf872130bb").unwrap());
+        // 换值 → 原地替换，不追加第二行。
+        assert!(write_wechat_appid(&root, "wx0000000000000abc").unwrap());
+        let text = fs::read_to_string(root.join("project.toml")).unwrap();
+        assert_eq!(text.matches("wechat_appid =").count(), 1, "{text}");
+        // 清空 → 写成空值（读取侧视为缺失），而不是删行。
+        assert!(write_wechat_appid(&root, "").unwrap());
+        assert_eq!(read_wechat_appid(&root), "");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// 真实工程的形状：`[project]` 后面还跟着 `[audio]`/`[input]` 段（`game_jhyt` 就是这样）。
+    const SECTIONED_TOML: &str = "[project]\nname = \"Demo\"\nwindow_height = 720\n\n[audio]\nmaster = 0.5\n\n[input]\nmap = \"rustlua-actions-v2\\nattack=key:keyj\"\n";
+
+    #[test]
+    fn wechat_appid_lands_inside_the_project_section_not_at_eof() {
+        // 第一版的回归：追加到文件末尾会落进 `[input]` 段，变成 `input.wechat_appid`。
+        let root = temp_project("appid-section", SECTIONED_TOML);
+        assert!(write_wechat_appid(&root, "wx7091f1cf872130bb").unwrap());
+        let text = fs::read_to_string(root.join("project.toml")).unwrap();
+        let appid = text.find("wechat_appid =").expect(&text);
+        assert!(
+            appid > text.find("[project]").unwrap() && appid < text.find("[audio]").unwrap(),
+            "appid 必须落在 [project] 段内：{text}"
+        );
+        // 别人的段与键一个都不能少、顺序不能动。
+        assert!(text.contains("window_height = 720"), "{text}");
+        assert!(text.contains("master = 0.5"), "{text}");
+        assert!(text.contains("attack=key:keyj"), "{text}");
+        assert_eq!(text.matches("[input]").count(), 1, "{text}");
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn wechat_appid_repairs_a_line_previously_written_into_input() {
+        // 被上一版写坏的工程（键躺在 `[input]` 段末）：用户重新填一次就搬回 `[project]`。
+        let broken = SECTIONED_TOML.replace(
+            "map = \"rustlua-actions-v2\\nattack=key:keyj\"\n",
+            "map = \"rustlua-actions-v2\\nattack=key:keyj\"\nwechat_appid = \"\"\n",
+        );
+        let root = temp_project("appid-repair", &broken);
+        assert!(write_wechat_appid(&root, "wx7091f1cf872130bb").unwrap());
+        let text = fs::read_to_string(root.join("project.toml")).unwrap();
+        assert_eq!(text.matches("wechat_appid =").count(), 1, "{text}");
+        assert!(
+            text.find("wechat_appid =").unwrap() < text.find("[audio]").unwrap(),
+            "搬回 [project] 段：{text}"
+        );
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn reseed_follows_the_newly_opened_project() {
+        // 项目导入是就地替换 `self.project`：面板缓冲不重播就会把上一个工程的值写进新工程。
+        let first = temp_project(
+            "reseed-a",
+            "[project]\nname = \"A\"\nwechat_appid = \"wxaaaaaaaaaaaaaaaa\"\n",
+        );
+        let second = temp_project(
+            "reseed-b",
+            "[project]\nname = \"B\"\nwechat_appid = \"wxbbbbbbbbbbbbbbbb\"\n",
+        );
+        let mut state = PublishState::new(&first);
+        assert_eq!(state.wechat_appid, "wxaaaaaaaaaaaaaaaa");
+        // 模拟"用户在 A 里改过 appid"后切到 B：脏标记必须随重播清掉。
+        state.wechat_appid = "typed-by-hand".to_owned();
+        state.appid_edited = true;
+        state.reseed(&second);
+        assert_eq!(state.wechat_appid, "wxbbbbbbbbbbbbbbbb");
+        assert_eq!(state.name, "B");
+        assert!(!state.appid_edited, "换工程后不该把上一个工程的值回写");
+        fs::remove_dir_all(&first).ok();
+        fs::remove_dir_all(&second).ok();
+    }
+
+    #[test]
+    fn wechat_appid_write_reports_missing_project_toml() {
+        let missing =
+            std::env::temp_dir().join(format!("rustlua-publish-no-toml-{}", std::process::id()));
+        let error = write_wechat_appid(&missing, "wx7091f1cf872130bb")
+            .expect_err("没有 project.toml 应报错而不是静默丢弃");
+        assert!(error.contains("project.toml"), "{error}");
     }
 }

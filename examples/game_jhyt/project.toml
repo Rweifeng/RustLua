@@ -11,6 +11,7 @@ font_weight = 400.0
 text_render_mode = "vector"
 window_width = 1280
 window_height = 720
+wechat_appid = "wx7091f1cf872130bb"
 
 [audio]
 master = 0.5

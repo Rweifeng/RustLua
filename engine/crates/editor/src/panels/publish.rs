@@ -30,6 +30,30 @@ impl EditorApp {
                     ui.label("发布名");
                     ui.text_edit_singleline(&mut self.publish.name);
                 });
+                if self.publish.platform == PublishPlatform::WechatMiniGame {
+                    ui.horizontal(|ui| {
+                        ui.label("微信 AppID");
+                        let edit = ui.text_edit_singleline(&mut self.publish.wechat_appid);
+                        if edit.changed() {
+                            self.publish.appid_edited = true;
+                        }
+                        // 失焦就记进 `<工程>/project.toml`：否则只点关闭不发布的话，
+                        // 下次打开面板还得重填一遍。
+                        if edit.lost_focus() {
+                            self.commit_wechat_appid();
+                        }
+                    });
+                    ui.label(
+                        egui::RichText::new(
+                            "留空则沿用模板的 touristappid（只能本地预览，不能上传）",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                    if !self.publish.message.is_empty() {
+                        ui.label(egui::RichText::new(self.publish.message.as_str()).small());
+                    }
+                }
                 ui.checkbox(&mut self.publish.compress, "压缩");
                 ui.checkbox(&mut self.publish.encrypt, "加密");
                 ui.separator();
@@ -40,6 +64,9 @@ impl EditorApp {
                     self.start_publish();
                 }
             });
+        if !open {
+            self.commit_wechat_appid();
+        }
         self.publish.show_panel = open && self.publish.show_panel;
     }
 }

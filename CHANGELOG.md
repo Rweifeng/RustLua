@@ -113,6 +113,42 @@
 - **回滚档**：只动运行时 `plugins/webgl/web-runtime.js` 一个文件，引擎本体零改动；还原该文件重打包
   即回旧行为（白块复现，回滚可验）。
 
+## Unreleased — 微信 appid 从「发布面板填一次」到「产物直接可上传」：`project.config.json` 不再要手工改
+
+- **症状**：编辑器发布微信小游戏后，`launcher/project.config.json` 的 `appid` 永远是模板里的
+  `touristappid`，`run.txt` 第 2 步写着"填入自己的 appid"——每次发布都要手工改一次那个文件，
+  而下一次发布它又被模板覆盖回去。
+- **改法**：`PublishState` 多一个 `wechat_appid`（面板选「微信小游戏」时才出现这一行），编辑过之后
+  经 `write_wechat_appid` 记进 `<工程>/project.toml` 的 `[project]` 段（失焦 / 关面板 / 点发布三个
+  提交点，同值不动文件）；发布时以 `-WechatAppId` 传给
+  [scripts/package.ps1](scripts/package.ps1)，由它写进 `project.config.json` 的 `appid` 并同步
+  `run.txt` 文案。形状不符 `wx` + 16 位十六进制只告警不中止（体验版/企业 appid 的口径不由我方定）。
+  非微信平台给了这个参数会告警并忽略。
+- **第一版的两个真缺陷（用户 2026-10-12 当场报回"填了再打开面板就没了"）**：
+  ① 回写走了 `panels::project_settings::upsert_project_toml`，它缺失键时**追加到文件末尾**，
+  而真实工程普遍以 `[audio]`/`[input]` 段结尾 —— `game_jhyt` 的 appid 就落进了
+  `[input]` 段（按行扁平扫描我方还读得到，任何真 TOML 解析方都会读错段）。改成
+  `put_wechat_appid`：先删任意位置的旧行、再插到 `[project]` 段末，**顺带自愈**已被写坏的工程。
+  ② 提交无条件跑，而 `PublishState` 只在 `EditorApp::new` 播种一次、项目导入是就地替换
+  `self.project`（`import.rs:115`）——切工程后面板里还是上一个工程的值，关一次面板就把
+  **空串覆写进新工程**（这就是"没了"）。改成：只有 `appid_edited`（本轮真的编辑过该栏）才回写，
+  并在导入完成时 `PublishState::reseed` 按新工程重播「发布名 + appid」；
+  **`发布名` 此前就有同一个跨工程残留的缺陷**，一并被 reseed 修掉。
+- **实测**（`examples/game_api` 临时副本，`-SkipBuild` 三连发）：给 `-WechatAppId wx…` → 产物
+  `"appid": "wx7091f1cf872130bb"`；不给 → `"appid": "touristappid"` 且 `run.txt` 走"未配置"文案；
+  给 `not-a-real-appid` → 一行告警、照写不中止。编辑器侧
+  `cargo test -p editor --bin editor publish` **13/13 绿**（6 条新增：播种、幂等且保注释、缺
+  `project.toml` 报错、**落在 `[project]` 段内**、**搬回被写进 `[input]` 的旧行**、
+  **换工程重新播种且清脏标记**；后三条在上一版实现下都会红）。
+  被写坏的 `examples/game_jhyt/project.toml` 里那行 `wechat_appid = ""` 已手工删除。
+- **实测（目验）**：临时 env 钩子驱动 `gui_evidence` 把面板打开（截完撤钩子），100% 与 200% DPI
+  两张里「微信 AppID」行与提示都在既有面板宽度内、无截断、无豆腐块。
+- **代价 / 未测**：appid 明文写进工程配置（它本来就随包分发给玩家，不是密钥）；面板多一行、
+  非微信平台不显示。**切工程 + 关面板那条覆写路径只由单测覆盖**（`reseed_follows_the_newly_opened_project`），
+  没有在真编辑器里点两遍复验——`import.rs` 那条重播调用未经目验。
+- **回滚档**：revert 本次提交即可——`project.config.json` 回到"模板原样 + 只改 projectname"，
+  已写进工程 `project.toml` 的 `wechat_appid` 一行留着无害（读取方只有发布面板）。
+
 ## Unreleased — 第二张图照金标规范跑通：云泽村从"6 种平色瓦"变成 102 槽 autotile + 326 件散布（M72-11 ①village）
 
 - **这一包是 M72-11 的第一张**：plan 点名 7 张图，本包按"一张做满再一次 commit"只做满 `village`，

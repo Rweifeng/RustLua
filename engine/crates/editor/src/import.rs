@@ -134,6 +134,9 @@ impl EditorApp {
                     self.custom_vector_atlases.lock().unwrap().clear();
                     // 项目设置缓冲按项目读取，切换后重置为默认（下次打开再读取）。
                     self.project_settings = Default::default();
+                    // 发布面板的「发布名 / 微信 appid」同样按项目读取：不重新播种的话，
+                    // 面板里还是上一个工程的值，点发布或关面板就会把它写进新工程的 project.toml。
+                    self.publish.reseed(&self.project.root);
                     self.history.clear();
                     self.autosave.reset();
                     self.play_session = None;

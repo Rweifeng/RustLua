@@ -152,8 +152,12 @@ editor [--project <项目路径>] [--check] [--help]
 - 导入在后台线程进行（进度 0.1→0.9），进度窗「导入游戏项目」；成功后切换工程/文档/恢复资源，记录最近项目；失败保留窗口。
 - **发布项目**面板（菜单 **项目 → 发布项目**）：
   - **发布平台**：PC / WebGL / 微信小游戏。
-  - **发布名**（默认取 `project.toml` 的 `name`）、**压缩**、**加密**、**发布** 按钮。
-  - 后台启动 [scripts/package.ps1](../scripts/package.ps1)（`powershell -NoProfile -ExecutionPolicy Bypass`，不弹终端窗），参数 `-ProjectRoot -Platform -PublishName [-Compress] [-Encrypt]`。
+  - **发布名**（默认取 `project.toml` 的 `name`，**换工程时按新工程重新取**）、**压缩**、**加密**、**发布** 按钮。
+  - **微信 AppID**（仅平台选「微信小游戏」时出现）：编辑过这一栏才会记进 `project.toml` `[project]` 段的
+    `wechat_appid`（失焦/关面板/点发布三个提交点，同值不动文件；换工程时按新工程重新播种，
+    未编辑过不回写），并在发布时写进 `launcher/project.config.json` 的 `appid`；
+    留空则保留模板的 `touristappid`（只能本地预览，不能上传）。
+  - 后台启动 [scripts/package.ps1](../scripts/package.ps1)（`powershell -NoProfile -ExecutionPolicy Bypass`，不弹终端窗），参数 `-ProjectRoot -Platform -PublishName [-Compress] [-Encrypt] [-WechatAppId]`。
   - 输出目录：`<项目>/builds/<平台>`；进度阶段映射：Release 构建 0.15 → assetc 打包 0.55 → 复制运行器 0.7 → 目录隔离自测 0.85 → 就绪 0.95。
   - 完成显示输出目录 + **打开目录**；完整日志存 `artifacts/builds/release/publish-last.log`。
 

@@ -25,6 +25,10 @@ param(
     # 微信小游戏：资源远端回落基址（包内读不到时才用）。留空 = 纯包内，不落配置文件。
     # 例：-RemotePackBaseUrl http://127.0.0.1:8787/pack/（配 scripts/serve-pack.ps1 本地测试）
     [string]$RemotePackBaseUrl = "",
+    # 微信小游戏：正式 appid，写进 launcher/project.config.json 的 appid 字段。
+    # 编辑器的「发布项目」面板填了就会带过来（值随工程记在 <工程>/project.toml 的 wechat_appid）。
+    # 留空 = 保留模板默认 touristappid，只能本地预览，**上传会失败**（真机/上传都要求正式 appid）。
+    [string]$WechatAppId = "",
     # 微信小游戏：资源包形态（三选一，只对 -Platform wechat-minigame 有意义）。
     #   subpackage = **微信默认**。主包 + 单分包：首屏资源切到兄弟目录 mainpack/（随主包上传），
     #                其余资源留在 pack/（声明成 game.json 的 subpackages），运行时按需
@@ -84,6 +88,14 @@ $invalidNameChars = [IO.Path]::GetInvalidFileNameChars()
 foreach ($ch in $invalidNameChars) { $PublishName = $PublishName.Replace([string]$ch, "_") }
 $PublishName = $PublishName.Trim()
 if ([string]::IsNullOrWhiteSpace($PublishName)) { $PublishName = "game" }
+# 微信 appid 归一化：只有微信小游戏有 project.config.json 可落，其它平台给了就明确忽略
+# （而不是悄悄写进一个不存在的地方）；空值回落到模板默认的 touristappid（仅本地预览）。
+$WechatAppId = $WechatAppId.Trim()
+if ($Platform -ne "wechat-minigame") {
+    if ($WechatAppId) { Write-Warning "==> -WechatAppId 只对 -Platform wechat-minigame 有意义，本次发布（$Platform）忽略该值" }
+    $WechatAppId = ""
+}
+if ([string]::IsNullOrWhiteSpace($WechatAppId)) { $WechatAppId = "touristappid" }
 # M31/P3：玩家数据目录（存档 + 玩家设置）。与引擎 `rustlua-infra` 的 user_dir 规则一致
 # （engine/crates/rustlua-infra/src/user_dir.rs）：
 # Windows 为 `%APPDATA%\<publish_name>`，其它平台取各自的数据目录；`RUSTLUA_USER_DIR` 可覆盖。
@@ -1092,6 +1104,14 @@ WASM build failed ($Platform)。
             # PS 5.1 的 Get-Content 默认按 ANSI 解码：必须显式 UTF8，否则中文工程名会被写坏。
             $projectConfig = Get-Content -LiteralPath $projectConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
             $projectConfig.projectname = $PublishName
+            # appid 来自编辑器「发布项目」面板（随工程记在 project.toml 的 wechat_appid）。
+            # 不传就保留模板的 touristappid —— 那是微信的"游客"占位，能本地预览但不能上传，
+            # 所以填了 appid 时这里是唯一能让产物直接可上传的地方（历史上要手工改这个文件）。
+            if ($WechatAppId -notmatch '^(wx[0-9a-fA-F]{16}|touristappid)$') {
+                Write-Warning ("==> 微信 appid 形状不像正式 appid（应为 wx + 16 位十六进制）: '{0}' —— 仍按原样写入，上传前请在微信开发者工具里核对" -f $WechatAppId)
+            }
+            $projectConfig.appid = $WechatAppId
+            Write-Host ("==> project.config.json appid = {0}" -f $WechatAppId) -ForegroundColor DarkGray
             $projectConfigJson = $projectConfig | ConvertTo-Json -Depth 10
             # 开发者工具的 JSON 解析对 BOM 敏感：写无 BOM 的 UTF-8。
             [IO.File]::WriteAllText($projectConfigPath, $projectConfigJson, (New-Object Text.UTF8Encoding($false)))
@@ -1751,11 +1771,16 @@ WASM build failed ($Platform)。
         else {
             "0) 发布根下有两块：launcher/ = 首包（上传微信 / 导入开发者工具的就是它），assets/ = 资源包（整目录上传 CDN）"
         }
+        $wechatAppidLine = if ($WechatAppId -eq "touristappid") {
+            "2) 未配置 appid：launcher/project.config.json 里是 touristappid，只能本地预览。上传前在编辑器「发布项目」面板填微信 appid 重新发布（或直接改这个文件）"
+        } else {
+            "2) appid 已由发布脚本写进 launcher/project.config.json（$WechatAppId），可直接上传；换小程序主体时改面板里的 appid 再发布一次"
+        }
         $wechatRunLines = @(
             "Run instructions (WeChat Mini Game)",
             $wechatRootLine,
             "1) 打开微信开发者工具 -> 导入项目 -> 选择本目录下的 launcher（已含 game.json / project.config.json）",
-            "2) 在 launcher/project.config.json 里填入自己的 appid（默认 touristappid 仅用于本地预览）",
+            $wechatAppidLine,
             "3) 手机预览：左半屏为虚拟摇杆（WASD），右半屏为动作键（space）；微信 PC 端同时支持键盘"
         )
         if ($isSubpackagePack) {

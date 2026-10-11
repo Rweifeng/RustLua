@@ -17,11 +17,16 @@ startup_scene = "scenes/main.scene"   # 可为空（headless 无场景）
 font = "assets/fonts/NotoSansSC-VF.ttf"
 font_fallback = "assets/fonts/NotoSansSC-Fallback.ttf"
 font_weight = 400.0
+wechat_appid = "wx0123456789abcdef"   # 微信小游戏 appid（编辑器发布面板填，只有微信用到）
 ```
 
 `startup_scene` 为空时运行器/编辑器只加载脚本不实例化场景。
 `font` 缺省为 `assets/fonts/NotoSansSC-VF.ttf`；可变字体默认使用 `font_weight`
 实例化，缺省 400（Regular），避免 CJK 字体默认 Thin 在小字号下发虚。
+`wechat_appid` 可缺省：它是编辑器「发布项目」面板在选微信小游戏时填的 appid，
+编辑过之后（失焦/关面板/点发布三个提交点）会写回**本段内**、同值不动文件；没编辑过就不回写，
+换工程时面板按新工程重新播种（否则会拿上一个工程的值覆写本工程）。发布时随 `-WechatAppId`
+带进 `project.config.json`。appid 会随包分发给玩家，不是密钥，可以入库。
 
 ## 2. assetc CLI
 
@@ -102,6 +107,8 @@ RustLua <flags> [12B nonce] <payload>
    - **wechat-minigame**：`game.js` + `wechat-adapter.js` + `game.json` + `project.config.json` + `web-runtime.js` + `pkg/fengari-web.js` + `pack/` + `run.txt` + `deps.txt` + `build-info.txt`；
      默认形态（`-AssetPack subpackage`）下另有 `mainpack.json` + `mainpack/`（主包侧首屏资源）+ `pack/game.js`（分包入口）。
      平台文件来自 `plugins/wechat-minigame/`；发布脚本会检查入口/配置/资源齐全、拒绝混入 `game.exe`/`index.html`、**拒绝任何非 CommonJS 脚本**（小游戏不支持 ES Module）、并强制**主包 ≤ 4 MB / 单分包 ≤ 4 MB / 总计 ≤ 20 MB**。
+     `project.config.json` 由模板复制后再改写两处：`projectname` 取发布名、`appid` 取 `-WechatAppId`
+     （编辑器面板填的 `wechat_appid`；没填保留模板的 `touristappid`，形状不像正式 appid 时告警但照写）。
      不发行 wasm-bindgen 产物（浏览器 ESM 胶水，小游戏用不到也解析不了）；字体只分发 assetc 子集化产物。
      发布脚本还会做**代码包后缀合规**：微信只上传后缀在白名单内的文件（69 个，见
      `scripts/code-package-rules.js`），`.lua`/`.toml`/`.md` 传不上去（真机上读它们是
