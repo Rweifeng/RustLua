@@ -21,6 +21,10 @@ web-sys = { version = "0.3", features = [
     "Element",
     "HtmlCanvasElement",
     "Window",
+    # `window.navigator()` 的返回类型。本 crate 直接调它（`lib.rs` 的 `run_probe`），
+    # 必须自己声明：以前能编过是靠同一次构建里 engine 的 web 依赖把这项特性**合并**进来，
+    # 单独 `-p gpu-web-probe` 且依赖图里没有别人开 Navigator 时就红。
+    "Navigator",
     "console",
 ] }
 # `features = ["webgl"]`：**必须显式打开**。wgpu 的 default 在 wasm32 上只含 `webgpu`，

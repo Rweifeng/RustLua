@@ -20,6 +20,21 @@
 //! 3. **不挂进 DOM**：`document.create_element("canvas")` 造出的游离 canvas 足够让 wgpu 建
 //!    surface（WebGL2 上下文不需要 canvas 在文档里），这样探针可以随时调用，不污染页面。
 
+// 目标位闸门：本 crate 通篇是"浏览器里的一段异步问答"，宿主目标上三个面**同时**不存在
+// （实测 `cargo clippy -p gpu-web-probe --all-targets`，宿主 Windows）：
+//   E0433 `engine::host::web_surface` —— 该模块在 engine 侧就是 `#[cfg(target_arch = "wasm32")]`；
+//   E0277 ×2 `map_async` 回调要 `WasmNotSend`，非 wasm 目标上退化成 `Send`，而回调必须捕获 `Rc<RefCell<…>>`。
+// 所以这不是"少写一个 feature"能补的，是设计上的 wasm-only。宿主侧继续编它只会把 CI 的
+// Clippy 步（`cargo clippy --workspace --all-targets --all-features`）永久钉红，
+// 而红门没人当真 = 门禁名存实亡。
+// 代价说清楚：**宿主目标上本 crate 不再被检查**，它的编译门只发生在
+// `cargo build -p gpu-web-probe --target wasm32-unknown-unknown`（`scripts/gpu-web-probe.ps1`
+// 的构建路径就是它）。闸门不是把探针变空：同一条 wasm 构建里产物仍是 324,920,099 字节的
+// debug wasm，`gpu_probe` / `gpu_render_probe` / `storage_buffer` 这些符号都还在导出段里。
+// 仍留在 workspace members 里是有意的：`cargo tree -p game_web` 那条"发布包不含本探针"的门
+// 要靠 members 才查得到。
+#![cfg(target_arch = "wasm32")]
+
 use serde_json::{json, Value};
 use wasm_bindgen::prelude::*;
 

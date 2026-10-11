@@ -5,6 +5,34 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — wasm-only 探针不再拖红全量 clippy：`gpu-web-probe` 补目标位闸门、`Navigator` 自己声明
+
+- **症状**：`cargo clippy --workspace --all-targets`（本地 pre-commit 与 CI 的 Clippy 步同口径）在
+  `crates/gpu-web-probe` 上固定红：`E0433` 找不到 `engine::host::web_surface`、`E0277` ×2
+  `map_async` 的回调不满足 `WasmNotSend`、`E0599` `Window::navigator` 不存在。此前它被当作
+  "别人的在建工作"绕开——`tasks/done/M72-04` §8 明记 "`--exclude gpu-web-probe` 后 clippy 零告警"。
+- **根因不在 feature 表**：这个 crate 通篇是浏览器里的异步问答——`web_surface` 在 engine 侧就是
+  `#[cfg(target_arch = "wasm32")]`，而 `map_async` 的回调必须捕获 `Rc<RefCell<…>>`，非 wasm 目标上
+  `WasmNotSend` 退化成 `Send` 就直接不成立。也就是说**宿主目标上它本来就无法编译**，补 feature、
+  换 `Arc` 都治不到根。
+- **改法**：① `src/lib.rs` 顶部加 crate 级 `#![cfg(target_arch = "wasm32")]`，注释里写清三条实测错误码、
+  代价（宿主侧不再检查本 crate）与"仍留在 workspace members"的理由（`cargo tree -p game_web`
+  那条"发布包不含本探针"的门要靠 members 才查得到）；② `Cargo.toml` 的 web-sys 特性补 `"Navigator"`
+  ——`window.navigator()` 是探针自己调的，以前编得过是靠同一次构建里 engine 的 web 依赖把这项
+  特性**合并**进来，属于借来的绿灯。
+- **实测**：`cargo clippy -j 2 -p gpu-web-probe --all-targets -- -D warnings` 与带 `--all-features`
+  同一条都 exit 0；正向对照（证明闸门没把探针变成空壳）`cargo build -j 2 -p gpu-web-probe --target
+  wasm32-unknown-unknown` exit 0、debug 产物 324,920,099 字节，`gpu_probe` / `gpu_render_probe` /
+  `storage_buffer` 仍在符号表里。只加 `Navigator`、不加闸门那一步的读数是 E0599 消失、E0433+E0277 剩
+  3 条——这条差量就是"特性合并掩盖了缺声明"的证据。`cargo fmt -p gpu-web-probe -- --check` exit 0。
+- **代价与未做**：宿主目标上这个 crate 从此不被任何 lint 检查，它的编译门只剩 wasm 那条构建路径
+  （`scripts/gpu-web-probe.ps1` 走的就是它）；没有改 CI 的 `--workspace` 命令（改命令去迁就一个红，
+  等于给所有 crate 开逃生门）。**同一轮回归里 `game_web` 仍红 15+2 条 dead_code**（`frame_input.rs`
+  的 `apply_frame`/`FrameInputProducer`/`InputScript`/`ScriptDriver` 等、`fit.rs` 的 `contain_box`/
+  `css_to_design`），它们只被 `gpu_host.rs`/`rust_scene.rs` 这两个
+  `#[cfg(all(target_arch = "wasm32", feature = "gpu2d"))]` 模块使用，属同一类"宿主目标看不见消费者"
+  的红——但那份工作正在被另一路改（`game_web/src/lib.rs` 有未提交在途内容），本批不碰。
+
 ## Unreleased — 同格 NPC 不再叠成一个人：日程落位在 32px 格内按 persist_id 错开
 
 - **症状**：新档一开局（`main.lua` 的 `clock.set(1, 0)` = 00:00）山庄厢房 (12,6) 只看得见"一个人"，
