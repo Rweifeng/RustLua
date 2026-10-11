@@ -5,6 +5,26 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — web/微信投影贴片不再画成不透明白块：世界精灵吃 `Sprite.tint`
+
+- **症状**：PC 上建筑投影贴片（白 blob 贴图 + `tint=0.122,0.137,0.157,0.280`）是半透深色，
+  WebGL 与微信小游戏两个宿主上却是**不透明白块**（实机 2026-10-12，山庄）。
+- **根因**：两宿主共用的 `plugins/webgl/web-runtime.js`（打包时复制）里，世界精灵绘制循环对带贴图的
+  精灵只 `drawImage` 原图、**从不读 `Sprite.tint`**；原生片元是「贴图色 × tint、alpha 也相乘」，
+  于是 web 侧 tint 整批丢失——白 blob 贴图原样上屏。带 tint 的装饰精灵（暖冷色变化）同样在 web 丢色。
+- **改法**：tint 非默认时改走瓦片已有的两趟染色离屏画布（`multiply` 上色 + `destination-in` 回乘 alpha
+  + tint.a 相乘），按「贴图+tint」缓存、首帧后只取缓存；默认 tint 仍走直绘快路。染色离屏画布盖
+  `_src` = 源贴图路径：微信层带门（`--check-foreground-order`）按 drawImage 的 src 序列认投影贴片与
+  遮挡物，不盖则主画布那次 drawImage 是空串 src、门整批失明；缓存外层预算 8→32（sprite tint 是
+  每件小图一个外层键，单场景贴片+装饰+图集过十，8 会每帧淘汰=每帧重合成）。
+- **实测**：微信无头 harness `wechat_minigame_harness_ok`（drawn=1486）；`--check-foreground-order` 绿
+  （manor 16 张投影贴片全在主角前 `castMax=495 < playerIdx=547`、遮挡物在后、反面对照翻转）；
+  浏览器像素 A/B（对照 = 同发布目录 + `git show HEAD:` 旧运行时）：旧运行时近白像素 18429、
+  ≥40px 长白 run 177 行（纯 255,255,255），修复后 287/0；阴影像素 (63,76,103) 与邻石 (78,93,125)
+  精确等于 `0.72×石色 + 0.28×tint` 的半透混合。
+- **回滚档**：只动运行时 `plugins/webgl/web-runtime.js` 一个文件，引擎本体零改动；还原该文件重打包
+  即回旧行为（白块复现，回滚可验）。
+
 ## Unreleased — 第二张图照金标规范跑通：云泽村从"6 种平色瓦"变成 102 槽 autotile + 326 件散布（M72-11 ①village）
 
 - **这一包是 M72-11 的第一张**：plan 点名 7 张图，本包按"一张做满再一次 commit"只做满 `village`，

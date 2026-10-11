@@ -681,7 +681,9 @@
   // 还各自持有最多 TINTED_TILE_CACHE_LIMIT 张离屏画布。此前只有"同一张贴图内部"的上限，
   // 外层没有任何上限，反复切图会一路把离屏画布留在内存里（症状是长跑后内存只涨不落）。
   // 这里按插入序淘汰最旧的图集（Map 保序），再配合换场景时的显式释放。
-  const TINTED_TILESET_CACHE_LIMIT = 8;
+  // Sprite.tint 也走这座缓存（投影贴片/装饰每件一张小图、不是图集）：单场景的贴片 +
+  // 装饰 + 瓦片图集的外层条目轻松过十，8 会每帧淘汰重建（离屏画布每帧重合成），故放宽到 32。
+  const TINTED_TILESET_CACHE_LIMIT = 32;
 
   // 换场景时调用：`images` 整批换成新 loadImage 的结果，旧图集对象不会再被 drawTintedTile
   // 用到，缓存里的离屏画布必须跟着放掉（否则就是上面那条只涨不落的保留链）。
@@ -706,9 +708,21 @@
     if (cached) return cached;
     const context = createOffscreenCanvas(Math.max(1, Math.round(sw)), Math.max(1, Math.round(sh)), mainCanvas);
     if (!context) return null;
+    // 离屏画布最终由一次 drawImage 落到主画布：不盖源贴图的 src，宿主侧绘制序列里
+    // 这次绘制就是空串 src——微信层带门按 src 认投影贴片/遮挡物（M72-06），会整个失明。
+    context.canvas._src = (tileset && (tileset._src || tileset.src)) || '';
     context.drawImage(tileset, sx, sy, sw, sh, 0, 0, context.canvas.width, context.canvas.height);
     context.globalCompositeOperation = 'multiply';
-    context.fillStyle = `rgb(${Math.round(tint[0] * 255)},${Math.round(tint[1] * 255)},${Math.round(tint[2] * 255)})`;
+    // tint 分量必须**逐通道钳到 [0,255]**：农田湿度等染色来自 farm_soil.lua 的
+    // `moist_tints_rgb`，蓝通道是 1.12/1.06/1.01（引擎里 tint>1 = 提亮）。原生片元直接
+    // 乘采样值、帧缓冲自然钳位，但 canvas2d 的 fillStyle 走 CSS 解析：`rgb(204,224,286)`
+    // 因为 286>255 是**非法颜色**，赋值被静默忽略 → fillStyle 保持上一值（新画布默认黑）
+    // → multiply 把整格压成黑块（真机 2026-10-11：微信农场里成片深蓝/紫方块）。钳到 255
+    // 等价于「该通道不提亮也不压暗」，是 canvas2d 能做到的、最接近引擎语义的近似。
+    const tintR = Math.max(0, Math.min(255, Math.round(tint[0] * 255)));
+    const tintG = Math.max(0, Math.min(255, Math.round(tint[1] * 255)));
+    const tintB = Math.max(0, Math.min(255, Math.round(tint[2] * 255)));
+    context.fillStyle = `rgb(${tintR},${tintG},${tintB})`;
     context.fillRect(0, 0, context.canvas.width, context.canvas.height);
     context.globalCompositeOperation = 'destination-in';
     context.drawImage(tileset, sx, sy, sw, sh, 0, 0, context.canvas.width, context.canvas.height);
@@ -2190,14 +2204,22 @@
       const pivotY = entity.sprite && entity.sprite.pivot_y !== undefined ? entity.sprite.pivot_y : 0.5;
       const dx = p.x - pivotX * size * camZoom;
       const dy = p.y - (1 - pivotY) * sizeY * camZoom;
+      // Sprite.tint（原生片元 = 贴图色 × tint，alpha 也相乘）：web 侧此前对带贴图的精灵
+      // 直接 drawImage 原图，于是「白 blob 贴图 + 半透深色 tint」的投影贴片在 web/微信画成
+      // **不透明白块**（实机 2026-10-12）。这里复用瓦片的两趟染色离屏画布（按 图+tint 缓存，
+      // 首帧之后只取缓存）；默认 tint 走原直绘快路，不多花一次离屏合成。
+      const tint = entity.sprite && entity.sprite.tint ? entity.sprite.tint : null;
+      const needsTint = !!tint && (tint[0] !== 1 || tint[1] !== 1 || tint[2] !== 1 || tint[3] !== 1);
       if (sprite && clip) {
         // frame 是**帧序号**（Lua 侧按引擎 current_frame 算好回写），不是累计 tick：
         // 引擎的 current_frame_uv 只取条带首行（frame/cols, 0），所以 sy 恒为 0。
         const index = Math.max(0, Math.floor(Number(entity.animation.frame) || 0));
         const sx = (index % Math.max(1, clip.cols)) * size;
-        ctx.drawImage(sprite, sx, 0, size, size, dx, dy, size * camZoom, sizeY * camZoom);
+        if (needsTint) drawTintedTile(ctx, sprite, sx, 0, size, size, tint, dx, dy, size * camZoom, sizeY * camZoom);
+        else ctx.drawImage(sprite, sx, 0, size, size, dx, dy, size * camZoom, sizeY * camZoom);
       } else if (sprite) {
-        ctx.drawImage(sprite, dx, dy, size * camZoom, sizeY * camZoom);
+        if (needsTint) drawTintedTile(ctx, sprite, 0, 0, sprite.width, sprite.height, tint, dx, dy, size * camZoom, sizeY * camZoom);
+        else ctx.drawImage(sprite, dx, dy, size * camZoom, sizeY * camZoom);
       } else if (!clip && entity.sprite && isWhiteTexture(entity.sprite.texture)) {
         // 白图 × tint = 纯色方块。原生画的是 tint 乘上 1×1 白纹理的四边形，所以这里
         // 必须是**方**、且用 Sprite.tint；下面那条圆点是"根本没有贴图字段"的兜底，
