@@ -23,7 +23,7 @@ fn font_probe_loads_when_the_project_lives_in_the_resource_provider() {
     let toml_bytes =
         b"name = \"Web\"\nfont = \"assets/fonts/Pack.ttf\"\nfont_weight = 500\n".to_vec();
     let font_bytes = repo_font_bytes();
-    let table = vec![
+    let table = [
         (toml_path.clone(), toml_bytes),
         (font_path.clone(), font_bytes),
     ];

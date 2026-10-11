@@ -167,7 +167,9 @@ fn adjacent_same_texture_draws_collapse_into_one_draw_call() {
     // 结构检查：白色像素面积 = 四块的解析面积之和。合并若把两段之间的空隙也画了，
     // 或者把某段漏掉，这条会立刻露馅——单点采样做不到这一点。
     let white = pixels
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|pixel| pixel[0] > 200 && pixel[1] > 200 && pixel[2] > 200)
         .count();
     let expected: usize = RECTS

@@ -60,9 +60,8 @@ fn save_commit_and_load_go_through_the_platform_slot() {
     );
 
     // 键名与旧运行时逐字一致：默认档就是 `rustlua:save`。
-    assert_eq!(
+    assert!(
         save_slot::read("rustlua:save").is_some(),
-        true,
         "引擎必须用与旧运行时同一把键写槽"
     );
     assert!(

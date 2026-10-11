@@ -33,7 +33,7 @@ fn the_resource_channel_reads_through_the_provider_and_decodes() {
     let on_disk = root.join("notes.txt");
     std::fs::write(&on_disk, b"from disk").unwrap();
 
-    let table = vec![(in_pack.clone(), packed), (toml.clone(), toml_bytes)];
+    let table = [(in_pack.clone(), packed), (toml.clone(), toml_bytes)];
     rustlua_infra::vfs::set_provider(Box::new(move |path: &Path| {
         table
             .iter()
