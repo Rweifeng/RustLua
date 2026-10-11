@@ -520,7 +520,9 @@ fn decode_atlas(project: &Path, path: &str) -> Result<Sheet, Box<dyn std::error:
         height: h,
         pixels: image
             .into_raw()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
             .collect(),
     })
@@ -1022,7 +1024,7 @@ fn appearances_for(
     };
     let mut out = Vec::new();
     for (start, count) in ranges {
-        for quad in vertices[start..start + count].chunks_exact(6) {
+        for quad in vertices[start..start + count].as_chunks::<6>().0.iter() {
             let (uv, color) = quad[0];
             let entry = entry_of_uv(uv)?;
             let tint = tint_bucket([color[0], color[1], color[2]]).ok_or(format!(

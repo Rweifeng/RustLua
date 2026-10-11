@@ -751,7 +751,7 @@ fn quads_of(
     };
     let mut out = Vec::new();
     for (start, count) in if overlay.is_empty() { world } else { overlay } {
-        for quad in uvs[start..start + count].chunks_exact(6) {
+        for quad in uvs[start..start + count].as_chunks::<6>().0.iter() {
             out.push((quad[0], quad[2]));
         }
     }
