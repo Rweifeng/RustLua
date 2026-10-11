@@ -189,7 +189,7 @@ fn section_assets(project: &Path) -> Result<usize, Box<dyn std::error::Error>> {
         for slot in 0..*stages {
             let entry = entry_of(row, slot);
             let bytes = entry_bytes(&image, entry);
-            let opaque = bytes.chunks_exact(4).any(|p| p[3] != 0);
+            let opaque = bytes.as_chunks::<4>().0.iter().any(|p| p[3] != 0);
             tiles.push((format!("{id}.stage_{}", slot + 1), fnv1a(&bytes), opaque));
         }
     }
@@ -230,7 +230,7 @@ fn section_assets(project: &Path) -> Result<usize, Box<dyn std::error::Error>> {
     for (id, row, _) in CROPS {
         for slot in 0..SHAKE_SLOTS {
             let bytes = entry_bytes(&image, entry_of(row, STAGE_SLOTS + slot));
-            if !bytes.chunks_exact(4).any(|p| p[3] != 0) {
+            if !bytes.as_chunks::<4>().0.iter().any(|p| p[3] != 0) {
                 return Err(format!("{id} 的抖动槽 {} 是空的", slot + 1).into());
             }
         }
@@ -287,11 +287,11 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     hash
 }
 
+/// 解码后的位图：(宽, 高, 行优先像素)。
+type RgbaImage = (u32, u32, Vec<[u8; 4]>);
+
 /// 解码 RGBA8；返回 (宽, 高, 行优先像素)。
-fn decode_rgba(
-    project: &Path,
-    path: &str,
-) -> Result<(u32, u32, Vec<[u8; 4]>), Box<dyn std::error::Error>> {
+fn decode_rgba(project: &Path, path: &str) -> Result<RgbaImage, Box<dyn std::error::Error>> {
     let resolved = project.join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
     let bytes = fs::read(&resolved).map_err(|error| format!("{path}: {error}"))?;
     let image = image::load_from_memory(&bytes)
@@ -303,7 +303,9 @@ fn decode_rgba(
         h,
         image
             .into_raw()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|p| [p[0], p[1], p[2], p[3]])
             .collect(),
     ))
@@ -653,7 +655,7 @@ fn soil_sheet(project: &Path, runtime: &mut LuaRuntime) -> Result<(), Box<dyn st
         .into_iter()
         .map(|(slot, label)| {
             let bytes = column_bytes(&farm, slot);
-            let opaque = bytes.chunks_exact(4).any(|p| p[3] != 0);
+            let opaque = bytes.as_chunks::<4>().0.iter().any(|p| p[3] != 0);
             (label.to_string(), fnv1a(&bytes), opaque)
         })
         .collect();
@@ -673,7 +675,7 @@ fn soil_sheet(project: &Path, runtime: &mut LuaRuntime) -> Result<(), Box<dyn st
     let mut translucent = 0usize;
     let mut opaque = 0usize;
     let mut any = 0usize;
-    for pixel in column_bytes(&moist, 0).chunks_exact(4) {
+    for pixel in column_bytes(&moist, 0).as_chunks::<4>().0.iter() {
         if pixel[3] > 0 {
             any += 1;
         }

@@ -183,7 +183,7 @@ fn coverage_histogram(cell: &[u8]) -> (usize, usize, usize, usize) {
     let mut lit = 0;
     let mut dark = 0;
     let mut alpha_off = 0;
-    for pixel in cell.chunks_exact(4) {
+    for pixel in cell.as_chunks::<4>().0.iter() {
         let (r, g, b) = (pixel[0], pixel[1], pixel[2]);
         if r == 0 && g == 0 && b == 0 {
             dark += 1;
@@ -201,7 +201,9 @@ fn coverage_histogram(cell: &[u8]) -> (usize, usize, usize, usize) {
 
 fn quads_from_text_mesh(mesh: &TextMesh, atlas: (u32, u32)) -> Vec<Quad> {
     mesh.vertices
-        .chunks_exact(6)
+        .as_chunks::<6>()
+        .0
+        .iter()
         .map(|hexagon| {
             Quad::from_corners(
                 hexagon[0].position,
@@ -553,7 +555,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let text_quads: Vec<Quad> = font_draws
         .iter()
-        .flat_map(|(start, count)| scene.vertices[*start..*start + *count].chunks_exact(6))
+        .flat_map(|(start, count)| {
+            scene.vertices[*start..*start + *count]
+                .as_chunks::<6>()
+                .0
+                .iter()
+        })
         .map(|hexagon| {
             Quad::from_corners(
                 to_device_px(hexagon[0].position),

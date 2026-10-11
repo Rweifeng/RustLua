@@ -514,7 +514,7 @@ fn quads_of(
 fn quads_in(ranges: &[(usize, usize)], uvs: &[[f32; 2]]) -> Vec<UvQuad> {
     let mut out = Vec::new();
     for (start, count) in ranges {
-        for quad in uvs[*start..*start + *count].chunks_exact(6) {
+        for quad in uvs[*start..*start + *count].as_chunks::<6>().0.iter() {
             out.push((quad[0], quad[2]));
         }
     }

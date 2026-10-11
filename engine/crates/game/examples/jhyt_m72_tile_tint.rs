@@ -376,11 +376,8 @@ fn quad_colors(
     }
     let mut out = Vec::new();
     for (start, count) in ranges {
-        for quad in colors[start..start + count].chunks_exact(6) {
-            let six: ColorQuad = quad
-                .try_into()
-                .map_err(|_| format!("{path} 的顶点数不是 6 的整数倍"))?;
-            out.push(six);
+        for quad in colors[start..start + count].as_chunks::<6>().0.iter() {
+            out.push(*quad);
         }
     }
     Ok(out)

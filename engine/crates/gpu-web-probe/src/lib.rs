@@ -738,7 +738,9 @@ async fn run_render_probe() -> Result<Value, String> {
     // 结构检查：白色像素数必须≈两块四边形的解析面积。位置对、尺寸不对（例如 overlay 视口
     // 没生效、整帧被缩到四分之一）单点采样看不出来，面积能。
     let white_pixels = pixels
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|pixel| pixel[0] > 200 && pixel[1] > 200 && pixel[2] > 200)
         .count();
     let expected_white_pixels: usize = QUADS
