@@ -135,8 +135,9 @@ powershell -NoProfile -File scripts\serve-pack.ps1 `
   -Root examples\game_jhyt\builds\wechat-minigame\assets -Port 8787
 ```
 
-发布之后用微信开发者工具「导入项目」选中发布目录即可；默认 appid 为 `touristappid`（本地预览），
-上架前需要在 `project.config.json` 换成自己的 appid。
+发布之后用微信开发者工具「导入项目」选中发布目录即可。appid 由编辑器「发布项目」面板的
+**微信 AppID** 填（记在工程的 `project.toml` `wechat_appid`，发布时经 `-WechatAppId` 直接写进
+`launcher/project.config.json`）；没填则保留默认的 `touristappid`——它只能本地预览，上传前要换成自己的 appid。
 
 ## 远端资源回落（`-AssetPack remote`：可选形态）
 
