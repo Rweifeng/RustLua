@@ -8,15 +8,15 @@
 //! - `spatial_inheritance_switches_between_local_and_world_positions`
 
 use super::*;
-use crate::core::scene::Scene;
+use rustlua_scene::scene::Scene;
 
 #[test]
 fn camera_pose_follows_the_parent_chain() {
     let root = game_root();
     let mut scene = Scene::new("camera-under-parent");
-    let rig = crate::core::scene::SceneEntityId(1);
-    let cam = crate::core::scene::SceneEntityId(2);
-    let ground = crate::core::scene::SceneEntityId(3);
+    let rig = rustlua_scene::scene::SceneEntityId(1);
+    let cam = rustlua_scene::scene::SceneEntityId(2);
+    let ground = rustlua_scene::scene::SceneEntityId(3);
     scene.add_entity(rig, "Rig", None).unwrap();
     scene.add_entity(cam, "Cam", Some(rig)).unwrap();
     scene.add_entity(ground, "Ground", None).unwrap();
@@ -83,9 +83,9 @@ fn migrated_child_renders_at_the_same_place_with_inheritance_enabled() {
     std::fs::create_dir_all(&dir).expect("create temp dir");
     let path = dir.join("hierarchy.scene");
 
-    let mut scene = crate::core::scene::Scene::new("hierarchy-render");
-    let parent = crate::core::scene::SceneEntityId(1);
-    let child = crate::core::scene::SceneEntityId(2);
+    let mut scene = rustlua_scene::scene::Scene::new("hierarchy-render");
+    let parent = rustlua_scene::scene::SceneEntityId(1);
+    let child = rustlua_scene::scene::SceneEntityId(2);
     scene.add_entity(parent, "Parent", None).unwrap();
     scene.add_entity(child, "Child", Some(parent)).unwrap();
     // 相机默认中心是 (640, 360)，精灵放这附近才不会被视口剔除掉（剔除是渲染路径的一部分）。
@@ -118,9 +118,9 @@ fn migrated_child_renders_at_the_same_place_with_inheritance_enabled() {
     );
 
     // B：跑真实**文件级**迁移（写回 + 读回校验），再把迁移后的文件读回来开继承渲染。
-    let outcome = crate::core::scene_migration::migrate_scene_file(
+    let outcome = rustlua_scene::scene_migration::migrate_scene_file(
         &path,
-        crate::core::scene_migration::MigrationOptions {
+        rustlua_scene::scene_migration::MigrationOptions {
             write: true,
             backup: false,
         },
@@ -135,7 +135,8 @@ fn migrated_child_renders_at_the_same_place_with_inheritance_enabled() {
         outcome.converted, 1,
         "只有一个子实体需要改成局部坐标：{outcome:?}"
     );
-    let migrated_scene = crate::core::scene::Scene::load(&path).expect("load migrated scene file");
+    let migrated_scene =
+        rustlua_scene::scene::Scene::load(&path).expect("load migrated scene file");
     let mut migrated =
         RuntimeScene::from_scene_edit(Some(root.as_path()), migrated_scene).expect("migrated");
     migrated.set_spatial_inheritance(true);
@@ -179,8 +180,8 @@ fn migrated_child_renders_at_the_same_place_with_inheritance_enabled() {
 fn draw_ranges_carry_the_render_layer_of_their_producer() {
     let root = game_root();
     let build = |name: &str, component: (&str, &str)| {
-        let mut scene = crate::core::scene::Scene::new(name);
-        let id = crate::core::scene::SceneEntityId(1);
+        let mut scene = rustlua_scene::scene::Scene::new(name);
+        let id = rustlua_scene::scene::SceneEntityId(1);
         scene.add_entity(id, "E", None).unwrap();
         let entity = scene.entities.get_mut(&id).unwrap();
         entity.components.insert(
@@ -212,7 +213,7 @@ fn draw_ranges_carry_the_render_layer_of_their_producer() {
         world_mesh
             .draws
             .iter()
-            .all(|draw| draw.render_layer == crate::core::layer::RenderLayer::World2D),
+            .all(|draw| draw.render_layer == rustlua_render::layer::RenderLayer::World2D),
         "世界文字必须标成 World2D：{:?}",
         world_mesh
             .draws
@@ -223,8 +224,8 @@ fn draw_ranges_carry_the_render_layer_of_their_producer() {
 
     // 屏幕 UI 文本：ScreenUI（不受世界相机影响、不参与深度）。
     // 屏幕 UI 要参与布局才有绘制分段，因此这里显式给一个 `UiLayout`。
-    let mut ui_scene = crate::core::scene::Scene::new("ui-text-layer");
-    let ui_id = crate::core::scene::SceneEntityId(1);
+    let mut ui_scene = rustlua_scene::scene::Scene::new("ui-text-layer");
+    let ui_id = rustlua_scene::scene::SceneEntityId(1);
     ui_scene.add_entity(ui_id, "E", None).unwrap();
     let ui_entity = ui_scene.entities.get_mut(&ui_id).unwrap();
     ui_entity.components.insert(
@@ -248,7 +249,7 @@ fn draw_ranges_carry_the_render_layer_of_their_producer() {
         ui_mesh
             .draws
             .iter()
-            .all(|draw| draw.render_layer == crate::core::layer::RenderLayer::ScreenUI),
+            .all(|draw| draw.render_layer == rustlua_render::layer::RenderLayer::ScreenUI),
         "屏幕 UI 文本必须标成 ScreenUI：{:?}",
         ui_mesh
             .draws
@@ -263,12 +264,12 @@ fn draw_ranges_carry_the_render_layer_of_their_producer() {
 #[test]
 fn scene_entity_world_transform_follows_the_parent_chain() {
     let root = game_root();
-    let mut scene = crate::core::scene::Scene::new("editor-picking");
+    let mut scene = rustlua_scene::scene::Scene::new("editor-picking");
     // docs/54 §4.1：断言的是父链组合，所以场景显式声明局部空间语义。
     scene.metadata.insert("spatial".into(), "local".into());
-    let parent = crate::core::scene::SceneEntityId(1);
-    let child = crate::core::scene::SceneEntityId(2);
-    let lone = crate::core::scene::SceneEntityId(3);
+    let parent = rustlua_scene::scene::SceneEntityId(1);
+    let child = rustlua_scene::scene::SceneEntityId(2);
+    let lone = rustlua_scene::scene::SceneEntityId(3);
     scene.add_entity(parent, "Parent", None).unwrap();
     scene.add_entity(child, "Child", Some(parent)).unwrap();
     scene.add_entity(lone, "Lone", None).unwrap();
@@ -304,7 +305,7 @@ fn scene_entity_world_transform_follows_the_parent_chain() {
     // 未知场景实体：`None`（而不是编一个 0 位置的框）。
     assert!(
         runtime
-            .world_transform_2d_of(crate::core::scene::SceneEntityId(99))
+            .world_transform_2d_of(rustlua_scene::scene::SceneEntityId(99))
             .is_none()
     );
 }
@@ -320,8 +321,8 @@ fn scene_entity_world_transform_follows_the_parent_chain() {
 #[test]
 fn physics_authority_decides_who_owns_the_transform() {
     let root = game_root();
-    let mut scene = crate::core::scene::Scene::new("authority");
-    let id = crate::core::scene::SceneEntityId(1);
+    let mut scene = rustlua_scene::scene::Scene::new("authority");
+    let id = rustlua_scene::scene::SceneEntityId(1);
     scene.add_entity(id, "Crate", None).unwrap();
     let entity = scene.entities.get_mut(&id).unwrap();
     entity.components.insert(
@@ -382,10 +383,10 @@ fn physics_authority_decides_who_owns_the_transform() {
 #[test]
 fn spatial_inheritance_switches_between_local_and_world_positions() {
     let root = game_root();
-    let mut scene = crate::core::scene::Scene::new("hierarchy");
+    let mut scene = rustlua_scene::scene::Scene::new("hierarchy");
     scene.metadata.insert("spatial".into(), "local".into());
-    let parent = crate::core::scene::SceneEntityId(1);
-    let child = crate::core::scene::SceneEntityId(2);
+    let parent = rustlua_scene::scene::SceneEntityId(1);
+    let child = rustlua_scene::scene::SceneEntityId(2);
     scene.add_entity(parent, "Parent", None).unwrap();
     scene.add_entity(child, "Child", Some(parent)).unwrap();
     scene.entities.get_mut(&parent).unwrap().components.insert(
@@ -402,7 +403,7 @@ fn spatial_inheritance_switches_between_local_and_world_positions() {
     let child_entity = runtime.script.with_world(|world| {
         world.entities_with::<Transform>().into_iter().find(|id| {
             world
-                .get::<crate::core::hierarchy::Parent>(*id)
+                .get::<rustlua_ecs::hierarchy::Parent>(*id)
                 .ok()
                 .flatten()
                 .is_some()
@@ -413,7 +414,7 @@ fn spatial_inheritance_switches_between_local_and_world_positions() {
     let read_world = |runtime: &RuntimeScene| {
         runtime
             .script
-            .with_world(|world| crate::core::hierarchy::world_transform_2d(world, child_entity))
+            .with_world(|world| rustlua_ecs::hierarchy::world_transform_2d(world, child_entity))
             .unwrap()
             .expect("child transform")
     };

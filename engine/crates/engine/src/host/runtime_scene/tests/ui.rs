@@ -13,7 +13,7 @@ use super::*;
 /// 顶点数在 mesh 里看不见；这里直接取未合批的 draw 分段。
 #[test]
 fn circle_vertices_are_triangle_list_compatible() {
-    let root = crate::core::games_dir().join("examples").join("game_api");
+    let root = rustlua_infra::games_dir().join("examples").join("game_api");
     let mut runtime = RuntimeScene::new(Some(&root)).expect("runtime for game_api sample");
     runtime
         .with_script(|lua| lua.execute_console("ui.circle('probe', 32, 18, 9, 1, 1, 1, 1)"))

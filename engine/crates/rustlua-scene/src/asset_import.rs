@@ -18,7 +18,7 @@ struct PrefabImporter;
 
 impl Importer for SceneImporter {
     fn version(&self) -> &'static str {
-        // 与拆分前（engine::core::importer）保持一致：`scene-1` 是资源库/缓存里
+        // 与拆分前（rustlua_assets::importer）保持一致：`scene-1` 是资源库/缓存里
         // 记录的版本号，改动它会强制全量重导入——本次只迁实现、不改语义。
         "scene-1"
     }

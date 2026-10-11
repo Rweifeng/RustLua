@@ -4,7 +4,7 @@
 //! Parsing is a pure function so it is testable without a window, and the shell decides what a
 //! jump means (select an entity, open a scene/prefab document, or narrow the console filter).
 
-use engine::core::scene::SceneEntityId;
+use rustlua_scene::scene::SceneEntityId;
 use std::path::PathBuf;
 
 /// One resolvable location extracted from a log line or diagnostic message.

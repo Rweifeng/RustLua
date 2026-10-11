@@ -1,7 +1,5 @@
-use engine::core::{
-    input::{InputSnapshot, KeyCode},
-    script::LuaRuntime,
-};
+use rustlua_input::input::{InputSnapshot, KeyCode};
+use rustlua_scripting::script::LuaRuntime;
 use std::{
     fs,
     time::{SystemTime, UNIX_EPOCH},

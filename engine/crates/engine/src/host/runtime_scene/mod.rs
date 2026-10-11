@@ -12,26 +12,24 @@ use std::{
     time::Duration,
 };
 
-use crate::core::{
-    asset_handle::{AssetHandle, AssetRecord, AssetStore},
-    camera::Camera3D,
-    camera::{Camera2D, RenderView, Viewport},
-    entity::EntityId,
-    font::{FontAtlas, FontVectorAtlas, project_font},
-    hierarchy::SpatialReport,
-    input::InputSnapshot,
-    par::Parallelism,
-    physics::PhysicsAuthority,
-    resource_kind::ResourceKind,
-    scene::{Scene, SceneEntityId},
-    scheduler::{ScheduleReport, Scheduler, SystemTiming},
-    script::LuaRuntime,
-    sprite_batch::{OverlayVertexSink, SpriteBatch, ndc_from_screen},
-    text::TextMesh,
-    tilemap::Tilemap,
-    transform::{Transform, Vec2},
-    ui_scene_layout::{ResolvedUiNode, UiSceneNode, UiSceneNodeSource},
-};
+use rustlua_assets::asset_handle::{AssetHandle, AssetRecord, AssetStore};
+use rustlua_assets::resource_kind::ResourceKind;
+use rustlua_camera::camera::Camera3D;
+use rustlua_camera::camera::{Camera2D, RenderView, Viewport};
+use rustlua_ecs::entity::EntityId;
+use rustlua_ecs::hierarchy::SpatialReport;
+use rustlua_ecs::scheduler::{ScheduleReport, Scheduler, SystemTiming};
+use rustlua_ecs::tilemap::Tilemap;
+use rustlua_ecs::transform::{Transform, Vec2};
+use rustlua_infra::par::Parallelism;
+use rustlua_input::input::InputSnapshot;
+use rustlua_physics::physics::PhysicsAuthority;
+use rustlua_render::font::{FontAtlas, FontVectorAtlas, project_font};
+use rustlua_render::sprite_batch::{OverlayVertexSink, SpriteBatch, ndc_from_screen};
+use rustlua_render::text::TextMesh;
+use rustlua_scene::scene::{Scene, SceneEntityId};
+use rustlua_scripting::script::LuaRuntime;
+use rustlua_ui::ui_scene_layout::{ResolvedUiNode, UiSceneNode, UiSceneNodeSource};
 
 use crate::host::frame::{
     FONT_ATLAS_TEXTURE_PATH, FontAtlasMap, OverlayVertex, SceneDraw, VectorAtlasMap,
@@ -100,7 +98,7 @@ pub struct RuntimeScene {
     pub(crate) script_micros: u64,
     pub(crate) sprite_batch: SpriteBatch,
     /// 每精灵顶点生成的并行度（WP8）。默认取检测到的核数；`Parallelism::SEQUENTIAL`
-    /// 即完全回滚到单线程，输出逐字节相同（见 `crate::core::par` 与 `sprite_batch` 的测试）。
+    /// 即完全回滚到单线程，输出逐字节相同（见 `rustlua_infra::par` 与 `sprite_batch` 的测试）。
     pub(crate) sprite_parallelism: Parallelism,
     /// P1-③：系统级数据并行开关（粒子积分等系统内纯数据子任务）。默认取检测到的
     /// 核数；`Parallelism::SEQUENTIAL` 完全回滚到单线程——输出逐位相同（回滚档）。
@@ -111,7 +109,7 @@ pub struct RuntimeScene {
     pub(crate) spatial_index: bool,
     /// 空间索引网格（惰性创建）。跨帧复用：`hierarchy::local_fingerprint` 不变则不重建
     /// ——静态场景收集从 O(N) 降为 O(视口内)；任何实体一动（指纹变）就整体重建。
-    pub(crate) spatial_grid: Option<crate::core::spatial_index::SpatialGrid2D>,
+    pub(crate) spatial_grid: Option<rustlua_render::spatial_index::SpatialGrid2D>,
     /// 上次重建网格时的指纹（与 `hierarchy::local_fingerprint` 返回同型；
     /// 与层级传播的 `spatial_fingerprint` 是两套独立缓存）。
     pub(crate) spatial_index_fingerprint: Option<(u64, usize, usize)>,
@@ -217,7 +215,7 @@ pub struct RuntimeScene {
     pub(crate) spatial_inheritance: bool,
     /// docs/54 §4.1：**场景声明的** `parent` 语义（与 `spatial_inheritance` 区分：后者是当前
     /// 生效的开关，宿主可覆盖；这一份是场景自己说的，用于诊断与验收）。
-    pub(crate) spatial_mode: crate::core::scene_space::SpatialMode,
+    pub(crate) spatial_mode: rustlua_scene::scene_space::SpatialMode,
     /// docs/54 §10 批 R：上一帧传播用的**局部真源指纹**（`(hash, 组件数, Parent 数)`）。
     /// 与上一帧相同 ⇒ 世界值仍然是上一帧算出来的那一份，整趟跳过传播。
     pub(crate) spatial_fingerprint: Option<(u64, usize, usize)>,
@@ -226,11 +224,11 @@ pub struct RuntimeScene {
     /// 累计"因为输入没变而跳过传播"的帧数（诊断/验收用）。
     pub(crate) spatial_skipped_frames: u64,
     /// docs/54 §10 批 S：**逐实体增量**传播的状态（上一帧的输入快照 + 父先序求解顺序）。
-    pub(crate) spatial_incremental: crate::core::hierarchy::SpatialIncremental,
+    pub(crate) spatial_incremental: rustlua_ecs::hierarchy::SpatialIncremental,
     /// 增量策略的开关（回滚档：`false` = 指纹变化后一律全量传播，与批 S 之前逐字节一致）。
     pub(crate) spatial_incremental_enabled: bool,
     /// 最近一次传播走的路径（`Skipped` / `Full` / `Incremental`）——门与验收读它。
-    pub(crate) last_spatial_path: crate::core::hierarchy::SpatialPath,
+    pub(crate) last_spatial_path: rustlua_ecs::hierarchy::SpatialPath,
     /// 最近一次传播**真正重算**的实体数（增量路径 = 脏子树大小）。这是"增量真的生效"的证据：
     /// 只挪一个叶子时它必须是 1，而不是实体总数。
     pub(crate) last_spatial_recomputed: usize,
@@ -481,7 +479,7 @@ fn texture_id_of(
 /// keyed by that order rather than by the scene file's sparse entity ids.
 ///
 /// "哪些实体参与布局、`preferred_size` 怎么算"这套规则只有**一处**定义：
-/// `crate::core::ui_scene_layout::build_ui_scene_nodes`。运行期 `prefab.spawn` 把同一份
+/// `rustlua_ui::ui_scene_layout::build_ui_scene_nodes`。运行期 `prefab.spawn` 把同一份
 /// 组件字符串落进活世界后走的是同一个函数（见 `rustlua-scripting` 的 prefab 节点登记），
 /// 于是"场景里会画的 UI，spawn 出来不会画"这种各算一遍的分叉没有落脚的地方。
 /// 这里只剩一层映射：文档实体 id → 活实体槽位序。
@@ -493,7 +491,7 @@ fn build_ui_scene_nodes(scene: &Scene, honor_editor_hidden: bool) -> BTreeMap<u6
         }
         id_to_key.insert(entity.id.0, id_to_key.len() as u64);
     }
-    crate::core::ui_scene_layout::build_ui_scene_nodes(scene.entities.values().filter_map(
+    rustlua_ui::ui_scene_layout::build_ui_scene_nodes(scene.entities.values().filter_map(
         |entity| {
             Some(UiSceneNodeSource {
                 key: *id_to_key.get(&entity.id.0)?,
@@ -529,7 +527,7 @@ fn load_runtime_scene(project_root: Option<&Path>) -> Scene {
                     // 经 `vfs` provider 取。**这不是"第二条解析实现"**——同样落在
                     // `Scene::from_packed_bytes` → `from_text`，所以两条路读出来的场景一致。
                     // 失败时保留**第一次**的错误（它才是"文件到底在不在"的答案）。
-                    match crate::core::vfs::read(&full) {
+                    match rustlua_infra::vfs::read(&full) {
                         Ok(bytes) => Scene::from_packed_bytes(&full, &bytes),
                         Err(_) => Err(error),
                     }

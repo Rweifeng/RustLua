@@ -1,7 +1,5 @@
-use engine::core::{
-    camera::{Camera2D, CameraBounds, Viewport},
-    transform::Vec2,
-};
+use rustlua_camera::camera::{Camera2D, CameraBounds, Viewport};
+use rustlua_ecs::transform::Vec2;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let viewport = Viewport::new(256.0, 256.0)?;
     let camera = Camera2D::new(Vec2::new(999.0, -999.0), 16.0)?

@@ -8,16 +8,14 @@ use std::{
     path::PathBuf,
 };
 
-use crate::core::{
-    asset_handle::AssetHandle,
-    async_loader::AsyncLoader,
-    camera::{Camera3D, FrameViews, Viewport},
-    layer::RenderLayer,
-    light::Light,
-    math3d::{Mat4, Vec3},
-    post_process::PostProcess,
-    render_plan::{RenderPass, RenderPlan},
-};
+use rustlua_assets::asset_handle::AssetHandle;
+use rustlua_camera::camera::{Camera3D, FrameViews, Viewport};
+use rustlua_math::math3d::{Mat4, Vec3};
+use rustlua_render::async_loader::AsyncLoader;
+use rustlua_render::layer::RenderLayer;
+use rustlua_render::light::Light;
+use rustlua_render::post_process::PostProcess;
+use rustlua_render::render_plan::{RenderPass, RenderPlan};
 use wgpu::{Device, Queue, Surface, SurfaceConfiguration};
 
 use crate::host::frame::{Scene3d, SceneMesh};
@@ -143,10 +141,10 @@ struct CachedMesh {
 }
 
 impl GpuMaterial {
-    /// docs/54 §4.3：GPU 材质由统一的 [`crate::core::renderable::Material`] 构造——金属度/粗糙度/
+    /// docs/54 §4.3：GPU 材质由统一的 [`rustlua_render::renderable::Material`] 构造——金属度/粗糙度/
     /// 基色的默认值从此只有一处，精灵与网格不会各自演化出一套"缺省材质"。
     fn from_material(
-        material: &crate::core::renderable::Material,
+        material: &rustlua_render::renderable::Material,
         skinned: bool,
         albedo: Option<u32>,
     ) -> Self {
@@ -164,7 +162,7 @@ struct CachedPrimitive {
     geometry: GpuGeometry,
     /// docs/54 §4.3：网格的材质与精灵/Quad 共用同一个 `Material` 类型（"材质是什么"只有一处
     /// 定义）；`albedo` 是它的贴图在 GPU 底图表里的下标，`None` = 白底。
-    material: crate::core::renderable::Material,
+    material: rustlua_render::renderable::Material,
     /// Index into `Renderer::albedo_textures`; `None` samples a white fallback.
     albedo: Option<u32>,
     /// Local-space bounding sphere (center, radius) used for frustum culling.
@@ -523,7 +521,7 @@ impl Renderer {
     /// WP5：声明本帧的相机侧视图（清屏策略 + 视口）。
     ///
     /// 收敛前渲染器把清屏色**写死在 pass 里**、视口恒为整个目标，宿主想说"这块区域
-    /// 只画 2D overlay"或"这帧不要清屏"都无处可说。现在这两件事都由 [`crate::core::camera::FrameViews`]
+    /// 只画 2D overlay"或"这帧不要清屏"都无处可说。现在这两件事都由 [`rustlua_camera::camera::FrameViews`]
     /// 声明，渲染器只消费不再自己决定。
     ///
     /// 回滚档：**不调用**本函数（或传 [`FrameViews::new`]）即回到收敛前的行为——
@@ -621,7 +619,7 @@ impl Renderer {
 }
 
 /// Conservative local-space bounding sphere from a primitive's vertex AABB.
-fn compute_mesh_bounds(vertices: &[crate::core::mesh3d::MeshVertex]) -> (Vec3, f32) {
+fn compute_mesh_bounds(vertices: &[rustlua_render::mesh3d::MeshVertex]) -> (Vec3, f32) {
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
     for vertex in vertices {
@@ -650,11 +648,11 @@ fn compute_mesh_bounds(vertices: &[crate::core::mesh3d::MeshVertex]) -> (Vec3, f
 /// Builds the joint-palette uniform data padded to `MAX_BONES` identity
 /// matrices: `[f32; 4]` rows so `bytemuck` casts the whole buffer at once.
 fn joint_palette_data(palette: &[Mat4]) -> Vec<[f32; 4]> {
-    let mut data = Vec::with_capacity(crate::core::mesh3d::MAX_BONES * 4);
-    for matrix in palette.iter().take(crate::core::mesh3d::MAX_BONES) {
+    let mut data = Vec::with_capacity(rustlua_render::mesh3d::MAX_BONES * 4);
+    for matrix in palette.iter().take(rustlua_render::mesh3d::MAX_BONES) {
         data.extend_from_slice(&matrix.columns);
     }
-    while data.len() < crate::core::mesh3d::MAX_BONES * 4 {
+    while data.len() < rustlua_render::mesh3d::MAX_BONES * 4 {
         data.extend_from_slice(&IDENTITY_MAT4);
     }
     data
@@ -677,7 +675,7 @@ fn identity_palette_data() -> Vec<[f32; 4]> {
 /// Light-space view-projection used by the shadow map: an orthographic-style projection from a camera
 /// placed **on the light's side**, looking at the origin.
 ///
-/// `Light::direction` is the direction the light **travels** (`crate::core::light` 与 docs/24 的约定，
+/// `Light::direction` is the direction the light **travels** (`rustlua_render::light` 与 docs/24 的约定，
 /// 着色器用 `-direction` 求表面→光源向量），因此"光源所在的一侧"是 `-direction`：
 ///
 /// ```text

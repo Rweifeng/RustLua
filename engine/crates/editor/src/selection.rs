@@ -14,7 +14,7 @@
 //! [`SelectionModel::contains`] / [`SelectionModel::iter`] / [`SelectionModel::primary`]
 //! 读到同一份数据。
 
-use engine::core::scene::SceneEntityId;
+use rustlua_scene::scene::SceneEntityId;
 use std::collections::BTreeSet;
 
 /// 产生本次选择变化的入口，用于诊断与 Delete 快捷键来源判定。

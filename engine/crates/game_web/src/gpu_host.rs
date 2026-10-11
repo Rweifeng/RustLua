@@ -1211,7 +1211,10 @@ async fn run_inner(canvas_id: &str, scene_path: &str) -> Result<String, String> 
 /// * 本函数**只建实例/表面/适配器**并读能力，不建设备、不建渲染器、不画帧——
 ///   因此它可以在小游戏宿主里安全地先跑一次，作为"要不要往这条路上投资"的判据。
 #[wasm_bindgen]
-pub async fn probe_canvas_host(gpu_canvas: JsValue, report: js_sys::Function) -> Result<String, JsValue> {
+pub async fn probe_canvas_host(
+    gpu_canvas: JsValue,
+    report: js_sys::Function,
+) -> Result<String, JsValue> {
     match probe_canvas_host_inner(gpu_canvas, &report).await {
         Ok(summary) => Ok(summary),
         Err(error) => {

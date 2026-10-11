@@ -7,12 +7,6 @@
 //! `renderer/mod.rs`（§3.1.2）；本模块是它的后代，结构体字面量按私有字段构造**不需要**
 //! 放宽任何可见性。
 
-use crate::core::{
-    async_loader::{AsyncLoader, LoadMode},
-    camera::{Camera3D, FrameViews, Viewport},
-    math3d::{Mat4, Vec3},
-    render_plan::RenderPlan,
-};
 use crate::host::{
     frame::{OverlayVertex, VectorTextVertex, WorldSpriteVertex},
     shader::{
@@ -20,6 +14,10 @@ use crate::host::{
         WORLD_SPRITE_SHADER,
     },
 };
+use rustlua_camera::camera::{Camera3D, FrameViews, Viewport};
+use rustlua_math::math3d::{Mat4, Vec3};
+use rustlua_render::async_loader::{AsyncLoader, LoadMode};
+use rustlua_render::render_plan::RenderPlan;
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use wgpu::util::DeviceExt;
 use wgpu::{
@@ -550,7 +548,7 @@ impl Renderer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
                     min_binding_size: wgpu::BufferSize::new(
-                        (crate::core::mesh3d::MAX_BONES * 64) as u64,
+                        (rustlua_render::mesh3d::MAX_BONES * 64) as u64,
                     ),
                 },
                 count: None,
@@ -767,7 +765,8 @@ impl Renderer {
                     entry_point: Some("vs_main"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                     buffers: &[wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<crate::core::mesh3d::MeshVertex>() as u64,
+                        array_stride: std::mem::size_of::<rustlua_render::mesh3d::MeshVertex>()
+                            as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &[
                             wgpu::VertexAttribute {
@@ -845,7 +844,8 @@ impl Renderer {
                     entry_point: Some("vs_main"),
                     compilation_options: Default::default(),
                     buffers: &[wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<crate::core::mesh3d::MeshVertex>() as u64,
+                        array_stride: std::mem::size_of::<rustlua_render::mesh3d::MeshVertex>()
+                            as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &[
                             wgpu::VertexAttribute {
@@ -1095,7 +1095,7 @@ impl Renderer {
         });
         let post_process_params = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("rustlua-post-process-params"),
-            // 32 字节：exposure + vignette + 两个填充位，随后是一个 vec4 着色（见 crate::core::post_process）。
+            // 32 字节：exposure + vignette + 两个填充位，随后是一个 vec4 着色（见 rustlua_render::post_process）。
             size: 32,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,

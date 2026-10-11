@@ -4,7 +4,7 @@
 //! 失败（有文件编译不过）退出码 2。演示工程大量新增脚本时，它比跑整套引擎测试快得多；
 //! 真正的运行期验证仍由 `game_api` 的 headless 场景门负责。
 
-use engine::core::script::LuaRuntime;
+use rustlua_scripting::script::LuaRuntime;
 
 fn main() {
     let mut args = std::env::args().skip(1);

@@ -341,7 +341,7 @@ impl GuiEvidence {
             let lit_ratio = lit as f32 / total as f32;
             let file_name = format!("{:02}-{}.png", self.index + 1, label);
             let path = self.out_dir.join(&file_name);
-            let error = match engine::core::texture::save_png_rgba8(&path, width, height, &rgba) {
+            let error = match rustlua_render::texture::save_png_rgba8(&path, width, height, &rgba) {
                 Ok(()) => None,
                 Err(error) => Some(error.to_string()),
             };
@@ -1391,7 +1391,7 @@ mod tests {
     /// 把示例工程整份拷进临时目录：soak 负载会往工程里复制资源，
     /// 直接在 `examples/game_api` 上跑等于把导入产物写进仓库。
     fn copy_sample_project(label: &str) -> PathBuf {
-        let source = engine::core::games_dir().join("examples").join("game_api");
+        let source = rustlua_infra::games_dir().join("examples").join("game_api");
         let root = temp_root(label);
         fs::create_dir_all(&root).expect("建临时工程");
         for dir in ["assets", "scenes", "scripts", "data"] {
@@ -1460,7 +1460,7 @@ mod tests {
     fn churn_load_repeats_the_same_work_without_growing_the_project() {
         let root = copy_sample_project("churn");
         let project = editor::open_project(&root).expect("打开临时工程");
-        let mut app = EditorApp::new(project, None, engine::core::logging::LogSink::new(256));
+        let mut app = EditorApp::new(project, None, rustlua_infra::logging::LogSink::new(256));
         app.project_loaded = true;
         app.open_scene_resource(PathBuf::from("scenes/main.scene"));
         assert!(
@@ -1539,7 +1539,7 @@ mod tests {
         fs::write(root.join("project.toml"), "[project]\nname = \"demo\"\n")
             .expect("写 project.toml");
         let project = editor::open_project(&root).expect("打开空工程");
-        let mut app = EditorApp::new(project, None, engine::core::logging::LogSink::new(16));
+        let mut app = EditorApp::new(project, None, rustlua_infra::logging::LogSink::new(16));
         app.project_loaded = true;
         let mut soak = soak_with_churn(&root, 1);
         soak.churn.as_mut().expect("装配好的负载").every = Duration::from_secs(3_600);

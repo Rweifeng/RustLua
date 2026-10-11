@@ -27,19 +27,18 @@
 //! Usage:
 //!   cargo run -p game --example jhyt_m22_input [-- <game_jhyt-root>]
 
-use engine::core::{
-    input::{
-        ACTION_MAP_VERSION, ACTION_MAP_VERSION_V1, ActionMap, Binding, InputSnapshot, KeyCode,
-    },
-    script::LuaRuntime,
+use rustlua_input::input::{
+    ACTION_MAP_VERSION, ACTION_MAP_VERSION_V1, ActionMap, Binding, InputSnapshot, KeyCode,
 };
+use rustlua_scripting::script::LuaRuntime;
 use std::{env, fs, path::PathBuf};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let project = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+    let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
+        rustlua_infra::games_dir()
+            .join("examples")
+            .join("game_jhyt")
+    });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

@@ -31,15 +31,11 @@
 //! Usage:
 //!   cargo run -p game --example jhyt_m61_prefab_runtime [-- <game_jhyt-root>]
 
-use engine::{
-    core::{
-        entity::EntityId,
-        input::{InputSnapshot, MouseButton},
-        ui::UiText,
-        ui_layout::UiRect,
-    },
-    host::RuntimeScene,
-};
+use engine::host::RuntimeScene;
+use rustlua_ecs::entity::EntityId;
+use rustlua_input::input::{InputSnapshot, MouseButton};
+use rustlua_ui::ui::UiText;
+use rustlua_ui::ui_layout::UiRect;
 use std::{env, fs, path::PathBuf};
 
 /// 设计分辨率 = 宿主视口（`RuntimeScene` 的默认视口，门面 UI 就按这套像素作者化）。
@@ -511,10 +507,11 @@ fn assert_same_rects(
 // ---------- Lua 取值 ----------
 
 fn resolve_project() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let project = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+    let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
+        rustlua_infra::games_dir()
+            .join("examples")
+            .join("game_jhyt")
+    });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

@@ -12,7 +12,8 @@
 use crate::EditorApp;
 use crate::util::strip_verbatim_prefix;
 use eframe::egui;
-use engine::core::{resource_kind::ResourceKind, scene::SceneEntityId};
+use rustlua_assets::resource_kind::ResourceKind;
+use rustlua_scene::scene::SceneEntityId;
 #[cfg(windows)]
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};

@@ -19,16 +19,12 @@
 
 use std::{env, fs, path::PathBuf};
 
-use engine::{
-    core::{
-        camera::Viewport,
-        games_dir,
-        math3d::Vec3,
-        picking::screen_from_world,
-        scene::{Scene, SceneEntityId},
-    },
-    host::{RenderOutcome, Renderer, RuntimeScene},
-};
+use engine::host::{RenderOutcome, Renderer, RuntimeScene};
+use rustlua_camera::camera::Viewport;
+use rustlua_infra::games_dir;
+use rustlua_math::math3d::Vec3;
+use rustlua_render::picking::screen_from_world;
+use rustlua_scene::scene::{Scene, SceneEntityId};
 use serde_json::json;
 
 const WIDTH: u32 = 640;
@@ -249,7 +245,7 @@ fn render_scene(
     let pixels = renderer
         .copy_texture_to_cpu(texture, WIDTH, HEIGHT)
         .expect("lighting readback");
-    let project = |world: Vec3| -> (engine::core::transform::Vec2, [u8; 3]) {
+    let project = |world: Vec3| -> (rustlua_ecs::transform::Vec2, [u8; 3]) {
         let point = screen_from_world(extracted.camera, world, viewport)
             .expect("camera projects the sample point")
             .0;
@@ -355,7 +351,7 @@ fn render_scene(
     }
 }
 
-fn sample_pixel(pixels: &[u8], point: engine::core::transform::Vec2) -> [u8; 3] {
+fn sample_pixel(pixels: &[u8], point: rustlua_ecs::transform::Vec2) -> [u8; 3] {
     let x = (point.x.round().max(0.0) as u32).min(WIDTH - 1);
     let y = (point.y.round().max(0.0) as u32).min(HEIGHT - 1);
     let index = ((y * WIDTH + x) * 4) as usize;

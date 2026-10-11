@@ -9,19 +9,17 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::core::{
-    camera::{CameraView, OrthoTerms, Viewport},
-    entity::EntityId,
-    font::FontVectorAtlas,
-    hierarchy::GlobalTransform,
-    layer::RenderLayer,
-    math3d::Vec3,
-    sprite_batch::{SpriteDrawBatch, ndc_from_screen},
-    text::{TextAtlas, TextLayout, TextMesh, TextStyle},
-    transform::Transform,
-    ui::UiText,
-    world_text::WorldText,
-};
+use rustlua_camera::camera::{CameraView, OrthoTerms, Viewport};
+use rustlua_ecs::entity::EntityId;
+use rustlua_ecs::hierarchy::GlobalTransform;
+use rustlua_ecs::transform::Transform;
+use rustlua_math::math3d::Vec3;
+use rustlua_render::font::FontVectorAtlas;
+use rustlua_render::layer::RenderLayer;
+use rustlua_render::sprite_batch::{SpriteDrawBatch, ndc_from_screen};
+use rustlua_render::text::{TextAtlas, TextLayout, TextMesh, TextStyle};
+use rustlua_scene::world_text::WorldText;
+use rustlua_ui::ui::UiText;
 
 use super::{
     FONT_ATLAS_TEXTURE_PATH, FrameVectorTextVertex, OverlayVertex, SceneDraw, TextRenderMode,

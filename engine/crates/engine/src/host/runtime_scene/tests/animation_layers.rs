@@ -6,14 +6,14 @@
 //! - `explicit_render_modes_route_geometry_to_the_right_channel`
 
 use super::*;
-use crate::core::scene::Scene;
+use rustlua_scene::scene::Scene;
 
 /// docs/54 §4.4：**动画片段也有运行时身份**——推进动画时把片段的内容签名 intern 进与贴图/网格
 /// 同一张身份表，因此"这份动画是哪一个"跨帧可比，而 `ResourceKind::Animation` 让它在诊断里
 /// 一眼可辨。
 #[test]
 fn animation_clip_identity_is_stable_across_frames() {
-    let root = crate::core::games_dir().join("examples").join("game_api");
+    let root = rustlua_infra::games_dir().join("examples").join("game_api");
     if !root.join("scenes/main.scene").is_file() {
         return;
     }
@@ -38,12 +38,16 @@ fn animation_clip_identity_is_stable_across_frames() {
         RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
     // 第一步：推进动画时把片段身份 intern 进身份表。
     runtime
-        .run_script_steps(1, 1.0 / 60.0, &crate::core::input::InputSnapshot::default())
+        .run_script_steps(
+            1,
+            1.0 / 60.0,
+            &rustlua_input::input::InputSnapshot::default(),
+        )
         .expect("step");
     let clip_key = |runtime: &RuntimeScene| -> String {
         let mut found = None;
         runtime.script.with_world(|world| {
-            world.for_each::<crate::core::animation::AnimationStateMachine>(|_, machine| {
+            world.for_each::<rustlua_animation::animation::AnimationStateMachine>(|_, machine| {
                 found = Some(machine.clip_resource_key().to_owned());
             });
         });
@@ -60,12 +64,16 @@ fn animation_clip_identity_is_stable_across_frames() {
         .expect("身份表里应有这条片段");
     assert_eq!(
         record.kind,
-        crate::core::resource_kind::ResourceKind::Animation,
+        rustlua_assets::resource_kind::ResourceKind::Animation,
         "片段身份必须标成动画资源"
     );
     let sizes = runtime.asset_entries().len();
     runtime
-        .run_script_steps(1, 1.0 / 60.0, &crate::core::input::InputSnapshot::default())
+        .run_script_steps(
+            1,
+            1.0 / 60.0,
+            &rustlua_input::input::InputSnapshot::default(),
+        )
         .expect("second step");
     assert_eq!(clip_key(&runtime), key, "片段内容没变，身份键也不该变");
     assert_eq!(
@@ -86,7 +94,7 @@ fn animation_clip_identity_is_stable_across_frames() {
 /// ② 渲染只按写下来的优先级画一种（`Sprite` 优先）——此前两条收集路径各自 push，会**画两遍**。
 #[test]
 fn conflicting_renderables_are_reported_and_only_one_draws() {
-    let root = crate::core::games_dir().join("examples").join("game_api");
+    let root = rustlua_infra::games_dir().join("examples").join("game_api");
     if !root.join("scenes/main.scene").is_file() {
         return;
     }
@@ -157,7 +165,7 @@ fn merging_adjacent_draws_never_crosses_render_layers() {
 /// 通道——即使宿主开关是关的，只要场景里有实体这样声明，这一帧就走世界通道。
 #[test]
 fn explicit_render_modes_route_geometry_to_the_right_channel() {
-    let root = crate::core::games_dir().join("examples").join("game_api");
+    let root = rustlua_infra::games_dir().join("examples").join("game_api");
     if !root.join("scenes/main.scene").is_file() {
         return;
     }

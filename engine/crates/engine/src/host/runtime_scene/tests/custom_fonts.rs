@@ -7,7 +7,7 @@
 //! - `pixel_font_stays_out_of_the_vector_channel_even_in_forced_vector_mode`
 
 use super::*;
-use crate::core::scene::Scene;
+use rustlua_scene::scene::Scene;
 use std::fs;
 
 /// 场景 Text 指定自定义字体时：该字体 key 出现在 SceneMesh 的自定义图集
@@ -174,7 +174,7 @@ fn text_render_mode_parsing_uses_auto_fallback() {
 
 #[test]
 fn sourcehan_sdf_mode_emits_default_font_draws() {
-    let root = crate::core::games_dir()
+    let root = rustlua_infra::games_dir()
         .join("examples")
         .join("sourcehan_test");
     if !root.join("scenes/font_check.scene").is_file() {
@@ -228,7 +228,9 @@ fn sourcehan_sdf_mode_emits_default_font_draws() {
 /// `if use_vector && push_…` 的正确写法，这两处是漏网的。
 #[test]
 fn pixel_font_stays_out_of_the_vector_channel_even_in_forced_vector_mode() {
-    let project = crate::core::games_dir().join("examples").join("game_jhyt");
+    let project = rustlua_infra::games_dir()
+        .join("examples")
+        .join("game_jhyt");
     let source = project.join("assets/fonts/FusionPixel-12px-Monospaced-zhHans.ttf");
     // 只在"整个示例工程没被 checkout"时让路。工程在盘上、`project.toml` 声明的主字体却不在，
     // 就是字体被误删或漏提交——那时静默 `return` 等于把这条挡板变成零断言

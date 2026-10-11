@@ -6,12 +6,10 @@ use crate::preview_session::{PreviewSession, PreviewTick};
 use crate::util::strip_verbatim_prefix;
 use editor::PlaySession;
 use eframe::egui;
-use engine::core::{
-    input::{InputSnapshot, MouseButton},
-    preview_diagnostics::PreviewErrorKind,
-    scene::Scene,
-};
 use engine::host::load_project_font_atlas;
+use rustlua_infra::preview_diagnostics::PreviewErrorKind;
+use rustlua_input::input::{InputSnapshot, MouseButton};
+use rustlua_scene::scene::Scene;
 
 impl EditorApp {
     /// 进入 Play：创建内嵌游戏预览（运行 Lua + 物理 + 渲染），并把编辑器场景隔离快照。
@@ -559,9 +557,9 @@ mod tests {
     use editor::ProjectInfo;
     use editor::open_project;
     use eframe::egui::{self, Event, Key, Modifiers, MouseWheelUnit, PointerButton, RawInput};
-    use engine::core::input::{KeyCode, MouseButton};
-    use engine::core::logging::LogSink;
-    use engine::core::scene::SceneEntityId;
+    use rustlua_infra::logging::LogSink;
+    use rustlua_input::input::{KeyCode, MouseButton};
+    use rustlua_scene::scene::SceneEntityId;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -602,7 +600,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("examples").join("game_api")
+        rustlua_infra::games_dir().join("examples").join("game_api")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {

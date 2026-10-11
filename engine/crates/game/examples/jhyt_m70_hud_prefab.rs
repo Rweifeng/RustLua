@@ -48,15 +48,11 @@
 //!
 //! `--capture` 只打印读数表后退出（在**迁移前**的树上跑一次，产出的就是黄金表）。
 
-use engine::{
-    core::{
-        entity::EntityId,
-        input::InputSnapshot,
-        ui::{UiImage, UiText},
-        ui_layout::{UiRect, UiRectLayout},
-    },
-    host::{RuntimeScene, SceneDraw, SceneMesh},
-};
+use engine::host::{RuntimeScene, SceneDraw, SceneMesh};
+use rustlua_ecs::entity::EntityId;
+use rustlua_input::input::InputSnapshot;
+use rustlua_ui::ui::{UiImage, UiText};
+use rustlua_ui::ui_layout::{UiRect, UiRectLayout};
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
@@ -403,7 +399,8 @@ const fn probe(
 /// **255**)、`ui_hud_chip_9s` 中心 (237,237,237,**255**)，三张整图 min alpha 都是 255。
 /// 进表不等于就会盖人：`Reading::opaque` 还要看 Image 染色 alpha（色与图相乘），
 /// 面板底 0.620 / 色标 0.950 因此仍算"盖不住人"。行图标/头像框/条图标边缘透明不进表。
-const OPAQUE_NOTE: &str = "贴图中心 alpha=255 **且** Image 染色 alpha ≥ 0.99 才算能盖人（见 m65 门常量注释的复现命令）";
+const OPAQUE_NOTE: &str =
+    "贴图中心 alpha=255 **且** Image 染色 alpha ≥ 0.99 才算能盖人（见 m65 门常量注释的复现命令）";
 const OPAQUE_TEXTURES: &[&str] = &[
     "ui_bar_frame_9s.png",
     "ui_bar_fill_hp.png",
@@ -787,7 +784,11 @@ fn dynamic_reading(runtime: &mut RuntimeScene, probe: &Probe) -> Result<Option<R
             // 印出来的仍是同一串字节，M72-09 换真贴图后这条不变。
             let mut parts = text.splitn(5, ',');
             let head: Vec<&str> = parts.by_ref().take(4).collect();
-            format!("{},__white__,-,{}", head.join(","), parts.next().unwrap_or(""))
+            format!(
+                "{},__white__,-,{}",
+                head.join(","),
+                parts.next().unwrap_or("")
+            )
         }
         _ if !hidden => text.clone(),
         _ => "hidden".to_owned(),
@@ -1353,7 +1354,11 @@ fn resolve_project(args: &[String]) -> Result<PathBuf, Box<dyn std::error::Error
         .iter()
         .find(|arg| !arg.starts_with("--"))
         .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+        .unwrap_or_else(|| {
+            rustlua_infra::games_dir()
+                .join("examples")
+                .join("game_jhyt")
+        });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

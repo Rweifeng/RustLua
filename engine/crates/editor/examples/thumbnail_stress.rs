@@ -1,4 +1,4 @@
-use engine::core::texture::{TextureAsset, TextureColorSpace};
+use rustlua_render::texture::{TextureAsset, TextureColorSpace};
 use std::{
     fs,
     path::PathBuf,
@@ -20,7 +20,7 @@ fn temp_root(label: &str) -> PathBuf {
 }
 
 fn sample_project_root() -> PathBuf {
-    engine::core::games_dir().join("examples").join("game_api")
+    rustlua_infra::games_dir().join("examples").join("game_api")
 }
 
 fn downscale_rgba(

@@ -30,12 +30,10 @@
 //! Usage:
 //!   cargo run -p game --example jhyt_m72_tileset_atlas [-- <game_jhyt-root>]
 
-use engine::core::{
-    input::InputSnapshot,
-    tilemap::{TILES_FORMAT_ATLAS, TILES_FORMAT_LEGACY, Tilemap},
-    transform::Vec2,
-};
 use engine::host::{RuntimeScene, SceneMesh};
+use rustlua_ecs::tilemap::{TILES_FORMAT_ATLAS, TILES_FORMAT_LEGACY, Tilemap};
+use rustlua_ecs::transform::Vec2;
+use rustlua_input::input::InputSnapshot;
 use std::{env, path::PathBuf};
 
 const VIEW_W: u32 = 1280;
@@ -74,10 +72,11 @@ fn expected_uv(entry: u8) -> UvQuad {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let project = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+    let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
+        rustlua_infra::games_dir()
+            .join("examples")
+            .join("game_jhyt")
+    });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

@@ -20,9 +20,9 @@
 
 use std::path::Path;
 
-use engine::core::input::InputSnapshot;
-use engine::core::scene::Scene;
 use engine::host::{RuntimeScene, SceneMesh};
+use rustlua_input::input::InputSnapshot;
+use rustlua_scene::scene::Scene;
 
 use crate::VIRTUAL_PROJECT_ROOT;
 
@@ -385,8 +385,8 @@ impl RustScene {
 
     /// 本帧的取景：2D 视图由**场景自己的相机**给出（与桌面运行器同源）。
     /// 3D 主视图这里留空——本片不碰 3D（`scene_3d` 的相机载荷另说）。
-    pub fn frame_views(&self) -> engine::core::camera::FrameViews {
-        engine::core::camera::FrameViews {
+    pub fn frame_views(&self) -> rustlua_camera::camera::FrameViews {
+        rustlua_camera::camera::FrameViews {
             main: None,
             overlay: Some(self.scene.render_view_2d(self.width, self.height)),
         }
@@ -394,7 +394,7 @@ impl RustScene {
 
     /// 世界 Sprite 的相机矩阵（与桌面运行器同源：`world_sprite_depth` 关着时为 `None`，
     /// 此时渲染器走它自己的历史回退，与桌面完全一致）。
-    pub fn world_sprite_camera(&self) -> Option<engine::core::math3d::Mat4> {
+    pub fn world_sprite_camera(&self) -> Option<rustlua_math::math3d::Mat4> {
         self.scene.sprite_view_projection(self.width, self.height)
     }
 

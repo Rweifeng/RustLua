@@ -7,12 +7,10 @@
 
 use std::collections::HashMap;
 
-use crate::core::{
-    asset_handle::AssetHandle,
-    camera::{CameraView, RenderView, Viewport},
-    math3d::Mat4,
-};
 use crate::host::frame::{Scene3d, SceneMesh};
+use rustlua_assets::asset_handle::AssetHandle;
+use rustlua_camera::camera::{CameraView, RenderView, Viewport};
+use rustlua_math::math3d::Mat4;
 
 use super::{
     DepthPass, FrameDraw, GpuMaterial, RenderFrameMetrics, Renderer, StaticGroup,
@@ -130,7 +128,7 @@ impl Renderer {
         target: (u32, u32),
         world: WorldSpriteView,
         pass_kind: DepthPass,
-        draws: &[crate::core::sprite_batch::SpriteDrawBatch],
+        draws: &[rustlua_render::sprite_batch::SpriteDrawBatch],
         paths: &[String],
         handles: &[AssetHandle],
         filter: SpritePassFilter,
@@ -303,7 +301,7 @@ impl Renderer {
         draws
     }
 
-    /// WP6：写入世界 Sprite 通道用的投影矩阵——**只在宿主没有声明任何 [`crate::core::camera::FrameViews`] 时**
+    /// WP6：写入世界 Sprite 通道用的投影矩阵——**只在宿主没有声明任何 [`rustlua_camera::camera::FrameViews`] 时**
     /// 才需要（纯 2D 回滚档）。声明了主视图或 overlay 时，世界 Sprite 用声明里的那一份矩阵
     /// （与网格同一份，见 docs/54 §8-③/④），本函数写入的值会被当帧覆盖。
     pub fn set_world_sprite_camera(&mut self, view_projection: Mat4) {

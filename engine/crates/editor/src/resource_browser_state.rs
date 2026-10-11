@@ -1,8 +1,8 @@
-use engine::core::{
-    dependency::recompute_edges,
-    resource_db::{AssetId, DiskAsset, ResourceDatabase, ResourceDbError, ResourceState},
-    resource_kind::ResourceKind,
+use rustlua_assets::dependency::recompute_edges;
+use rustlua_assets::resource_db::{
+    AssetId, DiskAsset, ResourceDatabase, ResourceDbError, ResourceState,
 };
+use rustlua_assets::resource_kind::ResourceKind;
 use std::{
     collections::HashMap,
     fs,
@@ -198,9 +198,9 @@ impl ResourceBrowserState {
 
             // 统一从 ImporterRegistry 取版本：assetc 与编辑器同源，避免版本漂移。
             // core 拆分后 builtin() 不含 Scene/Prefab 导入器，必须用完整注册表。
-            let importer_version = engine::core::asset_import::full_registry()
+            let importer_version = rustlua_scene::asset_import::full_registry()
                 .get(kind)
-                .map(engine::core::importer::Importer::version)
+                .map(rustlua_assets::importer::Importer::version)
                 .unwrap_or(kind.token());
             match database.register(&relative, kind, importer_version) {
                 Ok(asset_id) => registered.push((relative, kind, asset_id)),
@@ -358,7 +358,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("examples").join("game_api")
+        rustlua_infra::games_dir().join("examples").join("game_api")
     }
 
     fn copy_file(from: &Path, to: &Path) -> std::io::Result<()> {

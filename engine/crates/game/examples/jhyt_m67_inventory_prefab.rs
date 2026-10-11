@@ -37,15 +37,11 @@
 //! 迁移后跑校验模式：`compare_golden` 对 cover 段按"排序键逐行比对"（行序是排序产物不是
 //! 画面属性，动态层与实体层的排序键不同源，见 m66 的修法）。
 
-use engine::{
-    core::{
-        entity::EntityId,
-        input::InputSnapshot,
-        ui::{UiImage, UiText},
-        ui_layout::{UiRect, UiRectLayout},
-    },
-    host::{RuntimeScene, SceneDraw, SceneMesh},
-};
+use engine::host::{RuntimeScene, SceneDraw, SceneMesh};
+use rustlua_ecs::entity::EntityId;
+use rustlua_input::input::InputSnapshot;
+use rustlua_ui::ui::{UiImage, UiText};
+use rustlua_ui::ui_layout::{UiRect, UiRectLayout};
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
@@ -986,7 +982,11 @@ fn resolve_project(args: &[String]) -> Result<PathBuf, Box<dyn std::error::Error
         .iter()
         .find(|arg| !arg.starts_with("--"))
         .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+        .unwrap_or_else(|| {
+            rustlua_infra::games_dir()
+                .join("examples")
+                .join("game_jhyt")
+        });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

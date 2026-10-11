@@ -32,16 +32,12 @@
 //! 前置：`engine/crates/editor/fonts/FusionPixel-12px-Monospaced-zhHans.ttf`（7 MB 上游全量，
 //! **不入库**）必须就位；缺文件时本门**报错并打印取回命令**，不静默跳过（见 ① 那段）。
 
-use engine::{
-    core::{
-        char_collect::collect_project_chars,
-        font::{FontAtlas, FontVectorAtlas, RASTER_SCALE, project_font},
-        input::InputSnapshot,
-        pack,
-        text::{TextLayout, TextMesh, TextStyle},
-    },
-    host::{RuntimeScene, SceneMesh, frame::FONT_ATLAS_TEXTURE_PATH},
-};
+use engine::host::{RuntimeScene, SceneMesh, frame::FONT_ATLAS_TEXTURE_PATH};
+use rustlua_assets::pack;
+use rustlua_input::input::InputSnapshot;
+use rustlua_render::font::{FontAtlas, FontVectorAtlas, RASTER_SCALE, project_font};
+use rustlua_render::text::{TextLayout, TextMesh, TextStyle};
+use rustlua_scene::char_collect::collect_project_chars;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -250,10 +246,11 @@ fn load_font(path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let project = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+    let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
+        rustlua_infra::games_dir()
+            .join("examples")
+            .join("game_jhyt")
+    });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

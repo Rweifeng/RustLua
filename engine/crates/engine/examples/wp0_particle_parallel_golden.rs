@@ -9,10 +9,10 @@
 
 use std::{env, fs, path::PathBuf};
 
-use engine::{
-    core::{games_dir, par::Parallelism, scene::Scene},
-    host::{RenderOutcome, Renderer, RuntimeScene},
-};
+use engine::host::{RenderOutcome, Renderer, RuntimeScene};
+use rustlua_infra::games_dir;
+use rustlua_infra::par::Parallelism;
+use rustlua_scene::scene::Scene;
 use serde_json::json;
 
 const WIDTH: u32 = 400;

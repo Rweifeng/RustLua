@@ -6,16 +6,14 @@
 //! 它被 `scene.rs` 的 `init` 调用、`run_pipelines`/`run_script_steps` 被每帧路径调用，
 //! 方向跨模块 ⇒ `pub(super)`（§3.1.4）。
 
-use crate::core::{
-    animation::{AnimationFrameEvent, AnimationStateMachine},
-    animation3d::Animation3D,
-    asset_handle::AssetRecord,
-    entity::EntityId,
-    input::InputSnapshot,
-    mesh3d::MeshRenderer,
-    scheduler::{ScheduleStage, Scheduler, SchedulerError, System, SystemError},
-    transform::integrate_velocity,
-};
+use rustlua_animation::animation::{AnimationFrameEvent, AnimationStateMachine};
+use rustlua_animation::animation3d::Animation3D;
+use rustlua_assets::asset_handle::AssetRecord;
+use rustlua_ecs::entity::EntityId;
+use rustlua_ecs::scheduler::{ScheduleStage, Scheduler, SchedulerError, System, SystemError};
+use rustlua_ecs::transform::integrate_velocity;
+use rustlua_input::input::InputSnapshot;
+use rustlua_render::mesh3d::MeshRenderer;
 
 use super::{FrameScheduleReport, PhysicsStageOrder, RuntimeScene};
 
@@ -280,7 +278,8 @@ impl RuntimeScene {
                                     key,
                                     AssetRecord {
                                         path: key.to_owned(),
-                                        kind: crate::core::resource_kind::ResourceKind::Animation,
+                                        kind:
+                                            rustlua_assets::resource_kind::ResourceKind::Animation,
                                     },
                                 );
                             }
@@ -314,7 +313,8 @@ impl RuntimeScene {
                                     key.clone(),
                                     AssetRecord {
                                         path: key,
-                                        kind: crate::core::resource_kind::ResourceKind::Animation,
+                                        kind:
+                                            rustlua_assets::resource_kind::ResourceKind::Animation,
                                     },
                                 );
                             }

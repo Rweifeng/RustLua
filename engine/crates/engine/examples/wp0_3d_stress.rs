@@ -8,13 +8,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use engine::{
-    core::{
-        games_dir,
-        scene::{Scene, SceneEntityId},
-    },
-    host::{RenderOutcome, Renderer, RuntimeScene},
-};
+use engine::host::{RenderOutcome, Renderer, RuntimeScene};
+use rustlua_infra::games_dir;
+use rustlua_scene::scene::{Scene, SceneEntityId};
 
 struct CountingAllocator;
 static ALLOC_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -258,7 +254,7 @@ fn render_once(
 ) {
     let mesh = runtime.vertices(640, 360).expect("2D extraction");
     let scene =
-        runtime.scene_3d(engine::core::camera::Viewport::new(640.0, 360.0).expect("viewport"));
+        runtime.scene_3d(rustlua_camera::camera::Viewport::new(640.0, 360.0).expect("viewport"));
     assert!(matches!(
         renderer.render_into_texture(&mesh, scene.as_ref(), view, 640, 360),
         RenderOutcome::Presented

@@ -14,7 +14,7 @@
 
 use std::{path::PathBuf, process};
 
-use engine::core::script::LuaRuntime;
+use rustlua_scripting::script::LuaRuntime;
 
 /// 契约用例（两侧共用的同一份 Lua）与 transcript 基线，相对 `crates/engine` 清单文件的路径。
 const CONTRACT_REL: &str = "../rustlua-scripting/src/api_surface_snapshot/lua_api_contract.lua";

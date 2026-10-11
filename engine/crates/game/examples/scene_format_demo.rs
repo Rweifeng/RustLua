@@ -1,7 +1,5 @@
-use engine::core::{
-    resource_db::AssetId,
-    scene::{Scene, SceneEntityId},
-};
+use rustlua_assets::resource_db::AssetId;
+use rustlua_scene::scene::{Scene, SceneEntityId};
 use std::fs;
 
 fn main() {

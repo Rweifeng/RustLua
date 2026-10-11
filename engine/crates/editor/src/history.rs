@@ -1,5 +1,5 @@
 use crate::SceneDocument;
-use engine::core::scene::SceneEntityId;
+use rustlua_scene::scene::SceneEntityId;
 
 /// 一条活动中的事务：把一次连续交互（拖拽 / 数值拖动 / 连续绘制…）合并为
 /// 一条可 Undo 的 `EditCommand`。事务期间只更新 preview（调用方自行在

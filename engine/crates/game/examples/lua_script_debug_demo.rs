@@ -1,4 +1,4 @@
-use engine::core::script::LuaRuntime;
+use rustlua_scripting::script::LuaRuntime;
 use std::{
     fs,
     time::{SystemTime, UNIX_EPOCH},

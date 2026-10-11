@@ -1,8 +1,8 @@
 //! 浏览器（WebGL / 微信小游戏）wasm 入口与宿主 API（WP10）。
 //!
 //! Lua 桥接线（`run_lua_once`）：把 Web 宿主拿到的项目资源（.lua 脚本 /
-//! require 模块 / data JSON）注入 `engine::core::vfs` 的资源提供者，再启动
-//! `engine::core::script::LuaRuntime` 执行项目脚本并跑一帧 `update()`。
+//! require 模块 / data JSON）注入 `rustlua_infra::vfs` 的资源提供者，再启动
+//! `rustlua_scripting::script::LuaRuntime` 执行项目脚本并跑一帧 `update()`。
 //! 平台无关的核心逻辑（资源表注入 + Lua 执行）可在桌面直接跑测试。
 
 /// WP10 批次 A：`app / clock / calendar / day` 宿主 API 的 Rust 实现（编译进 wasm）。
@@ -94,7 +94,7 @@ type ResourceReader = dyn Fn(&str) -> Option<Vec<u8>> + 'static;
 /// `read_resource` 按**项目相对路径**（如 `"scripts/main.lua"`、`"data/items.json"`）
 /// 返回资源字节；`None` = 资源不存在。需要 `'static`：provider 会进 vfs 的全局
 /// 存储（桌面 `OnceLock` / wasm `thread_local`）。桌面上 provider 优先于真实
-/// 文件系统（`engine::core::vfs` 的语义），因此本函数在桌面测试与 Web 宿主行为一致。
+/// 文件系统（`rustlua_infra::vfs` 的语义），因此本函数在桌面测试与 Web 宿主行为一致。
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_lua_once<F>(read_resource: F) -> anyhow::Result<String>
 where
@@ -127,7 +127,7 @@ fn run_lua_once_shared(read_resource: Box<ResourceReader>) -> anyhow::Result<Str
         read_resource(&key)
     };
     // `set_provider` 的失败是 `&'static str`（非 `StdError`），保留显式构造以维持原文案。
-    engine::core::vfs::set_provider(Box::new(provider)).map_err(|e| anyhow::anyhow!("{e}"))?;
+    rustlua_infra::vfs::set_provider(Box::new(provider)).map_err(|e| anyhow::anyhow!("{e}"))?;
     lua_once_finish(root)
 }
 
@@ -140,7 +140,7 @@ fn lua_once_finish(root: std::path::PathBuf) -> anyhow::Result<String> {
     let _ = crate::lua_bridge::install_storage_slot();
     #[cfg(target_arch = "wasm32")]
     let _ = crate::audio_sink::install();
-    let mut runtime = engine::core::script::LuaRuntime::new()?;
+    let mut runtime = rustlua_scripting::script::LuaRuntime::new()?;
     runtime.set_project_root(root.clone());
     runtime.execute_project_script(&root.join("scripts/main.lua"))?;
     Ok(runtime.call_update()?)
@@ -177,11 +177,11 @@ mod wasm {
         super::install_panic_hook();
         match stage {
             0 | 1 | 2 => {
-                engine::core::script::probe_startup_stage(stage as u8)
+                rustlua_scripting::script::probe_startup_stage(stage as u8)
                     .map_err(|e| JsValue::from_str(&e))?;
             }
             3 => {
-                let _ = engine::core::script::LuaRuntime::new()
+                let _ = rustlua_scripting::script::LuaRuntime::new()
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
             }
             4 | 5 => {
@@ -199,10 +199,10 @@ mod wasm {
     }
 
     /// probe 专用：注入 mock 资源 provider，建运行时并执行 `scripts/main.lua`。
-    fn probe_boot() -> Result<engine::core::script::LuaRuntime, JsValue> {
+    fn probe_boot() -> Result<rustlua_scripting::script::LuaRuntime, JsValue> {
         let root = std::path::PathBuf::from(super::VIRTUAL_PROJECT_ROOT);
         let root_for_key = root.clone();
-        let _ = engine::core::vfs::set_provider(move |path: &std::path::Path| {
+        let _ = rustlua_infra::vfs::set_provider(move |path: &std::path::Path| {
             let key = path
                 .strip_prefix(&root_for_key)
                 .map(|p| p.to_string_lossy().into_owned())
@@ -216,7 +216,7 @@ mod wasm {
                 _ => None,
             }
         });
-        let mut runtime = engine::core::script::LuaRuntime::new()
+        let mut runtime = rustlua_scripting::script::LuaRuntime::new()
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         runtime.set_project_root(root);
         let main = std::path::PathBuf::from(super::VIRTUAL_PROJECT_ROOT).join("scripts/main.lua");

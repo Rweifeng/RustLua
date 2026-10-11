@@ -35,3 +35,6 @@ serde_json = "1"
 # 注意**不要**在 wasm 目标上 `cargo build --workspace`：同一构建里特性会合并，
 # 那时 `game_web` 会跟着拿到 `engine/webgl`（+139 KB）。门脚本一律按 `-p` 构建。
 engine = { path = "../engine", features = ["webgl"] }
+
+rustlua-camera = { path = "../rustlua-camera" }
+rustlua-math = { path = "../rustlua-math" }

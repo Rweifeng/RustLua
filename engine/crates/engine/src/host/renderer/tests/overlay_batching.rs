@@ -5,7 +5,7 @@
 //! 采样点与解析面积必须和逐 draw 画时完全一致——包括"不该合并的地方不许合并"。
 
 use super::*;
-use crate::core::camera::{FrameViews, Viewport};
+use rustlua_camera::camera::{FrameViews, Viewport};
 
 const SIZE: u32 = 64;
 

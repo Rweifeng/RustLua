@@ -19,15 +19,11 @@
 use std::{env, fs, path::PathBuf, time::Instant};
 
 use editor::{CommandHistory, CommandKind, SceneDocument, document_space};
-use engine::{
-    core::{
-        games_dir,
-        scene::{Scene, SceneEntityId},
-        spatial_transform::LocalTransform,
-        transform::Vec2,
-    },
-    host::{OverlayVertex, RenderOutcome, Renderer, RuntimeScene},
-};
+use engine::host::{OverlayVertex, RenderOutcome, Renderer, RuntimeScene};
+use rustlua_ecs::spatial_transform::LocalTransform;
+use rustlua_ecs::transform::Vec2;
+use rustlua_infra::games_dir;
+use rustlua_scene::scene::{Scene, SceneEntityId};
 use serde_json::json;
 
 const WIDTH: u32 = 640;
@@ -45,7 +41,7 @@ fn main() {
         document_space::world_transform_2d(&document.scene, rig).expect("rig world transform");
 
     // ---------- 1. 世界保持的编辑：把子实体在**世界**空间里移动 (1.5, 0) ----------
-    let target = LocalTransform::from_2d(engine::core::transform::Transform {
+    let target = LocalTransform::from_2d(rustlua_ecs::transform::Transform {
         position: original_world.position + Vec2::new(1.5, 0.0),
         rotation: original_world.rotation,
         scale: original_world.scale,

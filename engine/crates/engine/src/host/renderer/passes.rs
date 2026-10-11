@@ -5,14 +5,12 @@
 //! 拆成 `passes/clear.rs` / `passes/world2d.rs` 之类属于改变结构，另开工作包（§9）。
 //! `Renderer` 结构体与字段仍留在 `renderer/mod.rs`；被父模块调用的私有方法按编译器要求放宽。
 
-use crate::core::{
-    camera::{ClearPolicy, DEFAULT_3D_CLEAR, RenderView},
-    layer::{RenderLayer, layer_indices},
-    logging::{EngineError, LogModule},
-    post_process::PostProcess,
-    render_plan::{FrameFacts, RenderPass, RenderPlan},
-};
 use crate::host::frame::{Scene3d, SceneMesh};
+use rustlua_camera::camera::{ClearPolicy, DEFAULT_3D_CLEAR, RenderView};
+use rustlua_infra::logging::{EngineError, LogModule};
+use rustlua_render::layer::{RenderLayer, layer_indices};
+use rustlua_render::post_process::PostProcess;
+use rustlua_render::render_plan::{FrameFacts, RenderPass, RenderPlan};
 // M73-00 WP5：时钟必须走 `web-time` 而不是 `std::time`。`wasm32-unknown-unknown` 的 std
 // 落在 `sys/pal/unsupported` 上，`Instant::now()` 会**直接 panic**（"time not implemented on
 // this platform"，见 std 源码 `sys/time/unsupported.rs`）——渲染器是第一个真在 wasm 上被调用的
@@ -192,7 +190,7 @@ impl Renderer {
     /// offscreen target): clears the view, draws 3D (shadow + mesh into the
     /// depth view), then the 2D overlay.
     ///
-    /// WP5：清屏与视口不再由本函数写死——它们来自宿主声明的 [`crate::core::camera::FrameViews`]。
+    /// WP5：清屏与视口不再由本函数写死——它们来自宿主声明的 [`rustlua_camera::camera::FrameViews`]。
     fn render_passes(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,

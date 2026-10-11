@@ -10,10 +10,8 @@
 //! The project root defaults to `../../../game_farm` relative to the `game`
 //! crate (the repo's `game_farm/` directory).
 
-use engine::core::{
-    input::{InputSnapshot, KeyCode},
-    script::LuaRuntime,
-};
+use rustlua_input::input::{InputSnapshot, KeyCode};
+use rustlua_scripting::script::LuaRuntime;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -23,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args()
         .nth(1)
         .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::fixture_games_dir().join("game_farm"));
+        .unwrap_or_else(|| rustlua_infra::fixture_games_dir().join("game_farm"));
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

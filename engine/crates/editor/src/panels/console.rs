@@ -222,7 +222,7 @@ impl EditorApp {
             .iter()
             .map(|diagnostic| {
                 let level = if diagnostic.kind
-                    == engine::core::preview_diagnostics::PreviewErrorKind::Layout
+                    == rustlua_infra::preview_diagnostics::PreviewErrorKind::Layout
                 {
                     ConsoleLogLevel::Warning
                 } else {

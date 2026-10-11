@@ -23,12 +23,10 @@
 use crate::{EditorApp, SceneTool};
 use editor::{ProjectInfo, SceneDocument};
 use eframe::egui;
-use engine::core::{
-    logging::LogSink,
-    scene::SceneEntityId,
-    sprite::{SpriteComponent, SpriteSorting},
-    transform::Vec2 as CoreVec2,
-};
+use rustlua_ecs::transform::Vec2 as CoreVec2;
+use rustlua_infra::logging::LogSink;
+use rustlua_render::sprite::{SpriteComponent, SpriteSorting};
+use rustlua_scene::scene::SceneEntityId;
 use std::{
     fs,
     path::{Path, PathBuf},

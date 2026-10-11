@@ -1,4 +1,4 @@
-use engine::core::script::{LuaRuntime, ReloadStatus};
+use rustlua_scripting::script::{LuaRuntime, ReloadStatus};
 use std::{
     fs,
     time::{SystemTime, UNIX_EPOCH},

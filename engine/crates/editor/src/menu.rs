@@ -965,6 +965,6 @@ mod tests {
             version: "test".to_owned(),
             directories: Vec::new(),
         };
-        EditorApp::new(project, None, engine::core::logging::LogSink::new(64))
+        EditorApp::new(project, None, rustlua_infra::logging::LogSink::new(64))
     }
 }

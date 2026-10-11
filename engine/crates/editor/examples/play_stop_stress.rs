@@ -1,5 +1,5 @@
 use editor::{PlaySession, SceneDocument};
-use engine::core::scene::SceneEntityId;
+use rustlua_scene::scene::SceneEntityId;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -20,7 +20,7 @@ fn temp_root(label: &str) -> PathBuf {
 }
 
 fn sample_project_root() -> PathBuf {
-    engine::core::games_dir().join("examples").join("game_api")
+    rustlua_infra::games_dir().join("examples").join("game_api")
 }
 
 fn copy_dir(source: &Path, destination: &Path) {

@@ -9,13 +9,11 @@
 use crate::EditorApp;
 use crate::util::strip_verbatim_prefix;
 use editor::{CommandKind, SceneTreeState};
-use engine::core::{
-    prefab::Prefab,
-    resource_kind::ResourceKind,
-    scene::SceneEntityId,
-    texture::{TextureAsset, TextureColorSpace},
-    transform::{Transform3D, Vec2},
-};
+use rustlua_assets::resource_kind::ResourceKind;
+use rustlua_ecs::transform::{Transform3D, Vec2};
+use rustlua_render::texture::{TextureAsset, TextureColorSpace};
+use rustlua_scene::prefab::Prefab;
+use rustlua_scene::scene::SceneEntityId;
 use std::path::Path;
 
 impl EditorApp {
@@ -229,12 +227,12 @@ impl SpawnSpec {
                         "Transform".into(),
                         "position=0,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
                     );
-                    let sprite = engine::core::sprite::SpriteComponent {
+                    let sprite = rustlua_render::sprite::SpriteComponent {
                         texture: path.to_owned(),
                         size: *size,
-                        pivot: engine::core::transform::Vec2::new(0.5, 0.5),
+                        pivot: rustlua_ecs::transform::Vec2::new(0.5, 0.5),
                         tint: [1.0; 4],
-                        sorting: engine::core::sprite::SpriteSorting::default(),
+                        sorting: rustlua_render::sprite::SpriteSorting::default(),
 
                         flip_x: false,
                         flip_y: false,
@@ -256,7 +254,8 @@ mod tests {
     use super::EditorApp;
     use crate::util::test_token;
     use editor::{CommandResult, EditorCommand, ProjectInfo, SceneDocument};
-    use engine::core::{logging::LogSink, scene::SceneEntityId};
+    use rustlua_infra::logging::LogSink;
+    use rustlua_scene::scene::SceneEntityId;
 
     /// 一个只带根实体的临时工程：精灵拖放不需要磁盘上的文件（读不到尺寸时回退 32×32），
     /// 所以这些用例能在纯内存条件下成立。

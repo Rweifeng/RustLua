@@ -8,9 +8,9 @@
 //! 这行措辞是刻意的：写成属性字面量会让 `grep -c '#\[test\]'` 的计数虚高 1。
 
 use super::*;
-use crate::core::camera::{Camera2D, ClearPolicy, DEFAULT_3D_CLEAR, Projection, RenderView};
-use crate::core::math3d::Quat;
-use crate::core::transform::Vec2;
+use rustlua_camera::camera::{Camera2D, ClearPolicy, DEFAULT_3D_CLEAR, Projection, RenderView};
+use rustlua_ecs::transform::Vec2;
+use rustlua_math::math3d::Quat;
 
 use crate::host::frame::OverlayVertex;
 // WP12 阶段 4d：这两个名字原先由 `renderer/mod.rs` 顶部的 use 块带进来（测试靠 glob 取用），

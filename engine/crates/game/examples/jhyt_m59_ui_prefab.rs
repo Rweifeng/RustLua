@@ -34,7 +34,9 @@
 //!   git worktree add %TEMP%\jhyt-head HEAD
 //!   cargo run -p game --example jhyt_m59_ui_prefab -- %TEMP%\jhyt-head\examples\game_jhyt --capture
 
-use engine::core::{resource_kind::ResourceKind, script::LuaRuntime, ui_layout::UiLayoutPreset};
+use rustlua_assets::resource_kind::ResourceKind;
+use rustlua_scripting::script::LuaRuntime;
+use rustlua_ui::ui_layout::UiLayoutPreset;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -73,7 +75,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .find(|a| !a.starts_with("--"))
         .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+        .unwrap_or_else(|| {
+            rustlua_infra::games_dir()
+                .join("examples")
+                .join("game_jhyt")
+        });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

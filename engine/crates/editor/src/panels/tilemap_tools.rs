@@ -6,7 +6,7 @@
 //! 坐标约定与 `Tilemap`/农田一致：0-index、`y` 朝上（row 0 在地图最底），
 //! 索引 = `y * width + x`。
 
-use engine::core::tilemap::Tilemap;
+use rustlua_ecs::tilemap::Tilemap;
 
 /// 归一化的格矩形（**含**边界；`min <= max` 恒成立）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,8 +108,8 @@ pub(crate) fn brush_label(tilemap: &Tilemap, value: u8) -> String {
 #[must_use]
 pub(crate) fn debug_swatch(value: u8) -> [f32; 4] {
     let index = value as usize;
-    if index >= 1 && index <= engine::core::tilemap::TILE_PALETTE.len() {
-        return engine::core::tilemap::TILE_PALETTE[index - 1];
+    if index >= 1 && index <= rustlua_ecs::tilemap::TILE_PALETTE.len() {
+        return rustlua_ecs::tilemap::TILE_PALETTE[index - 1];
     }
     // 黄金角色相轮：相邻槽位色差最大，肉眼可分；alpha 恒 1（贴图缺失时才用）。
     let hue = (index as f32 * 0.618_034) % 1.0;
@@ -244,7 +244,7 @@ fn offset_index(origin: isize, offset: usize, limit: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::core::transform::Vec2;
+    use rustlua_ecs::transform::Vec2;
 
     fn map(width: usize, height: usize) -> Tilemap {
         Tilemap::new(Vec2::new(32.0, 32.0), width, height).expect("tilemap")
@@ -485,8 +485,8 @@ mod tests {
     #[test]
     fn debug_swatch_covers_slots_beyond_the_legacy_palette() {
         // 前 6 槽仍是 TILE_PALETTE 的旧色（迁移后的老图在编辑器里颜色不变）。
-        assert_eq!(debug_swatch(1), engine::core::tilemap::TILE_PALETTE[0]);
-        assert_eq!(debug_swatch(6), engine::core::tilemap::TILE_PALETTE[5]);
+        assert_eq!(debug_swatch(1), rustlua_ecs::tilemap::TILE_PALETTE[0]);
+        assert_eq!(debug_swatch(6), rustlua_ecs::tilemap::TILE_PALETTE[5]);
         // 第 7 槽起不再是"一律 6 号色"：相邻槽位必须给出可区分的颜色。
         assert_ne!(debug_swatch(7), debug_swatch(8));
         for slot in [0_u8, 7, 42, 96, 255] {

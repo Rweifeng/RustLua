@@ -5,10 +5,10 @@
 //! `rustlua-scripting` 依赖不到 engine（反向依赖会成环），所以脚本侧的 input 测试
 //! 只能自己摆 `InputSnapshot`，唯独"边沿来自真实轮询"这件事只能在 engine 这一侧验。
 
-use engine::{
-    core::{input::InputSnapshot, script::LuaRuntime, settings::NavSettings},
-    host::gamepad::{FakeBackend, GamepadFrame, GamepadPoller, axis},
-};
+use engine::host::gamepad::{FakeBackend, GamepadFrame, GamepadPoller, axis};
+use rustlua_gameplay::settings::NavSettings;
+use rustlua_input::input::InputSnapshot;
+use rustlua_scripting::script::LuaRuntime;
 
 /// 推住左摇杆上推 `steps` 帧，返回 `action_repeat("ui_up")` 为真的帧号。
 fn run_repeat(steps: usize, delay_ms: u32, repeat_ms: u32) -> Vec<usize> {

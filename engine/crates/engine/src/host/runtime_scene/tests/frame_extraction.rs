@@ -11,7 +11,7 @@
 //! 而且分不清"世界真的变了"与"提取自己攒了东西"。
 
 use super::*;
-use crate::core::scene::Scene;
+use rustlua_scene::scene::Scene;
 
 /// 一次提取的**分通道计数**——只看总数会把"哪一路在涨"这一点丢掉。
 #[derive(Debug, PartialEq, Eq)]
@@ -54,7 +54,9 @@ fn sprite_scene(name: &str) -> Scene {
 /// 最小世界：连提 8 次，每次都必须与第一次**逐通道相同**。
 #[test]
 fn repeated_extraction_without_steps_is_stable() {
-    let root = crate::core::games_dir().join("examples").join("game_jhyt");
+    let root = rustlua_infra::games_dir()
+        .join("examples")
+        .join("game_jhyt");
     let mut runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), sprite_scene("stable"))
         .expect("runtime scene");
     let first = extract(&mut runtime);
@@ -72,7 +74,9 @@ fn repeated_extraction_without_steps_is_stable() {
 /// 找不到工程就跳过——这条断言的价值在"用真数据跑"，不是"必须有真数据"。
 #[test]
 fn project_scene_repeated_extraction_is_stable() {
-    let root = crate::core::games_dir().join("examples").join("game_jhyt");
+    let root = rustlua_infra::games_dir()
+        .join("examples")
+        .join("game_jhyt");
     let path = root.join("scenes").join("village.scene");
     if !path.is_file() {
         return;

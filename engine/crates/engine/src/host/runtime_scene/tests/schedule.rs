@@ -3,12 +3,12 @@
 //! 与调度性能统计出口。这些测试是 headless 的：直接驱动 RuntimeScene。
 
 use super::*;
-use crate::core::camera::CameraBounds;
+use rustlua_camera::camera::CameraBounds;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 fn sample_root() -> std::path::PathBuf {
-    crate::core::games_dir().join("examples").join("game_api")
+    rustlua_infra::games_dir().join("examples").join("game_api")
 }
 
 fn sample_runtime() -> RuntimeScene {
@@ -30,7 +30,9 @@ fn sample_runtime() -> RuntimeScene {
 /// 是唯一真源，换图不读它则门面形态的工程永远停在 1）。
 #[test]
 fn scene_declared_camera_bounds_refresh_after_scene_switch() {
-    let root = crate::core::games_dir().join("examples").join("game_jhyt");
+    let root = rustlua_infra::games_dir()
+        .join("examples")
+        .join("game_jhyt");
     if !root.join("scenes/manor.scene").is_file() {
         eprintln!("跳过：checkout 内没有 examples/game_jhyt");
         return;

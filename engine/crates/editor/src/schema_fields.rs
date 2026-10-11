@@ -8,14 +8,14 @@
 //! 接管集合是**推导**的（注册了 schema 且不在 [`HANDWRITTEN_PANEL_COMPONENTS`] 里），
 //! 所以给引擎新增组件 + 注册 schema 之后，编辑器自动获得它的字段编辑器。
 
-use engine::core::camera::Projection;
-use engine::core::component_schema::{FieldKind, builtin_registry};
-use engine::core::math3d::Vec3;
-use engine::core::property_path::{
+use rustlua_camera::camera::Projection;
+use rustlua_ecs::component_schema::{FieldKind, builtin_registry};
+use rustlua_ecs::property_path::{
     PropertyError, PropertyPath, read_field_display_text, write_field,
 };
-use engine::core::scene::{Scene, SceneEntity, SceneEntityId};
-use engine::core::transform::Transform3D;
+use rustlua_ecs::transform::Transform3D;
+use rustlua_math::math3d::Vec3;
+use rustlua_scene::scene::{Scene, SceneEntity, SceneEntityId};
 
 /// **有手写面板**的组件：这些组件仍由各自的专用面板编辑，通用字段编辑器不碰它们
 /// （否则同一字段会出现两个编辑器，互相覆盖）。
@@ -117,7 +117,7 @@ pub enum ChoiceSource {
 /// 以**角度**为单位的字段（组件, 字段）。
 ///
 /// `Camera3D.fov` 的组件串里存的就是角度：`Camera3D::from_component_str` 读进来时
-/// `to_radians()`、`Camera3D::to_component_str` 写出去时 `to_degrees()`（见 `engine::core::camera`）。
+/// `to_radians()`、`Camera3D::to_component_str` 写出去时 `to_degrees()`（见 `rustlua_camera::camera`）。
 /// 这条事实由 `field_units_agree_with_the_engine_encoder` 直接拿引擎编码器对拍：
 /// 编辑器显示的角度必须等于引擎解析出来的 `fov_y` 换算成的角度。
 const DEGREE_FIELDS: &[(&str, &str)] = &[("Camera", "fov")];
@@ -346,8 +346,8 @@ pub fn rows_for_component(entity: &SceneEntity, component: &str) -> Option<Vec<S
             path_rule: field.rules.iter().any(|rule| {
                 matches!(
                     rule,
-                    engine::core::component_schema::FieldRule::ProjectPath { .. }
-                        | engine::core::component_schema::FieldRule::OptionalProjectPath { .. }
+                    rustlua_ecs::component_schema::FieldRule::ProjectPath { .. }
+                        | rustlua_ecs::component_schema::FieldRule::OptionalProjectPath { .. }
                 )
             }),
             missing_asset: false,
@@ -466,9 +466,9 @@ pub fn mark_missing_assets(
 
 /// 取出路径规则的扩展名白名单（第一条路径规则为准；没有路径规则就是空 = 不限制）。
 fn path_extensions_of(
-    rules: &[engine::core::component_schema::FieldRule],
+    rules: &[rustlua_ecs::component_schema::FieldRule],
 ) -> &'static [&'static str] {
-    use engine::core::component_schema::FieldRule;
+    use rustlua_ecs::component_schema::FieldRule;
     rules
         .iter()
         .find_map(|rule| match rule {
@@ -631,10 +631,10 @@ fn transform_reset_action(entity: &SceneEntity, component: &str) -> Vec<SchemaCo
     let Some(payload) = entity.components.get(component) else {
         return Vec::new();
     };
-    let Ok(current) = engine::core::transform::Transform3D::from_component_str(payload) else {
+    let Ok(current) = rustlua_ecs::transform::Transform3D::from_component_str(payload) else {
         return Vec::new();
     };
-    let identity = engine::core::transform::Transform3D::identity();
+    let identity = rustlua_ecs::transform::Transform3D::identity();
     if current == identity {
         // 已经等于默认值时不提供动作（视图据此隐藏"重置"）。
         return Vec::new();
@@ -675,10 +675,10 @@ fn ui_layout_preset_actions(entity: &SceneEntity, component: &str) -> Vec<Schema
     let Some(payload) = entity.components.get(component) else {
         return Vec::new();
     };
-    let Ok(layout) = engine::core::ui_layout::UiRectLayout::from_component_str(payload) else {
+    let Ok(layout) = rustlua_ui::ui_layout::UiRectLayout::from_component_str(payload) else {
         return Vec::new();
     };
-    engine::core::ui_layout::UiLayoutPreset::ALL
+    rustlua_ui::ui_layout::UiLayoutPreset::ALL
         .into_iter()
         .map(|preset| {
             let mut applied = layout.clone();
@@ -721,7 +721,7 @@ fn camera_notes(entity: &SceneEntity) -> Vec<SchemaComponentNote> {
     let Some(raw) = entity.components.get("Camera") else {
         return Vec::new();
     };
-    let camera = match engine::core::camera::Camera::from_component_str(raw) {
+    let camera = match rustlua_camera::camera::Camera::from_component_str(raw) {
         Ok(camera) => camera,
         Err(error) => {
             return vec![SchemaComponentNote::warning(format!(
@@ -839,7 +839,7 @@ pub fn edit_component_payload(
 fn edit_component_payload_with(
     registry: &std::collections::BTreeMap<
         &'static str,
-        engine::core::component_schema::ComponentSchema,
+        rustlua_ecs::component_schema::ComponentSchema,
     >,
     component: &str,
     payload: &str,
@@ -867,7 +867,7 @@ fn edit_component_payload_with(
     // （相机的 `near < far`、look-at 非退化、Transform 的缩放非零……）就靠这一道拦住——
     // 校验逻辑只有引擎解析器一处定义，编辑器不另写一份，也不会随引擎演进而漂移。
     if let Some(Err(reason)) =
-        engine::core::typed_scene::validate_component_payload(component, &updated)
+        rustlua_scene::typed_scene::validate_component_payload(component, &updated)
     {
         return Err(SchemaFieldError::EngineRejected {
             component: component.to_owned(),
@@ -904,8 +904,8 @@ pub fn preview_field_edit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::core::camera::Camera3D;
-    use engine::core::scene::SceneEntity;
+    use rustlua_camera::camera::Camera3D;
+    use rustlua_scene::scene::SceneEntity;
     use std::collections::BTreeMap;
 
     fn entity_with(components: &[(&str, &str)]) -> SceneEntity {
@@ -1198,13 +1198,13 @@ mod tests {
                 .unwrap_or(payload);
         }
         assert_eq!(
-            engine::core::transform::Transform3D::from_component_str(&payload).unwrap(),
-            engine::core::transform::Transform3D::identity()
+            rustlua_ecs::transform::Transform3D::from_component_str(&payload).unwrap(),
+            rustlua_ecs::transform::Transform3D::identity()
         );
         // 已经是单位变换 → 没有"重置"动作可点。
         let identity = entity_with(&[(
             "Transform",
-            engine::core::transform::Transform3D::identity()
+            rustlua_ecs::transform::Transform3D::identity()
                 .to_component_str()
                 .as_str(),
         )]);
@@ -1227,7 +1227,7 @@ mod tests {
         let actions = component_actions(&entity, "UiLayout");
         assert_eq!(
             actions.len(),
-            engine::core::ui_layout::UiLayoutPreset::ALL.len(),
+            rustlua_ui::ui_layout::UiLayoutPreset::ALL.len(),
             "动作列表必须来自引擎的预设表（12 个）"
         );
         // 每个动作都写 anchors + pivot 两个字段（预设会同时改它们）。
@@ -1247,9 +1247,7 @@ mod tests {
         // 把某个预设写回后，**恰好那一个**变成选中态（选中态由字段值推导，不另存状态）。
         let full_rect = actions
             .iter()
-            .find(|action| {
-                action.label == engine::core::ui_layout::UiLayoutPreset::FullRect.label()
-            })
+            .find(|action| action.label == rustlua_ui::ui_layout::UiLayoutPreset::FullRect.label())
             .expect("FullRect 动作");
         let mut payload = entity.components["UiLayout"].clone();
         for (field, value) in &full_rect.fields {
@@ -1258,9 +1256,9 @@ mod tests {
                 .unwrap_or(payload);
         }
         // 写回后布局必须真的等于该预设（写的是引擎语义，不是文本猜的）。
-        let layout = engine::core::ui_layout::UiRectLayout::from_component_str(&payload).unwrap();
+        let layout = rustlua_ui::ui_layout::UiRectLayout::from_component_str(&payload).unwrap();
         let mut applied = layout.clone();
-        applied.apply_preset(engine::core::ui_layout::UiLayoutPreset::FullRect);
+        applied.apply_preset(rustlua_ui::ui_layout::UiLayoutPreset::FullRect);
         assert_eq!(applied.anchors, layout.anchors);
         assert_eq!(applied.pivot, layout.pivot);
         // 且这一份布局的"选中态"只有 FullRect 一个。
@@ -1283,7 +1281,7 @@ mod tests {
     /// 显示成 3437.75°。这条测试直接拿引擎编码器对拍，杜绝同类漂移。
     #[test]
     fn field_units_agree_with_the_engine_encoder() {
-        use engine::core::property_path::read_field_text;
+        use rustlua_ecs::property_path::read_field_text;
         let camera = Camera3D::perspective(
             Vec3::new(0.0, 0.0, 5.0),
             Vec3::ZERO,
@@ -1292,7 +1290,7 @@ mod tests {
             100.0,
         )
         .expect("合法相机");
-        let payload = engine::core::camera::Camera::Perspective(camera).to_component_str();
+        let payload = rustlua_camera::camera::Camera::Perspective(camera).to_component_str();
         let raw = read_field_text(&payload, &PropertyPath::new("Camera", "fov")).expect("fov 原文");
         let stored: f64 = raw.trim().parse().expect("fov 是数字");
         let shown = field_unit("Camera", "fov").to_display(stored);
@@ -1336,7 +1334,7 @@ mod tests {
             updated.contains("text=a\\;b\\=c\\\\d 中文"),
             "组件串里必须是转义形式：{updated}"
         );
-        let parsed = engine::core::ui::UiText::from_component_str(&updated)
+        let parsed = rustlua_ui::ui::UiText::from_component_str(&updated)
             .expect("引擎解析器必须能读回转义后的串");
         assert_eq!(parsed.text, "a;b=c\\d 中文");
         // 再读显示文本：回到真实文字（读 → 写两个方向互为逆运算）。
@@ -1366,7 +1364,7 @@ mod tests {
         )
         .expect("ok")
         .expect("changed");
-        let parsed = engine::core::ui::UiText::from_component_str(&font_updated).unwrap();
+        let parsed = rustlua_ui::ui::UiText::from_component_str(&font_updated).unwrap();
         assert_eq!(parsed.font, "assets/fonts/a;b=数字.ttf");
         assert_eq!(parsed.text, "a;b=c\\d 中文", "写一个字段不得改动其它字段");
     }
@@ -1746,7 +1744,7 @@ mod tests {
         );
         // `Script`（实体级脚本）虽然不由通用编辑器接管，但它必须能**按运行时格式**读回：
         // 这条同时覆盖了"三个名字收敛成一个"的修复。
-        let script = engine::core::entity_script::EntityScript::from_component_str(
+        let script = rustlua_ecs::entity_script::EntityScript::from_component_str(
             &entity.components["Script"],
         )
         .expect("运行时解析器必须认得保存下来的 Script");

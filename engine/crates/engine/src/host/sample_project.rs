@@ -21,15 +21,13 @@ use std::{
 };
 
 use super::RuntimeScene;
-use crate::core::{
-    input::{InputSnapshot, MouseButton},
-    scene::Scene,
-    script::{LUA_API_PROBE, LuaRuntime},
-    typed_scene::ComponentId,
-};
+use rustlua_input::input::{InputSnapshot, MouseButton};
+use rustlua_scene::scene::Scene;
+use rustlua_scene::typed_scene::ComponentId;
+use rustlua_scripting::script::{LUA_API_PROBE, LuaRuntime};
 
 fn project_root() -> PathBuf {
-    crate::core::games_dir().join("examples").join("game_api")
+    rustlua_infra::games_dir().join("examples").join("game_api")
 }
 
 /// 入口菜单自身的场景名：它是演示的**目录**，不是演示之一，因此不进 `demos.lua`。
@@ -376,7 +374,7 @@ fn sample_project_shared_overlay_is_not_covered() {
             let Some(payload) = entity.components.get("UiLayout") else {
                 continue;
             };
-            let Ok(layout) = crate::core::ui_layout::UiRectLayout::from_component_str(payload)
+            let Ok(layout) = rustlua_ui::ui_layout::UiRectLayout::from_component_str(payload)
             else {
                 continue;
             };
@@ -432,12 +430,14 @@ fn sample_project_scene_text_has_every_glyph() {
         for entity in scene.entities.values() {
             for (component, payload) in &entity.components {
                 let text = match component.as_str() {
-                    "Text" => crate::core::ui::UiText::from_component_str(payload)
+                    "Text" => rustlua_ui::ui::UiText::from_component_str(payload)
                         .ok()
                         .map(|text| text.text),
-                    "WorldText" => crate::core::world_text::WorldText::from_component_str(payload)
-                        .ok()
-                        .map(|text| text.text.text),
+                    "WorldText" => {
+                        rustlua_scene::world_text::WorldText::from_component_str(payload)
+                            .ok()
+                            .map(|text| text.text.text)
+                    }
                     _ => None,
                 };
                 let Some(text) = text else { continue };

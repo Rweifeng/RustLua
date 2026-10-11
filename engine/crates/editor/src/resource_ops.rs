@@ -80,7 +80,7 @@ fn rewrite_segment(segment: &str, from: &str, to: &str) -> Option<String> {
 
 /// 改写一份场景里所有组件的引用；返回**被改动的组件数**。
 pub fn rewrite_scene_references(
-    scene: &mut engine::core::scene::Scene,
+    scene: &mut rustlua_scene::scene::Scene,
     from: &str,
     to: &str,
 ) -> usize {
@@ -125,7 +125,7 @@ pub fn rewrite_project_references(
         if skip.is_some_and(|skip| paths_match(skip, &path)) {
             continue;
         }
-        let Ok(mut scene) = engine::core::scene::Scene::load(&path) else {
+        let Ok(mut scene) = rustlua_scene::scene::Scene::load(&path) else {
             report
                 .failures
                 .push(relative_display(root, &path) + "（解析失败，未改动）");
@@ -230,7 +230,7 @@ fn relative_display(root: &Path, path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::core::scene::Scene;
+    use rustlua_scene::scene::Scene;
 
     /// 只替换**整段取值**：同名前缀/后缀的路径不许被顺手改掉（子串替换是典型的数据损坏源）。
     #[test]
@@ -326,11 +326,11 @@ mod tests {
         // 一个引用它的场景 + 一个不引用它的场景 + 一个坏文件 + 一个构建产物里的场景。
         let mut scene = Scene::new("main");
         scene
-            .add_entity(engine::core::scene::SceneEntityId(1), "Hero", None)
+            .add_entity(rustlua_scene::scene::SceneEntityId(1), "Hero", None)
             .unwrap();
         scene
             .entities
-            .get_mut(&engine::core::scene::SceneEntityId(1))
+            .get_mut(&rustlua_scene::scene::SceneEntityId(1))
             .unwrap()
             .components
             .insert(
@@ -359,7 +359,7 @@ mod tests {
         );
         let reloaded = Scene::load(root.join("scenes/main.scene")).unwrap();
         assert!(
-            reloaded.entities[&engine::core::scene::SceneEntityId(1)].components["Sprite"]
+            reloaded.entities[&rustlua_scene::scene::SceneEntityId(1)].components["Sprite"]
                 .contains("assets/textures/new.png")
         );
         // `skip`（当前打开的文档）不碰磁盘文件——它由编辑器在内存里改。
@@ -373,7 +373,7 @@ mod tests {
         assert!(
             Scene::load(root.join("scenes/main.scene"))
                 .unwrap()
-                .entities[&engine::core::scene::SceneEntityId(1)]
+                .entities[&rustlua_scene::scene::SceneEntityId(1)]
                 .components["Sprite"]
                 .contains("assets/textures/new.png")
         );

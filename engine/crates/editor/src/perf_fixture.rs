@@ -5,7 +5,9 @@
 //! GPU state, so measurements are portable across machines and CI.
 
 use crate::SceneDocument;
-use engine::core::{math3d::Vec3, scene::SceneEntityId, transform::Transform3D};
+use rustlua_ecs::transform::Transform3D;
+use rustlua_math::math3d::Vec3;
+use rustlua_scene::scene::SceneEntityId;
 
 /// Named fixture sizes used by the baseline report and tests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

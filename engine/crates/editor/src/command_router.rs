@@ -7,7 +7,7 @@
 
 use crate::EditorApp;
 use editor::{CommandResult, EditorCommand, SceneDocument};
-use engine::core::scene::SceneEntityId;
+use rustlua_scene::scene::SceneEntityId;
 
 #[cfg(test)]
 use editor::PlaySession;
@@ -472,7 +472,7 @@ mod tests {
     use crate::EditorApp;
     use editor::PlayState;
     use editor::{CommandKind, ProjectInfo, SceneDocument};
-    use engine::core::logging::LogSink;
+    use rustlua_infra::logging::LogSink;
 
     fn test_app() -> EditorApp {
         let mut app = EditorApp::new(
@@ -517,15 +517,15 @@ mod tests {
         let components =
             &app.document.current_scene.as_ref().unwrap().scene.entities[&entity].components;
         assert_eq!(
-            engine::core::transform::Transform3D::from_component_str(&components["Transform"])
+            rustlua_ecs::transform::Transform3D::from_component_str(&components["Transform"])
                 .expect("统一形态的 Transform"),
-            engine::core::transform::Transform3D::identity()
+            rustlua_ecs::transform::Transform3D::identity()
         );
-        let camera = engine::core::camera::Camera::from_component_str(&components["Camera"])
+        let camera = rustlua_camera::camera::Camera::from_component_str(&components["Camera"])
             .expect("统一形态的 Camera");
         assert_eq!(
             camera.projection(),
-            engine::core::camera::CameraProjection::Perspective,
+            rustlua_camera::camera::CameraProjection::Perspective,
             "默认添加的是透视相机（要正交就把判别字段改成 orthographic）"
         );
         // 旧名不得再被认识：加进文档只会得到"未知组件"错误，而不是悄悄写一个没人读的键。
@@ -580,8 +580,8 @@ mod tests {
         let payload = &app.document.current_scene.as_ref().unwrap().scene.entities[&boxed]
             .components["Transform"];
         assert_eq!(
-            engine::core::transform::Transform3D::from_component_str(payload).expect("统一形态"),
-            engine::core::transform::Transform3D::identity()
+            rustlua_ecs::transform::Transform3D::from_component_str(payload).expect("统一形态"),
+            rustlua_ecs::transform::Transform3D::identity()
         );
 
         // 复制：在选中实体旁生成副本，历史 +1。

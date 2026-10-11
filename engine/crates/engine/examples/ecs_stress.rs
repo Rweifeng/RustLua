@@ -7,11 +7,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use engine::core::{
-    commands::CommandQueue,
-    transform::{Transform, Vec2, Velocity, integrate_velocity},
-    world::World,
-};
+use rustlua_ecs::commands::CommandQueue;
+use rustlua_ecs::transform::{Transform, Vec2, Velocity, integrate_velocity};
+use rustlua_ecs::world::World;
 
 const DEFAULT_ENTITIES: usize = 10_000;
 const DEFAULT_SECONDS: u64 = 60;

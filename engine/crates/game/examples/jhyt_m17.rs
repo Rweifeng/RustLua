@@ -19,10 +19,8 @@
 //! Usage:
 //!   cargo run -p game --example jhyt_m17 [-- <game_jhyt-root>]
 
-use engine::core::{
-    input::{InputSnapshot, KeyCode},
-    script::LuaRuntime,
-};
+use rustlua_input::input::{InputSnapshot, KeyCode};
+use rustlua_scripting::script::LuaRuntime;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -47,10 +45,11 @@ const START_SEED_LINGZHI: f64 = 8.0;
 const SEED_LINGZHI_AFTER_PLANT: f64 = START_SEED_LINGZHI - 1.0;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let project = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+    let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
+        rustlua_infra::games_dir()
+            .join("examples")
+            .join("game_jhyt")
+    });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

@@ -14,12 +14,10 @@
 
 use crate::EditorApp;
 use editor::CommandKind;
-use engine::core::{
-    scene::{SceneEntity, SceneEntityId},
-    spatial_transform::LocalTransform,
-    transform::Vec2,
-    ui_layout::UiRectLayout,
-};
+use rustlua_ecs::spatial_transform::LocalTransform;
+use rustlua_ecs::transform::Vec2;
+use rustlua_scene::scene::{SceneEntity, SceneEntityId};
+use rustlua_ui::ui_layout::UiRectLayout;
 use std::collections::BTreeMap;
 
 impl EditorApp {
@@ -189,7 +187,7 @@ impl EditorApp {
             for (id, transform) in &preview {
                 targets.insert(
                     *id,
-                    engine::core::spatial_transform::LocalTransform::from_3d(*transform),
+                    rustlua_ecs::spatial_transform::LocalTransform::from_3d(*transform),
                 );
             }
             let locals = editor::document_space::locals_for_world_targets(&scene.scene, &targets);
@@ -263,7 +261,7 @@ impl EditorApp {
         };
         let mut targets = BTreeMap::new();
         for (id, fields) in &self.scene_state.preview {
-            let transform = engine::core::transform::Transform {
+            let transform = rustlua_ecs::transform::Transform {
                 position: Vec2::new(fields.position_x, fields.position_y),
                 // 预览里的旋转是编辑器口径的**度**，引擎的平面 Transform 按**弧度**建四元数：
                 // 这里漏一次换算，"拖到 45°"就会落成"绕 Z 转 45 弧度"（画面跳回约 1°）。
@@ -313,7 +311,7 @@ pub(crate) fn set_container_padding(entity: &mut SceneEntity, padding: [f32; 4])
     let Some(raw) = entity.components.get("Container") else {
         return false;
     };
-    let Ok(mut style) = engine::core::ui_layout::ContainerStyle::from_component_str(raw) else {
+    let Ok(mut style) = rustlua_ui::ui_layout::ContainerStyle::from_component_str(raw) else {
         return false;
     };
     style.padding = padding;
@@ -329,12 +327,10 @@ mod tests {
     use crate::gizmo::{GizmoDrag, GizmoDragTargets};
     use editor::{CommandResult, EditorCommand, ProjectInfo, SceneDocument};
     use eframe::egui;
-    use engine::core::{
-        logging::LogSink,
-        math3d::{Quat, Vec3},
-        scene::SceneEntityId,
-        transform::Transform3D,
-    };
+    use rustlua_ecs::transform::Transform3D;
+    use rustlua_infra::logging::LogSink;
+    use rustlua_math::math3d::{Quat, Vec3};
+    use rustlua_scene::scene::SceneEntityId;
     use std::collections::BTreeSet;
 
     fn app_with_two_entities() -> EditorApp {

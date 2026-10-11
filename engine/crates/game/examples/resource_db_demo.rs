@@ -1,7 +1,5 @@
-use engine::core::{
-    resource_db::{ResourceDatabase, ResourceState},
-    resource_kind::ResourceKind,
-};
+use rustlua_assets::resource_db::{ResourceDatabase, ResourceState};
+use rustlua_assets::resource_kind::ResourceKind;
 
 fn main() {
     let root =

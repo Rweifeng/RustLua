@@ -9,7 +9,7 @@
 //! - `texture_identity_is_stable_across_frames`
 
 use super::*;
-use crate::core::scene::Scene;
+use rustlua_scene::scene::Scene;
 
 /// 世界文字（WP4）：锚点跟随实体的世界位置与相机。
 ///
@@ -123,7 +123,7 @@ fn camera2d_controller_follows_scripted_target() {
 #[test]
 fn world_channel_is_sorted_far_to_near_within_a_layer() {
     let root = game_root();
-    let mut scene = crate::core::scene::Scene::new("world-sort");
+    let mut scene = rustlua_scene::scene::Scene::new("world-sort");
     // 三个精灵：刻意让"插入顺序"与 z 顺序相反，并且给两个不同的排序层。
     let specs = [
         (1_u64, "Near", "-0.5", "default"),
@@ -131,7 +131,7 @@ fn world_channel_is_sorted_far_to_near_within_a_layer() {
         (3, "BackLayer", "0.9", "background"),
     ];
     for (id, name, z, layer) in specs {
-        let entity_id = crate::core::scene::SceneEntityId(id);
+        let entity_id = rustlua_scene::scene::SceneEntityId(id);
         scene.add_entity(entity_id, name, None).unwrap();
         let entity = scene.entities.get_mut(&entity_id).unwrap();
         entity.components.insert(
@@ -186,7 +186,7 @@ fn world_channel_is_sorted_far_to_near_within_a_layer() {
 /// ③ `Quad` 组件真的留在 ECS 里（不是实例化时被悄悄降级成 `Sprite`），因此运行时可查可改。
 #[test]
 fn quad_is_a_first_class_renderable_sharing_the_sprite_path() {
-    let root = crate::core::games_dir().join("examples").join("game_api");
+    let root = rustlua_infra::games_dir().join("examples").join("game_api");
     if !root.join("scenes/main.scene").is_file() {
         return;
     }
@@ -230,7 +230,7 @@ fn quad_is_a_first_class_renderable_sharing_the_sprite_path() {
     assert!(
         mesh.paths
             .iter()
-            .any(|path| path == crate::core::quad::QUAD_DEFAULT_TEXTURE),
+            .any(|path| path == rustlua_render::quad::QUAD_DEFAULT_TEXTURE),
         "缺省贴图必须解析到内置白纹理：{:?}",
         mesh.paths
     );
@@ -313,7 +313,7 @@ fn entity_script_component_runs_inside_the_step_pipeline() {
     let scripted_position = |runtime: &RuntimeScene| -> Vec2 {
         runtime.script.with_world(|world| {
             let mut position = None;
-            world.for_each2::<Transform, crate::core::entity_script::EntityScript>(
+            world.for_each2::<Transform, rustlua_ecs::entity_script::EntityScript>(
                 |_, transform, _| position = Some(transform.position),
             );
             position.expect("带 Script 的实体必须有 Transform")
@@ -325,7 +325,7 @@ fn entity_script_component_runs_inside_the_step_pipeline() {
         scripted_position(&runtime)
     );
     runtime
-        .run_script_steps(1, 0.5, &crate::core::input::InputSnapshot::default())
+        .run_script_steps(1, 0.5, &rustlua_input::input::InputSnapshot::default())
         .expect("step runtime");
     assert_eq!(
         runtime.last_entity_script_calls(),
@@ -344,13 +344,16 @@ fn entity_script_component_runs_inside_the_step_pipeline() {
 /// 里；同一网格跨帧恒同句柄、不同网格不同句柄，且身份表记录的 `ResourceKind` 是 `Model`。
 #[test]
 fn mesh_identity_is_stable_across_frames() {
-    let root = crate::core::games_dir().join("examples").join("game_api");
+    let root = rustlua_infra::games_dir().join("examples").join("game_api");
     if !root.join("scenes/main.scene").is_file() {
         return;
     }
     let mut scene = Scene::new("mesh_identity");
     for (id, mesh) in [
-        (SceneEntityId(1), crate::core::mesh3d::GROUND_PLANE_SENTINEL),
+        (
+            SceneEntityId(1),
+            rustlua_render::mesh3d::GROUND_PLANE_SENTINEL,
+        ),
         (SceneEntityId(2), "assets/models/missing.glb"),
     ] {
         scene.add_entity(id, format!("Mesh{}", id.0), None).unwrap();
@@ -387,9 +390,12 @@ fn mesh_identity_is_stable_across_frames() {
     let record = runtime
         .asset_entries()
         .into_iter()
-        .find(|record| record.path == crate::core::mesh3d::GROUND_PLANE_SENTINEL)
+        .find(|record| record.path == rustlua_render::mesh3d::GROUND_PLANE_SENTINEL)
         .expect("网格身份应在表里");
-    assert_eq!(record.kind, crate::core::resource_kind::ResourceKind::Model);
+    assert_eq!(
+        record.kind,
+        rustlua_assets::resource_kind::ResourceKind::Model
+    );
 }
 
 /// docs/54 §4.4：运行时资源身份**跨帧稳定**——同一个路径在相邻两帧必须是同一个句柄，
@@ -397,7 +403,7 @@ fn mesh_identity_is_stable_across_frames() {
 /// 重建，本身不是身份）。
 #[test]
 fn texture_identity_is_stable_across_frames() {
-    let root = crate::core::games_dir().join("examples").join("game_api");
+    let root = rustlua_infra::games_dir().join("examples").join("game_api");
     if !root.join("scenes/main.scene").is_file() {
         return;
     }

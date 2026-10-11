@@ -7,16 +7,16 @@
 //! - `ui_test_scene_emits_sdf_text_draws`
 
 use super::*;
-use crate::core::scene::Scene;
+use rustlua_scene::scene::Scene;
 
 /// 俄罗斯方块工程冒烟：加载场景 + 脚本，跑几步（输入驱动），验证精灵/UI
 /// 渲染与 Lua 脚本不报错。
 #[test]
 fn tetris_project_runs_and_renders() {
-    use crate::core::input::KeyCode;
-    use crate::core::scene::Scene;
+    use rustlua_input::input::KeyCode;
+    use rustlua_scene::scene::Scene;
 
-    let root = crate::core::fixture_games_dir().join("tetris");
+    let root = rustlua_infra::fixture_games_dir().join("tetris");
     if !root.join("scenes/main.scene").is_file() {
         return;
     }
@@ -79,9 +79,9 @@ fn tetris_project_runs_and_renders() {
 /// 相机投影到屏幕的 AABB。验证三类实体都能得到正确的 `(名字, origin, size)`。
 #[test]
 fn compute_click_targets_resolves_image_text_sprite() {
-    use crate::core::scene::{Scene, SceneEntityId};
+    use rustlua_scene::scene::{Scene, SceneEntityId};
 
-    let root = crate::core::games_dir().join("examples");
+    let root = rustlua_infra::games_dir().join("examples");
     let mut scene = Scene::new("click");
     let add = |scene: &mut Scene, id: u64, name: &str, components: &[(&str, &str)]| {
         scene.add_entity(SceneEntityId(id), name, None).unwrap();
@@ -152,9 +152,9 @@ fn compute_click_targets_resolves_image_text_sprite() {
 /// E16：命中矩形完全来自四边 Anchor+Offset 布局；Image 只携带视觉属性。
 #[test]
 fn ui_layout_component_defines_click_rect() {
-    use crate::core::scene::{Scene, SceneEntityId};
+    use rustlua_scene::scene::{Scene, SceneEntityId};
 
-    let root = crate::core::games_dir().join("examples");
+    let root = rustlua_infra::games_dir().join("examples");
     let mut scene = Scene::new("layout");
     scene
         .add_entity(SceneEntityId(1), "StretchImg", None)
@@ -166,16 +166,16 @@ fn ui_layout_component_defines_click_rect() {
     );
     entity.components.insert(
         "UiLayout".to_owned(),
-        crate::core::ui_layout::UiRectLayout {
+        rustlua_ui::ui_layout::UiRectLayout {
             anchors: [0.0, 0.0, 1.0, 0.0],
             offsets: [10.0, 20.0, -10.0, 80.0],
-            ..crate::core::ui_layout::UiRectLayout::default()
+            ..rustlua_ui::ui_layout::UiRectLayout::default()
         }
         .to_component_str(),
     );
     entity.components.insert(
         "UiEvents".to_owned(),
-        crate::core::ui_events::UiEvents::click("on_click").to_component_str(),
+        rustlua_ui::ui_events::UiEvents::click("on_click").to_component_str(),
     );
     let mut runtime = RuntimeScene::from_scene_edit(Some(&root), scene).unwrap();
     let targets = runtime.compute_click_targets();

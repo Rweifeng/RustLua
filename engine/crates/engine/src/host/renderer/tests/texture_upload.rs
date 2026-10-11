@@ -6,7 +6,7 @@
 //! 变成白色或别的颜色，断言当场炸，而不是悄悄画出一片白。
 
 use super::*;
-use crate::core::camera::{FrameViews, Viewport};
+use rustlua_camera::camera::{FrameViews, Viewport};
 
 /// 上传用的键：**故意不是文件路径**。
 ///

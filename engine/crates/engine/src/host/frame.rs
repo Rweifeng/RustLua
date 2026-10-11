@@ -6,15 +6,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::core::{
-    camera::{Camera3D, RenderView},
-    font::FontAtlas,
-    layer::RenderLayer,
-    light::Light,
-    math3d::{Aabb3, Mat4},
-    sprite_batch::SpriteDrawBatch,
-};
 use bytemuck::{Pod, Zeroable};
+use rustlua_camera::camera::{Camera3D, RenderView};
+use rustlua_math::math3d::{Aabb3, Mat4};
+use rustlua_render::font::FontAtlas;
+use rustlua_render::layer::RenderLayer;
+use rustlua_render::light::Light;
+use rustlua_render::sprite_batch::SpriteDrawBatch;
 
 /// Vertex format for the 2D textured overlay pass.
 #[repr(C)]
@@ -29,7 +27,7 @@ pub struct OverlayVertex {
 
 /// WP6 单趟化：让 2D 批处理直接把顶点写成宿主布局，省掉中间那份 `SpriteVertex`。
 /// 核心只提供 NDC 位置/UV/颜色，`sdf` 是宿主自己的字段，因此由这里补 0。
-impl crate::core::sprite_batch::OverlayVertexSink for OverlayVertex {
+impl rustlua_render::sprite_batch::OverlayVertexSink for OverlayVertex {
     fn placeholder() -> Self {
         Self {
             position: [0.0; 2],
@@ -59,7 +57,7 @@ pub struct WorldSpriteVertex {
     pub color: [f32; 4],
 }
 
-impl crate::core::sprite_batch::WorldSpriteVertexSink for WorldSpriteVertex {
+impl rustlua_render::sprite_batch::WorldSpriteVertexSink for WorldSpriteVertex {
     fn placeholder() -> Self {
         Self {
             position: [0.0; 3],
@@ -210,11 +208,11 @@ pub struct SceneMesh {
     /// docs/54 §4.4：与 [`Self::paths`] **同序**的运行时资源身份。
     ///
     /// `paths` 每帧按注册顺序重建，因此下标本身不是身份——同一个下标在相邻两帧可以指两个不同的
-    /// 资源。句柄由 [`crate::core::asset_handle::AssetStore`] 保证"同路径恒同句柄"，渲染器因此
+    /// 资源。句柄由 [`rustlua_assets::asset_handle::AssetStore`] 保证"同路径恒同句柄"，渲染器因此
     /// 可以用它做 O(1) 的贴图缓存查找，并在资源被释放后认出失效引用。
     ///
     /// 空 = 这是宿主**手写**的 `SceneMesh`（没有身份）：渲染器回退到按路径解析，行为与收敛前一致。
-    pub path_handles: Vec<crate::core::asset_handle::AssetHandle>,
+    pub path_handles: Vec<rustlua_assets::asset_handle::AssetHandle>,
     /// Current CJK font atlas pixels; `pixels` empty means unchanged since last upload.
     pub font_atlas: Option<FontAtlasPixels>,
     /// Per-Text custom font atlases touched this frame. `pixels` empty means
@@ -250,7 +248,7 @@ pub type FontAtlasMap = Arc<Mutex<HashMap<String, FontHandle>>>;
 
 /// A handle to one vector-outline font atlas, shared across `RuntimeScene`
 /// rebuilds so outlines are parsed/extracted once.
-pub type VectorFontHandle = Arc<Mutex<crate::core::font::FontVectorAtlas>>;
+pub type VectorFontHandle = Arc<Mutex<rustlua_render::font::FontVectorAtlas>>;
 
 /// Editor-injected shared cache of per-Text vector outline atlases, keyed by
 /// the namespaced font id (`font://...`).
@@ -270,7 +268,7 @@ pub struct Scene3dBounds {
 
 /// marks a skinned drawable whose joint matrices are uploaded per frame.
 pub struct Scene3dDrawable {
-    pub entity: crate::core::scene::SceneEntityId,
+    pub entity: rustlua_scene::scene::SceneEntityId,
     pub name: String,
     pub mesh_path: String,
     /// docs/54 §4.4：与 `mesh_path` 对应的运行时资源身份。渲染器用它做 O(1) 的网格缓存查找，
@@ -278,7 +276,7 @@ pub struct Scene3dDrawable {
     ///
     /// `None` = 宿主自己拼的 `Scene3d`（编辑器预览、测试夹具）：渲染器回退到按路径解析，行为与
     /// 收敛前一致。
-    pub mesh_handle: Option<crate::core::asset_handle::AssetHandle>,
+    pub mesh_handle: Option<rustlua_assets::asset_handle::AssetHandle>,
     pub model: Mat4,
     pub palette: Vec<Mat4>,
     pub bounds: Scene3dBounds,

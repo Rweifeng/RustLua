@@ -7,7 +7,7 @@
 //! 返回可绘制的辅助线集合（面板坐标）。
 
 use eframe::egui;
-use engine::core::scene::SceneEntityId;
+use rustlua_scene::scene::SceneEntityId;
 
 /// 8 个缩放手柄：4 角 + 4 边中点。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

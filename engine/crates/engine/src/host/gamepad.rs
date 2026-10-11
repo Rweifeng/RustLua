@@ -1,6 +1,6 @@
 //! 手柄设备轮询适配层（M20-06）。
 //!
-//! 引擎的**抽象**手柄输入早已就位（`crate::core::input::InputSnapshot` 的
+//! 引擎的**抽象**手柄输入早已就位（`rustlua_input::input::InputSnapshot` 的
 //! `gamepad_button_event` / `set_gamepad_axis` 与 `ActionMap` 的
 //! `Binding::GamepadButton` / `Binding::GamepadAxis`），但此前没有任何代码
 //! 喂入真实设备事件。本模块补齐这一层：
@@ -30,10 +30,10 @@
 //! | 11 | R3 | | | |
 //! | 12..15 | DPad 上/下/左/右 | | | |
 //!
-//! 死区与阈值是**两个概念**：死区（[`crate::core::input::STICK_DEADZONE`]/[`crate::core::input::TRIGGER_DEADZONE`]）用于
-//! 消除漂移，动作判定阈值沿用 `crate::core::input` 的 0.5。
+//! 死区与阈值是**两个概念**：死区（[`rustlua_input::input::STICK_DEADZONE`]/[`rustlua_input::input::TRIGGER_DEADZONE`]）用于
+//! 消除漂移，动作判定阈值沿用 `rustlua_input::input` 的 0.5。
 
-use crate::core::input::{AxisDirection, InputSnapshot};
+use rustlua_input::input::{AxisDirection, InputSnapshot};
 // 时钟必须走 `web-time`（与渲染器 `passes.rs` 同一处理）：`wasm32-unknown-unknown` 的 std
 // 把 `Instant::now()` 实现在 `sys/pal/unsupported/time.rs` 上，是**直接 panic**。
 // 这里踩到的原因是"每帧"：`expire_rumble` 由 `poll_into` 调用，而 `poll_into` 在
@@ -42,10 +42,10 @@ use crate::core::input::{AxisDirection, InputSnapshot};
 // `web-time` 在原生上就是 `std::time::Instant` 的再导出，零行为变化。
 use web_time::Instant;
 
-// M22（W5）：死区值类型与纯函数已下沉到 `crate::core::input`（core 不再反向依赖 host）。
+// M22（W5）：死区值类型与纯函数已下沉到 `rustlua_input::input`（core 不再反向依赖 host）。
 // 这里保留重导出，既有 `host::gamepad::{GamepadDeadzone, MAX_DEADZONE, ...}` 路径
 // 与调用方（编辑器面板、示例、headless 测试）不受影响。
-pub use crate::core::input::{
+pub use rustlua_input::input::{
     AXIS_DIGITAL_OFF, AXIS_DIGITAL_ON, AXIS_HYSTERESIS, GamepadDeadzone, MAX_DEADZONE,
     STICK_DEADZONE, TRIGGER_DEADZONE, apply_stick_deadzone, apply_stick_deadzone_radial,
     apply_trigger_deadzone,
@@ -944,7 +944,7 @@ mod tests {
         TRIGGER_DEADZONE, apply_stick_deadzone, apply_trigger_deadzone, axes_from_raw,
         axes_from_raw_with, button, buttons_from_flags, triggers_to_buttons,
     };
-    use crate::core::input::{ActionMap, AxisDirection, Binding, InputSnapshot};
+    use rustlua_input::input::{ActionMap, AxisDirection, Binding, InputSnapshot};
 
     fn frame_with_button(index: usize) -> GamepadFrame {
         let mut frame = GamepadFrame::idle();

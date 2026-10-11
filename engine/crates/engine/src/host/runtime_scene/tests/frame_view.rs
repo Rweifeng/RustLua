@@ -10,8 +10,8 @@
 //! - `script_steps_invalidate_the_frame_view`
 
 use super::*;
-use crate::core::camera::ledger;
-use crate::core::scene::Scene;
+use rustlua_camera::camera::ledger;
+use rustlua_scene::scene::Scene;
 
 /// 同一输入 scene 在静态 serialized extractor 与初始 runtime world 上：
 /// 每个 serialized 3D 实体都能找到同名、同 mesh path、同 transform 的
@@ -26,7 +26,7 @@ fn serialized_and_runtime_consistency_demo3d() {
     }
     let path = root.join("scenes/demo3d.scene");
     let scene = Scene::load(&path).unwrap_or_else(|e| panic!("load demo3d: {e}"));
-    let serialized = crate::core::scene_extract::extract_serialized_scene_3d(&scene);
+    let serialized = rustlua_scene::scene_extract::extract_serialized_scene_3d(&scene);
     let runtime = RuntimeScene::from_scene_edit(Some(&root), scene).expect("runtime demo3d");
     let runtime3d = runtime
         .scene_3d(Viewport::new(16.0, 9.0).unwrap())
@@ -95,10 +95,10 @@ fn serialized_and_runtime_consistency_demo3d() {
 #[test]
 fn runtime_camera_pose_follows_transform_when_declared() {
     let root = game_root();
-    let mut scene = crate::core::scene::Scene::new("camera-pose");
-    let posed = crate::core::scene::SceneEntityId(1);
-    let plain = crate::core::scene::SceneEntityId(2);
-    let mesh = crate::core::scene::SceneEntityId(3);
+    let mut scene = rustlua_scene::scene::Scene::new("camera-pose");
+    let posed = rustlua_scene::scene::SceneEntityId(1);
+    let plain = rustlua_scene::scene::SceneEntityId(2);
+    let mesh = rustlua_scene::scene::SceneEntityId(3);
     scene.add_entity(posed, "PosedCamera", None).unwrap();
     scene.add_entity(plain, "PlainCamera", None).unwrap();
     scene.add_entity(mesh, "Mesh", None).unwrap();
@@ -149,9 +149,9 @@ fn runtime_camera_pose_follows_transform_when_declared() {
     assert_eq!(extracted.drawables.len(), 1, "只有网格实体是 drawable");
 
     // 对照组：同样的 `Transform3D`，但相机没有声明 `pose=transform`，姿态必须保持组件值。
-    let control_camera = crate::core::scene::SceneEntityId(1);
-    let control_mesh = crate::core::scene::SceneEntityId(2);
-    let mut control = crate::core::scene::Scene::new("camera-look-at");
+    let control_camera = rustlua_scene::scene::SceneEntityId(1);
+    let control_mesh = rustlua_scene::scene::SceneEntityId(2);
+    let mut control = rustlua_scene::scene::Scene::new("camera-look-at");
     control
         .add_entity(control_camera, "PlainCamera", None)
         .unwrap();
@@ -379,7 +379,7 @@ fn local_transform_write_invalidates_the_frame_view() {
     // `pose=transform`：姿态来自实体自己的 `Transform`（组件名 `Transform` 解出的就是 3D 变换）。
     scene
         .entities
-        .get_mut(&crate::core::scene::SceneEntityId(1))
+        .get_mut(&rustlua_scene::scene::SceneEntityId(1))
         .unwrap()
         .components
         .insert(
@@ -402,10 +402,10 @@ fn local_transform_write_invalidates_the_frame_view() {
     // 帧内改姿态：定帧值必须作废。
     let moved = runtime
         .set_local_transform(
-            crate::core::scene::SceneEntityId(1),
-            crate::core::spatial_transform::LocalTransform {
+            rustlua_scene::scene::SceneEntityId(1),
+            rustlua_ecs::spatial_transform::LocalTransform {
                 translation: Vec3::new(0.0, 1.0, 60.0),
-                rotation: crate::core::math3d::Quat::from_axis_angle(Vec3::Y, 0.0).unwrap(),
+                rotation: rustlua_math::math3d::Quat::from_axis_angle(Vec3::Y, 0.0).unwrap(),
                 scale: Vec3::new(1.0, 1.0, 1.0),
             },
         )

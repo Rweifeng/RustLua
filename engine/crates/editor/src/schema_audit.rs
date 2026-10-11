@@ -6,7 +6,7 @@
 //! honest; this module applies the same registry to *actual project files*, so drift in
 //! authored content is reported instead of silently absorbed.
 
-use engine::core::component_schema::{SchemaError, builtin_registry, validate_component};
+use rustlua_ecs::component_schema::{SchemaError, builtin_registry, validate_component};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -196,19 +196,19 @@ fn project_documents(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn load_document(path: &Path) -> Result<engine::core::scene::Scene, String> {
+fn load_document(path: &Path) -> Result<rustlua_scene::scene::Scene, String> {
     match path.extension().and_then(|value| value.to_str()) {
-        Some("prefab") => engine::core::prefab::Prefab::load(path)
+        Some("prefab") => rustlua_scene::prefab::Prefab::load(path)
             .map(|prefab| crate::document::scene_from_prefab(&prefab))
             .map_err(|error| error.to_string()),
-        _ => engine::core::scene::Scene::load(path).map_err(|error| error.to_string()),
+        _ => rustlua_scene::scene::Scene::load(path).map_err(|error| error.to_string()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::core::scene::{Scene, SceneEntityId};
+    use rustlua_scene::scene::{Scene, SceneEntityId};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_root(label: &str) -> PathBuf {

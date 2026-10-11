@@ -405,7 +405,7 @@ mod publish_tests {
             eprintln!("未找到发布脚本，跳过");
             return;
         };
-        let project_root = engine::core::games_dir().join("examples").join("game_api");
+        let project_root = rustlua_infra::games_dir().join("examples").join("game_api");
         let (tx, rx) = channel();
         spawn_publish(
             PublishRequest {

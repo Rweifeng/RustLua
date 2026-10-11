@@ -19,26 +19,24 @@ use crate::{
 };
 use editor::{SelectionSource, TransformFields};
 use eframe::egui;
-use engine::core::{
-    camera::Camera2D,
-    camera::{Camera3D, DEFAULT_3D_CLEAR, FrameViews, Ray3, RenderView, Viewport},
-    light::Light,
-    math3d::{Quat, Vec3},
-    physics::ColliderDesc,
-    scene::{SceneEntity, SceneEntityId},
-    sprite::SpriteComponent,
-    text::{TextAtlas, TextLayout, TextStyle},
-    tilemap::Tilemap,
-    transform::Transform3D,
-    transform::Vec2,
-    typed_scene::{ComponentId, TypedComponent, TypedScene},
-    ui_layout::{UiRect, UiRectLayout},
-    ui_scene_layout::{UiSceneNode, resolve_scene_ui_layout},
-};
 use engine::host::{
     BoundsSource, ReadbackStatus, Renderer, RuntimeScene, Scene3d, Scene3dBounds, Scene3dDrawable,
     SceneMesh, load_project_font_atlas, load_project_vector_atlas,
 };
+use rustlua_camera::camera::Camera2D;
+use rustlua_camera::camera::{Camera3D, DEFAULT_3D_CLEAR, FrameViews, Ray3, RenderView, Viewport};
+use rustlua_ecs::tilemap::Tilemap;
+use rustlua_ecs::transform::Transform3D;
+use rustlua_ecs::transform::Vec2;
+use rustlua_math::math3d::{Quat, Vec3};
+use rustlua_physics::physics::ColliderDesc;
+use rustlua_render::light::Light;
+use rustlua_render::sprite::SpriteComponent;
+use rustlua_render::text::{TextAtlas, TextLayout, TextStyle};
+use rustlua_scene::scene::{SceneEntity, SceneEntityId};
+use rustlua_scene::typed_scene::{ComponentId, TypedComponent, TypedScene};
+use rustlua_ui::ui_layout::{UiRect, UiRectLayout};
+use rustlua_ui::ui_scene_layout::{UiSceneNode, resolve_scene_ui_layout};
 
 /// Scene 视图（2D/3D）显示用的纹理来源。
 ///
@@ -448,7 +446,7 @@ impl EditorApp {
                         continue;
                     };
                     let Ok(style) =
-                        engine::core::ui_layout::ContainerStyle::from_component_str(container_raw)
+                        rustlua_ui::ui_layout::ContainerStyle::from_component_str(container_raw)
                     else {
                         continue;
                     };
@@ -569,7 +567,7 @@ impl EditorApp {
                     && let Some(scene_entity) = scene.scene.entities.get(&primary)
                     && let Some(container_raw) = scene_entity.components.get("Container")
                     && let Ok(style) =
-                        engine::core::ui_layout::ContainerStyle::from_component_str(container_raw)
+                        rustlua_ui::ui_layout::ContainerStyle::from_component_str(container_raw)
                     && let Some(entity) = entities.iter().find(|e| e.id == primary)
                 {
                     let outer_rect = egui::Rect::from_center_size(entity.center, entity.size);
@@ -1024,7 +1022,7 @@ impl EditorApp {
         let scene_entity = scene.scene.entities.get(&primary)?;
         let container_raw = scene_entity.components.get("Container")?;
         let style =
-            engine::core::ui_layout::ContainerStyle::from_component_str(container_raw).ok()?;
+            rustlua_ui::ui_layout::ContainerStyle::from_component_str(container_raw).ok()?;
         let padding = self
             .scene_state
             .preview_padding
@@ -1230,7 +1228,7 @@ impl EditorApp {
             let measured_text_bounds = e
                 .components
                 .get("Text")
-                .and_then(|raw| engine::core::ui::UiText::from_component_str(raw).ok())
+                .and_then(|raw| rustlua_ui::ui::UiText::from_component_str(raw).ok())
                 .map(|text| {
                     if let Some(runtime) = self.scene_runtime.as_mut() {
                         runtime.measure_scene_ui_text(&text).1
@@ -1542,7 +1540,7 @@ impl EditorApp {
             .iter()
             .filter(|entity| filter.matches_name(&entity.name.to_lowercase()))
             .map(|entity| {
-                let bounds = engine::core::math3d::Aabb3 {
+                let bounds = rustlua_math::math3d::Aabb3 {
                     min: Vec3::new(-0.5, -0.5, -0.5),
                     max: Vec3::new(0.5, 0.5, 0.5),
                 };
@@ -1630,7 +1628,7 @@ impl EditorApp {
         //
         // docs/55 阶段 2 收口：手柄作用于**整个选中集合**——锚点按轴心模式取"主实体原点"
         // 或"选中集合并集包围盒中心"，拖拽时对每个目标算各自的新世界变换（见 `crate::gizmo`）。
-        let selected: Vec<(SceneEntityId, Transform3D, engine::core::math3d::Aabb3)> = entities3d
+        let selected: Vec<(SceneEntityId, Transform3D, rustlua_math::math3d::Aabb3)> = entities3d
             .iter()
             .filter(|(id, _, _, _)| self.selection.contains(*id))
             .map(|(id, _, transform, bounds)| (*id, *transform, *bounds))
@@ -2033,8 +2031,8 @@ impl EditorApp {
     /// "手柄在人不在的地方"（画面用世界值、覆层用局部值）。
     fn scene_view_3d_world_transform(
         &self,
-        id: engine::core::scene::SceneEntityId,
-    ) -> Option<engine::core::transform::Transform3D> {
+        id: rustlua_scene::scene::SceneEntityId,
+    ) -> Option<rustlua_ecs::transform::Transform3D> {
         if let Some(runtime) = &self.scene_runtime
             && let Some(world) = runtime.world_transform_3d_of(id)
         {
@@ -2794,7 +2792,7 @@ impl EditorApp {
                     model,
                     palette: Vec::new(),
                     bounds: Scene3dBounds {
-                        local_aabb: engine::core::math3d::Aabb3 {
+                        local_aabb: rustlua_math::math3d::Aabb3 {
                             min: Vec3::new(-0.5, -0.5, -0.5),
                             max: Vec3::new(0.5, 0.5, 0.5),
                         },
@@ -3435,13 +3433,13 @@ impl EditorApp {
 
     fn editor_camera_ray(&self, x: f32, y: f32, width: f32, height: f32) -> Option<Ray3> {
         let camera = self.editor_camera();
-        // docs/54 §8-⑦：与 Lua `camera3d.ray` 走**同一条共享链**（`engine::core::picking`），
+        // docs/54 §8-⑦：与 Lua `camera3d.ray` 走**同一条共享链**（`rustlua_render::picking`），
         // 因此"编辑器点中哪个"和"脚本算出的射线"不会各说一套。宽高比与屏幕坐标同源
         // （同一个 `viewport`），拆分批 7 之后这一点由类型保证。
         let viewport = Viewport::new(width.max(1.0), height.max(1.0)).ok()?;
-        engine::core::picking::ray_from_screen(
+        rustlua_render::picking::ray_from_screen(
             camera,
-            engine::core::transform::Vec2::new(x, y),
+            rustlua_ecs::transform::Vec2::new(x, y),
             viewport,
         )
         .ok()
@@ -3813,7 +3811,7 @@ fn pick_scene_3d_entity(
         SceneEntityId,
         String,
         Transform3D,
-        engine::core::math3d::Aabb3,
+        rustlua_math::math3d::Aabb3,
     )],
     locked: &std::collections::BTreeSet<SceneEntityId>,
     preview: &std::collections::BTreeMap<SceneEntityId, Transform3D>,
@@ -3826,7 +3824,7 @@ fn pick_scene_3d_entity(
                 .get(id)
                 .map(|value| value.position)
                 .unwrap_or(transform.position);
-            let world_bounds = engine::core::math3d::Aabb3 {
+            let world_bounds = rustlua_math::math3d::Aabb3 {
                 min: bounds.min + position,
                 max: bounds.max + position,
             };
@@ -3932,7 +3930,7 @@ fn ui_entity_2d_box(
         let bounds = measured_text_bounds
             .or_else(|| {
                 let raw = entity.components.get("Text")?;
-                let text = engine::core::ui::UiText::from_component_str(raw).ok()?;
+                let text = rustlua_ui::ui::UiText::from_component_str(raw).ok()?;
                 Some(measure_text_without_runtime(&text.text, text.effective_scale()).1)
             })
             .unwrap_or([0.0; 4]);
@@ -3948,17 +3946,18 @@ fn ui_entity_2d_box(
 }
 
 fn scene_ui_nodes(
-    scene: &engine::core::scene::Scene,
+    scene: &rustlua_scene::scene::Scene,
 ) -> std::collections::BTreeMap<u64, UiSceneNode> {
     scene
         .entities
         .values()
         .map(|entity| {
-            let layout = entity.components.get("UiLayout").and_then(|raw| {
-                engine::core::ui_layout::UiRectLayout::from_component_str(raw).ok()
-            });
+            let layout = entity
+                .components
+                .get("UiLayout")
+                .and_then(|raw| rustlua_ui::ui_layout::UiRectLayout::from_component_str(raw).ok());
             let container = entity.components.get("Container").and_then(|raw| {
-                engine::core::ui_layout::ContainerStyle::from_component_str(raw).ok()
+                rustlua_ui::ui_layout::ContainerStyle::from_component_str(raw).ok()
             });
             let preferred_size = if entity.components.contains_key("Image") {
                 layout
@@ -4171,8 +4170,8 @@ mod tests {
     use crate::EditorApp;
     use crate::EditorCamera;
     use editor::open_project;
-    use engine::core::logging::LogSink;
-    use engine::core::ui_layout::UiLayoutPreset;
+    use rustlua_infra::logging::LogSink;
+    use rustlua_ui::ui_layout::UiLayoutPreset;
 
     // ---- E11：交互入口（`scene_pointer_*`）的独立单测 ----
     //
@@ -4431,8 +4430,8 @@ mod tests {
     #[test]
     fn gizmo_rotate_and_scale_about_the_pivot() {
         use crate::scene_interaction::GizmoSpace;
-        use engine::core::math3d::Quat;
-        use engine::core::transform::Transform3D;
+        use rustlua_ecs::transform::Transform3D;
+        use rustlua_math::math3d::Quat;
         let initial = Transform3D {
             position: Vec3::new(1.0, 0.0, 0.0),
             rotation: Quat::identity(),
@@ -4536,7 +4535,7 @@ mod tests {
         use crate::scene_interaction::GizmoPivot;
         let position = Vec3::new(10.0, 0.0, 0.0);
         // 一个"原点在脚下"的模型：AABB 从 0 到 2 高。
-        let bounds = engine::core::math3d::Aabb3 {
+        let bounds = rustlua_math::math3d::Aabb3 {
             min: Vec3::new(-0.5, 0.0, -0.5),
             max: Vec3::new(0.5, 2.0, 0.5),
         };
@@ -4610,7 +4609,7 @@ mod tests {
     #[test]
     fn gizmo_axes_follow_the_camera_projection() {
         use crate::scene_interaction::GizmoSpace;
-        use engine::core::math3d::Quat;
+        use rustlua_math::math3d::Quat;
         let center = egui::pos2(200.0, 150.0);
         let len = 40.0;
         // 假投影：x 向右、y 向上（屏幕 y 反向）、z **完全压扁**（模拟正俯视：
@@ -4707,7 +4706,7 @@ mod tests {
     #[test]
     fn gizmo_local_axes_follow_the_entity_rotation() {
         use crate::scene_interaction::GizmoSpace;
-        use engine::core::math3d::Quat;
+        use rustlua_math::math3d::Quat;
         // 绕 Y 转 90°：局部 X 变成世界 -Z，局部 Z 变成世界 +X（右手系）。
         let rotation =
             Quat::from_axis_angle(Vec3::Y, std::f32::consts::FRAC_PI_2).expect("单位四元数");
@@ -4754,7 +4753,7 @@ mod tests {
     #[test]
     fn gizmo_rotation_space_picks_world_or_own_axis() {
         use crate::scene_interaction::GizmoSpace;
-        use engine::core::math3d::Quat;
+        use rustlua_math::math3d::Quat;
         let initial = Quat::from_axis_angle(Vec3::new(1.0, 0.0, 1.0), 0.6).expect("单位四元数");
         let own_y = initial.rotate(Vec3::Y).expect("旋转 Y");
         let angle = 0.5_f32;
@@ -4798,13 +4797,13 @@ mod tests {
     /// 换一根轴只是把 `Y` 换成 `X/Z`，不需要在这里重复一遍。
     fn rotate_only(
         space: crate::scene_interaction::GizmoSpace,
-        rotation: engine::core::math3d::Quat,
+        rotation: rustlua_math::math3d::Quat,
         angle: f32,
-    ) -> engine::core::math3d::Quat {
+    ) -> rustlua_math::math3d::Quat {
         crate::gizmo::rotate_about(
             space,
             Vec3::Y,
-            &engine::core::transform::Transform3D {
+            &rustlua_ecs::transform::Transform3D {
                 position: Vec3::new(0.0, 0.0, 0.0),
                 rotation,
                 scale: Vec3::new(1.0, 1.0, 1.0),
@@ -4814,8 +4813,8 @@ mod tests {
         )
         .1
     }
-    use engine::core::scene::SceneEntityId;
-    use engine::core::transform::Vec2;
+    use rustlua_ecs::transform::Vec2;
+    use rustlua_scene::scene::SceneEntityId;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -4854,7 +4853,7 @@ mod tests {
         let Some((device, queue)) = test_device() else {
             return;
         };
-        let source = engine::core::games_dir().join("examples").join("game_api");
+        let source = rustlua_infra::games_dir().join("examples").join("game_api");
         let root = temp_root("ui-test-gpu");
         fs::create_dir_all(&root).unwrap();
         fs::copy(source.join("project.toml"), root.join("project.toml")).unwrap();
@@ -4905,7 +4904,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("examples").join("game_api")
+        rustlua_infra::games_dir().join("examples").join("game_api")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {
@@ -4977,12 +4976,12 @@ mod tests {
             );
             entity.components.insert(
                 "Sprite".to_owned(),
-                engine::core::sprite::SpriteComponent {
+                rustlua_render::sprite::SpriteComponent {
                     texture: "assets/textures/player.png".to_owned(),
-                    size: engine::core::transform::Vec2::new(32.0, 32.0),
-                    pivot: engine::core::transform::Vec2::new(0.5, 0.5),
+                    size: rustlua_ecs::transform::Vec2::new(32.0, 32.0),
+                    pivot: rustlua_ecs::transform::Vec2::new(0.5, 0.5),
                     tint: [1.0; 4],
-                    sorting: engine::core::sprite::SpriteSorting::default(),
+                    sorting: rustlua_render::sprite::SpriteSorting::default(),
                     flip_x: false,
                     flip_y: false,
                     z: 0.0,
@@ -5039,10 +5038,8 @@ mod tests {
             .clone();
         assert_ne!(after, before, "文档必须真的被改动");
         let moved =
-            engine::core::spatial_transform::LocalTransform::transform_2d_from_component_str(
-                &after,
-            )
-            .expect("统一写法必须能被 2D 视图读回");
+            rustlua_ecs::spatial_transform::LocalTransform::transform_2d_from_component_str(&after)
+                .expect("统一写法必须能被 2D 视图读回");
         // 面板 Y 向下、世界 Y 向上：面板 +(24,12) 对应世界 (124, 88)（zoom=1、ppp=1）。
         assert!(
             (moved.position.x - 124.0).abs() < 0.001 && (moved.position.y - 88.0).abs() < 0.001,
@@ -5082,12 +5079,12 @@ mod tests {
             );
             entity.components.insert(
                 "Sprite".to_owned(),
-                engine::core::sprite::SpriteComponent {
+                rustlua_render::sprite::SpriteComponent {
                     texture: "assets/textures/player.png".to_owned(),
-                    size: engine::core::transform::Vec2::new(32.0, 32.0),
-                    pivot: engine::core::transform::Vec2::new(0.5, 0.5),
+                    size: rustlua_ecs::transform::Vec2::new(32.0, 32.0),
+                    pivot: rustlua_ecs::transform::Vec2::new(0.5, 0.5),
                     tint: [1.0; 4],
-                    sorting: engine::core::sprite::SpriteSorting::default(),
+                    sorting: rustlua_render::sprite::SpriteSorting::default(),
                     flip_x: false,
                     flip_y: false,
                     z: 0.0,
@@ -5571,7 +5568,7 @@ mod tests {
         let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(400.0, 300.0));
         let pan = egui::Vec2::ZERO;
         let zoom = 2.0;
-        let mut scene = engine::core::scene::Scene::new("bounds");
+        let mut scene = rustlua_scene::scene::Scene::new("bounds");
         let id = SceneEntityId(1);
         scene.add_entity(id, "Sprite", None).unwrap();
         // 无尺寸组件：回退默认框，中心即 transform 位置。
@@ -5593,7 +5590,7 @@ mod tests {
                 size: Vec2::new(64.0, 32.0),
                 pivot: Vec2::new(0.5, 0.5),
                 tint: [1.0; 4],
-                sorting: engine::core::sprite::SpriteSorting::default(),
+                sorting: rustlua_render::sprite::SpriteSorting::default(),
 
                 flip_x: false,
                 flip_y: false,
@@ -5632,7 +5629,7 @@ mod tests {
                 size: Vec2::new(64.0, 32.0),
                 pivot: Vec2::new(0.0, 1.0),
                 tint: [1.0; 4],
-                sorting: engine::core::sprite::SpriteSorting::default(),
+                sorting: rustlua_render::sprite::SpriteSorting::default(),
 
                 flip_x: false,
                 flip_y: false,
@@ -5662,7 +5659,7 @@ mod tests {
         let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(400.0, 300.0));
         let pan = egui::Vec2::ZERO;
         let zoom = 1.0;
-        let mut scene = engine::core::scene::Scene::new("bounds-tilemap");
+        let mut scene = rustlua_scene::scene::Scene::new("bounds-tilemap");
         let id = SceneEntityId(2);
         scene.add_entity(id, "Map", None).unwrap();
         let tilemap = Tilemap::new(Vec2::new(32.0, 32.0), 4, 3).unwrap();
@@ -5706,7 +5703,7 @@ mod tests {
         let pan = egui::vec2(20.0, -10.0);
         let zoom = 2.0;
         let ppp = 2.0;
-        let mut scene = engine::core::scene::Scene::new("high-dpi");
+        let mut scene = rustlua_scene::scene::Scene::new("high-dpi");
         let id = SceneEntityId(1);
         scene.add_entity(id, "Sprite", None).unwrap();
         let sprite = SpriteComponent {
@@ -5714,7 +5711,7 @@ mod tests {
             size: Vec2::new(64.0, 32.0),
             pivot: Vec2::new(0.5, 0.5),
             tint: [1.0; 4],
-            sorting: engine::core::sprite::SpriteSorting::default(),
+            sorting: rustlua_render::sprite::SpriteSorting::default(),
 
             flip_x: false,
             flip_y: false,
@@ -5755,7 +5752,7 @@ mod tests {
         // 输出像素，纹理贴回面板时除以 ppp；包围框必须落在同一像素位置。
         let camera = Camera2D::new(Vec2::new(-pan.x / zoom, -pan.y / zoom), zoom).unwrap();
         let viewport =
-            engine::core::camera::Viewport::new(rect.width() * ppp, rect.height() * ppp).unwrap();
+            rustlua_camera::camera::Viewport::new(rect.width() * ppp, rect.height() * ppp).unwrap();
         let px = camera
             .world_to_screen(
                 Vec2::new(transform.position_x, transform.position_y),
@@ -5769,7 +5766,7 @@ mod tests {
     #[test]
     fn ui_entity_box_image_canvas_center_anchor() {
         let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1280.0, 720.0));
-        let mut scene = engine::core::scene::Scene::new("ui-image");
+        let mut scene = rustlua_scene::scene::Scene::new("ui-image");
         let id = SceneEntityId(10);
         scene.add_entity(id, "LogoCoin", None).unwrap();
         {
@@ -5819,7 +5816,7 @@ mod tests {
     #[test]
     fn ui_entity_box_image_screen_origin_anchor() {
         let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(400.0, 300.0));
-        let mut scene = engine::core::scene::Scene::new("ui-image-screen");
+        let mut scene = rustlua_scene::scene::Scene::new("ui-image-screen");
         let id = SceneEntityId(11);
         scene.add_entity(id, "StartImage", None).unwrap();
         {
@@ -5856,7 +5853,7 @@ mod tests {
     #[test]
     fn ui_entity_box_text_canvas_measures_and_centers() {
         let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1280.0, 720.0));
-        let mut scene = engine::core::scene::Scene::new("ui-text");
+        let mut scene = rustlua_scene::scene::Scene::new("ui-text");
         let id = SceneEntityId(12);
         scene.add_entity(id, "Title", None).unwrap();
         {
@@ -5884,7 +5881,7 @@ mod tests {
         .unwrap();
         // 与运行时同款：布局点决定文本网格原点，度量只补齐可见字形包围框。
         let text =
-            engine::core::ui::UiText::from_component_str("text=Start Production;font_size=28.8")
+            rustlua_ui::ui::UiText::from_component_str("text=Start Production;font_size=28.8")
                 .unwrap();
         let (_, bounds) = measure_text_without_runtime(&text.text, text.effective_scale());
         let gw = (bounds[2] - bounds[0]).max(0.0);
@@ -5907,7 +5904,7 @@ mod tests {
     #[test]
     fn ui_entity_box_returns_none_for_non_ui_entities() {
         let rect = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(400.0, 300.0));
-        let mut scene = engine::core::scene::Scene::new("ui-none");
+        let mut scene = rustlua_scene::scene::Scene::new("ui-none");
         let id = SceneEntityId(13);
         scene.add_entity(id, "Sprite", None).unwrap();
         {
@@ -5917,7 +5914,7 @@ mod tests {
                 size: Vec2::new(64.0, 32.0),
                 pivot: Vec2::new(0.5, 0.5),
                 tint: [1.0; 4],
-                sorting: engine::core::sprite::SpriteSorting::default(),
+                sorting: rustlua_render::sprite::SpriteSorting::default(),
 
                 flip_x: false,
                 flip_y: false,
@@ -5947,7 +5944,7 @@ mod tests {
     #[test]
     fn set_ui_component_layout_rewrites_ui_and_rejects_others() {
         use crate::scene_drag::set_ui_component_layout;
-        let mut scene = engine::core::scene::Scene::new("ui-rewrite");
+        let mut scene = rustlua_scene::scene::Scene::new("ui-rewrite");
         let image_id = SceneEntityId(20);
         let sprite_id = SceneEntityId(21);
         scene.add_entity(image_id, "Coin", None).unwrap();
@@ -5967,7 +5964,7 @@ mod tests {
                 size: Vec2::new(64.0, 32.0),
                 pivot: Vec2::new(0.5, 0.5),
                 tint: [1.0; 4],
-                sorting: engine::core::sprite::SpriteSorting::default(),
+                sorting: rustlua_render::sprite::SpriteSorting::default(),
 
                 flip_x: false,
                 flip_y: false,
@@ -6037,8 +6034,7 @@ mod tests {
         let title = by_id(3);
         let scene = app.document.current_scene.as_ref().unwrap();
         let entity = &scene.scene.entities[&SceneEntityId(3)];
-        let text =
-            engine::core::ui::UiText::from_component_str(&entity.components["Text"]).unwrap();
+        let text = rustlua_ui::ui::UiText::from_component_str(&entity.components["Text"]).unwrap();
         let layout = UiRectLayout::from_component_str(&entity.components["UiLayout"]).unwrap();
         let origin = layout.resolve([rect.width(), rect.height()]);
         let (_, bounds) = measure_text_without_runtime(&text.text, text.effective_scale());
@@ -6058,7 +6054,7 @@ mod tests {
     #[test]
     fn ui_test_scene_2d_view_collect_does_not_panic() {
         // 复制到临时目录，绝不触碰真实的 examples 项目。
-        let source = engine::core::games_dir().join("examples").join("game_api");
+        let source = rustlua_infra::games_dir().join("examples").join("game_api");
         let root = temp_root("ui-test");
         fs::create_dir_all(&root).unwrap();
         fs::copy(source.join("project.toml"), root.join("project.toml")).unwrap();

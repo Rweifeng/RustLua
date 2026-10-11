@@ -129,7 +129,7 @@ impl Scene {
     ///
     /// 与 [`Scene::load`] 同一套解码与解析，只把"读字节"这一步留给调用方：
     /// web / 微信小游戏没有 `std::fs`，场景字节由宿主的资源表提供
-    /// （`engine::core::vfs` 的 provider）。这不是"另一条解析实现"——
+    /// （`rustlua_infra::vfs` 的 provider）。这不是"另一条解析实现"——
     /// 两条路最后都落在同一个 `from_text`，所以桌面能读的场景，宿主也读得一模一样。
     pub fn from_packed_bytes(path: &Path, bytes: &[u8]) -> Result<Self, SceneError> {
         // 支持发布包的压缩/加密场景文件；明文原样返回。

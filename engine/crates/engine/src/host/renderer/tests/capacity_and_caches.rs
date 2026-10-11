@@ -2,7 +2,7 @@
 
 use super::*;
 // WP12 阶段 4b：这个名字原先由 `renderer/mod.rs` 顶部的 use 块带进来（测试靠 glob 取用）。
-use crate::core::mesh3d::GROUND_PLANE_SENTINEL;
+use rustlua_render::mesh3d::GROUND_PLANE_SENTINEL;
 
 /// 2D 顶点缓冲容量策略：不小于初始容量、按 2 的幂增长、且总是能容纳请求。
 /// 回归背景：此前容量固定为 1 MiB 且超限时**没有 else 分支**，超出的帧会
@@ -72,7 +72,7 @@ fn texture_identity_cache_is_hit_on_the_second_frame() {
         trace: wgpu::Trace::Off,
     }))
     .expect("request test device");
-    let root = crate::core::games_dir().join("examples").join("game_api");
+    let root = rustlua_infra::games_dir().join("examples").join("game_api");
     let texture_path = "assets/textures/player.png";
     if !root.join(texture_path).is_file() {
         return; // 没有示例资源就跳过（与"没有 GPU 就跳过"同一策略）
@@ -224,14 +224,14 @@ fn mesh_identity_cache_is_hit_on_the_second_frame() {
         view: RenderView::main_3d(camera, viewport, DEFAULT_3D_CLEAR),
         light: Light::default(),
         drawables: vec![crate::host::frame::Scene3dDrawable {
-            entity: crate::core::scene::SceneEntityId(1),
+            entity: rustlua_scene::scene::SceneEntityId(1),
             name: "Ground".to_owned(),
             mesh_path: GROUND_PLANE_SENTINEL.to_owned(),
             mesh_handle: handle,
             model: Mat4::translation(Vec3::new(0.0, 0.0, -1.0)),
             palette: Vec::new(),
             bounds: crate::host::frame::Scene3dBounds {
-                local_aabb: crate::core::math3d::Aabb3 {
+                local_aabb: rustlua_math::math3d::Aabb3 {
                     min: Vec3::new(-4.0, -4.0, -0.1),
                     max: Vec3::new(4.0, 4.0, 0.1),
                 },

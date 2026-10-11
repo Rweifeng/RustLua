@@ -31,12 +31,10 @@
 //! Usage:
 //!   cargo run -p game --example jhyt_m30_cjk_text [-- <game_jhyt-root>]
 
-use engine::core::{
-    entity::EntityId,
-    input::{InputSnapshot, KeyCode},
-    script::LuaRuntime,
-    ui::UiText,
-};
+use rustlua_ecs::entity::EntityId;
+use rustlua_input::input::{InputSnapshot, KeyCode};
+use rustlua_scripting::script::LuaRuntime;
+use rustlua_ui::ui::UiText;
 use std::{env, fs, path::Path, path::PathBuf};
 
 /// 引擎测得的最小可读字号（`docs/42` §1：中文字形 11px 起可读）。
@@ -56,10 +54,11 @@ const MIN_SCENE_TEXTS: usize = 21;
 const MIN_REGISTERED_TEXT_SITES: usize = 28;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let project = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+    let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
+        rustlua_infra::games_dir()
+            .join("examples")
+            .join("game_jhyt")
+    });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());
@@ -193,7 +192,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // 首包字体子集：`assetc::package` 用 `char_collect` 收字符（场景/预制体 Text + Lua 字面量），
     // 运行时用到的每个字符都必须已被收到，否则正式包里就是豆腐块。
-    let collected = engine::core::char_collect::collect_project_chars(&project);
+    let collected = rustlua_scene::char_collect::collect_project_chars(&project);
     let runtime_chars = query_str(&mut rt, "require('tools.text_audit').unique_chars()")?;
     let mut uncovered: Vec<char> = runtime_chars
         .chars()
@@ -654,11 +653,11 @@ fn scene_font_sizes(project: &Path) -> Result<(usize, f64), Box<dyn std::error::
         let entities = if is_prefab {
             let text = fs::read_to_string(&path)
                 .map_err(|error| format!("{} 读取失败：{error}", path.display()))?;
-            engine::core::prefab::Prefab::from_text(&text)
+            rustlua_scene::prefab::Prefab::from_text(&text)
                 .map_err(|error| format!("{} 解析失败：{error}", path.display()))?
                 .entities
         } else {
-            engine::core::scene::Scene::load(&path)
+            rustlua_scene::scene::Scene::load(&path)
                 .map_err(|error| format!("{} 读取失败：{error}", path.display()))?
                 .entities
         };

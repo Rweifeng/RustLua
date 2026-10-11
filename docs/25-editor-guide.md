@@ -290,7 +290,7 @@ editor [--project <项目路径>] [--check] [--help]
   文件内非法数值由引擎解析器忽略并回落默认 `1.0`。
 - 运行期同一份数据由 `audio.load_settings()` / `audio.save_settings()` 读写：游戏
   `game_jhyt` 在启动时应用该文件，暂停菜单「设置」页调整后写回。编辑器与游戏共用
-  `engine::core::settings::ProjectSettings` 的解析/写回实现，不会出现两种格式漂移。
+  `rustlua_gameplay::settings::ProjectSettings` 的解析/写回实现，不会出现两种格式漂移。
 - 已知限制：面板**不提供试听**（编辑器侧没有打开音频设备），试听请在游戏中调整；
   分组音量的权威来源是 `settings.toml`，编辑器与游戏同写同一文件时以最后一次保存为准。
 

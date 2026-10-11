@@ -18,19 +18,17 @@
 #[path = "support/wp0_alloc.rs"]
 mod wp0_alloc;
 
-use engine::core::{
-    games_dir,
-    input::InputSnapshot,
-    math3d::Vec3,
-    par::Parallelism,
-    particle::ParticleEmitter,
-    scene::{Scene, SceneEntityId},
-    scene_extract::extract_serialized_scene_3d,
-    spatial_transform::{LocalTransform, TransformTree},
-    transform::Vec2 as SceneVec2,
-    typed_scene::TypedScene,
-};
 use engine::host::RuntimeScene;
+use rustlua_ecs::particle::ParticleEmitter;
+use rustlua_ecs::spatial_transform::{LocalTransform, TransformTree};
+use rustlua_ecs::transform::Vec2 as SceneVec2;
+use rustlua_infra::games_dir;
+use rustlua_infra::par::Parallelism;
+use rustlua_input::input::InputSnapshot;
+use rustlua_math::math3d::Vec3;
+use rustlua_scene::scene::{Scene, SceneEntityId};
+use rustlua_scene::scene_extract::extract_serialized_scene_3d;
+use rustlua_scene::typed_scene::TypedScene;
 use std::{
     env, fs,
     path::PathBuf,
@@ -372,7 +370,7 @@ fn run_frame(runtime: &mut RuntimeScene, input: &InputSnapshot) -> FrameSample {
         .expect("2D extraction");
     let vertices_alloc_count = wp0_alloc::window_count();
     let scene3d = runtime.scene_3d(
-        engine::core::camera::Viewport::new(VIEWPORT.0 as f32, VIEWPORT.1 as f32)
+        rustlua_camera::camera::Viewport::new(VIEWPORT.0 as f32, VIEWPORT.1 as f32)
             .expect("viewport"),
     );
     let scene3d_alloc_count = wp0_alloc::window_count();

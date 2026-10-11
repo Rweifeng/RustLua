@@ -6,8 +6,8 @@
 //! `engine/crates/engine/tests/host_pub_surface.rs` 与 `artifacts/baselines/engine-pub-surface.json`）。
 //! `prewarm_font_atlas` 只被 `load_project_font_atlas` 调用，保持私有。
 
-use crate::core::font::{FontAtlas, FontVectorAtlas, project_font};
 use crate::host::frame::FontHandle;
+use rustlua_render::font::{FontAtlas, FontVectorAtlas, project_font};
 use std::{
     path::Path,
     sync::{Arc, Mutex},
@@ -28,7 +28,7 @@ pub fn load_project_vector_atlas(
 
 /// 工程文件是否存在：走 `vfs::is_file`（provider 优先；桌面无 provider 时就是 `Path::is_file`）。
 fn project_file_exists(path: &Path) -> bool {
-    crate::core::vfs::is_file(path)
+    rustlua_infra::vfs::is_file(path)
 }
 
 /// 读工程文件并解码：走 `vfs::read_resource`（**唯一资源加载通道**）。
@@ -37,7 +37,7 @@ fn project_file_exists(path: &Path) -> bool {
 /// 共用同一条通道：provider 优先、桌面回落 `std::fs`，再统一解码。Web/微信上工程随宿主资源表走，
 /// `std::fs` 恒失败——没有这条通道，字体与配置都读不到。
 fn read_project_bytes(path: &Path) -> Option<Vec<u8>> {
-    crate::core::vfs::read_resource(path).ok()
+    rustlua_infra::vfs::read_resource(path).ok()
 }
 
 /// 加载项目字体并包装为可跨运行时共享的图集（MSDF 字形按需生成，共享后只生成

@@ -13,7 +13,7 @@
 use crate::EditorApp;
 use editor::{ChoiceSource, field_choice_source};
 use eframe::egui;
-use engine::core::component_schema::FieldKind;
+use rustlua_ecs::component_schema::FieldKind;
 
 /// 一行字段的输入缓冲 + 上次同步的文档取值。
 #[derive(Clone)]
@@ -114,7 +114,7 @@ impl EditorApp {
                 .into_iter()
                 .filter(|id| *id != selected),
         );
-        let entities: Vec<&engine::core::scene::SceneEntity> = ids
+        let entities: Vec<&rustlua_scene::scene::SceneEntity> = ids
             .iter()
             .filter_map(|id| document.scene.entities.get(id))
             .collect();
@@ -738,8 +738,9 @@ mod tests {
     use super::{FieldWidget, field_widget};
     use crate::EditorApp;
     use editor::{CommandResult, EditorCommand, ProjectInfo, SceneDocument};
-    use engine::core::component_schema::FieldKind;
-    use engine::core::{logging::LogSink, scene::SceneEntityId};
+    use rustlua_ecs::component_schema::FieldKind;
+    use rustlua_infra::logging::LogSink;
+    use rustlua_scene::scene::SceneEntityId;
 
     fn app_with_quad() -> EditorApp {
         let mut app = EditorApp::new(
@@ -836,7 +837,7 @@ mod tests {
     /// 否则"迁移面板"就会变成体验降级。
     #[test]
     fn migrated_components_keep_their_handwritten_widget_kinds() {
-        let light = engine::core::component_schema::builtin_registry()["Light"].clone();
+        let light = rustlua_ecs::component_schema::builtin_registry()["Light"].clone();
         let widgets: Vec<(&str, FieldWidget)> = light
             .fields
             .iter()
@@ -903,7 +904,7 @@ mod tests {
             .components
             .insert(
                 "Light".to_owned(),
-                engine::core::light::Light::default().to_component_str(),
+                rustlua_render::light::Light::default().to_component_str(),
             );
 
         // 1) 行由 schema 生成，且控件类型与手写面板同级（DragValue / 取色器）。
@@ -940,7 +941,7 @@ mod tests {
             .components["Light"]
             .clone();
         assert_eq!(
-            engine::core::light::Light::from_component_str(&payload)
+            rustlua_render::light::Light::from_component_str(&payload)
                 .expect("引擎解析器必须认得迁移后的写入")
                 .intensity,
             2.5
@@ -952,7 +953,7 @@ mod tests {
             .components["Light"]
             .clone();
         assert_eq!(
-            engine::core::light::Light::from_component_str(&payload)
+            rustlua_render::light::Light::from_component_str(&payload)
                 .expect("引擎解析器")
                 .intensity,
             1.0
@@ -977,7 +978,7 @@ mod tests {
             .components
             .insert(
                 "MeshRenderer".to_owned(),
-                format!("mesh={}", engine::core::mesh3d::GROUND_PLANE_SENTINEL),
+                format!("mesh={}", rustlua_render::mesh3d::GROUND_PLANE_SENTINEL),
             );
 
         // 行由 schema 生成，hint 里带上规则说明（"工程内相对路径（扩展名 glb/gltf）…"）。
@@ -1004,7 +1005,7 @@ mod tests {
             .components["MeshRenderer"]
             .clone();
         assert_eq!(
-            engine::core::mesh3d::MeshRenderer::from_component_str(&payload)
+            rustlua_render::mesh3d::MeshRenderer::from_component_str(&payload)
                 .expect("引擎解析器")
                 .mesh,
             "assets/models/cube.glb"
@@ -1035,7 +1036,7 @@ mod tests {
                 entity,
                 component: "MeshRenderer".to_owned(),
                 field: "mesh".to_owned(),
-                value: engine::core::mesh3d::GROUND_PLANE_SENTINEL.to_owned(),
+                value: rustlua_render::mesh3d::GROUND_PLANE_SENTINEL.to_owned(),
             }),
             CommandResult::Applied
         );
@@ -1071,7 +1072,7 @@ mod tests {
         use editor::{ChoiceSource, field_choice_source};
         assert_eq!(field_choice_source("font"), ChoiceSource::ProjectFonts);
         assert_eq!(field_choice_source("text"), ChoiceSource::Static);
-        let light = engine::core::component_schema::builtin_registry()["Camera"].clone();
+        let light = rustlua_ecs::component_schema::builtin_registry()["Camera"].clone();
         let fov = light
             .fields
             .iter()
@@ -1163,7 +1164,7 @@ mod tests {
             .components["WorldText"]
             .clone();
         let parsed =
-            engine::core::world_text::WorldText::from_component_str(&payload).expect("引擎解析器");
+            rustlua_scene::world_text::WorldText::from_component_str(&payload).expect("引擎解析器");
         assert_eq!(parsed.text.text, "受伤-12");
         assert_eq!(parsed.text.color, [0.25, 0.5, 0.75]);
         assert!(parsed.centered);
@@ -1297,7 +1298,7 @@ mod tests {
         let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
             .components["Collider"]
             .clone();
-        let collider = engine::core::physics::ColliderDesc::from_component_str(&payload)
+        let collider = rustlua_physics::physics::ColliderDesc::from_component_str(&payload)
             .expect("引擎解析器必须认得通用编辑器写出来的串");
         assert!(
             format!("{collider:?}").contains("Ball(20"),
@@ -1401,7 +1402,7 @@ mod tests {
             .components["Image"]
             .clone();
         assert_eq!(
-            engine::core::ui::UiImage::from_component_str(&payload)
+            rustlua_ui::ui::UiImage::from_component_str(&payload)
                 .expect("引擎解析器")
                 .nine_slice,
             Some([8.0, 8.0, 16.0, 16.0])
@@ -1503,7 +1504,7 @@ mod tests {
         let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
             .components["Camera"]
             .clone();
-        let camera = engine::core::camera::Camera::from_component_str(&payload)
+        let camera = rustlua_camera::camera::Camera::from_component_str(&payload)
             .expect("引擎解析器必须认得迁移后的写入")
             .as_perspective()
             .expect("判别字段是 perspective");
@@ -1613,7 +1614,7 @@ mod tests {
         let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
             .components["Text"]
             .clone();
-        let parsed = engine::core::ui::UiText::from_component_str(&payload).expect("引擎解析器");
+        let parsed = rustlua_ui::ui::UiText::from_component_str(&payload).expect("引擎解析器");
         assert_eq!(parsed.text, "a;b=中文");
         assert_eq!(parsed.font_size, 16.0, "写一个字段不得改动其它字段");
     }
@@ -1683,7 +1684,7 @@ mod tests {
         let actions = app.schema_component_actions("UiLayout");
         assert_eq!(
             actions.len(),
-            engine::core::ui_layout::UiLayoutPreset::ALL.len()
+            rustlua_ui::ui_layout::UiLayoutPreset::ALL.len()
         );
         assert!(
             actions.iter().all(|action| !action.selected),
@@ -1693,9 +1694,7 @@ mod tests {
         // 3) 应用一个预设：一条 Undo、引擎读回、offsets 不变。
         let full_rect = actions
             .iter()
-            .find(|action| {
-                action.label == engine::core::ui_layout::UiLayoutPreset::FullRect.label()
-            })
+            .find(|action| action.label == rustlua_ui::ui_layout::UiLayoutPreset::FullRect.label())
             .expect("FullRect 动作")
             .clone();
         assert_eq!(
@@ -1710,7 +1709,7 @@ mod tests {
         let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
             .components["UiLayout"]
             .clone();
-        let layout = engine::core::ui_layout::UiRectLayout::from_component_str(&payload).unwrap();
+        let layout = rustlua_ui::ui_layout::UiRectLayout::from_component_str(&payload).unwrap();
         assert_eq!(layout.anchors, [0.0, 0.0, 1.0, 1.0], "FullRect = 四边贴满");
         assert_eq!(layout.offsets, [0.0, 0.0, 0.0, 0.0], "未涉及的字段原样保留");
         // 应用后该预设成为选中态。
@@ -1729,9 +1728,9 @@ mod tests {
         }
         // 5) 默认值来自引擎（`default_element()`：中心锚 200×100）。
         let default_payload =
-            engine::core::ui_layout::UiRectLayout::default_element().to_component_str();
+            rustlua_ui::ui_layout::UiRectLayout::default_element().to_component_str();
         let default_layout =
-            engine::core::ui_layout::UiRectLayout::from_component_str(&default_payload).unwrap();
+            rustlua_ui::ui_layout::UiRectLayout::from_component_str(&default_payload).unwrap();
         assert_eq!(default_layout.offsets, [-100.0, -50.0, 100.0, 50.0]);
     }
 
@@ -1755,7 +1754,7 @@ mod tests {
             .components["Quad"]
             .clone();
         assert!(
-            engine::core::quad::Quad::from_component_str(&payload).is_ok(),
+            rustlua_render::quad::Quad::from_component_str(&payload).is_ok(),
             "引擎必须能读回：{payload}"
         );
         // 行提示里带着规则说明（用户能看到"为什么被拒绝"）。
@@ -1859,8 +1858,8 @@ mod tests {
             .components["Transform"]
             .clone();
         assert_eq!(
-            engine::core::transform::Transform3D::from_component_str(&payload).unwrap(),
-            engine::core::transform::Transform3D::identity()
+            rustlua_ecs::transform::Transform3D::from_component_str(&payload).unwrap(),
+            rustlua_ecs::transform::Transform3D::identity()
         );
         // 重置后动作列表变空（视图据此不显示按钮）。
         assert!(app.schema_component_actions("Transform").is_empty());
@@ -1880,10 +1879,10 @@ mod tests {
             .components["Transform"]
             .clone();
         assert_eq!(
-            engine::core::transform::Transform3D::from_component_str(&payload)
+            rustlua_ecs::transform::Transform3D::from_component_str(&payload)
                 .unwrap()
                 .scale,
-            engine::core::math3d::Vec3::new(2.0, 2.0, 2.0)
+            rustlua_math::math3d::Vec3::new(2.0, 2.0, 2.0)
         );
         // 缩放为 0 仍被拒绝（引擎解析器的规则，经兜底门生效）。
         match app.dispatch(EditorCommand::SetComponentField {
@@ -1915,12 +1914,12 @@ mod tests {
             .components
             .insert(
                 "Sprite".to_owned(),
-                engine::core::sprite::SpriteComponent {
+                rustlua_render::sprite::SpriteComponent {
                     texture: "assets/textures/player.png".to_owned(),
-                    size: engine::core::transform::Vec2::new(32.0, 32.0),
-                    pivot: engine::core::transform::Vec2::new(0.5, 0.5),
+                    size: rustlua_ecs::transform::Vec2::new(32.0, 32.0),
+                    pivot: rustlua_ecs::transform::Vec2::new(0.5, 0.5),
                     tint: [1.0; 4],
-                    sorting: engine::core::sprite::SpriteSorting::default(),
+                    sorting: rustlua_render::sprite::SpriteSorting::default(),
                     flip_x: false,
                     flip_y: false,
                     z: 0.0,
@@ -1984,7 +1983,7 @@ mod tests {
         let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
             .components["Sprite"]
             .clone();
-        let sprite = engine::core::sprite::SpriteComponent::from_component_str(&payload)
+        let sprite = rustlua_render::sprite::SpriteComponent::from_component_str(&payload)
             .expect("引擎解析器");
         assert_eq!(sprite.sorting.layer, "actor");
         assert_eq!(sprite.texture, "assets/textures/player.png", "其它字段不动");
@@ -2094,12 +2093,12 @@ mod tests {
         assert_eq!(app.dispatch(EditorCommand::Undo), CommandResult::Applied);
         let scene = &app.document.current_scene.as_ref().unwrap().scene;
         let size_of = |id: SceneEntityId| {
-            engine::core::quad::Quad::from_component_str(&scene.entities[&id].components["Quad"])
+            rustlua_render::quad::Quad::from_component_str(&scene.entities[&id].components["Quad"])
                 .expect("引擎解析器")
                 .size
         };
-        assert_eq!(size_of(a), engine::core::transform::Vec2::new(64.0, 32.0));
-        assert_eq!(size_of(b), engine::core::transform::Vec2::new(8.0, 8.0));
+        assert_eq!(size_of(a), rustlua_ecs::transform::Vec2::new(64.0, 32.0));
+        assert_eq!(size_of(b), rustlua_ecs::transform::Vec2::new(8.0, 8.0));
     }
 
     /// **原子多字段提交**（第 30 轮）：组件级动作（如锚点预设）一次改多个字段，
@@ -2139,8 +2138,8 @@ mod tests {
         let payload = app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
             .components["UiLayout"]
             .clone();
-        let layout = engine::core::ui_layout::UiRectLayout::from_component_str(&payload)
-            .expect("引擎解析器");
+        let layout =
+            rustlua_ui::ui_layout::UiRectLayout::from_component_str(&payload).expect("引擎解析器");
         assert_eq!(layout.anchors, [0.5, 0.5, 0.5, 0.5]);
         assert_eq!(
             layout.offsets,
@@ -2188,7 +2187,7 @@ mod tests {
         let actions = app.schema_component_actions("UiLayout");
         assert_eq!(
             actions.len(),
-            engine::core::ui_layout::UiLayoutPreset::ALL.len()
+            rustlua_ui::ui_layout::UiLayoutPreset::ALL.len()
         );
     }
 

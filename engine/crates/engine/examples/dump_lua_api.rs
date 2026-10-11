@@ -6,9 +6,9 @@
 //!   `crates/rustlua-scripting/src/api_surface_snapshot/lua_api_surface.json`
 //!   （WP11 拆分期间每改一处 API 都要跑）
 //!
-//! 事实源是运行期 `_G`，不是任何手抄清单：见 `crate::core::script::LUA_API_PROBE`。
+//! 事实源是运行期 `_G`，不是任何手抄清单：见 `rustlua_scripting::script::LUA_API_PROBE`。
 
-use engine::core::script::{LUA_API_PROBE, LuaRuntime};
+use rustlua_scripting::script::{LUA_API_PROBE, LuaRuntime};
 
 /// 基线相对 `crates/engine` 清单文件的路径。
 ///

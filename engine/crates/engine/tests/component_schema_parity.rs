@@ -5,7 +5,8 @@
 //! 在 ecs 的测试里会出现两个版本的 `rustlua_ecs` 类型对不上。engine 依赖两侧且只有一份，
 //! 因此这里是唯一能做机械化对拍的地方。
 
-use engine::core::{component_schema::builtin_registry, typed_scene::ComponentId};
+use rustlua_ecs::component_schema::builtin_registry;
+use rustlua_scene::typed_scene::ComponentId;
 
 /// **运行时认识的每个组件名都必须有 schema**（第 39 轮）：机械化地防住"键名漂移"。
 ///

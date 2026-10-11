@@ -25,7 +25,8 @@
 //! 临时改成 `if true then return true end`（即取消版本判定），A 章立刻
 //! `Error: "#(require('systems.gather').gathered_ids()) = 1, want 0"`；还原后全绿。
 
-use engine::core::{games_dir, script::LuaRuntime};
+use rustlua_infra::games_dir;
+use rustlua_scripting::script::LuaRuntime;
 use std::{
     env, fs,
     path::{Path, PathBuf},

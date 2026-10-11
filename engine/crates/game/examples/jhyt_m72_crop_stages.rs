@@ -38,7 +38,8 @@
 //! Usage:
 //!   cargo run -p game --example jhyt_m72_crop_stages [-- <game_jhyt-root>]
 
-use engine::core::{input::InputSnapshot, script::LuaRuntime};
+use rustlua_input::input::InputSnapshot;
+use rustlua_scripting::script::LuaRuntime;
 use std::{
     collections::BTreeMap,
     env, fs,
@@ -111,10 +112,11 @@ struct Cell {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let project = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+    let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
+        rustlua_infra::games_dir()
+            .join("examples")
+            .join("game_jhyt")
+    });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());
@@ -639,7 +641,10 @@ fn soil_sheet(project: &Path, runtime: &mut LuaRuntime) -> Result<(), Box<dyn st
             )
             .into());
         }
-        println!("  {entity_name}：atlas_cols={scene_cols:.0} == farm_soil.{declared_field} == 贴图宽 {}", image.0);
+        println!(
+            "  {entity_name}：atlas_cols={scene_cols:.0} == farm_soil.{declared_field} == 贴图宽 {}",
+            image.0
+        );
     }
 
     // 两列土面必须是两张图：瓦值不同已经钉过，这里是像素侧。

@@ -2,13 +2,11 @@
 //!
 //! 运行：`cargo run --release -p engine --example sprite_stress -- --sprites 1000 --cycles 60`
 
-use engine::core::{
-    camera::{Camera2D, Viewport},
-    par::Parallelism,
-    sprite::Sprite,
-    sprite_batch::{SpriteBatch, SpriteBatchItem, SpriteBatchMesh},
-    transform::{Transform, Vec2},
-};
+use rustlua_camera::camera::{Camera2D, Viewport};
+use rustlua_ecs::transform::{Transform, Vec2};
+use rustlua_infra::par::Parallelism;
+use rustlua_render::sprite::Sprite;
+use rustlua_render::sprite_batch::{SpriteBatch, SpriteBatchItem, SpriteBatchMesh};
 use std::{
     env, fs,
     path::PathBuf,

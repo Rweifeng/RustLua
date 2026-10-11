@@ -15,3 +15,15 @@ bytemuck.workspace = true
 pollster = "0.4"
 wgpu = "27"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+rustlua-assets = { path = "../rustlua-assets" }
+rustlua-camera = { path = "../rustlua-camera" }
+rustlua-ecs = { path = "../rustlua-ecs" }
+rustlua-gameplay = { path = "../rustlua-gameplay" }
+rustlua-infra = { path = "../rustlua-infra" }
+rustlua-input = { path = "../rustlua-input" }
+rustlua-math = { path = "../rustlua-math" }
+rustlua-render = { path = "../rustlua-render" }
+rustlua-scene = { path = "../rustlua-scene" }
+rustlua-scripting = { path = "../rustlua-scripting" }
+rustlua-ui = { path = "../rustlua-ui" }

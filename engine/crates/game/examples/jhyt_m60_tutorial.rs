@@ -22,7 +22,7 @@
 //! Usage:
 //!   cargo run -p game --example jhyt_m60_tutorial [-- <game_jhyt-root>]
 
-use engine::core::script::LuaRuntime;
+use rustlua_scripting::script::LuaRuntime;
 use std::{env, path::PathBuf};
 
 /// 耕地区 cell (24,4)（data/farm.lua：field=x24..33，避开温室 x28..33,y8..13）。
@@ -32,10 +32,11 @@ const FARM_TARGET: (f64, f64) = (784.0, 112.0);
 const NOON: i64 = 720;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let project = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+    let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
+        rustlua_infra::games_dir()
+            .join("examples")
+            .join("game_jhyt")
+    });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

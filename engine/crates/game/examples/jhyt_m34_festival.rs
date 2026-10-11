@@ -19,10 +19,8 @@
 //! Usage:
 //!   cargo run -p game --example jhyt_m34_festival [-- <game_jhyt-root>]
 
-use engine::core::{
-    input::{InputSnapshot, KeyCode},
-    script::LuaRuntime,
-};
+use rustlua_input::input::{InputSnapshot, KeyCode};
+use rustlua_scripting::script::LuaRuntime;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -52,10 +50,11 @@ const DRILL_OFFER: &str = "夏至演武，弟子愿上台。";
 const LANTERN_OFFER: &str = "灯会可要人手？弟子来搭把手。";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let project = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+    let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
+        rustlua_infra::games_dir()
+            .join("examples")
+            .join("game_jhyt")
+    });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

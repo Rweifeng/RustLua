@@ -23,20 +23,19 @@
 //! Usage:
 //!   cargo run -p game --example jhyt_m24_numeric_alignment [-- <game_jhyt-root>]
 
-use engine::core::{
-    input::{InputSnapshot, KeyCode},
-    script::LuaRuntime,
-};
+use rustlua_input::input::{InputSnapshot, KeyCode};
+use rustlua_scripting::script::LuaRuntime;
 use std::{env, fs, path::PathBuf};
 
 /// 设计案里"尚未进入 MVP 数据"的商店商品（显式白名单，新增行必须做决定）。
 const SHOP_ROWS_WITHOUT_DATA: &[&str] = &["草药", "清水", "石材"];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let project = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+    let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
+        rustlua_infra::games_dir()
+            .join("examples")
+            .join("game_jhyt")
+    });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

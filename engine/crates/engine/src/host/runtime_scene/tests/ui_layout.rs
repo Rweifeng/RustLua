@@ -9,16 +9,16 @@
 //! - `font_prewarm_from_chars_txt`
 
 use super::*;
-use crate::core::scene::Scene;
+use rustlua_scene::scene::Scene;
 use std::fs;
 
 /// 九宫格：带 `nine_slice` 的 Image 应渲染为 3×3 共 9 格（54 顶点），而非
 /// 单四边形（6 顶点）。用真实按钮纹理（192×64）验证 UV 分片路径。
 #[test]
 fn nine_slice_image_renders_nine_quads() {
-    use crate::core::scene::{Scene, SceneEntityId};
+    use rustlua_scene::scene::{Scene, SceneEntityId};
 
-    let root = crate::core::games_dir().join("examples").join("game_api");
+    let root = rustlua_infra::games_dir().join("examples").join("game_api");
     if !root.join("assets/textures/ui/button_green.png").is_file() {
         return;
     }
@@ -57,7 +57,7 @@ fn nine_slice_image_renders_nine_quads() {
 /// labels below/off their buttons.
 #[test]
 fn scene_ui_text_keeps_layout_origin_once() {
-    use crate::core::scene::{Scene, SceneEntityId};
+    use rustlua_scene::scene::{Scene, SceneEntityId};
 
     let font_source =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../editor/fonts/NotoSansSC-VF.ttf");
@@ -107,7 +107,7 @@ fn scene_ui_text_keeps_layout_origin_once() {
 /// sparse authoring ID. Dragging entity 2 must never rewrite entity 1.
 #[test]
 fn ui_layout_preview_targets_authored_entity() {
-    use crate::core::scene::{Scene, SceneEntityId};
+    use rustlua_scene::scene::{Scene, SceneEntityId};
 
     let mut scene = Scene::new("drag-preview");
     for id in [1, 2] {
@@ -134,7 +134,7 @@ fn ui_layout_preview_targets_authored_entity() {
 
 #[test]
 fn ui_layout_rects_expose_exact_preview_geometry() {
-    use crate::core::scene::SceneEntityId;
+    use rustlua_scene::scene::SceneEntityId;
 
     let mut scene = Scene::new("drag-preview-geometry");
     scene.add_entity(SceneEntityId(1), "Image", None).unwrap();
@@ -159,7 +159,7 @@ fn ui_layout_rects_expose_exact_preview_geometry() {
 /// internal layout snapshot.
 #[test]
 fn ui_layout_preview_changes_rendered_mesh() {
-    use crate::core::scene::{Scene, SceneEntityId};
+    use rustlua_scene::scene::{Scene, SceneEntityId};
 
     let mut scene = Scene::new("drag-preview-render");
     for id in [1, 2] {
@@ -230,7 +230,7 @@ fn font_prewarm_from_chars_txt() {
 /// 同一趟里钉住"三段仍是不透明"：仓库 120 行 `Image` 的 `color=` 全是三段，这条一红就是全工程变淡。
 #[test]
 fn scene_ui_image_alpha_reaches_the_vertex() {
-    use crate::core::scene::{Scene, SceneEntityId};
+    use rustlua_scene::scene::{Scene, SceneEntityId};
 
     let mut scene = Scene::new("image-alpha");
     for (id, name, color, offsets) in [

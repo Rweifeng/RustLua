@@ -44,8 +44,8 @@
 //! Usage:
 //!   cargo run -p game --example jhyt_m32_camera [-- <game_jhyt-root>]
 
-use engine::core::input::InputSnapshot;
 use engine::host::RuntimeScene;
+use rustlua_input::input::InputSnapshot;
 use std::{env, path::PathBuf};
 
 /// 设计分辨率 = 发布窗口尺寸 = 相机视口（横屏 1280×720）。
@@ -76,10 +76,11 @@ const FOLLOW_EPS: f32 = 0.6;
 const DT: f32 = 1.0 / 60.0;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let project = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+    let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
+        rustlua_infra::games_dir()
+            .join("examples")
+            .join("game_jhyt")
+    });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

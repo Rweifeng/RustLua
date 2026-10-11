@@ -45,28 +45,26 @@ use editor::{
     SelectionModel, TransformFields, check_project, open_project,
 };
 use eframe::egui;
-use engine::core::{
-    animation::{AnimationClip, AnimationStateMachine},
-    camera::DEFAULT_2D_CAMERA_CENTER,
-    editor_plugins::PluginRegistry,
-    font::FontAtlas,
-    input::InputSnapshot,
-    logging::LogSink,
-    math3d::Vec3,
-    preview_diagnostics::DiagnosticCollector,
-    scene::SceneEntityId,
-    texture::{TextureAsset, TextureColorSpace},
-    tilemap::Tilemap,
-    transform::Transform3D,
-    transform::Vec2,
-    ui_animation::{UiAnimationClip, UiAnimationPreview},
-    ui_binding::BindingSet,
-    ui_events::UiEvents,
-    ui_layout::CanvasConfig,
-    ui_layout_cache::UiLayoutCache,
-    ui_states::ButtonStateSet,
-};
 use engine::host::{Renderer, RuntimeScene};
+use rustlua_animation::animation::{AnimationClip, AnimationStateMachine};
+use rustlua_camera::camera::DEFAULT_2D_CAMERA_CENTER;
+use rustlua_ecs::tilemap::Tilemap;
+use rustlua_ecs::transform::Transform3D;
+use rustlua_ecs::transform::Vec2;
+use rustlua_infra::editor_plugins::PluginRegistry;
+use rustlua_infra::logging::LogSink;
+use rustlua_infra::preview_diagnostics::DiagnosticCollector;
+use rustlua_input::input::InputSnapshot;
+use rustlua_math::math3d::Vec3;
+use rustlua_render::font::FontAtlas;
+use rustlua_render::texture::{TextureAsset, TextureColorSpace};
+use rustlua_scene::scene::SceneEntityId;
+use rustlua_ui::ui_animation::{UiAnimationClip, UiAnimationPreview};
+use rustlua_ui::ui_binding::BindingSet;
+use rustlua_ui::ui_events::UiEvents;
+use rustlua_ui::ui_layout::CanvasConfig;
+use rustlua_ui::ui_layout_cache::UiLayoutCache;
+use rustlua_ui::ui_states::ButtonStateSet;
 
 #[derive(Debug, Default)]
 struct Arguments {
@@ -200,7 +198,7 @@ fn downscale_rgba_benchmark(
 /// 返回值是 `(报告文本, 是否被阻断)`。阻断 = 有实体被拒绝（无法无损迁移）或有权处理失败；
 /// 退出码 2 由调用方给出，让脚本能把它当成质量门使用（**报告仍会打印/落盘**，不是静默失败）。
 fn run_spatial_migration(project_root: &Path, write: bool, restore: bool) -> (String, bool) {
-    use engine::core::scene_migration::{
+    use rustlua_scene::scene_migration::{
         MigrationOptions, migrate_scene_file, project_scene_files, restore_scene_backup,
     };
 
@@ -384,7 +382,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok()
         .and_then(|path| path.parent().map(|dir| dir.join("crash.log")))
         .unwrap_or_else(|| PathBuf::from("crash.log"));
-    engine::core::logging::install_crash_handler(crash_log_path);
+    rustlua_infra::logging::install_crash_handler(crash_log_path);
     // 编辑器日志：写入可执行文件同目录，便于排查内嵌预览等问题。
     let log_path = std::env::current_exe()
         .ok()
@@ -392,7 +390,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_else(|| PathBuf::from("editor.log"));
     // 实时日志缓冲：控制台面板读取，游戏/引擎日志自动上屏。
     let log_sink = LogSink::new(500);
-    let _ = engine::core::logging::init_logging_with_sink(&log_path, None, Some(log_sink.clone()));
+    let _ = rustlua_infra::logging::init_logging_with_sink(&log_path, None, Some(log_sink.clone()));
     // 编辑器主窗口：初始按常规编辑尺寸打开（默认 800x600 过小）。
     // 标题栏/任务栏图标走引擎共用那张 PNG（出图：engine/tools/gen_engine_icon.py，
     // exe 文件图标由 build.rs 从同一张规格表出的 engine_icon.ico 嵌进 PE 资源），
@@ -512,7 +510,7 @@ struct EditorApp {
     /// 推到当前姿态（结构没变时修订号不动，运行时不会自己重建）。
     play_scene_transforms: Vec<(
         SceneEntityId,
-        engine::core::spatial_transform::LocalTransform,
+        rustlua_ecs::spatial_transform::LocalTransform,
     )>,
     /// Game 视图本帧是否已经步进过预览：帧末据此决定要不要补一次空输入步进
     /// （切到 Scene 页签时游戏不该停摆）。每帧在 `update` 开头复位。
@@ -796,7 +794,7 @@ struct EditorApp {
     /// `just_pressed`/`just_released` 边沿只在模拟帧边界消费一次，失焦/Play-Stop 时清空。
     preview_input_state: InputSnapshot,
     /// Hierarchy 实体复制剪贴板，保存源实体及其子树快照。
-    hierarchy_clipboard: Option<engine::core::scene::SceneEntity>,
+    hierarchy_clipboard: Option<rustlua_scene::scene::SceneEntity>,
     /// H02 行内重命名会话（目标实体 + 输入缓冲 + 首帧聚焦标记）。
     hierarchy_rename: Option<HierarchyRename>,
     /// H03 Shift 范围选择的锚点：最近一次非 Shift 选择/加选的实体。
@@ -853,7 +851,7 @@ impl TileEditMode {
 impl Default for TilemapEditorState {
     fn default() -> Self {
         Self {
-            map: Tilemap::new(engine::core::transform::Vec2::new(32.0, 32.0), 8, 8)
+            map: Tilemap::new(rustlua_ecs::transform::Vec2::new(32.0, 32.0), 8, 8)
                 .expect("default tilemap should be valid"),
             brush: 1,
             paint_collision: false,
@@ -1162,7 +1160,7 @@ enum GizmoAxis {
 #[derive(Clone)]
 struct ComponentClipboard {
     components: std::collections::BTreeMap<String, String>,
-    resources: std::collections::BTreeMap<String, engine::core::resource_db::AssetId>,
+    resources: std::collections::BTreeMap<String, rustlua_assets::resource_db::AssetId>,
     metadata: std::collections::BTreeMap<String, String>,
 }
 
@@ -2410,7 +2408,7 @@ impl EditorApp {
 mod layout_tests {
     use crate::{EditorApp, SceneTool, SceneViewMode, WorkspaceTab};
     use eframe::egui;
-    use engine::core::logging::LogSink;
+    use rustlua_infra::logging::LogSink;
 
     /// 每次调用都是唯一的临时工程根（`{:?}` 的 SystemTime 保证同纳秒也不会撞车）。
     fn temp_root(label: &str) -> std::path::PathBuf {
@@ -2930,7 +2928,7 @@ mod layout_tests {
 #[cfg(test)]
 mod migration_tests {
     use super::*;
-    use engine::core::scene::Scene;
+    use rustlua_scene::scene::Scene;
 
     fn temp_project(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

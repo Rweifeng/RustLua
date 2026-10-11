@@ -18,15 +18,11 @@
 
 use std::{env, fs, path::PathBuf};
 
-use engine::{
-    core::{
-        camera::{Camera2D, Viewport},
-        games_dir,
-        scene::{Scene, SceneEntityId},
-        transform::Vec2,
-    },
-    host::{RenderOutcome, Renderer, RuntimeScene},
-};
+use engine::host::{RenderOutcome, Renderer, RuntimeScene};
+use rustlua_camera::camera::{Camera2D, Viewport};
+use rustlua_ecs::transform::Vec2;
+use rustlua_infra::games_dir;
+use rustlua_scene::scene::{Scene, SceneEntityId};
 use serde_json::json;
 
 const WIDTH: u32 = 1280;
@@ -97,9 +93,9 @@ fn main() {
         let mut counts = (0, 0, 0);
         for draw in &mesh.draws {
             match draw.render_layer {
-                engine::core::layer::RenderLayer::World2D => counts.0 += 1,
-                engine::core::layer::RenderLayer::Overlay2D => counts.1 += 1,
-                engine::core::layer::RenderLayer::ScreenUI => counts.2 += 1,
+                rustlua_render::layer::RenderLayer::World2D => counts.0 += 1,
+                rustlua_render::layer::RenderLayer::Overlay2D => counts.1 += 1,
+                rustlua_render::layer::RenderLayer::ScreenUI => counts.2 += 1,
             }
         }
         counts

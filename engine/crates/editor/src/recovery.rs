@@ -1,5 +1,5 @@
 use crate::SceneDocument;
-use engine::core::scene::{Scene, SceneError};
+use rustlua_scene::scene::{Scene, SceneError};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -329,7 +329,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), RecoveryError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::core::scene::SceneEntityId;
+    use rustlua_scene::scene::SceneEntityId;
 
     fn root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("m5-09-{label}-{}", now_ns()))

@@ -1,11 +1,7 @@
-use engine::{
-    core::{
-        scene::{Scene, SceneEntityId},
-        tilemap::Tilemap,
-        transform::Vec2,
-    },
-    host::RuntimeScene,
-};
+use engine::host::RuntimeScene;
+use rustlua_ecs::tilemap::Tilemap;
+use rustlua_ecs::transform::Vec2;
+use rustlua_scene::scene::{Scene, SceneEntityId};
 use std::{
     env, fs,
     path::PathBuf,

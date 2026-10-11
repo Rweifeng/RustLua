@@ -100,7 +100,7 @@ fn clamp_viewport_keeps_rects_inside_the_target() {
     assert_eq!(clamp_viewport(zero, (0, 0)), (0, 0, 1, 1));
 }
 
-/// WP5：渲染器消费宿主声明的 [`crate::core::camera::FrameViews`]——清屏色来自声明，且 2D overlay 的视口
+/// WP5：渲染器消费宿主声明的 [`rustlua_camera::camera::FrameViews`]——清屏色来自声明，且 2D overlay 的视口
 /// 真的只画在声明的那块区域内。
 ///
 /// 同时这是**收敛的对拍**：不声明任何视图时读回的第一像素，必须与"声明历史默认
@@ -292,7 +292,7 @@ fn declared_frame_views_own_clear_color_and_overlay_viewport() {
             sdf: false,
             bitmap: false,
             vector: false,
-            render_layer: crate::core::layer::RenderLayer::World2D,
+            render_layer: rustlua_render::layer::RenderLayer::World2D,
         }],
         world_sprites: Vec::new(),
         world_sprite_draws: Vec::new(),

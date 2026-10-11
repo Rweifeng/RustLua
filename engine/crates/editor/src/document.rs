@@ -1,9 +1,7 @@
 use crate::{ProjectError, ProjectInfo};
-use engine::core::{
-    prefab::{Prefab, PrefabError},
-    resource_db::AssetId,
-    scene::{Scene, SceneError},
-};
+use rustlua_assets::resource_db::AssetId;
+use rustlua_scene::prefab::{Prefab, PrefabError};
+use rustlua_scene::scene::{Scene, SceneError};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -423,7 +421,9 @@ pub enum DocumentError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::core::{prefab::Prefab, scene::SceneEntityId, tilemap::Tilemap};
+    use rustlua_ecs::tilemap::Tilemap;
+    use rustlua_scene::prefab::Prefab;
+    use rustlua_scene::scene::SceneEntityId;
 
     fn temp_root(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("rustlua-m5-02-{label}-{}", unique_token()))
@@ -435,7 +435,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("examples").join("game_api")
+        rustlua_infra::games_dir().join("examples").join("game_api")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {

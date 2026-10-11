@@ -17,14 +17,10 @@
 
 use std::{env, fs, path::PathBuf};
 
-use engine::{
-    core::{
-        camera::{DEFAULT_3D_CLEAR, FrameViews, RenderView, Viewport},
-        games_dir,
-        scene::Scene,
-    },
-    host::{RenderOutcome, Renderer, RuntimeScene},
-};
+use engine::host::{RenderOutcome, Renderer, RuntimeScene};
+use rustlua_camera::camera::{DEFAULT_3D_CLEAR, FrameViews, RenderView, Viewport};
+use rustlua_infra::games_dir;
+use rustlua_scene::scene::Scene;
 use serde_json::json;
 
 const WIDTH: u32 = 640;

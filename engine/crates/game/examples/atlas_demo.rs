@@ -1,12 +1,10 @@
 use bytemuck::{Pod, Zeroable};
-use engine::core::{
-    atlas::load_atlas,
-    camera::{Camera2D, Viewport},
-    sprite::Sprite,
-    sprite_batch::{SpriteBatch, SpriteBatchItem},
-    texture::{TextureAsset, TextureColorSpace},
-    transform::{Transform, Vec2},
-};
+use rustlua_camera::camera::{Camera2D, Viewport};
+use rustlua_ecs::transform::{Transform, Vec2};
+use rustlua_render::atlas::load_atlas;
+use rustlua_render::sprite::Sprite;
+use rustlua_render::sprite_batch::{SpriteBatch, SpriteBatchItem};
+use rustlua_render::texture::{TextureAsset, TextureColorSpace};
 use std::fs;
 use wgpu::util::DeviceExt;
 

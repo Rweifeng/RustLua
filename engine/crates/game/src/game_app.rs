@@ -4,14 +4,12 @@
 
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
-use engine::core::{
-    camera::{FrameViews, Viewport},
-    input::{InputSnapshot, MouseButton},
-    logging::{EngineError, LogModule},
-    performance::{PerformanceSnapshot, PerformanceStats},
-    time_step::FixedTimeStep,
-    window::{AppLifecycle, has_renderable_size},
-};
+use rustlua_camera::camera::{FrameViews, Viewport};
+use rustlua_infra::logging::{EngineError, LogModule};
+use rustlua_infra::performance::{PerformanceSnapshot, PerformanceStats};
+use rustlua_infra::time_step::FixedTimeStep;
+use rustlua_infra::window::{AppLifecycle, has_renderable_size};
+use rustlua_input::input::{InputSnapshot, MouseButton};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -55,7 +53,7 @@ pub struct GameApp {
 
 impl GameApp {
     /// 构造运行器。`packaged` = 是否发布包（`--pack`）：发布包把存档与玩家设置写到
-    /// 用户数据目录（见 `engine::core::user_dir`），而不是程序目录。
+    /// 用户数据目录（见 `rustlua_infra::user_dir`），而不是程序目录。
     pub fn new(
         project_root: Option<PathBuf>,
         window_title: String,
@@ -254,7 +252,7 @@ impl GameApp {
                         bitmap: false,
                         vector: false,
                         // 性能浮层是世界之上的叠加内容：屏幕空间、不参与深度。
-                        render_layer: engine::core::layer::RenderLayer::Overlay2D,
+                        render_layer: rustlua_render::layer::RenderLayer::Overlay2D,
                     });
                 }
                 if uses_atlas {
@@ -340,13 +338,13 @@ impl ApplicationHandler for GameApp {
         // Lua 动态 UI 是屏幕像素空间、不随参考分辨率缩放，窗口比例不对就会整块画到屏幕外。
         let (window_width, window_height) = match self.project_root.as_deref() {
             Some(root) => {
-                let (size, diagnostics) = engine::core::project_config::window_size(root);
+                let (size, diagnostics) = rustlua_infra::project_config::window_size(root);
                 for diagnostic in diagnostics {
                     tracing::warn!(target: "window", "[window] {diagnostic}");
                 }
                 size
             }
-            None => engine::core::project_config::DEFAULT_WINDOW_SIZE,
+            None => rustlua_infra::project_config::DEFAULT_WINDOW_SIZE,
         };
         let scale_factor = event_loop
             .primary_monitor()
@@ -409,9 +407,9 @@ impl ApplicationHandler for GameApp {
                     (self.project_root.as_deref(), self.runtime_scene.as_mut())
                 {
                     let settings_root =
-                        engine::core::user_dir::data_roots(root, self.packaged).settings_dir;
+                        rustlua_infra::user_dir::data_roots(root, self.packaged).settings_dir;
                     let (deadzone, diagnostic) =
-                        engine::core::settings::load_deadzone_section(&settings_root);
+                        rustlua_gameplay::settings::load_deadzone_section(&settings_root);
                     if let Some(diagnostic) = diagnostic {
                         tracing::warn!(target: "input", "[gamepad] {diagnostic}");
                     }
@@ -626,16 +624,17 @@ fn build_overlay(snapshot: PerformanceSnapshot, width: u32, height: u32) -> Over
         atlas: false,
     });
 
-    let atlas = engine::core::text::TextAtlas::built_in();
+    let atlas = rustlua_render::text::TextAtlas::built_in();
     let mut text_vertices: Vec<OverlayVertex> = Vec::new();
     let push_text = |text: &str, x: f32, y: f32, color: [f32; 4], out: &mut Vec<OverlayVertex>| {
-        let style = engine::core::text::TextStyle {
+        let style = rustlua_render::text::TextStyle {
             scale: SCALE,
             spacing: 1.0,
             line_spacing: 2.0,
             color,
         };
-        if let Ok(mesh) = engine::core::text::TextLayout::build_bitmap(text, [x, y], style, &atlas)
+        if let Ok(mesh) =
+            rustlua_render::text::TextLayout::build_bitmap(text, [x, y], style, &atlas)
         {
             for vertex in mesh.vertices {
                 out.push(OverlayVertex {

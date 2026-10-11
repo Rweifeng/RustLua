@@ -12,10 +12,14 @@ use super::*;
 
 #[test]
 fn example_project_runs_with_new_api() {
-    let root = crate::core::games_dir().join("examples").join("game_api");
+    let root = rustlua_infra::games_dir().join("examples").join("game_api");
     let mut runtime = RuntimeScene::new(Some(&root)).unwrap();
     runtime
-        .run_script_steps(2, 1.0 / 60.0, &crate::core::input::InputSnapshot::default())
+        .run_script_steps(
+            2,
+            1.0 / 60.0,
+            &rustlua_input::input::InputSnapshot::default(),
+        )
         .unwrap();
 }
 
@@ -23,10 +27,14 @@ fn example_project_runs_with_new_api() {
 /// 真实运行的 `[perf] lua_ms=` 恒为 `0.000`——一条看着在工作、其实永远为零的指标。
 #[test]
 fn script_update_time_is_measured_and_taken_once() {
-    let root = crate::core::games_dir().join("examples").join("game_api");
+    let root = rustlua_infra::games_dir().join("examples").join("game_api");
     let mut runtime = RuntimeScene::new(Some(&root)).unwrap();
     runtime
-        .run_script_steps(2, 1.0 / 60.0, &crate::core::input::InputSnapshot::default())
+        .run_script_steps(
+            2,
+            1.0 / 60.0,
+            &rustlua_input::input::InputSnapshot::default(),
+        )
         .unwrap();
     let micros = runtime.take_script_micros();
     assert!(micros > 0, "Lua update 耗时必须被测量到，得到 {micros}µs");
@@ -38,9 +46,9 @@ fn script_update_time_is_measured_and_taken_once() {
 /// StartButton 会经注入的 on_click 分发（update 返回带实体名）。
 #[test]
 fn ui_test_scene_renders_ui_and_dispatches_clicks() {
-    use crate::core::input::MouseButton;
+    use rustlua_input::input::MouseButton;
 
-    let root = crate::core::games_dir().join("examples").join("game_api");
+    let root = rustlua_infra::games_dir().join("examples").join("game_api");
     let path = root.join("scenes/ui_test.scene");
     assert!(path.is_file(), "ui_test 示例场景缺失: {}", path.display());
     let scene = Scene::load(&path).unwrap();
@@ -86,7 +94,7 @@ fn ui_test_scene_renders_ui_and_dispatches_clicks() {
 /// ⇒ 调度器放弃本步剩余系统 ⇒ 宿主 `fail()` 退出。容错后本步照跑，错误进诊断与计数。
 #[test]
 fn contained_script_error_does_not_abort_the_fixed_step() {
-    let scene = crate::core::scene::Scene::new("guard-contain");
+    let scene = rustlua_scene::scene::Scene::new("guard-contain");
     let mut runtime = RuntimeScene::from_scene(None, scene).unwrap();
     runtime.set_script_error_policy(ScriptErrorPolicy::Contain);
     let path = write_guard_script("guard-contain", "function update() error('guard boom') end");
@@ -123,7 +131,7 @@ fn contained_script_error_does_not_abort_the_fixed_step() {
 /// 不受容错能力影响。
 #[test]
 fn strict_policy_still_fails_the_step_on_script_error() {
-    let scene = crate::core::scene::Scene::new("guard-strict");
+    let scene = rustlua_scene::scene::Scene::new("guard-strict");
     let mut runtime = RuntimeScene::from_scene(None, scene).unwrap();
     assert_eq!(
         runtime.script_error_policy(),
@@ -149,7 +157,7 @@ fn strict_policy_still_fails_the_step_on_script_error() {
 /// 每帧都炸的回调会被停用并**从此不再进 Lua**：既止损，也让日志不被同一个错误淹没。
 #[test]
 fn repeated_contained_errors_disable_update() {
-    let scene = crate::core::scene::Scene::new("guard-disable");
+    let scene = rustlua_scene::scene::Scene::new("guard-disable");
     let mut runtime = RuntimeScene::from_scene(None, scene).unwrap();
     runtime.set_script_error_policy(ScriptErrorPolicy::Contain);
     runtime.with_script(|script| script.set_callback_error_limit(2));
@@ -187,11 +195,11 @@ fn repeated_contained_errors_disable_update() {
 fn contained_script_error_leaves_engine_systems_running() {
     let mut scene = Scene::new("guard-systems");
     scene
-        .add_entity(crate::core::scene::SceneEntityId(1), "Tick", None)
+        .add_entity(rustlua_scene::scene::SceneEntityId(1), "Tick", None)
         .unwrap();
     scene
         .entities
-        .get_mut(&crate::core::scene::SceneEntityId(1))
+        .get_mut(&rustlua_scene::scene::SceneEntityId(1))
         .unwrap()
         .components
         .insert(

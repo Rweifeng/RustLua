@@ -27,6 +27,14 @@ rustlua-frame-abi.workspace = true
 # 必须走与引擎同一套 `pack::decode`（见 `lua_bridge::first_png_resource`）。
 rustlua-infra.workspace = true
 
+
+rustlua-audio = { path = "../rustlua-audio" }
+rustlua-camera = { path = "../rustlua-camera" }
+rustlua-gameplay = { path = "../rustlua-gameplay" }
+rustlua-input = { path = "../rustlua-input" }
+rustlua-math = { path = "../rustlua-math" }
+rustlua-scene = { path = "../rustlua-scene" }
+rustlua-scripting = { path = "../rustlua-scripting" }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # GPU 渲染器句柄。`optional` + `gpu2d` 特性：默认不进产物。
 wgpu = { version = "27", optional = true }

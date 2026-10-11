@@ -24,7 +24,7 @@ mod step;
 mod transition;
 mod values;
 
-// 跨 crate 的公开面（`editor` / `game_web` / `host` 用到）：消费方沿用的 `engine::core::script::*`
+// 跨 crate 的公开面（`editor` / `game_web` / `host` 用到）：消费方沿用的 `rustlua_scripting::script::*`
 // 由 engine 的 core.rs 门面再导出，路径与拆分前一字不变。
 pub use error::{LuaBridgeError, ScriptDebugger, ScriptDiagnostic};
 pub use guard::{

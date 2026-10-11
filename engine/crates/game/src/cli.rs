@@ -164,7 +164,7 @@ pub fn verify_project(root: &Path) -> Vec<String> {
 /// M20-01：校验 `scripts/**/*.lua` 全部脚本语法（与导入期共用 Importer 校验器，
 /// 错误含文件路径与 Lua 行列定位）。
 fn verify_script_syntax(root: &Path) -> Vec<String> {
-    use engine::core::importer::ImporterRegistry;
+    use rustlua_assets::importer::ImporterRegistry;
     let mut issues = Vec::new();
     let scripts_root = root.join("scripts");
     if !scripts_root.is_dir() {
@@ -204,7 +204,7 @@ fn verify_domain_data(root: &Path) -> Vec<String> {
     if !entry.is_file() {
         return Vec::new();
     }
-    let runtime = match engine::core::script::LuaRuntime::new() {
+    let runtime = match rustlua_scripting::script::LuaRuntime::new() {
         Ok(runtime) => runtime,
         Err(error) => return vec![format!("Lua 运行时初始化失败: {error}")],
     };
@@ -253,11 +253,11 @@ fn extract_key(text: &str, key: &str) -> Option<String> {
 }
 
 /// 提取场景文本中以 `assets/` 开头、到 `;`/`:`/换行为止的资源引用。
-/// 共享 `engine::core::dependency` 提取器，保证运行时校验与依赖图同源。
+/// 共享 `rustlua_assets::dependency` 提取器，保证运行时校验与依赖图同源。
 fn extract_asset_refs(text: &str) -> Vec<String> {
-    use engine::core::dependency::DependencyRef;
-    use engine::core::resource_kind::ResourceKind;
-    engine::core::dependency::extract_refs(text, ResourceKind::Scene)
+    use rustlua_assets::dependency::DependencyRef;
+    use rustlua_assets::resource_kind::ResourceKind;
+    rustlua_assets::dependency::extract_refs(text, ResourceKind::Scene)
         .into_iter()
         .filter_map(|reference| match reference {
             DependencyRef::Asset(path) => Some(path.to_string_lossy().into_owned()),

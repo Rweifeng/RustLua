@@ -12,14 +12,11 @@ use eframe::egui;
 /// 而引擎的平面 `Transform.rotation` 与四元数构造一律按**弧度**（`Quat::from_axis_angle` 内部
 /// 走 `angle * 0.5` 的 `sin_cos`）。这两个单位只在这里互换，出去就是引擎口径。
 pub(crate) fn encode_transform(transform: TransformFields) -> String {
-    let local = engine::core::spatial_transform::LocalTransform::from_2d(
-        engine::core::transform::Transform {
-            position: engine::core::transform::Vec2::new(
-                transform.position_x,
-                transform.position_y,
-            ),
+    let local = rustlua_ecs::spatial_transform::LocalTransform::from_2d(
+        rustlua_ecs::transform::Transform {
+            position: rustlua_ecs::transform::Vec2::new(transform.position_x, transform.position_y),
             rotation: transform.rotation.to_radians(),
-            scale: engine::core::transform::Vec2::new(transform.scale_x, transform.scale_y),
+            scale: rustlua_ecs::transform::Vec2::new(transform.scale_x, transform.scale_y),
         },
     )
     .expect("2D 字段一定是有限数（编辑器内部数据）");
@@ -32,7 +29,7 @@ pub(crate) fn encode_transform(transform: TransformFields) -> String {
 /// [`encode_transform`] 的另一半：引擎给的旋转是弧度，这里换成编辑器口径的**度**。
 pub(crate) fn parse_transform(value: &str) -> Option<TransformFields> {
     let transform =
-        engine::core::spatial_transform::LocalTransform::transform_2d_from_component_str(value)?;
+        rustlua_ecs::spatial_transform::LocalTransform::transform_2d_from_component_str(value)?;
     Some(TransformFields {
         position_x: transform.position.x,
         position_y: transform.position.y,
@@ -174,7 +171,7 @@ mod geometry_tests {
         let encoded = encode_transform(transform);
         // 直接按引擎口径读组件：旋转必须是 45° 的**弧度**表示，而不是数字 45。
         let stored =
-            engine::core::spatial_transform::LocalTransform::transform_2d_from_component_str(
+            rustlua_ecs::spatial_transform::LocalTransform::transform_2d_from_component_str(
                 &encoded,
             )
             .expect("编码必须写出统一形态");

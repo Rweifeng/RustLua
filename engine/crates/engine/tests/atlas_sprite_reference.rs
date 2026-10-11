@@ -4,10 +4,10 @@
 //! 路径形状取**真实项目里的写法**：场景组件串与 `.atlas` 的 `texture=` 都是工程根相对
 //! 路径，由运行时的 project_root 解析（与渲染器读纹理同一规则）。
 
-use engine::core::scene::{Scene, SceneEntityId};
-use engine::core::script::LuaRuntime;
-use engine::core::sprite::{Sprite, SpriteAsset};
-use engine::core::transform::Vec2;
+use rustlua_ecs::transform::Vec2;
+use rustlua_render::sprite::{Sprite, SpriteAsset};
+use rustlua_scene::scene::{Scene, SceneEntityId};
+use rustlua_scripting::script::LuaRuntime;
 use std::fs;
 use std::path::{Path, PathBuf};
 

@@ -11,13 +11,11 @@ use crate::util::{
 use editor::{
     ProjectDocument, ProjectInfo, RecoveryManager, RecoveryScan, ResourceBrowserState, open_project,
 };
-use engine::core::{
-    import_cache::ImportCache,
-    importer::{ImportSummary, run_import_batch_with_progress},
-    resource_db::{AssetId, ResourceDatabase},
-    resource_kind::ResourceKind,
-    scene::SceneEntityId,
-};
+use rustlua_assets::import_cache::ImportCache;
+use rustlua_assets::importer::{ImportSummary, run_import_batch_with_progress};
+use rustlua_assets::resource_db::{AssetId, ResourceDatabase};
+use rustlua_assets::resource_kind::ResourceKind;
+use rustlua_scene::scene::SceneEntityId;
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -420,7 +418,7 @@ fn spawn_resource_import(
                 let mut cache = ImportCache::open(&root)
                     .map_err(|error| format!("导入缓存打开失败：{error}"))?;
                 // core 拆分后 builtin() 不含 Scene/Prefab，编辑器导入必须用完整注册表。
-                let registry = engine::core::asset_import::full_registry();
+                let registry = rustlua_scene::asset_import::full_registry();
                 let items: Vec<(AssetId, PathBuf)> = items
                     .into_iter()
                     .map(|(id, relative)| (id, root.join(relative)))
@@ -490,14 +488,15 @@ fn spawn_resource_import(
 #[cfg(test)]
 mod import_tests {
     use super::*;
-    use engine::core::logging::LogSink;
+    use rustlua_infra::logging::LogSink;
 
     #[test]
     fn project_import_resets_scene_render_resources() {
         // 旧项目样例：sourcehan_test 已随示例重组删除，改用 game_api 样例工程。
-        let old_project = open_project(engine::core::games_dir().join("examples").join("game_api"))
-            .expect("open old project");
-        let new_project = open_project(engine::core::games_dir().join("examples/game_jhyt"))
+        let old_project =
+            open_project(rustlua_infra::games_dir().join("examples").join("game_api"))
+                .expect("open old project");
+        let new_project = open_project(rustlua_infra::games_dir().join("examples/game_jhyt"))
             .expect("open new project");
         let mut app = EditorApp::new(old_project, None, LogSink::new(64));
         app.scene_screen_cache_key = Some((12, (1280, 720)));
@@ -532,7 +531,7 @@ mod import_tests {
     #[test]
     fn resource_import_success_auto_closes_progress_panel() {
         let project =
-            open_project(engine::core::games_dir().join("examples").join("game_api")).unwrap();
+            open_project(rustlua_infra::games_dir().join("examples").join("game_api")).unwrap();
         let mut app = EditorApp::new(project, None, LogSink::new(64));
         // 模拟一个已完成且成功的资源导入。
         app.progress.kind = ProgressKind::ResourceImport;
@@ -547,7 +546,7 @@ mod import_tests {
     #[test]
     fn resource_import_failure_keeps_panel_open() {
         let project =
-            open_project(engine::core::games_dir().join("examples").join("game_api")).unwrap();
+            open_project(rustlua_infra::games_dir().join("examples").join("game_api")).unwrap();
         let mut app = EditorApp::new(project, None, LogSink::new(64));
         app.progress.kind = ProgressKind::ResourceImport;
         app.progress.done = true;
@@ -560,7 +559,7 @@ mod import_tests {
     #[test]
     fn import_spawn_end_to_end() {
         // 复现编辑器「导入游戏项目」后台路径：打开 game 项目并扫描资源。
-        let game = engine::core::games_dir().join("examples").join("game_api");
+        let game = rustlua_infra::games_dir().join("examples").join("game_api");
         let (tx, rx) = channel();
         spawn_import(game, tx);
         let mut output = String::new();

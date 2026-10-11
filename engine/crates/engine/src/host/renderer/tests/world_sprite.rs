@@ -2,8 +2,8 @@
 
 use super::*;
 // WP12 阶段 4b：这个名字原先由 `renderer/mod.rs` 顶部的 use 块带进来（测试靠 glob 取用）。
-use crate::core::mesh3d::GROUND_PLANE_SENTINEL;
 use crate::host::frame::WHITE_TEXTURE_PATH;
+use rustlua_render::mesh3d::GROUND_PLANE_SENTINEL;
 // WP12 阶段 4c：视图解析搬进 `renderer::world_sprite` 后不再由 glob 带下来，显式指名。
 use crate::host::renderer::world_sprite::resolve_world_sprite_view;
 
@@ -37,8 +37,8 @@ fn world_sprite_pass_is_painter_ordered_without_depth_writes() {
         .expect("offscreen renderer");
     let viewport = Viewport::new(SIZE as f32, SIZE as f32).unwrap();
     // 相机中心 (0,0)、zoom = SIZE（1 世界单位 = SIZE 像素）⇒ 世界 ±0.5 覆盖整个目标。
-    let camera = crate::core::camera::Camera2D::new(
-        crate::core::transform::Vec2::new(0.0, 0.0),
+    let camera = rustlua_camera::camera::Camera2D::new(
+        rustlua_ecs::transform::Vec2::new(0.0, 0.0),
         SIZE as f32,
     )
     .expect("camera");
@@ -80,17 +80,17 @@ fn world_sprite_pass_is_painter_ordered_without_depth_writes() {
     // 纯 2D 回滚档（宿主没有声明任何视图）：世界 Sprite 只有画家顺序，深度策略不参与，
     // 因此这里按"不写深度"构造，与本条测试的断言一一对应。
     mesh.world_sprite_draws = vec![
-        crate::core::sprite_batch::SpriteDrawBatch::translucent(
+        rustlua_render::sprite_batch::SpriteDrawBatch::translucent(
             0,
             0,
-            crate::core::layer::RenderLayer::World2D,
+            rustlua_render::layer::RenderLayer::World2D,
             0,
             6,
         ),
-        crate::core::sprite_batch::SpriteDrawBatch::translucent(
+        rustlua_render::sprite_batch::SpriteDrawBatch::translucent(
             0,
             1,
-            crate::core::layer::RenderLayer::World2D,
+            rustlua_render::layer::RenderLayer::World2D,
             6,
             6,
         ),
@@ -166,10 +166,10 @@ fn world_sprite_pass_is_painter_ordered_without_depth_writes() {
     //    这是本轮补的不对称——2D 叠加通道那处丢弃早有正面用例（`passes.rs`），世界精灵这处此前
     //    只有"不回归"。越界正好也走 `bind_group_for` 的 `paths.get(...)?`（修好前的直接下标会 panic）。
     mesh.world_sprite_draws
-        .push(crate::core::sprite_batch::SpriteDrawBatch::translucent(
+        .push(rustlua_render::sprite_batch::SpriteDrawBatch::translucent(
             99,
             2,
-            crate::core::layer::RenderLayer::World2D,
+            rustlua_render::layer::RenderLayer::World2D,
             12,
             6,
         ));
@@ -248,7 +248,7 @@ fn world_sprites_and_meshes_occlude_each_other_in_one_view() {
         view: RenderView::main_3d(camera, viewport, DEFAULT_3D_CLEAR),
         light: Light::default(),
         drawables: vec![crate::host::frame::Scene3dDrawable {
-            entity: crate::core::scene::SceneEntityId(1),
+            entity: rustlua_scene::scene::SceneEntityId(1),
             name: "Ground".to_owned(),
             mesh_path: GROUND_PLANE_SENTINEL.to_owned(),
             // 测试手写场景：给一个本地句柄即可（渲染器只把它当缓存键）。
@@ -256,7 +256,7 @@ fn world_sprites_and_meshes_occlude_each_other_in_one_view() {
             model: mesh_model,
             palette: Vec::new(),
             bounds: crate::host::frame::Scene3dBounds {
-                local_aabb: crate::core::math3d::Aabb3 {
+                local_aabb: rustlua_math::math3d::Aabb3 {
                     min: Vec3::new(-4.0, -4.0, -0.1),
                     max: Vec3::new(4.0, 4.0, 0.1),
                 },
@@ -288,10 +288,10 @@ fn world_sprites_and_meshes_occlude_each_other_in_one_view() {
         draws: Vec::new(),
         world_sprites: quad(z),
         // 不透明（alpha = 1）⇒ 这一段落写深度，因此能与网格互相遮挡。
-        world_sprite_draws: vec![crate::core::sprite_batch::SpriteDrawBatch::opaque(
+        world_sprite_draws: vec![rustlua_render::sprite_batch::SpriteDrawBatch::opaque(
             0,
             0,
-            crate::core::layer::RenderLayer::World2D,
+            rustlua_render::layer::RenderLayer::World2D,
             0,
             6,
         )],
@@ -350,13 +350,14 @@ fn world_sprites_and_meshes_occlude_each_other_in_one_view() {
 
     // ③ 半透明精灵即使在前也不写深度：它不会反过来遮住网格的深度（策略按分段下发）。
     let mut translucent = mesh_with_sprite(0.0);
-    translucent.world_sprite_draws = vec![crate::core::sprite_batch::SpriteDrawBatch::translucent(
-        0,
-        0,
-        crate::core::layer::RenderLayer::World2D,
-        0,
-        6,
-    )];
+    translucent.world_sprite_draws =
+        vec![rustlua_render::sprite_batch::SpriteDrawBatch::translucent(
+            0,
+            0,
+            rustlua_render::layer::RenderLayer::World2D,
+            0,
+            6,
+        )];
     for vertex in &mut translucent.world_sprites {
         vertex.color = [1.0, 0.0, 0.0, 0.5];
     }
@@ -382,7 +383,7 @@ fn world_sprite_view_is_resolved_from_the_declared_views() {
     )
     .unwrap();
     let camera2d =
-        crate::core::camera::Camera2D::new(crate::core::transform::Vec2::zero(), 1.0).unwrap();
+        rustlua_camera::camera::Camera2D::new(rustlua_ecs::transform::Vec2::zero(), 1.0).unwrap();
     let main = RenderView::main_3d(camera3d, viewport, DEFAULT_3D_CLEAR);
     let overlay = RenderView::overlay_2d(camera2d, half);
     let explicit = Mat4::identity();

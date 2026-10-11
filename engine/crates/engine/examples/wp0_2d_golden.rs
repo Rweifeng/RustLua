@@ -13,15 +13,11 @@
 
 use std::{env, fs, path::PathBuf};
 
-use engine::{
-    core::{
-        camera::{Camera2D, DEFAULT_2D_CAMERA_CENTER, Viewport},
-        games_dir,
-        scene::{Scene, SceneEntityId},
-        transform::Vec2,
-    },
-    host::{RenderOutcome, Renderer, RuntimeScene},
-};
+use engine::host::{RenderOutcome, Renderer, RuntimeScene};
+use rustlua_camera::camera::{Camera2D, DEFAULT_2D_CAMERA_CENTER, Viewport};
+use rustlua_ecs::transform::Vec2;
+use rustlua_infra::games_dir;
+use rustlua_scene::scene::{Scene, SceneEntityId};
 use serde_json::json;
 
 const WIDTH: u32 = 400;

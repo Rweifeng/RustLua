@@ -24,14 +24,10 @@
 //! Usage:
 //!   cargo run -p game --example jhyt_m31_pc_release [-- <game_jhyt-root>]
 
-use engine::{
-    core::{
-        script::LuaRuntime,
-        settings,
-        user_dir::{self, USER_DIR_ENV},
-    },
-    host::gamepad::{GamepadPoller, XInputBackend},
-};
+use engine::host::gamepad::{GamepadPoller, XInputBackend};
+use rustlua_gameplay::settings;
+use rustlua_infra::user_dir::{self, USER_DIR_ENV};
+use rustlua_scripting::script::LuaRuntime;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -65,10 +61,11 @@ const FORBIDDEN_PACK_ENTRIES: &[&str] = &[".cache", ".data", "settings.local.tom
 const FORBIDDEN_RELEASE_SUFFIXES: &[&str] = &[".sav", ".log", ".tmp"];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let project = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+    let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
+        rustlua_infra::games_dir()
+            .join("examples")
+            .join("game_jhyt")
+    });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

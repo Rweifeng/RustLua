@@ -636,16 +636,16 @@ async fn run_render_probe() -> Result<Value, String> {
 
     // 宿主声明视图：主视图负责清屏（黑），2D overlay 视图给出 2D pass 的视口。
     // 声明视图本身也是要验的一段——清屏与视口不再写死在渲染器里（WP5 的 FrameViews）。
-    let viewport = engine::core::camera::Viewport::new(RENDER_SIZE as f32, RENDER_SIZE as f32)
+    let viewport = rustlua_camera::camera::Viewport::new(RENDER_SIZE as f32, RENDER_SIZE as f32)
         .map_err(|error| format!("Viewport::new: {error}"))?;
-    let camera = engine::core::camera::Camera2D::new(
-        engine::core::math2d::Vec2::new(RENDER_SIZE as f32 * 0.5, RENDER_SIZE as f32 * 0.5),
+    let camera = rustlua_camera::camera::Camera2D::new(
+        rustlua_math::math2d::Vec2::new(RENDER_SIZE as f32 * 0.5, RENDER_SIZE as f32 * 0.5),
         1.0,
     )
     .map_err(|error| format!("Camera2D::new: {error}"))?;
-    renderer.set_frame_views(engine::core::camera::FrameViews::layered(
-        engine::core::camera::RenderView::main_2d(camera, viewport, CLEAR_BLACK),
-        engine::core::camera::RenderView::overlay_2d(camera, viewport),
+    renderer.set_frame_views(rustlua_camera::camera::FrameViews::layered(
+        rustlua_camera::camera::RenderView::main_2d(camera, viewport, CLEAR_BLACK),
+        rustlua_camera::camera::RenderView::overlay_2d(camera, viewport),
     ));
 
     // 贴图路径：web 上没有文件系统，所以必须先把像素**交进去**再画。这一步就是 WP5 第二片的

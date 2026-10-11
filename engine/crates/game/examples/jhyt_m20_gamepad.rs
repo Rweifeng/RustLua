@@ -31,14 +31,12 @@
 //! Usage:
 //!   cargo run -p game --example jhyt_m20_gamepad [-- <game_jhyt-root>]
 
-use engine::core::{
-    input::{InputSnapshot, KeyCode},
-    script::LuaRuntime,
-};
 use engine::host::gamepad::{
     GAMEPAD_BUTTON_COUNT, GamepadBackend, GamepadDeadzone, GamepadFrame, GamepadPoller,
     SlotBackend, axes_from_raw_with, button, triggers_to_buttons,
 };
+use rustlua_input::input::{InputSnapshot, KeyCode};
+use rustlua_scripting::script::LuaRuntime;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -67,10 +65,11 @@ const VELOCITY_Y: &str =
     "(function() local v = physics.get_velocity(require('core.state').player); return v[2] end)()";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let project = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+    let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
+        rustlua_infra::games_dir()
+            .join("examples")
+            .join("game_jhyt")
+    });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

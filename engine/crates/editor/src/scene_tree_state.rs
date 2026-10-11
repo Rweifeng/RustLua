@@ -1,6 +1,6 @@
 use crate::DocumentError;
 use crate::SceneDocument;
-use engine::core::scene::{SceneEntity, SceneEntityId};
+use rustlua_scene::scene::{SceneEntity, SceneEntityId};
 use std::collections::BTreeSet;
 
 /// 场景树**文档操作**的无状态助手。
@@ -425,7 +425,7 @@ pub enum SceneTreeError {
     #[error("根节点 {} 没有可调整的同级顺序", .0 .0)]
     CannotReorderRoot(SceneEntityId),
     #[error("场景操作失败：{0}")]
-    Scene(#[source] engine::core::scene::SceneError),
+    Scene(#[source] rustlua_scene::scene::SceneError),
     #[error("文档操作失败：{0}")]
     Document(#[source] DocumentError),
 }
@@ -433,7 +433,7 @@ pub enum SceneTreeError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::core::scene::Scene;
+    use rustlua_scene::scene::Scene;
 
     fn document() -> SceneDocument {
         SceneDocument::new_scene("main")

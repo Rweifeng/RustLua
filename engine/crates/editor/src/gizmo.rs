@@ -18,12 +18,10 @@
 use crate::scene_interaction::{GizmoPivot, GizmoSpace};
 use crate::{GizmoAxis, SceneTool};
 use eframe::egui;
-use engine::core::{
-    geom3d::Ray3,
-    math3d::{Aabb3, Vec3},
-    scene::SceneEntityId,
-    transform::Transform3D,
-};
+use rustlua_ecs::transform::Transform3D;
+use rustlua_math::geom3d::Ray3;
+use rustlua_math::math3d::{Aabb3, Vec3};
+use rustlua_scene::scene::SceneEntityId;
 
 /// 手柄命中半径（点）。比绘制半径大一点：细线手柄要"好抓"。
 pub(crate) const GIZMO_HIT_RADIUS: f32 = 8.0;
@@ -397,7 +395,7 @@ pub(crate) struct GizmoDrag {
     pub origin: Transform3D,
     /// 轴心模式 `Center` 时的**公转中心**；`None` = 原地旋转/缩放。
     pub pivot: Option<Vec3>,
-    pub start_ray: Option<engine::core::camera::Ray3>,
+    pub start_ray: Option<rustlua_camera::camera::Ray3>,
 }
 
 impl GizmoDrag {
@@ -507,7 +505,7 @@ pub(crate) fn rotate_about(
     initial: &Transform3D,
     pivot: Option<Vec3>,
     angle: f32,
-) -> (Vec3, engine::core::math3d::Quat) {
+) -> (Vec3, rustlua_math::math3d::Quat) {
     let delta = rotation_delta(space, initial.rotation, slot, angle);
     let rotation = delta * initial.rotation;
     let position = match pivot {
@@ -608,25 +606,23 @@ pub(crate) fn scale_axis_targets(
 /// 四元数非法（非单位/非有限）时退回世界轴——坏掉的旋转不该让手柄整根失效。
 pub(crate) fn rotation_delta(
     space: GizmoSpace,
-    rotation: engine::core::math3d::Quat,
+    rotation: rustlua_math::math3d::Quat,
     slot: Vec3,
     angle: f32,
-) -> engine::core::math3d::Quat {
+) -> rustlua_math::math3d::Quat {
     let axis = match space {
         GizmoSpace::World => slot,
         GizmoSpace::Local => rotation.rotate(slot).unwrap_or(slot),
     };
-    engine::core::math3d::Quat::from_axis_angle(axis, angle)
-        .unwrap_or_else(|_| engine::core::math3d::Quat::identity())
+    rustlua_math::math3d::Quat::from_axis_angle(axis, angle)
+        .unwrap_or_else(|_| rustlua_math::math3d::Quat::identity())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::core::{
-        math3d::{Quat, Vec3},
-        transform::Transform3D,
-    };
+    use rustlua_ecs::transform::Transform3D;
+    use rustlua_math::math3d::{Quat, Vec3};
 
     fn target(id: u64, x: f32) -> (SceneEntityId, Transform3D) {
         (

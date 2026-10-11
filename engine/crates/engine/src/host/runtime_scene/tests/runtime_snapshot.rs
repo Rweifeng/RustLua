@@ -5,9 +5,9 @@
 //! 而脚本运行期 `entity.spawn` 出来的实体**不在 `.scene` 文档里**，只有世界能回答。
 
 use super::*;
-use crate::core::entity::EntityId;
-use crate::core::hierarchy::Parent;
-use crate::core::scene::Scene;
+use rustlua_ecs::entity::EntityId;
+use rustlua_ecs::hierarchy::Parent;
+use rustlua_scene::scene::Scene;
 // 与生产代码同一个编码器：断言里的期望值不能是"手抄一遍编码"，否则两处一起写错就没人发现。
 use crate::host::runtime_scene::scene::encode_handle;
 
@@ -154,7 +154,7 @@ fn runtime_snapshot_flags_ui_rows_from_the_live_world() {
     runtime.with_script(|script| {
         script.with_world_mut(|world| {
             world
-                .insert(panel, crate::core::ui_layout::UiRectLayout::default())
+                .insert(panel, rustlua_ui::ui_layout::UiRectLayout::default())
                 .unwrap();
         });
     });

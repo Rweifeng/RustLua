@@ -10,13 +10,11 @@ use editor::{
     TransformFields,
 };
 use eframe::egui;
-use engine::core::{
-    animation::AnimationStateMachine,
-    prefab::Prefab,
-    scene::{SceneEntity, SceneEntityId},
-    sprite::SpriteComponent,
-    tilemap::Tilemap,
-};
+use rustlua_animation::animation::AnimationStateMachine;
+use rustlua_ecs::tilemap::Tilemap;
+use rustlua_render::sprite::SpriteComponent;
+use rustlua_scene::prefab::Prefab;
+use rustlua_scene::scene::{SceneEntity, SceneEntityId};
 use std::path::{Path, PathBuf};
 
 /// E08 Inspector「脏编辑」标记：用户在一次连续交互中改动了缓冲字段，但
@@ -1331,7 +1329,7 @@ impl EditorApp {
                 .and_then(|entity| entity.components.get("Tilemap"))
                 .and_then(|value| Tilemap::from_component_str(value).ok())
                 .unwrap_or_else(|| {
-                    Tilemap::new(engine::core::transform::Vec2::new(32.0, 32.0), 8, 8)
+                    Tilemap::new(rustlua_ecs::transform::Vec2::new(32.0, 32.0), 8, 8)
                         .expect("default tilemap")
                 });
             self.animation.machine = scene
@@ -1343,7 +1341,7 @@ impl EditorApp {
                 .unwrap_or_else(|| {
                     AnimationStateMachine::new(
                         "idle",
-                        vec![engine::core::animation::AnimationClip {
+                        vec![rustlua_animation::animation::AnimationClip {
                             name: "idle".to_owned(),
                             sheet: self.selected_sprite_texture(),
                             cols: 1,
@@ -1377,11 +1375,11 @@ impl EditorApp {
         self.entity_name.clear();
         self.mesh_renderer.clear();
         self.collider3d = Collider3dFields::default();
-        self.tilemap.map = Tilemap::new(engine::core::transform::Vec2::new(32.0, 32.0), 8, 8)
+        self.tilemap.map = Tilemap::new(rustlua_ecs::transform::Vec2::new(32.0, 32.0), 8, 8)
             .expect("default tilemap");
         self.animation.machine = AnimationStateMachine::new(
             "idle",
-            vec![engine::core::animation::AnimationClip {
+            vec![rustlua_animation::animation::AnimationClip {
                 name: "idle".to_owned(),
                 sheet: self.selected_sprite_texture(),
                 cols: 1,
@@ -1994,7 +1992,7 @@ impl EditorApp {
     /// 重建图集时读到它并预生成字形，避免首帧文字卡顿。
     pub(crate) fn collect_font_chars(&mut self) {
         let root = crate::util::strip_verbatim_prefix(&self.project.root);
-        let chars = engine::core::char_collect::collect_project_chars(&root);
+        let chars = rustlua_scene::char_collect::collect_project_chars(&root);
         match std::fs::write(root.join("chars.txt"), chars.as_bytes()) {
             Ok(()) => {
                 self.status = format!(
@@ -2554,13 +2552,13 @@ impl EditorApp {
                         .ok_or_else(|| format!("源 Prefab 缺少组件 {key}"))?;
                     entity.components.insert(key.to_owned(), payload);
                 } else if let Some(raw_path) = field.strip_prefix("property:") {
-                    let path = engine::core::property_path::PropertyPath::parse(raw_path)
+                    let path = rustlua_ecs::property_path::PropertyPath::parse(raw_path)
                         .map_err(|error| error.to_string())?;
                     let source_payload = source_entity
                         .components
                         .get(&path.component)
                         .ok_or_else(|| format!("源 Prefab 缺少组件 {}", path.component))?;
-                    let value = engine::core::property_path::read_field_text(source_payload, &path)
+                    let value = rustlua_ecs::property_path::read_field_text(source_payload, &path)
                         .map_err(|error| error.to_string())?;
                     let current = entity
                         .components
@@ -2568,7 +2566,7 @@ impl EditorApp {
                         .cloned()
                         .ok_or_else(|| format!("实例缺少组件 {}", path.component))?;
                     let updated =
-                        engine::core::property_path::write_builtin(&current, &path, &value)
+                        rustlua_ecs::property_path::write_builtin(&current, &path, &value)
                             .map_err(|error| error.to_string())?;
                     entity.components.insert(path.component.clone(), updated);
                 } else if let Some(key) = field.strip_prefix("metadata:") {
@@ -2802,7 +2800,7 @@ impl EditorApp {
                 .components
                 .insert(key.to_owned(), instance_value);
         } else if let Some(raw_path) = field.strip_prefix("property:") {
-            let Ok(path) = engine::core::property_path::PropertyPath::parse(raw_path) else {
+            let Ok(path) = rustlua_ecs::property_path::PropertyPath::parse(raw_path) else {
                 self.status = format!("非法属性路径：{raw_path}");
                 return;
             };
@@ -2810,7 +2808,7 @@ impl EditorApp {
                 self.status = format!("源 Prefab 缺少组件 {}", path.component);
                 return;
             };
-            match engine::core::property_path::write_builtin(&payload, &path, &instance_value) {
+            match rustlua_ecs::property_path::write_builtin(&payload, &path, &instance_value) {
                 Ok(updated) => {
                     source_entity.components.insert(path.component, updated);
                 }
@@ -2989,7 +2987,7 @@ pub(crate) struct PrefabRebuildState {
 }
 
 pub(crate) fn collect_prefab_rebuild_state(
-    scene: &engine::core::scene::Scene,
+    scene: &rustlua_scene::scene::Scene,
     instance_root: SceneEntityId,
     prefab_source: &str,
     prefab: &Prefab,
@@ -3046,7 +3044,7 @@ pub(crate) fn collect_prefab_rebuild_state(
 }
 
 pub(crate) fn build_prefab_from_instance_root(
-    scene: &engine::core::scene::Scene,
+    scene: &rustlua_scene::scene::Scene,
     instance_root: SceneEntityId,
     existing_prefab: &Prefab,
 ) -> Result<Prefab, String> {
@@ -3102,7 +3100,7 @@ pub(crate) fn build_prefab_from_instance_root(
     Ok(prefab)
 }
 
-fn prefab_root_ids(scene: &engine::core::scene::Scene, prefab_source: &str) -> Vec<SceneEntityId> {
+fn prefab_root_ids(scene: &rustlua_scene::scene::Scene, prefab_source: &str) -> Vec<SceneEntityId> {
     scene
         .entities
         .values()
@@ -3121,7 +3119,7 @@ fn prefab_root_ids(scene: &engine::core::scene::Scene, prefab_source: &str) -> V
 }
 
 fn collect_prefab_overrides(
-    scene: &engine::core::scene::Scene,
+    scene: &rustlua_scene::scene::Scene,
     prefab: &Prefab,
     source_to_instance: &std::collections::BTreeMap<SceneEntityId, SceneEntityId>,
 ) -> Result<std::collections::BTreeMap<(SceneEntityId, String), String>, String> {
@@ -3155,13 +3153,13 @@ fn prefab_override_value(instance: &SceneEntity, field: &str) -> Result<String, 
         // 逐字段覆盖：值取该字段（或元组分量）的**原始文本**，
         // 由 `PrefabInstance::apply_overrides` 用 property_path 做最小改写。
         // 取原始文本而不是规范化数值，避免把 `77` 写成 `77.000000`。
-        let path = engine::core::property_path::PropertyPath::parse(path)
+        let path = rustlua_ecs::property_path::PropertyPath::parse(path)
             .map_err(|error| format!("{field}: {error}"))?;
         let payload = instance
             .components
             .get(&path.component)
             .ok_or_else(|| format!("实例缺少组件 {}", path.component))?;
-        engine::core::property_path::read_field_text(payload, &path)
+        rustlua_ecs::property_path::read_field_text(payload, &path)
             .map_err(|error| format!("{field}: {error}"))
     } else if let Some(key) = field.strip_prefix("metadata:") {
         instance
@@ -3175,11 +3173,11 @@ fn prefab_override_value(instance: &SceneEntity, field: &str) -> Result<String, 
 }
 
 fn collect_scene_subtree(
-    scene: &engine::core::scene::Scene,
+    scene: &rustlua_scene::scene::Scene,
     root: SceneEntityId,
 ) -> Result<Vec<SceneEntityId>, String> {
     fn visit(
-        scene: &engine::core::scene::Scene,
+        scene: &rustlua_scene::scene::Scene,
         id: SceneEntityId,
         out: &mut Vec<SceneEntityId>,
         visiting: &mut std::collections::BTreeSet<SceneEntityId>,
@@ -3205,9 +3203,9 @@ fn collect_scene_subtree(
 }
 
 pub(crate) fn apply_prefab_instance_metadata(
-    scene: &mut engine::core::scene::Scene,
+    scene: &mut rustlua_scene::scene::Scene,
     prefab_source: &str,
-    instance: &engine::core::prefab::PrefabInstance,
+    instance: &rustlua_scene::prefab::PrefabInstance,
 ) {
     for (source_id, entity_id) in &instance.source_to_instance {
         if let Some(entity) = scene.entities.get_mut(entity_id) {
@@ -3286,7 +3284,9 @@ mod tests {
     use super::*;
     use crate::{EditorApp, EditorCamera, SceneViewCache2d, SceneViewCache3d};
     use editor::open_project;
-    use engine::core::{logging::LogSink, transform::Transform3D, transform::Vec2};
+    use rustlua_ecs::transform::Transform3D;
+    use rustlua_ecs::transform::Vec2;
+    use rustlua_infra::logging::LogSink;
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -3302,7 +3302,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("examples").join("game_api")
+        rustlua_infra::games_dir().join("examples").join("game_api")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {
@@ -3506,7 +3506,7 @@ mod tests {
             size: Vec2::new(32.0, 32.0),
             pivot: Vec2::new(0.5, 0.5),
             tint: [1.0; 4],
-            sorting: engine::core::sprite::SpriteSorting {
+            sorting: rustlua_render::sprite::SpriteSorting {
                 layer: "world".to_owned(),
                 order,
             },

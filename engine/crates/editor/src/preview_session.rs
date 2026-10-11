@@ -5,13 +5,13 @@
 //! Game 视图只负责输入桥接与绘制，Scene 视图可复用 readback 生命周期辅助。
 
 use eframe::egui;
-use engine::core::camera::Viewport;
-use engine::core::font::FontAtlas;
-use engine::core::input::InputSnapshot;
-use engine::core::scene::Scene;
-use engine::core::time_step::FixedTimeStep;
 use engine::host::frame::{FontAtlasMap, VectorAtlasMap, VectorFontHandle};
 use engine::host::{ReadbackMetrics, ReadbackStatus, Renderer, RuntimeScene, ScriptErrorPolicy};
+use rustlua_camera::camera::Viewport;
+use rustlua_infra::time_step::FixedTimeStep;
+use rustlua_input::input::InputSnapshot;
+use rustlua_render::font::FontAtlas;
+use rustlua_scene::scene::Scene;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -110,7 +110,7 @@ impl PreviewSession {
         // （与独立 game 宿主 `game_app` 同一入口；文件缺失/无 `[input]` 段 → 引擎默认
         // 0.15/0.05，读取失败只记日志不中断 Play）。
         let (deadzone, deadzone_diagnostic) =
-            engine::core::settings::load_deadzone_section(project_root);
+            rustlua_gameplay::settings::load_deadzone_section(project_root);
         if let Some(diagnostic) = deadzone_diagnostic {
             tracing::warn!(target: "editor", "[preview][gamepad] {diagnostic}");
         }
@@ -239,7 +239,7 @@ impl PreviewSession {
     /// 调用方负责只做读取。
     pub(crate) fn with_script<R>(
         &mut self,
-        visit: impl FnOnce(&mut engine::core::script::LuaRuntime) -> R,
+        visit: impl FnOnce(&mut rustlua_scripting::script::LuaRuntime) -> R,
     ) -> R {
         self.runtime.with_script(visit)
     }
@@ -564,7 +564,7 @@ impl Drop for PreviewSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::core::scene::Scene;
+    use rustlua_scene::scene::Scene;
 
     /// Headless wgpu 设备/队列（fallback adapter）；无 GPU 时返回 None，测试跳过。
     fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {

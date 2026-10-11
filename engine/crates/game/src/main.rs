@@ -7,7 +7,7 @@ mod game_app;
 
 use std::path::{Path, PathBuf};
 
-use engine::core::logging::init_logging;
+use rustlua_infra::logging::init_logging;
 use winit::event_loop::EventLoop;
 
 use cli::{find_project_root, parse_arguments, resolve_window_title, verify_project};
@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("game_check_ok project={}", root.display());
             // P3：把解析出的玩家数据位置打出来，发布脚本据此断言"发布包的存档/设置
             // 落在用户数据目录，而不是程序目录"（真实二进制、真实命令行参数）。
-            let roots = engine::core::user_dir::data_roots(root, arguments.pack);
+            let roots = rustlua_infra::user_dir::data_roots(root, arguments.pack);
             println!(
                 "player_data_roots packaged={} save_dir={} settings_dir={}",
                 roots.packaged,
@@ -54,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_default();
     let log_path = match project
         .as_deref()
-        .map(|root| engine::core::user_dir::data_roots(root, arguments.pack))
+        .map(|root| rustlua_infra::user_dir::data_roots(root, arguments.pack))
     {
         Some(roots) if roots.packaged => roots.log_dir().join("game.log"),
         _ => [
@@ -71,8 +71,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     init_logging(&log_path, arguments.log_filter.as_deref())
         .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)?;
-    engine::core::logging::install_crash_handler(log_path.with_file_name("crash.log"));
-    tracing::info!(target: "game", version = engine::core::version(), project = ?project, "game runner starting");
+    rustlua_infra::logging::install_crash_handler(log_path.with_file_name("crash.log"));
+    tracing::info!(target: "game", version = rustlua_infra::version(), project = ?project, "game runner starting");
 
     // 启动期资源完整性校验：发布包模式缺失即拒绝启动，开发模式仅告警。
     if let Some(root) = &project {
@@ -97,7 +97,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let event_loop = EventLoop::new()?;
     let window_title = resolve_window_title(project.as_deref(), arguments.title);
     // P3：`--pack` 启动的发布包把存档与玩家设置写到用户数据目录
-    // （`engine::core::user_dir`），不写程序目录。
+    // （`rustlua_infra::user_dir`），不写程序目录。
     let mut app = GameApp::new(
         project,
         window_title,

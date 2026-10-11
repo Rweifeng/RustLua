@@ -4,7 +4,7 @@
 
 ## Importer 抽象（M12-01）
 
-每种 `ResourceKind` 对应一个内置 `Importer`（`engine::core::importer::ImporterRegistry::builtin()`），职责分三段：
+每种 `ResourceKind` 对应一个内置 `Importer`（`rustlua_assets::importer::ImporterRegistry::builtin()`），职责分三段：
 
 ```rust
 pub trait Importer: Send + Sync {
@@ -34,7 +34,7 @@ pub trait Importer: Send + Sync {
 
 ## 批量导入（`run_import_batch`）
 
-`engine::core::importer::run_import_batch(project, db, cache, registry, items, cancel) -> ImportSummary`：
+`rustlua_assets::importer::run_import_batch(project, db, cache, registry, items, cancel) -> ImportSummary`：
 
 - 逐项 `get(ResourceKind::from_path)` → `skipped`（Other）或 `import_file`；
 - 成功 → `mark_ready(id, cache_path, content_hash)`；失败 → `mark_failed(id, error)`；

@@ -199,7 +199,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogSink {
 /// Initializes console and file logging once.
 ///
 /// `filter` follows `tracing_subscriber::EnvFilter` syntax, for example
-/// `info,engine::core=debug,game=debug`.
+/// `info,rustlua_infra=debug,game=debug`.
 pub fn init_logging(log_path: impl AsRef<Path>, filter: Option<&str>) -> Result<(), EngineError> {
     init_logging_with_sink(log_path, filter, None)
 }

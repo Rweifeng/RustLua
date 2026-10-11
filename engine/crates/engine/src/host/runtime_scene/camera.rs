@@ -5,12 +5,10 @@
 //! `declared_camera_2d_in` / `selected_camera_2d_in` 被 `mod.rs` 的 `init` 与相机同步调用，
 //! `sprite_screen_rect` 被 UI 点击目标收集调用，故标 `pub(super)`。
 
-use crate::core::{
-    camera::{Camera2D, CameraSelection, OrthoTerms, Viewport},
-    entity::EntityId,
-    sprite::Sprite,
-    transform::{Transform, Vec2},
-};
+use rustlua_camera::camera::{Camera2D, CameraSelection, OrthoTerms, Viewport};
+use rustlua_ecs::entity::EntityId;
+use rustlua_ecs::transform::{Transform, Vec2};
+use rustlua_render::sprite::Sprite;
 
 // 阶段 3c 把 2D 相机的三条方法（同步/生效载荷/步进）接进本文件：类型定义仍在 mod.rs，
 // 固有 impl 块按模块分散即可。
@@ -26,16 +24,16 @@ use super::RuntimeScene;
 ///
 /// 运行时世界里只有**一个** `Camera` 组件，因此这里单趟遍历、按投影分支取值，
 /// 不再需要"先取一份 `Vec<EntityId>` 再逐实体 `get`"。
-pub(super) fn declared_camera_2d_in(world: &crate::core::world::World) -> Option<Camera2D> {
+pub(super) fn declared_camera_2d_in(world: &rustlua_ecs::world::World) -> Option<Camera2D> {
     first_enabled_ortho_camera_in(world).map(|(_, camera)| camera)
 }
 
 /// 排序序第一台**启用**的正交相机（拆分批 9：这是"默认 2D 相机"的唯一定义处）。
 fn first_enabled_ortho_camera_in(
-    world: &crate::core::world::World,
+    world: &rustlua_ecs::world::World,
 ) -> Option<(EntityId, Camera2D)> {
     let mut found = None;
-    world.for_each::<crate::core::camera::Camera>(|id, camera| {
+    world.for_each::<rustlua_camera::camera::Camera>(|id, camera| {
         if found.is_some() {
             return;
         }
@@ -59,12 +57,12 @@ fn first_enabled_ortho_camera_in(
 ///   3D 相机（最常见操作）绝不该把 2D 相机重置回作者写的初始值——2D 的 center/zoom 归
 ///   `Camera2dController`（跟随/死区/平滑/抖动/请求），重置会在切相机那一帧闪一下。
 pub(super) fn selected_camera_2d_in(
-    world: &crate::core::world::World,
+    world: &rustlua_ecs::world::World,
     selection: CameraSelection,
 ) -> Option<(EntityId, Camera2D)> {
     let mut chosen = None;
     let mut selected_disabled = false;
-    world.for_each::<crate::core::camera::Camera>(|id, camera| {
+    world.for_each::<rustlua_camera::camera::Camera>(|id, camera| {
         // 正交相机是 2D 的唯一候选：选中的透视相机在这里被过滤掉（它服务 3D pass）。
         let Some(component) = camera.as_orthographic() else {
             return;
@@ -236,7 +234,7 @@ impl RuntimeScene {
         let desired = follow.and_then(|entity| {
             self.script.with_world(|world| {
                 // WP2：跟随目标跟的是**世界**位置（父链下的子实体会跟着父一起动）。
-                crate::core::hierarchy::world_transform_2d(world, entity)
+                rustlua_ecs::hierarchy::world_transform_2d(world, entity)
                     .ok()
                     .flatten()
                     .map(|transform| transform.position)

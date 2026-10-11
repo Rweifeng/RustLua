@@ -22,10 +22,8 @@
 //! Usage:
 //!   cargo run -p game --example jhyt_m20_audio [-- <game_jhyt-root>]
 
-use engine::core::{
-    input::{InputSnapshot, KeyCode},
-    script::LuaRuntime,
-};
+use rustlua_input::input::{InputSnapshot, KeyCode};
+use rustlua_scripting::script::LuaRuntime;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -37,10 +35,11 @@ use std::{
 const SETTINGS_TEMPLATE: &str = "# M20-02 测试设置（示例结束时恢复）\n[project]\nname = \"game_jhyt\"\nversion = \"0.1.0\"\nengine = \"RustLua\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\nfont = \"assets/fonts/NotoSansSC-VF.ttf\"\nfont_fallback = \"\"\nfont_weight = 400.0\ntext_render_mode = \"vector\"\nwindow_width = 1280\nwindow_height = 720\n\n[audio]\nmaster = 0.5\nbgm = 0.25\nsfx = 0.75\nui = 0.5\n\n[input]\nmap = \"keep-me\"\n";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let project = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+    let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
+        rustlua_infra::games_dir()
+            .join("examples")
+            .join("game_jhyt")
+    });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

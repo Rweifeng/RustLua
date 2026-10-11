@@ -9,16 +9,12 @@
 
 use std::{env, fs, path::PathBuf};
 
-use engine::{
-    core::{
-        camera::{Camera3D, Viewport},
-        games_dir,
-        lod::LodGroup,
-        mesh3d::MeshRenderer,
-        scene::Scene,
-    },
-    host::{RenderOutcome, Renderer, RuntimeScene},
-};
+use engine::host::{RenderOutcome, Renderer, RuntimeScene};
+use rustlua_camera::camera::{Camera3D, Viewport};
+use rustlua_infra::games_dir;
+use rustlua_render::lod::LodGroup;
+use rustlua_render::mesh3d::MeshRenderer;
+use rustlua_scene::scene::Scene;
 use serde_json::json;
 
 const WIDTH: u32 = 640;
@@ -72,9 +68,9 @@ fn main() {
 
     // 近相机：位置 (1.5, 0, 3)，看向 warrior 所在 (1.5, 0, 0)，距离 ≈ 3 < 8 → 基础级 warrior。
     let near_camera = Camera3D {
-        position: engine::core::math3d::Vec3::new(1.5, 0.0, 3.0),
-        target: engine::core::math3d::Vec3::new(1.5, 0.0, 0.0),
-        up: engine::core::math3d::Vec3::Y,
+        position: rustlua_math::math3d::Vec3::new(1.5, 0.0, 3.0),
+        target: rustlua_math::math3d::Vec3::new(1.5, 0.0, 0.0),
+        up: rustlua_math::math3d::Vec3::Y,
         fov_y: std::f32::consts::FRAC_PI_2,
         near: 0.1,
         far: 100.0,
@@ -97,9 +93,9 @@ fn main() {
 
     // 远相机：位置 (1.5, 0, 30)，距离 ≈ 28.5 > 8 → 切到低细节 triangle。
     let far_camera = Camera3D {
-        position: engine::core::math3d::Vec3::new(1.5, 0.0, 20.0),
-        target: engine::core::math3d::Vec3::new(1.5, 0.0, 0.0),
-        up: engine::core::math3d::Vec3::Y,
+        position: rustlua_math::math3d::Vec3::new(1.5, 0.0, 20.0),
+        target: rustlua_math::math3d::Vec3::new(1.5, 0.0, 0.0),
+        up: rustlua_math::math3d::Vec3::Y,
         fov_y: std::f32::consts::FRAC_PI_2,
         near: 0.1,
         far: 100.0,

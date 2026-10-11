@@ -11,14 +11,14 @@
 //! - `collider_debug_draw_3d_projects_the_live_physics_pose`
 
 use super::*;
-use crate::core::scene::Scene;
+use rustlua_scene::scene::Scene;
 
 /// docs/54 §8-①：场景声明的**正交** `Camera` 成为**初始** 2D 相机；没声明时保持历史默认。
 #[test]
 fn scene_declared_camera2d_becomes_the_initial_runtime_camera() {
     let root = game_root();
     let mut scene = Scene::new("scene-camera2d");
-    let id = crate::core::scene::SceneEntityId(1);
+    let id = rustlua_scene::scene::SceneEntityId(1);
     scene.add_entity(id, "Main2D", None).unwrap();
     scene.entities.get_mut(&id).unwrap().components.insert(
         "Camera".into(),
@@ -34,7 +34,7 @@ fn scene_declared_camera2d_becomes_the_initial_runtime_camera() {
         RuntimeScene::from_scene_edit(Some(root.as_path()), plain).expect("runtime");
     assert_eq!(
         default_runtime.camera_2d(),
-        Camera2D::new(crate::core::camera::DEFAULT_2D_CAMERA_CENTER, 1.0).unwrap(),
+        Camera2D::new(rustlua_camera::camera::DEFAULT_2D_CAMERA_CENTER, 1.0).unwrap(),
         "没有声明相机时必须是历史默认（既有工程逐字节不变）"
     );
 }
@@ -48,7 +48,7 @@ fn three_d_physics_authority_syncs_before_step_and_skips_writeback() {
     let root = game_root();
     let build = || {
         let mut scene = Scene::new("authority-3d");
-        let ball = crate::core::scene::SceneEntityId(1);
+        let ball = rustlua_scene::scene::SceneEntityId(1);
         scene.add_entity(ball, "Ball", None).unwrap();
         let entity = scene.entities.get_mut(&ball).unwrap();
         entity.components.insert(
@@ -61,7 +61,7 @@ fn three_d_physics_authority_syncs_before_step_and_skips_writeback() {
         );
         scene
     };
-    let input = crate::core::input::InputSnapshot::default();
+    let input = rustlua_input::input::InputSnapshot::default();
     let drop_one_step = 1.0 / 60.0;
 
     // ① authority = Script：步前同步（3D 计数为 1），步后不回写 ⇒ ECS 保留脚本设的位置。
@@ -69,7 +69,7 @@ fn three_d_physics_authority_syncs_before_step_and_skips_writeback() {
         RuntimeScene::from_scene_edit(Some(root.as_path()), build()).expect("runtime");
     scripted.set_physics_authority(PhysicsAuthority::Script);
     let handle = scripted
-        .with_script(|script| script.scene_entity_handle(crate::core::scene::SceneEntityId(1)))
+        .with_script(|script| script.scene_entity_handle(rustlua_scene::scene::SceneEntityId(1)))
         .expect("handle");
     scripted.with_script(|script| {
         script.with_world_mut(|world| {
@@ -89,7 +89,7 @@ fn three_d_physics_authority_syncs_before_step_and_skips_writeback() {
         "脚本权威下必须在物理步之前同步 3D 刚体（2D 场景里没有 2D 刚体，因此是 (0, 1)）"
     );
     let position = scripted
-        .world_transform_3d_of(crate::core::scene::SceneEntityId(1))
+        .world_transform_3d_of(rustlua_scene::scene::SceneEntityId(1))
         .expect("world")
         .position;
     assert!(
@@ -101,7 +101,7 @@ fn three_d_physics_authority_syncs_before_step_and_skips_writeback() {
     let mut simulated =
         RuntimeScene::from_scene_edit(Some(root.as_path()), build()).expect("runtime");
     let handle = simulated
-        .with_script(|script| script.scene_entity_handle(crate::core::scene::SceneEntityId(1)))
+        .with_script(|script| script.scene_entity_handle(rustlua_scene::scene::SceneEntityId(1)))
         .expect("handle");
     simulated.with_script(|script| {
         script.with_world_mut(|world| {
@@ -121,7 +121,7 @@ fn three_d_physics_authority_syncs_before_step_and_skips_writeback() {
         "默认权威不做步前同步"
     );
     let position = simulated
-        .world_transform_3d_of(crate::core::scene::SceneEntityId(1))
+        .world_transform_3d_of(rustlua_scene::scene::SceneEntityId(1))
         .expect("world")
         .position;
     assert!(
@@ -135,7 +135,7 @@ fn three_d_physics_authority_syncs_before_step_and_skips_writeback() {
 fn legacy_stage_order_actually_changes_the_pipeline() {
     let root = game_root();
     let mut scene = Scene::new("legacy-order");
-    let ball = crate::core::scene::SceneEntityId(1);
+    let ball = rustlua_scene::scene::SceneEntityId(1);
     scene.add_entity(ball, "Ball", None).unwrap();
     let entity = scene.entities.get_mut(&ball).unwrap();
     entity.components.insert(
@@ -150,7 +150,11 @@ fn legacy_stage_order_actually_changes_the_pipeline() {
     runtime.set_physics_authority(PhysicsAuthority::Script);
     runtime.set_physics_stage_order(PhysicsStageOrder::Legacy);
     runtime
-        .run_script_steps(1, 1.0 / 60.0, &crate::core::input::InputSnapshot::default())
+        .run_script_steps(
+            1,
+            1.0 / 60.0,
+            &rustlua_input::input::InputSnapshot::default(),
+        )
         .expect("step");
     assert_eq!(
         runtime.last_physics_sync(),
@@ -167,8 +171,8 @@ fn legacy_stage_order_actually_changes_the_pipeline() {
 #[test]
 fn document_runtime_and_lua_agree_on_the_world_transform() {
     let root = game_root();
-    let rig = crate::core::scene::SceneEntityId(1);
-    let child = crate::core::scene::SceneEntityId(2);
+    let rig = rustlua_scene::scene::SceneEntityId(1);
+    let child = rustlua_scene::scene::SceneEntityId(2);
     let mut scene = Scene::new("three-way");
     // docs/54 §4.1：这条测试断言的是"父子参与空间组合"，因此场景必须**显式声明**它
     // （未声明 ⇒ 组织关系，运行时不会组合）。
@@ -196,7 +200,7 @@ fn document_runtime_and_lua_agree_on_the_world_transform() {
     );
 
     // ① 文档侧（编辑态，没有 ECS）。
-    let document_world = crate::core::scene_space::world_transform_3d(&scene, child)
+    let document_world = rustlua_scene::scene_space::world_transform_3d(&scene, child)
         .expect("document world transform");
     assert_eq!(document_world.position, Vec3::new(10.0, 5.0, 0.0));
 
@@ -214,7 +218,7 @@ fn document_runtime_and_lua_agree_on_the_world_transform() {
     // ③ Lua 侧（同一实体，走 `transform3d.world`）。
     let handle = runtime
         .with_script(|script| script.scene_entity_handle(child))
-        .map(crate::core::script::entity_lua_id)
+        .map(rustlua_scripting::script::entity_lua_id)
         .expect("runtime entity handle");
     let source = format!(
         "function update()\n\
@@ -253,7 +257,7 @@ fn document_runtime_and_lua_agree_on_the_world_transform() {
 fn loading_a_scene_reports_broken_parent_edges() {
     let root = game_root();
     let mut scene = Scene::new("parent-audit");
-    let dangling = crate::core::scene::SceneEntityId(2);
+    let dangling = rustlua_scene::scene::SceneEntityId(2);
     scene.add_entity(dangling, "Dangling", None).unwrap();
     scene
         .entities
@@ -266,7 +270,7 @@ fn loading_a_scene_reports_broken_parent_edges() {
         );
     // 手改成悬空父：`Scene::add_entity` 会拒绝这种边，因此只能直接写字段。
     scene.entities.get_mut(&dangling).unwrap().parent =
-        Some(crate::core::scene::SceneEntityId(999));
+        Some(rustlua_scene::scene::SceneEntityId(999));
 
     let runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime");
     assert_eq!(
@@ -280,10 +284,10 @@ fn loading_a_scene_reports_broken_parent_edges() {
 /// 且计数能区分"被遮罩拦住"与"根本没提取到"。
 #[test]
 fn view_visibility_mask_filters_world_sprites() {
-    use crate::core::visibility::ALL_LAYERS;
+    use rustlua_render::visibility::ALL_LAYERS;
     let root = game_root();
-    let masked = crate::core::scene::SceneEntityId(1);
-    let plain = crate::core::scene::SceneEntityId(2);
+    let masked = rustlua_scene::scene::SceneEntityId(1);
+    let plain = rustlua_scene::scene::SceneEntityId(2);
     let mut scene = Scene::new("visibility-sprite");
     for (id, name) in [(masked, "Masked"), (plain, "Plain")] {
         scene.add_entity(id, name, None).unwrap();
@@ -339,10 +343,10 @@ fn view_visibility_mask_filters_world_sprites() {
 /// docs/54 §4.2：3D 网格吃**世界**视图的遮罩（与 2D 世界内容同一条规则）。
 #[test]
 fn view_visibility_mask_filters_3d_meshes() {
-    use crate::core::visibility::ALL_LAYERS;
+    use rustlua_render::visibility::ALL_LAYERS;
     let root = game_root();
-    let camera = crate::core::scene::SceneEntityId(1);
-    let mesh = crate::core::scene::SceneEntityId(2);
+    let camera = rustlua_scene::scene::SceneEntityId(1);
+    let mesh = rustlua_scene::scene::SceneEntityId(2);
     let mut scene = Scene::new("visibility-mesh");
     scene.add_entity(camera, "Cam", None).unwrap();
     scene.add_entity(mesh, "Box", None).unwrap();
@@ -395,9 +399,9 @@ fn view_visibility_mask_filters_3d_meshes() {
 /// 而按名字注册的画布 UI 不是实体、不受遮罩影响。
 #[test]
 fn view_visibility_mask_filters_entity_backed_ui_only() {
-    use crate::core::visibility::ALL_LAYERS;
+    use rustlua_render::visibility::ALL_LAYERS;
     let root = game_root();
-    let panel = crate::core::scene::SceneEntityId(1);
+    let panel = rustlua_scene::scene::SceneEntityId(1);
     let mut scene = Scene::new("visibility-ui");
     scene.add_entity(panel, "Panel", None).unwrap();
     let entity = scene.entities.get_mut(&panel).unwrap();
@@ -449,8 +453,8 @@ fn view_visibility_mask_filters_entity_backed_ui_only() {
 fn collider_debug_draw_3d_projects_the_live_physics_pose() {
     let root = game_root();
     let mut scene = Scene::new("collider-debug-3d");
-    let cam = crate::core::scene::SceneEntityId(1);
-    let wall = crate::core::scene::SceneEntityId(2);
+    let cam = rustlua_scene::scene::SceneEntityId(1);
+    let wall = rustlua_scene::scene::SceneEntityId(2);
     scene.add_entity(cam, "Cam", None).unwrap();
     scene.add_entity(wall, "Wall", None).unwrap();
     scene.entities.get_mut(&cam).unwrap().components.insert(

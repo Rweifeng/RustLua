@@ -11,7 +11,9 @@ use editor::{
     CommandKind, FixtureSize, ResourceBrowserState, SceneDocument, build_console_fixture,
     build_scene_fixture, percentiles_ms,
 };
-use engine::core::{logging::LogSink, scene::SceneEntityId, transform::Transform3D};
+use rustlua_ecs::transform::Transform3D;
+use rustlua_infra::logging::LogSink;
+use rustlua_scene::scene::SceneEntityId;
 use std::{fs, path::PathBuf, time::Instant};
 
 /// One measured scenario.
@@ -1140,9 +1142,9 @@ pub(crate) fn run_baseline() -> BaselineReport {
                     .components
                     .get("Quad")
                     .and_then(|payload| {
-                        engine::core::property_path::read_field_text(
+                        rustlua_ecs::property_path::read_field_text(
                             payload,
-                            &engine::core::property_path::PropertyPath::new("Quad", "size"),
+                            &rustlua_ecs::property_path::PropertyPath::new("Quad", "size"),
                         )
                         .ok()
                     })
@@ -1169,9 +1171,9 @@ pub(crate) fn run_baseline() -> BaselineReport {
             .map(|part| format!("{part}.000000"))
             .collect::<Vec<_>>()
             .join(",");
-        let read_back = engine::core::property_path::read_field_text(
+        let read_back = rustlua_ecs::property_path::read_field_text(
             &payload,
-            &engine::core::property_path::PropertyPath::new("Quad", "size"),
+            &rustlua_ecs::property_path::PropertyPath::new("Quad", "size"),
         )
         .unwrap_or_default();
         scenarios.push(summarize(
@@ -1213,7 +1215,7 @@ pub(crate) fn run_baseline() -> BaselineReport {
         ));
         let scenes = root.join("scenes");
         fs::create_dir_all(&scenes).expect("temp project scenes dir");
-        let mut scene = engine::core::scene::Scene::new("rules");
+        let mut scene = rustlua_scene::scene::Scene::new("rules");
         let bad = [
             // Windows 上 `Path::is_absolute()` 对 `/x` 返回 false，必须由根组件判定兜住。
             "file=/etc/passwd.lua",
@@ -1225,7 +1227,7 @@ pub(crate) fn run_baseline() -> BaselineReport {
             let id = SceneEntityId(entity_index);
             scene.add_entity(id, format!("bad{index}"), None).unwrap();
             scene.entities.get_mut(&id).unwrap().components.insert(
-                engine::core::entity_script::SCRIPT_COMPONENT.to_owned(),
+                rustlua_ecs::entity_script::SCRIPT_COMPONENT.to_owned(),
                 bad[index % bad.len()].to_owned(),
             );
             entity_index += 1;
@@ -1234,7 +1236,7 @@ pub(crate) fn run_baseline() -> BaselineReport {
             let id = SceneEntityId(entity_index);
             scene.add_entity(id, format!("good{index}"), None).unwrap();
             scene.entities.get_mut(&id).unwrap().components.insert(
-                engine::core::entity_script::SCRIPT_COMPONENT.to_owned(),
+                rustlua_ecs::entity_script::SCRIPT_COMPONENT.to_owned(),
                 format!("file=scripts/ai/patrol_{index}.lua"),
             );
             entity_index += 1;
@@ -1279,7 +1281,7 @@ pub(crate) fn run_baseline() -> BaselineReport {
                 && absolute + traversal + empty == 200
                 && audit.findings.iter().all(|finding| {
                     finding.field == "file"
-                        && finding.component == engine::core::entity_script::SCRIPT_COMPONENT
+                        && finding.component == rustlua_ecs::entity_script::SCRIPT_COMPONENT
                 }),
         ));
         let _ = fs::remove_dir_all(&root);
@@ -1293,9 +1295,9 @@ pub(crate) fn run_baseline() -> BaselineReport {
     // ③ 实例化 → 落盘场景 → 重新打开之后，实例上的覆盖字段**逐字**保持原值；
     // ④ 把"实例 vs 源 Prefab"重新 diff 出来，覆盖集合与写入前**完全相同**（幂等，不会越用越多）。
     {
-        use engine::core::prefab::Prefab;
-        use engine::core::resource_db::AssetId;
-        use engine::core::scene::Scene;
+        use rustlua_assets::resource_db::AssetId;
+        use rustlua_scene::prefab::Prefab;
+        use rustlua_scene::scene::Scene;
 
         let root = temp_root("prefab-roundtrip");
         let prefab_path = root.join("prefabs/hero.prefab");
@@ -1354,9 +1356,9 @@ pub(crate) fn run_baseline() -> BaselineReport {
 
         // ③ 覆盖字段逐字保持：重开之后实例上的 Quad.size 必须还是覆盖值。
         let reopened_body = reopened.entities.get(&body).expect("Body 实例");
-        let reopened_size = engine::core::property_path::read_field_text(
+        let reopened_size = rustlua_ecs::property_path::read_field_text(
             &reopened_body.components["Quad"],
-            &engine::core::property_path::PropertyPath::new("Quad", "size"),
+            &rustlua_ecs::property_path::PropertyPath::new("Quad", "size"),
         )
         .unwrap_or_default();
         let override_survived = reopened_size == "99.000000,88.000000";
@@ -1418,7 +1420,7 @@ pub(crate) fn run_baseline() -> BaselineReport {
     // 的硬阻断项，原型不通过这一条就没有意义。
     {
         use editor::{EditPatch, PatchHistory};
-        use engine::core::scene::SceneEntityId;
+        use rustlua_scene::scene::SceneEntityId;
 
         let fixture = build_scene_fixture(FixtureSize::Medium.spec());
         let mut base = fixture.document;
@@ -1592,7 +1594,7 @@ pub(crate) fn run_baseline() -> BaselineReport {
         let payload = probe.components.get("Camera").cloned().unwrap_or_default();
         let parse_started = Instant::now();
         for _ in 0..BATCH {
-            std::hint::black_box(engine::core::camera::Camera::from_component_str(&payload).ok());
+            std::hint::black_box(rustlua_camera::camera::Camera::from_component_str(&payload).ok());
         }
         let parse_ns = parse_started.elapsed().as_nanos() as f64 / BATCH as f64;
 

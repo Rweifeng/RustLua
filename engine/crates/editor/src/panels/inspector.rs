@@ -6,11 +6,9 @@ use crate::panels::tilemap_tools;
 use crate::util::strip_verbatim_prefix;
 use editor::{Collider3dFields, InspectorError, InspectorState};
 use eframe::egui;
-use engine::core::{
-    prefab::Prefab,
-    scene::{SceneEntity, SceneEntityId},
-    ui_animation::{UiEasing, UiKeyframe},
-};
+use rustlua_scene::prefab::Prefab;
+use rustlua_scene::scene::{SceneEntity, SceneEntityId};
+use rustlua_ui::ui_animation::{UiEasing, UiKeyframe};
 use std::{collections::BTreeSet, fs, path::Path, time::SystemTime};
 
 struct ComponentDescriptor {
@@ -192,12 +190,12 @@ impl EditorApp {
                             ui.label(egui::RichText::new(format!("{:?}", entry.kind)).monospace());
                         });
                         let (status_text, status_color) = match entry.status {
-                            engine::core::resource_db::ResourceState::Ready => ("已就绪".to_owned(), egui::Color32::from_rgb(120,200,130)),
-                            engine::core::resource_db::ResourceState::Discovered => ("待导入".to_owned(), egui::Color32::YELLOW),
-                            engine::core::resource_db::ResourceState::Stale => ("已变更需重导".to_owned(), egui::Color32::YELLOW),
-                            engine::core::resource_db::ResourceState::Missing => ("文件缺失".to_owned(), egui::Color32::GRAY),
-                            engine::core::resource_db::ResourceState::ImportFailed => ("导入失败".to_owned(), egui::Color32::RED),
-                            engine::core::resource_db::ResourceState::Invalid => ("依赖断链".to_owned(), egui::Color32::RED),
+                            rustlua_assets::resource_db::ResourceState::Ready => ("已就绪".to_owned(), egui::Color32::from_rgb(120,200,130)),
+                            rustlua_assets::resource_db::ResourceState::Discovered => ("待导入".to_owned(), egui::Color32::YELLOW),
+                            rustlua_assets::resource_db::ResourceState::Stale => ("已变更需重导".to_owned(), egui::Color32::YELLOW),
+                            rustlua_assets::resource_db::ResourceState::Missing => ("文件缺失".to_owned(), egui::Color32::GRAY),
+                            rustlua_assets::resource_db::ResourceState::ImportFailed => ("导入失败".to_owned(), egui::Color32::RED),
+                            rustlua_assets::resource_db::ResourceState::Invalid => ("依赖断链".to_owned(), egui::Color32::RED),
                             _ => (format!("{:?}", entry.status), ui.visuals().weak_text_color()),
                         };
                         ui.horizontal(|ui| {
@@ -214,7 +212,7 @@ impl EditorApp {
                             ui.label(format!("大小：{kb:.1} KB"));
                         }
                         // 纹理：显示大图预览
-                        if entry.kind == engine::core::resource_kind::ResourceKind::Texture {
+                        if entry.kind == rustlua_assets::resource_kind::ResourceKind::Texture {
                             ui.separator();
                             let rel = entry.path_string();
                             if let Some(tex_id) = self.texture_thumbnail(&rel, ui.ctx()) {
@@ -226,7 +224,7 @@ impl EditorApp {
                             }
                         }
                         // 场景/Prefab：提示双击打开
-                        if matches!(entry.kind, engine::core::resource_kind::ResourceKind::Scene | engine::core::resource_kind::ResourceKind::Prefab) {
+                        if matches!(entry.kind, rustlua_assets::resource_kind::ResourceKind::Scene | rustlua_assets::resource_kind::ResourceKind::Prefab) {
                             ui.separator();
                             ui.label(egui::RichText::new("双击资源面板中的条目可打开编辑").small().weak());
                         }
@@ -311,10 +309,10 @@ impl EditorApp {
                             .selected_text(self.canvas_config.scale_mode.as_str())
                             .show_ui(ui, |ui| {
                                 for mode in [
-                                    engine::core::ui_layout::CanvasScaleMode::None,
-                                    engine::core::ui_layout::CanvasScaleMode::FitWidth,
-                                    engine::core::ui_layout::CanvasScaleMode::FitHeight,
-                                    engine::core::ui_layout::CanvasScaleMode::FitBoth,
+                                    rustlua_ui::ui_layout::CanvasScaleMode::None,
+                                    rustlua_ui::ui_layout::CanvasScaleMode::FitWidth,
+                                    rustlua_ui::ui_layout::CanvasScaleMode::FitHeight,
+                                    rustlua_ui::ui_layout::CanvasScaleMode::FitBoth,
                                 ] {
                                     ui.selectable_value(
                                         &mut self.canvas_config.scale_mode,
@@ -960,7 +958,7 @@ impl EditorApp {
                                 self.animation.machine.clips.remove(index);
                                 if self.animation.machine.clips.is_empty() {
                                     self.animation.machine.clips.push(
-                                        engine::core::animation::AnimationClip {
+                                        rustlua_animation::animation::AnimationClip {
                                             name: "idle".to_owned(),
                                             sheet: self.selected_sprite_texture(),
                                             cols: 1,
@@ -983,7 +981,7 @@ impl EditorApp {
                             }
                             if ui.button("添加 Clip").clicked() {
                                 self.animation.machine.clips.push(
-                                    engine::core::animation::AnimationClip {
+                                    rustlua_animation::animation::AnimationClip {
                                         name: format!(
                                             "clip{}",
                                             self.animation.machine.clips.len() + 1
@@ -1130,20 +1128,20 @@ impl EditorApp {
             egui::Grid::new(format!("ui_event_{index}")).show(ui, |ui| {
                 let mut event = binding
                     .event
-                    .unwrap_or(engine::core::ui_events::UiEventType::Click);
+                    .unwrap_or(rustlua_ui::ui_events::UiEventType::Click);
                 if egui::ComboBox::from_id_salt(format!("ui_event_type_{index}"))
                     .selected_text(event.as_str())
                     .show_ui(ui, |ui| {
                         for candidate in [
-                            engine::core::ui_events::UiEventType::Click,
-                            engine::core::ui_events::UiEventType::PointerEnter,
-                            engine::core::ui_events::UiEventType::PointerExit,
-                            engine::core::ui_events::UiEventType::PointerDown,
-                            engine::core::ui_events::UiEventType::PointerUp,
-                            engine::core::ui_events::UiEventType::Focus,
-                            engine::core::ui_events::UiEventType::Submit,
-                            engine::core::ui_events::UiEventType::ValueChanged,
-                            engine::core::ui_events::UiEventType::Drag,
+                            rustlua_ui::ui_events::UiEventType::Click,
+                            rustlua_ui::ui_events::UiEventType::PointerEnter,
+                            rustlua_ui::ui_events::UiEventType::PointerExit,
+                            rustlua_ui::ui_events::UiEventType::PointerDown,
+                            rustlua_ui::ui_events::UiEventType::PointerUp,
+                            rustlua_ui::ui_events::UiEventType::Focus,
+                            rustlua_ui::ui_events::UiEventType::Submit,
+                            rustlua_ui::ui_events::UiEventType::ValueChanged,
+                            rustlua_ui::ui_events::UiEventType::Drag,
                         ] {
                             ui.selectable_value(&mut event, candidate, candidate.as_str());
                         }
@@ -1205,8 +1203,8 @@ impl EditorApp {
             if ui.button("添加 Event").clicked() {
                 self.events_editor
                     .bindings
-                    .push(engine::core::ui_events::UiEventBinding {
-                        event: Some(engine::core::ui_events::UiEventType::Click),
+                    .push(rustlua_ui::ui_events::UiEventBinding {
+                        event: Some(rustlua_ui::ui_events::UiEventType::Click),
                         target: None,
                         function: "on_click".to_owned(),
                         arguments: Default::default(),
@@ -1227,14 +1225,14 @@ impl EditorApp {
             egui::Grid::new(format!("ui_binding_{index}")).show(ui, |ui| {
                 let property = binding
                     .property
-                    .unwrap_or(engine::core::ui_binding::BoundProperty::TextText);
+                    .unwrap_or(rustlua_ui::ui_binding::BoundProperty::TextText);
                 if egui::ComboBox::from_id_salt(format!("binding_property_{index}"))
                     .selected_text(property.as_str())
                     .show_ui(ui, |ui| {
                         for candidate in [
-                            engine::core::ui_binding::BoundProperty::TextText,
-                            engine::core::ui_binding::BoundProperty::ImageVisible,
-                            engine::core::ui_binding::BoundProperty::ProgressValue,
+                            rustlua_ui::ui_binding::BoundProperty::TextText,
+                            rustlua_ui::ui_binding::BoundProperty::ImageVisible,
+                            rustlua_ui::ui_binding::BoundProperty::ProgressValue,
                         ] {
                             ui.selectable_value(
                                 &mut binding.property,
@@ -1258,7 +1256,7 @@ impl EditorApp {
                 if ui
                     .add(egui::TextEdit::singleline(&mut source).hint_text("data.path"))
                     .changed()
-                    && let Ok(path) = engine::core::ui_binding::BindingPath::parse(&source)
+                    && let Ok(path) = rustlua_ui::ui_binding::BindingPath::parse(&source)
                 {
                     binding.source = path;
                     changed = true;
@@ -1286,10 +1284,10 @@ impl EditorApp {
             if ui.button("添加 Binding").clicked() {
                 self.bindings_editor
                     .bindings
-                    .push(engine::core::ui_binding::PropertyBinding {
-                        property: Some(engine::core::ui_binding::BoundProperty::TextText),
+                    .push(rustlua_ui::ui_binding::PropertyBinding {
+                        property: Some(rustlua_ui::ui_binding::BoundProperty::TextText),
                         target: String::new(),
-                        source: engine::core::ui_binding::BindingPath(vec![
+                        source: rustlua_ui::ui_binding::BindingPath(vec![
                             "data".to_owned(),
                             "value".to_owned(),
                         ]),
@@ -1382,7 +1380,7 @@ impl EditorApp {
         }
         ui.horizontal(|ui| {
             if ui.button("添加 opacity 轨道").clicked() {
-                let track = engine::core::ui_animation::UiAnimationTrack::new(
+                let track = rustlua_ui::ui_animation::UiAnimationTrack::new(
                     "opacity",
                     vec![UiKeyframe {
                         time: 0.0,
@@ -1439,7 +1437,7 @@ impl EditorApp {
             .and_then(|document| {
                 let id = self.selection.primary()?;
                 let payload = document.scene.entities.get(&id)?.components.get("Sprite")?;
-                engine::core::sprite::SpriteComponent::from_component_str(payload)
+                rustlua_render::sprite::SpriteComponent::from_component_str(payload)
                     .ok()
                     .map(|sprite| sprite.texture)
             })
@@ -1487,12 +1485,12 @@ impl EditorApp {
                 if let Some(entity) = scene.scene.entities.get_mut(&selected) {
                     entity.components.insert(
                         "Sprite".to_owned(),
-                        engine::core::sprite::SpriteComponent {
+                        rustlua_render::sprite::SpriteComponent {
                             texture: "assets/textures/player.png".to_owned(),
-                            size: engine::core::transform::Vec2::new(128.0, 128.0),
-                            pivot: engine::core::transform::Vec2::new(0.5, 0.5),
+                            size: rustlua_ecs::transform::Vec2::new(128.0, 128.0),
+                            pivot: rustlua_ecs::transform::Vec2::new(0.5, 0.5),
                             tint: [1.0; 4],
-                            sorting: engine::core::sprite::SpriteSorting::default(),
+                            sorting: rustlua_render::sprite::SpriteSorting::default(),
                             flip_x: false,
                             flip_y: false,
                             z: 0.0,
@@ -1507,8 +1505,8 @@ impl EditorApp {
                 if let Some(entity) = scene.scene.entities.get_mut(&selected) {
                     entity.components.insert(
                         "Tilemap".to_owned(),
-                        engine::core::tilemap::Tilemap::new(
-                            engine::core::transform::Vec2::new(32.0, 32.0),
+                        rustlua_ecs::tilemap::Tilemap::new(
+                            rustlua_ecs::transform::Vec2::new(32.0, 32.0),
                             8,
                             8,
                         )
@@ -1522,9 +1520,9 @@ impl EditorApp {
                 if let Some(entity) = scene.scene.entities.get_mut(&selected) {
                     entity.components.insert(
                         "Animation".to_owned(),
-                        engine::core::animation::AnimationStateMachine::new(
+                        rustlua_animation::animation::AnimationStateMachine::new(
                             "idle",
-                            vec![engine::core::animation::AnimationClip {
+                            vec![rustlua_animation::animation::AnimationClip {
                                 name: "idle".to_owned(),
                                 sheet: "assets/textures/player.png".to_owned(),
                                 cols: 1,
@@ -1545,7 +1543,7 @@ impl EditorApp {
                 if let Some(entity) = scene.scene.entities.get_mut(&selected) {
                     entity.components.insert(
                         "Transform".to_owned(),
-                        engine::core::transform::Transform3D::identity().to_component_str(),
+                        rustlua_ecs::transform::Transform3D::identity().to_component_str(),
                     );
                 }
                 scene.mark_dirty();
@@ -1554,8 +1552,8 @@ impl EditorApp {
             // 看向原点、FOV 90°、near 0.1、far 100）+ 显式判别字段；要正交就把
             // `projection` 改成 orthographic，字段编辑器会接着给正交那套字段。
             "Camera" => {
-                let camera = engine::core::camera::Camera::Perspective(
-                    engine::core::camera::Camera3D::default(),
+                let camera = rustlua_camera::camera::Camera::Perspective(
+                    rustlua_camera::camera::Camera3D::default(),
                 );
                 if let Some(entity) = scene.scene.entities.get_mut(&selected) {
                     entity
@@ -1570,7 +1568,7 @@ impl EditorApp {
                 if let Some(entity) = scene.scene.entities.get_mut(&selected) {
                     entity.components.insert(
                         "Light".to_owned(),
-                        engine::core::light::Light::default().to_component_str(),
+                        rustlua_render::light::Light::default().to_component_str(),
                     );
                 }
                 scene.mark_dirty();
@@ -1583,8 +1581,8 @@ impl EditorApp {
                 if let Some(entity) = scene.scene.entities.get_mut(&selected) {
                     entity.components.insert(
                         "MeshRenderer".to_owned(),
-                        engine::core::mesh3d::MeshRenderer {
-                            mesh: engine::core::mesh3d::GROUND_PLANE_SENTINEL.to_owned(),
+                        rustlua_render::mesh3d::MeshRenderer {
+                            mesh: rustlua_render::mesh3d::GROUND_PLANE_SENTINEL.to_owned(),
                         }
                         .to_component_str(),
                     );
@@ -1592,7 +1590,7 @@ impl EditorApp {
                 scene.mark_dirty();
             }
             "Text" => {
-                let text = engine::core::ui::UiText::default();
+                let text = rustlua_ui::ui::UiText::default();
                 if let Some(entity) = scene.scene.entities.get_mut(&selected) {
                     entity
                         .components
@@ -1606,10 +1604,10 @@ impl EditorApp {
                 if let Some(entity) = scene.scene.entities.get_mut(&selected) {
                     entity.components.insert(
                         "WorldText".to_owned(),
-                        engine::core::world_text::WorldText {
-                            text: engine::core::ui::UiText {
+                        rustlua_scene::world_text::WorldText {
+                            text: rustlua_ui::ui::UiText {
                                 text: "文字".to_owned(),
-                                font_size: engine::core::ui::UI_TEXT_BASE_PX,
+                                font_size: rustlua_ui::ui::UI_TEXT_BASE_PX,
                                 color: [1.0, 1.0, 1.0],
                                 font: String::new(),
                             },
@@ -1626,7 +1624,7 @@ impl EditorApp {
                 if let Some(entity) = scene.scene.entities.get_mut(&selected) {
                     entity.components.insert(
                         "Image".to_owned(),
-                        engine::core::ui::UiImage {
+                        rustlua_ui::ui::UiImage {
                             texture: String::new(),
                             color: [1.0, 1.0, 1.0, 1.0],
                             nine_slice: None,
@@ -1642,7 +1640,7 @@ impl EditorApp {
                 if let Some(entity) = scene.scene.entities.get_mut(&selected) {
                     entity.components.insert(
                         "UiLayout".to_owned(),
-                        engine::core::ui_layout::UiRectLayout::default_element().to_component_str(),
+                        rustlua_ui::ui_layout::UiRectLayout::default_element().to_component_str(),
                     );
                     scene.mark_dirty();
                 }
@@ -1652,7 +1650,7 @@ impl EditorApp {
                 if let Some(entity) = scene.scene.entities.get_mut(&selected) {
                     entity.components.insert(
                         "Container".to_owned(),
-                        engine::core::ui_layout::ContainerStyle::default().to_component_str(),
+                        rustlua_ui::ui_layout::ContainerStyle::default().to_component_str(),
                     );
                     scene.mark_dirty();
                 }
@@ -1661,7 +1659,7 @@ impl EditorApp {
                 if let Some(entity) = scene.scene.entities.get_mut(&selected) {
                     entity.components.insert(
                         "UiEvents".to_owned(),
-                        engine::core::ui_events::UiEvents::click("on_click").to_component_str(),
+                        rustlua_ui::ui_events::UiEvents::click("on_click").to_component_str(),
                     );
                     scene.mark_dirty();
                 }
@@ -1869,13 +1867,13 @@ fn prefab_override_side_value(entity: &SceneEntity, field: &str) -> String {
             .unwrap_or_else(|| "（缺失）".to_owned());
     }
     if let Some(raw_path) = field.strip_prefix("property:") {
-        let Ok(path) = engine::core::property_path::PropertyPath::parse(raw_path) else {
+        let Ok(path) = rustlua_ecs::property_path::PropertyPath::parse(raw_path) else {
             return "（非法路径）".to_owned();
         };
         let Some(payload) = entity.components.get(&path.component) else {
             return "（缺失）".to_owned();
         };
-        return engine::core::property_path::read_field_text(payload, &path)
+        return rustlua_ecs::property_path::read_field_text(payload, &path)
             .unwrap_or_else(|_| "（缺失）".to_owned());
     }
     if let Some(key) = field.strip_prefix("metadata:") {
@@ -1922,7 +1920,7 @@ pub(crate) fn diff_prefab_entity(source: &SceneEntity, instance: &SceneEntity) -
         .chain(instance.components.keys())
         .cloned()
         .collect::<std::collections::BTreeSet<_>>();
-    let registry = engine::core::component_schema::builtin_registry();
+    let registry = rustlua_ecs::component_schema::builtin_registry();
     for key in component_keys {
         let source_value = source.components.get(&key);
         let instance_value = instance.components.get(&key);
@@ -2001,14 +1999,12 @@ mod tests {
         collect_prefab_rebuild_state,
     };
     use editor::open_project;
-    use engine::core::{
-        animation::AnimationStateMachine,
-        logging::LogSink,
-        prefab::Prefab,
-        resource_db::AssetId,
-        scene::{Scene, SceneEntity, SceneEntityId},
-        ui::UiText,
-    };
+    use rustlua_animation::animation::AnimationStateMachine;
+    use rustlua_assets::resource_db::AssetId;
+    use rustlua_infra::logging::LogSink;
+    use rustlua_scene::prefab::Prefab;
+    use rustlua_scene::scene::{Scene, SceneEntity, SceneEntityId};
+    use rustlua_ui::ui::UiText;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2028,7 +2024,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("examples").join("game_api")
+        rustlua_infra::games_dir().join("examples").join("game_api")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {
@@ -2428,20 +2424,20 @@ mod tests {
             .get("Transform")
             .expect("Transform")
             .clone();
-        let registry = engine::core::component_schema::builtin_registry();
+        let registry = rustlua_ecs::component_schema::builtin_registry();
         let read = |field: &str| {
             let path =
-                engine::core::property_path::PropertyPath::parse(&format!("Transform.{field}"))
+                rustlua_ecs::property_path::PropertyPath::parse(&format!("Transform.{field}"))
                     .expect("path");
-            engine::core::property_path::read_field(&registry, &payload, &path).expect("field")
+            rustlua_ecs::property_path::read_field(&registry, &payload, &path).expect("field")
         };
         assert_eq!(
             read("position"),
-            engine::core::component_schema::FieldValue::Tuple(vec![77.0, 19.0, 0.0])
+            rustlua_ecs::component_schema::FieldValue::Tuple(vec![77.0, 19.0, 0.0])
         );
         assert_eq!(
             read("scale"),
-            engine::core::component_schema::FieldValue::Tuple(vec![1.0, 1.0, 1.0])
+            rustlua_ecs::component_schema::FieldValue::Tuple(vec![1.0, 1.0, 1.0])
         );
         assert!(
             payload.contains("position=77"),
@@ -2480,7 +2476,7 @@ mod tests {
         // 期望值 = 同一 Prefab 在空场景里**全新实例化**的结果：
         // 「Revert Overrides」的语义就是"回到没有覆盖的源状态"。
         let expected = {
-            let prefab = engine::core::prefab::Prefab::load(
+            let prefab = rustlua_scene::prefab::Prefab::load(
                 crate::util::strip_verbatim_prefix(&app.project.root)
                     .join("assets/prefabs/slime_green.prefab"),
             )
@@ -2520,7 +2516,7 @@ mod tests {
         // 生产示例场景里同一个 Prefab 有多个同级实例，且 revert 会重建实例（新实体 ID），
         // 因此这里做**差分**断言：实例数量不变、名字覆盖消失、且恰好出现一个
         // 取值等于"全新实例化"的实例根（即刚被 revert 的那个）。
-        let roots: Vec<&engine::core::scene::SceneEntity> = scene
+        let roots: Vec<&rustlua_scene::scene::SceneEntity> = scene
             .entities
             .values()
             .filter(|entity| {
@@ -2542,7 +2538,7 @@ mod tests {
                 .all(|candidate| candidate.name != "RevertedName"),
             "名字覆盖必须被还原"
         );
-        let reverted: Vec<&&engine::core::scene::SceneEntity> = roots
+        let reverted: Vec<&&rustlua_scene::scene::SceneEntity> = roots
             .iter()
             .filter(|entity| entity.components.get("Transform") == Some(&expected))
             .collect();
@@ -2582,9 +2578,9 @@ mod tests {
                 .cloned()
                 .expect("instance has Transform");
             let path =
-                engine::core::property_path::PropertyPath::parse("Transform.position").unwrap();
+                rustlua_ecs::property_path::PropertyPath::parse("Transform.position").unwrap();
             let updated =
-                engine::core::property_path::write_builtin(&payload, &path, "999,0,0").unwrap();
+                rustlua_ecs::property_path::write_builtin(&payload, &path, "999,0,0").unwrap();
             entity.components.insert("Transform".to_owned(), updated);
             scene.mark_dirty();
         }
@@ -2608,8 +2604,8 @@ mod tests {
         let scene = &app.document.current_scene.as_ref().unwrap().scene;
         let entity = scene.entities.get(&target).expect("instance");
         let payload = entity.components.get("Transform").expect("Transform");
-        let path = engine::core::property_path::PropertyPath::parse("Transform.position").unwrap();
-        let registry = engine::core::component_schema::builtin_registry();
+        let path = rustlua_ecs::property_path::PropertyPath::parse("Transform.position").unwrap();
+        let registry = rustlua_ecs::component_schema::builtin_registry();
         let source_position = {
             let prefab = Prefab::load(root.join("assets/prefabs/slime_green.prefab")).unwrap();
             let source_id = entity
@@ -2622,11 +2618,11 @@ mod tests {
                 .components
                 .get("Transform")
                 .expect("source Transform");
-            engine::core::property_path::read_field(&registry, source_payload, &path)
+            rustlua_ecs::property_path::read_field(&registry, source_payload, &path)
                 .expect("source position")
         };
         assert_eq!(
-            engine::core::property_path::read_field(&registry, payload, &path).expect("position"),
+            rustlua_ecs::property_path::read_field(&registry, payload, &path).expect("position"),
             source_position,
             "被回退字段必须等于源取值"
         );
@@ -2645,10 +2641,10 @@ mod tests {
             .expect("Transform")
             .clone();
         let position =
-            engine::core::property_path::read_field(&registry, &payload, &path).expect("position");
+            rustlua_ecs::property_path::read_field(&registry, &payload, &path).expect("position");
         assert_eq!(
             position,
-            engine::core::component_schema::FieldValue::Tuple(vec![999.0, 0.0, 0.0]),
+            rustlua_ecs::component_schema::FieldValue::Tuple(vec![999.0, 0.0, 0.0]),
             "Undo 后覆盖字段应恢复"
         );
         let _ = fs::remove_dir_all(root);
@@ -2674,9 +2670,9 @@ mod tests {
                 .cloned()
                 .expect("instance has Transform");
             let path =
-                engine::core::property_path::PropertyPath::parse("Transform.position").unwrap();
+                rustlua_ecs::property_path::PropertyPath::parse("Transform.position").unwrap();
             let updated =
-                engine::core::property_path::write_builtin(&payload, &path, "999,0,0").unwrap();
+                rustlua_ecs::property_path::write_builtin(&payload, &path, "999,0,0").unwrap();
             entity.components.insert("Transform".to_owned(), updated);
             scene.mark_dirty();
         }
@@ -2699,10 +2695,10 @@ mod tests {
         // 1) 源 Prefab 文件里该字段已更新。
         let prefab = Prefab::load(root.join("assets/prefabs/slime_green.prefab"))
             .expect("source prefab reloads");
-        let registry = engine::core::component_schema::builtin_registry();
-        let path = engine::core::property_path::PropertyPath::parse("Transform.position").unwrap();
+        let registry = rustlua_ecs::component_schema::builtin_registry();
+        let path = rustlua_ecs::property_path::PropertyPath::parse("Transform.position").unwrap();
         assert_eq!(
-            engine::core::property_path::read_field(
+            rustlua_ecs::property_path::read_field(
                 &registry,
                 prefab.entities[&source_id]
                     .components
@@ -2711,7 +2707,7 @@ mod tests {
                 &path
             )
             .expect("source position"),
-            engine::core::component_schema::FieldValue::Tuple(vec![999.0, 0.0, 0.0]),
+            rustlua_ecs::component_schema::FieldValue::Tuple(vec![999.0, 0.0, 0.0]),
             "源 Prefab 文件必须被更新"
         );
 
@@ -2906,7 +2902,7 @@ mod tests {
         .unwrap();
         assert_eq!(title.text, "Production Sample Title");
         assert_eq!(title.font_size, 33.6);
-        let layout = engine::core::ui_layout::UiRectLayout::from_component_str(
+        let layout = rustlua_ui::ui_layout::UiRectLayout::from_component_str(
             &reopened.scene.entities[&SceneEntityId(3)].components["UiLayout"],
         )
         .unwrap();

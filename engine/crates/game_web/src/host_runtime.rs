@@ -34,7 +34,7 @@
 
 use std::cell::RefCell;
 
-use rustlua_infra::frame_clock::{FrameClock, FRAME_INTERVAL_TOLERANCE_SECONDS};
+use rustlua_infra::frame_clock::{FRAME_INTERVAL_TOLERANCE_SECONDS, FrameClock};
 use wasm_bindgen::prelude::*;
 
 /// Everything one engine host owns. Single-threaded by construction (wasm), so it lives in a
@@ -124,8 +124,10 @@ async fn begin_inner(
     } else {
         serde_json::from_str(options_json).map_err(|error| host_error("options-json", error))?
     };
-    let updates_per_second = option_u32(&options, "updates_per_second", DEFAULT_UPDATES_PER_SECOND)?;
-    let max_catch_up_steps = option_u32(&options, "max_catch_up_steps", DEFAULT_MAX_CATCH_UP_STEPS)?;
+    let updates_per_second =
+        option_u32(&options, "updates_per_second", DEFAULT_UPDATES_PER_SECOND)?;
+    let max_catch_up_steps =
+        option_u32(&options, "max_catch_up_steps", DEFAULT_MAX_CATCH_UP_STEPS)?;
     let max_frame_seconds = option_f64(&options, "max_frame_seconds", DEFAULT_MAX_FRAME_SECONDS)?;
     let clear = option_color(&options)?;
     // `tick`：谁跑 Lua 的固定步。默认 `none` —— 老 JS 世界每帧也在跑，两边同时跑就是把世界推进两次。
@@ -146,10 +148,16 @@ async fn begin_inner(
     // 那会把"调用方给了一张没尺寸的画布"变成"我们悄悄用了别的尺寸"）。
     let canvas: web_sys::HtmlCanvasElement = gpu_canvas.clone().unchecked_into();
     let (mut width, mut height) = (canvas.width(), canvas.height());
-    if let Some(value) = options.get("canvas_width").and_then(serde_json::Value::as_u64) {
+    if let Some(value) = options
+        .get("canvas_width")
+        .and_then(serde_json::Value::as_u64)
+    {
         width = value.min(u64::from(u32::MAX)) as u32;
     }
-    if let Some(value) = options.get("canvas_height").and_then(serde_json::Value::as_u64) {
+    if let Some(value) = options
+        .get("canvas_height")
+        .and_then(serde_json::Value::as_u64)
+    {
         height = value.min(u64::from(u32::MAX)) as u32;
     }
     if width == 0 || height == 0 {
@@ -442,11 +450,7 @@ pub fn engine_host_frame_layout_json() -> String {
 /// 这是**每帧**该走的路：没有字符串、没有 JSON、没有 `JSON.parse`。
 /// `out` 太短 ⇒ `host: frame-out: …`（**先于**一切状态检查：入参不合法就该在碰设备之前说清楚）。
 #[wasm_bindgen]
-pub fn engine_host_frame_into(
-    dt_ms: f64,
-    input: JsValue,
-    out: &mut [f64],
-) -> Result<u32, JsValue> {
+pub fn engine_host_frame_into(dt_ms: f64, input: JsValue, out: &mut [f64]) -> Result<u32, JsValue> {
     if out.len() < HOST_FRAME_LEN {
         return Err(host_error(
             "frame-out",
@@ -526,11 +530,7 @@ pub fn engine_host_end() {
     });
 }
 
-fn option_u32(
-    options: &serde_json::Value,
-    key: &str,
-    fallback: u32,
-) -> Result<u32, JsValue> {
+fn option_u32(options: &serde_json::Value, key: &str, fallback: u32) -> Result<u32, JsValue> {
     match options.get(key) {
         None | Some(serde_json::Value::Null) => Ok(fallback),
         Some(value) => value
@@ -563,7 +563,12 @@ fn option_color(options: &serde_json::Value) -> Result<wgpu::Color, JsValue> {
     let list = value
         .as_array()
         .filter(|list| list.len() == 4)
-        .ok_or_else(|| host_error("options", format!("clear 必须是 4 个数的数组，给的是 {value}")))?;
+        .ok_or_else(|| {
+            host_error(
+                "options",
+                format!("clear 必须是 4 个数的数组，给的是 {value}"),
+            )
+        })?;
     let mut channels = [0.0_f64; 4];
     for (index, item) in list.iter().enumerate() {
         channels[index] = item

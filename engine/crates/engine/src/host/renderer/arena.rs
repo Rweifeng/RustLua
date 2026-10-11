@@ -3,7 +3,7 @@
 //!
 //! 同一类型、同 crate 的另一个固有 `impl` 块；可见性口径见 `gpu_mesh.rs` 的文件头。
 
-use crate::core::math3d::Mat4;
+use rustlua_math::math3d::Mat4;
 
 use super::{GpuMaterial, Renderer, joint_palette_data, next_2d_vertex_capacity};
 

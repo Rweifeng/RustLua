@@ -69,7 +69,7 @@ pub mod selection;
 
 pub use selection::{SelectionModel, SelectionSource};
 
-pub use engine::core::resource_kind::ResourceKind;
+pub use rustlua_assets::resource_kind::ResourceKind;
 
 pub mod inspector_state;
 

@@ -1,6 +1,6 @@
 //! `runtime_scene` 的测试集合：WP12 阶段 1 从 `runtime_scene.rs` 原样搬来的 4 个
 //! `#[cfg(test)] mod`（100 项测试）。断言、造数据与读盘路径一律没改——测试走
-//! `crate::core::games_dir()`（= `CARGO_MANIFEST_DIR` 向上三级 = 仓库根），与源文件位置无关。
+//! `rustlua_infra::games_dir()`（= `CARGO_MANIFEST_DIR` 向上三级 = 仓库根），与源文件位置无关。
 //!
 //! 可见性依据（`tasks/done/WP12-host拆分.md` §3.1.5）：本目录里的每个模块都是
 //! `runtime_scene` 的后代，`use super::*;` 的 glob 会把父模块的**私有项**一并带下来，
@@ -11,24 +11,22 @@ use super::*;
 
 // WP12 阶段 3b：这些名字原先由 `runtime_scene.rs` 顶部的 use 块带进来（测试靠 glob 取用）。
 // 生产代码搬走后父模块的导入被裁掉，这里改由测试自己声明——断言与造数据的路径一字未改。
-use crate::core::{
-    layer::RenderLayer,
-    math3d::Vec3,
-    quad::Quad,
-    resource_kind::ResourceKind,
-    scheduler::{ScheduleStage, SchedulerError, System},
-    script::ScriptErrorPolicy,
-    sprite::Sprite,
-    transform::Transform3D,
-    ui::{UiImage, UiText},
-    ui_layout::UiRect,
-};
 use crate::host::frame::SceneMesh;
+use rustlua_assets::resource_kind::ResourceKind;
+use rustlua_ecs::scheduler::{ScheduleStage, SchedulerError, System};
+use rustlua_ecs::transform::Transform3D;
+use rustlua_math::math3d::Vec3;
+use rustlua_render::layer::RenderLayer;
+use rustlua_render::quad::Quad;
+use rustlua_render::sprite::Sprite;
+use rustlua_scripting::script::ScriptErrorPolicy;
+use rustlua_ui::ui::{UiImage, UiText};
+use rustlua_ui::ui_layout::UiRect;
 
 // 示例重组后，展示工程从 examples/ 迁入 examples/game_api/（多项目布局）；
 // 此处路径同步修正，恢复 showcase/ui_test 等测试的真实覆盖（M18-03）。
 fn game_root() -> std::path::PathBuf {
-    crate::core::games_dir().join("examples").join("game_api")
+    rustlua_infra::games_dir().join("examples").join("game_api")
 }
 
 // 示例工程"逐场景实例化 + 步进"的门已迁到 `host::sample_project`
@@ -37,7 +35,7 @@ fn game_root() -> std::path::PathBuf {
 // 那一组门还一并覆盖脚本编译、API 覆盖率、组件覆盖率与入口菜单接线。
 
 fn production_sample_root() -> std::path::PathBuf {
-    crate::core::games_dir().join("examples").join("game_api")
+    rustlua_infra::games_dir().join("examples").join("game_api")
 }
 
 /// 写一个只含 `update()` 的临时工程脚本，返回路径（文件名带测试名，避免并行互踩）。
@@ -53,10 +51,10 @@ fn frame_view_scene(
     name: &str,
     second_camera: Option<&str>,
     camera_payload: &str,
-) -> crate::core::scene::Scene {
-    let mut scene = crate::core::scene::Scene::new(name);
-    let camera = crate::core::scene::SceneEntityId(1);
-    let mesh = crate::core::scene::SceneEntityId(2);
+) -> rustlua_scene::scene::Scene {
+    let mut scene = rustlua_scene::scene::Scene::new(name);
+    let camera = rustlua_scene::scene::SceneEntityId(1);
+    let mesh = rustlua_scene::scene::SceneEntityId(2);
     scene.add_entity(camera, "Camera", None).unwrap();
     scene.add_entity(mesh, "Mesh", None).unwrap();
     scene
@@ -74,7 +72,7 @@ fn frame_view_scene(
         .components
         .insert("MeshRenderer".into(), "mesh=assets/models/test.glb".into());
     if let Some(payload) = second_camera {
-        let second = crate::core::scene::SceneEntityId(3);
+        let second = rustlua_scene::scene::SceneEntityId(3);
         scene.add_entity(second, "Camera2", None).unwrap();
         scene
             .entities

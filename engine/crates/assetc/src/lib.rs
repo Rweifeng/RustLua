@@ -7,13 +7,11 @@
 //! 命令（见 `main.rs`）：`scan` / `import` / `clean` / `list` / `package` / `--check`。
 
 use anyhow::anyhow;
-use engine::core::{
-    dependency::recompute_edges,
-    import_cache::ImportCache,
-    importer::run_import_batch,
-    resource_db::{AssetId, DiskAsset, ResourceDatabase, ResourceState},
-    resource_kind::ResourceKind,
-};
+use rustlua_assets::dependency::recompute_edges;
+use rustlua_assets::import_cache::ImportCache;
+use rustlua_assets::importer::run_import_batch;
+use rustlua_assets::resource_db::{AssetId, DiskAsset, ResourceDatabase, ResourceState};
+use rustlua_assets::resource_kind::ResourceKind;
 use std::{
     collections::{BTreeMap, HashSet},
     fs,
@@ -251,7 +249,7 @@ pub fn scan(project: &Path) -> anyhow::Result<Vec<ScanEntry>> {
     let mut database = ResourceDatabase::open(project)?;
     // core 拆分后 `ImporterRegistry::builtin()` 不含 Scene/Prefab 导入器，
     // 扫描阶段必须用完整注册表，否则 .scene/.prefab 会误报"不支持的资源类型"。
-    let registry = engine::core::asset_import::full_registry();
+    let registry = rustlua_scene::asset_import::full_registry();
     let mut entries = Vec::new();
     let mut disk_assets = Vec::with_capacity(scanned_files.len());
     // 已注册记录延迟到 reconcile+传播后再重建，让 scan 输出反映最新状态
@@ -331,7 +329,7 @@ pub fn import(project: &Path) -> anyhow::Result<Vec<ImportOutcome>> {
     let entries = scan(project)?;
     let mut database = ResourceDatabase::open(project)?;
     let mut cache = ImportCache::open(project)?;
-    let registry = engine::core::asset_import::full_registry();
+    let registry = rustlua_scene::asset_import::full_registry();
     let items: Vec<_> = entries
         .iter()
         .filter_map(|entry| {
@@ -537,7 +535,7 @@ fn copy_dir_encoded(
         let encrypt_file = encrypt && should_encrypt(&file);
         if compress_file || encrypt_file {
             let bytes = fs::read(&file)?;
-            let encoded = engine::core::pack::encode(&bytes, compress_file, encrypt_file);
+            let encoded = rustlua_assets::pack::encode(&bytes, compress_file, encrypt_file);
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -598,11 +596,11 @@ pub fn benchmark_compression(project: &Path) -> anyhow::Result<Vec<CompressionBe
             fs::read(&file).map_err(|error| anyhow!("读取失败 {}: {error}", file.display()))?;
         let kind = ResourceKind::from_path(&file).token().to_owned();
         let started = std::time::Instant::now();
-        let compressed = engine::core::pack::encode(&bytes, true, false);
+        let compressed = rustlua_assets::pack::encode(&bytes, true, false);
         let compress_time = started.elapsed();
         let started = std::time::Instant::now();
         let decompressed =
-            engine::core::pack::decode(&compressed).map_err(|error| anyhow!("{error}"))?;
+            rustlua_assets::pack::decode(&compressed).map_err(|error| anyhow!("{error}"))?;
         let decompress_time = started.elapsed();
         if decompressed != bytes {
             return Err(anyhow!("压缩往返校验失败: {}", file.display()));
@@ -732,7 +730,7 @@ pub fn package(
         never_encode,
     )?;
     // 首包字体：收集项目用到的字符清单，运行时预生成字形（首帧文字不卡）。
-    let chars = engine::core::char_collect::collect_project_chars(project);
+    let chars = rustlua_scene::char_collect::collect_project_chars(project);
     fs::write(out.join("chars.txt"), &chars)?;
     // 发布子集化：把主字体裁剪到用到的字符，缩小体积（原 `subset-font.py` 的 Rust 版）。
     // 子集化失败（如 CFF 字体）时保留完整字体。
@@ -742,7 +740,7 @@ pub fn package(
         if src.is_file()
             && dst.is_file()
             && let Ok(bytes) = fs::read(&src)
-            && let Ok(subset) = engine::core::font_subset::subset_ttf(&bytes, &chars)
+            && let Ok(subset) = rustlua_render::font_subset::subset_ttf(&bytes, &chars)
         {
             fs::write(&dst, subset)?;
         }
@@ -862,7 +860,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("examples").join("game_api")
+        rustlua_infra::games_dir().join("examples").join("game_api")
     }
 
     fn copy_sample_project(label: &str) -> Option<PathBuf> {
@@ -1103,8 +1101,8 @@ mod tests {
         package(&root, &out, true, false).unwrap();
         let png = fs::read(out.join("assets/textures/red-1x1.png")).unwrap();
         let lua = fs::read(out.join("scripts/main.lua")).unwrap();
-        assert!(png.starts_with(engine::core::pack::PACK_MAGIC));
-        assert!(!lua.starts_with(engine::core::pack::PACK_MAGIC));
+        assert!(png.starts_with(rustlua_assets::pack::PACK_MAGIC));
+        assert!(!lua.starts_with(rustlua_assets::pack::PACK_MAGIC));
         fs::remove_dir_all(&out).ok();
         cleanup(&root);
     }

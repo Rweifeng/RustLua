@@ -47,8 +47,8 @@
 //! Usage:
 //!   cargo run -p game --example jhyt_m35_depth_sort [-- <game_jhyt-root>]
 
-use engine::core::input::InputSnapshot;
 use engine::host::{RuntimeScene, SceneDraw, SceneMesh};
+use rustlua_input::input::InputSnapshot;
 use std::{env, path::PathBuf};
 
 /// 设计分辨率 = 发布窗口尺寸（与 `jhyt_m32_camera` 同一口径）。
@@ -91,10 +91,11 @@ struct Reading {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let project = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+    let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
+        rustlua_infra::games_dir()
+            .join("examples")
+            .join("game_jhyt")
+    });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

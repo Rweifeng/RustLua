@@ -6,29 +6,27 @@
 //! 这个不变量就跨文件了，正是本次拆分要避免的方向。
 //! 每帧主路径的调用方（`mod.rs` 与兄弟子模块）用的私有方法标 `pub(super)`（计划 §3.1.4）。
 
-use crate::core::{
-    animation::AnimationStateMachine,
-    animation3d::Animation3D,
-    asset_handle::AssetRecord,
-    camera::Camera3D,
-    camera::{CameraSelection, CameraView, DEFAULT_3D_CLEAR, RenderView, Viewport},
-    entity::EntityId,
-    hierarchy::GlobalTransform,
-    layer::RenderLayer,
-    light::Light,
-    math3d::{Mat4, Vec3},
-    mesh3d::MeshRenderer,
-    quad::Quad,
-    scene::SceneEntityId,
-    sprite::{Sprite, SpriteAsset, SpriteSorting},
-    sprite_batch::{SpriteBatchItem, SpriteDrawBatch},
-    transform::Transform3D,
-    transform::{Transform, Vec2},
-};
 use crate::host::frame::{
     BoundsSource, CustomFontAtlasPixels, FontAtlasPixels, OverlayVertex, Scene3d, Scene3dBounds,
     Scene3dDrawable, SceneDraw, SceneMesh, WHITE_TEXTURE_PATH, WorldSpriteVertex,
 };
+use rustlua_animation::animation::AnimationStateMachine;
+use rustlua_animation::animation3d::Animation3D;
+use rustlua_assets::asset_handle::AssetRecord;
+use rustlua_camera::camera::Camera3D;
+use rustlua_camera::camera::{CameraSelection, CameraView, DEFAULT_3D_CLEAR, RenderView, Viewport};
+use rustlua_ecs::entity::EntityId;
+use rustlua_ecs::hierarchy::GlobalTransform;
+use rustlua_ecs::transform::Transform3D;
+use rustlua_ecs::transform::{Transform, Vec2};
+use rustlua_math::math3d::{Mat4, Vec3};
+use rustlua_render::layer::RenderLayer;
+use rustlua_render::light::Light;
+use rustlua_render::mesh3d::MeshRenderer;
+use rustlua_render::quad::Quad;
+use rustlua_render::sprite::{Sprite, SpriteAsset, SpriteSorting};
+use rustlua_render::sprite_batch::{SpriteBatchItem, SpriteDrawBatch};
+use rustlua_scene::scene::SceneEntityId;
 use std::collections::HashSet;
 
 use super::{FrameView3d, RuntimeScene, merge_adjacent_draws, texture_id_of};
@@ -77,7 +75,7 @@ impl RuntimeScene {
             // `WorldTransform3D`，此时每个有 `Transform3D` 的实体都已拿到世界变换），
             // 因此不必逐实体"先试世界再退回局部"而多付一次 `get`。
             let mut collect = |id: EntityId, model: Mat4, renderer: &MeshRenderer| {
-                if !crate::core::visibility::entity_visible_in(world, id, view_mask) {
+                if !rustlua_render::visibility::entity_visible_in(world, id, view_mask) {
                     filtered += 1;
                     return;
                 }
@@ -91,13 +89,13 @@ impl RuntimeScene {
                     .flatten()
                     .map(|animation| animation.joint_matrices())
                     .unwrap_or_default();
-                let bounds = if renderer.mesh == crate::core::mesh3d::GROUND_PLANE_SENTINEL {
+                let bounds = if renderer.mesh == rustlua_render::mesh3d::GROUND_PLANE_SENTINEL {
                     Scene3dBounds {
-                        local_aabb: crate::core::math3d::Aabb3::new(
+                        local_aabb: rustlua_math::math3d::Aabb3::new(
                             Vec3::new(-100.0, -0.05, -100.0),
                             Vec3::new(100.0, 0.05, 100.0),
                         )
-                        .unwrap_or_else(|_| crate::core::math3d::Aabb3 {
+                        .unwrap_or_else(|_| rustlua_math::math3d::Aabb3 {
                             min: Vec3::new(-1.0, -1.0, -1.0),
                             max: Vec3::new(1.0, 1.0, 1.0),
                         }),
@@ -105,7 +103,7 @@ impl RuntimeScene {
                     }
                 } else {
                     Scene3dBounds {
-                        local_aabb: crate::core::math3d::Aabb3 {
+                        local_aabb: rustlua_math::math3d::Aabb3 {
                             min: Vec3::new(-0.5, -0.5, -0.5),
                             max: Vec3::new(0.5, 0.5, 0.5),
                         },
@@ -117,7 +115,10 @@ impl RuntimeScene {
                 // 或没有可用相机时退 `renderer.mesh`（原行为，像素逐字节不变）。
                 let mesh_path = match (
                     lod_camera_position,
-                    world.get::<crate::core::lod::LodGroup>(id).ok().flatten(),
+                    world
+                        .get::<rustlua_render::lod::LodGroup>(id)
+                        .ok()
+                        .flatten(),
                 ) {
                     (Some(camera_pos), Some(group)) => {
                         let model_pos = Vec3::new(
@@ -146,7 +147,7 @@ impl RuntimeScene {
                                 mesh_path.as_str(),
                                 AssetRecord {
                                     path: mesh_path.clone(),
-                                    kind: crate::core::resource_kind::ResourceKind::Model,
+                                    kind: rustlua_assets::resource_kind::ResourceKind::Model,
                                 },
                             )
                             .0
@@ -240,7 +241,7 @@ impl RuntimeScene {
     /// "这里发生了相机相关的世界变更"写在调用点上。
     pub(super) fn invalidate_frame_view_3d(&mut self) {
         #[cfg(test)]
-        crate::core::camera::ledger::count_frame_view_invalidations();
+        rustlua_camera::camera::ledger::count_frame_view_invalidations();
         self.frame_view_3d = None;
     }
 
@@ -257,7 +258,7 @@ impl RuntimeScene {
     /// `aspect_ratio`，于是"组件里存的比例"与"渲染/拾取实际用的比例"成为两份状态。
     pub(super) fn active_camera3d(&self) -> Camera3D {
         #[cfg(test)]
-        crate::core::camera::ledger::count_camera3d_resolution();
+        rustlua_camera::camera::ledger::count_camera3d_resolution();
         let fallback = Camera3D::perspective(
             Vec3::new(0.0, 0.0, 5.0),
             Vec3::ZERO,
@@ -288,7 +289,7 @@ impl RuntimeScene {
             let mut chosen: Option<Camera3D> = None;
             let mut fallback: Option<Camera3D> = None;
             let mut selected_disabled = false;
-            world.for_each::<crate::core::camera::Camera>(|id, camera| {
+            world.for_each::<rustlua_camera::camera::Camera>(|id, camera| {
                 // 唯一组件、按投影分支取值：正交相机不属于 3D pass 的候选（既不参与
                 // "第一个"回退，也不响应显式选中——与它此前根本不在 `Camera3D` 存储里一致）。
                 let Some(component) = camera.as_perspective() else {
@@ -309,7 +310,7 @@ impl RuntimeScene {
                     // docs/54 §8-⑦：姿态取实体的**世界**变换（父链组合后的结果）。取局部值
                     // 会让挂在父下的相机看不清"它到底在看哪里"；这里用 lazy 版本，因此不依赖
                     // "调用方本帧已经跑过传播"这个隐含顺序。
-                    match crate::core::hierarchy::world_transform_3d_lazy(world, id) {
+                    match rustlua_ecs::hierarchy::world_transform_3d_lazy(world, id) {
                         Ok(Some(pose)) => component.with_pose(pose).unwrap_or(component),
                         _ => component,
                     }
@@ -461,20 +462,20 @@ impl RuntimeScene {
             // 预筛不生效；`sprite_culling` 关闭时同样不预筛（全收，像素不变）。
             let candidates: Option<std::collections::HashSet<EntityId>> =
                 if self.spatial_index && self.sprite_culling && !world_view_is_3d {
-                    let fingerprint = script.with_world(crate::core::hierarchy::local_fingerprint);
+                    let fingerprint = script.with_world(rustlua_ecs::hierarchy::local_fingerprint);
                     if self.spatial_index_fingerprint != Some(fingerprint) {
                         // 重建：与提取同一对组件族（inherit 分支同源），只取位置/缩放/尺寸；
                         // for_each2 按 EntityId 升序，rebuild 要求升序输入。
                         let cell_size = self.spatial_index_cell_size;
                         let grid = script.with_world(|world| {
-                            let mut items: Vec<(EntityId, crate::core::spatial_index::Circle)> =
+                            let mut items: Vec<(EntityId, rustlua_render::spatial_index::Circle)> =
                                 Vec::new();
                             if inherit {
                                 world.for_each2::<GlobalTransform, Sprite>(|id, global, sprite| {
                                     if let Some(plane) = global.plane() {
                                         items.push((
                                             id,
-                                            crate::core::spatial_index::Circle::from_sprite(
+                                            rustlua_render::spatial_index::Circle::from_sprite(
                                                 plane.position,
                                                 plane.scale,
                                                 sprite.size,
@@ -486,7 +487,7 @@ impl RuntimeScene {
                                 world.for_each2::<Transform, Sprite>(|id, transform, sprite| {
                                     items.push((
                                         id,
-                                        crate::core::spatial_index::Circle::from_sprite(
+                                        rustlua_render::spatial_index::Circle::from_sprite(
                                             transform.position,
                                             transform.scale,
                                             sprite.size,
@@ -495,7 +496,7 @@ impl RuntimeScene {
                                 });
                             }
                             let mut grid =
-                                crate::core::spatial_index::SpatialGrid2D::new(cell_size);
+                                rustlua_render::spatial_index::SpatialGrid2D::new(cell_size);
                             grid.rebuild(items);
                             grid
                         });
@@ -504,7 +505,7 @@ impl RuntimeScene {
                     }
                     // 查询候选（CameraBounds → 查询 Bounds）。
                     cull_bounds.map(|bounds| {
-                        let query_bounds = crate::core::spatial_index::Bounds {
+                        let query_bounds = rustlua_render::spatial_index::Bounds {
                             min_x: bounds.min.x,
                             min_y: bounds.min.y,
                             max_x: bounds.max.x,
@@ -527,13 +528,13 @@ impl RuntimeScene {
                 // WP2：提取用的变换来源由空间继承开关**每帧选定一次**：开启时整条换成
                 // `WorldTransform`，关闭时仍走 `Transform`。刻意不做"每个实体先试世界再退回局部"
                 // ——那会给每个精灵多一次 `get`（两层哈希），WP6 已量到那正是 5 万精灵档的大头。
-                // 不变量（见 `crate::core::hierarchy`）：开启继承时**每个有局部变换的实体都有世界变换**
+                // 不变量（见 `rustlua_ecs::hierarchy`）：开启继承时**每个有局部变换的实体都有世界变换**
                 // （组合不了或成环的保留局部值当世界值），所以整条替换不会漏画任何一个精灵。
                 let mut collect = |id: EntityId, transform: &Transform, sprite: &Sprite| {
                     if failure.is_some() {
                         return;
                     }
-                    if !crate::core::visibility::entity_visible_in(world, id, view_mask) {
+                    if !rustlua_render::visibility::entity_visible_in(world, id, view_mask) {
                         filtered += 1;
                         return;
                     }
@@ -592,20 +593,20 @@ impl RuntimeScene {
                     // docs/54 §4.3：显式显示模式把这段几何路由到对应通道；未声明 = 跟随全局开关。
                     let item = SpriteBatchItem::new(texture, layer, sprite, *transform);
                     match world
-                        .get::<crate::core::render_mode::RenderMode>(id)
+                        .get::<rustlua_render::render_mode::RenderMode>(id)
                         .ok()
                         .flatten()
                         .copied()
                     {
-                        Some(crate::core::render_mode::RenderMode::Overlay) => {
+                        Some(rustlua_render::render_mode::RenderMode::Overlay) => {
                             routed.1 += 1;
                             overlay_batch.push(item);
                         }
-                        Some(crate::core::render_mode::RenderMode::Screen) => {
+                        Some(rustlua_render::render_mode::RenderMode::Screen) => {
                             routed.2 += 1;
                             screen_batch.push(item);
                         }
-                        Some(crate::core::render_mode::RenderMode::World) => {
+                        Some(rustlua_render::render_mode::RenderMode::World) => {
                             routed.0 += 1;
                             sprite_batch.push(item);
                         }
@@ -655,7 +656,7 @@ impl RuntimeScene {
             let inherit = self.spatial_active;
             let view_mask = self.view_world_mask;
             let mut filtered = 0usize;
-            let white = crate::core::quad::QUAD_DEFAULT_TEXTURE;
+            let white = rustlua_render::quad::QUAD_DEFAULT_TEXTURE;
             let mut routed = (0usize, 0usize, 0usize);
             script.with_world(|world| {
                 let mut index = 0usize;
@@ -663,7 +664,7 @@ impl RuntimeScene {
                     if failure.is_some() {
                         return;
                     }
-                    if !crate::core::visibility::entity_visible_in(world, id, view_mask) {
+                    if !rustlua_render::visibility::entity_visible_in(world, id, view_mask) {
                         filtered += 1;
                         return;
                     }
@@ -686,7 +687,8 @@ impl RuntimeScene {
                     let path = quad.texture.as_deref().unwrap_or(white);
                     let texture =
                         texture_id_of(path, assets, texture_paths, texture_lookup, texture_handles);
-                    let layer = if quad.sorting == crate::core::sprite::SpriteSorting::default() {
+                    let layer = if quad.sorting == rustlua_render::sprite::SpriteSorting::default()
+                    {
                         // 与精灵同一套默认层规则（按序号）。两个集合的序号各自从 0 起，因此同层时
                         // 后收集的 Quad 画在精灵之上——色块/进度条底这类用途本来就该压在上面。
                         1 + layer_index as i32
@@ -695,21 +697,21 @@ impl RuntimeScene {
                     };
                     // docs/54 §4.3：显式显示模式把这段几何路由到对应通道；未声明 = 跟随全局开关。
                     let mode = world
-                        .get::<crate::core::render_mode::RenderMode>(id)
+                        .get::<rustlua_render::render_mode::RenderMode>(id)
                         .ok()
                         .flatten()
                         .copied();
                     let item = SpriteBatchItem::new(texture, layer, sprite, *transform);
                     match mode {
-                        Some(crate::core::render_mode::RenderMode::Overlay) => {
+                        Some(rustlua_render::render_mode::RenderMode::Overlay) => {
                             routed.1 += 1;
                             overlay_batch.push(item);
                         }
-                        Some(crate::core::render_mode::RenderMode::Screen) => {
+                        Some(rustlua_render::render_mode::RenderMode::Screen) => {
                             routed.2 += 1;
                             screen_batch.push(item);
                         }
-                        Some(crate::core::render_mode::RenderMode::World) => {
+                        Some(rustlua_render::render_mode::RenderMode::World) => {
                             routed.0 += 1;
                             sprite_batch.push(item);
                         }

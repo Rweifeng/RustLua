@@ -5,27 +5,25 @@
 //! 线框方法被**留在 `mod.rs` 的每帧主路径**调用，方向是子→父，故标 `pub(super)`（§3.1.4）。
 //! 结构体本身仍定义在 `mod.rs`——搬走它会逼着约 40 个字段逐个放宽可见性。
 
-use crate::core::{
-    asset_handle::{AssetHandle, AssetRecord, AssetStore},
-    camera::{Camera2D, OrthoTerms, Viewport},
-    entity::EntityId,
-    font::FontAtlas,
-    hierarchy::{Parent, SpatialReport},
-    layer::RenderLayer,
-    par::Parallelism,
-    physics::PhysicsAuthority,
-    scene::{Scene, SceneEntityId},
-    scheduler::Scheduler,
-    script::LuaRuntime,
-    spatial_transform::LocalTransform,
-    sprite_batch::SpriteBatch,
-    tilemap::Tilemap,
-    transform::{Transform, Transform3D, Vec2},
-    ui::UI_REFERENCE_SIZE,
-    ui_layout::{UiRect, UiRectLayout},
-};
 use crate::host::frame::{OverlayVertex, SceneDraw, VectorFontHandle};
 use crate::host::gamepad::GamepadPoller;
+use rustlua_assets::asset_handle::{AssetHandle, AssetRecord, AssetStore};
+use rustlua_camera::camera::{Camera2D, OrthoTerms, Viewport};
+use rustlua_ecs::entity::EntityId;
+use rustlua_ecs::hierarchy::{Parent, SpatialReport};
+use rustlua_ecs::scheduler::Scheduler;
+use rustlua_ecs::spatial_transform::LocalTransform;
+use rustlua_ecs::tilemap::Tilemap;
+use rustlua_ecs::transform::{Transform, Transform3D, Vec2};
+use rustlua_infra::par::Parallelism;
+use rustlua_physics::physics::PhysicsAuthority;
+use rustlua_render::font::FontAtlas;
+use rustlua_render::layer::RenderLayer;
+use rustlua_render::sprite_batch::SpriteBatch;
+use rustlua_scene::scene::{Scene, SceneEntityId};
+use rustlua_scripting::script::LuaRuntime;
+use rustlua_ui::ui::UI_REFERENCE_SIZE;
+use rustlua_ui::ui_layout::{UiRect, UiRectLayout};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::Path,
@@ -247,8 +245,8 @@ impl RuntimeScene {
             };
             for (from, to) in shape.wireframe_segments() {
                 let (Some(from), Some(to)) = (
-                    crate::core::picking::screen_from_view_unclipped(view, from, viewport),
-                    crate::core::picking::screen_from_view_unclipped(view, to, viewport),
+                    rustlua_render::picking::screen_from_view_unclipped(view, from, viewport),
+                    rustlua_render::picking::screen_from_view_unclipped(view, to, viewport),
                 ) else {
                     continue; // 相机背后/远裁剪面之外：不画，也不猜
                 };
@@ -481,10 +479,10 @@ impl RuntimeScene {
             for handle in world.entities_with::<UiRectLayout>() {
                 ui_handles.insert(encode_handle(handle));
             }
-            for handle in world.entities_with::<crate::core::ui::UiImage>() {
+            for handle in world.entities_with::<rustlua_ui::ui::UiImage>() {
                 ui_handles.insert(encode_handle(handle));
             }
-            for handle in world.entities_with::<crate::core::ui::UiText>() {
+            for handle in world.entities_with::<rustlua_ui::ui::UiText>() {
                 ui_handles.insert(encode_handle(handle));
             }
             let mut candidates: Vec<EntityId> = named.iter().map(|(handle, _)| *handle).collect();
@@ -561,8 +559,8 @@ impl RuntimeScene {
         // docs/54 §4.1：`parent` 的默认语义由**场景自身**声明，而不是由宿主猜。未声明 ⇒ 组织
         // 关系（v2 历史语义），`spatial=local` ⇒ 父子参与空间组合（迁移后的场景）。宿主仍可用
         // `set_spatial_inheritance` 覆盖这次判断（回滚档）。
-        let spatial_mode = crate::core::scene_space::spatial_mode(&scene);
-        if let Some(issue) = crate::core::scene_space::spatial_mode_issue(&scene) {
+        let spatial_mode = rustlua_scene::scene_space::spatial_mode(&scene);
+        if let Some(issue) = rustlua_scene::scene_space::spatial_mode_issue(&scene) {
             tracing::warn!(target: "scene", scene = %scene.name, "{issue}");
         }
         let mut script = LuaRuntime::new()?;
@@ -583,13 +581,13 @@ impl RuntimeScene {
             // P3 用户数据目录：发布包（`<exe>/pack` + `release.toml`，或 `--pack`）
             // 把存档与玩家设置写到用户目录（`%APPDATA%\<app>`），不写程序目录；
             // 开发工程保持工程内 `.cache/save.sav` 与工程根 `settings.toml`。
-            let roots = crate::core::user_dir::data_roots(root, packaged);
-            if let Err(error) = crate::core::user_dir::ensure_save_dir(&roots) {
+            let roots = rustlua_infra::user_dir::data_roots(root, packaged);
+            if let Err(error) = rustlua_infra::user_dir::ensure_save_dir(&roots) {
                 tracing::warn!(target: "save", "{}", error);
             }
             if roots.packaged {
                 script.set_settings_root(roots.settings_dir.clone());
-                match crate::core::user_dir::seed_settings(&roots, root) {
+                match rustlua_infra::user_dir::seed_settings(&roots, root) {
                     Ok(true) => tracing::info!(
                         target: "app",
                         path = %roots.settings_file().display(),
@@ -613,7 +611,7 @@ impl RuntimeScene {
             // 表现成"脚本没生效"，实则是这里把门关着。判两次比"哪个平台用哪个"更稳：
             // 桌面走前半句就短路，Web 走后半句，两边判定一致。
             let script_exists =
-                script_path.is_file() || crate::core::vfs::read(&script_path).is_ok();
+                script_path.is_file() || rustlua_infra::vfs::read(&script_path).is_ok();
             if script_exists {
                 script.execute_project_script(&script_path)?;
             } else {
@@ -627,7 +625,7 @@ impl RuntimeScene {
         let declared_camera = script.with_world(declared_camera_2d_in);
         let camera = match declared_camera {
             Some(camera) => camera,
-            None => Camera2D::new(crate::core::camera::DEFAULT_2D_CAMERA_CENTER, 1.0)?,
+            None => Camera2D::new(rustlua_camera::camera::DEFAULT_2D_CAMERA_CENTER, 1.0)?,
         };
         if declared_camera.is_some() {
             tracing::info!(
@@ -656,8 +654,8 @@ impl RuntimeScene {
             spatial_index_cell_size: 256.0,
             collider_debug_draw: false,
             collider_debug_draw_3d: false,
-            view_world_mask: crate::core::visibility::ALL_LAYERS,
-            view_overlay_mask: crate::core::visibility::ALL_LAYERS,
+            view_world_mask: rustlua_render::visibility::ALL_LAYERS,
+            view_overlay_mask: rustlua_render::visibility::ALL_LAYERS,
             view_filtered: std::cell::Cell::new(0),
             tilemap_culling: true,
             sprite_culling: true,
@@ -707,9 +705,9 @@ impl RuntimeScene {
             spatial_fingerprint: None,
             spatial_skip_unchanged: true,
             spatial_skipped_frames: 0,
-            spatial_incremental: crate::core::hierarchy::SpatialIncremental::default(),
+            spatial_incremental: rustlua_ecs::hierarchy::SpatialIncremental::default(),
             spatial_incremental_enabled: true,
-            last_spatial_path: crate::core::hierarchy::SpatialPath::Full,
+            last_spatial_path: rustlua_ecs::hierarchy::SpatialPath::Full,
             last_spatial_recomputed: 0,
             spatial_path_counts: [0; 3],
             spatial_recomputed_total: 0,
@@ -752,7 +750,7 @@ pub struct RuntimeSpawnedEntity {
     /// 设计分辨率框里那张真游戏画面。
     pub ui: bool,
     /// 实体**自己**的局部姿态（`position=..;rotation=..;scale=..` 那一套，见
-    /// [`crate::core::spatial_transform::TRANSFORM_COMPONENT`]：2D/3D 在文档里共用这一个组件名）。
+    /// [`rustlua_ecs::spatial_transform::TRANSFORM_COMPONENT`]：2D/3D 在文档里共用这一个组件名）。
     pub position: [f32; 3],
     /// 四元数 `x,y,z,w`。
     pub rotation: [f32; 4],

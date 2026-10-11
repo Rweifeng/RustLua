@@ -1,8 +1,6 @@
-use engine::core::{
-    prefab::Prefab,
-    resource_db::AssetId,
-    scene::{Scene, SceneEntityId},
-};
+use rustlua_assets::resource_db::AssetId;
+use rustlua_scene::prefab::Prefab;
+use rustlua_scene::scene::{Scene, SceneEntityId};
 use std::{collections::BTreeMap, fs};
 
 fn main() {

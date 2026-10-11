@@ -17,13 +17,13 @@
 
 use crate::util::strip_verbatim_prefix;
 use eframe::egui;
-use engine::core::input::{ActionConflict, ActionMap, AxisDirection, Binding};
-use engine::core::settings::{
-    ProjectSettings, load_deadzone_section, load_input_section, save_input_settings,
-};
 use engine::host::gamepad::{
     GAMEPAD_AXIS_COUNT, GAMEPAD_BUTTON_COUNT, GamepadDeadzone, GamepadFrame, GamepadPoller,
 };
+use rustlua_gameplay::settings::{
+    ProjectSettings, load_deadzone_section, load_input_section, save_input_settings,
+};
+use rustlua_input::input::{ActionConflict, ActionMap, AxisDirection, Binding};
 use std::path::Path;
 
 /// 轴捕获阈值：明显高于设备死区（0.15）与动作判定阈值（0.5），使摇杆回中漂移
@@ -494,8 +494,8 @@ pub(crate) fn settings_path(root: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::core::input::{InputSnapshot, KeyCode, MouseButton};
     use engine::host::gamepad::{FakeBackend, axis, button};
+    use rustlua_input::input::{InputSnapshot, KeyCode, MouseButton};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     fn temp_project(tag: &str) -> std::path::PathBuf {

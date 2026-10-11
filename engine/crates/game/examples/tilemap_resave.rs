@@ -14,7 +14,7 @@
 //! 不带参数时只处理 `game_jhyt`（M72 的八张场景）。工具是**幂等**的：新编码再跑一遍
 //! 得到同一份字节，所以可以安全地重复执行。
 
-use engine::core::tilemap::{TILES_FORMAT_ATLAS, Tilemap};
+use rustlua_ecs::tilemap::{TILES_FORMAT_ATLAS, Tilemap};
 use std::{env, fs, path::PathBuf, process};
 
 fn main() {
@@ -31,7 +31,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .map(|arg| Ok(PathBuf::from(arg).canonicalize()?))
             .collect::<Result<_, Box<dyn std::error::Error>>>()?
     } else {
-        vec![engine::core::games_dir().join("examples").join("game_jhyt")]
+        vec![
+            rustlua_infra::games_dir()
+                .join("examples")
+                .join("game_jhyt"),
+        ]
     };
     let mut files = 0usize;
     let mut rewritten = 0usize;

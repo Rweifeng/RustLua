@@ -4,9 +4,10 @@ use crate::EditorApp;
 use crate::util::{display_path, strip_verbatim_prefix};
 use editor::{ReparentPosition, SelectionSource};
 use eframe::egui;
-use engine::core::{
-    prefab::Prefab, resource_db::AssetId, scene::SceneEntityId, transform::Transform3D,
-};
+use rustlua_assets::resource_db::AssetId;
+use rustlua_ecs::transform::Transform3D;
+use rustlua_scene::prefab::Prefab;
+use rustlua_scene::scene::SceneEntityId;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -378,7 +379,7 @@ impl EditorApp {
                 .get("Transform")
                 .and_then(|value| Transform3D::from_component_str(value).ok())
                 .map(|transform| transform.position)
-                .unwrap_or(engine::core::math3d::Vec3::ZERO);
+                .unwrap_or(rustlua_math::math3d::Vec3::ZERO);
             self.editor_camera.target = target;
             self.status = "3D Scene View 已聚焦实体".to_owned();
             return;
@@ -1219,8 +1220,8 @@ impl EditorApp {
                     .metadata
                     .get("ui.root")
                     .is_some_and(|value| value == "true"),
-                engine::core::spatial_transform::entity_space(&entity.components)
-                    == engine::core::spatial_transform::SpatialKind::ThreeD,
+                rustlua_ecs::spatial_transform::entity_space(&entity.components)
+                    == rustlua_ecs::spatial_transform::SpatialKind::ThreeD,
                 entity
                     .components
                     .keys()
@@ -1659,7 +1660,7 @@ impl EditorApp {
 /// 子树里出现的第一个 `prefab.source`（含根自己）：非 `None` 说明这份子树里已经有
 /// Prefab 实例，从它创建 Prefab 会产生**嵌套**（编辑器目前不支持）。
 fn subtree_prefab_source(
-    scene: &engine::core::scene::Scene,
+    scene: &rustlua_scene::scene::Scene,
     root: SceneEntityId,
 ) -> Option<String> {
     let mut stack = vec![root];
@@ -1706,7 +1707,9 @@ mod tests {
     };
     use editor::SceneDocument;
     use eframe::egui;
-    use engine::core::{logging::LogSink, resource_db::AssetId, scene::SceneEntityId};
+    use rustlua_assets::resource_db::AssetId;
+    use rustlua_infra::logging::LogSink;
+    use rustlua_scene::scene::SceneEntityId;
 
     /// 新建场景的默认名：`main` 可用就用它；`scenes/main.scene` 已存在则 `main2`…
     /// 菜单里没有名字输入框，名字必须由这里保证"不覆盖已有场景"。
@@ -1787,7 +1790,7 @@ mod tests {
             app.status
         );
         let prefab =
-            engine::core::prefab::Prefab::load(root.join("assets/prefabs/Hero.prefab")).unwrap();
+            rustlua_scene::prefab::Prefab::load(root.join("assets/prefabs/Hero.prefab")).unwrap();
         assert!(
             prefab.nested_sources().is_empty(),
             "平 Prefab 不该带任何嵌套引用"
@@ -1799,7 +1802,7 @@ mod tests {
     /// 扫出"这份 Prefab 里嵌了谁"（引擎侧事实源 `Prefab::nested_sources`）。
     #[test]
     fn nested_sources_report_every_prefab_reference_in_the_file() {
-        let mut scene = engine::core::scene::Scene::new("hero");
+        let mut scene = rustlua_scene::scene::Scene::new("hero");
         let root = SceneEntityId(1);
         scene.add_entity(root, "Hero", None).unwrap();
         let child = SceneEntityId(2);
@@ -1808,7 +1811,7 @@ mod tests {
             "prefab.source".to_owned(),
             "assets/prefabs/sword.prefab".to_owned(),
         );
-        let prefab = engine::core::prefab::Prefab::from_scene(
+        let prefab = rustlua_scene::prefab::Prefab::from_scene(
             &scene,
             root,
             AssetId::from_seed("hero"),

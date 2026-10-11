@@ -8,7 +8,7 @@ use crate::{
     CommandHistory, CommandKind, DocumentError, PlaySession, ProjectDocument, ProjectInfo,
     SceneDocument, SelectionModel, SelectionSource,
 };
-use engine::core::scene::SceneEntityId;
+use rustlua_scene::scene::SceneEntityId;
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},

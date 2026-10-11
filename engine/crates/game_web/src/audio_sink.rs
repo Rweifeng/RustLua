@@ -1,4 +1,4 @@
-//! wasm 侧的平台音频出口（[`engine::core::audio_sink`] 的实现）。
+//! wasm 侧的平台音频出口（[`rustlua_audio::audio_sink`] 的实现）。
 //!
 //! ## 两个平台，一条 Rust 路
 //!
@@ -26,7 +26,7 @@
 
 use std::cell::RefCell;
 
-use engine::core::audio_sink::{AudioRequest, AudioSinkProvider};
+use rustlua_audio::audio_sink::{AudioRequest, AudioSinkProvider};
 use wasm_bindgen::{JsCast, JsValue};
 
 /// 播放统计：给宿主读数用（**这是 wasm 自报的数字**，外部证据看 `__rustluaAudioElements`）。
@@ -129,7 +129,7 @@ impl AudioSinkProvider for WebAudioSink {
 
 /// 装平台音频出口（**幂等**，与资源/存档槽同一套理由）。
 pub fn install() -> Result<(), String> {
-    match engine::core::audio_sink::set_provider(Box::new(WebAudioSink)) {
+    match rustlua_audio::audio_sink::set_provider(Box::new(WebAudioSink)) {
         Ok(()) => Ok(()),
         Err(error) => {
             web_sys::console::log_1(&JsValue::from_str(&format!(

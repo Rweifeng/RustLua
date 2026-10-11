@@ -4,19 +4,17 @@
 //! 这里的开关成对出现（`set_*` + 读取器）。`sprite_parallelism` 的读取器按行段正好落在两条
 //! collider 调试方法之间，因此单独成段带走——与 `set_sprite_parallelism` 同模块，配对不用跨文件找。
 
-use crate::core::{
-    camera::{Camera2D, RenderView, Viewport},
-    entity::EntityId,
-    hierarchy::SpatialReport,
-    math3d::Mat4,
-    par::Parallelism,
-    particle::{ParticleEmitter, SceneParticleEmitter},
-    physics::PhysicsAuthority,
-    scene::SceneEntityId,
-    transform::Transform3D,
-    transform::{Transform, Vec2},
-    world::World,
-};
+use rustlua_camera::camera::{Camera2D, RenderView, Viewport};
+use rustlua_ecs::entity::EntityId;
+use rustlua_ecs::hierarchy::SpatialReport;
+use rustlua_ecs::particle::{ParticleEmitter, SceneParticleEmitter};
+use rustlua_ecs::transform::Transform3D;
+use rustlua_ecs::transform::{Transform, Vec2};
+use rustlua_ecs::world::World;
+use rustlua_infra::par::Parallelism;
+use rustlua_math::math3d::Mat4;
+use rustlua_physics::physics::PhysicsAuthority;
+use rustlua_scene::scene::SceneEntityId;
 
 use super::{PhysicsStageOrder, RuntimeScene};
 
@@ -29,9 +27,9 @@ use super::{PhysicsStageOrder, RuntimeScene};
 pub(super) fn local_transform_in(
     world: &World,
     entity: EntityId,
-) -> Option<crate::core::spatial_transform::LocalTransform> {
+) -> Option<rustlua_ecs::spatial_transform::LocalTransform> {
     if let Ok(Some(transform)) = world.get::<Transform3D>(entity) {
-        return Some(crate::core::spatial_transform::LocalTransform::from_3d(
+        return Some(rustlua_ecs::spatial_transform::LocalTransform::from_3d(
             *transform,
         ));
     }
@@ -40,7 +38,7 @@ pub(super) fn local_transform_in(
         .ok()
         .flatten()
         .and_then(|transform| {
-            crate::core::spatial_transform::LocalTransform::from_2d(*transform).ok()
+            rustlua_ecs::spatial_transform::LocalTransform::from_2d(*transform).ok()
         })
 }
 
@@ -55,7 +53,7 @@ impl RuntimeScene {
     pub fn local_transform_of(
         &self,
         entity: SceneEntityId,
-    ) -> Option<crate::core::spatial_transform::LocalTransform> {
+    ) -> Option<rustlua_ecs::spatial_transform::LocalTransform> {
         let runtime = self.script.scene_entity_handle(entity)?;
         self.script
             .with_world(|world| local_transform_in(world, runtime))
@@ -74,7 +72,7 @@ impl RuntimeScene {
     pub fn set_local_transform(
         &mut self,
         entity: SceneEntityId,
-        value: crate::core::spatial_transform::LocalTransform,
+        value: rustlua_ecs::spatial_transform::LocalTransform,
     ) -> anyhow::Result<bool> {
         let Some(runtime) = self.script.scene_entity_handle(entity) else {
             return Ok(false);
@@ -93,7 +91,7 @@ impl RuntimeScene {
                 }
                 if world.get::<Transform>(runtime).ok().flatten().is_some() {
                     let flat =
-                        crate::core::spatial_transform::plane_local(value).ok_or_else(|| {
+                        rustlua_ecs::spatial_transform::plane_local(value).ok_or_else(|| {
                             anyhow::anyhow!(
                                 "this entity only has a 2D Transform; the value is not planar \
                          (tilt, z offset or z scale) — flattening would drop it"
@@ -118,7 +116,7 @@ impl RuntimeScene {
     pub fn world_transform_2d_of(&self, entity: SceneEntityId) -> Option<Transform> {
         let runtime = self.script.scene_entity_handle(entity)?;
         self.script
-            .with_world(|world| crate::core::hierarchy::world_transform_2d(world, runtime))
+            .with_world(|world| rustlua_ecs::hierarchy::world_transform_2d(world, runtime))
             .ok()
             .flatten()
     }
@@ -127,7 +125,7 @@ impl RuntimeScene {
     pub fn world_transform_3d_of(&self, entity: SceneEntityId) -> Option<Transform3D> {
         let runtime = self.script.scene_entity_handle(entity)?;
         self.script
-            .with_world(|world| crate::core::hierarchy::world_transform_3d(world, runtime))
+            .with_world(|world| rustlua_ecs::hierarchy::world_transform_3d(world, runtime))
             .ok()
             .flatten()
     }
@@ -187,7 +185,7 @@ impl RuntimeScene {
     /// docs/54 §4.1：**场景声明的** `parent` 语义（未声明 ⇒ 组织关系）。宿主开关可以覆盖生效值，
     /// 但这一份永远是场景自己说的，因此"运行时为什么继承/不继承"有据可查。
     #[must_use]
-    pub const fn spatial_mode(&self) -> crate::core::scene_space::SpatialMode {
+    pub const fn spatial_mode(&self) -> rustlua_scene::scene_space::SpatialMode {
         self.spatial_mode
     }
 
@@ -252,8 +250,8 @@ impl RuntimeScene {
         self.camera
             .view_projection(
                 viewport,
-                crate::core::camera::ORTHO_NEAR,
-                crate::core::camera::ORTHO_FAR,
+                rustlua_camera::camera::ORTHO_NEAR,
+                rustlua_camera::camera::ORTHO_FAR,
             )
             .ok()
     }
@@ -264,7 +262,7 @@ impl RuntimeScene {
     pub fn world_view_has_3d_content(&self) -> bool {
         self.script.with_world(|world| {
             !world
-                .entities_with::<crate::core::mesh3d::MeshRenderer>()
+                .entities_with::<rustlua_render::mesh3d::MeshRenderer>()
                 .is_empty()
         })
     }
@@ -288,7 +286,7 @@ impl RuntimeScene {
                     continue;
                 };
                 // 没有变换的发射器没有位置可发，跳过（与"世界变换缺席"的消费端约定一致）。
-                let Some(position) = crate::core::hierarchy::world_transform_2d(world, id)
+                let Some(position) = rustlua_ecs::hierarchy::world_transform_2d(world, id)
                     .ok()
                     .flatten()
                     .map(|transform| transform.position)
@@ -384,7 +382,7 @@ impl RuntimeScene {
         // 逐实体精确快照比较（只在指纹变化时才付）。回滚档是 `set_spatial_incremental(false)`。
         let fingerprint = self
             .script
-            .with_world(crate::core::hierarchy::local_fingerprint);
+            .with_world(rustlua_ecs::hierarchy::local_fingerprint);
         let (_, _, parents) = fingerprint;
         let active_now = enabled && parents > 0;
         if self.spatial_skip_unchanged
@@ -393,7 +391,7 @@ impl RuntimeScene {
         {
             self.spatial_skipped_frames = self.spatial_skipped_frames.saturating_add(1);
             self.spatial_path_counts[0] = self.spatial_path_counts[0].saturating_add(1);
-            self.last_spatial_path = crate::core::hierarchy::SpatialPath::Skipped;
+            self.last_spatial_path = rustlua_ecs::hierarchy::SpatialPath::Skipped;
             self.last_spatial_recomputed = 0;
             return;
         }
@@ -404,11 +402,11 @@ impl RuntimeScene {
             let state = &mut self.spatial_incremental;
             let outcome = script.with_world_mut(|world| {
                 if incremental {
-                    crate::core::hierarchy::propagate_spatial_incremental(world, state, active_now)
+                    rustlua_ecs::hierarchy::propagate_spatial_incremental(world, state, active_now)
                 } else {
-                    crate::core::hierarchy::SpatialOutcome {
-                        report: crate::core::hierarchy::propagate_spatial(world, active_now),
-                        path: crate::core::hierarchy::SpatialPath::Full,
+                    rustlua_ecs::hierarchy::SpatialOutcome {
+                        report: rustlua_ecs::hierarchy::propagate_spatial(world, active_now),
+                        path: rustlua_ecs::hierarchy::SpatialPath::Full,
                         recomputed: 0,
                     }
                 }
@@ -421,9 +419,9 @@ impl RuntimeScene {
         self.last_spatial_path = outcome.path;
         self.last_spatial_recomputed = outcome.recomputed;
         let slot = match outcome.path {
-            crate::core::hierarchy::SpatialPath::Skipped => 0,
-            crate::core::hierarchy::SpatialPath::Full => 1,
-            crate::core::hierarchy::SpatialPath::Incremental => 2,
+            rustlua_ecs::hierarchy::SpatialPath::Skipped => 0,
+            rustlua_ecs::hierarchy::SpatialPath::Full => 1,
+            rustlua_ecs::hierarchy::SpatialPath::Incremental => 2,
         };
         self.spatial_path_counts[slot] = self.spatial_path_counts[slot].saturating_add(1);
         self.spatial_recomputed_total = self
@@ -461,7 +459,7 @@ impl RuntimeScene {
 
     /// 最近一次传播走的路径（`Skipped` / `Full` / `Incremental`）。
     #[must_use]
-    pub const fn last_spatial_path(&self) -> crate::core::hierarchy::SpatialPath {
+    pub const fn last_spatial_path(&self) -> rustlua_ecs::hierarchy::SpatialPath {
         self.last_spatial_path
     }
 

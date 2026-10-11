@@ -3,10 +3,11 @@
 //!
 //! Usage: cargo run -q -p game --example probe_title_render -- <game_jhyt-root> --offscreen
 
-use engine::{
-    core::{camera::Viewport, input::InputSnapshot, prefab::Prefab, scene::Scene},
-    host::{Renderer, RuntimeScene},
-};
+use engine::host::{Renderer, RuntimeScene};
+use rustlua_camera::camera::Viewport;
+use rustlua_input::input::InputSnapshot;
+use rustlua_scene::prefab::Prefab;
+use rustlua_scene::scene::Scene;
 use std::{env, path::PathBuf};
 
 const VIEW_W: u32 = 1280;
@@ -19,7 +20,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .find(|arg| !arg.starts_with("--"))
         .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+        .unwrap_or_else(|| {
+            rustlua_infra::games_dir()
+                .join("examples")
+                .join("game_jhyt")
+        });
     let project = project.canonicalize()?;
     let prefab_flag = args.iter().position(|arg| arg == "--prefab");
     let sceneview_flag = args.iter().any(|arg| arg == "--sceneview");
@@ -46,7 +51,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 精确复现 Scene View 的 UI 覆盖层调用序列：
         // game_camera 中心 = DEFAULT_2D_CAMERA_CENTER(640,360)、zoom=1；
         // set_render_ui_overlay(true) + set_ui_reference([1280,720]) + vertices(1280,720)。
-        use engine::core::{camera::Camera2D, math2d::Vec2};
+        use rustlua_camera::camera::Camera2D;
+        use rustlua_math::math2d::Vec2;
         let game_camera =
             Camera2D::new(Vec2::new(640.0, 360.0), 1.0).expect("default camera center is valid");
         runtime.set_camera_2d(game_camera);

@@ -5,7 +5,7 @@
 //! 固有 `impl` 块不要求和类型同模块（同 crate 即可），而这里的私有方法要能被父模块的
 //! `new_async`/`render_passes` 调用 ⇒ 按编译器指出的那几条加 `pub(super)`（计划 §3.1.4）。
 
-use crate::core::window::has_renderable_size;
+use rustlua_infra::window::has_renderable_size;
 use wgpu::Device;
 use winit::dpi::PhysicalSize;
 

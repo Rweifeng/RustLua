@@ -1,7 +1,5 @@
-use engine::core::{
-    scene::{Scene, SceneEntityId},
-    script::{LuaRuntime, ReloadStatus},
-};
+use rustlua_scene::scene::{Scene, SceneEntityId};
+use rustlua_scripting::script::{LuaRuntime, ReloadStatus};
 use std::{
     fs,
     time::{SystemTime, UNIX_EPOCH},

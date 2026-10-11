@@ -7,15 +7,15 @@
 
 use std::{collections::HashMap, path::PathBuf};
 
-use crate::core::{
-    camera::{CameraBounds, OrthoTerms, Viewport},
-    entity::EntityId,
-    hierarchy::GlobalTransform,
-    sprite_batch::{OverlayVertexSink, SpriteDrawBatch, WorldSpriteVertexSink, ndc_from_screen},
-    tilemap::Tilemap,
-    transform::{Transform, Vec2},
-};
 use crate::host::frame::{OverlayVertex, WorldSpriteVertex};
+use rustlua_camera::camera::{CameraBounds, OrthoTerms, Viewport};
+use rustlua_ecs::entity::EntityId;
+use rustlua_ecs::hierarchy::GlobalTransform;
+use rustlua_ecs::tilemap::Tilemap;
+use rustlua_ecs::transform::{Transform, Vec2};
+use rustlua_render::sprite_batch::{
+    OverlayVertexSink, SpriteDrawBatch, WorldSpriteVertexSink, ndc_from_screen,
+};
 
 use super::{CachedTileSprite, CachedTilemapLayer, RuntimeScene, TileChunk, texture_id_of};
 
@@ -242,7 +242,7 @@ pub(super) fn append_tilemap_layer<V: OverlayVertexSink>(
         draws.push(SpriteDrawBatch::translucent(
             texture_id,
             0,
-            crate::core::layer::RenderLayer::World2D,
+            rustlua_render::layer::RenderLayer::World2D,
             start,
             count,
         ));
@@ -341,7 +341,7 @@ pub(super) fn append_tilemap_layer_world<V: WorldSpriteVertexSink>(
         draws.push(SpriteDrawBatch::opaque(
             texture_id,
             0,
-            crate::core::layer::RenderLayer::World2D,
+            rustlua_render::layer::RenderLayer::World2D,
             start,
             count,
         ));
@@ -423,9 +423,9 @@ impl RuntimeScene {
             .unwrap_or_else(|| PathBuf::from(path));
         // 与贴图加载同一条通道：wasm 上没有文件系统，裸 `fs::read` 恒 `ENOSYS`，
         // 拿不到尺寸就会退化成单四边形（第 45 轮：manor 的地表 tileset 正在失败清单里）。
-        let dims = crate::core::vfs::read(&resolved)
+        let dims = rustlua_infra::vfs::read(&resolved)
             .ok()
-            .and_then(|bytes| crate::core::pack::decode(&bytes).ok())
+            .and_then(|bytes| rustlua_assets::pack::decode(&bytes).ok())
             .and_then(|bytes| {
                 image::ImageReader::new(std::io::Cursor::new(bytes))
                     .with_guessed_format()

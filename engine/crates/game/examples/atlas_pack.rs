@@ -7,7 +7,7 @@
 //! 分隔符统一为 `/`。区域名取文件名词干（stem）；同名后者覆盖前者并给出警告。
 //! 装箱算法与门的确定性由 `rustlua-assets::atlas_pack` 的 golden 测试钉住。
 
-use engine::core::atlas_pack::{AtlasPackerOptions, PackSource, compose_page, pack_atlas};
+use rustlua_assets::atlas_pack::{AtlasPackerOptions, PackSource, compose_page, pack_atlas};
 use std::{fs, path::PathBuf};
 
 fn main() -> Result<(), String> {

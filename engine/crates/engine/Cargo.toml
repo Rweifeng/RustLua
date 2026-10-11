@@ -36,7 +36,7 @@ web-time = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 getrandom.workspace = true
 
-# Sub-crates (re-exported via `core` module for backward compatibility).
+# Engine core implementation crates.
 rustlua-math.workspace = true
 rustlua-ecs.workspace = true
 rustlua-scene.workspace = true

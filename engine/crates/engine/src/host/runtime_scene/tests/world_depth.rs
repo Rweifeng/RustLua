@@ -7,7 +7,7 @@
 //! - `scene_declared_emitter_emits_continuously_through_the_step_pipeline`
 
 use super::*;
-use crate::core::scene::Scene;
+use rustlua_scene::scene::Scene;
 
 /// WP6：世界文字也进世界坐标深度通道——它此前是唯一仍留在屏幕空间的世界内容。    /// 转换走 `view_projection` 的**逆映射**，因此屏幕观感与 overlay 路径逐个像素一致，
 /// 但顶点有了世界坐标与 `z`，可以和精灵/瓦片一起参与深度测试。
@@ -72,8 +72,8 @@ fn world_sprite_depth_moves_world_text_into_the_world_channel() {
 #[test]
 fn world_sprite_depth_moves_tilemaps_into_the_world_channel() {
     let root = game_root();
-    let mut scene = crate::core::scene::Scene::new("tilemap-world-pass");
-    let id = crate::core::scene::SceneEntityId(1);
+    let mut scene = rustlua_scene::scene::Scene::new("tilemap-world-pass");
+    let id = rustlua_scene::scene::SceneEntityId(1);
     scene.add_entity(id, "Map", None).unwrap();
     let entity = scene.entities.get_mut(&id).unwrap();
     entity.components.insert(
@@ -121,7 +121,7 @@ fn world_sprite_depth_moves_tilemaps_into_the_world_channel() {
         world
             .world_sprite_draws
             .iter()
-            .all(|draw| draw.render_layer == crate::core::layer::RenderLayer::World2D),
+            .all(|draw| draw.render_layer == rustlua_render::layer::RenderLayer::World2D),
         "世界通道的分段必须是 World2D"
     );
     assert!(
@@ -149,8 +149,8 @@ fn world_sprite_depth_moves_tilemaps_into_the_world_channel() {
 #[test]
 fn world_sprite_depth_flag_switches_between_overlay_and_world_vertices() {
     let root = game_root();
-    let mut scene = crate::core::scene::Scene::new("world-sprite-flag");
-    let id = crate::core::scene::SceneEntityId(1);
+    let mut scene = rustlua_scene::scene::Scene::new("world-sprite-flag");
+    let id = rustlua_scene::scene::SceneEntityId(1);
     scene.add_entity(id, "Hero", None).unwrap();
     let entity = scene.entities.get_mut(&id).unwrap();
     entity.components.insert(
@@ -205,7 +205,7 @@ fn world_sprite_depth_flag_switches_between_overlay_and_world_vertices() {
 fn world_channel_does_not_cull_by_the_2d_camera_when_the_scene_has_3d_content() {
     let root = game_root();
     let mut scene = Scene::new("world-view-cull");
-    let sprite = crate::core::scene::SceneEntityId(1);
+    let sprite = rustlua_scene::scene::SceneEntityId(1);
     scene.add_entity(sprite, "FarSprite", None).unwrap();
     let entity = scene.entities.get_mut(&sprite).unwrap();
     // 默认 2D 相机中心 (640,360)、zoom 1 ⇒ 世界 (-40,0) 落在 2D 视口之外。
@@ -230,7 +230,7 @@ fn world_channel_does_not_cull_by_the_2d_camera_when_the_scene_has_3d_content() 
     );
 
     // ② 同一个精灵 + 一个网格：世界视图变成 3D，世界通道不得再按 2D 相机剔除。
-    let wall = crate::core::scene::SceneEntityId(2);
+    let wall = rustlua_scene::scene::SceneEntityId(2);
     scene.add_entity(wall, "Wall", None).unwrap();
     let entity = scene.entities.get_mut(&wall).unwrap();
     entity.components.insert(
@@ -262,7 +262,7 @@ fn world_channel_does_not_cull_by_the_2d_camera_when_the_scene_has_3d_content() 
 fn scene_declared_emitter_emits_continuously_through_the_step_pipeline() {
     let root = game_root();
     let mut scene = Scene::new("scene-emitter");
-    let source = crate::core::scene::SceneEntityId(1);
+    let source = rustlua_scene::scene::SceneEntityId(1);
     scene.add_entity(source, "Sparks", None).unwrap();
     let entity = scene.entities.get_mut(&source).unwrap();
     entity.components.insert(
@@ -275,7 +275,7 @@ fn scene_declared_emitter_emits_continuously_through_the_step_pipeline() {
         "count=2;rate=60;speed=10;life=0.5;size=2;color=1,1,1,1".into(),
     );
     let mut runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime");
-    let input = crate::core::input::InputSnapshot::default();
+    let input = rustlua_input::input::InputSnapshot::default();
     for _ in 0..3 {
         runtime
             .run_script_steps(1, 1.0 / 60.0, &input)
@@ -294,7 +294,7 @@ fn scene_declared_emitter_emits_continuously_through_the_step_pipeline() {
 
     // burst-only（rate = 0）的发射器不参与连续发射。
     let mut burst_scene = Scene::new("burst-only");
-    let id = crate::core::scene::SceneEntityId(1);
+    let id = rustlua_scene::scene::SceneEntityId(1);
     burst_scene.add_entity(id, "Puff", None).unwrap();
     let entity = burst_scene.entities.get_mut(&id).unwrap();
     entity.components.insert(

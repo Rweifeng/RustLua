@@ -337,7 +337,11 @@ fn entity_handle_lua_matches_the_lua_side_encoding_and_hides_dead_handles() {
         Some(lua_handle),
         "出口必须给出与 Lua 侧逐位一致的编码"
     );
-    assert_eq!(runtime.entity_handle_lua("Nope"), None, "不认识的名字给 None");
+    assert_eq!(
+        runtime.entity_handle_lua("Nope"),
+        None,
+        "不认识的名字给 None"
+    );
 
     let removed = runtime.with_world_mut(|world| {
         let ids = world.entities_with::<Transform>();

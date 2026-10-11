@@ -23,8 +23,8 @@
 //! 线格式里的 `pressed`/`released` 只用来补一种情况——**同一帧内按下又抬起**的点按
 //! （它不会出现在按住集合里）。这样即使宿主的边沿位漏了一帧，状态也不会永久错下去。
 
-use engine::core::input::{InputSnapshot, KeyCode, MouseButton};
 use rustlua_frame_abi::{FrameInput, KEY_NAMES, MOUSE_NAMES};
+use rustlua_input::input::{InputSnapshot, KeyCode, MouseButton};
 
 /// 本帧真正改动的输入项数量（键 + 鼠标按钮的边沿次数）。
 ///

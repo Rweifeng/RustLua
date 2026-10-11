@@ -9,7 +9,7 @@
 //! - `sample_project_gameplay_scene_instantiates_gameplay_entities`
 
 use super::*;
-use crate::core::scene::Scene;
+use rustlua_scene::scene::Scene;
 
 /// docs/54 §4.1：**未声明空间语义的 v2 场景里，`parent` 只是组织关系**。
 ///
@@ -19,9 +19,9 @@ use crate::core::scene::Scene;
 #[test]
 fn unmarked_v2_scenes_treat_parent_as_organizational_only() {
     let root = game_root();
-    let parent = crate::core::scene::SceneEntityId(1);
-    let child = crate::core::scene::SceneEntityId(2);
-    let mut scene = crate::core::scene::Scene::new("organizational");
+    let parent = rustlua_scene::scene::SceneEntityId(1);
+    let child = rustlua_scene::scene::SceneEntityId(2);
+    let mut scene = rustlua_scene::scene::Scene::new("organizational");
     scene.add_entity(parent, "Group", None).unwrap();
     scene.add_entity(child, "Member", Some(parent)).unwrap();
     scene.entities.get_mut(&parent).unwrap().components.insert(
@@ -37,7 +37,7 @@ fn unmarked_v2_scenes_treat_parent_as_organizational_only() {
 
     assert_eq!(
         runtime.spatial_mode(),
-        crate::core::scene_space::SpatialMode::Organizational,
+        rustlua_scene::scene_space::SpatialMode::Organizational,
         "未声明时场景语义应是组织关系"
     );
     assert!(
@@ -56,7 +56,7 @@ fn unmarked_v2_scenes_treat_parent_as_organizational_only() {
     // 但 `parent` 边本身仍然落到 ECS 上（层级信息不丢，只是不参与空间组合）。
     let has_parent = runtime.script.with_world(|world| {
         world
-            .entities_with::<crate::core::hierarchy::Parent>()
+            .entities_with::<rustlua_ecs::hierarchy::Parent>()
             .len()
     });
     assert_eq!(has_parent, 1, "组织关系不等于丢掉父子边");
@@ -66,27 +66,27 @@ fn unmarked_v2_scenes_treat_parent_as_organizational_only() {
 /// 认不出的值按默认处理但**会被点名**（不静默吞掉）。
 #[test]
 fn explicit_and_invalid_spatial_declarations_are_reported() {
-    let mut scene = crate::core::scene::Scene::new("declared");
+    let mut scene = rustlua_scene::scene::Scene::new("declared");
     scene
         .metadata
         .insert("spatial".into(), "organizational".into());
     assert_eq!(
-        crate::core::scene_space::spatial_mode(&scene),
-        crate::core::scene_space::SpatialMode::Organizational
+        rustlua_scene::scene_space::spatial_mode(&scene),
+        rustlua_scene::scene_space::SpatialMode::Organizational
     );
-    assert!(crate::core::scene_space::spatial_mode_issue(&scene).is_none());
+    assert!(rustlua_scene::scene_space::spatial_mode_issue(&scene).is_none());
     scene.metadata.insert("spatial".into(), "inherit".into());
     assert_eq!(
-        crate::core::scene_space::spatial_mode(&scene),
-        crate::core::scene_space::SpatialMode::Inherit
+        rustlua_scene::scene_space::spatial_mode(&scene),
+        rustlua_scene::scene_space::SpatialMode::Inherit
     );
     scene.metadata.insert("spatial".into(), "world".into());
     assert_eq!(
-        crate::core::scene_space::spatial_mode(&scene),
-        crate::core::scene_space::SpatialMode::Organizational,
+        rustlua_scene::scene_space::spatial_mode(&scene),
+        rustlua_scene::scene_space::SpatialMode::Organizational,
         "认不出的值按 v2 默认处理"
     );
-    let issue = crate::core::scene_space::spatial_mode_issue(&scene).expect("非法取值必须被点名");
+    let issue = rustlua_scene::scene_space::spatial_mode_issue(&scene).expect("非法取值必须被点名");
     assert!(issue.contains("spatial=world"), "{issue}");
 }
 
@@ -94,10 +94,10 @@ fn explicit_and_invalid_spatial_declarations_are_reported() {
 #[test]
 fn scene_parents_become_runtime_parent_components() {
     let root = game_root();
-    let mut scene = crate::core::scene::Scene::new("parents");
-    let parent = crate::core::scene::SceneEntityId(1);
-    let child = crate::core::scene::SceneEntityId(2);
-    let orphan = crate::core::scene::SceneEntityId(3);
+    let mut scene = rustlua_scene::scene::Scene::new("parents");
+    let parent = rustlua_scene::scene::SceneEntityId(1);
+    let child = rustlua_scene::scene::SceneEntityId(2);
+    let orphan = rustlua_scene::scene::SceneEntityId(3);
     scene.add_entity(parent, "Parent", None).unwrap();
     scene.add_entity(child, "Child", Some(parent)).unwrap();
     scene.add_entity(orphan, "Orphan", None).unwrap();
@@ -111,7 +111,7 @@ fn scene_parents_become_runtime_parent_components() {
         RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
     let with_parent = runtime.script.with_world(|world| {
         world
-            .entities_with::<crate::core::hierarchy::Parent>()
+            .entities_with::<rustlua_ecs::hierarchy::Parent>()
             .len()
     });
     assert_eq!(with_parent, 1, "只有子实体带 Parent");
@@ -131,11 +131,11 @@ fn render_view_2d_shares_the_runtime_camera() {
     assert_eq!(view.viewport, Viewport::new(640.0, 360.0).unwrap());
     assert_eq!(
         view.projection,
-        crate::core::camera::Projection::Orthographic { zoom: 2.0 },
+        rustlua_camera::camera::Projection::Orthographic { zoom: 2.0 },
         "视图的投影必须来自运行时相机的 zoom"
     );
     // 2D overlay 是叠加层：不清屏（3D 主视图才清屏）。
-    assert_eq!(view.clear, crate::core::camera::ClearPolicy::None);
+    assert_eq!(view.clear, rustlua_camera::camera::ClearPolicy::None);
     assert!((view.aspect() - 640.0 / 360.0).abs() < 1e-6);
     assert_eq!(
         runtime.camera_2d().center,
@@ -191,7 +191,7 @@ fn sample_project_ui_scene_instantiates_ui() {
     let counts = runtime.script.with_world(|world| {
         (
             world
-                .entities_with::<crate::core::ui_events::UiEvents>()
+                .entities_with::<rustlua_ui::ui_events::UiEvents>()
                 .len(),
             world.entities_with::<UiImage>().len(),
             world.entities_with::<UiText>().len(),
@@ -229,15 +229,15 @@ fn sample_project_gameplay_scene_instantiates_gameplay_entities() {
     let mesh = runtime.vertices(1280, 720).expect("vertices");
     let counts = runtime.script.with_world(|world| {
         (
-            world.entities_with::<crate::core::tilemap::Tilemap>().len(),
+            world.entities_with::<rustlua_ecs::tilemap::Tilemap>().len(),
             world
-                .entities_with::<crate::core::sprite::SpriteAsset>()
+                .entities_with::<rustlua_render::sprite::SpriteAsset>()
                 .len(),
             world
-                .entities_with::<crate::core::world_text::WorldText>()
+                .entities_with::<rustlua_scene::world_text::WorldText>()
                 .len(),
             world
-                .entities_with::<crate::core::ui_events::UiEvents>()
+                .entities_with::<rustlua_ui::ui_events::UiEvents>()
                 .len(),
         )
     });

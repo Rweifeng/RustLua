@@ -16,6 +16,21 @@ wgpu = "27"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing.workspace = true
+
+rustlua-animation = { path = "../rustlua-animation" }
+rustlua-assets = { path = "../rustlua-assets" }
+rustlua-audio = { path = "../rustlua-audio" }
+rustlua-camera = { path = "../rustlua-camera" }
+rustlua-ecs = { path = "../rustlua-ecs" }
+rustlua-gameplay = { path = "../rustlua-gameplay" }
+rustlua-infra = { path = "../rustlua-infra" }
+rustlua-input = { path = "../rustlua-input" }
+rustlua-math = { path = "../rustlua-math" }
+rustlua-physics = { path = "../rustlua-physics" }
+rustlua-render = { path = "../rustlua-render" }
+rustlua-scene = { path = "../rustlua-scene" }
+rustlua-scripting = { path = "../rustlua-scripting" }
+rustlua-ui = { path = "../rustlua-ui" }
 [target."cfg(windows)".dependencies]
 # `Win32_System_ProcessStatus` + `Win32_System_Threading`：docs/55 阶段 0 的长会话
 # soak 报告要给出**真实进程工作集**，否则"8 小时无持续内存增长"只能靠感觉判断。

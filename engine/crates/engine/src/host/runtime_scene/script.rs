@@ -3,7 +3,7 @@
 //! 全部是 `pub` 方法，没有一处需要放宽可见性：`RuntimeScene` 只持有 `LuaRuntime` 的所有权，
 //! 错误策略/诊断计数这些状态仍在那台运行时里。
 
-use crate::core::script::{LuaRuntime, ReloadStatus, ScriptDiagnostic, ScriptErrorPolicy};
+use rustlua_scripting::script::{LuaRuntime, ReloadStatus, ScriptDiagnostic, ScriptErrorPolicy};
 
 use super::RuntimeScene;
 

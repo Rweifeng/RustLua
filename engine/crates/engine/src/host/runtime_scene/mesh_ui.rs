@@ -4,23 +4,21 @@
 //! `compute_click_targets` 与 `text_hit_rect` 跟着进来：点击矩形与绘制矩形必须同源，
 //! 分开两个模块就成了"同一事实两处算"（计划 §2.2 的那类病）。
 
-use crate::core::{
-    camera::{OrthoTerms, Viewport},
-    entity::EntityId,
-    layer::RenderLayer,
-    sprite::Sprite,
-    transform::Transform,
-    ui::{
-        DynamicUiImage, UiImage, UiText, nine_slice_cells, resolve_ui_rect, ui_text_effective_scale,
-    },
-    ui_events::{UiClickTarget, UiEvents},
-    ui_layout::UiRect,
-    ui_scene_layout::resolve_scene_ui_layout,
-};
 use crate::host::frame::{
     ATLAS_TEXTURE_PATH, FONT_ATLAS_TEXTURE_PATH, OverlayVertex, SceneDraw, VectorGlyphSnapshot,
     VectorSegmentSnapshot, VectorTextVertex as FrameVectorTextVertex,
 };
+use rustlua_camera::camera::{OrthoTerms, Viewport};
+use rustlua_ecs::entity::EntityId;
+use rustlua_ecs::transform::Transform;
+use rustlua_render::layer::RenderLayer;
+use rustlua_render::sprite::Sprite;
+use rustlua_ui::ui::{
+    DynamicUiImage, UiImage, UiText, nine_slice_cells, resolve_ui_rect, ui_text_effective_scale,
+};
+use rustlua_ui::ui_events::{UiClickTarget, UiEvents};
+use rustlua_ui::ui_layout::UiRect;
+use rustlua_ui::ui_scene_layout::resolve_scene_ui_layout;
 
 use super::{RuntimeScene, nine_slice_quad, screen_rect_ndc, text, text_to_ndc};
 use crate::host::runtime_scene::camera::sprite_screen_rect;
@@ -43,17 +41,17 @@ impl RuntimeScene {
             Option<UiImage>,
             Option<UiText>,
             Option<(Sprite, Transform)>,
-            Option<crate::core::ui_events::UiEvents>,
+            Option<rustlua_ui::ui_events::UiEvents>,
         );
         let entities: Vec<UiEventComponents> = self.script.with_world(|world| {
             let mut out = Vec::new();
-            for id in world.entities_with::<crate::core::ui_events::UiEvents>() {
+            for id in world.entities_with::<rustlua_ui::ui_events::UiEvents>() {
                 let image = world.get::<UiImage>(id).ok().flatten().cloned();
                 let text = world.get::<UiText>(id).ok().flatten().cloned();
                 let sprite = world.get::<Sprite>(id).ok().flatten().cloned();
                 let transform = world.get::<Transform>(id).ok().flatten().cloned();
                 let events = world
-                    .get::<crate::core::ui_events::UiEvents>(id)
+                    .get::<rustlua_ui::ui_events::UiEvents>(id)
                     .ok()
                     .flatten()
                     .cloned();
@@ -324,7 +322,7 @@ impl RuntimeScene {
                         // 先推的那块底色四边形）。这批只给实体层 `Image` 补 alpha，这里保持旧
                         // 画面，免得顺手改动背包格子的观感。
                         alpha: 1.0,
-                        space: crate::core::ui::UiLayoutSpace::Screen,
+                        space: rustlua_ui::ui::UiLayoutSpace::Screen,
                         anchor: [0.0, 0.0],
                         nine_slice: None,
                     };
@@ -494,7 +492,7 @@ impl RuntimeScene {
         let images: Vec<(EntityId, UiImage)> = self.script.with_world(|world| {
             let mut images = Vec::new();
             world.for_each::<UiImage>(|id, image| {
-                if crate::core::visibility::entity_visible_in(world, id, overlay_mask) {
+                if rustlua_render::visibility::entity_visible_in(world, id, overlay_mask) {
                     images.push((id, image.clone()));
                 } else {
                     filtered += 1;
@@ -510,7 +508,7 @@ impl RuntimeScene {
                     size: [rect.w, rect.h],
                     color: [image.color[0], image.color[1], image.color[2]],
                     alpha: image.color[3],
-                    space: crate::core::ui::UiLayoutSpace::Screen,
+                    space: rustlua_ui::ui::UiLayoutSpace::Screen,
                     anchor: [0.0, 0.0],
                     nine_slice: image.nine_slice,
                 };
@@ -545,7 +543,7 @@ impl RuntimeScene {
                 // 实体仍在场景与 UiLayout 布局里，仅跳过绘制（语义与 web 兼容层一致）。
                 // P3-②：换成免克隆判定（旧实现每文字每帧 clone 整份隐藏集）。
                 let name_hidden = self.script.is_entity_scene_text_hidden(id);
-                if crate::core::visibility::entity_visible_in(world, id, overlay_mask)
+                if rustlua_render::visibility::entity_visible_in(world, id, overlay_mask)
                     && !name_hidden
                 {
                     texts.push((id, text.clone()));
@@ -591,12 +589,12 @@ impl RuntimeScene {
                         })
                         && let Ok(mut atlas) = handle.lock()
                     {
-                        let style = crate::core::text::TextStyle {
+                        let style = rustlua_render::text::TextStyle {
                             scale: text.effective_scale(),
                             color: [1.0, 1.0, 1.0, 1.0],
                             ..Default::default()
                         };
-                        if let Ok(verts) = crate::core::text::TextLayout::build_vector(
+                        if let Ok(verts) = rustlua_render::text::TextLayout::build_vector(
                             &text.text,
                             [0.0, 0.0],
                             style,

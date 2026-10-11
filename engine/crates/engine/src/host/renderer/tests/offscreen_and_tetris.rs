@@ -95,7 +95,7 @@ fn tetris_blocks_are_visible_pixels() {
         trace: wgpu::Trace::Off,
     }))
     .expect("request test device");
-    let root = crate::core::fixture_games_dir().join("tetris");
+    let root = rustlua_infra::fixture_games_dir().join("tetris");
     if !root.join("scenes/main.scene").is_file() {
         return;
     }
@@ -122,7 +122,7 @@ fn tetris_blocks_are_visible_pixels() {
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let scene = crate::core::scene::Scene::load(root.join("scenes/main.scene")).unwrap();
+    let scene = rustlua_scene::scene::Scene::load(root.join("scenes/main.scene")).unwrap();
     let mut runtime = crate::host::RuntimeScene::from_scene(Some(&root), scene).unwrap();
     let mesh = runtime.vertices(1280, 720).expect("vertices");
     renderer.render_into_texture(&mesh, None, &view, 1280, 720);
@@ -159,8 +159,8 @@ fn tetris_blocks_are_visible_pixels() {
 /// 重开（R）应清屏：初始 4 块 → 硬降后 8 块 → 重开后只剩新方块 4 块。
 #[test]
 fn tetris_restart_clears_field() {
-    use crate::core::input::{InputSnapshot, KeyCode};
-    use crate::core::scene::Scene;
+    use rustlua_input::input::{InputSnapshot, KeyCode};
+    use rustlua_scene::scene::Scene;
 
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     let Some(adapter) =
@@ -182,7 +182,7 @@ fn tetris_restart_clears_field() {
         trace: wgpu::Trace::Off,
     }))
     .expect("device");
-    let root = crate::core::fixture_games_dir().join("tetris");
+    let root = rustlua_infra::fixture_games_dir().join("tetris");
     let mut renderer = Renderer::new_offscreen(
         device.clone(),
         queue.clone(),
@@ -206,7 +206,7 @@ fn tetris_restart_clears_field() {
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let root = crate::core::fixture_games_dir().join("tetris");
+    let root = rustlua_infra::fixture_games_dir().join("tetris");
     if !root.join("scenes/main.scene").is_file() {
         return;
     }
@@ -281,17 +281,21 @@ fn editor_preview_path_renders_game_scene() {
     .expect("request test device");
     let mut renderer = Renderer::new_offscreen(device.clone(), queue, None, false, false)
         .expect("offscreen renderer");
-    let game = crate::core::games_dir().join("examples").join("game_api");
+    let game = rustlua_infra::games_dir().join("examples").join("game_api");
     if !game.join("scenes/main.scene").is_file() {
         return;
     }
     let scene_text =
         std::fs::read_to_string(game.join("scenes/main.scene")).expect("read main.scene");
-    let scene = crate::core::scene::Scene::from_text(&scene_text).expect("parse main.scene");
+    let scene = rustlua_scene::scene::Scene::from_text(&scene_text).expect("parse main.scene");
     let mut runtime = crate::host::runtime_scene::RuntimeScene::from_scene(Some(&game), scene)
         .expect("instantiate runtime");
     runtime
-        .run_script_steps(1, 1.0 / 60.0, &crate::core::input::InputSnapshot::default())
+        .run_script_steps(
+            1,
+            1.0 / 60.0,
+            &rustlua_input::input::InputSnapshot::default(),
+        )
         .expect("step runtime");
     let mesh = runtime.vertices(640, 360).expect("build 2D mesh");
     let scene3d = runtime.scene_3d(Viewport::new(640.0, 360.0).unwrap());

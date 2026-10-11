@@ -19,7 +19,7 @@
 //! 键域的边界（独立 `game` 宿主全部支持）。
 
 use eframe::egui;
-use engine::core::input::KeyCode;
+use rustlua_input::input::KeyCode;
 
 /// `egui::Key` → 引擎物理键（Play 预览桥接 + 重绑定捕获的唯一入口）。
 ///

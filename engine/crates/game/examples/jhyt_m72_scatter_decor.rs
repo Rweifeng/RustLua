@@ -35,10 +35,8 @@
 //! Usage:
 //!   cargo run -p game --example jhyt_m72_scatter_decor [-- <game_jhyt-root>]
 
-use engine::{
-    core::input::InputSnapshot,
-    host::{RuntimeScene, SceneMesh},
-};
+use engine::host::{RuntimeScene, SceneMesh};
+use rustlua_input::input::InputSnapshot;
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
@@ -122,10 +120,11 @@ struct Placed {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let project = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+    let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
+        rustlua_infra::games_dir()
+            .join("examples")
+            .join("game_jhyt")
+    });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

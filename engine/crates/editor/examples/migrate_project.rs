@@ -34,13 +34,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use engine::core::{
-    camera::{CAMERA_COMPONENT, Camera, Camera2D, Camera3D},
-    prefab::Prefab,
-    scene::{Scene, SceneEntity, SceneEntityId},
-    spatial_transform::{LocalTransform, SpatialKind, THREE_D_MARKERS, entity_space},
-    transform::{Transform, Transform3D},
-};
+use rustlua_camera::camera::{CAMERA_COMPONENT, Camera, Camera2D, Camera3D};
+use rustlua_ecs::spatial_transform::{LocalTransform, SpatialKind, THREE_D_MARKERS, entity_space};
+use rustlua_ecs::transform::{Transform, Transform3D};
+use rustlua_scene::prefab::Prefab;
+use rustlua_scene::scene::{Scene, SceneEntity, SceneEntityId};
 
 /// 旧组件名（本次要抹掉的三个）。
 const LEGACY_TRANSFORM_3D: &str = "Transform3D";

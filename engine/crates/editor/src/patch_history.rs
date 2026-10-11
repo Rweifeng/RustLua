@@ -17,10 +17,8 @@
 //! * 与快照历史同形的语义：空操作不入栈、新的编辑清空 redo、相邻同目标变换可合并、
 //!   预算上限丢最旧并计数。
 
-use engine::core::{
-    scene::{Scene, SceneEntityId},
-    transform::Transform3D,
-};
+use rustlua_ecs::transform::Transform3D;
+use rustlua_scene::scene::{Scene, SceneEntityId};
 
 use crate::CommandKind;
 
@@ -196,7 +194,7 @@ pub fn transform3d_patch(entity: SceneEntityId, before: String, after: Transform
         "Transform",
         Some(before),
         crate::document_space::encode_transform(
-            engine::core::spatial_transform::LocalTransform::from_3d(after),
+            rustlua_ecs::spatial_transform::LocalTransform::from_3d(after),
         ),
     )
 }

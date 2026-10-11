@@ -9,8 +9,8 @@
 //! - `runtime_scene_create_step_drop_100_cycles`
 
 use super::*;
-use crate::core::camera::ledger;
-use crate::core::scene::Scene;
+use rustlua_camera::camera::ledger;
+use rustlua_scene::scene::Scene;
 
 /// 拆分批 8：宿主**没走** `vertices()` 就先调 `scene_3d`（示例/golden 里有这种顺序）时，
 /// 没有定帧值 ⇒ 按需解析 + 烘焙，行为与定帧前逐字节相同。
@@ -50,12 +50,12 @@ fn scene_3d_without_a_frame_still_resolves_on_demand() {
 #[test]
 fn frame_bake_ledger_is_pinned() {
     let root = game_root();
-    let mut scene = crate::core::scene::Scene::new("frame-bake-ledger");
-    let sprite = crate::core::scene::SceneEntityId(1);
-    let tiles = crate::core::scene::SceneEntityId(2);
-    let text = crate::core::scene::SceneEntityId(3);
-    let camera = crate::core::scene::SceneEntityId(4);
-    let mesh = crate::core::scene::SceneEntityId(5);
+    let mut scene = rustlua_scene::scene::Scene::new("frame-bake-ledger");
+    let sprite = rustlua_scene::scene::SceneEntityId(1);
+    let tiles = rustlua_scene::scene::SceneEntityId(2);
+    let text = rustlua_scene::scene::SceneEntityId(3);
+    let camera = rustlua_scene::scene::SceneEntityId(4);
+    let mesh = rustlua_scene::scene::SceneEntityId(5);
     for (id, name) in [
         (sprite, "Sprite"),
         (tiles, "Tiles"),
@@ -65,7 +65,7 @@ fn frame_bake_ledger_is_pinned() {
     ] {
         scene.add_entity(id, name, None).unwrap();
     }
-    let payload = |scene: &mut crate::core::scene::Scene, id, key: &str, value: &str| {
+    let payload = |scene: &mut rustlua_scene::scene::Scene, id, key: &str, value: &str| {
         scene
             .entities
             .get_mut(&id)
@@ -159,11 +159,11 @@ fn camera2d_selection_scene(
     name: &str,
     disable_a: bool,
     with_3d: bool,
-) -> crate::core::scene::Scene {
-    let mut scene = crate::core::scene::Scene::new(name);
-    let a = crate::core::scene::SceneEntityId(1);
-    let b = crate::core::scene::SceneEntityId(2);
-    let sprite = crate::core::scene::SceneEntityId(3);
+) -> rustlua_scene::scene::Scene {
+    let mut scene = rustlua_scene::scene::Scene::new(name);
+    let a = rustlua_scene::scene::SceneEntityId(1);
+    let b = rustlua_scene::scene::SceneEntityId(2);
+    let sprite = rustlua_scene::scene::SceneEntityId(3);
     for (id, entity) in [(a, "Cam2dA"), (b, "Cam2dB"), (sprite, "Sprite")] {
         scene.add_entity(id, entity, None).unwrap();
     }
@@ -186,8 +186,8 @@ fn camera2d_selection_scene(
         "texture=assets/textures/red-1x1.png;size=16x16;pivot=0.5,0.5;z=0".into(),
     );
     if with_3d {
-        let camera3d = crate::core::scene::SceneEntityId(4);
-        let mesh = crate::core::scene::SceneEntityId(5);
+        let camera3d = rustlua_scene::scene::SceneEntityId(4);
+        let mesh = rustlua_scene::scene::SceneEntityId(5);
         scene.add_entity(camera3d, "Cam3d", None).unwrap();
         scene.add_entity(mesh, "Mesh", None).unwrap();
         scene

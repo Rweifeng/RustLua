@@ -1,9 +1,7 @@
 use crate::SceneDocument;
-use engine::core::{
-    entity_script::{EntityScript, SCRIPT_COMPONENT},
-    physics3d::{ColliderDesc3d, ColliderShape3d},
-    scene::{SceneEntity, SceneEntityId},
-};
+use rustlua_ecs::entity_script::{EntityScript, SCRIPT_COMPONENT};
+use rustlua_physics::physics3d::{ColliderDesc3d, ColliderShape3d};
+use rustlua_scene::scene::{SceneEntity, SceneEntityId};
 use std::path::Path;
 
 /// 第一批 Inspector 可编辑的 Transform 字段。
@@ -90,13 +88,13 @@ impl Default for Collider3dFields {
 // （文本 = 输入框、字号 = DragValue、字体 = **项目字体下拉**、颜色 = 取色器）。
 // 自由文本里的 `;`/`=`/`\` 由 schema 的转义字段负责（`FieldSchema::escaped`），
 // 因此"文字里带分号"不会再写坏组件串，审计也不再把它判成漂移。
-// 默认值取引擎类型（`engine::core::ui::UiText::default()`）。
+// 默认值取引擎类型（`rustlua_ui::ui::UiText::default()`）。
 
 // `WorldText` 的 Inspector 缓冲管线（`WorldTextFields` + `set_world_text`/`clear_world_text` +
 // `encode/decode/validate_world_text`）**已删除**（第 23 轮）：该组件迁到 schema 生成的字段编辑器，
 // `font` 字段用**项目字体下拉**（`ChoiceSource::ProjectFonts`），其余用文本框/DragValue/取色器/勾选框。
 // 注意：`WorldText` 的默认值（`text=文字;font_size=…;offset=0,-20;centered=true`）现在由
-// `add_component` 直接用**引擎类型**的编码给出（`engine::core::world_text::WorldText`），
+// `add_component` 直接用**引擎类型**的编码给出（`rustlua_scene::world_text::WorldText`），
 // 编辑器里不再有这份默认值。
 
 // `Image` 的 Inspector 缓冲管线（`ImageFields` + `set_image`/`clear_image` +
@@ -134,12 +132,12 @@ pub struct ContainerFields {
 }
 
 impl ContainerFields {
-    pub fn to_style(&self) -> Result<engine::core::ui_layout::ContainerStyle, String> {
-        let kind = engine::core::ui_layout::ContainerKind::parse(&self.kind)
+    pub fn to_style(&self) -> Result<rustlua_ui::ui_layout::ContainerStyle, String> {
+        let kind = rustlua_ui::ui_layout::ContainerKind::parse(&self.kind)
             .ok_or_else(|| format!("未知 Container kind：{}", self.kind))?;
-        let align = engine::core::ui_layout::ChildAlign::parse(&self.align)
+        let align = rustlua_ui::ui_layout::ChildAlign::parse(&self.align)
             .ok_or_else(|| format!("未知对齐：{}", self.align))?;
-        Ok(engine::core::ui_layout::ContainerStyle {
+        Ok(rustlua_ui::ui_layout::ContainerStyle {
             kind,
             padding: [
                 self.padding_l,
@@ -155,7 +153,7 @@ impl ContainerFields {
         })
     }
 
-    pub fn from_style(style: engine::core::ui_layout::ContainerStyle) -> Self {
+    pub fn from_style(style: rustlua_ui::ui_layout::ContainerStyle) -> Self {
         Self {
             kind: style.kind.as_str().to_owned(),
             padding_l: style.padding[0],
@@ -173,7 +171,7 @@ impl ContainerFields {
 
 impl Default for ContainerFields {
     fn default() -> Self {
-        Self::from_style(engine::core::ui_layout::ContainerStyle::default())
+        Self::from_style(rustlua_ui::ui_layout::ContainerStyle::default())
     }
 }
 
@@ -488,7 +486,7 @@ fn snapshot_for(entity: &SceneEntity) -> Result<InspectorSnapshot, InspectorErro
             .components
             .get("Container")
             .map_or(Ok(None), |value| {
-                engine::core::ui_layout::ContainerStyle::from_component_str(value)
+                rustlua_ui::ui_layout::ContainerStyle::from_component_str(value)
                     .map(|style| Some(ContainerFields::from_style(style)))
                     .map_err(InspectorError::InvalidContainer)
             })?,
@@ -602,7 +600,7 @@ fn entity_script_value(script: &str) -> String {
 }
 
 /// 读回脚本路径：优先 `Script`（含 `file=` 形式），兼容旧的 `LuaScript` 裸路径写法
-/// （正常路径下 [`engine::core::component_migration`] 已经在打开场景时迁移过，
+/// （正常路径下 [`rustlua_scene::scene_migration`] 已经在打开场景时迁移过，
 /// 这里只是不让"未经迁移的实体内存对象"显示成空）。
 fn read_lua_script(entity: &SceneEntity) -> Option<String> {
     if let Some(value) = entity.components.get(SCRIPT_COMPONENT) {
@@ -654,7 +652,7 @@ pub enum InspectorError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::core::scene::SceneEntityId;
+    use rustlua_scene::scene::SceneEntityId;
 
     fn setup() -> (SceneDocument, InspectorState, SceneEntityId) {
         let mut document = SceneDocument::new_scene("main");
@@ -734,15 +732,15 @@ mod tests {
         // （历史的 `LuaScript` + 裸路径运行时根本不读，这条断言就是那个缺陷的回归守卫。）
         let raw = &document.scene.entities[&id].components;
         assert_eq!(
-            raw.get(engine::core::entity_script::SCRIPT_COMPONENT)
+            raw.get(rustlua_ecs::entity_script::SCRIPT_COMPONENT)
                 .map(String::as_str),
             Some("file=scripts/player.lua"),
             "面板必须按运行时格式写 Script 组件"
         );
         assert!(!raw.contains_key("LuaScript"), "旧键名不得再被写进场景");
         // 运行时解析器读得回来（"不是换个名字了事"）。
-        let parsed = engine::core::entity_script::EntityScript::from_component_str(
-            &raw[engine::core::entity_script::SCRIPT_COMPONENT],
+        let parsed = rustlua_ecs::entity_script::EntityScript::from_component_str(
+            &raw[rustlua_ecs::entity_script::SCRIPT_COMPONENT],
         )
         .expect("runtime parser");
         assert_eq!(parsed.file, "scripts/player.lua");
@@ -769,17 +767,15 @@ mod tests {
         // （运行时 `root.join(file)` 后直接编译，扩展名不参与判定），
         // 所以同样的载荷在引擎侧是合法的（见 `component_schema::field_rules_match_engine_validators`）。
         assert!(
-            engine::core::entity_script::EntityScript::from_component_str(
-                "file=scripts/player.txt"
-            )
-            .is_ok(),
+            rustlua_ecs::entity_script::EntityScript::from_component_str("file=scripts/player.txt")
+                .is_ok(),
             "引擎侧必须仍然接受它（否则运行时行为被编辑器约定改掉了）"
         );
     }
 
     /// Windows 上的"根相对"路径（`/etc/passwd.lua`）没有盘符，`Path::is_absolute()` 会返回
     /// `false`——编辑器曾经因此放行、而运行时拒绝，写出一个运行时不加载的脚本。
-    /// 现在两边共用 `engine::core::paths` 的判定。
+    /// 现在两边共用 `rustlua_infra::paths` 的判定。
     #[test]
     fn lua_windows_root_relative_path_rejected() {
         let (mut document, inspector, id) = setup();
@@ -822,18 +818,18 @@ mod tests {
         let entity = document.scene.entities.get_mut(&id).unwrap();
         entity.components.insert(
             "MeshRenderer".to_owned(),
-            format!("mesh={}", engine::core::mesh3d::GROUND_PLANE_SENTINEL),
+            format!("mesh={}", rustlua_render::mesh3d::GROUND_PLANE_SENTINEL),
         );
         let snapshot = inspector.snapshot(&document, id).unwrap();
         assert!(!format!("{snapshot:?}").contains("mesh_renderer"));
         // 引擎解析器仍认得哨兵（迁移不改数据格式、也不放松引擎校验）。
         assert_eq!(
-            engine::core::mesh3d::MeshRenderer::from_component_str(
+            rustlua_render::mesh3d::MeshRenderer::from_component_str(
                 &document.scene.entities[&id].components["MeshRenderer"]
             )
             .expect("引擎解析器")
             .mesh,
-            engine::core::mesh3d::GROUND_PLANE_SENTINEL
+            rustlua_render::mesh3d::GROUND_PLANE_SENTINEL
         );
     }
     /// 相机的缓冲管线已随面板迁移删除（第 24 轮）、组件本身也在第 57 轮统一成单一 `Camera`；
@@ -850,7 +846,7 @@ mod tests {
             .components
             .insert(
             "Camera".to_owned(),
-            engine::core::camera::Camera::Perspective(engine::core::camera::Camera3D::default())
+            rustlua_camera::camera::Camera::Perspective(rustlua_camera::camera::Camera3D::default())
                 .to_component_str(),
         );
         let snapshot = inspector.snapshot(&document, id).unwrap();
@@ -858,7 +854,7 @@ mod tests {
             !format!("{snapshot:?}").contains("camera3d"),
             "迁移后快照不得再携带相机缓冲字段"
         );
-        let camera = engine::core::camera::Camera::from_component_str(
+        let camera = rustlua_camera::camera::Camera::from_component_str(
             &document.scene.entities[&id].components["Camera"],
         )
         .expect("引擎解析器必须认得统一的 Camera")
@@ -886,7 +882,7 @@ mod tests {
         let snapshot = inspector.snapshot(&document, id).unwrap();
         assert!(!format!("{snapshot:?}").contains("light"));
         // 组件串必须仍能被引擎解析器读回（迁移不得改变数据格式）。
-        let light = engine::core::light::Light::from_component_str(
+        let light = rustlua_render::light::Light::from_component_str(
             &document.scene.entities[&id].components["Light"],
         )
         .expect("引擎解析器必须认得 Light");
@@ -905,10 +901,10 @@ mod tests {
             .components
             .insert(
                 "Transform".to_owned(),
-                engine::core::transform::Transform {
-                    position: engine::core::transform::Vec2::new(4.0, 5.0),
+                rustlua_ecs::transform::Transform {
+                    position: rustlua_ecs::transform::Vec2::new(4.0, 5.0),
                     rotation: 0.5,
-                    scale: engine::core::transform::Vec2::new(2.0, 3.0),
+                    scale: rustlua_ecs::transform::Vec2::new(2.0, 3.0),
                 }
                 .to_component_str(),
             );
@@ -916,7 +912,7 @@ mod tests {
             .set_lua_script(&mut document, id, "player.lua")
             .unwrap();
         let text = document.scene.to_text();
-        let loaded = engine::core::scene::Scene::from_text(&text).unwrap();
+        let loaded = rustlua_scene::scene::Scene::from_text(&text).unwrap();
         assert_eq!(
             loaded.entities[&id].components,
             document.scene.entities[&id].components
@@ -994,7 +990,7 @@ mod tests {
             )
             .unwrap();
         let text = document.scene.to_text();
-        let loaded = engine::core::scene::Scene::from_text(&text).unwrap();
+        let loaded = rustlua_scene::scene::Scene::from_text(&text).unwrap();
         let stored = loaded.entities[&id]
             .components
             .get("Collider3d")
@@ -1010,7 +1006,7 @@ mod tests {
     #[test]
     fn image_is_edited_through_the_schema_path() {
         let (mut document, inspector, id) = setup();
-        let registry = engine::core::component_schema::builtin_registry();
+        let registry = rustlua_ecs::component_schema::builtin_registry();
         // 负九宫格：schema 规则拒绝（原来由编辑器 set_image 拒绝）。
         assert!(
             registry["Image"]
@@ -1033,7 +1029,7 @@ mod tests {
         let snapshot = inspector.snapshot(&document, id).unwrap();
         assert!(!format!("{snapshot:?}").contains("image"));
         // 引擎解析器仍能读回九宫格（迁移不改格式）。
-        let parsed = engine::core::ui::UiImage::from_component_str(
+        let parsed = rustlua_ui::ui::UiImage::from_component_str(
             &document.scene.entities[&id].components["Image"],
         )
         .expect("引擎解析器");
@@ -1055,8 +1051,8 @@ mod tests {
 
         // 存盘再读回：场景文本必须无损往返（组件串里带中文与分号风险）。
         let text = document.scene.to_text();
-        let loaded = engine::core::scene::Scene::from_text(&text).unwrap();
-        let reloaded = engine::core::world_text::WorldText::from_component_str(
+        let loaded = rustlua_scene::scene::Scene::from_text(&text).unwrap();
+        let reloaded = rustlua_scene::world_text::WorldText::from_component_str(
             loaded.entities[&id]
                 .components
                 .get("WorldText")
@@ -1068,7 +1064,7 @@ mod tests {
         assert!(reloaded.centered);
 
         // 非有限 offset：schema 规则仍拒绝（原来由编辑器 validate_world_text 拦）。
-        let registry = engine::core::component_schema::builtin_registry();
+        let registry = rustlua_ecs::component_schema::builtin_registry();
         assert!(
             registry["WorldText"]
                 .parse("text=x;font_size=18;offset=NaN,0")
@@ -1086,12 +1082,12 @@ mod tests {
             "texture=assets/textures/ui/panel.png;color=1,1,1;nine_slice=8,8,16,16".to_owned(),
         );
         let text = document.scene.to_text();
-        let loaded = engine::core::scene::Scene::from_text(&text).unwrap();
+        let loaded = rustlua_scene::scene::Scene::from_text(&text).unwrap();
         let stored = loaded.entities[&id]
             .components
             .get("Image")
             .expect("Image persisted");
-        let parsed = engine::core::ui::UiImage::from_component_str(stored).expect("引擎解析器");
+        let parsed = rustlua_ui::ui::UiImage::from_component_str(stored).expect("引擎解析器");
         assert_eq!(parsed.nine_slice, Some([8.0, 8.0, 16.0, 16.0]));
     }
     /// `Text` 的缓冲管线已随面板迁移删除（第 25 轮）；这里验证**迁移后的路径**：
@@ -1109,18 +1105,18 @@ mod tests {
             .components
             .insert(
                 "Text".to_owned(),
-                engine::core::ui::UiText::default().to_component_str(),
+                rustlua_ui::ui::UiText::default().to_component_str(),
             );
         let snapshot = inspector.snapshot(&document, id).unwrap();
         assert!(
             !format!("{snapshot:?}").contains("text: Some"),
             "迁移后快照不得再携带 Text 缓冲字段"
         );
-        let parsed = engine::core::ui::UiText::from_component_str(
+        let parsed = rustlua_ui::ui::UiText::from_component_str(
             &document.scene.entities[&id].components["Text"],
         )
         .expect("引擎解析器必须认得 Text");
-        assert_eq!(parsed.font_size, engine::core::ui::UI_TEXT_BASE_PX);
+        assert_eq!(parsed.font_size, rustlua_ui::ui::UI_TEXT_BASE_PX);
         assert_eq!(parsed.font, "", "默认不写 font 字段");
     }
 }

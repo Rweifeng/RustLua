@@ -198,7 +198,7 @@ impl EditorApp {
                 dir.join("scenes/main.scene"),
                 format!(
                     "scene_version={}\nname=main\n",
-                    engine::core::scene::CURRENT_SCENE_VERSION
+                    rustlua_scene::scene::CURRENT_SCENE_VERSION
                 ),
             )
             .map_err(fs_err)?;
@@ -211,7 +211,8 @@ impl EditorApp {
 mod tests {
     use super::*;
     use editor::{SceneDocument, open_project};
-    use engine::core::{logging::LogSink, scene::SceneEntityId};
+    use rustlua_infra::logging::LogSink;
+    use rustlua_scene::scene::SceneEntityId;
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -230,7 +231,7 @@ mod tests {
     }
 
     fn sample_project_root() -> PathBuf {
-        engine::core::games_dir().join("examples").join("game_api")
+        rustlua_infra::games_dir().join("examples").join("game_api")
     }
 
     fn copy_dir(source: &Path, destination: &Path) {

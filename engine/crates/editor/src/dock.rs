@@ -567,7 +567,7 @@ impl TabViewer for DockTabViewer<'_> {
 mod tests {
     use super::*;
     use crate::EditorApp;
-    use engine::core::logging::LogSink;
+    use rustlua_infra::logging::LogSink;
 
     fn sample_app() -> EditorApp {
         let root =

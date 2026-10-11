@@ -2,13 +2,13 @@
 //!
 //! 在 M22/W1 之前，「平台键 → 引擎键」这件事在四个地方各写了一遍
 //! （`game_app::map_key` 读字符、`game_view::PREVIEW_KEYS` 手写 60 项镜像、
-//! `input_bindings` 的捕获表、`crate::core::script::parse_key` 的字符表），于是
+//! `input_bindings` 的捕获表、`rustlua_scripting::script::parse_key` 的字符表），于是
 //! 「引擎支持哪些键」没有单一事实来源，加一个键要改四处、漏一处就静默失效。
 //!
-//! 现在只有这两份表：**引擎键域 = `crate::core::input::KeyCode` 全表**，逐项覆盖由
+//! 现在只有这两份表：**引擎键域 = `rustlua_input::input::KeyCode` 全表**，逐项覆盖由
 //! `map_key_covers_every_key_code`（本文件，winit 侧）与编辑器侧的
 //! `preview_keys_match_the_engine_key_table` / `egui_round_trip_covers_every_key_code`
-//! 锁住；加一个键只需在 `crate::core::input` 的 `define_key_codes!` 里加一项。
+//! 锁住；加一个键只需在 `rustlua_input::input` 的 `define_key_codes!` 里加一项。
 //!
 //! 分层：`core` 不认识平台类型（`docs/37` P1-1 的架构约束），因此转换表只能落在
 //! `host`；而 **egui 那张表放在编辑器侧**（`editor::panels::keymap`）——引擎不依赖
@@ -23,7 +23,7 @@
 //! **为什么必须是物理键**：字符身份在 AZERTY/Dvorak 上会把移动键错位（`W` 位置产生
 //! `z`），而且 `Shift+1` 这类组合、Tab/Enter/F5/修饰键在字符身份下**根本无法表达**。
 
-use crate::core::input::KeyCode;
+use rustlua_input::input::KeyCode;
 
 /// `winit` 的物理键码 → 引擎物理键。
 ///

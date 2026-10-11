@@ -47,7 +47,7 @@ thread_local! {
 /// （此前 do_string 持 `borrow_mut` 跨 `.exec()`，重入的 call_global 在 `borrow()` 处 panic →
 /// wasm 上是无法 unwind 的 `unreachable` trap）。
 thread_local! {
-    static LUA_RUNTIME: RefCell<Option<engine::core::script::LuaRuntime>> =
+    static LUA_RUNTIME: RefCell<Option<rustlua_scripting::script::LuaRuntime>> =
         const { RefCell::new(None) };
 }
 
@@ -336,7 +336,7 @@ pub fn override_resource(path: &str, bytes: Vec<u8>) -> bool {
 /// 谁先到都行，两边装的是**同一份内容**（同一个 `provider_from_resources`），
 /// 所以"已经装过"必须当成功，否则后到的那个会把整条启动链弄红。
 pub fn install_resource_provider() -> Result<(), String> {
-    match engine::core::vfs::set_provider(provider_from_resources()) {
+    match rustlua_infra::vfs::set_provider(provider_from_resources()) {
         Ok(()) => Ok(()),
         Err(error) => {
             // 只有"已安装"一种可能；内容相同，视作成功。
@@ -360,7 +360,7 @@ fn js_error_text(e: &JsValue) -> String {
 /// 这里只负责搬运字符串——序列化不在这层做。
 struct LocalStorageSlot;
 
-impl engine::core::save_slot::SaveSlotProvider for LocalStorageSlot {
+impl rustlua_infra::save_slot::SaveSlotProvider for LocalStorageSlot {
     fn read(&self, key: &str) -> Option<String> {
         let storage = web_sys::window()?.local_storage().ok()??;
         storage.get_item(key).ok()?
@@ -386,7 +386,7 @@ impl engine::core::save_slot::SaveSlotProvider for LocalStorageSlot {
 /// 装了它之后，引擎自己的 `save.commit()`/`save.load()` 在 wasm 上才真的落盘——
 /// 在此之前它们必然失败（`std::fs` 在 wasm 上没有写通道），也就是"玩家进度存不下来"。
 pub fn install_storage_slot() -> Result<(), String> {
-    match engine::core::save_slot::set_provider(Box::new(LocalStorageSlot)) {
+    match rustlua_infra::save_slot::set_provider(Box::new(LocalStorageSlot)) {
         Ok(()) => Ok(()),
         Err(error) => {
             web_sys::console::log_1(&JsValue::from_str(&format!(
@@ -433,13 +433,13 @@ fn boot_runtime(
 ) -> Result<(), JsValue> {
     // 与 Rust 侧运行时场景（`install_resource_provider`）共用同一条 setup：
     // 谁先安装都行，后到的当成功（内容相同，见该函数注释）。
-    if let Err(error) = engine::core::vfs::set_provider(provider) {
+    if let Err(error) = rustlua_infra::vfs::set_provider(provider) {
         web_sys::console::log_1(&JsValue::from_str(&format!(
             "[vfs] provider 已安装（{error}），沿用现有 provider"
         )));
     }
-    let mut runtime =
-        engine::core::script::LuaRuntime::new().map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let mut runtime = rustlua_scripting::script::LuaRuntime::new()
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
     runtime.set_project_root(std::path::PathBuf::from(super::VIRTUAL_PROJECT_ROOT));
     LUA_RUNTIME.with(|slot| *slot.borrow_mut() = Some(runtime));
     // 新状态 = 新常驻输入表：旧差分基准会让"这一帧该松开哪些键"算错。
@@ -482,12 +482,12 @@ pub fn lua_execute_main() -> Result<(), JsValue> {
             .as_ref()
             .ok_or_else(|| JsValue::from_str("lua bridge: runtime not booted"))?;
         let path = std::path::PathBuf::from(super::VIRTUAL_PROJECT_ROOT).join("scripts/main.lua");
-        let source = engine::core::script::read_project_script(&path)
+        let source = rustlua_scripting::script::read_project_script(&path)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         // 装 require 搜索器：mlua 默认搜索器走 C 文件 API，wasm 下无文件系统；
         // 与桌面 load_candidate 语义一致（vfs provider → pack::decode）。
         if let Some(script_dir) = path.parent() {
-            engine::core::script::install_web_require(runtime.lua(), script_dir)
+            rustlua_scripting::script::install_web_require(runtime.lua(), script_dir)
                 .map_err(|e| JsValue::from_str(&format!("lua install require: {e}")))?;
         }
         runtime
@@ -522,32 +522,31 @@ pub fn lua_do_string(source: &str, chunkname: &str) -> Result<(), JsValue> {
 /// 每帧（每个固定步）编译一小段源码来改这个数，那是纯浪费；这里直接写全局表。
 #[wasm_bindgen]
 pub fn lua_set_number(name: &str, value: f64) -> Result<(), JsValue> {
-
-/// 把**一批** Lua 全局设为数值（一次跨界；语义与逐个 `lua_set_number` 完全一致）。
-///
-/// 存在理由：相机三元组每帧要写三个数，逐个写就是 3 次跨语言往返；它们同一瞬间、同一批语义，
-/// 合并成一次没有语义风险。**注意**：不同时间点的写入（例如固定步之前的 `dt`）不能并进来——
-/// 那会改变脚本读到的时机（脚本在推进前读 `dt`、在绘制时读相机值）。
-///
-/// 入参是 `[[name, value], ...]` 的 JSON 数组；解析失败与设置失败都带具名错误，不做静默兜底。
-#[wasm_bindgen]
-pub fn lua_set_numbers(pairs_json: &str) -> Result<(), JsValue> {
-    let pairs: Vec<(String, f64)> = serde_json::from_str(pairs_json)
-        .map_err(|e| JsValue::from_str(&format!("lua set globals: bad json: {e}")))?;
-    LUA_RUNTIME.with(|slot| {
-        let guard = slot.borrow();
-        let runtime = guard
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("lua bridge: runtime not booted"))?;
-        let globals = runtime.lua().globals();
-        for (name, value) in pairs {
-            globals
-                .set(name.as_str(), value)
-                .map_err(|e| JsValue::from_str(&format!("lua set global {name}: {e}")))?;
-        }
-        Ok(())
-    })
-}
+    /// 把**一批** Lua 全局设为数值（一次跨界；语义与逐个 `lua_set_number` 完全一致）。
+    ///
+    /// 存在理由：相机三元组每帧要写三个数，逐个写就是 3 次跨语言往返；它们同一瞬间、同一批语义，
+    /// 合并成一次没有语义风险。**注意**：不同时间点的写入（例如固定步之前的 `dt`）不能并进来——
+    /// 那会改变脚本读到的时机（脚本在推进前读 `dt`、在绘制时读相机值）。
+    ///
+    /// 入参是 `[[name, value], ...]` 的 JSON 数组；解析失败与设置失败都带具名错误，不做静默兜底。
+    #[wasm_bindgen]
+    pub fn lua_set_numbers(pairs_json: &str) -> Result<(), JsValue> {
+        let pairs: Vec<(String, f64)> = serde_json::from_str(pairs_json)
+            .map_err(|e| JsValue::from_str(&format!("lua set globals: bad json: {e}")))?;
+        LUA_RUNTIME.with(|slot| {
+            let guard = slot.borrow();
+            let runtime = guard
+                .as_ref()
+                .ok_or_else(|| JsValue::from_str("lua bridge: runtime not booted"))?;
+            let globals = runtime.lua().globals();
+            for (name, value) in pairs {
+                globals
+                    .set(name.as_str(), value)
+                    .map_err(|e| JsValue::from_str(&format!("lua set global {name}: {e}")))?;
+            }
+            Ok(())
+        })
+    }
     LUA_RUNTIME.with(|slot| {
         let guard = slot.borrow();
         let runtime = guard
@@ -939,7 +938,7 @@ pub fn lua_api_surface_json() -> Result<String, JsValue> {
             .as_ref()
             .ok_or_else(|| JsValue::from_str("lua bridge: runtime not booted"))?;
         let surface = runtime
-            .eval_json(engine::core::script::LUA_API_PROBE)
+            .eval_json(rustlua_scripting::script::LUA_API_PROBE)
             .map_err(|e| JsValue::from_str(&format!("lua api surface probe: {e}")))?;
         serde_json::to_string(&surface)
             .map_err(|e| JsValue::from_str(&format!("serialize api surface: {e}")))

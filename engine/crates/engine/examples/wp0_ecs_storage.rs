@@ -18,10 +18,8 @@
 #[path = "support/wp0_alloc.rs"]
 mod wp0_alloc;
 
-use engine::core::{
-    dense_storage::DenseStorage,
-    entity::{EntityAllocator, EntityId},
-};
+use rustlua_ecs::dense_storage::DenseStorage;
+use rustlua_ecs::entity::{EntityAllocator, EntityId};
 use std::{
     collections::HashMap,
     env, fs,

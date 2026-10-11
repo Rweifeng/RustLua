@@ -30,15 +30,11 @@
 //! Usage:
 //!   cargo run -p game --example jhyt_m62_prefab_write [-- <game_jhyt-root>]
 
-use engine::{
-    core::{
-        entity::EntityId,
-        input::{InputSnapshot, MouseButton},
-        ui::UiText,
-        ui_layout::{UiRect, UiRectLayout},
-    },
-    host::RuntimeScene,
-};
+use engine::host::RuntimeScene;
+use rustlua_ecs::entity::EntityId;
+use rustlua_input::input::{InputSnapshot, MouseButton};
+use rustlua_ui::ui::UiText;
+use rustlua_ui::ui_layout::{UiRect, UiRectLayout};
 use std::{env, fs, path::PathBuf};
 
 const VIEW_W: f32 = 1280.0;
@@ -523,10 +519,11 @@ fn rects_summary(rects: &[(String, UiRect)]) -> String {
 // ---------- Lua 取值 ----------
 
 fn resolve_project() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let project = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+    let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
+        rustlua_infra::games_dir()
+            .join("examples")
+            .join("game_jhyt")
+    });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

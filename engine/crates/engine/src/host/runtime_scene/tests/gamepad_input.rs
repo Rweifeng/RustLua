@@ -8,7 +8,7 @@
 //! - `lua_rumble_reaches_device_layer`
 
 use super::*;
-use crate::core::scene::Scene;
+use rustlua_scene::scene::Scene;
 
 /// 标题场景（`main.scene`）的手柄导航在**真实 RuntimeScene 路径**上可用。
 ///
@@ -18,7 +18,9 @@ use crate::core::scene::Scene;
 fn title_scene_gamepad_navigation_works_through_runtime_scene() {
     use crate::host::gamepad::{GamepadFrame, SlotBackend, button};
 
-    let root = crate::core::games_dir().join("examples").join("game_jhyt");
+    let root = rustlua_infra::games_dir()
+        .join("examples")
+        .join("game_jhyt");
     let scene_path = root.join("scenes/main.scene");
     if !scene_path.is_file() {
         return;
@@ -69,7 +71,9 @@ fn title_scene_gamepad_navigation_works_through_runtime_scene() {
 fn title_scene_stick_navigation_works_through_runtime_scene() {
     use crate::host::gamepad::{GamepadFrame, SlotBackend};
 
-    let root = crate::core::games_dir().join("examples").join("game_jhyt");
+    let root = rustlua_infra::games_dir()
+        .join("examples")
+        .join("game_jhyt");
     let scene_path = root.join("scenes/main.scene");
     if !scene_path.is_file() {
         return;

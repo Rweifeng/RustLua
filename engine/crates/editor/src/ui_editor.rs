@@ -3,20 +3,22 @@
 use crate::EditorApp;
 use editor::{CommandKind, InspectorError};
 use eframe::egui;
-use engine::core::{
-    component_schema::{builtin_registry, validate_component},
-    editor_plugins::EditorPlugin,
-    preview_diagnostics::{DiagnosticCollector, PreviewDiagnostic, PreviewErrorKind},
-    scene::SceneEntityId,
-    // `UiEasing`/`UiKeyframe` 不再从这里导入：`UiAnimation` 的解析/编码已搬进引擎
-    // （`UiAnimationClip::tracks_from_component_str`/`tracks_to_component_str`）。
-    ui_animation::UiAnimationPreview,
-    ui_binding::BindingSet,
-    ui_events::UiEvents,
-    ui_layout::{CanvasConfig, ContainerStyle, UiRectLayout},
-    ui_scene_layout::{UiSceneNode, resolve_scene_ui_layout},
-    ui_states::ButtonStateSet,
+use rustlua_ecs::component_schema::{builtin_registry, validate_component};
+use rustlua_infra::editor_plugins::EditorPlugin;
+use rustlua_infra::preview_diagnostics::{
+    DiagnosticCollector, PreviewDiagnostic, PreviewErrorKind,
 };
+use rustlua_scene::scene::SceneEntityId;
+// `UiEasing`/`UiKeyframe` 不再从这里导入：`UiAnimation` 的解析/编码已搬进引擎
+
+// （`UiAnimationClip::tracks_from_component_str`/`tracks_to_component_str`）。
+
+use rustlua_ui::ui_animation::UiAnimationPreview;
+use rustlua_ui::ui_binding::BindingSet;
+use rustlua_ui::ui_events::UiEvents;
+use rustlua_ui::ui_layout::{CanvasConfig, ContainerStyle, UiRectLayout};
+use rustlua_ui::ui_scene_layout::{UiSceneNode, resolve_scene_ui_layout};
+use rustlua_ui::ui_states::ButtonStateSet;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A tiny built-in plugin proves that the registry is owned by the app and
@@ -79,7 +81,7 @@ impl EditorApp {
             .components
             .get("UiAnimation")
             .and_then(|raw| parse_ui_animation_component(raw).ok())
-            .unwrap_or_else(|| engine::core::ui_animation::UiAnimationClip::new("preview"));
+            .unwrap_or_else(|| rustlua_ui::ui_animation::UiAnimationClip::new("preview"));
         if self.ui_animation_editor != animation {
             self.ui_animation_editor = animation;
             self.ui_animation_preview = None;
@@ -232,7 +234,7 @@ impl EditorApp {
             return;
         }
         // 编码同样来自引擎（唯一事实源）：编辑器不再自己拼 `track.<属性>=…`。
-        let payload = engine::core::ui_animation::UiAnimationClip::tracks_to_component_str(
+        let payload = rustlua_ui::ui_animation::UiAnimationClip::tracks_to_component_str(
             &self.ui_animation_editor.tracks,
         );
         self.set_ui_component("UiAnimation", Some(payload));
@@ -319,7 +321,7 @@ impl EditorApp {
                     }
                 }
                 if let Some(reference) = entity.components.get("Image").map(String::as_str)
-                    && let Ok(image) = engine::core::ui::UiImage::from_component_str(reference)
+                    && let Ok(image) = rustlua_ui::ui::UiImage::from_component_str(reference)
                     && !image.texture.is_empty()
                     && image.texture != engine::host::frame::WHITE_TEXTURE_PATH
                     && !self.project.root.join(&image.texture).is_file()
@@ -357,7 +359,7 @@ impl EditorApp {
             return;
         };
         let root = crate::util::strip_verbatim_prefix(&self.project.root);
-        let prefab = match engine::core::prefab::Prefab::load(root.join(&prefab_source)) {
+        let prefab = match rustlua_scene::prefab::Prefab::load(root.join(&prefab_source)) {
             Ok(prefab) => prefab,
             Err(error) => {
                 self.status = format!("加载源 Prefab 失败：{error}");
@@ -422,9 +424,9 @@ impl EditorApp {
 /// 预览用的 clip（`name` 是预览概念，不属于组件契约）。
 pub(crate) fn parse_ui_animation_component(
     raw: &str,
-) -> Result<engine::core::ui_animation::UiAnimationClip, String> {
-    let tracks = engine::core::ui_animation::UiAnimationClip::tracks_from_component_str(raw)?;
-    let mut clip = engine::core::ui_animation::UiAnimationClip::new("preview");
+) -> Result<rustlua_ui::ui_animation::UiAnimationClip, String> {
+    let tracks = rustlua_ui::ui_animation::UiAnimationClip::tracks_from_component_str(raw)?;
+    let mut clip = rustlua_ui::ui_animation::UiAnimationClip::new("preview");
     clip.tracks = tracks;
     Ok(clip)
 }
@@ -476,11 +478,11 @@ fn layout_diagnostics(scene: &editor::SceneDocument) -> Vec<PreviewDiagnostic> {
 }
 
 fn collect_subtree_ids(
-    scene: &engine::core::scene::Scene,
+    scene: &rustlua_scene::scene::Scene,
     root: SceneEntityId,
 ) -> Result<Vec<SceneEntityId>, String> {
     fn visit(
-        scene: &engine::core::scene::Scene,
+        scene: &rustlua_scene::scene::Scene,
         id: SceneEntityId,
         out: &mut Vec<SceneEntityId>,
         seen: &mut BTreeSet<SceneEntityId>,

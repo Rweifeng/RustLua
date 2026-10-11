@@ -4,15 +4,13 @@
 //!
 //! 同一类型、同 crate 的另一个固有 `impl` 块；可见性口径见 `gpu_mesh.rs` 的文件头。
 
-use crate::core::{
-    asset_handle::AssetHandle,
-    text::TextAtlas,
-    texture::{TextureAsset, TextureColorSpace},
-};
 use crate::host::frame::{
     ATLAS_TEXTURE_PATH, FONT_ATLAS_TEXTURE_PATH, FontAtlasPixels, WHITE_TEXTURE_PATH,
     font_asset_from_texture_path, is_font_texture_path,
 };
+use rustlua_assets::asset_handle::AssetHandle;
+use rustlua_render::text::TextAtlas;
+use rustlua_render::texture::{TextureAsset, TextureColorSpace};
 use std::path::PathBuf;
 
 use super::{CustomFontUpload, LoadedTexture, Renderer, hash_bytes};

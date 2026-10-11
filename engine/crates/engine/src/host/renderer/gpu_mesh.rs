@@ -5,10 +5,8 @@
 //! 这里只是同 crate 兄弟模块里的另一个固有 `impl` 块；私有方法被父模块调用时按编译器
 //! 指出的那几条加 `pub(super)`（计划 §3.1.4）。
 
-use crate::core::{
-    asset_handle::AssetHandle,
-    mesh3d::{GROUND_PLANE_SENTINEL, MeshAsset},
-};
+use rustlua_assets::asset_handle::AssetHandle;
+use rustlua_render::mesh3d::{GROUND_PLANE_SENTINEL, MeshAsset};
 use std::path::PathBuf;
 use wgpu::util::DeviceExt;
 
@@ -68,7 +66,7 @@ impl Renderer {
                     geometry: self.upload_geometry(&primitive.vertices, &primitive.indices),
                     // docs/54 §4.3：glTF 的 PBR 参数装进**统一的** `Material`（精灵/Quad 用的是同一个
                     // 类型的无光照变体），因此"缺省材质"只有一处定义。
-                    material: crate::core::renderable::Material::pbr(
+                    material: rustlua_render::renderable::Material::pbr(
                         material
                             .map(|value| value.base_color_factor)
                             .unwrap_or([0.55, 0.7, 1.0, 1.0]),
@@ -113,7 +111,10 @@ impl Renderer {
     ///
     /// 这是"后台解码、主线程小步上传"的上传侧：`wgpu` 的提交本身不阻塞，真正卡主线程的
     /// CPU 解码已全部下移到 worker。失败资源只记 warning（调用方已有占位回退），不崩溃。
-    pub(super) fn upload_decoded(&mut self, assets: Vec<crate::core::async_loader::DecodedAsset>) {
+    pub(super) fn upload_decoded(
+        &mut self,
+        assets: Vec<rustlua_render::async_loader::DecodedAsset>,
+    ) {
         for asset in assets {
             if let Some(error) = &asset.error {
                 tracing::warn!(
@@ -125,7 +126,7 @@ impl Renderer {
                 continue;
             }
             match asset.kind {
-                crate::core::async_loader::LoadKind::TexturePng => {
+                rustlua_render::async_loader::LoadKind::TexturePng => {
                     if let Some(texture) = asset.texture {
                         if self.texture_paths.contains_key(asset.key.as_str()) {
                             continue; // 已上传过（并发请求去重后的兜底）。
@@ -152,7 +153,7 @@ impl Renderer {
                         }
                     }
                 }
-                crate::core::async_loader::LoadKind::GltfMesh => {
+                rustlua_render::async_loader::LoadKind::GltfMesh => {
                     if let Some(meshes) = asset.meshes {
                         if self.mesh_cache.contains_key(&asset.key) {
                             continue;
@@ -224,28 +225,28 @@ impl Renderer {
     /// `__ground_plane__` MeshRenderer sentinel so shadows have a surface.
     fn ground_plane_cached_mesh(&self) -> CachedMesh {
         let vertices = [
-            crate::core::mesh3d::MeshVertex {
+            rustlua_render::mesh3d::MeshVertex {
                 position: [-4.0, 0.0, -4.0],
                 normal: [0.0, 1.0, 0.0],
                 texcoord: [0.0, 0.0],
                 joints: [0, 0, 0, 0],
                 weights: [1.0, 0.0, 0.0, 0.0],
             },
-            crate::core::mesh3d::MeshVertex {
+            rustlua_render::mesh3d::MeshVertex {
                 position: [4.0, 0.0, -4.0],
                 normal: [0.0, 1.0, 0.0],
                 texcoord: [1.0, 0.0],
                 joints: [0, 0, 0, 0],
                 weights: [1.0, 0.0, 0.0, 0.0],
             },
-            crate::core::mesh3d::MeshVertex {
+            rustlua_render::mesh3d::MeshVertex {
                 position: [4.0, 0.0, 4.0],
                 normal: [0.0, 1.0, 0.0],
                 texcoord: [1.0, 1.0],
                 joints: [0, 0, 0, 0],
                 weights: [1.0, 0.0, 0.0, 0.0],
             },
-            crate::core::mesh3d::MeshVertex {
+            rustlua_render::mesh3d::MeshVertex {
                 position: [-4.0, 0.0, 4.0],
                 normal: [0.0, 1.0, 0.0],
                 texcoord: [0.0, 1.0],
@@ -256,7 +257,7 @@ impl Renderer {
         CachedMesh {
             primitives: vec![CachedPrimitive {
                 geometry: self.upload_geometry(&vertices, &[0, 2, 1, 0, 3, 2]),
-                material: crate::core::renderable::Material::pbr(
+                material: rustlua_render::renderable::Material::pbr(
                     [0.25, 0.3, 0.38, 1.0],
                     None,
                     0.0,
@@ -270,7 +271,7 @@ impl Renderer {
 
     fn upload_geometry(
         &self,
-        vertices: &[crate::core::mesh3d::MeshVertex],
+        vertices: &[rustlua_render::mesh3d::MeshVertex],
         indices: &[u32],
     ) -> GpuGeometry {
         let vertex_buffer = self

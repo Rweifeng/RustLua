@@ -4,8 +4,8 @@ use crate::EditorApp;
 use crate::util::strip_verbatim_prefix;
 use editor::{ResourceBrowserState, ResourceEntry, ResourceKind};
 use eframe::egui;
-use engine::core::resource_db::ResourceState;
-use engine::core::texture::{TextureAsset, TextureColorSpace};
+use rustlua_assets::resource_db::ResourceState;
+use rustlua_render::texture::{TextureAsset, TextureColorSpace};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -864,7 +864,7 @@ mod tests {
     use super::{build_resource_tree, downscale_rgba};
     use crate::EditorApp;
     use editor::{ResourceEntry, ResourceKind, open_project};
-    use engine::core::logging::LogSink;
+    use rustlua_infra::logging::LogSink;
     use std::{
         fs,
         path::PathBuf,
@@ -875,7 +875,7 @@ mod tests {
         ResourceEntry {
             path: PathBuf::from(path),
             kind,
-            status: engine::core::resource_db::ResourceState::Discovered,
+            status: rustlua_assets::resource_db::ResourceState::Discovered,
             asset_id: None,
             error: None,
         }
@@ -967,13 +967,13 @@ mod tests {
         let root = temp_project_root("rename-resource");
         fs::write(root.join("assets/player.png"), b"png").unwrap();
         // 另一个引用了该纹理的文档（磁盘上，非当前打开）。
-        let mut other = engine::core::scene::Scene::new("other");
+        let mut other = rustlua_scene::scene::Scene::new("other");
         other
-            .add_entity(engine::core::scene::SceneEntityId(1), "Hero", None)
+            .add_entity(rustlua_scene::scene::SceneEntityId(1), "Hero", None)
             .unwrap();
         other
             .entities
-            .get_mut(&engine::core::scene::SceneEntityId(1))
+            .get_mut(&rustlua_scene::scene::SceneEntityId(1))
             .unwrap()
             .components
             .insert(
@@ -1037,9 +1037,9 @@ mod tests {
         assert!(!root.join("assets/player.png").exists());
         assert!(root.join("assets/hero.png").exists());
         // 其它文档：磁盘上已改写。
-        let reloaded = engine::core::scene::Scene::load(root.join("scenes/other.scene")).unwrap();
+        let reloaded = rustlua_scene::scene::Scene::load(root.join("scenes/other.scene")).unwrap();
         assert!(
-            reloaded.entities[&engine::core::scene::SceneEntityId(1)].components["Sprite"]
+            reloaded.entities[&rustlua_scene::scene::SceneEntityId(1)].components["Sprite"]
                 .contains("assets/hero.png"),
             "其它文档的引用必须跟着改"
         );
@@ -1170,7 +1170,7 @@ mod tests {
     #[test]
     fn thumbnail_worker_decodes_png_and_reports_failure() {
         let mut worker = super::ThumbnailWorker::new();
-        let png = engine::core::games_dir()
+        let png = rustlua_infra::games_dir()
             .join("examples")
             .join("game_api")
             .join("assets/textures/red-1x1.png");

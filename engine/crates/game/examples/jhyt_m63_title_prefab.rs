@@ -34,16 +34,12 @@
 //! `--capture` 只打印读数表后退出（在**迁移前**的树上跑一次，产出的就是黄金表）：
 //!   cargo run -p game --example jhyt_m63_title_prefab --capture
 
-use engine::{
-    core::{
-        entity::EntityId,
-        input::InputSnapshot,
-        ui::{UiImage, UiText},
-        ui_events::UiEvents,
-        ui_layout::{UiRect, UiRectLayout},
-    },
-    host::{RuntimeScene, SceneDraw, SceneMesh},
-};
+use engine::host::{RuntimeScene, SceneDraw, SceneMesh};
+use rustlua_ecs::entity::EntityId;
+use rustlua_input::input::InputSnapshot;
+use rustlua_ui::ui::{UiImage, UiText};
+use rustlua_ui::ui_events::UiEvents;
+use rustlua_ui::ui_layout::{UiRect, UiRectLayout};
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
@@ -829,7 +825,11 @@ fn resolve_project(args: &[String]) -> Result<PathBuf, Box<dyn std::error::Error
         .iter()
         .find(|arg| !arg.starts_with("--"))
         .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+        .unwrap_or_else(|| {
+            rustlua_infra::games_dir()
+                .join("examples")
+                .join("game_jhyt")
+        });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

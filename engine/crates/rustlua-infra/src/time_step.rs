@@ -74,8 +74,7 @@ impl FixedTimeStep {
     pub fn advance(&mut self, elapsed_seconds: f64) -> StepReport {
         self.accumulator_seconds += elapsed_seconds.max(0.0);
         let mut steps = 0;
-        while self.accumulator_seconds
-            >= self.fixed_delta_seconds - self.step_tolerance_seconds
+        while self.accumulator_seconds >= self.fixed_delta_seconds - self.step_tolerance_seconds
             && steps < self.max_catch_up_steps
         {
             self.accumulator_seconds -= self.fixed_delta_seconds;

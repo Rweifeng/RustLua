@@ -6,7 +6,7 @@
 //! - `non_planar_local_transform_is_refused_for_2d_entities`
 
 use super::*;
-use crate::core::scene::Scene;
+use rustlua_scene::scene::Scene;
 
 /// docs/54 §10 批 R：**输入没变就跳过传播**——静态层级场景不再付那三成帧成本，而任何一处
 /// 局部真源变化都必须立刻退回全量传播。
@@ -16,7 +16,7 @@ use crate::core::scene::Scene;
 /// ④ 回滚档（`set_spatial_skip_unchanged(false)`）每帧都传播。
 #[test]
 fn static_hierarchy_skips_propagation_until_something_changes() {
-    let root = crate::core::games_dir().join("examples").join("game_api");
+    let root = rustlua_infra::games_dir().join("examples").join("game_api");
     if !root.join("scenes/main.scene").is_file() {
         return;
     }
@@ -36,7 +36,7 @@ fn static_hierarchy_skips_propagation_until_something_changes() {
     );
     let mut runtime =
         RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
-    let input = crate::core::input::InputSnapshot::default();
+    let input = rustlua_input::input::InputSnapshot::default();
     let child_world_x = |runtime: &RuntimeScene| {
         runtime
             .world_transform_2d_of(child)
@@ -66,9 +66,9 @@ fn static_hierarchy_skips_propagation_until_something_changes() {
     assert_eq!(child_world_x(&runtime), 12.0, "跳过不等于世界值失效");
 
     // ② 改自己的局部值 ⇒ 必须传播。
-    let moved = crate::core::spatial_transform::LocalTransform {
-        translation: crate::core::math3d::Vec3::new(5.0, 0.0, 0.0),
-        ..crate::core::spatial_transform::LocalTransform::identity()
+    let moved = rustlua_ecs::spatial_transform::LocalTransform {
+        translation: rustlua_math::math3d::Vec3::new(5.0, 0.0, 0.0),
+        ..rustlua_ecs::spatial_transform::LocalTransform::identity()
     };
     runtime
         .set_local_transform(child, moved)
@@ -87,9 +87,9 @@ fn static_hierarchy_skips_propagation_until_something_changes() {
     );
 
     // ③ 改**父**的局部值：子自己的局部没变，但世界值必须跟着父走。
-    let parent_moved = crate::core::spatial_transform::LocalTransform {
-        translation: crate::core::math3d::Vec3::new(20.0, 0.0, 0.0),
-        ..crate::core::spatial_transform::LocalTransform::identity()
+    let parent_moved = rustlua_ecs::spatial_transform::LocalTransform {
+        translation: rustlua_math::math3d::Vec3::new(20.0, 0.0, 0.0),
+        ..rustlua_ecs::spatial_transform::LocalTransform::identity()
     };
     runtime
         .set_local_transform(parent, parent_moved)
@@ -144,7 +144,7 @@ fn static_hierarchy_skips_propagation_until_something_changes() {
 /// （`set_spatial_incremental(false)`）每帧全量、世界值一致。
 #[test]
 fn incremental_propagation_recomputes_only_changed_subtrees() {
-    let root = crate::core::games_dir().join("examples").join("game_api");
+    let root = rustlua_infra::games_dir().join("examples").join("game_api");
     if !root.join("scenes/main.scene").is_file() {
         return;
     }
@@ -183,9 +183,9 @@ fn incremental_propagation_recomputes_only_changed_subtrees() {
     );
 
     // ② 只挪链尾：一帧里重算的实体数应当是 1。
-    let moved_leaf = crate::core::spatial_transform::LocalTransform {
-        translation: crate::core::math3d::Vec3::new(5.0, 0.0, 0.0),
-        ..crate::core::spatial_transform::LocalTransform::identity()
+    let moved_leaf = rustlua_ecs::spatial_transform::LocalTransform {
+        translation: rustlua_math::math3d::Vec3::new(5.0, 0.0, 0.0),
+        ..rustlua_ecs::spatial_transform::LocalTransform::identity()
     };
     runtime
         .set_local_transform(leaf, moved_leaf)
@@ -205,9 +205,9 @@ fn incremental_propagation_recomputes_only_changed_subtrees() {
     assert!(counts[2] >= 1, "本步应当走过增量路径（计数 {counts:?}）");
 
     // ③ 挪链根：整条链都要重算（3 个实体）。
-    let moved_root = crate::core::spatial_transform::LocalTransform {
-        translation: crate::core::math3d::Vec3::new(20.0, 0.0, 0.0),
-        ..crate::core::spatial_transform::LocalTransform::identity()
+    let moved_root = rustlua_ecs::spatial_transform::LocalTransform {
+        translation: rustlua_math::math3d::Vec3::new(20.0, 0.0, 0.0),
+        ..rustlua_ecs::spatial_transform::LocalTransform::identity()
     };
     runtime
         .set_local_transform(ring, moved_root)
@@ -232,9 +232,9 @@ fn incremental_propagation_recomputes_only_changed_subtrees() {
     assert!(!runtime.spatial_incremental());
     let _ = runtime.take_spatial_path_counts();
     for step in 0..3 {
-        let moved = crate::core::spatial_transform::LocalTransform {
-            translation: crate::core::math3d::Vec3::new(1.0 + step as f32, 0.0, 0.0),
-            ..crate::core::spatial_transform::LocalTransform::identity()
+        let moved = rustlua_ecs::spatial_transform::LocalTransform {
+            translation: rustlua_math::math3d::Vec3::new(1.0 + step as f32, 0.0, 0.0),
+            ..rustlua_ecs::spatial_transform::LocalTransform::identity()
         };
         runtime
             .set_local_transform(leaf, moved)
@@ -270,9 +270,9 @@ fn incremental_propagation_recomputes_only_changed_subtrees() {
         "缓存刚建好，这一步还走不了增量（计数 {counts:?}）"
     );
     // 再改一次值 ⇒ 走增量，且只重算那一个叶子。
-    let moved_again = crate::core::spatial_transform::LocalTransform {
-        translation: crate::core::math3d::Vec3::new(6.0, 0.0, 0.0),
-        ..crate::core::spatial_transform::LocalTransform::identity()
+    let moved_again = rustlua_ecs::spatial_transform::LocalTransform {
+        translation: rustlua_math::math3d::Vec3::new(6.0, 0.0, 0.0),
+        ..rustlua_ecs::spatial_transform::LocalTransform::identity()
     };
     runtime
         .set_local_transform(leaf, moved_again)
@@ -297,13 +297,13 @@ fn incremental_propagation_recomputes_only_changed_subtrees() {
 /// 转换口径都会在这里失败——这正是"两份真源"最容易被引入的地方。
 #[test]
 fn runtime_and_document_agree_on_the_canonical_local_transform() {
-    let root = crate::core::games_dir().join("examples").join("game_api");
+    let root = rustlua_infra::games_dir().join("examples").join("game_api");
     let path = root.join("scenes/index.scene");
     if !path.is_file() {
         return;
     }
     let scene = Scene::load(&path).expect("load shipped scene");
-    let document = crate::core::scene_space::local_transforms(&scene);
+    let document = rustlua_scene::scene_space::local_transforms(&scene);
     let mut runtime =
         RuntimeScene::from_scene_edit(Some(root.as_path()), scene.clone()).expect("runtime");
     assert!(!document.is_empty(), "场景应当带局部变换");
@@ -330,7 +330,7 @@ fn runtime_and_document_agree_on_the_canonical_local_transform() {
         .expect("至少一个带变换的实体")
         .id;
     let mut moved = document[&target];
-    moved.translation = moved.translation + crate::core::math3d::Vec3::new(3.0, 4.0, 0.0);
+    moved.translation = moved.translation + rustlua_math::math3d::Vec3::new(3.0, 4.0, 0.0);
     assert!(
         runtime
             .set_local_transform(target, moved)
@@ -348,7 +348,7 @@ fn runtime_and_document_agree_on_the_canonical_local_transform() {
 /// （手抄 XY 会把旋转与缩放丢掉）。
 #[test]
 fn non_planar_local_transform_is_refused_for_2d_entities() {
-    let root = crate::core::games_dir().join("examples").join("game_api");
+    let root = rustlua_infra::games_dir().join("examples").join("game_api");
     if !root.join("scenes/main.scene").is_file() {
         return;
     }
@@ -365,19 +365,19 @@ fn non_planar_local_transform_is_refused_for_2d_entities() {
         );
     let mut runtime =
         RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
-    let planar = crate::core::spatial_transform::LocalTransform {
-        translation: crate::core::math3d::Vec3::new(5.0, 6.0, 0.0),
-        rotation: crate::core::math3d::Quat::identity(),
-        scale: crate::core::math3d::Vec3::new(2.0, 2.0, 1.0),
+    let planar = rustlua_ecs::spatial_transform::LocalTransform {
+        translation: rustlua_math::math3d::Vec3::new(5.0, 6.0, 0.0),
+        rotation: rustlua_math::math3d::Quat::identity(),
+        scale: rustlua_math::math3d::Vec3::new(2.0, 2.0, 1.0),
     };
     assert!(
         runtime
             .set_local_transform(SceneEntityId(1), planar)
             .unwrap()
     );
-    let tilted = crate::core::spatial_transform::LocalTransform {
+    let tilted = rustlua_ecs::spatial_transform::LocalTransform {
         // 沿 z 抬起：2D 平面装不下。
-        translation: crate::core::math3d::Vec3::new(5.0, 6.0, 3.0),
+        translation: rustlua_math::math3d::Vec3::new(5.0, 6.0, 3.0),
         ..planar
     };
     let error = runtime

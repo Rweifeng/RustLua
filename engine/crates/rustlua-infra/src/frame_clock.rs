@@ -250,7 +250,10 @@ mod tests {
     fn tolerance_override_is_honoured() {
         // 默认容差：比一帧少 1e-12 秒（几个 ulp）仍算一帧。
         assert_eq!(
-            FrameClock::new(60, 8, 0.25).unwrap().plan(FRAME_60 - 1e-12).steps,
+            FrameClock::new(60, 8, 0.25)
+                .unwrap()
+                .plan(FRAME_60 - 1e-12)
+                .steps,
             1
         );
         // 收紧到 0：同样的间隔不再算一帧（证明这个开关真的在起作用，不是摆设）。

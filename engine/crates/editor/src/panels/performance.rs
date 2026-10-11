@@ -11,7 +11,7 @@
 use crate::EditorApp;
 use editor::{ProfilerReport, TimingSummary};
 use eframe::egui;
-use engine::core::ui_layout_cache::LayoutCacheStats;
+use rustlua_ui::ui_layout_cache::LayoutCacheStats;
 
 /// 面板耗时表最多列出的行数（其余只给计数，完整清单见「复制报告」）。
 const MAX_PANEL_ROWS: usize = 12;

@@ -1,6 +1,6 @@
 use bytemuck::{Pod, Zeroable};
-use engine::core::text::{TextAtlas, TextLayout, TextStyle};
-use engine::core::texture::{TextureAsset, TextureColorSpace};
+use rustlua_render::text::{TextAtlas, TextLayout, TextStyle};
+use rustlua_render::texture::{TextureAsset, TextureColorSpace};
 use wgpu::util::DeviceExt;
 
 #[repr(C)]

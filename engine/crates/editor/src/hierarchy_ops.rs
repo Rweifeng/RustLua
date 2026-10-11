@@ -8,7 +8,8 @@
 
 use crate::EditorApp;
 use editor::{CommandKind, ReparentPosition, SelectionSource};
-use engine::core::{scene::SceneEntityId, transform::Transform3D};
+use rustlua_ecs::transform::Transform3D;
+use rustlua_scene::scene::SceneEntityId;
 
 impl EditorApp {
     pub(crate) fn paste_entity(&mut self, parent: Option<SceneEntityId>) {
@@ -88,7 +89,7 @@ impl EditorApp {
         // docs/54 §8-⑦（§4.1）：换父提供 **keep-world** 语义——先记下移动方的世界矩阵，改完父
         // 再按新父反解局部值，因此"拖进新父"不会让实体在画面上跳走。反解不了（剪切/镜像/退化）
         // 时整笔事务取消，绝不静默近似。
-        let worlds: Vec<(SceneEntityId, engine::core::math3d::Mat4)> = {
+        let worlds: Vec<(SceneEntityId, rustlua_math::math3d::Mat4)> = {
             let matrices = editor::document_space::world_matrices(&scene.scene);
             batch
                 .iter()

@@ -19,8 +19,8 @@
 
 use crate::EditorApp;
 use eframe::egui;
-use engine::core::scene::Scene;
-use engine::core::script::LuaRuntime;
+use rustlua_scene::scene::Scene;
+use rustlua_scripting::script::LuaRuntime;
 use serde_json::Value;
 use std::{
     fs,
@@ -1614,7 +1614,7 @@ fn join_or_none(values: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::core::scene::{SceneEntity, SceneEntityId};
+    use rustlua_scene::scene::{SceneEntity, SceneEntityId};
     use std::collections::BTreeMap;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1806,7 +1806,9 @@ mod tests {
     /// 错误定位可用」，不锁定内容数值。
     #[test]
     fn real_game_project_loads_unified_entry_and_reads_view() {
-        let root = engine::core::games_dir().join("examples").join("game_jhyt");
+        let root = rustlua_infra::games_dir()
+            .join("examples")
+            .join("game_jhyt");
         if !root.join(UNIFIED_ENTRY_RELATIVE).is_file() {
             // 仓库状态不含统一入口时跳过（该能力由 M20-01 提供）。
             return;

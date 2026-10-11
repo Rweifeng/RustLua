@@ -39,8 +39,9 @@
 //! 用法：
 //!   cargo run --quiet -p game --example jhyt_m72_building_footprint [-- <game_jhyt-root>]
 
-use engine::{core::input::InputSnapshot, host::RuntimeScene};
+use engine::host::RuntimeScene;
 use image::RgbaImage;
+use rustlua_input::input::InputSnapshot;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     env,
@@ -313,10 +314,11 @@ struct Tally {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let project = env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| engine::core::games_dir().join("examples").join("game_jhyt"));
+    let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
+        rustlua_infra::games_dir()
+            .join("examples")
+            .join("game_jhyt")
+    });
     let project = project.canonicalize()?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());

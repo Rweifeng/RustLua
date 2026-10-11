@@ -6,7 +6,7 @@
 //!
 //! M20-02 追加「音频」小节：编辑 `<project>/project.toml` 的 `[audio]` 段四路
 //! 音量（主/BGM/音效/界面），与运行期 `audio` Lua API 共用引擎
-//! `engine::core::settings::ProjectSettings` 的读写实现（保序、未知段原样保留）。
+//! `rustlua_gameplay::settings::ProjectSettings` 的读写实现（保序、未知段原样保留）。
 //!
 //! M20-08 追加「输入」小节：按动作列出绑定文本、捕获式改绑（键盘/手柄按钮/
 //! 手柄轴方向）、跨动作冲突提示与保存前校验、「恢复默认」二次确认、摇杆/扳机
@@ -19,7 +19,7 @@ use crate::panels::input_bindings::{
 };
 use crate::util::strip_verbatim_prefix;
 use eframe::egui;
-use engine::core::settings::ProjectSettings;
+use rustlua_gameplay::settings::ProjectSettings;
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -228,7 +228,7 @@ pub(crate) fn load_audio_into(ui: &mut ProjectSettingsUi, root: &Path) -> Result
 
 /// 把 `ProjectSettings` 写到面板缓冲（含 0..=1 钳制）。
 fn apply_audio_buffers(ui: &mut ProjectSettingsUi, settings: &ProjectSettings) {
-    use engine::core::audio::AudioBus;
+    use rustlua_audio::audio::AudioBus;
     ui.audio_master = settings.volume(AudioBus::Master);
     ui.audio_bgm = settings.volume(AudioBus::Bgm);
     ui.audio_sfx = settings.volume(AudioBus::Sfx);
@@ -237,7 +237,7 @@ fn apply_audio_buffers(ui: &mut ProjectSettingsUi, settings: &ProjectSettings) {
 
 /// 面板缓冲 → `ProjectSettings`（越界/非有限值钳制，写入不会产生非法文件）。
 pub(crate) fn audio_settings_from(ui: &ProjectSettingsUi) -> ProjectSettings {
-    use engine::core::audio::AudioBus;
+    use rustlua_audio::audio::AudioBus;
     let mut settings = ProjectSettings::new();
     for (bus, value) in [
         (AudioBus::Master, ui.audio_master),
@@ -943,7 +943,7 @@ mod tests {
                 directories: Vec::new(),
             },
             None,
-            engine::core::logging::LogSink::new(64),
+            rustlua_infra::logging::LogSink::new(64),
         );
 
         app.open_project_settings();
@@ -1019,7 +1019,7 @@ mod tests {
             ..ProjectSettingsUi::default()
         };
         let settings = audio_settings_from(&ui);
-        use engine::core::audio::AudioBus;
+        use rustlua_audio::audio::AudioBus;
         assert_eq!(settings.volume(AudioBus::Master), 1.0);
         assert_eq!(settings.volume(AudioBus::Bgm), 0.0);
         assert_eq!(settings.volume(AudioBus::Sfx), 1.0); // 非有限值回落默认

@@ -26,8 +26,8 @@ powershell -File scripts/gen-rustdoc.ps1      # cargo doc → 可发布的静态
 
 存量 78 条 rustdoc 告警（`engine` 77 + `editor` 1）全部是失效的 intra-doc 链接。根因不是笔误，而是 rustdoc 的两条解析规则：
 
-1. **从私有子模块 `pub use` 上来的名字不进链接解析作用域**。`core/camera/mod.rs` 里 `mod component;` / `mod view;` 是私有的，条目页写在 `camera/component/struct.Camera2D.html`（定义位置），`camera/` 下那份是 re-export。于是文档里写 `[`Camera2D`]` 解析不到，必须写公开路径。
-2. **文档里不能用 crate 自己的名字起头**。crate 内部要写 `crate::core::camera::Camera2D`；`engine::…` 只有在**别的** crate（editor / game_web）引用时才成立。这条特别容易踩：`[`engine::…`]` 在 editor 里是对的，在 engine 自己里面就是断链。
+1. **从私有子模块 `pub use` 上来的名字不进链接解析作用域**。`rustlua-camera/src/camera/mod.rs` 里 `mod component;` / `mod view;` 是私有的，条目页写在 `camera/component/struct.Camera2D.html`（定义位置），`camera/` 下那份是 re-export。于是文档里写 `[`Camera2D`]` 解析不到，必须写公开路径。
+2. **文档链接要使用定义 crate 的真实公开路径**。例如相机 API 位于 `rustlua_camera::camera`，Lua 运行时位于 `rustlua_scripting::script`；编辑器、运行器和宿主均直接依赖对应的 `rustlua-*` crate。
 
 判"哪些路径真的是公开的"没有靠人眼：`target/doc/**` 的目录结构本身就是权威答案——**含 `index.html` 的目录才是公开模块**，只含条目页的目录是私有模块（rustdoc 给私有模块写条目页但不写 index）。据此索引把 120 处裸链接机械限定成公开路径，剩下 10 处按性质逐条处理：
 
@@ -35,7 +35,7 @@ powershell -File scripts/gen-rustdoc.ps1      # cargo doc → 可发布的静态
 |---|---|
 | `[`component`]` 等 6 个私有子模块名 | 降级成代码块（`component`），没有公开条目可链 |
 | `[`WorldTransform`] / [`WorldTransform3D`]` | 指向已合并的 [`GlobalTransform`](../engine/crates/rustlua-ecs/src/spatial_transform.rs)（docs/60 那批的改名遗留） |
-| `[`crate::core::script::LuaRuntime::with_script`]` | 该方法不存在；反向解码其实是私有 `entity_from_lua`，降级成代码块 |
+| `[`rustlua_scripting::script::LuaRuntime::with_script`]` | 该方法不存在；反向解码其实是私有 `entity_from_lua`，降级成代码块 |
 | `[`Camera2D::visible_extent`]` | 私有方法，"public documentation links to private item" 告警，降级 |
 
 改动全部是注释行，`git diff` 可按 `[`crate::` 复核。**没有为了消警而把私有项改成 `pub`**——那会让 API 面变大，属于用错工具解决问题。

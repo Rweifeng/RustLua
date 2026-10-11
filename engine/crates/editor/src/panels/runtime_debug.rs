@@ -14,7 +14,7 @@
 
 use crate::EditorApp;
 use eframe::egui;
-use engine::core::script::LuaRuntime;
+use rustlua_scripting::script::LuaRuntime;
 use serde_json::Value;
 
 /// 一条只读探针：显示标签 + Lua 表达式（表达式必须返回 `{ value = ... }` 或

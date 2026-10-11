@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 use crate::EditorApp;
 use editor::runtime_sync::{RuntimeWorldSnapshot, apply_runtime_snapshot, live_transforms};
 use editor::{PlaySession, ProjectDocument, SceneDocument};
-use engine::core::{input::InputSnapshot, scene::SceneEntityId};
+use rustlua_input::input::InputSnapshot;
+use rustlua_scene::scene::SceneEntityId;
 
 /// 运行态回灌的节流：层级面板是给人看的，30Hz 足够，也避免每帧克隆整份世界读数。
 const RUNTIME_SYNC_INTERVAL: Duration = Duration::from_millis(33);
@@ -174,9 +175,9 @@ mod tests {
     use super::*;
     use editor::ProjectInfo;
     use eframe::egui;
-    use engine::core::logging::LogSink;
-    use engine::core::scene::Scene;
-    use engine::core::spatial_transform::TRANSFORM_COMPONENT;
+    use rustlua_ecs::spatial_transform::TRANSFORM_COMPONENT;
+    use rustlua_infra::logging::LogSink;
+    use rustlua_scene::scene::Scene;
 
     /// headless（CPU fallback）wgpu 设备；拿不到就跳过——这几条要真预览会话。
     fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
@@ -294,7 +295,7 @@ mod tests {
             assert_eq!(mirror.scene.entities.len(), 2, "Hero + Bullet，不多不少");
             (
                 bullet,
-                engine::core::spatial_transform::scene_entity_local(&entity.components)
+                rustlua_ecs::spatial_transform::scene_entity_local(&entity.components)
                     .expect("镜像行该有 Transform 分量串"),
             )
         };
@@ -371,7 +372,7 @@ mod tests {
             return;
         };
         let source =
-            engine::core::games_dir().join("examples/game_jhyt/assets/prefabs/title_menu.prefab");
+            rustlua_infra::games_dir().join("examples/game_jhyt/assets/prefabs/title_menu.prefab");
         let target = root.join("assets/prefabs/title_menu.prefab");
         std::fs::create_dir_all(target.parent().expect("prefab dir")).unwrap();
         std::fs::copy(&source, &target).expect("复制门面预设");

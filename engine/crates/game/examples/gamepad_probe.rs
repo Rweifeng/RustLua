@@ -128,7 +128,7 @@ fn main() {
     poller.rumble(0.6, 0.3, 300);
     println!("已发送震动脉冲（左 0.6 / 右 0.3 / 300ms）；到期由引擎自动归零。");
     // 到期归零由 poll_into 驱动；这里手动采样几帧让状态机走完。
-    let mut input = engine::core::input::InputSnapshot::default();
+    let mut input = rustlua_input::input::InputSnapshot::default();
     let stopped = Instant::now();
     while stopped.elapsed() < Duration::from_millis(400) {
         poller.poll_into(&mut input);

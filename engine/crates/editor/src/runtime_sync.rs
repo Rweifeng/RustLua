@@ -14,12 +14,10 @@
 //! Stop 用 `editor_snapshot` 复原，所以这里可以放心增删行——但**不能** `mark_dirty`，
 //! 否则层级标题会一直挂着"● 未保存"，而那份"未保存"永远存不了。
 
-use engine::core::{
-    math3d::{Quat, Vec3},
-    scene::{Scene, SceneEntity, SceneEntityId},
-    spatial_transform::{LocalTransform, TRANSFORM_COMPONENT},
-};
 use engine::host::RuntimeSpawnedEntity;
+use rustlua_ecs::spatial_transform::{LocalTransform, TRANSFORM_COMPONENT};
+use rustlua_math::math3d::{Quat, Vec3};
+use rustlua_scene::scene::{Scene, SceneEntity, SceneEntityId};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::document_space::encode_transform;
@@ -349,7 +347,7 @@ fn next_scene_entity_id(scene: &Scene) -> SceneEntityId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::core::spatial_transform::scene_entity_local;
+    use rustlua_ecs::spatial_transform::scene_entity_local;
 
     const HERO: SceneEntityId = SceneEntityId(1);
     const HAND: SceneEntityId = SceneEntityId(2);

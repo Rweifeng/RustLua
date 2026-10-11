@@ -2,10 +2,9 @@
 
 use std::{env, fs, path::PathBuf};
 
-use engine::{
-    core::{games_dir, scene::Scene},
-    host::{RenderOutcome, Renderer, RuntimeScene},
-};
+use engine::host::{RenderOutcome, Renderer, RuntimeScene};
+use rustlua_infra::games_dir;
+use rustlua_scene::scene::Scene;
 use serde_json::json;
 
 const WIDTH: u32 = 640;
@@ -19,7 +18,7 @@ fn main() {
     let mut runtime =
         RuntimeScene::from_scene_edit(Some(&root), scene).expect("instantiate demo3d");
     let viewport =
-        engine::core::camera::Viewport::new(WIDTH as f32, HEIGHT as f32).expect("viewport");
+        rustlua_camera::camera::Viewport::new(WIDTH as f32, HEIGHT as f32).expect("viewport");
     let extracted = runtime.scene_3d(viewport).expect("3D scene");
     let names = extracted
         .drawables
