@@ -1261,7 +1261,7 @@ if ($Mvp -or $MvpOnly) {
         # ⑦ 8 朝向 × 4 帧 = 32 帧的脚下椭圆质心恒在身体中心同一侧（先烘进帧再镜像会把 w/sw/nw
         # 翻到左边，正是 C-1 修掉的那处）；⑧ Y 排序容差 = `depth.lua` 的 `STEP`：Δy=1 不许翻桶、
         # Δy=2 必须恰好翻一桶。跨宿主那条读的是假 ctx 的 `drawImage` 序列
-        # （`--check-foreground-order`，复现命令与三段读数在 `tasks/plan/M72-06` D 段）。
+        # （`--check-foreground-order`，复现命令与三段读数在 `tasks/done/M72-06` D 段）。
         "jhyt_m72_foreground_occlusion"
         # M72-07 多格建筑占地与碰撞门（M72-11 起逐图跑，表在 `SCENES` 里）：manor 以前"撞空气"
         # ——solid 是按 sprite 的矩形画框标出来的，而建筑贴图四角全透明。① 门**独立复算**一遍

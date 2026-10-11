@@ -1,6 +1,6 @@
 //! Headless acceptance drive for M72-02：**per-tile tint 一路带到顶点色**。
 //!
-//! 需求（`tasks/plan/M72-02-per-tile-tint与确定性变体与autotile.md`）：季节/湿润的整体色调与阴影
+//! 需求（`tasks/done/M72-02-per-tile-tint与确定性变体与autotile.md`）：季节/湿润的整体色调与阴影
 //! 压暗都要落在**单格**上。顶点格式早就带 `color:[f32;4]`，结构上是免费的，缺的只是" tilemap 别再
 //! 把它硬编码成不透明白"。所以这条门不测像素，测**顶点色**：像素能回答"这里变暗了"，回答不了
 //! "第 7 格的那 6 个顶点带没带走这一格的颜色"。

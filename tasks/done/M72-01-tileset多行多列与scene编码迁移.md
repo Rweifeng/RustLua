@@ -275,7 +275,7 @@
   又让 `node scripts/engine-pub-surface.mjs --check` 红在 `added=8`。两笔债都在 M72-02 还清
   （七个函数的说明补上、桩数落回 275，16 个模块 `绑定：<file>:<line>` 的行号漂移再生成进来；
   符号面基线跑 `--update` 到 2192 项），读数与逐条归因见
-  `tasks/plan/M72-02-per-tile-tint与确定性变体与autotile.md` §验收证据。
+  `tasks/done/M72-02-per-tile-tint与确定性变体与autotile.md` §验收证据。
   **口径补一句**：改 `.scene`/渲染之外的公开 Rust 符号时，`cargo doc`、`gen-lua-api-docs.js`、
   `engine-pub-surface.mjs` 这三道是连着的，只跑 clippy + test 会漏。
 - `jhyt_m66_pause_prefab` 的陈旧黄金表、`docs/32` 的悬空 `../scripts/README.md` 链接、

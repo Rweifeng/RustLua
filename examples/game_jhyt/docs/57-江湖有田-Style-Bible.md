@@ -108,7 +108,7 @@
    - 树干/树冠、墙身/屋顶**分别登记**（`tools/gen_manor_art.py` 的 `LAYER_SPLITS`），两块按行拼回去逐字节 == 整张原图。
    - 量化判据：玩家可达位置上被前景盖住的角色像素占比 ≤ `occlusion.max_cover_ratio`，且全图最深 ≥ `min_cover_ratio`（否则前景层是白加的）。**`0.65` 这一档钉的是美术切点，不是运行期的宽容度**：树冠切顶 40 行实测最深 0.604、顶 57 行 0.861（人在树冠里只剩一条边）、顶 26 行 0.357（数字过得上旧判据 0.40，画面却读成"人站在树前面"——正是"靠放宽数字装没事"会奖励的结果）。取的是中间那档：露腿、头在树后。
    - 门：`cargo run --quiet -p game --example jhyt_m72_foreground_occlusion` §③④⑤（读原生 `mesh.draws` 提交序 + 运行期 `sprite.set` 反面对照）。工具（`preview_scene.py`）不验证绘制序。
-   - 同一判据的第二份实现（web/微信的排序键与绘制循环是另写的两份，见下面第 9 款）：`node scripts/wechat-minigame-harness.js <发布目录>/launcher --remote auto --remote-root <发布目录>/assets --frames 90 --drive-new-game --check-foreground-order`——它看的是假 ctx 记下的**真实 `drawImage` 先后**，三段（正序 / 只改 `sorting_layer` 的反面对照 / 还原）读数在 `tasks/plan/M72-06` 的 D 段。
+   - 同一判据的第二份实现（web/微信的排序键与绘制循环是另写的两份，见下面第 9 款）：`node scripts/wechat-minigame-harness.js <发布目录>/launcher --remote auto --remote-root <发布目录>/assets --frames 90 --drive-new-game --check-foreground-order`——它看的是假 ctx 记下的**真实 `drawImage` 先后**，三段（正序 / 只改 `sorting_layer` 的反面对照 / 还原）读数在 `tasks/done/M72-06` 的 D 段。
 6. **软边门**：PNG 必须 RGBA8；主体 alpha 仅允许 0/255，雨雪与受击闪白另行登记例外。尺寸正确或目录存在，均不等于接线完成。
 7. **色阶审计边界**：工具可检查 PNG IHDR、明确 `icon=`/`texture=`/`sheet=` 路径和注册表枚举；不能从文件名、目录或启发式"看起来像"推断场景已接线、素材已被运行时使用。
 8. **投影门（光向全局唯一，M72-06）**：一批图只能有一个光向，这条现在是**算出来的**，不是目测的。

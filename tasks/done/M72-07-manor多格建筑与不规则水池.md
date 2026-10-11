@@ -192,7 +192,7 @@
 本包重算占地 + 挖门洞 + 池塘改岸线的净结果）、`jhyt_m72_foreground_occlusion.rs` 与
 `jhyt_m72_scatter_decor.rs` 里写死的 360/360 注释、`docs/58` §12（遮断物表重列、`blob_95x27`、
 1,636 B、`ManorGateShadow` 17/27 行在图外）。历史台账（`docs/58` §15 的 1.3 行、`CHANGELOG` 的
-M72-06 段、`tasks/plan/M72-06`）不改——那是当时的事实。
+M72-06 段、`tasks/done/M72-06`）不改——那是当时的事实。
 
 ## 验收证据
 

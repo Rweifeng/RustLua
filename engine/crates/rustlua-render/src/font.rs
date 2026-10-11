@@ -962,7 +962,7 @@ fn pixel_rect_size(outline: &Outline, units_per_em: f32, design_px: f32) -> (u32
 ///
 /// 覆盖阈值不会把本就该亮的像素压暗：实测 Fusion Pixel 12px 在 12 px/em 栅格下
 /// 471 个工程用字的覆盖值**只有 0.0 与 1.0 两档**（最大偏差 0.000000，见
-/// `tasks/plan/M72-03`），同一份字体在 `RASTER_SCALE=96` 下有 5876 个部分覆盖像素。
+/// `tasks/done/M72-03`），同一份字体在 `RASTER_SCALE=96` 下有 5876 个部分覆盖像素。
 fn rasterize_pixel(
     outline: &Outline,
     width: u32,

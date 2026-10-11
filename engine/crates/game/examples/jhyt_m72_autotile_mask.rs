@@ -1,6 +1,6 @@
 //! Headless acceptance drive for M72-02：**4-bit autotile 掩码与它的图集条目布局**。
 //!
-//! 需求（`tasks/plan/M72-02-per-tile-tint与确定性变体与autotile.md`）：地形交界是直线 = 每种地形
+//! 需求（`tasks/done/M72-02-per-tile-tint与确定性变体与autotile.md`）：地形交界是直线 = 每种地形
 //! 只有一格瓦。autotile 让格子里存的始终是「逻辑瓦 id」（草 / 土），交界取哪一格由**邻居掩码**
 //! 当场解出。这条门钉的是：位序（艺术契约）、掩码 → 条目 → UV 这一路、以及"内部格不许取压边瓦"。
 //!
