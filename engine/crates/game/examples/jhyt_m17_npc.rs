@@ -82,6 +82,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 玄鹤 00:00 也在山庄（厢房）。
     assert_npc(&mut runtime, "npc_xuanhe", "map", "manor")?;
     assert_npc(&mut runtime, "npc_xuanhe", "live", "true")?;
+    // 睡眠点撞格：顾长风与玄鹤的 00:00 目标都是 manor_home (12,6)——一个地点只有一个
+    // cell，而日程允许两人同时段引用它。不错开就是两个精灵完全重叠（新档开局可见）。
+    // 错开只发生在格内（±12 < TILE/2），所以两人读回的 cell 仍是 12,6：路径端点、
+    // 存档格坐标、下面 M17-02b/c 的点位断言都不受影响。
+    assert_npc(&mut runtime, "npc_xuanhe", "cell_x", "12")?;
+    assert_npc(&mut runtime, "npc_xuanhe", "cell_y", "6")?;
+    let standing = query_str(
+        &mut runtime,
+        "local a = entity.find_id('npc_gu_changfeng'); \
+         local b = entity.find_id('npc_xuanhe'); \
+         local pa = transform.get(a); local pb = transform.get(b); \
+         return string.format('%.1f,%.1f;%.1f,%.1f', pa.x, pa.y, pb.x, pb.y)",
+    )?;
+    match standing.split_once(';') {
+        Some((gu, xuan)) if gu != xuan => {}
+        _ => return Err(format!("同格 NPC 未错开落位：{standing}").into()),
+    }
+    println!("  同格错位 => {standing}");
 
     banner("M17-02b 时间驱动 + A* 路径跟随：顾长风 厢房 → 剑坪");
     lua(&mut runtime, "clock.set(1, 600)")?; // 10:00

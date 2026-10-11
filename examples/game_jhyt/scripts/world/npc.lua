@@ -33,6 +33,22 @@ local TILE = 32
 -- 路径失败后的重算节流（帧数），避免每帧重复 A* 与刷屏诊断。
 local REPATH_TICKS = 30
 
+-- 同格多人时的格内错位表（世界单位）。places.lua 一个地点只有一个 cell，而日程
+-- 允许两人在同一时段引用同一地点（00:00 顾长风与玄鹤同睡 manor_home、19:00 云泽村
+-- 茶摊挤 6 人），于是精灵完全重叠、看着就像"开局有人叠在别人身上"。
+-- 封顶 ±12 是刻意的：格 32、格心在 16，偏移后仍落在本格 [4,28] 内，
+-- grid.world_to_cell 读回同一格 ⇒ find_path 的起终点、存档 cell、
+-- jhyt_m17_npc 的 cell_x/cell_y 断言都不受影响。
+-- 超出表长的第 12 人起回落格心（16 个 NPC 全挤一格才会退化，宁可不完美也不出格）。
+local SPREAD = {
+  { 0, 0 },
+  { -12, -2 }, { 12, -2 },
+  { -12, 6 }, { 12, 6 },
+  { 0, -10 }, { 0, 10 },
+  { -12, -10 }, { 12, -10 },
+  { -12, 10 }, { 12, 10 }
+}
+
 local ground_id = nil -- 当前图 GroundMap 的 Tilemap 实体
 local width, height = 0, 0
 local actors = {} -- persist_id → 运行时记录
@@ -383,6 +399,35 @@ local function tick_actor(actor, here, dt, day)
   step_path(actor, dt)
 end
 
+-- 把"已停在同一格"的本图 NPC 按 persist_id 稳定顺序错开落位。
+-- 只碰停下来的那批（path 已清空且当前格 == 目标格）：走路中的仍按格心走，
+-- 否则每帧和 waypoint 抢位置。槽位来自 npc_list() 的 persist_id 升序，
+-- 同帧重算结论一致 ⇒ 不会在两个站位之间来回跳。
+local function spread_standing(here)
+  local taken = {}
+  for _, npc in ipairs(npc_list()) do
+    local actor = actors[npc.persist_id]
+    if actor and actor.id and actor.map == here and not actor.path
+      and actor.cell and actor.target_cell
+      and actor.cell.x == actor.target_cell.x
+      and actor.cell.y == actor.target_cell.y then
+      local key = tostring(actor.cell.x) .. "," .. tostring(actor.cell.y)
+      local slot = (taken[key] or 0) + 1
+      taken[key] = slot
+      local off = SPREAD[slot]
+      if off then
+        local x, y = cell_center(actor.cell.x, actor.cell.y)
+        x = x + off[1]
+        y = y + off[2]
+        local pos = transform.get(actor.id)
+        if pos and (math.abs(pos.x - x) > 0.001 or math.abs(pos.y - y) > 0.001) then
+          transform.set(actor.id, x, y)
+        end
+      end
+    end
+  end
+end
+
 -- 同步：逻辑目标在本图的 NPC 落位；不在本图的确保无实体。
 function M.sync()
   local here = current_map()
@@ -439,6 +484,7 @@ function M.tick()
       tick_actor(actor, here, dt, day)
     end
   end
+  spread_standing(here)
 end
 
 -- 查询入口（headless 验收/调试）：单个 NPC 的逻辑状态。
