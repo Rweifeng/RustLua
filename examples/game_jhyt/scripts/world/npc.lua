@@ -33,21 +33,35 @@ local TILE = 32
 -- 路径失败后的重算节流（帧数），避免每帧重复 A* 与刷屏诊断。
 local REPATH_TICKS = 30
 
--- 同格多人时的格内错位表（世界单位）。places.lua 一个地点只有一个 cell，而日程
--- 允许两人在同一时段引用同一地点（00:00 顾长风与玄鹤同睡 manor_home、19:00 云泽村
--- 茶摊挤 6 人），于是精灵完全重叠、看着就像"开局有人叠在别人身上"。
--- 封顶 ±12 是刻意的：格 32、格心在 16，偏移后仍落在本格 [4,28] 内，
--- grid.world_to_cell 读回同一格 ⇒ find_path 的起终点、存档 cell、
--- jhyt_m17_npc 的 cell_x/cell_y 断言都不受影响。
--- 超出表长的第 12 人起回落格心（16 个 NPC 全挤一格才会退化，宁可不完美也不出格）。
-local SPREAD = {
-  { 0, 0 },
-  { -12, -2 }, { 12, -2 },
-  { -12, 6 }, { 12, 6 },
-  { 0, -10 }, { 0, 10 },
-  { -12, -10 }, { 12, -10 },
-  { -12, 10 }, { 12, 10 }
-}
+-- 同地多人的落位分配。places.lua 一个地点只有一个 cell，而日程允许两人在同一时段引用
+-- 同一地点（00:00 顾长风与玄鹤同睡 manor_home、19:00 云泽村茶摊挤 6 人）。
+-- 为什么不是"格内像素抖动"：角色贴图 64×64，可见身体 alpha 包围盒 12 张里 11 张是
+-- x∈[20,51]（宽正好 32 = **整整一格**），最宽的 han_tieshan 到 x∈[18,51]（34）⇒ 一格只有
+-- 32 宽、格心到格边只剩 ±16 ⇒ 格内怎么抖都抖不开（旧表最大间距 12，两人还是叠在一起）。
+-- 所以改成每人分配一个**真实格位**：从锚点格起
+-- 按环形外扩，跳过实心格与已被本图其他 NPC 占用的格 ⇒ 同一地点的人围成一圈，全图也不会有
+-- 两个人站在同一格。落点是真格子而不是 transform 偏移 ⇒ world_to_cell 读回、find_path
+-- 端点、存档 cell、深度排序走的都是普通落位路径。
+-- 环序：由近及远（中心 → 四邻 → 斜角 → 两格外的八格 → 四角），保证一群人留在锚点周围
+-- 而不是散到隔壁地点去。半径 2 = 25 个候选格：全量日程 ×1440 分钟 ×晴/雨实测最挤的
+-- 同地组是茶摊 (32,8) 19:00 的 6 人，该锚点 R=2 内筛掉实心后仍剩 24 个空格，够分。
+local STAND_RADIUS = 2
+local STAND_RING = {}
+for dy = -STAND_RADIUS, STAND_RADIUS do
+  for dx = -STAND_RADIUS, STAND_RADIUS do
+    STAND_RING[#STAND_RING + 1] = { x = dx, y = dy, d = dx * dx + dy * dy }
+  end
+end
+-- 距离平方升序；同距按 y、x 升序 —— 纯函数排序，跨帧/跨宿主结论一致。
+table.sort(STAND_RING, function(a, b)
+  if a.d ~= b.d then
+    return a.d < b.d
+  end
+  if a.y ~= b.y then
+    return a.y < b.y
+  end
+  return a.x < b.x
+end)
 
 local ground_id = nil -- 当前图 GroundMap 的 Tilemap 实体
 local width, height = 0, 0
@@ -87,6 +101,36 @@ local function cell_of(id)
   end
   local cell = grid.world_to_cell(pos.x, pos.y, TILE)
   return { x = cell[1], y = cell[2] }
+end
+
+local function same_cell(a, b)
+  return a ~= nil and b ~= nil and a.x == b.x and a.y == b.y
+end
+
+local function cell_key(cell)
+  return tostring(cell.x) .. "," .. tostring(cell.y)
+end
+
+-- 候选格可用 = 在图内且非实心。实心格当 find_path 端点会直接失败，
+-- 所以宁可少分一格也不能把 NPC 派进墙里。
+local function cell_open(cell)
+  if not grid.in_bounds(cell.x, cell.y, width, height) then
+    return false
+  end
+  local ok, solid = pcall(tilemap.is_solid, ground_id, cell.x, cell.y)
+  return ok and solid == false
+end
+
+-- 已有的落脚点是否还作数：必须是当前锚点半径 STAND_RADIUS 内的某一格（挡读档/换图后
+-- 残留的远格）、在图内、非实心。归属冲突由 assign_stand_cells 的 taken 表另外判。
+local function cell_on_ring(anchor, cell)
+  return math.abs(cell.x - anchor.x) <= STAND_RADIUS
+    and math.abs(cell.y - anchor.y) <= STAND_RADIUS
+end
+
+local function stand_cell_usable(actor, cell)
+  return cell ~= nil and actor.place_cell ~= nil
+    and cell_on_ring(actor.place_cell, cell) and cell_open(cell)
 end
 
 local function window_text(block)
@@ -352,14 +396,20 @@ local function tick_actor(actor, here, dt, day)
     return
   end
 
-  -- 目标格变化 → 作废旧路径，立即重算。
-  if not actor.target_cell
-    or actor.target_cell.x ~= def.cell.x
-    or actor.target_cell.y ~= def.cell.y then
+  -- 日程换地点 → 作废落脚点，回到锚点格重新排队（stand_cell 由 assign_stand_cells 重排）。
+  -- 注意比较的是 place_cell（日程锚点）而不是 target_cell（当前走去的格子）：
+  -- 后者会被落位分配改成锚点周围的外扩格，拿它比日程就会每帧自我推翻、来回踱步。
+  if not actor.place_cell
+    or actor.place_cell.x ~= def.cell.x
+    or actor.place_cell.y ~= def.cell.y then
+    actor.place_cell = { x = def.cell.x, y = def.cell.y }
+    actor.stand_cell = nil
     actor.target_cell = { x = def.cell.x, y = def.cell.y }
     actor.path = nil
     actor.path_index = nil
     actor.repath_wait = 0
+  elseif not actor.target_cell then
+    actor.target_cell = { x = actor.place_cell.x, y = actor.place_cell.y }
   end
 
   if actor.repath_wait and actor.repath_wait > 0 then
@@ -399,31 +449,59 @@ local function tick_actor(actor, here, dt, day)
   step_path(actor, dt)
 end
 
--- 把"已停在同一格"的本图 NPC 按 persist_id 稳定顺序错开落位。
--- 只碰停下来的那批（path 已清空且当前格 == 目标格）：走路中的仍按格心走，
--- 否则每帧和 waypoint 抢位置。槽位来自 npc_list() 的 persist_id 升序，
--- 同帧重算结论一致 ⇒ 不会在两个站位之间来回跳。
-local function spread_standing(here)
+-- 给本图每个已激活的 NPC 分配落脚格。三趟：
+--   ① 保住已有的 stand_cell（按 persist_id 升序先到先得）——否则有人到场/离场会让
+--      整群人重新排队、集体绕场一圈；
+--   ② 没落脚的按 STAND_RING 从自己的锚点外扩，取第一格"没被占且非实心"的格子；
+--   ③ 把落脚格写成要去的那格（target_cell），NPC 于是**走过去站定**（一格约 0.8 秒），
+--      不是被推离原位。③ 必须对①保住的人同样做：despawn/on_enter 只清 target_cell、
+--      不清 stand_cell，回到本图时若只改派新来的人，"保住落脚点"的那个就会一直站在
+--      锚点上和锚点的第一人重叠（茶摊 32,8 的阿七与玄鹤）。
+local function assign_stand_cells(here)
   local taken = {}
+  local pending = {}
+  local standing = {}
   for _, npc in ipairs(npc_list()) do
     local actor = actors[npc.persist_id]
-    if actor and actor.id and actor.map == here and not actor.path
-      and actor.cell and actor.target_cell
-      and actor.cell.x == actor.target_cell.x
-      and actor.cell.y == actor.target_cell.y then
-      local key = tostring(actor.cell.x) .. "," .. tostring(actor.cell.y)
-      local slot = (taken[key] or 0) + 1
-      taken[key] = slot
-      local off = SPREAD[slot]
-      if off then
-        local x, y = cell_center(actor.cell.x, actor.cell.y)
-        x = x + off[1]
-        y = y + off[2]
-        local pos = transform.get(actor.id)
-        if pos and (math.abs(pos.x - x) > 0.001 or math.abs(pos.y - y) > 0.001) then
-          transform.set(actor.id, x, y)
-        end
+    if actor and actor.id and actor.map == here and actor.place_cell then
+      local cell = actor.stand_cell
+      local key = cell and cell_key(cell) or nil
+      if key and not taken[key] and stand_cell_usable(actor, cell) then
+        taken[key] = true
+        standing[#standing + 1] = actor
+      else
+        actor.stand_cell = nil
+        pending[#pending + 1] = actor
       end
+    end
+  end
+  for _, actor in ipairs(pending) do
+    for _, off in ipairs(STAND_RING) do
+      local cell = { x = actor.place_cell.x + off.x, y = actor.place_cell.y + off.y }
+      local key = cell_key(cell)
+      if not taken[key] and cell_open(cell) then
+        actor.stand_cell = cell
+        taken[key] = true
+        standing[#standing + 1] = actor
+        break
+      end
+    end
+    if not actor.stand_cell then
+      -- 分不到格子是要**看得见**的失败：画面上的症状只是"两个人叠在一起"，
+      -- 没人会为此去翻日程表，所以把它报成一条诊断（同一地点只报一次）。
+      report(actor, "spread:" .. tostring(here) .. ":" .. cell_key(actor.place_cell),
+        target_line(actor, actor.place, { map = here, cell = actor.place_cell },
+          actor.activity, actor.block) .. " reason=落脚格全被占或实心，退回锚点格")
+      standing[#standing + 1] = actor
+    end
+  end
+  for _, actor in ipairs(standing) do
+    local spot = actor.stand_cell or actor.place_cell
+    if not same_cell(actor.target_cell, spot) then
+      actor.target_cell = { x = spot.x, y = spot.y }
+      actor.path = nil
+      actor.path_index = nil
+      actor.repath_wait = 0
     end
   end
 end
@@ -484,7 +562,7 @@ function M.tick()
       tick_actor(actor, here, dt, day)
     end
   end
-  spread_standing(here)
+  assign_stand_cells(here)
 end
 
 -- 查询入口（headless 验收/调试）：单个 NPC 的逻辑状态。
@@ -510,8 +588,36 @@ function M.query(persist_id)
     activity = actor.activity,
     cell_x = cell and cell.x or nil,
     cell_y = cell and cell.y or nil,
+    moving = actor.path ~= nil,
+    -- 站定 = 没有路径**且**人已在自己要去的那格。assign_stand_cells 在 tick 末尾改派
+    -- 落脚格时会顺手清 path，只看 moving 会把"刚被改派、人还在原格"当成站定。
+    at_target = actor.path == nil and same_cell(cell, actor.target_cell),
     live = actor.id ~= nil and entity.is_alive(actor.id) == true
   }
+end
+
+-- 落位分配现场（headless 验收/调试）：本图每个已激活 NPC 一行
+-- `persist_id 锚点 落脚格 目标格 当前格 重算等待 walk|idle`。判"为什么这俩人还在同一格"
+-- 要看的就是这五列（落脚格不同却同格 = 走不过去；落脚格相同 = 分配器没生效；
+-- 目标格 ≠ 落脚格 = 分配器没把它写进 target_cell）。
+function M.standing_report()
+  local here = current_map()
+  local out = {}
+  for _, npc in ipairs(npc_list()) do
+    local actor = actors[npc.persist_id]
+    if actor and actor.id and actor.map == here then
+      out[#out + 1] = table.concat({
+        npc.persist_id,
+        actor.place_cell and cell_key(actor.place_cell) or '-',
+        actor.stand_cell and cell_key(actor.stand_cell) or '-',
+        actor.target_cell and cell_key(actor.target_cell) or '-',
+        actor.cell and cell_key(actor.cell) or '-',
+        tostring(actor.repath_wait or 0),
+        actor.path and 'walk' or 'idle'
+      }, ' ')
+    end
+  end
+  return table.concat(out, ' | ')
 end
 
 -- 诊断列表（验收项③）：不可达/未知地点/时段缺失等去重后的文案，首次发生顺序。
@@ -574,6 +680,12 @@ function M.restore(data)
         if type(entry.cell) == "table" then
           actor.cell = { x = entry.cell.x, y = entry.cell.y }
         end
+        -- 存档那一格就是它上一局的落脚格：连锚点一起写回，分配器会重验一遍（在环内、
+        -- 非实心、没和别人撞格）后认下来 ⇒ 读档不会先走回锚点再重新散开。
+        local anchor = places.get(entry.place)
+        actor.place_cell = anchor and { x = anchor.cell.x, y = anchor.cell.y } or nil
+        actor.stand_cell = type(entry.cell) == "table"
+          and { x = entry.cell.x, y = entry.cell.y } or nil
         if type(entry.pos) == "table" then
           actor.pending_pos = { x = entry.pos.x, y = entry.pos.y }
         end

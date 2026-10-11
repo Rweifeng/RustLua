@@ -23,6 +23,10 @@ use std::{
 const MAIN_EXIT: (f32, f32) = (528.0, 48.0);
 /// 云泽村出生/入口格 (19,2) 世界坐标。
 const VILLAGE_SPAWN: (f32, f32) = (624.0, 80.0);
+/// 一个角色的可见身体宽度（世界单位）。贴图 64×64，逐像素扫 `assets/art/characters/*/static_s.png`
+/// 的 alpha>8 包围盒：12 张里 11 张 x∈[20,51]（正好 32 = 一格），最宽 han_tieshan x∈[18,51]（34）。
+/// 落位判据用它做下限：中心距低于它就是还在叠着。
+const NPC_BODY_WIDTH: f64 = 32.0;
 
 /// 读档一致性抽样的 NPC（含跨图玄鹤）。
 const SAMPLE: [&str; 4] = [
@@ -31,6 +35,45 @@ const SAMPLE: [&str; 4] = [
     "npc_han_tieshan",
     "npc_xuanhe",
 ];
+
+/// 本图所有已激活 NPC 是否都**站定在自己要去的那格**。
+/// 判据不能只看 `moving`：落位分配在 tick 末尾改派落脚格时会清掉 path，那一帧读起来
+/// 是"没在走路"、人却还站在旧格上，量到的就是两个 NPC 同格的假红。
+const ALL_SETTLED: &str = "local npc = require('world.npc'); \
+     for _, x in ipairs(require('data.npcs').list()) do \
+       local q = npc.query(x.persist_id); \
+       if q and q.live and not q.at_target then return false end; \
+     end; return true";
+
+/// 失败时 dump 每名在场 NPC 的站定判定（判"谓词为什么会绿"用）。
+const SETTLE_DUMP: &str = "local npc = require('world.npc'); local out = {}; \
+     for _, x in ipairs(require('data.npcs').list()) do \
+       local q = npc.query(x.persist_id); \
+       if q and q.live then out[#out + 1] = x.persist_id \
+         .. ' at=' .. tostring(q.at_target) .. ' mv=' .. tostring(q.moving) \
+         .. ' cell=' .. q.cell_x .. ',' .. q.cell_y .. ' place=' .. tostring(q.place) end; \
+     end; return table.concat(out, ' | ')";
+
+/// 站定 NPC 的两两落位体检脚本（`{gap}` 由调用点 replace 成一个身位）：返回 `ok`
+/// 或逐条撞格清单。量的是 `query().cell_x/cell_y`（= 实体当前所在格）折回格心，
+/// 不读 Lua 侧的分配表，所以"分配器自说自话分好了"骗不过它。
+const SPREAD_REPORT: &str = "local npc = require('world.npc'); \
+     local seen, pts, bad = {}, {}, {}; \
+     for _, x in ipairs(require('data.npcs').list()) do \
+       local q = npc.query(x.persist_id); \
+       if q and q.live and q.cell_x then \
+         local key = q.cell_x .. ',' .. q.cell_y; \
+         if seen[key] then bad[#bad + 1] = '同格 ' .. key .. ':' .. seen[key] .. '+' .. x.persist_id end; \
+         seen[key] = x.persist_id; \
+         pts[#pts + 1] = { id = x.persist_id, x = (q.cell_x + 0.5) * 32, y = (q.cell_y + 0.5) * 32 }; \
+       end; \
+     end; \
+     for i = 1, #pts do for j = i + 1, #pts do \
+       local dx = pts[i].x - pts[j].x; local dy = pts[i].y - pts[j].y; \
+       local d = math.sqrt(dx * dx + dy * dy); \
+       if d < {gap} then bad[#bad + 1] = string.format('太近 %s+%s=%.1f', pts[i].id, pts[j].id, d) end; \
+     end end; \
+     return #bad == 0 and 'ok' or table.concat(bad, ' | ')";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
@@ -84,22 +127,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_npc(&mut runtime, "npc_xuanhe", "live", "true")?;
     // 睡眠点撞格：顾长风与玄鹤的 00:00 目标都是 manor_home (12,6)——一个地点只有一个
     // cell，而日程允许两人同时段引用它。不错开就是两个精灵完全重叠（新档开局可见）。
-    // 错开只发生在格内（±12 < TILE/2），所以两人读回的 cell 仍是 12,6：路径端点、
-    // 存档格坐标、下面 M17-02b/c 的点位断言都不受影响。
-    assert_npc(&mut runtime, "npc_xuanhe", "cell_x", "12")?;
-    assert_npc(&mut runtime, "npc_xuanhe", "cell_y", "6")?;
+    // 错开的方式是**给第二个人另分一格**（见 world/npc.lua 的 STAND_RING）：角色贴图
+    // 64×64、可见身体宽 32 = 一整格，格内像素抖动分不开，所以必须落到真格子上。
+    // 锚点格归 persist_id 升序的第一人（顾长风）；第二人落到哪一格由那一片的实心分布
+    // 决定，所以这里只钉"换了一格 + 中心距够一个身位"，不把环序写死成断言。
+    // 等两人走完再判：开局 5 帧时第二个人还在锚点格与落脚格之间，读回的格仍是锚点。
+    run_until(
+        &mut runtime,
+        "local n = require('world.npc'); \
+         local a = n.query('npc_gu_changfeng'); local b = n.query('npc_xuanhe'); \
+         return a and b and (not a.live or a.at_target) and (not b.live or b.at_target)",
+        600,
+    )?;
     let standing = query_str(
         &mut runtime,
-        "local a = entity.find_id('npc_gu_changfeng'); \
+        "local n = require('world.npc'); \
+         local a = entity.find_id('npc_gu_changfeng'); \
          local b = entity.find_id('npc_xuanhe'); \
          local pa = transform.get(a); local pb = transform.get(b); \
-         return string.format('%.1f,%.1f;%.1f,%.1f', pa.x, pa.y, pb.x, pb.y)",
+         local qa = n.query('npc_gu_changfeng'); local qb = n.query('npc_xuanhe'); \
+         return string.format('%.1f;%d,%d;%d,%d', \
+           math.sqrt((pa.x - pb.x) ^ 2 + (pa.y - pb.y) ^ 2), \
+           qa.cell_x, qa.cell_y, qb.cell_x, qb.cell_y)",
     )?;
-    match standing.split_once(';') {
-        Some((gu, xuan)) if gu != xuan => {}
-        _ => return Err(format!("同格 NPC 未错开落位：{standing}").into()),
+    let mut fields = standing.split(';');
+    let mut next = |name: &str| -> Result<String, Box<dyn std::error::Error>> {
+        fields
+            .next()
+            .map(str::to_owned)
+            .ok_or_else(|| format!("两人落位读数不完整：{standing}（缺 {name}）").into())
+    };
+    let gap: f64 = next("中心距")?.parse()?;
+    let gu_cell = next("顾长风格位")?;
+    let xuan_cell = next("玄鹤格位")?;
+    if gu_cell != "12,6" {
+        return Err(format!("顾长风没站在日程锚点格：{gu_cell}（{standing}）").into());
     }
-    println!("  同格错位 => {standing}");
+    // 判据是"看得见身体不重叠"，不是"坐标不同"：旧实现中心只差 12 也能过，屏幕上照样
+    // 是两个人叠在一起（2026-10-12 目验）。低于一个身位就是没分开。
+    if xuan_cell == gu_cell || gap < NPC_BODY_WIDTH {
+        return Err(format!(
+            "同地 NPC 未错开落位：顾 {gu_cell} · 玄 {xuan_cell} · 中心距 {gap:.1} < 一个身位 {NPC_BODY_WIDTH:.1}"
+        )
+        .into());
+    }
+    println!("  同地错位 => 顾 {gu_cell} · 玄 {xuan_cell} · 中心距 {gap:.1}");
 
     banner("M17-02b 时间驱动 + A* 路径跟随：顾长风 厢房 → 剑坪");
     lua(&mut runtime, "clock.set(1, 600)")?; // 10:00
@@ -203,6 +275,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     if stable != "ok" {
         return Err(format!("7-day NPC state unstable: {stable}").into());
+    }
+
+    banner("M17-02e2 同地多人各自一格：站定后两两中心距 ≥ 一个身位");
+    // 玩家此刻在云泽村。三个时段覆盖"最挤 / 中等 / 分散"：1140=19:00 茶摊 (32,8) 挤 6 人
+    // （全表最挤的一格），540=09:00 村口 (14,3) 三人，1320=22:00 各自返家。
+    // 先等全员走定再量：走路中的坐标落在路径上，把它读成"落位重叠"是判据错，不是缺陷。
+    for minute in [1_140, 540, 1_320] {
+        lua(
+            &mut runtime,
+            &format!("clock.set(clock.now().day, {minute})"),
+        )?;
+        // clock.set 之后先走一帧再轮询：ALL_SETTLED 是"改派前若恰好全员站定就为真"的谓词，
+        // 首帧不跑就可能量到上一个时段的落位。
+        frames(&mut runtime, 1)?;
+        run_until(&mut runtime, ALL_SETTLED, 3_600)?;
+        let report = query_str(
+            &mut runtime,
+            &SPREAD_REPORT.replace("{gap}", &NPC_BODY_WIDTH.to_string()),
+        )?;
+        if report != "ok" {
+            let standing = query_str(
+                &mut runtime,
+                "return require('world.npc').standing_report()",
+            )?;
+            let settle = query_str(&mut runtime, SETTLE_DUMP)?;
+            let diag = query_str(
+                &mut runtime,
+                "return table.concat(require('world.npc').diagnostics(), ' | ')",
+            )?;
+            return Err(format!(
+                "minute={minute} 落位过挤（两两 < {NPC_BODY_WIDTH:.0}）：{report}\n  现场 锚点/落脚/目标/当前/等待/状态: {standing}\n  站定判定: {settle}\n  诊断: {diag}"
+            )
+            .into());
+        }
+        println!("  minute={minute} => 全员站定且两两 ≥ {NPC_BODY_WIDTH:.0}");
     }
 
     banner("M17-02f 读档后位置与活动一致");
