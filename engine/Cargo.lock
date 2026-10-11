@@ -286,6 +286,8 @@ dependencies = [
  "rustlua-infra",
  "rustlua-render",
  "rustlua-scene",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1623,6 +1625,7 @@ dependencies = [
  "rustlua-math",
  "rustlua-scene",
  "rustlua-scripting",
+ "serde",
  "serde_json",
  "tracing",
  "wasm-bindgen",

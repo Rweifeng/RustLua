@@ -65,11 +65,14 @@ out/
 ### 清单 `manifest.txt`
 
 ```
-assetc_manifest=1\tassetc-package-1
+assetc_manifest=1\tassetc-package-2
 {相对路径}\t{大小}\t{fnv1a 校验和(16 hex)}
 ```
 
-版本号 `PACKAGE_VERSION = "assetc-package-1"` 变更会触发发布脚本重新打包。
+版本号 `PACKAGE_VERSION = "assetc-package-2"` 变更会触发发布脚本重新打包。
+`dependencies.json` 是打包时生成的静态资源依赖索引（格式版本 1），记录可证明的依赖边与
+必须保守处理的动态引用；WebGL 启动按入口闭包预载，闭包遇到动态/缺失依赖或旧包无此索引时
+全量预载，避免静态分析漏项改变同步 Lua/VFS 的可见资源。Lua `require` 仍同步，因此脚本会全部纳入入口集合。
 
 ## 3. 发布资源编码（RustLua）
 

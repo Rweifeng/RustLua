@@ -26,7 +26,7 @@
 use rustlua_frame_abi::{FrameInput, KEY_NAMES, MOUSE_NAMES};
 use rustlua_input::input::{InputSnapshot, KeyCode, MouseButton};
 
-/// 本帧真正改动的输入项数量（键 + 鼠标按钮的边沿次数）。
+/// 本帧真正改动的输入项数量（键、鼠标按钮与摇杆轴）。
 ///
 /// 读数用它回答"输入到底有没有落到模拟里"：恒为 0 说明宿主与 wasm 对"哪些位该变"理解不一致，
 /// 而不是"玩家没操作"。
@@ -38,6 +38,8 @@ pub struct AppliedInput {
     pub mouse_changes: u32,
     /// 同一帧内按下又抬起的点按次数（只存在于边沿位里，按住集合看不到）。
     pub same_frame_taps: u32,
+    /// 摇杆轴值发生变化的轴数。
+    pub axis_changes: u32,
 }
 
 impl AppliedInput {
@@ -46,7 +48,10 @@ impl AppliedInput {
     #[cfg(test)]
     #[must_use]
     pub fn is_empty(self) -> bool {
-        self.key_changes == 0 && self.mouse_changes == 0 && self.same_frame_taps == 0
+        self.key_changes == 0
+            && self.mouse_changes == 0
+            && self.same_frame_taps == 0
+            && self.axis_changes == 0
     }
 }
 
@@ -142,6 +147,11 @@ pub fn apply_frame(snapshot: &mut InputSnapshot, frame: &FrameInput) -> AppliedI
     snapshot.cursor_moved(frame.cursor[0], frame.cursor[1]);
     if frame.scroll[0] != 0.0 || frame.scroll[1] != 0.0 {
         snapshot.scroll_event(frame.scroll[0] as f32, frame.scroll[1] as f32);
+    }
+    for (axis, value) in frame.axis.iter().enumerate() {
+        if snapshot.gamepad_axis(axis as u8) != *value as f32 {
+            applied.axis_changes += 1;
+        }
     }
     snapshot.set_gamepad_axis(0, frame.axis[0] as f32);
     snapshot.set_gamepad_axis(1, frame.axis[1] as f32);
@@ -305,6 +315,25 @@ impl FrameInputProducer {
         self.scroll[1] += delta[1];
     }
 
+    /// 设置虚拟摇杆轴（0 = X，1 = Y），并限制到设备轴的有效范围。
+    pub fn gamepad_axis(&mut self, axis: usize, value: f64) {
+        if let Some(slot) = self.axis.get_mut(axis) {
+            *slot = value.clamp(-1.0, 1.0);
+        }
+    }
+
+    /// Release held controls after focus/visibility loss so key-up events missed in the background
+    /// cannot leave the simulation stuck moving.
+    pub fn release_all(&mut self) {
+        self.keys_released |= self.keys_held;
+        self.keys_held = 0;
+        self.mouse_just_released |= self.mouse_held;
+        self.mouse_held = 0;
+        self.axis = [0.0; 2];
+        self.scroll = [0.0; 2];
+        self.pointer_fresh = false;
+    }
+
     /// 取走本帧线格式，并清空本帧量（边沿、滚轮、光标新鲜度）。
     pub fn take_frame(&mut self, out: &mut FrameInput) {
         self.frame = self.frame.wrapping_add(1);
@@ -332,7 +361,7 @@ impl FrameInputProducer {
     }
 }
 
-/// 一段确定性的输入剧本：`<键名>:<起帧>-<止帧>`，多段用逗号分隔。
+/// 确定性输入剧本：`<键名|axis0±|axis1±>:<起帧>-<止帧>`，多段用逗号分隔。
 ///
 /// **为什么需要它**：验证"输入 → 世界改变"这条链，用真人/探针按键必然带时序抖动
 /// （探针按键的帧号取决于事件循环与无头环境的调度）。而"按住 w 从第 30 帧到第 150 帧"
@@ -344,23 +373,52 @@ impl FrameInputProducer {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InputScript {
     windows: Vec<(String, u64, u64)>,
+    axis_windows: Vec<(usize, i8, u64, u64)>,
 }
 
 impl InputScript {
-    /// 解析 `w:30-150,a:150-180` 这类剧本。空串 = 没有剧本（正常路径一行不改）。
+    /// 解析 `w:30-150,axis1-:10-90` 这类剧本。空串 = 没有剧本（正常路径一行不改）。
     ///
     /// 严格报错而不是"猜"：帧号写反、缺冒号、键名不认识，都在这里一次说清。
     /// 静默丢掉一段剧本，现象是"按了没反应"——正是本轮要消灭的那类失败。
     pub fn parse(spec: &str) -> Result<Self, String> {
         let mut windows = Vec::new();
+        let mut axis_windows = Vec::new();
         for part in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
             let (name, range) = part
                 .split_once(':')
                 .ok_or_else(|| format!("输入剧本片段缺少 ':'：{part}"))?;
             let name = name.trim();
-            if wire_key_name(name).is_none() {
-                return Err(format!("输入剧本里的键名不在线格式键表里：{name}"));
-            }
+            let axis_binding = match name.strip_prefix("axis") {
+                Some(binding) => {
+                    let mut chars = binding.chars();
+                    let axis = chars
+                        .next()
+                        .and_then(|digit| digit.to_digit(10))
+                        .map(|digit| digit as usize)
+                        .ok_or_else(|| {
+                            format!("输入剧本摇杆轴格式应为 axis0+/axis0- 或 axis1+/axis1-：{name}")
+                        })?;
+                    let sign = chars.as_str();
+                    if axis > 1 {
+                        return Err(format!("输入剧本摇杆轴编号只能是 0 或 1：{name}"));
+                    }
+                    let value = match sign {
+                        "+" => 1,
+                        "-" => -1,
+                        _ => {
+                            return Err(format!("输入剧本摇杆轴方向只能是 + 或 -：{name}"));
+                        }
+                    };
+                    Some((axis, value))
+                }
+                None => {
+                    if wire_key_name(name).is_none() {
+                        return Err(format!("输入剧本里的键名不在线格式键表里：{name}"));
+                    }
+                    None
+                }
+            };
             let (from, to) = range
                 .split_once('-')
                 .ok_or_else(|| format!("输入剧本片段缺少 '-' 区间：{part}"))?;
@@ -375,14 +433,34 @@ impl InputScript {
             if to <= from {
                 return Err(format!("输入剧本区间必须止帧大于起帧：{part}"));
             }
-            windows.push((name.to_owned(), from, to));
+            if let Some((axis, value)) = axis_binding {
+                if axis_windows
+                    .iter()
+                    .any(|(other_axis, other_value, other_from, other_to)| {
+                        *other_axis == axis
+                            && *other_value != value
+                            && from < *other_to
+                            && *other_from < to
+                    })
+                {
+                    return Err(format!(
+                        "输入剧本摇杆轴不能在重叠区间内同时驱动正反方向：{part}"
+                    ));
+                }
+                axis_windows.push((axis, value, from, to));
+            } else {
+                windows.push((name.to_owned(), from, to));
+            }
         }
-        Ok(Self { windows })
+        Ok(Self {
+            windows,
+            axis_windows,
+        })
     }
 
     /// 这份剧本是否为空（空剧本不该改变任何行为）。
     pub fn is_empty(&self) -> bool {
-        self.windows.is_empty()
+        self.windows.is_empty() && self.axis_windows.is_empty()
     }
 
     /// 第 `frame` 帧**应当按住**的键集合（按剧本里的顺序，去重交给调用方）。
@@ -437,6 +515,14 @@ impl ScriptDriver {
             }
         }
         self.held = want.into_iter().map(str::to_owned).collect();
+        let mut axes = [0.0; 2];
+        for (axis, value, from, to) in &self.script.axis_windows {
+            if self.frame >= *from && self.frame < *to {
+                axes[*axis] = f64::from(*value);
+            }
+        }
+        producer.gamepad_axis(0, axes[0]);
+        producer.gamepad_axis(1, axes[1]);
     }
 }
 
@@ -599,6 +685,7 @@ mod tests {
             // 所以这里保持按住，才能验"没有变化就不该报变化"。
             mouse_held: 1,
             cursor: [150.0, 34.0],
+            axis: [-0.5, 0.25],
             ..FrameInput::new()
         };
         let again = apply_frame(&mut snapshot, &moved);
@@ -682,6 +769,23 @@ mod tests {
         let applied = apply_frame(&mut snapshot, &frame);
         assert_eq!(applied.same_frame_taps, 1, "同帧点按要被认出来");
         assert_eq!(applied.key_changes, 0, "按住集合没变，不该报变化");
+    }
+
+    #[test]
+    fn producer_releases_controls_on_lifecycle_loss() {
+        let mut producer = FrameInputProducer::new();
+        assert!(producer.key_down("w"));
+        producer.mouse_down("left");
+        producer.gamepad_axis(0, 0.75);
+        producer.release_all();
+
+        let mut frame = FrameInput::new();
+        producer.take_frame(&mut frame);
+        assert_eq!(frame.keys_held, 0);
+        assert_ne!(frame.keys_released, 0);
+        assert_eq!(frame.mouse_held, 0);
+        assert_ne!(frame.mouse_just_released, 0);
+        assert_eq!(frame.axis, [0.0, 0.0]);
     }
 
     /// 本帧量取走即清空：边沿、滚轮、光标新鲜度都不能留到下一帧。
@@ -792,6 +896,9 @@ mod tests {
             ("w:150-30", "止帧不大于起帧"),
             ("w:30-30", "零长度区间"),
             ("nosuchkey:30-150", "键名不在线格式键表里"),
+            ("axis2+:30-150", "摇杆轴编号超出范围"),
+            ("axis1x:30-150", "摇杆轴方向非法"),
+            ("axis1+:30-150,axis1-:40-50", "摇杆轴正反向重叠"),
             ("space:30-150", "空格键在线表里（'space'），但 ' ' 不在"),
         ] {
             let got = InputScript::parse(spec);
@@ -818,6 +925,43 @@ mod tests {
         assert_eq!(script.held_at(151), vec!["a"]);
         assert_eq!(script.held_at(179), vec!["a"]);
         assert!(script.held_at(180).is_empty());
+    }
+
+    #[test]
+    fn script_driver_sets_and_clears_gamepad_axes_on_frame_boundaries() {
+        let script = InputScript::parse("axis1-:2-4,axis0+:4-6").unwrap();
+        let mut driver = ScriptDriver::new(script);
+        let mut producer = FrameInputProducer::new();
+        let mut frame = FrameInput::new();
+        let mut axes = Vec::new();
+
+        for _ in 0..6 {
+            driver.tick(&mut producer);
+            producer.take_frame(&mut frame);
+            axes.push(frame.axis);
+        }
+
+        assert_eq!(
+            axes,
+            [
+                [0.0, 0.0],
+                [0.0, -1.0],
+                [0.0, -1.0],
+                [1.0, 0.0],
+                [1.0, 0.0],
+                [0.0, 0.0],
+            ],
+            "轴输入应在半开区间生效，并在窗口外回中"
+        );
+
+        let mut snapshot = InputSnapshot::default();
+        let applied = apply_frame(&mut snapshot, &frame);
+        assert_eq!(applied.axis_changes, 0, "末帧轴值已回中");
+        frame.axis[0] = 0.5;
+        let applied = apply_frame(&mut snapshot, &frame);
+        assert_eq!(applied.axis_changes, 1);
+        assert_eq!(snapshot.gamepad_axis(0), 0.5);
+        assert!(apply_frame(&mut snapshot, &frame).is_empty());
     }
 
     #[test]

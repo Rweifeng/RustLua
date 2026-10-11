@@ -26,7 +26,7 @@
 
 use std::cell::RefCell;
 
-use rustlua_audio::audio_sink::{AudioRequest, AudioSinkProvider};
+use rustlua_audio::sink::{AudioRequest, AudioSinkProvider};
 use wasm_bindgen::{JsCast, JsValue};
 
 /// 播放统计：给宿主读数用（**这是 wasm 自报的数字**，外部证据看 `__rustluaAudioElements`）。
@@ -129,7 +129,7 @@ impl AudioSinkProvider for WebAudioSink {
 
 /// 装平台音频出口（**幂等**，与资源/存档槽同一套理由）。
 pub fn install() -> Result<(), String> {
-    match rustlua_audio::audio_sink::set_provider(Box::new(WebAudioSink)) {
+    match rustlua_audio::sink::set_provider(Box::new(WebAudioSink)) {
         Ok(()) => Ok(()),
         Err(error) => {
             web_sys::console::log_1(&JsValue::from_str(&format!(
@@ -138,6 +138,35 @@ pub fn install() -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+pub fn pause_for_lifecycle() {
+    let elements = global().and_then(|global| {
+        js_sys::Reflect::get(&global, &JsValue::from_str(ELEMENTS))
+            .ok()
+            .and_then(|value| value.dyn_into::<js_sys::Array>().ok())
+    });
+    if let Some(elements) = elements {
+        for index in 0..elements.length() {
+            call(&elements.get(index), "pause");
+        }
+    }
+    STATS.with(|stats| {
+        let mut stats = stats.borrow_mut();
+        if stats.music.is_some() {
+            stats.music_state = "paused";
+        }
+    });
+}
+
+pub fn resume_music_for_lifecycle() {
+    WebAudioSink.resume_music();
+    STATS.with(|stats| {
+        let mut stats = stats.borrow_mut();
+        if stats.music.is_some() {
+            stats.music_state = "playing";
+        }
+    });
 }
 
 /// 宿主读数（拼进状态属性）：`audio=N last=<名字>@<总线> src=<路径> err=N`。

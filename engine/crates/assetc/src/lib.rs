@@ -7,7 +7,7 @@
 //! 命令（见 `main.rs`）：`scan` / `import` / `clean` / `list` / `package` / `--check`。
 
 use anyhow::anyhow;
-use rustlua_assets::dependency::recompute_edges;
+use rustlua_assets::dependency::{DependencyRef, extract_refs, recompute_edges};
 use rustlua_assets::import_cache::ImportCache;
 use rustlua_assets::importer::run_import_batch;
 use rustlua_assets::resource_db::{AssetId, DiskAsset, ResourceDatabase, ResourceState};
@@ -21,7 +21,7 @@ use std::{
 };
 
 /// assetc 打包清单格式版本；变更会触发发布脚本重新打包。
-pub const PACKAGE_VERSION: &str = "assetc-package-1";
+pub const PACKAGE_VERSION: &str = "assetc-package-2";
 
 /// 扫描时跳过的本地工作目录。
 const SKIP_DIRS: &[&str] = &[".cache", ".temp", ".git", "target"];
@@ -90,6 +90,13 @@ pub struct CompressionBenchmarkEntry {
     pub compressed_bytes: u64,
     pub compress_time: Duration,
     pub decompress_time: Duration,
+}
+
+#[derive(serde::Serialize)]
+struct DependencyIndex {
+    format: u32,
+    edges: BTreeMap<String, Vec<String>>,
+    opaque: Vec<String>,
 }
 
 impl CompressionBenchmarkEntry {
@@ -745,6 +752,7 @@ pub fn package(
             fs::write(&dst, subset)?;
         }
     }
+    write_dependency_index(project, &out.join("dependencies.json"))?;
 
     let mut files = Vec::new();
     collect_files(out, &mut files)?;
@@ -780,6 +788,107 @@ pub fn package(
     }
     fs::write(out.join("manifest.txt"), lines.join("\n"))?;
     Ok(PackageManifest { entries: manifest })
+}
+
+/// Emit the static resource graph used by synchronous runtimes to avoid
+/// loading unrelated package entries. Any dynamic/unsupported resource access
+/// marks its source opaque so consumers can conservatively preload everything.
+fn write_dependency_index(project: &Path, destination: &Path) -> anyhow::Result<()> {
+    let mut files = Vec::new();
+    for root in ["scenes", "scripts", "assets"] {
+        let dir = project.join(root);
+        if dir.is_dir() {
+            collect_files(&dir, &mut files)?;
+        }
+    }
+    let mut known = BTreeMap::<String, String>::new();
+    let mut sources = Vec::new();
+    for (path, _) in files {
+        let relative = path
+            .strip_prefix(project)
+            .map_err(|_| anyhow!("依赖索引源文件不在项目目录内：{}", path.display()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let folded = relative.to_ascii_lowercase();
+        known.insert(folded, relative.clone());
+        sources.push((relative, path));
+    }
+
+    let mut edges = BTreeMap::<String, std::collections::BTreeSet<String>>::new();
+    let mut opaque = std::collections::BTreeSet::new();
+    for (source, path) in sources {
+        let kind = ResourceKind::from_path(&path);
+        if !matches!(
+            kind,
+            ResourceKind::Scene
+                | ResourceKind::Prefab
+                | ResourceKind::Atlas
+                | ResourceKind::LuaScript
+        ) {
+            continue;
+        }
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(_) => {
+                opaque.insert(source);
+                continue;
+            }
+        };
+        // These APIs consume runtime paths synchronously. Their path values are
+        // often assembled through Lua variables, which this string scanner
+        // cannot prove complete; use the safe full-package fallback for them.
+        if kind == ResourceKind::LuaScript
+            && [
+                "data.load",
+                "data.reload",
+                "asset.load",
+                "prefab.spawn",
+                "audio.",
+            ]
+            .iter()
+            .any(|call| text.contains(call))
+        {
+            opaque.insert(source.clone());
+        }
+        let mut targets = std::collections::BTreeSet::new();
+        for reference in extract_refs(&text, kind) {
+            let candidate = match reference {
+                DependencyRef::Asset(path) => path.to_string_lossy().replace('\\', "/"),
+                DependencyRef::LuaModule(name) => format!("scripts/{name}.lua"),
+                DependencyRef::SceneName(name) => format!("scenes/{name}.scene"),
+                DependencyRef::Dynamic(_) => {
+                    opaque.insert(source.clone());
+                    continue;
+                }
+            };
+            if let Some(target) = known
+                .get(&candidate.to_ascii_lowercase())
+                .or_else(|| known.get(&candidate))
+            {
+                if target != &source {
+                    targets.insert(target.clone());
+                }
+            } else {
+                opaque.insert(source.clone());
+            }
+        }
+        if !targets.is_empty() {
+            edges.insert(source, targets);
+        }
+    }
+
+    let index = DependencyIndex {
+        format: 1,
+        edges: edges
+            .into_iter()
+            .map(|(source, targets)| (source, targets.into_iter().collect()))
+            .collect(),
+        opaque: opaque.into_iter().collect(),
+    };
+    let bytes =
+        serde_json::to_vec(&index).map_err(|error| anyhow!("序列化依赖索引失败：{error}"))?;
+    fs::write(destination, bytes)?;
+    Ok(())
 }
 
 /// 冒烟检查：创建临时项目，验证 scan/import 闭环可用。
@@ -1082,9 +1191,97 @@ mod tests {
         assert!(out.join("project.toml").is_file());
         assert!(out.join("scripts/main.lua").is_file());
         assert!(out.join("assets/textures/red-1x1.png").is_file());
+        assert!(out.join("dependencies.json").is_file());
         let manifest_text = fs::read_to_string(out.join("manifest.txt")).unwrap();
+        assert_eq!(
+            manifest_text.lines().next(),
+            Some("assetc_manifest=1\tassetc-package-2")
+        );
+        assert!(
+            manifest_text
+                .lines()
+                .any(|line| line.starts_with("dependencies.json\t")),
+            "manifest includes the generated dependency index"
+        );
         assert!(manifest_text.contains("red-1x1.png"), "manifest lists png");
         assert!(manifest_text.contains("main.lua"), "manifest lists lua");
+        fs::remove_dir_all(&out).ok();
+        cleanup(&root);
+    }
+
+    #[test]
+    fn package_dependency_index_records_static_edges_and_opaque_sources() {
+        let root = temp_project("package-dependency-index");
+        fs::write(
+            root.join("scenes/main.scene"),
+            "scene_version=2\nSprite texture=assets/textures/red-1x1.png;size=1\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("scripts/main.lua"),
+            "local helper = require('helper')\nfunction update() return 'ok' end\n",
+        )
+        .unwrap();
+        fs::write(root.join("scripts/helper.lua"), "return {}\n").unwrap();
+        let out = std::env::temp_dir().join(format!(
+            "rustlua-assetc-dependency-index-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&out);
+        package(&root, &out, false, false).unwrap();
+        let index: serde_json::Value =
+            serde_json::from_slice(&fs::read(out.join("dependencies.json")).unwrap()).unwrap();
+        assert_eq!(index["format"], 1);
+        assert!(
+            index["edges"]["scenes/main.scene"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|path| path == "assets/textures/red-1x1.png")
+        );
+        assert!(
+            index["edges"]["scripts/main.lua"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|path| path == "scripts/helper.lua")
+        );
+        assert!(index["opaque"].as_array().unwrap().is_empty());
+        fs::remove_dir_all(&out).ok();
+
+        fs::write(
+            root.join("scripts/main.lua"),
+            "local next_scene = state.scene\nscene.load(next_scene)\n",
+        )
+        .unwrap();
+        package(&root, &out, false, false).unwrap();
+        let index: serde_json::Value =
+            serde_json::from_slice(&fs::read(out.join("dependencies.json")).unwrap()).unwrap();
+        assert!(
+            index["opaque"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|path| path == "scripts/main.lua")
+        );
+        fs::remove_dir_all(&out).ok();
+
+        fs::write(
+            root.join("scripts/main.lua"),
+            "function update() audio.play('ui_click') end\n",
+        )
+        .unwrap();
+        package(&root, &out, false, false).unwrap();
+        let index: serde_json::Value =
+            serde_json::from_slice(&fs::read(out.join("dependencies.json")).unwrap()).unwrap();
+        assert!(
+            index["opaque"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|path| path == "scripts/main.lua")
+        );
         fs::remove_dir_all(&out).ok();
         cleanup(&root);
     }

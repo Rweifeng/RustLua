@@ -78,8 +78,9 @@ param(
     # M73-00 WP6-04：GPU 帧循环的帧预算（URL 位 `rustlua-gpu-frames=`）。0 = 不设上限。
     # 需要它的原因：默认 240 帧跑完循环就停、状态属性随之冻结，于是"按键后读读数"永远看不到变化。
     [int]$GpuFrames = -1,
-    # M73-00 WP6-05：确定性输入剧本（URL 位 `rustlua-input-script=`），如 `w:30-150`。
-    # 给了它就额外开一道"位移非零"门：输入进去之后，Rust 侧从引擎世界读出的主角位置必须变过。
+    # M73-00 WP6-05：确定性输入剧本（URL 位 `rustlua-input-script=`），如 `w:30-150` 或 `axis1-:30-150`。
+    # 键名驱动键盘，axis0/axis1 的 +/- 驱动手柄摇杆；给了它就额外开一道"位移非零"门。
+    # 输入进去之后，Rust 侧从引擎世界读出的主角位置必须变过。
     [string]$InputScript = "",
     # 配合 `-InputScript` 的**自定义期望**：整条状态读数必须匹配这条正则（留空＝走默认的位移门）。
     [string]$ExpectWorld = "",
@@ -369,7 +370,7 @@ if ($WorldExpr -ne "") { $queryBits += "rustlua-world-expr=$([uri]::EscapeDataSt
 if ($WorldDo -ne "") { $queryBits += "rustlua-world-do=$([uri]::EscapeDataString($WorldDo))" }
 if ($SimScriptLines -gt 0) { $queryBits += "rustlua-sim-lines=$SimScriptLines" }
 if ($SimRoute) {
-    if ($SimRoute -notmatch '^(script|scene-script|scene-script-noroot)$') { throw "-SimRoute 只接受 script / scene-script / scene-script-noroot：$SimRoute" }
+    if ($SimRoute -notmatch '^(script|scene-only|scene-script|scene-script-noroot)$') { throw "-SimRoute 只接受 script / scene-only / scene-script / scene-script-noroot：$SimRoute" }
     $queryBits += "rustlua-sim=$SimRoute"
 }
 # M73-00 WP3 第三片：让 Rust 侧运行时场景**换一个场景**来起（默认用工程的启动场景）。
@@ -448,7 +449,13 @@ function Invoke-HeadlessDom([string]$HeadlessFlag, [string]$ModeOverride = "", [
     # 没有它，"模式何时落定"取决于浏览器调度 ⇒ 读到哪一帧是碰运气（本轮实测同一条命令两次分别读到
     # frames=30 与 frames=240，前者正好在按 `i` 的那一刻，于是门把"还没生效"误判成"没生效"）。
     # 只在开了剧本/查询时才等，其余路径一个字节的行为都不变。
-    $settleArg = if ($InputScript -ne "" -or $WorldExpr -ne "" -or $WorldDo -ne "" -or $StorageProbe -or $AudioProbe -ne "") { "200" } else { "-" }
+    $settleArg = if ($GpuFrames -gt 0) {
+        [string]$GpuFrames
+    } elseif ($InputScript -ne "" -or $WorldExpr -ne "" -or $WorldDo -ne "" -or $StorageProbe -or $AudioProbe -ne "") {
+        "200"
+    } else {
+        "-"
+    }
     $probeStorageArg = if ($StorageProbe) { "1" } else { "-" }
     $probeAudioArg = if ($AudioProbe -ne "") { $AudioProbe } else { "-" }
     $cdpEcho = @(& node $cdpScript $cdpPort $outTarget $waitMode $TimeoutSeconds $shotArg $underArg $probeArg $settleArg $probeStorageArg $probeAudioArg)
@@ -914,7 +921,7 @@ if ($Gpu2d -and $gpuState -like "presented*") {
 # 为什么必须让驱动自己断言、而不是"人去 dump 里看一眼"：`input_edges` 只证明边沿进了快照，
 # 证明不了游戏逻辑真的因此动了什么——这两件事之间隔着整个工程脚本。读数由 Rust 侧
 # 从引擎自己的世界（`entity.find` + `transform.get`）与场景输出（`scene_delta=`）读出，
-# 与 JS 世界无关；再配上按帧号触发的 `<键>:<起帧>-<止帧>` 剧本，这个门就是**确定性**的。
+# 与 JS 世界无关；再配上按帧号触发的 `<键|axis0±|axis1±>:<起帧>-<止帧>` 剧本，这个门就是**确定性**的。
 #
 # 两种期望：
 #   * 默认（不给 -ExpectWorld）＝**位移门**：按住的键必须让主角位移非零（`moved=`）。

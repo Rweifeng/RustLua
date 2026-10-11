@@ -49,6 +49,12 @@ mod frame_input;
 /// 这种错只能靠小测试抓（见模块内 `tests`）。
 mod fit;
 
+/// Build-time static dependency index selection for the synchronous VFS
+/// provider. Kept host-testable so closure and fallback behavior are verified
+/// without a browser.
+#[cfg(any(target_arch = "wasm32", test))]
+mod resource_index;
+
 /// wasm 侧诊断的**唯一安装点**：panic hook（"炸了"）+ `tracing` 出口（"走到哪一步了"）。
 ///
 /// 两件事都收在这里，是因为它们必须同时在场才有用：只有 panic hook 时，事故现场只剩一句
@@ -176,7 +182,7 @@ mod wasm {
     pub fn probe_stage(stage: u32) -> Result<(), JsValue> {
         super::install_panic_hook();
         match stage {
-            0 | 1 | 2 => {
+            0..=2 => {
                 rustlua_scripting::script::probe_startup_stage(stage as u8)
                     .map_err(|e| JsValue::from_str(&e))?;
             }
@@ -186,7 +192,7 @@ mod wasm {
             }
             4 | 5 => {
                 // P2-④：probe 4/5 的 setup 完全相同，收敛为一个函数；5 多跑一帧 update。
-                let mut runtime = probe_boot()?;
+                let runtime = probe_boot()?;
                 if stage == 5 {
                     runtime
                         .call_update()
@@ -249,12 +255,67 @@ mod wasm {
             .unwrap_or_else(|| "scenes/main.scene".to_owned());
         let scene = fetch_text(&format!("pack/{startup_scene}")).await?;
 
-        // 预加载清单内的全部资源 → 内存资源表（迁移后存 wasm 全局，`lua_boot()`
-        // 的 vfs provider 从这里读；与微信端"打包资源表"语义一致）。`pack::decode`
-        // （压缩/加密自动解开）由引擎侧 `read_project_script` 内部完成，因此这里
-        // 直接存打包原始字节。
+        // 同步 VFS 仍需启动前取得资源字节；新包按静态依赖闭包预载，动态/未知
+        // 引用、坏索引和旧包保守回退到完整 manifest。`pack::decode` 由引擎读取侧完成。
         let mut resources: std::collections::HashMap<String, Vec<u8>> = Default::default();
-        for relative in manifest_paths(&manifest) {
+        let all_paths = manifest_paths(&manifest);
+        let mut roots = vec![
+            startup_scene.clone(),
+            project_key(&project, "main_script").unwrap_or_else(|| "scripts/main.lua".to_owned()),
+        ];
+        roots.extend(
+            ["project.toml", "chars.txt", "settings.toml"]
+                .iter()
+                .filter(|path| all_paths.iter().any(|entry| entry == **path))
+                .map(|path| (*path).to_owned()),
+        );
+        roots.extend(
+            ["font", "font_fallback"]
+                .iter()
+                .filter_map(|key| project_key(&project, key))
+                .filter(|path| all_paths.contains(path)),
+        );
+        // Lua require is synchronous, so every packaged module remains in the
+        // initial set even when it is not reachable by a literal require edge.
+        roots.extend(
+            all_paths
+                .iter()
+                .filter(|path| path.starts_with("scripts/") && path.ends_with(".lua"))
+                .cloned(),
+        );
+        let (selected_paths, full_fallback) = match fetch_text("pack/dependencies.json").await {
+            Ok(index) => {
+                match super::resource_index::select_resources(&index, &all_paths, &roots) {
+                    Ok(selection) => {
+                        if let Some(reason) = &selection.fallback_reason {
+                            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                                "[resources] full preload fallback: {reason}"
+                            )));
+                        }
+                        (selection.paths, selection.full_fallback)
+                    }
+                    Err(error) => {
+                        web_sys::console::warn_1(&JsValue::from_str(&format!(
+                            "[resources] invalid dependency index; full preload: {error}"
+                        )));
+                        (all_paths.clone(), true)
+                    }
+                }
+            }
+            Err(error) => {
+                web_sys::console::warn_1(&JsValue::from_str(&format!(
+                    "[resources] dependency index unavailable; full preload: {}",
+                    js_error_text(&error)
+                )));
+                (all_paths.clone(), true)
+            }
+        };
+        web_sys::console::log_1(&JsValue::from_str(&format!(
+            "[resources] selected={} manifest={} full_fallback={full_fallback}",
+            selected_paths.len(),
+            all_paths.len(),
+        )));
+        for relative in selected_paths {
             match fetch_bytes(&format!("pack/{relative}")).await {
                 Ok(bytes) => {
                     resources.insert(relative, bytes);

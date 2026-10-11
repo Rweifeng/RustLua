@@ -100,6 +100,11 @@ node scripts\wechat-minigame-harness.js <发布根>\launcher --frames 12 ^
   --image-src-silent --expect-boot-stall --boot-timeout-ms 1000 --boot-deadline-ms 6000
 ```
 
+2026-10-11 当前 `game_jhyt` 分包发布的模拟验收读数：主包 `3,030 KB / 4,096 KB`，首屏
+`mainpack/` `2,393 KB`，`pack/` 分包 `8,188 KB`，总计 `11,218 KB / 20,480 KB`。
+`verify-wechat-minigame.ps1 -DriveJhyt` 在 Node wx 模拟宿主通过 240 帧，包含分包挂载、玩法绘制、
+触摸摇杆、存档持久化和音频播放请求；这不是微信开发者工具或真机的出声/前后台验收。
+
 `verify-wechat-minigame.ps1` 会按**产物形态**自动分组跑完用例，全绿时输出（分包形态）：
 
 ```

@@ -41,7 +41,7 @@ pub trait Importer: Send + Sync {
 - **单坏项不 abort**，继续下一项；每项间检查 `cancel: &AtomicBool` 可干净停止；
 - 结束后 DB `save()` 一次；返回 `ImportSummary { total, imported, reused, failed, skipped, elapsed_ms, results }`。
 
-`PACKAGE_VERSION`（`assetc-package-1`）替代旧 `IMPORTER_VERSION`；assetc 与编辑器统一从 registry 取 importer 版本，消除版本双源漂移。
+`PACKAGE_VERSION`（当前 `assetc-package-2`）替代旧 `IMPORTER_VERSION`；assetc 与编辑器统一从 registry 取 importer 版本，消除版本双源漂移。
 
 ## 增量语义
 

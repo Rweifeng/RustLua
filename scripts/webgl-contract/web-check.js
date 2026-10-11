@@ -92,7 +92,7 @@
     const manifest = await fetchText("pack/manifest.txt");
     const manifestLines = manifest.split(/\r?\n/);
     details.manifestHeader = manifestLines[0] || "";
-    // assetc 清单格式：首行 `assetc_manifest=1<TAB>assetc-package-1`，其后每行
+    // assetc 清单格式：首行 `assetc_manifest=1<TAB>assetc-package-2`，其后每行
     // `相对路径<TAB>字节数<TAB>内容指纹`。
     const manifestFiles = manifestLines
       .map((line) => line.trim())

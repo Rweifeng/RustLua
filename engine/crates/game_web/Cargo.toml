@@ -35,6 +35,8 @@ rustlua-input = { path = "../rustlua-input" }
 rustlua-math = { path = "../rustlua-math" }
 rustlua-scene = { path = "../rustlua-scene" }
 rustlua-scripting = { path = "../rustlua-scripting" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # GPU 渲染器句柄。`optional` + `gpu2d` 特性：默认不进产物。
 wgpu = { version = "27", optional = true }
@@ -67,8 +69,6 @@ web-sys = { version = "0.3", features = [
 # wasm Lua 桥（lua_bridge.rs）直接使用 mlua 类型：必须与 engine 同一 feature 集，
 # 否则 workspace 会编译两份 mlua 实例、Value/Function 类型无法互通。
 mlua = { version = "0.11", features = ["lua54", "vendored"] }
-# wasm Lua 桥的 JSON 参数/返回值编解码（lua_bridge.rs）。
-serde_json = "1"
 # wasm 侧的 `tracing` 出口（`wasm_log`）：引擎的字体/资源/渲染诊断全走 `tracing`，
 # 宿主此前没装订阅者，那些行在浏览器里被静默丢掉——上一轮排查字体时只能靠 DOM 属性反推。
 tracing.workspace = true

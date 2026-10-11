@@ -810,7 +810,7 @@ impl GamepadPoller {
     ///   `action_pressed`，按住期间每帧只断言数字态；
     /// * **活动槽位**（M22/W2）：显式指定 → 粘住当前设备 → 第一个已连接；切换槽位或拔线时
     ///   释放旧槽位仍按住的按钮与轴方向（不粘键）；
-    /// * 无设备时每帧写「没有按住任何按钮、轴归零」，每帧重建的快照也一致。
+    /// * 无设备时不覆盖传入快照里的宿主按钮/轴输入；新建快照本身仍是全零。
     pub fn poll_into(&mut self, input: &mut InputSnapshot) {
         let frames = self.backend.poll_all();
 
@@ -879,16 +879,8 @@ impl GamepadPoller {
         }
 
         let Some(active) = self.active else {
-            // 持续无设备：每帧重建的快照也要看到「没有按住任何键/轴归零」。
-            for index in 0..GAMEPAD_BUTTON_COUNT {
-                input.set_gamepad_button_held(index as u8, false);
-            }
-            for index in 0..GAMEPAD_AXIS_COUNT {
-                input.set_gamepad_axis(index as u8, 0.0);
-                for direction in AXIS_DIRECTIONS {
-                    input.set_gamepad_axis_digital(index as u8, direction, false);
-                }
-            }
+            // 传入快照也可能带宿主注入的虚拟摇杆/按钮。没有物理设备时不应把这一路清零；
+            // 物理设备断开时，上面的 previous_active 分支已经释放了它先前持有的状态。
             self.expire_rumble();
             return;
         };
@@ -1112,7 +1104,7 @@ mod tests {
         );
     }
 
-    /// 断连后每帧重建的快照也必须看到「没有按住任何按钮、轴归零」。
+    /// 无设备时保留已有的宿主输入；新建快照仍然保持中性。
     #[test]
     fn disconnected_frame_clears_state_for_fresh_snapshots() {
         let mut poller = GamepadPoller::new(Box::new(FakeBackend::new(vec![
@@ -1127,6 +1119,28 @@ mod tests {
             assert!(!fresh.action_is_down(&map, "confirm"));
             assert!(!fresh.action_just_pressed(&map, "confirm"));
         }
+    }
+
+    #[test]
+    fn disconnected_frame_preserves_host_injected_gamepad_state() {
+        let mut poller = GamepadPoller::new(Box::new(FakeBackend::new(vec![
+            GamepadFrame::disconnected(),
+        ])));
+        let mut input = InputSnapshot::default();
+        input.set_gamepad_axis(0, 0.75);
+        input.set_gamepad_button_held(button::A as u8, true);
+
+        poller.poll_into(&mut input);
+
+        assert_eq!(
+            input.gamepad_axis(0),
+            0.75,
+            "虚拟摇杆轴不应被无设备轮询覆盖"
+        );
+        assert!(
+            input.gamepad_button(button::A as u8),
+            "宿主注入的虚拟按钮不应被无设备轮询覆盖"
+        );
     }
 
     #[test]
@@ -1400,12 +1414,12 @@ mod tests {
         assert!(!input.action_is_down(&map, "ui_right"));
         assert_eq!(input.gamepad_axis(super::axis::LEFT_X as u8), 0.0);
 
-        // 持续无设备：快照里不得残留数字态（回落判定也不会命中）。
+        // 持续无设备：新快照保持无数字态；显式写入 `false` 会屏蔽宿主注入的模拟轴。
         let mut input = InputSnapshot::default();
         poller.poll_into(&mut input);
         assert_eq!(
             input.gamepad_axis_digital(super::axis::LEFT_X as u8, AxisDirection::Positive),
-            Some(false)
+            None
         );
         assert!(!input.action_is_down(&map, "ui_right"));
     }

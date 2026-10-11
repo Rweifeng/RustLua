@@ -6836,6 +6836,27 @@ end
           if (d.exitKey) { dispatchDriveKey('keyup', d.exitKey); d.exitKey = null; }
           return 'arrived';
         }
+        if (d.navLastPos && Math.abs(pos[0] - d.navLastPos[0]) < 1 &&
+            Math.abs(pos[1] - d.navLastPos[1]) < 1) {
+          d.navStuckFrames = (d.navStuckFrames || 0) + 1;
+        } else {
+          d.navStuckFrames = 0;
+        }
+        d.navLastPos = pos;
+        if (d.navDetourFrames > 0) {
+          d.navDetourFrames -= 1;
+          return 'detouring';
+        }
+        if (d.navStuckFrames >= 60 && (d.navDetourAttempts || 0) < 2) {
+          if (d.exitKey) dispatchDriveKey('keyup', d.exitKey);
+          const detourKey = (d.navDetourAttempts || 0) === 0 ? 'd' : 'a';
+          dispatchDriveKey('keydown', detourKey);
+          d.exitKey = detourKey;
+          d.navDetourFrames = 10;
+          d.navDetourAttempts = (d.navDetourAttempts || 0) + 1;
+          d.navStuckFrames = 0;
+          return 'detouring';
+        }
         let key;
         if (Math.abs(dx) >= Math.abs(dy)) key = dx > 0 ? 'd' : 'a';
         else key = dy > 0 ? 'w' : 's';
@@ -6947,7 +6968,7 @@ end
           const expect = d.phase === 'wait-map' ? 'village' : 'manor';
           if (map === expect) {
             d.milestones.push('M' + (d.phase === 'wait-map' ? '5' : '6') +
-              ':scene(' + expect + ',alive=' + alive + ',scene=' + scene + ')');
+              ':scene(' + expect + ',frames=' + d.frames + ',alive=' + alive + ',scene=' + scene + ')');
             if (d.phase === 'wait-map') {
               d.phase = 'spawn-check'; d.frames = 0;
             } else {

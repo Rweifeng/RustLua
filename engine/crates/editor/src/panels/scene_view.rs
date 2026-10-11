@@ -2071,34 +2071,37 @@ impl EditorApp {
         let tool = self.scene_tool();
         let mode = self.tool_mode();
         let mut requested: Option<SceneTool> = None;
-        let tools_response = ui.scope_builder(egui::UiBuilder::new().max_rect(tools_rect), |ui| {
-            // right_to_left：先画的 widget 贴右边缘，保证工具条紧贴视图右边界。
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // 世界/轴心不在这里——它们在左上角状态胶囊那一行（见下方）。
-                // 工具按钮：rev() 后视觉顺序仍是 选择|移动|旋转|缩放|▦（从左到右）
-                for candidate in mode.tools().iter().rev() {
-                    let label = match candidate {
-                        SceneTool::TilePaint => "▦",
-                        other => match other {
-                            SceneTool::Select => "选择",
-                            SceneTool::Move => "移动",
-                            SceneTool::Rotate => "旋转",
-                            SceneTool::Scale => "缩放",
+        let tools_content_width = ui
+            .scope_builder(egui::UiBuilder::new().max_rect(tools_rect), |ui| {
+                // right_to_left：先画的 widget 贴右边缘，保证工具条紧贴视图右边界。
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // 世界/轴心不在这里——它们在左上角状态胶囊那一行（见下方）。
+                    // 工具按钮：rev() 后视觉顺序仍是 选择|移动|旋转|缩放|▦（从左到右）
+                    for candidate in mode.tools().iter().rev() {
+                        let label = match candidate {
                             SceneTool::TilePaint => "▦",
-                        },
-                    };
-                    if icon_toggle(ui, tool == *candidate, label, mode.tool_hint(*candidate))
-                        .clicked()
-                    {
-                        requested = Some(*candidate);
+                            other => match other {
+                                SceneTool::Select => "选择",
+                                SceneTool::Move => "移动",
+                                SceneTool::Rotate => "旋转",
+                                SceneTool::Scale => "缩放",
+                                SceneTool::TilePaint => "▦",
+                            },
+                        };
+                        if icon_toggle(ui, tool == *candidate, label, mode.tool_hint(*candidate))
+                            .clicked()
+                        {
+                            requested = Some(*candidate);
+                        }
                     }
-                }
-            });
-        });
+                });
+                ui.min_rect().width()
+            })
+            .inner;
         if let Some(tool) = requested {
             self.set_scene_tool(tool);
         }
-        let tools_row_width = tools_response.response.rect.width();
+        let tools_row_width = tools_content_width;
         // RustLua-②c：左上角状态胶囊——2D 下回显视图/吸附/像素网格的**显式**状态，
         // 外加 Gizmo 空间/轴心切换（原先贴在右上角工具条尾部，挪到这里与状态同侧）。
         let gizmo_toggle_visible = matches!(
@@ -2121,8 +2124,8 @@ impl EditorApp {
                 egui::pos2(rect.left() + 4.0, status_top),
                 egui::vec2(380.0, 26.0),
             );
-            let status_response =
-                ui.scope_builder(egui::UiBuilder::new().max_rect(status_rect), |ui| {
+            let status_content_width = ui
+                .scope_builder(egui::UiBuilder::new().max_rect(status_rect), |ui| {
                     // `horizontal_centered` 而不是 `horizontal`：后者只按 `interact_size.y`（18）
                     // 起行，18 高的标签会贴在这条 26 高带子的顶上，比右侧真正居中的 24 高
                     // 图标按钮高 4px。前者按整条带子居中，两组才在同一条水平线上。
@@ -2175,8 +2178,10 @@ impl EditorApp {
                             }
                         }
                     });
-                });
-            self.scene_status_row_width = status_response.response.rect.width();
+                    ui.min_rect().width()
+                })
+                .inner;
+            self.scene_status_row_width = status_content_width;
             self.scene_overlay_bottom_offset = status_top - rect.top() + 26.0;
         } else {
             self.scene_overlay_bottom_offset = 0.0;
@@ -6328,6 +6333,37 @@ mod tests {
             max - min < 1.0,
             "浮层一行的外框中心散布 {min:.1}..{max:.1}（差 {:.1}），左右两组没对齐",
             max - min
+        );
+    }
+
+    #[test]
+    fn overlay_status_stays_at_top_when_content_fits() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../examples/game_api");
+        let project = open_project(&root).expect("打开样板工程");
+        let mut app = EditorApp::new(project, None, LogSink::new(16));
+        let context = egui::Context::default();
+        crate::util::configure_cjk_fallback(&context);
+
+        for _ in 0..2 {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(768.0, 500.0),
+                )),
+                ..Default::default()
+            };
+            let _ = context.run(raw, |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    let rect = ui.max_rect();
+                    app.draw_scene_tool_panel(ui, rect);
+                });
+            });
+        }
+
+        assert!(
+            (app.scene_overlay_bottom_offset - 30.0).abs() < 1.0,
+            "状态行内容能放下时必须留在视图顶部，偏移为 {}",
+            app.scene_overlay_bottom_offset
         );
     }
 }

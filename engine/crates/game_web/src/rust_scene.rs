@@ -20,6 +20,7 @@
 
 use std::path::Path;
 
+use engine::host::runtime_scene::TextRenderMode;
 use engine::host::{RuntimeScene, SceneMesh};
 use rustlua_input::input::InputSnapshot;
 use rustlua_scene::scene::Scene;
@@ -84,7 +85,7 @@ pub struct RustScene {
     input: InputSnapshot,
     /// 已推进的定长步总数：`0` 说明模拟只是"摆着"，没有真的往前走。
     steps: u64,
-    /// 落到快照上的输入变化累计数（键 + 鼠标 + 同帧点按）。恒为 0 而玩家在操作，
+    /// 落到快照上的输入变化累计数（键 + 鼠标 + 同帧点按 + 摇杆轴）。恒为 0 而玩家在操作，
     /// 就说明输入没进模拟——这是"画面动、模拟不动"分叉的第一手线索。
     input_edges: u64,
     /// 推进失败的累计次数与最后一次原因。
@@ -187,6 +188,10 @@ impl RustScene {
                 (scene, desc)
             }
         };
+        // WebGL2 exposes no storage buffers for the vector-text shader path; the renderer drops
+        // those draws, so force the equivalent atlas-backed SDF path for this host.
+        let mut scene = scene;
+        scene.set_text_render_mode(TextRenderMode::Sdf);
         let assets = scene.asset_entries().len();
         Ok(Self {
             scene,
@@ -231,8 +236,12 @@ impl RustScene {
         frame: &rustlua_frame_abi::FrameInput,
     ) -> Result<(), String> {
         let applied = crate::frame_input::apply_frame(&mut self.input, frame);
-        self.input_edges +=
-            u64::from(applied.key_changes + applied.mouse_changes + applied.same_frame_taps);
+        self.input_edges += u64::from(
+            applied.key_changes
+                + applied.mouse_changes
+                + applied.same_frame_taps
+                + applied.axis_changes,
+        );
         let outcome = self
             .scene
             .run_script_steps(steps, delta_seconds, &self.input)
@@ -372,12 +381,10 @@ impl RustScene {
         }
     }
 
-    /// 更新渲染视口（跟随窗口的**等比适配盒**，见 `gpu_host::GpuHost::fit_now`）。
+    /// 设置场景提取使用的逻辑视口；它保持项目设计分辨率，与 GPU 后备缓冲尺寸分离。
     ///
-    /// 为什么不是"一直用设计分辨率"：Canvas2D 那一层把 1280×720 设计空间**等比**缩放到窗口里
-    /// 居中（`web-runtime.js` 的 contain 适配），GPU 这一层若按自己的固定尺寸铺满视口，两层就是
-    /// 两个不同的几何盒子（非 16:9 窗口下 GPU 会被拉伸）。渲染视口因此必须等于**适配盒**；
-    /// 设计分辨率仍是基准——适配盒与它**同比**，所以世界→屏幕的映射不变，只是像素更密/更疏。
+    /// GPU surface 可按 contain 盒缩小后备缓冲，但在这里传入缩小后的像素尺寸会让
+    /// `RuntimeScene::vertices()` 再缩放一次 Canvas UI。渲染目标的实际尺寸由 renderer 单独接收。
     pub fn set_viewport(&mut self, width: u32, height: u32) {
         self.width = width;
         self.height = height;

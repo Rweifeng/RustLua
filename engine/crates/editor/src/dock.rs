@@ -534,8 +534,8 @@ impl TabViewer for DockTabViewer<'_> {
                 // 工具条画在一个把宽度钉到裁剪框的子 ui 里。egui_dock 会在本回调之前
                 // `expand_to_include_rect(available_rect)`（show/leaf.rs 的 ScrollArea 内），
                 // 只要工具条某一帧横向溢出裁剪框，之后每帧可用宽度都停在溢出值、
-                // `horizontal_wrapped` 不再换行，zoom 数值就一直压在右侧属性面板下（窄叶子才
-                // 触发）。给工具条一个宽度=可见裁剪宽度的 scope，换行就按真实可见宽度发生，
+                // 工具条不再换行，zoom 数值就一直压在右侧属性面板下（窄叶子才触发）。
+                // 给工具条一个宽度=可见裁剪宽度的 scope，横向滚动只在可见区域内发生，
                 // 溢出也不会再回灌到父 ui 的可用宽度。
                 // 原点必须留在父 ui 的内容原点：直接把 max_rect 钉成 clip_rect 会把子 ui
                 // 起点推到裁剪框左缘（比标签体内容内缩还左 2~3px），整行工具条因此压过

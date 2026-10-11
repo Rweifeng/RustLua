@@ -40,11 +40,27 @@
       "apis": [
         "input.action",
         "input.action_axis",
+        "input.action_map_text",
         "input.action_pressed",
         "input.action_released",
         "input.action_repeat",
         "input.actions",
-        "input.bindings"
+        "input.bindings",
+        "input.diagnostics",
+        "input.last_device",
+        "input.load_settings",
+        "input.migration_notes",
+        "input.nav_settings",
+        "input.pad_axis",
+        "input.pad_button",
+        "input.rebind",
+        "input.reset_bindings",
+        "input.rumble",
+        "input.save_settings",
+        "input.set_action_map",
+        "input.set_nav_settings",
+        "input.settings_path",
+        "input.unbind"
       ]
     },
     {
@@ -114,11 +130,15 @@
         "ui.scene_text_visible",
         "ui.scroll_close",
         "ui.scroll_extents",
+        "ui.scroll_max",
         "ui.scroll_offset",
+        "ui.scroll_open",
         "ui.scroll_to_visible",
+        "ui.scroll_visible",
         "ui.show",
         "ui.text",
-        "ui.text_at"
+        "ui.text_at",
+        "ui.text_get"
       ]
     }
   ],
@@ -126,14 +146,10 @@
     {
       "module": "animation",
       "note": "动画状态存在 __rustlua_animations，组件解析走 __rustlua_parse_animation，alive 校验走 __rustlua_require_alive。dropped=clips/events/time：剪辑清单与动画时钟都要引擎按帧推进，而 web 帧循环不调 LuaRuntime::step（同 time 那条缺口），所以这三条在 web 上没有可用状态源。",
-      "dropped": [
-        "clips",
-        "events",
-        "time"
-      ],
+      "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 2449
+      "line": 3721
     },
     {
       "module": "animation3d",
@@ -147,7 +163,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 2501
+      "line": 3799
     },
     {
       "module": "audio",
@@ -164,18 +180,23 @@
         "settings_path",
         "settings_text"
       ],
-      "line": 2510
+      "line": 3808
     },
     {
       "module": "camera",
       "note": "整表是占位（set/set_active 只 return true）。dropped=get/get_active：相机真值在 JS 渲染侧且不回 Lua，所以查询函数补了也只能给假数；发包工程读的是自己那份 Lua 侧相机状态（core 里的 camera_view），不依赖这两条。",
-      "dropped": [
-        "get",
-        "get_active"
-      ],
+      "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 3071
+      "line": 4490
+    },
+    {
+      "module": "camera2d",
+      "note": "2D 相机状态在 web 侧由画布视口/缩放与 Rust-side GPU 取景统一维护，不走引擎原生的 camera2d ECS 仓库；整表改成占位是为了保持 Lua 一致接口，但真正值由渲染宿主而非桌面 camera2d 状态回写。dropped=0：web 只保留视口接口，不走原生相机查询。",
+      "dropped": [],
+      "invented": [],
+      "referenced": [],
+      "line": 4535
     },
     {
       "module": "entity",
@@ -183,7 +204,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 1889
+      "line": 2846
     },
     {
       "module": "grid",
@@ -191,7 +212,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 1604
+      "line": 2536
     },
     {
       "module": "health",
@@ -199,36 +220,17 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 2329
+      "line": 3302
     },
     {
       "module": "input",
       "note": "输入状态由 JS 采集、逐帧序列化进 Lua 全局 __rustlua_input（引擎的 Rust InputState 在 web 不参与游戏状态），所以只能整张表换掉。dropped=14 全是设备层与配置后端：手柄（pad_axis/pad_button/rumble/last_device）、改键（rebind/unbind/reset_bindings/set_action_map/action_map_text）、导航手感读写（nav_settings/set_nav_settings）、工程设置文件路径与文本（settings_path/migration_notes/diagnostics）。其中 last_device/nav_settings/set_nav_settings 三个 game_jhyt 正在引用（ui/hints.lua:160/186/221），三处都有\"是不是函数\"的判据，所以 web 上是静默走默认手感而不是崩。invented=press_position 是补丁自造（虚拟摇杆要按下位置，桌面没有这个名字），ui/virtual_pad.lua:241 用 pcall 取它。",
-      "dropped": [
-        "action_map_text",
-        "diagnostics",
-        "last_device",
-        "migration_notes",
-        "nav_settings",
-        "pad_axis",
-        "pad_button",
-        "rebind",
-        "reset_bindings",
-        "rumble",
-        "set_action_map",
-        "set_nav_settings",
-        "settings_path",
-        "unbind"
-      ],
+      "dropped": [],
       "invented": [
         "press_position"
       ],
-      "referenced": [
-        "last_device",
-        "nav_settings",
-        "set_nav_settings"
-      ],
-      "line": 1539
+      "referenced": [],
+      "line": 2457
     },
     {
       "module": "inv",
@@ -238,7 +240,7 @@
         "open"
       ],
       "referenced": [],
-      "line": 1699
+      "line": 2631
     },
     {
       "module": "log",
@@ -248,7 +250,7 @@
         "debug"
       ],
       "referenced": [],
-      "line": 1515
+      "line": 2419
     },
     {
       "module": "map",
@@ -259,7 +261,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1835
+      "line": 2767
     },
     {
       "module": "mesh",
@@ -270,32 +272,23 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 3072
+      "line": 4610
     },
     {
       "module": "particles",
       "note": "整表只有一个占位：burst 直接 return true，没有粒子状态。dropped=count 同理（web 侧没有粒子系统可问）。",
-      "dropped": [
-        "count"
-      ],
+      "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 3070
+      "line": 4464
     },
     {
       "module": "physics",
       "note": "宽相查询按 Lua 侧 __rustlua_transforms 的位置做圆查询、速度存 __rustlua_velocity，与 native 同名 API 同语义（补丁注释里写明了口径）。dropped=6：raycast/overlap/get_velocity 与 ccd 开关（get_ccd/set_ccd）及 debug_draw——射线、连续碰撞与调试绘制需要引擎物理后端，位置近似补不出这些语义。game_jhyt 对 overlap 的提到只在 systems/combat.lua:338 的注释里，不是调用。",
-      "dropped": [
-        "debug_draw",
-        "get_ccd",
-        "get_velocity",
-        "overlap",
-        "raycast",
-        "set_ccd"
-      ],
+      "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 2330
+      "line": 3373
     },
     {
       "module": "physics3d",
@@ -310,7 +303,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 2375
+      "line": 3510
     },
     {
       "module": "prefab",
@@ -318,7 +311,15 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 1495
+      "line": 2399
+    },
+    {
+      "module": "quad",
+      "note": "web 端的四边形数据是 GPU 侧批量提交的临时顶点，不走桌面原生 Quad 资源池；因此整表被替换为宿主本地占位，保持 `quad.*` 的调用形态但不要求桌面那份元数据回 Lua。dropped=0：调用方拿到的是统一的画布命令结构，而不是原生 Quad句柄。",
+      "dropped": [],
+      "invented": [],
+      "referenced": [],
+      "line": 3599
     },
     {
       "module": "save",
@@ -326,7 +327,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 2953
+      "line": 4347
     },
     {
       "module": "scene",
@@ -334,7 +335,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 1588
+      "line": 2520
     },
     {
       "module": "sprite",
@@ -342,7 +343,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 2378
+      "line": 3513
     },
     {
       "module": "tilemap",
@@ -354,7 +355,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 2055
+      "line": 3028
     },
     {
       "module": "time",
@@ -362,7 +363,7 @@
       "dropped": [],
       "invented": [],
       "referenced": [],
-      "line": 1516
+      "line": 2421
     },
     {
       "module": "transform",
@@ -374,7 +375,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1923
+      "line": 2880
     },
     {
       "module": "transform3d",
@@ -384,7 +385,7 @@
       ],
       "invented": [],
       "referenced": [],
-      "line": 1948
+      "line": 2905
     },
     {
       "module": "ui",
@@ -403,17 +404,29 @@
         "modal_show",
         "scroll_by",
         "scroll_lines",
-        "scroll_max",
-        "scroll_open",
         "scroll_page",
-        "scroll_visible",
-        "text_get",
         "tooltip",
         "tooltip_hide"
       ],
       "invented": [],
       "referenced": [],
-      "line": 2562
+      "line": 3860
+    },
+    {
+      "module": "visibility",
+      "note": "可见性在 web 侧由 `__rustlua_visible` / `__rustlua_scene_state` 这类 Lua 宿主状态维护，而不是桌面原生 `visibility` 组件表；整表替换保留了 `visible` 语义，但没有把桌面那套 `Component` 读写同步回 Lua。dropped=0：这是宿主侧的可见性镜像，不是“本来缺失”的 API。",
+      "dropped": [],
+      "invented": [],
+      "referenced": [],
+      "line": 3652
+    },
+    {
+      "module": "world_text",
+      "note": "世界文本在 web 侧挂到渲染层字符串缓存和 GPU 文字批次，不再依赖桌面原生 WorldText 组件表；这张表留成宿主镜像，目的是让 Lua 侧调用形态不变，同时让真正的文本堆栈交给 JS/Canvas 回放，不返回桌面端那套组件状态。dropped=0：原生状态没有被删，只是被渲染层接管。",
+      "dropped": [],
+      "invented": [],
+      "referenced": [],
+      "line": 3625
     }
   ]
 }

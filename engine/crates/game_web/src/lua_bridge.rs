@@ -28,31 +28,31 @@ use std::cell::RefCell;
 
 use wasm_bindgen::prelude::*;
 
-/// 浏览器（webgl）入口预加载的项目资源表（`start()` 填充，`lua_boot()` 消费）。
-///
-/// 与微信端"打包资源表"语义一致：key 为项目相对路径（`/` 分隔，如
-/// `scripts/main.lua`），值为**打包原始字节**（`pack::decode` 由引擎侧
-/// `read_project_script` 自动解开）。
+// 浏览器（webgl）入口预加载的项目资源表（`start()` 填充，`lua_boot()` 消费）。
+//
+// 与微信端"打包资源表"语义一致：key 为项目相对路径（`/` 分隔，如
+// `scripts/main.lua`），值为**打包原始字节**（`pack::decode` 由引擎侧
+// `read_project_script` 自动解开）。
 thread_local! {
     static LUA_RESOURCES: RefCell<Option<std::collections::HashMap<String, Vec<u8>>>> =
         const { RefCell::new(None) };
 }
 
-/// 当前 Lua 运行时（单线程 wasm：一个槽位足够；`lua_boot` 建，Lua 桥函数用）。
-///
-/// 借用约定：`LuaRuntime::lua()` 只需 `&self`，因此所有只读入口（do_string / execute_main /
-/// call_global / register_js_callback / missing_globals）一律用共享 `borrow()`；唯一的
-/// `borrow_mut()` 在 `boot_runtime`（一次性写入，此时尚无 Lua 在跑）。这样 Lua 执行期间经
-/// JS 回调重入本桥时，嵌套的共享借用可以并存，不会触发 `already mutably borrowed: BorrowError`
-/// （此前 do_string 持 `borrow_mut` 跨 `.exec()`，重入的 call_global 在 `borrow()` 处 panic →
-/// wasm 上是无法 unwind 的 `unreachable` trap）。
+// 当前 Lua 运行时（单线程 wasm：一个槽位足够；`lua_boot` 建，Lua 桥函数用）。
+//
+// 借用约定：`LuaRuntime::lua()` 只需 `&self`，因此所有只读入口（do_string / execute_main /
+// call_global / register_js_callback / missing_globals）一律用共享 `borrow()`；唯一的
+// `borrow_mut()` 在 `boot_runtime`（一次性写入，此时尚无 Lua 在跑）。这样 Lua 执行期间经
+// JS 回调重入本桥时，嵌套的共享借用可以并存，不会触发 `already mutably borrowed: BorrowError`
+// （此前 do_string 持 `borrow_mut` 跨 `.exec()`，重入的 call_global 在 `borrow()` 处 panic →
+// wasm 上是无法 unwind 的 `unreachable` trap）。
 thread_local! {
     static LUA_RUNTIME: RefCell<Option<rustlua_scripting::script::LuaRuntime>> =
         const { RefCell::new(None) };
 }
 
-/// JS 回调注册表（`lua_register_js_callback` 存，mlua 包装闭包按索引取用）。
-/// JS 函数与 wasm 桥同生命周期；Lua 状态销毁前不应清空。
+// JS 回调注册表（`lua_register_js_callback` 存，mlua 包装闭包按索引取用）。
+// JS 函数与 wasm 桥同生命周期；Lua 状态销毁前不应清空。
 thread_local! {
     static JS_CALLBACKS: RefCell<Vec<js_sys::Function>> = const { RefCell::new(Vec::new()) };
 }
@@ -129,7 +129,7 @@ fn with_fixed_clock<R>(f: impl FnOnce(&mut rustlua_infra::frame_clock::FrameCloc
         let mut guard = slot.borrow_mut();
         if guard.is_none() {
             // `new` 只在频率/追帧上限/上限秒数为 0 时报错，而这三个都是本文件里的非零常量。
-            let mut clock = rustlua_infra::frame_clock::FrameClock::new(
+            let clock = rustlua_infra::frame_clock::FrameClock::new(
                 FIXED_STEPS_PER_SECOND,
                 MAX_CATCH_UP_STEPS,
                 MAX_FRAME_SECONDS,
@@ -397,7 +397,9 @@ pub fn install_storage_slot() -> Result<(), String> {
     }
 }
 
-fn provider_from_resources() -> Box<dyn Fn(&std::path::Path) -> Option<Vec<u8>> + 'static> {
+type ResourceProvider = dyn Fn(&std::path::Path) -> Option<Vec<u8>> + 'static;
+
+fn provider_from_resources() -> Box<ResourceProvider> {
     Box::new(|path: &std::path::Path| {
         let key = path
             .strip_prefix(super::VIRTUAL_PROJECT_ROOT)
@@ -412,9 +414,7 @@ fn provider_from_resources() -> Box<dyn Fn(&std::path::Path) -> Option<Vec<u8>> 
     })
 }
 
-fn provider_from_reader(
-    read_file: js_sys::Function,
-) -> Box<dyn Fn(&std::path::Path) -> Option<Vec<u8>> + 'static> {
+fn provider_from_reader(read_file: js_sys::Function) -> Box<ResourceProvider> {
     Box::new(move |path: &std::path::Path| {
         let key = path
             .strip_prefix(super::VIRTUAL_PROJECT_ROOT)
@@ -428,9 +428,7 @@ fn provider_from_reader(
     })
 }
 
-fn boot_runtime(
-    provider: Box<dyn Fn(&std::path::Path) -> Option<Vec<u8>> + 'static>,
-) -> Result<(), JsValue> {
+fn boot_runtime(provider: Box<ResourceProvider>) -> Result<(), JsValue> {
     // 与 Rust 侧运行时场景（`install_resource_provider`）共用同一条 setup：
     // 谁先安装都行，后到的当成功（内容相同，见该函数注释）。
     if let Err(error) = rustlua_infra::vfs::set_provider(provider) {

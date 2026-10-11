@@ -48,6 +48,24 @@ powershell -NoProfile -File scripts\verify-webgl-bundle.ps1
 powershell -NoProfile -File scripts\verify-webgl-bundle.ps1 -DriveJhyt
 ```
 
+## Rust GPU 宿主（显式启用）
+
+`package.ps1 -Platform webgl -Gpu2d` 会把引擎 GPU 2D 宿主编入 wasm，但页面仍需显式带
+`?rustlua-gpu=1` 才启用该通道；未启用时沿用既有 Canvas2D 宿主。Rust GPU 通道默认从工程启动场景
+启动并执行工程脚本，`?rustlua-sim=scene-only` 只用于隔离渲染诊断。
+
+GPU 宿主用浏览器 `requestAnimationFrame` 时间戳驱动共享 60 Hz `FrameClock`，追帧上限为 8 步，
+单帧 elapsed 上限为 0.25 秒。`?rustlua-gpu-frames=N` 仅用于自动化有限帧回归；不设时持续运行。
+页面隐藏时重置时间基准、释放 Rust 侧按键/鼠标/摇杆并暂停浏览器音频；恢复时从新的时间基准继续。
+这些生命周期接线目前只覆盖 WebGL GPU 宿主，不能据此推断微信入口行为。
+
+```powershell
+# Rust-only 真实发布包跑满 240 个 present 帧（不启动共享 JS 世界）
+powershell -NoProfile -File scripts\verify-webgl-bundle.ps1 `
+  -BundleRoot examples\game_jhyt\builds\webgl -Gpu2d -StubJsRuntime `
+  -SimRoute script -GpuFrames 240 -NoSceneVerify
+```
+
 产物的定位规则收在 `scripts/bundle-discovery.ps1`：扫 `examples\<工程>\builds\webgl`，
 标记文件清单与 `package.ps1` 的产物校验数组**逐项一致**（含 `pkg/game_web_bg.wasm`——正是它把随包
 wasm 核心之前的历史产物挡在发现之外，否则一个「index.html 与 wasm 都在、却在浏览器里进不了 Lua」

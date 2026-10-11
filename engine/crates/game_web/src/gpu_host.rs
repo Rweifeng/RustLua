@@ -25,47 +25,52 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::*;
 
 use engine::host::{OverlayVertex, RenderOutcome, Renderer, SceneDraw, SceneMesh};
+use rustlua_infra::frame_clock::{FrameClock, FramePlan};
 
 use crate::rust_scene::SimRoute;
 
-/// 这条通道跑多少帧后收工。它**不再阻塞启动链**（见 `run_inner`）：帧循环被派到事件循环上，
-/// 所以"跑多少帧"只决定这条通道活多久，不决定页面多久能起来。
-///
-/// 为什么从"固定 3 帧"变成"跑一长串"：3 帧能证明 `Fifo` 下画布纹理能反复取用（第二帧才会暴露
-/// "上一帧没还回去"），但证明不了"它在**持续**渲染"——而持续渲染才是宿主该有的形状，
-/// 也才谈得上后面接输入与场景切换。
-const FRAME_BUDGET: u32 = 240;
 /// 状态属性每这么多帧改写一次：既是心跳，也让"跑到一半被抓拍"的 dump 仍有可读读数。
 const STATUS_EVERY: u32 = 30;
+const MAX_FRAME_WORK_SAMPLES: usize = 4096;
+const SIM_UPDATES_PER_SECOND: u32 = 60;
+const SIM_MAX_CATCH_UP_STEPS: u32 = 8;
+const SIM_MAX_FRAME_SECONDS: f64 = 0.25;
 /// 画布尺寸取 2D 设计分辨率的一半做离屏目标不合适：这里直接按画布实际尺寸渲染。
 const FALLBACK_SIZE: u32 = 256;
 
-/// 本帧循环跑多少帧收工——默认 [`FRAME_BUDGET`]，可用 URL `rustlua-gpu-frames=<n>` 覆盖（`0` = 不设上限）。
-///
-/// 为什么需要这个开关：状态属性每 [`STATUS_EVERY`] 帧才刷一次，而 240 帧跑完**循环就停了**，
-/// 属性随之冻结。于是"按一下键，看读数有没有动"这种验法在 240 帧之后永远看不到变化——
-/// 本轮实测就卡在这里：探针读到的 `frames 240 -> 240 -> 240`、`dom_events` 恒为 0，
-/// 看起来像"事件没到"，实际是**宿主已经收工了**。交互式验证必须让循环活着。
-fn frame_budget() -> u32 {
+fn percentile_ms(samples: &[f64], percentile: f64) -> f64 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    let rank = (sorted.len() as f64 * percentile).ceil() as usize;
+    sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
+}
+
+fn wasm_memory_bytes() -> usize {
+    std::arch::wasm32::memory_size(0) * 65_536
+}
+
+/// 帧预算仅供自动化验证；产品默认持续运行。URL `rustlua-gpu-frames=<n>` 可设定上限，`0` 表示无限。
+fn frame_budget() -> Option<u32> {
     let Some(window) = web_sys::window() else {
-        return FRAME_BUDGET;
+        return None;
     };
     let Some(search) = window.location().search().ok() else {
-        return FRAME_BUDGET;
+        return None;
     };
     const PREFIX: &str = "rustlua-gpu-frames=";
     let Some(start) = search.find(PREFIX) else {
-        return FRAME_BUDGET;
+        return None;
     };
     let rest = &search[start + PREFIX.len()..];
     let end = rest.find('&').unwrap_or(rest.len());
-    match rest[..end].trim().parse::<u32>() {
-        // `0` 读作"不设上限"：把它当成 `u32::MAX` 会让 `index == budget` 那条永远不会触发，
-        // 但循环本身照跑——语义上就是"一直跑到页面关闭"。
-        Ok(0) => u32::MAX,
-        Ok(value) => value,
-        Err(_) => FRAME_BUDGET,
-    }
+    rest[..end]
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|frames| *frames > 0)
 }
 
 /// URL `rustlua-input-script=<键:起帧-止帧[,键:起帧-止帧]>`：确定性的输入剧本。
@@ -113,17 +118,6 @@ fn url_value(search: &str, prefix: &str) -> Option<String> {
     Some(decoded)
 }
 
-/// 每条宿主帧推进几个**定长步**，以及一步多长。
-///
-/// 为什么按帧固定步、而不是按真实经过时间：wasm 上 `std::time::Instant::now()` 是会 panic 的
-/// 不支持路径（第 13 轮那类事故的同族），而 `performance.now()` 会让读数随无头环境的调度抖动。
-/// 固定步换来的是**可复现**：读第 N 帧就能反推模拟到哪了。代价写在这里，别当成"对时间没意见"：
-/// 宿主帧率与逻辑步因此**一一对应**，二者不同源——真实时间对齐要等输入 ABI 把
-/// 宿主的帧序号/时间一并送进来（`FrameInput.frame` 已经在线上，接它即可）。
-const SIM_STEPS_PER_FRAME: u32 = 1;
-/// 一步的时间长度（秒）。与编辑器预览、headless 运行器用的同一个值。
-const SIM_FIXED_DELTA: f32 = 1.0 / 60.0;
-
 /// 内存里造一张 2×2 四色棋盘。资源里找不到可用贴图时的兜底，也是"贴图路径真的被采样到了"的判据：
 /// 四色里**没有白**，所以最后那格若不是对应颜色，只可能是白兜底。
 const CHECKER: [[u8; 4]; 4] = [
@@ -134,6 +128,79 @@ const CHECKER: [[u8; 4]; 4] = [
 ];
 const CHECKER_KEY: &str = "web://checker2x2";
 
+type SharedInput = std::rc::Rc<std::cell::RefCell<InputShared>>;
+
+struct LifecycleEvents {
+    document: web_sys::Document,
+    visible: std::rc::Rc<std::cell::Cell<bool>>,
+    resume_generation: std::rc::Rc<std::cell::Cell<u64>>,
+    input_shared: std::rc::Rc<std::cell::RefCell<Option<SharedInput>>>,
+    listener: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::Event)>,
+}
+
+impl LifecycleEvents {
+    fn install(document: &web_sys::Document) -> Result<Self, String> {
+        use wasm_bindgen::JsCast;
+
+        let visible = std::rc::Rc::new(std::cell::Cell::new(!document.hidden()));
+        let resume_generation = std::rc::Rc::new(std::cell::Cell::new(0u64));
+        let input_shared: std::rc::Rc<std::cell::RefCell<Option<SharedInput>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        let visible_for_listener = visible.clone();
+        let generation_for_listener = resume_generation.clone();
+        let input_for_listener = input_shared.clone();
+        let document_for_listener = document.clone();
+        let listener = wasm_bindgen::closure::Closure::wrap(Box::new(move |_event| {
+            let is_visible = !document_for_listener.hidden();
+            if visible_for_listener.replace(is_visible) != is_visible {
+                if is_visible {
+                    generation_for_listener.set(generation_for_listener.get().saturating_add(1));
+                    crate::audio_sink::resume_music_for_lifecycle();
+                } else {
+                    if let Some(shared) = input_for_listener.borrow().as_ref() {
+                        shared.borrow_mut().producer.release_all();
+                    }
+                    crate::audio_sink::pause_for_lifecycle();
+                }
+            }
+        })
+            as Box<dyn FnMut(web_sys::Event)>);
+        document
+            .add_event_listener_with_callback("visibilitychange", listener.as_ref().unchecked_ref())
+            .map_err(|error| format!("visibilitychange listener: {error:?}"))?;
+        Ok(Self {
+            document: document.clone(),
+            visible,
+            resume_generation,
+            input_shared,
+            listener,
+        })
+    }
+
+    fn set_input_shared(&self, shared: SharedInput) {
+        *self.input_shared.borrow_mut() = Some(shared);
+    }
+
+    fn is_visible(&self) -> bool {
+        self.visible.get()
+    }
+
+    fn resume_generation(&self) -> u64 {
+        self.resume_generation.get()
+    }
+}
+
+impl Drop for LifecycleEvents {
+    fn drop(&mut self) {
+        use wasm_bindgen::JsCast;
+
+        let _ = self.document.remove_event_listener_with_callback(
+            "visibilitychange",
+            self.listener.as_ref().unchecked_ref(),
+        );
+    }
+}
+
 /// GPU 宿主：surface + device/queue + 渲染器。
 struct GpuHost {
     surface: wgpu::Surface<'static>,
@@ -142,12 +209,15 @@ struct GpuHost {
     /// surface 配置（改尺寸时只改宽高再 `configure`，其余字段原样保留——重建配置最容易
     /// 悄悄换掉 `alpha_mode`/`present_mode`）。
     surface_config: wgpu::SurfaceConfiguration,
+    lifecycle: LifecycleEvents,
     /// 本层画布（GPU 那张）与**游戏画布**（Canvas2D 那张）。后者只用来读窗口尺寸：
     /// `web-runtime.js` 会把游戏画布的后备缓冲跟到窗口（含 DPR），本层必须与它同框。
     canvas: web_sys::HtmlCanvasElement,
     game_canvas: web_sys::HtmlCanvasElement,
     width: u32,
     height: u32,
+    simulation_clock: FrameClock,
+    last_animation_frame_ms: Option<f64>,
     /// 最近一次适配读数（进 `note`，无头驱动据此断言两层同框）。
     fit_note: String,
     /// 最近一次写进画布 style 的几何（只在变化时写 DOM，避免每帧刷样式）。
@@ -191,7 +261,7 @@ struct GpuHost {
     ///
     /// 用 `Rc<RefCell<…>>` 是因为监听器闭包要活到宿主结束，而闭包不能借用宿主自己；
     /// wasm 单线程，这是这里该用的东西。
-    input_shared: Option<std::rc::Rc<std::cell::RefCell<InputShared>>>,
+    input_shared: Option<SharedInput>,
     /// 本帧要应用给模拟的输入（Rust 采集的 + JS 世界送来的并集）。
     frame_input: rustlua_frame_abi::FrameInput,
     /// 收到的 DOM 事件数（键 + 指针）。**读数用它证明输入真的到了 Rust 侧**——
@@ -276,29 +346,31 @@ fn set_status(state: &str) {
     web_sys::console::log_1(&JsValue::from_str(&format!("[gpu] {state}")));
 }
 
-/// 让出一个**宏任务**：WebGL2 的 present 与浏览器合成都靠主循环推进，promise microtask 不够
-/// （与探针 `yield_to_event_loop` 同一条实测结论）。
-async fn yield_to_event_loop() {
-    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
-        if let Some(window) = web_sys::window() {
-            // `setTimeout(..."0")` 的返回值是 timeout id，这里不需要它（失败也无所谓：
-            // 拿不到定时器时下面这次 await 会由 microtask 兜住，不会卡死流程）。
-            let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0);
+/// 等待浏览器下一次绘制机会；返回 requestAnimationFrame 的单调时间戳。
+async fn next_animation_frame() -> Result<f64, String> {
+    let promise = js_sys::Promise::new(&mut |resolve, reject| {
+        let Some(window) = web_sys::window() else {
+            let _ = reject.call1(&JsValue::NULL, &JsValue::from_str("window unavailable"));
+            return;
+        };
+        if let Err(error) = window.request_animation_frame(&resolve) {
+            let _ = reject.call1(&JsValue::NULL, &error);
         }
     });
-    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    let timestamp = wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map_err(|error| format!("requestAnimationFrame: {error:?}"))?;
+    timestamp
+        .as_f64()
+        .ok_or_else(|| "requestAnimationFrame returned a non-numeric timestamp".to_owned())
 }
 
 /// URL 位 `rustlua-sim=<名字>`：选模拟来源（见 [`crate::rust_scene::SimRoute`]）。
 ///
-/// 默认**不跑脚本**，这是一次刻意的取舍：不跑脚本才能把"引擎能画出工程的**真场景**"
-/// （组件 → 网格 → GPU）单独证出来；而"工程的 `main.lua` 能在没有 JS 补丁层的 VM 里跑"
-/// 是**另一件事**，已知会卡住（读数见
-/// `artifacts/logs/gpu-web-probe/web-host-rust-sim-first-slice-20261008.md`）。
-/// 两者合成一条时，脚本的卡住会让"引擎到底画不画得出"这个问题一起失效。
+/// 默认路线是 Rust 引擎加载启动场景并执行工程脚本。隔离渲染诊断仍可显式选择 `scene-only`。
 ///
 /// 取值：`script`（引擎自己加载启动场景 + 跑脚本）、`scene-script`（宿主给场景字节 + 跑脚本）、
-/// 其他/缺省（宿主给场景字节、不跑脚本）。
+/// `scene-only`（宿主给场景字节、不跑脚本）；缺省等同 `script`。
 fn sim_route() -> SimRoute {
     let name = web_sys::window()
         .and_then(|window| window.location().search().ok())
@@ -307,7 +379,7 @@ fn sim_route() -> SimRoute {
                 .split(['?', '&'])
                 .find_map(|pair| pair.strip_prefix("rustlua-sim=").map(str::to_owned))
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| "script".to_owned());
     SimRoute::from_name(&name)
 }
 
@@ -380,6 +452,7 @@ impl GpuHost {
         canvas: &web_sys::HtmlCanvasElement,
         game_canvas: &web_sys::HtmlCanvasElement,
         scene_path: &str,
+        lifecycle: LifecycleEvents,
     ) -> Result<Self, String> {
         let (width, height) = canvas_size(canvas);
         // 输入剧本：解析一次就定了。**失败要可见**——静默当成"没给剧本"会让"按了没反应"
@@ -498,15 +571,24 @@ impl GpuHost {
         web_sys::console::log_1(&JsValue::from_str(&format!(
             "[gpu] sim_boot_ms={boot_ms:.1} note={sim_note}"
         )));
+        let simulation_clock = FrameClock::new(
+            SIM_UPDATES_PER_SECOND,
+            SIM_MAX_CATCH_UP_STEPS,
+            SIM_MAX_FRAME_SECONDS,
+        )
+        .map_err(|error| format!("FrameClock::new: {error}"))?;
         Ok(Self {
             surface,
             device,
             renderer,
             surface_config,
+            lifecycle,
             canvas: canvas.clone(),
             game_canvas: game_canvas.clone(),
             width,
             height,
+            simulation_clock,
+            last_animation_frame_ms: None,
             fit_note: String::new(),
             fit_css: String::new(),
             texture_key,
@@ -636,6 +718,7 @@ impl GpuHost {
             }),
         );
 
+        self.lifecycle.set_input_shared(shared.clone());
         self.input_shared = Some(shared);
         self.input_closures = closures;
     }
@@ -649,11 +732,11 @@ impl GpuHost {
         };
         // 顺序：先动作、再读数。这样同一帧的属性里，"做完之后世界是什么样"是自洽的
         // （动作只跑一次，读数每帧都新鲜）。
-        if !self.world_do_done {
-            if let Some(source) = self.world_do.clone() {
-                self.world_do_done = true;
-                self.world_do_note = format!(" do={}", sim.eval_world_do(&source));
-            }
+        if !self.world_do_done
+            && let Some(source) = self.world_do.clone()
+        {
+            self.world_do_done = true;
+            self.world_do_note = format!(" do={}", sim.eval_world_do(&source));
         }
         sim.refresh_world();
         // 自定义查询与内置世界读数在**同一处**刷新：两者都是"给人/给驱动看的观测"，
@@ -687,7 +770,9 @@ impl GpuHost {
             self.width = fit_w;
             self.height = fit_h;
             if let Some(sim) = self.sim.as_mut() {
-                sim.set_viewport(fit_w, fit_h);
+                // Keep scene extraction in design coordinates; the surface/backbuffer size is
+                // only the raster target. Passing the fitted pixel size here scales Canvas UI twice.
+                sim.set_viewport(crate::DESIGN_WIDTH, crate::DESIGN_HEIGHT);
             }
         }
         // CSS：把画布摆到游戏画布内容盒的正中，尺寸按同一个比例换回 CSS 像素。
@@ -728,7 +813,7 @@ impl GpuHost {
     }
 
     /// 选出本帧要渲的网格：优先 Rust 侧运行时场景，失败就退回内建场景（原因留在 `sim_note`）。
-    fn next_mesh(&mut self) -> SceneMesh {
+    fn next_mesh(&mut self, plan: FramePlan) -> SceneMesh {
         if !self.first_frame_done {
             set_status("mesh_begin");
         }
@@ -769,9 +854,7 @@ impl GpuHost {
         let step_started = web_time::Instant::now();
         let frame = self.frame_input;
         let attempt = self.sim.as_mut().map(|sim| -> Result<SceneMesh, String> {
-            step_failed = sim
-                .step(SIM_STEPS_PER_FRAME, SIM_FIXED_DELTA, &frame)
-                .is_err();
+            step_failed = sim.step(plan.steps, plan.delta_seconds, &frame).is_err();
             step_ms = step_started.elapsed().as_secs_f64() * 1000.0;
             let mesh_started = web_time::Instant::now();
             let mesh = sim.mesh();
@@ -909,8 +992,14 @@ impl GpuHost {
     }
 
     /// 渲一帧到画布纹理并 present。返回渲染器自报的 draw 计数，供状态属性带出去。
-    fn frame(&mut self) -> Result<(u64, u64, String), String> {
+    fn frame(&mut self, timestamp_ms: f64) -> Result<(u64, u64, String), String> {
         let first_frame = !self.first_frame_done;
+        let elapsed_seconds = self
+            .last_animation_frame_ms
+            .replace(timestamp_ms)
+            .map(|previous| (timestamp_ms - previous).max(0.0) / 1000.0)
+            .unwrap_or(1.0 / f64::from(SIM_UPDATES_PER_SECOND));
+        let plan = self.simulation_clock.plan(elapsed_seconds);
         // 先对齐几何（窗口/DPR 变了就在这里改画布 + surface + 视口），再取画布纹理：
         // 反过来就会用旧尺寸的纹理去渲新尺寸的内容。
         self.fit_now();
@@ -921,7 +1010,7 @@ impl GpuHost {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mesh = self.next_mesh();
+        let mesh = self.next_mesh(plan);
         // 渲染+呈现：这一段是 GPU 提交侧的成本（含 present 与一次显式 poll）。
         let render_started = web_time::Instant::now();
         let outcome =
@@ -1129,7 +1218,8 @@ async fn run_inner(canvas_id: &str, scene_path: &str) -> Result<String, String> 
         .dyn_into::<web_sys::HtmlCanvasElement>()
         .map_err(|_| format!("#{canvas_id} is not a canvas"))?;
     let canvas = create_gpu_canvas(&document)?;
-    let mut host = GpuHost::new(&canvas, &host_canvas, scene_path).await?;
+    let lifecycle = LifecycleEvents::install(&document)?;
+    let mut host = GpuHost::new(&canvas, &host_canvas, scene_path, lifecycle).await?;
     // 起完栈先对齐一次几何：这样"frames=0"那条开屏读数与第一帧的取景就已经是同一个盒子，
     // 不必靠"第一帧跑完再看"（否则无头驱动在 frames=0 上读到的是设计分辨率的旧数）。
     host.fit_now();
@@ -1152,14 +1242,45 @@ async fn run_inner(canvas_id: &str, scene_path: &str) -> Result<String, String> 
         // 因此它只用于**同机对比**（这一轮 vs 上一轮），不当真机性能。
         let loop_started = web_time::Instant::now();
         let budget = frame_budget();
-        for index in 1..=budget {
+        let mut index = 0u32;
+        let mut resume_generation = host.lifecycle.resume_generation();
+        let mut frame_work_samples_ms = Vec::with_capacity(
+            (budget.unwrap_or(STATUS_EVERY * 4).saturating_sub(1) as usize)
+                .min(MAX_FRAME_WORK_SAMPLES),
+        );
+        let wasm_memory_start_bytes = wasm_memory_bytes();
+        let mut wasm_memory_peak_bytes = wasm_memory_start_bytes;
+        loop {
+            let timestamp_ms = match next_animation_frame().await {
+                Ok(timestamp) => timestamp,
+                Err(error) => {
+                    set_status(&format!("failed frame-clock:{error}"));
+                    return;
+                }
+            };
+            if !host.lifecycle.is_visible() {
+                if let Some(shared) = host.input_shared.as_ref() {
+                    shared.borrow_mut().producer.release_all();
+                }
+                host.last_animation_frame_ms = None;
+                host.simulation_clock.reset_accumulator();
+                continue;
+            }
+            let current_resume_generation = host.lifecycle.resume_generation();
+            if current_resume_generation != resume_generation {
+                host.last_animation_frame_ms = None;
+                host.simulation_clock.reset_accumulator();
+                resume_generation = current_resume_generation;
+            }
+            index = index.saturating_add(1);
             // 写状态属性之前**按需**刷一次世界读数：读数不进热路径（见 RustScene::refresh_world
             // 里的实测记录——自动刷新会把并行跑的 JS 剧本挤出帧预算）。放在 rame() 之前，
             // 这样本帧组出来的读数与本帧的世界一致。
-            if index % STATUS_EVERY == 0 || index == budget {
+            if index % STATUS_EVERY == 0 || budget == Some(index) {
                 host.refresh_world_readout();
             }
-            let frame = match host.frame() {
+            let work_started = web_time::Instant::now();
+            let frame = match host.frame(timestamp_ms) {
                 Ok(frame) => frame,
                 Err(error) => {
                     // 失败要**当场**写进属性并收工：沉默地停掉会让"通道坏了"看起来像"跑完了"。
@@ -1167,21 +1288,33 @@ async fn run_inner(canvas_id: &str, scene_path: &str) -> Result<String, String> 
                     return;
                 }
             };
-            // 收工那一帧也要写一次：`budget` 可能来自 URL，与常量 `FRAME_BUDGET` 不是一回事。
-            if index % STATUS_EVERY == 0 || index == budget {
+            let frame_work_ms = work_started.elapsed().as_secs_f64() * 1000.0;
+            if index > 1 && frame_work_samples_ms.len() < MAX_FRAME_WORK_SAMPLES {
+                frame_work_samples_ms.push(frame_work_ms);
+            }
+            wasm_memory_peak_bytes = wasm_memory_peak_bytes.max(wasm_memory_bytes());
+            if index % STATUS_EVERY == 0 || budget == Some(index) {
                 let elapsed_ms = loop_started.elapsed().as_secs_f64() * 1000.0;
                 let avg_frame_ms = elapsed_ms / index as f64;
+                let work_p95_ms = percentile_ms(&frame_work_samples_ms, 0.95);
+                let work_p99_ms = percentile_ms(&frame_work_samples_ms, 0.99);
                 // 读数取**本帧**的：最后一步写下的就是最后一帧的数字，因此不需要额外留一份"上一帧"。
                 set_status(&format!(
-                    "presented frames={index} draw_calls={} triangles={} avg_frame_ms={avg_frame_ms:.2} fps={:.1} {} canvas=#{GPU_CANVAS_ID} {width}x{height}",
+                    "presented frames={index} sim_steps={} sim_dropped={} sim_clamped={} sim_acc_ms={:.3} draw_calls={} triangles={} avg_frame_ms={avg_frame_ms:.2} work_p95_ms={work_p95_ms:.2} work_p99_ms={work_p99_ms:.2} work_samples={} wasm_mem_start_bytes={wasm_memory_start_bytes} wasm_mem_peak_bytes={wasm_memory_peak_bytes} fps={:.1} {} canvas=#{GPU_CANVAS_ID} {width}x{height}",
+                    host.simulation_clock.total_steps(),
+                    host.simulation_clock.total_dropped_steps(),
+                    host.simulation_clock.clamped_frames(),
+                    host.simulation_clock.accumulator_seconds() * 1000.0,
                     frame.0,
                     frame.1,
+                    frame_work_samples_ms.len(),
                     1000.0 / avg_frame_ms,
-                    frame.2
+                    frame.2,
                 ));
             }
-            // 每帧之间让出宏任务：present 与合成由浏览器主循环推进（见 `yield_to_event_loop`）。
-            yield_to_event_loop().await;
+            if budget == Some(index) {
+                break;
+            }
         }
     });
     Ok(opening)

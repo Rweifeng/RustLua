@@ -22,7 +22,7 @@
 
 WASM 入口读取的资源路径（契约，改动需同步 `web-check.js`）：
 
-- `pack/manifest.txt`（首行 `assetc_manifest=1<TAB>assetc-package-1`，其后每行 `相对路径<TAB>字节数<TAB>指纹`）
+- `pack/manifest.txt`（首行 `assetc_manifest=1<TAB>assetc-package-2`，其后每行 `相对路径<TAB>字节数<TAB>指纹`）
 - `pack/project.toml`（`startup_scene` 决定首个场景）
 - `pack/<startup_scene>`
 
