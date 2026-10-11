@@ -6,8 +6,9 @@ local depth = require("world.depth")
 local M = {}
 
 -- 场景原生玩家实体（JianghuPlayer）：由 manor.scene 用
--- Transform + Sprite + Collider(ball;radius=12) 声明，引擎实例化时自动生成
--- 动态刚体。跨场景 persistent=true，同名实体会在每次进入山庄时被场景本体
+-- Transform + Sprite + Collider(ball;radius=12;offset=0,-16) 声明，引擎实例化时自动生成
+-- 动态刚体。碰撞圆下边缘落在脚底基线（贴图 64×64 中心对齐 ⇒ 脚底在实体坐标 -28），
+-- 所以"贴墙"贴的是脚而不是腰。跨场景 persistent=true，同名实体会在每次进入山庄时被场景本体
 -- 覆盖重建（引擎 process_scene_transition 语义），因此这里始终用 entity.find
 -- 重新定位，不缓存运行时 id。
 function M.ensure()

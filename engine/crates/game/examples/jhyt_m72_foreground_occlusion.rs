@@ -69,8 +69,11 @@ const PROP_DIR: &str = "assets/art/props/";
 /// 八方向：§⑦ 每个朝向各量一次脚下阴影落在身体中心的哪一侧。
 const FACINGS: [&str; 8] = ["s", "n", "e", "w", "se", "sw", "ne", "nw"];
 
-/// 玩家 `Collider shape=ball;radius=12`，刚体建在 `Transform` 上 ⇒ 圆心就是实体坐标。
+/// 玩家 `Collider shape=ball;radius=12;offset=0,-16`：圆心在实体坐标**下方 16 单位**，
+/// 下边缘正好落在脚底基线（贴图导出行 59 的下边界 = 世界 -28，见 `docs/36` §2.1）。
 const PLAYER_RADIUS: f32 = 12.0;
+/// 碰撞圆心相对实体坐标的 y 偏移，与上面那条组件串同源。
+const PLAYER_COLLIDER_OFFSET_Y: i32 = -16;
 /// 主角贴图 64×64 且**没有 pivot 字段** ⇒ 默认 0.5（中心对齐），所以 Transform 是四边形中心。
 const PLAYER_HALF: i32 = 32;
 /// 候选网格步进：2 世界单位 = 1/16 格。再密不改变结论，只拖慢门。
@@ -189,7 +192,9 @@ struct Placed {
     layer: String,
     x: f32,
     y: f32,
-    collider: bool,
+    /// `Collider` 组件串原样；空串 = 该实体没有碰撞体。§③/§⑥ 用它禁遮断物与影子挂碰撞体，
+    /// §④ 用玩家的这一串校 `PLAYER_RADIUS` / `PLAYER_COLLIDER_OFFSET_Y` 两个手抄常数。
+    collider: String,
     /// `tint=` 原样字符串（`r,g,b,a`，三位小数）——§⑥ 拿它跟 `lighting.shadow_tint` 对，
     /// 因为"影子多暗"在盘上只许有一处出处。
     tint: String,
@@ -324,6 +329,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     let sprites = read_scene(&project.join(SCENE))?;
+    // §④ 的可达集按玩家碰撞圆算，而 `PLAYER_RADIUS` / `PLAYER_COLLIDER_OFFSET_Y` 是手抄的：
+    // 先跟盘上那一串对一次。不对就红——否则改了场景忘了改常数，门会拿一个物理里根本
+    // 不存在的圆去判可行走，读数看着正常、其实整段是假的。
+    let player_collider = find(&sprites, PLAYER)?.collider.clone();
+    let player_collider_fields = parse_fields(&player_collider);
+    let collider_radius: f32 = player_collider_fields
+        .get("radius")
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| {
+            format!("{SCENE} 的 {PLAYER} Collider 没有可解析的 radius：{player_collider}")
+        })?;
+    let collider_offset_y: f32 = player_collider_fields
+        .get("offset")
+        .and_then(|value| value.split(',').nth(1))
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0.0);
+    if (collider_radius - PLAYER_RADIUS).abs() > f32::EPSILON
+        || (collider_offset_y - PLAYER_COLLIDER_OFFSET_Y as f32).abs() > f32::EPSILON
+    {
+        return Err(format!(
+            "{SCENE} 的 {PLAYER} Collider 是 {player_collider}（r={collider_radius} oy={collider_offset_y}），\
+             门里的常数是 r={PLAYER_RADIUS} oy={PLAYER_COLLIDER_OFFSET_Y}：可达集算的是盘上不存在的那个圆"
+        )
+        .into());
+    }
     banner("③ 拆层结构契约：本体与前景成对、接缝等式、以及\"拼回去逐字节等于整图\"");
     let occluders: Vec<&Placed> = sprites
         .iter()
@@ -354,7 +384,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // 排序前提（两条都在门里现取现比，不抄 lighting.lua 的结论）：遮断物必须比特效先画，
     // 否则刀光被树冠埋掉；层秩的比较交给 §⑤ 的运行期反转来证。
-    if !(occluder_order < effect_order) {
+    if occluder_order >= effect_order {
         return Err(format!(
             "场景用的遮断物 order {occluder_order} 不低于特效 order {effect_order}：\
              树冠会把刀光埋掉（`lighting.validate_all` 也在钉这一条，两处一起红才是真红）"
@@ -364,7 +394,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for row in SPLITS {
         let base = find(&sprites, row.base)?;
         let occ = find(&sprites, row.occluder)?;
-        if occ.collider {
+        if !occ.collider.is_empty() {
             return Err(format!(
                 "{} 带 Collider：遮断物是**画在人身上的那片像素**，不是墙。给它加碰撞体，玩家会\
                  被一棵透明树冠顶在门外",
@@ -792,7 +822,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let base = find(&sprites, base_name)?;
         shadowed.insert(base_name.to_owned());
-        if shadow.collider {
+        if !shadow.collider.is_empty() {
             return Err(format!(
                 "{} 带 Collider：一片影子会把玩家顶住（装饰与遮断物同一条禁令）",
                 shadow.name
@@ -955,7 +985,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let distance = ((f64::from(shadow.x) - f64::from(deep_x)).powi(2)
             + (f64::from(shadow.y) - f64::from(deep_y)).powi(2))
         .sqrt();
-        if nearest.map_or(true, |(_, _, best)| distance < best) {
+        if nearest.is_none_or(|(_, _, best)| distance < best) {
             nearest = Some((shadow, index, distance));
         }
     }
@@ -1224,7 +1254,7 @@ fn read_scene(path: &Path) -> Result<Vec<Placed>, Box<dyn std::error::Error>> {
     let mut sprite_of: BTreeMap<i64, String> = BTreeMap::new();
     let mut transform_of: BTreeMap<i64, String> = BTreeMap::new();
     let mut role_of: BTreeMap<i64, String> = BTreeMap::new();
-    let mut collider: Vec<i64> = Vec::new();
+    let mut collider_of: BTreeMap<i64, String> = BTreeMap::new();
     for line in text.replace("\r\n", "\n").split('\n') {
         let field: Vec<&str> = line.split('\t').collect();
         if field.len() < 3 {
@@ -1244,7 +1274,7 @@ fn read_scene(path: &Path) -> Result<Vec<Placed>, Box<dyn std::error::Error>> {
                 transform_of.insert(id, field[3].to_owned());
             }
             "component" if field[2] == "Collider" => {
-                collider.push(id);
+                collider_of.insert(id, field[3].to_owned());
             }
             "entity_meta" if field[2] == "role" && field.len() > 3 => {
                 role_of.insert(id, field[3].to_owned());
@@ -1287,7 +1317,7 @@ fn read_scene(path: &Path) -> Result<Vec<Placed>, Box<dyn std::error::Error>> {
             layer: fields.get("sorting_layer").cloned().unwrap_or_default(),
             x,
             y,
-            collider: collider.iter().any(|item| item == id),
+            collider: collider_of.get(id).cloned().unwrap_or_default(),
             tint: fields.get("tint").cloned().unwrap_or_default(),
             role: role_of.get(id).cloned().unwrap_or_default(),
         });
@@ -1400,7 +1430,7 @@ fn object_height(project: &Path, item: &Placed) -> Result<u32, Box<dyn std::erro
 /// 自己的一部分，被树冠盖住时也该计入"人被盖住多少"，把它排除掉会让占比虚高在另一个方向上。
 fn opaque_rows(image: &RgbaImage) -> Vec<bool> {
     let mut on = Vec::with_capacity((image.width() * image.height()) as usize);
-    for pixel in image.as_raw().chunks_exact(4) {
+    for pixel in image.as_raw().as_chunks::<4>().0 {
         on.push(pixel[3] > 0);
     }
     on
@@ -1439,11 +1469,13 @@ impl Occluder {
 /// 一条角色帧的不透明像素，写成相对**中心（= Transform）**的整数偏移。
 /// 1 texel = 1 世界单位、坐标取整 ⇒ 两块可以直接按整数栅格比对，不需要插值。
 /// 像素 (col,row) → 世界 (cx-32+col, cy+32-row-1) ⇒ 偏移 (col-32, 31-row)。
+type FrameOffsets = Vec<Vec<(i32, i32)>>;
+
 fn frame_masks(
     image: &RgbaImage,
     frames: usize,
-) -> Result<Vec<Vec<(i32, i32)>>, Box<dyn std::error::Error>> {
-    if frames == 0 || image.width() % frames as u32 != 0 {
+) -> Result<FrameOffsets, Box<dyn std::error::Error>> {
+    if frames == 0 || !image.width().is_multiple_of(frames as u32) {
         return Err(format!(
             "角色条带 {}x{} 切不出 {frames} 帧：UV 读回来的帧数与图宽不成整除",
             image.width(),
@@ -1476,7 +1508,7 @@ fn frame_masks(
     Ok(out)
 }
 
-/// 玩家 ball(r=12) 在 (cx,cy) 是否**不压进任何 solid 格**。
+/// 玩家 ball(r=12，圆心在实体坐标下方 16) 站在实体坐标 (cx,cy) 时是否**不压进任何 solid 格**。
 /// solid 是关卡的可行走事实源：`data/places.lua` 的出生点、`tilemap.find_path` 的寻路、
 /// `systems/building.lua` 的占地判定读的都是这一张表，门跟着它们走，不自造一套。
 /// 这一张**同时是物理世界**：`scene_spawn.rs` 的 `solid_cell_colliders` 给每个实心格在
@@ -1486,6 +1518,8 @@ fn frame_masks(
 /// 末尾那条 teleport 落位断言；"全图理论上界"那一列则把位图之外的位置一并扫过，证明
 /// 上界不是靠漏看来达标的。
 fn reachable(cx: i32, cy: i32, grid: &SolidGrid) -> bool {
+    // (cx, cy) 是**实体坐标**，而碰撞圆心带着组件串上的 `offset` ⇒ 先换算到圆心。
+    let cy = cy + PLAYER_COLLIDER_OFFSET_Y;
     let min_col = (cx - PLAYER_RADIUS as i32).div_euclid(TILE);
     let max_col = (cx + PLAYER_RADIUS as i32).div_euclid(TILE);
     let min_row = (cy - PLAYER_RADIUS as i32).div_euclid(TILE);
@@ -1538,10 +1572,10 @@ fn sweep_occ(occ: &Occluder, offsets: &[(i32, i32)], grid: &SolidGrid) -> Sweep 
         let mut cx = start_x;
         while cx <= x_hi {
             // 快速排除：两个矩形不相交时覆盖率必为 0，不必走一遍像素。
-            if cx + PLAYER_HALF - 1 >= occ.x
-                && cx - PLAYER_HALF <= occ.x + occ.w as i32 - 1
-                && cy + PLAYER_HALF - 1 >= occ.y
-                && cy - PLAYER_HALF <= occ.y + occ.h as i32 - 1
+            if cx + PLAYER_HALF > occ.x
+                && cx - PLAYER_HALF < occ.x + occ.w as i32
+                && cy + PLAYER_HALF > occ.y
+                && cy - PLAYER_HALF < occ.y + occ.h as i32
             {
                 let mut hits = 0usize;
                 for (dx, dy) in offsets {
@@ -1638,8 +1672,8 @@ impl SolidGrid {
 ///   * 换算方向与偏移：探针坐标用 `col·TILE+16, row·TILE+16`，与引擎同一式子。行序若反，
 ///     实心格命中率会塌下来；
 ///   * r=4 远小于半格 16 ⇒ 一发只落在正下方那一格，命中数按格可加。
-/// 顺带解释 `jhyt_m72_scatter_decor` §⑤ 那个"命中别物 16 次（地表 tilemap 的实心格）"：
-/// 那些命中就是这些按格生成的碰撞体（GroundMap 没有 Sprite 组件，所以那边标成 no-sprite）。
+///     顺带解释 `jhyt_m72_scatter_decor` §⑤ 那个"命中别物 16 次（地表 tilemap 的实心格）"：
+///     那些命中就是这些按格生成的碰撞体（GroundMap 没有 Sprite 组件，所以那边标成 no-sprite）。
 fn solid_physics_probe(
     runtime: &mut RuntimeScene,
     grid: &SolidGrid,

@@ -270,7 +270,7 @@ def build_scene(ground, solid):
     lines.append(f"component\t{player_id}\tSprite\t{player_sprite}")
     if player_animation:
         lines.append(f"component\t{player_id}\tAnimation\t{player_animation}")
-    lines.append(f"component\t{player_id}\tCollider\tshape=ball;radius=12")
+    lines.append(f"component\t{player_id}\tCollider\tshape=ball;radius=12;offset=0,-16")
     lines.append(transform_line(player_id, spawn_wx, spawn_wy))
     lines.append(f"entity_meta\t{player_id}\trole\tplayer_spawn")
     lines.append(f"entity_meta\t{player_id}\tpersistent\ttrue")

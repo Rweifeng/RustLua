@@ -178,6 +178,12 @@ component  7  RenderMode  mode=screen
 - `Collider3d`：`shape=ball;radius=<r>` / `shape=cuboid;half_width=..;half_height=..;half_z=..`
   / `shape=capsule;half_height=..;radius=..`，可选字段与 2D 同名同义，`offset` 为 `x,y,z`。
 
+2D 的 `offset` 是**刚体局部**偏移，而俯视世界的动态刚体一律锁死姿态（`PhysicsWorld::add_body`
+里的 `lock_rotations()`），`Transform` 的 `rotation` 也从不进物理刚体——所以偏心碰撞盒永远停在
+实体坐标的那个方向，不随转向。这条锁死不是省事：刚体一旦自旋，接触力矩会让偏心碰撞盒绕着实体
+公转，而 Sprite 只跟着 translation 走、纹丝不动，画面上就成了"人不动、碰撞盒在飘"
+（主角的脚底球 `radius=12;offset=0,-16` 正是偏心碰撞盒）。
+
 布尔字段只接受 `true`/`false`，拼错**报错**而不是静默当 false（`ccd` 被静默关掉会让高速子弹
 重新穿墙且毫无线索）。2D 的 `Tilemap` 实体仍会自动生成静态单元格碰撞体，不需要写 `Collider`。
 

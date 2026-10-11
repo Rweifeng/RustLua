@@ -433,6 +433,16 @@ impl PhysicsWorld {
     /// WP7：任一 collider 声明了 `ccd` 时给该**刚体**开启连续碰撞检测（Rapier 的 CCD
     /// 是刚体属性）。这样"高速子弹/高速下落物穿墙"可以在场景里直接声明，而不必靠
     /// 调高物理步频或把速度调小来绕开。
+    ///
+    /// 动态刚体一律 `lock_rotations()`：这条世界是俯视零重力，`step()` 只把
+    /// `translation` 同步回 ECS `Transform`，刚体的**姿态从来没人读**。所以一旦让它自旋，
+    /// 画面上的 Sprite 纹丝不动、而真正参与碰撞的那圈 collider 会绕着实体坐标公转——
+    /// collider 只要带 `;offset`（主角的脚底碰撞球 `offset=0,-16`），接触力就不再过质心，
+    /// 擦到墙角的法向冲量与摩擦都会给出力矩，且角阻尼为 0，转起来就停不下。
+    /// web/微信宿主本来就没有刚体姿态这条通道（`web-runtime.js` 的遮挡判定按
+    /// `x + col.ox, y + col.oy` 直接加偏移），锁死之后两边才是同一个形状。
+    /// 3D 侧（`physics3d.rs`）不动：它的首行契约就是"rotation and scale stay owned by
+    /// the scene"，姿态由场景/模型持有，锁死与否是另一件事。
     pub fn add_body(
         &mut self,
         entity: EntityId,
@@ -444,7 +454,7 @@ impl PhysicsWorld {
             return Err(PhysicsError::DuplicateBody(entity));
         }
         let mut builder = if dynamic {
-            RigidBodyBuilder::dynamic()
+            RigidBodyBuilder::dynamic().lock_rotations()
         } else {
             RigidBodyBuilder::fixed()
         };
@@ -1278,5 +1288,84 @@ mod tests {
                 .any(|c| (c.a == player && c.b == wall) || (c.a == wall && c.b == player)),
             "no contact reported"
         );
+    }
+
+    /// 主角的脚底碰撞球 `radius=12;offset=0,-16` 把接触点挪到了实体坐标之外，于是任何
+    /// 接触力都不再过质心：擦墙的法向冲量与摩擦都会给出力矩，动态刚体开始自旋。
+    /// 而 `step()` 只回写 translation，Sprite 不跟着转，画面上就是"人不动、碰撞盒绕着人转"
+    /// （web/微信宿主没有刚体姿态这条通道，所以只有原生会红）。
+    /// 这条测试钉住的是**偏心碰撞盒必须始终贴在实体坐标下方**，即动态刚体的姿态被锁死。
+    #[test]
+    fn dynamic_body_with_offset_collider_never_orbits_its_entity() {
+        let player = entity(1);
+        let wall = entity(2);
+        let mut world = PhysicsWorld::new();
+        world
+            .add_body(
+                player,
+                Vec2::zero(),
+                true,
+                vec![ColliderDesc {
+                    shape: ColliderShape::Ball(12.0),
+                    offset: Vec2::new(0.0, -16.0),
+                    sensor: false,
+                    layer: 0xFF,
+                    mask: 0xFF,
+                    ccd: false,
+                    dynamic: true,
+                }],
+            )
+            .unwrap();
+        // 横在地面上的墙：下边缘 y=50。斜着顶上去，让接触点偏离质心。
+        world
+            .add_body(
+                wall,
+                Vec2::new(0.0, 60.0),
+                false,
+                vec![ColliderDesc {
+                    shape: ColliderShape::Cuboid(Vec2::new(100.0, 10.0)),
+                    offset: Vec2::zero(),
+                    sensor: false,
+                    layer: 0xFF,
+                    mask: 0xFF,
+                    ccd: false,
+                    dynamic: false,
+                }],
+            )
+            .unwrap();
+
+        let mut contacted = false;
+        for _ in 0..240 {
+            world.set_velocity(player, 60.0, 200.0).unwrap();
+            let moved = world.step(1.0 / 60.0);
+            let pos = moved
+                .iter()
+                .find(|(e, _)| *e == player)
+                .map(|(_, p)| *p)
+                .expect("动态刚体每步都要回写位置");
+            contacted |= !world.drain_contacts().is_empty();
+            let shape = world
+                .debug_shapes()
+                .into_iter()
+                .find(|s| s.entity == player)
+                .expect("玩家的碰撞球要在调试形状里");
+            // 圆心必须**逐帧**精确落在 (x, y-16)：一旦刚体转过角度，偏移就会被旋出去
+            // （实测 240 帧能漂到 32 单位 = 偏移半径的两倍）。
+            assert!(
+                (shape.rotation).abs() < 1e-5,
+                "动态刚体自旋了：rotation={}",
+                shape.rotation
+            );
+            assert!(
+                (shape.center.x - pos.x).abs() < 1e-4
+                    && (shape.center.y - (pos.y - 16.0)).abs() < 1e-4,
+                "碰撞盒漂离实体坐标：pos=({},{}) center=({},{})",
+                pos.x,
+                pos.y,
+                shape.center.x,
+                shape.center.y
+            );
+        }
+        assert!(contacted, "240 帧都没碰到墙，等于没测到受力工况");
     }
 }
