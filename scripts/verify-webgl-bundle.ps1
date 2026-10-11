@@ -617,6 +617,31 @@ if ($jsHostSkipped) {
     Write-Log "[跳过] JS 宿主专属的门（场景切换/剧本/世界读数/像素诊断）：本次未请求 JS 宿主，页面自报 legacy JS world skipped（引擎宿主独占这一帧）⇒ 这些门没有写者，不是回归" Yellow
 }
 
+# ---- M73-00 WP8：**默认页面必须有绘制者**（否则 boot=ok 也是纯黑，而旧门不会红）----
+#
+# 来由（第 113 轮实测）：默认 URL 曾同时"旧 JS 世界不启动 + GPU 宿主没开/没编"，页面
+# `boot=ok`、控制台零报错、纯黑一屏，而两个验收入口**全绿**——因为它们只走显式带开关的 URL
+# （`-Gpu2d` 加 `rustlua-gpu=1`；契约/剧本加 `rustlua-js-host=1`），裸默认 URL 一条用例都没有。
+#
+# 判据：`data-rustlua-gpu` 在（GPU 宿主起了）**或**旧 JS 世界在跑（没有 skipped 自报）；
+# 两者都没有时，只有**显式**要求"谁都别画"（`rustlua-gpu=0` / `rustlua-js-host=0`）才算合法。
+$gpuHostStarted = [bool]($dom -match 'data-rustlua-gpu="')
+$painterOptedOut = ($url -match '[?&]rustlua-gpu=0(?:&|$)') -or ($url -match '[?&]rustlua-js-host=0(?:&|$)')
+if ($gpuHostStarted) {
+    Write-Log "frame owner ok: engine GPU host (data-rustlua-gpu)" Green
+}
+elseif ($jsHostSkipped -and $painterOptedOut) {
+    # 合法但**必须显式**：这一次 URL 自己说了"谁都别画"（只验启动链时用）。
+    Write-Log "frame owner: none — 本次 URL 显式要求不画（rustlua-gpu=0 / rustlua-js-host=0），画面为空是预期" Yellow
+}
+elseif ($jsHostSkipped) {
+    Write-Log "webgl_bundle_no_frame_owner：boot 已落定但**没有任何绘制者**（GPU 宿主未起、旧 JS 世界又自报 legacy JS world skipped）⇒ 默认入口是黑屏。修法二选一：产物用 package.ps1 -Gpu2d 构建，或让 index.html 在探不到 gpu_host_run 时退回旧 JS 世界。" Red
+    Exit-With 1
+}
+else {
+    Write-Log "frame owner ok: legacy JS world" Green
+}
+
 # 产物身份自证（**引擎侧、更强的一条**）：页面自报的 `RustLua WebGL/WASM started: <名字>; …`
 # 必须与待验产物 `build-info.txt` 里的 `publish_name` 一致。第 57 轮遇到过"验证读到另一个产物"，
 # 那时靠 `pack/project.toml` 的 SHA256 抓到了服务根；这条把**页面那侧**也钉住：

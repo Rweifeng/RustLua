@@ -108,7 +108,11 @@
       showUnsupported(reason);
     } else {
       try {
-        await init();
+        // 留住 `init()` 的返回值：wasm-bindgen `--target web` 的 `init()` 解析出来的就是
+        // wasm 的 **instance.exports**（`pkg/game_web.js` 里 `wasm = instance.exports; … return wasm;`）。
+        // 下面用它做**能力探针**——"这份产物到底编没编 GPU 宿主"在页面里因此是可读的事实，
+        // 不必靠 URL 约定去猜（猜错的代价见下面"谁是这一帧的绘制者"那段）。
+        const wasmExports = await init();
         await start('rustlua-canvas', publishName);
         // start() 里会把后备缓冲设成设计尺寸 1280×720，必须在它之后再接管尺寸。
         window.__rustluaSyncCanvasSize();
@@ -138,34 +142,52 @@
       // 会拿到无效句柄：实测作者 id 13 ⇒ EntityId(0:g13)）。
       lua_entity_handle
         };
-        // ---- M73-00 WP7-13：旧 JS 世界**默认不再**作为第二宿主启动 ----
-        // `start()` 已经让引擎独占这一帧：引擎自带 Lua 状态、自己的定步长循环
-        // （`RuntimeScene::run_script_steps`）与 GPU 呈现。而 `web-runtime.js` 那套是
-        // **另一套完整的宿主**：自建第二个 Lua 状态、自己在 JS 里 parse 场景、自己一个
-        // 60 Hz 追帧循环、自己画到同一张 2D canvas。两者在同一份产物里并行 ⇒ 每帧双份
-        // 模拟 + 双份绘制。
+        // ---- M73-00：谁是**这一帧的绘制者**（WP7-13 起了个头，WP8 在这里收尾）----
+        // `start()` 自己只预载资源、**一帧都不画**；真正会画的只有两条路：
+        //   ① 旧 JS/Canvas2D 世界（`web-runtime.js`：自建第二个 Lua 状态、自己 parse 场景、
+        //      自己一个 60 Hz 追帧循环、自己画到同一张 2D canvas）；
+        //   ② 引擎 GPU 宿主（Rust 侧**默认开**、`?rustlua-gpu=0` 关，见 `game_web/src/lib.rs`）。
         //
-        // 实测证据（第 48 轮，同一产物）：不 stub 时 `-DriveJhyt` 能跑出
-        // `phase=nav-exit timeout phase=nav-exit frames=901 world=manor …` 这种明细，
-        // 而那段文字**只由 `web-runtime.js` 写**（`jhytFail`/`markDrive`）⇒ 旧世界确实活着；
-        // 同时 `-StubJsRuntime`（整个 JS 世界不启动）产出的画面与不 stub 时**逐字节相同**
-        // ⇒ 玩家看到的一直是引擎的画面，JS 世界那份是纯冗余。
+        // 第 48 轮把 ① 改成默认不启动，理由是同一份产物里两个宿主并行 = 每帧双份模拟 + 双份绘制
+        // （实测证据：`-StubJsRuntime` 的画面与不 stub 时**逐字节相同** ⇒ 旧世界那份是纯冗余）。
+        // 但 ② **只在 `-Gpu2d` 产物里存在**（`mod gpu_host` 带 `cfg(feature = "gpu2d")`），
+        // 于是"不带该开关的产物"默认变成了**两个都没有**：`boot=ok`、控制台零报错、纯黑一屏
+        // （2026-10-11 实测：默认 URL 截图 1,967 B ，带 `?rustlua-gpu=1` 48,820 B 的标题画面）。
+        // 两个验收入口都只走"显式带开关"的 URL，所以这条缝一直没人踩到——**没有写者的门不会红**。
         //
-        // 迁移期保留显式开关：URL `?rustlua-js-host=1`（或启动前 `window.__RUSTLUA_JS_HOST = true`）
-        // 仍然启动旧世界——`-Drive` / `-DriveJhyt` 两条 JS 侧验收通道现在要带这个开关。
-        const jsHostRequested = (() => {
-          try {
-            if (window.__RUSTLUA_JS_HOST === true) return true;
-            const flag = new URLSearchParams(window.location.search).get('rustlua-js-host');
-            return flag === '1' || flag === 'true';
-          } catch (error) {
-            return false;
-          }
+        // 兜底规则（只补"谁都不画"这一种情况，不改变两个宿主各自的默认）：
+        //   · 显式要旧世界（`?rustlua-js-host=1` 或 `window.__RUSTLUA_JS_HOST = true`）⇒ 跑它；
+        //   · 这份产物**没编** GPU 宿主（能力探针读 `gpu_host_run`）且没显式关旧世界
+        //     （`?rustlua-js-host=0`）⇒ 退回旧世界：它本来就只有这一条路，别让页面全黑；
+        //   · 其余情况保持原样（GPU 宿主画，旧世界不启动）。
+        const flags = (() => {
+          let params = null;
+          try { params = new URLSearchParams(window.location.search); } catch (error) { params = null; }
+          const read = (name) => (params ? params.get(name) : null);
+          const js = read('rustlua-js-host');
+          const gpu = read('rustlua-gpu');
+          return {
+            jsHost: window.__RUSTLUA_JS_HOST === true || js === '1' || js === 'true',
+            jsHostOff: js === '0' || js === 'false',
+            gpuOff: gpu === '0' || gpu === 'false',
+          };
         })();
-        if (jsHostRequested && typeof window.rustluaRunLuaGame === 'function') {
+        // 能力探针，不是猜：`gpu_host_run` 只在 `gpu2d` 档编译进 wasm。
+        const gpuHostCompiled = !!wasmExports && typeof wasmExports.gpu_host_run === 'function';
+        const fallbackToLegacyWorld = !gpuHostCompiled && !flags.jsHostOff;
+        if ((flags.jsHost || fallbackToLegacyWorld) && typeof window.rustluaRunLuaGame === 'function') {
+          if (fallbackToLegacyWorld) {
+            console.log('[host] this build has no GPU host (no `gpu_host_run` in the wasm exports); '
+              + 'running the legacy JS world so the page is not blank');
+          }
           await window.rustluaRunLuaGame(status);
         } else {
-          console.log('[host] legacy JS world skipped (engine host owns the frame)');
+          // 这行是"谁在画"的现场凭据，两个验收门都靠它判断"这些门有没有写者"——
+          // 所以三个原因要分开说，别让"显式关了 GPU"和"引擎独占这一帧"长得一样。
+          console.log('[host] legacy JS world skipped ('
+            + (flags.jsHostOff ? 'rustlua-js-host=0'
+              : (flags.gpuOff ? 'rustlua-gpu=0: nobody draws by request'
+                : 'engine host owns the frame')) + ')');
         }
         // 启动成功后收起这行加载文案：留着就是盖在游戏画面左上的一条调试字。
         // 失败分支不动（那时它是玩家唯一能看到的报错出口）。

@@ -48,11 +48,28 @@ powershell -NoProfile -File scripts\verify-webgl-bundle.ps1
 powershell -NoProfile -File scripts\verify-webgl-bundle.ps1 -DriveJhyt
 ```
 
-## Rust GPU 宿主（显式启用）
+## Rust GPU 宿主（默认开，`?rustlua-gpu=0` 关）
 
-`package.ps1 -Platform webgl -Gpu2d` 会把引擎 GPU 2D 宿主编入 wasm，但页面仍需显式带
-`?rustlua-gpu=1` 才启用该通道；未启用时沿用既有 Canvas2D 宿主。Rust GPU 通道默认从工程启动场景
-启动并执行工程脚本，`?rustlua-sim=scene-only` 只用于隔离渲染诊断。
+`package.ps1 -Platform webgl -Gpu2d` 把引擎 GPU 2D 宿主编进 wasm，**默认就走这条通道**：
+它从工程启动场景启动并执行工程脚本，`?rustlua-sim=scene-only` 只用于隔离渲染诊断。
+
+默认值曾经是反的（要显式 `?rustlua-gpu=1`），理由是"未启用时沿用既有 Canvas2D 宿主"；
+第 48 轮把旧 JS 世界改成默认不启动之后，这句话就不成立了——旧世界不跑、GPU 又不默认开，
+默认页面就**没有任何帧所有者**：`boot=ok`、控制台一条错都没有、纯黑一屏（实测默认 URL 截图
+1,967 B vs `?rustlua-gpu=1` 48,820 B 的标题画面）。所以默认改成开，并留两个显式出口：
+
+| URL | 谁画 |
+| --- | --- |
+| （不带查询串） | Rust GPU 宿主（推荐）；**产物没编 GPU 宿主时自动退回旧 JS 世界** |
+| `?rustlua-gpu=0` | GPU 那条路不画。`-Gpu2d` 产物上就没有别的绘制者了（空屏，只验启动链时用）；**非** `-Gpu2d` 产物本来也没有 GPU 宿主，仍走下面的兜底 |
+| `?rustlua-js-host=1` | 旧 JS/Canvas2D 世界；此时 GPU 让位（要两层同框就两个开关都写） |
+| `?rustlua-js-host=0` | 显式禁止旧世界（含上面那条兜底），配合 `?rustlua-gpu=0` 得到"谁都不画" |
+
+那条兜底是**能力探针**、不是猜测：`index.html` 留住 `init()` 的返回值（wasm-bindgen `--target web`
+的 `init()` 解析出来的就是 `instance.exports`），看 `gpu_host_run` 在不在——`mod gpu_host` 带
+`cfg(feature = "gpu2d")`，所以不带 `-Gpu2d` 的产物里它**真的不存在**。这类产物因此回到
+"单宿主 Canvas2D"（它本来就只有这一条路），页面上会打一行
+`[host] this build has no GPU host …` 说明是兜底在跑，而不是静默改变形态。
 
 GPU 宿主用浏览器 `requestAnimationFrame` 时间戳驱动共享 60 Hz `FrameClock`，追帧上限为 8 步，
 单帧 elapsed 上限为 0.25 秒。`?rustlua-gpu-frames=N` 仅用于自动化有限帧回归；不设时持续运行。

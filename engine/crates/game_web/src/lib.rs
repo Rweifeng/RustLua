@@ -443,13 +443,27 @@ mod wasm {
         e.as_string().unwrap_or_else(|| format!("{e:?}"))
     }
 
-    /// 页面是否显式要求走 GPU 渲染路径（`?rustlua-gpu=1`）。
+    /// 页面是否走 GPU 渲染路径：**默认开**，`?rustlua-gpu=0` 显式关。
     ///
-    /// 为什么是"显式要求"而不是"有 WebGL2 就走"：这条通道还在逐片搭建中，默认必须是
-    /// 既有 Canvas2D 路径——否则一次误判就会让所有平台的画面一起变。
+    /// 为什么不再是"显式要求才走"：原注释的前提是"默认走既有 Canvas2D 路径"，但第 48 轮已经
+    /// 把旧 JS 世界改成**默认不启动**（避免两个宿主同帧双跑），于是这条通道成了默认页面
+    /// **唯一的帧所有者**——它再默认关，页面 `boot=ok`、控制台一条错都没有、却一个像素都不画。
+    /// 2026-10-11 实测（发布包、同一次改动前后只差 URL）：默认 URL 截图 1,967 B 纯背景，
+    /// `?rustlua-gpu=1` 48,820 B 的标题画面。两个门都只走"显式带开关"的路径，所以这条缝
+    /// 一直没被覆盖——门里加不回来的东西，只能靠默认值本身对。
+    ///
+    /// 显式请求旧 JS 世界时**让位**（两层同框是显式验收场合，默认不同时跑两套模拟与两套绘制）；
+    /// 那时要 GPU 就两个开关都写。
     #[cfg(feature = "gpu2d")]
     fn gpu_requested(window: &web_sys::Window) -> bool {
-        location_search(window).is_some_and(|search| search.contains("rustlua-gpu=1"))
+        let search = location_search(window).unwrap_or_default();
+        if search.contains("rustlua-gpu=0") {
+            return false;
+        }
+        if search.contains("rustlua-js-host=1") {
+            return search.contains("rustlua-gpu=1");
+        }
+        true
     }
 
     /// URL 位 `rustlua-sim-scene=<名字>`：Rust 侧运行时场景改用这个场景起（缺省 = 工程启动场景）。
