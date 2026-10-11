@@ -149,6 +149,39 @@
 - **回滚档**：revert 本次提交即可——`project.config.json` 回到"模板原样 + 只改 projectname"，
   已写进工程 `project.toml` 的 `wechat_appid` 一行留着无害（读取方只有发布面板）。
 
+## Unreleased — wasm 内核体积腰斩：发布管线走对 + WebGL 侧补上 `wasm-opt`
+
+- **症状**：`examples/game_jhyt/builds/webgl/pkg/game_web_bg.wasm` 一度是 **5.6 MB**（5,893,414 B），
+  微信 `.wasm` 5,302 KB，两个 web 平台的 PC/编辑器键鼠还完全没有响应。
+- **根因四条，都不在"代码太大"这一层**：
+  ① 那两个产物是**手工 `cargo build --release`** 出来的（`build-info.txt` 自报 rustc 1.98.0，而
+  `package.ps1` 强制 wasm 侧用 `+1.88.0`），于是吃的是 workspace 默认 release profile
+  （`opt-level="s"` + `lto=false` + `codegen-units=16`），发布脚本里给 wasm 分支覆盖的
+  `opt-level=z` / `lto=fat` / `codegen-units=1` 一行都没生效；
+  ② webgl 分支**刻意跳过** `wasm-opt`，而那条理由（"binaryen 的任意 pass 会把纯 `try_table` 改回
+  legacy `try`"）出自**其它版本** binaryen，仓库已锁死 version_133；
+  ③ 工程 `project.toml` 的 `[input].map` 里 `move_*` 只剩手柄轴（`padaxis:*`），键盘 WASD 无绑定，
+  且 `merge_missing` 是**按动作**补齐的——动作一旦出现就再也不会补回默认键位，于是编辑器 Play 与
+  PC 发布都没有任何键盘入口（网页/微信能用只是因为 `ui/virtual_pad.lua` 用 `input.virtual_key`
+  注入，它绕过绑定表）；
+  ④ `scripts/package.ps1` 的 UTF-8 BOM 被文件工具剥掉后，PS 5.1 按 ANSI 读、中文注释在解析期
+  变乱码并报出指错行的 `Missing closing '}'`。
+- **改法**：`scripts/package.ps1` 去掉 webgl 的 `wasm-opt` 特例，两个 web 平台共用同一个
+  `Optimize-WasmBin`（微信独有的剥 Global / 剥 Tag / noextern 降级仍只作用于微信——那是
+  WXWebAssembly 的能力缺口）；补回 `project.toml` 的键盘绑定（`move_*`=WASD、`attack`=J、
+  `interact`=E、`inventory`=I、`pause`=P、`respawn`=R、`skill`=K）；恢复被剥的 BOM。
+- **实测**（`examples/game_jhyt`，正式管线三平台）：webgl `2,932,495 B → 2,708,444 B`（`-Oz` 省
+  224 KB），起点 5,893,414 B ⇒ **合计 −54.0%，省 3.18 MB**；webgl 发布目录 8,560 KB → 8,342 KB；
+  微信主包 **2,893 KB / 4,096 KB（70.6%）**；三平台 exit 0，产物原子交换。
+  改动前还手工量过：`image` 依赖在默认 webgl 路径上**贡献 0 字节**（fat LTO 已整块剥掉，只去掉
+  jpeg feature 重编字节数完全相同），单独跑 `--strip-debug` 反而变大 3 KB——即"减体积"的杠杆只有
+  编译开关与 `-Oz`，砍依赖无效。
+- **回滚档**：纯打包链路 + 工程配置改动，运行时一行未动。旧包（未过 `-Oz`、pad-only 绑定）仍能跑，
+  回滚只需还原 `scripts/package.ps1` 的 webgl 分支与 `examples/game_jhyt/project.toml`。
+- **顺带**：EH 门这次给了两条独立证据——Edge 155 真实 `WebAssembly.compile` 通过（46 ms）+ Node V8
+  `verify-wasm-host.mjs --platform=webgl` 通过；`verify-webgl-bundle.ps1` 的 `scene_verify=done`、
+  `check-docs` 的 `ps1_bom_ok=33 ps1_parse_ok=33` 同轮全绿。
+
 ## Unreleased — 第二张图照金标规范跑通：云泽村从"6 种平色瓦"变成 102 槽 autotile + 326 件散布（M72-11 ①village）
 
 - **这一包是 M72-11 的第一张**：plan 点名 7 张图，本包按"一张做满再一次 commit"只做满 `village`，

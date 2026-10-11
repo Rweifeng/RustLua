@@ -690,13 +690,22 @@ WASM build failed ($Platform)。
             # 复制步骤赢，所以这里把 wasm-bindgen 顺带生成的那份删掉，避免"谁最后写谁生效"
             # 这种靠顺序的隐式约定。
             Remove-Item -LiteralPath (Join-Path $pkgRoot "index.html") -Force -ErrorAction SilentlyContinue
-            # WP10 迁移（webgl EH 兼容）：**不跑 wasm-opt**。wasm-bindgen 产物是纯
-            # try_table（new EH，V8/Edge 支持）；binaryen 的任意 pass 都会把部分 try_table
-            # 转回 legacy try（0x06），造成"legacy + new EH 指令混合"，当前 Edge 直接拒绝
-            # 编译（WebAssembly.instantiateStreaming: module uses a mix of legacy and new
-            # exception handling instructions，实测 2026-09-29）。webgl 无 4MB 硬体积门槛，
-            # 2.8MB 未优化产物直接发布。微信侧保留 wasm-opt（WXWebAssembly 接受混合，
-            # 且主包 4MB 上限需要 -Oz 瘦身）。
+            # 体积：webgl 与微信**共用** `Optimize-WasmBin`（同一条 binaryen 133 `-Oz`）。
+            #
+            # 这里此前**故意不跑** wasm-opt，理由是"binaryen 的任意 pass 都会把 try_table 转回
+            # legacy try，造成新旧 EH 混合、Edge 拒绝编译（2026-09-29 实测）"。2026-10-11 复核
+            # 后推翻该口径：当时用的是**其它版本**的 binaryen，而本仓已把版本锁死在 133
+            # （`scripts/minify-toolchain.ps1` 只认 version_133）。
+            # 实测（同一次 A/B，`+1.88.0` + `opt-level=z` + `lto=fat` + `codegen-units=1`）：
+            #   wasm-bindgen 产物 2,932,495 B → `wasm-opt -Oz` 后 **2,708,453 B（省 224 KB / 7.6%）**，
+            #   产物仍是纯 `try_table`（无 legacy `try`/`catch`），Node V8 `WebAssembly.compile` 通过、
+            #   138 个导出不变。此后每次发布都会由下面的 `verify-wasm-host.mjs`（`--platform=webgl`）
+            #   与 `scripts/verify-webgl-eh.ps1`（真实浏览器 fetch + compile）各兜一次——
+            #   这条链正是把上面四类"wasm 装不进来"的回归挡在发布期的守卫。
+            # 微信侧独有的三步（剥 Global / 剥 Tag / noextern 降级）**不适用于 webgl**：
+            # 那是 WXWebAssembly 的能力缺口（iOS 不支持 Global 导出、没有 WebAssembly.Tag
+            # 构造器、不认 GC 终版 typed null），浏览器三样都支持，做了反而平白丢功能。
+            Optimize-WasmBin (Join-Path $pkgRoot "game_web_bg.wasm")
         }
         else {
             # 微信小游戏：**必须用 `--target no-modules`**。
