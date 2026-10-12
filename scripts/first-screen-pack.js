@@ -244,14 +244,35 @@ function buildEntries(packRoot, includePrefixes) {
   scripts.forEach(add);
 
   // 4) 字体必须主包侧：适配层 loadGameFont 在 boot **之前**读它，且 wx.loadFont 只吃本地路径。
-  //    路径单独留一份：下面要用它断言"宿主自己加载的资源不得被改名"。
+  //    但它读的是 project.toml **声明**的那一份（font，以及 font_fallback 若配置）。此前这里
+  //    收整个 assets/fonts/ 目录，等于断言"目录里每个字体都是启动期宿主加载"——目录里留着的
+  //    停用全量字体会直接压垮主包配额（实测 jhyt：NotoSansSC-VF.ttf 17.7 MB 未声明、未引用，
+  //    主包 19,928 KB > 4,096 KB 打不出包）。未声明的字体仍随分包 `pack/` 发布，只是不占首屏。
+  //    font 键缺失时保留"全收"的旧口径并逐条警告——适配层会按默认字体加载，静态推不出它对应
+  //    哪一份文件，漏列才致命、多列无副作用（与 scripts/ 同一条判据）。
+  //    路径单独留一份（fontPaths）：下面要用它断言"宿主自己加载的资源不得被改名"。
+  const declaredFonts = [font, keyValue(projectToml, 'font_fallback', '')]
+    .filter(Boolean)
+    .map((p) => p.replace(/\\/g, '/'));
   const fontPaths = [];
   let fontFiles = 0;
   for (const rel of catalog.keys()) {
-    if (rel.startsWith('assets/fonts/')) {
-      add(rel);
-      fontPaths.push(rel);
-      fontFiles += 1;
+    if (!rel.startsWith('assets/fonts/')) continue;
+    if (declaredFonts.length > 0 && !declaredFonts.includes(rel)) continue;
+    add(rel);
+    fontPaths.push(rel);
+    fontFiles += 1;
+  }
+  // 声明字体落在 assets/fonts/ 之外时同样要进首屏（宿主按真实路径读它）。
+  for (const rel of declaredFonts) {
+    if (!catalog.has(rel) || fontPaths.includes(rel)) continue;
+    add(rel);
+    fontPaths.push(rel);
+    fontFiles += 1;
+  }
+  for (const rel of catalog.keys()) {
+    if (rel.startsWith('assets/fonts/') && !fontPaths.includes(rel)) {
+      warnings.push('font_not_first_screen=' + rel);
     }
   }
 

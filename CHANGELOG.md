@@ -5,6 +5,56 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — L3 行为契约开跑前归一键位状态：桌面基线与 web 活体不再隔着一份工程配置对拍
+
+- **症状**：微信体积门转绿后，运行期契约第一次跑到 `input.actions.list` 就红：
+  `n=36（PC 基线）vs n=41（web 活体，+dash,guard,skill_2,3,4）`。
+- **根因不是行为分叉，是契约把输出钉在了运行时的**可变量**上**：桌面基线（`run_lua_contract` 与
+  `lua_api_contract_matches_transcript`）跑在裸 `LuaRuntime::new()`——只有 `ActionMap::with_defaults()`
+  的 36 条；两侧活体（PC `main.lua` 的 `input.load_settings()`、web 的
+  `__rustlua_apply_project_bindings`）都会把工程 `project.toml` 的 `[input].map` 合进动作表，jhyt 的
+  五条自定义键位（`f00aedfb` 修回的）于是进读数。10-11 那次 webgl/微信契约的绿是 scratch
+  `project.toml` 恰好删着那五键的巧合——又一次"没有写者的门不会红"。
+- **改法**：`lua_api_contract.lua` 的 `__contract_run()` 入口加 `input.reset_bindings()`：引擎侧回
+  `ActionMap::with_defaults()`，web 侧回声明"与引擎默认一一对应"的硬编码默认表。**契约钉 API 面，
+  不钉工程配置**；默认表若两侧漂移，`input.*` 用例即红——那才是这道门该抓的东西。transcript 一字不动；
+  两侧 `actions()` 都是字典序，无排序歧义。代价：验收入口里跑契约会清掉活体键位（玩家路径不经过这里）。
+- **实测**：桌面 `run_lua_contract` exit 0、快照测试 2 passed；微信 `verify-wechat-minigame.ps1
+  -ExpectGpuKernel` **整门 exit 0**，四个路径形态用例全 `api_contract=ok,cases=33`（此前"运行期段
+  只跑到契约红为止"的账随之闭合：`play_path/touch_stick/save_persist/subpackage_case=ok` 与全部
+  negatives 到齐）；webgl `verify-webgl-bundle.ps1 -ApiContract -UrlQuery 'rustlua-js-host=1'` 0 红、
+  同 33 例 ok。**命令写法坑**：M73-00 WP8 后默认页面归 GPU 宿主，契约通道 `__RUSTLUA_LUA_BRIDGE`
+  只在旧 JS 世界里，`-ApiContract` 不带 `rustlua-js-host=1` 会报 `verdict=unavailable`——红的是量具接线。
+- **代价与未做**：① `game_api` 的 webgl 产物没跑契约；② 归一只动 `input.*` 一族，其余 32 例对工程
+  状态的依赖没逐例审；③ web 侧 reset 后 `action_map_text()` 对 pad 绑定的无损性没验（验收模式跑完即退）。
+  回滚档：`engine/crates/rustlua-scripting/src/api_surface_snapshot/lua_api_contract.lua` 一处入口注释+一句调用。
+
+## Unreleased — 微信包体里未声明的散装字体不再随包发：体积门从"巧合绿"变成"有道理地绿"（docs/65 P0-① 前置）
+
+- **症状**：拿 P0-② 那份遥测内核重打微信产物（`package.ps1 -Platform wechat-minigame -Gpu2d`），
+  体积门连红两次：主包 19,928 KB > 4,096 KB（首屏 `fonts=3`），把首屏收窄后又撞分包
+  25,626 KB > 20,480 KB——全量 NotoSansSC-VF.ttf（17.7 MB）换了个包照样顶穿。
+- **根因是"假绿"而非新回归**：`first-screen-pack.js` 第 4 步一直收**整个** `assets/fonts/` 目录，
+  隐含断言"目录里每个字体宿主启动期都要读"；该断言只在 assetc 把目录里唯一那份字体子集化时成立。
+  10-11 的 scratch `project.toml`（没有 `font` 键）恰好制造过这种形态，`f00aedfb` 修回点阵字体声明后，
+  17.7 MB 全量 Noto 重新以"未声明散装"身份躺在目录被整收。**门从没检查过"声明"，所以它红得迟、绿得假**。
+- **改法**：① 首屏清单只收 `project.toml` 声明的 `font`/`font_fallback` 路径，其余逐条警告
+  `font_not_first_screen=<rel>`；无声明时保留旧"全收"口径（默认字体静态推不出对应文件，宁多收不漏收）。
+  ② `assetc package` 新增 `--drop-undeclared-fonts`：子集化后、manifest 收集前，物理删除产物
+  `assets/fonts/` 内未声明的字体二进制（ttf/otf/woff/woff2；`LICENSE.txt` 这类非字体文件不动），
+  由 `package.ps1` **仅在 wechat-minigame 分支**传入——PC 无体积门、`jhyt_m72_pixel_font` 读的是工程源，
+  两边都不受影响。③ `package.ps1` 两处注释里的旧体积读数按"旧说法→新实测"更正。
+- **实测**（同一产物 `-SkipBuild` 复跑逐字一致，完整末行见 docs/52 §6.4）：主包 **2,571 KB / 62.8%**、
+  分包 8,270 KB / 40.4%、总包 10,841 KB / 52.9%，首屏 `fonts=1`；`wasm_host_ok bytes=5,408,219` 与
+  P0-② 插桩内核逐字节一致——那批"微信产物仍是旧内核"的没测账就此闭合，P0-① 设备会话有了可验的产物。
+  `cargo test -p assetc` 23 passed（含新增剔除用例的存留/删除/manifest 三向断言与 flag=false 对照）。
+- **代价与未做**：① 体积门绿后暴露的运行期红 `wechat_api_contract_failed L19 input.actions.list 36 vs 41`
+  与本批无关——桌面基线用裸 `LuaRuntime::new()`（36 条引擎默认动作），web 实况在**已启动的工程运行时**里跑
+  （`project.toml` 的五条自定义键位合入 ⇒ 41），Rust 宿主没有 boot 期灌 `[input].map` 的调用点；
+  10-11 两侧契约的绿同样是 scratch 表的巧合。判别与修法选项记在 M73-00，属引擎侧设计决策，单开批次；
+  ② webgl 包仍随包发全量 Noto（开关只给 wechat）；③ 新产物的运行期门只跑到契约那条红为止。
+  回滚档：`scripts/first-screen-pack.js`、`scripts/package.ps1`、`engine/crates/assetc/src/{lib,main}.rs`。
+
 ## Unreleased — 启动有了七段阶段遥测，"字体首帧 40s / 内存峰值 300MB"归因落账（docs/65 P0-②）
 
 - **症状**：docs/65 §10 挂着两条没有归因的读数——WebGL 首帧 36–46s、WASM 线性内存峰值 ~300MB，

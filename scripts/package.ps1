@@ -532,7 +532,8 @@ try {
         # scripts/verify-wechat-minigame.ps1。
         # **纠正一条当时的结论**：那句"主包 4,269 KB 顶穿 4,096 KB"是用 `du -sk` 算的，对 700 个
         # 小文件虚高数百 KB；体积门看的是文件**字节和**（`wechat_minigame_package_ok` 那行），
-        # 真实主包从未超限（当前 3,635 KB / 88.7%）。口径见 docs/52 §6.1。
+        # 真实主包从未超限（旧读数 3,635 KB / 88.7%，docs/52 §6.1；10-06 内核搬分包后该口径失效，
+        # 2026-10-12 复跑实测 2,571 KB / 62.8%，见 docs/52 §6.4）。
         $savedStrip = $env:CARGO_PROFILE_RELEASE_STRIP
         $env:CARGO_PROFILE_RELEASE_STRIP = "none"
         $savedOptLevel = $env:CARGO_PROFILE_RELEASE_OPT_LEVEL
@@ -602,16 +603,22 @@ WASM build failed ($Platform)。
     $assetcArgs = @("package", $gameRoot, "-o", $packRoot)
     if ($Compress) { $assetcArgs += "--compress" }
     if ($Encrypt) { $assetcArgs += "--encrypt" }
+    # 微信形态剔除未声明字体（docs/52 配额门的真根因，2026-10-12）：开发树里的停用全量
+    # 字体（jhyt 的 NotoSansSC-VF.ttf 17.7 MB）没有 `font`/`font_fallback` 声明、也没有任何
+    # Lua/场景引用，宿主不会读它，随包发就把分包顶到 25,626 KB > 20,480 KB。剔除发生在
+    # manifest.txt 生成之前，清单与磁盘自洽。PC 不开（桌面无体积门，换字体走设置还要它）。
+    if ($Platform -eq "wechat-minigame") { $assetcArgs += "--drop-undeclared-fonts" }
     & $assetc @assetcArgs
     if ($LASTEXITCODE -ne 0) { throw "assetc package failed." }
 
     # Lua 注释剥离（仅 web 平台；紧随 assetc 之后、首屏切分与代码包改名之前）：
-    # 微信主包 4,096 KB 是硬门，当前实测 3,635 KB / 88.7%（`wechat_minigame_package_ok` 那行的字节和口径，
-    # 别用 du——它对本工程 700 个小文件虚高数百 KB，见 docs/52 §6.1）。**编译侧**的杠杆已全部用完
+    # 微信主包 4,096 KB 是硬门，2026-10-12 复跑实测 2,571 KB / 62.8%（`wechat_minigame_package_ok`
+    # 那行的字节和口径，见 docs/52 §6.4；旧读数 3,635 KB / 88.7% 是 §6.1 那次、内核还在主包时的
+    # 账，别用 du——它对本工程 700 个小文件虚高数百 KB）。**编译侧**的杠杆已全部用完
     # （wasm：opt-level=z + lto=fat + codegen-units=1 + wasm-opt -Oz + --remove-name-section；JS：terser），
-    # 所以余量只能从**内容侧**买：主包里的 Lua 共 862 KB，其中 283 KB 是给人看的注释
-    # （实测 `node scripts/strip-lua-comments.mjs <pack> --json`）。玩家不会读发布包里的注释，
-    # 这是这批体积里唯一完全不改变运行时行为的减法。
+    # 所以余量只能从**内容侧**买：主包里的 Lua 共 862 KB、其中 283 KB 是给人看的注释
+    # （§6.1 那次读数；本工程脚本已涨到 155 个，同一条命令实测 `saved=581KB`，剥后主包
+    # scripts/ 共 1,070 KB）。玩家不会读发布包里的注释，这是这批体积里唯一完全不改变运行时行为的减法。
     # 两条必须由工具一起满足的约束（见该文件头注释）：
     #   · 同步重写 manifest.txt 的字节数与 FNV-1a-64——运行时逐条校验清单，只改文件不改清单
     #     等于首屏每个脚本都校验失败；
@@ -1142,7 +1149,8 @@ WASM build failed ($Platform)。
                 [IO.File]::WriteAllText($remoteConfigPath, ($remoteConfig | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding($false)))
                 Write-Host ("==> 远端资源回落: {0}（包内仍是首选，读不到才下载）" -f $baseUrl) -ForegroundColor DarkGray
             }
-            # 小游戏包不复制完整字体：assetc 已把用到的字符子集化进 pack/。
+            # 小游戏包不复制完整字体：assetc 已把用到的字符子集化进 pack/；
+            # 没有 font/font_fallback 声明的字体二进制由上方 --drop-undeclared-fonts 在包侧物理删除。
             $packedFont = Join-Path $packRoot ("assets\fonts\" + $fontName)
             if (-not (Test-Path -LiteralPath $packedFont)) {
                 throw "WeChat package requires the subset font inside pack/: $packedFont"

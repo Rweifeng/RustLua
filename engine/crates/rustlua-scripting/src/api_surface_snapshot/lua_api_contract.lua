@@ -323,6 +323,13 @@ cases['ui.focus.shape'] = function()
 end
 
 function __contract_run()
+  -- 状态归一（2026-10-12）：`input.actions()` 反映 ScriptState 的**当前**动作表——web 活体在
+  -- 启动时已按工程 project.toml 的 `[input].map` 逐动作合入（jhyt 实测 41 条），PC 基线跑在
+  -- 裸注册层（36 条）。契约钉的是 API 面，不是工程配置，所以开跑前统一 `reset_bindings()`：
+  -- 引擎侧回 `ActionMap::with_defaults()`，web 侧回它那张声明"与引擎默认一一对应"的硬编码
+  -- 默认表——两张表若漂移，input.* 用例即红，那才是这道门该抓的 API 漂移。
+  -- 代价：在活体游戏进程里跑本契约会把工程键位清掉（验收入口专用，玩家路径不经过这里）。
+  input.reset_bindings()
   local names = {}
   for name, _ in pairs(cases) do names[#names + 1] = name end
   table.sort(names)

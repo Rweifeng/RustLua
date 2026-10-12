@@ -122,6 +122,26 @@ fn project_font_key(project: &Path) -> Option<String> {
     })
 }
 
+/// `project.toml` 里被声明为**运行期字体**的相对路径（`font` 与 `font_fallback`）。
+/// 宿主启动期只会读这两份；`assets/fonts/` 下其余字体文件属于开发树（缺字对照、
+/// 停用待下架），不构成"包里的资源"。按行扁平扫描，与 `project_font_key` 同口径。
+fn project_font_declarations(project: &Path) -> Vec<String> {
+    let Ok(text) = fs::read_to_string(project.join("project.toml")) else {
+        return Vec::new();
+    };
+    ["font =", "font_fallback ="]
+        .iter()
+        .filter_map(|prefix| {
+            text.lines().find_map(|line| {
+                let line = line.trim().trim_start_matches('\u{feff}');
+                line.strip_prefix(*prefix)
+                    .map(|value| value.trim().trim_matches('"').to_owned().replace('\\', "/"))
+            })
+        })
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
 /// 验证项目目录存在 `project.toml`。
 pub fn ensure_project(project: &Path) -> anyhow::Result<()> {
     let manifest = project.join("project.toml");
@@ -705,11 +725,16 @@ fn canonical_or_absolute(path: &Path) -> anyhow::Result<PathBuf> {
 /// 生成发布资源包：复制 `project.toml`、`scenes/`、`scripts/`、`assets/`
 /// 到 `out`，并写入 `manifest.txt`（路径、大小、校验和）。
 /// `compress` 对 `assets/` 下支持压缩的资产生效；`encrypt` 仅对 Lua 与场景文件生效。
+/// `drop_undeclared_fonts`（微信形态，docs/52 配额门）：删掉 `assets/fonts/` 下**没被
+/// `project.toml` 声明**（`font`/`font_fallback`）的字体二进制——它们是开发树对照物，
+/// 宿主只 `wx.loadFont` 声明那一份，随包发就是把配额门压在不被读取的死重上。
+/// 剔除发生在 `manifest.txt` 生成**之前**，清单与磁盘天然一致。
 pub fn package(
     project: &Path,
     out: &Path,
     compress: bool,
     encrypt: bool,
+    drop_undeclared_fonts: bool,
 ) -> anyhow::Result<PackageManifest> {
     ensure_project(project)?;
     ensure_distinct_output(project, out)?;
@@ -752,6 +777,31 @@ pub fn package(
             && let Ok(subset) = rustlua_render::font_subset::subset_ttf(&bytes, &chars)
         {
             fs::write(&dst, subset)?;
+        }
+    }
+    if drop_undeclared_fonts {
+        let declared = project_font_declarations(project);
+        let fonts_dir = out.join("assets").join("fonts");
+        if fonts_dir.is_dir() {
+            for entry in fs::read_dir(&fonts_dir)? {
+                let path = entry?.path();
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if !matches!(ext.as_str(), "ttf" | "otf" | "woff" | "woff2") {
+                    continue;
+                }
+                let relative = path
+                    .strip_prefix(out)
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_default();
+                if declared.contains(&relative) {
+                    continue;
+                }
+                fs::remove_file(&path)?;
+            }
         }
     }
     write_dependency_index(project, &out.join("dependencies.json"))?;
@@ -1191,7 +1241,7 @@ mod tests {
             unique_suffix()
         ));
         let _ = fs::remove_dir_all(&out);
-        package(&root, &out, false, false).unwrap();
+        package(&root, &out, false, false, false).unwrap();
         let index: serde_json::Value =
             serde_json::from_slice(&fs::read(out.join("dependencies.json")).unwrap()).unwrap();
         let edges = index["edges"]["scripts/main.lua"].as_array().unwrap();
@@ -1469,7 +1519,7 @@ mod tests {
         let root = temp_project("package");
         let out = std::env::temp_dir().join(format!("rustlua-assetc-out-{}", std::process::id()));
         let _ = fs::remove_dir_all(&out);
-        package(&root, &out, false, false).unwrap();
+        package(&root, &out, false, false, false).unwrap();
         assert!(out.join("project.toml").is_file());
         assert!(out.join("scripts/main.lua").is_file());
         assert!(out.join("assets/textures/red-1x1.png").is_file());
@@ -1488,6 +1538,46 @@ mod tests {
         assert!(manifest_text.contains("red-1x1.png"), "manifest lists png");
         assert!(manifest_text.contains("main.lua"), "manifest lists lua");
         fs::remove_dir_all(&out).ok();
+        cleanup(&root);
+    }
+
+    /// 微信形态配额门（docs/52）：`--drop-undeclared-fonts` 只留 `project.toml` 声明的
+    /// `font`/`font_fallback`；未声明字体二进制不随包发、也不进 `manifest.txt`。
+    /// 反面对照：不开旗标（PC 形态）时全量字体原样保留。
+    #[test]
+    fn package_drops_undeclared_fonts_when_requested() {
+        let root = temp_project("package-font-drop");
+        let mut toml = fs::read_to_string(root.join("project.toml")).unwrap();
+        toml.push_str("font = \"assets/fonts/kept.ttf\"\nfont_fallback = \"\"\n");
+        fs::write(root.join("project.toml"), toml).unwrap();
+        fs::create_dir_all(root.join("assets/fonts")).unwrap();
+        fs::write(root.join("assets/fonts/kept.ttf"), b"kept-font").unwrap();
+        fs::write(root.join("assets/fonts/dead-weight.ttf"), b"dead").unwrap();
+        fs::write(root.join("assets/fonts/LICENSE.txt"), b"lic").unwrap();
+        let out =
+            std::env::temp_dir().join(format!("rustlua-assetc-dropout-{}", std::process::id()));
+        let out_keep =
+            std::env::temp_dir().join(format!("rustlua-assetc-keepout-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&out);
+        let _ = fs::remove_dir_all(&out_keep);
+        package(&root, &out, false, false, true).unwrap();
+        assert!(out.join("assets/fonts/kept.ttf").is_file());
+        assert!(!out.join("assets/fonts/dead-weight.ttf").exists());
+        assert!(
+            out.join("assets/fonts/LICENSE.txt").is_file(),
+            "非字体文件（授权说明）不受剔除影响"
+        );
+        let manifest_text = fs::read_to_string(out.join("manifest.txt")).unwrap();
+        assert!(
+            !manifest_text.contains("dead-weight.ttf"),
+            "清单不得再列被剔除的字体（运行时按清单校验）"
+        );
+        assert!(manifest_text.contains("kept.ttf"));
+        // 对照：不开旗标 = 既有 PC 行为逐字不变。
+        package(&root, &out_keep, false, false, false).unwrap();
+        assert!(out_keep.join("assets/fonts/dead-weight.ttf").is_file());
+        fs::remove_dir_all(&out).ok();
+        fs::remove_dir_all(&out_keep).ok();
         cleanup(&root);
     }
 
@@ -1511,7 +1601,7 @@ mod tests {
             unique_suffix()
         ));
         let _ = fs::remove_dir_all(&out);
-        package(&root, &out, false, false).unwrap();
+        package(&root, &out, false, false, false).unwrap();
         let index: serde_json::Value =
             serde_json::from_slice(&fs::read(out.join("dependencies.json")).unwrap()).unwrap();
         assert_eq!(index["format"], 1);
@@ -1537,7 +1627,7 @@ mod tests {
             "local next_scene = state.scene\nscene.load(next_scene)\n",
         )
         .unwrap();
-        package(&root, &out, false, false).unwrap();
+        package(&root, &out, false, false, false).unwrap();
         let index: serde_json::Value =
             serde_json::from_slice(&fs::read(out.join("dependencies.json")).unwrap()).unwrap();
         assert!(
@@ -1554,7 +1644,7 @@ mod tests {
             "function update() audio.play('ui_click') end\n",
         )
         .unwrap();
-        package(&root, &out, false, false).unwrap();
+        package(&root, &out, false, false, false).unwrap();
         let index: serde_json::Value =
             serde_json::from_slice(&fs::read(out.join("dependencies.json")).unwrap()).unwrap();
         // `audio.*` 不是同步 vfs 读取（运行期由宿主按名字取回），因此既不产边也不标 opaque：
@@ -1575,7 +1665,7 @@ mod tests {
             "function on_click()\n  local target = maps.get(name)\n  return scene.load(target and target or \"main\")\nend\n",
         )
         .unwrap();
-        package(&root, &out, false, false).unwrap();
+        package(&root, &out, false, false, false).unwrap();
         let index: serde_json::Value =
             serde_json::from_slice(&fs::read(out.join("dependencies.json")).unwrap()).unwrap();
         assert!(
@@ -1607,7 +1697,7 @@ mod tests {
             "local PRESET_PATH = \"assets/prefabs/dialogue.prefab\"\nfunction boot()\n  return prefab.spawn(PRESET_PATH)\nend\n",
         )
         .unwrap();
-        package(&root, &out, false, false).unwrap();
+        package(&root, &out, false, false, false).unwrap();
         let index: serde_json::Value =
             serde_json::from_slice(&fs::read(out.join("dependencies.json")).unwrap()).unwrap();
         assert!(
@@ -1634,7 +1724,7 @@ mod tests {
             "local DIR = \"assets/ui/prefabs/\"\nfunction load(name)\n  return data.load(DIR .. name .. \".ui.json\")\nend\n",
         )
         .unwrap();
-        package(&root, &out, false, false).unwrap();
+        package(&root, &out, false, false, false).unwrap();
         let index: serde_json::Value =
             serde_json::from_slice(&fs::read(out.join("dependencies.json")).unwrap()).unwrap();
         assert!(
@@ -1650,7 +1740,7 @@ mod tests {
         fs::create_dir_all(root.join("assets/ui/prefabs")).unwrap();
         fs::write(root.join("assets/ui/prefabs/dialogue.ui.json"), "{}\n").unwrap();
         fs::write(root.join("assets/ui/prefabs/hud.ui.json"), "{}\n").unwrap();
-        package(&root, &out, false, false).unwrap();
+        package(&root, &out, false, false, false).unwrap();
         let index: serde_json::Value =
             serde_json::from_slice(&fs::read(out.join("dependencies.json")).unwrap()).unwrap();
         let edges = index["edges"]["scripts/main.lua"].as_array().unwrap();
@@ -1683,7 +1773,7 @@ mod tests {
             unique_suffix()
         ));
         let _ = fs::remove_dir_all(&out);
-        package(&root, &out, true, false).unwrap();
+        package(&root, &out, true, false, false).unwrap();
         let png = fs::read(out.join("assets/textures/red-1x1.png")).unwrap();
         let lua = fs::read(out.join("scripts/main.lua")).unwrap();
         assert!(png.starts_with(rustlua_assets::pack::PACK_MAGIC));
@@ -1713,12 +1803,12 @@ mod tests {
     #[test]
     fn package_rejects_output_inside_data_dirs_or_equal_to_project() {
         let root = temp_project("package-outguard");
-        let error = package(&root, &root, false, false).expect_err("输出=项目 必须被拒绝");
+        let error = package(&root, &root, false, false, false).expect_err("输出=项目 必须被拒绝");
         assert!(error.to_string().contains("相同"), "{error}");
 
         for sub in ["assets", "scripts", "scenes"] {
             let nested = root.join(sub).join("dist");
-            let error = package(&root, &nested, false, false)
+            let error = package(&root, &nested, false, false, false)
                 .expect_err("输出位于项目数据目录内部 必须被拒绝");
             assert!(error.to_string().contains("项目数据目录"), "{error}");
             assert!(!nested.exists(), "被拒绝的打包不应留下输出目录");
@@ -1726,7 +1816,8 @@ mod tests {
 
         // 带 `..` 的等价写法也要被识别（词法比较即可，不需要目录存在）。
         let dotted = root.join("assets").join("dist").join("..").join("dist");
-        let error = package(&root, &dotted, false, false).expect_err("`..` 绕不过数据目录检查");
+        let error =
+            package(&root, &dotted, false, false, false).expect_err("`..` 绕不过数据目录检查");
         assert!(error.to_string().contains("项目数据目录"), "{error}");
         cleanup(&root);
     }
@@ -1745,7 +1836,7 @@ mod tests {
             .join("jianghu_youtian")
             .join(".staging-20260101-000000-abcdef")
             .join("pack");
-        package(&root, &out, false, false).expect("builds/ 下的输出必须被允许");
+        package(&root, &out, false, false, false).expect("builds/ 下的输出必须被允许");
         assert!(out.join("scripts/main.lua").is_file());
         assert!(out.join("manifest.txt").is_file());
         // 项目数据子目录没有被产物污染（打包输入仍是纯项目数据）。
@@ -1818,7 +1909,7 @@ mod tests {
             std::process::id(),
             unique_suffix()
         ));
-        let error = package(&root, &out, false, false).expect_err("打包必须拒绝越界链接");
+        let error = package(&root, &out, false, false, false).expect_err("打包必须拒绝越界链接");
         assert!(error.to_string().contains("项目目录外"), "{error}");
 
         fs::remove_file(&link).ok();
@@ -1909,7 +2000,7 @@ mod tests {
             unique_suffix()
         ));
         let _ = fs::remove_dir_all(&out);
-        let manifest = package(&root, &out, false, false).unwrap();
+        let manifest = package(&root, &out, false, false, false).unwrap();
         assert!(
             manifest.entries.contains_key("scenes/api_gameplay.scene"),
             "packaged manifest should include production scene"

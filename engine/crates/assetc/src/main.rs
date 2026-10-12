@@ -74,6 +74,7 @@ fn run(args: &[String]) -> anyhow::Result<String> {
             let mut out = None;
             let mut compress = false;
             let mut encrypt = false;
+            let mut drop_undeclared_fonts = false;
             let mut i = 3;
             while i < args.len() {
                 match args[i].as_str() {
@@ -86,17 +87,20 @@ fn run(args: &[String]) -> anyhow::Result<String> {
                     }
                     "--compress" => compress = true,
                     "--encrypt" => encrypt = true,
+                    "--drop-undeclared-fonts" => drop_undeclared_fonts = true,
                     other => return Err(anyhow!("package 未知参数: {other}")),
                 }
                 i += 1;
             }
             let out = out.ok_or_else(|| anyhow!("缺少参数: -o <输出目录>"))?;
-            assetc::package(&project, &out, compress, encrypt).map(|manifest| {
-                format!(
-                    "assetc_package_ok files={} compress_assets={compress} encrypt_code={encrypt}",
-                    manifest.entries.len()
-                )
-            })
+            assetc::package(&project, &out, compress, encrypt, drop_undeclared_fonts).map(
+                |manifest| {
+                    format!(
+                        "assetc_package_ok files={} compress_assets={compress} encrypt_code={encrypt} drop_undeclared_fonts={drop_undeclared_fonts}",
+                        manifest.entries.len()
+                    )
+                },
+            )
         }
         Some("--help") | None => {
             usage();
