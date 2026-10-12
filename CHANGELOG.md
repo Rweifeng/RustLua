@@ -5,6 +5,45 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 微信 GPU 路线模拟器首绿：六问里 ①②③⑤ 全绿，途中修掉三条会让 wasm 宿主"静默挂死/必炸"的宿主缺陷
+
+- **症状**：docs/65 §12 P0-① 的 `probe_canvas_host`/`engine_host_begin` 在微信开发者工具里表现为
+  **既不 ok 也不 failed 的挂死**，补上 panic hook 后现场只剩 `RuntimeError: unreachable`，再往前一层
+  是 `wgpu-hal-27.0.4/src/gles/web.rs:89` 的 `dyn_into().expect("canvas context is not a
+  WebGl2RenderingContext")` panic——而 JS 侧 `ctx instanceof WebGL2RenderingContext` 明明是 true。
+- **根因是三条叠起来的宿主缺口**：① 微信宿主**没有** `queueMicrotask`（wasm-bindgen 胶水调度 async
+  导出 pump 靠它，缺时第一拍的 ReferenceError 落在微任务里无人接住 ⇒ 静默挂死）；② GPU async 入口没调
+  `install_panic_hook`（panic 失去现场），且 hook 安装本身在正在 panic 的栈里会**二次 panic**
+  （"cannot modify the panic hook from a panicking thread"，两层把启动掀翻）；③ 微信宿主**没有**
+  `WebGL2RenderingContext` 全局（两个大小写都缺），胶水 `__wbg_instanceof_WebGl2RenderingContext_*`
+  对 wgpu 取到的上下文做 `arg0 instanceof WebGL2RenderingContext`（**DOM 大小写**，整句裹 try/catch，
+  缺全局时 ReferenceError 被吞成 false）⇒ wgpu-hal 的向下转型必炸。判别实验：q0 逐字复刻 wgpu 的调用
+  形态（`Reflect.set` 现造 `{antialias:false}` 选项对象）在 JS 侧 instanceof=true ⇒ **调用形态无罪，
+  毒在 wasm 解析不到的全局**；探针侧鸭子类型假类会把预检读数变成自证，装**真构造器**才诚实。
+- **改法**：适配层（wechat-adapter.js）补 `queueMicrotask` shim（`Promise.resolve().then`）与新函数
+  `installWebGl2Constructor`（从真实 webgl2 上下文取原生构造器，按 `WebGL2RenderingContext`/
+  `WebGl2RenderingContext` 两个大小写装全局）；`gpu_host.rs`/`host_runtime.rs` 的 GPU async 入口各调
+  `install_panic_hook`；`lib.rs` 的 hook 安装改 AtomicBool 幂等。探针与编排固化为
+  `scripts/wechat-devtools-probe.js`（读数通道：launcher 临时注入探针 + `wx.request` POST
+  `127.0.0.1:9422`——官方 automator 的 `App.*` 域在 `compileType=game` 下整域不响应，实测只有 `Tool.*`
+  应答，代码注入这条路不存在）。
+- **实测（终验 run17，`node scripts/wechat-devtools-probe.js` exit 0，产物带正式 appid）**：
+  `q1_canvas_host=ok(ANGLE/GT 1030/backend=Gl/formats 含 Rgba8UnormSrgb/present_modes=1)`、
+  `q2_engine_host_begin=running`（surface 建在 2532x1170 专用离屏画布，`frame_abi=rustlua-engine-host-frame`）、
+  `q3_presented=325/300 reached=yes span_ms=6065 failed_presents=0`（≈60Hz 节奏）、
+  `q5_eh=accepted`、`verdict=gpu-route-ok-simulator`——**wasm 引擎宿主第一次在微信宿主里连续 present**。
+  run11（修复放探针侧）与 run14/17（修复进适配层产品、探针改被动记账）四问同绿，证明产品自带这条路成立。
+- **发布命令口径（用户 2026-10-12 三次强调）**：发布到微信开发者工具**必须带正式 appid**
+  `wx7091f1cf872130bb`，否则编译/上传不通过。`package.ps1` 不会自动读 `project.toml` 的
+  `wechat_appid`——脚本化发布必须显式 `-WechatAppId wx7091f1cf872130bb`，忘传会把
+  `project.config.json` 回写成 `touristappid`（本批吃过一次：门读数照样绿，产物已悄悄退回游客态）。
+- **代价与未做**：④ 前后台恢复与 ⑥ 设备内存预算**模拟器没有可信通道，device-pending**（真机仍缺，
+  不外推）；引擎宿主画在离屏画布、可见主画面此刻仍由老 JS 世界呈现（tick 开关刻意不开），GPU 宿主
+  接管可见画面的整屏目验没跑；`cli auto` 有"打了 ✔ 却没把项目跑起来"的静默失败形态
+  （run12/13 两次零 POST 假象的根因），判法登记在 `tasks/plan/M73-00` docs65-P0① 一节；探针是临时注入物，
+  重打包即消失（恢复：`.temp/reinject_p0.py`）。回滚档：适配层两段 + 引擎三处入口 + 新脚本
+  `scripts/wechat-devtools-probe.js`（untracked）。
+
 ## Unreleased — L3 行为契约开跑前归一键位状态：桌面基线与 web 活体不再隔着一份工程配置对拍
 
 - **症状**：微信体积门转绿后，运行期契约第一次跑到 `input.actions.list` 就红：

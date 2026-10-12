@@ -101,6 +101,10 @@ pub async fn engine_host_begin(
     options_json: String,
     report: js_sys::Function,
 ) -> Result<String, JsValue> {
+    // 诊断唯一安装点（见 `lib.rs::install_panic_hook` 的注释）：async 导出的 panic 落在
+    // microtask pump 里，没有 hook 时现场只剩一句 `unreachable`——2026-10-12 微信模拟器
+    // 六问探针就是靠补这一行才把真凶（panic 位置）捞出来的。
+    crate::install_panic_hook();
     match begin_inner(gpu_canvas, &options_json, &report).await {
         Ok(summary) => Ok(summary),
         Err(error) => {

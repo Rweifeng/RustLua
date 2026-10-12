@@ -557,7 +557,11 @@ host: canvas_surface: ... webgl2 not available
 ### P0：先验证微信 GPU 路线是否成立
 
 > **2026-10-12 状态**：微信开发者工具已在本机可用（`D:\Program Files (x86)\Tencent\微信web开发者工具`，
-> CLI 在位），Android/iOS 真机仍无。执行进展登记在 `tasks/plan/M73-00`。
+> CLI 在位），Android/iOS 真机仍无。**模拟器侧 ①②③⑤ 已答且为绿**（`node scripts/wechat-devtools-probe.js`
+> 终行 `verdict=gpu-route-ok-simulator`：探针 ok、宿主 begin 在 2532x1170 离屏画布建立 surface、
+> 322/300 连续 present 0 失败、EH `accepted`）；途中修掉三条宿主缺陷（缺 `queueMicrotask`、GPU 入口缺
+> panic hook、缺 `WebGL2RenderingContext` 全局——详见 `tasks/plan/M73-00` 的 docs65-P0① 一节）。
+> ④（前后台）与 ⑥（内存预算）只能在真机回答，device-pending。执行进展登记在 `tasks/plan/M73-00`。
 
 应在微信开发者工具、至少一台 Android 和一台 iOS 设备上回答：
 

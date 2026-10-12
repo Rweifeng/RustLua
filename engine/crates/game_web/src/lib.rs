@@ -74,6 +74,14 @@ pub(crate) fn wasm_memory_bytes() -> usize {
 /// `unreachable`；只有日志时，trap 之后什么都不再打。各入口统一调这一个函数。
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn install_panic_hook() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    // 必须只装一次：`set_hook` 在**正在 panic 的栈**里再被调用会二次 panic
+    // （"cannot modify the panic hook from a panicking thread"，实测 2026-10-12 微信模拟器：
+    // GPU 入口的 wgpu dyn_into 失败先炸，入口里那句 install 再炸，两层 panic 把整局启动掀翻）。
+    static INSTALLED: AtomicBool = AtomicBool::new(false);
+    if INSTALLED.swap(true, Ordering::SeqCst) {
+        return;
+    }
     wasm_log::install();
     std::panic::set_hook(Box::new(|info| {
         web_sys::console::error_1(&wasm_bindgen::JsValue::from_str(&info.to_string()));

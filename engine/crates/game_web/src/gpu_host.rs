@@ -1361,6 +1361,7 @@ pub async fn probe_canvas_host(
     gpu_canvas: JsValue,
     report: js_sys::Function,
 ) -> Result<String, JsValue> {
+    crate::install_panic_hook();
     match probe_canvas_host_inner(gpu_canvas, &report).await {
         Ok(summary) => Ok(summary),
         Err(error) => {

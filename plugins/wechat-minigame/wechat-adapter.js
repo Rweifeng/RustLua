@@ -3324,6 +3324,48 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     var self = this;
     this.load = function () { return Promise.resolve(self); };
   }, false);
+  // wasm-bindgen 胶水用它调度 async 导出的 future pump：微信宿主**没有**这个全局
+  // （模拟器实测 `typeof queueMicrotask === 'undefined'`，2026-10-12）。缺它时第一拍调度
+  // 在微任务里抛 ReferenceError、无人接住，Rust 侧 QUEUE 就此失去驱动——
+  // `probe_canvas_host`/`engine_host_begin` 表现为**静默挂死**（既不 ok 也不 failed）。
+  // 语义对齐浏览器：callback 作为微任务执行，异常按未处理 Promise 拒绝上报。
+  defineGlobal('queueMicrotask', function (callback) {
+    if (typeof callback !== 'function') throw new TypeError('queueMicrotask: callback must be a function');
+    Promise.resolve().then(callback);
+  }, true);
+  // 微信宿主同样**没有** `WebGL2RenderingContext` 全局（模拟器实测两个大小写变体都是
+  // undefined，2026-10-12）。这专杀 wasm-bindgen 的向下转型：胶水对 wgpu-hal 取到的
+  // webgl2 上下文执行 `arg0 instanceof WebGL2RenderingContext`（DOM 大小写；见胶水
+  // `__wbg_instanceof_WebGl2RenderingContext_*`），全局缺失时 ReferenceError 被胶水自己的
+  // try/catch 吞掉、结果判 false → `dyn_into::<WebGl2RenderingContext>().expect(...)` 在
+  // `wgpu-hal/src/gles/web.rs:89` panic（六问探针实测 2026-10-12）。装法必须取**原生上下文
+  // 自己的构造器**（胶水拿到的 ctx 就是它造的，instanceof 必真），鸭子类型假类骗不过
+  // 真实原型链以外的判据、还会把预检读数变成自证。两个大小写都挂：web_sys 的 Rust 名是
+  // `WebGl2RenderingContext`，将来别的转型路径可能查那一边。
+  (function installWebGl2Constructor() {
+    if (typeof globalThis.WebGL2RenderingContext === 'function') return;
+    try {
+      var probeCanvas = null;
+      if (typeof wx.createOffscreenCanvas === 'function') {
+        try { probeCanvas = wx.createOffscreenCanvas({ type: 'webgl', width: 1, height: 1 }); } catch (e) { probeCanvas = null; }
+      }
+      if (!probeCanvas || typeof probeCanvas.getContext !== 'function') {
+        var again = safeCall(wx, 'createCanvas');
+        probeCanvas = again && again !== canvas && typeof again.getContext === 'function' ? again : null;
+      }
+      var gl = probeCanvas ? probeCanvas.getContext('webgl2') : null;
+      var ctor = gl && gl.constructor;
+      if (typeof ctor !== 'function') {
+        warn('wechat-adapter: 宿主给不出 webgl2 上下文，WebGL2RenderingContext 全局无法安装（GPU 路线会停在 wgpu 转型处，这是宿主能力缺失而不是 shim 缺失）');
+        return;
+      }
+      defineGlobal('WebGL2RenderingContext', ctor, true);
+      defineGlobal('WebGl2RenderingContext', ctor, true);
+      log('wechat-adapter: 已装 WebGL2RenderingContext 全局（取自原生 webgl2 上下文，wasm 侧 dyn_into 依赖它）');
+    } catch (error) {
+      warn('wechat-adapter: 安装 WebGL2RenderingContext 全局失败 -> ' + hostError(error));
+    }
+  })();
   defineGlobal('requestAnimationFrame', function (callback) {
     // 帧回调之后再画覆盖层/警示条：运行时通常每帧 clearRect 一次，画在它前面等于白画。
     var wrapped = function (time) {
