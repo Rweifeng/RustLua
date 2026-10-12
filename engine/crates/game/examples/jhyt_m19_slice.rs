@@ -550,16 +550,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('core.state').last_action",
         "gather_lingzhi",
     )?;
-    // 内容推进（2026-09-26，docs/48 接线）：莲子塘 (33,5) 与芦苇丛 (5,13)。
-    // 站到采集点**相邻格**并面向它（(33,4)→(33,5)、(4,13)→(5,13)）。
+    // 采集点搬迁（2026-10-10，48b4f496）：莲子塘 (29,5)→(7,15)、芦苇丛 (5,13)→(8,14)，
+    // 旧格四邻全实心采不到（理由逐条写在 `scripts/data/gather.lua` 的注释里）。
+    // 引擎 `grid.facing_cell` 的步进是 up=+1 / down=-1（单测 `facing_cell_steps_cardinally` 钉的），
+    // 所以站涧东岸 (8,15) 一格就够了：朝 left 打莲子 (7,15)、朝 down 打芦苇 (8,14)。
     lua(
         &mut rt,
-        "require('player.player').teleport(944.0, 144.0); require('core.state').facing = 'up'",
+        "require('player.player').teleport(272.0, 496.0); require('core.state').facing = 'left'",
     )?;
     frames(&mut rt, 2)?;
     assert_str(
         &mut rt,
-        "require('systems.interaction').prompt('up')",
+        "require('systems.interaction').prompt('left')",
         "E: 采集 莲子",
     )?;
     press(&mut rt, KeyCode::KeyE)?;
@@ -570,18 +572,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     lua(
         &mut rt,
-        "require('player.player').teleport(144.0, 432.0); require('core.state').facing = 'right'",
+        "require('player.player').teleport(272.0, 496.0); require('core.state').facing = 'down'",
     )?;
     frames(&mut rt, 2)?;
     assert_str(
         &mut rt,
-        "require('systems.interaction').prompt('right')",
+        "require('systems.interaction').prompt('down')",
         "E: 采集 芦苇",
     )?;
     press(&mut rt, KeyCode::KeyE)?;
     assert_str(&mut rt, "require('core.state').last_action", "gather_reed")?;
-    // 内容推进（2026-09-27，docs/48 接线）：茶丛 (19,10) 与野果树 (6,16)。
-    // 站到采集点**相邻格**并面向它（(19,9)→(19,10)、(6,15)→(6,16)）。
+    // 内容推进（2026-09-27，docs/48 接线）：茶丛 (19,10) 与野果树（搬迁后 (8,17)）。
+    // 站到采集点**相邻格**并面向它（(19,9)→(19,10)、(8,16)→(8,17)）。
     lua(
         &mut rt,
         "require('player.player').teleport(624.0, 304.0); require('core.state').facing = 'up'",
@@ -600,7 +602,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     lua(
         &mut rt,
-        "require('player.player').teleport(208.0, 496.0); require('core.state').facing = 'up'",
+        "require('player.player').teleport(272.0, 528.0); require('core.state').facing = 'up'",
     )?;
     frames(&mut rt, 2)?;
     assert_str(
