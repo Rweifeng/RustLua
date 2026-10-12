@@ -40,6 +40,22 @@ fn read_project_bytes(path: &Path) -> Option<Vec<u8>> {
     rustlua_infra::vfs::read_resource(path).ok()
 }
 
+/// 预热分批粒度：够小到每批耗时/内存读数有分辨力，够大到日志条数可控（1558 字 ⇒ 7 条）。
+const PREWARM_CHUNK_CHARS: usize = 256;
+
+/// 阶段遥测的线性内存读数（docs/65 P0：300MB 峰值归因）。wasm 上取 64KB 页数×页大小；
+/// 桌面返回 `None`——桌面的内存本来就能用调试器看，不给它的日志加伪读数。
+fn stage_memory_bytes() -> Option<usize> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        Some(std::arch::wasm32::memory_size(0) * 65_536)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        None
+    }
+}
+
 /// 加载项目字体并包装为可跨运行时共享的图集（MSDF 字形按需生成，共享后只生成
 /// 缺省路径是 NotoSansSC-VF.ttf，项目可通过 `font` 键切换字体；
 /// 缺省字重是 Regular（400）。
@@ -84,6 +100,9 @@ pub fn load_project_font_atlas(project_root: Option<&Path>) -> Option<Arc<Mutex<
         build_ms,
         primary_bytes = primary_bytes.len(),
         fallback_bytes = fallback_bytes.as_ref().map_or(0, Vec::len),
+        atlas_px = atlas.width() * atlas.height(),
+        atlas_bytes = atlas.pixels().len(),
+        mem_bytes = stage_memory_bytes().unwrap_or(0),
         "[render] font atlas ready"
     );
     // 首包预热：把打包时收集的字符清单（chars.txt）预生成进图集，首帧文字不卡。
@@ -93,17 +112,44 @@ pub fn load_project_font_atlas(project_root: Option<&Path>) -> Option<Arc<Mutex<
 
 /// 从项目根 `chars.txt`（打包时由 assetc 生成）读取字符并预热字形。
 /// MSDF 光栅化跨线程并行，debug 构建下显著加速（ui_demo 135 字从 ~2.3s 降到 ~0.3s）。
+///
+/// 分批（256 字/批）调用 `prewarm` 而不是整表一次：Phase A 的光栅化结果在批内驻留，
+/// 分批只改变**驻留时长**与日志粒度，不改变字形内容与顺序（`prewarm` 按 chars 顺序
+/// 去重、跳过已缓存、打包布局逐批接续）。docs/65 P0 的峰值归因要靠每批落一条
+/// 耗时+线性内存读数，而不是事后猜"300MB 是不是字体"。
 fn prewarm_font_atlas(root: &Path, atlas: &mut FontAtlas) {
     let Some(bytes) = read_project_bytes(&root.join("chars.txt")) else {
         return;
     };
     let text = String::from_utf8_lossy(&bytes);
+    let chars: Vec<char> = text.chars().collect();
     let started = web_time::Instant::now();
-    let count = atlas.prewarm(text.chars());
+    let mut count = 0usize;
+    let mut chunks = 0usize;
+    let mut prev_total_ms = 0.0f64;
+    for chunk in chars.chunks(PREWARM_CHUNK_CHARS) {
+        count += atlas.prewarm(chunk.iter().copied());
+        chunks += 1;
+        let total_ms = started.elapsed().as_secs_f64() * 1000.0;
+        tracing::info!(
+            target: "render",
+            chunk = chunks,
+            chunk_chars = chunk.len(),
+            count,
+            chunk_ms = total_ms - prev_total_ms,
+            total_ms,
+            atlas_px = atlas.width() * atlas.height(),
+            atlas_bytes = atlas.pixels().len(),
+            mem_bytes = stage_memory_bytes().unwrap_or(0),
+            "[render] font prewarm chunk"
+        );
+        prev_total_ms = total_ms;
+    }
     if count > 0 {
         tracing::info!(
             target: "render",
             count,
+            chunks,
             elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
             "[render] font prewarmed {count} chars"
         );

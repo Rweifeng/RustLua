@@ -48,10 +48,6 @@ fn percentile_ms(samples: &[f64], percentile: f64) -> f64 {
     sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
 }
 
-fn wasm_memory_bytes() -> usize {
-    std::arch::wasm32::memory_size(0) * 65_536
-}
-
 /// 帧预算仅供自动化验证；产品默认持续运行。URL `rustlua-gpu-frames=<n>` 可设定上限，`0` 表示无限。
 fn frame_budget() -> Option<u32> {
     let Some(window) = web_sys::window() else {
@@ -865,9 +861,13 @@ impl GpuHost {
             self.first_frame_ms = step_started.elapsed().as_secs_f64() * 1000.0;
             // 首帧耗时与启动耗时是**两个不同的瓶颈**（前者=工程脚本 + 首次字体读取 + 首次网格/图集，
             // 后者=场景/脚本装载），所以分开报，并且各留一条控制台行（属性会被后面覆盖）。
+            // 首帧再拆 step/mesh 两段并带线性内存读数（docs/65 P0：字体图集在 mesh 趟里，
+            // 这一步的内存增量要能单独指认，而不是混进 300MB 峰值里猜）。
             web_sys::console::log_1(&JsValue::from_str(&format!(
-                "[gpu] sim_boot_ms={:.1} first_frame_ms={:.1}",
-                self.boot_ms, self.first_frame_ms
+                "[gpu] sim_boot_ms={:.1} first_frame_ms={:.1} first_frame_step_ms={step_ms:.1} first_frame_mesh_ms={mesh_ms:.1} mem_after_first_mesh={}",
+                self.boot_ms,
+                self.first_frame_ms,
+                crate::wasm_memory_bytes(),
             )));
         }
         if step_failed && !self.step_failure_reported {
@@ -957,8 +957,13 @@ impl GpuHost {
     /// 这两条最早写在 JS 的 `web-runtime.js` 里（`WHITE_TEXTURE_PATH` 那段注释），
     /// 现在 Rust 侧也要认同一套语义，否则纯色块实体每帧都会去读一个不存在的文件。
     fn ensure_textures(&mut self, paths: &[String]) {
+        // PNG 解码前后各一次读数（docs/65 P0 阶段遥测）：这一批是首帧之后最大的一次
+        // 突发性分配（每张图 解码 RGBA + GPU 上传），要能和字体图集的账分开。
+        let decode_started = web_time::Instant::now();
+        let mem_before = crate::wasm_memory_bytes();
         let mut loaded = 0usize;
         let mut failed = 0usize;
+        let mut png_bytes = 0usize;
         for path in paths {
             if path == engine::host::frame::WHITE_TEXTURE_PATH
                 || path == engine::host::frame::ATLAS_TEXTURE_PATH
@@ -970,15 +975,18 @@ impl GpuHost {
                 continue;
             }
             match crate::lua_bridge::resource_png(path) {
-                Some(bytes) => match self.renderer.upload_texture_png(path, &bytes) {
-                    Ok(_) => loaded += 1,
-                    Err(error) => {
-                        failed += 1;
-                        web_sys::console::warn_1(&JsValue::from_str(&format!(
-                            "[gpu] upload_texture_png({path}) failed: {error}"
-                        )));
+                Some(bytes) => {
+                    png_bytes += bytes.len();
+                    match self.renderer.upload_texture_png(path, &bytes) {
+                        Ok(_) => loaded += 1,
+                        Err(error) => {
+                            failed += 1;
+                            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                                "[gpu] upload_texture_png({path}) failed: {error}"
+                            )));
+                        }
                     }
-                },
+                }
                 None => {
                     failed += 1;
                     // 资源表里没有这张图：**不静默**——它意味着这一帧的贴图会退回白兜底。
@@ -989,6 +997,11 @@ impl GpuHost {
             }
         }
         self.texture_stats = (loaded, failed);
+        web_sys::console::log_1(&JsValue::from_str(&format!(
+            "[gpu] textures_decoded ok={loaded} fail={failed} png_bytes={png_bytes} decode_ms={:.1} mem_before={mem_before} mem_after={}",
+            decode_started.elapsed().as_secs_f64() * 1000.0,
+            crate::wasm_memory_bytes(),
+        )));
     }
 
     /// 渲一帧到画布纹理并 present。返回渲染器自报的 draw 计数，供状态属性带出去。
@@ -1248,7 +1261,7 @@ async fn run_inner(canvas_id: &str, scene_path: &str) -> Result<String, String> 
             (budget.unwrap_or(STATUS_EVERY * 4).saturating_sub(1) as usize)
                 .min(MAX_FRAME_WORK_SAMPLES),
         );
-        let wasm_memory_start_bytes = wasm_memory_bytes();
+        let wasm_memory_start_bytes = crate::wasm_memory_bytes();
         let mut wasm_memory_peak_bytes = wasm_memory_start_bytes;
         loop {
             let timestamp_ms = match next_animation_frame().await {
@@ -1292,7 +1305,7 @@ async fn run_inner(canvas_id: &str, scene_path: &str) -> Result<String, String> 
             if index > 1 && frame_work_samples_ms.len() < MAX_FRAME_WORK_SAMPLES {
                 frame_work_samples_ms.push(frame_work_ms);
             }
-            wasm_memory_peak_bytes = wasm_memory_peak_bytes.max(wasm_memory_bytes());
+            wasm_memory_peak_bytes = wasm_memory_peak_bytes.max(crate::wasm_memory_bytes());
             if index % STATUS_EVERY == 0 || budget == Some(index) {
                 let elapsed_ms = loop_started.elapsed().as_secs_f64() * 1000.0;
                 let avg_frame_ms = elapsed_ms / index as f64;

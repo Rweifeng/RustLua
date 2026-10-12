@@ -5,6 +5,32 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 启动有了七段阶段遥测，"字体首帧 40s / 内存峰值 300MB"归因落账（docs/65 P0-②）
+
+- **症状**：docs/65 §10 挂着两条没有归因的读数——WebGL 首帧 36–46s、WASM 线性内存峰值 ~300MB，
+  而且"不同场景峰值逐字节相同"这条现象没有任何解释。门只报"绿/红"，红了也说不清钱花在哪一段。
+- **根因**：两条读数都属于 **MSDF 字体路径**（不是产品路径）。首帧那 40s 是 `prewarm` 的 Phase A
+  在 wasm32 上串行逐字形栅格化（RASTER_SCALE=96px），整段发生在首帧网格生成内部；内存峰值是
+  atlas 长到 4096² 上限（64MB）+ `grow()` 双缓冲 + Phase A 的"全部栅格先驻留再打包"。产品路径
+  （FusionPixel 12px 点阵，11×11 texel 单元）首帧实测 ~58ms、峰值 46MB，两条账本来就不同。
+- **改法**：① `game_web/src/lib.rs` 加 `wasm_memory_bytes()`（`std::arch::wasm32::memory_size`，
+  非 wasm 恒 0）并在资源预载循环前后打 `preload_ms / preload_bytes / mem_before / mem_after`；
+  ② `gpu_host.rs` 的 `ensure_textures()` 打 `png_bytes / decode_ms / mem_*`，首帧打
+  `sim_boot_ms / first_frame_ms / first_frame_step_ms / first_frame_mesh_ms / mem_after_first_mesh`；
+  ③ `runtime_scene/fonts.rs`：`prewarm` 改成 256 字符一块、每块打 `chunk_ms / total_ms / atlas_px /
+  atlas_bytes / mem_bytes`——逐块遥测顺带把 Phase A 的"全部驻留"切成"每块驻留"，这是峰值下降的机制。
+  逐条读数、对拍表与复现命令在 `tasks/plan/M73-00` 的 docs65-P0② 一节；docs/65 §10.1/§10.2 按
+  "旧说法→新实测"更正，§12 P0-② 标记已完成归因。
+- **实测**：同一份插桩 wasm（bytes=5402823）+ 同一条 240 帧门，只换 `project.toml` 的 `font` 键对拍
+  ——MSDF 路 prewarm 合计 27,461.5ms、首帧 27,532.3ms、峰值 243MB（分块前 300MB，省 ~57MB）；
+  点阵路 prewarm 16–21ms、首帧 52–58ms、峰值 46MB。预载本身只有 22.3MB、贴图解码 +2.4MB，
+  都不是主体。"不同场景峰值逐字节相同"由 prewarm 与场景无关这一事实解释。
+- **新发现（不在原两条读数里）**：MSDF 路在 CJK 文本下会把 atlas 容量打满（`容量 1558`），溢出字形
+  被丢弃、场景 UI 文字整行跳过——这是产品口径（点阵字档）之外的独立缺陷，本批只登记不修。
+- **代价与未做**：① 微信小游戏 launcher 的 wasm **没有**用这份新内核重建，P0-① 真机验收前必须先走
+  `-Gpu2d` 打包链（登记在 M73-00 没测账）；② MSDF 容量溢出未修；③ 遥测只进日志通道，没有进门断言；
+  ④ P0-①（微信 GPU 路线六问）本批未执行。回滚档：`fonts.rs`、`gpu_host.rs`、`lib.rs` 三个 Rust 文件。
+
 ## Unreleased — wasm-only 探针不再拖红全量 clippy：`gpu-web-probe` 补目标位闸门、`Navigator` 自己声明
 
 - **症状**：`cargo clippy --workspace --all-targets`（本地 pre-commit 与 CI 的 Clippy 步同口径）在

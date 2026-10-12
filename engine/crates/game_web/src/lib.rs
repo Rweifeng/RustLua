@@ -55,6 +55,19 @@ mod fit;
 #[cfg(any(target_arch = "wasm32", test))]
 mod resource_index;
 
+/// wasm 线性内存当前大小（字节）。docs/65 P0 的阶段遥测用它把"300MB 峰值属于哪一段"
+/// 落成逐阶段读数。非 wasm 目标恒 0（桌面调试器本来就能看内存，不抢这条通道的语义）。
+pub(crate) fn wasm_memory_bytes() -> usize {
+    #[cfg(target_arch = "wasm32")]
+    {
+        std::arch::wasm32::memory_size(0) * 65_536
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        0
+    }
+}
+
 /// wasm 侧诊断的**唯一安装点**：panic hook（"炸了"）+ `tracing` 出口（"走到哪一步了"）。
 ///
 /// 两件事都收在这里，是因为它们必须同时在场才有用：只有 panic hook 时，事故现场只剩一句
@@ -315,9 +328,15 @@ mod wasm {
             selected_paths.len(),
             all_paths.len(),
         )));
+        // 资源预载阶段遥测（docs/65 P0：峰值要能归因到"全量预载"还是"字体图集"）：
+        // 整个 fetch 循环是一个同步长任务，前后各取一次线性内存与耗时。
+        let preload_started = web_time::Instant::now();
+        let preload_mem_before = crate::wasm_memory_bytes();
+        let mut preload_bytes = 0usize;
         for relative in selected_paths {
             match fetch_bytes(&format!("pack/{relative}")).await {
                 Ok(bytes) => {
+                    preload_bytes += bytes.len();
                     resources.insert(relative, bytes);
                 }
                 Err(e) => {
@@ -328,6 +347,11 @@ mod wasm {
                 }
             }
         }
+        web_sys::console::log_1(&JsValue::from_str(&format!(
+            "[resources] preload_ms={:.1} preload_bytes={preload_bytes} mem_before={preload_mem_before} mem_after={}",
+            preload_started.elapsed().as_secs_f64() * 1000.0,
+            crate::wasm_memory_bytes(),
+        )));
         let preloaded = resources.len();
         super::lua_bridge::set_resources(resources);
 
