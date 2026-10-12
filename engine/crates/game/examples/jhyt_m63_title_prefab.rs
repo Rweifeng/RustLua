@@ -601,13 +601,24 @@ fn draw_span(mesh: &SceneMesh, name: &str) -> Option<(usize, usize)> {
     Some((*hits.first()?, *hits.last()?))
 }
 
+/// 字形图集在读数表里的末段名：引擎侧的哨兵路径见
+/// `engine/crates/engine/src/host/frame.rs:173`（`FONT_ATLAS_TEXTURE_PATH`）。
+const FONT_SEGMENT: &str = "__font_atlas__";
+
 /// 白图（纯色块）在读数表里的角色名：它没有文件名，`mesh.draws` 里以 `texture == 0` 出现。
 const WHITE_ROLE: &str = "<内置白图>";
 
-/// ④ 的期望序列 = **迁移前实测**的本帧提交序（`--capture` 打印可粘贴的这一行）。
+/// ④ 的期望序列 = **迁移前实测**那份提交序 + 工程当前字档的字形分段（`--capture` 打印可粘贴的这一行）。
 ///
 /// 这份表是"一像素没动"在层序维度的那一份账：① 的矩形读数只管形状与内容，对"谁盖谁"完全瞎
 /// ——一块东西搬进/搬出实体层，矩形与贴图可以一个字节都不变，而从此被别人的贴图盖住。
+///
+/// 末段 `__font_atlas__` 不是门面多出来的一张图，是**工程字档的凭据**：`text_render_mode="sdf"`
+/// 加像素字（M72-03 那款 Fusion Pixel）时字形写进 `__font_atlas__` 这张图集、经 `draws` 提交，
+/// 而 `push_ui_text`/`push_scene_ui_text` 排在所有图趟之后
+/// （`engine/crates/engine/src/host/runtime_scene/frame_data.rs:878-902`）⇒ 文字恒在最上层。
+/// 换回 `vector` 档时字形改走 `SceneMesh.vector_*`（不进 `draws`），这条门会红在
+/// "分段数 期望 16、实测 15"——那是**换字档**的读数，不是层序变了（两边各实测过一次）。
 ///
 /// 表里这条**读出来的事实**（不是设计意图）：预设那 7 张图（`title_bg_pixel.png`、
 /// `ui_menu_vignette.png`、三块木牌 `ui_menu_btn_wuxia_9s.png` 等）整批排在动态层分段**之前**，
@@ -632,6 +643,7 @@ const ORDER_GOLDEN: &[&str] = &[
     "ui_menu_ornament_corner.png",
     "ui_menu_ornament_corner_tr.png",
     "ui_menu_seal_jianghu.png",
+    FONT_SEGMENT,
 ];
 
 /// 门面上要点名的角色（末段名），逐个报它在提交序列里的区间。
@@ -675,11 +687,21 @@ fn layer_order(
             None => println!("  {name:<34} 本帧没提交"),
         }
     }
-    // 诚实标注这条通道的口径：headless 顶点路径这一帧没产出任何文字分段（`mesh.draws` 里
-    // 一张字形图集都没有），所以 ④ 只管图块与纯色块的层序；文字层的先后是代码事实
-    // （`frame_data.rs`：预设图趟在 `push_ui_*` 之前、预设文字趟在 `push_ui_text` 之后，
-    // 后者受字体图集约束不能前挪），由 §10 写明，不在这道门里。
-    println!("  文字分段：无（这条读数通道这一帧不出文字 ⇒ ④ 只钉图块/色块的层序）");
+    // 文字分段在不在、排第几，是这条门**实测到**的，不是代码意图：当前字档（sdf + 像素字）下
+    // 字形经 `__font_atlas__` 进 `draws`、排在所有图块之后 ⇒ ④ 连文字层的先后一起钉。
+    // `vector` 档这一帧没有这一段（字形走 `SceneMesh.vector_*`），④ 退回只钉图块/色块。
+    match draw_span(&mesh, FONT_SEGMENT) {
+        Some((first, last)) => {
+            let start = mesh.draws[first].start;
+            let end = mesh.draws[last].start + mesh.draws[last].count;
+            println!(
+                "  文字分段：{FONT_SEGMENT} 分段 {first}..{last}（顶点 {start}..{end}），排在全部图块/色块之后 ⇒ 这一帧文字盖在最上层"
+            );
+        }
+        None => println!(
+            "  文字分段：无（当前字档把字形交给 SceneMesh.vector_*，不进 draws ⇒ ④ 只钉图块/色块的层序）"
+        ),
+    }
     if capture {
         println!(
             "  可粘贴的期望序列：{}",
@@ -708,7 +730,7 @@ fn layer_order(
             ));
         }
         return Err(format!(
-            "层序变了：\n  {}\n层序不在①的矩形读数里，所以这是唯一能证明「搬进预设的东西没被谁盖住、\n  也没盖住谁」的账（见本段注释与 docs/66 §10）。",
+            "层序变了：\n  {}\n层序不在①的矩形读数里，所以这是唯一能证明「搬进预设的东西没被谁盖住、\n  也没盖住谁」的账（期望序列的来历见本段注释；换字档会改变分段数，不是层序变了）。",
             diff.join("\n  ")
         )
         .into());
