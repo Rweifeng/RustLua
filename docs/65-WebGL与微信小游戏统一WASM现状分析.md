@@ -598,6 +598,14 @@ host: canvas_surface: ... webgl2 not available
 
 ### P1：将微信 `host_runtime` 接入真正的 `RuntimeScene`
 
+> **2026-10-12 前置通道已验（模拟器口径，方案 A 最小接管）**：`__RUSTLUA_ENGINE_HOST_VISIBLE`
+> 开启时 2d 改道离屏、宿主直接绑**主画布**——`engine_host_begin` 成功（`source=main-canvas`，
+> present 44/44 失败 0），每帧 present 后同任务的引擎侧 `readPixels` 五点回读全部等于 clear color
+> （`[69,75,85,255]`）⇒ **此刻可见屏幕的像素所有者是引擎宿主**；老 JS 世界经对照组证明仍在画
+> （改道 2d 结构读数 luma=98.7 与接管前同形）。本片的画面只有 clear-color——下面这条共享核心
+> 就是"接管的不只是一块纯色屏"的下一片。真机主画布给不给 webgl2 未验（模拟器不外推）；
+> 读数与注入复现步骤见 `tasks/plan/M73-00` 的"可见画面接管"一节与 CHANGELOG 同批条目。
+
 前提是微信真机 GPU 探针成功。应把 `gpu_host.rs` 中的平台无关部分抽成共享核心，而不是继续复制：
 
 ```text

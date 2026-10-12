@@ -22,7 +22,7 @@
   var g = typeof globalThis !== 'undefined' ? globalThis : this;
   // 版本号会打进日志和 __RUSTLUA_DIAG()：开发者工具会缓存代码包，
   // "有没有报错" 分不清旧包新包，只有版本号能分清（实测踩过）。
-  var ADAPTER_VERSION = '0.7.6+lifecycle';
+  var ADAPTER_VERSION = '0.7.7+visible-takeover';
   var wx = g.wx;
   if (!wx) {
     throw new Error('wechat-adapter: 未找到全局 wx —— 本文件只能在微信小游戏运行时中加载');
@@ -1448,6 +1448,32 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 是否与 wx.createCanvas() 返回的是同一个对象（true 时说明"首次调用"语义被我们用对了）。
   var canvasIsCreated = !!(createdCanvas && canvas === createdCanvas);
 
+  // ── 可见画面接管开关（任务 #13 方案 A：引擎宿主绑主画布）──────────────────────
+  // 为什么必须在**模块加载时**读：一张画布只能开一个上下文，"2d 要不要改道到离屏"必须在
+  // 任何人第一次 `getContext('2d')` 之前定下来——等引擎宿主真要拿主画布时再改道就晚了
+  // （2d 已经绑在主画布上，主画布从此给不出 webgl2）。验收 harness 要在
+  // `require('./wechat-adapter.js')` **之前**置 `globalThis.__RUSTLUA_ENGINE_HOST_VISIBLE = true`。
+  // 开关形态与其它开关同款（全局 / 存储），默认关 ⇒ 生产读数不变。
+  function engineHostVisibleEnabled() {
+    try { if (globalThis.__RUSTLUA_ENGINE_HOST_VISIBLE === true) return true; } catch (error) { /* 无全局对象 */ }
+    try {
+      if (typeof wx.getStorageSync === 'function') {
+        var stored = wx.getStorageSync('rustlua_engine_host_visible');
+        if (stored === true || stored === 1 || stored === '1') return true;
+      }
+    } catch (error) { /* 存储不可用不影响结论 */ }
+    return false;
+  }
+  var engineVisibleTakeover = engineHostVisibleEnabled();
+
+  // 2d 改道的读数（diag 用）。状态机：
+  //   off            —— 开关没开，2d 照旧绑主画布（生产形态）；
+  //   redirected     —— 2d 已改道到离屏画布，主画布留给引擎宿主的 webgl2；
+  //   fallback-main —— 改道画布拿不到 ⇒ 退回"2d 绑主画布"（画面优先于接管，host 会因此拿不到
+  //                     webgl2，具名失败在 engine_host.reason 里，这是**可见**的降级不是静默）。
+  var twoDRedirect = { status: 'off', source: '', note: '' };
+  var redirectCanvas = null;
+
   // ── 微信侧 GL 能力读数（WP8 的设备验证仪器）────────────────────────────────
   // 为什么要有它：引擎的真渲染器是 wgpu/WebGL2（`gpu_host.rs`：`Backends::GL` +
   // `downlevel_webgl2_defaults()`），而"微信小游戏给不给 WebGL2"直接决定 WP8 在微信上能不能
@@ -1629,6 +1655,8 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   var engineHost = {
     status: 'off', reason: '', source: '', begin: '', frames: 0, steps: 0,
     presented: 0, failed: 0, clamped: 0, inputApplied: 0, lastState: null,
+    // 本次宿主是不是接管的**主画布**（方案 A）；diag 与 harness 都读它，不猜开关组合。
+    visibleTakeover: false,
     // ④ 前后台门控计数：hidden 期间被跳过、没有送去 `engine_host_frame` 的帧数。
     hiddenSkips: 0,
     // ⑥ begin summary 里的 Rust 侧线性内存（`wasm_mem_bytes`），从 JSON 里抠出来单记——
@@ -1651,6 +1679,8 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   var engineHostMinMs = 0;
 
   function engineHostEnabled() {
+    // 可见接管开关**蕴含**引擎宿主开关：接管形态下宿主是画面所有者，不存在"开接管不开宿主"。
+    if (engineVisibleTakeover) return true;
     try { if (globalThis.__RUSTLUA_ENGINE_HOST === true) return true; } catch (error) { /* 无全局对象 */ }
     try {
       if (typeof wx.getStorageSync === 'function') {
@@ -1714,8 +1744,21 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     // 宿主画布按**上屏尺寸**开（它要负责整屏呈现），而不是探针那种 16×16 的连通性画布。
     var width = Math.max(1, Math.round(screenWidth * (pixelRatio || 1)));
     var height = Math.max(1, Math.round(screenHeight * (pixelRatio || 1)));
-    var target = dedicatedGpuCanvas(info, width, height);
+    var target;
+    if (engineVisibleTakeover) {
+      // 接管形态：宿主直接绑**主画布**。此刻主画布还是干净的——2d 从没在它上面绑过
+      // （getContext 包装在第一次 '2d' 请求时就把它改道到离屏，见 ensureTwoDRedirectCanvas），
+      // webgl2 因此能开出来。能开 webgl2 这件事本身就是这片验收要回答的问题（模拟器/真机都未证）。
+      target = canvas;
+      info.source = 'main-canvas(visible-takeover)';
+      // 尺寸以主画布现状为准（平台给的就是上屏像素尺寸），拿不到才退回屏幕计算值。
+      width = Math.max(1, canvas.width || width);
+      height = Math.max(1, canvas.height || height);
+    } else {
+      target = dedicatedGpuCanvas(info, width, height);
+    }
     engineHost.source = info.source;
+    engineHost.visibleTakeover = engineVisibleTakeover;
     if (!target) {
       engineHost.status = 'failed';
       engineHost.reason = 'no-host-canvas:' + (info.note || 'unknown');
@@ -1731,7 +1774,11 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       canvas_height: height,
       // `tick: 'lua'` = 由宿主推进 Lua 固定步。老 JS 世界每帧也在跑，两边同时跑 =
       // 世界推进两次 ⇒ 只有显式打开第二个开关才走这条路，并打一行警告。
-      tick: tickWanted ? 'lua' : 'none'
+      tick: tickWanted ? 'lua' : 'none',
+      // 接管形态固定开像素回读：验收要"主画布真的被宿主画出来了"的**像素证据**，
+      // 而不是只有 status=running（口径见 host_runtime.rs 的 preserveDrawingBuffer 注释——
+      // 唯一可信窗口是 present 后同任务的引擎侧 readPixels，JS 事后 toDataURL 只会截到空白）。
+      pixel_sample: engineVisibleTakeover
     });
     if (tickWanted) {
       log('wechat-adapter: 引擎宿主将接管固定步（tick=lua）——运行时会因此停掉自己的固定步；'
@@ -1990,6 +2037,38 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     return ctx;
   }
 
+  // 2d 改道的离屏画布（只在接管形态下创建，第一次 '2d' 请求时）。尺寸取**当时**主画布的
+  // 尺寸快照；`onWindowResize` 之后主画布变了、这张不会跟着变——这片是验收通道，记在
+  // twoDRedirect.note 之外不再处理（resize 在模拟器验收里不发生）。
+  function ensureTwoDRedirectCanvas() {
+    if (redirectCanvas) return redirectCanvas;
+    var width = Math.max(1, canvas.width || VIEW_WIDTH);
+    var height = Math.max(1, canvas.height || VIEW_HEIGHT);
+    if (typeof wx.createOffscreenCanvas === 'function') {
+      try {
+        var off = wx.createOffscreenCanvas({ type: '2d', width: width, height: height });
+        if (off && typeof off.getContext === 'function') {
+          redirectCanvas = off;
+          twoDRedirect.source = 'wx.createOffscreenCanvas(2d,' + width + 'x' + height + ')';
+          return off;
+        }
+      } catch (error) { twoDRedirect.note = twoDRedirect.note || 'offscreen-2d-threw'; }
+    }
+    // 兜底：`wx.createCanvas()` 首次之外的调用返回离屏画布（主画布已在上面拿过）。
+    var again = null;
+    try { again = safeCall(wx, 'createCanvas'); } catch (error) { again = null; }
+    if (again && again !== canvas && typeof again.getContext === 'function') {
+      again.width = width;
+      again.height = height;
+      redirectCanvas = again;
+      twoDRedirect.source = 'wx.createCanvas(2d-fallback,' + width + 'x' + height + ')';
+      return again;
+    }
+    twoDRedirect.status = 'failed';
+    twoDRedirect.note = twoDRedirect.note || 'no-redirect-canvas';
+    return null;
+  }
+
   var rawGetContext = canvas.getContext;
   canvas.getContext = function (kind, attributes) {
     if (kind !== '2d') return rawGetContext ? rawGetContext.call(canvas, kind, attributes) : null;
@@ -1997,9 +2076,22 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       // 第二个参数必须转给宿主：运行时用 `{ willReadFrequently: true }` 声明"这层 canvas 要频繁
       // getImageData 回读像素"（画面自检），丢了它宿主就按"很少回读"配上下文，开发者工具会为
       // 每次回读提示一次性能警告。
-      var ctx = rawGetContext ? rawGetContext.call(canvas, '2d', attributes) : null;
+      var ctx = null;
+      if (engineVisibleTakeover) {
+        var redirect = ensureTwoDRedirectCanvas();
+        // 改道成功才走离屏；拿不到改道画布时**退回主画布**（画面优先于接管——宁可验收降级，
+        // 不许黑屏）。退回去后宿主在主画布上拿不到 webgl2，会在 engine_host.reason 里具名失败。
+        if (redirect) {
+          ctx = redirect.getContext('2d', attributes);
+          if (ctx) twoDRedirect.status = 'redirected';
+        }
+        if (!ctx) twoDRedirect.status = 'fallback-main';
+      }
+      if (!ctx) ctx = rawGetContext ? rawGetContext.call(canvas, '2d', attributes) : null;
       if (!ctx) return null;
       canvas.__rustluaContext = wrapContext(ctx);
+      log('wechat-adapter: 2d 上下文绑定 path=' + (twoDRedirect.status === 'redirected' ? 'offscreen-redirect' : 'main-canvas') +
+        ' v=' + ADAPTER_VERSION);
     }
     return canvas.__rustluaContext;
   };
@@ -2222,6 +2314,15 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         runtime_input_frames: engineHost.runtimeInputFrames,
         hidden_skips: engineHost.hiddenSkips,
         mem_begin: engineHost.memBegin,
+        // 方案 A 的两条形态读数：宿主绑的是不是主画布 / 2d 有没有改道成功。
+        // 两条必须一起看——`visible_takeover=true` 而 `two_d_redirect=off` 意味着 2d 先于
+        // 开关绑上了主画布（harness 置开关的时机错了），那时宿主拿不到 webgl2。
+        visible_takeover: engineHost.visibleTakeover,
+        two_d_redirect: {
+          status: twoDRedirect.status,
+          source: twoDRedirect.source || 'none',
+          note: twoDRedirect.note || ''
+        },
         last_state: engineHost.lastState || null
       },
       // ④ 前后台底座读数：hidden 旗的当前值 + 谁在订 visibilitychange + 派发目标到底是谁。
@@ -4121,6 +4222,22 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     // 微信侧 GL 能力（webgl2 / webgl / 上限）：WP8 要在微信上接引擎渲染器，先得知道宿主给不给
     // WebGL2。真机/开发者工具里执行 `__RustLuaWechat.glCapability()` 即可拿到同一份读数。
     glCapability: probeGlCapability,
+    // 引擎宿主的 wasm 侧状态**直读**（`engine_host_state` 的 JSON，含 `pixel_sample` 像素回读）。
+    // 未 boot / 内核无 GPU 路径都返回具名 JSON 而不是抛异常——验收侧要的是读数，不是栈。
+    engineHostState: function () {
+      var host = engineHostRef;
+      if (!host || typeof host.engine_host_state !== 'function') {
+        return JSON.stringify({
+          ok: false,
+          reason: host ? 'kernel-without-engine-host-state' : 'kernel-not-loaded-yet'
+        });
+      }
+      try {
+        return host.engine_host_state();
+      } catch (error) {
+        return JSON.stringify({ ok: false, reason: String((error && error.message) || error).slice(0, 300) });
+      }
+    },
     // 渲染自证：开发者工具控制台里可直接 `__RUSTLUA_DIAG()` 复制一份现场快照
     // （主画布来源、像素回读、帧数、贴图成败、远端状态、wasm 核心状态）。
     diag: diagSnapshot,
@@ -4164,6 +4281,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     if (typeof wx !== 'undefined' && wx) {
       wx.__rustluaDiag = diagSnapshot;
       wx.__rustluaCanvasInfo = api.canvasInfo;
+      wx.__rustluaEngineHostState = api.engineHostState;
       wx.__rustluaVersion = ADAPTER_VERSION;
       wx.__rustluaPublishDiag = publishDiag;
       wxBridge = 'ok';

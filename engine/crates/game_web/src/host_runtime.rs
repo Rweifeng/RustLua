@@ -59,6 +59,16 @@ struct EngineHost {
     tick_failures: u64,
     clear: wgpu::Color,
     canvas_note: String,
+    /// `pixel_sample` 开关（任务 #13 方案 A）：present 后同任务回读几个像素。
+    /// 为什么必须是**引擎侧 readPixels**而不是 JS 的 `toDataURL`：wgpu-hal 27 建上下文只设
+    /// `antialias:false`（`gles/web.rs:103`），`preserveDrawingBuffer` 保持默认 false ⇒
+    /// 浏览器在合成之后就把绘制缓冲清空，事后 `toDataURL` 只会截到空白。present 之后、
+    /// 本任务结束之前读像素是唯一可信窗口。
+    pixel_sample: bool,
+    /// 同一个 WebGL2 上下文（`getContext('webgl2')` 二次调用返回已存在的那个），只为回读。
+    gl: Option<web_sys::WebGl2RenderingContext>,
+    /// 最近一次回读的读数（`中心=… 左上=… …`）；未开启/未采过为空串。
+    last_pixel_sample: String,
     presented_frames: u64,
     failed_presents: u64,
     input_frames: u64,
@@ -134,6 +144,18 @@ async fn begin_inner(
         option_u32(&options, "max_catch_up_steps", DEFAULT_MAX_CATCH_UP_STEPS)?;
     let max_frame_seconds = option_f64(&options, "max_frame_seconds", DEFAULT_MAX_FRAME_SECONDS)?;
     let clear = option_color(&options)?;
+    // `pixel_sample`（任务 #13 方案 A）：present 后同任务回读像素。默认关——readPixels 是
+    // 同步阻塞调用，不该白加在生产帧循环上；只有可见画面接管的验收场合显式打开。
+    let pixel_sample = match options.get("pixel_sample") {
+        None | Some(serde_json::Value::Null) => false,
+        Some(serde_json::Value::Bool(value)) => *value,
+        Some(other) => {
+            return Err(host_error(
+                "options",
+                format!("pixel_sample 只接受 true/false，给的是 {other}"),
+            ));
+        }
+    };
     // `tick`：谁跑 Lua 的固定步。默认 `none` —— 老 JS 世界每帧也在跑，两边同时跑就是把世界推进两次。
     // `lua` = 由本宿主按自己的帧时钟推进（`lua_fixed_run_steps`），给"引擎宿主拥有整个世界"那条路用。
     let tick_lua = match options.get("tick") {
@@ -221,6 +243,23 @@ async fn begin_inner(
     };
     surface.configure(&device, &config);
 
+    // 回读开启时拿 wgpu-hal 在 create_surface 时就建好的**同一个** WebGL2 上下文：
+    // WebGL 规范保证同一 canvas 上二次 `getContext('webgl2')` 返回已存在的那个，
+    // 所以这里不会抢在 wgpu 之前建第二个上下文（那才是真正会毁掉 surface 的写法）。
+    let gl = if pixel_sample {
+        let context = canvas
+            .get_context("webgl2")
+            .map_err(|error| host_error("gl-context", format!("{error:?}")))?
+            .ok_or_else(|| host_error("gl-context", "画布没有给出 WebGL2 上下文"))?;
+        Some(
+            context
+                .dyn_into::<web_sys::WebGl2RenderingContext>()
+                .map_err(|_| host_error("gl-context", "画布上已存在的上下文不是 WebGL2"))?,
+        )
+    } else {
+        None
+    };
+
     let clock = FrameClock::new(updates_per_second, max_catch_up_steps, max_frame_seconds)
         .map_err(|error| host_error("frame-clock", error))?;
     let canvas_note = format!("{width}x{height}");
@@ -235,6 +274,7 @@ async fn begin_inner(
         "max_frame_seconds": max_frame_seconds,
         "tolerance_seconds": FRAME_INTERVAL_TOLERANCE_SECONDS,
         "tick": if tick_lua { "lua" } else { "none" },
+        "pixel_sample": pixel_sample,
         "frame_abi": HOST_FRAME_ABI,
         "frame_abi_version": HOST_FRAME_ABI_VERSION,
         "frame_abi_len": HOST_FRAME_SLOTS.len(),
@@ -265,6 +305,9 @@ async fn begin_inner(
             tick_failures: 0,
             clear,
             canvas_note,
+            pixel_sample,
+            gl,
+            last_pixel_sample: String::new(),
             presented_frames: 0,
             failed_presents: 0,
             input_frames: 0,
@@ -413,6 +456,10 @@ fn frame_core(dt_ms: f64, input: JsValue) -> Result<[f64; HOST_FRAME_LEN], JsVal
         // WebGL2 没有阻塞能力：显式 poll 一次，让这一帧的校验错误在这里暴露，而不是变成下一帧的谜题。
         let _ = host.device.poll(wgpu::PollType::Poll);
         host.presented_frames += 1;
+        if host.pixel_sample {
+            host.last_pixel_sample =
+                read_pixel_sample(host.gl.as_ref(), host.config.width, host.config.height);
+        }
         host.last_note = if plan.clamped {
             format!("clamped({:.3}s)", plan.elapsed_seconds)
         } else {
@@ -523,6 +570,7 @@ pub fn engine_host_state() -> Result<String, JsValue> {
             "canvas": host.canvas_note,
             "input_note": host.last_input_note,
             "note": host.last_note,
+            "pixel_sample": host.last_pixel_sample,
             "size": format!("{}x{}", host.config.width, host.config.height),
             // docs/65 P0-⑥：随时可采的线性内存读数（与 begin summary 同一口径）。
             "wasm_mem_bytes": crate::wasm_memory_bytes(),
@@ -537,6 +585,53 @@ pub fn engine_host_end() {
     HOST.with(|slot| {
         *slot.borrow_mut() = None;
     });
+}
+
+/// 用 `readPixels` 采 5 个点：中心 + 四角（各内缩 1px）。坐标按 GL 口径（原点在**左下**），
+/// 命名按屏幕口径（"左上"= 屏幕上看到的左上）。
+///
+/// 每点一次 1x1 回读，依赖的唯一前提是"present 之后、同一 JS 任务之内，默认帧缓冲里就是
+/// 刚呈现的内容"（`preserveDrawingBuffer:false` 清空发生在本任务结束后的合成时点）。
+/// 失败**写进读数而不是 panic**：这是验收读数通道，不该把帧循环带崩。
+fn read_pixel_sample(
+    gl: Option<&web_sys::WebGl2RenderingContext>,
+    width: u32,
+    height: u32,
+) -> String {
+    let Some(gl) = gl else {
+        return "no-gl-context".to_string();
+    };
+    let inset_x = width.saturating_sub(2).max(1);
+    let inset_y = height.saturating_sub(2).max(1);
+    let points: [(&str, u32, u32); 5] = [
+        ("中心", width / 2, height / 2),
+        ("左上", 1, inset_y),
+        ("右上", inset_x, inset_y),
+        ("左下", 1, 1),
+        ("右下", inset_x, 1),
+    ];
+    let mut parts = Vec::with_capacity(points.len());
+    for (name, x, y) in points {
+        let mut pixel = [0u8; 4];
+        let read = gl.read_pixels_with_opt_u8_array(
+            x as i32,
+            y as i32,
+            1,
+            1,
+            web_sys::WebGl2RenderingContext::RGBA,
+            web_sys::WebGl2RenderingContext::UNSIGNED_BYTE,
+            Some(&mut pixel),
+        );
+        if read.is_ok() {
+            parts.push(format!(
+                "{name}=[{},{},{},{}]",
+                pixel[0], pixel[1], pixel[2], pixel[3]
+            ));
+        } else {
+            parts.push(format!("{name}=read-failed"));
+        }
+    }
+    parts.join(" ")
 }
 
 fn option_u32(options: &serde_json::Value, key: &str, fallback: u32) -> Result<u32, JsValue> {

@@ -5,6 +5,46 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 微信引擎宿主首次接管可见主画布（模拟器口径）：主画布开得出 webgl2，present 44/44，像素回读=清屏色
+
+- **症状/动机**：docs/65 §12 P1（宿主接真场景）的前提通道一直是登记过的"没测账"——引擎宿主只画在
+  **专用离屏画布**上，可见画面从头到尾归老 JS 世界；"主画布给不给 webgl2 上下文、2d 改道后世界还
+  画不画得出东西"在模拟器里一次没验过。本批是用户选定方案 A 的**最小接管**：宿主直接绑主画布，
+  clear-color 帧即算本片证据，场景内容留给 P1。
+- **改法**：适配层（wechat-adapter.js `0.7.6+lifecycle`→`0.7.7+visible-takeover`）加第三个开关
+  `__RUSTLUA_ENGINE_HOST_VISIBLE`（全局/存储同款，**必须在模块加载时读**——第一次 `getContext('2d')`
+  不可逆，等宿主真要拿主画布再改道就晚了）：开启时 `canvas.getContext` 包装把 2d 改道到离屏画布
+  （主通道 `wx.createOffscreenCanvas({type:'2d'})`，兜底第二次 `wx.createCanvas()`；都拿不到就
+  **退回主画布并具名记账**——画面优先于接管，宁可验收降级不许黑屏），`engineHostEnabled` 被它蕴含，
+  宿主 target 从专用离屏换成主画布、`pixel_sample: true` 固定开；diag 加 `visible_takeover`/
+  `two_d_redirect`，出口加 `engineHostState()`（wasm `engine_host_state` 直读，含像素回读）。
+  Rust 侧（host_runtime.rs）：`pixel_sample` 选项 + begin 时二次 `getContext('webgl2')` 拿 wgpu-hal
+  已建的**同一个**上下文、每帧 present 后**同任务** `readPixels` 采 5 点（中心+四角内缩 1px）。
+  为什么必须引擎侧回读而不是 JS `toDataURL`：wgpu-hal 27 建上下文只设 `antialias:false`
+  （`gles/web.rs:103`），`preserveDrawingBuffer` 默认 false ⇒ 规范口径下合成后缓冲即清空。
+- **实测（`.temp/visible-shot-probe.js`+collector 注入跑，终行 `verdict=takeover-ok`）**：
+  `engine_host={status:running, source:main-canvas(visible-takeover), frames:44, presented:44}`
+  （失败 0）；`pixel_sample=中心=[69,75,85,255] 左上=… 右上=… 左下=… 右下=…` 五点一致，正是
+  clear color `[0.06,0.07,0.09]` 线性→sRGB 8bit 值 ⇒ **主画布的像素此刻是宿主写的**；对照组
+  改道 2d `getImageData` luma=98.7/runs=145400 与尖峰期 JS 世界标题读数（98.7/145534）同形 ⇒
+  老世界照旧在画、只是画在离屏；模拟器主画布 `toDataURL` 拿到 54,721 B 均匀深灰蓝 PNG（目验）——
+  与规范最坏预期不符（模拟器实现把 present 内容留到了回读之后），**真机不外推**。
+  模拟器里 `wx.createOffscreenCanvas({type:'2d'})` 没给出可用画布（未抛异常、note 为空），改道走的是
+  兜底通道 `wx.createCanvas(2d-fallback,2532x1170)`——现象登记，原因未展开。
+- **门禁**：`verify-wechat-minigame.ps1 -ExpectGpuKernel` EXIT=0，生产口径 `engine_host=off
+  reason=switch-off`、`2d 上下文绑定 path=main-canvas`（默认关 ⇒ 行为与 0.7.6 逐字同形）；
+  `cargo check -q -p game_web --target wasm32-unknown-unknown --features gpu2d`（1.88+ZIG）exit 0、
+  `cargo fmt --all -- --check` exit 0、`check_docs_ok docs=59 game_docs=46 links=414`。
+  复现：重打包（`package.ps1 -Platform wechat-minigame -Gpu2d -WechatAppId wx7091f1cf872130bb`）→
+  launcher/game.js 在 require 适配层**前**置 `__RUSTLUA_ENGINE_HOST_VISIBLE=true`、尾部 require
+  `.temp/visible-shot-probe.js` 的拷贝 → `node .temp/visible-shot-collector.js`（注入物验收后已撤）。
+- **未测与本批不碰的账**：① 真机主画布给不给 webgl2（模拟器结论不外推）；② 接管后画面只有
+  clear-color——场景内容 = P1 本体（docs/65 §12 抽共享核心）；③ 改道画布不跟随 `onWindowResize`
+  改尺寸（验收形态刻意不管，已注释登记）；④ `pixel_sample` 的 readPixels 是同步阻塞，只随接管
+  形态开，生产帧循环不付这个钱；⑤ 模拟器 toDataURL 能截到 GPU 画布这件事本身是**实现行为**，
+  依赖它的任何截屏通道都要先真机复验。回滚档：wechat-adapter.js 的接管段 + host_runtime.rs 的
+  pixel_sample 三处。
+
 ## Unreleased — P0-① 第二批：④ 前后台恢复在模拟器口径转 recovered、⑥ 内存读数双侧口径开表
 
 - **症状**：六问剩下两问没有读数通道——④ 在微信宿主里**结构上不存在**：适配层只把 `wx.onHide/onShow`
