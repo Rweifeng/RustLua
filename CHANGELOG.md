@@ -5,6 +5,39 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — P0-① 第二批：④ 前后台恢复在模拟器口径转 recovered、⑥ 内存读数双侧口径开表
+
+- **症状**：六问剩下两问没有读数通道——④ 在微信宿主里**结构上不存在**：适配层只把 `wx.onHide/onShow`
+  映成 window 的 blur/focus，`document` 是无操作的假监听器（addEventListener 收人不执行）、没有
+  `hidden` 字段，引擎侧 `LifecycleEvents`（gpu_host.rs）订阅的 `visibilitychange` 永远不会到达；
+  ⑥ 则两侧都没有可独立对拍的读数（JS 侧拿不到 wasm 线性内存字节数，Rust 侧 begin summary 没有
+  `wasm_mem_bytes`）。
+- **根因与判别链（run18→run23，全部登记在 `tasks/plan/M73-00` docs65-P0①补充一节）**：run18 探针
+  截不到注册函数（适配层在模块加载期就 `wx.onHide` 了，注入必须早于 `require('./wechat-adapter.js')`）；
+  run19-22 订阅成功但 `events=0`——微信开发者工具的 game 壳给了一个**伪 `HTMLDocument` 全局**：
+  原生 addEventListener "看着够用"（过了 `shimMemberUsable` 判定）、原生 dispatchEvent 却拒收普通
+  对象、连 `createEvent`/`new Event` 都造不出它能派发的 Event ⇒ 教训一条：**代理宿主的"够用"判定
+  只证明方法在场，不证明语义可用**。
+- **改法**：适配层把 `document` 做成真事件目标（`createEventTarget` + `hidden` getter +
+  `dispatchVisibility`），`wx.onHide/onShow` 额外派发 `visibilitychange`；`document` 全局被宿主
+  伪档占住时上 **双路分发包装**（`ensureVisibilityChannel`：shim 注册表必达 + 宿主原生尽力转发）；
+  引擎宿主帧循环加 hidden 门控（hidden 期间 `hidden_skips++`、present 冻结、重置 lastMs 免得恢复
+  第一拍灌巨大 dt）；`wasm-bridge.js` 导出 `__RUSTLUA_WASM_MEMORY_BYTES`（`memory.buffer.byteLength`
+  随增长实时），Rust 侧 begin summary 与 `engine_host_state` 都带 `crate::wasm_memory_bytes()`，
+  适配层从 summary 正则回摘进 diag 的 `mem_begin`——两口径独立、同问对拍。版本标记
+  `0.7.6+lifecycle`。
+- **实测（run23，`node scripts/wechat-devtools-probe.js` exit 0）**：
+  `q4_foreground_restore=recovered`（hidden 期间 present 冻结、`hidden_skips=135`、onShow 后
+  323→457 恢复出帧、`events=2`——其中一次是 `web-runtime.js:7241` 那个写了以来第一次收到微信的
+  `visibilitychange` 的活订阅者）；`q6_mem reader=installed now=9240576 begin_summary=2228224
+  peak=8912896 samples=7 warnings=[] device_budget=device-pending`；`verdict=gpu-route-ok-simulator`。
+- **口径要记清**：④ 是**回调链驱动**的模拟切换，不是 OS 级 suspend；设备内存预算（真机 RSS 与微信
+  告警阈值）仍 device-pending（真机无）。连带：探针注入物会让 `verify-wechat-minigame.ps1` 的
+  "生产口径引擎画布探针必须是 off" 门**假红**（探针自己会开产品开关）——跑门禁前必须先撤注入；
+  `cli quit` 是异步的，IDE 进程没退干净就重打包会 EBUSY 换入失败并把旧产物自动还原（判法：`tasklist`）。
+  未测：GPU 宿主接管可见画面的整屏目验照旧没跑；hidden 门控只盖引擎宿主帧，老 JS 世界后台仍在步进。
+  回滚档：wechat-adapter.js / wasm-bridge.js 的生命周期与读数段 + host_runtime.rs 两处 `wasm_mem_bytes`。
+
 ## Unreleased — 微信 GPU 路线模拟器首绿：六问里 ①②③⑤ 全绿，途中修掉三条会让 wasm 宿主"静默挂死/必炸"的宿主缺陷
 
 - **症状**：docs/65 §12 P0-① 的 `probe_canvas_host`/`engine_host_begin` 在微信开发者工具里表现为

@@ -561,7 +561,13 @@ host: canvas_surface: ... webgl2 not available
 > 终行 `verdict=gpu-route-ok-simulator`：探针 ok、宿主 begin 在 2532x1170 离屏画布建立 surface、
 > 322/300 连续 present 0 失败、EH `accepted`）；途中修掉三条宿主缺陷（缺 `queueMicrotask`、GPU 入口缺
 > panic hook、缺 `WebGL2RenderingContext` 全局——详见 `tasks/plan/M73-00` 的 docs65-P0① 一节）。
-> ④（前后台）与 ⑥（内存预算）只能在真机回答，device-pending。执行进展登记在 `tasks/plan/M73-00`。
+> **④⑥ 同日第二批已答（模拟器口径）**——旧说法"只能在真机回答"已不成立：**④ 前后台恢复=recovered**
+> （微信 onHide/onShow → 适配层 visibilitychange 派发 → 引擎宿主出帧门控：hidden 期间 present 冻结、
+> `hidden_skips=135`、onShow 后 323→457 恢复，run23 终行原文见 `tasks/plan/M73-00` 的 docs65-P0①补充
+> 一节；这**不是** OS 级 suspend，回调链外的 OS 级切换仍 device-pending）；**⑥ 内存读数双侧口径已开表**
+> （JS 侧 `__RUSTLUA_WASM_MEMORY_BYTES` 与 Rust 侧 begin summary 的 `wasm_mem_bytes`：线性内存
+> 2,228,224 → 9,240,576 B，`onMemoryWarning` 告警 0 条；**设备预算**——真机 RSS 与微信告警阈值——仍
+> device-pending）。执行进展登记在 `tasks/plan/M73-00`。
 
 应在微信开发者工具、至少一台 Android 和一台 iOS 设备上回答：
 

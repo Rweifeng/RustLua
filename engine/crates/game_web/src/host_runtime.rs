@@ -238,6 +238,9 @@ async fn begin_inner(
         "frame_abi": HOST_FRAME_ABI,
         "frame_abi_version": HOST_FRAME_ABI_VERSION,
         "frame_abi_len": HOST_FRAME_SLOTS.len(),
+        // docs/65 P0-⑥：begin 时刻的 wasm 线性内存基线（Rust 侧口径；JS 侧另有
+        // `__RUSTLUA_WASM_MEMORY_BYTES`，两侧同问对拍用）。
+        "wasm_mem_bytes": crate::wasm_memory_bytes(),
     });
     report_line(
         report,
@@ -521,6 +524,8 @@ pub fn engine_host_state() -> Result<String, JsValue> {
             "input_note": host.last_input_note,
             "note": host.last_note,
             "size": format!("{}x{}", host.config.width, host.config.height),
+            // docs/65 P0-⑥：随时可采的线性内存读数（与 begin summary 同一口径）。
+            "wasm_mem_bytes": crate::wasm_memory_bytes(),
         });
         Ok(state.to_string())
     })

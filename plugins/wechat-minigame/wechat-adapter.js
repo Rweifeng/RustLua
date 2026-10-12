@@ -22,7 +22,7 @@
   var g = typeof globalThis !== 'undefined' ? globalThis : this;
   // 版本号会打进日志和 __RUSTLUA_DIAG()：开发者工具会缓存代码包，
   // "有没有报错" 分不清旧包新包，只有版本号能分清（实测踩过）。
-  var ADAPTER_VERSION = '0.7.5+engine-probe';
+  var ADAPTER_VERSION = '0.7.6+lifecycle';
   var wx = g.wx;
   if (!wx) {
     throw new Error('wechat-adapter: 未找到全局 wx —— 本文件只能在微信小游戏运行时中加载');
@@ -1629,6 +1629,11 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   var engineHost = {
     status: 'off', reason: '', source: '', begin: '', frames: 0, steps: 0,
     presented: 0, failed: 0, clamped: 0, inputApplied: 0, lastState: null,
+    // ④ 前后台门控计数：hidden 期间被跳过、没有送去 `engine_host_frame` 的帧数。
+    hiddenSkips: 0,
+    // ⑥ begin summary 里的 Rust 侧线性内存（`wasm_mem_bytes`），从 JSON 里抠出来单记——
+    // `begin` 字段只留 400 字符，整包塞进 diag 会被截尾。
+    memBegin: null,
     // 定长 ABI（WP7-55）：每帧搬一个 Float64Array，不再每帧 JSON.parse。
     abi: '', abiVersion: 0, slot: null, out: null,
     // 宿主是否负责跑 Lua 固定步；以及"老 JS 世界也在跑"的冲突读数。
@@ -1741,6 +1746,9 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       .then(function (summary) {
         engineHost.status = 'running';
         engineHost.begin = String(summary || '').slice(0, 400);
+        // ⑥ Rust 侧 begin 基线：从 summary JSON 里抠 `wasm_mem_bytes`（口径见 host_runtime.rs）。
+        var memMatch = /"wasm_mem_bytes":(\d+)/.exec(String(summary || ''));
+        engineHost.memBegin = memMatch ? Number(memMatch[1]) : null;
         engineHost.tick = tickWanted;
         // 到这里宿主**真的起来了**（设备、管线、布局都拿到了）：如果它是来接固定步的，
         // 现在才把"世界由它推进"的标记交给它。放在 `.catch` **之前**，所以后面任何失败都会走
@@ -1800,6 +1808,14 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     if (engineHost.status !== 'running') return;
     var host = engineHostRef;
     if (!host || typeof host.engine_host_frame_into !== 'function' || !engineHost.slot) return;
+    // ④ 与 gpu_host 帧循环同口径：hidden 期间不出帧。真机上 wx 的 rAF 本身会停，但"会停"
+    // 是平台行为不是我们的保证（模拟器/异常宿主仍在给帧），所以这道门必须在。
+    // 重开后的第一帧 dt 从当下起算（复位 engineHostLastMs），隐藏的时长不会积成一次巨大 dt。
+    if (documentHidden) {
+      engineHost.hiddenSkips += 1;
+      engineHostLastMs = Date.now();
+      return;
+    }
     var now = Date.now();
     var dtMs = Math.max(0, now - engineHostLastMs);
     engineHostLastMs = now;
@@ -1998,13 +2014,16 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     removeAttribute: function (name) { delete bootAttributes[name]; },
     appendChild: function () {}, style: {}, textContent: ''
   };
+  // ④ 前后台的读数底座。引擎宿主的 `LifecycleEvents`（game_web/src/gpu_host.rs）只认两件事：
+  // `document.hidden` 的实时值 + `visibilitychange` 订阅。这一版之前 addEventListener 是 no-op、
+  // 且没有 `hidden`——微信侧生命周期与引擎从此**互不相通**。改成真事件注册表（createEventTarget）
+  // 加 getter，由 installLifecycle 在 wx.onHide/onShow 里写旗并派发。
+  var documentHidden = false;
   var documentShim = {
     readyState: 'complete',
     body: bodyElement,
     documentElement: bodyElement,
     fonts: { add: function () {} },
-    addEventListener: function () {},
-    removeEventListener: function () {},
     querySelectorAll: function () { return []; },
     querySelector: function () { return null; },
     createElement: function (tag) {
@@ -2016,6 +2035,17 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       return null;
     }
   };
+  createEventTarget(documentShim);
+  try {
+    Object.defineProperty(documentShim, 'hidden', {
+      get: function () { return documentHidden; },
+      enumerable: true,
+      configurable: true
+    });
+  } catch (error) {
+    documentShim.hidden = documentHidden;
+    warn('wechat-adapter: document.hidden 装不上 getter（退化为定值，前后台读数不可信）-> ' + hostError(error));
+  }
 
   function bootMark(name) {
     if (bodyElement.getAttribute(name) != null) return true;
@@ -2190,7 +2220,23 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         runtime_fixed_frames: engineHost.runtimeFixedFrames,
         runtime_run_steps: engineHost.runtimeRunSteps,
         runtime_input_frames: engineHost.runtimeInputFrames,
+        hidden_skips: engineHost.hiddenSkips,
+        mem_begin: engineHost.memBegin,
         last_state: engineHost.lastState || null
+      },
+      // ④ 前后台底座读数：hidden 旗的当前值 + 谁在订 visibilitychange + 派发目标到底是谁。
+      // `subs=-1` = documentTarget 没有 __listenerCount（宿主 document 抢占且补不上注册表）。
+      // run20 教训：`subs=0` 而探针明明订阅成功了——说明**探针订的对象**和**适配层派发的
+      // 对象**可能不是同一个（宿主 document 在 boot 期间被换/代理）。没有这三条身份读数，
+      // 事件到达与否的失败现场无法归因。
+      visibility: {
+        hidden: documentHidden,
+        subs: (typeof documentTarget !== 'undefined' && documentTarget &&
+          typeof documentTarget.__listenerCount === 'function')
+          ? documentTarget.__listenerCount('visibilitychange') : -1,
+        target_is_shim: (typeof documentTarget !== 'undefined') && documentTarget === documentShim,
+        global_matches_target: g.document === documentTarget,
+        target_ctor: (documentTarget && documentTarget.constructor && documentTarget.constructor.name) || 'none'
       },
       pixel_probe: pixelProbeValue,
       frames: frameCount,
@@ -2720,8 +2766,76 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     function on(name, handler) {
       if (typeof wx[name] === 'function') { try { wx[name](handler); } catch (e) { warn('wechat-adapter: ' + name + ' 注册失败 ' + e); } }
     }
-    on('onHide', function () { dispatchWindow(makeEvent('blur', {})); });
-    on('onShow', function () { dispatchWindow(makeEvent('focus', {})); });
+    // ④ 前后台要让**引擎宿主**也看得见：只派发 window blur/focus 是不够的——引擎订的是
+    // document 的 visibilitychange（gpu_host.rs LifecycleEvents），而文档侧此前是 no-op。
+    // 现在写 hidden 旗 + 在运行时的 document（可能是宿主那份，见 installShimGlobal）上派发；
+    // blur/focus 原样保留（老 JS 世界读的是它们）。
+    //
+    // 实测（run19）：开发者工具的壳给的是一个**原生 DOM document**——它的 addEventListener
+    // 因"够用"被 installShimGlobal 保留，而原生 dispatchEvent 用类型检查拒掉 plain 对象
+    // （"is not of type 'Event'"）。所以派发要带两步兜底：plain 事件被拒 → 换真 Event 再派；
+    // 并给 shim 注册表补派一次（宿主保留原生监听器时，注册在 shim 里的订阅者不能饿死）。
+    function dispatchVisibility(hidden) {
+      documentHidden = hidden;
+      var target = (typeof documentTarget !== 'undefined' && documentTarget) ? documentTarget : documentShim;
+      try {
+        // 宿主 document 不可扩展时 getter 装不上（installShimGlobal 会 warn"补不动的 hidden"），
+        // 这里逐次把当前值写过去，至少让 document.hidden 的读数跟着生命周期走。
+        if (target !== documentShim) { try { target.hidden = hidden; } catch (e) { /* 属性写不进 */ } }
+        if (typeof target.dispatchEvent === 'function') {
+          var event = makeEvent('visibilitychange', {});
+          try {
+            target.dispatchEvent(event);
+          } catch (hostEventError) {
+            // 走到这里说明 target 是**真 DOM document**（run21 实锤：ctor=HTMLDocument）。
+            // 造真 Event 的三路（run22 现场：createEvent 路线没能给出可派发的对象，原因待
+            // 下面这条带形态读数的 warn 定案——读数缺 createEvent/defaultView/Event 身份三问）：
+            //   1) `document.createEvent('Events') + initEvent`——DOM 自产，最正统；
+            //   2) `document.defaultView.Event`——宿主壳里 document 与游戏全局**可能不同 realm**，
+            //      全局 `Event` 可能是适配层占位类（defineGlobal 的 onlyIfMissing 遮法），
+            //      而 defaultView 拿到的才是 document 那个 realm 的构造器；
+            //   3) 全局 `Event`——前两条都没有才试它。
+            var nativeEvent = null;
+            var routes = 'createEvent=' + typeof target.createEvent +
+              ' defaultView=' + (target.defaultView ? 'yes' : 'no') +
+              ' viewEvent=' + (target.defaultView && target.defaultView.Event ? 'yes' : 'no');
+            try {
+              if (typeof target.createEvent === 'function') {
+                nativeEvent = target.createEvent('Events');
+                nativeEvent.initEvent('visibilitychange', false, false);
+              } else if (target.defaultView && typeof target.defaultView.Event === 'function') {
+                nativeEvent = new target.defaultView.Event('visibilitychange');
+              } else if (typeof Event === 'function') {
+                nativeEvent = new Event('visibilitychange');
+              }
+            } catch (e) { nativeEvent = null; }
+            if (nativeEvent) {
+              try { target.dispatchEvent(nativeEvent); }
+              catch (e2) {
+                warn('wechat-adapter: visibilitychange 真 Event 也派发失败 -> ' + hostError(e2) +
+                  '（' + routes + ' eventCtor=' + (nativeEvent.constructor && nativeEvent.constructor.name) + '）');
+              }
+            } else {
+              warn('wechat-adapter: visibilitychange 派发失败且造不出真 Event -> ' + hostError(hostEventError) +
+                '（' + routes + '）');
+            }
+          }
+        } else {
+          warn('wechat-adapter: document 没有 dispatchEvent，visibilitychange 未派发（target=' +
+            (target === documentShim ? 'shim' : '宿主') + '）');
+        }
+        // shim 注册表补派：target 用的不是 shim 那套分发、且双路包装**没装成**时才补
+        // （包装在场时 shim 一路已由 wrapper 分发，补派会把同一注册表的订阅者打两遍）。
+        if (target !== documentShim && target.dispatchEvent !== documentShim.dispatchEvent &&
+          !visibilityChannelWrapped) {
+          documentShim.dispatchEvent(makeEvent('visibilitychange', {}));
+        }
+      } catch (error) {
+        warn('wechat-adapter: visibilitychange 派发失败 -> ' + hostError(error));
+      }
+    }
+    on('onHide', function () { dispatchVisibility(true); dispatchWindow(makeEvent('blur', {})); });
+    on('onShow', function () { dispatchVisibility(false); dispatchWindow(makeEvent('focus', {})); });
     on('onMemoryWarning', function (res) { warn('wechat-adapter: 内存告警 level=' + (res && res.level)); });
   }
 
@@ -2940,6 +3054,40 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 硬要求只有 `getElementById`——web-runtime.js 里唯一**没有前置保护**的 DOM 依赖就是它
   // （`body`/`documentElement` 有 `if (!body) return`，`fonts` 有 `!document.fonts` 判断）。
   var documentTarget = installShimGlobal('document', documentShim, ['getElementById']);
+  // ④ 生命周期通道保底（run21/22 实锤的形态）：开发者工具的壳给的是一个**仿冒 HTMLDocument
+  // 的 stub**——原生 addEventListener 因"够用"被 installShimGlobal 保留，但它的 dispatchEvent
+  // 只收真 DOM Event（`makeEvent` 的 plain 对象被类型检查拒掉；stub 又没有可用的
+  // createEvent/defaultView 来造真 Event）。结果就是"订阅成功、事件永远到不了"。
+  // 这里把 documentTarget 的 add/remove/dispatchEvent 换成**双通道分发**：注册同时进
+  // shim 注册表（我们控制的那套，plain 事件也认）与原生监听器（若可用）；派发先走 shim
+  // 注册表、再尽力转原生（失败吞掉——shim 那一步已经保证送达）。引擎的
+  // `LifecycleEvents` 与探针因此都收得到。
+  var visibilityChannelWrapped = false;
+  (function ensureVisibilityChannel() {
+    if (documentTarget === documentShim) return; // shim 自己就是目标，无需再包
+    var nativeAdd = typeof documentTarget.addEventListener === 'function' ? documentTarget.addEventListener.bind(documentTarget) : null;
+    var nativeRemove = typeof documentTarget.removeEventListener === 'function' ? documentTarget.removeEventListener.bind(documentTarget) : null;
+    var nativeDispatch = typeof documentTarget.dispatchEvent === 'function' ? documentTarget.dispatchEvent.bind(documentTarget) : null;
+    try {
+      documentTarget.addEventListener = function (type, handler) {
+        documentShim.addEventListener(type, handler);
+        if (nativeAdd) { try { nativeAdd(type, handler); } catch (e) { /* 原生不收的形态由 shim 兜 */ } }
+      };
+      documentTarget.removeEventListener = function (type, handler) {
+        documentShim.removeEventListener(type, handler);
+        if (nativeRemove) { try { nativeRemove(type, handler); } catch (e) { /* 同上 */ } }
+      };
+      documentTarget.dispatchEvent = function (event) {
+        documentShim.dispatchEvent(event);
+        if (nativeDispatch) { try { nativeDispatch(event); } catch (e) { /* 原生要真 Event，够不到就算 */ } }
+        return true;
+      };
+      visibilityChannelWrapped = true;
+      log('wechat-adapter: document 事件通道已改双路分发（shim 注册表 + 宿主原生尽力转发）');
+    } catch (error) {
+      warn('wechat-adapter: document 双路分发包装失败（visibilitychange 只剩 shim 一路）-> ' + hostError(error));
+    }
+  })();
   log('wechat-adapter: 宿主全局自检 window=' + (windowTarget === g ? 'globalThis' : '宿主 window（已补齐）') +
     ' document=' + (documentTarget === documentShim ? '适配层 shim' : '宿主 document（已补齐）') +
     ' canvas=' + (canvasTarget === canvas ? '原对象' : '转发包装') +

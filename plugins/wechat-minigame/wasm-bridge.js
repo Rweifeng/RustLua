@@ -398,6 +398,21 @@ function errorDetail(error) {
   return error && error.message ? String(error.message) : String(error);
 }
 
+// docs/65 P0-⑥ 的 JS 侧读数通道：记住实例的**线性内存对象**并暴露一个只读函数。
+// `memory` 句柄是活的——内存增长后 `memory.buffer.byteLength` 就是新值，无需重新拿实例。
+// 这与 Rust 侧 `wasm_memory_bytes`（begin summary / state JSON 里的 `wasm_mem_bytes`）
+// 是两个独立口径，同问对拍用；只诊断、不改变任何行为，装不上就算了（不打扰启动）。
+function installWasmMemoryReader(g, wasmExports) {
+  var memory = wasmExports && wasmExports.memory;
+  if (!memory) return false;
+  try {
+    g.__RUSTLUA_WASM_MEMORY_BYTES = function () {
+      try { return memory.buffer.byteLength; } catch (error) { return -1; }
+    };
+    return true;
+  } catch (error) { return false; }
+}
+
 function requireGlue(g) {
   var glue = require('./pkg/game_web.js');
   if (typeof glue !== 'function') throw new Error('glue-shape-unexpected');
@@ -455,6 +470,7 @@ function instantiateByPath(g, glue, wasm, wasmPath) {
     .then(function () { return glue({}); })
     .then(function (wasmExports) {
       restore();
+      installWasmMemoryReader(g, wasmExports);
       return { exports: listExports(wasmExports), path: usedPath };
     }, function (error) {
       restore();
@@ -470,7 +486,9 @@ function instantiateByBytes(g, glue, wasm, bytes) {
   g.WebAssembly = wasm;
   try {
     if (typeof glue.initSync !== 'function') throw new Error('glue-shape-unexpected');
-    return { exports: listExports(glue.initSync(bytes)) };
+    var wasmExports = glue.initSync(bytes);
+    installWasmMemoryReader(g, wasmExports);
+    return { exports: listExports(wasmExports) };
   } finally {
     if (previous === undefined) {
       try { delete g.WebAssembly; } catch (error) { g.WebAssembly = undefined; }

@@ -7,7 +7,8 @@
 //   经 `wx.request` POST 回本脚本监听的 http://127.0.0.1:9422/report
 //   （launcher/project.config.json 的 `urlCheck:false` 放行本地域名）。
 // 本脚本负责：起监听 → `cli quit`/`cli auto` 冷启动项目 → 收报告 → 打 verdict 行。
-// ④（前后台恢复）与 ⑥（设备内存预算）模拟器没有可信通道，如实登记 device-pending。
+// ④=模拟器口径的回调链驱动（JS 手动调用适配层注册的 onHide/onShow；不是 OS 级 suspend），
+// ⑥=线性内存双侧读数（设备 RSS/内存告警阈值仍 device-pending）。
 //
 // 用法：node scripts/wechat-devtools-probe.js
 // 环境：RUSTLUA_DEVTOOLS_CLI（cli.bat 路径）、RUSTLUA_DEVTOOLS_PROJECT（launcher 目录）、
@@ -82,15 +83,17 @@ async function main() {
   const q1 = final.q1 || {};
   const q2 = final.q2 || {};
   const q3 = final.q3 || {};
+  const q4 = final.q4 || {};
   const q5 = final.q5 || {};
+  const q6 = final.q6 || {};
   console.log(`wechat_devtools_probe boot=wasm:${final.boot && final.boot.wasm ? final.boot.wasm.status + '/' + (final.boot.wasm.channel || '') : '?'}`);
   if (final.q0) console.log('[probe] q0 gl-preflight: ' + JSON.stringify(final.q0));
   console.log(`wechat_devtools_probe q1_canvas_host=${q1.status}${q1.reason ? '(' + q1.reason + ')' : ''}${q1.source ? ' source=' + q1.source : ''}`);
   console.log(`wechat_devtools_probe q2_engine_host_begin=${q2.status}${q2.reason ? '(' + q2.reason + ')' : ''}${q2.source ? ' source=' + q2.source : ''}`);
   console.log(`wechat_devtools_probe q3_presented=${q3.presented}/${PRESENT_TARGET} reached=${q3.reached ? 'yes' : 'no'} span_ms=${q3.span_ms} failed_presents=${q3.failed_presents} status=${q3.status}`);
-  console.log(`wechat_devtools_probe q4_foreground_restore=device-pending（模拟器无前后台切换通道，automator App.* 域在小游戏不响应）`);
+  console.log(`wechat_devtools_probe q4_foreground_restore=${q4.verdict || 'no-data'}（口径=${String(q4.channel || 'simulated-callbacks').slice(0, 40)}；frozen=${q4.frozen} resumed=${q4.resumed} events=${q4.eventsReached} skips=${q4.skippedWhileHidden}；OS 级 suspend 仍 device-pending）`);
   console.log(`wechat_devtools_probe q5_eh=${q5.ehProbe}`);
-  console.log(`wechat_devtools_probe q6_mem_budget=device-pending wasm_bytes=${final.boot && final.boot.wasm ? final.boot.wasm.bytes : '?'}`);
+  console.log(`wechat_devtools_probe q6_mem reader=${q6.jsReader || '?'} now=${q6.wasmMemNow} begin_summary=${q6.wasmMemBeginSummary} peak=${q6.wasmMemPeak} samples=${q6.wasmMemSamples} perf_memory=${q6.perfMemory === 'n/a' ? 'n/a' : JSON.stringify(q6.perfMemory)} warnings=${JSON.stringify(q6.memWarnings || [])} device_budget=device-pending`);
   // ehProbe 的读数是整句 `eh_probe=accepted（…）`，只能按"含 accepted"判，不能全等。
   const ok = q1.status === 'ok' && q2.status === 'running' && q3.reached && String(q5.ehProbe || '').includes('accepted');
   console.log(`wechat_devtools_probe verdict=${ok ? 'gpu-route-ok-simulator' : 'gpu-route-not-proven'}（六问里 ④⑥ 需真机；模拟器读数不外推到设备）`);
