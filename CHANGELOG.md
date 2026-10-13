@@ -5,6 +5,32 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 任务#18：接管回退路径判别——A 形（begin 具名拒绝）画布可回、接线未做；B 形（拿过 webgl2 后）回退只可能是冷启动（判别片，产品码零改动，run1→run2）
+
+- **题面**（P1 第二片没测账④）：接管开关开着而引擎宿主起不来时，可见屏幕归谁、老世界能不能回来。
+- **判别现场（run2，模拟器）**：用 `scene + tick=lua` 互斥把 `engine_host_begin` 逼成**具名失败**
+  （`reason="host: options: tick=\"lua\" 不能与 scene 同时给…"`，frames/presented=0，读码链说它死在
+  `get_context('webgl2')` 之前）。三条公开通道读数定形：① 主画布 `getContext('webgl2')` **给得出**
+  （被 2d 绑过的画布按 WebGL 规范必给 null）⇒ 失败形态下主画布**没被锁**；② `getContext('2d')` 给出
+  的对象**就是** boot 时绑定的改道件（`same_as_bound=true`）⇒ 适配层的 2d 通道焊死在改道上，
+  **没有回转入口**；③ 拿到 webgl2 之后再要 `bitmaprenderer` 得 null ⇒ "一张画布一个上下文家族"是
+  运行期事实——#13"开关必须早于第一次 getContext"那条纪律第一次有现场实证。
+- **结论（回退策略形态，进 docs/65）**：**A 形**（options/解析期拒绝，画布未被碰）= runtime 回退
+  **物理可行**，缺的是适配层在 failed 时撤改道+重绑的**接线**（没做，登记）；**B 形**（begin 成功后
+  崩/停）= 主画布已锁 webgl2，2d 永远回不来，**回退=关开关冷启动**是唯一形态。生产推进的回退预算
+  应按 B 形口径设计（A 形接线只改善体验，不改变"最坏=重启"的边界）。
+- **量具自纠一条（run1）**：第一版探针想在 boot 前抓主画布的原始 getContext——launcher 形态下
+  `g.canvas` 那时是 undefined（主画布由适配层 `wx.createCanvas()` 首用取得），raw 又被闭包保存够不到；
+  且探针**不许**自己先调 `wx.createCanvas`（会把适配层的主画布挤成离屏，整条接管语义作废）。改法=
+  只用公开通道的**判别性问法**（null-vs-got 的规范语义），结论反而更硬。
+- **连带新证（登记不修）**：静态形态下主画布 `toDataURL` 给得出 72,970 B——run8 登记的"组合形态
+  拿不到"因此有了差分数据点（差异候选=引擎宿主 present 循环在场与否）；归因照旧在账。
+- **门禁**：产品码零改动；注入撤净后 `verify-wechat-minigame.ps1 -ExpectGpuKernel` EXIT=0
+  （`engine_host=off reason=switch-off`、harness 240 帧、`package_ok`）。一次性工具留
+  `.temp/`（`p1-rollback-probe.js`/`p1-rollback-collector.js`(9427)/`reinject_rollback.py`）。
+- **未测**：真机；B 形的现场化（begin 成功后再杀宿主——本批用读码+规范语义推断，未做运行期强杀）；
+  A 形撤改道接线要不要做、以什么触发条件做（属生产化设计，不是本片）。
+
 ## Unreleased — 任务#17：scene 档四角 [0,0,0,0] 归因并修复——scene 档从此显式清屏（产品码一行，run9）
 
 - **症状**：run8 组合验收主画布五点回读 `中心=[10,13,20,255] 左上=[11,16,29,255]`，而

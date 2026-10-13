@@ -633,6 +633,13 @@ host: canvas_surface: ... webgl2 not available
 > 产品码一行）。run9（模拟器）：`verdict=combo-scene-visible presented=69 failed=0`，四角变
 > `[56,75,97,255]`（=清屏色线性→sRGB，不透明），左上仍是场景内容；两侧发布产物已带新核重建、
 > 两平台门同批绿。逐条读数与复现见 `tasks/plan/M73-00` 的任务#17 一节与 CHANGELOG 同批条目。
+>
+> **2026-10-13 回退路径判别（任务#18，模拟器，产品码零改动）**：接管失败时分两种形状——
+> **A 形**（options 期具名拒绝，run2 现场：`tick="lua" 与 scene 互斥` 把 begin 挡在拿上下文之前）
+> 主画布没被锁（`getContext('webgl2')` 现场给得出；被 2d 绑过按 WebGL 规范必为 null），runtime 回退
+> 物理可行，但适配层 2d 通道焊死在改道件上（`same_as_bound=true`）——**缺接线不是缺能力**；
+> **B 形**（begin 成功、拿过 webgl2 之后崩/停）主画布永远回不出 2d，**回退=关开关冷启动**。
+> 生产推进的回退预算按 B 形口径设计。读数与量具自纠见 `tasks/plan/M73-00` 的任务#18 一节。
 
 前提是微信真机 GPU 探针成功。应把 `gpu_host.rs` 中的平台无关部分抽成共享核心，而不是继续复制：
 
