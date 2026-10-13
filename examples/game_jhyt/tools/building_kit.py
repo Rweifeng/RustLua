@@ -136,6 +136,36 @@ SCENES = {
             "BoulderB": "box",
         },
     },
+    # 演武场（M72-11 ④，这张图以前是七张里唯一还在逐件手填 `solid_cells` 的）。
+    # **门洞格与出口格同源**：`data/maps.lua` 的 `arena_to_main` 出口格是 (9,1)，而门洞
+    # 必须有两格可站的洞（(9,1) 与门内 (9,2)），否则南门就是一道画在墙上的假门。贴图
+    # `manor_gate` 96×96 压 cell (8,0) ⇒ 紧包围盒 x8..10 × y0..2 共 9 格，减这两个洞 = 7 格
+    # 实心，与旧版手填的 `GATE_PILLARS`（四根立柱）加 row0 天然墙逐格相同——这条对拍是
+    # "把 `box`/门洞算法引进来没有悄悄改碰撞"的证据，不是巧合（manor 用同一张图、同一结构）。
+    # 关键前提在生成器那边：`GATE_ROW` 把门洞那一列的地表刷成**石板**而不是院墙，因为
+    # `TILE_NATIVE_SOLID` 含 WALL，压在墙行上的洞永远实心。
+    "combat_arena": {
+        "openings": {
+            "ArenaGate": ((9, 1), (9, 2)),
+        },
+        "prop_collision": {
+            # 兵器架 64×46、山石 64×40、茶水棚 64×40：横着占两格的实体，只标锚点等于
+            # 右半边"看得见却穿得过"（旧版手填的就是这两格，引进 `box` 才能顺带把
+            # 46/40px 高度压出的**第二行**也按可视依据算出来）。
+            "ArenaRackA": "box",
+            "ArenaRackB": "box",
+            "ArenaRockA": "box",
+            "ArenaRockB": "box",
+            "ArenaRockC": "box",
+            "ArenaRockD": "box",
+            "ArenaRockN": "box",
+            "ArenaStall": "box",
+            # 木栈桥铺在池面上，是**上北岸的唯一通道**：与山道的 Boardwalk 同一类
+            # "看得见但不实心"。生成器那边还把桥面三格的地表刷成石板，两侧合起来才是
+            # "一座真能走上去的桥"（见 `gen_arena_scene.PIER`）。
+            "ArenaPier": "walk",
+        },
+    },
 }
 
 

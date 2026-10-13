@@ -44,6 +44,9 @@ RESERVED_BY_SCENE = {
     "manor": "gen_manor_scene",
     "village": "gen_village_scene",
     "mountain_path": "gen_mountain_scene",
+    # M72-11 ④：演武场的留白是**战斗几何**——六个验收锚点（出生/出口/木人/试招/狼窝/引敌）
+    # 与两件器械的占地，撒了草垛就挡住了 `jhyt_m18_combat` 的硬编码站位。
+    "combat_arena": "gen_arena_scene",
 }
 
 

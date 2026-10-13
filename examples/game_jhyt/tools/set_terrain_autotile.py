@@ -5,7 +5,11 @@
 
     python tools/set_terrain_autotile.py scenes/village.scene --freeze 2,14,33,17
     python tools/set_terrain_autotile.py scenes/manor.scene --freeze 14,4,33,13 --apply
-    python tools/set_terrain_autotile.py scenes/combat_arena.scene --identity --apply
+
+（旧版这里第三条是 `python tools/set_terrain_autotile.py scenes/combat_arena.scene --identity --apply`。
+M72-11 ④ 把演武场升到 autotile 之后这条**变成了反向操作**：照跑会把刚生成的 `tile_kinds/tints`
+一整段抹回恒等寻址。删例子的证据：`grep -o 'tile_kinds=[0-9]*' scenes/*.scene` 四张玩法图全是
+`tile_kinds=6`，盘上一张恒等寻址的场景都没有了。）
 
 对场景数无关：哪一行是地表按 `role=ground_tilemap` 认（`building_kit.ground_line`），
 取哪一档色按场景自己的 `name=` 查（`terrain_ramp.json` 的 `scenes`）。JITTER_* 那套
@@ -210,7 +214,9 @@ def main():
     parser.add_argument("scene")
     parser.add_argument("--apply", action="store_true", help="写回文件（默认只报告）")
     parser.add_argument("--identity", action="store_true",
-                        help="只改图集行列（恒等寻址，不开 autotile）——arena 复用同一张图时用")
+                        help="只改图集行列（恒等寻址，不开 autotile）：**M72-11 ④ 之后盘上四张玩法"
+                             "图全是 autotile，这条暂无使用者**，留着是"
+                             "『把一行 Tilemap 降回恒等寻址』的反向出口，不是任何图的重建路径")
     parser.add_argument("--freeze", action="append", default=[],
                         help="冻结矩形 x0,y0,x1,y1（可重复）：农田区必须冻")
     args = parser.parse_args()

@@ -15,7 +15,7 @@
     "rows": 9,
     "comment": [
       "条目寻址与引擎 `Tilemap::resolve_atlas_index` 同构（M72-02）：",
-      "kind 的满块瓦在 entry = 1 + (kind-1)（autotile 关掉时的恒等档，也是 arena 复用的那 6 格）；",
+      "kind 的满块瓦在 entry = 1 + (kind-1)（autotile 关掉时的恒等档）；",
       "kind 的 16 格过渡块在 entry = 1 + kinds + (kind-1)*16 + mask（variant_count=1）；",
       "mask 位序 bit0=y-1(下沿) bit1=x+1(右沿) bit2=y+1(上沿) bit3=x-1(左沿)，按 index 命名不按方位。",
       "6 kinds * (1 + 16) = 102 条，12*9=108 容得下，尾部 103..108 留全透明（越界不许画错格）。"
@@ -107,6 +107,34 @@
         "granite": ["#5C646E", "#78808B", "#9098A4", "#A7AFBA"],
         "cliff": ["#474441", "#63605A", "#7E7A71", "#969186"],
         "bamboo_floor": ["#6B6533", "#888143", "#A09A54", "#B8B26B"]
+      }
+    },
+    "combat_arena": {
+      "display_name": "山庄·演武场（人工场院）",
+      "source": "docs/50-江湖有田-演武场场景设计.md §2 地表 tileset + §3 布局（0.2 起的编号）",
+      "comment": [
+        "演武场的身份是**人造场地**：三张户外图里只有它有直角大方砖、顺砌青砖墙与压顶黛瓦，",
+        "母题是踩与砌——草皮有修剪纹与踩秃的土斑，石面中心磨亮、边缘留糙。",
+        "5 号（顶层叫 roof 的那列）和山庄/村庄一样**不铺在地表**，只保留 6 列语义与恒等寻址的真美术。",
+        "6 号水复用顶层 `water` 族（山庄池塘/村溪/山涧同一族色），差别在画法：园池要画浮萍与水下青石。",
+        "2 号那一格在这里有真美术但**全场零格**（docs/50 铁律 2：farm.lua 判 tile==2 可垦，",
+        "FARM 矩形 x14..33,y4..13 没有场景门，演武场铺夯土等于给别人添一块田）。"
+      ],
+      "uses": ["courtyard_turf", "drill_loam", "worn_flagstone", "grey_brick", "blue_tile", "water"],
+      "kinds": [
+        { "id": 1, "name": "grass", "family": "courtyard_turf", "meaning": "庭院草皮（耐踩的黄绿草 + 修剪横纹 + 踩秃的土斑）" },
+        { "id": 2, "name": "dirt", "family": "drill_loam", "meaning": "夯土练武位（耙痕与脚印；本场景零格，见 comment）" },
+        { "id": 3, "name": "stone", "family": "worn_flagstone", "meaning": "场院大方砖（冷灰青石，中心磨亮、白灰勾缝）" },
+        { "id": 4, "name": "wall", "family": "grey_brick", "meaning": "青砖院墙（顺砌 + 黛青瓦压顶 + 青石基）" },
+        { "id": 5, "name": "roof", "family": "blue_tile", "meaning": "黛青瓦（门楼与墙头用色；地表层不铺，保留 6 列语义）" },
+        { "id": 6, "name": "water", "family": "water", "meaning": "园池（复用顶层水色，浮萍与 submerged 青石是演武场自己的母题）" }
+      ],
+      "families": {
+        "courtyard_turf": ["#4C5C2E", "#61723B", "#76884A", "#8C9E5F"],
+        "drill_loam": ["#59452C", "#6F5738", "#876B48", "#9D8259"],
+        "worn_flagstone": ["#5A6155", "#71786A", "#8C9383", "#A6AD9C"],
+        "grey_brick": ["#3E4751", "#525D68", "#6B7784", "#8492A0"],
+        "blue_tile": ["#2A3340", "#3A4655", "#4E5C6D", "#657587"]
       }
     }
   },

@@ -57,9 +57,19 @@ MIN_DECOR_OBJECTS = {
     # 复现：`python tools/scene_readings.py scenes/<图>.scene` 读"每屏可见装饰"那一行。
     # village 实测 326 件、min/median/max = 58/94/128（没有整块留白的地块，所以 min 就高）。
     "village": 40,
-    # mountain_path 实测 253 件、min/median/max = 45/84/109（M72-11）：竹林地（kind 5）在
-    # `decor_kit.BASE_P` 里权重 0（竹叶画在瓦里），那是**故意**的少，不是漏撒。
+    # mountain_path 实测 245 件、min/median/max = 49/80/106（M72-11 ④ 复跑同一命令重读）：
+    # 竹林地（kind 5）在 `decor_kit.BASE_P` 里权重 0（竹叶画在瓦里），那是**故意**的少，不是漏撒。
+    # 旧说法：登记时（48b4f496）写的是 253 件、45/84/109。新实测的证据是"生成器重跑 == 盘上场景"
+    # （`python tools/gen_mountain_scene.py --out .temp/m.scene` 与 `scenes/mountain_path.scene`
+    # 逐行相同，仅行尾 CRLF 差），所以 245 是这条管线现在的产物、253 是当时的中间产物；差因未追，
+    # 按新读数更正而不是把两个数都留着。
     "mountain_path": 40,
+    # combat_arena（M72-11 ④）实测 340 件、min/median/max = 70/96/133
+    # （复现：`python tools/scene_readings.py scenes/combat_arena.scene`）。
+    # 比 manor 高一倍不是撒多了：这张图没有整块留白的玩法地块（manor 的 min 7 就是药田那一屏），
+    # min 70 是"坪内草地本来就少、装饰集中在坪外"的正常形状。分档仍取 plan §验收方式 的户外 ≥40，
+    # 不在这里给本图单独抬高门槛——那条线管的是"管线跑没跑"，不是"这张图该多密"。
+    "combat_arena": 40,
 }
 
 # ---------------------------------------------------------------------------

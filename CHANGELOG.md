@@ -5,6 +5,96 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — M72-11 ④：演武场不再借山庄图集，七张里最后一份手填 `solid_cells` 的图上了金标管线
+
+- **症状/动机**：docs/58 §1.3 给 `combat_arena` 记的是**两笔借图债**——地表用 manor 的 hex
+  （改山庄调色会顺手改演武场），且按**恒等寻址**只取六族满块档（autotile 关着 ⇒ 坪与草的交界是
+  按格子对齐的直线，docs/71 §1 点名的"像 demo"头号成因）；它的 `solid_cells` 还是七张图里最后一份手填的。
+  plan §推进顺序 3 那句"必须停止复用 manor 图集"到这一笔才还。
+- **改法**：① 图集归自己——`terrain_ramp.json` 新增 `combat_arena` 档（`courtyard_turf / drill_loam /
+  worn_flagstone / grey_brick / blue_tile / water`；5 号照旧不铺地表，但图集仍画满 6 族），
+  `gen_terrain_tiles.py` 出 12×9 = 108 槽 / **18,745 B**（manor 那张 18,455 B，同档）；
+  ② `gen_arena_scene.py` 升到与另三张**同一条代码路径**（`building_kit` 占地 + 抖动/撒 tint + 装饰 +
+  遮断 + 投影 inline），盘上场景 19,504 B / 32 实体 → **158,704 B / 387 实体**
+  （28 建筑与道具 + 340 装饰 + 5 遮断 + 9 投影 + 玩家/相机/HUD/地表）；
+  ③ 布局跟读数走四处：演武坪 x1..19×y1..12 → **x2..18×y2..11**（19×12 装得进一整屏纯内部格，
+  三档 tint 最多撑 3 种，判据是**最坏** 20×12 窗口 ≥24 种），`GATE_ROW` 把门洞那一列刷成石板
+  （`TILE_NATIVE_SOLID` 含 WALL ⇒ 门洞压在墙行上永远实心，旧版靠把坪画到 y1 绕开且没写下来），
+  `ArenaPier` 走 `walk` 且桥面三格地表刷石板（旧版 `solid_cells=[]` 而底下三格仍是水 ⇒ 画面上是一座
+  走不进去的桥），山林带 y19 → **y18**；④ 登记面补齐：`scene_readings.MIN_DECOR_OBJECTS` 加
+  `combat_arena: 40`（没登记就是硬红）、`set_scatter_decor.RESERVED_BY_SCENE` 指认生成器为留白事实源、
+  `building_kit.SCENES["combat_arena"]`（门洞 2 格 + 8 件 `box` + 1 件 `walk`）、`verify.ps1` 的
+  `$decorScene` 循环加第四张、Rust `jhyt_m72_building_footprint` 的 `SCENES` 加 `ARENA`。
+- **本包挖出的一条规则空洞（门说的是场景的真话，不是规则的真话）**：`building_kit.visual_cells()`
+  会把同名拆层件并进视觉并集，而**道具只在 `cell` 那一格参与碰撞** ⇒ 挂在道具上的树冠/遮断件在碰撞上
+  **完全空转**，`jhyt_m72_building_footprint` 的**反面对照 B**（"只按本体算占地必须报缺碰撞"）在本图
+  永远不会红。第一次红按"树冠被墙行吃掉"归因、挪了山林带仍然红；真因是本图 `role=building` 只有
+  不拆层的南门一件 ⇒ 补 `ArenaArmory`（复用 `buildings/manor_shed.png`，**追加在 `ENTITIES` 表尾**拿
+  id 29、玩家顺延 30 ⇒ 盘上 id 2..28 一字节不动，挪 id 会让 Lua 侧 `entity.find` 与黄金表全部重排）。
+  修法是给场景补一件真的拆层建筑，不是放宽门。
+- **实测（2026-10-12，逐条可重跑，命令与末行原文落在 `tasks/plan/M72-11` §combat_arena）**：
+  `scene_readings --gate` 最坏 20×12 窗口 **27 种** ≥24（图集条目 16 + tint 撑 11 = 40%）、装饰 340 件
+  min/median/max **70/96/133**；kind 直方图 `{4:160, 1:450, 3:290, 6:20}` **无 kind 2**，且这条自检现在
+  测在**抖动后**的载荷上（71 格被抖，farm.lua 防误垦那条从"结论一样、证据弱一档"变硬）；
+  `building_kit --check` 盘上 solid=239 应实心=239 缺 0 悬空 0；反面对照 A `ArenaBambooA 按 quad 框 →
+  悬空 5 格，首格 (5,19)`、反面对照 B `只按本体算占地 → 缺碰撞 10 格，首格 (2,16)`（屋顶并进并集这条
+  第一次真的在参与计算）；BFS 可达 681 格、把洞格填实则 681→679（门是叶子不是桥）；引擎读回的
+  `is_solid` 位图与盘上 `solid` 40×23 逐格相同；`jhyt_m18_combat` **零改动**通过
+  `kills=1 deaths=0 taken=0 frame=123`；`gen_arena_scene.py --out` 产物与盘上场景**逐字节相同**
+  （158,704 B == 158,704 B，这张图盘上是 LF，不需要山道那一档的 CRLF 豁免）；投影用的四档 blob 全是既有
+  尺寸 ⇒ `assets/art/shadows/` 16 张 / 3,031 B **一字未增**。
+- **三处旧说法按"旧说法→新实测"更正，不静默覆盖**：`set_terrain_autotile.py` 的 `--identity` 用法示例
+  （示例写的就是"arena 复用同一张图时用"，现在跑它会把 arena 的自有图集打成恒等档 ⇒ 删示例、旗标留着
+  登记为无使用者待收）；`layer_kit.write_splits` 的"village.scene 与 combat_arena.scene 还在引用整张
+  `manor_tree.png`"（实测八张场景 `grep -c manor_tree.png scenes/*.scene` 全 0，整图留着是因为它是
+  **生成链输入**而不是场景引用）；`scripts/data/lighting.lua` 的"顶 40 行切点 ⇒ village / combat_arena
+  不受影响"（只在 M72-06 那一档成立，现在三张图共用切点，遮断上限要一起重量）。
+  台账 docs/58 升到 1.7（§0 三行、§1.1、§1.3、§12.4 逐行重测）、docs/50 升到 0.2。
+- **连带修一条挡整条门链的断链**：`tools/gen_decor_art.py:69` 的 `DIRT_WET = ga.DIRT_WET` 在 import 期就
+  `AttributeError`——`86bcaa53`（碎屑库那批）把 dirt 三档从 `gen_manor_art` 删了、同一笔却在本文件新增这一句
+  引用，于是 `verify.ps1` 的 `==> Decor scatter determinism (python)` 从那天起**整段中止**，后面的 Clippy
+  与其下游从来没跑到过。改成自己从色阶表取（`ga.ramp("dirt", 0)`）。这条改动的字节面是零：把那行补进内存后
+  重出 26 张（13 形状 × 本体+镜像）与盘上**逐像素 0 差**（一次性对照，探针在 `.temp/`、不入库；
+  常驻判据是 `gen_decor_art.py --check` 的 `[OK] 装饰库校验通过（26 张）`）。顺带两处旧说法：`gen_decor_art.py` docstring 与
+  `verify.ps1:407` 的"24 张 PNG"都是 M72-05 那一档的读数，实测 26 张。
+- **门禁（单门）**：`check_docs_ok docs=59 game_docs=46 h1=107 links=414 ps1_bom_ok=33 ps1_parse_ok=33`、
+  `cargo fmt --all -- --check` exit 0、`cargo clippy -q -p game --example jhyt_m72_building_footprint
+  --example jhyt_m18_combat -- -D warnings` 0 条、七条 Python `--check` + `check_scene_refs.py` 全绿。
+- **全量 `scripts/verify.ps1` 复验（2026-10-13 两次跑，日志 `artifacts/logs/verify-m7211-arena-full.log`
+  与 `…-skipclippy.log`）**：断链修活之后总门历史上第一次跑到 Python 段末尾，四图一轮全绿——
+  `[OK] 装饰库校验通过（26 张）`，演武场那轮 `check ok（360 行装饰段、同种子两次逐字节相同、
+  换种子已变（592 行）、与盘上逐字节相同）`、`ArenaGate 视觉 9 → solid 7 门洞 [(9,1),(9,2)]`、
+  `盘上 solid=239 应实=239 差 0 悬空=0`、`同屏可见瓦种类：全图 108 种 / 最坏 20x12 窗口 27 种
+  （左上角格 (2, 7)）→ ok`。门链之后停在两条**不属于本笔**的红上（本笔在这些 crate 里零改动，
+  只登记与移交，不在别人的在制品上动刀）：① `==> Clippy`
+  （`cargo clippy --workspace --all-targets --all-features -- -D warnings`）在 `crates/game_web` 报 3 条
+  dead-code（`wasm_memory_bytes`、`FrameInputProducer::pointer_fresh`/`mouse_up`、`ScriptDriver::is_empty`，
+  成因同一个：它们的调用者全在 `#[cfg(target_arch = "wasm32")]` 门后的模块里，host 档编不到）；
+  ② 加 `-SkipClippy` 后过到 `==> Rustdoc`，红在
+  `crates/rustlua-scripting/src/script/progress.rs:37` 的 intra-doc 链接 `[HOOK_STEP]` 指向私有项，
+  `RUSTDOCFLAGS=-D warnings` 把 rustdoc 告警放大成 error。两条都在 HEAD 上，不是本笔带进来的。
+  总门跑不到的下游四步单独跑齐（`artifacts/logs/arena-rustgates.log`）：`game_check_ok
+  project=E:/Codex/RustLua/examples/game_jhyt`、`editor_project_ok … baseline=v0.21` +
+  `schema_audit documents=16 components=3693 schema_errors=0 unknown_components=0 renamed_components=0`
+  （演武场从 32 实体推到 387 之后，新登记的遮断/投影负载在审计里 0 漂移；第二份工程
+  `game_api` 同门 `documents=19 components=552 schema_errors=0`）、
+  `jhyt_m72_building_footprint_ok scenes=4 … combat_arena(solid=239 buildings=2 splits=5 shadows=9)`、
+  `jhyt_m18_combat_ok … kills=1 deaths=0 taken=0 frame=123`。跑这四步时工作树里另有别包在制品
+  （`engine/crates/game_web/src/engine_core.rs` 的 P1 核心抽取，未提交），`-p game` / `-p editor`
+  都不编译 `game_web`，所以这四条读数与本笔口径一致。
+- **未测与本笔不碰的账**：① `jhyt_m72_foreground_occlusion` 至今 `const SCENE = "scenes/manor.scene"`
+  ⇒ 演武场那 5 件遮断**没有 `max_cover_ratio` 读数**（village / mountain_path 同档，既有缺口，
+  本笔既没扩大也没修——修它等于改门的取样面，属另开一笔）；② **+18,745 B 一张新图集进包**（旧形态共用
+  manor 那张、零增量），主包 4,096 KB / 分包 20,480 KB 门要在下一次 `-Gpu2d` 打包时复核，本笔没重打包；
+  ③ 整屏目验一次没跑（`preview_scene.py` 出图与三宿主目验收口在 M72-12）；④ 无季节换色表——
+  `gen_season_variants.py --scene combat_arena --check` 实测 `[FAIL] … 没有季节换色表（SEASON_TABLES 里
+  点名了 ['manor','village']）`，按设计与山道同档，不是本笔欠账；⑤ 军械棚用的是山庄柴房贴图，
+  演武场专属兵器房美术待外部委托；⑥ **总门此刻对任何人都跑不到底**——上面那两条既有红（`game_web` 三条
+  dead-code、`rustlua-scripting` 一条 rustdoc 私有链接）归微信批次与 script.rs 拆分批次，本笔只把它们的
+  现场读数钉下来；修完之后 `-Mvp` 那一段（headless 回归 / 浸泡 / 打包自测）也还没在这棵树上验过。
+  回滚档：`scenes/combat_arena.scene` + `tools/gen_arena_scene.py` +
+  `terrain_ramp.json` 的 `combat_arena` 档三处（新图集目录删掉即回到借图形态）。
+
 ## Unreleased — 微信引擎宿主首次接管可见主画布（模拟器口径）：主画布开得出 webgl2，present 44/44，像素回读=清屏色
 
 - **症状/动机**：docs/65 §12 P1（宿主接真场景）的前提通道一直是登记过的"没测账"——引擎宿主只画在

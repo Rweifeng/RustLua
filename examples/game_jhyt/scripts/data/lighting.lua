@@ -95,6 +95,10 @@ M.occlusion = {
   --     一条边），而"上界 0.40"在那一档是任何可达位置都做不到的。把切点改到顶 40 行
   --     （`tools/gen_manor_art.LAYER_SPLITS`，两块 PNG 与 `manor.scene` 里那 5 件实体跟着走，
   --     整张 `manor_tree.png` 一个字节没动 ⇒ village / combat_arena 不受影响）才落到 0.604。
+  --     括号里那句"village / combat_arena 不受影响"**只对 M72-06 当时的盘上状态成立**：那两张
+  --     图当时引用的确实是整图。M72-11 ④ 之后演武场也走拆层（`grep -c manor_tree_canopy
+  --     scenes/combat_arena.scene` = 4），所以顶 40 行这个切点**现在是这三张图共用的**，
+  --     改它要 manor / village / combat_arena 一起复量。
   --     所以这条上界钉的是**美术切点**，不是运行期的宽容度。三档渲染对比的读法：57 行 =
   --     人没了一半、40 行 = 露腿而头在树后、26 行 = 读成"人站在树前面"（错），取中间那档。
   --   * 同一次扫描里"不限可行走"的理论上界是 1.000（屋顶）——那要求玩家站进正房的实心格里。

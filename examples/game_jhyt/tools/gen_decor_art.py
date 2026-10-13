@@ -10,8 +10,11 @@
 （`docs/37` 里那条约定，建筑与道具同理），所以"同一种东西的第 2 个样子"只能另存一张。
 本工具因此给每个条目再产一张**水平镜像** `_r.png`——镜像由 `Canvas.mirrored()` 在数据侧
 做，而不是场景串里写 `flip_x`：引擎规范序列化 `Sprite::to_component_str` 根本不输出 flip
-字段，作者串带上它就过不了"生成器 == 引擎回写"的对拍。12 张本体 + 12 张镜像 = 24 个
-形状，加上"同一张图配地表 tint 的两档明度"，实测等价外观 48 种。
+字段，作者串带上它就过不了"生成器 == 引擎回写"的对拍。**旧说法"12 张本体 + 12 张镜像 = 24 个
+形状、等价外观 48 种"是 M72-05 那一档的数**；`decor_kit.CATALOG` 现在 13 行 ⇒ 盘上 26 张
+（复现 `python -c "import decor_kit as dk; print(len(dk.CATALOG))"` = 13、
+`ls assets/art/decor | grep -v _preview | wc -l` = 26），两档明度按同一条算术是 52 档——
+这条只有算术、没有门读它，所以只登记不判绿。
 
 三条硬契约（都有门）：
 
@@ -66,7 +69,13 @@ GRASS_HI = ga.GRASS_HI
 LEAF = ga.LEAF
 LEAF_DARK = ga.LEAF_DARK
 LEAF_LIGHT = ga.LEAF_LIGHT
-DIRT_WET = ga.DIRT_WET
+# `DIRT_WET` 在这里**自己从色阶表取**而不是 `ga.DIRT_WET`：`86bcaa53` 把 dirt 三档从
+# `gen_manor_art` 删了（那时它是那里的私有实现细节），同一笔却在本文件加了 `ga.DIRT_WET`，
+# 于是 import 期就 `AttributeError`、这条门从那天起从没跑起来过（`verify.ps1` 的 Python 段
+# 一红就 throw，后面 Clippy/rustdoc/77 条 MVP 门全部跑不到）。取的就是**同一个数**
+# （dirt 族首档 `#4E3A26`，自 `86bcaa53` 起色阶表那四格一字未改），证据：把那行按
+# `ga.ramp("dirt", 0)` 补进内存后重出 26 张（13 形状 × 本体+镜像），与盘上**逐像素 0 差**。
+DIRT_WET = ga.ramp("dirt", 0)
 STONE = ga.STONE
 STONE_LIGHT = ga.STONE_LIGHT
 STONE_DARK = ga.STONE_DARK

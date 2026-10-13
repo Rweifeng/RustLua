@@ -272,7 +272,65 @@ const MOUNTAIN: Scene = Scene {
     ],
 };
 
-const SCENES: &[Scene] = &[MANOR, VILLAGE, MOUNTAIN];
+/// 演武场（M72-11 第四档）：名单同样逐条能在 `building_kit.SCENES["combat_arena"]` /
+/// `layer_kit.LAYER_SPLITS` / `data/maps.lua` 找到出处。这张图的特殊处在**洞与柱**：
+/// 南门 96×96 的九格里只有中间那一列是洞（另两列由不透明像素实心），而那两个洞
+/// (9,1)(9,2) 就是 `maps.lua` 的 `arena_to_main` 出口格与其北邻——出生点 (9,5) 在坪内，
+/// §③ 的 BFS 要一路走到门口才算南门真能出人。
+const ARENA: Scene = Scene {
+    name: "combat_arena",
+    file: "scenes/combat_arena.scene",
+    ground_texture: "assets/art/tilesets/combat_arena/combat_arena_ground.png",
+    // `data/maps.lua` 的 combat_arena.spawn = `gen_arena_scene.SPAWN` = 战败 R 重开落点。
+    spawn: (9, 5),
+    openings: &[("ArenaGate", 9, 1), ("ArenaGate", 9, 2)],
+    // 64×46 的兵器架与 64×40 的山石/茶棚横占两格：只标锚点等于另一半看得见却穿得过。
+    box_props: &[
+        "ArenaRackA",
+        "ArenaRackB",
+        "ArenaRockA",
+        "ArenaRockB",
+        "ArenaRockC",
+        "ArenaRockD",
+        "ArenaRockN",
+        "ArenaStall",
+    ],
+    // 栈桥三格铺在池水上，是坪东侧到北岸的走线；标成实心就把"桥"变成一堵平的墙。
+    walk_props: &["ArenaPier"],
+    // 这条落在一丛竹子上：48×76 按框标会把竹梢那几格一起标成墙，而竹梢本来就是
+    // 人能走过去的高度（山庄东南那丛竹同一类错；竹子在 `layer_kit` 里**不拆层**，
+    // 所以它不是遮断件，这条对照靠的是"框比实际占的格大"而不是"前景压住人"）。
+    quad_probe: "ArenaBambooA",
+    splits: &[
+        Split {
+            base: "ArenaArmory",
+            occluder: "ArenaArmoryRoof",
+            full: "assets/art/buildings/manor_shed.png",
+        },
+        Split {
+            base: "ArenaTreeA",
+            occluder: "ArenaTreeACanopy",
+            full: "assets/art/props/manor_tree.png",
+        },
+        Split {
+            base: "ArenaTreeB",
+            occluder: "ArenaTreeBCanopy",
+            full: "assets/art/props/manor_tree.png",
+        },
+        Split {
+            base: "ArenaTreeC",
+            occluder: "ArenaTreeCCanopy",
+            full: "assets/art/props/manor_tree.png",
+        },
+        Split {
+            base: "ArenaTreeD",
+            occluder: "ArenaTreeDCanopy",
+            full: "assets/art/props/manor_tree.png",
+        },
+    ],
+};
+
+const SCENES: &[Scene] = &[MANOR, VILLAGE, MOUNTAIN, ARENA];
 
 /// 场景里一个 sprite 实体的门侧视图。
 #[derive(Clone, Debug)]

@@ -175,10 +175,19 @@ def split_stem(stem):
 
 
 def write_splits(stems):
-    """把拆层块写盘。**原图继续保留并继续被使用**：`village.scene` 与
-    `combat_arena.scene` 还在引用整张 `manor_tree.png`，删掉就是那两张图缺文件；
-    `data/buildings.lua` 的 `levels[].sprite` 引用的也是整张 `build_*.png`（建造模式摆出来的
-    房子仍是一件），所以一张图都不删。而两块本来就由整图按行切出，同源 ⇒ 不会漂移。
+    """把拆层块写盘。**原图一张都不删**，但"为什么不删"这件事 M72-11 ④ 换了理由：
+
+    * 旧说法（M72-06 写的）：`village.scene` 与 `combat_arena.scene` 还在引用整张
+      `manor_tree.png`，删掉就是那两张图缺文件。
+    * 新实测：`grep -c manor_tree.png scenes/*.scene` 八张全 0，盘上只有 `_trunk`/`_canopy`
+      （manor 4 件、village 3 件、combat_arena 4 件）——因为**每张有树的图**都由生成器登记
+      整图、`set_foreground_occluders` 出图时把那一行改写成两块，盘上从来没有整图引用
+      （山道的松树 `wilds_pine` 走同一条路径，所以那条也不该算进"引用整图"）。
+    * 现在不删整图的真实理由有两条，都比"某个场景引用它"更硬：① 整图是**生成链的输入**
+      （`split_stem` 从盘上整图切块、`check_texture_sizes` 按整图核声明尺寸、门侧
+      `jhyt_m72_building_footprint` §② 拿整图算"拆层前的占地"）；② `data/buildings.lua`
+      的 `levels[].sprite` 引用的就是整张 `build_*.png`（建造模式摆出来的房子仍是一件）。
+    而两块本来就由整图按行切出，同源 ⇒ 不会漂移。
     """
     out = []
     for stem in sorted(stems):

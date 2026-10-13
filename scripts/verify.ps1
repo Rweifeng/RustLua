@@ -404,7 +404,7 @@ try {
         # Windows 控制台默认代码页是 GBK，工具输出的中文在编码不匹配时抛 UnicodeEncodeError——
         # 那是门自己的环境问题，不是散布判红。
         $env:PYTHONIOENCODING = "utf-8"
-        # 碎屑库自己的门：24 张 PNG 条目齐全、尺寸 == 目录、每个不透明像素都在 `terrain_ramp.json`
+        # 碎屑库自己的门：26 张 PNG（13 形状 × 本体+镜像；旧说法 24 张是 M72-05 那一档）条目齐全、尺寸 == 目录、每个不透明像素都在 `terrain_ramp.json`
         # 覆盖的色族里、alpha 只有 0/255。Rust 那条只比尺寸与明度档，"手改过一张图的像素"只有这里看得见。
         Invoke-Checked python @(
             (Join-Path $projectRoot "examples/game_jhyt/tools/gen_decor_art.py"), "--check"
@@ -412,7 +412,7 @@ try {
         # 逐图三条门，一张图一轮跑齐：散布确定性 → 建筑占地 solid 对拍 → 逐图量化读数。
         #
         # ① `set_scatter_decor.py --check`：盘上装饰段 == 按当前地表现算的装饰段（M72-05 只有
-        #    manor 一条（204 件），village 326 件、mountain_path 245 件都比它多，而
+        #    manor 一条（204 件），village 326 件、mountain_path 245 件、combat_arena 340 件都比它多，而
         #    `decor_kit.CATALOG` 是所有图共用的形状库——改了库没重撒，红在这里而不是等目验发现）。
         # ② `building_kit.py --check`：M72-11 铺量——"每格 solid 都要有可视依据"这条规则的**实现**，
         #    而 `jhyt_m72_building_footprint` 是它的第二份独立实现（Rust 不 import Python）。
@@ -424,7 +424,7 @@ try {
         #    `jhyt_m72_scatter_decor` 只管 manor 那份散布。这条是"任意一张图都能判"的那一份，
         #    判据常量与那两扇门同名同值。分档表 `MIN_DECOR_OBJECTS` 里没有的场景直接红
         #    （室内/洞穴要按 plan §风险 另定分档，工具不替它猜）。
-        foreach ($decorScene in @("manor", "village", "mountain_path")) {
+        foreach ($decorScene in @("manor", "village", "mountain_path", "combat_arena")) {
             Invoke-Checked python @(
                 (Join-Path $projectRoot "examples/game_jhyt/tools/set_scatter_decor.py"),
                 (Join-Path $projectRoot "examples/game_jhyt/scenes/$decorScene.scene"),

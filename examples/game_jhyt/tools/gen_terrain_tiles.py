@@ -22,7 +22,7 @@ Rust 门都读同一张表；表外的颜色算越界，出图后处理报数、
 
 **图集排布与引擎同构**（运行时解算在 M72-02 定死，条目算术在 `terrain_kit.py`）：
 
-    entry = 1 + (kind-1)                        # 满块档：关 autotile 的恒等寻址 + arena 复用的那 6 格
+    entry = 1 + (kind-1)                        # 满块档：关掉 autotile 时的恒等寻址
     entry = 1 + kinds + (kind-1)*16 + mask      # 过渡块：bit0=y-1(下) bit1=x+1(右) bit2=y+1(上) bit3=x-1(左)
     6 kinds × (1 + 16) = 102 条 ≤ 12×9 = 108，尾部 103..108 留全透明。
 
@@ -632,6 +632,185 @@ def paint_mountain_stream(canvas, rand, pal, ctx):
 
 
 # ---------------------------------------------------------------------------
+# 山庄·演武场（M72-11 第三张铺量的图）
+#
+# 身份差别写在 `terrain_ramp.json:scenes.combat_arena`。三张户外图里只有演武场是**人造场地**：
+# docs/50 的口径是场院铺大方砖、院墙顺砌青砖、墙头压黛瓦，所以母题是"踩"与"砌"——草皮有
+# 修剪纹与踩秃的土斑，砖位由常数定死而不是随 rand 漂。
+#
+# 砖缝是直的不违反 docs/71 §1 那条"直线交界像 demo"：那条判的是**两种 kind 的交界**画成
+# 一把尺子，而人造铺地本来就有直角缝；交界的犬牙仍由 `_edge_stone` 与
+# `set_terrain_autotile.jitter` 负责。这里为砖块专门写了一条 `跨瓦一致` 的规矩（见
+# `paint_arena_flagstone` 的 `ti`）：一张瓦只有一个图像（同一 kind 的 17 档共用同一张本体），
+# 所以半块砖骑在瓦边上时，两半的**色档必须由同一个键算出来**，否则缝两侧会各拼出一块
+# 不同明度的砖，铺开后是锯齿而不是一条线。
+# ---------------------------------------------------------------------------
+
+
+def paint_arena_turf(canvas, rand, pal, ctx):
+    """庭院草皮：横向修剪纹 + 踩秃的土斑 + 矮草簇。"""
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["mid"])
+    for x in range(TILE):
+        # 带界每 8 列挪 2px：式子只看瓦内列号，所以相邻瓦的纹首尾接得上，而边界不是一条尺子线。
+        shift = ((x // 8) % 2) * 3
+        for y in range(TILE):
+            if ((y + shift) // 8) % 2 == 0:
+                canvas.set(x, y, pal["light"])
+    _speckles(canvas, rand, [pal["deep"], pal["dark"], pal["light"]], 170)
+    for _ in range(2):  # 踩秃的土斑：露出夯土族。**抖动**着露，方块边读成"啃出来的"而不是贴纸
+        x, y = 2 + rand(TILE - 10), 3 + rand(TILE - 7)
+        width, height = 4 + rand(4), 2 + rand(3)
+        for dy in range(height):
+            for dx in range(width):
+                if (dx + dy + x + y) % 3 == 2:
+                    continue
+                canvas.set(x + dx, y + dy, ctx["soil"]["dark"] if dy == 0 else ctx["soil"]["mid"])
+    for _ in range(4):  # 草簇：与山庄同款三叶，但矮半格（庭院是被踩出来的）
+        x, y = 1 + rand(TILE - 3), 2 + rand(TILE - 5)
+        canvas.vline(x, y - 1, y, pal["dark"])
+        canvas.vline(x - 1, y, y, pal["deep"])
+        canvas.vline(x + 1, y, y, pal["light"])
+
+
+def paint_arena_loam(canvas, rand, pal, ctx):
+    """夯土练武位：三道耙痕 + 两只脚印 + 嵌进土的碎石。
+
+    这一档在本场景**零格**（docs/50 铁律 2：farm.lua 判 tile==2 可垦），但满块档必须有真
+    美术——`check` 查的就是"关掉 autotile 会不会画出空白"，而恒等寻址是回滚路线。
+    """
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["mid"])
+    _speckles(canvas, rand, [pal["deep"], pal["dark"], pal["light"]], 150)
+    for row in (5, 14, 23):
+        x = 0
+        while x < TILE:
+            width = 4 + rand(5)
+            y = row + (rand(3) - 1)
+            right = min(TILE - 1, x + width)
+            canvas.hline(x, right, y, pal["deep"])
+            canvas.hline(x, right, y + 1, pal["light"])
+            x = right + 1
+    for _ in range(2):  # 脚印：一掌宽的暗坑，前掌亮一档才读得出是踩下去的
+        x, y = 2 + rand(TILE - 5), 3 + rand(TILE - 8)
+        canvas.rect(x, y, x + 1, y + 2, pal["deep"])
+        canvas.hline(x, x + 1, y, pal["dark"])
+    for _ in range(3):
+        _pebble(canvas, rand, ctx["paving"])
+    for _ in range(2):
+        _twig(canvas, rand, ctx["utility"]["wood"])
+
+
+def paint_arena_flagstone(canvas, rand, pal, ctx):
+    """场院大方砖：16×6 的砖按顺缝排，隔行错半块，缝是直的、缝里点白灰、砖面中心磨亮。"""
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["deep"])
+    faces = (pal["mid"], pal["light"], pal["mid"], pal["dark"])
+    for row in range(4):
+        y0 = row * 8
+        for x0 in ((0, 16) if row % 2 == 0 else (-8, 8, 24)):
+            # 同一块砖在左右两张瓦里算出同一个键：`-8` 与 `24` 是同一块砖的两半。
+            # 四格一循环（不是三格）是目验定的：三档里 `light` 占了两席，整片场院铺开后
+            # 白得压过了草皮，读成"刚铺的"而不是"踩亮的"。
+            ti = (((x0 + 16) % 32) // 16 + 2 * row) % 4
+            left, right = max(0, x0 + 1), min(TILE - 1, x0 + 14)
+            canvas.rect(left, y0 + 1, right, y0 + 6, faces[ti])
+            canvas.hline(left, right, y0 + 1, pal["light"])
+            canvas.hline(left, right, y0 + 6, pal["dark"])
+            canvas.vline(right, y0 + 1, y0 + 6, pal["deep"])
+    for x in range(TILE):  # 勾缝断续：只在横缝上点白灰，实线缝读成尺子（四点一点，密了就成缝线）
+        for y in (7, 15, 23, 31):
+            if rand(4) == 0:
+                canvas.set(x, y, ctx["utility"]["paper"])
+    for _ in range(18):  # 中心磨亮：碎点只打在暗档与中档砖面上
+        x, y = rand(TILE), rand(TILE)
+        if canvas.get(x, y)[:3] in (pal["mid"][:3], pal["dark"][:3]):
+            canvas.set(x, y, pal["light"])
+
+
+def paint_arena_brick(canvas, rand, pal, ctx):
+    """青砖顺砌：5px 一层的通长砖，隔层错半块。
+
+    山庄院墙是圆石砌体（`paint_masonry`：宽高全随机 = 随手垒的），演武场是烧制砖：砖位由
+    常数决定，**只有砖面斑驳与缝里的苔是随机的**——那是岁月，不是砌法。
+    """
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["deep"])
+    faces = (pal["mid"], pal["dark"], pal["mid"], pal["light"])
+    for index, y0 in enumerate(range(0, TILE, 5)):
+        y1 = min(TILE - 1, y0 + 3)
+        for x0 in ((0, 16) if index % 2 == 0 else (-8, 8, 24)):
+            ti = (((x0 + 16) % 32) // 16 + index) % 4
+            left, right = max(0, x0 + 1), min(TILE - 1, x0 + 14)
+            canvas.rect(left, y0, right, y1, faces[ti])
+            canvas.hline(left, right, y0, pal["mid"] if ti == 3 else pal["light"])
+            canvas.hline(left, right, y1, pal["deep"])
+            canvas.vline(right, y0, y1, pal["deep"])
+    for _ in range(22):  # 砖面斑驳
+        canvas.set(rand(TILE), rand(TILE), pal["dark"] if rand(3) else pal["deep"])
+    turf = ctx["families"]["courtyard_turf"]
+    for _ in range(4):  # 缝里生苔：两档草色，只落在横缝那一行
+        x, y = rand(TILE), rand(6) * 5 + 4
+        canvas.set(x, min(TILE - 1, y), turf["dark"])
+        canvas.set(x + 1 if x + 1 < TILE else x - 1, min(TILE - 1, y), turf["light"])
+
+
+def paint_arena_pool(canvas, rand, pal, ctx):
+    """园池：山庄池塘那种斑块水 + 水下青石 + 两片浮萍（演武场的池是园景，不是野溪）。"""
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["dark"])
+    _speckles(canvas, rand, [pal["deep"], pal["mid"]], 70)
+    for _ in range(2):
+        x, y = rand(TILE - 9), rand(TILE - 7)
+        canvas.rect(x, y, x + 6 + rand(3), y + 3 + rand(3), pal["deep"])
+    for _ in range(2):  # 水下青石：浅得能看见底（一瓦两块就够，多了读成河床而不是一池水）
+        x, y = 2 + rand(TILE - 8), 2 + rand(TILE - 8)
+        canvas.rect(x, y, x + 3, y + 2, ctx["paving"]["dark"])
+        canvas.hline(x, x + 2, y, ctx["paving"]["mid"])
+    turf = ctx["families"]["courtyard_turf"]
+    for _ in range(1):  # 浮萍：草族两档的圆片，缺角那一格留回水色
+        x, y = 2 + rand(TILE - 6), 2 + rand(TILE - 6)
+        canvas.rect(x, y, x + 2, y + 2, turf["dark"])
+        canvas.hline(x, x + 2, y, turf["light"])
+        canvas.set(x + 2, y + 2, pal["mid"])
+    for _ in range(4):
+        x, y = rand(TILE - 7), rand(TILE - 2)
+        width = 2 + rand(4)
+        canvas.hline(x, x + width, y, pal["light"])
+        canvas.hline(x, x + width - 1, y + 1, pal["mid"])
+
+
+def paint_arena_brick_edges(canvas, seed, mask, pal, ctx):
+    """青砖墙的三段式收口：压顶黛瓦（上）/ 青石基脚（下）/ 砖端面（左右）。
+
+    结构与徽派白墙那一段一模一样（docs/53 §3.3：顶、身、基），换的是材料与一个母题——
+    墙头的瓦每四列画一枚**瓦当**（`mid` 圆头）：演武场在山庄墙内，瓦作是官式做法，
+    村里那种马头墙收边在这里读起来就不对。
+    """
+    exposed = tk.mask_edges(mask)
+    tile = ctx["families"]["blue_tile"]
+    if "top" in exposed:
+        for x in range(TILE):
+            depth = 5 + (seed + x) % 3
+            canvas.rect(x, 0, x, depth - 2, tile["dark"])
+            canvas.set(x, 0, tile["light"])
+            canvas.set(x, depth - 1, tile["deep"])
+            if (seed + x) % 4 == 0:
+                canvas.set(x, depth - 2, tile["mid"])
+    if "bottom" in exposed:
+        paving = ctx["paving"]
+        for x in range(TILE):
+            depth = 4 + (seed + x * 3) % 3
+            for d in range(depth):
+                canvas.set(x, TILE - 1 - d, paving["deep"] if d == 0 else paving["mid"])
+            if (seed + x * 5) % 8 == 0:
+                canvas.set(x, TILE - depth, paving["light"])
+    for edge in ("left", "right"):
+        if edge in exposed:
+            coord = EDGE_COORD[edge]
+            for t in range(TILE):
+                canvas.set(*coord(t, 0), pal["deep"])
+                canvas.set(*coord(t, 1), pal["dark"])
+                if (seed + t * 13) % 7:
+                    canvas.set(*coord(t, 2), ctx["utility"]["ink"])
+
+
+# ---------------------------------------------------------------------------
 # 配方表与单瓦装配
 # ---------------------------------------------------------------------------
 #
@@ -760,10 +939,21 @@ MOUNTAIN_EDGES = {"grass": _edge_soil, "dirt": _edge_soil, "stone": _edge_stone,
                   "wall": paint_mountain_cliff_edges, "roof": _edge_soil,
                   "water": _edge_water}
 
+# 演武场的 5 号（顶层叫 roof 的那列）与山庄/村庄一样只是占位，所以本体复用 `_base_roof`、
+# 只把色阶换成 `blue_tile`；水反过来走自家画法（园池要画浮萍与水下青石）。
+ARENA_BASE = {"grass": paint_arena_turf, "dirt": paint_arena_loam,
+              "stone": paint_arena_flagstone, "wall": paint_arena_brick,
+              "roof": _base_roof, "water": paint_arena_pool}
+
+ARENA_EDGES = {"grass": _edge_soil, "dirt": _edge_soil, "stone": _edge_stone,
+               "wall": paint_arena_brick_edges, "roof": _edge_roof,
+               "water": _edge_water}
+
 SCENE_RECIPES = {
     "manor": (MANOR_BASE, MANOR_EDGES),
     "village": (VILLAGE_BASE, VILLAGE_EDGES),
     "mountain_path": (MOUNTAIN_BASE, MOUNTAIN_EDGES),
+    "combat_arena": (ARENA_BASE, ARENA_EDGES),
 }
 
 
@@ -804,7 +994,7 @@ def build_sheet(table, scene=None):
                 interior = tile
             sheet.paint(tk.entry_transition(table, kind_id, mask), tile)
         # 满块档 = 四邻皆同类，与过渡块的 mask 15 逐像素相同：这样"关掉 autotile 立刻回滚"
-        # 和 arena 的恒等寻址拿到的都是真美术，而不是空白或另一种构图。
+        # 拿到的就是真美术，而不是空白或另一种构图。
         sheet.paint(tk.entry_base(table, kind_id), interior)
     return sheet
 

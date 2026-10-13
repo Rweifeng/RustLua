@@ -206,8 +206,9 @@ def entry_base(table, kind_id):
     """kind 的**满块瓦**条目号（1 基）= 恒等档 `tiles==id` 直接取用的那一格。
 
     对应 Rust：`1 + (kind-1) * variant_span`，本批 `variant_count=1`。autotile 开着时
-    运行时不会走到这里，但它是"关掉 autotile 立刻回滚"的那一档，也是 combat_arena
-    复用同一张图集时按恒等寻址取用的那 6 格，所以必须有真美术。
+    运行时不会走到这里，但它是"关掉 autotile 立刻回滚"的那一档，所以必须有真美术。
+    （M72-11 之前 `combat_arena` 没有自己的图集，靠的就是这 6 格的恒等寻址复用 manor 那张；
+    ④ 之后它走自己的 12×9 图集，这条回滚路线才不再跨场景借图。）
     """
     return 1 + (kind_id - 1)
 
