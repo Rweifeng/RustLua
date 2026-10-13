@@ -129,7 +129,11 @@ pub fn subset_ttf(source: &[u8], chars: &str) -> Result<Vec<u8>, String> {
     let mut maxp = maxp_raw.to_vec();
     patch_u16(&mut maxp, 4, new_num_glyphs); // numGlyphs
 
-    // 写出 TTF。
+    // 写出 TTF。post 不再原样拷贝：子集重排了字形 ID 与数量，旧名字表与 numGlyphs 必然错位
+    // （实测这份脏表还带着 233KB 旧 stringData 尾巴，Chrome 的 OTS 按"字段必须自洽"直接拒整个
+    // 字体 ⇒ 浏览器 @font-face 与微信模拟器 gamePage 全拿不到像素字）。渲染链不读 glyph 名，
+    // 重建为 format 3.0（32 字节、无名字表，保留源表的度量头）。
+    let post_out = rebuild_post_static(post_raw);
     write_ttf(&[
         (
             b"OS/2".to_vec(),
@@ -143,11 +147,19 @@ pub fn subset_ttf(source: &[u8], chars: &str) -> Result<Vec<u8>, String> {
         (b"loca".to_vec(), loca_bytes),
         (b"maxp".to_vec(), maxp),
         (b"name".to_vec(), name_raw.to_vec()),
-        (
-            b"post".to_vec(),
-            post_raw.map(|b| b.to_vec()).unwrap_or_default(),
-        ),
+        (b"post".to_vec(), post_out),
     ])
+}
+
+/// 把 post 重建为 format 3.0（无 glyph 名）。源表缺失或短于 32 字节时给零值头。
+fn rebuild_post_static(raw: Option<&[u8]>) -> Vec<u8> {
+    let mut out = vec![0u8; 32];
+    out[..4].copy_from_slice(&0x0003_0000u32.to_be_bytes());
+    if let Some(raw) = raw {
+        let keep = (raw.len().saturating_sub(4)).min(28);
+        out[4..4 + keep].copy_from_slice(&raw[4..4 + keep]);
+    }
+    out
 }
 
 /// 字形数据是否为复合字形（numberOfContours == -1）。
@@ -310,6 +322,17 @@ fn write_ttf(tables: &[(Vec<u8>, Vec<u8>)]) -> Result<Vec<u8>, String> {
     }
     for r in &records {
         out.extend_from_slice(&r.data);
+    }
+
+    // head.checkSumAdjustment：规范要求"把该字段置零后整文件 u32 和 == 0xB1B0AFBA"。
+    // 不修它，逐表校验和全对也没用——Chrome 的 OTS 在 head 表就判字体无效并**整个拒掉**
+    // （实测：子集字体在浏览器/模拟器报 "Failed to decode downloaded Font"，而 ab_glyph
+    // 不看这条，桌面一路绿灯，只有 OTS 一侧红）。
+    if let Some(r) = records.iter().find(|r| r.tag == *b"head") {
+        let adj = r.offset as usize + 8;
+        out[adj..adj + 4].copy_from_slice(&0u32.to_be_bytes());
+        let fixed = 0xB1B0_AFBAu32.wrapping_sub(checksum(&out));
+        out[adj..adj + 4].copy_from_slice(&fixed.to_be_bytes());
     }
     Ok(out)
 }
@@ -505,5 +528,49 @@ mod tests {
                 "{c:?} 应有非退化 bounds"
             );
         }
+    }
+
+    /// OTS 自洽性（浏览器/微信模拟器一侧的判据，ab_glyph 不看这两条）：
+    /// ① 整文件 u32 和（checkSumAdjustment 计入）必须恰为 0xB1B0AFBA；
+    /// ② post 必须是无名字表的 format 3.0——旧名字条数与子集 numGlyphs 必然错位，
+    ///    OTS 会因此把整个字体拒掉（实测症状："Failed to decode downloaded Font"）。
+    #[test]
+    fn subset_output_is_ots_consistent() {
+        let source = test_font();
+        let subset = subset_ttf(&source, "开始游戏AB01").expect("subset");
+        assert_eq!(
+            checksum(&subset),
+            0xB1B0_AFBA,
+            "整文件校验和必须收敛到 0xB1B0AFBA"
+        );
+        let n = u16::from_be_bytes([subset[4], subset[5]]) as usize;
+        let mut post_seen = false;
+        for i in 0..n {
+            let rec = 12 + i * 16;
+            let tag = &subset[rec..rec + 4];
+            let declared = u32::from_be_bytes(subset[rec + 4..rec + 8].try_into().unwrap());
+            let off = u32::from_be_bytes(subset[rec + 8..rec + 12].try_into().unwrap()) as usize;
+            let len = u32::from_be_bytes(subset[rec + 12..rec + 16].try_into().unwrap()) as usize;
+            let padded_len = len.next_multiple_of(4);
+            if tag == b"post" {
+                post_seen = true;
+                assert_eq!(len, 32, "post format 3.0 应恰为 32 字节");
+                assert_eq!(
+                    u32::from_be_bytes(subset[off..off + 4].try_into().unwrap()),
+                    0x0003_0000,
+                    "子集 post 必须是 format 3.0"
+                );
+            }
+            // head 的表内和因 adjustment 字段特殊处理（写出时按整文件收敛），逐表比对跳过它。
+            if tag != b"head" {
+                assert_eq!(
+                    checksum(&subset[off..off + padded_len]),
+                    declared,
+                    "表 {} 校验和错位",
+                    String::from_utf8_lossy(tag)
+                );
+            }
+        }
+        assert!(post_seen, "子集必须带 post 表");
     }
 }

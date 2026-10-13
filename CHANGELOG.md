@@ -5,6 +5,121 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — M72-11 §推进顺序 4：寒泉洞上金标管线（第一张室内/地下图），"单一光向在暗场景怎么落"由读数回答而不是开豁免名单
+
+- **症状/动机**：`cold_spring_cave` 的地表是 `assets/art/tilesets/cave/cave_ground.png` 6×1 借用图，
+  无 `tile_kinds`/`variant_count`/`autotile`/tint；它借的编号把水记 kind 3、冰记 kind 6，与
+  `building_kit.TILE_NATIVE_SOLID=(4,6)` 的跨图语义位硬约束（墙必须 4、水必须 6）相冲 ⇒ 这张图接不进
+  占地门。plan 给洞穴出的题是"单一光向规则在暗场景怎么落"。
+- **改法**：① 图集归自己——`terrain_ramp.json` 新增 `cold_spring_cave` 档
+  （`cave_floor / cave_scree / hewn_stone / cave_rock / ice_crust / cave_water`，kind 1..6 按语义位归一：
+  洞壁=4、暗河=6 ⇒ 天然实心 83 格；`cave_scree` 取中性灰而不是户外 dirt 那种暖褐），
+  `gen_terrain_tiles.py --scene cold_spring_cave` 出 12×9 = 108 槽 / **17,835 B**；旧目录
+  `assets/art/tilesets/cave/`（`cave_ground.png` 1,022 B + `_preview.png` 4,244 B）整目录下架，
+  `gen_wilds_art.py --check` 加一条反面对照：那两张图回到盘上就报"多出来的一套地表真相"。
+  ② 唯一事实源改名 `gen_wilds_scene.py` → `gen_cave_scene.py`（`git mv`；旧名下两个文件互相指错），
+  并升到与另四张**同一条代码路径**（`building_kit` 占地 + 抖动/撒 tint + 装饰 + 遮断 + 投影 inline）；
+  确定性三段对拍：两次 `--out` 逐字节相同，且与盘上场景 `cmp` 无差。
+  ③ 登记面：`scene_readings.MIN_DECOR_OBJECTS["cold_spring_cave"] = 40`（按实测 57 同档登记、没为它降门槛）、
+  `decor_kit.SCENE_DECOR` 把八件户外专属条目从洞穴候选池**摘掉**（洞里无草皮/花瓣/落叶/灌木/花/香蒲/睡莲：
+  暗河是地下静水、无光 ⇒ 没有光合作用那一条），两档地表基线 `0.75 → 0.55`，
+  "候选池一变 ⇒ 四张已提交场景的装饰字节全漂"钉在注释里；`building_kit.SCENES` 加洞穴档
+  （`box` 三件 CaveRockA/B、CaveOreVein；火把/木箱/雪莲被 `MIN_CELL_OVERLAP` 收在锚点格 ⇒ 走默认 `root`
+  不登记；`openings` 是**空表且是登记**：唯一建筑石龛四面是墙、洞口是边界上凿平的一列石，没有要人工挖开的格）；
+  `verify.ps1` 的 `$decorScene` 循环加第五张；Rust `jhyt_m72_building_footprint` 的 `SCENES` 从四张扩到五张。
+- **暗场景那一档的答案 = 让够格线自己判 0，不靠名单**：`scripts/data/lighting.lua` 的
+  `shadow_reach = 0.12` × `cast_shadow.min_reach_units = 8` ⇒ 总高 ≥66.67 px 才够格挂投影；洞里最高的
+  石龛整图 64 px ⇒ `64 × 0.12 = 7.68 < 8` ⇒ **够格 0 件**。`set_cast_shadows.py scenes/cold_spring_cave.scene
+  --check` 末行"投影 0 件 / 贴片 0 张、旧的 0 件已清、id 保留段 5101+ 干净"，门 §④ 打
+  `CaveShrine 无投影：总高不够 ¼ 瓦的体量，贴片只会读成一团脏像素`；前景遮断接了 1 件（`CaveShrineRoof`）。
+  所以 docs/58 §12.4 从"未接 4 张"改成"未接 3 张 + 洞穴**已接但 0 件**"——**0 件与未接是两件事**；
+  plan §风险 那条"室内卡住就是规范缺分支、要回炉 M72-07"的判据本笔**没有触发**。
+- **实测（2026-10-13，逐条可重跑，命令与末行原文落在 `tasks/plan/M72-11` §cold_spring_cave）**：
+  `scene_readings --gate` 末四行原文（kind 直方图 `{4:66, 3:71, 1:71, 6:17, 5:15}`、solid 96 格、
+  tint 非白档 **173 格 = 173/240 ⇒ 72%，五张金标图里最高**；最坏 20×12 窗口 **103 种** ≥24，
+  其中只算图集条目 58 种 ⇒ tint 撑 45 种占 43%；装饰 57 件 min/median/max **57/57/57**）；
+  `building_kit --check` 盘上 solid=96 应实心=96 缺 0 悬空 0；门末行
+  `jhyt_m72_building_footprint_ok scenes=5 … cold_spring_cave(solid=96 buildings=1 splits=1 shadows=0)`；
+  洞穴 §① 两条反面对照都有主体（A 火把按 quad 框 ⇒ **悬空 1 格**首格 `(1,9)`，那一格是 kind 1 可走地面，
+  "看得见却穿得过"翻成"撞空气"；B 只按石龛本体 ⇒ **缺碰撞 2 格**首格 `(16,7)`）；空 `openings` 在门 §③
+  下从"平凡通过还打印成像测过"改成**点名**"三条判据与填洞对照在本图没有主体"；BFS 可达 **144 格**与生成器
+  "主块 144 格、进不去的小块 0 个"同源；五图 15 连（每张 `set_scatter_decor --check` / `building_kit --check` /
+  `scene_readings --gate`）EXIT=0；`check_scene_refs.py` `[OK] 源码/数据无断链`，且
+  `grep -c -E "tilesets/(manor|cave)/" scenes/cold_spring_cave.scene` = 0（既没借 manor 也没借旧 cave 目录）。
+- **把本批自己写错的账钉正（docs/58 §15 新增第 7 条）**：草稿里"interior_forge 有 162 格室内能种地"、
+  "洞穴里 48 格可垦"两句都不成立，根因是**把"瓦值 2 的格数"当成了"能种地的格数"**。开垦判据是三段串联，
+  `is_dirt`（`scripts/systems/farm.lua:240-244` 看瓦值）排在最后：`:550` 先要 `farm_id = entity.find("FarmGrid")`
+  （八张场景只有 `manor` 有 ⇒ 其余七张运行期一律 `no_farm`），`:559` 再要 `in_farm`——它用的是 `:52` 那块
+  **与场景无关**的全局矩形 x14..33/y4..13。按此口径 interior_forge 162 格瓦值 2 对 `data/farm.lua` 三块 land 区
+  逐块交集 = **30 / 0 / 0**、且没有 FarmGrid ⇒ **实际能种地 0 格**（锄头按下去运行期就 `no_farm`）；
+  "48" 查到的出处是本批自己写在 `terrain_ramp.json` 洞穴 comment 里的那句**假设**
+  （"把 x14..19,y4..11 画成碎石就等于给别人添 48 格田" = FARM 矩形裁进 20×12 的面积上限 6×8），
+  被草稿抄成了既成读数（同数的 `data/farm.lua:9` `plot_radius` 是像素半径键值，与本题无关，一并登记防再抄错）；
+  洞穴工作树 kind 2 = **0 格**、HEAD 旧图那 10 格瓦值 2 对三块 land 区交集 **0 / 0 / 0** 且从来没有 FarmGrid
+  ⇒ **洞穴的 0 是编号决定的自然结果，不是本笔修了判据的功劳**（本笔没动 `farm.lua` 一行）。
+  运行期读数由一次性探针取（逐张 `scene.load` → `farm.init()` → `farm.target('down')`，用引擎自己的
+  `tilemap.get_cell` 数瓦值再与 `require('data.farm').land` 逐块求交），代码按本仓"探针不入库、只登记"的先例
+  全文记在 plan、跑完移出 crate（现在在 `.temp/jhyt_probe_till.rs`）⇒ 不会被 `--all-targets` 编到。
+  逐图同口径读数（瓦值 2 / ∩全局田矩形 / 逐块 medicinal·greenhouse·field / 运行期理由）：
+  manor 211 / 200 / 100·36·100 / `not_farmland`（对照行，它有 FarmGrid）、mountain_path 114 / 25 / 15·4·10 / `no_farm`、
+  village 32 / 8 / 8·0·0 / `no_farm`、interior_herb 18 / 5 / 5·0·0 / `no_farm`、combat_arena 0、cold_spring_cave 0、
+  main 0（无 tilemap）⇒ **交集非零 ≠ 能种地**，真正的欠账是"判据缺场景门禁"，登记不修。
+- **代价与本笔登记但不修的一条**：**+17,835 B 进包**（新图集）+ 37,345 B 预览（`_ground_preview.png`，
+  运行期不引用，进 §1 审计的开发产物档）、下架 −5,266 B ⇒ 发布门 `-Gpu2d` 的包体积读数下次打包复核。
+  五张图的 `set_cast_shadows.py --check` 全跑一遍，只有 **village 红**（`VillageMountainGateShadow` 盘上
+  `blob_131x33.png` vs 重算 `blob_135x35.png`）：用 **HEAD 的工具链**对同一张 `scenes/village.scene` 跑同一条
+  `--check` 报**逐字相同的这条红**，且本批对 `set_cast_shadows.py`/`light_kit.py`/`pixel_kit.py`/
+  `set_foreground_occluders.py` 零改动 ⇒ 既有红，红进盘的时刻按 `git log --oneline --diff-filter=A --
+  examples/game_jhyt/assets/art/shadows/blob_135x35.png` = `48b4f496`（山道那笔量出新接触椭圆却没回头
+  `--apply` village）定；**它漂移四天没人看见的原因是 `verify.ps1` 的逐图循环里从来没有这条 `--check`**
+  （Rust 门 §④ 只数件数，12 件 == 12 件所以绿）。修法是 `set_cast_shadows.py scenes/village.scene --apply`
+  并同步 docs/58 §12 那张"逐张登记到使用者"的表，归 village 收口，**不裹进本 commit**；这条 `--check`
+  也不现在加进循环——那等于把已知红入库。
+- **台账**：docs/58 升到 **1.8**（§0 三行、§1.1 目录行、§1.3 洞穴行整行重测 + "金标几张"第五条、
+  §12.4 未接清单与暗场景判据、§13 门快照 `scenes=5` 与 96 格分解 + "框与像素同解"的 1/4 格门槛更正、
+  §15 第 7 条、§17 版本记录）；docs/42（旧图集路径）、docs/43（洞穴那格）、docs/52（尺寸档）按
+  "旧说法→新实测"就地更正，不静默覆盖。
+- **未测与本笔不碰**：① 三宿主整屏目验一次没跑（归 M72-12），洞穴那两档 tint 的冷暖差在显示器上的可读性
+  还没被人眼看过（D5 复核那条"0 片满块落在 tint 读不出来的族上"不等于目视成立）；
+  ② `interior_herb`/`interior_forge`/`main` 三张仍是旧 6×1 档；③ `Stove`（`role=furniture`）在
+  `building_kit.ROOT_ROLES` 视野外 ⇒ "看得见却穿得过"记在 `gen_cave_scene.EXTRAS`、与室内那批一起收；
+  ④ `maps.lua` 注册未闭合（洞穴还只是场景文件，不是可进入的地图）；⑤ 上面那条"缺场景门禁"要不要改成
+  按场景/`land_type` 判，本批不替它决定，也不往洞穴瓦表里塞 2 来"顺手证明"什么。
+
+## Unreleased — 任务#15：`字体解析失败: InvalidFont` 刷屏背后的两条真缺陷（通道症状 + OTS 非法子集），font_subset 现产出 OTS 合法 TTF
+
+- **症状/动机**：IDE 控制台连续 `[render] font atlas load failed; error=字体解析失败: InvalidFont`
+  （490 条/138 警告 + `[wasm-log] 已丢弃后续 tracing 事件（上限 400 条）`）。判别出**两条独立缺陷**，
+  上一条已在 0.7.11 批修掉、本笔只复核，下一条是字体文件自身：**①** `InvalidFont` 是 reader utf8
+  文本通道把 TTF 字节打成 U+FFFD 的症状，刷屏形态则是 `text.rs` `ensure_font_atlas` 在 atlas 为
+  None 时每帧重试加载的设计（登记为已知行为，不修）——run7 复判：宿主直读包内字体
+  `byteLength=288364/head16` 与包字节一致、`console_tail` 该线已无；**②** `font_subset.rs` 输出的
+  子集被 Chromium OTS sanitizer 整只拒收：`head.checkSumAdjustment` 没重算（旧产物整文件和
+  0x2c5050a5 ≠ `0xB1B0AFBA`）+ `post` format 2.0 原样透传（字形名计数与新字形数不符、带
+  233,693 B 多余 stringData）。桌面 ab_glyph/ttf_parser 两条都不校验——"桌面绿、浏览器红"长期
+  并存的原因。判别途中还纠了一次量具错：第一版对拍用 crc32，谎报"全表坏"；正确口径是每表
+  BE-u32 求和。
+- **改法**：`font_subset.rs` 新增 `rebuild_post_static`（`post` 一律出 format 3.0、32 B、保留源表
+  标量字段）；`write_ttf` 成文后回算 `checkSumAdjustment`（置零→`0xB1B0AFBA − 整文件和`）；回归
+  测试 `subset_output_is_ots_consistent`。字体按既有入口重烘
+  （`cargo run -q -p engine --example subset_project_font -- examples/game_jhyt --source <全量>`）：
+  FusionPixel 子集 599,264 → **288,364 B**（再省 ~311 KB），fontTools 独立复核
+  maxp=1613/cmap missing=0/post 3.0/file_sum=0xb1b0afba。
+- **实测**（逐条读数与复现见 `tasks/plan/M73-00` 任务#15 一节）：无头 Chromium + 反面对照
+  `VERDICT=OTS newfont=loaded bytes=288364 | oldfont=FAILED`（旧字体从 HEAD 取出同场验——
+  被抓证明量具有效）；微信 run7 `verdict=scene-real presented=61 failed=0`、
+  `textures=14/15`、无字体错误线；`boot_ms=3626.2` 高于 run5 的 1435，疑冷启动挂载波动，
+  未归因、登记。
+- **门禁**：撤净注入后 `verify-wechat-minigame.ps1 -ExpectGpuKernel` EXIT=0（`font=ok`、
+  `engine_host=off reason=switch-off`、harness 240 帧）；`verify-webgl-bundle -Gpu2d
+  -GpuFrames 240` EXIT=0（OTS 临时件清净后）；桌面 `jhyt_m72_pixel_font` 门 EXIT=0；
+  wasm32 gpu2d check（1.88+ZIG）/`cargo fmt --check`/`cargo clippy -p rustlua-render` exit 0。
+  上一条 P1 条目"未测与本笔不碰"⑤里的字体两行按本节**旧说法→新实测收窄**：两行都已归因，
+  一行已修、一行是已修通道的症状；仅 `dropped_draws` 仍未碰。
+- **未测与本笔不碰**：① 每帧重试设计未改（失败仍会刷屏，但失败有具名 warn）；② 真机浏览器
+  内核（XWeb/webkit）是否同样校验 OTS 未验——微信运行时走 ab_glyph 字节路，不经 OTS；
+  ③ "全量字体不随包发"配额登记口径不变（新子集更小）。
+
 ## Unreleased — docs65-P1 第一片：gpu_host 渲染链抽成共享核心，微信引擎宿主第一次在离屏画出**真场景**
 
 - **症状/动机**：可见画面接管那批登记"接管画面只有 clear-color，场景内容 = P1 共享核心本体"；
