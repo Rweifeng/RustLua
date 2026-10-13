@@ -1075,6 +1075,320 @@ def paint_cave_shore_edges(canvas, seed, mask, pal, ctx):
 
 
 # ---------------------------------------------------------------------------
+# 铁匠铺内（M72-11 §推进顺序 5 的第一张：室内图自己的图集）
+#
+# 身份差别写在 `terrain_ramp.json:scenes.interior_forge`（换序的三条理由与 kind 2 零格那条
+# 都在那里，这里只记画法）。这张与前四张的**机制**一字不差（12×9、1+16 条目算术、4-bit
+# 位序、碎点压边、满块档 = mask 15），要回答的是另一问：**一张室内的地表怎么读得出"这是
+# 作坊，不是随便一间屋"**。三条落法：
+#   * 六族里只有两族是"地面"（夯土、石板），其余四格各有身份：炭渣是炉子的**产出**、
+#     耐火砖是**炉前那两块被火烧亮、被锤屑砸出坑的方砖**、砖墙是外圈、水槽是不能走的方槽。
+#     所以本体画法不是一套配方换六遍色：每种材质各写一条"只有这张图会这样画"的母题
+#     （夯土的夯层缝、炭渣的余烬、耐火砖的锤坑、砖墙的缺角砖与烟炱、水槽的水下铁条）。
+#   * **暖色只有两处**：`cinder_scree` 的最亮档（余烬橙）与 `hearth_brick` 整族。前者落在
+#     零格的那一列上（所以全图唯一的暖面是炉前），后者是炉前——这两件事合起来就是
+#     "铁匠铺的亮是火光不是天光"，也是 `scene_readings` 的 D5 复核要看的那档（满块格数
+#     够不够多、tint 跨度能不能读出来）。
+#   * 墙的三段式在室内换材料不换结构（docs/53 §3.3）：顶是**砖檐压顶 + 檐下木梁 + 梁下
+#     一条墨影**，底是**青石基与地面相接**，左右是砖端面 + 墨断点。山庄用草帽沿、村庄用
+#     黛瓦、演武场用官式瓦当、洞穴什么都没有——室内本来就没有檐口外的天空，所以第一段
+#     收的是"屋子里侧的檐"，不是屋外那条线。
+# 人造铺地的直缝不违反 docs/71 §1（那条判的是**两种 kind 的交界**画成一把尺子）；沿用的
+# 仍是演武场那条 `跨瓦一致` 规矩：同一块砖被瓦边切成两半时，两半的色档由同一个键算出来。
+# ---------------------------------------------------------------------------
+
+
+def paint_forge_earth(canvas, rand, pal, ctx):
+    """夯土地面：三遍夯层的横向暗沿 + 踩秃的浅坑 + 铁屑压痕。
+
+    与演武场的夯土练武位（`paint_arena_loam`）不是一回事：那里是耙痕（人为整地的动作），
+    这里是**夯层**（一层一层填土砸实的界面）——缝是横向、成层、间距不等的，而坑是长期
+    踩踏磨出来的。煤渣点来自 `ctx["soil"]`（cinder 族的深档）：作坊地上的黑点是炉子掉的，
+    不是泥土本身的颜色。
+    """
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["mid"])
+    for y in (7, 15, 24):  # 夯层缝：三条不等距，每条沿列号小步漂、带断口
+        x = 0
+        while x < TILE:
+            width = 5 + rand(6)
+            right = min(TILE - 1, x + width)
+            line = y + (rand(3) - 1)
+            if rand(6):
+                canvas.hline(x, right, line, pal["dark"])
+                canvas.hline(x, right, line + 1, pal["light"])  # 层界面砸实时露出的湿砂，比面亮
+            x = right + 2
+    _speckles(canvas, rand, [pal["deep"], pal["dark"], pal["light"]], 130)
+    for _ in range(2):  # 踩秃的浅坑：坑底最深，只有上沿抬一档（受光的是朝上那张脸）
+        x, y = 2 + rand(TILE - 10), 3 + rand(TILE - 9)
+        width, height = 4 + rand(5), 3 + rand(3)
+        canvas.rect(x, y, x + width, y + height, pal["deep"])
+        canvas.hline(x, x + width, y, pal["dark"])
+        for dx in range(width):
+            if rand(4) == 0:
+                canvas.set(x + dx, y + height, pal["mid"])
+    for _ in range(5):  # 铁屑与煤渣压痕：2-3px 斜撇，深档压在中档面上才读得出方向
+        x, y = 2 + rand(TILE - 6), 4 + rand(TILE - 7)
+        for step in range(2 + rand(2)):
+            canvas.set(x + step, y - step,
+                       ctx["soil"]["deep"] if rand(3) else pal["deep"])
+
+
+def paint_forge_cinder(canvas, rand, pal, ctx):
+    """炭渣与铁屑堆：黑渣成堆、余烬只给零星针尖大的橙。
+
+    这一档在本场景**零格**（理由写在色阶表 comment 的 farm.lua 那三条），但满块档必须有真
+    美术——恒等寻址是回滚路线，`check` 查的就是关掉 autotile 会不会画空白。与山庄 dirt /
+    演武场 loam 同一口径登记。
+
+    `light` 档是余烬橙（#8A4A26），所以这里 `light` 一律**不成面**：一只余烬只有两三个像素，
+    一整片橙读成"地上刷了漆"而不是一堆还有火心的渣。铁屑用石板族的亮档：那是从铁砧上
+    崩下来的金属，与石头的明度同一档，读起来才对。
+    """
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["dark"])
+    _speckles(canvas, rand, [pal["deep"], pal["mid"]], 150)
+    for _ in range(4):  # 渣块：扁片状，顶行亮、底行最深（单一光向：朝上的那张脸）
+        x, y = 1 + rand(TILE - 7), 2 + rand(TILE - 6)
+        width = 3 + rand(4)
+        canvas.rect(x, y, x + width, y + 1, pal["mid"])
+        canvas.hline(x, x + width, y, ctx["paving"]["dark"])
+        canvas.hline(x, x + width, y + 2, pal["deep"])
+    for _ in range(3):  # 余烬：2-3 个像素一撮，橙只出现在渣堆的缝隙里
+        x, y = 2 + rand(TILE - 5), 3 + rand(TILE - 7)
+        canvas.set(x, y, pal["light"])
+        if rand(2):
+            canvas.set(x + 1, y, ctx["paving"]["deep"])
+        canvas.set(x, y + 1, pal["deep"])
+    for _ in range(3):  # 铁屑：石板族亮档的短横，一瓦两道就够读成"扫不干净"
+        x, y = 2 + rand(TILE - 8), 3 + rand(TILE - 6)
+        canvas.hline(x, x + 2 + rand(3), y, ctx["paving"]["light"])
+    for _ in range(2):  # 烧裂的煤块：一圈深档、中心留中档，读得出是裂开不是个洞
+        x, y = 3 + rand(TILE - 9), 3 + rand(TILE - 9)
+        canvas.rect(x, y, x + 3, y + 2, pal["deep"])
+        canvas.set(x + 1, y + 1, pal["mid"])
+
+
+def paint_forge_flagstone(canvas, rand, pal, ctx):
+    """门前与炉前的铺石：16×16 大块青石，隔行错半块，缝里点白灰，块面中心磨亮。
+
+    与演武场的方砖（`paint_arena_flagstone`，16×8 长条）换的是**尺度**：作坊的石头要经得起
+    铁块掉下来，所以是一整块整块的方石；长条砖读成"砌出来的地面"，方石读成"凿出来的"。
+    跨瓦一致沿用 `ti` 那条规矩（同一块砖被瓦边切成两半时两半同档），四格一循环、`light`
+    只占一席也是演武场目验定的那条（白得压过邻族就读成"刚铺的"）。
+    """
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["deep"])
+    faces = (pal["mid"], pal["light"], pal["dark"], pal["mid"])
+    for row in range(2):
+        y0 = row * 16
+        for x0 in ((0, 16) if row % 2 == 0 else (-8, 8, 24)):
+            ti = (((x0 + 16) % 32) // 16 + 2 * row) % 4
+            left, top = max(0, x0 + 1), y0 + 1
+            right, bottom = min(TILE - 1, x0 + 14), y0 + 14
+            canvas.rect(left, top, right, bottom, faces[ti])
+            canvas.hline(left, right, top, pal["light"] if ti != 1 else pal["mid"])
+            canvas.hline(left, right, bottom, pal["dark"])
+            canvas.vline(right, top, bottom, pal["deep"])
+    for x in range(TILE):  # 勾缝断续：横竖缝都只在四列里点一列白灰，满线读成尺子
+        for y in (15, 31):
+            if rand(4) == 0:
+                canvas.set(x, y, ctx["utility"]["paper"])
+        if rand(5) == 0:
+            canvas.set(x, 0 if rand(2) else 16, ctx["utility"]["paper"])
+    for _ in range(16):  # 中心磨亮：碎点只打在暗档与中档石面上
+        x, y = rand(TILE), rand(TILE)
+        if canvas.get(x, y)[:3] in (pal["mid"][:3], pal["dark"][:3]):
+            canvas.set(x, y, pal["light"])
+    for _ in range(2):  # 石面崩角：一块深坑压在中档面上，缝边才读得出是石头不是瓷砖
+        x, y = 3 + rand(TILE - 8), 3 + rand(TILE - 8)
+        canvas.rect(x, y, x + 2, y + 1, pal["deep"])
+        canvas.set(x, y, pal["dark"])
+
+
+def paint_forge_brick(canvas, rand, pal, ctx):
+    """砖墙：5px 一层的顺砌砖，隔层错半块；缺角砖与烟炱是随机的，砖位由常数决定。
+
+    与演武场青砖（`paint_arena_brick`）同一套砌法（砖位常数 = 烧制砖的规矩），换两件事：
+    缝里生的不是苔而是**烟炱**（作坊里黑的是熏的，不是长的：`ctx["soil"]` 的深档），
+    以及一瓦里许一到两块**缺角砖**（`deep` 一小口）——被吊运铁件磕过的墙，砖面不该是完好的。
+    """
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["deep"])
+    faces = (pal["mid"], pal["dark"], pal["mid"], pal["light"])
+    for index, y0 in enumerate(range(0, TILE, 5)):
+        y1 = min(TILE - 1, y0 + 3)
+        for x0 in ((0, 16) if index % 2 == 0 else (-8, 8, 24)):
+            ti = (((x0 + 16) % 32) // 16 + index) % 4
+            left, right = max(0, x0 + 1), min(TILE - 1, x0 + 14)
+            canvas.rect(left, y0, right, y1, faces[ti])
+            canvas.hline(left, right, y0, pal["mid"] if ti == 3 else pal["light"])
+            canvas.hline(left, right, y1, pal["deep"])
+            canvas.vline(right, y0, y1, pal["deep"])
+    for _ in range(2):  # 缺角砖：一块砖的左上或右下啃掉一口，露出垫层的深档
+        x, y = rand(TILE - 6) + 1, rand(6) * 5
+        canvas.rect(x, y, x + 2, min(TILE - 1, y + 2), pal["deep"])
+        canvas.set(x, y, pal["dark"])
+    for _ in range(20):  # 砖面斑驳
+        canvas.set(rand(TILE), rand(TILE), pal["dark"] if rand(3) else pal["deep"])
+    for _ in range(3):  # 烟炱：顺着砖缝淌下来的一线黑，比斑驳更竖
+        x, y = rand(TILE), rand(TILE - 10)
+        canvas.vline(x, y, y + 4 + rand(5), ctx["soil"]["deep"])
+
+
+def paint_forge_hearth(canvas, rand, pal, ctx):
+    """炉前耐火砖：8×8 方砖 + 锤坑 + 烧裂的壳 + 溅落的火星点。
+
+    这一档是这张图的身份，也是全图**最亮的一族**（最亮档亮度 145.7，墙族最亮档才 100.1）：
+    铁砧与炉子前面那一块被火烧得发亮、被锤屑砸出坑的方砖地。像山道竹林地、洞穴冰晶地
+    那样真铺在地表，所以本体与边都走自家画法（不复用 `_base_roof` 的瓦垄）。
+
+    `light` 给砖面的**受光那一半**而不是整片：耐火砖是暗里被烤亮的，读感是"这块地面热"，
+    不是"这块地面新"。锤坑与火星分两档：坑是砸下去的（坑底最深、只有上沿抬一档），
+    火星是溅上来的（一两像素的亮点，落在缝里）。
+    """
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["deep"])
+    faces = (pal["mid"], pal["light"], pal["dark"], pal["mid"])
+    for row in range(4):
+        y0 = row * 8
+        for x0 in ((0, 16) if row % 2 == 0 else (-8, 8, 24)):
+            ti = (((x0 + 16) % 32) // 8 + 3 * row) % 4
+            left, right = max(0, x0 + 1), min(TILE - 1, x0 + 6)
+            canvas.rect(left, y0 + 1, right, y0 + 6, faces[ti])
+            canvas.hline(left, right, y0 + 1, pal["light"] if ti != 1 else pal["mid"])
+            canvas.hline(left, right, y0 + 6, pal["dark"])
+            canvas.vline(right, y0 + 1, y0 + 6, pal["deep"])
+    for _ in range(2):  # 锤坑：砸进砖面的一口，坑底 deep、上沿 dark 才读得出是个坑不是个洞
+        x, y = 3 + rand(TILE - 9), 3 + rand(TILE - 9)
+        width = 3 + rand(3)
+        canvas.rect(x, y, x + width, y + 2, pal["deep"])
+        canvas.hline(x, x + width, y, pal["dark"])
+    for _ in range(3):  # 烧裂的壳：砖面起皮，裂口是深档的一条斜线
+        x, y = 2 + rand(TILE - 6), 3 + rand(TILE - 6)
+        for step in range(2 + rand(3)):
+            canvas.set(x + step, y + (step // 2), pal["deep"])
+    for _ in range(4):  # 溅落的火星：一两像素的亮档，缝里那一颗最亮
+        x, y = rand(TILE), rand(TILE)
+        canvas.set(x, y, pal["light"] if (x + y) % 8 in (0, 7) else pal["mid"])
+    for _ in range(2):  # 铁屑嵌进砖缝：石板族的亮档，只有黑渣里才看得见
+        x, y = 2 + rand(TILE - 6), 1 + rand(3) * 8
+        canvas.set(x, y, ctx["paving"]["light"])
+
+
+def paint_forge_trough(canvas, rand, pal, ctx):
+    """淬火水槽：静水 + 水下一根淬过的铁条 + 一条按列号小步漂的反光带。
+
+    与演武场的园池（`paint_arena_pool`）相反：那是给太阳看的（浮萍、水下青石、碎光），
+    这里的读感必须"不动"——一槽死水，只在炉火的方位上反一道光。所以：
+      * 波纹不给（`light` 只出现在那一条带上，且带界随列号漂，满宽直线最扎眼）；
+      * 水下青石换成**一根铁条**（`utility.ink`：比本族最深档还黑，水下的东西读得出轮廓、
+        读不出颜色，与寒泉洞的水下石同一判法）；
+      * 槽底不画斑块而画**沉渣**：deep 档的扁片，比主体深一档，是淬火掉进去的氧化皮。
+    """
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["dark"])
+    _speckles(canvas, rand, [pal["deep"], pal["mid"]], 70)
+    for _ in range(3):  # 沉渣：扁片贴在槽底
+        x, y = 2 + rand(TILE - 8), 3 + rand(TILE - 8)
+        canvas.rect(x, y, x + 4 + rand(3), y + 1, pal["deep"])
+    x0, y0 = 3 + rand(TILE - 14), 6 + rand(TILE - 14)
+    lean = rand(3) - 1
+    for step in range(9 + rand(6)):  # 水下一根铁条：只有轮廓，边缘比本体还深一档
+        x = min(TILE - 1, x0 + step)
+        y = y0 + (step * lean) // 3
+        if 0 <= y < TILE:
+            canvas.set(x, y, ctx["utility"]["ink"])
+            canvas.set(x, min(TILE - 1, y + 1), pal["deep"])
+    band = 8 + rand(14)
+    for x in range(TILE):  # 受光带：一线 mid，其上 1px light，带界随列号漂
+        y = band + ((x // 6) % 3) - 1
+        canvas.set(x, y, pal["mid"])
+        if rand(3):
+            canvas.set(x, y - 1, pal["light"])
+
+
+def paint_forge_wall_edges(canvas, seed, mask, pal, ctx):
+    """室内砖墙的三段式：砖檐压顶 + 檐下木梁（上）/ 青石基与地面相接（下）/ 砖端面（左右）。
+
+    结构照 docs/53 §3.3，材料全换：山庄墙顶是草帽沿、村庄是黛瓦压顶、演武场是官式瓦当、
+    寒泉洞什么都没有——**室内本来就没有檐口外的天空**，所以第一段收的是屋子里侧的檐：
+    砖立砌压顶（顶行 `light`，因为受光的是朝上那张脸）→ 檐下那根木梁（`utility.wood`）→
+    梁底一条墨影（梁把墙面压暗，那是这张图上唯一一处"人造的暗"）。下沿反过来：墙脚与
+    地面相接的那圈是青石基（`ctx["paving"]`），不是土也不是草。
+    """
+    exposed = tk.mask_edges(mask)
+    wood = ctx["utility"]["wood"]
+    paving = ctx["paving"]
+    if "top" in exposed:
+        for x in range(TILE):
+            depth = 6 + (seed + x) % 3
+            canvas.rect(x, 0, x, 1, pal["light"] if (seed + x) % 3 else pal["mid"])
+            canvas.set(x, 2, pal["deep"])
+            for d in range(3, depth - 1):
+                canvas.set(x, d, wood)
+            canvas.set(x, depth - 1, ctx["utility"]["ink"])  # 梁底的墨影
+            if (seed + x * 5) % 7 == 0:
+                canvas.set(x, depth, ctx["utility"]["gold"])  # 梁头的钉帽
+    if "bottom" in exposed:
+        for x in range(TILE):
+            depth = 4 + (seed + x * 3) % 3
+            for d in range(depth):
+                canvas.set(x, TILE - 1 - d,
+                           ctx["utility"]["ink"] if d == 0 else
+                           (paving["deep"] if d == 1 else paving["mid"]))
+            if (seed + x * 5) % 8 == 0:
+                canvas.set(x, TILE - 1 - depth, paving["light"])
+    for edge in ("left", "right"):
+        if edge in exposed:
+            coord = EDGE_COORD[edge]
+            for t in range(TILE):
+                canvas.set(*coord(t, 0), pal["deep"])
+                canvas.set(*coord(t, 1), pal["dark"])
+                if (seed + t * 11) % 7:
+                    canvas.set(*coord(t, 2), ctx["utility"]["ink"])
+
+
+def paint_forge_hearth_edges(canvas, seed, mask, pal, ctx):
+    """耐火砖地的收口：外圈是溅出去的炭渣，贴着砖的那圈是烧裂的壳，零星一颗砖屑亮档。"""
+    for bit in range(4):
+        edge = tk.EDGE_BY_BIT[bit]
+        if edge not in tk.mask_edges(mask):
+            continue
+        rand = hash_stream(seed + bit * 131 + 9)
+        coord = EDGE_COORD[edge]
+        for t, depth in enumerate(edge_profile(rand)):
+            span = max(depth, 2)
+            for d in range(span):
+                canvas.set(*coord(t, d),
+                           ctx["soil"]["deep"] if d < 2 else pal["deep"])
+            if rand(4) == 0:
+                canvas.set(*coord(t, span), pal["light"])  # 崩出来的砖屑，受光的只有这一颗
+            if rand(7) == 0:
+                canvas.set(*coord(t, 1), ctx["utility"]["ink"])
+
+
+def paint_forge_trough_edges(canvas, seed, mask, pal, ctx):
+    """槽沿（docs/53 §3.7 的"先画沿再画水"，换材料）：沿是青石，不是土岸。
+
+    水侧不给 `light` 浪花：槽沿内侧那圈是**水渍**（deep 档压边），反光只留在槽心那条带里
+    （见 `paint_forge_trough`）。沿的外列最深、内列给石板族中档，读得出是一条凿出来的方槽。
+    """
+    for bit in range(4):
+        edge = tk.EDGE_BY_BIT[bit]
+        if edge not in tk.mask_edges(mask):
+            continue
+        rand = hash_stream(seed + bit * 131 + 7)
+        coord = EDGE_COORD[edge]
+        for t in range(TILE):
+            rim = 2 + rand(3)
+            for d in range(rim):  # 石沿：外列最深，内列抬两档
+                canvas.set(*coord(t, d),
+                           ctx["paving"]["deep"] if d == 0 else ctx["paving"]["mid"])
+            canvas.set(*coord(t, rim), pal["deep"])  # 水渍
+            if rand(5) == 0:
+                canvas.set(*coord(t, rim), ctx["utility"]["paper"])  # 沿口的白霜（水碱）
+            for d in range(rim + 1, rim + 4):
+                canvas.set(*coord(t, d), pal["deep"])
+            if rand(6) == 0:
+                canvas.set(*coord(t, rim + 2), pal["mid"])
+
+
+# ---------------------------------------------------------------------------
 # 配方表与单瓦装配
 # ---------------------------------------------------------------------------
 #
@@ -1225,12 +1539,24 @@ CAVE_EDGES = {"grass": _edge_soil, "dirt": _edge_soil, "stone": _edge_stone,
               "wall": paint_cave_wall_edges, "roof": paint_cave_ice_edges,
               "water": paint_cave_shore_edges}
 
+# 铁匠铺的 1/2/3 号（夯土、炭渣、石板）的边收口**全部复用通用件**：软面压硬面这件事在屋里
+# 同样是"碎屑压在暴露边上"。4/5/6 号（砖墙、耐火砖地、淬火水槽）走自家画法——墙顶在室内
+# 收的是屋子里侧的檐、耐火砖的边是烧裂的壳、水槽的沿是凿出来的石沿，通用件里没有这三样的份。
+FORGE_BASE = {"grass": paint_forge_earth, "dirt": paint_forge_cinder,
+              "stone": paint_forge_flagstone, "wall": paint_forge_brick,
+              "roof": paint_forge_hearth, "water": paint_forge_trough}
+
+FORGE_EDGES = {"grass": _edge_soil, "dirt": _edge_soil, "stone": _edge_stone,
+               "wall": paint_forge_wall_edges, "roof": paint_forge_hearth_edges,
+               "water": paint_forge_trough_edges}
+
 SCENE_RECIPES = {
     "manor": (MANOR_BASE, MANOR_EDGES),
     "village": (VILLAGE_BASE, VILLAGE_EDGES),
     "mountain_path": (MOUNTAIN_BASE, MOUNTAIN_EDGES),
     "combat_arena": (ARENA_BASE, ARENA_EDGES),
     "cold_spring_cave": (CAVE_BASE, CAVE_EDGES),
+    "interior_forge": (FORGE_BASE, FORGE_EDGES),
 }
 
 
