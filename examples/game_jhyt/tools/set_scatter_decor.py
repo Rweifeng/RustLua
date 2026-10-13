@@ -47,6 +47,9 @@ RESERVED_BY_SCENE = {
     # M72-11 ④：演武场的留白是**战斗几何**——六个验收锚点（出生/出口/木人/试招/狼窝/引敌）
     # 与两件器械的占地，撒了草垛就挡住了 `jhyt_m18_combat` 的硬编码站位。
     "combat_arena": "gen_arena_scene",
+    # M72-11 §推进顺序 4：寒泉洞的留白是**契约锚点**（出生/出口/四个 places 格/首领 home）
+    # 加每件道具的锚点格；这张图只有 240 格，中景压在交互点上是最亏的写法。
+    "cold_spring_cave": "gen_cave_scene",
 }
 
 
@@ -157,11 +160,12 @@ def check(scene_path, table):
     _, _, cells, solid_str, tints, width, height = read_ground(lines)
     ground = [cells[y * width:(y + 1) * width] for y in range(height)]
     solid = [[int(solid_str[y * width + x]) for x in range(width)] for y in range(height)]
-    exclude, avoid = reserved_provider(bk.scene_name(lines))()
+    scene = bk.scene_name(lines)
+    exclude, avoid = reserved_provider(scene)()
 
     def section_for(seed):
         placements = dk.scatter(width, height, ground, solid, exclude,
-                                seed=seed, mid_avoid=avoid)
+                                seed=seed, mid_avoid=avoid, scene=scene)
         return dk.decor_lines(1, placements, table,
                               lambda cell: tints.get(cell[1] * width + cell[0], 0), seed)
 
@@ -172,7 +176,7 @@ def check(scene_path, table):
 
     def section_for(seed):
         placements = dk.scatter(width, height, ground, solid, exclude,
-                                seed=seed, mid_avoid=avoid)
+                                seed=seed, mid_avoid=avoid, scene=scene)
         return dk.decor_lines(start, placements, table,
                               lambda cell: tints.get(cell[1] * width + cell[0], 0), seed)
 
@@ -221,7 +225,8 @@ def main():
 
     lines, removed = strip_decor(lines)
     exclude, avoid = reserved_provider(scene)()
-    placements = dk.scatter(width, height, ground, solid, exclude, seed=seed, mid_avoid=avoid)
+    placements = dk.scatter(width, height, ground, solid, exclude, seed=seed,
+                            mid_avoid=avoid, scene=scene)
     start = next_id(lines)
     lines.extend(dk.decor_lines(start, placements, table,
                                 lambda cell: tints.get(cell[1] * width + cell[0], 0), seed))
@@ -233,14 +238,18 @@ def main():
           f"（窗口 20×11.25 格，每 1/4 格取一窗；最坏窗口左下角 {counts[3]}）")
     # 形状分布一起报：某个条目一次都没被抽到 = 白画一张图（香蒲就撞过一次——它要求临水，
     # 而池塘四周一圈实测是夯土与石板，权重只给草地时永远进不了候选）。
+    # 但**本场景生态里被点名为"不该出现"的条目不算**（洞穴不该长出草皮与睡莲，
+    # 见 `decor_kit.SCENE_DECOR`）：把它们混进"白画一张图"会让一条正确的减法读起来像缺陷。
     histogram = {}
     for item in placements:
         histogram[item["name"]] = histogram.get(item["name"], 0) + 1
-    unused = [row[0] for row in dk.CATALOG if row[0] not in histogram]
+    hidden = dk.overrides(scene).get("exclude", frozenset())
+    unused = [row[0] for row in dk.CATALOG if row[0] not in histogram and row[0] not in hidden]
     mid = sum(1 for item in placements if item["band"] == "mid")
     print("  形状 " + " ".join(f"{name}={histogram[name]}" for name in sorted(histogram)))
     print(f"  碎屑/中景 = {len(placements) - mid}/{mid}"
-          + (f"  一次没抽到：{unused}" if unused else ""))
+          + (f"  一次没抽到：{unused}" if unused else "")
+          + (f"  本图生态排除 {len(hidden)} 件" if hidden else ""))
     if args.apply:
         with open(args.scene, "w", encoding="utf-8", newline="") as handle:
             handle.write(newline.join(lines))

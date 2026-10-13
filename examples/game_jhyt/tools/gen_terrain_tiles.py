@@ -811,6 +811,270 @@ def paint_arena_brick_edges(canvas, seed, mask, pal, ctx):
 
 
 # ---------------------------------------------------------------------------
+# 寒泉洞（M72-11 第四张铺量的图，第一张室内/地下图）
+#
+# 身份差别写在 `terrain_ramp.json:scenes.cold_spring_cave`。这张要回答的是 plan §推进顺序 4
+# 点名的那条：**"单一光向"规则在暗场景怎么落**。洞里既没有太阳也没有第二光源
+# （`scripts/world/lighting.lua` 不分场景档；火把的局部暖点要等光系统，本包不发明它），
+# 所以这里的落法不是"再画一层阴影"，而是**把亮度层次压进色阶表的使用方式里**：
+#   * 本体满块的底色一律 `dark`（户外三图用 `mid`）——整幅的读感先暗下来；
+#   * `light` 只给**沿**：层顶、板块上沿、冰针尖端、收口碎点，宽度 ≤2px，绝不铺成面
+#     （铺成面在暗场景里读成过曝，不读成"这里有光"）；
+#   * 层次由 deep↔dark↔mid 三档承担，于是"亮处"是**少数像素**而明度跨度仍在——
+#     `check` 的"每族至少用上 3 档"与"每条暴露边改 ≥8 像素"两条门同时成立。
+# 全图最深的一族给洞壁（`cave_rock` 最深档亮度 25.7，比山庄夯土的最深档 40.1 还低）、
+# 最亮的一族给冰晶地（`ice_crust` 最亮档 169.3）：这两族不是"一块暗石和一块亮石"，
+# 而是光在洞里的**去向**——水与冰聚住光，岩石吃掉光。
+# ---------------------------------------------------------------------------
+
+
+def paint_cave_floor(canvas, rand, pal, ctx):
+    """洞底石板：暗档打底 + 滴水蚀坑 + 一层从洞壁塌下来的扁碎屑。"""
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["dark"])
+    _speckles(canvas, rand, [pal["deep"], pal["mid"]], 150)
+    for _ in range(2):  # 滴水蚀坑：坑底最深，只有**上沿**抬一档（受光的是朝上那张脸）
+        x, y = 2 + rand(TILE - 8), 3 + rand(TILE - 8)
+        width, height = 4 + rand(4), 3 + rand(3)
+        canvas.rect(x, y, x + width, y + height, pal["deep"])
+        canvas.hline(x, x + width, y, pal["mid"])
+    for _ in range(5):  # 塌落碎屑：宽 3 高 1 的扁片（洞壁是片岩，崩下来就不是圆的）
+        x, y = 1 + rand(TILE - 5), 1 + rand(TILE - 3)
+        width = 2 + rand(2)
+        canvas.hline(x, x + width, y, ctx["soil"]["dark"])
+        canvas.set(x, y, ctx["soil"]["light"])
+    for _ in range(2):  # 水痕：暗河回水带上来的湿线，比蚀坑更深一档
+        x, y = 1 + rand(TILE - 3), 4 + rand(TILE - 8)
+        canvas.vline(x, y, y + 3 + rand(3), pal["deep"])
+
+
+def paint_cave_scree(canvas, rand, pal, ctx):
+    """塌落碎石堆：叠起来的扁片岩，缝里是全图最深的洞壁色。
+
+    这一档在本场景**零格**（理由写在色阶表的 comment：farm.lua 判 tile==2 可垦、没有场景门），
+    但满块档必须有真美术——恒等寻址是回滚路线，`check` 查的就是关掉 autotile 会不会画空白。
+    """
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["deep"])
+    _speckles(canvas, rand, [pal["dark"], pal["mid"]], 120)
+    for _ in range(9):  # 扁片岩：顶行最亮、底行最深（单一光向：朝上的那张脸）
+        x, y = 1 + rand(TILE - 6), 1 + rand(TILE - 4)
+        width = 3 + rand(4)
+        canvas.rect(x, y, x + width, y + 1, pal["mid"])
+        canvas.hline(x, x + width, y, pal["light"])
+        canvas.hline(x, x + width, y + 1, pal["deep"])
+    rock = ctx["families"]["cave_rock"]
+    for _ in range(3):  # 缝里的湿暗：石堆的空隙读作洞壁色，碎石因此是"从这个壁上掉下来的"
+        x, y = rand(TILE), rand(TILE)
+        canvas.rect(x, y, min(TILE - 1, x + 1), min(TILE - 1, y + 1), rock["deep"])
+    for _ in range(2):  # 坑道木：洞里的枯枝是塌下来的支护，不是落叶
+        _twig(canvas, rand, ctx["utility"]["wood"])
+
+
+def paint_cave_hewn(canvas, rand, pal, ctx):
+    """凿平甬道：一块大錾面 + 一道**断续**的导水槽 + 几道竖向錾口。
+
+    洞里的"路"不是铺出来的，是从石床上錾出来的，所以没有村街那种大块拼花；`building.lua`
+    认 tile==3 是道路，这条錾平石就是洞穴的主通道。水槽用比面还深的两档画，读作"水从这儿走"。
+
+    第一版是"两块通长条石 + 每条石满宽亮上沿"，28 格的甬道一铺开就读成**一叠木板**——
+    满宽横线每 32px 重复一次就是尺子，跟洞壁那面的格栅是同一个成因。改法三条：缝只留一道、
+    并让它沿列号漂 ±1px 且带断口；下半块的面压到 `dark`；`light` 全瓦只剩上沿那一行、
+    且四列里断两列。
+    """
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["deep"])
+    seam = 12 + rand(8)
+    canvas.rect(0, 0, TILE - 1, seam - 2, pal["mid"])
+    canvas.rect(0, seam + 2, TILE - 1, TILE - 1, pal["dark"])
+    for x in range(TILE):  # 导水槽：带界随列号小步漂，每五列断一次
+        y = seam + ((x // 7) % 3) - 1
+        if (x + seam) % 5 == 0:
+            continue
+        canvas.set(x, y - 1, pal["deep"])
+        canvas.set(x, y, pal["deep"])
+        canvas.set(x, y + 1, pal["mid"])  # 槽底只反光一档，不给 light
+    for x in range(0, TILE, 11):  # 竖向錾口：把大面切成几块，缝是深的
+        canvas.vline(x + 3 + rand(3), 0, seam - 2, pal["deep"])
+    for x in range(TILE):  # 受光沿：断续的四列两列，满宽亮线在暗场景里最扎眼
+        if (x + seam) % 4 < 2:
+            canvas.set(x, 0, pal["light"])
+    for _ in range(5):  # 錾痕：3px 的斜撇，深档压在中档面上才读得出錾子的方向
+        x, y = 2 + rand(TILE - 6), 3 + rand(TILE - 4)
+        tone = pal["deep"] if y < seam else pal["mid"]
+        for step in range(3):
+            canvas.set(x + step, y - step, tone)
+
+
+def paint_cave_wall(canvas, rand, pal, ctx):
+    """洞壁：层理切成石块 + 短节理 + 流石挂面，全图最深的一族。
+
+    与山道岩壁（`paint_mountain_cliff`）的区别不是"更暗一点的同一种石头"：山道的壁是**山体**
+    （层理被节理切成块、缝里生苔），这里的壁是**被水掏出来的洞壁**（缝里长苔这件事在没有光的
+    洞里不成立，所以苔一档都不给）。
+
+    第一版铺 66 格就读成**金属格栅**：每条层的顶行拉满 32px 的亮档、节理又通高，横竖都是尺子。
+    山道那次已经为同一个毛病改过一轮（"瓦楞铁皮"，见 `paint_mountain_cliff` 的注释），
+    这里更严重是因为洞壁是全场格数最多的一族。改法：① 层加厚（6-10px）并把每层再切成
+    2-3 块石，块间一道深缝——亮档因此只剩几段而不是一条线；② 受光沿只给偶数层、且过半概率、
+    且沿列断口；③ 节理改成"只穿过一到两层"的短线；④ 流石挂面压到 `mid`，`light` 留给层沿。
+    """
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["dark"])
+    y = 0
+    index = 0
+    while y < TILE:
+        height = 6 + rand(5)
+        bottom = min(TILE - 1, y + height - 1)
+        canvas.rect(0, y, TILE - 1, bottom, pal["mid"] if index % 2 == 0 else pal["dark"])
+        x = 0
+        while x < TILE:  # 把这一层切成石块：缝比面深一档，块顶才谈得上受光
+            width = 9 + rand(9)
+            right = min(TILE - 1, x + width - 1)
+            canvas.hline(x, right, y, pal["deep"])
+            if index % 2 == 0 and rand(2):
+                for t in range(x, right + 1):
+                    if (t + index * 5) % 3:
+                        canvas.set(t, y, pal["light"] if t == x else pal["mid"])
+            if rand(3) == 0:  # 层内的横向裂隙：短，不给第二道光
+                x0 = x + 1 + rand(max(1, right - x - 1))
+                canvas.hline(x0, min(right, x0 + 3 + rand(4)),
+                             y + 2 + rand(max(1, bottom - y - 2)), pal["deep"])
+            if right < TILE - 1:
+                canvas.vline(right + 1, y, bottom, pal["deep"])
+            x = right + 2
+        y = bottom + 1
+        index += 1
+    for _ in range(2):  # 竖向节理：只穿过一到两层，右壁接一档光
+        x = 2 + rand(TILE - 4)
+        top = rand(TILE - 12)
+        bottom = min(TILE - 1, top + 7 + rand(8))
+        canvas.vline(x, top, bottom, pal["deep"])
+        canvas.vline(x - 1 if x else x, top, bottom, pal["mid"])
+    for _ in range(2):  # 流石挂面：自壁顶垂下来的一线湿痕
+        x = rand(TILE)
+        canvas.vline(x, 0, 4 + rand(6), pal["mid"])
+
+
+def paint_cave_ice(canvas, rand, pal, ctx):
+    """冰晶地：暗底冰壳 + 一簇簇斜插的冰针，全图最亮的一族。像山道的竹林地一样真铺在地表。
+
+    第一版底色 `dark` + 130 个均匀碎点 + 两根横缝 + 两汪融水，20 格铺开后读成**泳池瓷砖**：
+    均匀的盐噪配上规则的暗块，没有方向也没有"结在石头上"的关系。改法是压底色、撤碎点密度、
+    把亮集中到**针尖**（`light` 全瓦只有针尖那几个像素），暗缝改成斜着走、底下读出洞底石色。
+    """
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["deep"])
+    _speckles(canvas, rand, [pal["dark"], pal["mid"]], 90)
+    for _ in range(2):  # 壳下的暗缝：斜着走的一道，露出洞底石
+        x, y = 1 + rand(TILE - 9), 1 + rand(TILE - 6)
+        lean = rand(3) - 1
+        for step in range(5 + rand(4)):
+            canvas.set(x + step, y + (step * lean) // 2,
+                       ctx["families"]["cave_floor"]["deep"])
+    for _ in range(8):  # 冰针：2-3 根一簇，根部暗、针身 mid、只有尖端给 light
+        x, y = 2 + rand(TILE - 6), 5 + rand(TILE - 9)
+        for i in range(2 + rand(2)):
+            top = y - rand(2)
+            canvas.set(x + i, top, pal["light"])
+            canvas.set(x + i, top + 1, pal["mid"])
+            canvas.set(x + i, top + 2, pal["dark"])
+        canvas.set(x - 1, y + 1, ctx["families"]["cave_water"]["deep"])  # 根部的融水
+
+
+def paint_cave_darkwater(canvas, rand, pal, ctx):
+    """暗河：静水。户外的水有五到六条亮波纹（太阳下的碎光），这里只留**一条**受光带。
+
+    水面之下的东西在洞里读不出来，读得出来的只有反光的方向——所以水下石只给 `deep`/`dark`
+    两档，一律不给亮；那条受光带按列号小步漂，满宽直线在暗场景里最扎眼（docs/71 §1）。
+    """
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["deep"])
+    _speckles(canvas, rand, [pal["dark"]], 70)
+    for _ in range(2):  # 回水涡：比主体还深一档
+        x, y = rand(TILE - 9), rand(TILE - 7)
+        canvas.rect(x, y, x + 6 + rand(3), y + 3 + rand(3), pal["deep"])
+    band = 6 + rand(20)
+    for x in range(TILE):  # 受光带：一线 mid，其上 1px light
+        y = band + ((x // 5) % 3) - 1
+        canvas.set(x, y, pal["mid"])
+        canvas.set(x, y - 1, pal["light"])
+    for _ in range(2):  # 水下石：只读得出轮廓，读不出颜色
+        x, y = 3 + rand(TILE - 8), 3 + rand(TILE - 8)
+        canvas.rect(x, y, x + 3, y + 2, ctx["families"]["cave_rock"]["deep"])
+        canvas.hline(x, x + 2, y, ctx["paving"]["dark"])
+
+
+def paint_cave_wall_edges(canvas, seed, mask, pal, ctx):
+    """洞壁收口：顶沿是壁面朝里弯的流石、墙脚是塌下来的碎石坡、两端是墨线断点。
+
+    山庄院墙顶是草帽沿、村庄白墙顶是黛瓦压顶、山道岩壁顶是林下的草——洞穴的壁顶什么都没有，
+    只有一道被水磨圆的檐，所以上沿直接是本族色阶；下沿反过来用 `ctx["soil"]`（cave_scree），
+    因为墙脚那圈碎石是墙自己的产出，不是地面的草或土。
+    """
+    exposed = tk.mask_edges(mask)
+    scree = ctx["soil"]
+    if "top" in exposed:
+        for x in range(TILE):
+            depth = 4 + (seed + x) % 3
+            canvas.rect(x, 0, x, depth - 2, pal["mid"])
+            canvas.set(x, 0, pal["light"])
+            canvas.set(x, depth - 1, pal["deep"])
+            if (seed + x * 5) % 6 == 0:
+                canvas.set(x, depth, scree["dark"])
+    if "bottom" in exposed:
+        for x in range(TILE):
+            depth = 3 + (seed + x * 3) % 3
+            for d in range(depth):
+                canvas.set(x, TILE - 1 - d,
+                           scree["deep"] if d == 0 else
+                           (scree["light"] if d == depth - 1 else scree["dark"]))
+    for edge in ("left", "right"):
+        if edge in exposed:
+            coord = EDGE_COORD[edge]
+            for t in range(TILE):
+                canvas.set(*coord(t, 0), pal["deep"])
+                canvas.set(*coord(t, 1), pal["dark"])
+                if (seed + t * 11) % 7:
+                    canvas.set(*coord(t, 2), ctx["utility"]["ink"])
+
+
+def paint_cave_ice_edges(canvas, seed, mask, pal, ctx):
+    """冰壳的崩边：断裂面压最深档、内侧留 mid，零星一根 `light` 针尖朝外。"""
+    for bit in range(4):
+        edge = tk.EDGE_BY_BIT[bit]
+        if edge not in tk.mask_edges(mask):
+            continue
+        rand = hash_stream(seed + bit * 131 + 9)
+        coord = EDGE_COORD[edge]
+        for t, depth in enumerate(edge_profile(rand)):
+            span = max(depth, 2)
+            for d in range(span):
+                canvas.set(*coord(t, d), pal["deep"] if d == span - 1 else pal["mid"])
+            if rand(3) == 0:
+                canvas.set(*coord(t, 0), pal["light"])
+            if rand(5) == 0:
+                canvas.set(*coord(t, 1), ctx["families"]["cave_water"]["deep"])
+
+
+def paint_cave_shore_edges(canvas, seed, mask, pal, ctx):
+    """暗河岸：docs/53 §3.7 的"先画 rim 再画水"照旧，换两件事——rim 是**湿石**不是土岸，
+    水侧不给 `light` 浪花（洞水没有白浪），只给一线 `mid` 反光 + 深档压边。"""
+    for bit in range(4):
+        edge = tk.EDGE_BY_BIT[bit]
+        if edge not in tk.mask_edges(mask):
+            continue
+        rand = hash_stream(seed + bit * 131 + 7)
+        coord = EDGE_COORD[edge]
+        for t in range(TILE):
+            rim = 2 + rand(3)
+            for d in range(rim):  # 湿石 rim：外列最深，内列给凿石族的暗档
+                canvas.set(*coord(t, d), ctx["soil"]["deep"] if d == 0 else ctx["paving"]["dark"])
+            if rand(4) == 0:
+                canvas.set(*coord(t, rim), pal["mid"])
+            else:
+                canvas.set(*coord(t, rim), pal["deep"])
+            for d in range(rim + 1, rim + 4):
+                canvas.set(*coord(t, d), pal["deep"])
+            if rand(7) == 0:  # 岸上的冰碴：寒泉的冷气只在贴岸那一圈结得出东西
+                canvas.set(*coord(t, rim + 1), ctx["families"]["ice_crust"]["dark"])
+
+
+# ---------------------------------------------------------------------------
 # 配方表与单瓦装配
 # ---------------------------------------------------------------------------
 #
@@ -949,11 +1213,24 @@ ARENA_EDGES = {"grass": _edge_soil, "dirt": _edge_soil, "stone": _edge_stone,
                "wall": paint_arena_brick_edges, "roof": _edge_roof,
                "water": _edge_water}
 
+# 洞穴的 1/2/3 号（洞底石、碎石堆、凿平甬道）三种地面的边收口**全部复用通用件**：软面压硬面
+# 这件事在洞里同样是"碎屑压在暴露边上"，没有第二种读法。5 号（冰晶地）像山道的竹林地那样
+# 真铺在地表，所以本体与边都走自家画法；4/6 号（洞壁、暗河）也一样——这两样在户外三图里
+# 不存在对应的东西，通用件里没有它们的份。
+CAVE_BASE = {"grass": paint_cave_floor, "dirt": paint_cave_scree,
+             "stone": paint_cave_hewn, "wall": paint_cave_wall,
+             "roof": paint_cave_ice, "water": paint_cave_darkwater}
+
+CAVE_EDGES = {"grass": _edge_soil, "dirt": _edge_soil, "stone": _edge_stone,
+              "wall": paint_cave_wall_edges, "roof": paint_cave_ice_edges,
+              "water": paint_cave_shore_edges}
+
 SCENE_RECIPES = {
     "manor": (MANOR_BASE, MANOR_EDGES),
     "village": (VILLAGE_BASE, VILLAGE_EDGES),
     "mountain_path": (MOUNTAIN_BASE, MOUNTAIN_EDGES),
     "combat_arena": (ARENA_BASE, ARENA_EDGES),
+    "cold_spring_cave": (CAVE_BASE, CAVE_EDGES),
 }
 
 

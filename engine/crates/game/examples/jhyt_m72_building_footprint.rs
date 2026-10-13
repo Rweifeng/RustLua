@@ -18,14 +18,17 @@
 //!      （缺=0、悬空=0），并报出每栋的视觉格数/实心格数/门洞/拆层件。
 //!      两条反面对照走同一个函数：把一件道具的占地从"单格根碰撞"换成**整个 quad 框**
 //!      必须报出悬空格并点名（落点逐图点名，见 `Scene::quad_probe`——山庄是东南那丛竹子、
-//!      村里是石桥：两者都是"框里有格画的是能走过去的东西"；拿贴图铺满画框的房子做这条
-//!      对照是空转）；把同名拆层屋顶件从并集里摘掉必须报出缺碰撞并点名屋檐格。
+//!      村里是石桥、寒泉洞是火把：三者都是"框里有格画的是能走过去的东西或人身高的
+//!      装饰"；拿贴图铺满画框的房子做这条对照是空转）；把同名拆层屋顶件从并集里摘掉
+//!      必须报出缺碰撞并点名屋檐格。
 //!   ② 拆层不变量：每栋建筑占地必须跨多格（≥4），且**拆层前后占地逐格相同**——
 //!      用整图（未拆层）算的格集必须等于"本体∪屋顶"算的格集。这条是拆层这件事
 //!      没有偷偷改变玩法的唯一证据：画面换了、碰撞没换。
 //!   ③ 门洞：声明的洞格必须**不在 solid 里**、贴图在那一格上**真是洞**（不透明占比
 //!      ≤ `HOLE_MAX_OPAQUE_RATIO`），并且从出生点按 4 邻域 BFS **走得到**。
 //!      反面对照：把洞填成实心，可达性必须当场断掉。
+//!      `openings` 为空的那张图（寒泉洞）这一节只剩可达读数，两条判据与反面对照都
+//!      平凡通过——空表是**登记**（那张图没有 sprite 通道）而不是漏登记，写在各档注释里。
 //!   ④ 投影贴片：每栋**够格**的建筑都必须挂一件 `<名字>Shadow`（`role=cast_shadow`），
 //!      且画在本体之下；不够格的必须**没有**——只查前者等于允许"给每样东西都糊一块灰"过关。
 //!      "够格"不是名单而是 `lighting.lua` 的两个数（总高 × `shadow_reach` ≥
@@ -330,7 +333,40 @@ const ARENA: Scene = Scene {
     ],
 };
 
-const SCENES: &[Scene] = &[MANOR, VILLAGE, MOUNTAIN, ARENA];
+/// 寒泉洞（M72-11 第五档，暗场景）：与另四张跑**同一套判据**，只有两处在这张图上是
+/// 空的，两处都在注释里点名"为什么是登记而不是漏登记"——一张图的宽容度必须写下来，
+/// 否则下一张图会把它当成"名单可以省"的先例。
+const CAVE: Scene = Scene {
+    name: "cold_spring_cave",
+    file: "scenes/cold_spring_cave.scene",
+    ground_texture: "assets/art/tilesets/cold_spring_cave/cold_spring_cave_ground.png",
+    // `data/maps.lua` 的 cold_spring_cave.spawn，与 `gen_cave_scene.SPAWN` 同源：洞口厅。
+    spawn: (10, 3),
+    // 空表 = 登记（口径同 `building_kit.SCENES["cold_spring_cave"].openings`）：本图唯一的
+    // `role=building` 是石龛，它的视觉框内没有人穿过去的通道；南口 (10,1) 是
+    // `maps.lua` 的出口格，但它落在厅口的地面上、不是"某件 sprite 的洞"，
+    // 于是 §③ 的三档判据（在框内 / 图上真是洞 / 走得到）在这一张没有主体，只剩可达读数。
+    openings: &[],
+    // 山石 48×32 横压两格：只标锚点等于右半边看得见却穿得过。矿脉 40×32 的不透明框
+    // 实测只压 1 格（右边那 8px 是遮罩描边，落在相邻格不足 1/4 格），所以这一件
+    // `box` 与 `root` 同解——登记成 `box` 是按贴图体量归档，不是为它多标一格。
+    box_props: &["CaveRockA", "CaveRockB", "CaveOreVein"],
+    // 洞内没有"能走过去的横件"：暗河那一格由瓦自己画成实心（kind 6 在 `TILE_NATIVE_SOLID`
+    // 里），桥一类道具这张图没有。
+    walk_props: &[],
+    // 这条落在火把上：24×56 竖跨两格，而单格根碰撞只标底那一格，按框标会把**火焰那一格**
+    // 砌成墙。本图没有前景遮断的道具（唯一的拆层件是石龛屋顶，归 §②），所以这一档的
+    // 落点不是山庄/山道那类"竹梢/树冠压住人"，而是"画在人身高的东西不算占地"。
+    // 实测悬空首格 (1,9)：那一格 kind=1 是可走地面、盘上 solid 为 0。
+    quad_probe: "CaveTorchA",
+    splits: &[Split {
+        base: "CaveShrine",
+        occluder: "CaveShrineRoof",
+        full: "assets/art/buildings/village_shrine.png",
+    }],
+};
+
+const SCENES: &[Scene] = &[MANOR, VILLAGE, MOUNTAIN, ARENA, CAVE];
 
 /// 场景里一个 sprite 实体的门侧视图。
 #[derive(Clone, Debug)]
@@ -671,56 +707,68 @@ fn check_scene(
     // 走进这张图的），拿出生点起算会让"填洞"当场变成"把出生点砌进墙里"，可达集缩到 0
     // ——那条既证不了"门是死的"，还会把"门后面那一整片只能穿这扇门走"这类真缺陷混掉。
     // 所以往洞外挪一格起算，并要求填洞**只让洞格自己**掉出可达集：门是叶子，不是桥。
-    let is_hole = |cell: &(i32, i32)| scene.openings.iter().any(|(_, cx, cy)| (*cx, *cy) == *cell);
-    let start = if is_hole(&scene.spawn) {
-        NEIGHBOURS
-            .iter()
-            .map(|(dx, dy)| (scene.spawn.0 + dx, scene.spawn.1 + dy))
-            .find(|cell| !is_hole(cell) && reached.contains(cell))
-            .ok_or_else(|| {
-                format!(
-                    "{}：出生点 {:?} 就站在门洞里，而它四周除洞格之外没有可走格",
-                    scene.name, scene.spawn
-                )
-            })?
+    if scene.openings.is_empty() {
+        // **空表那张图不假装通过**：寒泉洞没有 sprite 通道（登记见该档注释），三条判据与
+        // 这条填洞对照都没有主体。照原样跑会得到一行"少掉的正好是 0 个洞格"——看着像绿，
+        // 实际什么也没测，还会让台账里"§③ 在本图未测"与"§③ 通过"混成同一种读数。
+        println!(
+            "  本图未声明门洞（`openings` 空表 = 登记）：洞的三条判据与填洞对照没有主体，\
+             §③ 在这一张只出上面那条可达读数"
+        );
     } else {
-        scene.spawn
-    };
-    let from_start = reachable_from(&ground, &walkable, start);
-    let mut sealed = walkable.clone();
-    for (_, cx, cy) in scene.openings {
-        sealed.insert((*cx, *cy));
-    }
-    let sealed_reach = reachable_from(&ground, &sealed, start);
-    if scene
-        .openings
-        .iter()
-        .any(|(_, cx, cy)| sealed_reach.contains(&(*cx, *cy)))
-    {
-        return Err(
-            "反面对照失手：把门洞填成实心之后洞格仍然可达——§③ 的可达性其实没在依赖 solid".into(),
+        let is_hole =
+            |cell: &(i32, i32)| scene.openings.iter().any(|(_, cx, cy)| (*cx, *cy) == *cell);
+        let start = if is_hole(&scene.spawn) {
+            NEIGHBOURS
+                .iter()
+                .map(|(dx, dy)| (scene.spawn.0 + dx, scene.spawn.1 + dy))
+                .find(|cell| !is_hole(cell) && reached.contains(cell))
+                .ok_or_else(|| {
+                    format!(
+                        "{}：出生点 {:?} 就站在门洞里，而它四周除洞格之外没有可走格",
+                        scene.name, scene.spawn
+                    )
+                })?
+        } else {
+            scene.spawn
+        };
+        let from_start = reachable_from(&ground, &walkable, start);
+        let mut sealed = walkable.clone();
+        for (_, cx, cy) in scene.openings {
+            sealed.insert((*cx, *cy));
+        }
+        let sealed_reach = reachable_from(&ground, &sealed, start);
+        if scene
+            .openings
+            .iter()
+            .any(|(_, cx, cy)| sealed_reach.contains(&(*cx, *cy)))
+        {
+            return Err(
+                "反面对照失手：把门洞填成实心之后洞格仍然可达——§③ 的可达性其实没在依赖 solid"
+                    .into(),
+            );
+        }
+        let lost: Vec<(i32, i32)> = from_start
+            .difference(&sealed_reach)
+            .filter(|cell| !is_hole(cell))
+            .copied()
+            .collect();
+        if !lost.is_empty() {
+            return Err(format!(
+                "反面对照：填上 {} 个洞格之后，洞格之外还掉了 {lost:?}——那扇门是**桥**不是叶子，\
+                 它后面那一整片只能穿过这扇门走：把门挖开的那一刻等于把那片地封了",
+                scene.openings.len()
+            )
+            .into());
+        }
+        println!(
+            "  反面对照：从洞外 {start:?} 起算，把洞格填成实心 → 可达集 {} 缩到 {}，\
+             少掉的正好是 {} 个洞格本身（门是叶子不是桥）",
+            from_start.len(),
+            sealed_reach.len(),
+            scene.openings.len()
         );
     }
-    let lost: Vec<(i32, i32)> = from_start
-        .difference(&sealed_reach)
-        .filter(|cell| !is_hole(cell))
-        .copied()
-        .collect();
-    if !lost.is_empty() {
-        return Err(format!(
-            "反面对照：填上 {} 个洞格之后，洞格之外还掉了 {lost:?}——那扇门是**桥**不是叶子，\
-             它后面那一整片只能穿过这扇门走：把门挖开的那一刻等于把那片地封了",
-            scene.openings.len()
-        )
-        .into());
-    }
-    println!(
-        "  反面对照：从洞外 {start:?} 起算，把洞格填成实心 → 可达集 {} 缩到 {}，\
-         少掉的正好是 {} 个洞格本身（门是叶子不是桥）",
-        from_start.len(),
-        sealed_reach.len(),
-        scene.openings.len()
-    );
 
     banner("④ 投影贴片：够格的每栋都有、不够格的都没有");
     // 够格**不是名单**，是 `lighting.lua` 那两个数：偏移长度 = 物体总高 × `shadow_reach`，

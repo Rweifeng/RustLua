@@ -166,6 +166,28 @@ SCENES = {
             "ArenaPier": "walk",
         },
     },
+    # 寒泉洞（M72-11 §推进顺序 4，第一张**室内/地下**图）。
+    # **`openings` 是空的**，而且这是登记不是漏登记：这个字段只服务"石体压几格、中间留一个
+    # 真洞"的门楼（山门/南门），本图唯一的建筑是石龛（`village_shrine` 64×64，四面都是墙），
+    # 洞口则是地图边界上的一列凿平石——`gen_cave_scene.ENTRANCE` 不压在洞壁行/列上，天然实心
+    # 只来自 `TILE_NATIVE_SOLID`（墙与水），没有需要人工挖开的格。空表在
+    # `jhyt_m72_building_footprint` §③ 与 `check_openings` 下都是**平凡通过**（不报错、也不
+    # 假装测过），这条读法在山道/演武场那两批已核过。
+    "cold_spring_cave": {
+        "openings": {},
+        "prop_collision": {
+            # 山石 48×32 横占两格：只标锚点等于右半边"看得见却穿得过"（与山道 BoulderA/B、
+            # 演武场 ArenaRock* 同一判法）。
+            "CaveRockA": "box",
+            "CaveRockB": "box",
+            # 矿脉 40×32 压 (8,9)+(9,9)，`cave_ore` 那个地点格在 (9,8) 隔壁，不冲突。
+            "CaveOreVein": "box",
+            # 火把 24×56、木箱 32×28、雪莲 32×32 的紧包围盒都被 `MIN_CELL_OVERLAP`（1/4 格）
+            # 收在锚点那一格内 ⇒ 走默认 root，不登记；`Stove` 是 `role=furniture`，
+            # `ROOT_ROLES` 根本不看它（那条"看得见却穿得过"记在 `gen_cave_scene.EXTRAS`，
+            # 归室内图那批一起收）。
+        },
+    },
 }
 
 

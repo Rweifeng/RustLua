@@ -108,6 +108,41 @@ CATALOG = (
 )
 
 
+# ---------------------------------------------------------------------------
+# 逐场景覆盖：**目录与基线概率是生态事实，不是口味**
+# ---------------------------------------------------------------------------
+# `CATALOG` 是四张已铺量场景共用的户外草甸清单（草、花、灌木、香蒲、睡莲）。寒泉洞是地下
+# 场景：洞里不长草、不开花、没有香蒲与睡莲，把同一份清单原样撒进去会撒出一洞的绿草皮，
+# 而 `BASE_P` 那一档"草地 0.75"读的是"阳光下的草甸该密"，暗场景照抄就成了噪点。
+#
+# **为什么是覆盖而不是新目录**：加形状会改所有已提交场景的散布字节（`scatter()` 逐格独立
+# 哈希，但候选池一变，`pick_item` 的加权区间整体重排）——所以洞穴只做减法与降档，不新增条目。
+# 没登记的场景一个字节都不受影响（`scene=None` ⇒ 覆盖表空 ⇒ 与旧路径同算式）。
+SCENE_DECOR = {
+    "cold_spring_cave": {
+        # 洞底石板（kind 1）与凿平甬道（kind 3）各降一档：暗场景的低对比度下，密装饰会糊成
+        # 一片脏纹理，而"这一片有东西/那一片空着"在暗处反而更靠块面读。
+        "base_p": {GRASS: 0.55, STONE: 0.55},
+        # 八件户外专属：草皮两件 + 花瓣/落叶（洞里无落叶层）+ 灌木 + 花 + 临水香蒲 + 睡莲
+        # （暗河是**地下静水**，无光 ⇒ 没有光合作用那一条；`DECOR_ON_SOLID` 那格因此空置）。
+        "exclude": frozenset(("GrassShort", "GrassTuft", "Petals", "LeafPile",
+                              "Bush", "Flowers", "Reed", "Lily")),
+    },
+}
+
+
+def overrides(scene):
+    """这张图的覆盖档（`None`/未登记 ⇒ 空 dict ⇒ 走户外默认清单）。"""
+    return SCENE_DECOR.get(scene, {})
+
+
+def base_p(scene=None):
+    """该场景的逐格基线概率表（默认 `BASE_P` 加场景覆盖）。"""
+    out = dict(BASE_P)
+    out.update(overrides(scene).get("base_p", {}))
+    return out
+
+
 def catalog_entry(name):
     for row in CATALOG:
         if row[0] == name:
@@ -147,12 +182,19 @@ def neighbours_water(ground, width, height, x, y):
     return False
 
 
-def pick_item(ground, width, height, x, y, kind, seed, allow_mid=True):
-    """按 kind 权重（中景再乘 `MID_SHARE`）加权抽一件；带临水约束的条目只在条件成立时进候选。"""
+def pick_item(ground, width, height, x, y, kind, seed, allow_mid=True, scene=None):
+    """按 kind 权重（中景再乘 `MID_SHARE`）加权抽一件；带临水约束的条目只在条件成立时进候选。
+
+    `scene` 决定这张图的生态（见 `SCENE_DECOR`）：被点名的条目**不进候选池**，而不是
+    "抽到了再丢弃"——丢弃会让候选池的加权区间与盘上不一致，`--check` 的逐字节对拍就废了。
+    """
+    hidden = overrides(scene).get("exclude", frozenset())
     pool = []
     total = 0
     for row in CATALOG:
         name, stem, size, band, weights = row[:5]
+        if name in hidden:
+            continue
         weight = weights.get(kind, 0)
         if not weight:
             continue
@@ -177,10 +219,13 @@ def pick_item(ground, width, height, x, y, kind, seed, allow_mid=True):
     return None
 
 
-def scatter(width, height, ground, solid, exclude, seed=DECOR_SEED, mid_avoid=frozenset()):
+def scatter(width, height, ground, solid, exclude, seed=DECOR_SEED, mid_avoid=frozenset(),
+            scene=None):
     """返回装饰清单（row-major 顺序，所以同输入下实体 id 分配也是确定的）。
 
     `ground[y][x]` 是地表 kind，`solid[y][x]` 是 0/1，`exclude` 是两带都不许下的格子。
+    `scene` 是这张图的场景键（`name=` / `maps.lua` 的地图键），决定基线概率与生态清单
+    （见 `SCENE_DECOR`）；不传就是户外默认档，四张已铺量的图因此一个字节都不变。
 
     **留白跟着遮挡力走，不是一律保守**：`mid_avoid` 只挡中景带（order 12，会盖在井/木牌/
     晒谷架这些小道具 order 10 上面），碎屑带（order -30，画在所有物件之前、连玩家也永远在
@@ -188,10 +233,11 @@ def scatter(width, height, ground, solid, exclude, seed=DECOR_SEED, mid_avoid=fr
     一屏中位数只有 22 件——"画面几乎没东西"就是这么来的，而它防的症状根本不存在。
     """
     out = []
+    params = base_p(scene)
     for y in range(height):
         for x in range(width):
             kind = ground[y][x]
-            if kind not in BASE_P or not BASE_P[kind]:
+            if kind not in params or not params[kind]:
                 continue
             if solid[y][x] and kind not in DECOR_ON_SOLID:
                 continue
@@ -200,10 +246,10 @@ def scatter(width, height, ground, solid, exclude, seed=DECOR_SEED, mid_avoid=fr
             factor = patch_factor(x, y, seed)
             if factor <= 0.0:
                 continue
-            if _rand(x, y, 0x51A3, seed) % 1000 >= int(BASE_P[kind] * factor * 1000):
+            if _rand(x, y, 0x51A3, seed) % 1000 >= int(params[kind] * factor * 1000):
                 continue
             item = pick_item(ground, width, height, x, y, kind, seed,
-                             allow_mid=(x, y) not in mid_avoid)
+                             allow_mid=(x, y) not in mid_avoid, scene=scene)
             if item is None:
                 continue
             w, h = item["size"]

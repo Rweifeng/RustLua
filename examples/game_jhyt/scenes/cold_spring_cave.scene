@@ -7,7 +7,7 @@ meta	ui_reference_height	720
 meta	ui_reference_width	1280
 entity	1	GroundMap
 component	1	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	1	Tilemap	tile_size=32x32;width=20;height=12;texture=assets/art/tilesets/cave/cave_ground.png;tiles_format=1;atlas_cols=6;atlas_rows=1;tiles=4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,5,5,4,4,1,3,3,3,3,1,1,1,1,1,1,1,6,6,6,6,6,1,4,4,1,3,3,3,3,1,1,1,1,1,1,1,6,6,6,6,6,1,4,4,1,3,3,3,3,1,1,1,1,1,1,1,6,6,6,6,6,1,4,4,1,3,3,3,3,1,1,1,1,1,1,1,6,6,6,6,6,1,4,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,4,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,4,4,1,1,1,2,2,2,2,2,1,1,1,1,1,1,1,1,1,1,4,4,1,1,1,2,2,2,2,2,1,1,1,1,1,1,1,1,1,1,4,4,5,5,1,1,1,1,1,1,5,5,1,1,1,1,1,1,1,1,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4;solid=111111111111111111111000000000000000000110111100000000000001101111000000000000011011110000000000000110111100000000000001100000000000000100011000000000000000000110000000000010000001100000000000010000011000000000000000000111111111111111111111
+component	1	Tilemap	tile_size=32x32;width=20;height=12;texture=assets/art/tilesets/cold_spring_cave/cold_spring_cave_ground.png;tiles_format=1;atlas_cols=12;atlas_rows=9;tiles=4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,3,3,3,3,3,1,1,1,3,3,3,3,1,1,1,1,1,1,4,4,1,3,6,6,6,3,3,1,3,3,3,3,1,5,5,5,1,1,4,4,3,6,6,6,6,6,3,3,3,3,3,3,5,5,5,5,5,1,4,4,3,6,6,6,6,6,3,3,3,3,3,1,5,5,5,5,1,1,4,4,1,3,6,6,6,6,3,3,3,3,3,1,1,5,5,5,1,1,4,4,1,3,3,3,3,3,1,1,3,3,1,1,1,1,1,1,1,1,4,4,1,1,4,4,1,1,3,3,3,3,1,1,1,1,1,1,1,1,4,4,1,1,4,1,3,3,3,1,3,3,3,1,1,1,1,1,1,1,4,4,1,1,1,3,3,3,3,3,3,3,3,3,3,1,1,4,1,1,4,4,1,1,1,1,3,3,3,3,3,3,3,3,3,1,1,4,4,1,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4;solid=111111111111111111111000001100000000000110011100000000000001101111100000000000011011111000000000000110011110000000000001100000000000000111111001100000000000110111010000000011000001100000001000010010011000000000000000110111111111111111111111;tile_kinds=6;variant_count=1;autotile=1;tints=0:2,1:2,4:1,5:1,6:1,7:1,8:1,9:1,10:2,11:2,14:2,15:2,16:1,17:1,18:2,19:2,20:2,21:2,24:1,25:1,26:1,27:1,28:1,29:1,30:2,31:2,34:2,35:2,36:1,37:1,38:2,39:2,42:2,43:2,44:2,45:2,48:2,49:2,50:1,51:1,54:2,55:2,58:1,59:1,62:2,63:1,64:1,65:1,68:2,69:2,70:1,71:1,74:2,75:2,78:1,79:1,83:1,84:1,85:1,86:2,87:2,88:1,89:1,92:2,93:2,94:2,95:2,96:2,97:2,98:2,99:2,104:1,105:1,106:2,107:2,108:1,109:1,112:2,113:2,114:2,115:2,116:2,117:2,118:2,119:2,120:1,121:1,122:2,123:2,124:1,125:1,128:1,129:1,130:2,131:2,132:1,133:1,134:2,135:2,136:1,137:1,138:2,139:2,140:1,141:1,142:2,143:2,144:1,145:1,148:1,149:1,150:2,151:2,152:1,153:1,154:2,155:2,156:1,157:1,158:2,159:2,162:2,163:2,164:1,165:1,166:1,167:1,168:2,169:2,172:1,173:1,178:1,179:1,182:2,183:2,184:1,185:1,186:1,187:1,188:2,189:2,192:1,193:1,198:1,199:1,202:1,203:1,204:1,205:1,206:1,207:1,208:1,209:1,210:1,211:1,216:1,217:1,218:2,219:2,222:1,223:1,224:1,225:1,226:1,227:1,228:1,229:1,230:1,231:1,236:1,237:1,238:2,239:2;tints_rgb=0.96,0.98,1,1|1.03,1.02,0.99,1
 entity_meta	1	role	ground_tilemap
 entity	2	CaveTorchA
 component	2	Sprite	texture=assets/art/props/wilds_torch.png;size=24x56;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=20
@@ -70,3 +70,240 @@ component	13	Sprite	texture=assets/art/furniture/interior_stove.png;size=48x40;p
 component	13	Transform	position=320.000000000,192.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity_meta	13	role	furniture
 entity_meta	13	cell	10,6
+entity	14	CaveShrine
+component	14	Sprite	texture=assets/art/buildings/village_shrine_body.png;size=64x35;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=0
+component	14	Transform	position=512.000000000,192.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	14	role	building
+entity_meta	14	cell	16,6
+entity	15	Decor_Pebbles_15
+component	15	Sprite	texture=assets/art/decor/decor_pebbles_r.png;size=16x7;pivot=0.000,0.000;tint=1.030,1.020,0.990,1.000;sorting_layer=world;order=-30
+component	15	Transform	position=33.000000000,38.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	15	role	decor
+entity	16	Decor_Twigs_16
+component	16	Sprite	texture=assets/art/decor/decor_twigs_r.png;size=20x9;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=-30
+component	16	Transform	position=75.000000000,34.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	16	role	decor
+entity	17	Decor_MossPatch_17
+component	17	Sprite	texture=assets/art/decor/decor_moss_patch.png;size=20x8;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=-30
+component	17	Transform	position=102.000000000,49.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	17	role	decor
+entity	18	Decor_MossPatch_18
+component	18	Sprite	texture=assets/art/decor/decor_moss_patch_r.png;size=20x8;pivot=0.000,0.000;tint=1.030,1.020,0.990,1.000;sorting_layer=world;order=-30
+component	18	Transform	position=330.000000000,42.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	18	role	decor
+entity	19	Decor_Rock_19
+component	19	Sprite	texture=assets/art/decor/decor_rock_r.png;size=24x18;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=12
+component	19	Transform	position=420.000000000,32.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	19	role	decor
+entity	20	Decor_Pebbles_20
+component	20	Sprite	texture=assets/art/decor/decor_pebbles.png;size=16x7;pivot=0.000,0.000;tint=1.030,1.020,0.990,1.000;sorting_layer=world;order=-30
+component	20	Transform	position=455.000000000,51.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	20	role	decor
+entity	21	Decor_Pebbles_21
+component	21	Sprite	texture=assets/art/decor/decor_pebbles.png;size=16x7;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=-30
+component	21	Transform	position=546.000000000,44.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	21	role	decor
+entity	22	Decor_Twigs_22
+component	22	Sprite	texture=assets/art/decor/decor_twigs.png;size=20x9;pivot=0.000,0.000;tint=1.030,1.020,0.990,1.000;sorting_layer=world;order=-30
+component	22	Transform	position=579.000000000,52.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	22	role	decor
+entity	23	Decor_Rock_23
+component	23	Sprite	texture=assets/art/decor/decor_rock_r.png;size=24x18;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=12
+component	23	Transform	position=32.000000000,70.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	23	role	decor
+entity	24	Decor_Pebbles_24
+component	24	Sprite	texture=assets/art/decor/decor_pebbles_r.png;size=16x7;pivot=0.000,0.000;tint=1.030,1.020,0.990,1.000;sorting_layer=world;order=-30
+component	24	Transform	position=70.000000000,80.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	24	role	decor
+entity	25	Decor_Twigs_25
+component	25	Sprite	texture=assets/art/decor/decor_twigs.png;size=20x9;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=-30
+component	25	Transform	position=203.000000000,80.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	25	role	decor
+entity	26	Decor_Pebbles_26
+component	26	Sprite	texture=assets/art/decor/decor_pebbles_r.png;size=16x7;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=-30
+component	26	Transform	position=327.000000000,80.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	26	role	decor
+entity	27	Decor_MossPatch_27
+component	27	Sprite	texture=assets/art/decor/decor_moss_patch.png;size=20x8;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=-30
+component	27	Transform	position=361.000000000,84.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	27	role	decor
+entity	28	Decor_Pebbles_28
+component	28	Sprite	texture=assets/art/decor/decor_pebbles.png;size=16x7;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=-30
+component	28	Transform	position=396.000000000,71.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	28	role	decor
+entity	29	Decor_Twigs_29
+component	29	Sprite	texture=assets/art/decor/decor_twigs.png;size=20x9;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=-30
+component	29	Transform	position=428.000000000,69.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	29	role	decor
+entity	30	Decor_MossPatch_30
+component	30	Sprite	texture=assets/art/decor/decor_moss_patch_r.png;size=20x8;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=-30
+component	30	Transform	position=36.000000000,110.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	30	role	decor
+entity	31	Decor_MossPatch_31
+component	31	Sprite	texture=assets/art/decor/decor_moss_patch_r.png;size=20x8;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=-30
+component	31	Transform	position=235.000000000,117.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	31	role	decor
+entity	32	Decor_Pebbles_32
+component	32	Sprite	texture=assets/art/decor/decor_pebbles_r.png;size=16x7;pivot=0.000,0.000;tint=1.030,1.020,0.990,1.000;sorting_layer=world;order=-30
+component	32	Transform	position=298.000000000,121.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	32	role	decor
+entity	33	Decor_Twigs_33
+component	33	Sprite	texture=assets/art/decor/decor_twigs_r.png;size=20x9;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=-30
+component	33	Transform	position=322.000000000,102.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	33	role	decor
+entity	34	Decor_MossPatch_34
+component	34	Sprite	texture=assets/art/decor/decor_moss_patch_r.png;size=20x8;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=-30
+component	34	Transform	position=388.000000000,119.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	34	role	decor
+entity	35	Decor_Pebbles_35
+component	35	Sprite	texture=assets/art/decor/decor_pebbles_r.png;size=16x7;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=-30
+component	35	Transform	position=41.000000000,153.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	35	role	decor
+entity	36	Decor_MossPatch_36
+component	36	Sprite	texture=assets/art/decor/decor_moss_patch.png;size=20x8;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=-30
+component	36	Transform	position=362.000000000,148.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	36	role	decor
+entity	37	Decor_Pebbles_37
+component	37	Sprite	texture=assets/art/decor/decor_pebbles.png;size=16x7;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=-30
+component	37	Transform	position=36.000000000,172.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	37	role	decor
+entity	38	Decor_MossPatch_38
+component	38	Sprite	texture=assets/art/decor/decor_moss_patch.png;size=20x8;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=-30
+component	38	Transform	position=64.000000000,177.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	38	role	decor
+entity	39	Decor_MossPatch_39
+component	39	Sprite	texture=assets/art/decor/decor_moss_patch.png;size=20x8;pivot=0.000,0.000;tint=1.030,1.020,0.990,1.000;sorting_layer=world;order=-30
+component	39	Transform	position=551.000000000,169.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	39	role	decor
+entity	40	Decor_Pebbles_40
+component	40	Sprite	texture=assets/art/decor/decor_pebbles_r.png;size=16x7;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=-30
+component	40	Transform	position=44.000000000,216.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	40	role	decor
+entity	41	Decor_Rock_41
+component	41	Sprite	texture=assets/art/decor/decor_rock_r.png;size=24x18;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=12
+component	41	Transform	position=162.000000000,201.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	41	role	decor
+entity	42	Decor_Pebbles_42
+component	42	Sprite	texture=assets/art/decor/decor_pebbles_r.png;size=16x7;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=-30
+component	42	Transform	position=268.000000000,201.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	42	role	decor
+entity	43	Decor_MossPatch_43
+component	43	Sprite	texture=assets/art/decor/decor_moss_patch_r.png;size=20x8;pivot=0.000,0.000;tint=1.030,1.020,0.990,1.000;sorting_layer=world;order=-30
+component	43	Transform	position=320.000000000,201.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	43	role	decor
+entity	44	Decor_Twigs_44
+component	44	Sprite	texture=assets/art/decor/decor_twigs.png;size=20x9;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=-30
+component	44	Transform	position=36.000000000,246.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	44	role	decor
+entity	45	Decor_Pebbles_45
+component	45	Sprite	texture=assets/art/decor/decor_pebbles.png;size=16x7;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=-30
+component	45	Transform	position=170.000000000,241.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	45	role	decor
+entity	46	Decor_Twigs_46
+component	46	Sprite	texture=assets/art/decor/decor_twigs_r.png;size=20x9;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=-30
+component	46	Transform	position=193.000000000,243.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	46	role	decor
+entity	47	Decor_Pebbles_47
+component	47	Sprite	texture=assets/art/decor/decor_pebbles_r.png;size=16x7;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=-30
+component	47	Transform	position=228.000000000,226.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	47	role	decor
+entity	48	Decor_MossPatch_48
+component	48	Sprite	texture=assets/art/decor/decor_moss_patch.png;size=20x8;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=-30
+component	48	Transform	position=262.000000000,239.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	48	role	decor
+entity	49	Decor_Pebbles_49
+component	49	Sprite	texture=assets/art/decor/decor_pebbles.png;size=16x7;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=-30
+component	49	Transform	position=296.000000000,230.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	49	role	decor
+entity	50	Decor_Pebbles_50
+component	50	Sprite	texture=assets/art/decor/decor_pebbles.png;size=16x7;pivot=0.000,0.000;tint=1.030,1.020,0.990,1.000;sorting_layer=world;order=-30
+component	50	Transform	position=326.000000000,245.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	50	role	decor
+entity	51	Decor_MossPatch_51
+component	51	Sprite	texture=assets/art/decor/decor_moss_patch.png;size=20x8;pivot=0.000,0.000;tint=1.030,1.020,0.990,1.000;sorting_layer=world;order=-30
+component	51	Transform	position=354.000000000,228.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	51	role	decor
+entity	52	Decor_MossPatch_52
+component	52	Sprite	texture=assets/art/decor/decor_moss_patch_r.png;size=20x8;pivot=0.000,0.000;tint=1.030,1.020,0.990,1.000;sorting_layer=world;order=-30
+component	52	Transform	position=64.000000000,280.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	52	role	decor
+entity	53	Decor_Twigs_53
+component	53	Sprite	texture=assets/art/decor/decor_twigs.png;size=20x9;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=-30
+component	53	Transform	position=135.000000000,264.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	53	role	decor
+entity	54	Decor_Rock_54
+component	54	Sprite	texture=assets/art/decor/decor_rock_r.png;size=24x18;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=12
+component	54	Transform	position=193.000000000,269.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	54	role	decor
+entity	55	Decor_MossPatch_55
+component	55	Sprite	texture=assets/art/decor/decor_moss_patch_r.png;size=20x8;pivot=0.000,0.000;tint=1.030,1.020,0.990,1.000;sorting_layer=world;order=-30
+component	55	Transform	position=292.000000000,266.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	55	role	decor
+entity	56	Decor_MossPatch_56
+component	56	Sprite	texture=assets/art/decor/decor_moss_patch_r.png;size=20x8;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=-30
+component	56	Transform	position=364.000000000,257.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	56	role	decor
+entity	57	Decor_Twigs_57
+component	57	Sprite	texture=assets/art/decor/decor_twigs.png;size=20x9;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=-30
+component	57	Transform	position=450.000000000,266.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	57	role	decor
+entity	58	Decor_Rock_58
+component	58	Sprite	texture=assets/art/decor/decor_rock.png;size=24x18;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=12
+component	58	Transform	position=549.000000000,262.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	58	role	decor
+entity	59	Decor_Mushroom_59
+component	59	Sprite	texture=assets/art/decor/decor_mushroom.png;size=16x14;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=12
+component	59	Transform	position=577.000000000,265.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	59	role	decor
+entity	60	Decor_MossPatch_60
+component	60	Sprite	texture=assets/art/decor/decor_moss_patch.png;size=20x8;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=-30
+component	60	Transform	position=36.000000000,296.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	60	role	decor
+entity	61	Decor_Twigs_61
+component	61	Sprite	texture=assets/art/decor/decor_twigs.png;size=20x9;pivot=0.000,0.000;tint=1.030,1.020,0.990,1.000;sorting_layer=world;order=-30
+component	61	Transform	position=71.000000000,296.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	61	role	decor
+entity	62	Decor_Pebbles_62
+component	62	Sprite	texture=assets/art/decor/decor_pebbles_r.png;size=16x7;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=-30
+component	62	Transform	position=229.000000000,300.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	62	role	decor
+entity	63	Decor_MossPatch_63
+component	63	Sprite	texture=assets/art/decor/decor_moss_patch_r.png;size=20x8;pivot=0.000,0.000;tint=1.030,1.020,0.990,1.000;sorting_layer=world;order=-30
+component	63	Transform	position=296.000000000,310.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	63	role	decor
+entity	64	Decor_Rock_64
+component	64	Sprite	texture=assets/art/decor/decor_rock_r.png;size=24x18;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=12
+component	64	Transform	position=549.000000000,300.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	64	role	decor
+entity	65	Decor_MossPatch_65
+component	65	Sprite	texture=assets/art/decor/decor_moss_patch.png;size=20x8;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=-30
+component	65	Transform	position=576.000000000,298.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	65	role	decor
+entity	66	Decor_MossPatch_66
+component	66	Sprite	texture=assets/art/decor/decor_moss_patch.png;size=20x8;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=-30
+component	66	Transform	position=167.000000000,338.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	66	role	decor
+entity	67	Decor_Pebbles_67
+component	67	Sprite	texture=assets/art/decor/decor_pebbles.png;size=16x7;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=-30
+component	67	Transform	position=224.000000000,333.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	67	role	decor
+entity	68	Decor_Pebbles_68
+component	68	Sprite	texture=assets/art/decor/decor_pebbles.png;size=16x7;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=-30
+component	68	Transform	position=270.000000000,342.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	68	role	decor
+entity	69	Decor_MossPatch_69
+component	69	Sprite	texture=assets/art/decor/decor_moss_patch.png;size=20x8;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=-30
+component	69	Transform	position=295.000000000,338.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	69	role	decor
+entity	70	Decor_MossPatch_70
+component	70	Sprite	texture=assets/art/decor/decor_moss_patch_r.png;size=20x8;pivot=0.000,0.000;tint=0.960,0.980,1.000,1.000;sorting_layer=world;order=-30
+component	70	Transform	position=363.000000000,337.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	70	role	decor
+entity	71	Decor_MossPatch_71
+component	71	Sprite	texture=assets/art/decor/decor_moss_patch.png;size=20x8;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=world;order=-30
+component	71	Transform	position=423.000000000,340.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	71	role	decor
+entity	5001	CaveShrineRoof
+component	5001	Sprite	texture=assets/art/buildings/village_shrine_roof.png;size=64x29;pivot=0.000,0.000;tint=1.000,1.000,1.000,1.000;sorting_layer=foreground;order=-100
+component	5001	Transform	position=512.000000000,227.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+entity_meta	5001	role	occluder

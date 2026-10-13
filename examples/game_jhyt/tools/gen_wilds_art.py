@@ -8,13 +8,12 @@
 
 产出：
 
-    （山道地表**不在本文件出图**：M72-11 起归 `gen_terrain_tiles.py --scene mountain_path`，
-      产出 `assets/art/tilesets/mountain_path/mountain_path_ground.png` 12×9 图集）
-    assets/art/tilesets/cave/cave_ground.png          6 列 × 32px（洞窟地表）
+    （**两张地表都不在本文件出图**：M72-11 起山道归 `gen_terrain_tiles.py --scene mountain_path`、
+      寒泉洞归 `gen_terrain_tiles.py --scene cold_spring_cave`，各产出自己的 12×9 图集
+      `assets/art/tilesets/<场景>/<场景>_ground.png`）
     assets/art/buildings/wilds_*.png                  山门 / 栈道 / 茶棚 / 营寨 / 断桥
     assets/art/props/wilds_*.png                      松树 / 山石 / 藤蔓 / 火把 / 路牌 / 营火 / 木箱 / 树桩
     assets/art/gather/wilds_*.png                     9 种采集物（野果丛 / 药草 / 柴薪 / 矿石 / 雪莲 / 芦苇 / 莲蓬 / 毒草 / 茶树丛）
-    assets/art/tilesets/cave/_preview.png              洞窟地表 4× 预览
     assets/art/buildings/_wilds_preview.png           建筑道具 2× 预览
     assets/art/gather/_preview.png                    采集物 3× 预览（中文名）
     assets/art/props/wilds_pine_{canopy,trunk}.png     松树按行切的两块（切点见 `layer_kit`）
@@ -29,13 +28,16 @@
 对应 docs/31 §3.1 的"山林 2 套 / 洞窟 1 套"与 §7.1 的采集区域；
 对应 docs/30 §7.1 的四种采集区域（村外湿地 / 青云山道 / 青云山腰 / 寒泉洞）。
 
-kind 语义（两套地表各有各的一张图）：
-  cave    ：`cave/cave_ground.png` 6 列 × 32px 直接寻址（本文件出图）——
-            1=洞底石地 2=碎石堆 3=暗河水 4=洞壁 5=矿脉 6=冰晶地
+kind 语义（**两张地表都不再由本文件出图**，M72-11 起）：
   mountain：`mountain_path/mountain_path_ground.png` 12×9 图集 + autotile，由
             `gen_terrain_tiles.py --scene mountain_path` 出图，色阶只从 `tools/terrain_ramp.json`
             的 `scenes.mountain_path` 取——1=落叶松林地 2=碎石土路 3=石阶 4=岩壁 5=竹林地 6=溪水
-            （洞窟换金标是它自己那一包： kinds 仍按引擎写死的 6 列，只是那张图不在这里画）
+  cave    ：`cold_spring_cave/cold_spring_cave_ground.png`，同一命令换 `--scene`；
+            kind 语义已换序（旧说法 1=洞底石地 2=碎石堆 3=暗河水 4=洞壁 5=矿脉 6=冰晶地 →
+            新实测 1=洞底石板 2=塌落碎石(零格) 3=凿平甬道 4=洞壁 5=冰晶地 6=暗河），
+            逐条理由与"为什么水必须是 6、墙必须是 4"写在 `gen_cave_scene.py` 的模块 docstring。
+            旧那张 6 列 × 1 行的直接寻址图与它的 `_preview.png` 随本批从产出表里摘掉
+            （`assets/art/tilesets/cave/` 整目录不再存在，盘上不留第二套地表真相）。
 
 文字：路牌 / 山门匾额 / 茶棚幌子 / 营寨旗 都用**中文**（走 tools/cjk_text.py 的 GDI+ 栅格化）。
 
@@ -49,7 +51,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from pixel_kit import Canvas, draw_text, hash_stream, mix, rgb, shade, text_width  # noqa: E402
+from pixel_kit import Canvas, draw_text, hash_stream, mix, rgb, shade  # noqa: E402
 from gen_manor_art import (  # noqa: E402
     BAMBOO, BAMBOO_DARK, BAMBOO_LIGHT, CINNABAR, GOLD, GOLD_LIGHT, INK, PAPER, PAPER_DIM,
     STONE, STONE_DARK, STONE_LIGHT, STONE_MORTAR, TILE, TILE_ROOF, TILE_ROOF_DARK,
@@ -71,19 +73,12 @@ PINE_DARK = rgb("#2C3F24")
 PINE_LIGHT = rgb("#4C6A3C")
 VINE = rgb("#5B7048")
 
-# 洞窟色板
-CAVE_FLOOR = rgb("#54514B")
-CAVE_FLOOR_DARK = rgb("#403E39")
-CAVE_FLOOR_LIGHT = rgb("#66635C")
-CAVE_WALL = rgb("#3A3833")
-CAVE_WALL_DARK = rgb("#282621")
-CAVE_WALL_LIGHT = rgb("#4C4943")
+# 洞窟色板：只留**采集物**还需要的两组（`wilds_ore` 的矿砂、`wilds_snow_lotus` 的冰面），
+# 洞窟地表那六族现在住在 `tools/terrain_ramp.json:scenes.cold_spring_cave.families`。
 ORE = rgb("#C9A05A")
 ORE_LIGHT = rgb("#E4C078")
 ICE = rgb("#A9C4D8")
 ICE_LIGHT = rgb("#D6E6F2")
-DARKWATER = rgb("#2A3E52")
-DARKWATER_LIGHT = rgb("#3E6485")
 
 TILE_DIR = os.path.join("assets", "art", "tilesets")
 BUILDING_DIR = os.path.join("assets", "art", "buildings")
@@ -92,104 +87,12 @@ GATHER_DIR = os.path.join("assets", "art", "gather")
 
 
 # ---------------------------------------------------------------------------
-# 洞窟地表
+# 山道建筑 / 道具 / 采集物（**两张地表图集都不再由本文件出图**：金标规范下图集的唯一
+# 产出点是 `gen_terrain_tiles.py --scene <场景>`，这里再画一张 6×1 会把那张门的三条判据
+# 直接压红。M72-11 起山道与寒泉洞都搬过去了，本文件旧的那六格 `tile_cave_*` 与
+# `cave_tiles()/pack()` 一起摘除。）
 # ---------------------------------------------------------------------------
 
-
-def tile_cave_floor(seed=411):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, CAVE_FLOOR)
-    rnd = hash_stream(seed)
-    for _ in range(30):
-        cv.set(rnd(TILE), rnd(TILE), CAVE_FLOOR_DARK)
-    for _ in range(18):
-        cv.set(rnd(TILE), rnd(TILE), CAVE_FLOOR_LIGHT)
-    for _ in range(5):
-        x = 3 + rnd(TILE - 8)
-        y = 3 + rnd(TILE - 8)
-        cv.set(x, y, CAVE_WALL_DARK)
-        cv.set(x + 1, y, CAVE_FLOOR_LIGHT)
-    return cv
-
-
-def tile_cave_rubble(seed=422):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, CAVE_FLOOR_DARK)
-    rnd = hash_stream(seed)
-    for _ in range(6):
-        x = 2 + rnd(TILE - 8)
-        y = 2 + rnd(TILE - 8)
-        cv.rect(x, y, x + 3, y + 2, ROCK_DARK)
-        cv.hline(x, x + 3, y, ROCK)
-    for _ in range(24):
-        cv.set(rnd(TILE), rnd(TILE), CAVE_FLOOR)
-    return cv
-
-
-def tile_dark_water(seed=433):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, DARKWATER)
-    for y in (6, 16, 26):
-        for x in range(1, TILE - 2, 8):
-            cv.set(x, y, DARKWATER_LIGHT)
-            cv.set(x + 1, y, DARKWATER_LIGHT)
-            cv.set(x + 2, y - 1, rgb("#5D82A0"))
-    rnd = hash_stream(seed)
-    for _ in range(16):
-        cv.set(rnd(TILE), rnd(TILE), rgb("#1E2E3E"))
-    return cv
-
-
-def tile_cave_wall(seed=444):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, CAVE_WALL)
-    rnd = hash_stream(seed)
-    for _ in range(28):
-        cv.set(rnd(TILE), rnd(TILE), CAVE_WALL_DARK)
-    for _ in range(16):
-        cv.set(rnd(TILE), rnd(TILE), CAVE_WALL_LIGHT)
-    for x in range(0, TILE, 11):  # 竖向岩层
-        cv.vline(x, 0, TILE - 1, CAVE_WALL_DARK)
-        cv.vline(x + 1, 0, TILE - 1, CAVE_WALL_LIGHT)
-    cv.hline(0, TILE - 1, 0, rgb("#1E1C18"))
-    return cv
-
-
-def tile_ore_vein(seed=455):
-    cv = tile_cave_wall(seed)
-    for x, y in ((6, 10), (9, 12), (14, 8), (20, 14), (24, 11), (13, 20), (21, 22)):
-        cv.set(x, y, ORE)
-        cv.set(x + 1, y, ORE_LIGHT)
-        cv.set(x, y + 1, shade(ORE, 0.75))
-    cv.set(10, 13, ORE_LIGHT)
-    cv.set(22, 15, ORE)
-    return cv
-
-
-def tile_ice(seed=466):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, ICE)
-    for y in range(0, TILE, 7):
-        cv.hline(0, TILE - 1, y, ICE_LIGHT)
-        cv.hline(0, TILE - 1, y + 1, shade(ICE, 0.9))
-    rnd = hash_stream(seed)
-    for _ in range(14):
-        cv.set(rnd(TILE), rnd(TILE), rgb("#FFFFFF"))
-    for _ in range(10):
-        cv.set(rnd(TILE), rnd(TILE), shade(ICE, 0.82))
-    return cv
-
-
-def cave_tiles():
-    return [tile_cave_floor(), tile_cave_rubble(), tile_dark_water(), tile_cave_wall(),
-            tile_ore_vein(), tile_ice()]
-
-
-def pack(tiles):
-    sheet = Canvas(TILE * len(tiles), TILE)
-    for index, tile in enumerate(tiles):
-        sheet.blit(tile, index * TILE, 0)
-    return sheet
 
 
 # ---------------------------------------------------------------------------
@@ -644,20 +547,6 @@ def write_png(path, canvas):
         handle.write(canvas.to_png())
 
 
-def build_tiles_preview(tiles, title, labels, scale=4):
-    tile = TILE * scale
-    label_w = text_width("WHITEWASH_WALL", 1) + 10
-    cv = Canvas(label_w + tile + 8, 20 + len(tiles) * (tile + 4) + 8)
-    cv.rect(0, 0, cv.w - 1, cv.h - 1, rgb("#14171A"))
-    draw_text(cv, 4, 4, title, GOLD_LIGHT, 1)
-    for index, tile_canvas in enumerate(tiles):
-        y = 20 + index * (tile + 4)
-        draw_text(cv, 4, y + tile // 2 - 2, labels[index], BAMBOO_LIGHT, 1)
-        cv.rect(label_w - 1, y - 1, label_w + tile, y + tile, rgb("#262C33"))
-        cv.blit(tile_canvas.scaled(scale), label_w, y)
-    return cv
-
-
 def build_sprite_preview(entries, title, scale=2, cols=4):
     items = sorted(entries, key=lambda item: item[0])
     pad = 10
@@ -688,14 +577,9 @@ def generate(quiet=False):
     prewarm([("青云山", 12, "pixel", True), ("茶", 14, "pixel", True),
              ("寨", 16, "pixel", True), ("山道", 13, "pixel", True)] +
             [(display, 11, "pixel", True) for _, _, display in BUILDINGS + PROPS + GATHERS])
-    cave = cave_tiles()
-    # 山道地表**不在这里出图**（M72-11）：金标规范下图集的唯一产出点是
-    # `gen_terrain_tiles.py --scene mountain_path`（12×9 + 只从 `terrain_ramp.json` 取色），
-    # 这里再画一张 6×1 会把那张门直接压红。寒泉洞等到它自己那一包再换。
-    write_png(os.path.join(TILE_DIR, "cave", "cave_ground.png"), pack(cave))
-    write_png(os.path.join(TILE_DIR, "cave", "_preview.png"),
-              build_tiles_preview(cave, "COLD SPRING CAVE 32PX X4",
-                                  ["FLOOR", "RUBBLE", "DARKWATER", "WALL", "ORE VEIN", "ICE"]))
+    # 两张地表都**不在这里出图**（M72-11）：金标规范下图集的唯一产出点是
+    # `gen_terrain_tiles.py --scene <场景>`（12×9 + 只从 `terrain_ramp.json` 取色），
+    # 这里再画一张 6×1 会把那张门的三条判据直接压红。
 
     built = []
     for name, factory, display in BUILDINGS:
@@ -724,7 +608,7 @@ def generate(quiet=False):
             print(f"  {name}.png {canvas.w}x{canvas.h}  {display}")
         for stem, path, rows in splits:
             print(f"  split {path} {rows} 行")
-        print("  1 tileset + 2 previews")
+        print("  2 张预览（两张地表图集都不由本文件出图，见模块 docstring）")
 
 
 EXPECTED = {
@@ -757,16 +641,15 @@ def check():
     from pixel_kit import decode_png
 
     issues = []
-    # 只点寒泉洞那一张：山道地表现在归 `gen_terrain_tiles.py --scene mountain_path --check`
-    # （它有 12×9 结构、取色与四边收口三条判据，这张表里的手写 hex 判不了那三样）。
-    for folder, name in ((TILE_DIR, "cave/cave_ground"),):
-        path = os.path.join(folder, name + ".png")
-        if not os.path.exists(path):
-            issues.append("missing " + path)
-            continue
-        width, height, _, _ = decode_png(path)
-        if (width, height) != (TILE * 6, TILE):
-            issues.append(f"{path}: {width}x{height} != 192x32（引擎要求 6 列 × 32px）")
+    # **反面对照**：旧那张 6 列 × 1 行的洞窟图（含它的预览）必须**不在盘上**。M72-11 起
+    # 寒泉洞的地表由 `gen_terrain_tiles.py --scene cold_spring_cave` 出 12×9 那一张，留着 6×1
+    # 就是两套地表真相——谁把它恢复回来（或把本文件的出图代码加回来），红在这里。
+    # 山道地表同一条理由早已搬走，两边都不在这张表里再判尺寸。
+    for stale in (os.path.join(TILE_DIR, "cave", "cave_ground.png"),
+                  os.path.join(TILE_DIR, "cave", "_preview.png")):
+        if os.path.exists(stale):
+            issues.append(f"多出来的一套地表真相：{stale} 还在盘上——寒泉洞图集只由 "
+                          "gen_terrain_tiles.py --scene cold_spring_cave 产出")
     for name, (want_w, want_h) in EXPECTED.items():
         folder = BUILDING_DIR if name in {n for n, _, _ in BUILDINGS} else (
             PROP_DIR if name in {n for n, _, _ in PROPS} else GATHER_DIR)
@@ -777,8 +660,7 @@ def check():
         width, height, _, _ = decode_png(path)
         if (width, height) != (want_w, want_h):
             issues.append(f"{path}: {width}x{height} != {want_w}x{want_h}")
-    for path in (os.path.join(TILE_DIR, "cave", "_preview.png"),
-                 os.path.join(BUILDING_DIR, "_wilds_preview.png"),
+    for path in (os.path.join(BUILDING_DIR, "_wilds_preview.png"),
                  os.path.join(GATHER_DIR, "_preview.png")):
         if not os.path.exists(path):
             issues.append("missing " + path)
@@ -798,7 +680,8 @@ def main():
             for problem in problems:
                 print("[FAIL]", problem)
             raise SystemExit(1)
-        print(f"[OK] 批次 2 校验通过（1 tileset + {len(BUILDINGS)} 建筑 + {len(PROPS)} 道具 + {len(GATHERS)} 采集物 + 拆层 {len(WILDS_STEMS)} 件）")
+        print(f"[OK] 批次 2 校验通过（{len(BUILDINGS)} 建筑 + {len(PROPS)} 道具 + {len(GATHERS)} 采集物"
+              f" + 拆层 {len(WILDS_STEMS)} 件 + 2 预览；地表图集归 gen_terrain_tiles.py）")
         return
     generate()
 

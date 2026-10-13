@@ -136,6 +136,42 @@
         "grey_brick": ["#3E4751", "#525D68", "#6B7784", "#8492A0"],
         "blue_tile": ["#2A3340", "#3A4655", "#4E5C6D", "#657587"]
       }
+    },
+    "cold_spring_cave": {
+      "display_name": "寒泉洞（石灰岩洞窟）",
+      "source": "docs/43 §洞穴 kind 语义 + docs/57 2.3-5（石灰青 + 墨黑、洞窟整体更暗、火把是局部暖点）+ docs/53 §4 参考图 cellar-inside",
+      "comment": [
+        "第四张铺量的图，也是第一张**室内/地下**图。机制（12×9 图集、1+16 条目算术、4-bit 位序、",
+        "碎点压边、容量口径）与前三个场景一字不差，只有取色与 kind 归属不同——这条是本批要证的。",
+        "暗场景的落法不靠 alpha、也不靠给引擎加场景光档（`scripts/world/lighting.lua` 现在不分场景），",
+        "而是把**亮度层次压到色阶表里**：整族往低走（洞壁最深档 25.7、最亮档 81.3，比村庄青石的",
+        "最深档 34 还低），同时把本体满块的底色从户外那三图的 `mid` 改成 `dark`，",
+        "`light` 只允许出现在**受光的那一条沿**（单一光向：上沿/左沿），其余层次由 deep↔dark↔mid 撑。",
+        "5 号（顶层叫 roof 的那列）在这里和山道一样**真铺在地表**（冰晶地），所以它走自家画法；",
+        "2 号与演武场一样**全场零格**：farm.lua 判 tile==2 可垦、FARM 矩形 x14..33,y4..13 没有场景门，",
+        "而洞穴只有 20×12，把 x14..19,y4..11 画成碎石就等于给别人添 48 格田（实测重叠数见 M72-11 §洞穴）。",
+        "碎石的身份改由装饰散布承担，地表只保留恒等寻址的真美术当回滚档。",
+        "cave_scree 取**中性灰**而不是户外 dirt 那种暖褐：它是从洞壁（石灰青）崩下来的片岩，不是泥土。",
+        "第一版按暖褐（#5C554A 一族）出图，20×12 铺开后墙脚那一圈读成'泥地'，",
+        "等于把整幅唯一的暖色给了最不该有暖色的地方（目验产物 .temp/cave_tiled.png）。"
+      ],
+      "uses": ["cave_floor", "cave_scree", "hewn_stone", "cave_rock", "ice_crust", "cave_water"],
+      "kinds": [
+        { "id": 1, "name": "grass", "family": "cave_floor", "meaning": "洞底石板（可走的基面；滴水蚀坑 + 一层薄碎石）" },
+        { "id": 2, "name": "dirt", "family": "cave_scree", "meaning": "塌落碎石堆（扁片岩；本场景零格，见 comment 的 farm.lua 那条）" },
+        { "id": 3, "name": "stone", "family": "hewn_stone", "meaning": "凿平甬道（人工錾过的石面 + 导水槽；building.lua 判 tile==3 为道路）" },
+        { "id": 4, "name": "wall", "family": "cave_rock", "meaning": "洞壁（层理 + 竖向节理 + 流石挂面，全图最深的一族；天然 solid）" },
+        { "id": 5, "name": "roof", "family": "ice_crust", "meaning": "冰晶地（寒泉涌出的冰壳，全图最亮的一族；像山道竹林地那样真铺地表）" },
+        { "id": 6, "name": "water", "family": "cave_water", "meaning": "暗河（静水，只有一条受光亮带；天然 solid）" }
+      ],
+      "families": {
+        "cave_floor": ["#2B2E33", "#3C4048", "#4E535D", "#646A75"],
+        "cave_scree": ["#2A2A28", "#3F3F3C", "#565550", "#6E6D65"],
+        "hewn_stone": ["#333A46", "#454E5C", "#5B6675", "#77828F"],
+        "cave_rock": ["#171A1F", "#242830", "#343A44", "#4A5260"],
+        "ice_crust": ["#33414F", "#4A6070", "#6C8799", "#93AEBC"],
+        "cave_water": ["#101E2C", "#1C3040", "#2A4457", "#3D5C72"]
+      }
     }
   },
   "crops": {
