@@ -6,6 +6,8 @@
 //! - [`Renderer`] consumes those frames and renders 2D/3D passes to a window
 //!   surface (and, in M10-02, an offscreen texture target).
 
+/// 声明视口 → 目标附件里的等比居中矩形（宿主与渲染器共用的唯一口径）。
+pub mod fit;
 pub mod frame;
 /// 手柄设备轮询适配层（M20-06）。
 pub mod gamepad;

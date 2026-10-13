@@ -85,19 +85,24 @@ fn depth_policies_are_pinned_per_pass() {
     }
 }
 
-/// WP5 视口夹取：声明的视口必须落在目标内、至少 1×1，且整目标视口与"未声明"等价。
+/// WP5 + 任务 #20：声明的视口换算成**等比居中矩形**——必须落在目标内、至少 1×1，
+/// 且"整目标视口"与"未声明"等价。
+///
+/// 旧口径是 `(0, 0, min(声明, 目标))`：只在声明盒与附件同比例时才对，否则内容挤在左上角。
+/// 上面那条"1 px 容差 ⇒ 贴满"的护栏就是为它设的：浏览器 fit 后的 GL 画布与设计盒只差取整，
+/// 若这里返回小一号的矩形，画面就会多出一条底色缝，命令流也不再是"不调用 `set_viewport`"。
 #[test]
-fn clamp_viewport_keeps_rects_inside_the_target() {
+fn fit_viewport_rect_contains_and_centers_the_declared_box() {
     let full = Viewport::new(64.0, 64.0).unwrap();
-    assert_eq!(clamp_viewport(full, (64, 64)), (0, 0, 64, 64));
-    // 超出目标：夹到目标尺寸，而不是让 wgpu 校验报错。
-    assert_eq!(clamp_viewport(full, (32, 16)), (0, 0, 32, 16));
-    // 逻辑像素取整：59.6 → 60。
-    let rounded = Viewport::new(59.6, 10.2).unwrap();
-    assert_eq!(clamp_viewport(rounded, (64, 64)), (0, 0, 60, 10));
-    // 空/非法尺寸（构造器会拒绝，这里兜住手写的 0）：至少 1×1。
+    assert_eq!(fit_viewport_rect(full, (64, 64)), (0, 0, 64, 64));
+    // 超出目标：等比缩进目标并**居中**（旧行为"夹到目标尺寸"= 左上角一块）。
+    assert_eq!(fit_viewport_rect(full, (32, 16)), (8, 0, 16, 16));
+    // 细长盒进方目标：长边贴满、短边居中留边（10.667 → 11，取整口径可见）。
+    let wide = Viewport::new(60.0, 10.0).unwrap();
+    assert_eq!(fit_viewport_rect(wide, (64, 64)), (0, 26, 64, 11));
+    // 空/非法尺寸（构造器会拒绝，这里兜住手写的 0）：至少 1×1 且不溢出。
     let zero = Viewport::new(1.0, 1.0).unwrap();
-    assert_eq!(clamp_viewport(zero, (0, 0)), (0, 0, 1, 1));
+    assert_eq!(fit_viewport_rect(zero, (0, 0)), (0, 0, 1, 1));
 }
 
 /// WP5：渲染器消费宿主声明的 [`rustlua_camera::camera::FrameViews`]——清屏色来自声明，且 2D overlay 的视口
@@ -244,7 +249,9 @@ fn declared_frame_views_own_clear_color_and_overlay_viewport() {
         "声明 ClearPolicy::None 时不应清屏"
     );
 
-    // 5) 2D overlay 视口：只画左半屏（32×64），白 quad 只应覆盖左半。
+    // 5) 2D overlay 视口：声明半宽盒 ⇒ 渲染器把它**等比居中**摆进目标（32×64 进 64×64
+    //    就是正中那条竖带），两侧留底色。任务 #20 之前这里是"左上角一块"（`(0,0,32,64)`），
+    //    而同一条换算在浏览器被 fit 层掩盖了——微信接管形态没有 fit 层，缺陷才现形。
     let half = Viewport::new((SIZE / 2) as f32, SIZE as f32).unwrap();
     let quad = crate::host::frame::SceneMesh {
         vertices: vec![
@@ -328,13 +335,18 @@ fn declared_frame_views_own_clear_color_and_overlay_viewport() {
             .expect("readback")
     };
     assert_eq!(
-        pixel(&clipped, 4, SIZE / 2),
+        pixel(&clipped, SIZE / 2, SIZE / 2),
         [255, 255, 255, 255],
-        "声明的 overlay 视口内应画出 quad"
+        "等比居中的 overlay 矩形正中应画出 quad"
     );
     assert_eq!(
-        pixel(&clipped, SIZE - 5, SIZE / 2),
+        pixel(&clipped, 2, SIZE / 2),
         clear,
-        "视口之外的右半屏必须保持清屏色（视口确实生效）"
+        "矩形之外的左条必须保持清屏色（视口确实生效）"
+    );
+    assert_eq!(
+        pixel(&clipped, SIZE - 3, SIZE / 2),
+        clear,
+        "矩形之外的右条同样保持清屏色（居中不是左上贴齐）"
     );
 }

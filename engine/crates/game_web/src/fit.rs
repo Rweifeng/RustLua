@@ -12,16 +12,15 @@
 ///
 /// 结果与设计分辨率同比（±1 个像素），且不会超出 `box`；退化输入（0 或极端小）也给正数，
 /// 因为 0×0 的画布会让 surface 配置直接失败（`wgpu` 不接受 0 尺寸）。
+///
+/// 偏移在渲染器那一侧算（`engine::host::fit::contain_rect`：它是唯一同时看得见"声明盒"和
+/// "实际附件"的地方），这里只把矩形降成尺寸——**两处共用一份换算**，不允许各写一套口径。
 pub fn contain_box(box_w: u32, box_h: u32, design_w: u32, design_h: u32) -> (u32, u32) {
-    let (box_w, box_h) = (box_w.max(1) as f64, box_h.max(1) as f64);
-    let (design_w, design_h) = (design_w.max(1) as f64, design_h.max(1) as f64);
-    let scale = (box_w / design_w).min(box_h / design_h);
-    if !scale.is_finite() || scale <= 0.0 {
-        return (design_w as u32, design_h as u32);
-    }
-    let width = (design_w * scale).round().max(1.0) as u32;
-    let height = (design_h * scale).round().max(1.0) as u32;
-    (width.min(box_w as u32), height.min(box_h as u32))
+    let (_, _, width, height) = engine::host::fit::contain_rect(
+        (design_w.max(1) as f32, design_h.max(1) as f32),
+        (box_w, box_h),
+    );
+    (width, height)
 }
 
 /// CSS 像素坐标 → 设计坐标（1280×720）。

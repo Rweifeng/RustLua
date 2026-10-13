@@ -65,6 +65,9 @@ struct EngineHost {
     /// 后备缓冲尺寸（begin 时定；`engine_host_state` 与像素回读都读这里，不再摸 config）。
     width: u32,
     height: u32,
+    /// scene 档的**几何读数**：`declared=设计盒 rect=宽x高+左+上`（渲染器这一帧把声明盒
+    /// 等比居中摆进表面的实际矩形）。clear 档恒为空串——那条路只清屏，没有取景可言。
+    fit_note: String,
     /// `pixel_sample` 开关（任务 #13 方案 A）：present 后同任务回读几个像素。
     /// 为什么必须是**引擎侧 readPixels**而不是 JS 的 `toDataURL`：wgpu-hal 27 建上下文只设
     /// `antialias:false`（`gles/web.rs:103`），`preserveDrawingBuffer` 保持默认 false ⇒
@@ -231,100 +234,110 @@ async fn begin_inner(
             "tick=\"lua\" 不能与 scene 同时给：scene 档的固定步由共享核心的帧链推进",
         ));
     }
-    let (gpu, adapter_display, backend_display, format_display, mode_display) = match scene_spec {
-        Some((scene_path, route)) => {
-            let report_for_core = report.clone();
-            let core = crate::engine_core::EngineCore::build(crate::engine_core::CoreArgs {
-                canvas: &gpu_canvas,
-                width,
-                height,
-                scene_path: &scene_path,
-                route,
-                route_note: String::new(),
-                device_label: "rustlua-engine-host-scene-device",
-                report: Box::new(move |line: &str| {
-                    report_line(&report_for_core, line);
-                }),
-            })
-            .await
-            .map_err(|error| host_error("engine-core", error))?;
-            let (adapter_display, backend_display, format_display) = {
-                let (adapter, backend, format) = core.stack_info();
-                (adapter.to_owned(), backend.to_owned(), format)
-            };
-            (
-                HostGpu::Scene(core),
-                adapter_display,
-                backend_display,
-                format_display,
-                format!("scene({scene_path})"),
-            )
-        }
-        None => {
-            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-                // wasm 上必须显式 GL：默认在 wasm 只有 webgpu（与 `gpu_host` / 探针同一口径）。
-                backends: wgpu::Backends::GL,
-                ..Default::default()
-            });
-            let surface = engine::host::web_surface::canvas_surface(&instance, &gpu_canvas)
-                .map_err(|error| host_error("canvas_surface", error))?;
-            let adapter = instance
-                .request_adapter(&wgpu::RequestAdapterOptions {
-                    power_preference: wgpu::PowerPreference::HighPerformance,
-                    compatible_surface: Some(&surface),
-                    force_fallback_adapter: false,
+    let (gpu, adapter_display, backend_display, format_display, mode_display, fit_note) =
+        match scene_spec {
+            Some((scene_path, route)) => {
+                let report_for_core = report.clone();
+                let core = crate::engine_core::EngineCore::build(crate::engine_core::CoreArgs {
+                    canvas: &gpu_canvas,
+                    width,
+                    height,
+                    scene_path: &scene_path,
+                    route,
+                    route_note: String::new(),
+                    device_label: "rustlua-engine-host-scene-device",
+                    report: Box::new(move |line: &str| {
+                        report_line(&report_for_core, line);
+                    }),
                 })
                 .await
-                .map_err(|error| host_error("request_adapter", error))?;
-            let info = adapter.get_info();
-            let capabilities = surface.get_capabilities(&adapter);
-            let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-            if !capabilities.formats.contains(&format) {
-                return Err(host_error(
-                    "surface-format",
-                    format!("不提供 {format:?}（给的是 {:?}）", capabilities.formats),
-                ));
+                .map_err(|error| host_error("engine-core", error))?;
+                // **逻辑视口 = 设计分辨率**（与浏览器宿主 `GpuHost::fit_now` 同一说法，任务 #20）：
+                // 表面/后备缓冲是设备像素（接管形态下必须整屏），投影按设计盒算，渲染器再把设计盒
+                // **等比居中**摆进表面（`engine::host::fit::contain_rect`）。此前这里把表面尺寸直接
+                // 当逻辑视口 ⇒ 1 世界单位 = 1 设备像素，画面停在表面一角（run10 实测内容块
+                // `1380×720` / 表面 `2532×1170`，非底色像素只占 31.1%）。
+                let (core, fit_note) = fit_scene_viewport(core, width, height);
+                let (adapter_display, backend_display, format_display) = {
+                    let (adapter, backend, format) = core.stack_info();
+                    (adapter.to_owned(), backend.to_owned(), format)
+                };
+                (
+                    HostGpu::Scene(core),
+                    adapter_display,
+                    backend_display,
+                    format_display,
+                    format!("scene({scene_path})"),
+                    fit_note,
+                )
             }
-            let limits =
-                wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
-            let (device, queue) = adapter
-                .request_device(&wgpu::DeviceDescriptor {
-                    label: Some("rustlua-engine-host-device"),
-                    required_features: wgpu::Features::empty(),
-                    experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                    required_limits: limits,
-                    memory_hints: wgpu::MemoryHints::Performance,
-                    trace: wgpu::Trace::Off,
-                })
-                .await
-                .map_err(|error| host_error("request_device", error))?;
-            let config = wgpu::SurfaceConfiguration {
-                // 只要 RENDER_ATTACHMENT（理由同 `gpu_host`：画布纹理当不了 copy 源，申请 COPY_SRC
-                // 会让 wgpu 在未捕获的校验错误上 panic，wasm 直接 abort）。
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                format,
-                width,
-                height,
-                present_mode: wgpu::PresentMode::Fifo,
-                desired_maximum_frame_latency: 2,
-                alpha_mode: capabilities.alpha_modes[0],
-                view_formats: vec![],
-            };
-            surface.configure(&device, &config);
-            (
-                HostGpu::Clear {
-                    _instance: instance,
-                    surface,
-                    device,
-                    queue,
-                },
-                info.name,
-                format!("{:?}", info.backend),
-                format!("{format:?}"),
-                "clear".to_owned(),
-            )
-        }
-    };
+            None => {
+                let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                    // wasm 上必须显式 GL：默认在 wasm 只有 webgpu（与 `gpu_host` / 探针同一口径）。
+                    backends: wgpu::Backends::GL,
+                    ..Default::default()
+                });
+                let surface = engine::host::web_surface::canvas_surface(&instance, &gpu_canvas)
+                    .map_err(|error| host_error("canvas_surface", error))?;
+                let adapter = instance
+                    .request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::HighPerformance,
+                        compatible_surface: Some(&surface),
+                        force_fallback_adapter: false,
+                    })
+                    .await
+                    .map_err(|error| host_error("request_adapter", error))?;
+                let info = adapter.get_info();
+                let capabilities = surface.get_capabilities(&adapter);
+                let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+                if !capabilities.formats.contains(&format) {
+                    return Err(host_error(
+                        "surface-format",
+                        format!("不提供 {format:?}（给的是 {:?}）", capabilities.formats),
+                    ));
+                }
+                let limits =
+                    wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
+                let (device, queue) = adapter
+                    .request_device(&wgpu::DeviceDescriptor {
+                        label: Some("rustlua-engine-host-device"),
+                        required_features: wgpu::Features::empty(),
+                        experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                        required_limits: limits,
+                        memory_hints: wgpu::MemoryHints::Performance,
+                        trace: wgpu::Trace::Off,
+                    })
+                    .await
+                    .map_err(|error| host_error("request_device", error))?;
+                let config = wgpu::SurfaceConfiguration {
+                    // 只要 RENDER_ATTACHMENT（理由同 `gpu_host`：画布纹理当不了 copy 源，申请 COPY_SRC
+                    // 会让 wgpu 在未捕获的校验错误上 panic，wasm 直接 abort）。
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    format,
+                    width,
+                    height,
+                    present_mode: wgpu::PresentMode::Fifo,
+                    desired_maximum_frame_latency: 2,
+                    alpha_mode: capabilities.alpha_modes[0],
+                    view_formats: vec![],
+                };
+                surface.configure(&device, &config);
+                (
+                    HostGpu::Clear {
+                        _instance: instance,
+                        surface,
+                        device,
+                        queue,
+                    },
+                    info.name,
+                    format!("{:?}", info.backend),
+                    format!("{format:?}"),
+                    "clear".to_owned(),
+                    // clear 档没有逻辑视口可言（整张表面就是清屏色），读数留空，验收形态照旧。
+                    String::new(),
+                )
+            }
+        };
 
     // 回读开启时拿 wgpu-hal 在 create_surface 时就建好的**同一个** WebGL2 上下文：
     // WebGL 规范保证同一 canvas 上二次 `getContext('webgl2')` 返回已存在的那个，
@@ -359,6 +372,7 @@ async fn begin_inner(
         "tolerance_seconds": FRAME_INTERVAL_TOLERANCE_SECONDS,
         "tick": if tick_lua { "lua" } else { "none" },
         "pixel_sample": pixel_sample,
+        "fit": fit_note,
         "frame_abi": HOST_FRAME_ABI,
         "frame_abi_version": HOST_FRAME_ABI_VERSION,
         "frame_abi_len": HOST_FRAME_SLOTS.len(),
@@ -369,7 +383,7 @@ async fn begin_inner(
     report_line(
         report,
         &format!(
-            "host: 已就绪 canvas={canvas_note} fmt={format_display} adapter={adapter_display} backend={backend_display} tick={}",
+            "host: 已就绪 canvas={canvas_note} fmt={format_display} adapter={adapter_display} backend={backend_display} tick={} fit={fit_note}",
             if tick_lua { "lua" } else { "none" }
         ),
     );
@@ -385,6 +399,7 @@ async fn begin_inner(
             canvas_note,
             width,
             height,
+            fit_note,
             pixel_sample,
             gl,
             last_pixel_sample: String::new(),
@@ -399,6 +414,40 @@ async fn begin_inner(
         });
     });
     Ok(summary.to_string())
+}
+
+/// scene 档的几何收敛：把核心的**逻辑视口**收到设计分辨率，并返回这一帧的几何读数。
+///
+/// 为什么两侧都要"逻辑视口 ≠ 表面尺寸"：投影矩阵按声明盒取景，pass 视口再把声明盒
+/// 等比居中映射进附件（`engine::host::fit::contain_rect`）。浏览器外壳靠 `fit_now`
+/// 把后备缓冲缩到等比适配盒（表面宽高比 ≡ 设计比 ⇒ 矩形贴满、无偏移）；微信接管形态
+/// 的表面必须是整屏设备像素（缩放由平台把画布拉到屏幕，改后备尺寸就是非等比拉伸），
+/// 因此留边必须发生在**表面内部**——这一步就是那条路的入口。
+///
+/// 读数进 `engine_host_state.fit` 与 begin summary：几何错了在 `presented=`/`frames=`
+/// 里完全看不见（#19 的 31.1% 覆盖率就是这么发现的），所以矩形本身必须是可读数的。
+fn fit_scene_viewport(
+    mut core: crate::engine_core::EngineCore,
+    surface_width: u32,
+    surface_height: u32,
+) -> (crate::engine_core::EngineCore, String) {
+    let note = match core.sim_mut() {
+        Some(sim) => {
+            sim.set_viewport(crate::DESIGN_WIDTH, crate::DESIGN_HEIGHT);
+            let (x, y, width, height) = engine::host::fit::contain_rect(
+                (crate::DESIGN_WIDTH as f32, crate::DESIGN_HEIGHT as f32),
+                (surface_width, surface_height),
+            );
+            format!(
+                "declared={}x{} rect={width}x{height}+{x}+{y}",
+                crate::DESIGN_WIDTH,
+                crate::DESIGN_HEIGHT
+            )
+        }
+        // 核心自己退化成了内建档（场景没起来）：没有逻辑视口可收，读数留空。
+        None => String::new(),
+    };
+    (core, note)
 }
 
 /// 每帧状态的**定长 ABI** 槽位数。布局只有这一份来源（`engine_host_frame_layout_json` 把它交给 JS，
@@ -712,6 +761,7 @@ pub fn engine_host_state() -> Result<String, JsValue> {
             "tick_failures": host.tick_failures,
             "updates_per_second": host.updates_per_second,
             "canvas": host.canvas_note,
+            "fit": host.fit_note,
             "input_note": host.last_input_note,
             "note": host.last_note,
             "pixel_sample": host.last_pixel_sample,

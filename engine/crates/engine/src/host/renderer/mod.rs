@@ -263,28 +263,21 @@ fn record_indexed_draw(
     metrics.triangles += u64::from(index_count) / 3 * instance_count as u64;
 }
 
-/// 把声明的 [`Viewport`]（浮点、世界无关）夹成目标纹理内的整数矩形。
+/// 把声明的 [`Viewport`]（浮点、世界无关）换算成目标附件内的**等比居中矩形**。
 ///
-/// [`Viewport`] 只描述尺寸，因此矩形左上角恒为 `(0, 0)`——渲染器的每张视图本来就渲染进
-/// 自己的附件（窗口或编辑器离屏纹理），不需要在附件内部再偏移。结果**至少 1×1** 且永远
-/// 落在 `target` 之内：越界的 `set_viewport` 会被 wgpu 校验直接判错，而宿主给的是逻辑
-/// 像素，可能与实际附件尺寸有取整差。
-fn clamp_viewport(viewport: Viewport, target: (u32, u32)) -> (u32, u32, u32, u32) {
-    let target_width = target.0.max(1);
-    let target_height = target.1.max(1);
-    let width = (viewport.width.round().max(1.0) as u32)
-        .min(target_width)
-        .max(1);
-    let height = (viewport.height.round().max(1.0) as u32)
-        .min(target_height)
-        .max(1);
-    (0, 0, width, height)
+/// 换算本身在 [`crate::host::fit::contain_rect`]（与 `game_web::fit` / Canvas2D 层同一口径），
+/// 这里只是渲染器侧的调用点。曾经的实现是 `(0, 0, min(declared, target))`——那条路只在
+/// "声明盒与附件同比例"时才对，否则内容会挤成左上角一块、其余是底色（微信接管形态实测
+/// 内容块 `1380×720` / 表面 `2532×1170`，非底色像素只占 31.1%）。
+fn fit_viewport_rect(viewport: Viewport, target: (u32, u32)) -> (u32, u32, u32, u32) {
+    crate::host::fit::contain_rect((viewport.width, viewport.height), target)
 }
 
 /// 在 pass 上应用声明的视口。
 ///
-/// 声明的视口等于整个目标时**不调用** `set_viewport`：wgpu 的默认视口就是整目标，
-/// 因此"没声明"与"声明整目标"两条路径产生完全相同的命令流——收敛不引入像素差异。
+/// 换算结果等于整个目标时**不调用** `set_viewport`：wgpu 的默认视口就是整目标，
+/// 因此"没声明"、"声明了 ≡ 目标"与"声明了但只差 1 px 取整"三条路径产生完全相同的命令流
+/// ——收敛不引入像素差异（桌面/编辑器/浏览器 fit 后的画布都在这三条里）。
 fn apply_declared_viewport(
     pass: &mut wgpu::RenderPass<'_>,
     viewport: Option<Viewport>,
@@ -293,7 +286,7 @@ fn apply_declared_viewport(
     let Some(viewport) = viewport else {
         return;
     };
-    let (x, y, width, height) = clamp_viewport(viewport, target);
+    let (x, y, width, height) = fit_viewport_rect(viewport, target);
     if x == 0 && y == 0 && width == target.0.max(1) && height == target.1.max(1) {
         return;
     }
