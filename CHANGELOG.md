@@ -86,6 +86,29 @@
   ④ `maps.lua` 注册未闭合（洞穴还只是场景文件，不是可进入的地图）；⑤ 上面那条"缺场景门禁"要不要改成
   按场景/`land_type` 判，本批不替它决定，也不往洞穴瓦表里塞 2 来"顺手证明"什么。
 
+## Unreleased — docs65-P1 第二片：接管+scene 组合首验——引擎宿主在**此刻可见的主画布**上画真场景（模拟器；本笔产品码零改动）
+
+- **症状/动机**：第一片登记"两通道各自验过、组合未验"；判据要从"像素=clear color"换成"像素=场景内容"。
+- **改法**：**产品码零改动**——组合形态在批 1/批 2 里已经接好（visible 路 target=主画布+固定
+  `pixel_sample:true`、scene 开关独立、scene 自泵、begin options.scene 三路正交），本笔是纯验收：
+  一次性探针把 `__RUSTLUA_ENGINE_HOST_VISIBLE` 与 `__RUSTLUA_ENGINE_HOST_SCENE` 同开（VISIBLE 必须在
+  require 适配层之前置——第一次 `getContext('2d')` 不可逆），collector 判据分层
+  （not-visible/not-scene/clear-only/scene-visible）。
+- **实测（run8 终行原文）**：`verdict=combo-scene-visible presented=68 failed=0
+  source=main-canvas(visible-takeover) mode=scene sim=rust(boot ok)`，`textures=14/15`、
+  `step_errors=0` 与 run7 同形 ⇒ **可见屏幕的像素所有者从"只有一块清屏色的宿主"换成"画着真场景的宿主"**。
+  像素判据换形：中心=[10,13,20,255] 左上=[11,16,29,255]（≠ #13 批的五点一致清屏色 [69,75,85,255]），
+  四角=[0,0,0,0]——角上 alpha=0 是 scene 档与 clear 档的清除形态差异（场景 mesh 不覆盖四角、
+  背景四边形只到左上/中心），如实登记未归因。改道 2d 走的仍是 `wx.createCanvas(2d-fallback)`
+  （模拟器 `createOffscreenCanvas(type:'2d')` 照旧给不出可用画布，与 #13 同现象）。
+  本形态主画布 `toDataURL` 报 `no-toDataURL`（#13 拿得到 54,721 B）——两形态差一条登记，
+  目测通道缺、主判据不受影响（引擎侧同任务 readPixels 才是主证据）。
+- **门禁**：撤净注入后 `verify-wechat-minigame.ps1 -ExpectGpuKernel` EXIT=0（生产口径
+  `engine_host=off reason=switch-off`、`font=ok`、harness 240 帧）——产品字节未动，无重打包需求。
+- **未测与本笔不碰**：① 真机（webgl2/改道/scene boot 耗时三段全部不外推）；② 组合形态下
+  `onWindowResize` 改尺寸（改道画布不跟随是 #13 已登记账）；③ 四角清除 alpha 形态差异归因；
+  ④ `ensure_font_atlas` 每帧重试设计（#15 登记照旧）。
+
 ## Unreleased — 任务#15：`字体解析失败: InvalidFont` 刷屏背后的两条真缺陷（通道症状 + OTS 非法子集），font_subset 现产出 OTS 合法 TTF
 
 - **症状/动机**：IDE 控制台连续 `[render] font atlas load failed; error=字体解析失败: InvalidFont`

@@ -618,6 +618,14 @@ host: canvas_surface: ... webgl2 not available
 > 已画真场景；可见接管 + scene 的组合（判据从清屏像素换成场景像素）是下一片，真机仍未验。
 > 逐条读数与复现见 `tasks/plan/M73-00` 的 docs65-P1 第一片一节与 CHANGELOG 同批条目。
 
+> **2026-10-13 组合片（P1 第二片）首验：此刻可见的主画布画的是真场景（模拟器；产品码零改动）**。
+> 两开关同开（`__RUSTLUA_ENGINE_HOST_VISIBLE` + `__RUSTLUA_ENGINE_HOST_SCENE`）即达——三路接线
+> （target=主画布 / options.scene / scene 自泵）在前面两批里已正交铺好。run8 终行
+> `verdict=combo-scene-visible presented=68 failed=0 source=main-canvas(visible-takeover) mode=scene
+> sim=rust(boot ok)`；像素判据从"五点=清屏色 [69,75,85,255]"换成含场景内容
+> （中心=[10,13,20,255]、左上=[11,16,29,255]；四角=[0,0,0,0]，清除形态差异登记未归因）。
+> 上一块"真机仍未验"照旧成立；逐条读数见 `tasks/plan/M73-00` 的 P1 第二片一节与 CHANGELOG 同批条目。
+
 前提是微信真机 GPU 探针成功。应把 `gpu_host.rs` 中的平台无关部分抽成共享核心，而不是继续复制：
 
 ```text
