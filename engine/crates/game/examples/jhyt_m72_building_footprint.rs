@@ -18,8 +18,9 @@
 //!      （缺=0、悬空=0），并报出每栋的视觉格数/实心格数/门洞/拆层件。
 //!      两条反面对照走同一个函数：把一件道具的占地从"单格根碰撞"换成**整个 quad 框**
 //!      必须报出悬空格并点名（落点逐图点名，见 `Scene::quad_probe`——山庄是东南那丛竹子、
-//!      村里是石桥、寒泉洞是火把：三者都是"框里有格画的是能走过去的东西或人身高的
-//!      装饰"；拿贴图铺满画框的房子做这条对照是空转）；把同名拆层屋顶件从并集里摘掉
+//!      村里是石桥、寒泉洞是火把、铁匠铺是木箱：前三个都是"框里有格画的是能走过去的东西
+//!      或人身高的装饰"，第四个是"描边那 4px 压进相邻格"（它正是 1/4 格门槛存在的理由）；
+//!      拿贴图铺满画框的房子做这条对照是空转）；把同名拆层屋顶件从并集里摘掉
 //!      必须报出缺碰撞并点名屋檐格。
 //!   ② 拆层不变量：每栋建筑占地必须跨多格（≥4），且**拆层前后占地逐格相同**——
 //!      用整图（未拆层）算的格集必须等于"本体∪屋顶"算的格集。这条是拆层这件事
@@ -27,8 +28,9 @@
 //!   ③ 门洞：声明的洞格必须**不在 solid 里**、贴图在那一格上**真是洞**（不透明占比
 //!      ≤ `HOLE_MAX_OPAQUE_RATIO`），并且从出生点按 4 邻域 BFS **走得到**。
 //!      反面对照：把洞填成实心，可达性必须当场断掉。
-//!      `openings` 为空的那张图（寒泉洞）这一节只剩可达读数，两条判据与反面对照都
-//!      平凡通过——空表是**登记**（那张图没有 sprite 通道）而不是漏登记，写在各档注释里。
+//!      `openings` 为空的那两张图（寒泉洞、铁匠铺内）这一节只剩可达读数，两条判据与反面
+//!      对照都平凡通过——空表是**登记**（那两张图没有 sprite 通道）而不是漏登记，
+//!      写在各档注释里。
 //!   ④ 投影贴片：每栋**够格**的建筑都必须挂一件 `<名字>Shadow`（`role=cast_shadow`），
 //!      且画在本体之下；不够格的必须**没有**——只查前者等于允许"给每样东西都糊一块灰"过关。
 //!      "够格"不是名单而是 `lighting.lua` 的两个数（总高 × `shadow_reach` ≥
@@ -57,7 +59,8 @@ const DT: f32 = 1.0 / 60.0;
 
 const TILE: f64 = 32.0;
 
-/// 地表 kind（与 `terrain_ramp.json` 的序号一致，七张图共用同一套 kind 语义位）。
+/// 地表 kind（与 `terrain_ramp.json` 的序号一致，进那张表的六张图共用同一套 kind 语义位；
+/// `interior_herb` 与 `main` 仍是图集外的旧 6×1 档，语义位到各自那一片才对表）。
 const WALL_KIND: i32 = 4;
 const WATER_KIND: i32 = 6;
 
@@ -366,7 +369,35 @@ const CAVE: Scene = Scene {
     }],
 };
 
-const SCENES: &[Scene] = &[MANOR, VILLAGE, MOUNTAIN, ARENA, CAVE];
+/// 铁匠铺内（M72-11 §推进顺序 5 第一片，第一张上金标的**作坊室内**图）。判据与前五张一字
+/// 不差，两处空表同样是登记不是漏登记：`openings`（唯一的建筑是借村里土地庙的 64×64 石龛，
+/// 四面都是墙，出门格 (10,1) 落在门前厅的地面上而不是某件 sprite 的洞里）与 `walk_props`
+/// （室内没有"能走过去的横件"，水槽那一格由瓦自己画成实心——kind 6 在 `TILE_NATIVE_SOLID` 里）。
+const FORGE: Scene = Scene {
+    name: "interior_forge",
+    file: "scenes/interior_forge.scene",
+    ground_texture: "assets/art/tilesets/interior_forge/interior_forge_ground.png",
+    // `data/maps.lua` 的 interior_forge.spawn，与 `gen_forge_scene.SPAWN` 同源：门前厅。
+    spawn: (10, 3),
+    openings: &[],
+    // 货架 64×56、方桌 48×40、铁砧 56×48、茶炉 64×64、酒坊设备 64×72：五件横占两格、
+    // 纵压两行（`building_kit.SCENES["interior_forge"].prop_collision` 逐件记了实测矩形）。
+    // 木桶/木箱/木椅三件的紧框被 `MIN_CELL_OVERLAP` 收在锚点格内 ⇒ 登记成 root（与 box 同解，
+    // 登记 box 是空转）；灯笼 24×44 真口径确实多出上面一格但那不是可撞体量 ⇒ 同洞穴火把那档。
+    box_props: &["ShelfGoods", "Table", "Anvil", "TeaStove", "WineWorks"],
+    walk_props: &[],
+    // 这条落在木箱上：36×30 的紧框右半边只有 4px 遮罩描边压进第 9 格，按整个 quad 框标就把
+    // (9,2) 那一格**门前厅的可走石板**砌成墙。与火把/竹子那一类不同——那两件是"画在人身高
+    // 的东西"，这一件是"描边那一条像素"，而它正是 `MIN_CELL_OVERLAP`（1/4 格）存在的理由。
+    quad_probe: "Chest",
+    splits: &[Split {
+        base: "ForgeShrine",
+        occluder: "ForgeShrineRoof",
+        full: "assets/art/buildings/village_shrine.png",
+    }],
+};
+
+const SCENES: &[Scene] = &[MANOR, VILLAGE, MOUNTAIN, ARENA, CAVE, FORGE];
 
 /// 场景里一个 sprite 实体的门侧视图。
 #[derive(Clone, Debug)]

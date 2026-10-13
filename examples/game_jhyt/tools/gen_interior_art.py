@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""《江湖有田》批次 3 美术：室内 tileset ×2 + 家具 + 生产设施 + 可建造建筑。
+"""《江湖有田》批次 3 美术：室内 tileset（药庐）+ 家具 + 生产设施 + 可建造建筑。
 
 用法（工程根目录 examples/game_jhyt 下运行）：
 
@@ -8,16 +8,25 @@
 
 产出：
 
+    （**铁匠铺地表不在本文件出图**：M72-11 §推进顺序 5 起归
+      `gen_terrain_tiles.py --scene interior_forge`，产出自己的 12×9 图集
+      `assets/art/tilesets/interior_forge/interior_forge_ground.png`）
     assets/art/tilesets/interior_herb/interior_ground.png   6 列 × 32px（药庐/民居室内）
-    assets/art/tilesets/interior_forge/interior_ground.png  6 列 × 32px（铁匠铺/工坊室内）
     assets/art/furniture/interior_*.png                     12 件家具（含中文招牌的两件）
     assets/art/facilities/facility_*.png                    5 件生产设施（docs/30 §6.4）
     assets/art/buildings/build_*.png                        5 座可建造建筑 + 地基 + 脚手架
     assets/art/{tilesets/furniture,facilities,buildings}/_*_preview.png
 
-列语义（每张地图一套 tileset，引擎写死 6 列）：
+列语义（药庐那张仍是引擎写死 6 列的**恒等寻址**；铁匠铺已换成 12×9 + autotile）：
   interior_herb ：1=木地板 2=青砖地 3=席垫 4=白墙 5=木隔断 6=柜台
-  interior_forge：1=夯土地 2=石板地 3=炭渣地 4=砖墙 5=石墙 6=水槽
+  interior_forge：本文件**不再出图**。旧说法（1=夯土地 2=石板地 3=炭渣地 4=砖墙 5=石墙 6=水槽）
+            → 新实测（1=夯土 2=炭渣碎石(零格) 3=石板 4=砖墙 5=耐火砖 6=水槽），换序理由是
+            `building_kit.TILE_NATIVE_SOLID=(4,6)` 的跨图语义位（墙必须 4、水必须 6）；逐条
+            理由写在 `gen_forge_scene.py` 的模块 docstring。旧那张 6 列 × 1 的图与它的
+            `_preview.png` 随本批从盘上下架（`check()` 有反面对照，回盘就报"多出来的一套
+            地表真相"）。药庐那档的换序与重做是 §推进顺序 5 第二片，本文件那六格
+            `tile_plank/tile_brick_floor/tile_mat/tile_white_wall/tile_partition/tile_counter`
+            到那一片才摘。
 
 对应 docs/30 §6.4（药炉/茶灶/酒坊/研磨台/铁砧）与 §11.2（药庐/练功房/仓房/茶棚/铁匠台）。
 可建造建筑的施工两态共用「地基」「脚手架」两张图（脚手架是叠加层），
@@ -63,12 +72,14 @@ PARTITION = rgb("#6B4F3A")
 COUNTER = rgb("#8A6A46")
 FORGE_EARTH = rgb("#6E5A44")
 FORGE_EARTH_DARK = rgb("#544434")
-FORGE_SLAB = rgb("#7A766C")
 CINDER = rgb("#3E3A34")
-CINDER_LIGHT = rgb("#5A544A")
 BRICKWALL = rgb("#7A5A46")
-STONEWALL = rgb("#6E6B62")
-TROUGH = rgb("#3E6485")
+# 铁匠铺地表那六族现在住在 `tools/terrain_ramp.json:scenes.interior_forge.families`。
+# 上面四行留下不是因为图集：`furn_stove`/`facility_herb_stove`/`facility_tea_stove` 的炉膛、
+# `facility_tea_stove` 与 `build_forge_stand` 的墙体、`build_foundation` 与 `build_storehouse`
+# 的夯土还在用同一套颜色，删了它们等于顺手改了家具与建筑的画。
+# 只跟着 6×1 图集一起下架的是 `FORGE_SLAB/CINDER_LIGHT/STONEWALL/TROUGH` 四行——
+# 它们除了那六格瓦没有别的使用者。
 
 
 def _cjk(text, size, color, outline=INK):
@@ -184,83 +195,13 @@ def tile_counter(seed=566):
     return cv
 
 
-def tile_forge_earth(seed=577):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, FORGE_EARTH)
-    rnd = hash_stream(seed)
-    for _ in range(28):
-        cv.set(rnd(TILE), rnd(TILE), FORGE_EARTH_DARK)
-    for _ in range(16):
-        cv.set(rnd(TILE), rnd(TILE), shade(FORGE_EARTH, 1.15))
-    return cv
-
-
-def tile_forge_slab(seed=588):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, FORGE_SLAB)
-    for y in (0, 16):
-        cv.hline(0, TILE - 1, y, STONE_MORTAR)
-    cv.vline(0, 0, TILE - 1, STONE_MORTAR)
-    cv.vline(16, 0, TILE - 1, STONE_MORTAR)
-    rnd = hash_stream(seed)
-    for _ in range(20):
-        cv.set(rnd(TILE), rnd(TILE), shade(FORGE_SLAB, 0.88))
-    for _ in range(10):
-        cv.set(rnd(TILE), rnd(TILE), STONE_LIGHT)
-    return cv
-
-
-def tile_cinder(seed=599):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, CINDER)
-    rnd = hash_stream(seed)
-    for _ in range(30):
-        cv.set(rnd(TILE), rnd(TILE), CINDER_LIGHT)
-    for _ in range(8):
-        x = 3 + rnd(TILE - 8)
-        y = 3 + rnd(TILE - 8)
-        cv.set(x, y, rgb("#C3452F"))
-        cv.set(x + 1, y, rgb("#E07B3A"))
-    return cv
-
-
-def tile_brick_wall(seed=611):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, BRICKWALL)
-    for row, y in enumerate(range(0, TILE, 6)):
-        offset = 0 if row % 2 == 0 else 5
-        cv.hline(0, TILE - 1, y, shade(BRICKWALL, 0.75))
-        for x in range(offset, TILE, 10):
-            cv.vline(x, y, y + 5, shade(BRICKWALL, 0.75))
-    rnd = hash_stream(seed)
-    for _ in range(16):
-        cv.set(rnd(TILE), rnd(TILE), shade(BRICKWALL, 1.15))
-    return cv
-
-
-def tile_stone_wall(seed=622):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, STONEWALL)
-    rnd = hash_stream(seed)
-    for _ in range(24):
-        cv.set(rnd(TILE), rnd(TILE), STONE_DARK)
-    for _ in range(14):
-        cv.set(rnd(TILE), rnd(TILE), STONE_LIGHT)
-    for x in range(0, TILE, 11):
-        cv.vline(x, 0, TILE - 1, STONE_MORTAR)
-    cv.hline(0, TILE - 1, 0, rgb("#3E3B36"))
-    return cv
-
-
-def tile_trough(seed=633):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, STONE_DARK)
-    cv.rect(3, 3, TILE - 4, TILE - 4, TROUGH)
-    cv.hline(3, TILE - 4, 3, rgb("#5D82A0"))
-    for x in range(6, TILE - 6, 7):
-        cv.set(x, 9, rgb("#7FA3D4"))
-    cv.hline(3, TILE - 4, TILE - 4, rgb("#2F4E6B"))
-    return cv
+# ---------------------------------------------------------------------------
+# 铁匠铺地表：**本文件不再出图**（M72-11 §推进顺序 5）。旧的那六格
+# `tile_forge_earth/tile_forge_slab/tile_cinder/tile_brick_wall/tile_stone_wall/tile_trough`
+# 与它们的 `_pack(forge)` 一起摘除——金标规范下图集的唯一产出点是
+# `gen_terrain_tiles.py --scene interior_forge`（12×9 + autotile + per-tile tint），这里再画
+# 一张 6×1 就是把"两套地表真相"留在盘上。`check()` 有反面对照：那两张图回盘就报红。
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -728,16 +669,10 @@ def generate(quiet=False):
                                 ("药庐", 12), ("练功房", 12), ("仓房", 12), ("茶棚", 12), ("铁匠台", 12))
              ] + [(display, 11, "pixel", True) for _, _, display in FURNITURE + FACILITIES + BUILDABLES])
     herb = [tile_plank(), tile_brick_floor(), tile_mat(), tile_white_wall(), tile_partition(), tile_counter()]
-    forge = [tile_forge_earth(), tile_forge_slab(), tile_cinder(), tile_brick_wall(),
-             tile_stone_wall(), tile_trough()]
     write_png(os.path.join(TILE_DIR, "interior_herb", "interior_ground.png"), _pack(herb))
-    write_png(os.path.join(TILE_DIR, "interior_forge", "interior_ground.png"), _pack(forge))
     write_png(os.path.join(TILE_DIR, "interior_herb", "_preview.png"),
               build_tiles_preview(herb, "INTERIOR HERB HUT X4",
                                   ["PLANK", "BRICK", "MAT", "WHITE WALL", "PARTITION", "COUNTER"]))
-    write_png(os.path.join(TILE_DIR, "interior_forge", "_preview.png"),
-              build_tiles_preview(forge, "INTERIOR FORGE X4",
-                                  ["EARTH", "SLAB", "CINDER", "BRICK WALL", "STONE WALL", "TROUGH"]))
 
     rendered = []
     for name, factory, display in FURNITURE:
@@ -763,8 +698,8 @@ def generate(quiet=False):
     # 整图刚落盘就按行切出 body/roof：分块与整图同源同刻（`gen_manor_art.check_splits` 逐字节对拍）。
     splits = [split_stem(stem) for stem in BUILD_STEMS]
     if not quiet:
-        print(f"  2 tilesets + {len(FURNITURE)} 家具 + {len(FACILITIES)} 设施 + {len(BUILDABLES)} 可建造")
-        print("  5 previews")
+        print(f"  1 tileset + {len(FURNITURE)} 家具 + {len(FACILITIES)} 设施 + {len(BUILDABLES)} 可建造")
+        print("  4 previews")
         for stem, pieces in zip(BUILD_STEMS, splits):
             print(f"  split    {stem}: " + " + ".join(f"{os.path.basename(p)} {rows} 行"
                                                       for p, rows in pieces))
@@ -794,12 +729,19 @@ def check():
     from pixel_kit import decode_png
 
     issues = []
-    for folder, name in ((TILE_DIR, "interior_herb/interior_ground"),
-                         (TILE_DIR, "interior_forge/interior_ground")):
-        path = os.path.join(folder, name + ".png")
-        if not os.path.exists(path):
-            issues.append("missing " + path)
-            continue
+    # **反面对照**：旧那张 6 列 × 1 行的铁匠铺图（含它的预览）必须**不在盘上**。M72-11
+    # §推进顺序 5 起铁匠铺的地表由 `gen_terrain_tiles.py --scene interior_forge` 出 12×9
+    # 那一张，留着 6×1 就是两套地表真相——谁把它恢复回来（或把本文件的出图代码加回来），
+    # 红在这里。药庐那张还是本文件出的 6×1（§推进顺序 5 第二片才搬），所以尺寸只判它。
+    for stale in (os.path.join(TILE_DIR, "interior_forge", "interior_ground.png"),
+                  os.path.join(TILE_DIR, "interior_forge", "_preview.png")):
+        if os.path.exists(stale):
+            issues.append(f"多出来的一套地表真相：{stale} 还在盘上——铁匠铺图集只由 "
+                          "gen_terrain_tiles.py --scene interior_forge 产出")
+    path = os.path.join(TILE_DIR, "interior_herb", "interior_ground.png")
+    if not os.path.exists(path):
+        issues.append("missing " + path)
+    else:
         width, height, _, _ = decode_png(path)
         if (width, height) != (TILE * 6, TILE):
             issues.append(f"{path}: {width}x{height} != 192x32")
@@ -830,7 +772,8 @@ def main():
             for problem in problems:
                 print("[FAIL]", problem)
             raise SystemExit(1)
-        print(f"[OK] 批次 3 校验通过（2 tileset + {len(FURNITURE)} 家具 + {len(FACILITIES)} 设施 + {len(BUILDABLES)} 可建造）")
+        print(f"[OK] 批次 3 校验通过（1 tileset（药庐，铁匠铺那张只判它不在盘上）+ "
+              f"{len(FURNITURE)} 家具 + {len(FACILITIES)} 设施 + {len(BUILDABLES)} 可建造）")
         return
     print("生成批次 3 美术 → 室内 / 家具 / 生产设施 / 可建造建筑")
     generate()

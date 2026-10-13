@@ -50,6 +50,10 @@ RESERVED_BY_SCENE = {
     # M72-11 §推进顺序 4：寒泉洞的留白是**契约锚点**（出生/出口/四个 places 格/首领 home）
     # 加每件道具的锚点格；这张图只有 240 格，中景压在交互点上是最亏的写法。
     "cold_spring_cave": "gen_cave_scene",
+    # M72-11 §推进顺序 5 第一片：铁匠铺内的留白是**切图与交互契约**（出生/出口/forge_inside）
+    # 加十一件家具与石龛的锚点格；240 格的屋子里中景一共没几件，压在铁砧前面或门口那一列
+    # 是最亏的写法（留白输入的实现见 `gen_forge_scene.decor_reserved()`）。
+    "interior_forge": "gen_forge_scene",
 }
 
 

@@ -413,8 +413,10 @@ try {
         #
         # ① `set_scatter_decor.py --check`：盘上装饰段 == 按当前地表现算的装饰段（M72-05 只有
         #    manor 一条（204 件），village 326 件、mountain_path 245 件、combat_arena 340 件、
-        #    cold_spring_cave 57 件；洞穴那张件数少是它的可走地面只有 144 格，散布按格数出，
-        #    而 `decor_kit.CATALOG` 是所有图共用的形状库——改了库没重撒，红在这里而不是等目验发现）。
+        #    cold_spring_cave 57 件、interior_forge 43 件；洞穴那张件数少是它的可走地面只有
+        #    144 格，铁匠铺更少是 `decor_kit.SCENE_DECOR` 把八件户外条目摘掉后可撒的地表本来就窄
+        #    （散布按可走格数 × 档位概率出），而 `decor_kit.CATALOG` 是所有图共用的形状库——
+        #    改了库没重撒，红在这里而不是等目验发现）。
         # ② `building_kit.py --check`：M72-11 铺量——"每格 solid 都要有可视依据"这条规则的**实现**，
         #    而 `jhyt_m72_building_footprint` 是它的第二份独立实现（Rust 不 import Python）。
         #    现算的应实心格集必须 == 盘上 `solid` 串（缺 0 悬空 0）。为什么每张图都要——`solid`
@@ -424,9 +426,10 @@ try {
         #    每屏装饰 median ≥40），而 `jhyt_m72_manor_terrain` 按设计只管 manor 那张图集、
         #    `jhyt_m72_scatter_decor` 只管 manor 那份散布。这条是"任意一张图都能判"的那一份，
         #    判据常量与那两扇门同名同值。分档表 `MIN_DECOR_OBJECTS` 里没有的场景直接红
-        #    （室内/洞穴要按 plan §风险 另定分档，工具不替它猜；寒泉洞那一条按实测登记 = 40，
-        #    实测 57/57/57，没有为它降过门槛）。
-        foreach ($decorScene in @("manor", "village", "mountain_path", "combat_arena", "cold_spring_cave")) {
+        #    （室内/洞穴要按 plan §风险 另定分档，工具不替它猜；寒泉洞与铁匠铺那两条都是**按实测
+        #    登记 = 40**（洞穴 57/57/57、铁匠铺 43/43/43），没有为它们降过门槛；`interior_herb`
+        #    与 `main` 仍是旧 6×1 档、还没接进这张循环）。
+        foreach ($decorScene in @("manor", "village", "mountain_path", "combat_arena", "cold_spring_cave", "interior_forge")) {
             Invoke-Checked python @(
                 (Join-Path $projectRoot "examples/game_jhyt/tools/set_scatter_decor.py"),
                 (Join-Path $projectRoot "examples/game_jhyt/scenes/$decorScene.scene"),

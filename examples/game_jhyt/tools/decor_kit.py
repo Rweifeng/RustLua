@@ -128,6 +128,22 @@ SCENE_DECOR = {
         "exclude": frozenset(("GrassShort", "GrassTuft", "Petals", "LeafPile",
                               "Bush", "Flowers", "Reed", "Lily")),
     },
+    # 铁匠铺内（M72-11 §推进顺序 5 第一片）：**作坊室内**，与洞穴那条"地下无光"不同因、
+    # 同一种做法（只做减法与降档，绝不新增条目）。
+    "interior_forge": {
+        # 夯土地面（kind 1）与石板（kind 3）各压两档：屋子里的"密"应该由**家具**读，
+        # 不是由草屑读；`BASE_P` 的 0.75 那一档读的是"阳光下的草甸该密"，照抄到 240 格的
+        # 作坊里就是满地噪点。石板带（门前厅 + 北墙根 + 砌岸）压得更低，那是铺出来的地面。
+        "base_p": {GRASS: 0.45, STONE: 0.35},
+        # 摘掉的还是那八件户外专属，理由要按室内重写一遍：草皮两件（屋里不长草）、花瓣与
+        # 落叶（屋内有顶，无落叶层）、灌木与花（没有花圃）、香蒲（临水条目——淬火槽是
+        # **作坊设备**不是生态水面，边上扎芦苇读起来是"屋外"）、睡莲（同一句理由，
+        # 且 `DECOR_ON_SOLID` 那格因此空置）。
+        # 留下的五件正是"作坊地上该有的东西"：木屑枝桠（Twigs）、碎渣（Pebbles）、
+        # 墙角青苔（MossPatch）、垫脚石块（Rock）、潮角落的蘑菇（Mushroom）。
+        "exclude": frozenset(("GrassShort", "GrassTuft", "Petals", "LeafPile",
+                              "Bush", "Flowers", "Reed", "Lily")),
+    },
 }
 
 
