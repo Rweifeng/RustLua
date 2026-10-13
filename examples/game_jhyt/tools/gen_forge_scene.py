@@ -23,7 +23,9 @@
     `building_kit.TILE_NATIVE_SOLID=(4,6)` 要求墙必须落在 4——照旧代码重跑，herb 的"墙"
     在跨图语义里根本不是墙（洞穴那批已把这条写成硬约束）。
   * 所以 herb 的正牌生成器就是 §推进顺序 5 **第二片**的交付物（自带 12×9 图集与色阶档），
-    旧实现按 `git show HEAD~1:examples/game_jhyt/tools/gen_interior_scenes.py` 取回。
+    旧实现按 `git show 3f99bb8f^:examples/game_jhyt/tools/gen_interior_scenes.py` 取回
+    （钉 SHA 不写 `HEAD~1`：那句话写下时 HEAD~1 还是改名之前那一笔，现在 HEAD~1 已经是
+    改名这一笔本身 ⇒ 相对位置取不到东西）。
     本批结束后 `scenes/interior_herb.scene` 处于"无唯一事实源"状态，这条登记在 plan 与
     docs/58，不静默当成已完成。
 

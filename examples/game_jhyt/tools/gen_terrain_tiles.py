@@ -1389,6 +1389,367 @@ def paint_forge_trough_edges(canvas, seed, mask, pal, ctx):
 
 
 # ---------------------------------------------------------------------------
+# 药庐内（M72-11 §推进顺序 5 的第二张室内图）
+#
+# 语义位的换序（含"墙记在 5 上"那条债、以及这张图**没有**铁匠铺那句"主地面坐在可垦位上"
+# 的账）全写在 `terrain_ramp.json:scenes.interior_herb`，这里只记画法。机制与另五张一字不差
+# （12×9、1+16 条目算术、4-bit 位序、碎点压边、满块档 = mask 15），要回答的是铁匠铺那个同一
+# 形态的问题的另一半：**一张室内的地表怎么读得出"这是药庐，不是另一间铁匠铺"**。三条落法：
+#   * **地面是钉出来的、铺出来的、编出来的，三样分开画**。木地板靠"横向通缝 + 逐行错开的
+#     板端缝"（`paint_herb_plank`），门厅青砖靠"8px 一行的长条砖 + 隔行错半块"
+#     （`paint_herb_brick`），席垫靠"4px 一经纬的编织面"（`paint_herb_mat`）——三种规矩在
+#     铁匠铺那张上分别是夯层缝、16×16 凿石、8×8 耐火砖。同一间屋子换的若是色而不是画法，
+#     读出来就是"同一张图换了个色调"，那正是 docs/71 §1 点名的"像 demo"。
+#   * **亮在晒、暗在墙**：本图用到的六族里唯二破 150 的是 `herb_mat`（180.3）与 `herb_brick`
+#     （156.1）——两张**接得到日光的地面**（窗边晒席、进门门厅砖），其余四族顶档 ≤137.1，而
+#     `herb_partition` 整族最亮才 83.4（墙不接天光）。铁匠铺那条是"亮是火光"（最亮给炉前耐火
+#     砖），这两张合起来把"室内为什么亮"分成了两个答案。绿只给 `herb_dregs` 一族（六族里唯一
+#     每档 G>R），与铁匠铺的余烬橙同一角色：身份色住在那一列上，不许成面。
+#   * 人造铺地的直缝不违反 docs/71 §1（那条判的是**两种 kind 的交界**画成一把尺子）；跨瓦
+#     一致沿用演武场/铁匠铺那条 `ti` 规矩：同一块砖被瓦边切成两半时，两半的色档由同一个键算。
+# ---------------------------------------------------------------------------
+
+
+def paint_herb_plank(canvas, rand, pal, ctx):
+    """木地板：八像素一行的长板 + 落在板端的接缝 + 顺纹暗线 + 踩秃的亮斑 + 缝里的药渣。
+
+    与铁匠铺的夯土（`paint_forge_earth`：一层层填土砸实，缝是横向**成层不等距**的）换的是
+    材料来源：这里的横线是**板与板的接缝**，所以等距（八像素一张板）且在板端处收口；竖的
+    板端缝逐行错开半张板，那是木工的规矩（通缝的地板不结实，也读不出是一张张板）。旧
+    `gen_interior_art.tile_plank` 的平涂色 #A6855C 仍在族里当最亮档——搬进 12×9 不换颜色，
+    只补恒等寻址画不出的两件事：缝的断口，和掉进缝里的东西（`ctx["soil"]` = 本图 kind 2
+    那一族：作坊地上积的黑点是炉子掉的，药庐地上积的是碾末与碎茎）。
+
+    **两处口径是量具逼出来的**（3×3 同瓦拼接目验：地板铺满一间屋时读成了棋盘）：
+      * 板端缝必须落在**板边界**上（每 16px 一张板、逐行错半张），不许是板中随机一根短竖——
+        随机断点在一间屋里按瓦重复，读成满地的裂缝而不是接缝；
+      * 亮斑不许是实心方块：一整块方的 `light` 每瓦两处，铺满就是 32px 周期的棋盘格。改成
+        在 8×3 的范围里**按密度撒**（约一半像素抬一档），边缘自然散掉，才读成"这块板走秃了"。
+    碎点也从 90 降到 45：木地板是擦过的地面，噪点密度与夯土/炭渣同档就会读成"没扫过的泥地"。
+      * 缝里的渣不许拿 `soil` 一族的最深两档：`herb_dregs` 的 deep/dark 亮度 35.9/52.8，而本族
+        deep 是 70.5 —— 落在浅棕板面上的近黑点读成虫蛀的洞，不读成灰。改用 `soil["mid"]`
+        （75.1，与本族 deep 同档）压暗一档到 `soil["dark"]`：**同深度、换色相**才读成"缝里积的
+        是药末"。（3×3 拼接图上第一条就是这几点先扎眼的。）
+    """
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["mid"])
+    for row, y in enumerate(range(0, TILE, 8)):
+        x = 0
+        while x < TILE:  # 板缝成对：下线深、上线亮（缝口翘起的毛边才吃得住光）
+            right = min(TILE - 1, x + 15)
+            if rand(5):
+                canvas.hline(x, right, y, pal["dark"])
+                canvas.hline(x, right, y + 1, pal["light"])
+            else:  # 断口：一整行不断开的缝就是尺子，这里让它缺一截
+                canvas.hline(x, right, y, pal["deep"])
+            x = right + 1
+        for seam in ((0, 16) if row % 2 == 0 else (8, 24)):  # 板端缝：逐行错开半张板
+            canvas.vline(seam, y + 1, y + 7, pal["deep"])
+            canvas.vline(seam + 1, y + 1, y + 7, pal["light"])
+    for _ in range(3):  # 顺纹：一两根走满半张板的暗线，只有木纹顺着板长方向
+        y = 2 + rand(3) * 8
+        x = 1 + rand(TILE - 12)
+        canvas.hline(x, x + 6 + rand(7), y, pal["dark"] if rand(3) else pal["deep"])
+    _speckles(canvas, rand, [pal["deep"], pal["dark"], pal["light"]], 45)
+    x, y = 1 + rand(TILE - 10), 2 + rand(3) * 8  # 踩秃的亮斑：撒出来的，不是方的一整块
+    for dx in range(9):
+        for dy in range(3):
+            if rand(2):
+                canvas.set(min(TILE - 1, x + dx), y + dy, pal["light"])
+    for _ in range(4):  # 缝里的药渣：扁片贴在缝口，与本族 deep 同深度、只换色相
+        sx, sy = 1 + rand(TILE - 4), rand(4) * 8 + 1
+        canvas.set(sx, sy, ctx["soil"]["mid"] if rand(3) else ctx["soil"]["dark"])
+
+
+def paint_herb_dregs(canvas, rand, pal, ctx):
+    """药渣与切屑：碾末的扁片 + 切刀下的斜茎 + 几粒种子。本图六族里唯一带绿味的一族。
+
+    旧那六列里没有这一族（它是本档新增的），画法只能"从产物倒推动作"：药碾碾出来的末是
+    扁片（`deep`/`dark` 的 2-4px 横片，边缘参差），切药刀切下来的茎是斜撇（1-3px，方向只
+    有一致才读得出是刀下的），晒完扫成堆的叶屑才给 `light`（#6F7A46 干草绿）。与铁匠铺
+    `paint_forge_cinder` 的余烬橙同一条规矩：**身份色不许成面**——一整片绿读成"地上刷了漆"，
+    零星一撮才读成"刚从药碾里崩出来"。
+
+    这一档坐在 kind 2（farm.lua 判可垦的编号位）上，本图格数由场景侧那一笔定；色阶表 comment
+    里那条三段串联说明它是编号卫生不是行为变化。恒等寻址是回滚路线，所以零格也要有真美术
+    （`check` 查的就是关掉 autotile 会不会画空白），与铁匠铺的炭渣同一口径。
+    """
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["dark"])
+    _speckles(canvas, rand, [pal["deep"], pal["mid"]], 140)
+    for _ in range(5):  # 碾末的扁片：顶行抬一档、底行最深（单一光向：朝上的那张脸）
+        x, y = 1 + rand(TILE - 7), 2 + rand(TILE - 6)
+        width = 2 + rand(3)
+        canvas.rect(x, y, x + width, y + 1, pal["mid"])
+        canvas.hline(x, x + width, y, pal["light"] if rand(4) else pal["mid"])
+        canvas.hline(x, x + width, y + 2, pal["deep"])
+    for _ in range(6):  # 切下来的茎：同向斜撇，长短不一
+        x, y = 2 + rand(TILE - 6), 3 + rand(TILE - 6)
+        for step in range(1 + rand(3)):
+            canvas.set(x + step, y - step, pal["mid"] if rand(3) else pal["deep"])
+    for _ in range(3):  # 一撮绿：只在渣堆缝隙里，两三像素
+        x, y = 2 + rand(TILE - 5), 3 + rand(TILE - 7)
+        canvas.set(x, y, pal["light"])
+        if rand(2):
+            canvas.set(x + 1, y, pal["deep"])
+    for _ in range(3):  # 种子：本族亮档的一个点压在中档面上，比茎更小
+        canvas.set(2 + rand(TILE - 4), 2 + rand(TILE - 4), pal["light"])
+    for _ in range(2):  # 扫到边的一缕：横着拖出的两条线，读成"扫过但没扫净"
+        x, y = 1 + rand(TILE - 10), 3 + rand(TILE - 6)
+        canvas.hline(x, x + 6 + rand(5), y, pal["deep"])
+        canvas.hline(x + 1, x + 6 + rand(5), y + 1, pal["dark"])
+
+
+def paint_herb_brick(canvas, rand, pal, ctx):
+    """门厅青砖：8px 一行的长条砖、隔行错半块，缝里点白灰，靠门槛那一侧磨亮。
+
+    与铁匠铺门前那一排方石（`paint_forge_flagstone`，2 行 × 16×16 大块）换的是**尺度**：
+    旧 `tile_brick_floor` 就是 8px 一行、隔行错 8px 的砌法，长条砖读成"砌出来的地面"，方石
+    读成"凿出来的"。四格一循环、`light` 只占一席沿用演武场定的那条（白得压过邻族就读成
+    "刚铺的"）；这一族本图六族第二亮（156.1），因为日光进门先落在门前厅，而它占的正是跨图
+    "铺出来的通路"编号位（building.lua 判 tile==3 为道路）。
+    """
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["deep"])
+    faces = (pal["mid"], pal["light"], pal["dark"], pal["mid"])
+    for row, y0 in enumerate(range(0, TILE, 8)):
+        for x0 in ((0, 16) if row % 2 == 0 else (-8, 8, 24)):
+            ti = (((x0 + 16) % 32) // 16 + row) % 4
+            left, top = max(0, x0 + 1), y0 + 1
+            right, bottom = min(TILE - 1, x0 + 14), y0 + 6
+            canvas.rect(left, top, right, bottom, faces[ti])
+            canvas.hline(left, right, top, pal["light"] if ti != 1 else pal["mid"])
+            canvas.hline(left, right, bottom, pal["dark"])
+            canvas.vline(right, top, bottom, pal["deep"])
+    for y in range(1, TILE, 8):  # 灰缝里偶尔露出的白灰：满线读成尺子，只点断开的几处
+        for x in range(TILE):
+            if rand(6) == 0:
+                canvas.set(x, y - 1, ctx["utility"]["paper"])
+    for _ in range(14):  # 磨亮：碎点只打在暗档与中档砖面上
+        x, y = rand(TILE), rand(TILE)
+        if canvas.get(x, y)[:3] in (pal["mid"][:3], pal["dark"][:3]):
+            canvas.set(x, y, pal["light"])
+    for _ in range(2):  # 缺角砖：一块砖的角啃掉一口，露出垫层的 deep
+        x, y = 3 + rand(TILE - 8), 1 + rand(3) * 8
+        canvas.rect(x, y, x + 2, y + 1, pal["deep"])
+        canvas.set(x, y, pal["dark"])
+    for _ in range(3):  # 砖缝里的药渣：从里屋踩出来的末，落在门厅砖上（同 `paint_herb_plank`
+        x, y = rand(TILE), 1 + rand(3) * 8  # 那条判据：压暗一档换色相，不用近黑的 soil.deep）
+        canvas.set(x, y, ctx["soil"]["dark"] if rand(2) else ctx["soil"]["mid"])
+
+
+def paint_herb_partition(canvas, rand, pal, ctx):
+    """木隔断：八像素一块的立板（缝"左亮右暗"成对）+ 两道横撑 + 斑驳与翘刺。
+
+    三段式结构在室内不换结构换材料（docs/53 §3.3）：本体只画"满高的立板"这一层，压顶与
+    踢脚交给 `paint_herb_partition_edges`。**板墙与砖墙的差别在缝的方向**：砖墙的缝是横的、
+    层层压（`paint_forge_brick`），板墙的缝是竖的、根根立——同一编号位（跨图墙=4）两种材料，
+    这一条也是铁匠铺与药庐在画面上最快分得开地方。旧 `tile_partition` 用 PARTITION #6B4F3A
+    平涂 + `WOOD_DARK`/`WOOD_LIGHT` 双线缝，这里把那条双线换成族内档位（`deep`/`light`），
+    整族最亮 83.4：屋里的墙不接天光。
+    """
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["mid"])
+    for x in range(0, TILE, 8):
+        canvas.vline(x, 0, TILE - 1, pal["deep"])
+        canvas.vline(x + 1, 0, TILE - 1, pal["light"])  # 缝口翘起的那张脸吃光
+        if rand(3) == 0:  # 板面疤结：一枚椭圆深档，两块板之间才有
+            canvas.rect(x + 3, 6 + rand(20), x + 4, 8 + rand(20), pal["dark"])
+    for y in (4, 20):  # 横撑两道：板墙要有撑，不然读成木地板竖起来
+        canvas.hline(0, TILE - 1, y, pal["dark"])
+        canvas.hline(0, TILE - 1, y + 1, pal["light"])
+        for x in range(0, TILE, 8):  # 撑过板缝处钉一颗
+            if rand(4) == 0:
+                canvas.set(x + 4, y, ctx["utility"]["gold"])
+    for _ in range(26):  # 斑驳：旧漆磨掉的那几块，深档与暗档交错
+        canvas.set(rand(TILE), rand(TILE), pal["dark"] if rand(3) else pal["deep"])
+    for _ in range(3):  # 翘出的木刺：亮档一根短竖，只在板缝口
+        x = 8 * rand(4) + 1
+        canvas.vline(x, 4 + rand(24), 6 + rand(22), pal["light"])
+    for _ in range(2):  # 磕出的楔口：板角啃掉一块，露出垫层
+        x, y = 8 * rand(4) + 2, rand(TILE - 4)
+        canvas.rect(x, y, x + 2, y + 2, pal["deep"])
+        canvas.set(x + 2, y, pal["dark"])
+
+
+def paint_herb_mat(canvas, rand, pal, ctx):
+    """席垫：四像素一经纬的编织面 + 坐出来的压痕 + 翘出的篾丝。
+
+    这一档是这张图的身份，也是本图六族**最亮的一族**（最亮档 180.3，比主地面木地板的 137.1
+    高一大截）：榻前与诊桌前那张被日光晒得发白的铺席。像山道竹林地、洞穴冰晶地、铁匠铺
+    炉前耐火砖那样真铺在地表，所以本体与边都走自家画法（不复用 `_base_roof` 的瓦垄）。
+
+    编织面靠"经深纬浅"两档交替（四像素一束），不许把 `deep` 满铺——满铺就成了一块炭。
+    `light` 给纬线受光那一侧；压痕用 `dark`（坐久了把席**压暗**、把篾条压平，不是压出个洞），
+    这条与耐火砖的锤坑（坑底最深、上沿抬一档）正好是一对：一个是砸的，一个是磨的。
+    """
+    canvas.rect(0, 0, TILE - 1, TILE - 1, pal["mid"])
+    for row, y in enumerate(range(0, TILE, 4)):
+        canvas.hline(0, TILE - 1, y, pal["dark"] if row % 2 else pal["deep"])
+        canvas.hline(0, TILE - 1, y + 1, pal["light"] if row % 2 == 0 else pal["mid"])
+    for x in range(0, TILE, 8):  # 经线：压住纬线的暗档，隔 8px 一道，读得出是织不是刷
+        canvas.vline(x, 0, TILE - 1, pal["deep"])
+        if rand(2):
+            canvas.vline(x + 1, 0, TILE - 1, pal["light"])
+    for _ in range(2):  # 坐秃的压痕：一片压平的地方，比席面暗一档、边缘留亮
+        x, y = 2 + rand(TILE - 14), 2 + rand(TILE - 12)
+        width, height = 8 + rand(6), 6 + rand(4)
+        for dx in range(width):  # 按密度撒：方的暗块每瓦两块，铺满一间屋就是 32px 周期的棋盘
+            for dy in range(height):
+                if rand(2):
+                    canvas.set(min(TILE - 1, x + dx), min(TILE - 1, y + dy), pal["dark"])
+        canvas.hline(x, min(TILE - 1, x + width - 1), y, pal["light"])
+        for _ in range(6):  # 压痕里仍留中档：压平的是篾条的棱，不是换了张席
+            canvas.set(x + rand(width), y + rand(height), pal["mid"])
+    for _ in range(4):  # 翘出的篾丝：亮档一两像素，断在经线上才读得出是席不是纸
+        x, y = 8 * rand(4) + rand(7), 2 + rand(TILE - 4)
+        canvas.set(x, y, pal["light"])
+        if rand(2):
+            canvas.set(x + 1, y - 1, pal["light"])
+    for _ in range(3):  # 落在席上的药末：本族唯一用 `ctx["soil"]` 的地方——晒药就在席上
+        canvas.set(2 + rand(TILE - 4), 2 + rand(TILE - 4), ctx["soil"]["dark"])
+
+
+def paint_herb_counter(canvas, rand, pal, ctx):
+    """药柜台：台面那一横条受光 + 立面抽屉格 + 一颗铜拉手 + 与地接触的暗线。
+
+    它占的是跨图"实心位"（kind 6，铁匠铺那一格给的是淬火水槽），画法却反过来：水槽要画
+    **水下的东西**（一根铁条，轮廓读得出、颜色读不出），柜台要画**看不进去**——立面一律压在
+    `deep`，抽屉缝一条 `dark`，铜件只给一个 `utility.gold` 像素。台面那一横条给 `light`：
+    它是这张图上唯一一处"横着朝上、又被日光正照着"的立面件；抽屉面 `mid`/`dark` 交替（老柜子的
+    抽屉不是同一个木匠配的，颜色不该齐）。
+    """
+    canvas.rect(0, 0, TILE - 1, 7, pal["mid"])
+    canvas.hline(0, TILE - 1, 0, pal["light"])  # 台面边：最上那一行吃光
+    canvas.hline(0, TILE - 1, 7, ctx["utility"]["ink"])  # 台面与立面分界
+    canvas.rect(0, 8, TILE - 1, TILE - 1, pal["deep"])
+    faces = (pal["mid"], pal["dark"], pal["mid"], pal["deep"])
+    for index, x0 in enumerate(range(1, TILE, 8)):  # 抽屉：隔 8px 一格，缝深一档
+        right = min(TILE - 1, x0 + 6)
+        ti = index % 4
+        canvas.rect(x0, 9, right, TILE - 3, faces[ti])
+        canvas.hline(x0, right, 9, pal["light"] if ti == 0 else pal["mid"])
+        canvas.vline(TILE - 1 if x0 > 24 else right + 1, 9, TILE - 3, pal["deep"])
+        canvas.set((x0 + right) // 2, 15, ctx["utility"]["gold"])  # 铜拉手一颗
+        if rand(3) == 0:
+            canvas.set(x0 + 2 + rand(4), 18 + rand(8), ctx["utility"]["paper"])  # 贴的纸签
+    for _ in range(18):  # 立面的磨痕与磕口
+        canvas.set(rand(TILE), 10 + rand(20), pal["dark"] if rand(3) else pal["mid"])
+    canvas.hline(0, TILE - 1, TILE - 2, pal["deep"])
+    canvas.hline(0, TILE - 1, TILE - 1, ctx["utility"]["ink"])  # 柜脚与地的接触线
+
+
+def paint_herb_brick_edges(canvas, seed, mask, pal, ctx):
+    """门厅青砖的暴露边：垫层用**木地板的暗档**，不用通用件那个 `ctx["soil"]`。
+
+    通用件 `paint_paving_edge` 的垫层取 `ctx["soil"]["dark"]`，也就是本图 kind 2 那一族——
+    在另五张上那是土/碎石/炭渣/洞底碎屑，铺地收边时露出垫层碎砾是对的。这一张不行：
+    kind 2 是**药渣**（本图六族里唯一每档 G>R 的一族），拿它当砖地的边就是"砖缝里长出一圈绿"，
+    而门前厅那一横排接的是木地板与门槛，缝里该积的是木屑与灰。所以这里只换垫层取色、
+    结构仍走通用件（犬牙深度带 + 半嵌的砖块），与 `paint_herb_mat_edges` 那条"席下露的是
+    地板"同一判法。
+    """
+    bedding = ctx["families"]["herb_plank"]["dark"]
+    for bit in range(4):
+        edge = tk.EDGE_BY_BIT[bit]
+        if edge in tk.mask_edges(mask):
+            paint_paving_edge(canvas, hash_stream(seed + bit * 131 + 5), edge, pal, bedding)
+
+
+def paint_herb_partition_edges(canvas, seed, mask, pal, ctx):
+    """室内板墙的三段式：压顶木 + 梁底墨影（上）/ 踢脚板与地面相接（下）/ 板端面（左右）。
+
+    结构照 docs/53 §3.3，与铁匠铺同一套三段、材料全换：那里第一段是砖立砌压顶 + 檐下一根
+    木梁，这里第一段直接就是**压顶的那根横木本身**（顶行 `light`，因为受光的是朝上那张脸；
+    木身 `utility.wood`；梁底一条墨影），第二段（墙体）交给本体，第三段是**踢脚板**——
+    屋里墙脚与地面相接的那圈不是青石基（那是作坊的门口），而是一条压住地板缝的木板。
+    """
+    exposed = tk.mask_edges(mask)
+    wood = ctx["utility"]["wood"]
+    if "top" in exposed:
+        for x in range(TILE):
+            depth = 5 + (seed + x) % 3
+            canvas.rect(x, 0, x, 1, pal["light"] if (seed + x) % 3 else pal["mid"])
+            canvas.set(x, 2, pal["deep"])
+            for d in range(3, depth - 1):
+                canvas.set(x, d, wood)
+            canvas.set(x, depth - 1, ctx["utility"]["ink"])  # 压顶木底面的墨影
+            if (seed + x * 5) % 7 == 0:
+                canvas.set(x, depth, ctx["utility"]["gold"])  # 钉进板墙的那一颗
+    if "bottom" in exposed:
+        for x in range(TILE):
+            depth = 3 + (seed + x * 3) % 3
+            for d in range(depth):
+                canvas.set(x, TILE - 1 - d,
+                           ctx["utility"]["ink"] if d == 0 else
+                           (pal["deep"] if d == 1 else pal["dark"]))
+            if (seed + x * 5) % 8 == 0:
+                canvas.set(x, TILE - 1 - depth, pal["light"])  # 踢脚上沿受光那一行
+    for edge in ("left", "right"):
+        if edge in exposed:
+            coord = EDGE_COORD[edge]
+            for t in range(TILE):
+                canvas.set(*coord(t, 0), pal["deep"])
+                canvas.set(*coord(t, 1), pal["dark"])
+                if (seed + t * 11) % 7:
+                    canvas.set(*coord(t, 2), ctx["utility"]["ink"])
+
+
+def paint_herb_mat_edges(canvas, seed, mask, pal, ctx):
+    """席边：席下压出来的地板暗档 + 一圈包布 + 零星一根翘出的篾丝。
+
+    与铁匠铺耐火砖的边（烧裂的壳 + 溅出去的炭渣）同一档角色但不同材料：席子是一块**铺上去
+    的东西**，所以它的边先露出被压住的那层（`ctx["families"]["herb_plank"]` 的深档——本图
+    kind 1 那一族，席下就是木地板），再收一圈包布（`dark` 两像素 + 上沿一颗 `light`）。
+    席面与地板的交界是"软面压住硬面"，所以沿用通用件的 `edge_profile` 犬牙深度带：只有
+    犬牙才读得出是铺上去的一张，等宽就是刷上去的一圈。
+    """
+    floor = ctx["families"]["herb_plank"]
+    for bit in range(4):
+        edge = tk.EDGE_BY_BIT[bit]
+        if edge not in tk.mask_edges(mask):
+            continue
+        rand = hash_stream(seed + bit * 131 + 9)
+        coord = EDGE_COORD[edge]
+        for t, depth in enumerate(edge_profile(rand)):
+            span = max(depth, 2)
+            for d in range(span):
+                canvas.set(*coord(t, d), floor["deep"] if d == 0 else floor["dark"])
+            canvas.set(*coord(t, span), pal["dark"])
+            canvas.set(*coord(t, span + 1), pal["dark"])
+            if rand(4) == 0:
+                canvas.set(*coord(t, span + 1), pal["light"])  # 包布上沿吃光那一行
+            if rand(7) == 0:
+                canvas.set(*coord(t, span + 2), pal["light"])  # 翘出的篾丝
+            if rand(6) == 0:
+                canvas.set(*coord(t, 1), ctx["utility"]["ink"])
+
+
+def paint_herb_counter_edges(canvas, seed, mask, pal, ctx):
+    """柜沿（docs/53 §3.7 的"先画沿再画水"，换成"先画沿再画柜"）：沿口一线亮、立面压暗。
+
+    与水槽那条的区别写在 `paint_herb_counter` 里（一个要画水下、一个不许看进去），这里区别
+    在**沿本身是什么**：淬火槽的沿是凿出来的青石（外列最深、内列抬两档），柜台的沿是**台面
+    的边**——最外一列给 `light`（朝外那圈边被日光正照着），往里才是立面最暗的 `deep`，
+    再往里补一条 `dark` 的抽屉口上沿。沿口不留碎点：柜子上不落渣，这是它和屋里那块席的
+    分工（席边才露垫层）。
+    """
+    for bit in range(4):
+        edge = tk.EDGE_BY_BIT[bit]
+        if edge not in tk.mask_edges(mask):
+            continue
+        rand = hash_stream(seed + bit * 131 + 5)
+        coord = EDGE_COORD[edge]
+        for t in range(TILE):
+            rim = 2 + rand(2)
+            for d in range(rim):  # 台面边：外列最亮，往里收到 mid（台面的厚度）
+                canvas.set(*coord(t, d),
+                           pal["light"] if d == 0 else (pal["mid"] if d == 1 else pal["dark"]))
+            for d in range(rim, rim + 3):
+                canvas.set(*coord(t, d), pal["deep"])  # 立面：看不进去的那一圈
+            if rand(8) == 0:
+                canvas.set(*coord(t, rim + 1), ctx["utility"]["gold"])  # 侧面的铜包角
+            if rand(5) == 0:
+                canvas.set(*coord(t, rim + 3), pal["dark"])
+
+
+# ---------------------------------------------------------------------------
 # 配方表与单瓦装配
 # ---------------------------------------------------------------------------
 #
@@ -1550,6 +1911,20 @@ FORGE_EDGES = {"grass": _edge_soil, "dirt": _edge_soil, "stone": _edge_stone,
                "wall": paint_forge_wall_edges, "roof": paint_forge_hearth_edges,
                "water": paint_forge_trough_edges}
 
+# 药庐的 1/2 号（木地板、药渣）与另五张同一口径复用通用件：软面压硬面在屋里就是"碎屑压在
+# 暴露边上"。3 号（门厅青砖）走 `paint_herb_brick_edges`——结构还是通用件那条犬牙带，只把
+# 垫层从 kind 2 那一族换成木地板的暗档，因为这张图的 kind 2 是药渣不是碎石（"砖缝里长出一圈
+# 绿"是要防的事）。4/5/6 号（木隔断、席垫、药柜台）走自家画法——墙顶收的是屋内侧的压顶木与
+# 踢脚板、席子边要先露出被它压住的那层地板、柜台的沿是台面的边，通用件里没有这三样的份。
+# 反过来 5 号（跨图 roof 位）这里**不能**复用 `_base_roof`：席垫是铺在地表的一张，不是瓦垄。
+HERB_BASE = {"grass": paint_herb_plank, "dirt": paint_herb_dregs,
+             "stone": paint_herb_brick, "wall": paint_herb_partition,
+             "roof": paint_herb_mat, "water": paint_herb_counter}
+
+HERB_EDGES = {"grass": _edge_soil, "dirt": _edge_soil, "stone": paint_herb_brick_edges,
+              "wall": paint_herb_partition_edges, "roof": paint_herb_mat_edges,
+              "water": paint_herb_counter_edges}
+
 SCENE_RECIPES = {
     "manor": (MANOR_BASE, MANOR_EDGES),
     "village": (VILLAGE_BASE, VILLAGE_EDGES),
@@ -1557,6 +1932,7 @@ SCENE_RECIPES = {
     "combat_arena": (ARENA_BASE, ARENA_EDGES),
     "cold_spring_cave": (CAVE_BASE, CAVE_EDGES),
     "interior_forge": (FORGE_BASE, FORGE_EDGES),
+    "interior_herb": (HERB_BASE, HERB_EDGES),
 }
 
 
