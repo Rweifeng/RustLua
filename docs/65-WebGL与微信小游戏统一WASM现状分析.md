@@ -664,6 +664,17 @@ host: canvas_surface: ... webgl2 not available
 > （清屏色留边条，此处是期望值）、中心 `[58,72,104,255]` 是场景内容。逐条读数与复现见
 > `tasks/plan/M73-00` 的任务#20 一节与 CHANGELOG 同批条目。
 
+> **2026-10-13 接管+scene 的输入归属（任务#21，模拟器）**：#20 在账的那句"接管形态今天拿不到输入"被 run16 否证——
+> `web-runtime.js` 是输入注入的唯一所有者，接管+scene 每帧照样把 `RLFI` 送进 wasm 的 `LATEST_FRAME`，宿主 scene
+> 档消费它；本笔给这条通道补了现场读数（`engine_host_state().scene_input` = 本帧消费的 `frame/axis/cursor/held/press/mouse`）。
+> 合成事件从**适配层触摸/键盘桥之上**注入（包住 `wx.onTouch*/onKey*` 抓 handler 再调用），实测键盘按下→`axis=1.00,held=1`、
+> 跨帧仍 `held=1`、松开→归零，触摸按下→`mouse=1`、cursor 落**设计坐标**且与 #20 那套 contain 矩形反算**逐值互逆**
+> （328,447 与 889,201 两点全等）。分工钉清：`input_frames` 数的是宿主帧入口被调用次数，`input_applied=0` 只说明
+> "没随调用附带批量"，**不等于没有输入**。逐条读数与量具自纠（采样必须等指纹前进，定长 sleep 会采到陈旧帧）见
+> `tasks/plan/M73-00` 的任务#21 一节。没接的线：接管形态还没有浏览器宿主那种只读世界查询（`rustlua-world-expr`），
+> 所以本笔证到"进到宿主消费的那一帧"，没证"世界位移"。
+
+
 
 
 前提是微信真机 GPU 探针成功。应把 `gpu_host.rs` 中的平台无关部分抽成共享核心，而不是继续复制：

@@ -88,6 +88,15 @@ struct EngineHost {
     last_note: String,
     /// scene 档最近一帧的场景读数（进 `engine_host_state` 的 `scene` 块；clear 档恒为空串）。
     last_scene: String,
+    /// scene 档**本帧真正消费到的**那份输入的指纹（`latest_frame_input()` 的读数）。
+    ///
+    /// 注入者不是宿主：`web-runtime.js` 是输入注入的唯一所有者（它每帧采样、打包成 `RLFI`、
+    /// 经 `lua_input_frame` 落进 Lua 常驻表并把解码结果缓存进 `LATEST_FRAME`），宿主只是从这里取。
+    /// 为什么这条必须有读数：`engine_host_frame_into` 那两个计数器说的是**另一条通道**——
+    /// `input_frames` 记"这个入口被调了几次"（接管形态 ≈ 帧数），`input_applied` 只记"随调用附带的
+    /// 批量解码成功了几次"，而适配层在接管形态恒传 `undefined`（批量已经由 `lua_input_frame` 走掉）
+    /// ⇒ `input_applied` 恒为 0。拿它判"接管形态有没有输入"会把"这条旁路没走"读成"没有输入"。
+    scene_input_note: String,
 }
 
 /// GPU 侧的两条互斥形态。
@@ -411,6 +420,7 @@ async fn begin_inner(
             last_input_note: String::new(),
             last_note: String::new(),
             last_scene: String::new(),
+            scene_input_note: String::new(),
         });
     });
     Ok(summary.to_string())
@@ -596,6 +606,18 @@ fn frame_core(dt_ms: f64, input: JsValue) -> Result<[f64; HOST_FRAME_LEN], JsVal
                 // `LATEST_FRAME`（按住集合是权威，本帧没批量 = 状态不变）。核心内部
                 // 已含 present 与显式 poll（与 clear 档同一口径）。
                 let input = crate::lua_bridge::latest_frame_input();
+                // 本帧消费的指纹（判"输入到底进没进宿主"的唯一现场证据，见字段注释）。
+                host.scene_input_note = format!(
+                    "frame={} axis={:.2},{:.2} cursor={:.0},{:.0} held={} press={} mouse={}",
+                    input.frame,
+                    input.axis[0],
+                    input.axis[1],
+                    input.cursor[0],
+                    input.cursor[1],
+                    input.keys_held.count_ones(),
+                    input.keys_pressed.count_ones(),
+                    input.mouse_held.count_ones(),
+                );
                 match core.frame(plan.steps, plan.delta_seconds, &input) {
                     Ok(out) => {
                         // 读数只进 `engine_host_state` 的 `scene` 块：**定长 ABI 的 16 槽不许动**
@@ -763,6 +785,7 @@ pub fn engine_host_state() -> Result<String, JsValue> {
             "canvas": host.canvas_note,
             "fit": host.fit_note,
             "input_note": host.last_input_note,
+            "scene_input": host.scene_input_note,
             "note": host.last_note,
             "pixel_sample": host.last_pixel_sample,
             "mode": mode,
