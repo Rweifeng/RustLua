@@ -22,7 +22,7 @@
   var g = typeof globalThis !== 'undefined' ? globalThis : this;
   // 版本号会打进日志和 __RUSTLUA_DIAG()：开发者工具会缓存代码包，
   // "有没有报错" 分不清旧包新包，只有版本号能分清（实测踩过）。
-  var ADAPTER_VERSION = '0.7.7+visible-takeover';
+  var ADAPTER_VERSION = '0.7.11+bytes-reader';
   var wx = g.wx;
   if (!wx) {
     throw new Error('wechat-adapter: 未找到全局 wx —— 本文件只能在微信小游戏运行时中加载');
@@ -1545,6 +1545,9 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   var engineProbe = { status: 'off', reason: '', reports: [], source: '' };
   var engineProbePromise = null;
   var engineHostRef = null;
+  // `attachWasmBridge` 里定义的微信同步读取器（`/project/…` → `pack/…`）。scene 档要在
+  // begin **之前**用它预装 vfs reader provider（见 engineHostStart 里的注释），所以提到模块级。
+  var wechatReadFileRef = null;
 
   function engineProbeEnabled() {
     try { if (globalThis.__RUSTLUA_GPU_PROBE === true) return true; } catch (error) { /* 无全局对象 */ }
@@ -1705,6 +1708,22 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     return false;
   }
 
+  // 字符串形态的宿主开关（scene 档路径/路由名用）：全局优先、存储兜底，空串 = 没开。
+  // 与其它开关同款读取顺序，只是值类型是字符串（布尔开关的 `=== true` 判定在这里不适用）。
+  function engineHostSwitchString(globalName, storageKey) {
+    try {
+      var value = globalThis[globalName];
+      if (typeof value === 'string' && value.length > 0) return value;
+    } catch (error) { /* 无全局对象 */ }
+    try {
+      if (typeof wx.getStorageSync === 'function') {
+        var stored = wx.getStorageSync(storageKey);
+        if (typeof stored === 'string' && stored.length > 0) return stored;
+      }
+    } catch (error) { /* 存储不可用不影响结论 */ }
+    return '';
+  }
+
   // 「谁在推进世界」的**唯一**标记：运行时（`web-runtime.js`）每帧读它。
   // 宿主起不来/降级时必须由这里清掉 —— 否则"宿主死了"会表现成"世界冻住"（脚本还在画，
   // 但 update 再也不跑），而这类"画面正常、逻辑不动"的故障最难查。
@@ -1766,7 +1785,11 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       return engineHostPromise;
     }
     var tickWanted = engineHostTickEnabled();
-    var options = JSON.stringify({
+    // scene 档开关（P1 共享核心，验收 harness 用）：给一个包内相对 .scene 路径，宿主就走
+    // 与浏览器**同一条**渲染链（Renderer + RustScene 真场景），而不是 clear-color 形态。
+    // 与 `tick=lua` 互斥（wasm 侧 begin 会具名拒绝），所以这里不关心开关组合、只管透传。
+    // 默认空串 = 不写 options.scene ⇒ 生产形态读数与 P0-①/接管两批完全可比。
+    var optionsObj = {
       updates_per_second: 60,
       max_catch_up_steps: 8,
       max_frame_seconds: 0.25,
@@ -1779,7 +1802,28 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       // 而不是只有 status=running（口径见 host_runtime.rs 的 preserveDrawingBuffer 注释——
       // 唯一可信窗口是 present 后同任务的引擎侧 readPixels，JS 事后 toDataURL 只会截到空白）。
       pixel_sample: engineVisibleTakeover
-    });
+    };
+    var scenePath = engineHostSwitchString('__RUSTLUA_ENGINE_HOST_SCENE', 'rustlua_engine_host_scene');
+    if (scenePath) {
+      optionsObj.scene = scenePath;
+      var simRoute = engineHostSwitchString('__RUSTLUA_ENGINE_HOST_SIM', 'rustlua_engine_host_sim');
+      if (simRoute) optionsObj.sim = simRoute;
+      log('wechat-adapter: 引擎宿主将以 scene 档启动 scene=' + scenePath + (simRoute ? ' sim=' + simRoute : ''));
+    }
+    var options = JSON.stringify(optionsObj);
+    // scene 档**预装 reader provider**（实测根因）：begin 里 `RustScene::boot` 会调
+    // `install_resource_provider`（= 预加载表 provider，微信侧表恒空），vfs 槽是一次性的——
+    // 它先占了槽，运行时随后 `lua_boot` 装 reader 时"沿用现有"，main.lua 必炸
+    // `vfs: resource not found: /project/scripts/main.lua` ⇒ boot=failed、rAF 链死。
+    // 先用真 reader 装槽：RustScene 的读取落到真字节，运行时再 boot 沿用同一 provider。
+    if (scenePath && typeof host.lua_boot_with_reader === 'function' && wechatReadFileRef) {
+      try {
+        host.lua_boot_with_reader(wechatReadFileRef);
+        log('wechat-adapter: scene 档已预装 reader provider（vfs 槽归适配层读取器）');
+      } catch (error) {
+        warn('wechat-adapter: scene 档预装 reader provider 失败 -> ' + hostError(error));
+      }
+    }
     if (tickWanted) {
       log('wechat-adapter: 引擎宿主将接管固定步（tick=lua）——运行时会因此停掉自己的固定步；'
         + '若宿主起不来，这个标记会被清掉（世界不会冻住）');
@@ -1806,6 +1850,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         // 定长 ABI 的布局由 wasm 给（`engine_host_frame_layout_json`）：偏移只有这一份来源，
         // 适配层不再自己维护字段表——两边各写一份就是"字段错位但都看着正常"的老路。
         return engineHostFrameAbi();
+      })
+      .then(function () {
+        // 帧 ABI 到位后才有"能出帧"的前提；scene 档从这里自带泵，其余形态照旧走 afterFrame。
+        if (scenePath && engineHost.status === 'running') startEngineHostScenePump();
       })
       .catch(function (error) {
         engineHost.status = 'failed';
@@ -1848,6 +1896,25 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     engineHost.abi = String(layout.abi || '');
     engineHost.abiVersion = Number(layout.version) || 0;
     return engineHost;
+  }
+
+  // scene 档的**自泵**标记。为什么 scene 档必须自带帧泵：`afterFrame` 挂在运行时（web-runtime.js）
+  // 的 rAF 回调上，而 scene 档的语义是"引擎宿主自己起场景、跑自己的模拟"——它是画面与世界的
+  // 所有者，出帧不该依赖被它接管的那一方（实测：scene 档 begin 成功、mode=scene、rust(boot ok)，
+  // 但运行时 boot=failed、rAF 链死 ⇒ presented 恒 0）。setTimeout 形态与 preBootUi 那条同理由
+  // （2696 行注释：不借 wx.requestAnimationFrame，那条队列是运行时的）。
+  var engineHostScenePump = false;
+
+  function startEngineHostScenePump() {
+    if (engineHostScenePump) return;
+    engineHostScenePump = true;
+    log('wechat-adapter: 引擎宿主 scene 档自泵启动（帧驱动不再依赖运行时 rAF）');
+    var tick = function () {
+      if (engineHost.status !== 'running') { engineHostScenePump = false; return; }
+      engineHostDriveFrame();
+      setTimeout(tick, 16);
+    };
+    setTimeout(tick, 16);
   }
 
   // 每帧驱动宿主。**任何异常都必须降级成 failed 并停帧**：这是诊断通道，不许把游戏主循环掀翻。
@@ -2318,6 +2385,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         // 两条必须一起看——`visible_takeover=true` 而 `two_d_redirect=off` 意味着 2d 先于
         // 开关绑上了主画布（harness 置开关的时机错了），那时宿主拿不到 webgl2。
         visible_takeover: engineHost.visibleTakeover,
+        scene_pump: engineHostScenePump,
         two_d_redirect: {
           status: twoDRedirect.status,
           source: twoDRedirect.source || 'none',
@@ -2614,7 +2682,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     frameCount += 1;
     // 引擎宿主每帧驱动。**必须在下面的提前 return 之前**：那段"没什么要画就 return"是
     // 覆盖层/警示条的逻辑，与宿主出帧无关（宿主关了就是空操作）。
-    if (engineHost.status === 'running') engineHostDriveFrame();
+    if (engineHost.status === 'running' && !engineHostScenePump) engineHostDriveFrame();
     // 需要改写 Image.src 却改不动时，每帧重申 failed：`data-rustlua-boot` 的权威读者是**宿主 body**
     // （见 bootAttr 的取值顺序），运行时会在启动过程中往同一个元素写 running，
     // 只在标记那一刻写一次会被后写的盖掉（实测：写完仍读到 boot=running）。
@@ -4093,8 +4161,14 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       function wechatReadFile(path) {
         var rel = String(path).replace(/^\/project\//, '');
         if (rel.indexOf('pack/') !== 0) rel = 'pack/' + rel;
-        return readText(rel);
+        // 按**字节**返回（0.7.11）：utf8 字符串通道会把 TTF/PNG 的非法序列静默换成
+        // U+FFFD（实测：贴图 0/14 全失败 + 字体 InvalidFont，而 .lua 文本毫发无损）。
+        // wasm 侧 provider 认 ArrayBuffer/Uint8Array，字符串只作旧通道回落。
+        var bytes = readBytes(rel);
+        if (bytes) return bytes;
+        return readText(rel, true);
       }
+      wechatReadFileRef = wechatReadFile;
       window.__RUSTLUA_LUA_BRIDGE = {
         lua_boot: function () { return result.host.lua_boot_with_reader(wechatReadFile); },
         lua_do_string: result.host.lua_do_string,

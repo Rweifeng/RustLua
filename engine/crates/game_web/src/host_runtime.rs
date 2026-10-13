@@ -24,10 +24,13 @@
 //!
 //! ## Scope of this slice
 //!
-//! Begin/end, the fixed-step clock, per-frame clear + present, and a JSON state readout. The
-//! simulation tick itself is still driven by the existing Lua bridge (`lua_fixed_frame`); wiring
-//! the engine's own scene host into this loop is the next slice, and the input batch (`RLFI`) is
-//! carried through untouched but not yet decoded here (counted, so the pipe is visible).
+//! Begin/end, the fixed-step clock, per-frame clear + present, and a JSON state readout.
+//! With `options.scene` set the frame goes through the **shared engine core**
+//! (`crate::engine_core::EngineCore` — the same renderer + `RustScene` chain the browser host
+//! uses), so the WeChat host can draw the real project scene instead of a clear color. Without
+//! it the host stays the verified clear-color/pixel-sample shape (P0-① / takeover batches).
+//! The input batch (`RLFI`) is carried through untouched but not decoded here against the
+//! scene's Lua world — it still lands in `LATEST_FRAME`, which is what the core reads.
 //!
 //! The GPU half only exists in the `gpu2d` build (`package.ps1 -Gpu2d`): the default kernel has no
 //! `wgpu` at all, and therefore no `engine_host_*` exports.
@@ -37,15 +40,14 @@ use std::cell::RefCell;
 use rustlua_infra::frame_clock::{FRAME_INTERVAL_TOLERANCE_SECONDS, FrameClock};
 use wasm_bindgen::prelude::*;
 
+use crate::rust_scene::SimRoute;
+
 /// Everything one engine host owns. Single-threaded by construction (wasm), so it lives in a
 /// thread-local instead of being handed back to JS as an opaque pointer.
 struct EngineHost {
-    /// Kept alive so the surface/adapter remain valid for the whole host lifetime.
-    _instance: wgpu::Instance,
-    surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
+    /// GPU 侧二选一：**clear-color 栈**（P0-①/接管形态，既有现场）或**共享核心**（`scene` 档，
+    /// 真场景形态）。一张画布只会有一个 surface——两条分支绝不同时存在。
+    gpu: HostGpu,
     clock: FrameClock,
     /// 固定步频率。**步长按 f64 现算**（`1.0 / ups`）而不是用 `FrameClock` 的 f32 步长：
     /// JS 侧喂给 Lua 的是 `1/60` 的 double，f32 取整会给出 0.016666668，两者不是同一个数。
@@ -57,8 +59,12 @@ struct EngineHost {
     tick_steps_total: u64,
     /// 固定步执行失败次数（失败原因沿 `host: tick: …` 抛出，同时也计数）。
     tick_failures: u64,
+    /// clear 档的清屏色；scene 档由渲染器自己管清屏，这里不生效。
     clear: wgpu::Color,
     canvas_note: String,
+    /// 后备缓冲尺寸（begin 时定；`engine_host_state` 与像素回读都读这里，不再摸 config）。
+    width: u32,
+    height: u32,
     /// `pixel_sample` 开关（任务 #13 方案 A）：present 后同任务回读几个像素。
     /// 为什么必须是**引擎侧 readPixels**而不是 JS 的 `toDataURL`：wgpu-hal 27 建上下文只设
     /// `antialias:false`（`gles/web.rs:103`），`preserveDrawingBuffer` 保持默认 false ⇒
@@ -77,6 +83,24 @@ struct EngineHost {
     input_applied: u64,
     last_input_note: String,
     last_note: String,
+    /// scene 档最近一帧的场景读数（进 `engine_host_state` 的 `scene` 块；clear 档恒为空串）。
+    last_scene: String,
+}
+
+/// GPU 侧的两条互斥形态。
+enum HostGpu {
+    /// clear-color 栈（P0-①/接管验收的既有形态）：每帧只清屏 + present。字段与抽取前同源
+    /// （`config` 不存：configure 之后没人读它，尺寸读数在 `EngineHost.width/height`）。
+    Clear {
+        /// 保活：surface/adapter 的生命周期挂在它上面。
+        _instance: wgpu::Instance,
+        surface: wgpu::Surface<'static>,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+    },
+    /// 真场景形态（P1 共享核心）：与浏览器宿主同一条渲染链
+    /// （`Renderer` + `RustScene` step/mesh/贴图/取景/render/present）。
+    Scene(crate::engine_core::EngineCore),
 }
 
 thread_local! {
@@ -101,7 +125,9 @@ fn report_line(report: &js_sys::Function, line: &str) {
 ///
 /// `options_json` may be empty or `{}`; recognised keys and defaults:
 /// `updates_per_second` (60), `max_catch_up_steps` (8), `max_frame_seconds` (0.25),
-/// `clear` (`[0.06, 0.07, 0.09, 1]`), `canvas_width` / `canvas_height` (read from the canvas).
+/// `clear` (`[0.06, 0.07, 0.09, 1]`), `canvas_width` / `canvas_height` (read from the canvas),
+/// `pixel_sample` (false), `tick` (`"none"`|`"lua"`), `scene`（缺省 = clear-color 形态；给出
+/// 场景相对路径则切进共享核心真场景形态）与 `sim`（路线名，缺省 `script`，只在给了 `scene` 时有意义）。
 ///
 /// Returns a JSON summary. Failures reject with a `host: <stage>: <detail>` string and are also
 /// pushed through `report`.
@@ -193,55 +219,112 @@ async fn begin_inner(
         ));
     }
 
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-        // wasm 上必须显式 GL：默认在 wasm 只有 webgpu（与 `gpu_host` / 探针同一口径）。
-        backends: wgpu::Backends::GL,
-        ..Default::default()
-    });
-    let surface = engine::host::web_surface::canvas_surface(&instance, &gpu_canvas)
-        .map_err(|error| host_error("canvas_surface", error))?;
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-        })
-        .await
-        .map_err(|error| host_error("request_adapter", error))?;
-    let info = adapter.get_info();
-    let capabilities = surface.get_capabilities(&adapter);
-    let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-    if !capabilities.formats.contains(&format) {
+    // `scene` 档（P1 共享核心）：给了就走与浏览器宿主**同一条**渲染链（Renderer + RustScene，
+    // 阶段自报走 `report` 同一条通道）；没给就保持 clear-color 形态（P0-①/接管两批的既有现场，
+    // 那条路径的建栈代码逐字不动，验收读数才有可比性）。
+    let scene_spec = option_scene(&options)?;
+    // scene 档与 `tick:"lua"` **互斥**：scene 模式下 `EngineCore::frame` 自己就按 plan.steps
+    // 推进模拟（与浏览器宿主同序），宿主再跑一遍 `lua_fixed_run_steps` 就是把世界推进两次。
+    if scene_spec.is_some() && tick_lua {
         return Err(host_error(
-            "surface-format",
-            format!("不提供 {format:?}（给的是 {:?}）", capabilities.formats),
+            "options",
+            "tick=\"lua\" 不能与 scene 同时给：scene 档的固定步由共享核心的帧链推进",
         ));
     }
-    let limits = wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
-    let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor {
-            label: Some("rustlua-engine-host-device"),
-            required_features: wgpu::Features::empty(),
-            experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            required_limits: limits,
-            memory_hints: wgpu::MemoryHints::Performance,
-            trace: wgpu::Trace::Off,
-        })
-        .await
-        .map_err(|error| host_error("request_device", error))?;
-    let config = wgpu::SurfaceConfiguration {
-        // 只要 RENDER_ATTACHMENT（理由同 `gpu_host`：画布纹理当不了 copy 源，申请 COPY_SRC
-        // 会让 wgpu 在未捕获的校验错误上 panic，wasm 直接 abort）。
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format,
-        width,
-        height,
-        present_mode: wgpu::PresentMode::Fifo,
-        desired_maximum_frame_latency: 2,
-        alpha_mode: capabilities.alpha_modes[0],
-        view_formats: vec![],
+    let (gpu, adapter_display, backend_display, format_display, mode_display) = match scene_spec {
+        Some((scene_path, route)) => {
+            let report_for_core = report.clone();
+            let core = crate::engine_core::EngineCore::build(crate::engine_core::CoreArgs {
+                canvas: &gpu_canvas,
+                width,
+                height,
+                scene_path: &scene_path,
+                route,
+                route_note: String::new(),
+                device_label: "rustlua-engine-host-scene-device",
+                report: Box::new(move |line: &str| {
+                    report_line(&report_for_core, line);
+                }),
+            })
+            .await
+            .map_err(|error| host_error("engine-core", error))?;
+            let (adapter_display, backend_display, format_display) = {
+                let (adapter, backend, format) = core.stack_info();
+                (adapter.to_owned(), backend.to_owned(), format)
+            };
+            (
+                HostGpu::Scene(core),
+                adapter_display,
+                backend_display,
+                format_display,
+                format!("scene({scene_path})"),
+            )
+        }
+        None => {
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                // wasm 上必须显式 GL：默认在 wasm 只有 webgpu（与 `gpu_host` / 探针同一口径）。
+                backends: wgpu::Backends::GL,
+                ..Default::default()
+            });
+            let surface = engine::host::web_surface::canvas_surface(&instance, &gpu_canvas)
+                .map_err(|error| host_error("canvas_surface", error))?;
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: Some(&surface),
+                    force_fallback_adapter: false,
+                })
+                .await
+                .map_err(|error| host_error("request_adapter", error))?;
+            let info = adapter.get_info();
+            let capabilities = surface.get_capabilities(&adapter);
+            let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+            if !capabilities.formats.contains(&format) {
+                return Err(host_error(
+                    "surface-format",
+                    format!("不提供 {format:?}（给的是 {:?}）", capabilities.formats),
+                ));
+            }
+            let limits =
+                wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
+            let (device, queue) = adapter
+                .request_device(&wgpu::DeviceDescriptor {
+                    label: Some("rustlua-engine-host-device"),
+                    required_features: wgpu::Features::empty(),
+                    experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                    required_limits: limits,
+                    memory_hints: wgpu::MemoryHints::Performance,
+                    trace: wgpu::Trace::Off,
+                })
+                .await
+                .map_err(|error| host_error("request_device", error))?;
+            let config = wgpu::SurfaceConfiguration {
+                // 只要 RENDER_ATTACHMENT（理由同 `gpu_host`：画布纹理当不了 copy 源，申请 COPY_SRC
+                // 会让 wgpu 在未捕获的校验错误上 panic，wasm 直接 abort）。
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format,
+                width,
+                height,
+                present_mode: wgpu::PresentMode::Fifo,
+                desired_maximum_frame_latency: 2,
+                alpha_mode: capabilities.alpha_modes[0],
+                view_formats: vec![],
+            };
+            surface.configure(&device, &config);
+            (
+                HostGpu::Clear {
+                    _instance: instance,
+                    surface,
+                    device,
+                    queue,
+                },
+                info.name,
+                format!("{:?}", info.backend),
+                format!("{format:?}"),
+                "clear".to_owned(),
+            )
+        }
     };
-    surface.configure(&device, &config);
 
     // 回读开启时拿 wgpu-hal 在 create_surface 时就建好的**同一个** WebGL2 上下文：
     // WebGL 规范保证同一 canvas 上二次 `getContext('webgl2')` 返回已存在的那个，
@@ -266,9 +349,10 @@ async fn begin_inner(
     let summary = serde_json::json!({
         "ok": true,
         "canvas": canvas_note,
-        "format": format!("{format:?}"),
-        "adapter": info.name,
-        "backend": format!("{:?}", info.backend),
+        "format": format_display,
+        "adapter": adapter_display,
+        "backend": backend_display,
+        "mode": mode_display,
         "updates_per_second": updates_per_second,
         "max_catch_up_steps": max_catch_up_steps,
         "max_frame_seconds": max_frame_seconds,
@@ -285,19 +369,13 @@ async fn begin_inner(
     report_line(
         report,
         &format!(
-            "host: 已就绪 canvas={canvas_note} fmt={format:?} adapter={} backend={:?} tick={}",
-            info.name,
-            info.backend,
+            "host: 已就绪 canvas={canvas_note} fmt={format_display} adapter={adapter_display} backend={backend_display} tick={}",
             if tick_lua { "lua" } else { "none" }
         ),
     );
     HOST.with(|slot| {
         *slot.borrow_mut() = Some(EngineHost {
-            _instance: instance,
-            surface,
-            device,
-            queue,
-            config,
+            gpu,
             clock,
             updates_per_second,
             tick_lua,
@@ -305,6 +383,8 @@ async fn begin_inner(
             tick_failures: 0,
             clear,
             canvas_note,
+            width,
+            height,
             pixel_sample,
             gl,
             last_pixel_sample: String::new(),
@@ -315,6 +395,7 @@ async fn begin_inner(
             input_applied: 0,
             last_input_note: String::new(),
             last_note: String::new(),
+            last_scene: String::new(),
         });
     });
     Ok(summary.to_string())
@@ -419,46 +500,89 @@ fn frame_core(dt_ms: f64, input: JsValue) -> Result<[f64; HOST_FRAME_LEN], JsVal
                 }
             }
         }
-        let frame = match host.surface.get_current_texture() {
-            Ok(frame) => frame,
-            Err(error) => {
-                host.failed_presents += 1;
-                return Err(host_error("present", error));
+        match &mut host.gpu {
+            HostGpu::Clear {
+                surface,
+                device,
+                queue,
+                ..
+            } => {
+                let frame = match surface.get_current_texture() {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        host.failed_presents += 1;
+                        return Err(host_error("present", error));
+                    }
+                };
+                let view = frame
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+                let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("rustlua-engine-host-frame"),
+                });
+                {
+                    let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("rustlua-engine-host-clear"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            depth_slice: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(host.clear),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                }
+                queue.submit(Some(encoder.finish()));
+                frame.present();
+                // WebGL2 没有阻塞能力：显式 poll 一次，让这一帧的校验错误在这里暴露，而不是变成下一帧的谜题。
+                let _ = device.poll(wgpu::PollType::Poll);
             }
-        };
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = host
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("rustlua-engine-host-frame"),
-            });
-        {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("rustlua-engine-host-clear"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(host.clear),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
+            HostGpu::Scene(core) => {
+                // 场景输入与浏览器宿主**同一个回读口**：`lua_input_frame` 把批量落进
+                // `LATEST_FRAME`（按住集合是权威，本帧没批量 = 状态不变）。核心内部
+                // 已含 present 与显式 poll（与 clear 档同一口径）。
+                let input = crate::lua_bridge::latest_frame_input();
+                match core.frame(plan.steps, plan.delta_seconds, &input) {
+                    Ok(out) => {
+                        // 读数只进 `engine_host_state` 的 `scene` 块：**定长 ABI 的 16 槽不许动**
+                        // （版本没变就是契约没变，这是那套槽位存在的全部理由）。
+                        if let Some(reason) = core.pending_step_failure.take() {
+                            host.last_scene = format!("scene_step_failed:{reason}");
+                        } else if out.builtin {
+                            host.last_scene = format!("builtin {}", core.sim_note);
+                        } else {
+                            // `out.scene_note` 是场景自报（名字/实体数/来源）——**必须进读数**：
+                            // 引擎 loader 失败时会静默换内置诊断场景，只报 `rust(boot ok)`
+                            // 会把"起了个假场景"说成"起了真场景"。
+                            host.last_scene = format!(
+                                "{} {} draws={} tris={} scene_delta={:+},{:+},{:+}",
+                                core.sim_note,
+                                out.scene_note,
+                                out.draw_calls,
+                                out.triangles,
+                                out.scene_delta[0],
+                                out.scene_delta[1],
+                                out.scene_delta[2]
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        if error.starts_with("get_current_texture") {
+                            host.failed_presents += 1;
+                        }
+                        return Err(host_error("scene-frame", error));
+                    }
+                }
+            }
         }
-        host.queue.submit(Some(encoder.finish()));
-        frame.present();
-        // WebGL2 没有阻塞能力：显式 poll 一次，让这一帧的校验错误在这里暴露，而不是变成下一帧的谜题。
-        let _ = host.device.poll(wgpu::PollType::Poll);
         host.presented_frames += 1;
         if host.pixel_sample {
-            host.last_pixel_sample =
-                read_pixel_sample(host.gl.as_ref(), host.config.width, host.config.height);
+            host.last_pixel_sample = read_pixel_sample(host.gl.as_ref(), host.width, host.height);
         }
         host.last_note = if plan.clamped {
             format!("clamped({:.3}s)", plan.elapsed_seconds)
@@ -550,6 +674,26 @@ pub fn engine_host_state() -> Result<String, JsValue> {
         let host = borrow.as_ref().ok_or_else(|| {
             host_error("not-begun", "先调 engine_host_begin（画布与设备由它建立）")
         })?;
+        // scene 档的读数**只进 JSON 状态**（定长 ABI 的 16 槽不动）：`last` 是每帧拼好的
+        // 场景读数，`sim`/`textures` 是核心自己的账（与浏览器状态属性同一批字段名同源）。
+        let (mode, scene_block) = match &host.gpu {
+            HostGpu::Clear { .. } => ("clear", serde_json::Value::Null),
+            HostGpu::Scene(core) => (
+                "scene",
+                serde_json::json!({
+                    "sim": core.sim_note,
+                    "textures": format!(
+                        "{}/{}",
+                        core.texture_stats.0,
+                        core.texture_stats.0 + core.texture_stats.1
+                    ),
+                    "texture_note": core.texture_note,
+                    "boot_ms": core.boot_ms,
+                    "first_frame_ms": core.first_frame_ms.is_finite().then_some(core.first_frame_ms),
+                    "last": host.last_scene,
+                }),
+            ),
+        };
         let state = serde_json::json!({
             "abi": HOST_FRAME_ABI,
             "version": HOST_FRAME_ABI_VERSION,
@@ -571,7 +715,9 @@ pub fn engine_host_state() -> Result<String, JsValue> {
             "input_note": host.last_input_note,
             "note": host.last_note,
             "pixel_sample": host.last_pixel_sample,
-            "size": format!("{}x{}", host.config.width, host.config.height),
+            "mode": mode,
+            "scene": scene_block,
+            "size": format!("{}x{}", host.width, host.height),
             // docs/65 P0-⑥：随时可采的线性内存读数（与 begin summary 同一口径）。
             "wasm_mem_bytes": crate::wasm_memory_bytes(),
         });
@@ -632,6 +778,48 @@ fn read_pixel_sample(
         }
     }
     parts.join(" ")
+}
+
+/// `scene` / `sim` 选项（P1 共享核心切片）：给了 `scene`（非空字符串 = 启动场景的工程相对路径）
+/// 就把本宿主切进真场景形态；`sim` 是模拟路线名（与浏览器 `rustlua-sim` 同源，缺省 `script`）。
+///
+/// 只给 `sim` 不给 `scene` ⇒ **具名拒绝**而不是静默忽略："说了走哪条路线却没走成"是意图落空，
+/// 与"某个键按了没反应"同族，宁可在这里响亮失败。
+fn option_scene(options: &serde_json::Value) -> Result<Option<(String, SimRoute)>, JsValue> {
+    let route_name = match options.get("sim") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(text)) => Some(text.clone()),
+        Some(other) => {
+            return Err(host_error(
+                "options",
+                format!("sim 只接受字符串（路线名），给的是 {other}"),
+            ));
+        }
+    };
+    let scene_path = match options.get("scene") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(text)) if !text.trim().is_empty() => Some(text.clone()),
+        Some(serde_json::Value::String(_)) => {
+            return Err(host_error("options", "scene 不能是空字符串"));
+        }
+        Some(other) => {
+            return Err(host_error(
+                "options",
+                format!("scene 只接受非空字符串（场景资源路径），给的是 {other}"),
+            ));
+        }
+    };
+    match (scene_path, route_name) {
+        (Some(path), name) => Ok(Some((
+            path,
+            SimRoute::from_name(&name.unwrap_or_else(|| "script".to_owned())),
+        ))),
+        (None, Some(name)) => Err(host_error(
+            "options",
+            format!("给了 sim={name} 却没给 scene：clear-color 形态没有模拟可走"),
+        )),
+        (None, None) => Ok(None),
+    }
 }
 
 fn option_u32(options: &serde_json::Value, key: &str, fallback: u32) -> Result<u32, JsValue> {

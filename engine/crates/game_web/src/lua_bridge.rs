@@ -292,11 +292,19 @@ pub fn resource_png(path: &str) -> Option<Vec<u8>> {
 /// `Scene::from_packed_bytes` / `Scene::load` 内部自己就会 `pack::decode`
 /// （发布包里场景是压缩/加密的）。在这里先解一次会让场景被解两遍，得到"读到了文件但解析出来是垃圾"。
 pub fn resource_raw(path: &str) -> Option<Vec<u8>> {
-    LUA_RESOURCES.with(|slot| {
-        let borrowed = slot.borrow();
-        let resources = borrowed.as_ref()?;
-        resources.get(path).cloned()
-    })
+    let from_table = LUA_RESOURCES.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .and_then(|resources| resources.get(path).cloned())
+    });
+    if from_table.is_some() {
+        return from_table;
+    }
+    // 表里没有 → 走**已装的 vfs provider**：微信侧预加载表恒为空（资源由适配层同步读取器
+    // 提供，`lua_boot_with_reader` 装的就是它），这条回落是那边唯一的取字节通道。
+    // 浏览器侧 provider 就是表本身，回落查一次仍是"没有"，行为不变（P1 共享核心切片）。
+    let full = std::path::Path::new(super::VIRTUAL_PROJECT_ROOT).join(path);
+    rustlua_infra::vfs::read(&full).ok()
 }
 
 /// 资源表里有没有这一项（**只看表，不碰文件系统**）。
@@ -424,6 +432,16 @@ fn provider_from_reader(read_file: js_sys::Function) -> Box<ResourceProvider> {
         let value = read_file
             .call1(&JsValue::NULL, &JsValue::from_str(&key))
             .ok()?;
+        // 字节通道（适配层 0.7.11 起返回 ArrayBuffer/Uint8Array）：**必须按字节取**。
+        // 旧的 utf8 字符串通道会把二进制（TTF/PNG）静默换成 U+FFFD——实测症状是
+        // 字体 `InvalidFont` + 贴图 0/14 全失败，而文本文件毫发无损（最难查的那类通道）。
+        if let Some(buffer) = value.dyn_ref::<js_sys::ArrayBuffer>() {
+            return Some(js_sys::Uint8Array::new(buffer).to_vec());
+        }
+        if let Some(bytes) = value.dyn_ref::<js_sys::Uint8Array>() {
+            return Some(bytes.to_vec());
+        }
+        // 字符串回落：旧适配层/纯文本宿主。UTF-8 语义对文本文件仍然成立。
         value.as_string().map(|s| s.into_bytes())
     })
 }

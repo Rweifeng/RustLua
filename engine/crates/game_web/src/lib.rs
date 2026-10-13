@@ -30,6 +30,12 @@ mod rust_scene;
 #[cfg(all(target_arch = "wasm32", feature = "gpu2d"))]
 mod host_runtime;
 
+/// P1 共享核心：画布 → device → Renderer → `RustScene` → present 的整条渲染链。
+/// `gpu_host`（浏览器外壳）与 `host_runtime`（引擎宿主外壳）共用这一条路；
+/// 只在 `gpu2d` 档存在（内含 `wgpu`）。
+#[cfg(all(target_arch = "wasm32", feature = "gpu2d"))]
+mod engine_core;
+
 /// 平台音频出口：wasm 上没有可读文件系统也没有音频设备，播放交给浏览器/微信的
 /// "用 URL 播放"通道（浏览器 `HTMLAudioElement`、微信 `InnerAudioContext`）。
 #[cfg(target_arch = "wasm32")]

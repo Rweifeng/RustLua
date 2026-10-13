@@ -7,13 +7,20 @@
 //! 在浏览器里从未被宿主用过。WP5 前四片把这条路的每个前提单独验通了（能建、能按期望值画对、
 //! 内存贴图能交进来、能渲进画布纹理并 present），本片把它们**接起来**。
 //!
+//! ## P1 第一片之后：这一层只剩"外壳"
+//!
+//! GPU 栈搭建、渲染器、场景 boot、每帧 step/mesh/贴图/取景/render/present 全部搬进
+//! [`crate::engine_core::EngineCore`]（与微信引擎宿主 `host_runtime` 共用的那份核心）。
+//! 本文件保留的是**只有浏览器才有的东西**：rAF、`fit_now` 两层几何对齐、DOM 输入采集、
+//! URL 开关、`data-rustlua-gpu` 状态属性。抽取是行为等价的：读数文案与帧序逐字沿用。
+//!
 //! ## 为什么是 Rust 侧的 URL 开关
 //!
 //! 默认路径（Canvas2D）一行都不动：GPU 路径只在 `?rustlua-gpu=1` 时才建，建成与否写进
 //! `document.body` 的 `data-rustlua-gpu`，供门（`scripts/verify-webgl-bundle.ps1 -Gpu2d`）
 //! 与人工排查读。放在 Rust 侧而不是页面脚本里，是为了**不碰** `plugins/webgl/` 下的既有改动。
 //!
-//! ## 已实测钉住的平台事实（WP5 第四片，本片直接沿用）
+//! ## 已实测钉住的平台事实（WP5 第四片，核心沿用同一口径）
 //!
 //! - WebGL2 画布提供的格式里就有 `Rgba8UnormSrgb`——**正是**渲染器构造时烘死的那个，
 //!   所以不需要为 web 做格式参数化；不提供时必须**响亮失败**，不能往不匹配的 surface 上渲。
@@ -24,8 +31,7 @@
 use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::*;
 
-use engine::host::{OverlayVertex, RenderOutcome, Renderer, SceneDraw, SceneMesh};
-use rustlua_infra::frame_clock::{FrameClock, FramePlan};
+use rustlua_infra::frame_clock::FrameClock;
 
 use crate::rust_scene::SimRoute;
 
@@ -114,16 +120,6 @@ fn url_value(search: &str, prefix: &str) -> Option<String> {
     Some(decoded)
 }
 
-/// 内存里造一张 2×2 四色棋盘。资源里找不到可用贴图时的兜底，也是"贴图路径真的被采样到了"的判据：
-/// 四色里**没有白**，所以最后那格若不是对应颜色，只可能是白兜底。
-const CHECKER: [[u8; 4]; 4] = [
-    [255, 0, 0, 255],
-    [0, 255, 0, 255],
-    [0, 0, 255, 255],
-    [255, 255, 0, 255],
-];
-const CHECKER_KEY: &str = "web://checker2x2";
-
 type SharedInput = std::rc::Rc<std::cell::RefCell<InputShared>>;
 
 struct LifecycleEvents {
@@ -197,60 +193,23 @@ impl Drop for LifecycleEvents {
     }
 }
 
-/// GPU 宿主：surface + device/queue + 渲染器。
+/// GPU 宿主**外壳**：渲染链在 [`crate::engine_core::EngineCore`] 里，这里只剩浏览器项
+/// （rAF 时钟、两层几何、DOM 输入、世界读数探针）。
 struct GpuHost {
-    surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    renderer: Renderer,
-    /// surface 配置（改尺寸时只改宽高再 `configure`，其余字段原样保留——重建配置最容易
-    /// 悄悄换掉 `alpha_mode`/`present_mode`）。
-    surface_config: wgpu::SurfaceConfiguration,
+    core: crate::engine_core::EngineCore,
     lifecycle: LifecycleEvents,
     /// 本层画布（GPU 那张）与**游戏画布**（Canvas2D 那张）。后者只用来读窗口尺寸：
     /// `web-runtime.js` 会把游戏画布的后备缓冲跟到窗口（含 DPR），本层必须与它同框。
     canvas: web_sys::HtmlCanvasElement,
     game_canvas: web_sys::HtmlCanvasElement,
-    width: u32,
-    height: u32,
     simulation_clock: FrameClock,
     last_animation_frame_ms: Option<f64>,
     /// 最近一次适配读数（进 `note`，无头驱动据此断言两层同框）。
     fit_note: String,
     /// 最近一次写进画布 style 的几何（只在变化时写 DOM，避免每帧刷样式）。
     fit_css: String,
-    /// 贴图注册用的键。**必须与内建场景写进 `paths[0]` 的是同一个字符串**，
-    /// 否则渲染器查不到这张贴图、静默退回白兜底——画面"看着正常"，只是那块贴图永远不对。
-    texture_key: String,
-    /// 贴图来源（写进状态属性，便于一眼分辨"用的是真资源还是兜底棋盘"）。
-    texture_note: String,
-    /// Rust 侧运行时场景。`None` = 起不来（`sim_note` 里就是原因），画面退回内建场景。
-    sim: Option<crate::rust_scene::RustScene>,
+    /// 外壳拼出来的场景读数（`rust {stats} scene_delta=…`；降级时回落到核心的 `sim_note`）。
     sim_note: String,
-    /// 已经交给渲染器的贴图路径（避免每帧重复解码/上传）。
-    uploaded: std::collections::HashSet<String>,
-    /// `(已上传, 失败)` 计数，写进状态属性。
-    texture_stats: (usize, usize),
-    /// 贴图只在**第一帧**对齐一次：本片不处理运行期换图（流式重传是后续内容）。
-    textures_ensured: bool,
-    /// 第一帧专用：阶段自报只在第一帧写（诊断卡死用，不污染每帧路径）。
-    first_frame_done: bool,
-    /// 推进失败只报一次事件（读数里的 `step_errors` 每帧都在，事件是给无头驱动看的）。
-    step_failure_reported: bool,
-    /// 启动（场景 + 工程脚本装载）耗时，毫秒。**必须活到最后一帧**：阶段属性会被后续
-    /// `set_status` 覆盖，只有进 `note` 才留得下来。
-    boot_ms: f64,
-    /// **首帧**耗时，毫秒：首步（工程脚本 + `ui.measure_text` 首次读/解析字体）**加上**首次取网格
-    /// （首次文本图集 = 解码 + 建图集 + 预热，以及首次绘制管线/贴图上传）。
-    /// 两段合在一起报，是因为它们发生在同一次 `next_mesh()` 里；拆开反而会让人把图集成本
-    /// 算到逻辑步头上。
-    first_frame_ms: f64,
-    /// 稳态每帧三分：逻辑（`step`）、取网格（`mesh`）、渲染+呈现（`render_into_texture`+`present`）。
-    /// **首帧不计入**：那一帧含一次性建图集/建管线，混进来会把三个均值一起抬高，
-    /// 而"稳态跑多快"问的正是后面的帧。
-    sum_step_ms: f64,
-    sum_mesh_ms: f64,
-    sum_render_ms: f64,
-    timed_frames: u64,
     /// **Rust 侧自己的输入生产者**（WP6-04）。此前这一层只有消费者：JS 世界采集事件、编码成
     /// `RLFI`、经 `lua_input_frame` 写进常驻表，宿主再读出来——于是"没有 JS 世界就没有输入"。
     /// 有了它，Rust 那条路自己就能被玩家操作（退休清单第一项的落地）。
@@ -273,8 +232,6 @@ struct GpuHost {
     /// 输入剧本的解析结果说明（空 = 没给剧本）。**解析失败必须可见**——
     /// 静默丢掉一段剧本，现象就是"按了没反应"，正是本片要消灭的那类失败。
     input_script_note: String,
-    /// 稳态第一帧的场景输出计数（draw/顶点/路径），用于 `scene_delta=` 读数。
-    mesh_baseline: Option<[usize; 3]>,
     /// URL `rustlua-world-expr=<Lua>`：随状态属性一起报出来的**只读**工程状态查询。
     ///
     /// 为什么需要它：`scene_delta=` 这类输出差值证明不了"是哪个逻辑动了"——待机动画也会让它动
@@ -417,16 +374,6 @@ fn apply_script_truncation() -> Option<String> {
     ))
 }
 
-/// 状态属性里的短名：事后从 dump 读到时，不需要回头查映射表。
-fn route_label(route: SimRoute) -> &'static str {
-    match route {
-        SimRoute::SceneOnly => "scene-only",
-        SimRoute::EngineStartup => "engine-startup",
-        SimRoute::SceneWithScript => "scene-script",
-        SimRoute::SceneScriptNoRoot => "scene-script-noroot",
-    }
-}
-
 fn canvas_size(canvas: &web_sys::HtmlCanvasElement) -> (u32, u32) {
     let width = canvas.width();
     let height = canvas.height();
@@ -443,7 +390,8 @@ fn contain_box(box_w: u32, box_h: u32) -> (u32, u32) {
 }
 
 impl GpuHost {
-    /// 建整套 GPU 栈。任何一步失败都要能说出**是哪一步**（wasm 上 panic 不给回溯）。
+    /// 建核心（GPU 栈 + 渲染器 + 场景，全在 [`crate::engine_core::EngineCore`]）+ 外壳自己的
+    /// 时钟与读数。任何一步失败都要能说出**是哪一步**（wasm 上 panic 不给回溯）。
     async fn new(
         canvas: &web_sys::HtmlCanvasElement,
         game_canvas: &web_sys::HtmlCanvasElement,
@@ -468,105 +416,27 @@ impl GpuHost {
                 }
             },
         };
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            // WP2 硬约束 1：wasm 上必须显式 `Backends::GL`（默认在 wasm 上只有 webgpu）。
-            backends: wgpu::Backends::GL,
-            ..Default::default()
-        });
-        // 引擎里那**唯一**一份"从画布建 surface"的实现（web_surface 模块注释解释了这个
-        // 不得已而为之的 unsafe 通路：wgpu 27 的 `create_surface(canvas)` 在本版本用不了）。
-        let surface =
-            engine::host::web_surface::canvas_surface(&instance, &JsValue::from(canvas.clone()))?;
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .map_err(|error| format!("request_adapter: {error}"))?;
-        let capabilities = surface.get_capabilities(&adapter);
-        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        if !capabilities.formats.contains(&format) {
-            // 渲染器的颜色附件格式是构造时烘死的；不匹配就**不要**渲，把话写清楚。
-            return Err(format!(
-                "画布不提供 {format:?}（给的是 {:?}）；渲染器的目标格式尚未参数化",
-                capabilities.formats
-            ));
-        }
-        // WP2 硬约束 2：起点用 WebGL2 一定接受的地板，再把分辨率上限抬到适配器实际值。
-        let limits = wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits());
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("rustlua-web-gpu-device"),
-                required_features: wgpu::Features::empty(),
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                required_limits: limits,
-                memory_hints: wgpu::MemoryHints::Performance,
-                trace: wgpu::Trace::Off,
-            })
-            .await
-            .map_err(|error| format!("request_device: {error}"))?;
-        let surface_config = wgpu::SurfaceConfiguration {
-            // 只要 RENDER_ATTACHMENT：画布纹理当不了 copy 源，申请 COPY_SRC 会让 wgpu
-            // 在未捕获的校验错误上 panic（wasm 直接 abort，见模块注释）。
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            width,
-            height,
-            present_mode: wgpu::PresentMode::Fifo,
-            desired_maximum_frame_latency: 2,
-            alpha_mode: capabilities.alpha_modes[0],
-            view_formats: vec![],
-        };
-        surface.configure(&device, &surface_config);
-        let mut renderer = Renderer::new_offscreen_async(
-            device.clone(),
-            queue.clone(),
-            // 不挂项目根：本片只画手工场景，不解析任何文件路径。
-            None,
-            false,
-            false,
-        )
-        .await
-        .map_err(|error| format!("Renderer::new_offscreen_async: {error:#}"))?;
-        let (texture_key, texture_note) = prepare_texture(&mut renderer)?;
-        // Rust 侧运行时场景：**失败不致命**，原因原样带进状态属性，画面退回内建场景。
-        // 本片要问的正是"它在 wasm 上到底跑不跑得起来"，所以这里只记录、不重试、不吞掉原因。
-        //
-        // 阶段自报（`sim_boot_begin` → …）：这一步要跑整个工程的 Lua 脚本，在 wasm 上是
-        // 整页唯一的同步长任务——**万一它卡住，页面就卡在 `initializing`，什么线索都没有**。
-        // 所以每过一个阶段就把属性改写一次：事后从 dump 里读到最后落定的那个阶段，
-        // 就知道该去看哪一段（与 `gpu-web-probe` 的 `set_stage` 同一套做法）。
-        set_status("sim_boot_begin");
         let route = sim_route();
         let truncation = apply_script_truncation();
-        set_status(&format!(
-            "sim_boot_route={} {}",
-            route_label(route),
-            truncation.clone().unwrap_or_default()
-        ));
-        // 启动耗时（wasm 上唯一的长同步任务）：`Instant::now()` 在这里是 panic 路径，
-        // 所以用与引擎同一颗 `web_time`。读数进状态属性，事后从 dump 里就能读。
-        let boot_started = web_time::Instant::now();
-        let (sim, sim_note) =
-            match crate::rust_scene::RustScene::boot(width, height, route, scene_path) {
-                Ok(scene) => {
-                    set_status("sim_boot_ok");
-                    (Some(scene), "rust(boot ok)".to_owned())
-                }
-                Err(error) => {
-                    web_sys::console::warn_1(&JsValue::from_str(&format!(
-                        "[gpu] RustScene::boot failed: {error}; builtin scene will be used"
-                    )));
-                    set_status(&format!("sim_boot_failed:{error}"));
-                    (None, format!("rust-failed:{error}"))
-                }
-            };
-        let boot_ms = boot_started.elapsed().as_secs_f64() * 1000.0;
+        // 阶段自报走 `set_status`（`data-rustlua-gpu` 属性 + 控制台行）：文案与抽取前逐字相同，
+        // 无头驱动的门断言不需要改。
+        let core = crate::engine_core::EngineCore::build(crate::engine_core::CoreArgs {
+            canvas: &JsValue::from(canvas.clone()),
+            width,
+            height,
+            scene_path,
+            route,
+            route_note: truncation.unwrap_or_default(),
+            device_label: "rustlua-web-gpu-device",
+            report: Box::new(|state| set_status(state)),
+        })
+        .await?;
+        // 启动耗时是一条独立的控制台行：状态属性会被后续读数覆盖，事后从 dump 里读不到就没了。
         web_sys::console::log_1(&JsValue::from_str(&format!(
-            "[gpu] sim_boot_ms={boot_ms:.1} note={sim_note}"
+            "[gpu] sim_boot_ms={:.1} note={}",
+            core.boot_ms, core.sim_note
         )));
+        let sim_note = core.sim_note.clone();
         let simulation_clock = FrameClock::new(
             SIM_UPDATES_PER_SECOND,
             SIM_MAX_CATCH_UP_STEPS,
@@ -574,41 +444,21 @@ impl GpuHost {
         )
         .map_err(|error| format!("FrameClock::new: {error}"))?;
         Ok(Self {
-            surface,
-            device,
-            renderer,
-            surface_config,
+            core,
             lifecycle,
             canvas: canvas.clone(),
             game_canvas: game_canvas.clone(),
-            width,
-            height,
             simulation_clock,
             last_animation_frame_ms: None,
             fit_note: String::new(),
             fit_css: String::new(),
-            texture_key,
-            texture_note,
-            sim,
             sim_note,
-            uploaded: std::collections::HashSet::new(),
-            texture_stats: (0, 0),
-            textures_ensured: false,
-            first_frame_done: false,
-            step_failure_reported: false,
-            boot_ms,
-            first_frame_ms: f64::NAN,
-            sum_step_ms: 0.0,
-            sum_mesh_ms: 0.0,
-            sum_render_ms: 0.0,
-            timed_frames: 0,
             input_shared: None,
             frame_input: rustlua_frame_abi::FrameInput::new(),
             dom_events: 0,
             input_closures: Vec::new(),
             input_script: crate::frame_input::ScriptDriver::new(input_script),
             input_script_note,
-            mesh_baseline: None,
             world_expr: world_expr_spec(),
             world_expr_note: String::new(),
             world_do: world_do_spec(),
@@ -723,7 +573,7 @@ impl GpuHost {
     ///
     /// 包一层而不是让调用方直接摸 sim：读数属于**观测**，观测不该出现在热路径上。
     fn refresh_world_readout(&mut self) {
-        let Some(sim) = self.sim.as_mut() else {
+        let Some(sim) = self.core.sim_mut() else {
             return;
         };
         // 顺序：先动作、再读数。这样同一帧的属性里，"做完之后世界是什么样"是自洽的
@@ -755,17 +605,13 @@ impl GpuHost {
     fn fit_now(&mut self) {
         let (box_w, box_h) = canvas_size(&self.game_canvas);
         let (fit_w, fit_h) = contain_box(box_w, box_h);
-        if (fit_w, fit_h) != (self.width, self.height) {
+        if (fit_w, fit_h) != (self.core.width(), self.core.height()) {
             // 后备缓冲尺寸变了：画布属性 → surface 重新配置 → 渲染视口。三者必须同一帧改完，
             // 否则会出现"按旧尺寸渲、往新尺寸显"的一帧（Windows 上是闪烁，wasm 上是拉伸）。
             self.canvas.set_width(fit_w);
             self.canvas.set_height(fit_h);
-            self.surface_config.width = fit_w;
-            self.surface_config.height = fit_h;
-            self.surface.configure(&self.device, &self.surface_config);
-            self.width = fit_w;
-            self.height = fit_h;
-            if let Some(sim) = self.sim.as_mut() {
+            self.core.resize(fit_w, fit_h);
+            if let Some(sim) = self.core.sim_mut() {
                 // Keep scene extraction in design coordinates; the surface/backbuffer size is
                 // only the raster target. Passing the fitted pixel size here scales Canvas UI twice.
                 sim.set_viewport(crate::DESIGN_WIDTH, crate::DESIGN_HEIGHT);
@@ -808,21 +654,19 @@ impl GpuHost {
         }
     }
 
-    /// 选出本帧要渲的网格：优先 Rust 侧运行时场景，失败就退回内建场景（原因留在 `sim_note`）。
-    fn next_mesh(&mut self, plan: FramePlan) -> SceneMesh {
-        if !self.first_frame_done {
-            set_status("mesh_begin");
-        }
-        // 借出再调：模拟要独占借用，先取出结果、再决定用哪条分支。
-        // **先推进模拟（含工程脚本），再取网格**——与桌面运行器同序。反过来会永远画上一帧的世界，
-        // 而现在模拟已经吃真实输入了，差一帧就是"操作慢半拍"。
-        //
-        // 推进失败**不拆模拟**：原因由 `RustScene` 记成读数（`step_errors` / `last_step_error`），
-        // 这里只把"第一次失败"发一次事件，方便无头驱动直接看到首因，不必等 30 帧后的心跳。
-        let mut step_failed = false;
-        // 首帧单独计时：它是"工程脚本第一次真正跑起来"的那一帧，里面含 `ui.measure_text`
-        // 的**首次**字体读取与首次文本图集，是启动耗时里最不可预测的一段。
-        let first_frame = !self.first_frame_done;
+    /// 渲一帧到画布纹理并 present：本帧输入在这里采好（DOM 采集 ∪ JS 世界 `RLFI`），
+    /// 渲染链本身在 [`crate::engine_core::EngineCore::frame`]；返回渲染器自报的 draw 计数
+    /// 与拼好的状态属性文案（抽取前后逐字相同）。
+    fn frame(&mut self, timestamp_ms: f64) -> Result<(u64, u64, String), String> {
+        let elapsed_seconds = self
+            .last_animation_frame_ms
+            .replace(timestamp_ms)
+            .map(|previous| (timestamp_ms - previous).max(0.0) / 1000.0)
+            .unwrap_or(1.0 / f64::from(SIM_UPDATES_PER_SECOND));
+        let plan = self.simulation_clock.plan(elapsed_seconds);
+        // 先对齐几何（窗口/DPR 变了就在这里改画布 + surface + 视口），再取画布纹理：
+        // 反过来就会用旧尺寸的纹理去渲新尺寸的内容。
+        self.fit_now();
         // 输入：本帧 = **Rust 侧 DOM 采集**（WP6-04，没有 JS 世界也能操作）**并上** JS 世界送来的
         // `RLFI`（它那里有屏幕虚拟摇杆的轴与补丁层的虚拟键）。两路都是合法来源，丢掉任何一边
         // 都会让某一种操作方式失灵，且症状（"摇杆没反应"）离原因很远。
@@ -844,212 +688,35 @@ impl GpuHost {
         }
         let wire = crate::lua_bridge::latest_frame_input();
         crate::frame_input::merge_into(&mut self.frame_input, &wire, js_cursor_wins);
-        // 稳态三分：逻辑与取网格分开计时。两者在同一个闭包里发生，所以用两个局部变量带出来。
-        let mut step_ms = 0.0f64;
-        let mut mesh_ms = 0.0f64;
-        let step_started = web_time::Instant::now();
-        let frame = self.frame_input;
-        let attempt = self.sim.as_mut().map(|sim| -> Result<SceneMesh, String> {
-            step_failed = sim.step(plan.steps, plan.delta_seconds, &frame).is_err();
-            step_ms = step_started.elapsed().as_secs_f64() * 1000.0;
-            let mesh_started = web_time::Instant::now();
-            let mesh = sim.mesh();
-            mesh_ms = mesh_started.elapsed().as_secs_f64() * 1000.0;
-            mesh
-        });
-        if first_frame {
-            self.first_frame_ms = step_started.elapsed().as_secs_f64() * 1000.0;
-            // 首帧耗时与启动耗时是**两个不同的瓶颈**（前者=工程脚本 + 首次字体读取 + 首次网格/图集，
-            // 后者=场景/脚本装载），所以分开报，并且各留一条控制台行（属性会被后面覆盖）。
-            // 首帧再拆 step/mesh 两段并带线性内存读数（docs/65 P0：字体图集在 mesh 趟里，
-            // 这一步的内存增量要能单独指认，而不是混进 300MB 峰值里猜）。
-            web_sys::console::log_1(&JsValue::from_str(&format!(
-                "[gpu] sim_boot_ms={:.1} first_frame_ms={:.1} first_frame_step_ms={step_ms:.1} first_frame_mesh_ms={mesh_ms:.1} mem_after_first_mesh={}",
-                self.boot_ms,
-                self.first_frame_ms,
-                crate::wasm_memory_bytes(),
-            )));
-        }
-        if step_failed && !self.step_failure_reported {
-            self.step_failure_reported = true;
-            let reason = self
-                .sim
-                .as_ref()
-                .and_then(|sim| sim.last_step_error())
-                .unwrap_or("unknown")
-                .to_string();
+        let input = self.frame_input;
+        let out = self.core.frame(plan.steps, plan.delta_seconds, &input)?;
+        // 推进失败**不拆模拟**（核心里只记原因、下次还试）：外壳把"第一次失败"发一次事件，
+        // 方便无头驱动直接看到首因，不必等 30 帧后的心跳。
+        if let Some(reason) = self.core.pending_step_failure.take() {
             set_status(&format!("sim_step_failed:{reason}"));
         }
-        let mesh = match attempt {
-            Some(Ok(mesh)) => {
-                if !self.textures_ensured {
-                    self.textures_ensured = true;
-                    set_status("textures_begin");
-                    self.ensure_textures(&mesh.paths);
-                    set_status(&format!(
-                        "textures_done={}/{}",
-                        self.texture_stats.0,
-                        self.texture_stats.0 + self.texture_stats.1
-                    ));
-                }
-                let views = self.sim.as_ref().map(|sim| sim.frame_views());
-                if let Some(views) = views {
-                    // 2D 取景由**场景自己的相机**给出（与桌面运行器同源）：不清屏/视口两套说法。
-                    self.renderer.set_frame_views(views);
-                }
-                // 世界 Sprite 的深度通道：与桌面运行器同一处调用（场景说没有就保持渲染器默认）。
-                let camera = self.sim.as_ref().and_then(|sim| sim.world_sprite_camera());
-                if let Some(camera) = camera {
-                    self.renderer.set_world_sprite_camera(camera);
-                }
-                let stats = self.sim.as_ref().map(|sim| sim.note(&mesh));
-                if let Some(stats) = stats {
-                    // 场景输出基线：稳态第一帧记下 draw/顶点/路径三项，之后每帧报**差值**。
-                    //
-                    // 为什么是差值：绝对值说不出"这一帧和开局一样不一样"。UI 面板打开、交互结果、
-                    // 地图切换都会让这三项跳，而差值能让驱动用一个正则就断言"输入确实改变了场景输出"
-                    // （跨进程比对用不了：两次运行的绝对计数会被字体图集预热顺序影响）。
-                    // 基线取稳态第一帧（`first_frame` 那一帧含一次性建图集/建管线，它的网格不是稳态）。
-                    let counts = [mesh.draws.len(), mesh.vertices.len(), mesh.paths.len()];
-                    let delta = match self.mesh_baseline {
-                        Some(base) => [
-                            counts[0] as i64 - base[0] as i64,
-                            counts[1] as i64 - base[1] as i64,
-                            counts[2] as i64 - base[2] as i64,
-                        ],
-                        None => {
-                            if !first_frame {
-                                self.mesh_baseline = Some(counts);
-                            }
-                            [0, 0, 0]
-                        }
-                    };
-                    self.sim_note = format!(
-                        "rust {stats} scene_delta={:+},{:+},{:+}{}{} {}",
-                        delta[0],
-                        delta[1],
-                        delta[2],
-                        self.world_do_note,
-                        self.world_expr_note,
-                        crate::audio_sink::note()
-                    );
-                }
-                mesh
-            }
-            Some(Err(error)) => {
-                // 起得来、取不出：把它降级成"内建场景"，但**保留原因**（这一片就是来收集原因的）。
-                self.sim = None;
-                self.sim_note = format!("rust-failed:{error}");
-                scene_mesh(&self.texture_key)
-            }
-            None => scene_mesh(&self.texture_key),
-        };
-        if !first_frame {
-            self.sum_step_ms += step_ms;
-            self.sum_mesh_ms += mesh_ms;
+        if out.builtin {
+            // 降级/起不来：原因就在核心的 `sim_note`（`rust-failed:{原因}`），照原样带出去。
+            self.sim_note = self.core.sim_note.clone();
+        } else {
+            self.sim_note = format!(
+                "rust {} scene_delta={:+},{:+},{:+}{}{} {}",
+                out.scene_note,
+                out.scene_delta[0],
+                out.scene_delta[1],
+                out.scene_delta[2],
+                self.world_do_note,
+                self.world_expr_note,
+                crate::audio_sink::note()
+            );
         }
-        mesh
-    }
-
-    /// 把本帧网格引用的贴图从预加载资源表交进渲染器。
-    ///
-    /// 跳过两个**不是路径**的保留项：白纹理（渲染器就地造）与内建字模图集（保留纹理）。
-    /// 这两条最早写在 JS 的 `web-runtime.js` 里（`WHITE_TEXTURE_PATH` 那段注释），
-    /// 现在 Rust 侧也要认同一套语义，否则纯色块实体每帧都会去读一个不存在的文件。
-    fn ensure_textures(&mut self, paths: &[String]) {
-        // PNG 解码前后各一次读数（docs/65 P0 阶段遥测）：这一批是首帧之后最大的一次
-        // 突发性分配（每张图 解码 RGBA + GPU 上传），要能和字体图集的账分开。
-        let decode_started = web_time::Instant::now();
-        let mem_before = crate::wasm_memory_bytes();
-        let mut loaded = 0usize;
-        let mut failed = 0usize;
-        let mut png_bytes = 0usize;
-        for path in paths {
-            if path == engine::host::frame::WHITE_TEXTURE_PATH
-                || path == engine::host::frame::ATLAS_TEXTURE_PATH
-            {
-                continue;
-            }
-            if !self.uploaded.insert(path.clone()) {
-                loaded += 1;
-                continue;
-            }
-            match crate::lua_bridge::resource_png(path) {
-                Some(bytes) => {
-                    png_bytes += bytes.len();
-                    match self.renderer.upload_texture_png(path, &bytes) {
-                        Ok(_) => loaded += 1,
-                        Err(error) => {
-                            failed += 1;
-                            web_sys::console::warn_1(&JsValue::from_str(&format!(
-                                "[gpu] upload_texture_png({path}) failed: {error}"
-                            )));
-                        }
-                    }
-                }
-                None => {
-                    failed += 1;
-                    // 资源表里没有这张图：**不静默**——它意味着这一帧的贴图会退回白兜底。
-                    web_sys::console::warn_1(&JsValue::from_str(&format!(
-                        "[gpu] 资源表没有贴图 {path}（该四边形会退回白兜底）"
-                    )));
-                }
-            }
-        }
-        self.texture_stats = (loaded, failed);
-        web_sys::console::log_1(&JsValue::from_str(&format!(
-            "[gpu] textures_decoded ok={loaded} fail={failed} png_bytes={png_bytes} decode_ms={:.1} mem_before={mem_before} mem_after={}",
-            decode_started.elapsed().as_secs_f64() * 1000.0,
-            crate::wasm_memory_bytes(),
-        )));
-    }
-
-    /// 渲一帧到画布纹理并 present。返回渲染器自报的 draw 计数，供状态属性带出去。
-    fn frame(&mut self, timestamp_ms: f64) -> Result<(u64, u64, String), String> {
-        let first_frame = !self.first_frame_done;
-        let elapsed_seconds = self
-            .last_animation_frame_ms
-            .replace(timestamp_ms)
-            .map(|previous| (timestamp_ms - previous).max(0.0) / 1000.0)
-            .unwrap_or(1.0 / f64::from(SIM_UPDATES_PER_SECOND));
-        let plan = self.simulation_clock.plan(elapsed_seconds);
-        // 先对齐几何（窗口/DPR 变了就在这里改画布 + surface + 视口），再取画布纹理：
-        // 反过来就会用旧尺寸的纹理去渲新尺寸的内容。
-        self.fit_now();
-        let frame = self
-            .surface
-            .get_current_texture()
-            .map_err(|error| format!("get_current_texture: {error}"))?;
-        let view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mesh = self.next_mesh(plan);
-        // 渲染+呈现：这一段是 GPU 提交侧的成本（含 present 与一次显式 poll）。
-        let render_started = web_time::Instant::now();
-        let outcome =
-            self.renderer
-                .render_into_texture(&mesh, None, &view, self.width, self.height);
-        let metrics = self.renderer.last_frame_metrics();
-        if !matches!(outcome, RenderOutcome::Presented) {
-            // `RenderOutcome` 没有 `Debug`（它的语义靠 `matches!` 读），所以这里给一句人话。
-            return Err("render_into_texture 未返回 Presented".to_owned());
-        }
-        frame.present();
-        // WebGL2 没有阻塞能力，错误域与 fence 都靠 poll 推进；这里显式轮询一次，
-        // 让"这一帧的校验错误"在本函数返回前暴露，而不是变成下一帧的谜题。
-        let _ = self.device.poll(wgpu::PollType::Poll);
-        if !first_frame {
-            self.sum_render_ms += render_started.elapsed().as_secs_f64() * 1000.0;
-            self.timed_frames += 1;
-        }
-        self.first_frame_done = true;
         // 稳态三分（**首帧不计入**：那一帧含一次性建图集/建管线）。三者之和与 `avg_frame_ms`
         // 的差就是宿主自身开销（取画布纹理、每帧让出宏任务等）。
         let per = |sum: f64| {
-            if self.timed_frames == 0 {
+            if self.core.timed_frames == 0 {
                 0.0
             } else {
-                sum / self.timed_frames as f64
+                sum / self.core.timed_frames as f64
             }
         };
         // 输入读数与几何读数同级：`dom_events` 证明事件真的到了 Rust 侧，
@@ -1065,92 +732,22 @@ impl GpuHost {
              avg_step_ms={:.2} avg_mesh_ms={:.2} avg_render_ms={:.2} timed_frames={} \
              dom_events={} input_dropped={}{} {}",
             self.sim_note,
-            self.texture_stats.0,
-            self.texture_stats.0 + self.texture_stats.1,
-            self.texture_note,
-            self.boot_ms,
-            self.first_frame_ms,
-            self.boot_ms + self.first_frame_ms,
-            per(self.sum_step_ms),
-            per(self.sum_mesh_ms),
-            per(self.sum_render_ms),
-            self.timed_frames,
+            self.core.texture_stats.0,
+            self.core.texture_stats.0 + self.core.texture_stats.1,
+            self.core.texture_note,
+            self.core.boot_ms,
+            self.core.first_frame_ms,
+            self.core.boot_ms + self.core.first_frame_ms,
+            per(self.core.sum_step_ms),
+            per(self.core.sum_mesh_ms),
+            per(self.core.sum_render_ms),
+            self.core.timed_frames,
             self.dom_events,
             input_dropped,
             self.input_script_note,
             self.fit_note,
         );
-        Ok((metrics.draw_calls, metrics.triangles, note))
-    }
-}
-
-/// 给场景准备一张贴图，返回 **(注册用的键, 人读的来源说明)**：优先用工程资源里第一张 PNG
-/// （证明"打包资源 → GPU 贴图"这条路在真宿主里也是通的），拿不到就退回内存棋盘
-/// （保证本片自己可验，不依赖某个游戏的内容）。
-///
-/// 键必须**只在这一处决定**：调用方（`scene_mesh`）拿到的是同一个字符串，
-/// 不允许两处各自去挑一次——那样"上传失败退回棋盘"时，场景仍按资源键去查，
-/// 于是静默变成白兜底，而白兜底与"贴图被采样到了"在画面上无法区分。
-fn prepare_texture(renderer: &mut Renderer) -> Result<(String, String), String> {
-    if let Some((path, bytes)) = crate::lua_bridge::first_png_resource() {
-        match renderer.upload_texture_png(&path, &bytes) {
-            Ok(_) => return Ok((path.clone(), format!("resource:{path} ({} B)", bytes.len()))),
-            Err(error) => {
-                web_sys::console::warn_1(&JsValue::from_str(&format!(
-                    "[gpu] upload_texture_png({path}) failed: {error}; falling back to builtin checker"
-                )));
-            }
-        }
-    }
-    renderer
-        .upload_texture_rgba8(CHECKER_KEY, 2, 2, &CHECKER.concat())
-        .map_err(|error| format!("upload_texture_rgba8: {error}"))?;
-    Ok((CHECKER_KEY.to_owned(), format!("builtin:{CHECKER_KEY}")))
-}
-
-/// 手工场景：两块内建白四边形 + 一块**贴图**四边形（用 `texture = 1` 指向 `paths[0]`）。
-///
-/// 贴图那一格四色之一必须出现：白兜底与本片要证的"贴图被采样到了"是两回事，
-/// 所以这一格的颜色是判据，不是装饰。
-fn scene_mesh(texture_key: &str) -> SceneMesh {
-    let rects = [
-        [-0.9f32, -0.3, 0.1, 0.9],
-        [-0.1, 0.7, 0.1, 0.9],
-        [-0.9, -0.1, -0.9, -0.1],
-    ];
-    let mut vertices = Vec::with_capacity(18);
-    let mut draws = Vec::with_capacity(3);
-    for (index, quad) in rects.iter().enumerate() {
-        let [x0, x1, y0, y1] = *quad;
-        let corner = |x: f32, y: f32, u: f32, v: f32| OverlayVertex {
-            position: [x, y],
-            uv: [u, v],
-            color: [1.0, 1.0, 1.0, 1.0],
-            sdf: 0,
-        };
-        let start = vertices.len() as u32;
-        vertices.push(corner(x0, y0, 0.0, 0.0));
-        vertices.push(corner(x1, y0, 1.0, 0.0));
-        vertices.push(corner(x1, y1, 1.0, 1.0));
-        vertices.push(corner(x0, y0, 0.0, 0.0));
-        vertices.push(corner(x1, y1, 1.0, 1.0));
-        vertices.push(corner(x0, y1, 0.0, 1.0));
-        let texture = if index == rects.len() - 1 { 1 } else { 0 };
-        draws.push(SceneDraw::screen_ui(texture, start, 6));
-    }
-    let paths = vec![texture_key.to_owned()];
-    SceneMesh {
-        vertices,
-        draws,
-        world_sprites: Vec::new(),
-        world_sprite_draws: Vec::new(),
-        paths,
-        path_handles: Vec::new(),
-        font_atlas: None,
-        custom_font_atlases: Vec::new(),
-        vector_vertices: Vec::new(),
-        vector_glyphs: Vec::new(),
-        vector_segments: Vec::new(),
+        Ok((out.draw_calls, out.triangles, note))
     }
 }
 
@@ -1242,8 +839,8 @@ async fn run_inner(canvas_id: &str, scene_path: &str) -> Result<String, String> 
     // 起设备是**必须等**的（它决定这条通道能不能用，读数要当场拿到）；帧循环则不该等：
     // 它跑几百帧、每帧让出一个宏任务，同步跑完会把 JS 那条启动链一起摁住几百毫秒。
     // 所以这里把它派到事件循环上，`start()` 立刻继续跑游戏自己的启动。
-    let width = host.width;
-    let height = host.height;
+    let width = host.core.width();
+    let height = host.core.height();
     let opening = format!(
         "frames=0 draw_calls=0 triangles=0 {} canvas=#{GPU_CANVAS_ID} {}x{}",
         host.sim_note, width, height

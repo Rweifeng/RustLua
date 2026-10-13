@@ -67,6 +67,16 @@ impl SimRoute {
             _ => Self::SceneOnly,
         }
     }
+
+    /// 读数里报出的短名（阶段自报与状态属性都用它，两处不必各存一张映射表）。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SceneOnly => "scene-only",
+            Self::EngineStartup => "engine-startup",
+            Self::SceneWithScript => "scene-script",
+            Self::SceneScriptNoRoot => "scene-script-noroot",
+        }
+    }
 }
 
 /// 一个跑在 wasm 里的工程运行时场景。

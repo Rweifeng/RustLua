@@ -606,6 +606,18 @@ host: canvas_surface: ... webgl2 not available
 > 就是"接管的不只是一块纯色屏"的下一片。真机主画布给不给 webgl2 未验（模拟器不外推）；
 > 读数与注入复现步骤见 `tasks/plan/M73-00` 的"可见画面接管"一节与 CHANGELOG 同批条目。
 
+> **2026-10-13 共享核心第一片落地：微信模拟器第一次在离屏画出真场景（浏览器侧同片行为等价）**。
+> 下面"抽成共享核心"那句的改法已做：`gpu_host` 的平台无关渲染链抽进 `game_web/src/engine_core.rs`
+> （新文件），`gpu_host`（浏览器）与 `host_runtime`（微信引擎宿主）两个调用者共用；宿主新增
+> `scene` 档 options，未给 scene 时 clear 分支与 P0-① 形态逐字节同形。实测（模拟器口径）：
+> `verdict=scene-real presented=61 failed=0 sim=rust(boot ok)`，`textures=14/15` 与浏览器基线同形
+> （缺项 `__font_atlas__` 白兜底是分包配额登记的既有决定），`step_errors=0`，boot_ms=1435；
+> 浏览器侧 240 帧门绿。途中钉死并修掉三条宿主侧缺陷：帧泵不再依赖 JS 世界 rAF（scene 档自泵）、
+> vfs 一次性 provider 槽竞态（scene 档 begin 前预装 reader provider）、reader 文本通道损坏二进制
+> （改 ArrayBuffer 字节通道）。**上一块里"本片的画面只有 clear-color"这句到此收窄**：离屏 scene 档
+> 已画真场景；可见接管 + scene 的组合（判据从清屏像素换成场景像素）是下一片，真机仍未验。
+> 逐条读数与复现见 `tasks/plan/M73-00` 的 docs65-P1 第一片一节与 CHANGELOG 同批条目。
+
 前提是微信真机 GPU 探针成功。应把 `gpu_host.rs` 中的平台无关部分抽成共享核心，而不是继续复制：
 
 ```text
