@@ -402,10 +402,22 @@ impl RustScene {
 
     /// 本帧的取景：2D 视图由**场景自己的相机**给出（与桌面运行器同源）。
     /// 3D 主视图这里留空——本片不碰 3D（`scene_3d` 的相机载荷另说）。
+    ///
+    /// 清屏必须在这里显式声明：`overlay_2d` 的语义是"叠在已有内容上"（`ClearPolicy::None`），
+    /// 而 Web 宿主这里**没有任何主视图垫底**——不声明就由整帧负责的这个视图也不清屏，
+    /// 未画区域停在后备缓冲的透明黑上（run8 四角 [0,0,0,0] 的机制；微信接管形态下四角
+    /// 透页面背景）。底色取 `DEFAULT_3D_CLEAR`：与渲染器"没声明主视图"的历史默认色**同值**，
+    /// 因此场景档与内建档（走渲染器默认清屏）从此是同一个基色，画面不随退化切换。
     pub fn frame_views(&self) -> rustlua_camera::camera::FrameViews {
         rustlua_camera::camera::FrameViews {
             main: None,
-            overlay: Some(self.scene.render_view_2d(self.width, self.height)),
+            overlay: Some(
+                self.scene
+                    .render_view_2d(self.width, self.height)
+                    .with_clear(rustlua_camera::camera::ClearPolicy::Color(
+                        rustlua_camera::camera::DEFAULT_3D_CLEAR,
+                    )),
+            ),
         }
     }
 

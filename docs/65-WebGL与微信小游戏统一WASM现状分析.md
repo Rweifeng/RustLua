@@ -625,6 +625,14 @@ host: canvas_surface: ... webgl2 not available
 > sim=rust(boot ok)`；像素判据从"五点=清屏色 [69,75,85,255]"换成含场景内容
 > （中心=[10,13,20,255]、左上=[11,16,29,255]；四角=[0,0,0,0]，清除形态差异登记未归因）。
 > 上一块"真机仍未验"照旧成立；逐条读数见 `tasks/plan/M73-00` 的 P1 第二片一节与 CHANGELOG 同批条目。
+>
+> **2026-10-13 run9 收口四角落**：上面组合块"四角=[0,0,0,0]，清除形态差异登记未归因"已归因并修掉——
+> scene 档**两平台同形地从没显式清屏**（`RustScene::frame_views()` 只声明 overlay 视图，其恒带
+> `ClearPolicy::None` 的"叠在已有内容上"语义 + 没有主视图垫底 ⇒ 渲染计划里连清屏通道都不存在），
+> 修法是给 scene 档唯一视图声明 `ClearPolicy::Color(DEFAULT_3D_CLEAR)`（`game_web/src/rust_scene.rs`
+> 产品码一行）。run9（模拟器）：`verdict=combo-scene-visible presented=69 failed=0`，四角变
+> `[56,75,97,255]`（=清屏色线性→sRGB，不透明），左上仍是场景内容；两侧发布产物已带新核重建、
+> 两平台门同批绿。逐条读数与复现见 `tasks/plan/M73-00` 的任务#17 一节与 CHANGELOG 同批条目。
 
 前提是微信真机 GPU 探针成功。应把 `gpu_host.rs` 中的平台无关部分抽成共享核心，而不是继续复制：
 

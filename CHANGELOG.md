@@ -5,6 +5,33 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 任务#17：scene 档四角 [0,0,0,0] 归因并修复——scene 档从此显式清屏（产品码一行，run9）
+
+- **症状**：run8 组合验收主画布五点回读 `中心=[10,13,20,255] 左上=[11,16,29,255]`，而
+  `右上/左下/右下=[0,0,0,0]`——接管形态下场景没覆盖的角落**整只透明**。
+- **根因（两平台同形，不是微信特有；一段单行声明缺陷）**：`RustScene::frame_views()` 只声明
+  `overlay_2d` 视图（语义恒带 `ClearPolicy::None`——"叠在已有内容上"）且 `main: None`；
+  `FrameViews::clear()` 取最小 order 视图的清屏说法 ⇒ `Some(None)` ⇒ `passes.rs` 把 clear 折成
+  `None` ⇒ `RenderPlan::for_frame` 无后处理且 `facts.clear=false` ⇒ **`RenderPass::Clear` 通道
+  根本不在计划里**，后备缓冲从没被显式清过。浏览器侧从没暴露：老世界垫在 canvas 之下、画布本身
+  透明、没人读四角；微信接管形态第一次让"主画布=可见层"踩上这条。
+- **修复（`engine/crates/game_web/src/rust_scene.rs` 一行声明 + 注释）**：scene 档给这唯一视图
+  `.with_clear(ClearPolicy::Color(DEFAULT_3D_CLEAR))`——没有主视图垫底时由它负责整帧基色；取值为
+  渲染器"没声明主视图"的历史默认色**同值** ⇒ 场景档与内建档（走默认清屏）从此同基色，退化不跳色。
+- **实测（run9，模拟器，同一套注入工具）**：`verdict=combo-scene-visible presented=69 failed=0
+  mode=scene sim=rust(boot ok)`；`pixel_sample="中心=[10,13,20,255] 左上=[11,16,29,255]
+  右上=[56,75,97,255] 左下=[56,75,97,255] 右下=[56,75,97,255]"`——未被场景覆盖的三角落在
+  `[0.04,0.07,0.12]` 线性→sRGB 8bit 的 `[56,75,97]` 且 alpha=255，左上仍是场景内容
+  ⇒ "先清屏、场景叠上"语义正确；五点全部不透明。
+- **门禁**：`verify-wechat-minigame.ps1 -ExpectGpuKernel` EXIT=0（生产口径 `engine_host=off
+  reason=switch-off`、harness 240 帧、`package_ok`）；`verify-webgl-bundle.ps1 -Gpu2d -GpuFrames
+  240` EXIT=0（浏览器同链：`scene=rust`、`textures=14/15`、`step_errors=0`、帧所有者断言未动）；
+  `cargo check -q -p game_web --target wasm32-unknown-unknown --features gpu2d`（1.88+ZIG）
+  exit 0；`cargo fmt --all -- --check` exit 0。两份发布产物（wechat/webgl）已带新核重建。
+- **未测与本笔不碰**：真机照旧不外推；scene 档主画布 `toDataURL` 拿不到（run8 登记的未归因账仍在，
+  本笔不碰）；场景未覆盖区基色要不要做成工程可声明（现随渲染器默认色）；接管后老世界回可见层的
+  回退路径照旧未验。
+
 ## Unreleased — M72-11 §推进顺序 4：寒泉洞上金标管线（第一张室内/地下图），"单一光向在暗场景怎么落"由读数回答而不是开豁免名单
 
 - **症状/动机**：`cold_spring_cave` 的地表是 `assets/art/tilesets/cave/cave_ground.png` 6×1 借用图，
