@@ -738,6 +738,8 @@ pub fn engine_host_end() {
 ///
 /// 每点一次 1x1 回读，依赖的唯一前提是"present 之后、同一 JS 任务之内，默认帧缓冲里就是
 /// 刚呈现的内容"（`preserveDrawingBuffer:false` 清空发生在本任务结束后的合成时点）。
+/// 这条口径在 #19 用字节对拍钉过：同一形态下 JS **事后** `toDataURL` 多数给整幅
+/// `RGBA(0,0,0,0)`（清空后的缓冲），偶尔给到活画面（落在清空之前）⇒ 事后回读是竞态，不能当验收通道。
 /// 失败**写进读数而不是 panic**：这是验收读数通道，不该把帧循环带崩。
 fn read_pixel_sample(
     gl: Option<&web_sys::WebGl2RenderingContext>,

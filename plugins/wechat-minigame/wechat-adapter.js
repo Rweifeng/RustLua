@@ -22,7 +22,7 @@
   var g = typeof globalThis !== 'undefined' ? globalThis : this;
   // 版本号会打进日志和 __RUSTLUA_DIAG()：开发者工具会缓存代码包，
   // "有没有报错" 分不清旧包新包，只有版本号能分清（实测踩过）。
-  var ADAPTER_VERSION = '0.7.11+bytes-reader';
+  var ADAPTER_VERSION = '0.7.12+pixel-sample-switch';
   var wx = g.wx;
   if (!wx) {
     throw new Error('wechat-adapter: 未找到全局 wx —— 本文件只能在微信小游戏运行时中加载');
@@ -1708,6 +1708,28 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     return false;
   }
 
+  // 像素回读的**显式**开关（#19 归因判别用）：默认跟随接管形态（验收要像素证据），
+  // 给 true/false（或存储值 `0`/`off`）才偏离默认。#19 用它分流跑过判别，实测结论已落账：
+  // 事后 `toDataURL` 在接管形态下**不可靠**——同一形态两次冷启动一次给整幅 RGBA(0,0,0,0)、
+  // 一次给到活画面（回读落在合成清空之前/之后的竞态），所以画面归属的证据只认引擎侧
+  // present 后同任务的 readPixels（见 host_runtime.rs `read_pixel_sample` 的口径注释）。
+  // 未置任何值时返回 `null` = 沿用默认，生产与既有验收读数逐字节不变。
+  function engineHostPixelSampleOverride() {
+    try {
+      var value = globalThis.__RUSTLUA_ENGINE_HOST_PIXEL_SAMPLE;
+      if (value === true || value === 1 || value === '1') return true;
+      if (value === false || value === 0 || value === '0' || value === 'off') return false;
+    } catch (error) { /* 无全局对象 */ }
+    try {
+      if (typeof wx.getStorageSync === 'function') {
+        var stored = wx.getStorageSync('rustlua_engine_host_pixel_sample');
+        if (stored === true || stored === 1 || stored === '1') return true;
+        if (stored === false || stored === 0 || stored === '0' || stored === 'off') return false;
+      }
+    } catch (error) { /* 存储不可用不影响结论 */ }
+    return null;
+  }
+
   // 字符串形态的宿主开关（scene 档路径/路由名用）：全局优先、存储兜底，空串 = 没开。
   // 与其它开关同款读取顺序，只是值类型是字符串（布尔开关的 `=== true` 判定在这里不适用）。
   function engineHostSwitchString(globalName, storageKey) {
@@ -1801,7 +1823,11 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       // 接管形态固定开像素回读：验收要"主画布真的被宿主画出来了"的**像素证据**，
       // 而不是只有 status=running（口径见 host_runtime.rs 的 preserveDrawingBuffer 注释——
       // 唯一可信窗口是 present 后同任务的引擎侧 readPixels，JS 事后 toDataURL 只会截到空白）。
-      pixel_sample: engineVisibleTakeover
+      // `__RUSTLUA_ENGINE_HOST_PIXEL_SAMPLE` 显式给值时偏离该默认（#19 归因判别，见上）。
+      pixel_sample: (function () {
+        var override = engineHostPixelSampleOverride();
+        return override === null ? engineVisibleTakeover : override;
+      })()
     };
     var scenePath = engineHostSwitchString('__RUSTLUA_ENGINE_HOST_SCENE', 'rustlua_engine_host_scene');
     if (scenePath) {
