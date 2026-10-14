@@ -6,6 +6,7 @@
     python tools/gen_terrain_tiles.py --scene village   # 出图 village_ground.png + 预览 + 自检
     python tools/gen_terrain_tiles.py                  # 不带 --scene 就是 manor（M72-04 的默认）
     python tools/gen_terrain_tiles.py --scene village --check    # 只校盘上那张 PNG，不重画
+    python tools/gen_terrain_tiles.py --scene village --repro-check    # 判出处：盘上那张是不是这条代码画的（同样不写盘）
     python tools/gen_terrain_tiles.py --layout         # 打印条目表（人读，验收对表用）
 
 产出 `assets/art/tilesets/<scene>/<scene>_ground.png`（384×288 = 12 列 × 9 行 × 32px）。
@@ -19,6 +20,13 @@
 但出图侧各自写 hex（`gen_manor_art.py` 的 `GRASS_LIGHT`、四季变体 `MAPS` 又是第三份），
 于是"色阶表"与"实际用色"从来没有共同来源。本文件与 `--check`、`gen_season_variants.py`、
 Rust 门都读同一张表；表外的颜色算越界，出图后处理报数、生成器直接拒绝落盘。
+
+**`--check` 判合法，`--repro-check` 判出处**：前者管"这张图能不能用"（色阶在表内 / alpha /
+16 个过渡块齐 / 四边收口 / 尾部空槽透明），后者管"这张图是不是这条代码画的"。两条判的是两件
+事，因为一张按别的画法画出来、同样合法的图集在前者那里照样 `[OK]`——图集侧那句"生成器是唯一
+事实源"只有后者说得出（`combat_arena` 那条红就是长期只跑前者留下的，量化读数见
+`tasks/plan/M72-11` §七图收口扫描）。两个开关可以同时给：各自跑完再合并退出码，短路会让合法门
+一红就挡住出处档，而"合法但出处不对"恰好只有两条同时给才看得见。
 
 **图集排布与引擎同构**（运行时解算在 M72-02 定死，条目算术在 `terrain_kit.py`）：
 
@@ -37,6 +45,7 @@ Rust 门都读同一张表；表外的颜色算越界，出图后处理报数、
 """
 
 import argparse
+import hashlib
 import os
 import sys
 
@@ -2106,24 +2115,144 @@ def check(scene="manor", path=None, table=None):
 
 
 # ---------------------------------------------------------------------------
+# 出处对拍：盘上那张到底是不是这条代码路径画的
+# ---------------------------------------------------------------------------
+
+
+def render(scene):
+    """画这张场景的全部产出，返回 `[(标签, 盘上路径, Canvas)]`，顺序就是写盘顺序。
+
+    `generate` 与 `repro_check` **必须**共用这一个入口，这是判据的一部分而不只是省事：
+    对拍若自己另抄一遍出图步骤，它就会和自己要检的东西一起漂，"逐字节相同"于是变成两句
+    各自成立、互相不证的空话——本批在图集侧消灭的"两份真相"正是这个形状。
+    """
+    table = tk.load_ramp(scene)
+    sheet = build_sheet(table, scene)
+    offenders = sheet.quantize()
+    if offenders:
+        raise SystemExit(f"[FAIL] 生成器画出 {offenders} 个表外颜色——hex 只能来自 terrain_ramp.json")
+    return [("tileset", ground_path(scene), sheet.canvas),
+            ("preview", ground_preview_path(scene), build_preview(table, sheet.canvas))]
+
+
+def slots_of_family(table, kind_id):
+    """一个 kind 占的槽位（0 基）：满块档 + 16 个过渡块。"""
+    entries = [tk.entry_base(table, kind_id)]
+    entries += [tk.entry_transition(table, kind_id, mask) for mask in range(tk.AUTOTILE_SLOTS)]
+    return {entry - 1 for entry in entries}
+
+
+def pixel_diff(a, b):
+    """两个同尺寸 Canvas 的不同像素数与落在哪些 32px 格（0 基，行优先）。
+
+    第三个读数返回"两边各有几个 alpha<255 的像素"，用来分辨两种完全不同的情形：盘上那份
+    若是被压平成不透明的（没有 alpha 通道），逐格皆不同说的是**压平**，不是**画法漂**——
+    少了这项，族归属会把六族 + 尾部空槽全报成"整族换画法"，把下一笔指向错的方向。
+    """
+    slots = set()
+    count = 0
+    soft_a = soft_b = 0
+    columns = a.w // TILE
+    for y in range(a.h):
+        for x in range(a.w):
+            pa, pb = a.get(x, y), b.get(x, y)
+            if pa[3] != 255:
+                soft_a += 1
+            if pb[3] != 255:
+                soft_b += 1
+            if pa != pb:
+                count += 1
+                slots.add((y // TILE) * columns + (x // TILE))
+    return count, slots, (soft_a, soft_b)
+
+
+def family_note(table, slots):
+    """把漂的槽归到 kind 族——"整族换了画法"与"个别边被重画"是下一笔要查的两个不同方向。"""
+    parts = []
+    covered = set()
+    for kind in table["kinds"]:
+        kind_id = int(kind["id"])
+        own = slots_of_family(table, kind_id)
+        hit = own & slots
+        if not hit:
+            continue
+        covered |= hit
+        parts.append(f"kind {kind_id} {kind['family']} {len(hit)}/{len(own)} 槽"
+                     + ("（整族）" if hit == own else ""))
+    outside = sorted(slots - covered)
+    if outside:
+        parts.append(f"不属于任何 kind 的槽 {outside}")
+    if not parts:
+        return "漂的槽位读不出归属"
+    return "   漂在哪些族：" + "、".join(parts)
+
+
+def repro_check(scene, quiet=False):
+    """判**出处**：用同一条代码重画到内存，与盘上那张比字节。不写盘。
+
+    与 `--check` 正交：`--check` 判**合法**（色阶在表内 / alpha / 16 个过渡块齐 / 四边收口 /
+    尾部空槽透明），一张按别的画法画出来、同样合法的图它会照样打 `[OK]`——`combat_arena`
+    那条红就是这么漏掉的（盘上那张与生成器那张两侧都 `[OK]`，见 `docs/58` §1.3 的口径更正与
+    `tasks/plan/M72-11` §七图收口扫描）。"生成器是唯一事实源"这句话只有这条对拍说得出。
+
+    判字节而不只判像素：字节不等而像素全同 = 编码档漂（zlib 等级、chunk 顺序），同样说明盘上
+    那份不是这条代码写的，只是肉眼看不出来，所以两种读数一起给。
+    """
+    table = tk.load_ramp(scene)
+    drift = 0
+    for label, path, canvas in render(scene):
+        want = canvas.to_png()
+        want_md5 = hashlib.md5(want).hexdigest()[:12]
+        if not os.path.exists(path):
+            print(f"[DRIFT] {label} {path}：盘上没有这张（生成器认为它该在）")
+            drift += 1
+            continue
+        with open(path, "rb") as handle:
+            have = handle.read()
+        if have == want:
+            if not quiet:
+                print(f"[OK] {label} {path}：逐字节可由生成器重画（md5 {want_md5}，{len(want):,} B）")
+            continue
+        drift += 1
+        print(f"[DRIFT] {label} {path}：盘上 {len(have):,} B md5 "
+              f"{hashlib.md5(have).hexdigest()[:12]} ≠ 生成器 {len(want):,} B md5 {want_md5}")
+        try:
+            disk = load_canvas(path)
+        except ValueError as exc:
+            print(f"   盘上那张的像素读不出（{exc}）——无法量化漂在哪些槽")
+            continue
+        if (disk.w, disk.h) != (canvas.w, canvas.h):
+            print(f"   尺寸也不同：盘上 {disk.w}x{disk.h} vs 生成器 {canvas.w}x{canvas.h}")
+            continue
+        diff_px, slots, (soft_disk, soft_want) = pixel_diff(disk, canvas)
+        total = disk.w * disk.h
+        print(f"   像素差 {diff_px:,}/{total:,} = {100.0 * diff_px / total:.2f}%，"
+              f"落在 {len(slots)} 个 32px 格上")
+        if soft_disk == 0 and soft_want:
+            print(f"   注意：盘上那张一个 alpha<255 的像素都没有（生成器那份有 {soft_want:,} 个）"
+                  "——上面那串逐格皆不同说的是『透明处被压平成不透明』，不是画法漂；"
+                  "族归属要等带 alpha 的那一份回到盘上才读得准")
+            continue
+        if label == "tileset" and slots:
+            print(family_note(table, slots))
+    return drift
+
+
+# ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
 
 
 def generate(scene="manor", quiet=False):
     table = tk.load_ramp(scene)
-    path = ground_path(scene)
-    sheet = build_sheet(table, scene)
-    offenders = sheet.quantize()
-    if offenders:
-        raise SystemExit(f"[FAIL] 生成器画出 {offenders} 个表外颜色——hex 只能来自 terrain_ramp.json")
-    write_png(path, sheet.canvas)
-    write_png(ground_preview_path(scene), build_preview(table, sheet.canvas))
-    problems = check(scene, path, table)
+    (_, sheet_path, sheet_canvas), (_, preview_path, preview_canvas) = render(scene)
+    write_png(sheet_path, sheet_canvas)
+    write_png(preview_path, preview_canvas)
+    problems = check(scene, sheet_path, table)
     if not quiet:
-        print(f"tileset  {path} {sheet.canvas.w}x{sheet.canvas.h} "
+        print(f"tileset  {sheet_path} {sheet_canvas.w}x{sheet_canvas.h} "
               f"({table['cols']}列 × {table['rows']}行，{len(table['kinds'])} kinds × 17 档)")
-        print(f"preview  {ground_preview_path(scene)}")
+        print(f"preview  {preview_path}")
     if problems:
         for problem in problems:
             print("[FAIL]", problem)
@@ -2151,21 +2280,35 @@ def main():
     parser.add_argument("--scene", default=tk.DEFAULT_SCENE, choices=tk.scenes(),
                         help=f"取哪一个场景档（色阶表 scenes 段里登记的），默认 {tk.DEFAULT_SCENE}")
     parser.add_argument("--check", action="store_true", help="只校验盘上 PNG，不重画")
+    parser.add_argument("--repro-check", action="store_true",
+                        help="判出处：同一条代码重画到内存、与盘上比字节（不写盘）；与 --check 可同时给")
     parser.add_argument("--layout", action="store_true", help="打印条目表")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
     if args.layout:
         print_layout(args.scene)
         return
+    if not (args.check or args.repro_check):
+        generate(args.scene, quiet=args.quiet)
+        return
+    # 两条门各自独立跑完再合并退出码：短路会让 `--check` 一红就读不到出处那档，
+    # 而"合法但出处不对"（`combat_arena` 现状）正是只有两条同时给才看得见的形态。
+    failed = 0
     if args.check:
         problems = check(args.scene)
         if problems:
             for problem in problems:
                 print("[FAIL]", problem)
-            raise SystemExit(1)
-        print(f"[OK] {args.scene} 地表图集校验通过（色阶 / alpha / 16 过渡块 / 四边收口 / 空槽）")
-        return
-    generate(args.scene, quiet=args.quiet)
+            failed = 1
+        else:
+            print(f"[OK] {args.scene} 地表图集校验通过（色阶 / alpha / 16 过渡块 / 四边收口 / 空槽）")
+    if args.repro_check:
+        if repro_check(args.scene, quiet=args.quiet):
+            failed = 1
+        else:
+            print(f"[OK] {args.scene} 图集与预览逐字节可由生成器重画（出处对得上）")
+    if failed:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
