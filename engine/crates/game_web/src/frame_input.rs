@@ -641,6 +641,49 @@ mod tests {
         assert!(snapshot.just_released(key));
     }
 
+    /// 一次按键跨 0 步帧必须**还活着**：边沿只在跳变上产生，0 步帧里没有 `update()` 消费它。
+    ///
+    /// 宿主侧的规则（`rust_scene::step` / `game_app` / 编辑器预览三处同一个守卫）：
+    /// **只有真跑了固定步的帧才 `finish_frame()`**。浏览器的 0 步帧是常态（rAF 快于固定步、
+    /// 或追帧被 `FrameClock` 夹住；实测 `frames=240` 对 `sim_steps=152` ⇒ 88 帧一步不跑），
+    /// 无条件清边沿会把落在这种帧里的确认**永久吞掉**——症状是"标题界面按空格有时不响应，
+    /// 而且把按键窗口拉长也没用"（丢的只是**下沿那一次**，之后一直是按住状态）。
+    /// 这里钉的是这条链的下半场：`apply_frame` 产生的边沿在没有 `finish_frame()` 的那一帧之后仍在。
+    #[test]
+    fn a_press_edge_survives_a_frame_without_fixed_steps() {
+        let key = key_for_name("space").expect("space");
+        let slot = key_slot("space").expect("space slot");
+        let mut snapshot = InputSnapshot::default();
+
+        // 帧 A：按下，但本帧没有固定步 ⇒ 宿主不调 `finish_frame()`（Lua 一次都没跑）。
+        let pressed = FrameInput {
+            keys_held: 1u128 << slot,
+            keys_pressed: 1u128 << slot,
+            ..FrameInput::new()
+        };
+        assert_eq!(apply_frame(&mut snapshot, &pressed).key_changes, 1);
+        assert!(snapshot.just_pressed(key));
+
+        // 帧 B：仍然按住、没有新边沿，本帧才跑固定步 ⇒ 脚本必须看到"刚按下"。
+        let held = FrameInput {
+            keys_held: 1u128 << slot,
+            ..FrameInput::new()
+        };
+        assert!(
+            apply_frame(&mut snapshot, &held).is_empty(),
+            "按住不动不该补发边沿——那一下只能靠帧 A 留下的状态"
+        );
+        assert!(
+            snapshot.just_pressed(key),
+            "0 步帧清掉了边沿：这一次按下永远不会被 update() 看到"
+        );
+
+        // 消费之后照旧清干净：按住不能再变成每帧都刚按下。
+        snapshot.finish_frame();
+        assert!(!snapshot.just_pressed(key));
+        assert!(snapshot.is_down(key));
+    }
+
     /// 同一帧内按下又抬起：按住集合看不到，必须由两个边沿位还原成一次点按。
     #[test]
     fn same_frame_tap_becomes_press_and_release() {

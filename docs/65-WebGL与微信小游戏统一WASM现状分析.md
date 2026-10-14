@@ -693,7 +693,31 @@ host: canvas_surface: ... webgl2 not available
 > `world=JianghuPlayer@532,112 moved=4,0`——这条档以前只会印 `no-player`。**顺带一条要还的账**：同一台命令当年记录的是
 > `528→≈668`（140 世界单位），今天两条平台、两条路由都只走到 532，规模差 35 倍；候选是 #20 的视口改动或"轴窗口落在转场
 > 前/后"，都没测，而那条位移门只断言 `moved≠0`，看不见规模。另：同一把 space 挪到晚窗（`space:30-33`/`space:30-120`）
-> 会停在标题（`spawned=18 last=bgm_title`、`input_edges=4` 照旧）⇒ 早窗/晚窗的差别没归因，但它决定这根线进门时窗口怎么取点。
+> 会停在标题（`spawned=18 last=bgm_title`、`input_edges=4` 照旧）⇒ 当时判成"早窗/晚窗的差别没归因"，而它决定这根线进门时窗口怎么取点。**这条已由 #23 判因并修掉：与窗口早晚无关**，见下面那块。
+
+> **2026-10-14 标题确认"只吃早窗"判因（任务#23）**：`RustScene::step` 原来**无条件** `finish_frame()`，
+> 而 `apply_frame` 的 `just_pressed` 只在"松开→按下"的跳变上产生（按住集合是权威，仍按住的键不补发）
+> ⇒ 边沿落在**不跑固定步的 rAF 帧**里就被当场抹掉，那一下确认永久丢。浏览器里 0 步帧是常态：实测
+> `frames=240` 对 `sim_steps=152`（`sim_dropped=7 sim_clamped=1`）⇒ ≥88 帧一步不跑，而 boot 段每帧都在
+> 追帧、必然跑步——这就是 `space:10-15` 行而 `space:30-33`/`space:30-120` 不行的全部原因（90 帧长窗里
+> 下沿仍只有一次，所以"窗口太短"本来就不是候选）。同一个守卫本仓已有两处：桌面 `game_app.rs:203-208`、
+> 编辑器 `game_view.rs:384-395`（M22/W4 补漏），`run_script_steps` 的注释（`schedule.rs:356-359`）还把这条
+> 写成契约；web 宿主是这条契约的第三个消费者，漏的是第三个。改法 `if steps > 0 { finish_frame() }` 加回归
+> 测试 `a_press_edge_survives_a_frame_without_fixed_steps`；`rust_scene.rs` 两平台共用 ⇒ 微信宿主同一条
+> `FrameClock.plan`（`host_runtime.rs:541`）一并覆盖。实测（clean bundle，撤净插桩后重打）：三条窗口
+> `space:30-33,axis0+:100-160` / `space:30-120,axis0+:140-200` / `space:10-15,axis0+:100-160` **全部 EXIT=0**
+> 且同一读数 `world=JianghuPlayer@532,112 moved=4,0`；文档档（`-SimScene manor -SimRoute scene-script
+> axis0+:30-150`）逐字同基线；带插桩那一跑给出正分支凭据 `c=29:c1U0D0u0d0X0Y0S1ABtnStart`（第 29 个 Lua
+> 步看到确认、`activated=BtnStart`）。
+>
+> **进门口径随之一变**：微信生产门接这根线时**不需要为窗口取点做特殊设计**（原话"它决定这根线进门时
+> 窗口怎么取点"作废），但需要把"按下那一次落在跑步的帧"当成**门自己的读数**——今天只能由
+> `frames − sim_steps` 反算，门里没有"0 步帧数"这一项。
+>
+> **不在本笔射程的一条**：#22 的位移规模账 `528→≈668` vs 今天 `528→532` 一字未动，本笔三条门仍是
+> `moved=4,0`——守卫修的是"确认这一帧有没有被看见"，不是"单位时间走多少世界单位"，两件事不同因，
+> 别并成一条。
+>
 
 
 

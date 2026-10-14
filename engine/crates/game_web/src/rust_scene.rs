@@ -257,8 +257,17 @@ impl RustScene {
             .scene
             .run_script_steps(steps, delta_seconds, &self.input)
             .map_err(|error| format!("RuntimeScene::run_script_steps: {error:#}"));
-        // 与桌面宿主同一顺序：**用完快照之后**才清边沿与增量。
-        self.input.finish_frame();
+        // 与桌面宿主同一顺序：**用完快照之后**才清边沿与增量，并且**只有真跑了固定步的帧才清**
+        // （`game_app.rs` 的 `steps > 0` 守卫、编辑器 `game_view.rs` 的 `stepped` 守卫同一件事，
+        // web 侧此前漏了第三处）。漏了的后果是**永久丢一下按键**：`apply_frame` 只在「松开→按下」
+        // 的跳变上产生 `just_pressed`，仍按住的键不会补发边沿，所以落在 0 步帧上的那一下被
+        // `finish_frame()` 抹掉之后，下一个有步的帧里 Lua 只会看到"按着"而永远看不到"刚按下"。
+        // 浏览器里 0 步帧是**常态而不是异常**（rAF 快于固定步、或追帧被 `FrameClock` 夹住）：
+        // 实测同一轮 `frames=240` 只有 `sim_steps=152`，即 88 帧一步都不跑，标题确认的
+        // `space:30-33` 恰好落进这种帧 ⇒ 一直停在标题，而早窗 `space:10-15` 能过。
+        if steps > 0 {
+            self.input.finish_frame();
+        }
         self.steps += u64::from(steps);
         // Lua `update` 净耗时（引擎在 `lua_update` 系统里记的微秒数）。`take_script_micros`
         // 是**取走即清空**，所以必须每一步取一次——攒着取会把几帧的量算到最后那一帧头上。
