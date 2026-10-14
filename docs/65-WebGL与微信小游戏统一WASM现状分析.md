@@ -772,8 +772,50 @@ host: canvas_surface: ... webgl2 not available
 > 量具两条账：`-KeyProbe` 原来只数 `dom_events`/`input_edges`**不数位移**（本笔在 `scripts/webgl-cdp-wait.js` 的打印里
 > 补上 `world=`，print-only +11/−1）；`-GpuFrames` 是**帧预算**（`gpu_host.rs:57-65`）而不是采样参数，带着它跑 `-KeyProbe`
 > 读到的是冻住的计数器（现场 `frames 240 -> 240 -> 240`），量活的按键必须不带它。
-> **登记未测**：微信接管的**正向**确认（纵向按键现在能否连续走）等开发者工具恢复；真机；"方向键纵向反向"是两拍实测拼接的
-> 推导（`axis1+ ⇒ Δy=+47` 与旧映射 `ArrowDown ⇒ axis=+1` 各有读数），反向本身没单独跑过。
+> **登记未测（旧说法）→ #27 新实测（本条闭合）**：原句"微信接管的**正向**确认（纵向按键现在能否连续走）等开发者工具恢复"
+> 已在 2026-10-14 开发者工具恢复后跑通：接管宿主起来了（`host_status=running`、`mode=scene`、`size=2532x1170`、
+> `fit=declared=1280x720`），纵向按键**按声明方向连续走**，两跑逐向复现（`s` ⇒ `Δy=-44`/`axis=0,-1`、`w` ⇒ `+44→+89`/
+> `(0,+1)`、对照段 `Δ=0`）。同一条读数把 #25 那三次"工具起不来"归了因：**包没带真实 appid**（`touristappid` 的包在
+> 开发者工具里编译不过 ⇒ 宿主从未 boot，症状是 `host_status=off` 而不是输入缺陷）。仍**未测**：真机（不外推）；
+> 原句里"方向键纵向反向是两拍实测拼接的推导，反向本身没单独跑过"这条也一并闭合——接管形态直接给了方向键读数
+> （`ArrowDown ⇒ Δy=-46/-49`、`ArrowUp ⇒ +45/+51`，与 `w`/`s` 同号），拼接推导不再需要。
+>
+> **#27 接管形态的正向确认（2026-10-14，零产品码，只登记）**：判据是**同一次跑里逐方向对拍**，不是"能走"这一个布尔。
+> 探针注入在 `launcher/game.js` 的 `require('./wechat-adapter.js')` **之前**置
+> `__RUSTLUA_ENGINE_HOST/VISIBLE/SCENE`（开关置晚了就掉进老 JS 世界，那条路的 `input` 垫片不看 padaxis，测不到本片改的东西），
+> 读数走 `__RustLuaWechat.engineHostState()` 的 `scene.world` + `scene_input`，采样一律等宿主帧前进（不用定长 sleep，
+> 转场期主线程 ≈2 fps 会读到陈旧值）。两跑逐向一致（run2 / run3，单位=世界 px）：对照段（不按键，跨 ≥10 宿主帧）`Δ=0,0`
+> 两跑同形；`s` `-44,-8 / -51`；`w` `+44,+89 / +49,+89`；`d` `+47,+51 / +49`；`ArrowDown` `-46 / -49`；`ArrowUp` `+45 / +51`
+> ——修前 #22 那条"按住 `keys` 共 52 宿主帧 `Δy` 恒 0"从此有了反向读数，且轴指纹也对上（`s ⇒ axis=0,-1`、`w ⇒ 0,+1`，
+> 即"声明的 `move_down` 与送到的向下同号"）。日志 `.temp/27-wechat-takeover-run{2,3}.log`、`.temp/v27-report.json`。
+> **一条顺带更正（防 #24 被误读）**：同一张 `manor` 出生点这次按 `d` 走了 `+47/+49`，而 #24 量的是 `moved=4,0`——
+> 两者不矛盾：#24 那拍**先按纵向**，纵向被当时那处抵消吃掉 ⇒ 主角没脱开南门门洞（左右各 4 px 余量）；本次纵向先走通了，
+> 横向自然走满。"4 px"是**卡在门洞里**的读数，不是横向能力。
+> **一条不算缺陷但必须登记的残余**：松手后世界还有 2–5 单位惯性（`w-stop +2`、`d-stop +5`、`arrow-down-stop −5`，
+> 而 `held=0 axis=0,0` 已归零）。**成因本笔没判**（最像是固定步与帧边沿的既有差，但没证据），也没进门——默认位移门断的是
+> 同号与 `moved≠0`，这个量级不触发它。
+> **包的身份这一档记进命令口径**：`package.ps1 -Platform wechat-minigame -Gpu2d` 不带 `-WechatAppId` ⇒ 写进
+> `project.config.json` 的是 `touristappid`，模拟器能跑 harness、开发者工具却**编译不过**（#25 那三次 `host_status=off` 全是
+> 这个形状）。appid 的唯一出处是 `examples/game_jhyt/project.toml:31`，**不写进命令行**（凭据形态会被分类器拦，也避免进 shell 历史）。
+> 手工改产物里的 `project.config.json` **不等于**带 `-WechatAppId` 重打包：run1 就是只改了 JSON 没重打，`no-report(timeout)`、
+> 且没有任何开发者工具进程起来。**手改不算数，重打才算**。
+> **体积一条（本笔的第二次红，归美术线）**：带 appid 首次重打包对总包硬门 `20,480 KB` 报红（实测 `21,331 KB`，
+> `assetc files=2487` vs 上一档 `2108`），成因只读地定在**打包把未跟踪的备份目录一并扫进资源**：`assets/art/` 下 11 个
+> `*_backup_20261014/` = 1,169 个文件 / 2,528 KB，而 14:48 那次成功的 `pack/` 里已经压着 740 个备份文件 / 737 KB
+> （ ⇒ 门红不是本笔带来的，是本包第一次撞上它）。用户把备份迁出 `assets/`（`examples/game_jhyt/art_backup/`）后重打包绿：
+> `assetc files=1368`、`Package size: 20,237.6 KB, 1384 files`、`main_of_limit=61.0% / subpackage_of_limit=86.6% /
+> total_of_limit=98.7%` ⇒ **总包余量只剩 ≈243 KB**，美术下一次重存要按这个数读，不能按 4,096/20,480 的的名义上限读。
+> **门禁（最终字节那一版）**：`verify-wechat-minigame.ps1 -ExpectGpuKernel` VERIFY_EXIT=0（注入撤净后才跑，
+> `wechat_minigame_package_ok`、生产口径 `engine_host=off`、harness 240 帧、五条负面用例全绿）；
+> 本笔零 Rust、零 `web-runtime.js` 改动 ⇒ `cargo fmt/clippy/test` 与 `wasm32` check、webgl 那条打包门没重跑（`5ab416b9`
+> 的基线仍在位）；`powershell -NoProfile -File scripts/check-docs.ps1` **DOCS_EXIT=0**、六项读数逐字同基线
+> （`docs=59 game_docs=46 h1=107 links=414 ps1_bom_ok=33 ps1_parse_ok=33`）——#26 那条挂在别包 `docs/58` 里的
+> `xxx.md` 反例引用红今天已由他们自己清掉（那份文件 `grep -c -F 'xxx.md'` = 0 且与 HEAD 一致）。**一条现场踩到的坑**：
+> `CHANGELOG.md` 在这个门的扫描面里（`scripts/check-docs.ps1:135`），所以条目里**不能**把"方括号紧跟圆括号"那个链接形态
+> 原样拼出来当引文——那会被判成一条真链接（与 M72-10 归档那条同一条坑）。
+> **一次性工具留 `.temp/`**（`p1-v27-{probe,collector}.js`、`27-package-wechat-appid{,-run2}.log`、
+> `27-wechat-takeover-run{1,2,3}.log`、`27-verify-wechat-appid.log`、`v27-report.json`），不进 verify 入口；
+> `builds/wechat-minigame/` 是重打包产物，**不是提交路径**。
 >
 
 
