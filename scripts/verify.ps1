@@ -1180,7 +1180,7 @@ if ($Mvp -or $MvpOnly) {
         # 选中、立绘 calm）；capture 一次过；verify 一次绿；部分预设混合载体（立绘本体留
         # 动态层，贴图随 NPC/mood 变化、引擎无运行期换贴图 API）② 豁免。
         "jhyt_m71_dialogue_prefab"
-        # M72 对标星露谷第 2 轮（P0 引擎地基，`tasks/plan/M72-00-*.md`）。
+        # M72 对标星露谷第 2 轮（P0 引擎地基，`tasks/done/M72-00-*.md`）。
         # M72-01 图集寻址与 `.scene` 编码迁移门：12×8 图集逐格 UV 落在正确的 (col,row) 子矩形、
         # 索引 0 不产出 quad（quad 数被钉死 = 非空格数）；反面对照内建两处——纯数据侧把
         # `atlas_rows` 改回 1 后条目 13 的 V 必须越出 0..1（证明 UV 断言对"多行"不是瞎的），

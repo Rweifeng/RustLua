@@ -50,7 +50,7 @@ const MIN_SCENE_TEXTS: usize = 21;
 /// 只许涨不许跌：少一处登记 = 少一条被宽度与字号审计量到的文案。
 /// 原值是 30（那时暂停菜单的 11 行还都画在动态层），M66/B3 把它们换成实体层载体后
 /// 动态层只剩 17 处——`record` 补回 11 处，总数仍比迁移前少 2 处（HUD 在 M70 搬进预设时
-/// 没有补登记，那批文案今天量不到，见本包 未完成项 与 `tasks/plan/M72-10`）。
+/// 没有补登记，那批文案今天量不到，见本包 未完成项 与 `tasks/done/M72-10`）。
 const MIN_REGISTERED_TEXT_SITES: usize = 28;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
