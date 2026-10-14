@@ -243,10 +243,20 @@ async function runKeyProbe(send) {
   }
   await sleep(400);
   const after = await readFresh(held.frames);
+  // `world=` 一起打出来：这条探针原本只数"事件到没到、边沿有几条"，数不到"世界动没动"。
+  // 键盘纵向被两个通道抵消那一笔（见 web-runtime.js 的 snapshot()）正好是**边沿都在、位移为零**
+  // 的形态，只看计数会一路绿灯。判据仍然不在这里——先把读数打得出来，归因留给台账。
+  // 口径提醒：`data-rustlua-gpu` 是**空格**分隔的，`[^;]*` 会把后段一起吞进来，所以打出来的
+  // `world` 段是连着 `sched_frames=` 那一串的——按空格拆着读（本笔现场就是这么读的）。
+  const worldOf = (state) => {
+    const m = /world=([^;]*)/.exec(state || '');
+    return m ? m[1].trim() : 'world=absent';
+  };
   console.log(
     '[cdp] key probe: frames ' + before.frames + ' -> ' + held.frames + ' -> ' + after.frames +
       ' ; dom_events ' + before.dom_events + ' -> ' + held.dom_events + ' -> ' + after.dom_events +
-      ' ; input_edges ' + before.input_edges + ' -> ' + after.input_edges
+      ' ; input_edges ' + before.input_edges + ' -> ' + after.input_edges +
+      ' ; world ' + worldOf(before.raw) + ' -> ' + worldOf(held.raw) + ' -> ' + worldOf(after.raw)
   );
 }
 

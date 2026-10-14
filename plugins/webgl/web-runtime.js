@@ -1119,8 +1119,31 @@
       snapshot() {
         state.cursorDelta = [state.cursor[0] - state.lastCursor[0], state.cursor[1] - state.lastCursor[1]];
         state.lastCursor = [state.cursor[0], state.cursor[1]];
+        // 这两个是键盘→手柄轴的兼容通道（web 侧没有真手柄设备：全仓没有 getGamepads）。
+        // **符号必须跟引擎的轴约定一致**：`padaxis:1+` 是"上推为正"（轴绑定在
+        // crates/engine/src/host/gamepad.rs，那条约定由 editor 的输入面板钉成断言：
+        // panels/input_bindings.rs 的"上推 = padaxis:1+（上为正）"），世界 y 也朝上。
+        // 这一行以前按"屏幕向下为正"写，于是同一次按键喂进两条**符号相反**的通道：工程的绑定是
+        // `move_up=key:keyw,padaxis:1+`、`move_down=key:keys,padaxis:1-`
+        //（examples/game_jhyt/project.toml 的 `map`），按 `w` 时键位给 move_up、这份轴给 move_down，
+        // `input.action_axis("move_down","move_up")` 把两者相加归零 ⇒ 纵向字母键全死——那个姿态就藏在
+        // #22 自己的读数里：按住 `keys` 共 52 宿主帧、`held=1 axis=0,1` 而 `Δy` 恒 0，而那个 `axis` 的
+        // `1` 按引擎约定正是"上推"。横向两通道同号（`d` 与 `padaxis:0+` 都是右）所以照常能动，
+        // "只有纵向坏"就是这个不对称暴露出来的。方向键是另一种死法：它们不进 `move_*` 的键位
+        // （`move_down` 只绑 `keys`），只经这份轴 ⇒ 旧号下按 `↓` 给 `padaxis:1+` = move_up ⇒ 纵向反向
+        //（这条是两拍实测拼出来的推导：`axis1+ ⇒ Δy=+47` 与旧映射 `ArrowDown ⇒ axis=+1` 各自有读数，
+        // 反向本身没单独跑过）。没有按旧号做过反向补偿的消费者：全仓 Lua 不调 `input.pad_axis(`，
+        // UI 导航走 `pad:` 键位，老 JS 世界的动作垫片只认键盘（不看 padaxis），触摸摇杆走
+        // virtual_keys 也只进键位分支——所以那几条路都没露过面，翻号也不会翻坏它们。
+        // 射程按实测划（别写成"两个 web 平台都坏"）：这里翻的号**只在 JS 快照真的送进
+        // 引擎的形态**上生效，也就是微信接管——适配层置 `__RUSTLUA_ENGINE_HOST_OWNS_TICK`
+        //（wechat-adapter.js:1753）⇒ 本文件的固定步循环每帧调 `applyInputFrame` ⇒ 宿主
+        // 侧读到这份轴（#21/#22 的 scene_input `axis=1,0`/`axis=0,1` 就是它的读数）。
+        // 浏览器那条引擎宿主路由走的是另一套：`frame()` 整段不跑（DOM 快照里连
+        // `data-rustlua-timing`/`-input` 都没有），输入只来自 Rust 侧 DOM 采集，实测按住
+        // 真 `w` 给 `act=1.00 pad1=0.00 moved=0,+124` ⇒ 这份合成轴在那边是惰性的，翻号不改它。
         const horizontal = (state.keys.d || state.keys.right ? 1 : 0) - (state.keys.a || state.keys.left ? 1 : 0);
-         const vertical = (state.keys.s || state.keys.down ? 1 : 0) - (state.keys.w || state.keys.up ? 1 : 0);
+        const vertical = (state.keys.w || state.keys.up ? 1 : 0) - (state.keys.s || state.keys.down ? 1 : 0);
         const out = { axis_x: horizontal, axis_y: vertical, keys: state.keys, just: state.just, released: state.up, mouse: state.mouse, mouse_just: state.mouseJust, mouse_just_released: state.mouseUp, cursor: state.cursor, press_cursor: state.pressCursor, cursor_delta: state.cursorDelta, scroll: [state.scrollX, state.scroll] };
         state.just = {};
         state.up = {};
