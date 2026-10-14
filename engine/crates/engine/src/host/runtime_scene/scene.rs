@@ -424,6 +424,24 @@ impl RuntimeScene {
             .collect()
     }
 
+    /// 活世界里**登记过名字的实体名**（声明的与脚本生成的都算），排序去重。
+    ///
+    /// 为什么不是 [`Self::runtime_spawned_entities`] 的名字：那张表是编辑器镜像用的，刻意**排除**
+    /// 场景声明的实体（它们在文档行里已有身份）。而"世界读数"问的是反过来的事——主角通常是文档里
+    /// 声明的那一位（工程运行时换图后照样按登记名 `entity.find("…")` 找它），排除声明实体等于
+    /// 把主角筛掉。判据两边共用同一套名字表，与 Lua 侧 `entity.find` 的命名空间同源。
+    pub fn named_entity_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .script
+            .named_entity_handles()
+            .into_iter()
+            .map(|(_, name)| name)
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
     /// 声明实体（场景文档里的行）**此刻在运行时里的局部变换**，按文档 id 给出。
     ///
     /// 只列「登记过句柄且仍活着」的实体，一次世界借用读完，供编辑器 Play 期间逐行回灌

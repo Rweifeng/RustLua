@@ -155,7 +155,8 @@ impl RustScene {
         crate::audio_sink::install()?;
         let root = Path::new(VIRTUAL_PROJECT_ROOT);
         // 主角候选名从**场景文档**里取（跨帧固定，取一次就够）。`EngineStartup` 那一档没有文档，
-        // 于是候选为空、世界读数退化成 `world=no-player`——那是诚实的读数，不是失败。
+        // 候选留空——世界读数于是改从**活世界**的命名实体里取候选（见 [`Self::refresh_world`]，接管+scene
+        // 形态走的就是这一档），两边都取不到时才退化成 `world=no-player(named=… samples=…)`，那是诚实的读数，不是失败。
         let mut player_names: Vec<String> = Vec::new();
         let (scene, scene_desc) = match route {
             SimRoute::EngineStartup => {
@@ -324,17 +325,55 @@ impl RustScene {
     /// （实测记录见 [`Self::step`]）。
     ///
     /// 只读求值：走 `LuaRuntime::eval_json`，它的契约就是"不改引擎状态、调用方传只读查询"。
-    /// 名字来自场景文档，取位置用引擎自己的 Lua API（`entity.find` + `transform.get`）——
-    /// 这两条都是**引擎**提供的，不依赖 `web-runtime.js` 预置的那套 `__rustlua_*`。
-    /// 这正是第 24 轮发现"JS 世界在遮蔽引擎 API"之后该走的路。
+    /// 取位置用引擎自己的 Lua API（`entity.find` + `transform.get`）——这两条都是**引擎**提供的，
+    /// 不依赖 `web-runtime.js` 预置的那套 `__rustlua_*`。这正是第 24 轮发现"JS 世界在遮蔽引擎
+    /// API"之后该走的路。
     pub fn refresh_world(&mut self) {
-        if self.player_names.is_empty() {
-            self.world_note = "world=no-player".to_owned();
+        // 候选名有两个来源，顺序就是"这份读数在说什么"：
+        //   ① **场景文档**里声明的实体名（`SceneOnly`/`SceneWithScript` 两条路，boot 时取一次，跨帧固定）；
+        //   ② 文档没给候选时——`EngineStartup` 那条路根本不解析场景文档，而引擎宿主接管形态与浏览器
+        //      默认形态走的就是它——从**活世界的登记名表**取（与工程 Lua `entity.find` 同一命名空间）。
+        //      这里刻意不用 `runtime_spawned_entities()` 的名字：实测它报
+        //      `named=50 samples=顾长风,陆归藏,陆青峰,苏晚晴`——那张表面向编辑器镜像、**排除**场景声明
+        //      实体，而主角恰恰是文档里声明的那一位，拿它筛 `player` 永远筛不到。
+        // 判据两边共用（名字含 `player`，即渲染器 `entityColor` 认主角的那套启发），不写死工程名：
+        // `game_web` 是引擎侧宿主，认工程名就等于把某个游戏焊进引擎。
+        let mut names = self.player_names.clone();
+        let named = if names.is_empty() {
+            self.scene.named_entity_names()
+        } else {
+            Vec::new()
+        };
+        if names.is_empty() {
+            names = named
+                .iter()
+                .filter(|name| name.to_ascii_lowercase().contains("player"))
+                .cloned()
+                .collect();
+        }
+        if names.is_empty() {
+            // "没有主角"要说清它**看见了什么**：只报 `world=no-player` 的话，下一轮还得先猜是
+            // "启发没命中"还是"世界里真一个命名实体都没有"。上面那条排除规则就是靠这四个样本名
+            // 定位到的。样本按登记名排序取前四个（ASCII 名排在中文前）。
+            let samples: Vec<String> = named
+                .iter()
+                .take(4)
+                .map(|name| truncate(name, 24))
+                .collect();
+            self.world_note = format!(
+                "world=no-player(named={} samples={})",
+                named.len(),
+                if samples.is_empty() {
+                    "-".to_owned()
+                } else {
+                    samples.join(",")
+                }
+            );
             return;
         }
-        // 名字来自场景文档，仍按 Lua 字面量转义（文档里出现引号时不能把表达式拼坏）。
+        // 名字仍按 Lua 字面量转义（登记名里出现引号时不能把表达式拼坏）。
         let mut body = String::new();
-        for name in &self.player_names {
+        for name in &names {
             let escaped = name.replace('\\', "\\\\").replace('\'', "\\'");
             body.push_str(&format!(
                 "do local e = entity.find('{escaped}'); local t = e and transform.get(e) or nil; \
@@ -389,6 +428,14 @@ impl RustScene {
         } else {
             self.world_note = format!("world={}", parts.join(" "));
         }
+    }
+
+    /// 最近一次 [`Self::refresh_world`] 的人读串（`world=JianghuPlayer@624,360 moved=0,280`）。
+    ///
+    /// 新鲜度归调用方：这份串只在有人调 `refresh_world` 时才前进，所以读它之前必须自己决定
+    /// 要不要先刷（浏览器宿主在写状态属性那一帧刷，引擎宿主在 `engine_host_state` 读态时刷）。
+    pub fn world_note(&self) -> &str {
+        &self.world_note
     }
 
     /// 设置场景提取使用的逻辑视口；它保持项目设计分辨率，与 GPU 后备缓冲尺寸分离。

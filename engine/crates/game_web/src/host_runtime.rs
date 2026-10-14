@@ -741,29 +741,51 @@ pub fn engine_host_frame(dt_ms: f64, input: JsValue) -> Result<String, JsValue> 
 #[wasm_bindgen]
 pub fn engine_host_state() -> Result<String, JsValue> {
     HOST.with(|slot| {
-        let borrow = slot.borrow();
-        let host = borrow.as_ref().ok_or_else(|| {
+        let mut borrow = slot.borrow_mut();
+        let host = borrow.as_mut().ok_or_else(|| {
             host_error("not-begun", "先调 engine_host_begin（画布与设备由它建立）")
         })?;
         // scene 档的读数**只进 JSON 状态**（定长 ABI 的 16 槽不动）：`last` 是每帧拼好的
         // 场景读数，`sim`/`textures` 是核心自己的账（与浏览器状态属性同一批字段名同源）。
-        let (mode, scene_block) = match &host.gpu {
+        let (mode, scene_block) = match &mut host.gpu {
             HostGpu::Clear { .. } => ("clear", serde_json::Value::Null),
-            HostGpu::Scene(core) => (
-                "scene",
-                serde_json::json!({
-                    "sim": core.sim_note,
-                    "textures": format!(
-                        "{}/{}",
-                        core.texture_stats.0,
-                        core.texture_stats.0 + core.texture_stats.1
-                    ),
-                    "texture_note": core.texture_note,
-                    "boot_ms": core.boot_ms,
-                    "first_frame_ms": core.first_frame_ms.is_finite().then_some(core.first_frame_ms),
-                    "last": host.last_scene,
-                }),
-            ),
+            HostGpu::Scene(core) => {
+                // `world`（主角坐标 + 相对原点的位移）在**读态这一刻**现刷，不挂在每帧链上。
+                // 两条理由：① `RustScene::refresh_world` 的实测教训写在它自己的注释里——热路径上
+                // 多一次 Lua 求值会挤掉同机并行剧本的帧预算（浏览器宿主因此只在写状态属性那一帧刷）；
+                // ② 接管形态没有状态属性可写，而 `engine_host_state` 是诊断口（适配层只把它挂在
+                // `wx.__rustluaEngineHostState` 上，产品帧循环不调）⇒ "有人问才刷"比"每 30 帧刷一次"
+                // 更省，也保证读到的就是读的那一帧。为什么必须有这根线：`scene_input` 只证到"输入进到
+                // 了宿主消费的那一帧"，而"世界因此动了没有"要的是**位移**读数（`moved=dx,dy`，
+                // 绝对坐标证明不了这一帧有没有动过——见 `RustScene::world_origin` 的注释）。
+                // 刻意不开浏览器那条 `rustlua-world-expr=<任意 Lua>`：那条通道的"只读"靠调用方自觉、
+                // 无护栏（plan §WP6-06 未完成① 就记着"微信侧若复用需补"），而这里的读数用的是引擎
+                // 自己的 `entity.find`/`transform.get`，构造上不写世界。
+                let world_note = match core.sim_mut() {
+                    Some(sim) => {
+                        sim.refresh_world();
+                        sim.world_note().to_owned()
+                    }
+                    // 核心起不来时 `sim` 是 None（画面退回内建场景），读数要说"没场景"而不是空串。
+                    None => "world=no-scene".to_owned(),
+                };
+                (
+                    "scene",
+                    serde_json::json!({
+                        "sim": core.sim_note,
+                        "textures": format!(
+                            "{}/{}",
+                            core.texture_stats.0,
+                            core.texture_stats.0 + core.texture_stats.1
+                        ),
+                        "texture_note": core.texture_note,
+                        "boot_ms": core.boot_ms,
+                        "first_frame_ms": core.first_frame_ms.is_finite().then_some(core.first_frame_ms),
+                        "world": world_note,
+                        "last": host.last_scene,
+                    }),
+                )
+            }
         };
         let state = serde_json::json!({
             "abi": HOST_FRAME_ABI,
