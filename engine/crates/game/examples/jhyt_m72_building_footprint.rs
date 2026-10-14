@@ -18,18 +18,18 @@
 //!      （缺=0、悬空=0），并报出每栋的视觉格数/实心格数/门洞/拆层件。
 //!      两条反面对照走同一个函数：把一件道具的占地从"单格根碰撞"换成**整个 quad 框**
 //!      必须报出悬空格并点名（落点逐图点名，见 `Scene::quad_probe`——山庄是东南那丛竹子、
-//!      村里是石桥、寒泉洞是火把、铁匠铺是木箱：前三个都是"框里有格画的是能走过去的东西
-//!      或人身高的装饰"，第四个是"描边那 4px 压进相邻格"（它正是 1/4 格门槛存在的理由）；
-//!      拿贴图铺满画框的房子做这条对照是空转）；把同名拆层屋顶件从并集里摘掉
-//!      必须报出缺碰撞并点名屋檐格。
+//!      村里是石桥、寒泉洞是火把、铁匠铺是木箱、药庐是药碾：前三个都是"框里有格画的是
+//!      能走过去的东西或人身高的装饰"，后两个是"描边那 4px / 那 7px 压进相邻格"（它们正是
+//!      1/4 格门槛存在的理由）；拿贴图铺满画框的房子做这条对照是空转）；把同名拆层屋顶件
+//!      从并集里摘掉必须报出缺碰撞并点名屋檐格。
 //!   ② 拆层不变量：每栋建筑占地必须跨多格（≥4），且**拆层前后占地逐格相同**——
 //!      用整图（未拆层）算的格集必须等于"本体∪屋顶"算的格集。这条是拆层这件事
 //!      没有偷偷改变玩法的唯一证据：画面换了、碰撞没换。
 //!   ③ 门洞：声明的洞格必须**不在 solid 里**、贴图在那一格上**真是洞**（不透明占比
 //!      ≤ `HOLE_MAX_OPAQUE_RATIO`），并且从出生点按 4 邻域 BFS **走得到**。
 //!      反面对照：把洞填成实心，可达性必须当场断掉。
-//!      `openings` 为空的那两张图（寒泉洞、铁匠铺内）这一节只剩可达读数，两条判据与反面
-//!      对照都平凡通过——空表是**登记**（那两张图没有 sprite 通道）而不是漏登记，
+//!      `openings` 为空的那三张图（寒泉洞、铁匠铺内、药庐内）这一节只剩可达读数，两条判据与
+//!      反面对照都平凡通过——空表是**登记**（那三张图没有 sprite 通道）而不是漏登记，
 //!      写在各档注释里。
 //!   ④ 投影贴片：每栋**够格**的建筑都必须挂一件 `<名字>Shadow`（`role=cast_shadow`），
 //!      且画在本体之下；不够格的必须**没有**——只查前者等于允许"给每样东西都糊一块灰"过关。
@@ -59,8 +59,12 @@ const DT: f32 = 1.0 / 60.0;
 
 const TILE: f64 = 32.0;
 
-/// 地表 kind（与 `terrain_ramp.json` 的序号一致，进那张表的六张图共用同一套 kind 语义位；
-/// `interior_herb` 与 `main` 仍是图集外的旧 6×1 档，语义位到各自那一片才对表）。
+/// 地表 kind（与 `terrain_ramp.json` 的序号一致，进那张表的七张图共用同一套 kind 语义位；
+/// 只剩 `main` 还是图集外的旧 6×1 档，语义位到它自己那一片才对表）。
+/// 编号跨图说话的是**实心位**而不是名字：药庐的 6 号位是柜台（`interior_herb` 把墙搬号到 4、
+/// 柜台占到 6），它在 `TILE_NATIVE_SOLID` 里与"水"同解——名字常量叫 `WATER_KIND` 而那一格
+/// 画的是柜台，这条按编号而非按语义的判断是 `building_kit` 那侧的既有口径（见
+/// `terrain_ramp.json:scenes.interior_herb.kinds`）。
 const WALL_KIND: i32 = 4;
 const WATER_KIND: i32 = 6;
 
@@ -397,7 +401,41 @@ const FORGE: Scene = Scene {
     }],
 };
 
-const SCENES: &[Scene] = &[MANOR, VILLAGE, MOUNTAIN, ARENA, CAVE, FORGE];
+const HERB: Scene = Scene {
+    name: "interior_herb",
+    file: "scenes/interior_herb.scene",
+    ground_texture: "assets/art/tilesets/interior_herb/interior_herb_ground.png",
+    // `data/maps.lua` 的 interior_herb.spawn，与 `gen_herb_scene.SPAWN` 同源：门前厅。
+    spawn: (10, 3),
+    openings: &[],
+    // 药柜 64×64、书架 56×72、床榻 64×48、屏风 56×56、诊桌 48×40、药炉 64×72、药碾台
+    // 56×56：七件横占两格（屏风与两件大柜纵也压两行），逐件实测矩形记在
+    // `building_kit.SCENES["interior_herb"].prop_collision`。椅子 28×40、药碾 40×28、
+    // 木箱 36×30 三件的紧框被 `MIN_CELL_OVERLAP` 收在锚点格内 ⇒ root 与 box 同解（登记
+    // box 是空转）；两件灯笼 24×44 真口径多出上面那一格，但不是可撞体量 ⇒ 同洞穴火把那档。
+    box_props: &[
+        "MedicineCabinet",
+        "Bookshelf",
+        "Bed",
+        "Screen",
+        "Table",
+        "HerbStove",
+        "GrindTable",
+    ],
+    walk_props: &[],
+    // 这条落在药碾上：40×28 压在 (13,2)，不透明紧框 417..455 的第 14 列只压进 7px，
+    // 差那道 8px 门槛 1px；按整个 quad 框标就把 (14,2) 那一格药庐地面的可走格砌成墙。
+    // 与铁匠铺木箱那 4px 同族（"描边那一条像素"），也与洞穴火把/山道断桥那两条
+    // "画在人身高"不同类——这张图唯一的拆层件是石龛屋顶，归 §②。
+    quad_probe: "HerbMill",
+    splits: &[Split {
+        base: "HerbShrine",
+        occluder: "HerbShrineRoof",
+        full: "assets/art/buildings/village_shrine.png",
+    }],
+};
+
+const SCENES: &[Scene] = &[MANOR, VILLAGE, MOUNTAIN, ARENA, CAVE, FORGE, HERB];
 
 /// 场景里一个 sprite 实体的门侧视图。
 #[derive(Clone, Debug)]

@@ -54,6 +54,10 @@ RESERVED_BY_SCENE = {
     # 加十一件家具与石龛的锚点格；240 格的屋子里中景一共没几件，压在铁砧前面或门口那一列
     # 是最亏的写法（留白输入的实现见 `gen_forge_scene.decor_reserved()`）。
     "interior_forge": "gen_forge_scene",
+    # M72-11 §推进顺序 5 第四片（药庐场景侧）：药庐内的留白与铁匠铺同构（出生/出口/herb_hut_inside 加十二件
+    # 家具与石龛的锚点格），差别在**这张图有 kind 2**：`gen_herb_scene.FREEZE` 冻的是
+    # `farm.lua` 那个 FARM 矩形与本图的交集，而留白集不吃那条（留白管装饰落点，冻分管抖动）。
+    "interior_herb": "gen_herb_scene",
 }
 
 

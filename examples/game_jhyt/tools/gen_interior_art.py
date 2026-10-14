@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""《江湖有田》批次 3 美术：室内 tileset（药庐）+ 家具 + 生产设施 + 可建造建筑。
+"""《江湖有田》批次 3 美术：室内家具 + 生产设施 + 可建造建筑（**地表 tileset 已全部不在本文件**）。
 
 用法（工程根目录 examples/game_jhyt 下运行）：
 
@@ -8,25 +8,30 @@
 
 产出：
 
-    （**铁匠铺地表不在本文件出图**：M72-11 §推进顺序 5 起归
-      `gen_terrain_tiles.py --scene interior_forge`，产出自己的 12×9 图集
-      `assets/art/tilesets/interior_forge/interior_forge_ground.png`）
-    assets/art/tilesets/interior_herb/interior_ground.png   6 列 × 32px（药庐/民居室内）
+    （**两张室内地表都不在本文件出图**：M72-11 §推进顺序 5 起，铁匠铺归
+      `gen_terrain_tiles.py --scene interior_forge`、药庐归
+      `gen_terrain_tiles.py --scene interior_herb`，各出 12×9 图集
+      `assets/art/tilesets/<图>/<图>_ground.png`。旧那两套 6 列 × 1 行的
+      `interior_ground.png` 与它们的 `_preview.png` 已随本批从盘上下架，`check()`
+      对两个目录各有反面对照）
     assets/art/furniture/interior_*.png                     12 件家具（含中文招牌的两件）
     assets/art/facilities/facility_*.png                    5 件生产设施（docs/30 §6.4）
     assets/art/buildings/build_*.png                        5 座可建造建筑 + 地基 + 脚手架
-    assets/art/{tilesets/furniture,facilities,buildings}/_*_preview.png
+    assets/art/{furniture,facilities,buildings}/*_preview.png
 
-列语义（药庐那张仍是引擎写死 6 列的**恒等寻址**；铁匠铺已换成 12×9 + autotile）：
-  interior_herb ：1=木地板 2=青砖地 3=席垫 4=白墙 5=木隔断 6=柜台
-  interior_forge：本文件**不再出图**。旧说法（1=夯土地 2=石板地 3=炭渣地 4=砖墙 5=石墙 6=水槽）
-            → 新实测（1=夯土 2=炭渣碎石(零格) 3=石板 4=砖墙 5=耐火砖 6=水槽），换序理由是
-            `building_kit.TILE_NATIVE_SOLID=(4,6)` 的跨图语义位（墙必须 4、水必须 6）；逐条
-            理由写在 `gen_forge_scene.py` 的模块 docstring。旧那张 6 列 × 1 的图与它的
-            `_preview.png` 随本批从盘上下架（`check()` 有反面对照，回盘就报"多出来的一套
-            地表真相"）。药庐那档的换序与重做是 §推进顺序 5 第二片，本文件那六格
-            `tile_plank/tile_brick_floor/tile_mat/tile_white_wall/tile_partition/tile_counter`
-            到那一片才摘。
+列语义（两张室内图现在都是 12×9 + autotile，本文件一张地表都不出）：
+  interior_herb ：本文件**不再出图**。旧说法（1=木地板 2=青砖地 3=席垫 4=白墙 5=木隔断 6=柜台，
+            6 列 × 1 行恒等寻址）→ 新实测（1=木地板 2=药渣与切屑(新增族) 3=青砖地 4=木隔断
+            5=席垫 6=药柜台，白墙那一列从地表语义里下架）。换序的头一条理由与铁匠铺同源而
+            更硬：`building_kit.TILE_NATIVE_SOLID=(4,6)` 按编号说话，而旧档把整圈墙记在
+            5=木隔断上 ⇒ 盘上那 60 格"墙"在跨图语义里根本不是墙。逐条理由写在
+            `terrain_ramp.json:scenes.interior_herb.comment` 与 `gen_herb_scene.py` 的模块
+            docstring。旧那张 6 列 × 1 的图与它的 `_preview.png` 随本批从盘上下架，本文件那
+            六格 `tile_plank/tile_brick_floor/tile_mat/tile_white_wall/tile_partition/
+            tile_counter` 连着 `build_tiles_preview`/`_pack` 一起摘除。
+  interior_forge：同一批下架，旧说法（1=夯土地 2=石板地 3=炭渣地 4=砖墙 5=石墙 6=水槽）
+            → 新实测（1=夯土 2=炭渣碎石(零格) 3=石板 4=砖墙 5=耐火砖 6=水槽），逐条
+            理由写在 `gen_forge_scene.py` 的模块 docstring。
 
 对应 docs/30 §6.4（药炉/茶灶/酒坊/研磨台/铁砧）与 §11.2（药庐/练功房/仓房/茶棚/铁匠台）。
 可建造建筑的施工两态共用「地基」「脚手架」两张图（脚手架是叠加层），
@@ -60,16 +65,15 @@ FURNITURE_DIR = os.path.join("assets", "art", "furniture")
 FACILITY_DIR = os.path.join("assets", "art", "facilities")
 BUILDING_DIR = os.path.join("assets", "art", "buildings")
 
-PLANK = rgb("#A6855C")
-PLANK_DARK = rgb("#7C6342")
-PLANK_LIGHT = rgb("#C0A070")
-BRICK = rgb("#8A8578")
-BRICK_DARK = rgb("#6B675C")
-BRICK_LIGHT = rgb("#A29C8C")
-MAT = rgb("#C9B47A")
-MAT_DARK = rgb("#A08F5C")
-PARTITION = rgb("#6B4F3A")
-COUNTER = rgb("#8A6A46")
+# 室内地表那十行颜色（`PLANK*/BRICK*/MAT*/PARTITION/COUNTER`）跟着 6×1 图集一起摘除：
+# 它们除了那六格瓦**没有任何别的使用者**（复现：`grep -n "\bPLANK\b\|\bCOUNTER\b" tools/*.py`
+# 在摘除前只命中本文件的 `tile_*` 六函数与预览标签串）。现在这些颜色住在
+# `tools/terrain_ramp.json:scenes.interior_herb.families` 的色阶档里，其中
+# `herb_plank.light #A6855C`、`herb_mat.light #C9B47A`、`herb_partition.light #6B4F3A`、
+# `herb_counter.light #8A6A46` 就是旧那四列的平涂色，搬进 12×9 没换颜色。
+# `PLASTER`/`PLASTER_DARK` 两行**留下**（从 `gen_manor_art` import）：`build_herb_hut` 与
+# `build_training_hall` 的可建造墙体还在用它们，删了等于顺手改了建筑的画——与下面铁匠铺那
+# 三行注释是同一条纪律。
 FORGE_EARTH = rgb("#6E5A44")
 FORGE_EARTH_DARK = rgb("#544434")
 CINDER = rgb("#3E3A34")
@@ -107,100 +111,12 @@ def plaque(cv, x0, y0, x1, y1, text, size=12, board=WOOD_DARK, face=WOOD_MID, in
 
 
 # ---------------------------------------------------------------------------
-# 室内地表
-# ---------------------------------------------------------------------------
-
-
-def tile_plank(seed=511):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, PLANK)
-    for y in range(0, TILE, 8):
-        cv.hline(0, TILE - 1, y, PLANK_DARK)
-        cv.hline(0, TILE - 1, y + 1, PLANK_LIGHT)
-    rnd = hash_stream(seed)
-    for _ in range(20):
-        cv.set(rnd(TILE), rnd(TILE), PLANK_DARK)
-    for _ in range(12):
-        cv.set(rnd(TILE), rnd(TILE), PLANK_LIGHT)
-    cv.vline(16, 0, 7, PLANK_DARK)
-    cv.vline(8, 8, 15, PLANK_DARK)
-    cv.vline(24, 8, 15, PLANK_DARK)
-    cv.vline(12, 16, 23, PLANK_DARK)
-    cv.vline(24, 24, 31, PLANK_DARK)
-    return cv
-
-
-def tile_brick_floor(seed=522):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, BRICK)
-    for row, y in enumerate(range(0, TILE, 8)):
-        offset = 0 if row % 2 == 0 else 8
-        cv.hline(0, TILE - 1, y, BRICK_DARK)
-        for x in range(offset, TILE, 16):
-            cv.vline(x, y, y + 7, BRICK_DARK)
-    rnd = hash_stream(seed)
-    for _ in range(18):
-        cv.set(rnd(TILE), rnd(TILE), BRICK_LIGHT)
-    for _ in range(14):
-        cv.set(rnd(TILE), rnd(TILE), shade(BRICK, 0.88))
-    return cv
-
-
-def tile_mat(seed=533):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, MAT)
-    for y in range(0, TILE, 4):
-        cv.hline(0, TILE - 1, y, MAT_DARK)
-    for x in range(0, TILE, 4):
-        cv.vline(x, 0, TILE - 1, shade(MAT, 0.94))
-    cv.rect(1, 1, TILE - 2, TILE - 2, shade(MAT, 1.06))
-    cv.hline(1, TILE - 2, 1, rgb("#DCC890"))
-    return cv
-
-
-def tile_white_wall(seed=544):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, PLASTER)
-    cv.rect(0, 0, TILE - 1, 3, mix(PLASTER, INK, 0.25))
-    cv.rect(0, 4, TILE - 1, 5, PLASTER_DARK)
-    rnd = hash_stream(seed)
-    for _ in range(16):
-        cv.set(rnd(TILE), 6 + rnd(24), PLASTER_DARK)
-    cv.rect(0, 29, TILE - 1, TILE - 1, WOOD_DARK)
-    return cv
-
-
-def tile_partition(seed=555):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, TILE - 1, PARTITION)
-    for x in range(0, TILE, 8):
-        cv.vline(x, 0, TILE - 1, WOOD_DARK)
-        cv.vline(x + 1, 0, TILE - 1, WOOD_LIGHT)
-    for y in (0, 15, 30):
-        cv.hline(0, TILE - 1, y, WOOD_DARK)
-    rnd = hash_stream(seed)
-    for _ in range(14):
-        cv.set(rnd(TILE), rnd(TILE), shade(PARTITION, 0.9))
-    return cv
-
-
-def tile_counter(seed=566):
-    cv = Canvas(TILE, TILE)
-    cv.rect(0, 0, TILE - 1, 12, COUNTER)
-    cv.hline(0, TILE - 1, 0, WOOD_LIGHT)
-    cv.hline(0, TILE - 1, 12, WOOD_DARK)
-    cv.rect(0, 13, TILE - 1, TILE - 1, WOOD_DARK)
-    for x in range(4, TILE, 10):
-        cv.vline(x, 14, TILE - 1, shade(WOOD_DARK, 0.8))
-    return cv
-
-
-# ---------------------------------------------------------------------------
-# 铁匠铺地表：**本文件不再出图**（M72-11 §推进顺序 5）。旧的那六格
-# `tile_forge_earth/tile_forge_slab/tile_cinder/tile_brick_wall/tile_stone_wall/tile_trough`
-# 与它们的 `_pack(forge)` 一起摘除——金标规范下图集的唯一产出点是
-# `gen_terrain_tiles.py --scene interior_forge`（12×9 + autotile + per-tile tint），这里再画
-# 一张 6×1 就是把"两套地表真相"留在盘上。`check()` 有反面对照：那两张图回盘就报红。
+# 室内地表：**本文件不再出图**（M72-11 §推进顺序 5）。旧的两批各六格——铁匠铺
+# `tile_forge_earth/tile_forge_slab/tile_cinder/tile_brick_wall/tile_stone_wall/tile_trough`、
+# 药庐 `tile_plank/tile_brick_floor/tile_mat/tile_white_wall/tile_partition/tile_counter`——
+# 连着它们的 `_pack(...)` 与 `build_tiles_preview` 一起摘除：金标规范下图集的唯一产出点是
+# `gen_terrain_tiles.py --scene <图>`（12×9 + autotile + per-tile tint），这里再画一张 6×1
+# 就是把"两套地表真相"留在盘上。`check()` 对两个目录各有反面对照：回盘就报红。
 # ---------------------------------------------------------------------------
 
 
@@ -616,20 +532,6 @@ def write_png(path, canvas):
         handle.write(canvas.to_png())
 
 
-def build_tiles_preview(tiles, title, labels, scale=4):
-    tile = TILE * scale
-    label_w = text_width("PARTITION", 1) + 10
-    cv = Canvas(label_w + tile + 8, 20 + len(tiles) * (tile + 4) + 8)
-    cv.rect(0, 0, cv.w - 1, cv.h - 1, rgb("#14171A"))
-    draw_text(cv, 4, 4, title, GOLD_LIGHT, 1)
-    for index, tile_canvas in enumerate(tiles):
-        y = 20 + index * (tile + 4)
-        draw_text(cv, 4, y + tile // 2 - 2, labels[index], BAMBOO_LIGHT, 1)
-        cv.rect(label_w - 1, y - 1, label_w + tile, y + tile, rgb("#262C33"))
-        cv.blit(tile_canvas.scaled(scale), label_w, y)
-    return cv
-
-
 def build_sprite_preview(entries, title, scale=2, cols=4):
     items = list(entries)
     pad = 10
@@ -668,11 +570,8 @@ def generate(quiet=False):
              for text, size in (("药", 12), ("书", 12), ("药炉", 11), ("茶灶", 11), ("酒坊", 11),
                                 ("药庐", 12), ("练功房", 12), ("仓房", 12), ("茶棚", 12), ("铁匠台", 12))
              ] + [(display, 11, "pixel", True) for _, _, display in FURNITURE + FACILITIES + BUILDABLES])
-    herb = [tile_plank(), tile_brick_floor(), tile_mat(), tile_white_wall(), tile_partition(), tile_counter()]
-    write_png(os.path.join(TILE_DIR, "interior_herb", "interior_ground.png"), _pack(herb))
-    write_png(os.path.join(TILE_DIR, "interior_herb", "_preview.png"),
-              build_tiles_preview(herb, "INTERIOR HERB HUT X4",
-                                  ["PLANK", "BRICK", "MAT", "WHITE WALL", "PARTITION", "COUNTER"]))
+    # 室内地表的出图代码（旧 `herb = [tile_plank(), ...]` 那三行与 `_pack`/`build_tiles_preview`）
+    # 随 §推进顺序 5 一起摘除：两张室内图各自的地表只由 `gen_terrain_tiles.py --scene <图>` 产出。
 
     rendered = []
     for name, factory, display in FURNITURE:
@@ -698,18 +597,12 @@ def generate(quiet=False):
     # 整图刚落盘就按行切出 body/roof：分块与整图同源同刻（`gen_manor_art.check_splits` 逐字节对拍）。
     splits = [split_stem(stem) for stem in BUILD_STEMS]
     if not quiet:
-        print(f"  1 tileset + {len(FURNITURE)} 家具 + {len(FACILITIES)} 设施 + {len(BUILDABLES)} 可建造")
-        print("  4 previews")
+        print(f"  0 tileset（两张室内地表都不出图）+ {len(FURNITURE)} 家具 + "
+              f"{len(FACILITIES)} 设施 + {len(BUILDABLES)} 可建造")
+        print("  3 previews")
         for stem, pieces in zip(BUILD_STEMS, splits):
             print(f"  split    {stem}: " + " + ".join(f"{os.path.basename(p)} {rows} 行"
                                                       for p, rows in pieces))
-
-
-def _pack(tiles):
-    sheet = Canvas(TILE * len(tiles), TILE)
-    for index, tile in enumerate(tiles):
-        sheet.blit(tile, index * TILE, 0)
-    return sheet
 
 
 EXPECTED = {
@@ -729,22 +622,17 @@ def check():
     from pixel_kit import decode_png
 
     issues = []
-    # **反面对照**：旧那张 6 列 × 1 行的铁匠铺图（含它的预览）必须**不在盘上**。M72-11
-    # §推进顺序 5 起铁匠铺的地表由 `gen_terrain_tiles.py --scene interior_forge` 出 12×9
-    # 那一张，留着 6×1 就是两套地表真相——谁把它恢复回来（或把本文件的出图代码加回来），
-    # 红在这里。药庐那张还是本文件出的 6×1（§推进顺序 5 第二片才搬），所以尺寸只判它。
-    for stale in (os.path.join(TILE_DIR, "interior_forge", "interior_ground.png"),
-                  os.path.join(TILE_DIR, "interior_forge", "_preview.png")):
-        if os.path.exists(stale):
-            issues.append(f"多出来的一套地表真相：{stale} 还在盘上——铁匠铺图集只由 "
-                          "gen_terrain_tiles.py --scene interior_forge 产出")
-    path = os.path.join(TILE_DIR, "interior_herb", "interior_ground.png")
-    if not os.path.exists(path):
-        issues.append("missing " + path)
-    else:
-        width, height, _, _ = decode_png(path)
-        if (width, height) != (TILE * 6, TILE):
-            issues.append(f"{path}: {width}x{height} != 192x32")
+    # **反面对照**：旧那两张 6 列 × 1 行的室内地表（连同各自的 `_preview.png`）必须**不在盘上**。
+    # M72-11 §推进顺序 5 起两张室内图的地表各由 `gen_terrain_tiles.py --scene <图>` 出 12×9
+    # 那一张，留着 6×1 就是两套地表真相——谁把它恢复回来（或把本文件的出图代码加回来），红
+    # 在这里。铁匠铺那两条是第一片（3f99bb8f）加的，本片把药庐并进来并把它们合成一个循环：
+    # 从此"室内"这一档的形状是**这四张文件都不许存在**，逐图点名会让第三张室内图漏登记。
+    for stale_scene in ("interior_forge", "interior_herb"):
+        for stale in (os.path.join(TILE_DIR, stale_scene, "interior_ground.png"),
+                      os.path.join(TILE_DIR, stale_scene, "_preview.png")):
+            if os.path.exists(stale):
+                issues.append(f"多出来的一套地表真相：{stale} 还在盘上——{stale_scene} 图集只由 "
+                              f"gen_terrain_tiles.py --scene {stale_scene} 产出")
     for name, (want_w, want_h) in EXPECTED.items():
         if name.startswith("interior_"):
             folder = FURNITURE_DIR
@@ -772,7 +660,7 @@ def main():
             for problem in problems:
                 print("[FAIL]", problem)
             raise SystemExit(1)
-        print(f"[OK] 批次 3 校验通过（1 tileset（药庐，铁匠铺那张只判它不在盘上）+ "
+        print(f"[OK] 批次 3 校验通过（0 tileset（两张室内图的 6×1 只判它们不在盘上）+ "
               f"{len(FURNITURE)} 家具 + {len(FACILITIES)} 设施 + {len(BUILDABLES)} 可建造）")
         return
     print("生成批次 3 美术 → 室内 / 家具 / 生产设施 / 可建造建筑")

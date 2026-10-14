@@ -22,12 +22,17 @@
   * herb 那档的语义位是错的：`"wall": PARTITION`（kind 5 木隔断）当墙用，而
     `building_kit.TILE_NATIVE_SOLID=(4,6)` 要求墙必须落在 4——照旧代码重跑，herb 的"墙"
     在跨图语义里根本不是墙（洞穴那批已把这条写成硬约束）。
-  * 所以 herb 的正牌生成器就是 §推进顺序 5 **第二片**的交付物（自带 12×9 图集与色阶档），
+  * 所以 herb 的正牌生成器就是 §推进顺序 5 后续那两片的交付物（第三片 `3710bd9f` 出图集、第四片出场景）。
+    **这一句原文写的是"第二片"**（`3f99bb8f` 落地时那句），那是按"一张图=一片"数的片序，与同一批落地的三条
+    CHANGELOG 标题（一片 = 半张图：forge 图集 / forge 场景 / herb 图集）冲突 ⇒ 第四片落地时按标题那套数法改净，
+    两套数法与改净范围记在 docs/58 §15 第 10 条
     旧实现按 `git show 3f99bb8f^:examples/game_jhyt/tools/gen_interior_scenes.py` 取回
     （钉 SHA 不写 `HEAD~1`：那句话写下时 HEAD~1 还是改名之前那一笔，现在 HEAD~1 已经是
     改名这一笔本身 ⇒ 相对位置取不到东西）。
     本批结束后 `scenes/interior_herb.scene` 处于"无唯一事实源"状态，这条登记在 plan 与
-    docs/58，不静默当成已完成。
+    docs/58，不静默当成已完成。**（旧说法→新实测：2026-10-13 第四片建 `tools/gen_herb_scene.py` 后这一档已闭合，
+    盘上那份场景由它逐字节重生成——`python tools/gen_herb_scene.py --out` 两次相同且与盘上 `cmp` 无差；登记原文
+    保留，因为它记的是"当时为什么不搬"的三条理由，那三条仍然成立。）
 
 **解图集的账**（这张图还清的两笔）：
   * 旧地表借用 `assets/art/tilesets/interior_forge/interior_ground.png`（6 列 × 1 行、
