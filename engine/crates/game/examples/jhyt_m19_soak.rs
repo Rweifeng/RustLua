@@ -11,7 +11,7 @@
 //! - C2 磁盘往返：同一 runtime 上 100 次 `save_manager.save()` → `save_manager.load()`
 //!   （真实写盘 + 原子提交 + 读回恢复），断言天数与地图不漂移。
 //! - D 性能/稳定性基线：固定步耗时、场景实体数、Lua 侧计数与存档摘要，
-//!   打印 `jhyt_m19_soak_baseline` 并写入 `artifacts/baselines/m19-soak.json`。
+//!   打印 `jhyt_m19_soak_baseline` 并写入 `baselines/m19-soak.json`。
 //!
 //! Usage:
 //!   cargo run -p game --example jhyt_m19_soak [-- <game_jhyt-root>]
@@ -361,7 +361,7 @@ fn assert_mode(runtime: &mut LuaRuntime, expected: &str) -> Result<(), Box<dyn s
     assert_str(runtime, "require('core.state').mode", expected)
 }
 
-/// 基线落盘：`artifacts/baselines/m19-soak.json`（供 M19-04/M20-05 文档引用）。
+/// 基线落盘：`baselines/m19-soak.json`（`RUSTLUA_BASELINES_DIR` 可改位置；供 M19-04/M20-05 文档引用）。
 fn write_baseline(
     project: &Path,
     line: &str,
@@ -375,7 +375,10 @@ fn write_baseline(
         .parent()
         .and_then(Path::parent)
         .ok_or("cannot resolve repo root from project path")?;
-    let dir = repo_root.join("artifacts").join("baselines");
+    let dir = match env::var_os("RUSTLUA_BASELINES_DIR") {
+        Some(custom) => PathBuf::from(custom),
+        None => repo_root.join("baselines"),
+    };
     fs::create_dir_all(&dir)?;
     let json = format!(
         "{{\n  \"task\": \"M19-04\",\n  \"source\": \"jhyt_m19_soak\",\n  \"per_step_ms\": {per_step_ms:.4},\n  \"soak_days\": {days:.0},\n  \"harvested_total\": {harvested:.0},\n  \"real_load_cycles\": {real_loads},\n  \"disk_save_load_cycles\": {disk_cycles},\n  \"snapshot_restores\": 3000,\n  \"line\": \"{line}\"\n}}\n"

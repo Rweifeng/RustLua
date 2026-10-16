@@ -9,7 +9,7 @@ param(
     [double]$MemoryLimitPercent = 10,
     # docs/54 §8-⑩：只比**跨机可比**的指标（几何量 + 分配峰值），跳过 p95/p99 时间。
     # 进门（`verify.ps1 -Benchmarks`）用它对比提交进版本库的基线：时间是机器相关的量，跨机器比
-    # 时间必然假红；同机 A/B 请用完整模式（把上一次的本地报告当 `-Previous`）。详见 artifacts/baselines/README.md。
+    # 时间必然假红；同机 A/B 请用完整模式（把上一次的本地报告当 `-Previous`）。详见 baselines/README.md。
     [switch]$GeometryOnly
 )
 

@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use crate::script::LUA_API_PROBE;
 use crate::script::LuaRuntime;
 
-/// 基线随源码提交（不放 `artifacts/baselines/`——那里除 README 外全被 `.gitignore` 排除，
+/// 基线随源码提交（不放 `baselines/`——那个目录整体被 `.gitignore` 排除，
 /// CI 拿不到文件，门就不成其为门）。
 const BASELINE: &str = include_str!("lua_api_surface.json");
 

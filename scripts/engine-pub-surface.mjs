@@ -28,7 +28,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(here);
 const mode = process.argv[2] === '--update' ? 'update' : 'check';
 const docRoot = process.argv[3] || join(repoRoot, 'engine', 'target', 'doc', 'engine');
-const baselinePath = join(repoRoot, 'artifacts', 'baselines', 'engine-pub-surface.json');
+// 本地基线目录（不入库）：默认 <repoRoot>/baselines，可用 RUSTLUA_BASELINES_DIR 改位置。
+const baselinesDir = process.env.RUSTLUA_BASELINES_DIR || join(repoRoot, 'baselines');
+const baselinePath = join(baselinesDir, 'engine-pub-surface.json');
 
 if (!existsSync(docRoot)) {
   console.log(`pub_surface_skipped reason=rustdoc_output_missing path=${docRoot} exit=3（先跑 cargo doc --no-deps --workspace --lib）`);
@@ -102,12 +104,12 @@ const text = JSON.stringify(payload, null, 2) + '\n';
 if (mode === 'update') {
   mkdirSync(dirname(baselinePath), { recursive: true });
   writeFileSync(baselinePath, text, 'utf8');
-  console.log(`pub_surface_updated path=artifacts/baselines/engine-pub-surface.json items=${unique.length}`);
+  console.log(`pub_surface_updated path=${relative(repoRoot, baselinePath).replace(/\\/g, '/')} items=${unique.length}`);
   process.exit(0);
 }
 
 if (!existsSync(baselinePath)) {
-  console.log('pub_surface_failed reason=baseline_missing path=artifacts/baselines/engine-pub-surface.json（用 --update 生成一次）');
+  console.log(`pub_surface_failed reason=baseline_missing path=${relative(repoRoot, baselinePath).replace(/\\/g, '/')}（用 --update 生成一次）`);
   process.exit(1);
 }
 const before = readFileSync(baselinePath, 'utf8').replace(/^\uFEFF/, '');

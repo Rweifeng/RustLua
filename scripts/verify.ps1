@@ -10,7 +10,7 @@ param(
     [switch]$Mvp,
     # 仅跑 MVP 追加部分（跳过 fmt/clippy/test/build 常规门）。
     [switch]$MvpOnly,
-    # WP0：运行固定 ECS/2D/3D 阶梯基准并写入本地 artifacts/baselines。
+    # WP0：运行固定 ECS/2D/3D 阶梯基准并写入本地 baselines/（RUSTLUA_BASELINES_DIR 可改位置）。
     [switch]$Benchmarks,
     # docs/54 §8-⑨：跑 Web 平台证据（浏览器契约层 + 已发布产物的启动层）。
     # 环境受限（无浏览器/无 node/无 wasm32 目标）时**显式**跳过并打印原因，不伪造通过。
@@ -77,6 +77,10 @@ if ($quick) {
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $engineRoot = Join-Path $projectRoot "engine"
+# 基线目录：默认 `<仓库根>\baselines`（整机本地，不入库），可用 RUSTLUA_BASELINES_DIR 指到别处。
+# 缺目录时由用到它的步骤现场建，不假设上一台机器留下了什么。
+$baselinesRoot = if ($env:RUSTLUA_BASELINES_DIR) { $env:RUSTLUA_BASELINES_DIR } else { Join-Path $projectRoot "baselines" }
+New-Item -ItemType Directory -Force -Path $baselinesRoot | Out-Null
 $gameRoot = Join-Path $projectRoot "examples"
 # 工程校验与干净目录自测的默认目标工程：examples 重组后样板工程在子目录里
 # （`examples/game_jhyt`），根目录已没有 project.toml——此前写死 `examples` 会让
@@ -472,7 +476,7 @@ try {
 
         # WP12 阶段 0：`engine` 对外 Rust 符号面的基线门。它读的就是上面 `cargo doc` 刚生成的产物
         # （`engine/target/doc/engine`），所以必须紧跟在那一步之后；判据是"路径 + 项的种类 + 方法还挂在
-        # 哪个类型上"逐项与 `artifacts/baselines/engine-pub-surface.json` 相同。
+        # 哪个类型上"逐项与 `baselines/engine-pub-surface.json` 相同。
         # 抓的是模块拆分这一类事故：`impl` 块搬进 `pub mod` 子模块、`pub use` 漏了一项，都会多/少一条路径。
         # 缺 node 时按本仓库口径打印原因后跳过，绝不把"跳过"写成通过。
         Write-Step "Engine public Rust surface"
@@ -615,7 +619,7 @@ try {
         Write-Step "Spatial migration report"
         Push-Location $projectRoot
         try {
-            $migrationReportPath = Join-Path $projectRoot "artifacts\baselines\spatial-migration-report.txt"
+            $migrationReportPath = Join-Path $baselinesRoot "spatial-migration-report.txt"
             $migrationOutput = & cargo run --quiet --manifest-path "engine/Cargo.toml" -p editor -- --project $defaultGameProject --migrate-spatial --migrate-report $migrationReportPath 2>&1
             $migrationExit = $LASTEXITCODE
             $migrationOutput | ForEach-Object { Write-Host $_ }
@@ -646,7 +650,7 @@ try {
         Write-Step "Editor performance baseline"
         Push-Location $projectRoot
         try {
-            $editorBaselinePath = Join-Path $projectRoot "artifacts\baselines\editor-baseline.txt"
+            $editorBaselinePath = Join-Path $baselinesRoot "editor-baseline.txt"
             $editorBaselineOutput = & cargo run --quiet --manifest-path "engine/Cargo.toml" -p editor -- --perf-baseline --perf-report $editorBaselinePath 2>&1
             $editorBaselineExit = $LASTEXITCODE
             $editorBaselineOutput | ForEach-Object { Write-Host $_ }
@@ -675,7 +679,7 @@ try {
         Write-Step "Editor GUI smoke (synthetic full frames)"
         Push-Location $projectRoot
         try {
-            $guiSmokePath = Join-Path $projectRoot "artifacts\baselines\editor-gui-smoke.txt"
+            $guiSmokePath = Join-Path $baselinesRoot "editor-gui-smoke.txt"
             $guiSmokeOutput = & cargo run --quiet --manifest-path "engine/Cargo.toml" -p editor -- --gui-smoke --gui-report $guiSmokePath 2>&1
             $guiSmokeExit = $LASTEXITCODE
             $guiSmokeOutput | ForEach-Object { Write-Host $_ }
@@ -1417,7 +1421,7 @@ if ($Benchmarks) {
     Write-Step "WP0 performance baselines"
     Push-Location $engineRoot
     try {
-        $baselineRoot = Join-Path $projectRoot "artifacts\baselines"
+        $baselineRoot = $baselinesRoot
         $ecsBaselinePath = Join-Path $baselineRoot "ecs-stairs.json"
         $spriteBaselinePath = Join-Path $baselineRoot "sprite-10000.json"
         $tilemapBaselinePath = Join-Path $baselineRoot "tilemap-100x100.json"
@@ -1498,11 +1502,11 @@ if ($Benchmarks) {
     }
     # docs/54 §8-⑩：把"这一次的 3D 报告"和**提交进版本库**的结构性基线比一次——几何量
     # （draw/instances/triangles）与分配峰值跨机可比，因此可以进门判红；时间（p95/p99）是机器
-    # 相关的量，这一档只打印不判定（同机 A/B 用完整模式，见 artifacts/baselines/README.md）。
+    # 相关的量，这一档只打印不判定（同机 A/B 用完整模式，见 baselines/README.md）。
     Write-Step "3D baseline comparison (geometry + allocation)"
-    $committedBaseline = Join-Path $projectRoot "artifacts\baselines\wp0-3d-stress.committed.json"
+    $committedBaseline = Join-Path $baselinesRoot "wp0-3d-stress.committed.json"
     if (-not (Test-Path -LiteralPath $committedBaseline)) {
-        throw "committed 3D baseline is missing: $committedBaseline（见 artifacts/baselines/README.md）"
+        throw "committed 3D baseline is missing: $committedBaseline（本地基线不入库；把上一次确认没回退的 wp0-3d-stress.json 复制成这个文件名，见 baselines/README.md）"
     }
     Invoke-Checked powershell @(
         "-NoProfile", "-ExecutionPolicy", "Bypass",

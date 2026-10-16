@@ -12,7 +12,7 @@
 //! ```powershell
 //! cd engine
 //! cargo run --release -p engine --example wp0_scene_frame -- --cycles 30 `
-//!   --output ..\artifacts\baselines\wp0-scene-frame.json
+//!   --output ..\baselines\wp0-scene-frame.json
 //! ```
 
 #[path = "support/wp0_alloc.rs"]

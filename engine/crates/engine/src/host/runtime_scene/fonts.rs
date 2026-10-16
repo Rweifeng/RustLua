@@ -3,7 +3,7 @@
 //! 四个 `pub fn` 是 `host` 对外符号面的一部分：`mod.rs` 用 `pub use fonts::{...}` 把它们留在
 //! `engine::host::runtime_scene::` 这条路径上，因此 `host/mod.rs` 的 `pub use` 与
 //! `engine::host::load_project_font_atlas` 的解析结果都没变（守卫见
-//! `engine/crates/engine/tests/host_pub_surface.rs` 与 `artifacts/baselines/engine-pub-surface.json`）。
+//! `engine/crates/engine/tests/host_pub_surface.rs` 与 `baselines/engine-pub-surface.json`）。
 //! `prewarm_font_atlas` 只被 `load_project_font_atlas` 调用，保持私有。
 
 use crate::host::frame::FontHandle;

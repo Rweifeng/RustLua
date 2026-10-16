@@ -12,7 +12,7 @@
 //! ```powershell
 //! cd engine
 //! cargo run --release -p engine --example wp0_ecs_storage -- --cycles 30 `
-//!   --output ..\artifacts\baselines\wp0-ecs-storage.json
+//!   --output ..\baselines\wp0-ecs-storage.json
 //! ```
 
 #[path = "support/wp0_alloc.rs"]
