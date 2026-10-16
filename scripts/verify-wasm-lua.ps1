@@ -258,8 +258,8 @@ $bridgeExit = Invoke-NodeScript $nodeFlags (Join-Path $scriptDir "verify-no-modu
 # ---------- 4. 输入批量线格式的语义对拍 ----------
 # 新协议（`RLFI` 批量二进制）必须与旧协议（每帧编译源码）逐步等价：两边都从出厂源码里抽
 # （旧的序列化器 / 新的打包器），配上真 wasm。省下的开销容易量，语义漂移不会自己变红。
-Write-Log "==> input-frame-abi-test.mjs"
-$abiExit = Invoke-NodeScript $nodeFlags (Join-Path $scriptDir "input-frame-abi-test.mjs") $glueDir
+Write-Log "==> input-frame-abi-test.mjs（已随 B8 退休：旧协议那套连写者都没有了，见上方说明）"
+# （原第 4 步的对拍调用已删：`input-frame-abi-test.mjs` 随旧世界一起退休。）
 
 # ---------- 5. 宿主画布探针的契约（WP8 微信半边第一片） ----------
 # `probe_canvas_host` 是"引擎能不能在小游戏那种没有浏览器构造器的宿主上起渲染栈"的判据。
@@ -276,17 +276,17 @@ else {
     $probeExit = 3
 }
 
-Write-Log "==> 汇总: spike_exit=$spikeExit bridge_exit=$bridgeExit abi_exit=$abiExit probe_exit=$probeExit"
+Write-Log "==> 汇总: spike_exit=$spikeExit bridge_exit=$bridgeExit probe_exit=$probeExit"
 
 # 任一为 3（输入缺失/环境受限）且无真失败 → 整体按环境受限跳过；其余非零一律判红。
-$exits = @($spikeExit, $bridgeExit, $abiExit, $probeExit)
+$exits = @($spikeExit, $bridgeExit, $probeExit)
 $realFailures = @($exits | Where-Object { $_ -ne 0 -and $_ -ne 3 })
 if (($exits -contains 3) -and ($realFailures.Count -eq 0)) {
     Write-Log "wasm_lua_skipped reason=node_input_missing" Yellow
     Exit-With 3
 }
 if ($realFailures.Count -gt 0) {
-    Write-Log "wasm_lua_FAILED spike_exit=$spikeExit bridge_exit=$bridgeExit abi_exit=$abiExit probe_exit=$probeExit" Red
+    Write-Log "wasm_lua_FAILED spike_exit=$spikeExit bridge_exit=$bridgeExit probe_exit=$probeExit" Red
     Exit-With 1
 }
 

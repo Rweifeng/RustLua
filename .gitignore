@@ -8,8 +8,7 @@ xtask/target/
 engine/.tools/
 
 # Generated release copies and profiling/screenshot output
-**/artifacts/logs/
-artifacts/
+/artifacts/
 
 # 本地基线（WP0 性能阶梯、editor 基线、engine 对外符号面基准）。全部只在本机生成与比对，
 # 不入库；出处与可比性裁定见 baselines/README.md。
@@ -23,6 +22,7 @@ artifacts/
 Thumbs.db
 .dbg/
 .cargo-target/
+.tools/
 
 # Per-project working directory: resource database, import cache, save data
 **/.cache/

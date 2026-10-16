@@ -33,13 +33,29 @@ pub const MAGIC: [u8; 4] = *b"RLFI";
 pub const VERSION: u16 = 1;
 
 /// 定长帧字节数。JS 侧不再手写这个数——它从 `input_frame_layout_json()` 取，避免两处各写一份。
-pub const WIRE_LEN: usize = 164;
+pub const WIRE_LEN: usize = 232;
 
 /// 键位槽数（`u128` 位图恰好覆盖 0..127）。
 pub const KEY_SLOTS: usize = 128;
 
 /// 鼠标按钮槽数（`u64` 位图恰好覆盖 0..63）。
 pub const MOUSE_SLOTS: usize = 64;
+
+/// 多指上限：定容数组的槽数（不用变长表——线格式是定长布局 + 具名偏移，变长要改分帧）。
+pub const MAX_POINTERS: usize = 4;
+
+// ~~多指之前那一版的长度（164 B）~~ —— **已删除**（2026-10-16）。这里用普通注释而不是文档注释：
+// 它说明的是一个**已删除**的项，挂在下一个项上本来就不对（`///` 块后面夹空行还会触发
+// `clippy::empty_line_after_doc_comments`，本轮就是被它咬到的）。
+//
+// 这里曾经写着"解码两版都收、编码只写 WIRE_LEN，因为 web-runtime.js 是另一个写者、自己打包
+// 164 B、而它还在 --rust-scene-host-off 里活着"。**那条理由已经不成立**：JS 打包器按
+// input_frame_layout_json() 报的 wire_len 分配缓冲（new Uint8Array(layout.wire_len)），
+// 而那个字段报的就是 WIRE_LEN ⇒ 它写出来的本来就是 232 B（多指块留零）。
+//
+// 所以 164 B 的写者一个都不剩，decode 只认一种长度。这段历史留在这里，是因为"跨语言协议变更时
+// 读者宽容"这个决定本身没错 —— 错的是**用一段人工维护的注释当判据**：它没跟着代码更新，于是
+// 变成"没人敢删"的死分支（docs/51 把这类脱节列为本项目的已知边界）。
 
 /// 键位表：**下标即线路位序**。改动顺序或删项等于改协议，必须同时把 [`VERSION`] +1 并跑
 /// `scripts/check-input-abi-parity.mjs`（它钉住"游戏绑定表里出现的每个键名都在这里"）。
@@ -196,13 +212,19 @@ pub mod offsets {
     pub const MOUSE_HELD: usize = 140;
     pub const MOUSE_JUST: usize = 148;
     pub const MOUSE_JUST_RELEASED: usize = 156;
+    /// 当前按住/接触的指针数（`u32`，解码时钳到 [`MAX_POINTERS`]）。
+    pub const POINTER_COUNT: usize = 164;
+    /// 每个指针**按下那一刻**的位置（`MAX_POINTERS` 个 f64 对，按按下先后排列）。
+    pub const PRESS_CURSORS: usize = 168;
 }
 
 // 布局自洽：上面那些常量算出来的总长必须等于 WIRE_LEN，否则编解码会写下标越界。
 const _: () = {
+    // 曾经这里还有一条"鼠标块末尾 == 164"（守住 legacy 长度）的断言；legacy 删掉后它没有意义，
+    // 只留下"多指块末尾 == WIRE_LEN"这条真正防越界的。
     assert!(
-        offsets::MOUSE_JUST_RELEASED + 8 == WIRE_LEN,
-        "offsets 与 WIRE_LEN 不一致"
+        offsets::PRESS_CURSORS + MAX_POINTERS * 16 == WIRE_LEN,
+        "多指块与 WIRE_LEN 不一致"
     );
 };
 
@@ -256,6 +278,14 @@ pub struct FrameInput {
     pub mouse_just: u64,
     /// 鼠标抬起边沿。
     pub mouse_just_released: u64,
+    /// 当前指针数（多指）。`0` 也包括"旧版写者只打包了 164 B"这一情形。
+    pub pointer_count: u8,
+    /// 每个指针的按下点，**按按下先后**排列；`[0..pointer_count]` 有效。
+    ///
+    /// 与 [`Self::press_cursor`] 的关系：后者是**最近一次**按下的那个点（旧语义，保持有效），
+    /// 即 `press_cursors[pointer_count - 1]`。两者冗余是刻意的——旧读者读旧字段、新读者循环数组；
+    /// 不变式由测试钉住，免得两份表示各自漂开。
+    pub press_cursors: [[f64; 2]; MAX_POINTERS],
 }
 
 impl Default for FrameInput {
@@ -283,6 +313,8 @@ impl FrameInput {
             mouse_held: 0,
             mouse_just: 0,
             mouse_just_released: 0,
+            pointer_count: 0,
+            press_cursors: [[0.0, 0.0]; MAX_POINTERS],
         }
     }
 
@@ -310,11 +342,17 @@ impl FrameInput {
         write_u64(out, offsets::MOUSE_HELD, self.mouse_held);
         write_u64(out, offsets::MOUSE_JUST, self.mouse_just);
         write_u64(out, offsets::MOUSE_JUST_RELEASED, self.mouse_just_released);
+        write_u32(out, offsets::POINTER_COUNT, u32::from(self.pointer_count));
+        for (index, point) in self.press_cursors.iter().enumerate() {
+            write_pair(out, offsets::PRESS_CURSORS + index * 16, *point);
+        }
         Ok(())
     }
 
     /// 从定长缓冲解析。magic/版本/长度任一不符即 [`AbiError`]。
     pub fn decode(bytes: &[u8]) -> Result<Self, AbiError> {
+        // **只认 `WIRE_LEN`**：以前两版都收，是因为 `web-runtime.js` 当时自己打包 164 B。现在它按
+        // 布局报的 `wire_len`（= `WIRE_LEN`）分配 ⇒ 164 B 的写者一个都不剩，单边收紧不伤任何在跑的路。
         if bytes.len() != WIRE_LEN {
             return Err(AbiError::Length {
                 actual: bytes.len(),
@@ -331,6 +369,13 @@ impl FrameInput {
                 expected: VERSION,
             });
         }
+        // 计数钳到上限：越界计数是上游的错，但截断后仍能读出有效前缀，比整帧失败更有用。
+        let pointer_count =
+            (read_u32(bytes, offsets::POINTER_COUNT) as usize).min(MAX_POINTERS) as u8;
+        let mut press_cursors = [[0.0, 0.0]; MAX_POINTERS];
+        for (index, point) in press_cursors.iter_mut().enumerate() {
+            *point = read_pair(bytes, offsets::PRESS_CURSORS + index * 16);
+        }
         Ok(Self {
             frame: read_u32(bytes, offsets::FRAME),
             axis: read_pair(bytes, offsets::AXIS),
@@ -344,6 +389,8 @@ impl FrameInput {
             mouse_held: read_u64(bytes, offsets::MOUSE_HELD),
             mouse_just: read_u64(bytes, offsets::MOUSE_JUST),
             mouse_just_released: read_u64(bytes, offsets::MOUSE_JUST_RELEASED),
+            pointer_count,
+            press_cursors,
         })
     }
 
@@ -498,6 +545,8 @@ mod tests {
             mouse_held: 0b01,
             mouse_just: 0b10,
             mouse_just_released: 0,
+            pointer_count: 2,
+            press_cursors: [[12.0, 34.0], [56.0, 78.0], [0.0, 0.0], [0.0, 0.0]],
         }
     }
 
@@ -633,6 +682,21 @@ mod tests {
         assert_eq!(mouse_slot("nosuchbutton"), None);
     }
 
+    /// 旧长度（164 B）**不再被接受** —— 这是那条 legacy 分支的**删除判据**：它以前断言"164 仍可解码"，
+    /// 而那条路现在连写者都没有（详见 `LEGACY_WIRE_LEN` 被删处留的那段历史）。保留同形状的一条负例，
+    /// 免得"宽松接受到底还在不在"只能靠翻代码确认。
+    #[test]
+    fn legacy_length_is_rejected_now() {
+        let mut wire = [0u8; WIRE_LEN];
+        let frame = FrameInput::new();
+        frame.encode(&mut wire).expect("encode");
+        let short = FrameInput::decode(&wire[..164]);
+        assert!(
+            matches!(short, Err(AbiError::Length { .. })),
+            "164 应当报长度错"
+        );
+    }
+
     #[test]
     fn offsets_do_not_overlap() {
         // 逐个字段写满再读回，能抓出"两个字段共用偏移"（只对单字段做往返是抓不到的）。
@@ -650,10 +714,16 @@ mod tests {
             mouse_held: 1,
             mouse_just: 2,
             mouse_just_released: 4,
+            pointer_count: 2,
+            press_cursors: [[11.0, 12.0], [13.0, 14.0], [0.0, 0.0], [0.0, 0.0]],
         };
         frame.encode(&mut wire).expect("encode");
         let back = FrameInput::decode(&wire).expect("decode");
         assert_eq!(back.frame, 7);
+        // 多指块也要逐个读回：它与既有的 `press_cursor` 是两份表示，最怕"写到同一个偏移"。
+        assert_eq!(back.pointer_count, 2);
+        assert_eq!(back.press_cursors[0], [11.0, 12.0]);
+        assert_eq!(back.press_cursors[1], [13.0, 14.0]);
         assert_eq!(back.axis, [1.0, 2.0]);
         assert_eq!(back.cursor, [3.0, 4.0]);
         assert_eq!(back.press_cursor, [5.0, 6.0]);

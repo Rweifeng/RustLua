@@ -118,7 +118,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("  肥料 3 级与品质派生全部与设计案一致，品质条目未泄漏进商店");
 
-    banner("② 进山庄新档，取 2 块药田 DIRT（③④ 用），⑤ 用出生点面前格 (16,4)");
+    banner("② 进山庄新档，取 2 块药田 DIRT（③④ 用），⑤ 用固定站位格 (16,4)");
     open_main_menu(&mut runtime)?;
     click_button(&mut runtime, "BtnStart")?;
     assert_scene_is(&mut runtime, "manor")?;
@@ -126,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if cells.len() < 2 {
         return Err(format!("药田区未开垦 DIRT 不足 2 格，实际 {}", cells.len()).into());
     }
-    println!("  药田格：{:?}；⑤ 固定用出生点面前格 (16,4)", cells);
+    println!("  药田格：{:?}；⑤ 固定用 (16,4)", cells);
 
     banner("③ 骨肥：薄荷 growth 3→2 天成熟，施肥消耗 1 个肥料");
     let bone_plot = cells[0];
@@ -215,9 +215,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  灵肥薄荷单茬 +{}（yield 2 → 3）", after - before);
 
     banner("⑤ 草药肥：收获至少良好（普通档并入良好），再生第二茬同享");
-    // 用出生点面前格 (16,4)：最左列站位 (14,5)(14,6)(14,7) 离庄园 NPC 过近，
-    // 按 E 会被 dialogue 候选优先拦截（dialogue 按最近距离判定，不要求面前）；
-    // 出生点 (16,3) 是 m24 ⑧ 验证过的安全站位（面前格可 till、无 NPC 干扰）。
+    // 用 (16,4)（`till_at` 站到它的南邻 (16,3) 朝上）：最左列站位 (14,5)(14,6)(14,7) 离庄园
+    // NPC 过近，按 E 会被 dialogue 候选优先拦截（dialogue 按最近距离判定，不要求面前）；
+    // (16,3) 是 m24 ⑧ 验证过的安全站位（面前格可 till、无 NPC 干扰）。
+    // #28 起山庄出生点在 (19,3)，本节用的是显式传送站位，不再停在出生点。
     let herb_plot = (16, 4);
     till_at(&mut runtime, herb_plot)?;
     add_fertilizer(&mut runtime, "herb_fertilizer")?;

@@ -2,19 +2,24 @@
 //
 // ## 它防的是哪一类缺陷
 // 批量 ABI 把键名从"每帧上线"改成"位图 + 固定键表"。于是**多了一个静默失效面**：
-// 游戏绑定表里写了某个键，而线路键表里没有它 —— 那个键就永远收不到，症状是
-// "某个键按了没反应"，只在该键上出现、只在该平台出现。第一次实测就真发生了：
+// 某个键在某一侧写得出来、另一侧不认识 —— 那个键就永远收不到，症状是"某个键按了没反应"，
+// 只在该键上出现、只在该平台出现。第一次实测就真发生了：
 // 绑定表里有 `volume_up = {'=', '+'}` / `volume_down = {'-', '_'}`，而键表漏了 `+` 与 `_`
 // （Shift 之后的**字符形式**），也就是"Shift+= 调不了音量"。
 //
-// 这条门在**构建之前**把三份东西对起来（都不需要产物，纯静态）：
-//   ① Rust `rustlua-frame-abi` 的 `KEY_NAMES`（线路位序的唯一真源）；
-//   ② `web-runtime.js` 预置层的 `bindings` 表（游戏绑定了哪些键）；
-//   ③ 宿主送进来的 DOM 键名（剧本/harness 里的 `key: '…'`）经 `keyName()` 归一后的结果。
-// 任一处出现表外键名即红。另外顺手钉住"顺序即位序"这件事的周边约束：唯一、全小写、不超槽位。
+// ## B8 之后它检查什么（三条腿，都在**活着的**名字空间里）
+//   ① Rust `rustlua-frame-abi` 的 `KEY_NAMES` 自洽（线路位序的唯一真源：全小写、唯一、不超槽位）；
+//   ② **工程绑定**：每个 `examples/*/project.toml` 的 `[input] map` 里 `key:<名>` 必须被引擎的
+//      键名表认识（`rustlua-input/src/input.rs` 的 `define_key_codes!` 那张 `KeyCode => "name"` 表）。
+//      这条是 **B8 新加的**：改之前这里比的是 `web-runtime.js` 预置层的 `bindings` 表，而那个表随
+//      旧世界消失；而工程绑定走的是**另一套名字空间**（winit 风格 `key:keyj`，见 `project.toml` 的
+//      注释），原来**没有任何静态门**看着它 —— 现在它比原来那条更贴近"真会发出去的东西"。
+//   ③ **宿主 DOM 键名**：剧本/harness 里出现的 `key: '…'` 与常见 DOM 值，经归一后在 `KEY_NAMES` 里。
+//      归一规则在门内**另写一份**（独立副本才有意义），并与 Rust 的 `frame_input::wire_key_name`
+//      交叉验证（那才是生产实现，且它自己有 `dom_key_names_normalize_exactly_like_the_js_host` 测试）。
 //
 // 退出码：0 通过；1 有断言失败；3 找不到源文件/抽不出块（环境问题，不是通过）。
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,10 +27,12 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..');
 
 const abiPath = join(repoRoot, 'engine', 'crates', 'rustlua-frame-abi', 'src', 'lib.rs');
-const runtimePath = join(repoRoot, 'plugins', 'webgl', 'web-runtime.js');
+const engineKeysPath = join(repoRoot, 'engine', 'crates', 'rustlua-input', 'src', 'input.rs');
+const wireKeyPath = join(repoRoot, 'engine', 'crates', 'game_web', 'src', 'frame_input.rs');
 const harnessPath = join(repoRoot, 'scripts', 'wechat-minigame-harness.js');
+const examplesRoot = join(repoRoot, 'examples');
 
-for (const path of [abiPath, runtimePath]) {
+for (const path of [abiPath, engineKeysPath, wireKeyPath]) {
   if (!existsSync(path)) {
     console.error(`missing source file: ${path}`);
     process.exit(3);
@@ -33,7 +40,8 @@ for (const path of [abiPath, runtimePath]) {
 }
 
 const abiSource = readFileSync(abiPath, 'utf8');
-const runtimeSource = readFileSync(runtimePath, 'utf8');
+const engineKeysSource = readFileSync(engineKeysPath, 'utf8');
+const wireKeySource = readFileSync(wireKeyPath, 'utf8');
 
 let failed = 0;
 let passed = 0;
@@ -67,7 +75,6 @@ function rustLiterals(source, startAnchor, endAnchor) {
     let value = '';
     while (cursor < body.length && body[cursor] !== '"') {
       if (body[cursor] === '\\') {
-        // Rust 转义：`\\` → `\`、`\"` → `"`；其余按字面量收（键表里只有这两种）。
         value += body[cursor + 1];
         cursor += 2;
         continue;
@@ -105,23 +112,46 @@ check('键数不超槽位', keyNames.length <= keySlots, `${keyNames.length} > $
 check('鼠标名不超槽位', mouseNames.length <= mouseSlots, `${mouseNames.length} > ${mouseSlots}`);
 console.log(`  剩余键槽 ${keySlots - keyNames.length} 个（新增键名要同步 version+1 并跑 ABI 对拍）`);
 
-// ---- ② 预置层绑定表（游戏绑定了哪些键）----
-const bindingsStart = runtimeSource.indexOf('local bindings = {');
-if (bindingsStart < 0) {
-  console.error('抽不出 web-runtime.js 的 bindings 表');
-  process.exit(3);
-}
-const bindingsEnd = runtimeSource.indexOf('\n}', bindingsStart);
-const bindingsBody = runtimeSource.slice(bindingsStart, bindingsEnd);
-const bindingKeys = [...bindingsBody.matchAll(/'([^']*)'/g)].map((match) => match[1]);
-const bindingUnique = [...new Set(bindingKeys)].sort();
-const missingFromTable = bindingUnique.filter((name) => !keyNames.includes(name));
-check(`绑定表用到的键全在线路键表里（${bindingUnique.length} 个）`,
-  missingFromTable.length === 0,
-  `缺 ${missingFromTable.map((name) => `'${name}'`).join(', ')}`);
+// ---- ② 工程绑定：`project.toml` 的 `[input] map` 里 key: 名字，引擎必须认识 ----
+// 名字表 = `define_key_codes!(` 里那张 `KeyCode => "name"`（宏体，逐行 `Name => "name"`）。
+const engineKeyNames = rustLiterals(engineKeysSource, 'define_key_codes!(', '\n);');
+check(`引擎键名表抽得出来（${engineKeyNames.length} 项）`, engineKeyNames.length > 20);
+const engineKeySet = new Set(engineKeyNames);
 
-// ---- ③ 宿主送进来的 DOM 键名，经 `keyName()` 归一后必须在表里 ----
-// 与 web-runtime.js 的 keyName 逐条对齐（' '→space、ArrowX→x、其余小写）。
+const projectMaps = [];
+for (const entry of readdirSync(examplesRoot)) {
+  const toml = join(examplesRoot, entry, 'project.toml');
+  if (!existsSync(toml)) continue;
+  const text = readFileSync(toml, 'utf8');
+  // 只认 `[input]` 段里的 `map = "..."`（TOML 基本串：把 \n 还原成真换行）。
+  const section = text.slice(text.indexOf('[input]'));
+  const mapMatch = section.match(/^\s*map\s*=\s*"([^"]*)"/m);
+  if (!mapMatch) continue;
+  const body = mapMatch[1].replace(/\\n/g, '\n');
+  const keyTokens = [];
+  for (const line of body.split('\n')) {
+    for (const part of line.split(',')) {
+      // 一个条目形如 `<动作>=key:<名>`（可再跟 `,pad:2` / `,padaxis:1+`）。**动作名在前**，
+      // 所以不能按 `key:` 开头判 —— 第一版就这么写，抽出 0 个键。
+      const token = part.trim();
+      const at = token.indexOf('key:');
+      if (at < 0) continue;
+      const name = token.slice(at + 'key:'.length).match(/^[A-Za-z0-9]+/);
+      if (name) keyTokens.push(name[0]);
+    }
+  }
+  projectMaps.push({ name: entry, keys: keyTokens });
+}
+const allProjectKeys = [...new Set(projectMaps.flatMap((project) => project.keys))].sort();
+check(`工程 project.toml 的 [input] 抽得出来（${projectMaps.length} 个工程 / ${allProjectKeys.length} 个键）`,
+  projectMaps.length > 0 && allProjectKeys.length > 0);
+const unknownProjectKeys = allProjectKeys.filter((name) => !engineKeySet.has(name));
+check(`工程绑定的键名引擎全认识（${allProjectKeys.length} 个）`,
+  unknownProjectKeys.length === 0,
+  `不认识 ${unknownProjectKeys.map((name) => `'${name}'`).join(', ')}（引擎键名表在 rustlua-input/src/input.rs）`);
+
+// ---- ③ 宿主送进来的 DOM 键名，经归一后必须在 KEY_NAMES 里 ----
+// 归一规则：' '→space、ArrowX→x、其余小写。**门内独立写一份**（复制运行时那份就等于测自己）。
 function normalizeDomKey(key) {
   const lowered = String(key).toLowerCase();
   if (lowered === ' ') return 'space';
@@ -141,19 +171,17 @@ check(`宿主 DOM 键名归一后全在表里（${normalized.length} 个）`,
   missingDom.length === 0,
   `缺 ${missingDom.map((name) => `'${name}'`).join(', ')}`);
 
-// 归一函数本身也要与运行时一致：抽运行时 keyName 的 " " 与 arrowX 两条特例做交叉验证。
-const keyNameSource = runtimeSource.slice(
-  runtimeSource.indexOf('const keyName = event =>'),
-  runtimeSource.indexOf('window.addEventListener(\'keydown\''));
-check('运行时的 keyName 归一规则与门内一致',
-  keyNameSource.includes("=== ' '") && keyNameSource.includes("'space'")
-  && keyNameSource.includes("startsWith('arrow')") && keyNameSource.includes('slice(5)'),
-  'keyName 改了写法，这条门的归一函数需要同步');
+// 归一规则必须与**生产实现**一致。B8 之前这里读的是 `web-runtime.js` 的 `keyName`；现在那条路
+// 已经删掉，生产实现是 Rust 的 `frame_input::wire_key_name`（浏览器/微信都走它），所以交叉验证
+// 换成 Rust 源码的两条特例（它自己另有 `dom_key_names_normalize_exactly_like_the_js_host` 测试）。
+check('Rust wire_key_name 的两条特例仍在（空格与方向键）',
+  wireKeySource.includes('" "') && wireKeySource.includes('"space"') && /arrow/i.test(wireKeySource),
+  'frame_input.rs 的 wire_key_name 改了写法，本门的归一函数需要同步');
 
 console.log(`\nRESULT: ${passed} passed, ${failed} failed`);
 if (failed > 0) {
   console.error('input_abi_key_parity_FAILED');
   process.exit(1);
 }
-console.log(`input_abi_key_parity_ok keys=${keyNames.length} bindings=${bindingUnique.length} ` +
+console.log(`input_abi_key_parity_ok keys=${keyNames.length} project_keys=${allProjectKeys.length} ` +
   `dom=${normalized.length} wire_len=${wireLen}`);

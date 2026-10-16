@@ -210,7 +210,8 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     // 常驻的虚拟控件只会盖住画面。此前 `ui/virtual_pad.lua` 只能按「宿主有没有实现
     // `input.virtual_key` / `ui.circle`」来判，而这四个 API 由本模块统一注册，桌面也全有，
     // 于是判定恒为真、桌面版照画摇杆。**能力存在 ≠ 需要触屏控件**，必须要平台标识。
-    // wasm 两条发布路径（浏览器 / 微信小游戏）共用同一运行时，都返回 `"webgl"`。
+    // wasm 两个平台发布变体（浏览器 / 微信小游戏）都由同一个 `game_web` 源核心编译；
+    // 最终二进制可不同，但这里是同一个 wasm32 编译期常量，因此都返回 `"webgl"`。
     app.set(
         "platform",
         lua.create_function(|_, ()| {

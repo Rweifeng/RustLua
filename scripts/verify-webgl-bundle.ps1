@@ -67,14 +67,12 @@ param(
     # M73-00 WP6-02：把 GPU 画布临时藏掉后再拍一张（同一时刻的"只有 Canvas2D 层"）。
     # 两张同帧对比才能回答"两层画面是否一致"——分两次运行取图会因动画相位不同而不可比。
     [string]$ShotUnder = "",
-    # M73-00 WP6-03：把产物里的 `web-runtime.js` 换成替身 ⇒ **整个 JS 世界不启动**，
-    # 只剩 Rust 那条路（`index.html`/wasm/pack 一行不改）。用于证明"Rust 侧自足"，
-    # 也用于量"JS 世界到底还贡献了什么"。产物会被拷到临时目录，不污染构建输出。
-    [switch]$StubJsRuntime,
     # M73-00 WP6-04：落定后真的按几下键，读"宿主收到的 DOM 事件数"与"落到模拟的边沿数"。
     # 两个数分开看才知道失败在"没收到事件"还是"收到了没应用"——Rust-only 宿主里没有页内剧本，
     # 只能用页内派发；CDP 的 `Input.dispatchKeyEvent` 在这个 headless 配置里已知进不来。
     [switch]$KeyProbe,
+    # 真事件探针：页内派发**真实**的两指 `pointerdown`，验"真实输入源真的在产多指数据"。
+    [switch]$PointerProbe,
     # M73-00 WP6-04：GPU 帧循环的帧预算（URL 位 `rustlua-gpu-frames=`）。0 = 不设上限。
     # 需要它的原因：默认 240 帧跑完循环就停、状态属性随之冻结，于是"按键后读读数"永远看不到变化。
     [int]$GpuFrames = -1,
@@ -132,51 +130,10 @@ trap {
     Exit-With 1
 }
 $workspaceRoot = Split-Path -Parent $PSScriptRoot
-# 前置语法自检：webgl 运行时是一大段**嵌在 JS 模板里的 Lua**，模板一旦被提前闭合（Lua 注释里
-# 写了反引号）或写出模板不允许的转义（八进制 \239），`node --check` 立刻报错，但整条打包链路
-# 不替我们查这一步 —— 现象是页面白屏/红灯，得从运行日志反推。本项目已经重复 5 次
-# （第 60/62/67/70/71 轮，每次都是"看起来无害的一行注释"）。放在最前面：语法错了就地报错，
-# 不浪费一整个"打包 + CDP 验收"周期（约 7 分钟）。
-$runtimeSource = Join-Path $workspaceRoot "plugins\webgl\web-runtime.js"
-if (Test-Path -LiteralPath $runtimeSource) {
-    $nodeCommand = Get-Command node -ErrorAction SilentlyContinue
-    if ($nodeCommand) {
-        # 本脚本开头把 $ErrorActionPreference 设成 Stop：原生命令的 stderr 经 `2>&1` 会变成
-        # 终止错误，于是 node --check 的报错会先被上面的 trap 拦成一句通用 abort（实测：只剩
-        # "@line 143"，真正原因反而丢了）。所以这一段临时放宽偏好，自己看退出码。
-        $savedPreference = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        $syntaxOutput = & $nodeCommand.Source --check $runtimeSource 2>&1
-        $syntaxCode = $LASTEXITCODE
-        $ErrorActionPreference = $savedPreference
-        if ($syntaxCode -ne 0) {
-            $syntaxText = ($syntaxOutput | Out-String).Trim()
-            # 这里只能用 `Write-Host`（单参数）：`Write-Log` 在本文件更下面才定义，函数要先定义后调用。
-            Write-Host "[RED] webgl_runtime_syntax_error detail=$syntaxText"
-            Write-Host "[RED] 修好 plugins\webgl\web-runtime.js 的语法再验（模板里的 Lua 注释不能用反引号；八进制转义要加倍）"
-            Exit-With 1
-        }
-        # `node --check` 只管**配对**的反引号：Lua 注释里单个反引号会立刻炸（上面那条拦得住），
-        # 但**成对**出现在两条注释里时 JS 照样通过 —— 模板被当成"带表达式的模板串"，
-        # 里面的 Lua 注释文本被当成 JS 表达式，Lua 侧拿到的是残缺片段，页面照常启动、
-        # 行为却莫名不同（最难查的一类）。所以再做一次机械扫描：Lua 注释行里不许有反引号。
-        $runtimeLines = Get-Content -LiteralPath $runtimeSource -Encoding UTF8
-        $backtickLines = @()
-        for ($i = 0; $i -lt $runtimeLines.Count; $i++) {
-            $trimmed = $runtimeLines[$i].Trim()
-            if ($trimmed.StartsWith('--') -and $trimmed.Contains([char]96)) {
-                $backtickLines += ($i + 1)
-            }
-        }
-        if ($backtickLines.Count -gt 0) {
-            Write-Host "[RED] webgl_runtime_lua_comment_backtick lines=$($backtickLines -join ',') count=$($backtickLines.Count)"
-            Write-Host "[RED] Lua 注释（-- 开头的行）里不能用反引号：JS 模板会把它当模板边界（成对时 node --check 也不报错）"
-            Exit-With 1
-        }
-    } else {
-        Write-Host "[YELLOW] 跳过前端语法自检：本机没有 node（web-runtime.js 的模板闭合/转义问题只能在运行期暴露）"
-    }
-}
+# **前端语法自检已退休**（B8）：它检的是 `plugins/webgl/web-runtime.js` —— 那个文件是**一大段嵌在
+# JS 模板里的 Lua**，模板被提前闭合（Lua 注释里写反引号）或写出八进制转义时，`node --check` 会报错
+# 而打包链路不查这一步（本项目重复踩过 5 次，见旧注释）。**删掉旧世界之后，仓里不再有"JS 模板里嵌
+# Lua"这种形态**（补丁层就是那个模板），所以这类检查没有对象了。
 . (Join-Path $PSScriptRoot "bundle-discovery.ps1")
 if ([string]::IsNullOrWhiteSpace($BundleRoot)) {
     # 不写死游戏工程：自动发现本机唯一的合格 webgl 产物（诊断由 bundle-discovery 打印）。
@@ -204,32 +161,17 @@ function Write-Log([string]$Message, [string]$Color = "Gray") {
     Add-Content -Path $logPath -Value $Message -Encoding UTF8
 }
 
-# M73-00 WP6-03：`-StubJsRuntime` = 把产物里的 `web-runtime.js` 换成替身，**整个 JS 世界不启动**。
-#
-# 为什么能这么做而不动用户文件：`index.html` 启动 Rust 侧后是**显式**调一次
-# `window.rustluaRunLuaGame(status)` 来拉起 JS 世界的，而 GPU 宿主是 Rust 的 `start()` 自己
-# 读 `?rustlua-gpu=1` 拉起的（`game_web/src/lib.rs`）。所以只要把那个入口换成空实现，
-# 跑起来的就是"只有 Rust"的那条路：`index.html`、wasm、pack 全部一行不改。
-#
-# 拷贝产物到临时目录（而不是就地改）：就地改会把用户下次打包的产物弄脏，且并行验证会互相踩。
-# 位置必须在 `Write-Log` 定义之后——PS 顺序执行，放前面会报"无法识别的命令"（第一次就踩了）。
+# **`-StubJsRuntime` 已退休**（B8）：它曾把**产物里**的 `web-runtime.js` 换成替身来证明"只有 Rust
+# 也跑得起来"。现在产物里**根本没有**这个文件了（`package.ps1` 不再复制它，四处完整性清单也已去掉），
+# 所以"JS 世界不启动"不再是需要构造的实验状态，而是**默认事实**；替身文件 `webgl-rust-only-stub.js`
+# 一并删除。$stubBundle 保留为空串，只是因为下面还有引用它的读数分支。
 $stubBundle = ""
-if ($StubJsRuntime) {
-    $stubBundle = Join-Path $logRoot "rust-only-$stamp"
-    New-Item -ItemType Directory -Force -Path $stubBundle | Out-Null
-    Copy-Item -Path (Join-Path $bundle "*") -Destination $stubBundle -Recurse -Force
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "webgl-rust-only-stub.js") `
-        -Destination (Join-Path $stubBundle "web-runtime.js") -Force
-    $bundle = $stubBundle
-    Write-Log "rust-only host: web-runtime.js 已换成替身（JS 世界不启动），产物副本=$stubBundle" Cyan
-}
 
 Write-Log "==> WebGL bundle verification (bundle=$bundle)" Cyan
 
 # ---------- 1. 产物完整性 ----------
 $required = @(
     "index.html",
-    "web-runtime.js",
     "pkg\game_web.js",
     "pkg\game_web_bg.wasm",
     "pack\manifest.txt",
@@ -444,7 +386,14 @@ function Invoke-HeadlessDom([string]$HeadlessFlag, [string]$ModeOverride = "", [
     # 后面所有参数就会错位一格（实测踩到：`-KeyProbe` 的 `1` 落到了 shot 的位置，探针静默不跑）。
     $shotArg = if ($Shot) { $Shot } else { "-" }
     $underArg = if ($ShotUnder) { $ShotUnder } else { "-" }
-    $probeArg = if ($KeyProbe) { "1" } else { "-" }
+    # `-PointerProbe` 需要宿主**持续推进帧**：`-GpuFrames N` 会让宿主跑满 N 帧就**停**，探针随后派发时读数
+# 必然是 0 —— 实测拿到 `frames 240->240` 配 `multipoint=0`，那是**假阴性**（宿主根本没在跑），
+# 而不是"真实输入源没接通"。所以在跑之前就拒绝，别让它变成一条会骗人的红或绿。
+if ($PointerProbe -and $GpuFrames -gt 0) {
+    throw "-PointerProbe 不能与 -GpuFrames 同用：-GpuFrames 会让宿主在 N 帧后停帧，探针读数必然为 0（假阴性）。请去掉 -GpuFrames（或设成 0）。"
+}
+$probeArg = if ($KeyProbe) { "1" } else { "-" }
+$probePointerArg = if ($PointerProbe) { "1" } else { "-" }
     # M73-00 WP6-06：确定性剧本/世界查询要读到**落定之后**的读数。
     # 没有它，"模式何时落定"取决于浏览器调度 ⇒ 读到哪一帧是碰运气（本轮实测同一条命令两次分别读到
     # frames=30 与 frames=240，前者正好在按 `i` 的那一刻，于是门把"还没生效"误判成"没生效"）。
@@ -458,7 +407,7 @@ function Invoke-HeadlessDom([string]$HeadlessFlag, [string]$ModeOverride = "", [
     }
     $probeStorageArg = if ($StorageProbe) { "1" } else { "-" }
     $probeAudioArg = if ($AudioProbe -ne "") { $AudioProbe } else { "-" }
-    $cdpEcho = @(& node $cdpScript $cdpPort $outTarget $waitMode $TimeoutSeconds $shotArg $underArg $probeArg $settleArg $probeStorageArg $probeAudioArg)
+    $cdpEcho = @(& node $cdpScript $cdpPort $outTarget $waitMode $TimeoutSeconds $shotArg $underArg $probeArg $settleArg $probeStorageArg $probeAudioArg $probePointerArg)
     $cdpExit = $LASTEXITCODE
     foreach ($cdpLine in $cdpEcho) { Write-Log "cdp: $cdpLine" }
     # M73-00 第 58 轮：把页面**自报的宿主形态**与**自报的产物身份**留下来给门用。
@@ -470,6 +419,9 @@ function Invoke-HeadlessDom([string]$HeadlessFlag, [string]$ModeOverride = "", [
     # 反过来，**请求了** JS 宿主却仍自报 skipped，那是真的坏，必须红。
     $script:pageHostSkipped = [bool]($cdpEcho | Where-Object { $_ -match 'legacy JS world skipped' })
     $script:pageStartedLine = ($cdpEcho | Where-Object { $_ -match 'RustLua WebGL/WASM started' } | Select-Object -First 1)
+# 真事件探针的回显。**必须显式送到 script 作用域**：`$cdpEcho` 是本函数的局部变量，
+# 外面读到的是 `$null` —— 症状是"探针没跑起来"（本轮实测踩到，而探针其实跑了并报了 multipoint=186）。
+$script:pointerProbeLine = ($cdpEcho | Where-Object { $_ -match 'pointer probe multipoint=' } | Select-Object -First 1)
     # 收尾：杀本脚本启动的浏览器**全部进程** + 清理 CDP profile（无头实例不会自己退出）。
     # 按唯一 user-data-dir 路径匹配命令行，精确杀本实例的进程树——绝不按进程名一网打尽
     # （开发机上还有用户自己的浏览器）；taskkill /T 对 Edge 的启动器/子进程不可靠。
@@ -594,6 +546,11 @@ $sceneVerifyState = if ($dom -match 'data-rustlua-scene-verify="([^"]*)"' -and $
 # `presented frames=…` = 引擎渲染器真的把帧画到画布上并 present 了；`failed: …` 给出卡在哪一步；
 # `absent` = 产物没编进 GPU 宿主（缺 `package.ps1 -Gpu2d`）或 URL 门没接上——两种情况都要能分辨。
 $gpuState = if ($dom -match 'data-rustlua-gpu="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "absent" }
+# P1 第三片（§9-A 第一刀）：引擎宿主的**结构化**状态 + 它本帧消费到的输入。
+# 与 `data-rustlua-gpu` 的分工：那条是"画面有没有出来"，这条是"**世界有没有收到输入**"——
+# 删掉旧 JS 世界之后风险最高的那一条（旧运行时不跑 ⇒ 不崩溃、不报错、`presented` 照涨，
+# 只是人钉死），只有结构化读数能把它变成一条会红的断言。
+$engineHostStateRaw = if ($dom -match 'data-rustlua-engine-host="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "" }
 $sceneVerifyDetail = if ($dom -match 'data-rustlua-scene-verify-detail="([^"]*)"' -and $Matches.Count -gt 0) { $Matches[1] } else { "" }
 # 音频后端读数（`data-rustlua-audio`，由 web-runtime.js 的 syncAudioMarker 写）：**只记录、
 # 不判定**，与微信 harness 的 audio_ctx/audio_played 同口径。absent = 产物还是旧版运行时
@@ -729,6 +686,13 @@ $summary = [ordered]@{
     bindingsInfo = $bindingsInfo
     statusText     = $statusText
     drawnSamples   = $drawnRaw
+    # P1 第二片续：**引擎侧**证据也进摘要。此前它只活在控制台与 DOM dump 里，于是
+    # `verify.ps1 -Web` 只能拿旧 JS 世界的 `drawnSamples`/`sceneVerify` 当"没黑屏"的判据——
+    # 而默认产物一旦由 Rust 宿主出帧（旧世界被跳过），那两个读数**必然缺席**，
+    # 门就会把"设计如此"读成"黑屏"。落进摘要之后，`verify.ps1` 才有替代判据可用。
+    gpuState       = $gpuState
+    jsHostSkipped  = $jsHostSkipped
+    engineHostState = $engineHostStateRaw
     uiElements     = $uiElements
     world          = $world
     tileLayers     = if ($null -eq $tileDrawn) { "absent" } else { "$tileDrawn/$tileDeclared" }
@@ -909,6 +873,72 @@ if ($Gpu2d -and $gpuState -notlike "presented*") {
     } else { "" }
     Write-Log "webgl_bundle_gpu2d_failed boot=$boot gpu=$gpuState $hint" Red
     Exit-With 1
+}
+
+# P1 第三片（§9-A 第一刀）：引擎宿主必须把它本帧消费到的输入与场景读数报出来，而且报的东西
+# 必须过断言。**为什么这必须是门而不是人工读**：旧 JS 世界一被跳过，`drawnSamples`/`sceneVerify`/
+# `world` 这些旧世界的读数全都缺席（它们不缺才是怪事），于是"输入还有没有进到宿主"就没有写者了
+# ——而那正是删旧世界时最危险的失效（不崩溃、不报错、presented 照涨）。
+if ($jsHostSkipped) {
+    if (-not $engineHostStateRaw) {
+        Write-Log "webgl_bundle_engine_state_absent: 页面自报引擎宿主独占这一帧，但没有 data-rustlua-engine-host ⇒ 无法断言输入是否进了宿主" Red
+        Exit-With 1
+    }
+    $engineHostParsed = $null
+    try { $engineHostParsed = (($engineHostStateRaw -replace '&quot;', '"') -replace '&amp;', '&') | ConvertFrom-Json } catch { }
+    if (-not $engineHostParsed) {
+        Write-Log "webgl_bundle_engine_state_unparsable: $($engineHostStateRaw.Substring(0, [Math]::Min(160, $engineHostStateRaw.Length)))" Red
+        Exit-With 1
+    }
+    # ⓪ 先认外壳：这一项证明"答这个导出的"是浏览器那条（与微信那条区分开）。
+    if ($engineHostParsed.shell -ne "browser-gpu-host") {
+        Write-Log "webgl_bundle_engine_shell_unexpected: 期望 shell=browser-gpu-host，实际 shell=$($engineHostParsed.shell)" Red
+        Exit-With 1
+    }
+    # ① 画的必须是**工程真场景**：`builtin=true` 是"引擎 loader 失败、悄悄换内建兜底"，
+    #    它同样能让 presented/draws 都好看。
+    if ($engineHostParsed.scene.builtin -ne $false) {
+        Write-Log "webgl_bundle_engine_builtin_scene: 引擎宿主画的是内建兜底场景（builtin=$($engineHostParsed.scene.builtin)、sim=$($engineHostParsed.scene.sim)）而不是工程真场景" Red
+        Exit-With 1
+    }
+    # ② 请求了确定性输入剧本 ⇒ 宿主必须**真的收到过**输入。判据用**累计量** `seen_frames` 而不是
+    #    瞬时 axis/held：剧本窗口跑完就回到 0，读瞬时值会把"输入进了宿主"读成"没进"（假阴性）。
+    if ($InputScript -ne "" -and [int]$engineHostParsed.scene.input.seen_frames -le 0) {
+        Write-Log "webgl_bundle_engine_input_missing: 请求了输入剧本 $InputScript，但宿主自报 seen_frames=$($engineHostParsed.scene.input.seen_frames) ⇒ 输入没有进到宿主（不崩溃、不报错的失效）" Red
+        Exit-With 1
+    }
+    # ②′ 指针剧本（`at:` + `hold:`）请求了「按下后拖走」⇒ 宿主必须报出「按下点与光标**真的不同**」的帧数。
+    # 判据刻意不是"字段存在"而是"两个值真的分开了"：字段一直在（刚加的那次就在），而"退化成一个值"
+    # 才是这条链唯一会静默出错的方式——`press_cursor` 跟着光标走，命中测试就回到"跟着手指跑"。
+    if ($InputScript -match 'hold:' -and [int]$engineHostParsed.scene.input.press_distinct_frames -le 0) {
+        Write-Log "webgl_bundle_engine_press_cursor_missing: 请求了指针剧本 $InputScript，但宿主自报 press_distinct_frames=$($engineHostParsed.scene.input.press_distinct_frames) ⇒ 按下点没有与光标分开（press_cursor 退化成实时光标）" Red
+        Exit-With 1
+    }
+    # ②″ 多指剧本（`at2:`/`hold2:`）请求了「两指同时按」⇒ 宿主必须报出「同时有多个指针」的帧数。
+    # 判据仍然是**累计量**：单帧采样会抓到两指都抬起之后的 0（这一条已经被前两个读数教训过两次）。
+    if ($InputScript -match 'at2:|hold2:' -and [int]$engineHostParsed.scene.input.multipoint_frames -le 0) {
+        Write-Log "webgl_bundle_engine_multipoint_missing: 请求了多指剧本 $InputScript，但宿主自报 multipoint_frames=$($engineHostParsed.scene.input.multipoint_frames) ⇒ 第二根手指没进到宿主" Red
+        Exit-With 1
+    }
+    # ③ 真事件通路（`-PointerProbe`）：页内派发**真实**的两指 `pointerdown` ⇒ 宿主必须报出多指帧数。
+    # 与 ②″ 的分工：那条靠**剧本**证明数据链装得下两指，这条靠**真事件**证明输入源真的在产它——
+    # 少了这条，"接了真实输入源"就只是我的一句声明。两项都是**累计**量，抬手不会抹回去。
+    if ($PointerProbe) {
+        # 探针跑在 **DOM 落盘之后**（与 `-KeyProbe` 同一位置），所以读数只从 cdp 回显里取：
+        # dump 里那份是探针之前的那一刻，拿它断言等于断言了个寂寞（本轮实测踩到）。
+        $probeLine = $script:pointerProbeLine
+        if (-not $probeLine) {
+            Write-Log "webgl_bundle_engine_pointer_probe_missing: 探针没有回显读数（--pointerProbe 没跑起来？）" Red
+            Exit-With 1
+        }
+        $probeMulti = [int]([regex]::Match($probeLine, 'multipoint=(\d+)').Groups[1].Value)
+        if ($probeMulti -le 0) {
+            Write-Log "webgl_bundle_engine_pointer_probe_missing: 页内派发了两指 pointerdown，但宿主自报 multipoint=$probeMulti ⇒ 真实指针事件没有进到宿主（$($probeLine.Trim())）" Red
+            Exit-With 1
+        }
+        Write-Log "webgl_bundle_engine_pointer_probe_ok $($probeLine.Trim())" Green
+    }
+    Write-Log "webgl_bundle_engine_state_ok builtin=$($engineHostParsed.scene.builtin) sim=$($engineHostParsed.scene.sim) draws=$($engineHostParsed.scene.draws) tris=$($engineHostParsed.scene.tris) input_frame=$($engineHostParsed.scene.input.frame) input_seen_frames=$($engineHostParsed.scene.input.seen_frames) input_script=$InputScript press_cursor=$($engineHostParsed.scene.input.press_cursor -join ',') press_distinct_frames=$($engineHostParsed.scene.input.press_distinct_frames) pointer_count=$($engineHostParsed.scene.input.pointer_count) multipoint_frames=$($engineHostParsed.scene.input.multipoint_frames)" Green
 }
 
 # M73-00 WP0 续五：GPU 层的几何必须**落在 Canvas2D 层的等比适配盒里**。

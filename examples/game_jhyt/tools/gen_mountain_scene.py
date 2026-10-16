@@ -31,7 +31,8 @@ HUD 尺寸、五件采集物（莲蓬/芦苇/茶丛/野果树/树桩）与贼寨
   竹林的叶子画在瓦里，所以 `decor_kit.BASE_P[5]=0`（那一块不撒装饰）读起来才对。
 
 山道布局（cell，0-index，y 朝上，含端点）：
-  南山门   ：x18..21, y0..2（贴图压住南墙两行，门洞 x19 两格 = 出口格 (19,1) 与落点 (19,2)）
+  南山门   ：x18..21, y0..2（贴图压住南墙两行，门洞 x19 两格 = 出口格 (19,1) 与其北邻通道格
+             (19,2)；出生点不在洞里，在门北两格的山道 (19,4)——洞那一格横向只剩 4 px，#28）
   进山路   ：x18..21, y1..6 碎石 → 折西 x14..21, y6..7 → 石阶 x10..21, y7..8
              → 西行纵路 x10..13, y7..15 → 石阶 x10..20, y14..15 → 北台地 x10..20, y15..19
              → 洞口路 x20..23, y17..20（东北洞口 = 出口格 (22,20)，从洞回来落 (22,19)）
@@ -48,7 +49,9 @@ HUD 尺寸、五件采集物（莲蓬/芦苇/茶丛/野果树/树桩）与贼寨
   贼寨     ：x29..33, y7..9（东岸台地）；茶棚 x14..17, y9..11（中途）
 
 **与 data 侧的四份契约**（每次生成自检，失败非零退出）：
-  1. `data/maps.lua` 的 spawn / 两个出口格 / 从寒泉洞回来的落格必须可走且从出生点可达；
+  1. `data/maps.lua` 的 spawn / 两个出口格 / 从寒泉洞回来的落格必须可走且从出生点可达，
+     而**放置格**（spawn 与每一个 `to_cell`）还必须有 `building_kit.placement_problems` 那条
+     横向净空（一格 32 px）——旧 spawn (19,2) 与山门洞同格，人被两柱夹住只挪得动 4 px（#28）；
   2. `data/places.lua` 里 mountain_path 的地点格必须可走可达，且**不与出口格四邻相邻**
      （出口 priority 20 会抢走对话/商店 priority 10，理由见 `gen_village_scene` 同条注释）；
   3. `data/gather.lua` 的每个采集格走的是 `facing_cell`：格子本身可以是实心（莲蓬就长在水里），
@@ -171,12 +174,16 @@ BAMBOO_CELLS = ({(x, y) for y, xs in BAMBOO_W_ROWS.items() for x in xs}
                 | {(x, y) for y, xs in BAMBOO_E_ROWS.items() for x in xs})
 CLIFFS = ((2, 10, 7, 13), (2, 16, 7, 20), (30, 1, 37, 5), (33, 6, 37, 9))
 
-SPAWN = (19, 2)                   # 与 `data/maps.lua` mountain_path.spawn 一致
+SPAWN = (19, 4)                   # 与 `data/maps.lua` mountain_path.spawn 一致（旧值 (19,2) 在山门洞里，横向只剩 4 px）
 # 出口格与落格：`mountain_to_village` 站在山门洞里 (19,1)、`mountain_to_cave` 在东北洞口
 # (22,20)，而从寒泉洞回来落在 (22,19)——它不是出口，是**别人送进来时的落脚格**，
 # 那一格若被标成实心，玩家一出洞就卡进岩壁里。所以四格一起进可达性自检。
+# 本图 spawn (19,4) 也是"别人送进来时的落脚格"（`village_to_mountain.to_cell`），旧值 (19,2)
+# 与山门洞同格——24×24 的脚底球在两柱之间左右各只剩 4 px（#28），所以放在门洞北两格的山道上。
 EXITS = {"to_village": (19, 1), "to_cave": (22, 20)}
-LANDINGS = (("cold_spring_cave", (22, 19)),)
+# `village_to_mountain` 送进来的落格就是本图 spawn 那一格（(19,4)，#28 起它在山门洞北两格），
+# 所以两处都登记：`LANDINGS` 喂装饰留白，`SPAWN` 喂主角 Transform 与可达性起点。
+LANDINGS = (("village", (19, 4)), ("cold_spring_cave", (22, 19)))
 # 抖动冻结矩形：**空**。山庄冻的是药田（`farm.lua` 判可开垦只能 tile==2），村庄冻的是茶园
 # （语义地块），山道两块都没有——这里的碎石路本来就该和林地咬出犬牙，冻住反而退回"直线交界"。
 FREEZE = []
@@ -477,7 +484,7 @@ def build_scene(ground, solid):
     lines.append(f"component\t{player_id}\tSprite\t{player_sprite}")
     if player_animation:
         lines.append(f"component\t{player_id}\tAnimation\t{player_animation}")
-    lines.append(f"component\t{player_id}\tCollider\tshape=ball;radius=12;offset=0,-16")
+    lines.append(f"component\t{player_id}\tCollider\t{bk.player_ball_collider()}")
     lines.append(transform_line(player_id, spawn_wx, spawn_wy))
     lines.append(f"entity_meta\t{player_id}\trole\tplayer_spawn")
     lines.append(f"entity_meta\t{player_id}\tpersistent\ttrue")
@@ -794,7 +801,36 @@ def self_check(ground, solid, walk):
     if not any(ground[y][x] == WATER for (x, y) in rect(GORGE)):
         problems.append("西涧一格水都没有：断桥就跨在一片草地上（M72-11 挪西崖的理由）")
     problems.extend(check_texture_sizes())
+    problems += lateral_problems(solid, walk)
     return problems
+
+
+def lateral_problems(solid, walk):
+    """落点：出生点 + 别的图落到本图的每一格，必须可走、可达，且横向走得开一格（判据在 `building_kit`）。
+
+    出口格与门洞那一档**不在这条里**：人是从开阔处走进门洞的，贴脸那一格不需要横向余量；
+    而"落到那一格"是另一回事——`to_cell` 是传送的直接产物，落进去动不了就等于卡死。
+    本文件的 `EXITS`/`LANDINGS` 与 maps.lua 同时改过才会红，两处抄错一处就抓住。
+    """
+    registry = bk.read_map_registry(SCENE)
+    problems = []
+    if registry["spawn"] != SPAWN:
+        problems.append(f"data/maps.lua {SCENE}.spawn={registry['spawn']} 与本文件 "
+                        f"SPAWN={SPAWN} 不一致：放置格有两个出处")
+    declared = {cell for _name, cell in LANDINGS}
+    incoming = {(x, y) for _label, x, y in registry["landings"]}
+    if declared != incoming:
+        problems.append(f"本文件 LANDINGS={sorted(declared)} 与 maps.lua 落到 {SCENE} 的 "
+                        f"to_cell={sorted(incoming)} 不一致：落格有两个出处")
+    cells = [("spawn", SPAWN)]
+    cells += [(label, (x, y)) for label, x, y in registry["landings"]]
+    for label, cell in cells:
+        if not (0 <= cell[0] < W and 0 <= cell[1] < H):
+            continue  # 越界由 `placement_problems` 报，这里不重复也不索引
+        if solid[cell[1]][cell[0]] or cell not in walk:
+            problems.append(f"{label} 的落点 {cell} 在本图不可走或从出生点不可达")
+    got, _readings = bk.placement_problems(W, H, bk.solid_bits(solid), cells)
+    return problems + got
 
 
 def main():

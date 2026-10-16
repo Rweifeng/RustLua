@@ -4,7 +4,7 @@
 //! reproduces the M17-01 acceptance paths:
 //!
 //! - 新档从山庄出生，农田耕作链路照常（till/plant/water）。
-//! - 走到山庄南出口格按 E → 切到云泽村，并在入口格 (19,2)=(624,80) 出生；
+//! - 走到山庄南出口格按 E → 切到云泽村，并在入口格 (19,4)=(624,144) 出生；
 //!   背包内容跨图不被清空（inventory.setup 只跑一次 / booted 语义）。
 //! - 云泽村内睡觉推日：on_day_start 在 village 上跑（体力重置 + 自动存档），
 //!   且不触碰 main 的农田日结算（无 FarmGrid 也不崩）。
@@ -26,14 +26,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// 山庄出生格 (16,3) 世界坐标。
-const MAIN_SPAWN: (f32, f32) = (528.0, 112.0);
+/// 山庄出生格 (19,3) 世界坐标。#28 前是 (16,3)：那颗脚底球的下半截压在南门门洞
+/// （(16,1)/(16,2)，两侧门柱 x15/x17）上，横向只剩 4 px ⇒ "按住方向键世界不动"。
+const MAIN_SPAWN: (f32, f32) = (624.0, 112.0);
 /// 山庄 → 云泽村出口格 (16,1) 世界坐标。
 const MAIN_EXIT: (f32, f32) = (528.0, 48.0);
 /// 出口格北侧的门廊 (16,2) 世界坐标：玩家最常站的那一格（面向出口按 E 也应离庄）。
 const MAIN_PORCH: (f32, f32) = (528.0, 80.0);
-/// 云泽村出生/入口格 (19,2) 世界坐标。
-const VILLAGE_SPAWN: (f32, f32) = (624.0, 80.0);
+/// 云泽村出生/入口落点 (19,4) 世界坐标（#28 前是门洞正北的 (19,2)）。
+const VILLAGE_SPAWN: (f32, f32) = (624.0, 144.0);
 /// 云泽村 → 山庄出口格 (19,1) 世界坐标。
 const VILLAGE_EXIT: (f32, f32) = (624.0, 48.0);
 /// 存档用非出生点（验证 restore 以存档坐标覆盖出生点）。
@@ -71,7 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(&mut runtime, "require('core.state').energy", 100.0)?;
     assert_player_at(&mut runtime, MAIN_SPAWN)?;
 
-    // 出生朝上，面前 (16,4) 是药田 DIRT：翻土 → 种灵芝 → 浇水。
+    // 出生朝上，面前 (19,4) 是药田 DIRT：翻土 → 种灵芝 → 浇水。
     set_facing(&mut runtime, "up")?;
     press(&mut runtime, KeyCode::KeyE)?; // till
     assert_str(&mut runtime, "require('core.state').last_action", "till")?;
@@ -93,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "water_lingzhi",
     )?;
     assert_num(&mut runtime, "require('core.state').energy", 85.0)?; // 100-8-3-4
-    assert_plot_crop(&mut runtime, "16,4", "lingzhi")?;
+    assert_plot_crop(&mut runtime, "19,4", "lingzhi")?;
     // 种地耗 1 颗灵芝种子。
     assert_num(
         &mut runtime,
@@ -105,7 +106,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     sleep(&mut runtime)?;
     assert_day(&mut runtime, 2)?;
     assert_num(&mut runtime, "require('core.state').energy", 100.0)?;
-    assert_plot_days(&mut runtime, "16,4", 1.0)?;
+    assert_plot_days(&mut runtime, "19,4", 1.0)?;
 
     banner("M17-01b0 站在门廊面向出口按 E 也能离庄（2026-10-03 实机：走到门口按 E 不传送）");
     // 门洞只有一格宽：山庄出口格 (16,1) 的南北两侧分别是院墙与门廊 (16,2)，
@@ -155,7 +156,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_scene_is(&mut runtime, "village")?;
     assert_map_current(&mut runtime, "village")?;
     assert_mode(&mut runtime, "Playing")?;
-    // 入口落点 (19,2)，非山庄出生点。
+    // 入口落点 (19,4)，非山庄出生点。
     assert_player_at(&mut runtime, VILLAGE_SPAWN)?;
     // 背包仍是「新档载荷 - 已播种数」：未二次 inventory.setup 清空。
     assert_num(
@@ -165,7 +166,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_num(&mut runtime, "inv.count('player', 'lingzhi')", 0.0)?;
     // 农田明细在切图后仍可从 map.state 读到（全量持久键保留）。
-    assert_plot_crop(&mut runtime, "16,4", "lingzhi")?;
+    assert_plot_crop(&mut runtime, "19,4", "lingzhi")?;
 
     banner("M17-01c village 日结算：睡觉推日 + 自动存档不碰农田");
     // 存档点：玩家停在不触发出口的格，睡到 day3。
@@ -194,8 +195,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_scene_is(&mut runtime, "manor")?;
     assert_map_current(&mut runtime, "manor")?;
     assert_player_at(&mut runtime, MAIN_SPAWN)?;
-    assert_plot_crop(&mut runtime, "16,4", "lingzhi")?;
-    assert_plot_days(&mut runtime, "16,4", 1.0)?; // day3 未浇水不成长
+    assert_plot_crop(&mut runtime, "19,4", "lingzhi")?;
+    assert_plot_days(&mut runtime, "19,4", 1.0)?; // day3 未浇水不成长
     assert_num(
         &mut runtime,
         "inv.count('player', 'seed_lingzhi')",
@@ -212,7 +213,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "inv.count('player', 'seed_lingzhi')",
         SEED_LINGZHI_AFTER_PLANT,
     )?;
-    assert_plot_crop(&mut runtime, "16,4", "lingzhi")?;
+    assert_plot_crop(&mut runtime, "19,4", "lingzhi")?;
 
     banner("M17-01e continue：第二 runtime 按存档地图回到云泽村");
     let mut second = new_runtime(&project_arg, &save_path)?;
@@ -223,7 +224,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_map_current(&mut second, "village")?;
     assert_day(&mut second, 3)?;
     assert_mode(&mut second, "Playing")?;
-    // restore 以存档坐标覆盖出生点 (624,80) -> (624,208)。
+    // restore 以存档坐标覆盖出生点 (624,144) -> (624,208)。
     assert_player_at(&mut second, VILLAGE_SAVE_SPOT)?;
     assert_num(
         &mut second,
@@ -232,8 +233,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_num(&mut second, "inv.count('player', 'lingzhi')", 0.0)?;
     // village 档同样携带 main 农田明细；查 map.state 校验 restore 写回。
-    assert_plot_crop(&mut second, "16,4", "lingzhi")?;
-    assert_plot_days(&mut second, "16,4", 1.0)?;
+    assert_plot_crop(&mut second, "19,4", "lingzhi")?;
+    assert_plot_days(&mut second, "19,4", 1.0)?;
     // 长跑：快照在 village 场景名下反复恢复稳定。
     let ok = query_str(
         &mut second,
@@ -246,10 +247,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     press(&mut second, KeyCode::KeyE)?;
     second.process_scene_transition()?;
     assert_scene_is(&mut second, "manor")?;
-    assert_plot_crop(&mut second, "16,4", "lingzhi")?;
+    assert_plot_crop(&mut second, "19,4", "lingzhi")?;
 
     println!(
-        "jhyt_m17_ok project={} day={} scene={} plot=16,4:lingzhi seeds={} pos={},{}",
+        "jhyt_m17_ok project={} day={} scene={} plot=19,4:lingzhi seeds={} pos={},{}",
         project.display(),
         query_i64(&mut second, "clock.now().day")?,
         query_str(&mut second, "scene.reload()")?,

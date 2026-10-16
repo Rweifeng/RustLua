@@ -43,12 +43,15 @@ const shotUnderFile = argAt(7);
 // 所以"输入进模拟"这件事，正常产物的验法是用 `verify-webgl-bundle.ps1 -Gpu2d -DriveJhyt`。
 //
 // 但那个结论只覆盖"注入能不能进 **JS 世界**的输入状态"。WP6-04 之后还有一问：
-// **Rust 侧自己装的 DOM 监听器收到没有**——而 Rust-only 宿主（`-StubJsRuntime`）里没有
-// `web-runtime.js`，页内剧本根本不存在，只能用页内派发。所以这里加的开关走
+// **Rust 侧自己装的 DOM 监听器收到没有**——而 Rust-only 宿主（Rust-only 宿主；B8 之后这就是**默认**形态）里没有
+// JS 世界（页内剧本）根本不存在，只能用页内派发。所以这里加的开关走
 // `Runtime.evaluate` + `window.dispatchEvent(new KeyboardEvent(...))`（DOM 标准语义下必然
 // 送达 `addEventListener`），并把 `dom_events`（收到几个事件）与 `input_edges`（落到模拟几个边沿）
 // **分开记**：两者一起看才知道失败在"没收到"还是"收到了没应用"。
 const keyProbe = argAt(8) === '1';
+// 真事件探针（argv[12]）：页内派发**真实**的两指 `pointerdown`，验"真实输入源真的在产多指数据"。
+// 与 `--input-script` 的 `at2:` 分工不同：那条证明**数据链**装得下两指，这条证明**输入源**在产它。
+const pointerProbe = argAt(12) === '1';
 // 读到第几帧才算"落定"（0 = 不等）。确定性输入剧本按**帧号**触发，而状态属性每 STATUS_EVERY 帧
 // 才写一次、模式落定时刻又取决于浏览器调度 ⇒ 不等到目标帧，读到哪一帧就是碰运气：
 // 实测同一条命令两次分别读到 frames=30（正好在按键那一刻，世界还没变）与 frames=240（已生效）。
@@ -180,6 +183,99 @@ async function findPage() {
 }
 
 /// 落定后真的按几下键，读"宿主收到几个事件"与"落到模拟几个边沿"。
+// 真事件探针：页内派发两指 `pointerdown`（`pointerType: "touch"`），让它们同时按住一段时间。
+//
+// 必须**页内**派发：CDP 的 `Input.dispatchTouchEvent` 在这个 headless 配置里进不了页面的监听器
+// （与键盘那条同源，见脚本头部的说明）。手指要真的同时按住若干帧，宿主才会报出多指帧数——
+// 那一项是**累计**的，所以之后抬手也不会把它抹回去。
+async function runPointerProbe(send) {
+  // **投递自检**（与 `keyProbe` 同款，缺了它就无法区分"没送达"与"没记录"）：
+  // 页内装一个计数监听器 → 派发一次 → 看收到几次。`hits=0` 说明这条派发路根本没进事件系统，
+  // 那么后面"宿主读数=0"就不是宿主的问题。
+  const delivery = await send('Runtime.evaluate', {
+    expression:
+      '(function(){try{var hits=0;var f=function(){hits++;};window.addEventListener("pointerdown",f);' +
+      'window.dispatchEvent(new PointerEvent("pointerdown",{pointerType:"touch",pointerId:99,clientX:10,clientY:10,bubbles:true}));' +
+      'window.removeEventListener("pointerdown",f);return "hits=" + hits;}catch(e){return "error: " + e;}})()',
+    returnByValue: true,
+  });
+  console.log(
+    '[cdp] pointer probe delivery self-test: ' +
+      (delivery && delivery.result ? String(delivery.result.value) : '?')
+  );
+  // `Runtime.evaluate` **不会**因为页内抛错而 reject：所以"没送达"与"构造 PointerEvent 就炸了"
+  // 在只看宿主机读数时长得一模一样。每次派发都把页面的异常记下来。
+  let dispatchErrors = 0;
+  const dispatch = async (type, id, x, y) => {
+    const r = await send('Runtime.evaluate', {
+      expression:
+        'window.dispatchEvent(new PointerEvent("' + type + '", {pointerType: "touch", pointerId: ' +
+        id + ', clientX: ' + x + ', clientY: ' + y +
+        ', bubbles: true, cancelable: true, isPrimary: ' + (id === 11) + '}))',
+      returnByValue: true,
+    });
+    if (r && r.exceptionDetails) {
+      dispatchErrors++;
+      if (dispatchErrors <= 2) {
+        console.log(
+          '[cdp] pointer probe dispatch threw: ' +
+            JSON.stringify(r.exceptionDetails).slice(0, 240)
+        );
+      }
+    }
+    return r;
+  };
+  // 第一指先按住（两根手指的**按下先后**就是数组顺序，所以顺序不能反）。
+  for (let i = 0; i < 10; i++) {
+    await dispatch('pointerdown', 11, 120, 360);
+    await sleep(80);
+  }
+  // 第二指在**第一指仍按住**时按下——这才是"两指同时按"。
+  for (let i = 0; i < 10; i++) {
+    await dispatch('pointerdown', 12, 900, 500);
+    await sleep(80);
+  }
+  await dispatch('pointerup', 12, 900, 500);
+  await dispatch('pointerup', 11, 120, 360);
+  await sleep(400);
+  // 读数必须**从页面里取**：本探针与 `runKeyProbe` 一样跑在 DOM 落盘**之后**（见调用点），
+  // 所以 dump 里那份是探针之前的那一刻，拿它断言等于断言了个寂寞。
+  // **先等帧真的推进再读数**：状态属性每 STATUS_EVERY 帧才写一次，读早了拿到的是上一份——
+  // 本轮实测踩到：`presented frames=0` 时读到 `multipoint=0`，与"触摸根本没被记录"完全不可区分，
+  // 于是我把"探针看不见"读成了"功能不通"（与本会话反复防的"陈旧快照当真值"同一类错）。
+  const gpuFrames = async () => {
+    const r = await send('Runtime.evaluate', {
+      expression: '(document.body ? document.body.getAttribute("data-rustlua-gpu") : "") || ""',
+      returnByValue: true,
+    });
+    const text = r && r.result && typeof r.result.value === 'string' ? r.result.value : '';
+    const m = /frames=(\d+)/.exec(text);
+    return m ? Number(m[1]) : -1;
+  };
+  const framesBefore = await gpuFrames();
+  const framesDeadline = Date.now() + 12000;
+  let framesNow = framesBefore;
+  while (Date.now() < framesDeadline && framesNow < framesBefore + 20) {
+    await sleep(200);
+    framesNow = await gpuFrames();
+  }
+  console.log('[cdp] pointer probe frames ' + framesBefore + '->' + framesNow);  const state = await send('Runtime.evaluate', {
+    expression:
+      '(document.body ? document.body.getAttribute("data-rustlua-engine-host") : "") || ""',
+    returnByValue: true,
+  });
+  const raw = state && state.result && typeof state.result.value === 'string' ? state.result.value : '';
+  const num = (name) => {
+    const m = new RegExp('"' + name + '":(\\d+)').exec(raw);
+    return m ? Number(m[1]) : -1;
+  };
+  console.log(
+    '[cdp] pointer probe multipoint=' + num('multipoint_frames') +
+      ' pointer_count=' + num('pointer_count') + ' seen_frames=' + num('seen_frames') +
+      ' dispatch_errors=' + dispatchErrors
+  );
+}
+
 async function runKeyProbe(send) {
   const read = async () => {
     const r = await send('Runtime.evaluate', {
@@ -478,6 +574,7 @@ async function main() {
         fs.writeFileSync(outFile, dom, 'utf8');
         await captureShot(send, shotFile, shotUnderFile);
         if (keyProbe) await runKeyProbe(send);
+if (pointerProbe) await runPointerProbe(send);
         // 存档槽探针放在最后：它不改页面状态，也不影响截图/按键读数。
         if (storageProbe) {
           const code = await runStorageProbe(send);
@@ -493,6 +590,16 @@ async function main() {
     await sleep(pollMs);
   }
   if (lastDom) fs.writeFileSync(outFile, lastDom, 'utf8');
+  // 探针放在**超时路径也要跑**：引擎宿主独占这一帧时（原子模式默认），场景/剧本读数没有写者、
+  // `settled` 永远不会真，于是 harness 走超时分支——而探针本来只写在落定分支里，就永远跑不到。
+  // 探针的读数是从**页面**里取的（不是 dump），所以页面还活着就够。
+  if (pointerProbe) {
+    try {
+      await runPointerProbe(send);
+    } catch (probeError) {
+      console.log('[cdp] pointer probe failed: ' + probeError);
+    }
+  }
   console.log('[cdp] timeout waiting for ' + mode + ' (last boot=' + stateOf(lastDom, 'data-rustlua-boot') + ')');
   process.exit(1);
 }

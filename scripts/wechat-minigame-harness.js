@@ -160,7 +160,7 @@ let noFrames = false;
   // L3 行为契约对拍（可选，默认关）：把桌面基线那份 `lua_api_contract.lua` 经 bridge
   // 注进**这个已打完补丁的活体 Lua 状态**跑一遍，与 PC transcript 逐行对拍。
   // 判据是返回值形状，不是名字——名字两边都在（L2 清单 54 个覆盖点，
-  // `node scripts/check-web-api-overrides.mjs` 给数），所以只有跑同一份用例
+  // `node scripts/check-web-api-overrides.mjs（已随 B8 退休）` 给数），所以只有跑同一份用例
   // 才能抓到"补丁版 clock.now() 少三个字段"这类分叉。非默认开：微信侧与 webgl 侧共用
   // 同一份补丁层，当前已知 3 条残留分叉（见任务 #9），默认开会红掉整条 harness。
   let checkApiContract = false;
@@ -193,8 +193,21 @@ let noFrames = false;
   let gpuProbe = false;
   // `--engine-host`：打开适配层的**引擎宿主**（`globalThis.__RUSTLUA_ENGINE_HOST = true`，见
   // wechat-adapter.js 的 engineHostStart）。与探针分开：探针只回答"能不能起渲染栈"，宿主是
-  // "真的起一个并按帧出帧"。默认关 ⇒ 自报里 `engine_host=off`（与生产口径一致）。
+  // "真的起一个并按帧出帧"。
+  //
+  // **注意（P1 第二片之后）**：Rust 宿主的原子模式已经是**生产默认**，所以"不带开关 = 宿主关"
+  // 这条口径不再成立——不带开关时宿主是**开着**的（自报 `engine_host_source=main-canvas(visible-takeover)`）。
+  // 这个旧开关仍然可用（打开它不改变"宿主开着"这个事实），保留是为了不动既有用例的调用面。
   let engineHost = false;
+  // `--rust-scene-host-off`：显式关掉**Rust 宿主原子模式**（`globalThis.__RUSTLUA_RUST_SCENE_HOST = false`）。
+  // 它是那条逃生门的守门用例：关掉之后自报必须逐字回到翻转前的旧形态（`engine_host=off` +
+  // `reason=switch-off`），证明"显式关还能用"，而不是"默认还是关"。
+  // （B8：`--rust-scene-host-off` 已退休 —— 旧世界删除后，关掉原子宿主没有可回退的形态。）
+  // `--host-direct-boot`：**宿主直启**（B8 第一步，默认关）—— 不加载旧世界 `web-runtime.js`，
+  // 启动编排由适配层 + 宿主完成（`globalThis.__RUSTLUA_HOST_DIRECT_BOOT = true`，见
+  // `wechat-adapter.js` 的 `hostDirectBoot`）。开它是为了**在删掉 414 KB 之前**把"补丁特有的行为"
+  // 暴露出来，而不是删完才发现。
+  // （B8：`--host-direct-boot` 已退休 —— 宿主直启现在是**唯一路径**，不再是开关。）
   // `--engine-host-tick`：让**宿主**接管 Lua 固定步（`tick: "lua"`）。默认关 —— 老 JS 世界每帧
   // 也在跑固定步，两边同时跑就是把世界推进两次。打开它才能验"宿主推进模拟"这条路。
   let engineHostTick = false;
@@ -206,6 +219,8 @@ let rafFrameCount = 0; // WP7-94：路径无关的帧计数（每帧都经过 rA
 if (argv[i] === '--no-frames') noFrames = true;
     else if (argv[i] === '--gpu-probe') gpuProbe = true;
     else if (argv[i] === '--engine-host') engineHost = true;
+    // （B8：`--rust-scene-host-off` 的解析已删，见上面声明处的说明。）
+    // （B8：`--host-direct-boot` 的解析已删。）
     else if (argv[i] === '--engine-host-tick') { engineHost = true; engineHostTick = true; }
     // WP7-94：接管→交还往返用例。只改那个全局标记，**不碰** engineHostFinish（宿主收尾语义不动）。
     else if (argv[i] === '--engine-host-off-at' && argv[i + 1]) { engineHost = true; engineHostTick = true; engineHostOffAt = Math.max(0, Number(argv[++i]) || 0); }
@@ -1559,6 +1574,11 @@ const stats = { packReads: 0, subpackageLoads: 0, imagesLoaded: 0, imageFailures
   // 引擎宿主（`--engine-host`）：同样必须在这里（`require(game.js)` 之前）置位——适配层启动链
   // 里就判定开关。默认不置 ⇒ 生产口径（`engine_host=off`）。
   if (engineHost) globalThis.__RUSTLUA_ENGINE_HOST = true;
+  // Rust 宿主原子模式**默认开**（P1 第二片）：要断言"旧形态还能走"就得在这里显式关掉它，
+  // 而且必须在这里——适配层在模块加载时就定下"2d 要不要改道到离屏"，晚了就改不动了。
+  // （B8：原 `if (rustSceneHostOff) globalThis.__RUSTLUA_RUST_SCENE_HOST = false;` 已删。）
+  // 宿主直启同样必须在这里置位：`game.js` 就是在模块加载时按它决定"要不要 require 旧世界"。
+  // （B8：原 `if (hostDirectBoot) globalThis.__RUSTLUA_HOST_DIRECT_BOOT = true;` 已删。）
   // 宿主接管固定步的开关必须**同时**置位（只在 --engine-host-tick 时）：单独打开它没有意义，
   // 而"宿主在跑 + 老世界也在跑"正是要避免的组合。
   if (engineHostTick) globalThis.__RUSTLUA_ENGINE_HOST_TICK = true;

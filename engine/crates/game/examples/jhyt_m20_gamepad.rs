@@ -48,7 +48,8 @@ use std::{
 /// 补齐，验证「旧设置文件仍可玩」）。
 const SETTINGS_TEMPLATE: &str = "# M20-08 手柄验收设置（示例结束时按原样恢复）\n[project]\nname = \"game_jhyt\"\nversion = \"0.1.0\"\nengine = \"RustLua\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\nfont = \"assets/fonts/NotoSansSC-VF.ttf\"\nfont_fallback = \"\"\nfont_weight = 400.0\ntext_render_mode = \"vector\"\nwindow_width = 1280\nwindow_height = 720\n\n[audio]\nmaster = 0.5\nbgm = 0.25\n\n[input]\nmap = \"rustlua-actions-v1\\ninteract=key:e\"\n";
 
-/// 药田起步点（与 `jhyt_smoke` 一致）：格 (16,3)，朝上面前 (16,4) 落在药田内。
+/// 药田起步点（每节都用 `teleport` 显式落位，不依赖出生点；#28 起山庄出生点是 (19,3)）：
+/// 格 (16,3)，朝上面前 (16,4) 落在药田内。
 const FARM_START: (f32, f32) = (528.0, 112.0);
 /// 第二块未耕作药田（格 (17,3)，朝上面前 (17,4)）：断连重连后再劳作一次。
 const FARM_START_2: (f32, f32) = (560.0, 112.0);

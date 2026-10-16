@@ -28,7 +28,8 @@ solid 串却留在原位 ⇒ 盘上 38 格"撞空气"的隐形墙 + 画出来的
   （村庄没有农田层：`farm.lua` 的 FARM 矩形只在山庄，所以这张图只有 GroundMap 一张 Tilemap。）
 
 山谷村落布局（cell，0-index，y 朝上，含端点）：
-  村口牌坊 ：x18..20, y0..2（贴图压住南院墙，门洞 x19 可走 = 山庄↔云泽村出口格 19,1）
+  村口牌坊 ：x18..20, y0..2（贴图压住南院墙，门洞 x19 两格 = 山庄↔云泽村出口格 19,1 与其北邻
+            通道格 19,2；出生点不在洞里，在主街 (19,4)——那一格横向只剩 4 px，#28）
   主街     ：x16..23, y1..9 石板；市集广场 x12..27, y3..5；中街 x10..29, y9..10
   药庐     ：x3..8, y15..19（6×5）；前院石板 x2..9, y13..14
   杂货铺   ：x21..26, y6..10（6×5，横屏方案A 从东院搬进市集）
@@ -88,7 +89,7 @@ TEA_FIELD = {"x0": 10, "x1": 14, "y0": 11, "y1": 14}     # 茶园（可走）
 STREAM = {"x0": 11, "x1": 29, "y0": 16, "y1": 17}        # 溪水
 STREAM_WIDE = {"x0": 18, "x1": 21, "y0": 15, "y1": 17}   # 溪水加宽（水潭）
 BRIDGE = {"x0": 24, "x1": 25, "y0": 16, "y1": 17}        # 石桥（石板，可走）
-SPAWN = {"x": 19, "y": 2}                                 # 与 data/maps.lua village.spawn 一致
+SPAWN = {"x": 19, "y": 4}                                 # 与 data/maps.lua village.spawn 一致（旧值 (19,2) 在村口门洞里，横向只剩 4 px）
 # 三个出口格（与 `data/maps.lua` 的 village.exits 同源）：南门↔山庄、山门↔青云山，
 # 另两个是室内门。它们决定 `self_check` 的可达性与散布的留白，所以只在这里写一次。
 EXITS = {
@@ -355,7 +356,7 @@ def build_scene(ground, solid):
     lines.append(f"component\t{player_id}\tSprite\t{player_sprite}")
     if player_animation:
         lines.append(f"component\t{player_id}\tAnimation\t{player_animation}")
-    lines.append(f"component\t{player_id}\tCollider\tshape=ball;radius=12;offset=0,-16")
+    lines.append(f"component\t{player_id}\tCollider\t{bk.player_ball_collider()}")
     lines.append(transform_line(player_id, spawn_wx, spawn_wy))
     lines.append(f"entity_meta\t{player_id}\trole\tplayer_spawn")
     lines.append(f"entity_meta\t{player_id}\tpersistent\ttrue")
@@ -530,7 +531,8 @@ def check_texture_sizes():
 
 
 def self_check(ground, solid):
-    """契约自检：出生点/出口/地点格可走、门洞可站可达、桥面可走、茶园是土、建筑锚点不泡水。"""
+    """契约自检：出生点/出口/地点格可走、门洞可站可达、桥面可走、茶园是土、建筑锚点不泡水、
+    落点横向走得开（`lateral_problems`）。"""
     problems = []
     walk = reachable_from(solid, (SPAWN["x"], SPAWN["y"]))
     for name, cell in (("spawn", (SPAWN["x"], SPAWN["y"])), *EXITS.items()):
@@ -582,7 +584,30 @@ def self_check(ground, solid):
                for x in range(TEA_FIELD["x0"], TEA_FIELD["x1"] + 1)):
         problems.append("茶园矩形里出现非夯土格（抖动没冻住它）")
     problems.extend(check_texture_sizes())
+    problems += lateral_problems(solid, walk)
     return problems
+
+
+def lateral_problems(solid, walk):
+    """落点：出生点 + 别的图落到本图的每一格，必须可走、可达，且横向走得开一格（判据在 `building_kit`）。
+
+    出口格与门洞那一档**不在这条里**：人是从开阔处走进门洞的，贴脸那一格不需要横向余量；
+    而"落到那一格"是另一回事——`to_cell` 是传送的直接产物，落进去动不了就等于卡死。
+    """
+    registry = bk.read_map_registry(SCENE)
+    problems = []
+    if registry["spawn"] != (SPAWN["x"], SPAWN["y"]):
+        problems.append(f"data/maps.lua {SCENE}.spawn={registry['spawn']} 与本文件 "
+                        f"SPAWN=({SPAWN['x']},{SPAWN['y']}) 不一致：放置格有两个出处")
+    cells = [("spawn", (SPAWN["x"], SPAWN["y"]))]
+    cells += [(label, (x, y)) for label, x, y in registry["landings"]]
+    for label, cell in cells:
+        if not (0 <= cell[0] < W and 0 <= cell[1] < H):
+            continue  # 越界由 `placement_problems` 报，这里不重复也不索引
+        if solid[cell[1]][cell[0]] or cell not in walk:
+            problems.append(f"{label} 的落点 {cell} 在本图不可走或从出生点不可达")
+    got, _readings = bk.placement_problems(W, H, bk.solid_bits(solid), cells)
+    return problems + got
 
 
 def main():

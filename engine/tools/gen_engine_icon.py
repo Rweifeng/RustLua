@@ -1,34 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""RustLua 引擎图标生成器（纯标准库，本机没有 PIL）。
+"""Deterministic, stdlib-only RustLua icons and startup splash.
 
-图案：深色圆角方砖 + 六齿齿轮环 + 嵌在齿轮内孔里的 `L`（Lua 的首字母，Lua 官方 logo 上那枚字）。
-齿轮=引擎，L=脚本层；L 完整收在内孔内、不压环带，靠一圈深色描边与银色齿盘分开。
-这套图给**所有引擎产物**共用：editor.exe / game.exe / assetc.exe 的窗口图标与 exe 文件图标。
-
-用法（仓库根目录运行）：
-
-    py engine/tools/gen_engine_icon.py           # 出图 + 目验表
-    py engine/tools/gen_engine_icon.py --check   # 校验入库产物与规格一致
-
-产物：
-
-    engine/assets/engine_icon.png         256×256 RGBA，窗口图标（`include_bytes!` 那张）
-    engine/assets/engine_icon.ico         七档位深的图标集，`build.rs` 编进 PE 资源当文件图标
-    engine/assets/engine_icon_preview.png 目验表：五档尺寸各放大到 256 一格，
-                                          左→右 256/128/64/32/16，上=浅底 下=深底
-
-为什么自己算 SDF 而不是手画一张：
-  * 标题栏尺寸是 Windows `SM_CXSMICON`（100% 缩放下 16px），eframe 用 Lanczos3 把这张 256
-    直接缩到 16/32（`eframe::native::app_icon`）——16px 上糊不糊由半径、齿角宽、笔画粗细决定，
-    得能量调重出，不能在大图上"感觉还行"；
-  * 出图必须逐字节幂等，`--check` 才能当质量门（跟 `gen_ui_art.py --check` 一路）；
-  * 圆/齿/直笔画都是解析形状，超采样后 box 平均即得反走样，无需外部光栅器。
-
-为什么 .ico 里小尺寸要写成 DIB 而不是七档全塞 PNG：
-  * ICO 允许内嵌 PNG（Vista+ 认），但 `zig rc` / 老 shell 对 <256 的 PNG 条目支持不一致，
-    资源管理器一旦不认就退回通用 exe 图标——表现为"嵌了但看不到"，比编不过更难查；
-  * 所以 16..128 走 32bpp BGRA DIB + 全 0 AND 掩码（透明靠 alpha 通道），只有 256 用 PNG。
+Midnight tile, copper six-tooth gear, ivory crescent and orbiting dot.
+Analytic shapes are supersampled; lettering uses bundled vector glyphs.
+Run normally to generate all four assets, or --check to compare every byte.
+ICO sizes 16/24/32/48 use BGRA DIB + zero AND masks for resource compiler
+compatibility; 256 uses PNG. Preview columns: 256/128/64/32/16 on light/dark.
 """
 
 import argparse
@@ -39,61 +17,44 @@ import struct
 import sys
 import zlib
 
-# --- 规格表（改这里就等于改设计；`--check` 按这份规格复算字节） -------------------
-
-MASTER = 1536            # 超采样栅格边长；必须被下面每一档输出尺寸整除（1536=2^9·3）
-OUT_SIZE = 256           # 入库 PNG 边长（eframe 会自己缩到 16/32/48）
-PREVIEW_SIZES = (256, 128, 64, 32, 16)  # 目验表从左到右的顺序
-# .ico 的档位：shell 实际只会问 16/24/32/48（100%~200% DPI 的小/中/大图标）和 256
-# （400% 与"超大图标"视图）。不加 64/128 是因为 DIB 条目不压缩，128 一档就 65 KB，
-# 而这两档没有任何宿主会去取——白涨 exe 体积。
+# Normalized design coordinates; broad strokes retain contrast at 16px.
+MASTER = 1536
+OUT_SIZE = 256
+PREVIEW_SIZES = (256, 128, 64, 32, 16)
 ICO_SIZES = (16, 24, 32, 48, 256)
-ICO_PNG_SIZES = (256,)   # 只有这些走内嵌 PNG，其余一律 DIB，见模块 docstring
+ICO_PNG_SIZES = (256,)
 
 PALETTE = {
-    "tile": (0x22, 0x26, 0x2D),     # 方砖底色，贴编辑器深色皮肤
-    "rim": (0x39, 0x41, 0x4D),      # 方砖内描边，让深色砖在深色标题栏上仍有边界
-    "ink": (0x10, 0x13, 0x1A),      # 形体内描边（压在任何元素上都比白描边稳）
-    "gear": (0xA9, 0xB4, 0xC2),     # 齿轮：冷银，退到第二视觉层级
-    "glyph_l": (0xE9, 0xB4, 0x4C),  # L：暖金，最亮 = 主语义（Lua 的首字母）
+    "tile": (15, 25, 43),
+    "rim": (39, 54, 75),
+    "gear": (218, 132, 79),
+    "ivory": (247, 239, 217),
+    "muted": (150, 166, 184),
 }
-
-# 圆角方砖：half 是半边长（单位 = 图幅），radius 是圆角半径，rim 是内描边厚。
 TILE_HALF = 0.485
 TILE_RADIUS = 0.150
-TILE_RIM = 0.014
-
-# 齿轮环（极坐标）：hole=内孔半径，ring=齿根半径，tip=齿顶半径。
-# 内孔要给 L 留位置：hole 从 0.165 提到 0.205（字必须整个收在孔里），环带随之瘦到 0.095
-# ——16px 上还剩 1.5px 银，够读出"环"，再瘦就没齿轮了。
-# 齿槽要"浅而等宽"：齿顶只外伸 0.085（16px 上 1.4px），齿根角宽取半距（齿与槽各 30°）。
-# 早先 base_hw=0.70 时槽只剩 18°，缩到 16px 齿槽全并掉，轮廓读成花瓣而不是齿轮。
-GEAR_HOLE = 0.205
-GEAR_RING = 0.300
-GEAR_TIP = 0.385
+TILE_RIM = 0.009
+GEAR_HOLE = 0.225
+GEAR_RING = 0.315
+GEAR_TIP = 0.405
 GEAR_TEETH = 6
-GEAR_BASE_HW = 0.52      # 齿根处角宽 = GEAR_BASE_HW * (π/齿数)，≈0.5 即齿与槽等宽
-GEAR_TIP_HW = 0.30       # 齿顶处角宽 = GEAR_TIP_HW * (π/齿数)
-GEAR_PHASE = math.pi / 2  # 让一齿正对上方，12 点方向不出现豁口
-GEAR_HALO = 0.012        # 描边厚到 0.018 会把齿槽并掉（16px 上槽只剩 1px 都不到）
-
-# L：两条方头笔画（矩形，不用胶囊）。竖笔 stem_top→corner、横笔 corner→foot_end。
-# 两笔等长会被读成"时钟 12:15 的指针"而不是字母，所以横笔只做到竖笔的 0.63 长。
-# 方头而不是圆头：圆头 + 等长 = 指针，方头才有"字"的收笔。
-GLYPH_STEM_TOP = (0.435, 0.400)
-GLYPH_CORNER = (0.435, 0.590)
-GLYPH_FOOT_END = (0.555, 0.590)
-GLYPH_HW = 0.040         # 笔画半边宽：256 上 20.5px，16px 上约 1.3px
-GLYPH_HALO = 0.014
-
-DARK_BG = (0x1E, 0x1E, 0x1E)
-LIGHT_BG = (0xF2, 0xF2, 0xF2)
+GEAR_BASE_HW = 0.58
+GEAR_TIP_HW = 0.34
+GEAR_PHASE = math.pi / 2
+MOON = (0.475, 0.515, 0.163)
+MOON_CUT = (0.545, 0.465, 0.145)
+ORBIT = (0.605, 0.395, 0.043)
+SPLASH_SIZE = (1280, 720)
+SPLASH_MARK_SIZE = 180
+DARK_BG = PALETTE["tile"]
+LIGHT_BG = (242, 242, 242)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS_DIR = os.path.join(os.path.dirname(HERE), "assets")
 ICON_PATH = os.path.join(ASSETS_DIR, "engine_icon.png")
 ICO_PATH = os.path.join(ASSETS_DIR, "engine_icon.ico")
 PREVIEW_PATH = os.path.join(ASSETS_DIR, "engine_icon_preview.png")
+SPLASH_PATH = os.path.join(ASSETS_DIR, "engine_splash.png")
 
 
 # --- SDF 基元 -------------------------------------------------------------------
@@ -133,47 +94,25 @@ def sd_gear(x, y):
     return max(outer, inner)
 
 
-def sd_box(x, y, x0, y0, x1, y1):
-    """到矩形边界的最小距离，内部为负。"""
-    qx = max(x0 - x, x - x1)
-    qy = max(y0 - y, y - y1)
-    return math.hypot(max(qx, 0.0), max(qy, 0.0)) + min(max(qx, qy), 0.0)
+def sd_circle(x, y, circle):
+    cx, cy, radius = circle
+    return math.hypot(x - cx, y - cy) - radius
 
 
-def glyph_boxes():
-    """L 的两条方头笔画，各自一个矩形（centerline 端点 + 半边宽推出四边）。"""
-    stem_x, top = GLYPH_STEM_TOP
-    _, bottom = GLYPH_CORNER
-    foot_x = GLYPH_FOOT_END[0]
-    hw = GLYPH_HW
-    return [
-        (stem_x - hw, top - hw, stem_x + hw, bottom + hw),
-        (stem_x - hw, bottom - hw, foot_x + hw, bottom + hw),
-    ]
+def sd_moon(x, y):
+    return min(max(sd_circle(x, y, MOON), -sd_circle(x, y, MOON_CUT)),
+               sd_circle(x, y, ORBIT))
 
-
-def sd_glyph_l(x, y):
-    return min(sd_box(x, y, *box) for box in glyph_boxes())
-
-
-# --- 上色 -----------------------------------------------------------------------
 
 def paint(x, y):
-    """返回单位坐标处颜色 (r, g, b, a)；None 表示完全透明。
-
-    画序即层级：L（含描边）压在齿轮上，齿轮压在方砖+内描边上。
-    """
+    """Straight RGBA at normalized coordinates; None outside the tile."""
     tile = sd_round_rect(x, y, TILE_HALF, TILE_RADIUS)
     if tile > 0.0:
         return None
-    glyph = sd_glyph_l(x, y)
-    if glyph <= GLYPH_HALO:
-        return PALETTE["glyph_l"] + (255,) if glyph <= 0.0 else PALETTE["ink"] + (255,)
-    gear = sd_gear(x, y)
-    if gear <= 0.0:
+    if sd_moon(x, y) <= 0.0:
+        return PALETTE["ivory"] + (255,)
+    if sd_gear(x, y) <= 0.0:
         return PALETTE["gear"] + (255,)
-    if gear <= GEAR_HALO:
-        return PALETTE["ink"] + (255,)
     if tile > -TILE_RIM:
         return PALETTE["rim"] + (255,)
     return PALETTE["tile"] + (255,)
@@ -326,30 +265,86 @@ def build_preview(rows):
     return encode_png(width, height, canvas)
 
 
-def glyph_max_extent():
-    """字（含描边）最外沿到图心的距离，必须 < GEAR_HOLE 才算整个收进内孔。
+# Monoline vector capitals on a 4 x 6 grid, with clipped geometric corners.
+LETTER_PATHS = {
+    "R": (((0, 6), (0, 0), (3, 0), (4, 1), (4, 2), (3, 3), (0, 3)),
+          ((2, 3), (4, 6))),
+    "U": (((0, 0), (0, 5), (1, 6), (3, 6), (4, 5), (4, 0)),),
+    "S": (((4, 0), (1, 0), (0, 1), (0, 2), (1, 3), (3, 3),
+           (4, 4), (4, 5), (3, 6), (0, 6)),),
+    "T": (((0, 0), (4, 0)), ((2, 0), (2, 6))),
+    "L": (((0, 0), (0, 6), (4, 6)),),
+    "A": (((0, 6), (0, 2), (2, 0), (4, 2), (4, 6)), ((0, 3.5), (4, 3.5))),
+    "G": (((4, 0), (1, 0), (0, 1), (0, 5), (1, 6), (4, 6), (4, 3), (2, 3)),),
+    "M": (((0, 6), (0, 0), (2, 3), (4, 0), (4, 6)),),
+    "E": (((4, 0), (0, 0), (0, 6), (4, 6)), ((0, 3), (3, 3))),
+    "N": (((0, 6), (0, 0), (4, 6), (4, 0)),),
+    "I": (((2, 0), (2, 6)),),
+}
 
-    方头笔画离图心最远的点一定是某个矩形角点，所以逐个角点量。这条是设计约束而不是
-    渲染细节——调 GEAR_HOLE / GLYPH_* 任一项都可能让字悄悄爬出孔去，主程序据此判红。
-    """
-    corners = [(cx, cy)
-               for x0, y0, x1, y1 in glyph_boxes()
-               for cx in (x0, x1) for cy in (y0, y1)]
-    return max(math.hypot(px - 0.5, py - 0.5) for px, py in corners) + GLYPH_HALO
+
+def draw_lettering(canvas, text, top, scale, tracking, stroke, color):
+    """Centered vector text, antialiased by analytic stroke coverage."""
+    width, height = SPLASH_SIZE
+    advance = 4 * scale + tracking
+    left = (width - (len(text) * advance - tracking)) / 2
+    for index, letter in enumerate(text):
+        if letter == " ":
+            continue
+        origin = left + index * advance
+        for path in LETTER_PATHS[letter]:
+            for (ax, ay), (bx, by) in zip(path, path[1:]):
+                ax, ay = origin + ax * scale, top + ay * scale
+                bx, by = origin + bx * scale, top + by * scale
+                dx, dy = bx - ax, by - ay
+                radius = stroke / 2
+                for y in range(max(0, int(min(ay, by) - radius - 1)),
+                               min(height, int(max(ay, by) + radius + 2))):
+                    for x in range(max(0, int(min(ax, bx) - radius - 1)),
+                                   min(width, int(max(ax, bx) + radius + 2))):
+                        t = max(0, min(1, ((x + .5 - ax) * dx + (y + .5 - ay) * dy)
+                                       / (dx * dx + dy * dy)))
+                        distance = math.hypot(x + .5 - ax - t * dx, y + .5 - ay - t * dy)
+                        coverage = max(0, min(1, radius + .5 - distance))
+                        offset = (y * width + x) * 4
+                        for channel in range(3):
+                            # Max coverage at joins avoids dark seams or double blending.
+                            value = round(DARK_BG[channel] * (1 - coverage) + color[channel] * coverage)
+                            canvas[offset + channel] = max(canvas[offset + channel], value)
+
+
+def build_splash():
+    """Opaque 1280x720 navy splash; centered 180px mark and custom lettering."""
+    width, height = SPLASH_SIZE
+    canvas = bytearray(bytes(DARK_BG + (255,)) * (width * height))
+    size = SPLASH_MARK_SIZE
+    left, top = (width - size) // 2, 218
+    samples = 4
+    for y in range(size):
+        for x in range(size):
+            total = [0, 0, 0]
+            for sy in range(samples):
+                for sx in range(samples):
+                    color = paint((x + (sx + .5) / samples) / size,
+                                  (y + (sy + .5) / samples) / size)
+                    for channel in range(3):
+                        total[channel] += color[channel] if color else DARK_BG[channel]
+            offset = ((top + y) * width + left + x) * 4
+            canvas[offset:offset + 3] = bytes(round(c / (samples * samples)) for c in total)
+    draw_lettering(canvas, "RUSTLUA", 440, 6, 16, 3.2, PALETTE["ivory"])
+    for y in range(501, 503):
+        for x in range(609, 671):
+            offset = (y * width + x) * 4
+            canvas[offset:offset + 3] = bytes(PALETTE["gear"])
+    draw_lettering(canvas, "GAME ENGINE", 528, 2, 6, 1.3, PALETTE["muted"])
+    return encode_png(width, height, canvas)
 
 
 def spec_digest():
-    """规格表指纹：--check 时和产物一起打印，方便比对设计是否被改过。"""
-    parts = [
-        f"tile={TILE_HALF}/{TILE_RADIUS}/{TILE_RIM}",
-        f"gear={GEAR_HOLE}/{GEAR_RING}/{GEAR_TIP}/{GEAR_TEETH}"
-        f"/{GEAR_BASE_HW}/{GEAR_TIP_HW}/{GEAR_HALO}",
-        f"glyph_l={GLYPH_STEM_TOP}/{GLYPH_CORNER}/{GLYPH_FOOT_END}"
-        f"/{GLYPH_HW}/{GLYPH_HALO}",
-        f"palette={sorted(PALETTE.items())}",
-        f"sizes={MASTER}/{OUT_SIZE}/{ICO_SIZES}",
-    ]
-    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:12]
+    """Fingerprint the full generator, including layout and vector glyphs."""
+    with open(os.path.abspath(__file__), "rb") as handle:
+        source = handle.read().replace(b"\r\n", b"\n")
+    return hashlib.sha256(source).hexdigest()[:12]
 
 
 def main():
@@ -362,42 +357,40 @@ def main():
         print(spec_digest())
         return 0
 
-    extent = glyph_max_extent()
+    extent = max(math.hypot(cx - .5, cy - .5) + radius
+                 for cx, cy, radius in (MOON, ORBIT))
     if extent >= GEAR_HOLE:
-        print(f"FAIL 字压出内孔：最外沿 {extent:.3f} >= GEAR_HOLE {GEAR_HOLE:.3f}，"
-              f"要么调小 GLYPH_*，要么加大 GEAR_HOLE")
+        print("FAIL crescent or orbit overlaps the gear")
         return 1
 
     rows = render_master()
     artifacts = (
+        (SPLASH_PATH, build_splash()),
         (ICON_PATH, encode_png(OUT_SIZE, OUT_SIZE, downsample(rows, OUT_SIZE))),
         (ICO_PATH, encode_ico(rows)),
+        (PREVIEW_PATH, build_preview(rows)),
     )
 
-    if arguments.check:
-        for path, expected in artifacts:
-            name = os.path.basename(path)
+    for path, body in artifacts:
+        if arguments.check:
             if not os.path.exists(path):
-                print(f"FAIL engine/assets/{name} 不存在，先跑本工具出图")
+                print(f"FAIL engine/assets/{os.path.basename(path)} missing; run generator")
                 return 1
             with open(path, "rb") as handle:
                 actual = handle.read()
-            if actual != expected:
-                print(f"FAIL engine/assets/{name} 与规格复算不一致"
-                      f"（规格指纹 {spec_digest()}），重跑本工具出图")
+            if actual != body:
+                print(f"FAIL engine/assets/{os.path.basename(path)} differs from generator")
                 return 1
-            print(f"OK   engine/assets/{name} ({len(actual)} bytes)")
-        print(f"OK   规格指纹 {spec_digest()}")
+            print(f"OK   engine/assets/{os.path.basename(path)} ({len(actual)} bytes)")
+        else:
+            os.makedirs(ASSETS_DIR, exist_ok=True)
+            with open(path, "wb") as handle:
+                handle.write(body)
+            print(f"wrote engine/assets/{os.path.basename(path)} ({len(body)} bytes)")
+    if arguments.check:
+        print(f"OK   generator {spec_digest()}")
         return 0
-
-    os.makedirs(ASSETS_DIR, exist_ok=True)
-    for path, body in artifacts:
-        with open(path, "wb") as handle:
-            handle.write(body)
-        print(f"wrote engine/assets/{os.path.basename(path)} ({len(body)} bytes)")
-    with open(PREVIEW_PATH, "wb") as handle:
-        handle.write(build_preview(rows))
-    print(f"wrote engine/assets/{os.path.basename(PREVIEW_PATH)}，规格指纹 {spec_digest()}")
+    print(f"wrote assets, generator {spec_digest()}")
     return 0
 
 

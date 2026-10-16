@@ -13,6 +13,9 @@
 //! | `gpu_host`（浏览器） | rAF、`fit_now` 两层几何、DOM 输入监听、URL 开关、`data-rustlua-gpu` 状态属性 |
 //! | `host_runtime`（微信/引擎宿主） | JS 帧驱动、RLFI 输入批量、`tick=lua` 通道、pixel_sample 回读、定长 ABI 与 JSON 状态 |
 //!
+//! **P1 第二片之后**：本类型只负责"一帧怎么画"，**不再**持有帧时钟——时钟与
+//! "这一帧该跑几步"的所有权在 [`crate::engine_host::EngineHost`]（见它的模块文档对照表）。
+//!
 //! ## 抽取纪律：行为等价，不是重写
 //!
 //! 帧序（先 step 再 mesh 再 render）、首帧不计入稳态均值、`sim_boot_*` 阶段自报、

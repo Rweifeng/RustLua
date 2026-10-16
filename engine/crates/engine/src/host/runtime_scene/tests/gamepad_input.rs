@@ -384,3 +384,157 @@ fn lua_rumble_reaches_device_layer() {
     assert_eq!(log.calls().len(), 2, "每帧一次请求，不做额外重发");
     let _ = std::fs::remove_dir_all(&root);
 }
+/// `input.press_position`（第 4 项）的**行为级**用例：命中测试必须用**按下点**，而不是实时光标。
+///
+/// 为什么这条用例存在：`ui/virtual_pad.lua` 用 `press_position` 做控件命中测试——按住摇杆时另一只手
+/// 点按钮，光标仍跟着摇杆那只手，而按钮必须按**自己的按下点**命中。补丁层（web/微信）一直有这个名字
+/// （它把逐指按下点塞进 Lua 表），而引擎侧此前**连字段都没有**，于是 native 上
+/// `host_function(input, "press_position")` 恒假、静默退化成「按实时光标命中」——症状是
+/// 「按住摇杆＋另一手点按钮」命中错位，而**任何读数都不报错**。这条用例把那个退化钉住。
+///
+/// 判别力来自**同一帧同一份输入下的两个答案**：`hit`（用按下点）必须是 `button`，
+/// `fallback_hit`（用实时光标，即修复前的行为）必须是 `pad`。两者相等就说明这条用例在空转，
+/// 所以第二个断言不是陪衬——它是「这条断言真的在判别」的自证。
+#[test]
+fn press_position_drives_hit_test_not_live_cursor() {
+    let root = std::env::temp_dir().join(format!(
+        "rustlua-press-position-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let scripts = root.join("scripts");
+    std::fs::create_dir_all(&scripts).unwrap();
+    // 与 `ui/virtual_pad.lua` **同一套读法**（`cp.x or cp[1]`、`pcall` + `type` 探针），
+    // 所以它测的是那个真实契约，而不是一个仿写的近似物。
+    std::fs::write(
+        scripts.join("main.lua"),
+        "hit, fallback_hit = 'none', 'none'\n\
+         function in_rect(x, y, x0, y0, x1, y1)\n\
+           return x >= x0 and x <= x1 and y >= y0 and y <= y1\n\
+         end\n\
+         function classify(x, y)\n\
+           if in_rect(x, y, 600, 300, 700, 400) then return 'button' end\n\
+           if in_rect(x, y, 100, 300, 200, 400) then return 'pad' end\n\
+           return 'none'\n\
+         end\n\
+         function update()\n\
+           local cp = input.cursor_position()\n\
+           local mx, my = cp.x or cp[1] or 0, cp.y or cp[2] or 0\n\
+           local press_x, press_y = mx, my\n\
+           if type(input.press_position) == 'function' then\n\
+             local ok, pp = pcall(input.press_position)\n\
+             if ok and pp then\n\
+               press_x = pp.x or pp[1] or mx\n\
+               press_y = pp.y or pp[2] or my\n\
+             end\n\
+           end\n\
+           hit = classify(press_x, press_y)\n\
+           fallback_hit = classify(mx, my)\n\
+           return ''\n\
+         end\n",
+    )
+    .unwrap();
+
+    let mut runtime =
+        RuntimeScene::from_scene(Some(&root), Scene::new("press-position")).expect("runtime scene");
+    // 摇杆在左半屏、按钮在右半屏；**光标跟着「按住摇杆的那只手」**，而按下点在按钮上——
+    // 这正是真机上另一只手点按钮的几何关系。
+    let mut host_input = InputSnapshot::default();
+    host_input.cursor_moved(150.0, 350.0);
+    host_input.press_cursor_moved(650.0, 350.0);
+    runtime
+        .run_script_steps(1, 1.0 / 60.0, &host_input)
+        .expect("script step");
+
+    let hit = runtime
+        .script
+        .execute_console("return hit")
+        .expect("read hit");
+    let fallback = runtime
+        .script
+        .execute_console("return fallback_hit")
+        .expect("read fallback_hit");
+    assert_eq!(
+        hit, "button",
+        "命中测试必须用 `input.press_position`（按下点）：光标在摇杆上、按下点在按钮上 ⇒ 应命中按钮；实际 {hit}。若这里是 pad，说明 `press_position` 退化成了实时光标（第 4 项的那个静默退步）。"
+    );
+    assert_eq!(
+        fallback, "pad",
+        "同一帧里用实时光标的答案必须是 pad，否则本用例没有判别力（两个答案相同 = 空转）；实际 {fallback}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+/// `input.press_position(i)` / `input.pointer_count()` 的**取值级**用例：脚本真的按索引读到
+/// "每根手指各自的按下点"。
+///
+/// 为什么必须有它：多指这条链有四处（线格式 → 生产者 → 引擎快照 → Lua 注册），前三处各有用例，
+/// 而"Lua 侧真的取到那一根手指"此前只有"函数在 API 面里"这一级证据——**"在面里"与"取到对的值"
+/// 是两回事**：注册了却永远回主按下点，照样在面里、照样过基线门。
+#[test]
+fn lua_reads_each_finger_press_point() {
+    let root = std::env::temp_dir().join(format!(
+        "rustlua-finger-points-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let scripts = root.join("scripts");
+    std::fs::create_dir_all(&scripts).unwrap();
+    // 用 `string.format('%.1f')` 而不是 `tostring`：后者在不同 Lua 版本上对整数值浮点的
+    // 输出不一致（"100.0" vs "100"），会让这条用例变成版本敏感的门。
+    std::fs::write(
+        scripts.join("main.lua"),
+        "count = -1\n\
+         s0, s1, s2, snone = 'x', 'x', 'x', 'x'\n\
+         local function fmt(pp)\n\
+           if not pp then return 'nil' end\n\
+           return string.format('%.1f,%.1f', pp.x or pp[1], pp.y or pp[2])\n\
+         end\n\
+         function update()\n\
+           count = input.pointer_count()\n\
+           s0 = fmt(input.press_position(0))\n\
+           s1 = fmt(input.press_position(1))\n\
+           s2 = fmt(input.press_position(2))\n\
+           snone = fmt(input.press_position())\n\
+           return ''\n\
+         end\n",
+    )
+    .unwrap();
+
+    let mut runtime =
+        RuntimeScene::from_scene(Some(&root), Scene::new("finger-points")).expect("runtime scene");
+    let mut host_input = InputSnapshot::default();
+    // 两根手指各按一处（顺序即按下先后）。
+    host_input.set_press_cursors(&[(100.0, 200.0), (600.0, 400.0)]);
+    runtime
+        .run_script_steps(1, 1.0 / 60.0, &host_input)
+        .expect("script step");
+
+    let mut read = |name: &str| {
+        runtime
+            .script
+            .execute_console(&format!("return tostring({name})"))
+            .expect("read")
+    };
+    assert_eq!(read("count"), "2", "脚本必须看到两根手指");
+    assert_eq!(read("s0"), "100.0,200.0", "第一根的按下点");
+    assert_eq!(read("s1"), "600.0,400.0", "第二根的按下点");
+    assert_eq!(
+        read("s2"),
+        "nil",
+        "越界必须回 nil，不能拿第一根（或主按下点）冒充——命中测试里错的坐标比没有坐标更糟"
+    );
+    assert_eq!(
+        read("snone"),
+        "600.0,400.0",
+        "不传参数 = 主按下点 = 最后一根（旧行为，`ui/virtual_pad.lua` 靠它）"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -4,7 +4,7 @@
 
 ## 1. 结论
 
-RustLua 已经实现“同一套 Rust/WASM 内核 + 同一套 Lua VM + 同一份 JS 兼容运行时”，但尚未实现“WebGL 与微信小游戏完全由同一个 Rust 模拟与渲染宿主运行”。
+RustLua 的**统一核心**已经基本完成：WebGL 与微信共用同一个 `game_web` Rust crate，以及同一套 Lua VM/桥、固定步与 RLFI 输入实现；两端是不同的**平台发布变体**，而由同一个 Rust engine host 完整接管模拟、输入消费和渲染的**统一宿主目标**尚未完成。
 
 当前完成度可概括为：
 
@@ -20,9 +20,19 @@ RustLua 已经实现“同一套 Rust/WASM 内核 + 同一套 Lua VM + 同一份
 
 > WebGL 正在从 JS/Canvas2D 宿主迁往 Rust `RuntimeScene` + wgpu；微信仍以共享 `web-runtime.js` + Canvas2D 为默认生产宿主，只把 Lua VM、固定步策略、输入协议和部分引擎能力统一到了 WASM 中。
 
+### 1.1 三层统一术语
+
+为避免把“核心统一”误读成“最终文件相同”，本文统一使用以下三层术语：
+
+- **统一核心**：同一个 `game_web` Rust crate，以及唯一一份 Lua VM/桥、固定步与 RLFI 输入实现。这里的“统一”指源码与语义事实源统一，不要求两个平台最终发行的 `_bg.wasm` 字节一致。
+- **平台发布变体**：同一份原始 WASM 构建按宿主生成 Web ESM（`--target web`）与微信 no-modules（`--target no-modules`）胶水；微信最终 WASM 另做剥 Global、剥 Tag、noextern 降级等平台专属兼容后处理。
+- **统一宿主目标**：最终由同一个 Rust engine host 同时负责 Web 与微信的场景模拟、输入消费和渲染；平台层只保留帧源、画布/surface、资源取得、音频、存储与生命周期接线。
+
+按这套术语，当前状态是：**统一核心基本完成，平台发布变体已经形成且属于有意差异，统一宿主目标尚未完成。**
+
 ## 2. 已统一的核心层
 
-### 2.1 同一个 `game_web` WASM 内核
+### 2.1 同一个 `game_web` 源核心与原始 WASM 构建
 
 WebGL 与微信小游戏都构建 `engine/crates/game_web`：
 
@@ -840,6 +850,55 @@ host: canvas_surface: ... webgl2 not available
 
 应共享 scene boot、step、mesh、texture upload、render 和 diagnostics，只保留平台帧源与 canvas 获取差异。
 
+**已落地两片**：
+
+- **P1 第一片 `engine_core`**：`surface/device → Renderer → RustScene boot → step → mesh → 贴图 → 取景 → render → present → poll` 只剩一份；两个外壳各自调用它。
+- **P1 第二片 `engine_host`**：帧的**驱动**也收成一份。此前两个外壳各持一个 `FrameClock`、各写一遍
+  `plan → 取输入 → core.frame(plan.steps, plan.delta_seconds, input)`（两张表逐格同形，一处改了另一处不一定改）；
+  现在这一段只有 `engine_host::EngineHost`（= 帧时钟 + `EngineCore` + 唯一的 `frame(raw_seconds, input)`），
+  浏览器 `gpu_host` 与微信 `host_runtime` 的 scene 档都走它。时钟配置收成 `host_config::HostConfig`
+  （默认 `(60, 8, 0.25)`，并用桌面单测锁住"喂 Lua 的步长必须 f64 现算"这条契约）。
+
+- **前置（同批落地）**：`engine_host_begin` 现在接受**只给 `sim` 而不给 `scene`**——`sim=script`
+  （`SimRoute::EngineStartup`）由**引擎自己**解析启动场景，它的 `scene_path` 只进读数，所以把微信默认翻到
+  Rust 宿主时不必在适配层再抄一份"启动场景是哪个"；另外三条路线仍必须有 `scene`（仍然具名拒绝，不静默退成 clear 档）。
+  这处 Rust 改动之后复跑浏览器那两条门：`webgl_bundle_ok wasm=5291.1KB`（`-Gpu2d -GpuFrames 240`，exit 0）与
+  `webgl_bundle_rust_input_ok script=axis0+:30-150 world=JianghuPlayer@797,112 moved=173,0`（scene + 确定性输入，exit 0）
+  ⇒ 统一宿主在 Web 这条路上"输入真的改变了世界"，改动没有回归。
+
+- **微信默认已翻转（步骤 2）**：适配层用一个**原子模式**取代原来那三个开关，**默认开**——微信默认形态就是
+  Rust 宿主的可见 scene 宿主（主画布归宿主、2d 改道到离屏、`sim=script` 由引擎自己解析启动场景、`tick=none`），
+  帧源改成 `wx.requestAnimationFrame` 并进 `engine_host.frame_source` 读数；只认**显式**关才退回旧形态。
+  门禁随之改成断言新默认（`engine_host_source` 含 `visible-takeover` + 结论永远具名），并新增一条显式关用例守逃生门。
+  读数：`verify-wechat-minigame.ps1 -ExpectGpuKernel` **exit 0**。
+
+- **构建默认也已翻转（同批）**：`game_web` 的 `gpu2d` 特性转**默认开**（`Cargo.toml` 的 `default = ["gpu2d"]`）。
+  此前两个平台的**运行期**默认都已翻到 Rust 宿主（浏览器 `index.html` 的"Rust 侧默认开、`?rustlua-gpu=0` 关"；
+  微信的原子模式默认开），但 `gpu2d` 默认关 + `package.ps1` 只在 `-Gpu2d` 时编它 ⇒ **默认产物里没有宿主**：
+  浏览器退回旧 JS 世界，微信直接 `engine_host=unavailable reason=kernel-without-gpu2d`（按已裁定的"默认开、不回退"，那是黑屏）。
+  改后整条链走默认档的读数：浏览器 `legacy JS world skipped (engine host owns the frame)`、
+  `frame owner ok: engine GPU host (data-rustlua-gpu)`、`webgl_bundle_ok wasm=5292.2KB`（exit 0）；
+  微信 `wasm_host_ok exports=146 globals=0`、`verify-wechat-minigame.ps1 -ExpectGpuKernel` **exit 0**。
+  ⇒ **旧 JS 世界现在在默认产物上不跑**（仍可由 `?rustlua-jshost=1` 或 `--no-default-features` 产物进入）。
+
+**本项仍未统一的两条 + 一条观测阻塞**（正是"统一宿主目标尚未完成"的具体内容）：
+
+1. 微信输入仍由旧 `web-runtime.js` 经 `lua_input_frame` 注入 `LATEST_FRAME`，宿主只负责取用
+   ⇒ **旧运行时停摆则设备输入不再更新**（浏览器那条路已有 Rust 侧 DOM 生产者，微信没有）。这一步**刻意留到删掉旧世界那一笔**：
+   注入搬给宿主会让 `input frames=N bits=M` 这个守卫读数（恒 0 = 两边对"这一帧该变哪些位"理解不一致）退化成恒 0 的假信号；
+2. `clear` 档（显式关掉原子模式、又没给 `scene` 时的诊断形态）还自己持钟，且仍有一份独立于
+   `engine_core::build_gpu_stack` 的建栈代码；它与探针那条路合计三份建栈代码待去重；
+
+**观测阻塞（它排在"把输入搬给宿主"前面）**：`engine_host_state()` 的 `scene` 块是 scene 档唯一的输入证据来源，
+而门与 harness **都不调用它**（`wechat-minigame-harness.js` 里 `engine_host_state` 出现 0 次），且**即使调用也读不到**——
+离线假宿主给不出 WebGL2 ⇒ `engine_host_begin` 必然失败 ⇒ `HOST` 是 `None`。于是"输入到底还有没有进到宿主"这条**最危险**的读数，
+恰恰是**最没有门可依**的一条。两条解法见 `tasks/plan/M73-01-删除旧JS世界-删除面清单.md` §9：
+**A（推荐）让浏览器也走 `host_runtime` 这台壳**（浏览器有 WebGL2，那几个导出同是 wasm 导出），在一个有 GL 的环境里给 N2/N3 造出可断言现场，
+顺带把两个外壳收成一个；B 给离线 harness 一个真 GL 上下文。**在解开之前，"把输入所有权搬给宿主"只能靠真机验证**，与"每步都要有可复现读数"冲突。
+
+**已补齐的一条（原第 3 条）**：`engine_host_resize` 已落地并**进了产物**（`exports=146`，实例化日志里可见该导出），
+`wx.onWindowResize` 会在宿主 `running` 且接管形态下通知它，并留 `resize_calls` 读数；但它**还没有专属门**（harness 无以模拟窗口变化），记为 §5 的 N8。
+
 ### P1：完成 Rust GPU 与旧 JS 世界的确定性对拍
 
 至少覆盖：
@@ -870,9 +929,15 @@ prefetch(paths)
 
 ## 13. 最终判断
 
-RustLua 的 WebGL/微信统一 WASM 已越过概念验证阶段，现已具备真实可运行的统一 Lua 内核、输入协议与固定步系统；WebGL 的 Rust 场景/GPU 路径也已形成完整雏形。
+按本文三层术语，最终判断是：
 
-但如果“统一 WASM”指两个平台均由同一个 `RuntimeScene`、同一个 Renderer、同一个资源服务和同一个帧宿主运行，那么当前仍处于中后期迁移阶段，而不是完成态。决定后续路线的五个关键缺口是：
+- **统一核心：基本完成。** WebGL 与微信已经使用同一个 `game_web` Rust crate，以及同一套 Lua VM/桥、固定步与 RLFI 输入实现。
+- **平台发布变体：已经形成，且差异是有意的。** Web 使用 ESM 胶水；微信使用 no-modules 胶水和平台专属 WASM 后处理，最终 `_bg.wasm` 不同文件、不要求哈希一致。
+- **统一宿主目标：浏览器已达成默认，微信差输入这一条。** 浏览器**默认产物**现在由 Rust 宿主出帧（`legacy JS world skipped`、
+  `frame owner ok: engine GPU host`），微信默认也已是原子模式且内核在位，但它的**输入仍由旧 JS 运行时注入**（见 §12 的剩余第 1 条），
+  而这一条的可断言性被观测阻塞压住（离线假宿主不给 GL ⇒ 宿主到不了 `running`）。
+
+因此，RustLua 的 WebGL/微信统一 WASM 已越过概念验证阶段，但若“统一”指两个平台均由同一个 `RuntimeScene`、同一个 Renderer、同一个资源服务和同一个帧宿主运行，当前仍处于中后期迁移阶段，而不是完成态。决定后续路线的五个关键缺口是：
 
 1. 微信 Rust GPU 宿主尚未真机证实；
 2. 微信默认仍依赖 JS/Canvas2D 世界；
@@ -888,3 +953,4 @@ RustLua 的 WebGL/微信统一 WASM 已越过概念验证阶段，现已具备�
 - `plugins/webgl/README.md`
 - `plugins/wechat-minigame/README.md`
 - `tasks/plan/M73-00-Web运行时性能重构.md`
+- `tasks/plan/M73-01-删除旧JS世界-删除面清单.md`（删旧世界的删除面分区账、依赖顺序 B1–B8、待写门 N1–N8、体积收益与静默风险 R1–R9）

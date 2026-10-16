@@ -28,6 +28,8 @@ item.define.roundtrip | name=剑/kind=weapon/stack=5/buy=10/sell=3
 light.get.unknown_entity | ok=false
 shop.price | keys(buy,sell)/buy=10/missing=nil/no_catalog=nil
 tag.get.unknown_entity | ok=false
+time.delta.positive | number=true
+time.shape | keys(delta)
 ui.focus.shape | open=true/count=true
 ui.scroll.lifecycle | offset=0.0
 ui.text.set_get | text=你好/visible=true

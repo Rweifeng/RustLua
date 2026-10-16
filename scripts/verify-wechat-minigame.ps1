@@ -199,7 +199,6 @@ $required = @(
     "game.json",
     "project.config.json",
     "wechat-adapter.js",
-    "web-runtime.js",
     "pkg\game_web.js",
     $wasmCoreRelative,
     ($skeletonSubdir + "\" + (Resolve-CodePackName "manifest.txt")),
@@ -501,16 +500,44 @@ if (-not $SkipRuntime) {
     Write-Host ("引擎画布探针：status={0} reason={1}" -f $probeStatus, $probeReason) -ForegroundColor DarkGray
 
     # 1a4) 引擎宿主（WP8 主线第二片：真的起一个宿主并按帧驱动它）。
-    #      同样两条，同样**按产物档位**落在两种具名结果之一：
-    #        · 生产口径：不带开关时必须 `engine_host=off`（每帧多一次 GPU 提交，默认关）；
-    #        · 开关通路：默认档内核 ⇒ `unavailable` + `kernel-without-gpu2d`；
-    #                    GPU 档内核 ⇒ `failed` + 以 `host: ` 开头的**引擎原文**（离线假宿主不给 GL，
-    #                    这条正证明宿主画布真的送到了 wgpu）。
-    #      `running` 只能由真机/带 GL 的宿主给出 ⇒ 在这里出现就是读数可疑，直接判失败。
+    #      **默认形态已经翻转**（P1 第二片）：Rust 宿主的原子模式是**生产默认**，不再需要开关。
+    #      断言随之从"不带开关必须 off"改成"不带开关必须是**接管形态**，且结论永远具名"：
+    #        · `engine_host_source` 必须含 `visible-takeover`——证明原子模式真的开着、而且绑的是主画布；
+    #        · 结论按产物档位/宿主能力落进具名结果：默认档内核 ⇒ `unavailable` + `kernel-without-gpu2d`；
+    #          GPU 档内核 + 离线假宿主（不给 GL）⇒ `failed` + 以 `host: ` 开头的引擎原文；
+    #          真机/带 GL 的宿主 ⇒ `running`（这才是这条路的目标态）。
+    #        · 失败时**理由不得为空**：默认翻过去之后"起不来"就是可见的黑屏 + 具名读数，
+    #          空理由会把黑屏变成查不出来的现象（用户裁：默认开、不回退）。
+    #      旧形态（宿主关）不再是默认，由下面 1a4b 的显式关用例继续守着。
     $hostOffLine = $case.Lines | Where-Object { $_ -match "engine_host=" } | Select-Object -First 1
-    if (-not ($hostOffLine -match '(?:^|\s)engine_host=off')) {
-        throw ("生产口径下引擎宿主必须是 off（默认关），实际：{0}" -f $hostOffLine)
+    $defaultHostStatus = if ($hostOffLine -match '(?:^|\s)engine_host=(\S+)') { $matches[1] } else { "缺失" }
+    $defaultHostSource = if ($hostOffLine -match '(?:^|\s)engine_host_source=(\S+)') { $matches[1] } else { "缺失" }
+    $defaultHostReason = if ($hostOffLine -match 'engine_host_reason="([^"]*)"') { $matches[1] } else { "" }
+    if ($defaultHostSource -notmatch 'visible-takeover') {
+        throw ("生产默认必须是 Rust 宿主的接管形态（engine_host_source 含 visible-takeover），实际 source={0}：{1}" -f $defaultHostSource, $hostOffLine)
     }
+    switch ($defaultHostStatus) {
+        "running" { }
+        "unavailable" {
+            if ($defaultHostReason -notmatch '^kernel-without-gpu2d$') {
+                throw ("默认形态下 unavailable 必须带具名理由 kernel-without-gpu2d，实际：{0}" -f $defaultHostReason)
+            }
+            if ($ExpectGpuKernel) {
+                throw "本产物没编 GPU 内核（unavailable），但调用方要求了 -ExpectGpuKernel：请用 package.ps1 -Gpu2d 重新打包"
+            }
+        }
+        "failed" {
+            if ($defaultHostReason -notmatch '^host: ') {
+                throw ("默认形态下失败必须带引擎原文（以 'host: ' 开头），实际：{0}" -f $defaultHostReason)
+            }
+        }
+        default { throw ("默认形态必须落在 running/unavailable/failed 之一，实际 status={0}" -f $defaultHostStatus) }
+    }
+    Write-Host ("引擎宿主（生产默认）：status={0} source={1} reason={2}" -f $defaultHostStatus, $defaultHostSource, $defaultHostReason) -ForegroundColor DarkGray
+
+    # **逃生门 `--rust-scene-host-off` 的守门用例已随 B8 退休**：那条门守的是"显式关掉原子模式后
+    # 仍能逐字回到旧形态（engine_host=off + reason=switch-off）"。旧世界删除后，关掉原子模式**没有
+    # 可回退的形态**了 —— 这条门连同逃生门一起退休（适配层那一侧也已把该全局读掉）。
     $hostCase = Invoke-HarnessCase -ExtraArgs @("--frames", "30", "--engine-host") -Label "engine-host-switch"
     if ($hostCase.ExitCode -ne 0) { throw ("--engine-host 用例失败（exit {0}）" -f $hostCase.ExitCode) }
     $hostOk = $hostCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_ok" } | Select-Object -First 1
@@ -635,8 +662,30 @@ if (-not $SkipRuntime) {
         #      这两条合起来就是"注入来自恰好一处"。离线宿主起不来 ⇒ input_applied 恒 0 是必然的，
         #      但这条契约必须写进产物读数里——真机上宿主起来时它才真正开始起作用（那属于设备侧）。
         $inputFrames = if ($probe.Line -match 'engine_host_runtime_input_frames=(\d+)') { [int]$matches[1] } else { -1 }
-        if ($inputFrames -le 0) {
+        # 契约按"宿主到底跑没跑"分两套（见上面 1a7）：宿主没跑 ⇒ 旧通道**必须**在注入（否则世界不动）；
+        # 宿主在跑 ⇒ 旧通道**必须**已停用（交接完成）。两套都要断，缺一套就会把另一种失效读成正常。
+        $probeHostRunning = $probe.Line -match '(?:^|\s)engine_host=running'
+        if (-not $probeHostRunning -and $inputFrames -le 0) {
             throw ("{0}：运行时必须在注入输入批量（否则整局对按键没反应），实际 engine_host_runtime_input_frames={1}" -f $probe.Name, $inputFrames)
+        }
+        # B4 交接后新增的一条：**新**通道必须真的在跑。它恒 0 与上面那条合起来就是"两边都没动"，
+        # 而那正是"按键没反应"的形态——所以两条必须一起断言，只看一条会放过它。
+        # （契约变化：交接前这里断言"运行时在注入 >0"，前提是注入归旧 JS 运行时；B4 把所有权
+        #  交给宿主自己的生产者 `engine_host_input_*` + 每帧 `engine_host_input_flush`。）
+        $hostInputFrames = if ($probe.Line -match 'engine_host_host_input_frames=(\d+)') { [int]$matches[1] } else { -1 }
+        # **只在宿主真的起来时**断言这一条：离线假宿主不给 GL ⇒ 宿主到不了 `running` ⇒ 它的输入泵
+        # 也不可能跑（`host_input_frames` 恒 0 是**环境**的结果，不是接线错）。这条正面证据在浏览器
+        # 那条门上已有同一个量：`scene.input.seen_frames`（§9-A，实测 120 = 剧本窗口宽度）。
+        # 宿主在跑时**新**通道必须也真的在跑：它恒 0 与"旧通道停用"合起来才是"两边都没动"。
+        if ($probeHostRunning -and $hostInputFrames -le 0) {
+            throw ("{0}：宿主在跑但它的输入生产者一帧都没跑（否则整局对按键没反应），实际 engine_host_host_input_frames={1}" -f $probe.Name, $hostInputFrames)
+        }
+        $probeHostStatus = if ($probe.Line -match '(?:^|\s)engine_host=(\S+)') { $matches[1] } else { "缺失" }
+        if ($probeHostRunning -and $inputFrames -ne 0) {
+            throw ("{0}：宿主在跑 ⇒ 输入所有权已交给宿主，旧运行时通道不该再被使用（两个写者按帧交错写同一个 LATEST_FRAME ⇒ 输入帧间跳变），实际 engine_host_runtime_input_frames={1}" -f $probe.Name, $inputFrames)
+        }
+        if ($probeHostStatus -ne "running" -and $hostInputFrames -gt 0) {
+            throw ("{0}：宿主没起来却有输入泵帧数（读数可疑），status={1} host_input_frames={2}" -f $probe.Name, $probeHostStatus, $hostInputFrames)
         }
         $hostApplied = if ($probe.Line -match 'engine_host_input_applied=(\d+)') { [int]$matches[1] } else { -1 }
         if ($hostApplied -ne 0) {
@@ -647,6 +696,9 @@ if (-not $SkipRuntime) {
         #      ⇒ 两个计数必须相等。这不是"实测凑巧相等"，而是同一条判断的两个分支；
         #      谁把注入挪进别处，这里立刻红。（真机上宿主接管时两者不再相等——注入每帧都做、
         #      推进归宿主，所以这条只在 `tick=runtime` 的产物上断言。）
+        # B4 交接后：输入不再跟运行时的步条件绑定（改由宿主生产者按帧 flush）⇒ 下面这条等式
+        # 只在**旧通道仍在用**时成立；交接完成时 `inputFrames == 0`，那时由上面 `host_input_frames > 0` 守。
+        # 放宽而不是删掉：旧形态（显式关掉原子模式）仍要走这条。
         if ($timing -match 'tick=runtime$' -and $inputFrames -ne $runSteps) {
             throw ("{0}：推进者是运行时 ⇒ 注入次数必须等于推进次数，实际 input_frames={1} run_steps={2}" -f `
                 $probe.Name, $inputFrames, $runSteps)
@@ -1147,40 +1199,11 @@ if (-not $SkipRuntime) {
     #      对象（引导代码先调过一次就会这样）→ 适配层必须挑上屏画布，绘制只能落在它上面；
     #    --debug-overlay：覆盖层 + 像素回读（画 #ff00ff 再 getImageData 读回来）必须命中；
     #    --remote down --expect-image-band：重资源拿不到时屏幕必须出现红色警示条。
-    $canvasArgs = @("--host-canvas", "offscreen")
-    $overlayArgs = @("--debug-overlay")
-    if ($isThinPack) {
-        $canvasArgs += @("--remote", "thin", "--remote-root", $assetPackDir)
-        $overlayArgs += @("--remote", "thin", "--remote-root", $assetPackDir)
-    }
-    $canvasCase = Invoke-HarnessCase -ExtraArgs $canvasArgs -Label "canvas-provenance"
-    if ($canvasCase.ExitCode -ne 0) { throw "上屏画布选择用例失败（--host-canvas offscreen, exit $($canvasCase.ExitCode)）" }
-    if (-not ($canvasCase.Lines | Where-Object { $_ -match "offscreen_ops=0" })) {
-        throw "上屏画布用例没有证明绘制都落在上屏画布上（未输出 offscreen_ops=0）"
-    }
-    $overlayCase = Invoke-HarnessCase -ExtraArgs $overlayArgs -Label "render-overlay"
-    if ($overlayCase.ExitCode -ne 0) { throw "渲染自证覆盖层用例失败（--debug-overlay, exit $($overlayCase.ExitCode)）" }
-    if (-not ($overlayCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_overlay_ok" })) {
-        throw "覆盖层用例没有输出 wechat_minigame_harness_overlay_ok（像素回读没有被验证）"
-    }
-    #    --no-frames --debug-overlay：**一帧都不跑**时屏幕上仍必须有自证图案。
-    #    真机上最常见的黑屏就是"流程走完、一帧都没画"；如果自证图案只挂在帧循环上，
-    #    这种黑屏就无法与"画到了看不见的画布"区分开。
-    $noFrameArgs = @("--no-frames", "--debug-overlay")
-    if ($isThinPack) { $noFrameArgs += @("--remote", "thin", "--remote-root", $assetPackDir) }
-    $noFrameCase = Invoke-HarnessCase -ExtraArgs $noFrameArgs -Label "render-overlay-no-frames"
-    if ($noFrameCase.ExitCode -ne 0) { throw "零帧自证用例失败（--no-frames --debug-overlay, exit $($noFrameCase.ExitCode)）" }
-    if (-not ($noFrameCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_overlay_ok frames=0" })) {
-        throw "零帧自证用例没有输出 overlay_ok frames=0（脱离帧循环的自证图案没有被验证）"
-    }
-    if ($isThinPack) {
-        # 瘦首包 + 远端不可达：骨架读得到、重资源拿不到 → 贴图必然失败，屏幕必须有警示条。
-        $bandCase = Invoke-HarnessCase -ExtraArgs @("--remote", "png-fail", "--remote-root", $assetPackDir, "--wx-path-style", "root", "--expect-image-band") -Label "image-failure-band"
-        if ($bandCase.ExitCode -ne 0) { throw "贴图失败警示条用例失败（--remote down --expect-image-band, exit $($bandCase.ExitCode)）" }
-        if (-not ($bandCase.Lines | Where-Object { $_ -match "case=image-failure-band band=yes" })) {
-            throw "贴图失败时屏幕没有出现警示条（静默黑屏）"
-        }
-    }
+    # **三条"旧世界在屏行为"用例已随 B8 退休**（原 `$legacyWorldArgs` + canvas-provenance /
+    # render-overlay / render-overlay-no-frames / image-failure-band）：它们断言的是"旧 JS 世界在它
+    # 自己形态下把画面上到主画布、像素回读命中、零帧也有图案"。旧世界删除后那个形态不存在了 ——
+    # 默认形态由 Rust 宿主把 2D 改道到离屏画布（主画布留给 webgl2），这些断言的前提随之消失。
+    # 它们守的关切没有丢：像素回读/自证图案的等价断言由**默认形态**那几条用例与浏览器门覆盖。
 
     # 8) 玩家的真实玩法路径：标题按确认 → 换场景 → 世界里有人 → **按住方向键主角会走**。
     #    前面所有用例（含默认用例）都停在启动场景，所以"点开始新游戏"这条路径曾经是覆盖盲区：
@@ -1290,3 +1313,4 @@ if (-not $SkipRuntime) {
 } else {
     Write-Host ("wechat_minigame_package_ok files={0} runtime=skipped" -f $required.Count) -ForegroundColor Yellow
 }
+

@@ -114,6 +114,26 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     )?;
     let s = Rc::clone(&state);
     input.set(
+        "press_position",
+        lua.create_function(move |lua, index: Option<i64>| {
+            // 语义刻意分两种：**不传**给主按下点（旧行为，`ui/virtual_pad.lua` 就是这么调的）；
+            // **传索引**给那根手指的按下点。越界回 `nil`——命中测试里"错的坐标"比"没有坐标"更糟，
+            // 所以宁可不给，由 Lua 侧既有的 `if pp then` 判据接住。
+            let slot = index.filter(|raw| *raw >= 0).map(|raw| raw as usize);
+            let Some((x, y)) = s.lua_borrow()?.input.press_position(slot) else {
+                return Ok(mlua::Value::Nil);
+            };
+            Ok(mlua::Value::Table(table_vec(lua, x as f32, y as f32)?))
+        })?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
+        "pointer_count",
+        // 有几根手指现在按着。命中测试可以据此只在"多指才有意义"的分支里循环。
+        lua.create_function(move |_, ()| Ok(i64::from(s.lua_borrow()?.input.pointer_count())))?,
+    )?;
+    let s = Rc::clone(&state);
+    input.set(
         "cursor_delta",
         lua.create_function(move |lua, ()| {
             let p = s.lua_borrow()?.input.cursor_delta();

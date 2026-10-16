@@ -1123,6 +1123,9 @@ fn binding_is_down(
 }
 
 /// A stable input state consumed by simulation and scripts.
+/// 多指上限。**必须与 `rustlua_frame_abi::MAX_POINTERS` 一致**——这一侧不依赖 ABI crate，
+/// 所以常量只能是两份，靠 `game_web` 里的编译期 `assert!` 防止漂开。
+pub const MAX_POINTERS: usize = 4;
 #[derive(Debug, Clone, PartialEq)]
 pub struct InputSnapshot {
     held_keys: HashSet<KeyCode>,
@@ -1151,6 +1154,17 @@ pub struct InputSnapshot {
     last_device: InputDevice,
     cursor_position: (f64, f64),
     cursor_delta: (f64, f64),
+    /// **按下那一刻**的光标位置（虚拟摇杆/虚拟按钮的命中测试要它）。
+    ///
+    /// 与 `cursor_position` 的区别是语义而不是精度：光标每帧都在动，而按下点只在按下时刷新。
+    /// 混用会让命中测试「跟着手指跑」——按住摇杆时另一只手点按钮就会脱靶，且不报任何错。
+    press_cursor: (f64, f64),
+    /// 每根手指的按下点（多指），`[0..pointer_count]` 有效，**按按下先后**排列。
+    ///
+    /// 与 `press_cursor` 的关系：后者是最近一次按下的那个点（旧语义），即最后一项。
+    press_cursors: [(f64, f64); MAX_POINTERS],
+    /// 本帧按下的指针数（0 = 没有多指信息，例如旧版写者送来的帧）。
+    pointer_count: u8,
     scroll_delta: (f32, f32),
     focused: bool,
 }
@@ -1175,6 +1189,9 @@ impl Default for InputSnapshot {
             last_device: InputDevice::default(),
             cursor_position: (0.0, 0.0),
             cursor_delta: (0.0, 0.0),
+            press_cursor: (0.0, 0.0),
+            press_cursors: [(0.0, 0.0); MAX_POINTERS],
+            pointer_count: 0,
             scroll_delta: (0.0, 0.0),
             focused: true,
         }
@@ -1551,8 +1568,49 @@ impl InputSnapshot {
         self.cursor_position
     }
 
+    /// 记录一次「按下点」。
+    ///
+    /// 与 `cursor_moved` **分开**是刻意的：光标每帧都在动，而按下点只在按下那一刻刷新。
+    /// 两者混用等于把命中测试变成「跟着手指跑」（按住摇杆时另一只手点按钮就脱靶，且不报错）。
+    pub fn press_cursor_moved(&mut self, x: f64, y: f64) {
+        self.press_cursor = (x, y);
+    }
+
+    /// 一次写入本帧**所有指针**的按下点（宿主每帧全量给，与按钮/轴的约定一致）。
+    ///
+    /// 空切片表示"这一帧没有多指信息"（旧版写者只打包 164 B 的线格式就是这种），此时
+    /// 主按下点 [`Self::press_position`]`(None)` 仍然可用——不让旧路径因为新增能力而失灵。
+    pub fn set_press_cursors(&mut self, points: &[(f64, f64)]) {
+        self.pointer_count = points.len().min(MAX_POINTERS) as u8;
+        self.press_cursors = [(0.0, 0.0); MAX_POINTERS];
+        for (slot, point) in self.press_cursors.iter_mut().zip(points.iter()) {
+            *slot = *point;
+        }
+        // 冗余表示保持同源：主按下点 = 最后一个指针（有指针时）。
+        if let Some(last) = points.last() {
+            self.press_cursor = *last;
+        }
+    }
+
+    /// 本帧按下的指针数。
     #[must_use]
-    pub const fn cursor_delta(&self) -> (f64, f64) {
+    pub const fn pointer_count(&self) -> u8 {
+        self.pointer_count
+    }
+
+    /// 取按下点。`None` = 主按下点（旧语义，永远有值）；`Some(i)` = 第 i 根手指，
+    /// **越界返回 `None`**（而不是拿主按下点冒充——命中测试里"错的坐标"比"没有坐标"更糟）。
+    #[must_use]
+    pub fn press_position(&self, index: Option<usize>) -> Option<(f64, f64)> {
+        match index {
+            None => Some(self.press_cursor),
+            Some(slot) if slot < self.pointer_count as usize => Some(self.press_cursors[slot]),
+            Some(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn cursor_delta(&self) -> (f64, f64) {
         self.cursor_delta
     }
 

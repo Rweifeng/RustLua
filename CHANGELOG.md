@@ -7,6 +7,1055 @@
 
 ## Unreleased — 任务：`baselines/` 从 `artifacts/` 挪到仓库根并整体脱管（目录搬迁 + 三份原跟踪文件 `git rm --cached` + 三个读取方接环境变量；零逻辑改动）：题面是用户口径"E:\Codex\RustLua\artifacts\baselines 把这个目录挪出来并修改git忽略"，追问两句定的落法="..\RustLua\baselines"（=仓库根 `baselines/`，仍在树内、只是不再跟踪）与"环境变量覆盖"，提交口径="拆两笔"。旧白名单是 `.gitignore` 里那 8 行 `!/artifacts/baselines/...`（README.md、wp0-3d-stress.committed.json、engine-pub-surface.json 三份放行），本笔换成一条 `/baselines/` 整目录排除，读取方三处统一成 `RUSTLUA_BASELINES_DIR` 优先、缺省 `<仓库根>/baselines`：`scripts/verify.ps1:80-83`（`$baselinesRoot` + 现场建目录，5 处硬路径改走它）、`scripts/engine-pub-surface.mjs:32`、`engine/crates/game/examples/jhyt_m19_soak.rs:378`；注释面另清 6 处（fonts.rs、api_surface_snapshot/mod.rs、两个 wp0 示例、compare-*.ps1）。判别读数：`node scripts/engine-pub-surface.mjs --check` 从新路径读到基线并 `pub_surface_ok items=1562`（这条同时证明路径接线是对的）；`cargo check -p game --example jhyt_m19_soak` Finished exit 0；`cargo fmt --check -p game -p engine -p rustlua-scripting` EXIT=0；三个 ps1 AST errors=0、`node --check` 通过；`scripts/check-docs.ps1` DOCS_EXIT=0 六项 = docs=60 game_docs=46 h1=108 links=420 ps1_bom_ok=33 ps1_parse_ok=33；12 个改动文件行尾 crlf 全数 bare_lf=0/lone_cr=0。新增的一条账（不是缺陷，是脱管的代价）：这目录不入库 ⇒ 新克隆或换机器时它是空的 ⇒ `verify.ps1 -Benchmarks` 的 committed-3D 步与 pub-surface 门都成了**缺文件判红的预期红**，throw 文案已改成可执行的"把上一次确认没回退的 wp0-3d-stress.json 复制成这个文件名"；而 `baselines/README.md` 自己也不入库了 ⇒ 那套可比性裁定在仓库里查不到，本笔把它改写成"本地基线"口径并留在本机；`wp0-3d-stress.committed.json` 文件名里的 committed 成了历史称谓，没重命名。文档面按用户口径"只改活句与命令"清 21 处（根 README.md 目录表新增 `baselines/` 一行、docs/34/36/37/39/43/53/54/56、game_jhyt/docs/54），日期型验收记录按仓库惯例不回填（docs/34 §252、docs/54 §584 与 §717、docs/58 §124、game_jhyt/docs/66 §196、CHANGELOG 与 tasks/done/* 里的旧路径引文）。现场一条并发事实：本笔工作期间 `scripts/verify.ps1`、`docs/34`、`.gitignore`、`CHANGELOG.md` 同时压着 B8 那包的在途 hunk——`.gitignore` 的 `artifacts/` 与 `**/artifacts/logs/` 两行在我改完之后被并发改成 `/artifacts/`，工作树 CHANGELOG 里 `grep -c 接管形态纵向按键` = 0 而 `git show HEAD:CHANGELOG.md` = 1 ⇒ 这三处（含 CHANGELOG）一律按"HEAD 字节 + 只施加自己的 hunk"局部暂存（量具在 `.temp/stage-verify-mine.py`、`.temp/stage-gitignore-docs34.py`），B8 的内容留在下一笔，不由本笔替他们提交或替他们抹回。没测与本笔不碰：① `verify.ps1` 全量门与 `-Benchmarks` 实跑没跑（本笔只改路径取值，不碰判据）；② `cargo clippy`/工作区 test 没跑；③ 空目录那两条"预期红"只按代码路径推断，没在真·干净克隆上验；④ `engine/crates/editor/src/main.rs:3068` 里的 `artifacts/baselines/spatial-migration.txt` 没动（它在临时工程根下拼路径，不指仓库，改它零功能收益）。回滚档：`mv baselines artifacts/baselines` + `.gitignore` 退回那 8 行白名单 + 三处读者退回原硬路径 + 文档 21 处按本条点名的行段撤 + 摘掉本条；`git revert` 本笔即可把三份跟踪状态与目录位置一起复原。
 
+## Unreleased — B8 收尾三件：清干净（两个开关块 + 历史账）、补现场纪律、以及一次**原因未明的产物清空**
+
+### 1) 清理干净
+
+- **适配层两个开关块删掉**：`原子模式`（原 1451-1483：开关本体 + 它读的全局与存储两个入口）与
+  `可见接管开关`（原 1485-1501：`engineHostVisibleEnabled`）。前者是"默认开、可显式关回旧形态"，
+  旧世界删除后**没有可回退的旧形态**；后者唯一的作用就是"原子模式被关掉时仍跑接管形态"，
+  因此同生同死。随之把 11 处 `rustSceneHost` 判据**按恒真/恒假展开**（行为等价）：
+  `engineHostEnabled` 直接 `return true`、`tickWanted=false`、`sceneMode=true`、else-if 链收成一个 else、
+  `useRaf` 去掉外层 if、`feedHostTouch`/`feedHostInput` 去掉守卫、`engine_host_input_flush` 与门面 `return 0` 去条件。
+  `engineVisibleTakeover` 恒真。适配层 4730 → 4685 行；`rustSceneHost` 只剩 3 处**沿革说明**（我写的）、
+  `engineHostVisibleEnabled` 引用归零；`node --check` 通过。
+- **历史账清理**：删 `plugins/webgl/lua_api_overrides.json` 与它的导出脚本 `scripts/lua-api-overrides-report.mjs`
+  （备份在 `artifacts/b8-backup/`），并改掉 3 处仍指向它的引用（`verify.ps1` 的退休注释、`docs/51` 的表格行、
+  引擎侧 `lua_api_contract.lua` 的说明）。逐表分类留在 `tasks/plan/M73-02`。
+- **3 处过时注释**（1463/1646/2977：还在拿被删的开关举例子）按行改写成准确说法。
+
+### 2) 品牌图资源：留给其作者确认（本轮不动）
+
+### 3) 补现场纪律（写进 `docs/34-质量门与发布清单.md` 新增的「现场纪律（打包与编辑）」一节）
+
+- **打包前让开发者工具彻底退出**：症状是"`package.ps1` 看起来跑完但产物没更新"（现场是 `.staging-*` 残留 +
+  原子交换回滚）。这一点现已被门守住（`release-atomic.ps1` 的锁探测：动文件之前挪一遍每个条目，命中抛具名错误）。
+  纪律：先 `cli.bat quit`，**必要时硬杀** `wechatdevtools`/`wxfilewatcher*` 并等几秒；探针报 `no-report` 时同理。
+- **编辑 `.ps1` 后确认 UTF-8 BOM 还在**：丢了 BOM 会被 PowerShell 5.1 按 ANSI 解析，中文打断字符串字面量 ⇒
+  实测一次报 123 个解析错误、且报错位置离真因很远。门是 `check-docs` 的 `ps1_bom_ok`（33 个文件），改完必跑。
+
+### 附：一次**原因未明**的产物清空（如实记录）
+
+本轮收尾时发现 `examples/game_jhyt/builds/` 目录**在、但内容全空**（webgl / wechat-minigame / pc 三个平台目录都没了）。
+时间窗：浏览器门在 16:43:46 还成功读到了 webgl 产物，探针在 16:49:22 已报路径不存在。
+**不是本次清理造成的**（那些编辑都在 `plugins/`、`scripts/`、`docs/`，没有一处碰 `builds/`）；
+在 `scripts/` 里按 `Remove-Item` 递归删除 build 根的常见写法搜了一遍**没有命中**，所以**成因仍未定位**。
+处置：两个平台已重建且尺寸与清空前一致（`webgl_package_ok files=8`、`wechat_minigame_package_ok files=14 main_kb=2,823/68.9%`），
+**产物可再生、源码无损**；但这条记在这里，供后续排查（值得怀疑方向：门脚本或打包脚本里某条"隔离/清理"路径）。
+
+本条有 CHANGELOG 条目。
+## Unreleased — B8：**旧世界本体已删除**（含备份）+ 逃生门 `--rust-scene-host-off` 退休
+
+**删除**（备份在 `artifacts/b8-backup/`，可回滚）：
+
+- `plugins/webgl/web-runtime.js`（415,320 B）—— 7,503 行 / 414 KB 的 JS 世界；
+- `scripts/wasm-lua/input-frame-abi-test.mjs`（20,081 B）—— 它抽的是旧世界的**旧协议 oracle + 打包器**，
+  对拍的两套死了一套；它的关切已有三个门守着（frame-abi 的 12 条用例 / 静态键表门 / 两个平台门）。
+  `verify-wasm-lua.ps1` 里第 4 步的调用与 3 处汇总引用一并去掉（`abiExit` 归零）。
+
+**删后立刻复核（全绿）**：`check-input-abi-parity` / `gen-lua-api-docs --check` / `engine-pub-surface` /
+`check-docs` 全过；两平台重打包 `wechat_minigame_package_ok` + `webgl_package_ok`。
+
+**逃生门 `--rust-scene-host-off` 退休**（目标点名的一项）：
+
+- `wechat-minigame-harness.js`：声明/解析/置位三处删掉（`--host-direct-boot` 同办 —— round 3 之后
+  宿主直启是唯一路径，它作为开关也失效了）；
+- `wechat-adapter.js`：`rustSceneHost` 恒真，`rustSceneHostDisabled()` 里对全局与存储的读**恒真早退**
+  （留个门在外头会让人以为还能关）；
+- `verify-wechat-minigame.ps1`：删掉逃生门的**守门用例**（14 行）与**三条"旧世界在屏行为"用例**
+  （`$legacyWorldArgs` + canvas-provenance / render-overlay / render-overlay-no-frames / image-failure-band）。
+  后三条的退休理由**写在它们自己的注释里已经一年**："步骤 3 删掉旧世界时，这几条用例会连同旧世界一起退休"。
+
+**刻意没做（写明理由）**：适配层里 `if (rustSceneHost)` 的 ~15 处**"关"分支**未清扫。
+它们现在不可达，但"逐处确认删掉不改行为"是独立一轮的活；与删文件混在一笔会让这次删除的**行为面不可控**。
+
+**验证**：微信门 **RED=0**、浏览器门 **RED=0**（`webgl_bundle_ok wasm=5308.8KB`）、两平台打包成功、
+`verify-wechat-minigame.ps1` parse ok（1365 → 1316 行）、harness 与适配层 `node --check` 通过。
+
+**体积**：主包 **2,824 KB / 68.9%**（4 MB 硬门）—— 相对删旧世界前的 3,082 KB / 75.2% 已降；
+本轮删的是**源码**（自 round 4 起它就不在产物里），所以产物尺寸不变，这正是"先让它离开产物、再删源码"的顺序对了。
+
+本条有 CHANGELOG 条目。
+## Unreleased — B8：重写门①（输入键表一致性）—— 最后一条依赖旧世界的门，且**新腿更强**
+
+**改之前**它有三条腿：① Rust `KEY_NAMES` 自洽；② 从 `web-runtime.js` 抽**预置层 bindings 表**；
+③ harness 里的 DOM 键名经 `keyName()` 归一后必须在线路键表里。其中 ② 的源头、③ 的归一函数都在旧世界里。
+
+**查实的两件事（都改变了搬法）**：
+
+1. **Rust 侧早就有那条 DOM 归一**：`game_web/src/frame_input.rs` 的 `wire_key_name(dom_key)`，
+   注释写明"与旧运行时同一张表"（`" "`→`space`、`ArrowLeft`→`left`），而且它自己有一条测试
+   `dom_key_names_normalize_exactly_like_the_js_host`。所以③的交叉验证**换成读 Rust 源码**即可，
+   不需要新写代码 —— 我原先预计的"前置：把 DOM 名映射搬进 Rust"**早已完成**。
+2. **工程绑定走的是另一套名字空间**：`examples/game_jhyt/project.toml` 的 `[input] map` 用的是
+   winit 风格名（`key:keyj`/`key:digit1`/`key:arrowup`，注释里写明），**不是**线路键表的 web 名。
+   所以②原来的口径（JS 预置层表 ↔ 线路键表）随补丁层一起消失。
+
+**重写后的三条腿（都在活着的名字空间里）**：
+
+- ① `KEY_NAMES` 自洽（不变）；
+- ② **新**：`examples/*/project.toml` 的 `[input] map` 里每个 `key:<名>` 必须被**引擎的键名表**认识
+  （`rustlua-input/src/input.rs` 的 `define_key_codes!` 共 194 项）。**这条原来不存在** ——
+  工程绑定此前没有任何静态门看着，而它比原来那条更贴近"真会发出去的东西"；
+- ③ harness/剧本的 DOM 键名归一后必须在线路键表里（**门内独立写一份**归一规则），
+  并与 **Rust 的 `wire_key_name`** 交叉验证（换成读 Rust 源码的两条特例）。
+
+**过程中我自己写错一次**：②的解析器第一版按"token 以 `key:` 开头"判，而实际条目是
+`attack=key:keyj`（**动作名在前**）⇒ 抽出 0 个键、当场红。改成"找 `key:` 再取其后名字"后
+抽到 41 个键 ✓ —— 这条门自己把这个错抓住了。
+
+**验收**：`RESULT: 10 passed, 0 failed` / `input_abi_key_parity_ok keys=105 project_keys=41 dom=34 wire_len=232`；
+对旧世界零依赖（残留两处提及是我新写的沿革注释）。**至此 8 个代码级读者全部处理完** —— 剩下的就是删文件本身。
+
+本条有 CHANGELOG 条目。
+## Unreleased — B8：清掉浏览器页的旧世界分支；固定步测试查实**无需改动**
+
+**浏览器页 `plugins/webgl/index.html`**：删掉 `fallbackToLegacyWorld` 那条"回退去跑 JS 世界"的分支
+（旧世界已不在产物里，那个 `typeof window.rustluaRunLuaGame === function` 判据恒假）。
+**保留**那条 `[host] legacy JS world skipped (...)` 诊断 —— 两条验收门都靠它判断"这些门有没有写者"，
+而且三个原因仍分开说；新增第四个分支"本产物没有 GPU host"，用来替掉原来那个"回退跑旧世界"的说法。
+
+**验证**：重打包 `webgl_package_ok files=8`；浏览器门 **RED=0 / webgl_bundle_ok wasm=5308.8KB**，
+且日志里确实读到 `[console.log] [host] legacy JS world skipped (engine host owns the frame)`。
+
+**`scripts/web-fixed-step-test.js`：查实无需改判据** —— 它 `:33-41` 早就写明"生产代码里已经不再保留
+JS 累积器兜底……本测试直接按 Rust 语义（`rustlua-infra/src/time_step.rs` + `frame_clock`）写一份等价的
+Node 侧时钟"。本轮只清掉两处会误导人的东西：头部那句"从 web-runtime.js 抽取源码执行"
+（与文件自身后半段自相矛盾）与那个只为它存在的 `RUNTIME` 常量。实测 **`web_fixed_step_test_ok cases=10` 全过**。
+
+**门① 体检**：`check-input-abi-parity.mjs` 现在仍绿（它读的是尚在盘上的源文件）。
+所以**它现在是最后一条**依赖旧世界的门 —— 删文件之前必须先给它换参照物。
+
+**仍未做**：门①（绑定表权威源 → `project.toml [input]`；前置：把 DOM 名映射搬进 Rust）
+→ 删源文件 + `--rust-scene-host-off` + `input-frame-abi-test.mjs` → 五条静态门 + 两平台门 + 体积门。
+
+本条有 CHANGELOG 条目。
+## Unreleased — B8：退休 L2「Web API 覆盖清单」门（补丁层没了 ⇒ 这个问题整体消失）
+
+**为什么**：这条门量的是"`web-runtime.js` 里那批 Lua 宿主补丁**盖掉了**引擎多少实现"——
+56 个函数式覆盖点、23 处整表替换、275 个引擎函数里 **77 个因此在 web 上是 nil**，以及那个最会骗人的后果：
+`clock.now()` 引擎版返回 6 个字段、补丁版只返回 3 个，**Lua 读到 nil 也不报错**。
+补丁层随旧世界一起消失 ⇒ "谁盖了谁""哪些名字在 web 上变 nil"**整体不再是问题**，
+这条门连同它唯一的判断对象一起退休。
+
+**改动**：删 `scripts/check-web-api-overrides.mjs`；`verify.ps1` 去掉调用与 Write-Step
+（并把它从 `[SKIP]` 文案里去掉）；`scripts/web-api-contract.js`、`scripts/wechat-minigame-harness.js`、
+`docs/34-质量门与发布清单.md`、`docs/51-平台插件适配.md` 里提到它的地方标成"已随 B8 退休"。
+
+**它依赖的那本账降级为历史记录**：`plugins/webgl/lua_api_overrides.json` **保留**（它的第二个消费者
+`scripts/lua-api-overrides-report.mjs` 读的是历史、不读产物，实测仍能出工单：28 条、10 条有缺口、2 个自造名）。
+M73-01 早就预言过这一步（"删 web-runtime.js 后这门 exit 3 ⇒ 必须同删账本或改成必须为空的断言"），
+本轮选了第三条路：**门删、账留、账的地位降级** —— 因为那本账里的逐名清单是 B/C 类实现工作的输入，
+直接删掉会把"哪些名字当年在 web 上是 nil"这段历史一起抹掉。
+
+**验收**：`verify.ps1` parse ok（BOM 已补）、`check-docs` 绿、账本导出脚本仍可用、残留提及只剩退休注释。
+
+**仍未做**：`web-fixed-step-test.js`（改成对 Rust 判据）、门① `check-input-abi-parity.mjs`（绑定表 → `project.toml [input]`，
+前置：DOM 名映射搬进 Rust）、浏览器页遗留分支；然后删源文件 + `--rust-scene-host-off` + `input-frame-abi-test.mjs`，
+最后五条静态门 + 两平台门 + 体积门。
+
+本条有 CHANGELOG 条目。
+## Unreleased — B8：退休两条"抽旧世界源码"的门（② 瓦片哈希 / u64 oracle），守卫已由 Rust 金标承担
+
+**为什么现在退而不是等删文件**：round 4 之后旧世界**已不在任何产物里**，所以它那两份 JS/Lua 抄本
+在生产里**早就是死代码** —— 这两条门是在"养"死代码，不是在守生产。
+
+**替换守卫（已核对到行，不是推断）**：同一组金标数字在 Rust 侧两处都在 ——
+`engine/crates/rustlua-ecs/src/tilemap.rs:1131`（crate 内测试）与
+`engine/crates/game/examples/jhyt_m72_tile_variant_determinism.rs:63`。
+它守的关切（"抄错一个字符不会崩，只会让地表换个样子"）因此**没有失去守卫**。
+
+**改动**：删 `scripts/check-tile-hash-parity.mjs` 与 `scripts/web-u64-hash-test.js`；
+`scripts/verify.ps1` 去掉两处调用与 Write-Step，并把 `[SKIP]` 文案里对应的两个名字去掉；
+`docs/16-scene-format.md` 里那句"跑 check-tile-hash-parity.mjs"改成指向 Rust 两条金标门。
+
+**更正我上一轮的判断（§九）**：我把 `web-u64-hash-test.js` 说成"最危险（oracle 会丢）"，**错了** ——
+oracle（旧 BigInt 实现）**本来就内联在测试里**（`scripts/web-u64-hash-test.js` 的参考实现段），
+从 `web-runtime.js` 抽的是**被测实现**。所以它失去的是被测物 ⇒ 正确处置是**退休**，不是"固化 oracle"。
+
+**验收**：`verify.ps1` parse ok（BOM 已补）、`check-docs` 绿、残留引用只剩我新写的退休注释与历史任务文档。
+
+**仍未做**：三条源码读者 —— 门① `check-input-abi-parity.mjs`（绑定表 → `project.toml [input]`，前置：DOM 名映射搬进 Rust）、
+`check-web-api-overrides.mjs`（覆盖账本随旧世界整体退休）、`web-fixed-step-test.js`（改成对 Rust 判据）；
+外加浏览器页遗留分支，然后删源文件、`--rust-scene-host-off`、`input-frame-abi-test.mjs` 与体积门收尾。
+
+本条有 CHANGELOG 条目。
+## Unreleased — B8：**旧世界已不在任何产物里**（两个平台都不再带 web-runtime.js），并全链路验证通过
+
+**改动（源文件仍在盘上 ⇒ 可回滚；那两条"解析它当源码"的门因此仍绿）**：
+
+- `package.ps1`：删掉两个平台共用的"复制 + minify web-runtime.js"那一块（1045-1054），
+  以及**四处完整性检查清单**里的它（微信/浏览器各一份 required 列表 + 各一份"目录隔离自测"列表）——
+  后四处是这一轮真正的坑：只删复制点，打包会以 `package is missing: ...web-runtime.js` **直接失败**（staging 里没有它了）。
+- `bundle-discovery.ps1`：两份发现清单各去掉一项。
+- `verify-webgl-bundle.ps1` / `verify-wechat-minigame.ps1`：两份产物完整性清单各去掉一项。
+
+**验证（四条通道全过）**：
+
+```text
+产物里 web-runtime.js: webgl=False   wechat=False
+浏览器门 RED=0 / webgl_bundle_ok wasm=5308.8KB
+微信门   RED=0
+开发者工具: q2_engine_host_begin=running / q3_presented=329/300 reached=yes failed_presents=0
+            verdict=gpu-route-ok-simulator（exit 0）/ host_direct_done=True
+主包: 3,082 KB(75.2%) → 2,824 KB(68.9%)      ← 旧世界 264 KB 从主包消失
+```
+
+**过程事实（省下一次半小时）**：探针第一次仍报 `no-report`，而**清场重试就过**。
+驱动自带的 `cli quit` **不够**：必须硬杀 `wechatdevtools`/`wxfilewatcher*` 并等待数秒，否则冷启拿不到这个项目。
+
+**仍未做（目标未完成）**：删**源文件** `plugins/webgl/web-runtime.js` 本体，这要求先处理：
+- 两条解析它的静态门：`check-input-abi-parity.mjs`（抽游戏绑定表）、`check-tile-hash-parity.mjs`（抽瓦片哈希）；
+- `verify.ps1` 里"从它抽 `advanceFixedSteps` 源码直接跑"的那条固定步验证；
+- `verify-webgl-bundle.ps1` 的 `-StubJsRuntime` 机制与它的前端语法自检（`:142`，读的就是这个源文件）；
+- 浏览器页 `index.html` 里 `fallbackToLegacyWorld` 那段遗留分支与可能的 script 标签；
+外加删 `--rust-scene-host-off` 逃生门、`input-frame-abi-test.mjs`，最后跑五条静态门与体积门。
+
+本条有 CHANGELOG 条目。
+## Unreleased — B8：微信侧**只剩一条启动路径**（宿主直启成为默认），并在真工具里验证通过
+
+**改动**（旧世界文件仍在盘上，所以这一步本身可回滚）：
+
+- `plugins/wechat-minigame/game.js`：**不再 require 任何运行时**（旧世界已删），入口只做两件事：
+  加载适配层 + 起启动 Promise。回调保留成一条**守卫** —— 适配层若再来要求跑旧世界，就**响亮失败**，
+  而不是静默什么都不发生。
+- `plugins/wechat-minigame/wechat-adapter.js`：删掉 `hostDirectBootWanted()` 与那个分支，
+  boot 链直接走 `hostDirectBoot()`（reader 预装 + `lua_execute_main()` + 宿主帧泵）。
+
+**验证（产物里没有任何开关注入 —— 这是对新默认路径的纯测试）**：
+
+```text
+q1_canvas_host=ok / q2_engine_host_begin=running
+q3_presented=326/300 reached=yes failed_presents=0
+verdict=gpu-route-ok-simulator        exit 0
+host_direct_done = True       presented_total = 326
+```
+外加 **微信门 RED=0**、**浏览器门 RED=0**（上一轮）。⇒ "微信侧启动编排已搬到适配层/宿主"这条**成立且是默认行为**。
+
+**体积之谜解开（并且新基线要紧）**：主包从 2,300 KB 跳到 **3,082 KB（75.2%）**，那段差值找到了 ——
+`branding/splash.png`（**793,949 B**）现在进了包（产物里在 `launcher/branding/splash.png`）。
+**更正上一轮的说法**：我那时说"整个仓库没有这个文件"——它**确实进了包**（源码位置待查）。
+这条也解释了早先 8,550 → 9,324 KB 的那次位移同源：**早先那几次包是缺文件的**，数字不能当基线。
+**注意**：主包现在 **75.2%**（4 MB 硬门），而删掉 `web-runtime.js`（414,881 B）后预期回到 ~65% ——
+也就是说"删旧世界"对体积门不是锦上添花，是**必要**的。
+
+**仍未做（目标未完成）**：删 `web-runtime.js` 文件本体 / 浏览器页里那个 script 标签与遗留分支 /
+`--rust-scene-host-off` / `input-frame-abi-test.mjs` / 打包与 discovery 清单 / 门搬家 ①②，然后跑五条静态门与体积门。
+
+本条有 CHANGELOG 条目。
+## Unreleased — B8 第一步**验证完成**（host_direct_done=True）+ 一个真打包 bug 与一条工具教训
+
+**目标里的三路验证都拿到了**：
+
+- **开发者工具探针**（本轮的欠账）：q1_canvas_host=ok / q2_engine_host_begin=running /
+  q3_presented=367/300 reached=yes failed_presents=0 / verdict=gpu-route-ok-simulator（exit 0）/
+  **host_direct_done = True** —— 直启路径确实跑过（main.lua 由引擎执行，未经 web-runtime.js）。
+  上一轮这个标记**还是推断**（"游戏起来了"分不出两条路），本轮它被**观测**到了 ⇒ 第 1 步成立。
+- **浏览器门**：RED=0 / webgl_bundle_ok wasm=5308.8KB；**微信门**：RED=0。
+
+**解开 no-report：一个真实的打包 bug（正是 runbook 的"必需文件清单"那一项）**
+
+适配层（并行在制品）新增了对 startup-branding.js 的 require，而 package.ps1:1044 的**穷举清单没跟上**
+⇒ 产物缺这个模块 ⇒ **开发者工具里根本起不来** ⇒ 探针收不到任何上报（表现是 verdict=no-report，
+而 cli auto 的输出本来就是空的，所以从上看不出毛病）。**修法**：加进清单，并与适配层同样走 minify
+（它也是运行期被 require 的产物文件、同样要过上传 ECMA 档）。这条抓到的是**活的 bug**，不是假设的。
+
+**我自己的工具教训（重要）**：edit 工具**不保留 UTF-8 BOM**，而本仓 .ps1 **必须有** BOM ——
+package.ps1 丢了 BOM 之后，PowerShell 5.1 按 **ANSI** 解析，文件里的中文把字符串字面量打断，
+**一次报 123 个解析错误**（而且报错位置离真因很远：第 141 行那种 -AssetPack 意外标记）。
+**规矩**：对 .ps1 用过 edit 之后，**补回 BOM 并复跑 ps1_bom_ok**（本仓那条门就是为它存在的）。
+
+**顺带查实（别人的在制品，需其作者处理）**：startup-branding.js 读 branding/splash.png，而**整个仓库里
+没有这个文件、plugins/wechat-minigame/ 下也没有 branding/ 目录**。离线 harness 会把它报成失败；
+但**真开发者工具里不影响启动**（本轮 367 帧照跑）⇒ 不是 B8 的阻塞，但该功能自身缺资源。
+
+**体积口径更正**：修好清单后是 **main 2,300 KB（56.2%）/ subpackage 9,324 KB（45.5%）**。
+此前那个 8,550 KB 来自**缺文件的包**，**不能当基线** —— 用它算"删掉 414 KB 后降到多少"会得到错的数。
+
+**下一步（目标未完成）**：门搬家 ①② → 删除 web-runtime.js / --rust-scene-host-off / input-frame-abi-test.mjs
+→ 五条静态门 + 两平台门 + 体积门（用上面这个新基线）。
+
+本条有 CHANGELOG 条目。
+## Unreleased — B8 第一步（续）：直启在**真开发者工具**里跑通一次（332 帧），并把"确实没经旧世界"变成可观测
+
+**已成立（本轮实测）**：
+
+1. **离线 harness**：`--host-direct-boot` 下适配层自报 `宿主直启完成（main.lua 由引擎执行，未经 web-runtime.js）`
+   ⇒ `lua_execute_main()` 确实在引擎里把 main.lua 跑起来了（那一轮剩下的红是离线 harness 没有 WebGL）。
+2. **真开发者工具**（给产物 `game.js` 前置 `__RUSTLUA_HOST_DIRECT_BOOT = true` ⇒ 按代码路径**不加载**旧世界）：
+   `q1_canvas_host=ok` / `q2_engine_host_begin=running` / `q3_presented=332/300 reached=yes failed_presents=0` /
+   `verdict=gpu-route-ok-simulator`（exit 0）。**即"删掉那 414 KB 之后游戏仍然起得来、画得出帧"这条前提，在真工具里成立。**
+3. 给直启加了**可观测证据**：`hostDirectBoot()` 置 `__RUSTLUA_HOST_DIRECT_BOOT_DONE`，`p0-probe.js` 把它带上读数 ——
+   因为"游戏跑起来了"本身**分不出**走的是直启还是旧世界（两条路都会跑起来），只有这个标记能把推断变成观测。
+
+**未成立（下一轮）**：带标记的那次复验返回 `no-report`（IDE 没上报）。产物四个 JS 都 `node --check` 通过，
+所以成因在 **DevTools 冷启/编译**那一侧，不在代码里；`host_direct_done` 因此**还没被观测到**，本条不据此声称。
+
+**两个值得记的现场问题**：
+
+- **陈旧产物陷阱又出现了一次**：开发者工具开着 ⇒ 发布目录被占 ⇒ 原子交换回滚 ⇒ 产物没刷新，
+  而我的临时注入（前置开关 + 探针 require）**累积到了 3 处**。判别方法很便宜：核对产物里"应该有的新代码"在不在
+  （那次是 `产物 adapter 有标记代码: 0`）。**先 `cli quit` 再打包**这条纪律必须每次都执行。
+- **包体积在两次成功打包之间从 8,550 KB 跳到 9,324 KB**（分包），差值 774 KB 与我这两轮只改了几十行 JS 不相称，
+  **尚未解释**。在用它做体积门（主包 55.9% → 预期 ≈49.4%）之前必须先查清，否则基线是漂的。
+
+**回滚档**：`__RUSTLUA_HOST_DIRECT_BOOT` 不置位即回到旧路径（并存设计）；再加删 `hostDirectBoot`/`hostDirectBootWanted`、
+`game.js` 的按需 require、harness 的 `--host-direct-boot`、探针的 `host_direct_done` 字段。
+
+本条有 CHANGELOG 条目。
+## Unreleased — B8 第一步：宿主直启（默认关，与旧路径并存）+ 它已经把旧世界的启动编排替掉了
+
+**要替掉什么**：旧世界 `web-runtime.js` 的启动编排。查实后这一步**比预想小得多** —— 原语都已经在了：
+
+- Lua 运行时**已由适配层建好**：`wechat-adapter.js` 在 scene 档的"预装 reader provider"里就调了 `lua_boot_with_reader`
+  （那次调用的目的是占住**一次性 vfs 槽**：`RustScene::boot` 会先占，main.lua 随后就炸 `vfs: resource not found`）；
+- **`lua_execute_main()` 自己装 require 搜索器**（`install_web_require`，"与桌面 load_candidate 语义一致：vfs provider → pack::decode"，`lua_bridge.rs:525-530`）
+  ⇒ 旧世界那段"把所有 `scripts/**.lua` 读进 JS 再注册 `package.preload`"**在引擎路径上是多余的**；
+- 帧泵 / boot 属性 / 失败态都已归适配层（B5、B6 查实）。
+
+**旧世界存在的最后一个理由**，是 `lua_bridge.rs:492` 那句"先注入全部宿主补丁、再执行 main.lua"的**顺序**；
+而那个顺序约束**是 JS 补丁带来的** —— 补丁没了，约束也就没了。这正是为什么"直启"能成立。
+
+**改动**（默认关，`__RUSTLUA_HOST_DIRECT_BOOT === true` 才走；旧路径原样并存、可回滚）：
+
+- `wechat-adapter.js`：新增 `hostDirectBoot()`（调 `lua_execute_main()`）与 `hostDirectBootWanted()`，boot 链里分流；
+- `game.js`：开关先于 require —— 开了就**不加载旧世界**，且"被要求跑旧世界"时**响亮失败**而不是静默；
+- `scripts/wechat-minigame-harness.js`：`--host-direct-boot`（照 `--rust-scene-host-off` 三条镜像加，供离线判据用）。
+
+**判据（离线 harness，本轮实测）**：
+
+```text
+wechat-adapter: 宿主直启完成（main.lua 由引擎执行，未经 web-runtime.js）   ← 机制成立
+wechat-adapter: 引擎宿主 status=failed … canvas_surface: Failed to create surface … getContext()
+```
+
+即 **`lua_execute_main()` 真的在引擎里跑起了 main.lua、完全没经旧世界**；后半段那条红是**离线 harness 没有 WebGL**
+（本会话早先正是为此改用开发者工具，那边给的是 `verdict=gpu-route-ok-simulator`），不是本次改动引起。
+**默认路径无回归**：微信门在重打包后 `RED=0`、harness ok ×3 path_style。
+
+**下一步**：在开发者工具里打开这个开关做真判据（那边的 WebGL 是真的）——这也是"删 414 KB 之前先把补丁特有行为暴露出来"的那一步。
+
+本条有 CHANGELOG 条目。
+## Unreleased — B5：`data-rustlua-boot` 的归属交接（**只补不盖**）+ B6 查实为"无需改动"
+
+**B5（做了）**：这个属性以前**只有 JS 世界写**（`web-runtime.js` 的 `markBoot`）—— JS 世界删掉后它就没有写者了，而**诊断与回归门读的正是它**。现在由两个**会留下**的写者补上成功态：
+
+- 浏览器：`gpu_host` 的发布路径（紧挨它写 `data-rustlua-engine-host` 的那处）；
+- 微信：`wechat-adapter.js` 的 `engineHostFinish`（适配层本来就在写 `data-rustlua-engine-host` 与失败态的 `data-rustlua-boot=failed`，所以它是最自然的归属方）。
+
+**判据只有一条：只补不盖。** `failed` 绝不能被"我这边一切正常"盖成 `ok` —— 那会把**真实启动失败读成成功**，而这个属性就是失败诊断的入口。规则落在两个同形实现里（两种语言没法共享代码）：Rust `crates/game_web/src/boot_state.rs::boot_state_to_publish` 与 JS 孪生 `publishBootOk`，**改动必须成对**。
+
+**过程中我自己的一个错（值得记）**：第一版把这个纯判据与它的负例放在 `gpu_host.rs` 里，而那个模块的门是 `#[cfg(all(target_arch = "wasm32", feature = "gpu2d"))]` ⇒ **测试根本不会被编译**。露出来的线索是"`cargo test -p game_web` 加了一条测试后仍然是 34"——**数字没变就是证据**。改成 `boot_state.rs` + 门 `any(target_arch = "wasm32", test)`（与 `host_config`/`fit` 同一约定：纯判据、不碰 `web_sys`、桌面单测能跑），于是 `running 35 tests` 且 `boot_state::tests::boot_state_never_clobbers_failed` **确实在跑**。
+
+**B6（查实：无需改动）**：适配层的 rAF 包装已在 `finally` 里调 `afterFrame()`（`wechat-adapter.js` 那处 `try { … } finally { try { afterFrame(); } … }`），且 scene 档**自带帧泵**、注释写明"非 scene 档才由 `afterFrame` 每帧驱动"⇒ 宿主自泵这条路上每帧钩子**已经在**。所以 B6 剩下的不是代码而是 **B8 的清单项**：删 JS 世界的 rAF 包装时，**必须保留适配层那个自泵 + `afterFrame` 调用**。
+
+**验收**：`cargo fmt --check` 0；`clippy --workspace --all-targets --all-features -D warnings` 0；`cargo test -p game_web` **35 passed**（含新负例，且确认它进了编译）；适配层 `node --check` 通过；重打包后**两平台门都绿**（浏览器 `RED=0`，读数仍为 **`boot=ok missing_host_api=0`**，`webgl_bundle_ok wasm=5308.8KB`；微信 `RED=0`，harness ok ×多个 path_style）。
+
+浏览器门里那条 `[cdp] timeout waiting for scene (last boot=ok)` 是**已知形状**（宿主持有帧时场景判据不会"settle"），不是失败：RED=0 且 bundle 断言照常通过。
+
+**回滚档**：删 `boot_state.rs` 与 `lib.rs` 的模块声明、去掉 `gpu_host` 与适配层那两处调用。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — B3：删掉 `LEGACY_WIRE_LEN`（164 B）分支 —— 它**不是"等 B8"的死代码，而是现在就没有写者**
+
+这是"删旧世界"清单里的 B3。账上写的是"补**线格式 JS 写者**的去向（`LEGACY_WIRE_LEN` 分支）"，隐含前提是"JS 侧还在打包 164 B，所以要留到 B8"。**查完发现那个前提是过期的。**
+
+**证据链（三环闭合）**：
+
+1. `lua_bridge.rs` 的布局报的是 `"wire_len": rustlua_frame_abi::WIRE_LEN` ⇒ **232**；
+2. `web-runtime.js` 的打包器**按布局分配**（`new Uint8Array(layout.wire_len)`）⇒ 它写出来的就是 232 B（多指块留零，它不认识那些 offsets）；
+3. `scripts/wasm-lua/input-frame-abi-test.mjs` 断言 `layout.wire_len === packer.length` ⇒ 写者与布局必须同长。
+
+所以 164 B 的写者**一个都不剩**，那条分支最后的制造者是**专门测它的那条用例**。
+
+**改动（5 处，都在 `crates/rustlua-frame-abi/src/lib.rs`）**：
+
+- 删 `pub const LEGACY_WIRE_LEN: usize = 164;`，并把"为什么单边收紧现在安全"改写成**普通注释**留在原位（理由见下条）；
+- 删布局断言 `MOUSE_JUST_RELEASED + 8 == LEGACY_WIRE_LEN`（守住 legacy 长度的那条），保留 `PRESS_CURSORS + MAX_POINTERS*16 == WIRE_LEN`；
+- `decode` 的长度检查：双长度接受 → **只认 `WIRE_LEN`**；
+- `has_pointers` 的两处条件读 → 无条件读（**账上没列这两处**：删掉接受分支后它们恒真）；
+- 那条用例 `legacy_length_is_accepted_without_pointers` → 换成**同形状的负例** `legacy_length_is_rejected_now`（免得"宽松接受还在不在"只能靠翻代码确认）。
+
+**被 clippy 咬到的一处（真缺陷）**：我那段历史说明写成了 `///` 文档注释，而它后面紧跟另一个 `///` 块、中间夹空行 ⇒ `clippy::empty_line_after_doc_comments`（`-D warnings` 当场红）。改成普通 `//` 注释 —— **语义上也更对**：它说明的是一个**已删除**的项，挂在下一个项上本来就不该是文档。
+
+**一个我事先担心、但实测不存在的问题**：`LEGACY_WIRE_LEN` 是 `pub const`，我预期删它会打红对外面基线（`scripts/engine-pub-surface.mjs`）。实测 **`pub_surface_ok items=1562`（绿）**——那条门不跟踪常量，所以**不需要** `--update`。担心是应该的，结论照实说。
+
+**验收**：`cargo fmt --check` 0；`clippy --workspace --all-targets --all-features -D warnings` 0；`cargo test -p rustlua-frame-abi` **12 passed**（含新负例）；静态门 `check-input-abi-parity.mjs` 绿（`wire_len=232`）；对外面门绿；**两平台门在重打包后都绿**（浏览器 `RED=0` / `webgl_bundle_ok wasm=5308.6KB`；微信 `RED=0` / harness ok ×3 path_style）。
+
+**未跑**：`scripts/wasm-lua/input-frame-abi-test.mjs` 的语义对拍部分报 "no-modules glue not found … 先跑 `scripts/verify-wasm-lua.ps1`（不带 -SkipBuild）" —— 它要一份 wasm 胶水产物，属**环境前置**，不是本次改动引起；下一轮跑 `verify-wasm-lua.ps1` 时顺带覆盖。
+
+**顺带查实（它一直在误导人）**：删掉的那段文档注释原本写着"JS 按 offsets JSON 自己打包 164 B，且它还在 `--rust-scene-host-off` 里活着"，而真实代码是按布局的 `wire_len` 分配、布局报 232。**我当初把 B3 写成"等 B8 一起"就是被这段话带偏的** —— 与 M73-02 §6 记的"人工维护的说明会与代码脱节"属同一类，这次它让一条**早就可以删**的分支多活了一阵。
+
+**回滚档**：恢复 `LEGACY_WIRE_LEN` 与双长度接受、把 `has_pointers` 的条件读放回、恢复原用例（`--rust-scene-host-off` 那条旧形态若要继续跑，也必须一起回滚，因为它的写者现在写的是 232 B）。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — B1：补 web 时间基（实为**一处漏掉的 `set_delta`**）+ 删掉补丁层的 `time` 影子
+
+这是"删旧世界"清单里的 B1。开工前先查了缺口真身，结论与账上写的不一样：**不是"web 帧循环没把 delta 喂进 Lua"（一次跨层改动），而是一处漏掉的 `set_delta`**。
+
+**查清的事实**（都落到行号）：
+
+- 引擎**有**权威的 `time` 表，读的是引擎状态：`globals.rs:43-49` → `s.lua_borrow()?.delta_seconds`；
+- 引擎**自己的**运行路径一直在喂：`schedule.rs:349 self.script.set_delta(delta_seconds)`（`386` 收尾清零）；
+- **只有 JS 侧的固定步入口没喂**：`lua_bridge.rs::lua_fixed_step` 当时只写了 Lua 全局 `__rustlua_dt`，没写引擎的 `delta_seconds`；
+- 补丁层那个 `time = { delta = function() return __rustlua_dt end }` **不是历史包袱，而是为绕开这个缺口而存在的影子**（它会盖掉引擎那张表）；
+- **`clock` 那半边早就干净**：`web-runtime.js` 里已搜不到 `clock` 覆盖，且 L3 契约有 `clock.now.shape`/`after_set`/`rate_and_pause` 三条在钉 ⇒ 账上"clock 倍率在 web 上是空的"这条**已不成立**。
+
+**改动（两行 + 一条门）**：
+
+- `lua_fixed_step`：在写 `__rustlua_dt` 之前补 `runtime.set_delta(delta_seconds as f32)`。**f32 是既定口径**（`host_config.rs` 专门有一段讲这个取舍），不是随手转。
+- `web-runtime.js`：删掉 `time` 影子（`__rustlua_dt` 的初值留着，Rust 侧仍在写它）。
+- `lua_api_contract.lua`：加 `time.shape`（`keys(delta)`）与 `time.delta.positive`；契约基线再生成。
+
+**被自己的门咬了一口**：这条门第一次跑，基线记下的是 **`time.delta.positive | delta=0.0`** —— 因为**契约运行器不推帧**，`delta=0` 是合法静止态。那条基线等于**把 0 供成正确值**。于是判据改成「数值 + 非负」，并把"是**真实步长**而非常量影子"那一半**留给真的跑帧的地方**（宿主门）—— 这是本轮唯一一处我**主动缩小**了断言范围的地方，理由写在用例注释里。
+
+**验收**：契约基线再生成一致（exit 0）；两条新用例进基线（`time.delta.positive | number=true`、`time.shape | keys(delta)`）；`fmt`/`clippy -D warnings` 0；**微信门绿**（`--rust-scene-host-off` 那条旧形态曾依赖这个影子，所以必须跑）；**浏览器门 RED=0 且 `webgl_bundle_ok wasm=5309.7KB`**。
+
+**两个我自己造的坑（都记下来）**：
+
+1. **在 JS 模板字符串里写 Lua 注释用了反引号** ⇒ 截断模板、`web-runtime.js` 语法崩 —— 而仓库的 webgl 语法门**当场就喊了这句话**（"模板里的 Lua 注释不能用反引号"）。改用无反引号的注释，并做**行级替换**而不是文本匹配（前一次文本匹配因我复现不出原句的省略号而 anchor=0）。
+2. **修了源文件却没重打包** ⇒ 产物里还是坏版本，浏览器门里那条 `SyntaxError: Unexpected identifier 'time'` 让我以为是"某处有片段级 JS 解析"。判别方法很便宜：**比对 B1 之前的绿灯日志**（`p33` 里 0 命中、只有 B1 的三份日志命中）⇒ 是本次改动引入；重打包后 `Unexpected identifier` 归零。教训：**改了 `plugins/` 下的东西，验证前先重打包**。
+
+**仍未做（交给宿主门）**：`time.delta` 在"真的在跑帧"时的**非零**断言 —— 契约运行器给不了（它不推帧）。
+
+**回滚档**：去掉 `lua_fixed_step` 里那三行 `set_delta`、恢复 `time` 影子、删两条契约用例并再生成基线。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — 两条护栏：发布目录**锁探测**（持有者无关、交换之前就报）+ `-PointerProbe` 与 `-GpuFrames` 互斥
+
+上一条把"打包与开发者工具互斥"的**根因**记下来了，但只做到了"报错具名"。这一段把两条护栏补成**真管用**的，并各自双向验证。
+
+### 1) 发布目录锁探测（`release-atomic.ps1` + `package.ps1`）
+
+- **判据换成"做一次交换要做的操作"**：把发布根下**每个**条目逐个 `Move-Item` 挪走再挪回来；失败即抛具名错误。**不猜持有者**。
+- 为什么不用进程匹配：第一版按"命令行里提到发布目录"筛，**实测漏判** —— `wxfilewatcher_x64.exe` 的命令行里**不含**路径；而只按进程名筛又会把"开发者工具开着别的工程"误判成占用。锁探测两种都绕开。
+- 为什么**逐个**：交换会把发布根下每个条目都挪走，只试第一个会在"被锁的是第二个"时漏判（发布根下常见 `launcher/` 与 `assets/` 兄弟目录）。挪出去成功、挪回来失败时**务必放回去**，别把发布目录弄成半态。
+- 调用点两处：交换处（`release-atomic.ps1`）+ **`package.ps1` 里一确定发布根就探**（`$finalRoot` 出现处，`Clear-StaleReleaseStaging` 之前）—— 否则要等几分钟打包完才报错。
+
+**双向验证**：
+
+```text
+A) 占住 launcher/game.js（文件句柄）⇒ 
+   release dir is locked (probe 'launcher' 挪不动): The process cannot access the file because it is being used by another process.
+   Atomic release swap 出现次数 = 0        ← 交换根本没走到（不再回滚、不留 staging）
+B) 无占用 ⇒ 打包成功并换入：launcher mtime 23:36:29（最新），build-info.txt 同步；
+   残留 .lockprobe-* = 0                    ← 探针自己收拾干净
+```
+
+顺手清掉了此前失败交换留下的 3 个 `.staging-*`（诊断残留）。
+
+### 2) `-PointerProbe` 与 `-GpuFrames` 互斥
+
+`-GpuFrames N` 会让宿主跑满 N 帧就**停**，而真事件探针在之后才派发 ⇒ 读数必然是 0。这不是"真实输入源没接通"，是**假阴性**（本会话实测 `frames 240->240` 配 `multipoint=0`，我一度把它汇报成功能不通）。现在在**启动浏览器之前**直接拒绝：
+
+```text
+[RED] webgl bundle verification aborted: -PointerProbe 不能与 -GpuFrames 同用：
+      -GpuFrames 会让宿主在 N 帧后停帧，探针读数必然为 0（假阴性）。请去掉 -GpuFrames（或设成 0）。
+```
+
+**验收**：`check-docs` 绿（`ps1_parse_ok=33`，含新改的三个 ps1）；三个 ps1 均 parse ok。
+
+**回滚档**：删 `Assert-ReleaseDirNotLocked` 与两处调用、去掉互斥断言。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — 微信侧：真开发者工具**首次验证通过**（`verdict=gpu-route-ok-simulator`）+ appid 与打包互斥的真因
+
+这一段是本会话第一次用**真微信开发者工具**（`D:\Program Files (x86)\Tencent\微信web开发者工具`）验微信端，结论是：**那条"微信侧宿主起不来、画不出帧"的边界，在模拟器里不成立**——它此前只反映离线假宿主没有 WebGL2。
+
+**验收读数**（`node scripts/wechat-devtools-probe.js`，**exit 0**）：
+
+```text
+wechat_devtools_probe boot=wasm:ok/path-instantiate
+wechat_devtools_probe q1_canvas_host=ok        source=main-canvas(visible-takeover)
+wechat_devtools_probe q2_engine_host_begin=running
+wechat_devtools_probe q3_presented=363/300 reached=yes failed_presents=0 status=running
+wechat_devtools_probe q5_eh=eh_probe=accepted
+wechat_devtools_probe verdict=gpu-route-ok-simulator
+```
+
+宿主不仅起来了，还**真的 present 了 363 帧、零失败 present**；`wx.__rustluaEngineHostState()` 也第一次返回真读数（`shell=engine-host`、`mode=scene`、`fit=declared=1280x720 rect=2080x1170+226+0`），且**已经带着这几轮加的多指字段**（`press_cursors`/`pointer_count`/`multipoint_frames`/`press_distinct_frames`）——§9-A 那条"微信侧读数无法观测"在模拟器里不再成立。
+
+### 两个真因（都不是"appid 没传"那么简单）
+
+1. **appid 的真源头**：`examples/game_jhyt/project.toml` 的 `wechat_appid = "wx7091f1cf872130bb"`，由 `package.ps1 -WechatAppId` 写进 `launcher/project.config.json`；不传就回落 `touristappid`（只能本地预览，**编译/上传会失败**——这正是本轮最先撞到的墙）。
+2. **它写不进去的原因是打包失败**：`==> Atomic release swap` 报 **"文件被另一个进程占用" → 回滚**，因为**开发者工具正开着这个工程**。留下的现场是两个 `.staging-*` 目录 + 一个没更新的 `launcher`，而报错在几十行输出的最后。**修法：打包前先 `cli quit`。**
+
+### 顺手加的护栏
+
+`scripts/release-atomic.ps1` 在**动任何文件之前**加"发布目录被占用预检"：用 `Get-CimInstance` 找命令行里**真的提到这个发布目录**的开发者工具/文件监视器进程（只按进程名会把"开着别的工程"也误判），命中就抛一条具名错误（`release dir is held by: …`）。交换失败的 `catch` 里再补一条"可能的持有者"，因为 IDE 主进程的命令行常常不含工程路径，预检会漏。
+
+### 我自己的 5 个探针 bug（都记下来）
+
+1. **在启动瞬就报 `done`** ⇒ `presented_total=0`，与"画不出来"完全不可区分。落定判据改为 `status running && presented ≥ 目标帧数`。
+2. **`reached` 是探针要给的字段**（驱动只读不算）⇒ 漏了它，363 帧也被印成 `reached=no`，verdict 永远绿不了。
+3. **`q1` 的口径是"canvas host 可用"**（驱动判 `=== 'ok'`），引擎宿主的运行态归 `q2`；把两问都塞 `host.status` 会让 q1 恒不等于 ok。
+4. **`ehProbe` 必须在 `q5`**（我塞在 `boot.wasm` 里 ⇒ 驱动读到 undefined，判据白丢一环）。
+5. **PowerShell 双引号里 `` `r `` 是转义**：注释里写反引号包住的 `reached` 被吃成 CR，JS 语法当场崩。改用**单引号 here-string** 整文件重写。
+
+### 仍未验
+
+- **两指同时按**：`multipoint_frames` / `host_touch_multi > 0` 需要模拟器里真人点两下（DevTools 的触摸模拟不是脚本能注入的）。代码在位，等一次人工点击即可读。
+- **真机**：探针自己仍标 `④⑥ device-pending`；模拟器读数不外推到设备。
+- 探针是**临时注入物**（`launcher/p0-probe.js`，存档在 `artifacts/p0-probe/p0-probe.js`）：每次 `package.ps1` 后必须重注入，且每次重打包都会把它冲掉。
+
+**回滚档**：删 `launcher/p0-probe.js` 与 `game.js` 末尾那行 `require`，并把 `release-atomic.ps1` 的两处预检去掉。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — 多指落地（第三段：**真实输入源**接通并验证）
+
+上一段结束时我明确留了一条"未达成"：真实输入源（DOM 触摸 / 微信 `wx.onTouch*`）还没有产出多指数据，`pointer_count > 1` 只可能来自诊断剧本。这一段把它接上，并且**验证到了**。
+
+**改法**：
+
+- `gpu_host` 的 `pointermove`/`pointerdown`/`pointerup` 按 **`pointerType` 分流**：非 `mouse` 的走**每指**通路（`pointer_down/move/up(id)`，不碰 `mouse_*` 位）。用 `pointerType` 而不是"再加一套 touch 监听"，是因为真机上 touchstart 之后浏览器还会合成 mouse 事件，两套监听会把同一根手指记成两根。
+- harness 新增真事件探针（argv[12] + `-PointerProbe`）：页内派发两指 `PointerEvent`（`pointerType:"touch"`，id 11/12；第一指先按住、第二指在它按住时按下），再读宿主的 `data-rustlua-engine-host`。
+
+**验证读数**（`verify-webgl-bundle.ps1 -PointerProbe -SimScene manor -SimRoute scene-script`，**exit 0**）：
+
+```text
+[cdp] pointer probe delivery self-test: hits=1          ← 事件确实送达 window 监听器
+[cdp] pointer probe frames 8520->8550                   ← 宿主在跑（帧真在推进）
+[cdp] pointer probe multipoint=186 pointer_count=1 dispatch_errors=0
+webgl_bundle_engine_pointer_probe_ok multipoint=186
+```
+
+`multipoint=186`（186 帧同时有两个以上指针）就是"真实输入源在产多指数据"的证据。
+
+**这一段真正的收获是三个我自己的观测 bug**（功能本身早就通了）：
+
+1. **探针只写在落定分支里** ⇒ 引擎宿主独占这一帧时场景读数没有写者、`settled` 永远不真，harness 每次走超时分支 ⇒ 探针根本跑不到。修法：超时路径也跑探针（它的读数是**从页面取**的，不依赖 dump）。
+2. **读早了**：属性每 `STATUS_EVERY` 帧才写一次，而探针派发完立刻读 ⇒ 拿到的是上一份。实测 `presented frames=0` 时读到 `multipoint=0`，与"触摸没被记录"**完全不可区分**——我因此一度把"探针看不见"汇报成了"功能不通"（与本会话反复防的"陈旧快照当真值"同一类错）。修法：**先等到帧推进 ≥20 帧**再读，并把 `frames before->after` 一起回显。
+3. **`$cdpEcho` 是 `Invoke-HeadlessDom` 的局部变量**，我在脚本顶层读它 ⇒ 恒为 `$null`，症状是"探针没跑起来"（而它其实跑了并报了 186）。修法：与相邻两条一样显式 `$script:pointerProbeLine = ...`。
+
+**运行约束（重要，别踩）**：`-PointerProbe` **不能与 `-GpuFrames` 同用**——`-GpuFrames N` 让宿主跑满 N 帧就**停**，探针随后派发时宿主已不在推进帧，读数必然为 0（实测 `frames 240->240`）。不传 `-GpuFrames` 即可（宿主持续运行）。
+
+**仍未达成/未验**：
+
+- **微信侧**：`wx.onTouch*` 的 `identifier` 还没有接到每指导出（适配层的 `feedHostInput` 用的是无 id 的 `engine_host_input_pointer`，且 flush 仍是 `if (false)`）。所以多指**只在浏览器侧成立**。
+- 真机 / 开发者工具依旧未验；`at2:`/`hold2:` 只用两根手指验过（上限 4）。
+
+**验收（全门）**：`rustlua-frame-abi` 12 / `rustlua-input` 23 / `rustlua-scripting` 118 / `game_web` 34 全 ok；`clippy -D warnings` 0；`fmt --check` 0；默认浏览器门 exit 0；`-PointerProbe` 真事件门 exit 0；微信门见下。
+
+**回滚档**：撤 `pointerType` 分流、探针与其门开关、以及上面三处观测修复。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — 多指落地（第二段：Lua 面 + 基线 + 浏览器门），三步做完并全绿
+
+上一段把线格式与生产者做完；这一段把**Lua 面**、**基线**、**浏览器可观测**补齐。
+
+### 1) Lua 面：`input.press_position([i])` + `input.pointer_count()`
+
+- `rustlua-input`：`InputSnapshot` 增 `press_cursors: [(f64, f64); 4]` 与 `pointer_count`，新增 `set_press_cursors(&[(f64, f64)])` / `press_position(Option<usize>)` / `pointer_count()`。
+- **索引是 0 起**（与既有 `input.pad_button(i)` / `input.pad_axis(i)` 一致——它们也是直接 `index.clamp(0, 255)` 透传）。Lua 惯例是 1 起，所以这一条必须写进文档：`press_position(1)` 是**第二**根手指。
+- 语义刻意分成两种：**不传** = 主按下点（旧行为，`ui/virtual_pad.lua` 就是这么调的，逐字不变）；**传索引** = 那根手指。**越界回 `nil`**，不拿主按下点冒充——命中测试里"错的坐标"比"没有坐标"更糟，Lua 侧既有的 `if pp then` 判据正好接得住。
+- `lua_bridge`：`__rustlua_input.pointer_count` 只报**数量**。逐指按下点走引擎的 Lua API，不走这张面向 JS 世界的表——它在 web 上会被补丁层整表替换，而补丁层正在被删除。
+- 两份 `MAX_POINTERS`（`rustlua-input` 不依赖 ABI crate）由 `game_web` 里的**编译期 `assert!`** 钉住：漂开的症状是"按一个上限写、按另一个上限读"，高位手指静默丢失。
+
+### 2) 基线 + 样例工程
+
+- 运行期 API 面基线再生成：**291 → 292** 函数（`dump_lua_api --write`）。
+- 文档桩再生成 + 桩数基线：**276 → 277**（`gen-lua-api-docs.js` 与 `--update-baseline`），`gen-lua-api-docs.js --check` → `lua_api_docs_ok`。
+- `lua_api_overrides.json`：`pointer_count` 进 `input.dropped`（补丁层那张整表替换的表没提供它 ⇒ web 上取到 nil，命中测试回落单值）——**"整表替换"必须逐项过账**，这条正是那个机制在起作用：`dropped 42 → 43`，`invented=2`。
+- 样例工程补一次**真实调用** `input.pointer_count()`：新 API 会触发 `sample_project_demos_cover_every_lua_api`（上一轮就是这么被咬的），补完该门绿。
+
+### 3) 浏览器：每指剧本 + 可观测
+
+- 剧本语言：`at`/`hold` 后可跟**可选指针号**（`at2:900x500:40-140`、`hold2:left:50-120`），不写 = 1 走**旧路**（`mouse_*` 位、`press_cursor`、`pointer_fresh` 的语义逐字不变，所以既有门不受影响）；`parse_pointer_id` 在 `1..=MAX_POINTERS` 当场卡住，不留给下游截断。
+- 驱动：id ≥ 2 的每个指针独立算按下/移动/抬起边沿；仍按住但本帧没有位置窗口的沿用上一帧位置（真机上手指可以停在原地）。
+- 读数：`press_cursors` / `pointer_count` / `multipoint_frames`（累计"同时有多指针"的帧数）。门新增断言：剧本含 `at2:`/`hold2:` 时 `multipoint_frames > 0`。**判据又是累计量**——单帧采样会抓到手指都抬起之后的 0（本会话第四次被这条设计救回）。
+
+**门当场抓到第二个真 gap**：首次跑 `multipoint_frames=0`。根因是 id 1 走鼠标路径、**不登记进指针表**，于是"两指"被读成"一根手指"。修法是承认**鼠标也是一根手指**：`mouse_down` 登记 `MOUSE_POINTER_ID = u64::MAX`（用"正常不可能出现的值"避免与 DOM `pointerId`/微信 `identifier` 撞号），鼠标键全松时在 `take_frame` 里移除。修完 `multipoint_frames > 0`。
+
+**验收读数**（`verify-webgl-bundle.ps1 -SimScene manor -SimRoute scene-script -InputScript "axis0+:30-150,at:100x200:10-60,hold:left:30-90,at:600x400:60-200,at2:900x500:40-140,hold2:left:50-120"`，**exit 0**）：
+
+- `webgl_bundle_engine_state_ok … press_distinct_frames=100 pointer_count=0 multipoint_frames>0`（末帧 `pointer_count=0` 是两指都抬起之后的静止值——正是判据必须累计的理由）；
+- `webgl_bundle_rust_input_ok … world=JianghuPlayer@797,112 moved=173,0`；`webgl_bundle_ok wasm=5308KB`。
+
+**全门**：`rustlua-frame-abi` 12 / `rustlua-input` 23 / `rustlua-scripting` 118 / `game_web` 34 全 ok；`clippy --workspace --all-targets --all-features -D warnings` 0；`fmt --check` 0；`lua_api_docs_ok`；`web_api_overrides_ok dropped=43`；`pub_surface_ok items=1562`；**微信门 `WX_EXIT=0`**（旧 164 B 那条路仍活着）；`check-docs` 0。
+
+**我在这一段自己造成并修掉的三个错**（都记下来，免得重复付学费）：① 两次把常量/断言插在 `derive` 与 `struct` **之间** ⇒ derive 挂到常量上、级联报错（规矩：插在属性之上或模块级）；② `rustlua-input` 的常量追加到**文件末尾** ⇒ 落在 `#[cfg(test)] mod tests` 之后，clippy 直接拒（`items after a test module`）；③ 在**单引号 here-string** 里写 `'` ⇒ here-string 不处理转义，写进 ps1 成了两个裸引号、脚本语法崩（规矩：here-string 里要单引号就写一个）。
+
+**仍未验到的**：`press_position(i)` 的 **Lua 取值级**行为（脚本真的读到"第一指 100,200 / 第二指 600,400"、越界得 nil）还没有专门用例——目前证据到"函数在面里 + 引擎侧快照与读数正确"这一级；真机/开发者工具依旧是未验边界；`at2:`/`hold2:` 只覆盖两根手指（语法上限 4，未逐个数验）。
+
+**回滚档**：删 Lua 面三处 + 读数三字段 + 门一条断言 + 剧本可选指针号与 `extra` 驱动；线格式与生产者的回滚见上一条。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — 多指**协议落地（第一段：线格式 + 生产者）**：读者宽容两版，写者只写新版
+
+按"先写门再改数据"的顺序，数据这一段开始动，但**只动到"线格式装得下、生产者填得满"**，Lua 面留到下一段。
+
+**为什么切成两段**：`web-runtime.js` 是这条协议的**另一个语言的写者**，它还在旧形态里活着（`--rust-scene-host-off`）。一次性把长度从 164 收紧到 232，那条路会立刻 `AbiError::Length`——"协议改了、另一侧没跟上"的典型事故。所以这一段的形状是：
+
+- **解码同时接受 164 与 232**（`LEGACY_WIRE_LEN` / `WIRE_LEN`）：旧写者的帧按「没有指针」处理（`pointer_count = 0`），而不是整帧失败；**编码只写 232**；
+- 多指块 = 指针计数（`u32` @164）+ 4 个按下点（`PRESS_CURSORS` @168，`MAX_POINTERS = 4`），布局自洽由编译期 `assert!` 钉住；
+- 计数**钳到上限**再读：越界是上游的错，但截断后仍能读出有效前缀，比整帧失败有用。
+
+**为什么是「扁平定容数组 + 计数」而不是变长表**：线格式是定长布局 + 具名偏移，变长要改分帧与长度前缀；槽 0 保留旧 `press_cursor` 的含义，旧读者继续有效；Lua 侧要能**循环**（`press_position(i)` + `pointer_count()`），一串递增命名做不到。
+
+**生产者**（`game_web/src/frame_input.rs`）：新增 `pointer_down(id, pos)` / `pointer_move(id, pos)` / `pointer_up(id)`。与 `mouse_down` 的关键区别是**它可以在别的指针已按下时再次调用**——后者在"键已按下"时提前返回，第二根手指的按下点因此根本没处可写。数组按**按下先后**排，抬起后**压实不留洞**（否则按索引取按下点会取到空槽）。
+
+**旧字段与数组的关系**：`press_cursor` = `press_cursors[count-1]`（最近一次按下）。冗余是刻意的——旧读者读旧字段、新读者循环数组；不变式由用例钉住，免得两份表示各自漂开。桌面鼠标按住时按**一根手指**计（`count = 1`），否则单指环境下按索引取按下点会全落空。
+
+**门转正**：上一条钉住"单值退化"的 `single_press_point_is_the_pre_multitouch_degradation` 已被 `two_pointers_keep_their_own_press_points` **取代**（不是删掉，是改成断言新能力）：两指各留按下点、移动不改写按下点、抬起后压实、鼠标按住算一根手指。
+
+**验收读数**：`rustlua-frame-abi` **13 passed**（含新增 `legacy_length_is_accepted_without_pointers`；并把往返样本值加上了多指块——原来只测单字段会漏掉"两个字段写到同一个偏移"）；`game_web` **34 passed**；`rustlua-input` 23 / `rustlua-scripting` 118 passed；`fmt --check` 与 `clippy --workspace --all-targets --all-features -D warnings` 均 exit 0；**微信门 `WX_EXIT=0`**（旧 164 B 那条路仍活着——本次最大风险点）、**浏览器门 `WEB_EXIT=0`**（`press_distinct_frames` 仍 > 0）。
+
+**下一段（Lua 面）**：`lua_bridge` 预置表 + `rustlua-input` 的 `InputSnapshot` 每指按下点 + `rustlua-scripting` 的 `press_position(i)`/`pointer_count()`，以及两份基线（`lua_api_surface.json` 与文档桩）再生成——**新 API 会触发 `sample_project_demos_cover_every_lua_api`**，所以还得在样例工程补一次真实调用（上次就是这么被咬的）。再之后才是浏览器剧本的每指指令、以及给 `press_cursors` 加浏览器门的读数。
+
+**回滚档**：线格式改回 164、删多指块与三个 `pointer_*` 方法，门恢复成"钉住退化"的那一版。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — 多指：**先写门**（ABI 已决，数据未动）+ 写门当场纠正了缺陷机制
+
+按"先写门再改数据"做的第一步：**门已写好并绿**，数据（协议）**未动**。
+
+**ABI 决定：扁平定容数组 + 计数**（`press_cursors[[f64;2]; 4]` + `pointer_count`），不是变长表、也不是 `press_cursor_0..3` 一串名字。三条理由：
+
+1. 线格式（`rustlua-frame-abi`）是**定长字节布局 + 具名偏移**（`offsets::PRESS_CURSOR = 44`）⇒ 追加一段定长块不需要改分帧、不需要长度前缀；变长表要动 encode/decode/validate 三处。
+2. 槽 0 保留今天 `press_cursor` 的含义 ⇒ 旧读者继续有效，步子可以分两次迈。
+3. Lua 要能**循环**：`press_position(i)` + `pointer_count()`。一串递增命名的字段做不到这件事。
+
+**写门这一步纠正了我对缺陷机制的理解（这正是它的价值）**。我原以为退化是"第二指**顶掉**第一指"，写了 `press_cursor == B` 的断言——**门当场红了**：实测 `mouse_down` 在已按下时**提前返回**，所以第二指的按下点**根本没被记下**（仍是第一指的 A）。不是"顶掉"，是"**整条丢掉**"——更糟：B 那个按钮**永远**无法用自己的按下点命中。
+
+这条纠正直接影响 ABI：退化有**两半**——① 第二指的按下点无处可写；② 线格式只有**一个** `mouse_held` 位集，"哪根手指按住什么"根本不可表达。所以这一步不是"多加几个按下点槽"，而是**"一个鼠标键状态" → "N 个独立指针"**：生产者要收每指的按下/抬起（不能沿用"键已按下就早退"的语义），线格式要带**指针计数**。工作量因此比"加槽"大一档。
+
+**已落地的门**：`single_press_point_is_the_pre_multitouch_degradation`（`game_web/src/frame_input.rs`）。它现在**绿**——因为它描述的是**现状**：第二指按下后 `press_cursor` 仍是第一指的值，且 `mouse_held` 只有 1 位。等 `press_cursors[]` + 计数落地，它会**红**，那正是"协议改了、这里必须一起改"的信号；**不要删它，改它**。
+
+**验收读数**：`cargo test -p game_web` → **34 passed**（新增 1 条）；`cargo fmt --check` exit 0；`cargo clippy -p game_web --all-targets --all-features -- -D warnings` exit 0。
+
+**下一笔（数据）的范围，据实列出**（3 个 crate / 6 个文件 / 2 份基线，半做即红树，所以没有在这个预算里动手）：`rustlua-frame-abi`（偏移 + encode/decode/validate + 缓冲尺寸）、`game_web` 生产者的**每指**按下/抬起、`lua_bridge` 的预置表、`rustlua-input` 的 `InputSnapshot` 每指按下点、`rustlua-scripting` 的 `press_position(i)`/`pointer_count()`、以及 `lua_api_surface.json` 与文档桩两份基线再生成；浏览器剧本还要补每指指令（今天 `at:`/`hold:` 是单指）。
+
+**回滚档**：删掉那条 `#[test]` 即可（本片未改任何运行期行为）。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — 按下点判据接到浏览器门：**并因此抓出一个真 bug**（`js_cursor_wins` 读早了）
+
+上一片把 `press_position` 的行为判据落在引擎侧。这一片把它接到**浏览器**那条路上，即"按下点与光标在**真 wasm 输入链**上确实是两个不同的值"。
+
+**先说抓到的 bug**（比这一片本身更重要）：接上断言后第一次跑，宿主自报 `press_distinct_frames=0`。追下去是**顺序错**——`gpu_host::frame` 里 `js_cursor_wins` 读在**剧本 tick 之前**，而 `take_frame` 会清掉 `pointer_fresh`：
+
+```rust
+let js_cursor_wins = … producer.pointer_fresh() …;   // ← 读太早：这是**上一帧**的指纹
+… self.input_script.tick(&mut shared.producer);      // 本帧剧本在这里落指针
+… shared.producer.take_frame(&mut self.frame_input); // ← 清掉 pointer_fresh
+```
+
+于是"本侧本帧动过没有"几乎永远为假 ⇒ `js_cursor_wins=true` ⇒ JS 侧（**原子模式下整份是全零**）赢走光标**与按下点**，本侧的指针输入被**静默抹掉**。这解释了一个一直存在但没人当回事的现象：§9-A 那次读数里 `"cursor":[0.0,0.0]`——当时我当它是设计，其实是这个 bug。修法是把指纹**在 tick 之后、`take_frame` 之前**读（`js_cursor_wins` 改成先声明、借用内赋值）。修完 `press_distinct_frames` 从 0 变成 **160**。
+
+**这一片实际做的事**：
+
+- 输入剧本语言补两类指令：`at:xXy:from-to`（指针位置）与 `hold:left:from-to`（按住鼠标键），驱动的是**与 DOM 监听同一个** `FrameInputProducer`。
+- 坐标分隔符用 `x` 而不是 `,`——**这是被新用例当场逼出来的**：`,` 是片段分隔符，`at:100,200:…` 会被切成两个片段，`InputScript::parse` 直接报错。测试第一次跑就红了，省下一轮"为什么坐标进不去"的盲查。
+- 读数补 `press_cursor` 与 `press_distinct_frames`（累计"两者真的不同"的帧数）。
+- 门（`verify-webgl-bundle.ps1`）新增断言：剧本里出现 `hold:` 时，`press_distinct_frames` 必须 > 0。**判据刻意不是"字段存在"而是"两个值真的分开了"**——字段一直在，唯一会静默出错的方式是它们退化成一个值。
+
+**验收读数**（`verify-webgl-bundle.ps1 -SimScene manor -SimRoute scene-script -InputScript "axis0+:30-150,at:100x200:10-60,hold:left:30-90,at:600x400:60-200"`，**exit 0**）：
+
+- `webgl_bundle_engine_state_ok … press_cursor=0.0,0.0 press_distinct_frames=160`；
+- 同一跑 `webgl_bundle_rust_input_ok … world=JianghuPlayer@792,112 moved=168,0` ⇒ 世界确实被驱动了；
+- 新增原生用例 `pointer_and_press_script_keeps_press_point_distinct_from_cursor`（`frame_input.rs`）→ `game_web` **33 passed**；`cargo fmt --check` / `cargo clippy -p game_web --all-targets -- -D warnings` 均 exit 0。
+
+**注意 `press_cursor=0.0,0.0`**：采样发生在最后一帧，而按钮在第 90 帧就抬起了。这正是判据必须是**累计量**的理由（本会话第三次被这条设计救回）——单帧快照会把"按下点被记录过"读成"没记录"。
+
+**没验到的**：微信那条路没跟着动（`gpu_host` 是浏览器专有），真机/开发者工具仍是未验的常态边界；`at:`/`hold:` 目前只覆盖左键与单指，多指（真机上"两指同时按两个按钮"）不在剧本表达力内。
+
+**回滚档**：删 `pointer_windows`/`press_windows` 与 `parse` 的两个分支、`ScriptDriver::tick` 里的指针段、读数的两个字段、门里那条断言；`js_cursor_wins` 那条修复**建议保留**（它是独立 bug）。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — 第 4 项的**行为级**用例：命中测试必须用按下点（含变异验证）
+
+上一片把第 4 项做到"名字两端都在 + 字段真的被写入 + 全门不回归"。这一片把它升到**行为正确**：新增
+`press_position_drives_hit_test_not_live_cursor`（`engine/src/host/runtime_scene/tests/gamepad_input.rs`）。
+
+**为什么没放在浏览器门上**（原建议是放那儿）：浏览器门只能看到 `input_edges`/`world` 这类**粗读数**，
+它无法回答"命中的是**哪一个控件**"——而那正是 `press_position` 唯一决定的事。能回答这个问题的载体是
+`RuntimeScene` + 合成 Lua（`engine/tests` 下已有 `jhyt_*` 一族就是这么加载真实游戏 Lua 的），所以用例放这里。
+
+**用例形状**：脚本按 `ui/virtual_pad.lua` 的**同一套读法**取值（`cp.x or cp[1]`、`type(input.press_position)`
+探针 + `pcall`），摇杆在左半屏、按钮在右半屏；一帧里给两个**不同**位置——光标 `(150,350)` 在摇杆上（模拟
+"按住摇杆那只手"）、按下点 `(650,350)` 在按钮上。于是同一帧里有**两个答案**：`hit`（用按下点）必须是
+`button`，`fallback_hit`（用实时光标 = 修复前的行为）必须是 `pad`。
+
+**第二个断言不是陪衬**：两个答案相同就说明用例在空转。它把"这条断言真的有判别力"变成运行期事实。
+
+**变异验证（关键）**：把 `InputSnapshot::press_position` 临时改成返回实时光标（即修复前的语义）后，
+用例**判红**且报出预期原因：
+
+```text
+assertion `left == right` failed: 命中测试必须用 `input.press_position`（按下点）：
+  光标在摇杆上、按下点在按钮上 ⇒ 应命中按钮；实际 pad。
+  若这里是 pad，说明 `press_position` 退化成了实时光标（第 4 项的那个静默退步）。
+test result: FAILED. 0 passed; 1 failed
+```
+
+复原后转绿（`test result: ok. 1 passed`）。**没有变异验证的行为用例只是"跑起来了"，不是"能判"。**
+
+**顺带撞出的一条契约（比分片本身更重要）**：`cargo test -p engine` **全量**跑时判红的**不是**这条新用例，
+而是 `sample_project_demos_cover_every_lua_api`——它要求样例工程（`examples/game_api`）对**每一个**运行期
+Lua API 都有一次**真实调用**（注释不算）。新 API 一进面，它就要求补演示。已在 `scripts/demo_input.lua` 的
+指针段补上 `local press = input.press_position()`（连带写清它与 `cursor_position()` 的语义差别）。
+
+教训：**新 API"单跑用例通过"与"全量通过"是两回事**——过滤跑（`cargo test -p engine press_position`）
+看得见自己那条，看不见"别人因为我的新增而红"。这类跨用例契约只能靠全量跑暴露。
+
+**验收读数**：`cargo test -p engine press_position` → `ok. 1 passed`；`cargo test -p engine` 全绿；
+`rustlua-input` 23 passed；`cargo fmt --check` exit 0；`cargo clippy --workspace --all-targets --all-features -- -D warnings` exit 0；
+`gen-lua-api-docs.js --check` → `lua_api_docs_ok`。
+
+**顺带记一个我自己造成的险情**：做变异验证时我用 `self.cursor_position` → `self.press_cursor` 的文本替换复原，
+而 `self.cursor_position` **同时也是 `cursor_position()` 访问器的函数体**，于是一次 `.Replace` 把两处都改成了
+`self.press_cursor`——`cursor_position()` 静默开始返回按下点。是"复原后用例仍红"暴露了它（第二个断言要求
+`fallback_hit == pad`），随后按三行上下文锚点精确修回。教训：**替换短文本前先数一遍它在文件里出现几次**，
+尤其是"字段名 == 访问器名"这种同形情形。
+
+**回滚档**：删掉该 `#[test]` 函数即可（它不改变任何运行期行为）。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — 第 4 项：`input.press_position` **引擎侧补齐**（补丁自造名转正）
+
+前几片记的"第 4 项"是：`input.press_position` 是**补丁层自造**的名字——web/微信那条 JS 世界把每根手指的按下点记进 `press_cursor` 再整表塞进 Lua，所以只有它认这个名字；而引擎侧**连字段都没有**，于是 `examples/game_jhyt/scripts/ui/virtual_pad.lua` 的 `host_function(input, "press_position")` 在 native 上永远走回退分支（退化成实时光标）。症状很隐：按住摇杆时另一只手点按钮，按钮按**跟着手指跑的光标**做命中测试 ⇒ 命中错位，而任何读数都不报错。
+
+**改法（一条断掉的线接上 + 一个名字转正）**：
+
+- `rustlua-input`：`InputSnapshot` 新增 `press_cursor: (f64, f64)` 与 `press_position()` / `press_cursor_moved(x, y)`。与 `cursor_moved` **分开**而不是复用是刻意的：光标每帧都在动，按下点只在按下那一刻刷新，两者混用等于把命中测试变成"跟着手指跑"。
+- `game_web::frame_input::apply_frame`：**这条线此前根本没接**——线格式里一直有 `press_cursor`（`FrameInput` 的字段之一），但 `apply_frame` 只把它送进了 Lua 表、没有写进引擎快照。现在补上 `snapshot.press_cursor_moved(frame.press_cursor[0], frame.press_cursor[1])`。
+- `rustlua-scripting`：注册 `input.press_position`（`table_vec` 返回 `{x, y}`，与 `cursor_position` 同形），所以 `virtual_pad.lua` 那个 `pcall` 判据在**两端同义**，不再有"web 有、native 没有"的分叉。
+
+**连带的基线/账目更新**（这类改动必须一起走，否则门红）：
+
+- 运行期 API 面基线 `api_surface_snapshot/lua_api_surface.json` **再生成**（42 表 / 290 → **291** 函数）：`cargo run -q -p engine --example dump_lua_api -- --write`。注意该 example **必须带 `--write`**，否则只打 stdout，"基线没变"会被误读成"改错了"。
+- Lua API 文档桩再生成 + 桩数基线 `275 → 276`（`gen-lua-api-docs.js` 与 `--update-baseline`）：新增 API 必然抬高桩数，这是"确属新增 API"的那一类，不是"文档欠账变多"。
+- `plugins/webgl/lua_api_overrides.json`：`press_position` 从 `invented` **移出**（`invented 3 → 2`），note 里那条"补丁自造"的账改成"引擎已提供"。`check-web-api-overrides.mjs` 现在 `invented=2`。
+
+**验收读数**：`cargo fmt --check` exit 0；`cargo clippy --workspace --all-targets --all-features -- -D warnings` **exit 0**；`rustlua-input`/`rustlua-scripting`/`game_web` 测试 **32 + 23 + 118 + 1 passed**；`gen-lua-api-docs.js --check` → `lua_api_docs_ok 再生成是 no-op、桩数未超标、无死绑定/重复注册`；`check-web-api-overrides.mjs` → `invented=2`；`engine-pub-surface.mjs` → `items=1562`（新增的 `press_position`/`press_cursor_moved` 落在 `rustlua-input` 的既有符号面内，未新增对外符号）。
+
+**没验到的**：`press_position` 的**行为**（"按住摇杆＋另一手点按钮命中正确"）没有专门的用例——它需要一路驱动到 `virtual_pad.lua` 的命中路径并断言选中了哪个控件。本片验到的是"名字两端都存在、字段真的被 `apply_frame` 写入、全门不回归"这一级；行为级用例是下一笔（判据可以放在浏览器那条门上，那里已有可驱动的输入剧本）。
+
+**回滚档**：删 `press_cursor` 字段 + 两个方法、`apply_frame` 那行、`input.rs` 的注册，并把基线/文档/账目三处再生成回去。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — B4 后半·**订正并激活**：交接条件改成"宿主真的在跑"，微信门复绿
+
+上一条把激活撤回，并把它归因到"那一版内核只有 140 导出"。**那个归因是错的**，本条先订正，再按正确的条件激活。
+
+**订正**：140 不是内核的导出数。逐用例统计失败那一跑的日志，**每个用例**（`plain` / `gpu-probe` / `engine-host` / `subpackage:ok` / `subpackage:delay`）都报 140，而同一份产物 `package.ps1` 报 152——说明 140 是 **harness 侧 facade 处理后的计数**，与"内核是哪一版"无关。140 vs 152 从来不是证据。
+
+**真因**：这条链的两半是"喂事件"与"停旧通道"，而"停旧通道"原先的条件是**原子模式**。离线假宿主不给 GL ⇒ 宿主起不来 ⇒ 若此时也停，就变成**两边都没注入**（世界不动），而读数上只看到 `runtime_input_frames=0`，**像是"交接完成"**——正是最危险的那种静默失效。`subpackage-delay` 那条用例会驱动输入并断言位移，于是第一个撞上它。
+
+**改法（一处条件）**：门面里停旧通道的条件从"原子模式"改成"**原子模式 且 `engineHost.status === "running"`**`。于是：
+
+- **宿主在跑**（真机/带 GL 的 harness）：交接生效 ⇒ 旧通道停用、宿主自己的生产者是唯一注入者；
+- **宿主没跑**（离线假宿主）：交接**不生效** ⇒ 旧通道继续注入、世界照动。
+
+**门也跟着分成两套契约**（`verify-wechat-minigame.ps1` 的 1a7）：
+
+- 宿主**没跑** ⇒ `runtime_input_frames > 0`（否则世界不动）；
+- 宿主**在跑** ⇒ `runtime_input_frames == 0`（交接完成）**且** `host_input_frames > 0`（新通道真的在跑）。
+
+两套都要断：只断一套就会把另一种失效读成正常——这正是上一片踩到的那个坑。
+
+**验收读数（B4 激活后）**：微信 `verify-wechat-minigame.ps1 -ExpectGpuKernel` → `wasm_host_ok bytes=5430775 exports=152`、**WX_EXIT=0**；`引擎宿主（生产默认）：status=failed source=main-canvas(visible-takeover)`；`输入注入的唯一所有者：生产 input_frames=12 / 接管用例 input_frames=30（宿主 input_applied=0）` ⇒ 离线走的是"宿主没跑"那一套契约，旧通道照常注入、世界照动；`node --check` 通过；`check-docs.ps1` exit 0。
+
+**仍未验到的一条（诚实边界）**：离线环境下宿主**永远到不了 `running`**，所以"宿主自己的生产者真的把输入送到了世界"这半边，离线**跑不出来**——门里那条断言只在宿主 `running` 时才生效（留给真机/带 GL 的 harness）。目前支持它的证据是三件：① `FrameInputProducer` 的边沿语义有单测守着（与浏览器 DOM 那条路同一实现）；② 浏览器侧同一个量已经跑通（`scene.input.seen_frames=120` = 剧本窗口宽度，§9-A）；③ 微信门那条条件断言已就位，换了有 GL 的环境会立刻开始判。
+
+**第 4 项（`input.press_position` 引擎侧补齐）仍在**：它是补丁层自造名，加它要动引擎 Lua API 面 ⇒ 连着 `lua_api_surface.json` 基线与 `gen-lua-api-docs` 再生成门一起走。
+
+**回滚档**：门面那句条件改回 `if (rustSceneHost) return 0;`、`engineHostDriveFrame` 里的 flush 改回 `if (false)`、门恢复上一版单契约断言。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — B4 后半**尝试并撤回激活**：适配层接线与读数都已在位，但"翻开关"会让微信门判红
+
+上一片把宿主自产输入的 **Rust 侧**（六个 `engine_host_input_*` 导出 + `lua_bridge::set_latest_frame`）落地了。这一片做了它的另一半，结论分两半：
+
+**已在位（保留）**：
+
+- 适配层把**同一份**事件喂给宿主的生产者：`designFromCanvas`（canvas 像素 → 设计坐标，与渲染端 contain 同一套算式——直接把 canvas 像素当设计坐标会让虚拟摇杆"点哪儿都不对"而读数上看不出来）+ `feedHostInput`，挂在 `dispatchWindow`/`dispatchCanvas` 两个漏斗上（触摸映射成的指针事件与键盘事件都走它们）。
+- 读数与 diag：`host_input_frames` / `host_input_dropped_keys` / `host_input_last`。**为什么要有**：交接之后"旧通道还用不用"（`runtime_input_frames`）与"新通道有没有在工作"必须能分开读——只盯前者会把"两边都没动"读成"交接完成"。
+
+**撤回激活（本片的结论）**：两处开关——`engineHostDriveFrame` 里的每帧 `engine_host_input_flush`，与门面里 `lua_input_frame` 在原子模式下 `return 0`（停掉旧通道）——**翻了之后微信门判红**：
+
+```text
+分包形态用例失败（subpackage-delay, exit 1）
+wasm-bridge: 核心实例化成功（… 导出 140 项：…）   ← 那一版内核只有 140 导出，而本笔的完整内核是 152
+```
+
+该用例用的内核导出数（140）比本笔产物（152）少 12，指向"那一版内核/那条用例的内核来源不同"；本片预算内没定到根因，所以**撤回激活、保住门绿**，把它留成下一片一次做到底。当前两处开关是显式 `if (false)`，并带注释说明原因——**整条链都在位，只差翻回来**。
+
+**这一步为什么不能只做一半就留着**：`LATEST_FRAME` 是**一个槽**。只激活"喂事件"而不停旧通道 ⇒ 两个写者按帧交错写它，而两者内容与时机都不同（运行时按自己的采样帧、宿主按 `engineHostDriveFrame` 的帧）⇒ 输入**帧间跳变**（按键时灵时不灵），坏于任何单写者。所以"喂事件"与"停旧通道"必须同时翻——这正是本片一起翻、又一起撤回的原因。
+
+**验收读数（撤回后）**：微信 `verify-wechat-minigame.ps1 -ExpectGpuKernel` → `wasm_host_ok bytes=5430775 exports=152`、**WX_EXIT=0**；浏览器 `webgl_bundle_engine_state_ok builtin=False … input_seen_frames=120` + `webgl_bundle_ok` → **exit 0**；`node --check` 通过；`check-docs.ps1` exit 0（ps1_parse_ok=33）。
+
+**没做的一件（第 4 项）**：`input.press_position` 引擎侧补齐。它是补丁层的**自造名**（`lua_api_overrides.json` 记着，`examples/game_jhyt/scripts/ui/virtual_pad.lua:598-604` 用 `pcall` 取，缺了回落实时光标）。加它要动引擎的 Lua API 面 ⇒ 连着 `lua_api_surface.json` 基线与 `gen-lua-api-docs` 再生成门一起走，是一笔独立的活。
+
+**回滚档**：本条是"接线+读数保留、激活撤回"，工作区状态即回滚目标；要回到上一片，删 `feedHostInput`/`designFromCanvas` 与三个 diag 字段即可。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — B4 前半：宿主自产输入的那条链（Rust 侧落地，适配层接线是下一片）
+
+**这条链解的是删旧世界的硬阻塞**：`LATEST_FRAME` 此前的**唯一写者**是 `lua_bridge::lua_input_frame`，而它唯一的调用者是旧 JS 运行时（`web-runtime.js` 的 `createWebInput` → `applyInputFrame`）。也就是说——**旧运行时不跑 ⇒ 宿主每帧拿 `FrameInput::default()`：不崩溃、不报错、`presented` 照涨，只是人钉死。** 删旧世界之前必须先把这条链搬进宿主。
+
+**改法**（`lua_bridge.rs` + `host_runtime.rs`，纯 Rust）：
+
+- `lua_bridge` 新增 `set_latest_frame(frame)`：落点与旧运行时那条路**同一个** `LATEST_FRAME`——"世界只有一个输入所有者"就是这么实现的：谁生产都行，读的只有这一处。
+- `host_runtime` 新增宿主自己的生产者状态 `HOST_INPUT`，复用 [`frame_input::FrameInputProducer`](engine/crates/game_web/src/frame_input.rs)——**与浏览器 DOM 那条路同一个实现**，边沿语义、落不进键表的键计数、`release_all` 都在它里面且有单测守着。
+- 六个导出：`engine_host_input_key/pointer/button/axis/release_all/flush`。形状是**"事件级进、每帧一次 flush 出"**，不是每个事件直接写 `LATEST_FRAME`：边沿是**每帧量**（`take_frame` 取走即清空），按事件写会把同一次点按在之后每一帧重复发出去，症状是"点一下角色一直走"而读数上完全看不出来。
+- `engine_host_input_key` **返回并计数**"落不进线格式的键名"，`flush` 把 `dropped_keys` 报出来——刻意不静默，那正是"某个键按了没反应"的经典成因。
+
+**验收读数**：
+
+- 六个导出**都在产物里**：微信 `wasm_host_ok bytes=5430775 exports=152`（+6）、webgl `wasm_host_ok bytes=5425211 exports=154`；
+- 微信门 `verify-wechat-minigame.ps1 -ExpectGpuKernel` **WX_EXIT=0**；浏览器门 `webgl_bundle_engine_state_ok … input_seen_frames=120` + `webgl_bundle_ok wasm=5298.1KB`（**exit 0**）；
+- 原生：`clippy --workspace --all-targets --all-features -- -D warnings` exit 0、`fmt` exit 0、`game_web` 32 passed。
+
+**这一片只落地了 Rust 侧，收益尚未兑现（下一片才是）**：**适配层还没有调用这六个导出**，所以微信上真正注入输入的仍然是旧运行时——`runtime_input_frames` 照涨、`input_applied` 仍是 0。本片的证据因此只到"**导出在位 + 全门不回归**"这一级，**不是**行为级。下一片要做的是：适配层 `wx.onTouch*`/键事件 → 这六个导出 → 每帧 `flush`，并让旧运行时那条注入**停掉**（`runtime_input_frames` 不再增长即"一个输入所有者"的判据）；判据可以借 §9-A 那个可在浏览器先跑的 `scene.input.seen_frames`。
+
+另：`press_position`（补丁层自造名，`virtual_pad.lua:598-604` 用 `pcall` 取）**本片没碰**——它属于"引擎侧补齐"那一半，留到适配层接线时一起验。
+
+**回滚档**：删掉六个导出、`HOST_INPUT` 与 `HostInputState`、`lua_bridge::set_latest_frame`。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — §9-A 收尾：`engine_host_state()` 在浏览器里也答得出来（被接管的宿主槽）
+
+上一刀把两个外壳的 `scene` 块收成同一个实现，但 `engine_host_state()` 这个**导出本身**在浏览器里仍然答不出来：它只在 `engine_host_begin` 建过宿主时才答，而离线假宿主给不出 WebGL2 ⇒ 宿主到不了 `running` ⇒ 微信那条路的读数**一条门都没有**（`tasks/plan/M73-01` §9）。
+
+**改法**：`host_runtime` 增加一个"被接管的宿主"槽 `ADOPTED`，`gpu_host` 每帧把它的读数发布进去；`engine_host_state()` 先答这一份、否则答自己那台。两处细节是刻意的：
+
+- **同一份字符串喂两个读者**：浏览器拼**一次** JSON，既发布给 `ADOPTED`（导出答的就是它），又写进 DOM 属性 `data-rustlua-engine-host`（无头驱动读的就是它）。各拼一次就是"门断言的"与"导出答的"再次分叉——本片之前那种分叉已经出现过一次（`textures` 数组 vs 字符串）。
+- **先发布、再取 body**：没有 DOM 的形态下导出也该答得出来，所以 DOM 那条路失败不影响 `ADOPTED`。
+- 两份读数各自自报 `shell`（`browser-gpu-host` / `engine-host`）：同一个导出两个外壳都可能答，不写这一项，两套会看起来一模一样。
+
+**验收读数**（`package.ps1 -Platform webgl` → `verify-webgl-bundle.ps1 -SimScene manor -SimRoute scene-script -InputScript "axis0+:30-150"`，**exit 0**）：
+
+- 新断言 `shell` 通过（不是 `browser-gpu-host` 就判红），随后 `webgl_bundle_engine_state_ok builtin=False sim=rust(boot ok) draws=58 tris=1720 input_frame=240 input_seen_frames=120`（字段路径随之落到 `scene.*`）；
+- 被断言的那个属性（同时就是 `engine_host_state()` 在浏览器里的返回值）实测：`{"fit":"viewport=756x441 fit=756x425 …","mode":"scene","scene":{"boot_ms":96.6,"builtin":false,"draws":58,"input":{"frame":240,…}}}`；
+- 微信侧：`wasm_host_ok bytes=5427867 exports=146`、`verify-wechat-minigame.ps1 -ExpectGpuKernel` **WX_EXIT=0**（该路径 `ADOPTED` 恒空，答的仍是自己那台，只是多了 `shell` 字段）；
+- 原生：`clippy --workspace --all-targets --all-features -- -D warnings` exit 0、`fmt` exit 0。
+
+**这一步换来了什么**：微信那条路的读数不再"永远无法断言"——它现在有一个**在浏览器里**可跑的同一个导出。B4（微信侧独立输入生产者）落地时，判据可以写在浏览器这条路上先跑通，而不是只能等真机。
+
+**没验到的**：浏览器那条路的 `engine_host_state()` 本轮是**经 DOM 属性**被断言的（两者同源，所以等价），**没有**从页面 JS 直接调这个导出跑一次；另外 `scene` 块里微信特有的字段（`world`/`last`）在浏览器那条路上是空串——那是设计（该外壳没有这项读数），但"空串而不是省字段"这条约定本身还没有门在守。
+
+**回滚档**：删掉 `ADOPTED` 槽与 `publish_adopted_state`、`engine_host_state()` 的早返回、`gpu_host` 里那句发布与 `shell` 字段、门里的 `shell` 断言（字段路径改回顶层）。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — §9-A 第二刀：两个外壳的状态读数收成一个实现（同一台宿主的 `scene` 块不再有两套形状）
+
+**先澄清一件容易被名字带偏的事**：§9-A 的字面说法是"让浏览器也走 `host_runtime` 这台壳"。**字面照做会是错的**——页面若改调 `engine_host_begin`，就会丢掉 `gpu_host` 的 `fit_now` 两层几何、Rust 侧 DOM 输入生产者、URL 开关与整条 `data-rustlua-gpu` 读数，而**浏览器那几条门恰恰全靠后者**：删掉它们等于把"浏览器真的能跑"的证明一起删掉，却换不来任何新的可观测性。
+
+**§9-A 真正要的是"同一个读数、两个外壳都认"**，而这一片之前它是**两份手拼的 JSON**——同一个 `textures` 在浏览器那边是数组 `[ok, fail]`、在微信那边是字符串 `"ok/fail"`。同一台宿主的同一件事有两套形状，正是本项目反复吃过的"读数分叉"：两侧都看着正常，直到有人拿一边的字段去读另一边。
+
+**改法**（`engine_host.rs` 收口 + 两个外壳各让出一处）：
+
+- `EngineHost` 新增 `FrameInputReadout`（`of/is_active/to_json`）与 `FrameFacts`（一帧渲染事实的轻量副本），并在 `frame()` 里**自己落账**——状态读数都是**帧外**调的（`engine_host_state` 与 `data-rustlua-engine-host` 都不在帧路径上），让外壳各自攥着 `out` 现拼就是分叉的成因。
+- 累计计数器 `input_seen_frames` 从浏览器外壳**搬进 `EngineHost`**：它描述的是"宿主收到过多少帧输入"，本来就属于宿主而不是某个外壳。
+- 新增唯一的状态读数 `EngineHost::scene_state_json(world, last_scene)`；`gpu_host::publish_engine_state` 与 `host_runtime::engine_host_state` 都改调它（各自只传自己那条世界观测；空串表示"这个外壳这一形态下没有这项读数"——留空而不是省字段，好让门能断言字段在不在）。
+
+**验收读数**：
+
+- 浏览器（`verify-webgl-bundle.ps1 -SimScene manor -SimRoute scene-script -InputScript "axis0+:30-150"`，**exit 0**）：`webgl_bundle_engine_state_ok builtin=False sim=rust(boot ok) draws=58 tris=1720 input_frame=240 input_seen_frames=120` —— 与收口**之前逐字相同**（读数换了实现、数字没变，这正是"行为等价"的判据）；
+- 微信（`package.ps1 -Platform wechat-minigame -Gpu2d` → `verify-wechat-minigame.ps1 -ExpectGpuKernel`）：`wasm_host_ok bytes=5427867 exports=146`、**WX_EXIT=0**；
+- 原生：`cargo clippy --workspace --all-targets --all-features -- -D warnings` **exit 0**、`fmt` exit 0、`game_web` **32 passed**。
+
+**没验到的（重要）**：`host_runtime::engine_host_state` 那条读数**仍然无法在离线环境里被跑过**——离线假宿主给不出 WebGL2 ⇒ `engine_host_begin` 失败 ⇒ `HOST` 是 `None` ⇒ 该导出直接返回 `host: not-begun`，而门从不调用它。所以"微信那份 `scene` 块换成共享实现"这一半目前只有**编译级**保证。要让它也可断言，还差最后一步：**让浏览器外壳把它的 `EngineHost` 也喂给 `host_runtime` 的读数通道**（本片把两侧形状统一，正是为那一步铺路——否则并起来会立刻撞上"两套 `textures`"）。
+
+**回滚档**：删掉 `FrameInputReadout`/`FrameFacts`/`scene_state_json`，两个外壳恢复各自手拼的 JSON，累计计数器搬回 `gpu_host`。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — §9-A 第一刀：浏览器宿主把"我这一帧收到了什么输入"报出来，并接成 N2 门
+
+**这一刀解的是"最危险的读数最没有门可依"**（`tasks/plan/M73-01` §9）：删掉旧 JS 世界之后，"输入还有没有进到宿主"是这条路上风险最高的一条——旧运行时不跑 ⇒ 宿主每帧拿默认值 ⇒ **不崩溃、不报错、`presented` 照涨，只是人钉死**。此前它一条门都没有：`engine_host_state()` 的 `scene` 块只在微信那条壳上，而离线假宿主给不出 WebGL2 ⇒ 宿主到不了 `running`。
+
+**关键观察（它让这件事变便宜）**：浏览器这条路的输入**本来就不依赖旧世界**——Rust 侧 DOM 输入生产者（`gpu_host::install_input_listeners`）与确定性剧本（`frame_input::ScriptDriver`）都在宿主自己手里，JS 世界送来的 `RLFI` 只是一条可选旁路。所以只要宿主把"我收到了什么"报出来，N2 这类断言在浏览器上**当场**就能成立，不必等微信真机、也不必先把两台外壳合一。
+
+**改法**（Rust + 门，各一处）：
+
+- `game_web/src/gpu_host.rs`：每帧写 `data-rustlua-engine-host`（结构化 JSON：`mode/sim/scene/builtin/draws/tris/textures` + `input.{frame,axis,cursor,held,pressed,mouse_held,seen_frames}`）。与 `data-rustlua-gpu` 的分工是"画面有没有出来" vs "**世界有没有收到输入**"。
+- `seen_frames` 是**累计**量而不是瞬时值，这是刻意的：剧本窗口（`axis0+:30-150`）跑完就回到 0，抓快照会把"输入进了宿主"读成"没进"。实测最后一帧 `axis=[0,0] held=0` 而 `seen_frames=120` —— 正是这条设计救回来的。
+- `verify-webgl-bundle.ps1`：把该属性读进 `bundle-summary` 的 `engineHostState`，并在页面自报"旧世界未参与"（`jsHostSkipped`）时断言三条：① 属性必须存在（否则**无法**断言输入，直接判红，而不是静默放行）；② `builtin` 必须是 `false`（`builtin=true` 是"引擎 loader 失败、悄悄换内建兜底"，它同样能让 presented/draws 好看）；③ 请求了输入剧本时 `input.seen_frames > 0`。
+
+**验收读数**（`package.ps1 -Platform webgl` → `verify-webgl-bundle.ps1 -SimScene manor -SimRoute scene-script -InputScript "axis0+:30-150" -GpuFrames 240`，**exit 0**）：
+
+- `webgl_bundle_engine_state_ok builtin=False sim=rust(boot ok) draws=58 tris=1720 input_frame=240 input_seen_frames=120 input_script=axis0+:30-150` ⇒ 宿主真的收到过输入，且**没有旧 JS 世界参与**（`jsHostSkipped=True`）；
+- 同一次运行的 `webgl_bundle_rust_input_ok script=axis0+:30-150 world=JianghuPlayer@794,112 moved=170,0` ⇒ 输入确实改变了世界；
+- 标题场景那一跑 `draws=16 tris=286`、manor 这一跑 `draws=58 tris=1720` ⇒ `draws/tris` 真的跟着场景走，不是常数。
+
+**没验到的**：三条断言的**负例**（属性缺席 / `builtin=true` / `seen_frames=0`）都只有"正例通过"这一侧被跑过——它们的输入全是数据驱动的守卫，本轮没搭负例现场。另：本条只做了 §9-A 的**第一刀**（让浏览器这条路可观测），§9-A 的"望远镜那头"——把浏览器也切到 `host_runtime` 那台壳、从而让**微信**这条路的同一读数也可断言——还没做；B4（微信侧独立输入生产者）仍在它后面。
+
+**回滚档**：删掉 `gpu_host.rs` 的 `publish_engine_state` 与 `input_seen_frames`、`verify-webgl-bundle.ps1` 里那段 `jsHostSkipped` 断言与摘要字段。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — 补完"先改门"的两步，**再把 `gpu2d` 转默认**（上一笔的撤回已按正确次序重做）
+
+上一笔（见下一条）撤回 `default = ["gpu2d"]` 的原因是次序：`verify.ps1 -Web` 的两条断言只认旧 JS 世界的写者。本条把那个次序补完，然后重做翻转。
+
+**第一步 · 让引擎侧证据进摘要**：`verify-webgl-bundle.ps1` 的 `bundle-summary-*.json` 新增两个字段 `gpuState`（`data-rustlua-gpu` 原文）与 `jsHostSkipped`（页面是否自报旧世界未参与）。此前这两个值只活在控制台与 DOM dump 里，摘要里没有 ⇒ `verify.ps1` 除了旧世界的读数无从判断"有没有黑屏"。
+
+**第二步 · 让 `verify.ps1` 按形态选非黑屏判据**：Web 段不再无条件要求 `drawnSamples > 0` 与 `sceneVerify == "done"`，而是——页面自报旧世界未参与（`jsHostSkipped`）时改判引擎侧证据 `gpuState = presented*`（present 后的引擎侧像素回读）；否则维持原判据。**两者都缺席仍然判红**（R2 纪律：不能把"缺席"当"正常"），所以这不是"跳过断言"而是"换一个有写者的断言"。
+
+**第三步 · 重做翻转并验证**：`Cargo.toml` 加 `default = ["gpu2d"]`，`package.ps1 -Platform webgl`（不带 `-Gpu2d`）→ `wasm_host_ok bytes=5419170 exports=148`；`verify-webgl-bundle.ps1`（不带 `-Gpu2d`）**exit 0**，且摘要实测 `jsHostSkipped=True`、`gpuState=presented frames=240 sim_steps=154 sim_dropped=5 …` ⇒ 新判据要读的字段确实在、确实是 `presented…`，而旧世界的两条读数如预期缺席。
+
+**顺带查清一条与本次无关的红**：`verify.ps1 -Web` 在 **rustdoc 阶段**的"对外 Rust 符号面门"上报 `pub_surface_failed items=1562 baseline=2192 added=5 removed=635`。它跑在 Web 段**之前**，而基线 `artifacts/baselines/engine-pub-surface.json` 是 **gitignore 掉的本地产物**、早于本工作区那批无关在制改动；`removed=635` 也不可能来自本笔——受影响的 `game_web` 模块全部是 `wasm32`/`test` 门控，**不参与原生 `cargo doc` 的符号面**。按脚本自己的提示 `node scripts/engine-pub-surface.mjs --update` 在本工作区重生成了一次（`items=1562`，本地产物、非仓库改动），好让 Web 段能被读到。
+
+**没验到的（已定位到具体条件，别误判成本笔的问题）**：Web 段新分支的**端到端**绿灯没拿到——`verify.ps1 -Web` 那一跑（日志 `.temp/p8-verify-web.log`）**根本没走到 Web 段**，它先红在 `cargo test --workspace --all-features`：`editor` crate 5 条**与本笔无关**的设置路径用例失败
+（`panels::input_bindings::…::deadzone_and_bindings_round_trip_through_settings_file`、`panels::project_settings::…::saving_project_settings_does_not_add_a_default_audio_section`，以及 `assertion failed: settings_path(Path::new("C:\\Games\\Demo")).ends_with("settings.toml")` 与 `Os {{ code: 2, kind: NotFound }}`），
+读数 `361 passed; 5 failed`。`verify.ps1` 的 Web 段排在 workspace tests **之后**，所以那条红会挡住它。**要拿到 Web 段的读数，要么先让这 5 条 editor 用例在本机变绿（它们在别的会话的在制改动面上），要么单独跑 Web 段那几步**：
+`package.ps1 -Platform webgl` → `verify-webgl-bundle.ps1` → 直接读 bundle-summary 的 `jsHostSkipped`/`gpuState`（本笔已给的那条 bundle 级读数就是这么来的，且是绿的）。
+
+另：本工作区的"对外 Rust 符号面门"基线（`artifacts/baselines/engine-pub-surface.json`）已按脚本提示 `--update` 在本机重生成过（本地产物、非仓库改动），所以那条红在下次跑 `-Web` 时不会再出现。
+
+**再补一条（`-SkipTests` 之后仍然到不了 Web 段）**：`verify.ps1 -Web -SkipTests` 实测红在 **Editor performance baseline**：`layout_row_height_gate n=1 last=0.000 … FAILED`、`scenarios=31 failed=1`。步骤次序实测为（`==> ` 头）`… Clippy → Rustdoc → Engine public Rust surface → 本地 pre-commit → Debug build → git diff check → Baseline 阈值 → Soak → game --check → editor --check → Spatial migration → **Editor performance baseline** →（才是 Web 段）`。
+⇒ **本工作区里 Web 段排在两条与本笔无关的 editor 门之后**（workspace tests 的 5 条设置路径用例、editor 性能基线的 `layout_row_height_gate`），且没有跳过后者的开关 ⇒ `verify.ps1 -Web` 在本机**读不到 Web 段**。这不是本笔的逻辑问题：该分支要读的两个字段与取值都已就位（见上面的 bundle 级读数），在 CI 或一棵干净的树上那两条 editor 门是绿的，Web 段自然可达。**要在本机单独钉这条读数，就跑 Web 段自己那几步**：`verify-webgl.ps1` → `verify-webgl-bundle.ps1`（已绿）→ `gpu-web-probe.ps1` → `verify-webgl-bundle.ps1 -DriveJhyt` / `-ApiContract`，再按同一套判据读 bundle-summary。
+
+**回滚档**：`Cargo.toml` 删掉 `default = ["gpu2d"]`；`verify-webgl-bundle.ps1` 摘掉摘要里那两个字段；`verify.ps1` 的 Web 段恢复无条件的两条断言。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — 尝试把 `gpu2d` 转默认特性，**已撤回**：`verify.ps1 -Web` 的两条断言只认旧 JS 世界的写者
+
+**为什么撤而不是留**：这一笔的目标是对的——两个平台的**运行期**默认都已翻到 Rust 宿主（浏览器 `plugins/webgl/index.html` 的"Rust 侧默认开、`?rustlua-gpu=0` 关"；微信 `wechat-adapter.js` 的原子模式默认开），于是"默认产物不带 GPU 宿主"不再是省体积而是**黑屏**；改法也只是一行（`Cargo.toml` 加 `default = ["gpu2d"]`）。但它**违反了清单自己写的顺序**——`tasks/plan/M73-01-删除旧JS世界-删除面清单.md` 的 B8 是"**先改门，再改默认**"。实测把默认翻过去之后：
+
+- 浏览器产物确实变成 Rust 宿主出帧，而且该门是绿的：`wasm_host_ok bytes=5419170 exports=148`、`[host] legacy JS world skipped (engine host owns the frame)`、`frame owner ok: engine GPU host (data-rustlua-gpu)`、`webgl_bundle_ok wasm=5292.2KB`（exit 0）；
+- 但 `scripts/verify.ps1:842-852` 的 Web 段硬要求 `drawnSamples > 0` 与 `sceneVerify == "done"`，而这两个读数**只有旧 JS 世界会写**（`web-runtime.js`）⇒ 默认档跳过旧世界之后它们必然缺席。实测那一版的 bundle-summary：`drawnSamples` 为空、`sceneVerify=absent` ⇒ **`verify.ps1 -Web`（CI 在跑，见 `.github/workflows/quality.yml:196`）会判红**。
+
+也就是说：只改这一行会得到"默认能用但 CI 红"——比不改更糟，因为红在 CI、绿在手上。故撤回。
+
+**撤回后复验**（`Cargo.toml` 恢复 `gpu2d` 非默认 + 重打产物）：`wasm_host_ok bytes=2674693 exports=138`（宿主不在产物里，回到改前形态）；`verify-webgl-bundle.ps1` **exit 0**，且 bundle-summary 里 `drawnSamples=5159`、`sceneVerify=done`、`frame owner ok: legacy JS world` ⇒ `verify.ps1 -Web` 的那两条断言重新有写者。
+
+**这一笔真正留下的东西是"次序"**——那条路要按下面走，**先门后默认**：
+
+1. 让 `verify-webgl-bundle.ps1` 把**引擎侧**证据落进 bundle-summary。今天 `data-rustlua-gpu` 只出现在控制台与 DOM dump 里，**摘要里没有这个字段**（实测摘要的键是 `task/bundle/url/browser/wasmBytes/boot/detail/missingCount/…/drawnSamples/uiElements/world/…/sceneVerify/…`，没有 `gpuState`/`jsHostSkipped`）；
+2. 让 `verify.ps1` 的 Web 段用**它**替代 `drawnSamples > 0` 与 `sceneVerify == "done"`（即清单的 N1/N3）——两者只在页面自报"旧世界未参与"时才允许缺席，其余情况仍必须判红（R2：不能把"缺席"当"正常"）；
+3. **然后**才改 `Cargo.toml` 那一行，并按"整条链走默认档"复跑：`package.ps1 -Platform webgl`（不带 `-Gpu2d`）→ `verify-webgl-bundle.ps1` → `verify.ps1 -Web`。
+
+**回滚档**：本条是"尝试 + 撤回"，工作区最终状态与改前一致（`Cargo.toml` 无 `default` 行、产物已重打）。`Cargo.toml` 里那段注释现在记着这次撤回的原因与次序，**不要再按"只改一行"去做**。
+
+**台账纪律一条**：本条插在 `CHANGELOG.md` 工作区副本顶部；提交时以 `git show HEAD:CHANGELOG.md` 字节基线施加，不整份覆盖。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — 补 `engine_host_resize`：窗口尺寸变化后由宿主重配 surface 与取景（删旧世界的前置）
+
+**为什么这是删旧世界的前置而不是可选打磨**：窗口尺寸变化今天由**旧 JS 世界**分散处理（它每帧从 `canvas.width/height` 现算布局与命中）。把微信默认翻到 Rust 宿主之后，宿主侧的 surface config、渲染目标尺寸、取景矩形与像素回读采样尺寸是**四件必须同一帧改完**的事；删掉旧世界却不补这一条，窗口一变化 surface 与画面比例就永久失配——而 `presented=` / `frames=` 全都正常，属于读数看不出来的错。
+
+**改法**（Rust + 适配层，各一处）：
+
+- `game_web/src/host_runtime.rs` 新增导出 `engine_host_resize(width, height)`：校验非零、`EngineHost` 档调 `core.resize` 并**复用同一处**取景计算、`clear` 档重配自己那份 `SurfaceConfiguration`（为此 clear 变体开始持有 config，原先"configure 之后没人读"的前提被这条打破），随后统一更新宿主记的 `width`/`height`/`fit_note` 并返回 `size` + `fit` 读数。`fit_scene_viewport` 同时从"按值收发"改成收 `&mut`——begin 与 resize 两套说法就是"改尺寸之后取景悄悄不对"的经典成因。
+- `plugins/wechat-minigame/wechat-adapter.js` 的 `wx.onWindowResize` 在写完 `canvas.width/height` 之后**通知宿主**（只在宿主 `running` 且是接管形态时），并给新增读数 `engine_host.resize_calls` / diag 的 `resize_calls` 计数——`size` 是宿主**以为**的尺寸，`resize_calls` 是它**收到过**几次变化，两个一起读才分得清"没通知"与"通知了但没生效"。失败只告警不掀翻。2d 改道那张离屏画布同步改尺寸（旧世界仍按它算布局与命中）。
+
+**验收读数**：`cargo check -p game_web --target wasm32-unknown-unknown --features gpu2d` exit 0；`cargo fmt --all -- --check` exit 0；`cargo test -p game_web` 32 passed；`package.ps1 -Platform wechat-minigame -Gpu2d` → `wasm_host_ok bytes=5424728 exports=146`（+1）且**实例化日志的导出清单里出现 `engine_host_resize`**（证明它真的进了产物，不是只编过）；`verify-wechat-minigame.ps1 -ExpectGpuKernel` **exit 0**。
+
+**没测的**：`resize` 目前**没有专属门**——harness 没有"模拟窗口变化"的开关，所以这条只验到"导出在位 + 全门不回归"，没验到"改尺寸之后 fit 矩形真的落进新 surface 内"。这条断言（N1 类）记在 `tasks/plan/M73-01-删除旧JS世界-删除面清单.md` 的待写清单里。
+
+**回滚档**：删掉 `engine_host_resize` 导出与适配层那段调用、`fit_scene_viewport` 回到按值收发、clear 变体不再持 config。
+
+**台账纪律一条**：本条插在 `CHANGELOG.md` 工作区副本顶部；提交时以 `git show HEAD:CHANGELOG.md` 字节基线施加，不整份覆盖。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — 步骤 2：微信小游戏默认启动切到 Rust engine host（原子模式取代三开关，默认开、不回退）
+
+**这一笔把"统一宿主目标"从诊断开关推成微信的生产默认。** 翻转前微信侧有三个互不相干的开关（`__RUSTLUA_ENGINE_HOST_VISIBLE` 可见接管 / `__RUSTLUA_ENGINE_HOST` 引擎宿主 / `__RUSTLUA_ENGINE_HOST_SCENE` scene 路径），能凑出"接管了但没有宿主""有宿主但没有场景路径"这类半开形态；而且**默认全关** ⇒ 走的始终是旧 JS/Canvas2D 世界，Rust 宿主只是诊断通路。用户对翻转的形态裁的是"**默认开、不回退**"：宿主起不来就是可见的黑屏 + 具名读数，不做"把 2D 世界还回主画布"那种回退。
+
+**Rust 侧前置（1 处）**：`engine_host_begin` 现在接受**只给 `sim` 而不给 `scene`**。`sim=script`（`SimRoute::EngineStartup`）那条路由**引擎自己**解析启动场景，`scene_path` 只进读数（`RustScene::boot` 里那条读数在缺省时报 `(engine startup scene)`，不留空位），所以翻默认不必在适配层再抄一份"启动场景是哪个"。另外三条路线由宿主提供场景字节，缺 `scene` 仍然具名拒绝（`sim=X 需要同时给 scene`），**不静默退成 clear 档**。
+
+**适配层（`plugins/wechat-minigame/wechat-adapter.js`，单文件）**：一个原子模式取代那三个开关。
+
+- `rustSceneHost` 在**模块加载时**定一次、**默认开**；只认**显式**关（`globalThis.__RUSTLUA_RUST_SCENE_HOST === false`，或 `wx.setStorageSync` 的 `rustlua_rust_scene_host` 键取到 `off` / `0` / `false`——真机用存储形态，控制台不可靠；空串**不**算关，否则真机会在没有任何显式声明时静默退回旧形态）。为什么必须在模块加载时读：一张画布只能有一个上下文，"2d 要不要改道到离屏"必须在任何人第一次 `getContext` 请求 2d 之前定下来。
+- 它一次性决定四件事：主画布归宿主、2d 改道到离屏、走 scene 档、**固定步归宿主**（`tick=none`）。原子模式下 `__RUSTLUA_ENGINE_HOST_TICK` 被忽略并打一行警告——`tick=lua` 与 scene 档在 begin 里互斥，而 scene 档的固定步由共享宿主 `EngineHost::frame` 自己推进。
+- **`sceneMode` 这个判据是本笔最容易漏的一处**：vfs reader 预装与帧泵启动原先都写成 `if (scenePath && …)`，而原子模式**没有** scenePath ⇒ 照抄会让**泵根本不启动**（`presented` 恒 0，而其余读数全绿）。两处都改判 `sceneMode = rustSceneHost || !!scenePath`。
+- **帧源**：原子模式优先用 `wx.requestAnimationFrame`（`host_runtime.rs` 顶部契约写明帧源应由平台 rAF 决定；旧形态用 `setTimeout(16)` 是为了不借运行时的 rAF 队列，而原子模式下宿主就是帧所有者）。实际挂在哪个帧源上进 `engine_host.frame_source` 读数——"泵没起来 / 帧率不对"第一个要问的就是它。
+- **输入所有权本笔不动**：仍然只有运行时一个注入者。理由写进注释——`lua_input_frame` 的返回值是"wasm 侧真的改了几位"，进 `input frames=N bits=M` 读数，恒 0 是"两边对『这一帧该变哪些位』理解不一致"的第一手线索；把注入搬到宿主等于让宿主**下一帧**才解码这一批 ⇒ 这一帧拿不到真值 ⇒ 那个守卫读数变成恒 0 的**假信号**。搬家属于删掉旧世界那一笔（那时这个读数也一起没了）。
+- 显式关掉原子模式后，行为与翻转前逐字相同（旧世界在屏、`engine_host=off` + `reason=switch-off`）。
+
+**门禁必须跟着改，否则它守的是刚被推翻的那个默认**（`scripts/`，2 个文件）：
+
+- `verify-wechat-minigame.ps1` 原先断言"不带开关必须 `engine_host=off`"。这条现在断言**新默认**：不带开关时 `engine_host_source` 必须含 `visible-takeover`（证明原子模式真的开着、而且绑的是主画布），结论必须落在具名结果之一（`running` / `unavailable`+`kernel-without-gpu2d` / `failed`+以 `host: ` 开头的引擎原文），**失败时理由不得为空**——默认翻过去之后"起不来"就是可见的黑屏 + 具名读数，空理由会把黑屏变成查不出来的现象。
+- 另加一条 `--rust-scene-host-off` 用例继续守**逃生门**（`engine_host=off` + `reason=switch-off`）；`wechat-minigame-harness.js` 相应新增这个开关，且必须在 `require(game.js)` 之前置位（适配层在模块加载时就定形态）。
+- "绘制必须落在上屏画布上 / 像素回读必须命中 / 屏幕必须有图案"这几条断言守的是**旧 JS 世界在自己形态下的在屏行为**，而原子模式**故意**把 2D 改道到离屏（主画布让给宿主）⇒ 它们必须显式关掉原子模式来跑（`$legacyWorldArgs`，含 `--host-canvas offscreen`、`--debug-overlay`、`--no-frames --debug-overlay`、`--expect-image-band` 四条）。**没有删它们**：旧世界还没退休（步骤 3 才删），它在自己的形态下必须继续正确。
+
+**验收读数**（`scripts/verify-wechat-minigame.ps1 -ExpectGpuKernel`，产物 `package.ps1 -Platform wechat-minigame -Gpu2d`：`wasm_host_ok bytes=5423661 exports=145 globals=0`、主包 `main_of_limit=55.7%`）：
+
+- **WX_EXIT=0**；
+- 默认形态（每个不带开关的用例）：`engine_host=failed engine_host_source=main-canvas(visible-takeover) engine_host_reason="host: engine-core: canvas_surface: … webgl2 not available or canvas already in use"` ⇒ 原子模式确实开着、失败具名（离线假宿主不给 GL，那是**环境**限制而不是路径错）；
+- 逃生门：`engine_host=off source=none reason=switch-off`、`two_d_redirect.status=off`、`pixel_probe=255,0,255,255（命中：绘制确实落在上屏画布上）`；
+- 一个输入所有者 / 一个 tick 所有者：`engine_host_input_applied=0`、`engine_host_runtime_input_frames=238`、`tick=runtime`、`engine_host_tick=none`、`engine_host_tick_conflict=no`；
+- 旧世界仍完整可用（翻转没有顺手砸坏它）：`move="keys=w before=624,112 after=624,205 d=0,93"`、`touch_stick="stick before=624,112 after=624,205 d=0,93"`、`save_persist="ok,probe=518,game=18718"`、`ui_layer_order="ok,card_ops=72,icon_ops=7,overlap_pairs=14"`；
+- 浏览器侧回归（同一笔 Rust 改动之后）：`webgl_bundle_ok wasm=5291.1KB`、`webgl_bundle_rust_input_ok script=axis0+:30-150 world=JianghuPlayer@797,112 moved=173,0` 两条 exit 0。
+
+**没测与仍未接的**：**微信真机 / 开发者工具本轮仍未验**——离线假宿主不给 GL，所以宿主在门里必然是 `failed` ⇒ "接管形态在真机上能不能开出 webgl2"仍然只有探针级别的证据，这是本笔最大的诚实边界；`engine_host_resize` 仍缺（窗口变化后 surface、取景矩形与像素回读尺寸都停在 `begin` 时）；旧 JS 世界仍在，删除它是步骤 3。
+
+**回滚档**：`wechat-adapter.js` 恢复三个开关的读法与两处 `scenePath &&` 判据、帧泵回到 `setTimeout`；`host_runtime.rs` 的 `option_scene` 恢复"给了 `sim` 必须给 `scene`"；门禁两处按本条改法退回；Rust 的 `SimRoute::loads_engine_startup` 可整删。
+
+**台账纪律一条**：本条插在 `CHANGELOG.md` **工作区副本**顶部——副本仍落后 HEAD，本笔不动那份差量；提交时按共享台账纪律以 `git show HEAD:CHANGELOG.md` 字节基线施加本条，不整份覆盖。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — P1 第二片：统一 Rust engine host——两个平台同一台宿主（时钟 + 共享核心 + 帧泵），并把它带出的门禁归零（rustdoc 断链 1 处 + dead code 18 条）
+
+**这一片补的是哪一段**：P1 第一片（`engine_core`）已经把"一帧怎么画"收成一份（GPU 栈 → Renderer → RustScene boot → step → mesh → 贴图 → 取景 → render → present → poll），但**帧的驱动**仍在两个外壳里各写一遍，而且逐格同形——浏览器 `gpu_host` 用三个模块常量造钟、微信 `host_runtime` 用 `engine_host_begin` 的 options 造钟；两边每帧都是 `plan(elapsed)` 之后 `core.frame(plan.steps, plan.delta_seconds, input)`。同形却各写一遍就是漂移入口：一处改了追帧上限、另一处没改，读数上完全看不出来（帧率、draw 计数、世界坐标全都"正常"）。
+
+**改法**（`engine/crates/game_web`，2 个新文件 + 4 个文件接线，零行为改动）：
+
+- 新增 `host_config::HostConfig`（`updates_per_second` / `max_catch_up_steps` / `max_frame_seconds`，默认 `(60, 8, 0.25)`）：**配置只有一处来源**，校验只有一条路（`FrameClock::new`）。它同时锁住一条易漂的契约——喂 Lua 的固定步长必须用 `HostConfig::fixed_delta_seconds_f64()` 现算（`1/60` 的 double），**不要**用 `FramePlan::delta_seconds`（f32 = `0.016666668`），两者不是同一个数；桌面单测直接断言这两个值不相等，谁把它换回 f32 就当场红。
+- 新增 `engine_host::EngineHost`：**持有** `FrameClock` + `EngineCore`，并唯一地定义 `frame(raw_seconds, input)`（规划固定步 → 把这份输入交给模拟与渲染）。失败按 `HostFrameStage`（`Present` / `SceneFrame`）分段，外壳各自拼自己的具名文案：浏览器照旧写 `data-rustlua-gpu`，微信用 `host: present:` / `host: scene-frame:`，与抽取前逐字相同。
+- `gpu_host`：`core: EngineCore` + `simulation_clock: FrameClock` 两个字段并成 `host: EngineHost`；`frame()` 里那句 `plan → core.frame(...)` 换成 `host.frame(elapsed_seconds, &input)`；`reset_accumulator` 与状态属性里的四个时钟读数改走 `host.clock()`。
+- `host_runtime`：`HostGpu::Scene(EngineCore)` 改成收 `EngineHost`；`clear` 档改为**自持**时钟（`HostGpu::Clear { clock, .. }`，P0-①/接管验收的既有现场逐字不动），scene 档用统一宿主的钟。计划与呈现因此按档分叉，**时钟必须跟着搬进它真正被规划的那一档**——否则状态读数会去读一个从不推进的钟（`frame` / `steps_total` 恒 0，属于"仪器说谎"）。呈现失败的账收成一处：`host.failed_presents = engine_host.failed_presents()`，外壳不再自己重算。
+
+**行为等价的证据**：浏览器这条路的读数文案、帧序、时钟参数逐字未变；微信 clear 档的建栈代码与具名失败阶段（`host: frame-clock:` / `host: surface-format:`）逐字未变；`docs/65` §12 的 P1 小节同时记下了本片**仍未统一**的四条（微信 scene 仍是诊断开关、输入仍由旧 `web-runtime.js` 注入、帧源仍是 `setTimeout(16)`、无 `engine_host_resize`）。
+
+**门禁归零（同一笔的第二步）**：
+
+- **rustdoc 断链 1 处**：`rustlua-scripting/src/script/progress.rs` 里**公开**结构体 `ScriptProgress` 的文档链到了私有常量 `HOOK_STEP`。按"对外 Rust 符号面门以 rustdoc 产物为基线"的纪律，改法是**去链接**（把文档里的方括号链接写成纯代码跨度），不是把常量提成 `pub`——后者会动公开符号面，要连带改基线。
+- **dead code 18 条**：全部落在 `game_web` 的**原生非测试 lib** 构建里。`frame_input` / `fit` / `host_config` 这三个模块的消费者全是 wasm 侧（`gpu_host` / `host_runtime` / `rust_scene` / `engine_host`）与它们自己的测试，原生 lib 里一个都没有 ⇒ 整层被判死。改法照抄同一个文件里 `resource_index` 已有的门：`#[cfg(any(target_arch = "wasm32", test))]`——桌面测试照常编译并守住契约，原生非测试构建不再编进没有消费者的模块。`wasm_memory_bytes` 同理收到 `#[cfg(target_arch = "wasm32")]`：原先那条"非 wasm 恒 0"的分支在桌面上没有任何消费者。三个模块的文档注释同步改成"刻意不门到 wasm（`any(wasm32, test)`）"，因为旧措辞"刻意不加 wasm 门"在加门之后已经不再成立。
+- **第三个红（`verify.ps1 -Quick` 抓到，本笔自己带出来的）**：Lua API 文档桩门判 `app.md` / `event.md` 与再生成结果不一致。根因不是签名变了，而是本笔在 `globals.rs` 的 `app.platform()` 注释里**加了一行**，于是那之后所有绑定的行号 +1，而文档桩里逐条记着 `globals.rs:<行号>`。改法是**跑生成器**（`node scripts/gen-lua-api-docs.js`）并按 `core.autocrlf=true` 的口径把两个文件的行尾从生成器的 LF 转回工作区的 CRLF；随后 `node scripts/gen-lua-api-docs.js --check` 复绿（`lua_api_docs_ok 再生成是 no-op`）。同时确认手写散文被生成器保留（`app.md` 里 `app.platform()` 的返回说明逐字还在）。
+- 顺带补 3 条**只在 wasm 有调用者**的契约测试（`frame_input`：`pointer_fresh` 的"取走即归零"、`mouse_up` 的"没按过的抬起不产生边沿"、`ScriptDriver::is_empty` 与剧本窗口一致）。它们不是为凑门禁：这三条各自对应一个"点哪都不对 / 没点过却触发 / 整段剧本被静默丢掉"的错法。
+
+**门禁读数**：`RUSTDOCFLAGS=-D warnings cargo doc --no-deps --workspace --lib` **exit 0**；`cargo clippy --workspace --all-targets --all-features -- -D warnings` **exit 0**（改前 `game_web (lib)` 报 18 条、`game_web (lib test)` 报 3 条，全部 dead code）；`cargo fmt --all -- --check` exit 0；`cargo test -p game_web` **32 passed / 0 failed**（改前 29，+3 条新契约测试）；`cargo check -p game_web --target wasm32-unknown-unknown --features gpu2d` exit 0 且 `game_web` 自身零告警；`node scripts/gen-lua-api-docs.js --check` exit 0；仓库快速门 `scripts/verify.ps1 -Quick` **exit 0**（`Quick gate passed (PARTIAL)`，判红时它停在文档桩那一步，现已走完）。
+
+**没测与本笔不碰的**：微信真机未验；把微信默认翻到 Rust 宿主、以及删除旧 JS 世界，都是**下一笔**；微信 `clear` 档那份独立于 `engine_core::build_gpu_stack` 的建栈代码保留（它是 P0-①/接管验收的既有现场，去重是另一笔）；工作区里与本笔无关的在制改动一律没动。
+
+**回滚档**：`gpu_host` 恢复 `core` + `simulation_clock` 两字段与内联的 `plan`；`host_runtime` 的 `HostGpu::Scene` 恢复收 `EngineCore` 并把时钟搬回外壳；`host_config` / `engine_host` 两个新文件可整删。门禁那一半原样退回（`progress.rs` 恢复那条方括号链接、三个模块摘掉 `cfg`）。
+
+**台账纪律一条**：本条插在 `CHANGELOG.md` **工作区副本**顶部——副本仍落后 HEAD，本笔不动那份差量；提交时按共享台账纪律以 `git show HEAD:CHANGELOG.md` 字节基线施加本条，不整份覆盖。
+
+本条有 CHANGELOG 条目。
+
+## Unreleased — M73-00 口径修正：固化“统一核心 / 平台发布变体 / 统一宿主目标”三层术语，并收紧“同一份 wasm”旧表述（零产品码）
+
+题面是 docs/65 §3 已钉死的口径："最终发行物不是同一个 WASM 文件"。本次两份发行产物实测（`node scripts\wasm-lua\verify-wasm-host.mjs`）：webgl 版 `examples/game_jhyt/builds/webgl/pkg/game_web_bg.wasm` = 5,415,941 B / exports 147 / Global 2 / bridge_exports 11，微信版 `examples/game_jhyt/builds/wechat-minigame/launcher/pack/game_web_bg.wasm` = 5,421,485 B / exports 145 / Global 0 / bridge_exports 11，SHA-256 不同——微信侧另有剥 Global / 剥 Tag / noextern 降级三步二进制后处理（都在 `scripts/package.ps1` 微信分支）。而仓内三个文件共四处文档/注释仍写着"共用同一份 wasm"，会让维护者误以为两份 `_bg.wasm` 应逐字节一致——最典型的误判是"比对哈希后报发行物漂移"，或"按导出数不同怀疑某一侧是旧产物"。
+
+先把权威术语落在 `docs/65-WebGL与微信小游戏统一WASM现状分析.md` 的结论区与最终判断：**统一核心** = 同一个 `game_web` Rust crate 和唯一一份 Lua/固定步/RLFI 输入实现；**平台发布变体** = Web ESM、微信 no-modules 与微信专属 WASM 后处理；**统一宿主目标** = 最终由同一个 Rust engine host 同时负责 Web 与微信的模拟、输入消费和渲染。当前判断随之收成一句：统一核心基本完成，平台发布变体是有意差异，统一宿主目标尚未完成。
+
+继续全仓审计后再收 7 处现行口径：`docs/65` 首句直接改用三层术语，`docs/README.md` 的索引摘要从“统一内核/双宿主”改成三层名称；`app.platform()` 的 Lua API 文档与 `globals.rs` 源码注释不再写“浏览器与微信共用同一 wasm 运行时”，而说明两端由同一个源核心编译成不同发布变体、返回值相同是 `wasm32` 编译期常量；M73 计划三处“微信侧共用同一 wasm 代码路径”改成“同一个 `game_web` 源核心的对应微信发布变体，但真机未验”。历史 CHANGELOG 原句不回写，只由本条记录新口径。
+
+改法（全部纯文本，零产品码、零判据逻辑改动，4 处）：① `plugins/wechat-minigame/README.md`「已知边界」wasm 核心段，原句"微信分支与 webgl 共用同一份 wasm"收紧为"共用同一个 `game_web` 源核心与同一份原始 WASM 构建（**最终发行的 `_bg.wasm` 不是同一份文件**：微信版另经剥 Global / 剥 Tag / noextern 降级等兼容后处理）"，指向 `scripts/package.ps1` 与 docs/65 §3；② `scripts/package.ps1` 头部注释，原句"共用同一套 WASM/静态产物，差别只在入口文件、资源配额与平台配置"——那个"只"字本身就漏了平台后处理这一维，扩成"胶水按平台各生成一份（--target web / no-modules）+ 微信侧二进制后处理 + 不逐字节相同、也不应要求相同"的完整差别面；③ `scripts/package.ps1` wasm 构建段，原句"**共用同一个 wasm 核心**"收紧为"**共用同一份原始 WASM 构建**"，并注明哈希不同是预期行为、指向下方 strip/downgrade 段；④ `docs/51-平台插件适配.md` 平台能力矩阵"Lua 游戏逻辑"行，原句"同一份 wasm 桥"收紧为"同一个 `game_web` 源核心 + wasm 桥（发行二进制另经微信兼容后处理，与 webgl 不是同一份文件）"。
+
+两处查过判为准确、有意不改：`scripts/gpu-web-probe.ps1:34` "两者共用同一份 wasm 产物"——"两者"指 backend/render 两档探针自己共用 `gpu_web_probe.wasm`，不是跨平台断言；`scripts/bundle-discovery.ps1:67` "wasm 两项与 webgl 同名同义"——同名同义指文件名与语义角色（都是 Lua 执行层），不声称字节相同。
+
+门禁：`scripts/check-docs.ps1` **DOCS_EXIT=0**、六项计数逐字同基线（`check_docs_ok docs=59 game_docs=46 h1=107 links=414 ps1_bom_ok=33 ps1_parse_ok=33`）；八个口径文件与 CHANGELOG 的 CRLF 校验 bare_lf=0 / double_cr=0，原 BOM 状态保持。Rust 只改注释、其余均为 Markdown/PowerShell 注释，零可执行逻辑改动；补跑 `cargo fmt --all -- --check`，web 打包门不重跑（本笔不产任何发行物差异）。
+
+台账纪律一条：本条插在 CHANGELOG.md **工作区副本**顶部——工作区副本当前落后 HEAD（任务#27 条目在 HEAD 而不在副本里，`git diff HEAD --stat -- CHANGELOG.md` = +14/−94，差量全是别包在制品），本笔不动那份差量；提交时按共享台账纪律以 `git show HEAD:CHANGELOG.md` 字节基线施加本条，不整份覆盖。
+
+回滚档：本笔零产品逻辑，按本条“改法”与“继续全仓审计”两段列出的口径位置退回原句即可。本条有 CHANGELOG 条目。
+
 ## Unreleased — 任务#27：接管形态纵向按键的**正向确认**拿到了——顺带判掉"#25 那三次工具起不来"是**包的身份**不对（零产品码，台账三处）
 
 题面是 #26 的 §没测 ① 与 ③ 那两条：**"没有'修后能走'的接管读数"** 与 **"方向键纵向反向只是两拍实测拼接的推导，反向本身没单独跑过"**，都挂在"等开发者工具恢复"上。今天工具恢复，用户口径两句：**"开发者工具已恢复，发布时要带上appid，不然编译不能通过"**、**"我现在把超过的备份美术资源已经迁出asset目录，重新出包测试"**。两跑逐向复现后，这两条同时闭合，并读出一条**不属于本包的体积红**（成因归美术线，本笔只登记）。
@@ -150,6 +1199,20 @@
 - **没测与本笔不碰**：① 逐图目验（三宿主整屏）照旧归 M72-12，本笔连一张预览图都没出——门面画面本身没被重新目视过，"该不该有地表"这条判据不覆盖"门面好不好看"；② 演武场入边的修法；③ `docs/52` 那条竖版"夜景底图纵向拉伸"（`STRETCH = {BgNight, BgVignette, InkBand}` 三层各拉各的）与本笔无关；④ `maps.lua` 那七键的 `spawn` 格与 scene 出生 Transform 的逐图对拍只在各图自己那一档做过，本笔没重扫；⑤ 一次性量具留 `.temp/`（`plan_main_closure2.py`、`d58_main_closure.py`、`main-audit*.txt`、`maps-*.txt`、`prefab-*.txt`、`probe` 级读数），不进 verify 入口。
 - **回滚档**：三处台账按本条点名的行段撤即可——plan 删 §main 小节那一段并把六处补注还原，docs/58 版本头退回 1.11 并撤 §17 那条 1.12，CHANGELOG 撤本条顶条。**盘面没有回滚项**（`scenes/main.scene`、`title_menu.prefab`、`data/maps.lua` 本笔一行未动）——这也是这条收口的交付形态：它欠的是判据，不是产物。M72-11 到此 §推进顺序 1–6 全部有结论，本包剩下的只有逐图目验（M72-12）与 `references/` 零泄漏扫描（M72-13 收口包）。
 
+## Unreleased — 任务#22：接管+scene 的**只读世界位移读数**接上了——"输入进到宿主消费的那一帧"升级成"世界真的动了"（3 路径产品码 + 台账三处，并作废 #21 自己那条"没有只读判据"）
+
+题面是 #21 没测账② 我自己写下的一句话："接管形态还没有浏览器宿主那种只读世界查询 ⇒ 本笔只证到输入进到宿主消费的那一帧"。这根线不能靠把浏览器那条 `rustlua-world-expr=<任意 Lua>` 搬过来补：那条通道的"只读"靠调用方自觉、**没有护栏**（plan §WP6-06 未完成① 原话就记着"微信侧若复用需补"），而微信侧的调用方是页面外的探针。改法=复用引擎自己那条构造上只读的读数（`RustScene::refresh_world`：`entity.find` + `transform.get`，走 `LuaRuntime::eval_json`），在 `engine_host_state()` **读态这一刻**刷一次、并进 `scene.world`。两条时机理由钉在注释里：① 不能挂每帧——`refresh_world` 自己的注释记着 WP6-05 的实测（热路径上多一次 Lua 求值足以挤掉同机并行剧本的帧预算）；② 接管形态没有状态属性可写，而 `engine_host_state` 是**诊断口**——适配层只把它挂成 `api.engineHostState`/`wx.__rustluaEngineHostState`（`plugins/wechat-minigame/wechat-adapter.js:4327/4384`），产品帧循环与 `verify-wechat-minigame.ps1`/harness 都不调它（两处 `grep -c EngineHostState` 都是 `0`）⇒"有人问才刷"既不落进生产读数，也保证读到的就是被读的那一帧。
+
+第二条改动比读数本身更要紧，否则这根线接上也是空转：**接管形态走的是 `SimRoute::EngineStartup`**（适配层默认路由名 `"script"`），而这一档根本不解析场景文档 ⇒ 主角候选名恒空 ⇒ `refresh_world` 一进门就写 `world=no-player` 返回。补法是文档没给候选时从**活世界的登记名表**取候选（新增 `RuntimeScene::named_entity_names()`，与工程 Lua `entity.find` 同一命名空间）。这里踩了一次坑、并按本仓"否定式断言先加运行期探针再说"的纪律留下了定位它自己的证据：第一版用的是 `runtime_spawned_entities()` 的名字，实测报 `named=50 samples=顾长风,陆归藏,陆青峰,苏晚晴`——那张表面向编辑器镜像、**刻意排除场景声明实体**，而主角恰恰是文档里声明的那一位，拿它筛 `player` 永远筛不到；换成登记名表后同一条判据命中 `JianghuPlayer`。顺带把"没有主角"这条读数从光说没有改成 `world=no-player(named=… samples=…)`——"启发没命中"与"世界里真一个命名实体都没有"从此可分辨，上面那次归因靠的就是那四个样本名。判据两边仍共用"名字含 `player`"（渲染器 `entityColor` 认主角的那套启发），不写死工程名：`game_web` 是引擎侧宿主，认工程名就等于把某个游戏焊进引擎。
+
+实测（模拟器，接管+scene，`__RUSTLUA_ENGINE_HOST_PIXEL_SAMPLE=false`；run5/run6/run7 **三次冷启动逐值相同**，`.temp/walk-run{5,6,7}.log`，终行 `walk_cycle verdict=world-moves-on-input`）：标题拍给出诚实读数 `world=no-player(named=18 samples=BgNight,BgVignette,BtnContinue,BtnContinueLabel)`（18 个登记名里确实没有主角，不是"读不到"）→ `space` 进游戏 ⇒ `world=JianghuPlayer@528,112 moved=0,0` → **对照段**（什么都不按、跨 10 宿主帧）`528,112 → 528,112` 且 `held=0` → **处理段**（按住 `keyd`=move_right）⇒ `@532,112 moved=4,0`，全程指纹 `held=1 axis=1,0` → **松开** 6 帧 ⇒ 仍 532 → **反方向**（按住 `keya`=move_left）⇒ `@524,112 moved=-4,0`（段内 Δ=`-8,0`）。三段合起来就是"世界随宿主消费的输入动了"：对照必须为零（少了它"世界自己在走"会冒充判据——WP6-06 那次拿 `draws=`/`vertices=` 差值当判据就是这么被否证的）、处理必须给**方向正确**的位移（只"变了"不够：换向、抖动、被墙顶住后的挤压都会"变了"）、松开必须停。原点语义另有一条自证：`moved=dx,dy` 与"相对第一次可读坐标的差"逐值相等（`moved_consistent=true`）——绝对坐标什么也不说明，位移才说明。
+
+一条**刻意没让判据去背**的观察（登记成账、不写成结论）：按住之后（再跨 10–23 宿主帧、指纹仍 `held=1 axis=±1,0`）位移不再增加。三种解释里 `repress` 那两拍给了决定性的分辨线索——同一次按下从 528 给 `+4`、从 524 给 `+8`、在 532 给 `0` ⇒ 位移大小随**位置**变而不是随按键次数定，向右被边界挡在 532（三道读数都恰好停在 532、从未越过），"每次按死一步"这条因此不成立；竖直段（按住 `keys`=move_down 共 52 宿主帧，指纹全程 `axis=0,1`）`Δy` 恒 0 ⇒ 出生点 `528,112` 在这张 `main.scene` 上四面被顶住。**所以"按住⇒连续走"在这个取点上没有判据可用**：浏览器侧同一个函数在 `manor` + `scene-script` 档**记录过**连续位移（`axis0+:10-90 ⇒ moved=140,0`），但那是另一张图、另一条路由，不能替这张图说话；而那条旧读数今天用逐字相同的 §WP6 命令重跑只剩 `528→532`（`moved=4,0`），所以它现在连"规模"都不能引用（归因见没测账⑧）。登记为后续：接管形态需要一条**开阔地**（或换图后）的位移连续性判据。
+
+门禁：`cargo fmt -p engine -p game_web -- --check` exit 0；`cargo test -q -p engine --lib` **185 passed / 0 failed**（本笔动了 `engine` 那个共享 crate；基线本来就是 185，没为它降门槛）；`cargo clippy -q -p engine -p game_web --all-targets` exit 0，18 条 `never used` 按文件归位全在 `fit.rs`/`frame_input.rs`/`lib.rs`（本笔那三个文件零警告）；`cargo +1.88.0 check -q -p game_web --target wasm32-unknown-unknown --features gpu2d`（ZIG）exit 0；`package.ps1 -Platform wechat-minigame -Gpu2d -WechatAppId wx7091f1cf872130bb` 全量重建（注入撤净之后重建，让最终源码与包内产物同源）→ `verify-wechat-minigame.ps1 -ExpectGpuKernel` **VERIFY_EXIT=0**（`.temp/verify-wechat-22.log`：生产口径 `engine_host=off engine_host_reason="switch-off"`、harness `frames=240`、`wechat_minigame_package_ok files=12 … total_kb=10,808`、五条负面用例全绿）；`refresh_world` 是两平台共用的，浏览器同片跑三条（`.temp/verify-webgl-22-{docroute,engineroute,engineroute-space,engineroute-space-long,engineroute-repro}.log`）：**两条位移门都 EXIT=0**——文档档（`-SimScene manor -SimRoute scene-script -InputScript 'axis0+:30-150'`）与 `EngineStartup` 档（`-SimRoute script -InputScript 'space:10-15,axis0+:100-160'`，即 §WP6 那台历史命令）都给 `webgl_bundle_rust_input_ok world=JianghuPlayer@532,112 moved=4,0`、`webgl_bundle_ok wasm=5289KB`；**后者是这条档第一次在浏览器读出真主角**（历史读数在这里只会印光秃的 `world=no-player`，因为 `EngineStartup` 不解析场景文档），属性上下文 `spawned=50 vertices=4944 draws=64 last=bgm_manor scene_delta=+48,+4086,+85 input_edges=4 script_errors=0`。**顺带钉出两条不在本题面的账**（都登记、本笔不修）：① **标题的确认只对早窗起效**——同一把 space 换到 `space:30-33` 与 `space:30-120` 两条窗口，各跑满 240 帧都停在标题（`world=no-player(named=18 samples=BgNight,BgVignette,BtnContinue,BtnContinueLabel)`、`spawned=18`、`last=bgm_title`、`scene_delta=+0,+0,+0`），而 `input_edges` 一样是 4 ⇒ "边沿没送到"这条解释被否证、"窗口太短"被 90 帧长窗否证，剩下的只有"起帧 10 行、起帧 30 不行"这条现象（**#23 判因完毕并修掉：与起帧早晚无关**，根因是 `RustScene::step` 在 0 步帧无条件 `finish_frame()` 把按下边沿当场抹掉，修后三条窗口给同一读数 `world=JianghuPlayer@532,112 moved=4,0`）；② **位移规模从历史记录的 140 掉到今天的 4**——§WP6 那条记录用**逐字相同的剧本**（`space:10-15,axis0+:100-160`）量到 `X=528 → ≈668`，本笔同包同路由重跑只到 532，两条档（manor 文档档 30-150 也一样）都收敛在 532 这一边界。候选两条都还站着（① #20 那次把逻辑视口收到设计分辨率，1 世界单位对应的量变了；② 那 60 帧轴窗口落进的是转场前还是转场后，本笔没测），**归因没做**，也不能用"门还绿"糊过去（判据只断言 `moved≠0`，规模不在它射程内）。这条与接管形态那三拍在 532 停住**同形**，所以它不是微信特有的现象，而是两条平台共用同一条缩放/碰撞链路的结果。一次性工具与日志留 `.temp/`。
+
+没测与本笔不碰：① 真机（不外推）；② 上面那条**位移连续性**判据（开阔地/换图取点）；③ 生产门里还没接这根线——`verify-wechat-minigame.ps1` 与 harness 都不调 `engineHostState`，所以这条位移读数今天只在一次性探针里判过（浏览器侧的等价件是 `verify-webgl-bundle.ps1:955-980` 那条位移门，它的存在也正是"这条判据该进门"的先例）；把它写进微信生产门需要 harness 侧调用与节拍；④ 多主角归属：判据是"名字含 `player`"，命中多个时读数会把它们逐个列出（`parts.join(" ")`），那种场景下"谁该动"没测；⑤ 浏览器那条 `world_expr` 护栏债（§WP6-06 未完成①）照旧没还，本笔刻意**没有**把任意 Lua 通道带到微信侧；⑥ 转场期主线程压住（≈2 fps，本笔现场 `waited_ms` 最高 2,699 ms/5 帧）、改道画布不跟随 `onWindowResize`、A 形撤改道接线、B 形现场化照旧在账；⑦ 一次性工具留 `.temp/`（`p1-w-probe.js`/`p1-w-collector.js`，端口 9431；`walk-run5.log`/`walk-run6.log`/`walk-run7.log`、全量 `walk-report.json`；浏览器侧 `verify-webgl-22-*.log` 五条），不进 verify 入口；⑧ **上面那条位移规模账**（`528→≈668` 的历史记录 vs 今天同剧本的 `528→532`）**已由 #24 结案**：当时站着的两条候选（#20 的视口改动 / 轴窗口落进转场前后）都被判掉——文档档根本不过转场也停在 `532.0`，轴窗拉到 140 帧仍是 `532.2`；真因是 `35155c81` 的脚底球 `offset=0,-16` 让出生球上半截伸进南门门洞那一档（门洞 32 px、球 24 px ⇒ 横向只剩 ±4 px，向右极限 `17*32−12=532.0`，向左对称 524）。手感量没回归（`MOVE_SPEED=140` 单位/秒、固定步 1/60，脱困后每步 ≈2.0 单位与当年同量级；先向南挪 21 px 再走同一条 80 帧窗 ⇒ Δ112），当年那个 140 之所以成立是因为旧球整截落在空行 row 3。顺带两笔要转出去：七张图里 `manor`/`village`/`mountain_path` 的出生点都卡在同一档门柱上（四向余量 4/4 px，按左右只动 4 px 就停，属场景线）；而 §WP6 那台在册命令的 `-ExpectWorld 'expr=.*manor:6[0-9]{2}'` 断的正是规模、今天 `[RED]`，台账已把它拆成"历史原样 + 一条跑绿的形态"；⑨ 标题确认只吃早窗（起帧 10 行、30 不行）的成因没查——它决定"以后要把这根线写进微信生产门时，剧本窗口该怎么取点"（**#23 已判因并修掉，答案是窗口不必特殊取点**：成败与起帧早晚无关，只与"那一下落在不跑固定步的帧里"有关）；本条有 CHANGELOG 条目。
+
 ## Unreleased — M72-11 §推进顺序 5 第四片（药庐场景侧 + 登记面）：interior_herb 接完金标管线最后一段，6×1 那一档清零（18 路径 +1,624/−270，内含旧两张 PNG 下架净 −4,396 B）
 
 - **题面 = 上一片欠的那一半**：`3710bd9f`（第三片）只到图集侧，盘上 `scenes/interior_herb.scene` 的 GroundMap 还指着 `assets/art/tilesets/interior_herb/interior_ground.png`（192×32 = 6 列 × 1 行**恒等寻址**，773 B），无 `tile_kinds/variant_count/autotile/tints_rgb` ⇒ 只有"一整块材质"那一档，木地板↔青砖、隔断墙↔地面交界全是按格子对齐的直线（docs/71 §1 点名的"像 demo"头号成因）。另一半更硬：`gen_interior_scenes.py` 已被铁匠铺那笔 `git mv` 成 `gen_forge_scene.py` 且只搬了 forge 一档 ⇒ herb 处于**无唯一事实源**状态，而旧文件早已对不上盘（只读探针重跑给 11,406 B ≠ 盘上 11,686 B；herb 那档还把 `"wall"` 记 kind 5 木隔断，与 `building_kit.TILE_NATIVE_SOLID=(4,6)` 的"墙必 4"相冲）⇒ **这不是"顺手重跑一下"能还的债，照旧代码重跑会写出一份"墙不是墙"的图**。
@@ -165,20 +1228,6 @@
 - **未测与本笔不碰**：① 三宿主整屏目验一次没跑（归 M72-12），两档 tint 的冷暖差还没被人眼看过，D5 那条读数不等于目视成立；② `main.scene` 归 §推进顺序 6——它根本没有 Tilemap，要先查清"门面到底该不该有地表"再动，不是照铺；③ 那十一件家具/设施里 `role=furniture`/`facility` 的旧串在 `ROOT_ROLES=("prop",)` 视野外 ⇒ "看得见却穿得过"照旧与室内那批一起收（本笔只把本图十二件按 `role=prop` 编号进占地；"是否给 `furniture` 升角色"属判据问题，不在铺量里顺手改）；④ `data/maps.lua` 注册未闭合；⑤ 第三片那 +18,510 B 图集进包的体积读数归下一次 `-Gpu2d` 打包复核（本笔没重打包，本笔体积净变化是旧两张下架 −4,396 B）；⑥ village 的 `VillageMountainGateShadow` 既有红仍按洞穴口径不进循环（那等于把已知红入库）。
 - **回滚档**：`scenes/interior_herb.scene` + `tools/gen_herb_scene.py` + 四处登记（`building_kit.SCENES` / `decor_kit.SCENE_DECOR` / `scene_readings.MIN_DECOR_OBJECTS` / `set_scatter_decor.RESERVED_BY_SCENE`）+ `verify.ps1` 循环里那第七张 + Rust 门 `HERB` 档。旧 6×1 那两张**不要**按 `git checkout HEAD~1 -- …` 取回（那是本笔时点的相对引用，下一笔落地即烂——本批 §15 第 10 条刚记过同一课）：正牌锚点 `git show 3710bd9f:examples/game_jhyt/assets/art/tilesets/interior_herb/interior_ground.png`（773 B）与 `git show 3710bd9f:examples/game_jhyt/assets/art/tilesets/interior_herb/_preview.png`（3,623 B），那两个文件在 `3710bd9f` 与其父提交上都还在。一次性量具留 `.temp/`（`probe_herb_cells*.py`、`probe_herb_decor.py`、`probe_herb_layout.py`、`herb-run/`、`herb-det/`），不进 verify 入口。CHANGELOG/verify.ps1 走既有台账纪律：本笔只暂存自己的行。这句起草时列的那几处别包在制品（`scene.rs`、`host_runtime.rs`、`rust_scene.rs`、两处 `fit.rs`、docs/65、M73-00）已分别随 `c802cd91`/#21/`e4e07965` 落地，本笔提交前按 `git status --short -- .gitignore docs/65* tasks/plan/M73-00* engine/crates/engine/src/host/runtime_scene/scene.rs engine/crates/engine/src/host/fit.rs engine/crates/game_web/src/{host_runtime,rust_scene,fit}.rs` 现扫，工作树里唯一的别包在制品只剩 `.gitignore`（+1/−0），一字未动。本条有 CHANGELOG 条目。
 
-
-## Unreleased — 任务#22：接管+scene 的**只读世界位移读数**接上了——"输入进到宿主消费的那一帧"升级成"世界真的动了"（3 路径产品码 + 台账三处，并作废 #21 自己那条"没有只读判据"）
-
-题面是 #21 没测账② 我自己写下的一句话："接管形态还没有浏览器宿主那种只读世界查询 ⇒ 本笔只证到输入进到宿主消费的那一帧"。这根线不能靠把浏览器那条 `rustlua-world-expr=<任意 Lua>` 搬过来补：那条通道的"只读"靠调用方自觉、**没有护栏**（plan §WP6-06 未完成① 原话就记着"微信侧若复用需补"），而微信侧的调用方是页面外的探针。改法=复用引擎自己那条构造上只读的读数（`RustScene::refresh_world`：`entity.find` + `transform.get`，走 `LuaRuntime::eval_json`），在 `engine_host_state()` **读态这一刻**刷一次、并进 `scene.world`。两条时机理由钉在注释里：① 不能挂每帧——`refresh_world` 自己的注释记着 WP6-05 的实测（热路径上多一次 Lua 求值足以挤掉同机并行剧本的帧预算）；② 接管形态没有状态属性可写，而 `engine_host_state` 是**诊断口**——适配层只把它挂成 `api.engineHostState`/`wx.__rustluaEngineHostState`（`plugins/wechat-minigame/wechat-adapter.js:4327/4384`），产品帧循环与 `verify-wechat-minigame.ps1`/harness 都不调它（两处 `grep -c EngineHostState` 都是 `0`）⇒"有人问才刷"既不落进生产读数，也保证读到的就是被读的那一帧。
-
-第二条改动比读数本身更要紧，否则这根线接上也是空转：**接管形态走的是 `SimRoute::EngineStartup`**（适配层默认路由名 `"script"`），而这一档根本不解析场景文档 ⇒ 主角候选名恒空 ⇒ `refresh_world` 一进门就写 `world=no-player` 返回。补法是文档没给候选时从**活世界的登记名表**取候选（新增 `RuntimeScene::named_entity_names()`，与工程 Lua `entity.find` 同一命名空间）。这里踩了一次坑、并按本仓"否定式断言先加运行期探针再说"的纪律留下了定位它自己的证据：第一版用的是 `runtime_spawned_entities()` 的名字，实测报 `named=50 samples=顾长风,陆归藏,陆青峰,苏晚晴`——那张表面向编辑器镜像、**刻意排除场景声明实体**，而主角恰恰是文档里声明的那一位，拿它筛 `player` 永远筛不到；换成登记名表后同一条判据命中 `JianghuPlayer`。顺带把"没有主角"这条读数从光说没有改成 `world=no-player(named=… samples=…)`——"启发没命中"与"世界里真一个命名实体都没有"从此可分辨，上面那次归因靠的就是那四个样本名。判据两边仍共用"名字含 `player`"（渲染器 `entityColor` 认主角的那套启发），不写死工程名：`game_web` 是引擎侧宿主，认工程名就等于把某个游戏焊进引擎。
-
-实测（模拟器，接管+scene，`__RUSTLUA_ENGINE_HOST_PIXEL_SAMPLE=false`；run5/run6/run7 **三次冷启动逐值相同**，`.temp/walk-run{5,6,7}.log`，终行 `walk_cycle verdict=world-moves-on-input`）：标题拍给出诚实读数 `world=no-player(named=18 samples=BgNight,BgVignette,BtnContinue,BtnContinueLabel)`（18 个登记名里确实没有主角，不是"读不到"）→ `space` 进游戏 ⇒ `world=JianghuPlayer@528,112 moved=0,0` → **对照段**（什么都不按、跨 10 宿主帧）`528,112 → 528,112` 且 `held=0` → **处理段**（按住 `keyd`=move_right）⇒ `@532,112 moved=4,0`，全程指纹 `held=1 axis=1,0` → **松开** 6 帧 ⇒ 仍 532 → **反方向**（按住 `keya`=move_left）⇒ `@524,112 moved=-4,0`（段内 Δ=`-8,0`）。三段合起来就是"世界随宿主消费的输入动了"：对照必须为零（少了它"世界自己在走"会冒充判据——WP6-06 那次拿 `draws=`/`vertices=` 差值当判据就是这么被否证的）、处理必须给**方向正确**的位移（只"变了"不够：换向、抖动、被墙顶住后的挤压都会"变了"）、松开必须停。原点语义另有一条自证：`moved=dx,dy` 与"相对第一次可读坐标的差"逐值相等（`moved_consistent=true`）——绝对坐标什么也不说明，位移才说明。
-
-一条**刻意没让判据去背**的观察（登记成账、不写成结论）：按住之后（再跨 10–23 宿主帧、指纹仍 `held=1 axis=±1,0`）位移不再增加。三种解释里 `repress` 那两拍给了决定性的分辨线索——同一次按下从 528 给 `+4`、从 524 给 `+8`、在 532 给 `0` ⇒ 位移大小随**位置**变而不是随按键次数定，向右被边界挡在 532（三道读数都恰好停在 532、从未越过），"每次按死一步"这条因此不成立；竖直段（按住 `keys`=move_down 共 52 宿主帧，指纹全程 `axis=0,1`）`Δy` 恒 0 ⇒ 出生点 `528,112` 在这张 `main.scene` 上四面被顶住。**所以"按住⇒连续走"在这个取点上没有判据可用**：浏览器侧同一个函数在 `manor` + `scene-script` 档**记录过**连续位移（`axis0+:10-90 ⇒ moved=140,0`），但那是另一张图、另一条路由，不能替这张图说话；而那条旧读数今天用逐字相同的 §WP6 命令重跑只剩 `528→532`（`moved=4,0`），所以它现在连"规模"都不能引用（归因见没测账⑧）。登记为后续：接管形态需要一条**开阔地**（或换图后）的位移连续性判据。
-
-门禁：`cargo fmt -p engine -p game_web -- --check` exit 0；`cargo test -q -p engine --lib` **185 passed / 0 failed**（本笔动了 `engine` 那个共享 crate；基线本来就是 185，没为它降门槛）；`cargo clippy -q -p engine -p game_web --all-targets` exit 0，18 条 `never used` 按文件归位全在 `fit.rs`/`frame_input.rs`/`lib.rs`（本笔那三个文件零警告）；`cargo +1.88.0 check -q -p game_web --target wasm32-unknown-unknown --features gpu2d`（ZIG）exit 0；`package.ps1 -Platform wechat-minigame -Gpu2d -WechatAppId wx7091f1cf872130bb` 全量重建（注入撤净之后重建，让最终源码与包内产物同源）→ `verify-wechat-minigame.ps1 -ExpectGpuKernel` **VERIFY_EXIT=0**（`.temp/verify-wechat-22.log`：生产口径 `engine_host=off engine_host_reason="switch-off"`、harness `frames=240`、`wechat_minigame_package_ok files=12 … total_kb=10,808`、五条负面用例全绿）；`refresh_world` 是两平台共用的，浏览器同片跑三条（`.temp/verify-webgl-22-{docroute,engineroute,engineroute-space,engineroute-space-long,engineroute-repro}.log`）：**两条位移门都 EXIT=0**——文档档（`-SimScene manor -SimRoute scene-script -InputScript 'axis0+:30-150'`）与 `EngineStartup` 档（`-SimRoute script -InputScript 'space:10-15,axis0+:100-160'`，即 §WP6 那台历史命令）都给 `webgl_bundle_rust_input_ok world=JianghuPlayer@532,112 moved=4,0`、`webgl_bundle_ok wasm=5289KB`；**后者是这条档第一次在浏览器读出真主角**（历史读数在这里只会印光秃的 `world=no-player`，因为 `EngineStartup` 不解析场景文档），属性上下文 `spawned=50 vertices=4944 draws=64 last=bgm_manor scene_delta=+48,+4086,+85 input_edges=4 script_errors=0`。**顺带钉出两条不在本题面的账**（都登记、本笔不修）：① **标题的确认只对早窗起效**——同一把 space 换到 `space:30-33` 与 `space:30-120` 两条窗口，各跑满 240 帧都停在标题（`world=no-player(named=18 samples=BgNight,BgVignette,BtnContinue,BtnContinueLabel)`、`spawned=18`、`last=bgm_title`、`scene_delta=+0,+0,+0`），而 `input_edges` 一样是 4 ⇒ "边沿没送到"这条解释被否证、"窗口太短"被 90 帧长窗否证，剩下的只有"起帧 10 行、起帧 30 不行"这条现象（**#23 判因完毕并修掉：与起帧早晚无关**，根因是 `RustScene::step` 在 0 步帧无条件 `finish_frame()` 把按下边沿当场抹掉，修后三条窗口给同一读数 `world=JianghuPlayer@532,112 moved=4,0`）；② **位移规模从历史记录的 140 掉到今天的 4**——§WP6 那条记录用**逐字相同的剧本**（`space:10-15,axis0+:100-160`）量到 `X=528 → ≈668`，本笔同包同路由重跑只到 532，两条档（manor 文档档 30-150 也一样）都收敛在 532 这一边界。候选两条都还站着（① #20 那次把逻辑视口收到设计分辨率，1 世界单位对应的量变了；② 那 60 帧轴窗口落进的是转场前还是转场后，本笔没测），**归因没做**，也不能用"门还绿"糊过去（判据只断言 `moved≠0`，规模不在它射程内）。这条与接管形态那三拍在 532 停住**同形**，所以它不是微信特有的现象，而是两条平台共用同一条缩放/碰撞链路的结果。一次性工具与日志留 `.temp/`。
-
-没测与本笔不碰：① 真机（不外推）；② 上面那条**位移连续性**判据（开阔地/换图取点）；③ 生产门里还没接这根线——`verify-wechat-minigame.ps1` 与 harness 都不调 `engineHostState`，所以这条位移读数今天只在一次性探针里判过（浏览器侧的等价件是 `verify-webgl-bundle.ps1:955-980` 那条位移门，它的存在也正是"这条判据该进门"的先例）；把它写进微信生产门需要 harness 侧调用与节拍；④ 多主角归属：判据是"名字含 `player`"，命中多个时读数会把它们逐个列出（`parts.join(" ")`），那种场景下"谁该动"没测；⑤ 浏览器那条 `world_expr` 护栏债（§WP6-06 未完成①）照旧没还，本笔刻意**没有**把任意 Lua 通道带到微信侧；⑥ 转场期主线程压住（≈2 fps，本笔现场 `waited_ms` 最高 2,699 ms/5 帧）、改道画布不跟随 `onWindowResize`、A 形撤改道接线、B 形现场化照旧在账；⑦ 一次性工具留 `.temp/`（`p1-w-probe.js`/`p1-w-collector.js`，端口 9431；`walk-run5.log`/`walk-run6.log`/`walk-run7.log`、全量 `walk-report.json`；浏览器侧 `verify-webgl-22-*.log` 五条），不进 verify 入口；⑧ **上面那条位移规模账**（`528→≈668` 的历史记录 vs 今天同剧本的 `528→532`）**已由 #24 结案**：当时站着的两条候选（#20 的视口改动 / 轴窗口落进转场前后）都被判掉——文档档根本不过转场也停在 `532.0`，轴窗拉到 140 帧仍是 `532.2`；真因是 `35155c81` 的脚底球 `offset=0,-16` 让出生球上半截伸进南门门洞那一档（门洞 32 px、球 24 px ⇒ 横向只剩 ±4 px，向右极限 `17*32−12=532.0`，向左对称 524）。手感量没回归（`MOVE_SPEED=140` 单位/秒、固定步 1/60，脱困后每步 ≈2.0 单位与当年同量级；先向南挪 21 px 再走同一条 80 帧窗 ⇒ Δ112），当年那个 140 之所以成立是因为旧球整截落在空行 row 3。顺带两笔要转出去：七张图里 `manor`/`village`/`mountain_path` 的出生点都卡在同一档门柱上（四向余量 4/4 px，按左右只动 4 px 就停，属场景线）；而 §WP6 那台在册命令的 `-ExpectWorld 'expr=.*manor:6[0-9]{2}'` 断的正是规模、今天 `[RED]`，台账已把它拆成"历史原样 + 一条跑绿的形态"；⑨ 标题确认只吃早窗（起帧 10 行、30 不行）的成因没查——它决定"以后要把这根线写进微信生产门时，剧本窗口该怎么取点"（**#23 已判因并修掉，答案是窗口不必特殊取点**：成败与起帧早晚无关，只与"那一下落在不跑固定步的帧里"有关）；本条有 CHANGELOG 条目。
 
 ## Unreleased — 任务#21：接管+scene 的输入**本来就进得来**——补上宿主侧每帧消费指纹，并据此更正 #20 那句"拿不到输入"（读数 + 判别片，1 路径产品码 + 台账三处）
 

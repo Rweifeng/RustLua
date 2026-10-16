@@ -29,10 +29,12 @@
 布局（cell，0-index，y 朝上，含端点）：
   院墙      ：整圈边界（row0 / row21..22 / col0 / col39），solid
   正房      ：x2..8, y5..11（7×7）solid；其上是 224×224 的 manor_house 贴图
-  屋前石院  ：x1..12, y1..4 石板，可走（含出生点与 NPC 落点）
+  屋前石院  ：x1..12, y1..4 石板，可走（NPC 落点；**出生点不在这里**——旧说法"含出生点"
+             是 #28 之前那版注释，出生点一直在田前石路那一行）
   柴房      ：x4..8, y15..18（5×4）solid；贴图 manor_shed
   药田      ：x14..33, y4..13 夯土，可走（farm.lua 的 FARM 矩形必须与之一致）
-  田前石路  ：y=3, x13..33；南门引道 x16, y1..2
+  田前石路  ：y=3, x13..33；南门引道 x16, y1..2；出生点 (19,3) 在这一行（#28：从引道正上方
+             (16,3) 挪开三格，那一格被南门两根门柱夹住、左右各只剩 4 px）
   池塘      ：x34..38, y4..9 水，solid
   南门      ：x15..17, y0..2（贴图压住南侧院墙），门洞 x16 可走（出口格 16,1）
   道具      ：水井/水缸/草堆/晒谷架/木牌/竹篱/竹丛/老树，见 PROPS；实心的在 solid 里标 1
@@ -133,7 +135,10 @@ THRESH = {"x0": 9, "x1": 13, "y0": 8, "y1": 12}        # 可走，石板
 PATH_Y = 3
 PATH = {"x0": 13, "x1": 33}                            # 田前石路
 GATE_SPUR = {"x": 16, "y0": 1, "y1": 2}                # 南门引道（出口格 16,1）
-SPAWN = {"x": 16, "y": PATH_Y}                         # 与 data/maps.lua main.spawn 一致
+# 出生点：田前石路上、离南门门洞三格。为什么不是引道正上方 (16,3)——那里球盒（跨
+# row 2..3）的上半截伸进南门门柱那一档，左右各只剩 4 px（#24：按 d 只走 4 px 的那一格）。
+# 判据与读数在 `building_kit.placement_problems`，门在 `building_kit.py --check`。
+SPAWN = {"x": 19, "y": PATH_Y}                         # 与 data/maps.lua manor.spawn 一致
 
 # ---- 建筑 / 道具 ----
 # texture：gen_manor_art.py / gen_interior_art.py 的产物；size 与图片像素 1:1；
@@ -401,7 +406,7 @@ def build_scene(ground, solid):
     lines.append(f"component\t{player_id}\tSprite\t{player_sprite}")
     if player_animation:
         lines.append(f"component\t{player_id}\tAnimation\t{player_animation}")
-    lines.append(f"component\t{player_id}\tCollider\tshape=ball;radius=12;offset=0,-16")
+    lines.append(f"component\t{player_id}\tCollider\t{bk.player_ball_collider()}")
     lines.append(transform_line(player_id, spawn_wx, spawn_wy))
     lines.append(f"entity_meta\t{player_id}\trole\tplayer_spawn")
     lines.append(f"entity_meta\t{player_id}\tpersistent\ttrue")
@@ -535,7 +540,8 @@ def read_manor_place_cells(
 
 
 def self_check(ground, solid):
-    """契约自检：出生点/出口/地点格可走、门洞可站可达、药田是夯土、建筑锚点不泡水。"""
+    """契约自检：出生点/出口/地点格可走、门洞可站可达、药田是夯土、建筑锚点不泡水、
+    落点横向走得开（`lateral_problems`）。"""
     problems = []
     walk = reachable_from(solid, (SPAWN["x"], SPAWN["y"]))
     checks = [
@@ -574,7 +580,30 @@ def self_check(ground, solid):
         cx, cy = prop["cell"]
         if ground[cy][cx] == WATER:
             problems.append(f"{prop['name']} 的锚点 ({cx},{cy}) 在水格上：整栋泡在池子里")
+    problems += lateral_problems(solid, walk)
     return problems
+
+
+def lateral_problems(solid, walk):
+    """落点：出生点 + 别的图落到本图的每一格，必须可走、可达，且横向走得开一格（判据在 `building_kit`）。
+
+    出口格与门洞那一档**不在这条里**：人是从开阔处走进门洞的，贴脸那一格不需要横向余量；
+    而"落到那一格"是另一回事——`to_cell` 是传送的直接产物，落进去动不了就等于卡死。
+    """
+    registry = bk.read_map_registry(SCENE)
+    problems = []
+    if registry["spawn"] != (SPAWN["x"], SPAWN["y"]):
+        problems.append(f"data/maps.lua {SCENE}.spawn={registry['spawn']} 与本文件 "
+                        f"SPAWN=({SPAWN['x']},{SPAWN['y']}) 不一致：放置格有两个出处")
+    cells = [("spawn", (SPAWN["x"], SPAWN["y"]))]
+    cells += [(label, (x, y)) for label, x, y in registry["landings"]]
+    for label, cell in cells:
+        if not (0 <= cell[0] < W and 0 <= cell[1] < H):
+            continue  # 越界由 `placement_problems` 报，这里不重复也不索引
+        if solid[cell[1]][cell[0]] or cell not in walk:
+            problems.append(f"{label} 的落点 {cell} 在本图不可走或从出生点不可达")
+    got, _readings = bk.placement_problems(W, H, bk.solid_bits(solid), cells)
+    return problems + got
 
 
 def main():
@@ -603,7 +632,8 @@ def main():
     places = read_manor_place_cells()
     pond = len(POND_CELLS)
     box = (POND["x1"] - POND["x0"] + 1) * (POND["y1"] - POND["y0"] + 1)
-    print(f"契约自检 ok：出生点/出口/药田/门洞/建筑锚点，places.lua {len(places)} 个山庄地点格全部可走且可达")
+    print(f"契约自检 ok：出生点/出口/药田/门洞/建筑锚点/落点净空，places.lua "
+          f"{len(places)} 个山庄地点格全部可走且可达")
     print(f"   池塘 {pond} 格 / 外接框 {box} 格 ⇒ 填充率 {pond / box:.3f}（旧版 5×6 矩形是 30/30=1.000）")
 
 

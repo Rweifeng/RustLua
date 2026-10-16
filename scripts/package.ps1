@@ -121,7 +121,10 @@ $packRoot = Join-Path $distRoot "pack"
 . (Join-Path $PSScriptRoot "wasm-bindgen.ps1")
 . (Join-Path $PSScriptRoot "minify-toolchain.ps1")
 
-# webgl 与微信小游戏共用同一套 WASM/静态产物，差别只在入口文件、资源配额与平台配置。
+# webgl 与微信小游戏共用同一份 game_web 原始 WASM 构建与静态产物管线；差别在入口文件、资源
+# 配额、平台配置，以及平台专属的发行后处理：胶水按平台各生成一份（--target web / no-modules），
+# 微信侧最终 WASM 另经剥 Global / 剥 Tag / noextern 降级——两平台发行的 _bg.wasm 不是逐字节
+# 相同的文件，也不应要求相同（口径见 docs/65 §3）。
 $isWebPlatform = $Platform -in @("webgl", "wechat-minigame")
 
 # 三种形态都只对微信小游戏有意义（只有微信有"主包 / 分包 / 远端资源"这套划分），
@@ -384,6 +387,9 @@ function Assert-WeChatPackageVolume {
 }
 
 $finalRoot = $distRoot
+# **发布根一确定就先探锁**：否则要等几分钟打包完、到交换那一步才报错（实测那次就是这么白干的）。
+# 探针与交换做的是同一个操作（目录重命名），所以它红了，交换也一定会红。
+Assert-ReleaseDirNotLocked -FinalRoot $finalRoot
 $staleRemoved = Clear-StaleReleaseStaging -FinalRoot $finalRoot -MaxAgeHours 24
 foreach ($stale in $staleRemoved) {
     Write-Host "==> Removed stale release staging: $stale" -ForegroundColor DarkGray
@@ -463,7 +469,9 @@ try {
             $ErrorActionPreference = $savedEap
         }
         if ($LASTEXITCODE -ne 0) { throw "assetc release build failed." }
-        # webgl 与微信小游戏**共用同一个 wasm 核心**（`-p game_web` 只构建一次，胶水按平台各生成一份）。
+        # webgl 与微信小游戏**共用同一份原始 WASM 构建**（`-p game_web` 只构建一次；胶水按平台
+        # 各生成一份，微信侧最终二进制另经剥 Global / 剥 Tag / noextern 降级等兼容后处理——见
+        # 下方 strip/downgrade 段。两平台的 _bg.wasm 不逐字节相同，哈希不同是预期行为）。
         # PS 5.1 陷阱：$ErrorActionPreference='Stop' 下原生程序写 stderr 会变成**终止性
         # 错误**（NativeCommandError），rustup/cargo 的正常进度输出也在 stderr —— 必须临时
         # 降为 Continue 再调，否则打包在构建第一步就误报失败。
@@ -668,6 +676,22 @@ WASM build failed ($Platform)。
     Remove-Item -Path (Join-Path $distRoot "assetc.exe") -Force -ErrorAction SilentlyContinue
 
     if ($isWebPlatform) {
+        $brandPython = Get-Command python -CommandType Application -ErrorAction SilentlyContinue
+        $brandPythonArgs = @("-B", "-X", "utf8")
+        if (-not $brandPython) {
+            $brandPython = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
+            $brandPythonArgs = @("-3", "-B", "-X", "utf8")
+        }
+        if (-not $brandPython) { throw "Branding packaging requires Python (and Pillow for project overrides)." }
+        $savedEapBrand = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $brandOutput = & $brandPython.Source @brandPythonArgs (Join-Path $PSScriptRoot "package-branding.py") `
+                --project-root $gameRoot --out (Join-Path $distRoot "branding") 2>&1
+            $brandExit = $LASTEXITCODE
+        } finally { $ErrorActionPreference = $savedEapBrand }
+        if ($brandExit -ne 0) { throw "Branding packaging failed: $($brandOutput -join ' ')" }
+        Write-Host ($brandOutput -join ' ') -ForegroundColor DarkGray
         Remove-Item -Path (Join-Path $distRoot "game.exe") -Force -ErrorAction SilentlyContinue
         # pkg/：随包分发的 Lua VM（不请求 CDN，离线可运行）；两个 web 平台各放一份 wasm 胶水。
         $pkgRoot = Join-Path $distRoot "pkg"
@@ -1020,27 +1044,31 @@ WASM build failed ($Platform)。
         }
         # WP10 迁移（fengari → mlua-wasm）：Lua 执行层在 wasm 侧 mlua（LuaRuntime 桥），
         # pkg/fengari-web.js 已从发布链路移除，此处不再复制。
-        # webgl 与微信小游戏共用同一份 web 运行时：两个平台的游戏逻辑不会各自漂移。
-        $webRuntimeTemplate = Join-Path $workspaceRoot "plugins\webgl\web-runtime.js"
-        if (-not (Test-Path -LiteralPath $webRuntimeTemplate)) {
-            throw "Web platform package requires the shared Lua runtime: plugins\webgl\web-runtime.js"
-        }
-        Copy-Item $webRuntimeTemplate (Join-Path $distRoot "web-runtime.js") -Force
-        # 发布产物 minify（源码保持 plugins/webgl/web-runtime.js 可读）：微信主包体积需要它。
-        Minify-JsFile (Join-Path $distRoot "web-runtime.js")
+        #
+        # **B8：旧世界 `plugins/webgl/web-runtime.js` 也不再复制。** 启动编排已经搬到适配层/宿主
+        # （`lua_boot_with_reader` 预装 reader + `lua_execute_main` 执行 main.lua + 宿主帧泵），
+        # 实测（开发者工具 `host_direct_done=True` + 326 帧）确认不加载它也能起、也能画。
+        # 源文件暂时留在盘上，是因为还有两条静态门（输入绑定表 / 瓦片哈希）在**解析它当源码**。
 
         if ($Platform -eq "wechat-minigame") {
-            # 微信小游戏入口：game.js（入口）+ wechat-adapter.js（wx 宿主适配）+ 两个配置。
-            # 平台文件都在 plugins/wechat-minigame/，发布脚本只负责复制、改名与校验。
+            # 微信小游戏入口：game.js（入口）+ wechat-adapter.js（wx 宿主适配）+ startup-branding.js
+            # （适配层 `require('./startup-branding.js')`，见 wechat-adapter.js 的 showStartupBranding）
+            # + 两个配置。平台文件都在 plugins/wechat-minigame/，发布脚本只负责复制、改名与校验。
+            #
+            # 这份清单**必须是穷举**（缺一个就 throw），而且**必须跟着适配层的 require 走** ——
+            # 2026-10-16 实测踩到：适配层新增了 `require('./startup-branding.js')` 而清单没跟上，
+            # 产物因此缺文件，**开发者工具里直接起不来**（表现是探针收不到任何上报）。
             $wechatPlugin = Join-Path $workspaceRoot "plugins\wechat-minigame"
-            foreach ($pluginFile in @("game.js", "game.json", "project.config.json", "wechat-adapter.js", "wasm-bridge.js")) {
+            foreach ($pluginFile in @("game.js", "game.json", "project.config.json", "wechat-adapter.js", "startup-branding.js", "wasm-bridge.js")) {
                 $pluginSource = Join-Path $wechatPlugin $pluginFile
                 if (-not (Test-Path -LiteralPath $pluginSource)) {
                     throw "WeChat platform plugin is missing: $pluginSource"
                 }
                 Copy-Item -LiteralPath $pluginSource -Destination (Join-Path $distRoot $pluginFile) -Force
-                # 发布产物 minify（源码保持 plugins/wechat-minigame/wechat-adapter.js 可读）。
-                if ($pluginFile -eq "wechat-adapter.js") { Minify-JsFile (Join-Path $distRoot $pluginFile) }
+                # 发布产物 minify（源码保持 plugins/wechat-minigame/*.js 可读）。
+                # `startup-branding.js` 与适配层同样处理：它也是运行期被 require 的产物文件，
+                # 同样要过上传的 ECMA 档（`check-upload-ecma.mjs` 逐文件检）。
+                if ($pluginFile -eq "wechat-adapter.js" -or $pluginFile -eq "startup-branding.js") { Minify-JsFile (Join-Path $distRoot $pluginFile) }
             }
             # game.json 的 subpackages **按形态注入，不写死在模板里**：
             # 模板带上分包声明会让另外两种形态（full / remote）被微信直接拒开——声明的 root
@@ -1187,8 +1215,34 @@ WASM build failed ($Platform)。
         }
     }
     else {
-        Copy-Item -Path (Join-Path $nativeTargetRoot "game.exe") `
-            -Destination (Join-Path $distRoot "game.exe") -Force
+        $packagedGame = Join-Path $distRoot "game.exe"
+        Copy-Item -LiteralPath (Join-Path $nativeTargetRoot "game.exe") `
+            -Destination $packagedGame -Force
+        # Project file icon is a packaging-only override. Never patch the shared
+        # Cargo artifact: other projects and the engine tools keep their default.
+        # Run this even with -SkipBuild, before self-checks and the atomic swap.
+        # Python is a packaging dependency only; Pillow is needed only for an override.
+        $iconPython = Get-Command python -CommandType Application -ErrorAction SilentlyContinue
+        $iconPythonArgs = @("-B", "-X", "utf8")
+        if (-not $iconPython) {
+            $iconPython = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
+            $iconPythonArgs = @("-3", "-B", "-X", "utf8")
+        }
+        if (-not $iconPython) { throw "PC icon packaging requires Python 3.11+ (and Pillow when icon_image is configured)." }
+        $savedEapIcon = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $iconOutput = & $iconPython.Source @iconPythonArgs (Join-Path $PSScriptRoot "package-icon.py") `
+                --project-root $gameRoot --exe $packagedGame 2>&1
+            $iconExit = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $savedEapIcon
+        }
+        if ($iconExit -ne 0) {
+            throw ("PC icon packaging failed (exit {0}): {1}" -f $iconExit, (($iconOutput | ForEach-Object { "$_" }) -join ' '))
+        }
+        Write-Host (($iconOutput | ForEach-Object { "$_" }) -join ' ') -ForegroundColor DarkGray
     }
 
     # 工程级设置（project.toml 的 [input]/[audio] 段：手柄改键与死区/音量）随包分发：发布包以 pack 目录作为
@@ -1535,7 +1589,9 @@ WASM build failed ($Platform)。
             (Join-Path $distRoot "game.json"),
             (Join-Path $distRoot "project.config.json"),
             (Join-Path $distRoot "wechat-adapter.js"),
-            (Join-Path $distRoot "web-runtime.js"),
+            (Join-Path $distRoot "startup-branding.js"),
+            (Join-Path $distRoot "branding\icon.png"),
+            (Join-Path $distRoot "branding\splash.png"),
             (Join-Path $distRoot "pkg\game_web.js"),
             (Join-Path $distRoot $wasmCoreRelative),
             (Join-Path $distRoot "code-package.json"),
@@ -1687,7 +1743,8 @@ WASM build failed ($Platform)。
         $requiredWebFiles = @(
             (Join-Path $distRoot "index.html"),
             (Join-Path $distRoot "test-webgl.bat"),
-            (Join-Path $distRoot "web-runtime.js"),
+            (Join-Path $distRoot "branding\icon.png"),
+            (Join-Path $distRoot "branding\splash.png"),
             (Join-Path $distRoot "pkg\game_web.js"),
             (Join-Path $distRoot "pkg\game_web_bg.wasm"),
             (Join-Path $packRoot "manifest.txt"),
@@ -1995,7 +2052,6 @@ if ($SelfTest) {
             (Join-Path $isolatedRoot "game.json"),
             (Join-Path $isolatedRoot "project.config.json"),
             (Join-Path $isolatedRoot "wechat-adapter.js"),
-            (Join-Path $isolatedRoot "web-runtime.js"),
             (Join-Path $isolatedRoot "pkg\game_web.js"),
             $isolatedWasmCore,
             (Join-Path $isolatedSkeletonRoot "manifest.txt")
@@ -2096,7 +2152,6 @@ if ($SelfTest) {
         $isolatedRoot = $isolatedReleaseRoot
         foreach ($file in @(
             (Join-Path $isolatedRoot "index.html"),
-            (Join-Path $isolatedRoot "web-runtime.js"),
             (Join-Path $isolatedRoot "pkg\game_web.js"),
             (Join-Path $isolatedRoot "pkg\game_web_bg.wasm"),
             (Join-Path $isolatedRoot "pack\manifest.txt")

@@ -2,7 +2,7 @@
 --
 -- 为什么需要这一层：wasm 里的 Lua 注册层已实测与桌面**逐字节相同**（41 张表 / 275 个函数，
 -- 见 scripts/wasm-lua/verify-no-modules-bridge.mjs 的 L1），但 `web-runtime.js` 的宿主补丁层
--- **覆盖了 57 个引擎已注册的实现**（见 plugins/webgl/lua_api_overrides.json）。名字两边都对得上，
+-- **覆盖了 57 个引擎已注册的实现**（见 plugins/webgl/lua_api_overrides.json（已随 B8 删除；逐表分类见 tasks/plan/M73-02））。名字两边都对得上，
 -- 所以"比名字"的门抓不到分叉——分叉在返回值形状与状态归属。已实测的一例：
 --   引擎版 clock.now() -> day,hour,minute,minute_of_day,paused,rate
 --   打补丁后 clock.now() -> day,minute,minute_of_day（少三个字段，Lua 读到 nil 且不报错）
@@ -57,6 +57,25 @@ end
 local cases = {}
 
 -- ---- clock / calendar / day：返回值形状与边界（这一组已知分叉，正是本门要钉住的）----
+
+-- `time` 这一组钉的是 **web 时间基**：`time.delta()` 必须是引擎给的**真实步长**，而不是补丁层
+-- 曾经那个常量/影子。返回**确定性字符串**（不能把 delta 的值打出来——它每帧都不同，transcript
+-- 基线会必然漂）。
+cases['time.shape'] = function()
+  return shape(function() return time end)
+end
+
+cases['time.delta.positive'] = function()
+  local delta = time.delta()
+  -- 判据刻意是「**数值 + 非负**」，不是「非零」：契约运行器**不推帧**，delta=0 是合法的静止态
+  -- （第一次跑这条时基线记下了 `delta=0.0` —— 把运行器没推帧误判成"时间基坏了"，反而会让门
+  --   把 0 当成正确值供起来）。"是**真实步长**而不是补丁层的常量影子"那一半，只能在**真的跑帧**
+  -- 的地方钉（宿主侧），所以它留在宿主门上，不塞进这条契约。
+  if type(delta) ~= 'number' or delta < 0 then
+    return 'delta=' .. tostring(delta)
+  end
+  return 'number=true'
+end
 
 cases['clock.now.shape'] = function()
   return shape(function() return clock.now() end)

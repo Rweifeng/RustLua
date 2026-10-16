@@ -23,20 +23,24 @@ end
 
 M.TILE = TILE
 
--- 山庄 → 云泽村：山庄南侧院墙内石路 (16,1)，云泽村南市街 (19,2) 落点。
--- 云泽村 → 山庄：南市街口 (19,1) 站立触发，回山庄药田前 (16,3)。
+-- 山庄 → 云泽村：山庄南侧院墙内石路 (16,1)，云泽村南市街 (19,4) 落点。
+-- 云泽村 → 山庄：南市街口 (19,1) 站立触发，回山庄田前石路 (19,3)。
+-- 落点为什么都不在门口那一格（#28）：主角的碰撞盒是脚底一个 24×24 的球，而一格宽（32px）
+-- 的门洞里左右各只剩 4 px——按方向键世界不动。出生点/落点因此一律放在门洞**北边一两格**的
+-- 开阔路上；出口格与门洞本身照旧是窄的（人从开阔处走进去，不需要横向余量）。
+-- 判据与读数：`tools/building_kit.py` 的 `placement_problems`（门槛 = 一格 32 px，只管横向）。
 M.version = 1
 M.maps = {
   manor = {
     display = "江湖有田·山庄",
     title = "山庄 · 药田垂直切片",
-    spawn = { x = 16, y = 3 }, -- 与 manor.scene JianghuPlayer Transform 一致
+    spawn = { x = 19, y = 3 }, -- 与 manor.scene JianghuPlayer Transform 一致（旧值 (16,3) 站在南门两柱之间，横向只剩 4 px）
     exits = {
       {
         id = "main_to_village",
         cell = { x = 16, y = 1 }, -- 院墙内南侧（玩家在此面对墙按 E）
         to = "village",
-        to_cell = { x = 19, y = 2 },
+        to_cell = { x = 19, y = 4 }, -- 村口门洞**北两格**的街面（旧值 (19,2) 就在门洞那一格里）
         label = "离开山庄 · 前往云泽村"
       }
     }
@@ -44,13 +48,13 @@ M.maps = {
   village = {
     display = "江湖有田·云泽村",
     title = "云泽村 · 南市街",
-    spawn = { x = 19, y = 2 }, -- 与 village.scene JianghuPlayer Transform 一致
+    spawn = { x = 19, y = 4 }, -- 与 village.scene JianghuPlayer Transform 一致（旧值 (19,2) 站在村口门洞里，横向只剩 4 px）
     exits = {
       {
         id = "village_to_main",
         cell = { x = 19, y = 1 }, -- 南市街口（南门内）
         to = "manor",
-        to_cell = { x = 16, y = 3 },
+        to_cell = { x = 19, y = 3 }, -- 回山庄田前石路（旧值 (16,3) 在南门两柱之间）
         label = "返回山庄"
       },
       -- 批次 2/3：北上青云山、进药庐、进铁匠铺（对应 scenes/village.scene 的三个门洞/门前格）
@@ -58,7 +62,7 @@ M.maps = {
         id = "village_to_mountain",
         cell = { x = 10, y = 20 }, -- 村北山门门洞（M72-11 复核：贴图那一格不透明占比 0.156，真是洞；山门 sprite 已从 (9,19) 挪到 (9,20) 压住北墙，洞才落在出口格上）
         to = "mountain_path",
-        to_cell = { x = 19, y = 2 },
+        to_cell = { x = 19, y = 4 }, -- 山门内北两格的山道（旧值 (19,2) 在山门洞里）
         label = "出村 · 上青云山"
       },
       {
@@ -84,7 +88,7 @@ M.maps = {
   mountain_path = {
     display = "江湖有田·青云山道",
     title = "青云山道 · 采药与护送",
-    spawn = { x = 19, y = 2 }, -- 与 mountain_path.scene JianghuPlayer Transform 一致
+    spawn = { x = 19, y = 4 }, -- 与 mountain_path.scene JianghuPlayer Transform 一致（旧值 (19,2) 站在山门洞里，横向只剩 4 px）
     exits = {
       {
         id = "mountain_to_village",
@@ -141,10 +145,11 @@ M.maps = {
         id = "forge_to_village",
         cell = { x = 10, y = 1 },
         to = "village",
-        -- 落点与上面的门前格同一格 (27,10)（M72-11）：旧值 (26,11) 在铁匠铺自己的占格里
-        -- （x25..28&y11..12 整框不透明，8 格全实心），走出铺子等于把人塞进墙里。
-        -- 铁匠铺只有两行高，没有"门前走廊"可用，所以进出共用门前那一格。
-        to_cell = { x = 27, y = 10 },
+        -- 走出铺子落在门前排的**东一格** (28,10)（#28）：旧值 (27,10) 与上面的门前格同格，
+        -- 而那一格西邻是搬进市集后的杂货铺屋顶（x21..26&y6..10 的 x26 那列实心），
+        -- 脚底球盒在那一格只剩 4 px 横向余量。进出因此不再共用一格——进门仍站 (27,10)，
+        -- 出门落在同排东邻，两格都在"铁匠铺 x25..28&y11..12 门前只剩东侧 x27..28 那一排"里。
+        to_cell = { x = 28, y = 10 },
         label = "走出铁匠铺"
       }
     }
@@ -160,7 +165,7 @@ M.maps = {
         id = "arena_to_main",
         cell = { x = 9, y = 1 }, -- 南门门洞内（manor_gate x8..10, y0..2，门洞 (9,1)(9,2)）
         to = "manor",
-        to_cell = { x = 16, y = 3 },
+        to_cell = { x = 19, y = 3 }, -- 山庄田前石路（旧值 (16,3) 在南门两柱之间）
         label = "离开演武场 · 返回山庄"
       }
     }

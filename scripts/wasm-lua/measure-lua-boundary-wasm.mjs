@@ -172,46 +172,49 @@ const OPS = [
 ];
 
 // M73-00 的新协议：批量二进制（`RLFI`）+ 原地改常驻表。**必须和上面那条同源**：
-// 打包用出厂 `web-runtime.js` 抽出来的打包器，应用用真 wasm 的 `lua_input_frame`。
+// 帧**按 wasm 自己给的布局现搭**（不再从出厂源码抽打包器，见下），应用用真 wasm 的 `lua_input_frame`。
 // 这一组数字就是"换掉每帧源码编译"到底省了多少的答案。
 let abiAvailable = false;
 if (typeof glue.lua_input_frame === 'function' && typeof glue.input_frame_layout_json === 'function') {
-  const runtimeSource = readFileSync(join(repoRoot, 'plugins', 'webgl', 'web-runtime.js'), 'utf8');
-  // 抽块按缩进配对（源码里有正则字面量，数花括号会被里面的引号带偏），并按 `\r?\n` 切行（CRLF）。
-  function blockAt(source, anchor) {
-    const lines = source.split(/\r?\n/);
-    const start = lines.findIndex((line) => line.includes(anchor));
-    if (start < 0) throw new Error(`anchor not found: ${anchor}`);
-    const closing = `${lines[start].match(/^ */)[0]}}`;
-    for (let index = start + 1; index < lines.length; index += 1) {
-      if (lines[index] === closing) return lines.slice(start, index + 1).join('\n');
+  // **不再从出厂源码抽打包器**：那要读 `plugins/webgl/web-runtime.js`，而那个文件正是"删旧世界"要删的
+  // （B8 的删除清单第 4 条）。改成**按 wasm 自己给的布局现搭一个合法帧** —— 被测物没变（仍是真 wasm 的
+  // `lua_input_frame` 跨界解码），而构造方式不可能与布局漂移：它就是照布局写的。
+  const layout = JSON.parse(glue.input_frame_layout_json());
+  const off = layout.offsets;
+  const keySlot = new Map(layout.key_names.map((name, index) => [name, index]));
+  const mouseSlot = new Map(layout.mouse_names.map((name, index) => [name, index]));
+  function buildAbiFrame() {
+    const buffer = new Uint8Array(layout.wire_len);
+    const view = new DataView(buffer.buffer);
+    for (let index = 0; index < layout.magic.length; index += 1) {
+      view.setUint8(off.magic + index, layout.magic.charCodeAt(index));
     }
-    throw new Error(`unbalanced block for anchor: ${anchor}`);
+    view.setUint16(off.version, layout.version, true);
+    view.setUint16(off.flags, 0, true);
+    view.setUint32(off.frame, 1, true);
+    view.setFloat64(off.axis, 1, true);
+    view.setFloat64(off.axis + 8, -1, true);
+    view.setFloat64(off.cursor, 627, true);
+    view.setFloat64(off.cursor + 8, 318, true);
+    view.setFloat64(off.press_cursor, 627, true);
+    view.setFloat64(off.press_cursor + 8, 318, true);
+    view.setFloat64(off.cursor_delta, 3, true);
+    view.setFloat64(off.cursor_delta + 8, -2, true);
+    view.setFloat64(off.scroll, 0, true);
+    view.setFloat64(off.scroll + 8, 0, true);
+    // 键位图是 u128：DataView 没有 u128 写入口，按低/高两个 u64 小端写。
+    const held = ['w', 'd', 'space'].reduce((bits, name) => bits | (1n << BigInt(keySlot.get(name))), 0n);
+    view.setBigUint64(off.keys_held, held & 0xffffffffffffffffn, true);
+    view.setBigUint64(off.keys_held + 8, held >> 64n, true);
+    const pressed = 1n << BigInt(keySlot.get('space'));
+    view.setBigUint64(off.keys_pressed, pressed & 0xffffffffffffffffn, true);
+    view.setBigUint64(off.keys_pressed + 8, pressed >> 64n, true);
+    view.setBigUint64(off.mouse_just, 1n << BigInt(mouseSlot.get('left')), true);
+    return buffer;
   }
-  const packerSource = [
-    'let inputFramePacker = null;',
-    blockAt(runtimeSource, 'function getInputFramePacker() {'),
-    blockAt(runtimeSource, 'function applyInputFrame(snapshot) {'),
-  ].join('\n');
-  const packer = new Function('window',
-    `${packerSource}\nreturn getInputFramePacker;`)({ __RUSTLUA_LUA_BRIDGE: glue })();
-  const abiSnapshot = {
-    axis_x: 1,
-    axis_y: -1,
-    keys: { w: true, d: true, space: true },
-    just: { space: true },
-    released: {},
-    mouse: { left: false, right: false },
-    mouse_just: { left: true },
-    mouse_just_released: {},
-    cursor: [627, 318],
-    press_cursor: [627, 318],
-    cursor_delta: [3, -2],
-    scroll: [0, 0],
-  };
   OPS.push({
     name: '输入快照 批量二进制(新)',
-    run: () => glue.lua_input_frame(packer.pack(abiSnapshot)),
+    run: () => glue.lua_input_frame(buildAbiFrame()),
   });
   abiAvailable = true;
 }

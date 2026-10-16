@@ -347,6 +347,13 @@ function M.update()
     local cursor = input.cursor_position()
     local delta = input.cursor_delta()
     local scroll = input.scroll_delta()
+    -- 按下点：与 `cursor_position()` 的区别是**语义**而不是精度——光标每帧都在动，而按下点只在
+    -- 按下那一刻刷新。触摸端"按住摇杆＋另一只手点按钮"就靠它：按钮必须按**自己的按下点**命中，
+    -- 否则命中会跟着摇杆那只手跑（`ui/virtual_pad.lua` 的控件命中就是这个用法）。
+    local press = input.press_position()
+    -- 有几根手指/指针按着（多指）。逐指的按下点用 `input.press_position(i)` 取，越界回 `nil`——
+    -- 命中测试里「错的坐标」比「没有坐标」更糟，所以越界宁可什么都不给。
+    local fingers = input.pointer_count()
     local mouse = mouse_text()
     local moving_dot = input.mouse_is_down("left") or input.mouse_is_down("middle") or input.mouse_is_down("right")
     local stuck = input.mouse_just_pressed("left") or input.mouse_just_pressed("middle")

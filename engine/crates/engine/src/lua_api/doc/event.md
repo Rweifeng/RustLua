@@ -8,7 +8,7 @@
 
 ## `event.emit(name: String, data: Option<Value>)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/globals.rs:278`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/globals.rs:279`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -19,7 +19,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `event.off(name: String, callback: Option<Function>)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/globals.rs:309`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/globals.rs:310`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -30,7 +30,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `event.on(name: String, callback: Function)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/globals.rs:269`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/globals.rs:270`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -41,7 +41,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `event.subscribe(name: String, callback: Function)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/globals.rs:261`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/globals.rs:262`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -52,7 +52,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `event.unsubscribe(name: String, callback: Option<Function>)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/globals.rs:293`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/globals.rs:294`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 

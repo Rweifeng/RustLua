@@ -11,10 +11,26 @@ crate-type = ["cdylib"]
 
 # WebGL2 的 GPU 渲染路径（`gpu_host`）：把引擎渲染器接到画布上。
 #
-# **默认关**，与 `engine/webgl` 同一口径：打开会把 wgpu 的 GL 后端编进发布产物
-# （`engine/Cargo.toml` 的 webgl 段记着 ≈+139 KB 起）。谁要它谁显式打开：
-# `scripts/package.ps1 -Gpu2d`（并把页面 URL 带上 `?rustlua-gpu=1`）。
+# **当前默认关，但这是一个已知缺口**：打开会把 wgpu 的 GL 后端编进发布产物
+# （`engine/Cargo.toml` 的 webgl 段记着 ≈+139 KB 起）。显式打开：`scripts/package.ps1 -Gpu2d`。
+#
+# **为什么默认关现在是缺口（2026-10-15 记录，附撤回原因）**：两个平台的**运行期**默认都已经
+# 翻到 Rust 宿主——浏览器 `plugins/webgl/index.html:149` 写着"Rust 侧默认开、`?rustlua-gpu=0` 关"，
+# 微信 `wechat-adapter.js` 的原子模式也是默认开。于是"默认产物不带宿主"不再是省体积：浏览器会退回
+# 旧 JS 世界（`index.html:177` 的 `fallbackToLegacyWorld`），微信直接 `engine_host=unavailable`
+# `reason=kernel-without-gpu2d`（按已裁定的"默认开、不回退"，那是黑屏）。**所以这一行该转成
+# `default = ["gpu2d"]`——但不能只改这一行。** 实测：转默认之后整条链走默认档，浏览器产物确实
+# 变成 Rust 宿主出帧（`legacy JS world skipped`、`frame owner ok: engine GPU host`、
+# `webgl_bundle_ok wasm=5292.2KB`，该门 exit 0），但 `scripts/verify.ps1:842-852` 的 Web 段硬要求
+# `drawnSamples > 0` 与 `sceneVerify == "done"`，而这两个读数**只有旧 JS 世界会写**
+# （`web-runtime.js`）⇒ 默认档跳过旧世界之后它们必然缺席（实测 bundle-summary 里
+# `drawnSamples` 为空、`sceneVerify=absent`）⇒ `verify.ps1 -Web`（CI 在跑，见
+# `.github/workflows/quality.yml:196`）会判红。**必须先改门**：让 `verify-webgl-bundle.ps1` 把引擎侧
+# 证据（`data-rustlua-gpu`）落进 bundle-summary，再由 `verify.ps1` 用它替代那两条断言
+# （即 `tasks/plan/M73-01-删除旧JS世界-删除面清单.md` 的 N1/N3），**然后**才轮到这一行。
+# 顺序反了就得到"默认能用但 CI 红"——本轮就是照这个顺序踩了一次，已撤回。
 [features]
+default = ["gpu2d"]
 gpu2d = ["dep:wgpu", "wgpu/webgl"]
 
 [dependencies]

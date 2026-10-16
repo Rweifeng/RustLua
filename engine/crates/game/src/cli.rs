@@ -122,6 +122,17 @@ fn release_title() -> Option<String> {
 /// 校验项目/发布包资源完整性：项目清单、主脚本、启动场景及场景引用的资源。
 /// 返回缺失项列表（空表示完整）。
 pub fn verify_project(root: &Path) -> Vec<String> {
+    let mut missing = verify_project_inner(root);
+    if let Err(error) = crate::splash::load(root) {
+        missing.push(error);
+    }
+    if let Err(error) = crate::splash::load_icon(root) {
+        missing.push(error);
+    }
+    missing
+}
+
+fn verify_project_inner(root: &Path) -> Vec<String> {
     let mut missing = Vec::new();
     let project_toml = root.join("project.toml");
     if !project_toml.is_file() {
@@ -159,6 +170,22 @@ pub fn verify_project(root: &Path) -> Vec<String> {
     missing.extend(verify_script_syntax(root));
     missing.extend(verify_domain_data(root));
     missing
+}
+
+// An optional image must not prevent startup; --check still reports it.
+pub fn verify_startup(root: &Path, packaged: bool) -> Result<(), String> {
+    let issues = verify_project_inner(root);
+    for item in &issues {
+        tracing::error!(target: "game", "资源校验失败: {item}");
+    }
+    if packaged && !issues.is_empty() {
+        return Err(format!(
+            "发布资源包校验失败（{} 项缺失）：\n  {}",
+            issues.len(),
+            issues.join("\n  ")
+        ));
+    }
+    Ok(())
 }
 
 /// M20-01：校验 `scripts/**/*.lua` 全部脚本语法（与导入期共用 Importer 校验器，
@@ -269,6 +296,108 @@ fn extract_asset_refs(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{extract_asset_refs, extract_key, resolve_window_title, verify_project};
+
+    #[test]
+    fn splash_check_missing_corrupt_plain_and_packed_images() {
+        let root =
+            std::env::temp_dir().join(format!("rustlua-splash-check-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        let config = root.join("project.toml");
+        std::fs::write(&config, "name = \"SplashTest\"\n").unwrap();
+        assert!(
+            verify_project(&root).is_empty(),
+            "no configuration preserves old check"
+        );
+        std::fs::write(&config, "splash_image = \"assets/start.png\"\n").unwrap();
+        let issues = verify_project(&root);
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("splash_image 读取失败"));
+        assert!(
+            super::verify_startup(&root, true).is_ok(),
+            "optional image must not prevent startup"
+        );
+        std::fs::write(root.join("assets/start.png"), b"broken").unwrap();
+        assert!(verify_project(&root)[0].contains("splash_image 解码失败"));
+        for format in [image::ImageFormat::Png, image::ImageFormat::Jpeg] {
+            let image = image::RgbImage::from_pixel(4, 2, image::Rgb([20, 40, 80]));
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image.write_to(&mut bytes, format).unwrap();
+            for packed in [false, true] {
+                let data = rustlua_infra::pack::encode(bytes.get_ref(), packed, packed);
+                std::fs::write(root.join("assets/start.png"), data).unwrap();
+                assert!(verify_project(&root).is_empty());
+                assert_eq!(
+                    crate::splash::load(&root).unwrap().unwrap().dimensions(),
+                    (4, 2)
+                );
+            }
+        }
+        std::fs::write(&config, "splash_image = \"../escape.png\"\n").unwrap();
+        assert!(verify_project(&root)[0].contains("相对路径"));
+        std::fs::write(&config, "main_script = \"missing.lua\"\n").unwrap();
+        assert!(super::verify_startup(&root, false).is_ok());
+        assert!(super::verify_startup(&root, true).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn icon_check_and_startup_fallback_plain_and_packed_images() {
+        let root = std::env::temp_dir().join(format!("rustlua-icon-check-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        let config = root.join("project.toml");
+        std::fs::write(&config, "name = \"IconTest\"\n").unwrap();
+        let default_splash = crate::splash::startup_image(None).unwrap();
+        let default_icon = crate::splash::icon_image(None);
+        assert_eq!(
+            crate::splash::startup_image(Some(&root)).unwrap(),
+            default_splash
+        );
+        assert_eq!(crate::splash::icon_image(Some(&root)), default_icon);
+        std::fs::write(
+            &config,
+            "icon_image = \"assets/icon.png\"\nsplash_image = \"assets/start.png\"\n",
+        )
+        .unwrap();
+        let issues = verify_project(&root);
+        assert_eq!(issues.len(), 2);
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("icon_image 读取失败"))
+        );
+        assert!(super::verify_startup(&root, true).is_ok());
+        std::fs::write(root.join("assets/icon.png"), b"broken").unwrap();
+        std::fs::write(root.join("assets/start.png"), b"broken").unwrap();
+        assert!(
+            verify_project(&root)
+                .iter()
+                .any(|issue| issue.contains("icon_image 解码失败"))
+        );
+        assert_eq!(
+            crate::splash::startup_image(Some(&root)).unwrap(),
+            default_splash
+        );
+        assert_eq!(crate::splash::icon_image(Some(&root)), default_icon);
+        for format in [image::ImageFormat::Png, image::ImageFormat::Jpeg] {
+            let image = image::RgbImage::from_pixel(4, 2, image::Rgb([20, 40, 80]));
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image.write_to(&mut bytes, format).unwrap();
+            let expected = image::load_from_memory(bytes.get_ref()).unwrap().to_rgba8();
+            for packed in [false, true] {
+                let data = rustlua_infra::pack::encode(bytes.get_ref(), packed, packed);
+                std::fs::write(root.join("assets/icon.png"), &data).unwrap();
+                std::fs::write(root.join("assets/start.png"), &data).unwrap();
+                assert!(verify_project(&root).is_empty());
+                assert_eq!(crate::splash::icon_image(Some(&root)), expected);
+                assert_eq!(crate::splash::startup_image(Some(&root)).unwrap(), expected);
+            }
+        }
+        for path in ["../escape.png", "/absolute.png", "C:\\absolute.png"] {
+            std::fs::write(&config, format!("icon_image = \"{path}\"\n")).unwrap();
+            assert!(verify_project(&root)[0].contains("icon_image 路径必须"));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn extract_key_parses_quoted_project_fields() {

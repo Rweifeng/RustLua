@@ -108,7 +108,7 @@ def build_mountain_gate():
 
       * 山道 `building_kit.SCENES["mountain_path"].openings["MountainGate"]` 压在 (18,0)：
         出口格 (19,1)(20,1) = 行 32..63 × 列 32..95 是通道，(19,2)(20,2) = 行 0..31 的中间
-        两格是门前的檐下；出生点 (19,2) 就在其中一格。
+        两格是门前的檐下（#28 之前那里同时是山道的出生格，现在出生点挪到门北两格 (19,4)）。
       * 村侧北山门 `SCENES["village"].openings["VillageMountainGate"]` 压在 (9,20)：那张图
         的通道是**最底一行** (10,20) = 行 64..95 × 列 32..63，上面两行是门楼的身与顶。
 

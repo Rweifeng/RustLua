@@ -102,12 +102,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("  洒水器 3 级与 forge 配方全部与设计案一致，未泄漏进商店");
 
-    banner("② 进山庄新档，出生点面前格 (16,4) 翻土 + 放竹筒引水器");
+    banner("② 进山庄新档，站 (16,3) 朝上给面前格 (16,4) 翻土 + 放竹筒引水器");
     open_main_menu(&mut runtime)?;
     click_button(&mut runtime, "BtnStart")?;
     assert_scene_is(&mut runtime, "manor")?;
-    // 出生点 (16,3) 面前 (16,4)（m24 ⑧ 验证过的安全站位，无 NPC 干扰）
-    set_facing(&mut runtime, "up")?;
+    // 站位 (16,3) 面前 (16,4)（m24 ⑧ 验证过的安全站位，无 NPC 干扰）。写成显式传送而不是
+    // "停在出生点"：#28 把出生点挪到 (19,3)，本节要的只是这块药田几何。
+    stand_at(&mut runtime, (16, 3), "up")?;
     press(&mut runtime, KeyCode::KeyE)?;
     assert_str(&mut runtime, "require('core.state').last_action", "till")?;
     add_sprinkler(&mut runtime, "sprinkler_bamboo")?;

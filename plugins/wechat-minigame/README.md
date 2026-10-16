@@ -431,7 +431,9 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
 - **wasm 核心：就是 Lua 执行层（WP10 迁移后）**。wasm（mlua 移植，Lua 5.4 + vendored）承载全部
   Lua 交互：启动（`lua_boot`/`lua_boot_with_reader`）、补丁注入（`lua_do_string`）、全局调用
   （`lua_call_global`）、JS 回调注册（`lua_register_js_callback`）、缺失全局（`lua_missing_globals`）、
-  工程主脚本执行（`lua_execute_main`）。微信分支与 webgl 共用同一份 wasm，以 `--target no-modules`
+  工程主脚本执行（`lua_execute_main`）。微信分支与 webgl 共用同一个 `game_web` 源核心与同一份
+  原始 WASM 构建（**最终发行的 `_bg.wasm` 不是同一份文件**：微信版另经剥 Global / 剥 Tag /
+  noextern 降级等兼容后处理，见 `scripts/package.ps1`；口径详见 docs/65 §3），以 `--target no-modules`
   生成 CommonJS 胶水随包发行，由适配层在 boot 之前经宿主的
   `WXWebAssembly.instantiate(wasmModulePath(), imports)` **异步**实例化（`wasmModulePath()`
   在分包形态给 `pack/game_web_bg.wasm`，其余形态给 `pkg/game_web_bg.wasm`；结果含"用了哪条通道"

@@ -117,7 +117,8 @@ GroundMap `tile==2`，它与本图（20×12）的交集是 x14..19 × y4..11 = *
 
 **契约锚点**（每次生成自检，失败非零退出；数值一律从数据侧读回来对拍，不在这里再抄一遍真相）：
   * `data/maps.lua`：`interior_forge.spawn = (10,3)`、出口 `forge_to_village` 格 `(10,1)`
-    → `village` (27,10)（村那侧的落点由 `gen_village_scene` 管）；
+    → `village` (28,10)（村那侧的落点由 `gen_village_scene` 管；#28 从 (27,10) 挪到那里，
+    旧值在铁匠铺自己的占格里）；
   * `data/places.lua`：`forge_inside (10,4)` 必须可走、从出生点可达、且站在**石板**上
     （它是交互点，地表读起来要像"门口铺出来的路"）；
   * `data/enemies.lua`：本图**没有任何行**（`grep -c interior_forge = 0`）⇒ 没有 home 锚点

@@ -126,7 +126,9 @@ const MANOR: Scene = Scene {
     file: "scenes/manor.scene",
     ground_texture: "assets/art/tilesets/manor/manor_ground.png",
     // `data/maps.lua` 的 main.spawn，与 `gen_manor_scene.SPAWN` 同源。
-    spawn: (16, 3),
+    // #28 把它从 (16,3) 挪到东邻 (19,3)：旧格上那颗 24×24 脚底球的下半截压进南门门洞
+    // （(16,1)/(16,2)，两侧门柱 x15/x17），横向只剩 4 px ⇒ "按住左右键世界不动"。
+    spawn: (19, 3),
     // 南门那两个洞是 `maps.lua` 山庄→云泽村出口格 (16,1) 所在。
     openings: &[("ManorGate", 16, 1), ("ManorGate", 16, 2)],
     box_props: &["ManorFence", "ManorRack"],
@@ -177,8 +179,9 @@ const VILLAGE: Scene = Scene {
     name: "village",
     file: "scenes/village.scene",
     ground_texture: "assets/art/tilesets/village/village_ground.png",
-    // `data/maps.lua` 的 village.spawn：南门内那一格，也就是村↔山庄的落点。
-    spawn: (19, 2),
+    // `data/maps.lua` 的 village.spawn：南门洞正北第二格，也是山庄→村的落点
+    // （山道→村落在北门内的 (10,19)）。#28 前是 (19,2)（贴着门洞，横向 4 px）。
+    spawn: (19, 4),
     // 南门 (19,1)(19,2) = 村↔山庄出口；山门 (10,20) = 村↔青云山出口。山门那条按
     // **数据侧的出口格**放：128×96 的门楼压 x9..12 三行，只有最底一行实测是洞。
     openings: &[
@@ -245,10 +248,11 @@ const MOUNTAIN: Scene = Scene {
     name: "mountain_path",
     file: "scenes/mountain_path.scene",
     ground_texture: "assets/art/tilesets/mountain_path/mountain_path_ground.png",
-    // `data/maps.lua` 的 mountain_path.spawn：山门洞里那格，也是村→山道的落点。
-    spawn: (19, 2),
-    // 山门那两个洞：(19,1) 是 `mountain_to_village` 的出口格，(19,2) 是它北邻、
-    // 出生点本身。128×96 的门楼压 x18..21 三行，实测只有中间那一列是洞（0.156）。
+    // `data/maps.lua` 的 mountain_path.spawn：山门洞正北第二格，也是村→山道的落点。
+    // #28 前是压在门洞上的 (19,2)。
+    spawn: (19, 4),
+    // 山门那两个洞：(19,1) 是 `mountain_to_village` 的出口格，(19,2) 是它北邻
+    // （#28 前那里就是出生点）。128×96 的门楼压 x18..21 三行，实测只有中间那一列是洞（0.156）。
     openings: &[("MountainGate", 19, 1), ("MountainGate", 19, 2)],
     // 山石 48×32 横占两格：只标锚点等于右半边看得见却穿得过。
     box_props: &["BoulderA", "BoulderB"],
@@ -771,11 +775,13 @@ fn check_scene(
         scene.openings.len(),
         reached.len()
     );
-    // 反面对照：把洞填成实心 ⇒ 出口必须断。**起点不能是洞格本身**：村的南门
-    // (19,1)(19,2) 与 `maps.lua` 的 `village.spawn = (19,2)` 是同一格（人就是从南门口
-    // 走进这张图的），拿出生点起算会让"填洞"当场变成"把出生点砌进墙里"，可达集缩到 0
-    // ——那条既证不了"门是死的"，还会把"门后面那一整片只能穿这扇门走"这类真缺陷混掉。
+    // 反面对照：把洞填成实心 ⇒ 出口必须断。**起点不能是洞格本身**：#28 之前 `maps.lua` 的
+    // `village.spawn = (19,2)` 与南门洞 (19,1)(19,2) 同格（人就是从南门口走进这张图的），
+    // 从那种出生点起算会让"填洞"当场变成"把出生点砌进墙里"，可达集缩到 0——那条既证不了
+    // "门是死的"，还会把"门后面那一整片只能穿这扇门走"这类真缺陷混掉。
     // 所以往洞外挪一格起算，并要求填洞**只让洞格自己**掉出可达集：门是叶子，不是桥。
+    // #28 之后三张图的出生点都不在洞格上（manor (19,3)、village/mountain_path (19,4)），
+    // 这条守卫今天不触发；留着是因为"落点贴门洞"正是要被它抓住的那种改法。
     if scene.openings.is_empty() {
         // **空表那张图不假装通过**：寒泉洞没有 sprite 通道（登记见该档注释），三条判据与
         // 这条填洞对照都没有主体。照原样跑会得到一行"少掉的正好是 0 个洞格"——看着像绿，

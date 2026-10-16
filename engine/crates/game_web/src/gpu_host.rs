@@ -31,8 +31,8 @@
 use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::*;
 
-use rustlua_infra::frame_clock::FrameClock;
-
+use crate::engine_host::EngineHost;
+use crate::host_config::HostConfig;
 use crate::rust_scene::SimRoute;
 
 /// 状态属性每这么多帧改写一次：既是心跳，也让"跑到一半被抓拍"的 dump 仍有可读读数。
@@ -41,6 +41,17 @@ const MAX_FRAME_WORK_SAMPLES: usize = 4096;
 const SIM_UPDATES_PER_SECOND: u32 = 60;
 const SIM_MAX_CATCH_UP_STEPS: u32 = 8;
 const SIM_MAX_FRAME_SECONDS: f64 = 0.25;
+
+/// 浏览器宿主的时钟配置：三个值与上面的 `SIM_*` 常量逐字同值（抽取前的取值），
+/// 只是现在由 [`crate::engine_host::EngineHost`] 持有——微信侧那份由 `engine_host_begin`
+/// 的 options 给。**两边的默认值必须是同一个数**，这条由 `host_config` 的单测守着。
+const fn web_host_config() -> HostConfig {
+    HostConfig::new(
+        SIM_UPDATES_PER_SECOND,
+        SIM_MAX_CATCH_UP_STEPS,
+        SIM_MAX_FRAME_SECONDS,
+    )
+}
 /// 画布尺寸取 2D 设计分辨率的一半做离屏目标不合适：这里直接按画布实际尺寸渲染。
 const FALLBACK_SIZE: u32 = 256;
 
@@ -196,13 +207,17 @@ impl Drop for LifecycleEvents {
 /// GPU 宿主**外壳**：渲染链在 [`crate::engine_core::EngineCore`] 里，这里只剩浏览器项
 /// （rAF 时钟、两层几何、DOM 输入、世界读数探针）。
 struct GpuHost {
-    core: crate::engine_core::EngineCore,
+    /// 统一宿主：**时钟与共享核心都在它里面**（P1 第二片）。
+    ///
+    /// 抽取前这里是 `core: EngineCore` + `simulation_clock: FrameClock` 两个字段：时钟由外壳
+    /// 自持、计划由外壳自算，而微信那份外壳又写了一模一样的一遍。现在"跑几步、步长多少、
+    /// 这一帧画什么"只有 [`crate::engine_host::EngineHost::frame`] 一份。
+    host: EngineHost,
     lifecycle: LifecycleEvents,
     /// 本层画布（GPU 那张）与**游戏画布**（Canvas2D 那张）。后者只用来读窗口尺寸：
     /// `web-runtime.js` 会把游戏画布的后备缓冲跟到窗口（含 DPR），本层必须与它同框。
     canvas: web_sys::HtmlCanvasElement,
     game_canvas: web_sys::HtmlCanvasElement,
-    simulation_clock: FrameClock,
     last_animation_frame_ms: Option<f64>,
     /// 最近一次适配读数（进 `note`，无头驱动据此断言两层同框）。
     fit_note: String,
@@ -284,6 +299,16 @@ fn point_into(state: &std::rc::Rc<std::cell::RefCell<InputShared>>, css_x: f64, 
     let point = crate::fit::css_to_design([left, top, width, height], [css_x, css_y]);
     shared.producer.pointer_moved(point);
     shared.events = shared.events.saturating_add(1);
+}
+
+/// css → 设计坐标（与 `point_into` 同一套换算）。多指的每指通路要先拿到这个点，才能按 id 记下来。
+fn design_point(
+    state: &std::rc::Rc<std::cell::RefCell<InputShared>>,
+    css_x: f64,
+    css_y: f64,
+) -> [f64; 2] {
+    let [left, top, width, height] = state.borrow().map;
+    crate::fit::css_to_design([left, top, width, height], [css_x, css_y])
 }
 
 fn set_status(state: &str) {
@@ -420,35 +445,33 @@ impl GpuHost {
         let truncation = apply_script_truncation();
         // 阶段自报走 `set_status`（`data-rustlua-gpu` 属性 + 控制台行）：文案与抽取前逐字相同，
         // 无头驱动的门断言不需要改。
-        let core = crate::engine_core::EngineCore::build(crate::engine_core::CoreArgs {
-            canvas: &JsValue::from(canvas.clone()),
-            width,
-            height,
-            scene_path,
-            route,
-            route_note: truncation.unwrap_or_default(),
-            device_label: "rustlua-web-gpu-device",
-            report: Box::new(|state| set_status(state)),
-        })
+        let host = EngineHost::build(
+            crate::engine_core::CoreArgs {
+                canvas: &JsValue::from(canvas.clone()),
+                width,
+                height,
+                scene_path,
+                route,
+                route_note: truncation.unwrap_or_default(),
+                device_label: "rustlua-web-gpu-device",
+                report: Box::new(set_status),
+            },
+            // 时钟参数与抽取前逐字同值（`SIM_*` 三个模块常量）；现在时钟由宿主内部持有，
+            // 外壳不再自己算"这一帧该跑几步"。
+            web_host_config(),
+        )
         .await?;
         // 启动耗时是一条独立的控制台行：状态属性会被后续读数覆盖，事后从 dump 里读不到就没了。
         web_sys::console::log_1(&JsValue::from_str(&format!(
             "[gpu] sim_boot_ms={:.1} note={}",
-            core.boot_ms, core.sim_note
+            host.core.boot_ms, host.core.sim_note
         )));
-        let sim_note = core.sim_note.clone();
-        let simulation_clock = FrameClock::new(
-            SIM_UPDATES_PER_SECOND,
-            SIM_MAX_CATCH_UP_STEPS,
-            SIM_MAX_FRAME_SECONDS,
-        )
-        .map_err(|error| format!("FrameClock::new: {error}"))?;
+        let sim_note = host.core.sim_note.clone();
         Ok(Self {
-            core,
+            host,
             lifecycle,
             canvas: canvas.clone(),
             game_canvas: game_canvas.clone(),
-            simulation_clock,
             last_animation_frame_ms: None,
             fit_note: String::new(),
             fit_css: String::new(),
@@ -525,6 +548,15 @@ impl GpuHost {
             Box::new(move |event: web_sys::Event| {
                 if let Some(mouse) = event.dyn_ref::<web_sys::MouseEvent>() {
                     point_into(&state, mouse.client_x() as f64, mouse.client_y() as f64);
+                    // **触摸/笔走每指通路**（只更新那根手指的当前位置，不动它的按下点）。
+                    if let Some(pointer) = event.dyn_ref::<web_sys::PointerEvent>()
+                        && pointer.pointer_type() != "mouse"
+                    {
+                        let id = pointer.pointer_id().max(0) as u64;
+                        let point =
+                            design_point(&state, mouse.client_x() as f64, mouse.client_y() as f64);
+                        state.borrow_mut().producer.pointer_move(id, point);
+                    }
                 }
             }),
         );
@@ -536,6 +568,26 @@ impl GpuHost {
                     let Some(mouse) = event.dyn_ref::<web_sys::MouseEvent>() else {
                         return;
                     };
+                    // **触摸/笔：每指一条记录，且不碰 `mouse_*` 位**（触摸不是鼠标键）。
+                    //
+                    // 分流依据是 `pointerType`，不是"再加一套 touch 监听"：真机上 touchstart 之后
+                    // 浏览器还会合成 mouse 事件，两套监听会把同一根手指记成两根（`pointer_count`
+                    // 凭空 +1，而"两指还是三指"正是这一层要报的东西）。
+                    if let Some(pointer) = event.dyn_ref::<web_sys::PointerEvent>()
+                        && pointer.pointer_type() != "mouse"
+                    {
+                        let id = pointer.pointer_id().max(0) as u64;
+                        let point =
+                            design_point(&state, mouse.client_x() as f64, mouse.client_y() as f64);
+                        let mut shared = state.borrow_mut();
+                        if is_down {
+                            shared.producer.pointer_down(id, point);
+                        } else {
+                            shared.producer.pointer_up(id);
+                        }
+                        shared.events = shared.events.saturating_add(1);
+                        return;
+                    }
                     point_into(&state, mouse.client_x() as f64, mouse.client_y() as f64);
                     let button = match mouse.button() {
                         1 => "middle",
@@ -573,7 +625,7 @@ impl GpuHost {
     ///
     /// 包一层而不是让调用方直接摸 sim：读数属于**观测**，观测不该出现在热路径上。
     fn refresh_world_readout(&mut self) {
-        let Some(sim) = self.core.sim_mut() else {
+        let Some(sim) = self.host.core.sim_mut() else {
             return;
         };
         // 顺序：先动作、再读数。这样同一帧的属性里，"做完之后世界是什么样"是自洽的
@@ -605,13 +657,13 @@ impl GpuHost {
     fn fit_now(&mut self) {
         let (box_w, box_h) = canvas_size(&self.game_canvas);
         let (fit_w, fit_h) = contain_box(box_w, box_h);
-        if (fit_w, fit_h) != (self.core.width(), self.core.height()) {
+        if (fit_w, fit_h) != (self.host.core.width(), self.host.core.height()) {
             // 后备缓冲尺寸变了：画布属性 → surface 重新配置 → 渲染视口。三者必须同一帧改完，
             // 否则会出现"按旧尺寸渲、往新尺寸显"的一帧（Windows 上是闪烁，wasm 上是拉伸）。
             self.canvas.set_width(fit_w);
             self.canvas.set_height(fit_h);
-            self.core.resize(fit_w, fit_h);
-            if let Some(sim) = self.core.sim_mut() {
+            self.host.core.resize(fit_w, fit_h);
+            if let Some(sim) = self.host.core.sim_mut() {
                 // Keep scene extraction in design coordinates; the surface/backbuffer size is
                 // only the raster target. Passing the fitted pixel size here scales Canvas UI twice.
                 sim.set_viewport(crate::DESIGN_WIDTH, crate::DESIGN_HEIGHT);
@@ -663,18 +715,17 @@ impl GpuHost {
             .replace(timestamp_ms)
             .map(|previous| (timestamp_ms - previous).max(0.0) / 1000.0)
             .unwrap_or(1.0 / f64::from(SIM_UPDATES_PER_SECOND));
-        let plan = self.simulation_clock.plan(elapsed_seconds);
         // 先对齐几何（窗口/DPR 变了就在这里改画布 + surface + 视口），再取画布纹理：
         // 反过来就会用旧尺寸的纹理去渲新尺寸的内容。
         self.fit_now();
         // 输入：本帧 = **Rust 侧 DOM 采集**（WP6-04，没有 JS 世界也能操作）**并上** JS 世界送来的
         // `RLFI`（它那里有屏幕虚拟摇杆的轴与补丁层的虚拟键）。两路都是合法来源，丢掉任何一边
         // 都会让某一种操作方式失灵，且症状（"摇杆没反应"）离原因很远。
-        let js_cursor_wins = self
-            .input_shared
-            .as_ref()
-            .map(|shared| !shared.borrow().producer.pointer_fresh())
-            .unwrap_or(true);
+        // 顺序是**行为**的一部分（本片实测踩到）：`js_cursor_wins` 必须在**本帧剧本跑完、`take_frame`
+        // 之前**读 —— `take_frame` 会清掉 `pointer_fresh`，读晚了就永远得到"本侧本帧没动过"，
+        // 于是 JS 侧（原子模式下整份是全零）赢走光标**与按下点**，本侧的指针输入被静默抹掉
+        // （症状：`cursor` 恒为 0,0，而所有读数都"正常"）。所以这里只声明，取值放到下面的借用里。
+        let mut js_cursor_wins = true;
         if let Some(shared) = self.input_shared.as_ref() {
             let mut shared = shared.borrow_mut();
             // 确定性输入剧本先走：它按**帧号**发边沿，与 DOM 那条路并进同一份快照。
@@ -683,21 +734,31 @@ impl GpuHost {
             if !self.input_script.is_empty() {
                 self.input_script.tick(&mut shared.producer);
             }
+            // 见上面 `js_cursor_wins` 的说明：**此刻**才是"本侧本帧动过没有"的正确答案。
+            js_cursor_wins = !shared.producer.pointer_fresh();
             shared.producer.take_frame(&mut self.frame_input);
             self.dom_events = shared.events;
         }
         let wire = crate::lua_bridge::latest_frame_input();
         crate::frame_input::merge_into(&mut self.frame_input, &wire, js_cursor_wins);
         let input = self.frame_input;
-        let out = self.core.frame(plan.steps, plan.delta_seconds, &input)?;
+        // 计划与渲染都交给统一宿主（`EngineHost::frame`）：外壳不再自己持钟、不再自己算步数。
+        // 失败原因原样带出（浏览器这条路的读数与抽取前逐字相同，不加分段前缀）。
+        let frame = self
+            .host
+            .frame(elapsed_seconds, &input)
+            .map_err(|error| error.detail)?;
+        // 浏览器外壳只读**渲染产出**：这一帧的计划（步数/累加器/夹取）由宿主内部消化——
+        // 读数拼装那一段直接用 `clock()` 取累计值，不需要经过 `plan`。
+        let out = frame.out;
         // 推进失败**不拆模拟**（核心里只记原因、下次还试）：外壳把"第一次失败"发一次事件，
         // 方便无头驱动直接看到首因，不必等 30 帧后的心跳。
-        if let Some(reason) = self.core.pending_step_failure.take() {
+        if let Some(reason) = self.host.core.pending_step_failure.take() {
             set_status(&format!("sim_step_failed:{reason}"));
         }
         if out.builtin {
             // 降级/起不来：原因就在核心的 `sim_note`（`rust-failed:{原因}`），照原样带出去。
-            self.sim_note = self.core.sim_note.clone();
+            self.sim_note = self.host.core.sim_note.clone();
         } else {
             self.sim_note = format!(
                 "rust {} scene_delta={:+},{:+},{:+}{}{} {}",
@@ -713,10 +774,10 @@ impl GpuHost {
         // 稳态三分（**首帧不计入**：那一帧含一次性建图集/建管线）。三者之和与 `avg_frame_ms`
         // 的差就是宿主自身开销（取画布纹理、每帧让出宏任务等）。
         let per = |sum: f64| {
-            if self.core.timed_frames == 0 {
+            if self.host.core.timed_frames == 0 {
                 0.0
             } else {
-                sum / self.core.timed_frames as f64
+                sum / self.host.core.timed_frames as f64
             }
         };
         // 输入读数与几何读数同级：`dom_events` 证明事件真的到了 Rust 侧，
@@ -732,22 +793,77 @@ impl GpuHost {
              avg_step_ms={:.2} avg_mesh_ms={:.2} avg_render_ms={:.2} timed_frames={} \
              dom_events={} input_dropped={}{} {}",
             self.sim_note,
-            self.core.texture_stats.0,
-            self.core.texture_stats.0 + self.core.texture_stats.1,
-            self.core.texture_note,
-            self.core.boot_ms,
-            self.core.first_frame_ms,
-            self.core.boot_ms + self.core.first_frame_ms,
-            per(self.core.sum_step_ms),
-            per(self.core.sum_mesh_ms),
-            per(self.core.sum_render_ms),
-            self.core.timed_frames,
+            self.host.core.texture_stats.0,
+            self.host.core.texture_stats.0 + self.host.core.texture_stats.1,
+            self.host.core.texture_note,
+            self.host.core.boot_ms,
+            self.host.core.first_frame_ms,
+            self.host.core.boot_ms + self.host.core.first_frame_ms,
+            per(self.host.core.sum_step_ms),
+            per(self.host.core.sum_mesh_ms),
+            per(self.host.core.sum_render_ms),
+            self.host.core.timed_frames,
             self.dom_events,
             input_dropped,
             self.input_script_note,
             self.fit_note,
         );
+        // P1 第三片（§9-A 第一刀）：把**宿主本帧真正消费到的那份输入**与场景读数写成
+        // **结构化**属性 `data-rustlua-engine-host`，供门断言。
+        //
+        // 为什么必须结构化：删掉旧 JS 世界之后"输入还有没有进到宿主"是这条路上风险最高的一条
+        // （旧运行时不跑 ⇒ 不崩溃、不报错、`presented` 照涨，只是人钉死），而门要断言的是
+        // "某个数随事件变化"——从日志串里正则抠数字是最脆的做法。
+        //
+        // 为什么这件事在**浏览器**上先做：这条路**不依赖旧世界**——Rust 侧 DOM 输入生产者
+        // （`install_input_listeners`）与确定性剧本（`frame_input::ScriptDriver`）都在宿主自己
+        // 手里，JS 世界送来的 `RLFI` 只是一条可选旁路。于是"输入进了宿主"在这里有真现场可断言，
+        // 而在微信那条路上它被"离线假宿主不给 GL ⇒ 宿主到不了 running"压住（见 M73-01 §9）。
+        //
+        // 每帧写一次而不是每 30 帧：它是**本帧**的读数，慢一拍就会把"这一帧没输入"读成"有"。
+        // 累计计数与"本帧消费到的是什么"都由宿主自己落账（`EngineHost::frame`），这里只把那份
+        // 读数**发布**出去——两个外壳发布的是同一个实现（见 `EngineHost::scene_state_json`）。
+        self.publish_engine_state();
         Ok((out.draw_calls, out.triangles, note))
+    }
+
+    /// 写 `data-rustlua-engine-host`（见 [`Self::frame`] 里调用点的说明）。
+    ///
+    /// 内容来自 [`crate::engine_host::EngineHost::scene_state_json`]——与微信那条路的
+    /// `engine_host_state().scene` **同一个实现**（本片之前是两份手拼的 JSON，且同一个 `textures`
+    /// 已经漂成"数组 vs 字符串"两种形状）。
+    fn publish_engine_state(&self) {
+        // `world` 走浏览器自己的只读观测通道（`?rustlua-world-expr=`）；这条外壳没有
+        // "最近一帧场景自报"的概念 ⇒ 传空串（留空而不是省字段，见 `scene_state_json` 的说明）。
+        let state = serde_json::json!({
+            // 谁答的：`engine_host_state()` 是**同一个导出**，两个外壳都可能答它。
+            "shell": "browser-gpu-host",
+            "mode": "scene",
+            "size": format!("{}x{}", self.host.core.width(), self.host.core.height()),
+            "fit": self.fit_note,
+            "scene": self.host.scene_state_json(&self.world_expr_note, ""),
+        })
+        .to_string();
+        // **同一份字符串喂两个读者**：`engine_host_state()`（导出，给 JS/真机查）与 DOM 属性
+        // （给无头驱动读）。必须先发布再取 body——没有 DOM 的形态下导出也该答得出来。
+        // 共享同一份是刻意的：各拼一次就是"门断言的"与"导出答的"再次分叉。
+        crate::host_runtime::publish_adopted_state(state.clone());
+        let Some(body) = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.body())
+        else {
+            // 没有 document/body ⇒ 属性这条路不存在，但导出那份已经发布过了。
+            return;
+        };
+        let _ = body.set_attribute("data-rustlua-engine-host", &state);
+        // **启动状态的归属交接**（B5）：`ok` 以前只有 JS 世界写（`web-runtime.js` 的 `markBoot`），
+        // JS 世界删掉之后这个属性就没有写者了 —— 而诊断与回归门读的正是它。宿主在这里补上，
+        // 但**只补不盖**（判据见 `boot_state_to_publish`）：`failed` 绝不能被"我这边一切正常"盖掉。
+        if let Some(boot) = crate::boot_state::boot_state_to_publish(
+            body.get_attribute("data-rustlua-boot").as_deref(),
+        ) {
+            let _ = body.set_attribute("data-rustlua-boot", boot);
+        }
     }
 }
 
@@ -839,8 +955,8 @@ async fn run_inner(canvas_id: &str, scene_path: &str) -> Result<String, String> 
     // 起设备是**必须等**的（它决定这条通道能不能用，读数要当场拿到）；帧循环则不该等：
     // 它跑几百帧、每帧让出一个宏任务，同步跑完会把 JS 那条启动链一起摁住几百毫秒。
     // 所以这里把它派到事件循环上，`start()` 立刻继续跑游戏自己的启动。
-    let width = host.core.width();
-    let height = host.core.height();
+    let width = host.host.core.width();
+    let height = host.host.core.height();
     let opening = format!(
         "frames=0 draw_calls=0 triangles=0 {} canvas=#{GPU_CANVAS_ID} {}x{}",
         host.sim_note, width, height
@@ -873,13 +989,13 @@ async fn run_inner(canvas_id: &str, scene_path: &str) -> Result<String, String> 
                     shared.borrow_mut().producer.release_all();
                 }
                 host.last_animation_frame_ms = None;
-                host.simulation_clock.reset_accumulator();
+                host.host.reset_accumulator();
                 continue;
             }
             let current_resume_generation = host.lifecycle.resume_generation();
             if current_resume_generation != resume_generation {
                 host.last_animation_frame_ms = None;
-                host.simulation_clock.reset_accumulator();
+                host.host.reset_accumulator();
                 resume_generation = current_resume_generation;
             }
             index = index.saturating_add(1);
@@ -911,10 +1027,10 @@ async fn run_inner(canvas_id: &str, scene_path: &str) -> Result<String, String> 
                 // 读数取**本帧**的：最后一步写下的就是最后一帧的数字，因此不需要额外留一份"上一帧"。
                 set_status(&format!(
                     "presented frames={index} sim_steps={} sim_dropped={} sim_clamped={} sim_acc_ms={:.3} draw_calls={} triangles={} avg_frame_ms={avg_frame_ms:.2} work_p95_ms={work_p95_ms:.2} work_p99_ms={work_p99_ms:.2} work_samples={} wasm_mem_start_bytes={wasm_memory_start_bytes} wasm_mem_peak_bytes={wasm_memory_peak_bytes} fps={:.1} {} canvas=#{GPU_CANVAS_ID} {width}x{height}",
-                    host.simulation_clock.total_steps(),
-                    host.simulation_clock.total_dropped_steps(),
-                    host.simulation_clock.clamped_frames(),
-                    host.simulation_clock.accumulator_seconds() * 1000.0,
+                    host.host.clock().total_steps(),
+                    host.host.clock().total_dropped_steps(),
+                    host.host.clock().clamped_frames(),
+                    host.host.clock().accumulator_seconds() * 1000.0,
                     frame.0,
                     frame.1,
                     frame_work_samples_ms.len(),

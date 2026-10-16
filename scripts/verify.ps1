@@ -353,20 +353,19 @@ try {
     Write-Step "Lua API doc stubs"
     if (Get-Command node -ErrorAction SilentlyContinue) {
         Invoke-Checked node @((Join-Path $projectRoot "scripts/gen-lua-api-docs.js"), "--check")
-        # docs/51：Web 是引擎的**第二份实现**（plugins/webgl/web-runtime.js 里那批 Lua 宿主补丁）。
-        # 这一步跑 L2 的两份账：补丁层重定义引擎函数的「覆盖点清单」，以及把整张引擎表换掉的
-        # 「整表替换账」（23 处 / 275 个函数里 77 个因此在 web 上是 nil）。判据只读源码与仓库里
-        # 提交的桌面基线 JSON，不需要 wasm 产物，所以放在与文档桩同一层：每次质量门都跑。
-        # 它抓的是"名字两边都在、行为分叉"这一类，与下面的浏览器/产物层门（需要真跑起来）不重叠。
-        Write-Step "Web API override inventory"
-        Invoke-Checked node @((Join-Path $projectRoot "scripts/check-web-api-overrides.mjs"))
-        # M72-02 的跨宿主哈希契约：变体序号与 autotile 掩码是"同一串位运算的四份实现"（Rust、
-        # web 的 JS、web 内嵌的 Lua 垫片、`tools/preview_scene.py`）。抄错一个字符不会崩，只会让
-        # web 与原生各画各的地表，而 M72-12 的三宿主目验会把它当美术问题查半天。Rust 那两份由
-        # `cargo test -p rustlua-ecs variant` 与两条 M72-02 门钉住（同一组金标数字）；这一步钉 JS
-        # 的 56 格解算，并把 Lua 垫片里的 6 个常数与 JS 侧逐条对上（两段同在一份文件里，静态即可判定）。
-        Write-Step "Tile atlas hash parity (web JS mirror vs Rust golden)"
-        Invoke-Checked node @((Join-Path $projectRoot "scripts/check-tile-hash-parity.mjs"))
+        # **L2「覆盖清单」门已退休**（B8）：它量的是"`web-runtime.js` 里那批 Lua 宿主补丁
+        # 盖掉了引擎多少实现"（56 个函数式覆盖点 / 23 处整表替换 / 275 个函数里 77 个因此在 web
+        # 上是 nil）。**补丁层随旧世界一起消失**，于是"谁盖了谁"这个问题整体不存在了 ——
+        # 名字面与行为面的分叉源（`clock.now()` 少三个字段那类）也一并消失。
+        # 门脚本 `scripts/check-web-api-overrides.mjs` 已删除；它依赖的那本账
+        # `plugins/webgl/lua_api_overrides.json（已随 B8 删除；逐表分类见 tasks/plan/M73-02）` **降级为历史记录**（第二个消费者
+        # `scripts/lua-api-overrides-report.mjs` 仍能把它导出成工单，读的是历史，不读产物）。
+        # **M72-02 的跨宿主哈希契约已退休**（B8）：它从 `web-runtime.js` 里抽**两份抄本**
+        # （JS 解算 + 内嵌 Lua 垫片）互相对拍并与金标比。那两份抄本随旧世界一起消失，而它守的
+        # 那份关切（"地表别换个样子"）**已经在 Rust 侧**：同一组金标数字由
+        # `engine/crates/rustlua-ecs/src/tilemap.rs`（crate 内测试）与
+        # `engine/crates/game/examples/jhyt_m72_tile_variant_determinism.rs` 钉着（已核对到位）。
+        # 门脚本 `scripts/check-tile-hash-parity.mjs` 一并删除。
         # M73-00：两条**不需要 wasm 产物**的运行时回归门。它们是"改坏了看不出来、而且要
         # 等一次完整微信打包才能发现"的那类规则的唯一快速判据，因此和上面几条同层：每次质量门都跑。
         #   ① 资源路由：主体 mainpack/pack、远端 URL、远端缓存的发布标识与旧版清理。
@@ -381,18 +380,17 @@ try {
         #      "逻辑速度与刷新率解耦"全靠它，写错不会崩、只会慢半拍或快半拍。
         Write-Step "Web fixed timestep (unit)"
         Invoke-Checked node @((Join-Path $projectRoot "scripts/web-fixed-step-test.js"))
-        #   ④ 64 位变体哈希：把出厂的 BigInt 实现换成"两个 32 位字"的手写算术（ES2019 上传门要求），
-        #      正确性靠**旧实现留作 oracle** 逐位对拍——写错只会让地表换个样子，不会崩。
-        #      顺带守住"四个变体都出现、第一行不是周期点阵"这两条它存在的理由。
-        Write-Step "Web u64 tile variant hash (oracle parity)"
-        Invoke-Checked node @((Join-Path $projectRoot "scripts/web-u64-hash-test.js"))
+        #   **④ 已退休**（B8）：原"64 位变体哈希 oracle 对拍"的被测物是 `web-runtime.js` 里那版
+        #   "两个 32 位字"的 JS 实现，它随旧世界消失；oracle（旧 BigInt 实现）本来就在测试内联。
+        #   同一份算法的**生产侧是 Rust**，金标由上面那两条 Rust 门钉着；测试 `scripts/web-u64-hash-test.js`
+        #   与被测物一起删除。
         #   ⑤ 输入线格式键表：批量 ABI 把键名从"每帧上线"变成"位图 + 固定键表"，于是多了一个
         #      静默失效面——游戏绑定了某个键而键表里没有它，那个键就永远收不到。静态对三份来源
         #      （Rust 键表 / 预置层 bindings / 宿主 DOM 键名归一），构建前即可判红。
         Write-Step "Input frame ABI key table (static parity)"
         Invoke-Checked node @((Join-Path $projectRoot "scripts/check-input-abi-parity.mjs"))
     } else {
-        Write-Host "  [SKIP] 未找到 node：Lua API 文档桩门、Web API 覆盖清单门、图集哈希 parity 门、微信资源路由门、wasm 兜底通道门、固定时间步门、u64 哈希对拍门与输入键表门未运行（不是通过）" -ForegroundColor Yellow
+        Write-Host "  [SKIP] 未找到 node：Lua API 文档桩门、微信资源路由门、wasm 兜底通道门、固定时间步门与输入键表门未运行（不是通过）" -ForegroundColor Yellow
     }
 
     # M72-05 装饰散布的**确定性**门。事实源在 Python（`tools/decor_kit.py` 的 `scatter()`），所以这条
@@ -843,19 +841,34 @@ try {
                 if ($bundlePayload.boot -notin @("ok", "booted", "running")) {
                     throw "webgl bundle boot state is '$($bundlePayload.boot)' (expected ok/booted/running): $($bundleSummary.Name)"
                 }
-                if ($null -eq $bundlePayload.drawnSamples -or $bundlePayload.drawnSamples -le 0) {
-                    throw "webgl bundle reports no painted canvas samples (blank frame): drawn=$($bundlePayload.drawnSamples)"
-                }
-                # 场景切换防回归门：verify-webgl-bundle 默认在 URL 里带 rustlua-scene-verify=1，
-                # 断言首帧把当前场景重新走一遍 applySceneSwitch 全流程（fetch → parse →
-                # 重绑 Lua → 重跑 on_create）。这里独立于子脚本 exit code 再兜一层，防止
-                # 未来 URL/断言解耦时被无意跳过；旧产物若没升级 web-runtime.js 会是 absent。
-                if ($bundlePayload.PSObject.Properties.Name -contains 'sceneVerify') {
-                    if ($bundlePayload.sceneVerify -ne 'done') {
-                        throw "webgl scene switch gate FAILED: scene_verify=$($bundlePayload.sceneVerify) detail=$($bundlePayload.sceneVerifyDetail)"
+                # 非黑屏判据有**两个写者**，按页面自报的形态选：
+                #   · 旧 JS 世界出帧 ⇒ `drawnSamples`（它自己的像素采样）＋ `sceneVerify`；
+                #   · 引擎宿主出帧（`jsHostSkipped`）⇒ `gpuState` 的 `presented…`（present 后的引擎侧
+                #     像素回读），而旧世界那两个读数**必然缺席**——这是设计，不是回归。
+                # **两者都缺席才是黑屏**：所以这里不是"跳过断言"，而是"换一个有写者的断言"。
+                # （R2 纪律：不能把"缺席"当"正常"。）
+                $jsHostSkipped = ($bundlePayload.PSObject.Properties.Name -contains 'jsHostSkipped') -and [bool]$bundlePayload.jsHostSkipped
+                $gpuStateNow = if ($bundlePayload.PSObject.Properties.Name -contains 'gpuState') { [string]$bundlePayload.gpuState } else { '' }
+                if ($jsHostSkipped) {
+                    if ($gpuStateNow -notlike 'presented*') {
+                        throw "webgl bundle: 旧 JS 世界未参与，且引擎宿主没有给出 presented 证据（gpu=$gpuStateNow）⇒ 有绘制者但画面全空：$($bundleSummary.Name)"
                     }
+                    Write-Host "webgl_bundle_engine_host_ok boot=$($bundlePayload.boot) wasm_bytes=$($bundlePayload.wasmBytes) gpu=$gpuStateNow ui=$($bundlePayload.uiElements) missing_host_api=$($bundlePayload.missingCount)（旧世界未参与，非黑屏判据改用引擎侧像素证据）" -ForegroundColor Green
+                } else {
+                    if ($null -eq $bundlePayload.drawnSamples -or $bundlePayload.drawnSamples -le 0) {
+                        throw "webgl bundle reports no painted canvas samples (blank frame): drawn=$($bundlePayload.drawnSamples)"
+                    }
+                    # 场景切换防回归门：verify-webgl-bundle 默认在 URL 里带 rustlua-scene-verify=1，
+                    # 断言首帧把当前场景重新走一遍 applySceneSwitch 全流程（fetch → parse →
+                    # 重绑 Lua → 重跑 on_create）。这里独立于子脚本 exit code 再兜一层，防止
+                    # 未来 URL/断言解耦时被无意跳过；旧产物若没升级 web-runtime.js 会是 absent。
+                    if ($bundlePayload.PSObject.Properties.Name -contains 'sceneVerify') {
+                        if ($bundlePayload.sceneVerify -ne 'done') {
+                            throw "webgl scene switch gate FAILED: scene_verify=$($bundlePayload.sceneVerify) detail=$($bundlePayload.sceneVerifyDetail)"
+                        }
+                    }
+                    Write-Host "webgl_bundle_ok boot=$($bundlePayload.boot) wasm_bytes=$($bundlePayload.wasmBytes) drawn=$($bundlePayload.drawnSamples) ui=$($bundlePayload.uiElements) missing_host_api=$($bundlePayload.missingCount) scene_verify=$($bundlePayload.sceneVerify)" -ForegroundColor Green
                 }
-                Write-Host "webgl_bundle_ok boot=$($bundlePayload.boot) wasm_bytes=$($bundlePayload.wasmBytes) drawn=$($bundlePayload.drawnSamples) ui=$($bundlePayload.uiElements) missing_host_api=$($bundlePayload.missingCount) scene_verify=$($bundlePayload.sceneVerify)" -ForegroundColor Green
             }
 
             # ②′ wgpu 的 WebGL2 后端能力门（WP2 的 GPU 后端技术验证，已进门）：

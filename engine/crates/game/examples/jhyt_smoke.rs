@@ -150,10 +150,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     set_mode(&mut runtime, "Playing")?;
 
     banner("M16-02 交互框架：E 定位农田并在其面前劳作");
-    // 玩家出生在 (528,112) → 格 (16,3)。朝上（state.facing = "up"）面前即
-    // (16,4)，落在药田矩形 x14..23/y4..13 内 —— 与文档"种灵芝朝上"一致。
+    // 玩家出生在 (624,112) → 格 (19,3)（#28 把出生点从南门门洞正上方的 (16,3) 挪开，
+    // 那格脚底球只剩 4 px 横向余量）。朝上（state.facing = "up"）面前即
+    // (19,4)，落在药田矩形 x14..23/y4..13 内 —— 与文档"种灵芝朝上"一致。
     set_facing(&mut runtime, "up")?;
-    let (_, _, ax, ay) = facing_cell_above(528.0, 112.0)?;
+    let (_, _, ax, ay) = facing_cell_above(624.0, 112.0)?;
     assert!(in_farm(ax, ay), "起步上方必须是农田格 (got {ax},{ay})");
     // 耕作前需装备锄头（inventory.setup 已装 hoe）。
     press(&mut runtime, KeyCode::KeyE)?; // 翻土

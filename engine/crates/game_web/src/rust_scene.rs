@@ -68,6 +68,15 @@ impl SimRoute {
         }
     }
 
+    /// 这条来源是否由**引擎自己**解析启动场景（`RuntimeScene::new`）。
+    ///
+    /// 它决定 `engine_host_begin` 能不能在**不给 `scene`** 的情况下进 scene 档：
+    /// 另外三条路的场景字节由宿主提供，缺 `scene` 就无从谈起；这一条路的 `scene_path`
+    /// 只进读数（见 [`RustScene::boot`]），所以"只给 `sim`"是合法请求。
+    pub fn loads_engine_startup(self) -> bool {
+        matches!(self, Self::EngineStartup)
+    }
+
     /// 读数里报出的短名（阶段自报与状态属性都用它，两处不必各存一张映射表）。
     pub fn label(self) -> &'static str {
         match self {
@@ -163,7 +172,14 @@ impl RustScene {
                 let scene = RuntimeScene::new(Some(root)).map_err(|error| {
                     format!("RuntimeScene::new({VIRTUAL_PROJECT_ROOT}): {error:#}")
                 })?;
-                (scene, format!("script-load {scene_path}"))
+                // 这一条路的场景由引擎自己解析（`RuntimeScene::new`），`scene_path` 只进读数：
+                // 缺省时（`engine_host_begin` 只给了 `sim`）报一句人读的出处，别留一个空位。
+                let origin = if scene_path.is_empty() {
+                    "(engine startup scene)"
+                } else {
+                    scene_path
+                };
+                (scene, format!("script-load {origin}"))
             }
             SimRoute::SceneOnly | SimRoute::SceneWithScript | SimRoute::SceneScriptNoRoot => {
                 let raw = crate::lua_bridge::resource_raw(scene_path).ok_or_else(|| {

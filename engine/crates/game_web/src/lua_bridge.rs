@@ -84,6 +84,15 @@ thread_local! {
 }
 
 /// 宿主最近一帧的线格式输入（没收到过任何一帧时是全零帧）。
+/// 由**宿主自己**的输入生产者落一帧（B4：微信侧不再只能靠旧 JS 运行时注入）。
+///
+/// 与 [`lua_input_frame`] 的关系：那条是"旧运行时把线格式批量发过来、这里解码"，这条是
+/// "宿主已经拿着一个 `FrameInput`"。两者的**落点是同一个** `LATEST_FRAME`——这正是"世界只有
+/// 一个输入所有者"的实现方式：谁生产都行，读的只有这一处。
+pub fn set_latest_frame(frame: rustlua_frame_abi::FrameInput) {
+    LATEST_FRAME.with(|slot| *slot.borrow_mut() = frame);
+}
+
 pub fn latest_frame_input() -> rustlua_frame_abi::FrameInput {
     LATEST_FRAME.with(|slot| *slot.borrow())
 }
@@ -187,6 +196,19 @@ pub fn lua_fixed_reset_clock() {
 /// 返回 `update()` 的字符串化结果（`None` = 它没返回字符串），与 `lua_call_global` 同协议。
 #[wasm_bindgen]
 pub fn lua_fixed_step(delta_seconds: f64) -> Result<Option<String>, JsValue> {
+    // **同时写引擎状态，而不只写 Lua 全局**：`time.delta()` 读的是引擎的 `delta_seconds`
+    // （`globals.rs` 注册的那张 `time` 表），而此前这里只写了 Lua 全局 `__rustlua_dt`
+    // ⇒ 引擎的 `time.delta()` 在这条路上是 stale 的，补丁层不得不用一个
+    // `time = { delta = function() return __rustlua_dt end }` 的影子把它盖住。
+    // 让两侧同源之后，那个影子才能删（删影子正是"补 web 时间基"的收尾动作）。
+    //
+    // f32 转换是**约定**而不是随手转：`FramePlan::delta_seconds` 也是 f32，两条路的口径必须一致
+    // （`host_config.rs` 里有专门一段在讲这个取舍，别改成 f64::from 之类的"更精确"写法）。
+    LUA_RUNTIME.with(|slot| {
+        if let Some(runtime) = slot.borrow_mut().as_mut() {
+            runtime.set_delta(delta_seconds as f32);
+        }
+    });
     lua_call_global_void("__rustlua_apply_virtual_input")?;
     lua_set_number("__rustlua_dt", delta_seconds)?;
     lua_call_global("update", "")
@@ -663,6 +685,9 @@ fn apply_input_frame(
     let root: mlua::Table = lua.globals().get("__rustlua_input")?;
     root.set("axis_x", frame.axis[0])?;
     root.set("axis_y", frame.axis[1])?;
+    // 多指：这里**只报数量**。逐指的按下点走**引擎的 Lua API**（`input.press_position(i)`），
+    // 不走这个面向 JS 世界的全局——那张表在 web 上会被补丁层整表替换，而补丁层正在被删除。
+    root.set("pointer_count", i64::from(frame.pointer_count))?;
     for (key, value) in [
         ("cursor", frame.cursor),
         ("press_cursor", frame.press_cursor),

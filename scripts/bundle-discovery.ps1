@@ -54,7 +54,6 @@ function Get-BundleMarkerFiles {
             # 「index.html + wasm 都在」会让一个跑不起来的包被选中。
             return @(
                 "index.html",
-                "web-runtime.js",
                 "pkg\game_web.js",
                 "pkg\game_web_bg.wasm",
                 "pack\manifest.txt",
@@ -103,7 +102,6 @@ function Get-BundleMarkerFiles {
                 "game.json",
                 "project.config.json",
                 "wechat-adapter.js",
-                "web-runtime.js",
                 "pkg\game_web.js",
                 $wasmCore,
                 ($skeleton + "\" + (& $resolve "manifest.txt")),

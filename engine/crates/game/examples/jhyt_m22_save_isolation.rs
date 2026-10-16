@@ -23,8 +23,8 @@ use std::{
 
 /// 新档初始灵芝菌种数（`scripts/player/inventory.lua` 的 `inventory.setup()`）。
 const START_SEED_LINGZHI: f64 = 8.0;
-/// 山庄药田第一格（与 jhyt_m17 相同：出生朝上，面前 (16,4) 是 DIRT）。
-const PLOT_CELL: &str = "16,4";
+/// 山庄药田第一格（与 jhyt_m17 相同：出生朝上，面前 (19,4) 是 DIRT；#28 起出生点是 (19,3)）。
+const PLOT_CELL: &str = "19,4";
 const PLOT_X: i64 = 16;
 const PLOT_Y: i64 = 4;
 

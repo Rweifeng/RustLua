@@ -199,6 +199,8 @@
         "nav_settings",
         "pad_axis",
         "pad_button",
+        "pointer_count",
+        "press_position",
         "pressed",
         "rebind",
         "released",

@@ -49,6 +49,8 @@ pub struct GameApp {
     cull_enabled: bool,
     /// Same mesh/material instancing (M8-08); off via `--no-instance`.
     instancing_enabled: bool,
+    splash: Option<crate::splash::Splash>,
+    deferred_verify: bool,
 }
 
 impl GameApp {
@@ -60,6 +62,7 @@ impl GameApp {
         cull_enabled: bool,
         instancing_enabled: bool,
         packaged: bool,
+        deferred_verify: bool,
     ) -> Self {
         Self {
             window: None,
@@ -79,7 +82,62 @@ impl GameApp {
             packaged,
             cull_enabled,
             instancing_enabled,
+            splash: None,
+            deferred_verify,
         }
+    }
+
+    fn initialize_runtime(&mut self, event_loop: &ActiveEventLoop) {
+        let root = self.project_root.as_deref();
+        if self.deferred_verify {
+            if let Some(root) = root
+                && let Err(error) = crate::cli::verify_startup(root, self.packaged)
+            {
+                self.fail(event_loop, error);
+                return;
+            }
+            self.deferred_verify = false;
+        }
+        self.runtime_scene = match RuntimeScene::new_with_layout(root, self.packaged) {
+            Ok(mut scene) => {
+                scene.set_script_error_policy(ScriptErrorPolicy::Contain);
+                Some(scene)
+            }
+            Err(error) => {
+                let diagnostic = EngineError::new(
+                    LogModule::Script,
+                    "initialize runtime scene",
+                    "runtime scene or project script failed to start",
+                )
+                .with_source(&error)
+                .with_suggestion("check the project scene and scripts/main.lua");
+                tracing::error!(target: "game", error = %diagnostic, "runtime initialization failed");
+                self.fail(
+                    event_loop,
+                    format!("runtime scene initialization failed: {error}"),
+                );
+                return;
+            }
+        };
+        if let (Some(root), Some(scene)) = (root, self.runtime_scene.as_mut()) {
+            let settings_root =
+                rustlua_infra::user_dir::data_roots(root, self.packaged).settings_dir;
+            let (deadzone, diagnostic) =
+                rustlua_gameplay::settings::load_deadzone_section(&settings_root);
+            if let Some(diagnostic) = diagnostic {
+                tracing::warn!(target: "input", "[gamepad] {diagnostic}");
+            }
+            scene.set_gamepad_deadzone(deadzone);
+            tracing::info!(target: "input", stick = deadzone.stick, trigger = deadzone.trigger, "[gamepad] deadzone applied");
+        }
+        self.input.clear_all();
+        self.last_frame = Instant::now();
+        self.transition(AppLifecycle::Running);
+        tracing::info!(target: "game", "[perf] overlay {} (F3 toggles the fps/latency overlay)", if self.overlay_enabled { "enabled" } else { "disabled" });
+        self.window
+            .as_ref()
+            .expect("window exists")
+            .request_redraw();
     }
 
     fn transition(&mut self, next: AppLifecycle) {
@@ -133,6 +191,9 @@ impl GameApp {
             );
         } else {
             tracing::info!(target: "game", "[window] renderable size: {}x{}", size.width, size.height);
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
         }
     }
 
@@ -179,6 +240,39 @@ impl GameApp {
     }
 
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
+        if self.lifecycle == AppLifecycle::Initializing && self.splash.is_some() {
+            let size = self.window.as_ref().expect("window exists").inner_size();
+            if self.occluded || !has_renderable_size(size.width, size.height) {
+                return;
+            }
+            if self
+                .splash
+                .as_ref()
+                .is_some_and(|splash| splash.stage == crate::splash::Stage::ReadyToLoad)
+            {
+                // A distinct Redraw callback after Presented: return to winit first,
+                // and leave the last presented image untouched during synchronous loading.
+                self.initialize_runtime(event_loop);
+                self.splash = None;
+                return;
+            }
+            let renderer = self.renderer.as_mut().expect("renderer exists");
+            let splash = self.splash.as_mut().expect("splash exists");
+            let mesh = splash.mesh(renderer.config.width, renderer.config.height);
+            let outcome = renderer.render(&mesh, None);
+            if matches!(outcome, RenderOutcome::Fatal) {
+                self.fail(
+                    event_loop,
+                    "renderer reported a fatal outcome during splash",
+                );
+            } else {
+                splash.stage.observe(outcome);
+                if splash.stage == crate::splash::Stage::ReadyToLoad {
+                    tracing::info!(target: "game", "[splash] presented before project initialization");
+                }
+            }
+            return;
+        }
         if self.lifecycle != AppLifecycle::Running {
             return;
         }
@@ -306,8 +400,8 @@ impl GameApp {
     }
 }
 
-/// 标题栏图标：和编辑器用同一张 `engine/assets/engine_icon.png`
-///（出图：`py engine/tools/gen_engine_icon.py`，规格表只有一份）。
+/// 标题栏图标：优先使用工程 `icon_image`，缺省或读取失败时使用
+/// 和编辑器相同的内置 `engine/assets/engine_icon.png`。
 ///
 /// 为什么不直接把 256² 喂给 winit：winit 在 Windows 上只发一次
 /// `WM_SETICON(ICON_SMALL)`，且按 HICON 的**原始尺寸**交给 DWM 塞进标题栏那个
@@ -317,15 +411,13 @@ impl GameApp {
 ///
 /// 任务栏大图标与 exe 文件图标不走这条路径——它们读 build.rs 嵌进 PE 的那份多尺寸
 /// `engine_icon.ico`，Windows 会自己挑合身的档位。
-fn window_icon(scale_factor: f64) -> Icon {
+fn window_icon(root: Option<&std::path::Path>, scale_factor: f64) -> Icon {
     let side = (16.0 * scale_factor).round().clamp(16.0, 256.0) as u32;
-    let master = image::load_from_memory(include_bytes!("../../../assets/engine_icon.png"))
-        .expect("内置图标 engine/assets/engine_icon.png 解析失败，跑 gen_engine_icon.py 重出")
-        .to_rgba8();
+    let master = crate::splash::icon_image(root);
     let scaled =
         image::imageops::resize(&master, side, side, image::imageops::FilterType::Lanczos3);
     // from_rgba 只校验长度 == 边长²×4，这里必然成立；真失败说明图源被改坏。
-    Icon::from_rgba(scaled.into_raw(), side, side).expect("winit 拒绝了内置图标")
+    Icon::from_rgba(scaled.into_raw(), side, side).expect("winit 拒绝了窗口图标")
 }
 
 impl ApplicationHandler for GameApp {
@@ -352,7 +444,10 @@ impl ApplicationHandler for GameApp {
             .unwrap_or(1.0);
         let attributes = Window::default_attributes()
             .with_title(&self.window_title)
-            .with_window_icon(Some(window_icon(scale_factor)))
+            .with_window_icon(Some(window_icon(
+                self.project_root.as_deref(),
+                scale_factor,
+            )))
             .with_inner_size(PhysicalSize::new(window_width, window_height));
         tracing::info!(
             target: "game",
@@ -369,70 +464,25 @@ impl ApplicationHandler for GameApp {
             Ok(renderer) => {
                 self.window = Some(window);
                 self.renderer = Some(renderer);
-                self.runtime_scene = match RuntimeScene::new_with_layout(
-                    self.project_root.as_deref(),
-                    self.packaged,
-                ) {
-                    Ok(mut scene) => {
-                        // P0：交互宿主对脚本错误**容错**。此前 `update()` 里一个未捕获的
-                        // Lua 错误 ⇒ 系统 Err ⇒ 调度器放弃本步剩余系统 ⇒ 这里 `fail()` 结束
-                        // 进程：玩家的这一局因为一行脚本而终止，物理/粒子/场景切换也一起被跳过。
-                        // 容错后错误进结构化诊断与计数、游戏继续；连续报错达上限的回调被停用
-                        // （不再每帧刷日志）。无头验收不用这一档——它们走默认严格档，
-                        // 因此"脚本报错必须判红"在样例与 soak 里原样保留。
-                        scene.set_script_error_policy(ScriptErrorPolicy::Contain);
-                        Some(scene)
-                    }
-                    Err(error) => {
-                        let diagnostic = EngineError::new(
-                            LogModule::Script,
-                            "initialize runtime scene",
-                            "runtime scene or project script failed to start",
+                let splash =
+                    crate::splash::startup_image(self.project_root.as_deref()).and_then(|image| {
+                        crate::splash::Splash::upload(
+                            self.renderer.as_mut().expect("renderer exists"),
+                            image,
                         )
-                        .with_source(&error)
-                        .with_suggestion("check the project scene and scripts/main.lua");
-                        tracing::error!(target: "game", error = %diagnostic, "runtime initialization failed");
-                        self.fail(
-                            event_loop,
-                            format!("runtime scene initialization failed: {error}"),
-                        );
-                        return;
-                    }
-                };
-                // M20-08：把手柄死区（`project.toml` 的 `[input]` 段）应用到设备后端。
-                // 文件缺失 → 引擎默认 0.15/0.05；读取失败只记日志。P3：发布包读的是
-                // **用户数据目录**里的那份设置（`user_dir::data_roots`），与 Lua 侧的
-                // `input.settings_path()` 同源，否则会出现"面板显示一套、设备用另一套"。
-                if let (Some(root), Some(scene)) =
-                    (self.project_root.as_deref(), self.runtime_scene.as_mut())
-                {
-                    let settings_root =
-                        rustlua_infra::user_dir::data_roots(root, self.packaged).settings_dir;
-                    let (deadzone, diagnostic) =
-                        rustlua_gameplay::settings::load_deadzone_section(&settings_root);
-                    if let Some(diagnostic) = diagnostic {
-                        tracing::warn!(target: "input", "[gamepad] {diagnostic}");
-                    }
-                    scene.set_gamepad_deadzone(deadzone);
-                    tracing::info!(
-                        target: "input",
-                        stick = deadzone.stick,
-                        trigger = deadzone.trigger,
-                        "[gamepad] deadzone applied"
-                    );
+                    });
+                match splash {
+                    Ok(splash) => self.splash = Some(splash),
+                    Err(error) => tracing::warn!(target: "game", "{error}; 继续无启动图流程"),
                 }
-                self.transition(AppLifecycle::Running);
-                // 发布默认不画调试 overlay；提示一次开启方式，便于需要时诊断。
-                tracing::info!(
-                    target: "game",
-                    "[perf] overlay {} (F3 toggles the fps/latency overlay)",
-                    if self.overlay_enabled { "enabled" } else { "disabled" }
-                );
-                self.last_frame = Instant::now();
-                self.window
-                    .as_ref()
-                    .expect("window exists")
-                    .request_redraw();
+                if self.splash.is_some() {
+                    self.window
+                        .as_ref()
+                        .expect("window exists")
+                        .request_redraw();
+                } else {
+                    self.initialize_runtime(event_loop);
+                }
             }
             Err(error) => {
                 tracing::error!(target: "engine", error = %EngineError::new(LogModule::Engine, "initialize renderer", "GPU renderer startup failed").with_source(&error).with_suggestion("update the graphics driver or use a compatible GPU"), "renderer initialization failed");
@@ -461,6 +511,9 @@ impl ApplicationHandler for GameApp {
         match event {
             WindowEvent::CloseRequested => self.request_exit(event_loop),
             WindowEvent::Resized(size) => {
+                if let Some(splash) = self.splash.as_mut() {
+                    splash.stage = crate::splash::Stage::AwaitingPresent;
+                }
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size);
                 }
@@ -468,9 +521,17 @@ impl ApplicationHandler for GameApp {
             }
             WindowEvent::Occluded(occluded) => {
                 self.occluded = occluded;
+                if let Some(splash) = self.splash.as_mut() {
+                    splash.stage = crate::splash::Stage::AwaitingPresent;
+                }
                 let size = self.window.as_ref().expect("window exists").inner_size();
                 self.update_pause_state(size);
             }
+            WindowEvent::KeyboardInput { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseWheel { .. }
+                if self.lifecycle == AppLifecycle::Initializing => {}
             WindowEvent::KeyboardInput { event, .. } => {
                 // M22/W1：**物理键**身份（`PhysicalKey::Code`），经 `host::keymap`
                 // 转换——宿主只做类型转换，不再按 `logical_key` 的字符猜键位。
@@ -517,7 +578,14 @@ impl ApplicationHandler for GameApp {
             }
             WindowEvent::RedrawRequested => {
                 self.redraw(event_loop);
-                if self.lifecycle == AppLifecycle::Running {
+                let size = self.window.as_ref().expect("window exists").inner_size();
+                if !event_loop.exiting()
+                    && (self.lifecycle == AppLifecycle::Running
+                        || (self.lifecycle == AppLifecycle::Initializing
+                            && self.splash.is_some()
+                            && !self.occluded
+                            && has_renderable_size(size.width, size.height)))
+                {
                     self.window
                         .as_ref()
                         .expect("window exists")

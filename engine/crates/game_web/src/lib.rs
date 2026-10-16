@@ -36,6 +36,19 @@ mod host_runtime;
 #[cfg(all(target_arch = "wasm32", feature = "gpu2d"))]
 mod engine_core;
 
+/// 统一宿主的帧时钟配置：纯数据、无 wgpu/web_sys 依赖，门是 `any(target_arch = "wasm32", test)`
+/// ——桌面单测据此守住"默认值 = (60, 8, 0.25)"与"喂 Lua 的步长必须 f64 现算"两条契约，
+/// 而原生非测试构建里它没有消费者，编译进来只会变成死代码。
+#[cfg(any(target_arch = "wasm32", test))]
+mod host_config;
+
+/// P1 第二片：两个平台**同一台宿主**（时钟 + 共享核心 + 帧泵）。
+///
+/// `engine_core` 统一了"一帧怎么画"，这一层统一"一帧由谁驱动、该跑几步"——
+/// 抽取前两张计划表逐格同形却各写一遍（见模块文档里的对照表）。
+#[cfg(all(target_arch = "wasm32", feature = "gpu2d"))]
+mod engine_host;
+
 /// 平台音频出口：wasm 上没有可读文件系统也没有音频设备，播放交给浏览器/微信的
 /// "用 URL 播放"通道（浏览器 `HTMLAudioElement`、微信 `InnerAudioContext`）。
 #[cfg(target_arch = "wasm32")]
@@ -43,17 +56,29 @@ mod audio_sink;
 
 /// 批量帧输入（`RLFI` 线格式）→ 引擎 `InputSnapshot`。
 ///
-/// **刻意不加 wasm 门**：这一层是纯数据换算（两边的表都在 host 上可编译），
-/// 不加门才能在桌面用测试守住"每个键名都有归宿""按住不动不产生按下边沿"这两条契约——
-/// 而这两条恰恰是"某个键按了没反应""边沿分支每帧触发"的成因。
+/// **刻意不门到 wasm**：门是 `any(target_arch = "wasm32", test)`，所以桌面测试照样守住
+/// "每个键名都有归宿""按住不动不产生按下边沿"这两条契约——而这两条恰恰是"某个键按了没反应"
+/// 与"边沿分支每帧触发"的成因。
+///
+/// 为什么门里还要留 wasm 那一半：**原生非测试构建里这一层没有消费者**（消费者全是 wasm 侧的
+/// `gpu_host` / `host_runtime` / `rust_scene`），不门就会让整层在原生 lib 里变成死代码。
+#[cfg(any(target_arch = "wasm32", test))]
 mod frame_input;
 
 /// 两层共用的几何：设计分辨率 → 画布等比适配盒（含 contain 黑边）。
 ///
-/// 同样**刻意不加门**：纯数学 + 纯 `u32`，不加门才能在桌面单测里守住"适配盒与设计分辨率同比"
-/// 这条契约。它一旦错，GPU 层会被非等比拉伸，而画布属性/帧率读数**全都正常**——
-/// 这种错只能靠小测试抓（见模块内 `tests`）。
+/// 同样**刻意不门到 wasm**（`any(target_arch = "wasm32", test)`）：纯数学 + 纯 `u32`，
+/// 桌面单测守住"适配盒与设计分辨率同比"这条契约。它一旦错，GPU 层会被非等比拉伸，
+/// 而画布属性/帧率读数**全都正常**——这种错只能靠小测试抓（见模块内 `tests`）。
+#[cfg(any(target_arch = "wasm32", test))]
 mod fit;
+
+/// 启动状态属性（`data-rustlua-boot`）的归属判据：**只补不盖** —— `failed` 绝不能被盖成 `ok`。
+///
+/// 与 `host_config` / `fit` 同样刻意不门到 wasm：纯判据、不碰 `web_sys`，桌面单测据此守住那条
+/// 负例 —— 它一旦错，"启动真失败"会被读成成功，而这正是诊断与回归门依赖的属性。
+#[cfg(any(target_arch = "wasm32", test))]
+mod boot_state;
 
 /// Build-time static dependency index selection for the synchronous VFS
 /// provider. Kept host-testable so closure and fallback behavior are verified
@@ -62,16 +87,14 @@ mod fit;
 mod resource_index;
 
 /// wasm 线性内存当前大小（字节）。docs/65 P0 的阶段遥测用它把"300MB 峰值属于哪一段"
-/// 落成逐阶段读数。非 wasm 目标恒 0（桌面调试器本来就能看内存，不抢这条通道的语义）。
+/// 落成逐阶段读数。
+///
+/// **只在 wasm 上存在**：调用方全是 wasm 侧（`start` 的预载遥测、`engine_core` 与两个宿主外壳）。
+/// 原先还给了一条"非 wasm 恒 0"的实现，但桌面上没有任何消费者——留着它只会让这条通道在原生
+/// 构建里变成死代码，而"桌面调试器本来就能看内存"这件事不需要一个恒 0 的函数来表达。
+#[cfg(target_arch = "wasm32")]
 pub(crate) fn wasm_memory_bytes() -> usize {
-    #[cfg(target_arch = "wasm32")]
-    {
-        std::arch::wasm32::memory_size(0) * 65_536
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        0
-    }
+    std::arch::wasm32::memory_size(0) * 65_536
 }
 
 /// wasm 侧诊断的**唯一安装点**：panic hook（"炸了"）+ `tracing` 出口（"走到哪一步了"）。

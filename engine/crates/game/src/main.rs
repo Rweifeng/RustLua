@@ -4,6 +4,7 @@
 
 mod cli;
 mod game_app;
+mod splash;
 
 use std::path::{Path, PathBuf};
 
@@ -74,25 +75,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     rustlua_infra::logging::install_crash_handler(log_path.with_file_name("crash.log"));
     tracing::info!(target: "game", version = rustlua_infra::version(), project = ?project, "game runner starting");
 
-    // 启动期资源完整性校验：发布包模式缺失即拒绝启动，开发模式仅告警。
-    if let Some(root) = &project {
-        let missing = verify_project(root);
-        if !missing.is_empty() {
-            for item in &missing {
-                tracing::error!(target: "game", "资源校验失败: {item}");
-            }
-            if arguments.pack {
-                return Err(Box::new(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!(
-                        "发布资源包校验失败（{} 项缺失）：\n  {}",
-                        missing.len(),
-                        missing.join("\n  ")
-                    ),
-                )));
-            }
-        }
-    }
+    // Default and project startup images both precede script/domain validation.
+    // GameApp only initializes the runtime after a successful splash present.
+    let deferred_verify = project.is_some();
 
     let event_loop = EventLoop::new()?;
     let window_title = resolve_window_title(project.as_deref(), arguments.title);
@@ -104,6 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         !arguments.no_cull,
         !arguments.no_instance,
         arguments.pack,
+        deferred_verify,
     );
     event_loop.run_app(&mut app)?;
     run_result(app.failure())

@@ -7,9 +7,10 @@
 // （`engine/crates/rustlua-infra/src/time_step.rs`，桌面取 `new(60, 8)`），
 // 所以判据按那边的语义写：同一串 elapsed 必须得到同一串 steps 与同一个累计丢弃数。
 //
-// 实现是从 `plugins/webgl/web-runtime.js` **抽取源码**执行的（不复制一份到测试里）：
-// 复制一份就变成了"测我自己写的副本"，与被测代码漂移了也不会红。
-// 抽取的锚点若不在了，本测试会**直接失败**并要求重新指锚点，绝不静默跳过。
+// **不再从任何产品源码抽实现**（B8 之前抽的是 `plugins/webgl/web-runtime.js` 里的 `advanceFixedSteps`）：
+// 那个文件已随旧世界删除，而**它的权威实现本来就是 Rust** —— 见下面的说明与
+// `engine/crates/rustlua-infra/src/time_step.rs`。抽取锚点不在了会**直接失败**、绝不静默跳过，
+// 这条纪律保留在"判据按 Rust 语义写死"这件事上。
 //
 // 用法：node scripts/web-fixed-step-test.js
 'use strict';
@@ -18,7 +19,6 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const RUNTIME = path.join(ROOT, 'plugins', 'webgl', 'web-runtime.js');
 
 const failures = [];
 function check(name, condition, detail) {

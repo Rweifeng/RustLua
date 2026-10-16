@@ -71,14 +71,15 @@ fn scene_declared_camera_bounds_refresh_after_scene_switch() {
         "换图后应读入新场景声明的 zoom（门面没声明，只能在这里生效）"
     );
     // ③ 姿态不被重置：`enter_playable_map` 先落点再 follow，下一帧相机中心 = 玩家坐标
-    // （528,112）。若 bounds 同步顺手把 center 重置成场景作者值，这里会变成 (640,368)——
+    // （624,112，#28 起山庄出生点是格 (19,3)）。若 bounds 同步顺手把 center 重置成场景作者
+    // 值，这里会变成 (640,368)——
     // 注意 y 最终仍会被夹到 bounds 内（地图 736 ≥ 视口高），所以只断言 x 未被重置。
     runtime.vertices(720, 1280).expect("render viewport");
     runtime.run_script_steps(1, 1.0 / 60.0, &idle).unwrap();
     let followed = runtime.camera_2d();
     assert!(
-        (followed.center.x - 528.0).abs() < 1.0,
-        "换图后 center.x 应由跟随决定（528），实际 {}",
+        (followed.center.x - 624.0).abs() < 1.0,
+        "换图后 center.x 应由跟随决定（624），实际 {}",
         followed.center.x
     );
 

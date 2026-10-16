@@ -10,6 +10,7 @@ version = "0.1.0"
 engine = "RustLua"
 main_script = "scripts/main.lua"
 startup_scene = "scenes/main.scene"
+splash_image = "assets/art/title/startup_background.png"
 font = "assets/fonts/FusionPixel-12px-Monospaced-zhHans.ttf"
 # 后备字体留空：像素点阵与平滑矢量混排会立刻露馅（M72-03 的「只入一款」）。
 # 缺字因此走点阵占位方框，由 `jhyt_m72_pixel_font` ④ 逐字拦住（实测工程用字 1,605 个、缺字 0）。

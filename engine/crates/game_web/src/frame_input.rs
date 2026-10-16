@@ -145,6 +145,17 @@ pub fn apply_frame(snapshot: &mut InputSnapshot, frame: &FrameInput) -> AppliedI
 
     // ③ 绝对量每帧覆盖：光标、滚轮、虚拟摇杆轴（0/1 = 左摇杆 X/Y，与设备层同序）。
     snapshot.cursor_moved(frame.cursor[0], frame.cursor[1]);
+    // 按下位置：**这条线此前没接**——引擎侧连字段都没有，于是 web/微信只能靠补丁层自造一个同名
+    // `input.press_position`，而 native 引擎上 `ui/virtual_pad.lua` 的 `pcall` 永远走回退分支
+    // （退化成实时光标 ⇒"按住摇杆＋另一手点按钮"命中错位，不报错）。补上它两端才同义。
+    snapshot.press_cursor_moved(frame.press_cursor[0], frame.press_cursor[1]);
+    // 多指：线格式里的按下点数组。**旧版写者没有这一段**（`pointer_count = 0`）⇒ 空切片 ⇒
+    // 主按下点照旧可用，旧路径不会因为新增能力而失灵。
+    let points: Vec<(f64, f64)> = (0..usize::from(frame.pointer_count))
+        .filter_map(|slot| frame.press_cursors.get(slot))
+        .map(|point| (point[0], point[1]))
+        .collect();
+    snapshot.set_press_cursors(&points);
     if frame.scroll[0] != 0.0 || frame.scroll[1] != 0.0 {
         snapshot.scroll_event(frame.scroll[0] as f32, frame.scroll[1] as f32);
     }
@@ -218,6 +229,12 @@ pub struct FrameInputProducer {
     axis: [f64; 2],
     /// 自上次取帧以来是否收到过指针事件（决定合并时谁的光标是"新的"）。
     pointer_fresh: bool,
+    /// 多指：`(id, 按下点, 当前位置)`，**按按下先后**排列。
+    ///
+    /// 为什么要有它：线格式里 `press_cursor` 只有一个槽，"两指同时按两个按钮"时第二指的按下点
+    /// 无处可写（`single_press_point_is_the_pre_multitouch_degradation` 曾把那个退化钉在案上）。
+    /// **顺序即语义**：`press_cursors[0..count]` 按按下先后排，最后一个就是旧字段 `press_cursor`。
+    pointers: Vec<(u64, [f64; 2], [f64; 2])>,
     /// 落不进 [`KEY_NAMES`] 的键数。**要能被读到**：静默丢弃会让人以为引擎坏了。
     dropped_keys: u32,
 }
@@ -226,6 +243,38 @@ impl FrameInputProducer {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 一根手指按下（多指）。
+    ///
+    /// 与 [`Self::mouse_down`] 的关键区别：**它可以在别的指针已按下时再次调用**。后者在"键已按下"
+    /// 时提前返回，于是第二根手指的按下点根本没处可写——那正是被钉住的那个退化。同一 `id` 重复
+    /// 按下只更新按下点、不新增指针（真机上 `touchstart` 对同一指可能重复到达）。
+    pub fn pointer_down(&mut self, id: u64, position: [f64; 2]) {
+        self.cursor = position;
+        self.press_cursor = position;
+        self.pointer_fresh = true;
+        if let Some(entry) = self.pointers.iter_mut().find(|(other, _, _)| *other == id) {
+            entry.1 = position;
+            entry.2 = position;
+        } else {
+            self.pointers.push((id, position, position));
+        }
+    }
+
+    /// 某根手指移动。`id` 不存在时**忽略**——抬起之后的移动事件是常态，不该凭空造出一根手指。
+    pub fn pointer_move(&mut self, id: u64, position: [f64; 2]) {
+        // 光标跟着"最近动的那根"走：这是鼠标语义与触摸语义的共同点。
+        self.cursor = position;
+        self.pointer_fresh = true;
+        if let Some(entry) = self.pointers.iter_mut().find(|(other, _, _)| *other == id) {
+            entry.2 = position;
+        }
+    }
+
+    /// 某根手指抬起。**不动 `press_cursor`**：与 `mouse_up` 的既有语义一致（按下点留到最后一次按下）。
+    pub fn pointer_up(&mut self, id: u64) {
+        self.pointers.retain(|(other, _, _)| *other != id);
     }
 
     /// 落不进键表的键数（读数用）。
@@ -286,6 +335,16 @@ impl FrameInputProducer {
         if self.mouse_held & bit == 0 {
             self.mouse_just |= bit;
             self.press_cursor = self.cursor;
+            // 鼠标也是**一根手指**：把主按下点登记进指针表。少了这一步，"鼠标按住 + 一根手指"
+            // 会被读成"只有一根手指"——多指计数与逐指按下点都会少一项（浏览器门实测踩到过）。
+            if !self
+                .pointers
+                .iter()
+                .any(|(id, _, _)| *id == MOUSE_POINTER_ID)
+            {
+                self.pointers
+                    .push((MOUSE_POINTER_ID, self.cursor, self.cursor));
+            }
         }
         self.mouse_held |= bit;
     }
@@ -351,6 +410,28 @@ impl FrameInputProducer {
         out.mouse_held = self.mouse_held;
         out.mouse_just = self.mouse_just;
         out.mouse_just_released = self.mouse_just_released;
+        // 多指块：按**按下先后**写进定容数组。
+        // 鼠标键全松 ⇒ 那根"手指"抬起。放在这里而不是 `mouse_up` 里：抬起是多键语义
+        // （还有别的键按着时不算），而这里正好是"本帧鼠标按住状态的最终值"。
+        if self.mouse_held == 0 {
+            self.pointers.retain(|(id, _, _)| *id != MOUSE_POINTER_ID);
+        }
+        let mut count = self.pointers.len().min(rustlua_frame_abi::MAX_POINTERS);
+        out.press_cursors = [[0.0, 0.0]; rustlua_frame_abi::MAX_POINTERS];
+        for (index, (_, press, _)) in self.pointers.iter().take(count).enumerate() {
+            out.press_cursors[index] = *press;
+        }
+        // **桌面鼠标也算一根手指**：它是"有按下点、但没走多指 API"的那条路。少了这一步，
+        // 单指环境的 `pointer_count` 会是 0，Lua 侧按索引取按下点就会全都取不到。
+        if count == 0 && self.mouse_held != 0 {
+            out.press_cursors[0] = self.press_cursor;
+            count = 1;
+        }
+        out.pointer_count = count as u8;
+        // 旧字段与"最后一个指针的按下点"**同源**：这份冗余表示的锚，测试钉住它。
+        if count > 0 {
+            out.press_cursor = out.press_cursors[count - 1];
+        }
 
         self.keys_pressed = 0;
         self.keys_released = 0;
@@ -370,10 +451,66 @@ impl FrameInputProducer {
 ///
 /// 它与 DOM 采集**不是二选一**：DOM 那条路证明"事件能进来"（第 24 轮），
 /// 这条证明"输入进去之后世界真的会变"（本轮的缺口）。两条一起才闭合。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// 两份 `MAX_POINTERS` 必须一致：`rustlua-input` 不依赖 ABI crate，常量只能是两份。
+/// 漂开的症状是"按下点按一个上限写、按另一个上限读"——高位手指**静默丢失**，
+/// 所以在这里用编译期断言钉住，而不是靠注释提醒。
+const _: () = assert!(
+    rustlua_input::input::MAX_POINTERS == rustlua_frame_abi::MAX_POINTERS,
+    "rustlua-input 与 rustlua-frame-abi 的 MAX_POINTERS 必须一致"
+);
+
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct InputScript {
     windows: Vec<(String, u64, u64)>,
     axis_windows: Vec<(usize, i8, u64, u64)>,
+    /// `at:x,y:from-to`：指针这段区间里的位置（**设计坐标**）。
+    pointer_windows: Vec<(u64, f64, f64, u64, u64)>,
+    /// `hold:left:from-to`：这段区间里按住某个鼠标键。
+    press_windows: Vec<(u64, String, u64, u64)>,
+}
+
+/// 解析 `from-to` 片段（三类指令共用），一处说清错误而不是各自"猜"。
+/// 鼠标占用的指针槽。用 `u64::MAX` 而不是 0/1：DOM 的 `pointerId` 与微信的 `identifier` 都从 0/1
+/// 起算，占一个"正常不可能出现"的值才不会和真手指撞号。
+const MOUSE_POINTER_ID: u64 = u64::MAX;
+
+/// 解析 `at`/`hold` 后的可选指针号：空 = 1（旧行为），否则必须落在 1..=MAX_POINTERS。
+///
+/// 上限在这里就卡住，不留给下游截断：脚本里写了 5 号手指却没进数组，症状是"那条断言永远不亮"，
+/// 查起来比当场报错贵得多。
+fn parse_pointer_id(id_part: &str, part: &str) -> Result<u64, String> {
+    let trimmed = id_part.trim();
+    if trimmed.is_empty() {
+        return Ok(1);
+    }
+    let id: u64 = trimmed
+        .parse()
+        .map_err(|_| format!("指针号不是数字：{part}"))?;
+    if id < 1 || id > rustlua_frame_abi::MAX_POINTERS as u64 {
+        return Err(format!(
+            "指针号必须在 1..={}：{part}",
+            rustlua_frame_abi::MAX_POINTERS
+        ));
+    }
+    Ok(id)
+}
+
+fn parse_script_range(range: &str, part: &str) -> Result<(u64, u64), String> {
+    let (from, to) = range
+        .split_once('-')
+        .ok_or_else(|| format!("输入剧本片段缺少 '-' 区间：{part}"))?;
+    let from: u64 = from
+        .trim()
+        .parse()
+        .map_err(|_| format!("输入剧本起帧不是数字：{part}"))?;
+    let to: u64 = to
+        .trim()
+        .parse()
+        .map_err(|_| format!("输入剧本止帧不是数字：{part}"))?;
+    if to <= from {
+        return Err(format!("输入剧本区间必须止帧大于起帧：{part}"));
+    }
+    Ok((from, to))
 }
 
 impl InputScript {
@@ -384,7 +521,53 @@ impl InputScript {
     pub fn parse(spec: &str) -> Result<Self, String> {
         let mut windows = Vec::new();
         let mut axis_windows = Vec::new();
+        let mut pointer_windows = Vec::new();
+        let mut press_windows = Vec::new();
         for part in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            // 指针/按键两类指令先分流：它们的"名字"后面还有一段（坐标或按钮名），
+            // 不能走下面的 `名:区间` 泛型切分。
+            // `at`/`hold` 后可跟可选指针号（`at2:` / `hold2:left:`）；不写 = 1，旧行为不变。
+            // 只在 rest 以 ':' 或数字开头时进这个分支，否则一个恰好以 "at" 开头的键名会被误吞。
+            if let Some(rest) = part.strip_prefix("at").filter(|rest| {
+                rest.starts_with(':') || rest.starts_with(|c: char| c.is_ascii_digit())
+            }) {
+                let (id_part, rest) = rest
+                    .split_once(':')
+                    .ok_or_else(|| format!("指针指令缺 ':'：{part}"))?;
+                let id = parse_pointer_id(id_part, part)?;
+                let (coords, range) = rest
+                    .split_once(':')
+                    .ok_or_else(|| format!("指针指令缺坐标/区间分隔 ':'：{part}"))?;
+                let (x, y) = coords
+                    // **不能用逗号**：`,` 是片段分隔符，`at:100,200:...` 会被切成两个片段。
+                    .split_once('x')
+                    .ok_or_else(|| format!("指针坐标应是 xXy（如 100x200）：{part}"))?;
+                let x: f64 = x
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("指针 x 不是数字：{part}"))?;
+                let y: f64 = y
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("指针 y 不是数字：{part}"))?;
+                let (from, to) = parse_script_range(range, part)?;
+                pointer_windows.push((id, x, y, from, to));
+                continue;
+            }
+            if let Some(rest) = part.strip_prefix("hold").filter(|rest| {
+                rest.starts_with(':') || rest.starts_with(|c: char| c.is_ascii_digit())
+            }) {
+                let (id_part, rest) = rest
+                    .split_once(':')
+                    .ok_or_else(|| format!("按键指令缺 ':'：{part}"))?;
+                let id = parse_pointer_id(id_part, part)?;
+                let (button, range) = rest
+                    .split_once(':')
+                    .ok_or_else(|| format!("按键指令缺按钮/区间分隔 ':'：{part}"))?;
+                let (from, to) = parse_script_range(range, part)?;
+                press_windows.push((id, button.trim().to_owned(), from, to));
+                continue;
+            }
             let (name, range) = part
                 .split_once(':')
                 .ok_or_else(|| format!("输入剧本片段缺少 ':'：{part}"))?;
@@ -455,12 +638,17 @@ impl InputScript {
         Ok(Self {
             windows,
             axis_windows,
+            pointer_windows,
+            press_windows,
         })
     }
 
     /// 这份剧本是否为空（空剧本不该改变任何行为）。
     pub fn is_empty(&self) -> bool {
-        self.windows.is_empty() && self.axis_windows.is_empty()
+        self.windows.is_empty()
+            && self.axis_windows.is_empty()
+            && self.pointer_windows.is_empty()
+            && self.press_windows.is_empty()
     }
 
     /// 第 `frame` 帧**应当按住**的键集合（按剧本里的顺序，去重交给调用方）。
@@ -482,6 +670,11 @@ pub struct ScriptDriver {
     script: InputScript,
     held: Vec<String>,
     frame: u64,
+    /// `hold:` 是否处于按住态：边沿必须跨帧记住，否则每帧都发一次 `mouse_down`
+    /// （按下点会被反复刷新成"当前光标"，按下位置就丢了）。
+    pressed: bool,
+    /// 多指（id ≥ 2）上一帧的状态：(id, 位置, 是否按住)，用来算按下/抬起边沿。
+    extra: Vec<(u64, [f64; 2], bool)>,
 }
 
 impl ScriptDriver {
@@ -490,6 +683,8 @@ impl ScriptDriver {
             script,
             held: Vec::new(),
             frame: 0,
+            pressed: false,
+            extra: Vec::new(),
         }
     }
 
@@ -503,6 +698,78 @@ impl ScriptDriver {
     /// 顺序固定才能逐帧复现。
     pub fn tick(&mut self, producer: &mut FrameInputProducer) {
         self.frame = self.frame.wrapping_add(1);
+        // **指针先落位，再判按下**：`mouse_down` 把*当时的*光标记成按下点，顺序反了按下点
+        // 就会是上一帧的位置（症状是"命中差一帧"，几乎看不出来）。
+        let mut pointer: Option<[f64; 2]> = None;
+        for (id, x, y, from, to) in &self.script.pointer_windows {
+            // id 1 = 主指针，走下面那条**旧路**（光标 / mouse_* / press_cursor 的语义逐字不变）。
+            if *id != 1 {
+                continue;
+            }
+            if self.frame >= *from && self.frame < *to {
+                pointer = Some([*x, *y]);
+            }
+        }
+        if let Some(at) = pointer {
+            producer.pointer_moved(at);
+        }
+        let want_press = self
+            .script
+            .press_windows
+            .iter()
+            .any(|(id, button, from, to)| {
+                *id == 1 && button == "left" && self.frame >= *from && self.frame < *to
+            });
+        if want_press && !self.pressed {
+            producer.mouse_down("left");
+            self.pressed = true;
+        } else if !want_press && self.pressed {
+            producer.mouse_up("left");
+            self.pressed = false;
+        }
+        // **多指（id ≥ 2）**：每个 id 自己维护按下/移动/抬起的边沿。
+        //
+        // 为什么与上面那条分开而不是合并：上面那条的语义被现有门依赖（mouse_* 位、press_cursor、
+        // pointer_fresh），合并会牵动一串既有读数；这条只负责第二根手指的按下点，可独立加、独立验。
+        let mut wanted: Vec<(u64, [f64; 2], bool)> = Vec::new();
+        for (id, x, y, from, to) in &self.script.pointer_windows {
+            if *id < 2 || self.frame < *from || self.frame >= *to {
+                continue;
+            }
+            let held = self
+                .script
+                .press_windows
+                .iter()
+                .any(|(bid, _, bfrom, bto)| {
+                    *bid == *id && self.frame >= *bfrom && self.frame < *bto
+                });
+            if let Some(entry) = wanted.iter_mut().find(|(wid, _, _)| *wid == *id) {
+                entry.1 = [*x, *y];
+                entry.2 = held;
+            } else {
+                wanted.push((*id, [*x, *y], held));
+            }
+        }
+        // 仍按住但本帧没有位置窗口的 id：沿用上一帧位置（真机上手指可以停在原地）。
+        for (id, position, held) in &self.extra {
+            if *held && !wanted.iter().any(|(wid, _, _)| wid == id) {
+                wanted.push((*id, *position, true));
+            }
+        }
+        for (id, position, held) in &wanted {
+            let was_held = self
+                .extra
+                .iter()
+                .find(|(eid, _, _)| eid == id)
+                .is_some_and(|(_, _, held)| *held);
+            match (was_held, *held) {
+                (false, true) => producer.pointer_down(*id, *position),
+                (true, true) => producer.pointer_move(*id, *position),
+                (true, false) => producer.pointer_up(*id),
+                (false, false) => {}
+            }
+        }
+        self.extra = wanted;
         let want: Vec<&str> = self.script.held_at(self.frame);
         for name in &self.held {
             if !want.contains(&name.as_str()) {
@@ -1032,5 +1299,137 @@ mod tests {
         assert_eq!(edges[3], (a, a, w), "第 4 帧应当松开 w、按下 a");
         // 帧 6：a 松开。
         assert_eq!(edges[5], (0, 0, a), "第 6 帧应当松开 a");
+    }
+
+    /// 契约：`pointer_fresh` 只在"本帧真的收到过指针事件"时为真，取走一帧即归零。
+    ///
+    /// 它决定 `merge_into` 里"谁的光标算数"：本侧刚动过 ⇒ 本侧的光标赢；没动过 ⇒
+    /// 让 JS 世界送来的光标留着。判错的两个方向都很难查——恒真是"点哪都不对"，
+    /// 恒假是"JS 世界不送光标时鼠标彻底失灵"。
+    #[test]
+    fn pointer_fresh_is_true_only_after_a_pointer_event_and_clears_with_the_frame() {
+        let mut producer = FrameInputProducer::new();
+        let mut out = FrameInput::new();
+        assert!(!producer.pointer_fresh(), "还没收到指针事件就不该是新鲜的");
+        producer.pointer_moved([10.0, 20.0]);
+        assert!(producer.pointer_fresh());
+        producer.take_frame(&mut out);
+        assert_eq!(out.cursor, [10.0, 20.0], "本帧的光标就是刚送进来的那个");
+        assert!(
+            !producer.pointer_fresh(),
+            "取走即归零，否则会永远抢走 JS 世界的光标"
+        );
+    }
+
+    /// 契约：`mouse_up` 清掉按住位，且**只**在真的按着时才产生"刚抬起"边沿。
+    ///
+    /// 宿主可能补发抬起（焦点丢失、指针在画布外抬起），所以"没按过的抬起"必须静默——
+    /// 否则会凭空多出一次释放边沿，`just_released` 分支的脚本会在没点过的时候触发。
+    #[test]
+    fn mouse_up_clears_held_and_only_edges_when_the_button_was_down() {
+        let mut producer = FrameInputProducer::new();
+        let mut out = FrameInput::new();
+        let left = 1u64 << rustlua_frame_abi::mouse_slot("left").expect("left 在线表里");
+
+        // 没按过就抬起：不产生任何边沿。
+        producer.mouse_up("left");
+        producer.take_frame(&mut out);
+        assert_eq!(out.mouse_held, 0);
+        assert_eq!(out.mouse_just_released, 0, "没按过的抬起不该产生释放边沿");
+
+        // 按下 → 抬起：按住位清零，且这一帧落在"刚抬起"位上。
+        producer.mouse_down("left");
+        producer.take_frame(&mut out);
+        assert_eq!(out.mouse_held, left);
+        producer.mouse_up("left");
+        producer.take_frame(&mut out);
+        assert_eq!(out.mouse_held, 0, "抬起必须清掉按住位");
+        assert_eq!(out.mouse_just_released, left, "这一帧应当有释放边沿");
+    }
+
+    /// 契约：`ScriptDriver::is_empty` 与"剧本有没有给窗口"一致。
+    ///
+    /// 浏览器宿主每帧问一次它来决定"整段剧本要不要跳过"（见 `gpu_host` 的调用点）：
+    /// 空剧本判假会白跑一次集合比较，非空判真会把一整段剧本静默丢掉——后者正是
+    /// "按了没反应"里最贵的那个错法。
+    #[test]
+    /// 指针剧本的**跨帧**语义：按下点停在按下那一刻，光标继续跟着指针走。
+    ///
+    /// 这是「按住摇杆＋另一只手点按钮」的输入侧形状，也是 `input.press_position` 成立的前提——
+    /// 若驱动把按下点每帧刷新成当前光标，或 `mouse_down` 与指针落位的顺序反了，这两个值就会相等，
+    /// 命中测试随即退化成「跟着手指跑」，而**任何读数都不报错**。
+    fn pointer_and_press_script_keeps_press_point_distinct_from_cursor() {
+        let script = InputScript::parse("at:100x200:10-21,hold:left:15-40,at:600x400:21-60")
+            .expect("script parse");
+        let mut producer = FrameInputProducer::new();
+        let mut driver = ScriptDriver::new(script);
+        let mut out = rustlua_frame_abi::FrameInput::new();
+        for _ in 0..30 {
+            driver.tick(&mut producer);
+            producer.take_frame(&mut out);
+        }
+        assert_eq!(out.press_cursor, [100.0, 200.0], "按下点必须停在按下那一刻");
+        assert_eq!(out.cursor, [600.0, 400.0], "光标必须跟着指针走");
+        assert_ne!(out.press_cursor, out.cursor, "两者必须是两个不同的值");
+    }
+
+    /// **多指门**：两根手指各留自己的按下点。
+    ///
+    /// 这条用例是上一片那条"钉住单值退化"的门**转正**后的样子：真机上"两指同时按两个按钮"是常态，
+    /// 而旧线格式只有一个 `press_cursor` 槽——第二指的按下点**根本没处可写**（`mouse_down` 在已按下
+    /// 时提前返回），于是第二个按钮**永远**无法用自己的按下点命中，且不报任何错。
+    #[test]
+    fn two_pointers_keep_their_own_press_points() {
+        let mut producer = FrameInputProducer::new();
+        let mut out = rustlua_frame_abi::FrameInput::new();
+        // 第一指按在 A。
+        producer.pointer_down(1, [100.0, 200.0]);
+        producer.take_frame(&mut out);
+        assert_eq!(out.pointer_count, 1, "一根手指占一个槽");
+        assert_eq!(out.press_cursors[0], [100.0, 200.0]);
+        assert_eq!(
+            out.press_cursor,
+            [100.0, 200.0],
+            "旧字段 = 最后一个指针的按下点"
+        );
+        // 第二指按在 B：**A 的按下点必须还在**——这正是旧线格式做不到的事。
+        producer.pointer_down(2, [600.0, 400.0]);
+        producer.take_frame(&mut out);
+        assert_eq!(out.pointer_count, 2);
+        assert_eq!(
+            out.press_cursors[0],
+            [100.0, 200.0],
+            "第一指的按下点没有被顶掉"
+        );
+        assert_eq!(out.press_cursors[1], [600.0, 400.0]);
+        assert_eq!(out.press_cursor, [600.0, 400.0], "旧字段跟最近一次按下");
+        // 移动不改变按下点：按下点是「按下那一刻」的位置，不是当前手指位置。
+        producer.pointer_move(2, [700.0, 500.0]);
+        producer.take_frame(&mut out);
+        assert_eq!(
+            out.press_cursors,
+            [[100.0, 200.0], [600.0, 400.0], [0.0, 0.0], [0.0, 0.0]],
+            "移动不得改写任何按下点"
+        );
+        // 抬起第一指 ⇒ 数组按按下先后**压实**（不留洞），否则按索引取按下点会取到空槽。
+        producer.pointer_up(1);
+        producer.take_frame(&mut out);
+        assert_eq!(out.pointer_count, 1);
+        assert_eq!(out.press_cursors[0], [600.0, 400.0], "抬起后压实，不留洞");
+        // 桌面鼠标也算一根手指：没有多指事件时 `pointer_count` 至少为 1，Lua 按索引取值才不落空。
+        let mut mouse = FrameInputProducer::new();
+        let mut wire = rustlua_frame_abi::FrameInput::new();
+        mouse.pointer_moved([40.0, 50.0]);
+        mouse.mouse_down("left");
+        mouse.take_frame(&mut wire);
+        assert_eq!(wire.pointer_count, 1, "鼠标按住 = 一根手指");
+        assert_eq!(wire.press_cursors[0], [40.0, 50.0]);
+    }
+
+    #[test]
+    fn script_driver_is_empty_exactly_when_no_window_was_given() {
+        assert!(ScriptDriver::new(InputScript::default()).is_empty());
+        let script = InputScript::parse("w:10-20").expect("剧本可解析");
+        assert!(!ScriptDriver::new(script).is_empty());
     }
 }

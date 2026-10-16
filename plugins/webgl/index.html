@@ -4,15 +4,19 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>__PUBLISH_NAME__</title>
+  <link rel="icon" type="image/png" href="./branding/icon.png" />
   <style>
-    html, body { margin: 0; width: 100%; height: 100%; background: #151923; overflow: hidden; }
+    html, body { margin: 0; width: 100%; height: 100%; background: #0f192b; overflow: hidden; }
     canvas { display: block; width: 100vw; height: 100vh; }
+    #startup-brand { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #0f192b; pointer-events: none; }
+    #startup-brand[hidden] { display: none; }
     #status { position: fixed; left: 16px; top: 12px; color: #d0d7e2; font: 14px sans-serif; }
   </style>
 </head>
 <body data-rustlua-boot="pending">
   <canvas id="rustlua-canvas"></canvas>
-  <div id="status">Loading __PUBLISH_NAME__...</div>
+  <img id="startup-brand" src="./branding/splash.png" alt="" fetchpriority="high" />
+  <div id="status" role="status">Loading __PUBLISH_NAME__...</div>
   <script>window.__RUSTLUA_FONT = '__FONT_PATH__';</script>
   <script>
     // 后备缓冲（canvas.width/height）必须跟随**布局尺寸 × dpr**。
@@ -53,9 +57,11 @@
     import init, { start, lua_boot, lua_do_string, lua_set_number, lua_set_numbers, lua_input_frame, input_frame_layout_json, lua_call_global, lua_call_global_void, lua_register_js_callback, lua_missing_globals, lua_execute_main, lua_api_surface_json, host_api_module_names_json, lua_fixed_frame, lua_fixed_run_steps, lua_fixed_steps_dropped, lua_fixed_accumulator_seconds, lua_fixed_reset_clock, lua_entity_handle } from './pkg/game_web.js';
     const publishName = __PUBLISH_NAME_JSON__;
     const status = document.getElementById('status');
+    const brand = document.getElementById('startup-brand');
     const markBoot = (state, detail) => {
       document.body.setAttribute('data-rustlua-boot', state);
       if (detail) document.body.setAttribute('data-rustlua-boot-detail', String(detail).slice(0, 400));
+      if (state !== 'pending') brand.hidden = true;
     };
 
     // ---- 新 EH 覆盖门槛守卫 ----
@@ -172,23 +178,16 @@
             gpuOff: gpu === '0' || gpu === 'false',
           };
         })();
-        // 能力探针，不是猜：`gpu_host_run` 只在 `gpu2d` 档编译进 wasm。
+        // **旧世界（`web-runtime.js`）已随 B8 删除**，所以这里**不再有**"回退去跑 JS 世界"的分支：
+        // 页面要么由 Rust 宿主画（`gpu_host_run` 编进了 wasm），要么什么都不画。
+        // 保留下面的诊断行，是因为**两条验收门都靠它判断"这些门有没有写者"** —— 三个原因仍要
+        // 分开说，别让"显式关了 GPU"和"引擎独占这一帧"长得一样。
         const gpuHostCompiled = !!wasmExports && typeof wasmExports.gpu_host_run === 'function';
-        const fallbackToLegacyWorld = !gpuHostCompiled && !flags.jsHostOff;
-        if ((flags.jsHost || fallbackToLegacyWorld) && typeof window.rustluaRunLuaGame === 'function') {
-          if (fallbackToLegacyWorld) {
-            console.log('[host] this build has no GPU host (no `gpu_host_run` in the wasm exports); '
-              + 'running the legacy JS world so the page is not blank');
-          }
-          await window.rustluaRunLuaGame(status);
-        } else {
-          // 这行是"谁在画"的现场凭据，两个验收门都靠它判断"这些门有没有写者"——
-          // 所以三个原因要分开说，别让"显式关了 GPU"和"引擎独占这一帧"长得一样。
-          console.log('[host] legacy JS world skipped ('
-            + (flags.jsHostOff ? 'rustlua-js-host=0'
-              : (flags.gpuOff ? 'rustlua-gpu=0: nobody draws by request'
-                : 'engine host owns the frame')) + ')');
-        }
+        console.log('[host] legacy JS world skipped ('
+          + (flags.jsHostOff ? 'rustlua-js-host=0'
+            : (flags.gpuOff ? 'rustlua-gpu=0: nobody draws by request'
+              : (gpuHostCompiled ? 'engine host owns the frame'
+                : 'this build has no GPU host (no `gpu_host_run` in the wasm exports)')) ) + ')');
         // 启动成功后收起这行加载文案：留着就是盖在游戏画面左上的一条调试字。
         // 失败分支不动（那时它是玩家唯一能看到的报错出口）。
         if (window.__RUSTLUA_DEBUG) status.textContent = publishName + ' - Lua running (mlua-wasm)';

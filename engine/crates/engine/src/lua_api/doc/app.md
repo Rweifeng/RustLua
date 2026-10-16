@@ -16,13 +16,14 @@
 
 - 参数：无
 - 返回：`"desktop"`（native 桌面 / 编辑器预览 / headless 验收）或 `"webgl"`（`wasm32-unknown-unknown`，
-  浏览器与微信小游戏共用同一 wasm 运行时，故两者同值）
+  浏览器与微信小游戏都构建同一个 `game_web` 源核心；虽然最终 WASM 属于不同平台发布变体，
+  但该返回值是同一个 wasm32 编译期常量，故两者同值）
 - 失败：不会失败（编译期常量，不查宿主能力）
 - 示例：`local touch_host = app.platform() == "webgl"`
 
 ## `app.project_root()`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/globals.rs:236`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/globals.rs:237`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 

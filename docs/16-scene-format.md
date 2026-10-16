@@ -374,7 +374,7 @@ cargo run -p game --example jhyt_m72_tile_variant_determinism --release  # 变�
 cargo run -p game --example jhyt_m72_autotile_mask --release             # 4-bit 掩码解出的条目 == 真画出来的
 cargo run -p game --example jhyt_m72_tile_tint --release                 # 染色落到顶点色（读 mesh 不读像素）
 cargo run -p game --example jhyt_m72_crop_stages --release -- examples/game_jhyt  # 作物阶段图集（8x29=232 槽，离 255 只剩 23）
-node scripts/check-tile-hash-parity.mjs                         # web 宿主的 JS/Lua 镜像与 Rust 金标逐位一致
+node engine 侧的两条金标门（`rustlua-ecs` 内测试 + `jhyt_m72_tile_variant_determinism`；原 `scripts/check-tile-hash-parity.mjs` 随 B8 退休）                         # web 宿主的 JS/Lua 镜像与 Rust 金标逐位一致
 ```
 
 **这些门的工程根参数**：`env::args().nth(1)` 缺省时回落到 `games_dir()/game_jhyt`

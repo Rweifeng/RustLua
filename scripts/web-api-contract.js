@@ -2,7 +2,7 @@
 //
 // 为什么需要它：wasm 里的 Lua **注册层**已实测与桌面逐字节相同（L1，41 张表 / 275 个函数），
 // 但 `web-runtime.js` 的宿主补丁层重定义了引擎已注册的一批实现（L2 清单——覆盖点数由
-// `node scripts/check-web-api-overrides.mjs` 给，2026-10-03 实测 54 个覆盖点 / 11 个模块）。
+// `node scripts/check-web-api-overrides.mjs（已随 B8 退休）` 给，2026-10-03 实测 54 个覆盖点 / 11 个模块）。
 // 名字两边都在，所以比名字的门抓不到分叉——分叉在**返回值形状与状态归属**。已实测的一例：
 //   引擎版 clock.now() -> day,hour,minute,minute_of_day,paused,rate
 //   补丁版 clock.now() -> day,minute,minute_of_day（少三个字段，Lua 读到 nil 且不报错）

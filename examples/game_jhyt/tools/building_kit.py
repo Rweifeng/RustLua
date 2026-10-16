@@ -29,6 +29,12 @@
 `role=ground_tilemap` 那条 Tilemap 读（所以这里不再存 manor 的路径），后两样收在 `SCENES`
 里按场景的 `name=` 取。**没登记的场景当场红**，不会静默用 manor 的门洞去量云泽村。
 
+**落点净空**（M72-11 之后由 #28 补上，见 `check_placement`）：`data/maps.lua` 里每一个"玩家
+会被放置的格"（每张图的 `spawn` + 所有落到本图的 `exits[].to_cell`）都必须让主角的脚底球
+**横向**至少走得开一格。这条与上面两条判法不同轴：solid 有可视依据、洞真是洞，都不保证
+人站在那一格上还能挪动——一格宽（32px）的门洞里放一个 24px 宽的球，左右各只剩 4 像素，
+按方向键就是"事件全在、世界不动"（#24 量到的 140→4）。
+
 用法（工程根目录 `examples/game_jhyt` 下）：
 
     python tools/building_kit.py scenes/manor.scene            # 只报告（差多少格）
@@ -40,6 +46,7 @@
 
 import argparse
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -79,10 +86,24 @@ OCCLUDER_LAYER = "foreground"
 # 而"看着有门其实实心"的写法（药庐那种棕色门板）在 0.86~1.00，中间隔着一条宽缝。
 HOLE_MAX_OPAQUE_RATIO = 0.35
 
+# 主角的脚底球：`35155c81` 把碰撞盒从躯干框换成脚底一个球（球心 = Transform + offset，
+# 半径 12 ⇒ 盒 24×24 跨在 32px 的瓦上）。这三样同时是**生成器写进场景的那一行**与
+# `check_placement` 算余量用的几何，所以物理口径只在这里定义一次。
+PLAYER_ENTITY = "JianghuPlayer"
+PLAYER_BALL_RADIUS = 12.0
+PLAYER_BALL_OFFSET = (0.0, -16.0)
+# 落点横向净空的门槛：一个瓦格。为什么只管横向——门洞/门前格**合法地**在纵向被墙贴脸
+# （村口 (10,19) 出村后北面 52px 就是门楼，药庐门口 (5,14) 北面只剩 20px），而"按了左右键
+# 世界不动"这个症状只在横向被夹住时出现（#24：同一格南北余量 52/340，左右各 4）。
+MIN_PLACEMENT_LATERAL_GAP = TILE
+# 那一行到地图边缘都没有实心格时的读数：不是"没有墙"，是"够得着走"。
+OPEN_GAP = 999.0
+
 # 每张图专有的三样（判据本身全场景相同，见模块 docstring）：
 #   * `openings`：这张图的门洞格。村庄与山道那三个洞的出处都是 `data/maps.lua` 的出口格——
 #     南门 (19,1)(19,2) 是村↔山庄出口，山门 (10,20) 是村↔青云山出口，
-#     山道的 MountainGate (19,1)(19,2) 是山↔村出口格与山的落点（= spawn）。
+#     山道的 MountainGate (19,1)(19,2) 是山↔村出口格与它北邻的通道格（#28 起山的 spawn/落点
+#     挪到门北两格 (19,4)，洞这两格只留"穿过门楼"这一件事）。
 #     山门那条按**数据侧的出口格**放：它压 x9..12 三行（128×96 贴北墙），只有最底一行 (10,20) 实测
 #     是洞（不透明占比 0.156），上面两行是门楼的身与顶（0.94~0.99）。人从 (10,19) 走进去、
 #     在那一格按 E 切图，落点回 (10,19)——所以 (10,20) 必须是可站的洞，而它上面那格
@@ -118,10 +139,11 @@ SCENES = {
         },
     },
     # 青云山道（M72-11）。**门洞格与出口格同源**：`data/maps.lua` 的 `mountain_to_village`
-    # 出口格是 (19,1)，`village_to_mountain` 的落点（= 本图 spawn）是 (19,2)，所以山门那一列
-    # 必须有两格可站的洞。贴图 128×96 压在 cell (18,0)：紧包围盒 x18..21 × y0..2 共 12 格，
-    # 减这两个洞 = 10 格实心（`gen_wilds_art.build_mountain_gate` 把「青云山」匾挂在额枋
-    # 行 16..31、通道行 32..63 只留一道檐下阴影，就是为了让 (19,1) 真是洞）。
+    # 出口格是 (19,1)，而洞要有两格可站才穿得过去（(19,1) 与门内通道格 (19,2)）——#28 之前
+    # `village_to_mountain` 的落点（= 本图 spawn）就压在那第二格上，脚底球在两柱之间左右各剩
+    # 4 px；现在落点是门北两格的 (19,4)，洞只服务"穿过门楼"。贴图 128×96 压在 cell (18,0)：
+    # 紧包围盒 x18..21 × y0..2 共 12 格，减这两个洞 = 10 格实心（`gen_wilds_art.build_mountain_gate`
+    # 把「青云山」匾挂在额枋行 16..31、通道行 32..63 只留一道檐下阴影，就是为了让 (19,1) 真是洞）。
     "mountain_path": {
         "openings": {
             "MountainGate": ((19, 1), (19, 2)),
@@ -619,6 +641,166 @@ def check_openings(scene_path, root=None):
     return problems
 
 
+# ---------------------------------------------------------------------------
+# 落点净空：地图注册表里的每一个放置格，横向都必须走得开一格
+# ---------------------------------------------------------------------------
+
+
+def player_ball_collider():
+    """主角 `Collider` 那一行的字段串。三个生成器写场景时调用它——物理口径不许再抄第二遍。"""
+    return "shape=ball;radius=%g;offset=%g,%g" % (PLAYER_BALL_RADIUS, *PLAYER_BALL_OFFSET)
+
+
+def read_player_ball(lines):
+    """盘上主角的 (半径, offset)。这里**不读常量**：谁手改了碰撞盒，这条必须在读数里露出来。"""
+    ids = set()
+    hits = []
+    for line in lines:
+        parts = line.split("\t")
+        if len(parts) >= 3 and parts[0] == "entity" and parts[2] == PLAYER_ENTITY:
+            ids.add(parts[1])
+        elif len(parts) >= 4 and parts[0] == "component" and parts[2] == "Collider":
+            hits.append((parts[1], _fields(line)))
+    player_hits = [(eid, fields) for eid, fields in hits if eid in ids]
+    if len(player_hits) != 1:
+        raise SystemExit(f"[FAIL] 期望 {PLAYER_ENTITY} 恰好一条 Collider，实到 "
+                         f"{len(player_hits)} 条：落点净空没有球盒几何可算")
+    fields = player_hits[0][1]
+    return float(fields["radius"]), tuple(float(v) for v in fields["offset"].split(","))
+
+
+def ball_rect(cell, radius=None, offset=None):
+    """放置格 -> 脚底球的世界矩形 (x0, y0, x1, y1)。cell 中心 = ((x+.5)*TILE, (y+.5)*TILE)。"""
+    radius, offset = (PLAYER_BALL_RADIUS, PLAYER_BALL_OFFSET) if radius is None else (radius, offset)
+    cx = (cell[0] + 0.5) * TILE + offset[0]
+    cy = (cell[1] + 0.5) * TILE + offset[1]
+    return (cx - radius, cy - radius, cx + radius, cy + radius)
+
+
+def _row_span(y0, y1, height):
+    return range(max(0, int(y0 // TILE)), min(height - 1, int((y1 - 1) // TILE)) + 1)
+
+
+def solid_bits(rows):
+    """生成器手里的 `solid[y][x]` 真值表 -> 场景里那串 row-major 的 0/1（同一份判据两种载体）。"""
+    return "".join("1" if cell else "0" for row in rows for cell in row)
+
+
+def lateral_clearance(solid, width, height, cell, radius=None, offset=None):
+    """一个放置格的横向读数 {"left","right","overlaps_solid"}（单位 px，无阻挡记 `OPEN_GAP`）。
+
+    算法与 #24 那台已校准的静态量具逐值相同（同一套 `idx = row*width + col`、球心 =
+    Transform + offset、挡源 = GroundMap 的 `solid` 位串），只是不量纵向——见
+    `MIN_PLACEMENT_LATERAL_GAP` 那条为什么。它与运行期的对应关系：那一串实心格每格是一个
+    静态 cuboid（`crates/rustlua-ecs/src/tilemap.rs`），球盒贴到它们边上就挪不动。
+    """
+    x0, y0, x1, y1 = ball_rect(cell, radius, offset)
+    rows = list(_row_span(y0, y1, height))
+    c_left, c_right = int(x0 // TILE), int((x1 - 1) // TILE)
+    out = {}
+    for direction, start, stop, step in (("left", c_left, -1, -1), ("right", c_right, width, 1)):
+        best = None
+        for column in range(start, stop, step):
+            if any(solid[row * width + column] == "1" for row in rows):
+                edge = column * TILE if direction == "right" else column * TILE + TILE
+                gap = edge - x1 if direction == "right" else x0 - edge
+                best = gap if best is None else min(best, gap)
+        out[direction] = OPEN_GAP if best is None else max(0.0, float(best))
+    out["overlaps_solid"] = any(solid[row * width + column] == "1"
+                                for row in rows for column in range(c_left, c_right + 1))
+    return out
+
+
+def read_map_registry(scene, path=None):
+    """`data/maps.lua` 里**落到这张图**的放置格：`spawn` + 所有 `to == scene` 的 `to_cell`。
+
+    不执行 Lua：按两格缩进的地图块切段、逐行正则取数（`gen_arena_scene.read_arena_registry`
+    同一条口径，只是那份只认 combat_arena）。`to_cell` 是**目标图**的格，所以必须按 `to`
+    归到目标图的网格上去量——拿源图的 `solid` 串量它，读数是另一张图的。
+    """
+    path = path or os.path.join(project_root(), "scripts", "data", "maps.lua")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"{path} 读不到：放置格是三方一致契约的另一侧")
+    text = open(path, encoding="utf-8").read()
+    body = text[text.index("M.maps = {"):]
+    out = {"spawn": None, "landings": []}
+    key = None
+    pending = {}
+    for line in body.splitlines():
+        started = re.match(r"^\s{2}(\w+) = \{$", line)
+        if started:
+            key = started.group(1)
+            pending = {}
+            continue
+        if key is None:
+            continue
+        spawn = re.search(r"spawn = \{\s*x = (\d+),\s*y = (\d+)\s*\}", line)
+        if spawn:
+            if key == scene:
+                out["spawn"] = (int(spawn.group(1)), int(spawn.group(2)))
+            continue
+        ident = re.search(r"id = \"(\w+)\"", line)
+        if ident:
+            pending = {"exit": ident.group(1)}
+            continue
+        target = re.search(r"to = \"(\w+)\"", line)
+        if target:
+            pending["to"] = target.group(1)
+            continue
+        landing = re.search(r"to_cell = \{\s*x = (\d+),\s*y = (\d+)\s*\}", line)
+        if landing and pending.get("to") == scene:
+            out["landings"].append(("%s.%s" % (key, pending.get("exit", "?")),
+                                    int(landing.group(1)), int(landing.group(2))))
+    if out["spawn"] is None:
+        raise SystemExit(f"[FAIL] data/maps.lua 里找不到地图 {scene!r} 的 spawn："
+                         "落点净空没有输入（场景键必须与地图键同名）")
+    return out
+
+
+def placement_problems(width, height, solid, cells, radius=PLAYER_BALL_RADIUS,
+                       offset=PLAYER_BALL_OFFSET):
+    """(问题列表, 读数列表)。`cells` = [(标签, (x, y))]，`solid` 是 row-major 的 0/1 串。
+
+    盘上门（`check_placement`）与三张户外图生成器的 `self_check` 共用这一份实现——
+    判据写在两处就会漂，而这条判据的产物是"玩家进图能不能挪动"。
+    """
+    problems, readings = [], []
+    for label, cell in cells:
+        if not (0 <= cell[0] < width and 0 <= cell[1] < height):
+            problems.append(f"{label} 的放置格 {cell} 越出 {width}x{height} 网格")
+            continue
+        got = lateral_clearance(solid, width, height, cell, radius, offset)
+        readings.append((label, cell, got["left"], got["right"]))
+        if got["overlaps_solid"]:
+            problems.append(f"{label} 的放置格 {cell} 上脚底球与实心格重叠："
+                            "玩家一帧就被推出（或被卡在墙里）")
+            continue
+        for direction in ("left", "right"):
+            if got[direction] < MIN_PLACEMENT_LATERAL_GAP:
+                problems.append(
+                    f"{label} 的放置格 {cell} 往{'左' if direction == 'left' else '右'}只有 "
+                    f"{got[direction]:g} px（< 一格 {MIN_PLACEMENT_LATERAL_GAP}）："
+                    "按住那个方向键世界不动——#24 量到的 4 px 门洞夹就是这个形状")
+    return problems, readings
+
+
+def check_placement(scene_path):
+    """盘上这条图的落点净空：问题列表 + 读数列表（口径见 `placement_problems`）。"""
+    lines = open(scene_path, encoding="utf-8").read().splitlines()
+    scene = scene_name(lines)
+    _row, _fields_, width, height, _kinds, solid = ground_component(lines)
+    radius, offset = read_player_ball(lines)
+    if radius != PLAYER_BALL_RADIUS or tuple(offset) != PLAYER_BALL_OFFSET:
+        return ([f"{PLAYER_ENTITY} 的碰撞盒 r={radius:g} offset={offset[0]:g},{offset[1]:g} "
+                 f"与 building_kit 的常量 r={PLAYER_BALL_RADIUS:g} "
+                 f"offset={PLAYER_BALL_OFFSET[0]:g},{PLAYER_BALL_OFFSET[1]:g} 不一致："
+                 "物理口径有两个出处"], [])
+    registry = read_map_registry(scene)
+    cells = [("spawn", registry["spawn"])] + [(label, (x, y))
+                                              for label, x, y in registry["landings"]]
+    return placement_problems(width, height, solid, cells, radius, offset)
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description="建筑占位/碰撞对拍")
     parser.add_argument("scene")
@@ -639,7 +821,12 @@ def main(argv):
         print("   悬空格（撞空气）：", result["orphan"])
     if result["missing"]:
         print("   缺碰撞格：", result["missing"])
-    for problem in check_openings(args.scene):
+    opening_problems = check_openings(args.scene)
+    placement_problems, placement_readings = check_placement(args.scene)
+    for label, cell, left, right in placement_readings:
+        print("   落点 %-30s cell=(%2d,%2d) 横向净空 左%4g/右%4g" % (
+            label, cell[0], cell[1], left, right))
+    for problem in opening_problems + placement_problems:
         print("   [FAIL]", problem)
 
     if args.apply:
@@ -647,7 +834,8 @@ def main(argv):
         with open(args.scene, "w", encoding="utf-8", newline="\n") as handle:
             handle.write("\n".join(lines) + "\n")
         print(f"   applied -> {args.scene}")
-    elif args.check and (result["missing"] or result["orphan"] or check_openings(args.scene)):
+    elif args.check and (result["missing"] or result["orphan"]
+                         or opening_problems or placement_problems):
         return 1
     return 0
 

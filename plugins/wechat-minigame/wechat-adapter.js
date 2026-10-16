@@ -1448,26 +1448,20 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 是否与 wx.createCanvas() 返回的是同一个对象（true 时说明"首次调用"语义被我们用对了）。
   var canvasIsCreated = !!(createdCanvas && canvas === createdCanvas);
 
-  // ── 可见画面接管开关（任务 #13 方案 A：引擎宿主绑主画布）──────────────────────
-  // 为什么必须在**模块加载时**读：一张画布只能开一个上下文，"2d 要不要改道到离屏"必须在
-  // 任何人第一次 `getContext('2d')` 之前定下来——等引擎宿主真要拿主画布时再改道就晚了
-  // （2d 已经绑在主画布上，主画布从此给不出 webgl2）。验收 harness 要在
-  // `require('./wechat-adapter.js')` **之前**置 `globalThis.__RUSTLUA_ENGINE_HOST_VISIBLE = true`。
-  // 开关形态与其它开关同款（全局 / 存储），默认关 ⇒ 生产读数不变。
-  function engineHostVisibleEnabled() {
-    try { if (globalThis.__RUSTLUA_ENGINE_HOST_VISIBLE === true) return true; } catch (error) { /* 无全局对象 */ }
-    try {
-      if (typeof wx.getStorageSync === 'function') {
-        var stored = wx.getStorageSync('rustlua_engine_host_visible');
-        if (stored === true || stored === 1 || stored === '1') return true;
-      }
-    } catch (error) { /* 存储不可用不影响结论 */ }
-    return false;
-  }
-  var engineVisibleTakeover = engineHostVisibleEnabled();
+  // **B8：原子模式开关已退休。** 这里原本是一个"原子模式"开关（默认开、可显式关回旧形态），
+  // 它一次决定四件事：主画布归 Rust 宿主、2d 改道离屏、走 scene 档（`sim:'script'`）、帧源归宿主。
+  // 旧世界删除后**没有可回退的旧形态**了，所以这四件事不再需要开关 —— 它们就是唯一形态。
+  // 原先读它的两个入口（全局 `__RUSTLUA_RUST_SCENE_HOST` 与存储 `rustlua_rust_scene_host`）一并删除。
+
+  // **B8：可见接管开关（`__RUSTLUA_ENGINE_HOST_VISIBLE`）已随原子模式退休。** 它的唯一作用曾是
+  // "原子模式被显式关掉时仍跑接管形态"；原子模式现在是唯一形态，所以它没有可作用的场合。
+  // 接管形态的**唯一**判据：原子模式（默认）或被显式要求的旧 VISIBLE 开关。
+  // **B8：恒真** —— 原子宿主是唯一形态 ⇒ 可见接管恒开（原判据还看上面那个已删的开关）。
+  var engineVisibleTakeover = true;
 
   // 2d 改道的读数（diag 用）。状态机：
-  //   off            —— 开关没开，2d 照旧绑主画布（生产形态）；
+  //   off            —— 已不存在：原子模式恒开（2d 不再有"照旧绑主画布"的形态）。
+  //                    （本笔之前的旧生产形态，现在只由"显式关掉原子模式"得到）；
   //   redirected     —— 2d 已改道到离屏画布，主画布留给引擎宿主的 webgl2；
   //   fallback-main —— 改道画布拿不到 ⇒ 退回"2d 绑主画布"（画面优先于接管，host 会因此拿不到
   //                     webgl2，具名失败在 engine_host.reason 里，这是**可见**的降级不是静默）。
@@ -1649,17 +1643,38 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 与探针的分工：探针只回答"能不能起渲染栈"；这里**起一个宿主**并按帧 `engine_host_frame`，
   // 于是微信侧第一次有"引擎自己在画布上出帧"的能力（清屏 + 呈现，状态按帧回报）。
   //
-  // 开关默认**关**（`globalThis.__RUSTLUA_ENGINE_HOST === true`，或
-  // `wx.setStorageSync('rustlua_engine_host', 1)`）——它每帧多一次 GPU 提交，属于要显式要求的动作。
+  // （B8：原子模式已是唯一形态，下面那段旧开关说明只作沿革保留。）
+  // （或 `wx.setStorageSync('rustlua_engine_host', 1)`）在原子模式被显式关掉时仍可用——
+  // 它是"只起宿主、不改道画面"的那条旧通路，harness 既有跑法用它。
   //
-  // 输入走**同一份** `RLFI` 批量：适配层把运行时的 `lua_input_frame` 包一层，把那一帧的批量
-  // 原样记下来再转给宿主（不发明第二套输入协议）。运行时的调用与 afterFrame 的顺序决定这是
-  // "本帧"还是"上一帧"的输入——诊断用途无所谓，真接模拟时再看这个顺序。
+  // 输入走**同一份** `RLFI` 批量，且**只有一个所有者**：运行时（web-runtime.js）把设备快照打成
+  // `RLFI` 发给 `lua_input_frame`，适配层那层包装只**计数**再原样转给同一个 wasm 导出
+  // （`result.host.lua_input_frame(bytes)`——不发明第二套协议、不搬字节）。宿主自己那条帧路
+  // （`engineHostDriveFrame`）**恒传 `undefined`**，所以定长 ABI 里的 `input_applied` 恒为 0：
+  // 这就是"宿主不是第二个注入者"的**可读证据**，而 `runtime_input_frames` 才是注入计数。
+  // 为什么原子模式下也不把注入搬给宿主：`apply()` 的返回值是 wasm 侧真的改了几位，进
+  // `input frames=N bits=M` 读数，是"两边对'这一帧该变哪些位'理解不一致"的第一手线索（恒 0 =
+  // 异常信号）。搬走等于让宿主在**下一帧**才解码这一批 ⇒ 这一帧拿不到真值 ⇒ 那个守卫读数变成
+  // 恒 0 的假信号。搬家的前提是删掉旧 JS 世界那一笔（那时这个读数也一起没了），不是本笔。
   var engineHost = {
     status: 'off', reason: '', source: '', begin: '', frames: 0, steps: 0,
     presented: 0, failed: 0, clamped: 0, inputApplied: 0, lastState: null,
     // 本次宿主是不是接管的**主画布**（方案 A）；diag 与 harness 都读它，不猜开关组合。
     visibleTakeover: false,
+    // 帧源（谁拥有帧泵）：`wx.requestAnimationFrame`（原子模式且有它）或 `setTimeout`（兜底）。
+    // 只留字符串读数——"帧率不对 / 泵没起来"这类现场，第一个要问的就是它挂在哪个帧源上。
+    frameSource: '',
+    // 收到窗口尺寸变化并**成功通知宿主**的次数（engine_host_resize）。为什么要有这个读数：
+    // 真机横竖屏切换后「画面比例不对」的第一个问题就是「宿主到底知不知道尺寸变了」——
+    // 只改 canvas 属性也能让 presented= 照常增长，从读数上看不出区别。
+    resizeCalls: 0,
+    // B4：**宿主自己的**输入生产者跑了多少帧 / 落不进线格式的键名个数 / 最近一次 flush 的读数。
+    // 为什么必须有这两个数：输入所有权从旧运行时交到宿主之后，"旧通道还用不用"（
+    // `runtimeInputFrames`）与"新通道有没有在工作"必须能分开读——只盯前者会把
+    // "两边都没动"读成"交接完成"。
+    hostInputFrames: 0, hostInputDroppedKeys: 0, hostInputLast: "",
+    // 多指（微信侧）：到达每指导出的触摸事件数 / "同时按住多根"的帧数 / 当前按住的 id 集合。
+    hostTouchEvents: 0, hostTouchMulti: 0, hostTouchActive: {},
     // ④ 前后台门控计数：hidden 期间被跳过、没有送去 `engine_host_frame` 的帧数。
     hiddenSkips: 0,
     // ⑥ begin summary 里的 Rust 侧线性内存（`wasm_mem_bytes`），从 JSON 里抠出来单记——
@@ -1682,6 +1697,8 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   var engineHostMinMs = 0;
 
   function engineHostEnabled() {
+    // 原子模式（默认开）：主画布、2d 改道、scene 档、帧源都归宿主——它就是"宿主开着"。
+    return true; // B8：原子宿主是唯一形态（下面几条旧判据已不可达，待单独一轮清扫）
     // 可见接管开关**蕴含**引擎宿主开关：接管形态下宿主是画面所有者，不存在"开接管不开宿主"。
     if (engineVisibleTakeover) return true;
     try { if (globalThis.__RUSTLUA_ENGINE_HOST === true) return true; } catch (error) { /* 无全局对象 */ }
@@ -1697,6 +1714,8 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 宿主的**第二个**开关：谁跑 Lua 的固定步。默认关，因为老 JS 世界每帧也在跑
   // （`lua_fixed_frame` + 自己的 update 循环）；两边同时跑就是把世界推进两次。
   // 打开它 = "引擎宿主拥有整个世界"那条路，接线到生产路径时要连老世界的 tick 一起关。
+  // **原子模式下它被忽略**（恒 `tick:'none'`）：原子模式走 scene 档，而 scene 与 `tick:'lua'`
+  // 在 begin 里互斥（具名拒绝）——scene 档的固定步由共享宿主 `EngineCore::frame` 自己推进。
   function engineHostTickEnabled() {
     try { if (globalThis.__RUSTLUA_ENGINE_HOST_TICK === true) return true; } catch (error) { /* 无全局对象 */ }
     try {
@@ -1756,9 +1775,22 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     }
   }
 
+  // **启动状态的归属交接**（B5）：`ok` 以前由 JS 世界（web-runtime.js 的 markBoot）写，而 JS 世界
+  // 删除后它就没写者了 —— 诊断与回归门读的正是它。适配层是**会留下**的那一层，所以由它补。
+  // **只补不盖**：启动失败时本层自己写过 failed（见下面 setAttribute('data-rustlua-boot','failed')
+  // 那处），绝不能在这里被"那边一切正常"盖掉。与 Rust 孪生 `boot_state_to_publish` 成对改。
+  function publishBootOk() {
+    try {
+      var current = bodyElement.getAttribute ? bodyElement.getAttribute('data-rustlua-boot') : null;
+      if (current === 'failed' || current === 'ok') return;
+      bodyElement.setAttribute('data-rustlua-boot', 'ok');
+    } catch (error) { /* 属性写不进去不影响结论 */ }
+  }
+
   function engineHostFinish() {
     try { bodyElement.setAttribute('data-rustlua-engine-host', engineHost.status); }
     catch (error) { /* 属性写不进去不影响结论 */ }
+    if (engineHost.status === 'running') publishBootOk();
     log('wechat-adapter: 引擎宿主 status=' + engineHost.status + ' source=' + (engineHost.source || 'none') +
       ' frames=' + engineHost.frames + ' steps=' + engineHost.steps + ' presented=' + engineHost.presented +
       (engineHost.reason ? ' reason=' + engineHost.reason : ''));
@@ -1806,11 +1838,23 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       engineHostPromise = Promise.resolve(engineHostFinish());
       return engineHostPromise;
     }
-    var tickWanted = engineHostTickEnabled();
-    // scene 档开关（P1 共享核心，验收 harness 用）：给一个包内相对 .scene 路径，宿主就走
-    // 与浏览器**同一条**渲染链（Renderer + RustScene 真场景），而不是 clear-color 形态。
-    // 与 `tick=lua` 互斥（wasm 侧 begin 会具名拒绝），所以这里不关心开关组合、只管透传。
-    // 默认空串 = 不写 options.scene ⇒ 生产形态读数与 P0-①/接管两批完全可比。
+    // 固定步归属：`tick:'lua'` 与 scene 档在 begin 里**互斥**（具名拒绝，host_runtime.rs 的
+    // `scene_spec.is_some() && tick_lua` 那条），而原子模式走的就是 scene 档、固定步由共享宿主的
+    // `frame()` 推进 ⇒ 原子模式恒 `none`。旧开关 `__RUSTLUA_ENGINE_HOST_TICK` 只在原子模式被
+    // 显式关掉时才有意义（那条路上没有 scene，也就没有互斥）。
+    var tickRequested = engineHostTickEnabled();
+    var tickWanted = false; // B8：原子模式下固定步归宿主；原判据 tickRequested && !rustSceneHost 恒假
+    if (tickRequested) {
+      warn('wechat-adapter: 原子模式下固定步归宿主（scene 档由共享核心帧链推进），忽略 '
+        + '__RUSTLUA_ENGINE_HOST_TICK —— tick:"lua" 与 scene 互斥');
+    }
+    // scene 档路径（P1 共享核心；harness 的 scene 专跑用它）：显式给一个包内相对 .scene 路径，
+    // 宿主就走与浏览器**同一条**渲染链（Renderer + RustScene 真场景），而不是 clear-color 形态。
+    var scenePath = engineHostSwitchString('__RUSTLUA_ENGINE_HOST_SCENE', 'rustlua_engine_host_scene');
+    // 是不是 scene 档。**不能用 `scenePath` 当判据**：原子模式没有场景路径，而下面的 vfs 预装与
+    // 帧泵都只在 scene 档成立——判据写成 `scenePath &&` 会让原子模式**泵根本不启动**（presented
+    // 恒 0，而其余读数全绿），这是本笔最容易漏掉的一处。
+    var sceneMode = true; // B8：原子宿主恒开 ⇒ scene 档恒成立（原判据还看 scenePath）
     var optionsObj = {
       updates_per_second: 60,
       max_catch_up_steps: 8,
@@ -1818,7 +1862,8 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       canvas_width: width,
       canvas_height: height,
       // `tick: 'lua'` = 由宿主推进 Lua 固定步。老 JS 世界每帧也在跑，两边同时跑 =
-      // 世界推进两次 ⇒ 只有显式打开第二个开关才走这条路，并打一行警告。
+      // 世界推进两次 ⇒ 只有显式打开第二个开关、**且不在原子模式下**才走这条路
+      // （原子模式恒 `none`，见上面 `tickWanted` 的算式）。
       tick: tickWanted ? 'lua' : 'none',
       // 接管形态固定开像素回读：验收要"主画布真的被宿主画出来了"的**像素证据**，
       // 而不是只有 status=running（口径见 host_runtime.rs 的 preserveDrawingBuffer 注释——
@@ -1829,23 +1874,34 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         return override === null ? engineVisibleTakeover : override;
       })()
     };
-    var scenePath = engineHostSwitchString('__RUSTLUA_ENGINE_HOST_SCENE', 'rustlua_engine_host_scene');
     if (scenePath) {
+      // 显式给了场景路径 ⇒ 照旧同时给 `scene` 与 `sim`（`sim` 缺省即 `script`）——harness 的
+      // scene 专跑走这条，逐字不变。
       optionsObj.scene = scenePath;
       var simRoute = engineHostSwitchString('__RUSTLUA_ENGINE_HOST_SIM', 'rustlua_engine_host_sim');
       if (simRoute) optionsObj.sim = simRoute;
       log('wechat-adapter: 引擎宿主将以 scene 档启动 scene=' + scenePath + (simRoute ? ' sim=' + simRoute : ''));
+    } else {
+      // 原子模式：只给 `sim`、**不写 `scene` 键**。`sim:'script'`（`SimRoute::EngineStartup`）让
+      // **引擎自己解析启动场景**，这条路的 `scene_path` 只进读数 ⇒ 宿主可以不带场景路径直接进
+      // scene 档（host_runtime.rs::option_scene 的 `(None, Some(name))` 分支；另外三条路线仍必须
+      // 同时给 `scene`，它们由宿主提供场景字节）。原子模式只认这一个形态，所以这里不再透传
+      // `__RUSTLUA_ENGINE_HOST_SIM`——"一个原子模式"的意思就是没有第二种组合。
+      optionsObj.sim = 'script';
+      log('wechat-adapter: 引擎宿主以原子模式启动 sim=script（启动场景由引擎自己解析，不写 options.scene）');
     }
     var options = JSON.stringify(optionsObj);
-    // scene 档**预装 reader provider**（实测根因）：begin 里 `RustScene::boot` 会调
+    // scene 档（**原子模式与显式 scene 路径都要**，所以判据是 `sceneMode` 而不是 `scenePath`）
+    // **预装 reader provider**（实测根因）：begin 里 `RustScene::boot` 会调
     // `install_resource_provider`（= 预加载表 provider，微信侧表恒空），vfs 槽是一次性的——
     // 它先占了槽，运行时随后 `lua_boot` 装 reader 时"沿用现有"，main.lua 必炸
     // `vfs: resource not found: /project/scripts/main.lua` ⇒ boot=failed、rAF 链死。
     // 先用真 reader 装槽：RustScene 的读取落到真字节，运行时再 boot 沿用同一 provider。
-    if (scenePath && typeof host.lua_boot_with_reader === 'function' && wechatReadFileRef) {
+    if (sceneMode && typeof host.lua_boot_with_reader === 'function' && wechatReadFileRef) {
       try {
         host.lua_boot_with_reader(wechatReadFileRef);
-        log('wechat-adapter: scene 档已预装 reader provider（vfs 槽归适配层读取器）');
+        log('wechat-adapter: scene 档已预装 reader provider（vfs 槽归适配层读取器；mode='
+          + (scenePath ? 'scene-path=' + scenePath : 'atomic sim=script') + '）');
       } catch (error) {
         warn('wechat-adapter: scene 档预装 reader provider 失败 -> ' + hostError(error));
       }
@@ -1879,7 +1935,8 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       })
       .then(function () {
         // 帧 ABI 到位后才有"能出帧"的前提；scene 档从这里自带泵，其余形态照旧走 afterFrame。
-        if (scenePath && engineHost.status === 'running') startEngineHostScenePump();
+        // 判据是 `sceneMode`：原子模式**没有** `scenePath`，写成 `scenePath &&` 会让泵不启动。
+        if (sceneMode && engineHost.status === 'running') startEngineHostScenePump();
       })
       .catch(function (error) {
         engineHost.status = 'failed';
@@ -1927,20 +1984,42 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // scene 档的**自泵**标记。为什么 scene 档必须自带帧泵：`afterFrame` 挂在运行时（web-runtime.js）
   // 的 rAF 回调上，而 scene 档的语义是"引擎宿主自己起场景、跑自己的模拟"——它是画面与世界的
   // 所有者，出帧不该依赖被它接管的那一方（实测：scene 档 begin 成功、mode=scene、rust(boot ok)，
-  // 但运行时 boot=failed、rAF 链死 ⇒ presented 恒 0）。setTimeout 形态与 preBootUi 那条同理由
-  // （2696 行注释：不借 wx.requestAnimationFrame，那条队列是运行时的）。
+  // 但运行时 boot=failed、rAF 链死 ⇒ presented 恒 0）。
+  //
+  // 帧源（本笔）：`host_runtime.rs` 顶部契约写明帧源应由 `requestAnimationFrame` /
+  // `wx.requestAnimationFrame` 决定 ⇒ **原子模式优先用 `wx.requestAnimationFrame`**（宿主就是
+  // 帧所有者：`tick:'none'`、scene 档固定步由共享宿主的 `frame()` 推进），没有它才退回
+  // `setTimeout(tick, 16)`。旧形态（只显式开了 VISIBLE 的 harness 通路）仍走 `setTimeout`：
+  // 当初选它正是为了**不借**运行时的 rAF 队列（同一理由见下面 preBootUi 那两条刻意的约束），
+  // 而那条路上宿主还不是帧所有者。
+  // 实际挂在哪个帧源上写进 `engineHost.frameSource`——"谁拥有帧源"必须是可读读数，否则
+  // "帧率不对 / 泵没起来"只能靠猜；读数记的是**实际**在用的那个，不是意图。
   var engineHostScenePump = false;
 
   function startEngineHostScenePump() {
     if (engineHostScenePump) return;
     engineHostScenePump = true;
-    log('wechat-adapter: 引擎宿主 scene 档自泵启动（帧驱动不再依赖运行时 rAF）');
+    var useRaf = false;
+    try { useRaf = !!(wx && typeof wx.requestAnimationFrame === 'function'); } catch (error) { useRaf = false; }
+    engineHost.frameSource = useRaf ? 'wx.requestAnimationFrame' : 'setTimeout';
+    log('wechat-adapter: 引擎宿主 scene 档自泵启动（帧驱动不再依赖运行时 rAF）frameSource='
+      + engineHost.frameSource);
+    var schedule = null;
     var tick = function () {
       if (engineHost.status !== 'running') { engineHostScenePump = false; return; }
       engineHostDriveFrame();
-      setTimeout(tick, 16);
+      schedule();
     };
-    setTimeout(tick, 16);
+    schedule = useRaf ? function () {
+      try {
+        wx.requestAnimationFrame(tick);
+      } catch (error) {
+        // 平台帧源中途不可用 ⇒ 落到定时器，并把读数改成**实际**在用的那个。
+        engineHost.frameSource = 'setTimeout';
+        setTimeout(tick, 16);
+      }
+    } : function () { setTimeout(tick, 16); };
+    schedule();
   }
 
   // 每帧驱动宿主。**任何异常都必须降级成 failed 并停帧**：这是诊断通道，不许把游戏主循环掀翻。
@@ -1961,6 +2040,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     engineHostLastMs = now;
     // 输入批量**不转交**：注入归运行时（WP7-58），宿主只推进固定步。传 undefined 让宿主如实
     // 报"没注入过"——定长 ABI 里的 `input_applied` 恒为 0，这就是"宿主不是第二个注入者"的证据。
+    // **原子模式（本笔默认形态）下这条一字不变**：设备输入仍只经运行时的 `lua_input_frame` 注入
+    // （见门面那一段的复核），所以 `input_applied` 继续恒 0、`runtime_input_frames` 继续增长——
+    // 两个读数一起读就是"一个输入所有者"的证据。下面那条 tick 冲突门只在 `engineHost.tick`
+    // （= `tick:'lua'`）成立时才判；原子模式 `tick:'none'`，所以老世界照跑**不算**冲突。
     // 「一个世界只能有一个 tick」：宿主接管固定步之后，运行时**不许**再跑固定步。
     // 证据必须是"真的跑了"（`runtimeRunSteps`），不是"问了步数"——`lua_fixed_frame` 每帧都会问
     // （宿主接管时也照样问，才能拿到丢帧读数），拿它当证据会把正常态误判成双步（WP7-57 修的）。
@@ -1975,6 +2058,19 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       return;
     }
     try {
+      // B4：先把这一帧攒下的事件取成一份线格式落到 `LATEST_FRAME`，**再**驱动帧。顺序反了，
+      // 本帧的输入要等下一帧才被模拟看到（症状是"按键慢一帧"，而读数上看不出来）。
+      // B4 激活：先把这一帧攒下的事件取成一份线格式落到 `LATEST_FRAME`，**再**驱动帧（顺序反了会慢一帧）。
+      // 上游 `engineHostDriveFrame` 只在 `status==="running"` 时才被调，所以这里不必再判一次。
+      // （离线宿主起不来 ⇒ 泵根本不跑 ⇒ 这一段进不去，所以"离线两条通道都没动"是环境的必然。）
+      if (typeof host.engine_host_input_flush === 'function') {
+        try {
+          engineHost.hostInputLast = String(host.engine_host_input_flush()).slice(0, 200);
+          engineHost.hostInputFrames += 1;
+        } catch (error) {
+          warn('wechat-adapter: engine_host_input_flush 失败 -> ' + hostError(error));
+        }
+      }
       var written = host.engine_host_frame_into(dtMs, undefined, engineHost.out);
       if (written !== engineHost.out.length) {
         throw new Error('宿主帧 ABI 长度不符：写入 ' + written + '，布局 ' + engineHost.out.length);
@@ -2066,6 +2162,28 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         screenHeight = res.windowHeight;
         canvas.width = Math.max(1, Math.round(screenWidth * pixelRatio));
         canvas.height = Math.max(1, Math.round(screenHeight * pixelRatio));
+        // P1 第二片：宿主接管画面之后，窗口变化必须**通知宿主**——surface 的 config、渲染目标、
+        // 取景矩形与像素回读尺寸是四件必须同一帧改完的事，而那一处实现只在 wasm 里
+        // （engine_host_resize）。只改 canvas 属性会让画面按旧尺寸渲、往新尺寸显（比例永久失配，
+        // 而 presented= / rames= 全都正常，属于读数看不出来的错）。
+        // 失败只告警不掀翻：resize 不该把启动或帧循环带崩。
+        if (engineHost.status === 'running' && engineHost.visibleTakeover
+          && engineHostRef && typeof engineHostRef.engine_host_resize === 'function') {
+          try {
+            engineHostRef.engine_host_resize(canvas.width, canvas.height);
+            engineHost.resizeCalls += 1;
+          } catch (error) {
+            warn('wechat-adapter: engine_host_resize 失败 -> ' + hostError(error));
+          }
+        }
+        // 2d 改道那张离屏画布也跟着改：它虽然不上屏，但旧世界仍按它的尺寸算布局与命中，
+        // 停在旧尺寸会留下「窗口变了之后旧世界命中框错位」这种只在接管形态才有的错。
+        if (redirectCanvas) {
+          try {
+            redirectCanvas.width = canvas.width;
+            redirectCanvas.height = canvas.height;
+          } catch (error) { /* 改不动不影响结论 */ }
+        }
       }
     });
   }
@@ -2384,6 +2502,8 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       },
       // 引擎宿主（WP8 主线第二片）：与探针分开报——探针回答"能不能起渲染栈"，宿主回答
       // "起来之后每帧真的出了多少帧/走了多少固定步"。`running` 才有 frames/presented 的增量。
+      // **本笔之后默认形态是原子模式**：不带任何开关时这里会是 running（真机）或 failed
+      // （离线假宿主不给 GL）——`off` 只在原子模式被显式关掉时才出现。
       engine_host: {
         status: engineHost.status,
         source: engineHost.source || 'none',
@@ -2412,6 +2532,22 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         // 开关绑上了主画布（harness 置开关的时机错了），那时宿主拿不到 webgl2。
         visible_takeover: engineHost.visibleTakeover,
         scene_pump: engineHostScenePump,
+        // 帧源（谁拥有帧泵）：`wx.requestAnimationFrame` / `setTimeout` / `none`（泵没起来）。
+        // 与 `scene_pump` 一起读：`scene_pump=true` 而它是 `none` 是不可能的组合，出现即说明
+        // "泵标记被置上但一次都没调度"。
+        frame_source: engineHost.frameSource || 'none',
+        // 成功通知宿主的窗口尺寸变化次数（见引擎宿主对象上 resizeCalls 的说明）：
+        // 与 size 一起读——size 是宿主**以为**的尺寸，这个数是它**收到过**几次变化。
+        resize_calls: engineHost.resizeCalls,
+        // B4：宿主自己的输入通道（见引擎宿主对象上这几个字段的说明）。与 `runtime_input_frames`
+        // 一起读才判得出交接：前者恒 0 且后者增长 = 还没交接；两者都恒 0 = 两个都没动。
+        host_input_frames: engineHost.hostInputFrames,
+        host_input_dropped_keys: engineHost.hostInputDroppedKeys,
+        host_input_last: engineHost.hostInputLast,
+        // 多指：`host_touch_events > 0` 证明**真手指**到了每指导出；`host_touch_multi > 0` 才是
+        // "两指同时按"（需要用例真的同时按住两根手指，单指用例只会让前者 > 0）。
+        host_touch_events: engineHost.hostTouchEvents,
+        host_touch_multi: engineHost.hostTouchMulti,
         two_d_redirect: {
           status: twoDRedirect.status,
           source: twoDRedirect.source || 'none',
@@ -2814,6 +2950,79 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   function toCanvasX(clientX) { return clientX / screenWidth * canvas.width; }
   function toCanvasY(clientY) { return clientY / screenHeight * canvas.height; }
 
+  // canvas 像素 → **设计坐标**：与渲染端 contain 同一套算式（`VIEW_WIDTH/VIEW_HEIGHT` 是设计声明）。
+  // 为什么不能直接把 canvas 像素当设计坐标交过去：虚拟摇杆/按钮的命中框是**设计空间**的矩形，
+  // 差一个 contain 缩放就是"点哪儿都不对"，而这种错在读数上完全看不出来。
+  var designFit = { w: 0, h: 0, scale: 1, ox: 0, oy: 0 };
+  function designFromCanvas(px, py) {
+    var cw = canvas.width || 1, ch = canvas.height || 1;
+    if (designFit.w !== cw || designFit.h !== ch) {
+      var scale = Math.min(cw / VIEW_WIDTH, ch / VIEW_HEIGHT);
+      if (!(scale > 0)) scale = 1;
+      designFit = {
+        w: cw, h: ch, scale: scale,
+        ox: (cw - VIEW_WIDTH * scale) / 2,
+        oy: (ch - VIEW_HEIGHT * scale) / 2
+      };
+    }
+    return [(px - designFit.ox) / designFit.scale, (py - designFit.oy) / designFit.scale];
+  }
+
+  // ── B4：把同一份事件也喂给**宿主自己的输入生产者** ────────────────────────────────
+  //
+  // 两条通道并存是刻意的：旧世界还在（删它是步骤 3），而宿主必须能在**旧运行时不跑**时自己
+  // 收到输入——此前 `LATEST_FRAME` 的唯一写者是旧运行时，它一停，宿主每帧拿默认值：
+  // 不崩溃、不报错、`presented` 照涨，只是人钉死（`tasks/plan/M73-01` 的 B4/R1）。
+  //
+  // 只在原子模式下发（B8 起这就是唯一形态；原"旧形态一行不动"的说法已过时）。
+  // ── 多指：微信侧把**每根手指**喂给宿主的多指通路 ─────────────────────────────
+  //
+  // 为什么不复用 `feedHostInput`：它拿到的已经是"映射成 DOM 鼠标事件"的东西，**手指身份在那一步
+  // 就丢了**（桥只维护一个跟手触点 `pointer`）。多指要的是 `touch.identifier` 本身。
+  function feedHostTouch(kind, touch) {
+    // （B8：原 `if (!rustSceneHost) return;` 已删 —— 原子宿主恒开。）
+    var host = engineHostRef;
+    if (!host || !touch) return;
+    var fn = host["engine_host_input_pointer_" + kind];
+    if (typeof fn !== "function") return;   // 旧内核没这三个导出：静默跳过（与既有降级一致）
+    var design = designFromCanvas(Number(touch.clientX) || 0, Number(touch.clientY) || 0);
+    var id = Number(touch.identifier);
+    try {
+      if (kind === "up") fn.call(host, id);
+      else fn.call(host, id, design[0], design[1]);
+    } catch (error) { return; }
+    engineHost.hostTouchEvents += 1;
+    // 同时按住的根数：这是微信侧"两指同时按"的可断言读数（与宿主侧的 `multipoint_frames` 同口径，
+    // 但这一份是**适配层自己数的**，所以能证明"真手指到了导出"，而不只是"宿主报了数"）。
+    if (kind === "down") engineHost.hostTouchActive[id] = true;
+    else if (kind === "up") delete engineHost.hostTouchActive[id];
+    if (Object.keys(engineHost.hostTouchActive).length > 1) engineHost.hostTouchMulti += 1;
+  }
+
+  function feedHostInput(event) {
+    // （B8：原 `if (!rustSceneHost) return;` 已删 —— 原子宿主恒开。）
+    var host = engineHostRef;
+    if (!host || !event) return;
+    var type = event.type;
+    if (type === "keydown" || type === "keyup") {
+      if (typeof host.engine_host_input_key !== "function") return;
+      try {
+        var accepted = host.engine_host_input_key(String(event.key == null ? "" : event.key), type === "keydown");
+        if (accepted === false) engineHost.hostInputDroppedKeys += 1;
+      } catch (error) { /* 单次事件失败不掀翻启动 */ }
+      return;
+    }
+    if (type === "mousedown" || type === "mousemove" || type === "mouseup") {
+      var design = designFromCanvas(Number(event.clientX) || 0, Number(event.clientY) || 0);
+      if (typeof host.engine_host_input_pointer === "function") {
+        try { host.engine_host_input_pointer(design[0], design[1]); } catch (error) { /* 同上 */ }
+      }
+      if ((type === "mousedown" || type === "mouseup") && typeof host.engine_host_input_button === "function") {
+        try { host.engine_host_input_button("left", type === "mousedown"); } catch (error) { /* 同上 */ }
+      }
+    }
+  }
+
   // 触摸 → 指针事件（让运行时既有的 mousedown/mousemove/mouseup 逻辑继续生效）
   // + 动作键（右半屏 space，菜单确认；兼容手机端从标题进游戏/对话推进）。
   //
@@ -2867,6 +3076,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
           // press_cursor，虚拟按钮按它做命中测试（根因③的修复）。
           movePointer(touch, 'mousedown', 0);
         }
+        feedHostTouch("down", touch);
         if (!isLeft && actionTouch === null) {
           actionTouch = touch.identifier;
           pressKey(' ');
@@ -2877,6 +3087,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       var list = (res && res.touches) || [];
       for (var i = 0; i < list.length; i++) {
         var touch = list[i];
+        feedHostTouch("move", touch);
         if (pointer && touch.identifier === pointer.id) {
           pointer.x = touch.clientX;
           pointer.y = touch.clientY;
@@ -2890,6 +3101,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       var lastUp = null;   // 最后一指（需要把 mouseup 交给运行时）
       for (var i = 0; i < list.length; i++) {
         var touch = list[i];
+        feedHostTouch("up", touch);
         if (actionTouch !== null && touch.identifier === actionTouch) {
           releaseKey(' ');
           actionTouch = null;
@@ -2943,7 +3155,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       dispatchWindow(makeEvent('keyup', { key: normalizeKey(res && res.key), code: res && res.code }));
     });
   }
-  function dispatchWindow(event) {
+  function dispatchWindow(event) { feedHostInput(event);
     // 派发目标是**运行时看到的那个 window**（宿主自带 window 时它是宿主对象，不是 globalThis）。
     var target = (typeof windowTarget !== 'undefined' && windowTarget) ? windowTarget : g;
     if (typeof target.dispatchEvent === 'function') target.dispatchEvent(event);
@@ -2951,7 +3163,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     var onname = 'on' + event.type;
     if (typeof target[onname] === 'function') { try { target[onname](event); } catch (e) { /* 忽略业务回调异常 */ } }
   }
-  function dispatchCanvas(event) {
+  function dispatchCanvas(event) { feedHostInput(event);
     if (typeof canvasTarget.dispatchEvent === 'function') canvasTarget.dispatchEvent(event);
   }
 
@@ -3812,10 +4024,58 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   }
 
   var started = false;
+  // **宿主直启**（B8 第一步；默认关，__RUSTLUA_HOST_DIRECT_BOOT === true 时才走）。
+  //
+  // 它要替掉旧世界 web-runtime.js 的启动编排。查实后这一步**很小**，因为原语都在：
+  //   * Lua 运行时已由 scene 档的预装步骤建好（lua_boot_with_reader，见上面"预装 reader provider"）；
+  //   * lua_execute_main() 自己会装 **require 搜索器**（install_web_require，vfs provider -> pack::decode），
+  //     所以旧世界那段"把所有 scripts/**.lua 读进 JS 再注册 package.preload"**在这里是多余的**；
+  //   * 帧泵 / boot 属性 / 失败态都已归适配层（B5/B6 查实）。
+  // 旧世界存在的最后理由是"**先注入全部宿主补丁、再执行 main.lua**"这个顺序（lua_bridge.rs:492），
+  // 而那个顺序约束**是 JS 补丁带来的** —— 补丁没了，约束也就没了。
+  //
+  // 风险面（正是这一步要暴露的）：补丁没了以后，游戏看到的是**引擎自己的** API 表（那正是 B8 的目标形态），
+  // 于是"补丁特有的行为"会在这一步现形，而不是在删掉 414 KB 之后。
+  function hostDirectBoot() {
+    var bridge = globalThis.__RUSTLUA_LUA_BRIDGE;
+    if (!bridge || typeof bridge.lua_execute_main !== 'function') {
+      throw new Error('宿主直启缺少 lua_execute_main（桥未就绪：web-runtime.js 被跳过时没人装它）');
+    }
+    bridge.lua_execute_main();
+    // **留下可读证据**：光看"游戏跑起来了"分不出走的是直启还是旧世界（两条路都会跑起来）。
+    // 这个标记进 `p0-probe.js` 的读数，于是"确实没经 web-runtime.js"是被**观测**到的，而不是推断的。
+    try { globalThis.__RUSTLUA_HOST_DIRECT_BOOT_DONE = true; } catch (error) { /* 无全局对象 */ }
+    log('wechat-adapter: 宿主直启完成（main.lua 由引擎执行，未经 web-runtime.js）');
+    return true;
+  }
+
   function start(boot) {
     if (started) return Promise.resolve(false);
     started = true;
     bodyElement.setAttribute('data-rustlua-adapter', 'ready');
+    setBootPhase('splash');
+    // 固定主包路径，不等 pack/远端/wasm。接管形态绕过 2D 改道，在同一张可见画布
+    // 一次性绘制 WebGL2；helper 清理并恢复 GL 状态之后才允许引擎拿到上下文。
+    var showStartupBranding;
+    try { showStartupBranding = require('./startup-branding.js'); }
+    catch (error) {
+      warn('wechat-adapter: startup splash helper unavailable -> ' + hostError(error));
+      return Promise.resolve().then(function () { return startAfterSplash(boot); });
+    }
+    return showStartupBranding({
+      canvas: canvas,
+      getContext: rawGetContext,
+      gpu: engineVisibleTakeover,
+      createImage: function () { return wx.createImage(); },
+      requestFrame: typeof wx.requestAnimationFrame === 'function'
+        ? function (callback) { wx.requestAnimationFrame(callback); }
+        : (typeof canvas.requestAnimationFrame === 'function'
+          ? function (callback) { canvas.requestAnimationFrame(callback); } : null),
+      warn: warn
+    }).then(function () { return startAfterSplash(boot); });
+  }
+
+  function startAfterSplash(boot) {
     // 看门狗从**这一行**就开始计时，覆盖"分包下载 → wasm 实例化 → 字体 → Lua boot"整条链。
     // 原来的写法是在 wasmReady 兑现**之后**才 arm：宿主如果有一步既不 success 也不 fail
     // （WXWebAssembly.instantiate 与 loadSubpackage 真机上都出现过这种半死状态），
@@ -3910,7 +4170,8 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     wasmReady.then(function () {
       try { probeEngineCanvas(); } catch (error) { /* 探针自身绝不掀翻启动 */ }
       // 引擎宿主：同样挂在 `wasmReady` 之后（要 `engineHostRef`），同样**不 await**——
-      // 建 wgpu 栈不该拖住启动；`running` 之后由 afterFrame 每帧驱动。
+      // 建 wgpu 栈不该拖住启动；`running` 之后由 scene 档自泵驱动（原子模式默认走这条），
+      // 非 scene 档才由 afterFrame 每帧驱动。
       try { engineHostStart(); } catch (error) { /* 宿主自身绝不掀翻启动 */ }
     });
     // 分包载入。**内核在分包里时上面已经 await 过同一条 Promise**（这里只是补状态标记，
@@ -3938,7 +4199,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       })
       .then(function () {
         setBootPhase('lua-boot');
-        return boot(statusElement);
+        // **B8：唯一路径。** 旧世界（`web-runtime.js`）已删除，启动编排在这里完成：
+        // reader 预装（scene 档那一步）+ `lua_execute_main()` + 宿主帧泵。`boot` 形参仍保留，
+        // 是为了让调用方（`game.js`）保有一条"被要求跑旧世界就**响亮失败**"的守卫。
+        return hostDirectBoot();
       })
       .then(function () {
         if (bootWatchdog) { clearTimeout(bootWatchdog); bootWatchdog = null; }
@@ -4213,7 +4477,31 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         // 同一帧输入会被注入两次（各自看着都正常，只有手感不对）；而"运行时跳过 + 宿主也没拿到"
         // 的组合更糟——第 88 轮就留下了那个 bug（`hostTick` 时整段跳过 ⇒ 宿主拿到 undefined
         // ⇒ 整局对按键没反应）。这批计数就是门用来钉"注入恰好来自一处"的证据。
+        // **本笔复核（原子模式默认接管画面之后）：这条归属不变、也不该变。** 返回值 `touched`
+        // 是 wasm 侧真的改了几位（`input frames=N bits=M`；恒 0 = 两边对"这一帧该变哪些位"理解
+        // 不一致的第一手线索）。把注入搬到宿主，等于让宿主在**下一帧**才解码这一批 ⇒ 这一帧的
+        // `touched` 拿不到真值 ⇒ 那个守卫读数变成恒 0 的**假信号**。宿主那条帧路
+        // （`engineHostDriveFrame`）继续恒传 `undefined`，所以 `engine_host_input_applied` 恒 0
+        // 就是"宿主不是第二个注入者"的证据；"输入所有权搬给宿主"属于删掉旧 JS 世界那一笔。
         lua_input_frame: function (bytes) {
+          // B4 · 输入所有权交接：**原子模式下运行时不再是注入者**。
+          //
+          // 为什么必须停掉而不是"两边都写"：`LATEST_FRAME` 是**一个槽**，两个写者按帧交错写进去
+          // ⇒ 谁后写谁赢，而两者的内容与时机都不同（运行时按它自己的采样帧、宿主按
+          // `engineHostDriveFrame` 的帧）⇒ 输入会**帧间跳变**（按键时灵时不灵），而读数上只
+          // 看得到"两边都在工作"。所以交接必须是原子的：一个模式，一个所有者。
+          //
+          // 返回值契约：运行时的 `appliedBits` 拿它当"两边对『这一帧该变哪些位』理解不一致"的
+          // 守卫（恒 0 = 异常）。原子模式下这一批**不再被应用**，所以如实回 0；同时**不再累加**
+          // `runtimeInputFrames`——那个计数现在的含义是"旧通道还被用了多少次"，恒 0 就是交接
+          // 完成的判据（门按新契约断言：改看宿主的 `hostInputFrames`）。
+          // **B4 输入所有权交接**：只在宿主**真的在跑**时才停掉旧通道。
+          //
+          // 为什么条件必须是"host running"而不是"原子模式"：离线假宿主不给 GL ⇒ 宿主起不来 ⇒
+          // 若此时也停旧通道，就变成**两边都没注入**（世界不动），而读数上只看到
+          // `runtime_input_frames=0` 像是"交接完成"——**这正是最危险的那种静默失效**。
+          // 真机上宿主 `running` ⇒ 交接生效、一个所有者；这里离线 ⇒ 旧通道继续注入、世界照动。
+          if (engineHost.status === "running") return 0;
           engineHost.runtimeInputFrames += 1;
           return result.host.lua_input_frame(bytes);
         },
@@ -4394,3 +4682,5 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   publishDiag();
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })();
+
+
