@@ -5,6 +5,14 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 分包通用化：引擎级默认不再绑定具体游戏
+
+- `BundleConfig::generic_domains()`：只依赖引擎约定目录，任何 RustLua 工程不写
+  `bundles.json` 都能用；`Default` / `load_or_default` 兜底改为它。
+- 原 `default_domains()` 保留为示例工程预设（docs/67 §5.3），不再作为引擎默认；
+  `examples/game_jhyt` 的工程级 `bundles.json` 行为不变。
+- 门：`generic_domains_depend_only_on_engine_conventions`（不含 `art/ui`、`title_bg_pixel`）。
+
 ## Unreleased — 发布形状校验：`bundle-layout.js --verify`
 
 - `verifyLauncher`：每个 `subpackages.root` 必须有 `game.js`、`mainpack/` 必须存在，

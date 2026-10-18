@@ -100,7 +100,8 @@ pub struct BundleConfig {
 
 impl Default for BundleConfig {
     fn default() -> Self {
-        Self::default_domains()
+        // 引擎级默认：只依赖通用目录约定，不绑定任何具体游戏。
+        Self::generic_domains()
     }
 }
 
@@ -142,7 +143,7 @@ impl BundleConfig {
             config.validate()?;
             return Ok(config);
         }
-        Ok(Self::default_domains())
+        Ok(Self::generic_domains())
     }
 
     /// 确定性 JSON（编辑器保存用）。
@@ -185,7 +186,53 @@ impl BundleConfig {
         Ok(())
     }
 
-    /// 默认规则：`docs/67` §5.3 那张实测分组表（内容域）。
+    /// **引擎级通用默认**：只依赖本引擎约定的目录（`project.toml` / `scripts/` / `scenes/` /
+    /// `assets/` / `splash/` / `branding/`），不含任何具体游戏的路径。
+    ///
+    /// 任何 RustLua 工程不写 `bundles.json` 都能用这一份；有更细的内容域需求时，
+    /// 由工程自己的 `bundles.json` 声明（`examples/game_jhyt` 就是那种工程级配置）。
+    #[must_use]
+    pub fn generic_domains() -> Self {
+        let group = |name: &str, unit: &str, include: &[&str]| GroupSpec {
+            name: name.to_owned(),
+            unit: Some(unit.to_owned()),
+            include: include.iter().map(|item| (*item).to_owned()).collect(),
+        };
+        Self {
+            schema: default_schema(),
+            default_group: default_group(),
+            default_unit: default_unit(),
+            allow_unowned: false,
+            groups: vec![
+                // 启动必需：清单、脚本、场景、预制体、字体、图集重定向表。
+                group(
+                    "core",
+                    "main",
+                    &[
+                        "project.toml",
+                        "chars.txt",
+                        "dependencies.json",
+                        "bundles.json",
+                        "atlas_redirect.json",
+                        "scripts/",
+                        "scenes/",
+                        "assets/prefabs/",
+                        "assets/fonts/",
+                    ],
+                ),
+                // 其余资源进默认分包；需要更细的加载边界时由工程 bundles.json 覆盖。
+                group("assets", "sub", &["assets/"]),
+                // 启动器品牌图不占游戏资源配额（发布器会另行放置）。
+                group("brand", "cdn", &["splash/", "branding/"]),
+            ],
+            assign: BTreeMap::new(),
+        }
+    }
+
+    /// 示例工程的内容域预设（`docs/67` §5.3 的实测分组表）。
+    ///
+    /// **不是**引擎默认：`art:ui` / `title_bg_pixel.png` 这类路径是具体游戏的约定，
+    /// 引擎层只保留 [`Self::generic_domains`]；本函数供示例/测试复现实测分组。
     ///
     /// 顺序有讲究：`art:ui` 必须在 `art:world` 之前，否则 `assets/` 的兜底组会先把 UI 吃掉。
     pub fn default_domains() -> Self {
@@ -879,6 +926,21 @@ mod tests {
         assert!(!paths.iter().any(|path| path.contains("_preview")));
         assert!(!paths.iter().any(|path| path.contains("/builds/")));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 引擎级默认只依赖通用目录约定：任何 RustLua 工程不写 `bundles.json` 都能用。
+    #[test]
+    fn generic_domains_depend_only_on_engine_conventions() {
+        let config = BundleConfig::generic_domains();
+        config.validate().unwrap();
+        assert_eq!(config.group_of("scripts/main.lua"), "core");
+        assert_eq!(config.group_of("assets/art/ui/hud/a.png"), "assets");
+        assert_eq!(config.group_of("splash/splash.png"), "brand");
+        let joined = serde_json::to_string(&config).unwrap();
+        assert!(!joined.contains("art/ui"), "{joined}");
+        assert!(!joined.contains("title_bg_pixel"), "{joined}");
+        // `Default`（无配置文件时的兜底）必须是通用规则，而不是示例工程的预设。
+        assert_eq!(BundleConfig::default().groups, config.groups);
     }
 
     fn layout_plan() -> BundlePlan {
