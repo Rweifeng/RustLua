@@ -5,6 +5,35 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 图集：配置归约收敛 + 编辑器预览面板 + 四处「静默出错」修复
+
+- **共享归约**：`atlas.json` 的解析、目录聚合、排除规则、装箱搬进
+  `rustlua-assets/src/atlas_plan.rs`；`assetc::atlas_cook` 只剩产物写入（写页/登记重定向/删源图/
+  自检），编辑器面板走同一份函数——不再有"预览一套、打包另一套"的漂移面。
+- **修 P0（必现或静默故障）**
+  - `format` 默认值 `"rtex"`（少一个 `l`）→ `"rltex"`，取值统一在 `AtlasConfig::validate`
+    校验：省略 `format` 的显式图集曾**直接构建失败**，`auto` 则要到写页时被 `image` 拒。
+  - 装配期重定向加**页缓存**（`(工程根, .atlas)` → `Arc<LoadedAtlas>`，`clear_atlas_cache()`
+    供热重载）：统一 2D 管线之后是**逐帧每精灵**查重定向，原先每次重读 `.atlas` + 整页字节
+    （容器形态还要 FNV + 拷整页，页 raw 实测 3.7 MB）——图集在局内等于不可用。
+  - 九宫格排除改为按场景/Prefab 的 `nine_slice=` 引用判定，文件名 `_9s` 只作快速通道
+    （原先 cook 按名字、运行期按组件字段，命名一破就白框）。
+  - Lua 拼出来的纹理进排除集：`string.format("…%s.png")` 模式展开、`tilemap.*` 调用参数、
+    以及 `assets/art/tilesets/` 整目录；Prefab 里的 `Tilemap` 也纳入扫描（四季地表就是这类）。
+- **新增 `format = "auto"`**：逐页在 PNG 与 `.rltex` 之间按**进容器块之后的 zstd 估算**取小。
+  按原始字节比会选错——稀疏页裸像素 3.7 MB / PNG 80 KB，但裸像素进块后只剩十几 KB。
+  实测 `game_jhyt` 的 `art:ui`：关图集 166 KB / 强制 `rltex` 151 KB / `auto` 158 KB / 错版 184 KB。
+- **编辑器**：`资源 ▸ 图集 ▸ 配置与预览…` 新增独立面板（`editor/src/panels/atlas.rs`）：
+  编辑 `atlas.json`（目录聚合 / `separate` / 显式图集 / 编码形态），「扫描并预览」在内存里
+  按同一份归约装箱，逐页显示页纹理与区域框（含尺寸、区域数、总像素、跳过项警告）。
+  面板**只写 `atlas.json`**，不写 `.rltex`/`.atlas`、不删源图。
+- **门禁**：`atlas_plan` 7 条 + `atlas_cook` 9 条 + 页缓存 1 条 + 面板 4 条；
+  `cargo test -p rustlua-assets -p rustlua-render -p assetc` 全绿（50/105/121 等）。
+  编辑器 365 通过 / 6 条失败全在本次未改动的文件里（`input_bindings` / `project_settings` /
+  `publish`），失败信息指向用户数据目录与脚本搬迁的既有在途改动。
+- **回滚档**：删除 `panels/atlas.rs` 与菜单项；排除规则退回只看场景 `Sprite` 白名单；
+  `format=auto` 退回 `rltex`；删掉页缓存与 `clear_atlas_cache`（行为回到逐帧重读）。
+
 ## Unreleased — 任务：`baselines/` 从 `artifacts/` 挪到仓库根并整体脱管（目录搬迁 + 三份原跟踪文件 `git rm --cached` + 三个读取方接环境变量；零逻辑改动）：题面是用户口径"E:\Codex\RustLua\artifacts\baselines 把这个目录挪出来并修改git忽略"，追问两句定的落法="..\RustLua\baselines"（=仓库根 `baselines/`，仍在树内、只是不再跟踪）与"环境变量覆盖"，提交口径="拆两笔"。旧白名单是 `.gitignore` 里那 8 行 `!/artifacts/baselines/...`（README.md、wp0-3d-stress.committed.json、engine-pub-surface.json 三份放行），本笔换成一条 `/baselines/` 整目录排除，读取方三处统一成 `RUSTLUA_BASELINES_DIR` 优先、缺省 `<仓库根>/baselines`：`scripts/verify.ps1:80-83`（`$baselinesRoot` + 现场建目录，5 处硬路径改走它）、`scripts/engine-pub-surface.mjs:32`、`engine/crates/game/examples/jhyt_m19_soak.rs:378`；注释面另清 6 处（fonts.rs、api_surface_snapshot/mod.rs、两个 wp0 示例、compare-*.ps1）。判别读数：`node scripts/engine-pub-surface.mjs --check` 从新路径读到基线并 `pub_surface_ok items=1562`（这条同时证明路径接线是对的）；`cargo check -p game --example jhyt_m19_soak` Finished exit 0；`cargo fmt --check -p game -p engine -p rustlua-scripting` EXIT=0；三个 ps1 AST errors=0、`node --check` 通过；`scripts/check-docs.ps1` DOCS_EXIT=0 六项 = docs=60 game_docs=46 h1=108 links=420 ps1_bom_ok=33 ps1_parse_ok=33；12 个改动文件行尾 crlf 全数 bare_lf=0/lone_cr=0。新增的一条账（不是缺陷，是脱管的代价）：这目录不入库 ⇒ 新克隆或换机器时它是空的 ⇒ `verify.ps1 -Benchmarks` 的 committed-3D 步与 pub-surface 门都成了**缺文件判红的预期红**，throw 文案已改成可执行的"把上一次确认没回退的 wp0-3d-stress.json 复制成这个文件名"；而 `baselines/README.md` 自己也不入库了 ⇒ 那套可比性裁定在仓库里查不到，本笔把它改写成"本地基线"口径并留在本机；`wp0-3d-stress.committed.json` 文件名里的 committed 成了历史称谓，没重命名。文档面按用户口径"只改活句与命令"清 21 处（根 README.md 目录表新增 `baselines/` 一行、docs/34/36/37/39/43/53/54/56、game_jhyt/docs/54），日期型验收记录按仓库惯例不回填（docs/34 §252、docs/54 §584 与 §717、docs/58 §124、game_jhyt/docs/66 §196、CHANGELOG 与 tasks/done/* 里的旧路径引文）。现场一条并发事实：本笔工作期间 `scripts/verify.ps1`、`docs/34`、`.gitignore`、`CHANGELOG.md` 同时压着 B8 那包的在途 hunk——`.gitignore` 的 `artifacts/` 与 `**/artifacts/logs/` 两行在我改完之后被并发改成 `/artifacts/`，工作树 CHANGELOG 里 `grep -c 接管形态纵向按键` = 0 而 `git show HEAD:CHANGELOG.md` = 1 ⇒ 这三处（含 CHANGELOG）一律按"HEAD 字节 + 只施加自己的 hunk"局部暂存（量具在 `.temp/stage-verify-mine.py`、`.temp/stage-gitignore-docs34.py`），B8 的内容留在下一笔，不由本笔替他们提交或替他们抹回。没测与本笔不碰：① `verify.ps1` 全量门与 `-Benchmarks` 实跑没跑（本笔只改路径取值，不碰判据）；② `cargo clippy`/工作区 test 没跑；③ 空目录那两条"预期红"只按代码路径推断，没在真·干净克隆上验；④ `engine/crates/editor/src/main.rs:3068` 里的 `artifacts/baselines/spatial-migration.txt` 没动（它在临时工程根下拼路径，不指仓库，改它零功能收益）。回滚档：`mv baselines artifacts/baselines` + `.gitignore` 退回那 8 行白名单 + 三处读者退回原硬路径 + 文档 21 处按本条点名的行段撤 + 摘掉本条；`git revert` 本笔即可把三份跟踪状态与目录位置一起复原。
 
 ## Unreleased — B8 收尾三件：清干净（两个开关块 + 历史账）、补现场纪律、以及一次**原因未明的产物清空**

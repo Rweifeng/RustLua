@@ -137,6 +137,10 @@ impl EditorApp {
                     // 发布面板的「发布名 / 微信 appid」同样按项目读取：不重新播种的话，
                     // 面板里还是上一个工程的值，点发布或关面板就会把它写进新工程的 project.toml。
                     self.publish.reseed(&self.project.root);
+                    // 图集面板的配置同样按工程读取：不重播的话会拿上一个工程的
+                    // `atlas.json` 去扫新工程，甚至把它保存进新工程。
+                    self.atlas
+                        .reseed(&crate::util::strip_verbatim_prefix(&self.project.root));
                     self.history.clear();
                     self.autosave.reset();
                     self.play_session = None;

@@ -46,6 +46,7 @@ const WRITE_NEEDLES: &[&str] = &[
 /// - `game_view.rs` / `header.rs`：**已清零**（第 28 轮）——Play 的 Stop 收尾与崩溃快照替换
 ///   都搬到了 shell（`actions.rs`），面板只发 typed action / 请求确认；
 const PINNED_WRITES: &[(&str, usize)] = &[
+    ("atlas.rs", 0),
     ("console.rs", 0),
     ("domain_data.rs", 0),
     ("game_view.rs", 0),

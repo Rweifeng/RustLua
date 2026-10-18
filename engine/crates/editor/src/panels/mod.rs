@@ -1,5 +1,6 @@
 //! 编辑器各面板：每个面板一个文件，`impl EditorApp` 中定义绘制与支撑方法。
 
+pub(crate) mod atlas;
 pub(crate) mod console;
 pub(crate) mod domain_data;
 pub(crate) mod game_view;

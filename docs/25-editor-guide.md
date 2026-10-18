@@ -97,10 +97,11 @@ editor [--project <项目路径>] [--check] [--help]
 ## 7. 属性（Inspector）
 
 - 右侧 **属性** 面板（min 340）。
-- 实体元信息：实体 ID、父实体、子实体数量、Prefab 来源与 Override 列表、**持久实体**（「运行时切场景不销毁」）。
+- 实体元信息：实体 ID、父实体、子实体数量、Prefab 来源与 Override 列表。
+- 运行时切场景不销毁：挂 **`Persistent` 组件**（**添加组件 ▸ 玩法**）。无载荷标记组件，挂在父节点上会级联到整棵子树；移除组件即恢复普通实体。旧的 `entity_meta persistent=true` 场景仍由运行时兼容读取，但编辑器不再写入该标志。
 - Prefab 根实例操作：**重新应用源 Prefab**、**打开源 Prefab**、**写回源并更新实例**。
 - **父级**：输入父实体 ID → **设置父级** / **解除父级**；**重新命名** 改名。
-- **添加组件**：可选 `Sprite, Tilemap, Animation, Transform3D, MeshRenderer, Camera3D, Light, Collider3d, Text, WorldText, Image, UiLayout, Container, UiEvents, UiBindings, ButtonStates, UiAnimation`；组件各有 **移除**。
+- **添加组件**：可选 `Sprite, Tilemap, Persistent, Animation, Transform3D, MeshRenderer, Camera3D, Light, Collider3d, Text, WorldText, Image, UiLayout, Container, UiEvents, UiBindings, ButtonStates, UiAnimation`；组件各有 **移除**。
 - 可编辑组件：
   - **变换（Transform）**：**一个**面板，按实体实际拥有的空间显示——只有 2D 就显示 2D（位置 XY/旋转/缩放 +
     Reset、复制/粘贴组件），只有 3D 就显示 3D（位置 XYZ、旋转四元数、缩放 XYZ + Reset 3D），
@@ -157,9 +158,25 @@ editor [--project <项目路径>] [--check] [--help]
     `wechat_appid`（失焦/关面板/点发布三个提交点，同值不动文件；换工程时按新工程重新播种，
     未编辑过不回写），并在发布时写进 `launcher/project.config.json` 的 `appid`；
     留空则保留模板的 `touristappid`（只能本地预览，不能上传）。
-  - 后台启动 [scripts/package.ps1](../scripts/package.ps1)（`powershell -NoProfile -ExecutionPolicy Bypass`，不弹终端窗），参数 `-ProjectRoot -Platform -PublishName [-Compress] [-Encrypt] [-WechatAppId]`。
+  - 后台启动 [scripts/build/package.ps1](../scripts/build/package.ps1)（`powershell -NoProfile -ExecutionPolicy Bypass`，不弹终端窗），参数 `-ProjectRoot -Platform -PublishName [-Compress] [-Encrypt] [-WechatAppId]`。
   - 输出目录：`<项目>/builds/<平台>`；进度阶段映射：Release 构建 0.15 → assetc 打包 0.55 → 复制运行器 0.7 → 目录隔离自测 0.85 → 就绪 0.95。
   - 完成显示输出目录 + **打开目录**；完整日志存 `artifacts/builds/release/publish-last.log`。
+
+### 11.1 图集配置与预览（菜单 **资源 → 图集 → 配置与预览…**）
+
+- 打开独立窗口「图集（Atlas）」，编辑的是工程根的 `atlas.json`（**只在你点「保存 atlas.json」时落盘**）。
+- **目录聚合**：勾启用 + 根目录（如 `assets/art/ui`），同目录的小图自动并成一页；
+  `单图阈值` 以上的图单独成集；`页编码` 三选一：
+  - `auto`（推荐）：逐页分别按 PNG 与裸像素编码，取**落盘字节小者**；
+  - `rltex`：裸像素（压缩交给容器块，稀疏页最省）；
+  - `png`：常规 PNG（稠密图、美术手工图集）。
+- **单独成集（separate）**：逐条加入路径，被点名的图不进目录默认页。
+- **显式图集（atlases）**：按 include 前缀手工装箱，优先级高于目录聚合。
+- **扫描并预览**：按当前配置**在内存里**装箱（不写盘、不删源图），列出图集/页/尺寸/区域数，
+  选中一页后显示页纹理与每个区域的边框；缩放跟随窗口或手动倍率。
+- 面板会显示被排除的条目与原因：Tilemap / 动画表 / 九宫格（`nine_slice`）/ Lua 拼出来的图
+  （如四季地表）/ `_preview` 调试图 / `assets/art/tilesets/` 整个目录。
+- 发布期才由 `assetc` 真正产出 `assets/atlases/*.rltex|*.png` + `*.atlas` + `atlas_redirect.json`。
 
 ## 12. 崩溃恢复
 
@@ -216,7 +233,7 @@ editor [--project <项目路径>] [--check] [--help]
 
 ### 14.3 PersistId 编辑（Inspector）
 
-- 属性面板「持久实体」下方新增 **PersistId** 行：输入 → **设置**（或按 Enter / 失焦）
+- 属性面板 PersistId 行：输入 → **设置**（或按 Enter / 失焦）
   写入实体自由 meta `entity_meta persist_id`；**清除** 删除该行。
 - 改动并入撤销栈（一次提交 = 一条 Undo），保存后场景文本**只增删该 entity_meta 行**，
   **不改变场景格式版本**；同场景重名会被编辑器拒绝并提示。

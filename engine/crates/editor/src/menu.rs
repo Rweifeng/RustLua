@@ -141,6 +141,8 @@ pub(crate) enum MenuAction {
     RefreshResources,
     CreatePrefab,
     CollectFontChars,
+    /// 资源 ▸ 图集 ▸ 配置与预览：`atlas.json` 编辑 + 打页预览（不写产物）。
+    OpenAtlasPanel,
     RevealProjectRoot,
     // 游戏对象
     CreateEmptyEntity,
@@ -261,6 +263,12 @@ const ASSETS_MENU: &[MenuRow] = &[
     MenuRow::Item(
         MenuItem::new("收集字体字符", MenuAction::CollectFontChars).gate(MenuGate::ProjectLoaded),
     ),
+    MenuRow::SubMenu {
+        label: "图集",
+        rows: &[MenuRow::Item(
+            MenuItem::new("配置与预览…", MenuAction::OpenAtlasPanel).gate(MenuGate::ProjectLoaded),
+        )],
+    },
     MenuRow::Separator,
     MenuRow::Item(
         MenuItem::new("在资源管理器中打开项目根", MenuAction::RevealProjectRoot)
@@ -619,6 +627,7 @@ impl EditorApp {
             }
             MenuAction::CreatePrefab => self.create_prefab_from_selected(),
             MenuAction::CollectFontChars => self.collect_font_chars(),
+            MenuAction::OpenAtlasPanel => self.open_atlas_panel(),
             MenuAction::RevealProjectRoot => {
                 crate::util::open_in_explorer(&self.project.root);
             }
