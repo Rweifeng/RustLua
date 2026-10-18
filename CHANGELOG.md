@@ -5,6 +5,14 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 适配层多根路由表：`bundle-roots.js`
+
+- 新增 `plugins/wechat-minigame/bundle-roots.js`：`unit → 根`（mainpack / pack / pack-<name>，
+  cdn 不参与挂载）、`planRootIndex`（路径 → 根）、`rootsForPaths`（一组路径需要挂哪些非主包根）、
+  `missingRoots`（尚未挂载的根）。
+- 自测：三种根 + cdn 排除 + 未知路径报错 + 已挂载根不重复列；
+  真实 plan 实测 `roots=mainpack,pack paths=1370`，audio 路径 → `needed=pack`。
+
 ## Unreleased — `package.ps1 -MultiSub`（opt-in）：产物落地后拆多分包根
 
 - 新开关 `-MultiSub`：仅 `-Platform wechat-minigame -AssetPack subpackage`，其它形态直接拒绝；
