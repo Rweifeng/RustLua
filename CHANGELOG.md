@@ -35,7 +35,9 @@
 
 - **音频/鼠标真机（devtools）修复（2026-10-19）**：分组容器里的 MP3 对
   `wx.createInnerAudioContext()` 不可见，`assetSrcFor` 又返回 `{src,source,pending}` 对象，
-  wasm 侧只做 `as_string()` → 永远回落到 `pack/assets/audio/*.mp3`（不存在）。现在
+  wasm 侧只做 `as_string()` → 永远回落到 `pack/assets/audio/*.mp3`（不存在）。更早一层，
+  `web_sys::window()` 拿到的是适配层 window shim，shim 上没有 `wx`，`wechat_global()` 因此
+  判成浏览器，报“没有 document”。现在 `global()` 用真正的 `js_sys::global()`。同时
   微信发布用 `assetc --keep assets/audio/` 保留 16 个真实 MP3、首屏切分显式跳过
   `assets/audio/`（否则 1.4 MB 会把主包顶到 4.8 MB），`wechat_src` 读取返回对象的
   `src`。同时注册 `wx.onMouseDown/onMouseMove/onMouseUp`（宿主提供时）并复用
