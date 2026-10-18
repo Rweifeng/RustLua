@@ -5,6 +5,13 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 分包通用接入文档（任意 RustLua 工程）
+
+- docs/67 新增 §5.8：零配置 `generic_domains()`、工程级 `bundles.json`、
+  `assetc package --bundle grouped`、`assetc layout --json` + `bundle-layout.js` 的
+  `--apply/--verify`、`--trace-loads` + 编辑器观测的完整接入路径。
+- 明确引擎侧不出现具体游戏路径；`default_domains()` 只是示例预设。
+
 ## Unreleased — 分包通用化：引擎级默认不再绑定具体游戏
 
 - `BundleConfig::generic_domains()`：只依赖引擎约定目录，任何 RustLua 工程不写
