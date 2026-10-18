@@ -74,6 +74,12 @@ const COMPONENT_REGISTRY: &[ComponentDescriptor] = &[
         name: "Tilemap",
         category: ComponentCategory::Gameplay,
     },
+    // 运行时切场景不销毁：无载荷标记组件，挂在父节点上会级联到整棵子树。
+    // 由运行时 `Scene::is_entity_persistent_with_ancestors` 解释；Inspector 不再有复选框。
+    ComponentDescriptor {
+        name: rustlua_scene::scene::PERSISTENT_COMPONENT,
+        category: ComponentCategory::Gameplay,
+    },
     ComponentDescriptor {
         name: "Animation",
         category: ComponentCategory::Gameplay,
@@ -440,29 +446,9 @@ impl EditorApp {
                         }
                     }
                 }
-                // 持久实体：运行时切场景不销毁。
-                {
-                    let mut persistent = self
-                        .current_scene()
-                        .and_then(|scene| {
-                            scene.scene.entities.get(&selected).map(|entity| {
-                                entity
-                                    .metadata
-                                    .get("persistent")
-                                    .is_some_and(|value| value == "true")
-                            })
-                        })
-                        .unwrap_or(false);
-                    if ui
-                        .checkbox(&mut persistent, "运行时切场景不销毁（持久实体）")
-                        .changed()
-                    {
-                        self.dispatch(editor::EditorCommand::SetEntityPersistent {
-                            entity: selected,
-                            persistent,
-                        });
-                    }
-                }
+                // 运行时切场景不销毁改由实体组件 `Persistent` 表达（Add Component ▸ 玩法）。
+                // 属性面板不再提供复选框：是否持久是**实体数据**，应当随场景/预制体一起保存，
+                // 并且父节点的组件会级联到整棵子树（见 `Scene::is_entity_persistent_with_ancestors`）。
                 // M19-03 PersistId：实体自由 meta（`entity_meta persist_id`），是运行期
                 // `entity.spawn(name, persist_id)` 的稳定锚点。增删改都并入 CommandHistory
                 // （一次提交 = 单条 Undo），保存后场景文本只增删该 entity_meta 行，
@@ -1678,6 +1664,16 @@ impl EditorApp {
                     entity.components.insert(
                         "ButtonStates".to_owned(),
                         "normal=assets/textures/player.png".to_owned(),
+                    );
+                    scene.mark_dirty();
+                }
+            }
+            // 标记组件没有字段：载荷就是空串，存在即开启。
+            rustlua_scene::scene::PERSISTENT_COMPONENT => {
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity.components.insert(
+                        rustlua_scene::scene::PERSISTENT_COMPONENT.to_owned(),
+                        String::new(),
                     );
                     scene.mark_dirty();
                 }

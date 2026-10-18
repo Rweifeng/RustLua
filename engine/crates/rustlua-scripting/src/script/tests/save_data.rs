@@ -719,6 +719,100 @@ fn persistent_entities_survive_scene_transition() {
 }
 
 #[test]
+fn persistent_component_survives_transition_and_cascades_to_children() {
+    use rustlua_scene::scene::PERSISTENT_COMPONENT;
+    use rustlua_scene::scene::Scene;
+    use rustlua_scene::scene::SceneEntityId;
+
+    let root =
+        std::env::temp_dir().join(format!("rustlua-persist-component-{}", std::process::id()));
+    let scenes = root.join("scenes");
+    fs::create_dir_all(&scenes).unwrap();
+
+    let mut arena = Scene::new("arena");
+    arena.add_entity(SceneEntityId(1), "Root", None).unwrap();
+    arena
+        .add_entity(SceneEntityId(2), "Child", Some(SceneEntityId(1)))
+        .unwrap();
+    arena.add_entity(SceneEntityId(3), "Dust", None).unwrap();
+    for (id, name) in [(1, "Root"), (2, "Child"), (3, "Dust")] {
+        arena
+            .entities
+            .get_mut(&SceneEntityId(id))
+            .unwrap()
+            .components
+            .insert(
+                "Sprite".into(),
+                format!("texture=assets/{name}.png;size=32x32"),
+            );
+    }
+    // 只给父节点挂标记组件：子节点没有该组件，也必须随父节点一起存活。
+    arena
+        .entities
+        .get_mut(&SceneEntityId(1))
+        .unwrap()
+        .components
+        .insert(PERSISTENT_COMPONENT.into(), String::new());
+    arena.save(scenes.join("arena.scene")).unwrap();
+
+    let mut hub = Scene::new("hub");
+    hub.add_entity(SceneEntityId(1), "Boss", None).unwrap();
+    hub.entities
+        .get_mut(&SceneEntityId(1))
+        .unwrap()
+        .components
+        .insert("Sprite".into(), "texture=assets/boss.png;size=32x32".into());
+    hub.save(scenes.join("hub.scene")).unwrap();
+
+    let mut runtime = LuaRuntime::new().unwrap();
+    runtime.set_project_root(root.clone());
+    let load_arena = script("assert(scene.load('arena'))\nfunction update() return 'ok' end");
+    runtime.execute_project_script(&load_arena).unwrap();
+    runtime.process_scene_transition().unwrap();
+    let load_hub = script("assert(scene.load('hub'))\nfunction update() return 'ok' end");
+    runtime.execute_project_script(&load_hub).unwrap();
+    runtime.process_scene_transition().unwrap();
+
+    let state = runtime.state.borrow();
+    let root_handle = state
+        .entity_state
+        .names
+        .get("Root")
+        .expect("persistent parent restored");
+    let child_handle = state
+        .entity_state
+        .names
+        .get("Child")
+        .expect("child of persistent parent survives");
+    assert_eq!(
+        state
+            .world
+            .get::<rustlua_ecs::hierarchy::Parent>(child_handle)
+            .unwrap()
+            .map(|parent| parent.0),
+        Some(root_handle),
+        "恢复后必须按名字重连父子边"
+    );
+    assert!(state.entity_state.names.contains_key("Boss"));
+    assert!(
+        !state.entity_state.names.contains_key("Dust"),
+        "没有标记组件的兄弟实体不应存活"
+    );
+    drop(state);
+
+    let check = script(
+        "assert(entity.find('Root') ~= nil)\nassert(entity.find('Child') ~= nil)\nassert(entity.find('Dust') == nil)\nfunction update() return 'ok' end",
+    );
+    runtime.execute_project_script(&check).unwrap();
+    runtime.call_update().unwrap();
+
+    let _ = fs::remove_dir_all(root);
+    let _ = fs::remove_file(load_arena);
+    let _ = fs::remove_file(load_hub);
+    let _ = fs::remove_file(check);
+}
+
+#[test]
 fn persistent_duplicate_name_new_scene_wins() {
     use rustlua_scene::scene::Scene;
     use rustlua_scene::scene::SceneEntityId;

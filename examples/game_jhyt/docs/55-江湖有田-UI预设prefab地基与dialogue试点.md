@@ -27,7 +27,7 @@
 
 - `data.load` 是**现成的**运行期数据通道：VFS 读 → `pack::decode` → serde_json → Lua 表，
   带 schema 校验与缓存，三个宿主同源，不需要新引擎 API；
-- `json` 在微信代码包后缀白名单内**且不会被编译**（`scripts/code-package-rules.js` 的
+- `json` 在微信代码包后缀白名单内**且不会被编译**（`scripts/lib/code-package-rules.js` 的
   `EXTENSION_WHITELIST` 与 `isCompiledName`：被编译的只有 `*.js` 和文件名恰为 `game.json`）；
   而 `*.lua` 在白名单外、要改名成 `.lua.txt` 才传得上去——数据文件用 `.json` 反而少一层特例；
 - 命名成 `<name>.ui.json`：`assetc::is_dev_artifact` 只把**文件名恰为** `manifest.json` 的
@@ -159,13 +159,13 @@ M30 ⑤ 静态扫 `scripts/**` 里每个 `ui_text.draw*` 调用的第 5 个实�
 `validate_content` 当场 `error` → 白屏。这正是 `validate_data.lua` 里记着的那条历史教训
 （"登记一个需要 `io` 的校验器会让两条 web 发布形态的启动当场失败"）的同族。
 
-修法：把 `assets/ui/prefabs/` 加进 `scripts/first-screen-pack.js` 的
+修法：把 `assets/ui/prefabs/` 加进 `scripts/build/first-screen-pack.js` 的
 `DEFAULT_INCLUDE_PREFIXES`——"被启动门读的东西"按定义就是首屏资源。
 
 实测（对同一份 pack 树重算清单，与已发布的 131 条比）：
 
 ```
-node scripts/first-screen-pack.js $TMP/packchk --out $TMP/mainpack-new.json
+node scripts/build/first-screen-pack.js $TMP/packchk --out $TMP/mainpack-new.json
 first_screen_pack_ok entries=132 …
 新增条目：assets/ui/prefabs/dialogue.ui.json、scripts/ui/prefab.lua
 主包新增字节：4,209（预设本体，manifest.txt 那一行）+ 37,889（新脚本，脚本整目录本来就在首屏）
@@ -173,7 +173,7 @@ first_screen_pack_ok entries=132 …
 ```
 
 **代价**：主包多带 42 KB。**买不到的部分**：本批没跑微信活体（那要重打包 + node harness，
-跑的是 `scripts/verify-wechat-minigame.ps1` 的 `subpackage-never/delay` 两档）；
+跑的是 `scripts/verify/verify-wechat-minigame.ps1` 的 `subpackage-never/delay` 两档）；
 上面证的是"清单归属对了"，没证"真机首帧读到了"。下次出微信包时那两档就是这条的验收。
 
 这条耦合在本批意外撞到过一次真实读数：重构 `prefab.lua` 时有一处漏改（调用已改名的函数），

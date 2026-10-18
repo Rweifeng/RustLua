@@ -16,8 +16,13 @@ const path = require('path');
 const rootsModule = require(path.resolve(__dirname, '../../plugins/wechat-minigame/bundle-roots.js'));
 
 function checkLauncher(launcherDir, planPath) {
-  const planFile = planPath || path.join(launcherDir, 'pack', 'bundle_plan.json');
-  if (!fs.existsSync(planFile)) throw new Error('缺计划表: ' + planFile);
+  // 计划表的主读位置是 launcher 根（适配层在挂载任何分包之前就要读它）；
+  // `pack/bundle_plan.json` 是 assetc 的原始落点，留给工具链对账。
+  const candidates = planPath
+    ? [planPath]
+    : [path.join(launcherDir, 'bundle_plan.json'), path.join(launcherDir, 'pack', 'bundle_plan.json')];
+  const planFile = candidates.find((file) => fs.existsSync(file));
+  if (!planFile) throw new Error('缺计划表: ' + candidates.join(' 或 '));
   const plan = rootsModule.parsePlan(fs.readFileSync(planFile, 'utf8'));
   const index = rootsModule.planRootIndex(plan);
   const missing = [];
@@ -31,7 +36,10 @@ function checkLauncher(launcherDir, planPath) {
       missing.push(root + '/game.js');
     }
     for (const bundle of index.roots[root].bundles) {
-      if (!fs.existsSync(path.join(rootDir, bundle))) missing.push(root + '/' + bundle);
+      // 发布链会按微信白名单把 `.rlb` 改名成 `.rlb.txt`（code-package.json 同一份映射）。
+      if (!fs.existsSync(path.join(rootDir, bundle)) && !fs.existsSync(path.join(rootDir, bundle + '.txt'))) {
+        missing.push(root + '/' + bundle);
+      }
     }
   }
   return {

@@ -15,7 +15,7 @@
 在项目根目录执行：
 
 ```powershell
-./scripts/verify.ps1
+./scripts/verify/verify.ps1
 ```
 
 该脚本依次执行：
@@ -29,20 +29,20 @@
 Release 质量门：
 
 ```powershell
-./scripts/verify.ps1 -Release
+./scripts/verify/verify.ps1 -Release
 ```
 
 仅运行测试：
 
 ```powershell
-./scripts/test.ps1
+./scripts/test/test.ps1
 ```
 
 运行最小 Demo：
 
 ```powershell
-./scripts/run-demo.ps1
-./scripts/run-demo.ps1 -Release
+./scripts/dev/run-demo.ps1
+./scripts/dev/run-demo.ps1 -Release
 ```
 
 ## 本地验证
@@ -67,7 +67,7 @@ RustLua Engine 0.1.0
 
 ## CI
 
-`.github/workflows/quality.yml` 在 Windows runner 上执行 metadata、format、clippy、test、Debug/Release build 与两个工程的 `--check`，再跑 `scripts/verify.ps1` 的 `-MvpOnly`／`-Benchmarks`／`-Web` 三步，以及 `scripts/test-compare-baseline.ps1`、`scripts/test-release-atomic.ps1`。
+`.github/workflows/quality.yml` 在 Windows runner 上执行 metadata、format、clippy、test、Debug/Release build 与两个工程的 `--check`，再跑 `scripts/verify/verify.ps1` 的 `-MvpOnly`／`-Benchmarks`／`-Web` 三步，以及 `scripts/test/test-compare-baseline.ps1`、`scripts/test/test-release-atomic.ps1`。
 
 ## 范围限制
 

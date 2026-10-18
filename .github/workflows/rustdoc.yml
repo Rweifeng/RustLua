@@ -12,7 +12,7 @@ name: Rustdoc site
 # 若仍是 "Deploy from a branch"，deploy-pages 这一步会报
 # "Pages source must be set to GitHub Actions"（而不是静默不发布）。
 #
-# 站点根导航页与 `.nojekyll` 由 scripts/gen-rustdoc.ps1 生成——cargo 对多 crate workspace
+# 站点根导航页与 `.nojekyll` 由 scripts/docgen/gen-rustdoc.ps1 生成——cargo 对多 crate workspace
 # 不写根 index.html，直接传 target/doc 会得到 404 的站点根。
 
 on:
@@ -20,8 +20,8 @@ on:
     branches: [main]
     paths:
       - "engine/**"
-      - "scripts/gen-rustdoc.ps1"
-      - "scripts/gen-lua-api-docs.js"
+      - "scripts/docgen/gen-rustdoc.ps1"
+      - "scripts/docgen/gen-lua-api-docs.js"
       - ".github/workflows/rustdoc.yml"
   workflow_dispatch:
 
@@ -56,7 +56,7 @@ jobs:
       # 站点目录 ~50MB（1800+ 文件，含源码浏览器），在 Pages 的 100MB 站点建议线内。
       # `-AllowWarnings` **故意不加**：文档有断链就不发布，宁可不更新站点。
       - name: Build rustdoc site
-        run: pwsh -NoProfile -File scripts/gen-rustdoc.ps1
+        run: pwsh -NoProfile -File scripts/docgen/gen-rustdoc.ps1
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

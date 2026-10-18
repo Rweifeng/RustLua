@@ -16,7 +16,7 @@ verbose = false
 #
 # 这里**不再**声明 `[env] ZIG`：那是单机绝对路径（历史上写死了某台机器的
 # `C:\Users\Administrator\...`，换机器就 panic "run zig cc: NotFound"，且被打包脚本的
-# `| Out-Null` 吞成"WASM build failed"）。zig 改由 `scripts/zig-toolchain.ps1` 解析并
+# `| Out-Null` 吞成"WASM build failed"）。zig 改由 `scripts/build/zig-toolchain.ps1` 解析并
 # 按需下载到 `engine\.tools\zig\`（gitignore），由 package.ps1 在 wasm 构建前写进
 # `$env:ZIG`。手工跑 `cargo build --target wasm32-unknown-unknown` 的人需自备 zig：
 # 放进 PATH，或 `$env:ZIG = "<path-to-zig.exe>"`（mlua-sys 的 find_zig 认这两个）。

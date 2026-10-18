@@ -22,7 +22,7 @@
 //! 变成"键位悄悄错一格"——那类缺陷在浏览器里表现为"某个方向键不灵"，最难查。
 //!
 //! 单测跑在原生（`cargo test -p rustlua-frame-abi`）：本 crate 无 wasm 依赖，宿主上即可验证。
-//! JS 侧的对拍在 `scripts/wasm-lua/input-frame-abi-test.mjs`（同一份键表、同一份布局）。
+//! JS 侧的对拍在 `scripts/lib/wasm-lua/input-frame-abi-test.mjs`（同一份键表、同一份布局）。
 
 use thiserror::Error;
 
@@ -58,7 +58,7 @@ pub const MAX_POINTERS: usize = 4;
 // 变成"没人敢删"的死分支（docs/51 把这类脱节列为本项目的已知边界）。
 
 /// 键位表：**下标即线路位序**。改动顺序或删项等于改协议，必须同时把 [`VERSION`] +1 并跑
-/// `scripts/check-input-abi-parity.mjs`（它钉住"游戏绑定表里出现的每个键名都在这里"）。
+/// `scripts/verify/check-input-abi-parity.mjs`（它钉住"游戏绑定表里出现的每个键名都在这里"）。
 ///
 /// 覆盖范围是"真实键盘上 DOM `KeyboardEvent.key` 会给出的键"：字母、数字、功能键、方向/导航键、
 /// 编辑键、修饰键、标点。落不进这张表的键（`Dead`/`Process`/`Unidentified`/输入法组合键）会被宿主

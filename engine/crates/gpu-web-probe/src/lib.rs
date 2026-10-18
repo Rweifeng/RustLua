@@ -28,7 +28,7 @@
 // Clippy 步（`cargo clippy --workspace --all-targets --all-features`）永久钉红，
 // 而红门没人当真 = 门禁名存实亡。
 // 代价说清楚：**宿主目标上本 crate 不再被检查**，它的编译门只发生在
-// `cargo build -p gpu-web-probe --target wasm32-unknown-unknown`（`scripts/gpu-web-probe.ps1`
+// `cargo build -p gpu-web-probe --target wasm32-unknown-unknown`（`scripts/verify/gpu-web-probe.ps1`
 // 的构建路径就是它）。闸门不是把探针变空：同一条 wasm 构建里产物仍是 324,920,099 字节的
 // debug wasm，`gpu_probe` / `gpu_render_probe` / `storage_buffer` 这些符号都还在导出段里。
 // 仍留在 workspace members 里是有意的：`cargo tree -p game_web` 那条"发布包不含本探针"的门

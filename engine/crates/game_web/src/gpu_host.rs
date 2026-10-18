@@ -17,7 +17,7 @@
 //! ## 为什么是 Rust 侧的 URL 开关
 //!
 //! 默认路径（Canvas2D）一行都不动：GPU 路径只在 `?rustlua-gpu=1` 时才建，建成与否写进
-//! `document.body` 的 `data-rustlua-gpu`，供门（`scripts/verify-webgl-bundle.ps1 -Gpu2d`）
+//! `document.body` 的 `data-rustlua-gpu`，供门（`scripts/verify/verify-webgl-bundle.ps1 -Gpu2d`）
 //! 与人工排查读。放在 Rust 侧而不是页面脚本里，是为了**不碰** `plugins/webgl/` 下的既有改动。
 //!
 //! ## 已实测钉住的平台事实（WP5 第四片，核心沿用同一口径）
@@ -234,6 +234,9 @@ struct GpuHost {
     input_shared: Option<SharedInput>,
     /// 本帧要应用给模拟的输入（Rust 采集的 + JS 世界送来的并集）。
     frame_input: rustlua_frame_abi::FrameInput,
+    /// 上一帧消费到的线格式帧号：用来判"另一路本帧是否真的产过帧"（[`crate::frame_input::wire_is_fresh`]）。
+    /// 没有它就只能拿"本侧没动过"当判据，而那会在没有指针事件的帧上抹掉活光标（现场=摇杆圆点闪烁）。
+    last_wire_frame: u32,
     /// 收到的 DOM 事件数（键 + 指针）。**读数用它证明输入真的到了 Rust 侧**——
     /// 没有这个数，"按了没反应"只能靠猜是没收到事件、还是收到了却没落到模拟里。
     dom_events: u64,
@@ -274,6 +277,12 @@ struct InputShared {
     map: [f64; 4],
     /// 收到的 DOM 事件数（读数用）。
     events: u64,
+    /// 临时遥测（排查"触摸抬手后摇杆不回弹"）：多指 down/up 各收到几次 + 非多指通路的鼠标 down/up。
+    /// 真机读数就靠它回答"抬手事件到底有没有到宿主"。定位完删。
+    touch_downs: u64,
+    touch_ups: u64,
+    mouse_downs: u64,
+    mouse_ups: u64,
 }
 
 impl Default for InputShared {
@@ -288,6 +297,10 @@ impl Default for InputShared {
                 crate::DESIGN_HEIGHT as f64,
             ],
             events: 0,
+            touch_downs: 0,
+            touch_ups: 0,
+            mouse_downs: 0,
+            mouse_ups: 0,
         }
     }
 }
@@ -311,6 +324,12 @@ fn design_point(
     crate::fit::css_to_design([left, top, width, height], [css_x, css_y])
 }
 
+/// 写 `data-rustlua-gpu`（阶段自报）＋ 一条控制台行。
+///
+/// **每帧那条不打控制台**（2026-10-17）：`presented frames=…` 是通过本函数每帧发一次的**直接
+/// console 调用**（不走 `tracing`，所以 `frame_log_filter` 管不到它）——一次加载实测 236 条，
+/// 是把控制台刷屏的最大一处。属性照写（门要读 `data-rustlua-gpu="presented…“`），
+/// 控制台那行由 `?rustlua-debug=1`（= `set_frame_logs(true)`）打开。
 fn set_status(state: &str) {
     let Some(window) = web_sys::window() else {
         return;
@@ -320,6 +339,11 @@ fn set_status(state: &str) {
     };
     if let Some(body) = document.body() {
         let _ = body.set_attribute("data-rustlua-gpu", state);
+    }
+    // 判据按**实况前缀**写：每帧那条从这里收到的是 `presented …`（调用点拼的），
+    // 启动期那几条是 `initializing` / `sim_boot_ok` / `textures_done=…` —— 后者必须照发。
+    if !crate::frame_log_filter::frame_logs_enabled() && state.starts_with("presented") {
+        return;
     }
     web_sys::console::log_1(&JsValue::from_str(&format!("[gpu] {state}")));
 }
@@ -478,6 +502,7 @@ impl GpuHost {
             sim_note,
             input_shared: None,
             frame_input: rustlua_frame_abi::FrameInput::new(),
+            last_wire_frame: 0,
             dom_events: 0,
             input_closures: Vec::new(),
             input_script: crate::frame_input::ScriptDriver::new(input_script),
@@ -582,11 +607,22 @@ impl GpuHost {
                         let mut shared = state.borrow_mut();
                         if is_down {
                             shared.producer.pointer_down(id, point);
+                            shared.touch_downs = shared.touch_downs.saturating_add(1);
                         } else {
                             shared.producer.pointer_up(id);
+                            shared.touch_ups = shared.touch_ups.saturating_add(1);
                         }
                         shared.events = shared.events.saturating_add(1);
                         return;
+                    }
+                    // 临时遥测：走了鼠标分支的 pointer down/up 各记一笔（读数里叫 `ptrM`）。
+                    {
+                        let mut shared = state.borrow_mut();
+                        if is_down {
+                            shared.mouse_downs = shared.mouse_downs.saturating_add(1);
+                        } else {
+                            shared.mouse_ups = shared.mouse_ups.saturating_add(1);
+                        }
                     }
                     point_into(&state, mouse.client_x() as f64, mouse.client_y() as f64);
                     let button = match mouse.button() {
@@ -721,11 +757,14 @@ impl GpuHost {
         // 输入：本帧 = **Rust 侧 DOM 采集**（WP6-04，没有 JS 世界也能操作）**并上** JS 世界送来的
         // `RLFI`（它那里有屏幕虚拟摇杆的轴与补丁层的虚拟键）。两路都是合法来源，丢掉任何一边
         // 都会让某一种操作方式失灵，且症状（"摇杆没反应"）离原因很远。
-        // 顺序是**行为**的一部分（本片实测踩到）：`js_cursor_wins` 必须在**本帧剧本跑完、`take_frame`
+        // 顺序是**行为**的一部分（本片实测踩到）：取值必须在**本帧剧本跑完、`take_frame`
         // 之前**读 —— `take_frame` 会清掉 `pointer_fresh`，读晚了就永远得到"本侧本帧没动过"，
-        // 于是 JS 侧（原子模式下整份是全零）赢走光标**与按下点**，本侧的指针输入被静默抹掉
-        // （症状：`cursor` 恒为 0,0，而所有读数都"正常"）。所以这里只声明，取值放到下面的借用里。
-        let mut js_cursor_wins = true;
+        // 于是另一侧赢走光标**与按下点**，本侧的指针输入被静默抹掉（症状：`cursor` 恒为 0,0）。
+        // **判据是"线格式那一侧本帧产过帧"（`wire_is_fresh`），不是"本侧本帧没动过"**（2026-10-17
+        // 修正）：B8 删掉旧 JS 世界后浏览器里 `LATEST_FRAME` 恒为默认值（光标/按下点都是 0,0），
+        // 用"本侧没动过"当判据会让**两次指针事件之间的每一帧**都抹掉活光标——现场症状正是
+        // "拖虚拟摇杆时中心圆点闪来闪去"与"点按钮没反应"（按下点被抹成 (0,0) ⇒ 命中测试脱靶）。
+        let mut dom_pointer_moved = false;
         if let Some(shared) = self.input_shared.as_ref() {
             let mut shared = shared.borrow_mut();
             // 确定性输入剧本先走：它按**帧号**发边沿，与 DOM 那条路并进同一份快照。
@@ -734,13 +773,19 @@ impl GpuHost {
             if !self.input_script.is_empty() {
                 self.input_script.tick(&mut shared.producer);
             }
-            // 见上面 `js_cursor_wins` 的说明：**此刻**才是"本侧本帧动过没有"的正确答案。
-            js_cursor_wins = !shared.producer.pointer_fresh();
+            // 见上面那段说明：**此刻**才是"本侧本帧动过没有"的正确答案。
+            dom_pointer_moved = shared.producer.pointer_fresh();
             shared.producer.take_frame(&mut self.frame_input);
             self.dom_events = shared.events;
         }
         let wire = crate::lua_bridge::latest_frame_input();
-        crate::frame_input::merge_into(&mut self.frame_input, &wire, js_cursor_wins);
+        let wire_fresh = crate::frame_input::wire_is_fresh(self.last_wire_frame, &wire);
+        self.last_wire_frame = wire.frame;
+        crate::frame_input::merge_into(
+            &mut self.frame_input,
+            &wire,
+            wire_fresh && !dom_pointer_moved,
+        );
         let input = self.frame_input;
         // 计划与渲染都交给统一宿主（`EngineHost::frame`）：外壳不再自己持钟、不再自己算步数。
         // 失败原因原样带出（浏览器这条路的读数与抽取前逐字相同，不加分段前缀）。
@@ -788,10 +833,25 @@ impl GpuHost {
             .as_ref()
             .map(|shared| shared.borrow().producer.dropped_keys())
             .unwrap_or(0);
+        // 临时遥测（排查"触摸抬手后摇杆不回弹"）：`ptrD/ptrU` = 多指通路收到几次，
+        // `ptrM` = 走鼠标分支几次（读数是 `down/up`）。
+        let (touch_downs, touch_ups, mouse_downs, mouse_ups) = self
+            .input_shared
+            .as_ref()
+            .map(|shared| {
+                let shared = shared.borrow();
+                (
+                    shared.touch_downs,
+                    shared.touch_ups,
+                    shared.mouse_downs,
+                    shared.mouse_ups,
+                )
+            })
+            .unwrap_or((0, 0, 0, 0));
         let note = format!(
             "scene={} textures={}/{} {} boot_ms={:.1} first_frame_ms={:.1} startup_ms={:.1} \
              avg_step_ms={:.2} avg_mesh_ms={:.2} avg_render_ms={:.2} timed_frames={} \
-             dom_events={} input_dropped={}{} {}",
+             dom_events={} ptrD={}/{} ptrM={}/{} input_dropped={}{} {}",
             self.sim_note,
             self.host.core.texture_stats.0,
             self.host.core.texture_stats.0 + self.host.core.texture_stats.1,
@@ -804,6 +864,10 @@ impl GpuHost {
             per(self.host.core.sum_render_ms),
             self.host.core.timed_frames,
             self.dom_events,
+            touch_downs,
+            touch_ups,
+            mouse_downs,
+            mouse_ups,
             input_dropped,
             self.input_script_note,
             self.fit_note,

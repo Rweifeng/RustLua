@@ -23,8 +23,8 @@ use super::world_sprite::SpritePassFilter;
 
 use super::{
     DepthPass, RenderFrameMetrics, RenderOutcome, Renderer, apply_declared_viewport,
-    count_layer_draws, hash_bytes, record_dropped_draw, record_indexed_draw, record_triangle_draw,
-    record_vertex_draw,
+    count_layer_draws, hash_bytes, record_dropped_draw, record_indexed_draw, record_set_pass,
+    record_triangle_draw, record_vertex_draw,
 };
 
 impl Renderer {
@@ -266,6 +266,7 @@ impl Renderer {
             record_indexed_draw(
                 &mut metrics,
                 draw.geometry.index_count,
+                draw.geometry.vertex_count,
                 draw.models.len(),
                 2,
             );
@@ -385,6 +386,7 @@ impl Renderer {
                 occlusion_query_set: None,
             });
             shadow_pass.set_pipeline(&self.shadow_pipeline);
+            record_set_pass(&mut metrics);
             shadow_pass.set_bind_group(0, &self.shadow_bind_group, &[]);
             for (index, draw) in frame_draws.iter().enumerate() {
                 shadow_pass.set_bind_group(1, &material_binds[index], &[]);
@@ -432,6 +434,7 @@ impl Renderer {
             });
             depth_cleared = true;
             pass.set_pipeline(&self.mesh_pipeline);
+            record_set_pass(&mut metrics);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
             apply_declared_viewport(&mut pass, main_viewport, target);
             for (index, draw) in frame_draws.iter().enumerate() {
@@ -494,6 +497,7 @@ impl Renderer {
                 occlusion_query_set: None,
             });
             pass.set_pipeline(&self.pipeline);
+            record_set_pass(&mut metrics);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             apply_declared_viewport(&mut pass, overlay_viewport, target);
             if let Some(font) = &mesh.font_atlas
@@ -536,6 +540,8 @@ impl Renderer {
                     continue;
                 }
                 let mut batch: Option<OverlayBatch> = None;
+                // 上面已经绑了普通管线；只有真的切到 SDF 管线（或切回来）才计一次 SetPass。
+                let mut overlay_pipeline_sdf = false;
                 for layer in stage.overlay_layers() {
                     for index in layer_indices(&mesh.draws, |draw| draw.render_layer, *layer) {
                         let draw = &mesh.draws[index];
@@ -607,11 +613,15 @@ impl Renderer {
                         });
                         if !extends {
                             flush_overlay_batch(&mut pass, &mut metrics, &mut batch);
-                            pass.set_pipeline(if key.sdf {
-                                &self.pipeline_sdf
-                            } else {
-                                &self.pipeline
-                            });
+                            if overlay_pipeline_sdf != key.sdf {
+                                pass.set_pipeline(if key.sdf {
+                                    &self.pipeline_sdf
+                                } else {
+                                    &self.pipeline
+                                });
+                                record_set_pass(&mut metrics);
+                                overlay_pipeline_sdf = key.sdf;
+                            }
                             pass.set_bind_group(0, &bind, &[]);
                             batch = Some(OverlayBatch {
                                 key,
@@ -697,6 +707,7 @@ impl Renderer {
                 occlusion_query_set: None,
             });
             pass.set_pipeline(&self.vector_pipeline);
+            record_set_pass(&mut metrics);
             pass.set_bind_group(0, bind, &[]);
             pass.set_vertex_buffer(0, self.vector_vertex_buffer.slice(..));
             apply_declared_viewport(&mut pass, overlay_viewport, target);
@@ -709,6 +720,7 @@ impl Renderer {
             && let (Some(source), Some(settings)) = (scene_view.as_ref(), post_process)
         {
             let vertices = self.draw_post_process(encoder, source, view, settings, target);
+            record_set_pass(&mut metrics);
             record_triangle_draw(&mut metrics, vertices as u32);
             executed.push(RenderPass::PostProcess);
         }

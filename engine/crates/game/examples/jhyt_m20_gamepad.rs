@@ -46,7 +46,7 @@ use std::{
 /// 示例写入的设置文件模板：完整 `[project]` 段（窗口尺寸/启动脚本等，main.lua
 /// 启动校验会读） + `[audio]` 段 + **部分** `[input]` 映射（缺的动作由引擎默认值
 /// 补齐，验证「旧设置文件仍可玩」）。
-const SETTINGS_TEMPLATE: &str = "# M20-08 手柄验收设置（示例结束时按原样恢复）\n[project]\nname = \"game_jhyt\"\nversion = \"0.1.0\"\nengine = \"RustLua\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\nfont = \"assets/fonts/NotoSansSC-VF.ttf\"\nfont_fallback = \"\"\nfont_weight = 400.0\ntext_render_mode = \"vector\"\nwindow_width = 1280\nwindow_height = 720\n\n[audio]\nmaster = 0.5\nbgm = 0.25\n\n[input]\nmap = \"rustlua-actions-v1\\ninteract=key:e\"\n";
+const SETTINGS_TEMPLATE: &str = "# M20-08 手柄验收设置（示例结束时按原样恢复）\n[project]\nname = \"game_jhyt\"\nversion = \"0.1.0\"\nengine = \"RustLua\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\nfont = \"assets/fonts/FusionPixel-12px-Monospaced-zhHans.ttf\"\nfont_fallback = \"\"\nfont_weight = 400.0\ntext_render_mode = \"sdf\"\nwindow_width = 1280\nwindow_height = 720\n\n[audio]\nmaster = 0.5\nbgm = 0.25\n\n[input]\nmap = \"rustlua-actions-v1\\ninteract=key:e\"\n";
 
 /// 药田起步点（每节都用 `teleport` 显式落位，不依赖出生点；#28 起山庄出生点是 (19,3)）：
 /// 格 (16,3)，朝上面前 (16,4) 落在药田内。

@@ -46,8 +46,8 @@ pub(crate) struct EditState {
 ///   实体**没有** MeshRenderer 组件时快照为 `None`，write 端会 clear（不会注入）。
 /// - `Sprite` / `Light` / `Text` / `Image` / `UiLayout` / `Camera3D` / `WorldText` 都已迁到
 ///   schema 生成的字段编辑器（第 20–34 轮），因此**不在**这条缓冲直写路径里。
-/// - `persistent`：`write_inspector` 不写该位，diff 由 `persistent`（文档真值）
-///   单独负责，避免面板残留的 false 在每次直写时把「未变更」判成变更。
+/// - `Persistent` 是**组件标记**，由通用组件管理（Add/Remove Component）维护，不在
+///   这条缓冲直写路径里；Inspector 也不再提供"持久实体"复选框。
 /// - `tilemap`/`animation`：从面板 `TilemapEditorState`/`AnimationEditorState`
 ///   实时编码的整串（`Some` 表示应保留/写回组件；None = 实体无该组件时不写）。
 ///
@@ -61,8 +61,6 @@ pub(crate) struct EditSnapshot {
     /// 面板主选要写回的实体 ID（可能已被撤销到不存在 —— `editing_entities` 兜底）。
     pub editing_entities: Vec<SceneEntityId>,
     pub snapshot: Option<InspectorSnapshot>,
-    /// 面板 buffer 的 persistent 与文档真值一致后才不会误写。
-    pub persistent: bool,
     pub tilemap: Option<String>,
     pub animation: Option<String>,
 }
@@ -75,7 +73,6 @@ impl EditSnapshot {
             doc_present: false,
             editing_entities: Vec::new(),
             snapshot: None,
-            persistent: false,
             tilemap: None,
             animation: None,
         }
@@ -902,7 +899,6 @@ impl EditorApp {
                 lua_script,
                 collider3d,
                 container,
-                persistent: false,
             },
             tilemap.as_deref(),
             animation.as_deref(),
@@ -939,7 +935,6 @@ impl EditorApp {
                 doc_present: false,
                 editing_entities: targets,
                 snapshot: None,
-                persistent: false,
                 tilemap: None,
                 animation: None,
             });
@@ -962,7 +957,6 @@ impl EditorApp {
             lua_script,
             collider3d: has("Collider3d").then_some(self.collider3d.clone()),
             container: has("Container").then_some(self.container.clone()),
-            persistent: false,
         };
         // Tilemap / Animation：面板编辑器状态实时编码整串。实体没有该组件时保持
         // None（写入端不写、比较端与基线 None 相等）；面板未编辑时编码串恰与
@@ -974,10 +968,6 @@ impl EditorApp {
             doc_present: true,
             editing_entities: targets,
             snapshot: Some(snapshot),
-            persistent: entity
-                .metadata
-                .get("persistent")
-                .is_some_and(|value| value == "true"),
             tilemap,
             animation,
         })
@@ -2154,22 +2144,6 @@ impl EditorApp {
                 Ok(())
             }
             Err(error) => Err(error.to_string()),
-        }
-    }
-
-    /// 设置实体的"运行时切场景不销毁"标记（Inspector 复选框；一次提交 = 一条历史）。
-    ///
-    /// 与迁移前的面板内联实现一致：**不做** Play 锁定（复选框本来就没有这道前置判断），
-    /// 组件写入失败也不改状态栏。
-    pub(crate) fn set_entity_persistent(&mut self, entity: SceneEntityId, persistent: bool) {
-        let inspector = self.inspector.clone();
-        if let Some(scene) = self.document.current_scene.as_mut() {
-            let _ =
-                self.history
-                    .execute(scene, "Toggle Persistent", CommandKind::Property, |scene| {
-                        inspector.set_persistent(scene, entity, persistent)?;
-                        Ok::<(), InspectorError>(())
-                    });
         }
     }
 

@@ -228,7 +228,7 @@ Release 构建不纳入日常验收，由负责人需要时手动执行。
 
 **里程碑级验收**：
 
-- 通过本地 `scripts/verify.ps1`（含全量测试与 Debug 构建；Release 由负责人手动确认）；
+- 通过本地 `scripts/verify/verify.ps1`（含全量测试与 Debug 构建；Release 由负责人手动确认）；
 - 没有未解决的 P0/P1 问题；
 - 回归测试通过；
 - 至少一个可运行的里程碑 Demo；

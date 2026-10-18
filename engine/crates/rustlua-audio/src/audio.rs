@@ -403,14 +403,16 @@ impl AudioSystem {
             format!("{name}.ogg"),
         ] {
             let path = dir.join(&file);
-            if path.is_file() {
-                let bytes = std::fs::read(&path)
-                    .map_err(|error| AudioError::Io(format!("{}: {error}", path.display())))?;
-                let bytes = rustlua_infra::pack::decode(&bytes)
-                    .map_err(|error| AudioError::Decode(format!("{}: {error}", path.display())))?;
-                loaded = Some(bytes);
-                break;
+            // 走 `vfs::read_resource`（provider 优先 + 解包）——发布包形态下音频在 RLB 容器里，
+            // `path.is_file()` + `fs::read` 会把它判成"没有这个音效"并且**不报错**，
+            // 症状是"所有音效静默不播"（`docs/67` §8）。明文/loose 形态行为不变。
+            if !rustlua_infra::vfs::is_file(&path) {
+                continue;
             }
+            let bytes = rustlua_infra::vfs::read_resource(&path)
+                .map_err(|error| AudioError::Io(format!("{}: {error}", path.display())))?;
+            loaded = Some(bytes);
+            break;
         }
         let bytes = loaded
             .ok_or_else(|| AudioError::Io(format!("no .mp3/.wav/.ogg clip found for {name}")))?;

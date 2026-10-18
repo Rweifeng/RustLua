@@ -135,7 +135,12 @@ impl Renderer {
                             Some(bind) => {
                                 self.texture_paths
                                     .insert(asset.key.clone(), self.textures.len());
-                                self.textures.push(LoadedTexture { bind_group: bind });
+                                self.textures.push(LoadedTexture {
+                                    bind_group: bind,
+                                    bytes: u64::from(texture.width())
+                                        * u64::from(texture.height())
+                                        * 4,
+                                });
                                 tracing::info!(
                                     target: "render",
                                     path = %asset.key,
@@ -209,8 +214,11 @@ impl Renderer {
             },
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        self.albedo_textures
-            .push(CachedAlbedoTexture { texture, view });
+        self.albedo_textures.push(CachedAlbedoTexture {
+            texture,
+            view,
+            bytes: u64::from(width.max(1)) * u64::from(height.max(1)) * 4,
+        });
         tracing::info!(
             target: "render",
             index = self.albedo_textures.len() - 1,
@@ -288,10 +296,14 @@ impl Renderer {
                 contents: bytemuck::cast_slice(indices),
                 usage: wgpu::BufferUsages::INDEX,
             });
+        let vertex_bytes = std::mem::size_of_val(vertices) as u64;
+        let index_bytes = std::mem::size_of_val(indices) as u64;
         GpuGeometry {
             vertex_buffer,
             index_buffer,
             index_count: indices.len() as u32,
+            vertex_count: vertices.len() as u32,
+            bytes: vertex_bytes + index_bytes,
         }
     }
 }

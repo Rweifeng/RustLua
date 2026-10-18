@@ -18,7 +18,7 @@
 //!    卫生（无 `.cache`/存档/`.staging-*` 残留）、真机手柄槽位采样结果、
 //!    WebGL 浏览器验证摘要（`artifacts/logs/webgl/summary-*.json`）以及 WebGL
 //!    发布包**产物层启动**摘要（`artifacts/logs/webgl/bundle-summary-*.json`，
-//!    来自 `scripts/verify-webgl-bundle.ps1`，当前为已知平台缺口只记录不阻塞）。
+//!    来自 `scripts/verify/verify-webgl-bundle.ps1`，当前为已知平台缺口只记录不阻塞）。
 //!    没有可用硬件/浏览器时**明确记录环境限制**，不伪造通过。
 //!
 //! Usage:
@@ -34,14 +34,19 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// 发布目录相对工程根的位置（`scripts/package.ps1 -Platform pc` 的输出）。
+/// 发布目录相对工程根的位置（`scripts/build/package.ps1 -Platform pc` 的输出）。
 const RELEASE_REL: &str = "builds/pc";
 /// 发布包必须存在的条目（`game.exe` 在上一级）。
 ///
-/// 字体在**包内**（`pack/assets/fonts/…`）而不是发布根：PC 形态不复制 17 MB 完整字体到发布根
-/// （见 `scripts/package.ps1` 的 pc 分支），运行时以 `pack/` 为工程根、按 `project.toml` 的
+/// 字体在**包内**（`pack/assets/fonts/…`）而不是发布根：PC 形态不复制完整字体到发布根
+/// （见 `scripts/build/package.ps1` 的 pc 分支），运行时以 `pack/` 为工程根、按 `project.toml` 的
 /// `font` 路径读取；发布根下的 `fonts/` 只有 webgl 的 `index.html` 需要。此前这里按 webgl
 /// 的布局要求根下字体，于是**一条正确的 pc 发布反而过不了这个门**。
+///
+/// **字体那一条不在这个常量里**（2026-10-17）：它原本硬编码 `NotoSansSC-VF.ttf`，而工程
+/// 早已改成点阵 FusionPixel（M72-03），发布包里只剩被 assetc 子集化的那一份 ⇒ 常量与
+/// `project.toml` 的声明各说一套，而读数还"绿"着（旧发布目录里躺着上一代的字体文件）。
+/// 现在按声明现算：`project.toml` 的 `font` 指向哪份，就要求包里那份存在。
 const REQUIRED_RELEASE_ENTRIES: &[&str] = &[
     "game.exe",
     "run.txt",
@@ -50,7 +55,6 @@ const REQUIRED_RELEASE_ENTRIES: &[&str] = &[
     "pack/project.toml",
     "pack/manifest.txt",
     "pack/chars.txt",
-    "pack/assets/fonts/NotoSansSC-VF.ttf",
     "pack/scripts/main.lua",
     "pack/scripts/ui/ui_text.lua",
     "pack/scripts/ui/text_fit.lua",
@@ -85,12 +89,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("① 发布目录形态与卫生（真实 `builds/pc`）");
     if !release.is_dir() {
         return Err(format!(
-            "release directory missing: {}（先跑 scripts/package.ps1 -Platform pc）",
+            "release directory missing: {}（先跑 scripts/build/package.ps1 -Platform pc）",
             release.display()
         )
         .into());
     }
-    for entry in REQUIRED_RELEASE_ENTRIES {
+    let mut required: Vec<String> = REQUIRED_RELEASE_ENTRIES
+        .iter()
+        .map(|entry| (*entry).to_owned())
+        .collect();
+    // 字体那一条从**声明**现算，而不是硬编码某一份文件名（见上面 `REQUIRED_RELEASE_ENTRIES`
+    // 的说明）：发布包里的字体是 assetc 按 `chars.txt` 子集化的产物，路径与 `project.toml` 的
+    // `font` 键逐字一致，换字体时这条门不需要人跟着改。
+    let font_entry = format!(
+        "pack/{}",
+        rustlua_render::font::project_font::primary_path(&project)
+    );
+    required.push(font_entry.clone());
+    for entry in &required {
         let path = release.join(entry);
         if !path.is_file() {
             return Err(format!("release is missing {entry}: {}", path.display()).into());
@@ -107,10 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !stray.is_empty() {
         return Err(format!("release directory has runtime leftovers: {stray:?}").into());
     }
-    println!(
-        "   release_entries={} stray=0",
-        REQUIRED_RELEASE_ENTRIES.len()
-    );
+    println!("   release_entries={} stray=0", required.len());
 
     // -----------------------------------------------------------------
     banner("② 发布包形态 ⇒ 用户数据目录；开发工程形态 ⇒ 工程内（同一份判定）");
@@ -163,6 +176,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let install = work.join("install");
     let fake_pack = install.join("pack");
     copy_project_plane(&project, &fake_pack)?;
+    // `copy_project_plane` 复制的是**工程根**的 `project.toml`，而 `release = true` 是
+    // `scripts/build/package.ps1` 在**发布包**里追加的标记（工程源那份不带、也不该带）。本节的题面
+    // 是"发布包首次运行"，所以这里必须把标记补上，否则 `user_dir::is_release_pack` 判 false
+    // ⇒ 下面那条播种断言必然红（**这个红与产物无关，是本节一直在拿"开发工程"副本断言
+    // "发布包"行为**；2026-10-17 复核时顺带修掉，实测此前在干净树上也照红）。
+    let source_settings = fs::read_to_string(fake_pack.join("project.toml"))?;
+    fs::write(
+        fake_pack.join("project.toml"),
+        format!("release = true\n{source_settings}"),
+    )?;
     // 自定义发布名（正式发行名 ≠ 工程名）写进包内 project.toml；发布判定靠复制过来的
     // `release = true` 标记（取代旧 release.toml）。
     fs::write(
@@ -416,14 +439,14 @@ fn probe_gamepad() -> String {
     )
 }
 
-/// WebGL 浏览器**契约**验证摘要（`scripts/verify-webgl.ps1` 产出）。
+/// WebGL 浏览器**契约**验证摘要（`scripts/verify/verify-webgl.ps1` 产出）。
 struct WebglContract {
     file: String,
     status: String,
     wasm_target: bool,
 }
 
-/// WebGL 发布包**产物层启动**摘要（`scripts/verify-webgl-bundle.ps1` 产出）。
+/// WebGL 发布包**产物层启动**摘要（`scripts/verify/verify-webgl-bundle.ps1` 产出）。
 struct WebglBundle {
     file: String,
     boot: String,

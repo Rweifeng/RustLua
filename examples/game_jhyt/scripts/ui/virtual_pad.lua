@@ -528,6 +528,16 @@ function M.release_all()
   for index, key in ipairs(DPAD_KEYS) do
     dpad_release(index, DPAD_PHYSICAL[key.dir or key.key])
   end
+  -- 关闭按钮按下时注入了 cancel 的**按住态**（见面板态那段）：整批释放时也要收掉它，
+  -- 否则"按着 × 时被别处关掉面板"会把 escape 粘住——下次开面板时它已经是按住态，
+  -- `action_pressed` 不再产生边沿，× 又变成没反应。
+  if close_down then
+    close_down = false
+    local cancel_key = action_key("cancel")
+    if cancel_key then
+      input.virtual_key(cancel_key, false)
+    end
+  end
   release_all_cards()
   release_all_actions()
   action_open = false
@@ -630,14 +640,30 @@ function M.update()
   end
   if is_panel then
     -- 关闭按钮（×）：命中即注入一次 cancel 边沿（面板关闭动作吃 just；跨帧按住不重发）。
+    --
+    -- **必须注入"动作绑定的物理键"，不是动作名**（2026-10-17 修）：引擎那条路
+    -- （`input.virtual_pressed` / `virtual_key`）按 `KeyCode::from_text` 解析**物理键名**，
+    -- 拿动作名去问只会得到 `None` ⇒ **静默丢弃**（不报错、不计数）。现场症状正是
+    -- "面板里点 × 没反应"。同一份文件里 dpad 用的是物理键（`up`/`space`）所以没事；
+    -- 这里走 `action_key("cancel")`（与招式卡、面板动作条同一条解析：`input.bindings` 取
+    -- 第一个 `key:` 绑定，玩家改键后也跟着走），并且**同时注入按住态**——`virtual_pressed`
+    -- 的边沿只活一帧，而引擎每步都会用设备层新快照调 `set_input`；按住态由
+    -- `inherit_virtual_keys` 跨帧沿用，抬手时（`mouse_released`）再释放，与 dpad 同手感。
     local cg = close_geometry()
+    local cancel_key = action_key("cancel")
     if close_down then
       if mouse_released then
         close_down = false
+        if cancel_key then
+          input.virtual_key(cancel_key, false)
+        end
       end
     elseif mouse_pressed and in_circle(press_x, press_y, cg.x, cg.y, cg.size / 2) then
       close_down = not mouse_released
-      input.virtual_pressed("cancel")
+      if cancel_key then
+        input.virtual_pressed(cancel_key)
+        input.virtual_key(cancel_key, true)
+      end
     end
     for index, key in ipairs(DPAD_KEYS) do
       if dpad_down[index] then

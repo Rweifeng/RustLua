@@ -484,9 +484,13 @@ impl Renderer {
             .ok_or_else(|| anyhow::anyhow!("贴图 GPU 上传失败（{key}）"))?;
         let slot = if let Some(&slot) = self.texture_paths.get(key) {
             self.textures[slot].bind_group = bind_group;
+            self.textures[slot].bytes = u64::from(asset.width()) * u64::from(asset.height()) * 4;
             slot
         } else {
-            self.textures.push(LoadedTexture { bind_group });
+            self.textures.push(LoadedTexture {
+                bind_group,
+                bytes: u64::from(asset.width()) * u64::from(asset.height()) * 4,
+            });
             let slot = self.textures.len() - 1;
             self.texture_paths.insert(key.to_owned(), slot);
             slot

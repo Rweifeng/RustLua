@@ -21,6 +21,7 @@ fn usage() {
          \x20        [--compress] [--encrypt] 仅目录形态有意义（单包由容器逐块压缩）\n\
          \x20        [--fast]                 单包用 zstd L3（开发构建）\n\
 \x20        [--keep <前缀>]          容器形态下把匹配的条目留在目录里（微信字体：wx.loadFont 只吃真实路径）\n\
+\x20        [--exclude-cdn]          grouped 本地包不携带 unit=cdn 的组（CDN 资源由发布器另行分发）\n\
          \x20        [--drop-undeclared-fonts] 剔除未声明的字体二进制\n\
          \x20 assetc --check-deps <项目目录>   检查依赖链路（列出 Invalid 断链）\n\
          \x20 assetc --check                   冒烟检查（临时项目闭环验证）\n\
@@ -107,6 +108,7 @@ fn run(args: &[String]) -> anyhow::Result<String> {
             let mut mode = assetc::BundleMode::Loose;
             let mut fast = false;
             let mut keep: Vec<String> = Vec::new();
+            let mut exclude_cdn = false;
             let mut block_size_kb: u32 = 0;
             let mut i = 3;
             while i < args.len() {
@@ -122,6 +124,7 @@ fn run(args: &[String]) -> anyhow::Result<String> {
                     "--encrypt" => encrypt = true,
                     "--drop-undeclared-fonts" => drop_undeclared_fonts = true,
                     "--fast" => fast = true,
+                    "--exclude-cdn" => exclude_cdn = true,
                     "--block-size" => {
                         // 块大小实验口（docs/67 §9）：默认 256 KB，量压缩率与启动解压的权衡。
                         let value = args
@@ -188,7 +191,7 @@ fn run(args: &[String]) -> anyhow::Result<String> {
                     if compress {
                         eprintln!("提示: --bundle grouped 下 --compress 无效果（压缩由容器块负责）");
                     }
-                    assetc::package_grouped_keep_with(&project, &out, drop_undeclared_fonts, fast, encrypt, &keep, block_size_kb * 1024).map(
+                    assetc::package_grouped_keep_with(&project, &out, drop_undeclared_fonts, fast, encrypt, &keep, block_size_kb * 1024, exclude_cdn).map(
                         |report| {
                             let groups: Vec<String> = report
                                 .groups

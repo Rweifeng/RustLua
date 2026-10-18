@@ -50,6 +50,9 @@ pub struct GameApp {
     /// Same mesh/material instancing (M8-08); off via `--no-instance`.
     instancing_enabled: bool,
     splash: Option<crate::splash::Splash>,
+    /// GPU 就绪之前的启动图（GDI 子窗口）。首帧 `Presented` 之后撤下，
+    /// 由 `splash` 接管同一张图；见 `crate::boot_splash`。
+    boot_splash: Option<crate::boot_splash::BootSplash>,
     deferred_verify: bool,
 }
 
@@ -83,6 +86,7 @@ impl GameApp {
             cull_enabled,
             instancing_enabled,
             splash: None,
+            boot_splash: None,
             deferred_verify,
         }
     }
@@ -269,6 +273,9 @@ impl GameApp {
                 splash.stage.observe(outcome);
                 if splash.stage == crate::splash::Stage::ReadyToLoad {
                     tracing::info!(target: "game", "[splash] presented before project initialization");
+                    // 交班点：GPU 已经把同一张图（同一套 contain 几何、同一个清屏底色）
+                    // 呈现出来了，GDI 那一层现在撤下不会造成任何闪动。
+                    self.boot_splash = None;
                 }
             }
             return;
@@ -400,24 +407,43 @@ impl GameApp {
     }
 }
 
-/// 标题栏图标：优先使用工程 `icon_image`，缺省或读取失败时使用
-/// 和编辑器相同的内置 `engine/assets/engine_icon.png`。
+/// 图标图源：优先使用工程 `icon_image`，缺省或读取失败时使用
+/// 和编辑器相同的内置 `engine/assets/engine_icon.png`，按目标边长做 Lanczos3。
 ///
-/// 为什么不直接把 256² 喂给 winit：winit 在 Windows 上只发一次
-/// `WM_SETICON(ICON_SMALL)`，且按 HICON 的**原始尺寸**交给 DWM 塞进标题栏那个
-/// `SM_CXSMICON`（= 16 × DPI）的槽里；256→16 一步缩到底会把齿轮的齿和 1.3px 的笔画
-/// 糊成一团。eframe 内部自己按 SM_CXSMICON 做过 Lanczos3，所以编辑器可以直接喂 256，
-/// 这里是裸 winit，得自己按 DPI 出图。
-///
-/// 任务栏大图标与 exe 文件图标不走这条路径——它们读 build.rs 嵌进 PE 的那份多尺寸
-/// `engine_icon.ico`，Windows 会自己挑合身的档位。
-fn window_icon(root: Option<&std::path::Path>, scale_factor: f64) -> Icon {
-    let side = (16.0 * scale_factor).round().clamp(16.0, 256.0) as u32;
+/// 为什么不直接把 256² 喂给 winit：winit 在 Windows 上按 HICON 的**原始尺寸**
+/// 交给 DWM 塞进标题栏那个 `SM_CXSMICON`（= 16 × DPI）的槽里，256→16 一步缩到底
+/// 会把齿轮的齿和 1.3px 的笔画糊成一团。eframe 内部自己缩过，所以编辑器可以直接
+/// 喂 256；这里是裸 winit，得自己按 DPI 出图。
+fn icon_rgba(root: Option<&std::path::Path>, side: u32) -> image::RgbaImage {
     let master = crate::splash::icon_image(root);
-    let scaled =
-        image::imageops::resize(&master, side, side, image::imageops::FilterType::Lanczos3);
+    image::imageops::resize(&master, side, side, image::imageops::FilterType::Lanczos3)
+}
+
+/// `base` 逻辑像素按 DPI 放大成物理像素；上限 256 是 winit 对 `ICON_BIG` 的建议天花板。
+fn icon_side(base: f64, scale_factor: f64) -> u32 {
+    (base * scale_factor).round().clamp(base, 256.0) as u32
+}
+
+/// 标题栏图标（`WM_SETICON(ICON_SMALL)`），尺寸 = 16 × DPI。
+fn window_icon(root: Option<&std::path::Path>, scale_factor: f64) -> Icon {
+    let side = icon_side(16.0, scale_factor);
+    let scaled = icon_rgba(root, side);
     // from_rgba 只校验长度 == 边长²×4，这里必然成立；真失败说明图源被改坏。
     Icon::from_rgba(scaled.into_raw(), side, side).expect("winit 拒绝了窗口图标")
+}
+
+/// 任务栏 / Alt-Tab 的大图标（`WM_SETICON(ICON_BIG)`），尺寸 = 32 × DPI。
+///
+/// **为什么必须单独设**：winit 的 `with_window_icon` 在 Windows 上只发
+/// `WM_SETICON(ICON_SMALL)`；`ICON_BIG` 空着时任务栏不会退回 PE 里的文件图标，
+/// 而是用窗口类的 `IDI_APPLICATION`（白纸窗口），于是 exe 明明嵌了齿轮图标，
+/// 运行中的任务栏仍显示成"没有图标"。build.rs 那份 `engine_icon.ico` 只对
+/// Explorer 里的**文件图标**生效。
+#[cfg(windows)]
+fn taskbar_icon(root: Option<&std::path::Path>, scale_factor: f64) -> Icon {
+    let side = icon_side(32.0, scale_factor);
+    let scaled = icon_rgba(root, side);
+    Icon::from_rgba(scaled.into_raw(), side, side).expect("winit 拒绝了任务栏图标")
 }
 
 impl ApplicationHandler for GameApp {
@@ -425,6 +451,17 @@ impl ApplicationHandler for GameApp {
         if self.window.is_some() {
             return;
         }
+        // 启动图先解码：窗口一出现就要有图可画。GPU 渲染器（`Renderer::new`）在 Windows 上
+        // 实测要 ~2.5 s（`Instance::new` 就占 ~1.9 s），而解码只花几十毫秒 ⇒ 同一张
+        // `RgbaImage` 先后喂给 GDI 早期启动图与 GPU 纹理上传，不重复解码、也绝不出现
+        // "窗口已出现但一片空白"的那 2.5 s。见 `crate::boot_splash`。
+        let boot_image = match crate::splash::startup_image(self.project_root.as_deref()) {
+            Ok(image) => Some(image),
+            Err(error) => {
+                tracing::warn!(target: "game", "{error}; 继续无启动图流程");
+                None
+            }
+        };
         // 窗口尺寸由工程声明（`project.toml` 的 `window_width`/`window_height`），缺省
         // 1280×720 横屏。**为什么不能写死**：竖版工程（`game_jhyt` 的 720×1280）里
         // Lua 动态 UI 是屏幕像素空间、不随参考分辨率缩放，窗口比例不对就会整块画到屏幕外。
@@ -449,12 +486,25 @@ impl ApplicationHandler for GameApp {
                 scale_factor,
             )))
             .with_inner_size(PhysicalSize::new(window_width, window_height));
+        // 任务栏图标：winit 的 `with_window_icon` 只设 `ICON_SMALL`，大图标得自己补。
+        #[cfg(windows)]
+        let attributes = {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            attributes.with_taskbar_icon(Some(taskbar_icon(
+                self.project_root.as_deref(),
+                scale_factor,
+            )))
+        };
         tracing::info!(
             target: "game",
             "[window] requested size: {window_width}x{window_height}"
         );
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
         tracing::info!(target: "game", "[window] created: {:?}", window.id());
+        // 在 `Renderer::new` 阻塞主线程之前把启动图放到屏幕上（同步画完）。
+        self.boot_splash = boot_image
+            .as_ref()
+            .and_then(|image| crate::boot_splash::BootSplash::show(&window, image));
         match Renderer::new(
             window.clone(),
             self.project_root.clone(),
@@ -464,16 +514,21 @@ impl ApplicationHandler for GameApp {
             Ok(renderer) => {
                 self.window = Some(window);
                 self.renderer = Some(renderer);
-                let splash =
-                    crate::splash::startup_image(self.project_root.as_deref()).and_then(|image| {
-                        crate::splash::Splash::upload(
-                            self.renderer.as_mut().expect("renderer exists"),
-                            image,
-                        )
-                    });
+                let splash = match boot_image {
+                    Some(image) => crate::splash::Splash::upload(
+                        self.renderer.as_mut().expect("renderer exists"),
+                        image,
+                    ),
+                    None => Err("没有可用的启动图".to_owned()),
+                };
                 match splash {
                     Ok(splash) => self.splash = Some(splash),
-                    Err(error) => tracing::warn!(target: "game", "{error}; 继续无启动图流程"),
+                    Err(error) => {
+                        tracing::warn!(target: "game", "{error}; 继续无启动图流程");
+                        // 没有 GPU 启动图可交接：早期启动图必须现在就撤下，
+                        // 否则它会一直盖在运行期画面上。
+                        self.boot_splash = None;
+                    }
                 }
                 if self.splash.is_some() {
                     self.window
@@ -869,6 +924,38 @@ mod tests {
                 (-1.0..=1.0).contains(&vertex.position[1]),
                 "y 越界: {}",
                 vertex.position[1]
+            );
+        }
+    }
+
+    /// 图标边长按 DPI 走，但不得小于逻辑尺寸、也不得超过 winit 给 `ICON_BIG`
+    /// 建议的 256 天花板（winit 直接按 HICON 原尺寸交给 DWM，没有二次缩放）。
+    #[test]
+    fn icon_sides_follow_dpi_and_ceiling() {
+        assert_eq!(icon_side(16.0, 1.0), 16);
+        assert_eq!(icon_side(16.0, 1.5), 24);
+        assert_eq!(icon_side(16.0, 2.0), 32);
+        assert_eq!(icon_side(32.0, 1.0), 32);
+        assert_eq!(icon_side(32.0, 1.25), 40);
+        assert_eq!(icon_side(32.0, 2.0), 64);
+        assert_eq!(
+            icon_side(32.0, 0.5),
+            32,
+            "低 DPI 不能把大图标缩到逻辑尺寸以下"
+        );
+        assert_eq!(icon_side(16.0, 99.0), 256, "超过建议天花板时收敛到 256");
+        assert_eq!(icon_side(32.0, 99.0), 256);
+    }
+
+    /// 图源必须真的缩到请求边长，并且不是全透明空图（空图会让任务栏更难看）。
+    #[test]
+    fn icon_source_is_resized_to_requested_side() {
+        for side in [16, 24, 32, 48, 64, 256] {
+            let icon = icon_rgba(None, side);
+            assert_eq!(icon.dimensions(), (side, side));
+            assert!(
+                icon.pixels().any(|pixel| pixel[3] > 0),
+                "{side}px 档不能是全透明"
             );
         }
     }

@@ -2,9 +2,9 @@
 //!
 //! - 事实源：运行期 `_G` 探针导出的 API 面基线（`rustlua-scripting` 的 api_surface_snapshot 快照门，
 //!   `lua_api_surface.json`，42 个模块表 / 292 个函数）；
-//! - 再生成：`node scripts/gen-lua-api-docs.js`；说明文字写在各模块的 markdown 里
+//! - 再生成：`node scripts/docgen/gen-lua-api-docs.js`；说明文字写在各模块的 markdown 里
 //!   （`src/lua_api/doc/<模块>.md`），Lua 侧签名从绑定源码推断；
-//! - 门：`node scripts/gen-lua-api-docs.js --check`——再生成必须是 no-op、待补桩数不得
+//! - 门：`node scripts/docgen/gen-lua-api-docs.js --check`——再生成必须是 no-op、待补桩数不得
 //!   超标、不许出现死绑定与重复注册；
 //! - 还没补的函数在小节里标着 `TODO(文档桩)`（计数见 `doc/baseline.json`）。
 //!

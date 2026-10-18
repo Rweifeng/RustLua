@@ -22,7 +22,7 @@
 | `engine/crates/game/examples/jhyt_m61_prefab_runtime.rs` | ⑤ 重述成"只摘自己那一批"，新增 ⑥"换场景之后运行期实例必须清零" |
 | `engine/crates/game/examples/jhyt_m30_cjk_text.rs` | ⑤ 的 Text 统计加读 `assets/prefabs/*.prefab` |
 | `engine/crates/game/examples/jhyt_m29_season_weather.rs` | 引用语料加读 `assets/prefabs/*.prefab`，`EXPECTED_REFERENCED` 977→978 |
-| `scripts/first-screen-pack.js` | 新增 5b：扫 `assets/prefabs/*.prefab`，把预设本体与它引用的贴图收进首屏包 |
+| `scripts/build/first-screen-pack.js` | 新增 5b：扫 `assets/prefabs/*.prefab`，把预设本体与它引用的贴图收进首屏包 |
 | `examples/game_jhyt/docs/48-…资源接线与下架清单.md` | §1 口径补 `.prefab` 一个来源，重扫数 1026→1027 / 977→978 |
 
 ---
@@ -188,7 +188,7 @@ verify.ps1 的 MVP 清单这批补登记了 `jhyt_m62_prefab_write` 与 `jhyt_m6
 - **首屏包对未解析贴图只 warn 不 throw**：预设写错路径时不会拦下构建，只在 warnings 里露头；
   throw 留给真正会误伤开发产物的那一类。
 - **web / 微信宿主没跑**：首屏清单这批补了 5b（§5），`assetc package` 也过了，但
-  `prefab.spawn` 在 wasm 宿主上的活体对拍（`scripts/verify-webgl-bundle.ps1`）没跑、包没重打，
+  `prefab.spawn` 在 wasm 宿主上的活体对拍（`scripts/verify/verify-webgl-bundle.ps1`）没跑、包没重打，
   `.prefab` 在微信代码包白名单里的行为仍未测——`docs/64` §7 那两条开放项**继续有效**，
   本批不声称三宿主都验过。
 - 这批所有绿都是在 `.cache/m20_proj` 这份工程拷贝上量的：工作区里

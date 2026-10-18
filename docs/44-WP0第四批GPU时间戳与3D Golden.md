@@ -37,8 +37,8 @@ Renderer 采用可选整帧 timestamp：
 
 新增：
 
-- `scripts/compare-baseline.ps1`
-- `scripts/test-compare-baseline.ps1`
+- `scripts/verify/compare-baseline.ps1`
+- `scripts/test/test-compare-baseline.ps1`
 
 比较规则：
 
@@ -55,8 +55,8 @@ Renderer 采用可选整帧 timestamp：
 - `cargo check -p engine --lib --example wp0_3d_stress`；
 - `cargo run -p engine --example wp0_3d_golden`；
 - GPU timestamp smoke，fallback DX12 取得非空 GPU 时间；
-- `scripts/test-compare-baseline.ps1`，`baseline_compare_tests_ok cases=2`。
+- `scripts/test/test-compare-baseline.ps1`，`baseline_compare_tests_ok cases=2`。
 
 ## WP0 状态
 
-第四批完成后，WP0 的基准、Renderer 指标、3D 阶梯、CPU 分配、GPU timestamp、semantic golden 和重复比较入口均已具备。正式关闭 WP0 前仍需运行一次完整 `scripts/verify.ps1 -Benchmarks`，并保存当机报告与环境信息。
+第四批完成后，WP0 的基准、Renderer 指标、3D 阶梯、CPU 分配、GPU timestamp、semantic golden 和重复比较入口均已具备。正式关闭 WP0 前仍需运行一次完整 `scripts/verify/verify.ps1 -Benchmarks`，并保存当机报告与环境信息。

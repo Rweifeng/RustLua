@@ -14,8 +14,8 @@
 在仓库根目录执行：
 
 ```powershell
-.\scripts\run-demo.ps1
-.\scripts\run-demo.ps1 -Release
+.\scripts\dev\run-demo.ps1
+.\scripts\dev\run-demo.ps1 -Release
 ```
 
 也可以直接指定工程：

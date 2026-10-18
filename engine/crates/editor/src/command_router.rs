@@ -265,9 +265,6 @@ impl EditorApp {
             EditorCommand::PasteComponents { entity } => {
                 self.document_edit(|app| app.paste_components_to(entity))
             }
-            EditorCommand::SetEntityPersistent { entity, persistent } => {
-                self.document_edit(|app| app.set_entity_persistent(entity, persistent))
-            }
             // Prefab 的 action：目标实体由命令显式携带，视图不再依赖"当前选区"。
             //
             // 前置条件在**命令层**统一判定（实体在场、是实例/根实例、非 Play），
@@ -539,6 +536,46 @@ mod tests {
             !app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
                 .components
                 .contains_key("Transform3D")
+        );
+    }
+
+    /// 持久实体是**组件**（无载荷标记）：从 Add Component 加进来后，文档里出现的是
+    /// `Persistent` 键而不是旧的 `entity_meta persistent`；移除组件即关闭。
+    #[test]
+    fn adding_persistent_component_writes_a_marker_component() {
+        let mut app = test_app();
+        app.project_loaded = true;
+        let entity = SceneEntityId(1);
+        assert_eq!(
+            app.dispatch(EditorCommand::AddComponent {
+                entity,
+                component: rustlua_scene::scene::PERSISTENT_COMPONENT.to_owned(),
+            }),
+            CommandResult::Applied
+        );
+        let stored = &app.document.current_scene.as_ref().unwrap().scene.entities[&entity];
+        assert_eq!(
+            stored
+                .components
+                .get(rustlua_scene::scene::PERSISTENT_COMPONENT),
+            Some(&String::new()),
+            "标记组件必须存在且载荷为空"
+        );
+        assert!(
+            !stored.metadata.contains_key("persistent"),
+            "组件路径不得再写旧的 metadata 标志"
+        );
+        assert_eq!(
+            app.dispatch(EditorCommand::RemoveComponent {
+                entity,
+                component: rustlua_scene::scene::PERSISTENT_COMPONENT.to_owned(),
+            }),
+            CommandResult::Applied
+        );
+        assert!(
+            !app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
+                .components
+                .contains_key(rustlua_scene::scene::PERSISTENT_COMPONENT)
         );
     }
 

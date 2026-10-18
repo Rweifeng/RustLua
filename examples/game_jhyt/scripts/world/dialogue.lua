@@ -30,7 +30,7 @@ local nav = require("ui.panel_nav")
 -- 设备判定与绑定命名都在 ui.hints 里，面板自己画底部提示时才不会写死键盘文案）。
 local hints = require("ui.hints")
 -- M71：对话面板的**版面**（矩形、锚点、行距、字号、贴图键）搬进运行期预设
--- `assets/prefabs/dialogue.prefab`（对账门 = jhyt_m71_dialogue_prefab，黄金表 34 行
+-- `assets/prefabs/ui/dialogue.prefab`（对账门 = jhyt_m71_dialogue_prefab，黄金表 34 行
 -- 钉死迁移前画面），本文件只喂内容取值（说话人、台词、选项、提示、立绘）。
 -- 开/关屏 = 根节点显隐（`prefab.set_visible` 子树语义），不撤重铺（M63c 教训）。
 -- 立绘本体留动态层 `ui.image`：贴图随 NPC/mood 运行期变化，引擎无运行期换贴图 API
@@ -48,7 +48,7 @@ local INTERACT_RANGE = 56 -- 世界单位，约 1.75 格
 -- （`jhyt_m71_dialogue_prefab` 逐节点对账守住这一条）。
 local OPTION_LIMIT = 5
 
--- 对话面板的版面（矩形/锚点/行距/字号/贴图键）在 `assets/prefabs/dialogue.prefab`：
+-- 对话面板的版面（矩形/锚点/行距/字号/贴图键）在 `assets/prefabs/ui/dialogue.prefab`：
 -- 调 UI 表现改那份数据，不改本文件（M71）。
 
 local FOCUS = "dlg:focus"
@@ -245,12 +245,12 @@ local function cond_ok(cond)
   return true
 end
 
--- M71：静态版式搬进 `assets/prefabs/dialogue.prefab`（对账门 = jhyt_m71_dialogue_prefab，
+-- M71：静态版式搬进 `assets/prefabs/ui/dialogue.prefab`（对账门 = jhyt_m71_dialogue_prefab，
 -- 黄金表 34 行钉死迁移前画面），render 只写会变的部分：说话人/台词/选项/提示文本、
 -- 选中行 marker 互斥、推进箭头显隐；立绘本体留动态层（贴图随 NPC/mood 变化）。
 -- 开/关屏 = 根节点显隐（`prefab.set_visible` 子树语义，藏父带子、藏节点不建布局项），
 -- 不撤重铺，避免槽位 LIFO 复用打乱绘制序（M63c 教训）。
-local PRESET_PATH = "assets/prefabs/dialogue.prefab"
+local PRESET_PATH = "assets/prefabs/ui/dialogue.prefab"
 local preset_handle = nil
 local preset_spawned = false
 
@@ -429,7 +429,7 @@ local function option_label(index, entry)
 end
 
 -- 绘制对话面板（场景切换会清空动态 UI，故每次换节点/开始都整体重绘）。
--- 静态版式取自预设（`assets/prefabs/dialogue.prefab`），这里只喂内容取值：
+-- 静态版式取自预设（`assets/prefabs/ui/dialogue.prefab`），这里只喂内容取值：
 -- 说话人 / 台词 / 选项 / 提示 / 立绘（立绘是动态层 `ui.image`，贴图随 NPC/mood 变化）。
 function M.render()
   if not active then

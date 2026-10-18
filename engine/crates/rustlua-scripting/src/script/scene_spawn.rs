@@ -130,21 +130,38 @@ impl LuaRuntime {
             state.entity_state.scene_entities.insert(entity.id, handle);
 
             // 持久实体快照（权威、静态组件），供切场景后重生。
-            if entity
-                .metadata
-                .get("persistent")
-                .is_some_and(|value| value == "true")
-                && !entity.name.is_empty()
-            {
-                state.entity_state.persistent.insert(
-                    entity.name.clone(),
-                    PersistedEntity {
-                        name: entity.name.clone(),
-                        components: entity.components.clone(),
-                        resources: entity.resources.clone(),
-                        metadata: entity.metadata.clone(),
-                    },
-                );
+            //
+            // 判定以 [`rustlua_scene::scene::PERSISTENT_COMPONENT`] 为准：实体自身或
+            // **任一祖先**带该组件都算持久实体（父节点的标记级联到整棵子树）。
+            // `metadata["persistent"]` 是旧场景的写法，继续兼容读取，但编辑器不再写它。
+            let persistent = scene.is_entity_persistent_with_ancestors(entity.id)
+                || entity
+                    .metadata
+                    .get("persistent")
+                    .is_some_and(|value| value == "true");
+            if !entity.name.is_empty() {
+                if persistent {
+                    // 父实体也必须是持久实体才会被快照；这里记下名字而不是句柄，
+                    // 恢复时再按名字重连（新场景里同名实体胜出）。
+                    let parent_name = entity.parent.and_then(|parent| {
+                        let parent = scene.entities.get(&parent)?;
+                        (!parent.name.is_empty()).then(|| parent.name.clone())
+                    });
+                    state.entity_state.persistent.insert(
+                        entity.name.clone(),
+                        PersistedEntity {
+                            name: entity.name.clone(),
+                            components: entity.components.clone(),
+                            resources: entity.resources.clone(),
+                            metadata: entity.metadata.clone(),
+                            parent_name,
+                        },
+                    );
+                } else {
+                    // 新场景明确用同名实体覆盖了旧快照，但没带持久标记 ⇒ 新定义胜出。
+                    // 不丢掉旧快照的话，再从别的场景切回来会把早已销毁的实体复活。
+                    state.entity_state.persistent.remove(&entity.name);
+                }
             }
             count += 1;
         }

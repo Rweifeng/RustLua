@@ -1,14 +1,20 @@
-//! 编辑器性能面板：一个**独立弹窗**，展示帧/面板/命令耗时、布局缓存命中率与队列计数。
+//! 编辑器性能分析面板：一个**独立弹窗**，分两层展示读数。
+//!
+//! - **运行时层**（Play 预览）：帧率、帧间隔、CPU/GPU 渲染、Lua/更新耗时、draw call、
+//!   set pass、实例/顶点/三角形、内存、贴图/网格缓存与加载队列（见 `runtime_perf.rs`）；
+//! - **编辑器层**：编辑器帧/面板/命令耗时、布局缓存命中率、资源扫描与队列计数。
 //!
 //! 这份数字原先画在 Scene 视图**右上角的覆盖层**（`painter.text`）里，而那个角落正好是
 //! 工具小面板（选择/移动/旋转/缩放）的位置——两段文字叠在一起：工具按钮被盖住、数字也读不全。
 //! 现在数字搬进本窗口（可拖动、可缩放、可关闭），视口里不再有性能文字，工具条独占那个角落。
-//! 工具栏的「性能」勾选框与「窗口 ▸ 性能面板」菜单项只负责**开关这个窗口**。
+//! 工具栏的「性能」勾选框与「窗口 ▸ 性能分析面板」菜单项只负责**开关这个窗口**。
 //!
-//! 分工：`profiler.rs` 负责有界采样与报告，本文件只负责"把报告排成能读的表"与画窗口。
-//! 因此排版逻辑（`performance_sections`）是纯函数，可以脱离 egui 断言。
+//! 分工：`profiler.rs` 负责编辑器有界采样与报告，`runtime_perf.rs` 负责运行时快照与趋势，
+//! 本文件只负责"把报告排成能读的表 / 把趋势画成折线"与画窗口。因此排版逻辑
+//! （`performance_sections`）是纯函数，可以脱离 egui 断言。
 
 use crate::EditorApp;
+use crate::runtime_perf::{RuntimePerfHistory, RuntimePerfSnapshot, RuntimeSeries, bytes_to_mib};
 use editor::{ProfilerReport, TimingSummary};
 use eframe::egui;
 use rustlua_ui::ui_layout_cache::LayoutCacheStats;
@@ -18,10 +24,10 @@ const MAX_PANEL_ROWS: usize = 12;
 /// 命令耗时表最多列出的行数（命令种类随功能增长，不能无限占屏）。
 const MAX_COMMAND_ROWS: usize = 8;
 /// 性能面板默认内容区尺寸（`egui::Window::default_size` 定的是**内容区**）。
-const DEFAULT_PANEL_WIDTH: f32 = 420.0;
-const DEFAULT_PANEL_HEIGHT: f32 = 340.0;
+const DEFAULT_PANEL_WIDTH: f32 = 460.0;
+const DEFAULT_PANEL_HEIGHT: f32 = 520.0;
 /// 内容区高度的下限：再矮就连「帧」这一节都读不全。
-const MIN_PANEL_HEIGHT: f32 = 200.0;
+const MIN_PANEL_HEIGHT: f32 = 240.0;
 /// 窗口装饰（标题栏 + 边框内边距）的竖向余量，单位是点。
 ///
 /// `default_size` 只管内容区，外面还有标题栏与边框（实测约 46 点）。定位时**必须**把它减掉：
@@ -123,6 +129,7 @@ pub(crate) fn performance_sections(
     report: &ProfilerReport,
     layout: &LayoutCacheStats,
     counts: EditorPerfCounts,
+    runtime: Option<&RuntimePerfSnapshot>,
 ) -> Vec<PerformanceSection> {
     let exceeded = report.frame_budget_exceeded();
     let over_percent = if report.frame_samples == 0 {
@@ -133,9 +140,13 @@ pub(crate) fn performance_sections(
 
     let mut sections = Vec::new();
 
-    // ① 帧：预算是否守住，是性能面板要回答的第一个问题。
+    // ⓪ 运行时：Play 预览的实时读数（帧率 / draw / setpass / 顶点面数 / 资源 / 内存）。
+    // 未 Play 时只给一个说明分组，不把上一局的过期数字留在这里。
+    sections.extend(runtime_perf_sections(runtime));
+
+    // ① 编辑器帧：预算是否守住，是编辑器自身性能要回答的第一个问题。
     sections.push(PerformanceSection {
-        title: "帧",
+        title: "编辑器帧",
         default_open: true,
         rows: vec![
             row(
@@ -377,6 +388,383 @@ pub(crate) fn performance_sections(
     sections
 }
 
+/// 运行时（Play 预览）的四个分组；没有运行时快照时给一个明确的"未运行"分组。
+///
+/// 只读 `RuntimePerfSnapshot`，不碰 `EditorApp`——与编辑器分组一样保持可单测。
+fn runtime_perf_sections(snapshot: Option<&RuntimePerfSnapshot>) -> Vec<PerformanceSection> {
+    let Some(snapshot) = snapshot else {
+        return vec![PerformanceSection {
+            title: "运行时（Play 预览）",
+            default_open: true,
+            rows: vec![row(
+                "状态",
+                "未运行（点击 Play 开始实时采样）",
+                "runtime.status",
+                false,
+            )],
+            note: Some(
+                "Play 后本组显示帧率 / draw call / set pass / 顶点面数 / CPU/GPU / 内存 / \
+                 资源加载与缓存。停止 Play 会清空，不保留上一局的过期读数。"
+                    .to_owned(),
+            ),
+        }];
+    };
+
+    let texture_lookups = snapshot
+        .texture_identity_hits
+        .saturating_add(snapshot.texture_identity_misses);
+    let texture_hit_rate = if texture_lookups == 0 {
+        0.0
+    } else {
+        snapshot.texture_identity_hits as f64 / texture_lookups as f64 * 100.0
+    };
+    let mesh_lookups = snapshot
+        .mesh_identity_hits
+        .saturating_add(snapshot.mesh_identity_misses);
+    let mesh_hit_rate = if mesh_lookups == 0 {
+        0.0
+    } else {
+        snapshot.mesh_identity_hits as f64 / mesh_lookups as f64 * 100.0
+    };
+    let pass_list = if snapshot.passes.is_empty() {
+        "（无）".to_owned()
+    } else {
+        snapshot.passes.join(" → ")
+    };
+    let short_pass_list = truncate_chars(&pass_list, 48);
+    let known_gpu_bytes = snapshot
+        .texture_bytes
+        .saturating_add(snapshot.mesh_bytes)
+        .saturating_add(snapshot.vertex_buffer_capacity);
+    let process_memory = snapshot.process_memory_mib.map_or_else(
+        || "不可用（仅 Windows）".to_owned(),
+        |mib| format!("{mib:.1} MiB"),
+    );
+
+    vec![
+        PerformanceSection {
+            title: "运行时 · 帧",
+            default_open: true,
+            rows: vec![
+                row("目标", snapshot.target, "runtime.target", false),
+                row(
+                    "分辨率",
+                    format!("{}×{}", snapshot.resolution.0, snapshot.resolution.1),
+                    "runtime.resolution",
+                    false,
+                ),
+                row(
+                    "帧率",
+                    format!("{:.1} FPS", snapshot.fps),
+                    "runtime.fps",
+                    snapshot.fps_below_target(),
+                ),
+                row(
+                    "帧间隔",
+                    format!("{:.2} ms", snapshot.frame_ms),
+                    "runtime.frame_ms",
+                    snapshot.frame_ms_over_budget(),
+                ),
+                row(
+                    "CPU 渲染",
+                    format!("{:.2} ms", snapshot.render_cpu_ms),
+                    "runtime.render_cpu_ms",
+                    snapshot.render_cpu_ms > 16.7,
+                ),
+                row(
+                    "GPU 渲染",
+                    snapshot.gpu_timing_label(),
+                    "runtime.render_gpu_ms",
+                    false,
+                ),
+                row(
+                    "运行时更新",
+                    format!("{:.2} ms", snapshot.update_ms),
+                    "runtime.update_ms",
+                    snapshot.update_ms > 16.7,
+                ),
+                row(
+                    "Lua 耗时",
+                    format!("{:.3} ms", snapshot.lua_ms),
+                    "runtime.lua_ms",
+                    false,
+                ),
+                row(
+                    "累计帧数",
+                    snapshot.frames.to_string(),
+                    "runtime.frames",
+                    false,
+                ),
+            ],
+            note: (snapshot.render_gpu_ms.is_none() && snapshot.gpu_timing_note.is_some())
+                .then(|| snapshot.gpu_timing_label()),
+        },
+        PerformanceSection {
+            title: "运行时 · 渲染",
+            default_open: true,
+            rows: vec![
+                row(
+                    "Draw Calls",
+                    snapshot.draw_calls.to_string(),
+                    "runtime.draw_calls",
+                    snapshot.draw_calls > 2000,
+                ),
+                row(
+                    "Set Pass",
+                    snapshot.set_pass_calls.to_string(),
+                    "runtime.set_pass_calls",
+                    snapshot.set_pass_calls > 200,
+                ),
+                row(
+                    "实例数",
+                    snapshot.instances.to_string(),
+                    "runtime.instances",
+                    false,
+                ),
+                row(
+                    "三角形（面数）",
+                    snapshot.triangles.to_string(),
+                    "runtime.triangles",
+                    false,
+                ),
+                row(
+                    "顶点数",
+                    snapshot.vertices.to_string(),
+                    "runtime.vertices",
+                    false,
+                ),
+                row(
+                    "丢弃 Draw",
+                    snapshot.dropped_draws.to_string(),
+                    "runtime.dropped_draws",
+                    snapshot.dropped_draws > 0,
+                ),
+                row(
+                    "渲染通道数",
+                    snapshot.passes.len().to_string(),
+                    "runtime.pass_count",
+                    false,
+                ),
+                row(
+                    "渲染通道",
+                    format!("{} 条：{short_pass_list}", snapshot.passes.len()),
+                    "runtime.passes",
+                    false,
+                ),
+                row(
+                    "2D 顶点缓冲",
+                    format_bytes(snapshot.vertex_buffer_capacity),
+                    "runtime.vertex_buffer_capacity",
+                    false,
+                ),
+                row(
+                    "顶点缓冲峰值",
+                    format_bytes(snapshot.vertex_bytes_peak),
+                    "runtime.vertex_bytes_peak",
+                    false,
+                ),
+                row(
+                    "缓冲扩容次数",
+                    snapshot.vertex_buffer_growths.to_string(),
+                    "runtime.vertex_buffer_growths",
+                    snapshot.vertex_buffer_growths > 8,
+                ),
+                row(
+                    "回读槽 / 丢弃",
+                    format!(
+                        "{} / {}",
+                        snapshot.readback.slot_count, snapshot.readback.dropped
+                    ),
+                    "runtime.readback_slots",
+                    snapshot.readback.dropped > 0,
+                ),
+                row(
+                    "回读待处理",
+                    snapshot.readback.pending.to_string(),
+                    "runtime.readback_pending",
+                    false,
+                ),
+            ],
+            note: Some(format!("完整通道顺序：{pass_list}")),
+        },
+        PerformanceSection {
+            title: "运行时 · 资源与缓存",
+            default_open: true,
+            rows: vec![
+                row(
+                    "2D/3D 贴图",
+                    snapshot.loaded_textures.to_string(),
+                    "runtime.loaded_textures",
+                    false,
+                ),
+                row(
+                    "字体图集",
+                    snapshot.font_atlas_textures.to_string(),
+                    "runtime.font_atlas_textures",
+                    false,
+                ),
+                row(
+                    "贴图显存（估算）",
+                    format_bytes(snapshot.texture_bytes),
+                    "runtime.texture_bytes",
+                    false,
+                ),
+                row(
+                    "贴图身份命中",
+                    snapshot.texture_identity_hits.to_string(),
+                    "runtime.texture_identity_hits",
+                    false,
+                ),
+                row(
+                    "贴图身份未命中",
+                    snapshot.texture_identity_misses.to_string(),
+                    "runtime.texture_identity_misses",
+                    false,
+                ),
+                row(
+                    "贴图身份命中率",
+                    format!("{texture_hit_rate:.1}%"),
+                    "runtime.texture_identity_hit_rate",
+                    false,
+                ),
+                row(
+                    "网格缓存",
+                    snapshot.cached_meshes.to_string(),
+                    "runtime.cached_meshes",
+                    false,
+                ),
+                row(
+                    "网格显存（估算）",
+                    format_bytes(snapshot.mesh_bytes),
+                    "runtime.mesh_bytes",
+                    false,
+                ),
+                row(
+                    "网格身份命中 / 未命中",
+                    format!(
+                        "{} / {}（{:.1}%）",
+                        snapshot.mesh_identity_hits,
+                        snapshot.mesh_identity_misses,
+                        mesh_hit_rate
+                    ),
+                    "runtime.mesh_identity_stats",
+                    false,
+                ),
+                row(
+                    "加载模式",
+                    if snapshot.async_mode {
+                        "异步（后台 worker）"
+                    } else {
+                        "同步（编辑器预览 / 确定性输出）"
+                    },
+                    "runtime.load_mode",
+                    false,
+                ),
+                row(
+                    "加载线程",
+                    snapshot.async_workers.to_string(),
+                    "runtime.async_workers",
+                    false,
+                ),
+                row(
+                    "待加载 / 已完成",
+                    format!(
+                        "{} / {}",
+                        snapshot.async_pending, snapshot.async_completed
+                    ),
+                    "runtime.async_loads",
+                    snapshot.async_pending > 0,
+                ),
+                row(
+                    "资源身份条目",
+                    snapshot.asset_entries.to_string(),
+                    "runtime.asset_entries",
+                    false,
+                ),
+                row(
+                    "场景实体 / 运行时实体",
+                    format!(
+                        "{} / {}",
+                        snapshot.scene_entities, snapshot.runtime_entities
+                    ),
+                    "runtime.entities",
+                    false,
+                ),
+            ],
+            note: Some(
+                "身份命中率按 draw 的资源句柄解析计，不等于磁盘缓存命中率；显存是上传时记录的估算值。"
+                    .to_owned(),
+            ),
+        },
+        PerformanceSection {
+            title: "运行时 · 内存",
+            default_open: true,
+            rows: vec![
+                row(
+                    "进程工作集",
+                    process_memory,
+                    "runtime.process_memory_mib",
+                    false,
+                ),
+                row(
+                    "GPU 贴图",
+                    format_bytes(snapshot.texture_bytes),
+                    "runtime.gpu_texture_bytes",
+                    false,
+                ),
+                row(
+                    "GPU 网格",
+                    format_bytes(snapshot.mesh_bytes),
+                    "runtime.gpu_mesh_bytes",
+                    false,
+                ),
+                row(
+                    "2D 顶点缓冲",
+                    format_bytes(snapshot.vertex_buffer_capacity),
+                    "runtime.gpu_vertex_buffer_bytes",
+                    false,
+                ),
+                row(
+                    "回读 CPU 缓冲",
+                    format_bytes(snapshot.readback.cpu_bytes as u64),
+                    "runtime.readback_cpu_bytes",
+                    false,
+                ),
+                row(
+                    "已知 GPU 合计",
+                    format_bytes(known_gpu_bytes),
+                    "runtime.known_gpu_bytes",
+                    false,
+                ),
+            ],
+            note: Some(
+                "进程工作集是真实 RSS（Windows GetProcessMemoryInfo）；GPU 字节是上传统计的估算值，\
+                 不含驱动对齐与不可见的管线/绑定组开销。"
+                    .to_owned(),
+            ),
+        },
+    ]
+}
+
+/// 字节 → 人读单位（面板表格用）。
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.2} MiB", bytes_to_mib(bytes))
+    } else {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    }
+}
+
+/// 按字符截断长文本（通道列表一行放不下；完整顺序放在分组说明里换行显示）。
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_owned();
+    }
+    let mut out: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
 /// 计数器中文名（`profiler.bump/add` 的调用点里已登记的键）。
 ///
 /// 未登记的名字原样显示——新增计数器不改这里也能读，悬停仍能看到原始键名。
@@ -426,6 +814,156 @@ fn gauge_label(name: &str) -> String {
     .to_owned()
 }
 
+/// 趋势图单格高度（点）。
+const TREND_HEIGHT: f32 = 52.0;
+/// 趋势图两列之间的间距（点）。
+const TREND_GAP: f32 = 8.0;
+
+/// 运行时趋势：把最近 240 帧画成 2 列折线图（帧率 / 帧间隔 / CPU/GPU / draw / 顶点面数 / 内存）。
+///
+/// 用 `egui::Painter` 直接画折线，不引入 `egui_plot` 依赖；每格只保留最近值与
+/// 最小/最大刻度，趋势细节靠折线形状表达。
+fn draw_runtime_trends(ui: &mut egui::Ui, history: &RuntimePerfHistory) {
+    if history.is_empty() {
+        ui.weak("（Play 运行后开始记录；窗口容量 240 帧）");
+        return;
+    }
+    ui.weak(format!(
+        "最近 {} / {} 帧（旧样本自动淘汰）",
+        history.len(),
+        history.capacity()
+    ));
+    let width = ((ui.available_width() - TREND_GAP) * 0.5).max(120.0);
+    let series = [
+        RuntimeSeries::Fps,
+        RuntimeSeries::FrameMs,
+        RuntimeSeries::RenderCpuMs,
+        RuntimeSeries::RenderGpuMs,
+        RuntimeSeries::DrawCalls,
+        RuntimeSeries::SetPassCalls,
+        RuntimeSeries::Triangles,
+        RuntimeSeries::Vertices,
+        RuntimeSeries::MemoryMib,
+    ];
+    egui::Grid::new("perf_runtime_trends")
+        .num_columns(2)
+        .spacing([TREND_GAP, 6.0])
+        .show(ui, |ui| {
+            for (index, series) in series.into_iter().enumerate() {
+                let values = history.series(series);
+                if !values.is_empty() {
+                    draw_sparkline(ui, series.label(), &values, series_color(series), width);
+                }
+                if index % 2 == 1 {
+                    ui.end_row();
+                }
+            }
+        });
+}
+
+/// 一格折线图：背景 + 中线 + 折线 + 左上标签 + 右上最近值。
+fn draw_sparkline(
+    ui: &mut egui::Ui,
+    label: &str,
+    values: &[f32],
+    color: egui::Color32,
+    width: f32,
+) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, TREND_HEIGHT), egui::Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+    let inner = rect.shrink2(egui::vec2(4.0, 14.0));
+    painter.line_segment(
+        [
+            egui::pos2(inner.left(), inner.center().y),
+            egui::pos2(inner.right(), inner.center().y),
+        ],
+        egui::Stroke::new(1.0_f32, ui.visuals().weak_text_color().gamma_multiply(0.25)),
+    );
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    for value in values {
+        if value.is_finite() {
+            min = min.min(*value);
+            max = max.max(*value);
+        }
+    }
+    if !min.is_finite() || !max.is_finite() {
+        return;
+    }
+    if (max - min).abs() <= f32::EPSILON {
+        // 一条水平线也要占满中间高度，不能贴边。
+        let pad = max.abs().max(1.0) * 0.05;
+        min -= pad;
+        max += pad;
+    }
+    let span = (max - min).max(f32::EPSILON);
+    let points: Vec<egui::Pos2> = values
+        .iter()
+        .enumerate()
+        .filter(|(_, value)| value.is_finite())
+        .map(|(index, value)| {
+            let x = if values.len() <= 1 {
+                inner.center().x
+            } else {
+                inner.left() + inner.width() * index as f32 / (values.len() - 1) as f32
+            };
+            let y = inner.bottom() - (*value - min) / span * inner.height();
+            egui::pos2(x, y)
+        })
+        .collect();
+    if points.len() >= 2 {
+        painter.add(egui::Shape::line(points, egui::Stroke::new(1.4_f32, color)));
+    } else if let Some(point) = points.first() {
+        painter.circle_filled(*point, 2.0, color);
+    }
+    painter.text(
+        rect.left_top() + egui::vec2(4.0, 1.0),
+        egui::Align2::LEFT_TOP,
+        label,
+        egui::FontId::proportional(10.0),
+        ui.visuals().weak_text_color(),
+    );
+    painter.text(
+        rect.right_top() + egui::vec2(-4.0, 1.0),
+        egui::Align2::RIGHT_TOP,
+        format!("{:.2}", values.last().copied().unwrap_or(0.0)),
+        egui::FontId::monospace(10.0),
+        color,
+    );
+    painter.text(
+        rect.left_bottom() + egui::vec2(4.0, -1.0),
+        egui::Align2::LEFT_BOTTOM,
+        format!("{min:.1}"),
+        egui::FontId::monospace(9.0),
+        ui.visuals().weak_text_color(),
+    );
+    painter.text(
+        rect.right_bottom() + egui::vec2(-4.0, -1.0),
+        egui::Align2::RIGHT_BOTTOM,
+        format!("{max:.1}"),
+        egui::FontId::monospace(9.0),
+        ui.visuals().weak_text_color(),
+    );
+}
+
+fn series_color(series: RuntimeSeries) -> egui::Color32 {
+    match series {
+        RuntimeSeries::Fps => egui::Color32::from_rgb(110, 210, 120),
+        RuntimeSeries::FrameMs => egui::Color32::from_rgb(240, 180, 90),
+        RuntimeSeries::RenderCpuMs => egui::Color32::from_rgb(240, 130, 90),
+        RuntimeSeries::RenderGpuMs => egui::Color32::from_rgb(110, 170, 240),
+        RuntimeSeries::DrawCalls => egui::Color32::from_rgb(120, 210, 220),
+        RuntimeSeries::SetPassCalls => egui::Color32::from_rgb(180, 200, 110),
+        RuntimeSeries::Triangles => egui::Color32::from_rgb(200, 150, 240),
+        RuntimeSeries::Vertices => egui::Color32::from_rgb(160, 180, 250),
+        RuntimeSeries::MemoryMib => egui::Color32::from_rgb(240, 140, 160),
+    }
+}
+
 impl EditorApp {
     /// 性能面板（独立弹窗）。
     ///
@@ -440,7 +978,15 @@ impl EditorApp {
         }
         let report = self.profiler.report();
         let counts = EditorPerfCounts::capture(self);
-        let sections = performance_sections(&report, self.ui_layout_cache.stats(), counts);
+        let runtime_snapshot = self.runtime_perf.snapshot();
+        let runtime_history = self.runtime_perf.history();
+        let sections = performance_sections(
+            &report,
+            self.ui_layout_cache.stats(),
+            counts,
+            runtime_snapshot,
+        );
+        let runtime_paused = self.runtime_perf.paused();
 
         // 工作区矩形本帧一定画过（`CentralPanel` 每帧都在）；退化值只是防御。
         let workspace = self.workspace_rect;
@@ -467,7 +1013,8 @@ impl EditorApp {
         let mut open = self.show_performance_panel;
         let mut clear_samples = false;
         let mut copy_report = false;
-        let response = egui::Window::new("性能（Editor Profiler）")
+        let mut toggle_pause = false;
+        let response = egui::Window::new("性能分析（Editor + Runtime）")
             .open(&mut open)
             .default_pos(default_pos)
             .default_size(default_size)
@@ -477,14 +1024,29 @@ impl EditorApp {
                 ui.horizontal(|ui| {
                     if ui
                         .button("清空采样")
-                        .on_hover_text("只清空帧/面板/命令的采样窗口；计数器与 gauge 保留")
+                        .on_hover_text(
+                            "清空编辑器帧/面板/命令采样与运行时趋势；计数器、gauge 与当前运行时快照保留",
+                        )
                         .clicked()
                     {
                         clear_samples = true;
                     }
                     if ui
+                        .button(if runtime_paused {
+                            "继续采样"
+                        } else {
+                            "冻结采样"
+                        })
+                        .on_hover_text("冻结后面板保留最后一次运行时快照与趋势，便于逐项核对")
+                        .clicked()
+                    {
+                        toggle_pause = true;
+                    }
+                    if ui
                         .button("复制报告")
-                        .on_hover_text("把完整 profiler 文本报告放进剪贴板（可直接归档做证据）")
+                        .on_hover_text(
+                            "把编辑器 profiler 与运行时性能文本报告放进剪贴板（可直接归档做证据）",
+                        )
                         .clicked()
                     {
                         copy_report = true;
@@ -492,10 +1054,24 @@ impl EditorApp {
                     if report.frame_budget_exceeded() {
                         ui.colored_label(
                             egui::Color32::from_rgb(240, 180, 90),
-                            format!("超预算（p95 {:.1} ms）", report.frame_p95_ms),
+                            format!("编辑器超预算（p95 {:.1} ms）", report.frame_p95_ms),
                         );
                     } else {
-                        ui.weak(format!("预算内（p95 {:.1} ms）", report.frame_p95_ms));
+                        ui.weak(format!("编辑器预算内（p95 {:.1} ms）", report.frame_p95_ms));
+                    }
+                    match runtime_snapshot {
+                        Some(snapshot) if snapshot.fps_below_target() => {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(240, 180, 90),
+                                format!("运行时 {:.1} FPS", snapshot.fps),
+                            );
+                        }
+                        Some(snapshot) => {
+                            ui.weak(format!("运行时 {:.1} FPS", snapshot.fps));
+                        }
+                        None => {
+                            ui.weak("运行时不采样（Play 后开始）");
+                        }
                     }
                 });
                 ui.separator();
@@ -534,15 +1110,36 @@ impl EditorApp {
                             }
                         });
                 }
+                egui::CollapsingHeader::new("运行时趋势")
+                    .id_salt("runtime_trends")
+                    .default_open(runtime_snapshot.is_some())
+                    .show(ui, |ui| {
+                        draw_runtime_trends(ui, runtime_history);
+                    });
             });
         self.perf_panel_rect = response.map_or(egui::Rect::NOTHING, |inner| inner.response.rect);
         self.show_performance_panel = open;
         if clear_samples {
             self.profiler.clear_samples();
-            self.status = "已清空性能采样（计数器与 gauge 保留）".to_owned();
+            self.runtime_perf.clear_history();
+            self.status = "已清空性能采样（计数器、gauge 与当前运行时快照保留）".to_owned();
+        }
+        if toggle_pause {
+            let next = !self.runtime_perf.paused();
+            self.runtime_perf.set_paused(next);
+            self.status = if next {
+                "运行时性能采样已冻结".to_owned()
+            } else {
+                "运行时性能采样已继续".to_owned()
+            };
         }
         if copy_report {
-            context.copy_text(report.to_text());
+            let mut text = report.to_text();
+            if let Some(snapshot) = self.runtime_perf.snapshot() {
+                text.push('\n');
+                text.push_str(&snapshot.to_text());
+            }
+            context.copy_text(text);
             self.status = "性能报告已复制到剪贴板".to_owned();
         }
     }
@@ -553,6 +1150,7 @@ mod tests {
     use super::*;
     use crate::framegate::GuiSmoke;
     use editor::{DEFAULT_FRAME_BUDGET_MS, EditorProfiler};
+    use engine::host::ReadbackMetrics;
     use std::time::{Duration, Instant};
 
     fn section<'a>(sections: &'a [PerformanceSection], title: &str) -> &'a PerformanceSection {
@@ -595,9 +1193,9 @@ mod tests {
             hierarchy_rows: 6,
             resource_scans: 1,
         };
-        let sections = performance_sections(&report, &layout, counts);
+        let sections = performance_sections(&report, &layout, counts, None);
 
-        let frame = section(&sections, "帧");
+        let frame = section(&sections, "编辑器帧");
         assert!(frame.default_open);
         let p95 = frame
             .rows
@@ -673,8 +1271,12 @@ mod tests {
                 total_ms: f64::from(index),
             })
             .collect();
-        let sections =
-            performance_sections(&report, &LayoutCacheStats::default(), Default::default());
+        let sections = performance_sections(
+            &report,
+            &LayoutCacheStats::default(),
+            Default::default(),
+            None,
+        );
 
         let panels = section(&sections, "面板耗时");
         assert_eq!(panels.rows.len(), MAX_PANEL_ROWS);
@@ -701,9 +1303,13 @@ mod tests {
             frame_budget_ms: DEFAULT_FRAME_BUDGET_MS,
             ..Default::default()
         };
-        let sections =
-            performance_sections(&report, &LayoutCacheStats::default(), Default::default());
-        assert_eq!(sections.len(), 7, "七个分组固定存在");
+        let sections = performance_sections(
+            &report,
+            &LayoutCacheStats::default(),
+            Default::default(),
+            None,
+        );
+        assert_eq!(sections.len(), 8, "七个编辑器分组 + 一个运行时占位分组");
         for title in [
             "面板耗时",
             "命令耗时",
@@ -715,17 +1321,231 @@ mod tests {
                 "{title} 在空报告下应为空（由绘制层显示占位）"
             );
         }
+        let runtime = section(&sections, "运行时（Play 预览）");
+        assert_eq!(runtime.rows[0].raw_key, "runtime.status");
+        assert_eq!(
+            runtime.rows[0].value, "未运行（点击 Play 开始实时采样）",
+            "未 Play 时必须明确说没在采样"
+        );
         // `enabled=false` 的报告必须自曝"没在记录"，而不是显示一排 0 让人误解。
         let disabled = ProfilerReport::default();
-        let sections =
-            performance_sections(&disabled, &LayoutCacheStats::default(), Default::default());
-        let row = section(&sections, "帧")
+        let sections = performance_sections(
+            &disabled,
+            &LayoutCacheStats::default(),
+            Default::default(),
+            None,
+        );
+        let row = section(&sections, "编辑器帧")
             .rows
             .iter()
             .find(|row| row.raw_key == "enabled")
             .expect("帧分组必须有记录开关");
         assert_eq!(row.value, "否");
         assert!(row.warn);
+    }
+
+    /// 运行时分组必须覆盖用户点名的全部关键读数，并给出可断言的原始键。
+    #[test]
+    fn runtime_sections_cover_frame_render_resource_and_memory() {
+        let snapshot = RuntimePerfSnapshot {
+            target: "Play 预览",
+            resolution: (1280, 720),
+            frames: 120,
+            fps: 58.5,
+            frame_ms: 17.1,
+            update_ms: 4.2,
+            lua_ms: 1.1,
+            render_cpu_ms: 2.3,
+            render_gpu_ms: Some(3.4),
+            gpu_timing_note: None,
+            draw_calls: 42,
+            set_pass_calls: 6,
+            instances: 18,
+            triangles: 1200,
+            vertices: 3600,
+            dropped_draws: 0,
+            passes: vec!["clear", "legacy_2d_overlay"],
+            loaded_textures: 12,
+            font_atlas_textures: 1,
+            texture_bytes: 4 * 1024 * 1024,
+            texture_identity_hits: 100,
+            texture_identity_misses: 2,
+            cached_meshes: 3,
+            mesh_bytes: 2 * 1024 * 1024,
+            mesh_identity_hits: 50,
+            mesh_identity_misses: 1,
+            async_mode: false,
+            async_workers: 0,
+            async_pending: 0,
+            async_completed: 15,
+            vertex_buffer_capacity: 1024 * 1024,
+            vertex_buffer_growths: 1,
+            vertex_bytes_peak: 900 * 1024,
+            readback: ReadbackMetrics {
+                slot_count: 3,
+                dropped: 1,
+                ..Default::default()
+            },
+            process_memory_mib: Some(512.0),
+            asset_entries: 20,
+            scene_entities: 40,
+            runtime_entities: 43,
+        };
+        let report = sampled_report();
+        let sections = performance_sections(
+            &report,
+            &LayoutCacheStats::default(),
+            Default::default(),
+            Some(&snapshot),
+        );
+        assert_eq!(sections.len(), 11, "七个编辑器分组 + 四个运行时分组");
+
+        let frame = section(&sections, "运行时 · 帧");
+        for (key, value) in [
+            ("runtime.fps", "58.5 FPS"),
+            ("runtime.frame_ms", "17.10 ms"),
+            ("runtime.render_cpu_ms", "2.30 ms"),
+            ("runtime.render_gpu_ms", "3.40 ms"),
+            ("runtime.update_ms", "4.20 ms"),
+            ("runtime.lua_ms", "1.100 ms"),
+            ("runtime.frames", "120"),
+        ] {
+            let row = frame
+                .rows
+                .iter()
+                .find(|row| row.raw_key == key)
+                .unwrap_or_else(|| panic!("运行时帧分组缺少 {key}"));
+            assert_eq!(row.value, value);
+        }
+
+        let render = section(&sections, "运行时 · 渲染");
+        for (key, value) in [
+            ("runtime.draw_calls", "42"),
+            ("runtime.set_pass_calls", "6"),
+            ("runtime.instances", "18"),
+            ("runtime.triangles", "1200"),
+            ("runtime.vertices", "3600"),
+            ("runtime.dropped_draws", "0"),
+            ("runtime.pass_count", "2"),
+            ("runtime.passes", "2 条：clear → legacy_2d_overlay"),
+            ("runtime.readback_slots", "3 / 1"),
+        ] {
+            let row = render
+                .rows
+                .iter()
+                .find(|row| row.raw_key == key)
+                .unwrap_or_else(|| panic!("运行时渲染分组缺少 {key}"));
+            assert_eq!(row.value, value, "{key} 的值不对");
+        }
+        assert!(
+            render
+                .rows
+                .iter()
+                .find(|row| row.raw_key == "runtime.readback_slots")
+                .expect("回读槽")
+                .warn,
+            "回读丢弃必须标警示"
+        );
+
+        let resources = section(&sections, "运行时 · 资源与缓存");
+        for (key, value) in [
+            ("runtime.loaded_textures", "12"),
+            ("runtime.texture_bytes", "4.00 MiB"),
+            ("runtime.texture_identity_hit_rate", "98.0%"),
+            ("runtime.cached_meshes", "3"),
+            ("runtime.mesh_bytes", "2.00 MiB"),
+            ("runtime.load_mode", "同步（编辑器预览 / 确定性输出）"),
+            ("runtime.async_loads", "0 / 15"),
+            ("runtime.asset_entries", "20"),
+            ("runtime.entities", "40 / 43"),
+        ] {
+            let row = resources
+                .rows
+                .iter()
+                .find(|row| row.raw_key == key)
+                .unwrap_or_else(|| panic!("运行时资源分组缺少 {key}"));
+            assert_eq!(row.value, value, "{key} 的值不对");
+        }
+
+        let memory = section(&sections, "运行时 · 内存");
+        for (key, value) in [
+            ("runtime.process_memory_mib", "512.0 MiB"),
+            ("runtime.gpu_texture_bytes", "4.00 MiB"),
+            ("runtime.gpu_mesh_bytes", "2.00 MiB"),
+            ("runtime.gpu_vertex_buffer_bytes", "1.00 MiB"),
+            ("runtime.known_gpu_bytes", "7.00 MiB"),
+        ] {
+            let row = memory
+                .rows
+                .iter()
+                .find(|row| row.raw_key == key)
+                .unwrap_or_else(|| panic!("运行时内存分组缺少 {key}"));
+            assert_eq!(row.value, value, "{key} 的值不对");
+        }
+    }
+
+    /// 低帧率/丢 draw/超预算必须标黄；GPU 不可用只给原因，不冒充数据。
+    #[test]
+    fn runtime_warnings_are_explicit() {
+        let mut snapshot = RuntimePerfSnapshot {
+            frames: 60,
+            fps: 30.0,
+            frame_ms: 33.0,
+            draw_calls: 5000,
+            set_pass_calls: 400,
+            dropped_draws: 2,
+            ..Default::default()
+        };
+        snapshot.gpu_timing_note = Some("不可用（设备未启用时间戳）".to_owned());
+        let report = sampled_report();
+        let sections = performance_sections(
+            &report,
+            &LayoutCacheStats::default(),
+            Default::default(),
+            Some(&snapshot),
+        );
+        let frame = section(&sections, "运行时 · 帧");
+        assert!(
+            frame
+                .rows
+                .iter()
+                .find(|row| row.raw_key == "runtime.fps")
+                .expect("FPS 行")
+                .warn
+        );
+        assert!(
+            frame
+                .rows
+                .iter()
+                .find(|row| row.raw_key == "runtime.frame_ms")
+                .expect("帧间隔行")
+                .warn
+        );
+        assert_eq!(
+            frame
+                .rows
+                .iter()
+                .find(|row| row.raw_key == "runtime.render_gpu_ms")
+                .expect("GPU 行")
+                .value,
+            "不可用（设备未启用时间戳）"
+        );
+        let render = section(&sections, "运行时 · 渲染");
+        for key in [
+            "runtime.draw_calls",
+            "runtime.set_pass_calls",
+            "runtime.dropped_draws",
+        ] {
+            assert!(
+                render
+                    .rows
+                    .iter()
+                    .find(|row| row.raw_key == key)
+                    .unwrap_or_else(|| panic!("缺少 {key}"))
+                    .warn,
+                "{key} 越过阈值必须标警示"
+            );
+        }
     }
 
     /// 用户报的那个重叠：性能数字与 Scene 右上角工具条**不能**再叠在一起。

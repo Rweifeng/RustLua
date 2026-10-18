@@ -1,6 +1,6 @@
 //! WP12 阶段 0 守卫：`engine::host::` 对外符号面的存在性 pin。
 //!
-//! 事实源是 `scripts/engine-pub-surface.mjs` 读的 rustdoc 产物（路径与项的种类），那份账抓不到**同一个名字还挂在同一个类型上**
+//! 事实源是 `scripts/verify/engine-pub-surface.mjs` 读的 rustdoc 产物（路径与项的种类），那份账抓不到**同一个名字还挂在同一个类型上**
 //! 这件事在 nightly 缺席时的另一面，所以这里用手写的路径引用补一条编译期断言：下面每一行都只解析路径、不调用，
 //! `RuntimeScene`/`Renderer` 的方法一旦被搬进 `pub mod` 子模块而忘记私有化，或从 `host/mod.rs` 的 `pub use` 里漏掉，
 //! 这个文件就编译不过。它与 `editor`/`game`/`game_web`/`assetc` 的工作区编译是同一件事的两面：后者证明**用得到的**没坏，
@@ -32,6 +32,7 @@ fn pin_paths() {
     let _ = engine::host::Renderer::render;
     let _ = engine::host::Renderer::render_into_texture;
     let _ = engine::host::Renderer::resize;
+    let _ = engine::host::Renderer::resource_stats;
     let _ = engine::host::Renderer::set_frame_views;
     let _ = engine::host::Renderer::set_post_process;
     let _ = engine::host::Renderer::set_world_sprite_camera;
@@ -45,6 +46,7 @@ fn pin_paths() {
     let _ = engine::host::RuntimeScene::add_step_system;
     let _ = engine::host::RuntimeScene::asset_entries;
     let _ = engine::host::RuntimeScene::asset_handle;
+    let _ = engine::host::RuntimeScene::asset_count;
     let _ = engine::host::RuntimeScene::camera_center_2d;
     let _ = engine::host::RuntimeScene::from_scene;
     let _ = engine::host::RuntimeScene::from_scene_edit;
@@ -66,8 +68,10 @@ fn pin_paths() {
     let _ = engine::host::RuntimeScene::resume_music;
     let _ = engine::host::RuntimeScene::run_script_steps;
     let _ = engine::host::RuntimeScene::runtime_spawned_entities;
+    let _ = engine::host::RuntimeScene::runtime_entity_count;
     let _ = engine::host::RuntimeScene::scene_3d;
     let _ = engine::host::RuntimeScene::scene_3d_with_camera;
+    let _ = engine::host::RuntimeScene::scene_entity_count;
     let _ = engine::host::RuntimeScene::scene_entity_handles;
     let _ = engine::host::RuntimeScene::scene_entity_local_transforms;
     let _ = engine::host::RuntimeScene::scene_parent_issues;
@@ -136,6 +140,7 @@ fn pin_paths() {
     let _: Option<engine::host::ReadbackStatus> = None;
     let _: Option<engine::host::RenderFrameMetrics> = None;
     let _: Option<engine::host::RenderOutcome> = None;
+    let _: Option<engine::host::RendererResourceStats> = None;
     let _: Option<engine::host::RuntimeScene> = None;
     let _: Option<engine::host::RuntimeSpawnedEntity> = None;
     let _: Option<engine::host::ScriptErrorPolicy> = None;

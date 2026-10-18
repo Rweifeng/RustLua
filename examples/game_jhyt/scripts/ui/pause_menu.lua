@@ -222,14 +222,14 @@ local clear_ui
 local clear_settings_ui
 local clear_help_ui
 
--- M66/B3 预设化：暂停菜单整体收口为 `assets/prefabs/pause_menu.prefab`（对账门 =
+-- M66/B3 预设化：暂停菜单整体收口为 `assets/prefabs/ui/pause_menu.prefab`（对账门 =
 -- `jhyt_m66_pause_prefab`，黄金表 570 行钉死迁移前画面；"搬运不改画面"）。
 -- 面板贴图/几何/字号全部来自预设，脚本运行期只写 `prefab.set_text` / `set_rect` /
 -- `set_visible`，不再画动态层（docs/48 换肤贴图随之并入预设，skin 模块不再需要）。
 -- 但每一行同时 `ui_text.record` 进宽度登记表：载体换了，`jhyt_m30_cjk_text` 的量宽门
 -- 仍然只有那一个入口——搬家之后不登记，门就静默量不到这一页（触屏说明最长，最该量）。
 -- 必须定义在 switch_page / draw_frame 之前：Lua 词法作用域只认「已声明」的 local。
-local PRESET_PATH = "assets/prefabs/pause_menu.prefab"
+local PRESET_PATH = "assets/prefabs/ui/pause_menu.prefab"
 local pause_handle = nil
 
 -- 页面容器实体名（三页共面板，换页 = 容器显隐，子树语义带子）。

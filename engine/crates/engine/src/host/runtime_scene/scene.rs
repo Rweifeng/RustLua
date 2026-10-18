@@ -100,6 +100,24 @@ impl RuntimeScene {
             .collect()
     }
 
+    /// 运行时资源身份表里的活条目数（不克隆整张表；性能面板常驻读数用）。
+    #[must_use]
+    pub fn asset_count(&self) -> usize {
+        self.assets.borrow().len()
+    }
+
+    /// 场景声明的实体数（不含脚本运行期 spawn 的实体）。
+    #[must_use]
+    pub fn scene_entity_count(&self) -> usize {
+        self.script.scene_entity_count()
+    }
+
+    /// 运行时 ECS 世界里的实体总数（含脚本运行期 spawn 的实体）。
+    #[must_use]
+    pub fn runtime_entity_count(&self) -> usize {
+        self.script.with_world(|world| world.entity_count())
+    }
+
     /// docs/54 §4.3：本帧三种显式显示模式各路由了几个实体 `(world, overlay, screen)`。
     ///
     /// 未声明模式的实体不计数（它们跟随全局开关），因此这三个数只在场景真的用了显式模式时非零——

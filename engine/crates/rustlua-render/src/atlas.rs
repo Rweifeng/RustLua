@@ -441,6 +441,10 @@ mod tests {
     use super::*;
     use crate::texture::TextureColorSpace;
 
+    /// 页缓存是**进程级全局**：任何测试里的 `clear_atlas_cache()` 都必须串行，
+    /// 否则会清掉另一个测试刚建立、正准备第二次命中的缓存（并行跑实测偶发红）。
+    static ATLAS_CACHE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn converts_pixel_rect_to_top_left_uv() {
         let r = AtlasRegion::from_pixels(256, 128, 64, 32, 128, 64).unwrap();
@@ -490,6 +494,9 @@ mod tests {
     }
     #[test]
     fn resolve_atlas_reference_loads_real_files() {
+        let _cache_guard = ATLAS_CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let root = std::env::temp_dir().join(format!(
             "rustlua-atlas-resolve-{}-{}",
             std::process::id(),
@@ -564,6 +571,9 @@ mod tests {
     fn repeated_lookups_use_the_cached_page() {
         use rustlua_infra::atlas_redirect::{AtlasRedirect, REDIRECT_FILE, RedirectEntry};
 
+        let _cache_guard = ATLAS_CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         clear_atlas_cache();
         let root = std::env::temp_dir().join(format!(
             "rustlua-atlas-cache-{}-{}",

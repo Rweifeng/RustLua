@@ -21,6 +21,13 @@ pub const CURRENT_SCENE_VERSION: u32 = 2;
 /// 场景侧复用它、不再各自定义，文档侧与运行时侧因此共用同一份实体标识类型。
 pub use rustlua_ecs::spatial_transform::SceneEntityId;
 
+/// 标记组件：实体（及其整棵子树）在运行时切场景时不销毁。
+///
+/// 这是一个**无载荷**标记组件：`components` 里出现该键即为开启，移除组件即关闭。
+/// 语义由 [`Scene::is_entity_persistent_with_ancestors`] 定义——父实体的标记会向下
+/// 影响全部子实体，因此作者只需要挂在子树根上。
+pub use rustlua_ecs::component_schema::PERSISTENT_COMPONENT;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SceneEntity {
     pub id: SceneEntityId,
@@ -69,6 +76,29 @@ impl Scene {
             key.push_str("editor.hidden.");
             let _ = write!(key, "{}", entity_id.0);
             if self.metadata.get(&key).is_some_and(|value| value == "true") {
+                return true;
+            }
+            cursor = entity.parent;
+        }
+        false
+    }
+
+    /// 实体自身或任一祖先带 [`PERSISTENT_COMPONENT`] 时返回 true。
+    ///
+    /// 与 `editor.hidden` 一样是**向下级联**的语义：父节点挂上组件就等于整棵子树
+    /// 都是持久实体；子节点自己的组件状态不受影响（父级移除后子级各自恢复本来的判定）。
+    #[must_use]
+    pub fn is_entity_persistent_with_ancestors(&self, id: SceneEntityId) -> bool {
+        let mut cursor = Some(id);
+        // 环保护：正常层级深度不可能超过实体数。
+        for _ in 0..=self.entities.len() {
+            let Some(entity_id) = cursor else {
+                return false;
+            };
+            let Some(entity) = self.entities.get(&entity_id) else {
+                return false;
+            };
+            if entity.components.contains_key(PERSISTENT_COMPONENT) {
                 return true;
             }
             cursor = entity.parent;
@@ -491,6 +521,39 @@ mod tests {
         assert!(s.is_entity_hidden_with_ancestors(SceneEntityId(3)));
         s.metadata.insert(key(1), "true".into());
         assert!(s.is_entity_hidden_with_ancestors(SceneEntityId(3)));
+    }
+
+    #[test]
+    fn persistent_component_cascades_to_descendants() {
+        let mut s = Scene::new("main");
+        s.add_entity(SceneEntityId(1), "Root", None).unwrap();
+        s.add_entity(SceneEntityId(2), "Parent", Some(SceneEntityId(1)))
+            .unwrap();
+        s.add_entity(SceneEntityId(3), "Child", Some(SceneEntityId(2)))
+            .unwrap();
+        assert!(!s.is_entity_persistent_with_ancestors(SceneEntityId(3)));
+        s.entities
+            .get_mut(&SceneEntityId(2))
+            .unwrap()
+            .components
+            .insert(PERSISTENT_COMPONENT.into(), String::new());
+        // 父级挂组件：父级与整棵子树都是持久实体，祖父不受影响。
+        assert!(!s.is_entity_persistent_with_ancestors(SceneEntityId(1)));
+        assert!(s.is_entity_persistent_with_ancestors(SceneEntityId(2)));
+        assert!(s.is_entity_persistent_with_ancestors(SceneEntityId(3)));
+        // 子级单独挂组件不影响父级。
+        s.entities
+            .get_mut(&SceneEntityId(2))
+            .unwrap()
+            .components
+            .remove(PERSISTENT_COMPONENT);
+        s.entities
+            .get_mut(&SceneEntityId(3))
+            .unwrap()
+            .components
+            .insert(PERSISTENT_COMPONENT.into(), String::new());
+        assert!(!s.is_entity_persistent_with_ancestors(SceneEntityId(2)));
+        assert!(s.is_entity_persistent_with_ancestors(SceneEntityId(3)));
     }
 
     #[test]

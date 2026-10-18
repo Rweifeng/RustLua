@@ -602,7 +602,8 @@ pub struct UiBar {
     pub color: [f32; 4],
 }
 
-/// Authored snapshot of an entity marked `metadata["persistent"]="true"`.
+/// Authored snapshot of a persistent entity (component [`rustlua_scene::scene::PERSISTENT_COMPONENT`],
+/// or the legacy `metadata["persistent"]="true"` flag).
 /// Keyed by entity name (the only handle stable across scene switches); kept in
 /// `ScriptState::persistent` so `process_scene_transition` can re-spawn it.
 #[derive(Clone, Debug, Default)]
@@ -610,9 +611,12 @@ struct PersistedEntity {
     name: String,
     components: BTreeMap<String, String>,
     resources: BTreeMap<String, AssetId>,
-    /// 保留元数据（如 persistent 标志自身）；当前恢复只用 components。
+    /// 保留元数据（含旧的 `persistent` 标志）；当前恢复只用 components。
     #[allow(dead_code)]
     metadata: BTreeMap<String, String>,
+    /// 作者态的父实体**名字**：切场景后父实体的句柄会变，名字是唯一稳定锚点。
+    /// 恢复时在全部快照 spawn 完后统一重连 `Parent`，因此顺序无关。
+    parent_name: Option<String>,
 }
 
 /// Result of checking a loaded script for source changes.
@@ -942,6 +946,13 @@ impl LuaRuntime {
             .iter()
             .map(|(id, handle)| (*id, *handle))
             .collect()
+    }
+
+    /// 场景声明的实体数（不含脚本运行期 spawn 的实体）。性能面板的常驻读数用，
+    /// 不分配登记表；需要逐条句柄时用 [`Self::scene_entity_handles`]。
+    #[must_use]
+    pub fn scene_entity_count(&self) -> usize {
+        self.state.borrow().entity_state.scene_entities.len()
     }
 
     /// Gives the host a read view of runtime Lua-created UI panels/images/grids.

@@ -1,7 +1,12 @@
 'use strict';
 
 // Main-package asset, independent of pack routing, remote assets and the WASM bridge.
-var SPLASH_PATH = 'branding/splash.png';
+// **逻辑名**：交给宿主加载前必须由适配层解析成"宿主认的那种路径形式"（`options.resolveSrc`）。
+// 直接把这个裸相对路径塞给 `Image.src` 会踩宿主路径方言：`--wx-path-style slash` 那一档
+// 宿主只认前导斜杠，`branding/splash.jpg` 会直接 onerror（B8 收尾时 WeChat 门实测到的唯一红）。
+// 用 JPEG 而不是 PNG：同一张 1280×720 启动图 PNG 1,225 KB，JPEG(960×540,q80) 约 82 KB，
+// 主包因此从 2,626 KB 降到 ~1,483 KB（≤1.5 MB 目标；PNG 无法在这个体积内保持可接受画质）。
+var SPLASH_PATH = 'branding/splash.jpg';
 var NAVY = [15 / 255, 25 / 255, 43 / 255, 1];
 
 function draw2d(canvas, getContext, image) {
@@ -170,8 +175,12 @@ module.exports = function showStartupBranding(options) {
           else draw();
         } catch (error) { finish(error); }
       };
-      image.onerror = function () { finish(new Error('cannot load ' + SPLASH_PATH)); };
-      image.src = SPLASH_PATH;
+      // 解析出的 src 必须与错误文案同源：否则现场只看到"cannot load branding/splash.jpg"，
+      // 而真正送给宿主的可能已经是另一种路径形式（那正是要查的东西）。
+      var splashSrc = (typeof options.resolveSrc === 'function') ? options.resolveSrc(SPLASH_PATH) : SPLASH_PATH;
+      if (!splashSrc) splashSrc = SPLASH_PATH;
+      image.onerror = function () { finish(new Error('cannot load ' + splashSrc)); };
+      image.src = splashSrc;
     } catch (error) { finish(error); }
   });
 };

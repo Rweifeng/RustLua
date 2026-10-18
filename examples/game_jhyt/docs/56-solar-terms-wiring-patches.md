@@ -35,7 +35,7 @@
 
 ---
 
-## 2. `scripts/verify.ps1`（验收样例清单追加一行）
+## 2. `scripts/verify/verify.ps1`（验收样例清单追加一行）
 
 在样例清单（`jhyt_m49_festival` 附近）追加：
 ```powershell

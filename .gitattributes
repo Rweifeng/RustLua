@@ -3,9 +3,9 @@
 # sh 解释器读到 "#!/bin/sh\r" 会报 bad interpreter: /bin/sh^M，而 Windows 上开了
 # core.autocrlf=true 的克隆（安装器默认值，很常见）会把它们检出成 CRLF——表现为
 # "hook 装了却每次提交都报错"，且失败信息里看不出是行尾问题。
-# scripts/install-git-hooks.ps1 安装时会顺手把工作区里的 CRLF 修回 LF，这里是预防。
+# scripts/repo/install-git-hooks.ps1 安装时会顺手把工作区里的 CRLF 修回 LF，这里是预防。
 #
-# 只钉 hooks，不加 `* text=auto`：那会把仓库里既有 CRLF 文件（scripts/*.ps1 是
+# 只钉 hooks，不加 `* text=auto`：那会把仓库里既有 CRLF 文件（scripts/**/*.ps1 是
 # UTF-8 BOM + CRLF，与 PS 5.1 控制台口径一致）一次性改写成满屏脏 diff。
 git-hooks/* text eol=lf
 

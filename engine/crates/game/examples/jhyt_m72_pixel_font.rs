@@ -53,8 +53,15 @@ const PROBE_TEXT: &str = "山庄炼药";
 const WANT_DESIGN_PX: f32 = 12.0;
 /// 上游全量字体（子集化的源，即 `subset_project_font --source` 那份），相对 `crates/game`。
 const FULL_FONT: &str = "../editor/fonts/FusionPixel-12px-Monospaced-zhHans.ttf";
-/// 对照用的平滑矢量字体（本包之前的项目字体，仍在 dev 树里）。
-const SMOOTH_FONT: &str = "assets/fonts/NotoSansSC-VF.ttf";
+/// 对照用的平滑矢量字体（**已从工程资产树下架**，2026-10-17）。
+///
+/// 这是本包 §② 的"反面对照"：判据必须证明"不是什么字体都判成点阵"，所以这份平滑字体
+/// **仍然要能加载**——但它不再躺在 `examples/game_jhyt/assets/fonts/` 里：那份 17.7 MB
+/// 与 `engine/crates/editor/fonts/` 下的副本**是同一个 blob**（同一 SHA-256），而资产树里
+/// 那一份会被 assetc 收进每个发布包（webgl 走网络、微信走分包配额）。下架后工程的
+/// `font`/`font_fallback` 两处声明都不指向它，包里不再有它；对照改读引擎侧副本。
+/// 相对 `crates/game`（`CARGO_MANIFEST_DIR`），与下面 `FULL_FONT` 同一个基准。
+const SMOOTH_FONT: &str = "../editor/fonts/NotoSansSC-VF.ttf";
 
 fn banner(title: &str) {
     println!("\n== {title} ==");
@@ -279,7 +286,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })?;
     let font_rel = project_font::primary_path(&project);
     let subset = load_font(&project.join(&font_rel))?;
-    let smooth = load_font(&project.join(SMOOTH_FONT))?;
+    // 对照字体按 `CARGO_MANIFEST_DIR` 解析（工程资产树里那份已下架，见 `SMOOTH_FONT`）。
+    let smooth_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(SMOOTH_FONT)
+        .canonicalize()
+        .map_err(|_| {
+            format!(
+                "缺少反面对照字体：{}（本包 §② 要用它证明判据不是“什么字体都判成点阵”）。\
+                 它随引擎入库，正常不会缺；缺失说明 `engine/crates/editor/fonts/` 被动过。",
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join(SMOOTH_FONT)
+                    .display()
+            )
+        })?;
+    let smooth = load_font(&smooth_path)?;
     let full = load_font(&full_path)?;
 
     // ---------------- ① 字体身份 ----------------

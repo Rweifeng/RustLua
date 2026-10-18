@@ -264,7 +264,7 @@ impl EditorApp {
                     );
                         ui.checkbox(&mut self.show_performance_panel, "性能")
                             .on_hover_text(
-                                "性能面板（独立弹窗：帧/面板/命令耗时、缓存与队列计数）",
+                                "性能分析面板（独立弹窗：Play 运行时帧率 / draw call / set pass / 顶点面数 / CPU/GPU / 内存 / 资源缓存，以及编辑器各面板耗时）",
                             );
                         // M19-03：出口/地点只读覆盖层 + 两个可开关的生产工具窗口。
                         ui.checkbox(&mut self.show_domain_overlay, "出口/地点");

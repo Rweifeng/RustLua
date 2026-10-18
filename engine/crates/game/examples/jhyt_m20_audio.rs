@@ -32,7 +32,7 @@ use std::{
 /// 运行期写入的 project.toml：完整 `[project]` 段（main.lua 启动校验会读窗口
 /// 尺寸/启动脚本）+ `[audio]` 段 + `[input]` 段（后者是后续任务 M20-07 的扩展位，
 /// 本示例验证音频写入保序、不丢其他段）。
-const SETTINGS_TEMPLATE: &str = "# M20-02 测试设置（示例结束时恢复）\n[project]\nname = \"game_jhyt\"\nversion = \"0.1.0\"\nengine = \"RustLua\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\nfont = \"assets/fonts/NotoSansSC-VF.ttf\"\nfont_fallback = \"\"\nfont_weight = 400.0\ntext_render_mode = \"vector\"\nwindow_width = 1280\nwindow_height = 720\n\n[audio]\nmaster = 0.5\nbgm = 0.25\nsfx = 0.75\nui = 0.5\n\n[input]\nmap = \"keep-me\"\n";
+const SETTINGS_TEMPLATE: &str = "# M20-02 测试设置（示例结束时恢复）\n[project]\nname = \"game_jhyt\"\nversion = \"0.1.0\"\nengine = \"RustLua\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\nfont = \"assets/fonts/FusionPixel-12px-Monospaced-zhHans.ttf\"\nfont_fallback = \"\"\nfont_weight = 400.0\ntext_render_mode = \"sdf\"\nwindow_width = 1280\nwindow_height = 720\n\n[audio]\nmaster = 0.5\nbgm = 0.25\nsfx = 0.75\nui = 0.5\n\n[input]\nmap = \"keep-me\"\n";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {

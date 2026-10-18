@@ -16,6 +16,7 @@ mod perf_baseline;
 mod play_sync;
 mod preview_session;
 mod publish;
+mod runtime_perf;
 mod scene_drag;
 mod scene_interaction;
 mod scene_ops;
@@ -722,6 +723,8 @@ struct EditorApp {
     layout_load: editor::LayoutLoad,
     /// Editor Profiler（docs/55 P0）：帧/面板/命令耗时、计数器与 gauge。
     profiler: editor::EditorProfiler,
+    /// Play 预览的运行时性能快照与趋势窗口（帧率 / draw / setpass / 内存 / 资源缓存）。
+    runtime_perf: crate::runtime_perf::RuntimePerfTracker,
     hierarchy_visible_cache: crate::panels::hierarchy::HierarchyVisibleCache,
     /// Hierarchy 小写化名称缓存（按文档修订失效）：搜索改词不再重算 10k 个名字。
     hierarchy_lower: crate::panels::hierarchy::HierarchyLowerCache,
@@ -1330,6 +1333,7 @@ impl EditorApp {
             layout: editor::EditorLayout::default(),
             layout_load: editor::LayoutLoad::Missing,
             profiler: editor::EditorProfiler::new(editor::DEFAULT_FRAME_BUDGET_MS),
+            runtime_perf: crate::runtime_perf::RuntimePerfTracker::default(),
             hierarchy_visible_cache: Default::default(),
             hierarchy_lower: Default::default(),
             hierarchy_row_probe: Default::default(),
@@ -1980,6 +1984,21 @@ impl EditorApp {
         }
     }
 
+    /// 采样一帧运行时性能（Play 预览）。
+    ///
+    /// 只在持有 `preview` 时取样：Play 停止后 `sample(None)` 会清空快照与趋势，
+    /// 面板因此不会显示上一局的过期数字。进程工作集按 tracker 自己的节流窗口采样，
+    /// 不是每个编辑器帧都问一次系统。
+    fn sample_runtime_performance(&mut self) {
+        let snapshot = if let Some(preview) = self.preview.as_ref() {
+            let memory_mib = self.runtime_perf.memory_mib_now();
+            Some(preview.perf_snapshot(memory_mib))
+        } else {
+            None
+        };
+        self.runtime_perf.sample(snapshot);
+    }
+
     /// 帧末刷新 profiler gauge：历史深度、日志/输出行数、资源条目数与后台队列长度。
     fn update_profiler_gauges(&mut self) {
         if !self.profiler.enabled() {
@@ -2404,6 +2423,8 @@ impl EditorApp {
         }
         // Play 且本帧没人步进过预览（Game 页签没显示）：补一次空输入步进，游戏不因切页停摆。
         self.keep_preview_running_without_game_view(context);
+        // 运行时性能：在预览本帧的步进/渲染都完成后取快照；Play 停止时由 tracker 清空。
+        self.sample_runtime_performance();
         // 面板可见性/工作台/视图变化后自动落盘布局（一次小文件原子写，仅在真正变化时发生）。
         self.maybe_persist_layout_on_change();
         // 帧末汇总：帧耗时 + 会话级 gauge（历史深度/日志行数/资源条目/队列）。

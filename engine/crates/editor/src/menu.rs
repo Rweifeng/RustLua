@@ -326,7 +326,7 @@ const WINDOW_MENU: &[MenuRow] = &[
     MenuRow::Item(MenuItem::new("领域数据", MenuAction::ToggleDomainData)),
     MenuRow::Item(MenuItem::new("发布面板", MenuAction::TogglePublishPanel)),
     MenuRow::Item(MenuItem::new(
-        "性能面板",
+        "性能分析面板",
         MenuAction::TogglePerformancePanel,
     )),
     MenuRow::Separator,
@@ -962,6 +962,11 @@ mod tests {
             .collect();
         assert!(names.contains(&"Sprite"), "注册表里应有 Sprite");
         assert!(names.contains(&"Light"), "注册表里应有 Light");
+        // 运行时切场景不销毁是**组件**（无载荷标记），不再由 Inspector 复选框写 metadata。
+        assert!(
+            names.contains(&rustlua_scene::scene::PERSISTENT_COMPONENT),
+            "注册表里应有 Persistent 标记组件"
+        );
         // 第 57 轮：变换与相机各只有**一个**组件，旧名已经从注册表删除，
         // 因此既不会作为可添加项出现，也不会在加载时被认出来。
         assert!(names.contains(&"Transform"), "注册表里应有统一的 Transform");

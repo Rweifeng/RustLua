@@ -228,7 +228,7 @@ pub(crate) fn describe_conflicts(conflicts: &[ActionConflict]) -> String {
 }
 
 /// 「项目设置 → 输入」的缓冲状态（挂在 `ProjectSettingsUi` 上，打开窗口时从
-/// `<project>/settings.toml` 读入，保存时写回）。
+/// `<project>/project.toml` 读入，保存时写回）。
 #[derive(Debug)]
 pub(crate) struct InputBindingsUi {
     /// 当前编辑中的动作映射（打开面板时读入；缺失文件 = 引擎默认表）。
@@ -329,7 +329,7 @@ impl InputBindingsUi {
         self.poller.backend_name()
     }
 
-    /// 从 `<project>/settings.toml` 读入映射与死区；返回需要提示的诊断（可空）。
+    /// 从 `<project>/project.toml` 读入映射与死区；返回需要提示的诊断（可空）。
     ///
     /// 语义沿用引擎：文件缺失 → 默认表 / 默认死区（无提示）；`[input]` 段缺失 →
     /// 默认表且**没有** `map` 键提示（首次运行）；版本/绑定非法 → 回退默认并给出
@@ -367,7 +367,7 @@ impl InputBindingsUi {
         }
     }
 
-    /// 保存映射与死区到 `<project>/settings.toml`（保序写回）。
+    /// 保存映射与死区到 `<project>/project.toml`（保序写回）。
     ///
     /// **保存前校验**：存在跨动作冲突时拒绝写入并返回可读原因（不静默落盘坏配置）；
     /// 写盘失败同样返回原因。
@@ -762,7 +762,7 @@ mod tests {
             error.contains("attack") || error.contains("普攻"),
             "{error}"
         );
-        assert!(!root.join("settings.toml").exists(), "校验失败不得落盘");
+        assert!(!root.join("project.toml").exists(), "校验失败不得落盘");
         // 解绑冲突项后保存成功。
         ui.apply_binding_to(
             "attack",
@@ -771,7 +771,7 @@ mod tests {
         .unwrap();
         assert!(ui.conflicts().is_empty());
         ui.save(&root).unwrap();
-        let text = std::fs::read_to_string(root.join("settings.toml")).unwrap();
+        let text = std::fs::read_to_string(root.join("project.toml")).unwrap();
         // v2 文本：键位是**物理键名**而不是字符（v1 的 `key:j` 已不再写出）。
         assert!(text.contains("attack=key:keyj"), "{text}");
         let _ = std::fs::remove_dir_all(&root);
@@ -807,7 +807,7 @@ mod tests {
     fn deadzone_and_bindings_round_trip_through_settings_file() {
         let root = temp_project("round-trip");
         std::fs::write(
-            root.join("settings.toml"),
+            root.join("project.toml"),
             "# 玩家设置\n[audio]\nmaster = 0.5\n# 音量注释\nbgm = 0.25\n",
         )
         .unwrap();
@@ -828,7 +828,7 @@ mod tests {
         ui.set_deadzone(0.25, 0.08);
         ui.save(&root).unwrap();
 
-        let text = std::fs::read_to_string(root.join("settings.toml")).unwrap();
+        let text = std::fs::read_to_string(root.join("project.toml")).unwrap();
         assert!(text.contains("# 玩家设置"), "保序：注释保留\n{text}");
         assert!(text.contains("# 音量注释"), "{text}");
         assert!(
@@ -854,7 +854,7 @@ mod tests {
         assert!(reloaded.deadzone_changed());
         // 幂等：再次保存不产生重复键/丢段。
         reloaded.save(&root).unwrap();
-        let again = std::fs::read_to_string(root.join("settings.toml")).unwrap();
+        let again = std::fs::read_to_string(root.join("project.toml")).unwrap();
         assert_eq!(text, again);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -863,23 +863,23 @@ mod tests {
     fn invalid_settings_fall_back_to_defaults_with_readable_diagnostic() {
         let root = temp_project("invalid");
         std::fs::write(
-            root.join("settings.toml"),
+            root.join("project.toml"),
             "[audio]\nmaster = 0.5\n[input]\nmap = \"rustlua-actions-v0\\ninteract=key:f\"\nstick_deadzone = 9\n",
         )
         .unwrap();
         let mut ui = InputBindingsUi::default();
         let diagnostic = ui.load(&root).expect("非法版本必须给诊断");
-        assert!(diagnostic.contains("settings.toml"), "{diagnostic}");
+        assert!(diagnostic.contains("project.toml"), "{diagnostic}");
         assert!(diagnostic.contains("rustlua-actions-v0"), "{diagnostic}");
         assert_eq!(ui.map, ActionMap::with_defaults(), "回退默认映射");
         // 死区超界被钳制（0.9 上限），不会污染面板/后续保存。
         assert_eq!(ui.deadzone.stick, engine::host::gamepad::MAX_DEADZONE);
         assert!((ui.deadzone.trigger - 0.05).abs() < 1e-6);
-        // 写盘失败（settings.toml 是目录）→ 可读错误而不是 panic。
+        // 写盘失败（project.toml 是目录）→ 可读错误而不是 panic。
         let blocked = temp_project("blocked");
-        std::fs::create_dir_all(blocked.join("settings.toml")).unwrap();
+        std::fs::create_dir_all(blocked.join("project.toml")).unwrap();
         let error = ui.save(&blocked).unwrap_err();
-        assert!(error.contains("settings.toml"), "{error}");
+        assert!(error.contains("project.toml"), "{error}");
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&blocked);
     }
@@ -899,7 +899,7 @@ mod tests {
         );
         assert_eq!(gamepad_button_name(12), "DPad↑");
         assert_eq!(gamepad_axis_name(5), "RT");
-        assert!(settings_path(Path::new("C:\\Games\\Demo")).ends_with("settings.toml"));
+        assert!(settings_path(Path::new("C:\\Games\\Demo")).ends_with("project.toml"));
     }
 
     /// M22/W1：绑定的**稳定文本**（进设置文件）与**展示标签**（进界面）刻意分开。

@@ -26,7 +26,7 @@ local hints = require("ui.hints")
 local ui_text = require("ui.ui_text")
 -- M32 竖版：面板矩形与行偏移的唯一来源（`ui/layout.lua`）。
 local layout = require("ui.layout")
--- M68/B5：面板静态骨架搬进 `assets/prefabs/quest.prefab`，不再 require ui.skin。
+-- M68/B5：面板静态骨架搬进 `assets/prefabs/ui/quest.prefab`，不再 require ui.skin。
 
 -- 数字直选 1..9 的按键名（默认只有键盘数字键；未绑定该设备的动作自动跳过）。
 local function digits_label()
@@ -137,12 +137,12 @@ local function clear_ui()
 end
 
 -- ---------- 预设（M68/B5） ----------
--- 静态骨架搬进 `assets/prefabs/quest.prefab`（对账门 = jhyt_m68_quest_prefab，黄金表 70 行
+-- 静态骨架搬进 `assets/prefabs/ui/quest.prefab`（对账门 = jhyt_m68_quest_prefab，黄金表 70 行
 -- 钉死迁移前画面），render 只写会变的部分：选中行矩形、任务行文本、状态/发布者/目标进度、
 -- 提示、空列表与滚动窗口外行的显隐、bullet todo/done 二选一。title 与 msg 固定写死在预设。
 -- 开/关屏 = 根节点显隐（`prefab.set_visible` 子树语义，藏父带子、藏节点不建布局项），
 -- 不撤重铺，避免槽位 LIFO 复用打乱绘制序（M63c 教训）。
-local PRESET_PATH = "assets/prefabs/quest.prefab"
+local PRESET_PATH = "assets/prefabs/ui/quest.prefab"
 local preset_handle = nil
 local preset_spawned = false
 

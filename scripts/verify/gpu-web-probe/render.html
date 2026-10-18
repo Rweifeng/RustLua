@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>RustLua 渲染器 WebGL2 探针</title>
+</head>
+<!--
+  M73-00 WP5 第一片的页面：让**真正的** engine 渲染器在 WebGL2 上离屏渲染一帧，把像素与
+  渲染器自报的帧计数写进 body 的 data-* 属性，由 scripts/verify/gpu-web-probe.ps1 的 `-Stage render`
+  用既有 CDP 轮询（webgl-cdp-wait.js 的 `render-probe` 模式）读回来。
+
+  与 index.html（能力探针）分开两个页面：能力探针只问 wgpu "后端能不能用"，本页面问的是
+  "那台按 WebGPU 规格写的渲染器能不能在 WebGL2 上把一帧画对"——两者的失败原因完全不同，
+  合成一页会让"哪一层坏了"变得看不出来。
+
+  与 index.html 同一约定：状态属性是轮询判据（`pending`→`done`/`failed`），JSON 属性是结果；
+  CDP dump 的是序列化 DOM，属性值里的 `"` 会变成 `&quot;`，由 .ps1 反转义。
+-->
+<body data-render-probe="pending">
+  <h1>渲染器 WebGL2 探针</h1>
+  <pre id="out">render probe running…</pre>
+  <script type="module">
+    import init, { gpu_render_probe } from './pkg/gpu_web_probe.js';
+
+    const out = document.getElementById('out');
+    function report(state, text) {
+      document.body.setAttribute('data-render-probe', state);
+      document.body.setAttribute('data-render-probe-json', text);
+      out.textContent = text;
+    }
+
+    try {
+      // 阶段标记与 Rust 侧同名属性、同一用途：探针卡住时，dump 里最后那个值就是卡点。
+      // 「模块加载不起来」（import 失败）与「await 永远不来」在这里能被区分开。
+      document.body.setAttribute('data-render-probe', 'initializing');
+      await init();
+      document.body.setAttribute('data-render-probe', 'probing');
+      // `gpu_render_probe()` 把内部错误也写进 JSON（不 reject），这里只兜"模块加载不起来"。
+      const json = await gpu_render_probe();
+      window.__GPU_RENDER_PROBE_JSON = json;
+      report('done', json);
+    } catch (error) {
+      report('failed', String((error && error.stack) || error));
+    }
+  </script>
+</body>
+</html>

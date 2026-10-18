@@ -329,12 +329,18 @@ pub fn resource_raw(path: &str) -> Option<Vec<u8>> {
     rustlua_infra::vfs::read(&full).ok()
 }
 
-/// 资源表里有没有这一项（**只看表，不碰文件系统**）。
+/// 资源表里有没有这一项（**表 + 容器**，不碰文件系统）。
 ///
 /// 用途：平台侧那些"加载是异步的"通道需要在**同步**时机回答"这个资源存在吗"——
 /// 最典型的是音频（`AudioSinkProvider` 要先判存在性，才能把"缺文件"与"平台播放失败"
 /// 分开；等浏览器 `error` 事件回来时 `audio.play()` 早就返回了）。
 pub fn resource_exists(path: &str) -> bool {
+    // 容器形态下预载表是空的，存在性必须问容器——否则音频会先被判成"缺文件"，
+    // 症状是"音效全不播但没有任何报错"（`docs/67` §7.4 的第一类静默失败）。
+    let full = std::path::Path::new(super::VIRTUAL_PROJECT_ROOT).join(path);
+    if super::bundle_mount::contains(&full) {
+        return true;
+    }
     LUA_RESOURCES.with(|slot| {
         slot.borrow()
             .as_ref()
@@ -431,6 +437,11 @@ type ResourceProvider = dyn Fn(&std::path::Path) -> Option<Vec<u8>> + 'static;
 
 fn provider_from_resources() -> Box<ResourceProvider> {
     Box::new(|path: &std::path::Path| {
+        // 容器优先（`docs/67` §7.3）：发布包形态下 provider 槽只有一个，容器由
+        // `bundle_mount` 挂好后在这里被查——预载表在容器形态下是空的。
+        if let Some(bytes) = super::bundle_mount::lookup(path) {
+            return Some(bytes);
+        }
         let key = path
             .strip_prefix(super::VIRTUAL_PROJECT_ROOT)
             .map(|p| p.to_string_lossy().into_owned())
@@ -446,6 +457,11 @@ fn provider_from_resources() -> Box<ResourceProvider> {
 
 fn provider_from_reader(read_file: js_sys::Function) -> Box<ResourceProvider> {
     Box::new(move |path: &std::path::Path| {
+        // 容器优先：容器里的条目名就是工程相对路径，**不吃适配层的改名表**
+        // （`.lua` → `.lua.txt` 只对打包成散文件的那一套有意义）。
+        if let Some(bytes) = super::bundle_mount::lookup(path) {
+            return Some(bytes);
+        }
         let key = path
             .strip_prefix(super::VIRTUAL_PROJECT_ROOT)
             .map(|p| p.to_string_lossy().into_owned())
@@ -500,9 +516,33 @@ pub fn lua_boot() -> Result<(), JsValue> {
 }
 
 /// 建 Lua 运行时（微信：资源 provider 用适配层同步读取器 `read_file`）。
+///
+/// 容器形态下先挂包（读器读 `bundles/*.rlb`），之后 provider 第一步就查容器；
+/// 未挂载的工程行为不变（`mount_from_reader` 返回 0，provider 直接走读取器）。
 #[wasm_bindgen]
 pub fn lua_boot_with_reader(read_file: &js_sys::Function) -> Result<(), JsValue> {
     super::install_panic_hook();
+    if !super::bundle_mount::is_mounted() {
+        let value = read_file.call1(&JsValue::NULL, &JsValue::from_str("pack/manifest.txt"))?;
+        // **两种返回形态都要认**：适配层的 `readFile(path)` 对文本给字符串、对二进制给
+        // ArrayBuffer/Uint8Array。只判 `as_string()` 会在"二进制方言"下静默拿到 None，
+        // 于是容器一条都不挂、`scripts/main.lua` 回落成磁盘读取——真机症状是
+        // `vfs: resource not found: /project/scripts/main.lua`（本轮实测踩到）。
+        let manifest = value.as_string().or_else(|| {
+            super::bundle_mount::js_bytes(&value).and_then(|bytes| String::from_utf8(bytes).ok())
+        });
+        match manifest {
+            Some(manifest) => {
+                super::bundle_mount::mount_from_reader(&manifest, read_file)?;
+            }
+            // 读到了东西但不是清单：宁可说清楚，也不要静默跳过挂载（那会变成假死）。
+            None => {
+                return Err(JsValue::from_str(
+                    "wechat wasm: pack/manifest.txt 既不是字符串也不是字节（读取器返回值不认识）",
+                ));
+            }
+        }
+    }
     boot_runtime(provider_from_reader(read_file.clone()))
 }
 

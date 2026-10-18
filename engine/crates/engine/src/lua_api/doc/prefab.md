@@ -1,6 +1,6 @@
 # Lua 模块 `prefab`
 
-> 运行期 API 面基线里本模块有 7 个函数。本页由 `scripts/gen-lua-api-docs.js` 生成：
+> 运行期 API 面基线里本模块有 7 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
 > **函数清单与标题里的签名**不要手改；在每个小节里把
 > `TODO(文档桩)` 换成真实说明即可，再生成会保留已补的内容。
 
@@ -24,7 +24,7 @@
 
 ## `prefab.despawn(handle: i64)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/prefab.rs:52`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/prefab.rs:52`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 销毁一次 spawn 的整棵实例，并把它并进宿主布局快照的节点一起撤掉。撤干净的标准是：实体不
 再存活、那个矩形不再出现在 UI 读数里、`UiEvents` 也不再被点击派发——面板关掉之后不该留
@@ -41,7 +41,7 @@ if prefab.despawn(menu) then menu = nil end
 
 ## `prefab.node(handle: i64, name: String)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/prefab.rs:79`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/prefab.rs:79`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 按预设里写的实体名取实例内的某个节点 id。同一个预设 spawn 两次会得到两套不同的实体，所以
 **必须**经由 handle 查名，不能拿上一次的 id。
@@ -53,7 +53,7 @@ if prefab.despawn(menu) then menu = nil end
 
 ## `prefab.root(handle: i64)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/prefab.rs:66`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/prefab.rs:66`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 取实例根实体的 id，用于整棵树的显隐、位移或挂组件——预设文件里 `root` 那一行写的是谁，
 这里就返回谁。
@@ -65,7 +65,7 @@ if prefab.despawn(menu) then menu = nil end
 
 ## `prefab.set_rect(handle: i64, name: String, left: f32, top: f32, right: f32, bottom: f32)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/prefab.rs:155`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/prefab.rs:155`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 运行期改一个节点的**四边**——列表行按数据排位、进度条按数值改宽度就靠它，于是"版面在预设里、
 尺寸由数据决定"这条分工成立；没有它，运行期只能用 `ui.panel`/`ui.image` 动态层把同一块面板
@@ -91,7 +91,7 @@ prefab.set_rect(bag, 'Row3', 24, 24 + 3 * 52, 696, 24 + 3 * 52 + 48)
 
 ## `prefab.set_text(handle: i64, name: String, text: String)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/prefab.rs:97`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/prefab.rs:97`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 改实例内某节点 `Text` 组件的文字——写的是渲染真正读的那一份，所以这一条补上之后，"版面进
 预设、取值留脚本"才成立：标签不必再被场景层隐藏、由脚本另画一遍。字体、字号、颜色刻意不
@@ -109,7 +109,7 @@ prefab.set_text(menu, 'LblSave', save.exists('slot1') and '继续冒险' or '新
 
 ## `prefab.set_visible(handle: i64, name: String, visible: bool)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/prefab.rs:133`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/prefab.rs:133`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 隐藏/显示实例里的一个节点**及其整棵子树**。一屏里"这一刻不该出现的那些东西"靠它收起来：
 列表只画前 N 行、未解锁的页签、悬停才出现的装饰——不必为它们各写一份 `ui.hide`，也不必像
@@ -140,7 +140,7 @@ end
 
 ## `prefab.spawn(path: String)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/prefab.rs:22`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/prefab.rs:22`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 读一个 `.prefab` 并把它整棵实体树实例化进活世界，返回实例 handle。路径相对工程根，读取走
 VFS（打包后的包内读取只有这一条路，直连 `fs` 在发布包里就是"开发机能跑、真机白屏"）。

@@ -1,6 +1,6 @@
 # Lua 模块 `tilemap`
 
-> 运行期 API 面基线里本模块有 17 个函数。本页由 `scripts/gen-lua-api-docs.js` 生成：
+> 运行期 API 面基线里本模块有 17 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
 > **函数清单与标题里的签名**不要手改；在每个小节里把
 > `TODO(文档桩)` 换成真实说明即可，再生成会保留已补的内容。
 
@@ -8,7 +8,7 @@
 
 ## `tilemap.atlas_index(id: i64, x: usize, y: usize)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:119`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:119`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 读出一格**这一帧实际采样图集里第几个条目**。开启逻辑瓦解算后，格子里存的 kind 与画出来用的
 条目是两回事，而解算发生在渲染器内部；这个入口让门与脚本能断言"条目序列"而不必去读像素。
@@ -27,7 +27,7 @@ assert(tilemap.atlas_index(ground, 3, 4) == tilemap.get_cell(ground, 3, 4))
 
 ## `tilemap.autotile_mask(id: i64, x: usize, y: usize)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:133`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:133`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 4-bit 邻居掩码：上下左右四个方向"有没有同种邻居"，解算成过渡块的槽位序号。位序按 **index**
 而不是按方位命名——地图的 row 0 在**最底**、图集的 row 0 在**最顶**，同一句"上邻居"在两个
@@ -46,7 +46,7 @@ assert(tilemap.autotile_mask(dirt, 2, 3) == 0b0011)
 
 ## `tilemap.clear_tint(id: i64, x: usize, y: usize)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:176`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:176`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 把一格退回**不染色**，即顶点色 `[1,1,1,1]`（乘法单位元）。阴影撤掉、季节切回常色走这条，
 不要写成"涂一个白色"——后者会在调色表里多占一个条目，还把 alpha 一起改了。
@@ -64,7 +64,7 @@ end
 
 ## `tilemap.create(width: usize, height: usize, tile_size: f32, texture: Option<String>, name: Option<String>)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:238`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:238`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -75,7 +75,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `tilemap.find_path(id: i64, from_x: usize, from_y: usize, to_x: usize, to_y: usize, diagonal: Option<bool>)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:366`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:366`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -86,7 +86,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `tilemap.get(id: i64)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:27`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:27`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -97,7 +97,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `tilemap.get_cell(id: i64, x: usize, y: usize)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:282`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:282`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -108,7 +108,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `tilemap.get_meta(id: i64, x: usize, y: usize, key: String)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:332`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:332`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -119,7 +119,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `tilemap.is_solid(id: i64, x: usize, y: usize)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:269`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:269`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -130,7 +130,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `tilemap.set_atlas(id: i64, cols: usize, rows: usize)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:59`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:59`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 声明这张图集**有几列几行**——条目 `n`（1 基）取 `col=(n-1)%cols`、`row=(n-1)//cols` 的子矩形。
 列数刻意**显式声明而不从贴图尺寸反推**：反推法让"贴图里有几列"变成美术文件的隐式契约，
@@ -151,7 +151,7 @@ tilemap.set_atlas(ground, 12, 8)
 
 ## `tilemap.set_cell(id: i64, x: usize, y: usize, value: u8)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:295`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:295`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -162,7 +162,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `tilemap.set_kinds(id: i64, kinds: usize, variants: usize, autotile: Option<bool>, seed: Option<u32>)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:84`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:84`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 切换**格子值的语义**：`variants<=1` 且 `autotile` 关时格子值**就是**图集条目号（恒等档，
 仓库里所有既有场景与 `set_cell` 调用点都在这一档）；否则格子值是**逻辑瓦 kind**（`1..=kinds`），
@@ -186,7 +186,7 @@ tilemap.set_kinds(ground, 4, 1, true, 0x12345678)
 
 ## `tilemap.set_meta(id: i64, x: usize, y: usize, key: String, value: String)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:345`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:345`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -197,7 +197,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `tilemap.set_solid(id: i64, x: usize, y: usize, solid: bool)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:312`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:312`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -208,7 +208,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `tilemap.set_texture(id: i64, texture: String)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:216`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:216`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -219,7 +219,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `tilemap.set_tint(id: i64, x: usize, y: usize, r: f32, g: f32, b: f32, a: Option<f32>)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:149`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:149`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 给一格涂**乘法**顶点色：季节/湿润的整体色调、建筑的阴影压暗都走这条路，而不是换贴图或盖一层
 半透明 sprite（前者要为每个色调出一张图，后者会多一个绘制段并挡住同一层上后续的 tile）。
@@ -241,7 +241,7 @@ tilemap.set_tint(ground, 1, 0, 0.72, 0.84, 1.0)
 
 ## `tilemap.tint(id: i64, x: usize, y: usize)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:193`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:193`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 读回一格当前的染色，与画进顶点色的是同一份数据（门用它对账"解算里的 id 有没有真的落到 mesh"）。
 **没染色的格子返回 `[1,1,1,1]`**——乘法单位元，不是全 0；把它当"这格没画"读会得出相反的结论。

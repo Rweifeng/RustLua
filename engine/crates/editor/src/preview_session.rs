@@ -4,6 +4,7 @@
 //! 职责划分：本模块持有全部 GPU/运行时资源并驱动 ~60fps 节流步进与非阻塞回读；
 //! Game 视图只负责输入桥接与绘制，Scene 视图可复用 readback 生命周期辅助。
 
+use crate::runtime_perf::{PreviewPerfMeter, RuntimePerfSnapshot};
 use eframe::egui;
 use engine::host::frame::{FontAtlasMap, VectorAtlasMap, VectorFontHandle};
 use engine::host::{ReadbackMetrics, ReadbackStatus, Renderer, RuntimeScene, ScriptErrorPolicy};
@@ -44,6 +45,12 @@ pub(crate) enum PreviewTick {
     Failed,
 }
 
+/// 一个到期预览帧的产出：tick 状态 + 本帧 Lua 净耗时（微秒，喂给性能面板）。
+struct DuePreviewTick {
+    tick: PreviewTick,
+    script_micros: u64,
+}
+
 /// 把「本帧是否跑过逻辑步」折进 tick：没跑过就一律报 [`PreviewTick::Idle`]，
 /// 让调用方保留输入边沿（见 `game_view::consumes_input_edges`）。
 fn stepped_tick(stepped: bool, tick: PreviewTick) -> PreviewTick {
@@ -76,6 +83,8 @@ pub(crate) struct PreviewSession {
     script_error_note: Option<String>,
     /// 已提示过的脚本错误计数：只在增长时重建提示字符串，避免每帧分配。
     script_errors_seen: u64,
+    /// 运行时性能读数：帧间隔 / 一秒滚动帧率 / 本帧更新与 Lua 耗时。
+    perf: PreviewPerfMeter,
 }
 
 enum PreviewTexture {
@@ -176,6 +185,7 @@ impl PreviewSession {
             diagnostic: None,
             script_error_note: None,
             script_errors_seen: 0,
+            perf: PreviewPerfMeter::default(),
         };
         session.sync_native_texture(device);
         Ok(session)
@@ -269,6 +279,73 @@ impl PreviewSession {
         }
     }
 
+    /// 本帧运行时性能快照（Play 预览的实时读数）。
+    ///
+    /// 数据来源分三层：`perf`（预览 tick 的帧率/更新/Lua 耗时）、
+    /// `renderer.last_frame_metrics()`（draw/setpass/顶点/三角形/CPU/GPU）、
+    /// `renderer.resource_stats()`（贴图/网格缓存与加载队列）。全部是只读汇总，
+    /// 不触发 GPU 查询、不改变渲染状态。
+    pub(crate) fn perf_snapshot(&self, process_memory_mib: Option<f64>) -> RuntimePerfSnapshot {
+        let metrics = self.renderer.last_frame_metrics();
+        let resources = self.renderer.resource_stats();
+        let (fps, frame_ms, update_ms, lua_ms, frames) = self.perf.snapshot();
+        let gpu_timing_note = if metrics.gpu_frame_us.is_some() {
+            None
+        } else if !self.renderer.gpu_timestamp_supported() {
+            Some("不可用（GPU 设备未启用时间戳查询）".to_owned())
+        } else {
+            self.renderer
+                .gpu_timestamp_reason()
+                .map(|reason| format!("不可用（{reason}）"))
+                .or_else(|| Some("等待中".to_owned()))
+        };
+        RuntimePerfSnapshot {
+            target: "Play 预览",
+            resolution: (self.width, self.height),
+            frames,
+            fps,
+            frame_ms,
+            update_ms,
+            lua_ms,
+            render_cpu_ms: metrics.cpu_frame_us as f32 / 1000.0,
+            render_gpu_ms: metrics.gpu_frame_us.map(|micros| micros as f32 / 1000.0),
+            gpu_timing_note,
+            draw_calls: metrics.draw_calls,
+            set_pass_calls: metrics.set_pass_calls,
+            instances: metrics.instances,
+            triangles: metrics.triangles,
+            vertices: metrics.vertices,
+            dropped_draws: metrics.dropped_draws,
+            passes: self
+                .renderer
+                .last_frame_passes()
+                .iter()
+                .map(|pass| pass.as_str())
+                .collect(),
+            loaded_textures: resources.loaded_textures,
+            font_atlas_textures: resources.font_atlas_textures,
+            texture_bytes: resources.texture_bytes,
+            texture_identity_hits: resources.texture_identity_hits,
+            texture_identity_misses: resources.texture_identity_misses,
+            cached_meshes: resources.cached_meshes,
+            mesh_bytes: resources.mesh_bytes,
+            mesh_identity_hits: resources.mesh_identity_hits,
+            mesh_identity_misses: resources.mesh_identity_misses,
+            async_mode: resources.async_mode,
+            async_workers: resources.async_workers,
+            async_pending: resources.async_pending,
+            async_completed: resources.async_completed,
+            vertex_buffer_capacity: resources.vertex_buffer_capacity,
+            vertex_buffer_growths: resources.vertex_buffer_growths,
+            vertex_bytes_peak: resources.vertex_bytes_peak,
+            readback: resources.readback,
+            process_memory_mib,
+            asset_entries: self.runtime.asset_count(),
+            scene_entities: self.runtime.scene_entity_count(),
+            runtime_entities: self.runtime.runtime_entity_count(),
+        }
+    }
+
     /// 每帧调用：先排空在途回读，到 ~60fps 节流周期时按**真实经过时间**步进游戏
     /// 并渲染提交新回读。内部按需请求 repaint，保持游戏匀速而不忙转。
     ///
@@ -298,6 +375,25 @@ impl PreviewSession {
             });
         self.last_tick = Some(now);
 
+        let tick_started = std::time::Instant::now();
+        let result = self.update_due(elapsed, ctx, input);
+        // 帧率用「tick 开始 → tick 开始」的间隔；`update_ms` 是本帧实际工作量。
+        // 两者分开，才能区分"游戏慢"（间隔长）与"这一帧算得重"（update 长）。
+        self.perf.record_tick(
+            now,
+            tick_started.elapsed().as_secs_f32() * 1000.0,
+            result.script_micros as f32 / 1000.0,
+        );
+        result.tick
+    }
+
+    /// 到期待执行的预览帧体（从 `update` 里拆出来，好让计时器在**所有**返回路径上都能记账）。
+    fn update_due(
+        &mut self,
+        elapsed: f64,
+        ctx: &egui::Context,
+        input: &InputSnapshot,
+    ) -> DuePreviewTick {
         let report = self.time_step.advance(elapsed);
         if report.dropped_steps > 0 {
             tracing::warn!(
@@ -316,7 +412,11 @@ impl PreviewSession {
             tracing::warn!(target: "editor", "[preview] script step failed: {error}");
             self.diagnostic = Some(format!("脚本步进失败：{error}"));
             ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
-            return PreviewTick::Failed;
+            let script_micros = self.runtime.take_script_micros();
+            return DuePreviewTick {
+                tick: PreviewTick::Failed,
+                script_micros,
+            };
         }
         // 累加器还没凑够一个固定步：本帧没有跑逻辑步（边沿必须留给下一有效帧），
         // 但仍然渲染当前状态，避免画面停住。
@@ -331,7 +431,11 @@ impl PreviewSession {
                 tracing::error!(target: "editor", "[preview] build vertices failed: {error}");
                 self.diagnostic = Some(format!("渲染失败：{error}"));
                 ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
-                return PreviewTick::Failed;
+                let script_micros = self.runtime.take_script_micros();
+                return DuePreviewTick {
+                    tick: PreviewTick::Failed,
+                    script_micros,
+                };
             }
         };
         // 拆分批 7：宽高比只从视口来（相机载荷不再被改写），回滚档（不声明 FrameViews）下
@@ -354,7 +458,11 @@ impl PreviewSession {
             self.record_presented_frame();
             self.record_tick_window();
             ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
-            return stepped_tick(stepped, PreviewTick::Rendered);
+            let script_micros = self.runtime.take_script_micros();
+            return DuePreviewTick {
+                tick: stepped_tick(stepped, PreviewTick::Rendered),
+                script_micros,
+            };
         }
         // 非阻塞回读：就绪则上传；未就绪沿用上一帧（主线程不阻塞）。
         let tick = match self
@@ -383,7 +491,11 @@ impl PreviewSession {
         self.record_tick_window();
         // 节流到 ~60fps：无论回读是否就绪都排下一帧，保证游戏持续运行且不忙转。
         ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
-        stepped_tick(stepped, tick)
+        let script_micros = self.runtime.take_script_micros();
+        DuePreviewTick {
+            tick: stepped_tick(stepped, tick),
+            script_micros,
+        }
     }
 
     fn record_tick_window(&self) {
@@ -732,6 +844,20 @@ mod tests {
             second,
             PreviewTick::Pending | PreviewTick::Rendered
         ));
+        // 运行时性能快照必须接上本会话的真实 tick：帧数、分辨率与渲染通道都要有值。
+        let perf = session.perf_snapshot(None);
+        assert_eq!(perf.target, "Play 预览");
+        assert_eq!(perf.resolution, (64, 64));
+        assert!(
+            perf.frames >= 2,
+            "两次到期 tick 应记到至少两帧：{}",
+            perf.frames
+        );
+        assert!(
+            !perf.passes.is_empty(),
+            "离屏预览至少应执行 clear 通道：{:?}",
+            perf.passes
+        );
         // 指标单调不倒退。
         let before = session.readback_metrics();
         session.force_tick();

@@ -72,7 +72,7 @@ jobs:
 
       - name: Lua API doc stubs
         working-directory: ${{ github.workspace }}
-        run: node scripts/gen-lua-api-docs.js --check
+        run: node scripts/docgen/gen-lua-api-docs.js --check
 
       # 优化项 11：本地 pre-commit 门（git-hooks/pre-commit）自身也要进门。它只能靠每人记得
       # 跑一次安装脚本，装没装从 CI 看不出来；更要紧的是 hook 内的判定逻辑回归了不会有信号——
@@ -80,11 +80,11 @@ jobs:
       # 该用例在临时 git 仓库里真的提交，只用 git + cargo fmt（零依赖、秒级），成本极低。
       - name: Local pre-commit hook regression
         working-directory: ${{ github.workspace }}
-        run: pwsh -NoProfile -File scripts/test-git-hooks.ps1
+        run: pwsh -NoProfile -File scripts/test/test-git-hooks.ps1
       # 静默留痕门（docs/60 §10.7）：测试门守不住"只缺留痕"的缺陷，用 grep 断言固化读出来的约定。
       - name: Silent-failure traces
         working-directory: ${{ github.workspace }}
-        run: pwsh -NoProfile -File scripts/check-silent-traces.ps1
+        run: pwsh -NoProfile -File scripts/verify/check-silent-traces.ps1
 
   # 编译 + 全量测试（windows）。Release 构建放在测试**之前**：
   # `publish_spawn_end_to_end` 用 `-SkipBuild` 复用 `target/release/game.exe` 做真实的
@@ -144,24 +144,24 @@ jobs:
         run: cargo run --quiet --manifest-path engine/Cargo.toml -p editor -- --project "${{ github.workspace }}\examples\game_jhyt" --check
 
       - name: Game headless regression suite
-        run: pwsh -NoProfile -File scripts/verify.ps1 -MvpOnly
+        run: pwsh -NoProfile -File scripts/verify/verify.ps1 -MvpOnly
 
       # docs/54 §7/§8-⑩：性能红线的判定逻辑必须有测试（超阈必须非零退出）。
       - name: Baseline comparison thresholds
-        run: pwsh -NoProfile -File scripts/test-compare-baseline.ps1
+        run: pwsh -NoProfile -File scripts/test/test-compare-baseline.ps1
 
       # docs/34「Release Candidate」清单里的 `release_atomic_ok cases=4` 此前只靠人记得跑，
       # 而 `release-atomic.ps1` 是 `package.ps1` 每次发布都走的 staging/交换/回滚核心——它回归了
       # 不会有人立刻发现。这条用例零依赖（不需要 cargo / node / GPU，只用临时目录），进门成本极低。
       - name: Atomic release swap and rollback
-        run: pwsh -NoProfile -File scripts/test-release-atomic.ps1
+        run: pwsh -NoProfile -File scripts/test/test-release-atomic.ps1
 
       # docs/54 §8-⑨/⑩：WP0 基准与语义 golden（2D / 3D / **混合 2D/3D**）必须进门，而不是
       # "只在本机手动跑过"。这一步需要可用的 wgpu 适配器（示例显式请求 fallback adapter，
       # Windows 上是 WARP）；适配器缺失会让示例**报错退出**而不是静默跳过——宁可判红，也不要
       # 一份"跑过了但其实没测"的绿灯。
       - name: WP0 benchmarks and semantic goldens
-        run: pwsh -NoProfile -File scripts/verify.ps1 -Benchmarks
+        run: pwsh -NoProfile -File scripts/verify/verify.ps1 -Benchmarks
 
   # Web/wasm 证据门。docs/60 §7.2：补装 zig 后 wasm Lua 门在 CI 上**真的执行**
   # （此前 GitHub runner 无 zig，常态以 3 显式跳过）。跳过绝不等于通过的哲学不变：
@@ -193,7 +193,7 @@ jobs:
       # 浏览器/已发布产物时这两层会**显式**打印跳过原因并以 2/3 退出（不是伪造通过）；真失败
       # （页面能跑却没画面、引导失败）仍是退出码 1，会让这一步判红。
       - name: Web platform evidence
-        run: pwsh -NoProfile -File scripts/verify.ps1 -Web
+        run: pwsh -NoProfile -File scripts/verify/verify.ps1 -Web
 
       # wasm Lua 运行期验证门：spike（vendored mlua 的 wasm32 移植）+ no-modules 桥（game_web
       # 的 Lua 桥导出）的 Node 验证。**直接**调 wrapper（不经 verify.ps1），避免把整套常规门再跑
@@ -205,7 +205,7 @@ jobs:
           $status = "artifacts/logs/wasm-lua/ci.status"
           New-Item -ItemType Directory -Force -Path (Split-Path $status) | Out-Null
           $env:ZIG = "zig"
-          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-wasm-lua.ps1 -StatusFile $status
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/verify-wasm-lua.ps1 -StatusFile $status
           $code = 1
           if (Test-Path -LiteralPath $status) {
             $raw = ((Get-Content -LiteralPath $status -Raw).Trim()) -replace '^exit=', ''
@@ -228,7 +228,7 @@ jobs:
         run: |
           $status = "artifacts/logs/webgl/ci-eh.status"
           New-Item -ItemType Directory -Force -Path (Split-Path $status) | Out-Null
-          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify-webgl-eh.ps1 -StatusFile $status
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/verify-webgl-eh.ps1 -StatusFile $status
           $code = 1
           if (Test-Path -LiteralPath $status) {
             $raw = ((Get-Content -LiteralPath $status -Raw).Trim()) -replace '^exit=', ''

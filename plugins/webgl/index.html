@@ -52,7 +52,9 @@
       window.__RUSTLUA_DEBUG_COLLIDERS = enabled('rustlua-colliders');
     })();
   </script>
-  <script src="./web-runtime.js"></script>
+  <!-- B8：旧世界 `plugins/webgl/web-runtime.js` 已删除，这一行 `<script src="./web-runtime.js">`
+       随之摘掉。留着它会让发布页每次都请求一个不存在的文件（2026-10-17 门日志里那条 404
+       就是它：产物里 index.html 的全部 src/href 中，唯一缺失项正是这个）。 -->
   <script type="module">
     import init, { start, lua_boot, lua_do_string, lua_set_number, lua_set_numbers, lua_input_frame, input_frame_layout_json, lua_call_global, lua_call_global_void, lua_register_js_callback, lua_missing_globals, lua_execute_main, lua_api_surface_json, host_api_module_names_json, lua_fixed_frame, lua_fixed_run_steps, lua_fixed_steps_dropped, lua_fixed_accumulator_seconds, lua_fixed_reset_clock, lua_entity_handle } from './pkg/game_web.js';
     const publishName = __PUBLISH_NAME_JSON__;
@@ -119,6 +121,14 @@
         // 下面用它做**能力探针**——"这份产物到底编没编 GPU 宿主"在页面里因此是可读的事实，
         // 不必靠 URL 约定去猜（猜错的代价见下面"谁是这一帧的绘制者"那段）。
         const wasmExports = await init();
+        // 每帧日志（`[gpu] presented …` / `[render] mesh …` / `[render] batch …` /
+        // `[simulation] fixed update …`）默认**关**：一次加载实测这四条占 654 条控制台调用的
+        // 540 条，刷屏还会吃光 wasm 侧 400 条上限、把首屏诊断挤掉。同名读数在
+        // `data-rustlua-engine-host` 里常驻，排查时用 `?rustlua-debug=1` 打开即可。
+        // 位置有讲究：必须在 `init()` 之后（那时 wasm 导出才挂上）、`start()` 之前（首帧不漏）。
+        if (typeof wasmExports.set_frame_logs === 'function') {
+          wasmExports.set_frame_logs(!!window.__RUSTLUA_DEBUG);
+        }
         await start('rustlua-canvas', publishName);
         // start() 里会把后备缓冲设成设计尺寸 1280×720，必须在它之后再接管尺寸。
         window.__rustluaSyncCanvasSize();
@@ -148,24 +158,22 @@
       // 会拿到无效句柄：实测作者 id 13 ⇒ EntityId(0:g13)）。
       lua_entity_handle
         };
-        // ---- M73-00：谁是**这一帧的绘制者**（WP7-13 起了个头，WP8 在这里收尾）----
-        // `start()` 自己只预载资源、**一帧都不画**；真正会画的只有两条路：
-        //   ① 旧 JS/Canvas2D 世界（`web-runtime.js`：自建第二个 Lua 状态、自己 parse 场景、
-        //      自己一个 60 Hz 追帧循环、自己画到同一张 2D canvas）；
-        //   ② 引擎 GPU 宿主（Rust 侧**默认开**、`?rustlua-gpu=0` 关，见 `game_web/src/lib.rs`）。
+        // ---- M73-00：谁是**这一帧的绘制者**（WP7-13 起了个头，WP8/B8 在这里收尾）----
+        // `start()` 自己只预载资源、**一帧都不画**；旧 JS/Canvas2D 世界（`web-runtime.js`：
+        // 自建第二个 Lua 状态、自己 parse 场景、自己一个 60 Hz 追帧循环）已随 **B8 删除**，
+        // 所以今天唯一的绘制者是**引擎 GPU 宿主**（Rust 侧默认开、`?rustlua-gpu=0` 关，
+        // 见 `game_web/src/lib.rs`）。
         //
-        // 第 48 轮把 ① 改成默认不启动，理由是同一份产物里两个宿主并行 = 每帧双份模拟 + 双份绘制
-        // （实测证据：`-StubJsRuntime` 的画面与不 stub 时**逐字节相同** ⇒ 旧世界那份是纯冗余）。
-        // 但 ② **只在 `-Gpu2d` 产物里存在**（`mod gpu_host` 带 `cfg(feature = "gpu2d")`），
-        // 于是"不带该开关的产物"默认变成了**两个都没有**：`boot=ok`、控制台零报错、纯黑一屏
-        // （2026-10-11 实测：默认 URL 截图 1,967 B ，带 `?rustlua-gpu=1` 48,820 B 的标题画面）。
-        // 两个验收入口都只走"显式带开关"的 URL，所以这条缝一直没人踩到——**没有写者的门不会红**。
+        // 两条 URL 开关的去向（B8 之后**都不再是"跑哪条路"**，只影响诊断口径）：
+        //   · `?rustlua-js-host=*` / `window.__RUSTLUA_JS_HOST`：旧世界没了 ⇒ **没有可跑的路**。
+        //     本块仍读 `rustlua-js-host=0`，因为它表示"本次**显式要求不画**"（门据此把黑屏判为
+        //     预期，而不是"没有绘制者"的红）；`=1` 也仍然只是"要求过旧世界"的留痕，
+        //     谁都不画的事实由下面那行诊断说清。
+        //   · `?rustlua-gpu=0`：显式关掉唯一的绘制者（同样只对诊断/门有意义）。
         //
-        // 兜底规则（只补"谁都不画"这一种情况，不改变两个宿主各自的默认）：
-        //   · 显式要旧世界（`?rustlua-js-host=1` 或 `window.__RUSTLUA_JS_HOST = true`）⇒ 跑它；
-        //   · 这份产物**没编** GPU 宿主（能力探针读 `gpu_host_run`）且没显式关旧世界
-        //     （`?rustlua-js-host=0`）⇒ 退回旧世界：它本来就只有这一条路，别让页面全黑；
-        //   · 其余情况保持原样（GPU 宿主画，旧世界不启动）。
+        // 没有 GPU 宿主的产物（不带 `-Gpu2d`，`mod gpu_host` 带 `cfg(feature = "gpu2d")`）
+        // 今天**一个像素都不画**：这不许再被静默吞掉，下面那行诊断与门里的 `no_frame_owner`
+        // 断言就是为它准备的。
         const flags = (() => {
           let params = null;
           try { params = new URLSearchParams(window.location.search); } catch (error) { params = null; }
@@ -173,7 +181,9 @@
           const js = read('rustlua-js-host');
           const gpu = read('rustlua-gpu');
           return {
-            jsHost: window.__RUSTLUA_JS_HOST === true || js === '1' || js === 'true',
+            // `jsHost*` 只作**留痕**：旧世界删了以后没有任何分支会用它（见上面那段说明）。
+            // 留着读取是为了把"这个开关还有人写"如实报出来，而不是静默忽略。
+            jsHostRequested: window.__RUSTLUA_JS_HOST === true || js === '1' || js === 'true',
             jsHostOff: js === '0' || js === 'false',
             gpuOff: gpu === '0' || gpu === 'false',
           };
@@ -182,6 +192,12 @@
         // 页面要么由 Rust 宿主画（`gpu_host_run` 编进了 wasm），要么什么都不画。
         // 保留下面的诊断行，是因为**两条验收门都靠它判断"这些门有没有写者"** —— 三个原因仍要
         // 分开说，别让"显式关了 GPU"和"引擎独占这一帧"长得一样。
+        // 注意：`legacy JS world skipped` 是**门在匹配的机器记号**，措辞改动要先改
+        // `scripts/verify/verify-webgl-bundle.ps1` 里的匹配式。
+        if (flags.jsHostRequested) {
+          console.warn('[host] rustlua-js-host=* 已退休：旧 JS 世界随 B8 删除，没有可回退的路；'
+            + '本次仍由引擎宿主决定这一帧（详见下一行诊断）');
+        }
         const gpuHostCompiled = !!wasmExports && typeof wasmExports.gpu_host_run === 'function';
         console.log('[host] legacy JS world skipped ('
           + (flags.jsHostOff ? 'rustlua-js-host=0'

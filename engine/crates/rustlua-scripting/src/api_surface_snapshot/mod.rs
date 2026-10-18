@@ -97,7 +97,7 @@ const CONTRACT_TRANSCRIPT: &str = include_str!("lua_api_contract_transcript.txt"
 /// 为什么名字门不够：`lua_api_surface_matches_baseline` 只保证**注册层**两边同名同形，
 /// 而 web 的 57 个补丁覆盖点改的是**行为**（`clock.now()` 少三个字段就是实测的一例），
 /// 名字对拍一个字都抓不到。这份 transcript 把"两侧理应相同"的语义钉成文本，
-/// web 侧（`node scripts/wechat-minigame-harness.js <发布目录> --check-api-contract`）
+/// web 侧（`node scripts/verify/wechat-minigame-harness.js <发布目录> --check-api-contract`）
 /// 对的是**同一份基线**，所以 PC↔Web 的等价是传递性的，不需要另写一套"web 期望值"。
 #[test]
 fn lua_api_contract_matches_transcript() {

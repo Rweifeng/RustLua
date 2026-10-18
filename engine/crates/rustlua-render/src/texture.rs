@@ -40,10 +40,36 @@ impl TextureAsset {
             path: path.display().to_string(),
             reason,
         })?;
+        // `.rltex`（图集页/大纹理的发布形态，`docs/67` §6.3）：裸像素 + 容器压缩，
+        // 不走 PNG 解码器。分支放在这里而不是另开一个加载函数，是为了让**所有**贴图
+        // 读取点（含图集页、Lua `sprite.set`）自动支持，不需要各自记得换函数。
+        if rustlua_assets::rltex::is_rltex(&bytes) {
+            return Self::from_rltex_bytes(&bytes, color_space).map_err(|error| {
+                TextureError::Decode {
+                    path: path.display().to_string(),
+                    reason: error.to_string(),
+                }
+            });
+        }
         Self::from_png_bytes(&bytes, color_space).map_err(|error| TextureError::Decode {
             path: path.display().to_string(),
             reason: error.to_string(),
         })
+    }
+
+    /// 解 `.rltex`（裸 RGBA8）为纹理。
+    ///
+    /// 收益不只是少一层 PNG：wasm 上省掉 unfilter 与解码器分派，且页的落盘字节由容器块
+    /// 压缩负责（同一张页实测 153,012 B → 14,711 B）。
+    pub fn from_rltex_bytes(
+        bytes: &[u8],
+        color_space: TextureColorSpace,
+    ) -> Result<Self, TextureError> {
+        let image = rustlua_assets::rltex::decode(bytes).map_err(|error| TextureError::Decode {
+            path: "<rtex>".to_owned(),
+            reason: error.to_string(),
+        })?;
+        Self::from_rgba8(image.width, image.height, image.pixels, color_space)
     }
 
     /// Decodes PNG bytes as RGBA8.

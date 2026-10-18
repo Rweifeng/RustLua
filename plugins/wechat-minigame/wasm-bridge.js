@@ -178,7 +178,7 @@ function resolveWebAssembly(g) {
 // `[wasm=glue-missing/WXWebAssembly detail=WebAssembly is not defined]`（胶水其实在包里）。
 // 本机 Node 有真 `WebAssembly` 全局，所以这条缺口在本机永远不响——与 R12 同一类
 // "本机全绿、工具里起不来"。harness 现在复刻这个形态（摘掉标准全局、假宿主给 Tag/Exception），
-// 判据是证据行里的 `wasm=…:…:…:Tag+Exception+…`，见 scripts/wechat-minigame-harness.js。
+// 判据是证据行里的 `wasm=…:…:…:Tag+Exception+…`，见 scripts/verify/wechat-minigame-harness.js。
 var GLUE_EVAL_CTORS = ['Tag', 'Exception', 'Memory', 'Table', 'Global'];
 
 // ---------- Tag / Exception polyfill（宿主 WXWebAssembly 缺这两个时的降级） ----------
@@ -201,9 +201,9 @@ var GLUE_EVAL_CTORS = ['Tag', 'Exception', 'Memory', 'Table', 'Global'];
 //
 // 这个"关键验证点"已被实测回答（见 verify-wechat-minigame.ps1 用例 1a3 的 polyfill_tag_probe）：
 // WXWebAssembly.instantiate 收到 JS 伪造的 polyfill tag 时**拒绝**（要求真实的 WebAssembly.Tag），
-// 所以 PolyfillTag 顶不住 tag 导入——修法是把 tag 导入从 wasm 二进制里剥掉（scripts/wasm-lua
-// /strip-wasm-tags.mjs，只剥两个 externref 导入、留着内部 $tag$0）。剥完之后剩下的设备问题换成
-// "引擎认不认 EH 本身"，由下面的 EH 真机探针（probeEHAcceptance）负责，不再是这里。
+// 所以 PolyfillTag 顶不住 tag 导入——修法是把 tag 导入从 wasm 二进制里剥掉（scripts/lib/wasm-lua
+// /strip-wasm-tags.mjs，只剥两个 externref 导入、留着内部 $tag$0）。剥完之后剩下的设备问题
+// "引擎认不认 EH 本身"不属于这一层；由随包的 EH 真机探针（pkg/eh-probe.wasm）回答。
 //
 // 已知限制：wasm 侧 `__wbg_handle_catch` 用 `e.is(__wbindgen_wrapped_jstag)` 判断异常类型，
 // polyfill 的 `is()` 只比 tag 标识，不与 wasm 引擎的内部 tag 索引对齐——所以 wasm 内部 catch
@@ -275,33 +275,15 @@ function installWebAssemblyFacade(g, host) {
   return { native: native, polyfilled: polyfilled };
 }
 
-// ---------- EH 真机探针（2026-10-03）----------
+// ---------- EH 真机探针（2026-10-18 恢复，路径固定 pkg/eh-probe.wasm）----------
 //
-// 剥掉 tag 导入之后，产物里仍然留着**本地 tag 段**（`$tag$0`，实测在 wasm 里出现 3 次：
-// 一条声明 + 一条 `throw $tag$0` + 一条 `catch $tag$0`）与**legacy EH 指令**
-// （try=92 / catch_all=501 / rethrow=92 / delegate=3，try_table=0）。那是 Rust `catch_unwind`
-// / Lua `pcall` 的实现，**不能剥**（上一批"整块剥 EH"把 play 路径打成 `Error: unreachable` 就是
-// 证据）。于是剩下的决定性问题是：**微信 `WXWebAssembly` 底下那台引擎到底实没实现 wasm 异常处理
-// 这个 proposal？**
-//   实现   ⇒ 剥完 tag 导入的产物能在真机上编译/实例化，pcall 语义有地方落；
-//   没实现 ⇒ 引擎连本地 tag 段都拒绝，剥二进制这条路救不了微信包，只能换"根本不用 EH"的产物形态
-//     （RUSTFLAGS 去掉 -fwasm-exceptions），并重新验 Lua 错误处理怎么走。
-// 本机 V8 支持 EH，所以 harness **永远测不出**"设备不支持"这一侧——这条只能真机读，harness 那侧
-// 的价值是证明"探针没接错"（正对照：V8 必须 accepted）。
-//
-// 探针用一份**隔离**的极小模块 `pkg/eh-probe.wasm`（53 字节：一个本地 `(tag (param i32))`
-// + 一条 legacy `try/catch/throw`、**零导入**，由发布链路里同一个 binaryen-133 `wasm-as` 汇编），
-// 而不是直接 compile 主产物——主产物还顺带用了 GC/reference-types/bulk-memory 等一片特性，
-// compile 失败分不清是不是 EH 的锅。极小模块把变量收到只剩 EH：它被接受就证明引擎实现 EH，
-// 被拒绝的话宿主原话直指 EH。
-// 用 `compile(path)`：只校验解码、不链接，EH 指令不支持会在这一步就报出来。没有 `compile`
-// 就退到 `instantiate(path, {})`——这份模块零导入，空 imports 正好能一路跑到底，"实例化成功"
-// 是比"编译成功"更强的证据。
-// **必须自带超时**：这个 Promise 与实例化并发排在启动链路上，宿主不兑现它也不能拖垮 boot。
+// 产物里仍留本地 tag 段 + legacy `try/catch`（Rust `catch_unwind` / Lua `pcall` 的载体）。
+// 探针用一份隔离的 53 字节模块（零导入 + 本地 tag + legacy EH），走宿主代码包路径 compile；
+// 它被接受说明引擎实现 EH，被拒绝时宿主原话直指 EH，不会和 GC/reference-types 等特性混在一起。
 var PROBE_TIMEOUT_MS = 3000;
 var DEFAULT_EH_PROBE_PATH = 'pkg/eh-probe.wasm';
 
-// 永不 reject：任何分支都兑现成一句 `eh_probe=…` 读数，交给调用方（适配层）落进诊断里。
+// 永不 reject：任何分支都兑现成一句 `eh_probe=…` 读数，交给适配层落进诊断。
 function probeEHAcceptance(host, probePath) {
   var entry = null;
   var entryName = '';
@@ -347,13 +329,10 @@ function probeEHAcceptance(host, probePath) {
         clearTimeout(timer);
         if (settled) return;
         settled = true;
-        // 第一条候选路径的原始信息就够定方向了，剩下的写法差异不必再刷进 detail。
         resolve('eh_probe=' + entryName + '-reject[' + candidate + ']=' + errorDetail(error));
       });
     });
     return raced.then(function (text) {
-      // compile 被拒的原因可能是"路径写法宿主不认"而不是"模块被拒"，两种要分开：
-      // 只有像是文件不存在的报错才继续试下一条写法。
       if (index < candidates.length && /no such file|not found|permission denied/i.test(text)) return attempt();
       return text;
     });
@@ -505,9 +484,9 @@ function instantiateByBytes(g, glue, wasm, bytes) {
  * @param {(path:string)=>*} [options.readBytes] 读包内二进制（仅字节通道用）
  * @param {string} [options.wasmPath]            wasm 在代码包内的路径
  * @param {(msg:string)=>void} [options.log]     日志回调
- * @param {string} [options.ehProbePath]         EH 真机探针模块在代码包内的路径（默认 pkg/eh-probe.wasm）
+ * @param {string} [options.ehProbePath]         EH 真机探针在代码包内的路径（默认 pkg/eh-probe.wasm）
  * @param {(verdict:string)=>void} [options.onEhProbe] EH 探针读数回调（`eh_probe=…`）：与实例化并发、
- *        不挡 boot，宿主不兑现也在 3s 内自带超时收尾；调用方据此把"设备引擎认不认 EH"落进诊断。
+ *        不挡 boot，宿主不兑现也在 3s 内自带超时收尾。
  * @returns {Promise<{ok:boolean, channel?:string, source?:string, exports?:string[],
  *                    bytes?:number, path?:string, host?:Function, facade?:string,
  *                    reason?:string, detail?:string, attempts?:object[]}>}
@@ -556,9 +535,7 @@ function loadWasmCore(options) {
     ? ['path-instantiate', 'bytes-sync']
     : ['bytes-sync', 'path-instantiate'];
 
-  // EH 真机探针：与实例化**并发**跑，绝不挡 boot——结果只经 opts.onEhProbe 回调落到诊断里
-  // （它自带 3s 超时，且这条读数要的是"设备引擎认不认 EH"，与本次实例化成败是两条独立证据）。
-  // 宿主连 compile/instantiate 都没有时前面已 return，这里 entry 不会为空。
+  // EH 真机探针：与实例化并发跑、永不挡 boot；结果只经回调落进诊断。
   probeEHAcceptance(picked.wasm, opts.ehProbePath).then(function (verdict) {
     if (typeof opts.onEhProbe === 'function') {
       try { opts.onEhProbe(verdict); } catch (probeCbError) { /* 回调抛错不许影响主链路 */ }

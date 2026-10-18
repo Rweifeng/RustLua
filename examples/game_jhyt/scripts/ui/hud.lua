@@ -55,7 +55,7 @@ local PANEL_LINES = 6
 -- 每行左侧的"分类色块"（引擎文字没有着色通道，用色块做视觉分组）：
 -- ① 生命=绿 ② 体力/内力=青 ③ 时间/天气=金 ④ 金钱=蓝 ⑤ 武器=紫 ⑥ 种子=棕。
 -- **只有尺寸留在这里**（`PANEL_TEXT_W` 要按色块宽度排文字）：颜色和面板顶的金色收口条
--- 自 M70 起是 `assets/prefabs/hud.prefab` 的实体层贴图（M72-09 换成可染色九宫格切图，
+-- 自 M70 起是 `assets/prefabs/ui/hud.prefab` 的实体层贴图（M72-09 换成可染色九宫格切图，
 -- 染色写在 prefab 的 Image.color 里），脚本侧不再每帧画它们。
 local CHIP = { w = 6, h = 16, gap = 4 }
 -- docs/48 ui 换肤接线：状态行图标（行号 → skin key；无图标行为 nil）。
@@ -536,10 +536,10 @@ local SKILL_NAME_FONT = 12.0
 local skill_slots_drawn = 0
 
 -- M70/B7 预设化：常驻 HUD 的静态骨架（面板/色块/头像框/行图标/资源条框+图标/招式卡底/
--- 天气双图/雨罩/结局横幅/文字槽位）搬进 `assets/prefabs/hud.prefab`，运行期元素
+-- 天气双图/雨罩/结局横幅/文字槽位）搬进 `assets/prefabs/ui/hud.prefab`，运行期元素
 -- （资源条 fill 宽度、状态图标、招式图标/名、建造幽灵）留动态层。HUD 常驻不关屏，
 -- 预设 spawn 一次、根常 shown；每帧只写内容（set_text）与显隐（set_visible）/宽度（set_rect）。
-local PRESET_PATH = "assets/prefabs/hud.prefab"
+local PRESET_PATH = "assets/prefabs/ui/hud.prefab"
 local preset_handle = nil
 local preset_spawned = false
 

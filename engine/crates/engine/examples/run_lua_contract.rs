@@ -6,7 +6,7 @@
 //!   `crates/rustlua-scripting/src/api_surface_snapshot/lua_api_contract_transcript.txt`
 //!
 //! 同一份 `lua_api_contract.lua` 还会在 web 侧（打完宿主补丁的运行时）跑一遍：
-//! `node scripts/wechat-minigame-harness.js <发布目录> --check-api-contract`。
+//! `node scripts/verify/wechat-minigame-harness.js <发布目录> --check-api-contract`。
 //! 两侧都对齐这份 transcript，PC↔Web 的行为等价就是传递性的——不需要再维护一份"web 期望值"。
 //!
 //! 事实源是运行期：桌面注册层与 wasm 注册层已实测逐字节相同（见 L1 门），所以这里跑出来的

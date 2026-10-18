@@ -14,7 +14,8 @@ use rustlua_math::math3d::Mat4;
 
 use super::{
     DepthPass, FrameDraw, GpuMaterial, RenderFrameMetrics, Renderer, StaticGroup,
-    apply_declared_viewport, max_model_scale, record_dropped_draw, record_vertex_draw,
+    apply_declared_viewport, max_model_scale, record_dropped_draw, record_set_pass,
+    record_vertex_draw,
 };
 use crate::host::frame::WorldSpriteVertex;
 
@@ -185,6 +186,7 @@ impl Renderer {
             DepthPass::WorldSpriteOpaque => &self.world_sprite_opaque_pipeline,
             _ => &self.world_sprite_pipeline,
         });
+        record_set_pass(metrics);
         pass.set_bind_group(0, &self.world_sprite_camera_bind_group, &[]);
         pass.set_vertex_buffer(0, self.world_sprite_buffer.slice(..));
         apply_declared_viewport(&mut pass, world.viewport, target);

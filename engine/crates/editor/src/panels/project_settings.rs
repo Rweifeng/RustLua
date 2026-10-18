@@ -926,14 +926,11 @@ mod tests {
     fn saving_project_settings_does_not_add_a_default_audio_section() {
         let root = temp_project("no-default-noise");
         // 只有注释、一个未知键与 [input] 段的工程设置文件（音频用引擎默认 1.0）。
+        // 注意：玩家设置已并入 `project.toml`，所以这里只能写**一个**文件；先写一份再写
+        // 第二份会把 [project] 段或注释整段覆盖掉（那正是旧 `settings.toml` 时代的写法）。
         std::fs::write(
             root.join("project.toml"),
-            "# 玩家设置\ncustom = \"keep-me\"\n\n[input]\nstick_deadzone = 0.15\n",
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("project.toml"),
-            "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+            "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n\n# 玩家设置\ncustom = \"keep-me\"\n\n[input]\nstick_deadzone = 0.15\n",
         )
         .unwrap();
         let mut app = EditorApp::new(

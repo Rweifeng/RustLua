@@ -18,7 +18,9 @@ Windows 自带 GDI+ 能按字体文件栅格化中文，于是走这条链路：
 模式：`pixel` = `SingleBitPerPixelGridFit`（≤20px 匾额/标签，1 位点阵）；
       `smooth` = 在 `size×4` 上抗锯齿渲染再盒式缩小（大字 Logo，之后量化到色板）。
 
-依赖：Windows + PowerShell 5.1（GDI+）+ 工程自带 `assets/fonts/NotoSansSC-VF.ttf`。
+依赖：Windows + PowerShell 5.1（GDI+）+ **引擎侧**字体 `engine/crates/editor/fonts/NotoSansSC-VF.ttf`
+（2026-10-17：工程资产树里那份 17.7 MB 副本已下架——它与引擎副本是同一个 blob，而躺在
+`assets/fonts/` 下就会被打进每个发布包；工具链读引擎那份即可）。
 渲染不可用时返回空画布并打印原因，不会让整条美术生成链失败。
 """
 
@@ -33,7 +35,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pixel_kit import Canvas, decode_png, rgb  # noqa: E402
 
 CACHE_DIR = os.path.join(".temp", "cjk")
-FONT_PATH = os.path.join("assets", "fonts", "NotoSansSC-VF.ttf")
+# 引擎侧副本，相对本文件（`examples/game_jhyt/tools/` → 仓库根 → engine/crates/editor/fonts/）。
+FONT_PATH = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..",
+                 "engine", "crates", "editor", "fonts", "NotoSansSC-VF.ttf")
+)
 
 PAPER = rgb("#F2EAD8")
 INK = rgb("#1F2328")

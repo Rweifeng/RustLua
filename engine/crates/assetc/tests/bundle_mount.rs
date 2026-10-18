@@ -247,6 +247,64 @@ fn bundle_mount_roundtrip_and_loud_misses() {
     }
 }
 
+/// `--exclude-cdn`：本地包不携带 `unit = "cdn"` 的组，计划/产物/条目数三者一致。
+#[test]
+fn grouped_exclude_cdn_drops_brand_group() {
+    use rustlua_infra::bundle::plan::BundlePlan;
+
+    let project = temp_dir("grouped-cdn");
+    fixture(&project);
+    fs::create_dir_all(project.join("splash")).unwrap();
+    fs::write(project.join("splash/splash.png"), RED_PNG).unwrap();
+    fs::write(
+        project.join("bundles.json"),
+        r#"{
+  "schema": 1,
+  "default_group": "unowned",
+  "default_unit": "sub",
+  "allow_unowned": true,
+  "groups": [
+    { "name": "core", "unit": "main", "include": ["project.toml", "bundles.json", "scripts/", "scenes/"] },
+    { "name": "art", "unit": "sub", "include": ["assets/"] },
+    { "name": "brand", "unit": "cdn", "include": ["splash/"] }
+  ],
+  "assign": {}
+}"#,
+    )
+    .unwrap();
+    let packed = temp_dir("grouped-cdn-packed");
+    let report =
+        assetc::package_grouped_keep_with(&project, &packed, false, false, false, &[], 0, true)
+            .expect("exclude-cdn 分组打包");
+
+    let plan = BundlePlan::parse(&fs::read(packed.join("bundle_plan.json")).unwrap()).unwrap();
+    assert!(
+        plan.groups.iter().all(|group| group.unit != "cdn"),
+        "计划里仍有 cdn 组"
+    );
+    assert!(
+        plan.groups.iter().all(|group| group.name != "brand"),
+        "brand 组没有被剔除"
+    );
+    let brand_bundle_exists = fs::read_dir(packed.join("bundles"))
+        .unwrap()
+        .flatten()
+        .any(|entry| entry.file_name().to_string_lossy().starts_with("brand-"));
+    assert!(!brand_bundle_exists, "brand 容器不应落盘");
+    assert_eq!(plan.groups.len(), report.groups.len());
+    assert_eq!(
+        plan.groups
+            .iter()
+            .map(|group| group.paths.len() as u64)
+            .sum::<u64>(),
+        report.entries
+    );
+
+    for dir in [&project, &packed] {
+        let _ = fs::remove_dir_all(dir);
+    }
+}
+
 /// 批 C 门：分组形态——计划覆盖每一个条目、每个容器都能挂上、字节与目录形态相等。
 #[test]
 fn grouped_pack_is_covered_by_plan_and_mounts() {

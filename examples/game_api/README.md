@@ -169,7 +169,7 @@ cargo run -q -p engine --example subset_project_font -- examples/game_api
 
 | 生成物 | 生成器 | 说明 |
 |---|---|---|
-| `scenes/index.scene` | `scripts/gen-api-showcase-index.ps1` | 从 `scripts/demos.lua` 读清单，铺成 2 列卡片网格；手改会在下次生成时丢失。一致性由 `sample_project_index_menu_lists_every_scene` 兜底 |
+| `scenes/index.scene` | `scripts/docgen/gen-api-showcase-index.ps1` | 从 `scripts/demos.lua` 读清单，铺成 2 列卡片网格；手改会在下次生成时丢失。一致性由 `sample_project_index_menu_lists_every_scene` 兜底 |
 | `assets/fonts/NotoSansSC-VF.ttf` | `cargo run -q -p engine --example subset_project_font -- examples/game_api` | 按**工程实际用字**（场景文本 + Lua 字符串字面量）子集化。文案里新增汉字就要重跑，否则屏幕上出现方框（`sample_project_scene_text_has_every_glyph` 会判红） |
 
 新增一个演示的完整步骤：① 写 `scenes/api_xxx.scene` + `scripts/demo_xxx.lua`；

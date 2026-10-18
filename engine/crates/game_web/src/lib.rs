@@ -86,6 +86,13 @@ mod boot_state;
 #[cfg(any(target_arch = "wasm32", test))]
 mod resource_index;
 
+/// 发布包（RLB 容器）在 wasm 宿主上的挂载（`docs/67` §7.3，批 B）。
+/// 只有 wasm 编译它：它要装 `vfs` 的 lister，而桌面的 lister 要求 `Send + Sync`
+/// （那台机器上由 `crates/game` 自己装）。纯字符串那部分在 `resource_index::bundle_files`，
+/// 桌面上也有单测。
+#[cfg(target_arch = "wasm32")]
+mod bundle_mount;
+
 /// wasm 线性内存当前大小（字节）。docs/65 P0 的阶段遥测用它把"300MB 峰值属于哪一段"
 /// 落成逐阶段读数。
 ///
@@ -123,6 +130,24 @@ pub(crate) fn install_panic_hook() {
 /// 引擎里现成的 `[render] font atlas ready` 在浏览器里根本看不见。
 #[cfg(target_arch = "wasm32")]
 mod wasm_log;
+
+/// 每帧日志的过滤器（哪些 `tracing` 行默认不发 + 页面开关）。
+///
+/// **刻意不门到 wasm**（`any(target_arch = "wasm32", test)`）：判据是纯字符串逻辑，
+/// `windows` 那组门跑不到 wasm 的控制台路径——放这里才有回归守卫（模块内单测）。
+/// 原生非测试构建里它没有消费者（消费者是 wasm 侧的 `wasm_log`），不门就会变成死代码。
+#[cfg(any(target_arch = "wasm32", test))]
+mod frame_log_filter;
+
+/// 页面侧的 `set_frame_logs(enabled)`：打开/关闭**每帧日志**（`[gpu] presented …` /
+/// `[render] mesh …` / `[render] batch …` / `[simulation] fixed update …`）。
+///
+/// 默认关：一次加载实测这四条是 654 条控制台调用里的 540 条，刷屏还会吃光 `wasm_log`
+/// 的 400 条上限、把首屏诊断挤掉；同名读数已由 `data-rustlua-engine-host` 常驻提供。
+/// 页面由 `?rustlua-debug=1` 驱动（`plugins/webgl/index.html` 在 `init()` 之后调用）——
+/// 与既有的"左上加载行 / 底部运行行"同一个开关，不给玩家多一个要记的旋钮。
+#[cfg(target_arch = "wasm32")]
+pub use wasm_log::set_frame_logs;
 
 /// 项目根（虚拟）：Web 端没有真实文件系统，脚本/数据都挂在 `/project/` 下，
 /// 与桌面端的 `project_root` 语义一致（`data.load` 用 `root.join(path)`）。
@@ -202,11 +227,87 @@ fn lua_once_finish(root: std::path::PathBuf) -> anyhow::Result<String> {
     Ok(runtime.call_update()?)
 }
 
+/// 资源预载的在途请求上限。
+///
+/// 8 的来路：HTTP/1.1 的浏览器每源连接上限通常就是 6，超过它只是排队、不增加并发度；
+/// 留一点余量让"上一个响应体还在解析时下一个已经发出"。调大没有收益，调小直接线性变慢。
+///
+/// 桌面单测只喂 `preload_launch_batch` 的显式 `limit`，所以原生构建下它没有消费者。
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+const PRELOAD_CONCURRENCY: usize = 8;
+
+/// 每一步该发起哪些下标：把在途请求数填到 `limit`（其余参数相同则行为与既有的串行版语义一致——
+/// 每个下标恰好发起一次，不重不漏）。
+///
+/// 抽成纯函数是为了能在**桌面**单测它：`windows` 那组门跑不到 wasm 的 fetch 路径，
+/// 而"在途数不越界、下标恰好覆盖一遍"是这段调度里唯一会写错的东西。
+///
+/// 原生构建下没有消费者（wasm 侧 `mod wasm` 用；桌面单测在 `tests` 里直接喂它），
+/// 与上面的 `PRELOAD_CONCURRENCY` 同一处理。
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn preload_launch_batch(
+    queued: usize,
+    in_flight: usize,
+    total: usize,
+    limit: usize,
+) -> std::ops::Range<usize> {
+    let room = limit.saturating_sub(in_flight);
+    let end = queued.saturating_add(room).min(total);
+    queued..end
+}
+
 #[cfg(target_arch = "wasm32")]
 mod wasm {
+    use std::collections::HashMap;
+
+    use futures_util::stream::{FuturesUnordered, StreamExt};
     use wasm_bindgen::{JsCast, prelude::*};
     use wasm_bindgen_futures::JsFuture;
     use web_sys::{HtmlCanvasElement, Request, RequestInit, RequestMode, Response};
+
+    use super::{PRELOAD_CONCURRENCY, preload_launch_batch};
+
+    /// 限并发预载 `pack/` 下的全部选中资源，返回成功取回的字节总数。
+    ///
+    /// 失败的条目只告警、不中断（与串行版逐字相同的行为）：缺一个 sfx 不该让整个页面起不来，
+    /// 而缺关键脚本会在后面 Lua 启动阶段给出更有指向性的错误。
+    async fn preload_all(selected: &[String], resources: &mut HashMap<String, Vec<u8>>) -> usize {
+        let mut pending: Vec<(String, Result<Vec<u8>, JsValue>)> = Vec::new();
+        let mut in_flight = FuturesUnordered::new();
+        let mut queued = 0usize;
+        loop {
+            let launch =
+                preload_launch_batch(queued, in_flight.len(), selected.len(), PRELOAD_CONCURRENCY);
+            queued = launch.end;
+            for index in launch {
+                in_flight.push(async move {
+                    let relative = &selected[index];
+                    let bytes = fetch_bytes(&format!("pack/{relative}")).await;
+                    (relative.clone(), bytes)
+                });
+            }
+            match in_flight.next().await {
+                Some(result) => pending.push(result),
+                None => break,
+            }
+        }
+        let mut bytes_total = 0usize;
+        for (relative, result) in pending {
+            match result {
+                Ok(bytes) => {
+                    bytes_total += bytes.len();
+                    resources.insert(relative, bytes);
+                }
+                Err(e) => {
+                    web_sys::console::warn_1(&JsValue::from_str(&format!(
+                        "preload failed for {relative}: {}",
+                        js_error_text(&e)
+                    )));
+                }
+            }
+        }
+        bytes_total
+    }
 
     /// Web 入口：把 JS 侧同步资源读取器接进 Lua 桥并跑一帧。
     ///
@@ -300,10 +401,58 @@ mod wasm {
         canvas.set_width(super::DESIGN_WIDTH);
         canvas.set_height(super::DESIGN_HEIGHT);
         let manifest = fetch_text("pack/manifest.txt").await?;
-        let project = fetch_text("pack/project.toml").await?;
+        // 容器形态（`docs/67` §7.3 批 B）：清单里有 `bundles/*.rlb` 就只抓容器、不抓条目。
+        // 挂载之后 `project.toml` 与启动场景改走 `read_virtual`（容器优先、HTTP 兜底）。
+        let bundle_paths = super::resource_index::bundle_files(&manifest);
+        let mounted_entries = if bundle_paths.is_empty() {
+            0
+        } else {
+            // 只同步挂 `unit = main` 的组（启动必需），`sub` 组后台补挂：
+            // 启动路径上少下载/少解析几 MB，标题画面出来的时间不再被整包装载拖着。
+            let (boot_paths, deferred) = split_by_unit(&bundle_paths).await;
+            let mut bundle_bytes: std::collections::HashMap<String, Vec<u8>> = Default::default();
+            let fetched = preload_all(&boot_paths, &mut bundle_bytes).await;
+            let entries: Vec<(String, Vec<u8>)> = boot_paths
+                .iter()
+                .filter_map(|path| bundle_bytes.remove(path).map(|bytes| (path.clone(), bytes)))
+                .collect();
+            let count =
+                super::bundle_mount::mount(entries).map_err(|error| JsValue::from_str(&error))?;
+            web_sys::console::log_1(&JsValue::from_str(&format!(
+                "[resources] bundles={} (boot) deferred={} entries={} bundle_bytes={fetched}",
+                boot_paths.len(),
+                deferred.len(),
+                count
+            )));
+            if !deferred.is_empty() {
+                // 后台补挂。**并发发起**而不是串行等：浏览器本来就能并发 fetch，
+                // 串行等待只会把总时长加起来（与逐条目预载那条注释同一个理由）。
+                super::bundle_mount::set_pending(deferred.len());
+                wasm_bindgen_futures::spawn_local(async move {
+                    let mut rest: std::collections::HashMap<String, Vec<u8>> = Default::default();
+                    let bytes = preload_all(&deferred, &mut rest).await;
+                    let entries: Vec<(String, Vec<u8>)> = deferred
+                        .iter()
+                        .filter_map(|path| rest.remove(path).map(|data| (path.clone(), data)))
+                        .collect();
+                    let collected = entries.len();
+                    match super::bundle_mount::mount_more(entries) {
+                        Ok(added) => web_sys::console::log_1(&JsValue::from_str(&format!(
+                            "[resources] bundles_deferred mounted={collected} entries=+{added} bundle_bytes={bytes}"
+                        ))),
+                        Err(error) => web_sys::console::error_1(&JsValue::from_str(&format!(
+                            "[resources] 延迟挂载失败：{error}"
+                        ))),
+                    }
+                    super::bundle_mount::set_pending(0);
+                });
+            }
+            count
+        };
+        let project = read_virtual_text("project.toml").await?;
         let startup_scene = project_key(&project, "startup_scene")
             .unwrap_or_else(|| "scenes/main.scene".to_owned());
-        let scene = fetch_text(&format!("pack/{startup_scene}")).await?;
+        let scene = read_virtual_bytes(&startup_scene).await?;
 
         // 同步 VFS 仍需启动前取得资源字节；新包按静态依赖闭包预载，动态/未知
         // 引用、坏索引和旧包保守回退到完整 manifest。`pack::decode` 由引擎读取侧完成。
@@ -333,31 +482,49 @@ mod wasm {
                 .filter(|path| path.starts_with("scripts/") && path.ends_with(".lua"))
                 .cloned(),
         );
-        let (selected_paths, full_fallback) = match fetch_text("pack/dependencies.json").await {
-            Ok(index) => {
-                match super::resource_index::select_resources(&index, &all_paths, &roots) {
-                    Ok(selection) => {
-                        if let Some(reason) = &selection.fallback_reason {
-                            web_sys::console::warn_1(&JsValue::from_str(&format!(
-                                "[resources] full preload fallback: {reason}"
-                            )));
+        let (selected_paths, full_fallback) = if mounted_entries > 0 {
+            // 容器形态：容器里的条目不再逐个 fetch——同步读由容器提供。
+            // 但清单里还有**容器外**的骨架文件：`assets/fonts/*` 被 `--keep` 有意留在目录里
+            // （微信 `wx.loadFont` 只吃真实文件路径，见 docs/67 §11），`project.toml`/计划表同理。
+            // 它们不在任何容器里，不预载就没有同步通道能读到——实测症状是
+            // `font probe ok=false` ⇒ 每帧 `ui.measure_text: project font unavailable`、
+            // 标题按钮文字全空。所以这里预载"清单减去容器"的那几项（字体 288 KB + KB 级骨架）。
+            let loose: Vec<String> = all_paths
+                .iter()
+                .filter(|path| !bundle_paths.contains(path))
+                .cloned()
+                .collect();
+            (loose, false)
+        } else {
+            match fetch_text("pack/dependencies.json").await {
+                Ok(index) => {
+                    match super::resource_index::select_resources(&index, &all_paths, &roots) {
+                        Ok(selection) => {
+                            // **故意不是 warn**：全量预载是正确行为（见 `select_resources` 的文档），
+                            // 用 `full preload fallback` 这种措辞打 warn 会让每个读者以为出了故障——
+                            // 2026-10-17 那一族静默失败正是被"这看起来像兜底"误导出来的。
+                            if let Some(reason) = &selection.fallback_reason {
+                                web_sys::console::log_1(&JsValue::from_str(&format!(
+                                    "[resources] {reason}"
+                                )));
+                            }
+                            (selection.paths, selection.full_fallback)
                         }
-                        (selection.paths, selection.full_fallback)
-                    }
-                    Err(error) => {
-                        web_sys::console::warn_1(&JsValue::from_str(&format!(
-                            "[resources] invalid dependency index; full preload: {error}"
-                        )));
-                        (all_paths.clone(), true)
+                        Err(error) => {
+                            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                                "[resources] 依赖索引不可用（{error}）⇒ 预载全量（正确行为，见 select_resources 文档）"
+                            )));
+                            (all_paths.clone(), true)
+                        }
                     }
                 }
-            }
-            Err(error) => {
-                web_sys::console::warn_1(&JsValue::from_str(&format!(
-                    "[resources] dependency index unavailable; full preload: {}",
-                    js_error_text(&error)
-                )));
-                (all_paths.clone(), true)
+                Err(error) => {
+                    web_sys::console::warn_1(&JsValue::from_str(&format!(
+                        "[resources] dependency index unavailable; full preload: {}",
+                        js_error_text(&error)
+                    )));
+                    (all_paths.clone(), true)
+                }
             }
         };
         web_sys::console::log_1(&JsValue::from_str(&format!(
@@ -366,26 +533,19 @@ mod wasm {
             all_paths.len(),
         )));
         // 资源预载阶段遥测（docs/65 P0：峰值要能归因到"全量预载"还是"字体图集"）：
-        // 整个 fetch 循环是一个同步长任务，前后各取一次线性内存与耗时。
+        // 前后各取一次线性内存与耗时。
+        //
+        // **并发化（2026-10-17）**：这一段原先是一条 `for … .await` 的串行链——一个包 1,300+ 个
+        // 小文件，桌面实测 13.7 s、平均每个请求 ~10 ms，读数说明瓶颈是**请求个数**而不是字节数；
+        // 手机经 WiFi 每请求 30–50 ms 的往返乘上去就是几十秒的闪屏。`fetch` 是浏览器原生并发
+        // 的，串行等待纯粹是我们自己排的队，所以这里只改**发起顺序**：始终维持
+        // [`PRELOAD_CONCURRENCY`] 个在途请求，回来的字节仍按路径插进同一张资源表
+        // （表是 map，插入顺序不参与语义）。
         let preload_started = web_time::Instant::now();
         let preload_mem_before = crate::wasm_memory_bytes();
-        let mut preload_bytes = 0usize;
-        for relative in selected_paths {
-            match fetch_bytes(&format!("pack/{relative}")).await {
-                Ok(bytes) => {
-                    preload_bytes += bytes.len();
-                    resources.insert(relative, bytes);
-                }
-                Err(e) => {
-                    web_sys::console::warn_1(&JsValue::from_str(&format!(
-                        "preload failed for {relative}: {}",
-                        js_error_text(&e)
-                    )));
-                }
-            }
-        }
+        let preload_bytes = preload_all(&selected_paths, &mut resources).await;
         web_sys::console::log_1(&JsValue::from_str(&format!(
-            "[resources] preload_ms={:.1} preload_bytes={preload_bytes} mem_before={preload_mem_before} mem_after={}",
+            "[resources] preload_ms={:.1} preload_bytes={preload_bytes} mem_before={preload_mem_before} mem_after={} concurrency={PRELOAD_CONCURRENCY}",
             preload_started.elapsed().as_secs_f64() * 1000.0,
             crate::wasm_memory_bytes(),
         )));
@@ -455,6 +615,27 @@ mod wasm {
     /// | `canvas_info` | 画布来源/尺寸摘要（"画布拿得到"的证据） |
     /// | `read_file` | `string -> string \| null`，接到适配层同一套读取（含分包等待/远端回落） |
     /// | `report` | `(message: string) -> void`，收下这行启动诊断 |
+    /// 多根布局（微信）：boot 时只挂**当前已挂载根**里的容器，缺的留给
+    /// [`mount_bundles_from_reader`] 在对应分包根 ready 后补挂。
+    #[wasm_bindgen]
+    pub fn mount_from_reader_partial(
+        manifest: String,
+        read_file: &js_sys::Function,
+    ) -> Result<usize, JsValue> {
+        super::bundle_mount::mount_from_reader_partial(&manifest, read_file)
+    }
+
+    /// 补挂一个分包根的容器：`paths_json` 是 `["bundles/x.rlb", ...]`（计划表里的逻辑路径）。
+    #[wasm_bindgen]
+    pub fn mount_bundles_from_reader(
+        paths_json: String,
+        read_file: &js_sys::Function,
+    ) -> Result<usize, JsValue> {
+        let paths: Vec<String> = serde_json::from_str(&paths_json)
+            .map_err(|error| JsValue::from_str(&format!("mount_bundles paths JSON: {error}")))?;
+        super::bundle_mount::mount_bundles_from_reader(&paths, read_file)
+    }
+
     #[wasm_bindgen]
     pub fn start_wechat(
         title: String,
@@ -465,10 +646,22 @@ mod wasm {
         super::install_panic_hook();
         // 三个必需文件：缺任何一个都说明资源形态不对，直接失败并说清是哪一个。
         let manifest = read_required(read_file, "pack/manifest.txt")?;
+        // 容器形态（`docs/67` §7.3）：清单里有 `bundles/*.rlb` 就用适配层读取器把它们读进来挂上；
+        // 之后 `project.toml` 与启动场景走 `read_required_virtual`（容器优先、读取器兜底）。
+        let mounted = super::bundle_mount::mount_from_reader(&manifest, read_file)?;
+        if mounted > 0 {
+            report.call1(
+                &JsValue::NULL,
+                &JsValue::from_str(&format!(
+                    "[bundle] mounted entries={mounted} bundles={}",
+                    super::bundle_mount::bundle_files(&manifest).len()
+                )),
+            )?;
+        }
         let project = read_required(read_file, "pack/project.toml")?;
         let startup_scene = project_key(&project, "startup_scene")
             .unwrap_or_else(|| "scenes/main.scene".to_owned());
-        let scene = read_required(read_file, &format!("pack/{startup_scene}"))?;
+        let scene = read_required_virtual(read_file, &startup_scene)?;
         let summary = format!(
             "RustLua WeChat/WASM started: {title}; project bytes={}; manifest files={}; startup_scene={}; scene bytes={}; canvas={canvas_info}",
             project.len(),
@@ -497,6 +690,21 @@ mod wasm {
         value
             .as_string()
             .ok_or_else(|| JsValue::from_str(&format!("wechat wasm: cannot read {path}")))
+    }
+
+    /// 读启动场景：容器优先，未命中再问适配层读取器。
+    ///
+    /// 容器形态下 `scenes/*.scene` **不在代码包里**，`read_file("pack/scenes/main.scene")`
+    /// 必然失败——所以这条读取必须容器优先（`docs/67` §7.3）。
+    fn read_required_virtual(
+        read_file: &js_sys::Function,
+        relative: &str,
+    ) -> Result<String, JsValue> {
+        let full = std::path::Path::new(super::VIRTUAL_PROJECT_ROOT).join(relative);
+        if let Some(bytes) = super::bundle_mount::lookup(&full) {
+            return Ok(String::from_utf8_lossy(&bytes).into_owned());
+        }
+        read_required(read_file, &format!("pack/{relative}"))
     }
 
     /// JsValue → 可读文本（as_string 优先，兜底用 Debug 表示）。
@@ -581,6 +789,55 @@ mod wasm {
             .collect()
     }
 
+    /// 按 `bundle_plan.json` 的 `unit` 把容器清单切成（启动必需, 后台补挂）。
+    ///
+    /// 保守优先：**没有计划表 / 解析失败 / 组名对不上文件名** → 全部算启动必需。
+    /// 这条兜底的代价只是回到"整包同步挂"（也就是这一步之前的行为），
+    /// 而猜错的代价是启动期读不到资源——两害相权只能选前者。
+    async fn split_by_unit(paths: &[String]) -> (Vec<String>, Vec<String>) {
+        let Ok(plan) = fetch_text("pack/bundle_plan.json").await else {
+            return (paths.to_vec(), Vec::new());
+        };
+        let Ok(plan) = serde_json::from_str::<serde_json::Value>(&plan) else {
+            return (paths.to_vec(), Vec::new());
+        };
+        let Some(groups) = plan.get("groups").and_then(|value| value.as_array()) else {
+            return (paths.to_vec(), Vec::new());
+        };
+        // `bundle` 是计划里的容器相对路径（`bundles/core-1a2b3c4d.rlb`），
+        // 与 manifest 里那行同源，所以用后缀匹配而不是重新拼文件名（拼法一改就错）。
+        let mut boot = Vec::new();
+        let mut deferred = Vec::new();
+        for path in paths {
+            let matched = groups.iter().find(|group| {
+                group
+                    .get("bundle")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|bundle| path.ends_with(bundle))
+            });
+            let unit = matched
+                .and_then(|group| group.get("unit"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("main");
+            let name = matched
+                .and_then(|group| group.get("name"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            // `unit = "main"` 是"进主包"的判据；这里判的是"**boot 期就要挂**"，两者不是一回事：
+            // 音频在微信是分包（1.4 MB 不该占 4 MB 主包额度，适配层有 ensurePackForBoot 兜底），
+            // 但 webgl 上 BGM 在 boot 阶段就 `play()`，延迟挂载会让它退化成 `pack/<x>` 的 404。
+            // 所以：main 单元 ∨ 音频组 → boot 期挂载。
+            let is_main = unit == "main" || name.starts_with("audio");
+            // 匹配不上（计划与清单不同步）也当启动必需，见上面"保守优先"。
+            if is_main || matched.is_none() {
+                boot.push(path.clone());
+            } else {
+                deferred.push(path.clone());
+            }
+        }
+        (boot, deferred)
+    }
+
     /// 单个 GET 请求 → 已校验 ok 的 `Response`（P2-④：fetch_bytes/fetch_text 共用）。
     async fn fetch_response(url: &str) -> Result<Response, JsValue> {
         let init = RequestInit::new();
@@ -607,6 +864,24 @@ mod wasm {
         let response = fetch_response(url).await?;
         let text = JsFuture::from(response.text()?).await?;
         Ok(text.as_string().unwrap_or_default())
+    }
+
+    /// 读一个**工程相对路径**：容器优先，未挂载/不在容器里才走 HTTP。
+    ///
+    /// 为什么 `start()` 里 `project.toml` 与启动场景不能直接 `fetch("pack/<x>")`：
+    /// 容器形态下它们**不在磁盘上**（`project.toml` 是骨架所以还在，场景一定在容器里）。
+    /// 这条函数就是"发布形态下读一个工程文件"的单一入口（`docs/67` §7.3）。
+    pub(super) async fn read_virtual_bytes(relative: &str) -> Result<Vec<u8>, JsValue> {
+        let full = std::path::Path::new(super::VIRTUAL_PROJECT_ROOT).join(relative);
+        if let Some(bytes) = super::bundle_mount::lookup(&full) {
+            return Ok(bytes);
+        }
+        fetch_bytes(&format!("pack/{relative}")).await
+    }
+
+    pub(super) async fn read_virtual_text(relative: &str) -> Result<String, JsValue> {
+        let bytes = read_virtual_bytes(relative).await?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 }
 
@@ -645,5 +920,38 @@ mod tests {
 
         let result = run_lua_once(move |key| table.get(key).cloned());
         assert_eq!(result.expect("run_lua_once must succeed"), "ok:hi:sword");
+    }
+
+    /// 预载调度的契约：**每个下标恰好发起一次**、在途数从不超过上限。
+    ///
+    /// 这条守的是"响应回来的顺序**不**用于决定下一个发谁"——一开始就是按集合大小排满的，
+    /// 因此关掉并发（`limit=1`）时读数必须与旧的串行链逐字同序（回归对照）。
+    #[test]
+    fn preload_launch_batch_covers_every_index_once_within_the_in_flight_limit() {
+        for (total, limit) in [(1372usize, 8usize), (1, 8), (0, 8), (5, 1), (9, 3), (4, 4)] {
+            let mut launched: Vec<usize> = Vec::new();
+            let mut queued = 0usize;
+            let mut in_flight = 0usize;
+            loop {
+                let batch = preload_launch_batch(queued, in_flight, total, limit);
+                in_flight += batch.len();
+                launched.extend(batch.clone());
+                queued = batch.end;
+                if in_flight == 0 {
+                    break;
+                }
+                assert!(
+                    in_flight <= limit,
+                    "在途数越界：total={total} limit={limit} in_flight={in_flight}"
+                );
+                // 完成一个响应：这就是"每步减一"的真实形状。
+                in_flight -= 1;
+            }
+            assert_eq!(
+                launched,
+                (0..total).collect::<Vec<_>>(),
+                "下标必须恰好覆盖一遍且保持原序：total={total} limit={limit}"
+            );
+        }
     }
 }

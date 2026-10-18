@@ -68,8 +68,8 @@
 | F-1 | 中文本地化基础（溢出/换行/排版检查） | P1 | 🚧：字体子集化（`font_subset.rs`）+ 字符收集（`char_collect`）已具备；**缺文本自动换行/溢出/截断/省略检查工具**（`UiText` 仅手动 `\n` 折行） |
 | F-2 | UI 自动布局/滚动容器/键鼠手柄导航 | P2 | ✔（M20-02/M20-06/M20-07/M20-08）：自动布局（`UiRectLayout` + `ContainerKind` + `resolve_scene_ui_layout` + 布局缓存）、**焦点环与滚动状态** `ui_navigation::{FocusRing,ScrollState}`（Lua `ui.focus_*`/`ui.scroll_*`）、**手柄设备层**（XInput，按钮 0..15 / 轴 0..5 契约，死区可配置）、**命名动作映射**（36 个默认动作、`ActionMap` 持久化到 `settings.toml` 的 `[input]` 段）、**编辑器「项目设置 → 输入」重绑定面板**（捕获式改绑、跨动作冲突提示、死区滑块、恢复默认）。剩余：场景级 `Scroll` 容器变体仍缺（滚动由 `ui.scroll_*` + 面板自绘实现，见 `docs/18-lua-api.md`、`docs/33`、`docs/35`） |
 | F-3 | 音频混音（分组音量） | P2 | ✔（M20-02）：`audio.buses/set_bus_volume/bus_volume/effective_volume`（实际音量＝主×分组）、`play_on(bus,name)`、`[audio]` 段随 `settings.toml` 持久化、暂停菜单「设置」页四路音量增减与保存；`game_jhyt` 已走 BGM/SFX/UI 总线（`docs/18-lua-api.md`） |
-| F-4 | 发布原子替换 + 失败回滚 | P2 | ✔（M20-03）：`package.ps1` staging 优先构建 + `Complete-ReleaseSwap` 原子交换（旧内容整体重命名进 `.backup-*`）+ 失败回滚（旧版本原位恢复）+ 遗留 staging/backup 清理 + `-SkipBuild`；独立回归 `scripts/test-release-atomic.ps1` → `release_atomic_ok cases=4` |
-| F-5 | WebGL 真实浏览器集成测试 | P2 | 🚧（M20-04）：已有**真实浏览器契约检查页**（`scripts/webgl-contract/`；2026-10-07 从 `examples/game_jhyt/web/` 挪到门旁边——它是仓库的测试资产，不是游戏内容）+ `scripts/verify-webgl.ps1` 无头 Edge 断言（manifest/启动场景/首资源/WebGL2/存储降级/缺失 404，实测 `webgl_browser_ok`）；**仍缺** WASM 模块构建与浏览器内完整玩法（本机离线无法安装 `wasm32-unknown-unknown`，见 `docs/32`） |
+| F-4 | 发布原子替换 + 失败回滚 | P2 | ✔（M20-03）：`package.ps1` staging 优先构建 + `Complete-ReleaseSwap` 原子交换（旧内容整体重命名进 `.backup-*`）+ 失败回滚（旧版本原位恢复）+ 遗留 staging/backup 清理 + `-SkipBuild`；独立回归 `scripts/test/test-release-atomic.ps1` → `release_atomic_ok cases=4` |
+| F-5 | WebGL 真实浏览器集成测试 | P2 | 🚧（M20-04）：已有**真实浏览器契约检查页**（`scripts/verify/webgl-contract/`；2026-10-07 从 `examples/game_jhyt/web/` 挪到门旁边——它是仓库的测试资产，不是游戏内容）+ `scripts/verify/verify-webgl.ps1` 无头 Edge 断言（manifest/启动场景/首资源/WebGL2/存储降级/缺失 404，实测 `webgl_browser_ok`）；**仍缺** WASM 模块构建与浏览器内完整玩法（本机离线无法安装 `wasm32-unknown-unknown`，见 `docs/32`） |
 | F-6 | 微信小游戏 | 暂缓 | 仅预留声明（发布枚举/docs 项），无 `wx.*`/game.json 等实现分支，选中按 PC 处理——维持隐藏，不进 MVP |
 
 ## B-2 WorldSnapshot 缺口细化
@@ -88,7 +88,7 @@
   还有一条对游戏侧有用：**宿主写失败会真的报失败**（`save.commit()` 返回 `false` + 原因，
   `save_manager.M.save()` 的 `commit_reason` 分支因此在这两个宿主上也会走到，不再只在原生侧）。
   复现命令与 46 次判定见 [docs/51](../../../docs/51-平台插件适配.md)「存档落盘」一节
-  （`node scripts/wechat-minigame-harness.js … --drive-new-game --check-save-persist` →
+  （`node scripts/verify/wechat-minigame-harness.js … --drive-new-game --check-save-persist` →
   `save_persist="ok,probe=518,game=15074"`）。
 - **迁移钩子已移除**：兼容层收口 `a7b43a1`（2026-09-06）删除 `decode_with_version`、`save.version()` 与 Lua `on_migrate(from,to)`。旧版本文档 0.2 声称"已交付迁移钩子"**作废**；`scripts/main.lua` 中的 `on_migrate` 已删除（死代码）。版本迁移改由游戏侧快照自带 `version` 字段处理（`save_manager.lua`）。
 - **运行时结构不自动持久化**：背包、时钟、health 等是 `ScriptState` 上的 Rust 结构，不会进 KV 存档；持久化是游戏侧责任。
@@ -168,7 +168,7 @@
 2. **游戏侧零改动即受益**：`ui/pause_menu.lua`、`ui/hud.lua`、`world/dialogue.lua` 等仍按
    `input.settings_path()` / `audio.settings_path()` 读写，不需要知道自己跑在发布包还是工程里；
    手柄死区（Rust 设备后端）与面板设置同源，不再出现"面板显示一套、设备用另一套"。
-3. **新增引擎能力缺口（P1，WebGL 平台，实测确认）**：`scripts/verify-webgl-bundle.ps1` 把
+3. **新增引擎能力缺口（P1，WebGL 平台，实测确认）**：`scripts/verify/verify-webgl-bundle.ps1` 把
    真实 WebGL 发布包在无头浏览器里启动后发现——wasm 加载成功、页面进入 Lua，但
    `web-runtime.js` 只有演示级子集，缺 17 个桌面引擎顶层全局
    （`app, asset, calendar, clock, container, data, day, event, grid, interact, inv, item,
@@ -266,7 +266,7 @@
 ## 对齐记录（0.5，2026-09-14 / M23）
 
 按"先质量门、再数据安全、再引擎可靠性、再内容"的顺序执行后的复核（证据见
-`tasks/done/RustLua-game_jhyt-执行计划.md` 的执行记录与 `scripts/verify.ps1 -Mvp` 日志）：
+`tasks/done/RustLua-game_jhyt-执行计划.md` 的执行记录与 `scripts/verify/verify.ps1 -Mvp` 日志）：
 
 1. **数据校验（本轮新增，计划 G4）**：`validate_data.lua` 的登记表补上 `data.gather` 与
    `data.enemy_art`——两个模块**早就有** `validate_all` 却从未登记，等于它们的校验从来没跑过；

@@ -193,8 +193,6 @@ pub struct InspectorSnapshot {
     /// `Text` / `WorldText` / `Image` / `UiLayout` **不在快照里**：都已迁到 schema 生成的
     /// 字段编辑器（第 22/23/25/31 轮），提交走 `EditorCommand::SetComponentField(s)`。
     pub container: Option<ContainerFields>,
-    /// 运行时切场景不销毁。
-    pub persistent: bool,
 }
 
 /// Inspector 对单个实体进行读取/编辑的**无状态**文档助手（E03）。
@@ -357,27 +355,6 @@ impl InspectorState {
         Ok(())
     }
 
-    /// 设置/清除「运行时不跟随场景切换销毁」标志（实体 metadata）。
-    pub fn set_persistent(
-        &self,
-        document: &mut SceneDocument,
-        id: SceneEntityId,
-        enabled: bool,
-    ) -> Result<(), InspectorError> {
-        let entity = entity_mut(document, id)?;
-        if enabled {
-            if entity.metadata.get("persistent").map(String::as_str) != Some("true") {
-                entity
-                    .metadata
-                    .insert("persistent".to_owned(), "true".to_owned());
-                document.mark_dirty();
-            }
-        } else if entity.metadata.remove("persistent").is_some() {
-            document.mark_dirty();
-        }
-        Ok(())
-    }
-
     /// E08：把一份完整 Inspector 快照**直写**文档（不建 history、不落盘）。
     ///
     /// 语义与 `apply_inspector` 的 `history.execute` 闭包完全一致，供「Scene View
@@ -490,10 +467,6 @@ fn snapshot_for(entity: &SceneEntity) -> Result<InspectorSnapshot, InspectorErro
                     .map(|style| Some(ContainerFields::from_style(style)))
                     .map_err(InspectorError::InvalidContainer)
             })?,
-        persistent: entity
-            .metadata
-            .get("persistent")
-            .is_some_and(|value| value == "true"),
     })
 }
 

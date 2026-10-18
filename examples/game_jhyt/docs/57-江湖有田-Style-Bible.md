@@ -108,7 +108,7 @@
    - 树干/树冠、墙身/屋顶**分别登记**（`tools/gen_manor_art.py` 的 `LAYER_SPLITS`），两块按行拼回去逐字节 == 整张原图。
    - 量化判据：玩家可达位置上被前景盖住的角色像素占比 ≤ `occlusion.max_cover_ratio`，且全图最深 ≥ `min_cover_ratio`（否则前景层是白加的）。**`0.65` 这一档钉的是美术切点，不是运行期的宽容度**：树冠切顶 40 行实测最深 0.604、顶 57 行 0.861（人在树冠里只剩一条边）、顶 26 行 0.357（数字过得上旧判据 0.40，画面却读成"人站在树前面"——正是"靠放宽数字装没事"会奖励的结果）。取的是中间那档：露腿、头在树后。
    - 门：`cargo run --quiet -p game --example jhyt_m72_foreground_occlusion` §③④⑤（读原生 `mesh.draws` 提交序 + 运行期 `sprite.set` 反面对照）。工具（`preview_scene.py`）不验证绘制序。
-   - 同一判据的第二份实现（web/微信的排序键与绘制循环是另写的两份，见下面第 9 款）：`node scripts/wechat-minigame-harness.js <发布目录>/launcher --remote auto --remote-root <发布目录>/assets --frames 90 --drive-new-game --check-foreground-order`——它看的是假 ctx 记下的**真实 `drawImage` 先后**，三段（正序 / 只改 `sorting_layer` 的反面对照 / 还原）读数在 `tasks/done/M72-06` 的 D 段。
+   - 同一判据的第二份实现（web/微信的排序键与绘制循环是另写的两份，见下面第 9 款）：`node scripts/verify/wechat-minigame-harness.js <发布目录>/launcher --remote auto --remote-root <发布目录>/assets --frames 90 --drive-new-game --check-foreground-order`——它看的是假 ctx 记下的**真实 `drawImage` 先后**，三段（正序 / 只改 `sorting_layer` 的反面对照 / 还原）读数在 `tasks/done/M72-06` 的 D 段。
 6. **软边门**：PNG 必须 RGBA8；主体 alpha 仅允许 0/255，雨雪与受击闪白另行登记例外。尺寸正确或目录存在，均不等于接线完成。
 7. **色阶审计边界**：工具可检查 PNG IHDR、明确 `icon=`/`texture=`/`sheet=` 路径和注册表枚举；不能从文件名、目录或启发式"看起来像"推断场景已接线、素材已被运行时使用。
 8. **投影门（光向全局唯一，M72-06）**：一批图只能有一个光向，这条现在是**算出来的**，不是目测的。
@@ -124,7 +124,7 @@
    - **容差 = STEP**：Δy < 2 世界单位落同一桶 ⇒ 谁先谁后不许被依赖（门实测 Δy=1 order 不变、Δy=2 恰好翻一桶）。M72-13 在 HEAD 副本上复跑取到两侧读数：同一 actor 脚位 Δy=1 时 `order` 仍是 −279，Δy=2 时恰好翻一桶（−279 → −280），方向是 **y 越大越靠后**；门输出里那行 `桶宽=STEP` 就是"容差不是别的常数"的断言，复现命令见本节末。
    - **静态物件不参与 Y 折**：层秩是主键，人恒在所有 `world` 物件之后 ⇒ "主角站在房子北边不被房子盖住"是设计，不是 bug。
    - **foreground 恒压角色、不看 y**：这就是前景层只放"悬空的上半张"的原因，也是 `max_cover_ratio` 存在的理由。
-   - 禁止以实体 ID 当空间深度。`jhyt_m35_depth_sort` + 本门 §⑧ 两侧读数；微信/web 那条 (`scripts/wechat-minigame-harness.js --check-depth-order`) 见 M72-12 的宿主收口。上面那组 −279/−280 的复现：`cd engine && cargo run --quiet -p game --example jhyt_m72_foreground_occlusion -- <工程根>`（M72-13 在 HEAD 副本根实跑 rc=0，同一行还给出 `occluders=11 worst=0.604 bound=0.65 shadows=16 角度方差=0.000000° 脚下阴影=32帧 桶宽=STEP`）。
+   - 禁止以实体 ID 当空间深度。`jhyt_m35_depth_sort` + 本门 §⑧ 两侧读数；微信/web 那条 (`scripts/verify/wechat-minigame-harness.js --check-depth-order`) 见 M72-12 的宿主收口。上面那组 −279/−280 的复现：`cd engine && cargo run --quiet -p game --example jhyt_m72_foreground_occlusion -- <工程根>`（M72-13 在 HEAD 副本根实跑 rc=0，同一行还给出 `occluders=11 worst=0.604 bound=0.65 shadows=16 角度方差=0.000000° 脚下阴影=32帧 桶宽=STEP`）。
 10. **碰撞门（每一格 `solid` 都必须有可视依据，M72-07）**：`solid` 串不是装饰性元数据——`scene_spawn.rs` 的 `solid_cell_colliders` 给**每一个实心格挂一个静态 cuboid**，所以多标一格就是"在屋外两步远的地方撞空气"，少标一格就是"走进墙里并被画在墙前面"。口径：
    - 一格可以实心的**唯一两种理由**：那一格的地表本身就是墙/水（`building_kit.TILE_NATIVE_SOLID = (WALL, WATER)`，瓦自己画的），或有一个 sprite 的**不透明像素**压在那一格上。按 sprite 的 **quad 矩形**标是错的：建筑贴图的 quad 四角几乎总是全透明（屋顶是梯形、檐口是斜的）。
    - **建筑**（`role=building`/`building_site`，本体在 `world` 层）= 本体不透明紧包围盒 ∪ 同名拆层屋顶件 − 门洞。层秩 `world(−1) < actor(+1)` ⇒ 墙永远遮不住身后的人，所以墙身那几格必须实心；拆层只是把一张图按行切两块往上多挂一条遮带，**占地与整张原图一模一样**，所以屋顶并进并集（等价形式：拆层前后占地逐格相同，门 §② 在守）。

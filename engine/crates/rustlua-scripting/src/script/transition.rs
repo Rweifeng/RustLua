@@ -8,6 +8,7 @@ use crate::script::LuaRuntime;
 use crate::script::PersistedEntity;
 use crate::script::call_optional;
 use crate::script::error::LuaBridgeError;
+use rustlua_ecs::hierarchy::Parent;
 use rustlua_ecs::particle::ParticleSystem;
 use rustlua_ecs::world::World;
 use rustlua_scene::scene::Scene;
@@ -70,15 +71,19 @@ impl LuaRuntime {
         }
         let instantiated = self.instantiate_scene(&scene)?;
         // 恢复持久实体：新场景未定义的名字用持久快照重生（新场景定义胜出）。
+        //
+        // 快照的 `parent_name` 存的是**名字**：spawn 时父实体可能还没进世界（BTreeMap
+        // 按名字排序，子完全可能先于父），因此先全部 spawn，再统一重连父边。
         {
             let mut state = self.state.borrow_mut();
             let persisted: Vec<PersistedEntity> =
                 state.entity_state.persistent.values().cloned().collect();
+            let mut links: Vec<(rustlua_ecs::entity::EntityId, Option<String>)> = Vec::new();
             for entity in persisted {
                 if state.entity_state.names.contains_key(&entity.name) {
                     continue;
                 }
-                Self::spawn_entity_components(
+                let handle = Self::spawn_entity_components(
                     &mut state,
                     &entity.name,
                     &entity.components,
@@ -90,6 +95,22 @@ impl LuaRuntime {
                         entity.name
                     ))
                 })?;
+                links.push((handle, entity.parent_name));
+            }
+            for (child, parent_name) in links {
+                let Some(parent) = parent_name
+                    .as_ref()
+                    .and_then(|name| state.entity_state.names.get(name))
+                else {
+                    continue;
+                };
+                if parent == child {
+                    continue;
+                }
+                state
+                    .world
+                    .insert(child, Parent(parent))
+                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
             }
         }
         call_optional(&self.lua, "on_create").map_err(|error| LuaBridgeError::Runtime {

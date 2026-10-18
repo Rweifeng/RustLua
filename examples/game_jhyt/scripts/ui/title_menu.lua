@@ -1,4 +1,4 @@
--- title_menu.lua：主入口门面（`main.scene` + M63b 起的 `assets/prefabs/title_menu.prefab`）
+-- title_menu.lua：主入口门面（`main.scene` + M63b 起的 `assets/prefabs/ui/title_menu.prefab`）
 -- 的手柄/键盘菜单导航（M20-09）。
 --
 -- 背景：三个按钮（BtnStart / BtnContinue / BtnExit）只有
@@ -40,14 +40,14 @@ local M = {}
 local FOCUS = "title:menu"
 
 -- M63b：门面的**版面**（层级、锚点、矩形、贴图与九宫格边距、字号与颜色）搬进
--- `assets/prefabs/title_menu.prefab`，运行期实例化进活世界；留在脚本里的仍然是"取值"
+-- `assets/prefabs/ui/title_menu.prefab`，运行期实例化进活世界；留在脚本里的仍然是"取值"
 -- 与"每帧变化的东西"：选中项、高亮框、选中箭头、hover 贴图、顶部操作说明，以及三行
 -- 按钮标签的**文字本身**（今天由脚本画，场景/预设里那三份 `Text` 逐名隐藏）。
 --
 -- 装饰类（四角/竹分隔/印章）也**没有**搬进预设：动态层整体画在实体层**之下**
 -- （`frame_data.rs`：`push_ui_panels/images/text` 之后才 `push_scene_ui`），把它们搬进去
 -- 就是让它们从此盖住背景图——那是改画面，不是搬家。层序这一笔的账见 `docs/67` §2。
-local PRESET_PATH = "assets/prefabs/title_menu.prefab"
+local PRESET_PATH = "assets/prefabs/ui/title_menu.prefab"
 local menu_handle = nil
 -- 「门面激活」标志：reset（进门面）置 true、hide（离开门面）置 false。
 -- M71 修复：`scene.load` 是异步排队，过渡帧里 `scene.reload()` 尚未返回目标场景，
@@ -85,22 +85,20 @@ local function preset_spawn()
 end
 
 -- 与预设里按钮实体的 `UiLayout` 对齐（M63b 前住在 `main.scene`，**横屏 1280×720**，M32；2026-09-27）：
--- 三块木牌按钮竖排在中部（y 380 / 460 / 540），`layout.PANEL.title_btn` 给出统一矩形，
--- 每项只差 `title_btn_gap` 的纵向偏移。`label_x` 是**文字实体**（预设里 entity 9/11/13，
--- 迁移前是场景的 8/10/12）的左边缘：那份 `Text` 今天逐名藏着、字由脚本每帧画，脚本只在它的
--- 左侧留白里补选中箭头，因此两个坐标必须一起改（`tools/gen_main_menu_scene.py` 的 `BUTTONS`）。
+-- 三块木牌按钮水平排列在匾额下方，`layout.PANEL.title_btn` 给出第一个按钮的矩形，
+-- 每项向右偏移 `title_btn_gap + w`。
 local BTN = layout.PANEL.title_btn
-local BTN_STEP = BTN.h + layout.METRIC.title_btn_gap
+local BTN_STEP = BTN.w + layout.METRIC.title_btn_gap
 local BTN_LABEL_FONT = 24.0
 -- 标签在按钮里水平居中：按真实字宽算左边缘（`ui.measure_text` 与渲染同口径），
 -- 不再用"每字 25px"的估算——估宽会让「开始新游戏」与「继续江湖」看起来偏左/偏右。
-local function label_left(label)
+local function label_left(label, btn_x)
   local width = 0
   local ok, measured = pcall(ui.measure_text, label, BTN_LABEL_FONT)
   if ok and type(measured) == "table" and tonumber(measured.width) then
     width = tonumber(measured.width)
   end
-  return math.floor(BTN.x + (BTN.w - width) / 2 + 0.5)
+  return math.floor(btn_x + (BTN.w - width) / 2 + 0.5)
 end
 
 local OPTIONS = {
@@ -114,19 +112,19 @@ local OPTIONS = {
     id = "BtnContinue",
     label_text = "继续江湖",
     scene_label = "BtnContinueLabel",
-    panel = { BTN.x, BTN.y + BTN_STEP, BTN.x + BTN.w, BTN.y + BTN_STEP + BTN.h },
+    panel = { BTN.x + BTN_STEP, BTN.y, BTN.x + BTN_STEP + BTN.w, BTN.y + BTN.h },
   },
   {
     id = "BtnExit",
     label_text = "退出江湖",
     scene_label = "BtnExitLabel",
-    panel = { BTN.x, BTN.y + BTN_STEP * 2, BTN.x + BTN.w, BTN.y + BTN_STEP * 2 + BTN.h },
+    panel = { BTN.x + BTN_STEP * 2, BTN.y, BTN.x + BTN_STEP * 2 + BTN.w, BTN.y + BTN.h },
   },
 }
 -- 实体层（预设里那三份 `Text`）的左上角 = 标签居中位置 + 垂直居中（文字高按 30px 计，与它一致）。
 for _, option in ipairs(OPTIONS) do
   local x1, y1, x2, y2 = option.panel[1], option.panel[2], option.panel[3], option.panel[4]
-  option.label = { label_left(option.label_text), y1 + (((y2 - y1) - 30) // 2) }
+  option.label = { label_left(option.label_text, x1), y1 + (((y2 - y1) - 30) // 2) }
 end
 
 -- 选中箭头及其左边距（像素）：箭头画在标签左边缘往左 `ARROW_GAP` 处，
@@ -316,15 +314,15 @@ function M.render()
     skin.panel("title:btn_hover", sel_opt.panel[1], sel_opt.panel[2],
       sel_opt.panel[3] - sel_opt.panel[1], sel_opt.panel[4] - sel_opt.panel[2], "menu_btn_wuxia_hover")
   end
-  -- 四角装饰：围绕 logo 区（384,80)-(896,336) 外扩 6px，40×40。
-  skin.icon("title:orn_tl", 378, 74, 40, 40, "menu_ornament_corner")
-  skin.icon("title:orn_tr", 858, 74, 40, 40, "menu_ornament_corner_tr")
-  skin.icon("title:orn_bl", 378, 302, 40, 40, "menu_ornament_corner_bl")
-  skin.icon("title:orn_br", 858, 302, 40, 40, "menu_ornament_corner_br")
-  -- 竹分隔线：按钮区（y380-604）与贴士区之间（y600 起）。
-  skin.icon("title:divider", 460, 606, 360, 10, "menu_divider_bamboo")
-  -- 江湖印章：右上角（footer 在右下，右上留白）。
-  skin.icon("title:seal", 1176, 20, 64, 64, "menu_seal_jianghu")
+  -- 四角装饰（已删除，用户要求简洁）
+  -- skin.icon("title:orn_tl", 378, 74, 40, 40, "menu_ornament_corner")
+  -- skin.icon("title:orn_tr", 858, 74, 40, 40, "menu_ornament_corner_tr")
+  -- skin.icon("title:orn_bl", 378, 302, 40, 40, "menu_ornament_corner_bl")
+  -- skin.icon("title:orn_br", 858, 302, 40, 40, "menu_ornament_corner_br")
+  -- 竹分隔线（已删除）
+  -- skin.icon("title:divider", 460, 606, 360, 10, "menu_divider_bamboo")
+  -- 江湖印章（已删除）
+  -- skin.icon("title:seal", 1176, 20, 64, 64, "menu_seal_jianghu")
   for position, option in ipairs(OPTIONS) do
     local x1, y1, x2, y2 = option.panel[1], option.panel[2], option.panel[3], option.panel[4]
     if position == index then
@@ -362,7 +360,7 @@ function M.render()
         option.label[1], option.label[2], BTN_LABEL_FONT, BTN.w, option.label_text)
     end
   end
-  ui_text.draw("title", "title:hint", layout.ROW.top_x, layout.ROW.top_y, 13.0, layout.row_width(), M.hint_line())
+  -- ui_text.draw("title", "title:hint", layout.ROW.top_x, layout.ROW.top_y, 13.0, layout.row_width(), M.hint_line())
   return true
 end
 

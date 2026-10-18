@@ -8,6 +8,12 @@ use std::{
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs;
 
+// **整条 `tracing-subscriber` 只在原生编译**（2026-10-17 体积优化）：本模块里跨平台的那部分
+// 是 `EngineError` / `LogModule` / `LogSink` 这些类型（渲染器 `passes.rs` 在 wasm 上也用），
+// 而 registry + fmt layer + `EnvFilter`（带 regex）只服务下面两个 `init_logging*`，它们只被
+// 原生二进制调用。wasm 侧真正装订阅者的是宿主自己的 `tracing::Subscriber`
+// （`game_web::wasm_log`）。把这块整体 cfg 掉后，`tracing-subscriber` 从 wasm 依赖图里消失。
+#[cfg(not(target_arch = "wasm32"))]
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 static LOG_GUARD: OnceLock<LogGuard> = OnceLock::new();
@@ -188,6 +194,7 @@ impl io::Write for SinkWriter {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogSink {
     type Writer = SinkWriter;
 
@@ -200,12 +207,14 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogSink {
 ///
 /// `filter` follows `tracing_subscriber::EnvFilter` syntax, for example
 /// `info,rustlua_infra=debug,game=debug`.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn init_logging(log_path: impl AsRef<Path>, filter: Option<&str>) -> Result<(), EngineError> {
     init_logging_with_sink(log_path, filter, None)
 }
 
 /// 同 `init_logging`，额外把 tracing 日志实时回传到一个共享缓冲（如编辑器控制台）。
 /// `sink` 为 `None` 时行为与 `init_logging` 完全一致。
+#[cfg(not(target_arch = "wasm32"))]
 pub fn init_logging_with_sink(
     log_path: impl AsRef<Path>,
     filter: Option<&str>,

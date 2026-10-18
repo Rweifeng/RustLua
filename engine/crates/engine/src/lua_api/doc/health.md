@@ -1,6 +1,6 @@
 # Lua 模块 `health`
 
-> 运行期 API 面基线里本模块有 3 个函数。本页由 `scripts/gen-lua-api-docs.js` 生成：
+> 运行期 API 面基线里本模块有 3 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
 > **函数清单与标题里的签名**不要手改；在每个小节里把
 > `TODO(文档桩)` 换成真实说明即可，再生成会保留已补的内容。
 
@@ -8,7 +8,7 @@
 
 ## `health.damage(id: i64, amount: f32)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/entity.rs:153`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/entity.rs:153`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -19,7 +19,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `health.get(id: i64)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/entity.rs:129`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/entity.rs:129`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -30,7 +30,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `health.set(id: i64, value: f32)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/entity.rs:139`（直写）；签名由 `scripts/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-scripting/src/script/api/entity.rs:139`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 

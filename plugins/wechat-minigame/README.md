@@ -1,6 +1,6 @@
 # 微信小游戏平台插件
 
-微信小游戏发布所需的平台侧文件都在这个目录，`scripts/package.ps1 -Platform wechat-minigame`
+微信小游戏发布所需的平台侧文件都在这个目录，`scripts/build/package.ps1 -Platform wechat-minigame`
 会把它们复制进发布包并改写成对应工程。
 
 | 文件 | 作用 |
@@ -11,11 +11,11 @@
 | `project.config.json` | 微信开发者工具工程配置（`compileType: game`、忽略说明文件） |
 | `remote-assets.json` | **可选**（`-AssetPack remote` 时才生成，见「远端资源回落」）：包内读不到 `pack/` 文件时回落到该地址下载，按清单校验后缓存 |
 
-`pack/` 与 `mainpack/` 都不在这个目录里：它们由 assetc 与发布脚本产出到发布目录。
+`pack/` 与 `pack/` 都不在这个目录里：它们由 assetc 与发布脚本产出到发布目录。
 **资源形态三选一**（`-AssetPack`，微信平台默认 `subpackage`）：
 
 * **`subpackage`（默认）**：`pack/` 声明为 `game.json` 的 `subpackages[0]`（`root = "pack"`），
-  首屏资源被切到兄弟目录 `mainpack/`（属**主包**，启动即用），其余留在 `pack/` 分包里按需挂载。
+  首屏资源被切到兄弟目录 `pack/`（属**主包**，启动即用），其余留在 `pack/` 分包里按需挂载。
   root 下必须有入口 `pack/game.js`——微信的硬要求，缺了开发者工具直接报
   「未找到 `["subpackages"][0]["root"]` 对应的 `/pack/game.js` 文件」并拒绝打开工程。
   现在的入口是**真的**入口（挂载后由宿主执行，发布脚本生成、harness 会 `require` 一次）。
@@ -25,7 +25,7 @@
 三种形态互斥，细节与体积账见 [docs/52 微信小游戏分包发布](../../docs/52-微信小游戏分包发布.md)。
 
 **代码包后缀白名单（真机硬约束，实测踩到）**：微信只上传后缀在白名单内的文件（69 个后缀，见
-[scripts/code-package-rules.js](../../scripts/code-package-rules.js)）；`lua` / `toml` / `md`
+[scripts/lib/code-package-rules.js](../../scripts/lib/code-package-rules.js)）；`lua` / `toml` / `md`
 **不在白名单里** —— 传不上去，真机上读它们是 `permission denied`。这个游戏的全部 Lua 逻辑都靠
 逐文件读取，所以真机启动会直接失败（`pack/project.toml HTTP 404`）。构建期把这类文件改名成
 `<原名>.txt`（`scripts/core/audio.lua` → `audio.lua.txt`），映射落在产物根的 `code-package.json`，
@@ -37,13 +37,13 @@
 
 **上传器的语法档位比开发者工具低一档（实测踩到两次）**：2026-10-03（稳定版 2.02.2608070）点上传
 先后被拒 `Error: invalid file: <文件>, <行>:<列> SyntaxError: Unexpected token ?`，两处现场分别是
-wasm-bindgen 胶水里的 ES2021 逻辑赋值 `__wbg_terminated_addr ??= …`（`pkg/game_web.js, 989:72`）
+wasm-bindgen 胶水里的 ES2021 逻辑赋值 `__wbg_terminated_addr ??= …`（`game_web.js, 989:72`）
 和自维护运行时里的 ES2020 空值合并 `body.getAttribute(…) ?? …`（`web-runtime.js, 1:105804`）——
 **同一份包在开发者工具里一帧不缺地跑**，只有上传这一步炸，所以本机跑帧的门抓不到它。三条收口：
-构建期把那句守卫落成 ES5 级等价形式（`scripts/package.ps1` 的 glue 补丁段；`let` 初值 undefined、
+构建期把那句守卫落成 ES5 级等价形式（`scripts/build/package.ps1` 的 glue 补丁段；`let` 初值 undefined、
 右值是数值除法，故 `=== undefined` 与 `??=` 同义；不能用 `||=`/`if (!x)`——地址算出 0 也是合法值）；
 源码侧 `web-runtime.js` 不再用 `??`（读属性缺项本来就是 `null`，`let` + `if (raw === null)` 同义）；
-发布期用 [scripts/check-upload-ecma.mjs](../../scripts/check-upload-ecma.mjs)（acorn，脚本模式）
+发布期用 [scripts/verify/check-upload-ecma.mjs](../../scripts/verify/check-upload-ecma.mjs)（acorn，脚本模式）
 把包内每个 `.js` 按 **ES2019** 再解析一遍，`package.ps1` 与 `verify-wechat-minigame.ps1` 各调一次，
 输出 `upload_ecma_ok files=6 ecma=2019`。档位为什么从 2020 降到 2019：定 2020 时的理由是"同一包里
 的 `??` 从没被拒过"，那是假象——上传器在 `game_web.js` 就中止了，根本没走到 `web-runtime.js`；
@@ -54,20 +54,20 @@ wasm-bindgen 胶水里的 ES2021 逻辑赋值 `__wbg_terminated_addr ??= …`（
 
 ```powershell
 # 发布（默认形态：主包 + 单分包，零服务器/备案/域名白名单），-SkipBuild 可复用已有 assetc 产物
-powershell -NoProfile -File scripts\package.ps1 -Platform wechat-minigame -SkipBuild -SelfTest
-# 产物：<发布根>\launcher\（代码包，整目录上传微信）内含 mainpack.json + mainpack\ + pack\ + pack\game.js
+powershell -NoProfile -File scripts\build\package.ps1 -Platform wechat-minigame -SkipBuild -SelfTest
+# 产物：<发布根>\launcher\（代码包，整目录上传微信）内含 pack.json + pack\（首屏）+ pack-sub\（默认分包）+ pack-wasm\（内核）
 
 # 可选：瘦首包（launcher/ 只留骨架 + assets/ 资源包）
-powershell -NoProfile -File scripts\package.ps1 -Platform wechat-minigame -SkipBuild `
+powershell -NoProfile -File scripts\build\package.ps1 -Platform wechat-minigame -SkipBuild `
   -AssetPack remote -RemotePackBaseUrl https://cdn.example.com/games/jianghu -SelfTest
 
 # 验证已有发布包：静态布局/配额 + 无头运行时实跑
 # （-BundleRoot 可指 launcher/ 或整个发布根（会自动下沉）；资源包按 <发布根>\assets 自动探测）
-powershell -NoProfile -File scripts\verify-wechat-minigame.ps1 `
+powershell -NoProfile -File scripts\verify\verify-wechat-minigame.ps1 `
   -BundleRoot examples\game_jhyt\builds\wechat-minigame\launcher
 
 # 只要运行时那一层（Node 伪造 wx API 真实执行 game.js）
-node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigame\launcher --frames 12
+node scripts\verify\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigame\launcher --frames 12
 
 # 分包形态用例（--subpackage 与 --wx-path-style 是正交的两轴）：
 #   ok        → 声明有且仅有 1 个 root=pack、入口 pack/game.js 可执行
@@ -76,7 +76,7 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
 #   delay --subpackage-delay-frames 6
 #             → 第 6 帧才挂载：证明"首屏不等分包"，也是进度条唯一可观察的窗口
 #   fail-once → 首次失败、冷却后重试成功（冷却经存储注入压到 0 才能在用例里发生）
-node scripts\wechat-minigame-harness.js <发布根>\launcher --frames 120 ^
+node scripts\verify\wechat-minigame-harness.js <发布根>\launcher --frames 120 ^
   --subpackage delay --subpackage-delay-frames 6 --drive-new-game --expect-runtime-spawns
 
 # 远端回落用例（仅 remote 形态；harness 自己起本地服务，不需要外部进程）：
@@ -84,7 +84,7 @@ node scripts\wechat-minigame-harness.js <发布根>\launcher --frames 120 ^
 #   auto    → 包内完全读不到 pack/，一切都从远端取
 #   corrupt → 服务端只翻转 1 字节（长度不变），必须被校验和拦下且启动失败
 #   down    → 服务不可达，必须快速失败
-node scripts\wechat-minigame-harness.js <发布根>\launcher --frames 12 --remote auto
+node scripts\verify\wechat-minigame-harness.js <发布根>\launcher --frames 12 --remote auto
 
 # 宿主形态用例（都以"必须自报证据"为准，不看有没有报错）：
 #   --image-src-prototype    宿主把 src 定义在原型上（基础库真实形态）→ 必须自报 prototype-accessor 且贴图真加载
@@ -96,12 +96,12 @@ node scripts\wechat-minigame-harness.js <发布根>\launcher --frames 12 --remot
 #                            full 形态不需要改写，必须照常启动
 #   --host-document stub|locked|frozen / --host-window separate   宿主自带残缺全局
 #   --host-canvas offscreen / --debug-overlay / --remote png-fail --expect-image-band   画面自证
-node scripts\wechat-minigame-harness.js <发布根>\launcher --frames 12 ^
+node scripts\verify\wechat-minigame-harness.js <发布根>\launcher --frames 12 ^
   --image-src-silent --expect-boot-stall --boot-timeout-ms 1000 --boot-deadline-ms 6000
 ```
 
 2026-10-11 当前 `game_jhyt` 分包发布的模拟验收读数：主包 `3,030 KB / 4,096 KB`，首屏
-`mainpack/` `2,393 KB`，`pack/` 分包 `8,188 KB`，总计 `11,218 KB / 20,480 KB`。
+`pack/` `2,393 KB`，`pack/` 分包 `8,188 KB`，总计 `11,218 KB / 20,480 KB`。
 `verify-wechat-minigame.ps1 -DriveJhyt` 在 Node wx 模拟宿主通过 240 帧，包含分包挂载、玩法绘制、
 触摸摇杆、存档持久化和音频播放请求；这不是微信开发者工具或真机的出声/前后台验收。
 
@@ -123,15 +123,15 @@ wechat_minigame_package_ok files=12 runtime=ok path_styles=root,slash,sub-root,n
 
 | 双击 | 行为 |
 |---|---|
-| `scripts\serve-wechat-pack.bat` | 只起**资源包**静态服务（不跑验收），参数透传给 `test-bundle.ps1 -Platform wechat-minigame -NoVerify` |
-| `scripts\test-wechat-minigame.bat` | 先跑完整验收（`verify-wechat-minigame.ps1`），再起同一个资源包服务 |
+| `scripts\dev\serve-wechat-pack.bat` | 只起**资源包**静态服务（不跑验收），参数透传给 `test-bundle.ps1 -Platform wechat-minigame -NoVerify` |
+| `scripts\test\test-wechat-minigame.bat` | 先跑完整验收（`verify-wechat-minigame.ps1`），再起同一个资源包服务 |
 
 服务起来后：开发者工具「导入项目」选**发布目录**，并勾选
 「详情 → 本地设置 → 不校验合法域名、web-view（业务域名）、TLS 版本以及 HTTPS 证书」。
 等价的原始命令就是：
 
 ```powershell
-powershell -NoProfile -File scripts\serve-pack.ps1 `
+powershell -NoProfile -File scripts\dev\serve-pack.ps1 `
   -Root examples\game_jhyt\builds\wechat-minigame\assets -Port 8787
 ```
 
@@ -149,11 +149,11 @@ powershell -NoProfile -File scripts\serve-pack.ps1 `
 
 ```powershell
 # 1) 起一个本地静态服务托管**资源包目录**（瘦首包时发布目录里已经没有资源了）
-powershell -NoProfile -File scripts\serve-pack.ps1 `
+powershell -NoProfile -File scripts\dev\serve-pack.ps1 `
   -Root examples\game_jhyt\builds\wechat-minigame\assets -Port 8787
 
 # 2) 发布：瘦首包 + 导出资源包 + 写入远端地址
-powershell -NoProfile -File scripts\package.ps1 -Platform wechat-minigame `
+powershell -NoProfile -File scripts\build\package.ps1 -Platform wechat-minigame `
   -SkipBuild -AssetPack remote -RemotePackBaseUrl http://127.0.0.1:8787
 # 想额外镜像一份到别处（方便 rsync/s3 sync；权威位置仍是 <发布根>\assets）：加 -CdnPackDir D:\cdn\jianghu
 ```
@@ -198,17 +198,19 @@ powershell -NoProfile -File scripts\package.ps1 -Platform wechat-minigame `
 
 ```
 examples\<game>\builds\wechat-minigame\<PublishName>\      # 发布根
-└── launcher\                                   # 代码包（上传微信/导入开发者工具的目录），1,644 KB
-    ├── game.js, game.json, project.config.json, wechat-adapter.js
-    ├── web-runtime.js        # 与 webgl 共用的 Lua 运行时（同一份文件，逻辑不会漂移）
-    ├── pkg/                  # 随包内核：game_web.js/_bg.wasm（wasm 核心，含 mlua Lua 执行层与 Lua 桥导出，M32）
-    ├── mainpack.json         # 首屏清单：构建/运行时/harness 三方共用的路由依据
+└── launcher\                                   # 代码包（上传微信/导入开发者工具的目录），2,107 KB
+    ├── game.js, game.json, project.config.json, wechat-adapter.js, wasm-bridge.js, startup-branding.js
+    ├── game_web.js           # wasm-bindgen 胶水（launcher 根；同步 require，三种形态都在主包）
+    ├── pack.json         # 首屏清单：构建/运行时/harness 三方共用的路由依据
     ├── code-package.json     # 改名映射：逻辑路径 → 会随代码包上传的宿主文件名（见下）
-    ├── mainpack\             # 首屏资源（在**主包**里，启动即用，不等分包）
+    ├── pack\                 # 主包首屏资源（在**主包**里，启动即用，不等分包）
     │   └── manifest.txt, chars.txt, project.toml.txt,
     │       scripts\**（逐个改名为 *.lua.txt）, assets\fonts\**, …
-    ├── pack\                 # 分包 root（3,011 KB），目录下所有文件都进分包
+    ├── pack-sub\             # 默认分包 root，目录下所有文件都进分包
     │   └── game.js           # 分包入口（微信硬要求；挂载后由宿主执行）
+    ├── pack-wasm\            # 内核独立 root
+    │   ├── game.js
+    │   └── game_web_bg.wasm  # wasm 内核（分包形态）
     └── run.txt, deps.txt, build-info.txt
 ```
 
@@ -243,22 +245,22 @@ examples\<game>\builds\wechat-minigame\<PublishName>\      # 发布根
 
 **不随包分发 17 MB 的完整字体**：assetc 已按项目用字子集化（实测 226 KB），
 运行时用 `wx.loadFont` 注册该子集字体。它在包内的位置随形态变：分包形态下字体属首屏资源，
-在 `mainpack/assets/fonts/`（构建期随 `mainpack.json` 一起切过去）。
+在 `pack/assets/fonts/`（构建期随 `pack.json` 一起切过去）。
 
-**wasm 核心随包分发（M32 起）**：胶水 `pkg/game_web.js`（实测 51,947 字节）+ 内核
+**wasm 核心随包分发（M32 起）**：胶水 `game_web.js`（实测 160 KB 量级）+ 内核
 `game_web_bg.wasm`（实测 2,580,513 字节 = 2,520 KB，`-Oz` 后）。**内核的位置随形态变**：
-分包形态下它在 `pack/game_web_bg.wasm`（= 分包里，见下节），full / remote 仍在 `pkg/`——
+分包形态下它在 `pack-wasm/game_web_bg.wasm`（= 分包里，见下节），full / remote 仍在 `pkg/`——
 理由很直接：微信主包硬上限 4,096 KB，而搬迁前实测主包 4,547 KB（两份读数与复现命令见
 [docs/52](../../docs/52-微信小游戏分包发布.md) 的「主包构成」），内核单个文件就占主包额度的
-六成以上，留在主包就过不了门。胶水必须留在主包，它由
-`require('./pkg/game_web.js')` **同步**加载，进分包要换一套 require 语义。
+六成以上，留在主包就过不了门。胶水固定放在 launcher 根，它由
+`require('./game_web.js')` **同步**加载，进分包要换一套 require 语义。
 微信分支**必须**用 `wasm-bindgen --target no-modules` 生成胶水——`--target web`
 那份是浏览器 ESM（顶层 `export { … }`），小游戏按 CommonJS 解析，加载即报
 `WAGame.js:1 SyntaxError: MiniProgramError Unexpected token 'export'`。
 no-modules 产物是纯脚本（无 import/export，整体包在一个 IIFE 里），由 `wasm-bridge.js` 包成
 CommonJS，再按宿主的 **`instantiate(代码包路径, imports)`（异步）** 实例化。见「wasm 核心」一节。
 
-> **构建期有两处必需的补丁**（都在 `scripts/package.ps1`，改胶水写法时会响亮失败而不是静默放过）：
+> **构建期有两处必需的补丁**（都在 `scripts/build/package.ps1`，改胶水写法时会响亮失败而不是静默放过）：
 > ① no-modules 胶水的第一句是 `script_src = new URL(document.currentScript.src, location.href)...`，
 > 小游戏的 `document` shim 没有 `currentScript`/`location`，**这句必然抛错**（实测
 > `Cannot read properties of undefined (reading 'src')`）→ 包一层 try/catch；
@@ -267,12 +269,12 @@ CommonJS，再按宿主的 **`instantiate(代码包路径, imports)`（异步）
 
 ## wasm 核心（M32）
 
-代码包里随包发行 `pkg/game_web.js`（`--target no-modules` 胶水）+ `game_web_bg.wasm`（内核）。
-**两者位置不同**：胶水永远在 `pkg/`（主包，同步 `require`）；内核在分包形态下在 `pack/`（分包），
-其余形态在 `pkg/`。于是启动次序也跟着变：
+代码包里随包发行 `game_web.js`（`--target no-modules` 胶水）+ `game_web_bg.wasm`（内核）。
+**两者位置不同**：胶水永远在 launcher 根（主包，同步 `require('./game_web.js')`）；内核在分包形态下
+在 `pack/`（分包），其余形态在 `pkg/`。于是启动次序也跟着变：
 
 * 内核在主包（full / remote）：`start()` 直接实例化，分包在后台下载，标题画面不等它；
-* 内核在分包（subpackage）：`start()` 先 `await` 分包挂载（期间由适配层自己驱动帧链画进度条，
+* 内核在分包（subpackage）：`start()` 先 `await` **pack-wasm** 挂载（`pack/` 资源根在 boot 后后台挂）；期间由适配层自己驱动帧链画进度条，
   因为运行时还没起来、Lua 一行都没跑），**挂载成功后**才实例化，然后才出标题画面。
   挂载失败在实例化前自动重试一次（`ensurePackForBoot`；一次瞬时网络抖动不该把整局启动打死），
   重试仍失败才判 boot 失败，并把这句话画在屏上：「分包（pack）加载失败：游戏内核就在这个分包里，
@@ -300,7 +302,7 @@ WXWebAssembly.instantiate(path, imports)  ->  Promise<{module, instance}>
 `probePackReadability()` 之后发起，返回 **Promise**，boot 排在它之后
 （`wasmReady → loadGameFont() → boot()`）。内核在分包形态下发起前必须先等分包结算
 （`ensurePackForBoot()`，见上节启动次序），否则那一次 `instantiate` 只能撞墙。桥接层内部按
-宿主能力排两条通道，都试、都留证据。**两条通道读的都是 `wasmModulePath()`**（内核在 `pack/`
+宿主能力排两条通道，都试、都留证据。**两条通道读的都是 `wasmModulePath()`**（内核在 `pack-wasm/`
 还是 `pkg/` 由首屏清单判形态，不在适配层里写死）：
 
 | 通道 | 做法 | 适用宿主 |
@@ -308,8 +310,8 @@ WXWebAssembly.instantiate(path, imports)  ->  Promise<{module, instance}>
 | `path-instantiate`（首选，异步） | 把代码包路径交给 `WXWebAssembly.instantiate(path, imports)`；`imports` 由胶水自己造——临时把全局 `WebAssembly` 换成一个 shim，丢弃胶水传的第一参数、把第二参数原样转发，宿主返回的 `{module, instance}` 再交回胶水的 `__wbg_finalize_init` | 微信（小游戏唯一公开形态） |
 | `bytes-sync`（兜底，同步） | `readBytes(wasmModulePath())` → 胶水 `initSync(bytes)` | 有 `Module`/`Instance` 构造器的宿主（本机 Node、标准浏览器） |
 
-路径通道顺带**省掉把 2.3 MB wasm 读进 JS 堆**那一步。路径候选会试 `pack/game_web_bg.wasm` 与
-`/pack/game_web_bg.wasm` 两种写法（内核在主包的形态下前缀换成 `pkg/`；前后导斜杠的容忍度按宿主
+路径通道顺带**省掉把 2.3 MB wasm 读进 JS 堆**那一步。路径候选会试 `pack-wasm/game_web_bg.wasm` 与
+`/pack-wasm/game_web_bg.wasm` 两种写法（内核在主包的形态下前缀换成 `pkg/`；前后导斜杠的容忍度按宿主
 不同），成功的那个进 `path` 证据。
 
 **标准 `WebAssembly` 域名由 bridge 按宿主转发**（`GLUE_EVAL_CTORS` → facade）：胶水不止在实例化时
@@ -325,18 +327,14 @@ instantiate 时必被宿主拒，那只会把撒谎的报错换成另一句撒�
 `Global,Instance,Memory,Module,Table,compile,instantiate`，**没有** `Tag`/`Exception`。实测把 JS 伪造
 的 polyfill tag 塞进 `instantiate` 的 imports 会被宿主**拒绝**（要求真实的 `WebAssembly.Tag`，见
 用例 1a3 的 `polyfill_tag_probe=rejected`）——所以 facade 顶不住 tag 导入，只能把那两个 externref
-tag 导入从 wasm 二进制里剥掉（`scripts/wasm-lua/strip-wasm-tags.mjs`，只剥导入、留住内部 `$tag$0`）。
+tag 导入从 wasm 二进制里剥掉（`scripts/lib/wasm-lua/strip-wasm-tags.mjs`，只剥导入、留住内部 `$tag$0`）。
 
 剥完之后产物里**仍然留着**本地 tag 段 + legacy `try/catch`（那是 Rust `catch_unwind` / Lua `pcall`
-的载体，不能剥）。于是真机上剩下的决定性问题从"引擎认不认 tag 导入"换成"引擎到底实没实现
-wasm 异常处理本身"。缺 `Tag` 时 bridge 会经 `WXWebAssembly.compile` 编译一份**隔离**的极小模块
-`pkg/eh-probe.wasm`（53 字节：零导入 + 一个本地 tag + legacy `try/catch`，把变量收到只剩 EH；
-由发布链路同一个 binaryen-133 `wasm-as` 汇编），3 秒超时、与实例化**并发**跑（不挡 boot），结果写进
-`__RUSTLUA_DIAG().wasm.ehProbe`：`eh_probe=accepted` 说明引擎实现 EH、剥完的产物真机能落地；
-`eh_probe=compile-reject[路径]=<宿主原话>` 说明引擎连本地 tag 段都拒，只能换"根本不用 EH"的产物形态。
-本机 V8 支持 EH，所以本机的 `accepted` 只是**正对照**（证明探针接对），设备那一侧只能真机读；
-配套还有一条 `eh_probe_exec=7`（直接实例化探针调 `f()`，只有真跑过 `throw→catch` 才返回 7）挡住
-"探针其实是份不含 EH 的桩、compile 当然过"的假绿。方向由这几行定，不靠猜。
+的载体，不能剥）。这条"引擎到底实没实现 wasm 异常处理本身"的设备裁决，由随包的隔离极小模块
+`pkg/eh-probe.wasm`（53 字节：零导入 + 本地 tag + legacy `try/catch`）回答：`wasm-bridge.js` 的
+`probeEHAcceptance` 经 `WXWebAssembly.compile('pkg/eh-probe.wasm')` 编译它（3 秒超时、与实例化并发），
+读数写进 `__RUSTLUA_DIAG().wasm.ehProbe`。harness 另有 `eh_probe_exec=7` 正对照（实例化探针调
+`f()`，只有真的跑过 `throw→catch` 才返回 7），verify 断言这两条。产物本身仍依赖本地 tag + legacy EH。
 
 **失败不掀翻启动**：wasm 核心的宿主交互（`hostapi_*` 诊断）失败只 `console.warn` 一行 +
 `data-rustlua-wasm` 记状态；**但 Lua 执行层就在 wasm 里**（迁移后无备用解释器），`__RUSTLUA_LUA_BRIDGE`
@@ -362,7 +360,7 @@ wasm 状态不被静默忽略——有四个读取通道：
 | `wasm-bytes-unreadable` | 字节通道读不到包内 wasm | 只在字节通道宿主上出现；发布形态没把 wasm 打进去 |
 | `instantiate-failed` | 字节通道里胶水抛错（`detail` 带原始信息） | 产物 EH 与宿主不兼容（rustc ≠ 1.88）、胶水被改动后与宿主不匹配 |
 | `bridge-missing` | `require('./wasm-bridge.js')` 失败 | 平台文件没被复制进产物 |
-| `glue-missing` / `glue-shape-unexpected` | `require('./pkg/game_web.js')` 缺失或不是函数 | **构建期没补 CommonJS 导出**（no-modules 只有顶层 `let`）。标准域名缺席这一类已由 facade 接管，所以这句不再被"宿主没有 `WebAssembly` 全局"冒充；detail 带求值期全局读数 |
+| `glue-missing` / `glue-shape-unexpected` | `require('./game_web.js')` 缺失或不是函数 | **构建期没补 CommonJS 导出**（no-modules 只有顶层 `let`）。标准域名缺席这一类已由 facade 接管，所以这句不再被"宿主没有 `WebAssembly` 全局"冒充；detail 带求值期全局读数 |
 
 **能力边界**：wasm 到"能按宿主唯一通道实例化、导出清单可核对"为止。`game_web::start()`（web-sys 形态）
 在小游戏里跑不了，适配层不调用；`start_wechat()`（去 DOM 入口）已写在 Rust 侧但**未接线、未验证**
@@ -375,13 +373,13 @@ harness 自带那份**受限复刻**的 `WXWebAssembly`（见上），所以官�
 ```powershell
 # 完整启动路径：期望 wasm=ok:ok:path-instantiate，且 wasm-bridge 那行日志带"路径 …/game_web_bg.wasm"
 # （分包形态是 pack/，其余形态是 pkg/ —— 读的是适配层的 `wasmModulePath()`，不是写死的字符串）
-node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigame\launcher --frames 12 --subpackage ok
+node scripts\verify\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigame\launcher --frames 12 --subpackage ok
 
 # wasm 产物本身能否被宿主的 WebAssembly 接受（发布期硬门，跑在**搬迁之前**的那份产物上）
-node scripts\wasm-lua\verify-wasm-host.mjs examples\game_jhyt\builds\wechat-minigame\launcher\pack\game_web_bg.wasm
+node scripts\lib\wasm-lua\verify-wasm-host.mjs examples\game_jhyt\builds\wechat-minigame\launcher\pack\game_web_bg.wasm
 
 # 宿主完全没有 wasm 时的契约：必须响亮失败（boot=failed、Promise reject、控制台有"启动失败"）
-node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigame\launcher --frames 60 --no-wasm
+node scripts\verify\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigame\launcher --frames 60 --no-wasm
 ```
 
 **但这条通道最终只有真机/开发者工具能证明**：本机的 `WXWebAssembly` 是复刻的，
@@ -415,7 +413,7 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
 
 | 运行时需要 | 小游戏实现 |
 |---|---|
-| `fetch('pack/…')` | `wx.getFileSystemManager().readFileSync`，先查 `USER_DATA_PATH` 再查代码包。**首屏清单内的路径直接读主包 `mainpack/`（不等分包）**；清单外的才先 `await wx.loadSubpackage` 再读 `pack/` |
+| `fetch('pack/…')` | `wx.getFileSystemManager().readFileSync`，先查 `USER_DATA_PATH` 再查代码包。**首屏清单内的路径直接读主包 `pack/`（不等分包）**；清单外的才先 `await wx.loadSubpackage` 再读 `pack/`。多根布局（launcher 根有 `bundle_plan.json`）改由计划表回答：`pack/<x>` → `pack/`、`pack/` 或 `pack-<name>/`，读之前只挂它所在的根 |
 | `document` / `window` | 轻量 shim（`getElementById('rustlua-canvas')`、`body.setAttribute('data-rustlua-*')` 启动标记） |
 | `new Image()` | `wx.createImage()`；**包内没有这张贴图时先下载到 `USER_DATA_PATH`，再把 `src` 指向本地文件**（`Image.src` 是宿主自己加载的，给一个不存在的路径只会静默 `onerror`，画面上少东西而日志里看不出来） |
 | `FontFace` + `document.fonts` | `wx.loadFont` / `canvas.loadFont`，并把 `ctx.font` 里的 `RustLuaGameFont` 替换成真实字体族；同时立 `window.__RUSTLUA_FONT_OWNER='wechat-adapter'` 所有权标记，让 `web-runtime.js` 的浏览器那条 `document.fonts.add` 路**让路**（宿主自带原生 FontFaceSet，它会拒绝适配层的 shim FontFace，见"已知边界"⑬） |
@@ -423,6 +421,16 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
 | `localStorage` | `wx.getStorageSync` / `setStorageSync` |
 | `keydown` / `mouse*` | `wx.onKeyDown/onKeyUp`（微信 PC 端）；触摸映射为指针事件（画布 `mousedown/mousemove` + `window mouseup`）驱动**游戏侧可见虚拟摇杆/按钮**（`ui/virtual_pad.lua`），右半屏触点派发动作键（space，菜单确认） |
 | 生命周期 | `wx.onShow` / `wx.onHide` → `focus` / `blur` |
+
+**多根布局（2026-10-18 接线）**：发布侧 `-MultiSub` 拆出 `pack/`、`pack/`、`pack-<name>/`
+后，`bundle-layout --apply` 会把 `bundle_plan.json` 复制到 launcher 根。适配层启动时读它（`bundle-roots.js` 同一套
+路由规则），按计划表决定每个 `pack/<x>`（以及容器 `pack/bundles/<x>.rlb`）去哪个根。
+**boot 只等主包 + wasm 根**：`mount_from_reader_partial` 只挂当前可读根里的容器，具名根在
+preinstall 之后后台 `loadSubpackage`，root ready 后用 `mount_bundles_from_reader` 补挂容器
+（老内核没有这两个导出时回退全量预挂）。每个根独立记 `idle/loading/ready/failed/absent`。
+现场读数在 `__RUSTLUA_DIAG().bundle`
+（`plan/file/error/wasm_root/roots.<root>.state/boot_roots/plan_misses`）与
+`data-rustlua-layout=bundle-roots`。没有计划表时完全走旧单根路径，行为不变。
 
 启动失败时适配层会把原因直接画到画布上（小游戏没有 DOM 控制台），便于真机定位。
 
@@ -433,15 +441,15 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
   （`lua_call_global`）、JS 回调注册（`lua_register_js_callback`）、缺失全局（`lua_missing_globals`）、
   工程主脚本执行（`lua_execute_main`）。微信分支与 webgl 共用同一个 `game_web` 源核心与同一份
   原始 WASM 构建（**最终发行的 `_bg.wasm` 不是同一份文件**：微信版另经剥 Global / 剥 Tag /
-  noextern 降级等兼容后处理，见 `scripts/package.ps1`；口径详见 docs/65 §3），以 `--target no-modules`
+  noextern 降级等兼容后处理，见 `scripts/build/package.ps1`；口径详见 docs/65 §3），以 `--target no-modules`
   生成 CommonJS 胶水随包发行，由适配层在 boot 之前经宿主的
   `WXWebAssembly.instantiate(wasmModulePath(), imports)` **异步**实例化（`wasmModulePath()`
-  在分包形态给 `pack/game_web_bg.wasm`，其余形态给 `pkg/game_web_bg.wasm`；结果含"用了哪条通道"
+  在分包形态给 `pack-wasm/game_web_bg.wasm`，其余形态给 `pkg/game_web_bg.wasm`；结果含"用了哪条通道"
   进 `data-rustlua-wasm` / `__RUSTLUA_DIAG().wasm` / 一行启动日志）。实测（2026-10-06 那份产物：
   2,580,513 字节，`verify-wasm-host.mjs` 报 `exports=123 bridge_exports=7`，桥接层日志按它自己的
   口径列 111 项，含 `lua_boot`…`lua_execute_main`）：
-  `wasm-bridge: 核心实例化成功（WXWebAssembly/path-instantiate，路径 pack/game_web_bg.wasm，导出 111 项：…）`。
-  复现：`node scripts\wasm-lua\verify-wasm-host.mjs examples\game_jhyt\builds\wechat-minigame\launcher\pack\game_web_bg.wasm --platform=wechat-minigame`。
+  `wasm-bridge: 核心实例化成功（WXWebAssembly/path-instantiate，路径 pack-wasm/game_web_bg.wasm，导出 111 项：…）`。
+  复现：`node scripts\lib\wasm-lua\verify-wasm-host.mjs examples\game_jhyt\builds\wechat-minigame\launcher\pack\game_web_bg.wasm --platform=wechat-minigame`。
   **边界（不要夸大）**：`start()` 是 web-sys 形态（`document`/`window`/`fetch`/`Response`），
   小游戏里跑不了，因此适配层**不调用**它；`start_wechat()`（去 DOM 入口）已写在 Rust 侧但
   **未接线、未验证**（见 `engine/crates/game_web/src/lib.rs` 的状态段）。
@@ -465,7 +473,7 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
   wechat-adapter: 资源读取自检 manifest.txt=ok@mainpack project.toml=ok@mainpack（路径形式: main=root-relative pack=root-relative，分包状态: ready）
   ```
 
-  - 三个 =ok → 路径与挂载都正常（`@mainpack` 表示这一项按首屏清单被路由到了**主包** `mainpack/`，
+  - 三个 =ok → 路径与挂载都正常（`@mainpack` 表示这一项按首屏清单被路由到了**主包** `pack/`，
     分包形态下这是预期：这三个探针验证的正是路由层本身）；
   - 全 FAIL → pack/ 里的文件读不到（看上一行的 `读取失败 …` 里宿主的 errMsg，以及末尾的
     `分包状态:`——`loading`/`failed` 时读不到 `pack/` 是**预期**的，首屏本就不该依赖它）；
@@ -705,7 +713,7 @@ node scripts\wechat-minigame-harness.js examples\game_jhyt\builds\wechat-minigam
   `preventExtensions` 之前加，所以它同时是"补不动"的那一档），并记录假画布收到的属性参数；
   新增断言 = 不得出现 `game font could not be loaded`、`getContext` 的属性参数必须转发、
   包内完整资源（`--remote off`）时不得为 `remote-assets.json` 刷"读取失败"。
-  复现：`node scripts/wechat-minigame-harness.js examples/game_jhyt/builds/wechat-minigame/launcher --frames 30 --host-document locked`
+  复现：`node scripts/verify/wechat-minigame-harness.js examples/game_jhyt/builds/wechat-minigame/launcher --frames 30 --host-document locked`
   （旧版 `wechat-adapter.js` 塞进同一个包跑这条，报出的正是上面那两行现场）。
   剩下**有意保留**的一行是 `宿主已占用全局 document（宿主 keys: location），已就地补齐 …`——
   它是 ④ 那条故障类的自证（见 `--host-document` 用例对它的断言），不是错误。

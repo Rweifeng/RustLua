@@ -7,9 +7,9 @@ Rust 写的 2D/3D 游戏引擎 + Lua 玩法脚本运行时，配套一个可视�
 - **引擎**：Rust 负责渲染（wgpu）、ECS、物理（rapier）、输入、音频、字体与资源；玩法规则全部用 Lua。
 - **编辑**：`editor` 提供场景/层级/Inspector、Tilemap 与 2D Animation 编辑、Play 预览、资源面板与发布；
   场景里的变换与相机各只有**一个**组件名——`Transform` 与 `Camera`。
-- **发布**：`scripts/package.ps1` 产 PC / WebGL / 微信小游戏三种平台产物；`scripts/package-engine.ps1`
+- **发布**：`scripts/build/package.ps1` 产 PC / WebGL / 微信小游戏三种平台产物；`scripts/build/package-engine.ps1`
   产免安装的编辑器绿色版（含便携模式，不写 `%APPDATA%`）。
-- **验证**：`scripts/verify.ps1` 是唯一总门——文档门、cargo 三件套、`game --check`/`editor --check`、
+- **验证**：`scripts/verify/verify.ps1` 是唯一总门——文档门、cargo 三件套、`game --check`/`editor --check`、
   编辑器性能基线与 GUI smoke（`-Mvp` 追加 26 项 headless 样例与干净目录发布自测）。
 
 ## 仓库布局
@@ -20,7 +20,7 @@ Rust 写的 2D/3D 游戏引擎 + Lua 玩法脚本运行时，配套一个可视�
 | `examples/game_jhyt` | 完整游戏工程《江湖有田》：横版 1280×720、8 个场景动线（门面/山庄/村庄/山道/洞窟/演武场/两处室内），种田/采集/制作/战斗/任务/商店/7 日目标 |
 | `examples/game_api` | 引擎 API 活文档：每个 Lua API 都有一处**可运行**演示，覆盖度由 `host::sample_project` 的 11 条门守 |
 | `plugins/` | 平台运行时：`webgl/`（共用 `web-runtime.js` + 契约页）、`wechat-minigame/`（适配层与分包路由） |
-| `scripts/` | 质量门与发布脚本：`verify.ps1`（总门）、`check-docs.ps1`（文档门）、`package.ps1`（发布）、`package-engine.ps1`（绿色版）、`test-bundle.ps1`（本地试玩产物）等 |
+| `scripts/` | 质量门与发布脚本，按功能分层：`verify/verify.ps1`（总门）、`verify/check-docs.ps1`（文档门）、`build/package.ps1`（发布）、`build/package-engine.ps1`（绿色版）、`test/test-bundle.ps1`（本地试玩产物）；完整索引见 [scripts/README.md](scripts/README.md) |
 | `tasks/` | 任务生命周期：`plan/`（WP 工作包与 game_jhyt 执行台账）、`done/`（已归档 134 份） |
 | `docs/` | 引擎能力、技术决策、质量门与发布契约（索引见 [docs/README.md](docs/README.md)） |
 | `artifacts/` | 生成物：发布包、质量门日志（`artifacts/logs/`），已被 `.gitignore` 忽略 |
@@ -48,10 +48,10 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 
 | 平台 | 命令 | 现状 |
 |---|---|---|
-| PC | `scripts\package.ps1 -ProjectRoot examples/game_jhyt` | **已验收**（M31）：干净目录可运行、`pack/` 只读、存档与设置写用户数据目录 |
+| PC | `scripts\build\package.ps1 -ProjectRoot examples/game_jhyt` | **已验收**（M31）：干净目录可运行、`pack/` 只读、存档与设置写用户数据目录 |
 | WebGL | 加 `-Platform webgl` | **产物层 + 完整剧本门**：缺失宿主 API 全局 = 0、启动路径不再因缺失全局停下（2026-09-19 无头 Edge 复测）；2026-10-02 起 `verify-webgl-bundle.ps1 -DriveJhyt` 在真实浏览器里跑完整玩法链路（新游戏→移动→背包/任务开合→山庄↔云泽村真实切图→回山庄，M1–M6 里程碑落定）并挂进 `verify.ps1` 总门 |
 | 微信小游戏 | 加 `-Platform wechat-minigame`（默认主包 + 单分包） | **已真机验收**（2026-09-27，Android）：启动进山庄、虚拟摇杆移动、按钮交互全通；产物层切分、配额、白名单与 harness 用例（含摇杆链路）全绿 |
-| 编辑器绿色版 | `scripts\package-engine.ps1 -Zip` | 免安装包：release 三件套 + 字体 + 样例工程 + 双击即用的 bat |
+| 编辑器绿色版 | `scripts\build\package-engine.ps1 -Zip` | 免安装包：release 三件套 + 字体 + 样例工程 + 双击即用的 bat |
 
 平台契约、体积账与已知边界分别见 [docs/32](docs/32-webgl-浏览器平台验收.md)、
 [docs/52](docs/52-微信小游戏分包发布.md)、[docs/50](docs/50-发布包与用户数据目录.md)。
@@ -62,17 +62,17 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 
 | 目的 | 命令 |
 |---|---|
-| 总门（含 MVP 回归与发布自测） | `scripts\verify.ps1`（快速路径 `-MvpOnly`；`-SkipBuild -SkipClippy` 复用已有构建） |
-| **快速读数：这棵树现在红不红** | `scripts\verify.ps1 -Quick`（文档门 + vendor 门 + fmt + `git diff --check` + `game --check` + `editor --check` 两工程；跳过 clippy/rustdoc/测试/构建/基准/GUI smoke，**跳过的每一步都在结尾逐个打印**——绿灯只读作「数据级与格式门通过」） |
-| 提交前门禁（**只对本次提交负责**） | `git-hooks/pre-commit`（装：`scripts\install-git-hooks.ps1`；体检：`scripts\install-git-hooks.ps1 -Status`）。CI 的 lint job 看的是**这个提交**，所以门禁也只看提交内容：`rustlua.scope` 默认 `commit`（提交之外的失败只点名、按 `PARTIAL` 报告），`= worktree` 恢复"整棵树任何一处失败都拦"的旧口径。细则见 [docs/34](docs/34-质量门与发布清单.md) §3.5 |
+| 总门（含 MVP 回归与发布自测） | `scripts\verify\verify.ps1`（快速路径 `-MvpOnly`；`-SkipBuild -SkipClippy` 复用已有构建） |
+| **快速读数：这棵树现在红不红** | `scripts\verify\verify.ps1 -Quick`（文档门 + vendor 门 + fmt + `git diff --check` + `game --check` + `editor --check` 两工程；跳过 clippy/rustdoc/测试/构建/基准/GUI smoke，**跳过的每一步都在结尾逐个打印**——绿灯只读作「数据级与格式门通过」） |
+| 提交前门禁（**只对本次提交负责**） | `git-hooks/pre-commit`（装：`scripts\repo\install-git-hooks.ps1`；体检：`scripts\repo\install-git-hooks.ps1 -Status`）。CI 的 lint job 看的是**这个提交**，所以门禁也只看提交内容：`rustlua.scope` 默认 `commit`（提交之外的失败只点名、按 `PARTIAL` 报告），`= worktree` 恢复"整棵树任何一处失败都拦"的旧口径。细则见 [docs/34](docs/34-质量门与发布清单.md) §3.5 |
 | 格式 / 静态检查 / 测试 | `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings`、`cargo test --workspace --all-features` |
-| 文档一致性（编号/索引/链接/历史路径/编码） | `scripts\check-docs.ps1` |
-| vendor 补丁基线（wasm 必需补丁逐文件在位 + 版本耦合） | `scripts\check-vendor-patches.ps1` |
+| 文档一致性（编号/索引/链接/历史路径/编码） | `scripts\verify\check-docs.ps1` |
+| vendor 补丁基线（wasm 必需补丁逐文件在位 + 版本耦合） | `scripts\verify\check-vendor-patches.ps1` |
 | 编辑器整帧 smoke（合成输入的 DPI/resize/拖放/停靠/多选/弹窗） | `cargo run -p editor -- --gui-smoke`（`--gui-report <文件>` 落报告） |
-| 干净目录发布自测 | `scripts\package.ps1 -ProjectRoot examples/game_jhyt -SelfTest` |
-| WebGL 产物层启动验收 | `scripts\verify-webgl-bundle.ps1` |
-| 微信小游戏产物层验收 | `scripts\verify-wechat-minigame.ps1`（默认取 `examples/game_jhyt/builds/wechat-minigame`，`-BundleRoot` 可指定） |
-| 本地试玩某个 web 平台产物（自动发现 + 验收 + 起服务） | `scripts\test-bundle.ps1`（`-Platform wechat-minigame` 切平台） |
+| 干净目录发布自测 | `scripts\build\package.ps1 -ProjectRoot examples/game_jhyt -SelfTest` |
+| WebGL 产物层启动验收 | `scripts\verify\verify-webgl-bundle.ps1` |
+| 微信小游戏产物层验收 | `scripts\verify\verify-wechat-minigame.ps1`（默认取 `examples/game_jhyt/builds/wechat-minigame`，`-BundleRoot` 可指定） |
+| 本地试玩某个 web 平台产物（自动发现 + 验收 + 起服务） | `scripts\test\test-bundle.ps1`（`-Platform wechat-minigame` 切平台） |
 
 门全绿的含义与逐项通过标准见 [docs/34-质量门与发布清单.md](docs/34-质量门与发布清单.md)；
 `verify.ps1` 会依次跑文档门、cargo 门、`game --check`/`editor --check`、编辑器性能基线与 GUI smoke、
@@ -116,7 +116,7 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
   保存路径检测到**外部改动就拒绝写入**（不是提示，是真不写），显式出口是「强制保存」；
   补丁历史原型把 1000 次字段编辑的保留内存从约 398 MB 降到 216 KB（比值 0.054%，且撤销/重做等价）。
 - **示例工程 `game_api` 重建**（[docs/59](docs/59-示例工程game_api与API覆盖率门.md)）：
-  **42 个模块表 / 283 个 Lua 函数**（这个数由 `scripts/gen-lua-api-docs.js --check` 与覆盖率门自动守，
+  **42 个模块表 / 283 个 Lua 函数**（这个数由 `scripts/docgen/gen-lua-api-docs.js --check` 与覆盖率门自动守，
   不靠人记；1.3 版核对时把 README 里过期的 40/270 改正）/ 21 个运行时组件全部有演示；引擎新增一个
   Lua 函数，示例工程不补演示就会被覆盖率门判红。
 - **组件统一**（第 57 轮）：场景/Prefab 里变换与相机各只有**一个**组件名——`Transform`
@@ -126,7 +126,7 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
   （默认 dry-run）。细节与验收证据见 [docs/56](docs/56-编辑器重构阶段0-1基线与验收.md) §3.52。
 - **健康度**：**不在这里写数字**（此前写"1328 项通过"时是 M32，早已过期且没人更新）。权威读数是
   最近一次全量 `verify.ps1` 的日志（`artifacts/logs/quality/verify-*.log`，只保留最近 10 份）。
-  想现在就复核：`scripts\verify.ps1 -Quick`（6.6 秒，回答"这棵树现在红不红"，并**逐个打印它跳过了什么**）。
+  想现在就复核：`scripts\verify\verify.ps1 -Quick`（6.6 秒，回答"这棵树现在红不红"，并**逐个打印它跳过了什么**）。
 
 ## 约定
 

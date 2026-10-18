@@ -22,7 +22,7 @@
 
 var adapter = require('./wechat-adapter.js');
 
-// 启动 Promise 挂到全局，便于自动化验证（scripts/wechat-minigame-harness.js）等待启动完成。
+// 启动 Promise 挂到全局，便于自动化验证（scripts/verify/wechat-minigame-harness.js）等待启动完成。
 globalThis.__RustLuaWechatBoot = adapter.start(function () {
   // 适配层在宿主直启下**不会**调这个回调（它自己完成启动）。被调了就**响亮失败**，
   // 而不是静默什么都不发生 —— 这是"旧世界已删除"的守卫：谁把它接回来，这里立刻报出来。

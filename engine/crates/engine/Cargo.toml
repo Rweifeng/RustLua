@@ -25,7 +25,13 @@ pollster = "0.4"
 # 代价实测（同一次 A/B，`cargo build -p game_web --release --target wasm32-unknown-unknown`，
 # 其余输入不变）：默认 8,711,933 字节 → `-F engine/webgl` 8,851,119 字节，**+139,186 字节（+1.6%）**。
 # 现在没有任何 wasm 代码在用 GL 后端，game_web 也就没开它。
-wgpu = "27"
+#
+# **wasm 与非 wasm 分开声明**（2026-10-17 体积优化）：上面那条"默认特性"在浏览器里全是死重——
+# wgpu 的 `default` 会拖进 `dx12`/`metal`/`vulkan`/`gles`/`webgpu` 五个后端开关，其中
+# `webgpu` 还会拉 **naga 的 `wgsl-out`（整条 WGSL 后端）**。wasm32 上这些代码一行都跑不到，
+# 却实打实占体积。wasm 侧只留两块：`std` 与 `wgsl`（着色器是运行期 WGSL，需要 `wgsl-in`），
+# `webgl` 仍由上面的 `webgl` 特性按需开。桌面/编辑器照旧吃 default。
+# `resolver = "2"` 保证两个 target 的 features 不互相统一。
 winit = "0.30"
 # WP5：`wasm32-unknown-unknown` 的 std 落在 `sys/pal/unsupported`，`Instant::now()` 会 panic
 # （"time not implemented on this platform"）；渲染器在 wasm 上跑起来后帧计时就会踩到它。
@@ -61,6 +67,10 @@ serde_json = "1"
 # `HtmlCanvasElement → JsValue` 的转换由本来就依赖 web-sys 的宿主做。
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
+# wasm 侧的最小 wgpu：只留 `std` + `wgsl`（运行期 WGSL 需要 naga `wgsl-in`），
+# `webgl` 后端由上面的 `webgl` 特性按需开；默认特性会拖进 dx12/metal/vulkan/gles/webgpu
+# 与 naga 的 wgsl-out，在浏览器里全是死重（见 `[dependencies]` 那段注释）。
+wgpu = { version = "27", default-features = false, features = ["std", "wgsl"] }
 
 # M20-06：桌面手柄设备轮询。原计划的 gilrs 在本机离线环境下无法解析
 # （crates 已缓存但索引不可用，见任务文档），改用已在依赖树中的 windows-sys
@@ -70,5 +80,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Inpu
 
 # 文件日志（tracing-appender）在 wasm32-unknown-unknown 上不可用（无 symlink/
 # 文件系统），wasm 构建只保留 console/sink 层。
+# 桌面 / 编辑器 / 验收样例：原生后端要全，保留 wgpu 的默认特性。
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tracing-appender.workspace = true
+wgpu = "27"

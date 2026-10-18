@@ -98,11 +98,6 @@ pub enum EditorCommand {
     PasteComponents {
         entity: SceneEntityId,
     },
-    /// 设置"运行时切场景不销毁"（Inspector 的持久实体复选框）。
-    SetEntityPersistent {
-        entity: SceneEntityId,
-        persistent: bool,
-    },
     /// docs/55 阶段 2：按 schema/PropertyPath 改一个组件字段（一次提交 = 一条 Undo）。
     ///
     /// 通用（schema 驱动）Inspector 只发这个 action，不直接写组件串；取值校验、
@@ -435,7 +430,6 @@ impl WorkspaceController {
             | EditorCommand::RemoveCollider3d { .. }
             | EditorCommand::RenameSelection { .. }
             | EditorCommand::PasteComponents { .. }
-            | EditorCommand::SetEntityPersistent { .. }
             | EditorCommand::SetComponentField { .. }
             | EditorCommand::SetComponentFields { .. }
             | EditorCommand::SetComponentFieldOnSelection { .. }

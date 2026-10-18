@@ -43,7 +43,7 @@ WebGL 与微信小游戏都构建 `engine/crates/game_web`：
 - WASM 构建统一使用 `opt-level=z`、fat LTO、单 codegen unit，并经 `wasm-opt -Oz` 优化；
 - `gpu2d` 是同一 crate 上的可选 feature。
 
-发布脚本只构建一个 `game_web.wasm`，再按平台生成不同胶水与后处理产物，见 `scripts/package.ps1`。
+发布脚本只构建一个 `game_web.wasm`，再按平台生成不同胶水与后处理产物，见 `scripts/build/package.ps1`。
 
 因此以下能力已经只有一套 Rust 实现：
 
@@ -434,7 +434,7 @@ WebGL 当前具备：
 - 音频播放请求；
 - 单一固定步所有者；
 - 单一输入注入所有者；
-- EH 探针正对照。
+- EH 探针正对照（`pkg/eh-probe.wasm`，2026-10-18 恢复）。
 
 2026-10-11 的 `game_jhyt` 分包产物读数为：
 
@@ -567,7 +567,7 @@ host: canvas_surface: ... webgl2 not available
 ### P0：先验证微信 GPU 路线是否成立
 
 > **2026-10-12 状态**：微信开发者工具已在本机可用（`D:\Program Files (x86)\Tencent\微信web开发者工具`，
-> CLI 在位），Android/iOS 真机仍无。**模拟器侧 ①②③⑤ 已答且为绿**（`node scripts/wechat-devtools-probe.js`
+> CLI 在位），Android/iOS 真机仍无。**模拟器侧 ①②③⑤ 已答且为绿**（`node scripts/dev/wechat-devtools-probe.js`
 > 终行 `verdict=gpu-route-ok-simulator`：探针 ok、宿主 begin 在 2532x1170 离屏画布建立 surface、
 > 322/300 连续 present 0 失败、EH `accepted`）；途中修掉三条宿主缺陷（缺 `queueMicrotask`、GPU 入口缺
 > panic hook、缺 `WebGL2RenderingContext` 全局——详见 `tasks/plan/M73-00` 的 docs65-P0① 一节）。
@@ -779,7 +779,7 @@ host: canvas_surface: ... webgl2 not available
 > "先向**南**挪 21 px（`axis1+`）脱困"与"先向**北**挪半格（`axis1-`）更卡"方向名**写反了**；连带那两条修法里的选项 ①
 > "出生点向**南**挪一格"按此口径应为向**北**（把 `SPAWN` 的 y 抬高，实测 +21 px 即脱困）。这条与代码那处同号同源，
 > 都是"屏幕向下为正"的直觉——同一张账上它只误导了措辞，进了产品码就是本片这处缺陷。
-> 量具两条账：`-KeyProbe` 原来只数 `dom_events`/`input_edges`**不数位移**（本笔在 `scripts/webgl-cdp-wait.js` 的打印里
+> 量具两条账：`-KeyProbe` 原来只数 `dom_events`/`input_edges`**不数位移**（本笔在 `scripts/lib/webgl-cdp-wait.js` 的打印里
 > 补上 `world=`，print-only +11/−1）；`-GpuFrames` 是**帧预算**（`gpu_host.rs:57-65`）而不是采样参数，带着它跑 `-KeyProbe`
 > 读到的是冻住的计数器（现场 `frames 240 -> 240 -> 240`），量活的按键必须不带它。
 > **登记未测（旧说法）→ #27 新实测（本条闭合）**：原句"微信接管的**正向**确认（纵向按键现在能否连续走）等开发者工具恢复"
@@ -818,10 +818,10 @@ host: canvas_surface: ... webgl2 not available
 > **门禁（最终字节那一版）**：`verify-wechat-minigame.ps1 -ExpectGpuKernel` VERIFY_EXIT=0（注入撤净后才跑，
 > `wechat_minigame_package_ok`、生产口径 `engine_host=off`、harness 240 帧、五条负面用例全绿）；
 > 本笔零 Rust、零 `web-runtime.js` 改动 ⇒ `cargo fmt/clippy/test` 与 `wasm32` check、webgl 那条打包门没重跑（`5ab416b9`
-> 的基线仍在位）；`powershell -NoProfile -File scripts/check-docs.ps1` **DOCS_EXIT=0**、六项读数逐字同基线
+> 的基线仍在位）；`powershell -NoProfile -File scripts/verify/check-docs.ps1` **DOCS_EXIT=0**、六项读数逐字同基线
 > （`docs=59 game_docs=46 h1=107 links=414 ps1_bom_ok=33 ps1_parse_ok=33`）——#26 那条挂在别包 `docs/58` 里的
 > `xxx.md` 反例引用红今天已由他们自己清掉（那份文件 `grep -c -F 'xxx.md'` = 0 且与 HEAD 一致）。**一条现场踩到的坑**：
-> `CHANGELOG.md` 在这个门的扫描面里（`scripts/check-docs.ps1:135`），所以条目里**不能**把"方括号紧跟圆括号"那个链接形态
+> `CHANGELOG.md` 在这个门的扫描面里（`scripts/verify/check-docs.ps1:135`），所以条目里**不能**把"方括号紧跟圆括号"那个链接形态
 > 原样拼出来当引文——那会被判成一条真链接（与 M72-10 归档那条同一条坑）。
 > **一次性工具留 `.temp/`**（`p1-v27-{probe,collector}.js`、`27-package-wechat-appid{,-run2}.log`、
 > `27-wechat-takeover-run{1,2,3}.log`、`27-verify-wechat-appid.log`、`v27-report.json`），不进 verify 入口；

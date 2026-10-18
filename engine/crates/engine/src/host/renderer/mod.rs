@@ -94,6 +94,8 @@ fn next_2d_vertex_capacity(required: u64) -> u64 {
 /// `Renderer::texture_paths`, so the entry itself only carries the bind group.
 struct LoadedTexture {
     bind_group: wgpu::BindGroup,
+    /// RGBA8 像素字节数（显存占用估算；性能面板的「贴图显存」由它汇总）。
+    bytes: u64,
 }
 
 /// GPU upload state for one per-Text custom font atlas, keyed by namespaced
@@ -112,6 +114,10 @@ struct GpuGeometry {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
+    /// 顶点数（几何账本：`RenderFrameMetrics::vertices` 与缓存字节都靠它）。
+    vertex_count: u32,
+    /// 顶点 + 索引缓冲字节数（网格缓存显存估算）。
+    bytes: u64,
 }
 
 /// A decoded base-color texture uploaded to the GPU (sRGB) plus its view.
@@ -120,6 +126,8 @@ struct CachedAlbedoTexture {
     #[allow(dead_code)]
     texture: wgpu::Texture,
     view: wgpu::TextureView,
+    /// RGBA8 像素字节数（显存占用估算）。
+    bytes: u64,
 }
 
 /// File-authored material parameters for one primitive. The per-draw model
@@ -213,6 +221,14 @@ pub struct RenderFrameMetrics {
     pub draw_calls: u64,
     pub instances: u64,
     pub triangles: u64,
+    /// 本帧实际提交的顶点数。2D overlay / 世界 Sprite / 矢量文字按顶点计；
+    /// 3D 按「每个实例的顶点数 × 实例数」统计一次（与 `triangles` 同口径，不因阴影 pass 重复）。
+    pub vertices: u64,
+    /// 本帧的 shader pipeline 状态设置次数（Unity SetPass Calls 的对应量）。
+    ///
+    /// 每次 `set_pipeline`（含 2D 批次在普通管线与 SDF 管线之间的切换）计一次；
+    /// 同一个管线的重复绑定不计。清屏不是绘制通道，不计数。
+    pub set_pass_calls: u64,
     /// 本帧**被丢弃**的 draw 数（bind group 造不出来时的兜底分支）。
     ///
     /// 为什么要单独计数：通道级早就有对账（`RenderPlan::mismatch` → 告警 +
@@ -225,6 +241,11 @@ pub struct RenderFrameMetrics {
 
 fn record_draw_call(metrics: &mut RenderFrameMetrics) {
     metrics.draw_calls += 1;
+}
+
+/// 记一次 shader 管线状态设置（Unity SetPass Calls 的对应量）。
+fn record_set_pass(metrics: &mut RenderFrameMetrics) {
+    metrics.set_pass_calls += 1;
 }
 
 /// 记一次**画不出来**的 draw。刻意**不加** `draw_calls`：丢弃不是绘制，
@@ -243,11 +264,13 @@ fn count_layer_draws(mesh: &SceneMesh, layer: RenderLayer) -> usize {
 
 fn record_triangle_draw(metrics: &mut RenderFrameMetrics, vertex_count: u32) {
     record_draw_call(metrics);
+    metrics.vertices += u64::from(vertex_count);
     metrics.triangles += u64::from(vertex_count) / 3;
 }
 
 fn record_vertex_draw(metrics: &mut RenderFrameMetrics, vertex_count: u32) {
     record_draw_call(metrics);
+    metrics.vertices += u64::from(vertex_count);
     metrics.instances += u64::from(vertex_count) / 6;
     metrics.triangles += u64::from(vertex_count) / 3;
 }
@@ -255,12 +278,56 @@ fn record_vertex_draw(metrics: &mut RenderFrameMetrics, vertex_count: u32) {
 fn record_indexed_draw(
     metrics: &mut RenderFrameMetrics,
     index_count: u32,
+    vertex_count: u32,
     instance_count: usize,
     pass_count: u64,
 ) {
     metrics.draw_calls += pass_count;
     metrics.instances += instance_count as u64;
+    metrics.vertices += u64::from(vertex_count) * instance_count as u64;
     metrics.triangles += u64::from(index_count) / 3 * instance_count as u64;
+}
+
+/// 渲染器资源缓存与加载队列的一帧快照（编辑器性能面板 / 诊断用）。
+///
+/// 这是**只读汇总**，不改变任何缓存状态；字节数是按上传时记录的 RGBA8 像素 / 顶点索引
+/// 缓冲大小估算的显存占用，不是驱动真实分配量（驱动可能对齐或压缩）。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RendererResourceStats {
+    /// 已上传的 2D 贴图 + 3D albedo 贴图条数。
+    pub loaded_textures: usize,
+    /// 2D 贴图 + 3D albedo + 字体图集的 RGBA8 字节数估算。
+    pub texture_bytes: u64,
+    /// 字体图集纹理条数（内建默认图集 + 自定义字体）。
+    pub font_atlas_textures: usize,
+    /// 2D 贴图身份缓存命中次数（句柄命中）。
+    pub texture_identity_hits: u64,
+    /// 2D 贴图身份缓存未命中次数（首次见到的句柄）。
+    pub texture_identity_misses: u64,
+    /// 已缓存的 3D 网格条数。
+    pub cached_meshes: usize,
+    /// 3D 网格缓存顶点 + 索引缓冲字节数。
+    pub mesh_bytes: u64,
+    /// 网格身份缓存命中次数。
+    pub mesh_identity_hits: u64,
+    /// 网格身份缓存未命中次数。
+    pub mesh_identity_misses: u64,
+    /// 异步加载队列中尚未取走的请求数。
+    pub async_pending: usize,
+    /// 已取走的请求数（含失败）。
+    pub async_completed: usize,
+    /// 后台解码线程数（0 = 同步完成，编辑器离屏预览即如此）。
+    pub async_workers: usize,
+    /// 加载器当前是否走异步（后台线程）模式。
+    pub async_mode: bool,
+    /// 2D 顶点缓冲当前容量（字节）。
+    pub vertex_buffer_capacity: u64,
+    /// 2D 顶点缓冲扩容次数。
+    pub vertex_buffer_growths: u64,
+    /// 单帧 2D 顶点字节数峰值。
+    pub vertex_bytes_peak: u64,
+    /// 非阻塞回读账本（槽数 / 丢弃 / CPU 缓冲字节等）。
+    pub readback: ReadbackMetrics,
 }
 
 /// 把声明的 [`Viewport`]（浮点、世界无关）换算成目标附件内的**等比居中矩形**。
@@ -609,6 +676,69 @@ impl Renderer {
     pub fn vertex_bytes_peak(&self) -> u64 {
         self.vertex_bytes_peak
     }
+
+    /// 资源缓存 / 加载队列的汇总快照（编辑器性能面板与诊断用）。
+    ///
+    /// 贴图字节按上传时记录的 RGBA8 面积累加；字体图集按 `wgpu::Texture::size` 现算
+    /// （数量很少，且它们只在版本变化时重建）。网格字节在 `upload_geometry` 时记录，
+    /// 因此这里只是求和，不会触发任何 GPU 查询。
+    #[must_use]
+    pub fn resource_stats(&self) -> RendererResourceStats {
+        let loaded_texture_bytes: u64 = self.textures.iter().map(|texture| texture.bytes).sum();
+        let albedo_bytes: u64 = self
+            .albedo_textures
+            .iter()
+            .map(|texture| texture.bytes)
+            .sum();
+        let font_bytes = self
+            .font_atlas_texture
+            .as_ref()
+            .map(texture_rgba8_bytes)
+            .unwrap_or(0)
+            + self
+                .custom_fonts
+                .values()
+                .filter_map(|font| font.texture.as_ref())
+                .map(texture_rgba8_bytes)
+                .sum::<u64>();
+        let font_atlas_textures = usize::from(self.font_atlas_texture.is_some())
+            + self
+                .custom_fonts
+                .values()
+                .filter(|font| font.texture.is_some())
+                .count();
+        let mesh_bytes: u64 = self
+            .mesh_cache
+            .values()
+            .flat_map(|mesh| mesh.primitives.iter())
+            .map(|primitive| primitive.geometry.bytes)
+            .sum();
+        RendererResourceStats {
+            loaded_textures: self.textures.len() + self.albedo_textures.len(),
+            texture_bytes: loaded_texture_bytes + albedo_bytes + font_bytes,
+            font_atlas_textures,
+            texture_identity_hits: self.texture_identity_hits,
+            texture_identity_misses: self.texture_identity_misses,
+            cached_meshes: self.mesh_cache.len(),
+            mesh_bytes,
+            mesh_identity_hits: self.mesh_identity_hits,
+            mesh_identity_misses: self.mesh_identity_misses,
+            async_pending: self.async_loader.pending_count(),
+            async_completed: self.async_loader.completed_count(),
+            async_workers: self.async_loader.workers(),
+            async_mode: self.async_loader.mode() == rustlua_render::async_loader::LoadMode::Async,
+            vertex_buffer_capacity: self.vertex_buffer.size(),
+            vertex_buffer_growths: self.vertex_buffer_growths,
+            vertex_bytes_peak: self.vertex_bytes_peak,
+            readback: self.readback_metrics(),
+        }
+    }
+}
+
+/// RGBA8 纹理的字节数估算（字体图集与 albedo 都是 Rgba8Unorm/Rgba8UnormSrgb）。
+fn texture_rgba8_bytes(texture: &wgpu::Texture) -> u64 {
+    let size = texture.size();
+    u64::from(size.width) * u64::from(size.height) * u64::from(size.depth_or_array_layers) * 4
 }
 
 /// Conservative local-space bounding sphere from a primitive's vertex AABB.

@@ -235,6 +235,13 @@ pub struct FrameInputProducer {
     /// 无处可写（`single_press_point_is_the_pre_multitouch_degradation` 曾把那个退化钉在案上）。
     /// **顺序即语义**：`press_cursors[0..count]` 按按下先后排，最后一个就是旧字段 `press_cursor`。
     pointers: Vec<(u64, [f64; 2], [f64; 2])>,
+    /// 领走**主指针**的那根手指的 id（见 [`Self::pointer_down`]）。
+    ///
+    /// 主指针 = `cursor` / `press_cursor` / `mouse_held` / `mouse_just` 的驱动者：鼠标是它的天然形态，
+    /// 触屏上则由**第一根按下**的手指扮演。`None` = 当前没有手指领（触屏松手后回到这个状态）。
+    /// 不设它的话，触屏的按下边沿只存在于多指块里，而本机 `ui/virtual_pad.lua` 的屏上控件读的是
+    /// `input.mouse_just_pressed("left")`——真机症状是"手指点屏幕毫无反应"。
+    primary_touch: Option<u64>,
     /// 落不进 [`KEY_NAMES`] 的键数。**要能被读到**：静默丢弃会让人以为引擎坏了。
     dropped_keys: u32,
 }
@@ -250,9 +257,11 @@ impl FrameInputProducer {
     /// 与 [`Self::mouse_down`] 的关键区别：**它可以在别的指针已按下时再次调用**。后者在"键已按下"
     /// 时提前返回，于是第二根手指的按下点根本没处可写——那正是被钉住的那个退化。同一 `id` 重复
     /// 按下只更新按下点、不新增指针（真机上 `touchstart` 对同一指可能重复到达）。
+    ///
+    /// **第一根手指同时扮演主指针（= 鼠标左键）**，见 [`Self::primary_touch`]：只标按下点是不够的，
+    /// Lua 侧的屏上控件读的是 `input.mouse_just_pressed("left")` 这条边沿。
     pub fn pointer_down(&mut self, id: u64, position: [f64; 2]) {
         self.cursor = position;
-        self.press_cursor = position;
         self.pointer_fresh = true;
         if let Some(entry) = self.pointers.iter_mut().find(|(other, _, _)| *other == id) {
             entry.1 = position;
@@ -260,6 +269,36 @@ impl FrameInputProducer {
         } else {
             self.pointers.push((id, position, position));
         }
+        // 第一根手指**领走主指针**：按下点是它的、`mouse_just` / `mouse_held` 也由它驱动。
+        //
+        // 为什么必须有这一步（真机缺陷，2026-10-17）：触屏此前只走"每指通路"（标按下点、不碰
+        // `mouse_*` 位），而本机 `ui/virtual_pad.lua` 的屏上控件——摇杆、交互/攻击/背包/任务/暂停
+        // 五键、招式卡——命中测试读的正是 `input.mouse_just_pressed("left")`（`M.update()`）：
+        // 于是**手指按下去屏幕毫无反应**（鼠标能用只是因为鼠标事件会设这些位）。
+        // 多次按下不会重复领取（`primary_touch` 非空即已有人领），所以第二根手指仍然只走多指通路。
+        if self.primary_touch.is_none() {
+            self.primary_touch = Some(id);
+            self.claim_mouse_left_for_existing_pointer();
+        }
+    }
+
+    /// 把左键标成按下，并产出按下边沿——**但不再登记一根指针**。
+    ///
+    /// 与 [`Self::mouse_down`] 的唯一差别就在那条登记上：鼠标没有自己的指针记录时它补一条
+    /// （`pointer_count` 才是 1 而不是 0），而触屏的按下已经在 `pointers` 里了。两处都登记的话
+    /// 同一根手指会被数成两根（`pointer_count` 凭空 +1，多指读数与逐指按下点全部错位）。
+    fn claim_mouse_left_for_existing_pointer(&mut self) {
+        let Some(slot) = rustlua_frame_abi::mouse_slot("left") else {
+            return;
+        };
+        let bit = 1u64 << slot;
+        if self.mouse_held & bit == 0 {
+            self.mouse_just |= bit;
+            // 与 `mouse_down` 同口径：按下点 = 按下那一刻的光标。触屏那条路在调用本函数之前
+            // 已经把光标设成这根手指的位置，所以这里取到的就是它自己的按下点。
+            self.press_cursor = self.cursor;
+        }
+        self.mouse_held |= bit;
     }
 
     /// 某根手指移动。`id` 不存在时**忽略**——抬起之后的移动事件是常态，不该凭空造出一根手指。
@@ -273,8 +312,26 @@ impl FrameInputProducer {
     }
 
     /// 某根手指抬起。**不动 `press_cursor`**：与 `mouse_up` 的既有语义一致（按下点留到最后一次按下）。
+    ///
+    /// 领走主指针的那根抬起 ⇒ 一并松开鼠标左键（`mouse_just_released` 由 [`Self::mouse_up`] 置位）。
+    /// **"最后一根手指抬起"也算松开**（2026-10-17 真机实测）：真机/触摸模拟里 `pointerId` 可能与
+    /// 按下时那次不同（同一次触摸的两个事件 id 不保证一致），只认 id 会让主指针**永远不归还**——
+    /// 症状正是"抬起后摇杆不回弹、圆点钉在偏移位置"（实测 `mouse_held` 抬手后仍为 1、
+    /// `pointer_count` 下次按下涨到 2）。按下靠"第一根手指"领取，抬起就得靠"没有手指了"兜底，
+    /// 两者必须对称。
     pub fn pointer_up(&mut self, id: u64) {
         self.pointers.retain(|(other, _, _)| *other != id);
+        // **判据是"没有真手指了"，不是"指针表空了"**：`mouse_down` 会给鼠标补一条伪指针
+        // （`MOUSE_POINTER_ID`，见那里的说明），它一直躺在表里 ⇒ 拿 `is_empty()` 判永远为假，
+        // 主指针收不回来（实测：触摸抬手后 `mouse_held` 仍为 1、摇杆圆点钉在偏移位置不回弹）。
+        let last_finger_gone = !self
+            .pointers
+            .iter()
+            .any(|(other, _, _)| *other != MOUSE_POINTER_ID);
+        if self.primary_touch == Some(id) || last_finger_gone {
+            self.primary_touch = None;
+            self.mouse_up("left");
+        }
     }
 
     /// 落不进键表的键数（读数用）。
@@ -391,6 +448,10 @@ impl FrameInputProducer {
         self.axis = [0.0; 2];
         self.scroll = [0.0; 2];
         self.pointer_fresh = false;
+        // 主指针的归属也要放掉：留着它，切回前台后**第一根手指会被当成"已经有人领"**，
+        // 于是 `mouse_down` 不再发生，屏上控件在那一整次触摸里都收不到按下边沿。
+        self.primary_touch = None;
+        self.pointers.clear();
     }
 
     /// 取走本帧线格式，并清空本帧量（边沿、滚轮、光标新鲜度）。
@@ -793,6 +854,22 @@ impl ScriptDriver {
     }
 }
 
+/// 线格式那一侧（JS 世界的 `RLFI` / 微信适配层的 `engine_host_input_flush`）**本帧是否真的产过帧**。
+///
+/// 判据是"帧号变了"——`frame` 只在生产侧 `take_frame` 时递增，所以它是"这一路有新输入"的唯一
+/// 可靠信号。
+///
+/// **为什么不能用"本侧本帧没动过"当判据**（B8 之后浏览器上的真实缺陷）：合并光标时若写成
+/// `js_cursor_wins = !producer.pointer_fresh()`，那么"本侧这帧没有指针事件"就等于"让线格式那一侧
+/// 赢"。旧 JS 世界在的时候那一侧每帧都在写；它被删掉之后 `LATEST_FRAME` 恒为默认值（光标
+/// `(0,0)`、按下点 `(0,0)`）——于是**每次指针事件之间的那些帧都会把活光标与按下点抹成 (0,0)**。
+/// 症状正是"拖虚拟摇杆时中心圆点闪来闪去"（有事件帧=手指位置、无事件帧=(0,0)）与"点按钮没反应"
+/// （按下点被抹成 (0,0)，设计空间的命中测试必然脱靶）。
+#[must_use]
+pub fn wire_is_fresh(previous_frame: u32, wire: &FrameInput) -> bool {
+    wire.frame != previous_frame
+}
+
 /// 把另一路宿主（JS 世界的 `RLFI`）的输入**并进**本帧。
 ///
 /// 为什么是"并"而不是"选一个"：两条来源都合法——浏览器里 Rust 侧直接从 DOM 采集，
@@ -801,7 +878,11 @@ impl ScriptDriver {
 /// 位图的槽位语义两边同源于 [`KEY_NAMES`]，所以按位或就是正确的并集。
 ///
 /// 光标与滚轮是**绝对量/增量**，不能按位并：光标取"本帧真的动过"的那一路
-/// （`js_cursor_wins`；本侧动过就传 `false`），滚轮取两者之和。
+/// （`js_cursor_wins`；本侧动过就传 `false`）。滚轮取两者之和。
+///
+/// ⚠️ `js_cursor_wins` 的**调用口径**（B8 之后浏览器上踩到过）：它是"线格式那一侧本帧产过帧"
+/// （[`wire_is_fresh`]），**不是**"本侧本帧没动过"。写成后者时，没有指针事件的那些帧会让一个
+/// 恒为默认值的线格式帧赢走光标与按下点——症状见 [`wire_is_fresh`] 的注释。
 pub fn merge_into(dst: &mut FrameInput, src: &FrameInput, js_cursor_wins: bool) {
     dst.keys_held |= src.keys_held;
     dst.keys_pressed |= src.keys_pressed;
@@ -1190,6 +1271,73 @@ mod tests {
         assert_eq!(dst3.press_cursor, [640.0, 360.0]);
     }
 
+    /// 回归：**陈旧**的线格式帧不许把活光标抹掉（B8 之后浏览器上的真实缺陷）。
+    ///
+    /// 现场症状：拖虚拟摇杆时"中心圆点闪来闪去"、点按钮"没反应"。机制是合并判据写成了
+    /// "本侧本帧没动过就让线格式赢"，而 B8 删掉旧 JS 世界后 `LATEST_FRAME` 恒为默认值
+    /// （光标与按下点都是 `(0,0)`）⇒ 两次指针事件之间的每一帧都把光标/按下点抹成 `(0,0)`。
+    #[test]
+    fn stale_wire_frame_must_not_clobber_a_live_cursor() {
+        // 线格式那一侧：B8 之后浏览器里的常态——没人写，恒为默认值。
+        let wire = FrameInput::new();
+        let previous_wire_frame = wire.frame;
+        let wire_fresh = wire_is_fresh(previous_wire_frame, &wire);
+        assert!(!wire_fresh, "没人产帧的线格式不算新鲜");
+
+        // DOM 侧：手指停在设计空间 (640,360)，这一帧没有新的指针事件（`pointer_fresh = false`）。
+        let mut dom = FrameInput {
+            cursor: [640.0, 360.0],
+            press_cursor: [640.0, 360.0],
+            pointer_count: 1,
+            ..FrameInput::new()
+        };
+        // 正确口径：`js_cursor_wins` = "线格式本帧产过帧"（这里为 false）⇒ 本侧光标保留。
+        merge_into(&mut dom, &wire, wire_fresh);
+        assert_eq!(
+            dom.cursor,
+            [640.0, 360.0],
+            "陈旧线格式帧把活光标抹成了 (0,0)：这就是摇杆圆点闪烁的成因"
+        );
+        assert_eq!(
+            dom.press_cursor,
+            [640.0, 360.0],
+            "按下点同样不许被抹掉：命中测试（按钮/摇杆抓取）靠它"
+        );
+
+        // 对照：真的产过帧时（帧号变了），线格式那一侧照旧可以拿走光标。
+        let mut produced = FrameInput::new();
+        produced.frame = previous_wire_frame.wrapping_add(1);
+        produced.cursor = [10.0, 20.0];
+        produced.press_cursor = [10.0, 20.0];
+        assert!(wire_is_fresh(previous_wire_frame, &produced));
+        let mut dom2 = FrameInput {
+            cursor: [640.0, 360.0],
+            press_cursor: [640.0, 360.0],
+            ..FrameInput::new()
+        };
+        merge_into(
+            &mut dom2,
+            &produced,
+            wire_is_fresh(previous_wire_frame, &produced),
+        );
+        assert_eq!(dom2.cursor, [10.0, 20.0], "新鲜的另一路仍然说话");
+
+        // 反证（这条断言的作用是"证明上面那条不是空转"）：同一份输入下，**旧判据**
+        // （"本侧本帧没动过 ⇒ 线格式赢"，即这里传 `true`）确实会把活光标抹成 (0,0)。
+        let mut legacy = FrameInput {
+            cursor: [640.0, 360.0],
+            press_cursor: [640.0, 360.0],
+            pointer_count: 1,
+            ..FrameInput::new()
+        };
+        merge_into(&mut legacy, &wire, true);
+        assert_eq!(
+            legacy.cursor,
+            [0.0, 0.0],
+            "旧判据的失败现场：没有指针事件的那一帧被陈旧线格式帧抹成 (0,0)"
+        );
+    }
+
     #[test]
     fn input_script_reports_what_is_wrong_instead_of_guessing() {
         assert!(
@@ -1382,10 +1530,11 @@ mod tests {
     fn two_pointers_keep_their_own_press_points() {
         let mut producer = FrameInputProducer::new();
         let mut out = rustlua_frame_abi::FrameInput::new();
-        // 第一指按在 A。
+        // 第一指按在 A。**它同时领走主指针**（见下一条用例）⇒ `mouse_held` 已置位；
+        // `pointers` 里只有它自己那一条（主指针不再重复登记）。
         producer.pointer_down(1, [100.0, 200.0]);
         producer.take_frame(&mut out);
-        assert_eq!(out.pointer_count, 1, "一根手指占一个槽");
+        assert_eq!(out.pointer_count, 1, "一根手指就是一个槽");
         assert_eq!(out.press_cursors[0], [100.0, 200.0]);
         assert_eq!(
             out.press_cursor,
@@ -1395,7 +1544,10 @@ mod tests {
         // 第二指按在 B：**A 的按下点必须还在**——这正是旧线格式做不到的事。
         producer.pointer_down(2, [600.0, 400.0]);
         producer.take_frame(&mut out);
-        assert_eq!(out.pointer_count, 2);
+        assert_eq!(
+            out.pointer_count, 2,
+            "两根手指 = 两个槽（主指针不额外占一个）"
+        );
         assert_eq!(
             out.press_cursors[0],
             [100.0, 200.0],
@@ -1406,16 +1558,16 @@ mod tests {
         // 移动不改变按下点：按下点是「按下那一刻」的位置，不是当前手指位置。
         producer.pointer_move(2, [700.0, 500.0]);
         producer.take_frame(&mut out);
-        assert_eq!(
-            out.press_cursors,
-            [[100.0, 200.0], [600.0, 400.0], [0.0, 0.0], [0.0, 0.0]],
-            "移动不得改写任何按下点"
-        );
+        assert_eq!(out.press_cursors[0], [100.0, 200.0], "移动不得改写按下点");
+        assert_eq!(out.press_cursors[1], [600.0, 400.0]);
         // 抬起第一指 ⇒ 数组按按下先后**压实**（不留洞），否则按索引取按下点会取到空槽。
+        // 它同时是**领走主指针的那根**⇒ 鼠标左键一并松开。
         producer.pointer_up(1);
         producer.take_frame(&mut out);
-        assert_eq!(out.pointer_count, 1);
+        assert_eq!(out.pointer_count, 1, "剩下第二根手指");
         assert_eq!(out.press_cursors[0], [600.0, 400.0], "抬起后压实，不留洞");
+        assert_eq!(out.mouse_held, 0, "主指针抬手 = 左键松开");
+        assert_ne!(out.mouse_just_released, 0, "松开要留下边沿");
         // 桌面鼠标也算一根手指：没有多指事件时 `pointer_count` 至少为 1，Lua 按索引取值才不落空。
         let mut mouse = FrameInputProducer::new();
         let mut wire = rustlua_frame_abi::FrameInput::new();
@@ -1424,6 +1576,50 @@ mod tests {
         mouse.take_frame(&mut wire);
         assert_eq!(wire.pointer_count, 1, "鼠标按住 = 一根手指");
         assert_eq!(wire.press_cursors[0], [40.0, 50.0]);
+    }
+
+    /// **触屏的主指针契约**（2026-10-17 真机缺陷转正）：一根手指按下必须同时给出
+    /// `mouse_just` / `mouse_held`，否则屏上控件（`ui/virtual_pad.lua` 读
+    /// `input.mouse_just_pressed("left")`）在触屏上完全没有反应——鼠标能用只是因为
+    /// 鼠标事件会设这些位。第二根手指只走多指通路，不重复产生边沿。
+    #[test]
+    fn primary_pointer_drives_the_mouse_button_edges() {
+        let mut producer = FrameInputProducer::new();
+        let mut out = rustlua_frame_abi::FrameInput::new();
+        producer.pointer_down(1, [100.0, 200.0]);
+        producer.take_frame(&mut out);
+        assert_ne!(out.mouse_just, 0, "第一根手指按下必须给左键按下边沿");
+        assert_ne!(out.mouse_held, 0, "按住期间左键保持按下");
+        assert_eq!(out.press_cursor, [100.0, 200.0], "按下点 = 主指针的位置");
+        // 第二根手指：不产生新的左键边沿（它不该被读成"又点了一下左键"）。
+        producer.pointer_down(2, [600.0, 400.0]);
+        producer.take_frame(&mut out);
+        assert_eq!(out.mouse_just, 0, "第二根手指不得重复给左键边沿");
+        assert_ne!(out.mouse_held, 0, "左键仍被第一根手指按着");
+        assert_eq!(out.pointer_count, 2, "两根手指就是两个槽");
+        // 第二根手指抬起：主指针不受影响。
+        producer.pointer_up(2);
+        producer.take_frame(&mut out);
+        assert_ne!(out.mouse_held, 0, "抬起非主指不该松开左键");
+        assert_eq!(out.pointer_count, 1);
+        // 主指针抬起：左键松开，且**没有残留的手指**（下一次触摸要能重新领走主指针）。
+        producer.pointer_up(1);
+        producer.take_frame(&mut out);
+        assert_eq!(out.mouse_held, 0);
+        assert_eq!(out.pointer_count, 0);
+        producer.pointer_down(3, [300.0, 320.0]);
+        producer.take_frame(&mut out);
+        assert_ne!(out.mouse_just, 0, "松手后下一次触摸要能重新领走主指针");
+        // 焦点/可见性丢失会走 `release_all`：它必须把主指针的归属也放掉，否则切回前台后
+        // 第一根手指会被当成"已经有人领"，那一整次触摸都没有按下边沿。
+        producer.release_all();
+        producer.take_frame(&mut out);
+        producer.pointer_down(4, [10.0, 20.0]);
+        producer.take_frame(&mut out);
+        assert_ne!(
+            out.mouse_just, 0,
+            "release_all 之后第一根手指仍要能领主指针"
+        );
     }
 
     #[test]

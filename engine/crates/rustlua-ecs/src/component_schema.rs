@@ -1346,6 +1346,13 @@ const UI_ANIMATION_LIST: ListModel = ListModel {
     dynamic: UI_ANIMATION_DYNAMIC,
 };
 
+/// 运行时切场景不销毁的标记组件名（无载荷：存在即开启，父节点级联到子树）。
+///
+/// 定义在 schema 层是因为三个消费方都要读到同一个名字：场景文档
+/// （`rustlua_scene::scene` 的祖先判定 / 编辑器 Add Component）、运行时的持久快照，
+/// 以及本注册表（没有 schema 的真实工程组件会被审计报 `component_no_schema`）。
+pub const PERSISTENT_COMPONENT: &str = "Persistent";
+
 /// 内置 schema 注册表：新增结构化组件应加在这里，而不是继续长 ad hoc 解析分支。
 #[must_use]
 pub fn builtin_registry() -> BTreeMap<&'static str, ComponentSchema> {
@@ -1380,6 +1387,9 @@ pub fn builtin_registry() -> BTreeMap<&'static str, ComponentSchema> {
         // 第 26 轮：补齐有手写面板、但此前没有 schema 的 4 个组件。
         ComponentSchema::new("Collider3d", 1, COLLIDER_3D_FIELDS),
         ComponentSchema::new("Tilemap", 1, TILEMAP_FIELDS),
+        // 无载荷标记组件：存在即"运行时切场景不销毁"，父节点的标记级联到整棵子树。
+        // 注册 schema 是为了让审计认识它（否则真实工程里会报 `component_no_schema`）。
+        ComponentSchema::new(PERSISTENT_COMPONENT, 1, &[]),
         ComponentSchema::new("Container", 1, CONTAINER_FIELDS),
         ComponentSchema::new("ButtonStates", 1, BUTTON_STATES_FIELDS),
         // 第 38 轮：列表/重复字段模型落地后补上的 3 个；第 40 轮补上 `UiAnimation`

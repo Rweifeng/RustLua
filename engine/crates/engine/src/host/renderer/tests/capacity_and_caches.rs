@@ -151,12 +151,30 @@ fn texture_identity_cache_is_hit_on_the_second_frame() {
 
     let handle = AssetHandle::new(0, 1);
     renderer.render_into_texture(&quad(handle), None, &view, size, size);
+    let first_metrics = renderer.last_frame_metrics();
+    assert_eq!(
+        first_metrics.draw_calls, 1,
+        "一个 2D 批次就是一次 draw call"
+    );
+    assert_eq!(first_metrics.vertices, 6, "一个 quad 是 6 个顶点");
+    assert_eq!(first_metrics.triangles, 2, "一个 quad 是两个三角形");
+    assert_eq!(
+        first_metrics.set_pass_calls, 1,
+        "2D overlay 通道设置一次普通管线"
+    );
     assert_eq!(
         renderer.texture_identity_stats(),
         (0, 1),
         "第一帧句柄还没进缓存：应记一次未命中"
     );
     assert_eq!(renderer.loaded_texture_count(), 1, "同一资源只应加载一次");
+    let resources = renderer.resource_stats();
+    assert_eq!(resources.loaded_textures, 1);
+    assert!(
+        resources.texture_bytes > 0,
+        "贴图上传后应记录显存字节：{resources:?}"
+    );
+    assert_eq!(resources.texture_identity_misses, 1);
     renderer.render_into_texture(&quad(handle), None, &view, size, size);
     assert_eq!(
         renderer.texture_identity_stats(),
@@ -275,6 +293,20 @@ fn mesh_identity_cache_is_hit_on_the_second_frame() {
         "第一帧句柄还没进缓存：记一次未命中"
     );
     assert_eq!(renderer.cached_mesh_count(), 1, "同一网格只解析一次");
+    let resources = renderer.resource_stats();
+    assert_eq!(resources.cached_meshes, 1);
+    assert!(
+        resources.mesh_bytes > 0,
+        "网格上传后应记录顶点/索引缓冲字节：{resources:?}"
+    );
+    assert!(
+        renderer.last_frame_metrics().vertices > 0,
+        "3D 网格帧必须统计顶点数"
+    );
+    assert!(
+        renderer.last_frame_metrics().set_pass_calls >= 2,
+        "阴影 + 主网格两条通道各设置一次管线"
+    );
     renderer.render_into_texture(&mesh, Some(&scene(Some(handle))), &view, size, size);
     assert_eq!(
         renderer.mesh_identity_stats(),

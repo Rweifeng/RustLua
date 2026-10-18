@@ -220,7 +220,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 桌面侧的平台门（M33）：`app.platform()='desktop'` 时触屏控件必须整个收掉——
     // 登记表里不该有 `vp` 这个 owner，也不该有摇杆/按钮的元素。
     // （反向口径"触屏上必须画得出来"不在这里：native headless 报告不了 webgl，
-    // 由 web harness 与 `scripts/wechat-minigame-harness.js` 在真机/浏览器侧守。）
+    // 由 web harness 与 `scripts/verify/wechat-minigame-harness.js` 在真机/浏览器侧守。）
     assert_str(&mut rt, "tostring(app.platform())", "desktop")?;
     assert_str(
         &mut rt,

@@ -83,7 +83,7 @@ M.PANEL = {
   --    面板里重复一份正是当初挤爆一行、被迫加省略号的原因。
   hud_info = { x = 980, y = 8, w = 300, h = 180 },
   -- ② 标题门面的 3 块木牌按钮（与 main.scene 的 Btn* 矩形、title_menu 的 OPTIONS 同源）。
-  title_btn = { x = 460, y = 380, w = 360, h = 64 },
+  title_btn = { x = 380, y = 420, w = 160, h = 60 },
   -- ③ 暂停菜单（主菜单页与设置页共用同一面板）。
   pause = { x = 160, y = 40, w = 720, h = 640 },
   -- ④ 背包面板：单列 10 行 + 详情 + 消息 + 提示。
@@ -307,7 +307,7 @@ M.TOUCH_KEEP_CLEAR = {
 M.METRIC = {
   -- 门面三块木牌按钮的纵向间隔（`title_menu` 按它递进排 OPTIONS；
   -- 与 main.scene 按钮 y 380/460/540 对齐，step = 64 + 16 = 80）。
-  title_btn_gap = 16,
+  title_btn_gap = 20,
 }
 
 -- 同屏分组：组名 → 面板名列表。**同一组内的面板要求"互不重叠"**；组外的面板

@@ -45,6 +45,16 @@ wechat_appid = "wx0123456789abcdef"   # 微信小游戏 appid（编辑器发布�
 
 退出码：`0` 成功、`1` 失败。
 
+`package` 另有资源包形态：`--bundle none|single`（默认 `none` = 本文描述的目录形态）、
+`--fast`（单包用 zstd L3）。`--bundle single` 把整棵数据树收进
+`bundles/all-<hash8>.rlb`（块压缩 + 尾部索引），输出根只留 `project.toml` + 清单 +
+`package-report.json` 骨架。格式、分组与迁移计划见 [资源分包压缩与打包方案](67-资源分包压缩与打包方案.md)；
+单包形态下 `--compress` 无效果（压缩由容器逐块决定）、`--encrypt` 暂不支持（块级 AEAD 在批 F）。
+运行时**已能读单包**（批 B）：`game --pack <单包>` 启动时自动挂载 `bundles/*.rlb`，`--check` 走容器
+（输出 `game_bundles_mounted bundles=… entries=…` 后 `game_check_ok`）。
+但**发布脚本与默认值还没切**：`package.ps1` 与 `first-screen-pack.js` 仍在按目录形态操作 `pack/`，
+所以本文其余章节描述的仍是目录形态的行为（切换在批 C）。
+
 ### 扫描范围
 
 `scan` 覆盖 `project.toml`、`scenes/`、`scripts/`、`assets/`；跳过本地工作目录 `.cache`、`.temp`、`.git`、`target`。资源族统一为 `ResourceKind`（[resource_kind.rs](../engine/crates/rustlua-assets/src/resource_kind.rs)）。
@@ -105,9 +115,9 @@ RustLua <flags> [12B nonce] <payload>
 - `decode` 自动检测：非 `RustLua` 文件（开发明文）原样返回，因此同一套运行时代码既能加载开发明文也能加载发布加密包。
 - 加密密钥固定内嵌于可执行文件，属于防随意读取的混淆，非强加密。
 
-## 4. 发布流程（`scripts/package.ps1`）
+## 4. 发布流程（`scripts/build/package.ps1`）
 
-编辑器「发布」动作后台启动 [scripts/package.ps1](../scripts/package.ps1)（不弹终端窗，进度解析 `==>` 阶段标记）。脚本执行：
+编辑器「发布」动作后台启动 [scripts/build/package.ps1](../scripts/build/package.ps1)（不弹终端窗，进度解析 `==>` 阶段标记）。脚本执行：
 
 1. Release 构建（`cargo build --workspace --release`；web 平台改为 `cargo build -p game_web --release --target wasm32-unknown-unknown` + `wasm-bindgen`）。
 2. `assetc package` 生成数据包 `pack/`（按平台）。
@@ -118,13 +128,13 @@ RustLua <flags> [12B nonce] <payload>
      真查这一条；发布根下的 `fonts/` 只有 webgl 的 `index.html` 需要）。
    - **webgl**：`index.html`（由 `plugins/webgl/index.html` 模板替换工程名/字体路径生成）+ `web-runtime.js` + `pkg/game_web.js` + `pkg/game_web_bg.wasm` + `pkg/fengari-web.js` + `fonts/` + `pack/`。
    - **wechat-minigame**：`game.js` + `wechat-adapter.js` + `game.json` + `project.config.json` + `web-runtime.js` + `pkg/fengari-web.js` + `pack/` + `run.txt` + `deps.txt` + `build-info.txt`；
-     默认形态（`-AssetPack subpackage`）下另有 `mainpack.json` + `mainpack/`（主包侧首屏资源）+ `pack/game.js`（分包入口）。
+     默认形态（`-AssetPack subpackage`）下另有 `pack.json` + `mainpack/`（主包侧首屏资源）+ `pack/game.js`（分包入口）。
      平台文件来自 `plugins/wechat-minigame/`；发布脚本会检查入口/配置/资源齐全、拒绝混入 `game.exe`/`index.html`、**拒绝任何非 CommonJS 脚本**（小游戏不支持 ES Module）、并强制**主包 ≤ 4 MB / 单分包 ≤ 4 MB / 总计 ≤ 20 MB**。
      `project.config.json` 由模板复制后再改写两处：`projectname` 取发布名、`appid` 取 `-WechatAppId`
      （编辑器面板填的 `wechat_appid`；没填保留模板的 `touristappid`，形状不像正式 appid 时告警但照写）。
      不发行 wasm-bindgen 产物（浏览器 ESM 胶水，小游戏用不到也解析不了）；字体只分发 assetc 子集化产物。
      发布脚本还会做**代码包后缀合规**：微信只上传后缀在白名单内的文件（69 个，见
-     `scripts/code-package-rules.js`），`.lua`/`.toml`/`.md` 传不上去（真机上读它们是
+     `scripts/lib/code-package-rules.js`），`.lua`/`.toml`/`.md` 传不上去（真机上读它们是
      `permission denied`），因此构建期把这些文件名追加 `.txt` 并把映射写进产物根的
      `code-package.json`（运行时只查表）；分包 `pack/` 的后缀本来都合规，改名不动分包与 CDN 导出。
      资源形态三选一，详见 [微信小游戏分包发布](52-微信小游戏分包发布.md) 与
@@ -135,7 +145,7 @@ RustLua <flags> [12B nonce] <payload>
 **平台差异**：web 平台共用 `plugins/webgl/web-runtime.js`，该 JS 运行时只读明文 `pack/`，因此 `-Encrypt`/`-Compress` 仅对 PC 有效；对 web 平台传这两个开关会被脚本直接拒绝（避免产出跑不起来的包）。
 
 **主包 + 单分包（小游戏默认形态）**。`-AssetPack subpackage`（微信平台不传时的默认值）先把首屏资源
-从 `pack/` **搬**到兄弟目录 `mainpack/`（搬运依据是 `scripts/first-screen-pack.js` 生成的 `mainpack.json`，
+从 `pack/` **搬**到兄弟目录 `mainpack/`（搬运依据是 `scripts/build/first-screen-pack.js` 生成的 `pack.json`，
 清单项在 `pack/` 下随即消失——两侧互斥，切分不全过不了字节守恒断言），再把 `pack/`
 写进 `game.json` 的 `subpackages` 并生成分包入口 `pack/game.js`。运行时首屏读主包 `mainpack/`、
 其余读分包 `pack/`（`wx.loadSubpackage` 按需挂载）。产物形态：
@@ -143,7 +153,7 @@ RustLua <flags> [12B nonce] <payload>
 ```
 examples\<game>\builds\wechat-minigame\<PublishName>\
 └── launcher\            # 代码包：整目录一次上传微信（就是它，没有第二个目录）
-    ├── mainpack.json    # 首屏清单：构建/运行时/harness 三方共用的路由依据
+    ├── pack.json    # 首屏清单：构建/运行时/harness 三方共用的路由依据
     ├── mainpack\        # 首屏资源（在**主包**里，启动即用，不等分包）
     ├── pack\            # 分包 root（含入口 game.js；目录下所有文件都进分包）
     └── …
@@ -171,11 +181,11 @@ examples\<game>\builds\wechat-minigame\<PublishName>\
 语义是**包内优先 + 远端兜底**，不配 `-RemotePackBaseUrl` 时行为完全不变（且会删除陈旧配置，避免真机去拉已经不存在的地址）。
 下载后按 `pack/manifest.txt` 的体积 + FNV-1a 校验和比对，不符即丢弃（校验通过才写入缓存）。
 发布脚本会校验导出目录与包内 manifest 的文件数/字节数逐一相等，不等就报错（避免发出一个"少资源"的包）。
-本地联调：`scripts/serve-pack.ps1 -Root <发布根>\assets -Port 8787`（或直接双击 `scripts\serve-wechat-pack.bat`）
-用 Node 起一个只读静态服务托管资源包（`scripts/pack-server.js`，防目录穿越、带请求日志），
+本地联调：`scripts/dev/serve-pack.ps1 -Root <发布根>\assets -Port 8787`（或直接双击 `scripts\dev\serve-wechat-pack.bat`）
+用 Node 起一个只读静态服务托管资源包（`scripts/dev/pack-server.js`，防目录穿越、带请求日志），
 并在开发者工具勾选「不校验合法域名…」。
 瘦首包的运行时验证默认就能找到资源包（`<发布根>/assets`），也可显式指定
-`scripts/verify-wechat-minigame.ps1 -BundleRoot <发布根>\launcher -AssetPackRoot <资源包目录>`。
+`scripts/verify/verify-wechat-minigame.ps1 -BundleRoot <发布根>\launcher -AssetPackRoot <资源包目录>`。
 注意这只是**开发者工具侧的自测替身**：真机需要公网 HTTPS + 公众平台 `downloadFile` 白名单，且手机访问不到 `127.0.0.1`。
 平台细节与边界见 [plugins/wechat-minigame/README.md](../plugins/wechat-minigame/README.md)。
 
@@ -222,7 +232,7 @@ save_version=2
   .backup-<时间戳>-<随机>/     交换期间暂存旧内容
 ```
 
-- **构建阶段**：`scripts/package.ps1` 把所有产物写进 `.staging-*`（assetc 打包、运行器/字体/文档、
+- **构建阶段**：`scripts/build/package.ps1` 把所有产物写进 `.staging-*`（assetc 打包、运行器/字体/文档、
   `release.toml`、`deps.txt`、`build-info.txt`、`run.txt`、pack 自检）。此阶段失败 → 丢弃 staging，
   打印 `==> Release failed before swap; existing release kept at <dir>`，旧版本原样可用。
 - **替换阶段**：旧内容整体重命名进 `.backup-*`（同卷重命名，原子），再把 staging 顶层项重命名进最终目录，
@@ -232,7 +242,7 @@ save_version=2
 - **遗留清理**：每次发布开始时按 `.staging-`/`.backup-` 前缀 + 24 小时阈值清理中断遗留目录
   （不触碰发布内容）。`-SelfTest` 的隔离临时目录清理为尽力而为（退避重试 + 告警路径），不阻断发布。
 - **`-SkipBuild`**：复用 `target/release` 既有产物重复发布（缺少产物时明确报错）。
-- **回归**：`scripts/test-release-atomic.ps1` 覆盖成功交换、文件占用回滚、交换前失败丢弃、遗留清理四个场景，
+- **回归**：`scripts/test/test-release-atomic.ps1` 覆盖成功交换、文件占用回滚、交换前失败丢弃、遗留清理四个场景，
   输出 `release_atomic_ok cases=4`。
 
 发布目录布局与 RustLua 资源包格式未变（pc：`game.exe + pack/ + run.txt + deps.txt`，
@@ -247,7 +257,7 @@ save_version=2
   之内、以及项目位于 `out` 之内三种情况**明确报错**。前两者会直接覆写项目文件或让
   `collect_files` 一边遍历一边写入（自我复制，且下次打包把产物当输入）。**允许**
   `out` 位于项目内的其它位置（如 `builds/`）——`scan`/`collect_data_files` 只遍历
-  `project.toml` 与那三个子目录，`scripts/package.ps1` 的原子发布正是这样布局的
+  `project.toml` 与那三个子目录，`scripts/build/package.ps1` 的原子发布正是这样布局的
   （`<project>/builds/<platform>/.staging-*/pack`）。比较前先规范化路径
   （`canonical_or_absolute`：输出目录通常不存在，按"最近存在的祖先 + 剩余分量"规范化），
   因此 `assets/dist/../dist` 这类写法绕不过检查。

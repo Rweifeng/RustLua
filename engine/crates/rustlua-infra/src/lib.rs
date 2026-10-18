@@ -4,6 +4,9 @@ pub mod bundle;
 pub mod bundle_plan;
 pub mod editor_plugins;
 pub mod frame_clock;
+// `logging` 模块**必须两个 target 都在**：渲染器（`engine/src/host/renderer/passes.rs`）
+// 在 wasm 上也用它的 `EngineError` / `LogModule`。真正只有原生需要的订阅者装配
+// （registry + fmt + `EnvFilter`）在 `logging.rs` 内部按 `cfg(not(wasm32))` 关掉了。
 pub mod logging;
 pub mod pack;
 pub mod par;

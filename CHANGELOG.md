@@ -5,81 +5,137 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
-## Unreleased — 发布产物与计划一致性检查：`check-bundle-mounts.js`
+## Unreleased — 任务栏图标：winit 只设了 ICON_SMALL，补 ICON_BIG 后才显示齿轮
 
-- 以 `bundle_plan.json` 为准：每个单元根必须有目录、分包根必须有 `game.js`、
-  声明的容器必须齐全；缺件列出并 exit 1。
-- 覆盖 `bundle-layout --verify` 的盲区（它只看 `game.json`，不查"计划有、产物无"）。
+- **症状**：`game.exe` 在 Explorer 里已经是齿轮 + 月牙的文件图标（`build.rs` 嵌的
+  `engine_icon.ico`，`check_exe_icon.py` 逐字节对过），但**运行后最小化到任务栏**仍是
+  Windows 默认的"白纸窗口"。现场从运行中的窗口读回：`ICON_SMALL=0x9490D45`、
+  `ICON_BIG=0x0`——标题栏有图标，任务栏没有。
+- **归因**：winit 0.30 的 `with_window_icon` 在 Windows 上只发 `WM_SETICON(ICON_SMALL)`
+  （`platform_impl/windows/window.rs::set_window_icon`），`ICON_BIG` 不设；任务栏读不到
+  大图标时退回窗口类的 `IDI_APPLICATION`，而不是 PE 里的文件图标。原注释把"任务栏大图标"
+  和"exe 文件图标"混成一条，于是这个缺口一直没被当成缺口。
+- **改法**：`game_app.rs` 拆出 `icon_rgba` / `icon_side`；标题栏仍按 16×DPI 走
+  `with_window_icon`，Windows 再用 `WindowAttributesExtWindows::with_taskbar_icon` 补一份
+  32×DPI 的 `ICON_BIG`（`icon_side` 收敛在 winit 建议的 256 上限内）。非 Windows 目标不进
+  该分支，不新增依赖。
+- **实测**：`cargo test -p game icon` → 3 passed（新增 `icon_sides_follow_dpi_and_ceiling`、
+  `icon_source_is_resized_to_requested_side`；后者确认 16/24/32/48/64/256 六档都真缩到目标
+  边长且非全透明）。重建 debug 与 release 后各启动一次，用 `WM_GETICON` 从窗口读回：
+  `ICON_BIG=0x… (48×48 @150%)`、`ICON_SMALL=0x… (24×24)`，把大图标的 HICON 存成 PNG
+  目验为齿轮 + 月牙；`check_exe_icon.py` 对新 release 仍 `OK ... 5 张 RT_ICON`。
+  `examples/game_jhyt/builds/pc/game.exe` 已换成同一份 release 产物（哈希一致），按
+  `run.txt` 的 `--pack pack` 启动复测同样拿到 `ICON_BIG`。
+- **买不到的部分**：任务栏按钮本身没做截屏目验（读的是窗口 HICON 的像素，不是 DWM 合成后
+  的按钮）；Windows 的图标缓存仍可能让 **Explorer 文件图标**显示旧图，那是另一条路径。
+- 回滚档：`engine/crates/game/src/game_app.rs` 的 `icon_rgba` / `icon_side` / `taskbar_icon` /
+  `with_taskbar_icon` 块与两条单测、本文件。
 
-## Unreleased — 多根挂载编排：`mountRoots` / `ensurePathsMounted`
+## Unreleased — 微信适配层多根接线：计划表路由 + 按根挂载
 
-- `bundle-roots.js` 新增挂载编排：按顺序挂、已挂载跳过、`load(root)` 失败直接上抛；
-  `ensurePathsMounted` 读一组路径前只挂它们所在的分包根。
-- 自测覆盖：顺序、幂等、只挂路径所在根、失败必须上抛。
+- **音频/鼠标真机（devtools）修复（2026-10-19）**：分组容器里的 MP3 对
+  `wx.createInnerAudioContext()` 不可见，`assetSrcFor` 又返回 `{src,source,pending}` 对象，
+  wasm 侧只做 `as_string()` → 永远回落到 `pack/assets/audio/*.mp3`（不存在）。现在
+  微信发布用 `assetc --keep assets/audio/` 保留 16 个真实 MP3、首屏切分显式跳过
+  `assets/audio/`（否则 1.4 MB 会把主包顶到 4.8 MB），`wechat_src` 读取返回对象的
+  `src`。同时注册 `wx.onMouseDown/onMouseMove/onMouseUp`（宿主提供时）并复用
+  canvas mousedown + window mouseup 路径，修复 devtools 鼠标点按钮无响应。
+- **根名统一（2026-10-19）**：主包首屏根 `mainpack/` → **`pack/`**，默认分包根
+  `pack/` → **`pack-sub/`**；`pack-wasm/` 仍是独立内核根。逻辑资源前缀仍为 `pack/`
+  （引擎/计划表的虚拟命名空间），与物理根名解耦。同步改 `first-screen-pack.js`、
+  `bundle-layout.js`、`bundle-roots.js`、`package.ps1`、`verify-wechat-minigame.ps1`、
+  harness/e2e 与 `assetc` 的 `distribution_layout`；真实产物实测
+  `main=1,528 KB`（旧资产集）、`pack-sub=3,586 KB`（含 16 个真实 MP3）、
+  `pack-wasm=5,400 KB`、总量 `10,514 KB`，`verify` 与 e2e 均 exit 0。
+- **计划表 boot 元数据 + 发布期闭包检查**：`bundle_plan.json` 新增
+  `boot = { roots, groups, wasm, entries }`；`package.ps1` 在首屏切分完成后写它，并调用
+  `scripts/build/check-boot-closure.js` 对账 plan / `pack.json` / 真实文件：
+  boot roots 必须包含 `pack` 与 `wasm_root`，boot groups 必须恰好是 `unit=main` 的组，
+  `pack.json.entries` 必须与 `boot.entries` 完全一致，main 容器/boot entry/wasm 必须真实存在，
+  `game.json` 必须声明 boot 的非 main root。`-BootTrace <load-trace.json>` 时进一步要求
+  boot 上下文读到的每条路径都落在 main 单元（非 main 直接失败）；`apply-bundle-layout.ps1`
+  与 `verify-wechat-minigame.ps1` 也会跑这条门。lazy 不再只靠"大概都在 main"。
+- **音频检查修正**：容器形态下 `pack-sub/assets/audio/` 本来就被 `assetc` 收进 `audio-*.rlb`，
+  旧检查扫这个空目录，永远误报"无 MP3"。现在按计划表 audio 组校验：`game_jhyt` 实测
+  **16/16 条 MP3**（ID3 头，1,447,152 B），iOS 不会静音；如果 audio 组有资源却一个 MP3 都没有，
+  发布直接失败（不再留一个静音分包）。
+- **wasm 独立 `pack-wasm` 根**（2026-10-19）：`package.ps1` 不再把内核与资源一起塞进
+  `pack-sub/`。默认 subpackage 布局现在是 `pack/`（首屏）+ `pack-wasm/`（仅
+  `game_web_bg.wasm` + `game.js`）+ `pack-sub/`（非启动资源，boot 后后台挂载）；
+  `game.json` 声明 `pack-sub` 与 `pack-wasm` 两个 root。`bundle_plan.json` 增加 `wasm_root`，
+  `pack.json.layout` 同样写 `wasm_root`；launcher 根计划表默认生成（带 `launcher_root`），
+  适配层 boot 只等 `pack-wasm`，`pack-sub` 的容器由 `mount_bundles_from_reader` 补挂。
+  实测（旧资产集）主包 **1,529 KB**（≤1.5 MB）、`pack-sub 2,124 KB`、`pack-wasm 5,400 KB`、
+  总量 **9,053 KB**；`verify` 单根与多根均 exit 0，`wechat_multisub_test_ok roots=3
+  subpackage_loads=3`。
+- **主包瘦身（splash 去重/压图）**：先用 `assetc verify` 确认 `branding/splash.png` 与
+  `brand:cdn` 容器里的 `splash/splash.png` **逐字节相同**（`assetc_verify_ok entries=1`，都是
+  1,254,162 B）。微信发布改用 `branding/splash.jpg`（960×540 q80，83,968 B），
+  `package-branding.ps1` 新增 `-SplashFormat jpg`；`assetc package --bundle grouped --exclude-cdn`
+  把 `brand` 组从本地包的计划/清单/产物一起剔除（`remote` 形态保留）。实测
+  `wechat_minigame_package_ok main_kb=1,413（34.5%）subpackage_kb=7,482 total_kb=8,895`，
+  主包从 2,626 KB 降到 1,413 KB（目标 ≤1.5 MB）。
+- **根计划标记**：`bundle-layout --apply` 写到 launcher 根的 `bundle_plan.json` 带
+  `launcher_root: true`；适配层只认这个标记。`sub-root` 宿主把根路径回落到 `pack/` 时，
+  单分包产物里 `pack/bundle_plan.json` 不会再被误判成多根开关。
+- **计划表进运行期**：`bundle-layout --apply` 在拆根后把 `pack/bundle_plan.json` 复制到
+  launcher 根（主包可读），`wechat-adapter.js` 启动时读它并用 `bundle-roots.js` 把
+  `pack/<相对路径>` **与容器路径 `pack/bundles/<x>.rlb`** 一起路由到 `mainpack/`、`pack/`
+  或 `pack-<name>/`（少了容器路径，具名根的容器会被当成计划外回落 `pack/`，boot 报
+  `cannot read bundle`）。**boot 只等主包 + wasm 根**：新增 wasm 导出
+  `mount_from_reader_partial`（缺容器记 `pending`）与 `mount_bundles_from_reader`（根 ready 后补挂）；
+  `lua_boot_with_reader` 在 partial 已挂载时跳过严格全量挂载。老内核没有这两个导出时回退
+  "boot 前全量预挂"，旧产物仍能启动。具名根现在 boot 后后台下载，不再阻塞标题。
+- **计划表只留一份主包副本**：`first-screen-pack.js` 不再把 `bundle_plan.json` 当首屏文件搬进
+  `mainpack/`（多根产物由 `bundle-layout --apply` 复制到 launcher 根）；单分包主包因此少
+  一份 ~72 KB 的重复计划表。
+- **发布闭环**：`package.ps1 -MultiSub` 的拆根改到**原子交换前的 staging 内**（失败不碰最终目录），
+  拆完按「launcher − 全部 `pack`/`pack-*`」重测主包 4 MB / 总量 20 MB；`apply-bundle-layout.ps1`
+  的临时 layout 写系统临时目录（不再把 `.bundle-layout.json` 留在发布包）、apply 后自动跑
+  `check-bundle-mounts`。`run.txt` 追加实际多根名单。
+- **默认不变**：没有 launcher 根的 `bundle_plan.json` 时完全走旧单根路径（`mainpack` + `pack`，
+  逐字节行为不变）。计划表放在 `mainpack/`/`pack/` 里**不算**多根开关——单分包产物会把
+  `bundle_plan.json` 当首屏文件搬进 `mainpack/`，照它路由会去找并不存在的 `pack-<name>/`。
+  计划外路径回落旧规则并计入 `__RUSTLUA_DIAG().bundle.plan_misses`。
+- **改名容错**：`bundle-layout --apply` 与 `check-bundle-mounts` 同时认 `.rlb` 与代码包改名后的
+  `.rlb.txt`（apply 在改名之后运行；搬运后保留 `.txt` 后缀），否则 `-MultiSub` 会在"缺容器"处失败。
+- **诊断**：`__RUSTLUA_DIAG().bundle` 给出 `plan/file/error/wasm_root/roots.<root>.state/
+  plan_misses`；`data-rustlua-layout=bundle-roots`、`data-rustlua-bundle=<根列表>`。
+- **打包**：`bundle-roots.js` 进微信必带文件清单（适配层 `require('./bundle-roots.js')`），
+  模块顶层不再 `require('fs')`，微信运行时可直接加载。`package.ps1` 的 no-modules 胶水补丁
+  同时兼容 wasm-bindgen 0.2.129 的 `WebAssembly.JSTag` 与直接 `throw new WebAssembly.Exception`：
+  Tag 导入/构造/包装成对剔除，`facade` 检查不再把 `JSTag` 当未覆盖域名；微信 wasm 仍须用
+  rustc 1.88 构建（1.98 的 new-EH 指令会让 `strip-wasm-tags.mjs` 的 `wasm-as` 校验失败）。
+- **诊断修正**：`pack.mount_frame` 在挂载**成功**时也写入（原实现只在失败分支赋值，导致
+  delay 用例永远读到 `-1`）；`packState` 在主根失败时落 `failed`（原实现停在 `loading`，
+  `--expect-pack-failure` 读不到失败态）。
+- **门**：`scripts/test/wechat-asset-routing-test.js` 新增多根用例（main/sub/sub:audio 路由、
+  容器路径路由、partial 预挂、根 ready 后补容器、幂等、计划外回落计数）；`bundle-layout.js --self-test`、
+  `bundle-roots.js --self-test`、`check-bundle-mounts.js` 均通过。端到端具名根用例：
+  `powershell -File scripts/test/test-wechat-multisub.ps1` →
+  `wechat_multisub_test_ok roots=3 subpackage_loads=2`。**本机已用 rustc 1.88 重打微信包并实测懒加载**：
+  harness 先报 `boot 容器已挂载 1354 个`（main+pack，跳过未挂的 `pack-audio`），后台挂根后报
+  `补挂 pack-audio 容器 16 个`，最终 `subpackage_loads=2`；同一夹具的 `verify-wechat-minigame.ps1`
+  （新增多根静态/运行时分支）**exit 0**，单根产物 `verify` 也 **exit 0**。
 
-## Unreleased — 适配层多根路由表：`bundle-roots.js`
+## Unreleased — 编辑器性能分析面板：Play 运行时实时读数（帧率/draw/setpass/顶点面数/内存/CPU/GPU/资源缓存）
 
-- 新增 `plugins/wechat-minigame/bundle-roots.js`：`unit → 根`（mainpack / pack / pack-<name>，
-  cdn 不参与挂载）、`planRootIndex`（路径 → 根）、`rootsForPaths`（一组路径需要挂哪些非主包根）、
-  `missingRoots`（尚未挂载的根）。
-- 自测：三种根 + cdn 排除 + 未知路径报错 + 已挂载根不重复列；
-  真实 plan 实测 `roots=mainpack,pack paths=1370`，audio 路径 → `needed=pack`。
-
-## Unreleased — `package.ps1 -MultiSub`（opt-in）：产物落地后拆多分包根
-
-- 新开关 `-MultiSub`：仅 `-Platform wechat-minigame -AssetPack subpackage`，其它形态直接拒绝；
-  产物原子交换落地后调用 `apply-bundle-layout.ps1`（layout → apply → verify）。
-- 默认关闭、默认路径逐字节不变；适配层多根路由未接完，先用于验收产物形状。
-- 修复：行级编辑给 `package.ps1` 补回 UTF-8 BOM（PS 5.1 否则按 ANSI 解析并报语法错）。
-
-## Unreleased — 发布一键落地：`apply-bundle-layout.ps1`（layout → apply → verify）
-
-- 输入发布根（含 `pack/` 与 `bundle_plan.json`），依次跑 `assetc layout --json`、
-  `bundle-layout.js --apply`、`--verify`；`-Assetc`/`-SkipVerify` 可控。
-- 实测真实产物：`moved=2 subpackages=1 main_bundles=2 sub_bundles=5`，
-  `game.json` 其它字段保留。
-
-## Unreleased — `assetc bundles init`：任意工程一键生成通用分包配置
-
-- `init_bundles` 写 `generic_domains()`（core/assets/brand）草稿；已存在需 `--force`。
-- CLI：`assetc bundles init <工程> [--force]` → `assetc_bundles_init_ok path=… groups=…`。
-
-## Unreleased — 分包通用接入文档（任意 RustLua 工程）
-
-- docs/67 新增 §5.8：零配置 `generic_domains()`、工程级 `bundles.json`、
-  `assetc package --bundle grouped`、`assetc layout --json` + `bundle-layout.js` 的
-  `--apply/--verify`、`--trace-loads` + 编辑器观测的完整接入路径。
-- 明确引擎侧不出现具体游戏路径；`default_domains()` 只是示例预设。
-
-## Unreleased — 分包通用化：引擎级默认不再绑定具体游戏
-
-- `BundleConfig::generic_domains()`：只依赖引擎约定目录，任何 RustLua 工程不写
-  `bundles.json` 都能用；`Default` / `load_or_default` 兜底改为它。
-- 原 `default_domains()` 保留为示例工程预设（docs/67 §5.3），不再作为引擎默认；
-  `examples/game_jhyt` 的工程级 `bundles.json` 行为不变。
-- 门：`generic_domains_depend_only_on_engine_conventions`（不含 `art/ui`、`title_bg_pixel`）。
-
-## Unreleased — 发布形状校验：`bundle-layout.js --verify`
-
-- `verifyLauncher`：每个 `subpackages.root` 必须有 `game.js`、`mainpack/` 必须存在，
-  并数出主包/分包容器；缺入口/缺目录响亮失败（自测含正例与负例）。
-- CLI：`--verify <发布根>` → `bundle_layout_verify_ok subpackages=… main_bundles=… sub_bundles=…`。
-
-## Unreleased — 发布脚本可执行搬运：`bundle-layout.js --apply`（多分包根 + game.json + 入口）
-
-- `applyPlan`：按布局把容器搬进 `mainpack/`、`pack-<name>/`（默认 `pack` 原地不动），
-  写 `game.json` 的 `subpackages`（保留其它字段），并为每个分包根补 `game.js` 入口。
-- CLI：`--apply <发布根>` → `bundle_layout_applied moved=… roots=… subpackages=…`。
-- 自测：临时目录造 `pack/` → 搬 2 个容器、检查 `game.json` 形状/入口/其它字段不丢。
-
-## Unreleased — 发布侧布局解析：`bundle-layout.js`（搬运表 + subpackages + 字节守恒）
-
-- 新增 `scripts/build/bundle-layout.js`：`parseLayout` 吃 `assetc layout --json`（容忍 BOM，
-  校验 schema/unit/容器路径/entries/total_bytes）→ `distributionPlan` 生成
-  `bundles/x.rlb → mainpack|pack|pack-<name>/` 的搬运表与 `game.json` 的 `subpackages`
-  → `assertConservation` 校验字节守恒。
-- 零依赖自测：`node scripts/build/bundle-layout.js --self-test`。
-- 实测 `game_jhyt`：6 条搬运、1 个默认分包根、合计 2,852,426 B（cdn 不计）。
+- **运行时层进面板**：原来的性能窗口只显示编辑器帧/面板/命令耗时；现在 Play 期间实时显示
+  预览帧率、帧间隔、CPU/GPU 渲染、运行时更新与 Lua 耗时、draw call、set pass、实例/顶点/
+  三角形、丢弃 draw、执行通道、2D 顶点缓冲、贴图/网格缓存、加载队列与进程工作集。
+- **引擎指标补齐**：`RenderFrameMetrics` 新增 `vertices` 与 `set_pass_calls`（Unity SetPass
+  Calls 的对应量：每次 shader 管线状态设置计一次，2D 批次只在普通/SDF 管线切换时计）；
+  `Renderer::resource_stats()` 汇总贴图/网格缓存字节、身份命中、加载队列、回读账本与顶点缓冲。
+- **采样口径**：运行时快照在 `PreviewSession` 真实到期 tick 上采集（节流跳过的编辑器帧不记账），
+  帧率用一秒滚动窗口；进程工作集按 250 ms 节流；趋势窗口固定 240 帧。
+- **面板交互**：运行时趋势（2 列折线）、冻结/继续采样、清空采样、复制报告（编辑器 profiler +
+  运行时文本报告）。
+- **诚实边界**：GPU 时间依赖设备 timestamp query，不可用时显示原因而不是 0；贴图/网格字节是
+  上传时记录的估算值；身份命中率不是磁盘缓存命中率；编辑器只采 Play 预览，不混入编辑视口。
+- **门禁**：render_metrics 5 条、capacity_and_caches 3 条（含资源字节/命中）、editor
+  `runtime_perf` 12 条 + performance 面板 6 条；`docs/25` 与 `docs/68` 同步。
+- **回滚档**：删除 `runtime_perf.rs` 与面板运行时分组；引擎保留 `vertices`/`set_pass_calls`
+  字段（默认 0）与 `resource_stats()`，不影响既有宿主。
 
 ## Unreleased — 分发布局契约：单元 → 包内根（多分包发布器的输入）
 
@@ -164,6 +220,365 @@
   `publish`），失败信息指向用户数据目录与脚本搬迁的既有在途改动。
 - **回滚档**：删除 `panels/atlas.rs` 与菜单项；排除规则退回只看场景 `Sprite` 白名单；
   `format=auto` 退回 `rltex`；删掉页缓存与 `clear_atlas_cache`（行为回到逐帧重读）。
+
+## Unreleased — 持久实体从 Inspector 复选框改为 `Persistent` 组件（父节点级联子树）
+
+- **编辑器**：属性面板删除「运行时切场景不销毁（持久实体）」复选框，连同
+  `EditorCommand::SetEntityPersistent` / `InspectorState::set_persistent` /
+  `InspectorSnapshot.persistent` 一并删除；改为在 **添加组件 ▸ 玩法** 里添加
+  `Persistent`（无载荷标记组件，`component <id> Persistent <空>`）。
+- **运行时**：`Scene::is_entity_persistent_with_ancestors` 定义语义——实体自身或任一
+  祖先带 `Persistent` 即持久；切场景时按名字快照/重生，并记录父实体名字，恢复时统一
+  重连 `Parent`（父子边不再因为 BTreeMap 顺序而丢失）。新场景同名定义胜出；新场景里
+  同名但**没有**持久标记的实体会丢弃旧快照，避免以后切回来时复活。
+- **兼容**：旧场景的 `entity_meta persistent=true` 仍由运行时读取，但编辑器不再写入；
+  真实工程不需要为了本次迁移改场景文件。
+- **schema**：`Persistent` 在 `component_schema::builtin_registry` 注册为空字段 schema，
+  避免审计把它报成 `component_no_schema`。
+- **门禁**：`rustlua-scene` 的祖先级联单测、`rustlua-scripting` 的
+  `persistent_component_survives_transition_and_cascades_to_children`、
+  `editor` 的 `adding_persistent_component_writes_a_marker_component` 与组件菜单测试；
+  `cargo check` 通过；Clippy 改动 crate 仅剩既有的 `bundle_salt` dead_code 警告。
+- **回滚档**：恢复 Inspector 复选框与 `SetEntityPersistent` 命令、删除 `Persistent`
+  注册表项与 schema；运行时把持久判定退回只读 `metadata["persistent"]`。
+
+## Unreleased — 恢复微信 EH 真机探针：`pkg/eh-probe.wasm` 回包，`eh_probe` 读数回归
+
+题面是「把 eh-probe.wasm 恢复到 pkg 目录中」。2026-10-17 的退役条目被本条取代：探针回到
+`pkg/eh-probe.wasm`（53 字节，零导入 + 本地 tag + legacy try/catch），发布、运行时诊断与验收断言
+一并恢复。胶水 `pkg/game_web.js`、适配层/桥/启动图仍在 launcher 根；`pkg/` 只放 wasm 资产。
+
+- **发布**：`package.ps1` 在 wasm 后处理之后写 `pkg/eh-probe.wasm`；`requiredWeChatFiles` 与
+  SelfTest 都要求它存在。
+- **运行时**：`wasm-bridge.js` 恢复 `probeEHAcceptance`（`WXWebAssembly.compile('pkg/eh-probe.wasm')`，
+  3 秒超时、与实例化并发、永不 reject）；`wechat-adapter.js` 恢复 `EH_PROBE_PATH`、
+  `ehProbeReadout`、`wasm.ehProbe` 与 `onEhProbe` 接线。
+- **门禁**：harness 恢复 `eh_probe_exec=7`（直接实例化探针调 `f()`）与 ok 行 `eh_probe=`；
+  `verify-wechat-minigame.ps1` 恢复 `eh_probe_exec=7` / `eh_probe=accepted` 两条正对照，
+  并把 `pkg\eh-probe.wasm` 列入必需文件；devtools q5 恢复读取 `wasm.ehProbe`。
+- **实测**：`package.ps1 -Platform wechat-minigame -SkipBuild -WechatAppId wx7091f1cf872130bb -SelfTest`
+  → `PACKAGE_EXIT=0`；`wechat_minigame_package_ok files=12 … tag_polyfill_probe=rejected eh_probe=accepted`；
+  最终 `pkg/eh-probe.wasm` 53 B、`pkg/game_web.js` 与 `pack/` 同在。
+- **回滚档**：再按下一条 2026-10-17 的退役条目执行（删探针写入/接线/断言，保留本地 tag + legacy EH）。
+
+## Unreleased — 退役微信小游戏 EH 真机探针：`eh-probe.wasm` 不再随包，`eh_probe` 读数退场（已于 2026-10-18 恢复，见顶部）
+
+题面是「现在把整条探针链路退役吧」。上一批（2026-10-03）为解决"剥掉 tag 导入后，引擎还认不认本地
+tag + legacy EH"加了一条随包的 53 字节隔离探针；本次把**探针本身**、发布期写入、适配层诊断字段、
+harness/verify 断言与开发者工具 q5 一并删掉，**产物形态不变**。
+
+- **源码**：`wasm-bridge.js` 删 `probeEHAcceptance` / `DEFAULT_EH_PROBE_PATH` / `PROBE_TIMEOUT_MS`
+  与 `loadWasmCore` 里的并发调用及 `ehProbePath`/`onEhProbe` 选项；`wechat-adapter.js` 删
+  `EH_PROBE_PATH`、`ehProbeReadout`、`loadWasmCore` 接线与 `__RUSTLUA_DIAG().wasm.ehProbe`。
+- **发布**：`package.ps1` 微信分支不再写 `pkg/eh-probe.wasm`（那 53 字节的十六进制常量只留在历史
+  记录里）。下一次发布产物主包少 1 个文件、53 字节；当时的 `pkg/game_web.js` 与
+  `pack/game_web_bg.wasm` 位置不变（胶水随后在下一节挪到 launcher 根）。
+  `verify-wechat-minigame.ps1` 的静态段新增反向守卫：产物里仍有 `pkg\eh-probe.wasm` 就直接
+  失败（只删源码不重打包会在门口被拦下，而不是留着一份没人消费的死文件）。
+- **门禁**：`wechat-minigame-harness.js` 删 `eh_probe_exec=7` 非空转检查、假 `WXWebAssembly.compile`
+  复刻与 ok 行里的 `eh_probe=` 字段；`verify-wechat-minigame.ps1` 删 1a3 之后追加的 EH 两段断言与
+  `package_ok` 的 `eh_probe=`，tag polyfill 探针（`polyfill_tag_probe`/`real_tag_probe`）原样保留。
+  `scripts/dev/wechat-devtools-probe.js` 的 q5 改报 `retired`，verdict 不再要求 EH 读数。
+- **文档**：`plugins/wechat-minigame/README.md`、`docs/52`、`examples/game_jhyt/docs/70` 的
+  `ehProbe`/Q-21 口径同步改写；历史 CHANGELOG 条目与 `tasks/done` 的读数作为留档不动。
+- **为什么安全**：探针本来与主 wasm 实例化并发、3 秒超时、永不 reject，失败也只写诊断；删掉它不影响
+  启动。上一轮删文件实验里主 wasm 仍 `wasm=ok:ok:path-instantiate`。代价是 `wasm.ehProbe` 与
+  `eh_probe=` 彻底消失，真机/开发者工具不能再从包里读"引擎认不认 EH"。
+- **诚实边界**：本次**没有**新增设备裁决；退役不等于已证明微信/iOS 引擎支持 EH。产物仍保留本地
+  tag + legacy `try/catch`（Rust `catch_unwind` / Lua `pcall` 的载体），将来若换基础库/引擎或要重新
+  裁决，按下面回滚档恢复探针再测。
+- **回滚档**：恢复 `package.ps1` 的 53 字节写入（WAT/hex 见下方 2026-10-03 条目）、`wasm-bridge.js`
+  的 `probeEHAcceptance` 与 `loadWasmCore` 接线、`wechat-adapter.js` 的 `EH_PROBE_PATH`/诊断字段、
+  harness 的 compile 复刻与 `eh_probe_exec`、verify 1a3 的断言与 `package_ok` 字段、devtools q5，
+  并删掉 verify 静态段的 `pkg\eh-probe.wasm` 反向守卫；文档按上述反向改回。
+
+## Unreleased — 微信启动图的路径方言：`resolveSrc` 接回启动图，slash 宿主不再丢 splash
+
+发布自测在 `--wx-path-style slash` 档红在 `branding/splash.png` 读取失败：`startup-branding.js` 一直有
+`options.resolveSrc` 契约（把逻辑路径交给适配层解析成宿主认的形式），但 `wechat-adapter.js` 的
+`showStartupBranding({...})` 没传它，于是裸路径直接进 `Image.src`——只认前导斜杠的宿主必 onerror。
+补法：适配层新增 `resolveHostSrc`（与文本读取同一张策略表做 `accessSync` 存在性探测、顺带学出 main
+方言），作为 `resolveSrc` 传入；不读 794 KB 图片，只问路径存在性。实测 `--wx-path-style slash`
+从 exit 1 变 exit 0，`read_strategies=main:leading-slash/pack:root-relative`。
+回滚档：删 `resolveHostSrc` 与 `showStartupBranding` 里的 `resolveSrc:` 一行。
+
+## Unreleased — 宿主自带 window 时 Lua 桥不再丢：桥与 HostApi 走 `setWindowFlag`
+
+发布自测的 `--host-document stub --host-window separate` 档红在 `宿主直启缺少 lua_execute_main`：
+`__RUSTLUA_LUA_BRIDGE` / `__RUSTLUA_HOST_API` 原先只写 bare `window`，而 `hostDirectBoot` 读
+`globalThis`；宿主 window 与 globalThis 不是同一个对象时，两边看不到同一份桥。改成 `setWindowFlag`
+（既有函数：windowTarget 与 globalThis 两处都写），实测该档从 exit 1 变 exit 0（`宿主直启完成`）。
+回滚：两处 `setWindowFlag(...)` 改回 `window.__RUSTLUA_*`。
+
+## Unreleased — 微信胶水挪到 launcher 根：删掉只剩一个文件的 `pkg/`，`require('./game_web.js')`
+
+题面是「`pkg/game_web.js` 还需要吗？能不能把 `pkg/` 删掉、把胶水挪进 `pack/`」。结论是胶水必需、
+不能进分包（分包是异步 `loadSubpackage`，同步 `require` 等不了），但可以从 `pkg/` 挪到
+**launcher 根**：主包字节数不变，只是目录更扁平，subpackage 形态下不再出现只有一个文件的 `pkg/`。
+
+- **发布**：`package.ps1` 在 wasm 内核搬运之后把 `pkg/game_web.js` 移到 `$distRoot/game_web.js`；
+  `pkg/` 为空（subpackage 形态）就删掉。full / remote 形态内核仍留在 `pkg/`，目录保留。
+  胶水仍在主包，`pack/` 仍只放内核与资源。
+- **运行时**：`wasm-bridge.js` 的 `require('./pkg/game_web.js')` 改成 `require('./game_web.js')`；
+  适配层注释、README、docs/52、docs/51、docs/34、跑测用例同步改成新布局。
+- **验收**：`verify-wechat-minigame.ps1` 的必需文件从 `pkg\game_web.js` 改为 `game_web.js`，并新增
+  反向守卫（仍有 `pkg\game_web.js` 就失败）；`scripts/lib/bundle-discovery.ps1`、harness 注释、
+  `scripts/test/wasm-bridge-fallback-test.js` 的 fake require 同步。
+- **实测**：`package.ps1 -Platform wechat-minigame -SkipBuild -WechatAppId wx7091f1cf872130bb -SelfTest`
+  → `PACKAGE_EXIT=0`；`wechat_minigame_package_ok files=11`，`path_styles=root,slash,sub-root,no-utf8`，
+  `tag_polyfill_probe=rejected`；最终 `launcher/game_web.js` 存在、`launcher/pkg/` 不存在，
+  `launcher/pack/game_web_bg.wasm` 仍是内核。
+- **回滚档**：把 `game_web.js` 移回 `pkg/`（`package.ps1` 的 `Move-Item` 反向）、
+  `wasm-bridge.js` 的 require 改回 `./pkg/game_web.js`，并还原 verify/bundle-discovery/文档里的路径。
+
+## Unreleased — 启动即显示启动图：GPU 就绪前的那 ~2.5 s 不再是白屏
+
+题面是用户口径「game.exe 启动时会显示等待空白屏，应该启动立马显示 engine_splash.png」＋一张只有标题栏、
+客户区全白的窗口截图。定位结论与直觉不同：**启动图这条链路本身是好的**（`[splash] presented before
+project initialization` 照常打出来），白的是**它之前的那段空窗**——窗口在 70 ms 就创建了，而首帧要等到
+~2.5 s（临时打点读数，已撤：`Instance::new` 1.88 s、adapter 0.28 s、surface configure 0.29 s、七条管线
+合计 10 ms）。这段时间主线程阻塞在 `Renderer::new` 里，没有消息泵、没有任何东西可画，于是用户看到一片纯白。
+
+改法是**把启动图提前到 GPU 之前**：新增 `engine/crates/game/src/boot_splash.rs`——窗口创建后立刻建一个覆盖
+客户区的 GDI 子窗口，用 `CreateDIBSection` + `WM_PAINT` 把**同一张** `RgbaImage` 同步画进去（子窗口自带
+`WM_PAINT`，不依赖消息泵就能被 DWM 合成，正好覆盖 `Renderer::new` 阻塞的这 2.5 s）；GPU 侧 `splash.rs`
+首帧 `Presented` 之后 `boot_splash = None` 交班。三层口径刻意对齐：同一张图（`startup_image` 只解码一次，
+同一份数据先喂 GDI 再喂纹理上传）、同一套 contain 几何（`boot_splash::contain` 对 `splash::quad` 的
+`min(w/iw, h/ih)` + 居中）、同一个清屏底色（`DEFAULT_3D_CLEAR` 的 sRGB 字节 `56,75,97`）⇒ 交接时画面
+不跳、也不会露出留边。非 Windows 走 no-op（与没有这一层逐字节一致）。
+
+实测：日志 `[boot] splash painted before GPU init: window=1280x720 image=1280x720 elapsed_ms=7.2`
+（窗口创建后 13.6 ms）；同一轮 1.0 s / 2.4 s 的整屏截图都是启动图，3.6 s 是标题画面（说明 GDI 层已正确
+撤下、没有盖住运行期画面）；发布包 `examples/game_jhyt/builds/pc/game.exe` 同一条读数（5.7 ms）。
+门禁：`cargo test -p game --bin game` **21 passed**（新增 2 条：`contain` 与 GPU 侧同几何且退化输入不越界、
+`bgra_over` 的通道交换与 alpha 合成）；`cargo clippy -p game --bin game` 无新 lint；`cargo fmt -p game --
+--check` 干净（`bundle_boot.rs` 那条 diff 是别人的在制品，本笔没碰）。依赖只加 `windows-sys 0.59`
+（winit 0.30 已经在用的那一份，不引入新依赖树）。
+
+**操作账（本条必须先读）**：`cargo test -p game` 的默认形态会**并行编译 4 个 example 大二进制**
+（`jhyt_m20_audio` / `m20_gamepad` / `m31_pc_release` / `m72_pixel_font`），在 16 GB 的机器上把系统打爆过
+一次；本次门禁一律用 `--bin game`（只建单测宿主）＋ `-j 1` ＋ 6 GB Job Object 内存上限，实测峰值
+2.9 GB。回滚档：删 `boot_splash.rs`、`main.rs` 的 `mod boot_splash;`、`game_app.rs` 四处（字段、`resumed`
+里的解码与 `show`、`redraw` 的交班、上传失败时的撤下）与 `Cargo.toml` 的 target 依赖即可。
+未测与不碰：真机之外的平台没跑（非 Windows 是编译期的 no-op 分支）；窗口创建到 GDI 首笔之间有 ~14 ms
+（小于一帧），没有为它再加"先隐藏窗口再显示"的开关。
+
+## Unreleased — 浏览器控制台刷屏：每帧日志默认不发（一次加载 **654 → 49** 条），`?rustlua-debug=1` 仍可看全量
+
+题面是用户口径「这个日志重复打了好多条」＋一张控制台截图（一片 `[render] 2D texture uploaded from memory`）。
+先量再改，结论与直觉不同：**贴图那几条根本不是重复的**（每条一次，截图里那一片是 DevTools 跨刷新保留的历史），
+真正的噪声是**每帧三到四条**。一次加载的实测分布（CDP 数一遍）：
+
+| 条数 | 行 | 性质 |
+|---|---|---|
+| 236 | `[gpu] presented frames=…` | 每帧，**直接 console 调用**（`set_status`，不走 tracing） |
+| 152 | `[render] batch items=…` | 每帧，tracing |
+| 152 | `[render] mesh vertices=…` | 每帧，tracing |
+| 63 | `[simulation] fixed update returned: …` | 每步，tracing |
+| 51 | 其余（贴图上传、启动诊断…） | 一次性 |
+
+改法：新增 `game_web::frame_log_filter`（纯字符串判据，**原生也编**，所以桌面单测能守住它）
+＋ `wasm_log` 在**拼 target 前缀之前**按原始 message 挡掉每帧那几条；`set_status` 里每帧那条
+（它不走 tracing，过滤器管不到）单独判 `state.starts_with("presented")`——
+**属性照写**（门要读 `data-rustlua-gpu="presented…"`），只掐掉控制台那行。
+开关接到页面上已有的 `?rustlua-debug=1`：`index.html` 在 `init()` 之后、`start()` 之前调
+`wasmExports.set_frame_logs(!!window.__RUSTLUA_DEBUG)`（wasm 导出由 `lib.rs` 的
+`pub use wasm_log::set_frame_logs` 提供）。**实测**：默认一次加载 654 → **49** 条
+（剩下的是启动诊断 + 7 条字体预热分块），`?rustlua-debug=1` 回到 **654**；
+门复跑 `verify-webgl-bundle.ps1 -Port 8163 -Gpu2d` **EXIT=0**（`webgl_bundle_ok wasm=5347.5KB`，
+`data-rustlua-gpu` 判据照旧）；`cargo test -p game_web --lib` **40 passed**（新增 2 条）。
+
+**这段的现场教训（值得单独记）**：过滤器我写错了**两次**，两次都是"照控制台抄"。
+第一次把前缀抄成控制台那一行（`[gpu] presented frames=`），第二次又以为"同一族的 target 才是判据"
+（给 `mesh vertices=` 配 `target: "render"`）。真相只有插桩能给出——临时加 `log-probe` feature，
+把 `wasm_log` 收到的真实 `target` 与 message 打出来：
+
+```
+target=game   msg=presented frames=…              ← 不带 [gpu]（那是拼 target 补的）
+target=render msg=[render] mesh vertices=…        ← 自带 [render]
+target=game   msg=[simulation] fixed update…      ← 自带 [simulation]
+target=game   msg=设备没有存储缓冲（…）            ← target 是**短名**，不是模块路径
+```
+
+即"同一族日志里两种风格并存"，而且 `target` 是短名。插桩用完已删（`Cargo.toml` 的 feature 同步移除），
+判据与用例改按实测逐条钉住，插桩那三条读数写进 `frame_log_filter` 的模块头当留痕。
+**未做**：真机（手机）复测由用户跑；`[render] font prewarm` 的 7 条没合并（它是一次性诊断，
+7 条不算噪声）。
+
+## Unreleased — `test-webgl.bat` 能报出手机该开的地址了（并修掉它"看不见真产物"的两处旧账）
+
+题面是用户口径「同路由访问本地服务也在 `examples/game_jhyt/builds/webgl/test-webgl.bat` 增加打印输出」。
+改的是**模板** [plugins/webgl/test-webgl.bat](plugins/webgl/test-webgl.bat)（`package.ps1` 每次发布拷进产物目录，
+手改产物里那份下次发布就没了）＋它调用的 [scripts/test-bundle.ps1](scripts/test-bundle.ps1)。
+
+* **新增 `[host]` 第二个参数**（默认 `127.0.0.1`）：`test-webgl.bat 8137 0.0.0.0` 才会绑全网卡；
+  `test-bundle.ps1` 侧对应新增 `-BindHost`（名字刻意不叫 `-Host`：`$Host` 是 PowerShell 自动变量），
+  并把 `-BindHost` 透给 `serve-static.js` 与 `pack-server.js` 的 host 位。
+* **报出局域网地址**：新增 `Get-LanUrls`（`Get-NetIPAddress` 优先、`ipconfig` 兜底），
+  在 webgl 与微信瘦首包两条服务路径上都打一行
+  `==> 同一局域网的手机可用：http://192.168.3.27:8171/（同一 WiFi；防火墙放行 TCP 8171）`；
+  **绑回环时不打那行**（打出来只会误导），改打一句"要真机就用 `-BindHost 0.0.0.0` 再跑一次"。
+  实测（8171/0.0.0.0）：`==> 同一局域网的手机可用：http://192.168.3.27:8171/` ＋
+  `serve-static.js` 自己那行 `LAN: http://192.168.3.27:8171/`。
+* **两处旧账**：① 判定"这是不是一个产物目录"的必需文件表里还列着 `web-runtime.js`——B8 删掉旧 JS 世界时
+  它一并没了，于是**每个真产物都被判成"不是产物目录"**，脚本静默掉进"自动发现产物"分支（拿到的可能是
+  另一个工程的包）；现在按 `index.html` + `pkg/game_web.js` + `pkg/game_web_bg.wasm` 判。
+  ② `scripts/test-bundle.ps1` **丢了 UTF-8 BOM**（PS 5.1 按 ANSI 解析中文注释 ⇒ 一次 20+ 条
+  "Unexpected token"）——这正是仓库 `docs/34` 那条"编辑 `.ps1` 后确认 BOM 还在"的纪律，已补回并
+  `Parser::ParseFile` 错误数 0。**本笔第二次踩同一个坑**（第一次是 `package.ps1`），
+  说明"编辑器写文件会掉 BOM"这件事得当成硬约束而不是偶发。
+* 门：`test-webgl.bat 8171 0.0.0.0` 端到端跑通（`webgl_bundle_ok wasm=5347.2KB` + 起服务 + 打出 LAN 行）、
+  `check-docs.ps1` **DOCS_EXIT=0**。
+
+## Unreleased — **撤回**"按依赖索引收窄首屏预载"：被挡在预载之外的 560 个文件（全部音频 / 四季地表图集 / 6 张场景）在浏览器上静默失效
+
+题面是用户给的一张真机截图：**"现在的 web 包音频不播了，tilemap 资源白块"**，控制台两条
+`audio asset not found in resource table: assets/audio/bgm_title.{mp3,wav,ogg}` 与
+`async asset load failed; fallback used path=assets/art/tilesets/manor/manor_ground_spring.png`。
+两条说的是同一件事：**这些资源不在预载表里**（`start()` 只把选中集合塞进同步 vfs）。
+
+复刻 `start()` 的选择逻辑（`.temp/closure-diff.mjs`，与运行期同一份读数）实测：
+
+```
+manifest=1372 selected=812 missing=560 fallback=none
+missing by kind: {"art":536,"audio":16,"scene":6,"font":1,"dependencies.json":1}
+  assets/art/tilesets/manor/manor_ground_spring.png  <- []    ← 没有任何边指向它
+  assets/audio/bgm_title.mp3                        <- []
+```
+
+**这是我自己上一轮引入的回归**：**那笔把"静态闭包"当成预载集合来用**。真因不是扫描器，
+而是**前提错了**——这些资源本来就**不可静态证明**：音频由宿主**按名**取回（`audio.sfx("ui_click")`
+从不经同步 vfs，`assetc` 的扫描器为此**刻意不产边**）、四季地表名是
+`string.format(pattern, season)` **拼**出来的、场景是 `scene.load(name)` 的**动态字符串**。
+静态图能证明"这些一定读"，**证明不了"只读这些"**；收窄之后运行期是**失败即降级**
+（音频不播、图变白块、场景进不去），脚本层一条错都不报——症状落在最难归因的地方。
+
+修法（`crates/game_web/src/resource_index.rs`）：`select_resources` **永远返回整个 manifest**，
+`full_fallback` 自报为真、`fallback_reason` 说清"静态图只证明了几个 / 占了全量的几分之几"；
+遍历仍然跑（不短路），它的读数就是"闭包为什么不能当预载集合用"的可复现证据。同处把
+`start()` 那条诊断从 `console.warn("full preload fallback: …")` 改成 `console.log`：全量预载是
+**正确行为**，用"fallback"这种措辞打 warn 会让每个读者（包括我自己）以为出了故障——上一轮的
+误判正是被这个措辞带偏的。测试：`preload_is_always_the_whole_manifest_even_when_the_static_graph_is_smaller`
+（把现场钉成用例：静态可达 3 项、包里 6 项，含按名取回的音频与拼名贴图）替换掉那条把"闭包"当
+期望的旧用例；`opaque_or_missing_reachable_resource_also_preloads_everything` 保留并断言原因文案。
+`cargo test -p game_web --lib` **38 passed**。
+
+**保留下来的**（与本次回归无关、且确实有用）：`assetc` 的裸 `"assets/"` 前缀修复（索引
+131,895 → **78,592 B**、`season_art.lua` 的边 1,207 → 1 条，有单测）——它修的是**依赖图本身错**，
+不是预载集合；webgl 侧 `--drop-undeclared-fonts` 与 17.7 MB 字体下架；预载限并发；测试服务
+gzip + ETag。**净结果**：首屏仍是全量预载，但体积从 22.8 MB 降到 **5.7 MB 落盘 / 约 3.3 MB 过网**
+（gzip 后），并发 8 路。**读数**：重建后 `assetc_package_ok files=1372 … drop_undeclared_fonts=true`、
+`webgl_package_ok files=8`、`wasm_host_ok bytes=5475455 exports=157`；运行期一行读数把它钉住：
+`[resources] 静态闭包只覆盖 812 / 1372 项 … ⇒ 预载全量` + `selected=1372 manifest=1372 full_fallback=true`
++ `preload_ms=1930.1 preload_bytes=5652368 concurrency=8`（修前是 22,811,051 B / 13,679.9 ms）。
+两条路都在真产物上复验过：鼠标点 BtnStart ⇒ `alive 18 → 50`、`world=JianghuPlayer@624,112`；
+触摸同一坐标 ⇒ 同上，且逐个屏上按钮点过去 `alive 50 → 86`（背包面板打开）、`script_errors=0`，
+控制台**不再有** `audio asset not found in resource table` 与 `fallback used path=assets/art/tilesets/…`。
+**一条与代码无关、但会让人误判"点了没反应"的现场**：`package.ps1` 在**运行时交换**发布根
+（`assetc` 之后仍要 wasm-bindgen/wasm-opt/拷贝，最后原子交换），所以**构建立刻期间打开的页面
+会拿到半新半旧的产物**（实测这次用户就撞上了：构建还没落地时两条路都点不动）。复验前先看
+构建是否退出。**未做**：真机（手机）复测
+由用户跑；`art/` 里 536 项"只有按名取回、无静态边"的清单没有逐类建索引（那要求扫描器覆盖
+`string.format` 拼名与数据表取名，属另一笔）。
+
+## Unreleased — 手机浏览器**触屏完全没反应**：第一根手指没被当成主指针（`ui/virtual_pad.lua` 的屏上控件读的是 `input.mouse_just_pressed("left")`）
+
+题面是用户口径「web 端不支持鼠标点击（PC 浏览器）或者触屏点击（手机浏览器）」。先用 CDP 在真产物上把
+**两条路分开量**（`.temp/pointer-probe{2,3,4,5}.mjs`，真实 `Input.dispatchMouseEvent` /
+`Input.dispatchTouchEvent` + `Emulation.setTouchEmulationEnabled`）：
+
+- **鼠标那条路本来就是好的**：裸 URL 冷启动点 BtnStart(640,412) ⇒ `alive 18 → 50`、`world=JianghuPlayer@624,112`；
+  按住虚拟摇杆 (175,585) ⇒ 主角 `624 → 1119`（键盘/指针两条采集路都通）。
+- **触摸那条路是断的**：同一套坐标用真实触摸事件点 BtnStart ⇒ `alive` 停在 18、`world=no-player`；
+  摇杆也不动。读数上 `pointer_count=1`（手指**到了**宿主）但 `mouse_held=0`——**事件进来了，没人把它读成"按下"**。
+
+真因在 `game_web` 的输入生产者：触屏只走**每指通路**（`pointer_down` 标按下点，`take_frame` 写多指块），
+按设计它**不碰 `mouse_*` 位**（"触摸不是鼠标键"）。而本机 `scripts/ui/virtual_pad.lua` 的屏上控件
+（摇杆、交互/攻击/背包/任务/暂停五键、招式卡、面板动作条、关闭键）命中测试读的正是
+`input.mouse_just_pressed("left")` / `mouse_just_released("left")`（`M.update()`）——于是触屏上
+**每一个屏上按钮都收不到按下边沿**，鼠标能用只是因为鼠标事件会设这些位。
+
+修法（`crates/game_web/src/frame_input.rs`）：**第一根按下的手指领走"主指针"**——它同时写入
+`cursor` / `press_cursor` 与左键按下边沿（新增私有 `claim_mouse_left_for_existing_pointer`：与 `mouse_down`
+同口径但**不再登记一根指针**，否则同一根手指会被 `pointer_count` 数成两根）；它抬起时一并松开左键并归还归属；
+非主指仍只走多指通路（先抬它不会把移动一起断掉）；`release_all`（焦点/可见性丢失）也归还归属，
+否则切回前台后第一根手指会被当成"已经有人领"、那一整次触摸都没有边沿。新增单测
+`primary_pointer_drives_the_mouse_button_edges`（按下给边沿 / 第二指不重复给边沿 / 抬非主指不动左键 /
+松手后能重新领 / `release_all` 后能重新领），并把 `two_pointers_keep_their_own_press_points` 的
+`pointer_count` 期望按新语义收紧（两根手指就是两个槽）。
+
+**真机侧读数**（`pointer-probe4/5`，重建后的产物、触摸模拟）：点开始 ⇒ `alive 18 → 50`、`world=JianghuPlayer@624,112`；
+按住摇杆 ⇒ `624 → 1028` 且 `mouse_held=1`；逐键点一遍 ⇒ **背包键打开面板 `alive 50 → 86`**、
+`script_errors=0`。门：`package.ps1 -ProjectRoot examples/game_jhyt -Platform webgl -Gpu2d` ⇒
+`webgl_package_ok files=8`、`wasm_host_ok bytes=5475626 exports=157`；
+`verify-webgl-bundle.ps1 -Port 8158 -Gpu2d` **EXIT=0**（`webgl_bundle_ok wasm=5347.3KB`、
+`webgl_bundle_gpu_fit_ok viewport=750x404 fit=718x404 ratio=1.7772`、`webgl_bundle_engine_state_ok … pointer_count=0`）；
+`cargo test -p game_web --lib` **38 passed**（新增 1 条、收紧 1 条）。
+**没改的**：鼠标那条路（它已经是对的）、`ui_click_dispatch` 的命中口径（它读实时光标
+`cursor_position()`，主指针就是那根手指）。**未做**：真机（手机）复测由用户跑；
+`ui/virtual_pad.lua` 里"桌面 web 也画触屏控件"这条平台门没动（PC 浏览器上键鼠党会看到摇杆与五键）。
+
+## Unreleased — 真机（手机浏览器）首屏几十秒的闪屏：**扫描器把裸 `"assets/"` 当成目录引用** ⇒ 依赖闭包≈全包 ＋ 串行 1,300+ 次 fetch，以及一个 17.7 MB 已停用字体随包进 webgl
+
+题面是用户口径「手机和本机同一 WiFi，浏览器打开 `http://192.168.3.27:8765/` 卡在闪屏、很久才进开始界面」。查下来**不是手机兼容问题**：无头 Edge 逐字复现同一条 URL 读到 `[resources] selected=1366 manifest=1373 full_fallback=false` + `preload_ms=13679.9 preload_bytes=22811051`（发布包 1,373 项里 1,366 项都在首屏下载）。三个真因，按收益排序：
+
+1. **`assetc` 的目录前缀扫描把裸 `"assets/"` 当目录引用**：`scripts/data/season_art.lua:114` 有一句校验用的
+   `string.find(entry.pattern, "assets/", 1, true)`，`asset_prefix_refs` 只要求 `starts_with("assets/") && ends_with('/')`，
+   于是 `expand_asset_prefix` 把它展开成**整棵 assets 树**——实测该文件的边 1 条涨到 **1,207 条**（含那份 17.7 MB 字体），
+   闭包因此永远等于全包，运行期那条"只预载首屏依赖"的路走不到。修法：目录引用必须下钻至少一级
+   （`literal.trim_end_matches('/').len() > "assets".len()`），新增单测 `package_dependency_index_ignores_bare_assets_prefix_literal`
+   同时钉住"裸前缀不产边"与"`assets/art/tilesets/` 照旧展开"。实测索引 131,895 → **78,592 B**、该文件的边 1,207 → **1 条**。
+2. **`game_web` 的资源预载是串行 `for … .await`**：1,300+ 个小文件、桌面平均每请求 ~10 ms ⇒ 13.7 s，
+   瓶颈是**请求个数**不是字节数（22.8 MB / 13.7 s）。浏览器侧 fetch 本来就是并发的，串行是自己排的队。
+   改成限并发 `PRELOAD_CONCURRENCY = 8`（`FuturesUnordered`，新增 `futures-util` 依赖），
+   纯函数 `preload_launch_batch` 把调度抽出来给桌面单测（`preload_launch_batch_covers_every_index_once_within_the_in_flight_limit`：
+   每个下标恰好发起一次、在途数不越界、`limit=1` 时与旧串行链同序）。读数行补 `concurrency=` 一项。
+3. **`--drop-undeclared-fonts` 只给微信开，且剔除时机在依赖索引之前**：`jhyt` 的 `NotoSansSC-VF.ttf`（17.7 MB，
+   台账里写着"已停用"，`project.toml` 没声明、交付物无引用）随 webgl 包一起发。浏览器没有本地文件系统，
+   整个 `pack/` 都要经网络下来——注释里"PC 不开（桌面无体积门）"的理由在 webgl 这一档不成立。修法：
+   `package.ps1` 的 `--drop-undeclared-fonts` 覆盖 `webgl`。**同时**把剔除挪到 `write_dependency_index` **之前**
+   （原本只保证 manifest 与磁盘自洽，索引仍会留下指向已删字体的残边 ⇒ 运行期判"可达资源不在清单里"后
+   **保守退回全量预载**，省下的字节又白花）——这一条在 `assetc` 的 `package()` 里加了顺序说明并实测验证。
+
+**真机侧另外两件只属于测试服务的事**（`scripts/serve-static.js`，不改产物、不改运行期契约）：文本类资产 gzip
+（`.wasm` 5,475,487 → **2,192,775 B**、`.lua` 13,641 → 3,356 B、`index.html` 14,925 → 7,211 B）＋资产 ETag/短缓存
+（入口文件仍 `no-store`，"改产物→刷新"必须看得到新字节）；收尾与每 250 次打印 `gzip responses=` 读数
+（服务常被强杀，只写在退出钩子里等于读不到）。
+
+**读数**（同一台机、同一份发布包，`?-free` 裸 URL、冷 profile 无头 Edge，改动前/后）：
+`preload_bytes` 22,811,051 → **2,194,274**、`selected` 1,366 → **812**（`full_fallback=false`）、
+`preload_ms` 13,679.9 → **1,139.9**（12×）、`pack/` 23.0 → **5.47 MB**（1,373 文件）、
+`dependencies.json` 131,895 → **78,592 B**；上述每次读数都伴随 `data-rustlua-boot="ok"` 与
+`data-rustlua-gpu="textures_done=…"`（画面正常）。门：`package.ps1 -ProjectRoot examples/game_jhyt -Platform webgl -Gpu2d`
+⇒ `assetc_package_ok files=1372 … drop_undeclared_fonts=true` + `strip_lua_comments … saved=583KB` +
+`webgl_package_ok files=8`；`verify-webgl-bundle.ps1 -Port 8157 -Gpu2d` **EXIT=0**
+（`frame owner ok: engine GPU host`、`webgl_bundle_gpu_fit_ok viewport=750x404 fit=718x404 ratio=1.7772`、`webgl_bundle_ok wasm=5347.2KB`）；
+`cargo test -p assetc --lib` 24 passed（新增 1 条）、`cargo test -p game_web --lib` 37 passed（新增 1 条）、
+`cargo check -p game_web --target wasm32-unknown-unknown --features gpu2d` exit 0、`check-docs.ps1` **DOCS_EXIT=0**（`ps1_bom_ok=36 ps1_parse_ok=36`）。
+**踩到并把现场纪律执行了一遍**：本笔用编辑工具改 `scripts/package.ps1` 后文件变成 UTF-8 无 BOM，PS 5.1 按 ANSI 解析
+⇒ 报一串"Unexpected token"（正是 CHANGELOG 上一节记的那条纪律），按 `.gitattributes` 的 `scripts/*.ps1` 约定补回
+UTF-8 BOM 后 `Parser::ParseFile` 错误数 0。
+
+**顺手把 17.7 MB 从工程资产树下架**（用户口径：换成引擎副本 + 下架）：`examples/game_jhyt/assets/fonts/NotoSansSC-VF.ttf`
+与 `engine/crates/editor/fonts/NotoSansSC-VF.ttf` **是同一个 blob**（17,773,244 B / 同一 SHA-256），而躺在资产树里就会
+被 assetc 收进每个发布包（这份的"死重"身份就是这么来的）。本笔删掉资产树那份，`jhyt_m72_pixel_font` ② 的
+反面对照改读引擎副本（`SMOOTH_FONT` 相对 `CARGO_MANIFEST_DIR`，与同一文件里的 `FULL_FONT` 同基准）——
+读数逐字不变（`Noto 17773244B → design_px=None`，`jhyt_m72_pixel_font_ok`）；`tools/cjk_text.py` 的 `FONT_PATH`
+改指引擎副本（同一 blob，产出的字形不变）；`ASSET_REGISTER.tsv`、`examples/game_jhyt/docs/58` §11 表与 `docs/35`、
+`docs/74` 的字体行都改成"已下架（唯一一份在引擎侧）"，并保留仍未闭合的那一条：OFL 条款 2 要求随附许可证文本。
+两处顺带的旧账：`jhyt_m20_audio`/`jhyt_m20_gamepad` 写的临时 `project.toml` 模板还声明着 NotoSans（下架后
+那两个示例会因缺字体而失败），改成工程的真实声明（FusionPixel + `sdf`）；`jhyt_m31_pc_release` 的必需条目表
+把 `pack/assets/fonts/NotoSansSC-VF.ttf` 硬编码成按 `project.toml` 的 `font` 键**现算**（换字体不必再改门，
+且旧写法在"包里只剩子集字体"的今天只是靠上一代产物里的残留文件才绿）。**另外修掉一条与产物无关的既有红**：
+同一门第 ③ 节把 `copy_project_plane` 复制来的**工程根** `project.toml`（不带 `release = true`）当发布包用，
+`is_release_pack` 判 false ⇒ "首次运行必须播种"必然失败；现在显式补上发布标记（复刻真实包形态），
+`jhyt_m31_pc_release_ok`（六节全绿，`release_entries=11`）。
+
+**未做/不在本笔**：真机复测（手机端由用户跑；本笔只做到"同机冷 profile 无头复现 + 门全绿"）。
+
+## Unreleased — M73（B8 删旧 JS 世界）**收口 + 随批归档**：门按"被测物已删"逐条重划、残留修净、四条 WebGL 用例与微信全门实跑复绿
+
+题面是用户问「现在 `tasks/plan` 的 M73 是不是可以归档了」。查完的结论是**不能按验收通过归档**：`47a9304` 那笔"B8 在途工作整笔入库"（107 路径，删掉旧世界 8 个文件）自己写着**"不跑门，直接提"**，而 M73-00 台账全文没有一处提 B8；用户随后裁定「**先收口再归档**」，本笔就是那次收口。**产品码**：`plugins/webgl/index.html` 摘掉已删文件的 `<script src="./web-runtime.js">`（发布页此前每次多一个 404，产物里 index.html 的全部 `src/href` 中唯一缺失项就是它）＋把"谁在画"改成"唯一绘制者是引擎宿主"、`rustlua-js-host=*` 降级为留痕告警；`plugins/wechat-minigame/startup-branding.js` 的 splash `src` 改为经适配层解析（新 `options.resolveSrc` → `assetSrcFor`），修掉 `--wx-path-style slash` 档 `branding/splash.png` 直接 onerror；`wechat-adapter.js` 四处——`start()` 先读一次主包清清单再传 `resolveSrc`、`hostDirectBoot` 的桥取值与挂载点同源（`window.__RUSTLUA_LUA_BRIDGE` → globalThis 兜底，修掉宿主 `window !== globalThis` 形态下的"Lua 执行层未就绪"误报）、直启失败文案不再点名已删文件、文件头改成"给引擎宿主与胶水提供宿主 API"；`scripts/package.ps1` 五处 `$packageContents` 去掉 `web-runtime.js`（它会原样写进 `build-info.txt` 的 `contents:` 行）、terser/字体/ECMA 注释按实况改写；`bundle-discovery.ps1` 与 `engine/crates/game_web/Cargo.toml` 的过时注释（后者写着"默认关、已知缺口"，而 `default = ["gpu2d"]` 早已生效）。**门重划**（判据是"被测物消失"而不是放宽）：`verify-wechat-minigame.ps1` 的 1a6–1a11（旧运行时的推进/注入计数与 `export_readout` 载荷协议）、WP7-94 交还往返、6.5 玩法驱动、8 玩法路径四条**整块退休并写明归宿**；剩下的不变量改成"恰好一个 tick 所有者"（旧运行时两个计数恒 0 + 宿主起来时 `host_input_frames>0`）；新增 `-RequireRuntimeHost`（带 GL 的宿主上把"世界在推进/画面在出帧"变成硬要求）；`wechat-minigame-harness.js` 加 `engineHostNoGl` 环境分类（离线假宿主不给 WebGL2 ⇒ 无帧所有者，具名 `env_limited=no-webgl2-in-fake-host`，而不是把"触发条件不存在"报成红）、加**启动期 rAF 驱动**（没有游戏侧帧循环抽队列时开屏图那条 `requestFrame` 永不回、白等 3 秒看门狗）、delay 的"N 帧"改为从 `loadSubpackage` 调用那刻起算（实测下载发起时 preBootTicks 已 105、阈值 6 ⇒ 延迟退化成立即挂上、进度条没窗口可画）、`--no-wasm` 的原因匹配式加上 `lua_execute_main`；`verify-webgl-bundle.ps1` 退休"请求了 JS 宿主却自报 skipped ⇒ 判红"、绘制者判据只剩"引擎 GPU 宿主在"或"显式要求不画"、引擎宿主状态与 L3 契约门在写者缺席时跳过、提示文案不再叫用户去开已退休的开关。**读数**（全部本笔实跑）：WebGL `package.ps1 -SkipBuild` ⇒ `webgl_package_ok files=8`、29,364.2 KB/1,383 项；默认入口门 **exit 0**（`frame owner ok: engine GPU host`、`webgl_bundle_engine_state_ok builtin=False sim=rust(boot ok)`、`webgl_bundle_ok wasm=5343.1KB`）；`-UrlQuery 'rustlua-js-host=1' -ApiContract` **exit 0**（修前 `no_frame_owner`+`engine_state_absent`+`api_contract: unavailable` 三红，现三条 YELLOW 具名跳过）；`-Gpu2d -SimScene manor -SimRoute scene-script -InputScript 'axis0+:30-150' -GpuFrames 240` **exit 0**（`webgl_bundle_rust_input_ok … world=JianghuPlayer@727,112 moved=103,0`——B8 之后玩法证据在浏览器侧）；`-UrlQuery 'rustlua-gpu=0'` **exit 0**（修前在 `engine_state_absent` 上红）。微信 `package.ps1 -SkipBuild` ⇒ `wechat_minigame_package_ok files=14 main_kb=2,837（69.3%）subpackage_kb=9,351 total_kb=12,187.7（59.5%）`；`verify-wechat-minigame.ps1 -ExpectGpuKernel` **VERIFY_EXIT=0**，末行 `runtime=env-limited:no-webgl2 path_styles=root,slash,sub-root,no-utf8 … l3_api_contract=ok(经引擎 Lua，与世界推进无关) subpackage_case=ok,delay,delay-move,never,fail-once,no-game-json`（修前停在第一个用例就 exit 1，逐条往下修才走到绿）。`check-docs.ps1` **DOCS_EXIT=0**（`docs=60 game_docs=46 h1=108 links=420 ps1_bom_ok=36 ps1_parse_ok=36`）。**一处必须说明**：`verify.ps1 -Web` 只跑到 `cargo fmt --all -- --check` 就红，红因是**别包在制品**（`engine/crates/assetc/src/lib.rs`、`game_web/src/frame_input.rs`、`gpu_host.rs` 的工作树改动未格式化；同批还有启动品牌/图标线的 Python→PS1 迁移在途），本笔一字未动那些文件，自己的 Web 段读数以四条用例逐条实跑为准。**归档**：四份 M73（`00`–`03`）已随批移入 `tasks/done/`，各份 §归档记录 写明自己没收口什么，未收口项 7 条（15–21 号）登记在 `examples/game_jhyt/docs/59` §4.5，口径照 M72 先例（**归档 ≠ 收口**）。**没测与本笔不碰**：真机矩阵（刷新率/前后台/音频实听/包体真值/长跑）照旧未做；`Image.src` 接管与"贴图失败警示条"在 B8 之后没有消费者（贴图走引擎宿主按字节上传），这段产品码的去留与新可见通道需单独裁定；两份平台 README 与 adapter 内部约 25 处沿革注释未逐节回写；`M73-01` §7 的 N1–N8"待写门"与 `M73-02` §4 前三条仍未立起来。**回滚档**：`index.html` 那行 `<script>` 与注释段、两个微信插件文件的四处、五个脚本的本笔行段均可按 `tasks/done/M73-00` §B8 第 6 节点名的锚点单独撤，两个发布目录（未跟踪）按撤后源码重打即回到 B8 当时的形态；本笔**不碰**上面点名的别包在制品。
 
 ## Unreleased — 任务：`baselines/` 从 `artifacts/` 挪到仓库根并整体脱管（目录搬迁 + 三份原跟踪文件 `git rm --cached` + 三个读取方接环境变量；零逻辑改动）：题面是用户口径"E:\Codex\RustLua\artifacts\baselines 把这个目录挪出来并修改git忽略"，追问两句定的落法="..\RustLua\baselines"（=仓库根 `baselines/`，仍在树内、只是不再跟踪）与"环境变量覆盖"，提交口径="拆两笔"。旧白名单是 `.gitignore` 里那 8 行 `!/artifacts/baselines/...`（README.md、wp0-3d-stress.committed.json、engine-pub-surface.json 三份放行），本笔换成一条 `/baselines/` 整目录排除，读取方三处统一成 `RUSTLUA_BASELINES_DIR` 优先、缺省 `<仓库根>/baselines`：`scripts/verify.ps1:80-83`（`$baselinesRoot` + 现场建目录，5 处硬路径改走它）、`scripts/engine-pub-surface.mjs:32`、`engine/crates/game/examples/jhyt_m19_soak.rs:378`；注释面另清 6 处（fonts.rs、api_surface_snapshot/mod.rs、两个 wp0 示例、compare-*.ps1）。判别读数：`node scripts/engine-pub-surface.mjs --check` 从新路径读到基线并 `pub_surface_ok items=1562`（这条同时证明路径接线是对的）；`cargo check -p game --example jhyt_m19_soak` Finished exit 0；`cargo fmt --check -p game -p engine -p rustlua-scripting` EXIT=0；三个 ps1 AST errors=0、`node --check` 通过；`scripts/check-docs.ps1` DOCS_EXIT=0 六项 = docs=60 game_docs=46 h1=108 links=420 ps1_bom_ok=33 ps1_parse_ok=33；12 个改动文件行尾 crlf 全数 bare_lf=0/lone_cr=0。新增的一条账（不是缺陷，是脱管的代价）：这目录不入库 ⇒ 新克隆或换机器时它是空的 ⇒ `verify.ps1 -Benchmarks` 的 committed-3D 步与 pub-surface 门都成了**缺文件判红的预期红**，throw 文案已改成可执行的"把上一次确认没回退的 wp0-3d-stress.json 复制成这个文件名"；而 `baselines/README.md` 自己也不入库了 ⇒ 那套可比性裁定在仓库里查不到，本笔把它改写成"本地基线"口径并留在本机；`wp0-3d-stress.committed.json` 文件名里的 committed 成了历史称谓，没重命名。文档面按用户口径"只改活句与命令"清 21 处（根 README.md 目录表新增 `baselines/` 一行、docs/34/36/37/39/43/53/54/56、game_jhyt/docs/54），日期型验收记录按仓库惯例不回填（docs/34 §252、docs/54 §584 与 §717、docs/58 §124、game_jhyt/docs/66 §196、CHANGELOG 与 tasks/done/* 里的旧路径引文）。现场一条并发事实：本笔工作期间 `scripts/verify.ps1`、`docs/34`、`.gitignore`、`CHANGELOG.md` 同时压着 B8 那包的在途 hunk——`.gitignore` 的 `artifacts/` 与 `**/artifacts/logs/` 两行在我改完之后被并发改成 `/artifacts/`，工作树 CHANGELOG 里 `grep -c 接管形态纵向按键` = 0 而 `git show HEAD:CHANGELOG.md` = 1 ⇒ 这三处（含 CHANGELOG）一律按"HEAD 字节 + 只施加自己的 hunk"局部暂存（量具在 `.temp/stage-verify-mine.py`、`.temp/stage-gitignore-docs34.py`），B8 的内容留在下一笔，不由本笔替他们提交或替他们抹回。没测与本笔不碰：① `verify.ps1` 全量门与 `-Benchmarks` 实跑没跑（本笔只改路径取值，不碰判据）；② `cargo clippy`/工作区 test 没跑；③ 空目录那两条"预期红"只按代码路径推断，没在真·干净克隆上验；④ `engine/crates/editor/src/main.rs:3068` 里的 `artifacts/baselines/spatial-migration.txt` 没动（它在临时工程根下拼路径，不指仓库，改它零功能收益）。回滚档：`mv baselines artifacts/baselines` + `.gitignore` 退回那 8 行白名单 + 三处读者退回原硬路径 + 文档 21 处按本条点名的行段撤 + 摘掉本条；`git revert` 本笔即可把三份跟踪状态与目录位置一起复原。
 
@@ -4105,7 +4520,7 @@ wasm-bridge: 核心实例化成功（… 导出 140 项：…）   ← 那一版
     出路是把内核交给分包"（`subpackage` 形态本来就这么做，`remote` 形态没做）。
   - **新开关 `-WasmInSubpackage`**（只对 `wechat-minigame` + `remote` 有意义，**默认关**、行为不变）：
     内核搬进 `pack/` 分包，`game.json` 声明分包并写 `pack/game.js` 入口，体积门按"主包 = 总量 − 分包"
-    算，并给这份包发一份 `mainpack.json`（`layout.subpackage_root=pack`、`entries` 为空）——适配层就是
+    算，并给这份包发一份 `pack.json`（`layout.subpackage_root=pack`、`entries` 为空）——适配层就是
     靠它判断"内核在分包"，entries 为空正是 remote 需要的语义（首屏资源在 CDN）⇒ **本轮对
     `plugins/wechat-minigame/wechat-adapter.js` 零改动**。隔离副本自检同步扩展（内核位置判据 + 两条
     清单断言）。
@@ -4697,7 +5112,7 @@ wasm-bridge: 核心实例化成功（… 导出 140 项：…）   ← 那一版
     `main_kb=394`（占上限 9.6%），harness `--frames 120` 拿到 **`"boot":"running"`、120 帧**；
     断言只剩一条红。顺带修掉烟测工程自己的 `font = ""`（真工程写法是资源路径）。
   - **又一次自证伪**：那条红看着像"首屏闭包漏列资源"。我在 `scripts/` 放临时诊断副本量出被挡的
-    读取，结果是 **`6 x pack/manifest.txt`**——同一个文件读 6 次，而它**就在** `mainpack.json` 的
+    读取，结果是 **`6 x pack/manifest.txt`**——同一个文件读 6 次，而它**就在** `pack.json` 的
     entries 里 ⇒ **闭包是对的**，对不上的是**读的那一侧**（`pack/manifest.txt` 没被路由到
     `mainpack/manifest.txt`）。要修的是适配层的主包路由/读取次序，不是首屏打包器。
   - 另记：`game_web::start_wechat`（`lib.rs:331-365`）只做诊断、不渲染（自述"未接线"）⇒ 微信端画面
@@ -5819,7 +6234,7 @@ wasm-bridge: 核心实例化成功（… 导出 140 项：…）   ← 那一版
   `package.ps1 -Platform wechat-minigame -SkipBuild` + `verify-wechat-minigame.ps1 -SkipRuntime`）。
   分包用例矩阵 `delay / delay-move / never / fail-once` **exit 0**，`ok / no-game-json` 各剩一条与本批
   无关的既有红（见下）。形态判定全部只看产物本身：`bundle-discovery.ps1` / `verify-*.ps1` 的内核
-  路径按 `mainpack.json` 是否存在切换；启动日志实测 `wasm=ok:ok:path-instantiate` +
+  路径按 `pack.json` 是否存在切换；启动日志实测 `wasm=ok:ok:path-instantiate` +
   `核心实例化成功（WXWebAssembly/path-instantiate，路径 pack/game_web_bg.wasm…）`。
 - **本机证明不了的**（写清楚，别当已验证）：单文件 2.5 MB 上传上限（内核现在是 2,520 KB 的**单个
   文件**，只有上传器/工具面板能给数）、真机 `WXWebAssembly.instantiate` 的分包路径语义、重试的
@@ -6270,7 +6685,7 @@ O(n log n) 排序，正好违反它自己写下的那句话。生产调用点两
   遮蔽路径、`docs/37`/`docs/38`/`docs/53` 里的行号引用已失效、`verify -Mvp` 的 MVP 段本来就红在
   示例商店数据上……）逐条登记在计划 §12，**本批不修**。
 
-## Unreleased — 微信真机 EH 探针：把"设备引擎认不认 wasm 异常处理"变成一条机检读数
+## Unreleased — 微信真机 EH 探针：把"设备引擎认不认 wasm 异常处理"变成一条机检读数（已于 2026-10-17 退役，见顶部）
 
 主题：**剥完 tag 导入之后，剩下的决定性问题从"认不认 tag 导入"换成"引擎实没实现 EH"**。
 上一条批次（`786cfa5`）已用 binaryen-133 把两个 externref tag 导入从产物里剥掉（polyfill tag 被

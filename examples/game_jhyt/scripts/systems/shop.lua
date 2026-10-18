@@ -38,7 +38,7 @@ local hints = require("ui.hints")
 local ui_text = require("ui.ui_text")
 -- M32 竖版：面板矩形与行偏移的唯一来源（`ui/layout.lua`）。
 local layout = require("ui.layout")
--- M65/B2 预设化：商店面板已整体搬入 `assets/prefabs/shop.prefab`（对账门 =
+-- M65/B2 预设化：商店面板已整体搬入 `assets/prefabs/ui/shop.prefab`（对账门 =
 -- `jhyt_m65_shop_prefab`，黄金表 116 行钉死迁移前画面；"搬运不改画面"）。
 -- 面板贴图/几何/字号全部来自预设，脚本运行期只写 `prefab.set_text` / `set_rect` /
 -- `set_visible`，不再画动态层（docs/48 换肤贴图随之并入预设，skin 模块不再需要）。
@@ -61,7 +61,7 @@ local SCROLL = "shp:scroll"
 local PANEL = layout.PANEL.shop
 
 -- 预设路径与句柄：每世界 spawn 一次（幂等）；换场景世界重建、登记表清空后自动重铺。
-local PRESET_PATH = "assets/prefabs/shop.prefab"
+local PRESET_PATH = "assets/prefabs/ui/shop.prefab"
 local shop_handle = nil
 
 -- 每日限购计数：shop_id → { item_id → 已购数量 }。随存档持久化。
@@ -718,7 +718,7 @@ end
 
 -- 绘制商店面板：预设实例每世界 spawn 一次（幂等），运行期只改文字/矩形/显隐。
 -- 静态几何（面板矩形、页签/步进/滚动箭头/关闭/印章、文字字号）全部在
--- `assets/prefabs/shop.prefab`；本函数每帧写的内容与迁移前动态层一致
+-- `assets/prefabs/ui/shop.prefab`；本函数每帧写的内容与迁移前动态层一致
 -- （对账 = `jhyt_m65_shop_prefab` 黄金表 A/B 两态，逐值复现，bug-for-bug）。
 function M.render()
   if not ui_state then

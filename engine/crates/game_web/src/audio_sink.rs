@@ -229,7 +229,10 @@ fn resolve_logical(request: &AudioRequest<'_>) -> Result<String, String> {
 }
 
 fn global() -> Option<JsValue> {
-    web_sys::window().map(JsValue::from)
+    // **必须用真正的 globalThis**：微信侧 `web_sys::window()` 拿到的是适配层的 window shim，
+    // `wx` 与 `__RustLuaWechat` 挂在全局对象上，不在这个 shim 上。过去这里返回 window，
+    // 导致 `wechat_global()` 永远看不到 `wx`，音频走进浏览器分支并报“没有 document”。
+    Some(js_sys::global().into())
 }
 
 fn define_array(global: &JsValue, name: &str) -> js_sys::Array {
@@ -319,12 +322,35 @@ fn wechat_src(logical: &str) -> String {
         return packed;
     }
     match js_sys::Function::from(route).call1(&adapter, &JsValue::from_str(&packed)) {
-        Ok(value) => value.as_string().unwrap_or(packed),
+        // 适配层返回的是 `{ src, source, pending }`（与 Image.src 共用同一套路由结果），
+        // 不是裸字符串。过去这里只做 `as_string()`，于是永远回落到 `pack/<logical>`
+        // ——分组/多根布局下那个路径里根本没有 MP3，InnerAudioContext 静默失败。
+        Ok(value) => {
+            if let Some(src) = value.as_string() {
+                return src;
+            }
+            if value.is_object() {
+                if let Ok(src) = js_sys::Reflect::get(&value, &JsValue::from_str("src")) {
+                    if let Some(src) = src.as_string() {
+                        return src;
+                    }
+                }
+            }
+            packed
+        }
         Err(_) => packed,
     }
 }
 
-/// 浏览器分支：`pack/<logical>` 交给 `HTMLAudioElement`。
+/// 浏览器分支：`pack/<logical>` 交给 `HTMLAudioElement`；**容器形态走 Blob URL**。
+///
+/// 容器形态下音频在 `.rlb` 里，`pack/<logical>` 这个 URL 必然 404（实测：harness 里
+/// `[log.error] Failed to load resource: 404`，而启动断言全绿——BGM 静默失败，最隐蔽的那类）。
+/// 所以挂载了 bundle 时改用 `Blob` + `URL.createObjectURL`：
+/// 路径不变、`HTMLAudioElement` 不变（流式与 seek 语义保住），只是 URL 指向内存。
+///
+/// 为什么不用 WebAudio `decodeAudioData`：那会把整段 BGM 解成 PCM 常驻内存
+/// （4 分钟 mp3 ≈ 40 MB），而这些短 BGM/音效的收益是零。
 fn play_browser(logical: &str, volume: f32, looping: bool) -> Result<Played, String> {
     let document = web_sys::window()
         .and_then(|window| window.document())
@@ -334,8 +360,13 @@ fn play_browser(logical: &str, volume: f32, looping: bool) -> Result<Played, Str
         .map_err(|error| format!("createElement(audio): {}", text(&error)))?
         .dyn_into::<web_sys::HtmlAudioElement>()
         .map_err(|_| "createElement(audio) 不是 HTMLAudioElement".to_owned())?;
-    // 与旧运行时同一套 URL：页面根 + `pack/`。空格等字符要做百分号编码（旧运行时用 encodeURI）。
-    element.set_src(&encode_uri(&format!("pack/{logical}")));
+    let src = match bundle_blob_url(logical)? {
+        // 容器形态：内存里的字节，URL 只在本次播放有效。
+        Some(url) => url,
+        // 目录形态：与旧运行时同一套 URL（页面根 + `pack/`），空格等字符要百分号编码。
+        None => encode_uri(&format!("pack/{logical}")),
+    };
+    element.set_src(&src);
     element.set_volume(f64::from(volume.clamp(0.0, 1.0)));
     element.set_loop(looping);
     let global = global().unwrap_or(JsValue::NULL);
@@ -350,6 +381,45 @@ fn play_browser(logical: &str, volume: f32, looping: bool) -> Result<Played, Str
         branch: "web",
         element: element.into(),
     })
+}
+
+/// 容器形态下把音频条目变成 Blob URL；目录形态（未挂载）返回 `Ok(None)` 走原 URL。
+///
+/// 找不到条目时返回 `Ok(None)` 而不是错误：`resolve_logical` 已经按 `mp3→wav→ogg`
+/// 探测过存在的候选，走到这里仍是"资源表里有、容器里没有"的罕见不一致，
+/// 让浏览器去报它自己的 404 比在这里造一个假错误更利于排查。
+fn bundle_blob_url(logical: &str) -> Result<Option<String>, String> {
+    if !super::bundle_mount::is_mounted() {
+        return Ok(None);
+    }
+    let full = std::path::Path::new(super::VIRTUAL_PROJECT_ROOT).join(logical);
+    let Some(bytes) = super::bundle_mount::lookup(&full) else {
+        return Ok(None);
+    };
+    let mime = if logical.ends_with(".mp3") {
+        "audio/mpeg"
+    } else if logical.ends_with(".wav") {
+        "audio/wav"
+    } else {
+        "audio/ogg"
+    };
+    let array = js_sys::Uint8Array::from(bytes.as_slice());
+    let parts = js_sys::Array::new();
+    parts.push(&array.buffer());
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type(mime);
+    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options)
+        .map_err(|error| format!("new Blob: {}", text(&error)))?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob)
+        .map_err(|error| format!("createObjectURL: {}", text(&error)))?;
+    Ok(Some(url))
+}
+
+/// 释放 Blob URL（不释放就是内存泄漏：每条音效一个 blob，战斗中几十条）。
+fn revoke_blob_url(url: &str) {
+    if url.starts_with("blob:") {
+        web_sys::Url::revoke_object_url(url).ok();
+    }
 }
 
 /// 挂 `play()` 的失败回调，把原因记进外部可读的错误数组。
@@ -407,6 +477,12 @@ fn stop_music_element(stats: &mut Stats) -> bool {
     // 那是我们自己造成的，不该进错误数组。
     let _ = set(&music, RELEASED, &JsValue::TRUE);
     call(&music, "pause");
+    // 容器形态用的是 Blob URL：摘 src 之前先释放，否则每换一首 BGM 泄漏一份音频字节。
+    if let Ok(current) = js_sys::Reflect::get(&music, &JsValue::from_str("src"))
+        && let Some(url) = current.as_string()
+    {
+        revoke_blob_url(&url);
+    }
     let _ = set(&music, "src", &JsValue::from_str(""));
     call(&music, "load");
     true

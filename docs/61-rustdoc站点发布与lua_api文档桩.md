@@ -5,9 +5,9 @@
 ## 一、三条命令
 
 ```powershell
-node scripts/gen-lua-api-docs.js              # 生成/增量更新 Lua API 文档桩
-node scripts/gen-lua-api-docs.js --check      # 门：再生成必须是 no-op、桩数不得变多
-powershell -File scripts/gen-rustdoc.ps1      # cargo doc → 可发布的静态站点目录
+node scripts/docgen/gen-lua-api-docs.js              # 生成/增量更新 Lua API 文档桩
+node scripts/docgen/gen-lua-api-docs.js --check      # 门：再生成必须是 no-op、桩数不得变多
+powershell -File scripts/docgen/gen-rustdoc.ps1      # cargo doc → 可发布的静态站点目录
 ```
 
 `gen-rustdoc.ps1` 默认带 `RUSTDOCFLAGS=-D warnings`，产物落在 `artifacts/doc-site`（已在 `.gitignore` 的 `/artifacts/*` 里）。加 `-Open` 用默认浏览器打开，加 `-SiteDir <路径>` 换输出位置，加 `-AllowWarnings` 只用于排障（CI 与门都不带）。
@@ -42,7 +42,7 @@ powershell -File scripts/gen-rustdoc.ps1      # cargo doc → 可发布的静态
 
 ## 四、Lua API 文档桩
 
-形态：**rustdoc 页 + 再生成一致性门**。`scripts/gen-lua-api-docs.js` 从基线生成 `engine/crates/engine/src/lua_api/doc/<模块>.md`（41 个模块），`lua_api.rs` 里每个模块是一个只带 `#![doc = include_str!(…)]` 的空 `pub mod`，于是 `cargo doc` 产物里出现 `engine::lua_api::camera` 这样的参考页，函数名与签名各成一节、进侧边栏目录。
+形态：**rustdoc 页 + 再生成一致性门**。`scripts/docgen/gen-lua-api-docs.js` 从基线生成 `engine/crates/engine/src/lua_api/doc/<模块>.md`（41 个模块），`lua_api.rs` 里每个模块是一个只带 `#![doc = include_str!(…)]` 的空 `pub mod`，于是 `cargo doc` 产物里出现 `engine::lua_api::camera` 这样的参考页，函数名与签名各成一节、进侧边栏目录。
 
 **事实源是运行期 API 面基线**（`core/api_surface_snapshot/lua_api_surface.json`，41 张表 / 275 个函数），不是绑定源码。理由与快照门 `lua_api_surface_matches_baseline` 一致：源码里 `create_function` 有 267 处，运行期真正暴露 275 个函数，只有以基线为主才能同时发现两类失真——
 
@@ -57,9 +57,9 @@ powershell -File scripts/gen-rustdoc.ps1      # cargo doc → 可发布的静态
 
 | 门 | 命令 | 位置 |
 |---|---|---|
-| 文档桩再生成一致性 | `node scripts/gen-lua-api-docs.js --check` | `verify.ps1`「Lua API doc stubs」+ `quality.yml` lint job |
+| 文档桩再生成一致性 | `node scripts/docgen/gen-lua-api-docs.js --check` | `verify.ps1`「Lua API doc stubs」+ `quality.yml` lint job |
 | rustdoc 零告警 | `RUSTDOCFLAGS=-D warnings cargo doc --no-deps --workspace --lib` | `verify.ps1`「Rustdoc」+ `quality.yml` lint job |
-| 站点发布 | `scripts/gen-rustdoc.ps1`（自带 `-D warnings` 与根页自检） | `rustdoc.yml` |
+| 站点发布 | `scripts/docgen/gen-rustdoc.ps1`（自带 `-D warnings` 与根页自检） | `rustdoc.yml` |
 
 桩数基线 `src/lua_api/doc/baseline.json` 当前是 `{funcs: 275, stubs: 275, documented: 0}`。`--check` 有两档：`stubs > 基线` 判红（新增 API 却没补文档），`stubs ≠ 基线` 也判红并提示跑 `--update-baseline` 收紧——**补文档让桩数下降是好事，但必须显式承认新基线**，否则"下降"会变成没人核对的漂移。
 

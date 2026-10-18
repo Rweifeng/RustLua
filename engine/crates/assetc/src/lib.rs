@@ -1157,13 +1157,30 @@ pub fn package_grouped_keep(
     encrypt: bool,
     keep: KeepPrefixes<'_>,
 ) -> anyhow::Result<PackageReport> {
-    package_grouped_keep_with(project, out, drop_undeclared_fonts, fast, encrypt, keep, 0)
+    package_grouped_keep_with(
+        project,
+        out,
+        drop_undeclared_fonts,
+        fast,
+        encrypt,
+        keep,
+        0,
+        false,
+    )
 }
 
 /// [`package_grouped_keep`] 的可调块大小版本（`0` = 默认 256 KB）。
 ///
 /// 块大小的权衡（`docs/67` §9 的性能项）：块越大压缩率略好、同一次解压覆盖更多条目，
 /// 但单次解压更久、惰性读的粒度更粗。默认 256 KB 是拍的，这个参数就是为了量它。
+///
+/// `exclude_cdn`：本地包（微信分包/整包）不携带 `unit = "cdn"` 的组——它们本来就该由
+/// CDN 单独分发；带进 `pack/` 会变成"主包/分包里一份、CDN 上再一份"的死重
+/// （`splash/` 品牌图就是这种：发布器已把它压成 `branding/splash.jpg`，资源组里那份是纯重复）。
+///
+/// 参数是平铺的打包选项标量（与 `main.rs` / `tests/bundle_mount.rs` 三个调用点保持一致），
+/// 保持扁平比拆成配置结构更易读。
+#[allow(clippy::too_many_arguments)]
 pub fn package_grouped_keep_with(
     project: &Path,
     out: &Path,
@@ -1172,6 +1189,7 @@ pub fn package_grouped_keep_with(
     encrypt: bool,
     keep: KeepPrefixes<'_>,
     block_size: u32,
+    exclude_cdn: bool,
 ) -> anyhow::Result<PackageReport> {
     let block_size = if block_size == 0 {
         rustlua_infra::bundle::DEFAULT_BLOCK_SIZE
@@ -1235,6 +1253,25 @@ pub fn package_grouped_keep_with(
         .map(|(path, size, _)| (path.clone(), *size))
         .collect();
     let mut plan = build_plan(&config, &plan_entries, DEFAULT_BLOCK_SIZE)?;
+    if exclude_cdn {
+        // 先把 cdn 组的路径从打包条目里剔掉，再把组从计划里删掉并重封自校验。
+        // 顺序很重要：先 build_plan 才能知道哪些路径属于 cdn（归组规则只在 plan 里落地），
+        // 再按路径过滤 entries，最后 sealed() 重算 groups 的 FNV。
+        let cdn_paths: std::collections::BTreeSet<String> = plan
+            .groups
+            .iter()
+            .filter(|group| group.unit == "cdn")
+            .flat_map(|group| group.paths.iter().cloned())
+            .collect();
+        if !cdn_paths.is_empty() {
+            entries.retain(|(path, _, _)| !cdn_paths.contains(path));
+            plan.groups.retain(|group| group.unit != "cdn");
+            plan = plan.sealed();
+            if entries.is_empty() {
+                return Err(anyhow!("排除 cdn 后没有可打包的资源"));
+            }
+        }
+    }
     // 被 `--keep` 排除出容器的条目（微信字体）不在计划里，自然也不该参与"core 自足"断言：
     // 它们本来就是**目录里的真实文件**，按路径读得到，这正是 keep 的目的。
     let bundled: std::collections::BTreeSet<&str> =

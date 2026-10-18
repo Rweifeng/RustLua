@@ -29,6 +29,9 @@ param(
     # 编辑器的「发布项目」面板填了就会带过来（值随工程记在 <工程>/project.toml 的 wechat_appid）。
     # 留空 = 保留模板默认 touristappid，只能本地预览，**上传会失败**（真机/上传都要求正式 appid）。
     [string]$WechatAppId = "",
+    # 可选：`game --trace-loads` 采到的加载集。给了就在发布期校验 boot 上下文读到的
+    # 每条路径都落在 main 单元，而不是只信计划表声明。
+    [string]$BootTrace = "",
     # 微信小游戏：资源包形态（三选一，只对 -Platform wechat-minigame 有意义）。
     #   subpackage = **微信默认**。主包 + 单分包：首屏资源切到兄弟目录 mainpack/（随主包上传），
     #                其余资源留在 pack/（声明成 game.json 的 subpackages），运行时按需
@@ -47,7 +50,7 @@ param(
     # pkg/，主包 = 内核 + 胶水 + 运行时 + 骨架 + 子集字体，怎么瘦都过不去；把内核交给分包是
     # 唯一不动引擎本体的出路（subpackage 形态本来就是这么做的，见下面的搬运段）。
     # **代价**：标题画面与"下载分包"画面排在 boot 之前（适配层已有 `ensurePackForBoot` +
-    # pre-boot 进度界面）。前提是这份包要有 `mainpack.json`（`layout.subpackage_root=pack`、
+    # pre-boot 进度界面）。前提是这份包要有 `pack.json`（`layout.subpackage_root=pack`、
     # entries 为空）——适配层就是靠它判断"内核在分包"，缺了它会去主包找内核并启动失败。
     [switch]$WasmInSubpackage,
     # 资源容器形态（`docs/67` 批 C2 之后）：**默认 grouped**。
@@ -133,9 +136,14 @@ $PlayerDataDir = if ($env:RUSTLUA_USER_DIR) {
 # 发布根布局（2026-09-28 起）：产物直接落在 `builds\<平台>\`，不再按 publish_name 建子目录；
 # $PublishName 仍用于玩家数据目录、发布名与各配置文件的标识字段（见下）。
 $distRoot = Join-Path $gameRoot ("builds\" + $Platform)
-# 微信的分包 root 叫 subpack；webgl 的 pack/ 是数据目录，不是分包。
-$packDirName = if ($Platform -eq "wechat-minigame") { "subpack" } else { "pack" }
+# 资源根：主包首屏目录叫 pack/，默认分包根叫 pack-sub/（wasm 另有 pack-wasm/）。
+# 逻辑路径前缀仍是 `pack/`（适配层/引擎的虚拟命名空间），与物理根名解耦。
+$packDirName = "pack-sub"
+$mainPackDirName = "pack"
+$packWasmDirName = "pack-wasm"
 $packRoot = Join-Path $distRoot $packDirName
+$mainPackRoot = Join-Path $distRoot $mainPackDirName
+$packWasmRoot = Join-Path $distRoot $packWasmDirName
 # M20-03：原子发布。所有内容先写进 staging，全部成功后再原子替换最终目录；
 # 失败时最终目录保持旧版本不变（不会出现半更新状态）。
 . (Join-Path $PSScriptRoot "release-atomic.ps1")
@@ -429,6 +437,27 @@ function Assert-WeChatPackageVolume {
     return [pscustomobject]@{ Main = $mainBytes; Pack = $PackBytes; Total = $TotalBytes }
 }
 
+# 微信 launcher 里所有**分包根**的字节和：单根时就是 pack/，多根时是 pack/ + pack-<name>/。
+# 主包 = launcher 总量 − 这个和；只减 pack/ 会把具名根错算进主包（4 MB 门的方向就反了）。
+function Measure-WeChatSubpackageBytes {
+    param([Parameter(Mandatory = $true)][string]$LauncherRoot)
+    $sum = 0
+    $gameFile = Join-Path $LauncherRoot "game.json"
+    if (Test-Path -LiteralPath $gameFile) {
+        try {
+            $game = Get-Content -LiteralPath $gameFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            foreach ($sub in @($game.subpackages)) {
+                if (-not $sub -or [string]::IsNullOrWhiteSpace([string]$sub.root)) { continue }
+                $dir = Join-Path $LauncherRoot ([string]$sub.root).TrimEnd('/')
+                if (Test-Path -LiteralPath $dir) {
+                    $sum += (Get-ChildItem -LiteralPath $dir -Recurse -File -Force | Measure-Object -Property Length -Sum).Sum
+                }
+            }
+        } catch { return 0 }
+    }
+    return $sum
+}
+
 $finalRoot = $distRoot
 # **发布根一确定就先探锁**：否则要等几分钟打包完、到交换那一步才报错（实测那次就是这么白干的）。
 # 探针与交换做的是同一个操作（目录重命名），所以它红了，交换也一定会红。
@@ -439,7 +468,7 @@ foreach ($stale in $staleRemoved) {
 }
 # 微信小游戏的发布根下分两个兄弟目录（约定的产物形态）：
 #   launcher/  首包：导入微信开发者工具 / 上传微信的内容（含 pack/ 与 mainpack/、remote-assets.json）
-#   assets/    资源包：整目录上传 CDN，形如 <发布根>/assets/pack/**（只有 -AssetPack remote 才有）
+#   assets/    资源包：整目录上传 CDN，形如 <发布根>/assets/pack-sub/**（只有 -AssetPack remote 才有）
 # 其它平台没有这个划分，产物直接放在发布根下。
 # 关键：两者都在**同一个 staging** 里生成，所以首包与资源包是一次原子交换同时生效——
 # 否则"新首包 + 旧资源包"这种半更新状态只能等远端校验和事后暴露（真机表现为整批丢资源）。
@@ -461,6 +490,8 @@ if (-not [string]::IsNullOrWhiteSpace($CdnPackDir)) {
 $stageRoot = New-ReleaseStaging -FinalRoot $finalRoot
 $distRoot = if ($launcherSubdir) { Join-Path $stageRoot $launcherSubdir } else { $stageRoot }
 $packRoot = Join-Path $distRoot $packDirName
+$mainPackRoot = Join-Path $distRoot $mainPackDirName
+$packWasmRoot = Join-Path $distRoot $packWasmDirName
 $cdnPackRoot = if ($exportsAssetPack) { Join-Path $finalRoot "assets" } else { "" }
 $assetPackStage = if ($exportsAssetPack) { Join-Path $stageRoot "assets" } else { "" }
 $script:cdnMirrorStage = ""
@@ -471,7 +502,7 @@ if ($cdnPackMirror) {
     Write-Host "==> 资源包镜像目录: $cdnPackMirror（权威位置是发布根下的 assets/）" -ForegroundColor Cyan
 }
 if ($exportsAssetPack) {
-    Write-Host "==> 资源包随发布一起产出: $cdnPackRoot（形如 <发布根>/assets/pack/**，整目录上传 CDN）" -ForegroundColor Cyan
+    Write-Host "==> 资源包随发布一起产出: $cdnPackRoot（形如 <发布根>/assets/pack-sub/**，整目录上传 CDN）" -ForegroundColor Cyan
 }
 $script:swapAttempted = $false
 Write-Host "==> Staging release at $stageRoot (atomic swap on success)" -ForegroundColor Cyan
@@ -694,6 +725,18 @@ WASM build failed ($Platform)。
     # 代价只有 282 KB 不进口袋。
     if ($BundleMode -ne "none") {
         $assetcArgs += @("--keep", "assets/fonts/")
+        # 微信音频也必须留在目录里：`InnerAudioContext.src` 只吃真实文件路径，容器条目
+        # （`bundles/audio-*.rlb`）宿主自己读不到，表现就是"进游戏完全没声音"。
+        # 实测 devtools 复现：音频 16/16 在容器里，但 play 静默失败。
+        if ($Platform -eq "wechat-minigame") {
+            $assetcArgs += @("--keep", "assets/audio/")
+        }
+        # 微信本地包不携带 unit=cdn 的组：brand/splash 已由 package-branding 压成主包
+        # branding/splash.jpg；再打一份进 pack/ 就是纯重复（实测 1,224 KB）。
+        # remote 形态例外：cdn 组正是要导到 assets/ 上传 CDN 的内容。
+        if ($Platform -eq "wechat-minigame" -and $AssetPack -ne "remote") {
+            $assetcArgs += "--exclude-cdn"
+        }
     }
     if ($Encrypt) { $assetcArgs += "--encrypt" }
     # 剔除未声明字体（docs/52 配额门的真根因，2026-10-12）：开发树里的停用全量字体
@@ -707,6 +750,24 @@ WASM build failed ($Platform)。
     if ($Platform -eq "wechat-minigame" -or $Platform -eq "webgl") { $assetcArgs += "--drop-undeclared-fonts" }
     & $assetc @assetcArgs
     if ($LASTEXITCODE -ne 0) { throw "assetc package failed." }
+
+    # 计划表声明内核的独立根：pack-wasm 不是 assetc 的资源组（wasm 是发布链后搬进去的），
+    # 但适配层/layout 都靠这个字段决定"boot 等哪个根、容器放哪"。
+    if ($wasmInSubpackage) {
+        $planPath = Join-Path $packRoot "bundle_plan.json"
+        if (Test-Path -LiteralPath $planPath) {
+            $plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $plan | Add-Member -NotePropertyName wasm_root -NotePropertyValue $packWasmDirName -Force
+            [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 12),
+                (New-Object Text.UTF8Encoding($false)))
+            # 根计划是适配层的多根开关：默认形态也放一份（带 launcher_root 标记），
+            # 这样 pack-wasm/pack 的懒加载、路由和 check-bundle-mounts 走同一套计划表。
+            $rootPlan = $plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+            $rootPlan | Add-Member -NotePropertyName launcher_root -NotePropertyValue $true -Force
+            [IO.File]::WriteAllText((Join-Path $distRoot "bundle_plan.json"),
+                ($rootPlan | ConvertTo-Json -Depth 12), (New-Object Text.UTF8Encoding($false)))
+        }
+    }
 
     # 容器形态（docs/67）与 web/微信的发布后处理互斥：下面三段都按"pack/ 里是散文件"操作
     # （Lua 注释剥离要改 .lua 并同步改清单、首屏切分要按实际文件搬运、后缀改名要按文件名建映射）。
@@ -760,15 +821,39 @@ WASM build failed ($Platform)。
     }
 
     # 微信小游戏：音频统一为 MP3 格式（InnerAudioContext 在 iOS 和 Android 均支持，
-    # 不再需要 OGG+WAV 双格式）。源文件已是 MP3，assetc 直接复制到 pack/，无需转换。
+    # 不再需要 OGG+WAV 双格式）。微信发布用 `--keep assets/audio/` 把 MP3 留在真实文件路径上
+    # （容器条目 InnerAudioContext 读不到），所以这里同时接受"目录里的 raw MP3"与
+    # "计划表 audio 组"两种来源；两者都为空才算没有音频，有资源但无 .mp3 直接硬失败。
     if ($Platform -eq "wechat-minigame") {
+        $audioPaths = @()
         $audioDir = Join-Path $packRoot "assets\audio"
-        $mp3Files = @(Get-ChildItem -LiteralPath $audioDir -Filter "*.mp3" -File -ErrorAction SilentlyContinue)
-        if ($mp3Files.Count -eq 0) {
-            Write-Warning "WeChat audio: pack/assets/audio/ 内无 MP3 文件；BGM/SFX 将无声。请确认源 assets/audio/ 含 .mp3 文件。"
+        $rawMp3 = @(Get-ChildItem -LiteralPath $audioDir -Filter "*.mp3" -File -ErrorAction SilentlyContinue)
+        if ($rawMp3.Count -gt 0) {
+            $audioPaths += @($rawMp3 | ForEach-Object { "assets/audio/" + $_.Name })
+        }
+        if ($BundleMode -ne "none") {
+            $planPath = Join-Path $packRoot "bundle_plan.json"
+            if (Test-Path -LiteralPath $planPath) {
+                $audioPlan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                foreach ($group in @($audioPlan.groups)) {
+                    if ($group.name -eq "audio" -or @($group.paths | Where-Object { $_ -like "assets/audio/*" }).Count -gt 0) {
+                        $audioPaths += @($group.paths)
+                    }
+                }
+            }
+        }
+        $audioPaths = @($audioPaths | Select-Object -Unique)
+        $mp3Paths = @($audioPaths | Where-Object { $_ -match '\.mp3$' })
+        if ($audioPaths.Count -gt 0 -and $mp3Paths.Count -eq 0) {
+            throw ("WeChat audio: audio 组有 {0} 条资源，但没有任何 .mp3（iOS InnerAudioContext 只认 MP3；" +
+                "补 MP3 或删掉 audio 组，不能留一个 1.4 MB 的静音分包）") -f $audioPaths.Count
+        }
+        if ($mp3Paths.Count -eq 0) {
+            Write-Host "==> WeChat audio: 未声明音频组（无 BGM/SFX）" -ForegroundColor DarkGray
         }
         else {
-            Write-Host ("==> WeChat audio: {0} .mp3 files (iOS+Android 统一格式，无需双格式)" -f $mp3Files.Count) -ForegroundColor DarkGray
+            Write-Host ("==> WeChat audio: {0}/{1} 条为 .mp3（真实文件；InnerAudioContext 可直接读）" -f `
+                $mp3Paths.Count, $audioPaths.Count) -ForegroundColor DarkGray
         }
     }
 
@@ -781,8 +866,12 @@ WASM build failed ($Platform)。
         $savedEapBrand = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
-            $brandOutput = & (Join-Path $PSScriptRoot "package-branding.ps1") `
-                -ProjectRoot $gameRoot -Out (Join-Path $distRoot "branding") 2>&1
+            $brandArgs = @{
+                ProjectRoot = $gameRoot
+                Out = (Join-Path $distRoot "branding")
+            }
+            if ($Platform -eq "wechat-minigame") { $brandArgs["SplashFormat"] = "jpg" }
+            $brandOutput = & (Join-Path $PSScriptRoot "package-branding.ps1") @brandArgs 2>&1
             $brandExit = $LASTEXITCODE
         } finally { $ErrorActionPreference = $savedEapBrand }
         if ($brandExit -ne 0) { throw "Branding packaging failed: $($brandOutput -join ' ')" }
@@ -931,7 +1020,9 @@ WASM build failed ($Platform)。
             $glueText = $glueText -replace '(?m)^\s*const __wbindgen_jstag_polyfill = new WebAssembly\.Tag\(\{ parameters: \[''externref''\] \}\);\s*\r?\n?', ''
             $glueText = $glueText -replace '(?m)^\s*const __wbindgen_wrapped_jstag = new WebAssembly\.Tag\(\{ parameters: \[''externref''\] \}\);\s*\r?\n?', ''
             # 2) 删掉 __wbg_get_imports 里的 tag 字段
-            $glueText = $glueText -replace '(?m)^\s*__wbindgen_jstag: __wbindgen_jstag_polyfill,\s*\r?\n?', ''
+            # 0.2.129 的新胶水把 jstag 写成 `WebAssembly.JSTag`（不是 polyfill 变量），两种形态都要删；
+            # 删完 wasm 侧 strip-wasm-tags 也已不再导入它，JSTag 不会进入 facade 检查。
+            $glueText = $glueText -replace '(?m)^\s*__wbindgen_jstag:\s*(?:__wbindgen_jstag_polyfill|WebAssembly\.JSTag),\s*\r?\n?', ''
             $glueText = $glueText -replace '(?m)^\s*__wbindgen_wrapped_jstag: __wbindgen_wrapped_jstag,\s*\r?\n?', ''
             # 3) wrapError 改成直接透传
             $wrapErrorOld = 'function wrapError(f, args) {
@@ -969,6 +1060,12 @@ WASM build failed ($Platform)。
                 throw new Error(getStringFromWasm0(arg0, arg1));
             }, arguments); },'
             $glueText = $glueText.Replace($throwOld, $throwNew)
+            # 0.2.129 的新胶水把 throw 直接写在导入函数体里（没有 wrapError 包壳）：
+            #   throw new WebAssembly.Exception(__wbindgen_wrapped_jstag, [new Error(getStringFromWasm0(...))]);
+            # 上面的 Tag 构造已删，这个变量不再存在；直接抛普通 Error 即可。
+            $throwDirectOld = 'throw new WebAssembly.Exception(__wbindgen_wrapped_jstag, [new Error(getStringFromWasm0(arg0, arg1))]);'
+            $throwDirectNew = 'throw new Error(getStringFromWasm0(arg0, arg1));'
+            $glueText = $glueText.Replace($throwDirectOld, $throwDirectNew)
             [System.IO.File]::WriteAllText($gluePath, $glueText, (New-Object System.Text.UTF8Encoding($false)))
             Write-Host "==> Patched no-modules glue: removed WebAssembly.Tag/Exception usage for WeChat WXWebAssembly compatibility"
             # **必须补上 CommonJS 导出**：`--target no-modules` 的产物是一句
@@ -1109,7 +1206,7 @@ WASM build failed ($Platform)。
                 (Join-Path $pkgRoot "game_web_bg.wasm"), (($wasmHostOutput | ForEach-Object { "$_" }) -join ' '))
         }
         Write-Host (($wasmHostOutput | Where-Object { $_ -match '^wasm_host_ok' } | Select-Object -First 1)) -ForegroundColor DarkGray
-        # 分包形态把 **wasm 内核本体**搬进 pack/：微信主包只有 4 MB，而这份内核 2.5 MB（占主包
+        # 分包形态把 **wasm 内核本体**搬进独立的 pack-wasm/ 根：微信主包只有 4 MB，而这份内核 2.5 MB（占主包
         # 一半以上），内容侧（Lua + 字体 + 首屏贴图）实测已到 2 MB 量级——内核留在主包就没有任何
         # 出路（逐目录归属见 docs/52「主包构成」）。让分包替它腾地方是代价最小的一条：其余杠杆
         # （feature 裁剪、wasm 再瘦身）动的都是引擎本体，改一处要重验一整条链。
@@ -1129,13 +1226,14 @@ WASM build failed ($Platform)。
             if (-not (Test-Path -LiteralPath $wasmForSubpackage)) {
                 throw "内核入分包找不到待搬运的 wasm: $wasmForSubpackage"
             }
-            $wasmSubpackagePath = Join-Path $packRoot "game_web_bg.wasm"
+            New-Item -ItemType Directory -Force -Path $packWasmRoot | Out-Null
+            $wasmSubpackagePath = Join-Path $packWasmRoot "game_web_bg.wasm"
             Move-Item -LiteralPath $wasmForSubpackage -Destination $wasmSubpackagePath -Force
-            Write-Host ("==> 内核已搬进 $packDirName/（{0:N0} KB 不再计入主包；exporter={1}），胶水 pkg/game_web.js 留在主包" -f `
+            Write-Host ("==> 内核已搬进 $packWasmDirName/（{0:N0} KB 不再计入主包；exporter={1}），胶水 pkg/game_web.js 留在主包" -f `
                 ((Get-Item -LiteralPath $wasmSubpackagePath).Length / 1KB), $AssetPack) -ForegroundColor DarkGray
         }
         # 胶水留在 pkg/：`require('./pkg/game_web.js')` 是同步加载，pkg/ 是主包目录。
-        # subpackage 下内核已搬去 subpack/，pkg/ 里只剩这一份胶水（刻意的单文件目录）。
+        # subpackage 下内核已搬去 pack/，pkg/ 里只剩这一份胶水（刻意的单文件目录）。
         $glueAtPkg = Join-Path $pkgRoot "game_web.js"
         if (-not (Test-Path -LiteralPath $glueAtPkg)) {
             throw "缺少 wasm 胶水: $glueAtPkg"
@@ -1160,7 +1258,7 @@ WASM build failed ($Platform)。
             # 2026-10-16 实测踩到：适配层新增了 `require('./startup-branding.js')` 而清单没跟上，
             # 产物因此缺文件，**开发者工具里直接起不来**（表现是探针收不到任何上报）。
             $wechatPlugin = Join-Path $workspaceRoot "plugins\wechat-minigame"
-            foreach ($pluginFile in @("game.js", "game.json", "project.config.json", "wechat-adapter.js", "startup-branding.js", "wasm-bridge.js")) {
+            foreach ($pluginFile in @("game.js", "game.json", "project.config.json", "wechat-adapter.js", "startup-branding.js", "wasm-bridge.js", "bundle-roots.js")) {
                 $pluginSource = Join-Path $wechatPlugin $pluginFile
                 if (-not (Test-Path -LiteralPath $pluginSource)) {
                     throw "WeChat platform plugin is missing: $pluginSource"
@@ -1181,17 +1279,22 @@ WASM build failed ($Platform)。
             $gameConfig.PSObject.Properties.Remove("subpackages")
             $gameConfig.PSObject.Properties.Remove("subPackages")
             if ($wasmInSubpackage) {
-                # 单分包 subpack/：root 目录下**所有**文件都进分包（主包里一个都不能留）。
-                # subpackage 形态：首屏资源已被切到兄弟目录 mainpack/，这里声明的 subpack/ 只剩非首屏资源。
-                # remote + -WasmInSubpackage：subpack/ 只有骨架 + 内核，重资源在 CDN（不占任何代码包）。
-                $subpackageEntry = New-Object PSObject
-                $subpackageEntry | Add-Member -NotePropertyName name -NotePropertyValue $packDirName
-                $subpackageEntry | Add-Member -NotePropertyName root -NotePropertyValue $packDirName
-                $gameConfig | Add-Member -NotePropertyName subpackages -NotePropertyValue @($subpackageEntry) -Force
+                # pack/：非启动资源（容器 + 骨架）；pack-wasm/：只有内核。拆成两个 root 后
+                # boot 只等 pack-wasm，pack 由适配层在 boot 后后台挂载。
+                $subpackageEntries = @()
+                $packEntry = New-Object PSObject
+                $packEntry | Add-Member -NotePropertyName name -NotePropertyValue $packDirName
+                $packEntry | Add-Member -NotePropertyName root -NotePropertyValue $packDirName
+                $subpackageEntries += $packEntry
+                $wasmEntry = New-Object PSObject
+                $wasmEntry | Add-Member -NotePropertyName name -NotePropertyValue $packWasmDirName
+                $wasmEntry | Add-Member -NotePropertyName root -NotePropertyValue $packWasmDirName
+                $subpackageEntries += $wasmEntry
+                $gameConfig | Add-Member -NotePropertyName subpackages -NotePropertyValue $subpackageEntries -Force
             }
             $gameConfigJson = $gameConfig | ConvertTo-Json -Depth 10
             [IO.File]::WriteAllText($gameConfigPath, $gameConfigJson, (New-Object Text.UTF8Encoding($false)))
-            # 分包入口 subpack/game.js：微信要求 subpackages[i].root 下有 game.js，挂载后会**执行**它
+            # 分包入口 pack/game.js：微信要求 subpackages[i].root 下有 game.js，挂载后会**执行**它
             # （不只是存在性占位）。它由发布脚本生成而不是 assetc 打进去的：assetc 只认工程目录，
             # 而这是发布形态的产物。包内每个 .js 都会被下面三处按 CommonJS 解析，必须合法。
             $subpackageEntryPath = Join-Path $packRoot "game.js"
@@ -1201,10 +1304,10 @@ WASM build failed ($Platform)。
                     "// 微信小游戏的**分包入口**：subpackages[i].root === '$packDirName'，挂载后由宿主执行。",
                     "// 这个文件不加载任何资源——分包里的资源由主包侧 launcher/wechat-adapter.js 按",
                     $(if ($isSubpackagePack) {
-                            "// mainpack.json 静态路由后读取。它存在的意义只有一个：微信强制要求 root 目录下有"
+                            "// pack.json 静态路由后读取。它存在的意义只有一个：微信强制要求 root 目录下有"
                         }
                         else {
-                            "// mainpack.json 的空清单路由后读取（本包是 remote 形态：重资源在 CDN，分包里只有内核与骨架）。"
+                            "// pack.json 的空清单路由后读取（本包是 remote 形态：重资源在 CDN，分包里只有内核与骨架）。"
                         }),
                     "// game.js，缺了开发者工具连工程都打不开（报错形如「未找到 subpackages[0].root",
                     "// 对应的 /$packDirName/game.js 文件」）。",
@@ -1212,6 +1315,11 @@ WASM build failed ($Platform)。
                     ""
                 ) -join "`r`n"
                 [IO.File]::WriteAllText($subpackageEntryPath, $subpackageEntryBody, (New-Object Text.UTF8Encoding($false)))
+                # pack-wasm 也是微信分包根，必须有入口 game.js（内容无关，挂载时执行）。
+                $wasmEntryPath = Join-Path $packWasmRoot "game.js"
+                $wasmEntryBody = (Get-Content -LiteralPath $subpackageEntryPath -Raw -Encoding UTF8).
+                    Replace("'$packDirName'", "'$packWasmDirName'")
+                [IO.File]::WriteAllText($wasmEntryPath, $wasmEntryBody, (New-Object Text.UTF8Encoding($false)))
             }
             elseif (Test-Path -LiteralPath $subpackageEntryPath) {
                 # 非分包形态下 pack/game.js 是个**危险的假货**：它既不是主包入口，又会被
@@ -1219,9 +1327,9 @@ WASM build failed ($Platform)。
                 Remove-Item -LiteralPath $subpackageEntryPath -Force
                 Write-Warning "==> 已移除 pack/game.js（-AssetPack $AssetPack 不是分包形态，留着会盖住主包入口）"
             }
-            # mainpack/ 只属于分包形态：其它形态下留着会让开发者工具按目录结构误判。
-            $mainPackRoot = Join-Path $distRoot "mainpack"
-            $mainPackManifest = Join-Path $distRoot "mainpack.json"
+            # 主包首屏目录（pack/）只属于分包形态：其它形态下留着会让开发者工具按目录结构误判。
+            $mainPackRoot = Join-Path $distRoot $mainPackDirName
+            $mainPackManifest = Join-Path $distRoot "pack.json"
             if (-not $isSubpackagePack) {
                 foreach ($stalePath in @($mainPackRoot, $mainPackManifest)) {
                     if (Test-Path -LiteralPath $stalePath) {
@@ -1231,18 +1339,18 @@ WASM build failed ($Platform)。
                 }
             }
             # remote + -WasmInSubpackage：**必须**发一份首屏清单，适配层就是靠它判断"内核在分包"
-            # （`wechat-adapter.js` 的 `isWasmInPack()` ← `mainpack.json` 的 `layout.subpackage_root`）。
+            # （`wechat-adapter.js` 的 `isWasmInPack()` ← `pack.json` 的 `layout.subpackage_root`）。
             # 缺了它，适配层会去主包读 `pkg/game_web_bg.wasm`（内核已经不在那儿了）并启动失败。
             # entries 为空是**对的**：remote 形态的首屏资源在 CDN，包内没有 mainpack/ 路由可走；
             # 于是所有 `pack/` 读取都归到分包侧（挂载后本地读，读不到再走远端回落）。
             if ($wasmInSubpackage -and -not $isSubpackagePack) {
                 $emptyFirstScreen = [pscustomobject]@{
                     entries = @()
-                    layout  = [pscustomobject]@{ subpackage_root = $packDirName }
+                    layout  = [pscustomobject]@{ subpackage_root = $packDirName; wasm_root = $packWasmDirName }
                 }
                 [IO.File]::WriteAllText($mainPackManifest, ($emptyFirstScreen | ConvertTo-Json -Depth 6),
                     (New-Object Text.UTF8Encoding($false)))
-                Write-Host "==> remote + 内核入分包：已写 mainpack.json（layout.subpackage_root=$packDirName、entries 为空）" -ForegroundColor DarkGray
+                Write-Host "==> remote + 内核入分包：已写 pack.json（layout.subpackage_root=$packDirName、entries 为空）" -ForegroundColor DarkGray
             }
             # project.config.json 的工程名跟随 publish_name，方便开发者工具里区分工程。
             $projectConfigPath = Join-Path $distRoot "project.config.json"
@@ -1403,7 +1511,7 @@ WASM build failed ($Platform)。
     # 而 CDN 导出（remote 形态）与改名会改变磁盘上的名字；反过来，改名又必须晚于 CDN 导出
     # （远端 URL / 缓存 / 校验和全按逻辑路径算，先改名会让它们静默 404）。
     # 产物：
-    #   mainpack.json      —— 仅分包形态：首屏路由（读主包还是读分包）
+    #   pack.json      —— 仅分包形态：首屏路由（读主包还是读分包）
     #   code-package.json  —— 全形态：逻辑路径 → 会随代码包上传的宿主文件名（后缀白名单合规）
     $firstScreenTool = Join-Path $PSScriptRoot "first-screen-pack.js"
     $codePackageMap = Join-Path $distRoot "code-package.json"
@@ -1434,6 +1542,39 @@ WASM build failed ($Platform)。
             throw ("首屏清单生成失败（exit {0}）: {1}" -f $firstScreenExit, (($firstScreenOutput | ForEach-Object { "$_" }) -join ' '))
         }
         Write-Host (($firstScreenOutput | Where-Object { $_ -match '^first_screen_pack_ok' } | Select-Object -First 1)) -ForegroundColor DarkGray
+        if ($wasmInSubpackage -and (Test-Path -LiteralPath $mainPackManifest)) {
+            # 适配层没有根计划表时，靠 pack.json 的 layout 判断内核根（pack-wasm）。
+            $firstScreen = Get-Content -LiteralPath $mainPackManifest -Raw -Encoding UTF8 | ConvertFrom-Json
+            $layoutObject = $firstScreen.layout
+            if ($null -eq $layoutObject) {
+                $layoutObject = [pscustomobject]@{}
+                $firstScreen | Add-Member -NotePropertyName layout -NotePropertyValue $layoutObject -Force
+            }
+            $layoutObject | Add-Member -NotePropertyName subpackage_root -NotePropertyValue $packDirName -Force
+            $layoutObject | Add-Member -NotePropertyName wasm_root -NotePropertyValue $packWasmDirName -Force
+            [IO.File]::WriteAllText($mainPackManifest, ($firstScreen | ConvertTo-Json -Depth 8),
+                (New-Object Text.UTF8Encoding($false)))
+            # boot 元数据：计划表不再只描述"资源怎么分"，还明确写出"启动闭包是哪些根/组/条目"。
+            $planPath = Join-Path $packRoot "bundle_plan.json"
+            if (Test-Path -LiteralPath $planPath) {
+                $plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                $mainGroups = @($plan.groups | Where-Object { $_.unit -eq "main" } | ForEach-Object { $_.name })
+                $bootEntries = @($firstScreen.entries)
+                $bootObject = [pscustomobject]@{
+                    roots = @($mainPackDirName, $packWasmDirName)
+                    groups = $mainGroups
+                    wasm = "$packWasmDirName/game_web_bg.wasm"
+                    entries = $bootEntries
+                }
+                $plan | Add-Member -NotePropertyName boot -NotePropertyValue $bootObject -Force
+                [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 12),
+                    (New-Object Text.UTF8Encoding($false)))
+                $rootPlan = $plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+                $rootPlan | Add-Member -NotePropertyName launcher_root -NotePropertyValue $true -Force
+                [IO.File]::WriteAllText((Join-Path $distRoot "bundle_plan.json"),
+                    ($rootPlan | ConvertTo-Json -Depth 12), (New-Object Text.UTF8Encoding($false)))
+            }
+        }
         if (-not (Test-Path -LiteralPath $codePackageMap)) {
             throw "代码包改名映射没有被生成: $codePackageMap"
         }
@@ -1453,7 +1594,7 @@ WASM build failed ($Platform)。
     # 所以"主包保留首屏资源"不能表现为"在 pack/ 里留一部分"（那样留的在真机上仍属分包、
     # 首屏照样要等分包下载），只能把清单内的文件搬到**兄弟目录 mainpack/**（同构相对路径），
     # 由适配层按清单静态路由：首屏读 mainpack/，其余读 pack/。
-    # 切分依据是 scripts/build/first-screen-pack.js 生成的 mainpack.json —— 构建期、运行时、harness
+    # 切分依据是 scripts/build/first-screen-pack.js 生成的 pack.json —— 构建期、运行时、harness
     # 三方共用的唯一事实来源，从 pack/ 的实际磁盘内容推导，不写死工程名或目录层级。
     # 与 remote 的关键差别：remote 是 Remove-Item（资源只在远端），这里是 Move-Item（资源一份不少）。
     # 注意：这里全程用**逻辑路径**搬运（改名在这之后、对两棵树一起做），所以下面的断言也都在
@@ -1524,9 +1665,27 @@ WASM build failed ($Platform)。
         if (-not (Test-Path -LiteralPath (Join-Path $packRoot "game.js"))) {
             throw "分包形态缺少分包入口 pack/game.js（微信要求 subpackages[i].root 目录下有 game.js）"
         }
-        Write-Host ("wechat_minigame_split_ok mainpack_files={0} mainpack_kb={1:N0} subpackage_files={2} subpackage_kb={3:N0} swept_empty_dirs={4}" -f `
+        Write-Host ("wechat_minigame_split_ok pack_files={0} pack_kb={1:N0} subpackage_files={2} subpackage_kb={3:N0} swept_empty_dirs={4}" -f `
             $mainPackFileCount, ($mainPackBytes / 1KB), $packFileCountAfter, ($packBytesAfter / 1KB), $emptiedDirs.Count) -ForegroundColor Cyan
-        Write-Host ("==> 首屏资源已切到 mainpack/：主包直接可读，其余 {0:N0} KB 在 pack/ 分包里按需挂载" -f ($packBytesAfter / 1KB)) -ForegroundColor Cyan
+        Write-Host ("==> 首屏资源已切到 pack/：主包直接可读，其余 {0:N0} KB 在 pack-sub/ 分包里按需挂载" -f ($packBytesAfter / 1KB)) -ForegroundColor Cyan
+        # 现在 mainpack/ 已真正落盘，才能验 boot 闭包（清单/计划表/文件三方对账）。
+        if ($wasmInSubpackage) {
+            $bootCheck = Join-Path $PSScriptRoot "check-boot-closure.js"
+            $nodeForBoot = Get-Command node -ErrorAction SilentlyContinue
+            if (-not $nodeForBoot) { throw "boot 闭包检查需要 node" }
+            $bootArgs = @($bootCheck, "--launcher", $distRoot)
+            if (-not [string]::IsNullOrWhiteSpace($BootTrace)) {
+                $bootArgs += @("--trace", $BootTrace)
+            }
+            $savedEapBoot = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            try { $bootOutput = & $nodeForBoot.Source @bootArgs 2>&1; $bootExit = $LASTEXITCODE }
+            finally { $ErrorActionPreference = $savedEapBoot }
+            if ($bootExit -ne 0) {
+                throw ("boot 闭包检查失败（exit {0}）: {1}" -f $bootExit, (($bootOutput | ForEach-Object { "$_" }) -join ' '))
+            }
+            Write-Host (($bootOutput | Where-Object { $_ -match '^boot_closure_ok' } | Select-Object -First 1)) -ForegroundColor Green
+        }
     }
 
     # ------------------------------------------------- 资源包（pack/）导出与瘦身
@@ -1541,9 +1700,9 @@ WASM build failed ($Platform)。
         #    只有 remote 模式才有 assets/：full 模式的资源本来就在包内，再复制一份是纯浪费。
         if ($assetPackStage) {
             New-Item -ItemType Directory -Force -Path $assetPackStage | Out-Null
-            Copy-Item -LiteralPath $packRoot -Destination (Join-Path $assetPackStage "pack") -Recurse -Force
-            $fullFiles = (Get-ChildItem -LiteralPath (Join-Path $assetPackStage "pack") -Recurse -File -Force | Measure-Object).Count
-            $fullBytes = (Get-ChildItem -LiteralPath (Join-Path $assetPackStage "pack") -Recurse -File -Force | Measure-Object -Property Length -Sum).Sum
+            Copy-Item -LiteralPath $packRoot -Destination (Join-Path $assetPackStage $packDirName) -Recurse -Force
+            $fullFiles = (Get-ChildItem -LiteralPath (Join-Path $assetPackStage $packDirName) -Recurse -File -Force | Measure-Object).Count
+            $fullBytes = (Get-ChildItem -LiteralPath (Join-Path $assetPackStage $packDirName) -Recurse -File -Force | Measure-Object -Property Length -Sum).Sum
             $sourceFiles = (Get-ChildItem -LiteralPath $packRoot -Recurse -File -Force | Measure-Object).Count
             $sourceBytes = (Get-ChildItem -LiteralPath $packRoot -Recurse -File -Force | Measure-Object -Property Length -Sum).Sum
             # 资源树必须与包内那份逐一对应：数量/字节不一致就意味着上传 CDN 的东西和
@@ -1591,12 +1750,11 @@ WASM build failed ($Platform)。
             # 裁剪白名单是"根目录下的所有文件"：将来 assetc 若把大资源放在 pack/ 根下，
             # 这里必须报错要求更新白名单，而不是静默发出一个体积没降下来的"瘦"包。
             $thinBytes = (Get-ChildItem -LiteralPath $packRoot -Recurse -File -Force | Measure-Object -Property Length -Sum).Sum
-            # 内核入分包时 `pack/game_web_bg.wasm` 也在根下，但它是这一形态**故意**放进分包的大文件
-            # （主包装不下它，见搬运段）。把它从骨架读数里扣除，512 KB 那道门才仍然只管骨架——
-            # 否则"裁剪没生效"这个哨兵会被内核顶成常红，真出问题时反而看不出来。
+            # 内核入分包时它在独立的 `pack-wasm/game_web_bg.wasm`（不在 pack/ 骨架里）；
+            # 这里仍按旧位置回退检查，保证瘦首包 512 KB 门只量骨架。
             $thinCoreBytes = 0
             if ($wasmInSubpackage) {
-                $thinCorePath = Join-Path $packRoot "game_web_bg.wasm"
+                $thinCorePath = Join-Path $packWasmRoot "game_web_bg.wasm"
                 if (Test-Path -LiteralPath $thinCorePath) { $thinCoreBytes = (Get-Item -LiteralPath $thinCorePath).Length }
             }
             $thinSkeletonBytes = $thinBytes - $thinCoreBytes
@@ -1671,7 +1829,7 @@ WASM build failed ($Platform)。
         $skeletonRoot = if ($isSubpackagePack) { $mainPackRoot } else { $packRoot }
         # wasm 内核的位置同样随形态变（判据与上面同源，都是 $isSubpackagePack，两处一起改才不会漂移）：
         # 分包形态下它是 pack/ 分包根里的那个文件，主包只留胶水。
-        $wasmCoreRelative = if ($wasmInSubpackage) { "$packDirName\game_web_bg.wasm" } else { "pkg\game_web_bg.wasm" }
+        $wasmCoreRelative = if ($wasmInSubpackage) { "$packWasmDirName\game_web_bg.wasm" } else { "pkg\game_web_bg.wasm" }
         function Resolve-CodePackName([string]$logical) {
             if ($script:codePackageRenamed -and $script:codePackageRenamed.ContainsKey($logical)) {
                 return $script:codePackageRenamed[$logical]
@@ -1684,8 +1842,9 @@ WASM build failed ($Platform)。
             (Join-Path $distRoot "project.config.json"),
             (Join-Path $distRoot "wechat-adapter.js"),
             (Join-Path $distRoot "startup-branding.js"),
+            (Join-Path $distRoot "bundle-roots.js"),
             (Join-Path $distRoot "branding\icon.png"),
-            (Join-Path $distRoot "branding\splash.png"),
+            (Join-Path $distRoot "branding\splash.jpg"),
             (Join-Path $distRoot "pkg\game_web.js"),
             (Join-Path $distRoot "pkg\eh-probe.wasm"),
             (Join-Path $distRoot $wasmCoreRelative),
@@ -1697,14 +1856,18 @@ WASM build failed ($Platform)。
             # 内核入分包（subpackage 形态，或 remote + -WasmInSubpackage）多两项：
             # 清单（适配层判断"内核在分包"的唯一依据）与分包入口（微信的硬要求）。
             $requiredWeChatFiles += @(
-                (Join-Path $distRoot "mainpack.json"),
-                (Join-Path $packRoot "game.js")
+                (Join-Path $distRoot "pack.json"),
+                (Join-Path $packRoot "game.js"),
+                (Join-Path $packWasmRoot "game.js")
             )
             # 内核搬走的另一半证明：pkg/ 里那份必须**不存在**。留着它一声不响——适配层读的是 pack/
             # 那份，游戏照常跑，代价只是主包又超回 4 MB，而"超限"要到上传那一刻才暴露。
             # （与形态无关：只要内核入了分包，主包里就不许再有第二份。）
             if (Test-Path -LiteralPath (Join-Path $distRoot "pkg\game_web_bg.wasm")) {
                 throw "内核入了分包，但 pkg/game_web_bg.wasm 仍留在主包里：搬运步骤没跑（主包会按旧公式超限）"
+            }
+            if (Test-Path -LiteralPath (Join-Path $packRoot "game_web_bg.wasm")) {
+                throw "内核应只在 $packWasmDirName/，但 $packDirName/game_web_bg.wasm 仍存在（两个根会漂移）"
             }
         }
         if ($isSubpackagePack) {
@@ -1829,7 +1992,7 @@ WASM build failed ($Platform)。
         # 注意这里只是**提前拦截**（run.txt/deps.txt/build-info.txt 还没生成），
         # 最终数值在收尾处重新测量并输出 wechat_minigame_package_ok。
         $wechatTotalSize = (Get-ChildItem -LiteralPath $distRoot -Recurse -File -Force | Measure-Object -Property Length -Sum).Sum
-        $wechatPackSize = (Get-ChildItem -LiteralPath $packRoot -Recurse -File -Force | Measure-Object -Property Length -Sum).Sum
+        $wechatPackSize = Measure-WeChatSubpackageBytes -LauncherRoot $distRoot
         $wechatVolume = Assert-WeChatPackageVolume -TotalBytes $wechatTotalSize -PackBytes $wechatPackSize `
             -Form $(if ($wasmInSubpackage) { "subpackage" } else { $AssetPack }) -Suffix "（本值测于 run.txt/deps.txt/build-info.txt 生成之前，最终值见收尾的 wechat_minigame_package_ok）"
         Write-Host ("wechat_minigame_size_precheck files={0} main_kb={1:N0} main_of_limit={2:P1} subpackage_kb={3:N0} subpackage_of_limit={4:P1} pack_kb={5:N0} total_kb={6:N0} total_of_limit={7:P1} asset_pack={8}" -f `
@@ -1900,17 +2063,17 @@ WASM build failed ($Platform)。
     if ($Platform -eq "wechat-minigame") {
         # 发布根 = <工程>/builds/<平台>/，里面 launcher/ 是首包、assets/ 是 CDN 资源包（仅 remote 形态）；
         # $distRoot 始终指向 launcher/，所以体积统计/必需文件检查都只看首包。
-        $packageContents = "launcher/: game.js, game.json, project.config.json, wechat-adapter.js, pkg/ (game_web.js 胶水 + wasm 内核), subpack/ (skeleton when thin), run.txt, deps.txt"
+        $packageContents = "launcher/: game.js, game.json, project.config.json, wechat-adapter.js, pkg/ (game_web.js 胶水 + wasm 内核), pack/ (skeleton when thin), run.txt, deps.txt"
         if ($settingsPackaged) {
-            $packageContents = "launcher/: game.js, game.json, project.config.json, wechat-adapter.js, pkg/ (game_web.js 胶水 + wasm 内核), subpack/ (project.toml), run.txt, deps.txt"
+            $packageContents = "launcher/: game.js, game.json, project.config.json, wechat-adapter.js, pkg/ (game_web.js 胶水 + wasm 内核), pack/ (project.toml), run.txt, deps.txt"
         }
         if ($isSubpackagePack) {
-            # 分包形态的主包 = launcher 自身：首屏资源在 mainpack/，其余在 subpack/ 分包里。
+            # 分包形态的主包 = launcher 自身：首屏资源在 mainpack/，其余在 pack/ 分包里。
             # wasm 内核本体也一起进分包（主包 4 MB 装不下它 + 2 MB 内容），主包只留胶水 pkg/game_web.js。
-            $packageContents = "launcher/: game.js, game.json (subpackages=[subpack]), mainpack.json, mainpack/ (首屏资源), subpack/ (分包 root，含 game.js 入口与 game_web_bg.wasm 内核), project.config.json, wechat-adapter.js, pkg/game_web.js (胶水), run.txt, deps.txt"
+            $packageContents = "launcher/: game.js, game.json (subpackages=[pack-sub, pack-wasm]), pack.json, pack/ (首屏资源), pack-sub/ (非启动资源分包 root), pack-wasm/ (wasm 内核 root), project.config.json, wechat-adapter.js, pkg/game_web.js (胶水), run.txt, deps.txt"
         }
         if ($AssetPack -eq "remote") {
-            $packageContents = "$packageContents; assets/pack/** = full resource tree for CDN (重资源走远端 $RemotePackBaseUrl)"
+            $packageContents = "$packageContents; assets/pack-sub/** = full resource tree for CDN (重资源走远端 $RemotePackBaseUrl)"
         }
         if (-not [string]::IsNullOrWhiteSpace($RemotePackBaseUrl)) {
             $packageContents = "remote-assets.json (远端回落), $packageContents"
@@ -1944,7 +2107,7 @@ WASM build failed ($Platform)。
     }
 
     # 子集字体在包内的相对路径随形态变（分包形态下字体属于首屏资源，已被切到 mainpack/）。
-    $wechatFontRelative = if ($isSubpackagePack) { "mainpack/assets/fonts/$fontName" } else { "$packDirName/assets/fonts/$fontName" }
+    $wechatFontRelative = if ($isSubpackagePack) { "pack/assets/fonts/$fontName" } else { "$packDirName/assets/fonts/$fontName" }
     @(
         "RustLua game engine release package",
         "publish_name: $PublishName",
@@ -1980,31 +2143,31 @@ WASM build failed ($Platform)。
             "3) 手机预览：左半屏为虚拟摇杆（WASD），右半屏为动作键（space）；微信 PC 端同时支持键盘"
         )
         if ($isSubpackagePack) {
-            $wechatRunLines += "4) launcher/subpack/ 是**分包**（game.json 的 subpackages[0].root）：目录下所有文件都进分包，主包里一个都不留；root 下必须有 subpack/game.js 入口，缺了开发者工具会拒绝打开工程"
-            $wechatRunLines += "5) 主包侧的首屏资源在 launcher/mainpack/（与 subpack/ 同级的兄弟目录），路由依据是 launcher/mainpack.json：清单内的走主包，其余走分包。下载一次永久缓存"
-            $wechatRunLines += "5b) **wasm 内核本体（subpack/game_web_bg.wasm）也在分包里**（主包 4 MB 装不下它 + 2 MB 内容）：所以启动次序是「先等分包挂载 → JS 画进度条 → 实例化 wasm → 出标题画面」，标题不再是主包就能出。胶水 pkg/game_web.js 在主包（它被 require 同步加载，进分包要换一套 require 语义）"
-            $wechatRunLines += "6) 字体使用首屏子集字体（assetc 子集化产物，已随首屏切到 mainpack/assets/fonts/），完整字体不随包分发以控制体积"
+            $wechatRunLines += "4) launcher/pack-sub/ 是**分包**（game.json 的 subpackages[0].root）：目录下所有文件都进分包，主包里一个都不留；root 下必须有 pack-sub/game.js 入口，缺了开发者工具会拒绝打开工程"
+            $wechatRunLines += "5) 主包侧的首屏资源在 launcher/pack/（与 pack/ 同级的兄弟目录），路由依据是 launcher/pack.json：清单内的走主包，其余走分包。下载一次永久缓存"
+            $wechatRunLines += "5b) **wasm 内核本体（pack-wasm/game_web_bg.wasm）在独立分包根里**（主包 4 MB 装不下它 + 2 MB 内容）：启动次序是「先等 pack-wasm 挂载 → JS 画进度条 → 实例化 wasm → 出标题画面」，pack-sub/ 资源根在 boot 后后台挂载。胶水 pkg/game_web.js 在主包（它被 require 同步加载，进分包要换一套 require 语义）"
+            $wechatRunLines += "6) 字体使用首屏子集字体（assetc 子集化产物，已随首屏切到 pack/assets/fonts/），完整字体不随包分发以控制体积"
             $wechatRunLines += "7) 首包里不含 PC/WebGL 入口（game.exe / index.html），不要混用发布目录"
             $wechatRunLines += "8) 首次导入开发者工具后**必须**核对「详情 -> 代码包大小」面板：主包 / 分包两块数值应与本次输出行的 main_kb / subpackage_kb 一致（本机 harness 无法证明微信的真实打包语义，这里是唯一能证伪的地方）"
         }
         elseif (-not $wasmInSubpackage) {
-            $wechatRunLines += "4) launcher/subpack/ 不是分包（game.json 不含 subpackages）：它是主包内的普通目录，运行时直接读取，不需要 wx.loadSubpackage，也没有分包入口文件"
-            $wechatRunLines += "5) 字体使用 subpack/ 内的子集字体（assetc 子集化产物），完整字体不随包分发以控制体积"
+            $wechatRunLines += "4) launcher/pack/ 不是分包（game.json 不含 subpackages）：它是主包内的普通目录，运行时直接读取，不需要 wx.loadSubpackage，也没有分包入口文件"
+            $wechatRunLines += "5) 字体使用 pack/ 内的子集字体（assetc 子集化产物），完整字体不随包分发以控制体积"
             $wechatRunLines += "6) 首包里不含 PC/WebGL 入口（game.exe / index.html），不要混用发布目录"
         }
         else {
             # remote + -WasmInSubpackage：分包里只有内核与骨架，重资源在 CDN。
-            $wechatRunLines += "4) launcher/subpack/ **是分包**（game.json 的 subpackages[0].root，root 下有 subpack/game.js 入口）：里面只有 wasm 内核与骨架（manifest.txt/chars.txt/project.toml.txt），重资源全在 CDN"
-            $wechatRunLines += "5) **内核在分包里**：启动时适配层先 wx.loadSubpackage('subpack') 再实例化 wasm，标题画面与下载进度都排在分包之后（进度界面是 JS 侧画的，不依赖 wasm/Lua）"
+            $wechatRunLines += "4) launcher/pack-sub/ **是分包**（game.json 的 subpackages[0].root，root 下有 pack-sub/game.js 入口）：里面只有 wasm 内核与骨架（manifest.txt/chars.txt/project.toml.txt），重资源全在 CDN"
+            $wechatRunLines += "5) **内核在分包里**：启动时适配层先 wx.loadSubpackage('pack') 再实例化 wasm，标题画面与下载进度都排在分包之后（进度界面是 JS 侧画的，不依赖 wasm/Lua）"
             $wechatRunLines += "6) 字体使用 pack/ 内的子集字体（assetc 子集化产物），完整字体不随包分发以控制体积"
-            $wechatRunLines += "7) launcher/mainpack.json 是**空清单 + layout.subpackage_root=subpack**：适配层靠它判断内核在分包；首屏资源没有包内路由（都在 CDN）"
+            $wechatRunLines += "7) launcher/pack.json 是**空清单 + layout.subpackage_root=pack**：适配层靠它判断内核在分包；首屏资源没有包内路由（都在 CDN）"
             $wechatRunLines += "8) 首包里不含 PC/WebGL 入口（game.exe / index.html），不要混用发布目录"
         }
         # 这里必须写**最终**目录（$finalRoot）：run.txt 是在 staging 里生成的，
         # 而原子交换会把 staging 改名/删除，写 staging 路径等于写一个随后就不存在的目录。
         $wechatRunLines += "9) 无开发者工具时的运行时验证：powershell -NoProfile -File scripts\verify\verify-wechat-minigame.ps1 -BundleRoot `"$finalRoot\launcher`""
         if ($AssetPack -eq "remote") {
-            $wechatRunLines += "10) 本包是**瘦首包**：launcher/subpack/ 只含骨架（manifest.txt/chars.txt 原名，project.toml 因后缀不在微信上传白名单而改名为 project.toml.txt），重资源从 $RemotePackBaseUrl 下载，按 subpack/manifest.txt 校验后缓存到 USER_DATA_PATH"
+            $wechatRunLines += "10) 本包是**瘦首包**：launcher/pack/ 只含骨架（manifest.txt/chars.txt 原名，project.toml 因后缀不在微信上传白名单而改名为 project.toml.txt），重资源从 $RemotePackBaseUrl 下载，按 pack/manifest.txt 校验后缓存到 USER_DATA_PATH"
             $wechatRunLines += "11) 上传顺序：先把 assets/ 整份传到 CDN（使 packBaseUrl 可用），再上传 launcher/ 作为代码包；两侧不一致时校验和会拒绝下载（不会静默用错资源）"
             $wechatRunLines += "12) 运行时验证要带上资源包：scripts\verify\verify-wechat-minigame.ps1 -BundleRoot `"$finalRoot\launcher`" -AssetPackRoot `"$finalRoot\assets`""
             $wechatRunLines += "13) 本地预览（不用自己起服务）：双击 scripts\dev\serve-wechat-pack.bat，再按上面的方式导入 launcher/"
@@ -2037,12 +2200,32 @@ WASM build failed ($Platform)。
         ) | Set-Content (Join-Path $distRoot "run.txt") -Encoding UTF8
     }
 
+    if ($MultiSub) {
+        # **在原子交换之前**拆根：apply 失败时最终发布目录完全没被碰过（staging 由 catch 清理），
+        # 不会留下"拆了一半"的 release。拆完再测体积，4 MB 门看的才是最终 mainpack。
+        $layoutScript = Join-Path $PSScriptRoot "apply-bundle-layout.ps1"
+        if (-not (Test-Path -LiteralPath $layoutScript)) { throw "缺少 $layoutScript" }
+        $layoutArgs = @{ Launcher = $distRoot }
+        if ($assetc) { $layoutArgs["Assetc"] = $assetc }
+        & $layoutScript @layoutArgs
+        Write-Host "==> 多分包根已应用（-MultiSub，staging 内）" -ForegroundColor Yellow
+        # run.txt 在第 2040 行之前已生成；拆根后补一条实际根名，避免文档还写"单 pack"。
+        $gameConfigForRun = Get-Content -LiteralPath (Join-Path $distRoot "game.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+        $rootNames = @($gameConfigForRun.subpackages | ForEach-Object { [string]$_.root })
+        $runPath = Join-Path $distRoot "run.txt"
+        if (Test-Path -LiteralPath $runPath) {
+            $line = "13) 多分包根（-MultiSub）：$($rootNames -join ', ')；容器按 bundle_plan.json 分布在这些根里，适配层 boot 前全部挂载"
+            [System.IO.File]::AppendAllText($runPath, "`r`n" + $line, (New-Object System.Text.UTF8Encoding($false)))
+        }
+    }
+
     # 微信小游戏：收尾处（run.txt/deps.txt/build-info.txt 都写完之后）重新测量并输出最终体积。
     # 这一步不能省：微信上传时这些说明文件也计入主包，早期只在生成它们之前测过一次，
     # 会把主包少算 ~9 KB（实测 main_kb=303 而最终目录是 312）——守卫必须盯着最终产物。
     if ($Platform -eq "wechat-minigame") {
         $wechatFinalTotal = (Get-ChildItem -LiteralPath $distRoot -Recurse -File -Force | Measure-Object -Property Length -Sum).Sum
-        $wechatFinalPack = (Get-ChildItem -LiteralPath $packRoot -Recurse -File -Force | Measure-Object -Property Length -Sum).Sum
+        # 多根布局下"主包 = launcher − 全部分包根"，不能只减 pack/（那会把 pack-<name>/ 错算进主包）。
+        $wechatFinalPack = Measure-WeChatSubpackageBytes -LauncherRoot $distRoot
         $wechatFinalVolume = Assert-WeChatPackageVolume -TotalBytes $wechatFinalTotal -PackBytes $wechatFinalPack `
             -Form $(if ($wasmInSubpackage) { "subpackage" } else { $AssetPack }) -Suffix "（本值是权威值：run.txt/deps.txt/build-info.txt 都已写入发布目录）"
         Write-Host ("wechat_minigame_package_ok files={0} main_kb={1:N0} main_of_limit={2:P1} subpackage_kb={3:N0} subpackage_of_limit={4:P1} pack_kb={5:N0} total_kb={6:N0} total_of_limit={7:P1} asset_pack={8} split={9}" -f `
@@ -2050,7 +2233,7 @@ WASM build failed ($Platform)。
             $(if ($wasmInSubpackage) { $wechatFinalVolume.Pack / 1KB } else { 0 }), `
             $(if ($wasmInSubpackage) { $wechatFinalVolume.Pack / 20MB } else { 0 }), `
             ($wechatFinalPack / 1KB), ($wechatFinalVolume.Total / 1KB), ($wechatFinalVolume.Total / 20MB), $AssetPack, `
-            $(if ($isSubpackagePack) { "mainpack+pack" } elseif ($wasmInSubpackage) { "wasm+pack" } else { "none" })) -ForegroundColor Green
+            $(if ($isSubpackagePack) { $(if ($MultiSub) { "pack+multi" } else { "pack+pack-sub" }) } elseif ($wasmInSubpackage) { "wasm+pack" } else { "none" })) -ForegroundColor Green
     }
 
     # M20-03：全部内容与自检通过后，原子替换最终目录（旧版本备份→移入新版本
@@ -2062,17 +2245,9 @@ WASM build failed ($Platform)。
     # 同一次交换落地的，所以此刻首包与资源包一定互相配套。
     $distRoot = if ($launcherSubdir) { Join-Path $finalRoot $launcherSubdir } else { $finalRoot }
 
-    if ($MultiSub) {
-        # 产物已原子交换落地；这里再按分发布局拆根（opt-in）。默认路径完全不受影响。
-        # 完成后 `--verify` 要求每个分包根都有 game.js，`game.json` 的 subpackages 会被重写。
-        $layoutScript = Join-Path $PSScriptRoot "apply-bundle-layout.ps1"
-        if (-not (Test-Path -LiteralPath $layoutScript)) { throw "缺少 $layoutScript" }
-        $layoutArgs = @{ Launcher = $distRoot }
-        if ($assetc) { $layoutArgs["Assetc"] = $assetc }
-        & $layoutScript @layoutArgs
-        Write-Host "==> 多分包根已应用（-MultiSub）" -ForegroundColor Yellow
-    }
     $packRoot = Join-Path $distRoot $packDirName
+$mainPackRoot = Join-Path $distRoot $mainPackDirName
+    $packWasmRoot = Join-Path $distRoot $packWasmDirName
     Write-Host ("==> Release swapped in: {0} entries replaced, {1} entries moved aside" -f $swap.MovedIn.Count, $swap.MovedAside.Count) -ForegroundColor Cyan
 
     # -CdnPackDir 指定的镜像目录同样走 staging + 原子交换（避免镜像停在半更新状态）。
@@ -2153,15 +2328,16 @@ if ($SelfTest) {
         # 发布根下有 launcher/（首包）与 assets/（资源包）两个兄弟目录，验证脚本吃的是这两个。
         $isolatedRoot = Join-Path $isolatedReleaseRoot "launcher"
         $isolatedSkeletonRoot = if ($isSubpackagePack) { Join-Path $isolatedRoot "mainpack" } else { Join-Path $isolatedRoot $packDirName }
-        # wasm 内核与主包骨架同一个判据：内核入分包时它在 subpack/ 里（见上面那次搬运），
+        # wasm 内核与主包骨架同一个判据：内核入分包时它在 pack/ 里（见上面那次搬运），
         # 隔离副本按旧位置找就会把"产物是好的"报成"缺文件"。
         # 判据是 `$wasmInSubpackage` 而不是 `$isSubpackagePack`：remote + -WasmInSubpackage 也搬内核（第 53 轮）。
-        $isolatedWasmCore = Join-Path $isolatedRoot $(if ($wasmInSubpackage) { "$packDirName\game_web_bg.wasm" } else { "pkg\game_web_bg.wasm" })
+        $isolatedWasmCore = Join-Path $isolatedRoot $(if ($wasmInSubpackage) { "$packWasmDirName\game_web_bg.wasm" } else { "pkg\game_web_bg.wasm" })
         foreach ($file in @(
             (Join-Path $isolatedRoot "game.js"),
             (Join-Path $isolatedRoot "game.json"),
             (Join-Path $isolatedRoot "project.config.json"),
             (Join-Path $isolatedRoot "wechat-adapter.js"),
+            (Join-Path $isolatedRoot "bundle-roots.js"),
             (Join-Path $isolatedRoot "pkg\game_web.js"),
             (Join-Path $isolatedRoot "pkg\eh-probe.wasm"),
             $isolatedWasmCore,
@@ -2173,14 +2349,17 @@ if ($SelfTest) {
             if (-not (Test-Path -LiteralPath (Join-Path $isolatedRoot "$packDirName\game.js"))) {
                 throw "isolated subpackage launcher is missing the subpackage entry: $packDirName\game.js"
             }
-            $isolatedManifestPath = Join-Path $isolatedRoot "mainpack.json"
+            if (-not (Test-Path -LiteralPath (Join-Path $isolatedRoot "$packWasmDirName\game.js"))) {
+                throw "isolated subpackage launcher is missing the wasm subpackage entry: $packWasmDirName\game.js"
+            }
+            $isolatedManifestPath = Join-Path $isolatedRoot "pack.json"
             if (-not (Test-Path -LiteralPath $isolatedManifestPath)) {
-                throw "isolated subpackage launcher is missing mainpack.json"
+                throw "isolated subpackage launcher is missing pack.json"
             }
         }
         if ($isSubpackagePack) {
-            # 切分真实性：逐条读隔离副本里的 mainpack.json，每条都必须在 mainpack/ 下**存在**、
-            # 且在 subpack/ 下**不存在**。这条断言是"复制到隔离目录的过程把形态搞坏了"唯一的哨兵；
+            # 切分真实性：逐条读隔离副本里的 pack.json，每条都必须在 mainpack/ 下**存在**、
+            # 且在 pack/ 下**不存在**。这条断言是"复制到隔离目录的过程把形态搞坏了"唯一的哨兵；
             # 主包/分包两侧同时留同一份文件会让读取路径变得不确定（谁先命中谁生效）。
             # 隔离副本里也要再读一次改名映射（它跟着产物一起复制过来，是运行时的查询依据）。
             $isolatedMapPath = Join-Path $isolatedRoot "code-package.json"
@@ -2193,7 +2372,7 @@ if ($SelfTest) {
                 foreach ($property in $isolatedMap.renamed.PSObject.Properties) { $isolatedRenamed[$property.Name] = [string]$property.Value }
             }
             $isolatedEntries = @((Get-Content -LiteralPath $isolatedManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json).entries)
-            if ($isolatedEntries.Count -eq 0) { throw "isolated mainpack.json has an empty entries list" }
+            if ($isolatedEntries.Count -eq 0) { throw "isolated pack.json has an empty entries list" }
             $misplaced = @()
             foreach ($entry in $isolatedEntries) {
                 $hostName = if ($isolatedRenamed.ContainsKey($entry)) { $isolatedRenamed[$entry] } else { $entry }
@@ -2214,13 +2393,13 @@ if ($SelfTest) {
             # remote + -WasmInSubpackage：清单在本形态下只回答"分包叫什么"，entries 必须为空
             # （remote 的首屏资源在 CDN，包内没有 mainpack/ 可路由）。这两条正是适配层判断
             # "内核在分包"的全部输入，写错了它在隔离副本里也会去主包找内核。
-            $isolatedRemoteManifest = Get-Content -LiteralPath (Join-Path $isolatedRoot "mainpack.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+            $isolatedRemoteManifest = Get-Content -LiteralPath (Join-Path $isolatedRoot "pack.json") -Raw -Encoding UTF8 | ConvertFrom-Json
             if ([string]$isolatedRemoteManifest.layout.subpackage_root -ne $packDirName) {
-                throw ("isolated remote launcher 的 mainpack.json 没把分包写成 ${packDirName}: '{0}'" -f `
+                throw ("isolated remote launcher 的 pack.json 没把分包写成 ${packDirName}: '{0}'" -f `
                         $isolatedRemoteManifest.layout.subpackage_root)
             }
             if (@($isolatedRemoteManifest.entries).Count -ne 0) {
-                throw "isolated remote launcher 的 mainpack.json 不该有首屏路由条目（remote 的首屏资源在 CDN）"
+                throw "isolated remote launcher 的 pack.json 不该有首屏路由条目（remote 的首屏资源在 CDN）"
             }
         }
         $isolatedAssets = Join-Path $isolatedReleaseRoot "assets"
@@ -2235,7 +2414,7 @@ if ($SelfTest) {
                 throw "isolated thin WeChat package is missing remote-assets.json"
             }
             if (-not (Test-Path -LiteralPath (Join-Path $isolatedAssets "pack\manifest.txt"))) {
-                throw "isolated release is missing assets/pack/** (首包与资源包必须一起落地)"
+                throw "isolated release is missing assets/pack-sub/** (首包与资源包必须一起落地)"
             }
         }
         $verifier = Join-Path $PSScriptRoot "..\verify\verify-wechat-minigame.ps1"

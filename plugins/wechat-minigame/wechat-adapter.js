@@ -10,8 +10,8 @@
 //   实例化 wasm（宿主的 `WXWebAssembly.instantiate` 只有异步、代码包路径这一形态），把 6 个
 //   Lua 桥导出挂到 `window.__RUSTLUA_LUA_BRIDGE`（`lua_boot` 包装成 `lua_boot_with_reader`），
 //   全部 Lua 交互经桥执行——这条路径在小游戏里**真实可运行**；
-// - `pkg/game_web.js` + `pkg/game_web_bg.wasm` 随包分发（胶水是 `--target no-modules` 的
-//   纯脚本，由 wasm-bridge.js 包成 CommonJS）。适配层在 boot 之前完成实例化，并把结果
+// - `pkg/game_web.js` + `pkg/game_web_bg.wasm` / `pack/game_web_bg.wasm` 随包分发
+//   （胶水是 `--target no-modules` 的纯脚本，由 wasm-bridge.js 包成 CommonJS）。适配层在 boot 之前完成实例化，并把结果
 //   （用了哪条通道、哪个代码包路径）写进 `data-rustlua-wasm` / `__RUSTLUA_DIAG().wasm`，
 //   详见文末「WASM 说明」。
 // - 输入：微信 PC 端键盘（wx.onKeyDown/onKeyUp）直接桥接；触摸映射为指针事件，
@@ -50,12 +50,14 @@
   var PACK_PREFIX = 'pack/';
   // 兜底常量：真正的分包名以首屏清单的 layout.subpackage_root 为准（见 packSubpackageName），
   // 这里只用于"清单没给出名字"时的诊断文案与默认值。
-  var PACK_SUBPACKAGE = 'pack';
-  // 分包形态的**主包首屏目录**：与 pack/ 同级的兄弟目录，构建期按 mainpack.json 把首屏资源搬进去。
+  var PACK_SUBPACKAGE = 'pack-sub';
+  // 分包形态的**主包首屏目录**：与 pack/ 同级的兄弟目录，构建期按 pack.json 把首屏资源搬进去。
   // 为什么不干脆留在 pack/ 里：微信规则规定 subpackages[i].root 目录下的文件**全部**进分包，
   // 留在 pack/ 里的首屏资源在真机上依然要等分包下载 —— "主包留一部分"这个直觉做法根本不成立。
-  var MAINPACK_DIR = 'mainpack/';
-  var MAINPACK_MANIFEST = 'mainpack.json';
+  var MAINPACK_DIR = 'pack/';
+  var MAINPACK_MANIFEST = 'pack.json';
+  // 主包根名（与 bundle-roots.js / bundle-layout.js 同一口径）：它随包存在，永远不需要挂载。
+  var ROOT_MAIN = 'pack';
 // wasm 核心在代码包里的逻辑路径。**位置随发布形态变**，判据是首屏清单声明没声明分包：
 //   · 分包形态 → `pack/game_web_bg.wasm`（在分包里）。微信主包只有 4 MB，而内核 2.5 MB：
 //     实测 2026-10-06 主包 4,547 KB（内核 + Lua 与首屏内容），超 451 KB —— 内容侧已经压不动，
@@ -65,12 +67,11 @@
 //   · full / remote 形态 → `pkg/game_web_bg.wasm`（主包）。full 下 pack/ 本身也在主包（搬了
 //     等于没搬），remote 下 pack/ 会被构建期裁成骨架（内核搬过去就没了）。
 // 胶水 `pkg/game_web.js` 三种形态都留在主包：它由 `require('./pkg/game_web.js')` **同步**加载，
-// 进分包要换成"挂载之后再 require"，而那条语义本机证明不了（真机才认），所以不动它。
+// 进分包要换成"挂载之后再 require"，而那条语义本机证明不了（真机才认），所以不进分包。
 // `.wasm` 在微信代码包后缀白名单内（scripts/code-package-rules.js），因此不需要改名。
 var WASM_MODULE_PATH_MAIN = 'pkg/game_web_bg.wasm';
-var WASM_MODULE_PATH_PACK = PACK_PREFIX + 'game_web_bg.wasm';
-// EH 真机探针模块（53 字节，零导入 + 本地 tag 段 + legacy try/catch）：由发布链路写进 pkg/，
-// wasm-bridge 的 probeEHAcceptance 走同一条代码包通道 compile 它，读"设备引擎认不认 wasm EH"。
+var WASM_MODULE_PATH_PACK = PACK_SUBPACKAGE + '/game_web_bg.wasm';
+// EH 真机探针（53 B，零导入 + 本地 tag + legacy try/catch）：固定放主包 pkg/。
 var EH_PROBE_PATH = 'pkg/eh-probe.wasm';
 // WP10 微信侧接线：HostApi 构造器的发布名（与 webgl 发布名一致，app.name() 的返回值）。
 var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
@@ -130,10 +131,23 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     { name: 'root-relative', apply: function (p) { return p; } },
     { name: 'leading-slash', apply: function (p) { return '/' + p; } },
     { name: 'dot-prefix', apply: function (p) { return './' + p; } },
-    // 分包根相对（去掉 pack/ 前缀）：个别宿主把已加载的分包当作独立根。
+    // 分包根相对（去掉根前缀）：个别宿主把已加载的分包当作独立根。
+    // 多根形态下前缀可能是 `pack/` 也可能是 `pack-<name>/`，两种都要能剥（否则具名分包在
+    // `--wx-path-style sub-root` 这类宿主上整批读不到）。
     // 注意副作用：这条会读成 `x`，若宿主实际按主包根解析，就可能命中同名主包文件
     // （如 pack/game.js → 主包入口）。所以它排在最后，且只在其它形式都失败后才生效。
-    { name: 'subpackage-relative', apply: function (p) { return p.indexOf(PACK_PREFIX) === 0 ? p.slice(PACK_PREFIX.length) : null; } }
+    {
+      name: 'subpackage-relative',
+      apply: function (p) {
+        if (p.indexOf(PACK_PREFIX) === 0) return p.slice(PACK_PREFIX.length);
+        var slash = p.indexOf('/');
+        if (slash > 0) {
+          var head = p.slice(0, slash);
+          if (head.indexOf('pack-') === 0) return p.slice(slash + 1);
+        }
+        return null;
+      }
+    }
   ];
 
   // 首屏清单（分包形态）：构建期由 scripts/first-screen-pack.js 从 pack/ 的实际内容推导，
@@ -183,6 +197,171 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
 
   function firstScreenKeys() {
     return loadFirstScreenManifest();
+  }
+
+  // ---------------------------------------------------------------- 多根布局（bundle_plan）
+  //
+  // 单根（mainpack + pack）与多根（mainpack + pack + pack-<name>）共用同一套读取通道，
+  // 区别只在**一个逻辑路径落到哪个根**。判据是发布期由 `assetc` 写进包根的
+  // `bundle_plan.json`（docs/67 §5.4）；路由规则本身不在这里重写——直接调
+  // `bundle-roots.js`（与发布侧 bundle-layout.js 共用同一套根命名）。
+  //
+  // 为什么计划表要放在**主包可读**的位置：它是"要挂哪些分包根"的唯一依据，而分包根
+  // 未挂载前读不到自己目录里的文件。发布侧（apply-bundle-layout.ps1）会把计划表复制到
+  // launcher 根；**只有根上那一份才是多根开关**。
+  //
+  // 不能顺手去 mainpack/ 或 pack/ 找：单分包形态的 `first-screen-pack.js` 也会把
+  // `bundle_plan.json` 当首屏文件搬进 mainpack/（真实产物里就是这样），但那份计划里的
+  // `sub:<name>` 单元在物理上仍全在 `pack/` 一个分包根下——照它路由会去找 `pack-audio/`
+  // 这种根本不存在的根。根上那份由 `-MultiSub` 的 apply 步骤显式写出，语义无歧义。
+  //
+  // 没有根计划表 = 旧单根形态：所有分支保持原样（逐字节不变），多根逻辑完全不进来。
+  var BUNDLE_PLAN_FILE = 'bundle_plan.json';
+  var bundlePlanLoaded = false;
+  var bundlePlan = null;
+  var bundlePlanError = '';
+  var bundlePlanMisses = 0;
+  var bundlePlanMissSamples = [];
+  // 每个包根的挂载状态机：idle | loading | ready | failed | absent。
+  // 单根形态下只有 `pack` 一个根，`packState` 继续作为它的**镜像**（界面/诊断读的是它）。
+  var rootStates = Object.create(null);
+  var rootPromises = Object.create(null);
+  var rootAttempts = Object.create(null);
+  var rootFailures = Object.create(null);
+  var rootProgress = Object.create(null);
+  var rootMountFrame = Object.create(null);
+  var rootRetryCooldownUntil = Object.create(null);
+  // boot 前预挂具名根期间，等待画面要画进度条（此时 packState 可能仍是 idle/absent）。
+  var bootMountPending = 0;
+
+  // 主包内可读的原始文本：**不经过** user-data 方言（那要先算发布标识、读 manifest）。
+  function readBootText(name) {
+    var fs = fsManager();
+    if (!fs || typeof fs.readFileSync !== 'function') return null;
+    var candidates = [name, '/' + name, './' + name];
+    for (var i = 0; i < candidates.length; i++) {
+      var text = null;
+      try { text = fs.readFileSync(candidates[i], 'utf8'); } catch (error) { text = null; }
+      if (typeof text === 'string' && text.length > 0) return text;
+      // 个别宿主不认第二个 encoding 参数（`--wx-path-style no-utf8`）：退回原始字节再解码。
+      try {
+        var bytes = bytesFrom(fs.readFileSync(candidates[i]));
+        if (bytes) return decodeUtf8(bytes);
+      } catch (error2) { /* 试下一个前缀 */ }
+    }
+    return null;
+  }
+
+  function loadBundleRootsModule() {
+    try {
+      // 微信支持 CommonJS；无头单测的 vm 上下文里可能没有 require（那时就没有计划表语义）。
+      if (typeof require === 'function') return require('./bundle-roots.js');
+    } catch (error) {
+      bundlePlanError = 'bundle-roots 加载失败: ' + hostError(error);
+    }
+    return null;
+  }
+
+  // 惰性只读一次。解析失败**响亮一次**但绝不掀翻启动：旧单根形态照常工作，
+  // 只是多根产物会退化成"所有路径都按 pack/ 读"，症状是可诊断的（diagnostics.bundle.error）。
+  function loadBundlePlan() {
+    if (bundlePlanLoaded) return bundlePlan;
+    bundlePlanLoaded = true;
+    var api = loadBundleRootsModule();
+    if (!api || typeof api.parsePlan !== 'function') return null;
+    // **只认 launcher 根这一份**（多根开关）；理由见上面那段长注释。
+    var file = BUNDLE_PLAN_FILE;
+    var text = readBootText(file);
+    if (!text) return null;
+    // 只有 `bundle-layout --apply` 写到 launcher 根的那份带 `launcher_root: true`；
+    // `pack/bundle_plan.json` 是工具链对账用的副本，没有这个标记。某些宿主（sub-root 档）
+    // 会把根路径回落到 pack/，不校验标记就会把单分包产物误判成多根。
+    try {
+      var meta = JSON.parse(text);
+      if (!meta || meta.launcher_root !== true) return null;
+    } catch (error0) {
+      bundlePlanError = BUNDLE_PLAN_FILE + ' 解析失败: ' + hostError(error0);
+      logError('[wechat-adapter] ' + bundlePlanError + '（按旧单根形态继续）');
+      return null;
+    }
+    var index = null;
+    try {
+      index = api.planRootIndex(api.parsePlan(text));
+    } catch (error) {
+      bundlePlanError = BUNDLE_PLAN_FILE + ' 解析失败: ' + hostError(error);
+      logError('[wechat-adapter] ' + bundlePlanError + '（按旧单根形态继续；多根产物会读不到 pack-<name>/ 下的资源）');
+      return null;
+    }
+    bundlePlan = { api: api, index: index, file: file, roots: Object.keys(index.roots).sort() };
+    log('wechat-adapter: 多根布局 ' + bundlePlan.roots.join(',') + '（计划表 ' + file + '，' +
+      Object.keys(index.pathRoot).length + ' 条路径）');
+    return bundlePlan;
+  }
+
+  // 逻辑路径（`pack/<相对路径>`）→ 计划表里的包根；计划外/无计划返回 null。
+  function planRootFor(path) {
+    if (!bundlePlan || path.indexOf(PACK_PREFIX) !== 0) return null;
+    return bundlePlan.api.rootForPath(bundlePlan.index, path.slice(PACK_PREFIX.length));
+  }
+
+  // 计划表里有没有非主包根（决定"要不要改写 Image.src"；与"wasm 在不在分包"是两件事）。
+  function planHasSubRoots() {
+    if (!bundlePlan) return false;
+    for (var i = 0; i < bundlePlan.roots.length; i++) {
+      if (bundlePlan.roots[i] !== ROOT_MAIN) return true;
+    }
+    return false;
+  }
+
+  // boot 前要预挂的非主包根（mainpack 随包存在，不需要 loadSubpackage）。
+  function planNonMainRoots() {
+    if (!bundlePlan) return [];
+    var roots = [];
+    for (var i = 0; i < bundlePlan.roots.length; i++) {
+      if (bundlePlan.roots[i] !== ROOT_MAIN) roots.push(bundlePlan.roots[i]);
+    }
+    return roots;
+  }
+
+  // 计划外的 `pack/…` 路径：不静默拼根，记一条可诊断的样本后按旧单根规则回落。
+  // （典型来源：运行时生成文件、发布链追加的元数据；真正的资源缺件会在读取失败日志里出现。）
+  function notePlanMiss(path) {
+    bundlePlanMisses += 1;
+    if (bundlePlanMissSamples.length < 8) bundlePlanMissSamples.push(path);
+  }
+
+  // 诊断读数：计划表是否生效、每个根挂到哪一步、计划外路径有多少（附前 8 条样本）。
+  // 真机上这是"多根布局到底走没走"的唯一凭据（与 layout/pack 两个既有读数并列）。
+  function bundlePlanInfo() {
+    var roots = {};
+    if (bundlePlan) {
+      for (var i = 0; i < bundlePlan.roots.length; i++) {
+        var root = bundlePlan.roots[i];
+        var entry = bundlePlan.index.roots[root] || {};
+        roots[root] = {
+          unit: entry.unit || '',
+          state: rootStates[root] || 'idle',
+          attempted: (rootAttempts[root] || 0) > 0,
+          attempts: rootAttempts[root] || 0,
+          mount_frame: rootMountFrame[root] === undefined ? -1 : rootMountFrame[root],
+          progress: rootProgress[root] || 0,
+          failure: rootFailures[root] ? String(rootFailures[root]).slice(0, 160) : '',
+          bundles: entry.bundles || []
+        };
+      }
+    }
+    return {
+      plan: !!bundlePlan,
+      file: bundlePlan ? bundlePlan.file : '',
+      error: bundlePlanError,
+      wasm_root: bundlePlan ? wasmPlannedRoot() : '',
+      roots: roots,
+      root_names: bundlePlan ? bundlePlan.roots : [],
+      boot_roots: planNonMainRoots(),
+      boot_mount_pending: bootMountPending,
+      plan_misses: bundlePlanMisses,
+      miss_samples: bundlePlanMissSamples.slice()
+    };
   }
 
   // 代码包改名映射：逻辑路径（pack 相对，`/` 分隔）→ 会随代码包上传的宿主文件名。
@@ -238,20 +417,34 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 逻辑路径（`pack/<相对路径>`）是否属于首屏（主包侧）。
   function isFirstScreenPath(path) {
     if (path.indexOf(PACK_PREFIX) !== 0) return false;
+    // 多根形态下"首屏"就是单元 main：判据来自计划表，不再看首屏清单。
+    var root = planRootFor(path);
+    if (bundlePlan && root) return root === ROOT_MAIN;
     var manifest = firstScreenKeys();
     if (!manifest) return false;
     return !!manifest.entries[path.slice(PACK_PREFIX.length)];
   }
 
-  // 这个逻辑路径是否"必须等分包挂载"：pack/ 前缀 + 清单声明了分包（见 packSubpackageName）+ 不在首屏清单里。
+  // 读这个逻辑路径之前要挂哪个包根；null = 主包/根目录文件，不需要挂载。
+  // 多根形态以计划表为准；旧单根形态保持原判据（首屏清单 + layout.subpackage_root）。
+  function mountRootForPath(path) {
+    var root = planRootFor(path);
+    if (bundlePlan && root) return root === ROOT_MAIN ? null : root;
+    if (path.indexOf(PACK_PREFIX) !== 0) return null;
+    if (isFirstScreenPath(path)) return null;
+    return hasPackSubpackage() ? packSubpackageName() : null;
+  }
+
+  // 这个逻辑路径是否"必须等分包挂载"：读之前要挂的根还没结算。
   // 用于 Image.src 那条**同步**通道：分包还没挂载就交给宿主，宿主会立刻 onerror，
   // 而运行时的 loadImage 以第一次 onerror 为准——那时再挂载也救不回这张贴图。
   function needsPackMount(path) {
     var normalized = normalizePath(path);
-    if (normalized.indexOf(PACK_PREFIX) !== 0) return false;
-    if (isFirstScreenPath(normalized)) return false;
-    if (packState === 'ready' || packState === 'absent' || packState === 'failed') return false;
-    return hasPackSubpackage();
+    var root = mountRootForPath(normalized);
+    if (!root) return false;
+    var state = rootStates[root] || 'idle';
+    if (state === 'ready' || state === 'absent' || state === 'failed') return false;
+    return true;
   }
 
   // 逻辑路径 → **读取主体**。分包形态下 `pack/<x>` 若在首屏清单里，真正该读的是
@@ -270,12 +463,17 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 映射对两个主体都生效（主包侧 mainpack/ 与分包侧 pack/ 用的是同一张表、同一个键域）。
   function readSubjects(path) {
     if (path.indexOf(PACK_PREFIX) !== 0) {
-      // 根目录文件（game.json / remote-assets.json / mainpack.json…）不走 pack/ 键域，原样返回。
+      // 根目录文件（game.json / remote-assets.json / pack.json…）不走 pack/ 键域，原样返回。
       return [path];
     }
     var logical = path.slice(PACK_PREFIX.length);
     var host = hostFileFor(logical);
-    if (!isFirstScreenPath(path)) return [PACK_PREFIX + host];
+    // 多根形态：路径属于哪个单元，就去哪个根读。**只查表、不拼目录**——
+    // 根命名由 bundle-roots.js 与发布侧 bundle-layout.js 共同钉住。
+    var root = planRootFor(path);
+    if (bundlePlan && root) return [root + '/' + host];
+    if (bundlePlan) notePlanMiss(path);
+    if (!isFirstScreenPath(path)) return [PACK_SUBPACKAGE + '/' + host];
     return [MAINPACK_DIR + host];
   }
 
@@ -302,12 +500,18 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 方言记忆用的键：按**读取主体**分。理由有两条，都来自真实宿主形态：
   //   ① mainpack/ 下的文件物理上就在 launcher 根下，与 game.json / remote-assets.json 同级，
   //      必须共用同一套路径语义（--wx-path-style root/slash 就是这种"根相对"宿主）；
-  //   ② pack/ 是**分包根**，宿主可能给它完全另一套语义（--wx-path-style sub-root 就是这样：
-  //      主包里根本没有 pack/ 目录，只有去掉前缀的分包根相对路径能读到）。
+  //   ② pack/ 与 pack-<name>/ 是**分包根**，宿主可能给它完全另一套语义（--wx-path-style
+  //      sub-root 就是这样：主包里根本没有这些目录，只有去掉前缀的分包根相对路径能读到）。
   // 两套语义同时存在时，用同一个键会互相覆盖——功能上仍能读通（策略表会逐个回退），
   // 但"已探明的形式"这个诊断就永远是错的，而它正是排查"文本读得到图片 404"的唯一线索。
+  function isPackRootSubject(subject) {
+    if (subject.indexOf(PACK_SUBPACKAGE + '/') === 0) return true;
+    var slash = subject.indexOf('/');
+    return slash > 0 && subject.slice(0, slash).indexOf('pack-') === 0;
+  }
+
   function strategyKeyOf(subject) {
-    return subject.indexOf(PACK_PREFIX) === 0 ? 'pack' : 'main';
+    return isPackRootSubject(subject) ? 'pack' : 'main';
   }
 
   // ---- 宿主 FS 的**路由包装**：让所有读者共用同一张首屏清单 ----------------------
@@ -359,8 +563,9 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
 
   function shouldRouteFsPath(path) {
     if (typeof path !== 'string' || path.indexOf(PACK_PREFIX) !== 0) return false;
-    // 清单没读到 ⇒ 没有路由可言（full / remote 形态正是这条路），保持宿主语义。
-    if (!loadFirstScreenManifest()) { fsRouteSkipped += 1; return false; }
+    // 多根形态的路由依据是计划表；旧单根形态仍看首屏清单。
+    // 两者都没有 ⇒ 没有路由可言（full / remote 形态正是这条路），保持宿主语义。
+    if (!loadBundlePlan() && !loadFirstScreenManifest()) { fsRouteSkipped += 1; return false; }
     fsRouteTried += 1;
     return true;
   }
@@ -427,11 +632,14 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       // 宿主不许改写：退回"包住当前这一个实例"。功能等价，只是宿主若每次返回新对象就漏掉。
       try { fsRouteWrapped = wrapFsRouting(original.call(wx)); } catch (error2) { fsRouteWrapped = false; }
     }
+    // 计划表**在清单之前**加载：多根产物可以没有 pack.json（首屏切分让位于 bundle 布局），
+    // 而计划表同时回答"读哪个根"和"要挂哪些根"。两者读的都是主包内的根目录文件，不会递归。
+    try { loadBundlePlan(); } catch (error) { /* 解析失败已在内部响亮记录 */ }
     // 清单**在这里就加载**（原来只在第一次 pack/ 读取时惰性加载）：启动期最早的几次
     // `pack/…` 读取（web-runtime.js 一进来就问 manifest.txt）会赶在清单加载之前发生，
     // 那些读取只能按原样打到宿主上、在分包挂载前被挡。实测（2026-10-09，分包形态无头 harness）：
     // 6 次被挡里有 2 次属于这一类，`fs_route.skipped_no_manifest` 就是它的计数。
-    // 读的是主包里的 mainpack.json（不带 pack/ 前缀、不经过路由），所以不会递归。
+    // 读的是主包里的 pack.json（不带 pack/ 前缀、不经过路由），所以不会递归。
     try { loadFirstScreenManifest(); } catch (error) { /* 读不到就维持"无清单"语义 */ }
     return fsRouteWrapped;
   }
@@ -466,8 +674,12 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     var fs = fsManager();
     if (!fs) return null;
     // pack/ 的路由必须早于**任何** pack/ 读取：否则首屏文件会被当成"包内没有"去等分包。
-    // 惰性加载一次，之后是纯内存查表（loadFirstScreenManifest 读的是主包文件，不会递归进来）。
-    if (path.indexOf(PACK_PREFIX) === 0) loadFirstScreenManifest();
+    // 计划表（多根）与首屏清单（单根）都惰性加载一次，之后是纯内存查表
+    // （两者读的都是主包文件，不会递归进来）。
+    if (path.indexOf(PACK_PREFIX) === 0) {
+      loadBundlePlan();
+      loadFirstScreenManifest();
+    }
     // 作用域按**逻辑路径**分（不按主体）：分包形态下 mainpack/ 与 pack/ 都是"代码包相对路径"
     // 这一套语义（同一份代码、同一个宿主），资源来源统计跟着逻辑路径走才连续。方言记忆则按
     // **主体**分（strategyKeyOf），理由见那里的注释。
@@ -1108,10 +1320,9 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
 
   // ---------------------------------------------------------------- pack/ 资源载入
 
-  var packReady = null;
-  // 分包载入状态机：idle（还没试）| loading | ready（已挂载）| failed | absent（game.json 没声明）。
-  // 显式记状态而不是只看 Promise，是因为三件事都要读它：进度条要不要画（loading）、
-  // 失败横幅要不要画（failed）、以及失败后要不要再下一次（冷却，见 ensurePack）。
+  // 分包载入状态机（**主根镜像**）：idle（还没试）| loading | ready（已挂载）| failed | absent。
+  // 多根形态下每个根各有自己的状态（rootStates），这里保留的是"boot 要等的那个根"的镜像，
+  // 界面/诊断继续读它，旧读数的语义不变。
   var packState = 'idle';
   var packProgress = 0;
   var packProgressEvents = 0;
@@ -1120,7 +1331,6 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 失败（分包永远不会就绪，而失败通道只挂在"挂载失败"上，屏幕上不会有任何提示）。
   var packMountAttempts = 0;
   var packFailure = '';
-  var packRetryCooldownUntil = 0;
   // 失败后的重试冷却：不设的话每一次 pack/ 读取都会重新下一次包 → 重试风暴（真机上表现为反复下载）。
   // 10 秒是"玩家从标题进到玩法场景"的量级：够短（网络恢复后能自己好），够长（不会刷屏下载）。
   var PACK_RETRY_COOLDOWN_MS = 10000;
@@ -1135,10 +1345,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 宿主既不 success 也不 fail 时的兜底：不能让 Promise 永远悬着（等它的资源读取会跟着永远挂住）。
   var PACK_LOAD_TIMEOUT_MS = 20000;
 
-  // `pack/` 是不是**分包**、以及它叫什么名字 —— 判据必须是**我们自己打进包里的数据**，
-  // **不能读 `game.json`**。
+  // `pack/`（或计划表里的某个分包根）是不是**分包**、以及启动要等的那一个叫什么名字。
   //
-  // 实测（真机/开发者工具同一形态，2026-09-16）：宿主对 `readFileSync('game.json')` 一律拒绝——
+  // 判据必须是**我们自己打进包里的数据**，**不能读 `game.json`**：
+  // 实测（真机/开发者工具同一形态，2026-09-16）宿主对 `readFileSync('game.json')` 一律拒绝——
   //   user-data:  http://usr/game.json … no such file or directory
   //   root-relative / leading-slash / dot-prefix: readFileSync:fail permission denied
   // 它是**平台配置**，宿主只在自己解析时用，不向 FileSystemManager 开放（与小程序侧 `app.json`
@@ -1146,11 +1356,15 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // **静默退化**：判定成"没声明分包" → 一次 loadSubpackage 都不调 → pack/ 永远读不到 →
   // 进玩法场景缺素材。并且**一声不响**：失败通道挂在"挂载失败"上，这里压根没去挂载。
   //
-  // 现在的判据是首屏清单 `mainpack.json` 的 `layout.subpackage_root`：同一份清单既回答
-  // "这个逻辑路径读主包还是读分包"，也回答"要不要挂分包"，两者同源就不会互相矛盾；
-  // 而且它本来就在启动路径上被读（已实测可读）。没有清单（full / remote 形态）⇒ 不是分包
-  // ⇒ 不挂载，也就没有假失败噪音。
+  // 单根形态的判据是首屏清单 `pack.json` 的 `layout.subpackage_root`；多根形态的判据是
+  // `bundle_plan.json`（wasm 落在哪个单元就等哪个根）。没有清单也没有计划表（full / remote
+  // 形态）⇒ 不是分包 ⇒ 不挂载，也就没有假失败噪音。
   function packSubpackageName() {
+    if (bundlePlan) {
+      var primary = primaryMountRoot();
+      if (primary) return primary;
+      return bundlePlan.index.roots[PACK_SUBPACKAGE] ? PACK_SUBPACKAGE : '';
+    }
     var manifest = firstScreenKeys();
     var layout = manifest && manifest.layout;
     var name = layout && layout.subpackage_root;
@@ -1158,7 +1372,55 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   }
 
   function hasPackSubpackage() {
+    // 多根：有任何一个非主包根都算"有分包"（诊断/改写判据）；具体要不要挂/挂哪个由
+    // mountRootForPath 按计划表回答。
+    if (bundlePlan) return planHasSubRoots();
     return packSubpackageName() !== '';
+  }
+
+  // wasm 内核这次落在**哪个根、哪条宿主路径**。计划表通常**不含** wasm（它是发布链在内核
+  // 编译后追加的）：多根布局里它留在原资源根 `pack/`。
+  //   · 计划里有 `pack` 根 ⇒ `pack/` 是分包，内核在分包里，boot 前必须挂它；
+  //   · 计划里没有 `pack` 根（只有具名分包）⇒ `pack/` 不再被声明为分包，它在**主包**里，
+  //     直接可读、不挂载（这是唯一正确解：去找 `pack-<name>/game_web_bg.wasm` 是不存在的）。
+  function wasmLocation() {
+    if (bundlePlan) {
+      var root = bundlePlan.api.rootForPath(bundlePlan.index, 'game_web_bg.wasm');
+      if (root) return { root: root, path: root + '/game_web_bg.wasm' };
+      if (bundlePlan.index.roots[PACK_SUBPACKAGE]) {
+        return { root: PACK_SUBPACKAGE, path: PACK_SUBPACKAGE + '/game_web_bg.wasm' };
+      }
+      return { root: ROOT_MAIN, path: WASM_MODULE_PATH_MAIN };
+    }
+    // 单根/默认形态没有根计划表：pack.json 的 layout.wasm_root 是唯一依据
+    //（package.ps1 现在把内核固定放 pack-wasm/，不再与资源同根）。
+    var firstScreen = firstScreenKeys();
+    var layout = firstScreen && firstScreen.layout;
+    if (layout && layout.wasm_root) {
+      var wasmRoot = String(layout.wasm_root).replace(/\/$/, '');
+      return { root: wasmRoot, path: wasmRoot + '/game_web_bg.wasm' };
+    }
+    if (hasPackSubpackage()) return { root: packSubpackageName(), path: WASM_MODULE_PATH_PACK };
+    return { root: ROOT_MAIN, path: WASM_MODULE_PATH_MAIN };
+  }
+
+  // 计划形态下 wasm 所在根（诊断用）；无计划返回 null。
+  function wasmPlannedRoot() {
+    return bundlePlan ? wasmLocation().root : null;
+  }
+
+  // boot 要等的根（= wasm 所在根）。null 表示内核在主包，不需要等任何分包。
+  function primaryMountRoot() {
+    if (bundlePlan) {
+      var wasmRoot = wasmPlannedRoot();
+      return wasmRoot && wasmRoot !== ROOT_MAIN ? wasmRoot : null;
+    }
+    var root = wasmLocation().root;
+    return root && root !== ROOT_MAIN ? root : null;
+  }
+
+  function isPrimaryRoot(root) {
+    return root === primaryMountRoot();
   }
 
   // wasm 内核这次到底在**主包**还是在**分包**——启动路径上三处都要用到这个判据
@@ -1166,22 +1428,26 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 判据跟着形态而不是跟着"文件此刻在不在"：分包未挂载时 `pack/game_web_bg.wasm`
   // 读不到，那正是"要等分包"的信号，不是"退回主包路径"的理由（主包里根本没有它）。
   function isWasmInPack() {
-    return hasPackSubpackage();
+    return wasmLocation().root !== ROOT_MAIN;
   }
 
   function wasmModulePath() {
-    return isWasmInPack() ? WASM_MODULE_PATH_PACK : WASM_MODULE_PATH_MAIN;
+    return wasmLocation().path;
   }
 
   // 进度回调只服务于"给玩家看见还在下"：真机上分包是几十 MB 量级的下载，微信端却**没有**
   // 任何 loading UI（statusElement 是个 no-op 对象），所以这条进度是我们唯一的可见证据。
-  function attachPackProgress(task) {
+  function attachPackProgress(task, root) {
     if (!task || typeof task.onProgressUpdate !== 'function') return false;
     try {
       task.onProgressUpdate(function (res) {
-        packProgressEvents += 1;
         var value = res && typeof res.progress === 'number' ? res.progress : 0;
-        packProgress = Math.max(0, Math.min(100, Math.round(value)));
+        value = Math.max(0, Math.min(100, Math.round(value)));
+        rootProgress[root] = value;
+        if (isPrimaryRoot(root)) {
+          packProgressEvents += 1;
+          packProgress = value;
+        }
       });
       return true;
     } catch (error) {
@@ -1190,61 +1456,78 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     }
   }
 
-  // `pack/`（声明为分包时）按需载入；多次调用共享同一个 Promise（失败不缓存，冷却后允许重试）。
+  // 挂载一个包根；多次调用共享同一个 Promise（失败不缓存，冷却后允许重试）。
   //
   // **绝不 reject**：加载失败一律 resolve(false) 并走可见的失败通道（console.error +
   // data-rustlua-pack=failed + 屏幕红横幅）。理由：调用方既有 `fetchShim`（它要的是"能不能读"）
   // 也有 `start()`（它代表**整局启动**）。让一个分包下载失败去 reject 启动 Promise，结果是
   // 标题画面已经画出来了却被整屏错误页盖掉——黑屏、且比"分包没挂上"更难排查。
-  function ensurePack() {
-    if (packState === 'ready') return Promise.resolve(true);
-    if (packState === 'absent') return Promise.resolve(false);
-    if (packReady) return packReady;
-    // 未声明分包（清单里没有 subpackage_root）：不需要也不应该 loadSubpackage，按普通目录读取。
-    if (!hasPackSubpackage()) {
-      packState = 'absent';
-      log('wechat-adapter: 本包未声明 ' + PACK_SUBPACKAGE + ' 分包（pack/ 按主包内普通目录读取，与远端回落/包内完整两种形态一致）');
-      return Promise.resolve(false);
-    }
-    var mountName = packSubpackageName() || PACK_SUBPACKAGE;
+  function ensureRoot(root) {
+    if (!root || root === ROOT_MAIN) return Promise.resolve(false);
+    var state = rootStates[root] || 'idle';
+    if (state === 'ready') return Promise.resolve(true);
+    if (state === 'absent') return Promise.resolve(false);
+    if (rootPromises[root]) return rootPromises[root];
     if (typeof wx.loadSubpackage !== 'function') {
-      warn('wechat-adapter: 宿主没有 wx.loadSubpackage，但首屏清单声明了 ' + mountName + ' 分包');
-      packState = 'absent';
+      warn('wechat-adapter: 宿主没有 wx.loadSubpackage，但计划表声明了 ' + root + ' 分包');
+      rootStates[root] = 'absent';
+      if (isPrimaryRoot(root)) packState = 'absent';
       return Promise.resolve(false);
     }
-    if (packState === 'failed' && Date.now() < packRetryCooldownUntil) return Promise.resolve(false);
-    packState = 'loading';
-    packReady = new Promise(function (resolve) {
+    if (state === 'failed' && Date.now() < (rootRetryCooldownUntil[root] || 0)) return Promise.resolve(false);
+    rootStates[root] = 'loading';
+    if (isPrimaryRoot(root)) packState = 'loading';
+    rootPromises[root] = new Promise(function (resolve) {
       var settled = false;
       function finish(ok, err) {
         if (settled) return;
         settled = true;
         if (ok) {
-          packState = 'ready';
-          packMountFrame = frameCount;
+          rootStates[root] = 'ready';
+          rootMountFrame[root] = frameCount;
           // 挂载成功的瞬间个别宿主还没把文件挂上：开一个短重试窗口（见 readTextWithRetry）。
           packRetryDeadline = Date.now() + PACK_RETRY_WINDOW_MS;
-          log('wechat-adapter: ' + mountName + ' 分包已挂载（第 ' + frameCount + ' 帧，进度回调 ' + packProgressEvents + ' 次）');
+          if (isPrimaryRoot(root)) {
+            packState = 'ready';
+            // 成功也要记挂载帧：diagnostics / harness 用 `pack.mount_frame` 判断"分包在游戏帧
+            // 循环起来之前就挂上了"（内核在分包时它必须是 0）。原实现只在失败分支赋值，
+            // 成功时永远是 -1，把这条证据变成了假红。
+            packMountFrame = frameCount;
+          }
+          // 懒加载：根 ready 之后把它的容器补进引擎（boot 前尚未 partial 挂载时由这里兜住）。
+          if (bundleBootMounted) mountPlanBundlesForRoot(root);
+          log('wechat-adapter: ' + root + ' 分包已挂载（第 ' + frameCount + ' 帧，进度回调 ' +
+            (isPrimaryRoot(root) ? packProgressEvents : 0) + ' 次）');
           resolve(true);
           return;
         }
-        packReady = null;
-        packState = 'failed';
-        packRetryCooldownUntil = Date.now() + packRetryCooldownMs();
-        packFailure = mountName + ' 分包载入失败: ' + ((err && err.errMsg) || err);
-        // 失败必须**响亮**，但**不能**掀翻启动 Promise（见函数头注释）。三条通道同时给：
-        // 控制台（开发者工具）、属性（无头 harness/自动化）、屏幕横幅（真机上唯一可用的那条）。
-        console.error('[wechat-adapter] ' + packFailure + ' 现场：' + JSON.stringify(diagSnapshot()));
-        bodyElement.setAttribute('data-rustlua-pack', 'failed');
-        bodyElement.setAttribute('data-rustlua-pack-detail', packFailure.slice(0, 200));
+        rootPromises[root] = null;
+        rootStates[root] = 'failed';
+        rootRetryCooldownUntil[root] = Date.now() + packRetryCooldownMs();
+        rootFailures[root] = root + ' 分包载入失败: ' + ((err && err.errMsg) || err);
+        if (isPrimaryRoot(root)) {
+          packState = 'failed';
+          packMountFrame = rootMountFrame[root] === undefined ? -1 : rootMountFrame[root];
+          packFailure = rootFailures[root];
+          // 失败必须**响亮**，但**不能**掀翻启动 Promise（见函数头注释）。三条通道同时给：
+          // 控制台（开发者工具）、属性（无头 harness/自动化）、屏幕横幅（真机上唯一可用的那条）。
+          console.error('[wechat-adapter] ' + packFailure + ' 现场：' + JSON.stringify(diagSnapshot()));
+          bodyElement.setAttribute('data-rustlua-pack', 'failed');
+          bodyElement.setAttribute('data-rustlua-pack-detail', packFailure.slice(0, 200));
+        } else {
+          // 非主根失败不挡启动，但绝不能静默：读到它下面的资源时会反复失败，先在这里报一次。
+          console.error('[wechat-adapter] ' + rootFailures[root]);
+          bodyElement.setAttribute('data-rustlua-root-failed', rootFailures[root].slice(0, 200));
+        }
         publishDiag();
         resolve(false);
       }
       var task = null;
       try {
-        packMountAttempts += 1;
+        rootAttempts[root] = (rootAttempts[root] || 0) + 1;
+        if (isPrimaryRoot(root)) packMountAttempts = rootAttempts[root];
         task = wx.loadSubpackage({
-          name: mountName,
+          name: root,
           success: function () { finish(true, null); },
           fail: function (err) { finish(false, err); }
         });
@@ -1252,12 +1535,150 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         finish(false, error);
         return;
       }
-      attachPackProgress(task);
+      attachPackProgress(task, root);
       setTimeout(function () {
         finish(false, { errMsg: 'loadSubpackage 无回调超时（' + PACK_LOAD_TIMEOUT_MS + 'ms）' });
       }, PACK_LOAD_TIMEOUT_MS);
     });
-    return packReady;
+    return rootPromises[root];
+  }
+
+  // 传统入口：只挂 boot 要等的那个根（内核在主包时返回 false 且不挂任何东西）。
+  function ensurePack() {
+    var root = primaryMountRoot();
+    if (!root) {
+      packState = 'absent';
+      if (!bundlePlan) {
+        log('wechat-adapter: 本包未声明 ' + PACK_SUBPACKAGE + ' 分包（pack/ 按主包内普通目录读取，与远端回落/包内完整两种形态一致）');
+      }
+      return Promise.resolve(false);
+    }
+    return ensureRoot(root);
+  }
+
+  // 单个逻辑路径 → 读之前先把它的根挂好（主包路径直接 resolve false）。
+  function ensureMountFor(path) {
+    var root = mountRootForPath(path);
+    return root ? ensureRoot(root) : Promise.resolve(false);
+  }
+
+  // 一个根里的容器逻辑路径（bundle_plan 的 group.bundle）。
+  function planBundlePathsForRoot(root) {
+    if (!bundlePlan) return [];
+    var entry = bundlePlan.index.roots[root];
+    return entry && entry.bundles ? entry.bundles.slice() : [];
+  }
+
+  // 把某个根已经挂上的容器补进引擎 BundleSet（幂等：引擎侧也会过滤已挂路径）。
+  // `hostOverride`/`readerOverride` 只给单测注入假宿主用；生产调用不传。
+  function mountPlanBundlesForRoot(root, hostOverride, readerOverride) {
+    var host = hostOverride || engineHostRef;
+    var reader = readerOverride || wechatReadFileRef;
+    if (!bundlePlan || !bundleBootMounted || !host ||
+        typeof host.mount_bundles_from_reader !== 'function' || !reader) {
+      return false;
+    }
+    if (mountedRootBundles[root]) return true;
+    var paths = planBundlePathsForRoot(root);
+    if (paths.length === 0) {
+      mountedRootBundles[root] = true;
+      return true;
+    }
+    try {
+      var mounted = host.mount_bundles_from_reader(JSON.stringify(paths), reader);
+      mountedRootBundles[root] = true;
+      log('wechat-adapter: 补挂 ' + root + ' 容器 ' + mounted + ' 个');
+      return true;
+    } catch (error) {
+      warn('wechat-adapter: 补挂 ' + root + ' 容器失败 -> ' + hostError(error));
+      return false;
+    }
+  }
+
+  // boot 时只挂"当前能读到的根"：主包容器 + 已挂的 wasm 根；具名根留给后台。
+  // 老内核没有 mount_from_reader_partial：返回 false，调用方退回全量预挂。
+  function mountPlanBootBundles(hostOverride, readerOverride) {
+    var host = hostOverride || engineHostRef;
+    var reader = readerOverride || wechatReadFileRef;
+    if (!bundlePlan || !host ||
+        typeof host.mount_from_reader_partial !== 'function' || !reader) {
+      return false;
+    }
+    var manifest = readText(PACK_PREFIX + 'manifest.txt', true);
+    if (!manifest) {
+      warn('wechat-adapter: 读不到 pack/manifest.txt，无法做多根 partial 挂载');
+      return false;
+    }
+    try {
+      var mounted = host.mount_from_reader_partial(manifest, reader);
+      bundleBootMounted = true;
+      log('wechat-adapter: boot 容器已挂载 ' + mounted + ' 个（具名根留给后台补挂）');
+      return true;
+    } catch (error) {
+      warn('wechat-adapter: boot partial 挂载失败 -> ' + hostError(error));
+      return false;
+    }
+  }
+
+  // preinstall 之后后台挂载其余根；root ready 后由 ensureRoot 的 success 钩子补容器。
+  function mountDeferredPlanRoots() {
+    var primary = primaryMountRoot();
+    var roots = planNonMainRoots();
+    if (!bundlePlan) {
+      // 默认 pack-wasm 形态没有根计划表：pack/ 是 boot 后后台挂的非启动资源根。
+      var firstScreen = firstScreenKeys();
+      var layout = firstScreen && firstScreen.layout;
+      var assetRoot = layout && layout.subpackage_root ? String(layout.subpackage_root).replace(/\/$/, '') : '';
+      if (assetRoot && assetRoot !== primary) roots = [assetRoot];
+    }
+    for (var i = 0; i < roots.length; i++) {
+      (function (root) {
+        if (root === primary) { mountPlanBundlesForRoot(root); return; }
+        ensureRoot(root).then(function (ok) {
+          if (ok && bundlePlan) mountPlanBundlesForRoot(root);
+        });
+      })(roots[i]);
+    }
+  }
+
+  // **老内核的回退路径**：把计划表里的全部非主包根按顺序挂好。
+  //
+  // 新内核有 `mount_from_reader_partial` / `mount_bundles_from_reader`：boot 只挂主包 + wasm 根，
+  // 具名根在 preinstall 之后后台补挂。老内核没有 partial 导出，`lua_boot_with_reader` 会严格
+  // 读全 manifest（缺容器即硬错误），只能全量预挂；本函数因此只在 partial 不可用时调用。
+  function ensureAllPlanRootsForBoot() {
+    var roots = planNonMainRoots();
+    if (!bundlePlan) {
+      var firstScreen = firstScreenKeys();
+      var layout = firstScreen && firstScreen.layout;
+      roots = [];
+      if (layout && layout.subpackage_root) roots.push(String(layout.subpackage_root).replace(/\/$/, ''));
+      if (layout && layout.wasm_root) {
+        var wr = String(layout.wasm_root).replace(/\/$/, '');
+        if (roots.indexOf(wr) < 0) roots.push(wr);
+      }
+    }
+    bootMountPending = roots.length;
+    if (roots.length === 0) return Promise.resolve(true);
+    log('wechat-adapter: boot 前预挂多根布局的 ' + roots.join(',') +
+      '（引擎会一次性读入全部容器，不能等首次访问）');
+    var allMounted = true;
+    var chain = Promise.resolve(true);
+    roots.forEach(function (root) {
+      chain = chain.then(function (ok) {
+        return ensureRoot(root).then(function (mounted) {
+          if (bootMountPending > 0) bootMountPending -= 1;
+          if (!mounted) {
+            allMounted = false;
+            // 不 reject：让 boot 走到引擎侧，由它把 "cannot read bundle" 连同根名一起报出来。
+            warn('wechat-adapter: boot 前挂载 ' + root + ' 失败；该根里的容器无法被引擎挂载');
+            bodyElement.setAttribute('data-rustlua-root-failed', root + ' 未就绪');
+          }
+          return ok && mounted;
+        });
+      });
+    });
+    return chain.then(function () { return allMounted; });
   }
 
   // boot 之前的挂载重试（只有"内核在分包里"这一种形态会走到）。
@@ -1269,9 +1690,9 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 再加一轮就是一分钟起步的进度条。**本机证明不了第二次重试救回的概率**（假包要么挂上要么挂不上，
   // 没有真机的抖动分布），能给的只有"失败不再一次性致命"这条下限。
   //
-  // 这里刻意绕过 `packRetryCooldownUntil`：那条 10 秒冷却是**读路径**防重试风暴用的（玩法场景中
+  // 这里刻意绕过每个根的失败冷却：那条 10 秒冷却是**读路径**防重试风暴用的（玩法场景中
   // 连续几十次 pack/ 读取都会撞上它），而 boot 这条链由自己掌握节奏，等满一个短退避就把冷却清零。
-  // 冷却清零不影响读路径的语义——那里真正的判据是 `packState`，重试成功后它变回 ready。
+  // 冷却清零不影响读路径的语义——那里真正的判据是根状态，重试成功后它变回 ready。
   var PACK_BOOT_ATTEMPT_LIMIT = 2;
   var PACK_BOOT_RETRY_DELAY_MS = 1500;
   var packBootRetryNotice = '';
@@ -1285,13 +1706,24 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       // absent = 本包压根没声明分包（宿主没有 loadSubpackage / 清单没有 root）：重试没有意义。
       if (packState === 'absent' || remainingRetries <= 0) {
         packBootRetryNotice = '';
+        if (isWasmInPack()) {
+          try {
+            writeBootMark('data-rustlua-boot', 'failed');
+            writeBootMark('data-rustlua-boot-detail',
+              '分包 ' + (primaryMountRoot() || PACK_SUBPACKAGE) + ' 未挂载，wasm 内核不可用');
+          } catch (markError) { /* 诊断标记写不进去不改变启动结论 */ }
+          wasmState.status = 'path-instantiate-failed';
+          wasmState.detail = 'wechat wasm: no such file ' + (primaryMountRoot() || PACK_SUBPACKAGE) +
+            '/game_web_bg.wasm（分包尚未挂载）';
+        }
         return false;
       }
       packBootRetryNotice = '分包下载失败，正在重试（还会再试 ' + remainingRetries + ' 次）…';
       return new Promise(function (resolve) {
         setTimeout(resolve, PACK_BOOT_RETRY_DELAY_MS);
       }).then(function () {
-        packRetryCooldownUntil = 0;
+        var root = primaryMountRoot();
+        if (root) rootRetryCooldownUntil[root] = 0;
         return ensurePackForBoot(remainingRetries - 1);
       });
     });
@@ -1345,8 +1777,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 下载完成等于把首屏白屏时间绑在分包大小上——而"首屏不等分包"正是分包形态存在的理由。
   function fetchShim(url) {
     var path = normalizePath(url);
-    var needsPack = path.indexOf(PACK_PREFIX) === 0 && !isFirstScreenPath(path);
-    return (needsPack ? ensurePack() : Promise.resolve(false)).then(function () {
+    // 读这个路径之前只挂它所在的根（多根形态 = 计划表回答；单根形态 = 首屏清单回答）。
+    var mountRoot = mountRootForPath(path);
+    var needsPack = !!mountRoot;
+    return (needsPack ? ensureRoot(mountRoot) : Promise.resolve(false)).then(function () {
       // 分包刚 loadSubpackage 成功时，个别宿主还没把文件挂上：对 pack/ 内文件做几次短重试，
       // 避免把"挂载竞态"误判成"文件不存在"。
       return needsPack ? readTextWithRetry(path) : readText(path);
@@ -1542,6 +1976,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // `attachWasmBridge` 里定义的微信同步读取器（`/project/…` → `pack/…`）。scene 档要在
   // begin **之前**用它预装 vfs reader provider（见 engineHostStart 里的注释），所以提到模块级。
   var wechatReadFileRef = null;
+  // 多根懒加载：boot 时只挂当前可读根（partial），具名根在 preinstall 之后后台挂载，
+  // ready 后调用 wasm 的 mount_bundles_from_reader 把该根容器补进 BundleSet。
+  var bundleBootMounted = false;
+  var mountedRootBundles = Object.create(null);
 
   function engineProbeEnabled() {
     try { if (globalThis.__RUSTLUA_GPU_PROBE === true) return true; } catch (error) { /* 无全局对象 */ }
@@ -1897,6 +2335,11 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     // 它先占了槽，运行时随后 `lua_boot` 装 reader 时"沿用现有"，main.lua 必炸
     // `vfs: resource not found: /project/scripts/main.lua` ⇒ boot=failed、rAF 链死。
     // 先用真 reader 装槽：RustScene 的读取落到真字节，运行时再 boot 沿用同一 provider。
+    // 多根懒加载：preinstall 前只挂当前可读根的容器（主包 + wasm 根）；具名根在 preinstall
+    // 之后由 mountDeferredPlanRoots 后台挂载。老内核没有 partial 导出时，调用方已全量预挂。
+    if (bundlePlan) {
+      if (!mountPlanBootBundles()) bundleBootMounted = true;
+    }
     if (sceneMode && typeof host.lua_boot_with_reader === 'function' && wechatReadFileRef) {
       try {
         host.lua_boot_with_reader(wechatReadFileRef);
@@ -1905,6 +2348,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       } catch (error) {
         warn('wechat-adapter: scene 档预装 reader provider 失败 -> ' + hostError(error));
       }
+    }
+    if (bundlePlan) {
+      bundleBootMounted = true;
+      mountDeferredPlanRoots();
     }
     if (tickWanted) {
       log('wechat-adapter: 引擎宿主将接管固定步（tick=lua）——运行时会因此停掉自己的固定步；'
@@ -2610,9 +3057,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         exports: wasmState.exports,
         detail: wasmState.detail,
         attempts: wasmState.attempts,
-        // EH 真机探针读数（并发跑、独立于 status）：`eh_probe=accepted` 说明设备引擎实现 wasm EH、
-        // 剥完 tag 导入的产物（含本地 $tag$0 + legacy try/catch）能落地；`reject[...]`/`timeout` 才是
-        // "得换不用 EH 的产物形态"的信号。见 wasm-bridge.js 的 probeEHAcceptance。
+        // EH 真机探针读数（并发、独立于 status）：accepted / reject[...] / timeout。
         ehProbe: ehProbeReadout,
         luaBridge: wasmState.luaBridge,
         hostApi: wasmState.hostApi
@@ -2629,7 +3074,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       // 分包形态的形态自证全靠这三个数：form=none 说明清单没读到（路由没生效），
       // mainpack_reads=0 说明首屏资源一次都没从主包读（清单漏列或路由失效）。
       layout: {
-        form: firstScreen ? 'mainpack+pack' : 'none',
+        form: bundlePlan ? 'bundle-roots' : (firstScreen ? 'pack+pack-sub' : 'none'),
         manifest: MAINPACK_MANIFEST,
         entries: firstScreen ? firstScreen.count : 0,
         mainpack_reads: mainpackReads
@@ -2647,6 +3092,8 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         mount_frame: packMountFrame,
         failure: packFailure ? packFailure.slice(0, 160) : ''
       },
+      // 多根布局（bundle_plan.json）：没有计划表时 plan=false，roots 为空——旧形态读数不变。
+      bundle: bundlePlanInfo(),
       // 代码包后缀白名单的改名情况：map_entries=0 说明 code-package.json 没读到
       // （真机上 `.lua` 会按原名去读 → 一个脚本都加载不了），lookups_hit 是"查表命中过几次"。
       upload_rules: renamingInfo(),
@@ -2912,12 +3359,14 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     var ctx = null;
     try { ctx = canvas.getContext('2d'); } catch (e) { ctx = null; }
     if (!ctx) return;
-    if (packState === 'loading') {
-      withAdapterDraw(ctx, drawLoadingBar);
-      return;
-    }
     if (packState === 'failed') {
       withAdapterDraw(ctx, packBootRetryNotice ? drawPackRetryNotice : drawPackFailure);
+      return;
+    }
+    // 具名根预挂期间 packState 可能是 idle/absent：仍然要画"正在下载资源…"，
+    // 否则玩家看到的是标题画面前纯黑/静止的十几秒。
+    if (packState === 'loading' || bootMountPending > 0) {
+      withAdapterDraw(ctx, drawLoadingBar);
     }
   }
 
@@ -3142,6 +3591,34 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     on('onTouchEnd', handleEnd);
     on('onTouchCancel', handleEnd);
 
+    // 开发者工具/PC 端有时把鼠标事件单独送进来（不合成 touch）。只注册宿主真实提供的 API，
+    // 保持"没有 mouse API 的手机端"完全无影响；有则走同一套 canvas mousedown/mousemove +
+    // window mouseup 路径，避免"看得见按钮但鼠标点不动"。
+    function mousePoint(res) {
+      var x = res && res.clientX != null ? res.clientX : (res && res.x);
+      var y = res && res.clientY != null ? res.clientY : (res && res.y);
+      return { clientX: Number(x) || 0, clientY: Number(y) || 0 };
+    }
+    function handleMouse(type, res) {
+      var point = mousePoint(res);
+      if (type === 'mousedown') {
+        movePointer(point, 'mousemove');
+        movePointer(point, 'mousedown', 0);
+      } else if (type === 'mouseup') {
+        movePointer(point, 'mouseup', 0);
+        dispatchWindow(makeEvent('mouseup', {
+          button: 0,
+          clientX: toCanvasX(point.clientX),
+          clientY: toCanvasY(point.clientY)
+        }));
+      } else {
+        movePointer(point, 'mousemove');
+      }
+    }
+    on('onMouseDown', function (res) { handleMouse('mousedown', res); });
+    on('onMouseMove', function (res) { handleMouse('mousemove', res); });
+    on('onMouseUp', function (res) { handleMouse('mouseup', res); });
+
     // 微信 PC 端小游戏支持键盘：直接桥接成运行时的 keydown/keyup。
     function normalizeKey(key) {
       var value = String(key == null ? '' : key);
@@ -3288,7 +3765,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   function loadGameFont() {
     var projectPath = PACK_PREFIX + 'project.toml';
     // project.toml 可能只在远端（资源移出包内时）——先确保它在本地，否则会静默跳过字体。
-    return ensureLocalAsset(projectPath).then(function () {
+    // 多根形态下它也可能落在非主包单元里（配置把 core 放错了），读之前先把那个根挂上。
+    return ensureMountFor(projectPath).then(function () {
+      return ensureLocalAsset(projectPath);
+    }).then(function () {
       var projectText = readText(projectPath);
       var relative = '';
       if (projectText) {
@@ -3305,7 +3785,9 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       // 自己的 FontFaceSet，抛 "parameter 1 is not of type 'FontFace'"。
       setWindowFlag('__RUSTLUA_FONT_OWNER', 'wechat-adapter');
       setWindowFlag('__RUSTLUA_FONT', fontPath);
-      return ensureLocalAsset(fontPath).then(function (result) {
+      return ensureMountFor(fontPath).then(function () {
+        return ensureLocalAsset(fontPath);
+      }).then(function (result) {
         if (!result.available) { warn('wechat-adapter: 字体资源不可得，中文将使用系统字体: ' + fontPath); return null; }
         // 优先用**那次读取真正成功**的宿主路径（分包形态下它已经被路由到 mainpack/）；
         // 只有拿不到时才回落到按方言重算（缓存命中与远端下载后是这种情况）。
@@ -3580,6 +4062,14 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       return { src: subject, source: 'package', pending: false };
     }
     if (needsPackMount(normalized)) {
+      // 音频的 `assetSrcFor` 是同步的：这里只发起挂载，不阻塞本次调用。下一次 play 会命中
+      // `package`（根 ready + 容器补挂完成）；否则具名根里的音频会永远停在 pending。
+      var pendingRoot = mountRootForPath(normalized);
+      if (pendingRoot) {
+        ensureRoot(pendingRoot).catch(function (error) {
+          warn('wechat-adapter: 音频资源挂载 ' + pendingRoot + ' 失败 -> ' + hostError(error));
+        });
+      }
       return { src: subject, source: 'pending', pending: true };
     }
     if (loadRemoteConfig()) {
@@ -3721,7 +4211,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // 这两种情况必须**响亮失败**：静默降级的结果是"画面全黑 + 日志里一条异常都没有"。
   function requiresSrcRewrite() {
     if (loadRemoteConfig()) return true;
-    // 分包形态 ⇔ 首屏清单存在（见 packSubpackageName）：首屏贴图被切到 mainpack/，
+    // 分包/多根形态 ⇔ 有非主包根：资源被切到 mainpack/ 或 pack-<name>/，
     // 运行时要的是 pack/ 前缀，不改写 src 就整批对不上。
     return hasPackSubpackage();
   }
@@ -3818,7 +4308,8 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
             // 成功 → 正确的 pack/ 路径；失败 → 原样交出去，让宿主按真实情况报错（响亮，不静默）。
             if (needsPackMount(requested)) {
               var deferred = current;
-              ensurePack().then(function () { hostSet(hostSrcFor(requested)); })
+              var imageRoot = mountRootForPath(normalized);
+              ensureRoot(imageRoot).then(function () { hostSet(hostSrcFor(requested)); })
                 .catch(function () { hostSet(deferred); });
               return;
             }
@@ -4049,6 +4540,18 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     return true;
   }
 
+  // 启动图固定在主包根（branding/splash.jpg），但它加载时可能还没读过任何代码包文件，
+  // 路径方言还没探明；直接把裸路径交给 Image.src，在"只认前导斜杠"的宿主上会 onerror
+  // （--wx-path-style slash 的隔离自测就是这条）。这里用与文本读取同一张策略表做一次
+  // 存在性探测（accessSync，不读 794 KB 图片），成功即返回宿主真能吃下的路径形式，
+  // 顺带把 main 方言学出来。
+  function resolveHostSrc(path) {
+    var result = readWithStrategies(path, function (fsm, candidate) {
+      try { fsm.accessSync(candidate); return true; } catch (error) { return null; }
+    });
+    return result ? result.candidate : hostSrcFor(path);
+  }
+
   function start(boot) {
     if (started) return Promise.resolve(false);
     started = true;
@@ -4067,6 +4570,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       getContext: rawGetContext,
       gpu: engineVisibleTakeover,
       createImage: function () { return wx.createImage(); },
+      resolveSrc: resolveHostSrc,
       requestFrame: typeof wx.requestAnimationFrame === 'function'
         ? function (callback) { wx.requestAnimationFrame(callback); }
         : (typeof canvas.requestAnimationFrame === 'function'
@@ -4118,8 +4622,16 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     // 首屏清单要在**任何** pack/ 读取之前就位（font 与 probe 都会读 pack/）。这里显式加载一次
     // 而不是只靠 readWithStrategies 里的惰性加载：清单缺失是"发布形态不对"的硬信号，值得一条日志。
     if (loadFirstScreenManifest()) {
-      bodyElement.setAttribute('data-rustlua-layout', 'mainpack+pack');
+      bodyElement.setAttribute('data-rustlua-layout', 'pack+pack-sub');
       bodyElement.setAttribute('data-rustlua-mainpack-entries', String(firstScreen.count));
+    }
+    // 多根布局：计划表在首屏清单之后读一次并自报根名。两者可以同时存在（清单仍供远端清单/
+    // 首屏兜底），但路由以计划表为准，所以属性放在后面覆盖。
+    var plan = loadBundlePlan();
+    if (plan) {
+      bodyElement.setAttribute('data-rustlua-layout', 'bundle-roots');
+      bodyElement.setAttribute('data-rustlua-bundle', plan.roots.join(','));
+      bodyElement.setAttribute('data-rustlua-bundle-wasm-root', String(wasmPlannedRoot()));
     }
     // 资源读取自检：分包形态下这三个探针在 mainpack/ 下，验证的正是**路由层本身**。
     probePackReadability();
@@ -4131,13 +4643,14 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     // **它返回 Promise**：小游戏宿主的 `WXWebAssembly.instantiate(代码包路径, imports)` 只有
     // 异步形态，所以这里只发起加载、把它排在 boot 之前完成（见下面的 wasmReady 链）。
     var wasmInPack = isWasmInPack();
+    // 内核在分包里 ⇒ boot 必须等 wasm 根；具名根不再 boot 前等（新内核走 partial + 后台补挂）。
+    if (wasmInPack) startPreBootUi();
     var wasmReady = null;
     if (wasmInPack) {
       // 内核在分包里 ⇒ **boot 必须排在分包挂载之后**（次序变了，这是本次搬迁的代价）：
       // 挂载期间由 JS 自己画进度条，因为运行时还没起来、Lua 一行都没跑。
       // 挂载失败**不再**是"标题照常出、玩法缺素材"——那时 instantiate 读不到内核，
       // boot 会失败并走 showBootError；文案由 drawPackFailure 按形态切换。
-      startPreBootUi();
       wasmReady = ensurePackForBoot(PACK_BOOT_ATTEMPT_LIMIT - 1).then(function (mounted) {
         if (!mounted) {
           // 立刻补画一次失败横幅，**再**停帧链：这一刻之后没有人驱动 afterFrame，
@@ -4146,8 +4659,17 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
           var failCtx = null;
           try { failCtx = canvas.getContext('2d'); } catch (ctxError) { failCtx = null; }
           withAdapterDraw(failCtx, drawPackFailure);
-          stopPreBootUi();
+          // boot 失败的权威标记必须在**这里**落：否则 wasm 实例化失败前
+          // `data-rustlua-boot` 仍是 null，负向门（--expect-pack-failure）读不到 failed。
+          try {
+            writeBootMark('data-rustlua-boot', 'failed');
+            writeBootMark('data-rustlua-boot-detail',
+              '分包 ' + (primaryMountRoot() || PACK_SUBPACKAGE) + ' 未挂载，wasm 内核不可用');
+          } catch (markError) { /* 诊断标记写不进去不改变启动结论 */ }
           warn('wechat-adapter: 分包没挂载，而 wasm 内核就在分包里 —— 实例化将失败（path-instantiate-failed），启动到此为止');
+          // 没有内核根就没有执行层：不要再去 loadWasmCoreOnce（那只会得到
+          // `not-attempted` 的含糊读数）。直接抛给 start() 的 catch，统一落 boot=failed。
+          throw new Error('分包 ' + (primaryMountRoot() || PACK_SUBPACKAGE) + ' 未挂载，wasm 内核不可用');
         } else {
           stopPreBootUi();
         }
@@ -4158,6 +4680,15 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       setBootPhase('wasm');
       wasmReady = loadWasmCoreOnce();
     }
+    // 老内核没有 `mount_from_reader_partial`：无法在 boot 时跳过具名根，只能全量预挂
+    // （新内核则保持懒加载，具名根在 engineHostStart 的 preinstall 之后补挂）。
+    wasmReady = wasmReady.then(function (result) {
+      if (bundlePlan && engineHostRef &&
+          typeof engineHostRef.mount_from_reader_partial !== 'function') {
+        return ensureAllPlanRootsForBoot().then(function () { return result; });
+      }
+      return result;
+    });
     // 画布与游戏版面的自检：`game.json` 的方向与画布尺寸必须和 `ui/layout.lua` 的设计分辨率
     // 对得上。**为什么值得单独自检**：Lua 面板画在屏幕像素空间、不做缩放，画布尺寸不对的表现是
     // "面板溢出画布"（边缘控件看不见），而这在无头验证里**不会报错**
@@ -4273,7 +4804,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     // 实测：画布 720×1280 对声明 1280×720 本该报 mismatch，实际却报 unknown——横竖屏错配
     // 一直没被发现，根因就在这里。
     try {
-      var toml = readWithStrategies('pack/project.toml', readTextRaw);
+      var toml = readWithStrategies(PACK_PREFIX + 'project.toml', readTextRaw);
       if (toml && typeof toml.value === 'string') {
         var mw = /window_width\s*=\s*(\d+)/.exec(toml.value);
         var mh = /window_height\s*=\s*(\d+)/.exec(toml.value);
@@ -4341,9 +4872,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // （见 start() 里的 loadGameFont 之前那一步）。
   var wasmState = { status: 'not-attempted' };
   var wasmLoadPromise = null;
-  // EH 真机探针的读数（`eh_probe=…`）：单独存，**不**挂在 wasmState 上——loadWasmCoreOnce 里的
-  // finish() 会整个替换 wasmState 对象，而探针与实例化并发、落点先后不定，挂上去会被 finish 抹掉。
-  // 探针永不 reject，最迟 3s 后一定写进来（宿主不兑现也是 timeout），诊断读到它只是迟早。
+  // EH 探针读数单独存（finish 会替换 wasmState，探针与实例化并发落点不定）。
   var ehProbeReadout = 'not-attempted';
   // 画布/版面一致性自检结果（见 reportViewAgreement），进 __RUSTLUA_DIAG().view_agreement。
   var viewAgreement = { declared: 'unknown', canvas: 'unknown', agree: null, orientation: 'unknown' };
@@ -4380,8 +4909,6 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         ehProbePath: EH_PROBE_PATH,
         onEhProbe: function (verdict) {
           ehProbeReadout = verdict;
-          // 落 console：真机 vconsole 里能直接看到设备对 wasm EH 的裁决（accepted / reject[...] /
-          // timeout），不必等 __RUSTLUA_DIAG 快照。诊断对象仍照旧存 ehProbeReadout（见上）。
           log('wasm-bridge: EH 真机探针裁决 = ' + verdict);
         },
         log: log
@@ -4446,11 +4973,13 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     engineHostRef = result.host;
     try {
       // wasm 侧 vfs 的路径形如 `/project/scripts/main.lua`；适配层 readText 只认
-      // `pack/` 前缀的逻辑路径（readSubjects 据此路由到 mainpack/ 首屏清单 + 改名表
+      // `pack/` 前缀的逻辑路径（readSubjects 据此按计划表路由到主包/分包根 + 改名表
       // hostFileFor）。包装器负责转换：剥 `/project/` → 补 `pack/` 前缀。
       function wechatReadFile(path) {
         var rel = String(path).replace(/^\/project\//, '');
-        if (rel.indexOf('pack/') !== 0) rel = 'pack/' + rel;
+        // 引擎里仍有一处硬编码 `pack/manifest.txt`（Rust 侧读发布清单），它已经带逻辑前缀；
+        // `/project/...` 与裸相对路径补上同一个前缀，后续路由都由 readSubjects 统一回答。
+        if (rel.indexOf(PACK_PREFIX) !== 0) rel = PACK_PREFIX + rel;
         // 按**字节**返回（0.7.11）：utf8 字符串通道会把 TTF/PNG 的非法序列静默换成
         // U+FFFD（实测：贴图 0/14 全失败 + 字体 InvalidFont，而 .lua 文本毫发无损）。
         // wasm 侧 provider 认 ArrayBuffer/Uint8Array，字符串只作旧通道回落。
@@ -4459,7 +4988,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         return readText(rel, true);
       }
       wechatReadFileRef = wechatReadFile;
-      window.__RUSTLUA_LUA_BRIDGE = {
+      setWindowFlag('__RUSTLUA_LUA_BRIDGE', {
         lua_boot: function () { return result.host.lua_boot_with_reader(wechatReadFile); },
         lua_do_string: result.host.lua_do_string,
         // 逐帧写 `__rustlua_dt` 用（不编译 chunk）。**门面是显式白名单**：Rust 侧加了导出
@@ -4542,7 +5071,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         // 前者给"桌面有哪些宿主全局"的唯一来源，后者导出运行期真实 _G 的表面。
         lua_api_surface_json: result.host.lua_api_surface_json,
         host_api_module_names_json: result.host.host_api_module_names_json
-      };
+      });
       wasmState.luaBridge = 'ok';
     } catch (error) {
       wasmState.luaBridge = 'error:' + hostError(error);
@@ -4552,7 +5081,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     //  诊断兼容；web-runtime.js 不再经它注册宿主全局。）
     if (typeof result.host.HostApi === 'function') {
       try {
-        window.__RUSTLUA_HOST_API = new result.host.HostApi(WECHAT_PUBLISH_NAME);
+        setWindowFlag('__RUSTLUA_HOST_API', new result.host.HostApi(WECHAT_PUBLISH_NAME));
         wasmState.hostApi = 'ok';
       } catch (error) {
         wasmState.hostApi = 'error:' + hostError(error);
@@ -4572,6 +5101,32 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     // 贴图那条走 patchImageSrc 改写 src，音频没有可改写的对象，只能问这里。
     assetSrcFor: assetSrcFor,
     ensurePack: ensurePack,
+    // 读某个逻辑路径之前把它的根挂好（多根形态用；主包路径直接 resolve false）。
+    ensureMountFor: ensureMountFor,
+    // 多根接线：计划表读数 + 单路径的"该去哪个根 / 现在挂没挂"。
+    // 验证侧（单测/harness）用它证明"路径真的按计划表路由，并且按需挂了对应的根"。
+    bundleInfo: bundlePlanInfo,
+    loadBundlePlan: loadBundlePlan,
+    mountInfoForPath: function (path) {
+      var normalized = normalizePath(path);
+      return {
+        root: mountRootForPath(normalized),
+        plan_root: planRootFor(normalized),
+        subject: readSubjects(normalized)[0]
+      };
+    },
+    ensureRootForPath: function (path) {
+      var normalized = normalizePath(path);
+      var root = mountRootForPath(normalized);
+      if (!root) return Promise.resolve({ root: null, mounted: true });
+      return ensureRoot(root).then(function (mounted) { return { root: root, mounted: mounted }; });
+    },
+    // boot 前全量预挂（老内核回退路径）；单测/验收用它钉住顺序与幂等。
+    prepareBundleRootsForBoot: ensureAllPlanRootsForBoot,
+    // 懒加载的两个步骤：partial 只挂当前可读根；根 ready 后按 root 补容器。
+    // 第二个参数是测试注入的假宿主（生产调用不传）。
+    preparePlanBootBundles: mountPlanBootBundles,
+    mountPlanBundlesForRoot: mountPlanBundlesForRoot,
     probePackReadability: probePackReadability,
     // 分包形态的形态入口：清单（路由依据）与分包状态。harness 的断言直接读这两个，
     // 不去猜内部变量名。
@@ -4583,7 +5138,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     firstScreenInfo: function () {
       var manifest = firstScreenKeys();
       return {
-        form: manifest ? 'mainpack+pack' : 'none',
+        form: bundlePlan ? 'bundle-roots' : (manifest ? 'pack+pack-sub' : 'none'),
         manifest: MAINPACK_MANIFEST,
         entries: manifest ? manifest.count : 0,
         layout: manifest ? manifest.layout : null,

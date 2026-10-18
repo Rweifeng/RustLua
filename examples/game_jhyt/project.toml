@@ -10,7 +10,12 @@ version = "0.1.0"
 engine = "RustLua"
 main_script = "scripts/main.lua"
 startup_scene = "scenes/main.scene"
-splash_image = "assets/art/title/startup_background.png"
+# 启动图（闪屏）的唯一来源：`splash/` 目录。三端都从这里取——
+#   * PC：进 `pack/bundles/*.rlb` 的条目，GDI 早期层与 GPU 层共用这一张；
+#   * webgl / 微信：`package-branding.ps1` 按同一个键复制成 `<发布根>/branding/splash.png`
+#     （JS 宿主画的 DOM 图），所以**不要再往各平台目录里单独放 splash**。
+# 换图只改这一个文件（或改这行的路径），然后重新打包。
+splash_image = "splash/splash.png"
 font = "assets/fonts/FusionPixel-12px-Monospaced-zhHans.ttf"
 # 后备字体留空：像素点阵与平滑矢量混排会立刻露馅（M72-03 的「只入一款」）。
 # 缺字因此走点阵占位方框，由 `jhyt_m72_pixel_font` ④ 逐字拦住（实测工程用字 1,605 个、缺字 0）。

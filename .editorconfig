@@ -1,0 +1,15 @@
+# Keep file encodings stable across editors.
+# Windows PowerShell 5.1 reads a BOM-less .ps1 as ANSI, so every PowerShell
+# script keeps the UTF-8 BOM that scripts/verify/check-docs.ps1 requires.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+
+[*.{ps1,psm1,psd1}]
+charset = utf-8-bom
+end_of_line = crlf
+
+[*.{bat,cmd}]
+end_of_line = crlf

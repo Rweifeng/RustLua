@@ -32,7 +32,7 @@ local audio = require("core.audio")
 local nav = require("ui.panel_nav")
 local ui_text = require("ui.ui_text")
 local layout = require("ui.layout")
--- M69/B6：面板静态骨架搬进 `assets/prefabs/shipping.prefab`，不再 require ui.skin。
+-- M69/B6：面板静态骨架搬进 `assets/prefabs/ui/shipping.prefab`，不再 require ui.skin。
 
 local M = {}
 
@@ -325,11 +325,11 @@ local function clear_ui()
 end
 
 -- ---------- 预设（M69/B6） ----------
--- 静态骨架搬进 `assets/prefabs/shipping.prefab`（对账门 = jhyt_m69_shipping_prefab，黄金表
+-- 静态骨架搬进 `assets/prefabs/ui/shipping.prefab`（对账门 = jhyt_m69_shipping_prefab，黄金表
 -- 46 行钉死迁移前画面），render 只写会变的部分：选中行矩形、金币/待结算/反馈文字、出货行
 -- 文本、滚动箭头的条件显隐与行数不足时的行隐藏。title 与 hint 固定写死在预设。
 -- 开/关屏 = 根节点显隐（`prefab.set_visible` 子树语义），不撤重铺（M63c 教训）。
-local PRESET_PATH = "assets/prefabs/shipping.prefab"
+local PRESET_PATH = "assets/prefabs/ui/shipping.prefab"
 local preset_handle = nil
 local preset_spawned = false
 

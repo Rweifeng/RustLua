@@ -62,7 +62,7 @@ examples/game_api/
 
 | 生成物 | 生成器 | 说明 |
 |---|---|---|
-| `scenes/index.scene` | `scripts/gen-api-showcase-index.ps1` | 从 `demos.lua` 读清单，铺成 2 列卡片网格；手改该文件会在下次生成时丢失 |
+| `scenes/index.scene` | `scripts/docgen/gen-api-showcase-index.ps1` | 从 `demos.lua` 读清单，铺成 2 列卡片网格；手改该文件会在下次生成时丢失 |
 | `assets/fonts/NotoSansSC-VF.ttf` | `cargo run -q -p engine --example subset_project_font -- examples/game_api` | 按**工程实际用字**子集化（场景文本 + Lua 字符串字面量）。文案里新增了汉字就要重跑，否则屏幕上出现方框（有门钉住） |
 
 ## 4. 固定的渲染夹具：`demo3d` 与 `mixed`
@@ -76,7 +76,7 @@ examples/game_api/
 
 它们的价值恰恰在于"内容一像素不变"，所以没有拆掉重建——`scripts/demo_fixture.lua`
 只负责把"这是夹具、不是演示"显示出来。要改这两个场景，必须同时更新对应 golden 的断言与
-基线报告（`scripts/verify.ps1` 会校验报告字段）。
+基线报告（`scripts/verify/verify.ps1` 会校验报告字段）。
 
 ## 5. 自动化门：`host::sample_project`
 

@@ -971,6 +971,8 @@ mod tests {
                 "Light",
                 "MeshRenderer",
                 "ParticleEmitter",
+                // 无载荷标记组件：注册 schema 后自动进入组件列表（没有字段行可画）。
+                "Persistent",
                 "Quad",
                 "RenderMode",
                 "Sprite",

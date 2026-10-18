@@ -102,14 +102,14 @@ impl PublishState {
 }
 
 impl EditorApp {
-    /// 启动 Release 发布打包（后台执行 scripts/package.ps1，非阻塞、不弹终端窗）。
+    /// 启动 Release 发布打包（后台执行 scripts/build/package.ps1，非阻塞、不弹终端窗）。
     pub(crate) fn start_publish(&mut self) {
         if self.progress.running {
             return;
         }
         let Some(found) = find_publish_script(&self.project.root) else {
             self.progress.output = format!(
-                "未找到发布脚本 scripts/package.ps1（项目：{}）",
+                "未找到发布脚本 scripts/build/package.ps1（项目：{}）",
                 display_path(&self.project.root)
             );
             self.progress.done = true;
@@ -262,9 +262,9 @@ fn read_project_toml(project_root: &Path) -> Option<String> {
     fs::read_to_string(project_root.join("project.toml")).ok()
 }
 
-/// 定位发布脚本 `scripts/package.ps1`。
+/// 定位发布脚本 `scripts/build/package.ps1`。
 ///
-/// 发布脚本属于引擎工作区（`E:\Codex\RustLua\scripts\package.ps1`）。优先从编辑器
+/// 发布脚本属于引擎工作区（`E:\Codex\RustLua\scripts\build\package.ps1`）。优先从编辑器
 /// 自身定位工作区：
 /// 1. 编译期 `CARGO_MANIFEST_DIR`（编辑器 crate 上溯 3 级 = 工作区根，见 `workspace_root`）；
 /// 2. 运行时 `current_exe()` 所在目录及其祖先（编辑器被复制/安装到别处也有效）；
@@ -278,7 +278,7 @@ fn find_publish_script(root: &Path) -> Option<PathBuf> {
     }
     dirs.extend(root.ancestors().map(Path::to_path_buf));
     dirs.into_iter()
-        .map(|dir| dir.join("scripts").join("package.ps1"))
+        .map(|dir| dir.join("scripts").join("build").join("package.ps1"))
         .find(|path| path.is_file())
 }
 
@@ -466,7 +466,7 @@ fn spawn_publish(request: PublishRequest, tx: Sender<ProgressEvent>) {
 }
 
 /// 把发布脚本的阶段标记映射为大致进度 `0..=1`；未知行返回 `None`（保持当前进度）。
-/// 对应 scripts/package.ps1 里的 `==>` 阶段与最终就绪标记。
+/// 对应 scripts/build/package.ps1 里的 `==>` 阶段与最终就绪标记。
 fn publish_stage_progress(line: &str) -> Option<f32> {
     if line.contains("==> Release build") {
         Some(0.15)
@@ -514,8 +514,8 @@ mod publish_tests {
     #[test]
     fn strip_verbatim_removes_windows_verbatim_prefix() {
         assert_eq!(
-            strip_verbatim(Path::new(r"\\?\E:\Codex\RustLua\scripts\package.ps1")),
-            PathBuf::from(r"E:\Codex\RustLua\scripts\package.ps1")
+            strip_verbatim(Path::new(r"\\?\E:\Codex\RustLua\scripts\build\package.ps1")),
+            PathBuf::from(r"E:\Codex\RustLua\scripts\build\package.ps1")
         );
         assert_eq!(
             strip_verbatim(Path::new(r"\\?\UNC\server\share\file.ps1")),
@@ -523,8 +523,8 @@ mod publish_tests {
         );
         // 无前缀原样返回
         assert_eq!(
-            strip_verbatim(Path::new(r"E:\Codex\RustLua\scripts\package.ps1")),
-            PathBuf::from(r"E:\Codex\RustLua\scripts\package.ps1")
+            strip_verbatim(Path::new(r"E:\Codex\RustLua\scripts\build\package.ps1")),
+            PathBuf::from(r"E:\Codex\RustLua\scripts\build\package.ps1")
         );
     }
 
@@ -544,18 +544,36 @@ mod publish_tests {
 
     #[test]
     fn publish_spawn_end_to_end() {
-        // 复现编辑器「打包发布」全路径：找到脚本、spawn、收集输出与退出码。
-        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|p| p.parent())
-            .and_then(|p| p.parent())
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-        let Some(script) = find_publish_script(&workspace) else {
-            eprintln!("未找到发布脚本，跳过");
-            return;
-        };
-        let project_root = rustlua_infra::games_dir().join("examples").join("game_api");
+        // 复现编辑器「打包发布」的 **spawn → 收行 → 收退出码** 全路径。
+        //
+        // 刻意不跑真实的 `scripts/build/package.ps1`：那条链依赖 release assetc、游戏资源与
+        // 可写的 builds/，在单元测试里既慢又会因宿主 stdout 管道（assetc 的 broken pipe）
+        // 产生与发布逻辑无关的红。真实脚本由 `scripts/verify` / CI 验收；这里用一个行为
+        // 确定的 PowerShell 桩，钉住"参数怎么传、行怎么收、退出码怎么判"。
+        let root =
+            std::env::temp_dir().join(format!("rustlua-publish-spawn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let script = root.join("publish-stub.ps1");
+        std::fs::write(
+            &script,
+            r#"param(
+    [string]$ProjectRoot,
+    [string]$Platform,
+    [string]$PublishName,
+    [switch]$SkipBuild,
+    [switch]$Compress,
+    [switch]$Encrypt,
+    [string]$WechatAppId
+)
+Write-Output "==> Release build ($Platform)"
+Write-Output "publish_stub_ok project=$ProjectRoot platform=$Platform name=$PublishName skip=$SkipBuild"
+exit 0
+"#,
+        )
+        .unwrap();
+        let project_root = root.join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
         let (tx, rx) = channel();
         spawn_publish(
             PublishRequest {
@@ -566,8 +584,6 @@ mod publish_tests {
                 wechat_appid: String::new(),
                 compress: false,
                 encrypt: false,
-                // 测试走 `-SkipBuild`：复用 target/release 产物，避免在单元测试里
-                // 触发整仓 release 构建（运行中的编辑器会占用 target/release/*.exe）。
                 skip_build: true,
             },
             tx,
@@ -586,12 +602,21 @@ mod publish_tests {
         }
         eprintln!("=== 发布输出开始 ===\n{output}=== 发布输出结束 === success={success}");
         assert!(success, "发布应成功；输出：\n{output}");
+        assert!(
+            output.contains("publish_stub_ok"),
+            "应收到子进程 stdout：\n{output}"
+        );
+        assert!(
+            output.contains("platform=pc") && output.contains("skip=True"),
+            "参数应原样传给脚本：\n{output}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn find_publish_script_finds_workspace_script_for_outside_project() {
         // 项目在工作区之外（如 C:\GitHub\games\ui_demo）：从项目根向上永远找不到脚本，
-        // 应从编辑器所在工作区根解析到 scripts/package.ps1。
+        // 应从编辑器所在工作区根解析到 scripts/build/package.ps1。
         let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(Path::parent)
@@ -604,7 +629,10 @@ mod publish_tests {
             .unwrap_or_else(|| PathBuf::from(r"C:\GitHub\games\ui_demo"));
         let script = find_publish_script(&outside_project).expect("应命中工作区根下的发布脚本");
         assert!(script.is_file());
-        assert_eq!(script, workspace.join("scripts").join("package.ps1"));
+        assert_eq!(
+            script,
+            workspace.join("scripts").join("build").join("package.ps1")
+        );
     }
 
     #[test]

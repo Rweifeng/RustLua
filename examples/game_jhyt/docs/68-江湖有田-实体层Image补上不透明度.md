@@ -177,7 +177,7 @@ cargo run  -q -p game --example jhyt_m63_title_prefab       # ok（68 行黄金�
 cargo clippy --workspace --all-targets -- -D warnings       # exit 0（fast 档，不带 --all-features）
 RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps    # exit 0（18 个 crate，零告警）
 cargo fmt --all -- --check                                  # clean
-node scripts/gen-lua-api-docs.js --check                    # lua_api_docs_ok（ui.md 的 绑定 :NN 重生成，+3 行）
+node scripts/docgen/gen-lua-api-docs.js --check                    # lua_api_docs_ok（ui.md 的 绑定 :NN 重生成，+3 行）
 node scripts/check-web-api-overrides.mjs                    # web_api_overrides_ok overrides=56
 ```
 

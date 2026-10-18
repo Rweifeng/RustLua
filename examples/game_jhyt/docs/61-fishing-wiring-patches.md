@@ -47,7 +47,7 @@ local fishing = require("systems.fishing")
 
 ---
 
-## 3. `scripts/verify.ps1`（验收样例清单追加一行）
+## 3. `scripts/verify/verify.ps1`（验收样例清单追加一行）
 
 在样例清单（`jhyt_m42_shipping_box` / `jhyt_m43_mastery` 附近）追加：
 ```powershell

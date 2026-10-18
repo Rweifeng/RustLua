@@ -438,7 +438,7 @@ pub fn build_plan(
 pub struct DistributionRoot {
     /// 单元名（`main` / `sub` / `sub:<name>`）。
     pub unit: String,
-    /// 包内根目录：`mainpack`（主包首屏）、`pack`（默认分包）、`pack-<name>`（具名分包）。
+    /// 包内根目录：`pack`（主包首屏）、`pack-sub`（默认分包）、`pack-<name>`（具名分包）。
     pub root: String,
     /// 这个根里的容器（包内相对路径，升序）。
     pub bundles: Vec<String>,
@@ -449,8 +449,8 @@ pub struct DistributionRoot {
 /// 把计划表折算成**分发布局**：每个单元一个根，`cdn` 不进包。
 ///
 /// 这是发布器（`first-screen-pack.js` / `package.ps1`）与适配层之间的唯一契约：
-/// - `main` → `mainpack`（随主包上传，启动即可读）；
-/// - `sub` → `pack`（微信默认分包根）；
+/// - `main` → `pack`（随主包上传，启动即可读）；
+/// - `sub` → `pack-sub`（微信默认分包根）；
 /// - `sub:<name>` → `pack-<name>`（具名分包根，每根需要自己的 `game.js`）；
 /// - `cdn` → 不出现在布局里（发布器另行放置）。
 ///
@@ -459,8 +459,8 @@ pub fn distribution_layout(plan: &BundlePlan) -> anyhow::Result<Vec<Distribution
     let mut roots: BTreeMap<(u8, String), DistributionRoot> = BTreeMap::new();
     for group in &plan.groups {
         let (rank, unit, root) = match parse_unit(&group.unit).map_err(anyhow::Error::msg)? {
-            UnitKind::Main => (0u8, "main".to_owned(), "mainpack".to_owned()),
-            UnitKind::Sub(None) => (1, "sub".to_owned(), "pack".to_owned()),
+            UnitKind::Main => (0u8, "main".to_owned(), "pack".to_owned()),
+            UnitKind::Sub(None) => (1, "sub".to_owned(), "pack-sub".to_owned()),
             UnitKind::Sub(Some(name)) => (2, group.unit.clone(), format!("pack-{name}")),
             UnitKind::Cdn => continue,
         };
@@ -485,7 +485,7 @@ pub fn distribution_layout(plan: &BundlePlan) -> anyhow::Result<Vec<Distribution
         && main.bytes > MAX_BUNDLE_BYTES
     {
         anyhow::bail!(
-            "主包（mainpack）落盘 {} KB 超过 4,096 KB：把非启动资源挪到分包",
+            "主包（pack）落盘 {} KB 超过 4,096 KB：把非启动资源挪到分包",
             main.bytes / 1024
         );
     }
@@ -975,8 +975,8 @@ mod tests {
         }
         let roots = distribution_layout(&plan).unwrap();
         let names: Vec<&str> = roots.iter().map(|root| root.root.as_str()).collect();
-        assert!(names.contains(&"mainpack"));
         assert!(names.contains(&"pack"));
+        assert!(names.contains(&"pack-sub"));
         assert!(names.contains(&"pack-audio"));
         assert!(
             !names.iter().any(|root| root.contains("brand")),

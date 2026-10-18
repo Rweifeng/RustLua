@@ -75,7 +75,7 @@ JSON 那份**只能用 Lua 自己画**（`ui.*` 动态层），因此它进不�
 API 面账（本批实测）：
 
 ```
-node scripts/gen-lua-api-docs.js --check
+node scripts/docgen/gen-lua-api-docs.js --check
 lua_api_docs mode=check tables=42 funcs=281 stubs=275 documented=6
 lua_api_docs_ok 再生成是 no-op、桩数未超标、无死绑定/重复注册
 ```
@@ -160,7 +160,7 @@ M61Root 没有解析出矩形（spawn 的 UI 不会被画）；本帧读数 = <�
 cargo run -q -p game  --example jhyt_m61_prefab_runtime      # ok（格式化后重跑一次，仍 ok）
 cargo run -q -p game  --example jhyt_m59_ui_prefab           # ok golden_lines=102 anchors=12
 cargo test  -q -p engine --test host_pub_surface             # 1 passed（新 pub 面没破宿主公开面钉）
-node scripts/gen-lua-api-docs.js --check                     # ok，见 §3
+node scripts/docgen/gen-lua-api-docs.js --check                     # ok，见 §3
 node scripts/check-web-api-overrides.mjs                     # ok overrides=56 wholesale=23 dropped=72
 cargo fmt --all -- --check → 29 个文件仍脏，本批 4 个文件已 rustfmt --edition 2024 洗白（0 命中）
 ```
@@ -170,10 +170,10 @@ cargo fmt --all -- --check → 29 个文件仍脏，本批 4 个文件已 rustfm
 - `cargo clippy --workspace --all-features -D warnings` 与 `verify.ps1` 全量门没跑（工作区里
   29 个在途文件不属本批，fmt 一红全量就不跑）。下次跑全量时这批的 Rust 代码只过了编译与门。
 - **web / 微信**：`prefab` 表在 wasm 里是同一段 Rust 注册的，所以活体 API 面对拍
-  （`scripts/verify-webgl-bundle.ps1`）下次会读到 42 张表——**未跑**，包也没重打。
+  （`scripts/verify/verify-webgl-bundle.ps1`）下次会读到 42 张表——**未跑**，包也没重打。
   `plugins/webgl/lua_api_overrides.json` 的账是补丁层口径，`prefab` 不在里头，不需要补丁，
   但这条要靠下次真机门证实，不是本批结论。
-- ~~`assets/prefabs/` 还没进 `scripts/first-screen-pack.js` 的首屏清单~~（M63b 已补：新增 5b
+- ~~`assets/prefabs/` 还没进 `scripts/build/first-screen-pack.js` 的首屏清单~~（M63b 已补：新增 5b
   扫 `assets/prefabs/*.prefab`，预设本体与它 `texture=` 引用的图一起收进首屏包，账见 `docs/67` §5）。
   `.prefab` 后缀在**打包侧**已实测（`assetc package` `files=1142`，manifest 有
   `assets/prefabs/title_menu.prefab` 一行）；**微信代码包白名单里的行为仍未测**，web/微信活体的
