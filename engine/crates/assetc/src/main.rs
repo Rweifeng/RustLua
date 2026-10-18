@@ -69,6 +69,11 @@ fn run(args: &[String]) -> anyhow::Result<String> {
                 assetc::distribution_layout_report(&target)
             }
         }
+        Some("bundles") if args.get(2).map(String::as_str) == Some("init") => {
+            let project = arg(args, 3, "项目目录")?;
+            let force = args.iter().any(|value| value == "--force");
+            assetc::init_bundles(&project, force)
+        }
         Some("clean") => {
             let project = arg(args, 2, "项目目录")?;
             assetc::clean(&project).map(|_| "assetc_clean_ok".to_owned())

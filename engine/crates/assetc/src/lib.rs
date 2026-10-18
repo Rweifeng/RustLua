@@ -1488,6 +1488,28 @@ pub fn distribution_layout_json(target: &Path) -> anyhow::Result<String> {
     serde_json::to_string_pretty(&value).map_err(|error| anyhow!("序列化布局失败：{error}"))
 }
 
+/// 为任意工程生成一份 `bundles.json` 草稿（引擎级通用规则），可选 `force` 覆盖。
+///
+/// 用途：新工程接入分包时的**零猜测起点**——不绑定任何具体游戏路径，
+/// 之后由编辑器面板或手改细化。
+pub fn init_bundles(project: &Path, force: bool) -> anyhow::Result<String> {
+    let path = project.join("bundles.json");
+    if path.exists() && !force {
+        anyhow::bail!(
+            "{} 已存在：用 --force 覆盖，或直接在编辑器「资源 ▸ 分包」里编辑",
+            path.display()
+        );
+    }
+    let config = rustlua_infra::bundle_plan::BundleConfig::generic_domains();
+    config.validate()?;
+    std::fs::write(&path, config.to_json()?)?;
+    Ok(format!(
+        "assetc_bundles_init_ok path={} groups={}",
+        path.display(),
+        config.groups.len()
+    ))
+}
+
 /// 读 `bundle_plan.json` 并打印分发布局（单元 → 包内根），供发布脚本消费。
 pub fn distribution_layout_report(target: &Path) -> anyhow::Result<String> {
     let plan_path = if target.is_dir() {
