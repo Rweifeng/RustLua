@@ -5,6 +5,12 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 发布产物与计划一致性检查：`check-bundle-mounts.js`
+
+- 以 `bundle_plan.json` 为准：每个单元根必须有目录、分包根必须有 `game.js`、
+  声明的容器必须齐全；缺件列出并 exit 1。
+- 覆盖 `bundle-layout --verify` 的盲区（它只看 `game.json`，不查"计划有、产物无"）。
+
 ## Unreleased — 多根挂载编排：`mountRoots` / `ensurePathsMounted`
 
 - `bundle-roots.js` 新增挂载编排：按顺序挂、已挂载跳过、`load(root)` 失败直接上抛；
