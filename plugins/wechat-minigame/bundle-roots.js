@@ -95,7 +95,33 @@ function missingRoots(index, mounted) {
     .sort();
 }
 
-function selfTest() {
+/**
+ * 按顺序挂载给定的根（幂等：已挂载的跳过；主包不需要挂）。
+ * `load(root)` 由适配层提供（真实实现是 `wx.loadSubpackage`），失败直接抛出——
+ * 调用方决定"响亮失败"还是降级，本函数不做静默吞错。
+ * 返回 `{ mounted: 已挂载根（排序）, mountedNow: 本次新挂的根 }`。
+ */
+async function mountRoots(index, roots, opts) {
+  const load = opts && opts.load;
+  if (typeof load !== 'function') throw new Error('mountRoots 需要 load(root)');
+  const mounted = new Set((opts && opts.mounted) || []);
+  const mountedNow = [];
+  for (const root of roots) {
+    if (root === ROOT_MAIN || mounted.has(root)) continue;
+    if (!index.roots[root]) throw new Error('计划里没有这个根: ' + root);
+    await load(root);
+    mounted.add(root);
+    mountedNow.push(root);
+  }
+  return { mounted: Array.from(mounted).sort(), mountedNow };
+}
+
+/** 读一组路径前，把这些路径所在的非主包根**按顺序**挂好。 */
+async function ensurePathsMounted(index, paths, opts) {
+  return mountRoots(index, rootsForPaths(index, paths), opts);
+}
+
+async function selfTest() {
   const plan = parsePlan(
     JSON.stringify({
       schema: 1,
@@ -127,13 +153,38 @@ function selfTest() {
     threw = true;
   }
   if (!threw) throw new Error('未知路径必须报错');
+
+  // 挂载编排：顺序、幂等、已挂载跳过、失败传播。
+  const calls = [];
+  const load = async (root) => {
+    calls.push(root);
+  };
+  const first = await mountRoots(index, ['pack', 'pack-audio'], { load });
+  if (calls.join(',') !== 'pack,pack-audio') throw new Error('挂载顺序错: ' + calls);
+  if (first.mountedNow.join(',') !== 'pack,pack-audio') throw new Error('mountedNow 错');
+  calls.length = 0;
+  const second = await mountRoots(index, ['pack', 'pack-audio'], { load, mounted: first.mounted });
+  if (calls.length !== 0 || second.mountedNow.length !== 0) throw new Error('已挂载的根不该重复挂');
+  const byPaths = await ensurePathsMounted(index, ['assets/audio/bgm.mp3', 'scripts/main.lua'], { load });
+  if (byPaths.mountedNow.join(',') !== 'pack-audio') throw new Error('ensurePathsMounted 只挂路径所在的根: ' + byPaths.mountedNow);
+  let failed = false;
+  try {
+    await mountRoots(index, ['pack-audio'], {
+      load: async () => {
+        throw new Error('loadSubpackage failed');
+      },
+    });
+  } catch (error) {
+    failed = true;
+  }
+  if (!failed) throw new Error('挂载失败必须向上抛（不许静默）');
   console.log('bundle_roots_ok roots=' + Object.keys(index.roots).length + ' paths=' + Object.keys(index.pathRoot).length);
 }
 
-function main(argv) {
+async function main(argv) {
   const args = argv.slice(2);
   if (args.includes('--self-test')) {
-    selfTest();
+    await selfTest();
     return;
   }
   const planIndex = args.indexOf('--plan');
@@ -157,6 +208,20 @@ function main(argv) {
   }
 }
 
-if (require.main === module) main(process.argv);
+if (require.main === module) {
+  main(process.argv).catch((error) => {
+    console.error(error.message || String(error));
+    process.exit(1);
+  });
+}
 
-module.exports = { ROOT_MAIN, rootOfUnit, parsePlan, planRootIndex, rootsForPaths, missingRoots };
+module.exports = {
+  ROOT_MAIN,
+  rootOfUnit,
+  parsePlan,
+  planRootIndex,
+  rootsForPaths,
+  missingRoots,
+  mountRoots,
+  ensurePathsMounted,
+};
