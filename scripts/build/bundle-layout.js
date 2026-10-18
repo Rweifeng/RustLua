@@ -18,6 +18,8 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const MAIN_ROOT = 'mainpack';
 const DEFAULT_SUB_ROOT = 'pack';
@@ -105,6 +107,79 @@ function assertConservation(plan) {
   return true;
 }
 
+/**
+ * 按搬运计划真正搬文件，并写 `game.json` 的 `subpackages` + 每个分包根的 `game.js` 入口。
+ * 输入目录是**发布根**（含 `pack/`，即 `assetc` 产物落点）；`mainpack/`、`pack-<n>/` 由本函数创建。
+ * 返回计数用于日志断言（`moved` 只数真正跨目录移动的容器）。
+ */
+function applyPlan(plan, launcherDir) {
+  const gamePath = path.join(launcherDir, 'game.json');
+  let game = {};
+  if (fs.existsSync(gamePath)) {
+    game = JSON.parse(fs.readFileSync(gamePath, 'utf8').replace(/^\uFEFF/, ''));
+  }
+  let moved = 0;
+  for (const move of plan.moves) {
+    const src = path.join(launcherDir, 'pack', move.from);
+    const dst = path.join(launcherDir, move.to);
+    if (path.resolve(src) === path.resolve(dst)) continue;
+    if (!fs.existsSync(src)) throw new Error('缺容器（应在 pack/ 下）: ' + src);
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.renameSync(src, dst);
+    moved += 1;
+  }
+  game.subpackages = plan.subpackages;
+  fs.writeFileSync(gamePath, JSON.stringify(game, null, 2) + '\n');
+  // 微信规则：`subpackages[i].root` 目录下必须有入口 `game.js`；从默认分包入口复制一份。
+  const template = path.join(launcherDir, 'pack', 'game.js');
+  for (const sub of plan.subpackages) {
+    const target = path.join(launcherDir, sub.root, 'game.js');
+    if (fs.existsSync(target)) continue;
+    if (!fs.existsSync(template)) throw new Error('缺分包入口模板: ' + template);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(template, target);
+  }
+  return { moved, roots: plan.roots.length, subpackages: plan.subpackages.length };
+}
+
+/** `applyPlan` 的自测：临时目录里造 pack/，搬完检查文件位置、game.json 与入口。 */
+function applySelfTest() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bundle-layout-'));
+  try {
+    fs.mkdirSync(path.join(root, 'pack', 'bundles'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'pack', 'bundles', 'core.rlb'), 'core');
+    fs.writeFileSync(path.join(root, 'pack', 'bundles', 'audio.rlb'), 'audio');
+    fs.writeFileSync(path.join(root, 'pack', 'game.js'), '// entry\n');
+    fs.writeFileSync(path.join(root, 'game.json'), JSON.stringify({ deviceOrientation: 'landscape' }));
+    const layout = parseLayout(
+      JSON.stringify({
+        schema: 1,
+        entries: 20,
+        total_bytes: 10,
+        roots: [
+          { unit: 'main', root: 'mainpack', bundles: ['bundles/core.rlb'], entries: 10, bytes: 5 },
+          { unit: 'sub:audio', root: 'pack-audio', bundles: ['bundles/audio.rlb'], entries: 10, bytes: 5 },
+        ],
+      }),
+    );
+    const plan = distributionPlan(layout);
+    assertConservation(plan);
+    const report = applyPlan(plan, root);
+    if (report.moved !== 2) throw new Error('应搬 2 个容器，实际 ' + report.moved);
+    if (!fs.existsSync(path.join(root, 'mainpack', 'bundles', 'core.rlb'))) throw new Error('主包容器没搬');
+    if (!fs.existsSync(path.join(root, 'pack-audio', 'bundles', 'audio.rlb'))) throw new Error('分包容器没搬');
+    if (!fs.existsSync(path.join(root, 'pack-audio', 'game.js'))) throw new Error('具名分包缺入口 game.js');
+    const game = JSON.parse(fs.readFileSync(path.join(root, 'game.json'), 'utf8'));
+    if (game.subpackages.length !== 1 || game.subpackages[0].root !== 'pack-audio') {
+      throw new Error('game.json 的 subpackages 不对: ' + JSON.stringify(game.subpackages));
+    }
+    if (game.deviceOrientation !== 'landscape') throw new Error('game.json 其它字段被丢了');
+    console.log('bundle_layout_apply_ok moved=' + report.moved + ' subpackages=' + report.subpackages);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 function selfTest() {
   const layout = parseLayout(
     JSON.stringify({
@@ -144,6 +219,7 @@ function selfTest() {
   if (!threw) throw new Error('字节不守恒必须被拒绝');
 
   console.log('bundle_layout_ok moves=' + plan.moves.length + ' subpackages=' + plan.subpackages.length);
+  applySelfTest();
 }
 
 function main(argv) {
@@ -154,12 +230,22 @@ function main(argv) {
   }
   const fileIndex = args.indexOf('--file');
   if (fileIndex === -1 || !args[fileIndex + 1]) {
-    console.error('用法: node scripts/build/bundle-layout.js --file <layout.json> [--json] | --self-test');
+    console.error(
+      '用法: node scripts/build/bundle-layout.js --file <layout.json> [--json] [--apply <发布根>] | --self-test',
+    );
     process.exit(2);
   }
   const layout = parseLayout(fs.readFileSync(args[fileIndex + 1], 'utf8'));
   const plan = distributionPlan(layout);
   assertConservation(plan);
+  const applyIndex = args.indexOf('--apply');
+  if (applyIndex !== -1 && args[applyIndex + 1]) {
+    const report = applyPlan(plan, args[applyIndex + 1]);
+    console.log(
+      `bundle_layout_applied moved=${report.moved} roots=${report.roots} subpackages=${report.subpackages}`,
+    );
+    return;
+  }
   if (args.includes('--json')) {
     console.log(JSON.stringify(plan, null, 2));
   } else {
