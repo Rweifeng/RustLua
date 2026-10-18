@@ -1454,10 +1454,41 @@ fn project_key_value(project: &Path, key: &str) -> Option<String> {
 ///
 /// 输出刻意保持"一行一条 + 可 grep 的键值"：它同时是运维排查工具，
 /// `assetc inspect <pack\bundles> | Select-String boot_blocks` 就是一条门。
-/// 读 `bundle_plan.json` 并打印分发布局（单元 → 包内根），供发布脚本消费。
+/// 同 [`distribution_layout_report`]，但输出**机器可读 JSON**（发布脚本/适配层消费）。
 ///
-/// 语义与 `bundle_plan::distribution_layout` 完全一致（同一函数），所以"脚本按这个搬文件"
-/// 与"编辑器面板按这个统计"不会分叉。参数可以是包根目录或 `bundle_plan.json` 本身。
+/// 结构固定：`{ schema, entries, total_bytes, roots: [{ unit, root, bundles, entries, bytes }] }`。
+/// 与文本版共用同一次 `distribution_layout` 调用，所以两者不可能给出不同的分组。
+pub fn distribution_layout_json(target: &Path) -> anyhow::Result<String> {
+    let plan_path = if target.is_dir() {
+        target.join(bundle_plan::PLAN_FILE)
+    } else {
+        target.to_path_buf()
+    };
+    let bytes = fs::read(&plan_path)
+        .map_err(|error| anyhow!("读 {} 失败：{error}", plan_path.display()))?;
+    let plan = bundle_plan::BundlePlan::parse(&bytes).map_err(anyhow::Error::msg)?;
+    let roots = bundle_plan::distribution_layout(&plan)?;
+    let total: u64 = roots.iter().map(|root| root.bytes).sum();
+    let entries: u64 = roots.iter().map(|root| root.entries).sum();
+    let value = serde_json::json!({
+        "schema": 1,
+        "entries": entries,
+        "total_bytes": total,
+        "roots": roots
+            .iter()
+            .map(|root| serde_json::json!({
+                "unit": root.unit,
+                "root": root.root,
+                "bundles": root.bundles,
+                "entries": root.entries,
+                "bytes": root.bytes,
+            }))
+            .collect::<Vec<_>>(),
+    });
+    serde_json::to_string_pretty(&value).map_err(|error| anyhow!("序列化布局失败：{error}"))
+}
+
+/// 读 `bundle_plan.json` 并打印分发布局（单元 → 包内根），供发布脚本消费。
 pub fn distribution_layout_report(target: &Path) -> anyhow::Result<String> {
     let plan_path = if target.is_dir() {
         target.join(bundle_plan::PLAN_FILE)

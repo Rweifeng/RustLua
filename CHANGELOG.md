@@ -14,6 +14,8 @@
   `distribution_layout_rejects_oversized_main`。
 - 命令行：`assetc layout <包目录|bundle_plan.json>` 打印同一份布局，供发布脚本对账。
   实测 `game_jhyt`：`mainpack=760 KB / pack=2,024 KB / 合计 2,785 KB`（cdn 不计）。
+- `--json`：输出 `{schema, entries, total_bytes, roots[{unit, root, bundles, entries, bytes}]}`，
+  发布脚本（`first-screen-pack.js`）可直接消费，不必解析文本行。
 
 ## Unreleased — 分包建议：从加载集观测直接生成可应用的分组建议
 

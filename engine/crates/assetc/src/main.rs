@@ -63,7 +63,11 @@ fn run(args: &[String]) -> anyhow::Result<String> {
         }
         Some("layout") => {
             let target = arg(args, 2, "包目录或 bundle_plan.json")?;
-            assetc::distribution_layout_report(&target)
+            if args.iter().any(|value| value == "--json") {
+                assetc::distribution_layout_json(&target)
+            } else {
+                assetc::distribution_layout_report(&target)
+            }
         }
         Some("clean") => {
             let project = arg(args, 2, "项目目录")?;
