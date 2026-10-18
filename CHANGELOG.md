@@ -5,6 +5,15 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 发布侧布局解析：`bundle-layout.js`（搬运表 + subpackages + 字节守恒）
+
+- 新增 `scripts/build/bundle-layout.js`：`parseLayout` 吃 `assetc layout --json`（容忍 BOM，
+  校验 schema/unit/容器路径/entries/total_bytes）→ `distributionPlan` 生成
+  `bundles/x.rlb → mainpack|pack|pack-<name>/` 的搬运表与 `game.json` 的 `subpackages`
+  → `assertConservation` 校验字节守恒。
+- 零依赖自测：`node scripts/build/bundle-layout.js --self-test`。
+- 实测 `game_jhyt`：6 条搬运、1 个默认分包根、合计 2,852,426 B（cdn 不计）。
+
 ## Unreleased — 分发布局契约：单元 → 包内根（多分包发布器的输入）
 
 - `rustlua_infra::bundle_plan::distribution_layout`：把计划表折算成「单元 → 包内根」——
