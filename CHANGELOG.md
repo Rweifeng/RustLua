@@ -5,6 +5,12 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 发布形状校验：`bundle-layout.js --verify`
+
+- `verifyLauncher`：每个 `subpackages.root` 必须有 `game.js`、`mainpack/` 必须存在，
+  并数出主包/分包容器；缺入口/缺目录响亮失败（自测含正例与负例）。
+- CLI：`--verify <发布根>` → `bundle_layout_verify_ok subpackages=… main_bundles=… sub_bundles=…`。
+
 ## Unreleased — 发布脚本可执行搬运：`bundle-layout.js --apply`（多分包根 + game.json + 入口）
 
 - `applyPlan`：按布局把容器搬进 `mainpack/`、`pack-<name>/`（默认 `pack` 原地不动），

@@ -174,10 +174,50 @@ function applySelfTest() {
       throw new Error('game.json 的 subpackages 不对: ' + JSON.stringify(game.subpackages));
     }
     if (game.deviceOrientation !== 'landscape') throw new Error('game.json 其它字段被丢了');
+    const shape = verifyLauncher(root);
+    if (shape.subBundles !== 1 || shape.mainBundles !== 1) {
+      throw new Error('发布根形状计数不对: ' + JSON.stringify(shape));
+    }
+    // 负例：删掉具名分包入口，必须响亮失败。
+    fs.rmSync(path.join(root, 'pack-audio', 'game.js'));
+    let threw = false;
+    try {
+      verifyLauncher(root);
+    } catch (error) {
+      threw = true;
+    }
+    if (!threw) throw new Error('缺分包入口必须被拒绝');
     console.log('bundle_layout_apply_ok moved=' + report.moved + ' subpackages=' + report.subpackages);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+}
+
+/** 校验发布根形状：每个分包根有 `game.js` 入口、能数出容器；主包目录存在。 */
+function verifyLauncher(launcherDir) {
+  const gamePath = path.join(launcherDir, 'game.json');
+  if (!fs.existsSync(gamePath)) throw new Error('缺 game.json: ' + gamePath);
+  const game = JSON.parse(fs.readFileSync(gamePath, 'utf8').replace(/^\uFEFF/, ''));
+  const subs = game.subpackages || [];
+  if (!Array.isArray(subs)) throw new Error('game.json 的 subpackages 不是数组');
+  const countBundles = (dir) =>
+    fs.existsSync(dir)
+      ? fs.readdirSync(dir).filter((name) => name.endsWith('.rlb') || name.endsWith('.rlb.txt')).length
+      : 0;
+  let subBundles = 0;
+  for (const sub of subs) {
+    if (!sub || typeof sub.name !== 'string' || typeof sub.root !== 'string') {
+      throw new Error('subpackages 条目缺 name/root');
+    }
+    if (!fs.existsSync(path.join(launcherDir, sub.root, 'game.js'))) {
+      throw new Error(`分包 ${sub.name} 缺入口 game.js（root=${sub.root}）`);
+    }
+    subBundles += countBundles(path.join(launcherDir, sub.root, 'bundles'));
+  }
+  const mainDir = path.join(launcherDir, 'mainpack');
+  if (!fs.existsSync(mainDir)) throw new Error('缺 mainpack/（主包首屏目录）');
+  const mainBundles = countBundles(path.join(mainDir, 'bundles'));
+  return { subpackages: subs.length, subBundles, mainBundles };
 }
 
 function selfTest() {
@@ -228,6 +268,14 @@ function main(argv) {
     selfTest();
     return;
   }
+  const verifyIndex = args.indexOf('--verify');
+  if (verifyIndex !== -1 && args[verifyIndex + 1]) {
+    const shape = verifyLauncher(args[verifyIndex + 1]);
+    console.log(
+      `bundle_layout_verify_ok subpackages=${shape.subpackages} main_bundles=${shape.mainBundles} sub_bundles=${shape.subBundles}`,
+    );
+    return;
+  }
   const fileIndex = args.indexOf('--file');
   if (fileIndex === -1 || !args[fileIndex + 1]) {
     console.error(
@@ -256,4 +304,12 @@ function main(argv) {
 
 if (require.main === module) main(process.argv);
 
-module.exports = { parseLayout, distributionPlan, assertConservation, MAIN_ROOT, DEFAULT_SUB_ROOT };
+module.exports = {
+  parseLayout,
+  distributionPlan,
+  assertConservation,
+  applyPlan,
+  verifyLauncher,
+  MAIN_ROOT,
+  DEFAULT_SUB_ROOT,
+};
