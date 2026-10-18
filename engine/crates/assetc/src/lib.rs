@@ -1454,6 +1454,42 @@ fn project_key_value(project: &Path, key: &str) -> Option<String> {
 ///
 /// 输出刻意保持"一行一条 + 可 grep 的键值"：它同时是运维排查工具，
 /// `assetc inspect <pack\bundles> | Select-String boot_blocks` 就是一条门。
+/// 读 `bundle_plan.json` 并打印分发布局（单元 → 包内根），供发布脚本消费。
+///
+/// 语义与 `bundle_plan::distribution_layout` 完全一致（同一函数），所以"脚本按这个搬文件"
+/// 与"编辑器面板按这个统计"不会分叉。参数可以是包根目录或 `bundle_plan.json` 本身。
+pub fn distribution_layout_report(target: &Path) -> anyhow::Result<String> {
+    let plan_path = if target.is_dir() {
+        target.join(bundle_plan::PLAN_FILE)
+    } else {
+        target.to_path_buf()
+    };
+    let bytes = fs::read(&plan_path)
+        .map_err(|error| anyhow!("读 {} 失败：{error}", plan_path.display()))?;
+    let plan = bundle_plan::BundlePlan::parse(&bytes).map_err(anyhow::Error::msg)?;
+    let roots = bundle_plan::distribution_layout(&plan)?;
+    let mut out = String::from("assetc_layout");
+    let mut total = 0u64;
+    for root in &roots {
+        total += root.bytes;
+        out.push_str(&format!(
+            "\n{} unit={} bundles={} entries={} kb={}",
+            root.root,
+            root.unit,
+            root.bundles.len(),
+            root.entries,
+            root.bytes / 1024
+        ));
+    }
+    let entries: u64 = plan.groups.iter().map(|group| group.entries).sum();
+    out.push_str(&format!(
+        "\nassetc_layout_ok roots={} entries={entries} kb={}",
+        roots.len(),
+        total / 1024
+    ));
+    Ok(out)
+}
+
 pub fn inspect_bundles(target: &Path) -> anyhow::Result<String> {
     use rustlua_infra::bundle::BundleIndex;
 

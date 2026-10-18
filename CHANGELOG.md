@@ -12,6 +12,8 @@
   同时校验主包 ≤4 MB、总量 ≤20 MB。发布器与适配层共用这一份结果，不再各自按 `unit` 拼目录。
 - 门：`distribution_layout_groups_units_into_roots`（三种根 + cdn 排除 + 条目/字节合计）、
   `distribution_layout_rejects_oversized_main`。
+- 命令行：`assetc layout <包目录|bundle_plan.json>` 打印同一份布局，供发布脚本对账。
+  实测 `game_jhyt`：`mainpack=760 KB / pack=2,024 KB / 合计 2,785 KB`（cdn 不计）。
 
 ## Unreleased — 分包建议：从加载集观测直接生成可应用的分组建议
 

@@ -6,7 +6,7 @@
 
 pub use rustlua_infra::bundle::plan::{BundlePlan, PLAN_FILE, PLAN_FORMAT, PlannedGroup};
 pub use rustlua_infra::bundle_plan::{
-    BundleConfig, GroupSpec, MAX_BUNDLE_BYTES, MAX_TOTAL_BYTES, ProjectKeys, UnitKind, build_plan,
-    check_plan, is_main_unit, parse_unit, plan_to_json, sanitize, scan_project_entries, sub_name,
-    validate_plan,
+    BundleConfig, DistributionRoot, GroupSpec, MAX_BUNDLE_BYTES, MAX_TOTAL_BYTES, ProjectKeys,
+    UnitKind, build_plan, check_plan, distribution_layout, is_main_unit, parse_unit, plan_to_json,
+    sanitize, scan_project_entries, sub_name, validate_plan,
 };

@@ -61,6 +61,10 @@ fn run(args: &[String]) -> anyhow::Result<String> {
             let target = arg(args, 2, "包目录或 .rlb 文件")?;
             assetc::inspect_bundles(&target)
         }
+        Some("layout") => {
+            let target = arg(args, 2, "包目录或 bundle_plan.json")?;
+            assetc::distribution_layout_report(&target)
+        }
         Some("clean") => {
             let project = arg(args, 2, "项目目录")?;
             assetc::clean(&project).map(|_| "assetc_clean_ok".to_owned())
