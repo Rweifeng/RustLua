@@ -54,6 +54,47 @@ fn open(ciphertext: &[u8], nonce: &[u8; NONCE_LEN]) -> Result<Vec<u8>, String> {
         .map_err(|_| "解密失败（密钥不匹配或数据损坏）".to_owned())
 }
 
+/// 给**容器块级 AEAD**（`docs/67` §4.4 批 F）用的同一把密钥与同一个算法。
+///
+/// 为什么复用而不是另开一把：密钥内嵌在可执行文件里，多一把不会更安全，只会多一处
+/// 要对齐的常量；而"同一把密钥保护两种发布形态"让 `--encrypt` 的语义保持一致
+/// （目录形态是整文件 AEAD，容器形态是块级 AEAD）。
+pub fn aead_key() -> [u8; 32] {
+    KEY
+}
+
+/// 用固定密钥对一段字节做 AEAD 封装（附 AAD），供容器块使用。
+pub fn seal_with_aad(plaintext: &[u8], nonce: &[u8; NONCE_LEN], aad: &[u8]) -> Vec<u8> {
+    let cipher = ChaCha20Poly1305::new((&KEY).into());
+    cipher
+        .encrypt(
+            Nonce::from_slice(nonce),
+            chacha20poly1305::aead::Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
+        .expect("encrypt")
+}
+
+/// [`seal_with_aad`] 的逆操作；失败统一成一个不泄露细节的错误（与 [`open`] 同口径）。
+pub fn open_with_aad(
+    ciphertext: &[u8],
+    nonce: &[u8; NONCE_LEN],
+    aad: &[u8],
+) -> Result<Vec<u8>, String> {
+    let cipher = ChaCha20Poly1305::new((&KEY).into());
+    cipher
+        .decrypt(
+            Nonce::from_slice(nonce),
+            chacha20poly1305::aead::Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
+        .map_err(|_| "解密失败（密钥不匹配、AAD 不符或数据损坏）".to_owned())
+}
+
 /// 编码资源：按需压缩、加密。
 pub fn encode(bytes: &[u8], compress: bool, encrypt: bool) -> Vec<u8> {
     if !compress && !encrypt {
@@ -82,7 +123,16 @@ pub fn encode(bytes: &[u8], compress: bool, encrypt: bool) -> Vec<u8> {
 }
 
 /// 解码资源；非 `RustLua` 文件（明文/开发模式）原样返回。
+///
+/// 例外：收到 [`crate::bundle::BUNDLE_MAGIC`]（RLB 资源包）**必须报错**而不是当明文透传。
+/// 资源包是容器、不是资源；若把它原样交给调用方，Lua 加载器会把整包当脚本执行，
+/// 症状是"语法错误出现在某个二进制行"——那种错误没有人能据此定位（`docs/67` §4.6）。
 pub fn decode(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    if bytes.starts_with(crate::bundle::BUNDLE_MAGIC) {
+        return Err(
+            "这是 RLB 资源包（容器），不是单个资源：请经 bundle 挂载后按条目读取".to_owned(),
+        );
+    }
     if !bytes.starts_with(PACK_MAGIC) {
         return Ok(bytes.to_vec());
     }
@@ -115,6 +165,15 @@ mod tests {
     fn plaintext_passes_through_decode() {
         let data = b"function update() return 'ok' end".to_vec();
         assert_eq!(decode(&data).unwrap(), data);
+    }
+
+    #[test]
+    fn bundle_magic_is_rejected_not_passed_through() {
+        // 把资源包交给单文件解码器必须响亮失败：否则整包会被当明文脚本执行。
+        let mut bundle = crate::bundle::BUNDLE_MAGIC.to_vec();
+        bundle.extend_from_slice(&[0u8; 32]);
+        let error = decode(&bundle).expect_err("RLB 包不能当资源解码");
+        assert!(error.contains("RLB"), "得到：{error}");
     }
 
     #[test]

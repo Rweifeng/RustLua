@@ -17,13 +17,21 @@ use rustlua_assets::resource_kind::ResourceKind;
 use std::{
     collections::{BTreeMap, HashSet},
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::atomic::AtomicBool,
     time::Duration,
 };
 
+pub mod atlas_cook;
+pub mod bundle_plan;
+
 /// assetc 打包清单格式版本；变更会触发发布脚本重新打包。
 pub const PACKAGE_VERSION: &str = "assetc-package-2";
+
+/// 资源包（RLB）容器版本在 `rustlua_infra::bundle::BUNDLE_VERSION`；这里只做展示用的旁注。
+pub const BUNDLE_DIR: &str = "bundles";
+/// 包内报告文件名（随包发布，供 CI/发布面板读；**内容必须确定性**，不写时间戳）。
+pub const PACKAGE_REPORT_FILE: &str = "package-report.json";
 
 /// 扫描时跳过的本地工作目录。
 const SKIP_DIRS: &[&str] = &[".cache", ".temp", ".git", "target"];
@@ -39,7 +47,7 @@ const SKIP_DIRS: &[&str] = &[".cache", ".temp", ".git", "target"];
 ///     `season_preview.png`、`title_bg_pixel_preview.png`）；
 ///   * `manifest.json`：开发期清单（运行期只认 Lua 数据表与场景文件）。
 ///
-/// 打包结果由 `scripts/verify.ps1` 的发布自检打印计数（`assetc_package_ok files=<n>`），
+/// 打包结果由 `scripts/verify/verify.ps1` 的发布自检打印计数（`assetc_package_ok files=<n>`），
 /// 判定规则本身由本文件的单测 `dev_artifacts_are_not_packaged` 与
 /// `game_jhyt` 的验收样例 `jhyt_m29_season_weather` ⑦（重扫 `assets/**` 并核对
 /// `examples/game_jhyt/docs/48` 的决定表）共同守住，因此"预览图混进发行包"不会再悄悄发生。
@@ -663,7 +671,7 @@ const PACKAGE_SOURCE_DIRS: &[&str] = &["scenes", "scripts", "assets"];
 ///
 /// **允许** `out` 位于项目内的其它位置（如 `builds/`）：`scan`/`collect_data_files`
 /// 只遍历 `project.toml` 与上述三个子目录，因此 `builds/` 下的发布产物不会被当成
-/// 项目数据；`scripts/package.ps1` 的原子发布正是这样布局的
+/// 项目数据；`scripts/build/package.ps1` 的原子发布正是这样布局的
 /// （`<project>/builds/<platform>/.staging-*/pack`）。
 fn ensure_distinct_output(project: &Path, out: &Path) -> anyhow::Result<()> {
     let project_abs = canonical_or_absolute(project)?;
@@ -722,8 +730,51 @@ fn canonical_or_absolute(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(resolved)
 }
 
+/// 把 `project.toml` 声明的工程图（`splash_image` / `icon_image`）按声明的相对路径复制进包。
+///
+/// 为什么不能只靠 `assets/` 那一趟目录复制：启动图是**窗口出现之前就要读**的资源，工程常把
+/// 它单独放成顶层目录（`splash/splash.png`，game_jhyt 就这样）。只扫 `assets/` 的话它根本不
+/// 进包，运行期 `splash::startup_image` 读不到 ⇒ **静默回落**到编译期内置图，日志里仅有
+/// 一条 warn——"换了启动图却没生效"就是这条链。
+///
+/// 与 `font` 同一条纪律：**声明即随包**（`--drop-undeclared-fonts` 也只保留声明过的字体）。
+/// 缺失的文件不在这里报错（那是 `game --check` 的资源校验语境），但越出工程根的路径必须
+/// 拒绝：`fs::copy` 会把项目外的文件悄悄塞进发布包。
+fn copy_declared_images(project: &Path, out: &Path) -> anyhow::Result<()> {
+    for key in ["splash_image", "icon_image"] {
+        let Some(value) = project_key_value(project, key) else {
+            continue;
+        };
+        // Windows 工程里两种分隔符都有；包内条目名统一用 `/`（与 manifest/容器同一口径）。
+        let relative = value.replace('\\', "/");
+        let path = Path::new(&relative);
+        if relative.contains(':')
+            || path
+                .components()
+                .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
+        {
+            return Err(anyhow!(
+                "project.toml 的 {key} 必须是工程内相对路径（不得含 ..）：{relative}"
+            ));
+        }
+        let source = project.join(path);
+        if !source.is_file() {
+            continue;
+        }
+        let destination = out.join(path);
+        if destination.is_file() {
+            // 已经在 `assets/` 下：目录复制那一趟已经带过去了，不再覆盖（也不必）。
+            continue;
+        }
+        copy_file(&source, &destination)?;
+    }
+    Ok(())
+}
+
 /// 生成发布资源包：复制 `project.toml`、`scenes/`、`scripts/`、`assets/`
 /// 到 `out`，并写入 `manifest.txt`（路径、大小、校验和）。
+/// 此外还按 `project.toml` 的 `splash_image` / `icon_image` 把**声明的**工程图带进包
+/// （它们可以不在 `assets/` 下，见 [`copy_declared_images`]）。
 /// `compress` 对 `assets/` 下支持压缩的资产生效；`encrypt` 仅对 Lua 与场景文件生效。
 /// `drop_undeclared_fonts`（微信形态，docs/52 配额门）：删掉 `assets/fonts/` 下**没被
 /// `project.toml` 声明**（`font`/`font_fallback`）的字体二进制——它们是开发树对照物，
@@ -763,6 +814,7 @@ pub fn package(
         is_compressible_asset,
         never_encode,
     )?;
+    copy_declared_images(project, out)?;
     // 首包字体：收集项目用到的字符清单，运行时预生成字形（首帧文字不卡）。
     let chars = rustlua_scene::char_collect::collect_project_chars(project);
     fs::write(out.join("chars.txt"), &chars)?;
@@ -840,6 +892,739 @@ pub fn package(
     }
     fs::write(out.join("manifest.txt"), lines.join("\n"))?;
     Ok(PackageManifest { entries: manifest })
+}
+
+/// 打包形态（`docs/67` 批 A/批 C）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BundleMode {
+    /// 目录形态：一文件一资源（今天的 `assetc package`）。
+    Loose,
+    /// 单包形态：全部资源进一个 RLB 容器，输出根只留骨架。
+    Single,
+    /// 分组形态：按 `bundles.json`（缺省用内置内容域规则）切成多个容器 + `bundle_plan.json`。
+    Grouped,
+}
+
+impl BundleMode {
+    /// 命令行/日志用的短名。
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Loose => "none",
+            Self::Single => "single",
+            Self::Grouped => "grouped",
+        }
+    }
+
+    /// `--bundle <值>` 解析。
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "none" | "loose" => Some(Self::Loose),
+            "single" => Some(Self::Single),
+            "grouped" | "groups" => Some(Self::Grouped),
+            _ => None,
+        }
+    }
+}
+
+/// 打包体积报告（写进包内 `package-report.json`，也用于命令行摘要）。
+///
+/// **必须确定性**：只含由输入决定的值，不含耗时/时间戳/进程信息——否则同一份工程两次打包
+/// 产物不同，`manifest` 与 golden 门都会抖（`docs/67` §4.5）。
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PackageReport {
+    /// 报告 schema，改动字段含义时自增。
+    pub schema: u32,
+    /// `none` / `single`。
+    pub mode: String,
+    /// 输出目录里的文件数（含清单与报告自身）。
+    pub files: u64,
+    /// 包内条目数（目录形态下等于文件数减清单）。
+    pub entries: u64,
+    /// 块数（目录形态恒 0）。
+    pub blocks: u64,
+    /// 条目原始字节合计。
+    pub raw_bytes: u64,
+    /// 容器落盘字节（目录形态 = `raw_bytes`）。
+    pub bundle_bytes: u64,
+    /// 索引落盘 / 解压后字节。
+    pub index_bytes: u64,
+    pub index_raw_bytes: u64,
+    /// 压缩比 × 1000（整数，避免浮点在报告里抖动）。
+    pub ratio_milli: u64,
+    /// 容器文件的包内相对路径（目录形态为空；分组形态为第一个组，其余见 `groups`）。
+    pub bundle_path: String,
+    /// 分组形态的逐组结果（`single` / 目录形态为空）。
+    #[serde(default)]
+    pub groups: Vec<GroupReport>,
+}
+
+/// 报告里的单组结果。
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GroupReport {
+    pub name: String,
+    /// `main` / `sub` / `cdn`。
+    pub unit: String,
+    pub entries: u64,
+    pub raw_bytes: u64,
+    pub bundle_bytes: u64,
+    /// 容器在包内的相对路径。
+    pub bundle: String,
+}
+
+impl PackageReport {
+    fn ratio_milli(raw: u64, stored: u64) -> u64 {
+        if raw == 0 {
+            1000
+        } else {
+            stored.saturating_mul(1000).checked_div(raw).unwrap_or(1000)
+        }
+    }
+
+    /// 压缩比（浮点，仅供打印/测试）。
+    pub fn ratio(&self) -> f64 {
+        self.ratio_milli as f64 / 1000.0
+    }
+}
+
+/// 容器形态下**故意留在目录里**的路径前缀。
+pub type KeepPrefixes<'a> = &'a [String];
+
+/// 判断一个条目是否要留在目录形态里（不进容器）。
+///
+/// 为什么需要这个口子：有些消费者**按真实文件路径**读资源，容器里的条目它们够不着。
+/// 目前只有一个实例，但很硬：微信 `wx.loadFont(path)` 只吃本地文件，字体一旦进容器就加载不了
+/// （实测：`package.ps1` 的"字体必须在 pack/ 里"断言当场拦下）。
+/// 把这类资源按前缀排除之后，容器与目录两种形态可以并存——它们仍是 manifest 条目、
+/// 仍参与完整性校验，只是不被打进 `.rlb`。
+fn is_kept(relative: &str, keep: KeepPrefixes<'_>) -> bool {
+    keep.iter()
+        .any(|prefix| relative.starts_with(prefix.as_str()))
+}
+
+/// 启动闭包优先级：小的先排（0 = 启动就读，1 = 启动后按需）。
+///
+/// 判据只列**确实在 boot 期间被读**的东西（见 `game` / `game_web` 的启动序列）：
+/// `project.toml`、启动场景、主脚本、图集重定向表。字体不算——容器形态下它被 `--keep`
+/// 留在目录里，根本不进块。
+fn boot_priority(relative: &str) -> u8 {
+    // 0 = 引擎**确定**在 boot 期读的四个文件：project.toml、图集重定向表、启动场景、主脚本。
+    //     它们合计约 75 KB，排在一起就能塞进同一个块。
+    if relative == "project.toml"
+        || relative == "atlas_redirect.json"
+        || relative == "scenes/main.scene"
+        || relative == "scripts/main.lua"
+    {
+        return 0;
+    }
+    // 1 = 其余 Lua 脚本：`require` 同步，boot 期间会连带读到（1600 KB / 155 个文件，约 7 块）。
+    //     紧跟锚点，等于把"启动会摸到的块"压到容器最前面。
+    if relative.starts_with("scripts/") {
+        return 1;
+    }
+    // 2 = 其余（场景、预制体…）：启动只读其中一个场景，其余按需。
+    2
+}
+
+/// 单包形态：先按目录形态产出（复用字体子集/依赖索引/安全边界检查），
+/// 再把整棵树收进 `bundles/all-<hash8>.rlb`，输出根只留骨架
+/// （`project.toml` + `manifest.txt` + 容器 + 报告）。
+///
+/// 为什么"先生成再收"而不是直接流式写包：这样"包内条目 == 目录形态的产物"是**构造性成立**的，
+/// 等价性门（`bundle_package_matches_loose_output`）不需要再维护一份拷贝逻辑。
+pub fn package_bundled(
+    project: &Path,
+    out: &Path,
+    drop_undeclared_fonts: bool,
+    fast: bool,
+    encrypt: bool,
+    keep: KeepPrefixes<'_>,
+) -> anyhow::Result<PackageReport> {
+    package_bundled_with(project, out, drop_undeclared_fonts, fast, encrypt, keep, 0)
+}
+
+/// [`package_bundled`] 的可调块大小版本（`block_size = 0` 表示默认 256 KB）。
+pub fn package_bundled_with(
+    project: &Path,
+    out: &Path,
+    drop_undeclared_fonts: bool,
+    fast: bool,
+    encrypt: bool,
+    keep: KeepPrefixes<'_>,
+    block_size: u32,
+) -> anyhow::Result<PackageReport> {
+    let block_size = if block_size == 0 {
+        rustlua_infra::bundle::DEFAULT_BLOCK_SIZE
+    } else {
+        block_size
+    };
+    use rustlua_infra::bundle::BundleBuilder;
+
+    // 1) 目录形态打底 + （可选）图集 cook。cook 读的是 `out/assets/**`、写完页与重定向表后
+    //    源图就不在了，所以后面的条目收集天然拿到"页 + 定义"而不是散图。
+    package(project, out, false, false, drop_undeclared_fonts)?;
+    if let Some(config) = atlas_cook::AtlasConfig::load(&project.join("atlas.json"))? {
+        let redirect = atlas_cook::cook(project, out, &config)?;
+        fs::write(
+            out.join(atlas_cook::REDIRECT_FILE),
+            serde_json::to_vec_pretty(&redirect)
+                .map_err(|error| anyhow!("写重定向表失败：{error}"))?,
+        )?;
+    }
+
+    // 2) 收集条目（排除稍后要重写的清单与报告）。
+    let mut files = Vec::new();
+    collect_files(out, &mut files)?;
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    let manifest_path = out.join("manifest.txt");
+    let report_path = out.join(PACKAGE_REPORT_FILE);
+    let mut builder = BundleBuilder::new(block_size);
+    // 块级 AEAD（docs/67 §4.4）：--encrypt 直接落进容器，贴图/音频/字体一起进加密域。
+    if encrypt {
+        builder = builder.with_encryption(true);
+    }
+    if fast {
+        builder = builder.with_level(3);
+    }
+    let mut entries = 0u64;
+    for (path, _) in &files {
+        if path == &manifest_path || path == &report_path {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(out)
+            .map_err(|_| anyhow!("打包条目不在输出目录内：{}", path.display()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if is_kept(&relative, keep) {
+            continue; // 留在目录里：宿主按真实路径读它（微信 `wx.loadFont`）
+        }
+        let bytes = fs::read(path)?;
+        builder
+            .add(&relative, bytes)
+            .map_err(|error| anyhow!("{error}"))?;
+        entries += 1;
+    }
+    if entries == 0 {
+        return Err(anyhow!("没有可打包的资源（输出目录为空）"));
+    }
+
+    // 3) 建包。
+    let built = builder.build().map_err(|error| anyhow!("{error}"))?;
+    let bundle_name = format!("all-{:08x}.rlb", built.checksum as u32);
+    let bundle_rel = format!("{BUNDLE_DIR}/{bundle_name}");
+    let bundle_path = out.join(BUNDLE_DIR).join(&bundle_name);
+    if let Some(parent) = bundle_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&bundle_path, &built.bytes)?;
+
+    // 4) 收尾：删松散文件 → 写报告 → 重写清单。
+    let mut report = PackageReport {
+        schema: 2,
+        mode: BundleMode::Single.token().to_owned(),
+        files: 0,
+        entries,
+        blocks: u64::from(built.blocks),
+        raw_bytes: built.raw_len,
+        bundle_bytes: built.bytes.len() as u64,
+        index_bytes: u64::from(built.index_len),
+        index_raw_bytes: u64::from(built.index_raw_len),
+        ratio_milli: PackageReport::ratio_milli(built.raw_len, built.bytes.len() as u64),
+        bundle_path: bundle_rel,
+        groups: Vec::new(),
+    };
+    finalize_container_pack(out, &files, &[bundle_path], keep, &mut report)?;
+    Ok(report)
+}
+
+/// 分组形态（`docs/67` §5，批 C）：按 `bundles.json`（缺省内置内容域规则）切成多个容器，
+/// 产出 `bundle_plan.json`，并在构建期跑三条硬门（覆盖完整 / 不跨分发单元 / core 自足）。
+pub fn package_grouped(
+    project: &Path,
+    out: &Path,
+    drop_undeclared_fonts: bool,
+    fast: bool,
+) -> anyhow::Result<PackageReport> {
+    package_grouped_keep(project, out, drop_undeclared_fonts, fast, false, &[])
+}
+
+/// [`package_grouped`] 的带"留在目录里"前缀的版本（微信字体走这条路，见 [`is_kept`]）。
+pub fn package_grouped_keep(
+    project: &Path,
+    out: &Path,
+    drop_undeclared_fonts: bool,
+    fast: bool,
+    encrypt: bool,
+    keep: KeepPrefixes<'_>,
+) -> anyhow::Result<PackageReport> {
+    package_grouped_keep_with(project, out, drop_undeclared_fonts, fast, encrypt, keep, 0)
+}
+
+/// [`package_grouped_keep`] 的可调块大小版本（`0` = 默认 256 KB）。
+///
+/// 块大小的权衡（`docs/67` §9 的性能项）：块越大压缩率略好、同一次解压覆盖更多条目，
+/// 但单次解压更久、惰性读的粒度更粗。默认 256 KB 是拍的，这个参数就是为了量它。
+pub fn package_grouped_keep_with(
+    project: &Path,
+    out: &Path,
+    drop_undeclared_fonts: bool,
+    fast: bool,
+    encrypt: bool,
+    keep: KeepPrefixes<'_>,
+    block_size: u32,
+) -> anyhow::Result<PackageReport> {
+    let block_size = if block_size == 0 {
+        rustlua_infra::bundle::DEFAULT_BLOCK_SIZE
+    } else {
+        block_size
+    };
+    use bundle_plan::{
+        BundleConfig, MAX_BUNDLE_BYTES, PLAN_FILE, build_plan, plan_to_json, validate_plan,
+    };
+    use rustlua_infra::bundle::{BundleBuilder, DEFAULT_BLOCK_SIZE};
+
+    // 1) 目录形态打底（字体子集/依赖索引/安全边界都在这一层，与单包形态同源）+（可选）图集 cook。
+    package(project, out, false, false, drop_undeclared_fonts)?;
+    if let Some(config) = atlas_cook::AtlasConfig::load(&project.join("atlas.json"))? {
+        let redirect = atlas_cook::cook(project, out, &config)?;
+        fs::write(
+            out.join(atlas_cook::REDIRECT_FILE),
+            serde_json::to_vec_pretty(&redirect)
+                .map_err(|error| anyhow!("写重定向表失败：{error}"))?,
+        )?;
+    }
+
+    let manifest_path = out.join("manifest.txt");
+    let report_path = out.join(PACKAGE_REPORT_FILE);
+    let plan_path = out.join(PLAN_FILE);
+
+    // 2) 收集条目（排除稍后要重写的清单/报告/计划）。
+    //
+    // 注意 `collect_files` 的第二个字段是**修改时间（纳秒）**，不是字节数
+    // （见 `collect_files` 的文档与 `modified_nanos`）。分组要按字节切，所以这里单独取长度；
+    // 拿 mtime 当字节数会把几个 20 位数字加爆 u64（批 C 第一次跑就踩了）。
+    let mut files = Vec::new();
+    collect_files(out, &mut files)?;
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut entries: Vec<(String, u64, PathBuf)> = Vec::new();
+    for (path, _mtime) in &files {
+        if path == &manifest_path || path == &report_path || path == &plan_path {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(out)
+            .map_err(|_| anyhow!("打包条目不在输出目录内：{}", path.display()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if is_kept(&relative, keep) {
+            continue; // 留在目录里：宿主按真实路径读它（微信 `wx.loadFont`）
+        }
+        let size = fs::metadata(path)
+            .map_err(|error| anyhow!("读 {} 的长度失败：{error}", path.display()))?
+            .len();
+        entries.push((relative, size, path.clone()));
+    }
+    if entries.is_empty() {
+        return Err(anyhow!("没有可打包的资源（输出目录为空）"));
+    }
+
+    // 3) 分组 + 三条硬门。
+    let config = BundleConfig::load_or_default(&project.join("bundles.json"))?;
+    let plan_entries: Vec<(String, u64)> = entries
+        .iter()
+        .map(|(path, size, _)| (path.clone(), *size))
+        .collect();
+    let mut plan = build_plan(&config, &plan_entries, DEFAULT_BLOCK_SIZE)?;
+    // 被 `--keep` 排除出容器的条目（微信字体）不在计划里，自然也不该参与"core 自足"断言：
+    // 它们本来就是**目录里的真实文件**，按路径读得到，这正是 keep 的目的。
+    let bundled: std::collections::BTreeSet<&str> =
+        entries.iter().map(|(path, _, _)| path.as_str()).collect();
+    let keys = bundle_plan::ProjectKeys {
+        main_script: project_key_value(project, "main_script"),
+        startup_scene: project_key_value(project, "startup_scene"),
+        fonts: project_font_declarations(project)
+            .into_iter()
+            .filter(|font| bundled.contains(font.as_str()))
+            .collect(),
+    };
+    validate_plan(&plan, entries.len() as u64, &keys, MAX_BUNDLE_BYTES)?;
+
+    // 4) 逐组建包。
+    let by_path: BTreeMap<&str, &PathBuf> = entries
+        .iter()
+        .map(|(relative, _, path)| (relative.as_str(), path))
+        .collect();
+    let mut bundle_paths: Vec<PathBuf> = Vec::new();
+    let mut report_groups: Vec<GroupReport> = Vec::with_capacity(plan.groups.len());
+    let (mut total_raw, mut total_bytes, mut total_blocks) = (0u64, 0u64, 0u64);
+    let (mut total_index, mut total_index_raw) = (0u64, 0u64);
+    for group in &mut plan.groups {
+        let mut builder = BundleBuilder::new(block_size);
+        // 块级 AEAD（docs/67 §4.4）：--encrypt 直接落进容器，贴图/音频/字体一起进加密域。
+        if encrypt {
+            builder = builder.with_encryption(true);
+        }
+        if fast {
+            builder = builder.with_level(3);
+        }
+        // 组内装入次序 = **启动闭包优先**，其余按路径升序（`docs/67` §9 的性能项）。
+        //
+        // 为什么次序能省时间：容器按 256 KB 顺序切块，同块的条目共享一次解压。
+        // 启动只读极少数条目（project.toml / 启动场景 / 主脚本 / 重定向表），
+        // 它们在**哪个块**决定启动要解几次——散落在三个块里就要解三次。
+        // 把它们排到组内最前面，启动就落在第 0 块（必要时第 1 块）。
+        // 排序仍完全确定（同一输入 → 同一份字节），不吃掉 §4.5 的确定性要求。
+        for relative in &group.paths {
+            let path = by_path
+                .get(relative.as_str())
+                .ok_or_else(|| anyhow!("计划里的条目在产物里找不到：{relative}"))?;
+            // 排序交给 builder：它内部会按 (优先级, 名字) 重排，在 assetc 侧先排是无效的（实测）。
+            builder
+                .add_ranked(relative, fs::read(path)?, boot_priority(relative))
+                .map_err(|error| anyhow!("{error}"))?;
+        }
+        let built = builder
+            .build()
+            .map_err(|error| anyhow!("构建组 {} 失败：{error}", group.name))?;
+        let name = format!(
+            "{}-{:08x}.rlb",
+            bundle_plan::sanitize(&group.name),
+            built.checksum as u32
+        );
+        let relative = format!("{BUNDLE_DIR}/{name}");
+        let path = out.join(BUNDLE_DIR).join(&name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, &built.bytes)?;
+        // 复核 P0-1：单包上限按**落盘**字节判（微信分包口径），不是原始字节。
+        if group.unit != "cdn" && built.bytes.len() as u64 > MAX_BUNDLE_BYTES {
+            return Err(anyhow!(
+                "组 {} 落盘 {} B 超过单包上限 {} B（微信分包口径）：请拆细规则或改用 unit = \"cdn\"",
+                group.name,
+                built.bytes.len(),
+                MAX_BUNDLE_BYTES
+            ));
+        }
+        total_raw += built.raw_len;
+        total_bytes += built.bytes.len() as u64;
+        total_blocks += u64::from(built.blocks);
+        total_index += u64::from(built.index_len);
+        total_index_raw += u64::from(built.index_raw_len);
+        group.bundle = relative.clone();
+        group.bundle_bytes = built.bytes.len() as u64;
+        // 增量分发的比较键：整包 FNV（与文件名里的 8 位同源，这里给全 16 位）。
+        group.hash = format!("{:016x}", built.checksum);
+        report_groups.push(GroupReport {
+            name: group.name.clone(),
+            unit: group.unit.clone(),
+            entries: group.entries,
+            raw_bytes: built.raw_len,
+            bundle_bytes: built.bytes.len() as u64,
+            bundle: relative,
+        });
+        bundle_paths.push(path);
+    }
+
+    // 5) 计划表（先写：清单要覆盖它）。
+    // 计划表自校验（复核 P2）：**写盘前**签，因为 `bundle`/`bundle_bytes`/`hash` 在逐组建包时
+    // 才被回填；早签必然对不上。计划表是缺件归因的唯一依据，截断/错版必须当场发现。
+    plan.checksum = plan.compute_checksum();
+    fs::write(&plan_path, plan_to_json(&plan)?)?;
+    bundle_paths.push(plan_path.clone());
+
+    // 6) 收尾。
+    let mut report = PackageReport {
+        schema: 2,
+        mode: BundleMode::Grouped.token().to_owned(),
+        files: 0,
+        entries: entries.len() as u64,
+        blocks: total_blocks,
+        raw_bytes: total_raw,
+        bundle_bytes: total_bytes,
+        index_bytes: total_index,
+        index_raw_bytes: total_index_raw,
+        ratio_milli: PackageReport::ratio_milli(total_raw, total_bytes),
+        bundle_path: report_groups
+            .first()
+            .map(|group| group.bundle.clone())
+            .unwrap_or_default(),
+        groups: report_groups,
+    };
+    finalize_container_pack(out, &files, &bundle_paths, keep, &mut report)?;
+    Ok(report)
+}
+
+/// 容器形态的收尾：删掉已进容器的松散文件（保留 `project.toml` 与 `keep`）→ 写报告 → 重写清单。
+///
+/// `files` 是第 2 步收集到的**松散产物全集**（含清单与报告），`keep` 是必须留在磁盘上的
+/// 已生成文件（容器、计划表）。
+fn finalize_container_pack(
+    out: &Path,
+    files: &[(PathBuf, u64)],
+    keep: &[PathBuf],
+    prefixes: KeepPrefixes<'_>,
+    report: &mut PackageReport,
+) -> anyhow::Result<()> {
+    let manifest_path = out.join("manifest.txt");
+    let report_path = out.join(PACKAGE_REPORT_FILE);
+    let project_toml = out.join("project.toml");
+
+    for (path, _) in files {
+        if path == &manifest_path || path == &report_path || path == &project_toml {
+            continue;
+        }
+        if keep.iter().any(|kept| kept == path) {
+            continue;
+        }
+        // `--keep` 排出去的文件（微信字体）本来就不在容器里，绝不能在这里被当"中间产物"删掉：
+        // 删了之后容器读不到它（它不在容器里）、磁盘也没有，`wx.loadFont` 直接失效。
+        let relative = path
+            .strip_prefix(out)
+            .map(|tail| tail.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        if is_kept(&relative, prefixes) {
+            continue;
+        }
+        if path.is_file() {
+            fs::remove_file(path)?;
+        }
+    }
+    for dir in ["scenes", "scripts", "assets"] {
+        remove_dir_if_empty(&out.join(dir))?;
+    }
+    prune_empty_dirs(out, 0)?;
+
+    let files_after = {
+        let mut list = Vec::new();
+        collect_files(out, &mut list)?;
+        list.len() as u64
+    };
+    // 此刻磁盘上是"骨架 + 容器(+计划) + 第一轮留下的清单"，再加 1 份待写的报告。
+    report.files = files_after + 1;
+    fs::write(
+        &report_path,
+        serde_json::to_vec_pretty(report).map_err(|error| anyhow!("写报告失败：{error}"))?,
+    )?;
+
+    let mut listed = Vec::new();
+    collect_files(out, &mut listed)?;
+    listed.retain(|(path, _)| path != &manifest_path);
+    listed.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut lines = vec![format!("assetc_manifest=1\t{PACKAGE_VERSION}")];
+    for (path, _) in listed {
+        let relative = path
+            .strip_prefix(out)
+            .map_err(|_| anyhow!("清单文件不在输出目录内：{}", path.display()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let bytes = fs::read(&path)?;
+        lines.push(format!(
+            "{relative}\t{}\t{:016x}",
+            bytes.len(),
+            fnv1a(&bytes)
+        ));
+    }
+    fs::write(&manifest_path, lines.join("\n"))?;
+    Ok(())
+}
+
+/// 读 `project.toml` 里的一个键（与 `project_font_key` 同一条逐行扫描口径）。
+fn project_key_value(project: &Path, key: &str) -> Option<String> {
+    let text = fs::read_to_string(project.join("project.toml")).ok()?;
+    text.lines().find_map(|line| {
+        let line = line.trim().trim_start_matches('\u{feff}');
+        line.strip_prefix(&format!("{key} ="))
+            .map(|rest| rest.trim().trim_matches('"').to_owned())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+/// `assetc inspect <包目录|.rlb>`：打印容器索引摘要与**启动闭包落在第几个块**。
+///
+/// 为什么需要它：`game --check` 只说"1,371 个条目都读得出来"，看不出"启动要解几个块"——
+/// 而那正是块排序优化的唯一指标。索引本身是 zstd 压缩的（`HEADER_FLAG_INDEX_COMPRESSED`），
+/// 外部脚本解不了，所以这个读数只能由 Rust 侧给。
+///
+/// 输出刻意保持"一行一条 + 可 grep 的键值"：它同时是运维排查工具，
+/// `assetc inspect <pack\bundles> | Select-String boot_blocks` 就是一条门。
+pub fn inspect_bundles(target: &Path) -> anyhow::Result<String> {
+    use rustlua_infra::bundle::BundleIndex;
+
+    // 启动闭包：boot 期间确实会读的条目（与 `boot_priority` 同口径）。
+    let is_boot = |name: &str| {
+        name == "project.toml"
+            || name == "atlas_redirect.json"
+            // 只认**启动场景**：把所有 scenes/* 都算进来会得到 3 个块的假读数
+            // （那些场景启动时根本不读，只在切场景时才用）。
+            || name == "scenes/main.scene"
+            || name == "scripts/main.lua"
+    };
+
+    let mut files: Vec<PathBuf> = Vec::new();
+    if target.is_file() {
+        files.push(target.to_path_buf());
+    } else {
+        let nested = target.join(BUNDLE_DIR);
+        let dir = if nested.is_dir() {
+            nested
+        } else {
+            target.to_path_buf()
+        };
+        for entry in fs::read_dir(&dir)
+            .map_err(|error| anyhow!("读 {} 失败：{error}", dir.display()))?
+            .flatten()
+        {
+            let path = entry.path();
+            if path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("rlb"))
+            {
+                files.push(path);
+            }
+        }
+        files.sort();
+    }
+    if files.is_empty() {
+        return Err(anyhow!("没有找到 .rlb 容器：{}", target.display()));
+    }
+
+    let mut out = String::new();
+    let mut total_blocks = 0usize;
+    let mut boot_places: Vec<(String, u32, String)> = Vec::new();
+    for file in &files {
+        let bytes =
+            fs::read(file).map_err(|error| anyhow!("读 {} 失败：{error}", file.display()))?;
+        let index =
+            BundleIndex::parse(&bytes).map_err(|error| anyhow!("{}: {error}", file.display()))?;
+        let name = file
+            .file_name()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let index_kb = index
+            .blocks()
+            .iter()
+            .map(|block| block.stored_len as u64)
+            .sum::<u64>()
+            / 1024;
+        out.push_str(&format!(
+            "bundle {name} blocks={} entries={} payload_kb={index_kb} block_size={}\n",
+            index.blocks().len(),
+            index.len(),
+            index.block_size()
+        ));
+        total_blocks += index.blocks().len();
+        let mut per_block = vec![0usize; index.blocks().len()];
+        for entry in index.entries() {
+            if let Some(slot) = per_block.get_mut(entry.block as usize) {
+                *slot += 1;
+            }
+        }
+        for (number, block) in index.blocks().iter().enumerate() {
+            out.push_str(&format!(
+                "  block {number} flags={} stored={} raw={} entries={}\n",
+                block.flags, block.stored_len, block.raw_len, per_block[number]
+            ));
+        }
+        for entry in index.entries() {
+            if is_boot(&entry.path) {
+                boot_places.push((name.clone(), entry.block, entry.path.clone()));
+            }
+        }
+    }
+    boot_places.sort_by(|a, b| a.2.cmp(&b.2));
+    for (bundle, block, name) in &boot_places {
+        out.push_str(&format!("boot {bundle} block={block} {name}\n"));
+    }
+    let distinct: std::collections::BTreeSet<(String, u32)> = boot_places
+        .iter()
+        .map(|(bundle, block, _)| (bundle.clone(), *block))
+        .collect();
+    out.push_str(&format!(
+        "inspect_ok bundles={} boot_entries={} boot_blocks={} total_blocks={total_blocks}",
+        files.len(),
+        boot_places.len(),
+        distinct.len()
+    ));
+    Ok(out)
+}
+
+/// 等价性校验（`docs/67` 复核 P0-2）：容器形态的**每个条目**都必须与目录形态逐字节相等。
+///
+/// 为什么要有它：`game --check` 里的逐条目 FNV 只证明"容器内部自洽"，
+/// 它证明不了"容器里的内容 == 目录形态的内容"。两者是不同的断言，发布前要都成立。
+/// 这条入口同时也是发布脚本可以常跑的门（不是一次性测试）。
+pub fn verify_bundle_equivalence(loose: &Path, container: &Path) -> anyhow::Result<usize> {
+    use rustlua_infra::bundle::BundleSet;
+    let bundles_dir = container.join(BUNDLE_DIR);
+    let mut files: Vec<PathBuf> = fs::read_dir(&bundles_dir)
+        .map_err(|error| anyhow!("读 {} 失败：{error}", bundles_dir.display()))?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("rlb"))
+        })
+        .collect();
+    files.sort();
+    if files.is_empty() {
+        return Err(anyhow!("{} 下没有 .rlb 容器", bundles_dir.display()));
+    }
+    let mut set = BundleSet::new(container);
+    for file in &files {
+        set.mount_file(file)
+            .map_err(|error| anyhow!("挂载 {} 失败：{error}", file.display()))?;
+    }
+    let mut compared = 0usize;
+    let mut first_mismatch: Option<String> = None;
+    for path in set.paths().map(str::to_owned).collect::<Vec<_>>() {
+        let expected = fs::read(loose.join(&path))
+            .map_err(|error| anyhow!("目录形态缺少条目 {path}（容器里有）：{error}"))?;
+        let actual = set
+            .read(&path)?
+            .ok_or_else(|| anyhow!("容器读不出条目 {path}"))?;
+        compared += 1;
+        if actual != expected && first_mismatch.is_none() {
+            first_mismatch = Some(format!(
+                "{path}（容器 {} B / 目录 {} B）",
+                actual.len(),
+                expected.len()
+            ));
+        }
+    }
+    if let Some(mismatch) = first_mismatch {
+        return Err(anyhow!("条目字节不一致：{mismatch}"));
+    }
+    Ok(compared)
+}
+
+/// 删空目录（非递归、失败忽略）：`assets/` 下的小目录要一起收掉，否则目录形态的残骸还在。
+fn remove_dir_if_empty(dir: &Path) -> anyhow::Result<()> {
+    if dir.is_dir() && fs::read_dir(dir)?.next().is_none() {
+        fs::remove_dir(dir)?;
+    }
+    Ok(())
+}
+
+/// 自底向上删掉所有空目录（限制深度，防误伤）。
+fn prune_empty_dirs(root: &Path, depth: usize) -> anyhow::Result<()> {
+    if depth > 16 {
+        return Ok(());
+    }
+    let mut children = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            prune_empty_dirs(&path, depth + 1)?;
+            children.push(path);
+        }
+    }
+    for path in children {
+        remove_dir_if_empty(&path)?;
+    }
+    Ok(())
 }
 
 /// Emit the static resource graph used by synchronous runtimes to avoid
@@ -1109,7 +1894,16 @@ fn normalize_asset_path(value: &str, known: &BTreeMap<String, String>) -> Option
 fn asset_prefix_refs(text: &str) -> Vec<String> {
     let mut prefixes = Vec::new();
     for literal in string_literals(text) {
-        if literal.starts_with("assets/") && literal.ends_with('/') && !prefixes.contains(&literal)
+        if literal.starts_with("assets/")
+            && literal.ends_with('/')
+            // 仅 `"assets/"`（无下钻）不算目录引用：它是**校验用的字面量**
+            // （`string.find(entry.pattern, "assets/", 1, true)` 这类"路径确实是工程相对资产路径吗"
+            // 的判据），展开它等于把整包挂成这个文件闭包的一部分。
+            // 2026-10-17 实测：`scripts/data/season_art.lua:114` 的这一个字面量让它的边涨到
+            // 1,207 条（整棵 assets 树、含 17.7 MB 的已停用字体），运行期的闭包选择因此永远
+            // 走不到"少量首屏资源"那条路。目录引用至少给到一级子目录才有信息量。
+            && literal.trim_end_matches('/').len() > "assets".len()
+            && !prefixes.contains(&literal)
         {
             prefixes.push(literal);
         }
@@ -1256,6 +2050,74 @@ mod tests {
             "点号模块名不该把自己标成 opaque：{index}"
         );
         fs::remove_dir_all(&out).ok();
+        cleanup(&root);
+    }
+
+    /// 声明的启动图必须随包，**哪怕它不在 `assets/` 下**（`splash/` 这类顶层目录）。
+    ///
+    /// 漏了这一手的症状不是"打包失败"，而是运行期静默回落到编译期内置图（日志里只有一条
+    /// warn）——玩家看到的仍是引擎默认启动图，而包看着完全正常。
+    #[test]
+    fn declared_splash_outside_assets_is_packaged() {
+        let root = temp_project("declared-splash");
+        fs::create_dir_all(root.join("splash")).unwrap();
+        // 与 `assets/textures/red-1x1.png` 同一份合法 PNG：内容必须逐字节进包。
+        let png = fs::read(root.join("assets/textures/red-1x1.png")).unwrap();
+        fs::write(root.join("splash/splash.png"), &png).unwrap();
+        let config = fs::read_to_string(root.join("project.toml")).unwrap();
+        fs::write(
+            root.join("project.toml"),
+            format!("{config}splash_image = \"splash/splash.png\"\n"),
+        )
+        .unwrap();
+
+        let out = std::env::temp_dir().join(format!(
+            "rustlua-assetc-declared-splash-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&out);
+        package(&root, &out, false, false, false).unwrap();
+        let manifest = fs::read_to_string(out.join("manifest.txt")).unwrap();
+        assert!(
+            manifest
+                .lines()
+                .any(|line| line.starts_with("splash/splash.png\t")),
+            "声明的启动图必须进清单：{manifest}"
+        );
+        assert_eq!(fs::read(out.join("splash/splash.png")).unwrap(), png);
+
+        fs::remove_dir_all(&out).ok();
+        cleanup(&root);
+    }
+
+    /// 声明图越出工程根必须报错：`fs::copy` 会把项目外的文件悄悄塞进发布包。
+    #[test]
+    fn declared_splash_rejects_escaping_path() {
+        let root = temp_project("declared-splash-escape");
+        let config = fs::read_to_string(root.join("project.toml")).unwrap();
+        fs::write(
+            root.join("project.toml"),
+            format!("{config}splash_image = \"../outside.png\"\n"),
+        )
+        .unwrap();
+        let error = package(
+            &root,
+            &std::env::temp_dir().join(format!(
+                "rustlua-assetc-declared-splash-escape-{}-{}",
+                std::process::id(),
+                unique_suffix()
+            )),
+            false,
+            false,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("splash_image") && error.contains("相对路径"),
+            "{error}"
+        );
         cleanup(&root);
     }
 
@@ -1765,6 +2627,47 @@ mod tests {
     }
 
     #[test]
+    fn package_dependency_index_ignores_bare_assets_prefix_literal() {
+        let root = temp_project("package-bare-assets-prefix");
+        // 只有"一级子目录"的目录引用才算可证闭包；裸 `"assets/"` 是**校验字面量**
+        // （`string.find(path, "assets/", 1, true)`），展开它把整包挂成这个文件的依赖。
+        assert_eq!(
+            asset_prefix_refs("local ok = string.find(p, \"assets/\", 1, true)\n"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            asset_prefix_refs("local dir = \"assets/art/tilesets/\"\n"),
+            vec!["assets/art/tilesets/".to_owned()]
+        );
+        fs::create_dir_all(root.join("assets/art/tilesets")).unwrap();
+        fs::write(root.join("assets/art/tilesets/ground.png"), b"png").unwrap();
+        fs::write(root.join("assets/fonts-unused.ttf"), b"ttf").unwrap();
+        fs::write(
+            root.join("scripts/main.lua"),
+            "local PATTERN = \"assets/\"\n\
+             function update()\n\
+             \x20 return string.find(PATTERN, \"assets/\", 1, true) ~= nil\n\
+             end\n",
+        )
+        .unwrap();
+        let out = std::env::temp_dir().join(format!(
+            "rustlua-assetc-bare-prefix-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&out);
+        package(&root, &out, false, false, false).unwrap();
+        let index: serde_json::Value =
+            serde_json::from_slice(&fs::read(out.join("dependencies.json")).unwrap()).unwrap();
+        assert!(
+            index["edges"]["scripts/main.lua"].is_null(),
+            "裸 `assets/` 不该产生任何边（否则整包进闭包）：{index}"
+        );
+        fs::remove_dir_all(&out).ok();
+        cleanup(&root);
+    }
+
+    #[test]
     fn package_compresses_supported_assets_without_compressing_lua() {
         let root = temp_project("package-compress-assets");
         let out = std::env::temp_dir().join(format!(
@@ -2076,6 +2979,240 @@ mod tests {
             "updating all consumers should repair broken links: {broken:?}"
         );
 
+        cleanup(&root);
+    }
+
+    // ---------------------------------------------------------------- 批 A：RLB 单包
+
+    /// 建一个"有文本 + 有二进制 + 有依赖索引"的小工程，供打包门使用。
+    fn bundle_project(label: &str) -> PathBuf {
+        let root = temp_project(label);
+        fs::create_dir_all(root.join("assets/ui")).unwrap();
+        fs::write(
+            root.join("scripts/data.lua"),
+            "return { title = '测试标题', items = { 'a', 'b' } }\n".repeat(20),
+        )
+        .unwrap();
+        fs::write(
+            root.join("scripts/main.lua"),
+            "local data = require('data')\nfunction update() return data.title end\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("assets/ui/panel.txt"),
+            "nine_slice=1\nborder=4\n".repeat(10),
+        )
+        .unwrap();
+        root
+    }
+
+    /// 启动闭包优先排序（`docs/67` §9 的性能项）：boot 期读的条目必须排在组内最前面。
+    ///
+    /// 这条只校验**排序性质**（纯函数、零依赖、秒级）；"实际少解几个块"的读数需要
+    /// WebGL 产物 + 浏览器 harness（重，单独跑）。
+    #[test]
+    fn boot_closure_sorts_first() {
+        let mut paths = vec![
+            "assets/art/ui/hud/a.png".to_owned(),
+            "scripts/data/items.lua".to_owned(),
+            "scripts/main.lua".to_owned(),
+            "scenes/main.scene".to_owned(),
+            "project.toml".to_owned(),
+            "atlas_redirect.json".to_owned(),
+        ];
+        paths.sort_by(|a, b| {
+            boot_priority(a)
+                .cmp(&boot_priority(b))
+                .then_with(|| a.cmp(b))
+        });
+        let head: Vec<&str> = paths.iter().take(4).map(String::as_str).collect();
+        assert_eq!(
+            head,
+            vec![
+                "atlas_redirect.json",
+                "project.toml",
+                "scenes/main.scene",
+                "scripts/main.lua"
+            ],
+            "启动闭包必须全部排在前面：{paths:?}"
+        );
+        // 0 档 = 四个锚点（字典序）；1 档 = 其余脚本；2 档 = 美术等
+        assert_eq!(
+            paths[4], "scripts/data/items.lua",
+            "1 档是其余脚本：{paths:?}"
+        );
+        assert_eq!(paths[5], "assets/art/ui/hud/a.png", "2 档才是美术");
+    }
+
+    /// 单包产物 = 骨架 + 容器 + 报告 + 清单，且目录形态的数据目录**全部消失**。
+    #[test]
+    fn bundle_package_leaves_only_skeleton() {
+        let root = bundle_project("bundle-skeleton");
+        let out = std::env::temp_dir().join(format!(
+            "rustlua-assetc-bundle-skeleton-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&out);
+        let report = package_bundled(&root, &out, false, false, false, &[]).unwrap();
+
+        assert_eq!(report.mode, "single");
+        assert!(report.entries >= 4, "条目数 {report:?}");
+        assert!(report.blocks >= 1);
+        assert!(report.ratio_milli < 1000, "必须比原始更小：{report:?}");
+        assert!(report.bundle_path.starts_with("bundles/all-"));
+
+        // 骨架在，数据目录不在。
+        assert!(out.join("project.toml").is_file());
+        assert!(out.join("manifest.txt").is_file());
+        assert!(out.join(PACKAGE_REPORT_FILE).is_file());
+        assert!(out.join(&report.bundle_path).is_file());
+        for gone in ["scenes", "scripts", "assets"] {
+            assert!(!out.join(gone).exists(), "{gone}/ 不该留在输出根");
+        }
+
+        // 清单只列骨架/容器/报告，且校验和与磁盘一致。
+        let manifest = fs::read_to_string(out.join("manifest.txt")).unwrap();
+        let lines: Vec<&str> = manifest.lines().collect();
+        assert!(lines[0].starts_with("assetc_manifest=1\t"));
+        assert_eq!(lines.len(), 4, "清单应当只有 3 个条目：{manifest}");
+        for line in &lines[1..] {
+            let mut parts = line.split('\t');
+            let relative = parts.next().unwrap();
+            let size: u64 = parts.next().unwrap().parse().unwrap();
+            let checksum = u64::from_str_radix(parts.next().unwrap(), 16).unwrap();
+            let bytes = fs::read(out.join(relative)).unwrap();
+            assert_eq!(bytes.len() as u64, size, "{relative}");
+            assert_eq!(fnv1a(&bytes), checksum, "{relative}");
+        }
+
+        fs::remove_dir_all(&out).ok();
+        cleanup(&root);
+    }
+
+    /// 等价性门（`docs/67` §10.4）：目录形态与单包形态**逐条目字节相等**。
+    ///
+    /// 这条把"容器不改变内容"变成机器可证，比任何体积报告都重要。
+    #[test]
+    fn bundle_package_matches_loose_output() {
+        use rustlua_infra::bundle::{BundleIndex, BundleReader, MemSource};
+
+        let root = bundle_project("bundle-equivalence");
+        let loose = std::env::temp_dir().join(format!(
+            "rustlua-assetc-bundle-loose-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let packed = std::env::temp_dir().join(format!(
+            "rustlua-assetc-bundle-packed-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&loose);
+        let _ = fs::remove_dir_all(&packed);
+
+        package(&root, &loose, false, false, false).unwrap();
+        let report = package_bundled(&root, &packed, false, false, false, &[]).unwrap();
+
+        let bytes = fs::read(packed.join(&report.bundle_path)).unwrap();
+        let index = BundleIndex::parse(&bytes).unwrap();
+        let mut reader = BundleReader::new(index, MemSource::new(bytes));
+
+        // 目录形态里除清单外的每个文件，都必须在容器里有一份字节相同的条目。
+        let mut files = Vec::new();
+        collect_files(&loose, &mut files).unwrap();
+        let mut compared = 0;
+        for (path, _) in files {
+            let relative = path
+                .strip_prefix(&loose)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            if relative == "manifest.txt" {
+                continue; // 两种形态的清单本来就不同（bundle 级 vs 逐文件）
+            }
+            let expected = fs::read(&path).unwrap();
+            let actual = reader
+                .read(&relative)
+                .unwrap()
+                .unwrap_or_else(|| panic!("容器缺少条目 {relative}"));
+            assert_eq!(actual, expected, "条目 {relative} 字节不一致");
+            compared += 1;
+        }
+        assert_eq!(compared as u64, report.entries, "条目数必须守恒");
+        // 反向：容器里没有多余条目（index.paths ⊆ 目录形态的文件集）。
+        for entry in reader.index().paths() {
+            assert!(
+                loose.join(entry).exists(),
+                "容器里多出目录形态没有的条目 {entry}"
+            );
+        }
+        reader.verify_all().unwrap();
+
+        fs::remove_dir_all(&loose).ok();
+        fs::remove_dir_all(&packed).ok();
+        cleanup(&root);
+    }
+
+    /// 确定性门（`docs/67` §4.5）：同一输入连打两次，容器逐字节相同。
+    #[test]
+    fn bundle_package_is_deterministic() {
+        let root = bundle_project("bundle-determinism");
+        let mut previous: Option<Vec<u8>> = None;
+        for round in 0..2 {
+            let out = std::env::temp_dir().join(format!(
+                "rustlua-assetc-bundle-det-{round}-{}-{}",
+                std::process::id(),
+                unique_suffix()
+            ));
+            let _ = fs::remove_dir_all(&out);
+            let report = package_bundled(&root, &out, false, false, false, &[]).unwrap();
+            let bytes = fs::read(out.join(&report.bundle_path)).unwrap();
+            if let Some(before) = &previous {
+                assert_eq!(before, &bytes, "两次打包的容器字节必须相同");
+            }
+            previous = Some(bytes);
+            fs::remove_dir_all(&out).ok();
+        }
+        cleanup(&root);
+    }
+
+    /// 报告里的数字必须与容器本身对得上（否则体积报告就是装饰）。
+    #[test]
+    fn bundle_report_matches_container() {
+        use rustlua_infra::bundle::BundleIndex;
+
+        let root = bundle_project("bundle-report");
+        let out = std::env::temp_dir().join(format!(
+            "rustlua-assetc-bundle-report-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        let _ = fs::remove_dir_all(&out);
+        let report = package_bundled(&root, &out, false, false, false, &[]).unwrap();
+        let bytes = fs::read(out.join(&report.bundle_path)).unwrap();
+        let index = BundleIndex::parse(&bytes).unwrap();
+
+        assert_eq!(report.entries, index.len() as u64);
+        assert_eq!(report.blocks, index.blocks().len() as u64);
+        assert_eq!(
+            report.bundle_bytes,
+            bytes.len() as u64,
+            "报告的落盘字节必须等于容器文件大小"
+        );
+        // 容器名里的 8 位 hex 取自整包 FNV：名字换了内容一定换了（CDN/微信缓存失效的依据）。
+        let expected_name = format!(
+            "{BUNDLE_DIR}/all-{:08x}.rlb",
+            rustlua_infra::bundle::checksum(&bytes) as u32
+        );
+        assert_eq!(report.bundle_path, expected_name);
+
+        // 报告自身可被读回（发布面板/CI 依赖这份 JSON）。
+        let text = fs::read_to_string(out.join(PACKAGE_REPORT_FILE)).unwrap();
+        let parsed: PackageReport = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed, report);
+
+        fs::remove_dir_all(&out).ok();
         cleanup(&root);
     }
 }

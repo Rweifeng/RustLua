@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "auto": {
+    "enabled": true,
+    "root": "assets/art/ui",
+    "max_size": 1024,
+    "padding": 1,
+    "format": "auto",
+    "single_min_pixels": 65536
+  },
+  "separate": []
+}

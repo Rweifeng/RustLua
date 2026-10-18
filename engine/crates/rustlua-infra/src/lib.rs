@@ -1,3 +1,5 @@
+pub mod atlas_redirect;
+pub mod bundle;
 pub mod editor_plugins;
 pub mod frame_clock;
 pub mod logging;

@@ -19,7 +19,7 @@
 //! `rustlua_infra::pack::decode`.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Filesystem-like metadata exposed to the Lua bridge (hot-reload uses it).
 pub struct Meta {
@@ -30,6 +30,11 @@ pub struct Meta {
 /// 桌面端资源提供者的类型别名（签名较长，收敛重复，见 clippy type_complexity）。
 #[cfg(not(target_arch = "wasm32"))]
 type DesktopProvider = dyn Fn(&Path) -> Option<Vec<u8>> + Send + Sync;
+
+/// 桌面前缀列举器：容器要能"列条目"，否则发布形态下 `scripts/**` 在磁盘上不存在，
+/// 枚举类校验会静默跳过整棵树（`docs/67` §8 第 2 项）。
+#[cfg(not(target_arch = "wasm32"))]
+type DesktopLister = dyn Fn(&Path) -> Option<Vec<(PathBuf, bool)>> + Send + Sync;
 
 /// Install the host resource reader. Must be called once before any Lua
 /// script load; a second call fails.
@@ -55,17 +60,45 @@ pub fn set_provider(
     backend::set(Box::new(provider))
 }
 
+/// Install the host directory lister（资源包的"列条目"能力）。
+///
+/// 与 provider 同一条纪律：进程级一次安装，第二次报错。桌面用 `Send + Sync`（可能与
+/// provider 在不同线程被调用），wasm 单线程允许捕获非 `Send` 句柄。
+#[cfg(not(target_arch = "wasm32"))]
+pub fn set_lister(lister: Box<DesktopLister>) -> Result<(), &'static str> {
+    backend::set_lister(lister)
+}
+
+/// Install the host directory lister（wasm 形态）。
+#[cfg(target_arch = "wasm32")]
+pub fn set_lister(
+    lister: impl Fn(&Path) -> Option<Vec<(PathBuf, bool)>> + 'static,
+) -> Result<(), &'static str> {
+    backend::set_lister(Box::new(lister))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 mod backend {
     use super::*;
     use std::sync::OnceLock;
 
     static PROVIDER: OnceLock<Box<DesktopProvider>> = OnceLock::new();
+    static LISTER: OnceLock<Box<DesktopLister>> = OnceLock::new();
 
     pub fn set(provider: Box<DesktopProvider>) -> Result<(), &'static str> {
         PROVIDER
             .set(provider)
             .map_err(|_| "vfs: provider already installed")
+    }
+
+    pub fn set_lister(lister: Box<DesktopLister>) -> Result<(), &'static str> {
+        LISTER
+            .set(lister)
+            .map_err(|_| "vfs: lister already installed")
+    }
+
+    pub fn lister() -> Option<&'static DesktopLister> {
+        LISTER.get().map(|b| b.as_ref())
     }
 
     fn provider() -> Option<&'static DesktopProvider> {
@@ -105,6 +138,25 @@ mod backend {
             len: meta.len(),
         })
     }
+
+    /// 目录直接子项：先问 lister（资源包条目），再并上真实文件系统。
+    ///
+    /// 两者都返回才算完整：发布包形态下 `scripts/` 只在容器里，开发形态下只在磁盘上；
+    /// 混合形态（骨架 + 容器）两种都可能有。
+    pub fn list(dir: &Path) -> Vec<(PathBuf, bool)> {
+        let mut out = lister().and_then(|lister| lister(dir)).unwrap_or_default();
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let is_dir = path.is_dir();
+                if !out.iter().any(|(existing, _)| existing == &path) {
+                    out.push((path, is_dir));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -112,9 +164,12 @@ mod backend {
     use super::*;
     use std::cell::RefCell;
 
+    type WasmLister = dyn Fn(&Path) -> Option<Vec<(PathBuf, bool)>>;
+
     thread_local! {
         static PROVIDER: RefCell<Option<Box<dyn Fn(&Path) -> Option<Vec<u8>>>>> =
             const { RefCell::new(None) };
+        static LISTER: RefCell<Option<Box<WasmLister>>> = const { RefCell::new(None) };
     }
 
     pub fn set(provider: Box<dyn Fn(&Path) -> Option<Vec<u8>>>) -> Result<(), &'static str> {
@@ -126,6 +181,30 @@ mod backend {
             *slot = Some(provider);
             Ok(())
         })
+    }
+
+    pub fn set_lister(lister: Box<WasmLister>) -> Result<(), &'static str> {
+        LISTER.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot.is_some() {
+                return Err("vfs: lister already installed");
+            }
+            *slot = Some(lister);
+            Ok(())
+        })
+    }
+
+    /// wasm 上没有文件系统：目录项只能来自 lister（资源包条目）。
+    pub fn list(dir: &Path) -> Vec<(PathBuf, bool)> {
+        let mut out = LISTER.with(|slot| {
+            slot.borrow()
+                .as_deref()
+                .and_then(|lister| lister(dir))
+                .unwrap_or_default()
+        });
+        out.sort();
+        out.dedup();
+        out
     }
 
     pub fn read(path: &Path) -> io::Result<Vec<u8>> {
@@ -163,7 +242,27 @@ mod backend {
     }
 }
 
-pub use backend::{is_file, metadata, read};
+pub use backend::{is_file, list, metadata, read};
+
+/// 递归列出一个目录下的全部**文件**（`vfs::list` 的便捷封装）。
+///
+/// 用途：发布校验要枚举 `scripts/**`，而发布包形态下这些文件只在容器条目里。
+/// 符号链接不跟随（与 `assetc` 的扫描口径一致）。
+pub fn list_files_recursive(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        for (path, is_dir) in list(&current) {
+            if is_dir {
+                stack.push(path);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
 
 /// 读一个工程资源并解码——**引擎里读工程文件的唯一入口**。
 ///

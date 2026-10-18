@@ -2,6 +2,7 @@
 // launched by double-clicking the exe.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod bundle_boot;
 mod cli;
 mod game_app;
 mod splash;
@@ -18,13 +19,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = parse_arguments().map_err(|error| format!("argument error: {error}"))?;
     let project = arguments.project.or_else(find_project_root);
 
+    // 发布包形态（RLB 容器）在这里挂载：**必须早于任何资源读取**。
+    // 目录形态（没有 `bundles/`）走这里什么都不发生，行为与批 B 之前逐字节一致。
+    let mount = match project.as_deref() {
+        Some(root) => bundle_boot::mount_pack_bundles(root)
+            .map_err(|error| format!("挂载资源包失败: {error}"))?,
+        None => None,
+    };
+    if let Some(report) = &mount {
+        // `--check` 也要看得见：stdout 是发布脚本解析的那条通道。
+        println!("game_bundles_mounted {}", report.summary());
+    }
+
     // 仅校验模式：不初始化日志/窗口，输出结果后直接退出。
     if arguments.check {
         let Some(root) = &project else {
             eprintln!("game_check_failed: 未找到游戏项目");
             std::process::exit(1);
         };
-        let missing = verify_project(root);
+        let mut missing = verify_project(root);
+        // 容器形态下再补两条：计划里缺失的容器（整组没发布出去）、以及逐条目全量校验
+        // （只有它能把"某个块坏了"抓出来）。
+        for gap in bundle_boot::missing_bundles() {
+            missing.push(format!("资源包缺失（bundle_plan 里声明过）：{gap}"));
+        }
+        if let Err(error) = bundle_boot::verify_mounted() {
+            missing.push(error);
+        }
         if missing.is_empty() {
             println!("game_check_ok project={}", root.display());
             // P3：把解析出的玩家数据位置打出来，发布脚本据此断言"发布包的存档/设置

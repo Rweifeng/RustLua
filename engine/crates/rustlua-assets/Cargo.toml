@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 mlua = { version = "0.11", features = ["lua54", "vendored"] }
 rodio = { version = "0.19", features = ["wav", "vorbis", "mp3", "flac"] }

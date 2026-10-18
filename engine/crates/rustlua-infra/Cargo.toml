@@ -6,16 +6,33 @@ authors.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# RLB 资源包（`bundle.rs`）的**写**端。只有 `assetc` 打开它：
+# 它依赖 C 版 zstd（libzstd），而引擎与 wasm 产物只需要纯 Rust 的 `ruzstd` 解压。
+# 这个 feature 一旦被任何 wasm 依赖打开，`cargo build --target wasm32-unknown-unknown`
+# 就会去找 C 工具链——所以它不在 default 里，也不许往上加。
+bundle-write = ["dep:zstd"]
+
 [dependencies]
 # 时钟：wasm 上 std 的 Instant::now() 是 panic 路径；web-time 在 wasm 走 performance.now()、原生就是 std。
 web-time = "1"
 thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 flate2 = "1"
 chacha20poly1305 = "0.10"
 rand = "0.8"
+# RLB 资源包的**读**端解码器：纯 Rust zstd 解码，可编进 wasm（`docs/67` §4.3.1）。
+ruzstd = "0.8"
+# 写端编码器（仅 `bundle-write`）：C 版 zstd，只在构建机（assetc）用。
+zstd = { version = "0.13", optional = true }
+# `bundle_plan.json` 的结构放这里：**构建期写、运行期读**，两边必须是同一份定义
+# （`docs/67` §5.5）。serde_json 已在 wasm 依赖树里（game_web 的依赖索引用它），不新增体积。
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tracing-appender.workspace = true
+# 只服务 `logging` 模块，而那个模块已按 `cfg(not(wasm32))` 关掉 —— 声明也必须跟着一起关，
+# 否则 wasm 产物仍会把 registry/fmt/`EnvFilter`(regex) 编进去（体积优化 2026-10-17）。
+tracing-subscriber.workspace = true

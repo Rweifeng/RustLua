@@ -408,6 +408,17 @@ impl RuntimeScene {
         )
     }
 
+    /// 纹理重定向（`docs/67` §6.4）：原图路径 → 「图集页 + 区域」。
+    ///
+    /// 工程根取 `self.project_root`（构造期就有），**不要**用 `atlas::PROJECT_ROOT`：
+    /// 那个常量只是给拿不到根的调用方兜底，而这条路径有真根，用真根在桌面与 wasm 上都对。
+    pub(super) fn texture_redirect(
+        &self,
+        path: &str,
+    ) -> Option<(String, rustlua_render::atlas::AtlasRegion)> {
+        rustlua_render::atlas::redirect_region_with_root(self.project_root.as_deref(), path)
+    }
+
     /// 纹理像素尺寸（惰性、按 path 缓存），仅供九宫格 UV 计算。只读 PNG 头，
     /// 不做全量解码。路径解析与渲染器一致（`project_root.join(path)`，无根则用
     /// 原始路径），并走与纹理加载相同的 pack/decode 解包。读取失败 → `None` →

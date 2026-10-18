@@ -10,7 +10,9 @@ anyhow.workspace = true
 engine = { path = "../engine" }
 
 rustlua-assets = { path = "../rustlua-assets" }
-rustlua-infra = { path = "../rustlua-infra" }
+# `bundle-write`：RLB 资源包的写端（C 版 zstd）。**只有构建工具打开它**——
+# 引擎/wasm 侧只编纯 Rust 的 ruzstd 解压，见 docs/67 §4.3.1。
+rustlua-infra = { path = "../rustlua-infra", features = ["bundle-write"] }
 rustlua-render = { path = "../rustlua-render" }
 rustlua-scene = { path = "../rustlua-scene" }
 serde = { version = "1", features = ["derive"] }

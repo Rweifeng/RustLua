@@ -135,28 +135,31 @@ pub fn verify_project(root: &Path) -> Vec<String> {
 fn verify_project_inner(root: &Path) -> Vec<String> {
     let mut missing = Vec::new();
     let project_toml = root.join("project.toml");
-    if !project_toml.is_file() {
+    // 全走 `vfs`：发布包形态下 `project.toml` 是**骨架**（磁盘上有），但 `scripts/`、`scenes/`、
+    // `assets/` 只在 RLB 容器里——用 `path.is_file()` / `fs::read` 会把它们全判成"缺失"
+    // （批 A 落地时实测过：`game --pack <单包> --check` 当场红）。见 `docs/67` §8 第 2 项。
+    if !rustlua_infra::vfs::is_file(&project_toml) {
         missing.push(format!("缺少项目清单 {}", project_toml.display()));
         return missing;
     }
-    let Ok(text) = fs::read_to_string(&project_toml) else {
+    let Some(text) = read_text(&project_toml) else {
         missing.push(format!("无法读取项目清单 {}", project_toml.display()));
         return missing;
     };
     if let Some(script) = extract_key(&text, "main_script") {
         let path = root.join(script);
-        if !path.is_file() {
+        if !rustlua_infra::vfs::is_file(&path) {
             missing.push(format!("缺少主脚本 {}", path.display()));
         }
     }
     if let Some(scene) = extract_key(&text, "startup_scene") {
         let path = root.join(scene);
-        if !path.is_file() {
+        if !rustlua_infra::vfs::is_file(&path) {
             missing.push(format!("缺少启动场景 {}", path.display()));
-        } else if let Ok(scene_text) = fs::read_to_string(&path) {
+        } else if let Some(scene_text) = read_text(&path) {
             for asset in extract_asset_refs(&scene_text) {
                 let asset_path = root.join(&asset);
-                if !asset_path.is_file() {
+                if !rustlua_infra::vfs::is_file(&asset_path) {
                     let message = format!("场景引用的资源缺失 {}", asset);
                     if !missing.contains(&message) {
                         missing.push(message);
@@ -194,11 +197,10 @@ fn verify_script_syntax(root: &Path) -> Vec<String> {
     use rustlua_assets::importer::ImporterRegistry;
     let mut issues = Vec::new();
     let scripts_root = root.join("scripts");
-    if !scripts_root.is_dir() {
-        return issues;
-    }
-    let mut files = Vec::new();
-    collect_files(&scripts_root, &mut files);
+    // 目录形态下这里是真实目录；发布包形态下 `scripts/` 只在容器里，磁盘上不存在。
+    // 因此**不能**用 `scripts_root.is_dir()` 提前返回，枚举走 `vfs::list_files_recursive`
+    // （容器条目 ∪ 磁盘目录）。
+    let mut files = rustlua_infra::vfs::list_files_recursive(&scripts_root);
     files.sort();
     let registry = ImporterRegistry::builtin();
     for file in files {
@@ -212,7 +214,7 @@ fn verify_script_syntax(root: &Path) -> Vec<String> {
         let Some(importer) = registry.from_path(&file) else {
             continue;
         };
-        let Ok(bytes) = fs::read(&file) else {
+        let Ok(bytes) = rustlua_infra::vfs::read(&file) else {
             issues.push(format!("无法读取脚本 {}", file.display()));
             continue;
         };
@@ -228,7 +230,7 @@ fn verify_script_syntax(root: &Path) -> Vec<String> {
 /// 自身，不在此硬编码任何 NPC/任务语义；未提供该模块的工程跳过此项。
 fn verify_domain_data(root: &Path) -> Vec<String> {
     let entry = root.join("scripts").join("validate_data.lua");
-    if !entry.is_file() {
+    if !rustlua_infra::vfs::is_file(&entry) {
         return Vec::new();
     }
     let runtime = match rustlua_scripting::script::LuaRuntime::new() {
@@ -255,19 +257,22 @@ fn verify_domain_data(root: &Path) -> Vec<String> {
     }
 }
 
+/// 读一份工程文本：走 `vfs`（provider 优先，桌面无 provider 时回落文件系统）。
+///
+/// 发布包形态下 `project.toml` 在骨架里、`scenes/*.scene` 在容器里，两条通道必须同源——
+/// 这也是把 `fs::read_to_string` 换成它的原因。
+fn read_text(path: &Path) -> Option<String> {
+    let bytes = rustlua_infra::vfs::read(path).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 /// 递归收集目录下的全部文件（诊断扫描用；符号链接不跟随）。
+///
+/// 已由 [`rustlua_infra::vfs::list_files_recursive`] 取代（容器条目 ∪ 磁盘目录）。
+/// 保留这个名字只为让调用点读起来仍然是"收集文件"的语义。
+#[allow(dead_code)]
 fn collect_files(root: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_files(&path, out);
-        } else if path.is_file() {
-            out.push(path);
-        }
-    }
+    out.extend(rustlua_infra::vfs::list_files_recursive(root));
 }
 
 /// 从 `key = "value"` 样式的项目清单文本中提取字段值。

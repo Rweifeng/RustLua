@@ -571,16 +571,55 @@ impl RuntimeScene {
                                 )
                             }
                             None => match world.get::<SpriteAsset>(id).ok().flatten() {
-                                Some(asset) => (
-                                    texture_id_of(
-                                        asset.path(),
-                                        assets,
-                                        texture_paths,
-                                        texture_lookup,
-                                        texture_handles,
-                                    ),
-                                    *sprite,
-                                ),
+                                Some(asset) => {
+                                    // 图集重定向（`docs/67` §6.4）：`assetc` cook 之后散图已被页取代，
+                                    // 工程源里写的仍是原路径。这里把它翻成「页 + 区域」，
+                                    // **贴图上传与合批因此都不需要再知道图集的存在**：
+                                    // 上传按页路径取图，合批按 texture_id（= 页）自然合并。
+                                    //
+                                    // 九宫格不重定向：`nine_slice` 的边框是相对**整张纹理**算的，
+                                    // 换成页上的子区域会把边框取错位置。这条是保守选择——
+                                    // 宁可让九宫格继续用散图（cook 时可以把它排除出 include），
+                                    // 也不要画出错位的面板。
+                                    let redirect = if sprite.nine_slice.is_none() {
+                                        rustlua_render::atlas::redirect_region(asset.path())
+                                    } else {
+                                        None
+                                    };
+                                    match redirect {
+                                        Some((page, region)) => {
+                                            let sampled = match sprite
+                                                .with_uv(region.uv_min, region.uv_max)
+                                            {
+                                                Ok(sampled) => sampled,
+                                                Err(error) => {
+                                                    failure = Some(error.into());
+                                                    return;
+                                                }
+                                            };
+                                            (
+                                                texture_id_of(
+                                                    &page,
+                                                    assets,
+                                                    texture_paths,
+                                                    texture_lookup,
+                                                    texture_handles,
+                                                ),
+                                                sampled,
+                                            )
+                                        }
+                                        None => (
+                                            texture_id_of(
+                                                asset.path(),
+                                                assets,
+                                                texture_paths,
+                                                texture_lookup,
+                                                texture_handles,
+                                            ),
+                                            *sprite,
+                                        ),
+                                    }
+                                }
                                 None => return,
                             },
                         };

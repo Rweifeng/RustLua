@@ -779,48 +779,71 @@ impl RuntimeScene {
         let y0 = 1.0 - origin[1] / sh * 2.0;
         let x1 = (origin[0] + size[0]) / sw * 2.0 - 1.0;
         let y1 = 1.0 - (origin[1] + size[1]) / sh * 2.0;
+        // 图集重定向（`docs/67` §6.4）：UI `Image` 是**另一条装配路径**（不是场景里的
+        // `SpriteAsset`），所以这里也要查一次。命中时贴图换成页、UV 换成区域子矩形。
+        //
+        // 为什么必须在装配期做：被 cook 的散图已从包里删掉，回退到原路径只会白兜底。
+        // 这也是上一轮 `textures_decoded ok=2 fail=13` 的根因——菜单/标题用的是 `Image`。
+        let redirected = if image.nine_slice.is_none() {
+            self.texture_redirect(&image.texture)
+        } else {
+            None // 九宫格边框按整张纹理算，换页会取错位置（与 Sprite 同一条例外）
+        };
+        let (u0, v0, u1, v1) = match &redirected {
+            Some((_, region)) => (
+                region.uv_min.x,
+                region.uv_min.y,
+                region.uv_max.x,
+                region.uv_max.y,
+            ),
+            None => (0.0, 0.0, 1.0, 1.0),
+        };
         let quad = [
             OverlayVertex {
                 position: [x0, y0],
-                uv: [0.0, 0.0],
+                uv: [u0, v0],
                 color,
                 sdf: 0,
             },
             OverlayVertex {
                 position: [x1, y0],
-                uv: [1.0, 0.0],
+                uv: [u1, v0],
                 color,
                 sdf: 0,
             },
             OverlayVertex {
                 position: [x1, y1],
-                uv: [1.0, 1.0],
+                uv: [u1, v1],
                 color,
                 sdf: 0,
             },
             OverlayVertex {
                 position: [x0, y0],
-                uv: [0.0, 0.0],
+                uv: [u0, v0],
                 color,
                 sdf: 0,
             },
             OverlayVertex {
                 position: [x1, y1],
-                uv: [1.0, 1.0],
+                uv: [u1, v1],
                 color,
                 sdf: 0,
             },
             OverlayVertex {
                 position: [x0, y1],
-                uv: [0.0, 1.0],
+                uv: [u0, v1],
                 color,
                 sdf: 0,
             },
         ];
         let start = vertices.len() as u32;
         vertices.extend(quad);
+        let texture_path = redirected
+            .as_ref()
+            .map(|(page, _)| page.as_str())
+            .unwrap_or(image.texture.as_str());
         draws.push(SceneDraw {
-            texture: self.texture_id(&image.texture) + 1,
+            texture: self.texture_id(texture_path) + 1,
             start,
             count: vertices.len() as u32 - start,
             sdf: false,

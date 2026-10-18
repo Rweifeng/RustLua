@@ -85,6 +85,14 @@ fn next_pot(value: u32) -> u32 {
     value.max(1).next_power_of_two()
 }
 
+/// 只读一张图（PNG）的像素尺寸，不解码整图。给"按面积决定是否单独成集"这类策略用。
+pub fn source_dimensions(path: &std::path::Path) -> Result<(u32, u32), AtlasPackError> {
+    image::image_dimensions(path).map_err(|error| AtlasPackError::SourceIo {
+        name: path.display().to_string(),
+        reason: error.to_string(),
+    })
+}
+
 /// 只读源图头尺寸（不解码像素）做装箱，装箱与合成两次读盘保持同一尺寸事实。
 pub fn pack_atlas(
     sources: &[PackSource],
@@ -184,13 +192,14 @@ fn finish_page(page: &mut PackedPage, options: &AtlasPackerOptions) {
     };
 }
 
-/// 合成一页：按装箱序把 RGBA 拷进透明画布，写出 `png_path` 与同名 `.atlas`。
-pub fn compose_page(
+/// 合成一页：按装箱序把 RGBA 拷进透明画布，返回 `(width, height, RGBA8)`。
+///
+/// 抽出来是为了让 `.rltex`（裸像素，`docs/67` §6.3）与 PNG 两条输出共用同一份合成逻辑：
+/// 页的**像素**必须只有一个来源，否则"PNG 版与 .rltex 版内容不同"这类问题会永远查不完。
+pub fn compose_page_rgba(
     page: &PackedPage,
     sources: &[PackSource],
-    png_path: &Path,
-    atlas_path: &Path,
-) -> Result<(), AtlasPackError> {
+) -> Result<Vec<u8>, AtlasPackError> {
     let lookup: BTreeMap<&str, &Path> = sources
         .iter()
         .map(|source| (source.name.as_str(), source.path.as_ref()))
@@ -216,23 +225,46 @@ pub fn compose_page(
             }
         }
     }
+    Ok(canvas.into_raw())
+}
+
+/// 合成一页：按装箱序把 RGBA 拷进透明画布，写出 `png_path` 与同名 `.atlas`。
+pub fn compose_page(
+    page: &PackedPage,
+    sources: &[PackSource],
+    png_path: &Path,
+    atlas_path: &Path,
+) -> Result<(), AtlasPackError> {
+    let pixels = compose_page_rgba(page, sources)?;
+    let canvas = image::RgbaImage::from_raw(page.width, page.height, pixels).ok_or_else(|| {
+        AtlasPackError::WriteIo {
+            path: png_path.display().to_string(),
+            reason: "合成画布尺寸与像素长度不符".to_owned(),
+        }
+    })?;
     canvas
         .save(png_path)
         .map_err(|error| AtlasPackError::WriteIo {
             path: png_path.display().to_string(),
             reason: error.to_string(),
         })?;
+    write_atlas_definition(page, png_path, atlas_path)
+}
+
+/// 写 `.atlas` 定义（`texture` 用 `/` 分隔，与 `docs/11` 的约定一致）。
+pub fn write_atlas_definition(
+    page: &PackedPage,
+    texture_path: &Path,
+    atlas_path: &Path,
+) -> Result<(), AtlasPackError> {
     let definition = AtlasDefinition {
-        // `.atlas` 是入库的文本资产，`texture` 按格式约定用 `/` 分隔，避免同一份产物
-        // 在不同调用形式下写出 `dir\sheet.png` 与 `dir/sheet.png` 两种内容。
-        texture: png_path.display().to_string().replace('\\', "/"),
+        texture: texture_path.display().to_string().replace('\\', "/"),
         regions: page.regions.clone(),
     };
     fs::write(atlas_path, definition.to_text()).map_err(|error| AtlasPackError::WriteIo {
         path: atlas_path.display().to_string(),
         reason: error.to_string(),
-    })?;
-    Ok(())
+    })
 }
 
 #[cfg(test)]
