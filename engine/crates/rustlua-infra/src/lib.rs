@@ -1,5 +1,7 @@
 pub mod atlas_redirect;
 pub mod bundle;
+/// 分包配置与归约（`bundles.json` → 分组 → 计划表）：`assetc` 与编辑器面板共用一份规则。
+pub mod bundle_plan;
 pub mod editor_plugins;
 pub mod frame_clock;
 pub mod logging;

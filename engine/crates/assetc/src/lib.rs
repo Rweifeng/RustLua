@@ -1247,7 +1247,13 @@ pub fn package_grouped_keep_with(
             .filter(|font| bundled.contains(font.as_str()))
             .collect(),
     };
-    validate_plan(&plan, entries.len() as u64, &keys, MAX_BUNDLE_BYTES)?;
+    validate_plan(
+        &plan,
+        entries.len() as u64,
+        &keys,
+        &config,
+        MAX_BUNDLE_BYTES,
+    )?;
 
     // 4) 逐组建包。
     let by_path: BTreeMap<&str, &PathBuf> = entries

@@ -143,6 +143,8 @@ pub(crate) enum MenuAction {
     CollectFontChars,
     /// 资源 ▸ 图集 ▸ 配置与预览：`atlas.json` 编辑 + 打页预览（不写产物）。
     OpenAtlasPanel,
+    /// 资源 ▸ 分包 ▸ 配置与预览：`bundles.json` 编辑 + 落盘字节预估（不产容器）。
+    OpenBundlePanel,
     RevealProjectRoot,
     // 游戏对象
     CreateEmptyEntity,
@@ -267,6 +269,13 @@ const ASSETS_MENU: &[MenuRow] = &[
         label: "图集",
         rows: &[MenuRow::Item(
             MenuItem::new("配置与预览…", MenuAction::OpenAtlasPanel).gate(MenuGate::ProjectLoaded),
+        )],
+    },
+    MenuRow::SubMenu {
+        label: "分包",
+        rows: &[MenuRow::Item(
+            MenuItem::new("分包配置与预览…", MenuAction::OpenBundlePanel)
+                .gate(MenuGate::ProjectLoaded),
         )],
     },
     MenuRow::Separator,
@@ -628,6 +637,7 @@ impl EditorApp {
             MenuAction::CreatePrefab => self.create_prefab_from_selected(),
             MenuAction::CollectFontChars => self.collect_font_chars(),
             MenuAction::OpenAtlasPanel => self.open_atlas_panel(),
+            MenuAction::OpenBundlePanel => self.open_bundle_panel(),
             MenuAction::RevealProjectRoot => {
                 crate::util::open_in_explorer(&self.project.root);
             }

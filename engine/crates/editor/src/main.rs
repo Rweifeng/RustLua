@@ -617,6 +617,8 @@ struct EditorApp {
     publish: crate::publish::PublishState,
     /// 图集面板（`atlas.json` 配置 + 打页预览）：资源 ▸ 图集 ▸ 配置与预览。
     atlas: crate::panels::atlas::AtlasPanelState,
+    /// 分包面板（bundles.json 配置 + 落盘字节预估）：资源 ▸ 分包 ▸ 配置与预览。
+    bundles: crate::panels::bundles::BundlePanelState,
     /// 六个工作台面板的显示开关（M27-00 阶段 2 收尾：View 菜单逐项可切）。
     /// 唯一写入口是 [`crate::menu::MenuAction`]，dock 树每帧按这里同步成员关系。
     show_resources_panel: bool,
@@ -1267,6 +1269,7 @@ impl EditorApp {
             progress: ProgressPanel::default(),
             publish,
             atlas: crate::panels::atlas::AtlasPanelState::new(),
+            bundles: crate::panels::bundles::BundlePanelState::new(),
             show_resources_panel: true,
             show_lua_console: true,
             show_hierarchy_panel: true,
@@ -2379,6 +2382,7 @@ impl EditorApp {
         self.progress.window(context);
         self.draw_publish_panel(context);
         self.draw_atlas_panel(context);
+        self.draw_bundle_panel(context);
         self.draw_project_settings_panel(context);
         // M19-03：领域数据面板（Lua 校验 / PersistId 注册表）与运行时调试面板
         // （只读探针）都是可开关的独立窗口。

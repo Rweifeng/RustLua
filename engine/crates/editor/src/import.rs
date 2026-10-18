@@ -141,6 +141,9 @@ impl EditorApp {
                     // `atlas.json` 去扫新工程，甚至把它保存进新工程。
                     self.atlas
                         .reseed(&crate::util::strip_verbatim_prefix(&self.project.root));
+                    // 分包配置同样按工程读取：否则会把上一个工程的 bundles.json 存进新工程。
+                    self.bundles
+                        .reseed(&crate::util::strip_verbatim_prefix(&self.project.root));
                     self.history.clear();
                     self.autosave.reset();
                     self.play_session = None;

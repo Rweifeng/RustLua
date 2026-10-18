@@ -5,6 +5,27 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 分包 v2：多级分发单元 + 工程级 `bundles.json` + 编辑器预估面板
+
+- **归约规则收敛**：`BundleConfig` / `build_plan` / `check_plan` / `scan_project_entries` 搬进
+  `rustlua_infra::bundle_plan`，`assetc::bundle_plan` 只再导出——发布期与编辑器面板同一份规则。
+- **多级分发单元**：`unit ∈ {main, sub, sub:<name>, cdn}`，`parse_unit` 严格解析（名字 ≤32、
+  只允许字母/数字/`-`/`_`）；计划表原样保留具名分包，供运行时与面板按单元统计。
+- **未归组变成硬门**：`allow_unowned` 默认 `false`，`default_group` 非空时发布期直接拒绝
+  （原先静默落进 `sub`，首屏读到就是白图且 `async_loader` 不重试）；`assign` 指向未声明的组
+  在**读配置**时报错，防拼写错误静默丢文件。
+- **工程级配置**：`examples/game_jhyt/bundles.json` 落了一份，`title_bg_pixel.png` 这类工程专属
+  路径不再写死在 `assetc` 的默认规则里（不写文件时仍用内置兜底）。
+- **编辑器面板**：**资源 ▸ 分包 ▸ 分包配置与预览…**（`editor/src/panels/bundles.rs`）。
+  编辑 `bundles.json`，点「扫描并预估」按同一份归约分组，并**用发布同款 zstd 编码器**
+  （`BundleBuilder`，256 KB 块）逐组构建一次内存容器，得到真实落盘字节；
+  面板按单元汇总主包 4 MB / 总量 20 MB 配额，问题（未归组、脚本不在 main、单元语法、
+  单组超限、具名分包未拆分）一次列全。面板只写 `bundles.json`。
+- **诚实的边界**：`sub:<name>` 已进入配置/计划表/统计，但微信发布器仍只生成一个分包根；
+  面板会把这条作为问题明确列出，不让人误以为已经拆开（`docs/67` §0.3）。
+- **门**：`rustlua-infra` bundle_plan 8 条、editor 面板 5 条、`assetc` 121 条绿；
+  `docs/25`、`docs/67` 同步。
+
 ## Unreleased — 图集：配置归约收敛 + 编辑器预览面板 + 四处「静默出错」修复
 
 - **共享归约**：`atlas.json` 的解析、目录聚合、排除规则、装箱搬进

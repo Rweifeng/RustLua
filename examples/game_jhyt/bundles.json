@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "default_group": "unowned",
+  "default_unit": "sub",
+  "allow_unowned": false,
+  "groups": [
+    {
+      "name": "core",
+      "unit": "main",
+      "include": [
+        "project.toml",
+        "chars.txt",
+        "dependencies.json",
+        "bundles.json",
+        "atlas_redirect.json",
+        "scripts/",
+        "scenes/",
+        "assets/prefabs/",
+        "assets/fonts/"
+      ]
+    },
+    {
+      "name": "art:ui",
+      "unit": "main",
+      "include": [
+        "assets/atlases/",
+        "assets/art/ui/",
+        "assets/art/items/",
+        "assets/art/portraits/",
+        "assets/art/title/title_bg_pixel.png"
+      ]
+    },
+    {
+      "name": "audio",
+      "unit": "sub",
+      "include": [
+        "assets/audio/"
+      ]
+    },
+    {
+      "name": "art:characters",
+      "unit": "sub",
+      "include": [
+        "assets/art/characters/"
+      ]
+    },
+    {
+      "name": "art:enemies",
+      "unit": "sub",
+      "include": [
+        "assets/art/enemies/"
+      ]
+    },
+    {
+      "name": "art:world",
+      "unit": "sub",
+      "include": [
+        "assets/"
+      ]
+    },
+    {
+      "name": "brand",
+      "unit": "cdn",
+      "include": [
+        "splash/",
+        "branding/"
+      ]
+    }
+  ],
+  "assign": {}
+}
