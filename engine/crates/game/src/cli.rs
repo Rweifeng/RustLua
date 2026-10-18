@@ -19,6 +19,8 @@ pub struct Arguments {
     pub no_cull: bool,
     /// 关闭实例化（M8-08 基线回退）。
     pub no_instance: bool,
+    /// 加载集观测：把本次运行的资源读取按场景上下文写成 JSON（`docs/67` §5）。
+    pub trace_loads: Option<PathBuf>,
 }
 
 pub fn parse_arguments() -> Result<Arguments, String> {
@@ -48,6 +50,11 @@ pub fn parse_arguments() -> Result<Arguments, String> {
                 )
             }
             "--title" => args.title = Some(values.next().ok_or("--title requires a title")?),
+            "--trace-loads" => {
+                args.trace_loads = Some(PathBuf::from(
+                    values.next().ok_or("--trace-loads requires a path")?,
+                ));
+            }
             "--help" | "-h" => {
                 println!(
                     "Usage: game [--project <game-project-root>] [--pack <release-pack>] [--title <window-title>] [--check] [--log-filter <tracing-filter>]\n\
@@ -55,7 +62,8 @@ pub fn parse_arguments() -> Result<Arguments, String> {
                      --project <root>  加载开发游戏工程（含 .cache 等本地工作目录）\n\
                      --pack <dir>      加载 assetc package 生成的发布资源目录（严格校验资源完整性）\n\
                      --title <title>   设置窗口标题；未指定时优先读取发布包 release.toml\n\
-                     --check           仅校验资源完整性后退出（exit 0/1，不弹窗口）"
+                     --check           仅校验资源完整性后退出（exit 0/1，不弹窗口）\n\
+                     --trace-loads <file>  采集资源加载集（按场景上下文）并写 JSON"
                 );
                 std::process::exit(0);
             }

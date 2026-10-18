@@ -2,6 +2,7 @@
 // launched by double-clicking the exe.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod boot_splash;
 mod bundle_boot;
 mod cli;
 mod game_app;
@@ -18,6 +19,12 @@ use game_app::GameApp;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = parse_arguments().map_err(|error| format!("argument error: {error}"))?;
     let project = arguments.project.or_else(find_project_root);
+
+    // 加载集观测（`docs/67` §5）：必须在任何资源读取之前开始——`GameApp::new` 会读
+    // project.toml / 场景 / 脚本，晚一步就会漏掉 boot 上下文。
+    if let (Some(root), Some(_)) = (project.as_deref(), arguments.trace_loads.as_deref()) {
+        rustlua_infra::vfs::start_load_trace(root);
+    }
 
     // 发布包形态（RLB 容器）在这里挂载：**必须早于任何资源读取**。
     // 目录形态（没有 `bundles/`）走这里什么都不发生，行为与批 B 之前逐字节一致。
@@ -57,6 +64,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 roots.save_dir.display(),
                 roots.settings_dir.display()
             );
+            // `--check` 也能产出 boot 上下文的加载集（不需要开窗口）。
+            finish_load_trace(arguments.trace_loads.as_deref());
             return Ok(());
         }
         eprintln!("game_check_failed: {}", missing.join("; "));
@@ -113,7 +122,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         deferred_verify,
     );
     event_loop.run_app(&mut app)?;
+    finish_load_trace(arguments.trace_loads.as_deref());
     run_result(app.failure())
+}
+
+/// 结束加载集采集并写文件（没开 `--trace-loads` 时什么都不做）。
+///
+/// 输出行 `game_load_trace_ok path=… entries=… contexts=…` 是给脚本/面板解析的契约：
+/// 条目数与上下文数至少能证明"这次真的采到了东西"，不是写了一个空壳。
+fn finish_load_trace(path: Option<&Path>) {
+    let Some(path) = path else {
+        return;
+    };
+    let Some(trace) = rustlua_infra::vfs::stop_load_trace() else {
+        eprintln!("game_load_trace_skipped: 没有在采集（缺 --trace-loads 或工程未加载）");
+        return;
+    };
+    let contexts = trace.by_context().len();
+    match trace.write(path) {
+        Ok(()) => println!(
+            "game_load_trace_ok path={} entries={} contexts={}",
+            path.display(),
+            trace.entries.len(),
+            contexts
+        ),
+        Err(error) => eprintln!("game_load_trace_failed: {error}"),
+    }
 }
 
 /// 运行结束后的退出判定。`None` = 正常退出（用户关窗、Lua `app.quit()`），

@@ -13,8 +13,9 @@ use rustlua_infra::bundle::BundleBuilder;
 use rustlua_infra::bundle::plan::BundlePlan;
 use rustlua_infra::bundle_plan::{
     self, BundleConfig, GroupSpec, MAX_BUNDLE_BYTES, MAX_TOTAL_BYTES, ProjectKeys, UnitKind,
-    parse_unit,
+    is_main_unit, parse_unit,
 };
+use rustlua_infra::vfs::LoadTrace;
 
 use crate::EditorApp;
 
@@ -34,6 +35,27 @@ pub(crate) struct BundlePanelState {
     /// 新增 assign 行的输入。
     pub assign_path: String,
     pub assign_group: String,
+    /// 加载集观测文件路径（相对工程根；`game --trace-loads` 的产物）。
+    pub trace_path: String,
+    /// 读入后的观测视图。
+    pub trace: Option<TraceView>,
+}
+
+/// 一次观测的展示视图（已按上下文聚合，`ui` 不再碰文件）。
+pub(crate) struct TraceView {
+    pub contexts: Vec<TraceContext>,
+    /// boot 上下文（含启动场景）读到、但**不在 main 单元**的路径：首屏白图的直接证据。
+    pub boot_missing: Vec<String>,
+}
+
+pub(crate) struct TraceContext {
+    pub name: String,
+    pub entries: usize,
+    pub bytes: u64,
+    /// 各组的命中数（降序）。
+    pub groups: Vec<(String, usize)>,
+    /// 一句结论：主导组占比。
+    pub hint: String,
 }
 
 impl BundlePanelState {
@@ -48,6 +70,8 @@ impl BundlePanelState {
             show_paths: false,
             assign_path: String::new(),
             assign_group: String::new(),
+            trace_path: ".cache/load-trace.json".to_owned(),
+            trace: None,
         }
     }
 
@@ -61,6 +85,7 @@ impl BundlePanelState {
         self.selected = 0;
         self.assign_path.clear();
         self.assign_group.clear();
+        self.trace = None;
     }
 
     /// 扫描工程 + 逐组按发布编码器估算落盘字节（不写盘）。
@@ -149,6 +174,85 @@ impl BundlePanelState {
         write_atomic(&path, &bytes)?;
         self.dirty = false;
         Ok(path)
+    }
+
+    /// 读入 `game --trace-loads` 的观测文件，并按当前 `bundles.json` 归因到组。
+    ///
+    /// 这份视图回答两个问题（都不靠猜）：
+    /// 1. **首屏白图风险**：boot（含启动场景）读到的路径里，哪些不在 main 单元；
+    /// 2. **按场景拆包值不值**：每个上下文的字节主要落在哪个组（主导组占比）。
+    pub fn load_trace(&mut self, root: &Path) -> anyhow::Result<()> {
+        let path = root.join(&self.trace_path);
+        let bytes = std::fs::read(&path)
+            .map_err(|error| anyhow::anyhow!("读 {} 失败：{error}", path.display()))?;
+        let trace = LoadTrace::parse(&bytes).map_err(anyhow::Error::msg)?;
+        let entries = bundle_plan::scan_project_entries(root)?;
+        let plan = bundle_plan::build_plan(&self.config, &entries, PREVIEW_BLOCK_SIZE)?;
+        let group_of = |path: &str| {
+            plan.groups
+                .iter()
+                .find(|group| group.contains(path))
+                .map(|group| group.name.clone())
+        };
+        let main_paths: std::collections::BTreeSet<&str> = plan
+            .groups
+            .iter()
+            .filter(|group| is_main_unit(&group.unit))
+            .flat_map(|group| group.paths.iter().map(String::as_str))
+            .collect();
+        let startup = ProjectKeys::from_project(root).startup_scene;
+        let boot_contexts: std::collections::BTreeSet<String> =
+            ["boot".to_owned()].into_iter().chain(startup).collect();
+
+        let mut contexts = Vec::new();
+        let mut boot_missing: Vec<String> = Vec::new();
+        for (name, paths) in trace.by_context() {
+            let mut unique: Vec<&str> = paths.clone();
+            unique.sort_unstable();
+            unique.dedup();
+            let mut bytes_total = 0u64;
+            let mut counts: std::collections::BTreeMap<String, usize> =
+                std::collections::BTreeMap::new();
+            for path in &unique {
+                bytes_total += std::fs::metadata(root.join(path))
+                    .map(|meta| meta.len())
+                    .unwrap_or(0);
+                let group = group_of(path).unwrap_or_else(|| self.config.default_group.clone());
+                *counts.entry(group).or_insert(0) += 1;
+                if boot_contexts.contains(name) && !main_paths.contains(path) {
+                    boot_missing.push((*path).to_owned());
+                }
+            }
+            let mut groups: Vec<(String, usize)> = counts.into_iter().collect();
+            groups.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            let hint = match groups.first() {
+                Some((group, count)) if !unique.is_empty() => {
+                    let share = (*count * 100 / unique.len()).min(100);
+                    if group == "core" || group == "art:ui" {
+                        format!("{share}% 落在 {group}（启动单元）")
+                    } else if share >= 80 {
+                        format!("{share}% 落在 {group}：按场景拆包收益有限")
+                    } else {
+                        format!("{share}% 落在 {group}：包含多个域，可考虑按场景/单元拆")
+                    }
+                }
+                _ => "没有读到资源".to_owned(),
+            };
+            contexts.push(TraceContext {
+                name: name.to_owned(),
+                entries: unique.len(),
+                bytes: bytes_total,
+                groups,
+                hint,
+            });
+        }
+        boot_missing.sort();
+        boot_missing.dedup();
+        self.trace = Some(TraceView {
+            contexts,
+            boot_missing,
+        });
+        Ok(())
     }
 }
 
@@ -333,6 +437,97 @@ impl EditorApp {
 
         ui.separator();
         self.draw_bundle_preview(ui);
+        self.draw_trace_section(ui, root);
+    }
+
+    fn draw_trace_section(&mut self, ui: &mut egui::Ui, root: &Path) {
+        ui.separator();
+        ui.heading("加载集观测（实测）");
+        ui.horizontal(|ui| {
+            ui.label("文件");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.bundles.trace_path).desired_width(300.0),
+            );
+            if ui.button("读取观测").clicked() {
+                match self.bundles.load_trace(root) {
+                    Ok(()) => {
+                        let contexts = self
+                            .bundles
+                            .trace
+                            .as_ref()
+                            .map_or(0, |view| view.contexts.len());
+                        self.bundles.message = format!("已读取观测：{contexts} 个上下文");
+                    }
+                    Err(error) => self.bundles.message = format!("读取观测失败：{error}"),
+                }
+            }
+            ui.label(
+                egui::RichText::new(
+                    "采集：`game --project <工程> --trace-loads .cache/load-trace.json`（玩一段后关窗）",
+                )
+                .small()
+                .weak(),
+            );
+        });
+        let Some(view) = self.bundles.trace.as_ref() else {
+            return;
+        };
+        let contexts: Vec<(String, usize, u64, Vec<(String, usize)>, String)> = view
+            .contexts
+            .iter()
+            .map(|context| {
+                (
+                    context.name.clone(),
+                    context.entries,
+                    context.bytes,
+                    context.groups.clone(),
+                    context.hint.clone(),
+                )
+            })
+            .collect();
+        let boot_missing = view.boot_missing.clone();
+        if !boot_missing.is_empty() {
+            egui::CollapsingHeader::new(format!(
+                "boot 读到但不在 main 单元（{}）——首屏可能白图",
+                boot_missing.len()
+            ))
+            .default_open(true)
+            .show(ui, |ui| {
+                for path in boot_missing.iter().take(200) {
+                    ui.monospace(path);
+                }
+            });
+        }
+        egui::ScrollArea::vertical()
+            .id_salt("bundle_trace_list")
+            .max_height(200.0)
+            .show(ui, |ui| {
+                egui::Grid::new("bundle_trace_grid")
+                    .num_columns(4)
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.label("上下文");
+                        ui.label("条目");
+                        ui.label("字节");
+                        ui.label("结论");
+                        ui.end_row();
+                        for (name, entries, bytes, groups, hint) in &contexts {
+                            ui.monospace(name);
+                            ui.monospace(entries.to_string());
+                            ui.monospace(format!("{} KB", bytes / 1024));
+                            let groups_text = groups
+                                .iter()
+                                .take(3)
+                                .map(|(group, count)| format!("{group}:{count}"))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            ui.label(
+                                egui::RichText::new(format!("{hint}  [{groups_text}]")).small(),
+                            );
+                            ui.end_row();
+                        }
+                    });
+            });
     }
 
     fn draw_bundle_config(&mut self, ui: &mut egui::Ui) {
@@ -713,6 +908,56 @@ mod tests {
         state.config.default_unit = "bundle".to_owned();
         let error = state.scan(&root).expect_err("非法 unit 必须报错");
         assert!(error.to_string().contains("unit"), "{error}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn load_trace_flags_boot_paths_outside_main() {
+        use rustlua_infra::vfs::{LoadEntry, LoadTrace};
+        let root = temp_root("trace");
+        let trace = LoadTrace {
+            schema: 1,
+            root: String::new(),
+            entries: vec![
+                LoadEntry {
+                    context: "boot".to_owned(),
+                    path: "project.toml".to_owned(),
+                    count: 1,
+                },
+                LoadEntry {
+                    context: "boot".to_owned(),
+                    path: "assets/art/ui/a.png".to_owned(),
+                    count: 1,
+                },
+                LoadEntry {
+                    context: "boot".to_owned(),
+                    path: "assets/audio/bgm.mp3".to_owned(),
+                    count: 1,
+                },
+                LoadEntry {
+                    context: "scenes/main.scene".to_owned(),
+                    path: "assets/art/ui/a.png".to_owned(),
+                    count: 1,
+                },
+            ],
+        };
+        trace
+            .write(&root.join(".cache/load-trace.json"))
+            .expect("写观测文件");
+        let mut state = BundlePanelState::new();
+        state.load_trace(&root).expect("读观测");
+        let view = state.trace.as_ref().expect("有观测视图");
+        assert!(
+            view.boot_missing
+                .contains(&"assets/audio/bgm.mp3".to_owned()),
+            "boot 读到 sub 单元的资源必须被点名：{:?}",
+            view.boot_missing
+        );
+        assert!(
+            !view.boot_missing.contains(&"project.toml".to_owned()),
+            "main 单元里的 boot 资源不该报"
+        );
+        assert_eq!(view.contexts.len(), 2);
         let _ = std::fs::remove_dir_all(&root);
     }
 

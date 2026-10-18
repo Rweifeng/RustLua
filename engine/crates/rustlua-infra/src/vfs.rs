@@ -80,10 +80,84 @@ pub fn set_lister(
 #[cfg(not(target_arch = "wasm32"))]
 mod backend {
     use super::*;
-    use std::sync::OnceLock;
+    use std::sync::{Mutex, OnceLock};
 
     static PROVIDER: OnceLock<Box<DesktopProvider>> = OnceLock::new();
     static LISTER: OnceLock<Box<DesktopLister>> = OnceLock::new();
+
+    /// 采集状态：工程根 + 当前上下文 + 去重计数（BTreeMap 保证输出确定性）。
+    struct TraceState {
+        root: PathBuf,
+        context: String,
+        loads: std::collections::BTreeMap<(String, String), u64>,
+    }
+
+    static TRACE: OnceLock<Mutex<Option<TraceState>>> = OnceLock::new();
+
+    fn trace_slot() -> &'static Mutex<Option<TraceState>> {
+        TRACE.get_or_init(|| Mutex::new(None))
+    }
+
+    pub fn start_trace(root: &Path) {
+        if let Ok(mut slot) = trace_slot().lock() {
+            *slot = Some(TraceState {
+                root: root.to_path_buf(),
+                context: super::LOAD_CONTEXT_BOOT.to_owned(),
+                loads: std::collections::BTreeMap::new(),
+            });
+        }
+    }
+
+    pub fn trace_active() -> bool {
+        trace_slot().lock().is_ok_and(|slot| slot.is_some())
+    }
+
+    pub fn stop_trace() -> Option<LoadTrace> {
+        let state = trace_slot().lock().ok()?.take()?;
+        let entries = state
+            .loads
+            .into_iter()
+            .map(|((context, path), count)| LoadEntry {
+                context,
+                path,
+                count,
+            })
+            .collect();
+        Some(LoadTrace {
+            schema: 1,
+            root: state.root.to_string_lossy().replace('\\', "/"),
+            entries,
+        })
+    }
+
+    pub fn note_context(context: &str) {
+        if let Ok(mut slot) = trace_slot().lock()
+            && let Some(state) = slot.as_mut()
+        {
+            state.context = context.to_owned();
+        }
+    }
+
+    /// 只有**真正读字节**的 `read` 会走到这里；工程根之外的路径不记。
+    fn record(path: &Path) {
+        let Ok(mut slot) = trace_slot().lock() else {
+            return;
+        };
+        let Some(state) = slot.as_mut() else {
+            return;
+        };
+        let Ok(relative) = path.strip_prefix(&state.root) else {
+            return;
+        };
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        if relative.is_empty() {
+            return;
+        }
+        *state
+            .loads
+            .entry((state.context.clone(), relative))
+            .or_insert(0) += 1;
+    }
 
     pub fn set(provider: Box<DesktopProvider>) -> Result<(), &'static str> {
         PROVIDER
@@ -109,9 +183,12 @@ mod backend {
         if let Some(provider) = provider()
             && let Some(bytes) = provider(path)
         {
+            record(path);
             return Ok(bytes);
         }
-        std::fs::read(path)
+        let bytes = std::fs::read(path)?;
+        record(path);
+        Ok(bytes)
     }
 
     pub fn is_file(path: &Path) -> bool {
@@ -244,6 +321,121 @@ mod backend {
 
 pub use backend::{is_file, list, metadata, read};
 
+// ---------------------------------------------------------------------------------------------
+// 加载集观测（`docs/67` §5 的"观测而不是推断"）
+// ---------------------------------------------------------------------------------------------
+//
+// 为什么放在 vfs：它是**所有工程资源读取的唯一入口**（provider 优先、磁盘回落），
+// 在这里记一笔就不需要每个读者各自埋点；漏点会直接表现为"某个资源没进观测集"。
+//
+// 记录的是 `(上下文, 工程相对路径, 次数)`：
+// - 上下文由宿主在场景切换时用 [`note_load_context`] 打点（`scenes/manor.scene`）；
+// - 只有**真正读字节**的 [`read`] 会记录（`is_file`/`metadata` 是探测，不算加载）；
+// - 工程根之外（用户目录、临时文件）的读取不记——它们不是包内资源。
+
+/// 一次观测的上下文（未打点时）。
+pub const LOAD_CONTEXT_BOOT: &str = "boot";
+
+/// 一条加载记录。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LoadEntry {
+    /// 场景/界面上下文（`scenes/manor.scene` 或 `boot`）。
+    pub context: String,
+    /// 工程相对路径（`/` 分隔）。
+    pub path: String,
+    /// 同一上下文里被读了几次（同一帧重复读也算，便于看"热"资源）。
+    pub count: u64,
+}
+
+/// 一次观测的结果。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LoadTrace {
+    pub schema: u32,
+    /// 观测时使用的工程根（诊断用；运行期不依赖它）。
+    pub root: String,
+    pub entries: Vec<LoadEntry>,
+}
+
+impl LoadTrace {
+    /// 按上下文分组的路径集（编辑器"按场景看读了什么"直接用这个）。
+    pub fn by_context(&self) -> std::collections::BTreeMap<&str, Vec<&str>> {
+        let mut out: std::collections::BTreeMap<&str, Vec<&str>> =
+            std::collections::BTreeMap::new();
+        for entry in &self.entries {
+            out.entry(entry.context.as_str())
+                .or_default()
+                .push(entry.path.as_str());
+        }
+        out
+    }
+
+    /// 确定性 JSON（编辑器 / 诊断工具读同一份格式）。
+    pub fn to_json(&self) -> Result<Vec<u8>, String> {
+        serde_json::to_vec_pretty(self).map_err(|error| format!("序列化加载集失败：{error}"))
+    }
+
+    /// 从 JSON 还原。
+    pub fn parse(bytes: &[u8]) -> Result<Self, String> {
+        serde_json::from_slice(bytes).map_err(|error| format!("解析加载集失败：{error}"))
+    }
+
+    /// 把观测写入文件（父目录自动创建）。
+    pub fn write(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let bytes = self
+            .to_json()
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        std::fs::write(path, bytes)
+    }
+}
+
+/// 当前是否在采集（宿主/面板用来决定是否提示）。
+#[must_use]
+pub fn load_trace_active() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        backend::trace_active()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+}
+
+/// 开始采集。`root` 用来把绝对路径折算成工程相对路径。
+#[cfg(not(target_arch = "wasm32"))]
+pub fn start_load_trace(root: &Path) {
+    backend::start_trace(root);
+}
+
+/// wasm：采集不启用（真机诊断另走宿主通道）。
+#[cfg(target_arch = "wasm32")]
+pub fn start_load_trace(_root: &Path) {}
+
+/// 结束采集并取回结果（没在采集时返回 `None`）。
+#[cfg(not(target_arch = "wasm32"))]
+pub fn stop_load_trace() -> Option<LoadTrace> {
+    backend::stop_trace()
+}
+
+/// wasm：永远没有采集结果。
+#[cfg(target_arch = "wasm32")]
+pub fn stop_load_trace() -> Option<LoadTrace> {
+    None
+}
+
+/// 打一个上下文点（场景切换时调用）。
+#[cfg(not(target_arch = "wasm32"))]
+pub fn note_load_context(context: &str) {
+    backend::note_context(context);
+}
+
+/// wasm：无操作。
+#[cfg(target_arch = "wasm32")]
+pub fn note_load_context(_context: &str) {}
+
 /// 递归列出一个目录下的全部**文件**（`vfs::list` 的便捷封装）。
 ///
 /// 用途：发布校验要枚举 `scripts/**`，而发布包形态下这些文件只在容器条目里。
@@ -278,4 +470,60 @@ pub fn list_files_recursive(dir: &Path) -> Vec<PathBuf> {
 pub fn read_resource(path: &Path) -> io::Result<Vec<u8>> {
     let bytes = read(path)?;
     crate::pack::decode(&bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod trace_tests {
+    use super::*;
+
+    #[test]
+    fn load_trace_records_reads_by_context() {
+        let root = std::env::temp_dir().join(format!(
+            "rustlua-vfs-trace-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        std::fs::write(root.join("assets/a.txt"), b"a").unwrap();
+        std::fs::write(root.join("assets/b.txt"), b"b").unwrap();
+
+        start_load_trace(&root);
+        read(&root.join("assets/a.txt")).unwrap();
+        read(&root.join("assets/a.txt")).unwrap();
+        note_load_context("scenes/manor.scene");
+        read(&root.join("assets/b.txt")).unwrap();
+        // 工程根之外不记（用户目录/临时文件不是包内资源）。
+        let outside = root.parent().unwrap().join("outside-trace.txt");
+        std::fs::write(&outside, b"x").unwrap();
+        read(&outside).unwrap();
+        let trace = stop_load_trace().expect("采集必须返回结果");
+        let _ = std::fs::remove_file(&outside);
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(trace.schema, 1);
+        assert_eq!(trace.entries.len(), 2, "{:?}", trace.entries);
+        let boot = trace
+            .entries
+            .iter()
+            .find(|entry| entry.path == "assets/a.txt")
+            .unwrap();
+        assert_eq!(boot.context, LOAD_CONTEXT_BOOT);
+        assert_eq!(boot.count, 2);
+        let scene = trace
+            .entries
+            .iter()
+            .find(|entry| entry.path == "assets/b.txt")
+            .unwrap();
+        assert_eq!(scene.context, "scenes/manor.scene");
+        assert_eq!(scene.count, 1);
+
+        // 往返：编辑器读同一份 JSON。
+        let json = trace.to_json().unwrap();
+        assert_eq!(LoadTrace::parse(&json).unwrap(), trace);
+        assert!(!load_trace_active());
+    }
 }

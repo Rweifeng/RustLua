@@ -30,7 +30,10 @@ impl LuaRuntime {
             .project_root
             .clone()
             .ok_or_else(|| LuaBridgeError::Api("no project root configured".to_owned()))?;
-        let path = root.join("scenes").join(format!("{name}.scene"));
+        let relative = format!("scenes/{name}.scene");
+        let path = root.join(&relative);
+        // 加载集观测（`docs/67` §5）：场景切换是"上下文"的唯一分界，`vfs` 按它归组。
+        rustlua_infra::vfs::note_load_context(&relative);
         // 经 `vfs::read` 取字节（**不是** `Scene::load`）：后者的 `fs::read` 在 wasm 上
         // 读不到任何工程文件——第 45 轮 jhyt webgl 产物上，标题确认触发的切换就死在
         // 这一步（日志只有 `scene file not found` 与一张空白页）。这里与 `Scene::load`

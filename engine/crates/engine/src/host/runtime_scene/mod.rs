@@ -519,6 +519,8 @@ fn load_runtime_scene(project_root: Option<&Path>) -> Scene {
     project_root
         .and_then(|root| {
             let scene_path = startup_scene_path(root);
+            // 启动场景是第一个上下文点；之后的切换由脚本层 `scene.load` 打点。
+            rustlua_infra::vfs::note_load_context(&scene_path);
             let full = root.join(scene_path);
             // 先走文件系统（桌面工程/发布包解包目录的常规路径，语义一个字都不改）。
             Scene::load(&full)

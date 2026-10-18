@@ -5,6 +5,21 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 加载集观测：用实测读取替代依赖图推断（分包 v2 第一步）
+
+- **引擎**：`rustlua_infra::vfs` 新增加载集采集（`start_load_trace` / `note_load_context` /
+  `stop_load_trace`），记录 `(场景上下文, 工程相对路径, 次数)`；只在**真正读字节**的 `read`
+  记录，工程根之外的读取不记。场景上下文在启动场景与 Lua `scene.load` 两处打点。
+- **宿主**：`game --trace-loads <file>` 采集并在退出时写 JSON（`--check` 也可产出 boot 上下文），
+  输出契约 `game_load_trace_ok path=… entries=… contexts=…`。
+- **编辑器**：分包面板新增「加载集观测」——读取同一份 JSON，列出
+  ① boot 读到但不在 main 单元的路径（首屏白图的直接证据），
+  ② 每个上下文的条目/字节/组归属与主导组占比。面板仍然只读观测、只写 `bundles.json`。
+- **为什么**：静态依赖图在本工程只覆盖 55%~61%（场景不带脚本引用 + 运行期拼路径），
+  "按场景切分包"只能靠实测。观测结果就是后续多分包单元划分与 WebGL 预取的依据。
+- **门**：`vfs::trace_tests`（上下文分组/工程根外忽略/JSON 往返）、editor 面板 6 条单测；
+  实跑 `game --check --trace-loads` → `entries=158 contexts=1`。
+
 ## Unreleased — 分包 v2：多级分发单元 + 工程级 `bundles.json` + 编辑器预估面板
 
 - **归约规则收敛**：`BundleConfig` / `build_plan` / `check_plan` / `scan_project_entries` 搬进
