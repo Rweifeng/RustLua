@@ -46,6 +46,8 @@ pub(crate) struct TraceView {
     pub contexts: Vec<TraceContext>,
     /// boot 上下文（含启动场景）读到、但**不在 main 单元**的路径：首屏白图的直接证据。
     pub boot_missing: Vec<String>,
+    /// 按观测得出的分组建议（可一键应用）。
+    pub suggestions: Vec<BundleSuggestion>,
 }
 
 pub(crate) struct TraceContext {
@@ -56,6 +58,16 @@ pub(crate) struct TraceContext {
     pub groups: Vec<(String, usize)>,
     /// 一句结论：主导组占比。
     pub hint: String,
+}
+
+/// 一条可应用的分组建议（来自观测，不是猜测）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BundleSuggestion {
+    /// 给人看的理由。
+    pub text: String,
+    /// 建议改成的单元。
+    pub group: String,
+    pub unit: String,
 }
 
 impl BundlePanelState {
@@ -248,11 +260,103 @@ impl BundlePanelState {
         }
         boot_missing.sort();
         boot_missing.dedup();
+
+        // ---- 按观测生成建议（确定性；只改 unit，不动 include/assign） ----
+        let mut path_contexts: std::collections::BTreeMap<&str, std::collections::BTreeSet<&str>> =
+            std::collections::BTreeMap::new();
+        for entry in &trace.entries {
+            path_contexts
+                .entry(entry.path.as_str())
+                .or_default()
+                .insert(entry.context.as_str());
+        }
+        let mut suggestions = Vec::new();
+        for group in &plan.groups {
+            // 只对"默认分包"给建议：具名分包已经分过，main/cdn 不该被观测改动。
+            if !matches!(parse_unit(&group.unit), Ok(UnitKind::Sub(None))) {
+                continue;
+            }
+            let mut contexts: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+            for path in &group.paths {
+                if let Some(set) = path_contexts.get(path.as_str()) {
+                    contexts.extend(set.iter().copied());
+                }
+            }
+            let gameplay: Vec<&str> = contexts
+                .iter()
+                .copied()
+                .filter(|context| !boot_contexts.contains(*context))
+                .collect();
+            if contexts.len() == 1
+                && gameplay.len() == 1
+                && gameplay[0].starts_with("scenes/")
+                && let Some(slug) = scene_slug(gameplay[0])
+            {
+                suggestions.push(BundleSuggestion {
+                    text: format!(
+                        "组 {} 只在 {} 被读取 → 可改为 sub:{slug}，成为独立分包",
+                        group.name, gameplay[0]
+                    ),
+                    group: group.name.clone(),
+                    unit: format!("sub:{slug}"),
+                });
+            }
+        }
+        let mut missing_by_group: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for path in &boot_missing {
+            let group = group_of(path).unwrap_or_else(|| self.config.default_group.clone());
+            *missing_by_group.entry(group).or_insert(0) += 1;
+        }
+        for (group, count) in missing_by_group {
+            if plan
+                .group(&group)
+                .is_some_and(|group| !is_main_unit(&group.unit))
+            {
+                suggestions.push(BundleSuggestion {
+                    text: format!(
+                        "boot 读到 {count} 条来自组 {group} 的资源 → 把它设为 main（否则首屏可能白图）"
+                    ),
+                    group,
+                    unit: "main".to_owned(),
+                });
+            }
+        }
+        suggestions.sort_by(|a, b| a.text.cmp(&b.text));
+
         self.trace = Some(TraceView {
             contexts,
             boot_missing,
+            suggestions,
         });
         Ok(())
+    }
+
+    /// 应用全部观测建议（只改 `unit`；应用后配置变脏，预览/观测需要重扫）。
+    pub fn apply_suggestions(&mut self) -> usize {
+        let Some(view) = self.trace.as_ref() else {
+            return 0;
+        };
+        let list = view.suggestions.clone();
+        let mut applied = 0usize;
+        for suggestion in list {
+            if let Some(group) = self
+                .config
+                .groups
+                .iter_mut()
+                .find(|group| group.name == suggestion.group)
+                && group.unit.as_deref() != Some(suggestion.unit.as_str())
+            {
+                group.unit = Some(suggestion.unit);
+                applied += 1;
+            }
+        }
+        if applied > 0 {
+            self.dirty = true;
+            self.preview = None;
+            self.trace = None;
+        }
+        applied
     }
 }
 
@@ -326,6 +430,17 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
             Err(error)
         }
     }
+}
+
+/// `scenes/manor.scene` → `manor`（`sub:<name>` 的合法名字）。
+fn scene_slug(context: &str) -> Option<String> {
+    let stem = context.rsplit('/').next()?.trim_end_matches(".scene");
+    let slug: String = stem
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+        .collect::<String>()
+        .to_ascii_lowercase();
+    (!slug.is_empty() && slug.len() <= 32).then_some(slug)
 }
 
 fn unit_badge(unit: &str) -> (egui::Color32, &'static str) {
@@ -486,6 +601,7 @@ impl EditorApp {
             })
             .collect();
         let boot_missing = view.boot_missing.clone();
+        let suggestions = view.suggestions.clone();
         if !boot_missing.is_empty() {
             egui::CollapsingHeader::new(format!(
                 "boot 读到但不在 main 单元（{}）——首屏可能白图",
@@ -528,6 +644,24 @@ impl EditorApp {
                         }
                     });
             });
+        if !suggestions.is_empty() {
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label(format!("分组建议（{}）", suggestions.len()));
+                if ui.button("应用全部建议").clicked() {
+                    let applied = self.bundles.apply_suggestions();
+                    self.bundles.message = format!("已应用 {applied} 条建议（记得保存）");
+                }
+                ui.label(
+                    egui::RichText::new("只改 unit；应用后需重新扫描/读取观测")
+                        .small()
+                        .weak(),
+                );
+            });
+            for suggestion in &suggestions {
+                ui.label(egui::RichText::new(format!("· {}", suggestion.text)).small());
+            }
+        }
     }
 
     fn draw_bundle_config(&mut self, ui: &mut egui::Ui) {
@@ -958,6 +1092,65 @@ mod tests {
             "main 单元里的 boot 资源不该报"
         );
         assert_eq!(view.contexts.len(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn trace_suggestions_are_applied_to_the_draft() {
+        use rustlua_infra::vfs::{LoadEntry, LoadTrace};
+        let root = temp_root("suggest");
+        std::fs::create_dir_all(root.join("assets/art/characters")).unwrap();
+        std::fs::write(root.join("assets/art/characters/a.png"), b"png").unwrap();
+        let trace = LoadTrace {
+            schema: 1,
+            root: String::new(),
+            entries: vec![
+                LoadEntry {
+                    context: "boot".to_owned(),
+                    path: "project.toml".to_owned(),
+                    count: 1,
+                },
+                LoadEntry {
+                    context: "boot".to_owned(),
+                    path: "assets/audio/bgm.mp3".to_owned(),
+                    count: 1,
+                },
+                LoadEntry {
+                    context: "scenes/manor.scene".to_owned(),
+                    path: "assets/art/characters/a.png".to_owned(),
+                    count: 1,
+                },
+            ],
+        };
+        trace
+            .write(&root.join(".cache/load-trace.json"))
+            .expect("写观测");
+        let mut state = BundlePanelState::new();
+        state.load_trace(&root).expect("读观测");
+        let suggestions = state.trace.as_ref().unwrap().suggestions.clone();
+        assert!(
+            suggestions
+                .iter()
+                .any(|s| s.group == "art:characters" && s.unit == "sub:manor"),
+            "{suggestions:?}"
+        );
+        assert!(
+            suggestions
+                .iter()
+                .any(|s| s.group == "audio" && s.unit == "main"),
+            "boot 读到的 sub 组应建议进 main：{suggestions:?}"
+        );
+        assert!(state.apply_suggestions() >= 1);
+        assert_eq!(
+            state
+                .config
+                .groups
+                .iter()
+                .find(|g| g.name == "art:characters")
+                .and_then(|g| g.unit.as_deref()),
+            Some("sub:manor")
+        );
+        assert!(state.dirty, "应用建议后配置必须标记未保存");
         let _ = std::fs::remove_dir_all(&root);
     }
 
