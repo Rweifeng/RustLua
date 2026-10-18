@@ -5,6 +5,13 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 发布一键落地：`apply-bundle-layout.ps1`（layout → apply → verify）
+
+- 输入发布根（含 `pack/` 与 `bundle_plan.json`），依次跑 `assetc layout --json`、
+  `bundle-layout.js --apply`、`--verify`；`-Assetc`/`-SkipVerify` 可控。
+- 实测真实产物：`moved=2 subpackages=1 main_bundles=2 sub_bundles=5`，
+  `game.json` 其它字段保留。
+
 ## Unreleased — `assetc bundles init`：任意工程一键生成通用分包配置
 
 - `init_bundles` 写 `generic_domains()`（core/assets/brand）草稿；已存在需 `--force`。
