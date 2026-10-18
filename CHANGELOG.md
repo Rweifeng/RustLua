@@ -5,6 +5,14 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 分发布局契约：单元 → 包内根（多分包发布器的输入）
+
+- `rustlua_infra::bundle_plan::distribution_layout`：把计划表折算成「单元 → 包内根」——
+  `main`→`mainpack`、`sub`→`pack`、`sub:<name>`→`pack-<name>`、`cdn` 不进布局；
+  同时校验主包 ≤4 MB、总量 ≤20 MB。发布器与适配层共用这一份结果，不再各自按 `unit` 拼目录。
+- 门：`distribution_layout_groups_units_into_roots`（三种根 + cdn 排除 + 条目/字节合计）、
+  `distribution_layout_rejects_oversized_main`。
+
 ## Unreleased — 分包建议：从加载集观测直接生成可应用的分组建议
 
 - 编辑器分包面板「读取观测」同时产出两类确定性建议：某个 `sub` 组只在一个场景上下文被读到

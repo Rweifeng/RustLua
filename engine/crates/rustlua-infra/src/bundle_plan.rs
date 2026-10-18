@@ -386,6 +386,72 @@ pub fn build_plan(
     .sealed())
 }
 
+/// 一个分发根（微信分包/主包的目录边界）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DistributionRoot {
+    /// 单元名（`main` / `sub` / `sub:<name>`）。
+    pub unit: String,
+    /// 包内根目录：`mainpack`（主包首屏）、`pack`（默认分包）、`pack-<name>`（具名分包）。
+    pub root: String,
+    /// 这个根里的容器（包内相对路径，升序）。
+    pub bundles: Vec<String>,
+    pub entries: u64,
+    pub bytes: u64,
+}
+
+/// 把计划表折算成**分发布局**：每个单元一个根，`cdn` 不进包。
+///
+/// 这是发布器（`first-screen-pack.js` / `package.ps1`）与适配层之间的唯一契约：
+/// - `main` → `mainpack`（随主包上传，启动即可读）；
+/// - `sub` → `pack`（微信默认分包根）；
+/// - `sub:<name>` → `pack-<name>`（具名分包根，每根需要自己的 `game.js`）；
+/// - `cdn` → 不出现在布局里（发布器另行放置）。
+///
+/// 校验两条硬门：主包 ≤ 4 MB、主包 + 全部分包 ≤ 20 MB（微信口径，`docs/52`）。
+pub fn distribution_layout(plan: &BundlePlan) -> anyhow::Result<Vec<DistributionRoot>> {
+    let mut roots: BTreeMap<(u8, String), DistributionRoot> = BTreeMap::new();
+    for group in &plan.groups {
+        let (rank, unit, root) = match parse_unit(&group.unit).map_err(anyhow::Error::msg)? {
+            UnitKind::Main => (0u8, "main".to_owned(), "mainpack".to_owned()),
+            UnitKind::Sub(None) => (1, "sub".to_owned(), "pack".to_owned()),
+            UnitKind::Sub(Some(name)) => (2, group.unit.clone(), format!("pack-{name}")),
+            UnitKind::Cdn => continue,
+        };
+        let entry = roots
+            .entry((rank, unit.clone()))
+            .or_insert_with(|| DistributionRoot {
+                unit,
+                root,
+                bundles: Vec::new(),
+                entries: 0,
+                bytes: 0,
+            });
+        entry.bundles.push(group.bundle.clone());
+        entry.entries += group.entries;
+        entry.bytes += group.bundle_bytes;
+    }
+    let mut out: Vec<DistributionRoot> = roots.into_values().collect();
+    for root in &mut out {
+        root.bundles.sort();
+    }
+    if let Some(main) = out.iter().find(|root| root.unit == "main")
+        && main.bytes > MAX_BUNDLE_BYTES
+    {
+        anyhow::bail!(
+            "主包（mainpack）落盘 {} KB 超过 4,096 KB：把非启动资源挪到分包",
+            main.bytes / 1024
+        );
+    }
+    let total: u64 = out.iter().map(|root| root.bytes).sum();
+    if total > MAX_TOTAL_BYTES {
+        anyhow::bail!(
+            "主包 + 全部分包落盘 {} KB 超过总量上限 20,480 KB",
+            total / 1024
+        );
+    }
+    Ok(out)
+}
+
 /// 计划表自检：返回**全部**问题（编辑器面板要一次列全，而不是只报第一条）。
 #[must_use]
 pub fn check_plan(
@@ -813,5 +879,66 @@ mod tests {
         assert!(!paths.iter().any(|path| path.contains("_preview")));
         assert!(!paths.iter().any(|path| path.contains("/builds/")));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn layout_plan() -> BundlePlan {
+        let mut plan = build_plan(
+            &BundleConfig::default_domains(),
+            &[
+                ("project.toml".to_owned(), 10),
+                ("scripts/main.lua".to_owned(), 10),
+                ("scenes/main.scene".to_owned(), 10),
+                ("assets/audio/bgm.mp3".to_owned(), 100),
+                ("assets/art/ui/a.png".to_owned(), 100),
+                ("assets/art/buildings/b.png".to_owned(), 100),
+                ("splash/splash.png".to_owned(), 100),
+            ],
+            1024,
+        )
+        .unwrap();
+        for group in &mut plan.groups {
+            group.bundle_bytes = group.raw_bytes;
+        }
+        plan
+    }
+
+    #[test]
+    fn distribution_layout_groups_units_into_roots() {
+        let mut plan = layout_plan();
+        // 让 audio 成为具名分包，验证第三种根。
+        for group in &mut plan.groups {
+            if group.name == "audio" {
+                group.unit = "sub:audio".to_owned();
+            }
+        }
+        let roots = distribution_layout(&plan).unwrap();
+        let names: Vec<&str> = roots.iter().map(|root| root.root.as_str()).collect();
+        assert!(names.contains(&"mainpack"));
+        assert!(names.contains(&"pack"));
+        assert!(names.contains(&"pack-audio"));
+        assert!(
+            !names.iter().any(|root| root.contains("brand")),
+            "cdn 不进包"
+        );
+        let main = roots.iter().find(|root| root.unit == "main").unwrap();
+        assert!(main.bytes > 0);
+        assert!(
+            main.bundles
+                .iter()
+                .all(|bundle| bundle.contains("core") || bundle.contains("art-ui"))
+        );
+        let audio = roots.iter().find(|root| root.unit == "sub:audio").unwrap();
+        assert_eq!(audio.root, "pack-audio");
+        assert_eq!(audio.entries, 1);
+    }
+
+    #[test]
+    fn distribution_layout_rejects_oversized_main() {
+        let mut plan = layout_plan();
+        for group in &mut plan.groups {
+            group.bundle_bytes = MAX_BUNDLE_BYTES + 1;
+        }
+        let error = distribution_layout(&plan).expect_err("主包超限必须被拒绝");
+        assert!(error.to_string().contains("主包"), "{error}");
     }
 }
