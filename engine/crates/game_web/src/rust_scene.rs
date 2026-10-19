@@ -219,6 +219,12 @@ impl RustScene {
         // those draws, so force the equivalent atlas-backed SDF path for this host.
         let mut scene = scene;
         scene.set_text_render_mode(TextRenderMode::Sdf);
+        // Web 宿主也必须装工程字体图集：否则渲染器会把 `__font_atlas__` 当普通贴图去
+        // host 读取（微信日志 `pack/__font_atlas__ not found`），字形只能走白块兜底。
+        // loader 内部走 vfs，与场景/脚本同一条 provider，不依赖 std::fs。
+        if let Some(atlas) = engine::host::load_project_font_atlas(Some(root)) {
+            scene.set_font_atlas(Some(atlas));
+        }
         let assets = scene.asset_entries().len();
         Ok(Self {
             scene,

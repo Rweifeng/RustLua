@@ -5,6 +5,31 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — **容器形态下按需贴图全读不到**：渲染器建在 `project_root=None` 上，相对路径落不进 `/project` 键域
+
+- **症状**：`builds/webgl` 进玩法后控制台刷
+  `[render] async asset load failed; fallback used path=assets/art/tilesets/manor/manor_ground_spring.png
+  error=could not read PNG …: vfs: resource not found: assets/art/tilesets/manor/manor_ground_spring.png`，
+  同一族还有角色行走帧（实测复现到 `assets/art/characters/xuanhe/walk_s.png`）；贴图全走白兜底，
+  且失败键每帧再打一条 `texture not ready yet`。
+- **根因**：`game_web::engine_core::build` 建 `Renderer` 时传 `None`（注释理由是"场景字节由
+  `RustScene` 经 vfs 取，渲染器不解析文件路径"）。但渲染器的按需贴图/网格正是用
+  `project_root.join(path)` 解析场景里的相对路径（`gpu_texture.rs` / `gpu_mesh.rs`），
+  `None` 时路径原样进 vfs。散文件形态下预载表键就是相对路径，碰巧能命中；**`-BundleMode grouped`
+  成为默认后**，容器查找要求键为 `/project/<相对>`（`BundleSet::key_of` 的 `strip_prefix`），
+  于是所有按需贴图 miss。两条宿主（浏览器 + 微信引擎宿主）共用 `engine_core`，一起中招。
+- **修法**：`engine_core` 建渲染器时传 `Some(PathBuf::from(VIRTUAL_PROJECT_ROOT))`，与桌面宿主
+  一直传工程根同语义；场景/脚本/字体图集本来就走 `/project`，不新增第二条路径方言。
+- **实测**（`?rustlua-sim=scene-script&rustlua-sim-scene=manor`，grouped 产物）：
+  修前 `[season] manor -> spring` 之后是 `async asset load failed` + 每帧白兜底；修后
+  `[render] texture loaded (async) path=assets/art/characters/xuanhe/walk_s.png dimensions=(256,64)`、
+  `2D texture uploaded from memory key="assets/art/tilesets/manor/manor_ground_spring.png"`，
+  `failed=0 not_ready=0`。门：`cargo test -p game_web --lib` **41 passed**、
+  `verify-webgl-bundle.ps1 -BundleRoot examples\game_jhyt\builds\webgl -Port 8181 -Gpu2d` **EXIT=0**
+  （`webgl_bundle_ok wasm=5400.9KB`）；重建产物 `webgl_package_ok files=8`。
+- **回滚档**：只回 `engine_core.rs` 那一处 `None`（会退回按需贴图白兜底，不建议）；
+  目录形态产物不受影响。**未做**：真机（手机）复测由用户跑。
+
 ## Unreleased — 任务栏图标：winit 只设了 ICON_SMALL，补 ICON_BIG 后才显示齿轮
 
 - **症状**：`game.exe` 在 Explorer 里已经是齿轮 + 月牙的文件图标（`build.rs` 嵌的
@@ -33,6 +58,12 @@
 
 ## Unreleased — 微信适配层多根接线：计划表路由 + 按根挂载
 
+- **字体图集 / 标题贴图路径（2026-10-19）**：`game_web` 建 `RuntimeScene` 后现在调用
+  `load_project_font_atlas(/project)`（内部走 vfs），不再让渲染器把虚拟贴图
+  `__font_atlas__` 当普通文件去 host 读取（微信日志 `pack/__font_atlas__ not found`）。
+  同时修正 `bundles.json` 里 `assets/art/title/title_bg_pixel.png` 的旧路径为
+  `assets/art/ui/title/title_bg_pixel.png`，并重建产物；渲染器不再对标题背景报
+  `texture not ready / white fallback`。
 - **音频/鼠标真机（devtools）修复（2026-10-19）**：分组容器里的 MP3 对
   `wx.createInnerAudioContext()` 不可见，`assetSrcFor` 又返回 `{src,source,pending}` 对象，
   wasm 侧只做 `as_string()` → 永远回落到 `pack/assets/audio/*.mp3`（不存在）。更早一层，

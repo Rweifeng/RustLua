@@ -1631,14 +1631,20 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
       var assetRoot = layout && layout.subpackage_root ? String(layout.subpackage_root).replace(/\/$/, '') : '';
       if (assetRoot && assetRoot !== primary) roots = [assetRoot];
     }
+    var pending = [];
     for (var i = 0; i < roots.length; i++) {
       (function (root) {
-        if (root === primary) { mountPlanBundlesForRoot(root); return; }
-        ensureRoot(root).then(function (ok) {
+        if (root === primary) {
+          mountPlanBundlesForRoot(root);
+          return;
+        }
+        pending.push(ensureRoot(root).then(function (ok) {
           if (ok && bundlePlan) mountPlanBundlesForRoot(root);
-        });
+          return ok;
+        }));
       })(roots[i]);
     }
+    return Promise.all(pending);
   }
 
   // **老内核的回退路径**：把计划表里的全部非主包根按顺序挂好。
@@ -2337,6 +2343,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     // 先用真 reader 装槽：RustScene 的读取落到真字节，运行时再 boot 沿用同一 provider。
     // 多根懒加载：preinstall 前只挂当前可读根的容器（主包 + wasm 根）；具名根在 preinstall
     // 之后由 mountDeferredPlanRoots 后台挂载。老内核没有 partial 导出时，调用方已全量预挂。
+    var rootsReady = Promise.resolve(true);
     if (bundlePlan) {
       if (!mountPlanBootBundles()) bundleBootMounted = true;
     }
@@ -2351,7 +2358,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     }
     if (bundlePlan) {
       bundleBootMounted = true;
-      mountDeferredPlanRoots();
+      // 必须在 begin（RustScene::boot 读场景/贴图）之前把所有非主包根和容器装好：
+      // 异步贴图加载器走的是同步 vfs，不会 await ensurePack；按旧顺序"后台补挂"时，
+      // 场景已经先读到 `vfs: resource not found`，画面就是一片白块。
+      rootsReady = mountDeferredPlanRoots();
     }
     if (tickWanted) {
       log('wechat-adapter: 引擎宿主将接管固定步（tick=lua）——运行时会因此停掉自己的固定步；'

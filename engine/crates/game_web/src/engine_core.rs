@@ -216,8 +216,14 @@ impl EngineCore {
         let mut renderer = Renderer::new_offscreen_async(
             stack.device.clone(),
             stack.queue.clone(),
-            // 不挂项目根：场景字节由 `RustScene` 经 vfs 取，这里不解析任何文件路径。
-            None,
+            // **必须挂工程根**：按需贴图/网格（`gpu_texture.rs` / `gpu_mesh.rs`）用
+            // `root.join(path)` 把场景里的相对路径解析成工程路径。渲染器自己不读磁盘，
+            // 但 `TextureAsset::load_png` / `MeshAsset::from_gltf_path` 会把结果交给 vfs；
+            // 容器形态下包的键必须是 `/project/<相对>`（`BundleSet::key_of` 靠 `strip_prefix`），
+            // 给 `None` 时相对路径原样落进 vfs ⇒ `vfs: resource not found: assets/art/...`，
+            // 表现是玩法画面里角色/地表贴图全走白兜底（2026-10-19 grouped 成为默认后的现场）。
+            // 桌面宿主一直传 `Some(工程根)`，wasm 侧同一个语义。
+            Some(std::path::PathBuf::from(crate::VIRTUAL_PROJECT_ROOT)),
             false,
             false,
         )

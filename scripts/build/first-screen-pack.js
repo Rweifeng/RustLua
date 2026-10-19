@@ -418,7 +418,9 @@ function buildEntries(packRoot, includePrefixes) {
       if (rules.isCompiledName(rel)) continue;
       // `--keep assets/audio/` 是给微信 `InnerAudioContext` 留的真实文件：它仍然属于分包，
       // 不能因为"没进容器"就被首屏切分搬进主包（实测 16 个 MP3 会把主包顶到 4.8 MB）。
-      if (rel.startsWith('assets/audio/')) continue;
+      // 唯一例外是标题 BGM：`main.lua` 在 scene boot 里就 `audio.play_title()`，此时
+      // pack-sub 还没挂完；把这一个文件放主包，title 才有声，其他音效仍留在分包。
+      if (rel.startsWith('assets/audio/') && rel !== 'assets/audio/bgm_title.mp3') continue;
       add(rel);
     }
     log('first_screen_pack_container containers=' + container.containers +

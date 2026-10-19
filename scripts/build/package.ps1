@@ -136,10 +136,10 @@ $PlayerDataDir = if ($env:RUSTLUA_USER_DIR) {
 # 发布根布局（2026-09-28 起）：产物直接落在 `builds\<平台>\`，不再按 publish_name 建子目录；
 # $PublishName 仍用于玩家数据目录、发布名与各配置文件的标识字段（见下）。
 $distRoot = Join-Path $gameRoot ("builds\" + $Platform)
-# 资源根：主包首屏目录叫 pack/，默认分包根叫 pack-sub/（wasm 另有 pack-wasm/）。
-# 逻辑路径前缀仍是 `pack/`（适配层/引擎的虚拟命名空间），与物理根名解耦。
-$packDirName = "pack-sub"
-$mainPackDirName = "pack"
+# 微信分包：主包首屏目录叫 pack/，默认分包根叫 pack-sub/（wasm 另有 pack-wasm/）。
+# Web/桌面没有微信的"分包根"概念，资源仍统一落在 pack/；主包首屏切分只用于微信。
+$packDirName = if ($Platform -eq "wechat-minigame") { "pack-sub" } else { "pack" }
+$mainPackDirName = if ($Platform -eq "wechat-minigame") { "pack" } else { "mainpack" }
 $packWasmDirName = "pack-wasm"
 $packRoot = Join-Path $distRoot $packDirName
 $mainPackRoot = Join-Path $distRoot $mainPackDirName
