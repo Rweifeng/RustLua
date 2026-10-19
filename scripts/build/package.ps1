@@ -758,14 +758,14 @@ WASM build failed ($Platform)。
         if (Test-Path -LiteralPath $planPath) {
             $plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json
             $plan | Add-Member -NotePropertyName wasm_root -NotePropertyValue $packWasmDirName -Force
-            [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 12),
+            [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 12 -Compress),
                 (New-Object Text.UTF8Encoding($false)))
             # 根计划是适配层的多根开关：默认形态也放一份（带 launcher_root 标记），
             # 这样 pack-wasm/pack 的懒加载、路由和 check-bundle-mounts 走同一套计划表。
-            $rootPlan = $plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+            $rootPlan = $plan | ConvertTo-Json -Depth 12 -Compress | ConvertFrom-Json
             $rootPlan | Add-Member -NotePropertyName launcher_root -NotePropertyValue $true -Force
             [IO.File]::WriteAllText((Join-Path $distRoot "bundle_plan.json"),
-                ($rootPlan | ConvertTo-Json -Depth 12), (New-Object Text.UTF8Encoding($false)))
+                ($rootPlan | ConvertTo-Json -Depth 12 -Compress), (New-Object Text.UTF8Encoding($false)))
         }
     }
 
@@ -1567,12 +1567,14 @@ WASM build failed ($Platform)。
                     entries = $bootEntries
                 }
                 $plan | Add-Member -NotePropertyName boot -NotePropertyValue $bootObject -Force
-                [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 12),
+                # 计划表按**紧凑** JSON 写出：它是逐条列出 1,357 个路径的明文表，按缩进排版时
+                # 单是空白就占 ~100 KB，而 launcher 根那一份是算进微信主包 4 MB 配额的。
+                [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 12 -Compress),
                     (New-Object Text.UTF8Encoding($false)))
-                $rootPlan = $plan | ConvertTo-Json -Depth 12 | ConvertFrom-Json
+                $rootPlan = $plan | ConvertTo-Json -Depth 12 -Compress | ConvertFrom-Json
                 $rootPlan | Add-Member -NotePropertyName launcher_root -NotePropertyValue $true -Force
                 [IO.File]::WriteAllText((Join-Path $distRoot "bundle_plan.json"),
-                    ($rootPlan | ConvertTo-Json -Depth 12), (New-Object Text.UTF8Encoding($false)))
+                    ($rootPlan | ConvertTo-Json -Depth 12 -Compress), (New-Object Text.UTF8Encoding($false)))
             }
         }
         if (-not (Test-Path -LiteralPath $codePackageMap)) {

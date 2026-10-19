@@ -5,6 +5,31 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 微信主包配额：玩法美术三组切分包 + 计划表紧凑化（3,600 KB → 2,934 KB）
+
+- **动机**：2026-10-19 那份 `package.ps1 -Platform wechat-minigame -Gpu2d` 产物主包 **3,600 KB / 4,096 KB（87.9%）**，
+  而总量只用了 49.8%（10,205 KB）——瓶颈全在主包这一侧。根因不在资产量：`examples/game_jhyt/bundles.json`
+  把 5 个组里除 `audio` 外**全部**写成 `unit: "main"`，`default_unit: "sub"` 白设，于是"首屏"实际等于全量资源，
+  分包里只剩 1,222 KB。次因是 `bundle_plan.json` 按缩进排版、逐条列出 1,357 个路径，光空白就 112 KB，
+  而 launcher 根那份是算进主包配额的。
+- **改法**：① `bundles.json` 的 `art:characters` / `art:enemies` / `art:world` 改 `unit: "sub"`；
+  ② 计划表改**紧凑** JSON 写出——`scripts/build/package.ps1` 两处（默认分包分支与 `-WasmInSubpackage` 分支）
+  加 `-Compress`，`scripts/build/bundle-layout.js` 的根副本去掉缩进。计划表的 `checksum` 只对 `groups` 的
+  规范化字节取 FNV-1a（`rustlua-infra/src/bundle.rs`），排版变化不影响自校验；读方全是 JSON 解析，无逐字节比对。
+- **实测**（同一次 `-SkipBuild` 重打 + 验收门）：主包 3,600 → **2,934 KB（71.6%）**；首屏 `pack/` 3,070 → 2,458 KB
+  （清单 10 → 7 条，`boot_closure_ok roots=pack,pack-wasm groups=core,art:ui entries=7`）；分包 6,605 → 7,163 KB；
+  总量 10,205 → 10,097 KB（两份计划表紧凑化共 −108 KB）。`verify-wechat-minigame.ps1 -ExpectGpuKernel` **exit 0**
+  （`bundle_mounts_ok roots=3 paths=1363 missing=0`、四种路径方言、六条分包用例、五条反向用例全过）。
+  复现：`package.ps1 -Platform wechat-minigame -Gpu2d -SkipBuild` → `verify-wechat-minigame.ps1 -BundleRoot examples\game_jhyt\builds\wechat-minigame -ExpectGpuKernel`；
+  另有 `node scripts/test/wechat-asset-routing-test.js` 7 组绿（含 `sub 单元 → pack-sub`、`容器路径按所属单元路由`、`boot 预挂覆盖全部非主包根`）。
+- **代价与未验**：这三组改由 `pack-sub` 提供，而适配层是 boot 前预挂非主包根 ⇒ boot 前要下载的分包 +558 KB
+  （6,605 → 7,163，主体仍是 5,383 KB 的内核根，比例 +8.4%）；玩法图读分包容器的这条路径在离线门**没有帧所有者**
+  （`runtime=env-limited:no-webgl2`），进 manor 后角色/地面贴图是否正常**待微信开发者工具或真机复跑**，本机不以模拟宿主代替。
+- **剩余大头**（主包 2,934 KB 内）：`art:ui` 容器 1,301 KB（源目录里 `assets/art/ui/title/title_bg_pixel.png` 832 KB
+  + `ui/logo/ui_title_logo.png` 240 KB，PNG 进容器整体只压到 0.96，再省只能换格式或减首屏）、标题 BGM 353 KB
+  （c297b684 刻意入主包）、子集字体 282 KB、JS 代码面 309 KB（胶水 139 + 适配层 115 + 桥 36…）、`branding/splash.jpg` 82 KB。
+- **回滚档**：`bundles.json` 三处 `unit` 改回 `main`（体积回到 87.9%）；计划表紧凑化独立于分组，可单独保留。
+
 ## Unreleased — **容器形态下按需贴图全读不到**：渲染器建在 `project_root=None` 上，相对路径落不进 `/project` 键域
 
 - **症状**：`builds/webgl` 进玩法后控制台刷

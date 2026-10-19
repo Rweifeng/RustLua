@@ -177,7 +177,7 @@ function applyPlan(plan, launcherDir) {
     planObject.launcher_root = true;
     if (wasmRoot) planObject.wasm_root = wasmRoot;
     fs.writeFileSync(path.join(launcherDir, 'bundle_plan.json'),
-      JSON.stringify(planObject, null, 2) + '\n');
+      JSON.stringify(planObject) + '\n');
   }
   // 微信规则：`subpackages[i].root` 目录下必须有入口 `game.js`；从默认分包入口复制一份。
   const template = path.join(launcherDir, 'pack-sub', 'game.js');

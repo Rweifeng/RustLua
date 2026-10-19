@@ -39,21 +39,21 @@
     },
     {
       "name": "art:characters",
-      "unit": "main",
+      "unit": "sub",
       "include": [
         "assets/art/characters/"
       ]
     },
     {
       "name": "art:enemies",
-      "unit": "main",
+      "unit": "sub",
       "include": [
         "assets/art/enemies/"
       ]
     },
     {
       "name": "art:world",
-      "unit": "main",
+      "unit": "sub",
       "include": [
         "assets/"
       ]
