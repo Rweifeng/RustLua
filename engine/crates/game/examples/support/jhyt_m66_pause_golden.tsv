@@ -11,7 +11,7 @@ A	shown	menu/row1	text	184.00,100.00,18.00,> 继续游戏
 A	shown	menu/row2	text	184.00,144.00,18.00,  保存进度
 A	shown	menu/row3	text	184.00,188.00,18.00,  读取进度
 A	shown	menu/row4	text	184.00,232.00,18.00,  形象  青衫少侠
-A	shown	menu/row5	text	184.00,276.00,18.00,  音量  100%（- / +）
+A	shown	menu/row5	text	184.00,276.00,18.00,  音量  50%（- / +）
 A	shown	menu/row6	text	184.00,320.00,18.00,  帮助
 A	shown	menu/row7	text	184.00,364.00,18.00,  返回标题
 A	shown	menu/msg	text	184.00,616.00,15.00,
@@ -126,13 +126,13 @@ B	hidden	set/track1	image	-
 B	hidden	set/track2	image	-
 B	hidden	set/track3	image	-
 B	hidden	set/track4	image	-
-B	shown	set/handle1	image	840.00,116.00,12.00,12.00,assets/art/ui/common/ui_slider_handle.png,-
-B	shown	set/handle2	image	840.00,160.00,12.00,12.00,assets/art/ui/common/ui_slider_handle.png,-
+B	shown	set/handle1	image	790.00,116.00,12.00,12.00,assets/art/ui/common/ui_slider_handle.png,-
+B	shown	set/handle2	image	765.00,160.00,12.00,12.00,assets/art/ui/common/ui_slider_handle.png,-
 B	shown	set/handle3	image	840.00,204.00,12.00,12.00,assets/art/ui/common/ui_slider_handle.png,-
 B	shown	set/handle4	image	840.00,248.00,12.00,12.00,assets/art/ui/common/ui_slider_handle.png,-
 B	shown	set/title	text	184.00,56.00,22.00,设置
-B	shown	set/row1	text	184.00,100.00,18.00,> 主音量  100%（- / +）
-B	shown	set/row2	text	184.00,144.00,18.00,  BGM  100%（- / +）
+B	shown	set/row1	text	184.00,100.00,18.00,> 主音量  50%（- / +）
+B	shown	set/row2	text	184.00,144.00,18.00,  BGM  25%（- / +）
 B	shown	set/row3	text	184.00,188.00,18.00,  音效  100%（- / +）
 B	shown	set/row4	text	184.00,232.00,18.00,  界面音效  100%（- / +）
 B	shown	set/row5	text	184.00,276.00,18.00,  保存设置

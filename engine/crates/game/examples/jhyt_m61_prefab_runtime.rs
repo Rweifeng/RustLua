@@ -56,9 +56,48 @@ const EXPECTED: &[(&str, [f32; 4])] = &[
 /// `M61Btn` 的矩形中心（③ 的"内"探针）与画面左上角（"外"探针，不在任何 UI 实体的矩形里）。
 const BTN_CENTER: (f64, f64) = (160.0, 630.0);
 const OUTSIDE: (f64, f64) = (40.0, 40.0);
-/// 门面按钮 `BtnStart` 的矩形中心：M63b 起它来自 spawn 的门面预设（矩形与迁移前的
-/// `main.scene` 逐值相同），⑤ 用它证明"撤掉自己那一批"没关掉别批的派发通道。
-const SCENE_BTN_CENTER: (f64, f64) = (640.0, 412.0);
+/// 门面按钮 `BtnStart` 的**命中点从预设里现算**，不写死坐标。
+///
+/// 2026-10-20：M73 改版标题门面（三键横排，按钮从 360×64 @y380 变成 160×60 @y420），
+/// 原先写死的 `(640,412)` 正好落在新按钮上方 8px 的空白里 —— 读数变成"点一下没有派发"，
+/// 看起来像**派发通道坏了**，实际只是坐标过期。现在按 `assets/prefabs/ui/title_menu.prefab`
+/// 里 `UiLayout.offsets` 现算中心（⑤ 用它证明"撤掉自己那一批"没关掉别批的派发通道）。
+/// 读不到预设或找不到按钮就直接红：宁可红在"读不到"，不要绿在"点错地方"。
+fn title_button_center(project: &std::path::Path, name: &str) -> Result<(f64, f64), Box<dyn std::error::Error>> {
+    let path = project
+        .join("assets")
+        .join("prefabs")
+        .join("ui")
+        .join("title_menu.prefab");
+    let text = std::fs::read_to_string(&path)
+        .map_err(|error| format!("读不到 {}：{error}", path.display()))?;
+    let prefab = rustlua_scene::prefab::Prefab::from_text(&text)
+        .map_err(|error| format!("{} 解析失败：{error}", path.display()))?;
+    let entity = prefab
+        .entities
+        .values()
+        .find(|entity| entity.name == name)
+        .ok_or_else(|| format!("{} 里找不到实体 {name}", path.display()))?;
+    let layout = entity
+        .components
+        .get("UiLayout")
+        .ok_or_else(|| format!("{} 的 {name} 没有 UiLayout 组件", path.display()))?;
+    let offsets = layout
+        .split(';')
+        .find_map(|field| field.strip_prefix("offsets="))
+        .ok_or_else(|| format!("{name} 的 UiLayout 没有 offsets：{layout:?}"))?;
+    let values: Vec<f64> = offsets
+        .split(',')
+        .filter_map(|part| part.trim().parse::<f64>().ok())
+        .collect();
+    if values.len() != 4 {
+        return Err(format!("{name} 的 offsets 应恰有 4 个数，实为 {offsets:?}").into());
+    }
+    Ok((
+        (values[0] + values[2]) / 2.0,
+        (values[1] + values[3]) / 2.0,
+    ))
+}
 
 const FIXTURE_FILE: &str = "jhyt_m61_menu.prefab";
 const BROKEN_FILE: &str = "jhyt_m61_broken.prefab";
@@ -122,8 +161,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  门面场景 = {:?}", lua_str(&mut runtime, "map.current()")?);
 
     banner("⓪ 基线：场景自己的 UI 命中框（spawn 之前先跑一次，红了就不是这批的锅）");
-    click_dispatches(&mut runtime, SCENE_BTN_CENTER, &["BtnStart"], "⓪ 门面基线")?;
-    println!("  scene click({SCENE_BTN_CENTER:?}) → [\"BtnStart\"]");
+    let scene_btn_center = title_button_center(project.as_path(), "BtnStart")?;
+    click_dispatches(&mut runtime, scene_btn_center, &["BtnStart"], "⓪ 门面基线")?;
+    println!("  scene click({scene_btn_center:?}) → [\"BtnStart\"]");
     // M63b 起门面自己的 UI 也是 spawn 出来的（`assets/prefabs/title_menu.prefab`），
     // 于是本门的世界里同时住着**两批**实例：门面的 17 个 + 下面 fixture 的 4 个。
     // 先在这里记下门面那批的原点，⑤ 用它证明 `despawn` 只摘自己那一批。
@@ -301,7 +341,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     click_dispatches(&mut runtime, BTN_CENTER, &[], "⑤ despawn 之后按原位置")?;
     click_dispatches(
         &mut runtime,
-        SCENE_BTN_CENTER,
+        scene_btn_center,
         &["BtnStart"],
         "⑤ 门面场景 UI 未被污染",
     )?;

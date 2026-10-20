@@ -1,4 +1,5 @@
--- api_audio：演示 audio 模块的**全部** 13 个函数（播放 / 音量分组（总线）/ 设置文件往返）。
+-- api_audio：演示 audio 模块的**全部** 17 个函数（播放 / 音量分组（总线）/ 设置文件往返 /
+-- 空间化）。
 --
 -- 这个演示想证明什么：
 --   ① 播放接口只提交"播放请求"，返回值比想象中少：`audio.play` / `audio.music` /
@@ -15,6 +16,12 @@
 --      把它灌回引擎；`settings_path()` / `load_settings()` / `save_settings()` 读写工程
 --      设置文件 `settings.toml` 的 `[audio]` 段。设置文件是**可选**的：缺失时
 --      `load_settings()` 返回 `false, "missing"`，这是"第一次运行"的正常路径，不是错误。
+--   ④ 空间化（M74-01）是**引擎定模型、平台尽力**：听者位姿由宿主每帧从活动相机灌进来
+--      （`listener()` 读回来就能看见），`play_at(name,x,y[,z])` 返回 `ok, gain, pan`。
+--      `gain` 已经乘进了这次播放的音量；`pan` 只有能真正做声像的平台用得上 ——
+--      桌面会左右偏，web/微信只能改音量（引擎日志里显式记一条"声像未应用"）。
+--      `set_listener` 手设的位姿**下一帧就会被宿主按相机盖回去**，本演示用它来证明
+--      "这条线是活的"，而不是接管听者。
 --
 -- 看什么：
 --   * 三个精灵 = 三张音量表：Speaker（主音量 master）/ Bgm（bgm 总线）/ Sfx（sfx 与 ui 总线）。
@@ -112,6 +119,7 @@ local KEY_MASTER_UP = "bracketright"
 local KEY_APPLY = "keyp"
 local KEY_LOAD = "keyl"
 local KEY_SAVE = "keys"
+local KEY_SPATIAL = "digit6"
 
 -- 本模块自己的动态 UI 行 id（`api_demo` 负责 api_title / api_status / api_hint 三行）。
 local ROW_BUSES = "api_audio_buses"
@@ -119,6 +127,7 @@ local ROW_TABLE = "api_audio_table"
 local ROW_TEXT = "api_audio_text"
 local ROW_PATH = "api_audio_path"
 local ROW_OPS = "api_audio_ops"
+local ROW_SPATIAL = "api_audio_spatial"
 
 -- ---------------------------------------------------------------------------
 -- 模块内状态（脚本侧的观察值，不是引擎状态）
@@ -142,6 +151,8 @@ local S = {
     save = "save_settings() -> press S to write",
     last = "no key pressed yet",
     settings_path = "(read in on_create)",
+    listener = "listener() -> (read in update)",
+    spatial = "play_at() -> press 6",
     sfx_plays = 0,
     bgm_plays = 0,
     ui_plays = 0,
@@ -334,6 +345,32 @@ function M.update()
         log.info("api_audio " .. S.last)
     end
 
+    if input.just_pressed(KEY_SPATIAL) then
+        -- `audio.set_listener(x, y, z, fx, fy, fz)`：手设听者（位置 + 前方向；上方向固定 +Y）。
+        -- 宿主每帧都会按活动相机把它盖回去，所以这里设的值只活到下一帧 —— 本演示用它证明
+        -- "听者这条线是活的"，而不是接管听者。非法值（NaN / 零向量 / 与 +Y 平行）不会当场
+        -- 报错，而是在下一次 play_at 时被 `spatial::evaluate` 统一拒绝（校验只有一处）。
+        audio.set_listener(0, 0, 5, 0, 0, -1)
+
+        -- `audio.play_at(name, x, y[, z])`：按**世界坐标**播放，返回 `ok, gain, pan`。
+        -- 2D 工程省略 z（按 0 处理）；`y` 参与距离、`x` 决定左右（右轴 = +X）。
+        -- gain ∈ [0,1] 已乘进这次播放的音量；pan ∈ [-1,1]（-1 全左 / +1 全右）。
+        -- 这里的 (4, 0) 相对默认听者（原点朝 -Z、上 +Y）是"右前方"：距离 √41 ≈ 6.4 m、
+        -- 线性模型下 gain ≈ 0.81、pan ≈ +0.62 —— 状态行会把实际值原样贴出来。
+        local ok, gain, pan = audio.play_at(CLIP_ATTACK, 4, 0, 0)
+        S.sfx_plays = S.sfx_plays + 1
+        flash.sfx = FLASH_SECONDS
+        S.spatial = string.format(
+            'play_at("%s", 4, 0) -> ok=%s gain=%.2f pan=%+.2f',
+            CLIP_ATTACK,
+            tostring(ok),
+            gain,
+            pan
+        )
+        S.last = S.spatial
+        log.info("api_audio " .. S.last)
+    end
+
     if input.just_pressed(KEY_MUSIC) then
         -- `audio.music(name)`：在 **bgm 总线**上循环播放（重复调用会先停掉上一首），
         -- 同样**没有返回值**。引擎不回报"音乐在不在播"，所以下面的 music_playing
@@ -468,6 +505,20 @@ function M.update()
     local master = audio.bus_volume("master")
     local master_effective = audio.effective_volume("master")
 
+    -- `audio.listener()`（M74-01）：宿主每帧从活动相机灌进来的听者位姿
+    -- `{x, y, z, fx, fy, fz}`；空表 = 还没接线（此时 `play_at` 会拒绝，不会按原点瞎衰减）。
+    -- 只读：改听者用 `set_listener`，而正常游戏里宿主会替你管这件事。
+    local listener = audio.listener()
+    if #listener == 6 then
+        S.listener = string.format(
+            "listener() -> pos(%.1f,%.1f,%.1f) fwd(%.1f,%.1f,%.1f)",
+            listener[1], listener[2], listener[3],
+            listener[4], listener[5], listener[6]
+        )
+    else
+        S.listener = "listener() -> (empty: host has not wired a camera yet)"
+    end
+
     -- `settings_text()`：四路音量的版本化文本（首行 `rustlua-audio-v1`，之后每行 `bus=0.000`）。
     -- 每帧读一次是纯内存操作（不写盘）；显示时把换行折成 " | "，好让人看到行的格式。
     local settings_text = audio.settings_text()
@@ -530,6 +581,8 @@ function M.update()
     ui.text_at(ROW_TEXT, 24, 396, "settings_text(): " .. settings_oneline, 1.0)
     ui.text_at(ROW_PATH, 24, 420, "settings_path(): " .. tostring(S.settings_path), 1.0)
     ui.text_at(ROW_OPS, 24, 444, S.apply .. " | " .. S.load .. " | " .. S.save, 1.0)
+    -- 听者与空间化单独一行（M74-01）：位置/朝向 + 最近一次 `play_at` 的增益与声像。
+    ui.text_at(ROW_SPATIAL, 24, 468, S.listener .. " | " .. S.spatial, 1.0)
 
     -- ⑦ 本帧的事实（左下状态行）。
     api.status(
@@ -569,6 +622,7 @@ function M.on_destroy()
     ui.clear(ROW_TEXT)
     ui.clear(ROW_PATH)
     ui.clear(ROW_OPS)
+    ui.clear(ROW_SPATIAL)
     api.clear()
 end
 

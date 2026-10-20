@@ -840,27 +840,15 @@ end
 --
 -- 为什么这么做：此前"天气"在画面上只有状态面板里的一个字（晴/雨），玩家看不出
 -- 下雨；而 `farm` 的雨天免浇水、NPC 的 `rain_place` 日程都以天气为条件——没有可见
--- 反馈时这些机制像是"没生效"。这里只做**表现**：不改玩法状态，晴天把两者清掉。
+-- 反馈时这些机制像是"没生效"。这里只做**表现**：不改玩法状态，晴天把两者收掉。
 --
--- 全屏遮罩用 `ui.panel`（竖版 720×1280 设计视口，M32），图标用 `ui.image`（M29 起可读回，
--- 见 `ui.image_get`）。每帧重画，晴天 `ui.clear` 收干净。
-local RAIN_OVERLAY = {
-  id = "hud:rain",
-  w = layout.DESIGN_W,
-  h = layout.DESIGN_H,
-  r = 0.16,
-  g = 0.22,
-  b = 0.34,
-  a = 0.22,
-}
--- 天气取值闭集是 `sunny|rainy`（`world/weather.lua` 的 KINDS），所以只有两张图被接线；
+-- M70/B7 起几何与配色全在预设（`assets/prefabs/ui/hud.prefab`）：`HudRain` 是
+-- 1280×720 的 a=0.22 染色遮罩，`HudWeatherSun` / `HudWeatherRain` 是同一矩形上
+-- 互斥显隐的两张图。所以这里只按天气取值调 `prefab.set_visible`，不再自己算矩形
+-- 与颜色（旧版 `RAIN_OVERLAY` / `RAIN_ICON` / `WEATHER_ICONS` 三个表已随迁移删除，
+-- 断言改读实体层见 `jhyt_m29_season_weather` 第 ④ 段）。
+-- 天气取值闭集仍是 `sunny|rainy`（`world/weather.lua` 的 KINDS），因此只用两张图标；
 -- `ui_weather_cloud.png` 属于"没有对应天气取值"的资源，登记在 docs/48 的计划行里。
-local WEATHER_ICONS = {
-  sunny = "assets/art/ui/hud/ui_weather_sun.png",
-  rainy = "assets/art/ui/hud/ui_weather_rain.png",
-}
--- 图标落在**屏幕右上角**（竖屏顶部右侧没有别的元素；横屏时它贴在状态面板右上角）。
-local RAIN_ICON = { id = "hud:weather_icon", size = 20, x = layout.DESIGN_W - 28, y = 6 }
 
 function draw_weather_visual()
   local rainy = weather.is_rainy()

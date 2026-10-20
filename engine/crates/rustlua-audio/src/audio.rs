@@ -1,13 +1,21 @@
-//! Minimal sound-effect playback backed by rodio: WAV clips loaded from the
-//! project assets, a master volume, and a lazily-opened output device so games
-//! run fine on machines without audio hardware (play degrades to a warning).
+//! Minimal sound-effect playback backed by rodio（桌面）/ 平台出口（web、微信）：
+//! WAV 片段从工程资产里读，主音量与分组音量各一套，输出设备**懒打开**，
+//! 没有声卡的机器上照常跑（播放退化成一条 warning）。
 //!
 //! M20-02 追加**音量分组**（总线）：BGM / SFX / UI 各自独立调节，实际音量 =
 //! 主音量 × 分组音量；设置可经 [`crate::audio::AudioSystem::to_settings_text`] 持久化。
+//!
+//! M74-01 追加空间化：听者位姿 → 增益/声像的唯一来源在 [`crate::spatial`]（纯函数）。
+//! 桌面把 `pan` 折回固定距离喂 `rodio::SpatialSink`；平台出口只应用增益。
+//!
+//! 平台设备本身住在 [`crate::device`]：桌面是 rodio，wasm 是 no-op stub。这个文件因此
+//! 一条 `cfg` 都没有，`rodio` 也不是本 crate 的无条件依赖（docs/62 P1 第 4 条）。
 
-use std::{collections::HashMap, fmt, io::Cursor, path::PathBuf};
+use std::{collections::HashMap, fmt, path::PathBuf};
 
-use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
+use crate::device::Device;
+use crate::sink::SpatialEmission;
+use crate::spatial::{Listener, SpatialError, SpatialModel, SpatialParams, evaluate, fold_to_ears};
 
 /// 音量总线（M20-02）。`Master` 是总音量，其余为分组音量。
 ///
@@ -63,6 +71,12 @@ pub enum AudioError {
     /// 音量设置文本版本不符（M20-02）。
     #[error("audio settings rejected: {0}")]
     Settings(String),
+    /// 空间参数被拒（M74-01）：非有限值、模型不合法、听者朝向退化、或宿主还没接线。
+    ///
+    /// 为什么不静默降级：`play_at` 的语义是"按位置播"，听者缺失时按原点瞎算衰减，
+    /// 症状是"声音莫名很小/全在中间"，且不指向任何一处代码。
+    #[error("audio spatial rejected: {0}")]
+    Spatial(#[from] SpatialError),
 }
 
 /// Plays named WAV effects from an asset directory. The output device is
@@ -74,10 +88,13 @@ pub struct AudioSystem {
     volume: f32,
     /// 分组音量（M20-02）：主音量之外的 BGM/SFX/UI 各自可调。
     bus_volumes: HashMap<AudioBus, f32>,
-    stream: Option<OutputStream>,
-    handle: Option<OutputStreamHandle>,
-    sinks: Vec<Sink>,
-    music_sink: Option<Sink>,
+    /// 平台输出设备（[`crate::device`]）：桌面是 rodio，wasm 是 no-op stub。
+    /// 设备的细节（stream/sink）全在那一层，这里只按"开没开、播什么"调用。
+    device: Device,
+    /// 听者位姿（M74-01）：宿主每帧从相机灌入；`None` = 还没接线，`play_at` 会拒绝。
+    listener: Option<Listener>,
+    /// 距离衰减模型（M74-01），默认 [`SpatialModel::DEFAULT`]。
+    spatial_model: SpatialModel,
     /// 当前 BGM 的解码字节（供曲尾续播重挂；换曲/停止时更新）。
     music_bytes: Option<Vec<u8>>,
 }
@@ -86,12 +103,14 @@ impl fmt::Debug for AudioSystem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AudioSystem")
             .field("cached_sounds", &self.sounds.len())
-            .field("active_sinks", &self.sinks.len())
+            .field("active_sinks", &self.device.sink_count())
+            .field("spatial_sinks", &self.device.spatial_count())
+            .field("listener", &self.listener.is_some())
             .field("volume", &self.volume)
             .field("bgm_volume", &self.bus_volume(AudioBus::Bgm))
             .field("sfx_volume", &self.bus_volume(AudioBus::Sfx))
             .field("ui_volume", &self.bus_volume(AudioBus::Ui))
-            .field("device_open", &self.stream.is_some())
+            .field("device_open", &self.device.is_open())
             .finish()
     }
 }
@@ -111,10 +130,9 @@ impl AudioSystem {
             sounds: HashMap::new(),
             volume: 1.0,
             bus_volumes: HashMap::new(),
-            stream: None,
-            handle: None,
-            sinks: Vec::new(),
-            music_sink: None,
+            device: Device::new(),
+            listener: None,
+            spatial_model: SpatialModel::DEFAULT,
             music_bytes: None,
         }
     }
@@ -220,24 +238,99 @@ impl AudioSystem {
         // 下面那条"读字节 → 解码 → 送设备"的路在那里必然失败（见 `sink` 模块文档）。
         // 平台自己知道怎么用 URL 加载（浏览器 `HTMLAudioElement` / 微信 `InnerAudioContext`）。
         if crate::sink::is_installed() {
-            return self.play_via_sink(bus, name, false);
+            return self.play_via_sink(bus, name, false, None);
         }
         let bytes = self.sound_bytes(name)?;
         let volume = self.effective_volume(bus);
-        self.ensure_device()?;
-        let Some(handle) = self.handle.as_ref() else {
+        self.ensure_device();
+        if !self.device.is_open() {
             tracing::debug!(target: "audio", name, bus = bus.key(), "[audio] no device; skipped");
             return Ok(());
-        };
-        let sink = Sink::try_new(handle).map_err(|error| AudioError::Device(error.to_string()))?;
-        let source = Decoder::new(Cursor::new(bytes))
-            .map_err(|error| AudioError::Decode(error.to_string()))?;
-        sink.set_volume(volume);
-        sink.append(source);
-        self.sinks.push(sink);
-        self.sinks.retain(|sink| !sink.empty());
+        }
+        self.device.play(bytes, volume)?;
         tracing::info!(target: "audio", name, bus = bus.key(), "[audio] played");
         Ok(())
+    }
+
+    /// 设置听者位姿（M74-01）：宿主**每帧**调用一次（通常直接来自活动相机）。
+    ///
+    /// 为什么不做成"每次 `play_at` 传听者"：那会把同一份位姿抄到 120 个示例与所有调用点，
+    /// 而且漏传一处的症状是"这个音效的位置怪怪的"，非常难查。
+    pub fn set_listener(&mut self, listener: Listener) {
+        self.listener = Some(listener);
+    }
+
+    /// 当前听者位姿；`None` = 宿主还没接线。
+    #[must_use]
+    pub fn listener(&self) -> Option<Listener> {
+        self.listener
+    }
+
+    /// 设置距离衰减模型（M74-01）。非法模型当场拒绝（不夹紧）。
+    pub fn set_spatial_model(&mut self, model: SpatialModel) -> Result<(), AudioError> {
+        // 用一次"与听者同点"的求值来校验模型本身（其余字段都合法，只有模型可能不合法）。
+        evaluate([0.0; 3], &Listener::at_origin(), model)?;
+        self.spatial_model = model;
+        Ok(())
+    }
+
+    /// 当前距离衰减模型。
+    #[must_use]
+    pub fn spatial_model(&self) -> SpatialModel {
+        self.spatial_model
+    }
+
+    /// 在 SFX 总线上按世界坐标播放（M74-01），返回本次的增益与声像。
+    pub fn play_at(&mut self, name: &str, emitter: [f32; 3]) -> Result<SpatialParams, AudioError> {
+        self.play_at_on(AudioBus::Sfx, name, emitter)
+    }
+
+    /// 在指定总线上按世界坐标播放（M74-01），返回本次的增益与声像。
+    ///
+    /// 两条平台路径：
+    /// - 桌面（无平台出口）：`rodio::SpatialSink`，位置由 [`fold_to_ears`] 从 `pan` 折回
+    ///   （距离恒定 ⇒ rodio 自己的 `1/dist²` 不参与，衰减只由我们算的 `gain` 决定）。
+    /// - web/微信：把 `gain` 乘进音量交给平台，`pan` 原样放进 [`SpatialEmission`] 供有能力
+    ///   的平台使用（当前两个 provider 只有音量，会显式记一条"声像未应用"）。
+    pub fn play_at_on(
+        &mut self,
+        bus: AudioBus,
+        name: &str,
+        emitter: [f32; 3],
+    ) -> Result<SpatialParams, AudioError> {
+        let listener = self.listener.ok_or(SpatialError::NoListener)?;
+        let params = evaluate(emitter, &listener, self.spatial_model)?;
+        let spatial = SpatialEmission {
+            gain: params.gain,
+            pan: params.pan,
+        };
+        if crate::sink::is_installed() {
+            self.play_via_sink(bus, name, false, Some(spatial))?;
+            return Ok(params);
+        }
+        let bytes = self.sound_bytes(name)?;
+        self.ensure_device();
+        if !self.device.is_open() {
+            tracing::debug!(target: "audio", name, bus = bus.key(), "[audio] no device; skipped (spatial)");
+            return Ok(params);
+        }
+        let (left_ear, right_ear, folded) = fold_to_ears(&listener, params.pan);
+        self.device.play_spatial(
+            bytes,
+            self.effective_volume(bus) * params.gain,
+            folded,
+            left_ear,
+            right_ear,
+        )?;
+        tracing::info!(
+            target: "audio",
+            name,
+            bus = bus.key(),
+            gain = params.gain,
+            pan = params.pan,
+            "[audio] played (spatial)"
+        );
+        Ok(params)
     }
 
     /// 循环播放 `name` 作为 BGM，替换当前曲目。
@@ -252,26 +345,18 @@ impl AudioSystem {
     pub fn play_music(&mut self, name: &str) -> Result<(), AudioError> {
         // 与 `play_on` 同一条分叉：装了平台出口就交给平台（它自己会循环）。
         if crate::sink::is_installed() {
-            return self.play_via_sink(AudioBus::Bgm, name, true);
+            return self.play_via_sink(AudioBus::Bgm, name, true, None);
         }
         let bytes = self.sound_bytes(name)?;
-        self.ensure_device()?;
-        // 停掉当前音乐再起新曲目。
-        if let Some(music) = self.music_sink.take() {
-            music.stop();
-        }
+        self.ensure_device();
         self.music_bytes = None;
-        let Some(handle) = self.handle.as_ref() else {
+        if !self.device.is_open() {
             tracing::debug!(target: "audio", name, "[audio] no device; music skipped");
             return Ok(());
-        };
-        let sink = Sink::try_new(handle).map_err(|error| AudioError::Device(error.to_string()))?;
-        let source = Decoder::new(Cursor::new(bytes.clone()))
-            .map_err(|error| AudioError::Decode(error.to_string()))?;
-        sink.set_volume(self.effective_volume(AudioBus::Bgm));
-        sink.append(source);
+        }
+        self.device
+            .play_music(&bytes, self.effective_volume(AudioBus::Bgm))?;
         self.music_bytes = Some(bytes);
-        self.music_sink = Some(sink);
         tracing::info!(target: "audio", name, "[audio] music started (refill loop)");
         Ok(())
     }
@@ -286,14 +371,19 @@ impl AudioSystem {
         bus: AudioBus,
         name: &str,
         looping: bool,
+        spatial: Option<SpatialEmission>,
     ) -> Result<(), AudioError> {
-        let volume = self.effective_volume(bus);
+        // 空间增益在这里乘进音量：`AudioRequest.volume` 的契约就是"已算好的有效音量"，
+        // 平台不需要知道空间模型（它也无法知道）。
+        let gain = spatial.map_or(1.0, |emission| emission.gain);
+        let volume = self.effective_volume(bus) * gain;
         let request = crate::sink::AudioRequest {
             name,
             bus,
             volume,
             asset_dir: self.asset_dir.as_deref(),
             looping,
+            spatial,
         };
         crate::sink::play(request).map_err(|error| {
             tracing::warn!(target: "audio", name, bus = bus.key(), error = %error, "[audio] platform sink failed");
@@ -308,32 +398,27 @@ impl AudioSystem {
     /// 放弃循环，避免每帧刷屏。暂停中的 sink 不会走到 empty（`Pausable` 暂停时
     /// 产静音采样、不结束），因此暂停→恢复不会触发续播、也不会丢曲目。
     pub fn maintain_music(&mut self) {
-        let (Some(sink), Some(bytes)) = (self.music_sink.as_ref(), self.music_bytes.as_ref())
-        else {
+        let Some(bytes) = self.music_bytes.clone() else {
             return;
         };
-        if !sink.empty() {
+        if !self.device.music_finished() {
             return;
         }
-        match Decoder::new(Cursor::new(bytes.clone())) {
-            Ok(source) => sink.append(source),
-            Err(error) => {
-                tracing::warn!(target: "audio", error = %error, "[audio] music refill failed; loop ended");
-                self.music_bytes = None;
-            }
+        if let Err(error) = self.device.refill_music(&bytes) {
+            tracing::warn!(target: "audio", error = %error, "[audio] music refill failed; loop ended");
+            self.music_bytes = None;
         }
     }
 
     /// 把当前 BGM 总线音量应用到常驻音乐 sink（分组/主音量变更时调用）。
     fn apply_music_volume(&mut self) {
-        if let Some(music) = self.music_sink.as_ref() {
-            music.set_volume(self.effective_volume(AudioBus::Bgm));
-        }
+        self.device
+            .set_music_volume(self.effective_volume(AudioBus::Bgm));
     }
 
     /// Stops any looping background music.
     pub fn stop_music(&mut self) {
-        // 装了平台出口就交给它：wasm 上 rodio 的 sink 根本不存在（`music_sink` 恒为 None），
+        // 装了平台出口就交给它：桌面设备在 wasm 上根本不存在（`device` 是 no-op stub），
         // 于是切图时的 `audio.stop_music()` 会退化成 no-op —— 旧 BGM 继续响，比"没声音"更难查。
         if crate::sink::is_installed() {
             crate::sink::stop_music();
@@ -341,10 +426,7 @@ impl AudioSystem {
             return;
         }
         self.music_bytes = None;
-        if let Some(music) = self.music_sink.take() {
-            music.stop();
-            tracing::info!(target: "audio", "[audio] music stopped");
-        }
+        self.device.stop_music();
     }
     /// Pauses the looping background music（编辑器暂停时调用；不释放 sink，恢复时继续）。
     pub fn pause_music(&self) {
@@ -352,10 +434,7 @@ impl AudioSystem {
             crate::sink::pause_music();
             return;
         }
-        if let Some(music) = self.music_sink.as_ref() {
-            music.pause();
-            tracing::debug!(target: "audio", "[audio] music paused");
-        }
+        self.device.pause_music();
     }
 
     /// Resumes a previously paused looping background music sink。
@@ -364,28 +443,16 @@ impl AudioSystem {
             crate::sink::resume_music();
             return;
         }
-        if let Some(music) = self.music_sink.as_ref() {
-            music.play();
-            tracing::debug!(target: "audio", "[audio] music resumed");
-        }
+        self.device.resume_music();
     }
 
     /// Opens the output device on first use; degrades to a warning without one.
-    fn ensure_device(&mut self) -> Result<(), AudioError> {
-        if self.stream.is_some() {
-            return Ok(());
-        }
-        match OutputStream::try_default() {
-            Ok((stream, handle)) => {
-                self.stream = Some(stream);
-                self.handle = Some(handle);
-                Ok(())
-            }
-            Err(error) => {
-                tracing::warn!(target: "audio", error = %error, "[audio] no output device; audio disabled");
-                Ok(())
-            }
-        }
+    ///
+    /// 不再返回 `Result`：这条路径从来没有失败过（打不开设备就降级成"静默跳过"），
+    /// 之前那个 `Ok(())` 只是让每个调用点多写一个 `?`。设备层的失败处理在
+    /// [`crate::device`] 里（桌面记 warning，wasm 记一条"没有桌面设备"）。
+    fn ensure_device(&mut self) {
+        self.device.open();
     }
 
     fn sound_bytes(&mut self, name: &str) -> Result<Vec<u8>, AudioError> {
@@ -441,7 +508,7 @@ mod tests {
         // loading fails before any device is opened
         assert!(audio.play("rustlua-audio-definitely-missing").is_err());
         assert!(
-            audio.stream.is_none(),
+            !audio.device.is_open(),
             "device must not open on a failed load"
         );
     }
@@ -468,6 +535,57 @@ mod tests {
         audio.set_bus_volume(AudioBus::Master, 0.25);
         assert_eq!(audio.volume(), 0.25);
         assert!((audio.effective_volume(AudioBus::Bgm) - 0.1).abs() < 1e-6);
+    }
+
+    /// M74-01：没接线就拒绝（而不是按原点瞎衰减）。
+    #[test]
+    fn play_at_without_a_listener_is_rejected() {
+        let mut audio = AudioSystem::new();
+        audio.set_asset_dir(std::env::temp_dir());
+        let error = audio.play_at("rustlua-audio-definitely-missing", [1.0, 0.0, 0.0]);
+        assert!(
+            matches!(error, Err(AudioError::Spatial(SpatialError::NoListener))),
+            "得到 {error:?}"
+        );
+        // 仍然没有开设备：拒绝发生在读文件之前。
+        assert!(!audio.device.is_open());
+    }
+
+    /// M74-01：接线之后走的是"按位置播放"，缺文件仍然是 `Io`（不是静默成功）。
+    #[test]
+    fn play_at_with_listener_still_reports_missing_clip() {
+        let mut audio = AudioSystem::new();
+        audio.set_asset_dir(std::env::temp_dir());
+        audio.set_listener(Listener::at_origin());
+        let error = audio.play_at("rustlua-audio-definitely-missing", [0.0, 0.0, -5.0]);
+        assert!(matches!(error, Err(AudioError::Io(_))), "得到 {error:?}");
+    }
+
+    /// M74-01：模型非法当场拒绝；合法模型可读回。
+    #[test]
+    fn spatial_model_is_validated_and_read_back() {
+        let mut audio = AudioSystem::new();
+        assert_eq!(audio.spatial_model(), SpatialModel::DEFAULT);
+        let error = audio.set_spatial_model(SpatialModel {
+            min_distance: 30.0,
+            max_distance: 10.0,
+        });
+        assert!(
+            matches!(error, Err(AudioError::Spatial(_))),
+            "得到 {error:?}"
+        );
+        assert_eq!(
+            audio.spatial_model(),
+            SpatialModel::DEFAULT,
+            "拒绝后保持原值"
+        );
+        audio
+            .set_spatial_model(SpatialModel {
+                min_distance: 2.0,
+                max_distance: 50.0,
+            })
+            .unwrap();
+        assert_eq!(audio.spatial_model().max_distance, 50.0);
     }
 
     #[test]

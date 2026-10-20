@@ -98,7 +98,7 @@ impl EditorApp {
         }
     }
 
-    // `stop()` **已搬到 shell**（`actions.rs`，第 28 轮）：Stop 会替换当前文档，属于提交边界。
+    // `stop()` **已搬到 shell**（`crate::actions`，第 28 轮）：Stop 会替换当前文档，属于提交边界。
     // 面板只发 `EditorCommand::StopPlay`（docs/55 §4.1 规则 1：View 只发 typed action）。
 
     pub(crate) fn draw_game_view(&mut self, ui: &mut egui::Ui) {

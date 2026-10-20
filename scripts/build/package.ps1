@@ -492,7 +492,10 @@ $distRoot = if ($launcherSubdir) { Join-Path $stageRoot $launcherSubdir } else {
 $packRoot = Join-Path $distRoot $packDirName
 $mainPackRoot = Join-Path $distRoot $mainPackDirName
 $packWasmRoot = Join-Path $distRoot $packWasmDirName
-$cdnPackRoot = if ($exportsAssetPack) { Join-Path $finalRoot "assets" } else { "" }
+# 资源包根 = `<发布根>/assets/<packDirName>`（微信 = `assets/pack-sub/`：导出目录名与分包
+# root 同名）。旧值停在 `assets` 那一层，于是收尾断言去找 `assets/pack` ——**每一份 remote 产物**
+# 都会在原子交换之后抛 exit 1（产物其实已经换进去了，工具却报失败）。2026-10-20 实测。
+$cdnPackRoot = if ($exportsAssetPack) { Join-Path (Join-Path $finalRoot "assets") $packDirName } else { "" }
 $assetPackStage = if ($exportsAssetPack) { Join-Path $stageRoot "assets" } else { "" }
 $script:cdnMirrorStage = ""
 if ($cdnPackMirror) {
@@ -2209,6 +2212,8 @@ WASM build failed ($Platform)。
         if (-not (Test-Path -LiteralPath $layoutScript)) { throw "缺少 $layoutScript" }
         $layoutArgs = @{ Launcher = $distRoot }
         if ($assetc) { $layoutArgs["Assetc"] = $assetc }
+        # remote 形态：cdn 组的容器发布在 CDN 镜像目录里（本次发布的 staging），闭包要按它核对。
+        if ($script:cdnMirrorStage) { $layoutArgs["CdnDir"] = $script:cdnMirrorStage }
         & $layoutScript @layoutArgs
         Write-Host "==> 多分包根已应用（-MultiSub，staging 内）" -ForegroundColor Yellow
         # run.txt 在第 2040 行之前已生成；拆根后补一条实际根名，避免文档还写"单 pack"。
@@ -2238,6 +2243,45 @@ WASM build failed ($Platform)。
             $(if ($isSubpackagePack) { $(if ($MultiSub) { "pack+multi" } else { "pack+pack-sub" }) } elseif ($wasmInSubpackage) { "wasm+pack" } else { "none" })) -ForegroundColor Green
     }
 
+    # 瘦首包（`-AssetPack remote`）的容器闭包：**必须在最终形态上、对着资源包核**。
+    # 上一段的瘦身已经把 `pack/` 里的资源目录整体删掉，此刻包内一个容器都没有；而资源包
+    # （`<发布根>/assets/<packDirName>/…`，整目录传 CDN）里才是真正要发布的容器。
+    # 不在这里核 = 瘦首包形态的容器内容从来没被任何门看过（合成夹具又都长在包内）。
+    if ($Platform -eq "wechat-minigame" -and $AssetPack -eq "remote" -and $assetPackStage) {
+        $closureAssetc = if ($assetc) { $assetc } else { Join-Path $nativeTargetRoot "assetc.exe" }
+        if (-not (Test-Path -LiteralPath $closureAssetc)) {
+            throw ("容器闭包检查需要 assetc（找不到 $closureAssetc）：瘦首包的容器全在资源包里，这一门不允许跳过")
+        }
+        $plannedBundlesForClosure = @()
+        $planForClosure = Join-Path $packRoot "bundle_plan.json"
+        if (Test-Path -LiteralPath $planForClosure) {
+            $plannedBundlesForClosure = @((Get-Content -LiteralPath $planForClosure -Raw -Encoding UTF8 |
+                        ConvertFrom-Json).groups | ForEach-Object { [string]$_.bundle } | Where-Object { $_ })
+        }
+        $exportRootForClosure = ""
+        foreach ($candidate in @((Join-Path $assetPackStage $packDirName), $assetPackStage)) {
+            if ([string]::IsNullOrWhiteSpace($candidate) -or -not (Test-Path -LiteralPath $candidate)) { continue }
+            $complete = $plannedBundlesForClosure.Count -gt 0
+            foreach ($rel in $plannedBundlesForClosure) {
+                $probe = Join-Path $candidate $rel
+                if (-not (Test-Path -LiteralPath $probe) -and -not (Test-Path -LiteralPath ($probe + ".txt"))) {
+                    $complete = $false
+                    break
+                }
+            }
+            if ($complete) { $exportRootForClosure = $candidate; break }
+        }
+        if ([string]::IsNullOrWhiteSpace($exportRootForClosure)) {
+            throw ("瘦首包的资源包里找不齐计划声明的 {0} 个容器（在 {1} 下）：资源包导出不完整就是远端 404" -f $plannedBundlesForClosure.Count, $assetPackStage)
+        }
+        $closureOutputForThin = & $closureAssetc closure $distRoot --cdn $exportRootForClosure 2>&1
+        $closureExitForThin = $LASTEXITCODE
+        if ($closureExitForThin -ne 0) {
+            throw ("瘦首包容器闭包检查失败（assetc closure exit {0}）: {1}" -f $closureExitForThin, (($closureOutputForThin | ForEach-Object { "$_" }) -join "`n"))
+        }
+        Write-Host (($closureOutputForThin | Where-Object { $_ -match '^assetc_closure_ok' } | Select-Object -First 1)) -ForegroundColor Green
+    }
+
     # M20-03：全部内容与自检通过后，原子替换最终目录（旧版本备份→移入新版本
     # →清理备份）。交换失败会回滚旧版本并抛错，staging 保留以便诊断。
     Write-Host "==> Atomic release swap" -ForegroundColor Cyan
@@ -2262,12 +2306,12 @@ $mainPackRoot = Join-Path $distRoot $mainPackDirName
     }
 
     if ($cdnPackRoot) {
-        if (-not (Test-Path -LiteralPath (Join-Path $cdnPackRoot "pack"))) {
-            throw "资源包导出失败: $cdnPackRoot\pack 不存在（首包与资源包必须在同一次发布里产出）"
+        if (-not (Test-Path -LiteralPath $cdnPackRoot)) {
+            throw "资源包导出失败: $cdnPackRoot 不存在（首包与资源包必须在同一次发布里产出）"
         }
         Write-Host ("wechat_asset_pack_ok dir={0} files={1} pack_kb={2:N0} cdn_base={3}" -f `
             $cdnPackRoot, $script:cdnPackFullFiles, ($script:cdnPackFullBytes / 1KB), $RemotePackBaseUrl) -ForegroundColor Green
-        Write-Host ("==> 资源包已就绪：把 {0} 整个目录上传到 CDN，使 packBaseUrl 指向 {1}" -f $cdnPackRoot, $RemotePackBaseUrl) -ForegroundColor Cyan
+        Write-Host ("==> 资源包已就绪：把 {0} 里的**内容**上传到 CDN，使 packBaseUrl 指向 {1}" -f $cdnPackRoot, $RemotePackBaseUrl) -ForegroundColor Cyan
     }
 
     Write-Host "Release package ready: $finalRoot" -ForegroundColor Green

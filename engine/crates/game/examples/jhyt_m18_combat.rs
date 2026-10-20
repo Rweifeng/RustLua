@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project_arg = project.clone();
 
     banner("M18-01a 纯数据注册 + 加载期校验：招式/敌人来自 data，错误可定位");
-    let mut runtime = new_runtime(&project_arg, &save_path)?;
+    let (mut runtime, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut runtime, &main_script)?;
     // 招式条数**不写死**（与下面敌人的口径一致）：这一格原本是 `2`，而 M27/M28/M34 每批加招式
     // 都会让它假红一次——M34-04 认领时它已经是 5≠2 的既有红了。这里要钉的是"`ids()` 与数据表
@@ -135,13 +135,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M18-01c 普攻：徒手伤害 2，判定窗内同一攻击只结算一次，冷却期拒绝");
     teleport(&mut runtime, PLAYER_BEFORE_DUMMY)?;
     lua(&mut runtime, "require('core.state').facing = 'right'")?;
-    frames(&mut runtime, 2)?;
+    frames(&mut runtime, &host, 2)?;
     // 攻击#1：判定窗（windup 6 + active 12）内目标一直贴着 → 只掉一次血。
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
     )?;
-    frames(&mut runtime, 30)?;
+    frames(&mut runtime, &host, 30)?;
     assert_num(
         &mut runtime,
         "require('systems.enemy').query('enemy_dummy').hp",
@@ -150,6 +151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 攻击#2（#1 的 24 步冷却已过）：注册后仍在前摇，且再次攻击被冷却拒绝。
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_str(
@@ -162,7 +164,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('systems.enemy').query('enemy_dummy').hp",
         28.0,
     )?;
-    frames(&mut runtime, 30)?;
+    frames(&mut runtime, &host, 30)?;
     assert_num(
         &mut runtime,
         "require('systems.enemy').query('enemy_dummy').hp",
@@ -171,9 +173,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 攻击#3：冷却结束后再次命中。
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
     )?;
-    frames(&mut runtime, 30)?;
+    frames(&mut runtime, &host, 30)?;
     assert_num(
         &mut runtime,
         "require('systems.enemy').query('enemy_dummy').hp",
@@ -204,12 +207,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('player.skills').player_damage('strike')",
         10.0,
     )?;
-    frames(&mut runtime, 30)?;
+    frames(&mut runtime, &host, 30)?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
     )?;
-    frames(&mut runtime, 30)?;
+    frames(&mut runtime, &host, 30)?;
     assert_num(
         &mut runtime,
         "require('systems.enemy').query('enemy_dummy').hp",
@@ -220,9 +224,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(&mut runtime, "require('core.state').inner_power", 50.0)?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('k').expect("QWERTY 字符必须有对应物理键"),
     )?;
-    frames(&mut runtime, 30)?;
+    frames(&mut runtime, &host, 30)?;
     assert_num(&mut runtime, "require('core.state').inner_power", 40.0)?;
     assert_num(
         &mut runtime,
@@ -230,7 +235,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         8.0,
     )?;
     // 内力不足：先推过千风掌冷却（60 步），拒绝原因才是 inner_power，且不掉血。
-    frames(&mut runtime, 60)?;
+    frames(&mut runtime, &host, 60)?;
     lua(&mut runtime, "require('core.state').inner_power = 5")?;
     assert_str(
         &mut runtime,
@@ -245,12 +250,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     lua(&mut runtime, "require('core.state').inner_power = 40")?;
 
     banner("M18-01f 击杀：hp 归零 → 死亡销毁，战斗日志含 kill");
-    frames(&mut runtime, 24)?;
+    frames(&mut runtime, &host, 24)?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
     )?;
-    frames(&mut runtime, 30)?;
+    frames(&mut runtime, &host, 30)?;
     assert_num(
         &mut runtime,
         "require('systems.enemy').query('enemy_dummy').hp",
@@ -276,7 +282,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M18-01g 敌人 AI：A* 追击 → 进入攻击距离后攻击玩家");
     teleport(&mut runtime, WOLF_LURE)?;
-    frames(&mut runtime, 60)?;
+    frames(&mut runtime, &host, 60)?;
     assert_str(
         &mut runtime,
         "(function() local q = require('systems.enemy').query('enemy_wolf'); \
@@ -284,7 +290,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
          return 'state=' .. tostring(q.state) end)()",
         "true",
     )?;
-    frames(&mut runtime, 300)?;
+    frames(&mut runtime, &host, 300)?;
     let player_hp = query_num(&mut runtime, "return require('systems.combat').player_hp()")?;
     if player_hp >= 100.0 {
         return Err(format!("wolf never damaged player: hp={player_hp}").into());
@@ -297,7 +303,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M18-01h 战败与重开：hp 归零冻结输入，R 回山庄并复活全部敌人");
     lua(&mut runtime, "require('systems.combat').set_player_hp(3)")?;
-    frames(&mut runtime, 240)?;
+    frames(&mut runtime, &host, 240)?;
     assert_num(&mut runtime, "require('systems.combat').player_hp()", 0.0)?;
     assert_str(
         &mut runtime,
@@ -306,12 +312,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_mode(&mut runtime, "Playing")?;
     // 战败后敌人停手（不鞭尸），气血保持 0。
-    frames(&mut runtime, 120)?;
+    frames(&mut runtime, &host, 120)?;
     assert_num(&mut runtime, "require('systems.combat').player_hp()", 0.0)?;
     // 按 R 重开：走 `systems/death.lua` 的战败结算（M28/计划 G3，docs/33 §6.3）——
     // 状态回满 + **回山庄出生点**（不再是原地复活），敌人随复活重置。
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('r').expect("QWERTY 字符必须有对应物理键"),
     )?;
     runtime.process_scene_transition()?;
@@ -374,12 +381,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M18-01i 存档恢复：玩家气血与敌人账本（hp/位置/装备）随存档一致恢复");
     teleport(&mut runtime, PLAYER_BEFORE_DUMMY)?;
     lua(&mut runtime, "require('core.state').facing = 'right'")?;
-    frames(&mut runtime, 24)?;
+    frames(&mut runtime, &host, 24)?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
     )?;
-    frames(&mut runtime, 30)?;
+    frames(&mut runtime, &host, 30)?;
     assert_num(
         &mut runtime,
         "require('systems.enemy').query('enemy_dummy').hp",
@@ -387,7 +395,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     save_game(&mut runtime)?;
 
-    let mut second = new_runtime(&project_arg, &save_path)?;
+    let (mut second, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut second, &main_script)?;
     click_button(&mut second, "BtnContinue")?;
     assert_scene_is(&mut second, "combat_arena")?;
@@ -415,32 +423,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     teleport(&mut second, PLAYER_BEFORE_DUMMY)?;
     lua(&mut second, "require('core.state').facing = 'right'")?;
     let f0 = query_num(&mut second, "return require('systems.combat').frame()")?;
-    frames(&mut second, 5)?;
+    frames(&mut second, &host, 5)?;
     assert_num(&mut second, "require('systems.combat').frame()", f0 + 5.0)?;
     assert_num(&mut second, "time.delta()", 1.0 / 60.0)?;
     // 基准 A：攻击后批量推 30 帧。
-    frames(&mut second, 24)?;
+    frames(&mut second, &host, 24)?;
     let hp0 = query_num(
         &mut second,
         "return require('systems.enemy').query('enemy_dummy').hp",
     )?;
     press(
         &mut second,
+        &host,
         KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
     )?;
-    frames(&mut second, 30)?;
+    frames(&mut second, &host, 30)?;
     let hp_a = query_num(
         &mut second,
         "return require('systems.enemy').query('enemy_dummy').hp",
     )?;
     // 基准 B：等待冷却后同攻击，逐帧推 30 次。
-    frames(&mut second, 30)?;
+    frames(&mut second, &host, 30)?;
     press(
         &mut second,
+        &host,
         KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
     )?;
     for _ in 0..30 {
-        frames(&mut second, 1)?;
+        frames(&mut second, &host, 1)?;
     }
     let hp_b = query_num(
         &mut second,
@@ -485,14 +495,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 // ---------- helpers ----------
 
 /// Creates a bare engine runtime pointing at the project scripts & save file.
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 /// Runs the project script, then loads the `main` 门面 scene so BtnStart/BtnContinue
@@ -525,19 +540,27 @@ fn teleport(runtime: &mut LuaRuntime, pos: (f32, f32)) -> Result<(), Box<dyn std
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }
 
 /// Runs `update()` for `n` frames with an empty input snapshot.
-fn frames(runtime: &mut LuaRuntime, n: usize) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+fn frames(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    n: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    host.set_input(InputSnapshot::default());
     for _ in 0..n {
         runtime.call_update()?;
     }

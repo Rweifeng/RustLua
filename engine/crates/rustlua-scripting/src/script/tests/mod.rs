@@ -29,7 +29,7 @@ mod diagnostics;
 mod entity;
 mod globals;
 mod hot_reload;
-mod input;
+mod installers;
 mod particles;
 mod physics;
 mod reentrancy;
@@ -40,14 +40,6 @@ mod tilemap;
 mod transform;
 mod ui;
 
-/// 一帧「左摇杆上推」输入（含数字态，模拟 `GamepadPoller::poll_into` 的产物）。
-#[allow(dead_code)] // 唯一调用方在 `mod input` 里，该模块因迁移暂时被 [cfg(any())] 关掉
-fn held_stick_up(value: f32) -> InputSnapshot {
-    let mut input = InputSnapshot::default();
-    input.set_gamepad_axis(1, value);
-    input.set_gamepad_axis_digital(1, rustlua_input::input::AxisDirection::Positive, true);
-    input
-}
 fn script(contents: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     // 进程内单调计数 + 纳秒时间戳：并行测试在同一时间刻度内调用时

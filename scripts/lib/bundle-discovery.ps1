@@ -79,7 +79,26 @@ function Get-BundleMarkerFiles {
             $wasmCore = "pkg\game_web_bg.wasm"
             if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot) -and (Test-Path -LiteralPath (Join-Path $ArtifactRoot "pack.json"))) {
                 $skeleton = "mainpack"
-                $wasmCore = "pack\game_web_bg.wasm"
+                # 骨架根同样以磁盘为准：`package.ps1` 的 `$mainPackDirName` 在微信平台是 `pack`，
+                # `mainpack/` 只是旧形态。在这里重算发布器的命名规则，换形态时就会把合法产物误判成
+                # "缺 mainpack\manifest.txt"（实测 2026-10-19 的产物就落在这一形态）。
+                foreach ($skeletonCandidate in @("mainpack", "pack")) {
+                    if (Test-Path -LiteralPath (Join-Path $ArtifactRoot "$skeletonCandidate\manifest.txt")) {
+                        $skeleton = $skeletonCandidate
+                        break
+                    }
+                }
+                $wasmCore = "$skeleton\game_web_bg.wasm"
+                # `-WasmInSubpackage` 形态把 2.5 MB 内核**单独**拆到 `pack-wasm/`（主包 4 MB 装不下），
+                # 于是"内核在 pack/"这条判据把合法产物误判成缺件（实测 2026-10-19 的 game_jhyt 产物
+                # 就落在这一形态）。这里只问"内核在不在某个分包根里"，不重算发布器的拆分规则；
+                # `pkg/` 不在候选里是有意的——内核留在 pkg/ 说明是搬迁前的旧形态，仍应被排除。
+                foreach ($candidate in @("pack-wasm", "pack-sub", "mainpack", "pack")) {
+                    if (Test-Path -LiteralPath (Join-Path $ArtifactRoot "$candidate\game_web_bg.wasm")) {
+                        $wasmCore = "$candidate\game_web_bg.wasm"
+                        break
+                    }
+                }
             }
             $resolve = { param([string]$logical) $logical }
             if (-not [string]::IsNullOrWhiteSpace($ArtifactRoot)) {

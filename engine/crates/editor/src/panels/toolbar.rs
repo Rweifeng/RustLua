@@ -2,7 +2,7 @@
 //! 常驻 = Play 控制、设计分辨率、3D/UI、吸附+步长、缩放；
 //! 次要功能收进下拉 = 工具（对齐/等间距）、排序（Sprite）、覆盖层（辅助线等开关）。
 //! Undo/Redo 通过快捷键 Ctrl+Z / Ctrl+Y 触发（见 main.rs）。
-//! 工具按钮（Select/Move/Rotate/Scale）在 Scene 视图右上角的小面板中（见 scene_view.rs）。
+//! 工具按钮（Select/Move/Rotate/Scale）在 Scene 视图右上角的小面板中（见 panels/scene_view/）。
 //! Scene/Game 切换由 dock 页签与"窗口"菜单承担，工具栏不再重复放按钮。
 
 use crate::EditorApp;

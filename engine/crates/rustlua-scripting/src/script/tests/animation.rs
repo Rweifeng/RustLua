@@ -12,7 +12,7 @@ fn instantiated_animation_is_switchable_from_lua() {
         "default=idle;clip:idle:assets/idle-sheet.png:4:4:true;clip:attack:assets/attack-sheet.png:2:2:false".into(),
     );
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.instantiate_scene(&scene).unwrap();
 
     let first = script(
@@ -56,7 +56,7 @@ fn runtime_spawned_entity_can_attach_animation() {
          return 'ok' end\n\
          function update() return 'ok' end",
     );
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.execute_project_script(&first).unwrap();
     assert_eq!(runtime.call_update().unwrap(), "ok");
 
@@ -96,7 +96,7 @@ fn runtime_spawned_entity_can_attach_animation() {
 /// WP4 ⑦：动画帧事件从宿主收集到 Lua 轮询的整条链路。
 #[test]
 fn lua_animation_events_drain_after_host_advances() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     // 宿主侧推进一步动画后把事件交进来；Lua 侧取走即清空。
     let id = runtime.with_world_mut(|world| world.spawn());
     runtime.with_world_mut(|world| {
@@ -157,7 +157,7 @@ fn lua_3d_animation_queries_and_switches_clips() {
             "mesh=assets/models/m8-skin-quad.glb;clip=Bend;looped=true".into(),
         );
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);
 

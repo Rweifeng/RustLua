@@ -15,7 +15,7 @@ use super::*;
 /// 直接 call，命中率 100% 落在 API 闭包的借用上。
 #[test]
 fn reentrant_lua_api_call_surfaces_as_lua_error_instead_of_panic() {
-    let runtime = LuaRuntime::new().unwrap();
+    let runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let health: mlua::Table = runtime.lua.globals().get("health").unwrap();
     let get: mlua::Function = health.get("get").unwrap();
 
@@ -43,7 +43,7 @@ fn non_reentrant_lua_api_call_still_works() {
          assert(entity.find('probe') == e, '非重入路径的名字查找也必须正常')\n\
          function update() return 'ok' end",
     );
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.execute_project_script(&path).unwrap();
     assert_eq!(runtime.call_update().unwrap(), "ok");
     let _ = fs::remove_file(path);

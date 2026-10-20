@@ -19,7 +19,7 @@ fn physics3d_bindings_reject_non_finite_arguments_like_2d_does() {
          assert(not pcall(physics.raycast, 0, 0, 0, 1, 0/0), '2D 射线参数 NaN 必须报错（既有契约）')\n\
          function update() return 'ok' end",
     );
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.execute_project_script(&path).unwrap();
     assert_eq!(runtime.call_update().unwrap(), "ok");
     let _ = fs::remove_file(path);
@@ -29,7 +29,7 @@ fn physics3d_bindings_reject_non_finite_arguments_like_2d_does() {
 /// （与 camera2d 的 pending 语义一致——否则开关会在之后每一帧被重复应用）。
 #[test]
 fn lua_physics_debug_draw_registers_and_consumes_a_request() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(
         runtime.take_collider_debug_request(),
         None,
@@ -67,7 +67,7 @@ fn lua_physics_debug_draw_registers_and_consumes_a_request() {
             "Collider".into(),
             "shape=cuboid;half_width=16;half_height=8;sensor=true".into(),
         );
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);
     let shapes = runtime.collider_debug_shapes();
     assert_eq!(shapes.len(), 1, "每个碰撞体一个调试形状");
@@ -84,7 +84,7 @@ fn lua_physics_debug_draw_registers_and_consumes_a_request() {
 /// 即清空"的通道，但**两条通道互不干扰**（混合场景里只想看一侧是常态）。
 #[test]
 fn lua_physics3d_debug_draw_registers_and_consumes_a_request() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(
         runtime.take_collider_debug_request_3d(),
         None,
@@ -168,7 +168,7 @@ fn lua_physics_ccd_flag_reaches_the_rigid_body() {
             .components
             .insert("Collider".into(), collider.to_owned());
     }
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 2);
     let path = script(
         "function update()\n\
@@ -212,7 +212,7 @@ fn lua_physics_queries_hit_colliders_and_the_position_broad_phase_is_separate() 
         "Collider".into(),
         "shape=cuboid;half_width=1;half_height=5;sensor=false".into(),
     );
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 2);
     let path = script(
         "function update()\n\
@@ -270,7 +270,7 @@ fn lua_query_group_filters_are_shared_between_2d_and_3d() {
         "Collider3d".into(),
         "shape=cuboid;half_width=1;half_height=5;half_z=5;dynamic=false;layer=2;mask=2".into(),
     );
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 2);
     let path = script(
         "function update()\n\
@@ -339,7 +339,7 @@ fn physics_blocks_player_on_tilemap_wall_and_emits_events() {
             "tile_size=20x20;width=2;height=2;tiles=0000;solid=0101".into(),
         );
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.instantiate_scene(&scene).unwrap();
 
     let path = script(
@@ -394,7 +394,7 @@ fn lua_physics3d_ccd_flag_reaches_the_rigid_body() {
             .components
             .insert("Collider3d".into(), collider.to_owned());
     }
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 2);
     let path = script(
         "function update()\n\
@@ -454,7 +454,7 @@ fn physics3d_body_falls_onto_static_ground_and_syncs_transform3d() {
             "shape=cuboid;half_width=10;half_height=1;half_z=10;offset=0,-1,0;dynamic=false".into(),
         );
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.instantiate_scene(&scene).unwrap();
 
     let path = script(

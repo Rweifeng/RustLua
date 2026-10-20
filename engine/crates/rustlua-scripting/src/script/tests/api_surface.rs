@@ -2,11 +2,14 @@ use super::*;
 
 #[test]
 fn registers_log_time_input_and_quit_api() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    // `input` 绑定住在 `rustlua-input`（`docs/62` P1 阶段 3）：宿主句柄与注册表一起拿，
+    // 本 crate 只在测试里经 dev-dependency 造快照。
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let mut runtime = LuaRuntime::with_installers(installers).unwrap();
     runtime.set_delta(0.25);
-    let mut input = InputSnapshot::default();
-    input.key_event(KeyCode::KeyD, true);
-    runtime.set_input(input);
+    let mut input = rustlua_input::input::InputSnapshot::default();
+    input.key_event(rustlua_input::input::KeyCode::KeyD, true);
+    handles.input.set_input(input);
     let path = script(
         "assert(time.delta() == 0.25)\nassert(input.is_down('d'))\nassert(input.axis('horizontal') == 1.0)\nfunction update() return 'ok' end",
     );
@@ -25,7 +28,7 @@ fn registers_log_time_input_and_quit_api() {
 #[test]
 fn app_exposes_the_project_root_for_cwd_independent_file_checks() {
     let root = production_sample_root();
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     let reported = runtime
         .execute_console("return app.project_root()")
@@ -43,7 +46,7 @@ fn app_exposes_the_project_root_for_cwd_independent_file_checks() {
         "project_root() = {reported:?}，与 set_project_root 的值对不上（{expected:?}）"
     );
     // 没配置时不报错，只是空串（Web 宿主没有文件系统）。
-    let bare = LuaRuntime::new().unwrap();
+    let bare = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(
         bare.lua
             .load("return app.project_root()")
@@ -58,14 +61,14 @@ fn call_update_without_script_idles_instead_of_erroring() {
     // Engine-only diagnostic mode has no project script; update must be a
     // no-op rather than a fatal "nil to function" error (which used to
     // crash double-clicked runs).
-    let runtime = LuaRuntime::new().unwrap();
+    let runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(runtime.call_update().unwrap(), "");
 }
 
 #[test]
 fn invalid_entity_is_a_lua_error() {
     let path = script("transform.get(4294967297)");
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let error = runtime
         .execute_project_script(&path)
         .unwrap_err()
@@ -77,7 +80,7 @@ fn invalid_entity_is_a_lua_error() {
 /// 且错误保留原始 Lua 消息（供编辑器原样显示）。
 #[test]
 fn eval_json_converts_tables_arrays_scalars_and_reports_errors() {
-    let runtime = LuaRuntime::new().unwrap();
+    let runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(runtime.eval_json("nil").unwrap(), serde_json::Value::Null);
     assert_eq!(runtime.eval_json("true").unwrap(), serde_json::json!(true));
     assert_eq!(runtime.eval_json("42").unwrap(), serde_json::json!(42));

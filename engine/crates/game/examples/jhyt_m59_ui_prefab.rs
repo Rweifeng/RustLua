@@ -406,10 +406,13 @@ fn compare_golden(dump: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Creates a bare engine runtime pointing at the project scripts, audio assets and save file.
 fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
-    runtime.set_audio_asset_dir(project.join("assets").join("audio"));
+    handles
+        .audio
+        .with_mut(|audio| audio.set_asset_dir(project.join("assets").join("audio")));
     // 动态 UI 是屏幕像素空间，视口与设计分辨率一致（与 jhyt_m19_ui 同口径）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);

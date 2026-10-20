@@ -67,7 +67,7 @@ E01 要求“列出当前所有选择状态、Inspector 状态、Hierarchy 状�
 
 ### 1.4 编辑器快照字段（Inspector 渲染用，EditorApp 成员）
 
-Inspector 输入框不直接读写场景，而是读写 EditorApp 上的**快照字段**：`entity_name`、`transform`、`transform3d`、`mesh_renderer`、`camera3d`、`light`、`collider3d`、`text`、`image`、`sprite_reference`、`sprite_component`、`tilemap`、`animation` 等（[main.rs](../engine/crates/editor/src/main.rs#L601-L627)）。`sync_inspector(id)` 是唯一把 InspectorState.selected + 场景 → 这些快照字段的同步点（[actions.rs](../engine/crates/editor/src/actions.rs#L137-L198)）。
+Inspector 输入框不直接读写场景，而是读写 EditorApp 上的**快照字段**：`entity_name`、`transform`、`transform3d`、`mesh_renderer`、`camera3d`、`light`、`collider3d`、`text`、`image`、`sprite_reference`、`sprite_component`、`tilemap`、`animation` 等（[main.rs](../engine/crates/editor/src/main.rs#L601-L627)）。`sync_inspector(id)` 是唯一把 InspectorState.selected + 场景 → 这些快照字段的同步点（[actions/document_io.rs](../engine/crates/editor/src/actions/document_io.rs)）。
 
 ### 1.5 场景视图缓存
 
@@ -90,8 +90,8 @@ Inspector 输入框不直接读写场景，而是读写 EditorApp 上的**快照
 
 | 入口 | 位置 | 做了什么 | 清理力度 | 备注 |
 |---|---|---|---|---|
-| `set_current_scene_document` | [actions.rs](../engine/crates/editor/src/actions.rs#L15-L18) | `current_scene = Some(document)` + `invalidate_scene_view_state()` | **弱**：只做 scene view 缓存/预览清理 | 这是所有入口的“统一底座”，但**不清任何选择/元数据/资源选择** |
-| `open_scene_resource` | [actions.rs](../engine/crates/editor/src/actions.rs#L107-L134) | `open_scene_document` + history.clear + autosave.reset + play_session=None + tree.clear + delete_target=None + inspector.clear + clear_resource_selection + scene_state.selected/collapsed.clear + `sync_hierarchy_metadata()` | **最强（参考实现）** | 唯一同时清理两处选择 + delete_target + collapsed 并手动 sync metadata 的入口；Prefab 打开同样走这里 |
+| `set_current_scene_document` | [actions/document_io.rs](../engine/crates/editor/src/actions/document_io.rs) | `current_scene = Some(document)` + `invalidate_scene_view_state()` | **弱**：只做 scene view 缓存/预览清理 | 这是所有入口的“统一底座”，但**不清任何选择/元数据/资源选择** |
+| `open_scene_resource` | [actions/document_io.rs](../engine/crates/editor/src/actions/document_io.rs) | `open_scene_document` + history.clear + autosave.reset + play_session=None + tree.clear + delete_target=None + inspector.clear + clear_resource_selection + scene_state.selected/collapsed.clear + `sync_hierarchy_metadata()` | **最强（参考实现）** | 唯一同时清理两处选择 + delete_target + collapsed 并手动 sync metadata 的入口；Prefab 打开同样走这里 |
 | `create_scene` | [hierarchy.rs](../engine/crates/editor/src/panels/hierarchy.rs#L243-L264) | `set_current_scene_document(SceneDocument::new)` + history.clear + autosave.reset + tree.clear + inspector.clear | **中** | **不清 scene_state.selected/collapsed/hidden/locked/delete_target** |
 | `recover_candidate` | [header.rs](../engine/crates/editor/src/panels/header.rs#L169-L177) | `set_current_scene_document(recovery.recover())` + history.clear + autosave.reset + tree.clear + inspector.clear | **中** | 同上，恢复的文档 `dirty=true, revision=0` |
 | Play `stop()` | [game_view.rs](../engine/crates/editor/src/panels/game_view.rs#L60-L79) | `set_current_scene_document(session.stop())` + tree.clear + delete_target(Hierarchy→None) + inspector.clear + preview_input.clear + 回 Scene tab | **中** | 丢弃运行态，恢复 editor_snapshot |
@@ -140,8 +140,8 @@ Inspector 输入框不直接读写场景，而是读写 EditorApp 上的**快照
 | 触发 | 位置 | 说明 |
 |---|---|---|
 | Ctrl+S / 菜单“保存项目” | 主循环 [main.rs](../engine/crates/editor/src/main.rs#L942-L946) + header [header.rs](../engine/crates/editor/src/panels/header.rs#L40-L43) | 无条件执行（不区分文本焦点） |
-| 保存实体 | `save_scene()` | [actions.rs](../engine/crates/editor/src/actions.rs#L68-L104)：无 path 时写 `scenes/<name>.scene`；有 path 走 `recovery.save_document`（validate → save → clear_for）；Prefab 走独立分支 |
-| 场景视图拖拽提交 | scene_view.rs `commit_scene_drag`/`commit_gizmo_drag3d`（[scene_view.rs](../engine/crates/editor/src/panels/scene_view.rs#L1134-L1213)） | **history.execute 成功后立刻 `save_scene()`**（“拖一下存一下”） |
+| 保存实体 | `save_scene()` | [actions/document_io.rs](../engine/crates/editor/src/actions/document_io.rs)：无 path 时写 `scenes/<name>.scene`；有 path 走 `recovery.save_document`（validate → save → clear_for）；Prefab 走独立分支 |
+| 场景视图拖拽提交 | scene_view.rs `commit_scene_drag`/`commit_gizmo_drag3d`（[scene_view/pointer.rs](../engine/crates/editor/src/panels/scene_view/pointer.rs)） | **history.execute 成功后立刻 `save_scene()`**（“拖一下存一下”） |
 | Tilemap Paint / 批量属性 / Prefab Apply | 各提交点 | 部分提交点同样带 `save_scene`（scene_view）；Inspector/tree 走 apply 后手动保存与否不一致 |
 | 自动保存 | 主循环 [main.rs](../engine/crates/editor/src/main.rs#L915-L919) | `autosave.tick`（10s 周期，dirty 才写 recovery 快照）；AutoSaveController 在 [recovery.rs](../engine/crates/editor/src/recovery.rs#L19-L71) |
 | 崩溃快照 | `RecoveryManager::autosave/save_document/clear_for` | [recovery.rs](../engine/crates/editor/src/recovery.rs#L123-L228)：正式保存后清对应 recovery 快照 |
@@ -247,7 +247,7 @@ Inspector 输入框不直接读写场景，而是读写 EditorApp 上的**快照
 - 修复归属：E04（undo/redo 后统一调 on_document_changed）；E03 提供 selection repair。
 
 ### P3：`set_current_scene_document` 不 reset scene_state（含 preview_ui）/resource/delete_target（E02）
-- 位置：[actions.rs](../engine/crates/editor/src/actions.rs#L15-L18) + `invalidate_scene_view_state`（L29-L41）。
+- 位置：[actions/document_io.rs](../engine/crates/editor/src/actions/document_io.rs) + `invalidate_scene_view_state`（L29-L41）。
 - `invalidate_scene_view_state` 清理了 preview / preview3d_transform / gizmo_drag / scene_runtime / cache，但 **不清理 `preview_ui`（SceneEditorState 的 BTreeMap 字段）**、selected/collapsed/hidden/locked、delete_target、resource selection、tree/inspector。
 - 影响：任何直接调 `set_current_scene_document` 的路径（recover/stop/create_scene/undo 内部不调）都存在悬空；若文档被替换为不含旧实体集合的场景，preview_ui 残留旧 id。
 - 修复归属：E02（把清理收敛进 on_document_changed，按 change 类型决定清理范围）。
@@ -265,7 +265,7 @@ Inspector 输入框不直接读写场景，而是读写 EditorApp 上的**快照
 - 修复归属：E02（on_document_changed 统一 sync）+ E04（undo/redo 后同步）。
 
 ### P6：拖拽/绘制/对齐等提交后立即 save_scene，与“编辑期间不持续写盘”目标相反（E08）
-- 位置：[scene_view.rs](../engine/crates/editor/src/panels/scene_view.rs#L1172-L1174)、[scene_view.rs](../engine/crates/editor/src/panels/scene_view.rs#L1208-L1210)（scene_transform / 3D gizmo 提交后 `self.save_scene()`）。
+- 位置：[scene_view/pointer.rs](../engine/crates/editor/src/panels/scene_view/pointer.rs)、[scene_view/pointer.rs](../engine/crates/editor/src/panels/scene_view/pointer.rs)（scene_transform / 3D gizmo 提交后 `self.save_scene()`）。
 - 复现：拖动实体一下 → 每帧/每次 release 都 `history.execute` + `save_scene`（整份场景 validate+atomic 写盘 + clear_for）。
 - 影响：大场景拖动卡顿、磁盘频繁写、自动保存语义被“手动保存”抢占；undo 到拖前状态后磁盘却已是拖后内容。
 - 修复归属：E08（拖拽/数值拖动/颜色/Tilemap 接入 EditTransaction，提交后再异步自动保存；交互中不写盘）。

@@ -17,7 +17,7 @@ fn tilemap_find_path_returns_path_or_diagnostic() {
          return 'ok' end\n\
          function update() return 'ok' end",
     );
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.execute_project_script(&path).unwrap();
     assert_eq!(runtime.call_update().unwrap(), "ok");
     let _ = fs::remove_file(path);
@@ -48,7 +48,7 @@ fn instantiated_tilemap_is_queryable_from_lua() {
             "tile_size=32x32;width=4;height=3;tiles=100101000100;solid=100000000000".into(),
         );
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);
 
     let path = script(
@@ -92,7 +92,7 @@ fn grid_tilemap_tag_and_interact_lua_api() {
             "Transform".into(),
             "position=16,16,0;rotation=0,0,0,1;scale=1,1,1".into(),
         );
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.instantiate_scene(&scene).unwrap();
     let path = script(
         "local map = entity.find('FarmMap')\n\

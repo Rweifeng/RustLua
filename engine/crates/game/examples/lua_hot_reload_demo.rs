@@ -10,7 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::write(&path, "function update() return 'v1' end")?;
-    let mut runtime = LuaRuntime::new()?;
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry())?;
     runtime.execute_project_script(&path)?;
     assert_eq!(runtime.call_update()?, "v1");
     assert_eq!(runtime.reload_if_changed()?, ReloadStatus::Unchanged);

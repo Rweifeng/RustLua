@@ -63,7 +63,7 @@ end
 fn run_to_victory(
     path: &std::path::Path,
 ) -> Result<(LuaRuntime, String), Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry())?;
     runtime.execute_project_script(path)?;
     assert_eq!(runtime.call_update()?, "running");
     assert_eq!(runtime.call_update()?, "running");
@@ -114,7 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (_, reloaded_scene_result) = run_to_victory(&script_path)?;
     assert_eq!(first_result, reloaded_scene_result);
 
-    let mut hot_runtime = LuaRuntime::new()?;
+    let mut hot_runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry())?;
     hot_runtime.execute_project_script(&script_path)?;
     assert_eq!(hot_runtime.call_update()?, "running");
     let failure_script = SCRIPT.replace("local enemy_x = 8", "local enemy_x = 1.2");

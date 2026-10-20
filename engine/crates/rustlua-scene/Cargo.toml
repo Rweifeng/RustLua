@@ -6,18 +6,28 @@ authors.workspace = true
 license.workspace = true
 publish = false
 
+# `docs/62` P1 ④ 收口（2026-10-20）：**`rustlua-render` / `rustlua-ui` 退到 dev-dependencies。**
+#
+# 场景格式里的表现层组件（`Sprite`/`MeshRenderer`/`Text`/`WorldText`…）现在是"名字 + 一段
+# 不透明文本"：文法在 owning crate，校验走 `rustlua-component-codec` 的注册表，
+# `TypedScene` 只存 `Opaque { payload, assets }`。所以生产依赖图里不需要渲染层与 UI 层。
+#
+# 它们仍在 dev-dependencies 里：本 crate 的测试要装同一张表（`scene_codecs()`），
+# 而 dev-deps 不进 lib 依赖图、也不进 wasm 产物。
 [dependencies]
 thiserror.workspace = true
 serde_json = "1"
 rustlua-math = { path = "../rustlua-math" }
+rustlua-component-codec = { path = "../rustlua-component-codec" }
 rustlua-ecs = { path = "../rustlua-ecs" }
 rustlua-camera = { path = "../rustlua-camera" }
 rustlua-animation = { path = "../rustlua-animation" }
-rustlua-render = { path = "../rustlua-render" }
 rustlua-physics = { path = "../rustlua-physics" }
-rustlua-ui = { path = "../rustlua-ui" }
 rustlua-assets = { path = "../rustlua-assets" }
 rustlua-infra = { path = "../rustlua-infra" }
 
 [dev-dependencies]
 rustlua-infra = { path = "../rustlua-infra" }
+# 只为测试装表：表现层组件的 codec 由这两个 crate 提供，生产装配点是 `engine`/`editor`。
+rustlua-render = { path = "../rustlua-render" }
+rustlua-ui = { path = "../rustlua-ui" }

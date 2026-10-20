@@ -11,3 +11,11 @@ thiserror.workspace = true
 rustlua-ecs = { path = "../rustlua-ecs" }
 rustlua-audio = { path = "../rustlua-audio" }
 rustlua-input = { path = "../rustlua-input" }
+# `audio_lua`：audio 绑定的组合根接线（端口实现 + 注册表）。
+# 设置文件走 vfs 读（wasm 无文件系统），所以需要 infra。
+rustlua-infra = { path = "../rustlua-infra" }
+rustlua-lua-api = { path = "../rustlua-lua-api" }
+# save_lua：存档绑定下沉到存档域（P1 ⑤-2）。mlua 只用于装 save 全局表。
+mlua = { path = "../../vendor/mlua" }
+serde_json = "1"
+tracing.workspace = true

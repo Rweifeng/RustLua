@@ -3,7 +3,7 @@
 //! 三条约束（都来自已经踩过的坑）：
 //! 1. **只预览、不改产物**：本面板绝不写 `.rltex`/`.atlas`、绝不删源图——那是
 //!    `assetc::atlas_cook` 的职责（发布期才发生）。面板只写 `atlas.json`。
-//! 2. **归约规则只有一份**：配置→任务→装箱全部走 `rustlua_assets::atlas_plan`，
+//! 2. **归约规则只有一份**：配置→任务→装箱全部走 `rustlua_assets_import::atlas_plan`，
 //!    与发布期同一个函数。否则"编辑器里看到 14 页、打出来 11 页"这类漂移迟早发生
 //!    （`docs/67` §8 第 4 项）。
 //! 3. **像素只在选中页时合成**：页的像素是图集的真实成本（一页可达几十 MB），
@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
-use rustlua_assets::atlas_plan::{self, AtlasConfig, AtlasSpec, AutoAtlas, PlannedPage};
+use rustlua_assets_import::atlas_plan::{self, AtlasConfig, AtlasSpec, AutoAtlas, PlannedPage};
 
 use crate::EditorApp;
 

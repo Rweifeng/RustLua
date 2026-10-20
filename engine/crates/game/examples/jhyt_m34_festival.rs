@@ -66,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let save_path = fresh_save_path(&project, "jhyt_m34_festival.sav");
     let project_arg = project.clone();
 
-    let mut rt = new_runtime(&project_arg, &save_path)?;
+    let (mut rt, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut rt, &main_script)?;
     click_button(&mut rt, "BtnStart")?;
     assert_scene_is(&mut rt, "manor")?;
@@ -173,8 +173,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     goto_map(&mut rt, "village", VILLAGE_POS)?;
     lua(&mut rt, &format!("clock.set(5, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
-    talk_to(&mut rt, "npc_shen_qingluo")?;
+    frames(&mut rt, &host, 2)?;
+    talk_to(&mut rt, &host, "npc_shen_qingluo")?;
     assert_str(&mut rt, &option_visible(TEA_INTRO), "false")?;
     choose_option(&mut rt, "改日再说。")?;
     println!("  春 5（会期外）：沈青萝处听不到茶叶单子");
@@ -182,8 +182,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // **会期里但没有茶棚，这单生意照样听不到**。"今天算不算春分"与"茶会办不办得成"
     // 是两件事，前者永远为真、后者要过 data/festivals.lua 里那条 unlock。
     lua(&mut rt, &format!("clock.set(8, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
-    talk_to(&mut rt, "npc_shen_qingluo")?;
+    frames(&mut rt, &host, 2)?;
+    talk_to(&mut rt, &host, "npc_shen_qingluo")?;
     assert_str(&mut rt, &option_visible(TEA_INTRO), "false")?;
     choose_option(&mut rt, "改日再说。")?;
     assert_str(&mut rt, "require('world.festival').id()", "teafair")?;
@@ -202,7 +202,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     println!("  春 8、茶棚未建：日历仍是 teafair，但 available=false，选项不出现");
     // 回山庄真实盖一座茶棚并连升两级（place/upgrade 都走 systems/building.lua 的入口）。
-    unlock_teafair(&mut rt, MANOR_POS)?;
+    unlock_teafair(&mut rt, &host, MANOR_POS)?;
     assert_str(
         &mut rt,
         "tostring(require('world.festival').available('teafair'))",
@@ -210,8 +210,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     println!("  茶棚三级之后：available=true（等级记在 state.vars，站在山庄也查得到）");
     goto_map(&mut rt, "village", VILLAGE_POS)?;
-    frames(&mut rt, 2)?;
-    talk_to(&mut rt, "npc_shen_qingluo")?;
+    frames(&mut rt, &host, 2)?;
+    talk_to(&mut rt, &host, "npc_shen_qingluo")?;
     assert_str(&mut rt, &option_visible(TEA_INTRO), "true")?;
     assert_str(&mut rt, "require('world.festival').id()", "teafair")?;
     choose_option(&mut rt, TEA_INTRO)?;
@@ -234,9 +234,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "inv.add(require('core.state').inventory, 'tea_leaf', 6)",
     )?;
     lua(&mut rt, &format!("clock.set(12, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(&mut rt, "require('world.festival').id()", "")?;
-    talk_to(&mut rt, "npc_shen_qingluo")?;
+    talk_to(&mut rt, &host, "npc_shen_qingluo")?;
     assert_str(&mut rt, &option_visible(TEA_INTRO), "false")?;
     assert_str(&mut rt, &option_visible("六两茶叶已备好。"), "true")?;
     let money_before = query_num(&mut rt, "require('core.state').money")?;
@@ -272,13 +272,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 平日基线：春 13（12/14 都在窗口外）采一次 = 数据里的 count。
     let base_count = query_num(&mut rt, "require('data.gather').get('wild_herb_1').count")?;
     lua(&mut rt, &format!("clock.set(13, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(&mut rt, "require('world.festival').id()", "")?;
     let lingzhi_before = query_num(
         &mut rt,
         "inv.count(require('core.state').inventory, 'lingzhi')",
     )?;
-    gather_with(&mut rt, HERB_NODE)?;
+    gather_with(&mut rt, &host, HERB_NODE)?;
     assert_str(
         &mut rt,
         "require('core.state').last_action",
@@ -297,7 +297,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  春 13（无事件）：采灵芝 +{gained:.0} = 数据基线 count");
     // 清明：同一节点、同一动作，产物翻倍。
     lua(&mut rt, &format!("clock.set(15, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(&mut rt, "require('world.festival').id()", "qingming")?;
     let mult = query_num(
         &mut rt,
@@ -316,7 +316,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut rt,
         "inv.count(require('core.state').inventory, 'lingzhi')",
     )?;
-    gather_with(&mut rt, HERB_NODE)?;
+    gather_with(&mut rt, &host, HERB_NODE)?;
     assert_str(
         &mut rt,
         "require('core.state').last_action",
@@ -333,7 +333,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 端午：药材行情 +20%，走真实出售入口。
     let lingzhi_sell = query_num(&mut rt, "require('data.items').lingzhi.sell")?;
     lua(&mut rt, &format!("clock.set(35, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_num(
         &mut rt,
         "(function() for _, e in ipairs(require('systems.shop').buys('zhao_stall')) do \
@@ -341,7 +341,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         lingzhi_sell,
     )?;
     lua(&mut rt, &format!("clock.set(36, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(&mut rt, "require('world.festival').id()", "duanwu")?;
     let bonus = query_num(&mut rt, "require('world.festival').sell_bonus('lingzhi')")?;
     let offered = query_num(
@@ -383,14 +383,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M34-02④ 夏至（day 43–45）：演武给门派声望 +10、好感 +6、饭团 ×2，锚点只办一次");
     goto_map(&mut rt, "manor", MANOR_POS)?;
     lua(&mut rt, &format!("clock.set(42, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
-    talk_to(&mut rt, "npc_gu_changfeng")?;
+    frames(&mut rt, &host, 2)?;
+    talk_to(&mut rt, &host, "npc_gu_changfeng")?;
     assert_str(&mut rt, &option_visible(DRILL_OFFER), "false")?;
     choose_option(&mut rt, "改日再来请教。")?;
     println!("  夏 14（会期外）：顾长风不提演武");
     lua(&mut rt, &format!("clock.set(43, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
-    talk_to(&mut rt, "npc_gu_changfeng")?;
+    frames(&mut rt, &host, 2)?;
+    talk_to(&mut rt, &host, "npc_gu_changfeng")?;
     assert_str(&mut rt, &option_visible(DRILL_OFFER), "true")?;
     assert_num(
         &mut rt,
@@ -434,8 +434,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // 锚点生效：会期内再找师父，这句话已经收回（不重复给声望）。
     lua(&mut rt, &format!("clock.set(44, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
-    talk_to(&mut rt, "npc_gu_changfeng")?;
+    frames(&mut rt, &host, 2)?;
+    talk_to(&mut rt, &host, "npc_gu_changfeng")?;
     assert_str(&mut rt, &option_visible(DRILL_OFFER), "false")?;
     choose_option(&mut rt, "改日再来请教。")?;
     assert_num(
@@ -451,14 +451,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M34-02⑤ 中秋（day 64–66）：点灯给好感 +8 与莲子 ×3，且**不**写 ending 变量");
     goto_map(&mut rt, "manor", MANOR_POS)?;
     lua(&mut rt, &format!("clock.set(63, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
-    talk_to(&mut rt, "npc_su_wanqing")?;
+    frames(&mut rt, &host, 2)?;
+    talk_to(&mut rt, &host, "npc_su_wanqing")?;
     assert_str(&mut rt, &option_visible(LANTERN_OFFER), "false")?;
     choose_option(&mut rt, "改日再谈。")?;
     println!("  秋 7（会期外）：苏晚晴不提灯会");
     lua(&mut rt, &format!("clock.set(64, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
-    talk_to(&mut rt, "npc_su_wanqing")?;
+    frames(&mut rt, &host, 2)?;
+    talk_to(&mut rt, &host, "npc_su_wanqing")?;
     assert_str(&mut rt, &option_visible(LANTERN_OFFER), "true")?;
     let lotus_before = query_num(
         &mut rt,
@@ -501,7 +501,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     goto_map(&mut rt, "mountain_path", MOUNTAIN_POS)?;
     lua(&mut rt, "require('systems.gather').reset()")?;
     lua(&mut rt, &format!("clock.set(71, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(&mut rt, "require('world.festival').id()", "chongyang")?;
     assert_str(
         &mut rt,
@@ -518,10 +518,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "inv.count(require('core.state').inventory, 'rice')",
     )?;
     let berry_count = query_num(&mut rt, "require('data.gather').get('wild_berry_1').count")?;
-    gather_with(&mut rt, BERRY_NODE)?;
+    gather_with(&mut rt, &host, BERRY_NODE)?;
     assert_str(&mut rt, "require('core.state').last_action", "gather_rice")?;
     // 同日再按：仍然拒绝（"按日再刷"不等于"无限刷"）。
-    gather_with(&mut rt, BERRY_NODE)?;
+    gather_with(&mut rt, &host, BERRY_NODE)?;
     assert_str(&mut rt, "require('core.state').last_action", "gathered")?;
     let once = query_num(
         &mut rt,
@@ -535,7 +535,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // 次日（仍在窗口内）：一次性点重新可采。
     lua(&mut rt, &format!("clock.set(72, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(
         &mut rt,
         "tostring(require('systems.gather').is_gathered('wild_berry_1'))",
@@ -545,7 +545,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut rt,
         "inv.count(require('core.state').inventory, 'rice')",
     )?;
-    gather_with(&mut rt, BERRY_NODE)?;
+    gather_with(&mut rt, &host, BERRY_NODE)?;
     assert_str(&mut rt, "require('core.state').last_action", "gather_rice")?;
     let again = query_num(
         &mut rt,
@@ -559,13 +559,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     // 对照：窗口外的一次性点维持原语义（采完永久消失）。
     lua(&mut rt, &format!("clock.set(74, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(&mut rt, "require('world.festival').id()", "")?;
     let timber_before = query_num(
         &mut rt,
         "inv.count(require('core.state').inventory, 'timber')",
     )?;
-    gather_with(&mut rt, FIREWOOD_NODE)?;
+    gather_with(&mut rt, &host, FIREWOOD_NODE)?;
     assert_str(
         &mut rt,
         "require('core.state').last_action",
@@ -577,13 +577,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         timber_before + 1.0,
     )?;
     lua(&mut rt, &format!("clock.set(75, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(
         &mut rt,
         "tostring(require('systems.gather').is_gathered('wild_firewood_1'))",
         "true",
     )?;
-    gather_with(&mut rt, FIREWOOD_NODE)?;
+    gather_with(&mut rt, &host, FIREWOOD_NODE)?;
     assert_str(&mut rt, "require('core.state').last_action", "gathered")?;
     println!("  秋 18（出窗口）：柴堆照旧一次性——重阳的再刷没有把语义改成天天刷新");
 
@@ -592,21 +592,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 平日（冬 12 = day 96）：洞口可用，按 E 进寒泉洞。
     goto_map(&mut rt, "mountain_path", MOUNTAIN_POS)?;
     lua(&mut rt, &format!("clock.set(96, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(&mut rt, "require('world.festival').id()", "")?;
     assert_str(
         &mut rt,
         "tostring(require('world.festival').exit_closed('mountain_to_cave'))",
         "false",
     )?;
-    exit_with(&mut rt, "mountain_to_cave")?;
+    exit_with(&mut rt, &host, "mountain_to_cave")?;
     rt.process_scene_transition()?;
     assert_scene_is(&mut rt, "cold_spring_cave")?;
     println!("  冬 12（无封山）：山道洞口按 E 进寒泉洞");
     // 封山日（冬 15 = day 99）：同一格、同一个键，拒绝并给出中文理由。
     goto_map(&mut rt, "mountain_path", MOUNTAIN_POS)?;
     lua(&mut rt, &format!("clock.set(99, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(&mut rt, "require('world.festival').id()", "dongzhi")?;
     assert_str(
         &mut rt,
@@ -620,7 +620,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('systems.interaction').prompt('up')",
         "E: 进入寒泉洞",
     )?;
-    press_e_holding(&mut rt, &cave_stick)?;
+    press_e_holding(&mut rt, &host, &cave_stick)?;
     assert_str(
         &mut rt,
         "require('core.state').last_action",
@@ -642,7 +642,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "  冬 15：门口按 E 仍是出口命中（提示行照给），但拒绝通行，HUD 出「山道封了，进不得」"
     );
     // 同一天、同一张图：回村那一格必须可用（否则玩家被封在山上）。
-    exit_with(&mut rt, "mountain_to_village")?;
+    exit_with(&mut rt, &host, "mountain_to_village")?;
     rt.process_scene_transition()?;
     assert_scene_is(&mut rt, "village")?;
     assert_str(
@@ -657,7 +657,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_str(&mut rt, "require('world.festival').id()", "dongzhi")?;
     lua(&mut rt, "require('core.save_manager').save()")?;
     lua(&mut rt, &format!("clock.set(105, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(&mut rt, "require('world.festival').id()", "")?;
     assert_str(
         &mut rt,
@@ -665,7 +665,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "false",
     )?;
     println!("  冬 21（105 天）：同一个运行期里封山自动解除（没有残留状态要清）");
-    let mut second = new_runtime(&project_arg, &save_path)?;
+    let (mut second, _host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut second, &main_script)?;
     click_button(&mut second, "BtnContinue")?;
     assert_num(&mut second, "clock.now().day", 99.0)?;
@@ -862,31 +862,40 @@ fn exit_stick(exit_id: &str) -> String {
 /// 贴住站位按一次 E：每帧重新贴回（物理步会把重叠刚体推开，与 `talk_to` 同一手法）。
 fn press_e_holding(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     stick: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(KeyCode::KeyE, true);
-    runtime.set_input(input);
+    host.set_input(input);
     lua(runtime, stick)?;
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     lua(runtime, stick)?;
     runtime.call_update()?;
     Ok(())
 }
 
 /// 站到采集点前并按 E（真实交互路径）。
-fn gather_with(runtime: &mut LuaRuntime, node_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn gather_with(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    node_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let stick = node_stick(node_id);
     let got = query_str(runtime, &stick)?;
     if got != node_id {
         return Err(format!("采集点 {node_id} 的面向格未命中：{got}").into());
     }
-    press_e_holding(runtime, &stick)
+    press_e_holding(runtime, &host, &stick)
 }
 
 /// 站到出口触发格上并按 E（真实交互路径）。
-fn exit_with(runtime: &mut LuaRuntime, exit_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn exit_with(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    exit_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let stick = exit_stick(exit_id);
     let got = query_str(runtime, &stick)?;
     if got != "ok" {
@@ -897,7 +906,7 @@ fn exit_with(runtime: &mut LuaRuntime, exit_id: &str) -> Result<(), Box<dyn std:
     if !prompt.starts_with("E: ") {
         return Err(format!("出口 {exit_id} 的提示行异常：{prompt}").into());
     }
-    press_e_holding(runtime, &stick)
+    press_e_holding(runtime, &host, &stick)
 }
 
 /// 扫描当前地图，返回第一个可放置该建筑的锚点（确定性，与 jhyt_m27_goals 同法）。
@@ -932,10 +941,11 @@ fn first_legal_anchor(
 /// 等级要真的经 `persist()` 写进 `building_level_tea_shed`（历史最高，随 state 进存档）。
 fn unlock_teafair(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     spawn: (f32, f32),
 ) -> Result<(), Box<dyn std::error::Error>> {
     goto_map(runtime, "manor", spawn)?;
-    frames(runtime, 2)?;
+    frames(runtime, &host, 2)?;
     // 每级收一份 upgrade_cost（docs/33 §7.2 口径）：木材消耗从数据里读，不写死。
     let step_cost = query_num(
         runtime,
@@ -1000,14 +1010,19 @@ fn unlock_teafair(
     Ok(())
 }
 
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 fn enter_main_menu(
@@ -1027,8 +1042,12 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
     Ok(())
 }
 
-fn frames(runtime: &mut LuaRuntime, n: usize) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+fn frames(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    n: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    host.set_input(InputSnapshot::default());
     for _ in 0..n {
         runtime.call_update()?;
     }
@@ -1102,7 +1121,11 @@ fn goto_map(
 }
 
 /// 走到 NPC 相邻可行走格、面向 NPC，再按 E 开对话（真实交互路径）。
-fn talk_to(runtime: &mut LuaRuntime, persist_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn talk_to(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    persist_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let stick = format!(
         "(function() local q = require('world.npc').query('{persist_id}'); \
            if not q or not q.live then return 'no_npc' end; \
@@ -1126,10 +1149,10 @@ fn talk_to(runtime: &mut LuaRuntime, persist_id: &str) -> Result<(), Box<dyn std
     }
     let mut input = InputSnapshot::default();
     input.key_event(KeyCode::KeyE, true);
-    runtime.set_input(input);
+    host.set_input(input);
     lua(runtime, &stick)?;
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     lua(runtime, &stick)?;
     runtime.call_update()?;
     Ok(())

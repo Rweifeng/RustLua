@@ -1,4 +1,10 @@
 [toolchain]
-channel = "stable"
+# 工具链锁定（P2-01）：精确版本，不用 stable/beta/nightly 浮动值。
+# 原因：本仓的发布门与性能基线都以"同一条命令可复现"为前提；浮动 stable 会让
+# CI 与本机在升级窗口里跑不同 rustc，而 fmt/clippy/rustdoc 的输出可能随版本变化。
+# 改这里必须同步改 `.github/workflows/*.yml` 的 `dtolnay/rust-toolchain@<版本>`，
+# 由 `scripts/verify/check-toolchain-lock.ps1` 判红（两边不一致 = 门失败）。
+# 同一份版本也记在 `scripts/release/tools.json`（安全工具版本的单一事实源）。
+channel = "1.97.1"
 components = ["rustfmt", "clippy"]
 profile = "minimal"

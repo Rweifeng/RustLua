@@ -6,7 +6,7 @@ use super::*;
 /// XY、Z 保留；③ `attach` 不覆盖已有组件，且新建组件时把另一侧的 XY 带过来。
 #[test]
 fn lua_transform_api_dispatches_between_2d_and_3d() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(
         runtime
             .instantiate_scene(&unified_transform_scene())
@@ -77,7 +77,7 @@ fn lua_transform_api_dispatches_between_2d_and_3d() {
 /// 手抄会把旋转与缩放悄悄丢掉；压不平的 3D 变换必须**报错而不是丢数据**。
 #[test]
 fn lua_transform_attach_preserves_rotation_and_refuses_lossy_flatten() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     // 场景里 Flat 只有 2D、Solid 只有 3D（position=1,2,3 ⇒ z = 3，**非平面**）、Bare 两者皆无。
     assert_eq!(
         runtime
@@ -117,7 +117,7 @@ fn lua_transform_attach_preserves_rotation_and_refuses_lossy_flatten() {
 }
 #[test]
 fn lua_transform_api_refuses_ambiguous_rotation_and_unknown_space() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(
         runtime
             .instantiate_scene(&unified_transform_scene())
@@ -161,7 +161,7 @@ fn lua_transform_world_differs_from_local_under_inheritance() {
         "Transform".into(),
         "position=-3.5,0,0;rotation=0,0,0,1;scale=1,1,1".into(),
     );
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.instantiate_scene(&scene).unwrap();
     // 宿主侧开启空间继承并传播一次（与 `RuntimeScene::set_spatial_inheritance` 同一条路径）。
     runtime.with_world_mut(|world| {
@@ -186,7 +186,7 @@ fn lua_transform_world_differs_from_local_under_inheritance() {
 }
 #[test]
 fn lua_3d_attach_and_validation_errors() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let path = script(
         "local e = entity.spawn('Cube')\n\
          transform3d.attach(e)\n\

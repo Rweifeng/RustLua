@@ -49,7 +49,8 @@ fn main() {
     let write = std::env::args().skip(1).any(|arg| arg == "--write");
     let source = std::fs::read_to_string(manifest_path(CONTRACT_REL)).expect("读契约用例失败");
 
-    let runtime = LuaRuntime::new().expect("lua vm");
+    let runtime =
+        LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).expect("lua vm");
     let transcript = transcript_of(&runtime, &source).expect("契约执行失败");
 
     if write {

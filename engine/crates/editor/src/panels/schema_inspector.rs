@@ -1164,7 +1164,7 @@ mod tests {
             .components["WorldText"]
             .clone();
         let parsed =
-            rustlua_scene::world_text::WorldText::from_component_str(&payload).expect("引擎解析器");
+            rustlua_ui::world_text::WorldText::from_component_str(&payload).expect("引擎解析器");
         assert_eq!(parsed.text.text, "受伤-12");
         assert_eq!(parsed.text.color, [0.25, 0.5, 0.75]);
         assert!(parsed.centered);

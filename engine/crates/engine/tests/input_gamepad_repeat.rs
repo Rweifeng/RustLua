@@ -12,8 +12,10 @@ use rustlua_scripting::script::LuaRuntime;
 
 /// 推住左摇杆上推 `steps` 帧，返回 `action_repeat("ui_up")` 为真的帧号。
 fn run_repeat(steps: usize, delay_ms: u32, repeat_ms: u32) -> Vec<usize> {
-    let mut runtime = LuaRuntime::new().unwrap();
-    runtime.set_nav_settings(NavSettings::new(0.5, delay_ms, repeat_ms));
+    let (installers, host) = rustlua_gameplay::input_lua::registry_with_handles();
+    let mut runtime = LuaRuntime::with_installers(installers).unwrap();
+    host.input
+        .set_nav_settings(NavSettings::new(0.5, delay_ms, repeat_ms));
     runtime.set_delta(1.0 / 60.0);
 
     // 第 1 帧空闲（建立基线），之后持续推住左摇杆上推。
@@ -27,8 +29,8 @@ fn run_repeat(steps: usize, delay_ms: u32, repeat_ms: u32) -> Vec<usize> {
     for step in 1..=steps {
         let mut input = InputSnapshot::default();
         poller.poll_into(&mut input);
-        runtime.set_input(input);
-        if runtime.action_repeat("ui_up") {
+        host.input.set_input(input);
+        if host.input.action_repeat("ui_up") {
             fired.push(step);
         }
     }

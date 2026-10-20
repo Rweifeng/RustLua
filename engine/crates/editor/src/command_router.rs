@@ -237,7 +237,7 @@ impl EditorApp {
             EditorCommand::SetComponentFieldsOnSelection { component, fields } => {
                 self.apply_component_fields_edit_on_selection(&component, &fields)
             }
-            // Inspector 的组件管理：目标实体随命令携带，实现体住在 shell（`actions.rs`），
+            // Inspector 的组件管理：目标实体随命令携带，实现体住在 shell（`crate::actions`），
             // 面板只发命令。失败原因仍按既有惯例落回 `status`（与面板原来的直调路径一致）。
             EditorCommand::AddComponent { entity, component } => self.document_edit(|app| {
                 if let Err(error) = app.add_component_to(entity, &component) {

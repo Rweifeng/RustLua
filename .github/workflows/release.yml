@@ -1,0 +1,240 @@
+name: Release
+
+# P2-01 ⑤/⑥：tag 触发的可复现发布。
+# 资产：PC 包、引擎绿色版包、CycloneDX SBOM、SHA256SUMS、release notes。
+# 签名不是"有就最好"：有证书则强制验证；RUSTLUA_REQUIRE_SIGNING=1 时没证书直接判红。
+# 无证书且未要求签名时显式打印 signing_skipped，资产是**未签名**的，文档不写成"已签"。
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（如 v0.1.0；不存在时在当前 commit 创建）"
+        required: true
+        type: string
+      dry_run:
+        description: "只构建/打包/签名，不创建 GitHub Release"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      HAS_SIGNING_CERT: ${{ secrets.WINDOWS_CERT_PFX_BASE64 != '' }}
+      REQUIRE_SIGNING: ${{ vars.RUSTLUA_REQUIRE_SIGNING }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Toolchain lock
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/check-toolchain-lock.ps1
+          if ($LASTEXITCODE -ne 0) { throw "toolchain lock failed (exit $LASTEXITCODE)" }
+
+      - name: Install pinned security tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit@0.22.2,cargo-deny@0.20.2,cargo-cyclonedx@0.5.9
+
+      - name: Resolve tag and version
+        shell: pwsh
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          $tag = $env:INPUT_TAG
+          if ([string]::IsNullOrWhiteSpace($tag)) { $tag = "${{ github.ref_name }}" }
+          if ($tag -notmatch '^v(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)$') {
+            throw "release tag must be v<semver>, got '$tag'"
+          }
+          $version = $Matches[1]
+          $m = Select-String -Path engine/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+          if (-not $m) { throw "cannot read workspace version from engine/Cargo.toml" }
+          $workspaceVersion = $m.Matches[0].Groups[1].Value
+          if ($workspaceVersion -ne $version) {
+            throw "tag $tag != engine/Cargo.toml version $workspaceVersion; bump the workspace version first"
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value "TAG=$tag"
+          Add-Content -Path $env:GITHUB_ENV -Value "VERSION=$version"
+          Write-Host "release tag=$tag version=$version"
+
+      # 先构建：fork-sync 报告需要 registry/src 里的上游源码；构建也顺便解包依赖。
+      - name: Build release binaries
+        working-directory: engine
+        run: cargo build --locked --release -p game -p editor -p assetc
+
+      - name: Generate SBOM
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts/reports | Out-Null
+          node scripts/release/gen-sbom.mjs --output artifacts/reports/rustlua.cdx.json
+          if ($LASTEXITCODE -ne 0) { throw "gen-sbom failed (exit $LASTEXITCODE)" }
+
+      - name: Supply-chain security gate
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/check-security.ps1 `
+            -RequireTools -FetchForkUpstream `
+            -SbomPath artifacts/reports/rustlua.cdx.json
+          if ($LASTEXITCODE -ne 0) { throw "security gate failed (exit $LASTEXITCODE)" }
+
+      - name: Security gate self-tests
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/test-security-gates.ps1
+          if ($LASTEXITCODE -ne 0) { throw "security self-tests failed (exit $LASTEXITCODE)" }
+
+      - name: Package engine (unsigned staging)
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build/package-engine.ps1 -SkipBuild
+          if ($LASTEXITCODE -ne 0) { throw "package-engine failed (exit $LASTEXITCODE)" }
+
+      - name: Package PC (unsigned staging)
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build/package.ps1 `
+            -ProjectRoot examples/game_jhyt -Platform pc -SkipBuild
+          if ($LASTEXITCODE -ne 0) { throw "package PC failed (exit $LASTEXITCODE)" }
+
+      - name: Sign Windows binaries (if certificate configured)
+        if: env.HAS_SIGNING_CERT == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "rustlua-signing.pfx"
+          try {
+            [System.IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
+            $pcRoot = Join-Path $env:GITHUB_WORKSPACE "examples/game_jhyt/builds/pc"
+            $engineRoot = Join-Path $env:GITHUB_WORKSPACE ("artifacts/packages/RustLua-Engine-{0}-win64" -f $env:VERSION)
+            # `pwsh -File` 不绑定数组参数；用逗号拼成一个字符串，脚本内部再拆。
+            pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/release/sign-windows.ps1 `
+              -Path ($pcRoot + "," + $engineRoot) -PfxPath $pfx -PfxPassword $env:WINDOWS_CERT_PASSWORD -RequireSignature
+            if ($LASTEXITCODE -ne 0) { throw "sign-windows failed (exit $LASTEXITCODE)" }
+          }
+          finally {
+            if (Test-Path -LiteralPath $pfx) { Remove-Item -LiteralPath $pfx -Force }
+          }
+
+      - name: Enforce signing policy
+        if: env.REQUIRE_SIGNING == '1' && env.HAS_SIGNING_CERT != 'true'
+        shell: pwsh
+        run: |
+          Write-Error "RUSTLUA_REQUIRE_SIGNING=1 but WINDOWS_CERT_PFX_BASE64 is not configured"
+          exit 1
+
+      - name: Build release archives
+        shell: pwsh
+        run: |
+          $pcRoot = Join-Path $env:GITHUB_WORKSPACE "examples/game_jhyt/builds/pc"
+          $engineRoot = Join-Path $env:GITHUB_WORKSPACE ("artifacts/packages/RustLua-Engine-{0}-win64" -f $env:VERSION)
+          $out = Join-Path $env:GITHUB_WORKSPACE "artifacts/packages"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $pcZip = Join-Path $out ("RustLua-{0}-win64.zip" -f $env:VERSION)
+          $engineZip = Join-Path $out ("RustLua-Engine-{0}-win64.zip" -f $env:VERSION)
+          Compress-Archive -Path (Join-Path $pcRoot "*") -DestinationPath $pcZip -Force
+          Compress-Archive -Path (Join-Path $engineRoot "*") -DestinationPath $engineZip -Force
+          Copy-Item artifacts/reports/rustlua.cdx.json (Join-Path $out ("RustLua-{0}.cdx.json" -f $env:VERSION)) -Force
+          if (-not (Test-Path -LiteralPath $pcZip) -or -not (Test-Path -LiteralPath $engineZip)) {
+            throw "release archive missing"
+          }
+          Write-Host ("release_archives_ok pc={0} engine={1}" -f (Get-Item $pcZip).Length, (Get-Item $engineZip).Length)
+
+      - name: Write SHA256SUMS
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:GITHUB_WORKSPACE "artifacts/packages"
+          $assets = @(
+            (Join-Path $out ("RustLua-{0}-win64.zip" -f $env:VERSION)),
+            (Join-Path $out ("RustLua-Engine-{0}-win64.zip" -f $env:VERSION)),
+            (Join-Path $out ("RustLua-{0}.cdx.json" -f $env:VERSION))
+          )
+          $lines = foreach ($a in $assets) {
+            if (-not (Test-Path -LiteralPath $a)) { throw "asset missing: $a" }
+            $h = (Get-FileHash -LiteralPath $a -Algorithm SHA256).Hash.ToLowerInvariant()
+            "{0}  {1}" -f $h, (Split-Path -Leaf $a)
+          }
+          # SHA256SUMS 用 LF：GNU sha256sum -c 在 Linux/macOS 上不会把 CR 当成文件名的一部分。
+          $text = ($lines -join "`n") + "`n"
+          [System.IO.File]::WriteAllText((Join-Path $out "SHA256SUMS.txt"), $text, [System.Text.UTF8Encoding]::new($false))
+
+      - name: Generate release notes
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:GITHUB_WORKSPACE "artifacts/packages"
+          $assets = @(
+            (Join-Path $out ("RustLua-{0}-win64.zip" -f $env:VERSION)),
+            (Join-Path $out ("RustLua-Engine-{0}-win64.zip" -f $env:VERSION)),
+            (Join-Path $out ("RustLua-{0}.cdx.json" -f $env:VERSION))
+          )
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/release/release-notes.ps1 `
+            -Version $env:VERSION -Assets ($assets -join ',') -Sbom (Join-Path $out ("RustLua-{0}.cdx.json" -f $env:VERSION)) `
+            -Output (Join-Path $out "release-notes.md")
+          if ($LASTEXITCODE -ne 0) { throw "release-notes failed (exit $LASTEXITCODE)" }
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: |
+            artifacts/packages/*.zip
+            artifacts/packages/*.cdx.json
+            artifacts/packages/SHA256SUMS.txt
+            artifacts/packages/release-notes.md
+
+      - name: Dry run summary
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true'
+        shell: pwsh
+        run: |
+          Write-Host "dry-run: release NOT created; assets:"
+          Get-ChildItem artifacts/packages -File | Sort-Object Name | ForEach-Object {
+            Write-Host ("  {0}  {1} bytes" -f $_.Name, $_.Length)
+          }
+          Get-Content artifacts/packages/release-notes.md -TotalCount 12
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push' || github.event.inputs.dry_run == 'false'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:TAG
+          $out = Join-Path $env:GITHUB_WORKSPACE "artifacts/packages"
+          $assets = @(Get-ChildItem $out -File | Where-Object { $_.Name -match '\.(zip|cdx\.json|txt)$' } | ForEach-Object FullName)
+          $args = @("release", "create", $tag, "--title", ("RustLua " + $tag), "--notes-file", (Join-Path $out "release-notes.md"))
+          $existing = & git rev-parse -q --verify ("refs/tags/" + $tag) 2>$null
+          if ($LASTEXITCODE -eq 0 -and $existing) { $args += "--verify-tag" }
+          else { $args += @("--target", $env:GITHUB_SHA) }
+          $args += $assets
+          & gh @args
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed (exit $LASTEXITCODE)" }
+          Write-Host ("release_ok tag={0} assets={1}" -f $tag, $assets.Count)

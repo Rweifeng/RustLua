@@ -224,7 +224,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("not a game project: {}", project.display()).into());
     }
     let scripts = project.join("scripts");
-    let mut lua = LuaRuntime::new()?;
+    let mut lua = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry())?;
     lua.set_project_root(project.to_path_buf());
     lua.set_ui_viewport(1280, 720);
     lua.set_delta(1.0 / 60.0);

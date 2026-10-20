@@ -323,7 +323,7 @@ fn disk_cycle_drift(runtime: &mut LuaRuntime) -> Result<usize, Box<dyn std::erro
 // ---------- helpers ----------
 
 fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry())?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。

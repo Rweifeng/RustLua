@@ -3,7 +3,7 @@ use super::*;
 /// M20-02：`audio` 表的总线 API——分组独立、主 × 分组、非法总线名报错。
 #[test]
 fn audio_bus_lua_api_groups_volumes_and_rejects_unknown_bus() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime
         .execute_console(
             "assert(#audio.buses() == 4)\n\
@@ -33,7 +33,7 @@ fn audio_bus_lua_api_groups_volumes_and_rejects_unknown_bus() {
 /// M20-02：`audio.play_on`（总线播放）与 `settings_text`/`apply_settings` 往返。
 #[test]
 fn audio_lua_settings_text_round_trips_and_rejects_bad_version() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let text = runtime
         .execute_console(
             "audio.set_bus_volume('master', 0.6)\n\
@@ -49,7 +49,8 @@ fn audio_lua_settings_text_round_trips_and_rejects_bad_version() {
     assert!(text.contains("bgm=0.300"), "{text}");
 
     // 文本经 Lua 长字符串吃进第二个 VM，四路音量按总线路由恢复。
-    let mut restored = LuaRuntime::new().unwrap();
+    let mut restored =
+        LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let expression = format!(
         "assert(select(1, audio.apply_settings([==[\n{text}]==])) == true)\n\
          assert(math.abs(audio.bus_volume('master') - 0.6) < 1e-6)\n\
@@ -96,7 +97,7 @@ fn audio_lua_project_settings_load_and_save() {
         "# 说明\n[audio]\nmaster = 0.5\nbgm = 0.25\nsfx = 0.75\nui = 0.5\n\n[input]\nmap = \"keep\"\n",
     )
     .unwrap();
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     let path = runtime
         .execute_console("assert(audio.settings_path() ~= nil); return audio.settings_path()")
@@ -119,7 +120,7 @@ fn audio_lua_project_settings_load_and_save() {
     // 缺失文件 → 默认值 + 明确返回 false, "missing"，不报错。
     let empty = root.join("empty");
     fs::create_dir_all(&empty).unwrap();
-    let mut bare = LuaRuntime::new().unwrap();
+    let mut bare = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     bare.set_project_root(empty.clone());
     assert_eq!(
         bare.execute_console(
@@ -129,7 +130,8 @@ fn audio_lua_project_settings_load_and_save() {
         "false|missing"
     );
     // 无工程根：明确失败而不是 panic。
-    let mut rootless = LuaRuntime::new().unwrap();
+    let mut rootless =
+        LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(
         rootless
             .execute_console("return select(2, audio.save_settings())")

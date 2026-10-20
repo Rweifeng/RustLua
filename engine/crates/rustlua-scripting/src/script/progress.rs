@@ -159,7 +159,8 @@ mod tests {
     /// 预算调小是为了让测试几毫秒结束：这里验的是"拦得住 + 报得出位置"，不是阈值本身。
     #[test]
     fn runaway_script_trips_the_budget_with_a_location() {
-        let runtime = LuaRuntime::new().expect("runtime");
+        let runtime =
+            LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).expect("runtime");
         runtime.set_instruction_budget(100_000).expect("budget");
         let error = runtime
             .lua
@@ -188,7 +189,8 @@ mod tests {
     /// （那是设计，不是缺陷，见 [`ScriptProgress`] 的注释）。
     #[test]
     fn normal_script_leaves_progress_without_error() {
-        let runtime = LuaRuntime::new().expect("runtime");
+        let runtime =
+            LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).expect("runtime");
         runtime.set_instruction_budget(10_000_000).expect("budget");
         let source = "local sum = 0\nfor i = 1, 500000 do sum = sum + i end\nreturn sum";
         runtime.lua.load(source).exec().expect("正常脚本不该被拦");
@@ -201,7 +203,8 @@ mod tests {
     /// 否则"引擎替所有宿主做了决定"。
     #[test]
     fn zero_budget_disables_the_guard() {
-        let runtime = LuaRuntime::new().expect("runtime");
+        let runtime =
+            LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).expect("runtime");
         runtime.set_instruction_budget(0).expect("budget");
         assert_eq!(runtime.instruction_budget(), 0);
     }

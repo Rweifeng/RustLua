@@ -866,6 +866,11 @@ fn edit_component_payload_with(
     // 由引擎自己的 typed 解析器说了算。声明式规则表达不了的**跨字段/几何不变量**
     // （相机的 `near < far`、look-at 非退化、Transform 的缩放非零……）就靠这一道拦住——
     // 校验逻辑只有引擎解析器一处定义，编辑器不另写一份，也不会随引擎演进而漂移。
+    //
+    // 表现层组件（`Sprite`/`Text`/`Quad`…，P1 ④）的文法在 `render`/`ui`，场景层只查表；
+    // 装表是组合根的职责，编辑器作为场景文本的**写方**必须先装，否则每次编辑都会撞上
+    // "缺 codec"的硬错误（留成硬错误是对的：静默放过等于让字段写入绕过引擎校验）。
+    engine::host::scene_codecs::install();
     if let Some(Err(reason)) =
         rustlua_scene::typed_scene::validate_component_payload(component, &updated)
     {

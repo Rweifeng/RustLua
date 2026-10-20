@@ -453,6 +453,12 @@ fn unit_badge(unit: &str) -> (egui::Color32, &'static str) {
     }
 }
 
+/// 容器追踪面板的一行：(上下文名, 条目数, 字节数, 分组明细, 提示)。
+///
+/// 起别名不是为了好看：clippy 的 `type_complexity` 会在工具链升级后把这种五元组判成
+/// "太复杂"，而它只是**一张表的行**——名字比结构更能说明它是什么。
+type TraceContextRow = (String, usize, u64, Vec<(String, usize)>, String);
+
 impl EditorApp {
     /// 菜单入口：打开分包面板并按需从磁盘载入配置。
     pub(crate) fn open_bundle_panel(&mut self) {
@@ -587,7 +593,7 @@ impl EditorApp {
         let Some(view) = self.bundles.trace.as_ref() else {
             return;
         };
-        let contexts: Vec<(String, usize, u64, Vec<(String, usize)>, String)> = view
+        let contexts: Vec<TraceContextRow> = view
             .contexts
             .iter()
             .map(|context| {

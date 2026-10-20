@@ -93,7 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project_arg = project.clone();
 
     banner("M17-02a 纯数据注册：7 个 NPC 全部由 data/npcs.lua + schedule 解析");
-    let mut runtime = new_runtime(&project_arg, &save_path)?;
+    let (mut runtime, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut runtime, &main_script)?;
     click_button(&mut runtime, "BtnStart")?;
     assert_scene_is(&mut runtime, "manor")?;
@@ -115,7 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // 00:00（睡觉时段）：山庄 NPC 全部落在住所。
     lua(&mut runtime, "clock.set(1, 0)")?;
-    frames(&mut runtime, 5)?;
+    frames(&mut runtime, &host, 5)?;
     assert_npc(&mut runtime, "npc_gu_changfeng", "map", "manor")?;
     assert_npc(&mut runtime, "npc_gu_changfeng", "live", "true")?;
     assert_npc(&mut runtime, "npc_gu_changfeng", "place", "manor_home")?;
@@ -175,7 +175,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M17-02b 时间驱动 + A* 路径跟随：顾长风 厢房 → 剑坪");
     lua(&mut runtime, "clock.set(1, 600)")?; // 10:00
-    frames(&mut runtime, 1)?;
+    frames(&mut runtime, &host, 1)?;
     assert_npc(
         &mut runtime,
         "npc_gu_changfeng",
@@ -195,12 +195,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M17-02c 跨图：玄鹤 10:00 离开山庄，进入云泽村后重建");
     // 10:00 玄鹤目标在云泽村 → 山庄销毁其实体（逻辑上离开本图）。
-    frames(&mut runtime, 2)?;
+    frames(&mut runtime, &host, 2)?;
     assert_npc(&mut runtime, "npc_xuanhe", "map", "village")?;
     assert_npc(&mut runtime, "npc_xuanhe", "live", "false")?;
     // 玩家从山庄南出口进入云泽村。
     teleport(&mut runtime, MAIN_EXIT)?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     runtime.process_scene_transition()?;
     assert_scene_is(&mut runtime, "village")?;
     assert_map_current(&mut runtime, "village")?;
@@ -221,7 +221,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "local g = entity.find('GroundMap'); tilemap.set_solid(g, 12, 8, true)",
     )?;
     lua(&mut runtime, "clock.set(1, 1260)")?; // 21:00 return_home → village_home_west
-    frames(&mut runtime, 3)?;
+    frames(&mut runtime, &host, 3)?;
     let diag = query_str(
         &mut runtime,
         "return table.concat(require('world.npc').diagnostics(), ' | ')",
@@ -254,10 +254,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &mut runtime,
                 &format!("clock.set(clock.now().day, {minute})"),
             )?;
-            frames(&mut runtime, 3)?;
+            frames(&mut runtime, &host, 3)?;
         }
         lua(&mut runtime, "return day.sleep()")?;
-        frames(&mut runtime, 2)?;
+        frames(&mut runtime, &host, 2)?;
     }
     assert_day(&mut runtime, start_day + 7)?;
     let ids = lua_id_list(&SAMPLE);
@@ -288,7 +288,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
         // clock.set 之后先走一帧再轮询：ALL_SETTLED 是"改派前若恰好全员站定就为真"的谓词，
         // 首帧不跑就可能量到上一个时段的落位。
-        frames(&mut runtime, 1)?;
+        frames(&mut runtime, &host, 1)?;
         run_until(&mut runtime, ALL_SETTLED, 3_600)?;
         let report = query_str(
             &mut runtime,
@@ -315,14 +315,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M17-02f 读档后位置与活动一致");
     // 停到午夜（全部落回住所）后再存档抽样，比较 map/place/activity/cell/live。
     lua(&mut runtime, "clock.set(clock.now().day, 0)")?;
-    frames(&mut runtime, 4)?;
+    frames(&mut runtime, &host, 4)?;
     let mut expected = Vec::new();
     for pid in SAMPLE {
         expected.push((pid, sample(&mut runtime, pid)?));
     }
     save_game(&mut runtime)?;
 
-    let mut second = new_runtime(&project_arg, &save_path)?;
+    let (mut second, _host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut second, &main_script)?;
     click_button(&mut second, "BtnContinue")?;
     assert_scene_is(&mut second, "village")?;
@@ -353,14 +353,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 // ---------- helpers ----------
 
 /// Creates a bare engine runtime pointing at the project scripts & save file.
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 /// Runs the project script, then loads the `main` 门面 scene so BtnStart/BtnContinue
@@ -393,19 +398,27 @@ fn teleport(runtime: &mut LuaRuntime, pos: (f32, f32)) -> Result<(), Box<dyn std
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }
 
 /// Runs `update()` for `n` frames with an empty input snapshot.
-fn frames(runtime: &mut LuaRuntime, n: usize) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+fn frames(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    n: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    host.set_input(InputSnapshot::default());
     for _ in 0..n {
         runtime.call_update()?;
     }

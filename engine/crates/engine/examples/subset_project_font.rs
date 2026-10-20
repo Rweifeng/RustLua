@@ -11,9 +11,9 @@
 //! 用法：`cargo run -q -p engine --example subset_project_font -- <project-root> --source <full.ttf>`
 use std::{fs, path::PathBuf};
 
+use rustlua_assets_import::char_collect::collect_project_chars;
 use rustlua_render::font::project_font;
 use rustlua_render::font_subset::subset_ttf;
-use rustlua_scene::char_collect::collect_project_chars;
 
 fn main() -> Result<(), String> {
     let mut args = std::env::args().skip(1);

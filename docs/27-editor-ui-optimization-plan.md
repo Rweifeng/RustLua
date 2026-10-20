@@ -1027,10 +1027,10 @@ Entity
 
 ```text
 engine/crates/editor/src/main.rs
-engine/crates/editor/src/actions.rs
+engine/crates/editor/src/actions/（mod.rs + 9 个命令模块）
 engine/crates/editor/src/history.rs
 engine/crates/editor/src/panels/hierarchy.rs
-engine/crates/editor/src/panels/scene_view.rs
+engine/crates/editor/src/panels/scene_view/（mod.rs + 10 个模块）
 engine/crates/editor/src/panels/inspector.rs
 ```
 

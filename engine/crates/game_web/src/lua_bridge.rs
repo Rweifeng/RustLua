@@ -492,8 +492,10 @@ fn boot_runtime(provider: Box<ResourceProvider>) -> Result<(), JsValue> {
             "[vfs] provider 已安装（{error}），沿用现有 provider"
         )));
     }
-    let mut runtime = rustlua_scripting::script::LuaRuntime::new()
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let mut runtime = rustlua_scripting::script::LuaRuntime::with_installers(
+        rustlua_gameplay::input_lua::registry(),
+    )
+    .map_err(|e| JsValue::from_str(&e.to_string()))?;
     runtime.set_project_root(std::path::PathBuf::from(super::VIRTUAL_PROJECT_ROOT));
     LUA_RUNTIME.with(|slot| *slot.borrow_mut() = Some(runtime));
     // 新状态 = 新常驻输入表：旧差分基准会让"这一帧该松开哪些键"算错。

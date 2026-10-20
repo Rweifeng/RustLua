@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project_arg = project.clone();
 
     banner("M17-03a 纯数据注册 + 加载期校验：任务/对话均来自 data/*");
-    let mut runtime = new_runtime(&project_arg, &save_path)?;
+    let (mut runtime, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut runtime, &main_script)?;
     click_button(&mut runtime, "BtnStart")?;
     assert_scene_is(&mut runtime, "manor")?;
@@ -97,8 +97,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     lua(&mut runtime, "return require('world.weather').set('sunny')")?;
     lua(&mut runtime, &format!("clock.set(1, {TEN_AM})"))?;
-    frames(&mut runtime, 1)?;
-    talk(&mut runtime, "npc_gu_changfeng")?;
+    frames(&mut runtime, &host, 1)?;
+    talk(&mut runtime, &host, "npc_gu_changfeng")?;
     assert_mode(&mut runtime, "Dialogue")?;
     assert_str(&mut runtime, "require('world.dialogue').is_open()", "true")?;
     assert_str(
@@ -130,6 +130,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M17-03c 选项副作用：接取任务 + add_var 推进目标（in_progress）");
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_str(
@@ -144,6 +145,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_str(
@@ -165,10 +167,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M17-03d 目标达成 → deliverable → 交付 completed + 奖励 + on_complete");
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
     )?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_num(
@@ -190,6 +194,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_option(&mut runtime, "愿随师父走一遍基础三式。", false)?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_str(
@@ -218,21 +223,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(&mut runtime, "require('core.state').inner_power", 60.0)?;
     assert_num(&mut runtime, "require('core.state').money", 120.0)?;
     // Esc 结束对话，回到 Playing。
-    press(&mut runtime, KeyCode::Escape)?;
+    press(&mut runtime, &host, KeyCode::Escape)?;
     assert_str(&mut runtime, "require('world.dialogue').is_open()", "false")?;
     assert_mode(&mut runtime, "Playing")?;
 
     banner("M17-03f item 任务：条件不满足时交付选项不出现 / objectives_unmet");
     // 山庄南口 → 云泽村（复用 M17-02 的跨图路径）。
     teleport(&mut runtime, MAIN_EXIT)?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     runtime.process_scene_transition()?;
     assert_scene_is(&mut runtime, "village")?;
     assert_map_current(&mut runtime, "village")?;
     lua(&mut runtime, &format!("clock.set(1, {TEN_AM})"))?;
-    frames(&mut runtime, 2)?;
+    frames(&mut runtime, &host, 2)?;
     assert_num(&mut runtime, "inv.count('player', 'lingzhi')", 0.0)?;
-    talk(&mut runtime, "npc_shen_qingluo")?;
+    talk(&mut runtime, &host, "npc_shen_qingluo")?;
     assert_str(
         &mut runtime,
         "require('world.dialogue').dialogue_id()",
@@ -250,6 +255,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_str(
@@ -264,6 +270,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_str(&mut runtime, "require('world.dialogue').is_open()", "false")?;
@@ -273,7 +280,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "select(2, require('world.quest').deliver('quest_herb'))",
         "objectives_unmet",
     )?;
-    talk(&mut runtime, "npc_shen_qingluo")?;
+    talk(&mut runtime, &host, "npc_shen_qingluo")?;
     assert_str(
         &mut runtime,
         "require('world.dialogue').info().options[1]",
@@ -287,7 +294,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     banner("M17-03g item 交付：消耗目标物品 + item/money 奖励 + on_complete");
-    press(&mut runtime, KeyCode::Escape)?;
+    press(&mut runtime, &host, KeyCode::Escape)?;
     assert_mode(&mut runtime, "Playing")?;
     lua(&mut runtime, "inv.add('player', 'lingzhi', 3)")?;
     assert_num(&mut runtime, "inv.count('player', 'lingzhi')", 3.0)?;
@@ -296,7 +303,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('world.quest').state('quest_herb')",
         "deliverable",
     )?;
-    talk(&mut runtime, "npc_shen_qingluo")?;
+    talk(&mut runtime, &host, "npc_shen_qingluo")?;
     assert_str(
         &mut runtime,
         "require('world.dialogue').info().options[1]",
@@ -305,6 +312,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_option(&mut runtime, "灵芝还在采，稍待。", false)?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_str(
@@ -333,7 +341,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_num(&mut runtime, "require('core.state').money", 170.0)?;
     assert_num(&mut runtime, "inv.count('player', 'rice')", 4.0)?;
-    press(&mut runtime, KeyCode::Escape)?;
+    press(&mut runtime, &host, KeyCode::Escape)?;
     assert_mode(&mut runtime, "Playing")?;
 
     banner("M17-03h 副作用可回溯：变量写入带来源与事件流水");
@@ -357,7 +365,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M17-03i 读档恢复：任务记录 / 全局变量 / 奖励一致");
     save_game(&mut runtime)?;
-    let mut second = new_runtime(&project_arg, &save_path)?;
+    let (mut second, _host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut second, &main_script)?;
     click_button(&mut second, "BtnContinue")?;
     assert_scene_is(&mut second, "village")?;
@@ -408,7 +416,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     banner("M17-03j 五态覆盖：failed 态由任务状态机与对话条件共同生效");
-    let mut third = new_runtime(&project_arg, &fail_save_path)?;
+    let (mut third, host) = new_runtime(&project_arg, &fail_save_path)?;
     enter_main_menu(&mut third, &main_script)?;
     click_button(&mut third, "BtnStart")?;
     assert_scene_is(&mut third, "manor")?;
@@ -419,10 +427,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     lua(&mut third, "return require('world.weather').set('sunny')")?;
     lua(&mut third, &format!("clock.set(1, {TEN_AM})"))?;
-    frames(&mut third, 1)?;
-    talk(&mut third, "npc_gu_changfeng")?;
+    frames(&mut third, &host, 1)?;
+    talk(&mut third, &host, "npc_gu_changfeng")?;
     press(
         &mut third,
+        &host,
         KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
     )?; // 接取
     assert_str(
@@ -432,6 +441,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     press(
         &mut third,
+        &host,
         KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
     )?; // 起手：sword_drills = 1
     assert_str(
@@ -487,14 +497,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 // ---------- helpers ----------
 
 /// Creates a bare engine runtime pointing at the project scripts & save file.
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 /// Runs the project script, then loads the `main` 门面 scene so BtnStart/BtnContinue
@@ -527,7 +542,11 @@ fn teleport(runtime: &mut LuaRuntime, pos: (f32, f32)) -> Result<(), Box<dyn std
 }
 
 /// 把玩家传送到 NPC 的逻辑格心，再按 E 触发 interaction → 开对话。
-fn talk(runtime: &mut LuaRuntime, persist_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn talk(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    persist_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let got = query_str(
         runtime,
         &format!(
@@ -540,24 +559,32 @@ fn talk(runtime: &mut LuaRuntime, persist_id: &str) -> Result<(), Box<dyn std::e
     if got != "ok" {
         return Err(format!("npc {persist_id} not interactable: {got}").into());
     }
-    press(runtime, KeyCode::KeyE)?;
+    press(runtime, &host, KeyCode::KeyE)?;
     Ok(())
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }
 
 /// Runs `update()` for `n` frames with an empty input snapshot.
-fn frames(runtime: &mut LuaRuntime, n: usize) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+fn frames(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    n: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    host.set_input(InputSnapshot::default());
     for _ in 0..n {
         runtime.call_update()?;
     }

@@ -331,9 +331,9 @@ function caseBundleRoots() {
     block_size: 262144,
     checksum: '',
     groups: [
-      { name: 'core', unit: 'main', bundle: 'bundles/core.rlb', paths: ['scripts/main.lua', 'project.toml'] },
-      { name: 'art', unit: 'sub', bundle: 'bundles/art.rlb', paths: ['assets/art/a.png'] },
-      { name: 'audio', unit: 'sub:audio', bundle: 'bundles/audio.rlb', paths: ['assets/audio/bgm.mp3'] }
+      { name: 'core', unit: 'main', bundle: 'bundles/core.rlb', entries: 2, raw_bytes: 0, bundle_bytes: 0, hash: '', paths: ['project.toml', 'scripts/main.lua'] },
+      { name: 'art', unit: 'sub', bundle: 'bundles/art.rlb', entries: 1, raw_bytes: 0, bundle_bytes: 0, hash: '', paths: ['assets/art/a.png'] },
+      { name: 'audio', unit: 'sub:audio', bundle: 'bundles/audio.rlb', entries: 1, raw_bytes: 0, bundle_bytes: 0, hash: '', paths: ['assets/audio/bgm.mp3'] }
     ]
   };
   const gate = { mounted: new Set() };

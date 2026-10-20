@@ -52,7 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project_arg = project.clone();
 
     banner("M18-02a 纯数据注册 + 加载期校验：建筑/配方来自 data/buildings + data/recipes");
-    let mut runtime = new_runtime(&project_arg, &save_path)?;
+    let (mut runtime, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut runtime, &main_script)?;
     // 山庄是建造地图（manor.scene，FarmGrid 存在）；不点 BtnStart，直接加载场景。
     lua(&mut runtime, "scene.load('manor')")?;
@@ -470,6 +470,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('b').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_str(
@@ -492,6 +493,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('b').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_str(
@@ -508,6 +510,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 这里钉两件事：① 建造模式下提示行要带当前选中的建筑名和切换键位；② 换选要跟。
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('b').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_str(
@@ -564,6 +567,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('b').expect("QWERTY 字符必须有对应物理键"),
     )?;
 
@@ -662,14 +666,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 // ---------- helpers ----------
 
 /// Creates a bare engine runtime pointing at the project scripts & save file.
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 /// Runs the project script, then loads the `main` 门面 scene so scene.load works
@@ -753,12 +762,16 @@ fn till_plot(runtime: &mut LuaRuntime, cx: i64, cy: i64) -> Result<(), Box<dyn s
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }

@@ -34,10 +34,10 @@
 
 use engine::host::{RuntimeScene, SceneMesh, frame::FONT_ATLAS_TEXTURE_PATH};
 use rustlua_assets::pack;
+use rustlua_assets_import::char_collect::collect_project_chars;
 use rustlua_input::input::InputSnapshot;
 use rustlua_render::font::{FontAtlas, FontVectorAtlas, RASTER_SCALE, project_font};
 use rustlua_render::text::{TextLayout, TextMesh, TextStyle};
-use rustlua_scene::char_collect::collect_project_chars;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -485,6 +485,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---------------- ② 真运行时一帧：阈值档接线 + 二值覆盖 ----------------
     banner("M72-03② 真跑一帧：文字必须走 sdf=2 阈值档，用到的图集 texel 只能 0/255");
     let mut runtime = RuntimeScene::new(Some(project.as_path()))?;
+    // M72-03 起字体图集是**增量**上报的（`pixels` 空 = 本帧没变化，见
+    // `frame_data.rs` 的 `changed = version != last_font_version`）。而 `frame()` 内部会先调一次
+    // `vertices()`——那一帧就把"首帧上传"这份像素消费掉了，之后再取 mesh 只会拿到空 `pixels`。
+    // 所以这里**自己先取首帧**（直方图用它的像素），再步进一帧拿稳态 mesh：
+    // 两条一起断言，增量协议才算真的锁住。2026-10-20 之前这里只取步进后的那一帧，
+    // 于是这条门永远红在"pixels 为空"——红因不是字体坏了，是把稳态帧当成了首帧。
+    let first = runtime.vertices(VIEW_W, VIEW_H)?;
     frame(&mut runtime)?;
     let scene = runtime.vertices(VIEW_W, VIEW_H)?;
     let font_draws: Vec<(usize, usize)> = scene
@@ -559,12 +566,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into());
     }
-    let frame_atlas = scene
+    let frame_atlas = first
         .font_atlas
         .as_ref()
-        .ok_or("本帧 SceneMesh 没带字体图集像素（直方图要用的就是它）")?;
+        .ok_or("首帧 SceneMesh 没带字体图集像素（直方图要用的就是它）")?;
     if frame_atlas.pixels.is_empty() {
-        return Err("字体图集 pixels 为空（只在变化时带；这帧没上传过？)".into());
+        return Err(
+            "首帧的字体图集 pixels 为空——图集一开局就该上传一次（首帧必定 version 变化），\
+                    空说明这帧根本没走到上传那步"
+                .into(),
+        );
+    }
+    // 稳态帧（已经步进过一次）不该再带整张图集：这就是"只在变化时带"的另一半。
+    if scene
+        .font_atlas
+        .as_ref()
+        .is_some_and(|atlas| !atlas.pixels.is_empty())
+    {
+        return Err(
+            "步进后的稳态帧又带了一次整张字体图集：M72-03 的增量协议是「只在变化时带」，\
+                    每帧重传会把带宽吃回去"
+                .into(),
+        );
     }
     if !scene.custom_font_atlases.is_empty() {
         return Err(format!(

@@ -12,6 +12,7 @@ pub mod quad;
 pub mod render_mode;
 pub mod render_plan;
 pub mod renderable;
+pub mod scene_codec;
 pub mod spatial_index;
 pub mod sprite;
 pub mod sprite_batch;

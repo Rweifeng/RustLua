@@ -671,77 +671,9 @@ pub fn save_input_settings(
 // M20-09：[input] 段的菜单导航手感（摇杆阈值与按住重复节奏）
 // ---------------------------------------------------------------------------
 
-/// 菜单导航手感（左摇杆推杆阈值 + 按住重复节奏）。
-///
-/// 与死区一样属于**玩家偏好**：只影响面板选中的滚动节奏，不影响玩法移动。
-///
-/// **M22/W3 起重复节奏用毫秒**（原 M20-09 是帧数，导致手感随刷新率变化：144Hz 的
-/// 连发速度是 60Hz 的 2.4 倍）。旧的 `nav_delay_frames` / `nav_repeat_frames` 仍可读
-/// （按 60Hz 换算），写入统一用 `nav_delay_ms` / `nav_repeat_ms`。
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct NavSettings {
-    /// 摇杆推杆阈值（0..=1）：低于它不算导航输入（引擎轴判定阈值同源）。
-    pub threshold: f32,
-    /// 首次重复前的按住时长（毫秒，上限 [`Self::MAX_MS`]）。
-    pub delay_ms: u32,
-    /// 连发间隔（毫秒，下限 [`Self::MIN_REPEAT_MS`]，上限 [`Self::MAX_MS`]）。
-    pub repeat_ms: u32,
-}
-
-impl Default for NavSettings {
-    fn default() -> Self {
-        Self::DEFAULT
-    }
-}
-
-impl NavSettings {
-    /// 默认手感：阈值 0.5、延迟 350ms、间隔 90ms。
-    ///
-    /// 与 M20-09 的「16 帧 / 8 帧 @60Hz」几乎一致（267ms / 133ms → 350ms / 90ms，
-    /// 首次延迟略长、连发略快），这样键盘/手柄在任意帧率下手感一致。
-    pub const DEFAULT: Self = Self {
-        threshold: 0.5,
-        delay_ms: 350,
-        repeat_ms: 90,
-    };
-
-    /// 时长上限：再长也没有实用意义，同时防脏数据把导航变成「永不重复」。
-    pub const MAX_MS: u32 = 5000;
-
-    /// 连发间隔下限（约一个 60Hz 逻辑帧，防止退化成每步连发）。
-    pub const MIN_REPEAT_MS: u32 = 16;
-
-    /// 旧「帧」键换算成毫秒所用的固定步长（60Hz，与引擎默认固定步一致）。
-    pub const LEGACY_FRAME_MS: f32 = 1000.0 / 60.0;
-
-    /// 唯一构造入口：非有限/超界值统一钳制（阈值 0..=1、延迟 ≤ 上限、间隔 ≥ 下限）。
-    #[must_use]
-    pub fn new(threshold: f32, delay_ms: u32, repeat_ms: u32) -> Self {
-        let threshold = if threshold.is_finite() {
-            threshold.clamp(0.0, 1.0)
-        } else {
-            Self::DEFAULT.threshold
-        };
-        Self {
-            threshold,
-            delay_ms: delay_ms.min(Self::MAX_MS),
-            repeat_ms: repeat_ms.clamp(Self::MIN_REPEAT_MS, Self::MAX_MS),
-        }
-    }
-
-    /// 旧帧数 → 毫秒（兼容读取用）。非有限/负值按 0 处理（与 M20-09 的
-    /// `v.max(0.0) as u32` 一致），上限由 [`Self::new`] 统一钳制。
-    #[must_use]
-    pub fn frames_to_ms(frames: f32) -> u32 {
-        (frames.max(0.0) * Self::LEGACY_FRAME_MS).round() as u32
-    }
-
-    /// 是否与默认手感一致（编辑器/诊断用）。
-    #[must_use]
-    pub fn is_default(&self) -> bool {
-        *self == Self::DEFAULT
-    }
-}
+// 结构本体在 `rustlua-input::nav`（P1 阶段 3 跟着 `input` 绑定一起下沉到输入域）。
+// 这里只转发，保证 `rustlua_gameplay::settings::NavSettings` 这条既有路径不变。
+pub use rustlua_input::nav::NavSettings;
 
 /// 从设置文本解析 `[input]` 段的导航手感。宽松语义与死区一致：段缺失、键缺失、
 /// 非法数值都保留默认值，段外同名键不生效，同名键只取首次出现。

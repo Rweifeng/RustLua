@@ -76,7 +76,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("expected 16 clips, inspected {clips}").into());
     }
 
-    let mut runtime = new_runtime(&project_arg, &save_path)?;
+    let (mut runtime, host) = new_runtime(&project_arg, &save_path)?;
     enter_playable(&mut runtime, &main_script)?;
     // Lua 侧调用路径：pcall 包裹后必须返回 true（无设备/缺文件都不得中断玩法）。
     assert_str(
@@ -260,7 +260,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             format!("{action}|{skill}")
         };
-        let got = tap_skill_card(&mut runtime, index)?;
+        let got = tap_skill_card(&mut runtime, &host, index)?;
         if got != expected {
             return Err(format!(
                 "第 {index} 张招式卡（{want}）注入后没有出对应的招：期望 {expected}，实得 {got}"
@@ -346,7 +346,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut runtime,
             &format!("require('ui.virtual_pad').action_slots()[{index}].action"),
         )?;
-        let got = tap_action_disk(&mut runtime, index, false)?;
+        let got = tap_action_disk(&mut runtime, &host, index, false)?;
         let expected = format!("{want}|true|0");
         if got != expected {
             return Err(format!(
@@ -376,7 +376,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("more_key = {more_toggle}");
     // 按下一格后盘自动收起（一次点击 = 一个动作，九块盘不常驻盖住世界画面）。
-    let _ = tap_action_disk(&mut runtime, 1, false)?;
+    let _ = tap_action_disk(&mut runtime, &host, 1, false)?;
     assert_str(
         &mut runtime,
         "tostring(require('ui.virtual_pad').is_action_open())",
@@ -399,16 +399,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("more_in_panel = {more_in_panel}");
     // 效果探针一（运气，动作盘第 4 格）：内力 +5，与键盘按 Q 同一读数。
     lua(&mut runtime, "require('core.state').inner_power = 50")?;
-    let _ = tap_action_disk(&mut runtime, 4, true)?;
+    let _ = tap_action_disk(&mut runtime, &host, 4, true)?;
     assert_num(&mut runtime, "require('core.state').inner_power", 55.0)?;
     // 效果探针二（建造，第 2 格）：翻转建造模式，探针后复原。
-    let _ = tap_action_disk(&mut runtime, 2, true)?;
+    let _ = tap_action_disk(&mut runtime, &host, 2, true)?;
     assert_str(
         &mut runtime,
         "tostring(require('systems.building').build_mode())",
         "true",
     )?;
-    let _ = tap_action_disk(&mut runtime, 2, true)?;
+    let _ = tap_action_disk(&mut runtime, &host, 2, true)?;
     assert_str(
         &mut runtime,
         "tostring(require('systems.building').build_mode())",
@@ -451,7 +451,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .into());
         }
         for (offset, want) in actions.iter().enumerate() {
-            let got = tap_panel_strip(&mut runtime, mode, (offset + 1) as i64, false)?;
+            let got = tap_panel_strip(&mut runtime, &host, mode, (offset + 1) as i64, false)?;
             let expected = format!("{want}|true|0");
             if got != expected {
                 return Err(format!(
@@ -497,7 +497,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut runtime,
         &format!("require('ui.inventory_ui').select({})", can_row - 1),
     )?;
-    let equip_fire = tap_panel_strip(&mut runtime, "Inventory", 1, true)?;
+    let equip_fire = tap_panel_strip(&mut runtime, &host, "Inventory", 1, true)?;
     if equip_fire != "interact|true|0" {
         return Err(
             format!("背包「装备」格注入不对：期望 interact|true|0，实得 {equip_fire}").into(),
@@ -520,7 +520,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('systems.shop').open_ui('zhao_stall')",
     )?;
     assert_str(&mut runtime, "require('systems.shop').tab()", "buy")?;
-    let tab_fire = tap_panel_strip(&mut runtime, "Shop", 1, true)?;
+    let tab_fire = tap_panel_strip(&mut runtime, &host, "Shop", 1, true)?;
     if tab_fire != "place|true|0" {
         return Err(format!("商店「换页」格注入不对：期望 place|true|0，实得 {tab_fire}").into());
     }
@@ -531,7 +531,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     lua(&mut runtime, "require('core.audio').set_volume(0.5)")?;
     lua(&mut runtime, "require('ui.pause_menu').open()")?;
     let volume_before = query_num(&mut runtime, "require('core.audio').volume()")?;
-    let volume_fire = tap_panel_strip(&mut runtime, "Pause", 1, true)?;
+    let volume_fire = tap_panel_strip(&mut runtime, &host, "Pause", 1, true)?;
     if volume_fire != "volume_up|true|0" {
         return Err(
             format!("暂停「音量+」格注入不对：期望 volume_up|true|0，实得 {volume_fire}").into(),
@@ -559,6 +559,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('i').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_mode(&mut runtime, "Inventory")?;
@@ -577,10 +578,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (px, py) = player_pos(&mut runtime)?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('d').expect("QWERTY 字符必须有对应物理键"),
     )?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('w').expect("QWERTY 字符必须有对应物理键"),
     )?;
     let (px2, py2) = player_pos(&mut runtime)?;
@@ -598,6 +601,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let water_row = row_of(&mut runtime, "ui.inventory_ui", "watering_can")?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char(digit(water_row)).expect("数字行号必须有对应主键区数字键"),
     )?;
     assert_num(
@@ -605,7 +609,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('ui.inventory_ui').index()",
         (water_row - 1) as f64,
     )?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "inv.equip_list(require('core.state').inventory).tool",
@@ -622,9 +626,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hoe_row = row_of(&mut runtime, "ui.inventory_ui", "hoe")?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char(digit(hoe_row)).expect("数字行号必须有对应主键区数字键"),
     )?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "inv.equip_list(require('core.state').inventory).tool",
@@ -639,10 +644,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pill_row = row_of(&mut runtime, "ui.inventory_ui", "heal_pill")?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char(digit(pill_row)).expect("数字行号必须有对应主键区数字键"),
     )?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('u').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_num(&mut runtime, "require('core.state').energy", 90.0)?;
@@ -661,10 +668,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rice_row = row_of(&mut runtime, "ui.inventory_ui", "rice")?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char(digit(rice_row)).expect("数字行号必须有对应主键区数字键"),
     )?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('u').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_str(
@@ -676,6 +685,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 关闭：面板与动态 UI 一起收起，模式回到 Playing。
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('i').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_mode(&mut runtime, "Playing")?;
@@ -690,6 +700,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M19-02d 任务面板（只读）：L 打开 → 列出任务与目标进度 → Q 关闭");
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('l').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_mode(&mut runtime, "Quest")?;
@@ -727,6 +738,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('q').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_mode(&mut runtime, "Playing")?;
@@ -740,6 +752,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let volume_before = query_num(&mut runtime, "require('core.audio').volume()")?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('p').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_mode(&mut runtime, "Pause")?;
@@ -768,6 +781,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('+').expect("QWERTY 字符必须有对应物理键"),
     )?;
     let volume_after = query_num(&mut runtime, "require('core.audio').volume()")?;
@@ -776,6 +790,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('-').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_num(
@@ -813,10 +828,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 重新打开 → 继续游戏（首项）→ 关闭。
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('p').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_mode(&mut runtime, "Pause")?;
-    press(&mut runtime, KeyCode::Space)?;
+    press(&mut runtime, &host, KeyCode::Space)?;
     assert_mode(&mut runtime, "Playing")?;
     assert_str(
         &mut runtime,
@@ -1219,16 +1235,23 @@ fn inspect_mp3(path: &Path) -> Result<Mp3Info, Box<dyn std::error::Error>> {
 }
 
 /// Creates a bare engine runtime pointing at the project scripts, audio assets and save file.
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // 音频目录固定为 <project>/assets/audio（`rustlua-audio` 的 audio.rs）。
-    runtime.set_audio_asset_dir(project.join("assets").join("audio"));
+    handles
+        .audio
+        .with_mut(|audio| audio.set_asset_dir(project.join("assets").join("audio")));
     // M32 横屏：设计分辨率 1280×720（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 /// Runs the project script, then loads the `main` 门面 scene and enters 山庄.
@@ -1323,12 +1346,16 @@ fn player_pos(runtime: &mut LuaRuntime) -> Result<(f64, f64), Box<dyn std::error
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }
@@ -1340,9 +1367,10 @@ fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::erro
 /// ——姿态是 tick 结算的，不吃 tick 就永远读到 false。
 fn tap_skill_card(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     index: i64,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     query_str(
         runtime,
         &format!(
@@ -1379,10 +1407,11 @@ fn tap_skill_card(
 /// （只验注入的通用循环传 `false`，见调用处注释）。
 fn tap_action_disk(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     index: i64,
     dispatch: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     let step = if dispatch {
         "require('ui.input').update(); "
     } else {
@@ -1419,11 +1448,12 @@ fn tap_action_disk(
 /// "mode 是面板态但没有面板"而复位，动作被吞掉。
 fn tap_panel_strip(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     mode: &str,
     index: i64,
     dispatch: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     let step = if dispatch {
         "require('ui.input').update(); "
     } else {

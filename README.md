@@ -8,9 +8,12 @@ Rust 写的 2D/3D 游戏引擎 + Lua 玩法脚本运行时，配套一个可视�
 - **编辑**：`editor` 提供场景/层级/Inspector、Tilemap 与 2D Animation 编辑、Play 预览、资源面板与发布；
   场景里的变换与相机各只有**一个**组件名——`Transform` 与 `Camera`。
 - **发布**：`scripts/build/package.ps1` 产 PC / WebGL / 微信小游戏三种平台产物；`scripts/build/package-engine.ps1`
-  产免安装的编辑器绿色版（含便携模式，不写 `%APPDATA%`）。
-- **验证**：`scripts/verify/verify.ps1` 是唯一总门——文档门、cargo 三件套、`game --check`/`editor --check`、
-  编辑器性能基线与 GUI smoke（`-Mvp` 追加 26 项 headless 样例与干净目录发布自测）。
+  产免安装的编辑器绿色版（含便携模式，不写 `%APPDATA%`）。PC 与引擎包由 `v*` tag 触发
+  `.github/workflows/release.yml` 构建、签名（有证书时）、生成 SBOM 与 `SHA256SUMS.txt` 并上传 Release；
+  tag 不干净/版本不一致即阻断，见 [docs/69](docs/69-发布与供应链安全.md)。
+- **验证**：`scripts/verify/verify.ps1` 是唯一总门——文档门、工具链锁定、cargo 三件套、
+  `game --check`/`editor --check`、编辑器性能基线与 GUI smoke（`-Mvp` 追加 26 项 headless 样例与干净目录发布自测）；
+  `-Security` 追加 `cargo-audit`/`cargo-deny`/fork 同步/SBOM 供应链门（工具或网络缺失是 BLOCKED，不是通过）。
 
 ## 仓库布局
 
@@ -20,8 +23,8 @@ Rust 写的 2D/3D 游戏引擎 + Lua 玩法脚本运行时，配套一个可视�
 | `examples/game_jhyt` | 完整游戏工程《江湖有田》：横版 1280×720、8 个场景动线（门面/山庄/村庄/山道/洞窟/演武场/两处室内），种田/采集/制作/战斗/任务/商店/7 日目标 |
 | `examples/game_api` | 引擎 API 活文档：每个 Lua API 都有一处**可运行**演示，覆盖度由 `host::sample_project` 的 11 条门守 |
 | `plugins/` | 平台运行时：`webgl/`（共用 `web-runtime.js` + 契约页）、`wechat-minigame/`（适配层与分包路由） |
-| `scripts/` | 质量门与发布脚本，按功能分层：`verify/verify.ps1`（总门）、`verify/check-docs.ps1`（文档门）、`build/package.ps1`（发布）、`build/package-engine.ps1`（绿色版）、`test/test-bundle.ps1`（本地试玩产物）；完整索引见 [scripts/README.md](scripts/README.md) |
-| `tasks/` | 任务生命周期：`plan/`（WP 工作包与 game_jhyt 执行台账）、`done/`（已归档 134 份） |
+| `scripts/` | 质量门与发布脚本，按功能分层：`verify/verify.ps1`（总门）、`verify/check-docs.ps1`（文档门）、`verify/check-security.ps1`（供应链门）、`build/package.ps1`（发布）、`build/package-engine.ps1`（绿色版）、`release/`（SBOM/签名/notes/工具版本）、`test/test-bundle.ps1`（本地试玩产物）；完整索引见 [scripts/README.md](scripts/README.md) |
+| `tasks/` | 任务生命周期：`plan/`（在途工作包，含 P2 发布与安全工程）、`done/`（已归档） |
 | `docs/` | 引擎能力、技术决策、质量门与发布契约（索引见 [docs/README.md](docs/README.md)） |
 | `artifacts/` | 生成物：发布包、质量门日志（`artifacts/logs/`），已被 `.gitignore` 忽略 |
 | `baselines/` | 本地基线快照（WP0 性能阶梯、engine 对外符号面基准），整体被 `.gitignore` 忽略，供 `verify.ps1 -Benchmarks` 做"这一次 vs 上一次"的对比；位置可用 `RUSTLUA_BASELINES_DIR` 改，可比性裁定见 `baselines/README.md` |
@@ -52,6 +55,7 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 | WebGL | 加 `-Platform webgl` | **产物层 + 完整剧本门**：缺失宿主 API 全局 = 0、启动路径不再因缺失全局停下（2026-09-19 无头 Edge 复测）；2026-10-02 起 `verify-webgl-bundle.ps1 -DriveJhyt` 在真实浏览器里跑完整玩法链路（新游戏→移动→背包/任务开合→山庄↔云泽村真实切图→回山庄，M1–M6 里程碑落定）并挂进 `verify.ps1` 总门 |
 | 微信小游戏 | 加 `-Platform wechat-minigame`（默认主包 + 单分包） | **已真机验收**（2026-09-27，Android）：启动进山庄、虚拟摇杆移动、按钮交互全通；产物层切分、配额、白名单与 harness 用例（含摇杆链路）全绿 |
 | 编辑器绿色版 | `scripts\build\package-engine.ps1 -Zip` | 免安装包：release 三件套 + 字体 + 样例工程 + 双击即用的 bat |
+| GitHub Release（PC + 引擎包） | `scripts\repo\tag-release.ps1 -Push`（先跑默认 dry-run 复核；或 Actions 手动 `dry_run`） | tag 触发 `release.yml`：构建 → 安全门/SBOM → 可选 Authenticode 签名 → zip + `SHA256SUMS.txt` + notes；WebGL/微信仍手工，见 [docs/69](docs/69-发布与供应链安全.md) |
 
 平台契约、体积账与已知边界分别见 [docs/32](docs/32-webgl-浏览器平台验收.md)、
 [docs/52](docs/52-微信小游戏分包发布.md)、[docs/50](docs/50-发布包与用户数据目录.md)。
@@ -67,7 +71,13 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 | 提交前门禁（**只对本次提交负责**） | `git-hooks/pre-commit`（装：`scripts\repo\install-git-hooks.ps1`；体检：`scripts\repo\install-git-hooks.ps1 -Status`）。CI 的 lint job 看的是**这个提交**，所以门禁也只看提交内容：`rustlua.scope` 默认 `commit`（提交之外的失败只点名、按 `PARTIAL` 报告），`= worktree` 恢复"整棵树任何一处失败都拦"的旧口径。细则见 [docs/34](docs/34-质量门与发布清单.md) §3.5 |
 | 格式 / 静态检查 / 测试 | `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings`、`cargo test --workspace --all-features` |
 | 文档一致性（编号/索引/链接/历史路径/编码） | `scripts\verify\check-docs.ps1` |
+| 工具链锁定（Rust/Node/安全工具精确版本） | `scripts\verify\check-toolchain-lock.ps1`（`verify.ps1` 默认段已包含） |
+| 供应链安全门（audit / deny / wildcard / fork / SBOM） | `scripts\verify\check-security.ps1 -RequireTools`；`verify.ps1 -Security` 可并入总门 |
+| 安全门反例自测（SBOM 篡改/坏 DB/签名篡改） | `scripts\verify\test-security-gates.ps1` |
 | vendor 补丁基线（wasm 必需补丁逐文件在位 + 版本耦合） | `scripts\verify\check-vendor-patches.ps1` |
+| fork 上游同步报告 | `node scripts\repo\fork-sync-report.mjs --check`；`--write artifacts/reports/fork-sync.md` |
+| SBOM 生成/校验 | `node scripts\release\gen-sbom.mjs --output artifacts/reports/rustlua.cdx.json`；`--check` 复核 |
+| Windows 签名自测（无需真实证书） | `scripts\release\sign-windows.ps1 -SelfTest` |
 | 编辑器整帧 smoke（合成输入的 DPI/resize/拖放/停靠/多选/弹窗） | `cargo run -p editor -- --gui-smoke`（`--gui-report <文件>` 落报告） |
 | 干净目录发布自测 | `scripts\build\package.ps1 -ProjectRoot examples/game_jhyt -SelfTest` |
 | WebGL 产物层启动验收 | `scripts\verify\verify-webgl-bundle.ps1` |
@@ -75,8 +85,10 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 | 本地试玩某个 web 平台产物（自动发现 + 验收 + 起服务） | `scripts\test\test-bundle.ps1`（`-Platform wechat-minigame` 切平台） |
 
 门全绿的含义与逐项通过标准见 [docs/34-质量门与发布清单.md](docs/34-质量门与发布清单.md)；
-`verify.ps1` 会依次跑文档门、cargo 门、`game --check`/`editor --check`、编辑器性能基线与 GUI smoke、
-26 项 headless 验收样例和发布隔离自测。
+`verify.ps1` 会依次跑文档门、工具链锁定、cargo 门、`game --check`/`editor --check`、编辑器性能基线与
+GUI smoke、26 项 headless 验收样例和发布隔离自测。供应链门（audit/deny/SBOM/fork）因需要外部工具与
+advisory DB，默认不进全量门；用 `verify.ps1 -Security` 或 CI 的 `security` job 跑，缺工具/网络失败时
+明确打印 BLOCKED 并以 3 退出，绝不写成通过。
 
 ## 文档入口
 

@@ -20,6 +20,7 @@ tracing.workspace = true
 
 rustlua-animation = { path = "../rustlua-animation" }
 rustlua-assets = { path = "../rustlua-assets" }
+rustlua-assets-import = { path = "../rustlua-assets-import" }
 rustlua-audio = { path = "../rustlua-audio" }
 rustlua-camera = { path = "../rustlua-camera" }
 rustlua-ecs = { path = "../rustlua-ecs" }

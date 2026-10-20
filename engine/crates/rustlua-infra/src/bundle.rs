@@ -54,6 +54,11 @@ pub const ENTRY_FLAG_RLTEX: u8 = 1;
 pub const ENTRY_FLAG_PRECOMPRESSED: u8 = 2;
 /// 索引前缀：zstd 版本号 + salt。
 const INDEX_PROLOGUE_LEN: usize = 8;
+/// 索引里一条块记录的固定长度：1 标志 + 4 落盘长 + 4 原始长。
+const BLOCK_RECORD_LEN: u64 = 9;
+/// 索引里一条条目记录的**最小**长度（名字为空时）：2 名字长 + 1 标志 + 4 块号 +
+/// 4 偏移 + 4 长度 + 8 校验和。名字本身另外按实际字节算。
+const ENTRY_RECORD_MIN_LEN: u64 = 23;
 /// 写入端对大块启用 L19 的阈值（解压后字节）。只被 `bundle-write` 用到。
 #[cfg(feature = "bundle-write")]
 const LARGE_BLOCK_THRESHOLD: u32 = 1024 * 1024;
@@ -64,6 +69,9 @@ const LARGE_BLOCK_THRESHOLD: u32 = 1024 * 1024;
 /// 但索引是在块处理**之后**才建出来的——先加密块、后建索引，拿 index_fnv 当 salt 是循环依赖。
 /// 这里改成对**条目表**（名字 + raw_len，天然已排序）取 FNV：构建初期就能算、读侧解析完索引
 /// 也能重算，且同样"由内容决定、不引入随机"（确定性要求见 §4.5）。
+///
+/// 只在写端（`bundle-write`）用得到：读端把 salt 当黑盒从索引头读回来。
+#[cfg(feature = "bundle-write")]
 fn bundle_salt<'a, I>(entries: I) -> u32
 where
     I: Iterator<Item = (&'a str, u32)>,
@@ -205,6 +213,20 @@ pub mod plan {
         /// 空串表示旧计划（不校验），保证向后可读。
         #[serde(default)]
         pub checksum: String,
+        /// 必须**留在目录里**的工程相对路径（打包期 `--keep` 命中的条目，典型是微信字体）。
+        ///
+        /// 进这里就等于一条发布期契约，由 `assetc closure` 断言：
+        /// - 每个路径在发布根里必须是**真实文件**（宿主 `wx.loadFont` 只吃本地真实路径，
+        ///   被塞进容器就加载失败）；
+        /// - 且**不得**出现在任何容器索引里（出现了说明 `--keep` 没生效：同一份资源双份占配额）。
+        ///
+        /// 只记**具体路径**而不是前缀规则：前缀是构建参数，会随版本变；契约必须随产物走。
+        ///
+        /// 为什么是 `Option` 而不是空 `Vec`：`None` = 这份计划是**本字段之前**的版本生成的
+        /// （那时还没有 keep 元数据），验证端据此知道"没有契约可查"，而不是把"旧计划"误读成
+        /// "声明了零条 keep"。新版本打出来的计划**总是**带这个键（哪怕是 `[]`）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub keep: Option<Vec<String>>,
     }
 
     impl BundlePlan {
@@ -217,6 +239,79 @@ pub mod plan {
                     "bundle_plan 格式不认：{}（期望 {PLAN_FORMAT}）",
                     plan.format
                 ));
+            }
+            // 结构自检**与 checksum 无关**：手改过/旧版本的计划表 checksum 可能是空的，
+            // 但"组名重复/容器被两组声明/unit 写错"这类结构错在任何版本里都是歧义——
+            // 允许它通过等于让读取端自己猜（猜错的症状是白图，不是报错）。
+            if plan.schema != 1 {
+                return Err(format!(
+                    "bundle_plan schema 不支持：{}（期望 1）",
+                    plan.schema
+                ));
+            }
+            if plan.block_size == 0 {
+                return Err("bundle_plan 的 block_size 不能为 0".to_owned());
+            }
+            if plan.groups.is_empty() {
+                return Err("bundle_plan 没有 groups".to_owned());
+            }
+            let mut names = std::collections::BTreeSet::new();
+            let mut bundles = std::collections::BTreeSet::new();
+            for group in &plan.groups {
+                if !names.insert(group.name.as_str()) {
+                    return Err(format!("bundle_plan 组名重复：{}", group.name));
+                }
+                if !group.bundle.starts_with("bundles/") || group.bundle.len() <= "bundles/".len() {
+                    return Err(format!(
+                        "bundle_plan 组 {} 的容器路径非法：{}（必须在 bundles/ 下）",
+                        group.name, group.bundle
+                    ));
+                }
+                if !bundles.insert(group.bundle.as_str()) {
+                    return Err(format!("bundle_plan 容器被多个组声明：{}", group.bundle));
+                }
+                crate::bundle_plan::parse_unit(&group.unit).map_err(|error| {
+                    format!("bundle_plan 组 {} 的 unit 非法：{error}", group.name)
+                })?;
+                // 组内路径：必须是**规范形式 + 严格升序**。读取端用二分查
+                // （`PlannedGroup::contains`），乱序或非规范形式不会报错，只会**静默查不到**——
+                // 症状是"包里有这个文件，运行期说没有"，即首屏白图。这类错位以前只能在
+                // 构建期 `check_plan` ⑤ 挡住，而运行期读的可能是别处传来的计划表。
+                let mut previous: Option<&str> = None;
+                for path in &group.paths {
+                    if crate::paths::normalize_project_path(path).as_deref() != Some(path.as_str())
+                    {
+                        return Err(format!(
+                            "bundle_plan 组 {} 的路径不是规范形式：{path:?}（必须是 `/` 分隔的工程相对路径）",
+                            group.name
+                        ));
+                    }
+                    if previous.is_some_and(|prev| prev >= path.as_str()) {
+                        return Err(format!(
+                            "bundle_plan 组 {} 的路径没有严格升序：{path:?}（乱序/重复会让二分查静默失效）",
+                            group.name
+                        ));
+                    }
+                    previous = Some(path.as_str());
+                }
+            }
+            // keep 条目：必须是规范形式、不重复、且不能同时又列在某个组里
+            // （同时出现说明 `--keep` 没生效：容器里一份、目录里一份，白占配额）。
+            let mut kept = std::collections::BTreeSet::new();
+            for path in plan.keep.iter().flatten() {
+                if crate::paths::normalize_project_path(path).as_deref() != Some(path.as_str()) {
+                    return Err(format!(
+                        "bundle_plan 的 keep 路径不是规范形式：{path}（必须是 `/` 分隔的工程相对路径）"
+                    ));
+                }
+                if !kept.insert(path.as_str()) {
+                    return Err(format!("bundle_plan 的 keep 路径重复：{path}"));
+                }
+                if plan.groups.iter().any(|group| group.contains(path)) {
+                    return Err(format!(
+                        "bundle_plan 的 keep 路径同时属于某个容器组：{path}（keep 与容器只能二选一）"
+                    ));
+                }
             }
             // 自校验：非空就必须对得上。空串是旧计划（本字段之前生成的），放行。
             if !plan.checksum.is_empty() {
@@ -398,7 +493,18 @@ impl BundleIndex {
             return Err(BundleError::UnsupportedVersion(version));
         }
         let flags = u16::from_le_bytes([bytes[6], bytes[7]]);
+        // v1 只定义"索引是否压缩"这一位。高位只可能来自损坏，或来自"改了格式却没升版本"——
+        // 两种都不该被静默当成 0 处理（症状会是"解出来的索引莫名其妙"）。
+        if flags & !HEADER_FLAG_INDEX_COMPRESSED != 0 {
+            return Err(BundleError::Header(format!(
+                "头标志 {flags:#06x} 含 v1 未定义的位（v1 只定义 {HEADER_FLAG_INDEX_COMPRESSED:#06x}）"
+            )));
+        }
         let block_size = u32::from_le_bytes(bytes[8..12].try_into().expect("4 字节"));
+        // 0 会让 AAD 与块缓存判据同时失去意义；写侧最小是 1（见 `BundleBuilder::new`）。
+        if block_size == 0 {
+            return Err(BundleError::Header("block_size = 0".to_owned()));
+        }
         let index_offset = u64::from_le_bytes(bytes[12..20].try_into().expect("8 字节"));
         let index_len = u32::from_le_bytes(bytes[20..24].try_into().expect("4 字节")) as usize;
         let index_raw_len = u32::from_le_bytes(bytes[24..28].try_into().expect("4 字节")) as usize;
@@ -418,19 +524,34 @@ impl BundleIndex {
                 bytes.len()
             )));
         }
+        // 写侧总把索引放在**文件末尾**（`build()` 里 `index_offset = HEADER_LEN + payload.len()`）。
+        // 尾部多出字节只有两种来源：拼接了半包、或被追加了垃圾。以前这类包照样能解析——
+        // 于是"多出来的那段是什么"永远没人问；现在当场点名。
+        if index_end != bytes.len() as u64 {
+            return Err(BundleError::Header(format!(
+                "索引结束于 {index_end}，文件长 {}：尾部多出 {} B（v1 不允许尾部数据）",
+                bytes.len(),
+                bytes.len() as u64 - index_end
+            )));
+        }
         let stored_index = &bytes[index_offset as usize..index_end as usize];
         let raw_index: Vec<u8> = if flags & HEADER_FLAG_INDEX_COMPRESSED != 0 {
-            zstd_decode(stored_index).map_err(|error| BundleError::Index(error.to_string()))?
+            zstd_decode(stored_index, index_raw_len)
+                .map_err(|error| BundleError::Index(error.to_string()))?
         } else {
             stored_index.to_vec()
         };
-        if index_raw_len != 0 && raw_index.len() != index_raw_len {
+        // 以前这里留着 `index_raw_len != 0` 的逃逸口：只要把头里的长度写成 0 就跳过交叉校验。
+        // 写侧永远写真实长度（索引至少 `INDEX_PROLOGUE_LEN + 8` B，不可能为 0），
+        // 所以 0 只可能是损坏——现在一律比对。
+        if raw_index.len() != index_raw_len {
             return Err(BundleError::Index(format!(
                 "索引解压长度 {} 与头记录的 {index_raw_len} 不符",
                 raw_index.len()
             )));
         }
         let (blocks, entries) = parse_index(&raw_index)?;
+        validate_layout(block_size, &blocks, &entries)?;
 
         let mut block_offsets = Vec::with_capacity(blocks.len());
         let mut cursor = HEADER_LEN as u64;
@@ -486,7 +607,8 @@ impl BundleIndex {
         self.block_size
     }
 
-    /// 全部条目路径（升序，`/` 分隔，工程相对）。
+    /// 全部条目路径，顺序与写入端一致：默认按名字升序，带优先级（`add_ranked`）时
+    /// 按 `(rank, 名字)`——**不是**恒定的字典序，解析侧也不强制排序（只强制唯一）。
     pub fn paths(&self) -> impl Iterator<Item = &str> {
         self.entries.iter().map(|entry| entry.path.as_str())
     }
@@ -566,9 +688,29 @@ fn parse_index(raw: &[u8]) -> Result<(Vec<Block>, Vec<Entry>), BundleError> {
     }
     let entry_count = u32::from_le_bytes(take!(4).try_into().expect("4 字节")) as usize;
     let block_count = u32::from_le_bytes(take!(4).try_into().expect("4 字节")) as usize;
+    // 先用"剩余字节能装下多少条"把声明值兜住，再 `with_capacity`。
+    //
+    // 为什么：`entry_count` 是 u32，一个 16 B 的坏索引可以声明 40 亿条。直接
+    // `Vec::with_capacity(4e9)` 会先向系统要几十 GB 到上百 GB——原生是 OOM/被 kill，
+    // wasm 上是 `abort`，两者都**不是**"坏容器报错"。每个块记录固定 9 B、每个条目记录
+    // 至少 23 B（2 名字长 + 名字 + 1 标志 + 4 块号 + 4 偏移 + 4 长度 + 8 校验和），
+    // 所以这个上界既不误伤合法包，又能让坏包在**分配之前**就失败。
+    let needed = BLOCK_RECORD_LEN * block_count as u64 + ENTRY_RECORD_MIN_LEN * entry_count as u64;
+    let remaining = (raw.len() - cursor) as u64;
+    if needed > remaining {
+        return Err(BundleError::Index(format!(
+            "声明 {entry_count} 条目 + {block_count} 块至少需要 {needed} B，索引只剩 {remaining} B"
+        )));
+    }
     let mut blocks = Vec::with_capacity(block_count);
-    for _ in 0..block_count {
+    for number in 0..block_count {
         let flags = take!(1)[0];
+        let known = BLOCK_FLAG_COMPRESSED | BLOCK_FLAG_LARGE | BLOCK_FLAG_ENCRYPTED;
+        if flags & !known != 0 {
+            return Err(BundleError::Index(format!(
+                "块 {number} 标志 {flags:#04x} 含 v1 未定义的位（v1 只定义 {known:#04x}）"
+            )));
+        }
         let stored_len = u32::from_le_bytes(take!(4).try_into().expect("4 字节"));
         let raw_len = u32::from_le_bytes(take!(4).try_into().expect("4 字节"));
         blocks.push(Block {
@@ -582,7 +724,20 @@ fn parse_index(raw: &[u8]) -> Result<(Vec<Block>, Vec<Entry>), BundleError> {
         let name_len = u16::from_le_bytes(take!(2).try_into().expect("2 字节")) as usize;
         let path = String::from_utf8(take!(name_len).to_vec())
             .map_err(|_| BundleError::Index("条目名不是 UTF-8".to_owned()))?;
+        // 读侧与写侧必须**同一份路径口径**（`paths::normalize_project_path`）。写侧一直在
+        // 规范化/拒绝，读侧以前只查 UTF-8：于是 `assets\\a.png`、`./a.png`、`a//b.png`
+        // 这类名字能进索引，然后在 `BundleSet::key_of` 的规范化键下**永远查不到**——
+        // 症状是"包里有这个文件，游戏说没有"，且没有任何日志。现在解析期就点名。
+        if crate::paths::normalize_project_path(&path).as_deref() != Some(path.as_str()) {
+            return Err(BundleError::InvalidPath(path));
+        }
         let flags = take!(1)[0];
+        let known = ENTRY_FLAG_RLTEX | ENTRY_FLAG_PRECOMPRESSED;
+        if flags & !known != 0 {
+            return Err(BundleError::Index(format!(
+                "条目 {path} 标志 {flags:#04x} 含 v1 未定义的位（v1 只定义 {known:#04x}）"
+            )));
+        }
         let block = u32::from_le_bytes(take!(4).try_into().expect("4 字节"));
         let offset = u32::from_le_bytes(take!(4).try_into().expect("4 字节"));
         let len = u32::from_le_bytes(take!(4).try_into().expect("4 字节"));
@@ -596,16 +751,178 @@ fn parse_index(raw: &[u8]) -> Result<(Vec<Block>, Vec<Entry>), BundleError> {
             checksum,
         });
     }
+    // 条目/块记录之后还有字节，说明索引本身被拼接或写坏了。以前这些字节被静默忽略：
+    // 头里的 `index_raw_len` 只约束"解出来多长"，不约束"这些字节有没有人消费"。
+    // 写侧产出的索引恰好是 prologue + 计数 + 记录，所以 `cursor` 必须落在末尾。
+    if cursor != raw.len() {
+        return Err(BundleError::Index(format!(
+            "索引尾部多出 {} B（声明的 {entry_count} 条目 + {block_count} 块之后还有数据）",
+            raw.len() - cursor
+        )));
+    }
     Ok((blocks, entries))
 }
 
-fn zstd_decode(frame: &[u8]) -> Result<Vec<u8>, BundleError> {
+/// 块表与条目表的**联合**不变量：单看一边看不出问题的那些"坏容器"在这里一次挡住。
+///
+/// 三条都直接来自写侧（`BundleBuilder::build`）的保证，因此不会误伤合法包：
+/// 1. 块只能由条目产生（写侧只在有条目时建块），所以"有块没条目"和"某个块没有任何条目
+///    引用"都是坏包——后者以前只对**空块**检查，非空块可以白占一段永远读不到的 payload；
+/// 2. 非空块的落盘长度必为正（zstd 帧至少 1 B；不压缩时存的就是原字节）；空块只可能是
+///    "全部条目都是空文件"那一档，且落盘长度必须是 0；
+/// 3. `raw_len > block_size` 只有一种合法来源：单个条目自身就超过块大小、独占一块
+///    （`oversized` 分支）。所以这种块必须有一个**完整覆盖它**的条目
+///    （`offset == 0 && len == raw_len`）。这一条挡的是"raw_len 撒了 4 GB 的谎"——
+///    读侧会照着它解码/判缓存档，而错误直到解压或校验和才暴露，中途还可能先吃掉内存。
+fn validate_layout(
+    block_size: u32,
+    blocks: &[Block],
+    entries: &[Entry],
+) -> Result<(), BundleError> {
+    if blocks.is_empty() && entries.is_empty() {
+        return Ok(());
+    }
+    if entries.is_empty() {
+        return Err(BundleError::Index(format!(
+            "块表有 {} 块，但条目表为空（写侧不会产出没有被引用的块）",
+            blocks.len()
+        )));
+    }
+    // 块号越界由 `parse` 用带路径 + 块号的错误点名；这里先让路，避免"某个块没人引用"
+    // 把那条更具体的报错盖掉（两者都是坏包，但后者更容易定位）。
+    if entries
+        .iter()
+        .any(|entry| entry.block as usize >= blocks.len())
+    {
+        return Ok(());
+    }
+    let mut owners = vec![0u32; blocks.len()];
+    let mut covered = vec![false; blocks.len()];
+    for entry in entries {
+        let number = entry.block as usize;
+        // 块号越界 / 条目越界在 `parse` 里已有更具体的报错（带路径与块号），这里跳过。
+        let Some(block) = blocks.get(number) else {
+            continue;
+        };
+        owners[number] += 1;
+        if entry.offset == 0 && entry.len == block.raw_len && block.raw_len != 0 {
+            covered[number] = true;
+        }
+    }
+    for (number, block) in blocks.iter().enumerate() {
+        // 每个块都必须有归属：写侧的 `blocks` 全部由条目切出来，不存在"填充块"或
+        // "预热块"。没有归属的块永远读不到，只会让容器白大一段、且没人能解释它是什么。
+        if owners[number] == 0 {
+            return Err(BundleError::Index(format!(
+                "块 {number} 没有任何条目引用（写侧不会产出这种块）"
+            )));
+        }
+        if block.raw_len == 0 {
+            if block.stored_len != 0 {
+                return Err(BundleError::Index(format!(
+                    "空块 {number} 的落盘长度是 {} B（只能是 0）",
+                    block.stored_len
+                )));
+            }
+            continue;
+        }
+        if block.stored_len == 0 {
+            return Err(BundleError::Index(format!(
+                "块 {number} 的 raw_len 是 {} B 但落盘长度是 0",
+                block.raw_len
+            )));
+        }
+        if u64::from(block.raw_len) > u64::from(block_size) && !covered[number] {
+            return Err(BundleError::Index(format!(
+                "块 {number} 的 raw_len {} 超过 block_size {block_size}，却没有条目完整覆盖它\
+                 （写侧只在\"单条目超块\"时这样写）",
+                block.raw_len
+            )));
+        }
+    }
+    validate_block_spans(blocks, entries)
+}
+
+/// 每个块内的字节区间必须**互不重叠、且恰好铺满** `raw_len`。
+///
+/// 写侧（`BundleBuilder::build`）逐条目顺序切块，所以这两条是构造出来的必然结果；
+/// 一旦被破坏，只可能是索引被改过（或打包器回归）：
+///
+/// - **重叠**：两条路径指向同一段字节。危害是**静默的内容错乱**——条目 FNV 也存在索引里，
+///   篡改者把 `a.png` 的 `offset/len` 指到 `b.png` 的字节、同时写上 `b.png` 的校验和，
+///   校验和照样通过，游戏读到的是另一张图。这是"包没坏、内容却错"的唯一通道。
+/// - **空洞**：块里有一段字节没有任何条目解释。读者永远读不到它，于是它既可以夹带数据，
+///   也说明 `raw_len` 或条目表被动过（`raw_len` 撒谎的那一档已有更具体的报错）。
+///
+/// 零长条目（空文件）不参与区间计算：写侧会把它们都放在块尾，多个空文件共享同一个
+/// `offset` 是**合法**的，不能当成重叠。
+fn validate_block_spans(blocks: &[Block], entries: &[Entry]) -> Result<(), BundleError> {
+    let mut spans: Vec<Vec<(u64, u64, &str)>> = vec![Vec::new(); blocks.len()];
+    for entry in entries {
+        let Some(slot) = spans.get_mut(entry.block as usize) else {
+            continue;
+        };
+        if entry.len != 0 {
+            slot.push((
+                u64::from(entry.offset),
+                u64::from(entry.offset) + u64::from(entry.len),
+                entry.path.as_str(),
+            ));
+        }
+    }
+    for (number, block) in blocks.iter().enumerate() {
+        let mut list = std::mem::take(&mut spans[number]);
+        list.sort_unstable();
+        let mut cursor: u64 = 0;
+        let mut previous: Option<&str> = None;
+        for (start, end, path) in &list {
+            if *start < cursor {
+                return Err(BundleError::Index(format!(
+                    "块 {number} 的条目 {path} 与 {} 重叠（{start}..{end} 落在已覆盖的 0..{cursor} 里）",
+                    previous.unwrap_or("<未知>")
+                )));
+            }
+            cursor = *end;
+            previous = Some(path);
+        }
+        // `raw_len == 0` 的块（只装空文件）没有区间，自然铺满。
+        if cursor != u64::from(block.raw_len) {
+            return Err(BundleError::Index(format!(
+                "块 {number} 的条目只覆盖 0..{cursor}，raw_len 是 {}（有空洞：那段字节没有任何条目解释）",
+                block.raw_len
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn zstd_decode(frame: &[u8], limit: usize) -> Result<Vec<u8>, BundleError> {
     let mut decoder = ruzstd::decoding::StreamingDecoder::new(std::io::Cursor::new(frame))
         .map_err(|error| BundleError::Source(format!("zstd 帧头解析失败：{error}")))?;
-    let mut out = Vec::new();
-    decoder
-        .read_to_end(&mut out)
-        .map_err(|error| BundleError::Source(format!("zstd 解压失败：{error}")))?;
+    // 解压上限来自容器自己声明的长度（索引 `index_raw_len` / 块 `raw_len`），本不该
+    // 被突破。以前 `read_to_end` 无上限：一个几 KB 的 zstd 帧可以要求几百 MB 到几 GB
+    // 的输出，坏容器于是以 OOM / wasm `abort` 收场，而不是"长度字段撒谎"这条具体错误。
+    //
+    // 用固定大小缓冲逐段读，而不是 `Vec::with_capacity(limit)` 或 `Read::take`：
+    // 后者可能按攻击者声明的上限预分配，仍然把内存交出去。这里 `out` 最多长到 `limit`
+    // 多一个读块，超过就立刻报错。
+    const CHUNK: usize = 16 * 1024;
+    let mut out = Vec::with_capacity(limit.min(CHUNK));
+    let mut buffer = [0u8; CHUNK];
+    loop {
+        let read = decoder
+            .read(&mut buffer)
+            .map_err(|error| BundleError::Source(format!("zstd 解压失败：{error}")))?;
+        if read == 0 {
+            break;
+        }
+        if out.len().saturating_add(read) > limit {
+            return Err(BundleError::Source(format!(
+                "zstd 解压后超过声明的 {limit} B（坏容器或长度字段撒谎）"
+            )));
+        }
+        out.extend_from_slice(&buffer[..read]);
+    }
     Ok(out)
 }
 
@@ -712,9 +1029,14 @@ impl<S: BlockSource> BundleReader<S> {
             return Ok(None);
         };
         let block = self.block(entry.block)?;
-        let start = entry.offset as usize;
-        let end = start + entry.len as usize;
-        if end > block.len() {
+        // 用 u64 算区间再落到 usize：wasm32 上 `usize` 只有 32 位，`offset + len` 会在
+        // `offset`/`len` 都是 u32 时**回绕**成一个小数，`end > block.len()` 于是判不出来，
+        // 接着 `block[start..end]` 的 `start > end` 直接 panic。索引已经保证
+        // `offset + len <= raw_len`（见 `parse`），这里是第二道：坏索引不该以 panic 收场。
+        let start = u64::from(entry.offset);
+        let end = start + u64::from(entry.len);
+        let block_len = block.len() as u64;
+        if end > block_len {
             return Err(BundleError::EntryOutOfBlock {
                 path: entry.path.clone(),
                 block: entry.block,
@@ -723,6 +1045,7 @@ impl<S: BlockSource> BundleReader<S> {
                 block_len: block.len() as u32,
             });
         }
+        let (start, end) = (start as usize, end as usize);
         let bytes = block[start..end].to_vec();
         if verify {
             let actual = checksum(&bytes);
@@ -783,9 +1106,11 @@ impl<S: BlockSource> BundleReader<S> {
             stored
         };
         let raw = if block.is_compressed() {
-            let decoded = zstd_decode(&stored).map_err(|error| BundleError::BlockDecode {
-                block: number,
-                reason: error.to_string(),
+            let decoded = zstd_decode(&stored, block.raw_len as usize).map_err(|error| {
+                BundleError::BlockDecode {
+                    block: number,
+                    reason: error.to_string(),
+                }
             })?;
             if decoded.len() != block.raw_len as usize {
                 return Err(BundleError::BlockDecode {
@@ -930,10 +1255,6 @@ impl BundleSet {
         }
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
     /// 已挂载的包名（按挂载顺序）。
     pub fn mounted_names(&self) -> impl Iterator<Item = &str> {
         self.mounted.iter().map(|m| m.name.as_str())
@@ -980,11 +1301,14 @@ impl BundleSet {
         }
     }
 
-    /// 路径 → 条目名（相对工程根、`/` 分隔）。不在工程根下返回 `None`。
+    /// 路径 → 条目名（相对工程根、`/` 分隔）。不在工程根下或路径非法返回 `None`。
     pub fn key_of(&self, path: &Path) -> Option<String> {
         let relative = path.strip_prefix(&self.root).ok()?;
-        let key = relative.to_string_lossy().replace('\\', "/");
-        Some(key.trim_start_matches('/').to_owned())
+        let raw = relative.to_string_lossy();
+        if raw.is_empty() || raw == "." {
+            return Some(String::new());
+        }
+        crate::paths::normalize_project_path(&raw)
     }
 
     /// 按条目名读（先挂的先命中）。
@@ -1248,8 +1572,10 @@ mod writer {
             bytes: Vec<u8>,
             rank: u8,
         ) -> Result<(), BundleError> {
-            self.ranks.insert(path.to_owned(), rank);
-            self.add(path, bytes)
+            let normalized = crate::paths::normalize_project_path(path)
+                .ok_or_else(|| BundleError::InvalidPath(path.to_owned()))?;
+            self.ranks.insert(normalized.clone(), rank);
+            self.add(&normalized, bytes)
         }
 
         /// 打开块级 AEAD（`--encrypt`）：每块独立 ChaCha20Poly1305，nonce/AAD 见
@@ -1264,19 +1590,18 @@ mod writer {
         }
 
         pub fn add(&mut self, path: &str, bytes: Vec<u8>) -> Result<(), BundleError> {
-            if path.is_empty() || path.contains('\0') {
-                return Err(BundleError::InvalidPath(path.to_owned()));
-            }
+            let path = crate::paths::normalize_project_path(path)
+                .ok_or_else(|| BundleError::InvalidPath(path.to_owned()))?;
             if path.len() > u16::MAX as usize {
                 return Err(BundleError::InvalidPath(format!(
                     "{path}（名字 {} B 超过 u16 上限）",
                     path.len()
                 )));
             }
-            if self.entries.iter().any(|(existing, _)| existing == path) {
-                return Err(BundleError::DuplicateEntry(path.to_owned()));
+            if self.entries.iter().any(|(existing, _)| existing == &path) {
+                return Err(BundleError::DuplicateEntry(path));
             }
-            self.entries.push((path.to_owned(), bytes));
+            self.entries.push((path, bytes));
             Ok(())
         }
 
@@ -1308,7 +1633,11 @@ mod writer {
                 let oversized = bytes.len() > self.block_size as usize;
                 if oversized {
                     // 先把当前块收尾，大条目再独占一块。
-                    if !current.buf.is_empty() {
+                    //
+                    // 判据看的是**条目**而不只是字节：空文件不会往 `buf` 里写任何字节，
+                    // 只看 `buf` 会把"只装着空文件的那个块"连同块里的条目一起丢掉
+                    // （症状：容器里这几条路径彻底消失，`read` 返回 `None`、零报错）。
+                    if !current.buf.is_empty() || !current.entries.is_empty() {
                         blocks.push(std::mem::replace(&mut current, empty_block()));
                     }
                     let block_number = blocks.len() as u32;
@@ -1342,7 +1671,8 @@ mod writer {
                 });
                 current.buf.extend_from_slice(bytes);
             }
-            if !current.buf.is_empty() {
+            // 同上：有条目就得收尾（全空文件的容器否则会产出"零条目"的包）。
+            if !current.buf.is_empty() || !current.entries.is_empty() {
                 blocks.push(current);
             }
 
@@ -1509,6 +1839,7 @@ mod tests {
                 paths: vec!["scripts/main.lua".to_owned()],
             }],
             checksum: String::new(),
+            keep: None,
         }
         .sealed();
         let bytes = serde_json::to_vec_pretty(&plan).unwrap();
@@ -1523,9 +1854,83 @@ mod tests {
         assert!(error.contains("自校验失败"), "{error}");
 
         // 旧计划（没有 checksum 字段）仍然可读：向后兼容不能为了自校验牺牲
-        let legacy =
-            br#"{"schema":1,"format":"assetc-bundle-plan-1","block_size":262144,"groups":[]}"#;
-        assert!(BundlePlan::parse(legacy).is_ok(), "旧计划必须还能解析");
+        let legacy = br#"{"schema":1,"format":"assetc-bundle-plan-1","block_size":262144,
+            "groups":[{"name":"core","unit":"main","bundle":"bundles/core-1a2b3c4d.rlb",
+            "hash":"","entries":1,"raw_bytes":1,"bundle_bytes":1,"paths":["project.toml"]}]}"#;
+        assert!(
+            BundlePlan::parse(legacy).is_ok(),
+            "旧计划（无 checksum，但结构合法）必须还能解析"
+        );
+    }
+
+    /// 结构自检与 checksum 无关：手改过/无自校验的计划表也要拒绝**有歧义**的结构，
+    /// 否则读取端只能自己猜，猜错的表现是白图而不是报错。
+    #[test]
+    fn plan_structure_is_validated_even_without_checksum() {
+        use crate::bundle::plan::{BundlePlan, PLAN_FORMAT, PlannedGroup};
+
+        let group = |name: &str, unit: &str, bundle: &str| PlannedGroup {
+            name: name.to_owned(),
+            unit: unit.to_owned(),
+            bundle: bundle.to_owned(),
+            hash: String::new(),
+            entries: 1,
+            raw_bytes: 1,
+            bundle_bytes: 1,
+            paths: vec!["project.toml".to_owned()],
+        };
+        let plan = |groups: Vec<PlannedGroup>| BundlePlan {
+            schema: 1,
+            format: PLAN_FORMAT.to_owned(),
+            block_size: DEFAULT_BLOCK_SIZE,
+            groups,
+            checksum: String::new(),
+            keep: None,
+        };
+        let encode = |groups: Vec<PlannedGroup>| serde_json::to_vec(&plan(groups)).unwrap();
+
+        assert!(
+            BundlePlan::parse(&encode(vec![group("core", "main", "bundles/core.rlb")])).is_ok()
+        );
+        // 组名重复
+        let error = BundlePlan::parse(&encode(vec![
+            group("core", "main", "bundles/a.rlb"),
+            group("core", "sub", "bundles/b.rlb"),
+        ]))
+        .expect_err("组名重复必须被拒绝");
+        assert!(error.contains("组名重复"), "{error}");
+        // 一个容器被两个组声明
+        let error = BundlePlan::parse(&encode(vec![
+            group("core", "main", "bundles/a.rlb"),
+            group("art", "sub", "bundles/a.rlb"),
+        ]))
+        .expect_err("容器共用必须被拒绝");
+        assert!(error.contains("被多个组声明"), "{error}");
+        // unit 写错 / 容器不在 bundles/ 下 / block_size = 0 / schema 不认识
+        assert!(
+            BundlePlan::parse(&encode(vec![group("core", "bundle", "bundles/a.rlb")]))
+                .expect_err("未知 unit 必须被拒绝")
+                .contains("unit 非法")
+        );
+        assert!(
+            BundlePlan::parse(&encode(vec![group("core", "main", "core.rlb")]))
+                .expect_err("容器必须在 bundles/ 下")
+                .contains("容器路径非法")
+        );
+        let mut zero = plan(vec![group("core", "main", "bundles/a.rlb")]);
+        zero.block_size = 0;
+        assert!(
+            BundlePlan::parse(&serde_json::to_vec(&zero).unwrap())
+                .expect_err("block_size = 0 必须被拒绝")
+                .contains("block_size")
+        );
+        let mut future = plan(vec![group("core", "main", "bundles/a.rlb")]);
+        future.schema = 2;
+        assert!(
+            BundlePlan::parse(&serde_json::to_vec(&future).unwrap())
+                .expect_err("未知 schema 必须被拒绝")
+                .contains("schema")
+        );
     }
 
     /// 批 F：块级 AEAD——加密后不可直接读、正确密钥能读、错块/坏字节必须响亮。
@@ -1653,6 +2058,7 @@ mod tests {
             block_size: DEFAULT_BLOCK_SIZE,
             groups,
             checksum: String::new(),
+            keep: None,
         };
 
         // 本地有 core(v1)+audio(v1)；远端 core(v1)+audio(v2)+新增 art
@@ -1717,6 +2123,107 @@ mod tests {
             out.push((state & 0xff) as u8);
         }
         out
+    }
+
+    /// 手工装配容器：**写侧永远不会产出的字节组合，必须由读侧挡住**，所以坏包得自己拼。
+    ///
+    /// 只拼未压缩索引（`header_flags = 0`）：这样用例不依赖 zstd 的编码端，"索引被压"
+    /// 那条路径已由写侧既有用例覆盖。头部 FNV 按拼出来的 28 B 现算，所以改头字段
+    /// （标志位/块大小/索引长度）不会先撞上"包头损坏"。
+    #[derive(Clone)]
+    struct Craft {
+        block_size: u32,
+        header_flags: u16,
+        payload: Vec<u8>,
+        /// `(flags, stored_len, raw_len)`
+        blocks: Vec<(u8, u32, u32)>,
+        entries: Vec<CraftEntry>,
+        /// `None` = 写真实长度；`Some(n)` 用来伪造头里的记录值。
+        index_raw_len: Option<u32>,
+        /// 追加在（未压缩）索引记录之后的多余字节：`index_raw_len` 会把它算进去。
+        index_trailing: Vec<u8>,
+        trailing: Vec<u8>,
+    }
+
+    #[derive(Clone)]
+    struct CraftEntry {
+        path: String,
+        flags: u8,
+        block: u32,
+        offset: u32,
+        len: u32,
+        checksum: u64,
+    }
+
+    impl Craft {
+        fn new() -> Self {
+            Self {
+                block_size: DEFAULT_BLOCK_SIZE,
+                header_flags: 0,
+                payload: Vec::new(),
+                blocks: Vec::new(),
+                entries: Vec::new(),
+                index_raw_len: None,
+                index_trailing: Vec::new(),
+                trailing: Vec::new(),
+            }
+        }
+
+        /// 追加"一个块 + 一个完整覆盖它的条目"（最常见的那种合法形态）。
+        fn single(mut self, path: &str, bytes: &[u8]) -> Self {
+            let block = self.blocks.len() as u32;
+            self.blocks
+                .push((0, bytes.len() as u32, bytes.len() as u32));
+            self.payload.extend_from_slice(bytes);
+            self.entries.push(CraftEntry {
+                path: path.to_owned(),
+                flags: 0,
+                block,
+                offset: 0,
+                len: bytes.len() as u32,
+                checksum: checksum(bytes),
+            });
+            self
+        }
+
+        fn bytes(&self) -> Vec<u8> {
+            let mut index_raw = Vec::new();
+            index_raw.extend_from_slice(&0u32.to_le_bytes()); // zstd_version
+            index_raw.extend_from_slice(&0u32.to_le_bytes()); // salt
+            index_raw.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
+            index_raw.extend_from_slice(&(self.blocks.len() as u32).to_le_bytes());
+            for (flags, stored_len, raw_len) in &self.blocks {
+                index_raw.push(*flags);
+                index_raw.extend_from_slice(&stored_len.to_le_bytes());
+                index_raw.extend_from_slice(&raw_len.to_le_bytes());
+            }
+            for entry in &self.entries {
+                index_raw.extend_from_slice(&(entry.path.len() as u16).to_le_bytes());
+                index_raw.extend_from_slice(entry.path.as_bytes());
+                index_raw.push(entry.flags);
+                index_raw.extend_from_slice(&entry.block.to_le_bytes());
+                index_raw.extend_from_slice(&entry.offset.to_le_bytes());
+                index_raw.extend_from_slice(&entry.len.to_le_bytes());
+                index_raw.extend_from_slice(&entry.checksum.to_le_bytes());
+            }
+            index_raw.extend_from_slice(&self.index_trailing);
+            let index_offset = (HEADER_LEN + self.payload.len()) as u64;
+            let index_raw_len = self.index_raw_len.unwrap_or(index_raw.len() as u32);
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(BUNDLE_MAGIC);
+            bytes.extend_from_slice(&BUNDLE_VERSION.to_le_bytes());
+            bytes.extend_from_slice(&self.header_flags.to_le_bytes());
+            bytes.extend_from_slice(&self.block_size.to_le_bytes());
+            bytes.extend_from_slice(&index_offset.to_le_bytes());
+            bytes.extend_from_slice(&(index_raw.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&index_raw_len.to_le_bytes());
+            let header_fnv = checksum(&bytes) as u32;
+            bytes.extend_from_slice(&header_fnv.to_le_bytes());
+            bytes.extend_from_slice(&self.payload);
+            bytes.extend_from_slice(&index_raw);
+            bytes.extend_from_slice(&self.trailing);
+            bytes
+        }
     }
 
     #[test]
@@ -1892,6 +2399,52 @@ mod tests {
         ));
     }
 
+    /// 构建端必须与读取端同一口径：非规范化路径要么被规范化，要么当场拒绝。
+    /// 否则会出现"包建成功了，运行期 `BundleSet::key_of` 永远查不到"的静默缺件。
+    #[test]
+    fn builder_normalizes_or_rejects_non_canonical_paths() {
+        let mut builder = BundleBuilder::new(DEFAULT_BLOCK_SIZE);
+        builder.add(r"assets\art\\a.png", b"1".to_vec()).unwrap();
+        builder.add("./assets/art/b.png", b"2".to_vec()).unwrap();
+        // 规范化之后与前一条同名 → 重复条目（而不是两个查不到的键）。
+        assert!(matches!(
+            builder
+                .add(r"assets\\art/a.png", b"3".to_vec())
+                .unwrap_err(),
+            BundleError::DuplicateEntry(_)
+        ));
+        for bad in [
+            "../escape.png",
+            "/abs.png",
+            r"C:\win.png",
+            "a/../../b.png",
+            ".",
+        ] {
+            assert!(
+                matches!(
+                    builder.add(bad, b"x".to_vec()).unwrap_err(),
+                    BundleError::InvalidPath(_)
+                ),
+                "{bad:?} 必须被拒绝"
+            );
+        }
+        let built = builder.build().unwrap();
+        let index = BundleIndex::parse(&built.bytes).unwrap();
+        let paths: Vec<&str> = index.paths().collect();
+        assert_eq!(paths, vec!["assets/art/a.png", "assets/art/b.png"]);
+    }
+
+    #[test]
+    fn key_of_uses_canonical_project_relative_paths() {
+        let set = BundleSet::new("/project");
+        assert_eq!(
+            set.key_of(Path::new("/project/scripts/./data//items.lua")),
+            Some("scripts/data/items.lua".to_owned())
+        );
+        assert_eq!(set.key_of(Path::new("/project/../outside.lua")), None);
+        assert_eq!(set.key_of(Path::new("/project2/scripts/main.lua")), None);
+    }
+
     #[test]
     fn truncated_bundle_is_rejected_not_panicking() {
         let built = build(&[("a.txt", b"aaa".as_slice())]);
@@ -1899,5 +2452,364 @@ mod tests {
             let error = BundleIndex::parse(&built.bytes[..cut]).unwrap_err();
             assert!(matches!(error, BundleError::Header(_)), "cut={cut}");
         }
+    }
+
+    /// 正对照：手工装配的"合法"容器必须能解析并读回。
+    ///
+    /// 没有这一条，下面那批负向用例可能只是"手拼的字节本来就坏"，挡住的不是不变量。
+    #[test]
+    fn crafted_container_is_valid_until_an_invariant_is_broken() {
+        let bytes = Craft::new().single("a.txt", b"aaa").bytes();
+        let index = BundleIndex::parse(&bytes).unwrap();
+        let mut r = BundleReader::new(index, MemSource::new(bytes));
+        assert_eq!(r.read("a.txt").unwrap().unwrap(), b"aaa");
+    }
+
+    /// 头里的 `index_raw_len` 以前有 `!= 0` 的逃逸口：写成 0 就跳过交叉校验。
+    /// 写侧永远写真实长度（索引至少 16 B），所以 0 只能是损坏。
+    #[test]
+    fn recorded_index_len_is_always_cross_checked() {
+        let mut craft = Craft::new().single("a.txt", b"aaa");
+        craft.index_raw_len = Some(0);
+        let error = BundleIndex::parse(&craft.bytes()).unwrap_err();
+        assert!(matches!(error, BundleError::Index(_)), "得到 {error:?}");
+
+        // 少报一个字节同样要红（不只看 0 这档）。
+        let mut craft = Craft::new().single("a.txt", b"aaa");
+        craft.index_raw_len = Some(1);
+        let error = BundleIndex::parse(&craft.bytes()).unwrap_err();
+        assert!(matches!(error, BundleError::Index(_)), "得到 {error:?}");
+    }
+
+    #[test]
+    fn block_size_zero_is_rejected() {
+        let mut craft = Craft::new().single("a.txt", b"aaa");
+        craft.block_size = 0;
+        let error = BundleIndex::parse(&craft.bytes()).unwrap_err();
+        assert!(matches!(error, BundleError::Header(_)), "得到 {error:?}");
+    }
+
+    #[test]
+    fn trailing_bytes_are_rejected() {
+        let mut craft = Craft::new().single("a.txt", b"aaa");
+        craft.trailing = b"junk-from-a-bad-copy".to_vec();
+        let error = BundleIndex::parse(&craft.bytes()).unwrap_err();
+        assert!(
+            matches!(&error, BundleError::Header(text) if text.contains("尾部")),
+            "得到 {error:?}"
+        );
+    }
+
+    /// 索引**自己**尾部多出字节（不是文件尾部，而是声明记录之后）以前被静默忽略：
+    /// `index_raw_len` 只约束解出来多长，不约束这些字节有没有人消费。
+    #[test]
+    fn trailing_bytes_inside_index_are_rejected() {
+        let mut craft = Craft::new().single("a.txt", b"aaa");
+        craft.index_trailing = b"extra-index-bytes".to_vec();
+        let error = BundleIndex::parse(&craft.bytes()).unwrap_err();
+        assert!(
+            matches!(&error, BundleError::Index(text) if text.contains("索引尾部")),
+            "得到 {error:?}"
+        );
+    }
+
+    /// 解压上限取自容器声明的长度：坏容器不能用几 KB 的 zstd 帧要求几百 MB 的输出。
+    #[test]
+    fn zstd_decode_respects_declared_limit() {
+        let frame = zstd::bulk::compress(&vec![7u8; 4096], 3).unwrap();
+        let error = zstd_decode(&frame, 64).expect_err("超过声明长度必须报错");
+        assert!(
+            matches!(&error, BundleError::Source(text) if text.contains("超过声明")),
+            "得到 {error:?}"
+        );
+        // 正对照：恰好等于声明长度必须通过（防"上限写成 < 而不是 >"）。
+        assert_eq!(zstd_decode(&frame, 4096).unwrap(), vec![7u8; 4096]);
+    }
+
+    /// 非空块也必须被至少一个条目引用。以前只检查空块，于是"多塞一段 payload 再让
+    /// 块表里有个没人引用的块"可以解析成功——那段字节永远读不到、也永远没人解释。
+    #[test]
+    fn unreferenced_non_empty_block_is_rejected() {
+        let mut craft = Craft::new().single("a.txt", b"aaaa");
+        craft.blocks.push((0, 4, 4));
+        craft.payload.extend_from_slice(b"bbbb");
+        let error = BundleIndex::parse(&craft.bytes()).unwrap_err();
+        assert!(
+            matches!(&error, BundleError::Index(text) if text.contains("没有任何条目引用")),
+            "得到 {error:?}"
+        );
+    }
+
+    /// 同一块里两条路径指向重叠的字节段：**静默的内容错乱**通道。
+    ///
+    /// 条目 FNV 也存在索引里，所以"改 offset 指到邻居的字节 + 抄邻居的校验和"能过所有
+    /// 校验和检查，游戏读到的是另一张图。写侧逐条目顺序切块、不可能重叠，故解析期拒绝。
+    #[test]
+    fn overlapping_entries_in_one_block_are_rejected() {
+        let mut craft = Craft::new().single("a.txt", b"aaaabbbb");
+        craft.entries.push(CraftEntry {
+            path: "b.txt".to_owned(),
+            flags: 0,
+            block: 0,
+            offset: 4,
+            len: 4,
+            checksum: checksum(b"bbbb"),
+        });
+        let error = BundleIndex::parse(&craft.bytes()).unwrap_err();
+        assert!(
+            matches!(&error, BundleError::Index(text) if text.contains("重叠")),
+            "得到 {error:?}"
+        );
+
+        // 完全同一段（不同路径）同样是重叠，不能被"相同区间"混过去。
+        let mut alias = Craft::new().single("a.txt", b"aaaa");
+        alias.entries.push(CraftEntry {
+            path: "copy.txt".to_owned(),
+            flags: 0,
+            block: 0,
+            offset: 0,
+            len: 4,
+            checksum: checksum(b"aaaa"),
+        });
+        let error = BundleIndex::parse(&alias.bytes()).unwrap_err();
+        assert!(
+            matches!(&error, BundleError::Index(text) if text.contains("重叠")),
+            "得到 {error:?}"
+        );
+    }
+
+    /// 相邻不重叠的区间必须照常通过（负向用例不能顺手挡掉正常索引）。
+    #[test]
+    fn adjacent_entries_and_shared_empty_offsets_are_accepted() {
+        let mut craft = Craft::new().single("a.txt", b"aaaabbbb");
+        craft.entries.push(CraftEntry {
+            path: "b.txt".to_owned(),
+            flags: 0,
+            block: 0,
+            offset: 4,
+            len: 4,
+            checksum: checksum(b"bbbb"),
+        });
+        craft.entries[0].len = 4;
+        craft.entries[0].checksum = checksum(b"aaaa");
+        let index = BundleIndex::parse(&craft.bytes()).expect("相邻区间合法");
+        assert!(index.contains("a.txt") && index.contains("b.txt"));
+
+        // 多个空文件共享块尾的同一个 offset 是写侧的常态，不能算重叠。
+        let mut empties = Craft::new().single("a.txt", b"aaaa");
+        for path in ["e1.txt", "e2.txt"] {
+            empties.entries.push(CraftEntry {
+                path: path.to_owned(),
+                flags: 0,
+                block: 0,
+                offset: 4,
+                len: 0,
+                checksum: checksum(b""),
+            });
+        }
+        let index = BundleIndex::parse(&empties.bytes()).expect("共享 offset 的零长条目合法");
+        assert_eq!(index.len(), 3);
+        assert!(index.entry("e2.txt").is_some());
+    }
+
+    /// 块里有一段没有任何条目解释的字节（空洞）：读者永远读不到它，
+    /// 所以它只可能是"夹带的数据"或"索引被动过"。
+    #[test]
+    fn gaps_inside_a_block_are_rejected() {
+        let mut craft = Craft::new().single("a.txt", b"aaaabbbb");
+        // 条目只覆盖前 4 B，块却声明 8 B。
+        craft.entries[0].len = 4;
+        craft.entries[0].checksum = checksum(b"aaaa");
+        let error = BundleIndex::parse(&craft.bytes()).unwrap_err();
+        assert!(
+            matches!(&error, BundleError::Index(text) if text.contains("空洞")),
+            "得到 {error:?}"
+        );
+    }
+
+    /// 计划表里的组内路径必须是规范形式且严格升序：读取端用二分查（`PlannedGroup::contains`），
+    /// 乱序不会报错，只会**静默查不到**——"包里有这个文件，运行期说没有"。
+    #[test]
+    fn plan_paths_must_be_canonical_and_ascending() {
+        use crate::bundle::plan::{BundlePlan, PLAN_FORMAT, PlannedGroup};
+        let plan = |paths: Vec<&str>| {
+            BundlePlan {
+                schema: 1,
+                format: PLAN_FORMAT.to_owned(),
+                block_size: 640,
+                groups: vec![PlannedGroup {
+                    name: "core".to_owned(),
+                    unit: "main".to_owned(),
+                    bundle: "bundles/core.rlb".to_owned(),
+                    hash: String::new(),
+                    entries: paths.len() as u64,
+                    raw_bytes: 0,
+                    bundle_bytes: 0,
+                    paths: paths.into_iter().map(str::to_owned).collect(),
+                }],
+                checksum: String::new(),
+                keep: None,
+            }
+            .sealed()
+        };
+        for bad in [
+            vec!["scripts/main.lua", "scenes/main.scene"], // 乱序
+            vec!["a.txt", "a.txt"],                        // 重复（等于不升序）
+            vec!["assets\\a.png"],                         // 反斜杠
+            vec!["./a.png"],                               // 非规范
+            vec!["/abs.png"],                              // 绝对路径
+        ] {
+            let bytes = serde_json::to_vec(&plan(bad.clone())).unwrap();
+            let error = BundlePlan::parse(&bytes).unwrap_err();
+            assert!(
+                error.contains("bundle_plan 组 core"),
+                "{bad:?} 必须被拒绝，得到 {error}"
+            );
+        }
+        // 正对照：升序 + 规范形式照常通过（不能顺手把正常计划挡掉）。
+        let bytes = serde_json::to_vec(&plan(vec!["assets/a.png", "scripts/main.lua"])).unwrap();
+        assert!(BundlePlan::parse(&bytes).is_ok());
+    }
+
+    /// 一个 16 B 的坏索引可以声明 40 亿条目。以前会先 `with_capacity` 再报"索引截断"——
+    /// 原生是 OOM、wasm 是 abort，都不是"坏容器报错"。现在必须在**分配之前**失败。
+    #[test]
+    fn declared_table_counts_cannot_exhaust_memory() {
+        let mut craft = Craft::new().single("a.txt", b"aaa");
+        let bytes = craft.clone().bytes();
+        // 索引里前 8 B 是 prologue，接着是 entry_count(4) / block_count(4)。
+        let index_offset = HEADER_LEN + craft.payload.len();
+        craft.payload.shrink_to_fit();
+        for field in 0..2 {
+            let at = index_offset + 8 + field * 4;
+            let mut bytes = bytes.clone();
+            bytes[at..at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+            let error = BundleIndex::parse(&bytes).unwrap_err();
+            assert!(
+                matches!(&error, BundleError::Index(text) if text.contains("至少需要")),
+                "field={field} 得到 {error:?}"
+            );
+        }
+    }
+
+    /// 未定义标志位 = 损坏或"改了格式没升版本"，两种情况都该点名，不能当 0 用。
+    #[test]
+    fn unknown_flag_bits_are_rejected() {
+        let mut flat = Craft::new().single("a.txt", b"aaa");
+        flat.header_flags = 0b10;
+        let error = BundleIndex::parse(&flat.bytes()).unwrap_err();
+        assert!(
+            matches!(&error, BundleError::Header(text) if text.contains("未定义的位")),
+            "头标志：{error:?}"
+        );
+
+        let mut block = Craft::new().single("a.txt", b"aaa");
+        block.blocks[0].0 = 0b1000_0000;
+        let error = BundleIndex::parse(&block.bytes()).unwrap_err();
+        assert!(
+            matches!(&error, BundleError::Index(text) if text.contains("块 0 标志")),
+            "块标志：{error:?}"
+        );
+
+        let mut entry = Craft::new().single("a.txt", b"aaa");
+        entry.entries[0].flags = 0b1000_0000;
+        let error = BundleIndex::parse(&entry.bytes()).unwrap_err();
+        assert!(
+            matches!(&error, BundleError::Index(text) if text.contains("条目 a.txt 标志")),
+            "条目标志：{error:?}"
+        );
+    }
+
+    /// 索引里的路径必须已经是**规范化**形态，否则运行期 `BundleSet::key_of` 的规范化键
+    /// 永远匹配不上——"包里有这个文件，游戏说没有"，且没有任何日志。
+    #[test]
+    fn non_canonical_entry_paths_are_rejected() {
+        for bad in [
+            r"assets\art\a.png",
+            "./assets/a.png",
+            "assets//a.png",
+            "/absolute.png",
+            "../escape.png",
+            "assets/./a.png",
+            "",
+        ] {
+            let error = BundleIndex::parse(&Craft::new().single(bad, b"x").bytes()).unwrap_err();
+            assert!(
+                matches!(&error, BundleError::InvalidPath(path) if path == bad),
+                "{bad:?} 必须被拒绝，得到 {error:?}"
+            );
+        }
+        // 规范化形态照样通过（负向用例不能顺手把正常名字也挡了）。
+        let index =
+            BundleIndex::parse(&Craft::new().single("assets/art/a.png", b"x").bytes()).unwrap();
+        assert!(index.contains("assets/art/a.png"));
+    }
+
+    /// `raw_len` 超过 `block_size` 只有"单条目自身超块、独占一块"这一种合法来源。
+    /// 没有这条，"raw_len 撒 4 GB 的谎"会被解析期放行，读侧照着它解压/判缓存档。
+    #[test]
+    fn oversized_block_must_be_covered_by_one_entry() {
+        let mut lying = Craft::new().single("a.txt", b"aaaa");
+        lying.block_size = 1024;
+        lying.blocks[0].2 = 4096; // raw_len 说谎，条目只覆盖 4 B
+        let error = BundleIndex::parse(&lying.bytes()).unwrap_err();
+        assert!(
+            matches!(&error, BundleError::Index(text) if text.contains("超过 block_size")),
+            "得到 {error:?}"
+        );
+
+        // 同一块，但有一个条目完整覆盖它 ⇒ 结构合法（内容违法由 `block()` 在读时报）。
+        let mut covered = Craft::new().single("a.txt", b"aaaa");
+        covered.block_size = 1024;
+        covered.blocks[0].2 = 4096;
+        covered.entries[0].len = 4096;
+        covered.entries[0].checksum = checksum(b"aaaa");
+        assert!(BundleIndex::parse(&covered.bytes()).is_ok());
+    }
+
+    #[test]
+    fn block_table_without_entries_is_rejected() {
+        let mut craft = Craft::new();
+        craft.blocks.push((0, 4, 4));
+        craft.payload.extend_from_slice(b"aaaa");
+        let error = BundleIndex::parse(&craft.bytes()).unwrap_err();
+        assert!(
+            matches!(&error, BundleError::Index(text) if text.contains("块表有 1 块")),
+            "得到 {error:?}"
+        );
+    }
+
+    /// 写侧曾经把"只装空文件的那个块"连同条目一起丢掉：容器建成功、`read` 返回 `None`、
+    /// 零报错。空文件必须能原样往返（并且只产出 1 个空块）。
+    #[test]
+    fn empty_entries_survive_the_roundtrip() {
+        let built = build(&[("empty.txt", b"".as_slice())]);
+        let index = BundleIndex::parse(&built.bytes).unwrap();
+        assert_eq!(index.len(), 1, "空文件条目不能消失");
+        assert_eq!(index.blocks().len(), 1);
+        assert_eq!(index.blocks()[0].raw_len, 0);
+        let mut r = reader(&built);
+        assert_eq!(r.read("empty.txt").unwrap().unwrap(), Vec::<u8>::new());
+        r.verify_all().unwrap();
+
+        // 与非空条目同包时，空条目落在同一块里、偏移等于块尾（顺序由写侧按名字排，
+        // 所以这里按"块尾"断言而不是写死数字）。
+        let built = build(&[
+            ("a.txt", b"aaa".as_slice()),
+            ("empty.txt", b""),
+            ("b.txt", b"bb"),
+        ]);
+        let index = BundleIndex::parse(&built.bytes).unwrap();
+        assert_eq!(index.len(), 3);
+        let empty = index.entry("empty.txt").unwrap();
+        assert_eq!(empty.len, 0);
+        assert_eq!(
+            empty.offset,
+            index.blocks()[empty.block as usize].raw_len,
+            "空条目应正好落在块尾"
+        );
+        let mut r = reader(&built);
+        assert_eq!(r.read("empty.txt").unwrap().unwrap(), Vec::<u8>::new());
+        r.verify_all().unwrap();
     }
 }

@@ -26,7 +26,7 @@ fn serialized_and_runtime_consistency_demo3d() {
     }
     let path = root.join("scenes/demo3d.scene");
     let scene = Scene::load(&path).unwrap_or_else(|e| panic!("load demo3d: {e}"));
-    let serialized = rustlua_scene::scene_extract::extract_serialized_scene_3d(&scene);
+    let serialized = crate::host::scene_extract::extract_serialized_scene_3d(&scene);
     let runtime = RuntimeScene::from_scene_edit(Some(&root), scene).expect("runtime demo3d");
     let runtime3d = runtime
         .scene_3d(Viewport::new(16.0, 9.0).unwrap())

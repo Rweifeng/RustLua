@@ -29,7 +29,13 @@ param(
     # CI 机）上跑本脚本时请加它：那时"没有帧所有者"从环境限制变成**失败**。
     [switch]$RequireRuntimeHost,
     # 只做静态检查（没有 node 时使用）。
-    [switch]$SkipRuntime
+    [switch]$SkipRuntime,
+    # assetc 可执行文件（容器内容闭包检查用）。留空 = 按 engine\target\{release,debug}\assetc.exe 自动找。
+    [string]$Assetc = "",
+    # 远端组（`unit = "cdn"`）的 CDN 镜像目录：remote / thin 形态的容器不在发布根里，在这里。
+    # 不给 = 本次**不核对**远端组（会把 `--allow-cdn-skip` 传给 `assetc closure`，摘要里仍打印
+    # `cdn_skipped=N`）。给了就逐组比对条目数/字节/FNV/每条逻辑路径——与本地组同一套断言。
+    [string]$CdnDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -131,23 +137,38 @@ if ($packDeclaredAsSubpackage -and -not $hasMainPackManifest) {
 }
 $assetPackDir = ""
 if ($isThinPack) {
+    # 资源包根的候选目录名：`package.ps1` 导出时用的是 `$packDirName`（微信 = `pack-sub`，
+    # 与分包 root 同名），而旧代码在这里写死了 `pack`——于是**每一份真实瘦首包**都在这一步
+    # 被判"资源包不存在"（2026-10-20 实测：产物明明是 assets/pack-sub/）。两个名字都试。
+    $assetPackNames = @($subpackageRootName, "pack") | Select-Object -Unique
     if ([string]::IsNullOrWhiteSpace($AssetPackRoot)) {
         $candidates = @(
             (Join-Path (Split-Path -Parent $root) "assets"),
             (Join-Path (Split-Path -Parent $root) ((Split-Path -Leaf $root) + "-assets"))
         )
         foreach ($candidate in $candidates) {
-            if (Test-Path -LiteralPath (Join-Path $candidate "pack")) { $AssetPackRoot = $candidate; break }
+            if (@($assetPackNames | Where-Object { Test-Path -LiteralPath (Join-Path $candidate $_) }).Count -gt 0) { $AssetPackRoot = $candidate; break }
         }
     }
-    if ([string]::IsNullOrWhiteSpace($AssetPackRoot) -or -not (Test-Path -LiteralPath (Join-Path $AssetPackRoot "pack"))) {
+    $resolvedPackName = $null
+    if (-not [string]::IsNullOrWhiteSpace($AssetPackRoot)) {
+        foreach ($name in $assetPackNames) {
+            if (Test-Path -LiteralPath (Join-Path $AssetPackRoot $name)) { $resolvedPackName = $name; break }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($AssetPackRoot) -or -not $resolvedPackName) {
         throw ("这是瘦首包（pack/ 只有骨架），必须用 -AssetPackRoot <资源包目录> 指出重资源在哪" +
             "（约定位置：与 launcher/ 同级的 assets/，形如 <发布根>/assets/pack-sub/**）")
     }
+    # 资源包根里那一层的目录名（pack-sub / pack 都算），后面按它拼路径。
+    $assetPackInnerName = $resolvedPackName
     $assetPackDir = (Resolve-Path -LiteralPath $AssetPackRoot).Path
+    # 容器所在的资源包根（CDN 上那一份）：`<发布根>/assets/<pack-sub>/bundles/…`。
+    # 瘦首包里发布根一个容器都没有，所有「容器存在 / 容器内容」的门都必须按这个目录核。
+    $assetPackRemoteRoot = Join-Path $assetPackDir $assetPackInnerName
     # 两侧必须一一对应：资源包和包内 manifest 不一致，远端校验会把文件全丢掉。
     $bundlePackFiles = (Get-ChildItem -LiteralPath (Join-Path $root $subpackageRootName) -Recurse -File -Force | Measure-Object).Count
-    $assetPackFiles = (Get-ChildItem -LiteralPath (Join-Path $assetPackDir $subpackageRootName) -Recurse -File -Force | Measure-Object).Count
+    $assetPackFiles = (Get-ChildItem -LiteralPath (Join-Path $assetPackDir $assetPackInnerName) -Recurse -File -Force | Measure-Object).Count
     $manifest = Join-Path $root "$subpackageRootName\manifest.txt"
     $manifestEntries = (Get-Content -LiteralPath $manifest -Encoding UTF8 | Measure-Object).Count - 1
     if ($assetPackFiles -lt $manifestEntries) {
@@ -160,7 +181,7 @@ if ($isThinPack) {
         # 包内那份已按白名单改名（`project.toml` → `project.toml.txt`），资源包（CDN）那份保持
         # **逻辑名**不变——CDN 不受白名单约束，远端 URL / 缓存路径 / manifest 校验和全按逻辑路径算。
         $inBundle = Join-Path $root ("$subpackageRootName\" + (Resolve-CodePackName $shared))
-        $inPack = Join-Path $assetPackDir ("pack\" + $shared)
+        $inPack = Join-Path $assetPackDir ($assetPackInnerName + "\" + $shared)
         if (-not (Test-Path -LiteralPath $inPack)) {
             throw ("资源包缺少骨架文件: $subpackageRootName\{0}（远端校验依赖它）" -f $shared)
         }
@@ -325,7 +346,7 @@ foreach ($forbidden in @("game.exe", "index.html", "assetc.exe")) {
 # 会随资源包放到 CDN（适配层启动时会先下载到本地再 wx.loadFont），所以两种形态都要能找到。
 # 字体在包内的位置同样随形态变：分包形态下字体是首屏资源，已被切到 pack/assets/fonts。
 $fontSearchRoots = @((Join-Path $root ($skeletonSubdir + "\assets\fonts")))
-if ($isThinPack -and $assetPackDir) { $fontSearchRoots += (Join-Path $assetPackDir "pack\assets\fonts") }
+if ($isThinPack -and $assetPackDir) { $fontSearchRoots += (Join-Path $assetPackDir ($assetPackInnerName + "\assets\fonts")) }
 $packedFonts = @()
 foreach ($fontRoot in $fontSearchRoots) {
     $packedFonts += Get-ChildItem -LiteralPath $fontRoot -File -Filter *.ttf -ErrorAction SilentlyContinue
@@ -433,7 +454,13 @@ if ($multiRoot) {
     $savedEapMount = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        $mountOutput = & $nodeForMount.Source $mountCheck --launcher $root 2>&1
+        # 瘦首包：容器不在发布根里，而在资源包（`<发布根>/assets/<pack-sub>/**`，整目录传 CDN）。
+        # 不指认它，多根对账会把 5 个容器全算成缺件——而它们其实都在会上传的那份里。
+        $mountArgs = @($mountCheck, "--launcher", $root)
+        if ($isThinPack -and $assetPackRemoteRoot -and (Test-Path -LiteralPath $assetPackRemoteRoot)) {
+            $mountArgs += @("--remote", $assetPackRemoteRoot)
+        }
+        $mountOutput = & $nodeForMount.Source @mountArgs 2>&1
         $mountExit = $LASTEXITCODE
     }
     finally { $ErrorActionPreference = $savedEapMount }
@@ -445,7 +472,11 @@ if ($multiRoot) {
     $bootCheck = Join-Path $PSScriptRoot "..\build\check-boot-closure.js"
     if (-not (Test-Path -LiteralPath $bootCheck)) { throw "缺少 boot 闭包检查: $bootCheck" }
     try {
-        $bootOutput = & $nodeForMount.Source $bootCheck --launcher $root 2>&1
+        $bootArgs = @($bootCheck, "--launcher", $root)
+        if ($isThinPack -and $assetPackRemoteRoot -and (Test-Path -LiteralPath $assetPackRemoteRoot)) {
+            $bootArgs += @("--remote", $assetPackRemoteRoot)
+        }
+        $bootOutput = & $nodeForMount.Source @bootArgs 2>&1
         $bootExit = $LASTEXITCODE
     }
     finally { $ErrorActionPreference = $savedEapMount }
@@ -453,6 +484,101 @@ if ($multiRoot) {
         throw ("boot 闭包检查失败: " + (($bootOutput | ForEach-Object { "$_" }) -join ' '))
     }
     Write-Host (($bootOutput | Where-Object { $_ -match '^boot_closure_ok' } | Select-Object -First 1)) -ForegroundColor DarkGray
+}
+
+# ---- 容器内容闭包（**无条件**，只要产物是容器形态）----
+#
+# 上面两道门只证明"根目录/分包入口/容器文件存在"；它们**不打开容器**，于是"某个按需资源
+# 根本没进容器"可以一路绿到真机——启动场景刚好不用它，玩到一半才白图。这里按计划表逐组
+# 打开 RLB 索引，断言每条逻辑路径都取得到（实现只有一份：`assetc closure`，索引解析在 Rust 侧）。
+#
+# 为什么不再挂在 `$multiRoot` 下面：grouped full/thin/subpackage 也可能是容器形态（计划表在
+# `pack/bundle_plan.json`，没有 launcher 根计划表），旧写法把它们整类跳过。
+$wechatPlan = @(
+    (Join-Path $root "bundle_plan.json"),
+    (Join-Path $root "pack\bundle_plan.json")
+) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if ($wechatPlan) {
+    $assetcExe = $Assetc
+    if ([string]::IsNullOrWhiteSpace($assetcExe)) {
+        foreach ($candidate in @(
+                (Join-Path $workspaceRoot "engine\target\release\assetc.exe"),
+                (Join-Path $workspaceRoot "engine\target\debug\assetc.exe")
+            )) {
+            if (Test-Path -LiteralPath $candidate) { $assetcExe = $candidate; break }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($assetcExe) -or -not (Test-Path -LiteralPath $assetcExe)) {
+        throw ("容器内容闭包检查需要 assetc（找不到：先 `cargo build -p assetc --release`，或传 -Assetc）；" +
+            "这一门不允许静默跳过——它正是「容器存在但内容缺件」的唯一拦截点。计划表：$wechatPlan")
+    }
+    $savedEapClosure = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        # `-CdnDir`：装容器的**远端目录**（实际含义见 assetc closure 帮助）。
+        #   ① 瘦首包（`-AssetPack remote`）把 `pack/` 裁成骨架，**所有**组的容器都随资源包导出到
+        #      `<发布根>/assets/<packDirName>/…`——不指认它，主包/分包的容器就一个都核不到；
+        #   ② `-CdnPackDir` 镜像 / `cdn` 组同理。
+        # 没给 `-CdnDir` 时按产物自带的结构自动指认资源包目录（只有 remote 形态才有 `assets/`）；
+        # 连资源包都没有才用 `--allow-cdn-skip` 显式声明"这次不查远端"——摘要里仍打印 `cdn_skipped=N`。
+        $cdnDirs = @()
+        if (-not [string]::IsNullOrWhiteSpace($CdnDir)) {
+            $cdnDirs += (Resolve-Path -LiteralPath $CdnDir).Path
+        }
+        elseif ($isThinPack) {
+            # thin 形态：资源包就在发布根旁边。**不猜目录名**——用计划表反查：
+            # 哪个候选目录里能把计划的**每个**组的容器都找齐，哪个就是资源包根
+            # （实测 2026-10-20：导出目录名随形态变，写死 `assets/pack` 会找不到）。
+            $planPathForCdn = @(
+                (Join-Path $root "bundle_plan.json"),
+                (Join-Path $root "pack\bundle_plan.json")
+            ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+            $plannedBundles = @()
+            if ($planPathForCdn) {
+                try {
+                    $plannedBundles = @((Get-Content -LiteralPath $planPathForCdn -Raw -Encoding UTF8 |
+                                ConvertFrom-Json).groups | ForEach-Object { [string]$_.bundle } | Where-Object { $_ })
+                }
+                catch { $plannedBundles = @() }
+            }
+            $exportCandidates = @((Join-Path $assetPackDir $subpackageRootName), $assetPackDir) +
+                @(Get-ChildItem -LiteralPath $assetPackDir -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+            foreach ($candidate in ($exportCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique)) {
+                if ($plannedBundles.Count -eq 0) { break }
+                $complete = $true
+                foreach ($rel in $plannedBundles) {
+                    $probe = Join-Path $candidate $rel
+                    if (-not (Test-Path -LiteralPath $probe) -and -not (Test-Path -LiteralPath ($probe + ".txt"))) {
+                        $complete = $false
+                        break
+                    }
+                }
+                if ($complete) {
+                    $cdnDirs += (Resolve-Path -LiteralPath $candidate).Path
+                    Write-Host ("容器闭包：资源包根={0}（按计划表反查：{1} 个组的容器都在这里）" -f $cdnDirs[-1], $plannedBundles.Count) -ForegroundColor DarkGray
+                    break
+                }
+            }
+            if ($cdnDirs.Count -eq 0 -and $plannedBundles.Count -gt 0) {
+                # 找不齐不是"跳过"：让 closure 报出来（它会逐组点名缺哪个容器、哪个根下有什么）。
+                Write-Host ("容器闭包：{0} 下没有目录能找齐计划里的 {1} 个容器，交由 closure 判红并点名缺件" -f $assetPackDir, $plannedBundles.Count) -ForegroundColor Yellow
+            }
+        }
+        $closureArgs = @("closure", $root)
+        if ($cdnDirs.Count -gt 0) {
+            $closureArgs += @("--cdn", $cdnDirs[0])
+        }
+        else {
+            $closureArgs += "--allow-cdn-skip"
+        }
+        $closureOutput = & $assetcExe @closureArgs 2>&1
+        $closureExit = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $savedEapClosure }
+    if ($closureExit -ne 0) {
+        throw ("容器内容闭包检查失败（assetc closure exit {0}）: {1}" -f $closureExit, (($closureOutput | ForEach-Object { "$_" }) -join "`n"))
+    }
+    Write-Host (($closureOutput | Where-Object { $_ -match '^assetc_closure_ok' } | Select-Object -First 1)) -ForegroundColor DarkGray
 }
 Write-Host ("wechat_minigame_static_ok main={0:N0}KB subpackage={1:N0}KB total={2:N0}KB subpackages={3} asset_pack={4} upload_rules=ok main_of_limit={5:P1} subpackage_of_limit={6:P1} total_of_limit={7:P1}" -f `
     ($mainSize / 1KB), ($subpackageSize / 1KB), ($totalSize / 1KB), $(if ($subpackageNames.Count) { $subpackageNames -join ',' } else { 'none' }), $formName, `
@@ -464,7 +590,7 @@ if ($isSubpackagePack) {
 }
 elseif ($isThinPack) {
     Write-Host ("包内骨架 {0:N0}KB / 上限 4,096KB（{1:P1}）；资源包 {2:N0}KB 在 CDN，不占配额" -f `
-        ($packSize / 1KB), ($packSize / $MainPackageLimit), ((Get-DirSize -Path (Join-Path $assetPackDir $subpackageRootName)) / 1KB)) -ForegroundColor DarkGray
+        ($packSize / 1KB), ($packSize / $MainPackageLimit), ((Get-DirSize -Path (Join-Path $assetPackDir $assetPackInnerName)) / 1KB)) -ForegroundColor DarkGray
 }
 else {
     Write-Host ("$subpackageRootName/ 计入主包: {0:N0}KB / 上限 4,096KB（{1:P1}）" -f ($packSize / 1KB), ($packSize / $MainPackageLimit)) -ForegroundColor DarkGray
@@ -520,7 +646,7 @@ if (-not $SkipRuntime) {
         # （离线可跑、无需浏览器，33 条用例逐行对桌面基线），门里却一直没有它 —— 于是"两边名字都在、
         # 但返回值形状/状态归属分叉"这类缺陷，门抓不到。
         $caseArgs += @("--check-api-contract")
-        if ($isThinPack) { $caseArgs += @("--remote", "thin", "--remote-root", $assetPackDir) }
+        if ($isThinPack) { $caseArgs += @("--remote", "thin", "--remote-root", $assetPackRemoteRoot) }
         # 分包形态：方言用例必须**同时**把挂载这一轴显式打开（--subpackage ok），否则
         # "哪一档方言配哪一种分包行为"就说不清了，用例之间会互相掩盖。
         if ($isSubpackagePack) { $caseArgs += @("--subpackage", "ok") }
@@ -824,7 +950,7 @@ if (-not $SkipRuntime) {
     #      "只靠 JS polyfill 顶不住 tag 导入"，因此 strip-wasm-tags 的剥二进制必须留在链路里。
     #      真机/开发者工具同一次读数即为设备裁决：若哪天变成 accepted，才能考虑退役剥二进制方案。
     $tagProbeArgs = @("--frames", "30", "--wasm-tag-polyfill-probe")
-    if ($isThinPack) { $tagProbeArgs += @("--remote", "thin", "--remote-root", $assetPackDir) }
+    if ($isThinPack) { $tagProbeArgs += @("--remote", "thin", "--remote-root", $assetPackRemoteRoot) }
     $tagProbeCase = Invoke-HarnessCase -ExtraArgs $tagProbeArgs -Label "wasm-tag-polyfill-probe"
     if ($tagProbeCase.ExitCode -ne 0) { throw "tag polyfill 探针用例失败（--wasm-tag-polyfill-probe, exit $($tagProbeCase.ExitCode)）" }
     $tagProbeLine = $tagProbeCase.Lines | Where-Object { $_ -match "polyfill_tag_probe=" } | Select-Object -First 1
@@ -875,7 +1001,7 @@ if (-not $SkipRuntime) {
         # 这一形态的包内只有内核与骨架，重资源在 CDN，不接远端时用例会以"资源 404"失败，
         # 那测的就不是分包轴而是资源来源了（实测：`subpackage-ok` 不带远端时 boot 拒绝
         # `pack/scenes/main.scene HTTP 404`）。经典分包形态（资源全在包里）不带远端，保持原样。
-        $subRemoteArgs = if ($isWasmInPackRemote) { @("--remote", "thin", "--remote-root", $assetPackDir) } else { @() }
+        $subRemoteArgs = if ($isWasmInPackRemote) { @("--remote", "thin", "--remote-root", $assetPackRemoteRoot) } else { @() }
         # **B8 改判（这一段的证据字段随之变）**：delay 的"N 帧"从 `wx.loadSubpackage` 被调用那一刻起算
         # （原来从 boot Promise 建好那刻起算，适配层前面的活一多就退化成立即挂载、进度条没有窗口可画）；
         # 而 `--drive-move` / `--expect-runtime-spawns` 的位移读数写者（旧 JS 世界）已删除 ⇒ 离线这一档
@@ -947,7 +1073,7 @@ if (-not $SkipRuntime) {
     }
     else {
         $autoArgs = @("--remote", "auto")
-        if ($isThinPack) { $autoArgs += @("--remote-root", $assetPackDir) }
+        if ($isThinPack) { $autoArgs += @("--remote-root", $assetPackRemoteRoot) }
         $remoteCase = Invoke-HarnessCase -ExtraArgs $autoArgs -Label "remote-auto"
         if ($remoteCase.ExitCode -ne 0) { throw "远端回落验证失败（--remote auto, exit $($remoteCase.ExitCode)）" }
         $remoteOkLine = $remoteCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_ok" } | Select-Object -First 1
@@ -959,7 +1085,7 @@ if (-not $SkipRuntime) {
         foreach ($mode in $negativeCases) {
             $negativeArgs = @("--remote", $mode)
             # 瘦首包：服务根要指向导出目录，否则"被篡改的 project.toml"根本不在服务范围内。
-            if ($isThinPack -and $mode -ne "down") { $negativeArgs += @("--remote-root", $assetPackDir) }
+            if ($isThinPack -and $mode -ne "down") { $negativeArgs += @("--remote-root", $assetPackRemoteRoot) }
             $case = Invoke-HarnessCase -ExtraArgs $negativeArgs -Label $mode
             if ($case.ExitCode -ne 0) { throw "远端回落反向用例未按预期失败（--remote $mode, exit $($case.ExitCode)）" }
             if (-not ($case.Lines | Where-Object { $_ -match "wechat_minigame_harness_negative_ok" })) {
@@ -971,7 +1097,7 @@ if (-not $SkipRuntime) {
     # 4) 瘦首包专项：包内骨架必须**包内命中**（证明"包内优先"不是口号），重资源必须真的
     #    从资源包下载、按清单校验、落地缓存——并且本地 pack/ 里确实不该有那些重资源。
     if ($isThinPack) {
-        $case = Invoke-HarnessCase -ExtraArgs @("--remote", "thin", "--remote-root", $assetPackDir) -Label "thin"
+        $case = Invoke-HarnessCase -ExtraArgs @("--remote", "thin", "--remote-root", $assetPackRemoteRoot) -Label "thin"
         if ($case.ExitCode -ne 0) { throw "瘦首包运行时验证失败（--remote thin, exit $($case.ExitCode)）" }
         $thinOkLine = $case.Lines | Where-Object { $_ -match "wechat_minigame_harness_ok" } | Select-Object -First 1
         if (-not $thinOkLine) { throw "瘦首包验证未输出 wechat_minigame_harness_ok" }
@@ -989,14 +1115,14 @@ if (-not $SkipRuntime) {
         # 第四形态：需要改写 src 的原因是**重资源在 CDN**（不是 mainpack→pack 前缀），
         # 所以这条用例必须带远端。不带远端时 boot 会先因"包内只有骨架"404 失败，
         # 掩盖掉真正要验的那件事（宿主不让改写 src 时必须响亮失败）——实测踩过。
-        $frozenLoudArgs = @("--image-src-frozen", "--remote", "thin", "--remote-root", $assetPackDir)
+        $frozenLoudArgs = @("--image-src-frozen", "--remote", "thin", "--remote-root", $assetPackRemoteRoot)
     }
     elseif ($isSubpackagePack) {
         $frozenLoudArgs = @("--image-src-frozen")
     }
     else {
         $frozenLoudArgs = @("--image-src-frozen", "--remote", $(if ($isThinPack) { "thin" } else { "auto" }))
-        if ($isThinPack) { $frozenLoudArgs += @("--remote-root", $assetPackDir) }
+        if ($isThinPack) { $frozenLoudArgs += @("--remote-root", $assetPackRemoteRoot) }
     }
     $frozenLoud = Invoke-HarnessCase -ExtraArgs $frozenLoudArgs -Label "image-src-frozen-loud"
     if ($frozenLoud.ExitCode -ne 0) { throw "Image.src 冻结 + 需要改写 src 的形态未按预期响亮失败（exit $($frozenLoud.ExitCode)）" }
@@ -1016,7 +1142,7 @@ if (-not $SkipRuntime) {
     #     启动卡死 + 屏幕全黑 + 0 error + 日志全绿（开发者工具实测就是这个症状）。
     #     断言"接管方式 = prototype-accessor 且贴图真的加载了"，而不是"看起来没报错"。
     $protoSrcArgs = @("--image-src-prototype")
-    if ($isThinPack) { $protoSrcArgs += @("--remote", "thin", "--remote-root", $assetPackDir) }
+    if ($isThinPack) { $protoSrcArgs += @("--remote", "thin", "--remote-root", $assetPackRemoteRoot) }
     $protoSrcCase = Invoke-HarnessCase -ExtraArgs $protoSrcArgs -Label "image-src-prototype"
     if ($protoSrcCase.ExitCode -ne 0) { throw "宿主把 Image.src 定义在原型上时启动失败（--image-src-prototype, exit $($protoSrcCase.ExitCode)）" }
     if (-not ($protoSrcCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_ok" })) {
@@ -1028,7 +1154,7 @@ if (-not $SkipRuntime) {
     #     `this.__onload`）。用自己的 accessor 盖住 `onload`＝把宿主的桥拆掉：贴图加载成功也传不回
     #     运行时，症状与"src 没交到宿主"一模一样（卡死 + 0 错误 + 全黑）。断言接管方式 = host-setter。
     $bridgeArgs = @("--image-callback-bridge")
-    if ($isThinPack) { $bridgeArgs += @("--remote", "thin", "--remote-root", $assetPackDir) }
+    if ($isThinPack) { $bridgeArgs += @("--remote", "thin", "--remote-root", $assetPackRemoteRoot) }
     $bridgeCase = Invoke-HarnessCase -ExtraArgs $bridgeArgs -Label "image-callback-bridge"
     if ($bridgeCase.ExitCode -ne 0) { throw "宿主的 onload/onerror 是原型访问器时启动失败（--image-callback-bridge, exit $($bridgeCase.ExitCode)）" }
     if (-not ($bridgeCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_ok" })) {
@@ -1052,7 +1178,7 @@ if (-not $SkipRuntime) {
     # 两个静默一起给：形态判定取产物自身（`game.json` 分包声明 / `remote-assets.json`），不猜。
     $stallArgs = @("--image-src-silent", "--expect-boot-stall", "--boot-timeout-ms", "1000", "--boot-deadline-ms", "6000")
     if ($isSubpackagePack) { $stallArgs += @("--subpackage", "silent") }
-    if ($isThinPack) { $stallArgs += @("--remote", "silent", "--remote-root", $assetPackDir) }
+    if ($isThinPack) { $stallArgs += @("--remote", "silent", "--remote-root", $assetPackRemoteRoot) }
     $stallCase = Invoke-HarnessCase -ExtraArgs $stallArgs -Label "boot-stall-watchdog"
     if ($stallCase.ExitCode -ne 0) { throw "启动卡死时看门狗没有兜住（--image-src-silent --expect-boot-stall, exit $($stallCase.ExitCode)）" }
     if (-not ($stallCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_negative_ok case=boot-stall" })) {
@@ -1083,7 +1209,7 @@ if (-not $SkipRuntime) {
     #    独立 window。适配层必须"接替或就地补齐"宿主对象后照常启动；补不齐（冻结对象）
     #    必须响亮失败——绝不能让 TypeError 留到运行时才炸。
     $hostArgs = @("--host-document", "stub", "--host-window", "separate")
-    if ($isThinPack) { $hostArgs += @("--remote", "thin", "--remote-root", $assetPackDir) }
+    if ($isThinPack) { $hostArgs += @("--remote", "thin", "--remote-root", $assetPackRemoteRoot) }
     $hostCase = Invoke-HarnessCase -ExtraArgs $hostArgs -Label "host-globals"
     if ($hostCase.ExitCode -ne 0) { throw "宿主自带残缺全局时启动失败（--host-document stub --host-window separate, exit $($hostCase.ExitCode)）" }
     if (-not ($hostCase.Lines | Where-Object { $_ -match "wechat_minigame_harness_host_globals_ok" })) {
@@ -1094,14 +1220,14 @@ if (-not $SkipRuntime) {
     #    "__RustLuaWechat is not defined"（加载期中止）的来源；这里断言"照常跑起来 + 补不动的
     #    成员被明确报出"，也就是不许再用加载期抛错来"响亮失败"。
     $lockedHostArgs = @("--host-document", "locked")
-    if ($isThinPack) { $lockedHostArgs += @("--remote", "thin", "--remote-root", $assetPackDir) }
+    if ($isThinPack) { $lockedHostArgs += @("--remote", "thin", "--remote-root", $assetPackRemoteRoot) }
     $lockedHost = Invoke-HarnessCase -ExtraArgs $lockedHostArgs -Label "host-globals-locked"
     if ($lockedHost.ExitCode -ne 0) { throw "宿主全局不可扩展时游戏没能跑起来（--host-document locked, exit $($lockedHost.ExitCode)）" }
     if (-not ($lockedHost.Lines | Where-Object { $_ -match "wechat_minigame_harness_host_globals_ok document=locked" })) {
         throw "不可扩展宿主用例未输出 wechat_minigame_harness_host_globals_ok document=locked"
     }
     $frozenHostArgs = @("--host-document", "frozen")
-    if ($isThinPack) { $frozenHostArgs += @("--remote", "thin", "--remote-root", $assetPackDir) }
+    if ($isThinPack) { $frozenHostArgs += @("--remote", "thin", "--remote-root", $assetPackRemoteRoot) }
     $frozenHost = Invoke-HarnessCase -ExtraArgs $frozenHostArgs -Label "host-globals-frozen"
     if ($frozenHost.ExitCode -ne 0) { throw "宿主全局被冻结时未按预期响亮失败（exit $($frozenHost.ExitCode)）" }
     if (-not ($frozenHost.Lines | Where-Object { $_ -match "case=host-document-frozen" })) {

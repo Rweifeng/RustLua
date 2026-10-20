@@ -1,0 +1,18 @@
+# cargo-audit 配置（P2-01 ②）
+#
+# 运行位置：`engine/`（Cargo.lock 所在目录）。`scripts/verify/check-security.ps1` 会
+# `cd engine` 后执行 `cargo-audit audit`，所以本文件必须留在 `engine/.cargo/audit.toml`。
+#
+# 例外规则（不要随手加）：
+#   1. 只接受无法立即升级的 RUSTSEC 条目，且必须写清 id、影响、绕过理由、到期日、负责人；
+#   2. 到期后必须重新评估：门不会自动过期，但 review 时必须看日期；
+#   3. 不允许为了让门变绿而把整个 advisory 类别关掉（例如关闭 unmaintained 检查）。
+#
+# 当前基线：空。任何新增例外都要在 docs/69 §4 的例外表登记。
+[advisories]
+ignore = []
+
+# yanked 包检查保持开启（cargo-audit 0.22 的 [yanked] 只接受 enabled/update_index，
+# 不接受 ignore；需要豁免时在 docs/69 登记后按版本升级处理）。
+[yanked]
+enabled = true

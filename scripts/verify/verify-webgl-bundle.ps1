@@ -111,7 +111,9 @@ param(
     [string]$StatusFile = "",
     # 追加到页面 URL 的**原始**查询串（例如 `rustlua-js-host=1`）。迁移期验收旧 JS 世界
     # （`web-runtime.js`）是否被显式叫回来时用——它默认已不再作为第二宿主启动。
-    [string]$UrlQuery = ""
+    [string]$UrlQuery = "",
+    # assetc 可执行文件（容器内容闭包检查用）。留空 = 按 engine\target\{release,debug}\assetc.exe 自动找。
+    [string]$Assetc = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -192,6 +194,43 @@ $wasmBytes = [System.IO.File]::ReadAllBytes($wasmPath)
 $magic = -join ($wasmBytes[0..3] | ForEach-Object { [char]$_ })
 if ($magic -ne "`0asm") { throw "pkg/game_web_bg.wasm is not a wasm module (magic=$([int[]]$wasmBytes[0..3] -join ','))" }
 Write-Log "wasm module ok: $([math]::Round($wasmBytes.Length / 1024, 1)) KB, magic=$magic"
+
+# ---------- 1b. 容器内容闭包（grouped 产物才跑） ----------
+#
+# 浏览器启动只证明"首屏那几条资源读得到"。grouped 产物的按需组（`unit = sub` / `cdn`）里
+# 少一条资源，页面照样 boot=ok、场景门照样绿——真机玩到那一步才白图。这里按 `bundle_plan.json`
+# 逐组打开 RLB 索引对账（实现只有一份：`assetc closure`，解析在 Rust 侧）。
+# 放在起浏览器**之前**：这类缺陷不需要浏览器就能判，而且没有浏览器的机器上也要能拦住。
+$webglPlan = @(
+    (Join-Path $bundle "bundle_plan.json"),
+    (Join-Path $bundle "pack\bundle_plan.json")
+) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if ($webglPlan) {
+    $assetcExe = $Assetc
+    if ([string]::IsNullOrWhiteSpace($assetcExe)) {
+        foreach ($candidate in @(
+                (Join-Path $workspaceRoot "engine\target\release\assetc.exe"),
+                (Join-Path $workspaceRoot "engine\target\debug\assetc.exe")
+            )) {
+            if (Test-Path -LiteralPath $candidate) { $assetcExe = $candidate; break }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($assetcExe) -or -not (Test-Path -LiteralPath $assetcExe)) {
+        throw ("容器内容闭包检查需要 assetc（找不到：先 `cargo build -p assetc --release`，或传 -Assetc）；" +
+            "这一门不允许静默跳过——它正是「容器存在但内容缺件」的唯一拦截点。计划表：$webglPlan")
+    }
+    $savedEapClosure = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $closureOutput = & $assetcExe closure $bundle 2>&1
+        $closureExit = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $savedEapClosure }
+    if ($closureExit -ne 0) {
+        throw ("容器内容闭包检查失败（assetc closure exit {0}）: {1}" -f $closureExit, (($closureOutput | ForEach-Object { "$_" }) -join "`n"))
+    }
+    Write-Log (($closureOutput | Where-Object { $_ -match '^assetc_closure_ok' } | Select-Object -First 1))
+}
 
 # ---------- 2. 浏览器与静态服务器 ----------
 $browser = $null

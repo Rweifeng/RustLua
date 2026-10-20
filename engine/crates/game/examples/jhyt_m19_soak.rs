@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("120fps", 1.0 / 120.0),
     ] {
         let save_path = fresh_save_path(&project, &format!("jhyt_m19_soak_{label}.sav"));
-        let mut runtime = new_runtime(&project_arg, &save_path, dt)?;
+        let (mut runtime, _host) = new_runtime(&project_arg, &save_path, dt)?;
         bootstrap_manor(&mut runtime, &main_script)?;
         run_scripted_day(&mut runtime, false)?;
         let snapshot = query_str(&mut runtime, RULE_SNAPSHOT)?;
@@ -89,7 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M19-04b 30 天长跑：逐日劳作 + day.sleep + 每日自动存档");
     let soak_save = fresh_save_path(&project, "jhyt_m19_soak_long.sav");
-    let mut runtime = new_runtime(&project_arg, &soak_save, 1.0 / 60.0)?;
+    let (mut runtime, host) = new_runtime(&project_arg, &soak_save, 1.0 / 60.0)?;
     bootstrap_manor(&mut runtime, &main_script)?;
     let mut harvested = 0.0f64;
     let mut days_seen = 0.0f64;
@@ -98,6 +98,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // 睡觉：day.sleep() → on_day_end（存档）→ 清晨 → on_day_start（日结算+存档）。
         press(
             &mut runtime,
+            &host,
             KeyCode::from_char('t').expect("QWERTY 字符必须有对应物理键"),
         )?;
         let now_day = query_num(&mut runtime, "return clock.now().day")?;
@@ -127,7 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M19-04c 读档循环：20 次真实 runtime 读档 + 3000 次快照恢复");
     let mut real_loads = 0;
     for _ in 0..20 {
-        let mut second = new_runtime(&project_arg, &soak_save, 1.0 / 60.0)?;
+        let (mut second, _host) = new_runtime(&project_arg, &soak_save, 1.0 / 60.0)?;
         second.execute_project_script(&main_script)?;
         second.execute_console("scene.load('main')")?;
         second.process_scene_transition()?;
@@ -170,7 +171,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let steps = 1800u32;
     let started = Instant::now();
     for _ in 0..steps {
-        runtime.set_input(InputSnapshot::default());
+        host.set_input(InputSnapshot::default());
         runtime.call_update()?;
     }
     let elapsed = started.elapsed();
@@ -291,14 +292,16 @@ fn new_runtime(
     project: &Path,
     save_path: &Path,
     delta: f32,
-) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(delta);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -308,12 +311,16 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }

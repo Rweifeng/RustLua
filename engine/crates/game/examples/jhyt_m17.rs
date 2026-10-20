@@ -63,7 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project_arg = project.clone();
 
     banner("M17-01a 新档：山庄出生 + 农田链路");
-    let mut runtime = new_runtime(&project_arg, &save_path)?;
+    let (mut runtime, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut runtime, &main_script)?;
     click_button(&mut runtime, "BtnStart")?;
     assert_scene_is(&mut runtime, "manor")?;
@@ -74,10 +74,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 出生朝上，面前 (19,4) 是药田 DIRT：翻土 → 种灵芝 → 浇水。
     set_facing(&mut runtime, "up")?;
-    press(&mut runtime, KeyCode::KeyE)?; // till
+    press(&mut runtime, &host, KeyCode::KeyE)?; // till
     assert_str(&mut runtime, "require('core.state').last_action", "till")?;
     set_seed(&mut runtime, "seed_lingzhi")?;
-    press(&mut runtime, KeyCode::KeyE)?; // plant
+    press(&mut runtime, &host, KeyCode::KeyE)?; // plant
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 免体力分支，而这里断言的是体力账（100-8-3-4）。
     runtime.execute_console("require('world.weather').set('sunny')")?;
     equip_tool(&mut runtime, "watering_can")?;
-    press(&mut runtime, KeyCode::KeyE)?; // water
+    press(&mut runtime, &host, KeyCode::KeyE)?; // water
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -119,7 +119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('systems.interaction').prompt('down')",
         "E: 离开山庄 · 前往云泽村",
     )?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -139,14 +139,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // 回山庄，走既有"站在出口格"路径。
     teleport(&mut runtime, VILLAGE_EXIT)?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     runtime.process_scene_transition()?;
     assert_scene_is(&mut runtime, "manor")?;
 
     banner("M17-01b 出口交互：山庄 → 云泽村，背包跨图不清空");
     teleport(&mut runtime, MAIN_EXIT)?;
     assert_mode(&mut runtime, "Playing")?;
-    press(&mut runtime, KeyCode::KeyE)?; // exit main_to_village
+    press(&mut runtime, &host, KeyCode::KeyE)?; // exit main_to_village
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -184,7 +184,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M17-01d 回山庄：农田 overlay/plots 恢复，作物仍在");
     teleport(&mut runtime, VILLAGE_EXIT)?;
-    press(&mut runtime, KeyCode::KeyE)?; // exit village_to_manor
+    press(&mut runtime, &host, KeyCode::KeyE)?; // exit village_to_manor
     // 山庄地图键/场景在示例重组后为 manor（M18-02 收口同步断言）。
     assert_str(
         &mut runtime,
@@ -205,7 +205,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 再次往返验证稳定：main -> village 回村不丢状态。
     teleport(&mut runtime, MAIN_EXIT)?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     runtime.process_scene_transition()?;
     assert_scene_is(&mut runtime, "village")?;
     assert_num(
@@ -216,7 +216,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_plot_crop(&mut runtime, "19,4", "lingzhi")?;
 
     banner("M17-01e continue：第二 runtime 按存档地图回到云泽村");
-    let mut second = new_runtime(&project_arg, &save_path)?;
+    let (mut second, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut second, &main_script)?;
     click_button(&mut second, "BtnContinue")?;
     // 存档在 village —— continue 应切回 village 而非固定山庄。
@@ -244,7 +244,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M17-01f continue 后回到山庄农田依旧");
     teleport(&mut second, VILLAGE_EXIT)?;
-    press(&mut second, KeyCode::KeyE)?;
+    press(&mut second, &host, KeyCode::KeyE)?;
     second.process_scene_transition()?;
     assert_scene_is(&mut second, "manor")?;
     assert_plot_crop(&mut second, "19,4", "lingzhi")?;
@@ -265,14 +265,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 // ---------- helpers ----------
 
 /// Creates a bare engine runtime pointing at the project scripts & save file.
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 /// Runs the project script, then loads the `main` 门面 scene so BtnStart/BtnContinue
@@ -306,12 +311,16 @@ fn teleport(runtime: &mut LuaRuntime, pos: (f32, f32)) -> Result<(), Box<dyn std
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }

@@ -375,7 +375,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|error| format!("cannot read {}: {error}", design_doc.display()))?;
     let save_path = fresh_save_path(&project, "jhyt_m34_skills.sav");
 
-    let mut rt = new_runtime(&project, &save_path)?;
+    let (mut rt, host) = new_runtime(&project, &save_path)?;
     rt.execute_project_script(&main_script)?;
     open_scene(&mut rt, "main")?;
 
@@ -515,11 +515,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M34-04② H（dash 动作）= 追风步：位移 3 格、扣 15 内力、15 步无敌挡掉一整刀");
     let dash_key = KeyCode::from_char('h').expect("QWERTY 字符必须有对应物理键");
     let guard_key = KeyCode::from_char('z').expect("QWERTY 字符必须有对应物理键");
-    prepare_dash(&mut rt, edge_x + 4.0, edge_y)?;
+    prepare_dash(&mut rt, &host, edge_x + 4.0, edge_y)?;
     let (x_before, y_before) = player_pos(&mut rt)?;
     let inner_before = query_num(&mut rt, "require('core.state').inner_power")?;
     let attacks_before = query_num(&mut rt, "require('systems.combat').stats().attacks")?;
-    hold(&mut rt, &[dash_key], 1)?;
+    hold(&mut rt, &host, &[dash_key], 1)?;
     let (x_after, y_after) = player_pos(&mut rt)?;
     let inner_after = query_num(&mut rt, "require('core.state').inner_power")?;
     let want_dash = format!("chase_wind/{dash_tiles:.0}/{dash_distance:.0}/{iframes:.0}");
@@ -570,7 +570,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hp_before_iframe = query_num(&mut rt, "require('systems.combat').player_hp()")?;
     let ignored_before = query_num(&mut rt, "require('systems.combat').stats().ignored")?;
     register_dummy_hit(&mut rt, HIT_DAMAGE)?;
-    if !wait_for_player_log(&mut rt, &[], "dodge")? {
+    if !wait_for_player_log(&mut rt, &host, &[], "dodge")? {
         return Err("轻功无敌期间木人那一刀没有被整次吸收（24 步内没等到 dodge 日志）".into());
     }
     assert_num(
@@ -596,10 +596,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M34-04③ 贴墙按轻功：位移夹到可走格；一格都走不了则 dash_blocked，内力与冷却分文不动");
     let mut clip_report = Vec::new();
     for (offset, want_tiles) in [(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)] {
-        prepare_dash(&mut rt, edge_x + offset, edge_y)?;
+        prepare_dash(&mut rt, &host, edge_x + offset, edge_y)?;
         let (x_before, _) = player_pos(&mut rt)?;
         let inner_step_before = query_num(&mut rt, "require('core.state').inner_power")?;
-        hold(&mut rt, &[dash_key], 1)?;
+        hold(&mut rt, &host, &[dash_key], 1)?;
         let (x_after, _) = player_pos(&mut rt)?;
         let moved = x_before - x_after;
         if want_tiles == 0.0 {
@@ -679,14 +679,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("格挡 + 背面", "left", true, after_flat, 0.0),
         ("不格挡 + 正面", "right", false, after_flat, 0.0),
     ] {
-        prepare_guard(&mut rt, facing, 50.0)?;
+        prepare_guard(&mut rt, &host, facing, 50.0)?;
         if guarding {
-            hold(&mut rt, &[guard_key], 2)?;
+            hold(&mut rt, &host, &[guard_key], 2)?;
             assert_str(&mut rt, "require('systems.combat').is_guarding()", "true")?;
         }
         register_dummy_hit(&mut rt, HIT_DAMAGE)?;
         let keys: &[KeyCode] = if guarding { &[guard_key] } else { &[] };
-        if !wait_for_player_damage(&mut rt, keys, 100.0)? {
+        if !wait_for_player_damage(&mut rt, &host, keys, 100.0)? {
             return Err(format!("{case}：木人那一刀在 24 步内没打到玩家").into());
         }
         let hp = query_num(&mut rt, "require('systems.combat').player_hp()")?;
@@ -710,10 +710,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // 取整与"盾不是无敌"：平减之后剩 2 点，减 70% → floor 成 0，兜回 1 点。
     let edge_raw = defense + EDGE_FLAT_DAMAGE;
-    prepare_guard(&mut rt, "right", 50.0)?;
-    hold(&mut rt, &[guard_key], 2)?;
+    prepare_guard(&mut rt, &host, "right", 50.0)?;
+    hold(&mut rt, &host, &[guard_key], 2)?;
     register_dummy_hit(&mut rt, edge_raw)?;
-    if !wait_for_player_damage(&mut rt, &[guard_key], 100.0)? {
+    if !wait_for_player_damage(&mut rt, &host, &[guard_key], 100.0)? {
         return Err(format!("边界那一刀（原始 {edge_raw:.0}）没打到玩家").into());
     }
     let edge_log = query_str(&mut rt, LAST_PLAYER_HIT)?;
@@ -755,7 +755,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut taken_without_buff = 0.0;
     let mut taken_with_buff = 0.0;
     for (label, buffed) in [("不穿（只有基础防御）", false), ("加成层 +3", true)] {
-        prepare_guard(&mut rt, "right", 50.0)?;
+        prepare_guard(&mut rt, &host, "right", 50.0)?;
         lua(&mut rt, "require('player.stats').reset()")?;
         if buffed {
             let added = query_str(
@@ -778,7 +778,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .into());
         }
         register_dummy_hit(&mut rt, HIT_DAMAGE)?;
-        if !wait_for_player_damage(&mut rt, &[], 100.0)? {
+        if !wait_for_player_damage(&mut rt, &host, &[], 100.0)? {
             return Err(format!("{label}：木人那一刀在 24 步内没打到玩家").into());
         }
         let delta = 100.0 - query_num(&mut rt, "require('systems.combat').player_hp()")?;
@@ -842,14 +842,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner(&format!(
         "M34-04⑤ 守心诀的维持消耗：按下晚一步生效、每 {guard_period:.0} 步扣一笔、内力不够自动落防"
     ));
-    prepare_guard(&mut rt, "right", 50.0)?;
-    hold(&mut rt, &[guard_key], 1)?;
+    prepare_guard(&mut rt, &host, "right", 50.0)?;
+    hold(&mut rt, &host, &[guard_key], 1)?;
     assert_str(&mut rt, "require('systems.combat').is_guarding()", "false")?;
     assert_num(&mut rt, "require('core.state').inner_power", 50.0)?;
     println!(
         "  按下当步还没起来（is_guarding=false、内力 50）：与攻击前摇同一口径，操作晚一个固定步才落到世界里"
     );
-    hold(&mut rt, &[guard_key], 1)?;
+    hold(&mut rt, &host, &[guard_key], 1)?;
     assert_str(&mut rt, "require('systems.combat').is_guarding()", "true")?;
     assert_num(&mut rt, "require('core.state').inner_power", 40.0)?;
     assert_num(
@@ -860,10 +860,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "  第 2 步起来：第一笔 {guard_cost:.0} 点当步就扣（50 → 40），下一笔还剩 {guard_period:.0} 步"
     );
-    hold(&mut rt, &[guard_key], (guard_period - 1.0) as usize)?;
+    hold(&mut rt, &host, &[guard_key], (guard_period - 1.0) as usize)?;
     assert_num(&mut rt, "require('systems.combat').guard_charge()", 1.0)?;
     assert_num(&mut rt, "require('core.state').inner_power", 40.0)?;
-    hold(&mut rt, &[guard_key], 1)?;
+    hold(&mut rt, &host, &[guard_key], 1)?;
     assert_num(&mut rt, "require('core.state').inner_power", 30.0)?;
     assert_num(
         &mut rt,
@@ -875,21 +875,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     // 松手就落防（姿态不"记住"上一次按过）。落下要**两步**：步序里 combat.tick 在
     // input.update 之前，所以本步结算用的是上一步报上来的"按没按"——和按下晚一步生效同一口径。
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(&mut rt, "require('systems.combat').is_guarding()", "false")?;
     assert_num(&mut rt, "require('systems.combat').guard_charge()", 0.0)?;
     println!(
         "  松开 Z 两步后落防、扣费进度归零（再按才重新起，第一笔重新扣；与按下晚一步生效对称）"
     );
     // 内力不够 → 自动落防：不报错、不扣成负数、补足之后能重新起。
-    prepare_guard(&mut rt, "right", 5.0)?;
-    hold(&mut rt, &[guard_key], 2)?;
+    prepare_guard(&mut rt, &host, "right", 5.0)?;
+    hold(&mut rt, &host, &[guard_key], 2)?;
     assert_str(&mut rt, GUARD_SNAPSHOT, "false/0/5")?;
     println!(
         "  内力 5 < {guard_cost:.0}：按满两步也起不来，也没被扣成负数（docs/33 §2「不允许负数消耗」）"
     );
     lua(&mut rt, "require('core.state').inner_power = 20")?;
-    hold(&mut rt, &[guard_key], 1)?;
+    hold(&mut rt, &host, &[guard_key], 1)?;
     assert_str(&mut rt, GUARD_SNAPSHOT, "true/60/10")?;
     println!("  内力补到 20 再按：起得来（20 → 10），落防不是永久的");
 
@@ -922,14 +922,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut rt,
         &format!("require('core.state').inner_power = {inner_start}"),
     )?;
-    hold(&mut rt, &[practice_key], 1)?;
+    hold(&mut rt, &host, &[practice_key], 1)?;
     assert_num(
         &mut rt,
         "require('core.state').inner_power",
         inner_start + meditate_gain,
     )?;
     // 再空走两步：一次按键只结算一次（`action_pressed` 是边沿，不是"按着就一直回"）。
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_num(
         &mut rt,
         "require('core.state').inner_power",
@@ -944,7 +944,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut rt,
         &format!("require('core.state').inner_power = {}", inner_max - 2.0),
     )?;
-    hold(&mut rt, &[practice_key], 1)?;
+    hold(&mut rt, &host, &[practice_key], 1)?;
     assert_num(&mut rt, "require('core.state').inner_power", inner_max)?;
     println!(
         "  内力 {:.0} 再按一次 = {inner_max:.0}（夹在上限，不会加过头）",
@@ -1063,7 +1063,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut phase1_live = 0.0;
     let mut phase1_charged = false;
     for _ in 0..200 {
-        frames(&mut rt, 1)?;
+        frames(&mut rt, &host, 1)?;
         let pop = probe_fields(&mut rt, BOSS_POPULATION)?;
         if pop[0] > phase1_live {
             phase1_live = pop[0];
@@ -1137,7 +1137,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         2.0,
     )?;
     // 二阶段的**第一步**：补满空槽位 + 注册冲撞（同一格里两件事都发生，而注册那一步不位移）。
-    frames(&mut rt, 1)?;
+    frames(&mut rt, &host, 1)?;
     let (started, start_frame, x0, y0) = charge_readout(&mut rt)?;
     if !started {
         return Err("掉到阈值之后第一步没起冲：距离/冷却/阶段至少一条不对".into());
@@ -1171,6 +1171,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut wall_run = ChargeRun::at(start_frame, x0, y0);
     charge_finish(
         &mut rt,
+        &host,
         dir,
         4.0,
         &mut wall_run,
@@ -1217,6 +1218,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (stand2, dir2, dir2_name) = boss_span(&mut rt)?;
     let free_run = charge_measure(
         &mut rt,
+        &host,
         dir2,
         4.0,
         (boss_charge_steps + 60.0) as usize,
@@ -1261,7 +1263,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 口径②：冲撞的节流只有招式冷却这一份——从上一次**起冲那一帧**算起，下一次正好晚 cooldown 步。
-    let throttled = charge_start(&mut rt, dir2, 4.0, (charge_cooldown + 30.0) as usize)?;
+    let throttled = charge_start(&mut rt, &host, dir2, 4.0, (charge_cooldown + 30.0) as usize)?;
     let gap = throttled.start_frame - free_run.start_frame;
     if (gap - charge_cooldown).abs() > 1e-9 {
         return Err(format!(
@@ -1287,7 +1289,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if step % 5 == 0 {
             anchor_boss_witness(&mut rt, dir2, 4.0)?;
         }
-        frames(&mut rt, 1)?;
+        frames(&mut rt, &host, 1)?;
         let pop = probe_fields(&mut rt, BOSS_POPULATION)?;
         let live = pop[0];
         let total = pop[2];
@@ -1342,7 +1344,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 切图不残留：寒泉洞 → 演武场 → 寒泉洞，两次都要是零。
     open_scene(&mut rt, "combat_arena")?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     let arena_pop = probe_fields(&mut rt, BOSS_POPULATION)?;
     if arena_pop[0] != 0.0 || arena_pop[1] != 0.0 {
         return Err(format!(
@@ -1352,7 +1354,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
     open_scene(&mut rt, &boss_map)?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     let back_pop = probe_fields(&mut rt, BOSS_POPULATION)?;
     if back_pop[0] != 0.0 || back_pop[1] != 0.0 {
         return Err(format!(
@@ -1376,7 +1378,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if reborn.is_multiple_of(5) {
             anchor_boss_witness(&mut rt, dir2, 4.0)?;
         }
-        frames(&mut rt, 1)?;
+        frames(&mut rt, &host, 1)?;
         reborn += 1;
         let live = probe_fields(&mut rt, BOSS_POPULATION)?[0];
         if live >= 1.0 || reborn > (boss_interval + 60.0) as usize {
@@ -1547,7 +1549,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut stance_steps = 0usize;
     let readout = loop {
         anchor_east_of(&mut rt, xuanming, TILE)?;
-        frames(&mut rt, 1)?;
+        frames(&mut rt, &host, 1)?;
         let line = strike_watched(&mut rt, xuanming, Some(&guard_skill_data), HIT_DAMAGE)?;
         if line.split('/').nth(1) == Some("true") {
             break line;
@@ -1593,7 +1595,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "  抬起时机（等 {stance_steps} 步就站进空档）：姿态 = {}、state = {}，快照里这一行没有 guarding 这一格（{}）——与硬直/无敌帧/中毒同一类瞬时状态",
         fields[0], fields[9], fields[7]
     );
-    let Some(vitals) = wait_for_enemy_damage(&mut rt, xuanming, hp_before)? else {
+    let Some(vitals) = wait_for_enemy_damage(&mut rt, &host, xuanming, hp_before)? else {
         return Err(format!(
             "那一刀没打在举着盾的{guard_name}身上（30 步内气血没动，日志最后一条 = {}）：\
              判定窗没开窗，还是它走出了玩家的矩形",
@@ -1668,7 +1670,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut control_steps = 0usize;
     let control = loop {
         anchor_east_of(&mut rt, xuanming, TILE)?;
-        frames(&mut rt, 1)?;
+        frames(&mut rt, &host, 1)?;
         let line = strike_watched(&mut rt, xuanming, None, HIT_DAMAGE)?;
         if line.split('/').nth(1) == Some("true") {
             break line;
@@ -1695,7 +1697,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into());
     }
-    let Some(vitals) = wait_for_enemy_damage(&mut rt, xuanming, hp_open)? else {
+    let Some(vitals) = wait_for_enemy_damage(&mut rt, &host, xuanming, hp_open)? else {
         return Err(format!(
             "对照那一刀（姿态 {}）没打中：30 步内气血没动",
             control_fields[0]
@@ -1795,6 +1797,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let waited = approach_until_guarding(
         &mut rt,
+        &host,
         xuanming,
         &guard_skill_data,
         (guard_cd * 4.0) as usize,
@@ -1804,7 +1807,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &format!("require('systems.enemy').query('{xuanming}').state"),
     )?;
     anchor_east_of(&mut rt, xuanming, standoff)?;
-    frames(&mut rt, 1)?;
+    frames(&mut rt, &host, 1)?;
     let stance_down = query_str(
         &mut rt,
         &format!("tostring(require('systems.enemy').query('{xuanming}').guarding)"),
@@ -1830,8 +1833,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---------------- ⑥ 瞬时状态 ----------------
     banner("M34-04⑥ 格挡与硬直/无敌帧/中毒同类：倒地即落防、capture 里没有 guard、读档必清");
-    prepare_guard(&mut rt, "right", 50.0)?;
-    hold(&mut rt, &[guard_key], 2)?;
+    prepare_guard(&mut rt, &host, "right", 50.0)?;
+    hold(&mut rt, &host, &[guard_key], 2)?;
     assert_str(&mut rt, "require('systems.combat').is_guarding()", "true")?;
     lua(&mut rt, "require('systems.combat').set_player_hp(0)")?;
     let snapshot = query_str(&mut rt, GUARD_SNAPSHOT)?;
@@ -1850,15 +1853,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "false/player_dead",
     )?;
     lua(&mut rt, "require('systems.combat').respawn()")?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(&mut rt, "require('systems.combat').is_guarding()", "false")?;
     println!("  重开（R）之后不会自动站回盾上：姿态由此刻按没按键决定");
     assert_str(&mut rt, CAPTURE_SHAPE, "fields=3")?;
     println!(
         "  combat.capture() 只有 version/hp/dead 三个字段（**guard 不入档**，与中毒同一裁定）"
     );
-    prepare_guard(&mut rt, "right", 50.0)?;
-    hold(&mut rt, &[guard_key], 2)?;
+    prepare_guard(&mut rt, &host, "right", 50.0)?;
+    hold(&mut rt, &host, &[guard_key], 2)?;
     assert_str(&mut rt, "require('systems.combat').is_guarding()", "true")?;
     lua(
         &mut rt,
@@ -1872,8 +1875,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M34-04⑦ 帧率无关：同一串按键在 30Hz/120Hz 的 time.delta() 下位移与扣费节奏一致");
     for (label, delta) in [("30Hz", 1.0f32 / 30.0), ("120Hz", 1.0f32 / 120.0)] {
         rt.set_delta(delta);
-        prepare_dash(&mut rt, edge_x + 4.0, edge_y)?;
-        hold(&mut rt, &[dash_key], 1)?;
+        prepare_dash(&mut rt, &host, edge_x + 4.0, edge_y)?;
+        hold(&mut rt, &host, &[dash_key], 1)?;
         let dash_here = query_str(
             &mut rt,
             "(function() local d = require('systems.combat').last_dash(); \
@@ -1887,8 +1890,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .into());
         }
         // 起手 1 步晚生效 + 起手段 + 第 60 步扣第二笔 = period + 2 步。
-        prepare_guard(&mut rt, "right", 50.0)?;
-        hold(&mut rt, &[guard_key], (guard_period + 2.0) as usize)?;
+        prepare_guard(&mut rt, &host, "right", 50.0)?;
+        hold(&mut rt, &host, &[guard_key], (guard_period + 2.0) as usize)?;
         let here = query_str(&mut rt, GUARD_SNAPSHOT)?;
         let want = format!("true/{guard_period:.0}/30");
         if here != want {
@@ -2007,6 +2010,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// 按住若干键推进 n 个固定步（`keys` 为空等价于 `frames`）。
 fn hold(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     keys: &[KeyCode],
     n: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -2015,15 +2019,19 @@ fn hold(
         for key in keys {
             input.key_event(*key, true);
         }
-        runtime.set_input(input);
+        host.set_input(input);
         runtime.call_update()?;
     }
     Ok(())
 }
 
 /// 空输入推进 n 个固定步（站着不动）。
-fn frames(runtime: &mut LuaRuntime, n: usize) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+fn frames(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    n: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    host.set_input(InputSnapshot::default());
     for _ in 0..n {
         runtime.call_update()?;
     }
@@ -2034,6 +2042,7 @@ fn frames(runtime: &mut LuaRuntime, n: usize) -> Result<(), Box<dyn std::error::
 /// 内力显式给 50 而不是"读当时是多少"：连续几次轻功的扣费要能逐次核对。
 fn prepare_dash(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     x: f64,
     y: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -2048,7 +2057,7 @@ fn prepare_dash(
         ),
     )?;
     set_facing(runtime, "left")?;
-    frames(runtime, 1)
+    frames(runtime, &host, 1)
 }
 
 /// 格挡站位：站在训练木人**西侧一格**（木人在东），朝向决定它算正面还是背面。
@@ -2056,6 +2065,7 @@ fn prepare_dash(
 /// 命中由本门直接注册到 `combat.attack`，于是"这一刀从哪来、多少伤害"完全可控。
 fn prepare_guard(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     facing: &str,
     inner: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -2075,7 +2085,7 @@ fn prepare_guard(
         return Err(format!("演武场的训练木人不可用：{moved}").into());
     }
     set_facing(runtime, facing)?;
-    frames(runtime, 1)
+    frames(runtime, &host, 1)
 }
 
 /// 只搬人、不动账本：轻功的无敌帧还在倒计时，`combat.reset()` 会把它一起抹掉。
@@ -2121,11 +2131,12 @@ fn register_dummy_hit(
 /// 推进到玩家气血真的掉下来（最多 24 步：strike 前摇 6 + 判定窗 12 的两倍不到）。
 fn wait_for_player_damage(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     keys: &[KeyCode],
     before: f64,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     for _ in 0..24 {
-        hold(runtime, keys, 1)?;
+        hold(runtime, &host, keys, 1)?;
         if query_num(runtime, "require('systems.combat').player_hp()")? < before {
             return Ok(true);
         }
@@ -2136,11 +2147,12 @@ fn wait_for_player_damage(
 /// 推进到战斗日志尾部出现指定事件（用于 dodge：那种命中不掉血，只能看日志）。
 fn wait_for_player_log(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     keys: &[KeyCode],
     event: &str,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     for _ in 0..24 {
-        hold(runtime, keys, 1)?;
+        hold(runtime, &host, keys, 1)?;
         let last = query_str(
             runtime,
             "(function() local last; for _, e in ipairs(require('systems.combat').log()) do last = e end; \
@@ -2407,12 +2419,13 @@ fn enemy_vitals(
 /// "没打到"其实是"人走开了、打偏了"。返回掉血那一刻的四格读数（`enemy_vitals`）。
 fn wait_for_enemy_damage(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     persist_id: &str,
     before: f64,
 ) -> Result<Option<Vec<f64>>, Box<dyn std::error::Error>> {
     for _ in 0..30 {
         anchor_east_of(runtime, persist_id, TILE)?;
-        frames(runtime, 1)?;
+        frames(runtime, &host, 1)?;
         let vitals = enemy_vitals(runtime, persist_id)?;
         if vitals[0] < before {
             return Ok(Some(vitals));
@@ -2425,6 +2438,7 @@ fn wait_for_enemy_damage(
 /// 否则"盾掉了"可能从头到尾就是"没举起来"）。返回等了多少步。
 fn approach_until_guarding(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     persist_id: &str,
     want: &str,
     limit: usize,
@@ -2432,7 +2446,7 @@ fn approach_until_guarding(
     let mut stance = String::new();
     for step in 0..limit {
         anchor_east_of(runtime, persist_id, TILE)?;
-        frames(runtime, 1)?;
+        frames(runtime, &host, 1)?;
         stance = query_str(
             runtime,
             &format!("tostring(require('systems.enemy').query('{persist_id}').guarding)"),
@@ -2556,13 +2570,14 @@ impl ChargeRun {
 /// 所以返回的读数就是这条冲撞的起点。
 fn charge_start(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     dir: (f64, f64),
     witness: f64,
     wait_limit: usize,
 ) -> Result<ChargeRun, Box<dyn std::error::Error>> {
     for _ in 0..wait_limit {
         anchor_boss_witness(runtime, dir, witness)?;
-        frames(runtime, 1)?;
+        frames(runtime, &host, 1)?;
         let (charging, frame, x, y) = charge_readout(runtime)?;
         if charging {
             return Ok(ChargeRun::at(frame, x, y));
@@ -2577,6 +2592,7 @@ fn charge_start(
 /// 从"已经起冲"推进到它熄灭，把位移/步数写回 `run`。
 fn charge_finish(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     dir: (f64, f64),
     witness: f64,
     run: &mut ChargeRun,
@@ -2584,7 +2600,7 @@ fn charge_finish(
 ) -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..move_limit {
         anchor_boss_witness(runtime, dir, witness)?;
-        frames(runtime, 1)?;
+        frames(runtime, &host, 1)?;
         run.steps += 1;
         let (charging, _, x, y) = charge_readout(runtime)?;
         if !charging {
@@ -2604,13 +2620,14 @@ fn charge_finish(
 /// 完整量一次冲撞：等它起冲 → 推到结束。
 fn charge_measure(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     dir: (f64, f64),
     witness: f64,
     wait_limit: usize,
     move_limit: usize,
 ) -> Result<ChargeRun, Box<dyn std::error::Error>> {
-    let mut run = charge_start(runtime, dir, witness, wait_limit)?;
-    charge_finish(runtime, dir, witness, &mut run, move_limit)?;
+    let mut run = charge_start(runtime, &host, dir, witness, wait_limit)?;
+    charge_finish(runtime, &host, dir, witness, &mut run, move_limit)?;
     Ok(run)
 }
 
@@ -2783,14 +2800,19 @@ fn skill_num(
     )
 }
 
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 横屏：设计分辨率 1280×720（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 fn open_scene(runtime: &mut LuaRuntime, scene: &str) -> Result<(), Box<dyn std::error::Error>> {

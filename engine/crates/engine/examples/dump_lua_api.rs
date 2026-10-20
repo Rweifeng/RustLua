@@ -19,7 +19,8 @@ const BASELINE_REL: &str = "../rustlua-scripting/src/api_surface_snapshot/lua_ap
 
 fn main() {
     let write = std::env::args().skip(1).any(|arg| arg == "--write");
-    let runtime = LuaRuntime::new().expect("lua vm");
+    let runtime =
+        LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).expect("lua vm");
     let surface = runtime
         .eval_json(LUA_API_PROBE)
         .expect("导出运行时 API 面失败");

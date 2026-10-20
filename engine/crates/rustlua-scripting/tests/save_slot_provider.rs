@@ -40,7 +40,8 @@ fn save_commit_and_load_go_through_the_platform_slot() {
     let _ = std::fs::remove_file("/rustlua-nonexistent-root/save.sav");
     save_slot::set_provider(slot).expect("provider 每个进程只能装一次");
 
-    let mut runtime = LuaRuntime::new().expect("建 Lua 运行时");
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry())
+        .expect("建 Lua 运行时");
     runtime.set_save_path(std::path::PathBuf::from(
         "/rustlua-nonexistent-root/save.sav",
     ));

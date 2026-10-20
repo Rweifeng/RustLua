@@ -234,7 +234,7 @@ fn sample_project_gameplay_scene_instantiates_gameplay_entities() {
                 .entities_with::<rustlua_render::sprite::SpriteAsset>()
                 .len(),
             world
-                .entities_with::<rustlua_scene::world_text::WorldText>()
+                .entities_with::<rustlua_ui::world_text::WorldText>()
                 .len(),
             world
                 .entities_with::<rustlua_ui::ui_events::UiEvents>()

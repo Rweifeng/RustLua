@@ -47,18 +47,21 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 return Ok(false);
             }
             let mut state = s.lua_borrow_mut()?;
-            state.save.data.insert("__map".to_owned(), name.clone());
+            state
+                .save
+                .borrow_mut()?
+                .insert("__map".to_owned(), name.clone());
             if let (Some(x), Some(y)) = (x, y) {
                 if !x.is_finite() || !y.is_finite() {
                     return Err(api_error("map.goto spawn must be finite"));
                 }
                 state
                     .save
-                    .data
+                    .borrow_mut()?
                     .insert("__map:spawn:x".to_owned(), x.to_string());
                 state
                     .save
-                    .data
+                    .borrow_mut()?
                     .insert("__map:spawn:y".to_owned(), y.to_string());
             }
             state.scene_pending_load = Some(name);
@@ -77,18 +80,21 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 return Ok(false);
             }
             let mut state = s.lua_borrow_mut()?;
-            state.save.data.insert("__map".to_owned(), name.clone());
+            state
+                .save
+                .borrow_mut()?
+                .insert("__map".to_owned(), name.clone());
             if let (Some(x), Some(y)) = (x, y) {
                 if !x.is_finite() || !y.is_finite() {
                     return Err(api_error("map.go spawn must be finite"));
                 }
                 state
                     .save
-                    .data
+                    .borrow_mut()?
                     .insert("__map:spawn:x".to_owned(), x.to_string());
                 state
                     .save
-                    .data
+                    .borrow_mut()?
                     .insert("__map:spawn:y".to_owned(), y.to_string());
             }
             state.scene_pending_load = Some(name);
@@ -110,14 +116,17 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 return Err(api_error("map.enter spawn must be finite"));
             }
             let mut state = s.lua_borrow_mut()?;
-            state.save.data.insert("__map".to_owned(), name.clone());
             state
                 .save
-                .data
+                .borrow_mut()?
+                .insert("__map".to_owned(), name.clone());
+            state
+                .save
+                .borrow_mut()?
                 .insert("__map:spawn:x".to_owned(), x.to_string());
             state
                 .save
-                .data
+                .borrow_mut()?
                 .insert("__map:spawn:y".to_owned(), y.to_string());
             state.scene_pending_load = Some(name);
             Ok(true)
@@ -130,7 +139,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             let state = s.lua_borrow()?;
             let current = state
                 .save
-                .data
+                .borrow()?
                 .get("__map")
                 .cloned()
                 .or_else(|| state.scene.clone());
@@ -144,10 +153,16 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         "spawn",
         lua.create_function(move |lua, ()| {
             let state = s.lua_borrow()?;
-            let Some(x) = state.save.data.get("__map:spawn:x") else {
-                return Ok(Value::Nil);
+            // 一次窄借用同时取两个键：`Handle::borrow()` 的 guard 不能跨 `let...else`
+            // 存活（那是临时值），所以先 clone 出字符串再解析。
+            let (x, y) = {
+                let store = state.save.borrow()?;
+                (
+                    store.get("__map:spawn:x").cloned(),
+                    store.get("__map:spawn:y").cloned(),
+                )
             };
-            let Some(y) = state.save.data.get("__map:spawn:y") else {
+            let (Some(x), Some(y)) = (x, y) else {
                 return Ok(Value::Nil);
             };
             let Ok(x) = x.parse::<f32>() else {
@@ -169,14 +184,14 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             if !x.is_finite() || !y.is_finite() {
                 return Err(api_error("map.set_spawn must be finite"));
             }
-            let mut state = s.lua_borrow_mut()?;
+            let state = s.lua_borrow()?;
             state
                 .save
-                .data
+                .borrow_mut()?
                 .insert("__map:spawn:x".to_owned(), x.to_string());
             state
                 .save
-                .data
+                .borrow_mut()?
                 .insert("__map:spawn:y".to_owned(), y.to_string());
             Ok(())
         })?,
@@ -204,10 +219,10 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 }
                 let encoded =
                     serde_json::to_string(&json).map_err(|error| api_error(error.to_string()))?;
-                s.lua_borrow_mut()?.save.data.insert(key, encoded);
+                s.lua_borrow()?.save.borrow_mut()?.insert(key, encoded);
                 return Ok(Value::Boolean(true));
             }
-            let Some(encoded) = s.lua_borrow()?.save.data.get(&key).cloned() else {
+            let Some(encoded) = s.lua_borrow()?.save.borrow()?.get(&key).cloned() else {
                 return Ok(Value::Nil);
             };
             let json = serde_json::from_str(&encoded)
@@ -219,19 +234,20 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     map.set(
         "state_clear",
         lua.create_function(move |_, name: Option<String>| {
-            let mut state = s.lua_borrow_mut()?;
-            let before = state.save.data.len();
+            let state = s.lua_borrow()?;
+            let before = state.save.borrow()?.len();
             match &name {
                 Some(name) => {
                     let key = format!("__mapstate:{name}");
-                    state.save.data.remove(&key);
+                    state.save.borrow_mut()?.remove(&key);
                 }
                 None => state
                     .save
-                    .data
+                    .borrow_mut()?
+                    .data_mut()
                     .retain(|key, _| !key.starts_with("__mapstate:")),
             }
-            Ok(before - state.save.data.len())
+            Ok(before - state.save.borrow()?.len())
         })?,
     )?;
     let s = Rc::clone(&state);

@@ -46,6 +46,7 @@ getrandom.workspace = true
 rustlua-math.workspace = true
 rustlua-ecs.workspace = true
 rustlua-scene.workspace = true
+rustlua-component-codec.workspace = true
 rustlua-camera.workspace = true
 rustlua-animation.workspace = true
 rustlua-render.workspace = true
@@ -53,12 +54,17 @@ rustlua-ui.workspace = true
 rustlua-physics.workspace = true
 rustlua-assets.workspace = true
 rustlua-audio.workspace = true
+# `audio` 绑定的能力单元类型（`Handle<AudioSystem>`）：组合根持有它驱动 BGM 生命周期。
+rustlua-lua-api.workspace = true
 rustlua-input.workspace = true
 rustlua-gameplay.workspace = true
 rustlua-scripting.workspace = true
 rustlua-infra.workspace = true
 
 [dev-dependencies]
+# 只在例子/测试里用：`subset_project_font` 要扫工程字符集（`char_collect` 住在导入层，
+# 运行时不许依赖它——那会把 PNG/音频编解码拖回浏览器产物，见 `docs/62` P1 ③）。
+rustlua-assets-import = { path = "../rustlua-assets-import" }
 # wp0_*_golden examples 仍直接依赖（core 拆分后 serde_json 已随模块迁到子 crate）
 serde_json = "1"
 

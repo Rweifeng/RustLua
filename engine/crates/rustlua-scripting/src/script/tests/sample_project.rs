@@ -1,4 +1,7 @@
 use super::*;
+use rustlua_input::input::InputSnapshot;
+use rustlua_input::input::KeyCode;
+use rustlua_input::input::MouseButton;
 
 /// 示例工程的**入口菜单**能载入、跑一步，并且菜单卡片都是结构化的 `UiEvents` 实体。
 ///
@@ -16,7 +19,8 @@ fn sample_project_index_scene_runs_the_project_script() {
         return;
     }
     let scene = Scene::load(&path).expect("load index scene");
-    let mut runtime = LuaRuntime::new().unwrap();
+    let (installers, _host) = rustlua_gameplay::input_lua::registry_with_handles();
+    let mut runtime = LuaRuntime::with_installers(installers).unwrap();
     runtime.set_project_root(root.clone());
     runtime.instantiate_scene(&scene).unwrap();
     runtime
@@ -44,7 +48,8 @@ fn sample_project_menu_click_loads_the_demo_scene() {
         return;
     }
     let scene = Scene::load(&path).expect("load index scene");
-    let mut runtime = LuaRuntime::new().unwrap();
+    let (installers, _host) = rustlua_gameplay::input_lua::registry_with_handles();
+    let mut runtime = LuaRuntime::with_installers(installers).unwrap();
     runtime.set_project_root(root.clone());
     runtime.instantiate_scene(&scene).unwrap();
     runtime
@@ -58,7 +63,7 @@ fn sample_project_menu_click_loads_the_demo_scene() {
     // 这里直接给一个覆盖点击点的目标，实体名就是目标场景名。
     runtime
         .process_ui_clicks(
-            &input,
+            Some(input.cursor_position()),
             &[UiClickTarget {
                 name: "api_core".to_owned(),
                 origin: [120.0, 148.0],
@@ -101,7 +106,8 @@ fn sample_project_demo_saves_and_esc_returns_to_menu() {
     let save_path = dir.join("save.sav");
 
     let scene = Scene::load(&path).expect("load api_core scene");
-    let mut runtime = LuaRuntime::new().unwrap();
+    let (installers, host) = rustlua_gameplay::input_lua::registry_with_handles();
+    let mut runtime = LuaRuntime::with_installers(installers).unwrap();
     runtime.set_project_root(root.clone());
     runtime.set_save_path(save_path.clone());
     runtime.instantiate_scene(&scene).unwrap();
@@ -112,7 +118,7 @@ fn sample_project_demo_saves_and_esc_returns_to_menu() {
     // S = `save.slot("demo")` + `save.commit()`（演示里写明的落盘键）。
     let mut save_input = InputSnapshot::default();
     save_input.key_event(KeyCode::KeyS, true);
-    runtime.set_input(save_input);
+    host.input.set_input(save_input);
     runtime.call_update().unwrap();
     let slot_file = dir.join("save_demo.sav");
     assert!(
@@ -124,7 +130,7 @@ fn sample_project_demo_saves_and_esc_returns_to_menu() {
     // ESC = 命名动作 `cancel` → 路由回到入口菜单。
     let mut menu_input = InputSnapshot::default();
     menu_input.key_event(KeyCode::Escape, true);
-    runtime.set_input(menu_input);
+    host.input.set_input(menu_input);
     runtime.call_update().unwrap();
     runtime.process_scene_transition().unwrap();
     assert_eq!(

@@ -21,7 +21,6 @@ use crate::script::require::{
 };
 use mlua::{Function, Lua, Table};
 use rustlua_ecs::entity::EntityId;
-use rustlua_input::input::ActionMap;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -29,16 +28,33 @@ use std::rc::Rc;
 // WP11-USE:END
 
 impl LuaRuntime {
+    /// 裸 VM：内建模块 + 心跳/预算钩子，**不含任何领域绑定**。
+    ///
+    /// ⚠️ 宿主（game / engine / editor / 示例）应当用 [`LuaRuntime::with_installers`]，否则
+    /// `audio` 之类的模块会**静默缺失**——脚本调用时报的是 `attempt to index a nil value`，
+    /// 而不是"这个宿主忘了装配"。仓库内 222 处调用点已全部改走注册表；这个构造器只剩
+    /// "测基础运行时"与"确实不要领域模块的嵌入方"两个用途（见 `tests/installers.rs`）。
     pub fn new() -> Result<Self, LuaBridgeError> {
+        Self::with_installers(Rc::new(rustlua_lua_api::Registry::new()))
+    }
+
+    /// 建一个**带外部绑定**的运行时：`installers` 里是领域 crate 提供的 Lua 模块。
+    ///
+    /// 这是依赖倒置的落点（`docs/62` P1）：`rustlua-scripting` 不再 `use` 领域 crate 去
+    /// 逐个注册，而是由组合根（`engine`）把安装器塞进来。`Registry` 用 `Rc` 持有是因为
+    /// 热重载会重建 VM（见 [`LuaRuntime::load_candidate`]），每个新 VM 都要装同一套。
+    pub fn with_installers(
+        installers: Rc<rustlua_lua_api::Registry>,
+    ) -> Result<Self, LuaBridgeError> {
         let lua = Lua::new();
-        let state = Rc::new(RefCell::new(ScriptState::default()));
+        let state = Rc::new(RefCell::new(ScriptState {
+            // 存档域的能力单元在这里起名（`docs/62` P1 ⑤）：`Handle` 的名字只用于重入报错，
+            // 而 `ScriptState::default()` 给的是无名的 `<unnamed>`——装配点补上真名。
+            save: rustlua_gameplay::save_store::SaveStore::handle(),
+            ..ScriptState::default()
+        }));
         state.borrow_mut().ui_state.reference = rustlua_ui::ui::UI_REFERENCE_SIZE;
-        // M20-07：空映射 + 默认表 = 完整默认绑定（见 `ScriptState::action_map`）。
-        state
-            .borrow_mut()
-            .action_map
-            .merge_missing(&ActionMap::with_defaults());
-        api::register_all(&lua, Rc::clone(&state))
+        api::register_all(&lua, Rc::clone(&state), &installers)
             .map_err(|error| LuaBridgeError::Init(error.to_string()))?;
         // 心跳 + 指令预算：**每个 Lua 状态都装**（工程脚本、每实体脚本各自一份状态）。
         // 默认给足余量（见 `DEFAULT_INSTRUCTION_BUDGET`）：正常脚本撞不到它，
@@ -56,6 +72,7 @@ impl LuaRuntime {
             entity_scripts_spawned: HashSet::new(),
             entity_script_requests: Vec::new(),
             entity_script_requests_revision: u64::MAX,
+            installers,
         })
     }
 
@@ -319,9 +336,9 @@ impl LuaRuntime {
 
     fn load_candidate(&self, path: &Path, source: &str) -> Result<Lua, LuaBridgeError> {
         let candidate = Lua::new();
-        api::register_all(&candidate, Rc::clone(&self.state))
+        api::register_all(&candidate, Rc::clone(&self.state), &self.installers)
             .map_err(|error| LuaBridgeError::Init(error.to_string()))?;
-        // 候选状态是**新造的 Lua 状态**，不带 `LuaRuntime::new()` 装过的那套钩子——而
+        // 候选状态是**新造的 Lua 状态**，不带 `LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry())` 装过的那套钩子——而
         // `execute_project_script` 恰恰是在它上面跑工程脚本的（wasm 上卡死的那一段就是这里）。
         // 所以钩子必须在**这里**装：预算沿用当前值，周期从这一刻清零。
         progress::install(&candidate, progress::budget())

@@ -297,7 +297,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     world_text.set(
         "attach",
         lua.create_function(move |_, (id, component): (i64, String)| {
-            let text = rustlua_scene::world_text::WorldText::from_component_str(&component)
+            let text = rustlua_ui::world_text::WorldText::from_component_str(&component)
                 .map_err(|error| api_error(error.to_string()))?;
             let id = entity_from_lua(id)?;
             let mut state = s.lua_borrow_mut()?;
@@ -315,7 +315,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             require_alive(&state, id)?;
             let removed = state
                 .world
-                .remove::<rustlua_scene::world_text::WorldText>(id)
+                .remove::<rustlua_ui::world_text::WorldText>(id)
                 .map_err(world_error)?
                 .is_some();
             Ok(removed)

@@ -250,6 +250,19 @@ for (const entry of fs.readdirSync(API_DIR, { withFileTypes: true })) {
   }
 }
 
+// 绑定下沉（docs/62 P1）之后，一部分模块表的绑定不再住在 `scripting/src/script/api`，
+// 而是落在 **owning crate 的 `lua.rs`**（`rustlua-audio` / `rustlua-input`）。
+// 事实源仍是运行期基线 `lua_api_surface.json`；这里只决定"签名从哪个文件读"。
+// 不加这一段，这些模块的每个函数都会被当成"没有绑定源码"的桩（门就红了）。
+const OWNING_BINDING_FILES = [
+  'engine/crates/rustlua-audio/src/lua.rs',
+  'engine/crates/rustlua-input/src/lua.rs',
+];
+for (const relPath of OWNING_BINDING_FILES) {
+  const file = path.join(REPO_ROOT, relPath);
+  if (fs.existsSync(file)) parseBindingFile(file);
+}
+
 // 同一个 `模块.函数` 注册两次：后者静默覆盖前者，画面与样例都可能照跑。
 const byKey = new Map();
 const duplicated = [];

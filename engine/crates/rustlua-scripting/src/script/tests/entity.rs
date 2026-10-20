@@ -22,7 +22,7 @@ fn entity_name_reverse_index_is_stale_free_and_rebuilds_only_on_change() {
          entity.spawn('foe')\n\
          function update() return 'ok' end",
     );
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.execute_project_script(&path).unwrap();
     assert_eq!(runtime.call_update().unwrap(), "ok");
 
@@ -79,7 +79,7 @@ fn lua_gameplay_api_moves_damages_and_destroys() {
     let path = script(
         "player=entity.spawn('player')\ntransform.set(player,0,0)\ntransform.move(player,2,3)\nlocal p=transform.get(player)\nassert(p.x==2 and p.y==3)\nhealth.set(player,10)\nassert(health.damage(player,4)==6)\nassert(entity.find('player')==player)\nentity.destroy(player)\nassert(not entity.is_alive(player))\nfunction update() return 'ok' end",
     );
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.execute_project_script(&path).unwrap();
     assert_eq!(runtime.call_update().unwrap(), "ok");
     let _ = fs::remove_file(path);
@@ -95,7 +95,7 @@ fn entity_persist_id_registers_looks_up_and_rejects_duplicates() {
          assert(entity.find_id('house') == nil)\n\
          function update() return 'ok' end",
     );
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.execute_project_script(&path).unwrap();
     assert_eq!(runtime.call_update().unwrap(), "ok");
     let _ = fs::remove_file(path);
@@ -115,7 +115,7 @@ fn lua_visibility_round_trips_and_validates() {
         .unwrap()
         .components
         .insert("Visibility".into(), "layers=0x0F".into());
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 2);
     let path = script(
         "function update()\n\
@@ -151,7 +151,7 @@ fn lua_quad_round_trips_and_validates() {
         .unwrap()
         .components
         .insert("Quad".into(), "size=120,8;color=1,0,0,0.5".into());
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);
     let path = script(
         "function update()\n\
@@ -193,7 +193,7 @@ fn lua_quad_round_trips_and_validates() {
 /// ② **写**操作对同样的值继续报错——改动一个不存在的实体是 bug，必须当场报出来。
 #[test]
 fn entity_predicates_return_false_for_degenerate_handles_but_writers_still_error() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(
         runtime
             .execute_console("return tostring(entity.is_alive(0))")
@@ -236,7 +236,7 @@ fn entity_predicates_return_false_for_degenerate_handles_but_writers_still_error
 /// 要么工程改用 `persist_id` 字符串引用）。
 #[test]
 fn first_entity_handle_collides_with_foreign_small_ids() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let report = runtime
         .execute_console(
             "local id = entity.spawn('First')\n\
@@ -254,7 +254,7 @@ fn first_entity_handle_collides_with_foreign_small_ids() {
 /// 重复注册 `persist_id` 要报错（旧运行时同一条规则：`persist_id already in use`）。
 #[test]
 fn entity_lifecycle_matches_the_web_prelude_round_trip() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let report = runtime
         .execute_console(
             "local id = entity.spawn('Npc', 'npc_1')\n\
@@ -287,7 +287,7 @@ fn entity_lifecycle_matches_the_web_prelude_round_trip() {
 /// 所以"查找"这一侧必须自己把住。
 #[test]
 fn entity_find_never_hands_out_a_dead_handle() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(
         runtime
             .execute_console(
@@ -326,7 +326,7 @@ fn entity_find_never_hands_out_a_dead_handle() {
 /// 出口给出的编码与 Lua 侧**逐位一致**（否则换算出来的句柄还是错的），以及死句柄不许从它漏出去。
 #[test]
 fn entity_handle_lua_matches_the_lua_side_encoding_and_hides_dead_handles() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let lua_handle = runtime
         .execute_console("return tostring(entity.spawn('Hero'))")
         .unwrap()

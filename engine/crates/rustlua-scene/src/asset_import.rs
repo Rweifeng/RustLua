@@ -1,16 +1,17 @@
 //! Scene / Prefab importers（M12-01 集成）。
 //!
 //! `rustlua-assets` 不能依赖 `rustlua-scene`（其 importer 注册表刻意不含场景数据），
-//! 因此 Scene/Prefab 导入器放在本模块：调用方（assetc、editor）需要导入场景数据时，
-//! 用 [`ImporterRegistry::core_importers`] 加 [`scene_importers`] 组装完整注册表，
-//! 或直接取 [`full_registry`]。
+//! 因此 Scene/Prefab 导入器放在本模块，只提供**零件**：`scene_importers()`。
+//!
+//! **装配点不在本 crate**（2026-10-20 移动）：完整注册表由
+//! `rustlua_assets_import::full_registry()` 组装。原因是六个核心导入器（纹理/音频/脚本/
+//! 模型/图集/字体）要 `image`/`rodio`/`ab_glyph`/`mlua`，只该在 `assetc`/`editor` 里编译；
+//! 而本 crate 是运行时也要编的，一旦它来装配，浏览器产物就会被拖进整套编解码器。
+//! 现在的方向是 `assets-import → scene`，而不是反过来（`docs/62` P1 第 3 条）。
 
 use crate::prefab::Prefab;
 use crate::scene::Scene;
-use rustlua_assets::{
-    importer::{Importer, ImporterRegistry},
-    resource_kind::ResourceKind,
-};
+use rustlua_assets::{importer::Importer, resource_kind::ResourceKind};
 use std::path::Path;
 
 struct SceneImporter;
@@ -76,19 +77,6 @@ impl Importer for PrefabImporter {
 #[must_use]
 pub fn scene_importers() -> [&'static dyn Importer; 2] {
     [&SceneImporter, &PrefabImporter]
-}
-
-/// 完整导入注册表：assets 层核心导入器 + 场景导入器。
-///
-/// core 拆分后 `ImporterRegistry::builtin()` 只含 assets 层六个导入器，
-/// 不含 Scene/Prefab（那两类的校验依赖本 crate 的类型）。所有需要导入
-/// 场景数据的调用方（assetc、editor）都必须用本函数组装，否则 `.scene` /
-/// `.prefab` 会报"不支持的资源类型"。
-#[must_use]
-pub fn full_registry() -> ImporterRegistry {
-    let mut importers: Vec<&'static dyn Importer> = ImporterRegistry::core_importers().into();
-    importers.extend(scene_importers());
-    ImporterRegistry::from_importers(&importers)
 }
 
 /// Rejects empty sources uniformly across builtin importers.
@@ -222,6 +210,7 @@ fn line_column(text: &str, offset: usize) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustlua_assets::importer::ImporterRegistry;
     use rustlua_assets::resource_kind::ResourceKind;
     use std::fs;
     use std::path::PathBuf;
@@ -257,10 +246,15 @@ mod tests {
         b"prefab_version=1\nasset_id=00000000-0000-4000-8000-000000000000\nname=hero\nroot=1\nentity\t1\troot\t\n".to_vec()
     }
 
+    /// 本 crate 两个零件的注册表（**不含**六个核心导入器 —— 它们在导入层，本 crate 不依赖）。
+    fn scene_registry() -> ImporterRegistry {
+        ImporterRegistry::from_importers(&scene_importers())
+    }
+
     #[test]
     fn scene_importer_validates_json_and_ron_structure() {
         let root = root("data-json-ron");
-        let importer = full_registry().get(ResourceKind::Scene).unwrap();
+        let importer = scene_registry().get(ResourceKind::Scene).unwrap();
 
         let good_json = write_source(&root, "good.json", b"{\"a\": [1, 2, 3]}");
         importer
@@ -307,7 +301,7 @@ mod tests {
     fn scene_importer_is_strict_for_scene_but_lenient_for_ron_json() {
         let root = root("scene");
         let good = write_source(&root, "main.scene", &scene_bytes());
-        let importer = full_registry().get(ResourceKind::Scene).unwrap();
+        let importer = scene_registry().get(ResourceKind::Scene).unwrap();
         importer
             .validate(&good, &std::fs::read(&good).unwrap())
             .unwrap();
@@ -328,7 +322,7 @@ mod tests {
     fn prefab_importer_validates_prefab() {
         let root = root("prefab");
         let good = write_source(&root, "hero.prefab", &prefab_bytes());
-        let importer = full_registry().get(ResourceKind::Prefab).unwrap();
+        let importer = scene_registry().get(ResourceKind::Prefab).unwrap();
         importer
             .validate(&good, &std::fs::read(&good).unwrap())
             .unwrap();
@@ -341,25 +335,22 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// 完整注册表（六个核心导入器 + 本 crate 两个）的装配测试**搬到了导入层**
+    /// （`rustlua-assets-import`）：装配点不在本 crate 了，因为核心导入器要
+    /// `image`/`rodio`/`ab_glyph`/`mlua`，而本 crate 是浏览器也要编的。
+    /// 这里只钉住"本 crate 提供的两个零件本身可用、且没有偷带别的 kind"。
     #[test]
-    fn full_registry_includes_core_and_scene_importers() {
-        let registry = full_registry();
-        for kind in [
-            ResourceKind::Texture,
-            ResourceKind::Audio,
-            ResourceKind::LuaScript,
-            ResourceKind::Scene,
-            ResourceKind::Prefab,
-            ResourceKind::Model,
-            ResourceKind::Atlas,
-            ResourceKind::Font,
-        ] {
-            let importer = registry.get(kind).expect("full importer exists");
+    fn scene_importers_are_resolvable_by_kind_and_path() {
+        let registry = scene_registry();
+        for kind in [ResourceKind::Scene, ResourceKind::Prefab] {
+            let importer = registry.get(kind).expect("scene importer exists");
             assert_eq!(importer.kind(), kind);
             assert!(!importer.extensions().is_empty());
         }
-        assert!(registry.get(ResourceKind::Other).is_none());
-        // 场景导入器按扩展名解析（builtin 不含它们，这里单独钉住语义）。
+        assert!(
+            registry.get(ResourceKind::Texture).is_none(),
+            "本 crate 不该带核心导入器（那是导入层的事）"
+        );
         assert_eq!(
             registry.from_path(Path::new("c.prefab")).unwrap().kind(),
             ResourceKind::Prefab
@@ -372,7 +363,7 @@ mod tests {
 
     #[test]
     fn scene_and_prefab_importers_reject_empty_sources() {
-        let registry = full_registry();
+        let registry = scene_registry();
         for kind in [ResourceKind::Scene, ResourceKind::Prefab] {
             let importer = registry.get(kind).unwrap();
             assert!(

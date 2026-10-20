@@ -19,6 +19,7 @@
 mod wp0_alloc;
 
 use engine::host::RuntimeScene;
+use engine::host::scene_extract::extract_serialized_scene_3d;
 use rustlua_ecs::particle::ParticleEmitter;
 use rustlua_ecs::spatial_transform::{LocalTransform, TransformTree};
 use rustlua_ecs::transform::Vec2 as SceneVec2;
@@ -27,7 +28,6 @@ use rustlua_infra::par::Parallelism;
 use rustlua_input::input::InputSnapshot;
 use rustlua_math::math3d::Vec3;
 use rustlua_scene::scene::{Scene, SceneEntityId};
-use rustlua_scene::scene_extract::extract_serialized_scene_3d;
 use rustlua_scene::typed_scene::TypedScene;
 use std::{
     env, fs,
@@ -219,6 +219,10 @@ fn parse_config() -> Config {
 /// `compile_v2` 严格模式在任何诊断下都会返回 `Err`，因此能走到这里即意味着
 /// `diagnostics == 0`——报告里的该字段是这一事实的记录，不是独立统计。
 fn measure_scenes(examples: &std::path::Path, cycles: usize) -> Vec<String> {
+    // 表现层组件（`Sprite`/`Text`/`UiLayout`…）的文法在 render/ui，场景层只查表校验
+    // （P1 ④）。本例子要编译真实工程的场景文本，所以先装一次表——和游戏/编辑器启动时
+    // 做的是同一件事。
+    engine::host::scene_codecs::install();
     let mut reports = Vec::new();
     for project in PROJECTS {
         let dir = examples.join(project).join("scenes");

@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn console_evaluates_values_and_updates_lua_state() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(runtime.execute_console("return 1 + 2").unwrap(), "3");
     assert_eq!(runtime.execute_console("console_value = 7").unwrap(), "nil");
     assert_eq!(
@@ -13,7 +13,7 @@ fn console_evaluates_values_and_updates_lua_state() {
 
 #[test]
 fn console_errors_are_recorded_with_console_path() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert!(runtime.execute_console("error('console boom')").is_err());
     let diagnostics = runtime.all_diagnostics();
     assert_eq!(diagnostics.len(), 1);
@@ -25,7 +25,7 @@ fn console_errors_are_recorded_with_console_path() {
 #[test]
 fn debugger_extracts_location_deduplicates_and_filters() {
     let path = script("function update() error('boom') end");
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.execute_project_script(&path).unwrap();
     assert!(runtime.call_update_debug().is_err());
     assert!(runtime.call_update_debug().is_err());
@@ -52,7 +52,7 @@ fn debugger_extracts_line_from_lua_message() {
 #[test]
 fn syntax_error_contains_path_and_line() {
     let path = script("function update(\n");
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let error = runtime
         .execute_project_script(&path)
         .unwrap_err()
@@ -63,7 +63,7 @@ fn syntax_error_contains_path_and_line() {
 #[test]
 fn runtime_error_is_returned_without_panic() {
     let path = script("function update() error('boom') end");
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.execute_project_script(&path).unwrap();
     let error = runtime.call_update().unwrap_err().to_string();
     assert!(error.contains("boom"));

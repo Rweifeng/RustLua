@@ -1,6 +1,6 @@
 //! Scene View 拖拽 / 框选 / Gizmo 的**提交层**（docs/55 §4.1：View 只发 action）。
 //!
-//! 面板（`panels/scene_view.rs`）负责绘制、命中测试与事件采集；"预览 → 事务 → 恰好一条 Undo
+//! 面板（`panels/scene_view/`）负责绘制、命中测试与事件采集；"预览 → 事务 → 恰好一条 Undo
 //! → 保存"这串**提交逻辑**住在这里。它握着 `history.execute` 与文档写入，留在面板文件里会让
 //! "View 只发 typed action"这条规则失去可检性——架构棘轮
 //! （`panels/architecture_tests.rs`）直接扫描面板源文件，把这种"顺手写文档"钉成欠账。

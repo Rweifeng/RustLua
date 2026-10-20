@@ -77,7 +77,7 @@ fn scene_atlas_reference_resolves_to_sheet_uv_at_spawn() {
     let (sheet, atlas) = write_atlas_project(&root);
 
     let scene = scene_with_sprite(&format!("{atlas}#walk"));
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);
 
@@ -95,7 +95,7 @@ fn scene_atlas_reference_resolves_to_sheet_uv_at_spawn() {
 fn scene_plain_texture_reference_still_passes_through() {
     let root = temp_root("plain");
     let scene = scene_with_sprite("art/idle.png");
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);
     let (asset_path, _) = spawned_sprite(&mut runtime);
@@ -110,7 +110,7 @@ fn scene_broken_atlas_reference_fails_loudly_not_silently() {
 
     // 区域不存在：装配必须报错，而不是回退成整图。
     let scene = scene_with_sprite(&format!("{atlas}#fly"));
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     let error = runtime
         .instantiate_scene(&scene)
@@ -119,7 +119,7 @@ fn scene_broken_atlas_reference_fails_loudly_not_silently() {
 
     // 图集文件不存在：同样显式失败。
     let scene = scene_with_sprite("assets/atlases/missing.atlas#walk");
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     assert!(runtime.instantiate_scene(&scene).is_err());
     let _ = fs::remove_dir_all(&root);
@@ -131,7 +131,7 @@ fn scene_atlas_reference_without_project_root_is_an_error() {
     let root = temp_root("no-root");
     let (_, atlas) = write_atlas_project(&root);
     let scene = scene_with_sprite(&format!("{atlas}#walk"));
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let error = runtime
         .instantiate_scene(&scene)
         .expect_err("相对图集路径在没设工程根时必须失败");

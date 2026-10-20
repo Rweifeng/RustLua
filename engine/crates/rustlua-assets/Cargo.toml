@@ -6,17 +6,26 @@ authors.workspace = true
 license.workspace = true
 publish = false
 
+# ── 运行时那一半（导入层已搬去 `rustlua-assets-import`）───────────────────────
+#
+# 必须留下的：`resource_db`（资源库，运行时按 id 取资源）、`asset_handle`（句柄）、
+# `dependency`（Reload 依赖图）、`rltex`（纹理容器解码，渲染要用）、`atlas_format`
+# （图集定义文本格式，运行时读 `.atlas`）、`gltf_asset`（3D 资产解析，运行时懒加载
+# `GltfAsset::load`）、`hash`、`importer`（trait + 注册表；实现住在导入层）。
+#
+# 已经搬走的（2026-10-20，docs/62 P1 第 3 条）：`importer` 的六个实现、`atlas_plan`、
+# `atlas_pack`、`import_cache` → `rustlua-assets-import`。它们带来的 `image`（PNG/JPEG
+# 编解码）、`rodio`（整套音频解码器 + 设备枚举）、`ab_glyph`、`mlua`、`anyhow` 一并
+# 从本 crate 移除——这些只在 `assetc`/`editor` 里跑，浏览器里一次都不会执行。
+# 验收：`cargo tree -p game_web --target wasm32-unknown-unknown -i rodio` 无输出。
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-mlua = { version = "0.11", features = ["lua54", "vendored"] }
-rodio = { version = "0.19", features = ["wav", "vorbis", "mp3", "flac"] }
-ab_glyph = "0.2"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# `gltf_asset::GltfAsset::load` 在运行时被 `rustlua-animation` 的 3D 懒加载调用
+# （`from_gltf_path`），所以这个依赖留在运行时侧是有真实消费者的，不是漏拆。
 gltf.workspace = true
-anyhow.workspace = true
 rustlua-math = { path = "../rustlua-math" }
 rustlua-ecs = { path = "../rustlua-ecs" }
 rustlua-infra = { path = "../rustlua-infra" }

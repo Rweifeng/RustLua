@@ -108,8 +108,51 @@ const AFTER_RECT: &[(&str, [f32; 4])] = &[
 const ROW_OLD_CENTER: (f64, f64) = (160.0, 630.0);
 const ROW_NEW_CENTER: (f64, f64) = (400.0, 230.0);
 const OTHER_CENTER: (f64, f64) = (950.0, 630.0);
-/// main.scene 的 `BtnStart`（460,380,820,444）中心：⑧ 用它证明场景 UI 没被污染。
-const SCENE_BTN_CENTER: (f64, f64) = (640.0, 412.0);
+/// 门面按钮 `BtnStart` 的**命中点从预设里现算**，不写死坐标。
+///
+/// 2026-10-20：M73 改版标题门面（三键横排，按钮从 360×64 @y380 变成 160×60 @y420，
+/// 与 `main.scene` 时代那个 `(460,380,820,444)` 不再相同），写死的 `(640,412)` 落到
+/// 新按钮上方 8px 的空白里 —— 读数变成"点一下没有派发"，看着像**场景 UI 被污染**，
+/// 实际只是坐标过期。⑧ 要证明的是"本批写预设没碰场景 UI"，那就必须点在**真的按钮上**：
+/// 现在按 `assets/prefabs/ui/title_menu.prefab` 的 `UiLayout.offsets` 现算中心。
+fn title_button_center(
+    project: &std::path::Path,
+    name: &str,
+) -> Result<(f64, f64), Box<dyn std::error::Error>> {
+    let path = project
+        .join("assets")
+        .join("prefabs")
+        .join("ui")
+        .join("title_menu.prefab");
+    let text = std::fs::read_to_string(&path)
+        .map_err(|error| format!("读不到 {}：{error}", path.display()))?;
+    let prefab = rustlua_scene::prefab::Prefab::from_text(&text)
+        .map_err(|error| format!("{} 解析失败：{error}", path.display()))?;
+    let entity = prefab
+        .entities
+        .values()
+        .find(|entity| entity.name == name)
+        .ok_or_else(|| format!("{} 里找不到实体 {name}", path.display()))?;
+    let layout = entity
+        .components
+        .get("UiLayout")
+        .ok_or_else(|| format!("{} 的 {name} 没有 UiLayout 组件", path.display()))?;
+    let offsets = layout
+        .split(';')
+        .find_map(|field| field.strip_prefix("offsets="))
+        .ok_or_else(|| format!("{name} 的 UiLayout 没有 offsets：{layout:?}"))?;
+    let values: Vec<f64> = offsets
+        .split(',')
+        .filter_map(|part| part.trim().parse::<f64>().ok())
+        .collect();
+    if values.len() != 4 {
+        return Err(format!("{name} 的 offsets 应恰有 4 个数，实为 {offsets:?}").into());
+    }
+    Ok((
+        (values[0] + values[2]) / 2.0,
+        (values[1] + values[3]) / 2.0,
+    ))
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = resolve_project()?;
@@ -371,9 +414,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "⑧ despawn 一份之后另一份照旧",
     )?;
     click_dispatches(&mut runtime, ROW_NEW_CENTER, &[], "⑧ 已销毁的实例按位置")?;
+    let scene_btn_center = title_button_center(project.as_path(), "BtnStart")?;
     click_dispatches(
         &mut runtime,
-        SCENE_BTN_CENTER,
+        scene_btn_center,
         &["BtnStart"],
         "⑧ 门面场景 UI 未被污染",
     )?;

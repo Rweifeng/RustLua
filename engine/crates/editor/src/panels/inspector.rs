@@ -1412,7 +1412,7 @@ impl EditorApp {
     // 保留给测试直接调用（写入 + 收敛为一条历史的一步语义）。
 
     // 添加/移除 Collider3d 的按钮走 `EditorCommand::AddCollider3d` /
-    // `RemoveCollider3d`：实现体住在 shell（`actions.rs`），面板不再直接写文档。
+    // `RemoveCollider3d`：实现体住在 shell（`crate::actions`），面板不再直接写文档。
 
     /// 选中实体 `Sprite` 组件的纹理路径（Animation 面板新建 Clip 的默认 sheet 用它）。
     ///
@@ -1457,7 +1457,7 @@ impl EditorApp {
     ///
     /// 这是**纯函数**：只吃显式传入的场景与 Inspector 状态，不碰 `self.document` /
     /// `self.history` / 选区——提交边界住在 shell 的 `EditorApp::add_component_to`
-    /// （`actions.rs`）。这里留下的只有"注册表 → 默认值"这张表。
+    /// （`crate::actions`）。这里留下的只有"注册表 → 默认值"这张表。
     pub(crate) fn insert_default_component(
         scene: &mut editor::SceneDocument,
         inspector: &InspectorState,
@@ -1590,7 +1590,7 @@ impl EditorApp {
                 if let Some(entity) = scene.scene.entities.get_mut(&selected) {
                     entity.components.insert(
                         "WorldText".to_owned(),
-                        rustlua_scene::world_text::WorldText {
+                        rustlua_ui::world_text::WorldText {
                             text: rustlua_ui::ui::UiText {
                                 text: "文字".to_owned(),
                                 font_size: rustlua_ui::ui::UI_TEXT_BASE_PX,
@@ -1708,7 +1708,7 @@ impl EditorApp {
     }
 
     // 粘贴组件（`EditorCommand::PasteComponents`）与重命名（`RenameSelection`）的实现体
-    // 都已搬到 shell（`actions.rs`）：面板按钮只发 typed action。
+    // 都已搬到 shell（`crate::actions`）：面板按钮只发 typed action。
 
     /// 确保源 Prefab 已缓存（必要时重新读盘）。返回后不再持有 `&mut self` 借用，
     /// 调用方随后从 `prefab_source_cache` 取不可变引用即可。
@@ -1763,13 +1763,13 @@ impl EditorApp {
     }
 
     // 选择性 Revert（`EditorCommand::RevertPrefabOverride`）的实现体已搬到 shell
-    // （`actions.rs` 的 `revert_prefab_override_field`）：面板只发 typed action。
+    // （`crate::actions` 的 `revert_prefab_override_field`）：面板只发 typed action。
 
     // 重新应用源 Prefab（`EditorCommand::ReapplyPrefab`）的实现体已搬到 shell
-    // （`actions.rs` 的 `reapply_prefab`）：目标由 typed action 显式携带。
+    // （`crate::actions` 的 `reapply_prefab`）：目标由 typed action 显式携带。
 
     /// 把实例写回源 Prefab 文件（`EditorCommand::SavePrefabToSource`）与逐字段 Apply
-    /// （`EditorCommand::ApplyPrefabOverride`）的实现体都已搬到 shell（`actions.rs` 的
+    /// （`EditorCommand::ApplyPrefabOverride`）的实现体都已搬到 shell（`crate::actions` 的
     /// `save_prefab_to_source` / `apply_prefab_override_field`）：面板只发 typed action。
     /// 是否是 Prefab 实例（有 `prefab.source`）。typed action 的前置条件检查用它，
     /// 避免"面板与命令层各写一遍元数据判断"。
@@ -1825,10 +1825,10 @@ impl EditorApp {
     }
 
     // 「落盘 Prefab + 重建实例」整条路径（`write_prefab_and_rebuild_instances` 及其
-    // Prefab 写路径辅助）已整体搬到 shell（`actions.rs`）：面板不再持有提交边界。
+    // Prefab 写路径辅助）已整体搬到 shell（`crate::actions`）：面板不再持有提交边界。
 
     // 解包 Prefab（`EditorCommand::UnpackPrefab`）的实现体已搬到 shell
-    // （`actions.rs` 的 `unpack_prefab`）：面板只发 typed action。
+    // （`crate::actions` 的 `unpack_prefab`）：面板只发 typed action。
 }
 
 // 混合值判定（`has_mixed_transform`/`has_mixed_transform3d`）**已删除**（第 36 轮）：
@@ -1838,7 +1838,7 @@ impl EditorApp {
 // Prefab 写路径辅助（`PrefabRebuildState`、`collect_prefab_rebuild_state`、
 // `build_prefab_from_instance_root`、`prefab_root_ids`、`collect_prefab_overrides`、
 // `prefab_override_value`、`collect_scene_subtree`、`apply_prefab_instance_metadata`、
-// `preserve_prefab_editor_flags`、`PrefabWriteRequest`）已整体搬到 shell（`actions.rs`）：
+// `preserve_prefab_editor_flags`、`PrefabWriteRequest`）已整体搬到 shell（`crate::actions`）：
 // 它们只在"写回/重新应用/解包"这条提交路径上使用。面板侧只保留**显示用**的
 // Prefab diff（`diff_prefab_entity` / `prefab_override_rows`）与源缓存。
 
@@ -1988,7 +1988,7 @@ pub(crate) fn diff_prefab_entity(source: &SceneEntity, instance: &SceneEntity) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Prefab 写路径的纯函数住在 shell（`actions.rs`）：测试直接调它们做单元级断言。
+    // Prefab 写路径的纯函数住在 shell（`crate::actions`）：测试直接调它们做单元级断言。
     use crate::EditorApp;
     use crate::actions::{
         apply_prefab_instance_metadata, build_prefab_from_instance_root,

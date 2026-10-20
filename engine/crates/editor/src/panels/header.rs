@@ -56,7 +56,7 @@ impl EditorApp {
         self.request_document_change(crate::actions::PendingChange::Recover { candidate });
     }
 
-    // `perform_recover_candidate` **已搬到 shell**（`actions.rs`，第 28 轮）：它会替换当前文档，
+    // `perform_recover_candidate` **已搬到 shell**（`crate::actions`，第 28 轮）：它会替换当前文档，
     // 属于提交边界。面板只发确认/typed action。
 
     /// 重新扫描崩溃恢复目录。

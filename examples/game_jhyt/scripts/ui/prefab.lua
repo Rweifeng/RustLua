@@ -889,9 +889,11 @@ function M.audit()
   return #issues == 0, issues
 end
 
---- `validate_data` 入口（启动、`game --check`、`editor --check` 三条路径都会跑）。
-function M.validate_all()
-  return M.audit()
-end
-
+-- 没有 `validate_all`（M71 退役后的第二次收口）：本模块原来的校验入口是
+-- `validate_all → audit`，而 `M.NAMES` 清空之后 `audit` 遍历的是**空表**——那是一个
+-- 永远返回绿的校验器。把它登记进 `validate_data.lua` 只会让"校验跑过了"这句话变假
+-- （M59 当时登记过，退役时已按同一理由移除登记），而留着不登记则会被
+-- `jhyt_m23_data_validation` 判红（它的判据就是"定义了 validate_all 就必须登记"）。
+-- 所以入口本身也不留：将来若给这一层重新装数据，要**先把校验器写成能真的失败**，
+-- 再连同 `validate_data.lua` 的登记一起加回来。
 return M

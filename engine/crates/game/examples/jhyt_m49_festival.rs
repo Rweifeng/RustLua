@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let save_path = fresh_save_path(&project, "jhyt_m49_festival.sav");
     let project_arg = project.clone();
 
-    let mut rt = new_runtime(&project_arg, &save_path)?;
+    let (mut rt, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut rt, &main_script)?;
     click_button(&mut rt, "BtnStart")?;
     assert_scene_is(&mut rt, "manor")?;
@@ -213,7 +213,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M49④ 端午当日真实 shop.sell 灵芝：到账 = 基础卖价 +20% 溢价");
     let lingzhi_sell = query_num(&mut rt, "require('data.items').lingzhi.sell")?;
     lua(&mut rt, &format!("clock.set(36, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(&mut rt, "require('world.festival').id()", "duanwu")?;
     let bonus = query_num(&mut rt, "require('world.festival').sell_bonus('lingzhi')")?;
     let expected_offer = lingzhi_sell + (lingzhi_sell * bonus / 100.0).round();
@@ -254,24 +254,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 纯函数：把时钟拨到任意位置，显式传 day 的查询结果不变。
     let chuxi_a = query_str(&mut rt, "require('world.festival').id(110)")?;
     lua(&mut rt, &format!("clock.set(1, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     let chuxi_b = query_str(&mut rt, "require('world.festival').id(110)")?;
     if chuxi_a != chuxi_b || chuxi_a != "chuxi" {
         return Err(format!("除夕守岁查询不纯：拨钟前 {chuxi_a:?} / 拨钟后 {chuxi_b:?}").into());
     }
     // 跨天钩子：拨到除夕末日（冬 28 = 日 112）守岁，睡一觉 → 春 1（日 113），守岁自动消失。
     lua(&mut rt, &format!("clock.set(112, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(&mut rt, "require('world.festival').id()", "chuxi")?;
     assert_str(&mut rt, "require('world.calendar').current()", "winter")?;
     lua(&mut rt, "day.sleep()")?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_num(&mut rt, "clock.now().day", 113.0)?;
     assert_str(&mut rt, "require('world.festival').id()", "")?;
     assert_str(&mut rt, "require('world.calendar').current()", "spring")?;
     // 再睡一天回到春 2，确认不是"记住了守岁"。
     lua(&mut rt, "day.sleep()")?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_num(&mut rt, "clock.now().day", 114.0)?;
     assert_str(&mut rt, "require('world.festival').id()", "")?;
     println!(
@@ -308,13 +308,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 // ---------- helpers（与 jhyt_m42_shipping_box / m34 同一套） ----------
 
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 fn enter_main_menu(
@@ -334,8 +339,12 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
     Ok(())
 }
 
-fn frames(runtime: &mut LuaRuntime, n: usize) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+fn frames(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    n: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    host.set_input(InputSnapshot::default());
     for _ in 0..n {
         runtime.call_update()?;
     }

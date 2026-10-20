@@ -251,6 +251,16 @@ impl RuntimeScene {
         self.frame_view_3d.map(|frame| frame.view)
     }
 
+    /// 已定帧视图里的相机（M74-01 空间音频的听者来源）。
+    ///
+    /// 为什么要这个而不是直接再调一次 [`Self::active_camera3d`]：正常渲染路径每帧已经解析过
+    /// 相机（`vertices`/`scene_3d` 定帧时），音频再解析一次就是**同一帧算两遍**——测试账本
+    /// `ledger::camera3d_resolutions` 就是专门钉这件事的（`tests/frame_view.rs` 断言一帧
+    /// 恰好 1 次定帧解析）。复用这份缓存让人声与画面**看到同一台相机**，也不多付一次查找。
+    pub(super) fn frame_camera3d(&self) -> Option<Camera3D> {
+        self.frame_view_3d.map(|frame| frame.camera)
+    }
+
     /// Resolves the active camera: Lua's `camera.set_active` selection, else the
     /// first entity with a `Camera3D` component, else a fixed default.
     ///

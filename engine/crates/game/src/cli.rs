@@ -202,7 +202,7 @@ pub fn verify_startup(root: &Path, packaged: bool) -> Result<(), String> {
 /// M20-01：校验 `scripts/**/*.lua` 全部脚本语法（与导入期共用 Importer 校验器，
 /// 错误含文件路径与 Lua 行列定位）。
 fn verify_script_syntax(root: &Path) -> Vec<String> {
-    use rustlua_assets::importer::ImporterRegistry;
+    use rustlua_assets_import::builtin;
     let mut issues = Vec::new();
     let scripts_root = root.join("scripts");
     // 目录形态下这里是真实目录；发布包形态下 `scripts/` 只在容器里，磁盘上不存在。
@@ -210,7 +210,7 @@ fn verify_script_syntax(root: &Path) -> Vec<String> {
     // （容器条目 ∪ 磁盘目录）。
     let mut files = rustlua_infra::vfs::list_files_recursive(&scripts_root);
     files.sort();
-    let registry = ImporterRegistry::builtin();
+    let registry = builtin();
     for file in files {
         let is_lua = file
             .extension()
@@ -241,7 +241,9 @@ fn verify_domain_data(root: &Path) -> Vec<String> {
     if !rustlua_infra::vfs::is_file(&entry) {
         return Vec::new();
     }
-    let runtime = match rustlua_scripting::script::LuaRuntime::new() {
+    let runtime = match rustlua_scripting::script::LuaRuntime::with_installers(
+        rustlua_gameplay::input_lua::registry(),
+    ) {
         Ok(runtime) => runtime,
         Err(error) => return vec![format!("Lua 运行时初始化失败: {error}")],
     };

@@ -18,6 +18,10 @@ pub mod runtime_scene;
 /// 示例工程 `examples/game_api` 的工程级门（headless 步进 / 脚本编译 / API 与组件覆盖率）。
 #[cfg(test)]
 mod sample_project;
+/// 表现层组件 codec 的装表入口（P1 ④）：组合根在这里把 render/ui 的 codec 接给 scene。
+pub mod scene_codecs;
+/// 场景文本 → 渲染层类型的旧提取（P1 ④ 之后从 `rustlua-scene` 搬来：它产出 render 的类型）。
+pub mod scene_extract;
 pub mod shader;
 /// wasm 上"从画布建 `wgpu::Surface`"的唯一实现（web 宿主与探针共用，见模块注释）。
 #[cfg(target_arch = "wasm32")]

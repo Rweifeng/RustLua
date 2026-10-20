@@ -16,7 +16,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 // WP11-USE:END
 
-pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
+pub(super) fn register(
+    lua: &Lua,
+    state: Rc<RefCell<ScriptState>>,
+    pointer: Rc<std::cell::Cell<Option<(f32, f32)>>>,
+) -> LuaResult<()> {
+    let pointer_mouse = Rc::clone(&pointer);
+    let pointer_screen = Rc::clone(&pointer);
     let camera = lua.create_table()?;
     let s = Rc::clone(&state);
     camera.set(
@@ -153,7 +159,13 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             let (camera, viewport, cursor) = {
                 let state = s.lua_borrow()?;
                 let (camera, viewport) = camera3d_view_from(&state)?;
-                (camera, viewport, state.input.cursor_position())
+                (
+                    camera,
+                    viewport,
+                    pointer_mouse
+                        .get()
+                        .map_or((0.0, 0.0), |(x, y)| (f64::from(x), f64::from(y))),
+                )
             };
             let ray = rustlua_render::picking::ray_from_screen(
                 camera,
@@ -320,7 +332,13 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             let (camera, viewport, cursor) = {
                 let state = s.lua_borrow()?;
                 let (camera, viewport) = camera_view_from(&state)?;
-                (camera, viewport, state.input.cursor_position())
+                (
+                    camera,
+                    viewport,
+                    pointer_screen
+                        .get()
+                        .map_or((0.0, 0.0), |(x, y)| (f64::from(x), f64::from(y))),
+                )
             };
             let world = camera
                 .screen_to_world(

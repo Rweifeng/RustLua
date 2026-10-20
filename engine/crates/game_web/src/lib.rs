@@ -221,7 +221,9 @@ fn lua_once_finish(root: std::path::PathBuf) -> anyhow::Result<String> {
     let _ = crate::lua_bridge::install_storage_slot();
     #[cfg(target_arch = "wasm32")]
     let _ = crate::audio_sink::install();
-    let mut runtime = rustlua_scripting::script::LuaRuntime::new()?;
+    let mut runtime = rustlua_scripting::script::LuaRuntime::with_installers(
+        rustlua_gameplay::input_lua::registry(),
+    )?;
     runtime.set_project_root(root.clone());
     runtime.execute_project_script(&root.join("scripts/main.lua"))?;
     Ok(runtime.call_update()?)
@@ -338,8 +340,10 @@ mod wasm {
                     .map_err(|e| JsValue::from_str(&e))?;
             }
             3 => {
-                let _ = rustlua_scripting::script::LuaRuntime::new()
-                    .map_err(|e| JsValue::from_str(&e.to_string()))?;
+                let _ = rustlua_scripting::script::LuaRuntime::with_installers(
+                    rustlua_gameplay::input_lua::registry(),
+                )
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
             }
             4 | 5 => {
                 // P2-④：probe 4/5 的 setup 完全相同，收敛为一个函数；5 多跑一帧 update。
@@ -373,8 +377,10 @@ mod wasm {
                 _ => None,
             }
         });
-        let mut runtime = rustlua_scripting::script::LuaRuntime::new()
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let mut runtime = rustlua_scripting::script::LuaRuntime::with_installers(
+            rustlua_gameplay::input_lua::registry(),
+        )
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
         runtime.set_project_root(root);
         let main = std::path::PathBuf::from(super::VIRTUAL_PROJECT_ROOT).join("scripts/main.lua");
         runtime

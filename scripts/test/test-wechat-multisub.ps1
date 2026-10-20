@@ -1,6 +1,6 @@
 ﻿# 微信多分包根端到端用例（P0-A：boot 前预挂全部非主包根）。
 #
-# 从一份**已发布**的微信 launcher 复制出临时夹具，把 `bundles.json` 里的 audio 组改成
+# 从一份**已发布**的微信 launcher 复制出临时夹具，把计划表里第一个非主包组改成
 # `sub:audio`，用 bundle-layout.js 真正拆出 `pack-audio/`，再用无头 harness 跑完整启动：
 #   · 适配层必须读到 launcher 根的 bundle_plan.json；
 #   · boot 前必须把 pack + pack-audio 都 loadSubpackage 过；
@@ -104,12 +104,24 @@ try {
     }
 
     $plan = Read-Utf8 $planPath | ConvertFrom-Json
-    $audioGroups = @($plan.groups | Where-Object { $_.name -eq "audio" })
-    if ($audioGroups.Count -ne 1) {
-        Write-Host "wechat_multisub_test_skipped reason=no-audio-group launcher=$launcherRoot" -ForegroundColor DarkYellow
+    # 提升哪个组**不该写死**：`bundles.json` 改过一次分组（audio 从 sub 变成别的键），
+    # 写死组名会让这个用例静默跳过（`reason=no-audio-group`），于是"多根"这条覆盖就没了。
+    # 这里取第一个非 main、非 cdn、且还不是 `sub:audio` 的组来扮演具名分包。
+    $promoted = @($plan.groups | Where-Object {
+            $_.unit -ne "cdn" -and $_.unit -ne "main" -and $_.unit -ne "sub:audio"
+        } | Select-Object -First 1)
+    if ($plan.groups | Where-Object { $_.unit -eq "sub:audio" }) {
+        # 产物已经带具名分包：直接用现成的，不需要再提升。
+        $promoted = @($plan.groups | Where-Object { $_.unit -eq "sub:audio" } | Select-Object -First 1)
+    }
+    if ($promoted.Count -lt 1) {
+        Write-Host "wechat_multisub_test_skipped reason=no-promotable-group launcher=$launcherRoot" -ForegroundColor DarkYellow
         exit 0
     }
-    $audioGroups[0].unit = "sub:audio"
+    $promoted[0].unit = "sub:audio"
+    # 手改了 groups，计划表自校验的 checksum 必然失配：显式清空（= "手改过、无自校验" 的合法旧形态），
+    # 否则 `assetc closure` 会在解析阶段就拒绝它，测不到后面真正要测的容器闭包。
+    $plan.checksum = ""
     Write-Utf8 $planPath ($plan | ConvertTo-Json -Depth 10)
 
     # 由计划表生成 layout（与 assetc layout 同形；本用例不依赖本机 assetc 是否为含 layout 的新版）。
@@ -149,6 +161,58 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "bundle-layout --verify 失败（exit $LASTEXITCODE）" }
     & $node.Source $mountCheck --launcher $tempLauncher | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "check-bundle-mounts 失败（exit $LASTEXITCODE）" }
+
+    # 容器内容闭包：拆根之后每条逻辑路径仍必须能从**它那个根**的容器里取出来。
+    # 上面两道门只证明"容器文件在"，不打开容器；这一门由 assetc 实现（索引解析只有一份）。
+    $assetcExe = $null
+    foreach ($candidate in @(
+            (Join-Path $repo "engine\target\release\assetc.exe"),
+            (Join-Path $repo "engine\target\debug\assetc.exe")
+        )) {
+        if (Test-Path -LiteralPath $candidate) { $assetcExe = $candidate; break }
+    }
+    if (-not $assetcExe) {
+        Write-Host "wechat_multisub_test_assetc_missing reason=skip-closure（先 cargo build -p assetc --release）" -ForegroundColor DarkYellow
+    }
+    else {
+        $savedEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $closureOut = & $assetcExe closure $tempLauncher 2>&1
+            $closureExit = $LASTEXITCODE
+        }
+        finally { $ErrorActionPreference = $savedEap }
+        if ($closureExit -ne 0) {
+            throw ("拆根后容器闭包不成立（assetc closure exit {0}）：{1}" -f $closureExit, (($closureOut | ForEach-Object { "$_" }) -join "`n"))
+        }
+        Write-Host (($closureOut | Where-Object { $_ -match '^assetc_closure_ok' } | Select-Object -First 1)) -ForegroundColor DarkGray
+
+        # 反向用例：容器字节被改坏必须判红。没有这一条，上面的断言只能说"跑过了"，
+        # 证明不了"它真会拦下来"（本项目反复踩过"门永远绿"）。
+        $victim = Get-ChildItem -LiteralPath (Join-Path $tempLauncher "pack-audio\bundles") -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "*.rlb" -or $_.Name -like "*.rlb.txt" } |
+            Select-Object -First 1
+        if (-not $victim) { throw "pack-audio\bundles 下没有容器（含 .rlb.txt 改名形态），反向用例无法构造" }
+        $originalBytes = [System.IO.File]::ReadAllBytes($victim.FullName)
+        try {
+            $corrupted = [byte[]]$originalBytes.Clone()
+            $corrupted[$corrupted.Length - 1] = $corrupted[$corrupted.Length - 1] -bxor 0xFF
+            [System.IO.File]::WriteAllBytes($victim.FullName, $corrupted)
+            $ErrorActionPreference = "Continue"
+            try {
+                $negOut = & $assetcExe closure $tempLauncher 2>&1
+                $negExit = $LASTEXITCODE
+            }
+            finally { $ErrorActionPreference = $savedEap }
+            if ($negExit -eq 0) {
+                throw ("容器被改坏后 `assetc closure` 仍然通过（假绿）：" + (($negOut | ForEach-Object { "$_" }) -join "`n"))
+            }
+            Write-Host "wechat_multisub_closure_negative_ok 改坏 $($victim.Name) 后闭包检查判红（exit $negExit）" -ForegroundColor DarkGray
+        }
+        finally {
+            [System.IO.File]::WriteAllBytes($victim.FullName, $originalBytes)
+        }
+    }
 
     # 用当前源码覆盖夹具里的适配层：本用例要钉的是**这一笔**的 pre-mount 行为。
     Copy-Item -LiteralPath (Join-Path $repo "plugins\wechat-minigame\wechat-adapter.js") -Destination (Join-Path $tempLauncher "wechat-adapter.js") -Force

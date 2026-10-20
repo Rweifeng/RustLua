@@ -11,17 +11,21 @@
 //! ② 进图按季节换地表贴图（春→夏用 `clock.set(29, …)` + T 键跨天），未登记地图不动，
 //!    换图计数随存档往返；
 //! ③ 按日天气抽签的确定性与持久化（同档同天同结果、读档不漂、新档复位）；
-//! ④ 雨天可见变化：全屏薄雾面板 + 天气图标（`ui.panel_get` / `ui.image_get` 读回），
-//!    晴天必须收干净；
+//! ④ 雨天可见变化：全屏薄雾 + 天气图标——M70/B7 之后两者都是 HUD 预设节点，
+//!    所以读**实体层**（`HudRain` 建没建布局项 = 画不画、`Image.color` 的 alpha、
+//!    `UiLayout` 的矩形恰好盖满设计视口），晴天必须收干净；
 //! ⑤ 雨天真实影响玩法：雨天按 E 浇水 → `rain_watered` 且**不花体力**；
-//! ⑥ 三条资源条按真实数值画宽度（受伤 → 血条变短）；
+//! ⑥ 三条资源条按真实数值画宽度（受伤 → 血条变短，读 `HudBarFill1` 的矩形）；
 //! ⑦ 资源决定表 `docs/48` 与 `assets/**` 双向核对 + 下架动作（第三方包/标题原图）。
 //!
 //! Usage:
 //!   cargo run -p game --example jhyt_m29_season_weather [-- <game_jhyt-root>]
 
+use rustlua_ecs::entity::EntityId;
 use rustlua_input::input::{InputSnapshot, KeyCode};
 use rustlua_scripting::script::LuaRuntime;
+use rustlua_ui::ui::UiImage;
+use rustlua_ui::ui_layout::UiRectLayout;
 use std::{
     collections::BTreeMap,
     env, fs,
@@ -46,18 +50,21 @@ const NOON: i64 = 720;
 /// `_ui_weather_cloud.png` 按 `_` 前缀归入开发产物（46 → 47），内容缺口清零。
 /// 2026-09-27 Alpha 作物扩展：+7 图标（radish/seed_radish/seed_herb/polygonum/
 /// seed_polygonum/ginseng/seed_ginseng），herb.png 孤儿随草药落地转已引用 → 569。
-const EXPECTED_DEV_ARTIFACTS: usize = 47;
-// 2026-10-06 回归：2 个内容缺口均有 §2 决定行（计划登记）——
-//   * assets/art/ui/hud/ui_weather_cloud.png：生成器重新产出、天气闭集无阴天取值（_ 前缀版本已归开发产物）；
-//   * assets/ui/prefabs/dialogue.ui.json：M59 prefab 动态加载（语料只含目录前缀，docs/55 已登记）。
-const EXPECTED_CONTENT_ORPHANS: usize = 2;
-// 2026-10-06 终期回归重扫：阶段2–5 新增引用源（扩展物品 icon、ui/prefab 动态加载、collections/
-// achievements/endings 等新注册表、M59 预设）后 569→913，docs/48 §1 已同步。
-// 2026-10-07 主角头像：`gen_portraits_art.py` 补 player_male/player_female × 3 表情 = +6 张，
-// 全部以字面路径入 `ui/portrait.lua` ⇒ 978→984。**这条增量没跑过实测**：本样例在走到这条审计
-// 之前就先红在雨天遮罩那一腿（`ui.panel_get('hud:rain')` 读不到——M70/B7 把雨罩搬进预设之后
-// `hud:rain` 这个动态面板已不存在），修那一条时请顺手核对这里是不是 984。
-const EXPECTED_REFERENCED: usize = 984;
+///
+/// **2026-10-19 在干净树上重钉**（`examples/game_jhyt` 无未提交改动）：
+/// `assets/` 共 1231 = 已引用 1065 + 开发产物 23 + 内容缺口 143。
+/// 上一组（984 / 47 / 2，2026-10-07）被 M72 系列的美术产出整体顶掉，扫描口径一条没改：
+/// - 内容缺口 143 = **122** 个 `assets/art/crops/<crop>/stage_*.png`（`gen_crop_art.py`
+///   的出图中间帧；运行期寻址走图集 `manor_crops.png` + `data/crop_art.lua` 的 `CropGrid`）
+///   + **21** 个拆层整图 / 阴影中间件 / 改色备份（`docs/48` §2 逐目录登记）。
+///
+/// 那 122 个中间帧**是否进发行包属 P2 打包口径**，本样例不判：先按"计划"登记。
+/// 一旦 `assetc::is_dev_artifact` 认下它们，这里应改成 1065 / **145** / **21**。
+const EXPECTED_DEV_ARTIFACTS: usize = 23;
+// 内容缺口里 122 个是 crops 中间帧、21 个是拆层整图/阴影/备份，理由见上面那条。
+const EXPECTED_CONTENT_ORPHANS: usize = 143;
+// 已引用：扫描口径未变，984（2026-10-07）→ 1065 全部来自 M72 各批产出与新增引用点。
+const EXPECTED_REFERENCED: usize = 1065;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
@@ -78,7 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---------------- ① 四季地表数据表：结构与负例 ----------------
     banner("M29-01① 四季地表表 data/season_art.lua：登记/占位符/季节闭集，全部可校验");
-    let mut rt = new_runtime(&project_arg, &save_path)?;
+    let (mut rt, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut rt, &main_script)?;
     click_button(&mut rt, "BtnStart")?;
     assert_scene_is(&mut rt, "manor")?;
@@ -214,10 +221,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_scene_is(&mut rt, "manor")?;
     let swaps_before = query_num(&mut rt, "require('world.season_visual').swap_count()")?;
     lua(&mut rt, &format!("clock.set(29, {NOON})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(&mut rt, "require('world.calendar').current()", "summer")?;
     press(
         &mut rt,
+        &host,
         KeyCode::from_char('t').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_num(&mut rt, "clock.now().day", 30.0)?;
@@ -248,7 +256,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let persisted_swaps = query_num(&mut rt, "require('world.season_visual').swap_count()")?;
     lua(&mut rt, "require('core.save_manager').save()")?;
-    let mut rt2 = new_runtime(&project_arg, &save_path)?;
+    let (mut rt2, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut rt2, &main_script)?;
     click_button(&mut rt2, "BtnContinue")?;
     assert_scene_is(&mut rt2, "village")?;
@@ -337,6 +345,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     lua(&mut rt, &format!("clock.set(31, {NOON})"))?;
     press(
         &mut rt,
+        &host,
         KeyCode::from_char('t').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_num(&mut rt, "clock.now().day", 32.0)?;
@@ -351,7 +360,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // 读档后同一天同一结果（抽签结果由 seed+day 决定，不依赖运行期随机数）。
     lua(&mut rt, "require('core.save_manager').save()")?;
-    let mut rt3 = new_runtime(&project_arg, &save_path)?;
+    let (mut rt3, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut rt3, &main_script)?;
     click_button(&mut rt3, "BtnContinue")?;
     assert_num(&mut rt3, "clock.now().day", 32.0)?;
@@ -361,40 +370,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("③ 抽签纯函数稳定；跨天重抽；读档后第 32 天天气仍为 {day32}");
 
     // ---------------- ④ 雨天可见变化 ----------------
-    banner("M29-01④ 雨天可见变化：全屏薄雾面板 + 天气图标；晴天收干净");
+    banner("M29-01④ 雨天可见变化：全屏薄雾 + 天气图标（预设节点）；晴天收干净");
     // 先造一个雨天（显式覆盖：`set` 后当天不再重抽），跑几帧让 HUD 画出来。
     goto_map(&mut rt, "manor", MANOR_POS)?;
     assert_scene_is(&mut rt, "manor")?;
     lua(&mut rt, "require('world.weather').set('rainy')")?;
-    frames(&mut rt, 2)?;
-    assert_str(
-        &mut rt,
-        "(function() local p = ui.panel_get('hud:rain'); \
-           if not p then return 'no_overlay' end; \
-           if not p.visible then return 'overlay_hidden' end; \
-           if p.width < 1200 or p.height < 700 then return 'overlay_too_small' end; \
-           if p.a <= 0 or p.a >= 0.6 then return 'overlay_alpha:' .. tostring(p.a) end; \
-           return 'ok' end)()",
-        "ok",
-    )?;
-    assert_str(
-        &mut rt,
-        "(function() local icon = ui.image_get('hud:weather_icon'); \
-           if not icon then return 'no_icon' end; \
-           return icon.texture end)()",
-        "assets/art/ui/hud/ui_weather_rain.png",
-    )?;
-    // 晴天：遮罩与雨图标都必须被清掉（`ui.clear`），只留晴图标。
+    frames(&mut rt, &host, 2)?;
+    // M70/B7 把雨罩与天气图标搬进了 HUD 预设：动态层那套 `ui.panel`/`ui.image` 已经没了
+    // （`ui.panel_get('hud:rain')` 现在读回 nil），所以这一腿改读**实体层**——
+    // `HudRain` / `HudWeatherSun` / `HudWeatherRain` 三个预设节点。口径与 M70 一致：
+    // 节点在 `prefab_ui_nodes` 里 = 这一帧真画了（`prefab.set_visible(false)` 的整棵子树
+    // 一个布局项都不建，所以"画"与"能点中"同源），薄雾强度读 `Image.color` 的 alpha。
+    let rain = node_id(&mut rt, "HudRain")?.ok_or("HUD 预设里没有 HudRain 节点")?;
+    let rain_icon =
+        node_id(&mut rt, "HudWeatherRain")?.ok_or("HUD 预设里没有 HudWeatherRain 节点")?;
+    let sun_icon = node_id(&mut rt, "HudWeatherSun")?.ok_or("HUD 预设里没有 HudWeatherSun 节点")?;
+    if !node_drawn(&rt, rain) {
+        return Err("雨天：雨罩没建布局项（HudRain 被 set_visible(false) 藏了）".into());
+    }
+    let rain_image = node_image(&rt, rain).ok_or("雨天：HudRain 没有 Image 组件（不是色块）")?;
+    let (width, height) =
+        node_extent(&rt, rain).ok_or("雨天：HudRain 没有 UiLayout（画不出来）")?;
+    if width < 1200.0 || height < 700.0 {
+        return Err(format!("雨天：雨罩只有 {width}×{height}，盖不住 1280×720 设计视口").into());
+    }
+    if rain_image.color[3] <= 0.0 || rain_image.color[3] >= 0.6 {
+        return Err(format!(
+            "雨天：雨罩 alpha = {}（薄雾档应在 (0, 0.6)）",
+            rain_image.color[3]
+        )
+        .into());
+    }
+    if !node_drawn(&rt, rain_icon) || node_drawn(&rt, sun_icon) {
+        return Err("雨天：天气图标应只画雨（HudWeatherRain 画、HudWeatherSun 藏）".into());
+    }
+    let rain_texture = node_image(&rt, rain_icon)
+        .map(|image| image.texture)
+        .unwrap_or_default();
+    if rain_texture != "assets/art/ui/hud/ui_weather_rain.png" {
+        return Err(format!("雨天：雨图标贴图 = {rain_texture:?}").into());
+    }
+    // 晴天：遮罩与雨图标都必须被 `prefab.set_visible(false)` 收起，只留晴图标。
     lua(&mut rt, "require('world.weather').set('sunny')")?;
-    frames(&mut rt, 2)?;
-    assert_str(
-        &mut rt,
-        "(function() if ui.panel_get('hud:rain') then return 'overlay_leaked' end; \
-           local icon = ui.image_get('hud:weather_icon'); \
-           if not icon then return 'no_icon' end; \
-           return icon.texture end)()",
-        "assets/art/ui/hud/ui_weather_sun.png",
-    )?;
+    frames(&mut rt, &host, 2)?;
+    if node_drawn(&rt, rain) {
+        return Err("晴天：雨罩还建着布局项（set_visible 没收起）".into());
+    }
+    if node_drawn(&rt, rain_icon) || !node_drawn(&rt, sun_icon) {
+        return Err("晴天：天气图标应只画晴（HudWeatherSun 画、HudWeatherRain 藏）".into());
+    }
+    let sun_texture = node_image(&rt, sun_icon)
+        .map(|image| image.texture)
+        .unwrap_or_default();
+    if sun_texture != "assets/art/ui/hud/ui_weather_sun.png" {
+        return Err(format!("晴天：晴图标贴图 = {sun_texture:?}").into());
+    }
     // HUD 文本仍然与天气一致（文本与画面同源，M26 的映射不受影响）。
     // 天气片段在状态行里的**行号**会随改版式移动（M33 拆成 6 行后落在第 3 行），
     // 所以这里跨行找 `天气 ×`：断言的意图本来是"文本与天气一致"，不是"天气在第几行"。
@@ -413,7 +443,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---------------- ⑤ 雨天真实影响玩法：免浇水且不花体力 ----------------
     banner("M29-01⑤ 雨天按 E 浇水走 `rain_watered` 分支：不耗体力、不加劳作分钟");
     lua(&mut rt, &format!("clock.set(33, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     let (fx, fy) = find_plot_cell(&mut rt, 14, 23, "lingzhi")?;
     // 翻土 + 播种（真实 E 键，锄头与种子都按正常玩法准备）。
     lua(
@@ -425,14 +455,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (fy as f32 + 1.5) * 32.0
         ),
     )?;
-    frames(&mut rt, 2)?;
-    press(&mut rt, KeyCode::KeyE)?;
+    frames(&mut rt, &host, 2)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     assert_str(&mut rt, "require('core.state').last_action", "till")?;
     lua(
         &mut rt,
         "require('core.state').selected_seed = 'seed_lingzhi'",
     )?;
-    press(&mut rt, KeyCode::KeyE)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     assert_str(
         &mut rt,
         "require('core.state').last_action",
@@ -446,13 +476,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let energy_before = query_num(&mut rt, "require('core.state').energy")?;
     let labor_before = query_num(&mut rt, "require('core.state').labor_minutes")?;
-    press(&mut rt, KeyCode::KeyE)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     assert_str(&mut rt, "require('core.state').last_action", "rain_watered")?;
     assert_num(&mut rt, "require('core.state').energy", energy_before)?;
     assert_num(&mut rt, "require('core.state').labor_minutes", labor_before)?;
     // 同一天改回晴天：已经浇过（雨天那次）→ 走 already_watered，不会重复扣体力。
     lua(&mut rt, "require('world.weather').set('sunny')")?;
-    press(&mut rt, KeyCode::KeyE)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     assert_str(
         &mut rt,
         "require('core.state').last_action",
@@ -471,19 +501,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (gy as f32 + 1.5) * 32.0
         ),
     )?;
-    frames(&mut rt, 2)?;
-    press(&mut rt, KeyCode::KeyE)?;
+    frames(&mut rt, &host, 2)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     lua(
         &mut rt,
         "require('core.state').selected_seed = 'seed_lingzhi'",
     )?;
-    press(&mut rt, KeyCode::KeyE)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     lua(
         &mut rt,
         "inv.equip(require('core.state').inventory, 'tool', nil)",
     )?;
     let energy_blocked_before = query_num(&mut rt, "require('core.state').energy")?;
-    press(&mut rt, KeyCode::KeyE)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     assert_str(
         &mut rt,
         "require('core.state').last_action",
@@ -499,7 +529,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "inv.equip(require('core.state').inventory, 'tool', 'watering_can')",
     )?;
     let energy_sunny_before = query_num(&mut rt, "require('core.state').energy")?;
-    press(&mut rt, KeyCode::KeyE)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     assert_str(
         &mut rt,
         "require('core.state').last_action",
@@ -529,14 +559,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(format!("资源条比例越界：{ratios}").into());
         }
     }
-    assert_str(
-        &mut rt,
-        "(function() local icon = ui.image_get('hud:bar_hp'); \
-           if not icon then return 'no_bar' end; \
-           return icon.texture end)()",
-        "assets/art/ui/hud/ui_bar_fill_hp.png",
-    )?;
-    let full_width = query_num(&mut rt, "ui.image_get('hud:bar_hp').width")?;
+    // 三条 bar 也是预设节点（`HudBarFill1..3`）：脚本每帧用 `prefab.set_rect` 按真实比值
+    // 写填充宽度，所以读回 `UiRectLayout` 的宽度就是画面上的宽度，与 `bar_ratios` 同源。
+    let hp_bar = node_id(&mut rt, "HudBarFill1")?.ok_or("HUD 预设里没有 HudBarFill1 节点")?;
+    let hp_texture = node_image(&rt, hp_bar)
+        .map(|image| image.texture)
+        .unwrap_or_default();
+    if hp_texture != "assets/art/ui/hud/ui_bar_fill_hp.png" {
+        return Err(format!("血条贴图 = {hp_texture:?}").into());
+    }
+    let full_width = node_extent(&rt, hp_bar)
+        .ok_or("满血：血条没有 UiLayout（画不出来）")?
+        .0;
     if (full_width - 160.0).abs() > 1.0 {
         return Err(format!("满血条宽度应为 160，实为 {full_width}").into());
     }
@@ -545,10 +579,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut rt,
         "require('systems.combat').set_player_hp(require('systems.combat').player_max_hp() / 2)",
     )?;
-    frames(&mut rt, 2)?;
-    let hurt_width = query_num(&mut rt, "ui.image_get('hud:bar_hp').width")?;
+    frames(&mut rt, &host, 2)?;
+    let hurt_width = node_extent(&rt, hp_bar)
+        .ok_or("半血：血条没有 UiLayout（画不出来）")?
+        .0;
     if hurt_width >= full_width {
         return Err(format!("受伤后血条没有变短：{full_width} → {hurt_width}").into());
+    }
+    if (hurt_width - full_width * 0.5).abs() > 2.0 {
+        return Err(format!("半血条宽度应约为满血的一半：{full_width} → {hurt_width}").into());
     }
     assert_num(
         &mut rt,
@@ -572,26 +611,66 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         audit.dev.len(),
         audit.content.len()
     );
-    if audit.dev.len() != EXPECTED_DEV_ARTIFACTS {
-        return Err(format!(
-            "开发产物 {} 个，与 docs/48 §1 的 {EXPECTED_DEV_ARTIFACTS} 不符（新增预览图请改文档）",
-            audit.dev.len()
-        )
-        .into());
+    // 重钉基准时的取数入口：`RUSTLUA_M29_DUMP_GAPS=1` 跑一次，把内容缺口按**目录**分组
+    // 打出来，直接照着改 docs/48 §2 的行（每个目录一行）。之所以要按目录：§2 是逐前缀
+    // 匹配的表，散落的 143 个文件逐条登记不现实，按目录分组才让"漂移"仍然一眼可见。
+    if std::env::var_os("RUSTLUA_M29_DUMP_GAPS").is_some() {
+        let mut groups: BTreeMap<String, usize> = BTreeMap::new();
+        for rel in &audit.content {
+            let dir = rel.rsplit_once('/').map_or(rel.as_str(), |(dir, _)| dir);
+            *groups.entry(dir.to_owned()).or_insert(0) += 1;
+        }
+        println!("   ---- 内容缺口按目录分组 ----");
+        for (dir, count) in &groups {
+            println!("  gap {count:4}  {dir}");
+        }
+        println!("   ---- 内容缺口逐条 ----");
+        for rel in &audit.content {
+            println!("  gapfile   {rel}");
+        }
+        println!("   ---- 开发产物 {} ----", audit.dev.len());
+        for rel in &audit.dev {
+            println!("  dev       {rel}");
+        }
     }
-    if audit.content.len() != EXPECTED_CONTENT_ORPHANS {
+    // 三条基准数一起比：只报第一条会让"到底差多少"看不见，而这里的失败**几乎总是基准过期**
+    // （资源在长、表没跟），不是回归。所以把三条实测值、已知构成与两条收口路线一次说清。
+    if audit.dev.len() != EXPECTED_DEV_ARTIFACTS
+        || audit.content.len() != EXPECTED_CONTENT_ORPHANS
+        || audit.referenced.len() != EXPECTED_REFERENCED
+    {
+        let nongap: Vec<&str> = audit
+            .content
+            .iter()
+            .filter(|rel| !rel.starts_with("assets/art/crops/"))
+            .map(String::as_str)
+            .collect();
         return Err(format!(
-            "内容缺口 {} 个，与 docs/48 §1 的 {EXPECTED_CONTENT_ORPHANS} 不符；\
-             未在清单里的文件：{:?}",
+            "docs/48 §1 的基准过期（不是功能回归）：钉的是 已引用 {EXPECTED_REFERENCED} / \
+             开发产物 {EXPECTED_DEV_ARTIFACTS} / 内容缺口 {EXPECTED_CONTENT_ORPHANS}，\
+             实测 已引用 {} / 开发产物 {} / 内容缺口 {}（assets 共 {}）。\n\
+             已知构成：crops 中间帧 {} 个（`assets/art/crops/<crop>/stage_*.png`——运行期读的是\
+             图集 `manor_crops.png` + `CropGrid`，这些是 `tools/gen_crop_art.py` 的中间帧）+ \
+             其余 {} 个：{:?}\n\
+             两条收口路线（由 P2 资源打包口径定案，本样例不自作主张）：\n\
+             ① 认下 crops 中间帧 → 扩 `assetc::is_dev_artifact` 把 `art/crops/*/stage_*.png` \
+             归开发产物，§1 改成 已引用 {} / 开发产物 {} / 内容缺口 {}；\n\
+             ② 不认 → 全部按前缀登记 docs/48 §2（crops 每个作物一行、其余按目录一行），\
+             §1 改成 已引用 {} / 开发产物 {} / 内容缺口 {}。\n\
+             取数命令：`RUSTLUA_M29_DUMP_GAPS=1 cargo run -p game --example jhyt_m29_season_weather`",
+            audit.referenced.len(),
+            audit.dev.len(),
             audit.content.len(),
-            audit.content.iter().take(8).collect::<Vec<_>>()
-        )
-        .into());
-    }
-    if audit.referenced.len() != EXPECTED_REFERENCED {
-        return Err(format!(
-            "已引用 {} 个，与 docs/48 §1 的 {EXPECTED_REFERENCED} 不符",
-            audit.referenced.len()
+            audit.total,
+            audit.content.len() - nongap.len(),
+            nongap.len(),
+            nongap,
+            audit.referenced.len(),
+            audit.dev.len() + audit.content.len() - nongap.len(),
+            nongap.len(),
+            audit.referenced.len(),
+            audit.dev.len(),
+            audit.content.len(),
         )
         .into());
     }
@@ -669,17 +748,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         return Err(format!("已设 RUSTLUA_REQUIRE_THIRD_PARTY，但第三方包不可用：{reason}").into());
     }
-    if project.join("assets/art/title/title_bg.png").exists() {
+    // §3 的"标题原图下架"这条，2026-10-19 起口径变了：标题美术整体迁到
+    // `assets/art/ui/title/`，平滑原图（`tools/pixelate_title_bg.py` 的输入）不再入库，
+    // `assets/art/title/` 整个目录都不存在；门面底图是像素化那张，且由标题预设引用。
+    // 所以断言从"改名后的文件在"改成"原图不在 + 缩略底图在且真的被引用"。
+    if project.join("assets/art/title/title_bg.png").exists()
+        || project
+            .join("assets/art/title/_title_bg_source.png")
+            .exists()
+    {
         return Err(
-            "assets/art/title/title_bg.png 仍在（docs/48 §3 要求改名为 _title_bg_source.png）"
+            "平滑标题原图仍在 `assets/art/title/`（docs/48 §3：只保留像素化的 title_bg_pixel.png）"
                 .into(),
         );
     }
     if !project
-        .join("assets/art/title/_title_bg_source.png")
+        .join("assets/art/ui/title/title_bg_pixel.png")
         .is_file()
     {
-        return Err("缺少 assets/art/title/_title_bg_source.png".into());
+        return Err("缺少像素化标题背景 assets/art/ui/title/title_bg_pixel.png".into());
+    }
+    let title_prefab = fs::read_to_string(project.join("assets/prefabs/ui/title_menu.prefab"))?;
+    if !title_prefab.contains("assets/art/ui/title/title_bg_pixel.png") {
+        return Err("标题预设没有引用像素化背景（门面会缺底图）".into());
     }
     // 开发产物一律不进发行包（引擎规则，assetc 侧另有单测守住同一条规则）。
     for rel in &audit.dev {
@@ -1000,14 +1091,19 @@ fn fresh_save_path(project: &Path, file: &str) -> PathBuf {
     path
 }
 
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 fn enter_main_menu(
@@ -1027,18 +1123,26 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
     Ok(())
 }
 
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }
 
-fn frames(runtime: &mut LuaRuntime, n: usize) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+fn frames(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    n: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    host.set_input(InputSnapshot::default());
     for _ in 0..n {
         runtime.call_update()?;
     }
@@ -1084,6 +1188,46 @@ fn assert_num(
         return Err(format!("{expr} = {got}, want {expected}").into());
     }
     Ok(())
+}
+
+/// 实体层里按名字找一个预设节点（预设节点名就是实体名）；找不到返回 `None`。
+///
+/// 名字改了就返回 `None`，调用方据此报"节点不存在"，而不是把这当成"这一帧没画"——
+/// 那是两件事（后者由 [`node_drawn`] 回答）。
+fn node_id(
+    runtime: &mut LuaRuntime,
+    name: &str,
+) -> Result<Option<EntityId>, Box<dyn std::error::Error>> {
+    let raw = query_str(runtime, &format!("return tostring(entity.find('{name}'))"))?;
+    Ok(raw.parse::<f64>().ok().map(|raw| {
+        let raw = raw as u64;
+        EntityId::from_raw((raw >> 32) as u32, raw as u32)
+    }))
+}
+
+/// 这一帧画不画：`prefab_ui_nodes` 里有这个槽位 = 建了布局项。
+///
+/// `prefab.set_visible(false)` 是**子树**语义、走"不建节点"这条路，所以隐藏节点在表里
+/// 根本不出现——"画"与"能点中"同源，不存在"看不见却还能点"的中间态。
+fn node_drawn(runtime: &LuaRuntime, id: EntityId) -> bool {
+    runtime
+        .prefab_ui_nodes()
+        .contains_key(&u64::from(id.index()))
+}
+
+/// 节点上的 `Image` 读数（贴图 + RGBA）；不是图就返回 `None`。
+fn node_image(runtime: &LuaRuntime, id: EntityId) -> Option<UiImage> {
+    runtime.with_world(|world| world.get::<UiImage>(id).ok().flatten().cloned())
+}
+
+/// 节点 `UiLayout` 的四边偏移换算成 `(宽, 高)`：锚点都在左上时偏移就是矩形本身。
+fn node_extent(runtime: &LuaRuntime, id: EntityId) -> Option<(f32, f32)> {
+    runtime.with_world(|world| {
+        world.get::<UiRectLayout>(id).ok().flatten().map(|layout| {
+            let [left, top, right, bottom] = layout.offsets;
+            (right - left, bottom - top)
+        })
+    })
 }
 
 fn assert_scene_is(

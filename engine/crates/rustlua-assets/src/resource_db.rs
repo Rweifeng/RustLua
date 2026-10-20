@@ -9,61 +9,18 @@
 use crate::resource_kind::ResourceKind;
 use std::{
     collections::HashMap,
-    fmt, fs,
+    fs,
     path::{Path, PathBuf},
-    str::FromStr,
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 /// Stable 128-bit asset identifier rendered in canonical UUID form.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct AssetId([u8; 16]);
-
-impl AssetId {
-    /// Creates a deterministic UUID-shaped ID from a unique seed.
-    pub fn from_seed(seed: &str) -> Self {
-        let mut bytes = [0u8; 16];
-        for (i, byte) in seed.as_bytes().iter().enumerate() {
-            let slot = i % 16;
-            bytes[slot] = bytes[slot].wrapping_add(*byte).rotate_left((i % 8) as u32);
-            let other = (slot * 7 + 3) % 16;
-            bytes[other] ^= byte.wrapping_mul(31);
-        }
-        // UUID version 4 shape and RFC 4122 variant; identity is persisted in the DB.
-        bytes[6] = (bytes[6] & 0x0f) | 0x40;
-        bytes[8] = (bytes[8] & 0x3f) | 0x80;
-        Self(bytes)
-    }
-}
-
-impl fmt::Display for AssetId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, byte) in self.0.iter().enumerate() {
-            if matches!(i, 4 | 6 | 8 | 10) {
-                write!(f, "-")?;
-            }
-            write!(f, "{byte:02x}")?;
-        }
-        Ok(())
-    }
-}
-
-impl FromStr for AssetId {
-    type Err = ResourceDbError;
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let compact: String = value.chars().filter(|c| *c != '-').collect();
-        if compact.len() != 32 || !compact.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(ResourceDbError::InvalidId(value.to_owned()));
-        }
-        let mut bytes = [0u8; 16];
-        for (i, byte) in bytes.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(&compact[i * 2..i * 2 + 2], 16)
-                .map_err(|_| ResourceDbError::InvalidId(value.to_owned()))?;
-        }
-        Ok(Self(bytes))
-    }
-}
+///
+/// 定义已下沉到 `rustlua_infra::ids`（P1 依赖倒置）：`rustlua-scripting` 只为了两个字段
+/// 类型就得依赖整个资源库 crate，而 `AssetId` 是纯值对象。这里 `pub use` 保持对外路径不变
+/// （`rustlua_assets::resource_db::AssetId` 仍是既有调用点的写法）。
+pub use rustlua_infra::ids::{AssetId, AssetIdParseError};
 
 /// Lifecycle state of a resource.
 ///
@@ -631,7 +588,10 @@ fn parse_dependencies(value: &str) -> Result<Vec<AssetId>, ResourceDbError> {
     if value.is_empty() {
         return Ok(Vec::new());
     }
-    value.split(',').map(str::parse).collect()
+    value
+        .split(',')
+        .map(|item| item.parse::<AssetId>().map_err(ResourceDbError::from))
+        .collect()
 }
 
 fn unix_seconds() -> u64 {
@@ -689,6 +649,14 @@ pub enum ResourceDbError {
     PathNotFound(PathBuf),
     #[error("asset path already registered: {}", .0.display())]
     PathAlreadyRegistered(PathBuf),
+}
+
+/// `AssetId` 的解析错误来自 `rustlua-infra`（值类型下沉），这里并回本模块的错误枚举：
+/// 调用点看到的仍然是 `ResourceDbError`，`?` 的用法不变。
+impl From<AssetIdParseError> for ResourceDbError {
+    fn from(error: AssetIdParseError) -> Self {
+        Self::InvalidId(error.0)
+    }
 }
 
 #[cfg(test)]

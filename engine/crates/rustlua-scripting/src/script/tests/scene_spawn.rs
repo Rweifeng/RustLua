@@ -49,7 +49,7 @@ fn instantiated_scene_entities_are_shared_with_lua_movement() {
             "texture=assets/textures/red-1x1.png;size=32x32".into(),
         );
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);
 
     let path = script(
@@ -93,7 +93,9 @@ fn lua_bridge_accepts_unified_transform_and_camera_components() {
                 .components
                 .insert((*name).to_owned(), (*value).to_owned());
         }
-        LuaRuntime::new().unwrap().instantiate_scene(&scene)
+        LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry())
+            .unwrap()
+            .instantiate_scene(&scene)
     };
 
     // 2D 实体（无 3D 专属组件）+ 统一 `Camera`（正交）。
@@ -164,7 +166,7 @@ fn lua_bridge_accepts_unified_transform_and_camera_components() {
             "projection=perspective;position=0.000000000,0.000000000,5.000000000;target=0.000000000,0.000000000,0.000000000;fov=60.0000;near=0.100000000;far=100.000000000".to_owned(),
         );
     }
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);
     let entity = runtime.with_world(|world| {
         world
@@ -211,16 +213,16 @@ fn runtime_spawned_entity_can_attach_world_text() {
          return 'ok' end\n\
          function update() return 'ok' end",
     );
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.execute_project_script(&first).unwrap();
     assert_eq!(runtime.call_update().unwrap(), "ok");
     let texts =
-        runtime.with_world(|world| world.entities_with::<rustlua_scene::world_text::WorldText>());
+        runtime.with_world(|world| world.entities_with::<rustlua_ui::world_text::WorldText>());
     assert_eq!(texts.len(), 1);
     let attached = runtime
         .with_world(|world| {
             world
-                .get::<rustlua_scene::world_text::WorldText>(texts[0])
+                .get::<rustlua_ui::world_text::WorldText>(texts[0])
                 .unwrap()
                 .cloned()
         })
@@ -274,7 +276,7 @@ fn lua_sprite_set_resolves_atlas_region_reference() {
     )
     .unwrap();
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     let id = runtime.with_world_mut(|world| world.spawn());
     let lua_id = super::super::values::entity_lua_id(id);

@@ -99,10 +99,18 @@ prefab.render("dialogue", {
 所以 W/S 走一遍之后每行都留着一个箭头。这条在迁移前的代码上是红的，黄金表因此只取
 "开场、selected=1"的状态，而"选中态只留一个标记"单独钉在门 ⑤。
 
-## 6. 验收门 `jhyt_m59_ui_prefab`（已登记进 `verify.ps1` 的 MVP 清单）
+## 6. 验收门 `jhyt_m59_ui_prefab`
+
+> **2026-10-19 状态：已退役，本人已不在 MVP 执行清单里。** M71 把 JSON 预设层整体退役
+> （`assets/ui/prefabs/*.ui.json` 删除、`ui/prefab.lua` 的 `NAMES` 清空），本门依赖的
+> `ui.prefab` render/audit 已经不存在：`cargo run` 会在 ④ 黄金对账报
+> `期望 gu_changfeng_teach dlg:box panel … 实得 … missing`。对话面板的对账由
+> `jhyt_m71_dialogue_prefab`（运行期 `.prefab` + 黄金表 34 行）接管。文件仍在盘上
+> （仍参与编译门），在 `scripts/verify/verify.ps1` 里登记为 `$retiredExamples` 的成员——
+> 那是"已知跑不了的历史门"，与"清单漏登记"是两类，混淆会让真实回归消失。
 
 ```
-cargo run -p game --example jhyt_m59_ui_prefab        # 全绿
+cargo run -p game --example jhyt_m59_ui_prefab        # 历史读法（已退役，现红）
 cargo run -p game --example jhyt_m59_ui_prefab -- --capture   # 在迁移前的树上重生成黄金表
 ```
 

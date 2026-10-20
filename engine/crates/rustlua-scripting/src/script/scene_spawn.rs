@@ -14,15 +14,13 @@ use mlua::Value;
 use rustlua_animation::animation::AnimationStateMachine;
 use rustlua_animation::animation3d::Animation3D;
 use rustlua_animation::animation3d::Animation3dDescriptor;
-use rustlua_assets::resource_db::AssetId;
 use rustlua_ecs::entity::EntityId;
 use rustlua_ecs::particle::ParticleEmitter;
 use rustlua_ecs::particle::SceneParticleEmitter;
 use rustlua_ecs::tilemap::Tilemap;
 use rustlua_ecs::transform::Transform;
 use rustlua_ecs::transform::Transform3D;
-use rustlua_input::input::InputSnapshot;
-use rustlua_input::input::MouseButton;
+use rustlua_infra::ids::AssetId;
 use rustlua_math::math3d::Vec3;
 use rustlua_physics::physics::ColliderDesc;
 use rustlua_physics::physics3d::ColliderDesc3d;
@@ -198,21 +196,24 @@ impl LuaRuntime {
     /// precomputed by `RuntimeScene::compute_click_targets`; each target may
     /// declare one or more Lua callbacks.
     ///
+    /// `click` 是宿主算好的"这一次左键落在哪里"：`None` 表示本步没有点击边沿，
+    /// `Some((x, y))` 表示左键刚按下且光标在 (x, y)。输入快照本身住在
+    /// `rustlua-input`（`docs/62` P1 阶段 3），本 crate 不再认识它——只收这两个事实。
+    ///
     /// 容错档（[`ScriptErrorPolicy::Contain`]）下某个绑定的回调报错只跳过**它自己**：
     /// 一个按钮的函数写错，不该连带后面排队的按钮一起失效。检测到已停用的分发槽
     /// 时整体跳过——那时所有点击回调都已被停用。
     pub fn process_ui_clicks(
         &self,
-        input: &InputSnapshot,
+        click: Option<(f64, f64)>,
         targets: &[UiClickTarget],
     ) -> Result<(), LuaBridgeError> {
-        if !input.mouse_just_pressed(MouseButton::Left) {
+        let Some((mx, my)) = click else {
             return Ok(());
-        }
+        };
         if self.guard.borrow().is_disabled(BudgetSlot::UiClicks) {
             return Ok(());
         }
-        let (mx, my) = input.cursor_position();
         let clicked: Vec<&UiClickTarget> = targets
             .iter()
             .filter(|target| {
@@ -516,13 +517,12 @@ impl LuaRuntime {
         }
         // WP4：世界空间文字（锚在世界位置，与屏幕 `Text` 是两套组件）。
         if let Some(value) = components.get("WorldText") {
-            let text = rustlua_scene::world_text::WorldText::from_component_str(value).map_err(
-                |error| {
+            let text =
+                rustlua_ui::world_text::WorldText::from_component_str(value).map_err(|error| {
                     LuaBridgeError::Api(format!(
                         "entity {name:?} has an invalid WorldText: {error}"
                     ))
-                },
-            )?;
+                })?;
             state
                 .world
                 .insert(id, text)

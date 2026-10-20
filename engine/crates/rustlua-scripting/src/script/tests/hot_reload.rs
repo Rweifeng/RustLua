@@ -44,7 +44,7 @@ fn entity_hook_errors_are_contained_per_entity() {
         .components
         .insert("Script".into(), "file=scripts/healthy.lua".into());
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     runtime.instantiate_scene(&scene).unwrap();
 
@@ -130,7 +130,7 @@ fn entity_script_component_drives_its_own_entity() {
         "file=scripts/missing.lua;enabled=false".into(),
     );
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     assert_eq!(
         runtime.instantiate_scene(&scene).unwrap(),
@@ -235,7 +235,7 @@ fn entity_script_reports_missing_files_and_missing_project_root() {
         .insert("Script".into(), "file=scripts/nope.lua".into());
 
     // 没有工程根：明确报错，而不是"脚本没跑"。
-    let mut bare = LuaRuntime::new().unwrap();
+    let mut bare = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let error = bare
         .instantiate_scene(&scene)
         .expect_err("没有工程根时应报错");
@@ -245,7 +245,7 @@ fn entity_script_reports_missing_files_and_missing_project_root() {
     );
 
     // 有工程根但文件不存在：同样是加载期错误。
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     let error = runtime
         .instantiate_scene(&scene)
@@ -273,7 +273,7 @@ fn project_script_can_require_sibling_lua_modules() {
     )
     .unwrap();
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.execute_project_script(&main).unwrap();
     assert_eq!(runtime.call_update().unwrap(), "ok");
     let _ = fs::remove_dir_all(&root);
@@ -298,7 +298,7 @@ fn encrypted_project_and_modules_load_via_decode_and_require() {
     )
     .unwrap();
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.execute_project_script(&main).unwrap();
     assert_eq!(runtime.call_update().unwrap(), "enc-ok");
     let _ = fs::remove_dir_all(&root);
@@ -307,7 +307,7 @@ fn encrypted_project_and_modules_load_via_decode_and_require() {
 #[test]
 fn hot_reload_detects_changes_and_keeps_old_vm_on_failure() {
     let path = script("function update() return 'v1' end");
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.execute_project_script(&path).unwrap();
     assert_eq!(runtime.call_update().unwrap(), "v1");
     assert_eq!(
@@ -327,7 +327,7 @@ fn hot_reload_calls_lifecycle_callbacks() {
     let path = script(
         "function on_create() end; function on_destroy() end; function update() return 'v1' end",
     );
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.execute_project_script(&path).unwrap();
     fs::write(
         &path,

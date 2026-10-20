@@ -1436,11 +1436,11 @@ mod tests {
     use rustlua_render::render_mode::RenderMode;
     use rustlua_render::sprite::SpriteComponent;
     use rustlua_render::visibility::Visibility;
-    use rustlua_scene::world_text::WorldText;
     use rustlua_ui::ui_binding::{BindingPath, BindingSet, BoundProperty, PropertyBinding};
     use rustlua_ui::ui_events::{UiEventBinding, UiEventType, UiEvents};
     use rustlua_ui::ui_layout::{ChildAlign, ContainerKind, ContainerStyle};
     use rustlua_ui::ui_states::ButtonStateSet;
+    use rustlua_ui::world_text::WorldText;
 
     /// `Collider3d` 的真实工程实例（`examples/game_api/scenes/api_3d.scene`）：
     /// 三种形状各自出现过的完整形态，逐字节照抄。

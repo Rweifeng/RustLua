@@ -124,7 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let stage_files = section_assets(&project)?;
 
-    let mut rt = new_runtime(&project)?;
+    let (mut rt, host) = new_runtime(&project)?;
     banner("② 农田三态：犁地 / 湿润（叠痕 + tint）/ 干涸");
     enter_manor(&mut rt)?;
     soil_sheet(&project, &mut rt)?;
@@ -135,10 +135,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     three_state(&mut rt, field)?;
 
     banner("③ 阶段推进：稻谷 4 档 / 灵芝 5 档，同一档两作物不许同图");
-    stage_ramp(&mut rt, field, medicinal)?;
+    stage_ramp(&mut rt, &host, field, medicinal)?;
 
     banner("④ 收成动画：4 帧抖动 @100ms + 闪光，播完落回真实地块");
-    harvest_animation(&mut rt, field)?;
+    harvest_animation(&mut rt, &host, field)?;
 
     println!(
         "jhyt_m72_crop_stages_ok project={} stage_files={} atlas={}x{} entries={} crops={}",
@@ -339,13 +339,17 @@ fn column_bytes(image: &(u32, u32, Vec<[u8; 4]>), slot: usize) -> Vec<u8> {
 
 // ---------------------------------------------------------------- 运行期脚手架
 
-fn new_runtime(project: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
     runtime.execute_project_script(&project.join("scripts/main.lua"))?;
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 fn lua(runtime: &mut LuaRuntime, code: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -446,9 +450,13 @@ fn enter_manor(runtime: &mut LuaRuntime) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-fn pump(runtime: &mut LuaRuntime, frames: usize) -> Result<(), Box<dyn std::error::Error>> {
+fn pump(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    frames: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..frames {
-        runtime.set_input(InputSnapshot::default());
+        host.set_input(InputSnapshot::default());
         runtime.call_update()?;
     }
     Ok(())
@@ -887,12 +895,13 @@ fn ramp_one(
 
 fn stage_ramp(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     field: (i64, i64),
     medicinal: (i64, i64),
 ) -> Result<(), Box<dyn std::error::Error>> {
     // ② 结束时稻田是"稻种 + 已浇 2 天"。整块农田清干净，再逐作物走全程。
     run(runtime, "require('systems.farm').reset()")?;
-    pump(runtime, 2)?;
+    pump(runtime, &host, 2)?;
     for cell in [field, medicinal] {
         let cleared = read_cell(runtime, cell.0, cell.1)?;
         if cleared.soil != 0.0 || cleared.crop != 0.0 {
@@ -958,6 +967,7 @@ fn rice_count(runtime: &mut LuaRuntime) -> Result<f64, Box<dyn std::error::Error
 
 fn harvest_animation(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     cell: (i64, i64),
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (cx, cy) = cell;
@@ -978,7 +988,7 @@ fn harvest_animation(
     }
     // 前面翻土/浇水留下的条带（最长 6/12 秒 = 30 帧）全部自毁，特效计数回到 0；
     // 成熟后多等不腐烂（docs/33：成熟后停留可采），所以这里冲帧不改变地块。
-    pump(runtime, 90)?;
+    pump(runtime, &host, 90)?;
     if num(runtime, "require('systems.effects').active()")? != 0.0 {
         return Err("进收成前活动特效不为 0：上一条带还没自毁，计数断言会失真".into());
     }
@@ -1004,7 +1014,7 @@ fn harvest_animation(
     let mut last = mature_tile;
     let mut alive_mid = 0.0;
     for frame in 1..=48 {
-        pump(runtime, 1)?;
+        pump(runtime, &host, 1)?;
         let got = read_cell(runtime, cx, cy)?.crop;
         if got != last {
             changes.push((frame, got));

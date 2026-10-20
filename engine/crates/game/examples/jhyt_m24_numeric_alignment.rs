@@ -45,7 +45,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|error| format!("cannot read {}: {error}", design_doc.display()))?;
     let main_script = project.join("scripts/main.lua");
 
-    let mut runtime = LuaRuntime::new()?;
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.clone());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
@@ -309,18 +311,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if meditate.len() < 4 {
         return Err(format!("打坐行格式不符（期望 ≥4 列）: {meditate:?}").into());
     }
-    // 实现口径：ui/input.lua practice 分支
-    // `state.inner_power = math.min(100, (state.inner_power or 0) + 5)`。
-    // 文档单元格必须写「恢复 5 点内力」；改任何一侧都要同步另一侧，否则本断言失败。
-    const MEDITATION_RECOVERY: &str = "恢复 5 点内力";
-    if !meditate[3].contains(MEDITATION_RECOVERY) {
-        return Err(format!(
-            "设计案 §3 打坐效果 = {:?}，实现口径为「{MEDITATION_RECOVERY}」（ui/input.lua practice 分支）",
-            meditate[3]
-        )
-        .into());
+    // 实现口径：`ui/input.lua` 的 practice 分支
+    //   `state.inner_power = math.min(require("systems.meridian").max_inner_power(),
+    //                                  (state.inner_power or 0) + 5)`
+    // 所以文档单元格必须同时写两件事：**+5 内力** 与 **钳经脉动态上限**。
+    //
+    // 2026-10-20：单元格被改写成「恢复5点内力，钳经脉动态上限」（去掉旧文案里的空格、补上
+    // 钳制那一半），旧断言按带空格的「恢复 5 点内力」逐字比对，于是把一次**更准确**的
+    // 文档修订判成了漂移。现在按语义比对（去空白）并把「钳经脉」也纳入判据——它和 §10
+    // 的「体力恢复」行、§7.4 的跨天恢复池说的是同一件事，这条门守的就是这一致。
+    let cell = meditate[3].replace([' ', '\u{3000}'], "");
+    for needle in ["恢复5点内力", "钳经脉动态上限"] {
+        if !cell.contains(needle) {
+            return Err(format!(
+                "设计案 §3 打坐效果 = {:?}，实现口径为「恢复5点内力，钳经脉动态上限」\
+                 （`ui/input.lua` practice 分支：math.min(meridian.max_inner_power(), +5)）",
+                meditate[3]
+            )
+            .into());
+        }
     }
-    println!("  打坐: 效果单元格 = {:?}", meditate[3]);
+    // 文档写了「钳经脉动态上限」，代码侧那条钳制也必须真的在：只查文档不查代码的话，
+    // 把 `math.min(...)` 拆掉（退回硬上限 100）这条路一个断言都碰不到。
+    let input_source = fs::read_to_string(project.join("scripts").join("ui").join("input.lua"))?;
+    let mut clamped = false;
+    let mut cursor = 0usize;
+    while let Some(found) = input_source[cursor..].find("action_pressed(\"practice\")") {
+        let at = cursor + found;
+        let tail = &input_source[at..(at + 320).min(input_source.len())];
+        if tail.contains("max_inner_power()") && tail.contains("+ 5") {
+            clamped = true;
+            break;
+        }
+        cursor = at + 1;
+    }
+    if !clamped {
+        return Err(
+            "`ui/input.lua` 的 practice 分支不再按 meridian.max_inner_power() 钳制 +5 内力：\
+                   文档 §3 写的「钳经脉动态上限」在代码里已经没有对应实现"
+                .into(),
+        );
+    }
+    println!(
+        "  打坐: 效果单元格 = {:?}（+5 内力 ∧ 钳经脉动态上限，两半都有代码对应）",
+        meditate[3]
+    );
 
     banner("⑤ 设计案 §6.1 玩家招式 == data/skills.lua（基础刀法/追风步/守心诀；白名单只剩回风掌）");
     let skill_rows = markdown_table(&design, "招式")?;
@@ -618,17 +653,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_scene_is(&mut runtime, "manor")?;
     // 山庄出生点正前方就是药田格（与 jhyt_m17/jhyt_m22 同一格）。
     set_facing(&mut runtime, "up")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(&mut runtime, "require('core.state').last_action", "till")?;
     set_seed(&mut runtime, "seed_lingzhi")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
         "plant_seed_lingzhi",
     )?;
     let lingzhi_before = total_crop(&mut runtime, "lingzhi")?;
-    grow_and_harvest(&mut runtime, "watering_can", "water_lingzhi")?;
+    grow_and_harvest(&mut runtime, &host, "watering_can", "water_lingzhi")?;
     let lingzhi_yield = total_crop(&mut runtime, "lingzhi")? - lingzhi_before;
     let documented_lingzhi = query_num(&mut runtime, "require('data.crops').lingzhi.yield")?;
     if (lingzhi_yield - documented_lingzhi).abs() > f64::EPSILON {
@@ -670,17 +705,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     set_facing(&mut runtime, "up")?;
     println!("  field 地块 = {field_cell}（玩家已就位）");
     equip_tool(&mut runtime, "hoe")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(&mut runtime, "require('core.state').last_action", "till")?;
     set_seed(&mut runtime, "seed_rice")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
         "plant_seed_rice",
     )?;
     let rice_before = total_crop(&mut runtime, "rice")?;
-    grow_and_harvest(&mut runtime, "watering_can", "water_rice")?;
+    grow_and_harvest(&mut runtime, &host, "watering_can", "water_rice")?;
     let rice_yield = total_crop(&mut runtime, "rice")? - rice_before;
     let documented_rice = query_num(&mut runtime, "require('data.crops').rice.yield")?;
     if (rice_yield - documented_rice).abs() > f64::EPSILON {
@@ -692,14 +727,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("⑤ 数值真的由数据驱动：把 rice.yield 改成 3，同样流程就该收 3");
     runtime.execute_console("require('data.crops').rice.yield = 3")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
         "plant_seed_rice",
     )?;
     let rice_before_two = total_crop(&mut runtime, "rice")?;
-    grow_and_harvest(&mut runtime, "watering_can", "water_rice")?;
+    grow_and_harvest(&mut runtime, &host, "watering_can", "water_rice")?;
     let mutated_yield = total_crop(&mut runtime, "rice")? - rice_before_two;
     if (mutated_yield - 3.0).abs() > f64::EPSILON {
         return Err(format!(
@@ -726,14 +761,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     runtime.execute_console("inv.add(require('core.state').inventory, 'seed_radish', 1)")?;
     set_facing(&mut runtime, "up")?;
     set_seed(&mut runtime, "seed_radish")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
         "plant_seed_radish",
     )?;
     let radish_before = total_crop(&mut runtime, "radish")?;
-    grow_and_harvest(&mut runtime, "watering_can", "water_radish")?;
+    grow_and_harvest(&mut runtime, &host, "watering_can", "water_radish")?;
     let radish_yield = total_crop(&mut runtime, "radish")? - radish_before;
     let documented_radish = query_num(&mut runtime, "require('data.crops').radish.yield")?;
     if (radish_yield - documented_radish).abs() > f64::EPSILON {
@@ -953,13 +988,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// 因此把天气这个变量固定下来（`weather.set` 只钉当天，跨天会重抽）。
 fn grow_and_harvest(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     water_tool: &str,
     water_action: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     equip_tool(runtime, water_tool)?;
     loop {
         runtime.execute_console("require('world.weather').set('sunny')")?;
-        press(runtime, KeyCode::KeyE)?;
+        press(runtime, &host, KeyCode::KeyE)?;
         let action = query_str(runtime, "require('core.state').last_action")?;
         if action != water_action {
             return Err(format!("浇水失败，last_action = {action:?}").into());
@@ -994,7 +1030,7 @@ fn grow_and_harvest(
         }
     }
     equip_tool(runtime, "hoe")?;
-    press(runtime, KeyCode::KeyE)?;
+    press(runtime, &host, KeyCode::KeyE)?;
     let action = query_str(runtime, "require('core.state').last_action")?;
     if !action.starts_with("harvest_") {
         return Err(format!("收获失败，last_action = {action:?}").into());
@@ -1138,12 +1174,16 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
     Ok(())
 }
 
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }

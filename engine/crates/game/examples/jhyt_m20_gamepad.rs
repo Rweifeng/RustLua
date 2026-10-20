@@ -86,7 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fs::write(&settings_path, SETTINGS_TEMPLATE)?;
 
     let save_path = fresh_save_path(&project, "jhyt_m20_gamepad.sav");
-    let mut runtime = new_runtime(&project, &save_path)?;
+    let (mut runtime, host) = new_runtime(&project, &save_path)?;
     enter_playable(&mut runtime, &main_script)?;
     // 脚本化手柄：`Arc<Mutex<RawPad>>` 保存当前设备帧，测试随时改按钮/轴。
     let pad = Pad::new(GamepadDeadzone::DEFAULT);
@@ -100,12 +100,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_str(&mut runtime, "input.pad_button(0)", "false")?;
     assert_num(&mut runtime, "input.pad_axis(1)", 0.0)?;
     pad.press(button::A);
-    pad_tick(&mut runtime, &mut poller, &mut snapshot)?;
+    pad_tick(&mut runtime, &host, &mut poller, &mut snapshot)?;
     assert_str(&mut runtime, "input.pad_button(0)", "true")?;
     assert_str(&mut runtime, "input.action('confirm')", "true")?;
     assert_str(&mut runtime, "input.action_pressed('confirm')", "true")?;
     // 持续按住：held 为真、边沿只在第一帧（快速点按不丢由设备层单测覆盖）。
-    pad_tick(&mut runtime, &mut poller, &mut snapshot)?;
+    pad_tick(&mut runtime, &host, &mut poller, &mut snapshot)?;
     assert_str(&mut runtime, "input.action('confirm')", "true")?;
     assert_str_why(
         &mut runtime,
@@ -114,17 +114,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "按住不应重复触发按下边沿",
     )?;
     pad.release(button::A);
-    pad_tick(&mut runtime, &mut poller, &mut snapshot)?;
+    pad_tick(&mut runtime, &host, &mut poller, &mut snapshot)?;
     assert_str(&mut runtime, "input.action_released('confirm')", "true")?;
     assert_str(&mut runtime, "input.pad_button(0)", "false")?;
     // 扳机模拟量 ≥0.5 时派生数字按钮 6/7（设备契约）。
     pad.stick_trigger(1.0, 0.0);
-    pad_tick(&mut runtime, &mut poller, &mut snapshot)?;
+    pad_tick(&mut runtime, &host, &mut poller, &mut snapshot)?;
     assert_str(&mut runtime, "input.pad_button(6)", "true")?;
     assert_str(&mut runtime, "input.pad_button(7)", "false")?;
     assert_range(&mut runtime, "input.pad_axis(4)", 0.9, 1.0)?;
     pad.stick_trigger(0.0, 0.0);
-    pad_tick(&mut runtime, &mut poller, &mut snapshot)?;
+    pad_tick(&mut runtime, &host, &mut poller, &mut snapshot)?;
     assert_str(&mut runtime, "input.pad_button(6)", "false")?;
     assert_str(&mut runtime, "input.pad_axis(4)", "0.0")?;
     println!("device backend={} buttons=16 axes=6", poller.backend_name());
@@ -179,7 +179,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ③ 设备自动检测：推左摇杆 → 切到手柄说明；按键盘 W → 切回键鼠说明。
     lua(&mut runtime, "require('ui.input').set_device(nil)")?;
     pad.stick(0.0, 0.9);
-    pad_tick(&mut runtime, &mut poller, &mut snapshot)?;
+    pad_tick(&mut runtime, &host, &mut poller, &mut snapshot)?;
     lua(&mut runtime, "require('ui.input').update()")?;
     assert_str_why(
         &mut runtime,
@@ -188,14 +188,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "推摇杆后应自动切到手柄说明",
     )?;
     pad.stick(0.0, 0.0);
-    pad_tick(&mut runtime, &mut poller, &mut snapshot)?;
+    pad_tick(&mut runtime, &host, &mut poller, &mut snapshot)?;
     // 键盘侧同理：把 W 喂在输入快照里跑一帧（`input.update()` 同帧看到按键）。
     let mut held_w = InputSnapshot::default();
     held_w.key_event(
         KeyCode::from_char('w').expect("QWERTY 字符必须有对应物理键"),
         true,
     );
-    runtime.set_input(held_w);
+    host.set_input(held_w);
     lua(&mut runtime, "require('ui.input').update()")?;
     assert_str_why(
         &mut runtime,
@@ -203,7 +203,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "keyboard",
         "按键盘后应自动切回键鼠说明",
     )?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     // ④ 触屏形态（WebGL / 微信）：整块说明换成"屏上有哪些控件、点了出什么"，条目从
     //    `layout.TOUCH` 现推（按钮簇五键、九格动作盘、面板动作条）。桌面运行时
     //    `app.platform()` 恒为 desktop，没有 `set_touch` 这条旁路，这一支文案在机器
@@ -391,7 +391,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_str(&mut runtime, "input.bindings('interact')[1]", "pad:0")?;
     assert_num(&mut runtime, "#input.bindings('interact')", 1.0)?;
     // 旧键失效：键盘 E 不再触发交互，W 不再移动。
-    press_key(&mut runtime, KeyCode::KeyE)?;
+    press_key(&mut runtime, &host, KeyCode::KeyE)?;
     assert_ne_str(&mut runtime, "require('core.state').last_action", "till")?;
     assert_num(&mut runtime, VELOCITY_X, 0.0)?;
     // 新键生效：手柄 A 触发交互（见下一章的药田断言）。
@@ -407,19 +407,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // 回中：速度归零（无输入时 stop）。
     pad.stick(0.0, 0.0);
-    pad_ticks(&mut runtime, &mut poller, &mut snapshot, 2)?;
+    pad_ticks(&mut runtime, &host, &mut poller, &mut snapshot, 2)?;
     assert_num(&mut runtime, VELOCITY_X, 0.0)?;
     assert_num(&mut runtime, VELOCITY_Y, 0.0)?;
     // 死区内：原始 0.10 < 设备死区 0.15 → 轴归零 → 不移动、不改朝向。
     pad.stick(0.0, 0.10);
-    pad_ticks(&mut runtime, &mut poller, &mut snapshot, 3)?;
+    pad_ticks(&mut runtime, &host, &mut poller, &mut snapshot, 3)?;
     assert_str(&mut runtime, "input.pad_axis(1)", "0.0")?;
     assert_str(&mut runtime, "input.action('move_up')", "false")?;
     assert_num(&mut runtime, VELOCITY_Y, 0.0)?;
     assert_str(&mut runtime, "require('core.state').facing", "down")?;
     // 越过死区：原始 0.6 → (0.6-0.15)/0.85 ≈ 0.529 → 上移（轴 1 上为正）。
     pad.stick(0.0, 0.6);
-    pad_tick(&mut runtime, &mut poller, &mut snapshot)?;
+    pad_tick(&mut runtime, &host, &mut poller, &mut snapshot)?;
     assert_str(&mut runtime, "input.action('move_up')", "true")?;
     assert_str(&mut runtime, "require('core.state').facing", "up")?;
     assert_str(&mut runtime, "require('core.state').last_action", "move")?;
@@ -442,7 +442,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     // 左推：轴 0 为负 → 左移并改朝向。
     pad.stick(-0.6, 0.0);
-    pad_tick(&mut runtime, &mut poller, &mut snapshot)?;
+    pad_tick(&mut runtime, &host, &mut poller, &mut snapshot)?;
     assert_str(&mut runtime, "input.action('move_left')", "true")?;
     assert_str(&mut runtime, "require('core.state').facing", "left")?;
     let velocity = player_velocity(&mut runtime)?;
@@ -451,7 +451,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // 斜向：合成长度 >1 时缩放到 1（单位向量 → 各分量约 0.707×速度）。
     pad.stick(-1.0, 1.0);
-    pad_tick(&mut runtime, &mut poller, &mut snapshot)?;
+    pad_tick(&mut runtime, &host, &mut poller, &mut snapshot)?;
     let diagonal = player_velocity(&mut runtime)?;
     let component = 0.5_f64.sqrt() * MOVE_SPEED;
     if (diagonal.0 + component).abs() > 1.0 || (diagonal.1 - component).abs() > 1.0 {
@@ -459,7 +459,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // 松杆：停机（不滑行）。
     pad.stick(0.0, 0.0);
-    pad_tick(&mut runtime, &mut poller, &mut snapshot)?;
+    pad_tick(&mut runtime, &host, &mut poller, &mut snapshot)?;
     assert_num(&mut runtime, VELOCITY_X, 0.0)?;
     assert_num(&mut runtime, VELOCITY_Y, 0.0)?;
 
@@ -472,19 +472,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     )?;
     assert_num(&mut runtime, "require('core.state').energy", 100.0)?;
-    pad_press(&mut runtime, &mut poller, &mut snapshot, &pad, button::A)?;
+    pad_press(
+        &mut runtime,
+        &host,
+        &mut poller,
+        &mut snapshot,
+        &pad,
+        button::A,
+    )?;
     assert_str(&mut runtime, "require('core.state').last_action", "till")?;
     assert_num(&mut runtime, "require('core.state').energy", 92.0)?;
     // B 取消：LB 开背包 → B 关闭（cancel = Esc/B）。
     pad_press(
         &mut runtime,
+        &host,
         &mut poller,
         &mut snapshot,
         &pad,
         button::LEFT_SHOULDER,
     )?;
     assert_mode(&mut runtime, "Inventory")?;
-    pad_press(&mut runtime, &mut poller, &mut snapshot, &pad, button::B)?;
+    pad_press(
+        &mut runtime,
+        &host,
+        &mut poller,
+        &mut snapshot,
+        &pad,
+        button::B,
+    )?;
     assert_mode(&mut runtime, "Playing")?;
     assert_str(
         &mut runtime,
@@ -495,6 +510,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M20-08e 肩键 LB/RB：背包/暂停开关 + 面板期间 UI 输入不下沉世界");
     pad_press(
         &mut runtime,
+        &host,
         &mut poller,
         &mut snapshot,
         &pad,
@@ -503,11 +519,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_mode(&mut runtime, "Inventory")?;
     // 面板期间推摇杆：世界速度必须保持 0（update_movement 未被调用）。
     pad.stick(0.0, 0.9);
-    pad_ticks(&mut runtime, &mut poller, &mut snapshot, 3)?;
+    pad_ticks(&mut runtime, &host, &mut poller, &mut snapshot, 3)?;
     assert_num(&mut runtime, VELOCITY_Y, 0.0)?;
     assert_str(&mut runtime, "require('core.state').facing", "up")?;
     pad_press(
         &mut runtime,
+        &host,
         &mut poller,
         &mut snapshot,
         &pad,
@@ -515,9 +532,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_mode(&mut runtime, "Playing")?;
     pad.stick(0.0, 0.0);
-    pad_tick(&mut runtime, &mut poller, &mut snapshot)?;
+    pad_tick(&mut runtime, &host, &mut poller, &mut snapshot)?;
     pad_press(
         &mut runtime,
+        &host,
         &mut poller,
         &mut snapshot,
         &pad,
@@ -528,6 +546,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(&mut runtime, "require('ui.pause_menu').index()", 0.0)?;
     pad_press(
         &mut runtime,
+        &host,
         &mut poller,
         &mut snapshot,
         &pad,
@@ -536,6 +555,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(&mut runtime, "require('ui.pause_menu').index()", 1.0)?;
     pad_press(
         &mut runtime,
+        &host,
         &mut poller,
         &mut snapshot,
         &pad,
@@ -544,6 +564,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(&mut runtime, "require('ui.pause_menu').index()", 0.0)?;
     pad_press(
         &mut runtime,
+        &host,
         &mut poller,
         &mut snapshot,
         &pad,
@@ -562,6 +583,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(&mut runtime, "require('world.dialogue').selected()", 1.0)?;
     pad_press(
         &mut runtime,
+        &host,
         &mut poller,
         &mut snapshot,
         &pad,
@@ -578,6 +600,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     pad_press(
         &mut runtime,
+        &host,
         &mut poller,
         &mut snapshot,
         &pad,
@@ -612,7 +635,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &format!("assert(select(1, input.set_action_map({restored:?})))"),
     )?;
     pad.stick(0.0, -0.9);
-    pad_ticks(&mut runtime, &mut poller, &mut snapshot, 2)?;
+    pad_ticks(&mut runtime, &host, &mut poller, &mut snapshot, 2)?;
     assert_num_why(
         &mut runtime,
         "require('world.dialogue').selected()",
@@ -620,7 +643,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "摇杆下推应首次立即走一步",
     )?;
     // 累计 15 帧（250ms）仍在 350ms 延迟内 → 停在原处。
-    pad_ticks(&mut runtime, &mut poller, &mut snapshot, 13)?;
+    pad_ticks(&mut runtime, &host, &mut poller, &mut snapshot, 13)?;
     assert_num_why(
         &mut runtime,
         "require('world.dialogue').selected()",
@@ -628,7 +651,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "未到按住连发延迟不应继续移动",
     )?;
     // 累计 19 帧（约 317ms）仍未到 350ms。
-    pad_ticks(&mut runtime, &mut poller, &mut snapshot, 4)?;
+    pad_ticks(&mut runtime, &host, &mut poller, &mut snapshot, 4)?;
     assert_num_why(
         &mut runtime,
         "require('world.dialogue').selected()",
@@ -641,7 +664,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let next = if 2.0 >= options { 1.0 } else { 3.0 };
     // 累计 23 帧（约 383ms）：跨过 350ms → 恰好再走一步。
-    pad_ticks(&mut runtime, &mut poller, &mut snapshot, 4)?;
+    pad_ticks(&mut runtime, &host, &mut poller, &mut snapshot, 4)?;
     assert_num_why(
         &mut runtime,
         "require('world.dialogue').selected()",
@@ -650,7 +673,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let after_repeat = if next >= options { 1.0 } else { next + 1.0 };
     // 再过 6 帧（100ms > 90ms 间隔）→ 恰好再一步。
-    pad_ticks(&mut runtime, &mut poller, &mut snapshot, 6)?;
+    pad_ticks(&mut runtime, &host, &mut poller, &mut snapshot, 6)?;
     assert_num_why(
         &mut runtime,
         "require('world.dialogue').selected()",
@@ -658,7 +681,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "按住后按 90ms 间隔重复一步",
     )?;
     pad.stick(0.0, 0.0);
-    pad_tick(&mut runtime, &mut poller, &mut snapshot)?;
+    pad_tick(&mut runtime, &host, &mut poller, &mut snapshot)?;
     // 解除临时加回的两条轴绑定，恢复 M20-08b 留下的映射状态。
     for (action, binding) in [("ui_up", "padaxis:1+"), ("ui_down", "padaxis:1-")] {
         assert_str(
@@ -668,10 +691,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
     }
     lua(&mut runtime, "require('world.dialogue').select(1)")?;
-    pad_press(&mut runtime, &mut poller, &mut snapshot, &pad, button::A)?;
+    pad_press(
+        &mut runtime,
+        &host,
+        &mut poller,
+        &mut snapshot,
+        &pad,
+        button::A,
+    )?;
     assert_str(&mut runtime, "require('world.dialogue').node()", "accept")?;
     assert_mode(&mut runtime, "Dialogue")?;
-    pad_press(&mut runtime, &mut poller, &mut snapshot, &pad, button::B)?;
+    pad_press(
+        &mut runtime,
+        &host,
+        &mut poller,
+        &mut snapshot,
+        &pad,
+        button::B,
+    )?;
     assert_mode(&mut runtime, "Playing")?;
     assert_str(&mut runtime, "require('world.dialogue').is_open()", "false")?;
 
@@ -689,6 +726,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(&mut runtime, "require('systems.shop').selected()", 1.0)?;
     pad_press(
         &mut runtime,
+        &host,
         &mut poller,
         &mut snapshot,
         &pad,
@@ -697,6 +735,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(&mut runtime, "require('systems.shop').selected()", 2.0)?;
     pad_press(
         &mut runtime,
+        &host,
         &mut poller,
         &mut snapshot,
         &pad,
@@ -704,7 +743,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_num(&mut runtime, "require('systems.shop').selected()", 1.0)?;
     let money_before = query_num(&mut runtime, "return require('core.state').money")?;
-    pad_press(&mut runtime, &mut poller, &mut snapshot, &pad, button::A)?;
+    pad_press(
+        &mut runtime,
+        &host,
+        &mut poller,
+        &mut snapshot,
+        &pad,
+        button::A,
+    )?;
     let money_after = query_num(&mut runtime, "return require('core.state').money")?;
     if money_after >= money_before {
         return Err(
@@ -719,14 +765,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // F 键（place）在商店里切换买卖页：手柄侧用同一动作（X 已绑到 attack 无关）。
     assert_str(&mut runtime, "require('systems.shop').tab()", "buy")?;
-    press_key(&mut runtime, KeyCode::KeyF)?;
+    press_key(&mut runtime, &host, KeyCode::KeyF)?;
     assert_str_why(
         &mut runtime,
         "require('systems.shop').tab()",
         "sell",
         "键盘 F 仍可切换买卖页（改绑未影响上下文动作）",
     )?;
-    pad_press(&mut runtime, &mut poller, &mut snapshot, &pad, button::B)?;
+    pad_press(
+        &mut runtime,
+        &host,
+        &mut poller,
+        &mut snapshot,
+        &pad,
+        button::B,
+    )?;
     assert_mode(&mut runtime, "Playing")?;
 
     banner("M20-08g 战斗：手柄 X 普攻、Y 武学（内力消耗）、战败后 Back 重开");
@@ -741,15 +794,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             PLAYER_BEFORE_DUMMY.0, PLAYER_BEFORE_DUMMY.1
         ),
     )?;
-    frames(&mut runtime, 2)?;
+    frames(&mut runtime, &host, 2)?;
     assert_num(
         &mut runtime,
         "require('systems.enemy').query('enemy_dummy').hp",
         30.0,
     )?;
     // X = attack：徒手伤害 2。
-    pad_press(&mut runtime, &mut poller, &mut snapshot, &pad, button::X)?;
-    frames(&mut runtime, 30)?;
+    pad_press(
+        &mut runtime,
+        &host,
+        &mut poller,
+        &mut snapshot,
+        &pad,
+        button::X,
+    )?;
+    frames(&mut runtime, &host, 30)?;
     assert_num(
         &mut runtime,
         "require('systems.enemy').query('enemy_dummy').hp",
@@ -757,8 +817,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // Y = skill（千风掌）：内力 -10、固定伤害 6。
     assert_num(&mut runtime, "require('core.state').inner_power", 50.0)?;
-    pad_press(&mut runtime, &mut poller, &mut snapshot, &pad, button::Y)?;
-    frames(&mut runtime, 30)?;
+    pad_press(
+        &mut runtime,
+        &host,
+        &mut poller,
+        &mut snapshot,
+        &pad,
+        button::Y,
+    )?;
+    frames(&mut runtime, &host, 30)?;
     assert_num(&mut runtime, "require('core.state').inner_power", 40.0)?;
     assert_num(
         &mut runtime,
@@ -767,7 +834,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // 战败 → Back（respawn）重开：气血回满、回出生点、敌人复活。
     lua(&mut runtime, "require('systems.combat').set_player_hp(0)")?;
-    frames(&mut runtime, 2)?;
+    frames(&mut runtime, &host, 2)?;
     assert_str(
         &mut runtime,
         "require('systems.combat').is_player_dead()",
@@ -775,9 +842,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // 战败态冻结移动：推杆不产生速度（只认 respawn）。
     pad.stick(0.0, 0.9);
-    pad_ticks(&mut runtime, &mut poller, &mut snapshot, 2)?;
+    pad_ticks(&mut runtime, &host, &mut poller, &mut snapshot, 2)?;
     assert_num(&mut runtime, VELOCITY_Y, 0.0)?;
-    pad_press(&mut runtime, &mut poller, &mut snapshot, &pad, button::BACK)?;
+    pad_press(
+        &mut runtime,
+        &host,
+        &mut poller,
+        &mut snapshot,
+        &pad,
+        button::BACK,
+    )?;
     assert_num(&mut runtime, "require('systems.combat').player_hp()", 100.0)?;
     assert_str(
         &mut runtime,
@@ -790,7 +864,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "true",
     )?;
     pad.stick(0.0, 0.0);
-    pad_tick(&mut runtime, &mut poller, &mut snapshot)?;
+    pad_tick(&mut runtime, &host, &mut poller, &mut snapshot)?;
 
     banner("M20-08h project.toml 往返：保存绑定（保序）→ 新 runtime 启动应用");
     assert_str_why(
@@ -823,7 +897,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 新 runtime：main.lua 的 boot_game → input.load_settings() 应用玩家改键，
     // 因此无需再 rebind，手柄 A 直接就能在药田翻土。
     let save_path2 = fresh_save_path(&project, "jhyt_m20_gamepad_boot.sav");
-    let mut booted = new_runtime(&project, &save_path2)?;
+    let (mut booted, booted_host) = new_runtime(&project, &save_path2)?;
     enter_playable(&mut booted, &main_script)?;
     let pad2 = Pad::new(GamepadDeadzone::DEFAULT);
     let mut poller2 = GamepadPoller::new(Box::new(ScriptedPad {
@@ -850,30 +924,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     )?;
     assert_num(&mut booted, "require('core.state').energy", 100.0)?;
-    pad_press(&mut booted, &mut poller2, &mut snapshot2, &pad2, button::A)?;
+    pad_press(
+        &mut booted,
+        &booted_host,
+        &mut poller2,
+        &mut snapshot2,
+        &pad2,
+        button::A,
+    )?;
     assert_str(&mut booted, "require('core.state').last_action", "till")?;
     assert_num(&mut booted, "require('core.state').energy", 92.0)?;
 
     banner("M20-08i 断连不粘键：拔线清空按钮与轴，重连后仍可操作");
     pad2.press(button::A);
     pad2.stick(0.0, 0.9);
-    pad_tick(&mut booted, &mut poller2, &mut snapshot2)?;
+    pad_tick(&mut booted, &booted_host, &mut poller2, &mut snapshot2)?;
     assert_str(&mut booted, "input.pad_button(0)", "true")?;
     assert_str(&mut booted, "input.action('move_up')", "true")?;
     pad2.disconnect();
-    pad_tick(&mut booted, &mut poller2, &mut snapshot2)?;
+    pad_tick(&mut booted, &booted_host, &mut poller2, &mut snapshot2)?;
     assert_str(&mut booted, "input.pad_button(0)", "false")?;
     assert_str(&mut booted, "input.pad_axis(1)", "0.0")?;
     assert_str(&mut booted, "input.action('confirm')", "false")?;
     assert_str(&mut booted, "input.action('move_up')", "false")?;
     assert_num(&mut booted, VELOCITY_Y, 0.0)?;
     // 断连期间点按不产生输入（没有设备）。
-    pad_press(&mut booted, &mut poller2, &mut snapshot2, &pad2, button::A)?;
+    pad_press(
+        &mut booted,
+        &booted_host,
+        &mut poller2,
+        &mut snapshot2,
+        &pad2,
+        button::A,
+    )?;
     assert_str(&mut booted, "input.action('confirm')", "false")?;
     // 重连：同一按键重新按下即生效（不粘键、不丢输入）。
     pad2.connect();
     pad2.stick(0.0, 0.0);
-    pad_press(&mut booted, &mut poller2, &mut snapshot2, &pad2, button::A)?;
+    pad_press(
+        &mut booted,
+        &booted_host,
+        &mut poller2,
+        &mut snapshot2,
+        &pad2,
+        button::A,
+    )?;
     assert_str(&mut booted, "input.pad_button(0)", "false")?;
     lua(
         &mut booted,
@@ -883,7 +978,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     )?;
     lua(&mut booted, "require('core.state').energy = 100")?;
-    pad_press(&mut booted, &mut poller2, &mut snapshot2, &pad2, button::A)?;
+    pad_press(
+        &mut booted,
+        &booted_host,
+        &mut poller2,
+        &mut snapshot2,
+        &pad2,
+        button::A,
+    )?;
     assert_str_why(
         &mut booted,
         "require('core.state').last_action",
@@ -909,7 +1011,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for frame in 0..8 {
         let mut fresh = InputSnapshot::default();
         poller2.poll_into(&mut fresh);
-        booted.set_input(fresh);
+        booted_host.set_input(fresh);
         booted.call_update()?;
         assert_str_why(
             &mut booted,
@@ -932,7 +1034,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     pad2.stick(0.0, 0.0);
     let mut fresh = InputSnapshot::default();
     poller2.poll_into(&mut fresh);
-    booted.set_input(fresh);
+    booted_host.set_input(fresh);
     booted.call_update()?;
     assert_num_why(
         &mut booted,
@@ -945,7 +1047,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `main.scene` 的按钮原本只有鼠标 click 通路（`UiEvents event=click`），标题界面的
     // 手柄/键盘导航由 `ui.title_menu` 补上：焦点环选按钮、confirm 触发同一个 on_click。
     let title_save = fresh_save_path(&project, "jhyt_m20_gamepad_title.sav");
-    let mut title = new_runtime(&project, &title_save)?;
+    let (mut title, title_host) = new_runtime(&project, &title_save)?;
     title.execute_project_script(&main_script)?;
     // 启动场景由包/工程声明，headless 显式切到门面 main（等同启动流程）。
     lua(&mut title, "scene.load('main')")?;
@@ -964,10 +1066,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
     pad.stick(0.0, 0.0);
     // 空闲一帧：建立焦点环与设备基线。
-    pad_tick(&mut title, &mut title_poller, &mut title_snapshot)?;
+    pad_tick(
+        &mut title,
+        &title_host,
+        &mut title_poller,
+        &mut title_snapshot,
+    )?;
     // DPad 下移一次 → 第二项（摇杆/方向键同理，都经 `ui.input.ui_step()`）。
     pad.press(button::DPAD_DOWN);
-    pad_tick(&mut title, &mut title_poller, &mut title_snapshot)?;
+    pad_tick(
+        &mut title,
+        &title_host,
+        &mut title_poller,
+        &mut title_snapshot,
+    )?;
     assert_str_why(
         &mut title,
         "require('ui.title_menu').selected_id()",
@@ -998,11 +1110,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "true",
         "选中高亮应在本帧可见",
     )?;
+    // 高亮框画的是「按钮底 + 两侧各 `grow_x`」（`title_menu.lua`：`grow_x = 6 + 10 * ease`，
+    // ease ∈ [0,1]），所以它的宽度必然**大于布局里的按钮宽**、且不超过 `+2×(6+10)`。
+    // 原来写死 `> 380`（按当年的 372 基准），布局把 `title_btn.w` 改成 160 之后就只剩
+    // "数字过期"——现在从同一份 `ui.layout` 取基准，改版面不会再让这条断言变红。
     assert_str_why(
         &mut title,
-        "tostring((ui.panel_get('title:hl:BtnContinue') or {}).width > 380)",
+        "(function() \
+            local base = require('ui.layout').PANEL.title_btn.w \
+            local hl = ui.panel_get('title:hl:BtnContinue') \
+            if hl == nil then return 'false' end \
+            return tostring(hl.width > base and hl.width <= base + 32) \
+        end)()",
         "true",
-        "换项当帧高亮应外扩（>380px，基准 372px）",
+        "换项当帧高亮应比按钮底更宽（外扩 2×grow_x，grow_x 上限 16）",
     )?;
     // M22 追加修复（按钮文字单层）：按钮标签**由脚本统一绘制**（`ui_text.draw`），
     // 场景层 Text 实体（BtnStartLabel/BtnContinueLabel/BtnExitLabel）在同帧
@@ -1027,27 +1148,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "true",
         "选中箭头应可见（画在标签左侧留白里）",
     )?;
+    // 门面皮肤改版后**顶部操作说明不再画在门面上**（`title_menu.lua` 每帧
+    // `ui.hide("title:hint")`，绘制那行也已经注释掉）：门面只留牌匾 + 三块木牌。
+    // 所以这里断言两件事代替原来的"应可见"：① 该面板确实不显示（防止又冒出半截旧文案）；
+    // ② 按设备换文案这条**能力**仍在——`M.hint_line()` 是纯函数，手柄态必须提到 DPad。
     assert_str_why(
         &mut title,
-        "tostring((ui.get('title:hint') or {}).visible == true)",
+        "tostring((ui.get('title:hint') or {}).visible ~= true)",
         "true",
-        "顶部操作说明应可见",
+        "门面顶部的旧操作说明不应再显示",
+    )?;
+    assert_str_why(
+        &mut title,
+        "(function() \
+            local line = require('ui.title_menu').hint_line() \
+            return tostring(type(line) == 'string' and string.find(line, 'DPad', 1, true) ~= nil) \
+        end)()",
+        "true",
+        "手柄态的操作说明文案应提到 DPad（按设备换文案的能力不能随面板一起丢）",
     )?;
     let grow_hot = query_num(&mut title, "return require('ui.title_menu').anim().grow_x")?;
     pad.release(button::DPAD_DOWN);
     // 松手后 12 帧（0.2s > 0.14s 动画时长）→ 动画收敛：pop 归零、外扩回到基准 6 像素。
-    pad_ticks(&mut title, &mut title_poller, &mut title_snapshot, 12)?;
+    pad_ticks(
+        &mut title,
+        &title_host,
+        &mut title_poller,
+        &mut title_snapshot,
+        12,
+    )?;
     assert_str_why(
         &mut title,
         "tostring(require('ui.title_menu').anim().pop == 0)",
         "true",
         "动画应在 POP_SECONDS 内收敛",
     )?;
+    // 收敛态：外扩回到基准 `grow_x = 6`，所以宽度 = 按钮底 + 2×6。基准同样从
+    // `ui.layout` 取——原来这里写死 372（= 360 + 12），版面一改就成了过期数字。
     assert_str_why(
         &mut title,
-        "tostring((ui.panel_get('title:hl:BtnContinue') or {}).width == 372)",
+        "(function() \
+            local base = require('ui.layout').PANEL.title_btn.w \
+            local hl = ui.panel_get('title:hl:BtnContinue') \
+            if hl == nil then return 'false' end \
+            return tostring(hl.width == base + 2 * 6) \
+        end)()",
         "true",
-        "收敛后高亮应回到基准外扩（372px = 360 + 2×6；M32 竖版按钮 320→360 宽）",
+        "收敛后高亮应回到基准外扩（按钮底 + 2×6）",
     )?;
     assert_str_why(
         &mut title,
@@ -1067,21 +1214,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // 再下移一次 → 第三项「退出江湖」。
     pad.press(button::DPAD_DOWN);
-    pad_tick(&mut title, &mut title_poller, &mut title_snapshot)?;
+    pad_tick(
+        &mut title,
+        &title_host,
+        &mut title_poller,
+        &mut title_snapshot,
+    )?;
     assert_str(
         &mut title,
         "require('ui.title_menu').selected_id()",
         "BtnExit",
     )?;
     pad.release(button::DPAD_DOWN);
-    pad_tick(&mut title, &mut title_poller, &mut title_snapshot)?;
+    pad_tick(
+        &mut title,
+        &title_host,
+        &mut title_poller,
+        &mut title_snapshot,
+    )?;
     // A（confirm）落在「退出江湖」→ 同一个 on_click → app.quit()（不切场景）。
     // 手动推进（先喂设备帧再取方向），使断言与消费边沿的顺序确定。
     // 注意：Lua 侧 `app` 表只暴露 `quit()`；退出的可观测状态在宿主侧
     // `LuaRuntime::quit_requested()`，因此这里用 Rust 断言而不是 Lua 表达式。
     pad.press(button::A);
     title_poller.poll_into(&mut title_snapshot);
-    title.set_input(title_snapshot.clone());
+    title_host.set_input(title_snapshot.clone());
     let activated = query_str(
         &mut title,
         "(function() local id = require('ui.title_menu').update() \
@@ -1108,19 +1265,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_scene_is(&mut title, "main")?;
     title_snapshot.finish_frame();
-    title.set_input(InputSnapshot::default());
+    title_host.set_input(InputSnapshot::default());
     // B（cancel）在标题界面**无副作用**：既不落到「退出江湖」，也不触发 on_click。
     // 退出进程只走「选中退出江湖 + 确认」或窗口的关闭按钮——一键（Esc/B）关窗会误杀。
     let mut cancel_input = InputSnapshot::default();
     cancel_input.gamepad_button_event(button::B as u8, true);
-    title.set_input(cancel_input);
+    title_host.set_input(cancel_input);
     assert_str_why(
         &mut title,
         "tostring(require('ui.title_menu').update())",
         "nil",
         "B 取消不应触发任何按钮（旧语义：直接落在退出项）",
     )?;
-    title.set_input(InputSnapshot::default());
+    title_host.set_input(InputSnapshot::default());
     title.call_update()?;
     // 同时验证数字直选 2 → 「继续江湖」。
     let mut digit_input = InputSnapshot::default();
@@ -1128,7 +1285,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         KeyCode::from_char('2').expect("QWERTY 字符必须有对应物理键"),
         true,
     );
-    title.set_input(digit_input);
+    title_host.set_input(digit_input);
     title.call_update()?;
     assert_str_why(
         &mut title,
@@ -1136,7 +1293,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "BtnContinue",
         "数字键 2 直选第二项",
     )?;
-    title.set_input(InputSnapshot::default());
+    title_host.set_input(InputSnapshot::default());
     title.call_update()?;
     // M22/W4：W/S 也要能导航——顶部提示写的是「W/S 或 方向键 选择」，而 `title_menu`
     // 此前只看 `game.ui_step()`（`ui_up`/`ui_down`，默认绑方向键/DPad/左摇杆），
@@ -1154,6 +1311,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     press_key(
         &mut title,
+        &title_host,
         KeyCode::from_char('w').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_str_why(
@@ -1165,6 +1323,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 一次按下只走一步：左摇杆同时驱动 `move_*` 与 `ui_*`，两条路径必须互斥（else）。
     press_key(
         &mut title,
+        &title_host,
         KeyCode::from_char('s').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_str_why(
@@ -1195,14 +1354,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rumble_log = slot_backend.rumble_log();
     let mut slot_poller = GamepadPoller::new(Box::new(slot_backend));
 
-    pad_tick(&mut runtime, &mut slot_poller, &mut snapshot)?;
+    pad_tick(&mut runtime, &host, &mut slot_poller, &mut snapshot)?;
     assert_eq!(
         slot_poller.active_slot(),
         Some(0),
         "自动选择第一个已连接槽位"
     );
     assert_str(&mut runtime, "input.pad_button(0)", "false")?;
-    pad_tick(&mut runtime, &mut slot_poller, &mut snapshot)?;
+    pad_tick(&mut runtime, &host, &mut slot_poller, &mut snapshot)?;
     assert_str_why(
         &mut runtime,
         "input.pad_button(0)",
@@ -1210,7 +1369,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "slot 0 的 A 应生效",
     )?;
     // 切换设备：旧槽位仍按住的 A 被释放（不粘键），且不产生假按下。
-    pad_tick(&mut runtime, &mut slot_poller, &mut snapshot)?;
+    pad_tick(&mut runtime, &host, &mut slot_poller, &mut snapshot)?;
     assert_eq!(slot_poller.active_slot(), Some(1), "应接管 slot 1");
     assert_str_why(
         &mut runtime,
@@ -1219,7 +1378,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "切换槽位应释放旧槽位的按住状态",
     )?;
     assert_str(&mut runtime, "input.pad_button(1)", "false")?;
-    pad_tick(&mut runtime, &mut slot_poller, &mut snapshot)?;
+    pad_tick(&mut runtime, &host, &mut slot_poller, &mut snapshot)?;
     assert_str_why(
         &mut runtime,
         "input.pad_button(1)",
@@ -1228,7 +1387,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // 震动：Lua 只登记请求，宿主交给设备层；无 `RuntimeScene` 时由调用方取走并下达。
     lua(&mut runtime, "input.rumble(0.4, 0.6, 120)")?;
-    let request = runtime.take_rumble_request();
+    let request = host.take_rumble_request();
     if let Some((low, high, ms)) = request {
         slot_poller.rumble(low, high, ms);
     }
@@ -1385,11 +1544,12 @@ impl Pad {
 /// 一帧手柄驱动：轮询设备 → 写入快照 → 调用 Lua `update()` → 清边沿（保留按住）。
 fn pad_tick(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     poller: &mut GamepadPoller,
     snapshot: &mut InputSnapshot,
 ) -> Result<(), Box<dyn std::error::Error>> {
     poller.poll_into(snapshot);
-    runtime.set_input(snapshot.clone());
+    host.set_input(snapshot.clone());
     runtime.call_update()?;
     snapshot.finish_frame();
     Ok(())
@@ -1397,12 +1557,13 @@ fn pad_tick(
 
 fn pad_ticks(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     poller: &mut GamepadPoller,
     snapshot: &mut InputSnapshot,
     count: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..count {
-        pad_tick(runtime, poller, snapshot)?;
+        pad_tick(runtime, &host, poller, snapshot)?;
     }
     Ok(())
 }
@@ -1410,15 +1571,16 @@ fn pad_ticks(
 /// 手柄按键点按：按下 1 帧 + 松开 1 帧（与键盘 `press` 的边沿语义等价）。
 fn pad_press(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     poller: &mut GamepadPoller,
     snapshot: &mut InputSnapshot,
     pad: &Pad,
     index: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     pad.press(index);
-    pad_tick(runtime, poller, snapshot)?;
+    pad_tick(runtime, &host, poller, snapshot)?;
     pad.release(index);
-    pad_tick(runtime, poller, snapshot)?;
+    pad_tick(runtime, &host, poller, snapshot)?;
     Ok(())
 }
 
@@ -1457,16 +1619,23 @@ impl Drop for SettingsGuard {
     }
 }
 
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // 音频目录固定为 <project>/assets/audio（`rustlua-audio` 的 audio.rs）。
-    runtime.set_audio_asset_dir(project.join("assets").join("audio"));
+    handles
+        .audio
+        .with_mut(|audio| audio.set_asset_dir(project.join("assets").join("audio")));
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 /// 运行工程脚本并进入山庄（新档），与 jhyt_m20_audio 的 headless 范式一致。
@@ -1486,18 +1655,26 @@ fn enter_playable(
 }
 
 /// 键盘点按（用于验证「改绑后旧键失效」与上下文动作仍可用）。
-fn press_key(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press_key(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }
 
-fn frames(runtime: &mut LuaRuntime, count: usize) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+fn frames(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    count: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    host.set_input(InputSnapshot::default());
     for _ in 0..count {
         runtime.call_update()?;
     }

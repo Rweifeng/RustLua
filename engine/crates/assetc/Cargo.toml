@@ -7,9 +7,13 @@ description = "RustLua 资源构建工具：扫描/导入/清理/打包项目资
 
 [dependencies]
 anyhow.workspace = true
-engine = { path = "../engine" }
-
+# 这里曾经有一条 `engine = { path = "../engine" }`，而**整个 crate 一次都没用过它**
+# （`src/`、`tests/`、`build.rs` 里 `engine` 出现 0 次）。代价不是"多一行清单"：
+# 导入工具是个 CLI，`engine` 会把 render/scripting/ui/physics 整条运行时链拉进它的编译图，
+# 于是"改一行编辑器代码 → assetc 重编"。导入层与运行时层分离（docs/62 P1 第 3 条）的
+# 第一步就是把这条边删掉，别再长回来（架构门 `architecture_edges.rs` 现在能看见它）。
 rustlua-assets = { path = "../rustlua-assets" }
+rustlua-assets-import = { path = "../rustlua-assets-import" }
 # `bundle-write`：RLB 资源包的写端（C 版 zstd）。**只有构建工具打开它**——
 # 引擎/wasm 侧只编纯 Rust 的 ruzstd 解压，见 docs/67 §4.3.1。
 rustlua-infra = { path = "../rustlua-infra", features = ["bundle-write"] }

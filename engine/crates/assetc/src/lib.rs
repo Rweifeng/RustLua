@@ -10,10 +10,10 @@ use anyhow::anyhow;
 use rustlua_assets::dependency::{
     DependencyRef, extract_refs, module_path, recompute_edges, scan_path_call_args, scene_path,
 };
-use rustlua_assets::import_cache::ImportCache;
-use rustlua_assets::importer::run_import_batch;
 use rustlua_assets::resource_db::{AssetId, DiskAsset, ResourceDatabase, ResourceState};
 use rustlua_assets::resource_kind::ResourceKind;
+use rustlua_assets_import::import_cache::ImportCache;
+use rustlua_assets_import::run_import_batch;
 use std::{
     collections::{BTreeMap, HashSet},
     fs,
@@ -24,6 +24,8 @@ use std::{
 
 pub mod atlas_cook;
 pub mod bundle_plan;
+/// 发布闭包检查：计划里的每一条逻辑资源路径都必须在产物容器索引里可解析。
+pub mod closure;
 
 /// assetc 打包清单格式版本；变更会触发发布脚本重新打包。
 pub const PACKAGE_VERSION: &str = "assetc-package-2";
@@ -286,7 +288,7 @@ pub fn scan(project: &Path) -> anyhow::Result<Vec<ScanEntry>> {
     let mut database = ResourceDatabase::open(project)?;
     // core 拆分后 `ImporterRegistry::builtin()` 不含 Scene/Prefab 导入器，
     // 扫描阶段必须用完整注册表，否则 .scene/.prefab 会误报"不支持的资源类型"。
-    let registry = rustlua_scene::asset_import::full_registry();
+    let registry = rustlua_assets_import::full_registry();
     let mut entries = Vec::new();
     let mut disk_assets = Vec::with_capacity(scanned_files.len());
     // 已注册记录延迟到 reconcile+传播后再重建，让 scan 输出反映最新状态
@@ -366,7 +368,7 @@ pub fn import(project: &Path) -> anyhow::Result<Vec<ImportOutcome>> {
     let entries = scan(project)?;
     let mut database = ResourceDatabase::open(project)?;
     let mut cache = ImportCache::open(project)?;
-    let registry = rustlua_scene::asset_import::full_registry();
+    let registry = rustlua_assets_import::full_registry();
     let items: Vec<_> = entries
         .iter()
         .filter_map(|entry| {
@@ -774,7 +776,7 @@ fn copy_declared_images(project: &Path, out: &Path) -> anyhow::Result<()> {
 /// 生成发布资源包：复制 `project.toml`、`scenes/`、`scripts/`、`assets/`
 /// 到 `out`，并写入 `manifest.txt`（路径、大小、校验和）。
 /// 此外还按 `project.toml` 的 `splash_image` / `icon_image` 把**声明的**工程图带进包
-/// （它们可以不在 `assets/` 下，见 [`copy_declared_images`]）。
+/// （它们可以不在 `assets/` 下，见 `copy_declared_images`）。
 /// `compress` 对 `assets/` 下支持压缩的资产生效；`encrypt` 仅对 Lua 与场景文件生效。
 /// `drop_undeclared_fonts`（微信形态，docs/52 配额门）：删掉 `assets/fonts/` 下**没被
 /// `project.toml` 声明**（`font`/`font_fallback`）的字体二进制——它们是开发树对照物，
@@ -816,7 +818,7 @@ pub fn package(
     )?;
     copy_declared_images(project, out)?;
     // 首包字体：收集项目用到的字符清单，运行时预生成字形（首帧文字不卡）。
-    let chars = rustlua_scene::char_collect::collect_project_chars(project);
+    let chars = rustlua_assets_import::char_collect::collect_project_chars(project);
     fs::write(out.join("chars.txt"), &chars)?;
     // 发布子集化：把主字体裁剪到用到的字符，缩小体积（原 `subset-font.py` 的 Rust 版）。
     // 子集化失败（如 CFF 字体）时保留完整字体。
@@ -1148,7 +1150,7 @@ pub fn package_grouped(
     package_grouped_keep(project, out, drop_undeclared_fonts, fast, false, &[])
 }
 
-/// [`package_grouped`] 的带"留在目录里"前缀的版本（微信字体走这条路，见 [`is_kept`]）。
+/// [`package_grouped`] 的带"留在目录里"前缀的版本（微信字体走这条路，见 `is_kept`）。
 pub fn package_grouped_keep(
     project: &Path,
     out: &Path,
@@ -1225,6 +1227,10 @@ pub fn package_grouped_keep_with(
     collect_files(out, &mut files)?;
     files.sort_by(|a, b| a.0.cmp(&b.0));
     let mut entries: Vec<(String, u64, PathBuf)> = Vec::new();
+    // `--keep` 命中的**具体路径**要写进计划表：发布期 `assetc closure` 靠它断言"这些文件
+    // 必须以真实文件留在发布根里，且不得再出现在任何容器索引里"。只把前缀传下去是不够的——
+    // 前缀是规则，规则会在下一版改；契约必须随产物走。
+    let mut kept_paths: Vec<String> = Vec::new();
     for (path, _mtime) in &files {
         if path == &manifest_path || path == &report_path || path == &plan_path {
             continue;
@@ -1235,6 +1241,7 @@ pub fn package_grouped_keep_with(
             .to_string_lossy()
             .replace('\\', "/");
         if is_kept(&relative, keep) {
+            kept_paths.push(relative);
             continue; // 留在目录里：宿主按真实路径读它（微信 `wx.loadFont`）
         }
         let size = fs::metadata(path)
@@ -1372,6 +1379,7 @@ pub fn package_grouped_keep_with(
     // 5) 计划表（先写：清单要覆盖它）。
     // 计划表自校验（复核 P2）：**写盘前**签，因为 `bundle`/`bundle_bytes`/`hash` 在逐组建包时
     // 才被回填；早签必然对不上。计划表是缺件归因的唯一依据，截断/错版必须当场发现。
+    plan.keep = Some(kept_paths);
     plan.checksum = plan.compute_checksum();
     fs::write(&plan_path, plan_to_json(&plan)?)?;
     bundle_paths.push(plan_path.clone());

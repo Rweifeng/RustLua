@@ -763,7 +763,7 @@ struct EditorApp {
     /// E07 活动编辑事务：一条连续交互（拖拽等）在释放前只更新 preview，不写
     /// 磁盘、不追加 History；提交/取消在顶层网关统一处理。
     edit_transaction: editor::EditTransactionState,
-    /// E08 Inspector 缓冲脏编辑标记 + 已提交基线（见 actions.rs 顶部 EditState/EditSnapshot）。
+    /// E08 Inspector 缓冲脏编辑标记 + 已提交基线（见 crate::actions 顶部 EditState/EditSnapshot）。
     /// Inspector 面板改动 buffer 后与基线 diff，不一致才自动开事务直写文档，
     /// 从而一次拖动/输入只对应一条历史、不产生空操作。
     inspector_edit: crate::actions::EditState,

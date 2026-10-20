@@ -19,6 +19,10 @@ param(
     # + no-modules 桥（game_web Lua 桥）的 Node 验证。退出码 0=通过/1=判红/3=环境受限跳过，
     # 与 -Web 同一哲学：缺 node/wasm32/zig/wasm-bindgen 时显式跳过，绝不把"跳过"当"通过"。
     [switch]$WasmLua,
+    # 供应链安全门（P2-01）：cargo-audit / cargo-deny / fork 同步 / SBOM 一致性。
+    # 默认关：它需要固定版本的工具（scripts/release/install-security-tools.ps1）与
+    # advisory DB；CI 的 security job 直接跑 check-security.ps1，不经过总门。
+    [switch]$Security,
     # 快速读数（M66+）：只跑「零成本 + 数据级」的门，跳过编译重活与编辑器实机步骤。
     # 它与 -Mvp/-MvpOnly/-Benchmarks/-Web/-WasmLua 互斥（混用会让「跳过了什么」说不清），
     # 归一化与覆盖面见下面 `if ($Quick)` 那段长注释。
@@ -44,8 +48,8 @@ param(
 #
 # 本仓库口径是「跳过绝不等于通过」：`-Quick` 的绿灯只能读作「数据级与格式门通过」，
 # 不能读作总门通过——所以它不打印 Quality gate passed，只打印 Quick gate passed (PARTIAL)。
-if ($Quick -and ($Mvp -or $MvpOnly -or $Benchmarks -or $Web -or $WasmLua)) {
-    throw "-Quick 与 -Mvp/-MvpOnly/-Benchmarks/-Web/-WasmLua 不能同时使用：-Quick 的定义就是「只跑便宜的那一档」，混用会让「跳过了什么」说不清。"
+if ($Quick -and ($Mvp -or $MvpOnly -or $Benchmarks -or $Web -or $WasmLua -or $Security)) {
+    throw "-Quick 与 -Mvp/-MvpOnly/-Benchmarks/-Web/-WasmLua/-Security 不能同时使用：-Quick 的定义就是「只跑便宜的那一档」，混用会让「跳过了什么」说不清。"
 }
 $quick = [bool]$Quick
 # `-Quick` 本次跳过的步骤名：只由 guard 的调用点与下面这三行登记，结尾统一打印。
@@ -54,6 +58,8 @@ $skippedByQuick = [System.Collections.Generic.List[string]]::new()
 # 清单只在脚本**走到底**时才是完整的（guard 是走到才登记的）。判红时脚本停在半路，
 # 清单必须自曝这一点，否则读者会把"登记了 3 条"误读成"只跳了 3 步"。
 $quickCompleted = $false
+# -Security 的三态：false=未跑/通过，true=工具或 advisory DB 受限（exit 3，不是通过）。
+$securityBlocked = $false
 
 # `-Quick` 的跳过判定：返回 $true 表示「这一步本次跳过」，**副作用**是把步骤名登记进
 # `$skippedByQuick`。步骤名写在调用点（也就是 guard 那一行）上，所以清单与 guard 不可能漂移。
@@ -337,6 +343,47 @@ if (Test-Path $vendorGateScript) {
     }
 }
 
+# 工具链锁定门：`stable` 漂移会让"本地能过、CI 不能过"变成不可复现的口水仗。
+# 纯文件检查、约 1 秒，`-MvpOnly` 也跑；安全工具/网络相关的门不放这里。
+Write-Step "Toolchain lock"
+$toolchainLockScript = Join-Path $projectRoot "scripts/verify/check-toolchain-lock.ps1"
+if (Test-Path -LiteralPath $toolchainLockScript) {
+    $lockOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File $toolchainLockScript
+    $lockExit = $LASTEXITCODE
+    $lockOutput | ForEach-Object { Write-Host $_ }
+    if ($lockExit -ne 0) {
+        throw "check-toolchain-lock.ps1 failed (exit code $lockExit)"
+    }
+}
+else {
+    throw "check-toolchain-lock.ps1 missing: $toolchainLockScript"
+}
+
+# 供应链安全门：放编译之前。缺工具/DB 时 check-security 退 3（环境受限），
+# 这里保留该读数并在结尾把总门降级为 PARTIAL，而不是 throw 成"代码红了"。
+if ($Security) {
+    Write-Step "Supply-chain security"
+    $securityScript = Join-Path $projectRoot "scripts/verify/check-security.ps1"
+    if (-not (Test-Path -LiteralPath $securityScript)) {
+        throw "check-security.ps1 missing: $securityScript"
+    }
+    $securityArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $securityScript, "-FetchForkUpstream")
+    $sbomCandidate = Join-Path $projectRoot "artifacts\reports\rustlua.cdx.json"
+    if (Test-Path -LiteralPath $sbomCandidate) {
+        $securityArgs += @("-SbomPath", $sbomCandidate)
+    }
+    $securityOutput = & powershell @securityArgs 2>&1
+    $securityExit = $LASTEXITCODE
+    $securityOutput | ForEach-Object { Write-Host $_ }
+    if ($securityExit -eq 1) {
+        throw "check-security.ps1 failed (exit code 1); see $securityOutput"
+    }
+    if ($securityExit -eq 3) {
+        Write-Host "security_blocked: tools or advisory database unavailable (not a pass)" -ForegroundColor Yellow
+        $securityBlocked = $true
+    }
+}
+
 if ($runGates) {
 Push-Location $engineRoot
 try {
@@ -373,6 +420,16 @@ try {
         #   ② wasm 兜底通道：首选通道失败/抛错时必须真的用兜底通道的结果，而不是一律判失败。
         Write-Step "WeChat asset routing (adapter unit)"
         Invoke-Checked node @((Join-Path $projectRoot "scripts/test/wechat-asset-routing-test.js"))
+        #   ①′ boot 闭包自测：`check-boot-closure.js` 有两条通路（散文件 / 主包容器认领），
+        #      而真产物的 boot 条目恰好全是散文件（loose=7/container=0）——没有这条自测，
+        #      "容器认领"那条分支只有等到换产物形态才会被走到。
+        Write-Step "WeChat boot closure (self-test)"
+        Invoke-Checked node @((Join-Path $projectRoot "scripts/build/check-boot-closure.js"), "--self-test")
+        #   ①″ 跨端路径黄金对拍（JS 侧）：与 `cargo test -p rustlua-infra --test asset_routing_golden`
+        #      读**同一份** `scripts/test/fixtures/asset-routing-golden.json`。两侧都绿才算
+        #      "键的口径一致"；各绿各的只证明两份测试各说各话（症状是真机白图）。
+        Write-Step "Cross-host path routing golden table (js)"
+        Invoke-Checked node @((Join-Path $projectRoot "scripts/test/asset-routing-golden-test.js"))
         Write-Step "WeChat wasm bridge fallback (unit)"
         Invoke-Checked node @((Join-Path $projectRoot "scripts/test/wasm-bridge-fallback-test.js"))
         #   ③ 固定时间步：把 `advanceFixedSteps` 从 web-runtime.js **抽出源码**直接跑，
@@ -391,6 +448,46 @@ try {
         Invoke-Checked node @((Join-Path $projectRoot "scripts/verify/check-input-abi-parity.mjs"))
     } else {
         Write-Host "  [SKIP] 未找到 node：Lua API 文档桩门、微信资源路由门、wasm 兜底通道门、固定时间步门与输入键表门未运行（不是通过）" -ForegroundColor Yellow
+    }
+
+    # ---------- 发布闭包（容器内容）：此前没有任何自动化入口 ----------
+    # `assetc closure` 是"容器文件都在、但计划里某条资源没进容器"的唯一拦截点：启动场景刚好不用
+    # 那条资源时，缺件不会掀翻启动，只会在玩到一半白图。它此前只在发布机上真有产物时才跑
+    # （`apply-bundle-layout.ps1` / `verify-wechat-minigame.ps1`），总门与 CI 都覆盖不到。这里补两条：
+    #   ① 合成一份 grouped 产物 → 正例 + 三个反例（改坏容器 / 删容器 / 多容器），零依赖、秒级；
+    #   ② 微信产物存在时，把整份发布包静态验收拉进总门（此前总门**完全不碰**微信产物）。
+    Write-Step "Release closure (grouped containers, regress)"
+    $assetcExe = $null
+    foreach ($closureProfile in @("release", "debug")) {
+        $closureCandidate = Join-Path $projectRoot "engine\target\$closureProfile\assetc.exe"
+        if (-not $assetcExe -and (Test-Path -LiteralPath $closureCandidate -PathType Leaf)) {
+            $assetcExe = $closureCandidate
+        }
+    }
+    $closureTestArgs = @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass",
+        "-File", (Join-Path $projectRoot "scripts\test\test-release-closure.ps1")
+    )
+    if ($assetcExe) { $closureTestArgs += @("-Assetc", $assetcExe) }
+    Invoke-Checked powershell $closureTestArgs
+
+    # 微信发布包：总门此前从不验收它（只有 `package.ps1` 那一次 layout 检查）。产物在就跑静态验收
+    # （`assetc closure` + boot 闭包 + 主包配额 + 上传白名单），产物不在就明说"没跑"——
+    # 跳过写成通过是这个项目反复踩过的坑。
+    if (-not (Get-Command Resolve-GameBundle -ErrorAction SilentlyContinue)) {
+        . (Join-Path $projectRoot "scripts/lib/bundle-discovery.ps1")
+    }
+    $wechatBundle = Resolve-GameBundle -Platform "wechat-minigame" -WorkspaceRoot $projectRoot
+    if ($wechatBundle) {
+        Write-Step "WeChat mini-game package (static release closure)"
+        Invoke-Checked powershell @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", (Join-Path $projectRoot "scripts\verify\verify-wechat-minigame.ps1"),
+            "-BundleRoot", $wechatBundle, "-SkipRuntime"
+        )
+    }
+    else {
+        Write-Host "  [SKIP] 没有微信小游戏产物：发布包验收未运行（不是通过；先跑 scripts\build\package.ps1 -Platform wechat-minigame）" -ForegroundColor Yellow
     }
 
     # M72-05 装饰散布的**确定性**门。事实源在 Python（`tools/decor_kit.py` 的 `scatter()`），所以这条
@@ -1014,6 +1111,11 @@ try {
         $quickCompleted = $true
         Write-Host "`nQuick gate passed (PARTIAL). Log: $logPath" -ForegroundColor Green
     }
+    elseif ($securityBlocked) {
+        # 环境受限不是通过：措辞与退出码都要与"全绿"区分。
+        Write-Host "`nQuality gate PARTIAL: supply-chain security was BLOCKED (tools/advisory DB unavailable). Log: $logPath" -ForegroundColor Yellow
+        exit 3
+    }
     else {
         Write-Host "`nQuality gate passed. Log: $logPath" -ForegroundColor Green
     }
@@ -1076,7 +1178,10 @@ if ($Mvp -or $MvpOnly) {
         "jhyt_m28_loop",
         "jhyt_m29_season_weather",
         "jhyt_m30_cjk_text",
-        "jhyt_m31_pc_release",
+        # `jhyt_m31_pc_release` 不在这里：它验收的是**打好的 PC 发布包**（`builds/pc`），
+        # 干净树上必然没有那个目录，留在 MVP 清单里等于让这道门恒红（红因是"没打包"，
+        # 不是"发布包坏了"）。它改登记在下面的 `$releaseExamples`，由"产物在就跑、不在就
+        # 明说 [SKIP] 不是通过"的那一段执行——与本文件里微信小游戏发布包那段同一口径。
         # M32 相机收口：相机跟随玩家 + 取景由场景 bounds 锁在地图内（含换图后重绑 bounds）。
         "jhyt_m32_camera",
         # M34-00 存档负向门：map.state/快照版本门会红、provider 报错整批回滚、
@@ -1386,9 +1491,53 @@ if ($Mvp -or $MvpOnly) {
         "jhyt_m58_ending",
         # M60 新手引导重做：16 步序/条件合法、新档第 0 步仍为 till（不抢占）、
         # 真实 farm.act+day.sleep 推进首次种植五步闭环到萝卜成熟收获、strict 门绿。
-        "jhyt_m60_tutorial"
+        "jhyt_m60_tutorial",
+        # M74-01 3D 空间音频：距离衰减四档（min 内不衰减/线性/边界归零）、四类非法输入被拒
+        # （非有限值/模型反了/零朝向/朝向退化）、声像折回两耳坐标（rodio 自带 1/dist² 不外溢）、
+        # 宿主契约（没听者时 play_at 拒绝、模型非法保持原值、sink 路径把 gain 乘进音量）。
+        # 纯 `rustlua_audio` 驱动：headless 无音频设备也全程可跑（只算数值，不出声）。
+        "jhyt_m93_spatial_audio"
     )
     $exampleDir = Join-Path $engineRoot "crates\game\examples"
+
+    # 0) 「已知跑不了、留作历史记录」的门——和「漏登记」是两件事，必须分开登记。
+    #    加进这张表的前提：文件头写清了「为什么跑不了」与「谁接管了这份覆盖」，
+    #    否则正确的动作是修好它或者删掉它，而不是登记进来（登记 = 永久失去这份回归）。
+    #    `jhyt_m59_ui_prefab`：M71 把 JSON 预设层整体退役（`assets/ui/prefabs/*.ui.json` 删除、
+    #    `ui/prefab.lua` 的 NAMES 清空），本门依赖的 `ui.prefab` render/audit 已不存在；
+    #    对话面板的对账由 `jhyt_m71_dialogue_prefab`（运行期 `.prefab`，黄金表 34 行）接管。
+    #    文件头有退役声明，文件保留以便追溯 M59 当时的口径。它仍在盘上、仍参与编译门，
+    #    只是不进 MVP 执行清单。
+    $retiredExamples = @(
+        "jhyt_m59_ui_prefab"
+    )
+    # 「验收的是打包产物」的门——和「退役」也是两件事：它们**仍然有效、仍然必须过**，
+    # 只是前提是磁盘上有发布包。放这里而不是 `$examples`，是因为 MVP 清单的隐含契约是
+    # 「干净树上全部可跑」；把需要产物的门混进去，红因会永远是"没打包"，久了就没人看它。
+    # 执行口径见下面第 3 段：产物在 → 真跑并判红；产物不在 → 明打 [SKIP]（不是通过），
+    # 并指路 `scripts\build\package.ps1 -Platform pc`。与本文件微信发布包那段同一口径。
+    $releaseExamples = @(
+        # PC 发布包四类契约：存档/玩家设置写用户目录（`%APPDATA%\<app>`）、升级不覆盖玩家设置、
+        # 设备后端与 Lua 面板读同一个根、发布目录卫生（无 .cache/存档/.staging-* 残留）。
+        @{ Name = "jhyt_m31_pc_release"; Artifact = "builds\pc"; Hint = "scripts\build\package.ps1 -Platform pc" }
+    )
+    foreach ($example in $retiredExamples) {
+        if (-not (Test-Path -LiteralPath (Join-Path $exampleDir ($example + ".rs")))) {
+            throw ("retired example list names $example but the file is gone; drop the entry (it no longer records anything)")
+        }
+        if ($examples -contains $example) {
+            throw ("$example is both retired and in the MVP list; pick one (a retired gate must not run)")
+        }
+    }
+    foreach ($entry in $releaseExamples) {
+        $example = $entry.Name
+        if (-not (Test-Path -LiteralPath (Join-Path $exampleDir ($example + ".rs")))) {
+            throw ("release example list names $example but the file is gone; drop the entry (a missing gate is a lost gate)")
+        }
+        if (($examples -contains $example) -or ($retiredExamples -contains $example)) {
+            throw ("$example is in the MVP/retired list as well as the release list; pick one")
+        }
+    }
 
     # 1) 先全量校验清单，缺失/多余都直接失败（缺失 = 回归消失，多余 = 清单漏登记）。
     $missing = @()
@@ -1402,7 +1551,7 @@ if ($Mvp -or $MvpOnly) {
         throw ("MVP example list is missing $($missing.Count) file(s): " + ($missing -join ", ") + " (expected under $exampleDir)")
     }
     $onDisk = @(Get-ChildItem -LiteralPath $exampleDir -Filter "jhyt_*.rs" -File | ForEach-Object { $_.BaseName })
-    $unlisted = @($onDisk | Where-Object { $examples -notcontains $_ })
+    $unlisted = @($onDisk | Where-Object { $examples -notcontains $_ -and $retiredExamples -notcontains $_ -and @($releaseExamples | ForEach-Object { $_.Name }) -notcontains $_ })
     if ($unlisted.Count -gt 0) {
         throw ("jhyt_* example(s) exist but are not in the MVP list: " + ($unlisted -join ", ") + " (add them to verify.ps1 or delete them)")
     }
@@ -1423,6 +1572,24 @@ if ($Mvp -or $MvpOnly) {
         throw "MVP gate ran $executed example(s) but the manifest lists $($examples.Count); a silent skip is never acceptable."
     }
     Write-Host "MVP headless regression: executed=$executed expected=$($examples.Count)" -ForegroundColor Green
+
+    # 3) 打包产物门：产物在就真跑（失败即红），不在就明说 [SKIP]——不是通过。
+    Push-Location $engineRoot
+    try {
+        foreach ($entry in $releaseExamples) {
+            $artifactPath = Join-Path $defaultGameProject $entry.Artifact
+            if (-not (Test-Path -LiteralPath $artifactPath)) {
+                $message = "[SKIP] $($entry.Name): 没有发布产物 $($entry.Artifact)（不是通过；先跑 $($entry.Hint)）"
+                Write-Host "  $message" -ForegroundColor Yellow
+                Add-Content -Path $logPath -Value $message -Encoding UTF8
+                continue
+            }
+            Invoke-Checked cargo @("run", "--quiet", "-p", "game", "--example", $entry.Name)
+        }
+    }
+    finally {
+        Pop-Location
+    }
 
     Write-Step "Clean release directory self test"
     Invoke-PackageSelfTest -ProjectRootPath $defaultGameProject

@@ -136,7 +136,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---------------- ② 实际游戏工程：宿主 → 动作 → Lua ----------------
     banner("② 真实工程链路：默认动作表 → 物理键按下 → Lua 动作查询");
-    let mut runtime = LuaRuntime::new()?;
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.clone());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
@@ -149,7 +151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `move_*` 与 `ui_*`）是 M20-08 的设计，不算冲突；因此这里断言的是
     // 「`conflicts()` 里不含任何 Key 绑定」这一真正的不变量，而**不是**
     // `validate_bindings()`（它服务编辑器保存路径，连同动作多绑定也拒）。
-    let conflicts = runtime.action_map().conflicts();
+    let conflicts = host.action_map().conflicts();
     let key_conflicts: Vec<_> = conflicts
         .iter()
         .filter(|conflict| matches!(conflict.binding, Binding::Key(_)))
@@ -171,20 +173,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "    默认动作表 {} 个动作、键盘零冲突（手柄刻意别名 {gamepad_aliases} 处），\
          文本头 = {ACTION_MAP_VERSION}，无 key:other: 痕迹",
-        runtime.action_map().actions().len()
+        host.action_map().actions().len()
     );
 
     // 物理键按下 → Lua 动作查询（键盘与手柄语义一致由 M20-08 的单测覆盖）。
     let mut input = InputSnapshot::default();
     input.key_event(KeyCode::KeyE, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
     assert_lua_str(&mut runtime, "input.action('interact')", "true")?;
     assert_lua_str(&mut runtime, "input.action_pressed('interact')", "true")?;
     assert_lua_str(&mut runtime, "input.is_down('keye')", "true")?;
     assert_lua_str(&mut runtime, "input.is_down('e')", "true")?;
     assert_lua_str(&mut runtime, "input.is_down('keyw')", "false")?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
 
     // 未知名是**明确错误**并回显原值（旧实现静默落 Other(0)）。
@@ -211,7 +213,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "true",
     )?;
     assert_lua_str(&mut runtime, "input.bindings('interact')[1]", "key:keyf")?;
-    if runtime.action_map().bindings("interact") != [Binding::Key(KeyCode::KeyF)] {
+    if host.action_map().bindings("interact") != [Binding::Key(KeyCode::KeyF)] {
         return Err("宿主读到的映射必须与脚本一致（单一事实来源）".into());
     }
     println!("    重绑定：v1 写法与 v2 物理键名解析到同一物理键，宿主/脚本同源");
@@ -226,7 +228,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .as_nanos()
     ));
     fs::create_dir_all(&settings_root)?;
-    let mut runtime = LuaRuntime::new()?;
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project_arg.clone());
     runtime.set_settings_root(settings_root.clone());
     runtime.set_ui_viewport(1280, 720);
@@ -259,11 +263,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // 文本必须等于当前内存映射的 `to_text`（宿主/脚本/磁盘三者同源）。
     let stored = extract_map_line(&written)?;
-    if stored != runtime.action_map().to_text() {
+    if stored != host.action_map().to_text() {
         return Err(format!(
             "磁盘映射与内存映射不一致：\n磁盘 {:?}\n内存 {:?}",
             stored,
-            runtime.action_map().to_text()
+            host.action_map().to_text()
         )
         .into());
     }

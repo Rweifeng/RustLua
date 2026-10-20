@@ -11,10 +11,10 @@ use crate::util::{
 use editor::{
     ProjectDocument, ProjectInfo, RecoveryManager, RecoveryScan, ResourceBrowserState, open_project,
 };
-use rustlua_assets::import_cache::ImportCache;
-use rustlua_assets::importer::{ImportSummary, run_import_batch_with_progress};
 use rustlua_assets::resource_db::{AssetId, ResourceDatabase};
 use rustlua_assets::resource_kind::ResourceKind;
+use rustlua_assets_import::import_cache::ImportCache;
+use rustlua_assets_import::{ImportSummary, run_import_batch_with_progress};
 use rustlua_scene::scene::SceneEntityId;
 use std::{
     path::{Path, PathBuf},
@@ -428,7 +428,7 @@ fn spawn_resource_import(
                 let mut cache = ImportCache::open(&root)
                     .map_err(|error| format!("导入缓存打开失败：{error}"))?;
                 // core 拆分后 builtin() 不含 Scene/Prefab，编辑器导入必须用完整注册表。
-                let registry = rustlua_scene::asset_import::full_registry();
+                let registry = rustlua_assets_import::full_registry();
                 let items: Vec<(AssetId, PathBuf)> = items
                     .into_iter()
                     .map(|(id, relative)| (id, root.join(relative)))

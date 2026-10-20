@@ -14,6 +14,7 @@ on:
       - "docs/**"
       - "tasks/**"
       - ".github/workflows/quality.yml"
+      - ".github/workflows/release.yml"
   pull_request:
     paths:
       - "engine/**"
@@ -22,6 +23,7 @@ on:
       - "docs/**"
       - "tasks/**"
       - ".github/workflows/quality.yml"
+      - ".github/workflows/release.yml"
 
 jobs:
   # 快速失败门：格式 / clippy / diff 检查都不需要产物构建，先红先停。
@@ -35,7 +37,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
 
@@ -86,6 +88,85 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: pwsh -NoProfile -File scripts/verify/check-silent-traces.ps1
 
+  # 供应链安全门（P2-01）：工具版本固定，缺工具/网络失败必须判红或显式 blocked。
+  # 与 release.yml 的 security 步骤共用同一入口 check-security.ps1，避免"本地一套、CI 一套"。
+  # 依赖先 cargo check：fork-sync 报告要读 registry/src 里的上游源码，只 fetch 不够。
+  security:
+    needs: lint
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Toolchain lock
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/check-toolchain-lock.ps1
+          if ($LASTEXITCODE -ne 0) { throw "toolchain lock failed (exit $LASTEXITCODE)" }
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install pinned security tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit@0.22.2,cargo-deny@0.20.2,cargo-cyclonedx@0.5.9
+
+      - name: Unpack dependency sources
+        working-directory: engine
+        run: cargo check --locked --workspace --all-features
+
+      - name: Generate SBOM
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts/reports | Out-Null
+          node scripts/release/gen-sbom.mjs --output artifacts/reports/rustlua.cdx.json
+          if ($LASTEXITCODE -ne 0) { throw "gen-sbom failed (exit $LASTEXITCODE)" }
+
+      - name: Generate cargo-cyclonedx cross-check (independent implementation)
+        working-directory: engine
+        run: cargo cyclonedx --manifest-path crates/game/Cargo.toml --format json --spec-version 1.5 --describe crate
+
+      - name: Collect cross-check SBOM
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts/reports | Out-Null
+          Copy-Item engine/crates/game/game.cdx.json artifacts/reports/rustlua.cargo-cyclonedx-game.cdx.json -Force
+
+      - name: Supply-chain security gate
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/check-security.ps1 `
+            -RequireTools -FetchForkUpstream `
+            -SbomPath artifacts/reports/rustlua.cdx.json
+          if ($LASTEXITCODE -ne 0) { throw "security gate failed (exit $LASTEXITCODE)" }
+
+      - name: Security gate self-tests
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/test-security-gates.ps1
+          if ($LASTEXITCODE -ne 0) { throw "security self-tests failed (exit $LASTEXITCODE)" }
+
+      - name: Upload SBOM and security evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-evidence
+          path: |
+            artifacts/reports/rustlua.cdx.json
+            artifacts/reports/rustlua.cargo-cyclonedx-game.cdx.json
+            artifacts/logs/security/*
+          if-no-files-found: warn
+
   # 编译 + 全量测试（windows）。Release 构建放在测试**之前**：
   # `publish_spawn_end_to_end` 用 `-SkipBuild` 复用 `target/release/game.exe` 做真实的
   # 发布目录自检，若该产物不存在或是陈旧的，这条用例会以"发布应成功"失败——那是
@@ -102,7 +183,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
@@ -121,6 +202,46 @@ jobs:
       - name: Debug build
         run: cargo build --workspace
 
+  # 发布闭包（容器内容）：`assetc closure` 直接读 RLB 索引，断言"计划里的每条逻辑路径都在容器里"、
+  # 条目数/块大小/字节数/FNV 与计划一致。此前它只在发布机上有真产物时才跑（apply-bundle-layout /
+  # verify-wechat-minigame），CI 完全覆盖不到——于是"容器文件都在、但某个按需组少了一条资源"
+  # 可以一路绿到真机：启动场景刚好不用它，玩到一半才白图。这条 job 用合成工程跑 7 条断言：
+  # 单根正例 + 三个反例（改坏容器 / 删容器 / 塞计划外容器）+ 黄金表落地 + **平台形态**
+  # （真拆根、真改名、多根闭包）与其缺件反例。零 wasm、零浏览器、零 GPU。
+  release-closure:
+    needs: lint
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node (bundle-layout / check-bundle-mounts)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+
+      - name: Build assetc
+        run: cargo build -p assetc --release
+
+      # `-RequireAssetc`：这一步刚构建过，找不到就是配置错；静默跳过会把"门没跑"伪装成"门通过"。
+      # 两个坐标都要覆盖：①assetc 原始输出（单根、未改名）；②平台形态（`assetc layout` 拆根 +
+      # `.rlb` → `.rlb.txt` 改名，用真工具 `bundle-layout.js --apply` 造），后者才是"平台发布闭包"。
+      # 用例里自带反例（改坏/删/多容器/多根缺件），所以 CI 同时证明"门会拦"与"门在平台目录下成立"。
+      - name: Container closure regress (single-root + platform multi-root)
+        working-directory: ${{ github.workspace }}
+        run: pwsh -NoProfile -File scripts/test/test-release-closure.ps1 -Assetc engine/target/release/assetc.exe -RequireAssetc
+
   # 项目门 + 发布链路自测：消费 build-test 之外不需要 release 产物的检查项。
   gates:
     needs: lint
@@ -130,7 +251,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
@@ -156,6 +277,24 @@ jobs:
       - name: Atomic release swap and rollback
         run: pwsh -NoProfile -File scripts/test/test-release-atomic.ps1
 
+      # 微信多根路由 + 计划表结构校验：纯 Node、零构建、秒级。此前只有本地手动跑过，于是
+      # `bundle-roots.js` 的路由/挂载编排回归（具名分包路由错、预挂漏根）在 CI 上是静默的。
+      # `check-bundle-mounts.js --self-test` 钉住另外两条"第二套假设"：容器改名只认产物自带的
+      # `code-package.json`（规则模块兜底），发布根缺计划表时**不许**拿 `pack/` 的副本冒充。
+      # 容器内容闭包在 `release-closure` job 里跑（单根 + 平台多根两种坐标 + 反例）。
+      - name: Set up Node (WeChat routing gates)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: WeChat bundle routing and plan structure
+        run: |
+          node plugins/wechat-minigame/bundle-roots.js --self-test
+          node scripts/test/wechat-asset-routing-test.js
+          node scripts/build/check-boot-closure.js --self-test
+          node scripts/test/asset-routing-golden-test.js
+          node scripts/build/check-bundle-mounts.js --self-test
+
       # docs/54 §8-⑨/⑩：WP0 基准与语义 golden（2D / 3D / **混合 2D/3D**）必须进门，而不是
       # "只在本机手动跑过"。这一步需要可用的 wgpu 适配器（示例显式请求 fallback adapter，
       # Windows 上是 WARP）；适配器缺失会让示例**报错退出**而不是静默跳过——宁可判红，也不要
@@ -174,7 +313,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.1
         with:
           targets: wasm32-unknown-unknown
 

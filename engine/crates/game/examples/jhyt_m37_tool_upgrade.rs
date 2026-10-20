@@ -30,7 +30,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let main_script = project.join("scripts/main.lua");
 
-    let mut runtime = LuaRuntime::new()?;
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.clone());
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
@@ -43,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(&mut runtime, "require('core.state').energy", 100.0)?;
     set_facing(&mut runtime, "up")?;
     let e0 = energy(&mut runtime)?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(&mut runtime, "require('core.state').last_action", "till")?;
     let e1 = energy(&mut runtime)?;
     check_cost("基础锄翻土", e0, e1, 8.0)?;
@@ -57,23 +59,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 与 `jhyt_m36_regrow` 的 seed_mint 同法（inv.equip 要求背包里有货）。
     // 精铁锄头：翻土 6
     add_and_equip(&mut runtime, "hoe_iron")?;
-    let cost = till_at(&mut runtime, cells[0])?;
+    let cost = till_at(&mut runtime, &host, cells[0])?;
     check_cost("精铁锄头翻土", cost.0, cost.1, 6.0)?;
     // 寒铁锄头：翻土 5
     add_and_equip(&mut runtime, "hoe_cold")?;
-    let cost = till_at(&mut runtime, cells[1])?;
+    let cost = till_at(&mut runtime, &host, cells[1])?;
     check_cost("寒铁锄头翻土", cost.0, cost.1, 5.0)?;
     // 陨铁锄头：翻土 4（第 3 档封顶下限）
     add_and_equip(&mut runtime, "hoe_meteor")?;
-    let cost = till_at(&mut runtime, cells[2])?;
+    let cost = till_at(&mut runtime, &host, cells[2])?;
     check_cost("陨铁锄头翻土", cost.0, cost.1, 4.0)?;
-    let cost = till_at(&mut runtime, cells[3])?;
+    let cost = till_at(&mut runtime, &host, cells[3])?;
     check_cost("陨铁锄头翻土(第二格)", cost.0, cost.1, 4.0)?;
 
     banner("③ 在最后一格种薄荷，浇水逐档减耗（基础 4 → 精铁 3 → 寒铁 2）");
     runtime.execute_console("inv.add(require('core.state').inventory, 'seed_mint', 1)")?;
     set_seed(&mut runtime, "seed_mint")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -82,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     add_and_equip(&mut runtime, "watering_can")?;
     runtime.execute_console("require('world.weather').set('sunny')")?;
     let e2 = energy(&mut runtime)?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -94,7 +96,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     add_and_equip(&mut runtime, "water_iron")?;
     runtime.execute_console("require('world.weather').set('sunny')")?;
     let e4 = energy(&mut runtime)?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -106,7 +108,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     add_and_equip(&mut runtime, "water_cold")?;
     runtime.execute_console("require('world.weather').set('sunny')")?;
     let e6 = energy(&mut runtime)?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -174,11 +176,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// 移动到指定格下方并朝上，翻土一次；返回 (前, 后) 体力。
 fn till_at(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     cell: (i64, i64),
 ) -> Result<(f64, f64), Box<dyn std::error::Error>> {
     move_to(runtime, cell.0, cell.1)?;
     let before = energy(runtime)?;
-    press(runtime, KeyCode::KeyE)?;
+    press(runtime, &host, KeyCode::KeyE)?;
     assert_str(runtime, "require('core.state').last_action", "till")?;
     let after = energy(runtime)?;
     Ok((before, after))
@@ -270,12 +273,16 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
     Ok(())
 }
 
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }

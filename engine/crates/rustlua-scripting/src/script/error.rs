@@ -134,8 +134,12 @@ pub(super) fn find_line_number(source: &str) -> Option<u32> {
     None
 }
 
+/// 绑定期错误：Lua 侧看到 `RuntimeError`。
+///
+/// 实现放在 `rustlua-lua-api`（契约层）：下沉后的绑定（`rustlua-audio` 等）不依赖本 crate，
+/// 但两边**必须是同一种错误形状**，否则同一次失败在 Lua 侧会是两种可捕获性。
 pub(super) fn api_error(message: impl Into<String>) -> mlua::Error {
-    mlua::Error::RuntimeError(message.into())
+    rustlua_lua_api::api_error(message)
 }
 
 /// 拆开 [`LuaBridgeError`] 的 `(路径, 阶段, 报错文本)`。

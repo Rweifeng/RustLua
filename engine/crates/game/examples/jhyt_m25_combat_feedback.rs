@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let main_script = project.join("scripts/main.lua");
     let save_path = fresh_save_path(&project, "jhyt_m25_combat_feedback.sav");
 
-    let mut runtime = new_runtime(&project, &save_path)?;
+    let (mut runtime, host) = new_runtime(&project, &save_path)?;
     runtime.execute_project_script(&main_script)?;
     // 与 jhyt_m18_combat 同一条启动路径：先门面，再直接进演武场。
     open_scene(&mut runtime, "main")?;
@@ -140,16 +140,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("③ 训练木人：抵抗为 1 → 挨打不后退、不进硬直（练功房站桩不动）");
     teleport(&mut runtime, BEFORE_DUMMY)?;
     set_facing(&mut runtime, "right")?;
-    frames(&mut runtime, 2)?;
+    frames(&mut runtime, &host, 2)?;
     let dummy_cell_before = enemy_cell(&mut runtime, "enemy_dummy")?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
     )?;
     // 逐帧推进到命中：命中当步就要读到"木人不动、不硬直"。
     let mut landed = false;
     for _ in 0..30 {
-        frames(&mut runtime, 1)?;
+        frames(&mut runtime, &host, 1)?;
         let hp = query_num(
             &mut runtime,
             "require('systems.enemy').query('enemy_dummy').hp",
@@ -172,7 +173,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('systems.enemy').query('enemy_dummy').stun_frames",
         0.0,
     )?;
-    frames(&mut runtime, 30)?;
+    frames(&mut runtime, &host, 30)?;
     assert_num(
         &mut runtime,
         "require('systems.enemy').query('enemy_dummy').cell_x",
@@ -189,7 +190,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     teleport(&mut runtime, WOLF_LURE)?;
     let mut hurt_at_hit = None;
     for _ in 0..900 {
-        frames(&mut runtime, 1)?;
+        frames(&mut runtime, &host, 1)?;
         let hurt = query_num(
             &mut runtime,
             "require('systems.combat').player_hurt_frames()",
@@ -227,6 +228,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pos_before = player_pos(&mut runtime)?;
     move_input(
         &mut runtime,
+        &host,
         KeyCode::from_char('d').expect("QWERTY 字符必须有对应物理键"),
         2,
     )?;
@@ -285,7 +287,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hits_before = query_num(&mut runtime, "require('systems.combat').stats().hits_taken")?;
     let hp_before_burst = query_num(&mut runtime, "require('systems.combat').player_hp()")?;
     // 贴到狼身边，保证它一直在攻击距离内（被打退后它会自己追回来）。
-    frames(&mut runtime, 200)?;
+    frames(&mut runtime, &host, 200)?;
     let ignored_after = query_num(&mut runtime, "require('systems.combat').stats().ignored")?;
     let hits_after = query_num(&mut runtime, "require('systems.combat').stats().hits_taken")?;
     let hp_after_burst = query_num(&mut runtime, "require('systems.combat').player_hp()")?;
@@ -324,7 +326,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let mut recovered = false;
     for _ in 0..300 {
-        frames(&mut runtime, 1)?;
+        frames(&mut runtime, &host, 1)?;
         let iframes_now = query_num(&mut runtime, "require('systems.combat').player_iframes()")?;
         if iframes_now == 0.0 {
             recovered = true;
@@ -361,7 +363,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     teleport(&mut runtime, BEFORE_DUMMY)?;
     set_facing(&mut runtime, "right")?;
-    frames(&mut runtime, 2)?;
+    frames(&mut runtime, &host, 2)?;
     let dummy_cell_0 = enemy_cell(&mut runtime, "enemy_dummy")?;
     let dummy_hp_0 = query_num(
         &mut runtime,
@@ -370,12 +372,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     lua(&mut runtime, "require('core.state').inner_power = 50")?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('k').expect("QWERTY 字符必须有对应物理键"),
     )?;
     // 逐帧推进到命中，命中当步就要读到硬直（与 ④ 的玩家侧同一口径）。
     let mut dummy_stun_at_hit = None;
     for _ in 0..40 {
-        frames(&mut runtime, 1)?;
+        frames(&mut runtime, &host, 1)?;
         let hp = query_num(
             &mut runtime,
             "require('systems.enemy').query('enemy_dummy').hp",
@@ -427,9 +430,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('systems.enemy').query('enemy_dummy').state",
         "stunned",
     )?;
-    frames(&mut runtime, 4)?;
+    frames(&mut runtime, &host, 4)?;
     let during = enemy_cell(&mut runtime, "enemy_dummy")?;
-    frames(&mut runtime, 4)?;
+    frames(&mut runtime, &host, 4)?;
     let during2 = enemy_cell(&mut runtime, "enemy_dummy")?;
     if during != during2 {
         return Err(format!("硬直期间木人仍在移动: {during:?} → {during2:?}").into());
@@ -441,13 +444,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
          dummy.knockback_resist = 1\n\
          dummy.hitstun_resist = 1",
     )?;
-    frames(&mut runtime, 60)?;
+    frames(&mut runtime, &host, 60)?;
     let cell_before_again = enemy_cell(&mut runtime, "enemy_dummy")?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
     )?;
-    frames(&mut runtime, 30)?;
+    frames(&mut runtime, &host, 30)?;
     let cell_after_again = enemy_cell(&mut runtime, "enemy_dummy")?;
     if cell_before_again != cell_after_again {
         return Err(format!(
@@ -471,9 +475,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                require('core.state').facing = 'up'\n\
              end",
         )?;
-        frames(&mut runtime, 2)?;
+        frames(&mut runtime, &host, 2)?;
         if !query_str(&mut runtime, "require('systems.combat').player_can_act()")?.eq("true") {
-            frames(&mut runtime, 20)?;
+            frames(&mut runtime, &host, 20)?;
             continue;
         }
         let hp_before = query_num(
@@ -485,10 +489,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         press(
             &mut runtime,
+            &host,
             KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
         )?;
         for _ in 0..30 {
-            frames(&mut runtime, 1)?;
+            frames(&mut runtime, &host, 1)?;
             let hp_now = query_num(
                 &mut runtime,
                 "require('systems.enemy').query('enemy_wolf').hp",
@@ -501,7 +506,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if wolf_hit.is_some() {
             break;
         }
-        frames(&mut runtime, 30)?;
+        frames(&mut runtime, &host, 30)?;
     }
     let (wolf_hp_before, wolf_hp_after) =
         wolf_hit.ok_or("24 次尝试都没能打中灰狼（站位/朝向需要调整）")?;
@@ -531,7 +536,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "  灰狼：hp {wolf_hp_before} → {wolf_hp_after}，击退 {wolf_push}，硬直 {stun_frames}，追击已打断"
     );
-    frames(&mut runtime, 40)?;
+    frames(&mut runtime, &host, 40)?;
     let resumed = query_str(
         &mut runtime,
         "require('systems.enemy').query('enemy_wolf').state",
@@ -599,14 +604,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 // ---------- helpers ----------
 
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 fn open_scene(runtime: &mut LuaRuntime, scene: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -638,12 +648,16 @@ fn lua(runtime: &mut LuaRuntime, code: &str) -> Result<(), Box<dyn std::error::E
 }
 
 /// 单次按键：按下 1 帧 + 空 1 帧。
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }
@@ -651,22 +665,27 @@ fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::erro
 /// 按住方向键若干帧（验证"硬直期间移动无效"）。
 fn move_input(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     key: KeyCode,
     n: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..n {
         let mut input = InputSnapshot::default();
         input.key_event(key, true);
-        runtime.set_input(input);
+        host.set_input(input);
         runtime.call_update()?;
     }
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }
 
-fn frames(runtime: &mut LuaRuntime, n: usize) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+fn frames(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    n: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    host.set_input(InputSnapshot::default());
     for _ in 0..n {
         runtime.call_update()?;
     }

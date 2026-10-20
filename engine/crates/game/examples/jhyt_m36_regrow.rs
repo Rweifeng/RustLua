@@ -28,7 +28,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let main_script = project.join("scripts/main.lua");
 
-    let mut runtime = LuaRuntime::new()?;
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.clone());
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
@@ -42,10 +44,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 否则 seed_for_selected 回退到第一个有库存的种子（稳定字母序 = 灵芝）。
     runtime.execute_console("inv.add(require('core.state').inventory, 'seed_mint', 1)")?;
     set_facing(&mut runtime, "up")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(&mut runtime, "require('core.state').last_action", "till")?;
     set_seed(&mut runtime, "seed_mint")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -54,9 +56,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("② 首茬：浇 3 天水成熟（growth_days=3），收获 2 个 == yield");
     let mint_before = total_crop(&mut runtime, "mint")?;
-    grow_mint(&mut runtime)?;
+    grow_mint(&mut runtime, &host)?;
     equip_tool(&mut runtime, "hoe")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -90,8 +92,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("③ 二茬：再浇 3 天水（regrow_days=3）复熟，再收获 2 个 == yield");
     let mint_before_two = total_crop(&mut runtime, "mint")?;
-    grow_mint(&mut runtime)?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    grow_mint(&mut runtime, &host)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -149,11 +151,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// 浇水、睡觉；当前茬次的成熟所需浇水天数由地块 cycles 与 crop.regrow_days 决定
 /// （首茬 = growth_days，再生茬 = regrow_days）。成熟即返回（地块停在成熟态，
 /// 由调用方收获）。
-fn grow_mint(runtime: &mut LuaRuntime) -> Result<(), Box<dyn std::error::Error>> {
+fn grow_mint(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+) -> Result<(), Box<dyn std::error::Error>> {
     equip_tool(runtime, "watering_can")?;
     for day in 1..=10 {
         runtime.execute_console("require('world.weather').set('sunny')")?;
-        press(runtime, KeyCode::KeyE)?;
+        press(runtime, &host, KeyCode::KeyE)?;
         let action = query_str(runtime, "require('core.state').last_action")?;
         if action == "harvest_mint" {
             return Err("浇水时薄荷已成熟（成熟判定早于预期），应先行收获".into());
@@ -201,12 +206,16 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
     Ok(())
 }
 
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }

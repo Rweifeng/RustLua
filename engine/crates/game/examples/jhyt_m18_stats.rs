@@ -57,7 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project_arg = project.clone();
 
     banner("M18-04a 纯数据注册 + 加载期校验：关系/礼物/档位/阵营来自 data/relationships");
-    let mut runtime = new_runtime(&project_arg, &save_path)?;
+    let (mut runtime, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut runtime, &main_script)?;
     // 直接从标题进云泽村引导新档（entry=nil 走 new_game 分支，与 M17「继续到
     // 村庄」的 boot 路径同款）。不点 BtnStart（boot 在山庄会 farm.init，
@@ -369,6 +369,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('g').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_str(
@@ -383,13 +384,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_scene_is(&mut runtime, "village")?;
     lua(&mut runtime, "return require('world.weather').set('sunny')")?;
     lua(&mut runtime, &format!("clock.set(1, {TEN_AM})"))?;
-    frames(&mut runtime, 2)?;
+    frames(&mut runtime, &host, 2)?;
     assert_num(
         &mut runtime,
         "require('player.relationship').points('npc_shen_qingluo')",
         16.0,
     )?;
-    talk(&mut runtime, "npc_shen_qingluo")?;
+    talk(&mut runtime, &host, "npc_shen_qingluo")?;
     assert_mode(&mut runtime, "Dialogue")?;
     // 选项数量随 M19-01 追加的订单/主线入口变化；这里断言「接取」选项排第一且可见。
     assert_str(
@@ -405,6 +406,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_str(
@@ -425,6 +427,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('1').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_str(&mut runtime, "require('world.dialogue').is_open()", "false")?;
@@ -813,14 +816,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 // ---------- helpers ----------
 
 /// Creates a bare engine runtime pointing at the project scripts & save file.
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 /// Runs the project script, then loads the `main` 门面 scene so BtnStart/BtnContinue
@@ -846,7 +854,11 @@ fn teleport(runtime: &mut LuaRuntime, pos: (f32, f32)) -> Result<(), Box<dyn std
 }
 
 /// 把玩家传送到 NPC 的逻辑格心，再按 E 触发 interaction → 开对话（M17-03 同款）。
-fn talk(runtime: &mut LuaRuntime, persist_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn talk(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    persist_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let got = query_str(
         runtime,
         &format!(
@@ -859,24 +871,32 @@ fn talk(runtime: &mut LuaRuntime, persist_id: &str) -> Result<(), Box<dyn std::e
     if got != "ok" {
         return Err(format!("npc {persist_id} not interactable: {got}").into());
     }
-    press(runtime, KeyCode::KeyE)?;
+    press(runtime, &host, KeyCode::KeyE)?;
     Ok(())
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }
 
 /// Runs `update()` for `n` frames with an empty input snapshot.
-fn frames(runtime: &mut LuaRuntime, n: usize) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+fn frames(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    n: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    host.set_input(InputSnapshot::default());
     for _ in 0..n {
         runtime.call_update()?;
     }

@@ -22,19 +22,34 @@ use std::path::Path;
 
 use crate::audio::AudioBus;
 
+/// 一次播放的**空间化结果**（引擎算好，见 [`crate::spatial`]）。
+///
+/// 为什么两个数都要给平台：`gain` 谁都能应用（乘进音量），`pan` 只有能真正做声像的平台用得上。
+/// 平台如果只有音量（`HTMLAudioElement` / `wx.createInnerAudioContext`），**必须**在日志里记一条
+/// "声像未应用"，而不是悄悄丢掉——两端听感不同却查不出原因，是最难定位的一类问题。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpatialEmission {
+    /// 距离衰减后的增益，`0..=1`（已由引擎算好，平台**不要**再乘一次距离衰减）。
+    pub gain: f32,
+    /// 声像，`-1.0` 全左、`+1.0` 全右。
+    pub pan: f32,
+}
+
 /// 一次播放请求。字段都是"引擎知道、平台需要"的东西，没有平台细节。
 pub struct AudioRequest<'a> {
     /// 逻辑名（`audio.play` 里的那个名字，不带扩展名）。
     pub name: &'a str,
     /// 总线：决定用哪个音量（平台侧若要按总线分组调节，看这个）。
     pub bus: AudioBus,
-    /// 已算好的有效音量（主音量 × 总线音量），范围 0..=1。
+    /// 已算好的有效音量（主音量 × 总线音量 × 空间增益），范围 0..=1。
     pub volume: f32,
     /// 音频资源目录（通常 `<project>/assets/audio`）。平台据此算出可加载的 URL：
     /// 引擎不知道 web 的 `pack/…` 前缀，也不该知道。
     pub asset_dir: Option<&'a Path>,
     /// 是否循环（BGM）。
     pub looping: bool,
+    /// 空间化结果；`None` = 普通 2D 播放（与 M74-01 之前的全部调用语义相同）。
+    pub spatial: Option<SpatialEmission>,
 }
 
 /// 平台播放出口。`play` 返回 `Err` 表示**这次播放没有发生**（平台会给出原因）。

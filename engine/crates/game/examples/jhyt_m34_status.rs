@@ -7,7 +7,7 @@
 //!
 //! 1. **文档 ↔ 数据**：解析 `docs/33-江湖有田-数值设计案.md` §10 状态效果表，把"每 2 秒损失
 //!    3 生命 / 10 秒"按本仓唯一的计时单位（60Hz 固定步）换算后与 `data/combat.lua` 逐格比对；
-//!    表里另外四行（坚定/轻功无敌/治疗/内息恢复）各自声明归属，新增一行不登记就门红。
+//!    表里另外四行（坚定/轻功无敌/体力恢复/内息恢复）各自声明归属，新增一行不登记就门红。
 //! 2. **真实一击**：山道上让毒蝎自己追上来咬一口（不是脚本直接 apply）——账本挂上、战斗日志
 //!    的 hit 条目带 `status = "poison"`、HUD 的中毒图标真的被画出来。
 //! 3. **精确到步**：第 120 步才掉第一口（本步挂上的状态从下一步才走）、600 步内正好 5 口共
@@ -152,7 +152,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let save_path = fresh_save_path(&project, "jhyt_m34_status.sav");
     let project_arg = project.clone();
 
-    let mut rt = new_runtime(&project_arg, &save_path)?;
+    let (mut rt, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut rt, &main_script)?;
     click_button(&mut rt, "BtnStart")?;
     assert_scene_is(&mut rt, "manor")?;
@@ -162,7 +162,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rows = doc_status_rows(&design)?;
     if rows.len() != 5 {
         return Err(format!(
-            "§10 状态效果表读到 {} 行，期望 5 行（中毒/坚定/轻功无敌/治疗/内息恢复）",
+            "§10 状态效果表读到 {} 行，期望 5 行（中毒/坚定/轻功无敌/体力恢复/内息恢复）",
             rows.len()
         )
         .into());
@@ -198,8 +198,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "轻功无敌" => {
                     "追风步未入库；今天的 48 步无敌帧是**被动受击**（data/combat.lua:player.iframes），不是招式位移"
                 }
-                "治疗" => {
-                    "即时恢复走物品 use（data/items.lua 的回复药），不是持续状态；注意它今天回的是体力不是生命（§10 该行的待办）"
+                "体力恢复" => {
+                    "即时恢复走物品 use（`data/items.lua` 的回复药，`use = { energy = 40 }`），\
+                     不是持续状态；「钳经脉动态上限」由 `player/inventory.lua` 的 \
+                     `meridian.max_energy()` 兜住。2026-10-20：§10 这一行由「治疗」改名为\
+                     「体力恢复」并补上了钳制口径，与 §7.4 的跨天体力恢复池是同一条上限"
                 }
                 "内息恢复" => "即时恢复走物品 use（data/items.lua 的内力丹），不是持续状态",
                 other => {
@@ -324,7 +327,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---------------- ② 真实一击 ----------------
     banner("M34-03② 山道真实被毒蝎咬中：账本挂上 + 日志带状态 + HUD 图标真的画出来");
     goto_map(&mut rt, "mountain_path", MOUNTAIN_POS)?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     let spot = query_str(&mut rt, LURE_SCORPION)?;
     if !spot.starts_with("ok") {
         return Err(format!("找不到\"只有毒蝎够得着\"的站位：{spot}").into());
@@ -343,7 +346,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hp_before = player_hp(&mut rt)?;
     let mut bit = None;
     for step in 1..=900i64 {
-        frames(&mut rt, 1)?;
+        frames(&mut rt, &host, 1)?;
         if query_str(&mut rt, "require('systems.status').has('poison', 'player')")? == "true" {
             bit = Some(step);
             break;
@@ -401,13 +404,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     goto_map(&mut rt, "manor", spawn)?;
     assert_str(&mut rt, POISON_REMAIN, "600/120/毒蝎")?;
     // 图标是每帧重绘的：换图会把上一张图的动态面板收掉，所以要看"换图后的下一帧"而不是当帧。
-    frames(&mut rt, 1)?;
+    frames(&mut rt, &host, 1)?;
     assert_str(&mut rt, POISON_ICON, "16x16:ui_status_poison.png")?;
     assert_str(&mut rt, POISON_REMAIN, "599/119/毒蝎")?;
     println!("  换图不清账本：manor 上仍读到 600/120，下一帧图标照旧画出来（毒跟人走，不跟图走）");
     let dots_at_bite = dots(&mut rt)?;
     let damage_at_bite = dot_damage(&mut rt)?;
-    frames(&mut rt, 118)?;
+    frames(&mut rt, &host, 118)?;
     assert_str(&mut rt, POISON_REMAIN, "481/1/毒蝎")?;
     assert_num(&mut rt, DOT_COUNT, dots_at_bite)?;
     assert_str(
@@ -416,7 +419,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "0",
     )?;
     println!("  119 步：remaining = 481/1、结算条数没变（一口都没跳）");
-    frames(&mut rt, 1)?;
+    frames(&mut rt, &host, 1)?;
     assert_str(&mut rt, POISON_REMAIN, "480/120/毒蝎")?;
     assert_num(&mut rt, DOT_COUNT, dots_at_bite + 1.0)?;
     assert_num(&mut rt, DOT_DAMAGE, damage_at_bite + 3.0)?;
@@ -447,7 +450,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut seen = 0.0;
     for &target in &[120i64, 240, 360, 480, 600] {
         while remaining_steps(&mut rt)? > 600.0 - target as f64 {
-            frames(&mut rt, 1)?;
+            frames(&mut rt, &host, 1)?;
         }
         seen += 1.0;
         let dots_now = dots(&mut rt)? - dots_at_bite;
@@ -486,7 +489,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "  到期那一帧之后图标被收掉（hud:status_poison 读回 nil，不再\"毒早过了图标还亮着\"）"
     );
     let dots_at_expiry = dots(&mut rt)?;
-    frames(&mut rt, 120)?;
+    frames(&mut rt, &host, 120)?;
     assert_num(&mut rt, DOT_COUNT, dots_at_expiry)?;
     assert_str(&mut rt, POISON_REMAIN, "none")?;
     println!("  再走 120 步：一口也不掉（到期就是到期，没有\"残留每秒扣血\"）");
@@ -494,12 +497,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---------------- ⑤ 不可叠加：只刷新持续时间 ----------------
     banner("M34-03⑤ 再被咬一口：持续时间刷回 600，但下一次结算的倒计时**不被重置**");
     goto_map(&mut rt, "mountain_path", MOUNTAIN_POS)?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     let spot2 = query_str(&mut rt, LURE_SCORPION)?;
     if !spot2.starts_with("ok") {
         return Err(format!("第二次找不到站位：{spot2}").into());
     }
-    wait_until_bitten(&mut rt, 900)?;
+    wait_until_bitten(&mut rt, &host, 900)?;
     assert_str(&mut rt, POISON_REMAIN, "600/120/毒蝎")?;
     let dots_before = dots(&mut rt)?;
     // 逐帧盯 steps_left：它只会往下走，唯一能回到 600 的时机就是"又挂了一次"。
@@ -508,7 +511,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for step in 1..=200i64 {
         let before = remain(&mut rt)?;
         let dots_before_step = dots(&mut rt)?;
-        frames(&mut rt, 1)?;
+        frames(&mut rt, &host, 1)?;
         let after = remain(&mut rt)?;
         if after.steps_left == 600.0 && before.steps_left < 600.0 {
             refreshed_at = Some(step);
@@ -543,9 +546,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         refreshed_at.ok_or("等满 200 步没有被咬第二口（冷却 90 步，站位需要重看）")?;
     assert_num(&mut rt, "#require('systems.status').list('player')", 1.0)?;
     // 刷新不提前掉血，也不额外多掉一口：下一次结算仍按刷新后读到的 next_in 到来。
-    frames(&mut rt, (next_at_refresh - 1.0) as usize)?;
+    frames(&mut rt, &host, (next_at_refresh - 1.0) as usize)?;
     assert_num(&mut rt, DOT_COUNT, dots_before)?;
-    frames(&mut rt, 1)?;
+    frames(&mut rt, &host, 1)?;
     assert_num(&mut rt, DOT_COUNT, dots_before + 1.0)?;
     assert_str(
         &mut rt,
@@ -628,7 +631,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('systems.status').has('poison', 'player')",
         "false",
     )?;
-    wait_until_bitten(&mut rt, 900)?;
+    wait_until_bitten(&mut rt, &host, 900)?;
     assert_str(
         &mut rt,
         "require('systems.combat').is_player_dead()",
@@ -641,7 +644,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let mut died_by_dot = false;
     for _ in 1..=140i64 {
-        frames(&mut rt, 1)?;
+        frames(&mut rt, &host, 1)?;
         if query_str(&mut rt, "require('systems.combat').is_player_dead()")? == "true" {
             died_by_dot = true;
             break;
@@ -750,7 +753,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     lua(&mut rt, "clock.set_rate(8)")?;
     let dots_before_fast = dots(&mut rt)?;
     for _ in 0..4 {
-        frames(&mut rt, 150)?;
+        frames(&mut rt, &host, 150)?;
         // 分片之间读一次账本与控制台：读不能改变推进（查询无副作用）。
         let _ = remain(&mut rt)?;
         let _ = query_str(&mut rt, "clock.now().day")?;
@@ -788,7 +791,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .into());
         }
-        frames(&mut rt, 600)?;
+        frames(&mut rt, &host, 600)?;
         let got = dots(&mut rt)? - dots_at_delta;
         if (got - want).abs() > f64::EPSILON {
             rt.set_delta(1.0 / 60.0);
@@ -1130,10 +1133,11 @@ fn player_hp(runtime: &mut LuaRuntime) -> Result<f64, Box<dyn std::error::Error>
 /// 站着不动等毒蝎追上来咬一口（返回用了多少步；咬中判据是账本，不是血量）。
 fn wait_until_bitten(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     limit: i64,
 ) -> Result<i64, Box<dyn std::error::Error>> {
     for step in 1..=limit {
-        frames(runtime, 1)?;
+        frames(runtime, &host, 1)?;
         if query_str(runtime, "require('systems.status').has('poison', 'player')")? == "true" {
             return Ok(step);
         }
@@ -1167,14 +1171,19 @@ fn scan_wall_clock(project: &Path) -> Result<(usize, usize), Box<dyn std::error:
     ))
 }
 
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 横屏：设计分辨率 1280×720（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 fn enter_main_menu(
@@ -1195,8 +1204,12 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
 }
 
 /// 推进 n 个固定步（输入全空：站着不动）。
-fn frames(runtime: &mut LuaRuntime, n: usize) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+fn frames(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    n: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    host.set_input(InputSnapshot::default());
     for _ in 0..n {
         runtime.call_update()?;
     }

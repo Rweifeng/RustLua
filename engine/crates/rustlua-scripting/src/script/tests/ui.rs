@@ -1,4 +1,6 @@
 use super::*;
+use rustlua_input::input::InputSnapshot;
+use rustlua_input::input::MouseButton;
 
 /// 覆盖点击目标的单元素切片（命中矩形本身不是这两个用例的观察点）。
 fn click_target(function: &str) -> UiClickTarget {
@@ -13,7 +15,7 @@ fn click_target(function: &str) -> UiClickTarget {
 /// 严格档（默认）：点击回调报错必须上报给宿主——验收路径的语义不变。
 #[test]
 fn ui_click_error_propagates_in_strict_policy() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let path = script(
         "function on_click(name) error('click boom') end\nfunction update() return 'ok' end",
     );
@@ -22,7 +24,7 @@ fn ui_click_error_propagates_in_strict_policy() {
     input.mouse_event(MouseButton::Left, true);
 
     let error = runtime
-        .process_ui_clicks(&input, &[click_target("on_click")])
+        .process_ui_clicks(Some(input.cursor_position()), &[click_target("on_click")])
         .expect_err("严格档必须上报点击回调的错误");
     assert!(error.to_string().contains("click boom"), "{error}");
     assert_eq!(runtime.script_error_total(), 0, "严格档不经容错记账");
@@ -36,7 +38,7 @@ fn ui_click_error_propagates_in_strict_policy() {
 /// 按钮上时也一起失效。
 #[test]
 fn ui_click_error_is_contained_and_later_targets_still_fire() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_error_policy(ScriptErrorPolicy::Contain);
     let path = script(
         "function broken(name) error('click boom') end\n\
@@ -48,7 +50,10 @@ fn ui_click_error_is_contained_and_later_targets_still_fire() {
     input.mouse_event(MouseButton::Left, true);
 
     runtime
-        .process_ui_clicks(&input, &[click_target("broken"), click_target("healthy")])
+        .process_ui_clicks(
+            Some(input.cursor_position()),
+            &[click_target("broken"), click_target("healthy")],
+        )
         .expect("容错档下点击回调错误不得上报");
 
     assert_eq!(runtime.script_error_total(), 1, "错误必须被记账");
@@ -70,7 +75,7 @@ fn ui_click_error_is_contained_and_later_targets_still_fire() {
 
 #[test]
 fn ui_text_at_accepts_optional_scale_and_font_size() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let path = script(
         "ui.text_at('small', 10, 10, 'a')\nui.text_at('big', 10, 30, 'b', 3)\nui.text_at('huge', 10, 50, 'c', nil, 24)\nfunction update() return 'ok' end",
     );
@@ -106,7 +111,7 @@ fn ui_text_at_accepts_optional_scale_and_font_size() {
 /// 缺失（nil）与 true 均视为显示。语义与 web 兼容层 `__rustlua_scene_text_hidden` 对齐。
 #[test]
 fn ui_scene_text_visible_toggles_hidden_set() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let path =
         script("ui.scene_text_visible('BtnStartLabel', false)\nfunction update() return 'ok' end");
     runtime.execute_project_script(&path).unwrap();
@@ -116,7 +121,7 @@ fn ui_scene_text_visible_toggles_hidden_set() {
         "false registers the name as hidden"
     );
     let _ = fs::remove_file(path);
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let path = script(
         "ui.scene_text_visible('BtnStartLabel', true)\nui.scene_text_visible('BtnExitLabel', nil)\nfunction update() return 'ok' end",
     );
@@ -136,7 +141,7 @@ fn ui_scene_text_visible_toggles_hidden_set() {
 
 #[test]
 fn ui_panels_images_grids_and_drag_lua_api() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_ui_viewport(1280, 720);
     let path = script(
         "ui.panel('bg', 0, 0, 200, 200, 0.1, 0.1, 0.2, 1)\n\
@@ -191,7 +196,7 @@ fn measure_text_and_text_get_lua_api() {
     )
     .unwrap();
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     let path = script(
         "
@@ -228,7 +233,6 @@ fn measure_text_and_text_get_lua_api() {
 
 #[test]
 fn click_event_dispatches_lua_on_click() {
-    use rustlua_input::input::MouseButton;
     use rustlua_scene::scene::Scene;
     use rustlua_scene::scene::SceneEntityId;
 
@@ -247,7 +251,7 @@ fn click_event_dispatches_lua_on_click() {
         );
     menu.save(scenes.join("menu.scene")).unwrap();
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     let load = script("scene.load('menu')\nfunction update() return 'ok' end");
     runtime.execute_project_script(&load).unwrap();
@@ -264,7 +268,7 @@ fn click_event_dispatches_lua_on_click() {
     // 命中矩形由运行时 compute_click_targets 预计算；此处直接传入覆盖点击点的目标。
     runtime
         .process_ui_clicks(
-            &input,
+            Some(input.cursor_position()),
             &[UiClickTarget {
                 name: "Start".to_owned(),
                 origin: [0.0, 0.0],
@@ -288,7 +292,7 @@ fn click_event_dispatches_lua_on_click() {
 /// M20-02：`ui.focus_*` 焦点环——方向移动、环绕、网格列、越界与未知方向。
 #[test]
 fn ui_focus_lua_api_navigates_lists_and_grids() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime
         .execute_console(
             // 单列 3 项：下/上移动 + 边界环绕。
@@ -331,7 +335,7 @@ fn ui_focus_lua_api_navigates_lists_and_grids() {
 /// M20-02：`ui.scroll_*` 滚动状态——钳制、按行、滚入视口与可见区间。
 #[test]
 fn ui_scroll_lua_api_clamps_and_reveals_items() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime
         .execute_console(
             "ui.scroll_open('s', 100, 250)\n\

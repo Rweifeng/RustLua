@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project_arg = project.clone();
 
     banner("M17-04a 纯数据注册 + 加载期校验：商店来自 data/shops.lua");
-    let mut runtime = new_runtime(&project_arg, &save_path)?;
+    let (mut runtime, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut runtime, &main_script)?;
     click_button(&mut runtime, "BtnStart")?;
     assert_scene_is(&mut runtime, "manor")?;
@@ -199,14 +199,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M17-04d 商店 UI：E 交互开面板 + 键盘选择/数量/确认/切页/关闭");
     teleport(&mut runtime, MAIN_EXIT)?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     runtime.process_scene_transition()?;
     assert_scene_is(&mut runtime, "village")?;
     assert_map_current(&mut runtime, "village")?;
     lua(&mut runtime, &format!("clock.set(1, {TEN_AM})"))?;
-    frames(&mut runtime, 2)?;
+    frames(&mut runtime, &host, 2)?;
     goto_npc(&mut runtime, "npc_zhao_tiesuanpan")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_mode(&mut runtime, "Shop")?;
     assert_str(&mut runtime, "require('systems.shop').ui_active()", "true")?;
     assert_str(&mut runtime, "require('systems.shop').tab()", "buy")?;
@@ -216,17 +216,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 选第 2 行（seed_lingzhi），数量 +1。
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('2').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_num(&mut runtime, "require('systems.shop').selected()", 2.0)?;
     assert_num(&mut runtime, "require('systems.shop').quantity()", 1.0)?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('+').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_num(&mut runtime, "require('systems.shop').quantity()", 2.0)?;
     let money_before = query_num(&mut runtime, "return require('core.state').money")?;
-    press(&mut runtime, KeyCode::Space)?;
+    press(&mut runtime, &host, KeyCode::Space)?;
     assert_num(
         &mut runtime,
         "require('core.state').money",
@@ -244,7 +246,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_str(&mut runtime, "ui.get('shp:msg').text", "购买成功")?;
     // F 切到出售页：只列出本店收购且背包持有的物品（rice 2 件）。
-    press(&mut runtime, KeyCode::KeyF)?;
+    press(&mut runtime, &host, KeyCode::KeyF)?;
     assert_str(&mut runtime, "require('systems.shop').tab()", "sell")?;
     assert_num(&mut runtime, "#(require('systems.shop').rows())", 1.0)?;
     assert_str(
@@ -253,7 +255,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "rice",
     )?;
     // Esc 关闭面板，模式复位。
-    press(&mut runtime, KeyCode::Escape)?;
+    press(&mut runtime, &host, KeyCode::Escape)?;
     assert_str(&mut runtime, "require('systems.shop').ui_active()", "false")?;
     assert_mode(&mut runtime, "Playing")?;
 
@@ -264,9 +266,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 商店面板**；「未营业拒绝交易」由上面的 is_open/buy API 断言覆盖。
     lua(&mut runtime, "clock.set(1, 300)")?;
     goto_npc(&mut runtime, "npc_zhao_tiesuanpan")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     if query_str(&mut runtime, "require('core.state').mode")? == "Dialogue" {
-        press(&mut runtime, KeyCode::Escape)?;
+        press(&mut runtime, &host, KeyCode::Escape)?;
     }
     assert_str(
         &mut runtime,
@@ -275,7 +277,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_mode(&mut runtime, "Playing")?;
     lua(&mut runtime, "clock.set(1, 600)")?;
-    frames(&mut runtime, 1)?;
+    frames(&mut runtime, &host, 1)?;
 
     // 余额不足：拒绝且不改金币/背包。
     lua(&mut runtime, "require('core.state').money = 10")?;
@@ -500,7 +502,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 日结算重置体力（main.on_day_start）。
     assert_num(&mut runtime, "require('core.state').energy", 100.0)?;
     lua(&mut runtime, "clock.set(2, 600)")?;
-    frames(&mut runtime, 1)?;
+    frames(&mut runtime, &host, 1)?;
 
     banner("M17-04i 存档恢复：任务奖励 + 商店交易（含限购计数）");
     lua(&mut runtime, "require('core.state').money = 1000")?;
@@ -538,7 +540,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     lua(&mut runtime, "require('core.state').energy = 30")?;
     save_game(&mut runtime)?;
 
-    let mut second = new_runtime(&project_arg, &save_path)?;
+    let (mut second, _host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut second, &main_script)?;
     click_button(&mut second, "BtnContinue")?;
     assert_scene_is(&mut second, "village")?;
@@ -610,14 +612,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 // ---------- helpers ----------
 
 /// Creates a bare engine runtime pointing at the project scripts & save file.
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 /// Runs the project script, then loads the `main` 门面 scene so BtnStart/BtnContinue
@@ -667,19 +674,27 @@ fn goto_npc(runtime: &mut LuaRuntime, persist_id: &str) -> Result<(), Box<dyn st
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }
 
 /// Runs `update()` for `n` frames with an empty input snapshot.
-fn frames(runtime: &mut LuaRuntime, n: usize) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+fn frames(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    n: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    host.set_input(InputSnapshot::default());
     for _ in 0..n {
         runtime.call_update()?;
     }

@@ -19,10 +19,12 @@
 //!   ⑤ 地图边 = 暴露边界：越界当"没有邻居"，四角读 0b0110 / 0b1100 / 0b0011 / 0b1001；
 //!   ⑥ 挖一格空洞：本格条目变 0，右邻与上邻各恰好少掉指向它的那一位；填回去逐格复原；
 //!   ⑦ 一路到渲染：真把这张图画出来，每格 UV 必须等于「手写掩码 → 条目 → 12×8 子矩形」的算术结果；
-//!   ⑧ 跨宿主：把 `plugins/webgl/web-runtime.js` 里那份 Lua 解算镜像喂进引擎的真 Lua VM，让它拿
-//!      同一张图（布局读 `tilemap.get`、格子值读 `tilemap.get_cell`）重解 64 格的**掩码与条目**，
-//!      必须与逐格同值。**反面对照**：整张图换成全草后，垫片的 36 个内部格必须读到 0b1111 与满块瓦
-//!      条目 —— 说明它真的在读邻居，而不是恰好复现了同一串数字。
+//!   ⑧ **已退役（M73）**：原判据是跨宿主同值——把 `plugins/webgl/web-runtime.js` 内嵌的 Lua
+//!      解算镜像喂进真 VM，对同一张图重解 64 格的掩码与条目，并用"全草图 36 个内部格必须是
+//!      0b1111 + 满块瓦"当反面对照。M73 删掉旧 JS 世界后仓库里只剩引擎这一份实现
+//!      （`plugins/` 下再无瓦片解算代码），对账没有第二个边可比，读文件只会得到 `os error 2`。
+//!      整段删除而不是放宽成"文件不存在就跳过"——跳过等于让这道门在没有任何对账时报绿。
+//!      重新立它的前提是**先有第二份实现**（新宿主若再带自己的解算器，把那段文本原样喂回来）。
 //!
 //! Usage:
 //!   cargo run -p game --example jhyt_m72_autotile_mask [-- <game_jhyt-root>]
@@ -472,162 +474,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cells.iter().filter(|kind| **kind == DIRT).count()
     );
 
-    banner("⑧ web 的 Lua 垫片与引擎同解这张 autotile 图（把抄本喂进真 VM）");
-    lua_run(&mut runtime, &web_lua_mirror(project.as_path())?)?;
-    let mirrored_masks: Vec<u8> = mirror_series(&mut runtime, probe, "__rustlua_autotile_mask")?
-        .into_iter()
-        .map(|value| value as u8)
-        .collect();
-    let mirrored_entries = mirror_series(&mut runtime, probe, "__rustlua_atlas_index")?;
-    if mirrored_masks != masks || mirrored_entries != entries {
-        let position = (0..CELLS)
-            .find(|index| {
-                mirrored_masks[*index] != masks[*index]
-                    || mirrored_entries[*index] != entries[*index]
-            })
-            .unwrap_or(0);
-        let (x, y) = (position % WIDTH, position / WIDTH);
-        return Err(format!(
-            "({x},{y}) 引擎给掩码 {:04b}/条目 {}，web 的 Lua 垫片给 {:04b}/条目 {}——交界取哪一格\
-             在两个宿主上是两个答案，web 上的地形边会整体错一个方向",
-            masks[position],
-            entries[position],
-            mirrored_masks[position],
-            mirrored_entries[position]
-        )
-        .into());
-    }
-    // 反面对照：整张图换成全草后，垫片自己那份实现必须把 36 个内部格读成 0b1111 + 满块瓦条目。
-    // 若它其实没在读邻居（恒 0、或恒抄引擎的返回值），这一条会立刻破。
-    let interior_all_grass = mirror_all_one_kind(&mut runtime)?;
-    if interior_all_grass != 0 {
-        return Err(format!(
-            "全草图上垫片给 {interior_all_grass} 个内部格算错了掩码或条目（应为 0b1111 与 {}）：\
-             它没真的在消费邻居数据，上面的同值不作数",
-            want_full_slot(GRASS)
-        )
-        .into());
-    }
-    println!(
-        "  {} 格的掩码与条目逐格同值（布局取 `tilemap.get`、格子值取 `tilemap.get_cell`、解算走垫片）；\
-         对照：全草图的 {} 个内部格在垫片里同样是 0b1111 + 条目 {}",
-        CELLS,
-        (WIDTH - 2) * (HEIGHT - 2),
-        want_full_slot(GRASS)
-    );
+    banner("⑧ web 的 Lua 垫片同解：随 M73 删除旧 JS 世界而退役");
+    // 原 §⑧ 把 `plugins/webgl/web-runtime.js` 内嵌的 Lua 解算镜像喂进真 VM，让它对同一张图重解
+    // 64 格的掩码与条目，再拿"全草图 36 个内部格必须是 0b1111 + 满块瓦"当反面对照。M73 删掉旧
+    // JS 世界后仓库里只剩引擎这一份实现（`plugins/` 下再无瓦片解算代码），这条对账没有第二个边
+    // 可比；继续读那个文件只会得到 `os error 2`。整段删除而不是改成"文件不存在就跳过"——
+    // 跳过会让这道门在没有任何对账的情况下报绿。要重新立它，前提是先有第二份实现。
 
     println!(
-        "\njhyt_m72_autotile_mask_ok project={} cells={CELLS} dirt_border=12 dirt_interior=4 mask_kinds={}",
+        "\njhyt_m72_autotile_mask_ok project={} cells={CELLS} dirt_border=12 dirt_interior=4 mask_kinds={} \
+         web_mirror=retired(M73)",
         project.display(),
         distinct.len()
     );
     Ok(())
-}
-
-/// §⑧ 从 web 宿主切那份 Lua 解算镜像用的起止暗号（与 `jhyt_m72_tile_variant_determinism` 同一对）。
-const MIRROR_START: &str = "__rustlua_cell_index = function(m, x, y)";
-const MIRROR_END: &str = "\ntilemap = {";
-
-/// 原样切出宿主实际发给 Lua 的那段文本（不是手抄副本：这条门要判的正是两份是否同一串位）。
-fn web_lua_mirror(project: &std::path::Path) -> Result<String, Box<dyn std::error::Error>> {
-    let root = project
-        .parent()
-        .and_then(|examples| examples.parent())
-        .ok_or("game_jhyt 不在 examples/ 下，找不到仓库根")?;
-    let path = root.join("plugins").join("webgl").join("web-runtime.js");
-    let source = std::fs::read_to_string(&path)
-        .map_err(|error| format!("读不到 {}：{error}", path.display()))?;
-    let start = source.find(MIRROR_START).ok_or_else(|| {
-        format!(
-            "{} 里已找不到 {MIRROR_START:?}——web 宿主的解算镜像被挪走或改名，本门 §⑧ 无从对照",
-            path.display()
-        )
-    })?;
-    let rest = &source[start..];
-    let end = rest.find(MIRROR_END).ok_or_else(|| {
-        format!(
-            "{} 里 {MIRROR_START:?} 之后找不到 {MIRROR_END:?}——段落边界变了，切出来的会是半个函数",
-            path.display()
-        )
-    })?;
-    Ok(rest[..end].to_owned())
-}
-
-/// 让垫片把整张图重解一遍（`func` = 垫片里的函数名）。地图数据全部从引擎读，门不另存一份。
-fn mirror_series(
-    runtime: &mut RuntimeScene,
-    id: i64,
-    func: &str,
-) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
-    let text = lua_str(
-        runtime,
-        &format!(
-            r#"(function()
-                 {load_map}
-                 local out = {{}}
-                 for y = 0, {HEIGHT} - 1 do
-                   for x = 0, {WIDTH} - 1 do
-                     out[#out + 1] = {func}(m, x, y)
-                   end
-                 end
-                 return table.concat(out, ',')
-               end)()"#,
-            load_map = lua_load_map(id)
-        ),
-    )?;
-    let values: Vec<u32> = text
-        .split(',')
-        .filter_map(|part| part.trim().parse::<u32>().ok())
-        .collect();
-    if values.len() != CELLS {
-        return Err(format!(
-            "垫片的 {func} 序列读回 {text:?}，长度 {}，应为 {CELLS}（§⑧ 切出来的那段仍是完整一段？）",
-            values.len()
-        )
-        .into());
-    }
-    Ok(values)
-}
-
-/// 把引擎那份地图的布局与格子值装进垫片要的表形状（`cells` 是 1 基行主序）。
-fn lua_load_map(id: i64) -> String {
-    format!(
-        r#"local m = tilemap.get({id})
-           m.cells = {{}}
-           for y = 0, m.height - 1 do
-             for x = 0, m.width - 1 do
-               m.cells[#m.cells + 1] = tilemap.get_cell({id}, x, y)
-             end
-           end"#
-    )
-}
-
-/// 全草对照：返回垫片算错的内部格数（0 = 全对）。
-fn mirror_all_one_kind(runtime: &mut RuntimeScene) -> Result<usize, Box<dyn std::error::Error>> {
-    let text = lua_str(
-        runtime,
-        &format!(
-            r#"(function()
-                 local m = {{ width = {WIDTH}, height = {HEIGHT}, atlas_cols = {ATLAS_COLS},
-                   atlas_rows = {ATLAS_ROWS}, tile_kinds = {KINDS}, variant_count = {SPAN},
-                   autotile = true, variant_seed = {SEED}, cells = {{}} }}
-                 for i = 1, {WIDTH} * {HEIGHT} do m.cells[i] = {GRASS} end
-                 local bad = 0
-                 for y = 1, {HEIGHT} - 2 do
-                   for x = 1, {WIDTH} - 2 do
-                     if __rustlua_autotile_mask(m, x, y) ~= 15 or __rustlua_atlas_index(m, x, y) ~= {} then
-                       bad = bad + 1
-                     end
-                   end
-                 end
-                 return tostring(bad)
-               end)()"#,
-            want_full_slot(GRASS)
-        ),
-    )?;
-    text.trim()
-        .parse::<usize>()
-        .map_err(|_| format!("全草对照读回 {text:?}，应为个数").into())
 }
 
 /// 用"抹掉/互换某些位"的参考实现重算掩码，返回（变化格数、土块顶行变化格数、底行变化格数）。

@@ -1,0 +1,41 @@
+[package]
+name = "rustlua-assets-import"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "RustLua 资源导入层：源文件校验 / 图集装箱 / 缓存产物（只在构建工具与编辑器里编译）"
+
+# ── 为什么单独一个 crate（docs/62 P1 第 3 条）─────────────────────────────────
+#
+# `rustlua-assets` 原来把两件事装在一起：
+#   1. **运行时**：`ResourceDatabase` / `AssetHandle` / `DependencyGraph` / `rltex` —— 引擎每帧
+#      都在用，wasm 也要；
+#   2. **导入层**：`importer` / `atlas_plan` / `atlas_pack` / `import_cache` —— 只在
+#      `assetc`（构建工具）和 `editor`（编辑器）里跑，浏览器里**一次都不会**执行。
+#
+# 后果是运行时的编译图被迫背上 `image`（PNG/JPEG 编解码）、`rodio`（整套解码器 + 设备枚举）、
+# `ab_glyph`、`serde_json`、`anyhow`：实测 `cargo tree -p game_web --target wasm32` 里
+# `rodio` 的唯一入口就是这里。拆开之后浏览器包里这些依赖归零（`mlua` 也一起走了：
+# Lua 语法校验只属于导入期）。
+#
+# **依赖方向**：`assets-import → {assets, scene, infra, math}`。
+# 反向绝不允许（`scene` / `assets` 不能依赖本 crate）——那是把运行时又绑回导入层，
+# 架构门 `architecture_edges.rs` 会当场判红。
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# mlua：Lua 源文件的语法校验（只编译不执行）。它只属于导入期，所以跟着搬过来了。
+mlua = { version = "0.11", features = ["lua54", "vendored"] }
+ab_glyph = "0.2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rodio = { version = "0.19", features = ["wav", "vorbis", "mp3", "flac"] }
+
+rustlua-assets = { path = "../rustlua-assets" }
+rustlua-infra = { path = "../rustlua-infra" }
+rustlua-scene = { path = "../rustlua-scene" }
+rustlua-ui = { path = "../rustlua-ui" }

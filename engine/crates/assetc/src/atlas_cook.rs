@@ -1,7 +1,7 @@
 //! 图集 cook（`docs/67` §6）：把"共绘集"在构建期打成 `.rltex`/`.png` 页 + `.atlas`，
 //! 并产出 `atlas_redirect.json` 让运行时把原路径重定向到 `图集#区域`。
 //!
-//! 配置解析、目录聚合、排除规则与装箱都在 `rustlua_assets::atlas_plan`
+//! 配置解析、目录聚合、排除规则与装箱都在 `rustlua_assets_import::atlas_plan`
 //! （编辑器面板用同一份；两边各写一份必然漂移，`docs/67` §8 第 4 项的教训）。
 //! 本模块只负责**改产物**：写页、写定义、登记重定向、删源图、自检。
 //!
@@ -17,10 +17,10 @@ use std::{
 };
 
 use anyhow::{anyhow, bail};
-use rustlua_assets::atlas_plan;
+use rustlua_assets_import::atlas_plan;
 
 /// 配置类型与产物目录对上层（CLI/编辑器）保持一致。
-pub use rustlua_assets::atlas_plan::{ATLAS_DIR, AtlasConfig, AtlasSpec, AutoAtlas};
+pub use rustlua_assets_import::atlas_plan::{ATLAS_DIR, AtlasConfig, AtlasSpec, AutoAtlas};
 /// 重定向表的类型与解析在 infra（构建期写、运行期读，必须同一份定义）。
 pub use rustlua_infra::atlas_redirect::{AtlasRedirect, REDIRECT_FILE, RedirectEntry};
 
@@ -53,7 +53,7 @@ pub fn cook(_project: &Path, out: &Path, config: &AtlasConfig) -> anyhow::Result
         fs::write(&texture_path, bytes)?;
         // `.atlas` 里的 `texture=` 必须是**工程相对路径**：写绝对路径会让产物换机器就失效，
         // 而且容器条目名是相对的——两者对不上，运行时永远找不到页。
-        rustlua_assets::atlas_pack::write_atlas_definition(
+        rustlua_assets_import::atlas_pack::write_atlas_definition(
             &planned.page,
             Path::new(&texture_rel),
             &atlas_path,
@@ -101,9 +101,9 @@ pub fn cook(_project: &Path, out: &Path, config: &AtlasConfig) -> anyhow::Result
 /// 按原始字节比会选 PNG，把 art:ui 从 151 KB 抬到 184 KB（2026-10-18 实测）。
 /// 所以两边都过一遍与写包同源的 zstd 估算，再取小的那一个。
 fn encode_page(
-    planned: &rustlua_assets::atlas_plan::PlannedPage,
+    planned: &rustlua_assets_import::atlas_plan::PlannedPage,
 ) -> anyhow::Result<(&'static str, Vec<u8>)> {
-    use rustlua_assets::atlas_plan::{AtlasFormat, encode_page_png, encode_page_rltex};
+    use rustlua_assets_import::atlas_plan::{AtlasFormat, encode_page_png, encode_page_rltex};
     match planned.format {
         AtlasFormat::Rltex => Ok(("rltex", encode_page_rltex(planned)?)),
         AtlasFormat::Png => Ok(("png", encode_page_png(planned)?)),

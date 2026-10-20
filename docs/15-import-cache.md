@@ -4,7 +4,18 @@
 
 ## Importer 抽象（M12-01）
 
-每种 `ResourceKind` 对应一个内置 `Importer`（`rustlua_assets::importer::ImporterRegistry::builtin()`），职责分三段：
+每种 `ResourceKind` 对应一个内置 `Importer`。**2026-10-20 起契约与实现分居两个 crate**
+（`docs/62` P1 第 3 条）：
+
+- 契约在运行时侧的 `rustlua_assets::importer`（`Importer` trait、`ImporterRegistry`、
+  `ImportArtifact`、JSON/RON 校验器）—— 引擎与浏览器产物只可能用到这一层；
+- 六个内置**实现**在导入层的 `rustlua_assets_import::importers`
+  （`builtin()` / `core_importers()`），它们带来的 `image`/`rodio`/`ab_glyph`/`mlua`
+  只在 `assetc`/`editor` 里编译。要连 `.scene`/`.prefab` 一起导，用
+  `rustlua_assets_import::full_registry()`（scene 只提供 `scene_importers()` 零件，
+  装配点在导入层——scene 一旦反过来依赖导入层，运行时就会被拖回整套编解码器）。
+
+职责仍是三段：
 
 ```rust
 pub trait Importer: Send + Sync {
@@ -34,7 +45,8 @@ pub trait Importer: Send + Sync {
 
 ## 批量导入（`run_import_batch`）
 
-`rustlua_assets::importer::run_import_batch(project, db, cache, registry, items, cancel) -> ImportSummary`：
+`rustlua_assets_import::run_import_batch(project, db, cache, registry, items, cancel) -> ImportSummary`
+（2026-10-20 起住在导入层：它要写 `.cache/cache/`，运行时从不写缓存）：
 
 - 逐项 `get(ResourceKind::from_path)` → `skipped`（Other）或 `import_file`；
 - 成功 → `mark_ready(id, cache_path, content_hash)`；失败 → `mark_failed(id, error)`；

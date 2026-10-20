@@ -57,7 +57,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scripts = project.join("scripts");
     let main_script = scripts.join("main.lua");
 
-    let mut runtime = LuaRuntime::new()?;
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.clone());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
@@ -216,13 +218,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     lua(&mut runtime, "scene.load('manor')")?;
     runtime.process_scene_transition()?;
     lua(&mut runtime, "require('core.state').facing = 'up'")?;
-    press(&mut runtime, 'e')?;
+    press(&mut runtime, &host, 'e')?;
     assert_feedback_chinese(&mut runtime, "翻土")?;
     lua(
         &mut runtime,
         "require('core.state').selected_seed = 'seed_lingzhi'",
     )?;
-    press(&mut runtime, 'e')?;
+    press(&mut runtime, &host, 'e')?;
     assert_feedback_chinese(&mut runtime, "播种")?;
     // 钉住晴天（M29 起天气按 `(seed, day, 季节)` 抽签）：雨天浇水的反馈文案是
     // 「雨水浇灌」（`rain_watered`），本节要验的是「浇水」这条映射。
@@ -231,7 +233,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut runtime,
         "inv.equip(require('core.state').inventory, 'tool', 'watering_can')",
     )?;
-    press(&mut runtime, 'e')?;
+    press(&mut runtime, &host, 'e')?;
     assert_feedback_chinese(&mut runtime, "浇水")?;
     // 体力耗尽 → tired 的中文反馈（换个没浇过水的田块，走真实劳作路径：
     // 已浇过水的地块会先返回 already_watered，测不到体力检查）。
@@ -270,7 +272,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "inv.equip(require('core.state').inventory, 'tool', 'hoe')",
     )?;
     lua(&mut runtime, "require('core.state').energy = 0")?;
-    press(&mut runtime, 'e')?;
+    press(&mut runtime, &host, 'e')?;
     assert_str(&mut runtime, "require('core.state').last_action", "tired")?;
     assert_str(
         &mut runtime,
@@ -456,16 +458,20 @@ fn lua(runtime: &mut LuaRuntime, code: &str) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-fn press(runtime: &mut LuaRuntime, key: char) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: char,
+) -> Result<(), Box<dyn std::error::Error>> {
     use rustlua_input::input::{InputSnapshot, KeyCode};
     let mut input = InputSnapshot::default();
     input.key_event(
         KeyCode::from_char(key).ok_or_else(|| format!("字符 {key:?} 没有对应物理键"))?,
         true,
     );
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }

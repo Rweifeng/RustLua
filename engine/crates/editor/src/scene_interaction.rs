@@ -1,7 +1,7 @@
 //! E11：Scene View 交互事件与工具状态机的可测试核心。
 //!
 //! 交互**词汇表**（[`InteractionEvent`]）与工具状态机（[`ToolStateMachine`]）在这里，
-//! 命中测试与文档写入留在 `scene_view.rs` / shell。这样"事件 → 状态"的流转可以脱离
+//! 命中测试与文档写入留在 `panels/scene_view/` / shell。这样"事件 → 状态"的流转可以脱离
 //! egui/GPU 独立单测。
 //!
 //! **已接入生产路径**（docs/55 `ER-07` 首批接线）：`EditorApp` 用

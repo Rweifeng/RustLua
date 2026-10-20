@@ -10,7 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));
     fs::write(&path, "function update() error('debug-boom') end")?;
-    let mut runtime = LuaRuntime::new()?;
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry())?;
     runtime.execute_project_script(&path)?;
     assert!(runtime.call_update_debug().is_err());
     assert!(runtime.call_update_debug().is_err());

@@ -9,6 +9,7 @@
 use rustlua_animation::animation::{AnimationFrameEvent, AnimationStateMachine};
 use rustlua_animation::animation3d::Animation3D;
 use rustlua_assets::asset_handle::AssetRecord;
+use rustlua_audio::spatial::Listener;
 use rustlua_ecs::entity::EntityId;
 use rustlua_ecs::scheduler::{ScheduleStage, Scheduler, SchedulerError, System, SystemError};
 use rustlua_ecs::transform::integrate_velocity;
@@ -34,7 +35,7 @@ impl RuntimeScene {
             [] as [&str; 0],
             |scene: &mut RuntimeScene, _| {
                 if let Some(input) = scene.pending_step_input.clone() {
-                    scene.script.set_input(input);
+                    scene.input.set_input(input);
                 }
                 Ok(())
             },
@@ -64,9 +65,14 @@ impl RuntimeScene {
                     return Err(SystemError::new("pending step input is missing"));
                 };
                 let targets = scene.compute_click_targets();
+                // 左键点击边沿与光标位置在这里算好再交给脚本层：输入快照归
+                // `rustlua-input`（`docs/62` P1 阶段 3），脚本层只收"点在哪"。
+                let click = input
+                    .mouse_just_pressed(rustlua_input::input::MouseButton::Left)
+                    .then(|| input.cursor_position());
                 scene
                     .script
-                    .process_ui_clicks(&input, &targets)
+                    .process_ui_clicks(click, &targets)
                     .map_err(|error| SystemError::new(error.to_string()))
             },
         ));
@@ -360,7 +366,7 @@ impl RuntimeScene {
         let mut step_input = input.clone();
         if steps > 0 {
             self.gamepad
-                .set_axis_threshold(self.script.nav_settings().threshold);
+                .set_axis_threshold(self.input.nav_settings().threshold);
             self.gamepad.poll_into(&mut step_input);
         }
         // 调度器实例跨帧保留：借出 → 运行 → 放回。系统本体一直归调度器所有，
@@ -380,7 +386,7 @@ impl RuntimeScene {
         // M22/W2：把本帧的震动请求交给设备层（Lua `input.rumble` 只登记请求；到期归零由
         // `GamepadPoller` 的状态机负责）。失败路径不取走请求也没问题——下一帧会覆盖。
         if outcome.is_ok()
-            && let Some((low, high, ms)) = self.script.take_rumble_request()
+            && let Some((low, high, ms)) = self.input.take_rumble_request()
         {
             self.gamepad.rumble(low, high, ms);
         }
@@ -388,6 +394,11 @@ impl RuntimeScene {
         // WP2：本帧脚本/物理都改完局部变换后，统一传播一次世界变换——渲染与 Lua 的世界位置
         // 因此都来自同一次传播（3D 提取是 `&self`，不能自己触发传播，所以必须在这里做）。
         self.propagate_spatial_now();
+        // M74-01：空间音频的听者取**这台相机**。优先复用本帧已定帧视图里的那一份
+        // （渲染路径在 `vertices`/`scene_3d` 里已经解析过相机，音频再解析一遍就是同一帧算两遍，
+        // 而 `ledger::camera3d_resolutions` 专门钉这件事）；只有还没定帧（headless、首帧）才解析一次。
+        // 必须在 `invalidate_frame_view_3d()` **之前**取：那之后缓存就作废了。
+        let listener_camera = self.frame_camera3d();
         // 拆分批 8：这一步可能改过世界（脚本换选中相机、移动父链、换场景），因此在这之前定下的
         // "本帧 3D 视图"不再可信——作废，让下一次消费重新定帧。放在这里（而不是开头）是为了让
         // "先定帧后步进"的宿主顺序也不会拿到步进前的相机。
@@ -395,20 +406,43 @@ impl RuntimeScene {
         // BGM 曲尾续播：rodio 0.19 的 repeat_infinite 源会被 sink 判定为已播完（实测起播
         // ~3s 即 empty → 全程无声），因此循环改为"单次 append + 这里每帧补挂"。
         // 失败帧不补（脚本可能整体异常，交给下一帧）。
+        //
+        // M74-01：同一处把**听者位姿**灌给音频系统（空间音频的唯一来源在 `spatial` 模块）。
+        // 漏了这一步的症状是"声音的空间感一直停在原点"，而 `play_at` 在宿主没接线时会直接
+        // 拒绝（`SpatialError::NoListener`），不至于静默按原点衰减。
         if outcome.is_ok() {
-            self.script.maintain_music();
+            let camera = listener_camera.unwrap_or_else(|| self.active_camera3d());
+            let listener = Listener::facing(
+                [camera.position.x, camera.position.y, camera.position.z],
+                [camera.target.x, camera.target.y, camera.target.z],
+            );
+            self.audio.with_mut(|audio| {
+                audio.set_listener(listener);
+                audio.maintain_music();
+            });
         }
         outcome
     }
 
     /// 暂停 BGM（编辑器暂停时调用；不释放 sink）。
     pub fn pause_music(&self) {
-        self.script.pause_music();
+        self.audio.with(|audio| audio.pause_music());
+    }
+
+    /// 空间音频的听者位姿（M74-01）。
+    ///
+    /// 宿主每帧在 [`Self::run_script_steps`] 的收尾灌入，来源是**本帧渲染所用的相机**
+    /// （有定帧视图就复用，没有再解析一次——见 `frame_data.rs::frame_camera3d`）。
+    /// `None` = 还没跑过一帧（构造期），此时 Lua 的 `audio.play_at` 会拒绝而不是按原点衰减——
+    /// 编辑器/调试面板据此能直接看出"接线断了"。
+    #[must_use]
+    pub fn audio_listener(&self) -> Option<Listener> {
+        self.audio.with(|audio| audio.listener())
     }
 
     /// 恢复 BGM。
     pub fn resume_music(&self) {
-        self.script.resume_music();
+        self.audio.with(|audio| audio.resume_music());
     }
 
     /// Executes the per-step pipeline `steps` times and the frame pipeline

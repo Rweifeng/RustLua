@@ -371,12 +371,15 @@ mod tests {
         let Some((mut app, root)) = playing_app("hierarchy-prefab") else {
             return;
         };
-        let source =
-            rustlua_infra::games_dir().join("examples/game_jhyt/assets/prefabs/title_menu.prefab");
-        let target = root.join("assets/prefabs/title_menu.prefab");
+        let source = rustlua_infra::games_dir()
+            .join("examples/game_jhyt/assets/prefabs/ui/title_menu.prefab");
+        let target = root.join("assets/prefabs/ui/title_menu.prefab");
         std::fs::create_dir_all(target.parent().expect("prefab dir")).unwrap();
         std::fs::copy(&source, &target).expect("复制门面预设");
-        console(&mut app, "prefab.spawn('assets/prefabs/title_menu.prefab')");
+        console(
+            &mut app,
+            "prefab.spawn('assets/prefabs/ui/title_menu.prefab')",
+        );
         app.sync_runtime_document_from_preview();
 
         let (rows, ui_rows) = {

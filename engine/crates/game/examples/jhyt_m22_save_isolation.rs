@@ -24,9 +24,26 @@ use std::{
 /// 新档初始灵芝菌种数（`scripts/player/inventory.lua` 的 `inventory.setup()`）。
 const START_SEED_LINGZHI: f64 = 8.0;
 /// 山庄药田第一格（与 jhyt_m17 相同：出生朝上，面前 (19,4) 是 DIRT；#28 起出生点是 (19,3)）。
+///
+/// **键与坐标是同一格**：`systems/farm.lua` 的 `plot_key(cx, cy)` 就是 `"cx,cy"`，而
+/// `draw_cell(cx, cy)` 直接把土面/作物写到 `(cx, cy)` 这一格——所以这里只留这一份真源，
+/// 坐标由 [`plot_coords`] 解析出来。旧版另有一个 `PLOT_X/PLOT_Y = 16,4`，与这个键差了 3 列：
+/// 断言读的是隔壁那块空地，红因看起来像"农田没画"，实际账本与图层都在 (19,4)（2026-10-20 查实）。
 const PLOT_CELL: &str = "19,4";
-const PLOT_X: i64 = 16;
-const PLOT_Y: i64 = 4;
+
+/// `PLOT_CELL` → `(x, y)`：只此一份真源，键与坐标不可能再漂移。
+fn plot_coords() -> (i64, i64) {
+    let mut parts = PLOT_CELL.split(',');
+    let x = parts
+        .next()
+        .and_then(|value| value.trim().parse().ok())
+        .expect("PLOT_CELL 的 x 必须能解析");
+    let y = parts
+        .next()
+        .and_then(|value| value.trim().parse().ok())
+        .expect("PLOT_CELL 的 y 必须能解析");
+    (x, y)
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
@@ -44,7 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // -----------------------------------------------------------------
     banner("① 注册中心：provider 名单完整（防止重构时静默少注册）");
-    let mut runtime = new_runtime(&project_arg, &save_path)?;
+    let (mut runtime, _host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut runtime, &main_script)?;
     click_button(&mut runtime, "BtnStart")?;
     assert_scene_is(&mut runtime, "manor")?;
@@ -103,7 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if data_rows != text.lines().count() - 1 {
         return Err(format!("multiline value wrote extra rows:\n{text}").into());
     }
-    let mut reader = new_runtime(&project_arg, &save_path)?;
+    let (mut reader, _host) = new_runtime(&project_arg, &save_path)?;
     reader.execute_console(
         "local ok, reason = save.load()\n\
          assert(ok, tostring(reason))\n\
@@ -115,7 +132,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("③ v1 旧存档仍可读（零数据丢失）");
     let legacy = "save_version=1\nhp\t75\nnote\tlegacy\n";
     fs::write(&save_path, legacy)?;
-    let mut legacy_reader = new_runtime(&project_arg, &save_path)?;
+    let (mut legacy_reader, _host) = new_runtime(&project_arg, &save_path)?;
     legacy_reader.execute_console(
         "local ok, reason = save.load()\n\
          assert(ok, tostring(reason))\n\
@@ -130,7 +147,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("④ 损坏存档：保留原文件并给出 corrupt 原因（与 missing 区分）");
     let corrupt = "save_version=1\nhp\t75\nbroken row\n";
     fs::write(&save_path, corrupt)?;
-    let mut corrupt_reader = new_runtime(&project_arg, &save_path)?;
+    let (mut corrupt_reader, _host) = new_runtime(&project_arg, &save_path)?;
     corrupt_reader.execute_console(
         "local ok, reason = save.load()\n\
          assert(ok == false, 'corrupt save must not load')\n\
@@ -142,7 +159,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 没有存档文件时必须报 "missing" 而不是 "corrupt"：玩家进度"丢了"和
     // "从没存过"在 UI 与诊断里是两件事。
     let _ = fs::remove_file(&save_path);
-    let mut missing_reader = new_runtime(&project_arg, &save_path)?;
+    let (mut missing_reader, _host) = new_runtime(&project_arg, &save_path)?;
     missing_reader.execute_console(
         "local ok, reason = save.load()\n\
          assert(ok == false)\n\
@@ -152,17 +169,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // -----------------------------------------------------------------
     banner("⑤ 新游戏隔离：继续 → 玩 → 返回标题 → 开始新游戏 不继承上一局");
     let _ = fs::remove_file(&save_path);
-    let mut session = new_runtime(&project_arg, &save_path)?;
+    let (mut session, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut session, &main_script)?;
     click_button(&mut session, "BtnStart")?;
     assert_scene_is(&mut session, "manor")?;
 
     // 开垦 + 播种 + 浇水：制造"上一局的农田进度"。
     set_facing(&mut session, "up")?;
-    press(&mut session, KeyCode::KeyE)?;
+    press(&mut session, &host, KeyCode::KeyE)?;
     assert_str(&mut session, "require('core.state').last_action", "till")?;
     set_seed(&mut session, "seed_lingzhi")?;
-    press(&mut session, KeyCode::KeyE)?;
+    press(&mut session, &host, KeyCode::KeyE)?;
     assert_str(
         &mut session,
         "require('core.state').last_action",
@@ -171,7 +188,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 钉住晴天（M29 起天气按 `(seed, day, 季节)` 抽签）：雨天是 `rain_watered`。
     session.execute_console("require('world.weather').set('sunny')")?;
     equip_tool(&mut session, "watering_can")?;
-    press(&mut session, KeyCode::KeyE)?;
+    press(&mut session, &host, KeyCode::KeyE)?;
     assert_str(
         &mut session,
         "require('core.state').last_action",
@@ -358,14 +375,19 @@ fn fresh_save_path(project: &Path) -> PathBuf {
     ))
 }
 
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 fn enter_main_menu(
@@ -385,12 +407,16 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
     Ok(())
 }
 
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }
@@ -524,19 +550,45 @@ fn assert_farm_tile(
     layer: &str,
     expected: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let (plot_x, plot_y) = plot_coords();
     let raw = query_str(
         runtime,
         &format!(
             "local grid = entity.find('{layer}')\n\
              if not grid then return '-1' end\n\
-             return tostring(tilemap.get_cell(grid, {PLOT_X}, {PLOT_Y}))"
+             return tostring(tilemap.get_cell(grid, {plot_x}, {plot_y}))"
         ),
     )?;
     let got: i64 = raw
         .parse()
         .map_err(|error| format!("{raw:?} is not an integer: {error}"))?;
     if got != expected {
-        return Err(format!("{layer}({PLOT_X},{PLOT_Y}) = {got}, want {expected}").into());
+        // 诊断：把「地块账本里的键」与「FarmGrid 上真正有值的格子」一起打出来。
+        // 这两种红长得一模一样（都是 "0, want 1"）但修法相反：账本里有键、格子全空 = 没重绘；
+        // 账本的键和这里读的坐标不是同一格 = 断言读错了格（本文件就踩过：`PLOT_CELL = "19,4"`
+        // 与 `PLOT_X/Y = 16,4` 各说各话，红因看着像"农田没画"，其实读的是隔壁那块空地）。
+        let diag = query_str(
+            runtime,
+            "(function() local f = require('systems.farm'); local cap = f.capture() or {}; \
+               local keys = {}; \
+               for key, p in pairs(cap.plots or {}) do \
+                 if p.crop or (p.watered_days or 0) > 0 or p.watered_today then keys[#keys + 1] = key end \
+               end; \
+               table.sort(keys); \
+               local grid = entity.find('FarmGrid'); local cells = {}; \
+               if grid then \
+                 for y = 0, 22 do for x = 0, 39 do \
+                   local v = tilemap.get_cell(grid, x, y); \
+                   if v and v ~= 0 then cells[#cells + 1] = x .. ',' .. y .. '=' .. tostring(v) end \
+                 end end \
+               end; \
+               return 'plots=[' .. table.concat(keys, ' ') .. '] farmgrid_cells=[' .. \
+                 table.concat(cells, ' ') .. ']' end)()",
+        )?;
+        return Err(format!(
+            "{layer}({plot_x},{plot_y}) = {got}, want {expected}；{diag}"
+        )
+        .into());
     }
     Ok(())
 }

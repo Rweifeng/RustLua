@@ -46,12 +46,21 @@ const MIN_CORPUS_CHARS: usize = 550;
 /// 少一个说明作者侧的 UI 实体被改坏了，或有一份预设搬进了新载体却没算进这道统计——
 /// M63b 把门面那 17 个实体从 `main.scene` 搬进预设时，就同时踩到了后者）。
 const MIN_SCENE_TEXTS: usize = 21;
-/// Lua 侧登记调用下限（`ui_text.draw*` 17 处 + `ui_text.record` 11 处 = 28，2026-10-08 实测）。
+/// Lua 侧登记调用下限（`ui_text.draw*` 16 处 + `ui_text.record` 11 处 = **27**，2026-10-20 实测）。
 /// 只许涨不许跌：少一处登记 = 少一条被宽度与字号审计量到的文案。
 /// 原值是 30（那时暂停菜单的 11 行还都画在动态层），M66/B3 把它们换成实体层载体后
 /// 动态层只剩 17 处——`record` 补回 11 处，总数仍比迁移前少 2 处（HUD 在 M70 搬进预设时
 /// 没有补登记，那批文案今天量不到，见本包 未完成项 与 `tasks/done/M72-10`）。
-const MIN_REGISTERED_TEXT_SITES: usize = 28;
+///
+/// **2026-10-20 从 28 降到 27 的依据**（不是"跌了就改数"，是把两边的账对上）：
+/// `a4675c53`（Web/微信 UI 交互补全，**标题单层文字**）把 `ui/title_menu.lua` 的
+/// `title:hint` 那处 `ui_text.draw` 注释掉了——那行提示改由 `assets/prefabs/ui/title_menu.prefab`
+/// 的 `Text` 组件承载。于是动态层登记从 17 掉到 16。它**没有**掉出审计范围：⑤ 的实体层扫描
+/// 现在会递归读 `assets/prefabs/**`（本包同时修的那处），title_menu 的 7 个 Text 全在里面，
+/// 字号下限照旧量得到。逐提交复算（去注释口径）：`fd3b4cb3` = 28、`68ffcdef` = 17（当时
+/// 暂停菜单那 11 处还没补 record）、`HEAD` = 27 —— 28 这个数是 `fd3b4cb3` 当天的读数，
+/// 之后的搬家让它少了一处，而门一直红着没人认领。
+const MIN_REGISTERED_TEXT_SITES: usize = 27;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
@@ -69,11 +78,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let save_path = fresh_save_path(&project, "jhyt_m30_cjk_text.sav");
 
-    let mut rt = new_runtime(&project, &save_path)?;
+    let (mut rt, host) = new_runtime(&project, &save_path)?;
     enter_main_menu(&mut rt, &main_script)?;
     click_button(&mut rt, "BtnStart")?;
     assert_scene_is(&mut rt, "manor")?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
 
     // ---------------- ① 度量口径：与渲染同源 ----------------
     banner("M30-01① ui.measure_text / text_fit：CJK 满宽、ASCII 半宽、逐字符求和一致");
@@ -192,7 +201,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // 首包字体子集：`assetc::package` 用 `char_collect` 收字符（场景/预制体 Text + Lua 字面量），
     // 运行时用到的每个字符都必须已被收到，否则正式包里就是豆腐块。
-    let collected = rustlua_scene::char_collect::collect_project_chars(&project);
+    let collected = rustlua_assets_import::char_collect::collect_project_chars(&project);
     let runtime_chars = query_str(&mut rt, "require('tools.text_audit').unique_chars()")?;
     let mut uncovered: Vec<char> = runtime_chars
         .chars()
@@ -289,7 +298,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M30-04④ 压力值（金钱 99999 / 天数 999 / 数量 999）下仍然零溢出");
     lua(&mut rt, "require('core.state').money = 99999")?;
     assert_num(&mut rt, "require('core.state').money", 99999.0)?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(
         &mut rt,
         "tostring((function() for _, line in ipairs(require('ui.hud').status_lines()) do \
@@ -299,7 +308,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hud_stress = assert_layout_clean(&mut rt, "HUD(压力值)", 4)?;
     // 天数 999：HUD 的日期行是全年最长的文本形态之一（3 位数天数 + 季节 + 时段）。
     lua(&mut rt, "clock.set(999, 720)")?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(
         &mut rt,
         "tostring((function() for _, line in ipairs(require('ui.hud').status_lines()) do \
@@ -639,13 +648,12 @@ fn scene_font_sizes(project: &Path) -> Result<(usize, f64), Box<dyn std::error::
         .collect();
     let prefab_dir = project.join("assets").join("prefabs");
     if prefab_dir.is_dir() {
-        // 只收一层：预设目录现在是 `assets/prefabs/<name>.prefab` 平铺，将来若要分子目录
-        // 再换递归（这里刻意不递归，避免把开发产物也拖进统计）。
-        files.extend(
-            fs::read_dir(&prefab_dir)?
-                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-                .filter(|path| path.extension().is_some_and(|ext| ext == "prefab")),
-        );
+        // **递归**收：M63/M71/M72 把门面/对话/HUD 等预设搬进了
+        // `assets/prefabs/ui/<name>.prefab`（多了一层），而这里原先是"只收一层"的平铺扫描，
+        // 于是一份预设都没被统计到 —— ⑤ 的 Text 计数从 ≥21 掉到 14（八个场景 14 个 +
+        // 预设 0 个，实测 `assets/prefabs/ui/` 下 8 份预设共 154 个 Text）。判据是"数的是谁"
+        // 而不是"放在哪一层"，所以改成按扩展名递归；仍然只收 `.prefab`，开发产物不会混进来。
+        collect_prefabs(&prefab_dir, &mut files)?;
     }
     files.sort();
     for path in files {
@@ -688,6 +696,25 @@ fn scene_font_sizes(project: &Path) -> Result<(usize, f64), Box<dyn std::error::
 /// 起名字而不是把四元组写在签名里，是因为 `clippy::type_complexity` 会把后者判成"复杂类型"，
 /// 而这条门恰好是唯一一处要把四个读数一起交回调用方的地方（清单必须能顶掉自检）。
 type LuaFontReading = (usize, Vec<String>, f64, String);
+
+/// 递归收集 `assets/prefabs/**` 下所有 `*.prefab`（排序由调用方统一做）。
+///
+/// 为什么递归：预设现在放在 `assets/prefabs/ui/`（比原先的平铺多一层），只扫一层会
+/// 让"预设里的字号/文案"整批掉出统计——那不是数据变坏了，是统计范围错了。
+fn collect_prefabs(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir)?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            collect_prefabs(&path, out)?;
+        } else if path.extension().is_some_and(|ext| ext == "prefab") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
 
 /// Lua 登记调用的字号扫描，读数见 [`LuaFontReading`]。
 ///
@@ -1160,14 +1187,19 @@ fn scene_text(
     Ok((text, size, drawn))
 }
 
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 fn enter_main_menu(
@@ -1187,8 +1219,12 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
     Ok(())
 }
 
-fn frames(runtime: &mut LuaRuntime, n: usize) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+fn frames(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    n: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    host.set_input(InputSnapshot::default());
     for _ in 0..n {
         runtime.call_update()?;
     }
@@ -1196,12 +1232,16 @@ fn frames(runtime: &mut LuaRuntime, n: usize) -> Result<(), Box<dyn std::error::
 }
 
 #[allow(dead_code)]
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }

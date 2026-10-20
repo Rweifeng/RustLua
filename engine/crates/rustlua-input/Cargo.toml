@@ -7,4 +7,9 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# 绑定下沉到输入域（P1 阶段 3）：mlua 在此 crate 里只用于装 `input` 全局表。
+mlua = { version = "0.11", features = ["lua54", "vendored"] }
+# 契约层（能力单元 + 注册表），只依赖 mlua ⇒ 不会把领域 crate 拖进来。
+rustlua-lua-api = { path = "../rustlua-lua-api" }
 thiserror.workspace = true
+tracing.workspace = true

@@ -1,8 +1,8 @@
-use rustlua_assets::import_cache::ImportCache;
+use rustlua_assets_import::import_cache::ImportCache;
 use rustlua_assets::importer::{Importer, ImporterRegistry};
 use rustlua_assets::resource_db::AssetId;
 use rustlua_assets::resource_kind::ResourceKind;
-use rustlua_scene::asset_import::full_registry;
+use rustlua_assets_import::full_registry;
 use std::{fs, path::Path};
 
 /// 同一条缓存生命周期（首次 → 命中 → 源变化重导 → 清空重建）跑一遍一种资源。

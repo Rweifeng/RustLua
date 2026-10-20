@@ -29,14 +29,14 @@ fn event_bus_subscribes_emits_and_unsubscribes() {
          return 'ok' end\n\
          function update() return 'ok' end",
     );
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.execute_project_script(&path).unwrap();
     assert_eq!(runtime.call_update().unwrap(), "ok");
     let _ = fs::remove_file(path);
 }
 #[test]
 fn calendar_and_day_lifecycle_lua_api() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let path = script(
         "local now = calendar.now()\n\
          assert(now.absolute_day == 1 and now.day == 1 and now.season == 1 and now.year == 1)\n\

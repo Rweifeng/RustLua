@@ -18,8 +18,8 @@ use rustlua_render::font::FontVectorAtlas;
 use rustlua_render::layer::RenderLayer;
 use rustlua_render::sprite_batch::{SpriteDrawBatch, ndc_from_screen};
 use rustlua_render::text::{TextAtlas, TextLayout, TextMesh, TextStyle};
-use rustlua_scene::world_text::WorldText;
 use rustlua_ui::ui::UiText;
+use rustlua_ui::world_text::WorldText;
 
 use super::{
     FONT_ATLAS_TEXTURE_PATH, FrameVectorTextVertex, OverlayVertex, SceneDraw, TextRenderMode,

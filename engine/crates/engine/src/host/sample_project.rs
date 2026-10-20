@@ -323,7 +323,8 @@ fn sample_project_runs_every_scene_headless() {
 #[test]
 fn sample_project_scripts_all_compile() {
     let root = project_root();
-    let mut runtime = LuaRuntime::new().expect("lua vm");
+    let mut runtime =
+        LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).expect("lua vm");
     runtime.set_project_root(root.clone());
     let files = script_files(&root);
     for path in &files {
@@ -421,7 +422,8 @@ fn sample_project_shared_overlay_is_not_covered() {
 #[test]
 fn sample_project_scene_text_has_every_glyph() {
     let root = project_root();
-    let mut runtime = LuaRuntime::new().expect("lua vm");
+    let mut runtime =
+        LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).expect("lua vm");
     runtime.set_project_root(root.clone());
     let mut offenders = Vec::new();
     let mut checked = 0;
@@ -433,11 +435,9 @@ fn sample_project_scene_text_has_every_glyph() {
                     "Text" => rustlua_ui::ui::UiText::from_component_str(payload)
                         .ok()
                         .map(|text| text.text),
-                    "WorldText" => {
-                        rustlua_scene::world_text::WorldText::from_component_str(payload)
-                            .ok()
-                            .map(|text| text.text.text)
-                    }
+                    "WorldText" => rustlua_ui::world_text::WorldText::from_component_str(payload)
+                        .ok()
+                        .map(|text| text.text.text),
                     _ => None,
                 };
                 let Some(text) = text else { continue };
@@ -477,7 +477,8 @@ fn sample_project_scene_text_has_every_glyph() {
 #[test]
 fn sample_project_demos_cover_every_lua_api() {
     let root = project_root();
-    let runtime = LuaRuntime::new().expect("lua vm");
+    let runtime =
+        LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).expect("lua vm");
     let surface = runtime
         .eval_json(LUA_API_PROBE)
         .expect("导出运行时 API 面失败");

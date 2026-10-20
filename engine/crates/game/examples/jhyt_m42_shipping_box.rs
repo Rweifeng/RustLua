@@ -37,7 +37,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let main_script = project.join("scripts/main.lua");
 
-    let mut runtime = LuaRuntime::new()?;
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.clone());
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
@@ -66,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_scene_is(&mut runtime, "manor")?;
     stand_at(&mut runtime, (15, 3))?;
     set_facing(&mut runtime, "down")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     let diag = query_str(
         &mut runtime,
         "local it = require('systems.interaction')\n\
@@ -88,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         1.0,
     )?;
     println!("  按 E 打开货箱面板（mode=Shipping）；Esc 关闭复位 Playing");
-    press(&mut runtime, KeyCode::Escape)?;
+    press(&mut runtime, &host, KeyCode::Escape)?;
     assert_str(
         &mut runtime,
         "require('core.state').is_mode('Playing') and 'Playing' or 'other'",
@@ -303,12 +305,16 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
     Ok(())
 }
 
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }

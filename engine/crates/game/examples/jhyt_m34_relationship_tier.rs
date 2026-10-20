@@ -56,7 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---------------- ① 档位表结构与校验（含负例） ----------------
     banner("M34-01① 五档关系 / 五档声望：结构与交叉引用可校验，负例必须真的报出来");
-    let mut rt = new_runtime(&project_arg, &save_path)?;
+    let (mut rt, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut rt, &main_script)?;
     click_button(&mut rt, "BtnStart")?;
     assert_scene_is(&mut rt, "manor")?;
@@ -255,7 +255,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     // 实付金额 = 折扣价（走 shop.buy 真实入口；货摊营业窗口 480..1080）。
     lua(&mut rt, &format!("clock.set(1, {SHOP_HOUR})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     let money_before = query_num(&mut rt, "require('core.state').money")?;
     assert_str(
         &mut rt,
@@ -285,13 +285,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     reputation = set_reputation(&mut rt, "village", 0.0, reputation)?;
     goto_map(&mut rt, "village", VILLAGE_POS)?;
     lua(&mut rt, &format!("clock.set(1, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     // 主线五段的锚点由 quest.on_complete 写入，这里按同一入口写锚点（本样例不重跑主线）。
     lua(
         &mut rt,
         "require('core.state').set_var('mainline_truth_done', true, 'test', 'gate')",
     )?;
-    talk_to(&mut rt, "npc_shen_qingluo")?;
+    talk_to(&mut rt, &host, "npc_shen_qingluo")?;
     choose_option(&mut rt, "沈掌柜，我想回田里种药。")?;
     choose_option(&mut rt, "便依掌柜所言。")?;
     choose_option(&mut rt, "记下了。")?;
@@ -329,13 +329,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("声望门槛的进度行不对: {log_line}").into());
     }
     println!("  任务日志：{log_line}");
-    talk_to(&mut rt, "npc_shen_qingluo")?;
+    talk_to(&mut rt, &host, "npc_shen_qingluo")?;
     assert_str(&mut rt, &option_visible("二十份稻谷已入囤。"), "false")?;
     choose_option(&mut rt, "稻谷还在晒。")?;
     choose_option(&mut rt, "好。")?;
     // 19 分仍然挡住，20 分放行：档位下限就是交付下限。
     reputation = set_reputation(&mut rt, "village", 19.0, reputation)?;
-    talk_to(&mut rt, "npc_shen_qingluo")?;
+    talk_to(&mut rt, &host, "npc_shen_qingluo")?;
     assert_str(&mut rt, &option_visible("二十份稻谷已入囤。"), "false")?;
     choose_option(&mut rt, "改日再说。")?;
     // 这一章之后不再改声望，返回值无需接住（门槛放行只读数据侧的分数）。
@@ -346,7 +346,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "deliverable",
     )?;
     let money_before = query_num(&mut rt, "require('core.state').money")?;
-    talk_to(&mut rt, "npc_shen_qingluo")?;
+    talk_to(&mut rt, &host, "npc_shen_qingluo")?;
     assert_str(&mut rt, &option_visible("二十份稻谷已入囤。"), "true")?;
     choose_option(&mut rt, "二十份稻谷已入囤。")?;
     choose_option(&mut rt, "多谢掌柜。")?;
@@ -376,8 +376,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     goto_map(&mut rt, "manor", MANOR_POS)?;
     lua(&mut rt, &format!("clock.set(1, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
-    talk_to(&mut rt, "npc_gu_changfeng")?;
+    frames(&mut rt, &host, 2)?;
+    talk_to(&mut rt, &host, "npc_gu_changfeng")?;
     choose_option(&mut rt, "弟子想放下这一切。")?;
     choose_option(&mut rt, "弟子遵命。")?;
     lua(
@@ -395,7 +395,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M34-01④ 体己话分支：陌生看不见，真实送礼到「友善」才出现，且只说一次");
     goto_map(&mut rt, "village", VILLAGE_POS)?;
     lua(&mut rt, &format!("clock.set(1, {SHOP_HOUR})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     // 茶由阿七食摊买（每日限购 5，分两天）——真实购买入口，顺便验证折扣不碰限购。
     assert_str(
         &mut rt,
@@ -411,7 +411,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(&mut rt, "clock.now().day", 2.0)?;
     // 睡到清晨（< 07:00）会落在食摊营业窗口外，把时刻钉回上午再买第二批。
     lua(&mut rt, &format!("clock.set(2, {SHOP_HOUR})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(
         &mut rt,
         "select(2, require('systems.shop').buy('a_qi_provisions', 'tea_brew', 4))",
@@ -465,8 +465,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         40.0,
     )?;
     goto_map(&mut rt, "manor", MANOR_POS)?;
-    frames(&mut rt, 2)?;
-    talk_to(&mut rt, "npc_lu_guizang")?;
+    frames(&mut rt, &host, 2)?;
+    talk_to(&mut rt, &host, "npc_lu_guizang")?;
     assert_str(&mut rt, &option_visible(SECRET_OPTION), "false")?;
     choose_option(&mut rt, "改日再来请教。")?;
     println!("  关系分 40（相识档）：体己话选项仍不出现");
@@ -484,8 +484,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "true",
     )?;
     goto_map(&mut rt, "manor", MANOR_POS)?;
-    frames(&mut rt, 2)?;
-    talk_to(&mut rt, "npc_lu_guizang")?;
+    frames(&mut rt, &host, 2)?;
+    talk_to(&mut rt, &host, "npc_lu_guizang")?;
     assert_str(&mut rt, &option_visible(SECRET_OPTION), "true")?;
     choose_option(&mut rt, SECRET_OPTION)?;
     choose_option(&mut rt, "徒儿收好。")?;
@@ -501,7 +501,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         6.0,
     )?;
     // 锚点之后不再重复（falsy 条件把分支收掉）。
-    talk_to(&mut rt, "npc_lu_guizang")?;
+    talk_to(&mut rt, &host, "npc_lu_guizang")?;
     assert_str(&mut rt, &option_visible(SECRET_OPTION), "false")?;
     choose_option(&mut rt, "改日再来请教。")?;
     println!("  分支只说一次：锚点 lu_guizang_secret 已写入，选项收回");
@@ -509,7 +509,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---------------- ⑤ 存档往返 ----------------
     banner("M34-01⑤ 档位是派生值：分数随存档回来，折扣/门槛/分支结论一起回来");
     lua(&mut rt, "require('core.save_manager').save()")?;
-    let mut second = new_runtime(&project_arg, &save_path)?;
+    let (mut second, _host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut second, &main_script)?;
     click_button(&mut second, "BtnContinue")?;
     assert_num(
@@ -604,14 +604,19 @@ fn option_visible(text: &str) -> String {
 
 // ---------- helpers（与 jhyt_m27_goals 同一套） ----------
 
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 fn enter_main_menu(
@@ -631,8 +636,12 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
     Ok(())
 }
 
-fn frames(runtime: &mut LuaRuntime, n: usize) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+fn frames(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    n: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    host.set_input(InputSnapshot::default());
     for _ in 0..n {
         runtime.call_update()?;
     }
@@ -706,7 +715,11 @@ fn goto_map(
 }
 
 /// 走到 NPC 相邻可行走格、面向 NPC，再按 E 开对话（真实交互路径）。
-fn talk_to(runtime: &mut LuaRuntime, persist_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn talk_to(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    persist_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let stick = format!(
         "(function() local q = require('world.npc').query('{persist_id}'); \
            if not q or not q.live then return 'no_npc' end; \
@@ -730,10 +743,10 @@ fn talk_to(runtime: &mut LuaRuntime, persist_id: &str) -> Result<(), Box<dyn std
     }
     let mut input = InputSnapshot::default();
     input.key_event(KeyCode::KeyE, true);
-    runtime.set_input(input);
+    host.set_input(input);
     lua(runtime, &stick)?;
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     lua(runtime, &stick)?;
     runtime.call_update()?;
     Ok(())

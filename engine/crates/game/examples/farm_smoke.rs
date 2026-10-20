@@ -37,7 +37,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("missing {}", data_json.display()).into());
     }
 
-    let mut runtime = LuaRuntime::new()?;
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.clone());
     runtime.set_save_path(save_path.clone());
     runtime.set_ui_viewport(1280, 720);
@@ -65,9 +67,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // A movement frame (D held) must not error.
     let mut input = InputSnapshot::default();
     input.key_event(KeyCode::KeyD, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
 
     // Player and inventory exist after on_create.
@@ -102,26 +104,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     runtime.execute_console("local p = entity.find('FieldFarmer')\ntransform.set(p, 480, 260)")?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('q').expect("QWERTY 字符必须有对应物理键"),
     )?; // till
-    press(&mut runtime, KeyCode::KeyE)?; // plant seed_tomato
+    press(&mut runtime, &host, KeyCode::KeyE)?; // plant seed_tomato
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('r').expect("QWERTY 字符必须有对应物理键"),
     )?; // water
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('t').expect("QWERTY 字符必须有对应物理键"),
     )?; // sleep -> day 2, crop stage 1
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('r').expect("QWERTY 字符必须有对应物理键"),
     )?; // water again
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('t').expect("QWERTY 字符必须有对应物理键"),
     )?; // sleep -> day 3, crop stage 2 (mature)
-    press(&mut runtime, KeyCode::KeyF)?; // harvest -> tomato into inventory
+    press(&mut runtime, &host, KeyCode::KeyF)?; // harvest -> tomato into inventory
 
     let tomatoes = runtime.execute_console("return inv.count('player', 'tomato')")?;
     if tomatoes.trim() != "1" {
@@ -141,6 +148,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     runtime.execute_console("local p = entity.find('FieldFarmer')\ntransform.set(p, 680, 180)")?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('g').expect("QWERTY 字符必须有对应物理键"),
     )?; // sell at the market
     let tomatoes_after = runtime.execute_console("return inv.count('player', 'tomato')")?;
@@ -163,6 +171,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..60 {
         press(
             &mut runtime,
+            &host,
             KeyCode::from_char('d').expect("QWERTY 字符必须有对应物理键"),
         )?;
     }
@@ -180,6 +189,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     runtime.execute_console("local p = entity.find('FieldFarmer')\ntransform.set(p, 190, 340)")?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('w').expect("QWERTY 字符必须有对应物理键"),
     )?;
     let zone = runtime.execute_console("return tostring(require('core.state').zone_name)")?;
@@ -196,6 +206,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('2').expect("QWERTY 字符必须有对应物理键"),
     )?; // hotbar slot 2 = hoe
     let sel_tool = runtime.execute_console("return tostring(require('tools').selected_tool())")?;
@@ -218,6 +229,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     runtime.execute_console("require('core.state').energy = 50")?;
     press(
         &mut runtime,
+        &host,
         KeyCode::from_char('5').expect("QWERTY 字符必须有对应物理键"),
     )?; // use the bread
     let energy_after = runtime.execute_console("return tostring(require('core.state').energy)")?;
@@ -249,7 +261,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Save/load round-trip (M16-09): F1 persists the WorldSnapshot; a fresh
     // runtime loads it with F2 and must land on the same day.
-    press(&mut runtime, KeyCode::F1)?; // F1 save
+    press(&mut runtime, &host, KeyCode::F1)?; // F1 save
     if !save_path.is_file() {
         return Err("save file not written after F1".into());
     }
@@ -259,7 +271,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     second.set_ui_viewport(1280, 720);
     second.set_delta(1.0 / 60.0);
     second.execute_project_script(&main_script)?;
-    press(&mut second, KeyCode::F2)?; // F2 load
+    press(&mut second, &host, KeyCode::F2)?; // F2 load
     let loaded_day = second.execute_console("return clock.now().day")?;
     if loaded_day.trim() != "3" {
         return Err(format!("expected day 3 after F2 load, got {loaded_day:?}").into());
@@ -282,12 +294,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }

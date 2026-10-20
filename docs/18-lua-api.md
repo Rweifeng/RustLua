@@ -79,7 +79,7 @@ end
 | `scene` | `load/reload` | 场景状态切换接口 |
 | `asset` | `load/release` | 资源句柄生命周期接口 |
 | `ui` | `text/text_at/show/hide/get` | 最小文本 UI 状态接口；`text_at(id,x,y,text[,scale])` 可选缩放 |
-| `audio` | `play/volume/music/stop_music` | 音效播放与音量；`music(name)` 循环 BGM，`stop_music()` 停止 |
+| `audio` | `play/volume/music/stop_music` | 音效播放与音量；`music(name)` 循环 BGM，`stop_music()` 停止。**M74-01** 加了空间化三个函数：`play_at(name,x,y[,z])` 按世界坐标播放（听者由宿主每帧从活动相机灌入；2D 工程省略 `z`）、`set_listener(x,y,z,fx,fy,fz)` 手设听者（只给无相机的纯逻辑用例）、`listener()` 读回位姿。逐个参数的细节与平台降级口径见 [`lua_api/doc/audio.md`](../engine/crates/engine/src/lua_api/doc/audio.md) |
 | `save` | `read/write/load/commit` | 键值存档接口（load 从磁盘载入，commit 原子写入） |
 | `app` | `quit` / `project_root` | `quit()` 请求退出应用；`project_root()` 返回**工程根目录的绝对路径**（正斜杠，未配置时为空串）——`io.open` 的相对路径按进程工作目录解析，而 `--check` 不 chdir 到工程根，因此"跨文件契约"校验器（要读 `scenes/*.scene`、`project.toml`）必须靠它拼绝对路径，否则会静默跳过检查 |
 

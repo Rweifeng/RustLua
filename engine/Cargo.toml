@@ -9,13 +9,16 @@ members = [
     "crates/gpu-web-probe",
     "crates/rustlua-animation",
     "crates/rustlua-assets",
+    "crates/rustlua-assets-import",
     "crates/rustlua-audio",
     "crates/rustlua-camera",
+    "crates/rustlua-component-codec",
     "crates/rustlua-ecs",
     "crates/rustlua-frame-abi",
     "crates/rustlua-gameplay",
     "crates/rustlua-infra",
     "crates/rustlua-input",
+    "crates/rustlua-lua-api",
     "crates/rustlua-math",
     "crates/rustlua-physics",
     "crates/rustlua-render",
@@ -56,8 +59,11 @@ rustlua-frame-abi = { path = "crates/rustlua-frame-abi" }
 rustlua-ui = { path = "crates/rustlua-ui" }
 rustlua-physics = { path = "crates/rustlua-physics" }
 rustlua-assets = { path = "crates/rustlua-assets" }
+rustlua-assets-import = { path = "crates/rustlua-assets-import" }
+rustlua-component-codec = { path = "crates/rustlua-component-codec" }
 rustlua-audio = { path = "crates/rustlua-audio" }
 rustlua-input = { path = "crates/rustlua-input" }
+rustlua-lua-api = { path = "crates/rustlua-lua-api" }
 rustlua-gameplay = { path = "crates/rustlua-gameplay" }
 rustlua-scripting = { path = "crates/rustlua-scripting" }
 rustlua-infra = { path = "crates/rustlua-infra" }

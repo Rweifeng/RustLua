@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let save_path = fresh_save_path(&project, "jhyt_m55_solarterm.sav");
     let project_arg = project.clone();
 
-    let mut rt = new_runtime(&project_arg, &save_path)?;
+    let (mut rt, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut rt, &main_script)?;
     click_button(&mut rt, "BtnStart")?;
     assert_scene_is(&mut rt, "manor")?;
@@ -172,7 +172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M55④ 纯函数：同日反复查一致，拨钟前后 id(16) 恒为 qingming");
     let a = query_str(&mut rt, "require('systems.solar_terms').id(16)")?;
     lua(&mut rt, &format!("clock.set(1, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     let b = query_str(&mut rt, "require('systems.solar_terms').id(16)")?;
     if a != b || a != "qingming" {
         return Err(format!("节气查询不纯：拨钟前 {a:?} / 拨钟后 {b:?}").into());
@@ -182,7 +182,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---------------- ⑤ on_day_start 钩子显式调用 + 跨天无残留 ----------------
     banner("M55⑤ on_day_start 回当日节气 id；跨天后节气随 day 派生（不入档）");
     lua(&mut rt, &format!("clock.set(9, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(&mut rt, "require('systems.solar_terms').id()", "chunfen")?;
     assert_str(
         &mut rt,
@@ -191,7 +191,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // 睡一天到日 10：节气从春分(日9) 消失（单日生效），节日茶会(8-10) 仍在是另一轴。
     lua(&mut rt, "day.sleep()")?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_num(&mut rt, "clock.now().day", 10.0)?;
     assert_str(&mut rt, "require('systems.solar_terms').id()", "")?;
     // capture/restore/reset 空实现：capture 恒空表、restore 恒真、reset 不报错。
@@ -235,13 +235,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 // ---------- helpers（与 jhyt_m49_festival / m42 同一套） ----------
 
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 fn enter_main_menu(
@@ -261,8 +266,12 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
     Ok(())
 }
 
-fn frames(runtime: &mut LuaRuntime, n: usize) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+fn frames(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    n: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    host.set_input(InputSnapshot::default());
     for _ in 0..n {
         runtime.call_update()?;
     }

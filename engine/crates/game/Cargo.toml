@@ -17,6 +17,8 @@ wgpu = "27"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 rustlua-assets = { path = "../rustlua-assets" }
+rustlua-assets-import = { path = "../rustlua-assets-import" }
+rustlua-audio = { path = "../rustlua-audio" }
 rustlua-camera = { path = "../rustlua-camera" }
 rustlua-ecs = { path = "../rustlua-ecs" }
 rustlua-gameplay = { path = "../rustlua-gameplay" }

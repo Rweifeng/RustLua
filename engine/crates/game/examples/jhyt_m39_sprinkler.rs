@@ -38,7 +38,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let main_script = project.join("scripts/main.lua");
 
-    let mut runtime = LuaRuntime::new()?;
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.clone());
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
@@ -109,10 +111,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 站位 (16,3) 面前 (16,4)（m24 ⑧ 验证过的安全站位，无 NPC 干扰）。写成显式传送而不是
     // "停在出生点"：#28 把出生点挪到 (19,3)，本节要的只是这块药田几何。
     stand_at(&mut runtime, (16, 3), "up")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(&mut runtime, "require('core.state').last_action", "till")?;
     add_sprinkler(&mut runtime, "sprinkler_bamboo")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -123,11 +125,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("③ 竹筒（十字 4 邻）：下邻被浇成熟，(16,6)/(17,5) 不被浇");
     // 种薄荷 (16,5)（下邻 dy=1）：站 (16,4) 面前 (16,5)
-    plant_mint_at(&mut runtime, (16, 5))?;
+    plant_mint_at(&mut runtime, &host, (16, 5))?;
     // 种薄荷 (16,6)（下 2 格 dy=2，竹筒范围外）：站 (16,5) 面前 (16,6)
-    plant_mint_at(&mut runtime, (16, 6))?;
+    plant_mint_at(&mut runtime, &host, (16, 6))?;
     // 种薄荷 (17,5)（斜角 dx=1 dy=1，十字不浇）：站 (16,5) 朝右面前 (17,5)
-    plant_mint_right(&mut runtime, (17, 5))?;
+    plant_mint_right(&mut runtime, &host, (17, 5))?;
     // 钉晴天睡 4 天：洒水器在每天清晨浇水（种下的当天不计；第 4 次睡眠
     // 才结算第 3 天成长），(16,5) 累计 3 天成长成熟
     for _ in 0..4 {
@@ -138,7 +140,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_watered_days(&mut runtime, (17, 5), 0.0, "竹筒十字不浇斜角")?;
     // (16,5) 成熟可收
     stand_at(&mut runtime, (16, 4), "up")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -149,7 +151,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("④ 水车（3×3）：斜角 (17,5) 被浇成熟");
     // 拆竹筒（站 (16,3) 面前 (16,4)）
     stand_at(&mut runtime, (16, 3), "up")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -159,7 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_plot(&mut runtime, (16, 4), "none")?;
     // 放水车
     add_sprinkler(&mut runtime, "sprinkler_waterwheel")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -178,7 +180,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // 收获 (17,5)：站 (16,5) 朝右
     stand_at(&mut runtime, (16, 5), "right")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -189,14 +191,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("⑤ 机关（5×5）：远格 (16,6) 被浇成熟（radius=2）");
     // 拆水车、放机关
     stand_at(&mut runtime, (16, 3), "up")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
         "remove_sprinkler",
     )?;
     add_sprinkler(&mut runtime, "sprinkler_machine")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -209,7 +211,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_watered_days(&mut runtime, (16, 6), 3.0, "机关 5×5 应浇 (16,6)（dy=2）")?;
     // 收获 (16,6)：站 (16,5) 朝上
     stand_at(&mut runtime, (16, 5), "up")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -264,15 +266,16 @@ fn add_sprinkler(runtime: &mut LuaRuntime, item: &str) -> Result<(), Box<dyn std
 /// 补 1 粒薄荷籽并播种到指定格（站其上方一格朝上；面前格 = y+1，引擎 Up 语义）。
 fn plant_mint_at(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     cell: (i64, i64),
 ) -> Result<(), Box<dyn std::error::Error>> {
     stand_at(runtime, (cell.0, cell.1 - 1), "up")?;
     equip_tool(runtime, "hoe")?;
-    press(runtime, KeyCode::KeyE)?;
+    press(runtime, &host, KeyCode::KeyE)?;
     assert_str(runtime, "require('core.state').last_action", "till")?;
     runtime.execute_console("inv.add(require('core.state').inventory, 'seed_mint', 1)")?;
     set_seed(runtime, "seed_mint")?;
-    press(runtime, KeyCode::KeyE)?;
+    press(runtime, &host, KeyCode::KeyE)?;
     assert_str(
         runtime,
         "require('core.state').last_action",
@@ -284,15 +287,16 @@ fn plant_mint_at(
 /// 补 1 粒薄荷籽并播种到目标格右侧（站目标格左一格朝右）。
 fn plant_mint_right(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     cell: (i64, i64),
 ) -> Result<(), Box<dyn std::error::Error>> {
     stand_at(runtime, (cell.0 - 1, cell.1), "right")?;
     equip_tool(runtime, "hoe")?;
-    press(runtime, KeyCode::KeyE)?;
+    press(runtime, &host, KeyCode::KeyE)?;
     assert_str(runtime, "require('core.state').last_action", "till")?;
     runtime.execute_console("inv.add(require('core.state').inventory, 'seed_mint', 1)")?;
     set_seed(runtime, "seed_mint")?;
-    press(runtime, KeyCode::KeyE)?;
+    press(runtime, &host, KeyCode::KeyE)?;
     assert_str(
         runtime,
         "require('core.state').last_action",
@@ -396,12 +400,16 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
     Ok(())
 }
 
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }

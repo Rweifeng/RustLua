@@ -38,8 +38,6 @@ pub use values::entity_lua_id;
 // WP11-USE:BEGIN
 use error::{ScriptFingerprint, api_error};
 use rustlua_animation::animation::AnimationFrameEvent;
-use rustlua_assets::resource_db::AssetId;
-use rustlua_audio::audio::{AudioBus, AudioSystem};
 use rustlua_camera::camera::{Camera2D, Camera3D, Viewport};
 use rustlua_ecs::{
     entity::EntityId,
@@ -48,11 +46,10 @@ use rustlua_ecs::{
     transform::Transform,
     world::World,
 };
-use rustlua_gameplay::{
-    gameplay::{GameClock, Inventory, ItemDefinition, ItemStack},
-    settings::{NavSettings, ProjectSettings},
-};
-use rustlua_input::input::{ActionMap, InputSnapshot, KeyCode, MouseButton};
+use rustlua_gameplay::gameplay::{GameClock, Inventory, ItemDefinition, ItemStack};
+use rustlua_gameplay::save_store::SaveStore;
+use rustlua_infra::ids::AssetId;
+use rustlua_lua_api::Handle;
 use rustlua_math::math2d::Vec2;
 #[allow(unused_imports)] // 经 `script::tests` 的 `use super::*` 链供 `tests/camera.rs` 使用
 use rustlua_math::math3d::Vec3;
@@ -380,19 +377,10 @@ impl InventoryState {
     }
 }
 
-/// docs/60 §4.1：存档域（键值数据 + 存档路径/槽位）。刻意**不**随场景切换清理。
-#[derive(Debug, Default)]
-struct SaveState {
-    data: BTreeMap<String, String>,
-    path: Option<PathBuf>,
-    slot: Option<String>,
-}
-
 #[derive(Debug, Default)]
 pub(crate) struct ScriptState {
     delta_seconds: f32,
     quit_requested: bool,
-    input: InputSnapshot,
     world: World,
     scene: Option<String>,
     scene_pending_load: Option<String>,
@@ -420,7 +408,6 @@ pub(crate) struct ScriptState {
     /// 供 Lua 做屏幕→射线、世界→屏幕换算（`camera3d.*`）。与编辑器 picking 共用
     /// `Camera3D::ray_from_screen` / `world_to_ndc`，因此两侧不会各写一套投影数学。
     camera3d_view: Option<(Camera3D, [f32; 2])>,
-    audio: AudioSystem,
     /// Entity whose `Camera` component is the **active camera**（相机拆分批 9：只有这一条选择链）。
     /// Lua selects it with `camera.set_active`; each pass then filters candidates by projection —
     /// 3D pass 取透视、2D 相机取正交——未选择（或选中的不是本 pass 的投影）时回退到排序序第一台。
@@ -454,54 +441,13 @@ pub(crate) struct ScriptState {
     /// docs/54 §4.3：一个实体挂了多种可绘制组件的点名（渲染只按优先级画一种，但没有诊断的话
     /// "为什么另一个没画出来"无从解释）。
     scene_renderable_conflicts: Vec<String>,
-    /// 命名动作映射（M20-07）：**唯一实例**随 `ScriptState` 走，脚本重绑定
-    /// （`input.rebind`/`set_action_map`/设置文件）与宿主查询同源；默认绑定见
-    /// [`ActionMap::with_defaults`]。刻意**不**随场景切换或读档重置——绑定是
-    /// 玩家偏好，唯一重置入口是 `input.reset_bindings()`。
-    ///
-    /// 注意：本结构体的 `Default` 由 derive 生成（约 40 个字段逐一手写易漏），
-    /// 而 [`ActionMap::default`] 是**空**映射；因此 [`LuaRuntime::new`] 建好状态
-    /// 后立刻 `merge_missing(with_defaults())` 补齐默认绑定（`merge_missing`
-    /// 语义为空表 → 完整默认表），脚本与测试必须经 `LuaRuntime` 构造才拿到状态。
-    action_map: ActionMap,
-    /// 输入层诊断（M20-07，最近 16 条，最新在后）：设置文件回退默认、版本头
-    /// 不符、非法绑定、写盘失败等都在这里留下可定位的一行说明，脚本可用
-    /// `input.diagnostics()` 读出。不参与存档。
-    input_diagnostics: Vec<String>,
-    /// **v1 → v2 改键迁移诊断**（M22/W1）：`input.load_settings()` / `set_action_map`
-    /// 读入 v1（或 v1 写法）的绑定时，每条**有损换算**各一行中文说明
-    /// （`key:+` 只能落到 `key:equal` 这类），脚本用 `input.migration_notes()` 读出。
-    /// 与 `input_diagnostics` 分开：诊断是「出错了」，迁移说明是「变了但没丢」。
-    input_migration_notes: Vec<String>,
-    /// **逻辑时间**（毫秒，M22/W3）：按固定步在 [`ScriptState::set_input`] 里累加
-    /// （每步 + `delta_seconds`），供 `input.action_repeat` 做时间制连发。刻意不用
-    /// `game_clock`（它受游戏内时间倍率/暂停影响，菜单导航必须始终按真实逻辑时间走）。
-    logical_ms: f64,
-    /// 菜单导航手感（阈值 + 重复节奏，M22/W3）：默认 [`NavSettings::DEFAULT`]，
-    /// 由 `input.load_settings()`（读 `[input]` 段）或 Lua `input.set_nav_settings`
-    /// 覆盖；`RuntimeScene` 每帧把 `threshold` 同步给设备轮询器（轴判定阈值同源）。
-    nav: NavSettings,
-    /// 每个动作的按住/连发状态（M22/W3，时间制）：动作名 → 状态。
-    action_repeat: HashMap<String, ActionRepeatState>,
-    /// 待处理的震动请求（M22/W2）：Lua `input.rumble(low, high, ms)` 写入，宿主在帧末取走
-    /// 并交给设备层（`GamepadPoller::rumble`）。同一逻辑帧内多次调用以最后一次为准。
-    rumble_request: Option<(f32, f32, u32)>,
     // ---- docs/60 §4.1：按领域拆分的子状态 ----
     entity_state: EntityState,
     ui_state: UiState,
     physics: PhysicsState,
     inventory: InventoryState,
-    save: SaveState,
-}
-
-/// `input.action_repeat` 的每动作状态（M22/W3）。
-///
-/// * `holding`：上一帧该动作是否处于按下状态（用于识别「首次按下 = 立即一步」）；
-/// * `next_repeat_ms`：下一次允许连发的逻辑时间。
-#[derive(Debug, Clone, Copy, Default)]
-struct ActionRepeatState {
-    holding: bool,
-    next_repeat_ms: f64,
+    /// 存档域的能力单元（P1 ⑤：数据/路径/槽位归 `rustlua-gameplay`）。
+    save: Handle<SaveStore>,
 }
 
 impl ScriptState {
@@ -530,46 +476,6 @@ impl ScriptState {
         );
         self.font_probe = Some(probe.clone());
         Ok(probe)
-    }
-    /// 时间制连发（M22/W3）——[`LuaRuntime::action_repeat`] 与 Lua `input.action_repeat`
-    /// 同源实现。详见方法内注释与 `docs/35`。
-    fn action_repeat(&mut self, name: &str) -> bool {
-        let now = self.logical_ms;
-        let down = self.input.action_is_down(&self.action_map, name);
-        // 立即走一步只认**真实按下边沿**：轴与键都有边沿（M22），而「已经按住、但本函数
-        // 第一次观察到」不能补一步——否则同一根摇杆同时驱动 `move_*` 与 `ui_*` 时，
-        // 消费了边沿的那一帧走一步、下一帧 ui 路径又补一步（双步）。
-        let edge = self.input.action_just_pressed(&self.action_map, name);
-        // 连发只对「持续保持的模拟量绑定」生效（数字键/DPad 保持一次按下 = 一步）。
-        let analog = down && self.input.action_held_by_analog(&self.action_map, name);
-        let delay_ms = f64::from(self.nav.delay_ms);
-        let repeat_ms = f64::from(self.nav.repeat_ms);
-        let entry = self.action_repeat.entry(name.to_owned()).or_default();
-        if !down {
-            entry.holding = false;
-            // 边沿 = 「刚按下」，与「此刻是否仍按住」无关：**一步之内完成的「按下 + 松开」**
-            // 同样必须走一步——极短点按、编辑器 Play 预览把同帧内的按下/松开发成 down+up
-            // 边沿（`game_view::bridge_preview_input`）、摇杆越过阈值后立刻回中都是这种形态。
-            // 此前这里无条件 `return false`，于是一步内完成的点按被整帧丢掉，表现为
-            // 「按方向键偶发没有反应」。边沿在逻辑步内保留（与 `action_pressed` 同语义），
-            // 宿主在每帧首个固定步之后 `finish_frame` 清边沿，因此不会跨步重复。
-            return edge;
-        }
-        if !entry.holding {
-            // 开始计时；边沿帧立即走一步，非边沿帧只武装计时器。
-            entry.holding = true;
-            entry.next_repeat_ms = now + delay_ms;
-            return edge;
-        }
-        if !analog {
-            return false;
-        }
-        if now >= entry.next_repeat_ms {
-            // 以「当前时间 + 间隔」推进，而不是累加：长卡顿后不爆发式连发。
-            entry.next_repeat_ms = now + repeat_ms;
-            return true;
-        }
-        false
     }
 }
 
@@ -648,6 +554,11 @@ pub struct LuaRuntime {
     /// 组件结构没变化时直接复用，消掉每帧"全实体遍历 + 排序 + 字符串克隆"。
     entity_script_requests: Vec<(EntityId, String)>,
     entity_script_requests_revision: u64,
+    /// 领域 crate 提供的 Lua 模块（依赖倒置的落点，见 [`LuaRuntime::with_installers`]）。
+    ///
+    /// 用 `Rc` 持有：热重载会重建 VM，每个新 VM 都要装同一套安装器；安装器本身捕获的
+    /// 是 `rustlua-lua-api` 的 `Handle`（宿主能力单元），所以注册表可以被多个 VM 共享。
+    installers: Rc<rustlua_lua_api::Registry>,
 }
 
 /// 一份每实体脚本的运行时状态：Lua 状态 + 用于热重载比对的指纹。
@@ -667,7 +578,7 @@ pub fn probe_startup_stage(stage: u8) -> Result<(), String> {
             let _ = ScriptState::default();
         }
         2 => {
-            let _ = ActionMap::with_defaults();
+            let _ = rustlua_lua_api::Registry::new();
         }
         _ => return Err("unknown stage".to_owned()),
     }
@@ -675,77 +586,11 @@ pub fn probe_startup_stage(stage: u8) -> Result<(), String> {
 }
 
 impl LuaRuntime {
-    /// 当前命名动作映射（M20-07，只读快照）。
-    ///
-    /// 宿主需要「按动作查询输入」时用它与同一帧的 [`InputSnapshot`] 组合
-    /// （`InputSnapshot::action_is_down(&map, "interact")`），保证与脚本侧
-    /// `input.action("interact")` 结论一致。
-    #[must_use]
-    pub fn action_map(&self) -> ActionMap {
-        self.state.borrow().action_map.clone()
-    }
-
-    /// 注入命名动作映射（M20-07）：宿主设置界面改键、按工程设置文件启动时用，
-    /// 之后脚本查询/重绑定都作用在这一份上。
-    pub fn set_action_map(&mut self, map: ActionMap) {
-        self.state.borrow_mut().action_map = map;
-    }
-
-    /// 输入层诊断（M20-07，最新在后）：设置文件回退默认、版本头不符、非法绑定、
-    /// 写盘失败等。与 `ScriptDiagnostic`（脚本错误）分开，避免污染调试器记录。
-    #[must_use]
-    pub fn input_diagnostics(&self) -> Vec<String> {
-        self.state.borrow().input_diagnostics.clone()
-    }
-
     pub fn set_delta(&mut self, delta_seconds: f32) {
-        self.state.borrow_mut().delta_seconds = delta_seconds.max(0.0);
-    }
-
-    pub fn set_input(&mut self, input: InputSnapshot) {
-        let mut state = self.state.borrow_mut();
-        // M22/W3：逻辑时间按**每个固定步**累加（`set_input` 每步一次），
-        // 因此 catch-up 帧（一帧多步）也走同样的时间线，连发节奏与帧率无关。
-        state.logical_ms += f64::from(state.delta_seconds) * 1000.0;
-        // 触屏虚拟键（`input.virtual_key`）是**跨帧保持**的按住态，脚本只在抬起时
-        // 注入 `false`；宿主每帧喂入的新快照若整份替换，会把上一帧的注入清空，
-        // 摇杆/虚拟按钮就永远读不到按住。这里把旧虚拟键并入新快照。
-        let mut input = input;
-        input.inherit_virtual_keys(&state.input);
-        state.input = input;
-    }
-
-    /// 当前菜单导航手感（M22/W3；`RuntimeScene` 每帧读它同步设备层阈值）。
-    #[must_use]
-    pub fn nav_settings(&self) -> NavSettings {
-        self.state.borrow().nav
-    }
-
-    /// 覆盖菜单导航手感（Lua `input.set_nav_settings` / `load_settings` 用）。
-    pub fn set_nav_settings(&mut self, nav: NavSettings) {
-        self.state.borrow_mut().nav = nav;
-    }
-
-    /// 取走待处理的震动请求（M22/W2；宿主帧末调用一次）。
-    ///
-    /// Lua `input.rumble(low, high, ms)` 只记录请求，真正的设备调用（含到期归零的状态机）
-    /// 在 `host::gamepad::GamepadPoller`，因此需要宿主这一跳。
-    pub fn take_rumble_request(&mut self) -> Option<(f32, f32, u32)> {
-        self.state.borrow_mut().rumble_request.take()
-    }
-
-    /// `input.action_repeat` 的引擎实现（M22/W3，时间制连发）。
-    ///
-    /// 语义（与 M20-08 的 Lua 帧计数等价，但按毫秒）：
-    /// * 动作**本帧刚按下**（键或摇杆轴越过阈值的边沿）→ 立即返回 `true` 一步；
-    /// * 之后只有**模拟量绑定**（摇杆轴）持续按住时，才在超过 `nav.delay_ms` 后每
-    ///   `nav.repeat_ms` 返回一次 `true`；数字量绑定（键盘/DPad）按住**不连发**——
-    ///   保持 M20-08 既有的「一次按下 = 一步」语义（见 `docs/35` 与
-    ///   `jhyt_m20_gamepad` 的验收）；
-    /// * 「已按住但没有边沿」不补步，只开始计时（避免同一根摇杆同时驱动 `move_*`
-    ///   与 `ui_*` 时双步）。
-    pub fn action_repeat(&mut self, name: &str) -> bool {
-        self.state.borrow_mut().action_repeat(name)
+        let delta_seconds = delta_seconds.max(0.0);
+        self.state.borrow_mut().delta_seconds = delta_seconds;
+        // 下沉后的 `input` 绑定靠它把逻辑时间按固定步推进（连发节奏与帧率无关）。
+        self.installers.set_delta_seconds(delta_seconds);
     }
 
     /// 读 2D 相机控制器（WP4）。相机数据本身仍在宿主侧，这里只放"center 该怎么算"。
@@ -774,30 +619,15 @@ impl LuaRuntime {
         self.state.borrow_mut().ui_state.reference = reference;
     }
 
-    /// Sets the directory audio clips are loaded from.
-    pub fn set_audio_asset_dir(&mut self, dir: PathBuf) {
-        self.state.borrow_mut().audio.set_asset_dir(dir);
-    }
-
-    /// 暂停 BGM（编辑器暂停时调用）。
-    pub fn pause_music(&self) {
-        self.state.borrow().audio.pause_music();
-    }
-
-    /// 恢复 BGM（编辑器恢复运行时调用）。
-    pub fn resume_music(&self) {
-        self.state.borrow().audio.resume_music();
-    }
-
-    /// BGM 曲尾续播（宿主每帧调用一次；见 `AudioSystem::maintain_music`）。
-    pub fn maintain_music(&mut self) {
-        self.state.borrow_mut().audio.maintain_music();
-    }
-
     /// Sets the project root, used to resolve `scenes/<name>.scene` on load.
+    ///
+    /// 同时把**生效的设置根**写进注册表：`audio.load_settings` 等下沉后的设置持久化绑定读的是
+    /// 那里（`docs/62` P1）。这不是重复状态——`settings_root` 是运行时的口径（`input` 绑定还在用），
+    /// 注册表里的是"领域绑定能看见的那一份"，两者由这两个 setter 保持同步。
     pub fn set_project_root(&mut self, root: PathBuf) {
         // P1-③：一次借用完成两件事——相邻的两次 `borrow_mut()` 合并为一个借用
         // 作用域，杜绝任何"两次借用之间被重入"的窗口。
+        self.publish_settings_root(root.clone());
         let mut state = self.state.borrow_mut();
         state.project_root = Some(root);
         // 换工程 → 字体也可能换：丢缓存，下次 `ui.measure_text` 重新读盘。
@@ -806,14 +636,26 @@ impl LuaRuntime {
 
     /// Sets the file path save data is committed to / loaded from.
     pub fn set_save_path(&mut self, path: PathBuf) {
-        self.state.borrow_mut().save.path = Some(path);
+        self.state
+            .borrow()
+            .save
+            .with_mut(|save| save.set_path(Some(path)));
     }
 
     /// 设置玩家设置根目录（`settings.toml` 的读写根）。
     /// 发布包由宿主指向用户数据目录（见 `rustlua_infra::user_dir`），开发工程不调用，
     /// 于是退回项目根——编辑器与 `jhyt_m20_*` 检查的就是工程内那份。
     pub fn set_settings_root(&mut self, root: PathBuf) {
+        self.publish_settings_root(root.clone());
         self.state.borrow_mut().settings_root = Some(root);
+    }
+
+    /// 把"当前生效的设置根"同步给注册表（领域绑定经它读 `settings.toml`）。
+    ///
+    /// 口径与 [`settings_root`] 一致：显式 `settings_root` 优先，否则退回项目根。显式值还没设时
+    /// 先把项目根写进去，后续 `set_settings_root` 会覆盖。
+    fn publish_settings_root(&self, root: PathBuf) {
+        self.installers.set_root(Some(root));
     }
 
     /// Gives the host a read view of the UI text and bar elements.
@@ -1297,30 +1139,6 @@ fn require_positive_tile_size(tile_size: f32) -> Result<(), mlua::Error> {
     Ok(())
 }
 
-/// Resolves the save file path for the active slot. `None` keeps the original
-/// path.
-fn save_path_for_slot(path: &Path, slot: Option<&str>) -> PathBuf {
-    let Some(slot) = slot else {
-        return path.to_path_buf();
-    };
-    let safe: String = slot
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let safe = if safe.is_empty() {
-        "default".to_owned()
-    } else {
-        safe
-    };
-    path.with_file_name(format!("save_{safe}.sav"))
-}
-
 /// 工程里某个场景文件的路径（`<project_root>/scenes/<name>.scene`）。
 pub(crate) fn scene_file_path(state: &ScriptState, name: &str) -> Option<PathBuf> {
     state
@@ -1576,85 +1394,6 @@ fn refresh_tilemap_physics(state: &mut ScriptState, entity: EntityId) {
     }
 }
 
-/// 输入层诊断（M20-07）：只保留最近 [`INPUT_DIAGNOSTIC_LIMIT`] 条，最新在后。
-fn push_input_diagnostic(state: &mut ScriptState, message: String) {
-    const INPUT_DIAGNOSTIC_LIMIT: usize = 16;
-    tracing::warn!(target: "input", "{}", message);
-    if state.input_diagnostics.len() >= INPUT_DIAGNOSTIC_LIMIT {
-        state.input_diagnostics.remove(0);
-    }
-    state.input_diagnostics.push(message);
-}
-
-/// 玩家设置根目录：显式设置的 `settings_root`（发布包 = 用户数据目录）优先，
-/// 否则退回项目根（开发工程形态）。所有 `settings.toml` 读写都必须走这里，
-/// 否则发布包会出现"读用户目录、写程序目录"这种两边不一致的坏行为。
-fn settings_root(state: &ScriptState) -> Option<PathBuf> {
-    state
-        .settings_root
-        .clone()
-        .or_else(|| state.project_root.clone())
-}
-
-/// 解析 `input.load_settings/save_settings` 的可选路径参数（M20-07）。
-///
-/// * 省略 → `<settings_root>/settings.toml`（无根返回 `None`，Lua 侧报
-///   `no_project_root`）；
-/// * 相对路径 → 相对设置根解析（无根返回 `None`）；
-/// * 绝对路径 → 原样使用（无头/测试场景可给绝对路径）。
-fn resolve_input_settings_path(state: &ScriptState, path: Option<&str>) -> Option<PathBuf> {
-    match path.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(value) => {
-            let candidate = PathBuf::from(value);
-            if candidate.is_absolute() {
-                Some(candidate)
-            } else {
-                settings_root(state).map(|root| root.join(candidate))
-            }
-        }
-        None => settings_root(state).map(|root| ProjectSettings::path_in(&root)),
-    }
-}
-
-/// Lua `input.is_down/just_pressed/just_released` 的键名解析（M22/W1 起**严格**）。
-///
-/// 接受三种写法，与设置文件 / 编辑器捕获共用同一套键身份：
-///
-/// 1. **v2 物理键名**：`input.is_down("keye")`、`input.is_down("digit1")`、
-///    `input.is_down("arrowup")`、`input.is_down("space")`（即 [`KeyCode::to_text`]
-///    的输出，大小写不敏感，`key:` 前缀可省）；
-/// 2. **v1 兼容名**：`"w"`、`"1"`、`"up"`、`"f1"`、`"space"`、`"escape"`、
-///    `"other:1048577"`——老脚本与既有 headless 用例继续可用，按 US-QWERTY 位置
-///    换算（见 [`KeyCode::v1_key_code`]）；
-/// 3. `"key:<名字>"` 前缀形式（与 `input.rebind` 的绑定文本同源）。
-///
-/// **未知名报 Lua 错误**：旧实现把任何不认识的键静默映射成 `Other(0)`，于是拼错的
-/// 键名与真实按键无法区分（`input.is_down("W ")` 会永远返回 false 且毫无提示）。
-/// 现在与 `Binding::parse` 同一严格度，错误信息里带上原值。
-fn parse_key_strict(name: &str) -> LuaResult<KeyCode> {
-    let raw = name.trim();
-    if raw.is_empty() {
-        return Err(api_error("input key name must not be empty"));
-    }
-    let value = raw.strip_prefix("key:").unwrap_or(raw);
-    if let Some(key) = KeyCode::from_text(value) {
-        return Ok(key);
-    }
-    let mut notes = Vec::new();
-    if let Some(key) = KeyCode::v1_key_code(value, &mut notes) {
-        return Ok(key);
-    }
-    Err(api_error(format!(
-        "unknown input key: {raw}（可用物理键名如 keye/digit1/arrowup/space，或旧名如 w/1/up）"
-    )))
-}
-
-/// 音量总线名 → [`AudioBus`]；未知名报 Lua 错误（拼写错误可定位，不静默）。
-fn parse_audio_bus(name: &str) -> LuaResult<AudioBus> {
-    AudioBus::from_key(&name.trim().to_ascii_lowercase())
-        .ok_or_else(|| api_error(format!("unknown audio bus: {name}")))
-}
-
 /// P1-③：`ScriptState` 的重入借用失败从 **RefCell panic** 降级为 Lua 可捕获错误。
 ///
 /// Lua API 闭包**应当**用 `try_borrow(_mut)` + 本函数收尾：万一 mlua 经 `__index` 等
@@ -1667,9 +1406,9 @@ fn parse_audio_bus(name: &str) -> LuaResult<AudioBus> {
 /// 收口方向与验收办法见 `docs/60` §10 的 §4.3 条（要点：外层与内层都要转，只转一层等于没转；
 /// 最好再用类型把 panic 版借用藏起来，免得下一个绑定又写回 `s.borrow_mut()`）。
 fn reentrant_borrow(error: impl std::fmt::Display) -> mlua::Error {
-    mlua::Error::external(format!(
-        "script state is already borrowed (reentrant Lua call?): {error}"
-    ))
+    // 文案由契约层统一（`rustlua-lua-api`）：绑定下沉之后，"被借住的单元"不止这一个中枢，
+    // 两处各写一句会让同一次重入在日志里长得不一样。
+    rustlua_lua_api::reentrant_borrow("script state", error)
 }
 
 /// P2-③：Lua API 闭包的借用样板收敛（`Rc<RefCell<ScriptState>>` 的扩展方法）。
@@ -1689,37 +1428,5 @@ impl LuaStateBorrow for std::rc::Rc<std::cell::RefCell<ScriptState>> {
         self.try_borrow_mut().map_err(reentrant_borrow)
     }
 }
-/// 鼠标按钮名 → [`MouseButton`]（P1-④：与 `parse_key_strict` 同一严格度）。
-///
-/// 旧实现把任何不认识的名字静默映射成 `Other(0)`，拼错的按钮名与真实按钮无法
-/// 区分。现在未知名报 Lua 错误；接受的写法与 `Binding::parse` 的 `mouse:*` 同源：
-/// `left` / `right` / `middle` / `other:<序号>`，`mouse:` 前缀可省，大小写不敏感。
-fn parse_mouse_button(button: &str) -> LuaResult<MouseButton> {
-    let raw = button.trim();
-    if raw.is_empty() {
-        return Err(api_error("mouse button name must not be empty"));
-    }
-    let value = raw
-        .strip_prefix("mouse:")
-        .unwrap_or(raw)
-        .to_ascii_lowercase();
-    match value.as_str() {
-        "left" => Ok(MouseButton::Left),
-        "right" => Ok(MouseButton::Right),
-        "middle" => Ok(MouseButton::Middle),
-        other => other
-            .strip_prefix("other:")
-            .and_then(|index| index.parse::<u16>().ok())
-            .map_or_else(
-                || {
-                    Err(api_error(format!(
-                        "unknown mouse button: {raw}（可用 left/right/middle/other:<序号>）"
-                    )))
-                },
-                |index| Ok(MouseButton::Other(index)),
-            ),
-    }
-}
-
 #[cfg(test)]
 mod tests;

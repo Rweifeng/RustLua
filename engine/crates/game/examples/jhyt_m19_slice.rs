@@ -55,7 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---------------- 1. 创建存档 ----------------
     banner("M19-01① 创建存档：title → BtnStart → manor，初始资源 + 内容校验");
-    let mut rt = new_runtime(&project_arg, &save_path)?;
+    let (mut rt, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut rt, &main_script)?;
     click_button(&mut rt, "BtnStart")?;
     assert_scene_is(&mut rt, "manor")?;
@@ -140,7 +140,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "true|sunny",
     )?;
     lua(&mut rt, &format!("clock.set(1, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
 
     // ---------------- 2. 开垦 → 播种 → 浇水 ----------------
     banner("M19-01② 种田闭环：开垦→播种→浇水（farm.act 与真实 E 键各一次）");
@@ -208,9 +208,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (ry as f32 - 0.5) * 32.0
         ),
     )?;
-    press(&mut rt, KeyCode::KeyE)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     assert_str(&mut rt, "require('core.state').last_action", "till")?;
-    press(&mut rt, KeyCode::KeyE)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     assert_str(
         &mut rt,
         "require('core.state').last_action",
@@ -220,7 +220,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut rt,
         "inv.equip(require('core.state').inventory, 'tool', 'watering_can')",
     )?;
-    press(&mut rt, KeyCode::KeyE)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     assert_str(&mut rt, "require('core.state').last_action", "water_rice")?;
     assert_num(&mut rt, "require('core.state').energy", 55.0)?;
     // 三层分工（M72-08）：FarmGrid 只画土面（1=犁地 2=干涸），FarmMoist 画当日湿痕，
@@ -255,13 +255,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("M19-01③ 进入云泽村：走 manor→village 出口格真实路径，NPC 在场");
     teleport_world(&mut rt, MANOR_TO_VILLAGE)?;
     lua(&mut rt, "require('core.state').facing = 'down'")?;
-    press(&mut rt, KeyCode::KeyE)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     rt.process_scene_transition()?;
     assert_scene_is(&mut rt, "village")?;
     assert_map_current(&mut rt, "village")?;
     assert_str(&mut rt, "require('core.state').last_action", "exit_village")?;
     lua(&mut rt, &format!("clock.set(1, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     for npc_id in ["npc_shen_qingluo", "npc_lin_xiaoman"] {
         assert_str(
             &mut rt,
@@ -277,7 +277,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---------------- 4. 接任务：订单 + 主线第一段 ----------------
     banner("M19-01④ 接任务：对话接订单 order_herb + 主线 mainline_arrival");
     // 订单·药庐灵芝（沈青萝）：greet → order_intro → 接取 → 结束。
-    talk_to(&mut rt, "npc_shen_qingluo")?;
+    talk_to(&mut rt, &host, "npc_shen_qingluo")?;
     assert_str(
         &mut rt,
         "require('world.dialogue').dialogue_id()",
@@ -308,8 +308,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     rt.process_scene_transition()?;
     assert_scene_is(&mut rt, "manor")?;
     lua(&mut rt, &format!("clock.set(1, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
-    talk_to(&mut rt, "npc_gu_changfeng")?;
+    frames(&mut rt, &host, 2)?;
+    talk_to(&mut rt, &host, "npc_gu_changfeng")?;
     assert_str(
         &mut rt,
         "require('world.dialogue').dialogue_id()",
@@ -337,7 +337,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('world.quest').state('mainline_arrival')",
         "deliverable",
     )?;
-    talk_to(&mut rt, "npc_gu_changfeng")?;
+    talk_to(&mut rt, &host, "npc_gu_changfeng")?;
     choose_option(&mut rt, "药田翻好了，规矩也已记下。")?;
     assert_str(
         &mut rt,
@@ -364,7 +364,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     rt.process_scene_transition()?;
     assert_scene_is(&mut rt, "mountain_path")?;
     assert_map_current(&mut rt, "mountain_path")?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     // 数据侧：山道有采集点，野猪在该图。
     assert_num(
         &mut rt,
@@ -383,7 +383,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let labor_before = query_num(&mut rt, "require('core.state').labor_minutes")?;
     teleport_world(&mut rt, GATHER_STAND)?;
     lua(&mut rt, "require('core.state').facing = 'up'")?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     // 只读辅助：面向格命中可采集节点。
     assert_str(
         &mut rt,
@@ -398,7 +398,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "E: 采集 灵芝",
     )?;
     // 真实按键路径：E → interaction → gather 目标 → inv/labor/已采记录。
-    press(&mut rt, KeyCode::KeyE)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     assert_str(
         &mut rt,
         "require('core.state').last_action",
@@ -433,7 +433,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('systems.interaction').prompt('up')",
         "（已采集 · 灵芝）",
     )?;
-    press(&mut rt, KeyCode::KeyE)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     assert_num(
         &mut rt,
         "inv.count(require('core.state').inventory, 'lingzhi')",
@@ -491,8 +491,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         10.0,
     )?;
     let kills_before = query_num(&mut rt, "require('systems.combat').stats().kills")?;
-    strike_boar(&mut rt)?;
-    frames(&mut rt, 30)?;
+    strike_boar(&mut rt, &host)?;
+    frames(&mut rt, &host, 30)?;
     let boar_hp = query_str(
         &mut rt,
         "require('systems.enemy').query('enemy_wild_boar').hp",
@@ -505,9 +505,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     println!("野猪 hp after 1st strike = {boar_hp}");
     // 第二击（等冷却 24 步）→ 击杀，战斗账本 kills +1。
-    frames(&mut rt, 30)?;
-    strike_boar(&mut rt)?;
-    frames(&mut rt, 30)?;
+    frames(&mut rt, &host, 30)?;
+    strike_boar(&mut rt, &host)?;
+    frames(&mut rt, &host, 30)?;
     assert_num(
         &mut rt,
         "require('systems.combat').stats().kills",
@@ -536,15 +536,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut rt,
         "require('player.player').teleport(304.0, 496.0); require('core.state').facing = 'up'",
     )?;
-    frames(&mut rt, 2)?;
-    press(&mut rt, KeyCode::KeyE)?;
+    frames(&mut rt, &host, 2)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     assert_str(&mut rt, "require('core.state').last_action", "gather_rice")?;
     lua(
         &mut rt,
         "require('player.player').teleport(944.0, 464.0); require('core.state').facing = 'up'",
     )?;
-    frames(&mut rt, 2)?;
-    press(&mut rt, KeyCode::KeyE)?;
+    frames(&mut rt, &host, 2)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     assert_str(
         &mut rt,
         "require('core.state').last_action",
@@ -558,13 +558,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut rt,
         "require('player.player').teleport(272.0, 496.0); require('core.state').facing = 'left'",
     )?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(
         &mut rt,
         "require('systems.interaction').prompt('left')",
         "E: 采集 莲子",
     )?;
-    press(&mut rt, KeyCode::KeyE)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     assert_str(
         &mut rt,
         "require('core.state').last_action",
@@ -574,13 +574,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut rt,
         "require('player.player').teleport(272.0, 496.0); require('core.state').facing = 'down'",
     )?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(
         &mut rt,
         "require('systems.interaction').prompt('down')",
         "E: 采集 芦苇",
     )?;
-    press(&mut rt, KeyCode::KeyE)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     assert_str(&mut rt, "require('core.state').last_action", "gather_reed")?;
     // 内容推进（2026-09-27，docs/48 接线）：茶丛 (19,10) 与野果树（搬迁后 (8,17)）。
     // 站到采集点**相邻格**并面向它（(19,9)→(19,10)、(8,16)→(8,17)）。
@@ -588,13 +588,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut rt,
         "require('player.player').teleport(624.0, 304.0); require('core.state').facing = 'up'",
     )?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(
         &mut rt,
         "require('systems.interaction').prompt('up')",
         "E: 采集 茶叶",
     )?;
-    press(&mut rt, KeyCode::KeyE)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     assert_str(
         &mut rt,
         "require('core.state').last_action",
@@ -604,13 +604,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut rt,
         "require('player.player').teleport(272.0, 528.0); require('core.state').facing = 'up'",
     )?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(
         &mut rt,
         "require('systems.interaction').prompt('up')",
         "E: 采集 野果",
     )?;
-    press(&mut rt, KeyCode::KeyE)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     assert_str(
         &mut rt,
         "require('core.state').last_action",
@@ -642,13 +642,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut rt,
         "require('player.player').teleport(336.0, 160.0); require('core.state').facing = 'down'",
     )?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(
         &mut rt,
         "require('systems.interaction').prompt('down')",
         "E: 采集 木料",
     )?;
-    press(&mut rt, KeyCode::KeyE)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     assert_str(
         &mut rt,
         "require('core.state').last_action",
@@ -671,13 +671,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     rt.process_scene_transition()?;
     assert_scene_is(&mut rt, "village")?;
     lua(&mut rt, &format!("clock.set(1, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     let money_before = query_num(&mut rt, "require('core.state').money")?;
     let rel_before = query_num(
         &mut rt,
         "require('player.relationship').points('npc_shen_qingluo')",
     )?;
-    talk_to(&mut rt, "npc_shen_qingluo")?;
+    talk_to(&mut rt, &host, "npc_shen_qingluo")?;
     choose_option(&mut rt, "灵芝备好了，共两株。")?;
     assert_str(
         &mut rt,
@@ -714,7 +714,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('world.quest').state('mainline_orders')",
         "not_started",
     )?;
-    talk_to(&mut rt, "npc_shen_qingluo")?;
+    talk_to(&mut rt, &host, "npc_shen_qingluo")?;
     choose_option(&mut rt, "村里还有别的活计吗？")?;
     choose_option(&mut rt, "应该的。")?;
     assert_str(
@@ -731,7 +731,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut rt,
         "require('player.relationship').reputation('village')",
     )?;
-    talk_to(&mut rt, "npc_lin_xiaoman")?;
+    talk_to(&mut rt, &host, "npc_lin_xiaoman")?;
     assert_str(
         &mut rt,
         "require('world.dialogue').dialogue_id()",
@@ -747,8 +747,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     choose_option(&mut rt, "放心。")?;
     lua(&mut rt, "clock.set(1, 600)")?;
-    frames(&mut rt, 2)?;
-    talk_to(&mut rt, "npc_lin_xiaoman")?;
+    frames(&mut rt, &host, 2)?;
+    talk_to(&mut rt, &host, "npc_lin_xiaoman")?;
     choose_option(&mut rt, "两斗稻谷在此。")?;
     assert_str(
         &mut rt,
@@ -780,13 +780,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     rt.process_scene_transition()?;
     assert_scene_is(&mut rt, "mountain_path")?;
     lua(&mut rt, "clock.set(2, 480)")?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     lua(
         &mut rt,
         "require('player.player').teleport(400.0, 336.0); require('core.state').facing = 'up'",
     )?;
-    frames(&mut rt, 2)?;
-    press(&mut rt, KeyCode::KeyE)?;
+    frames(&mut rt, &host, 2)?;
+    press(&mut rt, &host, KeyCode::KeyE)?;
     assert_str(
         &mut rt,
         "require('core.state').last_action",
@@ -810,7 +810,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let key = format!("{bx},{by}");
     // 接取山庄订单 order_pill（顾长风），让三个订单都进入玩家任务栏；
     // 交付要等回复药出炉，故在收取后回话。
-    talk_to(&mut rt, "npc_gu_changfeng")?;
+    talk_to(&mut rt, &host, "npc_gu_changfeng")?;
     choose_option(&mut rt, "庄中可有要办的差事？")?;
     choose_option(&mut rt, "愿为山庄炼一丸。")?;
     assert_str(
@@ -867,8 +867,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 山庄订单：交付刚炼出的回复药。
     let money_before3 = query_num(&mut rt, "require('core.state').money")?;
     lua(&mut rt, &format!("clock.set(1, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
-    talk_to(&mut rt, "npc_gu_changfeng")?;
+    frames(&mut rt, &host, 2)?;
+    talk_to(&mut rt, &host, "npc_gu_changfeng")?;
     choose_option(&mut rt, "回复药炼好了，请过目。")?;
     assert_str(
         &mut rt,
@@ -894,13 +894,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     rt.process_scene_transition()?;
     assert_scene_is(&mut rt, "village")?;
     lua(&mut rt, &format!("clock.set(1, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(
         &mut rt,
         "require('world.quest').state('mainline_orders')",
         "deliverable",
     )?;
-    talk_to(&mut rt, "npc_shen_qingluo")?;
+    talk_to(&mut rt, &host, "npc_shen_qingluo")?;
     choose_option(&mut rt, "这把药材，请沈掌柜验看。")?;
     assert_str(
         &mut rt,
@@ -920,6 +920,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     lua(&mut rt, "require('core.state').energy = 42")?;
     press(
         &mut rt,
+        &host,
         KeyCode::from_char('t').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_str(&mut rt, "require('core.state').last_action", "sleep")?;
@@ -943,7 +944,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---------------- 9. 第二天读档 ----------------
     banner("M19-01⑨ 第二天读档：第二个 runtime → title → BtnContinue，跨 runtime 一致");
-    let mut second = new_runtime(&project_arg, &save_path)?;
+    let (mut second, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut second, &main_script)?;
     click_button(&mut second, "BtnContinue")?;
     // 存档发生在云泽村（第 8 章睡觉处），读档后应回到同一张图。
@@ -1057,8 +1058,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut second,
         &format!("clock.set({}, {TEN_AM})", day_before as i64 + 1),
     )?;
-    frames(&mut second, 2)?;
-    talk_to(&mut second, "npc_shen_qingluo")?;
+    frames(&mut second, &host, 2)?;
+    talk_to(&mut second, &host, "npc_shen_qingluo")?;
     choose_option(&mut second, "三笔买卖都清了。")?;
     choose_option(&mut second, "请验看。")?;
     assert_str(
@@ -1067,7 +1068,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "deliverable",
     )?;
     choose_option(&mut second, "好。")?;
-    talk_to(&mut second, "npc_shen_qingluo")?;
+    talk_to(&mut second, &host, "npc_shen_qingluo")?;
     choose_option(&mut second, "请验我炼的行气散。")?;
     assert_str(
         &mut second,
@@ -1163,14 +1164,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 // ---------- helpers ----------
 
 /// Creates a bare engine runtime pointing at the project scripts & save file.
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 /// Runs the project script, then loads the `main` 门面 scene so BtnStart/BtnContinue are live.
@@ -1193,19 +1199,27 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }
 
 /// Runs `update()` for `n` frames with an empty input snapshot.
-fn frames(runtime: &mut LuaRuntime, n: usize) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+fn frames(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    n: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    host.set_input(InputSnapshot::default());
     for _ in 0..n {
         runtime.call_update()?;
     }
@@ -1333,7 +1347,11 @@ fn teleport_world(
 ///
 /// teleport 会同步刚体与 ECS Transform，但物理步可能把重叠刚体推开，
 /// 因此按键的每一帧都重新贴回站立格（等价于玩家真实走位到 NPC 面前）。
-fn talk_to(runtime: &mut LuaRuntime, persist_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn talk_to(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    persist_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let stick = format!(
         "(function() local q = require('world.npc').query('{persist_id}'); \
            if not q or not q.live then return 'no_npc' end; \
@@ -1357,10 +1375,10 @@ fn talk_to(runtime: &mut LuaRuntime, persist_id: &str) -> Result<(), Box<dyn std
     }
     let mut input = InputSnapshot::default();
     input.key_event(KeyCode::KeyE, true);
-    runtime.set_input(input);
+    host.set_input(input);
     lua(runtime, &stick)?;
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     lua(runtime, &stick)?;
     runtime.call_update()?;
     Ok(())
@@ -1386,7 +1404,10 @@ fn choose_option(runtime: &mut LuaRuntime, text: &str) -> Result<(), Box<dyn std
 }
 
 /// 把玩家放到野猪侧面并朝它按 J（真实普攻键路径）。
-fn strike_boar(runtime: &mut LuaRuntime) -> Result<(), Box<dyn std::error::Error>> {
+fn strike_boar(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+) -> Result<(), Box<dyn std::error::Error>> {
     let got = query_str(
         runtime,
         "(function() local q = require('systems.enemy').query('enemy_wild_boar'); \
@@ -1399,9 +1420,10 @@ fn strike_boar(runtime: &mut LuaRuntime) -> Result<(), Box<dyn std::error::Error
     if got != "ok" {
         return Err(format!("boar not strikeable: {got}").into());
     }
-    frames(runtime, 2)?;
+    frames(runtime, &host, 2)?;
     press(
         runtime,
+        &host,
         KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
     )?;
     Ok(())

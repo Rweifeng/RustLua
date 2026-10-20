@@ -1,4 +1,4 @@
-shown	bg/night	image	0.00,0.00,1280.00,720.00,assets/art/title/title_bg_pixel.png,-
+shown	bg/night	image	0.00,0.00,1280.00,720.00,assets/art/ui/title/title_bg_pixel.png,-
 shown	bg/vignette	image	0.00,0.00,1280.00,720.00,assets/art/ui/menu/ui_menu_vignette.png,-
 shown	ink/band	image	320.00,80.00,640.00,160.00,assets/art/ui/menu/ui_menu_ink_band.png,-
 shown	logo	image	384.00,80.00,512.00,256.00,assets/art/ui/logo/ui_title_logo.png,-
@@ -30,7 +30,7 @@ shown	arrow/BtnContinue	text	hidden
 shown	arrow/BtnExit	text	hidden
 shown	hint	text	16.00,8.00,13,W/S 或 方向键 选择 · 空格 确认
 authored	BgNight	layout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.00,0.00,1280.00,720.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
-authored	BgNight	image	assets/art/title/title_bg_pixel.png,-,1.000,1.000,1.000
+authored	BgNight	image	assets/art/ui/title/title_bg_pixel.png,-,1.000,1.000,1.000
 authored	BgVignette	layout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.00,0.00,1280.00,720.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 authored	BgVignette	image	assets/art/ui/menu/ui_menu_vignette.png,-,1.000,1.000,1.000
 authored	InkBand	layout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=320.00,80.00,960.00,240.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000

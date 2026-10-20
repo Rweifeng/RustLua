@@ -436,9 +436,20 @@ const wasmInPack = fs.existsSync(path.join(root, 'pack', 'game_web_bg.wasm')) ||
     fail('--remote thin 需要 --remote-root <资源包目录>（内含 pack/，即导出的 CDN 目录）');
   }
   // 资源服务根目录：显式 --remote-root 时用它（auto 模式也可以从别处取完整资源包），否则用发布目录。
-  const remoteServeRoot = remoteRoot || root;
-  if (remoteMode === 'thin' && !fs.existsSync(path.join(remoteServeRoot, 'pack'))) {
-    fail(`--remote-root 下没有 pack/: ${remoteServeRoot}`);
+  let remoteServeRoot = remoteRoot || root;
+  if (remoteMode === 'thin') {
+    // 资源包的物理形状有两种，都认（判据取**内容标记**，不猜目录名）：
+    //   ① 老布局：`<root>/pack/…`（导出目录外面还套了一层 pack/）；
+    //   ② 现布局（2026-10-20 实测）：`<root>/…`，即 `assets/pack-sub/` 里直接就是
+    //      `manifest.txt` / `bundles/` / `assets/`——**这一层的内容**会上传成 CDN 上的 `pack/`。
+    // 旧实现只认 ①，于是每一份真实瘦首包都在这里被判"没有 pack/"。
+    if (fs.existsSync(path.join(remoteServeRoot, 'pack', 'manifest.txt'))) {
+      remoteServeRoot = path.join(remoteServeRoot, 'pack');
+    }
+    else if (!fs.existsSync(path.join(remoteServeRoot, 'manifest.txt'))) {
+      fail(`--remote-root 下找不到资源包内容（manifest.txt 或 pack/manifest.txt）：${remoteServeRoot}` +
+        '（瘦首包应传 <发布根>/assets/<pack 目录名>）');
+    }
   }
 
   const userRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rustlua-wx-user-'));

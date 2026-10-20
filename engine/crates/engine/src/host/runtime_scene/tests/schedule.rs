@@ -3,6 +3,7 @@
 //! 与调度性能统计出口。这些测试是 headless 的：直接驱动 RuntimeScene。
 
 use super::*;
+use rustlua_audio::spatial::Listener;
 use rustlua_camera::camera::CameraBounds;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -14,6 +15,44 @@ fn sample_root() -> std::path::PathBuf {
 fn sample_runtime() -> RuntimeScene {
     let root = sample_root();
     RuntimeScene::new(Some(&root)).expect("runtime for game_api sample project")
+}
+
+/// M74-01：听者位姿必须由宿主**每帧**灌进音频系统。
+///
+/// 守的是"接线在不在"：`play_at` 在没有听者时直接拒绝（`SpatialError::NoListener`），
+/// 所以这一处一旦被删掉，游戏里所有空间音效会**整个不响**——而纯音频单测、`cargo check`、
+/// 示例都发现不了（示例只测纯模型，宿主不在它的路径上）。
+///
+/// 口径：听者 = **本帧渲染所用的那台相机**。渲染路径已经有定帧视图时宿主复用它（不额外解析
+/// 一次，见 `tests/frame_view.rs` 的解析次数账本）；headless（本例就是）没有视图，于是解析一次
+/// ——所以这里的期望值取 `active_camera3d()`。
+#[test]
+fn listener_follows_the_active_camera_each_frame() {
+    let mut runtime = sample_runtime();
+    // 构造期不该凭空有听者：`None` 就是"宿主还没接线"的判据。
+    assert!(
+        runtime.audio_listener().is_none(),
+        "构造期听者必须为空（否则分不清接线前的状态）"
+    );
+    runtime
+        .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+        .expect("跑一帧");
+    let listener = runtime.audio_listener().expect("跑过一帧后听者必须就位");
+    let camera = runtime.active_camera3d();
+    let expected = Listener::facing(
+        [camera.position.x, camera.position.y, camera.position.z],
+        [camera.target.x, camera.target.y, camera.target.z],
+    );
+    assert_eq!(listener, expected, "听者必须就是本帧那台相机");
+    // 第二帧照样重灌（不是"只在第一帧灌一次"：相机随玩法移动，听者必须跟着走）。
+    runtime
+        .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+        .expect("再跑一帧");
+    assert_eq!(
+        runtime.audio_listener(),
+        Some(expected),
+        "每帧都要重灌（相机不动时必须还是同一份）"
+    );
 }
 
 /// **回归**：换图后必须重读新场景声明的 `Camera`，否则场景声明的 bounds 只在启动场景生效。

@@ -13,6 +13,14 @@ fn usage() {
          \x20 assetc scan <项目目录>           扫描并注册资源到 ResourceDatabase\n\
          \x20 assetc import <项目目录>         增量导入资源到 ImportCache\n\
          \x20 assetc verify <目录形态包> <容器形态包>  逐条目比对两种打包形态（docs/67 P0-2）\n\
+         \x20 assetc closure <发布根> [--plan <bundle_plan.json>] [--cdn <远端目录>] [--json]\n\
+         \x20                              按计划表核对最终产物：容器存在、索引可解析、\n\
+         \x20                              每条逻辑路径都在容器里（WebGL/PC/微信同一门）；\n\
+         \x20                              --cdn 给远端容器目录（-AssetPack remote 的 <发布根>/assets/pack、\n\
+         \x20                              或 -CdnPackDir 镜像）：本地找不到的容器在那里核，\n\
+         \x20                              keep 条目也允许只存在于该目录（随资源包上 CDN）；\n\
+         \x20                              keep 条目必须在目录里且不在任何容器中；\n\
+         \x20                              --allow-cdn-skip 显式声明这次不查远端（日志仍打印跳过数）\n\
 \x20 assetc inspect <包目录|.rlb>       打印容器索引摘要与启动闭包落在第几块（docs/67）\n\
          \x20 assetc list <项目目录>           列出已注册资源\n\
          \x20 assetc benchmark <项目目录>      输出各类资产压缩/解压基准\n\
@@ -61,6 +69,49 @@ fn run(args: &[String]) -> anyhow::Result<String> {
         Some("inspect") => {
             let target = arg(args, 2, "包目录或 .rlb 文件")?;
             assetc::inspect_bundles(&target)
+        }
+        Some("closure") => {
+            let base = arg(args, 2, "发布根")?;
+            let plan = args
+                .iter()
+                .position(|value| value == "--plan")
+                .and_then(|index| args.get(index + 1))
+                .map(PathBuf::from);
+            // `--cdn <目录>`：装容器的**远端目录**。两种用途：
+            // ① 瘦首包（`-AssetPack remote`）把 `pack/` 裁成骨架，所有组的容器都在
+            //    `<发布根>/assets/pack/…`——本地找不到的组在这里核；
+            // ② `-CdnPackDir` 镜像 / `cdn` 组：给定时所有 `cdn` 组都会在这里再核一遍。
+            // 都没给而计划里又有 `cdn` 组、或本地缺件时，那些组会被记成"未检查"问题（不是静默跳过）。
+            let cdn = args
+                .iter()
+                .position(|value| value == "--cdn")
+                .and_then(|index| args.get(index + 1))
+                .map(PathBuf::from);
+            let options = assetc::closure::ClosureOptions {
+                cdn: cdn.as_deref(),
+                allow_cdn_skip: args.iter().any(|value| value == "--allow-cdn-skip"),
+            };
+            let report =
+                assetc::closure::check_release_closure_with(&base, plan.as_deref(), options)?;
+            if args.iter().any(|value| value == "--json") {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_owned())
+                );
+                if report.problems.is_empty() {
+                    return Ok(String::new());
+                }
+                return Err(anyhow!("assetc_closure_failed {}", report.summary()));
+            }
+            if report.problems.is_empty() {
+                Ok(format!("assetc_closure_ok {}", report.summary()))
+            } else {
+                Err(anyhow!(
+                    "assetc_closure_failed {}：\n  - {}",
+                    report.summary(),
+                    report.problems.join("\n  - ")
+                ))
+            }
         }
         Some("layout") => {
             let target = arg(args, 2, "包目录或 bundle_plan.json")?;
@@ -146,9 +197,10 @@ fn run(args: &[String]) -> anyhow::Result<String> {
                     "--bundle" => {
                         let value = args
                             .get(i + 1)
-                            .ok_or_else(|| anyhow!("缺少参数: --bundle <none|single>"))?;
-                        mode = assetc::BundleMode::parse(value)
-                            .ok_or_else(|| anyhow!("--bundle 只认 none|single，收到 {value}"))?;
+                            .ok_or_else(|| anyhow!("缺少参数: --bundle <none|single|grouped>"))?;
+                        mode = assetc::BundleMode::parse(value).ok_or_else(|| {
+                            anyhow!("--bundle 只认 none|single|grouped，收到 {value}")
+                        })?;
                         i += 1;
                     }
                     other => return Err(anyhow!("package 未知参数: {other}")),

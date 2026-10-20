@@ -216,7 +216,7 @@ fn seed_live_input(lua: &Lua) -> LiveInput {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let runtime = LuaRuntime::new()?;
+    let runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry())?;
     let lua: &Lua = runtime.lua();
 
     let source = input_snapshot_source();

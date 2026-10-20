@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "comment": "P2-01 vendored fork manifest. Single source of truth for the fork-sync report. baseVersion must match vendor version file + engine/Cargo.lock; upstreamRepo is for humans; upstreamRef records where the unpatched base came from (crates.io package at baseVersion). Adding/removing a [patch.crates-io] entry requires updating this file and check-vendor-patches.ps1 together.",
+  "forks": [
+    {
+      "crate": "mlua",
+      "path": "vendor/mlua",
+      "versionFile": "Cargo.toml.orig",
+      "baseVersion": "0.11.6",
+      "upstreamRepo": "https://github.com/mlua-rs/mlua",
+      "upstreamRef": "crates.io:0.11.6",
+      "patched": true,
+      "reason": "wasm32-unknown-unknown error path: do not raise Err in Rust, skip catch_unwind (landing pads conflict with Lua C legacy EH)"
+    },
+    {
+      "crate": "mlua-sys",
+      "path": "vendor/mlua-sys",
+      "versionFile": "Cargo.toml.orig",
+      "baseVersion": "0.10.0",
+      "upstreamRepo": "https://github.com/mlua-rs/mlua",
+      "upstreamRef": "crates.io:0.10.0",
+      "patched": true,
+      "reason": "wasm shim: wasm-shim-c (minimal libc + trampoline + sjlj) and src/wasm_shim.rs"
+    },
+    {
+      "crate": "lua-src",
+      "path": "vendor/lua-src",
+      "versionFile": "Cargo.toml.orig",
+      "baseVersion": "550.0.0",
+      "upstreamRepo": "https://github.com/mlua-rs/mlua",
+      "upstreamRef": "crates.io:550.0.0",
+      "patched": true,
+      "reason": "wasm32 branch: zig cc --target=wasm32-freestanding -fwasm-exceptions -mllvm -wasm-enable-sjlj"
+    },
+    {
+      "crate": "wasm-bindgen-macro",
+      "path": "vendor/wasm-bindgen-macro/macro",
+      "versionFile": "Cargo.toml",
+      "baseVersion": "0.2.129",
+      "upstreamRepo": "https://github.com/rustwasm/wasm-bindgen",
+      "upstreamRef": "crates.io:0.2.129",
+      "patched": false,
+      "reason": "listed in [patch.crates-io] only to keep the macro/support pair on vendored paths; the code change lives in wasm-bindgen-macro-support"
+    },
+    {
+      "crate": "wasm-bindgen-macro-support",
+      "path": "vendor/wasm-bindgen-macro/macro-support",
+      "versionFile": "Cargo.toml",
+      "baseVersion": "0.2.129",
+      "upstreamRepo": "https://github.com/rustwasm/wasm-bindgen",
+      "upstreamRef": "crates.io:0.2.129",
+      "patched": true,
+      "reason": "same extern C change as wasm-bindgen-macro"
+    },
+    {
+      "crate": "wasm-bindgen-cli",
+      "path": "vendor/wasm-bindgen-cli/cli",
+      "versionFile": "Cargo.toml",
+      "baseVersion": "0.2.129",
+      "upstreamRepo": "https://github.com/rustwasm/wasm-bindgen",
+      "upstreamRef": "crates.io:0.2.129",
+      "patched": false,
+      "inLock": false,
+      "reason": "unpatched source kept in-repo so offline machines can build a matching CLI (not a dependency of the workspace)"
+    }
+  ]
+}

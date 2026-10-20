@@ -24,12 +24,17 @@ rustlua-ui = { path = "../rustlua-ui" }
 # 同一颗雷）；`web-time` 在原生上就是它的再导出，零行为变化。
 # 用途：`ui.measure_text` 首次调用要读 + 解析工程字体，那一段耗时必须能量出来。
 web-time = "1"
-rustlua-assets = { path = "../rustlua-assets" }
-rustlua-audio = { path = "../rustlua-audio" }
-rustlua-input = { path = "../rustlua-input" }
+# Lua 绑定的契约层（`docs/62` P1）：绑定期的错误口径 + 能力句柄 + 安装器注册表。
+# 它是叶子 crate（只依赖 mlua），所以"绑定下沉到所属 crate"不会成环。
+rustlua-lua-api = { path = "../rustlua-lua-api" }
 rustlua-gameplay = { path = "../rustlua-gameplay" }
 rustlua-infra = { path = "../rustlua-infra" }
 
 [dev-dependencies]
-# 图集引用门要真实落盘 PNG：加载器只读图片头取尺寸，非图片字节过不了这一步。
+# input 绑定下沉后库里不再依赖它（docs/62 P1 阶段 3）；测试仍要造快照。
+rustlua-input = { path = "../rustlua-input" }
+# 测试要真落盘 PNG：加载器只读图片头取尺寸，非图片字节过不了这一步。
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# `audio` 绑定已下沉到 `rustlua-audio`（`docs/62` P1）。测试仍要读音频设置版本号，
+# 但这只是 **dev** 依赖：库本身不再依赖它，改动半径与产物的依赖图都不受影响。
+rustlua-audio = { path = "../rustlua-audio" }

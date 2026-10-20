@@ -592,6 +592,12 @@ impl RuntimeScene {
         run_script: bool,
         packaged: bool,
     ) -> anyhow::Result<Self> {
+        // 表现层组件的 codec 在这里装（P1 ④）：`RuntimeScene` 是**所有**场景实例化的唯一入口
+        // （`new`/`new_with_layout`/`from_scene`/`from_scene_edit` 全走这里），而实例化会逐条
+        // 校验组件载荷——预制体套用、`validate_component_payload` 的调用方都在下游。装晚了
+        // 就会拿到"缺 codec"的硬错误（`Sprite`/`UiLayout` 那类组件被判非法，实体组件静默缺项），
+        // 这正是 `jhyt_m59_ui_prefab` 黄金对账抓到的那次回归。幂等，重复调用无害。
+        crate::host::scene_codecs::install();
         // docs/54 §4.1：`parent` 的默认语义由**场景自身**声明，而不是由宿主猜。未声明 ⇒ 组织
         // 关系（v2 历史语义），`spatial=local` ⇒ 父子参与空间组合（迁移后的场景）。宿主仍可用
         // `set_spatial_inheritance` 覆盖这次判断（回滚档）。
@@ -599,7 +605,12 @@ impl RuntimeScene {
         if let Some(issue) = rustlua_scene::scene_space::spatial_mode_issue(&scene) {
             tracing::warn!(target: "scene", scene = %scene.name, "{issue}");
         }
-        let mut script = LuaRuntime::new()?;
+        // `audio` 绑定住在 `rustlua-audio`（`docs/62` P1）：注册表与能力单元由组合根建，
+        // 宿主留着同一个句柄驱动音效目录与 BGM 生命周期（见 `RuntimeScene::audio`）。
+        let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+        let audio = handles.audio;
+        let input = handles.input;
+        let mut script = LuaRuntime::with_installers(installers)?;
         // Project root must be set before instantiation so scene components that
         // load assets (e.g. Animation3D) can resolve their mesh paths.
         if let Some(root) = project_root {
@@ -613,7 +624,7 @@ impl RuntimeScene {
         tracing::info!(target: "scene", "[scene] loaded name={} entities={}", scene.name, scene.entities.len());
         tracing::info!(target: "ecs", "[ecs] world initialized entities={instantiated}");
         if run_script && let Some(root) = project_root {
-            script.set_audio_asset_dir(root.join("assets").join("audio"));
+            audio.with_mut(|audio| audio.set_asset_dir(root.join("assets").join("audio")));
             // P3 用户数据目录：发布包（`<exe>/pack` + `release.toml`，或 `--pack`）
             // 把存档与玩家设置写到用户目录（`%APPDATA%\<app>`），不写程序目录；
             // 开发工程保持工程内 `.cache/save.sav` 与工程根 `settings.toml`。
@@ -680,6 +691,8 @@ impl RuntimeScene {
         let ui_scene_nodes = build_ui_scene_nodes(&scene, !run_script);
         let mut scene = Self {
             script,
+            audio,
+            input,
             script_micros: 0,
             sprite_batch: SpriteBatch::new(),
             sprite_parallelism: Parallelism::detected(),

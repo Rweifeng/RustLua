@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let main_script = project.join("scripts/main.lua");
 
-    let mut rt = LuaRuntime::new()?;
+    let mut rt = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry())?;
     rt.set_project_root(project.clone());
     rt.set_ui_viewport(1280, 720);
     rt.set_delta(1.0 / 60.0);

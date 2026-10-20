@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 thiserror.workspace = true
 rustlua-math = { path = "../rustlua-math" }
+rustlua-component-codec = { path = "../rustlua-component-codec" }
 rustlua-ecs = { path = "../rustlua-ecs" }
 
 [dev-dependencies]

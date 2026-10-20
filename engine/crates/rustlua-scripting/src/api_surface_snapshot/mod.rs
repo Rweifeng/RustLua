@@ -39,7 +39,8 @@ fn surface_tables(value: &serde_json::Value) -> BTreeMap<String, Vec<String>> {
 
 #[test]
 fn lua_api_surface_matches_baseline() {
-    let runtime = LuaRuntime::new().expect("lua vm");
+    let runtime =
+        LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).expect("lua vm");
     let current = surface_tables(
         &runtime
             .eval_json(LUA_API_PROBE)
@@ -101,7 +102,8 @@ const CONTRACT_TRANSCRIPT: &str = include_str!("lua_api_contract_transcript.txt"
 /// 对的是**同一份基线**，所以 PC↔Web 的等价是传递性的，不需要另写一套"web 期望值"。
 #[test]
 fn lua_api_contract_matches_transcript() {
-    let runtime = LuaRuntime::new().expect("lua vm");
+    let runtime =
+        LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).expect("lua vm");
     runtime
         .lua()
         .load(CONTRACT)

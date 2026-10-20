@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use rustlua_audio::audio::{AudioBus, AudioSystem};
-use rustlua_audio::sink::{self, AudioRequest, AudioSinkProvider};
+use rustlua_audio::sink::{self, AudioRequest, AudioSinkProvider, SpatialEmission};
+use rustlua_audio::spatial::{Listener, SpatialModel};
 
 /// provider 收到的每一次请求，便于断言"平台到底拿到了什么"。
 static RECORDS: Mutex<Vec<Recorded>> = Mutex::new(Vec::new());
@@ -19,6 +20,7 @@ struct Recorded {
     volume: f32,
     asset_dir: Option<PathBuf>,
     looping: bool,
+    spatial: Option<SpatialEmission>,
 }
 
 struct Recorder;
@@ -31,6 +33,7 @@ impl AudioSinkProvider for Recorder {
             volume: request.volume,
             asset_dir: request.asset_dir.map(PathBuf::from),
             looping: request.looping,
+            spatial: request.spatial,
         });
         Ok(())
     }
@@ -85,4 +88,34 @@ fn play_goes_through_the_platform_sink_with_resolved_volume() {
     assert!(music.looping, "BGM 必须带循环标记（平台自己循环）");
 
     assert_eq!(records[2].bus, AudioBus::Ui);
+    // 普通 2D 播放不带空间信息：`spatial = None` 就是"与 M74-01 之前完全一样"的判据。
+    assert!(records[2].spatial.is_none(), "2D 播放不该凭空带空间参数");
+    // 先放开锁：`play_at` 会回调 provider，而 provider 自己也要拿这把锁（不放开就是死锁）。
+    drop(records);
+
+    // ── M74-01：空间播放把 `gain` 折进音量、把 `gain/pan` 原样交给平台 ──
+    audio.set_listener(Listener::at_origin());
+    audio
+        .set_spatial_model(SpatialModel {
+            min_distance: 1.0,
+            max_distance: 21.0,
+        })
+        .unwrap();
+    let params = audio
+        .play_at("sfx_campfire", [10.0, 0.0, 0.0])
+        .expect("走平台出口的空间播放应当成功");
+    // 10 m 处：(21-10)/(21-1) = 0.55，正右 pan = 1
+    assert!((params.gain - 0.55).abs() < 1e-6, "gain={}", params.gain);
+    assert!((params.pan - 1.0).abs() < 1e-6, "pan={}", params.pan);
+
+    let records = RECORDS.lock().unwrap();
+    let spatial = records[3].spatial.expect("平台必须拿到空间参数");
+    assert!((spatial.gain - 0.55).abs() < 1e-6);
+    assert!((spatial.pan - 1.0).abs() < 1e-6);
+    // 音量 = 主 0.5 × SFX 0.5 × 空间增益 0.55 = 0.1375（平台不需要知道空间模型）
+    assert!(
+        (records[3].volume - 0.1375).abs() < 1e-6,
+        "音量应为 0.5×0.5×0.55=0.1375，实际 {}",
+        records[3].volume
+    );
 }

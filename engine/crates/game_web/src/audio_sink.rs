@@ -68,6 +68,21 @@ struct WebAudioSink;
 impl AudioSinkProvider for WebAudioSink {
     fn play(&self, request: AudioRequest<'_>) -> Result<(), String> {
         let logical = resolve_logical(&request)?;
+        // M74-01：引擎已经把空间增益乘进 `volume`，这里**不需要**再算距离；而 `pan` 只有
+        // WebAudio 的 `PannerNode` 能表达，当前两条分支（`HTMLAudioElement` /
+        // `wx.createInnerAudioContext`）**都只有音量**。所以显式记一条"声像未应用"——
+        // 两端听感不同却查不出原因，比听不出来更难定位（口径见 `sink::SpatialEmission`）。
+        if let Some(spatial) = request.spatial
+            && spatial.pan.abs() > 0.01
+        {
+            tracing::debug!(
+                target: "audio",
+                name = request.name,
+                pan = spatial.pan,
+                gain = spatial.gain,
+                "[audio] platform sink has no panning; playing centred"
+            );
+        }
         let result = if let Some(wx) = wechat_global() {
             play_wechat(&wx, &logical, request.volume, request.looping)
         } else {

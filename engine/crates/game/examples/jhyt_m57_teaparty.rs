@@ -327,7 +327,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 // ---------- helpers（与 jhyt_m48_npc 同一套） ----------
 
 fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry())?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     runtime.set_ui_viewport(1280, 720);

@@ -198,7 +198,7 @@ impl ResourceBrowserState {
 
             // 统一从 ImporterRegistry 取版本：assetc 与编辑器同源，避免版本漂移。
             // core 拆分后 builtin() 不含 Scene/Prefab 导入器，必须用完整注册表。
-            let importer_version = rustlua_scene::asset_import::full_registry()
+            let importer_version = rustlua_assets_import::full_registry()
                 .get(kind)
                 .map(rustlua_assets::importer::Importer::version)
                 .unwrap_or(kind.token());

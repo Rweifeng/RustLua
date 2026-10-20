@@ -19,7 +19,7 @@ fn clock_save_slots_blobs_map_inventory_and_data_lua_api() {
     town.add_entity(SceneEntityId(1), "Spawn", None).unwrap();
     town.save(scenes.join("town.scene")).unwrap();
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     runtime.set_save_path(root.join(".data").join("save.sav"));
     runtime.set_ui_viewport(1280, 720);
@@ -80,7 +80,7 @@ fn clock_save_slots_blobs_map_inventory_and_data_lua_api() {
 
 #[test]
 fn map_state_schema_rejects_invalid_writes_and_can_clear() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let path = script(
         "map.schema('farm', { ['$kind'] = 'object', \
          fields = { version = 'integer', \
@@ -196,7 +196,7 @@ fn map_state_tilemap_snapshot_survives_scene_change_and_restart() {
     // 启动脚本只加载一次；后续步骤通过 `execute_console` 在同一 VM 中执行，
     // 因为 `execute_project_script` 会重建 Lua VM，不能依赖跨脚本的全局 helper。
     // 切图不会重置 VM，因此 snapshot/restore helper 会跨 map.go 保留。
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     runtime.set_save_path(save_path.clone());
     let path = script(boot);
@@ -246,7 +246,7 @@ fn map_state_tilemap_snapshot_survives_scene_change_and_restart() {
     assert!(save_path.is_file(), "session one should commit a save file");
 
     // ---- second session: fresh runtime boots on the same project/save.
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     runtime.set_save_path(save_path.clone());
     let boot_path = script(boot);
@@ -287,7 +287,7 @@ fn data_schema_registration_rejects_invalid_tables_on_load() {
     .unwrap();
     fs::write(data.join("bad.json"), r#"{"tomato":{"stack":"big"}}"#).unwrap();
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     let path = script(
         "local items_schema = { ['$kind'] = 'map', values = { name = 'string', stack = 'integer' } }\n\
@@ -316,7 +316,7 @@ fn save_clear_and_map_state_clear_drop_persisted_keys() {
     fs::create_dir_all(&dir).unwrap();
     let save_path = dir.join("save.sav");
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_save_path(save_path.clone());
     let path = script(
         "save.write('hp', '75')\n\
@@ -350,7 +350,7 @@ fn new_game_style_clear_removes_map_keys_and_survives_reload() {
     fs::create_dir_all(&dir).unwrap();
     let save_path = dir.join("save.sav");
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_save_path(save_path.clone());
     let writer = script(
         "map.set_spawn(120, 240)\n\
@@ -363,7 +363,7 @@ fn new_game_style_clear_removes_map_keys_and_survives_reload() {
     assert!(save_path.is_file());
 
     // 第二次会话：读档 → 清档 → 落盘 → 第三次会话读回：什么都不该剩下。
-    let mut fresh = LuaRuntime::new().unwrap();
+    let mut fresh = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     fresh.set_save_path(save_path.clone());
     let clearer = script(
         "local ok = save.load()\n\
@@ -380,7 +380,7 @@ fn new_game_style_clear_removes_map_keys_and_survives_reload() {
     fresh.execute_project_script(&clearer).unwrap();
     assert_eq!(fresh.call_update().unwrap(), "ok");
 
-    let mut third = LuaRuntime::new().unwrap();
+    let mut third = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     third.set_save_path(save_path.clone());
     let reader = script(
         "local ok = save.load()\n\
@@ -409,7 +409,7 @@ fn save_load_rejects_older_save() {
     let save_path = dir.join("save.sav");
     fs::write(&save_path, "save_version=0\nhp\t10\n").unwrap();
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_save_path(save_path.clone());
     let path = script("assert(not save.load())\nfunction update() return 'ok' end");
     runtime.execute_project_script(&path).unwrap();
@@ -427,7 +427,7 @@ fn save_write_round_trips_multiline_and_cjk_values_across_sessions() {
     fs::create_dir_all(&dir).unwrap();
     let save_path = dir.join("save.sav");
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_save_path(save_path.clone());
     let writer = script(
         "save.write('hp', '75')\n\
@@ -446,7 +446,7 @@ fn save_write_round_trips_multiline_and_cjk_values_across_sessions() {
     assert_eq!(text.lines().count(), 5, "unexpected save text: {text:?}");
     assert!(text.starts_with("save_version=2\n"));
 
-    let mut fresh = LuaRuntime::new().unwrap();
+    let mut fresh = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     fresh.set_save_path(save_path.clone());
     let reader = script(
         "local ok, reason = save.load()\n\
@@ -476,7 +476,7 @@ fn save_load_reports_missing_versus_corrupt() {
     let save_path = dir.join("save.sav");
 
     // 1) 文件不存在 → "missing"
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_save_path(save_path.clone());
     let missing = script(
         "local ok, reason = save.load()\n\
@@ -490,7 +490,7 @@ fn save_load_reports_missing_versus_corrupt() {
     // 2) 损坏文件 → "corrupt: ..."，且原文件不被覆盖
     let corrupt_text = "save_version=1\nhp\t75\nbroken row\n";
     fs::write(&save_path, corrupt_text).unwrap();
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_save_path(save_path.clone());
     let corrupt = script(
         "local ok, reason = save.load()\n\
@@ -516,7 +516,7 @@ fn save_load_reports_missing_versus_corrupt() {
 /// `load` 时解析失败（等于一次误用毁掉玩家进度）。
 #[test]
 fn save_write_rejects_empty_key() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let path = script(
         "assert(not pcall(function() save.write('', 'x') end))\n\
          local err = select(2, pcall(function() save.write('', 'x') end))\n\
@@ -537,7 +537,7 @@ fn legacy_v1_save_still_loads_and_upgrades_on_commit() {
     let save_path = dir.join("save.sav");
     fs::write(&save_path, "save_version=1\nhp\t75\nscene\tarena\n").unwrap();
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_save_path(save_path.clone());
     let path = script(
         "local ok, reason = save.load()\n\
@@ -595,7 +595,7 @@ fn save_commit_load_and_scene_transition() {
     arena.save(scenes.join("arena.scene")).unwrap();
 
     // save + commit to disk
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     runtime.set_save_path(root.join(".data").join("save.sav"));
     let first = script(
@@ -606,7 +606,7 @@ fn save_commit_load_and_scene_transition() {
     assert!(root.join(".data").join("save.sav").is_file());
 
     // a fresh runtime loads the save back
-    let mut fresh = LuaRuntime::new().unwrap();
+    let mut fresh = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     fresh.set_save_path(root.join(".data").join("save.sav"));
     let load_script = script(
         "assert(save.load())\nassert(save.read('hp') == '75')\nfunction update() return 'ok' end",
@@ -678,7 +678,7 @@ fn persistent_entities_survive_scene_transition() {
         .insert("Sprite".into(), "texture=assets/boss.png;size=32x32".into());
     hub.save(scenes.join("hub.scene")).unwrap();
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     let load_arena = script("assert(scene.load('arena'))\nfunction update() return 'ok' end");
     runtime.execute_project_script(&load_arena).unwrap();
@@ -764,7 +764,7 @@ fn persistent_component_survives_transition_and_cascades_to_children() {
         .insert("Sprite".into(), "texture=assets/boss.png;size=32x32".into());
     hub.save(scenes.join("hub.scene")).unwrap();
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     let load_arena = script("assert(scene.load('arena'))\nfunction update() return 'ok' end");
     runtime.execute_project_script(&load_arena).unwrap();
@@ -850,7 +850,7 @@ fn persistent_duplicate_name_new_scene_wins() {
     hud.metadata.insert("persistent".into(), "true".into());
     hub.save(scenes.join("hub.scene")).unwrap();
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.set_project_root(root.clone());
     let load_arena = script("scene.load('arena')\nfunction update() return 'ok' end");
     runtime.execute_project_script(&load_arena).unwrap();

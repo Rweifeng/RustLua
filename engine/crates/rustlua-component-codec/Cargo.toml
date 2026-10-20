@@ -1,0 +1,26 @@
+[package]
+name = "rustlua-component-codec"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "场景组件载荷契约的叶子 crate：codec trait + 注册表，供 scene / render / ui 三方共用"
+
+# 为什么是**叶子** crate（`docs/62` P1 第 4 条）
+#
+# 组件文法的实现必须留在归属 crate（`Sprite` 的字段只有 `rustlua-render` 说得清），
+# 而消费方 `rustlua-scene` 是它们的**上游**。要用"注册表"解这条环，注册表类型本身
+# 必须住在谁都能依赖、且不依赖任何领域 crate 的地方——和 `rustlua-lua-api` 在 Lua
+# 绑定倒置里扮演的角色完全一样。
+#
+# 因此这里只有：
+#   * `ComponentCodec`（函数指针三元组：校验 / 资源路径 / 名字）
+#   * `ComponentCodecRegistry`（名字 → codec 的不可变表）
+#   * `install` / `global`（组合根装一次）
+#
+# **不许**给它加任何领域依赖：它一旦依赖 `render`/`ui`/`scene`，那三方就会被拖进同一张
+# 编译图，倒置白做。架构门 `lua_contract_crate_stays_a_leaf` 的同款约束由
+# `BUDGET` 里的空预算条目守住。
+[dependencies]
+thiserror.workspace = true

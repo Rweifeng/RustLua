@@ -36,7 +36,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let main_script = project.join("scripts/main.lua");
 
-    let mut runtime = LuaRuntime::new()?;
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.clone());
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
@@ -131,10 +133,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     banner("③ 骨肥：薄荷 growth 3→2 天成熟，施肥消耗 1 个肥料");
     let bone_plot = cells[0];
     // 翻土
-    till_at(&mut runtime, bone_plot)?;
+    till_at(&mut runtime, &host, bone_plot)?;
     // 补 1 个骨肥并选中施肥（真实玩家从 zhao_stall 购买）
     add_fertilizer(&mut runtime, "bone_fertilizer")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -145,7 +147,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 播种薄荷（补 1 粒）
     runtime.execute_console("inv.add(require('core.state').inventory, 'seed_mint', 1)")?;
     set_seed(&mut runtime, "seed_mint")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -153,11 +155,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     // 骨肥：所需浇水天数 3→2。浇水 2 天后成熟（第 2 次浇水时 watered_days=1 < 2，
     // 仍是 water_mint；睡一觉后 watered_days=2 >= need 成熟）。
-    let days = grow_crop(&mut runtime, "water_mint")?;
+    let days = grow_crop(&mut runtime, &host, "water_mint")?;
     if days != 2 {
         return Err(format!("骨肥薄荷应 2 天成熟，实际 {days} 天").into());
     }
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -175,9 +177,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("④ 灵肥：薄荷单茬 2 → +floor(2×0.5)=3 个");
     let spirit_plot = cells[1];
-    till_at(&mut runtime, spirit_plot)?;
+    till_at(&mut runtime, &host, spirit_plot)?;
     add_fertilizer(&mut runtime, "spirit_fertilizer")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -186,19 +188,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 薄荷籽在 ③ 已用掉 1 粒（seed_for_selected 会回退到灵芝）；补 1 粒再播种
     runtime.execute_console("inv.add(require('core.state').inventory, 'seed_mint', 1)")?;
     set_seed(&mut runtime, "seed_mint")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
         "plant_seed_mint",
     )?;
     // 无骨肥：薄荷仍 3 天成熟
-    let days = grow_crop(&mut runtime, "water_mint")?;
+    let days = grow_crop(&mut runtime, &host, "water_mint")?;
     if days != 3 {
         return Err(format!("灵肥薄荷应 3 天成熟（无骨肥），实际 {days} 天").into());
     }
     let before = total_crop(&mut runtime, "mint")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -220,9 +222,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // (16,3) 是 m24 ⑧ 验证过的安全站位（面前格可 till、无 NPC 干扰）。
     // #28 起山庄出生点在 (19,3)，本节用的是显式传送站位，不再停在出生点。
     let herb_plot = (16, 4);
-    till_at(&mut runtime, herb_plot)?;
+    till_at(&mut runtime, &host, herb_plot)?;
     add_fertilizer(&mut runtime, "herb_fertilizer")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -230,13 +232,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     runtime.execute_console("inv.add(require('core.state').inventory, 'seed_mint', 1)")?;
     set_seed(&mut runtime, "seed_mint")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
         "plant_seed_mint",
     )?;
-    let days = grow_crop(&mut runtime, "water_mint")?;
+    let days = grow_crop(&mut runtime, &host, "water_mint")?;
     if days != 3 {
         return Err(format!("草药肥薄荷应 3 天成熟，实际 {days} 天").into());
     }
@@ -244,7 +246,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 用增量而非绝对计数），良好+上品增量 == yield
     let mint_before_first = query_num(&mut runtime, "inv.count('player', 'mint')")?;
     let good_super_before = good_super(&mut runtime, "mint")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -264,13 +266,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     assert_plot_fertilizer(&mut runtime, herb_plot, "herb_fertilizer")?;
     // 再生第二茬：地块保留肥料 ⇒ 多茬同享，收获仍全为良好/上品
-    let days = grow_crop(&mut runtime, "water_mint")?;
+    let days = grow_crop(&mut runtime, &host, "water_mint")?;
     if days != 3 {
         return Err(format!("草药肥薄荷再生茬应 3 天成熟（regrow_days=3），实际 {days} 天").into());
     }
     let mint_before_second = query_num(&mut runtime, "inv.count('player', 'mint')")?;
     let second_before = good_super(&mut runtime, "mint")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -320,12 +322,13 @@ fn add_fertilizer(runtime: &mut LuaRuntime, item: &str) -> Result<(), Box<dyn st
 /// 成熟判定由地块 watered_days 与 crop growth_need（含骨肥 -1）决定。
 fn grow_crop(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     water_action: &str,
 ) -> Result<usize, Box<dyn std::error::Error>> {
     equip_tool(runtime, "watering_can")?;
     for day in 1..=10 {
         runtime.execute_console("require('world.weather').set('sunny')")?;
-        press(runtime, KeyCode::KeyE)?;
+        press(runtime, &host, KeyCode::KeyE)?;
         let action = query_str(runtime, "require('core.state').last_action")?;
         if action != water_action {
             return Err(format!(
@@ -458,7 +461,11 @@ fn dirt_cells(
 /// 先装备锄头（翻土要求装锄；上一步浇水可能已换成水壶）。
 /// 注意引擎 `grid.facing_cell(Up)` = 当前格 y+1（测试断言 Up→(0,1)，屏幕 y 向下），
 /// 所以要让"面前格"恰为 (cx,cy)，玩家须站在 (cx, cy-1)。
-fn till_at(runtime: &mut LuaRuntime, cell: (i64, i64)) -> Result<(), Box<dyn std::error::Error>> {
+fn till_at(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    cell: (i64, i64),
+) -> Result<(), Box<dyn std::error::Error>> {
     equip_tool(runtime, "hoe")?;
     runtime.execute_console(&format!(
         "local pid = require('player.player').ensure()\n\
@@ -467,7 +474,7 @@ fn till_at(runtime: &mut LuaRuntime, cell: (i64, i64)) -> Result<(), Box<dyn std
         (cell.1 as f64 - 0.5) * 32.0
     ))?;
     set_facing(runtime, "up")?;
-    press(runtime, KeyCode::KeyE)?;
+    press(runtime, &host, KeyCode::KeyE)?;
     assert_str(runtime, "require('core.state').last_action", "till")?;
     Ok(())
 }
@@ -489,12 +496,16 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
     Ok(())
 }
 
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }

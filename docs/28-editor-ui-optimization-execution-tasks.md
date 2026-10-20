@@ -105,7 +105,7 @@ E20 + E22
 
 **依赖**：E01。
 
-**重点文件**：[main.rs](../engine/crates/editor/src/main.rs)、[actions.rs](../engine/crates/editor/src/actions.rs)、[history.rs](../engine/crates/editor/src/history.rs)。
+**重点文件**：[main.rs](../engine/crates/editor/src/main.rs)、[actions/mod.rs](../engine/crates/editor/src/actions/mod.rs)、[history.rs](../engine/crates/editor/src/history.rs)。
 
 **验收标准**：任意文档变更后，Hierarchy、Inspector、Scene View、运行时预览和布局缓存均显示同一份数据；不再出现 Inspector 指向已删除对象或画布显示旧数据。
 
@@ -125,7 +125,7 @@ E20 + E22
 
 **依赖**：E01、E02。
 
-**重点文件**：[hierarchy.rs](../engine/crates/editor/src/panels/hierarchy.rs)、[scene_view.rs](../engine/crates/editor/src/panels/scene_view.rs)、[inspector.rs](../engine/crates/editor/src/panels/inspector.rs)。
+**重点文件**：[hierarchy.rs](../engine/crates/editor/src/panels/hierarchy.rs)、[scene_view/mod.rs](../engine/crates/editor/src/panels/scene_view/mod.rs)、[inspector.rs](../engine/crates/editor/src/panels/inspector.rs)。
 
 **验收标准**：任何入口选择对象后，三个面板在同一帧内显示一致；多选集合不会因面板切换、Undo/Redo 或 Play/Stop 被无故清空。
 
@@ -232,7 +232,7 @@ E20 + E22
 
 **依赖**：E07。
 
-**重点文件**：[scene_view.rs](../engine/crates/editor/src/panels/scene_view.rs)、[inspector.rs](../engine/crates/editor/src/panels/inspector.rs)、[history.rs](../engine/crates/editor/src/history.rs)。
+**重点文件**：[scene_view/mod.rs](../engine/crates/editor/src/panels/scene_view/mod.rs)、[inspector.rs](../engine/crates/editor/src/panels/inspector.rs)、[history.rs](../engine/crates/editor/src/history.rs)。
 
 **验收标准**：拖动过程中磁盘文件不持续变化；一次拖动对应一条历史记录；Inspector 输入提交后可恢复且不会产生空操作。
 

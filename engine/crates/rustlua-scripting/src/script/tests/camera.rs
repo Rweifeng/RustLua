@@ -4,7 +4,7 @@ use super::*;
 /// 这里断言三件事：视口中心 → 相机中心；往返一致；没渲染过就报错而不是猜。
 #[test]
 fn lua_camera_conversions_use_the_rendered_projection() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let camera = Camera2D::new(Vec2::new(100.0, 50.0), 2.0).unwrap();
     runtime.set_camera_view(camera, [400.0, 300.0]);
 
@@ -23,7 +23,7 @@ fn lua_camera_conversions_use_the_rendered_projection() {
     assert_eq!(runtime.call_update().unwrap(), "ok");
 
     // 还没渲染过任何一帧：必须报错。
-    let cold = LuaRuntime::new().unwrap();
+    let cold = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let mut cold = cold;
     let cold_path = script(
         "function update()\n\
@@ -41,7 +41,7 @@ fn lua_camera_conversions_use_the_rendered_projection() {
 /// `world_to_screen` 把目标投回屏幕中心；相机背后的点 `visible=false`；没渲染过就报错。
 #[test]
 fn lua_camera3d_ray_and_screen_conversions_share_the_rendered_projection() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let camera = Camera3D::perspective(
         Vec3::new(0.0, 5.0, 10.0),
         Vec3::ZERO,
@@ -73,7 +73,7 @@ fn lua_camera3d_ray_and_screen_conversions_share_the_rendered_projection() {
     assert_eq!(runtime.call_update().unwrap(), "ok");
 
     // 还没渲染过任何一帧：必须报错（猜一台相机做射线会让"点不中"变成无头案）。
-    let mut cold = LuaRuntime::new().unwrap();
+    let mut cold = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let cold_path = script(
         "function update()\n\
          local ok = pcall(camera3d.ray, 1, 1)\n\
@@ -99,7 +99,7 @@ fn camera2d_lua_api_requests_and_validates() {
          return 'ok' end\n\
          function update() return 'ok' end",
     );
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     runtime.execute_project_script(&first).unwrap();
     assert_eq!(runtime.call_update().unwrap(), "ok");
     runtime.camera2d_controller(|controller| {
@@ -184,7 +184,7 @@ fn lua_3d_api_moves_mesh_and_switches_camera() {
         .components
         .insert("MeshRenderer".into(), "mesh=assets/models/hero.glb".into());
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 3);
 
     let path = script(
@@ -272,7 +272,7 @@ fn camera_set_active_takes_any_projection() {
         "projection=perspective;position=0,0,6;target=0,0,0;fov=60;near=0.1;far=100",
     );
 
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 3);
 
     let path = script(
@@ -325,7 +325,7 @@ fn camera_set_moves_position_target_and_fov() {
             "Camera".into(),
             "projection=perspective;position=0,0,5;target=0,0,0;fov=90;near=0.1;far=100".into(),
         );
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     assert_eq!(runtime.instantiate_scene(&scene).unwrap(), 1);
 
     let path = script(

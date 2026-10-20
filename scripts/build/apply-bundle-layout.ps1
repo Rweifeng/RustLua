@@ -1,13 +1,16 @@
-﻿# 分发布局应用器（docs/67 §5.4）：assetc layout --json → bundle-layout.js --apply → --verify → check-bundle-mounts。
+﻿# 分发布局应用器（docs/67 §5.4）：assetc layout --json → bundle-layout.js --apply → --verify →
+# check-bundle-mounts → check-boot-closure → assetc closure。
 #
 # 输入是**发布根**（含 pack/：RLB 容器 + bundle_plan.json + game.json + pack/game.js）。
 # 这是把「单元 → 根」真正落到目录上的唯一入口；package.ps1 接线时只调这一个脚本。
 #
 # 用法：
-#   powershell -File scripts/build/apply-bundle-layout.ps1 -Launcher <发布根> [-Assetc <assetc.exe>] [-SkipVerify]
+#   powershell -File scripts/build/apply-bundle-layout.ps1 -Launcher <发布根> [-Assetc <assetc.exe>]
+#            [-CdnDir <远端镜像目录>] [-SkipVerify]
 param(
     [Parameter(Mandatory = $true)][string]$Launcher,
     [string]$Assetc = "",
+    [string]$CdnDir = "",
     [switch]$SkipVerify
 )
 $ErrorActionPreference = "Stop"
@@ -56,6 +59,19 @@ try {
     # 计划表的 boot 元数据必须与拆根后的真实目录一致；否则 lazy 只是"大概率安全"。
     & $node.Source $bootCheck --launcher $launcherRoot
     if ($LASTEXITCODE -ne 0) { throw "boot 闭包检查失败（exit $LASTEXITCODE）" }
+    # 拆根之后容器换了目录、微信还会把 `.rlb` 改名成 `.rlb.txt`——**只有在这一刻**才能对账
+    # "组里每条逻辑路径都还在它那个根的容器索引里"。`assetc closure` 是这条断言的唯一实现
+    # （索引解析在 Rust 侧，不在这里再造一份）。
+    #
+    # `-CdnDir`（remote 形态）：`unit = "cdn"` 的组不在发布根里发布，而在 CDN 镜像目录里。
+    # 不给它时 `assetc closure` 会把那些组判成"未检查"——打包步骤宁可判红也不静默跳过。
+    $closureArgs = @("closure", $launcherRoot)
+    if (-not [string]::IsNullOrWhiteSpace($CdnDir)) {
+        $cdnRoot = (Resolve-Path -LiteralPath $CdnDir).Path
+        $closureArgs += @("--cdn", $cdnRoot)
+    }
+    & $Assetc @closureArgs
+    if ($LASTEXITCODE -ne 0) { throw "容器内容闭包检查失败（assetc closure，exit $LASTEXITCODE）" }
     Write-Host "apply_bundle_layout_ok launcher=$launcherRoot"
 }
 finally {

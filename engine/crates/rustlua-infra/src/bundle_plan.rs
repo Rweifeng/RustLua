@@ -429,8 +429,28 @@ pub fn build_plan(
         block_size,
         groups,
         checksum: String::new(),
+        keep: None,
     }
     .sealed())
+}
+
+/// 单元 → (排序档, 归一化单元名, 包内根)。**唯一的映射表**：`distribution_layout` 与
+/// `assetc closure` 都走这里，JS 侧 `bundle-roots.js::rootOfUnit` 由黄金表对拍钉住
+/// （`tests/asset_routing_golden.rs` + `scripts/test/asset-routing-golden-test.js` 读同一份
+/// `scripts/test/fixtures/asset-routing-golden.json`）。此前这条映射在 Rust 里有两份手抄副本，
+/// 在 JS 里还有第三份——三份都"各自对"，合起来就是真机白图。
+fn unit_root_and_rank(unit: &str) -> anyhow::Result<Option<(u8, String, String)>> {
+    Ok(match parse_unit(unit).map_err(anyhow::Error::msg)? {
+        UnitKind::Main => Some((0, "main".to_owned(), "pack".to_owned())),
+        UnitKind::Sub(None) => Some((1, "sub".to_owned(), "pack-sub".to_owned())),
+        UnitKind::Sub(Some(name)) => Some((2, unit.to_owned(), format!("pack-{name}"))),
+        UnitKind::Cdn => None,
+    })
+}
+
+/// 分发单元 → 包内根目录；`None` 表示不进包（`cdn`）。
+pub fn root_of_unit(unit: &str) -> anyhow::Result<Option<String>> {
+    Ok(unit_root_and_rank(unit)?.map(|(_, _, root)| root))
 }
 
 /// 一个分发根（微信分包/主包的目录边界）。
@@ -458,11 +478,8 @@ pub struct DistributionRoot {
 pub fn distribution_layout(plan: &BundlePlan) -> anyhow::Result<Vec<DistributionRoot>> {
     let mut roots: BTreeMap<(u8, String), DistributionRoot> = BTreeMap::new();
     for group in &plan.groups {
-        let (rank, unit, root) = match parse_unit(&group.unit).map_err(anyhow::Error::msg)? {
-            UnitKind::Main => (0u8, "main".to_owned(), "pack".to_owned()),
-            UnitKind::Sub(None) => (1, "sub".to_owned(), "pack-sub".to_owned()),
-            UnitKind::Sub(Some(name)) => (2, group.unit.clone(), format!("pack-{name}")),
-            UnitKind::Cdn => continue,
+        let Some((rank, unit, root)) = unit_root_and_rank(&group.unit)? else {
+            continue;
         };
         let entry = roots
             .entry((rank, unit.clone()))
@@ -583,20 +600,38 @@ pub fn check_plan(
         }
     }
 
-    // ⑤ 具名分包在当前发布器里会被并进同一个分包：明确说出来，别让人以为已经分开了
-    let named: Vec<&str> = plan
-        .groups
-        .iter()
-        .filter_map(|group| sub_name(&group.unit).map(|_| group.name.as_str()))
-        .collect();
-    if !named.is_empty() {
-        issues.push(format!(
-            "具名分包（{}）已进入计划表，但当前微信发布器只生成一个分包根：\
-             它们会被合并进同一个 subpackage。真正的分包拆分见 docs/67 §9 待办",
-            named.join(", ")
-        ));
+    // ⑤ 路径口径：计划里的每条路径都必须是**规范化工程相对路径**（`/` 分隔、无 `.`/`..`、升序）。
+    // 读取端 `BundleSet::key_of` 用的是同一套规范化，两边不一致的后果是"包里明明有这字节，
+    // 运行期永远查不到"——这种缺件不会报错，只会白图，所以必须在计划期就挡住。
+    for group in &plan.groups {
+        let mut previous: Option<&str> = None;
+        for path in &group.paths {
+            match crate::paths::normalize_project_path(path) {
+                Some(normalized) if normalized == *path => {}
+                Some(normalized) => issues.push(format!(
+                    "组 {} 的路径 {path} 不是规范形式（应写成 {normalized}）",
+                    group.name
+                )),
+                None => issues.push(format!(
+                    "组 {} 的路径 {path} 不是合法的工程相对路径（不得绝对、不得含 ..）",
+                    group.name
+                )),
+            }
+            if let Some(previous) = previous
+                && path.as_str() < previous
+            {
+                issues.push(format!(
+                    "组 {} 的路径未按升序排列：{previous} 排在了 {path} 之前",
+                    group.name
+                ));
+            }
+            previous = Some(path.as_str());
+        }
     }
 
+    // ⑥ 具名分包由 distribution_layout 产出独立的 pack-<name> 根，
+    // 由发布期的 bundle-layout / check-bundle-mounts / `assetc closure` 验证目录、入口与容器。
+    // 这里不能再把 sub:<name> 判为错误，否则计划永远到不了已经实现的多根发布器。
     issues
 }
 
@@ -785,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn named_sub_units_go_into_the_plan_and_are_reported_as_not_split_yet() {
+    fn named_sub_units_are_accepted_by_multi_root_layout() {
         let entries = entries();
         let mut config = BundleConfig::default_domains();
         for group in &mut config.groups {
@@ -804,8 +839,85 @@ mod tests {
             MAX_BUNDLE_BYTES,
         );
         assert!(
-            issues.iter().any(|issue| issue.contains("具名分包")),
-            "必须提示当前发布器未拆分：{issues:?}"
+            !issues.iter().any(|issue| issue.contains("具名分包")),
+            "已实现多根布局不应拒绝具名分包：{issues:?}"
+        );
+        let roots = distribution_layout(&plan).unwrap();
+        assert!(roots.iter().any(|root| root.root == "pack-audio"));
+    }
+
+    /// 计划里的路径必须是读取端 `key_of` 认得的那个规范形式——
+    /// 否则容器里有字节、运行期永远查不到（静默缺件，只表现为白图）。
+    #[test]
+    fn non_canonical_or_unsorted_paths_are_rejected() {
+        let entries = entries();
+        let config = BundleConfig::default_domains();
+        let plan = build_plan(&config, &entries, 1024).unwrap();
+        assert!(
+            check_plan(
+                &plan,
+                entries.len() as u64,
+                &keys(),
+                &config,
+                MAX_BUNDLE_BYTES
+            )
+            .is_empty(),
+            "构建出来的计划本身必须干净"
+        );
+
+        let mut tampered = plan.clone();
+        let group = tampered
+            .groups
+            .iter_mut()
+            .find(|group| !group.paths.is_empty())
+            .expect("至少一个组");
+        let first = group.paths[0].clone();
+        group.paths[0] = first.replace('/', "\\");
+        let issues = check_plan(
+            &tampered,
+            entries.len() as u64,
+            &keys(),
+            &config,
+            MAX_BUNDLE_BYTES,
+        );
+        assert!(
+            issues.iter().any(|issue| issue.contains("不是规范形式")),
+            "{issues:?}"
+        );
+
+        let mut escaping = plan.clone();
+        escaping.groups[0].paths.push("../outside.png".to_owned());
+        let issues = check_plan(
+            &escaping,
+            entries.len() as u64,
+            &keys(),
+            &config,
+            MAX_BUNDLE_BYTES,
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("不是合法的工程相对路径")),
+            "{issues:?}"
+        );
+
+        let mut unsorted = plan.clone();
+        let group = unsorted
+            .groups
+            .iter_mut()
+            .find(|group| group.paths.len() >= 2)
+            .expect("至少一个双条目组");
+        group.paths.swap(0, 1);
+        let issues = check_plan(
+            &unsorted,
+            entries.len() as u64,
+            &keys(),
+            &config,
+            MAX_BUNDLE_BYTES,
+        );
+        assert!(
+            issues.iter().any(|issue| issue.contains("未按升序排列")),
+            "{issues:?}"
         );
     }
 

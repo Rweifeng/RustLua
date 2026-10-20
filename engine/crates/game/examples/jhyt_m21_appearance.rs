@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project_arg = project.clone();
 
     banner("M21-01a 形象数据：可选形象都指向 data/characters.lua 的 role=player");
-    let mut runtime = new_runtime(&project_arg, &save_path)?;
+    let (mut runtime, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut runtime, &main_script)?;
     stub_missing_input_settings(&mut runtime)?;
     assert_str(
@@ -74,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_scene_is(&mut runtime, "manor")?;
     assert_mode(&mut runtime, "Playing")?;
     lua(&mut runtime, "return require('world.weather').set('sunny')")?;
-    frames(&mut runtime, 2)?;
+    frames(&mut runtime, &host, 2)?;
     let status = query_str(
         &mut runtime,
         "local s = jianghu_appearance(); \
@@ -115,12 +115,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (KeyCode::KeyW, "walk_n"),
         (KeyCode::KeyS, "walk_s"),
     ] {
-        hold(&mut runtime, key, 4)?;
+        hold(&mut runtime, &host, key, 4)?;
         let clip = current_clip(&mut runtime)?;
         if clip != want_walk {
             return Err(format!("按住 {key:?} 时 clip = {clip:?}, want {want_walk:?}").into());
         }
-        release(&mut runtime, 3)?;
+        release(&mut runtime, &host, 3)?;
         let idle = current_clip(&mut runtime)?;
         let want_idle = want_walk.replace("walk_", "idle_");
         if idle != want_idle {
@@ -145,7 +145,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("翻土时 clip = {hoe_clip:?}, want \"hoe_s\"").into());
     }
     // 非循环条带播完（4 帧 @8fps = 0.5s = 30 帧）后必须落回 idle_s。
-    frames(&mut runtime, 40)?;
+    frames(&mut runtime, &host, 40)?;
     let after = current_clip(&mut runtime)?;
     if after != "idle_s" {
         return Err(format!("翻土结束后 clip = {after:?}, want \"idle_s\"").into());
@@ -166,7 +166,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if attack_sheet != "attack_s.png" {
         return Err(format!("普攻渲染条带 = {attack_sheet:?}, want \"attack_s.png\"").into());
     }
-    frames(&mut runtime, 40)?;
+    frames(&mut runtime, &host, 40)?;
 
     banner("M21-01e 换装：切到青衣女侠 → 贴图/条带立刻换，未知 id 被拒");
     let bad = query_str(
@@ -242,12 +242,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("M21-01g 存档：读档后形象一致，实体挂的是所选形象的条带");
     save_game(&mut runtime)?;
-    let mut second = new_runtime(&project_arg, &save_path)?;
+    let (mut second, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut second, &main_script)?;
     stub_missing_input_settings(&mut second)?;
     click_button(&mut second, "BtnContinue")?;
     assert_scene_is(&mut second, "manor")?;
-    frames(&mut second, 2)?;
+    frames(&mut second, &host, 2)?;
     assert_str(
         &mut second,
         "require('core.state').appearance",
@@ -295,14 +295,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 // ---------- helpers ----------
 
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 /// Runs the project script, then loads the `main` 门面 scene so BtnStart/BtnContinue
@@ -327,25 +332,34 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
 /// 按住方向键推进 `n` 帧（每帧都带同一个按键状态）。
 fn hold(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     key: KeyCode,
     n: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..n {
         let mut input = InputSnapshot::default();
         input.key_event(key, true);
-        runtime.set_input(input);
+        host.set_input(input);
         runtime.call_update()?;
     }
     Ok(())
 }
 
 /// 松开所有键推进 `n` 帧。
-fn release(runtime: &mut LuaRuntime, n: usize) -> Result<(), Box<dyn std::error::Error>> {
-    frames(runtime, n)
+fn release(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    n: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    frames(runtime, &host, n)
 }
 
-fn frames(runtime: &mut LuaRuntime, n: usize) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+fn frames(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    n: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    host.set_input(InputSnapshot::default());
     for _ in 0..n {
         runtime.call_update()?;
     }

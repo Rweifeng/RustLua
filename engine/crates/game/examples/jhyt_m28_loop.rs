@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---------------- ① 掉落表结构与校验 ----------------
     banner("M28-01① 掉落表：敌人/物品交叉引用闭合，结构与区间可校验（含负例）");
-    let mut rt = new_runtime(&project_arg, &save_path)?;
+    let (mut rt, host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut rt, &main_script)?;
     click_button(&mut rt, "BtnStart")?;
     assert_scene_is(&mut rt, "manor")?;
@@ -197,7 +197,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &format!("require('systems.loot').set_seed({WOLF_SEED})"),
     )?;
     let money_before = query_num(&mut rt, "require('core.state').money")?;
-    kill_enemy(&mut rt, "enemy_wolf", 40)?;
+    kill_enemy(&mut rt, &host, "enemy_wolf", 40)?;
     // 掉落表：灰狼 money 0..3（种子 1 → 2）+ 狼皮 ×1。
     assert_num(&mut rt, "require('core.state').money", money_before + 2.0)?;
     assert_num(&mut rt, "require('systems.loot').pending('wolf_pelt')", 1.0)?;
@@ -233,7 +233,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 训练木人没有掉落记录 → 打它不产生任何掉落（负例的真实路径版本）。
     let pending_before = query_num(&mut rt, "require('systems.loot').pending_count()")?;
     let money_before_dummy = query_num(&mut rt, "require('core.state').money")?;
-    kill_enemy(&mut rt, "enemy_dummy", 40)?;
+    kill_enemy(&mut rt, &host, "enemy_dummy", 40)?;
     assert_num(
         &mut rt,
         "require('systems.loot').pending_count()",
@@ -248,6 +248,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     lua(&mut rt, &format!("clock.set(1, {NOON})"))?;
     press(
         &mut rt,
+        &host,
         KeyCode::from_char('t').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_num(&mut rt, "clock.now().day", 2.0)?;
@@ -267,13 +268,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut rt,
         &format!("require('systems.loot').set_seed({BOAR_SEED})"),
     )?;
-    kill_enemy(&mut rt, "enemy_wild_boar", 40)?;
+    kill_enemy(&mut rt, &host, "enemy_wild_boar", 40)?;
     assert_num(&mut rt, "require('systems.loot').pending('boar_meat')", 2.0)?;
     lua(
         &mut rt,
         &format!("require('systems.loot').set_seed({BANDIT_SEED})"),
     )?;
-    kill_enemy(&mut rt, "enemy_bandit", 40)?;
+    kill_enemy(&mut rt, &host, "enemy_bandit", 40)?;
     assert_num(&mut rt, "require('systems.loot').pending('timber')", 2.0)?;
     let pending_money = query_num(&mut rt, "require('core.state').money")?;
     // 打猎收入 = 野猪 6 + 山贼 14（种子固定）。
@@ -283,8 +284,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     goto_map(&mut rt, "village", VILLAGE_POS)?;
     assert_scene_is(&mut rt, "village")?;
     lua(&mut rt, &format!("clock.set(2, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
-    talk_to(&mut rt, "npc_lin_xiaoman")?;
+    frames(&mut rt, &host, 2)?;
+    talk_to(&mut rt, &host, "npc_lin_xiaoman")?;
     choose_option(&mut rt, "村里还缺什么野味？")?;
     choose_option(&mut rt, "这单我接了。")?;
     assert_str(
@@ -299,7 +300,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     goto_map(&mut rt, "mountain_path", MOUNTAIN_POS)?;
     assert_scene_is(&mut rt, "mountain_path")?;
     lua(&mut rt, &format!("clock.set(2, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_num(&mut rt, "require('systems.combat').stats().deaths", 0.0)?;
     let money_at_death = query_num(&mut rt, "require('core.state').money")?;
     let pending_at_death = query_num(&mut rt, "require('systems.loot').pending_count()")?;
@@ -307,9 +308,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("待入库掉落太少，无法验证减半：{pending_at_death}").into());
     }
     // 先站到玄冥会徒身边再压血：避免"压到 3 点后一路被别的敌人打死"的不确定性。
-    stand_next_to(&mut rt, "enemy_xuanming")?;
+    stand_next_to(&mut rt, &host, "enemy_xuanming")?;
     lua(&mut rt, "require('systems.combat').set_player_hp(3)")?;
-    let dead = wait_for_death(&mut rt, 900)?;
+    let dead = wait_for_death(&mut rt, &host, 900)?;
     if !dead {
         return Err("900 帧内没有被敌人打死（战败路径未触发）".into());
     }
@@ -336,6 +337,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     press(
         &mut rt,
+        &host,
         KeyCode::from_char('r').expect("QWERTY 字符必须有对应物理键"),
     )?;
     rt.process_scene_transition()?;
@@ -422,13 +424,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut rt,
         &format!("require('systems.loot').set_seed({BOAR_SEED})"),
     )?;
-    kill_enemy(&mut rt, "enemy_wild_boar", 40)?;
+    kill_enemy(&mut rt, &host, "enemy_wild_boar", 40)?;
     assert_num(&mut rt, "require('systems.loot').pending('boar_meat')", 3.0)?;
     // 跨天入库（真实 T 键）。
     goto_map(&mut rt, "manor", MANOR_POS)?;
     lua(&mut rt, &format!("clock.set(2, {NOON})"))?;
     press(
         &mut rt,
+        &host,
         KeyCode::from_char('t').expect("QWERTY 字符必须有对应物理键"),
     )?;
     assert_num(&mut rt, "clock.now().day", 3.0)?;
@@ -442,14 +445,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     goto_map(&mut rt, "village", VILLAGE_POS)?;
     assert_scene_is(&mut rt, "village")?;
     lua(&mut rt, &format!("clock.set(3, {TEN_AM})"))?;
-    frames(&mut rt, 2)?;
+    frames(&mut rt, &host, 2)?;
     assert_str(
         &mut rt,
         "require('world.quest').state('order_hunt')",
         "deliverable",
     )?;
     let money_before_delivery = query_num(&mut rt, "require('core.state').money")?;
-    talk_to(&mut rt, "npc_lin_xiaoman")?;
+    talk_to(&mut rt, &host, "npc_lin_xiaoman")?;
     choose_option(&mut rt, "狼皮一张、兽肉两份，都在这里。")?;
     assert_str(
         &mut rt,
@@ -491,12 +494,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &format!("require('systems.loot').set_seed({WOLF_SEED})"),
     )?;
     // 灰狼在复活时已重置 → 可以再打一次（掉落序列用固定种子，结果确定）。
-    kill_enemy(&mut rt, "enemy_wolf", 40)?;
+    kill_enemy(&mut rt, &host, "enemy_wolf", 40)?;
     assert_num(&mut rt, "require('systems.loot').pending('wolf_pelt')", 1.0)?;
     let seed_before = query_num(&mut rt, "require('systems.loot').seed()")?;
     let money_before_save = query_num(&mut rt, "require('core.state').money")?;
     lua(&mut rt, "require('core.save_manager').save()")?;
-    let mut second = new_runtime(&project_arg, &save_path)?;
+    let (mut second, _host) = new_runtime(&project_arg, &save_path)?;
     enter_main_menu(&mut second, &main_script)?;
     click_button(&mut second, "BtnContinue")?;
     assert_map_current(&mut second, "combat_arena")?;
@@ -726,6 +729,7 @@ fn number_from_cell(cell: &str) -> Result<f64, Box<dyn std::error::Error>> {
 /// 站到敌人相邻格并朝它（真实移动不可控，用 teleport 复现"走到它面前"）。
 fn stand_next_to(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     enemy_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let got = query_str(
@@ -742,13 +746,14 @@ fn stand_next_to(
     if got != "ok" {
         return Err(format!("{enemy_id} not reachable: {got}").into());
     }
-    frames(runtime, 2)?;
+    frames(runtime, &host, 2)?;
     Ok(())
 }
 
 /// 用真实 J 键把敌人打死（走到它旁边 → 普攻，直到 `query().alive == false`）。
 fn kill_enemy(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     enemy_id: &str,
     tries: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -760,12 +765,13 @@ fn kill_enemy(
         if alive == "no" {
             return Ok(());
         }
-        stand_next_to(runtime, enemy_id)?;
+        stand_next_to(runtime, &host, enemy_id)?;
         press(
             runtime,
+            &host,
             KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
         )?;
-        frames(runtime, 30)?;
+        frames(runtime, &host, 30)?;
     }
     Err(format!("{tries} 次普攻没能击败 {enemy_id}（或目标不可达）").into())
 }
@@ -773,9 +779,10 @@ fn kill_enemy(
 /// 等玩家被敌人打死（真实受击路径）；返回是否在 `max_frames` 内死亡。
 fn wait_for_death(
     runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
     max_frames: usize,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     for _ in 0..max_frames {
         if query_str(
             runtime,
@@ -795,14 +802,19 @@ fn wait_for_death(
 // ---------- helpers ----------
 
 /// Creates a bare engine runtime pointing at the project scripts & save file.
-fn new_runtime(project: &Path, save_path: &Path) -> Result<LuaRuntime, Box<dyn std::error::Error>> {
-    let mut runtime = LuaRuntime::new()?;
+fn new_runtime(
+    project: &Path,
+    save_path: &Path,
+) -> Result<(LuaRuntime, rustlua_input::host::HostInput), Box<dyn std::error::Error>> {
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.to_path_buf());
     runtime.set_save_path(save_path.to_path_buf());
     // M32 竖版：设计分辨率 720×1280（Lua 动态 UI 是屏幕像素空间，视口必须与设计尺寸一致）。
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
-    Ok(runtime)
+    Ok((runtime, host))
 }
 
 /// Runs the project script, then loads the `main` 门面 scene so BtnStart/BtnContinue are live.
@@ -825,19 +837,27 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
 }
 
 /// Simulates a single key press: one frame with the key down, one clean frame.
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }
 
 /// Runs `update()` for `n` frames with an empty input snapshot.
-fn frames(runtime: &mut LuaRuntime, n: usize) -> Result<(), Box<dyn std::error::Error>> {
-    runtime.set_input(InputSnapshot::default());
+fn frames(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    n: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    host.set_input(InputSnapshot::default());
     for _ in 0..n {
         runtime.call_update()?;
     }
@@ -923,7 +943,11 @@ fn goto_map(
 }
 
 /// 走到 NPC 相邻可行走格、面向 NPC，再按 E 开对话（真实交互路径）。
-fn talk_to(runtime: &mut LuaRuntime, persist_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn talk_to(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    persist_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let stick = format!(
         "(function() local q = require('world.npc').query('{persist_id}'); \
            if not q or not q.live then return 'no_npc' end; \
@@ -947,10 +971,10 @@ fn talk_to(runtime: &mut LuaRuntime, persist_id: &str) -> Result<(), Box<dyn std
     }
     let mut input = InputSnapshot::default();
     input.key_event(KeyCode::KeyE, true);
-    runtime.set_input(input);
+    host.set_input(input);
     lua(runtime, &stick)?;
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     lua(runtime, &stick)?;
     runtime.call_update()?;
     Ok(())

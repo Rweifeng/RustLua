@@ -23,7 +23,7 @@ flate2 = "1"
 chacha20poly1305 = "0.10"
 rand = "0.8"
 # RLB 资源包的**读**端解码器：纯 Rust zstd 解码，可编进 wasm（`docs/67` §4.3.1）。
-ruzstd = "0.8"
+ruzstd = "0.9"
 # 写端编码器（仅 `bundle-write`）：C 版 zstd，只在构建机（assetc）用。
 zstd = { version = "0.13", optional = true }
 # `bundle_plan.json` 的结构放这里：**构建期写、运行期读**，两边必须是同一份定义

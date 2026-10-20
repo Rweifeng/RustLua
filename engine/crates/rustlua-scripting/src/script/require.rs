@@ -75,13 +75,3 @@ pub fn install_web_require(lua: &Lua, script_dir: &Path) -> mlua::Result<()> {
     install_encoded_require_searcher(lua, script_dir.to_path_buf())
 }
 
-/// Writes `text` to `path` atomically (temp file + rename), like scene saves.
-pub(super) fn atomic_write(path: &Path, text: &str) -> Result<(), std::io::Error> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let temp = path.with_extension("tmp");
-    std::fs::write(&temp, text)?;
-    std::fs::rename(temp, path)?;
-    Ok(())
-}

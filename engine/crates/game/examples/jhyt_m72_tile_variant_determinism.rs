@@ -20,14 +20,14 @@
 //!      是 `3,2,1,0,3,2,1,0` 的周期点阵，而引擎给的第一行不是任何周期 ≤4 的重复——少了收尾这一
 //!      步，§①②测的是"确定地画出一张马赛克网格"；
 //!   ⑤ 种子真的进了哈希：换 seed 必须换表，换回来必须逐格复原（纯函数才可复现）；
-//!   ⑥ 跨宿主：把 `plugins/webgl/web-runtime.js` 里那份 **Lua 图集解算镜像**原样喂进引擎的真
-//!      Lua 5.4 VM，让它拿同一张地图（布局字段读 `tilemap.get`、格子值读 `tilemap.get_cell`）
-//!      重解一遍，32 格必须与引擎逐格同值。**反面对照**：只把镜像那份表里的种子 +1，表必须变
-//!      ——证明这条同值不是"两边各自抄了同一个常量表"的错觉，而是镜像真的在跑同一串位运算。
-//!      四份实现的其余两份：JS 与 Lua 垫片的常数由 `scripts/check-tile-hash-parity.mjs` 钉住
-//!      （同一组金标数字），`tools/preview_scene.py` 用
-//!      `python -c "import sys;sys.path.insert(0,'examples/game_jhyt/tools');import preview_scene as p;print([p.variant_for([],8,4,x,0,0x12345678,4) for x in range(8)])"`
-//!      复现第一行 `0,2,2,1,3,1,0,3`。
+//!   ⑥ **已退役（M73）**：原判据是"跨宿主同值"——把 `plugins/webgl/web-runtime.js` 内嵌的
+//!      Lua 图集解算镜像原样喂进真 VM，32 格必须与引擎逐格同值，并把镜像的种子 +1 当反面对照。
+//!      M73 删掉旧 JS 世界后仓库里只剩引擎这一份实现（`plugins/` 下再无瓦片解算代码，
+//!      `scripts/check-tile-hash-parity.mjs` 也一并删除），对账没有第二个边可比，读文件只会得到
+//!      `os error 2`。**不是**把判据放宽成"文件存在/跳过"——那等于用永远成立的断言冒充一致，
+//!      而是整段删除并在 §⑥ 的位置留下这段账。重新立这条门的前提是**先有第二份实现**。
+//!      旧账里其余两份实现（JS 与 Lua 垫片的常数、`tools/preview_scene.py` 的第一行
+//!      `0,2,2,1,3,1,0,3`）也随之只剩历史意义，不在本门断言范围。
 //!
 //! 探针贴图路径指向一张**不存在**的文件：宿主只登记路径不做 IO，变体解算与像素无关。
 //!
@@ -52,9 +52,6 @@ const VARIANTS: usize = 4;
 const SEED: u32 = 0x1234_5678;
 const OTHER_SEED: u32 = 0xA5A5_1234;
 const FRAMES: usize = 100;
-/// §⑥ 从 web 宿主里切那份 Lua 解算镜像用的起止暗号（改动一侧就必须同时改这里）。
-const MIRROR_START: &str = "__rustlua_cell_index = function(m, x, y)";
-const MIRROR_END: &str = "\ntilemap = {";
 
 /// 种子 `0x1234_5678`、`variant_count=4` 时 8×4 每格的变体序号（行主序，row 0 在地图最底）。
 /// 与 `rustlua-ecs/src/tilemap.rs` 的同名常数**故意各写一遍**：那份钉数据层，这份钉"渲染读到的
@@ -288,120 +285,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let differs = swapped.iter().zip(&entries).filter(|(a, b)| a != b).count();
     println!("  换 seed 改了 {differs}/{PROBE_CELLS} 格；换回来逐格复原（纯函数，可复现）");
 
-    banner("⑥ web 宿主的 Lua 镜像与引擎解算同值（把垫片抄本喂进真 VM）");
-    let mirror = web_lua_mirror(project.as_path())?;
-    lua_run(&mut runtime, &mirror)?;
-    let mirrored = mirror_entries_of(&mut runtime, probe, 0)?;
-    let engine_entries: Vec<u32> = entries.iter().map(|entry| u32::from(*entry)).collect();
-    if mirrored != engine_entries {
-        let position = mirrored
-            .iter()
-            .zip(&engine_entries)
-            .position(|(a, b)| a != b)
-            .unwrap_or(0);
-        let (x, y) = (position % PROBE_WIDTH, position / PROBE_WIDTH);
-        return Err(format!(
-            "({x},{y}) 引擎解出条目 {}，web 的 Lua 垫片解出 {}——web 宿主与原生各画各的地表，\
-             而这件事只会在 M72-12 的三宿主目验里被当成美术问题查半天",
-            engine_entries[position], mirrored[position]
-        )
-        .into());
-    }
-    // 反面对照：镜像那份表里种子 +1 必须换表。同值若不是因为垫片真的在跑哈希，这一步会原样复现。
-    let bumped = mirror_entries_of(&mut runtime, probe, 1)?;
-    if bumped == mirrored {
-        return Err(
-            "把镜像里的 variant_seed 加 1，条目序列一格不变：垫片没读种子，§⑥ 的同值没有内容"
-                .to_owned()
-                .into(),
-        );
-    }
-    println!(
-        "  {} 格与引擎逐格同值（布局取自 `tilemap.get`、格子值取自 `tilemap.get_cell`、解算走垫片）；\
-         镜像种子 +1 后 {}/{} 格与引擎不同",
-        mirrored.len(),
-        bumped.iter().zip(&mirrored).filter(|(a, b)| a != b).count(),
-        PROBE_CELLS
-    );
+    banner("⑥ web 宿主的 Lua 镜像同值：随 M73 删除旧 JS 世界而退役");
+    // 原 §⑥ 从 `plugins/webgl/web-runtime.js` 内嵌模板串里切出"Lua 图集解算镜像"，喂进真 VM 与
+    // 引擎逐格对账。M73 删掉旧 JS 世界之后，仓库里**只剩引擎这一份实现**（`plugins/` 下再无任何
+    // 瓦片解算代码，`scripts/check-tile-hash-parity.mjs` 也一并删除），这条对账没有第二个边可比：
+    // 继续读那个文件只会得到 `os error 2`。所以整段退役，而不是把判据改成"文件存在"——
+    // 那等于用一条永远成立的断言冒充"跨宿主一致"。
+    // 想重新立这条门，要先有第二份实现（新 web 宿主如果又带自己的解算器，把它的文本原样喂进来，
+    // 判据照旧逐格同值 + 种子 +1 反面对照）。
 
     println!(
         "\njhyt_m72_tile_variant_determinism_ok project={} frames={FRAMES} cells={PROBE_CELLS} \
-         seed=0x{SEED:08x} raw_lattice={raw_first_row:?} lua_mirror_cells={}",
+         seed=0x{SEED:08x} raw_lattice={raw_first_row:?} web_mirror=retired(M73)",
         project.display(),
-        mirrored.len(),
     );
     Ok(())
-}
-
-/// 从 web 宿主（`plugins/webgl/web-runtime.js` 内嵌的模板串）里原样切出那份 Lua 图集解算镜像。
-///
-/// 切的是**宿主实际发给 Lua 的同一段文本**，不是手抄副本：抄本会各自演化，而这条门要判的正是
-/// "宿主那份与引擎那份是不是同一串位"。
-fn web_lua_mirror(project: &std::path::Path) -> Result<String, Box<dyn std::error::Error>> {
-    let root = project
-        .parent()
-        .and_then(|examples| examples.parent())
-        .ok_or("game_jhyt 不在 examples/ 下，找不到仓库根")?;
-    let path = root.join("plugins").join("webgl").join("web-runtime.js");
-    let source = std::fs::read_to_string(&path)
-        .map_err(|error| format!("读不到 {}：{error}", path.display()))?;
-    let start = source.find(MIRROR_START).ok_or_else(|| {
-        format!(
-            "{} 里已找不到 {MIRROR_START:?}——web 宿主的解算镜像被挪走或改名，本门 §⑥ 无从对照",
-            path.display()
-        )
-    })?;
-    let rest = &source[start..];
-    let end = rest.find(MIRROR_END).ok_or_else(|| {
-        format!(
-            "{} 里 {MIRROR_START:?} 之后找不到 {MIRROR_END:?}——镜像段落边界变了，切出来的会是半个函数",
-            path.display()
-        )
-    })?;
-    Ok(rest[..end].to_owned())
-}
-
-/// 把同一张地图交给垫片再解一遍：`seed_bump` 只写进镜像那份表（§⑥ 的反面对照开关）。
-fn mirror_entries_of(
-    runtime: &mut RuntimeScene,
-    id: i64,
-    seed_bump: i64,
-) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
-    let text = lua_str(
-        runtime,
-        &format!(
-            r#"(function()
-                 local m = tilemap.get({id})
-                 m.cells = {{}}
-                 for y = 0, m.height - 1 do
-                   for x = 0, m.width - 1 do
-                     m.cells[#m.cells + 1] = tilemap.get_cell({id}, x, y)
-                   end
-                 end
-                 m.variant_seed = m.variant_seed + {seed_bump}
-                 local out = {{}}
-                 for y = 0, m.height - 1 do
-                   for x = 0, m.width - 1 do
-                     out[#out + 1] = __rustlua_atlas_index(m, x, y)
-                   end
-                 end
-                 return table.concat(out, ',')
-               end)()"#
-        ),
-    )?;
-    let values: Vec<u32> = text
-        .split(',')
-        .filter_map(|part| part.trim().parse::<u32>().ok())
-        .collect();
-    if values.len() != PROBE_CELLS {
-        return Err(format!(
-            "Lua 垫片的条目序列读回 {text:?}，长度 {}，应为 {PROBE_CELLS}（垫片里 __rustlua_atlas_index \
-             没被定义？先确认 §⑥ 切出来的那段仍是完整的一段）",
-            values.len()
-        )
-        .into());
-    }
-    Ok(values)
 }
 
 /// 变体档探针：8×4 全部铺 kind 1，图集 12×8（容量 96 ≥ 4 kind × 4 变体）。

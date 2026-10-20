@@ -33,18 +33,22 @@ const WRITE_NEEDLES: &[&str] = &[
 /// 非 0 的几项都是**已知欠账**，每一条都要在 docs/56 §7 的迁移清单里有对应工作项：
 ///
 /// - `inspector.rs`：**已清零**（第 27 轮）——手写组件面板的提交、实体操作、Prefab 逐字段
-///   Apply/Revert/写回/解包/重建实例整条路径都搬到了 shell（`actions.rs`），面板只发
+///   Apply/Revert/写回/解包/重建实例整条路径都搬到了 shell（`crate::actions`），面板只发
 ///   typed action；剩下的辅助函数（`insert_default_component`、`prefab_instance_source` 等）
 ///   是**纯函数/只读**，不写文档。
 /// - `hierarchy.rs`：**已清零**（第 28 轮）——创建/删除/重命名/换父/粘贴/复制/隐藏锁定标记
 ///   落盘/场景与 Widget 新建都搬到了 `crate::hierarchy_ops`（面板只发 typed action）；
-/// - `scene_view.rs`：**已清零**（第 29 轮）——Tile 绘制落盘与拖放生成实体（prefab/model/sprite）
+/// - `panels/scene_view/`：**已清零**（第 29 轮）——Tile 绘制落盘与拖放生成实体（prefab/model/sprite）
 ///   搬到了 `crate::scene_ops`；拖拽/Gizmo 的提交层更早已在 `crate::scene_drag`。
+///   第 41 轮把该文件拆成 `panels/scene_view/`，守卫随之按相对路径递归扫描
+///   （`scene_view/draw.rs` 这样的键），拆分**不缩小**这层守卫的覆盖面。
+///   第 42 轮把它的测试搬进 `scene_view/tests/`：`count_writes` 本来就只统计生产代码、
+///   测试模块按惯例排除，所以这里不再登记测试文件（原来的 `scene_view/tests.rs` 条目已删）。
 ///
 /// 至此 `panels/` 下**所有**文件的直接写入计数都是 0：新增一处就会判红并给出"改用
 /// `self.dispatch(...)`"的修复提示（这条规则现在是**不变量**，不再是欠账表）。
 /// - `game_view.rs` / `header.rs`：**已清零**（第 28 轮）——Play 的 Stop 收尾与崩溃快照替换
-///   都搬到了 shell（`actions.rs`），面板只发 typed action / 请求确认；
+///   都搬到了 shell（`crate::actions`），面板只发 typed action / 请求确认；
 const PINNED_WRITES: &[(&str, usize)] = &[
     ("atlas.rs", 0),
     ("bundles.rs", 0),
@@ -63,7 +67,16 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     ("publish.rs", 0),
     ("resource_browser.rs", 0),
     ("runtime_debug.rs", 0),
-    ("scene_view.rs", 0),
+    ("scene_view/mod.rs", 0),
+    ("scene_view/draw.rs", 0),
+    ("scene_view/pointer.rs", 0),
+    ("scene_view/scene_geometry.rs", 0),
+    ("scene_view/view_state.rs", 0),
+    ("scene_view/view_3d.rs", 0),
+    ("scene_view/tool_panel.rs", 0),
+    ("scene_view/tilemap.rs", 0),
+    ("scene_view/render.rs", 0),
+    ("scene_view/projection.rs", 0),
     ("schema_inspector.rs", 0),
     ("tilemap_tools.rs", 0),
     ("toolbar.rs", 0),
@@ -73,28 +86,42 @@ fn normalized(source: &str) -> String {
     source.chars().filter(|ch| !ch.is_whitespace()).collect()
 }
 
+/// 收集 `panels/` 下的面板源码：**递归两层**（`panels/scene_view/*.rs` 这种拆出来的
+/// 子目录同样要扫），键是相对 `panels/` 的路径（`/` 分隔）。
 fn panel_sources() -> BTreeMap<String, String> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/panels");
     let mut sources = BTreeMap::new();
-    for entry in std::fs::read_dir(&dir).expect("panels dir") {
+    collect_panel_sources(&dir, "", &mut sources);
+    sources
+}
+
+fn collect_panel_sources(dir: &Path, prefix: &str, sources: &mut BTreeMap<String, String>) {
+    for entry in std::fs::read_dir(dir).expect("panels dir") {
         let entry = entry.expect("dir entry");
         let path = entry.path();
-        if path.extension().and_then(|value| value.to_str()) != Some("rs") {
-            continue;
-        }
-        let name = path
+        let file_name = path
             .file_name()
             .and_then(|value| value.to_str())
             .expect("file name")
             .to_owned();
+        if path.is_dir() {
+            // 只下探一层：`panels/scene_view/` 这类拆分目录，不扫更深的任意层级。
+            if !prefix.is_empty() {
+                continue;
+            }
+            collect_panel_sources(&path, &format!("{file_name}/"), sources);
+            continue;
+        }
+        if path.extension().and_then(|value| value.to_str()) != Some("rs") {
+            continue;
+        }
         // 守卫自己带着"反面样例"字符串，当然会命中——不扫它。
-        if name == "architecture_tests.rs" {
+        if file_name == "architecture_tests.rs" {
             continue;
         }
         let text = std::fs::read_to_string(&path).expect("panel source");
-        sources.insert(name, text);
+        sources.insert(format!("{prefix}{file_name}"), text);
     }
-    sources
 }
 
 fn count_writes(source: &str) -> Vec<String> {

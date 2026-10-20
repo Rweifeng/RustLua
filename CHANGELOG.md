@@ -5,7 +5,959 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — P2 发布与安全工程：供应链门、SBOM、tag 发布自动化、Authenticode 签名
+
+- **问题**：发布会话只回答"包能不能跑"，不回答"依赖有没有已知漏洞/许可证越界"、"发布包里到底有什么"、
+  "发布是不是只有某台机器会做"、"Windows 用户怎么确认 exe 没被换过"。`rust-toolchain.toml` 还是
+  浮动的 `stable`，CI 与本机可能不是同一个 rustc；6 条 vendored fork（4 条带补丁、1 条仅 patch 映射、
+  1 条 tool-only）只有"补丁在位"门，没有上游同步报告。
+- **做法**：
+  - 工具链锁定到 `1.97.1`，新增 `check-toolchain-lock.ps1`，并接进 `verify.ps1` 默认段；
+  - 固定 `cargo-audit 0.22.2` / `cargo-deny 0.20.2` / `cargo-cyclonedx 0.5.9`（`scripts/release/tools.json`），
+    新增 `check-security.ps1`：audit / deny / registry wildcard / fork-sync / SBOM 五项，三态退出
+    （0 通过、1 判红、3 环境受限）；`engine/deny.toml` 落许可证/来源/bans 配置；
+  - 新增 `gen-sbom.mjs`：CycloneDX 1.5、全 workspace、SHA-256、fork 标记；`--check` 可离线复核；
+  - 新增 `fork-sync-report.mjs` + `engine/vendor/FORKS.json`：6 条 fork 的补丁足迹与上游版本漂移；
+  - 新增 `release.yml` + `tag-release.ps1` + `release-notes.ps1`：tag 触发、PC/引擎包、SBOM、`SHA256SUMS.txt`、
+    notes、Actions artifact 与 GitHub Release；`workflow_dispatch` 默认 dry-run；
+  - 新增 `sign-windows.ps1`：signtool 优先、`Set-AuthenticodeSignature` 回退、RFC3161 时间戳、`-SelfTest`
+    自签 + 篡改检测；无证书退 3，`-RequireSignature` 退 1；
+  - 新增 `docs/69`，并更新 `docs/34`/`docs/README`/根 README/`scripts/README`/`tasks/README`。
+- **证据（2026-10-20 本机）**：`toolchain_lock_ok rust=1.97.1 node=20 tools=3`；
+  `cargo-audit 0.22.2 vulns=0 warnings=5`；`cargo-deny 0.20.2` advisories/bans/licenses/sources 全绿；
+  `sbom_ok` 565 components / 535 hashed / 566 deps / forks=6；`fork_sync_ok forks=6 patched=4`；
+  `signing_selftest_ok signer=authenticode tamper=HashMismatch`；`security_gates_selftest_ok`。
+  真实 tag 发布与真实证书签名尚未跑（本机无证书、未推 tag），见 `docs/69` §10/§11。
+- **顺带修复**：audit 发现 `ruzstd 0.8.3` 的 RUSTSEC-2026-0344（解压炸弹），升级到 `0.9.1`；
+  `ttf-parser` 的 unmaintained 例外登记在 `deny.toml`（复核截止 2027-10-20）。
+- **回滚档**：删 `release.yml`/`security` job 与新增脚本即可回到纯手工发布；`rust-toolchain.toml` 改回
+  `stable` 会同时让 `check-toolchain-lock` 判红——本任务不接受用 `stable` 掩盖漂移。
+
+## Unreleased — `rustlua-scene` 的依赖图里不再有渲染层与 UI 层（降耦合④阶段 4c/4d，④ 收口）
+
+- **问题**：④ 阶段 4a 已经把"表现层组件的载荷"变成注册表，但 `rustlua-scene` 的 `Cargo.toml`
+  还挂着 `rustlua-render` 与 `rustlua-ui`——三个残项各自"合理"，合起来意味着**改一次 UI 布局
+  就要重编整条下游**。`docs/62` 上 ④ 一直是 🚧，判据（`cargo tree -p rustlua-scene` 里看不见
+  `render`/`ui`）从未满足。
+- **三次搬家**（每处都是"它本来就该住在别处"）：
+  - `WorldText` + 它的 codec → `rustlua-ui`（`ui/src/world_text.rs`）。类型内嵌 `UiText`、
+    字号/颜色/转义规则全在 ui，它跟着文法回到 ui；`TypedScene` 里那个变体并入 `Opaque`，
+    codec 总数 11 → 12。
+  - `char_collect`（打包期字符集统计）→ `rustlua-assets-import`。它读 `.scene`/`.prefab`（scene）
+    又解析 `Text`/`WorldText`（ui），**只能**住在两者都依赖的导入层；`BUDGET` 给 assets-import
+    加一条 `ui`，`engine` 只把它收进 **dev-dependencies**（`subset_project_font` 例子要用）。
+  - `scene_extract` + 新旧对拍门 → `engine`（`host/scene_extract.rs`、`tests/typed_scene_parity.rs`）。
+    它产出 `MeshRenderer`/`Light`/`Camera3D`；对拍门要同时看见 typed 与 render 两侧，这只有
+    组合根做得到。
+- **依赖收口**：`rustlua-scene/Cargo.toml` 的 `render`/`ui` 退成 `[dev-dependencies]`（只为测试
+  装表），`architecture_edges.rs` 的 `BUDGET` 删掉那两条边——门会抓"预算虚高"，所以这条不是
+  文档承诺，是**测试强制**。实测 `cargo tree -p rustlua-scene -e normal` 只剩
+  `animation/assets/camera/component-codec/ecs/infra/math/physics`，`rustlua-render`/`rustlua-ui`
+  **零命中**。
+- **为什么 `scene_extract` 不留成 scene 的 dev-dependency**：能编译，但那条 `scene → render` 的
+  **库**边会在 dev-dep 的伪装下继续存在（看见 `[dev-dependencies] rustlua-render` 的人会以为可以
+  随手 `use`），门也抓不到——这正是本轮要消灭的那种"看起来拆了、其实没拆"。
+- **验证**：`cargo test` 全绿（scene 46+4+1、ui 69、render 124、component-codec 4、engine 195、
+  editor 188+392、assetc 54+4、scripting 110+1、assets-import 42）；架构门 5 条绿；
+  `cargo check --workspace --all-targets` 与 `game_web` wasm 检查 exit 0；clippy
+  `-D warnings`、`cargo fmt --check`、`check-docs`、`check-silent-traces` 绿；端到端
+  `wp0_scene_frame`（24 个真实场景、diagnostics 0）、`scene_format_demo`/`prefab_demo`
+  `roundtrip=true`、`jhyt_smoke` 绿，`.scene`/`.prefab` 文件**零改动**。
+- **回滚档**：`rustlua-scene/Cargo.toml` 把那两行移回 `[dependencies]` + `BUDGET` 补回
+  `"render"`/`"ui"` + 把 `world_text.rs`/`char_collect.rs`/`scene_extract.rs` 挪回；四处一起改
+  才回得去（这也是它现在回不去的原因——没有一个"半回滚"状态能编译过）。
+## Unreleased — 场景组件载荷契约变成注册表：`rustlua-scene` 不再认识 `Sprite`/`Text` 的类型（降耦合④阶段 4a，4c/4d 见上一条）
+
+- **问题**：`rustlua-scene` 是"几乎所有人都要编"的 crate（`assetc` 导场景、`editor` 读场景、
+  `game` 装世界），却直接 `use rustlua_render::{light, mesh3d, quad, sprite}` +
+  `rustlua_ui::{ui, ui_events, ui_layout, ui_states}`。代价不是包体，而是**改动半径**：
+  改一次 UI 的文字布局，`scene` 及其全部下游跟着重编；`scene` 的测试也必须拉起整套渲染与 UI。
+  根因是**文法归属错位**——`Sprite:texture=a.png;size=16x16` 的字段语义只有 `rustlua-render`
+  说得清，`Text` 的字号/颜色规则只有 `rustlua-ui` 说得清，但解析被迫住在它们**上游**。
+- **做法**：新增**叶子** crate `crates/rustlua-component-codec`（照 `rustlua-lua-api` 的形状：
+  谁都能依赖它，它谁也不依赖）承载 `ComponentCodec` + 注册表 + 装表入口：
+  `ComponentCodec { name, validate: fn(&str) -> Result<(), String>, asset_paths: fn(&str) -> Vec<String> }`。
+  `rustlua-render`/`rustlua-ui` 各自新增 `scene_codec.rs`（5 + 6 个 codec，直接把各自的
+  `from_component_str` 包一层，所以**校验只有一份实现**），`rustlua-scene` 只查表。
+  场景层保留的组件知识收缩为**名字**：`ComponentId` 不变，`TypedComponent` 的 11 个表现层变体
+  合并成 `Opaque { payload, assets }`——原文逐字节带进 typed 视图（所以 `.scene` 往返仍然是
+  **零改写**），资源路径由 owning crate 上报（`MeshRenderer.mesh`、`Sprite.texture`、
+  `Quad.texture`、`Text.font`、`Image.texture`；后两者是这次顺带补上的，此前只有 mesh 进依赖图）。
+- **未装表 = 硬错误**，不是"未知组件"：已知名字缺 codec 说明装配漏了，静默跳过会让工程里的
+  精灵**无声消失**。诊断带组件名与装表指引；`tests/component_codec_requires_install.rs` 用
+  **独立进程**钉住这条（装表是进程级 `OnceLock`，同进程装过之后就无法再观察"未装"）。
+  宽容编译同样记一条诊断，不静默丢。
+- **装配点只有一处**：`engine::host::scene_codecs::install()`（幂等）。组合根看得见两层，
+  `editor` 又依赖 `engine`，所以编辑器两处调用点（3D 视图懒编译、字段校验兜底门）与
+  `wp0_scene_frame` 例子都调同一个函数——不会出现"编辑器装了 11 个、游戏少装一个"。
+  **最实的那个调用点**是 `RuntimeScene::init`：`new`/`new_with_layout`/`from_scene`/
+  `from_scene_edit` 全走它，是"场景被实例化"的唯一入口，预制体套用与运行时校验都在下游。
+  这条不是设计时想到的，是**`jhyt_m59_ui_prefab` 的黄金对账抓出来的**：装表只接到编辑器与
+  示例进程时，`game` 侧的预制体校验拿不到 codec，`UiLayout` 被判非法后实体缺项，
+  该例子报"`dlg:box` 的 rect 期望 240,450,800,240 实得 missing"。教训：装表点要绑在
+  "实例化"这个动作上，而不是绑在"我以为会编译场景的那些调用方"上。
+- **验证**：`cargo test -p rustlua-component-codec` 4 条、`-p rustlua-render` 124 条、
+  `-p rustlua-ui` 67 条、`-p rustlua-scene` 60+1+4 条、`-p editor` 188+392 条、
+  `-p engine` 191 条、`-p assetc` 54+4 条、`-p rustlua-assets-import` 35 条、
+  `-p rustlua-scripting` 110+1 条、`cargo test -p rustlua-infra --test architecture_edges` 5 条
+  （新增 `component_codec_crate_stays_a_leaf`）全绿；`cargo check --workspace --all-targets`
+  与 `cargo check -p game_web --target wasm32-unknown-unknown` 绿；`cargo clippy -- -D warnings`
+  六个改动 crate 干净；`cargo fmt --check` 干净；`check-docs`/`check-silent-traces` 绿。
+  **端到端零回归证据**：`cargo run -p engine --example wp0_scene_frame` 覆盖 24 个真实工程场景，
+  `diagnostics` **合计 0**（该例子在严格模式下遇到任何诊断会直接 panic），
+  `scene_format_demo`（`roundtrip=true`）与 `prefab_demo`（`roundtrip=true`）也绿——
+  说明 `.scene`/`.prefab` 的文本写法与往返一个字节都没变。
+- **留下的残项（4c/4d）**：`render`/`ui` 仍在 `rustlua-scene/Cargo.toml` 与 `BUDGET` 里，因为
+  `WorldText`（类型内嵌 `UiText`，且是 **ECS 组件**，`engine`/`scripting` 直接往 `World` 里塞）、
+  `char_collect`（扫工程字符集要解析 `Text`/`WorldText`）、`scene_extract`（产出
+  `MeshRenderer`/`Light` 的类型化视图）三处还在用它们。搬法已写进
+  `tasks/plan/P1-降耦合收口.md`：`WorldText` → `rustlua-ui`、`char_collect` →
+  `rustlua-assets-import`、`scene_extract` → `engine`，之后两条边退成 dev-dependencies。
+- **回滚档**：删 `rustlua-component-codec`、把 11 个变体与两处 `use` 恢复进 `typed_scene.rs`、
+  装表调用删掉即可——形状与拆前一致；`BUDGET` 会立刻抓出预算虚高（这正是"不能悄悄回退"）。
+## Unreleased — 资源导入层分家：`rodio`/`image`/`ab_glyph`/`mlua` 退出浏览器产物（降耦合③）
+
+- **问题**：`rustlua-assets` 把两件不同生命周期的事装在一个 crate 里——
+  **运行时**（资源库、句柄、依赖图、`rltex` 纹理解码，每帧在用、wasm 也要）与
+  **导入层**（`importer` 的六个实现、图集规划/装箱、导入缓存，只在 `assetc`/`editor` 里跑）。
+  于是浏览器产物被迫编进 `image`（PNG/JPEG 编解码）、`rodio`（整套音频解码器 + 设备枚举）、
+  `ab_glyph`、`mlua`、`anyhow`：实测 `cargo tree -i rodio --target wasm32` 的**唯一**入口就是它。
+  这不是"体积洁癖"——`rodio` 在 wasm 上由 cpal 提供一层空后端，编译期白背、运行期永不执行。
+- **做法**：新 crate `crates/rustlua-assets-import`（`importers` / `batch` / `atlas_plan` /
+  `atlas_pack` / `import_cache`）；`rustlua-assets` 只留运行时那半
+  （`resource_db`/`asset_handle`/`dependency`/`rltex`/`atlas_format`/`gltf_asset`/`hash`/
+  `importer` 的 trait 与注册表）。依赖方向是 `assets-import → {assets, scene, infra}`，
+  反向由架构门保证：`BUDGET` 新增 `rustlua-assets-import`，任何 crate 反向依赖它都会被判红。
+- **装配点跟着搬**：`full_registry()`（六个核心 + Scene/Prefab）从
+  `rustlua_scene::asset_import` 移到 `rustlua_assets_import::full_registry()`，
+  scene 只保留 `scene_importers()` 零件。理由写进了两边的模块头：装配需要同时看见六个核心
+  导入器，而 scene 一旦反过来依赖导入层，运行时就被拖回整套编解码器。`builtin()` 同理从
+  `impl ImporterRegistry` 变成导入层的自由函数（`Importer` trait 仍留在运行时侧，
+  因为它是"消费端契约"，scene 要实现它）。
+- **有意留下的**：`gltf` 仍在运行时——`GltfAsset::load` 被
+  `rustlua_animation::from_gltf_path` 在 3D 懒加载时调用，是有真实消费者的依赖，不是漏拆。
+- **验证**：`cargo tree -p game_web --target wasm32-unknown-unknown -e normal` 里
+  `rodio`/`cpal`/`rustlua-assets-import` **全部出图**（图共 183 个 crate）；
+  `cargo test -p rustlua-assets` 72 条、`-p rustlua-assets-import` 35 条、
+  `-p assetc` 54+4 条、`-p editor` 188+392 条、`-p rustlua-scene` 60 条、架构门 4 条全绿；
+  `cargo check --workspace --all-targets` 与 `cargo check -p game_web --target wasm32` 绿；
+  `import_cache_demo`（`cache_files=1`）、`atlas_pack`（`regions=2`）示例绿；
+  `docs/15` 与 `docs/62` 的路径同步更新（同一份契约现在分居两个 crate，文档不能只留旧路径）。
+- **回滚档**：把五个模块与 `image`/`rodio`/`ab_glyph`/`mlua` 依赖搬回 `rustlua-assets`，
+  `full_registry()` 搬回 scene 即可——形状与拆分前一致；门会立刻把
+  `rustlua-assets` 的预算改动抓出来（那正是期望：这不是"悄悄加回来"能过关的操作）。
+
+## Unreleased — 架构耦合门修掉两条盲区（它此前恒绿），顺手收掉降耦合①②
+
+- **先说门**：`engine/crates/rustlua-infra/tests/architecture_edges.rs` 里那条"核心 crate
+  不得反向依赖组合根"的测试，**一直是恒绿的装饰**。扫描器有两条盲区：
+  1. 只认 `rustlua-` 前缀的依赖 —— 而组合根叫 `engine`/`game`/`game_web`/`editor`，一个都不带前缀；
+  2. 把 `foo.workspace = true` 这种带点键整行跳过 —— 而工作区里引组合根恰好都用这种写法。
+
+  两条叠起来的结果是**组合根一条边都扫不到**，于是"`assetc` 依赖了整个 `engine`"这种事挂多久都没人发现。
+  修法：扫描 `crates/` 下**全部**伙伴 crate（不止 `rustlua-` 前缀）、把带点键还原成 crate 名、
+  并加一条非空断言（扫到的组合根边 `>= 3`，现在 4 条）。扫描器哪天再退化成装饰，测试当场红，
+  不用等人去审计它。同时把 `assetc` 移出 `COMPOSITION_ROOTS`（它是工具，不是"把库接起来的应用"）、
+  把 `gpu-web-probe` 补进去（wasm 探针**刻意**驱动真渲染器，且没有任何 crate 依赖它）。
+- **① `assetc` 的死依赖 `engine`（降耦合 ①，纯减法）**：`assetc/Cargo.toml` 挂着
+  `engine = { path = "../engine" }`，而 `src/`+`tests/`+`build.rs` 里 `engine` 出现 **0 次**。
+  代价不是一行清单：资源构建工具被迫编整条运行时，"改一行编辑器代码 → 重编 assetc"。
+  删掉后 `cargo tree -p assetc` **178** 个 crate（`engine` 自己就是 **221**），
+  `scripting`/`gameplay`/`input`/`audio` 整棵子树出图；54 条测试仍绿，`cargo check --workspace
+  --all-targets` 绿。**回滚档**：加回那一行依赖即可（它不影响任何代码路径）。
+- **② `rustlua-audio` 的桌面/浏览器适配（降耦合 ④ 的一半）**：`rodio` 原来是**无条件**依赖，
+  于是 `game_web → engine → rustlua-audio` 把 cpal/rodio 整套桌面音频栈也编进了 wasm 产物，
+  而浏览器端真正出声的是 `game_web/src/audio_sink.rs` 的 `AudioSinkProvider`（`HTMLAudioElement`），
+  根本走不到 rodio。改法：
+  - `rodio` 移进 `[target.'cfg(not(target_arch = "wasm32"))'.dependencies]`。**不用 feature**：
+    feature 在同一次构建内跨 target 合并（`cargo build --workspace` 时 `game_web` 打开它，
+    原生 target 也会跟着拿到），target 条件依赖才能表达"浏览器构建不该含桌面后端"。
+  - 新增 `rustlua-audio/src/device.rs`：桌面是 rodio（`OutputStream`/`Sink`/`SpatialSink`），
+    wasm 是**同 API 的 no-op**（走到它说明宿主忘了装平台出口，记一条 warn 再跳过，不假装播过）。
+    于是 `audio.rs` 里 **0 条 `cfg`**，也不再出现 `rodio` 字样。
+  - `ensure_device` 从 `-> Result` 改成无返回值：它从来没失败过（打不开设备就降级），
+    那个 `Ok(())` 只让每个调用点多写一个 `?`。
+  - **验证**：`cargo test -p rustlua-audio` 15 条绿；`cargo check -p game_web --target
+    wasm32-unknown-unknown` 绿；`jhyt_m20_audio`（`buses=0.45/0.30/0.70/0.95`）、
+    `jhyt_m93_spatial_audio`、`jhyt_m66_pause_prefab` 绿；`-p rustlua-gameplay` 34 条、
+    `-p engine` 189 条全绿。**未验的一层**：wasm 图里 `rodio` 还剩**一条**入口——
+    `rustlua-assets/src/importer.rs:243`（导入期读音频时长）。它属于导入层，跟着
+    [P1-01 ③](tasks/plan/P1-降耦合收口.md) 一起搬；在那之前**不要**宣称"wasm 产物已无 rodio"。
+- **③④⑤ 的残项表**（导入层分离 / 场景组件编解码注册表 / `ScriptState` + 剩余 API 模块）已写进
+  [docs/62 §6 P1](docs/62-成熟引擎差距分析.md) 与 [tasks/plan/P1-降耦合收口.md](tasks/plan/P1-降耦合收口.md)，
+  含逐条验收命令与回滚口径。
+
+## Unreleased — 真实瘦首包（`-AssetPack remote`）跑通验收，顺手修掉 4 处"写死 `pack/`"的假设
+
+- **为什么做**：remote / thin 形态此前只有"文档说它是坏的"（`cache=0` + `failed to load /project/scripts/main.lua`），
+  从没有一份真实产物跑过容器闭包。而这一形态的物理形状和其它形态**完全不同**：`pack/` 被裁成骨架，
+  **所有**组的容器（不只是 `cdn` 组）都随资源包导出到 `<发布根>/assets/pack-sub/bundles/…` 再整目录传 CDN。
+- **真实产物**（`-AssetPack remote -RemotePackBaseUrl … -BundleMode grouped -WasmInSubpackage`）：
+  `launcher/` 479 KB（骨架在 `pack-sub/`、内核在 `pack-wasm/`）+ `assets/pack-sub/` 5,493 KB。
+  静态层全绿：`wechat_minigame_static_ok main=479KB … asset_pack=subpackage`、
+  `bundle_mounts_ok roots=3 paths=1363 containers=5 remote=5 missing=0`、
+  `boot_closure_ok roots=pack,pack-wasm`、
+  `assetc_closure_ok roots=0 groups=5 entries=1357 cdn_skipped=0 cdn_checked=1 remote_checked=5 keep=17
+  keep_remote=17 keep_contract=true`。
+- **`assetc closure` 的 `--cdn` 语义升级**（`closure.rs`）：不再是"只核 `cdn` 组"，而是
+  "**装容器的远端目录**"——本地找不到的组一律在那里核（`remote_checked=`），`keep` 条目也允许
+  只存在于该目录（`keep_remote=`）。不给它时逐组判红（`组 core 的容器不在 pack/ 里 …`），不静默跳过。
+  新增单测 `thin_release_checks_every_container_against_the_asset_export`（正例 + 远端缺件反例，
+  `cargo test -p assetc --lib closure` 15 通过）。
+- **修掉的四处硬编码假设**（都只在 remote 形态暴露，合成夹具永远碰不到）：
+  1. `package.ps1` 的 `$cdnPackRoot` 停在 `assets/` 一层 → 收尾断言去找 `assets/pack`，
+     **每一份 remote 产物**都会在原子交换之后抛 exit 1（产物已经换进去了，工具却报失败）；
+  2. `verify-wechat-minigame.ps1` 的资源包发现/校验同样写死 `pack`（真实产物是 `assets/pack-sub`），
+     于是每份瘦首包都被判"资源包不存在"；
+  3. `check-bundle-mounts.js` / `check-boot-closure.js` 只认发布根里的容器 → 新增 `--remote <资源包根>`
+     （远端那份**保持逻辑名**，与代码包白名单改名是两套），自测各加一例（6 例 / 2 例）；
+  4. 运行时 harness 的 `--remote-root` 只认 `<root>/pack/`，改成按 `manifest.txt` 判资源包根（两种形状都认）。
+
+  另在 `package.ps1` 原子交换**之前**对最终瘦首包跑一遍 `assetc closure --cdn <staging>/assets/pack-sub`：
+  不在这里核，瘦首包的容器内容就从来没被任何门看过。
+- **门**：`scripts/test/test-release-closure.ps1` 增第 10 例（瘦首包：本地缺件判红 / `--cdn` 逐组核对
+  `remote_checked` / 资源包缺件判红），`release_closure_test_ok cases=10`。
+- **运行时这一层也在真实开发者工具里跑通了**（同日补）：静态门只能证明"文件在、索引对"，
+  所以另加了 `scripts/dev/wechat-thin-devtools-probe.js`——真实微信开发者工具 + 本地 CDN 替身
+  （`pack-server.js --prefix /pack`，`/pack/<逻辑名>` → 资源包根），临时工程副本，注入探针把
+  `__RUSTLUA_DIAG()` 的读数 POST 回来。连续两次绿：
+  `verdict=thin-remote-ok-devtools boot=ok host=running presented=1037/1064 first_frame_at=3252ms
+  remote="http://127.0.0.1:8787/pack/ remote=8 failed=0" containers_served=5 bytes=3,113,209`
+  —— 5 个 `.rlb`（3.1 MB）**真的走 HTTP**、挂进引擎、世界千帧在跑。
+  这一层一开始是红的，抓到两个只在远端形态存在的 bug（都在 `wechat-adapter.js`）：
+  1. **容器从来没被下载过**：同步 reader（`wechatReadFile`）不会 await，远端回落只挂在 `fetchShim`
+     那条异步文字路径；挂载走同步 reader ⇒ 每个容器"读不到"，日志却只有"包内未命中，转远端"。
+     现象 `remote=0 failed=0` + `cannot read bundle …` + boot 落到 `lua bridge: runtime not booted`。
+     修法：新增 `prefetchPlanBundles()`，挂载前把缺的容器按 `packBaseUrl` 先取回缓存
+     （boot 前取齐计划表全部根，具名根 ready 后按根补取）。顺带修坐标错位：计划表里 `group.bundle`
+     是包内相对路径（`bundles/x.rlb`），而 `remoteUrlFor()` 会 `slice('pack/'.length)`，
+     不补前缀就砍成 `es/x.rlb`（实测 5/5 404）。
+  2. **`boot` 标记抢跑**：`hostDirectBoot()` 挂在 `wasmReady`，而 Lua 运行时由宿主 `begin` 建、
+     `begin` 现在要等容器预取 ⇒ 标记先报 `lua bridge: runtime not booted`（1.9s），画面其实千帧照跑。
+     修法：`bundleReadyPromise` 让启动链在 `lua_execute_main` 前等"容器挂好 + reader 预装"。
+  行为变更：`begin` 现在真的等各根容器就位（原来那个 `rootsReady` 算了却没 await，是死变量），
+  瘦首包冷启动首帧 ~3.2s（3.1 MB 走本地 CDN；真机按带宽）。容器在代码包里的形态不受影响。
+
+## Unreleased — 真实 grouped WebGL 产物端到端验收：抓到并修掉"cdn 组一律要 `--cdn`"的假红
+
+- **为什么做**：WebGL 此前只有 `test-release-closure.ps1` 里的**单根合成夹具**被 `assetc closure` 查过；
+  真实 WebGL 产物（`package.ps1 -Platform webgl`，默认 `-BundleMode grouped`）从没跑过这条门。
+  合成夹具的组都是 `main`/`sub`，天然躲开了 `cdn` 与 `keep` 这两条分支——正是"夹具比现实干净"。
+- **真跑一次就抓到红**：真实产物的 `brand` 组是 `unit=cdn`（品牌/splash 图；WebGL 没有远端那一跳，
+  容器就打在自己的 `pack/bundles/` 里），而上一节刚写的规则是"计划里有 `cdn` 组、没给 `--cdn`
+  就判红"。于是**一份完全正确的 WebGL 产物会被判成坏包**。
+- **改法**（`engine/crates/assetc/src/closure.rs`）：`cdn` 组按**字节在哪**核对，而不是按组名：
+  - 容器在发布根里 → 按普通组同一套断言就地核，计入 `cdn_local=`；
+  - 容器只在镜像目录里 → 必须 `--cdn <目录>`，计入 `cdn_checked=`；
+  - 两处都没有 → `cdn_skipped=N` 且**判红**（除非显式 `--allow-cdn-skip`）。
+
+  给了 `--cdn` 时所有 `cdn` 组都会在镜像里**再核一遍**（镜像才是要上传的那份）。摘要行因此多一个字段：
+  `… cdn_skipped=0 cdn_local=1 cdn_checked=0 …`。
+- **实测（本机，真实产物）**：
+  - `package.ps1 -Platform webgl` → `webgl_package_ok files=8`；`builds/webgl` 12,238 KB / 21 文件 / 7 组；
+  - `assetc closure builds/webgl` → `assetc_closure_ok roots=1 groups=6 entries=1373 cdn_skipped=0
+    cdn_local=1 cdn_checked=0 keep=1 keep_contract=true`（`keep=1` = 字体按真实路径留在 `pack/`）；
+  - 反例（把 `brand` 容器搬到 `cdn/bundles/`）：不给 `--cdn` → exit 1「组 brand … 都没核对到它」；
+    给 `--cdn` → `cdn_checked=1` 绿。**两条臂都在真实产物上验过**，不是只验正例；
+  - 浏览器层（`verify-webgl-bundle.ps1`，无头 Chrome）：`boot=ok missing_host_api=0`、
+    `webgl_bundle_engine_state_ok … draws=10 tris=200`、`webgl_bundle_ok wasm=5420.8KB`，exit 0。
+    场景切换门现在是**显式跳过**（`data-rustlua-scene-verify` 的写者随 B8 旧 JS 世界删除）——不是本批引入的，
+    但"boot ok + 引擎真画了 10 次、200 个三角形"是当前的产物层证据。
+- **门**：`cargo test -p assetc --lib closure` 14 通过（新增
+  `cdn_groups_inside_the_package_are_checked_in_place`，正例 + 改坏魔数反例）；`cargo test -p assetc` 53 通过。
+  `scripts/test/test-release-closure.ps1` 的 cdn 用例随之扩成**双形态**（包内就地核 `cdn_local=1` /
+  搬到镜像后不给 `--cdn` 判红 / 给了 `cdn_checked=1` / 远端缺件点名 `<cdn>` + 瘦首包形态），现在 `cases=10`。
+  WebGL 这侧其实**早就有门**：`verify.ps1 -Web` 在没有产物时会就地发布一份（`package.ps1 -Platform webgl`，
+  默认 grouped）再跑产物层，CI 的 `web-evidence` job 走的就是它——问题只是从没在本机真实产物上跑过。
+- **边界**：闭包只解析索引、**不读条目内容**（条目字节对不对由运行期 `read()` 的逐条 FNV 兜）；
+  WebGL 是单根形态，`-MultiSub` 只对微信 subpackage 开放，与本批无关。
+
+## Unreleased — `check-bundle-mounts.js` 不再持有"第二套解析/改名假设"
+
+- **症状/风险**：这个发布门自己写死了 `bundle + '.txt'`（微信白名单改名），并在发布根缺计划表时
+  回落到 `pack/bundle_plan.json`。两处都会**静默变绿**：`RENAME_SUFFIX` 一改、或 `.rlb` 进了白名单，
+  检查就去找一个真机上不存在（或存在但名字不同）的文件；而真实产物里 `pack/`、`pack-sub/`
+  **各有一份**计划表副本，回落到哪份全凭顺序——陈的那份照样能让门通过。
+- **改法**（`scripts/build/check-bundle-mounts.js`）：
+  - 计划表只认**一个**权威位置：发布根的 `bundle_plan.json`（= 适配层启动时读的那一份）；
+    缺了就响亮失败，并在错误里说明"为什么不用 `pack/` 副本"。
+  - 容器宿主名只认**产物自带**的 `code-package.json` 的 `renamed` 表（发布链真实写下的结果）；
+    没有这张表时才用 `scripts/lib/code-package-rules.js` 的 `hostNameFor` 兜底（原名/改名都算候选），
+    不再拼后缀。
+  - 新增 `--self-test`（5 条：正例、缺容器、缺 `game.js`、改名表与产物不符、缺计划表不许拿副本冒充），
+    已进 CI `gates` job；`bundle_mounts_ok` 摘要行多了 `containers=` 与 `renamed=` 两个计数。
+- **实测**：真实产物 `roots=3 paths=1363 containers=5 renamed=5 missing=0`——5 个容器全部由产物自己的
+  改名表解析出来（不是我猜的 `.txt`）；无 `code-package.json` 的多根夹具（`test-release-closure.ps1`
+  的平台形态）仍绿：`release_closure_multiroot_ok roots=2 renamed=.rlb.txt`。
+- **边界**：仍然**不打开容器**（内容闭包是 `assetc closure` 的事），也不校验 `pack/`→`pack-sub/` 副本
+  是否与发布根那份一致（`check-boot-closure.js` 读 boot 元数据、`assetc closure` 读组表，两者各自对账）。
+
+## Unreleased — RLB 读取加固：挡住"能过校验和、读出来却是别人的字节"那条路
+
+- **症状/风险**：`BundleIndex::parse` 此前检查"条目越界"（`offset + len <= raw_len`）与"条目 FNV"，
+  但**没检查同一块内两条路径是否指向同一段字节**。条目 FNV 就存在索引里——把 `a.png` 的
+  `offset/len` 指到 `b.png` 的字节、同时抄上 `b.png` 的校验和，篡改后的容器能通过越界检查、
+  通过 FNV、通过 `assetc closure` 的"每条路径都在索引里"，**只有画面**会告诉你 `a.png` 变成了
+  `b.png`。这是"包没坏、内容却错"的唯一静默通道；同族的空洞（块里有一段字节没有任何条目解释）
+  也能用来夹带数据。
+- **改法**（`engine/crates/rustlua-infra/src/bundle.rs`）：
+  - 新增 `validate_block_spans`：每个块内条目的 `[offset, offset+len)` 必须**互不重叠**且
+    **恰好铺满** `raw_len`；零长条目共享块尾 `offset` 仍是合法（写侧常态，不能误伤）。
+  - `read_impl` 的区间运算改成 `u64` 算完再落 `usize`：wasm32 上 `usize` 只有 32 位，
+    `offset + len` 回绕会让 `end > len` 判不出来，随后 `slice[start..end]` 直接 panic。
+  - `BundlePlan::parse` 增加组内 `paths` 的**规范形式 + 严格升序**校验：读取端用二分查
+    （`PlannedGroup::contains`），乱序不报错、只静默查不到（"包里有，运行期说没有"＝白屏）。
+    （`block_size == 0`、`checked_add`、头/块/条目的未定义标志位此前已落地，见 docs/67 §4.8 的表；
+    这一批补的是"区间"与"计划路径"这两块。）
+- **实测**：真实产物（`game_jhyt` 重打：5 组、1357 条、21 块）在新不变量下全部通过——
+  `assetc_closure_ok roots=1 groups=5 entries=1357`、`assetc verify` 目录形态 vs 容器形态
+  `assetc_verify_ok entries=1357`（逐条目真读数，不只是解析索引）；已发布的旧容器（`.rlb.txt`）同样通过。
+- **门**：`cargo test -p rustlua-infra --features bundle-write` **105 通过**，新增 4 条
+  （`overlapping_entries_in_one_block_are_rejected`、`gaps_inside_a_block_are_rejected`、
+  `adjacent_entries_and_shared_empty_offsets_are_accepted`、`plan_paths_must_be_canonical_and_ascending`）。
+  注意容器测试挂在 `bundle-write` 特性下：不带特性时这批用例**根本不会编译**（`--lib bundle`
+  只匹配到 `bundle_plan` 的用例），"跑过了"要看清是哪个特性集。
+- **代价**：解析期多一次按块分组 + 排序（1357 条约 0.1 ms 量级，容器打开时一次）。
+- **边界**：只做"结构自洽"，不做"内容可信"——构造者仍可写一个**自洽但错误**的容器
+  （整体换掉两张图的字节并配套改 FNV 与 plan hash）。防篡改要靠包外签名/哈希，不在这批口径里。
+
+## Unreleased — MVP 红门收口（第一批）：10 个示例转绿，两处"红因"被查实只是门面改版的后遗症
+
+- **背景**：上一节把清单补齐后逐个跑 80 个示例，65 绿 / 14 红。这批按"低成本 → 需要判断"
+  顺序处理，原则是**先分清红因再动手**：同一个红可能意味着①判据过期、②被测物没了、
+  ③真回归。三条的修法完全不同，混为一谈就会把"改名后的更准文档"当漂移修回去。
+- **① 判据过期（改判据本身）**：
+  - `jhyt_m23_data_validation`：`ui/prefab.lua` 的 `validate_all` 遍历的是 M71 清空的
+    `NAMES`，是一个**永远返回绿**的校验器。既不登记进 `validate_data.lua`（登记 = 让
+    "校验跑过了"变假），也不留入口（留着就会被 m23 的"带 validate_all 必须登记"判红）——
+    直接删掉入口，文件里写明重新启用的前提是"先把校验器写成能真的失败"。现读数
+    `registered=52 modules_with_validators=52`。
+  - `jhyt_m30_cjk_text`：预设搬进 `assets/prefabs/ui/` 后多了一层，而扫描是**平铺**的，
+    8 份预设共 154 个 `Text` 一个都没被统计（读数 14 < 21）。改成递归收集后 168 个。
+    同门第二处：`MIN_REGISTERED_TEXT_SITES=28` 与去注释实测 `27` 差一处，逐提交复算
+    （`fd3b4cb3`=28 → 当前=27）定位到 `a4675c53` 把 `title:hint` 搬进预设，按实测降为 27
+    并把"为什么不是简单改数"写进注释。
+  - `jhyt_m24_numeric_alignment`：§3 打坐单元格被改写成「恢复5点内力，钳经脉动态上限」
+    （去空格 + 补上钳制那一半），旧断言按带空格的旧文案逐字比对，把一次**更准确**的文档
+    修订判成了漂移。改成语义比对（去空白）**并新增代码侧断言**：`ui/input.lua` 的 practice
+    分支必须真的用 `meridian.max_inner_power()` 钳制 +5。
+  - `jhyt_m34_status`：§10 状态效果表的「治疗」改名「体力恢复」并补上钳制口径，归属表补该行
+    （写明 40 体力出自 `data/items.lua`、钳制出自 `player/inventory.lua` 的 `meridian.max_energy()`）。
+  - `jhyt_m66_pause_prefab`：黄金表里五处音量读数还是 100%，而 `project.toml [audio]` 是
+    `master=0.5 / bgm=0.25`。用 `--capture` 回写，diff 只有 5 行（音量 50%、主音量 50%、
+    BGM 25%、两根滑杆 x 由 840 移到 790/765），没有任何布局漂移。
+- **② 被测物没了（整段退役，不改成跳过）**：
+  - `jhyt_m72_tile_variant_determinism` ⑥ / `jhyt_m72_autotile_mask` ⑧ 原本把
+    `plugins/webgl/web-runtime.js` 内嵌的 Lua 解算镜像喂进真 VM，与引擎逐格对账。
+    M73 删掉旧 JS 世界后仓库里只剩引擎这一份实现（`plugins/` 下再无瓦片解算代码，
+    `scripts/check-tile-hash-parity.mjs` 也删了），对账没有第二个边可比 —— 读文件只会
+    `os error 2`。整段删除 + 写明"重新立门的前提是先有第二份实现"，①..⑤/⑦ 的确定性、
+    掩码、UV 断言原样保留（读数里 `web_mirror=retired(M73)`）。
+- **③ 判据写死了旧坐标（改成从数据现算）**：
+  - `jhyt_m61_prefab_runtime` / `jhyt_m62_prefab_write`：门面 `BtnStart` 的命中点写死
+    `(640,412)`（旧矩形 460,380,820,444 的中心）。M73 改版后按钮是 160×60 @ (380,420)，
+    写死的点落到按钮上方 8px 空白里，读数变成"点一下没有派发"——看着像派发通道坏了。
+    改成从 `assets/prefabs/ui/title_menu.prefab` 的 `UiLayout.offsets` 现算中心（读不到就红）。
+  - `jhyt_m22_save_isolation`：地块键 `PLOT_CELL="19,4"` 与坐标常量 `PLOT_X/Y=16,4` 各说各话，
+    断言读的是隔壁那块空地。改成"键是唯一真源"（坐标从键解析），失败时再打印地块账本与
+    FarmGrid 上真正非零的格子 —— 这两种红长得一样（`0, want 1`）但修法相反。
+- **④ 门被放错了清单**：`jhyt_m31_pc_release` 验收的是**打好的** PC 发布包（`builds/pc`），
+  干净树上必然没有 → 它在 MVP 清单里只会恒红，红因是"没打包"。改登记到新的
+  `$releaseExamples`：产物在就真跑、失败即红；产物不在就明打
+  `[SKIP] …（不是通过）` 并指路 `scripts\build\package.ps1 -Platform pc`——与本文件里
+  微信小游戏发布包那段同一口径。
+- **实测**：全量重扫（79 个 `jhyt_*` 示例，`jhyt_m31_pc_release` 走发布清单不在其中）
+  **75 绿 / 3 红**（上一节是 65 绿 / 14 红），红的三个就是下面"仍未收口"里的 m17_shop、
+  m63_title_prefab、m72_pixel_font；退役的 `jhyt_m59_ui_prefab` 按退役口径仍留在红。
+  逐门读数：`jhyt_m23_data_validation_ok registered=52 modules_with_validators=52`、
+  `jhyt_m30_cjk_text` 通过（场景/预设 Text 168）、`jhyt_m66_pause_prefab_ok`、
+  `jhyt_m24_numeric_alignment_ok`、`jhyt_m34_status_ok`、`jhyt_m22_save_isolation_ok
+  providers=16 rows=8 day=2`、`jhyt_m61_prefab_runtime_ok`、`jhyt_m62_prefab_write_ok`、
+  两个 m72 门 `web_mirror=retired(M73)`、`jhyt_m72_pixel_font` 走通 §② 的图集断言
+  （红点后移到"1:1 档 0 个"，见"仍未收口"）。
+- **同一批踩到的坑（不在代码里，值得记一笔）**：编辑工具改写 `.ps1` 会**丢掉 UTF-8 BOM**，
+  而 PowerShell 5.1 按 ANSI 解码中文即报一堆假语法错。本次 `verify.ps1` 补 BOM 后复绿，
+  另发现并发会话刚改过的 `apply-bundle-layout.ps1` / `package.ps1` /
+  `verify-wechat-minigame.ps1` 三个文件同样掉了 BOM（`check-docs` 红 6 条），一并补回：
+  `check_docs_ok … ps1_bom_ok=41 ps1_parse_ok=41`。
+- **仍未收口（红因已查清，需要决定，不在本批）**：
+  - `jhyt_m63_title_prefab`：黄金表与 `873f05f3` 之后的**新门面**差 28 行。其中 26 行是设计变更
+    （三键横排、logo/lantern 重排、装饰与提示行在 Lua 里被注释掉），**另 2 行是内容丢失**：
+    版本页脚 `FooterText` 的 `text=` 是空的（全工程再无 `v0.1.0`），键位提示 `hint` 被隐藏。
+    回写黄金表之前要先决定这两处是"恢复文案"还是"确认不要"——否则等于把丢失当成设计签收。
+  - `jhyt_m72_pixel_font`：§② 的下一步判据是"48 个字形四边形里至少一个落在 1:1 档"，
+    而当前标题门面全是 13/14/18/22/24px 这类非整数倍字号 → 1:1 档 0 个。这是字号口径
+    （M72-10）的事，不是点阵管线坏了。
+  - `jhyt_m17_shop`：`<console>` 里 `attempt to index a nil value`（`[C]: in metamethod 'index'`，
+    即被索引的是宿主 userdata 而不是普通表），失败段已定位到 `M17-04d 商店 UI` 那一段
+    （E 开面板 → 键盘选择/数量/确认/切页/关闭），尚未定位到具体语句；该文件与
+    `registry_with_handles` 的 `input`/`audio` 迁出内置由另一会话在改，本批没碰它。
+- **回滚档**：`git checkout HEAD -- <文件>`。判据类改动（m30 的 27、m24 的语义比对、
+  m61/m62 的现算中心）单独回滚会把对应的红带回来；退役类改动（两个 m72 段的删除）
+  回滚后需同时恢复 `plugins/webgl/web-runtime.js` 才能跑。
+
+## Unreleased — 远端组与 keep 文件也进闭包：跳过不再等于通过
+
+- **症状/风险**：`assetc closure` 有两条"不在本地容器正常位置"的分支是被**静默跳过**的：
+  ① `unit = "cdn"` 的组（`-AssetPack remote` / thin：容器发布在 CDN 镜像里）只被数进
+  `cdn_skipped=N`，容器缺失或内容与计划不一致时日志与"通过"一模一样；② `--keep` 命中的条目
+  （微信字体 `wx.loadFont`、音频 `InnerAudioContext.src` 只吃真实路径）根本没进计划表，于是
+  "某个字体/音频既不在容器里、也不在目录里"（真机表现：字体回退、进游戏没声音）无人拦。
+- **改法**：`assetc closure` 新增 `--cdn <目录>`（远端组按**同一套**断言逐组核对：条目数 /
+  `block_size` / 原始字节 / 容器大小 / FNV / 每条计划路径都在索引里，根名报 `<cdn>`）；
+  不给 `--cdn` 而计划里有 cdn 组 → **判红**，要显式 `--allow-cdn-skip` 才放行（摘要仍打印
+  `cdn_skipped=N`，跳过数永远可见）。打包期把 `--keep` 命中的**具体路径**写进计划表 `keep` 字段，
+  发布期断言"在发布根里是真实文件"且"不在任何容器索引里"。`keep` 是 `Option`：缺失/`null` =
+  旧版本计划（无契约可查，摘要 `keep_contract=false`），`[]` = 声明零条。
+- **接线**：`package.ps1` 在 remote 形态把镜像 staging 传给 `apply-bundle-layout.ps1 -CdnDir`；
+  `verify-wechat-minigame.ps1` 新增 `-CdnDir`（不给则显式 `--allow-cdn-skip`）。
+  `test-release-closure.ps1` 从 7 条扩到 9 条（keep 正例 + 删文件反例；cdn 三种情形）。
+- **实测**：`game_jhyt` 重打一份 grouped：`assetc_closure_ok roots=1 groups=5 entries=1357
+  cdn_skipped=0 cdn_checked=0 keep=17 keep_contract=true`；删掉 `assets/audio/bgm_manor.mp3` 后
+  判红并点名该文件；旧产物（无 keep 元数据）仍绿但打印 `keep_contract=false`。
+  回归脚本：`release_closure_keep_ok keep=1 …`、`release_closure_cdn_ok cdn_groups=1 …`、
+  `release_closure_test_ok cases=10`。
+- **代价**：计划表多一个可选字段（JSON 只增不减，旧读取端忽略它）；远端组现在要求调用方给出镜像
+  目录，否则必须显式声明跳过——这是**有意**的：这类"我忘了给参数"以前会伪装成通过。
+- **边界**：`--cdn` 只核对"镜像里有这个容器且内容与计划一致"，不负责把容器**传上去**（上传仍是
+  `package.ps1 -CdnPackDir` / rsync 的事）；keep 断言只覆盖计划表声明过的路径，旧计划无此元数据。
+
+## Unreleased — CI 里的闭包门第一次站在**平台坐标**上：真拆根、真改名、真多根
+
+- **症状/风险**：`assetc closure` 此前在 CI 上只对 assetc 的**原始输出**（单根、`.rlb` 未改名）跑过；
+  而平台发布会做两件改变容器物理坐标的事：按布局把容器搬进 `pack/`、`pack-sub/`、`pack-<name>/`，
+  以及按上传白名单把 `.rlb` 改名成 `.rlb.txt`。逻辑键不变、物理位置全变——"检查器在自家门口能跑"
+  和"门在平台目录下仍然成立"是两件事，CI 一直只证了前者。
+- **改法**：`scripts/test/test-release-closure.ps1` 从 5 条扩到 7 条，新增一节用**真工具**造平台形态：
+  `assetc layout` 出布局 → `bundle-layout.js --apply` 真搬容器、真改名 → `check-bundle-mounts.js` →
+  多根 `assetc closure`（断言摘要必须报 `roots=2`，否则说明它退回了单根回退、这条用例等于白跑），
+  再加反例：删掉分包容器必须点名 `pack-sub/`。CI 的 `release-closure` job 与 `verify.ps1` 都跑，
+  零 wasm、零浏览器、零 GPU，秒级。
+- **实测**：`release_closure_multiroot_ok roots=2 sub_containers=1 renamed=.rlb.txt`；
+  `assetc_closure_ok roots=2 groups=2 entries=6`；`bundle_mounts_ok roots=2 paths=8 missing=0`；
+  反例 `release_closure_multiroot_missing_ok`（exit 1）；整脚本 `release_closure_test_ok cases=7`。
+- **代价**：用例多约 60 行；多根夹具依赖 `bundle-layout.js`/`check-bundle-mounts.js`（已有，无新依赖）。
+- **边界**：这是**形态**夹具，不是真微信包——`verify-wechat-minigame.ps1`（`pkg/`、字体、ECMA 语法、
+  主包配额）仍只在有真产物时跑，两者不互相替代。
+- **回滚档**：删掉第 6/7 条这两节即可回到"只测单根原始输出"的旧覆盖。
+
+## Unreleased — 跨端路径黄金表：三个读者读同一份文件，映射收敛成一份实现
+
+- **症状/风险**："逻辑路径 → 组 → 包根"有三个读者：Rust（`root_of_unit` + `distribution_layout`）、
+  JS（`bundle-roots.js::rootForPath`）、发布产物（`assetc closure`）。此前是三份**手抄的表**，
+  各自单测全绿——但它们对同一条路径给出不同答案时不会报错，症状是**真机白图**（容器里有字节，
+  读取端拿另一个键去查）。这是原 P0 清单里唯一一条一直没做的"跨端对拍"。
+- **改法**：
+  ① 抽出**一张表** `scripts/test/fixtures/asset-routing-golden.json`（单元→根、每条路径的组/单元/根、
+  容器路径、可接受写法与必须拒绝的写法），三个读者读同一个文件；
+  ② Rust 侧新增集成测试 `engine/crates/rustlua-infra/tests/asset_routing_golden.rs`：黄金表必须先通过
+  真正的 `BundlePlan::parse`，再断言"组归属唯一""unit→根""容器路径归组""写法规范化""拒绝绝对路径/`..`/空/NUL"；
+  ③ JS 侧新增 `scripts/test/asset-routing-golden-test.js`：`rootOfUnit`/`rootForPath`/`rootsForPaths`
+  与非法 unit 抛错，期望值同样从黄金表读；
+  ④ `test-release-closure.ps1` 加第 5 条：把黄金表里的路径**真的打成容器**并过 `assetc closure`，
+  否则"Rust/JS 认为的键"与"打包器实际写进容器的键"仍可各对一半；
+  ⑤ 映射收敛成一份实现：`bundle_plan::unit_root_and_rank`，`distribution_layout` 与 `assetc closure`
+  都调它（`assetc closure` 里那份手抄副本删掉）。
+- **实测**：`cargo test -p rustlua-infra --test asset_routing_golden` 6 条；
+  `node scripts/test/asset-routing-golden-test.js` → `asset_routing_golden_ok units=5 paths=6 containers=3 checks=24`；
+  `test-release-closure.ps1` → `cases=5`（新增 `release_closure_golden_ok paths=6`）；`rustlua-infra` 全量 70 条、
+  `assetc` 47 条、clippy `-D warnings` 0。
+- **代价**：多一份约 100 行的 JSON 表与两个测试驱动；改路由判据时必须同步改表（表内 `note` 已写明）。
+- **回滚档**：删掉表与两个测试驱动，把 `unit_root_and_rank` 内联回 `distribution_layout` 即恢复旧形态。
+
+## Unreleased — MVP 示例清单：补登记 `jhyt_m93`、把 `jhyt_m59` 归入退役档
+
+- **先纠正一条我自己的错报**：此前说"`verify.ps1` 的 MVP 清单停在 `jhyt_m60_tutorial`，
+  `m61..m72` 都没登记"——**错的**。清单里早就有 `m61..m72`（只是排在 `m60` 之前，看结尾会误判）。
+  逐个核对后的真实缺口只有两个：
+  `jhyt_m93_spatial_audio`（本包新增，确实漏登记）与
+  `jhyt_m59_ui_prefab`（**故意**不在清单里：文件头写着「M71 退役声明……已从 `verify.ps1` 移除」）。
+- **两个缺口是两类问题，不能混**：前者是漏登记（补上即可），后者是"已知跑不了的历史门"。
+  旧代码没有区分手段——`jhyt_*.rs` 在盘上但不在 `$examples` 里就 `throw`，
+  于是 `-Mvp` 永远倒在第一步，而真正的"少跑了一个样例"也被同一个红掩盖。
+- **改法（`scripts/verify/verify.ps1`）**：`$examples` 78 → **79**（补 `jhyt_m93_spatial_audio`，
+  带"这道门守什么"的四行注释）；新增 `$retiredExamples = @("jhyt_m59_ui_prefab")`，并加两条守卫
+  ——退役档里的文件**必须还在盘上**（否则这条豁免只是在掩盖删除），且**不得同时出现在 `$examples`**
+  （"退役"与"要跑"是互斥的）。`$unlisted` 判定改为两边都排除。
+  复核读数：清单 79 + 退役 1 = 磁盘 80，缺失 0、漏登记 0、无重复。
+- **逐个跑过的读数（80 个全跑，2026-10-20）**：**65 绿 / 14 列红 / 1 退役红**。
+  14 条红逐条查过原因，**没有一条与 M74-01 有关**（证据：① 临时探针证明
+  `input_lua::registry_with_handles()` 装出来的运行时里 `clock/audio/input/time/log/ui/entity`
+  全在、`clock.set` 可调用——所以 `jhyt_m17_shop` 的 `index a nil value` 不是"绑定没装"；
+  ② 其余红的断言文本分别是 Text 组件数量、资产路径、`FarmGrid` 格位、打包目录缺失、
+  已删除的 `plugins/webgl/web-runtime.js`，都不在音频/听者这条路径上）。
+  归因分布：黄金表/资产路径/文本口径过期 5（m24/m30/m34_status/m63/m66）、
+  预制体命中面与注册漂移 3（m23 的 `ui.prefab` 未登记、m61/m62 门口按钮派发名单为空）、
+  游戏逻辑漂移 1（m22 `FarmGrid(16,4)=0 want 1`）、缺产物 3（m31 未打包、m72_tile_variant
+  与 m72_autotile 都在读已删除的 `plugins/webgl/web-runtime.js`）、渲染侧 1（m72_pixel_font
+  字体图集 `pixels` 为空）、未定位 1（m17_shop 的 console `index a nil value`）。
+- **结论**：`-MvpOnly` 在修掉那 14 条之前仍是红的，且这次的红**不再是"清单不准"**——
+  它是内容侧/资产侧/环境侧的真回归，需要单独排期逐条收（多数是更新黄金表或改路径）。
+  回滚档：删掉 `$retiredExamples` 与那条 `jhyt_m93` 行即可（`$unlisted` 的那一行判定要一起回退）。
+
+## Unreleased — M74-01 3D 空间音频：模型权威、平台尽力
+
+- **做了什么**：新增 `rustlua-audio/src/spatial.rs`（听者位姿 → `SpatialParams { gain, pan }` 的
+  **纯函数**、线性距离模型、等功率声像、非法输入一律拒绝）、`AudioSystem::play_at/play_at_on/
+  set_listener/set_spatial_model`、`AudioRequest.spatial: Option<SpatialEmission>`、宿主每帧从
+  **活动相机**灌听者位姿、Lua `audio.play_at / set_listener / listener` 三个函数，
+  以及 headless 门 `jhyt_m93_spatial_audio`。
+- **核心决策：模型权威、平台尽力**。听感只由引擎侧的 `evaluate()` 决定；平台只负责"把两个数
+  应用出去"。桌面把 `pan` 折回一个**固定 0.5 m 距离**上的位置喂给 `rodio::SpatialSink`，
+  web/微信把 `gain` 乘进音量、把 `pan` 原始值传下去并在日志里显式标注"声像未应用"——
+  不做"两端假装一致"。
+- **为什么桌面必须折回而不是直接给真实坐标**（本轮实测发现的关键事实）：rodio 0.19 的
+  `Spatial`（`rodio-0.19.0/src/source/spatial.rs:64-65`）自己带距离衰减
+  `(1.0 / dist²).min(1.0)`。直接喂真实坐标 = rodio 用自己的距离模型、web 用我们的，
+  两端在**同一份脚本**下听感分叉，而症状（"网页上声音偏轻/偏响"）不指向任何一行代码。
+  折回后声源到两耳的距离恒 ≤ 0.71 m（< rodio 的 1 m 不衰减阈值）⇒ rodio 的距离因子恒为 1，
+  真正生效的只有我们的 `gain` 与由两耳距离差产生的声像。这条不变量由
+  `folded_positions_stay_inside_rodios_no_attenuation_range` 与示例的 ④ 段逐档钉住。
+- **为什么拒绝而不是夹紧**：非有限值、`max_distance <= min_distance`、朝向基退化
+  （`forward` 为零或与 `up` 平行）、宿主没接听者——四种都返回错误/`ok=false` + 一条 warn。
+  "我设了参数但声音没变"是这类功能最难查的形态，夹紧会把它变成静默行为。
+- **为什么听者从相机来、且每帧灌**：脚本在一帧里可能换过选中相机、移动过父链、换过场景，
+  所以听者不能是"启动时存一次"的常量。宿主在 `run_script_steps` 收尾取**本帧渲染所用的相机**
+  （已经定帧就复用 `frame_camera3d()`，不再解析一次——否则同一帧算两遍，`tests/frame_view.rs`
+  的 `camera3d_resolutions` 账本会当场红；headless 没有定帧视图，才走 `active_camera3d()` 解析一次）。
+  `RuntimeScene::audio_listener()` 把它暴露出来，宿主测试
+  `listener_follows_the_active_camera_each_frame` 钉住"构造期为空 + 跑过一帧后等于相机 + 第二帧仍重灌"。
+- **实测/核对**：`rustlua-audio` 单测 15 条（含新增 8 条模型/折回 + 3 条宿主契约）、
+  平台出口契约 `sink_provider` 扩到断言"空间播放把 `gain` 折进音量、`gain/pan` 原样给平台、
+  2D 播放 `spatial = None`"；宿主接线测试 1 条；示例
+  `cargo run -p game --example jhyt_m93_spatial_audio` 五段全过（模型四档 / min 内不衰减 /
+  四类拒绝 / 折回五档 / 宿主契约）。
+- **顺带修掉两棵门**：
+  ① `lua_api_surface.json` 加 3 个函数后，`gen-lua-api-docs.js --check` 暴露它**本来就红**——
+  `docs/62` P1 把 `audio`/`input` 绑定下沉到 owning crate 之后，生成器只扫
+  `rustlua-scripting/src/script/api`，于是这两张表全被当成"没有绑定源码"的桩，且 `audio.md` 里的
+  绑定行还指着已删除的 `script/api/audio.rs`。改法两行：生成器补扫 `rustlua-audio/src/lua.rs` 与
+  `rustlua-input/src/lua.rs`；再生成后 `audio.md`/`input.md`/`camera*.md` 的绑定行回到真实文件，
+  桩数基线从 280 收紧到 277（新 API 的三节我直接写了正文，不留 `TODO(文档桩)`）。
+  ② `sample_project_demos_cover_every_lua_api`（示例工程的"每个 Lua API 都要真被调用一次"门）
+  当场指出新函数没有演示：`examples/game_api/scripts/demo_audio.lua` 补了 digit6 分支
+  （`set_listener` + `play_at`，并把实际 `gain/pan` 打进状态行）与每帧的 `listener()` 一行
+  —— 这棵门正是"新增 API 必须有人在用它"的落地点，绕不过去也不该绕。
+- **代价与未验**：① **人耳未验**——数值口径全绿不等于"听起来对"，`k = 0.5 m` 与两耳间距
+  `0.2 m` 决定声像强度，真机上要不要调这两个数只有耳朵能定；② 没有 `PannerNode`/HRTF、
+  没有遮挡（occlusion）、没有多听者——都是任务书里明确不做的；③ BGM（`audio.music`）保持
+  非空间化；④ `verify.ps1` 的 MVP 示例清单当时**没动**——我原先判断"清单停在 `jhyt_m60_tutorial`、
+  `m61..m72` 都不在册"，**这个判断是错的**（`m61..m72` 早就在册，只是排在 `m60` 之前）；
+  真实缺口只有本包的 `jhyt_m93` 与故意退役的 `jhyt_m59_ui_prefab`，已在紧邻的
+  「MVP 示例清单：补登记 …」一节里补齐并逐个跑过。
+- **回滚档**：`play_spatial` 与 `play_on` **共存**，`AudioRequest.spatial` 默认 `None`，
+  删掉 `spatial.rs` + 三个 Lua 函数 + 宿主两行即回到 M74 之前；`--update-baseline` 那一档
+  回滚需要重跑生成器（`audio.md`/`baseline.json` 是生成物）。
+
+## Unreleased — 能力补齐批 M74 排期：3D 空间音频 / ECS 并行调度 / Compute Shader
+
+- **为什么现在只排期不实现**：这三项是 `docs/62` §6 P1 里唯一还开着的三行，每一行都是"周"级
+  工程量，且其中两项（ECS 并行、compute）的收益**依赖今天的实测数字**——先动手等于先赌判断。
+  所以本轮交付的是三份可执行的排期（`tasks/plan/`），每份都带"什么条件下一开工就要停"。
+- **排期顺序与理由**：`M74-01 3D 空间音频`（1 周，先做）→ `M74-02 ECS 并行调度`（3–4 周）→
+  `M74-03 Compute Shader`（3–4 周，排在 P0 的 PBR/HDR 之后）。`01` 独立且唯一"低风险 + 玩家可听"，
+  `02`/`03` 都要动渲染/存储骨架，同一批文件里并行开工只会互相打架。
+- **三份排期各自钉住的东西**（都是实测，不是转述估算）：
+  - `M74-01`：播放出口只有两条（桌面 rodio `Sink` / wasm `sink::AudioSinkProvider`），
+    `AudioRequest` 只有 5 个字段、Lua 14 个函数（**本包之前**的数字；现为 17）里没有一个与位置有关；但 rodio 0.19 **自带**
+    `SpatialSink`，`Camera3D { position, target, up }` 与 `Transform3D` 位姿齐全 ⇒ 缺的只是
+    "引擎侧空间模型"这一层。核心决策写成"**模型权威、平台尽力**"：`evaluate()` 是纯函数，
+    桌面把结果折回 `SpatialSink` 的位置、web/微信只应用 `gain` 并把 `pan` 显式标注为未应用
+    ——不做"两端假装一致"。明确不做 WebAudio `PannerNode`/HRTF（那是另一件事）。
+  - `M74-02`：`System` 回调文档明写不要求 `Send`，`ComponentStorage: Any` 没有 `Send`/`Sync`，
+    `TypedStorage` 内嵌 `RefCell`/`Cell` ⇒ 今天并行调度在**类型层面**就被挡住。而帧成本大头不在
+    系统分发（WP0 实测 10k sprite 的 CPU 提取 11.5 ms p50，WP6 后每帧分配与精灵数几乎无关），
+    真正在跑的并行是 `infra::par` 对**切片**的分块（10k 噪声内、50k −21%、100k −26%）。
+    所以 **P0 是度量闸门**：量出"最慢 stage 的串行系统合计 < 帧的 20%"就判不做，成本停在 2 天。
+  - `M74-03`：全仓 0 处 `ComputePipeline`/`@compute`/`dispatch_workgroups`；后处理已是全屏
+    fragment pass（不需要 compute）；平台矩阵的关键一条是 **WebGL2 没有 compute**
+    （`wgpu::DownlevelFlags::COMPUTE_SHADERS`，`wgpu-types-27.0.1/src/lib.rs:1211`），而微信
+    只有 WebGL2 ⇒ 任何 compute 特性必须是"可选加速"，且 **P0 探针在 WebGL2 上读到 `true`
+    就说明判断错了、整条排期重写**。
+- **实测/核对**：三份里的代码位置与读数逐条对过（`rodio-0.19.0/src/spatial_sink.rs` 的
+  `try_new`/`set_emitter_position`/`set_left_ear_position`、`wgpu-types 27.0.1` 的
+  `COMPUTE_SHADERS`、`rustlua-infra/src/par.rs` 的阈值表、`docs/53` §3.1 的帧阶梯）；
+  `tasks/README.md` 的 `plan/` 条目从"2026-10-17 起为空"改成三份新任务的清单与顺序。
+- **代价与未验**：① 没有一行生产代码被改，所以"能力补齐"这件事**仍未开始**——本轮只是让它
+  可开工、可验收、可叫停；② `M74-01` 的"4 个数字断言"与 `M74-03` 的 GPU 对拍都要等实现时才
+  知道口径够不够；③ 三份的估时沿用了 `docs/62` §6 的 1 周 / 3–4 周 / 3–4 周，没有重新估，
+  因为 P0 阶段本身就是估时的校准点。
+- **回滚档**：`git revert` 本提交即删掉三份排期与两处索引回写（`docs/62` §6、`tasks/README.md`），
+  不影响任何代码或产物。
+
+## Unreleased — `BundleIndex::parse` 加固：坏容器不再静默（顺带修掉"空文件在容器里消失"）
+
+- **症状/风险**：`BundleIndex::parse` 是 RLB 格式**唯一的信任边界**。它原来只查"魔数/版本/头
+  FNV/索引越界/条目落在块内/路径重复"，剩下五类坏包都能解析成功，然后在别处变成没有出处的事故
+  （本轮复核又补了三处同族缝隙，见下）：
+  ① 头/块/条目的**未定义标志位**被当成 0 静默忽略（改了格式没升版本时，读写两侧语义悄悄分叉）；
+  ② 头里 `index_raw_len` 有 `!= 0` 的逃逸口——写成 0 就整条跳过"解出来的索引长度对不对"；
+  ③ 索引后面**追加的垃圾/拼接的半包**照样解析（写侧总把索引放在文件末尾，尾标在 v1 不存在）；
+  ④ 声明的条目数/块数是 u32，一个 16 B 的坏索引可以声明 40 亿条——先 `Vec::with_capacity`
+  再报"索引截断"，原生是 OOM/被 kill、wasm 是 `abort`，**都不是"坏容器报错"**；
+  ⑤ 条目路径只查 UTF-8 不查规范化形态（写侧一直在规范化/拒绝）：`assets\\a.png`、`./a.png`、
+  `a//b.png`、`/abs`、`..`、空名都能进索引，然后运行期 `BundleSet::key_of` 的规范化键**永远
+  查不到**——"包里有这个文件，游戏说没有"，且没有任何日志。
+- **改法**：把上面五类全部提到解析期（判据都取自写侧保证，不会误伤合法包），并新增
+  `validate_layout` 承担"块表 × 条目表"的联合不变量：
+  ① 三类标志位只接受 v1 定义过的位（`0x1` / `0x1|0x2|0x4` / `0x1|0x2`），其余点名；
+  ② `index_raw_len` 一律与解出的长度比对（去掉 0 逃逸）；
+  ③ 索引必须结束于文件末尾，否则报"尾部多出 N B"；
+  ④ 计数先用"剩余字节能装下多少条"（每块 9 B、每条 ≥23 B）兜住**再**分配；
+  ⑤ 路径必须是 `paths::normalize_project_path` 的**不动点**（否则 `InvalidPath` 带原值）。
+  另加四条联合不变量：块表非空 ⇒ 条目表非空；**每个块**都必须至少被一个条目引用
+  （旧检查只覆盖空块，非空块可以白占一段永远读不到的 payload）；非空块 `stored_len != 0`、
+  空块 `stored_len == 0`；`raw_len > block_size` 只允许"单条目自身超块、独占一块"（必须有一个
+  条目 `offset == 0 && len == raw_len` 完整覆盖它）——这条挡的是"`raw_len` 撒 4 GB 的谎"。
+  复核时又补了两处仍然静默的缝隙：① 索引**记录之后**的多余字节（`parse_index` 现在要求
+  `cursor == raw.len()`，以前只查"索引结束于文件末尾"）；② zstd 解压上限取自容器声明的长度
+  （索引 `index_raw_len` / 块 `raw_len`），以前 `read_to_end` 无上限，几 KB 的坏帧可以要求
+  几百 MB 到几 GB 输出，最终以 OOM / wasm `abort` 收场而不是"长度字段撒谎"。
+- **顺带修掉一个写侧的静默丢件**：`build()` 以前只按"块缓冲非空"收尾，而空文件不往缓冲写
+  字节 ⇒ **只装空文件的容器会把那些条目连同块一起丢掉**（容器建成功、`read` 返回 `None`、
+  零报错）。现在"有条目就收尾"，空文件产出 1 个 `raw_len == 0` 的块并原样往返。
+- **实测**：`cargo test -p rustlua-infra --features bundle-write --lib bundle::` **31 通过**
+  （新增 13 条：1 条手拼合法包的正对照 + 12 条坏包，逐条钉住上面每一格）；
+  `cargo test -p rustlua-infra --features bundle-write` 全量 **101 + 4 + 1 通过**；
+  `cargo clippy -p rustlua-infra --all-targets --features bundle-write -- -D warnings` 与
+  `cargo fmt -p rustlua-infra -- --check` 干净；
+  `cargo test -p assetc --all-features` **47 + 4 通过**（真实分组的包照样能挂、能逐条读回）；
+  `docs/67` 新增 §4.8 把这张不变量表写进格式契约（含"每条症状是什么"）。
+- **代价与未验**：① 尾部数据现在**一律拒绝**——将来真要加尾标（签名/trailer）必须升
+  `BUNDLE_VERSION`，不能再靠"多出来的字节没人看"；② 索引内多余字节与未被引用的块同样一律
+  拒绝（写侧从不产出；将来要加索引 padding / 填充块也必须升版本）；③ `BundleIndex::paths()`
+  的文档从"升序"改成"写入端顺序"：带 `add_ranked` 的包本来就不是字典序，旧说法一直是错的
+  （解析侧只强制唯一，不强制排序）；④ 未验：真实发布的 webgl/微信包（`package.ps1` 的两个
+  分组形态）本轮没重跑，`assetc` 的 `package_grouped` 用例已覆盖"分组包能挂载"。
+- **回滚档**：`git revert` 本提交即回到"只查魔数/版本/越界"的宽松解析；新增用例会一起回退，
+  旧行为下它们全部红——这正是判据。
+
+## Unreleased — `jhyt_m29_season_weather` 转绿：三条 HUD 断言改读预设节点，资源审计基准重钉 1065/23/143
+
+- **症状/风险**：`docs/48` §1 的注释里留着一条悬案——"主角头像的 +6 立绘把已引用从 978 推到 984，
+  但**这条增量从没跑过实测**，因为样例在走到资源审计之前就先红在雨天遮罩那一腿"。也就是说
+  M29 这条 master 级验收自 M70/B7 起一共红了三处，全都源于**同一件事**：HUD 从脚本动态层
+  （`ui.panel` / `ui.image`）搬进了 `assets/prefabs/ui/hud.prefab`，而断言还在读 `hud:rain` /
+  `hud:weather_icon` / `hud:bar_hp` 这三个已经不存在的动态对象。后面那段资源审计因此两年没被执行过。
+- **改法**：
+  ① ④ 雨天：改成读**实体层**——`entity.find("HudRain")` → `EntityId::from_raw` →
+     `runtime.prefab_ui_nodes().contains_key(&slot)` 判"这一帧画没画"（`prefab.set_visible(false)`
+     是子树语义、走"不建布局项"，所以"画"与"能点中"同源），再读 `Image.color[3] ∈ (0, 0.6)`
+     与 `UiLayout.offsets` 换算的 1280×720 覆盖范围；天气图标读 `HudWeatherRain` /
+     `HudWeatherSun` 的 `Image.texture` 与互斥可见性。晴天那一腿同时断言雨罩节点**不在**绘制表里。
+  ② ⑥ 资源条：改成读 `HudBarFill1` 的 `UiLayout` 宽度（脚本每帧 `prefab.set_rect` 写它，
+     与 `ui.hud.bar_ratios()` 同源）：满血 160、半血 ≈80 且严格变短，贴图仍是
+     `ui_bar_fill_hp.png`。
+  ③ ⑦ 资源审计：在**干净树**（`examples/game_jhyt` 无未提交改动）上实测
+     `assets/` 共 1231 = 已引用 **1065** + 开发产物 **23** + 内容缺口 **143**，按实测重钉
+     （旧值 984 / 47 / 2）。三条断言合并成一条诊断：失败时一次给出两个基准、实测值、
+     143 的构成与两条收口路线（不再只报第一条）；另加 `RUSTLUA_M29_DUMP_GAPS=1` 取数入口，
+     跑一次就打出内容缺口的按目录分组，重钉不再需要临时改代码。
+  ④ `docs/48` 同步：§1 追加 2026-10-19 重钉块（差额构成与复现命令）；§2 按目录补 36 行
+     决定（29 个作物的 `stage_*.png` 中间帧 + 拆层整图/阴影/改色备份），`dialogue.ui.json`
+     那行随 `.prefab` 迁移清零；§3 的"标题原图改名"改成"原图不再入库"。
+  ⑤ `scripts/ui/hud.lua` 里随迁移失活的三个常量表（`RAIN_OVERLAY` / `RAIN_ICON` /
+     `WEATHER_ICONS`）删掉——几何与配色全在预设，留着只会让下一个人以为雨罩还由脚本算；
+     两张天气图标改由 `hud.prefab` 引用（审计口径里预设整目录进语料，引用不断）。
+- **实测**：`jhyt_m29_season_weather` **7 段全过**（此前卡在 ④）；`docs/48` 63 行决定
+  覆盖 143 个内容缺口、接线行全部为真；`cargo test -p editor` **392 通过 / 0 失败 / 2 忽略**；
+  `cargo fmt --all -- --check` 干净；`cargo check --workspace --all-targets` 0 错误；
+  `check-docs`（links=440）与 `check-silent-traces`（assertions=8）绿。
+- **代价与未验**：那 122 个 `assets/art/crops/<crop>/stage_*.png` 是 `tools/gen_crop_art.py` 的
+  出图中间帧（运行期走图集 `manor_crops.png` + `CropGrid`），**是否进发行包属 P2 打包口径**，
+  本次只在 §2 按"计划"登记、不改 `assetc::is_dev_artifact`；一旦认下它们，基准应改成
+  1065 / 145 / 21（§1 与样例常量都写了这条）。未验：`clippy -p game --all-targets -D warnings`
+  仍红在别的示例（`jhyt_m20_audio` / `jhyt_m34_skills` 的 `&host` needless borrow，属并发在制的
+  `input_lua::registry_with_handles` 迁移），本次只对改动目标 `--example jhyt_m29_season_weather`
+  跑 clippy `-D warnings` 并干净。
+- **回滚档**：`git revert` 本提交即回到读动态面板的三条断言与 984/47/2 基准（只动验收代码与
+  `docs/48`，不影响引擎与游戏运行期行为）。
+
+## Unreleased — 两个测试目录按主题拆分（`scene_view/tests/`、`actions/tests/`）
+
+- **症状/风险**：上帝文件拆成目录后，两个目录里最大的文件变成了各自的 `tests.rs`（2,027 / 1,250 行）：
+  一个文件里混着指针状态机、gizmo 数学、投影/瓦片映射、UI 包围盒、样例工程端到端（以及临时工程、
+  样例拷贝、测试设备这些公共夹具），同一个主题的失败信息也挤在一处。
+- **改法**（纯搬运，切分后每步 `cargo check` + 定向测试）：
+  ① `scene_view/tests.rs` → `tests/` 8 个文件：`mod.rs`（模块头、导入、`interaction_entity` /
+  `rotate_only` / `unique_token` / `test_device` / 临时工程与样例拷贝 / `interaction_app`）、
+  `interaction`、`gizmo`、`render`（离屏 GPU）、`projection`、`tilemap`、`entities`（2D/UI 包围盒与浮层）、
+  `sample_project`（预设拖放、瓦片落盘）；
+  ② `actions/tests.rs` → `tests/` 5 个文件：`mod.rs`（导入 + 临时工程、样例拷贝、Scene 视图缓存探针、
+  `test_context`）、`document_gate`（E06 与磁盘冲突）、`transactions`（E07/E08）、`layout`（对齐分布、
+  sprite 排序）、`refresh`（统一刷新路由）；
+  ③ 子模块只写 `use super::*;`——公共夹具从 `tests/mod.rs` 取，导入与辅助函数都放在 `mod.rs` 一处
+  （与 `scene_view/mod.rs` 的分法一致）；每条测试的函数体一字未改。
+- **实测**：单文件最大 2,027 → **703**（`scene_view/tests/entities.rs`）、1,250 → **395**
+  （`actions/tests/refresh.rs`）；测试数与拆分前一致（`scene_view` 40 通过 / 1 忽略、`actions` 26 通过）；
+  面板棘轮 `PINNED_WRITES` 里原来的 `("scene_view/tests.rs", 0)` 条目随目录删除（该棘轮本就只统计
+  生产代码、测试模块按惯例排除），守卫覆盖面不变；clippy `-D warnings` 干净。
+- **代价与未验**：公共辅助函数从"就近定义"改成"集中在 `tests/mod.rs`"，读单个测试时要多跳一次；
+  未验：没有按主题单独跑某个文件的稳定性（全量 `cargo test -p editor` 已覆盖）。
+- **回滚档**：`git revert` 本提交即回到两个单文件测试模块，测试逻辑不变。
+
+## Unreleased — 修两条过期断言（预设路径、标题按钮宽度）并修掉 `host` 遮蔽
+
+- **症状/风险**：
+  ① `editor` 的 `play_sync::tests::hierarchy_panel_draws_a_runtime_spawned_prefab_screen` 长期红：
+     它从 `examples/game_jhyt/assets/prefabs/title_menu.prefab` 复制门面预设，而该预设随 UI 预制体化
+     搬到了 `prefabs/ui/` 下——测试拿一个不存在的路径，报 `复制门面预设: Os { code: 2, kind: NotFound }`；
+  ② `game` 的 `jhyt_m20_gamepad` M20-09c 卡在 `width > 380`（注释写着"基准 372px"）：标题按钮布局后来
+     改成 160×60，这条断言就只剩"数字过期"；而它一红，**后面整段**都没再执行过；
+  ③ ②挡住的那段里还有真缺陷：示例用 `let (mut title, host) = …` 把 `host` 遮蔽了，于是 M22-01
+     槽位/热插拔那段把 **Title 运行时的 host** 喂给主运行时——Lua 侧读到的自然是另一份输入
+     （`input.pad_button(0)` 恒为 false，看起来像"手柄 A 不生效"）。
+- **改法**：
+  ① 预设路径按新位置改成 `assets/prefabs/ui/title_menu.prefab`（源路径与临时工程里的落点同改）；
+  ② 高亮宽度不再写死像素，基准统一从 `ui.layout.PANEL.title_btn.w` 取：换项当帧断言
+     `宽 > 基准 且 ≤ 基准 + 2×16`（`grow_x = 6 + 10×ease` 的上限），收敛后断言 `宽 == 基准 + 2×6`；
+     顶部操作说明那条改成两件事——该面板**不再显示**（门面皮肤改版后每帧 `ui.hide("title:hint")`、
+     绘制那行也已注释掉），以及 `M.hint_line()` 在手柄态仍提到 DPad（"按设备换文案"的能力没随面板丢掉）；
+  ③ 每个运行时的 host 各自具名（`booted_host` / `title_host`，23 行），主运行时的 `&host` 不再被遮蔽。
+- **实测**：`jhyt_m20_gamepad` **11 段全过**（此前第 11 段就红）；`editor` 测试 **392 通过 / 0 失败 /
+  2 忽略**（此前 391 通过 + 那条红线）；clippy `-D warnings` 干净。
+- **代价与未验**：断言从"绝对值"改成"相对布局基准"，改版面不会再让它变红，但也因此不再锁死具体像素
+  值（要锁死就该在布局层加断言）；`jhyt_m29_season_weather` 仍红在 `ui.panel_get('hud:rain')`
+  （M70/B7 把雨罩搬进预设后动态面板已不存在，示例里自带注释说明），与本改动无关，本次未修。
+- **回滚档**：`git revert` 本提交即回到写死像素的断言与遮蔽的 `host`（只动测试代码，不影响引擎行为）。
+
+## Unreleased — 编辑器两个上帝文件拆成目录（P1 架构债）
+
+- **症状/风险**：`editor/src/actions.rs`（4,604 行）与 `editor/src/panels/scene_view.rs`（6,369 行）
+  是全仓最大的两个源文件，也是 WP12 之后**还在长**的那两处——`actions` 一个文件塞了 4 个
+  `impl EditorApp` 块（48 个方法：事务、撤销、保存、对齐、实体创建、组件结构编辑、预设），
+  `scene_view` 一个文件塞了 51 个方法（绘制、指针状态机、拾取、瓦片、三条离屏渲染路径、投影数学）
+  外加 690 行自由函数。改任何一个功能都要先在这两个文件里定位，review 的 diff 也永远落在同一处，
+  而且行号在文档里被反复引用（`docs/29` 里 11 处）。
+- **改法**（两轮，每轮都以 `cargo check` 收口，不改任何行为）：
+  ① `actions.rs` → `actions/`：`mod.rs` 只留模块说明、导入与 5 个共享类型（`EditState` /
+  `EditSnapshot` / `DocumentChange` / `PendingChange` / `PendingDecision`）+ 跨模块再导出，命令按
+  "文档闸门 / 编辑事务 / 文档读写 / 布局 / 实体 / 组件 / 预设命令 / 预设重建" 落到 8 个模块，
+  测试留在 `tests.rs`；
+  ② `panels/scene_view.rs` → `panels/scene_view/`：`mod.rs` 留导入、`SceneViewTexture` 与纹理同步，
+  其余按 "主绘制 / 指针 / 2D 命中 / 视图状态 / 3D / 工具面板 / 瓦片 / 渲染 / 投影" 落到 9 个模块，
+  测试留在 `tests.rs`；
+  ③ 切分用脚本按行段**纯搬运**（新增的只有每个文件的模块头与 `use super::*;`），随后只做两类必要
+  改动：跨子模块用到的条目从"模块内私有"抬到 `pub(crate)`（原来是同一个文件里的私有作用域，
+  可见范围等价），以及把原文件里**悬空的 3 行 `///`**（它描述的函数早已迁到 `crate::scene_drag`）
+  删掉；
+  ④ 守卫同步：面板棘轮 `panels/architecture_tests.rs` 原本平铺扫 `panels/*.rs`，拆成目录后
+  `scene_view/` 会被静默漏掉——改成递归一层、按相对路径登记，`PINNED_WRITES` 补进 11 个新文件。
+- **实测**：`actions/` 生产代码最大 594 行（`components.rs`）、`scene_view/` 生产代码最大 652 行
+  （`render.rs`），比拆分前分别降 87% / 90%；编辑器测试 391 通过 / 1 个既有失败（`play_sync` 的
+  预设路径，与本次无关）、clippy `-D warnings` 干净、`cargo check --workspace --all-targets`
+  零错误零告警（只有 `wasm-bindgen-macro` 的 linker 提示）、`check-docs`（440 条相对链接）与
+  `check-silent-traces` 通过。
+- **代价与未验**：文件的"位置"变了——文档里 11 处对这两个文件的链接已改到新路径，源码注释里的
+  `` `actions.rs` `` 改成 `` `crate::actions` ``；两个目录的 `tests.rs` 仍是最大单文件
+  （2,027 / 1,250 行），可按主题再拆；`preview_session` 与 `scene_view` 两套 offscreen renderer
+  的重复**没有**动（那是行为重构，不属于纯搬运）。未验：没有跑 GUI 冒烟（编辑器是二进制，
+  拆分只动了模块边界，测试已覆盖到各面板/命令的可执行路径）。
+- **回滚档**：`git revert` 本提交即回到两个单文件；因为只是移动代码，回滚不会引起任何行为差异。
+
+## Unreleased — `input` 绑定下沉：`rustlua-scripting` 领域依赖 11→10（P1 阶段 3）
+
+- **症状/风险**：音频搬走之后，39 个 `input.*` 函数与整套输入状态仍住在 `rustlua-scripting` 里，
+  "改一次按键边沿/重复计时/焦点导航"依旧要重编 VM 与全部绑定。附着点比音频硬：输入不是一份
+  共享资源，而是**每帧由宿主推入**的——快照、虚拟键继承、逻辑时钟、动作表、导航、诊断、震动
+  请求，全挂在 `ScriptState` 那个 40 字段中枢上；`process_ui_clicks` 还直接把 `InputSnapshot`
+  当参数收进脚本层。上一笔记的"额外前置"（`NavSettings`/`ProjectSettings` 跨层）就卡在这里。
+- **改法**：
+  ① 状态机整体搬到 `rustlua-input`：`state::InputState`（快照 / 动作表 / 导航 / 重复计时 / 诊断 /
+  震动请求 / f64 逻辑时钟）+ `nav::NavSettings`（原住 gameplay，本就是输入领域的类型）+
+  `port::SettingsPort`（读工程根、`vfs` 读、写回保留 `[audio]` 等其它段）；
+  ② 宿主能力单元 `HostInput`（`Clone`，`Rc<Cell<…>>` 共享）：`set_input` 逐句保持改造前的语义
+  （按固定步推逻辑时钟、继承虚拟键、换快照、公布指针位置），另带 `nav_settings` /
+  `take_rumble_request` / `action_map` / `set_action_map` / `action_repeat` / `input_diagnostics`；
+  ③ 39 个 `input.*` 函数住 `rustlua-input::lua`，端口实现与注册表接线住
+  `rustlua_gameplay::input_lua`（它拥有 `ProjectSettings`、已依赖 input，且所有建 VM 的 crate
+  都依赖它，不会成环）——于是"前置"消失：nav 与设置持久化都不必再挂 `ScriptState`；
+  ④ `ScriptState` 少 8 个字段（`input`/`action_map`/`nav`/`action_repeat`/`rumble_request`/
+  `input_diagnostics`/`input_migration_notes`/`logical_ms`），`LuaRuntime` 少 8 个宿主方法；
+  `RuntimeScene` 改持 `HostInput`；`process_ui_clicks` 不再收 `InputSnapshot`，只收
+  `Option<(f64, f64)>`（"左键这一下落在哪"），输入快照彻底不进脚本层。
+- **实测**：`api_surface_snapshot` 基线**零改动**（`input` 仍是 39 个函数、名字与排序不变）；
+  `jhyt_m22_input` 端到端通过（194 颗物理键全表、v1→v2 设置迁移、默认动作表 41 项零冲突）；
+  `jhyt_m20_audio` 通过、`jhyt_m20_gamepad` 前 10 段（重复计时四档、虚拟键继承、断连不粘键、
+  编辑器等价路径、焦点环）通过；测试：scripting 110 / engine 188 / editor 391 / gameplay 34 /
+  scene 60 / assets 105 / audio 4 / infra 70 / input 39（12 条集成 + 27 条库内）全绿；
+  架构耦合门 4/4（scripting 预算降到 10 条领域依赖 + `lua-api`）。
+- **代价与未验**：`rustlua-input` 新增 mlua 依赖（编译量换位置，买的是改动半径）；示例/测试造
+  `HostInput` 由 `rustlua_gameplay::input_lua::{registry,registry_with_handles}` 统一提供，38 个
+  示例的构造函数与帮助函数随之机械改签名；`scripting/src/script/tests/input.rs`（12 条）随绑定
+  一起删除——它测的就是"宿主喂快照 → Lua 读得到"，同一批断言现在以 `rustlua-input/tests/lua_bindings.rs`
+  的 12 条形式住在输入 crate 里（scripting 库测试因此 122→110）。未做：`scene` 的组件编解码
+  注册表（9→5）与 `ScriptState` 剩余字段的拆分。
+- **回滚档**：`git revert` 本提交即回到"input 绑定在 scripting、`ScriptState` 独占输入状态"的旧形状；
+  `api_surface` 基线未变意味着回滚不会引起脚本可见差异。
+
+## Unreleased — `audio` 绑定下沉：`rustlua-scripting` 领域依赖 12→11（P1 阶段 2）
+
+- **症状/风险**：上一笔把"注册表 + 能力单元"的接缝立起来了，但 16 个 `audio.*` 函数仍住在
+  `rustlua-scripting` 里，于是"改音频播放逻辑"依旧要重编整个 VM 与全部绑定。绑定与 `AudioSystem`
+  之间靠 `ScriptState`（40 字段中枢）连着：想搬走音频，先得让宿主与 Lua 共享同一份
+  `AudioSystem` 而不是让中枢独占它。
+- **改法**：
+  ① 绑定本体搬到 `rustlua-audio::lua`（`install(lua, &Handle<AudioSystem>, &Rc<dyn SettingsPort>)`），
+  16 个函数逐个改走能力单元借用——重入时现在报 `audio is already borrowed (…)`，点名到单元；
+  ② `settings.toml` 的 `[audio]` 段读写走 `SettingsPort` 端口：`rustlua-gameplay` **已经**依赖本
+  crate，绑定下沉后若反过来 `use` 它（`ProjectSettings` 在那）就成环，所以文件路径、`vfs` 读取、
+  "写入保留 `[input]` 等其它段"都由端口实现；错误口径逐字保留（`(false, "no_project_root"|"missing"|文本)`）；
+  ③ 端口实现与注册表接线放 `rustlua_gameplay::audio_lua`——它拥有 `ProjectSettings`、已依赖 audio，
+  而且**所有**会建 Lua 运行时的 crate（engine/game/game_web/editor/scripting）都已依赖它，所以示例与
+  测试不必各自复制一份；
+  ④ `Registry` 增加共享的工程根单元（`set_root`/`root`/`root_cell`）：`LuaRuntime::set_project_root` /
+  `set_settings_root` 把生效根转发进去，端口在调用时读取——"宿主先建 VM、后定工程根"的既有顺序因此不用改；
+  ⑤ `ScriptState.audio` 与 4 个宿主方法（`set_audio_asset_dir`/`pause_music`/`resume_music`/`maintain_music`）
+  从 `rustlua-scripting` 移除；`RuntimeScene` 改持 `Handle<AudioSystem>`（与 Lua 侧同一份状态）。
+- **实测**：**222 个 `LuaRuntime::new()` 调用点、99 个文件**一次性机械替换为
+  `LuaRuntime::with_installers(rustlua_gameplay::audio_lua::registry())`（无 import 变化）；
+  `api_surface_snapshot` 基线**零改动**（函数集与签名不变）；`jhyt_m20_audio` 端到端通过
+  （`buses=0.45/0.30/0.70/0.95`，写回后 `[input] map = "keep-me"` 仍在）；`game --check` 通过；
+  测试：scripting 122 / engine 188 / editor 188 / gameplay 34 / scene 60 / assets 105 / audio 4 / infra 70 全绿；
+  架构耦合门预算表同步（scripting 去 audio、gameplay 加 infra+lua-api、audio 加 lua-api），4 条全过。
+- **代价与未验**：`rustlua-gameplay` 现在依赖 `infra` 与 `lua-api`（都是叶子，编译量可忽略）；示例/测试建运行时
+  多一次 `AudioSystem::default()`（与改造前 `ScriptState::default()` 的行为一致）；`rustlua-audio` 新增 mlua 依赖
+  （wasm 构建已带 mlua，无新增工具链要求）。未做：`input` 的下沉——`input.load_settings` 用 `NavSettings`/
+  `ProjectSettings`，而 gameplay 已依赖 input，得先把 nav 与设置持久化从 `ScriptState` 移到宿主；届时可直接复用
+  这套注册表根单元。
+- **回滚档**：`git revert` 本提交即回到"audio 绑定在 scripting、`AudioSystem` 由 `ScriptState` 独占"的旧形状；
+  `rustlua-audio::lua` 是新增模块，`api_surface` 基线未变意味着回滚不会引起脚本可见差异。
+
+## Unreleased — 两道闭包门各归其位：boot 门认「容器认领」，容器识别按**格式**定界
+
+- **症状/风险**：两处"规则抄了两份"：
+  ① `check-boot-closure.js` 要求每条 boot entry 都能在磁盘上找到文件；一旦首屏清单里出现
+  **容器内**的条目（计划认领、内容在 `.rlb` 里），这道门就会假红——而它假红的修法通常是
+  "把条目从清单里删掉"，那正好删掉首屏资源；
+  ② `assetc closure` 里硬编码"`.rlb` 可能被改名成 `.rlb.txt`"，改名规则的真相却在
+  `scripts/lib/code-package-rules.js`；换一种传输后缀（或白名单变一次），这道门就找不到容器、
+  把合法产物判成缺件。
+- **改法**：
+  ① boot 门的判据改成两条通路——**散文件**（骨架/清单，允许 `.txt` 改名）或**被 main 单元的组认领**
+  （计划认领即算，内容是否存在由 `assetc closure` 证明）。分工的理由写在脚本里：
+  boot 门不摊开 RLB 索引，否则等于给容器格式加第二份 JS 实现，与 Rust 侧漂移的代价是启动期静默读错块；
+  摘要行增加 `loose=` / `container=` 两个计数，`--self-test` 用临时目录钉住两条通路与
+  "未被认领必须判红"（真产物的 boot 条目恰好全是散文件 `loose=7 container=0`，没有自测这条分支就没人走）；
+  ② `assetc closure` 不再枚举改名：物理文件名 → 逻辑名一律**从 `.rlb` 截断**，后面当传输后缀，
+  于是 `x.rlb` / `x.rlb.txt` / `x.rlb.bin` 归到同一个逻辑名，`x.rlb2` 不算。缺容器时的报错
+  还带上"该根下现有容器"清单（搬错根时不用人肉 diff 两份目录）。
+- **实测**：`boot_closure_selftest_ok cases=2`；真实产物 `boot_closure_ok … entries=7 loose=7
+  container=0`；`cargo test -p assetc --lib closure` 8 条（新增 `container_names_are_recognized_across_transport_renames`、
+  `a_renamed_container_still_closes`——把整个 `bundles/` 改名成 `.rlb.txt` 后闭包仍通过）；
+  `cargo test -p assetc --all-features` 47 条全过。
+- **代价**：`check-boot-closure.js` 多一条"计划认领"的判据（`--self-test` 与总门都跑，秒级）；
+  容器识别改成扫目录，单次闭包检查多几次 `readdir`（可忽略）。
+- **回滚档**：boot 门恢复"必须存在"只需删掉 `plannedPaths` 那条分支与自测；容器识别恢复白名单
+  只需把 `logical_bundle_name` 换回固定两候选。
+
+## Unreleased — 发布闭包门接进**默认流程**：总门与 CI 现在真的跑 `assetc closure`
+
+- **症状/风险**：上一笔把 `assetc closure` 写好了，但它只在"发布机上真有产物"时跑
+  （`apply-bundle-layout.ps1` 拆根后、`verify-wechat-minigame.ps1` 手工调用），于是：
+  ① `verify.ps1` **从不验收微信产物**（全文 3 处 wechat，且只调路由单测）——它连"有没有产物"都不知道；
+  ② CI 不打任何 grouped 包，`assetc closure` 与它覆盖的那一类缺陷（容器在、内容缺件）在 CI 上是零覆盖；
+  ③ 顺带发现**产物发现器本身是坏的**：`bundle-discovery.ps1` 的微信判据写死 `pack\game_web_bg.wasm`
+  + 骨架根 `mainpack\`，而 `-WasmInSubpackage` 形态把内核放 `pack-wasm/`、骨架放 `pack/`，
+  于是 2026-10-19 那份**完全合法**的产物被 `Resolve-GameBundle` 判成"缺 pkg\game_web_bg.wasm"——
+  总门就算想调微信验收也调不动。
+- **改法**：
+  ① 新增 `scripts/test/test-release-closure.ps1`：合成一个小工程 → `assetc package --bundle grouped`
+  → 正例（`assetc_closure_ok` 必须出现）+ **三个反例**（改坏容器字节 / 删容器 / 塞计划外容器，
+  必须分别判红并点明原因）。零 wasm、零浏览器、秒级；`-RequireAssetc` 供 CI 用（找不到就红，
+  不把"门没跑"伪装成"门通过"）；
+  ② `assetc closure` 支持**"发布根即 pack 根"**：`assetc package -o <dir> --bundle grouped` 的原始输出
+  没有 `pack/` 那一层，此前会被判成"容器不在 pack/ 里"（实测复现）；现在单根形态下 `pack/` 不存在
+  就退回发布根本身，摘要显示 `roots=<发布根>`；
+  ③ `verify.ps1` 加两步：**发布闭包回归**（有 assetc 就跑，没有则明说跳过）与**微信产物静态验收**
+  （解析到产物就调 `verify-wechat-minigame.ps1 -SkipRuntime`，含 `assetc closure` + boot 闭包 +
+  主包配额 + 上传白名单；没有产物才打印"未运行"）；
+  ④ CI 新增 `release-closure` job（`needs: lint`，构建 `assetc --release` 后跑回归）；
+  ⑤ `bundle-discovery.ps1` 修正微信判据：内核在哪个 `pack*` 根、骨架在 `mainpack/` 还是 `pack/`
+  一律**以磁盘为准探测**，不再在发现器里重算发布器的命名规则。
+- **实测**：`release_closure_test_ok cases=4 containers=2`（正例 `assetc_closure_ok roots=1 groups=2
+  entries=6`；改坏/删/多容器三条各自 exit 1）；`Resolve-GameBundle -Platform wechat-minigame`
+  现在能定位 `examples\game_jhyt\builds\wechat-minigame\launcher`（此前 `[RED] 未定位到可用的产物`）；
+  按总门的调用方式跑 `verify-wechat-minigame.ps1 -SkipRuntime` → `wechat_minigame_package_ok files=14`
+  （`assetc_closure_ok roots=2 groups=5 entries=1357`、主包 2,934KB / 71.6%）。
+- **代价**：总门在有微信产物时多约 15 秒（静态验收）；CI 多一个 job（`assetc` release 构建约 1–2 分钟，
+  命中缓存后更短）。另修了两处**既有** rustdoc 断链（`assetc` 的 `package_grouped_keep` 文档链到私有项），
+  它们会让 `cargo doc -D warnings` 直接判红、把总门挡在新步骤之前。
+- **回滚档**：删 `verify.ps1` 的两段调用与 CI 的 `release-closure` job 即回到"只在发布机跑"；
+  `test-release-closure.ps1`、`assetc closure` 的裸布局支持、发现器修正都可单独保留。
+
+## Unreleased — 核心耦合：Lua 绑定的依赖倒置接缝（P1 阶段 1）
+
+- **症状/风险**：`rustlua-scripting` 正向依赖全部 13 个兄弟 crate——它既是 VM 宿主，又是 270+ 个绑定的家。
+  于是**任何领域 crate 改动都会重编 VM 与全部绑定**，改动半径等于拆分前的整个 core，14-crate 拆分买到的
+  增量编译红利在它的下游一点拿不到。更糟的是这个数字没有门看着：每加一条依赖的那次提交都合理，代价要等
+  改动半径变大才被人感觉到。
+- **改法**：
+  ① 新增叶子 crate `rustlua-lua-api`（Lua 绑定的**契约层**，只依赖 mlua）：`Handle<T>` 能力单元
+  （宿主拥有、绑定借用；重入返回带单元名的 Lua 错误而不是 panic）、`Registry`/`Installer` 安装器注册表
+  （组合根填、运行时消费；重名当场报错），以及 `api_error`/`reentrant_borrow` 的统一口径；
+  ② `LuaRuntime::with_installers(Rc<Registry>)` + `register_all` 末尾走 `installers.install(lua)`：
+  **scripting 只认注册表，不认具体 crate**；`LuaRuntime::new()` 保持原签名（空注册表），222 个既有调用点
+  一处不用改；注册表随运行时持有，热重载重建的 VM 会重装同一套；
+  ③ `AssetId` 下沉到 `rustlua-infra::ids`（纯值对象，`assets` 仍 `pub use` 保持对外路径不变），
+  `rustlua-scripting` 因此去掉 `rustlua-assets` 依赖：**领域依赖 13 → 12**（另加一个零领域依赖的
+  契约层 crate——它只有 mlua + 3 个文件，碰它几乎不重编什么，和"碰资源库要重编全部绑定"是两回事）；
+  ④ 新增架构耦合门 `engine/crates/rustlua-infra/tests/architecture_edges.rs`：逐 crate 的依赖预算表
+  （多一条边就失败，欠一条也失败——预算不许虚高）、无成环、组合根不得被核心 crate 反向依赖、
+  `rustlua-lua-api` 必须保持叶子。
+- **实测**：`cargo test -p rustlua-scripting --lib installers` → 3 条接缝用例全过（模块真装进 VM、
+  热重载后仍在、空注册表看不到、重名报 `重复登记`、重入报 `counter ... already borrowed`）；
+  `cargo test -p rustlua-infra --test architecture_edges` → 4 条全过；`cargo test -p rustlua-assets` 105 条全过
+  （`AssetId` 迁移未改行为）；`cargo clippy --workspace --all-targets --all-features -D warnings` 干净。
+- **代价与未验/下一步（已量到，不再是估算）**：`LuaRuntime::new()` 有 **222** 个调用点（`game/examples` 约 120），
+  而它的默认装配就是那 18 个内建模块、`api_surface_snapshot/*.txt` 是这套装配的契约基线——**任何**绑定搬出去
+  都得同批把调用点换成组合根 helper 并重生成基线，这是跨 120+ 文件的机械改动，必须独立一笔（混在这笔里没法评审）。
+  `audio` 的落地配方与 `input` 的额外前置（`NavSettings`/`ProjectSettings` 在 gameplay，而 gameplay 依赖 input，
+  不能整块搬进 `rustlua-input`）已写进 `docs/62` 的 P1 条目。
+- **回滚档**：`git revert` 本提交即回到"scripting 依赖 13 个 crate、无架构门"的旧形状；`rustlua-lua-api`
+  是纯新增 crate，`AssetId` 的 `pub use` 保住了对外路径，回滚不影响场景/存档文件格式。
+
+## Unreleased — 资源路径单一口径 + **容器内容**发布闭包门（`assetc closure`）
+
+- **症状/风险**：三处各说各话，且都是"静默绿"：
+  ① 构建端 `BundleBuilder::add` 从不校验路径，能建出 `assets\art\a.png` / `./x` 这类容器里有字节、
+  读取端 `BundleSet::key_of` 永远查不到的包（症状是白图，不是报错）；
+  ② `check-bundle-mounts.js` 只查"根目录/分包入口/容器文件在"，`check-boot-closure.js` 只查"boot 元数据与首屏清单一致"，
+  两者**都不打开容器** ⇒ 某个按需资源没进容器可以一路绿到真机（启动场景不用它）；
+  ③ `check_plan` 把已经实现的 `sub:<name>` 具名分包判成"发布器不支持"，计划永远到不了多根发布器；
+  ④ WebGL 验收（`verify-webgl-bundle.ps1`）完全不看 `bundle_plan.json`，微信验收只在 `$multiRoot` 时才查 mount/boot
+  ⇒ grouped full/thin 形态整类绕过。
+- **改法**：
+  ① `rustlua-infra/src/paths.rs` 新增 `normalize_project_path` / `join_project_path`——**唯一**的工程相对路径口径
+  （`/` 分隔、丢 `.`、空段、拒绝绝对路径与 `..`），构建端、读取端、计划校验三处共用；
+  ② `BundleBuilder::add`/`add_ranked` 先规范化再入表，非法路径报 `InvalidPath`，重复按**规范化后**判；
+  `BundleSet::key_of` 改用同一函数（此前是手工 `strip_prefix` + `to_string_lossy`，`..` 会逃出根）；
+  ③ `check_plan` 新增第 ⑤ 块：计划里的每条路径必须是规范形式且升序（否则运行期必然查不到），
+  并删掉"具名分包没拆分"的假错误（`distribution_layout` 早已产出 `pack-<name>` 根）；
+  ④ 新增 `assetc closure <发布根> [--plan …] [--json]`：逐组打开 RLB 索引，核对
+  容器存在（接受微信 `.rlb.txt` 改名）、索引可解析、`entries`/`block_size`/`raw_bytes`/`bundle_bytes`/FNV 与计划一致、
+  **每条 `group.paths` 都在索引里**，并查根下有无计划外容器；单根（WebGL/PC）与多根（微信）按
+  "有没有 `pack-*` 兄弟目录"自适配，`cdn` 组跳过；
+  ⑤ 接线：`apply-bundle-layout.ps1`（`-MultiSub` 拆根后）、`verify-webgl-bundle.ps1`（起浏览器**之前**）、
+  `verify-wechat-minigame.ps1`（**无条件**，只要产物有计划表）都跑它；`-Assetc` 可显式指定二进制；
+  ⑥ `plugins/wechat-minigame/bundle-roots.js::parsePlan` 增加结构校验（schema/`block_size`/unit 语法/
+  `bundle` 必须 `bundles/` 前缀/路径规范与升序/跨组重复/同名组），并补 9 条负向自测；
+  ⑦ `scripts/test/test-wechat-multisub.ps1` 增加**正反两向**断言：拆根后闭包必须过；改坏一个容器字节必须判红。
+- **实测**：`assetc closure examples\game_jhyt\builds\wechat-minigame\launcher` →
+  `assetc_closure_ok roots=2 groups=5 entries=1357`（真实产物，多根 + `.txt` 改名）；
+  `cargo test -p assetc --lib closure` 4 条（正常产物、缺条路径、容器字节被改、unit 与所在根不一致）；
+  `cargo test -p rustlua-infra --features bundle-write bundle` 31 条（含新增
+  `builder_normalizes_or_rejects_non_canonical_paths`、`key_of_uses_canonical_project_relative_paths`、
+  `non_canonical_or_unsorted_paths_are_rejected`、`named_sub_units_are_accepted_by_multi_root_layout`）；
+  `node plugins/wechat-minigame/bundle-roots.js --self-test`、`node scripts/test/wechat-asset-routing-test.js` 7 组全绿。
+- **代价与未验**：`checksum` **不在** JS 侧重算（两份哈希实现漂移过一次，代价是真机启动失败）——
+  JS 只查无歧义的结构，校验和由 Rust 侧（`BundlePlan::parse` + `assetc closure`）在发布/验收期断言；
+  CI 仍不打包微信产物（闭包门跑在发布机与本地验收，CI 只跑单测与两个 Node 门）。
+- **回滚档**：三个脚本里的 `assetc closure` 调用可单独移除（Rust 侧与路径口径改动独立保留）；
+  具名分包重新判错只需恢复 `check_plan` ⑤ 旧块与对应测试。
+
 ## Unreleased — 微信主包配额：玩法美术三组切分包 + 计划表紧凑化（3,600 KB → 2,934 KB）
+
 
 - **动机**：2026-10-19 那份 `package.ps1 -Platform wechat-minigame -Gpu2d` 产物主包 **3,600 KB / 4,096 KB（87.9%）**，
   而总量只用了 49.8%（10,205 KB）——瓶颈全在主包这一侧。根因不在资产量：`examples/game_jhyt/bundles.json`

@@ -28,9 +28,11 @@ function update() return "lua-api-ok" end
     )?;
     let mut input = InputSnapshot::default();
     input.key_event(KeyCode::KeyD, true);
-    let mut runtime = LuaRuntime::new()?;
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_delta(1.0 / 60.0);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.execute_project_script(&path)?;
     let result = runtime.call_update()?;
     assert_eq!(result, "lua-api-ok");

@@ -1307,6 +1307,57 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     return promise;
   }
 
+  // 缓存里是否已经有某个逻辑路径（`user-data` 主体）。**容器预取**要用它判"够不够"：
+  // 只看 `readBytes` 会把整个文件读一遍再丢，几十 MB 的容器白拷一遍。
+  function cachedFileExists(path) {
+    var absolute = cachePathFor(path);
+    if (!absolute) return false;
+    var fs = fsManager();
+    if (!fs || typeof fs.existsSync !== 'function') return false;
+    try { return !!fs.existsSync(absolute); } catch (error) { return false; }
+  }
+
+  // 远端形态（`-AssetPack remote`）里容器**不在代码包里**：同步 reader 读不到，挂载必失败。
+  // 所以挂载前先把缺的容器按 packBaseUrl 取回本地缓存——这是同步通道唯一可行的做法
+  // （下载是异步的，只能在挂载之前把它做完，不能指望读的时候再回落）。
+  function prefetchPlanBundles(paths, label) {
+    if (!remoteConfig || !paths || paths.length === 0) return Promise.resolve(true);
+    var missing = [];
+    for (var i = 0; i < paths.length; i++) {
+      // 计划表里的 `group.bundle` 是**包内相对路径**（`bundles/x.rlb`），而缓存键与 URL 都
+      // 以 `pack/` 逻辑前缀为基准（`remoteUrlFor` 直接 slice 掉这个前缀）。不补前缀就会把
+      // `bundles/x.rlb` 砍成 `es/x.rlb` → 远端 404（2026-10-20 实测：5 个容器全 404）。
+      var logical = paths[i].indexOf(PACK_PREFIX) === 0 ? paths[i] : PACK_PREFIX + paths[i];
+      if (!cachedFileExists(logical)) missing.push(logical);
+    }
+    if (missing.length === 0) return Promise.resolve(true);
+    log('wechat-adapter: ' + label + ' 有 ' + missing.length + '/' + paths.length +
+      ' 个容器不在本地，按 packBaseUrl 预取（同步 reader 读不到远端，只能先取回缓存）');
+    return Promise.all(missing.map(function (path) { return fetchRemote(path); })).then(function (results) {
+      var ok = 0;
+      for (var j = 0; j < results.length; j++) if (results[j]) ok += 1;
+      log('wechat-adapter: ' + label + ' 容器预取 ' + ok + '/' + missing.length +
+        (ok === missing.length ? '' : '（缺的那些挂载会失败，已由远端下载日志点名）'));
+      return ok === missing.length;
+    });
+  }
+
+  // 计划表里所有根的容器逻辑路径（去重）。远端形态下 boot 前要一次性取齐。
+  function allPlanBundlePaths() {
+    var out = [];
+    var seen = Object.create(null);
+    if (!bundlePlan) return out;
+    for (var i = 0; i < bundlePlan.roots.length; i++) {
+      var paths = planBundlePathsForRoot(bundlePlan.roots[i]);
+      for (var j = 0; j < paths.length; j++) {
+        if (seen[paths[j]]) continue;
+        seen[paths[j]] = true;
+        out.push(paths[j]);
+      }
+    }
+    return out;
+  }
+
   function updateAssetMarkers() {
     bodyElement.setAttribute('data-rustlua-asset-package', String(assetStats.package));
     bodyElement.setAttribute('data-rustlua-asset-cache', String(assetStats.cache));
@@ -1495,7 +1546,12 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
             packMountFrame = frameCount;
           }
           // 懒加载：根 ready 之后把它的容器补进引擎（boot 前尚未 partial 挂载时由这里兜住）。
-          if (bundleBootMounted) mountPlanBundlesForRoot(root);
+          // 远端形态下容器可能还没在缓存里：先取回再挂（同步挂载读不到远端）。
+          if (bundleBootMounted) {
+            prefetchPlanBundles(planBundlePathsForRoot(root), root).then(function () {
+              mountPlanBundlesForRoot(root);
+            });
+          }
           log('wechat-adapter: ' + root + ' 分包已挂载（第 ' + frameCount + ' 帧，进度回调 ' +
             (isPrimaryRoot(root) ? packProgressEvents : 0) + ' 次）');
           resolve(true);
@@ -1986,6 +2042,10 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
   // ready 后调用 wasm 的 mount_bundles_from_reader 把该根容器补进 BundleSet。
   var bundleBootMounted = false;
   var mountedRootBundles = Object.create(null);
+  // 计划表容器的"挂好"信号（含远端预取 + reader 预装）。启动链的 lua_execute_main 必须等它：
+  // 运行时是宿主 begin 建的，而 begin 现在要等容器预取完（远端形态要几秒），
+  // 不等就会以 lua bridge: runtime not booted 报红——2026-10-20 在 devtools 实测。
+  var bundleReadyPromise = null;
 
   function engineProbeEnabled() {
     try { if (globalThis.__RUSTLUA_GPU_PROBE === true) return true; } catch (error) { /* 无全局对象 */ }
@@ -2343,26 +2403,36 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     // 先用真 reader 装槽：RustScene 的读取落到真字节，运行时再 boot 沿用同一 provider。
     // 多根懒加载：preinstall 前只挂当前可读根的容器（主包 + wasm 根）；具名根在 preinstall
     // 之后由 mountDeferredPlanRoots 后台挂载。老内核没有 partial 导出时，调用方已全量预挂。
-    var rootsReady = Promise.resolve(true);
-    if (bundlePlan) {
-      if (!mountPlanBootBundles()) bundleBootMounted = true;
+    //
+    // **远端形态（`-AssetPack remote`）的关键次序**：容器不在代码包里，同步 reader 读不到，
+    // 所以必须**先按 packBaseUrl 取回缓存、再挂载**。之前没有这一步，`mount_bundles_from_reader`
+    // 每次都抛 `cannot read bundle …`，而日志里只有"包内未命中，转远端"——看起来像在回落，
+    // 实际连一次 HTTP 都没发（同步通道没法 await）。2026-10-20 在真实 devtools 里抓到。
+    // 挂载计划表里的容器（**必须在 begin 之前完成**）：远端形态先预取，再 partial 挂载 +
+    // preinstall reader provider + 具名根后台挂载。老内核没有 partial 导出时 mountPlanBootBundles
+    // 返回 false，随后 mountDeferredPlanRoots 会按计划把全部根挂齐。
+    function prepareBundleMounts() {
+      return prefetchPlanBundles(allPlanBundlePaths(), '计划表全部根').then(function () {
+        if (!mountPlanBootBundles()) bundleBootMounted = true;
+        if (sceneMode && typeof host.lua_boot_with_reader === 'function' && wechatReadFileRef) {
+          try {
+            host.lua_boot_with_reader(wechatReadFileRef);
+            log('wechat-adapter: scene 档已预装 reader provider（vfs 槽归适配层读取器；mode='
+              + (scenePath ? 'scene-path=' + scenePath : 'atomic sim=script') + '）');
+          } catch (error) {
+            warn('wechat-adapter: scene 档预装 reader provider 失败 -> ' + hostError(error));
+          }
+        }
+        bundleBootMounted = true;
+        // 必须在 begin（RustScene::boot 读场景/贴图）之前把所有非主包根和容器装好：
+        // 异步贴图加载器走的是同步 vfs，不会 await ensurePack；按旧顺序"后台补挂"时，
+        // 场景已经先读到 `vfs: resource not found`，画面就是一片白块。
+        return mountDeferredPlanRoots();
+      });
     }
-    if (sceneMode && typeof host.lua_boot_with_reader === 'function' && wechatReadFileRef) {
-      try {
-        host.lua_boot_with_reader(wechatReadFileRef);
-        log('wechat-adapter: scene 档已预装 reader provider（vfs 槽归适配层读取器；mode='
-          + (scenePath ? 'scene-path=' + scenePath : 'atomic sim=script') + '）');
-      } catch (error) {
-        warn('wechat-adapter: scene 档预装 reader provider 失败 -> ' + hostError(error));
-      }
-    }
-    if (bundlePlan) {
-      bundleBootMounted = true;
-      // 必须在 begin（RustScene::boot 读场景/贴图）之前把所有非主包根和容器装好：
-      // 异步贴图加载器走的是同步 vfs，不会 await ensurePack；按旧顺序"后台补挂"时，
-      // 场景已经先读到 `vfs: resource not found`，画面就是一片白块。
-      rootsReady = mountDeferredPlanRoots();
-    }
+
+    var rootsReady = bundlePlan ? prepareBundleMounts() : Promise.resolve(true);
+    bundleReadyPromise = rootsReady;
     if (tickWanted) {
       log('wechat-adapter: 引擎宿主将接管固定步（tick=lua）——运行时会因此停掉自己的固定步；'
         + '若宿主起不来，这个标记会被清掉（世界不会冻住）');
@@ -2372,6 +2442,8 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
     engineHostOwnsTick(false);
     var report = function (line) { log('wechat-adapter: 引擎宿主 ' + String(line).slice(0, 300)); };
     engineHostPromise = Promise.resolve()
+      // 容器（含远端预取）先就位，再让宿主 begin 去读场景/贴图——顺序反了就是白块/启动失败。
+      .then(function () { return rootsReady; })
       .then(function () { return exportFn(target, options, report); })
       .then(function (summary) {
         engineHost.status = 'running';
@@ -4738,6 +4810,7 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
         setBootPhase('font');
         return loadGameFont();
       })
+      .then(function () { return bundleReadyPromise || true; })
       .then(function () {
         setBootPhase('lua-boot');
         // **B8：唯一路径。** 旧世界（`web-runtime.js`）已删除，启动编排在这里完成：

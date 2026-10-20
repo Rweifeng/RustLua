@@ -35,7 +35,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let main_script = project.join("scripts/main.lua");
 
-    let mut runtime = LuaRuntime::new()?;
+    let (installers, handles) = rustlua_gameplay::input_lua::registry_with_handles();
+    let host = handles.input;
+    let mut runtime = LuaRuntime::with_installers(installers)?;
     runtime.set_project_root(project.clone());
     runtime.set_ui_viewport(1280, 720);
     runtime.set_delta(1.0 / 60.0);
@@ -124,11 +126,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // （m24 验证过的可种格）
     stand_at(&mut runtime, (24, 5), "down")?;
     equip_tool(&mut runtime, "hoe")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(&mut runtime, "require('core.state').last_action", "till")?;
     runtime.execute_console("inv.add(require('core.state').inventory, 'seed_peach', 1)")?;
     set_seed(&mut runtime, "seed_peach")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -138,7 +140,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     banner("③ 成树 15 天（不浇水），期间按 E 提示树苗尚幼");
     // 树成熟前：E → tree_growing（不依赖浇水）
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -148,7 +150,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         runtime.execute_console("day.sleep()")?;
     }
     // 成树后非秋季：E → tree_not_fruiting（此时仍在春季）
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -191,7 +193,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         runtime.execute_console("day.sleep()")?;
     }
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -199,7 +201,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     assert_num(&mut runtime, "inv.count('player', 'peach')", 1.0)?;
     // 当日已采
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -208,7 +210,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_num(&mut runtime, "inv.count('player', 'peach')", 1.0)?;
     // 次日可再收
     runtime.execute_console("day.sleep()")?;
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -247,7 +249,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         runtime.execute_console("day.sleep()")?;
     }
-    press(&mut runtime, KeyCode::KeyE)?;
+    press(&mut runtime, &host, KeyCode::KeyE)?;
     assert_str(
         &mut runtime,
         "require('core.state').last_action",
@@ -289,12 +291,16 @@ fn click_button(runtime: &mut LuaRuntime, button: &str) -> Result<(), Box<dyn st
     Ok(())
 }
 
-fn press(runtime: &mut LuaRuntime, key: KeyCode) -> Result<(), Box<dyn std::error::Error>> {
+fn press(
+    runtime: &mut LuaRuntime,
+    host: &rustlua_input::host::HostInput,
+    key: KeyCode,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut input = InputSnapshot::default();
     input.key_event(key, true);
-    runtime.set_input(input);
+    host.set_input(input);
     runtime.call_update()?;
-    runtime.set_input(InputSnapshot::default());
+    host.set_input(InputSnapshot::default());
     runtime.call_update()?;
     Ok(())
 }

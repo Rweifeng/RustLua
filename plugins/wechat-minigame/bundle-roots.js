@@ -30,6 +30,49 @@ function rootOfUnit(unit) {
   throw new Error('不认识的 unit: ' + unit);
 }
 
+/**
+ * 计划表的**结构**校验（口径与 Rust `BundlePlan::parse` + `check_plan` ⑤ 一致）。
+ *
+ * 为什么在上传产物里再查一遍：适配层是唯一一处"逻辑路径 → 物理根"的解释器，
+ * 计划被截断/被手改/打包工具换代都会先在这里表现为**静默路由错**（读不到 = 白图），
+ * 而不是报错。这里只查**无歧义**的结构；`checksum` 属于构建期断言，权威实现在
+ * Rust（`BundlePlan::parse` 与 `assetc closure`），不在这里重复实现第二份哈希——
+ * 两份实现漂移过一次，代价是真机启动失败。
+ */
+function validatePlanStructure(plan) {
+  if (plan.schema !== 1) throw new Error('bundle_plan schema 不支持: ' + plan.schema);
+  if (!Number.isInteger(plan.block_size) || plan.block_size <= 0) {
+    throw new Error('bundle_plan block_size 必须是正整数');
+  }
+  var seenNames = Object.create(null);
+  var seenPaths = Object.create(null);
+  for (var i = 0; i < plan.groups.length; i++) {
+    var group = plan.groups[i];
+    if (!group || typeof group.name !== 'string' || !group.name) throw new Error('group 缺 name');
+    if (seenNames[group.name]) throw new Error('group 名称重复: ' + group.name);
+    seenNames[group.name] = true;
+    if (typeof group.unit !== 'string') throw new Error('group ' + group.name + ' 缺 unit');
+    rootOfUnit(group.unit);
+    if (typeof group.bundle !== 'string' || group.bundle.indexOf('bundles/') !== 0) {
+      throw new Error('group ' + group.name + ' 的 bundle 路径非法: ' + group.bundle);
+    }
+    if (!Array.isArray(group.paths)) throw new Error('group ' + group.name + ' 缺 paths');
+    var previous = '';
+    for (var j = 0; j < group.paths.length; j++) {
+      var resource = group.paths[j];
+      if (typeof resource !== 'string' || !resource || resource.indexOf('\\') >= 0 ||
+          resource.charAt(0) === '/' || resource === '..' ||
+          resource.indexOf('../') === 0 || resource.indexOf('/..') >= 0) {
+        throw new Error('group ' + group.name + ' 的资源路径非法: ' + resource);
+      }
+      if (j > 0 && resource < previous) throw new Error('group ' + group.name + ' 的 paths 未排序');
+      if (seenPaths[resource]) throw new Error('路径同时属于多个组: ' + resource);
+      seenPaths[resource] = group.name;
+      previous = resource;
+    }
+  }
+}
+
 /** 解析 `bundle_plan.json`（容忍 BOM），校验必备字段。 */
 function parsePlan(raw) {
   const text = String(raw).replace(/^\uFEFF/, '');
@@ -45,6 +88,7 @@ function parsePlan(raw) {
   if (!Array.isArray(plan.groups) || plan.groups.length === 0) {
     throw new Error('bundle_plan 没有 groups');
   }
+  validatePlanStructure(plan);
   return plan;
 }
 
@@ -171,20 +215,42 @@ function ensurePathsMounted(index, paths, opts) {
 }
 
 function selfTest() {
-  const plan = parsePlan(
-    JSON.stringify({
-      schema: 1,
-      format: 'assetc-bundle-plan-1',
-      block_size: 262144,
-      groups: [
-        { name: 'core', unit: 'main', bundle: 'bundles/core.rlb', entries: 2, raw_bytes: 1, bundle_bytes: 1, hash: '', paths: ['project.toml', 'scripts/main.lua'] },
-        { name: 'assets', unit: 'sub', bundle: 'bundles/assets.rlb', entries: 1, raw_bytes: 1, bundle_bytes: 1, hash: '', paths: ['assets/art/a.png'] },
-        { name: 'audio', unit: 'sub:audio', bundle: 'bundles/audio.rlb', entries: 1, raw_bytes: 1, bundle_bytes: 1, hash: '', paths: ['assets/audio/bgm.mp3'] },
-        { name: 'brand', unit: 'cdn', bundle: 'bundles/brand.rlb', entries: 1, raw_bytes: 1, bundle_bytes: 1, hash: '', paths: ['splash/splash.png'] },
-      ],
-      checksum: '',
-    }),
-  );
+  const fixture = {
+    schema: 1,
+    format: 'assetc-bundle-plan-1',
+    block_size: 262144,
+    groups: [
+      { name: 'core', unit: 'main', bundle: 'bundles/core.rlb', entries: 2, raw_bytes: 1, bundle_bytes: 1, hash: '', paths: ['project.toml', 'scripts/main.lua'] },
+      { name: 'assets', unit: 'sub', bundle: 'bundles/assets.rlb', entries: 1, raw_bytes: 1, bundle_bytes: 1, hash: '', paths: ['assets/art/a.png'] },
+      { name: 'audio', unit: 'sub:audio', bundle: 'bundles/audio.rlb', entries: 1, raw_bytes: 1, bundle_bytes: 1, hash: '', paths: ['assets/audio/bgm.mp3'] },
+      { name: 'brand', unit: 'cdn', bundle: 'bundles/brand.rlb', entries: 1, raw_bytes: 1, bundle_bytes: 1, hash: '', paths: ['splash/splash.png'] },
+    ],
+    checksum: '',
+  };
+  const plan = parsePlan(JSON.stringify(fixture));
+
+  // 结构校验（与 Rust `check_plan` ⑤ 同口径）：坏的、会静默路由错的计划表必须响亮失败。
+  const mustReject = (label, mutate) => {
+    const bad = JSON.parse(JSON.stringify(fixture));
+    mutate(bad);
+    let threw = false;
+    try {
+      parsePlan(JSON.stringify(bad));
+    } catch (error) {
+      threw = true;
+    }
+    if (!threw) throw new Error('坏的计划表必须被拒绝：' + label);
+  };
+  mustReject('反斜杠路径', (it) => { it.groups[1].paths[0] = 'assets\\art\\a.png'; });
+  mustReject('逃逸路径', (it) => { it.groups[1].paths[0] = '../a.png'; });
+  mustReject('绝对路径', (it) => { it.groups[1].paths[0] = '/a.png'; });
+  mustReject('未排序', (it) => { it.groups[0].paths.reverse(); });
+  mustReject('同名组', (it) => { it.groups[1].name = 'core'; });
+  mustReject('跨组重复路径', (it) => { it.groups[1].paths[0] = 'assets/audio/bgm.mp3'; });
+  mustReject('未知 unit', (it) => { it.groups[1].unit = 'bundle'; });
+  mustReject('容器不在 bundles/ 下', (it) => { it.groups[1].bundle = 'assets.rlb'; });
+  mustReject('schema 不认识', (it) => { it.schema = 2; });
+
   const index = planRootIndex(plan);
   if (index.pathRoot['scripts/main.lua'] !== 'pack') throw new Error('main 路径应路由到 mainpack');
   if (index.pathRoot['assets/audio/bgm.mp3'] !== 'pack-audio') throw new Error('具名分包路径路由错');

@@ -7,7 +7,11 @@
 // 开发者工具需要勾选「不校验合法域名、TLS 版本以及 HTTPS 证书」；手机访问不到本机的 127.0.0.1。
 //
 // 用法（也可被 harness 当库复用：createPackServer）：
-//   node scripts/dev/pack-server.js --root <发布目录> [--port 8787] [--host 127.0.0.1] [--log <文件>]
+//   node scripts/dev/pack-server.js --root <发布目录> [--port 8787] [--host 127.0.0.1] [--log <文件>] [--prefix /pack]
+//
+// --prefix：CDN 侧的 key 前缀。适配层算 URL 的方式是 `packBaseUrl + 逻辑路径去掉 pack/ 前缀`，
+// 所以 `packBaseUrl = http://host/pack/` 时请求会是 `/pack/bundles/x.rlb`；而导出目录里没有 pack/ 这一层
+// （就是 ssets/pack-sub/bundles/x.rlb）。服务端要还原 CDN 的映射：把 /pack 前缀剥掉再落到 root。
 
 const fs = require('fs');
 const http = require('http');
@@ -54,10 +58,15 @@ function createPackServer(options) {
   const root = path.resolve(options.root);
   const transform = options.transform || null;
   const failFor = options.failFor || null;
+  const prefix = String(options.prefix || '').replace(/\/+$/, '');
   const requests = [];
 
   const server = http.createServer((req, res) => {
-    const urlPath = String(req.url || '/').split('?')[0].split('#')[0];
+    let urlPath = String(req.url || '/').split('?')[0].split('#')[0];
+    // 剥掉 CDN 侧的 key 前缀（`/pack`）：导出目录里没有那一层，前缀只存在于 URL 上。
+    if (prefix && (urlPath === prefix || urlPath.startsWith(prefix + '/'))) {
+      urlPath = urlPath.slice(prefix.length) || '/';
+    }
     const abs = resolveWithin(root, urlPath);
     const rel = abs ? path.relative(root, abs).replace(/\\/g, '/') : urlPath.replace(/^\/+/, '');
     let status = 200;
@@ -100,13 +109,14 @@ function createPackServer(options) {
 }
 
 function parseArgs(argv) {
-  const args = { root: '.', port: 8787, host: '127.0.0.1', log: null };
+  const args = { root: '.', port: 8787, host: '127.0.0.1', log: null, prefix: '' };
   for (let i = 0; i < argv.length; i++) {
     const key = argv[i];
     if (key === '--root' && argv[i + 1]) args.root = argv[++i];
     else if (key === '--port' && argv[i + 1]) args.port = Number(argv[++i]);
     else if (key === '--host' && argv[i + 1]) args.host = argv[++i];
     else if (key === '--log' && argv[i + 1]) args.log = argv[++i];
+    else if (key === '--prefix' && argv[i + 1]) args.prefix = argv[++i];
     else return { error: `未知参数: ${key}` };
   }
   if (!Number.isInteger(args.port) || args.port <= 0 || args.port > 65535) return { error: `端口不合法: ${args.port}` };
@@ -130,12 +140,13 @@ async function main(argv) {
     }
   };
 
-  const pack = createPackServer({ root, log: logLine });
+  const pack = createPackServer({ root, log: logLine, prefix: args.prefix });
   try {
     const address = await pack.listen(args.port, args.host);
-    console.log(`pack_server_ok url=http://${args.host}:${address.port}/ root=${root}`);
-    if (fs.existsSync(path.join(root, 'pack'))) {
-      console.log(`==> 小游戏远端资源配置: ${JSON.stringify({ packBaseUrl: `http://${args.host}:${address.port}/pack/` })}`);
+    console.log(`pack_server_ok url=http://${args.host}:${address.port}${args.prefix || ''}/ root=${root}`);
+    if (args.prefix || fs.existsSync(path.join(root, 'pack'))) {
+      const basePrefix = args.prefix || '/pack';
+      console.log(`==> 小游戏远端资源配置: ${JSON.stringify({ packBaseUrl: `http://${args.host}:${address.port}${basePrefix}/` })}`);
     }
   } catch (error) {
     const message = String((error && error.code) || (error && error.message) || error);

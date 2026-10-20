@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn ui_particles_and_audio_lua_api() {
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let path = script(
         "particles.burst(5, -3, 10)\nui.bar('hp', 20, 30, 100, 10, 0.5, 1, 0, 0)\nui.text_at('objective', 20, 20, 'Reach the door')\naudio.volume(0.5)\nfunction update() return 'ok' end",
     );
@@ -22,7 +22,7 @@ fn ui_particles_and_audio_lua_api() {
 #[test]
 fn particles_burst_options_control_look_and_validate() {
     // 此前速度/寿命/颜色写死在引擎里，Lua 无法区分尘土、水花、落叶。
-    let mut runtime = LuaRuntime::new().unwrap();
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
     let path = script(
         "particles.burst(1, 2, 4, {\n\
          speed=20, life=2, size=8, size_end=0,\n\

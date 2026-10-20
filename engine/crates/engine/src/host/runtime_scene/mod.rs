@@ -92,6 +92,16 @@ pub struct RuntimeScene {
     /// `on_click` / `scene.load` / 控制台表达式，验证示例工程的菜单与演示真的能跑；
     /// 对外仍然只暴露 `RuntimeScene` 自己的方法。
     pub(crate) script: LuaRuntime,
+    /// `audio` 绑定的能力单元（`docs/62` P1）：绑定住在 `rustlua-audio`，宿主在这里持有同一份
+    /// 状态，用来定音效目录、暂停/恢复 BGM、每帧驱动曲尾续播。
+    ///
+    /// 与 `script` 是**两个独立对象**：`LuaRuntime` 不知道自己装了哪些领域模块，它只认注册表。
+    pub(crate) audio: rustlua_lua_api::Handle<rustlua_audio::audio::AudioSystem>,
+    /// `input` 绑定的能力单元（`docs/62` P1 阶段 3）：绑定住在 `rustlua-input`，宿主在这里
+    /// 持有同一份状态——喂快照、读动作映射、把震动请求交给设备层都走它。
+    ///
+    /// 与 `script` 一样是"宿主每帧推、Lua 读"的单向关系：脚本不反向驱动宿主。
+    pub(crate) input: rustlua_input::host::HostInput,
     /// 自上次 `take_script_micros` 以来所有固定步里 Lua `update()` 的累计耗时
     /// （微秒）。宿主把它送进 `PerformanceStats::lua_ms`，性能面板因此显示的是
     /// "Lua 花了多少"而不是恒为 0（P4 接线）。

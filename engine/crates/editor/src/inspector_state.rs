@@ -94,7 +94,7 @@ impl Default for Collider3dFields {
 // `encode/decode/validate_world_text`）**已删除**（第 23 轮）：该组件迁到 schema 生成的字段编辑器，
 // `font` 字段用**项目字体下拉**（`ChoiceSource::ProjectFonts`），其余用文本框/DragValue/取色器/勾选框。
 // 注意：`WorldText` 的默认值（`text=文字;font_size=…;offset=0,-20;centered=true`）现在由
-// `add_component` 直接用**引擎类型**的编码给出（`rustlua_scene::world_text::WorldText`），
+// `add_component` 直接用**引擎类型**的编码给出（`rustlua_ui::world_text::WorldText`），
 // 编辑器里不再有这份默认值。
 
 // `Image` 的 Inspector 缓冲管线（`ImageFields` + `set_image`/`clear_image` +
@@ -1025,7 +1025,7 @@ mod tests {
         // 存盘再读回：场景文本必须无损往返（组件串里带中文与分号风险）。
         let text = document.scene.to_text();
         let loaded = rustlua_scene::scene::Scene::from_text(&text).unwrap();
-        let reloaded = rustlua_scene::world_text::WorldText::from_component_str(
+        let reloaded = rustlua_ui::world_text::WorldText::from_component_str(
             loaded.entities[&id]
                 .components
                 .get("WorldText")

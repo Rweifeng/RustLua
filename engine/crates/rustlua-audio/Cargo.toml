@@ -9,5 +9,24 @@ publish = false
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
-rodio = { version = "0.19", features = ["wav", "vorbis", "mp3", "flac"] }
 rustlua-infra = { path = "../rustlua-infra" }
+# `lua` 模块：`audio` 的 Lua 绑定下沉到这里（`docs/62` P1）。
+# 契约层只依赖 mlua，所以 audio → lua-api 不会把其它领域 crate 拖进来。
+mlua = { version = "0.11", features = ["lua54", "vendored"] }
+rustlua-lua-api = { path = "../rustlua-lua-api" }
+
+# ── 平台后端：桌面才有 rodio ────────────────────────────────────────────────
+#
+# `docs/62` P1 第 4 条（`rustlua-audio` 的桌面/浏览器适配）。此前 rodio 写在
+# `[dependencies]` 里，于是 **wasm 产物也照编 cpal/rodio**：`game_web → engine →
+# rustlua-audio`，浏览器端白背一整套桌面音频栈（解码器、设备枚举、ALSA/WASAPI 绑定
+# 的 wasm 空壳），而 web 上真正出声的是 `game_web/src/audio_sink.rs` 的
+# `AudioSinkProvider`（`HTMLAudioElement`），根本走不到 rodio。
+#
+# 为什么用 target 条件依赖而不是 feature：feature 在**同一次构建内跨 target 合并**
+# （`cargo build --workspace` 时 `game_web` 打开它，原生 target 也会跟着拿到），
+# 于是"浏览器构建不该含桌面后端"这件事没法靠 feature 保证。target 条件依赖可以。
+#
+# 对应代码在 `src/device.rs`：两个 `cfg` 分支给出同一个 `Device` API，`audio.rs` 不写 cfg。
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rodio = { version = "0.19", features = ["wav", "vorbis", "mp3", "flac"] }

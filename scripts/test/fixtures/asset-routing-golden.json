@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "note": "跨端路径黄金表。同一份表喂三个读者：Rust（normalize_project_path / PlannedGroup::contains / distribution_layout）、JS（bundle-roots.rootOfUnit / planRootIndex / rootForPath）、以及发布产物（assetc closure）。改这张表必须三方同时绿；任何一方单独改判据都会在这里对不上。",
+  "plan": {
+    "schema": 1,
+    "format": "assetc-bundle-plan-1",
+    "block_size": 262144,
+    "wasm_root": "pack-wasm",
+    "checksum": "",
+    "groups": [
+      {
+        "name": "core",
+        "unit": "main",
+        "bundle": "bundles/core-0000000000000001.rlb",
+        "hash": "0000000000000001",
+        "entries": 2,
+        "raw_bytes": 20,
+        "bundle_bytes": 20,
+        "paths": ["scenes/main.scene", "scripts/main.lua"]
+      },
+      {
+        "name": "art",
+        "unit": "sub",
+        "bundle": "bundles/art-0000000000000002.rlb",
+        "hash": "0000000000000002",
+        "entries": 2,
+        "raw_bytes": 40,
+        "bundle_bytes": 40,
+        "paths": ["assets/art/a.png", "assets/art/b.png"]
+      },
+      {
+        "name": "audio",
+        "unit": "sub:audio",
+        "bundle": "bundles/audio-0000000000000003.rlb",
+        "hash": "0000000000000003",
+        "entries": 1,
+        "raw_bytes": 60,
+        "bundle_bytes": 60,
+        "paths": ["assets/audio/theme.ogg"]
+      },
+      {
+        "name": "brand",
+        "unit": "cdn",
+        "bundle": "bundles/brand-0000000000000004.rlb",
+        "hash": "0000000000000004",
+        "entries": 1,
+        "raw_bytes": 80,
+        "bundle_bytes": 80,
+        "paths": ["assets/brand/splash.jpg"]
+      }
+    ]
+  },
+  "units": [
+    { "unit": "main", "root": "pack" },
+    { "unit": "sub", "root": "pack-sub" },
+    { "unit": "sub:audio", "root": "pack-audio" },
+    { "unit": "sub:level_2", "root": "pack-level_2" },
+    { "unit": "cdn", "root": null }
+  ],
+  "paths": [
+    { "path": "scenes/main.scene", "group": "core", "unit": "main", "root": "pack" },
+    { "path": "scripts/main.lua", "group": "core", "unit": "main", "root": "pack" },
+    { "path": "assets/art/a.png", "group": "art", "unit": "sub", "root": "pack-sub" },
+    { "path": "assets/art/b.png", "group": "art", "unit": "sub", "root": "pack-sub" },
+    { "path": "assets/audio/theme.ogg", "group": "audio", "unit": "sub:audio", "root": "pack-audio" },
+    { "path": "assets/brand/splash.jpg", "group": "brand", "unit": "cdn", "root": null }
+  ],
+  "containers": [
+    { "path": "bundles/core-0000000000000001.rlb", "root": "pack" },
+    { "path": "bundles/art-0000000000000002.rlb", "root": "pack-sub" },
+    { "path": "bundles/audio-0000000000000003.rlb", "root": "pack-audio" }
+  ],
+  "spellings": [
+    { "input": "scripts/main.lua", "canonical": "scripts/main.lua" },
+    { "input": "./scripts/main.lua", "canonical": "scripts/main.lua" },
+    { "input": "scripts\\main.lua", "canonical": "scripts/main.lua" },
+    { "input": "assets//art/./a.png", "canonical": "assets/art/a.png" },
+    { "input": "assets\\art\\a.png", "canonical": "assets/art/a.png" },
+    { "input": "scenes/main.scene/", "canonical": "scenes/main.scene" }
+  ],
+  "rejected": [
+    "",
+    ".",
+    "..",
+    "../escape.lua",
+    "assets/art/../b.png",
+    "a/../../b.lua",
+    "scripts/../../x.lua",
+    "/abs/path.lua",
+    "C:\\win\\path.lua",
+    "assets/art/with\u0000nul.png"
+  ]
+}

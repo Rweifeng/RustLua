@@ -14,7 +14,8 @@ fn main() {
     let files: Vec<String> = args.collect();
     assert!(!files.is_empty(), "no input files");
 
-    let mut runtime = LuaRuntime::new().expect("lua vm");
+    let mut runtime =
+        LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).expect("lua vm");
     runtime.set_project_root(std::path::PathBuf::from(&root));
 
     let mut failed = 0;

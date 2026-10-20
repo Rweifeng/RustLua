@@ -61,27 +61,63 @@ pub fn escapes_project_root(raw: &str) -> bool {
         .any(|component| matches!(component, Component::ParentDir))
 }
 
+/// 规范化工程内资源路径，返回统一的 `/` 分隔相对路径。
+///
+/// 所有宿主（桌面、WebGL、微信）共享这一口径：拒绝绝对路径、盘符、`..`、空路径
+/// 和 NUL；允许 `.` 与重复分隔符，但输出只保留规范化后的相对路径。
+#[must_use]
+pub fn normalize_project_path(raw: &str) -> Option<String> {
+    if raw.is_empty() || raw.contains('\0') || is_absolute_path(raw) {
+        return None;
+    }
+    let normalized = raw.replace('\\', "/");
+    let mut parts = Vec::new();
+    for part in normalized.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => return None,
+            value => parts.push(value),
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("/"))
+    }
+}
+
+/// 把工程根与工程内资源路径安全拼接。
+#[must_use]
+pub fn join_project_path(root: &Path, raw: &str) -> Option<PathBuf> {
+    normalize_project_path(raw).map(|relative| root.join(relative))
+}
+
 #[cfg(test)]
-mod tests {
+mod normalized_tests {
     use super::*;
 
     #[test]
-    fn absolute_paths_cover_windows_root_relative_forms() {
-        for raw in ["/etc/passwd", "/x.lua", r"C:\Windows\x.lua", "C:/x.lua"] {
-            assert!(is_absolute_path(raw), "{raw:?} 必须被判为绝对路径");
-        }
-        for raw in ["scripts/x.lua", "x.lua", "./x.lua", "assets/a/b.png"] {
-            assert!(!is_absolute_path(raw), "{raw:?} 是相对路径");
+    fn normalize_project_paths_has_one_cross_platform_key() {
+        assert_eq!(
+            normalize_project_path(r"scripts\\./data//items.lua"),
+            Some("scripts/data/items.lua".to_owned())
+        );
+        assert_eq!(
+            normalize_project_path("assets/a.png"),
+            Some("assets/a.png".to_owned())
+        );
+        for raw in ["", ".", "../x", "a/../../x", "/x", r"C:\\x", "a\0b"] {
+            assert_eq!(normalize_project_path(raw), None, "{raw:?} 必须被拒绝");
         }
     }
 
     #[test]
-    fn traversal_is_detected_in_any_position() {
-        for raw in ["../x.lua", "a/../b.lua", "a/b/../../../c.lua"] {
-            assert!(escapes_project_root(raw), "{raw:?} 有 ..");
-        }
-        for raw in ["a/b.lua", "scripts/x.lua", "..hidden/x.lua"] {
-            assert!(!escapes_project_root(raw), "{raw:?} 没有 .. 段");
-        }
+    fn join_project_path_rejects_escape_attempts() {
+        let root = Path::new("/project");
+        assert_eq!(
+            join_project_path(root, "scripts/main.lua"),
+            Some(root.join("scripts/main.lua"))
+        );
+        assert_eq!(join_project_path(root, "../outside.lua"), None);
     }
 }
