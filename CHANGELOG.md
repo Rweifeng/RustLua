@@ -23,11 +23,13 @@
   - 新增 `sign-windows.ps1`：signtool 优先、`Set-AuthenticodeSignature` 回退、RFC3161 时间戳、`-SelfTest`
     自签 + 篡改检测；无证书退 3，`-RequireSignature` 退 1；
   - 新增 `docs/69`，并更新 `docs/34`/`docs/README`/根 README/`scripts/README`/`tasks/README`。
-- **证据（2026-10-20 本机）**：`toolchain_lock_ok rust=1.97.1 node=20 tools=3`；
+- **证据（2026-10-20 本机/CI）**：`toolchain_lock_ok rust=1.97.1 node=20 tools=3`；
   `cargo-audit 0.22.2 vulns=0 warnings=5`；`cargo-deny 0.20.2` advisories/bans/licenses/sources 全绿；
   `sbom_ok` 565 components / 535 hashed / 566 deps / forks=6；`fork_sync_ok forks=6 patched=4`；
   `signing_selftest_ok signer=authenticode tamper=HashMismatch`；`security_gates_selftest_ok`。
-  真实 tag 发布与真实证书签名尚未跑（本机无证书、未推 tag），见 `docs/69` §10/§11。
+  真实 tag 发布已跑通：`v0.1.0` → Actions run `39378803837` `success`，4 个资产，
+  `SHA256SUMS.txt` 逐文件复核 3/3 通过；真实证书签名仍未跑（本机无证书、无 `signtool`），
+  本次资产为 `NotSigned`，见 `docs/69` §10/§11。
 - **顺带修复**：audit 发现 `ruzstd 0.8.3` 的 RUSTSEC-2026-0344（解压炸弹），升级到 `0.9.1`；
   `ttf-parser` 的 unmaintained 例外登记在 `deny.toml`（复核截止 2027-10-20）。
 - **回滚档**：删 `release.yml`/`security` job 与新增脚本即可回到纯手工发布；`rust-toolchain.toml` 改回
