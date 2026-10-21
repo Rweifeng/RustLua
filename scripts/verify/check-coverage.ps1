@@ -122,12 +122,15 @@ if ($Current) {
     }
     $currentJson = Invoke-CoverageCollect
     if (-not $currentJson) { exit 1 }
-    # 归一化
+    # 归一化：显式绝对路径 + 字符串化布尔，避免 cargo-llvm-cov 之后 PATH/参数解析抖动。
     $summaryOut = Join-Path $artifactsRoot "coverage-summary.json"
     $summaryMd = Join-Path $artifactsRoot "coverage-summary.md"
-    & node (Join-Path $projectRoot "scripts\metrics\coverage-summary.mjs") `
-        --input $currentJson --out $summaryOut --markdown $summaryMd `
-        --env-fingerprint "local" --git-commit $git.commit --git-dirty $git.dirty
+    $nodeExe = Join-Path $env:ProgramFiles "nodejs\node.exe"
+    if (-not (Test-Path -LiteralPath $nodeExe)) { $nodeExe = (Get-Command node -ErrorAction Stop).Source }
+    $summaryScript = Join-Path $projectRoot "scripts\metrics\coverage-summary.mjs"
+    $dirtyArg = ([bool]$git.dirty).ToString().ToLowerInvariant()
+    & $nodeExe $summaryScript --input $currentJson --out $summaryOut --markdown $summaryMd `
+        --env-fingerprint "local" --git-commit ([string]$git.commit) --git-dirty $dirtyArg
     if ($LASTEXITCODE -ne 0) { exit 1 }
     $currentJson = $summaryOut
 }
