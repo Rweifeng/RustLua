@@ -66,6 +66,10 @@ function Get-GitState {
 
 function Invoke-CoverageCollect {
     Write-Host "==> collecting workspace coverage (llvm-cov, --no-fail-fast)"
+    # 2026-10-21 CI：默认并行 test 线程下 `engine --lib` 偶发 0xC0000005
+    # （STATUS_ACCESS_VIOLATION）；同一测试二进制单线程可稳定跑完。覆盖率采集不需要
+    # 并行，固定单线程换取可复现性（本地复现：204 passed / 0 failed）。
+    $env:RUST_TEST_THREADS = "1"
     $covJson = Join-Path $artifactsRoot "coverage.json"
     $lcov = Join-Path $artifactsRoot "lcov.info"
     $htmlDir = Join-Path $artifactsRoot "html"
