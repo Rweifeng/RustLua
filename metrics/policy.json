@@ -20,6 +20,8 @@
     },
     "coverage": {
       "compare_mode": "baseline_delta",
+      "min_samples": 1,
+      "comment": "覆盖率由 check-coverage 的 per-crate 基线棘轮；趋势库只要求当期读数，避免 per-crate 首轮被 min_samples 误判 BLOCKED",
       "rules": {
         "lines_pct": {"max_delta_pp": 0.5, "better": "higher", "comment": "overall line coverage drop > 0.5pp -> red"},
         "crate_lines_pct": {"max_delta_pp": 2.0, "better": "higher", "comment": "per-crate (source lines >= 200) drop > 2.0pp -> red"}
