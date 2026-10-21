@@ -69,10 +69,9 @@ function Invoke-CoverageCollect {
     # cargo-llvm-cov 总会向 stderr 打 `info: ... cfg(coverage)`；脚本全局是 Stop，
     # PowerShell 5.1 会把这类原生 stderr 当成终止错误。命令成功与否只认 $LASTEXITCODE。
     $ErrorActionPreference = "Continue"
-    # 2026-10-21 CI：默认并行 test 线程下 `engine --lib` 偶发 0xC0000005
-    # （STATUS_ACCESS_VIOLATION）；同一测试二进制单线程可稳定跑完。覆盖率采集不需要
-    # 并行，固定单线程换取可复现性（本地复现：204 passed / 0 failed）。
-    $env:RUST_TEST_THREADS = "1"
+    # 2026-10-21 CI：`engine --lib` 在 runtime_scene 用例上 0xC0000005。libtest 单线程
+    # 会把测试跑在主线程，`RUST_MIN_STACK` 不生效；固定 2 线程让用例进入 64MB 派生线程。
+    $env:RUST_TEST_THREADS = "2"
     $covJson = Join-Path $artifactsRoot "coverage.json"
     $lcov = Join-Path $artifactsRoot "lcov.info"
     $htmlDir = Join-Path $artifactsRoot "html"

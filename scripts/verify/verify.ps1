@@ -136,10 +136,10 @@ if ($MaxJobs -le 0) {
 }
 $env:CARGO_BUILD_JOBS = "$MaxJobs"
 $env:RAYON_NUM_THREADS = "$MaxJobs"
-# 2026-10-21：`engine --lib` 在默认并行 test 线程下走到 schedule/scene 测试时偶发
-# 0xC0000005（STATUS_ACCESS_VIOLATION）；同一二进制单线程稳定跑完。测试并行不改变
-# 断言覆盖，固定单线程换取可复现性（与 quality build-test / coverage 口径一致）。
-$env:RUST_TEST_THREADS = "1"
+# 2026-10-21：`engine --lib` 在 CI 上走到 runtime_scene/schedule 测试时 0xC0000005。
+# libtest 在 `--test-threads=1` 时把测试跑在主线程，`RUST_MIN_STACK` 影响不到它；
+# 固定 2 个测试线程让用例跑在带 64MB 栈的派生线程上，同时保留最基本的并发隔离。
+$env:RUST_TEST_THREADS = "2"
 
 New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
 
@@ -174,6 +174,23 @@ function Invoke-Checked([string]$File, [string[]]$Arguments, [switch]$QuietOutpu
     if ($exitCode -ne 0) {
         throw "Command failed (exit code $exitCode): $command"
     }
+}
+
+# 捕获输出但**不**让原生命令的 stderr 变成终止错误。
+# PS 5.1 在 `$ErrorActionPreference = "Stop"` 下会把 `cargo` 的 linker warning 当成
+# NativeCommandError，命令还没跑完就抛——`editor --check` 曾因此在“构建成功”时被误判红。
+function Invoke-Captured([string]$File, [string[]]$Arguments) {
+    Write-Host "> $File $($Arguments -join ' ')" -ForegroundColor DarkGray
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & $File @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
+    [pscustomobject]@{ Output = $output; ExitCode = $exitCode }
 }
 
 Write-Step "Resource limits"
@@ -649,6 +666,31 @@ try {
     if (-not $SkipTests) {
         Write-Step "Workspace tests"
         Invoke-Checked cargo @("test", "--workspace", "--all-features")
+
+        # M74-03：compute 接缝 + GPU 粒子两档对拍（10k × 120 步）。
+        # 0=通过；3=本机没有 compute（例如 CI runner / 只有 WebGL2 的环境）——**显式跳过，
+        # 不是通过**；设 RUSTLUA_REQUIRE_GPU=1 时把跳过升级为红（发布门用）。
+        Write-Step "Compute / GPU particles"
+        Push-Location $engineRoot
+        try {
+            & cargo run --quiet -p game --example jhyt_m95_gpu_particles
+            $computeExit = $LASTEXITCODE
+        }
+        finally {
+            Pop-Location
+        }
+        if ($computeExit -eq 3) {
+            if ($env:RUSTLUA_REQUIRE_GPU -eq "1") {
+                throw "compute gate skipped (exit 3) 但 RUSTLUA_REQUIRE_GPU=1：这台机器必须提供 compute"
+            }
+            Write-Host "compute_gate_skipped reason=no_compute exit=3（CPU 粒子仍是默认与回滚档；不是通过）" -ForegroundColor Yellow
+        }
+        elseif ($computeExit -ne 0) {
+            throw "compute gate FAILED (jhyt_m95_gpu_particles exit $computeExit)"
+        }
+        else {
+            Write-Host "compute_gate_ok (capacity=10000 steps=120 max_position_error<1e-4)" -ForegroundColor Green
+        }
     }
 
     if (-not $SkipBuild) {
@@ -709,8 +751,9 @@ try {
     Write-Step "Editor project check + component schema audit"
     Push-Location $projectRoot
     try {
-        $editorCheckOutput = & cargo run --quiet --manifest-path "engine/Cargo.toml" -p editor -- --project $defaultGameProject --check 2>&1
-        $editorCheckExit = $LASTEXITCODE
+        $editorCheck = Invoke-Captured cargo @("run", "--quiet", "--manifest-path", "engine/Cargo.toml", "-p", "editor", "--", "--project", $defaultGameProject, "--check")
+        $editorCheckOutput = $editorCheck.Output
+        $editorCheckExit = $editorCheck.ExitCode
         $editorCheckOutput | ForEach-Object { Write-Host $_ }
         if ($editorCheckExit -ne 0) {
             throw "editor project check failed (exit code $editorCheckExit)"
@@ -726,8 +769,9 @@ try {
         # field is wrong" drift stayed invisible. example game_api is the 3D-heavy one.
         $secondProject = Join-Path $gameRoot "game_api"
         if (Test-Path (Join-Path $secondProject "project.toml")) {
-            $secondOutput = & cargo run --quiet --manifest-path "engine/Cargo.toml" -p editor -- --project $secondProject --check 2>&1
-            $secondExit = $LASTEXITCODE
+            $secondCheck = Invoke-Captured cargo @("run", "--quiet", "--manifest-path", "engine/Cargo.toml", "-p", "editor", "--", "--project", $secondProject, "--check")
+            $secondOutput = $secondCheck.Output
+            $secondExit = $secondCheck.ExitCode
             $secondOutput | ForEach-Object { Write-Host $_ }
             if ($secondExit -ne 0) {
                 throw "editor project check failed for game_api (exit code $secondExit)"
@@ -752,8 +796,9 @@ try {
         Push-Location $projectRoot
         try {
             $migrationReportPath = Join-Path $baselinesRoot "spatial-migration-report.txt"
-            $migrationOutput = & cargo run --quiet --manifest-path "engine/Cargo.toml" -p editor -- --project $defaultGameProject --migrate-spatial --migrate-report $migrationReportPath 2>&1
-            $migrationExit = $LASTEXITCODE
+            $migration = Invoke-Captured cargo @("run", "--quiet", "--manifest-path", "engine/Cargo.toml", "-p", "editor", "--", "--project", $defaultGameProject, "--migrate-spatial", "--migrate-report", $migrationReportPath)
+            $migrationOutput = $migration.Output
+            $migrationExit = $migration.ExitCode
             $migrationOutput | ForEach-Object { Write-Host $_ }
             if ($migrationExit -ne 0) {
                 throw "spatial migration dry-run failed (exit code $migrationExit)"
@@ -783,8 +828,9 @@ try {
         Push-Location $projectRoot
         try {
             $editorBaselinePath = Join-Path $baselinesRoot "editor-baseline.txt"
-            $editorBaselineOutput = & cargo run --quiet --manifest-path "engine/Cargo.toml" -p editor -- --perf-baseline --perf-report $editorBaselinePath 2>&1
-            $editorBaselineExit = $LASTEXITCODE
+            $editorBaseline = Invoke-Captured cargo @("run", "--quiet", "--manifest-path", "engine/Cargo.toml", "-p", "editor", "--", "--perf-baseline", "--perf-report", $editorBaselinePath)
+            $editorBaselineOutput = $editorBaseline.Output
+            $editorBaselineExit = $editorBaseline.ExitCode
             $editorBaselineOutput | ForEach-Object { Write-Host $_ }
             if ($editorBaselineExit -ne 0) {
                 throw "editor performance baseline failed (exit code $editorBaselineExit); report: $editorBaselinePath"
@@ -812,8 +858,9 @@ try {
         Push-Location $projectRoot
         try {
             $guiSmokePath = Join-Path $baselinesRoot "editor-gui-smoke.txt"
-            $guiSmokeOutput = & cargo run --quiet --manifest-path "engine/Cargo.toml" -p editor -- --gui-smoke --gui-report $guiSmokePath 2>&1
-            $guiSmokeExit = $LASTEXITCODE
+            $guiSmoke = Invoke-Captured cargo @("run", "--quiet", "--manifest-path", "engine/Cargo.toml", "-p", "editor", "--", "--gui-smoke", "--gui-report", $guiSmokePath)
+            $guiSmokeOutput = $guiSmoke.Output
+            $guiSmokeExit = $guiSmoke.ExitCode
             $guiSmokeOutput | ForEach-Object { Write-Host $_ }
             if ($guiSmokeExit -ne 0) {
                 throw "editor GUI smoke failed (exit code $guiSmokeExit); report: $guiSmokePath"
