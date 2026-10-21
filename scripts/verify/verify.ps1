@@ -136,6 +136,10 @@ if ($MaxJobs -le 0) {
 }
 $env:CARGO_BUILD_JOBS = "$MaxJobs"
 $env:RAYON_NUM_THREADS = "$MaxJobs"
+# 2026-10-21：`engine --lib` 在默认并行 test 线程下走到 schedule/scene 测试时偶发
+# 0xC0000005（STATUS_ACCESS_VIOLATION）；同一二进制单线程稳定跑完。测试并行不改变
+# 断言覆盖，固定单线程换取可复现性（与 quality build-test / coverage 口径一致）。
+$env:RUST_TEST_THREADS = "1"
 
 New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
 
