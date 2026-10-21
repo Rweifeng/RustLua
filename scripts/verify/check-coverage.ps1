@@ -80,7 +80,7 @@ function Invoke-CoverageCollect {
     # 否则 cargo llvm-cov --workspace 会因找不到 manifest 直接失败。
     Push-Location $engineRoot
     try {
-        & cargo llvm-cov --workspace --all-features --locked --ignore-run-fail `
+        & cargo llvm-cov --workspace --all-features --locked --ignore-run-fail --no-cfg-coverage `
             --ignore-filename-regex 'engine[\\/]vendor[\\/]|engine[\\/]target[\\/]' `
             --json --summary-only --output-path $covJson 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
