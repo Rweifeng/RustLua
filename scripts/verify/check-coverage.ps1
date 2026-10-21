@@ -82,7 +82,7 @@ function Invoke-CoverageCollect {
     try {
         & cargo llvm-cov --workspace --all-features --locked --no-fail-fast `
             --ignore-filename-regex 'engine[\\/]vendor[\\/]|engine[\\/]target[\\/]' `
-            --json --summary-only --output-path $covJson -- --test-threads=1 --nocapture
+            --json --summary-only --output-path $covJson -- --test-threads=1 --nocapture | Out-Null
         if ($LASTEXITCODE -ne 0) {
             # --no-fail-fast 下测试失败会让 cargo 返回非零；覆盖率数字不能掩盖红测试。
             Write-Host "[FAIL] llvm-cov 采集失败或存在测试失败（exit $LASTEXITCODE）；覆盖率门不掩盖红测试" -ForegroundColor Red
@@ -129,8 +129,11 @@ if ($Current) {
     if (-not (Test-Path -LiteralPath $nodeExe)) { $nodeExe = (Get-Command node -ErrorAction Stop).Source }
     $summaryScript = Join-Path $projectRoot "scripts\metrics\coverage-summary.mjs"
     $dirtyArg = ([bool]$git.dirty).ToString().ToLowerInvariant()
+    $commitArg = [string]$git.commit
+    if ($commitArg.Length -gt 40) { $commitArg = $commitArg.Substring(0, 40) }
+    Write-Host ("coverage_summary_cmd node={0} node_len={1} script_len={2} commit_len={3}" -f $nodeExe, $nodeExe.Length, $summaryScript.Length, $commitArg.Length)
     & $nodeExe $summaryScript --input $currentJson --out $summaryOut --markdown $summaryMd `
-        --env-fingerprint "local" --git-commit ([string]$git.commit) --git-dirty $dirtyArg
+        --env-fingerprint "local" --git-commit $commitArg --git-dirty $dirtyArg
     if ($LASTEXITCODE -ne 0) { exit 1 }
     $currentJson = $summaryOut
 }
