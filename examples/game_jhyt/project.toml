@@ -6,7 +6,7 @@
 # `input.virtual_key` 注入，它绕过绑定表。
 [project]
 name = "game_jhyt"
-version = "0.1.0"
+version = "0.1.1"
 engine = "RustLua"
 main_script = "scripts/main.lua"
 startup_scene = "scenes/main.scene"

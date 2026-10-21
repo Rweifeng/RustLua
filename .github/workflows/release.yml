@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "要发布的 tag（如 v0.1.0；不存在时在当前 commit 创建）"
+        description: "要发布的 tag（如 v0.1.1；不存在时在当前 commit 创建）"
         required: true
         type: string
       dry_run:

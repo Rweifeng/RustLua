@@ -5,6 +5,27 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## v0.1.1 — 安全清理后的重发（2026-10-21）
+
+- **为什么发**：`v0.1.0` 的发布资产是 unmaintained 清理**之前**构建的（`cargo-audit warnings=5`、
+  SBOM 565 components），与仓库当前状态不一致。本版按清理后的树重发，也是 P2 的 tag/签名链路
+  第一次用在“干净构建”上。
+- **安全读数**：`cargo-audit 0.22.2` `vulns=0 warnings=1`（仅 `ttf-parser` RUSTSEC-2026-0192，
+  `deny.toml` 唯一例外，复核截止 2027-10-20）；`cargo-deny` 的 advisories / bans / licenses /
+  sources 全绿；CycloneDX 1.5 SBOM `505 components / 474 hashed / 506 deps / forks=7`；
+  fork 报告 `forks=7 patched=5`。
+- **依赖清理**：`paste` 用 `engine/vendor/paste`（pastey 0.2.3 代码，兼容包名/版本
+  `paste 1.0.15`）替换归档包；关闭 `eframe` 的 accesskit 默认特性后，
+  `zbus_names` / `zvariant` / `zvariant_derive` 退出依赖图。
+- **同批入库**（`v0.1.0` 之后）：
+  - P1 ⑤：15 个脚本 API 模块下沉到 9 个领域 crate，`script/api/` 4,998 → 681 行；workspace
+    clippy / fmt 首次全绿。
+  - M74-02：帧内调度分档工具（`--frame-profile` + 无窗口 example）；P0 实测可并行 stage 占帧
+    最高 11.96%（全部 < 20%），判“不做”并归档。
+- **发布资产**：`RustLua-0.1.1-win64.zip`、`RustLua-Engine-0.1.1-win64.zip`、
+  `RustLua-0.1.1.cdx.json`、`SHA256SUMS.txt`。Windows Authenticode 签名按仓库证书配置执行；
+  未签名时发布说明会明写，不伪称已签。
+
 ## Unreleased — M74-02 ECS 并行调度：P0 度量闸门判"不做"，只交付帧内分档工具
 
 - **问题**：`tasks/plan` 里排着"ECS 并行调度"（先把 `World` 变成 `Send`，再加访问集与并行执行，

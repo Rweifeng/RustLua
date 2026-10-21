@@ -62,7 +62,7 @@ cargo run -p game
 预期运行器输出：
 
 ```text
-RustLua Engine 0.1.0
+RustLua Engine 0.1.1
 ```
 
 ## CI

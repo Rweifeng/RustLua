@@ -194,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "assetc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "rustlua-assets",
@@ -838,7 +838,7 @@ dependencies = [
 
 [[package]]
 name = "editor"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "eframe",
@@ -1030,7 +1030,7 @@ dependencies = [
 
 [[package]]
 name = "engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -1228,7 +1228,7 @@ dependencies = [
 
 [[package]]
 name = "game"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytemuck",
  "engine",
@@ -1255,7 +1255,7 @@ dependencies = [
 
 [[package]]
 name = "game_web"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "engine",
@@ -3251,7 +3251,7 @@ dependencies = [
 
 [[package]]
 name = "rustlua-animation"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mlua",
  "rustlua-assets",
@@ -3264,7 +3264,7 @@ dependencies = [
 
 [[package]]
 name = "rustlua-assets"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "gltf",
  "rustlua-ecs",
@@ -3278,7 +3278,7 @@ dependencies = [
 
 [[package]]
 name = "rustlua-assets-import"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ab_glyph",
  "anyhow",
@@ -3297,7 +3297,7 @@ dependencies = [
 
 [[package]]
 name = "rustlua-audio"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mlua",
  "rodio",
@@ -3309,7 +3309,7 @@ dependencies = [
 
 [[package]]
 name = "rustlua-camera"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mlua",
  "rustlua-ecs",
@@ -3320,14 +3320,14 @@ dependencies = [
 
 [[package]]
 name = "rustlua-component-codec"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "rustlua-ecs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mlua",
  "rustlua-animation",
@@ -3346,14 +3346,14 @@ dependencies = [
 
 [[package]]
 name = "rustlua-frame-abi"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "rustlua-gameplay"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mlua",
  "rustlua-audio",
@@ -3368,7 +3368,7 @@ dependencies = [
 
 [[package]]
 name = "rustlua-infra"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chacha20poly1305",
@@ -3387,7 +3387,7 @@ dependencies = [
 
 [[package]]
 name = "rustlua-input"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mlua",
  "rustlua-lua-api",
@@ -3397,7 +3397,7 @@ dependencies = [
 
 [[package]]
 name = "rustlua-lua-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mlua",
  "serde_json",
@@ -3405,14 +3405,14 @@ dependencies = [
 
 [[package]]
 name = "rustlua-math"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "rustlua-physics"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mlua",
  "rapier2d",
@@ -3425,7 +3425,7 @@ dependencies = [
 
 [[package]]
 name = "rustlua-render"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ab_glyph",
  "bymsdfgen-core",
@@ -3446,7 +3446,7 @@ dependencies = [
 
 [[package]]
 name = "rustlua-scene"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rustlua-animation",
  "rustlua-assets",
@@ -3464,7 +3464,7 @@ dependencies = [
 
 [[package]]
 name = "rustlua-scripting"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "image",
@@ -3490,7 +3490,7 @@ dependencies = [
 
 [[package]]
 name = "rustlua-ui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mlua",
  "rustlua-component-codec",
