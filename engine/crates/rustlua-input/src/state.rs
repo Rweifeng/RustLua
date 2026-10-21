@@ -115,7 +115,7 @@ impl InputState {
         false
     }
 
-    /// 记一条输入层诊断（只保留最近 [`DIAGNOSTIC_LIMIT`] 条）。
+    /// 记一条输入层诊断（只保留最近 `DIAGNOSTIC_LIMIT` 条）。
     pub fn push_diagnostic(&mut self, message: String) {
         tracing::warn!(target: "input", "{}", message);
         if self.diagnostics.len() >= DIAGNOSTIC_LIMIT {

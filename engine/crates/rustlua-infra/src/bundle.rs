@@ -1579,7 +1579,7 @@ mod writer {
         }
 
         /// 打开块级 AEAD（`--encrypt`）：每块独立 ChaCha20Poly1305，nonce/AAD 见
-        /// [`block_nonce`] / [`block_aad`]。
+        /// `block_nonce` / `block_aad`。
         ///
         /// 不做整包 AEAD 的原因：整包要求"先全量解密才能读第一个字节"，随机访问、按组挂载、
         /// CDN 分段缓存全部作废；块级则把代价限制在"读哪个块解哪个块"。

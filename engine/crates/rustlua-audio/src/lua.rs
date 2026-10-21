@@ -5,7 +5,7 @@
 //! 绑定原先住在 `rustlua-scripting/src/script/api/audio.rs`，通过 `ScriptState`（40 字段的中枢）
 //! 摸 `AudioSystem`。代价是整个 crate 里**任何**领域的改动都要重编 VM 与全部绑定。搬到这里之后，
 //! `rustlua-scripting` 不再 `use` 本 crate：它只认 [`rustlua_lua_api::Registry`]，由组合根把
-//! [`install`] 塞进去。
+//! `install` 塞进去。
 //!
 //! ## 为什么这里有一层 `SettingsPort`
 //!

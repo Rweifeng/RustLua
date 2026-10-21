@@ -2,7 +2,7 @@
 //!
 //! 为什么放在 `rustlua-infra`（最底层）而不是各自的领域 crate：
 //!
-//! [`AssetId`] 被 `rustlua-assets`（数据库）、`rustlua-scene`（prefab/scene 引用）、
+//! `AssetId` 被 `rustlua-assets`（数据库）、`rustlua-scene`（prefab/scene 引用）、
 //! `rustlua-scripting`（`scene_spawn` 的句柄表）和编辑器同时使用。它是个**纯值对象**
 //! （128 位、可 `Copy`、无任何 I/O 或领域逻辑），但曾经定义在 `rustlua-assets` 里，
 //! 于是 `rustlua-scripting` 为了两个字段类型就得多依赖一整个资源库 crate

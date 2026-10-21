@@ -77,7 +77,7 @@ pub fn seal_with_aad(plaintext: &[u8], nonce: &[u8; NONCE_LEN], aad: &[u8]) -> V
         .expect("encrypt")
 }
 
-/// [`seal_with_aad`] 的逆操作；失败统一成一个不泄露细节的错误（与 [`open`] 同口径）。
+/// [`seal_with_aad`] 的逆操作；失败统一成一个不泄露细节的错误（与 `open` 同口径）。
 pub fn open_with_aad(
     ciphertext: &[u8],
     nonce: &[u8; NONCE_LEN],

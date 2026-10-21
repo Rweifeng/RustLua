@@ -212,7 +212,7 @@ pub mod offsets {
     pub const MOUSE_HELD: usize = 140;
     pub const MOUSE_JUST: usize = 148;
     pub const MOUSE_JUST_RELEASED: usize = 156;
-    /// 当前按住/接触的指针数（`u32`，解码时钳到 [`MAX_POINTERS`]）。
+    /// 当前按住/接触的指针数（`u32`，解码时钳到 `MAX_POINTERS`）。
     pub const POINTER_COUNT: usize = 164;
     /// 每个指针**按下那一刻**的位置（`MAX_POINTERS` 个 f64 对，按按下先后排列）。
     pub const PRESS_CURSORS: usize = 168;

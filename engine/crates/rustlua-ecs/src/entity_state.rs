@@ -135,7 +135,7 @@ impl EntityNames {
     }
 }
 
-/// 持久化实体的作者态快照（组件 [`rustlua_scene`] 里的 `Persistent` 或旧 `metadata` 标记）。
+/// 持久化实体的作者态快照（组件 `rustlua_scene` 里的 `Persistent` 或旧 `metadata` 标记）。
 /// 以**实体名**为键（切场景后唯一稳定的锚点），由脚本层在场景切换时重建。
 #[derive(Clone, Debug, Default)]
 pub struct PersistedEntity {

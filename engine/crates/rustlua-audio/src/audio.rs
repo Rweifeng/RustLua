@@ -8,7 +8,7 @@
 //! M74-01 追加空间化：听者位姿 → 增益/声像的唯一来源在 [`crate::spatial`]（纯函数）。
 //! 桌面把 `pan` 折回固定距离喂 `rodio::SpatialSink`；平台出口只应用增益。
 //!
-//! 平台设备本身住在 [`crate::device`]：桌面是 rodio，wasm 是 no-op stub。这个文件因此
+//! 平台设备本身住在 `crate::device`：桌面是 rodio，wasm 是 no-op stub。这个文件因此
 //! 一条 `cfg` 都没有，`rodio` 也不是本 crate 的无条件依赖（docs/62 P1 第 4 条）。
 
 use std::{collections::HashMap, fmt, path::PathBuf};

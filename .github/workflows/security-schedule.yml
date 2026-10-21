@@ -1,0 +1,94 @@
+name: Supply-chain recheck
+
+# P2 补强：advisory DB 与上游 fork 版本会随上游漂移，代码不动也可能变红。
+# 每周一 03:00 UTC 复跑一次完整供应链门；也可手动触发（可只跑门、不跑在线报告）。
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      online_fork_report:
+        description: "同时跑 fork --online（需要 crates.io 可达）"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supply-chain-recheck
+  cancel-in-progress: false
+
+jobs:
+  security:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Install Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install pinned security tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit@0.22.2,cargo-deny@0.20.2,cargo-cyclonedx@0.5.9
+
+      - name: Toolchain lock
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/check-toolchain-lock.ps1
+          if ($LASTEXITCODE -ne 0) { throw "toolchain lock failed (exit $LASTEXITCODE)" }
+
+      # fork-sync 的离线 diff 需要 registry/src 里的上游源码；check 顺便解包。
+      - name: Unpack registry sources
+        working-directory: engine
+        run: cargo check --locked --workspace --all-features
+
+      - name: Generate SBOM
+        shell: pwsh
+        run: |
+          node scripts/release/gen-sbom.mjs --output artifacts/reports/rustlua.cdx.json
+          if ($LASTEXITCODE -ne 0) { throw "gen-sbom failed (exit $LASTEXITCODE)" }
+          node scripts/release/gen-sbom.mjs --check --output artifacts/reports/rustlua.cdx.json
+          if ($LASTEXITCODE -ne 0) { throw "sbom check failed (exit $LASTEXITCODE)" }
+
+      - name: Supply-chain gate
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/check-security.ps1 `
+            -RequireTools -FetchForkUpstream `
+            -SbomPath artifacts/reports/rustlua.cdx.json
+          if ($LASTEXITCODE -ne 0) { throw "security gate failed (exit $LASTEXITCODE)" }
+
+      - name: Gate self-tests
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/test-security-gates.ps1
+          if ($LASTEXITCODE -ne 0) { throw "security self-tests failed (exit $LASTEXITCODE)" }
+
+      # 上游版本漂移是"报告"不是"门"：网络/API 失败不应把周检判红，但报告必须上传。
+      - name: Online fork drift report
+        if: github.event_name == 'schedule' || inputs.online_fork_report
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          node scripts/repo/fork-sync-report.mjs --online --write artifacts/reports/fork-sync-online.md
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-recheck
+          path: |
+            artifacts/reports/**
+            artifacts/logs/security/**
+          if-no-files-found: warn

@@ -44,7 +44,7 @@ impl LuaRuntime {
     ///
     /// 这是依赖倒置的落点（`docs/62` P1）：`rustlua-scripting` 不再 `use` 领域 crate 去
     /// 逐个注册，而是由组合根（`engine`）把安装器塞进来。`Registry` 用 `Rc` 持有是因为
-    /// 热重载会重建 VM（见 [`LuaRuntime::load_candidate`]），每个新 VM 都要装同一套。
+    /// 热重载会重建 VM（见 `LuaRuntime::load_candidate`），每个新 VM 都要装同一套。
     pub fn with_installers(
         installers: Rc<rustlua_lua_api::Registry>,
     ) -> Result<Self, LuaBridgeError> {

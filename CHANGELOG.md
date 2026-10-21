@@ -25,6 +25,10 @@
 - **发布资产**：`RustLua-0.1.1-win64.zip`、`RustLua-Engine-0.1.1-win64.zip`、
   `RustLua-0.1.1.cdx.json`、`SHA256SUMS.txt`。Windows Authenticode 签名按仓库证书配置执行；
   未签名时发布说明会明写，不伪称已签。
+- **发布证据（2026-10-21）**：tag `v0.1.1` → Actions run `39553133515` `success`；4 个资产，
+  `SHA256SUMS.txt` 3/3 复核并与 GitHub `digest` 一致；`game.exe --pack pack --check` exit 0；
+  签名步骤 skipped（仓库未配 Secrets），资产 `NotSigned`。同批修掉 11 处 rustdoc 私有/未解析
+  链接，`cargo doc -D warnings` 在 v0.1.1 提交上复绿。
 
 ## Unreleased — M74-02 ECS 并行调度：P0 度量闸门判"不做"，只交付帧内分档工具
 
