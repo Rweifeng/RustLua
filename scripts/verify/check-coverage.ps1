@@ -125,7 +125,10 @@ if ($Current) {
     # 归一化：显式绝对路径 + 字符串化布尔，避免 cargo-llvm-cov 之后 PATH/参数解析抖动。
     $summaryOut = Join-Path $artifactsRoot "coverage-summary.json"
     $summaryMd = Join-Path $artifactsRoot "coverage-summary.md"
-    & node (Join-Path $projectRoot "scripts\metrics\coverage-summary.mjs") `
+    # 用绝对 node.exe：PATH 解析到超长 shim 时 CI 会报 "filename or extension is too long"。
+    $nodeExe = Join-Path $env:ProgramFiles "nodejs\node.exe"
+    if (-not (Test-Path -LiteralPath $nodeExe)) { $nodeExe = (Get-Command node -ErrorAction Stop).Source }
+    & $nodeExe (Join-Path $projectRoot "scripts\metrics\coverage-summary.mjs") `
         --input $currentJson --out $summaryOut --markdown $summaryMd `
         --env-fingerprint "local" --git-commit $git.commit --git-dirty $git.dirty
     if ($LASTEXITCODE -ne 0) { exit 1 }
