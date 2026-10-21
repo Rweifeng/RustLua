@@ -20,18 +20,24 @@ function Invoke-CargoTree {
     param([string[]] $Arguments)
     # PowerShell 5.1 在 EAP=Stop 下会把原生程序的 stderr 当成终止性错误：cargo 的
     # "Updating crates.io index" 一走 stderr，命令还没结束就被 PowerShell 打断，现场只剩
-    # 这一行（2026-10-21 CI web-evidence 实测）。这里临时降级 EAP，按退出码判成败。
+    # 这一行（2026-10-21 CI web-evidence 实测）。这里临时降级 EAP，并把 stderr 单独落文件，
+    # 只把 stdout 的依赖图交给匹配逻辑——否则 "Downloaded rodio" 这类进度行会被误判成
+    # wasm 图里真的出现了音频后端（同日第二轮 CI 实测）。
     $savedEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
+    $errFile = [IO.Path]::GetTempFileName()
     try {
-        $output = & cargo tree --locked @Arguments 2>&1
+        $output = & cargo tree --locked @Arguments 2> $errFile
         $code = $LASTEXITCODE
+        $errText = if (Test-Path -LiteralPath $errFile) { Get-Content -LiteralPath $errFile -Raw } else { '' }
     }
     finally {
         $ErrorActionPreference = $savedEap
+        Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue
     }
     if ($code -ne 0) {
-        throw "cargo tree --locked $($Arguments -join ' ') 失败（exit $code）：$($output | Select-Object -First 8)"
+        $detail = (($errText -split "`r?`n") | Select-Object -First 8) -join ' | '
+        throw "cargo tree --locked $($Arguments -join ' ') 失败（exit $code）：$detail"
     }
     return $output
 }
