@@ -147,38 +147,9 @@ if ($null -eq $cur.crates -or -not $cur.crates) {
     exit 1
 }
 
-# ── 4. 基线：不存在退 3 ───────────────────────────────────────────────────────
-if (-not (Test-Path -LiteralPath $baselinePath)) {
-    Write-Host "coverage_blocked reason=no_baseline（metrics/baselines/coverage.json 不存在；首轮先出报告，人工审阅后 -Update 一次）" -ForegroundColor Yellow
-    exit 3
-}
-$base = Get-Content -LiteralPath $baselinePath -Raw -Encoding UTF8 | ConvertFrom-Json
-if ($base.schema -ne "coverage-v1" -or $null -eq $base.overall.lines) {
-    Write-Host "[FAIL] 基线文件 schema 不是 coverage-v1: $baselinePath" -ForegroundColor Red
-    exit 1
-}
-
-# ── 5. 棘轮判定 ───────────────────────────────────────────────────────────────
-$failures = @()
 $curLines = [double]$cur.overall.lines.percent
-$baseLines = [double]$base.overall.lines.percent
-$delta = $curLines - $baseLines
-if ($delta -lt -0.5) {
-    $failures += "总行覆盖掉了 $([math]::Abs($delta).ToString('0.0'))pp（阈值 0.5pp）"
-}
-$baseCrates = @{}
-foreach ($c in $base.crates) { $baseCrates[$c.name] = [double]$c.lines.percent }
-foreach ($c in $cur.crates) {
-    if ([int]$c.lines.count -lt 200) { continue } # 小 crate 不做单 crate 判红
-    if ($baseCrates.ContainsKey($c.name)) {
-        $cd = [double]$c.lines.percent - $baseCrates[$c.name]
-        if ($cd -lt -2.0) {
-            $failures += "crate $($c.name) 行覆盖掉了 $([math]::Abs($cd).ToString('0.0'))pp（阈值 2.0pp，源码行 $($c.lines.count)）"
-        }
-    }
-}
 
-# ── 6. -Update：显式更新基线 ─────────────────────────────────────────────────
+# ── 4. -Update：首份基线或显式更新（必须先于“缺基线退 3”）──────────────────
 if ($Update) {
     if ([string]::IsNullOrWhiteSpace($Reason)) {
         Write-Host "[FAIL] -Update 必须带 -Reason（提交信息要写清为什么这次增长/变化是合理的）" -ForegroundColor Red
@@ -194,6 +165,36 @@ if ($Update) {
     $cur | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $baselinePath -Encoding UTF8
     Write-Host ("coverage_baseline_updated lines=" + $curLines.ToString('0.0') + "% commit=" + $git.commit)
     exit 0
+}
+
+# ── 5. 基线：不存在退 3 ───────────────────────────────────────────────────────
+if (-not (Test-Path -LiteralPath $baselinePath)) {
+    Write-Host "coverage_blocked reason=no_baseline（metrics/baselines/coverage.json 不存在；首轮先出报告，人工审阅后 -Update 一次）" -ForegroundColor Yellow
+    exit 3
+}
+$base = Get-Content -LiteralPath $baselinePath -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($base.schema -ne "coverage-v1" -or $null -eq $base.overall.lines) {
+    Write-Host "[FAIL] 基线文件 schema 不是 coverage-v1: $baselinePath" -ForegroundColor Red
+    exit 1
+}
+
+# ── 6. 棘轮判定 ───────────────────────────────────────────────────────────────
+$failures = @()
+$baseLines = [double]$base.overall.lines.percent
+$delta = $curLines - $baseLines
+if ($delta -lt -0.5) {
+    $failures += "总行覆盖掉了 $([math]::Abs($delta).ToString('0.0'))pp（阈值 0.5pp）"
+}
+$baseCrates = @{}
+foreach ($c in $base.crates) { $baseCrates[$c.name] = [double]$c.lines.percent }
+foreach ($c in $cur.crates) {
+    if ([int]$c.lines.count -lt 200) { continue } # 小 crate 不做单 crate 判红
+    if ($baseCrates.ContainsKey($c.name)) {
+        $cd = [double]$c.lines.percent - $baseCrates[$c.name]
+        if ($cd -lt -2.0) {
+            $failures += "crate $($c.name) 行覆盖掉了 $([math]::Abs($cd).ToString('0.0'))pp（阈值 2.0pp，源码行 $($c.lines.count)）"
+        }
+    }
 }
 
 # ── 7. 输出与退出 ─────────────────────────────────────────────────────────────
