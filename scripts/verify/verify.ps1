@@ -599,9 +599,17 @@ try {
         # 哪个类型上"逐项与 `baselines/engine-pub-surface.json` 相同。
         # 抓的是模块拆分这一类事故：`impl` 块搬进 `pub mod` 子模块、`pub use` 漏了一项，都会多/少一条路径。
         # 缺 node 时按本仓库口径打印原因后跳过，绝不把"跳过"写成通过。
+        # `baselines/` 在 .gitignore 里（本地基线不入库），干净 CI 必然没有这份 JSON；
+        # 没有基线就显式跳过并说明，而不是让每个 push 都红在"baseline_missing"。
         Write-Step "Engine public Rust surface"
+        $baselinesDir = if ($env:RUSTLUA_BASELINES_DIR) { $env:RUSTLUA_BASELINES_DIR } else { Join-Path $projectRoot "baselines" }
+        $pubSurfaceBaseline = Join-Path $baselinesDir "engine-pub-surface.json"
         if (Get-Command node -ErrorAction SilentlyContinue) {
-            Invoke-Checked node @((Join-Path $projectRoot "scripts/verify/engine-pub-surface.mjs"), "--check")
+            if (Test-Path -LiteralPath $pubSurfaceBaseline) {
+                Invoke-Checked node @((Join-Path $projectRoot "scripts/verify/engine-pub-surface.mjs"), "--check")
+            } else {
+                Write-Host "  [SKIP] 缺少本地基线 $pubSurfaceBaseline（baselines/ 不入库；先跑 node scripts/verify/engine-pub-surface.mjs --update，或设 RUSTLUA_BASELINES_DIR）：对外 Rust 符号面基线门未运行（不是通过）" -ForegroundColor Yellow
+            }
         } else {
             Write-Host "  [SKIP] 未找到 node：对外 Rust 符号面基线门未运行（不是通过）" -ForegroundColor Yellow
         }

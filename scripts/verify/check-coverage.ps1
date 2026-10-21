@@ -82,20 +82,17 @@ function Invoke-CoverageCollect {
     try {
         & cargo llvm-cov --workspace --all-features --locked --no-fail-fast `
             --ignore-filename-regex 'engine[\\/]vendor[\\/]|engine[\\/]target[\\/]' `
-            --json --summary-only --output-path $covJson
+            --json --summary-only --output-path $covJson -- --test-threads=1 --nocapture
         if ($LASTEXITCODE -ne 0) {
             # --no-fail-fast 下测试失败会让 cargo 返回非零；覆盖率数字不能掩盖红测试。
             Write-Host "[FAIL] llvm-cov 采集失败或存在测试失败（exit $LASTEXITCODE）；覆盖率门不掩盖红测试" -ForegroundColor Red
             return $null
         }
         # lcov + HTML 作为 artifact 证据（尽力而为，失败不判红但打印原因）。
-        & cargo llvm-cov --workspace --all-features --locked --no-fail-fast `
-            --ignore-filename-regex 'engine[\\/]vendor[\\/]|engine[\\/]target[\\/]' `
-            --lcov --output-path $lcov 2>$null | Out-Null
+        # lcov + HTML 只从刚生成的 profdata 导出，不再重复跑一遍全量测试（P4-01 门要能在 CI 分钟预算内跑完）。
+        & cargo llvm-cov report --lcov --output-path $lcov 2>$null | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Host "[WARN] lcov 生成失败（artifact 缺失，不影响判据）" -ForegroundColor Yellow }
-        & cargo llvm-cov --workspace --all-features --locked --no-fail-fast `
-            --ignore-filename-regex 'engine[\\/]vendor[\\/]|engine[\\/]target[\\/]' `
-            --html --output-dir $htmlDir 2>$null | Out-Null
+        & cargo llvm-cov report --html --output-dir $htmlDir 2>$null | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Host "[WARN] HTML 生成失败（artifact 缺失，不影响判据）" -ForegroundColor Yellow }
     } finally {
         Pop-Location
@@ -125,12 +122,15 @@ if ($Current) {
     }
     $currentJson = Invoke-CoverageCollect
     if (-not $currentJson) { exit 1 }
-    # 归一化
+    # 归一化：显式绝对路径 + 字符串化布尔，避免 cargo-llvm-cov 之后 PATH/参数解析抖动。
     $summaryOut = Join-Path $artifactsRoot "coverage-summary.json"
     $summaryMd = Join-Path $artifactsRoot "coverage-summary.md"
-    & node (Join-Path $projectRoot "scripts\metrics\coverage-summary.mjs") `
-        --input $currentJson --out $summaryOut --markdown $summaryMd `
-        --env-fingerprint "local" --git-commit $git.commit --git-dirty $git.dirty
+    $nodeExe = Join-Path $env:ProgramFiles "nodejs\node.exe"
+    if (-not (Test-Path -LiteralPath $nodeExe)) { $nodeExe = (Get-Command node -ErrorAction Stop).Source }
+    $summaryScript = Join-Path $projectRoot "scripts\metrics\coverage-summary.mjs"
+    $dirtyArg = ([bool]$git.dirty).ToString().ToLowerInvariant()
+    & $nodeExe $summaryScript --input $currentJson --out $summaryOut --markdown $summaryMd `
+        --env-fingerprint "local" --git-commit ([string]$git.commit) --git-dirty $dirtyArg
     if ($LASTEXITCODE -ne 0) { exit 1 }
     $currentJson = $summaryOut
 }
