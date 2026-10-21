@@ -134,7 +134,7 @@ if ($Current) {
 
 # ── 3. 读取并校验当前报告 ────────────────────────────────────────────────────
 $cur = $null
-try { $cur = Get-Content -LiteralPath $currentJson -Raw | ConvertFrom-Json } catch {
+try { $cur = Get-Content -LiteralPath $currentJson -Raw -Encoding UTF8 | ConvertFrom-Json } catch {
     Write-Host "[FAIL] 当前覆盖率报告无法解析: $currentJson（$($_.Exception.Message)）" -ForegroundColor Red
     exit 1
 }
@@ -152,7 +152,7 @@ if (-not (Test-Path -LiteralPath $baselinePath)) {
     Write-Host "coverage_blocked reason=no_baseline（metrics/baselines/coverage.json 不存在；首轮先出报告，人工审阅后 -Update 一次）" -ForegroundColor Yellow
     exit 3
 }
-$base = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
+$base = Get-Content -LiteralPath $baselinePath -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($base.schema -ne "coverage-v1" -or $null -eq $base.overall.lines) {
     Write-Host "[FAIL] 基线文件 schema 不是 coverage-v1: $baselinePath" -ForegroundColor Red
     exit 1
