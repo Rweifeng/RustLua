@@ -21,6 +21,9 @@ pub struct Arguments {
     pub no_instance: bool,
     /// 加载集观测：把本次运行的资源读取按场景上下文写成 JSON（`docs/67` §5）。
     pub trace_loads: Option<PathBuf>,
+    /// 帧调度分档（M74-02 P0 度量闸门）：退出时把每系统 p50/p99、每 stage 合计与
+    /// "最慢 stage 占帧比"写成 JSON。`None` = 不开（零成本）。
+    pub frame_profile: Option<PathBuf>,
 }
 
 pub fn parse_arguments() -> Result<Arguments, String> {
@@ -55,6 +58,11 @@ pub fn parse_arguments() -> Result<Arguments, String> {
                     values.next().ok_or("--trace-loads requires a path")?,
                 ));
             }
+            "--frame-profile" => {
+                args.frame_profile = Some(PathBuf::from(
+                    values.next().ok_or("--frame-profile requires a path")?,
+                ));
+            }
             "--help" | "-h" => {
                 println!(
                     "Usage: game [--project <game-project-root>] [--pack <release-pack>] [--title <window-title>] [--check] [--log-filter <tracing-filter>]\n\
@@ -63,7 +71,9 @@ pub fn parse_arguments() -> Result<Arguments, String> {
                      --pack <dir>      加载 assetc package 生成的发布资源目录（严格校验资源完整性）\n\
                      --title <title>   设置窗口标题；未指定时优先读取发布包 release.toml\n\
                      --check           仅校验资源完整性后退出（exit 0/1，不弹窗口）\n\
-                     --trace-loads <file>  采集资源加载集（按场景上下文）并写 JSON"
+                     --trace-loads <file>  采集资源加载集（按场景上下文）并写 JSON\n\
+                     --frame-profile <file> 退出时把帧调度分档（每系统 p50/p99、每 stage 合计、\n\
+                                       最慢 stage 占帧比）写成 JSON（M74-02 P0）"
                 );
                 std::process::exit(0);
             }

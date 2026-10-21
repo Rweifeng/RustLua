@@ -235,3 +235,99 @@ fn atomic_write(path: &Path, text: &str) -> Result<(), std::io::Error> {
     std::fs::rename(temp, path)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mlua::Lua;
+
+    /// `save` 的 Lua 面就这 9 个：搬家到存档域之后一个都不能少
+    /// （`api_surface_snapshot` 盯全量，这条盯"这一步搬全了"）。
+    const NAMES: [&str; 9] = [
+        "write",
+        "read",
+        "clear",
+        "blob_write",
+        "blob_read",
+        "slot",
+        "slot_get",
+        "commit",
+        "load",
+    ];
+
+    fn installed() -> (Lua, Handle<SaveStore>) {
+        let lua = Lua::new();
+        let store = SaveStore::handle();
+        install(&lua, &store).unwrap();
+        (lua, store)
+    }
+
+    #[test]
+    fn every_save_function_is_installed() {
+        let (lua, _store) = installed();
+        let save: mlua::Table = lua.globals().get("save").unwrap();
+        for name in NAMES {
+            let value: Value = save.get(name).unwrap();
+            assert!(
+                matches!(value, Value::Function(_)),
+                "`save.{name}` 缺失或不是函数：{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn state_lives_in_the_handle_and_clears_through_it() {
+        let (lua, store) = installed();
+        lua.load(
+            r#"
+            save.write("day", "8")
+            assert(save.read("day") == "8")
+            save.blob_write("map", { rows = { "a", "b" }, day = 8 })
+            local blob = save.blob_read("map")
+            assert(blob.rows[1] == "a" and blob.rows[2] == "b" and blob.day == 8)
+            save.slot("slot2")
+            assert(save.slot_get() == "slot2")
+            local cleared = save.clear()
+            assert(cleared >= 1, "clear 应返回清掉的键数")
+            assert(save.read("day") == nil, "clear 之后读不回来")
+            "#,
+        )
+        .exec()
+        .unwrap();
+        // 状态确实在能力单元里（宿主读同一份）。
+        let state = store.borrow().unwrap();
+        assert!(state.is_empty(), "clear 已清空: {state:?}");
+    }
+
+    #[test]
+    fn empty_key_is_rejected_and_slot_empty_string_is_no_slot() {
+        let (lua, store) = installed();
+        let error = lua
+            .load(r#"save.write("", "v")"#)
+            .exec()
+            .unwrap_err()
+            .to_string();
+        // 空键会让整份存档在下次 load 时解析失败，所以写入点就拒。
+        assert!(
+            error.contains("must not be empty"),
+            "报错应点名空键：{error}"
+        );
+        lua.load(r#"save.slot("  ")"#).exec().unwrap();
+        assert!(
+            store.borrow().unwrap().slot().is_some(),
+            "非空串应保留（原样存）"
+        );
+        lua.load(r#"save.slot("")"#).exec().unwrap();
+        assert!(store.borrow().unwrap().slot().is_none(), "空串等于没有槽位");
+    }
+
+    #[test]
+    fn without_a_path_commit_and_load_report_instead_of_failing() {
+        let (lua, _store) = installed();
+        let committed: bool = lua.load(r#"return save.commit()"#).eval().unwrap();
+        assert!(!committed, "没配路径时 commit 返回 false");
+        let (loaded, reason): (bool, String) = lua.load(r#"return save.load()"#).eval().unwrap();
+        assert!(!loaded);
+        assert_eq!(reason, "no_save_path", "要与「没有存档(missing)」区分开");
+    }
+}

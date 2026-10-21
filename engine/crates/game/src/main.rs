@@ -120,8 +120,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         !arguments.no_instance,
         arguments.pack,
         deferred_verify,
+        arguments.frame_profile.clone(),
     );
     event_loop.run_app(&mut app)?;
+    // M74-02 P0：退出时落盘帧调度分档（未开 `--frame-profile` 时是 no-op）。
+    app.finish_frame_profile();
     finish_load_trace(arguments.trace_loads.as_deref());
     run_result(app.failure())
 }

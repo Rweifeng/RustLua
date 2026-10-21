@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "comment": "P4 metrics policy: per-domain thresholds, min_samples, windows. Thresholds from tasks/plan/P4-性能与测试度量.md §P4-04-4. Values are exact thresholds; a sample at exactly the threshold is a pass, over it is a regression (exit 2).",
+  "min_samples": 3,
+  "comment_min_samples": "time-class metrics need >=3 same-fingerprint samples; fewer -> exit 3 (BLOCKED). Deterministic metrics (geometry/bytes/coverage) can compare across fingerprints.",
+  "domains": {
+    "perf": {
+      "compare_mode": "same_fingerprint_trailing_median",
+      "window_runs": 7,
+      "rules": {
+        "p95_us": {"threshold_pct": 5, "better": "lower"},
+        "p99_us": {"threshold_pct": 10, "better": "lower"},
+        "cpu_peak_bytes": {"threshold_pct": 10, "better": "lower"},
+        "draw_calls": {"mode": "any_change_red", "better": "lower", "comment": "docs/54 red line: geometry any change is a regression"},
+        "instances": {"mode": "any_change_red", "better": "lower"},
+        "triangles": {"mode": "any_change_red", "better": "lower"},
+        "alloc_bytes": {"mode": "any_change_red", "better": "lower"},
+        "alloc_count": {"mode": "any_change_red", "better": "lower"}
+      }
+    },
+    "coverage": {
+      "compare_mode": "baseline_delta",
+      "rules": {
+        "lines_pct": {"max_delta_pp": 0.5, "better": "higher", "comment": "overall line coverage drop > 0.5pp -> red"},
+        "crate_lines_pct": {"max_delta_pp": 2.0, "better": "higher", "comment": "per-crate (source lines >= 200) drop > 2.0pp -> red"}
+      }
+    },
+    "compile": {
+      "compare_mode": "same_fingerprint_median",
+      "min_samples": 3,
+      "rules": {
+        "check_cold": {"threshold_pct": 15, "better": "lower"},
+        "check_warm": {"threshold_pct": 15, "better": "lower"},
+        "test_build_cold": {"threshold_pct": 15, "better": "lower"},
+        "release_build_cold": {"threshold_pct": 10, "better": "lower"},
+        "incremental_after_clean_package": {"threshold_pct": 20, "threshold_abs_s": 2, "better": "lower", "comment": "whichever threshold is exceeded first"}
+      }
+    },
+    "binary": {
+      "compare_mode": "baseline_delta",
+      "rules": {
+        "exe": {"threshold_pct": 3, "threshold_abs_bytes": 131072, "better": "lower", "comment": "exe +3% or +128 KiB, whichever is larger"},
+        "wasm": {"threshold_pct": 3, "threshold_abs_bytes": 65536, "better": "lower", "comment": "wasm +3% or +64 KiB"},
+        "editor_exe": {"threshold_pct": 3, "threshold_abs_bytes": 262144, "better": "lower", "comment": "editor.exe tool tolerance widened to +256 KiB"},
+        "js": {"threshold_pct": 5, "threshold_abs_bytes": 65536, "better": "lower"}
+      }
+    },
+    "package": {
+      "compare_mode": "baseline_delta",
+      "rules": {
+        "total": {"threshold_pct": 3, "better": "lower", "comment": "total package +3% -> red"},
+        "main": {"threshold_pct": 3, "better": "lower", "comment": "wechat main package +3% -> red"},
+        "subpackage": {"threshold_pct": 5, "better": "lower"},
+        "component": {"threshold_pct": 10, "better": "lower", "comment": "component +10% requires attribution note in the run"},
+        "wechat_main_quota_bytes": {"mode": "hard_quota", "limit_bytes": 4194304, "comment": "4 MiB hard gate; package.ps1 enforces first, P4 records trend only"},
+        "wechat_total_quota_bytes": {"mode": "hard_quota", "limit_bytes": 20971520, "comment": "20 MiB hard gate"}
+      }
+    },
+    "cfg": {
+      "compare_mode": "baseline_delta",
+      "rules": {
+        "wasm_attrs_covered": {"mode": "all_or_explicit", "better": "higher", "comment": "every wasm site must map to a compile cell or explicit exemption; unknown=0"},
+        "wasm_macros_covered": {"mode": "all_or_explicit", "better": "higher"},
+        "native_attrs_covered": {"mode": "all_or_explicit", "better": "higher"}
+      }
+    }
+  },
+  "allowlist_policy": {
+    "expired_behavior": "red",
+    "comment": "allowlist entry past expires -> gate returns 2 immediately; no yellow grace"
+  }
+}

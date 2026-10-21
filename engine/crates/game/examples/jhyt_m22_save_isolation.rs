@@ -585,10 +585,7 @@ fn assert_farm_tile(
                return 'plots=[' .. table.concat(keys, ' ') .. '] farmgrid_cells=[' .. \
                  table.concat(cells, ' ') .. ']' end)()",
         )?;
-        return Err(format!(
-            "{layer}({plot_x},{plot_y}) = {got}, want {expected}；{diag}"
-        )
-        .into());
+        return Err(format!("{layer}({plot_x},{plot_y}) = {got}, want {expected}；{diag}").into());
     }
     Ok(())
 }

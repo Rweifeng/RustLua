@@ -751,8 +751,8 @@ fn gather_once(
     if !probe.starts_with("ready:") {
         return Err(format!("{map_id} 没有可采集的采集点（{probe}）").into());
     }
-    frames(runtime, &host, 2)?;
-    press(runtime, &host, KeyCode::KeyE)?;
+    frames(runtime, host, 2)?;
+    press(runtime, host, KeyCode::KeyE)?;
     let action = query_str(runtime, "require('core.state').last_action")?;
     if !action.starts_with("gather_") {
         return Err(format!("采集失败：last_action = {action:?}（{probe}）").into());

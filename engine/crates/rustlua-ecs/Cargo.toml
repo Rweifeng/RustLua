@@ -13,6 +13,10 @@ thiserror.workspace = true
 serde_json = "1"
 rustlua-math = { path = "../rustlua-math" }
 rustlua-infra = { path = "../rustlua-infra" }
+# transform_lua（以及后续的 entity_lua / tilemap_lua）：组件与世界的 Lua 面跟着类型住
+# （P1 ⑤-10）。`lua-api` 是叶子契约层（`Handle` / `api_error`）。
+rustlua-lua-api = { path = "../rustlua-lua-api" }
+mlua = { version = "0.11", features = ["lua54", "vendored"] }
 
 [dev-dependencies]
 rustlua-animation = { path = "../rustlua-animation" }

@@ -887,7 +887,7 @@ fn gather_with(
     if got != node_id {
         return Err(format!("采集点 {node_id} 的面向格未命中：{got}").into());
     }
-    press_e_holding(runtime, &host, &stick)
+    press_e_holding(runtime, host, &stick)
 }
 
 /// 站到出口触发格上并按 E（真实交互路径）。
@@ -906,7 +906,7 @@ fn exit_with(
     if !prompt.starts_with("E: ") {
         return Err(format!("出口 {exit_id} 的提示行异常：{prompt}").into());
     }
-    press_e_holding(runtime, &host, &stick)
+    press_e_holding(runtime, host, &stick)
 }
 
 /// 扫描当前地图，返回第一个可放置该建筑的锚点（确定性，与 jhyt_m27_goals 同法）。
@@ -945,7 +945,7 @@ fn unlock_teafair(
     spawn: (f32, f32),
 ) -> Result<(), Box<dyn std::error::Error>> {
     goto_map(runtime, "manor", spawn)?;
-    frames(runtime, &host, 2)?;
+    frames(runtime, host, 2)?;
     // 每级收一份 upgrade_cost（docs/33 §7.2 口径）：木材消耗从数据里读，不写死。
     let step_cost = query_num(
         runtime,

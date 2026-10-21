@@ -1,4 +1,4 @@
-﻿//! Generational entity handles and a minimal entity allocator.
+//! Generational entity handles and a minimal entity allocator.
 
 use std::fmt;
 
@@ -35,6 +35,34 @@ impl EntityId {
     #[must_use]
     pub const fn generation(self) -> u32 {
         self.generation
+    }
+
+    /// Lua 侧的句柄编码：`index << 32 | generation`。
+    ///
+    /// 这条编码是**跨 crate 的契约**（脚本层与 `rustlua-camera` 这类领域绑定都要把实体交给
+    /// Lua），所以规则跟着实体类型住，不留在任何一侧的脚本层里（P1 ⑤-8）。Lua 的数字是
+    /// `f64`，`u32` 的 32 位与 `index` 拼起来正好落在 `2^53` 以内，往返无损。
+    #[must_use]
+    pub const fn to_lua_i64(self) -> i64 {
+        ((self.index as u64) << 32 | self.generation as u64) as i64
+    }
+
+    /// [`Self::to_lua_i64`] 的宽容解码：**不是句柄形态**（负数、generation 为 0）时返回
+    /// `None` 而不是报错。
+    ///
+    /// 严格版（报错）留给写操作的前置校验，由各绑定自己拼错误串；这里只回答
+    /// "这个整数是不是一个句柄形态"。
+    #[must_use]
+    pub const fn from_lua_i64(value: i64) -> Option<Self> {
+        if value < 0 {
+            return None;
+        }
+        let raw = value as u64;
+        let generation = raw as u32;
+        if generation == 0 {
+            return None;
+        }
+        Some(Self::from_raw((raw >> 32) as u32, generation))
     }
 }
 

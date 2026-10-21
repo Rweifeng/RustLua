@@ -9,6 +9,8 @@
 /// 声明视口 → 目标附件里的等比居中矩形（宿主与渲染器共用的唯一口径）。
 pub mod fit;
 pub mod frame;
+/// 帧调度分档统计（M74-02 P0 度量闸门）：每系统 p50/p99、每 stage 合计与占帧比。
+pub mod frame_profile;
 /// 手柄设备轮询适配层（M20-06）。
 pub mod gamepad;
 /// 平台事件 → 引擎物理键身份的唯一转换层（M22/W1）。
@@ -29,6 +31,10 @@ pub mod web_surface;
 
 pub use frame::{
     BoundsSource, OverlayVertex, Scene3d, Scene3dBounds, Scene3dDrawable, SceneDraw, SceneMesh,
+};
+pub use frame_profile::{
+    FrameProfile, FrameProfileSummary, PARALLELISM_GATE_SHARE_PCT, StageProfile, SystemProfile,
+    TimingStats,
 };
 pub use gamepad::{
     FakeBackend, GamepadBackend, GamepadDeadzone, GamepadFrame, GamepadPoller,

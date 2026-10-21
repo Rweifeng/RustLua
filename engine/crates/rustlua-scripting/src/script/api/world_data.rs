@@ -1,11 +1,24 @@
-//! 世界数据：`scene`（切换）、`map`（导航与跳转）、`asset`（资源句柄）、`data`（存档型配置）。
+//! 场景切换与地图导航：`scene.*`、`map.goto/go/enter/current`。
+//!
+//! ## 已经搬走的部分（`docs/62` P1 ⑤-4c）
+//!
+//! `asset.*`、`data.*`、`map.state/state_clear/schema/spawn/set_spawn` 属于**工程数据面**，
+//! 已下沉到 [`rustlua_gameplay::world_data_lua`]（状态在 `WorldDataState`，持久化在
+//! `SaveStore`）。本模块只留"切场景"这一半：
+//!
+//! - `scene.load/reload` 读写 `scene_pending_load` / 当前场景名；
+//! - `map.goto/go/enter` 在**校验场景文件存在**之后排队切场景（顺带写 `__map` 与出生点）；
+//! - `map.current` 的兜底是"当前场景名"，同样属于场景态。
+//!
+//! 这条边界不是按行数划的：数据面不需要知道场景在哪个文件、下一帧切到哪，
+//! 场景面也不该知道数据表 schema 怎么校验。`map` 是一张共享表——数据面由
+//! `world_data_lua::install` 填，导航面在这里填（与 `ui` 的三段式同一个手法）。
 
 // WP11-USE:BEGIN
 use crate::script::LuaStateBorrow;
 use crate::script::ScriptState;
 use crate::script::error::api_error;
 use crate::script::request_scene_load;
-use crate::script::values::{json_to_lua_value, lua_value_to_json};
 use mlua::Result as LuaResult;
 use mlua::{Lua, Value};
 use std::cell::RefCell;
@@ -13,15 +26,30 @@ use std::rc::Rc;
 // WP11-USE:END
 
 pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<()> {
+    let map = lua.create_table()?;
+    // 数据面（asset/data 两张全局表 + map 的持久状态函数）由领域 crate 装：
+    // 本模块只把三个能力单元的句柄交出去，不再认识数据表格式。
+    {
+        let state = state.borrow();
+        rustlua_gameplay::world_data_lua::install(
+            lua,
+            &map,
+            &state.world_data,
+            &state.save,
+            &state.project_root,
+        )?;
+    }
+
     let scene = lua.create_table()?;
     let s = Rc::clone(&state);
     scene.set(
         "load",
         lua.create_function(move |_, name: String| {
-            let state = s.lua_borrow()?;
-            let exists = request_scene_load(&state, &name);
+            let exists = {
+                let state = s.lua_borrow_mut()?;
+                request_scene_load(&state, &name)
+            };
             if exists {
-                drop(state);
                 s.lua_borrow_mut()?.scene_pending_load = Some(name);
             }
             Ok(exists)
@@ -34,13 +62,12 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     )?;
     lua.globals().set("scene", scene)?;
 
-    let map = lua.create_table()?;
     let s = Rc::clone(&state);
     map.set(
         "goto",
         lua.create_function(move |_, (name, x, y): (String, Option<f32>, Option<f32>)| {
             let exists = {
-                let state = s.lua_borrow()?;
+                let state = s.lua_borrow_mut()?;
                 crate::script::scene_file_exists(&state, &name)
             };
             if !exists {
@@ -73,7 +100,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         "go",
         lua.create_function(move |_, (name, x, y): (String, Option<f32>, Option<f32>)| {
             let exists = {
-                let state = s.lua_borrow()?;
+                let state = s.lua_borrow_mut()?;
                 crate::script::scene_file_exists(&state, &name)
             };
             if !exists {
@@ -106,7 +133,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         "enter",
         lua.create_function(move |_, (name, x, y): (String, f32, f32)| {
             let exists = {
-                let state = s.lua_borrow()?;
+                let state = s.lua_borrow_mut()?;
                 crate::script::scene_file_exists(&state, &name)
             };
             if !exists {
@@ -148,248 +175,6 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
                 .transpose()
         })?,
     )?;
-    let s = Rc::clone(&state);
-    map.set(
-        "spawn",
-        lua.create_function(move |lua, ()| {
-            let state = s.lua_borrow()?;
-            // 一次窄借用同时取两个键：`Handle::borrow()` 的 guard 不能跨 `let...else`
-            // 存活（那是临时值），所以先 clone 出字符串再解析。
-            let (x, y) = {
-                let store = state.save.borrow()?;
-                (
-                    store.get("__map:spawn:x").cloned(),
-                    store.get("__map:spawn:y").cloned(),
-                )
-            };
-            let (Some(x), Some(y)) = (x, y) else {
-                return Ok(Value::Nil);
-            };
-            let Ok(x) = x.parse::<f32>() else {
-                return Ok(Value::Nil);
-            };
-            let Ok(y) = y.parse::<f32>() else {
-                return Ok(Value::Nil);
-            };
-            let result = lua.create_table()?;
-            result.set("x", x)?;
-            result.set("y", y)?;
-            Ok(Value::Table(result))
-        })?,
-    )?;
-    let s = Rc::clone(&state);
-    map.set(
-        "set_spawn",
-        lua.create_function(move |_, (x, y): (f32, f32)| {
-            if !x.is_finite() || !y.is_finite() {
-                return Err(api_error("map.set_spawn must be finite"));
-            }
-            let state = s.lua_borrow()?;
-            state
-                .save
-                .borrow_mut()?
-                .insert("__map:spawn:x".to_owned(), x.to_string());
-            state
-                .save
-                .borrow_mut()?
-                .insert("__map:spawn:y".to_owned(), y.to_string());
-            Ok(())
-        })?,
-    )?;
-    let s = Rc::clone(&state);
-    map.set(
-        "state",
-        lua.create_function(move |lua, (name, value): (String, Option<Value>)| {
-            let key = format!("__mapstate:{name}");
-            if let Some(value) = value {
-                let json = lua_value_to_json(value)?;
-                // B-3：注册 `map.schema(name, spec)` 后，写入会先校验，
-                // 让错误在发生处暴露，而不是延迟到读档时才发现。
-                {
-                    let state = s.lua_borrow()?;
-                    if let Some(schema) = state.map_state_schemas.get(&name)
-                        && let Some(error) = rustlua_ecs::data_schema::validate(
-                            &json,
-                            schema,
-                            &format!("map.state {name}"),
-                        )
-                    {
-                        return Err(api_error(error));
-                    }
-                }
-                let encoded =
-                    serde_json::to_string(&json).map_err(|error| api_error(error.to_string()))?;
-                s.lua_borrow()?.save.borrow_mut()?.insert(key, encoded);
-                return Ok(Value::Boolean(true));
-            }
-            let Some(encoded) = s.lua_borrow()?.save.borrow()?.get(&key).cloned() else {
-                return Ok(Value::Nil);
-            };
-            let json = serde_json::from_str(&encoded)
-                .map_err(|error| api_error(format!("map.state {name} is corrupt: {error}")))?;
-            json_to_lua_value(lua, &json)
-        })?,
-    )?;
-    let s = Rc::clone(&state);
-    map.set(
-        "state_clear",
-        lua.create_function(move |_, name: Option<String>| {
-            let state = s.lua_borrow()?;
-            let before = state.save.borrow()?.len();
-            match &name {
-                Some(name) => {
-                    let key = format!("__mapstate:{name}");
-                    state.save.borrow_mut()?.remove(&key);
-                }
-                None => state
-                    .save
-                    .borrow_mut()?
-                    .data_mut()
-                    .retain(|key, _| !key.starts_with("__mapstate:")),
-            }
-            Ok(before - state.save.borrow()?.len())
-        })?,
-    )?;
-    let s = Rc::clone(&state);
-    map.set(
-        "schema",
-        lua.create_function(move |_, (name, spec): (String, Option<Value>)| {
-            let mut state = s.lua_borrow_mut()?;
-            if let Some(spec) = spec {
-                let json = lua_value_to_json(spec)?;
-                state.map_state_schemas.insert(name, json);
-            } else {
-                state.map_state_schemas.remove(&name);
-            }
-            Ok(())
-        })?,
-    )?;
     lua.globals().set("map", map)?;
-
-    let asset = lua.create_table()?;
-    let s = Rc::clone(&state);
-    asset.set(
-        "load",
-        lua.create_function(move |_, path: String| {
-            let mut state = s.lua_borrow_mut()?;
-            let token = format!("asset:{}", path);
-            state.assets.insert(path, token.clone());
-            Ok(token)
-        })?,
-    )?;
-    let s = Rc::clone(&state);
-    asset.set(
-        "release",
-        lua.create_function(move |_, token: String| {
-            s.lua_borrow_mut()?.assets.retain(|_, v| v != &token);
-            Ok(())
-        })?,
-    )?;
-    lua.globals().set("asset", asset)?;
-
-    // Validates a freshly loaded data table against its registered schema
-    // (`data.schema`), rejecting bad content with a located error instead of
-    // silently caching it.
-    fn validate_data_schema(
-        state: &Rc<RefCell<ScriptState>>,
-        path: &str,
-        json: &serde_json::Value,
-        verb: &str,
-    ) -> Result<(), mlua::Error> {
-        let schema = state.borrow().schema_defs.get(path).cloned();
-        if let Some(schema) = schema
-            && let Some(error) = rustlua_ecs::data_schema::validate(json, &schema, path)
-        {
-            return Err(api_error(format!(
-                "data.{verb} {path}: schema violation: {error}"
-            )));
-        }
-        Ok(())
-    }
-
-    let data = lua.create_table()?;
-    let s = Rc::clone(&state);
-    data.set(
-        "load",
-        lua.create_function(move |lua, path: String| {
-            let root = {
-                let state = s.lua_borrow()?;
-                state
-                    .project_root
-                    .clone()
-                    .ok_or_else(|| api_error("data.load requires a project root"))?
-            };
-            if let Some(cached) = s.lua_borrow()?.data_cache.get(&path) {
-                return json_to_lua_value(lua, cached);
-            }
-            let file_path = root.join(&path);
-            let bytes = rustlua_infra::vfs::read(&file_path).map_err(|error| {
-                api_error(format!("data.load {}: {error}", file_path.display()))
-            })?;
-            let decoded = rustlua_infra::pack::decode(&bytes).map_err(|error| {
-                api_error(format!("data.load {}: {error}", file_path.display()))
-            })?;
-            let text = String::from_utf8_lossy(&decoded);
-            let json: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
-                api_error(format!("data.load {}: {error}", file_path.display()))
-            })?;
-            validate_data_schema(&s, &path, &json, "load")?;
-            s.lua_borrow_mut()?.data_cache.insert(path, json.clone());
-            json_to_lua_value(lua, &json)
-        })?,
-    )?;
-    let s = Rc::clone(&state);
-    data.set(
-        "reload",
-        lua.create_function(move |lua, path: String| {
-            s.lua_borrow_mut()?.data_cache.remove(&path);
-            let root = {
-                let state = s.lua_borrow()?;
-                state
-                    .project_root
-                    .clone()
-                    .ok_or_else(|| api_error("data.reload requires a project root"))?
-            };
-            let file_path = root.join(&path);
-            let bytes = rustlua_infra::vfs::read(&file_path).map_err(|error| {
-                api_error(format!("data.reload {}: {error}", file_path.display()))
-            })?;
-            let decoded = rustlua_infra::pack::decode(&bytes).map_err(|error| {
-                api_error(format!("data.reload {}: {error}", file_path.display()))
-            })?;
-            let text = String::from_utf8_lossy(&decoded);
-            let json: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
-                api_error(format!("data.reload {}: {error}", file_path.display()))
-            })?;
-            validate_data_schema(&s, &path, &json, "reload")?;
-            s.lua_borrow_mut()?.data_cache.insert(path, json.clone());
-            json_to_lua_value(lua, &json)
-        })?,
-    )?;
-    let s = Rc::clone(&state);
-    data.set(
-        "cache_clear",
-        lua.create_function(move |_, ()| {
-            s.lua_borrow_mut()?.data_cache.clear();
-            Ok(())
-        })?,
-    )?;
-    let s = Rc::clone(&state);
-    data.set(
-        "schema",
-        lua.create_function(move |_, (path, spec): (String, Option<Value>)| {
-            let mut state = s.lua_borrow_mut()?;
-            if let Some(spec) = spec {
-                let json = lua_value_to_json(spec)?;
-                state.schema_defs.insert(path.clone(), json);
-                // A schema change must not be masked by a stale cached table.
-                state.data_cache.remove(&path);
-            } else {
-                state.schema_defs.remove(&path);
-            }
-            Ok(())
-        })?,
-    )?;
-    lua.globals().set("data", data)?;
     Ok(())
 }

@@ -32,10 +32,12 @@
 use mlua::Result as LuaResult;
 
 mod cell;
-pub mod values;
+mod project_root;
 mod registry;
+pub mod values;
 
 pub use cell::Handle;
+pub use project_root::ProjectRoot;
 pub use registry::{Installer, Registry};
 
 /// 绑定期错误：Lua 侧看到的是 `RuntimeError`，与 `rustlua-scripting::api_error` 同一种形状。

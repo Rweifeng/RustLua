@@ -871,7 +871,7 @@ fn talk(
     if got != "ok" {
         return Err(format!("npc {persist_id} not interactable: {got}").into());
     }
-    press(runtime, &host, KeyCode::KeyE)?;
+    press(runtime, host, KeyCode::KeyE)?;
     Ok(())
 }
 

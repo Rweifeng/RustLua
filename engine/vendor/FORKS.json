@@ -3,6 +3,16 @@
   "comment": "P2-01 vendored fork manifest. Single source of truth for the fork-sync report. baseVersion must match vendor version file + engine/Cargo.lock; upstreamRepo is for humans; upstreamRef records where the unpatched base came from (crates.io package at baseVersion). Adding/removing a [patch.crates-io] entry requires updating this file and check-vendor-patches.ps1 together.",
   "forks": [
     {
+      "crate": "paste",
+      "path": "vendor/paste",
+      "versionFile": "Cargo.toml.orig",
+      "baseVersion": "1.0.15",
+      "upstreamRepo": "https://github.com/as1100k/pastey",
+      "upstreamRef": "crates.io:1.0.15",
+      "patched": true,
+      "reason": "compatibility shim: pastey 0.2.3 maintained macro implementation packaged as paste 1.0.15 because egui_dock/simba/metal still require paste ^1.0; not the archived paste source"
+    },
+    {
       "crate": "mlua",
       "path": "vendor/mlua",
       "versionFile": "Cargo.toml.orig",

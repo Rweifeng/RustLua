@@ -3,6 +3,8 @@
   "comment": "P2-01 single source of truth for release/security tool versions. Keep ASCII-only: Windows PowerShell 5.1 reads BOM-less files as ANSI. Update engine/rust-toolchain.toml and .github/workflows/*.yml together; check-toolchain-lock.ps1 fails on drift. Tool versions must be exact semver (no latest/lts).",
   "rust": "1.97.1",
   "node": "20",
+  "python": "3.12",
+  "cargoLlvmCov": "0.9.1",
   "cargoAudit": "0.22.2",
   "cargoDeny": "0.20.2",
   "cargoCyclonedx": "0.5.9"

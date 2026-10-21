@@ -23,9 +23,10 @@ Rust 写的 2D/3D 游戏引擎 + Lua 玩法脚本运行时，配套一个可视�
 | `examples/game_jhyt` | 完整游戏工程《江湖有田》：横版 1280×720、8 个场景动线（门面/山庄/村庄/山道/洞窟/演武场/两处室内），种田/采集/制作/战斗/任务/商店/7 日目标 |
 | `examples/game_api` | 引擎 API 活文档：每个 Lua API 都有一处**可运行**演示，覆盖度由 `host::sample_project` 的 11 条门守 |
 | `plugins/` | 平台运行时：`webgl/`（共用 `web-runtime.js` + 契约页）、`wechat-minigame/`（适配层与分包路由） |
-| `scripts/` | 质量门与发布脚本，按功能分层：`verify/verify.ps1`（总门）、`verify/check-docs.ps1`（文档门）、`verify/check-security.ps1`（供应链门）、`build/package.ps1`（发布）、`build/package-engine.ps1`（绿色版）、`release/`（SBOM/签名/notes/工具版本）、`test/test-bundle.ps1`（本地试玩产物）；完整索引见 [scripts/README.md](scripts/README.md) |
+| `scripts/` | 质量门与发布脚本，按功能分层：`verify/verify.ps1`（总门）、`verify/check-docs.ps1`（文档门）、`verify/check-security.ps1`（供应链门）、`build/package.ps1`（发布）、`build/package-engine.ps1`（绿色版）、`release/`（SBOM/签名/notes/工具版本）、`metrics/`（覆盖率/cfg/趋势/编译/体积测量）、`test/test-bundle.ps1`（本地试玩产物）；完整索引见 [scripts/README.md](scripts/README.md) |
 | `tasks/` | 任务生命周期：`plan/`（在途工作包，含 P2 发布与安全工程）、`done/`（已归档） |
 | `docs/` | 引擎能力、技术决策、质量门与发布契约（索引见 [docs/README.md](docs/README.md)） |
+| `metrics/` | P4 度量底座：`policy.json`（阈值）、`allowlist.json`（到期制豁免）、`inventory/cfg-sites.json`（cfg 清单）、`wasm-cells.json`/`wasm-evidence.json`（wasm 覆盖声明）、`promotion.json`（平台矩阵档位）、`baselines/`（人工确认基线）、`history/`（事实源 JSONL）；派生库在 `artifacts/metrics/`（忽略） |
 | `artifacts/` | 生成物：发布包、质量门日志（`artifacts/logs/`），已被 `.gitignore` 忽略 |
 | `baselines/` | 本地基线快照（WP0 性能阶梯、engine 对外符号面基准），整体被 `.gitignore` 忽略，供 `verify.ps1 -Benchmarks` 做"这一次 vs 上一次"的对比；位置可用 `RUSTLUA_BASELINES_DIR` 改，可比性裁定见 `baselines/README.md` |
 
@@ -83,6 +84,9 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 | WebGL 产物层启动验收 | `scripts\verify\verify-webgl-bundle.ps1` |
 | 微信小游戏产物层验收 | `scripts\verify\verify-wechat-minigame.ps1`（默认取 `examples/game_jhyt/builds/wechat-minigame`，`-BundleRoot` 可指定） |
 | 本地试玩某个 web 平台产物（自动发现 + 验收 + 起服务） | `scripts\test\test-bundle.ps1`（`-Platform wechat-minigame` 切平台） |
+| 覆盖率棘轮（P4-01；缺 cargo-llvm-cov / 基线退 3） | `scripts\verify\check-coverage.ps1 -RequireTool`；`verify.ps1 -Coverage` 可并入总门 |
+| 度量总检查（cfg 条件编译覆盖 + 尺寸采集 + 趋势库回归，P4-02/04/06/07） | `scripts\verify\check-metrics.ps1`；`verify.ps1 -Metrics`（缺历史样本退 3） |
+| 平台矩阵档位与到期裁定（P4-03） | `scripts\verify\check-matrix-policy.ps1 -List/-Check`（blocking 3 / advisory 4，见 `metrics/promotion.json`） |
 
 门全绿的含义与逐项通过标准见 [docs/34-质量门与发布清单.md](docs/34-质量门与发布清单.md)；
 `verify.ps1` 会依次跑文档门、工具链锁定、cargo 门、`game --check`/`editor --check`、编辑器性能基线与
@@ -96,6 +100,7 @@ advisory DB，默认不进全量门；用 `verify.ps1 -Security` 或 CI 的 `sec
 - 全部文档索引与编号约定：[docs/README.md](docs/README.md)
 - Lua API 参考：[docs/18-lua-api.md](docs/18-lua-api.md)；编辑器指南：[docs/25-editor-guide.md](docs/25-editor-guide.md)
 - 发布包与用户数据目录：[docs/50-发布包与用户数据目录.md](docs/50-发布包与用户数据目录.md)
+- 性能与测试度量（覆盖率/cfg/矩阵/趋势/编译/体积，schema 与命令）：[docs/70-性能与测试度量.md](docs/70-性能与测试度量.md)
 - 游戏工程总览：[examples/game_jhyt/docs/29-江湖有田-项目执行总览.md](examples/game_jhyt/docs/29-江湖有田-项目执行总览.md)
 - 引擎改进台账：[docs/37-引擎与游戏工程复核及优化完善计划.md](docs/37-引擎与游戏工程复核及优化完善计划.md) 与
   [tasks/done/RustLua-game_jhyt-执行计划.md](tasks/done/RustLua-game_jhyt-执行计划.md)；

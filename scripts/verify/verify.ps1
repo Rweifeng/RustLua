@@ -27,6 +27,10 @@ param(
     # 它与 -Mvp/-MvpOnly/-Benchmarks/-Web/-WasmLua 互斥（混用会让「跳过了什么」说不清），
     # 归一化与覆盖面见下面 `if ($Quick)` 那段长注释。
     [switch]$Quick,
+    # P4-01：只跑覆盖率采集 + 棘轮门（重活，需 cargo-llvm-cov；缺工具退 3，不是通过）。
+    [switch]$Coverage,
+    # P4-04/06/07：只跑「已有产物的尺寸采集 + cfg 门 + 趋势检查」，不重跑 benchmark/构建。
+    [switch]$Metrics,
     # 限制 cargo 编译并行度与 benchmark rayon 线程池上限，防止完整回归把 CPU/内存打满导致系统崩溃。
     # 未指定时自动取 CPU 核数的一半（最少 2），已足够在 8 核 / 16 GB 机器上把峰值内存与 CPU 占用
     # 控制在安全范围。CI 不受影响（runner 资源固定，可显式传 -MaxJobs 覆盖）。
@@ -48,8 +52,8 @@ param(
 #
 # 本仓库口径是「跳过绝不等于通过」：`-Quick` 的绿灯只能读作「数据级与格式门通过」，
 # 不能读作总门通过——所以它不打印 Quality gate passed，只打印 Quick gate passed (PARTIAL)。
-if ($Quick -and ($Mvp -or $MvpOnly -or $Benchmarks -or $Web -or $WasmLua -or $Security)) {
-    throw "-Quick 与 -Mvp/-MvpOnly/-Benchmarks/-Web/-WasmLua/-Security 不能同时使用：-Quick 的定义就是「只跑便宜的那一档」，混用会让「跳过了什么」说不清。"
+if ($Quick -and ($Mvp -or $MvpOnly -or $Benchmarks -or $Web -or $WasmLua -or $Security -or $Coverage -or $Metrics)) {
+    throw "-Quick 与 -Mvp/-MvpOnly/-Benchmarks/-Web/-WasmLua/-Security/-Coverage/-Metrics 不能同时使用：-Quick 的定义就是「只跑便宜的那一档」，混用会让「跳过了什么」说不清。"
 }
 $quick = [bool]$Quick
 # `-Quick` 本次跳过的步骤名：只由 guard 的调用点与下面这三行登记，结尾统一打印。
@@ -78,6 +82,9 @@ if ($quick) {
     [void]$skippedByQuick.Add("Clippy (--all-targets --all-features)")
     [void]$skippedByQuick.Add("Workspace tests (--all-features)")
     [void]$skippedByQuick.Add("Release build + Debug build")
+    # P4：覆盖率采集与趋势检查都是重活/依赖工具，-Quick 不跑；登记进跳过清单，不静默。
+    [void]$skippedByQuick.Add("Coverage (P4-01, needs cargo-llvm-cov)")
+    [void]$skippedByQuick.Add("Metrics (P4-04/06/07, size collection + cfg gate + trend check)")
 }
 
 $ErrorActionPreference = "Stop"
@@ -358,6 +365,24 @@ if (Test-Path -LiteralPath $toolchainLockScript) {
 else {
     throw "check-toolchain-lock.ps1 missing: $toolchainLockScript"
 }
+
+# 降耦合门（`docs/62` P1 ③④⑤）：wasm 图里的音频后端、`rustlua-scene` 图里的渲染/UI 层、
+# 契约层 `rustlua-lua-api` 的本仓依赖，三条都必须为 0。跑三次 `cargo tree`（已编译时约 1-2 秒），
+# 放在编译之前——它只看依赖图，不改产物；退化时能直接指到"哪一层又被拖回来了"。
+Write-Step "Decoupling gate"
+$decouplingScript = Join-Path $projectRoot "scripts/verify/check-decoupling.ps1"
+if (Test-Path -LiteralPath $decouplingScript) {
+    $decoupleOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File $decouplingScript
+    $decoupleExit = $LASTEXITCODE
+    $decoupleOutput | ForEach-Object { Write-Host $_ }
+    if ($decoupleExit -ne 0) {
+        throw "check-decoupling.ps1 failed (exit code $decoupleExit)"
+    }
+}
+else {
+    throw "check-decoupling.ps1 missing: $decouplingScript"
+}
+
 
 # 供应链安全门：放编译之前。缺工具/DB 时 check-security 退 3（环境受限），
 # 这里保留该读数并在结尾把总门降级为 PARTIAL，而不是 throw 成"代码红了"。
@@ -1682,11 +1707,18 @@ if ($Benchmarks) {
     }
     # docs/54 §8-⑩：把"这一次的 3D 报告"和**提交进版本库**的结构性基线比一次——几何量
     # （draw/instances/triangles）与分配峰值跨机可比，因此可以进门判红；时间（p95/p99）是机器
-    # 相关的量，这一档只打印不判定（同机 A/B 用完整模式，见 baselines/README.md）。
+    # 相关的量，这一档只打印不判定（同机 A/B 用完整模式，见 metrics/README.md §7）。
+    # P4-00：长期基线先读 `metrics/baselines/wp0-3d-stress.json`（被 git 跟踪），
+    # 不存在再回退旧路径 `baselines/wp0-3d-stress.committed.json`（gitignore），避免"基线换位置"假红。
     Write-Step "3D baseline comparison (geometry + allocation)"
+    $metricsBaseline = Join-Path $projectRoot "metrics\baselines\wp0-3d-stress.json"
     $committedBaseline = Join-Path $baselinesRoot "wp0-3d-stress.committed.json"
+    if (Test-Path -LiteralPath $metricsBaseline) {
+        $committedBaseline = $metricsBaseline
+        Write-Host "  using tracked baseline: $metricsBaseline"
+    }
     if (-not (Test-Path -LiteralPath $committedBaseline)) {
-        throw "committed 3D baseline is missing: $committedBaseline（本地基线不入库；把上一次确认没回退的 wp0-3d-stress.json 复制成这个文件名，见 baselines/README.md）"
+        throw "committed 3D baseline is missing: $committedBaseline（结构性基线放 metrics/baselines/wp0-3d-stress.json，本地 A/B 可放 baselines/；生成与更新流程见 metrics/README.md §5/§8。示例：在干净 HEAD 上跑 `cargo run --release -p engine --example wp0_3d_stress -- --cycles 30` 后人工核对几何量并写入 metrics/baselines/）"
     }
     Invoke-Checked powershell @(
         "-NoProfile", "-ExecutionPolicy", "Bypass",
@@ -2221,6 +2253,69 @@ if ($WasmLua) {
     else {
         Write-Host "wasm_lua_skipped reason=environment_limited exit=$exitCode (缺 node/wasm32 target/zig/wasm-bindgen)" -ForegroundColor Yellow
     }
+}
+
+# P4-01 覆盖率门：全 workspace 采集 + 棘轮。哲学与 -Web/-WasmLua 一致：
+# 缺工具/缺基线退 3（BLOCKED，打印原因），测试失败退 1——覆盖率数字不能掩盖红测试。
+if ($Coverage) {
+    Write-Step "Coverage gate (P4-01)"
+    $coverageScript = Join-Path $projectRoot "scripts/verify/check-coverage.ps1"
+    if (-not (Test-Path -LiteralPath $coverageScript)) {
+        Write-Host "coverage_blocked reason=missing_script path=$coverageScript（P4-01 未落地）" -ForegroundColor Yellow
+        exit 3
+    }
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $coverageScript -RequireTool
+    if ($LASTEXITCODE -eq 3) {
+        Write-Host "coverage_blocked reason=missing_tool_or_baseline（缺 cargo-llvm-cov / llvm-tools-preview / 基线；先跑 install-metrics-tools.ps1，见 metrics/README.md）" -ForegroundColor Yellow
+        exit 3
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "coverage gate failed (check-coverage.ps1 exit $LASTEXITCODE)"
+    }
+}
+
+# P4-04/06/07：对**已有产物**做尺寸采集 + cfg 门 + 趋势检查，不重跑 benchmark/构建。
+# 依赖脚本未落地时显式退 3（BLOCKED），不静默跳过。
+if ($Metrics) {
+    Write-Step "Metrics gate (P4-04/06/07)"
+    $cfgScript = Join-Path $projectRoot "scripts/verify/check-cfg-coverage.ps1"
+    if (-not (Test-Path -LiteralPath $cfgScript)) {
+        Write-Host "metrics_blocked reason=missing_script path=$cfgScript（P4-02 未落地）" -ForegroundColor Yellow
+        exit 3
+    }
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $cfgScript
+    if ($LASTEXITCODE -ne 0) {
+        throw "cfg coverage gate failed (check-cfg-coverage.ps1 exit $LASTEXITCODE)"
+    }
+    $measureScript = Join-Path $projectRoot "scripts/metrics/measure-artifacts.mjs"
+    if (-not (Test-Path -LiteralPath $measureScript)) {
+        Write-Host "metrics_blocked reason=missing_script path=$measureScript（P4-06/07 未落地）" -ForegroundColor Yellow
+        exit 3
+    }
+    $metricsArtifacts = Join-Path $projectRoot "artifacts\metrics"
+    New-Item -ItemType Directory -Force -Path $metricsArtifacts | Out-Null
+    node $measureScript --kind binary --out (Join-Path $metricsArtifacts "binaries.json")
+    if ($LASTEXITCODE -ne 0) {
+        throw "binary size collection failed (exit $LASTEXITCODE)"
+    }
+    node $measureScript --kind package --project $defaultGameProject --out (Join-Path $metricsArtifacts "packages.json")
+    if ($LASTEXITCODE -ne 0) {
+        throw "package size collection failed (exit $LASTEXITCODE)"
+    }
+    $checkMetrics = Join-Path $projectRoot "scripts/verify/check-metrics.ps1"
+    if (-not (Test-Path -LiteralPath $checkMetrics)) {
+        Write-Host "metrics_blocked reason=missing_script path=$checkMetrics（P4-04 未落地）" -ForegroundColor Yellow
+        exit 3
+    }
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $checkMetrics
+    if ($LASTEXITCODE -eq 3) {
+        Write-Host "metrics_blocked reason=insufficient_history（缺历史样本；先入库，见 metrics/README.md §8）" -ForegroundColor Yellow
+        exit 3
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "metrics trend check failed (check-metrics.ps1 exit $LASTEXITCODE)"
+    }
+    Write-Host "metrics_gate_passed" -ForegroundColor Green
 }
 
 if (-not $KeepLog) {

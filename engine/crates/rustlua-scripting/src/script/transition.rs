@@ -5,9 +5,9 @@
 
 // WP11-USE:BEGIN
 use crate::script::LuaRuntime;
-use crate::script::PersistedEntity;
 use crate::script::call_optional;
 use crate::script::error::LuaBridgeError;
+use rustlua_ecs::entity_state::PersistedEntity;
 use rustlua_ecs::hierarchy::Parent;
 use rustlua_ecs::particle::ParticleSystem;
 use rustlua_ecs::world::World;
@@ -25,12 +25,15 @@ impl LuaRuntime {
         let Some(name) = pending else {
             return Ok(());
         };
-        let root = self
-            .state
-            .borrow()
-            .project_root
-            .clone()
-            .ok_or_else(|| LuaBridgeError::Api("no project root configured".to_owned()))?;
+        let root = {
+            let state = self.state.borrow();
+            state
+                .project_root
+                .borrow()
+                .ok()
+                .and_then(|root| root.path().map(|path| path.to_path_buf()))
+        }
+        .ok_or_else(|| LuaBridgeError::Api("no project root configured".to_owned()))?;
         let relative = format!("scenes/{name}.scene");
         let path = root.join(&relative);
         // 加载集观测（`docs/67` §5）：场景切换是"上下文"的唯一分界，`vfs` 按它归组。
@@ -47,15 +50,35 @@ impl LuaRuntime {
         })?;
         {
             let mut state = self.state.borrow_mut();
-            state.world = World::new();
+            // P1 ⑤-7：世界是能力单元，换世界 = 覆盖句柄里的那份（宿主与绑定看到同一个新世界）。
+            if let Ok(mut world) = state.world.borrow_mut() {
+                *world = World::new();
+            }
             // docs/60 §4.1：场景生命周期内的清理按领域收敛到各自
             // `clear_for_scene_transition`，新增场景态字段只需登记到所属域。
-            state.physics.clear_for_scene_transition();
+            // P1 ⑤-9：物理世界与两条回写队列都在句柄里，切场景换掉它们（旧实体句柄作废）。
+            if let Ok(mut physics) = state.physics.borrow_mut() {
+                physics.clear_for_scene_transition();
+            }
             state.particles = ParticleSystem::new();
-            state.entity_state.clear_for_scene_transition();
-            state.ui_state.clear_for_scene_transition();
-            state.inventory.clear_for_scene_transition();
-            state.schema_defs.clear();
+            {
+                let entities = state.entity_state.clone();
+                if let Ok(mut entities) = entities.borrow_mut() {
+                    entities.clear_for_scene_transition();
+                }
+            }
+            // 先取句柄副本，避免 UI 句柄与 `&state.nav` 同时对 `state` 借用。
+            let nav = state.nav.clone();
+            let ui = state.ui_state.clone();
+            if let Ok(mut ui) = ui.borrow_mut() {
+                ui.clear_for_scene_transition(&nav);
+            }
+            if let Ok(mut inventory) = state.inventory.borrow_mut() {
+                inventory.clear_for_scene_transition();
+            }
+            if let Ok(mut world_data) = state.world_data.borrow_mut() {
+                world_data.clear_for_scene_transition();
+            }
             // M63c：运行期 `prefab.spawn` 的实例登记表与它的布局节点表都是**世界内**状态。
             // 上面刚把 `state.world` 换成新世界，登记表里的实体句柄因此全部失效，留着有两处后果：
             // 旧 handle 再 `prefab.despawn` 会拿着死句柄去新世界上删（标题界面点按钮离开时直接
@@ -66,8 +89,17 @@ impl LuaRuntime {
             state.prefab_ui_nodes.clear();
             state.scene_pending_load = None;
             state.scene = Some(name.clone());
-            state.active_camera = None;
-            state.active_light = None;
+            // P1 ⑤-8：相机选中项住在 `rustlua-camera` 的能力单元里，切场景要让旧实体 id 失效
+            // （控制器与快照保留：前者是创作意图，后者每帧回填）。
+            if let Ok(mut camera) = state.camera.borrow_mut() {
+                camera.clear_for_scene_transition();
+            }
+            if let Ok(mut animation) = state.animation.borrow_mut() {
+                animation.clear_for_scene_transition();
+            }
+            if let Ok(mut renderable) = state.renderable.borrow_mut() {
+                renderable.clear_for_scene_transition();
+            }
         }
         let instantiated = self.instantiate_scene(&scene)?;
         // 恢复持久实体：新场景未定义的名字用持久快照重生（新场景定义胜出）。
@@ -76,11 +108,12 @@ impl LuaRuntime {
         // 按名字排序，子完全可能先于父），因此先全部 spawn，再统一重连父边。
         {
             let mut state = self.state.borrow_mut();
+            let entities = state.entity_state.clone();
             let persisted: Vec<PersistedEntity> =
-                state.entity_state.persistent.values().cloned().collect();
+                entities.with(|entities| entities.persistent.values().cloned().collect());
             let mut links: Vec<(rustlua_ecs::entity::EntityId, Option<String>)> = Vec::new();
             for entity in persisted {
-                if state.entity_state.names.contains_key(&entity.name) {
+                if entities.with(|entities| entities.names.contains_key(&entity.name)) {
                     continue;
                 }
                 let handle = Self::spawn_entity_components(
@@ -100,7 +133,7 @@ impl LuaRuntime {
             for (child, parent_name) in links {
                 let Some(parent) = parent_name
                     .as_ref()
-                    .and_then(|name| state.entity_state.names.get(name))
+                    .and_then(|name| entities.with(|entities| entities.names.get(name)))
                 else {
                     continue;
                 };
@@ -108,7 +141,8 @@ impl LuaRuntime {
                     continue;
                 }
                 state
-                    .world
+                    .world_mut()
+                    .map_err(|error| LuaBridgeError::Api(error.to_string()))?
                     .insert(child, Parent(parent))
                     .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
             }

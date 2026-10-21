@@ -1,0 +1,148 @@
+name: Rust metrics trends
+
+# P4-04 趋势库的 CI 侧（计划 §P4-04-5）：
+#   - nightly perf（Windows）：verify.ps1 -Benchmarks → 归一化 → 追加 history；
+#   - weekly package：PC/WebGL/微信打包后跑 P4-07，追加 history；
+#   - PR：只读（从 git 跟踪的 metrics/history/ 重建派生库并 check），不写 history。
+# history 写模式（metrics/README.md §8）：
+#   优先 bot commit（仅 metrics/history/**，contents: write）；仓库不允许 bot push 时，
+#   退化为上传 `metrics-history` artifact + 人工 merge。当前默认 artifact 模式。
+# 注意：coverage 的采集在 quality.yml 的 coverage job（路径过滤 engine/** + metrics/**），
+# 不在这里重复跑。
+
+on:
+  schedule:
+    # nightly perf：UTC 02:00（北京 10:00）
+    - cron: "0 2 * * *"
+    # weekly package：UTC 03:00 周一（北京 11:00）
+    - cron: "0 3 * * 1"
+  pull_request:
+    paths:
+      - "metrics/**"
+      - "scripts/metrics/**"
+      - "scripts/verify/check-metrics.ps1"
+      - "engine/**"
+      - "examples/**"
+
+permissions:
+  contents: read
+
+jobs:
+  # 每周一打包并测量：PC / WebGL / 微信三种平台产物 + 包体趋势入库。
+  package-weekly:
+    if: github.event_name == 'schedule' && github.event.schedule == '0 3 * * 1'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Package PC / WebGL / WeChat
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build/package.ps1 -ProjectRoot examples/game_jhyt
+          if ($LASTEXITCODE -ne 0) { throw "package PC failed (exit $LASTEXITCODE)" }
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build/package.ps1 -ProjectRoot examples/game_jhyt -Platform webgl
+          if ($LASTEXITCODE -ne 0) { throw "package WebGL failed (exit $LASTEXITCODE)" }
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build/package.ps1 -ProjectRoot examples/game_jhyt -Platform wechat-minigame
+          if ($LASTEXITCODE -ne 0) { throw "package WeChat failed (exit $LASTEXITCODE)" }
+
+      - name: Measure packages and ingest trend
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts/metrics | Out-Null
+          node scripts/metrics/measure-artifacts.mjs --kind package --project examples/game_jhyt --out artifacts/metrics/packages.json
+          if ($LASTEXITCODE -ne 0) { throw "package size collection failed (exit $LASTEXITCODE)" }
+          python scripts/metrics/trend_db.py ingest --input artifacts/metrics --history metrics/history
+          if ($LASTEXITCODE -ne 0) { throw "trend ingest failed (exit $LASTEXITCODE)" }
+          python scripts/metrics/trend_db.py check --policy metrics/policy.json
+
+      - name: Upload package evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-history
+          path: |
+            metrics/history/*.jsonl
+            artifacts/metrics/packages.json
+            artifacts/metrics/trend.sqlite
+          if-no-files-found: warn
+
+  # nightly perf：跑 verify.ps1 -Benchmarks（wp0 系列 + m19 soak + editor perf）→ 入库。
+  perf-nightly:
+    if: github.event_name == 'schedule' && github.event.schedule == '0 2 * * *'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run benchmarks
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/verify.ps1 -Benchmarks
+          if ($LASTEXITCODE -ne 0) { throw "benchmarks failed (exit $LASTEXITCODE)" }
+
+      - name: Ingest and check trends
+        shell: pwsh
+        run: |
+          python scripts/metrics/trend_db.py ingest --input artifacts/metrics --history metrics/history
+          if ($LASTEXITCODE -ne 0) { throw "trend ingest failed (exit $LASTEXITCODE)" }
+          python scripts/metrics/trend_db.py check --policy metrics/policy.json
+          if ($LASTEXITCODE -eq 2) { throw "perf regression detected (exit 2)" }
+
+      - name: Upload perf evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-history
+          path: |
+            metrics/history/*.jsonl
+            artifacts/metrics/trend.sqlite
+          if-no-files-found: warn
+
+  # PR 只读检查：从 git 跟踪的 metrics/history/ 重建派生库并 check。
+  # 不写 history、不跑 benchmark/打包；history 为空时按设计退 3（BLOCKED）并打印原因。
+  pr-check:
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python (metrics)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Rebuild and check trends (read-only)
+        shell: pwsh
+        run: |
+          python scripts/metrics/trend_db.py rebuild --history metrics/history --db artifacts/metrics/trend.sqlite
+          if ($LASTEXITCODE -ne 0) { throw "rebuild failed (exit $LASTEXITCODE)" }
+          python scripts/metrics/trend_db.py check --policy metrics/policy.json
+          $code = $LASTEXITCODE
+          if ($code -eq 3) { Write-Host "metrics_blocked reason=insufficient_history (metrics/history empty in this branch)" }
+          if ($code -ne 0 -and $code -ne 3) { throw "trend check failed (exit $code)" }

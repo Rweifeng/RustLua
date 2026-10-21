@@ -995,7 +995,7 @@ fn grow_and_harvest(
     equip_tool(runtime, water_tool)?;
     loop {
         runtime.execute_console("require('world.weather').set('sunny')")?;
-        press(runtime, &host, KeyCode::KeyE)?;
+        press(runtime, host, KeyCode::KeyE)?;
         let action = query_str(runtime, "require('core.state').last_action")?;
         if action != water_action {
             return Err(format!("浇水失败，last_action = {action:?}").into());
@@ -1030,7 +1030,7 @@ fn grow_and_harvest(
         }
     }
     equip_tool(runtime, "hoe")?;
-    press(runtime, &host, KeyCode::KeyE)?;
+    press(runtime, host, KeyCode::KeyE)?;
     let action = query_str(runtime, "require('core.state').last_action")?;
     if !action.starts_with("harvest_") {
         return Err(format!("收获失败，last_action = {action:?}").into());

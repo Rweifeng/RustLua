@@ -1,0 +1,5 @@
+{
+  "schema": 1,
+  "comment": "P4 allowlist: time-boxed deferrals for specific artifacts/metrics. Every entry MUST have owner/reason/expires and point at a concrete artifact or metric (never a whole domain). Expired entries flip the gate to red (exit 2) with no yellow grace.",
+  "entries": []
+}

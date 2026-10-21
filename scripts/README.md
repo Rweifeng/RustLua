@@ -13,6 +13,7 @@
 | `docgen/` | 文档与代码生成 |
 | `repo/` | 仓库维护 |
 | `lib/` | 跨类别公共件（被上面几类复用） |
+| `metrics/` | P4 度量：覆盖率归一化、cfg 扫描、趋势库（Python stdlib sqlite3）、编译/二进制/包体测量 |
 
 ## build/ —— 构建与打包
 
@@ -69,6 +70,21 @@
 | `gpu-web-probe.ps1` | GPU 后端能力探针与渲染器探针 |
 | `gpu-web-probe/` | 探针页面（`index.html` / `render.html`） |
 | `webgl-contract/` | WebGL 行为契约页面（`index.html` / `web-check.js`） |
+| `check-coverage.ps1` | 覆盖率棘轮门（P4-01）：`-RequireTool` 缺工具退 3；测试失败退 1；总行 −0.5pp / 单 crate −2.0pp 判 2；`-Update -Reason` 且 git 干净才写基线 |
+| `check-cfg-coverage.ps1` | wasm 条件编译覆盖门（P4-02）：cfg 清单漂移判 1；wasm 站点 crate ∈ wasm cell 直接包/闭包；`gpu-web-probe` 必须显式 check；豁免过期判 2 |
+| `check-metrics.ps1` | 度量总检查（P4-04/06/07）：缺历史退 3；`-DoCollect` 时对已有尺寸产物采集入库；趋势回归判 2 |
+| `check-matrix-policy.ps1` | 平台矩阵档位与到期裁定（P4-03）：`-List` 概要；`-Check` 到期判 2；`-Summarize <json>` 供 CI matrix-summary |
+
+## metrics/ —— P4 度量
+
+| 脚本 | 作用 |
+|---|---|
+| `coverage-summary.mjs` | llvm-cov JSON → `coverage-v1`（overall + per-crate，口径含测试代码），`--check` 防漂移 |
+| `cfg-inventory.mjs` | cfg 站点扫描（剥离注释/字符串/字符字面量），稳定 key 不含行号；`--check` 与跟踪清单逐 key 比对 |
+| `trend_db.py` | 趋势库（Python stdlib sqlite3）：`rebuild/ingest/report/check/query/prune`；6 类适配器（wp0 / m19 / editor-perf / coverage / compile / binary / package）；`run_id` 幂等去重；`git_dirty` 不能更新基线 |
+| `measure-build.ps1` | 编译时间测量：`-Mode check|test|release`、`-Cold`（必须 `-Yes`）、`-Incremental <crate>`；专用 `CARGO_TARGET_DIR`，≥3 次 min/median/max |
+| `parse-cargo-timings.mjs` | 解析 `cargo-timing*.html` 的 UNIT_DATA/CONCURRENCY_DATA → wall/critical/parallelism/per-crate |
+| `measure-artifacts.mjs` | `--kind binary`（exe/wasm/js 的 raw/gzip9/brotli11/sha256/分节）与 `--kind package`（PC/引擎/WebGL/微信分包/`.rlb`，配额余量）；缺文件标 `missing`、`partial=true` 不更新基线 |
 
 ## test/ —— 回归测试与自测
 
@@ -90,6 +106,11 @@
 | `wechat-startup-branding-test.js` | 启动品牌图确定性测试 |
 | `test-wechat-multisub.ps1` | 微信多分包根端到端（audio → `pack-audio`，boot 前预挂 + 容器读取） |
 | `test-release-closure.ps1` | 发布闭包回归（9 条）：`assetc closure` 正例 + 改坏/删/多容器三个反例 + 黄金表路径落地 + **平台形态**（真拆分真改名 → 多根闭包 `roots=2`）+ 多根缺件反例 + **keep**（`--keep` 文件必须留在目录里，删掉判红）+ **cdn**（不给 `--cdn` 判红、给了逐组核对、远端缺件点名 `<cdn>`）；`verify.ps1` 与 CI 都跑 |
+| `test-coverage-gate.ps1` | 覆盖率门自测（P4-01，5 用例）：持平 / 总 −0.6pp / 单 crate −2.1pp / 缺基线退 3 / 坏 schema 退 1 |
+| `test-cfg-coverage.ps1` | cfg 覆盖门自测（P4-02，基座 + 4 反例）：删 cell 包 / 删 gpu-web-probe / 未覆盖 cfg 站点 / 豁免过期 |
+| `test-cargo-timings.mjs` | cargo timings 解析自测（P4-05）：UNIT_DATA、critical path、wall、per-crate、坏 JSON 退 1 |
+| `test-package-metrics.mjs` | 包体测量自测（P4-07，5 用例）：主包/分包分账、配额余量、webgl 分账、缺 `game.json` → `partial=true` |
+| `test-trend-db.py` | 趋势库自测（P4-04，6 用例）：+8% 判 2、样本不足退 3、重复 run_id 忽略、坏 schema 退 1、`git_dirty` 不能更新基线、trailing median 稳健 |
 
 ## dev/ —— 本地运行、静态服务与探针
 

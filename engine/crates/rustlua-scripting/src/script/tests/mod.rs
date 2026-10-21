@@ -32,6 +32,7 @@ mod hot_reload;
 mod installers;
 mod particles;
 mod physics;
+mod physics_handle;
 mod reentrancy;
 mod sample_project;
 mod save_data;
@@ -39,6 +40,7 @@ mod scene_spawn;
 mod tilemap;
 mod transform;
 mod ui;
+mod world_handle;
 
 fn script(contents: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};

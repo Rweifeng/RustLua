@@ -9,7 +9,7 @@
 
 - **问题**：发布会话只回答"包能不能跑"，不回答"依赖有没有已知漏洞/许可证越界"、"发布包里到底有什么"、
   "发布是不是只有某台机器会做"、"Windows 用户怎么确认 exe 没被换过"。`rust-toolchain.toml` 还是
-  浮动的 `stable`，CI 与本机可能不是同一个 rustc；6 条 vendored fork（4 条带补丁、1 条仅 patch 映射、
+  浮动的 `stable`，CI 与本机可能不是同一个 rustc；7 条 vendored fork（5 条带补丁、1 条仅 patch 映射、
   1 条 tool-only）只有"补丁在位"门，没有上游同步报告。
 - **做法**：
   - 工具链锁定到 `1.97.1`，新增 `check-toolchain-lock.ps1`，并接进 `verify.ps1` 默认段；
@@ -17,23 +17,72 @@
     新增 `check-security.ps1`：audit / deny / registry wildcard / fork-sync / SBOM 五项，三态退出
     （0 通过、1 判红、3 环境受限）；`engine/deny.toml` 落许可证/来源/bans 配置；
   - 新增 `gen-sbom.mjs`：CycloneDX 1.5、全 workspace、SHA-256、fork 标记；`--check` 可离线复核；
-  - 新增 `fork-sync-report.mjs` + `engine/vendor/FORKS.json`：6 条 fork 的补丁足迹与上游版本漂移；
+  - 新增 `fork-sync-report.mjs` + `engine/vendor/FORKS.json`：7 条 fork 的补丁足迹与上游版本漂移；
   - 新增 `release.yml` + `tag-release.ps1` + `release-notes.ps1`：tag 触发、PC/引擎包、SBOM、`SHA256SUMS.txt`、
     notes、Actions artifact 与 GitHub Release；`workflow_dispatch` 默认 dry-run；
   - 新增 `sign-windows.ps1`：signtool 优先、`Set-AuthenticodeSignature` 回退、RFC3161 时间戳、`-SelfTest`
     自签 + 篡改检测；无证书退 3，`-RequireSignature` 退 1；
   - 新增 `docs/69`，并更新 `docs/34`/`docs/README`/根 README/`scripts/README`/`tasks/README`。
 - **证据（2026-10-20 本机/CI）**：`toolchain_lock_ok rust=1.97.1 node=20 tools=3`；
-  `cargo-audit 0.22.2 vulns=0 warnings=5`；`cargo-deny 0.20.2` advisories/bans/licenses/sources 全绿；
-  `sbom_ok` 565 components / 535 hashed / 566 deps / forks=6；`fork_sync_ok forks=6 patched=4`；
+  `cargo-audit 0.22.2 vulns=0 warnings=5`（`v0.1.0` 发布时；后续清理见下）；`cargo-deny 0.20.2`
+  advisories/bans/licenses/sources 全绿；`sbom_ok` 565 components / 535 hashed / 566 deps / forks=6；
+  `fork_sync_ok forks=6 patched=4`；
   `signing_selftest_ok signer=authenticode tamper=HashMismatch`；`security_gates_selftest_ok`。
   真实 tag 发布已跑通：`v0.1.0` → Actions run `39378803837` `success`，4 个资产，
   `SHA256SUMS.txt` 逐文件复核 3/3 通过；真实证书签名仍未跑（本机无证书、无 `signtool`），
   本次资产为 `NotSigned`，见 `docs/69` §10/§11。
+- **unmaintained 清理（2026-10-20，`v0.1.0` 之后）**：audit `warnings` 从 5 降到 1。
+  `paste` 用 `engine/vendor/paste`（pastey 0.2.3 代码，兼容包名 `paste 1.0.15`）替换；
+  `zbus_names`/`zvariant`/`zvariant_derive` 随 eframe 关闭 accesskit 默认特性移除；
+  仅 `ttf-parser` 保留 `deny.toml` 例外（复核截止 2027-10-20）。SBOM 重算为
+  505 components / 474 hashed / 506 deps / forks=7，fork 报告 `forks=7 patched=5`。
+  `v0.1.0` 发布资产仍是清理前构建，未重发。
 - **顺带修复**：audit 发现 `ruzstd 0.8.3` 的 RUSTSEC-2026-0344（解压炸弹），升级到 `0.9.1`；
   `ttf-parser` 的 unmaintained 例外登记在 `deny.toml`（复核截止 2027-10-20）。
 - **回滚档**：删 `release.yml`/`security` job 与新增脚本即可回到纯手工发布；`rust-toolchain.toml` 改回
   `stable` 会同时让 `check-toolchain-lock` 判红——本任务不接受用 `stable` 掩盖漂移。
+
+## Unreleased — P4 性能与测试度量：覆盖率棘轮、wasm 条件编译覆盖、平台矩阵、趋势库、编译/二进制/包体基线
+
+- **问题**：覆盖率没有棘轮（没人拦"这次变慢/覆盖掉 0.5pp"）；wasm 条件编译只有"`game_web` check 绿了"
+  的推断，没有"每条 cfg 都有编译单元、关键条目有运行证据"的表；Linux/macOS 从未编译过；
+  性能比较是"这次 vs 上次"而非"vs 同环境最近 N 次中位数"；编译时间、二进制/包体大小没有历史。
+- **做法**：
+  - `metrics/` 底座：`policy.json`（阈值）、`allowlist.json`（到期制豁免）、`README.md`；
+    `install-metrics-tools.ps1` 固定 `cargo-llvm-cov 0.9.1` + `llvm-tools-preview`，
+    `tools.json` 追加 `python=3.12`；
+  - 覆盖率：`coverage-summary.mjs`（llvm-cov → `coverage-v1`，口径含测试代码）+ `check-coverage.ps1`
+    棘轮（总行 −0.5pp / 单 crate −2.0pp 判 2；缺工具/基线退 3；测试失败退 1）+ 5 条自测；
+  - wasm 覆盖：`cfg-inventory.mjs` 扫描（剥离注释/字符串/字符字面量，稳定 key 不含行号）→
+    `cfg-sites.json` 清单 + `wasm-cells.json`/`wasm-evidence.json` + `check-cfg-coverage.ps1`
+    （每个 wasm 站点所在 crate ∈ wasm cell 直接包/闭包；`gpu-web-probe` 必须显式 check）+ 基座+4 反例自测；
+  - 平台矩阵：`matrix.yml` 7 cell（Windows ×3 blocking；Linux/macOS ×4 advisory 观察期）+
+    `promotion.json`（档位/到期日）+ `check-matrix-policy.ps1`（到期仍黄/红判 2）；
+  - 趋势库：`trend_db.py`（Python stdlib sqlite3，`rebuild/ingest/report/check/query/prune`，
+    6 类适配器，`run_id` 幂等，`git_dirty` 不能更新基线）+ 6 条自测；
+  - 编译时间：`measure-build.ps1`（冷/热/增量，专用 target 目录）+ `parse-cargo-timings.mjs`
+    （UNIT_DATA → wall/critical/per-crate）+ fixture 自测；
+  - 二进制/包体：`measure-artifacts.mjs`（binary：raw/gzip9/brotli11/sha256/分节；
+    package：PC/引擎/WebGL/微信主包+分包/`.rlb`，配额余量）+ 自测；
+  - `verify.ps1` 新增 `-Coverage`/`-Metrics`（与 `-Quick` 及全部 `-Mvp*`/`-Benchmarks`/`-Web`/`-WasmLua`/`-Security`
+    互斥；`-Quick` 跳过清单登记这两项）；`quality.yml` gates 段补 `setup-python 3.12`；
+  - 新增 `docs/70`，更新 `docs/34`/`docs/README`/根 README/`scripts/README`/`tasks/README`。
+- **证据（2026-10-20 本机）**：`toolchain_lock_ok rust=1.97.1 node=20 python=3.12 tools=5`（36 项）；
+  `cfg_inventory_ok files=539 sites=398 wasm_attrs=48 wasm_macros=4 not_wasm_attrs=37`；
+  `cfg_coverage_ok wasm_attrs=52 covered=52 wasm_macros=4 covered=4 native_attrs=37 covered=37 unknown=0`；
+  `cfg_coverage_selftest_ok cases=5`、`coverage_gate_selftest_ok cases=5`、`trend_db_selftest_ok cases=6`、
+  `cargo_timings_selftest_ok cases=5`、`package_metrics_selftest_ok cases=5`；
+  `matrix_cells=7 blocking=3 advisory=4`；
+  `binaries_ok game.exe=14495232 editor.exe=22673920 assetc.exe=4178432 game_web.wasm=9074177`；
+  `packages_ok pc=20065008 webgl=12532043 wechat_main=493011 wechat_sub=5175946 quota_ok=1`；
+  `baseline_compare_ok checks=12 regressions=0 mode=geometry-only`（`metrics/baselines/wp0-3d-stress.json`
+  从干净 HEAD `b7958560` 恢复，三档几何量/分配峰值人工核对通过）。
+  首份覆盖率基线：待 llvm-cov 首轮采集完成、人工审阅后 `--update`（见 `docs/70` §4）。
+- **未完成项 / 待裁定**（登记，不另开包）：覆盖率绝对下限未定；wasm 行覆盖率未做（`wasm-bindgen-test`
+  spike 未执行）；history 写入方式（bot commit vs artifact + 人工 merge）待仓库管理员定；
+  CI 分钟预算（nightly perf + weekly package + coverage）待确认；Linux/macOS 是否产品支持不在 P4。
+- **回滚档**：删 `verify.ps1` 的 `-Coverage`/`-Metrics` 分支与 `matrix.yml`/`metrics.yml`、
+  `scripts/metrics/`、`metrics/` 即可回到"只有 m19-soak 单份基线"；各门是加法，不影响现有 Windows 门。
 
 ## Unreleased — `rustlua-scene` 的依赖图里不再有渲染层与 UI 层（降耦合④阶段 4c/4d，④ 收口）
 

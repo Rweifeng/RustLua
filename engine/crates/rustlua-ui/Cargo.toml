@@ -7,6 +7,9 @@ license.workspace = true
 publish = false
 
 [dependencies]
+# lua_nav：UI 导航绑定下沉到 UI 域（P1 ⑤-3）。mlua 只用于装表。
+mlua = { version = "0.11", features = ["lua54", "vendored"] }
+rustlua-lua-api = { path = "../rustlua-lua-api" }
 thiserror.workspace = true
 rustlua-math = { path = "../rustlua-math" }
 rustlua-component-codec = { path = "../rustlua-component-codec" }

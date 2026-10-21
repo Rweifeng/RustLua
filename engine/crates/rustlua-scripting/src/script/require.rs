@@ -74,4 +74,3 @@ pub(super) fn install_encoded_require_searcher(lua: &Lua, script_dir: PathBuf) -
 pub fn install_web_require(lua: &Lua, script_dir: &Path) -> mlua::Result<()> {
     install_encoded_require_searcher(lua, script_dir.to_path_buf())
 }
-

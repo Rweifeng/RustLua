@@ -746,7 +746,7 @@ fn stand_next_to(
     if got != "ok" {
         return Err(format!("{enemy_id} not reachable: {got}").into());
     }
-    frames(runtime, &host, 2)?;
+    frames(runtime, host, 2)?;
     Ok(())
 }
 
@@ -765,13 +765,13 @@ fn kill_enemy(
         if alive == "no" {
             return Ok(());
         }
-        stand_next_to(runtime, &host, enemy_id)?;
+        stand_next_to(runtime, host, enemy_id)?;
         press(
             runtime,
-            &host,
+            host,
             KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
         )?;
-        frames(runtime, &host, 30)?;
+        frames(runtime, host, 30)?;
     }
     Err(format!("{tries} 次普攻没能击败 {enemy_id}（或目标不可达）").into())
 }

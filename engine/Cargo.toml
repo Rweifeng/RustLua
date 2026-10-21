@@ -67,7 +67,11 @@ rustlua-lua-api = { path = "crates/rustlua-lua-api" }
 rustlua-gameplay = { path = "crates/rustlua-gameplay" }
 rustlua-scripting = { path = "crates/rustlua-scripting" }
 rustlua-infra = { path = "crates/rustlua-infra" }
-eframe = { version = "0.33", features = ["wgpu"] }
+# P2 follow-up：关闭 eframe 默认启用的 accesskit（会拉入 Linux-only 的
+# accesskit_unix -> atspi -> zbus 5 链，RustSec 已把 zbus_names/zvariant/zvariant_derive
+# 标为 unmaintained）。项目没有使用屏幕阅读器/accesskit API；如将来要恢复无障碍支持，
+# 应整体升级到 zbus 6 的 accesskit 栈，而不是只把 default-features 打开。
+eframe = { version = "0.33", default-features = false, features = ["wgpu", "glow", "default_fonts", "x11", "wayland"] }
 # M27-00：多标签停靠布局。egui_dock 与 egui 小版本硬绑定（crates.io 实测：0.18.0↔0.33、0.19↔0.34、0.20↔0.35、0.21↔0.36；钉 =0.18.0），升级 eframe 必须同步。
 # `serde` feature（阶段 2）：DockState 本身带 serde derive，布局树直接落 layout.json；
 # 代价是同时打开 egui/serde。
@@ -88,6 +92,11 @@ anyhow = "1.0"
 # wasm32-unknown-unknown support for mlua: vendored forks with the wasm patch
 # (libc shim + wasm-EH error handling). See docs/ wasm notes.
 [patch.crates-io]
+# P2 follow-up：paste 已被上游归档；依赖方（egui_dock/simba/metal）仍声明 `paste`。
+# 这里用 pastey 0.2.3 的维护代码做**同名兼容包**（Cargo 无法把不同包名的 path patch
+# 注入 `paste` 依赖），包名/版本保持 1.0.15 以满足它们的 `paste ^1.0` 约束。
+# 这不是把漏洞藏起来：实际编译的是 pastey 代码；详情见 docs/69 §4.1.1。
+paste = { path = "vendor/paste" }
 mlua = { path = "vendor/mlua" }
 mlua-sys = { path = "vendor/mlua-sys" }
 lua-src = { path = "vendor/lua-src" }

@@ -351,7 +351,7 @@ fn release(
     host: &rustlua_input::host::HostInput,
     n: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    frames(runtime, &host, n)
+    frames(runtime, host, n)
 }
 
 fn frames(

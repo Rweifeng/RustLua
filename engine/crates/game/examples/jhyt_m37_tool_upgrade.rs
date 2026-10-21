@@ -181,7 +181,7 @@ fn till_at(
 ) -> Result<(f64, f64), Box<dyn std::error::Error>> {
     move_to(runtime, cell.0, cell.1)?;
     let before = energy(runtime)?;
-    press(runtime, &host, KeyCode::KeyE)?;
+    press(runtime, host, KeyCode::KeyE)?;
     assert_str(runtime, "require('core.state').last_action", "till")?;
     let after = energy(runtime)?;
     Ok((before, after))

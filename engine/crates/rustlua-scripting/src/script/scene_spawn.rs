@@ -5,16 +5,15 @@
 
 // WP11-USE:BEGIN
 use crate::script::LuaRuntime;
-use crate::script::PersistedEntity;
 use crate::script::ScriptState;
 use crate::script::error::LuaBridgeError;
 use crate::script::guard::{BudgetSlot, ScriptErrorPolicy};
-use crate::script::solid_cell_colliders;
 use mlua::Value;
 use rustlua_animation::animation::AnimationStateMachine;
 use rustlua_animation::animation3d::Animation3D;
 use rustlua_animation::animation3d::Animation3dDescriptor;
 use rustlua_ecs::entity::EntityId;
+use rustlua_ecs::entity_state::PersistedEntity;
 use rustlua_ecs::particle::ParticleEmitter;
 use rustlua_ecs::particle::SceneParticleEmitter;
 use rustlua_ecs::tilemap::Tilemap;
@@ -24,6 +23,7 @@ use rustlua_infra::ids::AssetId;
 use rustlua_math::math3d::Vec3;
 use rustlua_physics::physics::ColliderDesc;
 use rustlua_physics::physics3d::ColliderDesc3d;
+use rustlua_physics::tilemap_lua::solid_cell_colliders;
 use rustlua_render::atlas::resolve_atlas_reference;
 use rustlua_render::light::Light;
 use rustlua_render::mesh3d::MeshRenderer;
@@ -37,6 +37,20 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 // WP11-USE:END
+
+/// P1 ⑤-7：世界句柄借用失败（只可能是重入）报成场景装配错误，而不是 panic。
+/// 实体账本借用失败（Lua 重入时持有）→ 桥接错误（与 `world_borrow` 同款）。
+fn entity_borrow(error: mlua::Error) -> LuaBridgeError {
+    LuaBridgeError::Api(error.to_string())
+}
+fn world_borrow(error: mlua::Error) -> LuaBridgeError {
+    LuaBridgeError::Api(format!("world borrow failed: {error}"))
+}
+
+/// 物理句柄的借用失败同样降级成可读错误（重入时点名 `physics`，见 `Handle` 的命名）。
+fn physics_borrow(error: mlua::Error) -> LuaBridgeError {
+    LuaBridgeError::Api(format!("physics borrow failed: {error}"))
+}
 
 impl LuaRuntime {
     /// Spawns every scene entity into the runtime world, parsing the editor's
@@ -56,8 +70,13 @@ impl LuaRuntime {
         // 实例化也是一段"卡住就致命"的同步工作（组件装配会触发每实体脚本），周期从这一刻清零。
         crate::script::progress::arm();
         let mut state = self.state.borrow_mut();
+        let entities = state.entity_state.clone();
         state.scene = Some(scene.name.clone());
-        state.entity_state.scene_entities.clear();
+        entities
+            .borrow_mut()
+            .map_err(entity_borrow)?
+            .scene_entities
+            .clear();
         // 坏 parent 边（悬空/自环）同样在这里点名：运行时会把它们当成"没有父"，静默下去就成了
         // "子树莫名其妙少了一层位移"。
         state.scene_parent_issues = rustlua_scene::scene_space::parent_link_issues(scene)
@@ -125,7 +144,11 @@ impl LuaRuntime {
                 &entity.components,
                 &entity.resources,
             )?;
-            state.entity_state.scene_entities.insert(entity.id, handle);
+            entities
+                .borrow_mut()
+                .map_err(entity_borrow)?
+                .scene_entities
+                .insert(entity.id, handle);
 
             // 持久实体快照（权威、静态组件），供切场景后重生。
             //
@@ -145,20 +168,28 @@ impl LuaRuntime {
                         let parent = scene.entities.get(&parent)?;
                         (!parent.name.is_empty()).then(|| parent.name.clone())
                     });
-                    state.entity_state.persistent.insert(
-                        entity.name.clone(),
-                        PersistedEntity {
-                            name: entity.name.clone(),
-                            components: entity.components.clone(),
-                            resources: entity.resources.clone(),
-                            metadata: entity.metadata.clone(),
-                            parent_name,
-                        },
-                    );
+                    entities
+                        .borrow_mut()
+                        .map_err(entity_borrow)?
+                        .persistent
+                        .insert(
+                            entity.name.clone(),
+                            PersistedEntity {
+                                name: entity.name.clone(),
+                                components: entity.components.clone(),
+                                resources: entity.resources.clone(),
+                                metadata: entity.metadata.clone(),
+                                parent_name,
+                            },
+                        );
                 } else {
                     // 新场景明确用同名实体覆盖了旧快照，但没带持久标记 ⇒ 新定义胜出。
                     // 不丢掉旧快照的话，再从别的场景切回来会把早已销毁的实体复活。
-                    state.entity_state.persistent.remove(&entity.name);
+                    entities
+                        .borrow_mut()
+                        .map_err(entity_borrow)?
+                        .persistent
+                        .remove(&entity.name);
                 }
             }
             count += 1;
@@ -167,20 +198,25 @@ impl LuaRuntime {
         // 父实体出现，第一趟里父的运行时句柄还不存在。父被跳过（编辑器隐藏）时不建立关系——
         // 宁可不继承，也不要指到一个不存在或错误的实体上。
         for entity in scene.entities.values() {
-            let Some(&child) = state.entity_state.scene_entities.get(&entity.id) else {
+            let Some(&child) = entities
+                .borrow_mut()
+                .map_err(entity_borrow)?
+                .scene_entities
+                .get(&entity.id)
+            else {
                 continue;
             };
-            let Some(parent) = entity
-                .parent
-                .and_then(|parent| state.entity_state.scene_entities.get(&parent).copied())
-            else {
+            let Some(parent) = entity.parent.and_then(|parent| {
+                entities.with(|entities| entities.scene_entities.get(&parent).copied())
+            }) else {
                 continue;
             };
             if parent == child {
                 continue;
             }
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(child, rustlua_ecs::hierarchy::Parent(parent))
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
@@ -274,7 +310,7 @@ impl LuaRuntime {
         components: &BTreeMap<String, String>,
         _resources: &BTreeMap<String, AssetId>,
     ) -> Result<EntityId, LuaBridgeError> {
-        let id = state.world.spawn();
+        let id = state.world_mut().map_err(world_borrow)?.spawn();
         // **唯一的 `Transform` 组件**：载荷只有一个形态（`position/rotation/scale`），
         // 2D 还是 3D 由实体携带的**其它组件**推断（`spatial_transform::entity_space`），
         // 推断结果决定插进运行时世界的哪一份表示：2D 快路径（平面 f32 弧度，10k 精灵档实测过）
@@ -294,13 +330,15 @@ impl LuaRuntime {
                 rustlua_ecs::spatial_transform::SpatialKind::TwoD => {
                     let flat = local.to_2d();
                     state
-                        .world
+                        .world_mut()
+                        .map_err(world_borrow)?
                         .insert(id, flat)
                         .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
                 }
                 rustlua_ecs::spatial_transform::SpatialKind::ThreeD => {
                     state
-                        .world
+                        .world_mut()
+                        .map_err(world_borrow)?
                         .insert(
                             id,
                             Transform3D {
@@ -325,8 +363,13 @@ impl LuaRuntime {
             // 图集引用语法 `图集路径#区域名`：装配前解析成纹理路径 + 区域 UV，
             // 运行时仍然只认识 SpriteAsset + Sprite.uv，抽取/合批路径零改动。
             // 路径与渲染器同源：按项目根解析，返回的纹理路径保持工程根相对写法。
+            let project_root = state
+                .project_root
+                .borrow()
+                .ok()
+                .and_then(|root| root.path().map(PathBuf::from));
             let (texture_path, sprite) =
-                match resolve_atlas_reference(state.project_root.as_deref(), &component.texture) {
+                match resolve_atlas_reference(project_root.as_deref(), &component.texture) {
                     Ok(Some((texture_path, region))) => (
                         texture_path,
                         region.apply(sprite).map_err(|error| {
@@ -343,15 +386,18 @@ impl LuaRuntime {
                     }
                 };
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(id, sprite)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(id, SpriteAsset(texture_path))
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(id, component.sorting)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
@@ -363,7 +409,8 @@ impl LuaRuntime {
                 LuaBridgeError::Api(format!("entity {name:?} has an invalid Quad: {error}"))
             })?;
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(id, quad)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
@@ -372,7 +419,8 @@ impl LuaRuntime {
                 LuaBridgeError::Api(format!("entity {name:?} has an invalid Tilemap: {error}"))
             })?;
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(id, tilemap)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
@@ -388,7 +436,8 @@ impl LuaRuntime {
                     LuaBridgeError::Api(format!("entity {name:?} has an invalid Camera: {error}"))
                 })?;
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(id, camera)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
@@ -401,7 +450,8 @@ impl LuaRuntime {
                 ))
             })?;
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(id, SceneParticleEmitter::new(emitter))
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
@@ -410,7 +460,8 @@ impl LuaRuntime {
                 LuaBridgeError::Api(format!("entity {name:?} has an invalid Animation: {error}"))
             })?;
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(id, animation)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
@@ -420,18 +471,24 @@ impl LuaRuntime {
                     "entity {name:?} has an invalid Animation3D: {error}"
                 ))
             })?;
-            let root = state.project_root.clone().ok_or_else(|| {
-                LuaBridgeError::Api(format!(
-                    "entity {name:?} needs a project root to load its Animation3D mesh"
-                ))
-            })?;
+            let root = state
+                .project_root
+                .borrow()
+                .ok()
+                .and_then(|root| root.path().map(PathBuf::from))
+                .ok_or_else(|| {
+                    LuaBridgeError::Api(format!(
+                        "entity {name:?} needs a project root to load its Animation3D mesh"
+                    ))
+                })?;
             let animation = Animation3D::from_gltf_path(&root, &descriptor).map_err(|error| {
                 LuaBridgeError::Api(format!(
                     "entity {name:?} Animation3D failed to load: {error}"
                 ))
             })?;
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(id, animation)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
@@ -442,7 +499,8 @@ impl LuaRuntime {
                 ))
             })?;
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(id, renderer)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
@@ -451,7 +509,8 @@ impl LuaRuntime {
                 LuaBridgeError::Api(format!("entity {name:?} has an invalid Light: {error}"))
             })?;
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(id, light)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
@@ -465,7 +524,8 @@ impl LuaRuntime {
                     ))
                 })?;
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(id, visibility)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
@@ -477,7 +537,8 @@ impl LuaRuntime {
                     LuaBridgeError::Api(format!("entity {name:?} has an invalid Script: {error}"))
                 })?;
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(id, script)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
@@ -492,7 +553,8 @@ impl LuaRuntime {
                 },
             )?;
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(id, mode)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
@@ -502,7 +564,8 @@ impl LuaRuntime {
                 LuaBridgeError::Api(format!("entity {name:?} has an invalid Text: {error}"))
             })?;
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(id, text)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
@@ -511,7 +574,8 @@ impl LuaRuntime {
                 LuaBridgeError::Api(format!("entity {name:?} has an invalid Image: {error}"))
             })?;
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(id, image)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
@@ -524,7 +588,8 @@ impl LuaRuntime {
                     ))
                 })?;
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(id, text)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
@@ -533,7 +598,8 @@ impl LuaRuntime {
                 LuaBridgeError::Api(format!("entity {name:?} has invalid UiEvents: {error}"))
             })?;
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(id, events)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
@@ -544,39 +610,52 @@ impl LuaRuntime {
                 LuaBridgeError::Api(format!("entity {name:?} has an invalid UiLayout: {error}"))
             })?;
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(id, layout)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         if !name.is_empty() {
-            state.entity_state.names.insert(name.to_owned(), id);
+            state
+                .entity_state
+                .borrow_mut()
+                .map_err(entity_borrow)?
+                .names
+                .insert(name.to_owned(), id);
         }
-        let position = state
-            .world
+        let world_handle = state.world.clone();
+        let world = world_handle.borrow().map_err(world_borrow)?;
+        let position = world
             .get::<Transform>(id)
             .ok()
             .flatten()
             .map(|transform| transform.position)
             .unwrap_or_default();
+        drop(world);
         if let Some(value) = components.get("Collider") {
             let collider = ColliderDesc::from_component_str(value).map_err(|error| {
                 LuaBridgeError::Api(format!("entity {name:?} has an invalid Collider: {error}"))
             })?;
-            state
-                .physics
-                .world2d
+            let physics = state.physics.clone();
+            let mut physics = physics.borrow_mut().map_err(physics_borrow)?;
+            physics
+                .world2d_mut()
                 .add_body(id, position, collider.dynamic, vec![collider])
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         if components.contains_key("Tilemap") {
-            let tilemap = state.world.get::<Tilemap>(id).ok().flatten();
+            // 世界守卫借的是句柄副本，不占 `&state`；物理世界同理（P1 ⑤-7 / ⑤-9）。
+            let world_handle = state.world.clone();
+            let world = world_handle.borrow().map_err(world_borrow)?;
+            let tilemap = world.get::<Tilemap>(id).ok().flatten();
             if let Some(tilemap) = tilemap
                 && tilemap.solid.iter().any(|solid| *solid)
             {
                 let colliders = solid_cell_colliders(tilemap);
-                state
-                    .physics
-                    .world2d
+                let physics = state.physics.clone();
+                let mut physics = physics.borrow_mut().map_err(physics_borrow)?;
+                physics
+                    .world2d_mut()
                     .add_body(id, position, false, colliders)
                     .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
             }
@@ -587,16 +666,19 @@ impl LuaRuntime {
                     "entity {name:?} has an invalid Collider3d: {error}"
                 ))
             })?;
-            let position = state
-                .world
+            let world_handle = state.world.clone();
+            let world = world_handle.borrow().map_err(world_borrow)?;
+            let position = world
                 .get::<Transform3D>(id)
                 .ok()
                 .flatten()
                 .map(|transform| transform.position)
                 .unwrap_or(Vec3::ZERO);
-            state
-                .physics
-                .world3d
+            drop(world);
+            let physics = state.physics.clone();
+            let mut physics = physics.borrow_mut().map_err(physics_borrow)?;
+            physics
+                .world3d_mut()
                 .add_body(id, position, collider.dynamic, vec![collider])
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
@@ -700,7 +782,8 @@ impl LuaRuntime {
                 continue;
             }
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(child, rustlua_ecs::hierarchy::Parent(parent))
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
@@ -847,7 +930,8 @@ impl LuaRuntime {
         }
         if let Some(id) = id {
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .insert(id, layout)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
@@ -908,12 +992,18 @@ impl LuaRuntime {
         spawn: &PrefabSpawn,
     ) -> Result<(), LuaBridgeError> {
         for (name, handle) in &spawn.names {
-            state.entity_state.names.remove_name_if(name, *handle);
+            state
+                .entity_state
+                .borrow_mut()
+                .map_err(entity_borrow)?
+                .names
+                .remove_name_if(name, *handle);
         }
         for handle in &spawn.handles {
             state.prefab_ui_nodes.remove(&(handle.index() as u64));
             state
-                .world
+                .world_mut()
+                .map_err(world_borrow)?
                 .despawn(*handle)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }

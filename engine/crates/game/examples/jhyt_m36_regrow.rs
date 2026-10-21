@@ -158,7 +158,7 @@ fn grow_mint(
     equip_tool(runtime, "watering_can")?;
     for day in 1..=10 {
         runtime.execute_console("require('world.weather').set('sunny')")?;
-        press(runtime, &host, KeyCode::KeyE)?;
+        press(runtime, host, KeyCode::KeyE)?;
         let action = query_str(runtime, "require('core.state').last_action")?;
         if action == "harvest_mint" {
             return Err("浇水时薄荷已成熟（成熟判定早于预期），应先行收获".into());

@@ -12,3 +12,7 @@ rapier2d = "0.22"
 rapier3d = "0.22"
 rustlua-math = { path = "../rustlua-math" }
 rustlua-ecs = { path = "../rustlua-ecs" }
+# `physics_lua`：两张物理表的绑定下沉到物理域（P1 ⑤-9）。`lua-api` 是叶子契约层
+# （`Handle` / `api_error`），`mlua` 只用于装 `physics` / `physics3d` 两张全局表。
+rustlua-lua-api = { path = "../rustlua-lua-api" }
+mlua = { version = "0.11", features = ["lua54", "vendored"] }

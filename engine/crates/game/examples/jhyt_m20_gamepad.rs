@@ -1563,7 +1563,7 @@ fn pad_ticks(
     count: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..count {
-        pad_tick(runtime, &host, poller, snapshot)?;
+        pad_tick(runtime, host, poller, snapshot)?;
     }
     Ok(())
 }
@@ -1578,9 +1578,9 @@ fn pad_press(
     index: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     pad.press(index);
-    pad_tick(runtime, &host, poller, snapshot)?;
+    pad_tick(runtime, host, poller, snapshot)?;
     pad.release(index);
-    pad_tick(runtime, &host, poller, snapshot)?;
+    pad_tick(runtime, host, poller, snapshot)?;
     Ok(())
 }
 

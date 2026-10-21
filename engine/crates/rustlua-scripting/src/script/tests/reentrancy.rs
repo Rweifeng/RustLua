@@ -16,12 +16,15 @@ use super::*;
 #[test]
 fn reentrant_lua_api_call_surfaces_as_lua_error_instead_of_panic() {
     let runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
-    let health: mlua::Table = runtime.lua.globals().get("health").unwrap();
-    let get: mlua::Function = health.get("get").unwrap();
+    // ⑤-13 之后 `health` / `entity` 只碰 `World` 与 `EntityState` 两个独立句柄，**不再借**
+    // `ScriptState`——所以重入的充分条件要换成一个仍然借 `ScriptState` 的 API。
+    // `ui.measure_text` 还留在脚本层（要读工程字体探针），正好是这条路径。
+    let ui: mlua::Table = runtime.lua.globals().get("ui").unwrap();
+    let measure: mlua::Function = ui.get("measure_text").unwrap();
 
     // 持住可变借用：此后任何 `lua_borrow(_mut)` 都必须失败，而不是 panic。
     let held = runtime.state.borrow_mut();
-    let outcome = get.call::<mlua::Value>(1_i64);
+    let outcome = measure.call::<mlua::Value>(("x".to_owned(), 16.0_f32));
     drop(held);
 
     let error = outcome.expect_err("重入必须报错；拿到值说明这条路径根本没在借用 state");
@@ -29,6 +32,28 @@ fn reentrant_lua_api_call_surfaces_as_lua_error_instead_of_panic() {
     assert!(
         message.contains("already borrowed"),
         "错误必须说清是重入借用（脚本据此才报得出可读原因），实际是：{message}"
+    );
+}
+
+/// 同一契约在**领域句柄**这一层：持住 `entity_state` 的借用时，实体 API 报的必须是
+/// "已被借用 / entity_state"，而不是 panic（wasm32 上 panic = 硬 abort）。
+#[test]
+fn reentrant_entity_api_names_the_entity_state() {
+    let runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    let health: mlua::Table = runtime.lua.globals().get("health").unwrap();
+    let get: mlua::Function = health.get("get").unwrap();
+
+    let entities = runtime.state.borrow().entity_state.clone();
+    let _held = entities.borrow_mut().unwrap();
+    let outcome = get.call::<mlua::Value>(1_i64);
+
+    let message = outcome
+        .expect_err("持着实体账本借用时，实体 API 必须报借用失败")
+        .to_string();
+    assert!(message.contains("already borrowed"), "{message}");
+    assert!(
+        message.contains("entity_state"),
+        "错误要指名被借走的单元：{message}"
     );
 }
 

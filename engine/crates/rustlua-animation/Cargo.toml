@@ -11,6 +11,9 @@ thiserror.workspace = true
 rustlua-math = { path = "../rustlua-math" }
 rustlua-ecs = { path = "../rustlua-ecs" }
 rustlua-assets = { path = "../rustlua-assets" }
+# `animation_lua`：动画组件与帧事件队列的 Lua 面跟着类型住（P1 ⑤-10）。
+rustlua-lua-api = { path = "../rustlua-lua-api" }
+mlua = { version = "0.11", features = ["lua54", "vendored"] }
 
 [dev-dependencies]
 rustlua-infra = { path = "../rustlua-infra" }

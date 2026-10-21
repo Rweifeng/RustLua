@@ -5,8 +5,6 @@
 
 use std::{path::PathBuf, time::SystemTime};
 
-use rustlua_ecs::world::WorldError;
-
 /// Errors produced while loading or running a project Lua script.
 ///
 /// 文本字段命名为 `reason` 而不是 `source`：thiserror 会把名为 `source` 的字段一律
@@ -154,8 +152,4 @@ pub(super) fn bridge_error_parts(error: &LuaBridgeError) -> (PathBuf, &'static s
             (PathBuf::from("<engine>"), "api", source.clone())
         }
     }
-}
-
-pub(super) fn world_error(error: WorldError) -> mlua::Error {
-    api_error(error.to_string())
 }

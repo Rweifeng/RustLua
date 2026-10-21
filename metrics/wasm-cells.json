@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "comment": "P4-02 wasm/native compile cells. Every wasm cfg site's crate must be covered by a wasm cell (direct package or its dependency closure); every not-wasm site's crate by the native cell. gpu-web-probe is an independent wasm probe and MUST stay in wasm-default (it is not in game_web's closure). Design-native crates go in exclusions with owner/review_by.",
+  "cells": [
+    {
+      "id": "wasm-default",
+      "cmd": "cargo check -p game_web -p gpu-web-probe -p wasm-lua-spike --target wasm32-unknown-unknown",
+      "packages": ["game_web", "gpu-web-probe", "wasm-lua-spike"],
+      "role": "blocking"
+    },
+    {
+      "id": "wasm-gpu2d-off",
+      "cmd": "cargo check -p game_web --no-default-features --target wasm32-unknown-unknown",
+      "packages": ["game_web"],
+      "role": "blocking"
+    },
+    {
+      "id": "native-windows",
+      "cmd": "cargo check --workspace --all-targets",
+      "packages": ["*"],
+      "role": "blocking"
+    }
+  ],
+  "exclusions": [
+    {"crate": "assetc", "reason": "原生资源工具，无 wasm 条件分支（设计上 native-only）", "owner": "P4", "review_by": "2027-01-31"},
+    {"crate": "editor", "reason": "编辑器宿主，设计上 native-only，无 wasm 分支", "owner": "P4", "review_by": "2027-01-31"},
+    {"crate": "game", "reason": "游戏原生宿主，设计上 native-only，无 wasm 分支", "owner": "P4", "review_by": "2027-01-31"},
+    {"crate": "rustlua-assets-import", "reason": "资源导入工具链，设计上 native-only，无 wasm 分支", "owner": "P4", "review_by": "2027-01-31"}
+  ]
+}

@@ -776,26 +776,31 @@ fn persistent_component_survives_transition_and_cascades_to_children() {
     let state = runtime.state.borrow();
     let root_handle = state
         .entity_state
-        .names
-        .get("Root")
+        .with(|entities| entities.names.get("Root"))
         .expect("persistent parent restored");
     let child_handle = state
         .entity_state
-        .names
-        .get("Child")
+        .with(|entities| entities.names.get("Child"))
         .expect("child of persistent parent survives");
     assert_eq!(
         state
-            .world
+            .world()
+            .expect("world handle")
             .get::<rustlua_ecs::hierarchy::Parent>(child_handle)
             .unwrap()
             .map(|parent| parent.0),
         Some(root_handle),
         "恢复后必须按名字重连父子边"
     );
-    assert!(state.entity_state.names.contains_key("Boss"));
     assert!(
-        !state.entity_state.names.contains_key("Dust"),
+        state
+            .entity_state
+            .with(|entities| entities.names.contains_key("Boss"))
+    );
+    assert!(
+        !state
+            .entity_state
+            .with(|entities| entities.names.contains_key("Dust")),
         "没有标记组件的兄弟实体不应存活"
     );
     drop(state);

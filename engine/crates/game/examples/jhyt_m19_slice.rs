@@ -1420,10 +1420,10 @@ fn strike_boar(
     if got != "ok" {
         return Err(format!("boar not strikeable: {got}").into());
     }
-    frames(runtime, &host, 2)?;
+    frames(runtime, host, 2)?;
     press(
         runtime,
-        &host,
+        host,
         KeyCode::from_char('j').expect("QWERTY 字符必须有对应物理键"),
     )?;
     Ok(())

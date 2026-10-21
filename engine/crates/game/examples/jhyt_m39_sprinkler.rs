@@ -271,11 +271,11 @@ fn plant_mint_at(
 ) -> Result<(), Box<dyn std::error::Error>> {
     stand_at(runtime, (cell.0, cell.1 - 1), "up")?;
     equip_tool(runtime, "hoe")?;
-    press(runtime, &host, KeyCode::KeyE)?;
+    press(runtime, host, KeyCode::KeyE)?;
     assert_str(runtime, "require('core.state').last_action", "till")?;
     runtime.execute_console("inv.add(require('core.state').inventory, 'seed_mint', 1)")?;
     set_seed(runtime, "seed_mint")?;
-    press(runtime, &host, KeyCode::KeyE)?;
+    press(runtime, host, KeyCode::KeyE)?;
     assert_str(
         runtime,
         "require('core.state').last_action",
@@ -292,11 +292,11 @@ fn plant_mint_right(
 ) -> Result<(), Box<dyn std::error::Error>> {
     stand_at(runtime, (cell.0 - 1, cell.1), "right")?;
     equip_tool(runtime, "hoe")?;
-    press(runtime, &host, KeyCode::KeyE)?;
+    press(runtime, host, KeyCode::KeyE)?;
     assert_str(runtime, "require('core.state').last_action", "till")?;
     runtime.execute_console("inv.add(require('core.state').inventory, 'seed_mint', 1)")?;
     set_seed(runtime, "seed_mint")?;
-    press(runtime, &host, KeyCode::KeyE)?;
+    press(runtime, host, KeyCode::KeyE)?;
     assert_str(
         runtime,
         "require('core.state').last_action",

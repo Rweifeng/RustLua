@@ -13,6 +13,7 @@ on:
       - "scripts/**"
       - "docs/**"
       - "tasks/**"
+      - "metrics/**"
       - ".github/workflows/quality.yml"
       - ".github/workflows/release.yml"
   pull_request:
@@ -22,6 +23,7 @@ on:
       - "scripts/**"
       - "docs/**"
       - "tasks/**"
+      - "metrics/**"
       - ".github/workflows/quality.yml"
       - ".github/workflows/release.yml"
 
@@ -287,6 +289,13 @@ jobs:
         with:
           node-version: "20"
 
+      # P4-00：trend_db.py / 度量脚本的 CI Python 版本必须与 tools.json 一致
+      # （check-toolchain-lock.ps1 校验 python-version == tools.python）。
+      - name: Set up Python (metrics)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: WeChat bundle routing and plan structure
         run: |
           node plugins/wechat-minigame/bundle-roots.js --self-test
@@ -379,3 +388,64 @@ jobs:
           if ($code -eq 1) { throw "webgl new-EH cross-browser check FAILED (verify-webgl-eh.ps1 exit 1)" }
           if ($code -eq 3) { Write-Host "webgl_eh_skipped reason=environment_limited exit=3 (no browser or no published webgl bundle)" }
           else { Write-Host "webgl_eh_ok exit=0 (new-EH wasm compiles in all discovered browsers)" }
+
+  # P4-01 覆盖率棘轮：llvm-cov 全 workspace 采集 → 归一化 → 与基线比（总 −0.5pp /
+  # 单 crate −2.0pp 判红）。只覆盖"本次改动真正碰到的树"这一层判断由 workflow 级
+  # paths 承担（engine/** + metrics/**）；基线未就位时退 3（BLOCKED），绝不冒充通过。
+  # 上传 coverage.json / lcov.info / html 作离线复核证据。
+  coverage:
+    needs: lint
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.97.1 with llvm-tools-preview
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+
+      # P4-00：度量脚本的 CI Python 版本必须与 tools.json 一致
+      # （check-toolchain-lock.ps1 校验 python-version == tools.python）。
+      - name: Set up Python (metrics)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.9.1
+
+      - name: Toolchain lock (metrics tools)
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/check-toolchain-lock.ps1
+          if ($LASTEXITCODE -ne 0) { throw "toolchain lock failed (exit $LASTEXITCODE)" }
+
+      # check-coverage.ps1 在 engine/ 采集（workspace 根在 engine/），然后归一化、
+      # 判棘轮；--no-fail-fast 下测试失败按 exit 1 判红，覆盖率数字不掩盖红测试。
+      - name: Coverage ratchet
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/check-coverage.ps1 -RequireTool
+          $code = $LASTEXITCODE
+          if ($code -eq 3) { Write-Host "coverage_blocked reason=no_baseline (baseline not committed yet; first run must be reviewed and --update locally)" }
+          if ($code -ne 0) { throw "coverage gate failed (exit $code)" }
+
+      - name: Upload coverage evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-evidence
+          path: |
+            artifacts/metrics/coverage.json
+            artifacts/metrics/coverage-summary.json
+            artifacts/metrics/coverage-summary.md
+            artifacts/metrics/lcov.info
+            artifacts/metrics/html/
+          if-no-files-found: warn

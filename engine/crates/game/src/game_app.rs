@@ -19,7 +19,8 @@ use winit::{
 };
 
 use engine::host::{
-    OverlayVertex, RenderOutcome, Renderer, RuntimeScene, SceneDraw, SceneMesh, ScriptErrorPolicy,
+    FrameProfile, OverlayVertex, RenderOutcome, Renderer, RuntimeScene, SceneDraw, SceneMesh,
+    ScriptErrorPolicy,
 };
 
 pub struct GameApp {
@@ -54,6 +55,10 @@ pub struct GameApp {
     /// 由 `splash` 接管同一张图；见 `crate::boot_splash`。
     boot_splash: Option<crate::boot_splash::BootSplash>,
     deferred_verify: bool,
+    /// M74-02 P0：帧调度分档累加器（`--frame-profile` 打开；`None` = 不记，零成本）。
+    frame_profile: Option<FrameProfile>,
+    /// 分档报告的落盘路径（与 `frame_profile` 同生同灭）。
+    frame_profile_path: Option<PathBuf>,
 }
 
 impl GameApp {
@@ -66,6 +71,7 @@ impl GameApp {
         instancing_enabled: bool,
         packaged: bool,
         deferred_verify: bool,
+        frame_profile_path: Option<PathBuf>,
     ) -> Self {
         Self {
             window: None,
@@ -88,6 +94,8 @@ impl GameApp {
             splash: None,
             boot_splash: None,
             deferred_verify,
+            frame_profile: frame_profile_path.as_ref().map(|_| FrameProfile::new()),
+            frame_profile_path,
         }
     }
 
@@ -176,6 +184,34 @@ impl GameApp {
     /// 本次运行的失败原因；`None` 表示正常退出（含 Lua `app.quit()` 与用户关窗）。
     pub fn failure(&self) -> Option<&str> {
         self.failure.as_deref()
+    }
+
+    /// M74-02 P0：把本进程的帧调度分档写成 JSON，并打印单行摘要。
+    ///
+    /// 与 `--trace-loads` 同一出口形态：单行 `m74_frame_profile ...` 给脚本与 CI 读，
+    /// JSON 给台账存档。未开 `--frame-profile`、或一帧都没采样到时什么都不写——
+    /// 一份 `frames=0` 的报告只会让下游把"没量到"读成"占比 0%"。
+    pub fn finish_frame_profile(&mut self) -> Option<PathBuf> {
+        let summary = self.frame_profile.as_ref()?.summary();
+        let path = self.frame_profile_path.clone()?;
+        if summary.frames == 0 {
+            eprintln!("game_frame_profile_skipped: 没有采样到任何帧");
+            return None;
+        }
+        if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match std::fs::write(&path, format!("{}\n", summary.to_json())) {
+            Ok(()) => {
+                println!("game_frame_profile_path={}", path.display());
+                println!("{}", summary.summary_line());
+                Some(path)
+            }
+            Err(error) => {
+                eprintln!("game_frame_profile_failed: {error}");
+                None
+            }
+        }
     }
 
     fn update_pause_state(&mut self, size: PhysicalSize<u32>) {
@@ -283,6 +319,9 @@ impl GameApp {
         if self.lifecycle != AppLifecycle::Running {
             return;
         }
+        // M74-02 P0：整帧墙钟从这里起算（固定步 + 提取 + 提交都在里面）。调度器只知道自己
+        // 那一段，用它的总耗时当分母会把"串行系统占帧比"算大好几倍。
+        let frame_started = Instant::now();
         self.performance.begin_frame();
         self.performance.reset_lua_sample();
         let elapsed = self.last_frame.elapsed().as_secs_f64();
@@ -401,6 +440,14 @@ impl GameApp {
             RenderOutcome::Fatal => self.fail(event_loop, "renderer reported a fatal outcome"),
         }
         self.performance.end_frame();
+        // M74-02 P0：本帧的调度分档。放在渲染提交之后，这样样本里包含提取与提交——
+        // 分母就是玩家真正看到的那一帧，而不是调度器自己的一小段。
+        if let (Some(profile), Some(scene)) =
+            (self.frame_profile.as_mut(), self.runtime_scene.as_ref())
+            && let Some(report) = scene.last_schedule_report()
+        {
+            profile.record(report, frame_started.elapsed());
+        }
         if snapshot.frames.is_multiple_of(60) {
             tracing::info!(target: "engine", "[perf] fps={:.1} frame_ms={:.3} update_ms={:.3} lua_ms={:.3} frames={} overlay={}", snapshot.fps, snapshot.frame_ms, snapshot.update_ms, snapshot.lua_ms, snapshot.frames, self.overlay_enabled);
         }

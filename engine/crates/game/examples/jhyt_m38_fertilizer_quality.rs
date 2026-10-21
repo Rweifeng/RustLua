@@ -328,7 +328,7 @@ fn grow_crop(
     equip_tool(runtime, "watering_can")?;
     for day in 1..=10 {
         runtime.execute_console("require('world.weather').set('sunny')")?;
-        press(runtime, &host, KeyCode::KeyE)?;
+        press(runtime, host, KeyCode::KeyE)?;
         let action = query_str(runtime, "require('core.state').last_action")?;
         if action != water_action {
             return Err(format!(
@@ -474,7 +474,7 @@ fn till_at(
         (cell.1 as f64 - 0.5) * 32.0
     ))?;
     set_facing(runtime, "up")?;
-    press(runtime, &host, KeyCode::KeyE)?;
+    press(runtime, host, KeyCode::KeyE)?;
     assert_str(runtime, "require('core.state').last_action", "till")?;
     Ok(())
 }

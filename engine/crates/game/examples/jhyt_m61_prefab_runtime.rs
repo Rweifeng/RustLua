@@ -63,7 +63,10 @@ const OUTSIDE: (f64, f64) = (40.0, 40.0);
 /// 看起来像**派发通道坏了**，实际只是坐标过期。现在按 `assets/prefabs/ui/title_menu.prefab`
 /// 里 `UiLayout.offsets` 现算中心（⑤ 用它证明"撤掉自己那一批"没关掉别批的派发通道）。
 /// 读不到预设或找不到按钮就直接红：宁可红在"读不到"，不要绿在"点错地方"。
-fn title_button_center(project: &std::path::Path, name: &str) -> Result<(f64, f64), Box<dyn std::error::Error>> {
+fn title_button_center(
+    project: &std::path::Path,
+    name: &str,
+) -> Result<(f64, f64), Box<dyn std::error::Error>> {
     let path = project
         .join("assets")
         .join("prefabs")
@@ -93,10 +96,7 @@ fn title_button_center(project: &std::path::Path, name: &str) -> Result<(f64, f6
     if values.len() != 4 {
         return Err(format!("{name} 的 offsets 应恰有 4 个数，实为 {offsets:?}").into());
     }
-    Ok((
-        (values[0] + values[2]) / 2.0,
-        (values[1] + values[3]) / 2.0,
-    ))
+    Ok(((values[0] + values[2]) / 2.0, (values[1] + values[3]) / 2.0))
 }
 
 const FIXTURE_FILE: &str = "jhyt_m61_menu.prefab";

@@ -1,12 +1,17 @@
-//! 与实体无关的全局设施：日志、时间与日历、应用生命周期、事件总线。
+//! 与实体无关的全局设施：日志、帧时长、应用生命周期、事件总线。
 //!
-//! Lua 侧的 `log` / `time` / `clock` / `calendar` / `day` / `app` / `event`。
+//! Lua 侧的 `log` / `time` / `app` / `event`。
+//!
+//! **P1 ⑤-5**：`clock` / `calendar` / `day` 三张表已下沉到游戏时钟域
+//! （`rustlua_gameplay::clock_lua`）——它们读写的是 `GameClock`，那台时钟的类型与推进规则
+//! 本来就在 `rustlua-gameplay`。留在这里的这四张表**没有任何领域状态**：`log`/`event` 是纯
+//! VM 设施（订阅表归当前 VM 所有），`time.delta` 是宿主逐帧写入的帧事实，`app` 只转发宿主
+//! 生命周期（`quit`）、平台常量与工程根能力单元。VM 宿主自己拥有"宿主的全局表"是合理的边界，
+//! 不该为了凑模块数把 `log.info` 搬进某个领域 crate。
 
 // WP11-USE:BEGIN
 use crate::script::LuaStateBorrow;
 use crate::script::ScriptState;
-use crate::script::call_optional_day_hook;
-use crate::script::error::api_error;
 use mlua::Result as LuaResult;
 use mlua::{Function, Lua, Value};
 use std::cell::RefCell;
@@ -48,153 +53,8 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     )?;
     lua.globals().set("time", time)?;
 
-    let clock = lua.create_table()?;
-    let s = Rc::clone(&state);
-    clock.set(
-        "now",
-        lua.create_function(move |lua, ()| {
-            let clock = &s.lua_borrow()?.game_clock;
-            let now = lua.create_table()?;
-            now.set("day", clock.day as i64)?;
-            now.set("minute", clock.minute as i64)?;
-            now.set("hour", (clock.minute / 60) as i64)?;
-            now.set("minute_of_day", clock.minute as i64)?;
-            now.set("rate", clock.rate)?;
-            now.set("paused", clock.paused)?;
-            Ok(now)
-        })?,
-    )?;
-    let s = Rc::clone(&state);
-    clock.set(
-        "set_rate",
-        lua.create_function(move |_, rate: f32| {
-            if !rate.is_finite() || rate < 0.0 {
-                return Err(api_error("clock.set_rate must be finite and non-negative"));
-            }
-            let mut state = s.lua_borrow_mut()?;
-            state.game_clock.rate = rate;
-            Ok(())
-        })?,
-    )?;
-    let s = Rc::clone(&state);
-    clock.set(
-        "pause",
-        lua.create_function(move |_, paused: bool| {
-            s.lua_borrow_mut()?.game_clock.paused = paused;
-            Ok(())
-        })?,
-    )?;
-    let s = Rc::clone(&state);
-    clock.set(
-        "add",
-        lua.create_function(move |_, minutes: f32| {
-            if !minutes.is_finite() {
-                return Err(api_error("clock.add minutes must be finite"));
-            }
-            s.lua_borrow_mut()?.game_clock.add_minutes(minutes);
-            Ok(())
-        })?,
-    )?;
-    let s = Rc::clone(&state);
-    clock.set(
-        "set",
-        lua.create_function(move |_, (day, minute): (i64, i64)| {
-            if day < 1 || minute < 0 {
-                return Err(api_error("clock.set day must be >= 1 and minute >= 0"));
-            }
-            let mut state = s.lua_borrow_mut()?;
-            state.game_clock.set(
-                day as u32,
-                minute.min((rustlua_gameplay::gameplay::MINUTES_PER_DAY - 1) as i64) as u32,
-            );
-            Ok(())
-        })?,
-    )?;
-    let s = Rc::clone(&state);
-    clock.set(
-        "sleep_to_morning",
-        lua.create_function(move |_, ()| {
-            let day = s.lua_borrow_mut()?.game_clock.sleep_to_morning();
-            Ok(day as i64)
-        })?,
-    )?;
-    lua.globals().set("clock", clock)?;
-
-    // `calendar` derives season/year from the absolute in-game day (M16-08).
-
-    let calendar = lua.create_table()?;
-    let s = Rc::clone(&state);
-    calendar.set(
-        "now",
-        lua.create_function(move |lua, ()| {
-            let clock = &s.lua_borrow()?.game_clock;
-            let now = lua.create_table()?;
-            now.set("absolute_day", clock.day as i64)?;
-            now.set("day", clock.day_of_season() as i64)?;
-            now.set("season", clock.season() as i64)?;
-            now.set("year", clock.year() as i64)?;
-            now.set("minute", clock.minute as i64)?;
-            Ok(now)
-        })?,
-    )?;
-    let s = Rc::clone(&state);
-    calendar.set(
-        "set",
-        lua.create_function(
-            move |_, (day, season, year, minute): (i64, i64, i64, i64)| {
-                let days = rustlua_gameplay::gameplay::DAYS_PER_SEASON as i64;
-                if day < 1 || day > days {
-                    return Err(api_error(format!("calendar.set day must be in 1..={days}")));
-                }
-                if !(1..=rustlua_gameplay::gameplay::SEASONS_PER_YEAR as i64).contains(&season) {
-                    return Err(api_error("calendar.set season must be in 1..=4"));
-                }
-                if year < 1 {
-                    return Err(api_error("calendar.set year must be >= 1"));
-                }
-                let absolute = (year - 1) * rustlua_gameplay::gameplay::DAYS_PER_YEAR as i64
-                    + (season - 1) * days
-                    + day;
-                let mut state = s.lua_borrow_mut()?;
-                state
-                    .game_clock
-                    .set_absolute(absolute as u32, minute.max(0) as u32);
-                Ok(())
-            },
-        )?,
-    )?;
-    lua.globals().set("calendar", calendar)?;
-
-    // `day` lifecycle: sleep to the next morning, firing `on_day_end` then
-    // `on_day_start` (M16-08). Gameplay registers those globals for settlement.
-
-    let day = lua.create_table()?;
-    let s = Rc::clone(&state);
-    day.set(
-        "sleep",
-        lua.create_function(move |lua, ()| {
-            call_optional_day_hook(lua, "on_day_end")?;
-            let new_day = {
-                let mut state = s.lua_borrow_mut()?;
-                state.game_clock.sleep_to_morning()
-            };
-            call_optional_day_hook(lua, "on_day_start")?;
-            Ok(new_day as i64)
-        })?,
-    )?;
-    let s = Rc::clone(&state);
-    day.set(
-        "now",
-        lua.create_function(move |lua, ()| {
-            let clock = &s.lua_borrow()?.game_clock;
-            let now = lua.create_table()?;
-            now.set("day", clock.day as i64)?;
-            now.set("minute", clock.minute as i64)?;
-            Ok(now)
-        })?,
-    )?;
-    lua.globals().set("day", day)?;
-
+    // `clock` / `calendar` / `day` 已下沉到游戏时钟域（P1 ⑤-5）：
+    // `rustlua_gameplay::clock_lua::install(lua, &game_clock)`。
     let app = lua.create_table()?;
     let s = Rc::clone(&state);
     app.set(
@@ -240,8 +100,11 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             let root = s
                 .borrow()
                 .project_root
-                .as_ref()
-                .map(|path| path.to_string_lossy().replace('\\', "/"))
+                .with(|project| {
+                    project
+                        .path()
+                        .map(|path| path.to_string_lossy().replace('\\', "/"))
+                })
                 .unwrap_or_default();
             Ok(root)
         })?,

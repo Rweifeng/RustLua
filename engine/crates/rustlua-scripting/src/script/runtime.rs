@@ -21,6 +21,8 @@ use crate::script::require::{
 };
 use mlua::{Function, Lua, Table};
 use rustlua_ecs::entity::EntityId;
+use rustlua_ecs::world::World;
+use rustlua_lua_api::Handle;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -51,9 +53,39 @@ impl LuaRuntime {
             // 存档域的能力单元在这里起名（`docs/62` P1 ⑤）：`Handle` 的名字只用于重入报错，
             // 而 `ScriptState::default()` 给的是无名的 `<unnamed>`——装配点补上真名。
             save: rustlua_gameplay::save_store::SaveStore::handle(),
+            world_data: rustlua_gameplay::world_data_state::WorldDataState::handle(),
+            // 游戏时钟同样是能力单元（P1 ⑤-5）：`clock.*` 绑定与宿主的 `step_clock`
+            // 读写同一台时钟，脚本层不再保管它的类型与推进规则。
+            game_clock: rustlua_gameplay::clock_lua::handle(),
+            // 背包域的能力单元（P1 ⑤-6）：`item`/`inv`/`container`/`shop` 四张表与
+            // 存档面板读写同一份定义、格子与商店目录。
+            inventory: rustlua_gameplay::inventory_state::InventoryState::handle(),
+            // 世界的能力单元（P1 ⑤-7）：ECS 世界本身在这里起名。宿主仍经
+            // `with_world`/`with_world_mut` 访问，绑定侧经 `ScriptState::world()` 借用。
+            world: Handle::new(World::new(), "world"),
+            // 相机域的能力单元（P1 ⑤-8）：选中项、2D 控制器与两份每帧快照在这里起名，
+            // `camera`/`camera3d`/`camera2d` 三张表由 `rustlua_camera::camera_lua` 装。
+            camera: rustlua_camera::camera_state::CameraState::handle(),
+            // 物理域的能力单元（P1 ⑤-9）：两个模拟世界、分阶段回写队列与调试请求在这里起名，
+            // `physics`/`physics3d` 两张表由 `rustlua_physics::physics_lua` 装。
+            physics: rustlua_physics::physics_state::PhysicsState::handle(),
+            // 渲染域的脚本可见状态（P1 ⑤-10）：本帧主光的选择。
+            renderable: rustlua_render::renderable_lua::RenderableState::handle(),
+            // 动画域能力单元（P1 ⑤-10）：帧事件的一次性队列。
+            animation: rustlua_animation::animation_lua::AnimationState::handle(),
+            // UI 域能力单元（P1 ⑤-12）：动态文本/条/面板/图/网格/拖拽/视口。
+            ui_state: rustlua_ui::ui_state::UiState::handle(),
+            // 实体账本能力单元（P1 ⑤-13）：名字/持久 id/血量/标签/场景声明表。
+            entity_state: rustlua_ecs::entity_state::EntityState::handle(),
+            // 工程根同样是能力单元：`data.*` 绑定读它，`set_project_root` 换工程时
+            // 所有已装好的 VM 立即看见新根（P1 ⑤-4c）。
+            project_root: rustlua_lua_api::ProjectRoot::handle(),
             ..ScriptState::default()
         }));
-        state.borrow_mut().ui_state.reference = rustlua_ui::ui::UI_REFERENCE_SIZE;
+        {
+            let ui = state.borrow().ui_state.clone();
+            ui.with_mut(|ui| ui.set_reference(rustlua_ui::ui::UI_REFERENCE_SIZE));
+        }
         api::register_all(&lua, Rc::clone(&state), &installers)
             .map_err(|error| LuaBridgeError::Init(error.to_string()))?;
         // 心跳 + 指令预算：**每个 Lua 状态都装**（工程脚本、每实体脚本各自一份状态）。
@@ -191,7 +223,15 @@ impl LuaRuntime {
             return Ok(0);
         }
         let requests = self.entity_script_requests.clone();
-        let root = self.state.borrow().project_root.clone().ok_or_else(|| {
+        let root = {
+            let state = self.state.borrow();
+            state
+                .project_root
+                .borrow()
+                .ok()
+                .and_then(|root| root.path().map(Path::to_path_buf))
+        }
+        .ok_or_else(|| {
             LuaBridgeError::Api(
                 "entity scripts require a project root (set_project_root)".to_owned(),
             )
@@ -271,9 +311,16 @@ impl LuaRuntime {
     /// 重载会**清掉该文件 Lua 状态里的一切**（顶层局部变量、模块缓存），因此文档写明：每实体
     /// 状态要么放在实体组件里，要么放在脚本内以 `id` 为键的表里，并接受重载时重建。
     pub fn reload_entity_scripts(&mut self) -> Result<usize, LuaBridgeError> {
-        let root = match self.state.borrow().project_root.clone() {
-            Some(root) => root,
-            None => return Ok(0),
+        let root = {
+            let state = self.state.borrow();
+            state
+                .project_root
+                .borrow()
+                .ok()
+                .and_then(|root| root.path().map(Path::to_path_buf))
+        };
+        let Some(root) = root else {
+            return Ok(0);
         };
         let files: Vec<String> = self.entity_scripts.keys().cloned().collect();
         let mut reloaded = 0;
@@ -309,21 +356,22 @@ impl LuaRuntime {
     /// 失效判据是 `World::revision`：只有组件结构（insert/remove/despawn）变化才会重建。
     /// 稳态（脚本实体不增不减）下本函数是 O(1)，此前是每帧 O(n log n) 的全量遍历 + 排序。
     fn refresh_entity_script_requests(&mut self) {
-        let revision = self.state.borrow().world.revision();
+        // P1 ⑤-7：世界是能力单元，先取句柄副本再借用（借不到只可能是重入，直接跳过本帧）。
+        let handle = self.state.borrow().world.clone();
+        let Ok(world) = handle.borrow() else {
+            return;
+        };
+        let revision = world.revision();
         if revision == self.entity_script_requests_revision {
             return;
         }
         let mut requests: Vec<(EntityId, String)> = Vec::new();
-        {
-            let state = self.state.borrow();
-            state
-                .world
-                .for_each::<rustlua_ecs::entity_script::EntityScript>(|id, script| {
-                    if script.enabled {
-                        requests.push((id, script.file.clone()));
-                    }
-                });
-        }
+        world.for_each::<rustlua_ecs::entity_script::EntityScript>(|id, script| {
+            if script.enabled {
+                requests.push((id, script.file.clone()));
+            }
+        });
+        drop(world);
         requests.sort_by_key(|(id, _)| *id);
         // 消亡实体的容错预算在这里剪掉：`EntityId` 的槽位会被复用、generation 每次都不同，
         // 不剪就是"每生成一次实体泄漏一条预算"。

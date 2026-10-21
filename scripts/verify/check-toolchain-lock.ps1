@@ -51,6 +51,7 @@ if (-not (Test-Path -LiteralPath $toolsPath)) {
 $tools = Get-Content -LiteralPath $toolsPath -Raw | ConvertFrom-Json
 $rust = [string]$tools.rust
 $node = [string]$tools.node
+$python = [string]$tools.python
 
 # ── A. tools.json 自身：精确 semver，不用 latest/lts/浮动值 ───────────────────
 $semver = '^\d+\.\d+\.\d+$'
@@ -58,7 +59,9 @@ Add-Check "tools.rust 是精确版本 ($rust)" ($rust -match $semver) "expect X.
 Add-Check "tools.cargoAudit 是精确版本 ($($tools.cargoAudit))" ([string]$tools.cargoAudit -match $semver) "expect X.Y.Z"
 Add-Check "tools.cargoDeny 是精确版本 ($($tools.cargoDeny))" ([string]$tools.cargoDeny -match $semver) "expect X.Y.Z"
 Add-Check "tools.cargoCyclonedx 是精确版本 ($($tools.cargoCyclonedx))" ([string]$tools.cargoCyclonedx -match $semver) "expect X.Y.Z"
+Add-Check "tools.cargoLlvmCov 是精确版本 ($($tools.cargoLlvmCov))" ([string]$tools.cargoLlvmCov -match $semver) "expect X.Y.Z (no latest)"
 Add-Check "tools.node 是主版本锁定 ($node)" ([string]$node -match '^\d+$') "expect a major version like 20"
+Add-Check "tools.python 是版本锁定 ($python)" ([string]$python -match '^\d+\.\d+$') "expect X.Y like 3.12 (no latest)"
 
 # ── B. rust-toolchain.toml：精确版本且与 tools.json 一致 ─────────────────────
 $channel = Get-TomlString $toolchainPath "channel"
@@ -73,6 +76,7 @@ if (-not (Test-Path -LiteralPath $workflowRoot)) {
     Add-Check "workflows 目录非空" ($workflowFiles.Count -gt 0) "no *.yml under $workflowRoot"
     $rustRefs = 0
     $nodeRefs = 0
+    $pythonRefs = 0
     foreach ($wf in $workflowFiles) {
         $text = Get-Content -LiteralPath $wf.FullName -Raw
         $lineNo = 0
@@ -89,10 +93,16 @@ if (-not (Test-Path -LiteralPath $workflowRoot)) {
                 Add-Check ("{0}:{1} setup-node = {2}" -f $wf.Name, $lineNo, $Matches[1]) `
                     ($Matches[1] -eq $node) "expect $node (tools.json)"
             }
+            if ($line -match 'python-version:\s*"?([^"\s]+)"?') {
+                $pythonRefs++
+                Add-Check ("{0}:{1} setup-python = {2}" -f $wf.Name, $lineNo, $Matches[1]) `
+                    ($Matches[1] -eq $python) "expect $python (tools.json)"
+            }
         }
     }
     Add-Check "至少有一条 rust 工具链引用" ($rustRefs -gt 0) "no dtolnay/rust-toolchain reference found"
     Add-Check "至少有一条 setup-node 引用" ($nodeRefs -gt 0) "no actions/setup-node node-version found"
+    Add-Check "至少有一条 setup-python 引用" ($pythonRefs -gt 0) "no actions/setup-python python-version found; trend_db.py CI runs must pin python (tools.json)"
 }
 
 # ── D. workflows 里的安全工具版本：`cargo-audit@0.22.2` 这类 ref 必须等于 tools.json ──
@@ -146,5 +156,5 @@ if ($failed.Count -gt 0) {
     Write-Host "toolchain_lock_failed" -ForegroundColor Red
     exit 1
 }
-Write-Host ("toolchain_lock_ok rust=" + $rust + " node=" + $node + " tools=3") -ForegroundColor Green
+Write-Host ("toolchain_lock_ok rust=" + $rust + " node=" + $node + " python=" + $python + " tools=5") -ForegroundColor Green
 exit 0

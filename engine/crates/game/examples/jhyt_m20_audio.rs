@@ -675,7 +675,7 @@ fn press_many(
     times: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..times {
-        press(runtime, &host, key)?;
+        press(runtime, host, key)?;
     }
     Ok(())
 }

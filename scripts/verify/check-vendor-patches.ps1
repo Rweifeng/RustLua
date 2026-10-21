@@ -1,7 +1,7 @@
 ﻿# check-vendor-patches.ps1 —— vendor 补丁基线自动校验门
 #
-# 守护对象：`engine/Cargo.toml` 的 `[patch.crates-io]` 指向的 5 个 vendored fork
-# （mlua / mlua-sys / lua-src / wasm-bindgen-macro(+support) / wasm-bindgen-cli）。
+# 守护对象：`engine/Cargo.toml` 的 `[patch.crates-io]` 指向的 6 个 vendored fork
+# （paste 兼容 shim / mlua / mlua-sys / lua-src / wasm-bindgen-macro(+support) / wasm-bindgen-cli）。
 # 这些 fork 携带 wasm32-unknown-unknown 上 Lua 与 wasm-bindgen 的必需补丁，**升级上游
 # 后补丁极易被覆盖丢失**（实测教训：extern "C-unwind" 回归会让宿主函数返回 Err 的
 # pcall 在 wasm 上崩溃，而 boot 依旧全绿）。本门逐条断言每个补丁点仍在，不依赖人肉 diff。
@@ -66,6 +66,7 @@ if (-not (Test-Path -LiteralPath $engineToml)) {
 # ── A. [patch.crates-io] 指向（engine/Cargo.toml）──────────────────────────────
 $engineTomlRaw = Get-Content -LiteralPath $engineToml -Raw
 $patchChecks = @{
+    "paste"                    = "vendor/paste";
     "mlua"                     = "vendor/mlua";
     "mlua-sys"                 = "vendor/mlua-sys";
     "lua-src"                  = "vendor/lua-src";

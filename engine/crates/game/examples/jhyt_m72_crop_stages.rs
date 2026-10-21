@@ -901,7 +901,7 @@ fn stage_ramp(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // ② 结束时稻田是"稻种 + 已浇 2 天"。整块农田清干净，再逐作物走全程。
     run(runtime, "require('systems.farm').reset()")?;
-    pump(runtime, &host, 2)?;
+    pump(runtime, host, 2)?;
     for cell in [field, medicinal] {
         let cleared = read_cell(runtime, cell.0, cell.1)?;
         if cleared.soil != 0.0 || cleared.crop != 0.0 {
@@ -988,7 +988,7 @@ fn harvest_animation(
     }
     // 前面翻土/浇水留下的条带（最长 6/12 秒 = 30 帧）全部自毁，特效计数回到 0；
     // 成熟后多等不腐烂（docs/33：成熟后停留可采），所以这里冲帧不改变地块。
-    pump(runtime, &host, 90)?;
+    pump(runtime, host, 90)?;
     if num(runtime, "require('systems.effects').active()")? != 0.0 {
         return Err("进收成前活动特效不为 0：上一条带还没自毁，计数断言会失真".into());
     }
@@ -1014,7 +1014,7 @@ fn harvest_animation(
     let mut last = mature_tile;
     let mut alive_mid = 0.0;
     for frame in 1..=48 {
-        pump(runtime, &host, 1)?;
+        pump(runtime, host, 1)?;
         let got = read_cell(runtime, cx, cy)?.crop;
         if got != last {
             changes.push((frame, got));

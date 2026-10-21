@@ -10,3 +10,7 @@ publish = false
 thiserror.workspace = true
 rustlua-math = { path = "../rustlua-math" }
 rustlua-ecs = { path = "../rustlua-ecs" }
+# `camera_lua`：相机绑定下沉到相机域（P1 ⑤-8）。`lua-api` 是叶子契约层（`Handle` /
+# `api_error`），`mlua` 只用于装 `camera` / `camera3d` / `camera2d` 三张全局表。
+rustlua-lua-api = { path = "../rustlua-lua-api" }
+mlua = { version = "0.11", features = ["lua54", "vendored"] }

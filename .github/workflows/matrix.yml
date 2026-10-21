@@ -1,0 +1,133 @@
+name: platform matrix
+
+# P4-03 多平台矩阵：把"这棵树在别的 OS/target 上还行不行"变成每周有答案的 cell。
+# 初始只有 Windows 三个 cell 是 blocking（与 quality.yml 的门同级）；Linux/macOS 是
+# advisory 观察期（continue-on-error 只是观察，不是永远放行）——到期仍黄/红由
+# check-matrix-policy.ps1 判 2，promotion.json 是档位与到期日的单一事实源。
+# 档位/到期日变更只改 metrics/promotion.json，不要单独改这里的 experimental 表达。
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "engine/**"
+      - "examples/**"
+      - "scripts/**"
+      - "plugins/**"
+      - "metrics/**"
+      - ".github/workflows/matrix.yml"
+      - ".github/workflows/metrics.yml"
+  pull_request:
+    paths:
+      - "engine/**"
+      - "examples/**"
+      - "scripts/**"
+      - "plugins/**"
+      - "metrics/**"
+      - ".github/workflows/matrix.yml"
+  workflow_dispatch:
+  schedule:
+    - cron: "0 22 * * 0" # 每周日 22:00 UTC（周一 06:00 北京）
+
+jobs:
+  matrix:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: windows-native
+            os: windows-latest
+            cmd: cargo check --workspace --all-targets --locked
+            target: ""
+            tier: blocking
+            experimental: false
+          - id: windows-wasm
+            os: windows-latest
+            cmd: cargo check -p game_web -p gpu-web-probe -p wasm-lua-spike --target wasm32-unknown-unknown
+            target: wasm32-unknown-unknown
+            tier: blocking
+            experimental: false
+          - id: windows-wasm-gpu2d-off
+            os: windows-latest
+            cmd: cargo check -p game_web --no-default-features --target wasm32-unknown-unknown
+            target: wasm32-unknown-unknown
+            tier: blocking
+            experimental: false
+          - id: linux-native
+            os: ubuntu-latest
+            cmd: cargo check --workspace --all-targets --locked
+            target: ""
+            tier: advisory
+            experimental: true
+          - id: linux-wasm
+            os: ubuntu-latest
+            cmd: cargo check -p game_web -p gpu-web-probe -p wasm-lua-spike --target wasm32-unknown-unknown
+            target: wasm32-unknown-unknown
+            tier: advisory
+            experimental: true
+          - id: macos-native
+            os: macos-latest
+            cmd: cargo check --workspace --all-targets --locked
+            target: ""
+            tier: advisory
+            experimental: true
+          - id: macos-wasm
+            os: macos-latest
+            cmd: cargo check -p game_web -p gpu-web-probe -p wasm-lua-spike --target wasm32-unknown-unknown
+            target: wasm32-unknown-unknown
+            tier: advisory
+            experimental: true
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+
+      - name: Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev libx11-xcb-dev libxrandr-dev libxi-dev pkg-config
+
+      - name: Cell check
+        run: ${{ matrix.cmd }}
+
+      - name: Cell status report
+        shell: pwsh
+        run: |
+          Write-Host "matrix_cell id=${{ matrix.id }} tier=${{ matrix.tier }} status=${{ job.status }}"
+
+    # advisory 观察期：失败不阻断 workflow（矩阵是加法；失败仍会被 matrix-summary 汇总，
+    # 到期仍红由 check-matrix-policy.ps1 判 2）。blocking 永不 continue-on-error。
+    continue-on-error: ${{ matrix.tier == 'advisory' }}
+    timeout-minutes: 30
+
+  # 汇总裁定：blocking 必须全绿；advisory 红且到期的 cell 会让整个 workflow 判红。
+  matrix-summary:
+    needs: matrix
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Matrix policy gate
+        shell: pwsh
+        run: |
+          $results = '${{ toJson(needs.matrix.result) }}'
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/check-matrix-policy.ps1 -Summarize $results
+          if ($LASTEXITCODE -ne 0) { throw "matrix policy failed (exit $LASTEXITCODE)" }

@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "comment": "P4-02 wasm runtime-evidence mapping: wasm modules/entries -> runtime evidence commands, or explicit compile-only with reason. record-only means the data is recorded but NOT asserted (existing web audio readings). No entry may be 'unknown'.",
+  "evidence": [
+    {
+      "target": "game_web (wasm entry + bridge)",
+      "kind": "runtime",
+      "commands": [
+        "scripts/verify/verify-webgl-bundle.ps1",
+        "scripts/verify/verify-wasm-lua.ps1",
+        "scripts/verify/verify-webgl-eh.ps1"
+      ],
+      "notes": "启动、Lua 桥与错误处理在浏览器/Node 侧有运行证据。"
+    },
+    {
+      "target": "rustlua-infra wasm VFS/IO (vfs.rs, save_slot.rs, user_dir.rs wasm branches)",
+      "kind": "runtime",
+      "commands": ["scripts/verify/verify-webgl-bundle.ps1"],
+      "notes": "Web 启动与资源读取门覆盖 wasm VFS provider 路径（key_of /project 前缀）。"
+    },
+    {
+      "target": "rustlua-audio wasm Device/Sink",
+      "kind": "record-only",
+      "commands": ["scripts/verify/verify-webgl-bundle.ps1"],
+      "notes": "现有 Web 音频读数只记录不断言；不能假装是断言。"
+    },
+    {
+      "target": "engine wasm font warmup",
+      "kind": "runtime",
+      "commands": ["scripts/verify/verify-webgl-bundle.ps1"],
+      "notes": "启动 + 字体度量门覆盖 wasm 字体预热分支。"
+    },
+    {
+      "target": "gpu-web-probe",
+      "kind": "runtime",
+      "commands": ["scripts/verify/gpu-web-probe.ps1"],
+      "notes": "独立 wasm 探针，独立运行证据。"
+    },
+    {
+      "target": "rustlua-scripting globals.rs cfg!(target_arch=\"wasm32\")",
+      "kind": "compile-only",
+      "commands": ["cargo check -p game_web -p gpu-web-probe -p wasm-lua-spike --target wasm32-unknown-unknown"],
+      "notes": "宏分支随 wasm-default cell 编译；运行期语义由 wasm Lua 门覆盖。"
+    },
+    {
+      "target": "rustlua-infra par.rs / user_dir.rs cfg! macros",
+      "kind": "compile-only",
+      "commands": ["cargo check -p game_web -p gpu-web-probe -p wasm-lua-spike --target wasm32-unknown-unknown"],
+      "notes": "代码内 cfg! 随闭包编译覆盖；user_dir.rs:213 是文档注释（扫描器跳过），不计。"
+    }
+  ]
+}

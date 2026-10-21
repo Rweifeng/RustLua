@@ -1,6 +1,6 @@
 use mlua::{Lua, Result as LuaResult, Value};
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
     rc::Rc,
@@ -16,6 +16,7 @@ use std::{
 mod api;
 mod error;
 mod guard;
+mod prefab_host;
 mod progress;
 mod require;
 mod runtime;
@@ -36,33 +37,25 @@ pub use require::{install_web_require, read_project_script};
 pub use values::entity_lua_id;
 
 // WP11-USE:BEGIN
-use error::{ScriptFingerprint, api_error};
+use error::ScriptFingerprint;
 use rustlua_animation::animation::AnimationFrameEvent;
-use rustlua_camera::camera::{Camera2D, Camera3D, Viewport};
+use rustlua_camera::camera::{Camera2D, Camera3D};
 use rustlua_ecs::{
     entity::EntityId,
     particle::{Particle, ParticleEmitter, ParticleSystem},
-    tilemap::Tilemap,
-    transform::Transform,
     world::World,
 };
-use rustlua_gameplay::gameplay::{GameClock, Inventory, ItemDefinition, ItemStack};
+use rustlua_gameplay::gameplay::GameClock;
 use rustlua_gameplay::save_store::SaveStore;
-use rustlua_infra::ids::AssetId;
-use rustlua_lua_api::Handle;
+use rustlua_lua_api::{Handle, ProjectRoot};
 use rustlua_math::math2d::Vec2;
 #[allow(unused_imports)] // 经 `script::tests` 的 `use super::*` 链供 `tests/camera.rs` 使用
 use rustlua_math::math3d::Vec3;
-use rustlua_physics::{
-    physics::{ColliderDesc, ColliderShape, PhysicsWorld},
-    physics3d::PhysicsWorld3d,
-};
 use rustlua_scene::scene::SceneEntityId;
-use rustlua_ui::{
-    ui::{DynamicUiImage, UiGrid, UiPanel},
-    ui_navigation::{FocusRing, ScrollState},
-};
+use rustlua_ui::ui::{DynamicUiImage, UiGrid, UiPanel};
 use values::{format_lua_value, lua_value_to_json};
+// `ui` 的运行期元素类型跟着状态单元搬去了 UI 域（P1 ⑤-12），路径保持不变以便宿主继续用。
+pub use rustlua_ui::ui_state::{UiBar, UiDrag, UiText};
 // WP11-USE:END
 
 /// 运行期 API 面的**事实源探针**：遍历 `_G`，剔除 Lua 标准库，导出「模块表 → 函数名（排序）」。
@@ -100,117 +93,18 @@ end)()
 // 测试专用：反向名索引的重建次数。契约是「改名才重建、稳态反查零重建」，而重建产出的表与
 // 重建前逐项相同——从外部观察不到，只能数次数（与 `rustlua-ecs` 的 `ORDER_REBUILDS` 同一手法）。
 // 用 thread_local：`cargo test` 并行跑用例，全局计数会互相污染。
-#[cfg(test)]
-thread_local! {
-    static ENTITY_NAME_REBUILDS: Cell<u32> = const { Cell::new(0) };
-}
 
 #[cfg(test)]
 fn entity_name_rebuilds() -> u32 {
-    ENTITY_NAME_REBUILDS.with(|count| count.get())
+    rustlua_ecs::entity_state::entity_name_rebuilds()
 }
 
-/// 实体名索引：**正向**（名字 → 实体）是唯一真源，**反向**（实体 → 它的名字们）是惰性派生的缓存。
-///
-/// **为什么要合成一个类型**（`docs/60` §6.1 复核，2026-10-06）：反向查找原本是
-/// `by_name.iter().find(...)` 线性扫，而宿主在**实体循环里**调它（`host/runtime_scene/mesh_ui.rs`
-/// 的 `entity_name`，每个实体一次）→ 实体数 n 时每帧 O(n²)。
-///
-/// 只"再加一张反向表"是不够的——两张表各自维护就一定会漂移，而漂移的后果（名字张冠李戴）
-/// 比慢一点严重得多。所以两个方向由**这一个类型**一起管：改名的入口只有下面这几个方法，
-/// 脏标记在方法里置位，**没有"忘了同步反向表"这种可能**。
-///
-/// 重建策略与 `rustlua-ecs` 的 `TypedStorage::ensure_order` 同构：改动只标脏，
-/// 下一次反查整体重建一次——稳态（无改名）每帧零重建。
-#[derive(Debug, Default)]
-struct EntityNames {
-    /// 名字 → 实体。BTreeMap 的有序性是 `entity_names_by_slot` 这类**确定性输出**的基础。
-    by_name: BTreeMap<String, EntityId>,
-    /// 实体 → 它登记过的名字，按 `by_name` 的键序收集：`first_name` 取第一个，与改造前
-    /// `iter().find` 的结果**逐字相同**（同一实体挂多个名字时这一点尤其重要）。
-    by_entity: RefCell<HashMap<EntityId, Vec<String>>>,
-    reverse_dirty: Cell<bool>,
-}
-
-impl EntityNames {
-    fn clear(&mut self) {
-        self.by_name.clear();
-        self.reverse_dirty.set(true);
-    }
-
-    /// 登记一个名字。语义与改造前的 `BTreeMap::insert` **完全一致**：同名会改指到新实体，
-    /// 而同一实体拿到新名字时**旧名字仍然指向它**（"名字可冲突、可多个"是本表的既有契约，
-    /// 本次只加索引不改语义）。
-    fn insert(&mut self, name: String, id: EntityId) {
-        self.by_name.insert(name, id);
-        self.reverse_dirty.set(true);
-    }
-
-    fn get(&self, name: &str) -> Option<EntityId> {
-        self.by_name.get(name).copied()
-    }
-
-    fn contains_key(&self, name: &str) -> bool {
-        self.by_name.contains_key(name)
-    }
-
-    /// 名字仍指向 `id` 时才摘掉它（`despawn_prefab_state` 用：只摘自己那一份，不误伤别人）。
-    fn remove_name_if(&mut self, name: &str, id: EntityId) {
-        if self.by_name.get(name) == Some(&id) {
-            self.by_name.remove(name);
-            self.reverse_dirty.set(true);
-        }
-    }
-
-    /// 摘掉所有指向 `id` 的名字（实体销毁路径）。
-    fn remove_entity(&mut self, id: EntityId) {
-        let before = self.by_name.len();
-        self.by_name.retain(|_, value| *value != id);
-        if self.by_name.len() != before {
-            self.reverse_dirty.set(true);
-        }
-    }
-
-    /// 按名字有序遍历（`entity_names_by_slot` 等确定性输出的入口）。
-    fn iter_by_name(&self) -> impl Iterator<Item = (&String, &EntityId)> {
-        self.by_name.iter()
-    }
-
-    /// 反查缓存的惰性重建。走 `&self` + 内部可变性——外层 `ScriptState` 的借用方式一字不改
-    /// （所以这几个 getter 不会给 Lua 重入多开一个可变借用的口子）。
-    fn ensure_reverse(&self) {
-        if !self.reverse_dirty.get() {
-            return;
-        }
-        #[cfg(test)]
-        ENTITY_NAME_REBUILDS.with(|count| count.set(count.get() + 1));
-        let mut built: HashMap<EntityId, Vec<String>> = HashMap::new();
-        for (name, id) in &self.by_name {
-            built.entry(*id).or_default().push(name.clone());
-        }
-        *self.by_entity.borrow_mut() = built;
-        self.reverse_dirty.set(false);
-    }
-
-    /// `entity_name` 的实现：与旧 `iter().find` **同结果**（BTreeMap 键序里的第一个）。
-    fn first_name(&self, id: EntityId) -> Option<String> {
-        self.ensure_reverse();
-        self.by_entity
-            .borrow()
-            .get(&id)
-            .and_then(|names| names.first().cloned())
-    }
-
-    /// 该实体的**任一**名字命中谓词即为真（`is_entity_scene_text_hidden` 用：
-    /// 原来是线性扫全表，现在是 O(该实体的名字数)）。
-    fn any_name_matches(&self, id: EntityId, predicate: impl Fn(&str) -> bool) -> bool {
-        self.ensure_reverse();
-        self.by_entity
-            .borrow()
-            .get(&id)
-            .is_some_and(|names| names.iter().any(|name| predicate(name)))
-    }
-}
+// 只在测试里用到（经 `script::tests` 的 `use super::*` 链）：用 `cfg(test)` 收口，
+// 免得给生产构建留一个 `#[allow(unused_imports)]` 的口子。
+#[cfg(test)]
+use rustlua_ecs::tilemap::Tilemap;
+#[cfg(test)]
+use rustlua_ecs::transform::Transform;
 
 /// 运行期 spawn 的 UI 预设布局节点表 + **修订号**。
 ///
@@ -254,137 +148,22 @@ impl PrefabUiNodes {
     }
 }
 
-/// docs/60 §4.1：`ScriptState` 按领域拆分后的**实体注册域**。
-///
-/// 场景切换清理走 [`EntityState::clear_for_scene_transition`]——新字段若属于场景
-/// 生命周期，加进这里而不是散落的 `state.x.clear()` 行。
-#[derive(Debug, Default)]
-struct EntityState {
-    /// 名字索引。**P3-① 复核（docs/60 §6.1，2026-10-06）**：反向查询曾经是线性扫全表，
-    /// 而宿主每帧在实体循环里查一次 → O(n²)。现在正向真源与反向缓存由 [`EntityNames`]
-    /// 一起维护（惰性重建 + 脏标记），反查是 O(1)。
-    names: EntityNames,
-    health: HashMap<EntityId, f32>,
-    /// Stable project-level entity IDs (`persist_id` → live entity). Distinct
-    /// from `names` (display/authoring name, collision-prone): a persist ID is
-    /// unique across the runtime and is what save/snapshot uses to re-bind
-    /// runtime entities (crops, buildings, containers, NPCs) without
-    /// duplicating or misbinding them.
-    persist: HashMap<String, EntityId>,
-    /// Persistent entities (name → authored snapshot) that survive scene loads.
-    persistent: BTreeMap<String, PersistedEntity>,
-    /// Per-entity string tags used by interact queries and gameplay scripts.
-    /// P3-①：纯按键查找、从不按序遍历（有序性只在存档/序列化侧需要），故用 HashMap。
-    tags: HashMap<EntityId, HashMap<String, String>>,
-    /// Optional on-screen interaction prompt text (`interact.prompt`).
-    interact_prompt: Option<String>,
-    /// Authoring ID → live ECS handle. The editor uses this to preview a drag
-    /// by mutating one component without rebuilding the whole runtime.
-    scene_entities: BTreeMap<SceneEntityId, EntityId>,
-}
-
-impl EntityState {
-    /// 场景切换时丢弃**当前场景**的注册数据；`persistent` 刻意保留（跨场景快照）。
-    fn clear_for_scene_transition(&mut self) {
-        self.names.clear();
-        self.persist.clear();
-        self.health.clear();
-        self.tags.clear();
-        self.scene_entities.clear();
-        self.interact_prompt = None;
-    }
-}
-
-/// docs/60 §4.1：动态 UI 域（文本/条/面板/图/网格/拖拽/焦点/滚动 + 视口参考系）。
-#[derive(Debug, Default)]
-struct UiState {
-    texts: BTreeMap<String, UiText>,
-    bars: BTreeMap<String, UiBar>,
-    panels: BTreeMap<String, UiPanel>,
-    images: BTreeMap<String, DynamicUiImage>,
-    grids: BTreeMap<String, UiGrid>,
-    /// `ui.scene_text_visible(name, false)` 登记的场景文字实体按名隐藏集。
-    /// 语义与 web 兼容层 `__rustlua_scene_text_hidden` 对齐：实体仍在场景里
-    /// （照常参与 UiLayout 布局），仅绘制场景文字时跳过该实体。
-    scene_text_hidden: BTreeSet<String>,
-    drag: Option<UiDrag>,
-    /// 运行时 UI 焦点环（M20-02）：`ui.focus_open/move/...` 按稳定 id 持有，
-    /// 面板用方向键/摇杆方向驱动选择（`rustlua_ui::ui_navigation::FocusRing`）。
-    focus_rings: HashMap<String, FocusRing>,
-    /// 运行时列表滚动状态（M20-02）：面板把选中行滚入视口
-    /// （`rustlua_ui::ui_navigation::ScrollState`）。
-    scroll_states: HashMap<String, ScrollState>,
-    viewport: [f32; 2],
-    /// Canvas 空间 UI 参考分辨率（设计分辨率），与运行时渲染保持一致，
-    /// 供 Lua 侧 `process_ui_clicks` / `grid_hit` 命中测试使用。
-    reference: [f32; 2],
-}
-
-impl UiState {
-    /// 场景切换时丢弃动态登记的 UI 元素与交互状态；`viewport`/`reference`（窗口
-    /// 形态）与 `scene_text_hidden`（沿用既有行为，按名隐藏跨场景仍生效）保留。
-    fn clear_for_scene_transition(&mut self) {
-        self.texts.clear();
-        self.bars.clear();
-        self.panels.clear();
-        self.images.clear();
-        self.grids.clear();
-        self.drag = None;
-        self.focus_rings.clear();
-        self.scroll_states.clear();
-    }
-}
-
-/// docs/60 §4.1：物理模拟域（2D/3D 世界 + 分阶段回写 + 调试绘制请求）。
-#[derive(Debug, Default)]
-struct PhysicsState {
-    world2d: PhysicsWorld,
-    world3d: PhysicsWorld3d,
-    /// WP7：`Physics` 阶段推进后被移动的动态刚体，等 `Writeback` 阶段再写进 ECS。
-    /// 拆开两个阶段是为了让 2D/3D 的**所有**推进都发生在**任何**回写之前
-    /// （此前 2D 的回写夹在 3D 推进之前，"谁先看到谁"取决于注册顺序）。
-    pending_writeback_2d: Vec<(EntityId, Vec2)>,
-    pending_writeback_3d: Vec<(EntityId, rustlua_math::math3d::Vec3)>,
-    /// WP7 ②：collider 调试绘制的**请求值**。绘制开关属于宿主（渲染在那里发生），
-    /// 这里只登记 Lua 的请求、由宿主每帧取走，与 `camera2d` 的请求/消费模式一致。
-    collider_debug_request: Option<bool>,
-    /// docs/54 §8-⑥：3D 侧的同一条请求通道，由 `physics3d.debug_draw(...)` 登记。
-    /// 与 2D 分开是刻意的：混合场景里"只画 2D 碰撞体"或"只画 3D"都是常见需求。
-    collider_debug_request_3d: Option<bool>,
-}
-
-impl PhysicsState {
-    /// 场景切换重建两个模拟世界（旧实体句柄全部作废）。
-    fn clear_for_scene_transition(&mut self) {
-        self.world2d = PhysicsWorld::new();
-        self.world3d = PhysicsWorld3d::new();
-    }
-}
-
-/// docs/60 §4.1：物品/背包/商店域。
-#[derive(Debug, Default)]
-struct InventoryState {
-    item_defs: HashMap<String, ItemDefinition>,
-    inventories: HashMap<String, Inventory>,
-    /// Shop catalogs: name -> `{ item_id: { buy, sell } }` (M16-10).
-    shops: HashMap<String, serde_json::Value>,
-}
-
-impl InventoryState {
-    /// 场景切换只丢弃商店目录；物品定义与背包内容随存档/持久实体存活（既有语义）。
-    fn clear_for_scene_transition(&mut self) {
-        self.shops.clear();
-    }
-}
-
 #[derive(Debug, Default)]
 pub(crate) struct ScriptState {
     delta_seconds: f32,
     quit_requested: bool,
-    world: World,
+    /// 世界的能力单元（P1 ⑤-7：ECS 世界从 `ScriptState` 的内联字段变成可共享的句柄）。
+    ///
+    /// 这一步**只换借用面**，不搬绑定位置：`state.world()` / `state.world_mut()` 是调用点的
+    /// 短写（字段与同名方法在 Rust 里是两个命名空间）。宿主仍走 `with_world`/`with_world_mut`，
+    /// 绑定仍在 `script/api/*`——等 `transform`/`entity` 这些模块搬到 owning crate 时，
+    /// 它们拿的是同一个 `Handle<World>`，不需要 VM 宿主当中间人。
+    world: Handle<World>,
     scene: Option<String>,
     scene_pending_load: Option<String>,
-    project_root: Option<PathBuf>,
+    /// 工程根的能力单元（P1 ⑤-4c）：绑定（`data.*` 等）与宿主读同一份，
+    /// 因此运行期 `set_project_root` 对已装好的绑定立即生效（不需要重装 VM）。
+    project_root: Handle<ProjectRoot>,
     /// 懒加载的字体度量探针（`ui.measure_text` 用）：只读覆盖与 advance、
     /// 不光栅化字形、不占渲染图集内存。`None` = 从未尝试加载。
     font_probe: Option<Option<rustlua_render::font::FontProbe>>,
@@ -395,33 +174,19 @@ pub(crate) struct ScriptState {
     /// 上一次 Lua `update()` 的耗时（微秒）。宿主把它累加进 `PerformanceStats::lua_ms`
     /// ——这个指标此前只有单测在写，真实运行恒为 `0.000`（P4 接线，见 `docs/37` 5-6）。
     last_update_micros: u64,
-    assets: HashMap<String, String>,
-    /// WP4：2D 相机控制器（跟随 / 死区 / 平滑 / 抖动）。相机数据仍在
-    /// `RuntimeScene::camera`，这里只放"center 该怎么算"的控制器状态。
-    camera2d: rustlua_camera::camera::Camera2dController,
+    /// 世界数据域的能力单元（P1 ⑤-4c：状态与绑定都归 `rustlua-gameplay`）。
+    world_data: Handle<rustlua_gameplay::world_data_state::WorldDataState>,
+    /// 相机域的能力单元（P1 ⑤-8：选中项 / 2D 控制器 / 两份每帧快照与三张 Lua 表都归
+    /// `rustlua-camera`，绑定见 `rustlua_camera::camera_lua`）。
+    camera: Handle<rustlua_camera::camera_state::CameraState>,
     particles: ParticleSystem,
-    /// WP4 ⑦：本帧已触发、等待 Lua 轮询取走的动画帧事件（`animation.events()`）。
-    animation_events: Vec<(EntityId, AnimationFrameEvent)>,
-    /// WP4 ⑧：宿主回填的 2D 相机快照（相机 + 视口），供 Lua 做屏幕↔世界换算。
-    camera_view: Option<(Camera2D, [f32; 2])>,
-    /// docs/54 §8-⑦：宿主回填的 **3D 相机快照**（本帧 3D pass 实际用的那台 + 视口），
-    /// 供 Lua 做屏幕→射线、世界→屏幕换算（`camera3d.*`）。与编辑器 picking 共用
-    /// `Camera3D::ray_from_screen` / `world_to_ndc`，因此两侧不会各写一套投影数学。
-    camera3d_view: Option<(Camera3D, [f32; 2])>,
-    /// Entity whose `Camera` component is the **active camera**（相机拆分批 9：只有这一条选择链）。
-    /// Lua selects it with `camera.set_active`; each pass then filters candidates by projection —
-    /// 3D pass 取透视、2D 相机取正交——未选择（或选中的不是本 pass 的投影）时回退到排序序第一台。
-    active_camera: Option<EntityId>,
-    /// Entity whose `Light` component the renderer uses this frame.
-    active_light: Option<EntityId>,
-    game_clock: GameClock,
-    data_cache: HashMap<String, serde_json::Value>,
-    /// Registered `data.schema(path, spec)` validators for data tables.
-    schema_defs: HashMap<String, serde_json::Value>,
-    /// 注册 `map.schema(name, spec)` 的分地图持久状态校验器（B-3）。
-    /// 按地图名索引（而不是按场景索引），并刻意跨过
-    /// `process_scene_transition` 保留；`schema_defs` 则只跟踪数据文件校验器。
-    map_state_schemas: HashMap<String, serde_json::Value>,
+    /// 动画域能力单元（P1 ⑤-10）：帧事件队列归动画域（rustlua-animation）。
+    animation: Handle<rustlua_animation::animation_lua::AnimationState>,
+    /// 渲染域的脚本可见状态（P1 ⑤-10：本帧主光的选择归 `rustlua-render`）。
+    renderable: Handle<rustlua_render::renderable_lua::RenderableState>,
+    /// 游戏时钟的能力单元（P1 ⑤-5：时钟类型与推进规则归 `rustlua-gameplay`，
+    /// 绑定见 `rustlua_gameplay::clock_lua`，宿主推进见 [`LuaRuntime::step_clock`]）。
+    game_clock: Handle<GameClock>,
     /// 运行期 `prefab.spawn` 的活实例（handle → 活世界落点）。despawn 与按名查节点都走
     /// 这张表；刻意不进场景簿记——切图不该把动态 UI 实例当场景实体重生（见
     /// `scene_spawn::PrefabSpawn` 头注释）。
@@ -442,15 +207,33 @@ pub(crate) struct ScriptState {
     /// "为什么另一个没画出来"无从解释）。
     scene_renderable_conflicts: Vec<String>,
     // ---- docs/60 §4.1：按领域拆分的子状态 ----
-    entity_state: EntityState,
-    ui_state: UiState,
-    physics: PhysicsState,
-    inventory: InventoryState,
+    /// 实体账本的能力单元（P1 ⑤-13：名字/持久 id/血量/标签/场景声明表归 `rustlua-ecs`）。
+    entity_state: Handle<rustlua_ecs::entity_state::EntityState>,
+    /// UI 域的能力单元（P1 ⑤-12：动态文本/条/面板/图/网格/拖拽/视口都归 `rustlua-ui`）。
+    ui_state: Handle<rustlua_ui::ui_state::UiState>,
+    /// 物理模拟域的能力单元（P1 ⑤-9：两个世界、分阶段回写队列与调试请求都归
+    /// `rustlua-physics`，绑定见 `rustlua_physics::physics_lua`）。
+    physics: Handle<rustlua_physics::physics_state::PhysicsState>,
+    /// 物品/背包/商店域的能力单元（P1 ⑤-6：数据与槽位规则归 `rustlua-gameplay`）。
+    inventory: Handle<rustlua_gameplay::inventory_state::InventoryState>,
     /// 存档域的能力单元（P1 ⑤：数据/路径/槽位归 `rustlua-gameplay`）。
     save: Handle<SaveStore>,
+    /// UI 导航的能力单元（P1 ⑤-3：焦点环/滚动位置归 `rustlua-ui`）。
+    nav: Handle<rustlua_ui::lua_nav::NavState>,
 }
 
 impl ScriptState {
+    /// 只读借用世界（P1 ⑤-7）。调用点写 `state.world()?.get::<T>(id)`——比
+    /// `state.world.borrow()?` 短，且不会把 `Handle` 的字段名带进每个绑定。
+    fn world(&self) -> LuaResult<std::cell::Ref<'_, World>> {
+        self.world.borrow()
+    }
+
+    /// 可写借用世界（P1 ⑤-7）。
+    fn world_mut(&self) -> LuaResult<std::cell::RefMut<'_, World>> {
+        self.world.borrow_mut()
+    }
+
     /// 懒加载字体度量探针（`ui.measure_text`）：要工程根才能找到 `project.toml`
     /// 里的字体配置，故第一次调用才读盘；失败结果也会缓存（`Some(None)`），
     /// 避免每帧重复尝试读一个不存在的字体。切工程（`set_project_root`）会清缓存。
@@ -460,7 +243,7 @@ impl ScriptState {
         }
         let root = self
             .project_root
-            .clone()
+            .with(|root| root.path().map(Path::to_path_buf))
             .ok_or_else(|| LuaBridgeError::Api("no project root configured".to_owned()))?;
         // 这一步 = 读工程字体 + 建度量探针（Web 上还要先解包），是 `ui.measure_text` 的**首次**
         // 调用成本。第一帧卡顿的归因全靠这个读数：把它记成一条日志（wasm 侧经 `wasm_log` 进
@@ -477,52 +260,6 @@ impl ScriptState {
         self.font_probe = Some(probe.clone());
         Ok(probe)
     }
-}
-
-/// State for a Lua-driven inventory drag (`ui.drag_begin` / `ui.drag_end`).
-#[derive(Clone, Debug)]
-struct UiDrag {
-    from_id: String,
-    from_index: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct UiText {
-    pub text: String,
-    pub visible: bool,
-    pub position: [f32; 2],
-    /// 像素字号（SDF em 高度，px）。提供时优先于 `scale`；
-    /// 换算见 [`rustlua_ui::ui::ui_text_effective_scale`]。
-    pub font_size: Option<f32>,
-    /// 字形缩放系数（`1.0` = SDF 字体 em 12px / 位图 5x7 字形 7px）。
-    pub scale: f32,
-}
-
-/// A screen-space filled bar (e.g. a health bar) rendered by the host.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct UiBar {
-    pub position: [f32; 2],
-    pub size: [f32; 2],
-    /// Fill ratio in `0..=1`.
-    pub ratio: f32,
-    pub color: [f32; 4],
-}
-
-/// Authored snapshot of a persistent entity (component [`rustlua_scene::scene::PERSISTENT_COMPONENT`],
-/// or the legacy `metadata["persistent"]="true"` flag).
-/// Keyed by entity name (the only handle stable across scene switches); kept in
-/// `ScriptState::persistent` so `process_scene_transition` can re-spawn it.
-#[derive(Clone, Debug, Default)]
-struct PersistedEntity {
-    name: String,
-    components: BTreeMap<String, String>,
-    resources: BTreeMap<String, AssetId>,
-    /// 保留元数据（含旧的 `persistent` 标志）；当前恢复只用 components。
-    #[allow(dead_code)]
-    metadata: BTreeMap<String, String>,
-    /// 作者态的父实体**名字**：切场景后父实体的句柄会变，名字是唯一稳定锚点。
-    /// 恢复时在全部快照 spawn 完后统一重连 `Parent`，因此顺序无关。
-    parent_name: Option<String>,
 }
 
 /// Result of checking a loaded script for source changes.
@@ -594,29 +331,36 @@ impl LuaRuntime {
     }
 
     /// 读 2D 相机控制器（WP4）。相机数据本身仍在宿主侧，这里只放"center 该怎么算"。
+    ///
+    /// P1 ⑤-8 之后控制器住在 `Handle<CameraState>` 里；宿主侧签名保持不变（引擎与编辑器
+    /// 的 7 处调用一字未改），重入由 [`Handle::with`] 的命名 panic 兜底。
     pub fn camera2d_controller<R>(
         &self,
         visit: impl FnOnce(&rustlua_camera::camera::Camera2dController) -> R,
     ) -> R {
-        visit(&self.state.borrow().camera2d)
+        let camera = self.state.borrow().camera.clone();
+        camera.with(|state| visit(state.controller()))
     }
     /// 改 2D 相机控制器（Lua `camera2d.*` 与宿主每帧推进共用）。
     pub fn camera2d_controller_mut<R>(
         &mut self,
         visit: impl FnOnce(&mut rustlua_camera::camera::Camera2dController) -> R,
     ) -> R {
-        visit(&mut self.state.borrow_mut().camera2d)
+        let camera = self.state.borrow().camera.clone();
+        camera.with_mut(|state| visit(state.controller_mut()))
     }
     /// Stores the current viewport so Lua `ui.grid_hit` can resolve screen
     /// coordinates. The host calls this before rendering each frame.
     pub fn set_ui_viewport(&mut self, width: u32, height: u32) {
-        self.state.borrow_mut().ui_state.viewport = [width.max(1) as f32, height.max(1) as f32];
+        let ui = self.state.borrow().ui_state.clone();
+        ui.with_mut(|ui| ui.set_viewport(width, height));
     }
 
     /// Stores the Canvas 空间 UI 参考分辨率（设计分辨率），供 Lua 侧
     /// `process_ui_clicks` / `ui.grid_hit` 命中测试与渲染保持一致。
     pub fn set_ui_reference(&mut self, reference: [f32; 2]) {
-        self.state.borrow_mut().ui_state.reference = reference;
+        let ui = self.state.borrow().ui_state.clone();
+        ui.with_mut(|ui| ui.set_reference(reference));
     }
 
     /// Sets the project root, used to resolve `scenes/<name>.scene` on load.
@@ -629,7 +373,7 @@ impl LuaRuntime {
         // 作用域，杜绝任何"两次借用之间被重入"的窗口。
         self.publish_settings_root(root.clone());
         let mut state = self.state.borrow_mut();
-        state.project_root = Some(root);
+        state.project_root.with_mut(|project| project.set(root));
         // 换工程 → 字体也可能换：丢缓存，下次 `ui.measure_text` 重新读盘。
         state.font_probe = None;
     }
@@ -663,14 +407,15 @@ impl LuaRuntime {
         &self,
         f: impl FnOnce(&BTreeMap<String, UiText>, &BTreeMap<String, UiBar>) -> R,
     ) -> R {
-        let state = self.state.borrow();
-        f(&state.ui_state.texts, &state.ui_state.bars)
+        let ui = self.state.borrow().ui_state.clone();
+        ui.with(|ui| f(ui.texts(), ui.bars()))
     }
 
     /// 场景文字按名隐藏集（`ui.scene_text_visible` 写入）的只读视图。
     #[must_use]
     pub fn scene_text_hidden(&self) -> BTreeSet<String> {
-        self.state.borrow().ui_state.scene_text_hidden.clone()
+        let ui = self.state.borrow().ui_state.clone();
+        ui.with(|ui| ui.scene_text_hidden().clone())
     }
 
     /// P3-②：一次借用判定"实体的名字是否被隐藏"——此前宿主每帧为每个文字
@@ -678,11 +423,15 @@ impl LuaRuntime {
     #[must_use]
     pub fn is_entity_scene_text_hidden(&self, id: EntityId) -> bool {
         let state = self.state.borrow();
+        let ui = state.ui_state.clone();
+        let hidden = ui.with(|ui| ui.scene_text_hidden().clone());
+        let entities = state.entity_state.clone();
         // 只扫**这个实体自己的**名字（原来是扫全表每一条），"任一名字命中即隐藏"的语义原样保留。
-        state
-            .entity_state
-            .names
-            .any_name_matches(id, |name| state.ui_state.scene_text_hidden.contains(name))
+        entities.with(|entities| {
+            entities
+                .names
+                .any_name_matches(id, |name| hidden.contains(name))
+        })
     }
 
     /// 运行期 spawn 的 UI 预设实体的布局节点（键 = 活实体槽位号）。宿主每帧解算场景
@@ -738,11 +487,14 @@ impl LuaRuntime {
     #[must_use]
     pub fn entity_handle_lua(&self, name: &str) -> Option<i64> {
         let state = self.state.borrow();
-        let handle = state.entity_state.names.get(name)?;
+        let entities = state.entity_state.clone();
+        let handle = entities.with(|entities| entities.names.get(name))?;
         // 与 `entity.find` 同一条教条：只交活着的句柄。
+        // （重入失效时按"不在世"处理：宿主拿 `None` 退回 `nil`，比 panic 好。）
         state
-            .world
-            .is_alive(handle)
+            .world()
+            .ok()
+            .is_some_and(|world| world.is_alive(handle))
             .then(|| values::entity_to_lua(handle))
     }
 
@@ -751,13 +503,14 @@ impl LuaRuntime {
     /// 同一份黄金表因此能跨"载体是 `.scene` 还是 `.prefab`"对账。
     #[must_use]
     pub fn entity_names_by_slot(&self) -> BTreeMap<u64, String> {
-        let state = self.state.borrow();
-        state
-            .entity_state
-            .names
-            .iter_by_name()
-            .map(|(name, handle)| (handle.index() as u64, name.clone()))
-            .collect()
+        let entities = self.state.borrow().entity_state.clone();
+        entities.with(|entities| {
+            entities
+                .names
+                .iter_by_name()
+                .map(|(name, handle)| (handle.index() as u64, name.clone()))
+                .collect()
+        })
     }
 
     /// [`Self::entity_names_by_slot`] 的**带代际**版本：给出完整句柄而不是槽位号。
@@ -766,13 +519,14 @@ impl LuaRuntime {
     /// 只给槽位号会把复用槽位上的新实体认成旧实体。
     #[must_use]
     pub fn named_entity_handles(&self) -> Vec<(EntityId, String)> {
-        let state = self.state.borrow();
-        state
-            .entity_state
-            .names
-            .iter_by_name()
-            .map(|(name, handle)| (*handle, name.clone()))
-            .collect()
+        let entities = self.state.borrow().entity_state.clone();
+        entities.with(|entities| {
+            entities
+                .names
+                .iter_by_name()
+                .map(|(name, handle)| (*handle, name.clone()))
+                .collect()
+        })
     }
 
     /// 「场景实体 id → 运行时句柄」的完整登记表。
@@ -781,20 +535,22 @@ impl LuaRuntime {
     /// 声明的，而不是脚本运行期 spawn 的）。
     #[must_use]
     pub fn scene_entity_handles(&self) -> Vec<(SceneEntityId, EntityId)> {
-        self.state
-            .borrow()
-            .entity_state
-            .scene_entities
-            .iter()
-            .map(|(id, handle)| (*id, *handle))
-            .collect()
+        let entities = self.state.borrow().entity_state.clone();
+        entities.with(|entities| {
+            entities
+                .scene_entities
+                .iter()
+                .map(|(id, handle)| (*id, *handle))
+                .collect()
+        })
     }
 
     /// 场景声明的实体数（不含脚本运行期 spawn 的实体）。性能面板的常驻读数用，
     /// 不分配登记表；需要逐条句柄时用 [`Self::scene_entity_handles`]。
     #[must_use]
     pub fn scene_entity_count(&self) -> usize {
-        self.state.borrow().entity_state.scene_entities.len()
+        let entities = self.state.borrow().entity_state.clone();
+        entities.with(|entities| entities.scene_entities.len())
     }
 
     /// Gives the host a read view of runtime Lua-created UI panels/images/grids.
@@ -806,12 +562,8 @@ impl LuaRuntime {
             &BTreeMap<String, UiGrid>,
         ) -> R,
     ) -> R {
-        let state = self.state.borrow();
-        f(
-            &state.ui_state.panels,
-            &state.ui_state.images,
-            &state.ui_state.grids,
-        )
+        let ui = self.state.borrow().ui_state.clone();
+        ui.with(|ui| f(ui.panels(), ui.images(), ui.grids()))
     }
 
     /// Gives the host a read view of the active particles.
@@ -825,13 +577,15 @@ impl LuaRuntime {
     /// WP4 ⑧：宿主每帧把**本帧实际渲染用的** 2D 相机与视口回填进来，供 Lua 做
     /// 屏幕↔世界换算。放在帧末（渲染前）回填，因此脚本看到的是玩家刚看到的那一帧。
     pub fn set_camera_view(&mut self, camera: Camera2D, viewport: [f32; 2]) {
-        self.state.borrow_mut().camera_view = Some((camera, viewport));
+        let handle = self.state.borrow().camera.clone();
+        handle.with_mut(|state| state.set_view_2d(camera, viewport));
     }
 
     /// docs/54 §8-⑦：宿主每帧把**3D pass 实际用的那台相机**与视口回填进来，供 Lua
     /// `camera3d.ray` / `camera3d.world_to_screen` 使用（与编辑器 picking 同一套投影函数）。
     pub fn set_camera3d_view(&mut self, camera: Camera3D, viewport: [f32; 2]) {
-        self.state.borrow_mut().camera3d_view = Some((camera, viewport));
+        let handle = self.state.borrow().camera.clone();
+        handle.with_mut(|state| state.set_view_3d(camera, viewport));
     }
 
     /// 宿主侧直接生成一次粒子爆发，与 Lua `particles.burst` 走同一实现。
@@ -847,54 +601,52 @@ impl LuaRuntime {
     /// Gives the host a shared read view of the runtime entity world, so the
     /// renderer draws the exact entities the Lua script is mutating.
     pub fn with_world<R>(&self, f: impl FnOnce(&World) -> R) -> R {
-        f(&self.state.borrow().world)
+        // 先取句柄副本再借世界：`f` 是宿主代码，若它回调进 Lua（`state.borrow_mut()`），
+        // 手里还攥着 `Ref<ScriptState>` 就会撞重入错。
+        let world = self.state.borrow().world.clone();
+        world.with(f)
     }
     /// WP7 ②：取走 Lua 通过 `physics.debug_draw(...)` 登记的请求（取走即清空，与
     /// `camera2d` 的 pending 请求同一语义：请求只在被消费的那一帧生效）。
     pub fn take_collider_debug_request(&mut self) -> Option<bool> {
-        self.state
-            .borrow_mut()
-            .physics
-            .collider_debug_request
-            .take()
+        // P1 ⑤-9：物理句柄与 `ScriptState` 是两处借用，先取句柄副本再动它（与 `with_world` 同法）。
+        let physics = self.state.borrow().physics.clone();
+        physics.with_mut(|physics| physics.take_debug_request())
     }
     /// WP4 ⑦：宿主推进动画后把本步触发的帧事件交进来，供 Lua `animation.events()` 轮询。
     pub fn push_animation_events(&mut self, events: Vec<(EntityId, AnimationFrameEvent)>) {
-        self.state.borrow_mut().animation_events.extend(events);
+        let animation = self.state.borrow().animation.clone();
+        animation.with_mut(|state| state.push_events(events));
     }
     /// 物理世界里当前所有 2D 碰撞体的姿态与形状，供宿主做 collider 调试绘制。
     pub fn collider_debug_shapes(&self) -> Vec<rustlua_physics::physics::ColliderDebugShape> {
-        self.state.borrow().physics.world2d.debug_shapes()
+        let physics = self.state.borrow().physics.clone();
+        physics.with(|physics| physics.debug_shapes())
     }
     /// WP7 ②/docs/54 §8-⑥：取走 Lua 通过 `physics3d.debug_draw(...)` 登记的 3D 请求
     /// （与 2D 同一条"取走即清空"语义）。
     pub fn take_collider_debug_request_3d(&mut self) -> Option<bool> {
-        self.state
-            .borrow_mut()
-            .physics
-            .collider_debug_request_3d
-            .take()
+        let physics = self.state.borrow().physics.clone();
+        physics.with_mut(|physics| physics.take_debug_request_3d())
     }
     /// 物理世界里当前所有 3D 碰撞体的姿态与形状，供宿主做 3D collider 调试绘制。
     pub fn collider_debug_shapes_3d(
         &self,
     ) -> Vec<rustlua_physics::physics3d::ColliderDebugShape3d> {
-        self.state.borrow().physics.world3d.debug_shapes()
+        let physics = self.state.borrow().physics.clone();
+        physics.with(|physics| physics.debug_shapes_3d())
     }
     /// Gives the host a shared write view of the runtime entity world.
     pub fn with_world_mut<R>(&mut self, f: impl FnOnce(&mut World) -> R) -> R {
-        f(&mut self.state.borrow_mut().world)
+        let world = self.state.borrow().world.clone();
+        world.with_mut(f)
     }
 
     /// Returns the live ECS handle created from an authored scene entity.
     #[must_use]
     pub fn scene_entity_handle(&self, id: SceneEntityId) -> Option<EntityId> {
-        self.state
-            .borrow()
-            .entity_state
-            .scene_entities
-            .get(&id)
-            .copied()
+        let entities = self.state.borrow().entity_state.clone();
+        entities.with(|entities| entities.scene_entities.get(&id).copied())
     }
 
     /// docs/54 §8-②：最近一次场景加载里**坏的 `parent` 边**（悬空父/自环）的可读描述。
@@ -921,21 +673,24 @@ impl LuaRuntime {
     /// `iter().find(...)` 的结果逐字相同；变的只是复杂度（O(n) 线性扫 → O(1) 反查）。
     #[must_use]
     pub fn entity_name(&self, id: EntityId) -> Option<String> {
-        self.state.borrow().entity_state.names.first_name(id)
+        let entities = self.state.borrow().entity_state.clone();
+        entities.with(|entities| entities.names.first_name(id))
     }
 
     /// Returns the entity whose `Camera` the passes should use, if Lua selected one with
     /// `camera.set_active`（3D pass 只在它是透视相机时用它，2D 只在它是正交相机时用它）。
     #[must_use]
     pub fn active_camera(&self) -> Option<EntityId> {
-        self.state.borrow().active_camera
+        let handle = self.state.borrow().camera.clone();
+        handle.with(|state| state.active())
     }
 
     /// Returns the entity whose `Light` the renderer should use, if Lua
     /// selected one with `light.set_active`.
     #[must_use]
     pub fn active_light(&self) -> Option<EntityId> {
-        self.state.borrow().active_light
+        let renderable = self.state.borrow().renderable.clone();
+        renderable.with(|state| state.active_light())
     }
 
     /// 当前场景名（`scene.reload()` 返回的那个值）。
@@ -1094,57 +849,18 @@ fn call_entity_hook(
         reason: format!("{name}: {error}"),
     })
 }
-/// Calls a global Lua hook (`on_day_end` / `on_day_start`) if the script defines
-/// one. Missing hooks are a no-op; a hook that errors propagates the error.
-fn call_optional_day_hook(lua: &mlua::Lua, name: &str) -> Result<(), mlua::Error> {
-    if let Ok(function) = lua.globals().get::<mlua::Function>(name) {
-        function.call::<()>(())?;
-    }
-    Ok(())
-}
-/// 取宿主每帧回填的 (2D 相机, 视口)。**还没有渲染过任何一帧时报错**而不是猜一个默认值：
-/// 猜出来的世界坐标会让"点击没反应/点错位置"变成一桩无头案。
-fn camera_view_from(state: &ScriptState) -> LuaResult<(Camera2D, Viewport)> {
-    let (camera, viewport) = state.camera_view.ok_or_else(|| {
-        api_error("camera2d screen/world conversion needs one rendered frame first")
-    })?;
-    let viewport =
-        Viewport::new(viewport[0], viewport[1]).map_err(|error| api_error(error.to_string()))?;
-    Ok((camera, viewport))
-}
-
-fn camera_view(state: &Rc<RefCell<ScriptState>>) -> LuaResult<(Camera2D, Viewport)> {
-    camera_view_from(&state.borrow())
-}
-
-/// 取宿主每帧回填的 (3D 相机, 视口)。还没渲染过任何一帧时报错——与 2D 同样的理由：
-/// 猜一台相机做射线，会让"点不中/点错"变成无头案。
-fn camera3d_view_from(state: &ScriptState) -> LuaResult<(Camera3D, Viewport)> {
-    let (camera, viewport) = state.camera3d_view.ok_or_else(|| {
-        api_error("camera3d ray/screen conversion needs one rendered frame first")
-    })?;
-    let viewport =
-        Viewport::new(viewport[0], viewport[1]).map_err(|error| api_error(error.to_string()))?;
-    Ok((camera, viewport))
-}
-
-fn camera3d_view(state: &Rc<RefCell<ScriptState>>) -> LuaResult<(Camera3D, Viewport)> {
-    camera3d_view_from(&state.borrow())
-}
-
-fn require_positive_tile_size(tile_size: f32) -> Result<(), mlua::Error> {
-    if !tile_size.is_finite() || tile_size <= 0.0 {
-        return Err(api_error("tile_size must be finite and > 0"));
-    }
-    Ok(())
-}
-
+// 相机快照的取用（`camera_view_from` / `camera3d_view_from`）随绑定搬到了
+// `rustlua_camera::camera_lua`（P1 ⑤-8）：那是"没渲染过一帧"这条口径的唯一实现点。
 /// 工程里某个场景文件的路径（`<project_root>/scenes/<name>.scene`）。
 pub(crate) fn scene_file_path(state: &ScriptState, name: &str) -> Option<PathBuf> {
+    // 句柄只在这一次解析里借用：`resolve` 返回自有 `PathBuf`，guard 不跨调用。
+    // 借用失败（只可能来自绑定重入）按"没有工程根"处理：场景解析是只读快路径，
+    // 调用方（`scene_file_exists` → `map.goto`）本来就以 `false` 表示"切不了"。
     state
         .project_root
-        .as_ref()
-        .map(|root| root.join("scenes").join(format!("{name}.scene")))
+        .borrow()
+        .ok()?
+        .resolve(format!("scenes/{name}.scene"))
 }
 
 /// 场景文件是否存在。**必须经 [`rustlua_infra::vfs`]**：wasm 上没有文件系统，
@@ -1166,232 +882,6 @@ fn request_scene_load(state: &ScriptState, name: &str) -> bool {
         tracing::warn!(target: "scene", name = %name, "[map] scene file not found; load ignored");
     }
     exists
-}
-
-fn inventory_index(index: i64) -> Result<usize, mlua::Error> {
-    if index <= 0 {
-        Err(api_error("inventory slot index must be positive"))
-    } else {
-        Ok((index - 1) as usize)
-    }
-}
-
-fn inventory_clone(state: &ScriptState, id: &str) -> Result<Inventory, mlua::Error> {
-    state
-        .inventory
-        .inventories
-        .get(id)
-        .cloned()
-        .ok_or_else(|| api_error(format!("inventory {id} not found")))
-}
-
-/// P2-①：槽位越界检查（同背包与跨背包共用同一措辞的报错）。
-fn check_inventory_slot(inventory: &Inventory, index: usize, id: &str) -> Result<(), mlua::Error> {
-    if index >= inventory.capacity {
-        Err(api_error(format!("inventory {id} slot out of bounds")))
-    } else {
-        Ok(())
-    }
-}
-
-/// P2-①：物品堆叠上限——未定义的物品按 99（与历史行为一致）。
-fn item_stack_limit(state: &ScriptState, item_id: &str) -> u32 {
-    state
-        .inventory
-        .item_defs
-        .get(item_id)
-        .map_or(99, |definition| definition.stack)
-}
-
-/// P2-①：槽位 → 槽位合并搬运的唯一口径（同背包 / 跨背包共用）。
-///
-/// 规则不变：同名物品向目标堆叠至上限；目标为空槽则整段放入；目标是**别的**物品则一件不动。
-/// 返回（源槽新值, 目标槽新值, 实际搬动件数）。
-fn slot_merge_result(
-    source: &ItemStack,
-    target: &ItemStack,
-    max_stack: u32,
-    count: Option<i64>,
-) -> (ItemStack, ItemStack, u32) {
-    let requested = count
-        .unwrap_or(i64::from(source.count))
-        .min(i64::from(source.count))
-        .max(0) as u32;
-    let moved = if target.item_id == source.item_id {
-        max_stack.saturating_sub(target.count).min(requested)
-    } else if target.item_id.is_empty() {
-        requested
-    } else {
-        0
-    };
-    if moved == 0 {
-        return (source.clone(), target.clone(), 0);
-    }
-    let mut from_slot = source.clone();
-    from_slot.count -= moved;
-    if from_slot.count == 0 {
-        from_slot = ItemStack::default();
-    }
-    let to_slot = if target.item_id == source.item_id {
-        let mut merged = target.clone();
-        merged.count += moved;
-        merged
-    } else {
-        ItemStack::new(source.item_id.clone(), moved)
-    };
-    (from_slot, to_slot, moved)
-}
-
-fn swap_inventories(
-    state: &mut ScriptState,
-    from_id: &str,
-    from_index: i64,
-    to_id: &str,
-    to_index: i64,
-) -> Result<bool, mlua::Error> {
-    let from_index = inventory_index(from_index)?;
-    let to_index = inventory_index(to_index)?;
-    if from_id == to_id {
-        let mut inventory = inventory_clone(state, from_id)?;
-        check_inventory_slot(&inventory, from_index, from_id)?;
-        check_inventory_slot(&inventory, to_index, to_id)?;
-        inventory.slots.swap(from_index, to_index);
-        state
-            .inventory
-            .inventories
-            .insert(from_id.to_owned(), inventory);
-        return Ok(true);
-    }
-    let mut from = inventory_clone(state, from_id)?;
-    let mut to = inventory_clone(state, to_id)?;
-    check_inventory_slot(&from, from_index, from_id)?;
-    check_inventory_slot(&to, to_index, to_id)?;
-    let from_slot = from.slots[from_index].clone();
-    let to_slot = to.slots[to_index].clone();
-    from.slots[from_index] = to_slot;
-    to.slots[to_index] = from_slot;
-    state.inventory.inventories.insert(from_id.to_owned(), from);
-    state.inventory.inventories.insert(to_id.to_owned(), to);
-    Ok(true)
-}
-
-fn move_inventories(
-    state: &mut ScriptState,
-    from_id: &str,
-    from_index: i64,
-    to_id: &str,
-    to_index: Option<i64>,
-    count: Option<i64>,
-) -> Result<i64, mlua::Error> {
-    let from_index = inventory_index(from_index)?;
-    let to_index = to_index.map(inventory_index).transpose()?;
-    if from_id == to_id {
-        let mut inventory = inventory_clone(state, from_id)?;
-        check_inventory_slot(&inventory, from_index, from_id)?;
-        let source = inventory.slots[from_index].clone();
-        if source.item_id.is_empty() {
-            return Ok(0);
-        }
-        let max_stack = item_stack_limit(state, &source.item_id);
-        if let Some(to_index) = to_index {
-            check_inventory_slot(&inventory, to_index, to_id)?;
-            let (from_slot, to_slot, moved) =
-                slot_merge_result(&source, &inventory.slots[to_index], max_stack, count);
-            inventory.slots[from_index] = from_slot;
-            inventory.slots[to_index] = to_slot;
-            state
-                .inventory
-                .inventories
-                .insert(from_id.to_owned(), inventory);
-            return Ok(moved as i64);
-        }
-        // 未指定目标槽：自动落位（先按物品整体移除，再放回到放得下的槽位）。
-        let requested = count.unwrap_or(i64::from(source.count)).max(1) as u32;
-        let removed = inventory.remove(&source.item_id, requested);
-        let leftover = inventory.add(&source.item_id, removed, max_stack);
-        state
-            .inventory
-            .inventories
-            .insert(from_id.to_owned(), inventory);
-        return Ok(removed as i64 - leftover as i64);
-    }
-    let mut from = inventory_clone(state, from_id)?;
-    let mut to = inventory_clone(state, to_id)?;
-    check_inventory_slot(&from, from_index, from_id)?;
-    let source = from.slots[from_index].clone();
-    if source.item_id.is_empty() {
-        return Ok(0);
-    }
-    let max_stack = item_stack_limit(state, &source.item_id);
-    if let Some(to_index) = to_index {
-        check_inventory_slot(&to, to_index, to_id)?;
-        let (from_slot, to_slot, moved) =
-            slot_merge_result(&source, &to.slots[to_index], max_stack, count);
-        from.slots[from_index] = from_slot;
-        to.slots[to_index] = to_slot;
-        state.inventory.inventories.insert(from_id.to_owned(), from);
-        state.inventory.inventories.insert(to_id.to_owned(), to);
-        return Ok(moved as i64);
-    }
-    // 跨背包自动落位：目标放不下的部分退回源背包（语义与历史一致）。
-    let requested = count.unwrap_or(i64::from(source.count)).max(1) as u32;
-    let removed = from.remove(&source.item_id, requested);
-    let leftover = to.add(&source.item_id, removed, max_stack);
-    if leftover > 0 {
-        let _ = from.add(&source.item_id, leftover, max_stack);
-    }
-    state.inventory.inventories.insert(from_id.to_owned(), from);
-    state.inventory.inventories.insert(to_id.to_owned(), to);
-    Ok(removed as i64 - leftover as i64)
-}
-
-/// Converts a tile map's solid cells into static cuboid colliders attached to
-/// the tile map entity's fixed body, one per solid cell.
-fn solid_cell_colliders(tilemap: &Tilemap) -> Vec<ColliderDesc> {
-    let half = Vec2::new(tilemap.tile_size.x / 2.0, tilemap.tile_size.y / 2.0);
-    let mut colliders = Vec::new();
-    for y in 0..tilemap.height {
-        for x in 0..tilemap.width {
-            if tilemap.solid[y * tilemap.width + x] {
-                colliders.push(ColliderDesc {
-                    shape: ColliderShape::Cuboid(half),
-                    offset: Vec2::new(
-                        x as f32 * tilemap.tile_size.x + half.x,
-                        y as f32 * tilemap.tile_size.y + half.y,
-                    ),
-                    sensor: false,
-                    dynamic: false,
-                    layer: 0xFF,
-                    mask: 0xFF,
-                    ccd: false,
-                });
-            }
-        }
-    }
-    colliders
-}
-
-/// Rebuilds the fixed physics body for a tile map after Lua changes its solid
-/// layer, so runtime `tilemap.set_solid` immediately affects movement.
-fn refresh_tilemap_physics(state: &mut ScriptState, entity: EntityId) {
-    let position = state
-        .world
-        .get::<Transform>(entity)
-        .ok()
-        .flatten()
-        .map(|transform| transform.position)
-        .unwrap_or_default();
-    let _ = state.physics.world2d.remove_body(entity);
-    let Some(tilemap) = state.world.get::<Tilemap>(entity).ok().flatten() else {
-        return;
-    };
-    if tilemap.solid.iter().any(|solid| *solid) {
-        let colliders = solid_cell_colliders(tilemap);
-        let _ = state
-            .physics
-            .world2d
-            .add_body(entity, position, false, colliders);
-    }
 }
 
 /// P1-③：`ScriptState` 的重入借用失败从 **RefCell panic** 降级为 Lua 可捕获错误。

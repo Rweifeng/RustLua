@@ -148,10 +148,7 @@ fn title_button_center(
     if values.len() != 4 {
         return Err(format!("{name} 的 offsets 应恰有 4 个数，实为 {offsets:?}").into());
     }
-    Ok((
-        (values[0] + values[2]) / 2.0,
-        (values[1] + values[3]) / 2.0,
-    ))
+    Ok(((values[0] + values[2]) / 2.0, (values[1] + values[3]) / 2.0))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

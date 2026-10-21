@@ -1137,7 +1137,7 @@ fn wait_until_bitten(
     limit: i64,
 ) -> Result<i64, Box<dyn std::error::Error>> {
     for step in 1..=limit {
-        frames(runtime, &host, 1)?;
+        frames(runtime, host, 1)?;
         if query_str(runtime, "require('systems.status').has('poison', 'player')")? == "true" {
             return Ok(step);
         }

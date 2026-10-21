@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "comment": "P4-03 platform matrix cell registry. blocking cells gate merges; advisory cells are on an observation period (owner/reason/review_by). check-matrix-policy.ps1 -Check exits 2 when an advisory cell's review_by expires while it is still advisory/red; promotion = flip experimental to false after 2 consecutive greens on main + no flaky records, then update this file with reason.",
+  "cells": [
+    {"id": "windows-native", "tier": "blocking", "experimental": false, "owner": "P4", "reason": "Windows 是全量测试所在平台，check --workspace 必须绿"},
+    {"id": "windows-wasm", "tier": "blocking", "experimental": false, "owner": "P4", "reason": "wasm 构建（game_web/gpu-web-probe/wasm-lua-spike）必须绿"},
+    {"id": "windows-wasm-gpu2d-off", "tier": "blocking", "experimental": false, "owner": "P4", "reason": "gpu2d feature 关闭时的 wasm 构建必须绿"},
+    {"id": "linux-native", "tier": "advisory", "experimental": true, "owner": "P4", "reason": "Linux GUI/音频系统依赖观察期；缺依赖先修 workflow，不记为平台不支持", "review_by": "2026-12-31"},
+    {"id": "linux-wasm", "tier": "advisory", "experimental": true, "owner": "P4", "reason": "证明 wasm 构建不依赖 Windows", "review_by": "2026-12-31"},
+    {"id": "macos-native", "tier": "advisory", "experimental": true, "owner": "P4", "reason": "macOS 原生编译观察期", "review_by": "2026-12-31"},
+    {"id": "macos-wasm", "tier": "advisory", "experimental": true, "owner": "P4", "reason": "macOS wasm 编译观察期", "review_by": "2026-12-31"}
+  ]
+}

@@ -19,3 +19,8 @@ rustlua-ecs = { path = "../rustlua-ecs" }
 rustlua-camera = { path = "../rustlua-camera" }
 rustlua-infra = { path = "../rustlua-infra" }
 rustlua-assets = { path = "../rustlua-assets" }
+# `renderable_lua`：可渲染组件的 Lua 面跟着组件类型住（P1 ⑤-10）。`lua-api` 是叶子契约层
+# （`Handle` / `api_error` / `ProjectRoot`），`animation` 只为读 `AnimationStateMachine` 的当前 clip。
+rustlua-lua-api = { path = "../rustlua-lua-api" }
+rustlua-animation = { path = "../rustlua-animation" }
+mlua = { version = "0.11", features = ["lua54", "vendored"] }

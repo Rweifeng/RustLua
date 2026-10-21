@@ -2057,7 +2057,7 @@ fn prepare_dash(
         ),
     )?;
     set_facing(runtime, "left")?;
-    frames(runtime, &host, 1)
+    frames(runtime, host, 1)
 }
 
 /// 格挡站位：站在训练木人**西侧一格**（木人在东），朝向决定它算正面还是背面。
@@ -2085,7 +2085,7 @@ fn prepare_guard(
         return Err(format!("演武场的训练木人不可用：{moved}").into());
     }
     set_facing(runtime, facing)?;
-    frames(runtime, &host, 1)
+    frames(runtime, host, 1)
 }
 
 /// 只搬人、不动账本：轻功的无敌帧还在倒计时，`combat.reset()` 会把它一起抹掉。
@@ -2136,7 +2136,7 @@ fn wait_for_player_damage(
     before: f64,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     for _ in 0..24 {
-        hold(runtime, &host, keys, 1)?;
+        hold(runtime, host, keys, 1)?;
         if query_num(runtime, "require('systems.combat').player_hp()")? < before {
             return Ok(true);
         }
@@ -2152,7 +2152,7 @@ fn wait_for_player_log(
     event: &str,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     for _ in 0..24 {
-        hold(runtime, &host, keys, 1)?;
+        hold(runtime, host, keys, 1)?;
         let last = query_str(
             runtime,
             "(function() local last; for _, e in ipairs(require('systems.combat').log()) do last = e end; \
@@ -2425,7 +2425,7 @@ fn wait_for_enemy_damage(
 ) -> Result<Option<Vec<f64>>, Box<dyn std::error::Error>> {
     for _ in 0..30 {
         anchor_east_of(runtime, persist_id, TILE)?;
-        frames(runtime, &host, 1)?;
+        frames(runtime, host, 1)?;
         let vitals = enemy_vitals(runtime, persist_id)?;
         if vitals[0] < before {
             return Ok(Some(vitals));
@@ -2446,7 +2446,7 @@ fn approach_until_guarding(
     let mut stance = String::new();
     for step in 0..limit {
         anchor_east_of(runtime, persist_id, TILE)?;
-        frames(runtime, &host, 1)?;
+        frames(runtime, host, 1)?;
         stance = query_str(
             runtime,
             &format!("tostring(require('systems.enemy').query('{persist_id}').guarding)"),
@@ -2577,7 +2577,7 @@ fn charge_start(
 ) -> Result<ChargeRun, Box<dyn std::error::Error>> {
     for _ in 0..wait_limit {
         anchor_boss_witness(runtime, dir, witness)?;
-        frames(runtime, &host, 1)?;
+        frames(runtime, host, 1)?;
         let (charging, frame, x, y) = charge_readout(runtime)?;
         if charging {
             return Ok(ChargeRun::at(frame, x, y));
@@ -2600,7 +2600,7 @@ fn charge_finish(
 ) -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..move_limit {
         anchor_boss_witness(runtime, dir, witness)?;
-        frames(runtime, &host, 1)?;
+        frames(runtime, host, 1)?;
         run.steps += 1;
         let (charging, _, x, y) = charge_readout(runtime)?;
         if !charging {
@@ -2626,8 +2626,8 @@ fn charge_measure(
     wait_limit: usize,
     move_limit: usize,
 ) -> Result<ChargeRun, Box<dyn std::error::Error>> {
-    let mut run = charge_start(runtime, &host, dir, witness, wait_limit)?;
-    charge_finish(runtime, &host, dir, witness, &mut run, move_limit)?;
+    let mut run = charge_start(runtime, host, dir, witness, wait_limit)?;
+    charge_finish(runtime, host, dir, witness, &mut run, move_limit)?;
     Ok(run)
 }
 

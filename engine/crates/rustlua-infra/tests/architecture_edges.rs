@@ -37,7 +37,8 @@ const BUDGET: &[(&str, &[&str])] = &[
     // 所有领域 crate 都会被拖进同一张编译图。
     ("rustlua-lua-api", &[]),
     ("rustlua-infra", &[]),
-    ("rustlua-ecs", &["infra", "math"]),
+    // P1 ⑤-10：`Transform`/`Entity`/`Tilemap` 的 Lua 面跟着类型进 ECS，因此多认 `lua-api`。
+    ("rustlua-ecs", &["infra", "lua-api", "math"]),
     // `lua` 模块：audio 的 Lua 绑定下沉到这里（契约层只依赖 mlua，不成环）。
     ("rustlua-audio", &["infra", "lua-api"]),
     // `input` 的 Lua 绑定也下沉到本 crate（P1 阶段 3）：`mlua` 只用于装表，契约层提供
@@ -55,23 +56,30 @@ const BUDGET: &[(&str, &[&str])] = &[
     // `scene`：装配完整的导入注册表要用它的 Scene/Prefab 导入器零件（`scene_importers()`）；
     // 方向是 `assets-import → scene`，不是反过来。
     ("rustlua-assets-import", &["assets", "infra", "scene", "ui"]),
-    ("rustlua-camera", &["ecs", "math"]),
-    ("rustlua-physics", &["ecs", "math"]),
+    // P1 ⑤-8：相机绑定（`camera`/`camera3d`/`camera2d`）与拾取共享链都住进相机域，因此多认
+    // 一个 `lua-api`（叶子契约层：`Handle`/`api_error`，谁都能依赖它）。
+    ("rustlua-camera", &["ecs", "lua-api", "math"]),
+    // P1 ⑤-9：物理绑定（`physics`/`physics3d`）与回写队列搬进物理域，同样多认 `lua-api`。
+    ("rustlua-physics", &["ecs", "lua-api", "math"]),
     // P1 ④：表现层组件的**载荷契约**（`ComponentCodec` + 注册表 + 装表入口）。和
     // `lua-api` 同一个形状的叶子：谁都能依赖它，它谁也不依赖。`render`/`ui` 把各自的
     // `from_component_str` 包成 codec 交出来，`scene` 只查表——于是那条
     // `scene → render/ui` 的边（以及随之而来的"改 UI 重编全世界"）就消失了。
     ("rustlua-component-codec", &[]),
-    ("rustlua-ui", &["component-codec", "ecs", "math"]),
-    ("rustlua-animation", &["assets", "ecs", "math"]),
+    // `lua-api`：`lua_nav` 的导航绑定下沉到 UI 域（P1 ⑤-3）。契约层是叶子，不违反倒置。
+    ("rustlua-ui", &["component-codec", "ecs", "lua-api", "math"]),
+    // P1 ⑤-10：动画组件的 Lua 面进 animation 域。
+    ("rustlua-animation", &["assets", "ecs", "lua-api", "math"]),
     (
         "rustlua-render",
         &[
+            "animation",
             "assets",
             "camera",
             "component-codec",
             "ecs",
             "infra",
+            "lua-api",
             "math",
         ],
     ),

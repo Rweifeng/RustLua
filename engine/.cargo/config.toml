@@ -1,5 +1,18 @@
 [build]
 target-dir = "target"
+# 本机资源限制（2026-10-21 实测口径）：这台机器 12 逻辑核 / 15.8 GB 内存、工作区在 E: 盘
+# （当时只剩 30 GB 空闲）。cargo 默认按核数开 12 个 rustc，再叠增量编译的后果是：
+#
+# - **内存**：12 个 rustc + 链接器峰值吃满 16 GB → 进交换，整机卡死；
+# - **磁盘**：`target/debug/incremental` 实测长到 **89 GB / 23.6 万个文件**，每次 `cargo test`
+#   还在往上叠，是"磁盘跑满"的主因。
+#
+# 这里只压并行度 + 关增量编译。**刻意不改** debuginfo 与 target-dir：那会让所有产物指纹失效、
+# 触发一次全量重编（反而制造最大的一次资源尖峰）。
+#
+# 临时放开：`cargo --jobs 4 …`；恢复默认：删掉这两行。
+jobs = 4
+incremental = false
 
 [term]
 verbose = false

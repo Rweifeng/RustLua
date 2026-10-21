@@ -67,13 +67,13 @@ fn entity_hook_errors_are_contained_per_entity() {
         .state
         .borrow()
         .entity_state
-        .scene_entities
+        .with(|entities| entities.scene_entities.clone())
         .get(&healthy)
         .expect("健康实体的运行时实体");
     {
         let state = runtime.state.borrow();
-        let transform = state
-            .world
+        let world_guard = state.world().expect("world handle");
+        let transform = world_guard
             .get::<Transform>(healthy_id)
             .unwrap()
             .expect("健康实体有 Transform");
@@ -150,21 +150,21 @@ fn entity_script_component_drives_its_own_entity() {
         .state
         .borrow()
         .entity_state
-        .scene_entities
+        .with(|entities| entities.scene_entities.clone())
         .get(&walker)
         .expect("Walker 的运行时实体");
     let idle_id = *runtime
         .state
         .borrow()
         .entity_state
-        .scene_entities
+        .with(|entities| entities.scene_entities.clone())
         .get(&idle)
         .expect("Idle 的运行时实体");
     runtime.call_entity_scripts(0.5).unwrap();
     {
         let state = runtime.state.borrow();
-        let walker_transform = state
-            .world
+        let world_guard = state.world().expect("world handle");
+        let walker_transform = world_guard
             .get::<Transform>(walker_id)
             .unwrap()
             .expect("Walker 有 Transform");
@@ -173,8 +173,8 @@ fn entity_script_component_drives_its_own_entity() {
             "脚本应把实体移动 10*dt*2 次：实际 {}",
             walker_transform.position.x
         );
-        let idle_transform = state
-            .world
+        let world_guard = state.world().expect("world handle");
+        let idle_transform = world_guard
             .get::<Transform>(idle_id)
             .unwrap()
             .expect("Idle 有 Transform");
@@ -203,8 +203,8 @@ fn entity_script_component_drives_its_own_entity() {
     runtime.call_entity_scripts(0.5).unwrap();
     {
         let state = runtime.state.borrow();
-        let walker_transform = state
-            .world
+        let world_guard = state.world().expect("world handle");
+        let walker_transform = world_guard
             .get::<Transform>(walker_id)
             .unwrap()
             .expect("Walker 有 Transform");
