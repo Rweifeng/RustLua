@@ -462,6 +462,9 @@ def check(con, policy, allowlist_path):
     insufficient = []
     for domain, spec in domains.items():
         rules = spec.get("rules", {})
+        # 确定性域（如 coverage 的 per-crate 基线）不需要 3 个 trailing 样本；
+        # 由该域自己的基线门做棘轮，这里只要求 1 个当期读数。
+        domain_min = int(spec.get("min_samples", min_samples))
         cur_rows = con.execute(
             "SELECT workload, metric, value, created_at FROM samples WHERE domain=? ORDER BY created_at DESC, id DESC",
             (domain,),
@@ -475,8 +478,8 @@ def check(con, policy, allowlist_path):
             rule = rules.get(mt)
             if not rule:
                 continue
-            last_n = vals[:min_samples]
-            if len(last_n) < min_samples:
+            last_n = vals[:domain_min]
+            if len(last_n) < domain_min:
                 insufficient.append("{}|{}|{} n={}".format(domain, wl, mt, len(last_n)))
                 continue
             base = sorted(last_n)[len(last_n) // 2]

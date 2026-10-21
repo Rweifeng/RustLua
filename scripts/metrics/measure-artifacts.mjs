@@ -72,12 +72,21 @@ function collectBinary(binRoot) {
     { name: "editor.exe", rel: "release/editor.exe", kind: "exe", expect: true },
     { name: "assetc.exe", rel: "release/assetc.exe", kind: "exe", expect: true },
     { name: "game_web.wasm", rel: "wasm32-unknown-unknown/release/game_web.wasm", kind: "wasm", expect: false },
-    { name: "game_web_bg.wasm", rel: "wasm32-unknown-unknown/release/game_web_bg.wasm", kind: "wasm", expect: false },
-    { name: "game_web.js", rel: "wasm32-unknown-unknown/release/game_web.js", kind: "js", expect: false },
+    // wasm-bindgen 的 bg.wasm/js 由 package 脚本生成并落在 WebGL 包内；cargo target 里没有时回退到发布包，
+    // 仍按真实发布字节计量（P4-06 五件产物）。
+    { name: "game_web_bg.wasm", rel: "wasm32-unknown-unknown/release/game_web_bg.wasm", kind: "wasm", expect: false,
+      fallback: "examples/game_jhyt/builds/webgl/pkg/game_web_bg.wasm" },
+    { name: "game_web.js", rel: "wasm32-unknown-unknown/release/game_web.js", kind: "js", expect: false,
+      fallback: "examples/game_jhyt/builds/webgl/pkg/game_web.js" },
   ];
   let missing = 0;
   for (const t of targets) {
-    const p = path.join(binRoot, t.rel);
+    let p = path.join(binRoot, t.rel);
+    let shownPath = t.rel;
+    if (!fs.existsSync(p) && t.fallback) {
+      const fb = path.join(ROOT, t.fallback);
+      if (fs.existsSync(fb)) { p = fb; shownPath = t.fallback; }
+    }
     if (!fs.existsSync(p)) {
       if (t.expect) missing++;
       artifacts.push({ name: t.name, kind: t.kind, path: t.rel, missing: true });
@@ -85,7 +94,7 @@ function collectBinary(binRoot) {
     }
     const m = measureFile(p);
     const art = {
-      name: t.name, kind: t.kind, path: t.rel, profile: "release", strip: false,
+      name: t.name, kind: t.kind, path: shownPath, profile: "release", strip: false,
       ...m,
     };
     if (t.kind === "exe") {

@@ -1,0 +1,1270 @@
+{
+  "schema": "compile-v1",
+  "generated_at": "2026-10-21T08:53:08.899Z",
+  "profile": "check",
+  "jobs": 4,
+  "incremental": 1,
+  "cold": true,
+  "target_dir": "E:\\Codex\\RustLua\\artifacts\\metrics\\target-compile",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "check_cold": 105333,
+  "check_cold_min_ms": 105333,
+  "check_cold_max_ms": 105333,
+  "check_cold_variance_ms2": 0,
+  "check_warm": 904,
+  "check_warm_min_ms": 904,
+  "check_warm_max_ms": 904,
+  "check_warm_variance_ms2": 0,
+  "incremental_crate": "rustlua-infra",
+  "incremental_after_clean_package": 89373,
+  "units": {
+    "incremental_rebuild": 1
+  },
+  "baseline_reason": "P4 first compile baseline",
+  "baseline_created_at": "2026-10-21T08:59:38.933Z",
+  "baseline_commit": "0c0c6ced",
+  "timings": {
+    "schema": "compile-timings-v1",
+    "wall_ms": 7980,
+    "critical_path_ms": 7980,
+    "parallelism": 3.23,
+    "unit_count": 600,
+    "top_crate": "game",
+    "top_crate_ms": 25800,
+    "crates": {
+      "game": {
+        "duration_ms": 25800,
+        "units": 104
+      },
+      "mlua-sys": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "thiserror": {
+        "duration_ms": 0,
+        "units": 6
+      },
+      "adler2": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "aead": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "ahash": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "allocator-api2": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "anyhow": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "approx": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "arboard": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "arrayvec": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "ash": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "assetc": {
+        "duration_ms": 0,
+        "units": 7
+      },
+      "autocfg": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "base64": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "bit-set": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "bit-vec": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "bitflags": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "bstr": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "bumpalo": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "bymsdfgen-core": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "bytemuck": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "bytemuck_derive": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "byteorder": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "byteorder-lite": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "cc": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "cfg-if": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "cfg_aliases": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "chacha20": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "chacha20poly1305": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "cipher": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "claxon": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "clipboard-win": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "codespan-reporting": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "cpal": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "cpufeatures": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "crc32fast": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "crossbeam": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "crossbeam-channel": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "crossbeam-deque": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "crossbeam-epoch": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "crossbeam-queue": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "crossbeam-utils": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "crypto-common": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "cursor-icon": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "dasp_sample": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "deranged": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "displaydoc": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "document-features": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "downcast-rs": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "dpi": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "duplicate": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "ecolor": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "editor": {
+        "duration_ms": 0,
+        "units": 10
+      },
+      "eframe": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "egui": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "egui-wgpu": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "egui-winit": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "egui_dock": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "egui_glow": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "either": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "emath": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "ena": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "encoding_rs": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "engine": {
+        "duration_ms": 0,
+        "units": 28
+      },
+      "epaint": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "epaint_default_fonts": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "equivalent": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "error-code": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "fdeflate": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "find-msvc-tools": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "flate2": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "foldhash": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "form_urlencoded": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "futures-core": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "futures-task": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "futures-util": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "zune-jpeg": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "zune-core": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "zstd-sys": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "zstd-safe": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "zstd": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "zmij": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "zerovec-derive": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "zerovec": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "zerotrie": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "zeroize": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "zerofrom-derive": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "zerofrom": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "zerocopy-derive": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "zerocopy": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "yoke-derive": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "yoke": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "xml-rs": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "writeable": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "winit": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "windows_x86_64_msvc": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "windows-targets": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "windows-sys": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "windows-strings": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "windows-result": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "windows-link": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "windows-interface": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "windows-implement": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "windows-core": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "windows": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "wide": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "which": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "wgpu-types": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "wgpu-hal": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "wgpu-core-deps-windows-linux-android": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "wgpu-core": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "wgpu": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "webbrowser": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "web-time": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "web-sys": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "wasm-lua-spike": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "wasm-bindgen-shared": {
+        "duration_ms": 0,
+        "units": 4
+      },
+      "wasm-bindgen-macro-support": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "wasm-bindgen-macro": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "wasm-bindgen-futures": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "wasm-bindgen": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "version_check": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "utf8_iter": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "urlencoding": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "url": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "universal-hash": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "unicode-width": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "unicode-segmentation": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "unicode-ident": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "typenum": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "type-map": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "twox-hash": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "ttf-parser": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "tracing-subscriber": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "tracing-log": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "tracing-core": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "tracing-attributes": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "tracing-appender": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "tracing": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "tinyvec_macros": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "tinyvec": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "tinystr": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "time-core": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "time": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "thread_local": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "thiserror-impl": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "game_web": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "generic-array": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "getrandom": {
+        "duration_ms": 0,
+        "units": 4
+      },
+      "gl_generator": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "glow": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "gltf": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "gltf-derive": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "gltf-json": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "glutin": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "glutin-winit": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "glutin_egl_sys": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "glutin_wgl_sys": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "gpu-alloc": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "gpu-alloc-types": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "gpu-allocator": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "gpu-descriptor": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "gpu-descriptor-types": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "gpu-web-probe": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "half": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "hash32": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "hashbrown": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "heapless": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "heck": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "hexf-parse": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "hound": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "icu_collections": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "icu_locale_core": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "icu_normalizer": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "icu_normalizer_data": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "icu_properties": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "icu_properties_data": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "icu_provider": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "idna": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "idna_adapter": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "image": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "indexmap": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "inflections": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "inout": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "itoa": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "jobserver": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "js-sys": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "khronos-egl": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "khronos_api": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "lazy_static": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "lewton": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "libc": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "libloading": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "libm": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "litemap": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "litrs": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "lock_api": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "log": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "lua-src": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "luajit-src": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "matchers": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "matrixmultiply": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "memchr": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "memoffset": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "miniz_oxide": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "ab_glyph_rasterizer": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "ab_glyph": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "moxcms": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "naga": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "nalgebra": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "nalgebra-macros": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "nohash-hasher": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "nu-ansi-term": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "num-complex": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "num-conv": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "num-derive": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "num-integer": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "num-rational": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "num-traits": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "ogg": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "once_cell": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "opaque-debug": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "ordered-float": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "owned_ttf_parser": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "parking_lot": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "parking_lot_core": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "parry2d": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "parry3d": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "paste": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "percent-encoding": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "pin-project-lite": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "pkg-config": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "png": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "pollster": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "poly1305": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "potential_utf": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "powerfmt": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "ppv-lite86": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "presser": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "proc-macro2": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "proc-macro2-diagnostics": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "profiling": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "pxfm": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "quote": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "rand": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "rand_chacha": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "rand_core": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "range-alloc": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "rapier2d": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "rapier3d": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "raw-window-handle": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "rawpointer": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "rayon": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "rayon-core": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "regex-automata": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "regex-syntax": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "renderdoc-sys": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "robust": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "rodio": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "rstar": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "rustc-hash": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "rustlua-animation": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "rustlua-assets": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "rustlua-assets-import": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "rustlua-audio": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "rustlua-camera": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "rustlua-component-codec": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "rustlua-ecs": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "rustlua-frame-abi": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "rustlua-gameplay": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "rustlua-infra": {
+        "duration_ms": 0,
+        "units": 5
+      },
+      "rustlua-input": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "rustlua-lua-api": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "rustlua-math": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "rustlua-physics": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "rustlua-render": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "rustlua-scene": {
+        "duration_ms": 0,
+        "units": 4
+      },
+      "rustlua-scripting": {
+        "duration_ms": 0,
+        "units": 4
+      },
+      "rustlua-ui": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "rustversion": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "ruzstd": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "safe_arch": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "scopeguard": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "serde": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "serde_core": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "serde_derive": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "serde_json": {
+        "duration_ms": 0,
+        "units": 3
+      },
+      "sharded-slab": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "shlex": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "simba": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "simd-adler32": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "slab": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "smallvec": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "smol_str": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "spade": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "spirv": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "stable_deref_trait": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "static_assertions": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "subtle": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "symlink": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "symphonia": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "symphonia-bundle-mp3": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "symphonia-core": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "symphonia-metadata": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "syn": {
+        "duration_ms": 0,
+        "units": 2
+      },
+      "synstructure": {
+        "duration_ms": 0,
+        "units": 1
+      },
+      "mlua": {
+        "duration_ms": 0,
+        "units": 1
+      }
+    },
+    "source": "artifacts/metrics/target-compile/cargo-timings/cargo-timing-20261021T085842503Z-22e0cda4cdff254e.html"
+  }
+}

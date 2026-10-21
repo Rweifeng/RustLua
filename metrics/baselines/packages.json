@@ -1,0 +1,310 @@
+{
+  "schema": "package-v1",
+  "generated_at": "2026-10-21T07:56:38.179Z",
+  "project": "examples/game_jhyt",
+  "partial": false,
+  "packages": [
+    {
+      "platform": "pc",
+      "name": "pc",
+      "form": "full",
+      "path": "builds/pc",
+      "bytes_total": 20349901,
+      "files": 17
+    },
+    {
+      "platform": "engine",
+      "name": "RustLua-Engine-0.1.0-win64",
+      "form": "full",
+      "path": "artifacts/packages/RustLua-Engine-0.1.0-win64",
+      "bytes_total": 76772020,
+      "files": 1595,
+      "bytes_fonts": 18137652,
+      "bytes_samples": 17077357
+    },
+    {
+      "platform": "webgl",
+      "name": "webgl",
+      "form": "full",
+      "path": "builds/webgl",
+      "bytes_total": 12532043,
+      "files": 21,
+      "bytes_wasm": 5550856,
+      "bytes_js": 128650,
+      "bytes_fonts": 288364,
+      "bytes_pack": 5556581
+    },
+    {
+      "platform": "wechat",
+      "name": "main",
+      "form": "subpackage",
+      "path": "builds/wechat-minigame/launcher",
+      "bytes_main": 493011,
+      "bytes_sub": 5175946,
+      "bytes_total": 5668957,
+      "main_of_limit": 11.754298210144043,
+      "total_of_limit": 27.031693458557125,
+      "limits": {
+        "main_bytes": 4194304,
+        "total_bytes": 20971520
+      }
+    },
+    {
+      "platform": "wechat",
+      "name": "sub|pack-sub",
+      "form": "subpackage",
+      "path": "builds/wechat-minigame/launcher/pack-sub",
+      "bytes_total": 68084,
+      "files": 5
+    },
+    {
+      "platform": "wechat",
+      "name": "sub|pack-wasm",
+      "form": "subpackage",
+      "path": "builds/wechat-minigame/launcher/pack-wasm",
+      "bytes_total": 5107862,
+      "files": 2
+    },
+    {
+      "platform": "rlb",
+      "name": "art-characters-4d7c3bbc.rlb",
+      "form": "resource",
+      "bytes_total": 148656,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "art-enemies-91289f2c.rlb",
+      "form": "resource",
+      "bytes_total": 73792,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "art-ui-fd3959c1.rlb",
+      "form": "resource",
+      "bytes_total": 1331860,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "art-world-9ed8c85d.rlb",
+      "form": "resource",
+      "bytes_total": 403896,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "audio-22dba212.rlb",
+      "form": "resource",
+      "bytes_total": 1447152,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "brand-7916fae7.rlb",
+      "form": "resource",
+      "bytes_total": 1254256,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "core-f5f85add.rlb",
+      "form": "resource",
+      "bytes_total": 528450,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "art-characters-4d7c3bbc.rlb",
+      "form": "resource",
+      "bytes_total": 148656,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "art-enemies-91289f2c.rlb",
+      "form": "resource",
+      "bytes_total": 73792,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "art-ui-fd3959c1.rlb",
+      "form": "resource",
+      "bytes_total": 1331860,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "art-world-9ed8c85d.rlb",
+      "form": "resource",
+      "bytes_total": 403896,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "audio-22dba212.rlb",
+      "form": "resource",
+      "bytes_total": 1447152,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "brand-7916fae7.rlb",
+      "form": "resource",
+      "bytes_total": 1254256,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "core-2ded16b3.rlb",
+      "form": "resource",
+      "bytes_total": 528450,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "art-characters-4d7c3bbc.rlb",
+      "form": "resource",
+      "bytes_total": 148656,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "art-enemies-91289f2c.rlb",
+      "form": "resource",
+      "bytes_total": 73792,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "art-ui-fd3959c1.rlb",
+      "form": "resource",
+      "bytes_total": 1331860,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "art-world-9ed8c85d.rlb",
+      "form": "resource",
+      "bytes_total": 403896,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "audio-22dba212.rlb",
+      "form": "resource",
+      "bytes_total": 1447152,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "brand-7916fae7.rlb",
+      "form": "resource",
+      "bytes_total": 1254256,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "core-6577af5c.rlb",
+      "form": "resource",
+      "bytes_total": 524662,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "art-characters-4d7c3bbc.rlb",
+      "form": "resource",
+      "bytes_total": 148656,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "art-enemies-91289f2c.rlb",
+      "form": "resource",
+      "bytes_total": 73792,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "art-ui-fd3959c1.rlb",
+      "form": "resource",
+      "bytes_total": 1331860,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "art-world-9ed8c85d.rlb",
+      "form": "resource",
+      "bytes_total": 403896,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "audio-22dba212.rlb",
+      "form": "resource",
+      "bytes_total": 1447152,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "brand-7916fae7.rlb",
+      "form": "resource",
+      "bytes_total": 1254256,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "core-41a64001.rlb",
+      "form": "resource",
+      "bytes_total": 528661,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "art-characters-4d7c3bbc.rlb",
+      "form": "resource",
+      "bytes_total": 148656,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "art-enemies-91289f2c.rlb",
+      "form": "resource",
+      "bytes_total": 73792,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "art-ui-fd3959c1.rlb",
+      "form": "resource",
+      "bytes_total": 1331860,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "art-world-9ed8c85d.rlb",
+      "form": "resource",
+      "bytes_total": 403896,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "brand-7916fae7.rlb",
+      "form": "resource",
+      "bytes_total": 1254256,
+      "path": "?"
+    },
+    {
+      "platform": "rlb",
+      "name": "core-41a64001.rlb",
+      "form": "resource",
+      "bytes_total": 528661,
+      "path": "?"
+    }
+  ],
+  "baseline_reason": "P4 first baseline",
+  "baseline_created_at": "2026-10-21T08:53:09.126Z",
+  "baseline_commit": "6abb1ca9"
+}

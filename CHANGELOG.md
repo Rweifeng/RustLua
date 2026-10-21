@@ -5,6 +5,24 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — P4 性能与测试度量收口（2026-10-21）
+
+- **覆盖率**：`cargo llvm-cov` 全 workspace 首份基线入库（行 80.99%，301 文件/24 crate）；
+  `check-coverage.ps1` 支持首份 `-Update`、按 UTF-8 读 summary、`report` 复用 profdata，
+  `coverage` 门本地退出 0。
+- **wasm 条件编译**：`metrics/inventory/cfg-sites.json` 刷到 548 文件/408 站点；
+  `cfg_coverage_ok wasm_attrs=52 covered=52 … unknown=0`，新增 10 条原生/测试 cfg 均有归属。
+- **趋势库**：`metrics/history/2026-10.jsonl` 入库 6 个 run（perf 3 / coverage 1 / binary 1 /
+  package 1）；`trend_db check` 输出 `regressions=0 insufficient=0`，SQLite 仍可重建。
+- **编译/体积基线**：`compile-time.json` 记录冷 105.3s、热 0.9s、增量 89.4s 与 per-crate
+  `game=25.8s`/关键路径 7.98s；`binaries.json` 覆盖 6 件产物；`packages.json` 覆盖
+  PC/引擎/WebGL/微信主包+分包/`.rlb` 资源容器。
+- **门修正**：`measure-build` 拆分 cargo argv、允许进度 stderr；`parse-cargo-timings` 兼容
+  cargo 1.97 的对象 schema（秒）；`trend_db` 支持按域 `min_samples`（coverage 单样本）。
+- **未完成**：CI `coverage` job 与 Windows 3 blocking 的真实读数需推送后验证；
+  CI 分钟预算、history 默认写入方式、覆盖率绝对下限待管理员裁定；编译趋势 3 样本待 nightly。
+  本批按“随批归档”，不写成“验收通过”（详见 `tasks/done/P4-性能与测试度量.md` §11）。
+
 ## v0.1.1 — 安全清理后的重发（2026-10-21）
 
 - **为什么发**：`v0.1.0` 的发布资产是 unmaintained 清理**之前**构建的（`cargo-audit warnings=5`、
