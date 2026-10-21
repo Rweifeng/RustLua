@@ -210,7 +210,7 @@ jobs:
         # （STATUS_ACCESS_VIOLATION）；同一二进制单线程本地与覆盖率采集均通过。
         # 固定单线程换取可复现性，代价是测试墙钟时间变长。
         env:
-          RUST_TEST_THREADS: "1"
+          RUST_TEST_THREADS: "2"
         run: cargo test --workspace --all-features
 
       - name: Debug build
