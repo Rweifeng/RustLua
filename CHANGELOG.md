@@ -61,7 +61,7 @@
   `jhyt_m31_pc_release_ok`。
 - **实测**：`verify.ps1 -MvpOnly` → `MVP headless regression: executed=78 expected=78`
   （78/78 全绿），release 段 `jhyt_m31_pc_release_ok`、Clean release directory self test 通过，
-  `MVP gate passed`（2026-10-21 重跑）。
+  `MVP gate passed`（2026-10-21 重跑，主提交 `c913fc7f`）。
 - **回滚档**：只回滚 `.rs` 不回滚黄金表 `.tsv` 会让 m63 红在 ①；m72 的探针与首帧顺序必须
   一起回滚，否则回到“1:1 档 0 个”。`builds/pc` 是产物（gitignore），回滚代码后需重打。
   文档读数在 `examples/game_jhyt/docs/66` §10。

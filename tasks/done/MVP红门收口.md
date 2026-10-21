@@ -159,7 +159,7 @@ powershell -ExecutionPolicy Bypass -File scripts\verify\verify.ps1 -MvpOnly
 
 - 归档日期：2026-10-21。
 - 归档口径：**随批归档**（不是"验收通过"）。14 门已转绿，但 §5 的五条仍开着。
-- 本批提交：`（待填）`。
+- 本批提交：`c913fc7f`（归档主提交；本行哈希由紧随其后的回填提交补上）。
 - 主要改动文件：
   - `engine/crates/game/examples/jhyt_m63_title_prefab.rs`
   - `engine/crates/game/examples/support/jhyt_m63_title_menu_golden.tsv`（重导，68 行）
