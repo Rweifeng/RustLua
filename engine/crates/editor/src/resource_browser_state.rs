@@ -666,6 +666,9 @@ mod tests {
         let pending = browser.pending_imports().to_vec();
         browser.record_import_attempts(&pending);
         // 修改文件内容 → mtime 变化 → reconcile 转 Stale → 应重新待导入。
+        // CI 的 NTFS mtime 粒度/复用会让紧接着的写回拿到同一时间戳；显式跨过一个时间片，
+        // 否则 pending 仍为 0，测试在 runner 上偶发红（本地通常秒过）。
+        std::thread::sleep(std::time::Duration::from_millis(1100));
         file(&root, "assets/player.png", b"png2");
         browser.refresh(&root).unwrap();
         assert_eq!(browser.pending_imports().len(), 1);
