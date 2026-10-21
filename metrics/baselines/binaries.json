@@ -1,6 +1,6 @@
 {
   "schema": "binary-v1",
-  "generated_at": "2026-10-21T07:59:27.037Z",
+  "generated_at": "2026-10-21T08:57:56.252Z",
   "profile": "release",
   "partial": false,
   "artifacts": [
@@ -67,17 +67,29 @@
     {
       "name": "game_web_bg.wasm",
       "kind": "wasm",
-      "path": "wasm32-unknown-unknown/release/game_web_bg.wasm",
-      "missing": true
+      "path": "examples/game_jhyt/builds/webgl/pkg/game_web_bg.wasm",
+      "profile": "release",
+      "strip": false,
+      "bytes_raw": 5550856,
+      "bytes_gzip9": 2225942,
+      "bytes_brotli11": 1672603,
+      "sha256": "518241138d3b4929b0c491aeec1d09c16e5b1ba4b93cbb96a10d8e9f0c11ad92",
+      "mtime": "2026-10-20T02:07:30.817Z"
     },
     {
       "name": "game_web.js",
       "kind": "js",
-      "path": "wasm32-unknown-unknown/release/game_web.js",
-      "missing": true
+      "path": "examples/game_jhyt/builds/webgl/pkg/game_web.js",
+      "profile": "release",
+      "strip": false,
+      "bytes_raw": 128650,
+      "bytes_gzip9": 27190,
+      "bytes_brotli11": 22271,
+      "sha256": "66b43cd17e3a32dc73b42a979d9372d5ef8d0fe89f57456f2b2cad4e1640d01b",
+      "mtime": "2026-10-20T02:07:17.631Z"
     }
   ],
   "baseline_reason": "P4 first baseline",
-  "baseline_created_at": "2026-10-21T08:53:09.124Z",
-  "baseline_commit": "6abb1ca9"
+  "baseline_created_at": "2026-10-21T08:59:38.931Z",
+  "baseline_commit": "0c0c6ced"
 }

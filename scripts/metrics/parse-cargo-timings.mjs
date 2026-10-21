@@ -32,12 +32,19 @@ function parseTimings(html) {
   if (concMatch) {
     try { concurrency = JSON.parse(concMatch[1]); } catch { concurrency = []; }
   }
-  // UNIT_DATA 行：[name, duration_ms, start_ms, ...]
-  const parsed = units.map((u) => ({
-    name: String(u[0]),
-    duration_ms: Number(u[1]),
-    start_ms: Number(u[2]),
-  }));
+  // UNIT_DATA 有两种格式：旧版数组行 [name, duration_ms, start_ms]；新版对象
+  // {name, start, duration, ...}（cargo 1.97 起）。两种都要能解析。
+  const parsed = units.map((u) => {
+    if (Array.isArray(u)) {
+      return { name: String(u[0]), duration_ms: Number(u[1]), start_ms: Number(u[2]) };
+    }
+    return {
+      name: String(u.name ?? u.crate ?? "?"),
+      // 新版 cargo 的 HTML 用秒；旧 fixture/数组格式用毫秒。
+      duration_ms: Number(u.duration ?? u.duration_ms ?? 0) * 1000,
+      start_ms: Number(u.start ?? u.start_ms ?? 0) * 1000,
+    };
+  });
   // per-crate 聚合：name 形如 `crate::unit path (profile)`
   const crates = new Map();
   for (const u of parsed) {
@@ -47,13 +54,17 @@ function parseTimings(html) {
     c.duration_ms += u.duration_ms;
     c.units += 1;
   }
-  const wallMs = concurrency.length
-    ? Math.max(...concurrency.map((r) => Number(r[0]) || 0))
-    : parsed.reduce((mx, u) => Math.max(mx, u.start_ms + u.duration_ms), 0);
   const criticalMs = parsed.reduce((mx, u) => Math.max(mx, u.start_ms + u.duration_ms), 0);
-  const parallelism = concurrency.length
+  // CONCURRENCY_DATA 在新版 cargo 里是对象数组，不能按 r[0]/r[1] 读；wall 用关键路径兜底。
+  const concurrencyWall = concurrency.length && Array.isArray(concurrency[0])
+    ? Math.max(...concurrency.map((r) => Number(r[0]) || 0))
+    : 0;
+  const concurrencyParallelism = concurrency.length && Array.isArray(concurrency[0])
     ? Math.max(...concurrency.map((r) => Number(r[1]) || 0))
-    : 1;
+    : 0;
+  const wallMs = concurrencyWall || criticalMs;
+  const sumDuration = parsed.reduce((s, u) => s + u.duration_ms, 0);
+  const parallelism = concurrencyParallelism || (wallMs > 0 ? Math.round((sumDuration / wallMs) * 100) / 100 : 1);
   const topCrate = [...crates.entries()].sort((a, b) => b[1].duration_ms - a[1].duration_ms)[0];
   return {
     wall_ms: Math.round(wallMs),
