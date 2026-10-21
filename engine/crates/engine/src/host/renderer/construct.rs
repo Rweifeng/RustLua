@@ -29,8 +29,8 @@ use winit::window::Window;
 use super::world_sprite::WORLD_SPRITE_BUFFER_BYTES;
 use super::{
     DepthPass, FRAME_ARENA_INITIAL_BYTES, GpuTimestampState, IDENTITY_MAT4,
-    INITIAL_2D_VERTEX_BUFFER_BYTES, RenderFrameMetrics, Renderer, depth_stencil_state,
-    identity_palette_data,
+    INITIAL_2D_VERTEX_BUFFER_BYTES, RenderFrameMetrics, Renderer, RendererCapabilities,
+    compute::ComputeState, depth_stencil_state, identity_palette_data,
 };
 
 impl Renderer {
@@ -108,6 +108,8 @@ impl Renderer {
         };
         // Surface mode: create instance/adapter/device from the window.
         // Offscreen mode: use the caller-provided device/queue.
+        // 窗口路径的 adapter 只用于能力探测；离屏路径没有 adapter，靠限制值判定。
+        let mut adapter_for_caps: Option<wgpu::Adapter> = None;
         let (device, queue, surface, format, config, adapter_name) = if let Some(window) = window {
             let size = window.inner_size();
             let instance = Instance::new(&InstanceDescriptor::default());
@@ -172,6 +174,7 @@ impl Renderer {
                 desired_maximum_frame_latency: 2,
             };
             surface.configure(&device, &config);
+            adapter_for_caps = Some(adapter);
             (device, queue, Some(surface), format, config, adapter_name)
         } else {
             let (device, queue) = external_device
@@ -195,6 +198,25 @@ impl Renderer {
         // 校验错误走默认 handler，wasm 上是 `panic=abort`，整个渲染器就此死掉。
         // 所以这里按**设备能力**（而不是按平台 `cfg`）分叉：原生桌面照旧，web 走"没有这两条路"的构造。
         let storage_capable = device.limits().max_storage_buffers_per_shader_stage > 0;
+        // M74-03 P0：能力快照在构造期采一次。`adapter_for_caps` 只有窗口路径才有——
+        // 离屏渲染器拿的是外部 device（编辑器 eframe），没有 downlevel flag 可查，
+        // 由 `RendererCapabilities::probe` 退到限制值判定。
+        let capabilities = RendererCapabilities::probe(&device, adapter_for_caps.as_ref());
+        if let Some(reason) = capabilities.compute_unavailable_reason() {
+            tracing::info!(
+                target: "render",
+                backend = capabilities.backend_name(),
+                reason = %reason,
+                "[render] compute 通道不可用：GPU 粒子等消费者必须走 CPU 档"
+            );
+        } else {
+            tracing::info!(
+                target: "render",
+                backend = capabilities.backend_name(),
+                workgroup = ?capabilities.max_compute_workgroup_size,
+                "[render] compute 通道可用"
+            );
+        }
         let storage_usage = if storage_capable {
             wgpu::BufferUsages::STORAGE
         } else {
@@ -1146,6 +1168,9 @@ impl Renderer {
             vector_glyph_hash: 0,
             vector_segment_hash: 0,
             storage_capable,
+            capabilities,
+            compute_state: ComputeState::new(),
+            gpu_particles: None,
             font_atlas_uploaded_version: u64::MAX,
             font_atlas_uploaded_hash: 0,
             custom_fonts: HashMap::new(),

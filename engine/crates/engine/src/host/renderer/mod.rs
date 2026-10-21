@@ -21,14 +21,22 @@ use wgpu::{Device, Queue, Surface, SurfaceConfiguration};
 use crate::host::frame::{Scene3d, SceneMesh};
 
 mod arena;
+mod capabilities;
+mod compute;
 mod construct;
 mod gpu_mesh;
+mod gpu_particles;
 mod gpu_texture;
 mod passes;
 mod readback;
 mod targets;
 mod timestamp;
 mod world_sprite;
+pub use capabilities::RendererCapabilities;
+pub use compute::{ComputeBinding, ComputeDispatch, ComputeError, ComputeRequest, ComputeStats};
+pub use gpu_particles::{
+    GpuParticleConfig, GpuParticleSnapshot, GpuParticleState, GpuParticleStatus, GpuParticleStep,
+};
 pub use readback::{ReadbackMetrics, ReadbackStatus};
 use timestamp::{GpuTimestampState, TimestampSlot};
 
@@ -376,6 +384,13 @@ pub struct Renderer {
     device: Device,
     queue: Queue,
     pub config: SurfaceConfiguration,
+    /// M74-03 P0：构造期采集的设备能力快照（只读）。`capabilities().compute` 是所有
+    /// compute 消费者的唯一判据，不在别处重复探测。
+    capabilities: RendererCapabilities,
+    /// M74-03 P1：compute 管线/绑定组缓存、统计与宿主开关。
+    compute_state: compute::ComputeState,
+    /// M74-03 P2：GPU 粒子（第一个真实消费者）。`None` = 未启用，不产生任何额外 pass。
+    gpu_particles: Option<gpu_particles::GpuParticleSystem>,
     pipeline: wgpu::RenderPipeline,
     mesh_pipeline: wgpu::RenderPipeline,
     camera_bind_group: wgpu::BindGroup,

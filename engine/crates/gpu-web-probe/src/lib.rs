@@ -168,6 +168,13 @@ async fn probe_config(backends: wgpu::Backends, out: &mut Value) -> Result<(), S
         "adapter_features_bits": format!("{:?}", adapter.features().bits()),
         "downlevel_flags": format!("{:?}", downlevel.flags),
         "downlevel_shader_model": format!("{:?}", downlevel.shader_model),
+        // M74-03 P0 硬门：WebGL2 必须把 compute 报成 false。这里给两条独立证据
+        // （downlevel flag + 限制值），与 `engine::host::RendererCapabilities::probe` 同一口径。
+        "downlevel_compute_shaders": downlevel
+            .flags
+            .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS),
+        "compute_capable": compute_capable(&adapter),
+        "compute_unavailable_reason": compute_unavailable_reason(&adapter),
         "adapter_limits": describe_limits(&adapter.limits()),
         // 两次 request_device 的结果是本探针最关键的一句话：WebGL2 上 `Limits::default()`
         // 应该请求失败（它要求 max_storage_buffers_per_shader_stage=8 等 WebGL2 没有的东西），
@@ -257,12 +264,19 @@ fn device_descriptor(label: &str, required_limits: wgpu::Limits) -> wgpu::Device
 }
 
 /// 只挑与 engine 渲染器直接相关的限制字段。全量 `Limits` 有几十个字段，全打出来反而看不出重点；
-/// 这九个字段对应"能不能建存储缓冲/存储贴图、绑定组与顶点布局够不够大、能不能画满一张大贴图"。
+/// 这些字段对应"能不能建存储缓冲/存储贴图、绑定组与顶点布局够不够大、能不能画满一张大贴图"，
+/// 以及 M74-03 的 compute 三个维度上限与单次绑定大小。
 fn describe_limits(limits: &wgpu::Limits) -> Value {
     json!({
         "max_storage_buffers_per_shader_stage": limits.max_storage_buffers_per_shader_stage,
         "max_storage_textures_per_shader_stage": limits.max_storage_textures_per_shader_stage,
         "max_compute_workgroup_storage_size": limits.max_compute_workgroup_storage_size,
+        "max_compute_workgroup_size_x": limits.max_compute_workgroup_size_x,
+        "max_compute_workgroup_size_y": limits.max_compute_workgroup_size_y,
+        "max_compute_workgroup_size_z": limits.max_compute_workgroup_size_z,
+        "max_compute_invocations_per_workgroup": limits.max_compute_invocations_per_workgroup,
+        "max_compute_workgroups_per_dimension": limits.max_compute_workgroups_per_dimension,
+        "max_storage_buffer_binding_size": limits.max_storage_buffer_binding_size,
         "max_texture_dimension_2d": limits.max_texture_dimension_2d,
         "max_bind_groups": limits.max_bind_groups,
         "max_vertex_buffers": limits.max_vertex_buffers,
@@ -270,6 +284,56 @@ fn describe_limits(limits: &wgpu::Limits) -> Value {
         "max_color_attachments": limits.max_color_attachments,
         "max_uniform_buffer_binding_size": limits.max_uniform_buffer_binding_size,
     })
+}
+
+/// 与引擎同一口径：downlevel flag 与 compute 限制值**两条都满足**才算有 compute。
+///
+/// 为什么探针要自己再算一遍而不是直接读 `RendererCapabilities`：这份报告的第一层
+/// （`probe_config`）在拿到 device 之前就要给出结论，而 `RendererCapabilities` 是构造期采的。
+fn compute_capable(adapter: &wgpu::Adapter) -> bool {
+    let limits = adapter.limits();
+    adapter
+        .get_downlevel_capabilities()
+        .flags
+        .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+        && limits.max_compute_workgroup_size_x > 0
+        && limits.max_compute_workgroup_size_y > 0
+        && limits.max_compute_workgroup_size_z > 0
+        && limits.max_compute_invocations_per_workgroup > 0
+        && limits.max_compute_workgroups_per_dimension > 0
+        && limits.max_storage_buffers_per_shader_stage > 0
+}
+
+/// 无 compute 时的可读原因（有 compute 时返回 `null`）。
+fn compute_unavailable_reason(adapter: &wgpu::Adapter) -> Option<String> {
+    if compute_capable(adapter) {
+        return None;
+    }
+    let limits = adapter.limits();
+    let mut reasons = Vec::new();
+    if !adapter
+        .get_downlevel_capabilities()
+        .flags
+        .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+    {
+        reasons.push("DownlevelFlags::COMPUTE_SHADERS 未置位".to_owned());
+    }
+    if limits.max_storage_buffers_per_shader_stage == 0 {
+        reasons.push("max_storage_buffers_per_shader_stage=0".to_owned());
+    }
+    if limits.max_compute_workgroup_size_x == 0
+        || limits.max_compute_workgroup_size_y == 0
+        || limits.max_compute_workgroup_size_z == 0
+    {
+        reasons.push("max_compute_workgroup_size_*=0".to_owned());
+    }
+    if limits.max_compute_invocations_per_workgroup == 0 {
+        reasons.push("max_compute_invocations_per_workgroup=0".to_owned());
+    }
+    if limits.max_compute_workgroups_per_dimension == 0 {
+        reasons.push("max_compute_workgroups_per_dimension=0".to_owned());
+    }
+    Some(reasons.join("; "))
 }
 
 /// 真渲染 + 读回：清成绿色 → copy 到可映射缓冲 → map → 读第一个像素。
@@ -926,10 +990,19 @@ async fn run_render_probe() -> Result<Value, String> {
         }
     }
 
+    let capabilities = renderer.capabilities();
     Ok(json!({
         "backend": format!("{:?}", info.backend),
         "device_type": format!("{:?}", info.device_type),
         "adapter_name": info.name,
+        "engine_capabilities": {
+            "compute": capabilities.compute,
+            "storage_buffers": capabilities.storage_buffers,
+            "backend": capabilities.backend_name(),
+            "compute_unavailable_reason": capabilities.compute_unavailable_reason(),
+            "max_compute_workgroup_size": capabilities.max_compute_workgroup_size,
+            "max_storage_buffer_binding_size": capabilities.max_storage_buffer_binding_size,
+        },
         "limits": {
             "adapter_2d": adapter_limits.max_texture_dimension_2d,
             "requested_2d": requested.max_texture_dimension_2d,

@@ -165,7 +165,7 @@ impl Renderer {
         self.ensure_white()
     }
 
-    fn ensure_white(&mut self) -> Option<wgpu::BindGroup> {
+    pub(super) fn ensure_white(&mut self) -> Option<wgpu::BindGroup> {
         if let Some(white) = &self.white {
             return Some(white.clone());
         }

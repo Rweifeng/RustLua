@@ -274,7 +274,13 @@ impl Renderer {
         // 世界 Sprite 通道（docs/54 §8-④）：与网格**共用相机、视口与深度附件**。
         // 这一段只做 CPU 侧准备（uniform + 缓冲容量），不碰 encoder，因此可以排在清屏之前，
         // 好让下面的通道计划拿到 `shared_depth` 这个事实。
-        let world_view = if mesh.world_sprites.is_empty() {
+        // M74-03 P2：GPU 粒子复用同一份世界视图/相机 uniform，因此它单独存在时也要准备这份视图。
+        let particles_active = self.compute_enabled()
+            && self
+                .gpu_particles
+                .as_ref()
+                .is_some_and(super::gpu_particles::GpuParticleSystem::is_active);
+        let world_view = if mesh.world_sprites.is_empty() && !particles_active {
             None
         } else {
             self.prepare_world_sprites(mesh, main_matrix, overlay_viewport, target)
@@ -301,6 +307,7 @@ impl Renderer {
                 .iter()
                 .any(|draw| draw.depth_write),
             world_sprite_shared_depth: world_view.is_some_and(|world| world.shared_depth),
+            gpu_particles: particles_active && world_view.is_some(),
             world_2d_draws: count_layer_draws(mesh, RenderLayer::World2D),
             overlay_2d_draws: count_layer_draws(mesh, RenderLayer::Overlay2D),
             screen_ui_draws: count_layer_draws(mesh, RenderLayer::ScreenUI),
@@ -459,6 +466,7 @@ impl Renderer {
             } else {
                 SpritePassFilter::All
             };
+            let clear_world_depth = !depth_cleared;
             self.draw_world_sprites(
                 encoder,
                 draw_target,
@@ -469,10 +477,28 @@ impl Renderer {
                 &mesh.paths,
                 &mesh.path_handles,
                 filter,
-                !depth_cleared,
+                clear_world_depth,
                 &mut metrics,
             );
+            if clear_world_depth {
+                depth_cleared = true;
+            }
             executed.push(RenderPass::WorldSprite);
+        }
+        // M74-03 P2：GPU 粒子。compute 已在 `step_gpu_particles` 里提交（本帧 render 之前），
+        // 这里只把顶点缓冲画出来——渲染侧零回读、零上传。
+        if plan.contains(RenderPass::Particle)
+            && let Some(world) = world_view
+            && self.draw_gpu_particles(
+                encoder,
+                draw_target,
+                target,
+                world,
+                !depth_cleared,
+                &mut metrics,
+            )
+        {
+            executed.push(RenderPass::Particle);
         }
         if plan.contains(RenderPass::Legacy2DOverlay) || plan.contains(RenderPass::ScreenUI) {
             let bytes = bytemuck::cast_slice(&mesh.vertices);

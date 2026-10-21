@@ -5,6 +5,20 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — M74-03 Compute Shader 与 GPU 粒子（2026-10-21）
+
+- **Compute Shader 通道（M74-03）**：渲染器新增 `RendererCapabilities` 能力快照与 compute 接缝
+  （`renderer/compute.rs`）：WGSL `@compute` 管线缓存、storage/uniform 绑定组缓存、dispatch
+  提交与 native 同步回读；无 compute 时所有入口返回 `ComputeError::Unsupported`，不 panic、
+  不静默空转。第一个真实消费者是 GPU 粒子：状态在 storage buffer 里积分，compute 直接写
+  `WorldSpriteVertex` 到 `STORAGE | VERTEX` 缓冲，渲染侧零回读，新增 `RenderPass::Particle`
+  （`ALL` 9→10）。默认仍是 CPU 粒子，GPU 档由 `Renderer::configure_gpu_particles` 显式打开，
+  `set_compute_enabled(false)` / WebGL2 / 微信上回到 CPU 且画面逐字节不变。10k 粒子 × 120 步
+  CPU/GPU 最终位置差 `9.155e-5 < 1e-4`；验收命令
+  `cargo run -p game --example jhyt_m95_gpu_particles`（同门另报 50k × 60 步的 CPU 迭代与
+  GPU command 提交读数，独立 GPU 时间因本机 `timestamp=false` 不可得）。连续发射（`rate > 0`）在 v1 明确拒绝，
+  场景/Lua 的 `mode=cpu|gpu` 接线与 50k 基准留给 P3-R07。
+
 ## Unreleased — P4 性能与测试度量收口（2026-10-21）
 
 - **覆盖率**：`cargo llvm-cov` 全 workspace 首份基线入库（行 80.99%，301 文件/24 crate）；

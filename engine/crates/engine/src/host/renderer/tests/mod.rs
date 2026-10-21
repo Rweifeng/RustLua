@@ -19,6 +19,7 @@ use crate::host::frame::WorldSpriteVertex;
 use wgpu::DeviceDescriptor;
 
 mod capacity_and_caches;
+mod compute;
 mod depth_and_frame_views;
 mod offscreen_and_tetris;
 mod overlay_batching;

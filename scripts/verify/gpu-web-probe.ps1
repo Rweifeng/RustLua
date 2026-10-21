@@ -57,6 +57,16 @@ function Exit-With([int]$Code) { exit $Code }
 
 # ---------- 依赖解析（与 package.ps1 / verify-wasm-lua.ps1 共用同一份逻辑） ----------
 . (Join-Path $PSScriptRoot "..\build\wasm-bindgen.ps1")
+# vendored Lua 的 wasm C 源要 `zig cc` 才能编（见 vendor/mlua-sys/build）；不先解析，
+# 探针会以 "mlua-sys: cannot locate zig" 失败，看起来像探针坏了。与 verify-wasm-lua 同一口径：
+# $env:ZIG → engine\.tools\zig → PATH，缺了就按需装。
+. (Join-Path $PSScriptRoot "..\build\zig-toolchain.ps1")
+$zig = Resolve-ZigToolchain
+if (-not $zig) {
+    Write-Log "gpu_probe_skipped reason=no_zig (vendored Lua 的 wasm C 编译需要 zig)" Yellow
+    Exit-With 3
+}
+$env:ZIG = $zig
 
 $node = Get-Command node -ErrorAction SilentlyContinue
 if (-not $node) {

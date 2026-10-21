@@ -7,6 +7,7 @@
 //! ├── Shadow
 //! ├── Depth / Opaque
 //! ├── World Sprite / Billboard
+//! ├── Particle（compute 消费者）
 //! ├── Transparent
 //! ├── Legacy2DOverlay
 //! ├── ScreenUI
@@ -52,6 +53,11 @@ pub enum RenderPass {
     /// 世界 Sprite 通道：共用 3D 视图时画**半透明**段（测深度不写深度），否则画全部段
     /// （回滚档：纯 2D 画面只有精灵之间的画家顺序）。蓝图里的 `Transparent` 就是这里。
     WorldSprite,
+    /// GPU 粒子（M74-03 P2）：compute 已经在 `render()` 之前写好顶点缓冲，这里只画。
+    ///
+    /// 位置在世界空间、半透明，因此排在世界 Sprite 之后、2D overlay/UI 之前。没有
+    /// compute 能力或没配置消费者时**不出现**在计划里（不会绑到空管线）。
+    Particle,
     /// 旧 2D 叠加顶点，覆盖 `RenderLayer::{World2D, Overlay2D}` 两个桶（同一批顶点、同一条管线，
     /// 桶间按 [`crate::layer::OVERLAY_DRAW_ORDER`] 排序）。
     Legacy2DOverlay,
@@ -68,12 +74,13 @@ pub enum RenderPass {
 
 impl RenderPass {
     /// 规范执行顺序。渲染器按这个顺序执行，计划也必须按这个顺序列出通道。
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Clear,
         Self::WorldSpriteOpaque,
         Self::Shadow,
         Self::DepthOpaque,
         Self::WorldSprite,
+        Self::Particle,
         Self::Legacy2DOverlay,
         Self::ScreenUI,
         Self::VectorText,
@@ -89,6 +96,7 @@ impl RenderPass {
             Self::Shadow => "shadow",
             Self::DepthOpaque => "depth_opaque",
             Self::WorldSprite => "world_sprite",
+            Self::Particle => "particle",
             Self::Legacy2DOverlay => "legacy_2d_overlay",
             Self::ScreenUI => "screen_ui",
             Self::VectorText => "vector_text",
@@ -122,6 +130,8 @@ pub struct FrameFacts {
     pub world_sprite_opaque_segment: bool,
     /// 世界 Sprite 与网格**共用**相机/深度附件（`WorldSpriteView::shared_depth`）。
     pub world_sprite_shared_depth: bool,
+    /// 本帧有 GPU 粒子（已配置消费者且 compute 可用）。
+    pub gpu_particles: bool,
     /// `RenderLayer::World2D` 桶的 draw 数。
     pub world_2d_draws: usize,
     /// `RenderLayer::Overlay2D` 桶的 draw 数。
@@ -173,6 +183,9 @@ impl RenderPlan {
         }
         if facts.world_sprites > 0 {
             passes.push(RenderPass::WorldSprite);
+        }
+        if facts.gpu_particles {
+            passes.push(RenderPass::Particle);
         }
         if facts.world_2d_draws + facts.overlay_2d_draws > 0 {
             passes.push(RenderPass::Legacy2DOverlay);
@@ -266,6 +279,7 @@ mod tests {
             world_sprites: 4,
             world_sprite_opaque_segment: true,
             world_sprite_shared_depth: true,
+            gpu_particles: true,
             world_2d_draws: 2,
             overlay_2d_draws: 1,
             screen_ui_draws: 3,
@@ -286,6 +300,7 @@ mod tests {
                 RenderPass::Shadow,
                 RenderPass::DepthOpaque,
                 RenderPass::WorldSprite,
+                RenderPass::Particle,
                 RenderPass::Legacy2DOverlay,
                 RenderPass::ScreenUI,
                 RenderPass::VectorText,
@@ -298,7 +313,7 @@ mod tests {
             RenderPass::ALL.len(),
             "ALL_LEN 必须与规范顺序一致"
         );
-        assert_eq!(RenderPass::ALL.len(), 9, "通道数变化必须同步改渲染器");
+        assert_eq!(RenderPass::ALL.len(), 10, "通道数变化必须同步改渲染器");
     }
 
     /// 空帧：什么都不跑（连清屏都没有 ⇒ 宿主声明了 `ClearPolicy::None`）。
@@ -382,7 +397,7 @@ mod tests {
     /// 计划恒为规范顺序：把 bool 事实穷举一遍，`is_canonical` 必须无例外成立。
     #[test]
     fn every_fact_combination_yields_a_canonical_plan() {
-        for bits in 0u32..(1 << 7) {
+        for bits in 0u32..(1 << 8) {
             let facts = FrameFacts {
                 clear: bits & 1 != 0,
                 has_3d_draws: bits & 2 != 0,
@@ -394,6 +409,7 @@ mod tests {
                 screen_ui_draws: 0,
                 vector_text: false,
                 post_process: bits & 64 != 0,
+                gpu_particles: bits & 128 != 0,
             };
             let plan = RenderPlan::for_frame(facts);
             assert!(plan.is_canonical(), "{facts:?} ⇒ {:?}", plan.passes());

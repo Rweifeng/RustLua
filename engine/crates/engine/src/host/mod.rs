@@ -41,7 +41,9 @@ pub use gamepad::{
     button as gamepad_button,
 };
 pub use renderer::{
-    ReadbackMetrics, ReadbackStatus, RenderFrameMetrics, RenderOutcome, Renderer,
+    ComputeBinding, ComputeDispatch, ComputeError, ComputeRequest, ComputeStats, GpuParticleConfig,
+    GpuParticleSnapshot, GpuParticleState, GpuParticleStatus, GpuParticleStep, ReadbackMetrics,
+    ReadbackStatus, RenderFrameMetrics, RenderOutcome, Renderer, RendererCapabilities,
     RendererResourceStats,
 };
 pub use runtime_scene::{
