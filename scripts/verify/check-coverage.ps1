@@ -82,7 +82,7 @@ function Invoke-CoverageCollect {
     try {
         & cargo llvm-cov --workspace --all-features --locked --no-fail-fast `
             --ignore-filename-regex 'engine[\\/]vendor[\\/]|engine[\\/]target[\\/]' `
-            --json --summary-only --output-path $covJson
+            --json --summary-only --output-path $covJson -- --test-threads=1 --nocapture
         if ($LASTEXITCODE -ne 0) {
             # --no-fail-fast 下测试失败会让 cargo 返回非零；覆盖率数字不能掩盖红测试。
             Write-Host "[FAIL] llvm-cov 采集失败或存在测试失败（exit $LASTEXITCODE）；覆盖率门不掩盖红测试" -ForegroundColor Red
