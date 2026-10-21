@@ -1,15 +1,15 @@
 {
   "schema": 1,
-  "generated_at": "2026-10-20T11:52:58.308Z",
+  "generated_at": "2026-10-21T07:55:38.276Z",
   "counts": {
     "wasm_attrs": 48,
     "wasm_macros": 4,
     "not_wasm_attrs": 37,
-    "platform": 47,
+    "platform": 50,
     "feature": 10,
-    "test": 247,
+    "test": 254,
     "other": 5,
-    "total": 398
+    "total": 408
   },
   "sites": [
     {
@@ -1123,6 +1123,16 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "engine|crates/engine/src/host/frame_profile.rs|test||1",
+      "crate": "engine",
+      "file": "crates/engine/src/host/frame_profile.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "engine|crates/engine/src/host/gamepad.rs|not(windows)||1",
       "crate": "engine",
       "file": "crates/engine/src/host/gamepad.rs",
@@ -1833,6 +1843,36 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "game|crates/game/examples/jhyt_m31_pc_release.rs|not(windows)||1",
+      "crate": "game",
+      "file": "crates/game/examples/jhyt_m31_pc_release.rs",
+      "predicate": "not(windows)",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "platform",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "game|crates/game/examples/jhyt_m31_pc_release.rs|windows||1",
+      "crate": "game",
+      "file": "crates/game/examples/jhyt_m31_pc_release.rs",
+      "predicate": "windows",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "platform",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "game|crates/game/examples/jhyt_m31_pc_release.rs|windows||2",
+      "crate": "game",
+      "file": "crates/game/examples/jhyt_m31_pc_release.rs",
+      "predicate": "windows",
+      "item": "(none)",
+      "occurrence": 2,
+      "kind": "platform",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "game|crates/game/examples/tilemap_resave.rs|test||1",
       "crate": "game",
       "file": "crates/game/examples/tilemap_resave.rs",
@@ -2000,6 +2040,16 @@
       "item": "(none)",
       "occurrence": 1,
       "kind": "wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-animation|crates/rustlua-animation/src/animation_lua.rs|test||1",
+      "crate": "rustlua-animation",
+      "file": "crates/rustlua-animation/src/animation_lua.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
       "attr_or_macro": "attr"
     },
     {
@@ -2386,6 +2436,16 @@
       "key": "rustlua-ecs|crates/rustlua-ecs/src/entity_script.rs|test||1",
       "crate": "rustlua-ecs",
       "file": "crates/rustlua-ecs/src/entity_script.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-ecs|crates/rustlua-ecs/src/entity_state.rs|test||1",
+      "crate": "rustlua-ecs",
+      "file": "crates/rustlua-ecs/src/entity_state.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,
@@ -3703,6 +3763,16 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "rustlua-render|crates/rustlua-render/src/visibility_lua.rs|test||1",
+      "crate": "rustlua-render",
+      "file": "crates/rustlua-render/src/visibility_lua.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "rustlua-render|crates/rustlua-render/src/visibility.rs|test||1",
       "crate": "rustlua-render",
       "file": "crates/rustlua-render/src/visibility.rs",
@@ -3873,9 +3943,29 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "rustlua-scripting|crates/rustlua-scripting/src/script/values.rs|test||1",
+      "crate": "rustlua-scripting",
+      "file": "crates/rustlua-scripting/src/script/values.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "rustlua-ui|crates/rustlua-ui/src/lua_nav.rs|test||1",
       "crate": "rustlua-ui",
       "file": "crates/rustlua-ui/src/lua_nav.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-ui|crates/rustlua-ui/src/prefab_lua.rs|test||1",
+      "crate": "rustlua-ui",
+      "file": "crates/rustlua-ui/src/prefab_lua.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,
@@ -3956,6 +4046,16 @@
       "key": "rustlua-ui|crates/rustlua-ui/src/ui_scene_layout.rs|test||1",
       "crate": "rustlua-ui",
       "file": "crates/rustlua-ui/src/ui_scene_layout.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-ui|crates/rustlua-ui/src/ui_state.rs|test||1",
+      "crate": "rustlua-ui",
+      "file": "crates/rustlua-ui/src/ui_state.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,
