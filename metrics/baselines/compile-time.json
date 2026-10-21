@@ -1,0 +1,26 @@
+{
+  "schema": "compile-v1",
+  "generated_at": "2026-10-21T08:53:08.899Z",
+  "profile": "check",
+  "jobs": 4,
+  "incremental": 1,
+  "cold": true,
+  "target_dir": "E:\\Codex\\RustLua\\artifacts\\metrics\\target-compile",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "check_cold": 105333,
+  "check_cold_min_ms": 105333,
+  "check_cold_max_ms": 105333,
+  "check_cold_variance_ms2": 0,
+  "check_warm": 904,
+  "check_warm_min_ms": 904,
+  "check_warm_max_ms": 904,
+  "check_warm_variance_ms2": 0,
+  "incremental_crate": "rustlua-infra",
+  "incremental_after_clean_package": 89373,
+  "units": {
+    "incremental_rebuild": 1
+  },
+  "baseline_reason": "P4 first compile baseline",
+  "baseline_created_at": "2026-10-21T08:53:08.900Z",
+  "baseline_commit": "6abb1ca9"
+}
