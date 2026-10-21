@@ -89,13 +89,10 @@ function Invoke-CoverageCollect {
             return $null
         }
         # lcov + HTML 作为 artifact 证据（尽力而为，失败不判红但打印原因）。
-        & cargo llvm-cov --workspace --all-features --locked --no-fail-fast `
-            --ignore-filename-regex 'engine[\\/]vendor[\\/]|engine[\\/]target[\\/]' `
-            --lcov --output-path $lcov 2>$null | Out-Null
+        # lcov + HTML 只从刚生成的 profdata 导出，不再重复跑一遍全量测试（P4-01 门要能在 CI 分钟预算内跑完）。
+        & cargo llvm-cov report --lcov --output-path $lcov 2>$null | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Host "[WARN] lcov 生成失败（artifact 缺失，不影响判据）" -ForegroundColor Yellow }
-        & cargo llvm-cov --workspace --all-features --locked --no-fail-fast `
-            --ignore-filename-regex 'engine[\\/]vendor[\\/]|engine[\\/]target[\\/]' `
-            --html --output-dir $htmlDir 2>$null | Out-Null
+        & cargo llvm-cov report --html --output-dir $htmlDir 2>$null | Out-Null
         if ($LASTEXITCODE -ne 0) { Write-Host "[WARN] HTML 生成失败（artifact 缺失，不影响判据）" -ForegroundColor Yellow }
     } finally {
         Pop-Location
