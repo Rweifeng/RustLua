@@ -5,7 +5,7 @@
 //! 以及两个演示 examples。浏览器产物（`game_web`）与引擎库（`engine`）都不依赖本 crate ——
 //! 它们是"读产物"的一侧，读的是 [`rustlua_assets::resource_db`] 与 `rltex`。
 //!
-//! 拆分动机、代价与验收方式见 `docs/62` §6 P1 与 `tasks/plan/P1-降耦合收口.md` 的阶段 ③。
+//! 拆分动机、代价与验收方式见 `docs/62` §6 P1 与 `tasks/done/P1-降耦合收口.md` 的阶段 ③。
 //!
 //! # 模块
 //!

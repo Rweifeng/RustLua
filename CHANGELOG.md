@@ -207,7 +207,7 @@
   `WorldText`（类型内嵌 `UiText`，且是 **ECS 组件**，`engine`/`scripting` 直接往 `World` 里塞）、
   `char_collect`（扫工程字符集要解析 `Text`/`WorldText`）、`scene_extract`（产出
   `MeshRenderer`/`Light` 的类型化视图）三处还在用它们。搬法已写进
-  `tasks/plan/P1-降耦合收口.md`：`WorldText` → `rustlua-ui`、`char_collect` →
+  `tasks/done/P1-降耦合收口.md`：`WorldText` → `rustlua-ui`、`char_collect` →
   `rustlua-assets-import`、`scene_extract` → `engine`，之后两条边退成 dev-dependencies。
 - **回滚档**：删 `rustlua-component-codec`、把 11 个变体与两处 `use` 恢复进 `typed_scene.rs`、
   装表调用删掉即可——形状与拆前一致；`BUDGET` 会立刻抓出预算虚高（这正是"不能悄悄回退"）。
@@ -278,9 +278,9 @@
     `jhyt_m93_spatial_audio`、`jhyt_m66_pause_prefab` 绿；`-p rustlua-gameplay` 34 条、
     `-p engine` 189 条全绿。**未验的一层**：wasm 图里 `rodio` 还剩**一条**入口——
     `rustlua-assets/src/importer.rs:243`（导入期读音频时长）。它属于导入层，跟着
-    [P1-01 ③](tasks/plan/P1-降耦合收口.md) 一起搬；在那之前**不要**宣称"wasm 产物已无 rodio"。
+    [P1-01 ③](tasks/done/P1-降耦合收口.md) 一起搬；在那之前**不要**宣称"wasm 产物已无 rodio"。
 - **③④⑤ 的残项表**（导入层分离 / 场景组件编解码注册表 / `ScriptState` + 剩余 API 模块）已写进
-  [docs/62 §6 P1](docs/62-成熟引擎差距分析.md) 与 [tasks/plan/P1-降耦合收口.md](tasks/plan/P1-降耦合收口.md)，
+  [docs/62 §6 P1](docs/62-成熟引擎差距分析.md) 与 [tasks/done/P1-降耦合收口.md](tasks/done/P1-降耦合收口.md)，
   含逐条验收命令与回滚口径。
 
 ## Unreleased — 真实瘦首包（`-AssetPack remote`）跑通验收，顺手修掉 4 处"写死 `pack/`"的假设
@@ -618,6 +618,12 @@
   的 `camera3d_resolutions` 账本会当场红；headless 没有定帧视图，才走 `active_camera3d()` 解析一次）。
   `RuntimeScene::audio_listener()` 把它暴露出来，宿主测试
   `listener_follows_the_active_camera_each_frame` 钉住"构造期为空 + 跑过一帧后等于相机 + 第二帧仍重灌"。
+- **2026-10-21 补 2D 听者**：此前听者无条件取 `active_camera3d()`，2D 工程拿到的是 `(0,0,5)` 的
+  回退相机，2D 相机一平移声音就按世界原点衰减/定声像。现在场景里没有任何透视 `Camera3D` 时取
+  `Camera2D` 中心、`forward = -Z`（`+Z × +Y = -X` 会把声像左右弄反，任务书旧稿写的就是 `+Z`）；
+  `two_d_listener_follows_camera2d_center` 钉住位置/朝向/声像/相机平移后的跟随。
+  `listener_follows_the_active_camera_each_frame` 的 fixture 改用 `demo3d.scene`——原来用的
+  `game_api/main.scene` 是 2D 场景，测到的其实是回退相机。
 - **实测/核对**：`rustlua-audio` 单测 15 条（含新增 8 条模型/折回 + 3 条宿主契约）、
   平台出口契约 `sink_provider` 扩到断言"空间播放把 `gain` 折进音量、`gain/pan` 原样给平台、
   2D 播放 `spatial = None`"；宿主接线测试 1 条；示例

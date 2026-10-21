@@ -344,6 +344,22 @@ impl RuntimeScene {
         camera.unwrap_or(fallback)
     }
 
+    /// 场景里是否至少有一台**透视** 3D 相机（不看 `enabled`，也不看是否被选中）。
+    ///
+    /// M74-01 的 2D/3D 分界：纯 2D 工程没有 `Camera3D` 组件，听者要取 `Camera2D` 中心；
+    /// 只要有 3D 相机（哪怕当前全部禁用、渲染回退到默认 3D 相机），听者仍按 3D 相机口径。
+    /// **不能**用 `frame_view_3d.is_some()` 判断——`vertices()` 对纯 2D 工程也会定一帧
+    /// 回退 3D 视图，那份缓存的相机是 (0,0,5)，不是 2D 相机。
+    pub(super) fn has_perspective_camera3d(&self) -> bool {
+        self.script.with_world(|world| {
+            let mut found = false;
+            world.for_each::<rustlua_camera::camera::Camera>(|_, camera| {
+                found |= camera.as_perspective().is_some();
+            });
+            found
+        })
+    }
+
     /// Resolves the active light: Lua's `light.set_active` selection, else the
     /// first entity with a `Light` component, else a default directional light.
     fn active_light(&self) -> Light {

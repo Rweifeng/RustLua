@@ -17,6 +17,18 @@ fn sample_runtime() -> RuntimeScene {
     RuntimeScene::new(Some(&root)).expect("runtime for game_api sample project")
 }
 
+/// 带真实 `Camera3D` 的运行时：`game_api` 的 `demo3d.scene`。
+///
+/// 不能拿 `sample_runtime()`（工程的 `main.scene`）当 3D 用例——它是 2D 场景，没有
+/// `Camera3D`，`active_camera3d()` 返回的是 (0,0,5) 的回退相机；M74-01 的 2D 分界
+/// 会把听者切到 `Camera2D` 中心。
+fn demo3d_runtime() -> RuntimeScene {
+    let root = sample_root();
+    let scene = rustlua_scene::scene::Scene::load(root.join("scenes/demo3d.scene"))
+        .expect("load demo3d.scene");
+    RuntimeScene::from_scene_edit(Some(&root), scene).expect("runtime demo3d")
+}
+
 /// M74-01：听者位姿必须由宿主**每帧**灌进音频系统。
 ///
 /// 守的是"接线在不在"：`play_at` 在没有听者时直接拒绝（`SpatialError::NoListener`），
@@ -28,7 +40,7 @@ fn sample_runtime() -> RuntimeScene {
 /// ——所以这里的期望值取 `active_camera3d()`。
 #[test]
 fn listener_follows_the_active_camera_each_frame() {
-    let mut runtime = sample_runtime();
+    let mut runtime = demo3d_runtime();
     // 构造期不该凭空有听者：`None` 就是"宿主还没接线"的判据。
     assert!(
         runtime.audio_listener().is_none(),
@@ -52,6 +64,63 @@ fn listener_follows_the_active_camera_each_frame() {
         runtime.audio_listener(),
         Some(expected),
         "每帧都要重灌（相机不动时必须还是同一份）"
+    );
+}
+
+/// M74-01：**纯 2D 场景**（没有任何透视 `Camera3D`）的听者取 `Camera2D` 中心。
+///
+/// 守的是真回归：`active_camera3d()` 在 2D 工程里返回 (0,0,5) 的回退相机，直接拿它当听者，
+/// 2D 相机一平移，声音仍按世界原点衰减/定声像——相机在 x=120 时，世界 0 点的声音会被当成
+/// "很近"，而相机附近的声音反而被衰减/定到一侧。`forward` 取 `-Z`：声像右轴是
+/// `forward × up`，`+Z × +Y = -X` 会让屏幕右变成耳朵左（任务书旧稿写反过）。
+#[test]
+fn two_d_listener_follows_camera2d_center() {
+    let mut runtime =
+        RuntimeScene::from_scene_edit(None, rustlua_scene::scene::Scene::new("2d-listener"))
+            .expect("runtime scene");
+    runtime.set_camera_2d(
+        rustlua_camera::camera::Camera2D::new(rustlua_math::math2d::Vec2::new(120.0, 80.0), 1.0)
+            .expect("camera2d"),
+    );
+    runtime
+        .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+        .expect("跑一帧");
+    let listener = runtime.audio_listener().expect("跑过一帧后听者必须就位");
+    assert_eq!(
+        listener.position,
+        [120.0, 80.0, 0.0],
+        "2D 听者必须跟随相机中心，不是 3D 回退相机的 (0,0,5)"
+    );
+    assert_eq!(
+        listener.forward,
+        [0.0, 0.0, -1.0],
+        "2D 听者朝 -Z，屏幕 +X 才是耳朵右"
+    );
+    let params = rustlua_audio::spatial::evaluate(
+        [120.5, 80.0, 0.0],
+        &listener,
+        rustlua_audio::spatial::SpatialModel::DEFAULT,
+    )
+    .expect("evaluate");
+    assert!(
+        (params.pan - 1.0).abs() < 1e-6,
+        "相机右侧 0.5 m 的声音应 pan=+1：{}",
+        params.pan
+    );
+    assert_eq!(params.gain, 1.0, "0.5 m 在 min_distance 内，不应衰减");
+
+    // 相机平移后听者必须跟着走（不是只在第一帧灌一次）。
+    runtime.set_camera_2d(
+        rustlua_camera::camera::Camera2D::new(rustlua_math::math2d::Vec2::new(300.0, 80.0), 1.0)
+            .expect("camera2d"),
+    );
+    runtime
+        .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+        .expect("再跑一帧");
+    assert_eq!(
+        runtime.audio_listener().map(|listener| listener.position),
+        Some([300.0, 80.0, 0.0]),
+        "2D 相机平移后听者必须跟到新中心"
     );
 }
 

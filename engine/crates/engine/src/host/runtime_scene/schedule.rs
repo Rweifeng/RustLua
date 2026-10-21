@@ -10,6 +10,7 @@ use rustlua_animation::animation::{AnimationFrameEvent, AnimationStateMachine};
 use rustlua_animation::animation3d::Animation3D;
 use rustlua_assets::asset_handle::AssetRecord;
 use rustlua_audio::spatial::Listener;
+use rustlua_camera::camera::Camera3D;
 use rustlua_ecs::entity::EntityId;
 use rustlua_ecs::scheduler::{ScheduleStage, Scheduler, SchedulerError, System, SystemError};
 use rustlua_ecs::transform::integrate_velocity;
@@ -411,17 +412,33 @@ impl RuntimeScene {
         // 漏了这一步的症状是"声音的空间感一直停在原点"，而 `play_at` 在宿主没接线时会直接
         // 拒绝（`SpatialError::NoListener`），不至于静默按原点衰减。
         if outcome.is_ok() {
-            let camera = listener_camera.unwrap_or_else(|| self.active_camera3d());
-            let listener = Listener::facing(
-                [camera.position.x, camera.position.y, camera.position.z],
-                [camera.target.x, camera.target.y, camera.target.z],
-            );
+            // M74-01：纯 2D 工程里 `active_camera3d()` 返回的是 (0,0,5) 的回退相机，
+            // 直接拿它当听者，2D 相机一平移，声音仍按世界原点衰减/定声像。分界看**场景里
+            // 有没有透视 Camera3D**（不是看本帧有没有定帧视图：`vertices()` 对 2D 也定一帧）。
+            let listener = if self.has_perspective_camera3d() {
+                let camera = listener_camera.unwrap_or_else(|| self.active_camera3d());
+                listener_from_camera3d(&camera)
+            } else {
+                self.camera2d_listener()
+            };
             self.audio.with_mut(|audio| {
                 audio.set_listener(listener);
                 audio.maintain_music();
             });
         }
         outcome
+    }
+
+    /// 纯 2D 场景的听者：站在 `Camera2D` 中心、朝 `-Z`。
+    ///
+    /// 为什么不是 `+Z`：声像右轴是 `forward × up`，`+Z × +Y = -X`，取 `+Z` 会让屏幕右
+    /// 变成耳朵左（任务书旧稿在这里写反过）；`-Z` 与 3D 回退相机的朝向一致，`right = +X`。
+    fn camera2d_listener(&self) -> Listener {
+        Listener::new(
+            [self.camera.center.x, self.camera.center.y, 0.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 1.0, 0.0],
+        )
     }
 
     /// 暂停 BGM（编辑器暂停时调用；不释放 sink）。
@@ -580,4 +597,12 @@ impl RuntimeScene {
         }
         Ok(())
     }
+}
+
+/// 3D 相机的听者：位置 + `position → target` 的朝向（上方向取 `+Y`，与相机约定一致）。
+fn listener_from_camera3d(camera: &Camera3D) -> Listener {
+    Listener::facing(
+        [camera.position.x, camera.position.y, camera.position.z],
+        [camera.target.x, camera.target.y, camera.target.z],
+    )
 }
