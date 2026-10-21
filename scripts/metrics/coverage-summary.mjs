@@ -74,7 +74,8 @@ for (const block of raw.data) {
     if (!byCrate.has(cr)) byCrate.set(cr, JSON.parse(JSON.stringify(totals)));
     const acc = byCrate.get(cr);
     for (const k of ["functions", "instantiations", "lines", "regions", "branches"]) {
-      const src = f[k] || {};
+      // cargo-llvm-cov 的 summary-only 文件项把计数放在 `summary` 下；也兼容平铺旧格式。
+      const src = f.summary?.[k] || f[k] || {};
       acc[k].count += src.count ?? 0;
       acc[k].covered += src.covered ?? 0;
     }
