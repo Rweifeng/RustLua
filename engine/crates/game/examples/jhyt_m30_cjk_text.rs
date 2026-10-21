@@ -54,8 +54,9 @@ const MIN_SCENE_TEXTS: usize = 21;
 ///
 /// **2026-10-20 从 28 降到 27 的依据**（不是"跌了就改数"，是把两边的账对上）：
 /// `a4675c53`（Web/微信 UI 交互补全，**标题单层文字**）把 `ui/title_menu.lua` 的
-/// `title:hint` 那处 `ui_text.draw` 注释掉了——那行提示改由 `assets/prefabs/ui/title_menu.prefab`
-/// 的 `Text` 组件承载。于是动态层登记从 17 掉到 16。它**没有**掉出审计范围：⑤ 的实体层扫描
+/// `title:hint` 那处 `ui_text.draw` 注释掉了——那行提示**不再显示**（门面皮肤改版后的
+/// 决定，`jhyt_m20_gamepad` §M20-09c 有断言），不是搬进 `assets/prefabs/ui/title_menu.prefab`。
+/// 于是动态层登记从 17 掉到 16。它**没有**掉出审计范围：⑤ 的实体层扫描
 /// 现在会递归读 `assets/prefabs/**`（本包同时修的那处），title_menu 的 7 个 Text 全在里面，
 /// 字号下限照旧量得到。逐提交复算（去注释口径）：`fd3b4cb3` = 28、`68ffcdef` = 17（当时
 /// 暂停菜单那 11 处还没补 record）、`HEAD` = 27 —— 28 这个数是 `fd3b4cb3` 当天的读数，

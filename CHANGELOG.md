@@ -30,6 +30,44 @@
   签名步骤 skipped（仓库未配 Secrets），资产 `NotSigned`。同批修掉 11 处 rustdoc 私有/未解析
   链接，`cargo doc -D warnings` 在 v0.1.1 提交上复绿。
 
+## Unreleased — MVP 红门收口（第二批）：最后 3 门转绿，MVP 清单全绿
+
+- **背景**：第一批（下方 “MVP 红门收口（第一批）”）把 14 个红门收到 3 个，红因都已查清但要决定：
+  `jhyt_m63_title_prefab` 的黄金表与新门面差 28 行、`jhyt_m72_pixel_font` 的红点后移到
+  “1:1 档 0 个”、`jhyt_m17_shop` 的 nil 索引只定位到段落。本批把三门逐个收口，并重跑
+  `verify.ps1 -MvpOnly` 全量。
+- **m63 标题门面**：新门面是横版三键（160×60 @ 380/560/740）并撤掉四角/竹分隔/印章，
+  26 行是设计变更；另发现**真正的回归**——预设三行标签还是竖版坐标（`580,397 / 592,477 /
+  592,557`），动态层按真实字宽居中在 `398/590/770, y=435`，② 实测差 182/42/178px。
+  改预设后 ② 差 0/0/0。两处内容决定：`FooterText` 空 → 恢复为 `v0.1.1`（旧表 `v0.1.0`
+  已过期，颜色回到可读的 `0.659,0.624,0.541`）；`hint` → **确认不要**（`jhyt_m20_gamepad`
+  §M20-09c 断言“旧操作说明不应再显示”，不是丢失）。黄金表重导 68 行，④ 期望序列
+  16 → 10 段（少掉的正是撤掉的 6 张装饰）。`--capture` 改成打印完即返回。
+- **m72 像素字体**：② 要求真帧至少一个 1:1 档，标题全是 13/14/18/22/24px 非整数倍字号。
+  不动字号（归 M72-10），在**第一次 `vertices()` 之前**补一个 12px 探针，首帧整张图集上传
+  随探针一起发生；直方图与 1:1 计数读 `first`，稳态帧 `scene` 仍断言 `pixels` 为空。
+  这里修掉一个“时绿时红”：探针放在 `frame()` 之后、靠增量上传取首帧，在
+  `RAYON_NUM_THREADS=2` 下会红在“首帧 pixels 为空”（图集预热集合随线程数变）。
+  读数：`75 个 UI 字形四边形 … 1:1 档 9 个，非整数倍字号 66 个`。
+- **m17 商店**：商店 UI 已迁进 `shop.prefab`，反馈文案由 `prefab.set_text(handle, "ShopMsg", …)`
+  写进 `Text` 组件，旧断言 `ui.get('shp:msg').text` 读到 nil。改为 `entity.find` + `World::get<UiText>`
+  读 `ShopMsg`，断言“购买成功”；4a–4i 全过，临时 trace 删除。
+- **发布门（顺带收口）**：重打 `builds/pc` 后，`jhyt_m31_pc_release` 连续暴露两处 **grouped 容器**
+  的过期口径：① `chars.txt` 被收进 `core` 容器，但 `runtime_scene/fonts.rs` 按真实路径读它
+  ⇒ `package.ps1` 补 `--keep chars.txt`；② `scripts/main.lua` / `ui_text.lua` / `text_fit.lua`
+  在容器里，门却要求真实文件，而 assetc 明确不允许 keep 启动入口（Web 上 require 同步）
+  ⇒ 门改按 `bundle_plan.json` 的逻辑路径验，`project.toml` / `manifest.txt` / `chars.txt` /
+  字体仍必须是真实文件。重打后 `release_entries=11 stray=0`、`chars=1612 cjk=1473`、
+  `jhyt_m31_pc_release_ok`。
+- **实测**：`verify.ps1 -MvpOnly` → `MVP headless regression: executed=78 expected=78`
+  （78/78 全绿），release 段 `jhyt_m31_pc_release_ok`、Clean release directory self test 通过，
+  `MVP gate passed`（2026-10-21 重跑）。
+- **回滚档**：只回滚 `.rs` 不回滚黄金表 `.tsv` 会让 m63 红在 ①；m72 的探针与首帧顺序必须
+  一起回滚，否则回到“1:1 档 0 个”。`builds/pc` 是产物（gitignore），回滚代码后需重打。
+  文档读数在 `examples/game_jhyt/docs/66` §10。
+
+
+
 ## Unreleased — M74-02 ECS 并行调度：P0 度量闸门判"不做"，只交付帧内分档工具
 
 - **问题**：`tasks/plan` 里排着"ECS 并行调度"（先把 `World` 变成 `Send`，再加访问集与并行执行，

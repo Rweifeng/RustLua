@@ -728,6 +728,13 @@ WASM build failed ($Platform)。
     # 代价只有 282 KB 不进口袋。
     if ($BundleMode -ne "none") {
         $assetcArgs += @("--keep", "assets/fonts/")
+        # 首包字体预热清单也必须留在目录里：`runtime_scene/fonts.rs` 按 `<pack>/chars.txt`
+        # 的真实路径读它，进容器后读不到；PC 发布门（`jhyt_m31_pc_release` ①）也点名要这个文件。
+        # 代价只有几 KB，和字体同一条不变量：**boot 期按真实路径读的东西不进容器**。
+        $assetcArgs += @("--keep", "chars.txt")
+        # 注意：`scripts/main.lua` **不能** keep——assetc 要求启动入口必须在 `unit=main` 的组里
+        # （Web 上 require 同步，放到目录会让启动即失败）。所以发布门对脚本改查 manifest
+        # （见 `jhyt_m31_pc_release` ①），不要求它们是真实文件。
         # 微信音频也必须留在目录里：`InnerAudioContext.src` 只吃真实文件路径，容器条目
         # （`bundles/audio-*.rlb`）宿主自己读不到，表现就是"进游戏完全没声音"。
         # 实测 devtools 复现：音频 16/16 在容器里，但 play 静默失败。

@@ -107,11 +107,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rustlua_render::font::project_font::primary_path(&project)
     );
     required.push(font_entry.clone());
+    // grouped 容器形态（docs/67，PC 默认）把脚本收进 `bundles/core-*.rlb`，磁盘上不再有
+    // `pack/scripts/main.lua`；`assetc` **不允许** keep 启动入口（Web 上 require 同步，
+    // 放进目录会启动即失败）。所以脚本按 `bundle_plan.json` 的逻辑路径验，其余
+    // （project.toml / manifest / chars.txt / 字体）仍必须是真实文件。
+    let manifest_text = fs::read_to_string(pack.join("manifest.txt"))?;
+    let bundle_plan = fs::read_to_string(pack.join("bundle_plan.json")).unwrap_or_default();
+    let in_bundle_plan = |logical: &str| {
+        let quoted = format!("\"{logical}\"");
+        bundle_plan
+            .lines()
+            .any(|line| line.trim().trim_end_matches(',') == quoted)
+    };
     for entry in &required {
         let path = release.join(entry);
-        if !path.is_file() {
-            return Err(format!("release is missing {entry}: {}", path.display()).into());
+        if path.is_file() {
+            continue;
         }
+        let logical = entry.strip_prefix("pack/").unwrap_or(entry);
+        let in_manifest = manifest_text
+            .lines()
+            .any(|line| line.split('\t').next() == Some(logical));
+        if entry.starts_with("pack/scripts/") && (in_manifest || in_bundle_plan(logical)) {
+            continue;
+        }
+        return Err(format!("release is missing {entry}: {}", path.display()).into());
     }
     for entry in FORBIDDEN_PACK_ENTRIES {
         let path = pack.join(entry);
@@ -384,8 +404,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "scripts/ui/hud.lua",
         "scripts/core/save_manager.lua",
     ] {
-        if !manifest.contains(needle) {
-            return Err(format!("manifest.txt must list {needle}").into());
+        if !manifest.contains(needle) && !in_bundle_plan(needle) {
+            return Err(format!("manifest.txt/bundle_plan.json must list {needle}").into());
         }
     }
     let chars = fs::read_to_string(pack.join("chars.txt"))?;

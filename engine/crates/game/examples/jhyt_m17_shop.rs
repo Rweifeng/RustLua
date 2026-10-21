@@ -16,8 +16,10 @@
 //! Usage:
 //!   cargo run -p game --example jhyt_m17_shop [-- <game_jhyt-root>]
 
+use rustlua_ecs::entity::EntityId;
 use rustlua_input::input::{InputSnapshot, KeyCode};
 use rustlua_scripting::script::LuaRuntime;
+use rustlua_ui::ui::UiText;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -244,7 +246,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "require('systems.shop').used('zhao_stall', 'seed_lingzhi')",
         2.0,
     )?;
-    assert_str(&mut runtime, "ui.get('shp:msg').text", "购买成功")?;
+    // M17-04d 的商店 UI 在 M73 已迁进 `assets/prefabs/ui/shop.prefab`：反馈文案由
+    // `prefab.set_text(handle, "ShopMsg", ...)` 写进 `ShopMsg` 的 `Text` 组件，
+    // 不再有动态层 `ui.get('shp:msg')`（旧断言会直接 index nil）。
+    let shop_msg = prefab_text(&mut runtime, "ShopMsg")?;
+    if shop_msg != "购买成功" {
+        return Err(format!("ShopMsg = {shop_msg:?}, want \"购买成功\"").into());
+    }
     // F 切到出售页：只列出本店收购且背包持有的物品（rice 2 件）。
     press(&mut runtime, &host, KeyCode::KeyF)?;
     assert_str(&mut runtime, "require('systems.shop').tab()", "sell")?;
@@ -709,6 +717,24 @@ fn lua(runtime: &mut LuaRuntime, code: &str) -> Result<(), Box<dyn std::error::E
 fn query_str(runtime: &mut LuaRuntime, expr: &str) -> Result<String, Box<dyn std::error::Error>> {
     let value = runtime.execute_console(expr)?;
     Ok(value.trim().to_owned())
+}
+
+/// 读预设实例节点的 `Text` 组件。预设节点与场景实体共用同一张全局名字表（`entity.find`），
+/// 所以 `ShopMsg` 这个名字拿到的就是 `prefab.spawn` 出来的那个实例节点。
+fn prefab_text(runtime: &mut LuaRuntime, name: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let raw = query_str(runtime, &format!("return tostring(entity.find('{name}'))"))?;
+    let raw: u64 = raw
+        .parse()
+        .map_err(|error| format!("entity.find('{name}') = {raw:?} 不是实体 id：{error}"))?;
+    let id = EntityId::from_raw((raw >> 32) as u32, raw as u32);
+    let text = runtime.with_world(|world| {
+        world
+            .get::<UiText>(id)
+            .ok()
+            .flatten()
+            .map(|text| text.text.clone())
+    });
+    text.ok_or_else(|| format!("预设节点 {name:?} 不存在或没有 Text 组件").into())
 }
 
 fn query_num(runtime: &mut LuaRuntime, expr: &str) -> Result<f64, Box<dyn std::error::Error>> {

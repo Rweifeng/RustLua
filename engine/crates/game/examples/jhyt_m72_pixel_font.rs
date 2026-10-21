@@ -485,16 +485,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---------------- ② 真运行时一帧：阈值档接线 + 二值覆盖 ----------------
     banner("M72-03② 真跑一帧：文字必须走 sdf=2 阈值档，用到的图集 texel 只能 0/255");
     let mut runtime = RuntimeScene::new(Some(project.as_path()))?;
-    // M72-03 起字体图集是**增量**上报的（`pixels` 空 = 本帧没变化，见
-    // `frame_data.rs` 的 `changed = version != last_font_version`）。而 `frame()` 内部会先调一次
-    // `vertices()`——那一帧就把"首帧上传"这份像素消费掉了，之后再取 mesh 只会拿到空 `pixels`。
-    // 所以这里**自己先取首帧**（直方图用它的像素），再步进一帧拿稳态 mesh：
-    // 两条一起断言，增量协议才算真的锁住。2026-10-20 之前这里只取步进后的那一帧，
-    // 于是这条门永远红在"pixels 为空"——红因不是字体坏了，是把稳态帧当成了首帧。
+    // M72-10 还没把门面字号统一到 12px 的整数倍（当前是 13/14/18/22/24），真帧里一个 1:1
+    // 档都没有。这里补一个 12px 探针，让 ② 继续验到"真帧上的 1:1 覆盖"，而不是把这条断言
+    // 悄悄删掉；字号口径本身仍归 M72-10，不在本门里改。
+    //
+    // 探针必须在**第一次 `vertices()` 之前**画上：首帧一定会带整张图集，探针的字形随之
+    // 进入这次上传；② 的直方图与 1:1 计数都读 `first`，所以不依赖"探针恰好触发版本变化"
+    // （线程数不同会让图集预热集合不同，靠版本变化取首帧会时绿时红）。
+    let add_one_to_one_probe =
+        |runtime: &mut RuntimeScene| -> Result<(), Box<dyn std::error::Error>> {
+            runtime.with_script(|script| {
+                script.execute_console(
+                    "ui.text_at('m72:one_to_one', 1000, 700, '开始新游戏', 1.0, 12)",
+                )
+            })?;
+            Ok(())
+        };
+    add_one_to_one_probe(&mut runtime)?;
     let first = runtime.vertices(VIEW_W, VIEW_H)?;
+    // 步进一帧，把标题自己的更新跑出来；`settle` 消费这次更新可能带来的图集变化，
+    // 再取 `scene` 才是稳态（`pixels` 必须为空）。
     frame(&mut runtime)?;
+    let _settle = runtime.vertices(VIEW_W, VIEW_H)?;
     let scene = runtime.vertices(VIEW_W, VIEW_H)?;
-    let font_draws: Vec<(usize, usize)> = scene
+    let font_draws: Vec<(usize, usize)> = first
         .draws
         .iter()
         .filter(|draw| draw.sdf)
@@ -514,11 +528,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into());
     }
-    let mut draw_paths: Vec<&str> = scene
+    let mut draw_paths: Vec<&str> = first
         .draws
         .iter()
         .filter(|draw| draw.sdf)
-        .map(|draw| path_of(&scene, draw.texture).unwrap_or("<缺图>"))
+        .map(|draw| path_of(&first, draw.texture).unwrap_or("<缺图>"))
         .collect();
     draw_paths.sort_unstable();
     draw_paths.dedup();
@@ -528,7 +542,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into());
     }
-    let not_bitmap = scene
+    let not_bitmap = first
         .draws
         .iter()
         .filter(|draw| draw.sdf && !draw.bitmap)
@@ -539,12 +553,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into());
     }
-    if scene.draws.iter().any(|draw| draw.sdf && draw.vector) {
+    if first.draws.iter().any(|draw| draw.sdf && draw.vector) {
         return Err("文字绘制段同时被标成 vector——三条档互斥，混标说明 sdf 判定串了".into());
     }
     let text_sdf: Vec<u32> = font_draws
         .iter()
-        .flat_map(|(start, count)| scene.vertices[*start..*start + *count].iter())
+        .flat_map(|(start, count)| first.vertices[*start..*start + *count].iter())
         .map(|vertex| vertex.sdf)
         .collect();
     let not_two = text_sdf.iter().filter(|value| **value != 2).count();
@@ -559,10 +573,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into());
     }
-    if !scene.vector_vertices.is_empty() {
+    if !first.vector_vertices.is_empty() {
         return Err(format!(
             "矢量通道本帧有 {} 个顶点——像素字体必须被 `should_render_vector` 挡在矢量档之外",
-            scene.vector_vertices.len()
+            first.vector_vertices.len()
         )
         .into());
     }
@@ -589,17 +603,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .into(),
         );
     }
-    if !scene.custom_font_atlases.is_empty() {
+    if !first.custom_font_atlases.is_empty() {
         return Err(format!(
             "本帧另有 {} 个自定义字体图集，直方图口径会混进别的字体",
-            scene.custom_font_atlases.len()
+            first.custom_font_atlases.len()
         )
         .into());
     }
     let text_quads: Vec<Quad> = font_draws
         .iter()
         .flat_map(|(start, count)| {
-            scene.vertices[*start..*start + *count]
+            first.vertices[*start..*start + *count]
                 .as_chunks::<6>()
                 .0
                 .iter()

@@ -204,10 +204,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if capture {
         print!("{dump}");
         println!("jhyt_m63_captured lines={}", dump.lines().count());
-    } else {
-        compare_golden(&dump)?;
-        println!("golden_lines={}", dump.lines().count());
+        return Ok(());
     }
+    compare_golden(&dump)?;
+    println!("golden_lines={}", dump.lines().count());
 
     banner("② 标签两层的位置账：谁在画、差多少（决定预设里那三行 Text 写哪个 x）");
     label_pairing(&mut runtime, &rects, &hidden)?;
@@ -509,6 +509,7 @@ fn label_pairing(
     rects: &BTreeMap<String, UiRect>,
     hidden: &BTreeSet<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut mismatches = Vec::new();
     for (name, button) in LABELS {
         let rect = rects
             .get(*name)
@@ -540,12 +541,11 @@ fn label_pairing(
                     rect.x, rect.y
                 );
                 if shift > LABEL_ALIGN_EPS {
-                    return Err(format!(
+                    mismatches.push(format!(
                         "{name} 的实体矩形与动态层标签差 {shift:.2}px（>{}px）：两层不是同一坐标口径，\
                          照抄任何一份都会让门面上的字挪位",
                         LABEL_ALIGN_EPS
-                    )
-                    .into());
+                    ));
                 }
             }
             _ => println!(
@@ -553,6 +553,9 @@ fn label_pairing(
                 rect.x, rect.y
             ),
         }
+    }
+    if !mismatches.is_empty() {
+        return Err(mismatches.join("\n").into());
     }
     Ok(())
 }
@@ -608,25 +611,29 @@ const FONT_SEGMENT: &str = "__font_atlas__";
 /// 白图（纯色块）在读数表里的角色名：它没有文件名，`mesh.draws` 里以 `texture == 0` 出现。
 const WHITE_ROLE: &str = "<内置白图>";
 
-/// ④ 的期望序列 = **迁移前实测**那份提交序 + 工程当前字档的字形分段（`--capture` 打印可粘贴的这一行）。
+/// ④ 的期望序列 = **2026-10-21 横版新门面实测**（`--capture` 打印可粘贴的这一行）。
 ///
 /// 这份表是"一像素没动"在层序维度的那一份账：① 的矩形读数只管形状与内容，对"谁盖谁"完全瞎
 /// ——一块东西搬进/搬出实体层，矩形与贴图可以一个字节都不变，而从此被别人的贴图盖住。
+///
+/// 2026-10-21 的读数与迁移前那份（竖向三块木牌 + 四角/分隔/印章）不同：新门面把按钮改成横排、
+/// 撤掉了四角/竹分隔/印章（设计变更，见 `tasks/done/MVP红门收口.md` §2.1），所以期望序列从 16 段降到
+/// 10 段（含字形图集）。这不是层序坏了，是门面本身少了那 6 张装饰图。
 ///
 /// 末段 `__font_atlas__` 不是门面多出来的一张图，是**工程字档的凭据**：`text_render_mode="sdf"`
 /// 加像素字（M72-03 那款 Fusion Pixel）时字形写进 `__font_atlas__` 这张图集、经 `draws` 提交，
 /// 而 `push_ui_text`/`push_scene_ui_text` 排在所有图趟之后
 /// （`engine/crates/engine/src/host/runtime_scene/frame_data.rs:878-902`）⇒ 文字恒在最上层。
 /// 换回 `vector` 档时字形改走 `SceneMesh.vector_*`（不进 `draws`），这条门会红在
-/// "分段数 期望 16、实测 15"——那是**换字档**的读数，不是层序变了（两边各实测过一次）。
+/// "分段数 期望 10、实测 9"——那是**换字档**的读数，不是层序变了（两边各实测过一次）。
 ///
 /// 表里这条**读出来的事实**（不是设计意图）：预设那 7 张图（`title_bg_pixel.png`、
 /// `ui_menu_vignette.png`、三块木牌 `ui_menu_btn_wuxia_9s.png` 等）整批排在动态层分段**之前**，
-/// 也就是门面今天由脚本画的高亮框、hover、四角/分隔/印章全部盖在这张背景之上。
+/// 也就是门面今天由脚本画的高亮框、hover 盖在这张背景之上。
 /// 三块木牌 `ui_menu_btn_wuxia_9s.png` 实测 18432/18432 像素 alpha=255（含中心），`title_bg_pixel.png`
 /// 是 IHDR 色型 2（无 alpha 通道 ⇒ 逐像素全不透明）——正因为它们不透明，**谁先提交**就是
-/// 决定性的：M63b 搬家时这条序是反的（预设整批最后画 ⇒ 背景把脚本的高亮/hover/印章全埋掉，
-/// 实测 `title:seal` 区域只剩夜空色），修它=这次把 `push_scene_ui_images` 挪到 `push_ui_*` 之前。
+/// 决定性的：M63b 搬家时这条序是反的（预设整批最后画 ⇒ 背景把脚本的高亮/hover 全埋掉），
+/// 修它=这次把 `push_scene_ui_images` 挪到 `push_ui_*` 之前。
 const ORDER_GOLDEN: &[&str] = &[
     "title_bg_pixel.png",
     "ui_menu_vignette.png",
@@ -637,12 +644,6 @@ const ORDER_GOLDEN: &[&str] = &[
     "ui_menu_panel_scroll_9s.png",
     WHITE_ROLE,
     "ui_menu_btn_wuxia_hover_9s.png",
-    "ui_menu_divider_bamboo.png",
-    "ui_menu_ornament_corner_bl.png",
-    "ui_menu_ornament_corner_br.png",
-    "ui_menu_ornament_corner.png",
-    "ui_menu_ornament_corner_tr.png",
-    "ui_menu_seal_jianghu.png",
     FONT_SEGMENT,
 ];
 
@@ -735,7 +736,7 @@ fn layer_order(
         )
         .into());
     }
-    println!("  层序与迁移前实测一致（{} 个分段）", got.len());
+    println!("  层序与新门面期望一致（{} 个分段）", got.len());
     // 第二轮：**同一个世界里**撤掉再重铺。`entity.spawn()` 优先复用回收槽（LIFO），
     // 而实体层的绘制先后 = 槽位升序，所以"撤了重铺"完全可能把这一批节点铺成倒序——
     // 症状是那张 1280×720 无 alpha 的背景图排到最后、整块门面被盖成一张背景。

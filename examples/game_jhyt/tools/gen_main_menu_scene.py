@@ -96,7 +96,7 @@ BTNS = [
 
 # 底部卷轴小贴士面板（横屏：左下角，不挡按钮）。
 FOOTER_PANEL = ("TipScroll", "ui/menu 卷轴", (24, 600, 476, 696), "menu_tip_panel")
-FOOTER_TEXT = ("FooterText", "江湖有田 v0.1.0 · RustLua 原型 · 横版", (1080, 690, 1240, 710), "menu_footer")
+FOOTER_TEXT = ("FooterText", "江湖有田 v0.1.1 · RustLua 原型 · 横版", (1080, 690, 1240, 710), "menu_footer")
 
 TEX = {
     "btn": "assets/art/ui/menu/ui_menu_btn_wuxia_9s.png",
