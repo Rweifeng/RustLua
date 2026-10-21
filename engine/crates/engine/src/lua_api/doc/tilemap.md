@@ -64,7 +64,7 @@ end
 
 ## `tilemap.create(width: usize, height: usize, tile_size: f32, texture: Option<String>, name: Option<String>)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:238`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-physics/src/tilemap_lua.rs:399`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -75,7 +75,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `tilemap.find_path(id: i64, from_x: usize, from_y: usize, to_x: usize, to_y: usize, diagonal: Option<bool>)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:366`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-physics/src/tilemap_lua.rs:552`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -86,7 +86,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `tilemap.get(id: i64)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:27`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-physics/src/tilemap_lua.rs:157`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -97,7 +97,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `tilemap.get_cell(id: i64, x: usize, y: usize)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:282`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-physics/src/tilemap_lua.rs:451`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -108,7 +108,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `tilemap.get_meta(id: i64, x: usize, y: usize, key: String)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:332`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-physics/src/tilemap_lua.rs:511`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -119,7 +119,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `tilemap.is_solid(id: i64, x: usize, y: usize)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:269`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-physics/src/tilemap_lua.rs:434`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -151,7 +151,7 @@ tilemap.set_atlas(ground, 12, 8)
 
 ## `tilemap.set_cell(id: i64, x: usize, y: usize, value: u8)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:295`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-physics/src/tilemap_lua.rs:468`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -186,7 +186,7 @@ tilemap.set_kinds(ground, 4, 1, true, 0x12345678)
 
 ## `tilemap.set_meta(id: i64, x: usize, y: usize, key: String, value: String)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:345`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-physics/src/tilemap_lua.rs:528`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -197,7 +197,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `tilemap.set_solid(id: i64, x: usize, y: usize, solid: bool)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:312`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-physics/src/tilemap_lua.rs:488`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -208,7 +208,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `tilemap.set_texture(id: i64, texture: String)`
 
-> 绑定：`engine/crates/rustlua-scripting/src/script/api/tilemap.rs:216`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-physics/src/tilemap_lua.rs:374`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 

@@ -92,6 +92,19 @@ jobs:
           targets: ${{ matrix.target }}
           components: rustfmt
 
+      # vendored Lua 的 wasm 侧 C 源由 mlua-sys 用 `zig cc` 编；缺 zig 时 build.rs 直接 panic，
+      # 不是代码回归。固定 0.16.0，与 scripts/build/zig-toolchain.ps1 的版本一致。
+      - name: Install Zig (wasm C shim)
+        if: matrix.target == 'wasm32-unknown-unknown'
+        uses: mlugg/setup-zig@v2
+        with:
+          version: "0.16.0"
+
+      - name: Export ZIG
+        if: matrix.target == 'wasm32-unknown-unknown'
+        shell: pwsh
+        run: '"ZIG=zig" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8'
+
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:

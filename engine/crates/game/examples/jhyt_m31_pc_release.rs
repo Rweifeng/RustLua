@@ -24,6 +24,7 @@
 //! Usage:
 //!   cargo run -p game --example jhyt_m31_pc_release [-- <game_jhyt-root>]
 
+#[cfg(windows)]
 use engine::host::gamepad::{GamepadPoller, XInputBackend};
 use rustlua_gameplay::settings;
 use rustlua_infra::user_dir::{self, USER_DIR_ENV};
@@ -426,6 +427,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// 采样真实 XInput 槽位。没有硬件时返回"未连接"，这本身就是可复现的环境证据：
 /// 逻辑链路（死区/导航/按键映射）由 `jhyt_m20_gamepad` 的 Fake 后端覆盖。
+#[cfg(windows)]
 fn probe_gamepad() -> String {
     let mut poller = GamepadPoller::new(Box::new(XInputBackend::new()));
     let frame = poller.poll_frame();
@@ -437,6 +439,13 @@ fn probe_gamepad() -> String {
         frame.axes[0],
         frame.axes[1]
     )
+}
+
+/// 非 Windows 没有 XInput：显式记录环境限制，仍给出可判读的 `slots=` 读数，
+/// 不伪造一个已连接手柄，也不让整个示例在 macOS / Linux 上编译失败。
+#[cfg(not(windows))]
+fn probe_gamepad() -> String {
+    "connected=false active=0 slots=[] axes=(0.000,0.000) note=unsupported-os".to_owned()
 }
 
 /// WebGL 浏览器**契约**验证摘要（`scripts/verify/verify-webgl.ps1` 产出）。

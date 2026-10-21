@@ -38,6 +38,8 @@ concurrency:
 jobs:
   build:
     runs-on: windows-latest
+    outputs:
+      pages_enabled: ${{ steps.pages.outputs.enabled }}
     defaults:
       run:
         shell: pwsh
@@ -58,17 +60,33 @@ jobs:
       - name: Build rustdoc site
         run: pwsh -NoProfile -File scripts/docgen/gen-rustdoc.ps1
 
+      # 当前仓库计划不支持 GitHub Pages（创建 Pages 站点返回 422 "Your current plan does
+      # not support GitHub Pages for this repository"）。站点仍构建，部署显式跳过而不是让
+      # 每次 push 都红；计划升级或 Pages 可用后把仓库变量 RUSTLUA_PAGES 设为 true 即恢复发布。
+      - name: Pages availability
+        id: pages
+        shell: pwsh
+        run: |
+          if ("${{ vars.RUSTLUA_PAGES }}" -eq "true") {
+            "enabled=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "enabled=false" >> $env:GITHUB_OUTPUT
+            Write-Host "pages_deploy_skipped reason=pages_unavailable_or_RUSTLUA_PAGES_not_true"
+          }
+
       - name: Configure Pages
+        if: steps.pages.outputs.enabled == 'true'
         uses: actions/configure-pages@v5
 
       - name: Upload site artifact
+        if: steps.pages.outputs.enabled == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: artifacts/doc-site
 
   deploy:
     needs: build
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: needs.build.outputs.pages_enabled == 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: windows-latest
     environment:
       name: github-pages

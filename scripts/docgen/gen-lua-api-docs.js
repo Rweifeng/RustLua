@@ -168,7 +168,10 @@ function indexFileShapes(text) {
     }));
     const unique = new Map();
     for (const call of calls) {
-      if (!unique.has(call.var)) unique.set(call.var, call);
+      // 同一个宏可能用**同名变量**展开进多张表（`physics` 与 `physics3d` 都叫 `table`），
+      // 不能只按变量名去重，否则 3D 那张表的展开点会被 2D 的第一次调用吃掉。
+      const key = `${call.var}@${call.offset}`;
+      if (!unique.has(key)) unique.set(key, call);
     }
     macroCalls.set(def.name, [...unique.values()]);
   }
@@ -255,8 +258,26 @@ for (const entry of fs.readdirSync(API_DIR, { withFileTypes: true })) {
 // 事实源仍是运行期基线 `lua_api_surface.json`；这里只决定"签名从哪个文件读"。
 // 不加这一段，这些模块的每个函数都会被当成"没有绑定源码"的桩（门就红了）。
 const OWNING_BINDING_FILES = [
+  'engine/crates/rustlua-animation/src/animation_lua.rs',
   'engine/crates/rustlua-audio/src/lua.rs',
+  'engine/crates/rustlua-camera/src/camera_lua.rs',
+  'engine/crates/rustlua-ecs/src/entity_lua.rs',
+  'engine/crates/rustlua-ecs/src/transform_lua.rs',
+  'engine/crates/rustlua-gameplay/src/clock_lua.rs',
+  'engine/crates/rustlua-gameplay/src/grid_lua.rs',
+  'engine/crates/rustlua-gameplay/src/inventory_lua.rs',
+  'engine/crates/rustlua-gameplay/src/save_lua.rs',
+  'engine/crates/rustlua-gameplay/src/world_data_lua.rs',
   'engine/crates/rustlua-input/src/lua.rs',
+  'engine/crates/rustlua-physics/src/physics_lua.rs',
+  'engine/crates/rustlua-physics/src/tilemap_lua.rs',
+  'engine/crates/rustlua-render/src/renderable_lua.rs',
+  'engine/crates/rustlua-render/src/visibility_lua.rs',
+  'engine/crates/rustlua-ui/src/lua_nav.rs',
+  'engine/crates/rustlua-ui/src/prefab_lua.rs',
+  'engine/crates/rustlua-ui/src/ui_lua.rs',
+  'engine/crates/rustlua-ui/src/ui_panel_lua.rs',
+  'engine/crates/rustlua-ui/src/world_text_lua.rs',
 ];
 for (const relPath of OWNING_BINDING_FILES) {
   const file = path.join(REPO_ROOT, relPath);
