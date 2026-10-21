@@ -238,6 +238,23 @@ def icon_wild_fruit():
     return cv
 
 
+def icon_peach():
+    """桃子：两瓣粉果 + 中缝 + 叶（果树收获物；此前借用 rice.png）。"""
+    cv = Canvas(SIZE, SIZE)
+    stick(cv, 16, 8, 16, 14, WOOD_MID, 2)
+    cv.set(17, 8, BAMBOO)
+    cv.set(18, 7, BAMBOO_LIGHT)
+    cv.set(19, 7, BAMBOO)
+    shade_blob(cv, 13, 21, 7, 7, rgb("#E8A07C"))
+    shade_blob(cv, 20, 21, 7, 7, rgb("#D97B5C"))
+    for y in range(15, 29):
+        cv.set(16, y, rgb("#B65A44"))
+    cv.set(12, 19, rgb("#F2C0A2"))
+    cv.set(20, 19, rgb("#F2C0A2"))
+    cv.outline(INK)
+    return cv
+
+
 def icon_lotus_seed():
     """莲子：莲蓬 + 两粒莲子。"""
     cv = Canvas(SIZE, SIZE)
@@ -590,6 +607,7 @@ ICONS = [
     ("boar_meat", icon_boar_meat, "兽肉 / DROP"),
     ("ape_core", icon_ape_core, "山魈内丹 / DROP"),
     ("radish", icon_radish, "萝卜 / CROP"),
+    ("peach", icon_peach, "桃子 / CROP"),
     ("seed_radish", icon_seed_radish, "萝卜籽 / SEED"),
     ("seed_herb", icon_seed_herb, "草药籽 / SEED"),
     ("polygonum", icon_polygonum, "何首乌 / CROP"),

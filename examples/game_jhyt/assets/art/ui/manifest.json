@@ -3,7 +3,7 @@
   "generated_by": "tools/gen_ui_art.py",
   "design_doc": "docs/35-江湖有田-UI资源设计.md",
   "impl_doc": "docs/38-江湖有田-UI资源实现与接入.md",
-  "root": "assets/art/ui/jianghu",
+  "root": "assets/art/ui",
   "nine_slice_field": "Image 组件 ninth 参数顺序 [left, right, top, bottom]（纹理像素）",
   "engine_note": "场景 Image 支持 nine_slice；Lua ui.image 目前不支持（nine_slice 写死 None）",
   "modules": {
@@ -247,7 +247,7 @@
     {
       "module": "common",
       "name": "ui_panel_main_9s",
-      "path": "assets/art/ui/jianghu/common/ui_panel_main_9s.png",
+      "path": "assets/art/ui/common/ui_panel_main_9s.png",
       "size": "96x96",
       "spec": "96x96 9S 16",
       "nine_slice": [
@@ -260,7 +260,7 @@
     {
       "module": "common",
       "name": "ui_panel_paper_9s",
-      "path": "assets/art/ui/jianghu/common/ui_panel_paper_9s.png",
+      "path": "assets/art/ui/common/ui_panel_paper_9s.png",
       "size": "96x96",
       "spec": "96x96 9S 16",
       "nine_slice": [
@@ -273,7 +273,7 @@
     {
       "module": "common",
       "name": "ui_panel_confirm_9s",
-      "path": "assets/art/ui/jianghu/common/ui_panel_confirm_9s.png",
+      "path": "assets/art/ui/common/ui_panel_confirm_9s.png",
       "size": "64x64",
       "spec": "64x64 9S 12",
       "nine_slice": [
@@ -286,7 +286,7 @@
     {
       "module": "common",
       "name": "ui_btn_primary_9s",
-      "path": "assets/art/ui/jianghu/common/ui_btn_primary_9s.png",
+      "path": "assets/art/ui/common/ui_btn_primary_9s.png",
       "size": "64x48",
       "spec": "64x48 9S 8",
       "nine_slice": [
@@ -299,7 +299,7 @@
     {
       "module": "common",
       "name": "ui_btn_primary_pressed_9s",
-      "path": "assets/art/ui/jianghu/common/ui_btn_primary_pressed_9s.png",
+      "path": "assets/art/ui/common/ui_btn_primary_pressed_9s.png",
       "size": "64x48",
       "spec": "64x48 9S 8",
       "nine_slice": [
@@ -312,7 +312,7 @@
     {
       "module": "common",
       "name": "ui_btn_secondary_9s",
-      "path": "assets/art/ui/jianghu/common/ui_btn_secondary_9s.png",
+      "path": "assets/art/ui/common/ui_btn_secondary_9s.png",
       "size": "64x48",
       "spec": "64x48 9S 8",
       "nine_slice": [
@@ -325,7 +325,7 @@
     {
       "module": "common",
       "name": "ui_btn_danger_9s",
-      "path": "assets/art/ui/jianghu/common/ui_btn_danger_9s.png",
+      "path": "assets/art/ui/common/ui_btn_danger_9s.png",
       "size": "64x48",
       "spec": "64x48 9S 8",
       "nine_slice": [
@@ -338,7 +338,7 @@
     {
       "module": "common",
       "name": "ui_slot_9s",
-      "path": "assets/art/ui/jianghu/common/ui_slot_9s.png",
+      "path": "assets/art/ui/common/ui_slot_9s.png",
       "size": "48x48",
       "spec": "48x48 9S 6",
       "nine_slice": [
@@ -351,7 +351,7 @@
     {
       "module": "common",
       "name": "ui_slot_selected_9s",
-      "path": "assets/art/ui/jianghu/common/ui_slot_selected_9s.png",
+      "path": "assets/art/ui/common/ui_slot_selected_9s.png",
       "size": "48x48",
       "spec": "48x48 9S 6",
       "nine_slice": [
@@ -364,7 +364,7 @@
     {
       "module": "common",
       "name": "ui_input_9s",
-      "path": "assets/art/ui/jianghu/common/ui_input_9s.png",
+      "path": "assets/art/ui/common/ui_input_9s.png",
       "size": "48x28",
       "spec": "48x28 9S 6",
       "nine_slice": [
@@ -377,7 +377,7 @@
     {
       "module": "common",
       "name": "ui_tab_on_9s",
-      "path": "assets/art/ui/jianghu/common/ui_tab_on_9s.png",
+      "path": "assets/art/ui/common/ui_tab_on_9s.png",
       "size": "64x28",
       "spec": "64x28 9S 6",
       "nine_slice": [
@@ -390,7 +390,7 @@
     {
       "module": "common",
       "name": "ui_tab_off_9s",
-      "path": "assets/art/ui/jianghu/common/ui_tab_off_9s.png",
+      "path": "assets/art/ui/common/ui_tab_off_9s.png",
       "size": "64x28",
       "spec": "64x28 9S 6",
       "nine_slice": [
@@ -403,7 +403,7 @@
     {
       "module": "common",
       "name": "ui_key_hint_9s",
-      "path": "assets/art/ui/jianghu/common/ui_key_hint_9s.png",
+      "path": "assets/art/ui/common/ui_key_hint_9s.png",
       "size": "24x24",
       "spec": "24x24 9S 6",
       "nine_slice": [
@@ -416,7 +416,7 @@
     {
       "module": "common",
       "name": "ui_checkbox_off",
-      "path": "assets/art/ui/jianghu/common/ui_checkbox_off.png",
+      "path": "assets/art/ui/common/ui_checkbox_off.png",
       "size": "16x16",
       "spec": "16x16",
       "nine_slice": null
@@ -424,7 +424,7 @@
     {
       "module": "common",
       "name": "ui_checkbox_on",
-      "path": "assets/art/ui/jianghu/common/ui_checkbox_on.png",
+      "path": "assets/art/ui/common/ui_checkbox_on.png",
       "size": "16x16",
       "spec": "16x16",
       "nine_slice": null
@@ -432,7 +432,7 @@
     {
       "module": "common",
       "name": "ui_slider_track",
-      "path": "assets/art/ui/jianghu/common/ui_slider_track.png",
+      "path": "assets/art/ui/common/ui_slider_track.png",
       "size": "4x12",
       "spec": "4x12",
       "nine_slice": null
@@ -440,7 +440,7 @@
     {
       "module": "common",
       "name": "ui_slider_handle",
-      "path": "assets/art/ui/jianghu/common/ui_slider_handle.png",
+      "path": "assets/art/ui/common/ui_slider_handle.png",
       "size": "12x12",
       "spec": "12x12",
       "nine_slice": null
@@ -448,7 +448,7 @@
     {
       "module": "common",
       "name": "ui_dropdown_arrow",
-      "path": "assets/art/ui/jianghu/common/ui_dropdown_arrow.png",
+      "path": "assets/art/ui/common/ui_dropdown_arrow.png",
       "size": "8x8",
       "spec": "8x8",
       "nine_slice": null
@@ -456,7 +456,7 @@
     {
       "module": "common",
       "name": "ui_scroll_arrow_up",
-      "path": "assets/art/ui/jianghu/common/ui_scroll_arrow_up.png",
+      "path": "assets/art/ui/common/ui_scroll_arrow_up.png",
       "size": "8x8",
       "spec": "8x8",
       "nine_slice": null
@@ -464,7 +464,7 @@
     {
       "module": "common",
       "name": "ui_scroll_arrow_down",
-      "path": "assets/art/ui/jianghu/common/ui_scroll_arrow_down.png",
+      "path": "assets/art/ui/common/ui_scroll_arrow_down.png",
       "size": "8x8",
       "spec": "8x8",
       "nine_slice": null
@@ -472,7 +472,7 @@
     {
       "module": "common",
       "name": "ui_btn_close",
-      "path": "assets/art/ui/jianghu/common/ui_btn_close.png",
+      "path": "assets/art/ui/common/ui_btn_close.png",
       "size": "16x16",
       "spec": "16x16",
       "nine_slice": null
@@ -480,7 +480,7 @@
     {
       "module": "common",
       "name": "ui_btn_close_hover",
-      "path": "assets/art/ui/jianghu/common/ui_btn_close_hover.png",
+      "path": "assets/art/ui/common/ui_btn_close_hover.png",
       "size": "16x16",
       "spec": "16x16",
       "nine_slice": null
@@ -488,7 +488,7 @@
     {
       "module": "common",
       "name": "ui_divider",
-      "path": "assets/art/ui/jianghu/common/ui_divider.png",
+      "path": "assets/art/ui/common/ui_divider.png",
       "size": "4x4",
       "spec": "4x4",
       "nine_slice": null
@@ -496,7 +496,7 @@
     {
       "module": "common",
       "name": "ui_icon_seal",
-      "path": "assets/art/ui/jianghu/common/ui_icon_seal.png",
+      "path": "assets/art/ui/common/ui_icon_seal.png",
       "size": "24x24",
       "spec": "24x24",
       "nine_slice": null
@@ -504,7 +504,7 @@
     {
       "module": "menu",
       "name": "ui_menu_vignette",
-      "path": "assets/art/ui/jianghu/menu/ui_menu_vignette.png",
+      "path": "assets/art/ui/menu/ui_menu_vignette.png",
       "size": "1280x720",
       "spec": "1280x720 暗角+云纹+金框",
       "nine_slice": null
@@ -512,7 +512,7 @@
     {
       "module": "menu",
       "name": "ui_menu_ink_band",
-      "path": "assets/art/ui/jianghu/menu/ui_menu_ink_band.png",
+      "path": "assets/art/ui/menu/ui_menu_ink_band.png",
       "size": "960x240",
       "spec": "960x240 墨色横幅",
       "nine_slice": null
@@ -520,7 +520,7 @@
     {
       "module": "menu",
       "name": "ui_menu_btn_wuxia_9s",
-      "path": "assets/art/ui/jianghu/menu/ui_menu_btn_wuxia_9s.png",
+      "path": "assets/art/ui/menu/ui_menu_btn_wuxia_9s.png",
       "size": "256x72",
       "spec": "256x72 9S 18 木牌按钮",
       "nine_slice": [
@@ -533,7 +533,7 @@
     {
       "module": "menu",
       "name": "ui_menu_btn_wuxia_hover_9s",
-      "path": "assets/art/ui/jianghu/menu/ui_menu_btn_wuxia_hover_9s.png",
+      "path": "assets/art/ui/menu/ui_menu_btn_wuxia_hover_9s.png",
       "size": "256x72",
       "spec": "256x72 9S 18 悬停",
       "nine_slice": [
@@ -546,7 +546,7 @@
     {
       "module": "menu",
       "name": "ui_menu_btn_wuxia_pressed_9s",
-      "path": "assets/art/ui/jianghu/menu/ui_menu_btn_wuxia_pressed_9s.png",
+      "path": "assets/art/ui/menu/ui_menu_btn_wuxia_pressed_9s.png",
       "size": "256x72",
       "spec": "256x72 9S 18 按下",
       "nine_slice": [
@@ -559,7 +559,7 @@
     {
       "module": "menu",
       "name": "ui_menu_panel_scroll_9s",
-      "path": "assets/art/ui/jianghu/menu/ui_menu_panel_scroll_9s.png",
+      "path": "assets/art/ui/menu/ui_menu_panel_scroll_9s.png",
       "size": "192x128",
       "spec": "192x128 9S 20 卷轴",
       "nine_slice": [
@@ -572,7 +572,7 @@
     {
       "module": "menu",
       "name": "ui_menu_ornament_corner",
-      "path": "assets/art/ui/jianghu/menu/ui_menu_ornament_corner.png",
+      "path": "assets/art/ui/menu/ui_menu_ornament_corner.png",
       "size": "64x64",
       "spec": "64x64 回纹角饰 左上",
       "nine_slice": null
@@ -580,7 +580,7 @@
     {
       "module": "menu",
       "name": "ui_menu_ornament_corner_tr",
-      "path": "assets/art/ui/jianghu/menu/ui_menu_ornament_corner_tr.png",
+      "path": "assets/art/ui/menu/ui_menu_ornament_corner_tr.png",
       "size": "64x64",
       "spec": "64x64 回纹角饰 右上",
       "nine_slice": null
@@ -588,7 +588,7 @@
     {
       "module": "menu",
       "name": "ui_menu_ornament_corner_bl",
-      "path": "assets/art/ui/jianghu/menu/ui_menu_ornament_corner_bl.png",
+      "path": "assets/art/ui/menu/ui_menu_ornament_corner_bl.png",
       "size": "64x64",
       "spec": "64x64 回纹角饰 左下",
       "nine_slice": null
@@ -596,7 +596,7 @@
     {
       "module": "menu",
       "name": "ui_menu_ornament_corner_br",
-      "path": "assets/art/ui/jianghu/menu/ui_menu_ornament_corner_br.png",
+      "path": "assets/art/ui/menu/ui_menu_ornament_corner_br.png",
       "size": "64x64",
       "spec": "64x64 回纹角饰 右下",
       "nine_slice": null
@@ -604,7 +604,7 @@
     {
       "module": "menu",
       "name": "ui_menu_divider_bamboo",
-      "path": "assets/art/ui/jianghu/menu/ui_menu_divider_bamboo.png",
+      "path": "assets/art/ui/menu/ui_menu_divider_bamboo.png",
       "size": "320x18",
       "spec": "320x18 竹节分隔",
       "nine_slice": null
@@ -612,7 +612,7 @@
     {
       "module": "menu",
       "name": "ui_menu_lantern",
-      "path": "assets/art/ui/jianghu/menu/ui_menu_lantern.png",
+      "path": "assets/art/ui/menu/ui_menu_lantern.png",
       "size": "72x128",
       "spec": "72x128 红灯笼",
       "nine_slice": null
@@ -620,7 +620,7 @@
     {
       "module": "menu",
       "name": "ui_menu_seal_jianghu",
-      "path": "assets/art/ui/jianghu/menu/ui_menu_seal_jianghu.png",
+      "path": "assets/art/ui/menu/ui_menu_seal_jianghu.png",
       "size": "72x72",
       "spec": "72x72 印章 江湖",
       "nine_slice": null
@@ -628,7 +628,7 @@
     {
       "module": "hud",
       "name": "ui_bar_frame_9s",
-      "path": "assets/art/ui/jianghu/hud/ui_bar_frame_9s.png",
+      "path": "assets/art/ui/hud/ui_bar_frame_9s.png",
       "size": "48x16",
       "spec": "48x16 9S 4",
       "nine_slice": [
@@ -641,46 +641,31 @@
     {
       "module": "hud",
       "name": "ui_bar_fill_hp",
-      "path": "assets/art/ui/jianghu/hud/ui_bar_fill_hp.png",
+      "path": "assets/art/ui/hud/ui_bar_fill_hp.png",
       "size": "24x8",
-      "spec": "24x8 9S 4,0",
-      "nine_slice": [
-        4,
-        0,
-        4,
-        0
-      ]
+      "spec": "24x8 横条（整块拉伸，非九宫格）",
+      "nine_slice": null
     },
     {
       "module": "hud",
       "name": "ui_bar_fill_stamina",
-      "path": "assets/art/ui/jianghu/hud/ui_bar_fill_stamina.png",
+      "path": "assets/art/ui/hud/ui_bar_fill_stamina.png",
       "size": "24x8",
-      "spec": "24x8 9S 4,0",
-      "nine_slice": [
-        4,
-        0,
-        4,
-        0
-      ]
+      "spec": "24x8 横条（整块拉伸，非九宫格）",
+      "nine_slice": null
     },
     {
       "module": "hud",
       "name": "ui_bar_fill_neili",
-      "path": "assets/art/ui/jianghu/hud/ui_bar_fill_neili.png",
+      "path": "assets/art/ui/hud/ui_bar_fill_neili.png",
       "size": "24x8",
-      "spec": "24x8 9S 4,0",
-      "nine_slice": [
-        4,
-        0,
-        4,
-        0
-      ]
+      "spec": "24x8 横条（整块拉伸，非九宫格）",
+      "nine_slice": null
     },
     {
       "module": "hud",
       "name": "ui_icon_hp",
-      "path": "assets/art/ui/jianghu/hud/ui_icon_hp.png",
+      "path": "assets/art/ui/hud/ui_icon_hp.png",
       "size": "20x20",
       "spec": "20x20",
       "nine_slice": null
@@ -688,7 +673,7 @@
     {
       "module": "hud",
       "name": "ui_icon_stamina",
-      "path": "assets/art/ui/jianghu/hud/ui_icon_stamina.png",
+      "path": "assets/art/ui/hud/ui_icon_stamina.png",
       "size": "20x20",
       "spec": "20x20",
       "nine_slice": null
@@ -696,7 +681,7 @@
     {
       "module": "hud",
       "name": "ui_icon_neili",
-      "path": "assets/art/ui/jianghu/hud/ui_icon_neili.png",
+      "path": "assets/art/ui/hud/ui_icon_neili.png",
       "size": "20x20",
       "spec": "20x20",
       "nine_slice": null
@@ -704,7 +689,7 @@
     {
       "module": "hud",
       "name": "ui_icon_coin",
-      "path": "assets/art/ui/jianghu/hud/ui_icon_coin.png",
+      "path": "assets/art/ui/hud/ui_icon_coin.png",
       "size": "16x16",
       "spec": "16x16",
       "nine_slice": null
@@ -712,7 +697,7 @@
     {
       "module": "hud",
       "name": "ui_weather_sun",
-      "path": "assets/art/ui/jianghu/hud/ui_weather_sun.png",
+      "path": "assets/art/ui/hud/ui_weather_sun.png",
       "size": "32x32",
       "spec": "32x32",
       "nine_slice": null
@@ -720,7 +705,7 @@
     {
       "module": "hud",
       "name": "ui_weather_cloud",
-      "path": "assets/art/ui/jianghu/hud/ui_weather_cloud.png",
+      "path": "assets/art/ui/hud/ui_weather_cloud.png",
       "size": "32x32",
       "spec": "32x32",
       "nine_slice": null
@@ -728,7 +713,7 @@
     {
       "module": "hud",
       "name": "ui_weather_rain",
-      "path": "assets/art/ui/jianghu/hud/ui_weather_rain.png",
+      "path": "assets/art/ui/hud/ui_weather_rain.png",
       "size": "32x32",
       "spec": "32x32",
       "nine_slice": null
@@ -736,7 +721,7 @@
     {
       "module": "hud",
       "name": "ui_status_poison",
-      "path": "assets/art/ui/jianghu/hud/ui_status_poison.png",
+      "path": "assets/art/ui/hud/ui_status_poison.png",
       "size": "16x16",
       "spec": "16x16",
       "nine_slice": null
@@ -744,7 +729,7 @@
     {
       "module": "hud",
       "name": "ui_status_buff",
-      "path": "assets/art/ui/jianghu/hud/ui_status_buff.png",
+      "path": "assets/art/ui/hud/ui_status_buff.png",
       "size": "16x16",
       "spec": "16x16",
       "nine_slice": null
@@ -752,7 +737,7 @@
     {
       "module": "hud",
       "name": "ui_status_bleed",
-      "path": "assets/art/ui/jianghu/hud/ui_status_bleed.png",
+      "path": "assets/art/ui/hud/ui_status_bleed.png",
       "size": "16x16",
       "spec": "16x16 流血",
       "nine_slice": null
@@ -760,7 +745,7 @@
     {
       "module": "hud",
       "name": "ui_status_debuff",
-      "path": "assets/art/ui/jianghu/hud/ui_status_debuff.png",
+      "path": "assets/art/ui/hud/ui_status_debuff.png",
       "size": "16x16",
       "spec": "16x16 减益",
       "nine_slice": null
@@ -768,7 +753,7 @@
     {
       "module": "hud",
       "name": "ui_status_sleep",
-      "path": "assets/art/ui/jianghu/hud/ui_status_sleep.png",
+      "path": "assets/art/ui/hud/ui_status_sleep.png",
       "size": "16x16",
       "spec": "16x16 睡眠",
       "nine_slice": null
@@ -776,7 +761,7 @@
     {
       "module": "hud",
       "name": "ui_status_stealth",
-      "path": "assets/art/ui/jianghu/hud/ui_status_stealth.png",
+      "path": "assets/art/ui/hud/ui_status_stealth.png",
       "size": "16x16",
       "spec": "16x16 隐身",
       "nine_slice": null
@@ -784,7 +769,7 @@
     {
       "module": "hud",
       "name": "ui_status_weather",
-      "path": "assets/art/ui/jianghu/hud/ui_status_weather.png",
+      "path": "assets/art/ui/hud/ui_status_weather.png",
       "size": "16x16",
       "spec": "16x16 天气",
       "nine_slice": null
@@ -792,7 +777,7 @@
     {
       "module": "hud",
       "name": "ui_status_festival",
-      "path": "assets/art/ui/jianghu/hud/ui_status_festival.png",
+      "path": "assets/art/ui/hud/ui_status_festival.png",
       "size": "16x16",
       "spec": "16x16 节日",
       "nine_slice": null
@@ -800,7 +785,7 @@
     {
       "module": "hud",
       "name": "ui_hud_avatar_frame",
-      "path": "assets/art/ui/jianghu/hud/ui_hud_avatar_frame.png",
+      "path": "assets/art/ui/hud/ui_hud_avatar_frame.png",
       "size": "48x48",
       "spec": "48x48",
       "nine_slice": null
@@ -808,7 +793,7 @@
     {
       "module": "hud",
       "name": "ui_hud_chip_9s",
-      "path": "assets/art/ui/jianghu/hud/ui_hud_chip_9s.png",
+      "path": "assets/art/ui/hud/ui_hud_chip_9s.png",
       "size": "8x8",
       "spec": "8x8 9S 2 可染色分类色标",
       "nine_slice": [
@@ -821,7 +806,7 @@
     {
       "module": "hud",
       "name": "ui_hud_accent_9s",
-      "path": "assets/art/ui/jianghu/hud/ui_hud_accent_9s.png",
+      "path": "assets/art/ui/hud/ui_hud_accent_9s.png",
       "size": "16x3",
       "spec": "16x3 9S 4,4,1,1 金色收口轨",
       "nine_slice": [
@@ -834,7 +819,7 @@
     {
       "module": "backpack",
       "name": "ui_quality_frame_0",
-      "path": "assets/art/ui/jianghu/backpack/ui_quality_frame_0.png",
+      "path": "assets/art/ui/backpack/ui_quality_frame_0.png",
       "size": "40x40",
       "spec": "40x40 凡品",
       "nine_slice": null
@@ -842,7 +827,7 @@
     {
       "module": "backpack",
       "name": "ui_quality_frame_1",
-      "path": "assets/art/ui/jianghu/backpack/ui_quality_frame_1.png",
+      "path": "assets/art/ui/backpack/ui_quality_frame_1.png",
       "size": "40x40",
       "spec": "40x40 良品",
       "nine_slice": null
@@ -850,7 +835,7 @@
     {
       "module": "backpack",
       "name": "ui_quality_frame_2",
-      "path": "assets/art/ui/jianghu/backpack/ui_quality_frame_2.png",
+      "path": "assets/art/ui/backpack/ui_quality_frame_2.png",
       "size": "40x40",
       "spec": "40x40 上品",
       "nine_slice": null
@@ -858,7 +843,7 @@
     {
       "module": "backpack",
       "name": "ui_quality_frame_3",
-      "path": "assets/art/ui/jianghu/backpack/ui_quality_frame_3.png",
+      "path": "assets/art/ui/backpack/ui_quality_frame_3.png",
       "size": "40x40",
       "spec": "40x40 珍品",
       "nine_slice": null
@@ -866,7 +851,7 @@
     {
       "module": "backpack",
       "name": "ui_quality_frame_4",
-      "path": "assets/art/ui/jianghu/backpack/ui_quality_frame_4.png",
+      "path": "assets/art/ui/backpack/ui_quality_frame_4.png",
       "size": "40x40",
       "spec": "40x40 传世",
       "nine_slice": null
@@ -874,7 +859,7 @@
     {
       "module": "dialogue",
       "name": "ui_portrait_frame",
-      "path": "assets/art/ui/jianghu/dialogue/ui_portrait_frame.png",
+      "path": "assets/art/ui/dialogue/ui_portrait_frame.png",
       "size": "128x128",
       "spec": "128x128",
       "nine_slice": null
@@ -882,7 +867,7 @@
     {
       "module": "dialogue",
       "name": "ui_dialogue_continue",
-      "path": "assets/art/ui/jianghu/dialogue/ui_dialogue_continue.png",
+      "path": "assets/art/ui/dialogue/ui_dialogue_continue.png",
       "size": "16x16",
       "spec": "16x16",
       "nine_slice": null
@@ -890,7 +875,7 @@
     {
       "module": "dialogue",
       "name": "ui_dialogue_marker",
-      "path": "assets/art/ui/jianghu/dialogue/ui_dialogue_marker.png",
+      "path": "assets/art/ui/dialogue/ui_dialogue_marker.png",
       "size": "8x8",
       "spec": "8x8",
       "nine_slice": null
@@ -898,7 +883,7 @@
     {
       "module": "shop",
       "name": "ui_btn_step_minus",
-      "path": "assets/art/ui/jianghu/shop/ui_btn_step_minus.png",
+      "path": "assets/art/ui/shop/ui_btn_step_minus.png",
       "size": "24x24",
       "spec": "24x24",
       "nine_slice": null
@@ -906,7 +891,7 @@
     {
       "module": "shop",
       "name": "ui_btn_step_plus",
-      "path": "assets/art/ui/jianghu/shop/ui_btn_step_plus.png",
+      "path": "assets/art/ui/shop/ui_btn_step_plus.png",
       "size": "24x24",
       "spec": "24x24",
       "nine_slice": null
@@ -914,7 +899,7 @@
     {
       "module": "quest",
       "name": "ui_quest_bullet_todo",
-      "path": "assets/art/ui/jianghu/quest/ui_quest_bullet_todo.png",
+      "path": "assets/art/ui/quest/ui_quest_bullet_todo.png",
       "size": "12x12",
       "spec": "12x12",
       "nine_slice": null
@@ -922,7 +907,7 @@
     {
       "module": "quest",
       "name": "ui_quest_bullet_done",
-      "path": "assets/art/ui/jianghu/quest/ui_quest_bullet_done.png",
+      "path": "assets/art/ui/quest/ui_quest_bullet_done.png",
       "size": "12x12",
       "spec": "12x12",
       "nine_slice": null
@@ -930,7 +915,7 @@
     {
       "module": "skills",
       "name": "ui_skill_card_9s",
-      "path": "assets/art/ui/jianghu/skills/ui_skill_card_9s.png",
+      "path": "assets/art/ui/skills/ui_skill_card_9s.png",
       "size": "128x64",
       "spec": "128x64 9S 8",
       "nine_slice": [
@@ -943,7 +928,7 @@
     {
       "module": "skills",
       "name": "ui_skill_basic_blade",
-      "path": "assets/art/ui/jianghu/skills/ui_skill_basic_blade.png",
+      "path": "assets/art/ui/skills/ui_skill_basic_blade.png",
       "size": "32x32",
       "spec": "32x32 基础刀法",
       "nine_slice": null
@@ -951,7 +936,7 @@
     {
       "module": "skills",
       "name": "ui_skill_chase_wind",
-      "path": "assets/art/ui/jianghu/skills/ui_skill_chase_wind.png",
+      "path": "assets/art/ui/skills/ui_skill_chase_wind.png",
       "size": "32x32",
       "spec": "32x32 追风步",
       "nine_slice": null
@@ -959,7 +944,7 @@
     {
       "module": "skills",
       "name": "ui_skill_guard_heart",
-      "path": "assets/art/ui/jianghu/skills/ui_skill_guard_heart.png",
+      "path": "assets/art/ui/skills/ui_skill_guard_heart.png",
       "size": "32x32",
       "spec": "32x32 守心诀",
       "nine_slice": null
@@ -967,7 +952,7 @@
     {
       "module": "skills",
       "name": "ui_skill_return_palm",
-      "path": "assets/art/ui/jianghu/skills/ui_skill_return_palm.png",
+      "path": "assets/art/ui/skills/ui_skill_return_palm.png",
       "size": "32x32",
       "spec": "32x32 回风掌",
       "nine_slice": null
@@ -975,7 +960,7 @@
     {
       "module": "skills",
       "name": "ui_skill_breath_qi",
-      "path": "assets/art/ui/jianghu/skills/ui_skill_breath_qi.png",
+      "path": "assets/art/ui/skills/ui_skill_breath_qi.png",
       "size": "32x32",
       "spec": "32x32 养气诀",
       "nine_slice": null
@@ -983,7 +968,7 @@
     {
       "module": "skills",
       "name": "ui_skill_palm_gust",
-      "path": "assets/art/ui/jianghu/skills/ui_skill_palm_gust.png",
+      "path": "assets/art/ui/skills/ui_skill_palm_gust.png",
       "size": "32x32",
       "spec": "32x32 千风掌",
       "nine_slice": null
@@ -991,7 +976,7 @@
     {
       "module": "skills",
       "name": "ui_skill_crescent_slash",
-      "path": "assets/art/ui/jianghu/skills/ui_skill_crescent_slash.png",
+      "path": "assets/art/ui/skills/ui_skill_crescent_slash.png",
       "size": "32x32",
       "spec": "32x32 弦月斩",
       "nine_slice": null
@@ -999,7 +984,7 @@
     {
       "module": "skills",
       "name": "ui_skill_iron_palm",
-      "path": "assets/art/ui/jianghu/skills/ui_skill_iron_palm.png",
+      "path": "assets/art/ui/skills/ui_skill_iron_palm.png",
       "size": "32x32",
       "spec": "32x32 铁砂掌",
       "nine_slice": null
@@ -1007,7 +992,7 @@
     {
       "module": "skills",
       "name": "ui_skill_leopard_step",
-      "path": "assets/art/ui/jianghu/skills/ui_skill_leopard_step.png",
+      "path": "assets/art/ui/skills/ui_skill_leopard_step.png",
       "size": "32x32",
       "spec": "32x32 豹跃",
       "nine_slice": null
@@ -1015,7 +1000,7 @@
     {
       "module": "build",
       "name": "ui_build_ghost_ok",
-      "path": "assets/art/ui/jianghu/build/ui_build_ghost_ok.png",
+      "path": "assets/art/ui/build/ui_build_ghost_ok.png",
       "size": "32x32",
       "spec": "32x32",
       "nine_slice": null
@@ -1023,7 +1008,7 @@
     {
       "module": "build",
       "name": "ui_build_ghost_bad",
-      "path": "assets/art/ui/jianghu/build/ui_build_ghost_bad.png",
+      "path": "assets/art/ui/build/ui_build_ghost_bad.png",
       "size": "32x32",
       "spec": "32x32",
       "nine_slice": null
@@ -1031,7 +1016,7 @@
     {
       "module": "save",
       "name": "ui_save_slot_9s",
-      "path": "assets/art/ui/jianghu/save/ui_save_slot_9s.png",
+      "path": "assets/art/ui/save/ui_save_slot_9s.png",
       "size": "128x64",
       "spec": "128x64 9S 8",
       "nine_slice": [
@@ -1044,7 +1029,7 @@
     {
       "module": "save",
       "name": "ui_save_shot_placeholder",
-      "path": "assets/art/ui/jianghu/save/ui_save_shot_placeholder.png",
+      "path": "assets/art/ui/save/ui_save_shot_placeholder.png",
       "size": "96x54",
       "spec": "96x54",
       "nine_slice": null
@@ -1052,7 +1037,7 @@
     {
       "module": "settings",
       "name": "ui_toggle_on_9s",
-      "path": "assets/art/ui/jianghu/settings/ui_toggle_on_9s.png",
+      "path": "assets/art/ui/settings/ui_toggle_on_9s.png",
       "size": "44x20",
       "spec": "44x20 9S 8",
       "nine_slice": [
@@ -1065,7 +1050,7 @@
     {
       "module": "settings",
       "name": "ui_toggle_off_9s",
-      "path": "assets/art/ui/jianghu/settings/ui_toggle_off_9s.png",
+      "path": "assets/art/ui/settings/ui_toggle_off_9s.png",
       "size": "44x20",
       "spec": "44x20 9S 8",
       "nine_slice": [
@@ -1078,7 +1063,7 @@
     {
       "module": "touch",
       "name": "ui_touch_stick_base",
-      "path": "assets/art/ui/jianghu/touch/ui_touch_stick_base.png",
+      "path": "assets/art/ui/touch/ui_touch_stick_base.png",
       "size": "112x112",
       "spec": "112x112 摇杆轨道(中空)",
       "nine_slice": null
@@ -1086,7 +1071,7 @@
     {
       "module": "touch",
       "name": "ui_touch_stick_knob",
-      "path": "assets/art/ui/jianghu/touch/ui_touch_stick_knob.png",
+      "path": "assets/art/ui/touch/ui_touch_stick_knob.png",
       "size": "42x42",
       "spec": "42x42 摇杆头",
       "nine_slice": null
@@ -1094,7 +1079,7 @@
     {
       "module": "touch",
       "name": "ui_touch_btn_interact",
-      "path": "assets/art/ui/jianghu/touch/ui_touch_btn_interact.png",
+      "path": "assets/art/ui/touch/ui_touch_btn_interact.png",
       "size": "112x112",
       "spec": "112x112 交互(右下主键,与摇杆同径)",
       "nine_slice": null
@@ -1102,7 +1087,7 @@
     {
       "module": "touch",
       "name": "ui_touch_btn_attack",
-      "path": "assets/art/ui/jianghu/touch/ui_touch_btn_attack.png",
+      "path": "assets/art/ui/touch/ui_touch_btn_attack.png",
       "size": "68x68",
       "spec": "68x68 攻击",
       "nine_slice": null
@@ -1110,7 +1095,7 @@
     {
       "module": "touch",
       "name": "ui_touch_btn_bag",
-      "path": "assets/art/ui/jianghu/touch/ui_touch_btn_bag.png",
+      "path": "assets/art/ui/touch/ui_touch_btn_bag.png",
       "size": "68x68",
       "spec": "68x68 背包",
       "nine_slice": null
@@ -1118,7 +1103,7 @@
     {
       "module": "touch",
       "name": "ui_touch_btn_quest",
-      "path": "assets/art/ui/jianghu/touch/ui_touch_btn_quest.png",
+      "path": "assets/art/ui/touch/ui_touch_btn_quest.png",
       "size": "68x68",
       "spec": "68x68 任务",
       "nine_slice": null
@@ -1126,7 +1111,7 @@
     {
       "module": "touch",
       "name": "ui_touch_btn_pause",
-      "path": "assets/art/ui/jianghu/touch/ui_touch_btn_pause.png",
+      "path": "assets/art/ui/touch/ui_touch_btn_pause.png",
       "size": "68x68",
       "spec": "68x68 暂停",
       "nine_slice": null
@@ -1134,7 +1119,7 @@
     {
       "module": "touch",
       "name": "ui_touch_dpad",
-      "path": "assets/art/ui/jianghu/touch/ui_touch_dpad.png",
+      "path": "assets/art/ui/touch/ui_touch_dpad.png",
       "size": "64x64",
       "spec": "64x64 面板十字键",
       "nine_slice": null
@@ -1142,7 +1127,7 @@
     {
       "module": "touch",
       "name": "ui_touch_confirm",
-      "path": "assets/art/ui/jianghu/touch/ui_touch_confirm.png",
+      "path": "assets/art/ui/touch/ui_touch_confirm.png",
       "size": "80x80",
       "spec": "80x80 面板确定",
       "nine_slice": null
@@ -1150,7 +1135,7 @@
     {
       "module": "touch",
       "name": "ui_touch_close",
-      "path": "assets/art/ui/jianghu/touch/ui_touch_close.png",
+      "path": "assets/art/ui/touch/ui_touch_close.png",
       "size": "44x44",
       "spec": "44x44 面板关闭",
       "nine_slice": null
@@ -1158,7 +1143,7 @@
     {
       "module": "touch",
       "name": "ui_touch_btn_action",
-      "path": "assets/art/ui/jianghu/touch/ui_touch_btn_action.png",
+      "path": "assets/art/ui/touch/ui_touch_btn_action.png",
       "size": "68x68",
       "spec": "68x68 动作盘（睡觉/建造/放置…）",
       "nine_slice": null

@@ -35,6 +35,7 @@ local fish_icons = {
   floodcarp = "assets/art/items/floodcarp.png",
   snakehead = "assets/art/items/snakehead.png",
   swangeel = "assets/art/items/swangeel.png",
+  peach = "assets/art/items/peach.png",
 }
 
 -- 防撞名守护（与本文件末尾合并守护同一意图）：渔获 id 若已被既有物品占用

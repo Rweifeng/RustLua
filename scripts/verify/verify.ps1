@@ -595,6 +595,24 @@ try {
         Write-Host "  [SKIP] 未找到 python：装饰库色表门、装饰散布确定性门、建筑占地 solid 对拍门与逐图量化读数门未运行（不是通过）" -ForegroundColor Yellow
     }
 
+    # M72-10b：UI 资源契约（Python 只读量具）。九宫格半句查 8 份 prefab 的 54 行
+    # `_9s`：必须带 nine_slice、等于 manifest、且 UiLayout 宽高装得下边距；
+    # 图标半句查 93 张 32×32 的硬边/6bit/非纯色/非噪点。审美精修仍是外部委托，
+    # 这里只挡机器能判的退化；`--self-test` 带四种反面对照。
+    Write-Step "UI asset contract (python)"
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        $env:PYTHONIOENCODING = "utf-8"
+        Invoke-Checked python @(
+            (Join-Path $projectRoot "examples/game_jhyt/tools/ui_asset_census.py"),
+            "--self-test"
+        )
+        Invoke-Checked python @(
+            (Join-Path $projectRoot "examples/game_jhyt/tools/ui_asset_census.py"),
+            "--gate"
+        )
+    } else {
+        Write-Host "  [SKIP] 未找到 python：九宫格契约门与图标技术门未运行（不是通过）" -ForegroundColor Yellow
+    }
     if (-not $SkipClippy) {
         Write-Step "Clippy"
         Invoke-Checked cargo @("clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings")

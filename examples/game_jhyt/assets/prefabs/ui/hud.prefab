@@ -107,7 +107,7 @@ component	13	Image	texture=assets/art/ui/hud/ui_bar_fill_hp.png;color=1.000,1.00
 component	13	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	13	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,194.000000,1152.000000,212.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	14	HudBarFrame1	1
-component	14	Image	texture=assets/art/ui/hud/ui_bar_frame_9s.png;color=1.000,1.000,1.000
+component	14	Image	texture=assets/art/ui/hud/ui_bar_frame_9s.png;color=1.000,1.000,1.000;nine_slice=4,4,4,4
 component	14	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	14	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,194.000000,1152.000000,212.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	15	HudBarIcon1	1
@@ -119,7 +119,7 @@ component	16	Image	texture=assets/art/ui/hud/ui_bar_fill_neili.png;color=1.000,1
 component	16	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	16	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,242.000000,1072.000000,260.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	17	HudBarFrame3	1
-component	17	Image	texture=assets/art/ui/hud/ui_bar_frame_9s.png;color=1.000,1.000,1.000
+component	17	Image	texture=assets/art/ui/hud/ui_bar_frame_9s.png;color=1.000,1.000,1.000;nine_slice=4,4,4,4
 component	17	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	17	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,242.000000,1152.000000,260.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	18	HudBarIcon3	1
@@ -131,7 +131,7 @@ component	19	Image	texture=assets/art/ui/hud/ui_bar_fill_stamina.png;color=1.000
 component	19	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	19	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,218.000000,1152.000000,236.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	20	HudBarFrame2	1
-component	20	Image	texture=assets/art/ui/hud/ui_bar_frame_9s.png;color=1.000,1.000,1.000
+component	20	Image	texture=assets/art/ui/hud/ui_bar_frame_9s.png;color=1.000,1.000,1.000;nine_slice=4,4,4,4
 component	20	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	20	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=992.000000,218.000000,1152.000000,236.000000;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	21	HudBarIcon2	1

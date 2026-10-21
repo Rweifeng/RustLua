@@ -10,9 +10,9 @@ A	shown	img/avatar	image	924.00,16.00,48.00,48.00,assets/art/ui/hud/ui_hud_avata
 A	shown	img/line_icon1	image	986.00,26.00,12.00,12.00,assets/art/ui/hud/ui_icon_hp.png,-
 A	shown	img/line_icon2	image	986.00,54.00,12.00,12.00,assets/art/ui/hud/ui_icon_stamina.png,-
 A	shown	img/line_icon4	image	986.00,110.00,12.00,12.00,assets/art/ui/hud/ui_icon_coin.png,-
-A	shown	img/bar_frame1	image	992.00,194.00,160.00,18.00,assets/art/ui/hud/ui_bar_frame_9s.png,-
-A	shown	img/bar_frame2	image	992.00,218.00,160.00,18.00,assets/art/ui/hud/ui_bar_frame_9s.png,-
-A	shown	img/bar_frame3	image	992.00,242.00,160.00,18.00,assets/art/ui/hud/ui_bar_frame_9s.png,-
+A	shown	img/bar_frame1	image	992.00,194.00,160.00,18.00,assets/art/ui/hud/ui_bar_frame_9s.png,4,4,4,4
+A	shown	img/bar_frame2	image	992.00,218.00,160.00,18.00,assets/art/ui/hud/ui_bar_frame_9s.png,4,4,4,4
+A	shown	img/bar_frame3	image	992.00,242.00,160.00,18.00,assets/art/ui/hud/ui_bar_frame_9s.png,4,4,4,4
 A	shown	img/bar_fill1	image	992.00,194.00,160.00,18.00,assets/art/ui/hud/ui_bar_fill_hp.png,-
 A	shown	img/bar_fill2	image	992.00,218.00,160.00,18.00,assets/art/ui/hud/ui_bar_fill_stamina.png,-
 A	shown	img/bar_fill3	image	992.00,242.00,80.00,18.00,assets/art/ui/hud/ui_bar_fill_neili.png,-

@@ -6,12 +6,13 @@
     python -B -X utf8 tools/ui_asset_census.py            # 人读格式
     python -B -X utf8 tools/ui_asset_census.py --json      # 机读
     python -B -X utf8 tools/ui_asset_census.py --self-test  # 量具自检
+    python -B -X utf8 tools/ui_asset_census.py --gate       # 九宫格/图标技术契约门
 
-退出码：0 = 读数跑完（** findings 里的"已知债"不参与退出码**，见下）；2 = 输入/解码错误。
-为什么不把债判红：本工具今天交付的是**计数**，不是判据——"92 张图标里 64 张的出处不在
-`gen_item_icons.py`"与"manifest 的 98 条 path 一条都不在盘上"都是要登记的债，把它们做成
-退出码就等于把已知红入库（本批一路的口径）。债入门要等修法落地后再起，见
-`tasks/done/M72-10` 的"普查入门"那一格。
+退出码：0 = 读数跑完或 `--gate` 通过；1 = `--gate` 有 findings；2 = 输入/解码错误。
+读数模式的 "已知债" 不参与退出码（见下）；`--gate` 只判本任务定的机器契约。
+为什么不把债判红：本工具今天交付的是**计数**，不是全部判据——"93 张图标里 64 张的出处
+不在 `gen_item_icons.py`"仍是登记项；把它做成退出码就等于把已知红入库。九宫格边距与
+图标技术契约已由 `--gate` 判红，审美精修仍归外部委托。
 
 三组读数，各自都能单独复跑：
 
@@ -22,7 +23,7 @@
      对得上的是"这条代码能重画"的，对不上的是工具外产物（AI 生成/一次性工具）。
   3. **登记档**：`assets/art/ui/manifest.json` 的 `assets[]` 条目与盘上 PNG 互相点名
      （条目 path 命中数、盘上未登记数），九宫格边距在**清单 / `scripts/ui/skin.lua` /
-     `assets/prefabs/*.prefab`** 三处各写一遍的对拍，以及 `scripts/`、`scenes/`、
+     `assets/prefabs/**/*.prefab`** 三处各写一遍的对拍，以及 `scripts/`、`scenes/`、
      `assets/prefabs/` 的引用面。
 """
 
@@ -90,9 +91,9 @@ def pixel_row(path, rel):
 
 
 def reference_text():
-    """把引用面拼成一段文本（scripts/**.lua、scenes/*.scene、assets/prefabs/*.prefab）。"""
+    """把引用面拼成一段文本（scripts/**.lua、scenes/*.scene、assets/prefabs/**/*.prefab）。"""
     parts = []
-    for pattern in ("scripts/**/*.lua", "scenes/*.scene", "assets/prefabs/*.prefab"):
+    for pattern in ("scripts/**/*.lua", "scenes/*.scene", "assets/prefabs/**/*.prefab"):
         for path in sorted(ROOT.glob(pattern)):
             parts.append(path.read_text(encoding="utf-8", errors="replace"))
     return "\n".join(parts)
@@ -209,7 +210,7 @@ def census_skin():
 def census_prefab_margins():
     """prefab 侧的 `nine_slice=` 声明（第三份边距）。"""
     found = {}
-    for path in sorted(ROOT.glob("assets/prefabs/*.prefab")):
+    for path in sorted(ROOT.glob("assets/prefabs/**/*.prefab")):
         for match in re.finditer(
             r"texture=(assets/art/ui/[\w./-]+\.png)[^\n]*?nine_slice=(\d+),(\d+),(\d+),(\d+)",
             path.read_text(encoding="utf-8", errors="replace"),
@@ -218,6 +219,136 @@ def census_prefab_margins():
                 tuple(int(value) for value in match.groups()[1:5])
             )
     return {key: sorted(values) for key, values in found.items()}
+
+
+IMAGE_COMPONENT_RE = re.compile(r"^component\t([^\t]+)\tImage\t(.+)$")
+LAYOUT_COMPONENT_RE = re.compile(r"^component\t([^\t]+)\tUiLayout\t(.+)$")
+OFFSETS_RE = re.compile(r"offsets=(-?[\d.]+),(-?[\d.]+),(-?[\d.]+),(-?[\d.]+)")
+NINE_SLICE_RE = re.compile(r"nine_slice=(\d+),(\d+),(\d+),(\d+)")
+
+
+def ui_path(path):
+    """manifest 的旧前缀只剥一次，返回盘上/边距表使用的路径。"""
+    return path.replace(STALE_SEGMENT, "assets/art/ui/")
+
+
+def prefab_layout_size(body):
+    """从 UiLayout 的 `offsets=x0,y0,x1,y1` 取组件宽高（作者空间像素）。"""
+    match = OFFSETS_RE.search(body)
+    if not match:
+        return None
+    x0, y0, x1, y1 = (float(value) for value in match.groups())
+    return abs(x1 - x0), abs(y1 - y0)
+
+
+def prefab_nine_slice_findings(rel, text, declared):
+    """扫一个 prefab 文本，返回 (checked, findings)；抽出来是为了反面对照。"""
+    findings = []
+    checked = 0
+    current = {}
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if line.lstrip().startswith("#"):
+            continue
+        image = IMAGE_COMPONENT_RE.match(line)
+        if image:
+            entity, body = image.groups()
+            texture = re.search(r"texture=([^;\s]+)", body)
+            if not texture:
+                continue
+            texture_path = ui_path(texture.group(1))
+            if not texture_path.endswith("_9s.png"):
+                continue
+            checked += 1
+            sliced = NINE_SLICE_RE.search(body)
+            if not sliced:
+                findings.append(f"{rel}:{lineno}: 缺 nine_slice（{texture_path}）")
+                continue
+            value = tuple(int(part) for part in sliced.groups())
+            if texture_path not in declared:
+                findings.append(f"{rel}:{lineno}: 清单没声明边距（{texture_path}）")
+            elif value != declared[texture_path]:
+                findings.append(
+                    f"{rel}:{lineno}: 边距 {value} != 清单 {declared[texture_path]}（{texture_path}）"
+                )
+            current[entity] = (texture_path, value, lineno)
+            continue
+        layout = LAYOUT_COMPONENT_RE.match(line)
+        if layout:
+            entity, body = layout.groups()
+            entry = current.get(entity)
+            if not entry:
+                continue
+            texture_path, (left, right, top, bottom), image_line = entry
+            size = prefab_layout_size(body)
+            if size is None:
+                findings.append(f"{rel}:{lineno}: UiLayout 没有 offsets（{texture_path}）")
+                continue
+            width, height = size
+            if width < left + right or height < top + bottom:
+                findings.append(
+                    f"{rel}:{lineno}: {width:g}x{height:g} 装不下边距 "
+                    f"{left}+{right}/{top}+{bottom}（{texture_path}，Image 在第 {image_line} 行）"
+                )
+    return checked, findings
+
+
+def nine_slice_contract():
+    """M72-10b 九宫格契约：prefab 的每张 `_9s` 都必须带边距、等于清单、且装得下。
+
+    返回的 findings 是给人看的逐条 `文件:行:原因`；`checked` 是实际检查的
+    `_9s` 组件行数。这道门只读盘，不猜"应该画多大"。
+    """
+    declared = {
+        ui_path(path): tuple(values)
+        for path, values in census_manifest()["margins"].items()
+    }
+    findings = []
+    checked = 0
+    files = sorted(ROOT.glob("assets/prefabs/**/*.prefab"))
+    for path in files:
+        rel = path.relative_to(ROOT).as_posix()
+        found, current = prefab_nine_slice_findings(
+            rel, path.read_text(encoding="utf-8", errors="replace"), declared
+        )
+        checked += found
+        findings.extend(current)
+    # 第二处消费：`scripts/ui/skin.lua` 的硬写 slice 也必须等于同一份清单。
+    for path, value in census_skin().items():
+        if value is None:
+            continue
+        if path not in declared:
+            findings.append(f"scripts/ui/skin.lua: 清单没声明边距（{path}）")
+        elif value != declared[path]:
+            findings.append(f"scripts/ui/skin.lua: 边距 {value} != 清单 {declared[path]}（{path}）")
+    return dict(files=len(files), checked=checked, findings=findings)
+
+
+def icon_quality_contract(rows):
+    """M72-10b 图标技术契约：硬边、32×32、6bit、非纯色块、非噪点。
+
+    这不是"好不好看"的审美门——审美精修仍是外部委托；它只把
+    "用色块/渐变/半透明糊弄"这一类机器能判的退化挡住。
+    """
+    findings = []
+    checked = 0
+    for row in rows:
+        if not row["path"].startswith("assets/art/items/"):
+            continue
+        checked += 1
+        name = row["path"]
+        if row["size"] != "32x32":
+            findings.append(f"{name}: 尺寸 {row['size']} != 32x32")
+        if row["alpha_values"] != [0, 255]:
+            findings.append(f"{name}: alpha 取值 {row['alpha_values']} != [0,255]")
+        if not row["quantized_6bit"]:
+            findings.append(f"{name}: 每通道档数 >64（{row['levels_per_channel_max']}）")
+        if row["distinct_opaque"] <= 2:
+            findings.append(f"{name}: 纯色块（仅 {row['distinct_opaque']} 档不透明色）")
+        if row["opaque_px"] < 32:
+            findings.append(f"{name}: 不透明像素只有 {row['opaque_px']}，信息量不足")
+        if row["singleton_share"] is not None and row["singleton_share"] > 0.98:
+            findings.append(f"{name}: 单例色占比 {row['singleton_share']} > 0.98（噪点）")
+    return dict(checked=checked, findings=findings)
 
 
 def summarize(rows, icons):
@@ -255,6 +386,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument(
+        "--gate",
+        action="store_true",
+        help="跑 M72-10b 契约门（九宫格边距 + 图标技术门），有 findings 时退出 1",
+    )
     args = parser.parse_args()
     if args.self_test:
         return self_test()
@@ -311,6 +447,7 @@ def main():
             referenced_missing=[p for p in refs_items if not (ROOT / p).is_file()],
             unreferenced=[p for p in item_paths if p not in refs_items
                           and Path(p).name != "_preview.png"],
+            icon_quality_contract=icon_quality_contract(item_icons),
         ),
         ui=dict(
             summary=summarize(ui_rows, ui_rows),
@@ -319,9 +456,37 @@ def main():
             unreferenced=[row["path"] for row in ui_rows if row["path"] not in refs_ui],
             manifest=manifest,
             margins=margins,
+            nine_slice_contract=nine_slice_contract(),
         ),
         rows=dict(items=item_rows, ui=ui_rows),
     )
+
+    if args.gate:
+        nine = report["ui"]["nine_slice_contract"]
+        icon = report["items"]["icon_quality_contract"]
+        nine_ok = not nine["findings"]
+        icon_ok = not icon["findings"]
+        status = "ok" if nine_ok else "FAILED"
+        print(
+            f"jhyt_m72_nine_slice_margin_{status} prefabs={nine['files']} "
+            f"checked={nine['checked']} findings={len(nine['findings'])}"
+        )
+        for finding in nine["findings"]:
+            print("  " + finding)
+        status = "ok" if icon_ok else "FAILED"
+        print(
+            f"jhyt_m72_icon_quality_{status} icons={icon['checked']} "
+            f"findings={len(icon['findings'])}"
+        )
+        for finding in icon["findings"]:
+            print("  " + finding)
+        review = [row for row in item_icons if row["reuse"] is not None and row["reuse"] < 1.05]
+        print(
+            f"icon_quality_review low_reuse={len(review)} "
+            f"({', '.join(Path(row['path']).stem for row in review[:8]) or '无'})"
+            " —— 只登记，不是门的失败条件"
+        )
+        return 0 if nine_ok and icon_ok else 1
 
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -396,9 +561,40 @@ def self_test():
     man = census_manifest()
     assert man["nine_slice_keys"] == man["entries"], man
     assert man["nine_slice_keys"] > man["nine_slice_declared"], man
+    # ⑥ 九宫格反面对照：同一段合成 prefab，正向 16×16/6,6,6,6 必须过；
+    #    缺声明、边距不符、装不下、清单没这张，四种退化各报一条。
+    declared = {"assets/art/ui/common/ui_slot_9s.png": (6, 6, 6, 6)}
+    good = (
+        "component\t1\tImage\ttexture=assets/art/ui/common/ui_slot_9s.png;color=1,1,1;nine_slice=6,6,6,6\n"
+        "component\t1\tUiLayout\toffsets=0,0,16,16;min_size=0,0\n"
+    )
+    checked, findings = prefab_nine_slice_findings("synthetic.prefab", good, declared)
+    assert checked == 1 and not findings, findings
+    for label, bad in (
+        ("缺 nine_slice", good.replace(";nine_slice=6,6,6,6", "")),
+        ("边距不符", good.replace("nine_slice=6,6,6,6", "nine_slice=5,5,5,5")),
+        ("装不下", good.replace("offsets=0,0,16,16", "offsets=0,0,8,8")),
+        ("清单没声明", good.replace("ui_slot_9s.png", "ui_unknown_9s.png")),
+    ):
+        _, bad_findings = prefab_nine_slice_findings("synthetic.prefab", bad, declared)
+        assert bad_findings, label
+    # ⑦ 图标反面对照：好图过；半透明/纯色块/噪点各报一条。
+    icon = dict(
+        path="assets/art/items/synthetic.png", size="32x32", alpha_values=[0, 255],
+        quantized_6bit=True, levels_per_channel_max=16, distinct_opaque=8,
+        opaque_px=64, singleton_share=0.5,
+    )
+    assert not icon_quality_contract([icon])["findings"]
+    for label, patch in (
+        ("半透明", dict(alpha_values=[0, 128, 255])),
+        ("纯色块", dict(distinct_opaque=2)),
+        ("噪点", dict(singleton_share=0.99)),
+    ):
+        assert icon_quality_contract([dict(icon, **patch)])["findings"], label
     print(f"PASS: 两口径差一档 / 旧前缀只剥一次且落盘 / ICONS 走 AST 读到 {len(names)} 条"
           f" / 6bit 甲乙两读法相反（rice 档数上限 {rice['levels_per_channel_max']}）"
-          f" / nine_slice 键 {man['nine_slice_keys']} ≠ 声明 {man['nine_slice_declared']}")
+          f" / nine_slice 键 {man['nine_slice_keys']} ≠ 声明 {man['nine_slice_declared']}"
+          " / 九宫格与图标反面对照各四种退化")
     return 0
 
 

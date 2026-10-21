@@ -5,6 +5,26 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — M72-10b UI 资源三项收口（2026-10-21）
+
+- **九宫格消费侧补齐**：`hud.prefab` 3 行 `ui_bar_frame_9s` 补 `4,4,4,4`，
+  `inventory.prefab` 11 行背包格子补 `6,6,6,6`；`assets/prefabs/**/*.prefab`
+  的 `_9s` 组件行现在 **54/54** 带 `nine_slice=`。`manifest.json` 的
+  `root`/`path` 去掉盘上不存在的 `jianghu` 段（98/98 原样命中），三条
+  `ui_bar_fill_*` 改回 `null`（本来就不是九宫格）。
+- **契约门进总门**：`ui_asset_census.py --gate` 同时查 manifest / `skin.lua` /
+  prefab 三处边距与 prefab 最小尺寸，输出 `jhyt_m72_nine_slice_margin_ok
+  prefabs=8 checked=54 findings=0`；`--self-test` 带四种反面对照。已接进
+  `verify.ps1` 的 `UI asset contract (python)`。
+- **图标技术契约 + peach**：新增 `peach.png`（32×32），`data/items.lua:peach`
+  不再借 `rice.png`、`items_fish.lua` 补 `fish_icons.peach`；93 张图标
+  `jhyt_m72_icon_quality_ok icons=93 findings=0`（审美精修仍是外部委托，
+  `reuse<1.05` 的五张只登记）。
+- **全 UI 像素字**：`jhyt_m72_pixel_font` 复跑 `ok`（75 个 UI 字形四边形、
+  灰阶 0、缺字 0）；没有新增字体或逐控件 `font=` 覆盖。
+- HUD/背包黄金表按新边距重刷（3 + 11 行），`jhyt_m70_hud_prefab` /
+  `jhyt_m67_inventory_prefab` 复跑绿。
+
 ## Unreleased — M74-03 Compute Shader 与 GPU 粒子（2026-10-21）
 
 - **Compute Shader 通道（M74-03）**：渲染器新增 `RendererCapabilities` 能力快照与 compute 接缝

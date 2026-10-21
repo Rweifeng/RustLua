@@ -6,7 +6,7 @@
     python tools/gen_ui_art.py            # 生成全部切图 + manifest + 两张预览
     python tools/gen_ui_art.py --check    # 按规格表校验尺寸/存在性
 
-目录结构（`assets/art/ui/jianghu/<模块>/`，模块按 docs/35 §7/§8 划分）：
+目录结构（`assets/art/ui/<模块>/`，模块按 docs/35 §7/§8 划分）：
 
     common/     跨模块共用控件：面板 / 按钮 / 槽位 / 输入框 / 标签页 / 勾选 / 滑杆 /
                 箭头 / 关闭 / 分隔线 / 面板印章
@@ -1463,7 +1463,7 @@ def rel_path(module, name):
 
 
 def asset_path(module, name):
-    return f"assets/art/ui/jianghu/{module}/{name}.png"
+    return f"assets/art/ui/{module}/{name}.png"
 
 
 # ---------------------------------------------------------------------------
@@ -1734,7 +1734,7 @@ def build_manifest(items):
         "generated_by": "tools/gen_ui_art.py",
         "design_doc": "docs/35-江湖有田-UI资源设计.md",
         "impl_doc": "docs/38-江湖有田-UI资源实现与接入.md",
-        "root": "assets/art/ui/jianghu",
+        "root": "assets/art/ui",
         "nine_slice_field": "Image 组件 ninth 参数顺序 [left, right, top, bottom]（纹理像素）",
         "engine_note": "场景 Image 支持 nine_slice；Lua ui.image 目前不支持（nine_slice 写死 None）",
         "modules": modules,
