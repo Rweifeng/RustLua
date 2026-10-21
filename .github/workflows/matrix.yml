@@ -117,12 +117,33 @@ jobs:
           sudo apt-get install -y libasound2-dev libudev-dev libxkbcommon-dev libwayland-dev libx11-xcb-dev libxrandr-dev libxi-dev pkg-config
 
       - name: Cell check
+        id: cell
         run: ${{ matrix.cmd }}
 
-      - name: Cell status report
+      # 每个 cell 独立落一份结果 JSON：`needs.matrix.result` 只有整 job 的标量，
+      # 拿不到 7 个 cell 的逐格结论；汇总 job 用 artifact 还原成 {cell_id: status}。
+      # 用 `steps.cell.outcome` 而不是 `job.status`：advisory cell 的 continue-on-error
+      # 会把 job 结论改成 success，但 step 的 outcome 仍是 failure，不能被吞掉。
+      - name: Record cell result
+        if: always()
         shell: pwsh
+        working-directory: ${{ github.workspace }}
         run: |
-          Write-Host "matrix_cell id=${{ matrix.id }} tier=${{ matrix.tier }} status=${{ job.status }}"
+          New-Item -ItemType Directory -Force -Path artifacts/matrix | Out-Null
+          [ordered]@{
+            id = "${{ matrix.id }}"
+            tier = "${{ matrix.tier }}"
+            status = "${{ steps.cell.outcome }}"
+          } | ConvertTo-Json -Compress | Set-Content -LiteralPath "artifacts/matrix/${{ matrix.id }}.json" -Encoding utf8
+          Write-Host "matrix_cell id=${{ matrix.id }} tier=${{ matrix.tier }} status=${{ steps.cell.outcome }}"
+
+      - name: Upload cell result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matrix-result-${{ matrix.id }}
+          path: artifacts/matrix/${{ matrix.id }}.json
+          if-no-files-found: error
 
     # advisory 观察期：失败不阻断 workflow（矩阵是加法；失败仍会被 matrix-summary 汇总，
     # 到期仍红由 check-matrix-policy.ps1 判 2）。blocking 永不 continue-on-error。
@@ -138,9 +159,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Download cell results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: matrix-result-*
+          path: artifacts/matrix-results
+          merge-multiple: true
+
       - name: Matrix policy gate
         shell: pwsh
         run: |
-          $results = '${{ toJson(needs.matrix.result) }}'
-          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/check-matrix-policy.ps1 -Summarize $results
+          $results = @{}
+          Get-ChildItem artifacts/matrix-results -Filter *.json | ForEach-Object {
+            $r = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+            $results[$r.id] = $r.status
+          }
+          if ($results.Count -eq 0) { throw "matrix results empty (no cell artifact)" }
+          $json = $results | ConvertTo-Json -Compress
+          $jsonPath = "artifacts/matrix-results.json"
+          Set-Content -LiteralPath $jsonPath -Value $json -Encoding utf8
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/check-matrix-policy.ps1 -SummarizeFile $jsonPath
           if ($LASTEXITCODE -ne 0) { throw "matrix policy failed (exit $LASTEXITCODE)" }

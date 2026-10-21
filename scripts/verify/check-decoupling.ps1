@@ -18,9 +18,20 @@ if (-not (Test-Path -LiteralPath $engineDir)) {
 
 function Invoke-CargoTree {
     param([string[]] $Arguments)
-    $output = & cargo tree @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "cargo tree $($Arguments -join ' ') 失败：$($output | Select-Object -First 3)"
+    # PowerShell 5.1 在 EAP=Stop 下会把原生程序的 stderr 当成终止性错误：cargo 的
+    # "Updating crates.io index" 一走 stderr，命令还没结束就被 PowerShell 打断，现场只剩
+    # 这一行（2026-10-21 CI web-evidence 实测）。这里临时降级 EAP，按退出码判成败。
+    $savedEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & cargo tree --locked @Arguments 2>&1
+        $code = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $savedEap
+    }
+    if ($code -ne 0) {
+        throw "cargo tree --locked $($Arguments -join ' ') 失败（exit $code）：$($output | Select-Object -First 8)"
     }
     return $output
 }
