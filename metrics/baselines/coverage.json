@@ -1,0 +1,491 @@
+{
+    "schema":  "coverage-v1",
+    "generated_at":  "2026-10-21T08:02:05.499Z",
+    "git_commit":  "29257dcb",
+    "git_dirty":  false,
+    "env_fingerprint":  "local",
+    "overall":  {
+                    "lines":  {
+                                  "count":  110972,
+                                  "covered":  89876,
+                                  "percent":  80.99
+                              },
+                    "functions":  {
+                                      "count":  10432,
+                                      "covered":  8315,
+                                      "percent":  79.71
+                                  },
+                    "regions":  {
+                                    "count":  177722,
+                                    "covered":  143766,
+                                    "percent":  80.89
+                                }
+                },
+    "crates":  [
+                   {
+                       "name":  "editor",
+                       "lines":  {
+                                     "count":  43225,
+                                     "covered":  31111,
+                                     "percent":  71.97
+                                 },
+                       "functions":  {
+                                         "count":  3707,
+                                         "covered":  2738,
+                                         "percent":  73.86
+                                     },
+                       "regions":  {
+                                       "count":  67977,
+                                       "covered":  48925,
+                                       "percent":  71.97
+                                   },
+                       "source_lines":  43225
+                   },
+                   {
+                       "name":  "engine",
+                       "lines":  {
+                                     "count":  10504,
+                                     "covered":  8743,
+                                     "percent":  83.23
+                                 },
+                       "functions":  {
+                                         "count":  789,
+                                         "covered":  621,
+                                         "percent":  78.71
+                                     },
+                       "regions":  {
+                                       "count":  14026,
+                                       "covered":  11633,
+                                       "percent":  82.94
+                                   },
+                       "source_lines":  10504
+                   },
+                   {
+                       "name":  "rustlua-ecs",
+                       "lines":  {
+                                     "count":  8546,
+                                     "covered":  7916,
+                                     "percent":  92.63
+                                 },
+                       "functions":  {
+                                         "count":  819,
+                                         "covered":  713,
+                                         "percent":  87.06
+                                     },
+                       "regions":  {
+                                       "count":  13920,
+                                       "covered":  12785,
+                                       "percent":  91.85
+                                   },
+                       "source_lines":  8546
+                   },
+                   {
+                       "name":  "rustlua-render",
+                       "lines":  {
+                                     "count":  7005,
+                                     "covered":  6147,
+                                     "percent":  87.75
+                                 },
+                       "functions":  {
+                                         "count":  697,
+                                         "covered":  600,
+                                         "percent":  86.08
+                                     },
+                       "regions":  {
+                                       "count":  11537,
+                                       "covered":  9921,
+                                       "percent":  85.99
+                                   },
+                       "source_lines":  7005
+                   },
+                   {
+                       "name":  "rustlua-infra",
+                       "lines":  {
+                                     "count":  4659,
+                                     "covered":  4203,
+                                     "percent":  90.21
+                                 },
+                       "functions":  {
+                                         "count":  581,
+                                         "covered":  490,
+                                         "percent":  84.34
+                                     },
+                       "regions":  {
+                                       "count":  7804,
+                                       "covered":  7172,
+                                       "percent":  91.9
+                                   },
+                       "source_lines":  4659
+                   },
+                   {
+                       "name":  "rustlua-ui",
+                       "lines":  {
+                                     "count":  4022,
+                                     "covered":  3697,
+                                     "percent":  91.92
+                                 },
+                       "functions":  {
+                                         "count":  416,
+                                         "covered":  390,
+                                         "percent":  93.75
+                                     },
+                       "regions":  {
+                                       "count":  6333,
+                                       "covered":  5796,
+                                       "percent":  91.52
+                                   },
+                       "source_lines":  4022
+                   },
+                   {
+                       "name":  "assetc",
+                       "lines":  {
+                                     "count":  3816,
+                                     "covered":  3053,
+                                     "percent":  80.01
+                                 },
+                       "functions":  {
+                                         "count":  374,
+                                         "covered":  255,
+                                         "percent":  68.18
+                                     },
+                       "regions":  {
+                                       "count":  6682,
+                                       "covered":  5281,
+                                       "percent":  79.03
+                                   },
+                       "source_lines":  3816
+                   },
+                   {
+                       "name":  "rustlua-gameplay",
+                       "lines":  {
+                                     "count":  3225,
+                                     "covered":  2928,
+                                     "percent":  90.79
+                                 },
+                       "functions":  {
+                                         "count":  325,
+                                         "covered":  302,
+                                         "percent":  92.92
+                                     },
+                       "regions":  {
+                                       "count":  6286,
+                                       "covered":  5677,
+                                       "percent":  90.31
+                                   },
+                       "source_lines":  3225
+                   },
+                   {
+                       "name":  "rustlua-physics",
+                       "lines":  {
+                                     "count":  3153,
+                                     "covered":  2845,
+                                     "percent":  90.23
+                                 },
+                       "functions":  {
+                                         "count":  257,
+                                         "covered":  199,
+                                         "percent":  77.43
+                                     },
+                       "regions":  {
+                                       "count":  5183,
+                                       "covered":  4565,
+                                       "percent":  88.08
+                                   },
+                       "source_lines":  3153
+                   },
+                   {
+                       "name":  "rustlua-scripting",
+                       "lines":  {
+                                     "count":  3099,
+                                     "covered":  2538,
+                                     "percent":  81.9
+                                 },
+                       "functions":  {
+                                         "count":  436,
+                                         "covered":  316,
+                                         "percent":  72.48
+                                     },
+                       "regions":  {
+                                       "count":  5119,
+                                       "covered":  4198,
+                                       "percent":  82.01
+                                   },
+                       "source_lines":  3099
+                   },
+                   {
+                       "name":  "rustlua-assets",
+                       "lines":  {
+                                     "count":  3005,
+                                     "covered":  2674,
+                                     "percent":  88.99
+                                 },
+                       "functions":  {
+                                         "count":  289,
+                                         "covered":  261,
+                                         "percent":  90.31
+                                     },
+                       "regions":  {
+                                       "count":  5148,
+                                       "covered":  4653,
+                                       "percent":  90.38
+                                   },
+                       "source_lines":  3005
+                   },
+                   {
+                       "name":  "rustlua-scene",
+                       "lines":  {
+                                     "count":  2872,
+                                     "covered":  2615,
+                                     "percent":  91.05
+                                 },
+                       "functions":  {
+                                         "count":  244,
+                                         "covered":  213,
+                                         "percent":  87.3
+                                     },
+                       "regions":  {
+                                       "count":  4845,
+                                       "covered":  4420,
+                                       "percent":  91.23
+                                   },
+                       "source_lines":  2872
+                   },
+                   {
+                       "name":  "rustlua-assets-import",
+                       "lines":  {
+                                     "count":  2263,
+                                     "covered":  2061,
+                                     "percent":  91.07
+                                 },
+                       "functions":  {
+                                         "count":  228,
+                                         "covered":  197,
+                                         "percent":  86.4
+                                     },
+                       "regions":  {
+                                       "count":  3978,
+                                       "covered":  3588,
+                                       "percent":  90.2
+                                   },
+                       "source_lines":  2263
+                   },
+                   {
+                       "name":  "rustlua-input",
+                       "lines":  {
+                                     "count":  2197,
+                                     "covered":  1913,
+                                     "percent":  87.07
+                                 },
+                       "functions":  {
+                                         "count":  216,
+                                         "covered":  189,
+                                         "percent":  87.5
+                                     },
+                       "regions":  {
+                                       "count":  3683,
+                                       "covered":  3249,
+                                       "percent":  88.22
+                                   },
+                       "source_lines":  2197
+                   },
+                   {
+                       "name":  "rustlua-camera",
+                       "lines":  {
+                                     "count":  1990,
+                                     "covered":  1843,
+                                     "percent":  92.61
+                                 },
+                       "functions":  {
+                                         "count":  246,
+                                         "covered":  225,
+                                         "percent":  91.46
+                                     },
+                       "regions":  {
+                                       "count":  3333,
+                                       "covered":  2974,
+                                       "percent":  89.23
+                                   },
+                       "source_lines":  1990
+                   },
+                   {
+                       "name":  "game",
+                       "lines":  {
+                                     "count":  1844,
+                                     "covered":  839,
+                                     "percent":  45.5
+                                 },
+                       "functions":  {
+                                         "count":  154,
+                                         "covered":  79,
+                                         "percent":  51.3
+                                     },
+                       "regions":  {
+                                       "count":  2970,
+                                       "covered":  1388,
+                                       "percent":  46.73
+                                   },
+                       "source_lines":  1844
+                   },
+                   {
+                       "name":  "rustlua-animation",
+                       "lines":  {
+                                     "count":  1764,
+                                     "covered":  1550,
+                                     "percent":  87.87
+                                 },
+                       "functions":  {
+                                         "count":  178,
+                                         "covered":  153,
+                                         "percent":  85.96
+                                     },
+                       "regions":  {
+                                       "count":  2740,
+                                       "covered":  2343,
+                                       "percent":  85.51
+                                   },
+                       "source_lines":  1764
+                   },
+                   {
+                       "name":  "game_web",
+                       "lines":  {
+                                     "count":  1447,
+                                     "covered":  1351,
+                                     "percent":  93.37
+                                 },
+                       "functions":  {
+                                         "count":  147,
+                                         "covered":  121,
+                                         "percent":  82.31
+                                     },
+                       "regions":  {
+                                       "count":  2324,
+                                       "covered":  2166,
+                                       "percent":  93.2
+                                   },
+                       "source_lines":  1447
+                   },
+                   {
+                       "name":  "rustlua-audio",
+                       "lines":  {
+                                     "count":  948,
+                                     "covered":  726,
+                                     "percent":  76.58
+                                 },
+                       "functions":  {
+                                         "count":  123,
+                                         "covered":  89,
+                                         "percent":  72.36
+                                     },
+                       "regions":  {
+                                       "count":  1585,
+                                       "covered":  1201,
+                                       "percent":  75.77
+                                   },
+                       "source_lines":  948
+                   },
+                   {
+                       "name":  "rustlua-math",
+                       "lines":  {
+                                     "count":  571,
+                                     "covered":  497,
+                                     "percent":  87.04
+                                 },
+                       "functions":  {
+                                         "count":  76,
+                                         "covered":  68,
+                                         "percent":  89.47
+                                     },
+                       "regions":  {
+                                       "count":  908,
+                                       "covered":  787,
+                                       "percent":  86.67
+                                   },
+                       "source_lines":  571
+                   },
+                   {
+                       "name":  "rustlua-frame-abi",
+                       "lines":  {
+                                     "count":  332,
+                                     "covered":  327,
+                                     "percent":  98.49
+                                 },
+                       "functions":  {
+                                         "count":  41,
+                                         "covered":  40,
+                                         "percent":  97.56
+                                     },
+                       "regions":  {
+                                       "count":  536,
+                                       "covered":  527,
+                                       "percent":  98.32
+                                   },
+                       "source_lines":  332
+                   },
+                   {
+                       "name":  "rustlua-lua-api",
+                       "lines":  {
+                                     "count":  245,
+                                     "covered":  202,
+                                     "percent":  82.45
+                                 },
+                       "functions":  {
+                                         "count":  44,
+                                         "covered":  33,
+                                         "percent":  75
+                                     },
+                       "regions":  {
+                                       "count":  406,
+                                       "covered":  338,
+                                       "percent":  83.25
+                                   },
+                       "source_lines":  245
+                   },
+                   {
+                       "name":  "wasm-lua-spike",
+                       "lines":  {
+                                     "count":  122,
+                                     "covered":  0,
+                                     "percent":  0
+                                 },
+                       "functions":  {
+                                         "count":  19,
+                                         "covered":  0,
+                                         "percent":  0
+                                     },
+                       "regions":  {
+                                       "count":  202,
+                                       "covered":  0,
+                                       "percent":  0
+                                   },
+                       "source_lines":  122
+                   },
+                   {
+                       "name":  "rustlua-component-codec",
+                       "lines":  {
+                                     "count":  118,
+                                     "covered":  97,
+                                     "percent":  82.2
+                                 },
+                       "functions":  {
+                                         "count":  26,
+                                         "covered":  23,
+                                         "percent":  88.46
+                                     },
+                       "regions":  {
+                                       "count":  197,
+                                       "covered":  179,
+                                       "percent":  90.86
+                                   },
+                       "source_lines":  118
+                   }
+               ],
+    "included_files":  301,
+    "excluded_files":  0,
+    "notes":  [
+                  "含测试代码：inline #[cfg(test)] 模块被 LLVM 计入行覆盖，本口径不是\u0027产品代码覆盖率\u0027。",
+                  "engine/vendor/**、target/**、OUT_DIR 不计入。"
+              ],
+    "baseline_reason":  "P4 first full coverage baseline",
+    "baseline_created_at":  "2026-10-21T16:03:11Z",
+    "baseline_commit":  "09c94cc3"
+}
