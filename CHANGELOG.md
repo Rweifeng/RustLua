@@ -5,6 +5,30 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — M74-02 ECS 并行调度：P0 度量闸门判"不做"，只交付帧内分档工具
+
+- **问题**：`tasks/plan` 里排着"ECS 并行调度"（先把 `World` 变成 `Send`，再加访问集与并行执行，
+  3–4 周），但"并行调度值不值得"一直是推断而不是读数——没有工具能回答"一帧里调度系统占多少、
+  最慢 stage 是哪一段、并行最多能省多少"。任务书自己给了 P0 否决权：量完若收益不够，就以实测结论收口。
+- **做法**：
+  - 新增 `engine/src/host/frame_profile.rs`：`FrameProfile` 跨帧累加每系统 p50/p95/p99
+    （nearest-rank，与 `wp0_scene_frame` 同口径）、每 stage 合计与占帧比、关键路径与
+    **并行收益上限**；分母由调用方传入**整帧墙钟**（含提取与提交），不用调度器自报的管线时间。
+  - 两套 stage 口径：全量 `share_pct` 与去掉独占 stage 的 `parallel_share_pct`。`Script`（Lua）标为
+    独占——任务书 §风险 明写它永远串行，把它算进"并行能吃到多少"会读反结论。闸门判后者，
+    前者照样进报告作对照。
+  - `game --frame-profile <file>`：交互宿主每帧记录、退出落盘 JSON + 单行摘要；不开时零成本。
+    新增 `engine/examples/m74_ecs_frame_profile`：无窗口可复现，跑 `jhyt_title`/`jhyt_manor`/
+    `sprite_10000`/`sprite_50000` 四档，台账 `metrics/baselines/m74-frame-profile.json`。
+  - `docs/62` §6、`docs/53` §3.11、`tasks/README` 回写；任务归档进 `tasks/done/`。
+- **证据（2026-10-21，Release，12 逻辑核，300 帧 + 20 预热）**：可并行 stage 的最大占帧比
+  `jhyt_title` 2.36% / `jhyt_manor` 4.47% / `sprite_10000` 11.96% / `sprite_50000` 11.56%，
+  全部 < 20% ⇒ **不做**；跨系统并行的收益上限 ≤1.18%。全量口径下 `jhyt_manor` 的 76% 全在
+  `Script`（Lua）；50k 档 10.87 ms 里 9.12 ms 在调度之外的提取阶段。`cargo test -p engine --lib`
+  203 通过（含 8 条 `frame_profile` 单测）、`cargo test -p rustlua-ecs` 158 通过。
+- **回滚档**：纯读侧工具；`--frame-profile` 不开时行为与之前完全一致，`World`/调度器一行未改。
+- **未验**：交互宿主的读数（本机无窗口会话）；长跑对拍——没有并行档，也就没有第二个执行路径。
+
 ## Unreleased — P2 发布与安全工程：供应链门、SBOM、tag 发布自动化、Authenticode 签名
 
 - **问题**：发布会话只回答"包能不能跑"，不回答"依赖有没有已知漏洞/许可证越界"、"发布包里到底有什么"、

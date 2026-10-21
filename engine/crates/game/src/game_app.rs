@@ -5,6 +5,7 @@
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use rustlua_camera::camera::{FrameViews, Viewport};
+use rustlua_ecs::scheduler::ScheduleStage;
 use rustlua_infra::logging::{EngineError, LogModule};
 use rustlua_infra::performance::{PerformanceSnapshot, PerformanceStats};
 use rustlua_infra::time_step::FixedTimeStep;
@@ -94,7 +95,13 @@ impl GameApp {
             splash: None,
             boot_splash: None,
             deferred_verify,
-            frame_profile: frame_profile_path.as_ref().map(|_| FrameProfile::new()),
+            frame_profile: frame_profile_path.as_ref().map(|_| {
+                let mut profile = FrameProfile::new();
+                // `Script`（Lua）永远串行：不标独占会让真实工程把 76% 读成"该并行"
+                // （见 M74-02 §实现记录）。
+                profile.set_exclusive_stages([ScheduleStage::Script]);
+                profile
+            }),
             frame_profile_path,
         }
     }
@@ -198,7 +205,10 @@ impl GameApp {
             eprintln!("game_frame_profile_skipped: 没有采样到任何帧");
             return None;
         }
-        if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
             let _ = std::fs::create_dir_all(parent);
         }
         match std::fs::write(&path, format!("{}\n", summary.to_json())) {

@@ -1,10 +1,16 @@
-//! 帧调度分档统计（M74-02 P0 度量闸门）：把每帧的 [`FrameScheduleReport`] 累积成
-//! 每系统 p50/p99、每 stage 合计与"最慢 stage 占整帧比"。
+//! 帧调度分档统计（M74-02 P0 度量闸门）：把每帧的 `FrameScheduleReport`
+//! （[`runtime_scene::FrameScheduleReport`](crate::host::runtime_scene::FrameScheduleReport)）
+//! 累积成每系统 p50/p99、每 stage 合计与"最慢 stage 占整帧比"。
 //!
 //! 为什么要在 `ScheduleReport` 之外再做一层：一次 `run_script_steps` 的读数只描述**一次**
 //! 管线运行，而"并行调度值不值得做"问的是稳态分布——首帧、场景切换、GC 都会把单次读数
 //! 带偏。这里按帧累积后取分位数，输出直接回答闸门问题：
-//! [`FrameProfileSummary::gate_share_pct`]（最慢 stage 的串行系统合计占整帧多少）。
+//! [`FrameProfileSummary::gate_share_pct`]（最慢**可并行** stage 的串行系统合计占整帧多少）。
+//!
+//! **两种读法**：`Script`（Lua）永远串行，把它算进"并行能吃到多少"会让真实工程读出 76%
+//! 的假信号；所以调用方用 [`FrameProfile::set_exclusive_stages`] 标出独占 stage，
+//! 闸门读"可并行"口径，全量口径（[`FrameProfileSummary::literal_gate_share_pct`]）留在
+//! 报告里作对照。
 //!
 //! **整帧墙钟由调用方传入**：调度器只知道自己那一段，2D/3D 提取与渲染提交都不在里面。
 //! 拿调度器总耗时当分母会把占比算大好几倍，结论就从"要不要并行调度"变成"调度占调度
@@ -19,8 +25,10 @@ use rustlua_ecs::scheduler::ScheduleStage;
 
 use super::runtime_scene::FrameScheduleReport;
 
-/// P0 闸门的硬判据（任务文件 §阶段拆分）：最慢 stage 的串行系统合计**低于**整帧的这个
+/// P0 闸门的硬判据（任务文件 §阶段拆分）：最慢**可并行** stage 的串行系统合计**低于**整帧的这个
 /// 百分比 ⇒ 并行调度的收益上限不足两成，结论是**不做**。
+///
+/// `Script` 等独占 stage 不计入（见 [`FrameProfile::set_exclusive_stages`]）。
 pub const PARALLELISM_GATE_SHARE_PCT: f64 = 20.0;
 
 /// 一组耗时样本的分布。样本一律以纳秒存：`clock_step` 这类系统在微秒下会被截断成 0，
@@ -129,12 +137,29 @@ pub struct FrameProfile {
     stage_ns: BTreeMap<ScheduleStage, Vec<u64>>,
     /// 每帧该 stage 内**最慢单个系统**的耗时（并行后的关键路径下界）。
     stage_max_ns: BTreeMap<ScheduleStage, Vec<u64>>,
+    /// 判为"不可并行"的 stage（P0 默认空；例子把 `Script` 标进来，见 [`Self::set_exclusive_stages`]）。
+    exclusive_stages: Vec<ScheduleStage>,
+    /// 每帧该 stage 内**非独占**系统耗时之和——闸门读数用它，`stage_ns` 留给"全量"对照。
+    stage_parallel_ns: BTreeMap<ScheduleStage, Vec<u64>>,
+    /// 每帧该 stage 内非独占系统里最慢那一个。
+    stage_parallel_max_ns: BTreeMap<ScheduleStage, Vec<u64>>,
 }
 
 impl FrameProfile {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 把某些 stage 标为"独占、不可并行"。
+    ///
+    /// P0 只有一项：`Script`。任务书 §风险 与 §明确不做 都写明 Lua 状态是单线程的，
+    /// **Script stage 永远串行**——把它的耗时算进"并行调度能吃到多少"，会得出"该做"的
+    /// 假结论（真实工程里它恰好是最大的一块）。其余 stage 的系统都只碰 `World`。
+    ///
+    /// 必须在 [`Self::record`] 之前调用；调用方在预热阶段已知系统名单，直接按 stage 标。
+    pub fn set_exclusive_stages(&mut self, stages: impl IntoIterator<Item = ScheduleStage>) {
+        self.exclusive_stages = stages.into_iter().collect();
     }
 
     /// 记录一帧。`frame_elapsed` 是这一帧的整段墙钟（调用方计时）。
@@ -149,6 +174,8 @@ impl FrameProfile {
 
         let mut per_stage_sum: BTreeMap<ScheduleStage, u64> = BTreeMap::new();
         let mut per_stage_max: BTreeMap<ScheduleStage, u64> = BTreeMap::new();
+        let mut per_stage_parallel_sum: BTreeMap<ScheduleStage, u64> = BTreeMap::new();
+        let mut per_stage_parallel_max: BTreeMap<ScheduleStage, u64> = BTreeMap::new();
         for timing in &report.timings {
             let elapsed = nanos(timing.elapsed);
             if !self.systems.contains_key(&timing.name) {
@@ -165,12 +192,29 @@ impl FrameProfile {
             *per_stage_sum.entry(timing.stage).or_default() += elapsed;
             let max = per_stage_max.entry(timing.stage).or_default();
             *max = (*max).max(elapsed);
+            if !self.exclusive_stages.contains(&timing.stage) {
+                *per_stage_parallel_sum.entry(timing.stage).or_default() += elapsed;
+                let parallel_max = per_stage_parallel_max.entry(timing.stage).or_default();
+                *parallel_max = (*parallel_max).max(elapsed);
+            }
         }
         for (stage, elapsed) in per_stage_sum {
             self.stage_ns.entry(stage).or_default().push(elapsed);
         }
         for (stage, elapsed) in per_stage_max {
             self.stage_max_ns.entry(stage).or_default().push(elapsed);
+        }
+        for (stage, elapsed) in per_stage_parallel_sum {
+            self.stage_parallel_ns
+                .entry(stage)
+                .or_default()
+                .push(elapsed);
+        }
+        for (stage, elapsed) in per_stage_parallel_max {
+            self.stage_parallel_max_ns
+                .entry(stage)
+                .or_default()
+                .push(elapsed);
         }
         // 没有系统的 stage 不落样本：报告只为**真正执行过**的系统记时间，
         // 空 stage 不该在统计里以 0 出现、把"最慢 stage"的排序搅乱。
@@ -213,6 +257,19 @@ impl FrameProfile {
             // 并行的收益上限：最慢 stage 里除最慢那一个系统之外的部分都能被重叠掉。
             // 用 p50 相减（而不是各取最大值）保持"典型帧"的口径。
             let gain_ns = elapsed.p50_ns.saturating_sub(critical_path.p50_ns);
+            let parallel_elapsed = TimingStats::from_samples(
+                self.stage_parallel_ns
+                    .get(stage)
+                    .map_or(&[][..], Vec::as_slice),
+            );
+            let parallel_critical_path = TimingStats::from_samples(
+                self.stage_parallel_max_ns
+                    .get(stage)
+                    .map_or(&[][..], Vec::as_slice),
+            );
+            let parallel_gain_ns = parallel_elapsed
+                .p50_ns
+                .saturating_sub(parallel_critical_path.p50_ns);
             stages.push(StageProfile {
                 stage: *stage,
                 systems: systems_in_stage,
@@ -220,17 +277,14 @@ impl FrameProfile {
                 share_pct: percent(elapsed.p50_ns as f64, frame_p50),
                 critical_path,
                 gain_ceiling_pct: percent(gain_ns as f64, frame_p50),
+                parallel_elapsed,
+                parallel_share_pct: percent(parallel_elapsed.p50_ns as f64, frame_p50),
+                parallel_critical_path,
+                parallel_gain_ceiling_pct: percent(parallel_gain_ns as f64, frame_p50),
             });
         }
-        let worst_stage = stages
-            .iter()
-            .max_by(|left, right| {
-                left.share_pct
-                    .total_cmp(&right.share_pct)
-                    // 百分比相等时按阶段序（rank 小的在前）稳定取第一个。
-                    .then_with(|| right.stage.rank().cmp(&left.stage.rank()))
-            })
-            .cloned();
+        let worst_stage = pick_worst(&stages, |stage| stage.share_pct);
+        let worst_parallel_stage = pick_worst(&stages, |stage| stage.parallel_share_pct);
 
         FrameProfileSummary {
             frames: self.frames,
@@ -240,8 +294,28 @@ impl FrameProfile {
             stages,
             systems,
             worst_stage,
+            worst_parallel_stage,
         }
     }
+}
+
+/// 取百分比最大的 stage；相等时按 rank 升序稳定取第一个。
+///
+/// 只比较读数**大于 0** 的项：没有系统、或（对可并行口径而言）全部系统都被标为独占的
+/// stage，不该以 0% 参与"最慢"的评选——那会把"没有可并行工作"误报成"它就是最慢的"。
+fn pick_worst(
+    stages: &[StageProfile],
+    metric: impl Fn(&StageProfile) -> f64,
+) -> Option<StageProfile> {
+    stages
+        .iter()
+        .filter(|stage| metric(stage) > 0.0)
+        .max_by(|left, right| {
+            metric(left)
+                .total_cmp(&metric(right))
+                .then_with(|| right.stage.rank().cmp(&left.stage.rank()))
+        })
+        .cloned()
 }
 
 /// 单个系统的分档。
@@ -255,6 +329,10 @@ pub struct SystemProfile {
 }
 
 /// 单个 stage 的分档。
+///
+/// 两组读数并存：`elapsed`/`share_pct` 是**全量**（含独占系统），`parallel_elapsed`/
+/// `parallel_share_pct` 是去掉独占系统后的**可并行**口径。闸门判的是后者——任务书明写
+/// Script stage 永远串行，把它算进"并行能吃到多少"会得出"该做"的假结论。
 #[derive(Clone, Debug, PartialEq)]
 pub struct StageProfile {
     pub stage: ScheduleStage,
@@ -262,12 +340,20 @@ pub struct StageProfile {
     pub systems: usize,
     /// 每帧该 stage 内所有系统耗时**之和**的分布。
     pub elapsed: TimingStats,
-    /// stage 合计（p50）占整帧 p50 的百分比——P0 闸门读的就是它的最大值。
+    /// stage 合计（p50）占整帧 p50 的百分比。
     pub share_pct: f64,
     /// 该 stage 内最慢单个系统的分布（并行后的关键路径）。
     pub critical_path: TimingStats,
     /// 该 stage 并行化的收益上限占帧比：`(stage 合计 − 关键路径) / 帧`。
     pub gain_ceiling_pct: f64,
+    /// 去掉独占系统后，每帧该 stage 内可并行系统耗时之和的分布。
+    pub parallel_elapsed: TimingStats,
+    /// 可并行合计（p50）占整帧 p50 的百分比——P0 闸门读的就是它的最大值。
+    pub parallel_share_pct: f64,
+    /// 可并行系统里最慢那一个的分布。
+    pub parallel_critical_path: TimingStats,
+    /// 可并行部分的收益上限占帧比：`(可并行合计 − 其关键路径) / 帧`。
+    pub parallel_gain_ceiling_pct: f64,
 }
 
 /// 一份汇总报告。
@@ -282,15 +368,28 @@ pub struct FrameProfileSummary {
     pub stages: Vec<StageProfile>,
     /// 按首次执行顺序。
     pub systems: Vec<SystemProfile>,
-    /// 占帧比最高的 stage（没有系统时为 `None`）。
+    /// 占帧比最高的 stage（全量口径，含独占；没有系统时为 `None`）。
     pub worst_stage: Option<StageProfile>,
+    /// 占帧比最高的**可并行** stage（闸门判据；没有可并行系统时为 `None`）。
+    pub worst_parallel_stage: Option<StageProfile>,
 }
 
 impl FrameProfileSummary {
-    /// 闸门读数：最慢 stage 的串行系统合计占整帧的百分比。没有系统时为 0。
+    /// 闸门读数：最慢**可并行** stage 的串行系统合计占整帧的百分比。没有可并行系统时为 0。
     #[must_use]
     pub fn gate_share_pct(&self) -> f64 {
-        self.worst_stage.as_ref().map_or(0.0, |stage| stage.share_pct)
+        self.worst_parallel_stage
+            .as_ref()
+            .map_or(0.0, |stage| stage.parallel_share_pct)
+    }
+
+    /// 同样的读数但**不去掉独占系统**（对照用，不参与判定）。真实工程里它会被 Lua 占满，
+    /// 而 Lua 状态是单线程的——这正是不能拿它当判据的原因。
+    #[must_use]
+    pub fn literal_gate_share_pct(&self) -> f64 {
+        self.worst_stage
+            .as_ref()
+            .map_or(0.0, |stage| stage.share_pct)
     }
 
     /// 硬判据：`true` = 收益上限不足两成，**不做**并行调度（以实测结论收口）。
@@ -304,21 +403,33 @@ impl FrameProfileSummary {
     /// 结论词（写进 JSON 与单行摘要，便于脚本断言）。
     #[must_use]
     pub fn verdict(&self) -> &'static str {
-        if self.passes_gate() { "skip" } else { "proceed" }
+        if self.passes_gate() {
+            "skip"
+        } else {
+            "proceed"
+        }
     }
 
     /// 单行摘要（给 stdout / CI 断言读）。
+    ///
+    /// 同时给出可并行口径（判据）与全量口径（对照），并把两者都写进 JSON——只报一个数
+    /// 会让下游没法复核"为什么 73% 的帧却判不做"。
     #[must_use]
     pub fn summary_line(&self) -> String {
         let worst_stage = self
             .worst_stage
             .as_ref()
             .map_or_else(|| "none".to_owned(), |stage| stage.stage.to_string());
+        let worst_parallel_stage = self
+            .worst_parallel_stage
+            .as_ref()
+            .map_or_else(|| "none".to_owned(), |stage| stage.stage.to_string());
         format!(
             "m74_frame_profile frames={} frame_p50_us={:.3} schedule_p50_us={:.3} \
              serial_share_pct={:.3} worst_stage={} worst_stage_p50_us={:.3} \
-             worst_stage_share_pct={:.3} gain_ceiling_pct={:.3} gate_threshold_pct={:.1} \
-             verdict={}",
+             worst_stage_share_pct={:.3} worst_parallel_stage={} parallel_p50_us={:.3} \
+             gate_share_pct={:.3} parallel_gain_ceiling_pct={:.3} \
+             gate_threshold_pct={:.1} verdict={}",
             self.frames,
             self.frame.p50_us(),
             self.schedule.p50_us(),
@@ -327,10 +438,15 @@ impl FrameProfileSummary {
             self.worst_stage
                 .as_ref()
                 .map_or(0.0, |stage| stage.elapsed.p50_us()),
-            self.gate_share_pct(),
-            self.worst_stage
+            self.literal_gate_share_pct(),
+            worst_parallel_stage,
+            self.worst_parallel_stage
                 .as_ref()
-                .map_or(0.0, |stage| stage.gain_ceiling_pct),
+                .map_or(0.0, |stage| stage.parallel_elapsed.p50_us()),
+            self.gate_share_pct(),
+            self.worst_parallel_stage
+                .as_ref()
+                .map_or(0.0, |stage| stage.parallel_gain_ceiling_pct),
             PARALLELISM_GATE_SHARE_PCT,
             self.verdict()
         )
@@ -346,14 +462,20 @@ impl FrameProfileSummary {
             .map(|stage| {
                 format!(
                     "{{\"stage\":\"{}\",\"rank\":{},\"systems\":{},\"elapsed\":{},\
-                     \"share_pct\":{:.3},\"critical_path\":{},\"gain_ceiling_pct\":{:.3}}}",
+                     \"share_pct\":{:.3},\"critical_path\":{},\"gain_ceiling_pct\":{:.3},\
+                     \"parallel_elapsed\":{},\"parallel_share_pct\":{:.3},\
+                     \"parallel_critical_path\":{},\"parallel_gain_ceiling_pct\":{:.3}}}",
                     stage.stage,
                     stage.stage.rank(),
                     stage.systems,
                     stage.elapsed.json(),
                     stage.share_pct,
                     stage.critical_path.json(),
-                    stage.gain_ceiling_pct
+                    stage.gain_ceiling_pct,
+                    stage.parallel_elapsed.json(),
+                    stage.parallel_share_pct,
+                    stage.parallel_critical_path.json(),
+                    stage.parallel_gain_ceiling_pct
                 )
             })
             .collect::<Vec<_>>()
@@ -375,16 +497,22 @@ impl FrameProfileSummary {
         format!(
             "{{\"report_version\":\"m74-frame-profile-v1\",\"frames\":{},\
              \"frame\":{},\"schedule\":{},\"serial_share_pct\":{:.3},\
-             \"gate\":{{\"share_pct\":{:.3},\"threshold_pct\":{:.1},\"verdict\":\"{}\"}},\
-             \"worst_stage\":\"{}\",\"stages\":[{}],\"systems\":[{}]}}",
+             \"gate\":{{\"share_pct\":{:.3},\"literal_share_pct\":{:.3},\
+             \"threshold_pct\":{:.1},\"verdict\":\"{}\"}},\
+             \"worst_stage\":\"{}\",\"worst_parallel_stage\":\"{}\",\
+             \"stages\":[{}],\"systems\":[{}]}}",
             self.frames,
             self.frame.json(),
             self.schedule.json(),
             self.serial_share_pct,
             self.gate_share_pct(),
+            self.literal_gate_share_pct(),
             PARALLELISM_GATE_SHARE_PCT,
             self.verdict(),
             self.worst_stage
+                .as_ref()
+                .map_or_else(|| "none".to_owned(), |stage| stage.stage.to_string()),
+            self.worst_parallel_stage
                 .as_ref()
                 .map_or_else(|| "none".to_owned(), |stage| stage.stage.to_string()),
             stages,
@@ -511,10 +639,7 @@ mod tests {
     fn gate_boundary_is_strictly_below_twenty_percent() {
         let mut below = FrameProfile::new();
         below.record(
-            &report(
-                199,
-                vec![timing("lua_update", ScheduleStage::Script, 199)],
-            ),
+            &report(199, vec![timing("lua_update", ScheduleStage::Script, 199)]),
             Duration::from_micros(1_000),
         );
         let summary = below.summary();
@@ -524,10 +649,7 @@ mod tests {
 
         let mut exact = FrameProfile::new();
         exact.record(
-            &report(
-                200,
-                vec![timing("lua_update", ScheduleStage::Script, 200)],
-            ),
+            &report(200, vec![timing("lua_update", ScheduleStage::Script, 200)]),
             Duration::from_micros(1_000),
         );
         let summary = exact.summary();
@@ -547,11 +669,7 @@ mod tests {
             profile.record(
                 &report(
                     stage_micros,
-                    vec![timing(
-                        "lua_update",
-                        ScheduleStage::Script,
-                        stage_micros,
-                    )],
+                    vec![timing("lua_update", ScheduleStage::Script, stage_micros)],
                 ),
                 Duration::from_micros(1_000),
             );
@@ -561,6 +679,75 @@ mod tests {
         // 5 个样本的 p50 是第 3 个（下标 2），仍是 100（离群值在 p95 才出现）。
         assert!((summary.gate_share_pct() - 10.0).abs() < 1e-9);
         assert!((summary.worst_stage.expect("stage").elapsed.p99_us() - 900.0).abs() < 1e-9);
+    }
+
+    /// 独占 stage 的耗时**不能**进闸门读数：真实工程里 Script（Lua）恰好是最大的一块，
+    /// 而 Lua 状态是单线程的。判据用可并行口径，全量口径只作对照保留。
+    #[test]
+    fn exclusive_stages_are_removed_from_the_gate_reading() {
+        let mut profile = FrameProfile::new();
+        profile.set_exclusive_stages([ScheduleStage::Script]);
+        profile.record(
+            &report(
+                700,
+                vec![
+                    timing("lua_update", ScheduleStage::Script, 700),
+                    timing("physics2d_step", ScheduleStage::Physics, 100),
+                    timing("physics3d_step", ScheduleStage::Physics, 50),
+                ],
+            ),
+            Duration::from_micros(1_000),
+        );
+
+        let summary = profile.summary();
+        // 全量口径：Script 占 70%，是"最慢 stage"。
+        assert_eq!(
+            summary.worst_stage.as_ref().expect("全量最慢").stage,
+            ScheduleStage::Script
+        );
+        assert!((summary.literal_gate_share_pct() - 70.0).abs() < 1e-9);
+        // 可并行口径：Physics 15%，判定读它。
+        let worst_parallel = summary.worst_parallel_stage.as_ref().expect("可并行最慢");
+        assert_eq!(worst_parallel.stage, ScheduleStage::Physics);
+        assert!((summary.gate_share_pct() - 15.0).abs() < 1e-9);
+        assert!(summary.passes_gate(), "15% < 20% ⇒ 不做");
+        assert_eq!(summary.verdict(), "skip");
+        // Script 自己的可并行合计是 0（全被标为独占）。
+        let script = summary
+            .stages
+            .iter()
+            .find(|stage| stage.stage == ScheduleStage::Script)
+            .expect("Script stage");
+        assert_eq!(script.parallel_elapsed.count, 0);
+        assert_eq!(script.parallel_share_pct, 0.0);
+        assert!(
+            summary
+                .summary_line()
+                .contains("worst_parallel_stage=Physics")
+        );
+    }
+
+    /// 全部系统都被标为独占时，闸门读数必须是 0 而不是"没有数据 → 无穷大"。
+    #[test]
+    fn all_exclusive_systems_leave_no_parallel_work() {
+        let mut profile = FrameProfile::new();
+        profile.set_exclusive_stages([ScheduleStage::Script, ScheduleStage::Simulation]);
+        profile.record(
+            &report(
+                900,
+                vec![
+                    timing("lua_update", ScheduleStage::Script, 700),
+                    timing("particles_step", ScheduleStage::Simulation, 200),
+                ],
+            ),
+            Duration::from_micros(1_000),
+        );
+        let summary = profile.summary();
+        assert!((summary.literal_gate_share_pct() - 70.0).abs() < 1e-9);
+        assert_eq!(summary.gate_share_pct(), 0.0);
+        assert!(summary.worst_parallel_stage.is_none());
+        assert!(summary.passes_gate());
+        assert!(summary.summary_line().contains("worst_parallel_stage=none"));
     }
 
     /// 空档：没跑过帧时不算"通过"以外的任何结论，且 JSON 仍合法（不出现 NaN）。

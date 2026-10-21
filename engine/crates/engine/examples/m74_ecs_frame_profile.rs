@@ -2,7 +2,7 @@
 //!
 //! 为什么要有这个例子：`--frame-profile` 是给**交互宿主**用的（跑一局游戏、退出时落盘），
 //! 而闸门判据必须能在这台机器上重复跑、留读数。本例子用同一个计时口径
-//! （[`engine::host::FrameProfile`]）在无窗口条件下跑三个目标：
+//! （[`engine::host::FrameProfile`]）在无窗口条件下跑四个目标：
 //!
 //! - `jhyt_title` / `jhyt_manor`：真实工程（`examples/game_jhyt`）的标题屏与山庄，
 //!   走 `RuntimeScene::new` → 真实脚本、真实场景。
@@ -13,11 +13,14 @@
 //! `scene_3d`，并把析构计入——渲染器消费完这一帧的产物才算帧结束。因此
 //! "最慢 stage 占帧比"的分母是玩家真正看到的那一帧，不是调度器自己的一小段。
 //!
-//! 运行：
+//! `Script` 被标为独占（`set_exclusive_stages`）：Lua 状态单线程、永远串行（任务书 §风险）。
+//! 报告因此有两个读数——全量（含 `Script`）与可并行（判定用）——只写一个会把结论读反。
+//!
+//! 运行（`--project` 显式给出，避免依赖构建环境的 `CARGO_MANIFEST_DIR`）：
 //! ```powershell
 //! cd engine
 //! cargo run --release -p engine --example m74_ecs_frame_profile -- --frames 300 `
-//!   --output ..\metrics\baselines\m74-frame-profile.json
+//!   --project ..\examples\game_jhyt --output ..\metrics\baselines\m74-frame-profile.json
 //! ```
 
 use std::{
@@ -26,8 +29,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use engine::host::{FrameProfile, FrameProfileSummary, RuntimeScene, PARALLELISM_GATE_SHARE_PCT};
+use engine::host::{FrameProfile, FrameProfileSummary, PARALLELISM_GATE_SHARE_PCT, RuntimeScene};
 use rustlua_camera::camera::Viewport;
+use rustlua_ecs::scheduler::ScheduleStage;
 use rustlua_input::input::InputSnapshot;
 use rustlua_scene::scene::{Scene, SceneEntityId};
 
@@ -59,31 +63,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let examples = rustlua_infra::games_dir().join("examples");
     let mut targets = Vec::new();
 
-    let mut jhyt = RuntimeScene::new(Some(project.as_path()))?;
+    let mut jhyt = RuntimeScene::new(Some(project.as_path()))
+        .map_err(|error| format!("RuntimeScene::new({}): {error:#}", project.display()))?;
     // 标题屏：真实工程启动后的第一屏（Lua `update` 与 UI 都在跑）。
-    targets.push(measure("jhyt_title", &mut jhyt, config.frames)?);
+    targets.push(
+        measure("jhyt_title", &mut jhyt, config.frames)
+            .map_err(|error| format!("jhyt_title: {error}"))?,
+    );
     enter_manor(&mut jhyt)?;
     // 山庄：玩法主场景（主角、NPC、地块、粒子与 UI 都在这一屏里）。
-    targets.push(measure("jhyt_manor", &mut jhyt, config.frames)?);
+    targets.push(
+        measure("jhyt_manor", &mut jhyt, config.frames)
+            .map_err(|error| format!("jhyt_manor: {error}"))?,
+    );
     drop(jhyt);
 
     let game_api = examples.join("game_api");
     for sprites in SPRITE_STAIRS {
         let mut runtime =
-            RuntimeScene::from_scene_edit(Some(game_api.as_path()), sprite_scene(sprites))?;
-        targets.push(measure(
-            &format!("sprite_{sprites}"),
-            &mut runtime,
-            config.frames,
-        )?);
+            RuntimeScene::from_scene_edit(Some(game_api.as_path()), sprite_scene(sprites))
+                .map_err(|error| format!("from_scene_edit(sprites={sprites}): {error:#}"))?;
+        targets.push(
+            measure(&format!("sprite_{sprites}"), &mut runtime, config.frames)
+                .map_err(|error| format!("sprite_{sprites}: {error}"))?,
+        );
     }
 
-    let report = format_report(&config, &targets);
-    let path = config
-        .output
-        .clone()
-        .unwrap_or_else(|| rustlua_infra::games_dir().join("metrics/baselines/m74-frame-profile.json"));
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+    let report = format_report(&config, &targets, &project);
+    let path = config.output.clone().unwrap_or_else(|| {
+        rustlua_infra::games_dir().join("metrics/baselines/m74-frame-profile.json")
+    });
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         fs::create_dir_all(parent)?;
     }
     fs::write(&path, report)?;
@@ -95,10 +108,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "m74_frame_profile_ok report_version={REPORT_VERSION} targets={} frames={} \
          gate_threshold_pct={PARALLELISM_GATE_SHARE_PCT:.1} \
-         gate_share_pct={:.3} worst_target={} verdict={} report={}",
+         gate_share_pct={:.3} literal_gate_share_pct={:.3} worst_target={} verdict={} report={}",
         targets.len(),
         config.frames,
         worst.map_or(0.0, |target| target.summary.gate_share_pct()),
+        worst.map_or(0.0, |target| target.summary.literal_gate_share_pct()),
         worst.map_or("none", |target| target.name.as_str()),
         if worst.is_some_and(|target| target.summary.passes_gate()) {
             "skip"
@@ -155,7 +169,9 @@ fn resolve_project(config: &Config) -> Result<PathBuf, Box<dyn std::error::Error
             .join("examples")
             .join("game_jhyt")
     });
-    let project = project.canonicalize()?;
+    let project = project
+        .canonicalize()
+        .map_err(|error| format!("游戏工程不存在 {}: {error}", project.display()))?;
     if !project.join("project.toml").is_file() {
         return Err(format!("not a game project: {}", project.display()).into());
     }
@@ -177,6 +193,9 @@ fn measure(
         run_frame(runtime, &input, viewport)?;
     }
     let mut profile = FrameProfile::new();
+    // Script stage 永远串行（Lua 状态单线程，见任务书 §风险）：把它算进"并行能吃到多少"
+    // 会得出"该做"的假结论——真实工程里它恰好是最大的一块。
+    profile.set_exclusive_stages([ScheduleStage::Script]);
     for _ in 0..frames {
         let elapsed = run_frame(runtime, &input, viewport)?;
         let report = runtime
@@ -197,8 +216,12 @@ fn run_frame(
     viewport: Viewport,
 ) -> Result<Duration, Box<dyn std::error::Error>> {
     let started = Instant::now();
-    runtime.run_script_steps(1, DT, input)?;
-    let mesh = runtime.vertices(VIEWPORT.0, VIEWPORT.1)?;
+    runtime
+        .run_script_steps(1, DT, input)
+        .map_err(|error| format!("run_script_steps: {error:#}"))?;
+    let mesh = runtime
+        .vertices(VIEWPORT.0, VIEWPORT.1)
+        .map_err(|error| format!("vertices: {error:#}"))?;
     let scene3d = runtime.scene_3d(viewport);
     // 渲染器消费完这一帧的产物才算帧结束。
     drop(scene3d);
@@ -241,10 +264,16 @@ fn worst_target(targets: &[TargetResult]) -> Option<&TargetResult> {
     })
 }
 
-fn format_report(config: &Config, targets: &[TargetResult]) -> String {
+fn format_report(config: &Config, targets: &[TargetResult], project: &std::path::Path) -> String {
     let entries = targets
         .iter()
-        .map(|target| format!("{{\"name\":\"{}\",\"profile\":{}}}", target.name, target.summary.to_json()))
+        .map(|target| {
+            format!(
+                "{{\"name\":\"{}\",\"profile\":{}}}",
+                target.name,
+                target.summary.to_json()
+            )
+        })
         .collect::<Vec<_>>()
         .join(",\n    ");
     let worst = worst_target(targets);
@@ -255,17 +284,28 @@ fn format_report(config: &Config, targets: &[TargetResult]) -> String {
     };
     format!(
         "{{\n  \"report_version\": \"{REPORT_VERSION}\",\n  \
-         \"target\": {{\"frames\": {}, \"warmup_frames\": {}, \"viewport\": [{}, {}]}},\n  \
+         \"target\": {{\"project\": \"{}\", \"frames\": {}, \"warmup_frames\": {}, \
+         \"viewport\": [{}, {}], \"exclusive_stages\": [\"Script\"]}},\n  \
          \"targets\": [\n    {entries}\n  ],\n  \
-         \"gate\": {{\"share_pct\": {:.3}, \"threshold_pct\": {PARALLELISM_GATE_SHARE_PCT:.1}, \
+         \"gate\": {{\"share_pct\": {:.3}, \"literal_share_pct\": {:.3}, \
+         \"threshold_pct\": {PARALLELISM_GATE_SHARE_PCT:.1}, \
          \"worst_target\": \"{}\", \"verdict\": \"{verdict}\"}}\n}}\n",
+        display_path(project),
         config.frames,
         WARMUP_FRAMES,
         VIEWPORT.0,
         VIEWPORT.1,
         worst.map_or(0.0, |target| target.summary.gate_share_pct()),
+        worst.map_or(0.0, |target| target.summary.literal_gate_share_pct()),
         worst.map_or("none", |target| target.name.as_str()),
     )
+}
+
+/// 规范化成报告里的正向斜杠路径；去掉 Windows `canonicalize` 的 `\\?\` 前缀
+/// （它出现在台账里既难读，也会让按字符串比对路径的脚本认不出来）。
+fn display_path(path: &std::path::Path) -> String {
+    let text = path.display().to_string().replace('\\', "/");
+    text.strip_prefix("//?/").map(str::to_owned).unwrap_or(text)
 }
 
 /// 合成 `sprites` 个 Sprite 实体（布局与 `sprite_stress`/`wp0_scene_frame` 同族）。

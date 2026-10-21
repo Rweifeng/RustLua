@@ -144,6 +144,10 @@ env_fingerprint = sha256(
 - `baselines/`（仓库根，gitignore）保留为本机快速 A/B；`verify.ps1 -Benchmarks` 先读
   `metrics/baselines/wp0-3d-stress.json`，不存在再回退 `baselines/wp0-3d-stress.committed.json`，
   避免"基线换位置"造成假红。
+- `metrics/baselines/m74-frame-profile.json`（2026-10-21）是**帧内调度分档台账**，不是
+  `--update` 生成的回归基线：它记录一次判定性测量（M74-02 的 P0 闸门，结论"不做"），
+  条目与口径见 `tasks/done/M74-02-ECS并行调度.md` §实现记录与 `docs/53` §3.11。
+  判定读的是"可并行 stage 的最大占帧比"，`Script`（Lua）单列不计入。
 - `verify.ps1` 新增两个开关：
   - `-Coverage`：只跑覆盖率（重活，需工具）；
   - `-Metrics`：只跑"已有产物的尺寸采集 + cfg 门 + 趋势检查"，不重跑 benchmark/构建。
