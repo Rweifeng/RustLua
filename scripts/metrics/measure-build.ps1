@@ -133,10 +133,12 @@ if ($Incremental) {
         "release" { "release_build_cold" }
     }
     if (-not $SkipRun) {
-        $cmd = Get-CargoCmd -M $Mode
+        $cmd = @(Get-CargoCmd -M $Mode)
+        $cargoArgs = @()
+        if ($cmd.Count -gt 1) { $cargoArgs = @($cmd[1..($cmd.Count - 1)]) }
         $t = Invoke-Timed ("cargo {0} ({1})" -f $cmd[0], $Mode) {
             Push-Location $engineRoot
-            & $cmd 2>$null | Out-Null
+            & $cmd[0] @cargoArgs 2>$null | Out-Null
             Pop-Location
         } $Iterations
         $result[$key] = $t.median_ms
