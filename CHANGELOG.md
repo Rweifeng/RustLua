@@ -19,6 +19,15 @@
   GPU command 提交读数，独立 GPU 时间因本机 `timestamp=false` 不可得）。连续发射（`rate > 0`）在 v1 明确拒绝，
   场景/Lua 的 `mode=cpu|gpu` 接线与 50k 基准留给 P3-R07。
 
+## Unreleased — M72-10a Console 行高门（2026-10-21）
+
+- **Console 日志行不再在窄面板折行**：`draw_log_line` 的注释一直写“固定单行、超出裁切”，
+  代码却用 `TextWrapMode::Wrap`，160/320pt 面板下内容 30px > 行高 17.12px，
+  `layout_row_height_gate` 因此判红。改为 `Truncate` 并补窄宽单测
+  `console_log_line_truncates_at_narrow_width_instead_of_wrapping`。
+  完整 `verify.ps1` 随后退出 0（`layout_row_height_gate` 81 组组合全过，
+  `scenarios=31 failed=0`）。九宫格/全 UI 换字/图标画质仍归 M72-10 其余残项。
+
 ## Unreleased — P4 性能与测试度量收口（2026-10-21）
 
 - **覆盖率**：`cargo llvm-cov` 全 workspace 首份基线入库（行 80.99%，301 文件/24 crate）；

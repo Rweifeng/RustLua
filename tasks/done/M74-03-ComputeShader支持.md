@@ -144,10 +144,12 @@ WebGL2 / 微信上 `capabilities().compute == false`，所有入口返回 `Compu
   最终树复跑报告为 `artifacts/logs/gpu-web-probe/render-probe-20261021-194835.json`。
 - **总门 `scripts\verify\verify.ps1`（2026-10-21 复跑）**：文档/ps1 解析、vendor patch、
   toolchain lock、rustdoc、clippy、workspace tests、GPU 门 `compute_gate_ok`、game check、
-  editor check（`schema_errors=0`）均通过；随后停在 **editor performance baseline** 的
-  `layout_row_height_gate`（`scenarios=31 failed=1`，console compact 行内容 30px > 行高 17.12px）。
-  这是既有的 M72-10「字号口径」UI 密度残项（见 [tasks/README](../README.md)），不是 M74-03
-  引入；因此总门**不是全绿**，不能写成“全套门通过”。
+  editor check（`schema_errors=0`）均通过。当时停在 **editor performance baseline** 的
+  `layout_row_height_gate`（`scenarios=31 failed=1`，console compact 行内容 30px > 行高 17.12px）；
+  这是既有的 M72-10 UI 密度残项，不是 M74-03 引入。该门已由
+  [M72-10a](M72-10a-UI行高门.md) 修复（Console `Wrap` → `Truncate` + 窄宽单测）；
+  2026-10-21 全量复跑 `scripts\verify\verify.ps1` 退出 0，`scenarios=31 failed=0`，
+  `cases=43 failed=0`，日志 `artifacts/logs/quality/verify-20261021-195452.log`。
 - 总门第一次在 editor check 被 PS 5.1 的 `NativeCommandError` 误红：`cargo` 把 linker warning
   写到 stderr，`$ErrorActionPreference = "Stop"` 下 `2>&1` 直接抛。已把 `editor --check`、空间
   迁移、性能基线、GUI smoke 四处捕获统一为 `Invoke-Captured`（局部 `Continue` + `try/finally`

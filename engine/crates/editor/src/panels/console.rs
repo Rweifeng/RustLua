@@ -430,7 +430,7 @@ fn draw_log_line(ui: &mut egui::Ui, line: &str, level: ConsoleLogLevel) -> egui:
     // 这是虚拟滚动的前提——换行会让行高不一致，无法按固定行高跳转绘制。
     let response = ui.add(
         egui::Label::new(egui::RichText::new(line).monospace().color(color))
-            .wrap_mode(egui::TextWrapMode::Wrap)
+            .wrap_mode(egui::TextWrapMode::Truncate)
             .selectable(true)
             .sense(egui::Sense::click()),
     );
@@ -565,6 +565,37 @@ mod tests {
             "控制台行高不得塌陷：{height}"
         );
         assert!(height >= 14.0, "行高必须容纳 monospace 文本：{height}");
+    }
+
+    /// 窄面板下日志行必须裁切而不是折行：虚拟滚动按固定行高跳转，
+    /// 折成两行会让内容高度（30pt）超过行高（~17pt），相邻行重叠。
+    #[test]
+    fn console_log_line_truncates_at_narrow_width_instead_of_wrapping() {
+        let context = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(160.0, 640.0),
+            )),
+            ..Default::default()
+        };
+        let long = "2026-01-01T00:00:00Z  INFO editor: a long console line ".repeat(6);
+        let mut content_height = 0.0_f32;
+        let mut row_height = 0.0_f32;
+        let _ = context.run(raw, |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                ui.set_max_width(160.0);
+                row_height = console_row_height(ui);
+                content_height = draw_log_line(ui, &long, ConsoleLogLevel::Info)
+                    .rect
+                    .height();
+            });
+        });
+        assert!(content_height > 0.0, "测试行必须真的被绘制");
+        assert!(
+            content_height <= row_height + 0.01,
+            "窄宽日志行折行了：内容 {content_height:.2} > 行高 {row_height:.2}"
+        );
     }
 
     /// 布局探针语义：取最大值、可重置（门槛判定依赖这三点）。
