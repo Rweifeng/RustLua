@@ -32,7 +32,9 @@ param(
     [switch]$SkipRun
 )
 
-$ErrorActionPreference = "Stop"
+# cargo 会把 `Compiling ...` 等进度写到 stderr；PS5.1 在 Stop 下会把它当终止错误，
+# 但命令成败由 $LASTEXITCODE 判定。这里保持 Continue，失败仍由 Invoke-Timed 退 1。
+$ErrorActionPreference = "Continue"
 $projectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $engineRoot = Join-Path $projectRoot "engine"
 $targetDir = Join-Path $projectRoot "artifacts\metrics\target-compile"
