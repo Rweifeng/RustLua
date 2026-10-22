@@ -157,6 +157,8 @@ pub(crate) enum MenuAction {
     ToggleResources,
     ToggleHierarchy,
     ToggleInspector,
+    /// M75-03：内置 AI 助手标签（与属性同叶）。
+    ToggleAssistant,
     ToggleSceneView,
     ToggleGameView,
     ToggleConsole,
@@ -468,6 +470,7 @@ impl EditorApp {
                         ("Scene", MenuAction::ToggleSceneView),
                         ("Game", MenuAction::ToggleGameView),
                         ("属性", MenuAction::ToggleInspector),
+                        ("AI 助手", MenuAction::ToggleAssistant),
                         ("控制台", MenuAction::ToggleConsole),
                     ] {
                         let mut shown = self.panel_is_shown(action);
@@ -559,6 +562,7 @@ impl EditorApp {
             MenuAction::ToggleResources => self.show_resources_panel,
             MenuAction::ToggleHierarchy => self.show_hierarchy_panel,
             MenuAction::ToggleInspector => self.show_inspector_panel,
+            MenuAction::ToggleAssistant => self.show_assistant_panel,
             MenuAction::ToggleSceneView => self.show_scene_view,
             MenuAction::ToggleGameView => self.show_game_view,
             MenuAction::ToggleConsole => self.show_lua_console,
@@ -652,6 +656,7 @@ impl EditorApp {
             MenuAction::ToggleResources => self.show_resources_panel = !self.show_resources_panel,
             MenuAction::ToggleHierarchy => self.show_hierarchy_panel = !self.show_hierarchy_panel,
             MenuAction::ToggleInspector => self.show_inspector_panel = !self.show_inspector_panel,
+            MenuAction::ToggleAssistant => self.show_assistant_panel = !self.show_assistant_panel,
             MenuAction::ToggleConsole => self.show_lua_console = !self.show_lua_console,
             // 中央两个视图共用一条守卫（最后一个不许关）。
             MenuAction::ToggleSceneView => {
@@ -856,7 +861,7 @@ mod tests {
                     }
                     app.run_menu_action(item.action);
                 }
-                // 面板开关是复选框行（不是 `Item`），六个动作只在这里可达。
+                // 面板开关是复选框行（不是 `Item`），七个动作只在这里可达。
                 if matches!(row, MenuRow::PanelToggles) {
                     for action in [
                         MenuAction::ToggleResources,
@@ -864,6 +869,7 @@ mod tests {
                         MenuAction::ToggleSceneView,
                         MenuAction::ToggleGameView,
                         MenuAction::ToggleInspector,
+                        MenuAction::ToggleAssistant,
                         MenuAction::ToggleConsole,
                     ] {
                         app.run_menu_action(action);
@@ -885,6 +891,7 @@ mod tests {
             MenuAction::ToggleHierarchy,
             MenuAction::ToggleInspector,
             MenuAction::ToggleConsole,
+            MenuAction::ToggleAssistant,
         ] {
             let before = app.panel_is_shown(action);
             app.run_menu_action(action);

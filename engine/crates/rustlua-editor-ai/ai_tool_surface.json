@@ -1,0 +1,690 @@
+{
+  "resources": [
+    {
+      "description": "Lua API 行情的机器可读基线（模块 → 函数名），供生成 Lua 时对齐真签名。",
+      "mimeType": "application/json",
+      "name": "Lua API surface",
+      "uri": "rustlua://lua-api/surface"
+    },
+    {
+      "description": "由 API 面生成的文档桩（模块/函数清单）。",
+      "mimeType": "text/markdown",
+      "name": "Lua API docs",
+      "uri": "rustlua://lua-api/docs"
+    },
+    {
+      "description": "可 add_component 的组件名与类别。",
+      "mimeType": "application/json",
+      "name": "Component registry",
+      "uri": "rustlua://components"
+    },
+    {
+      "description": "组件字段 schema（类型、必填、候选值、领域规则）。",
+      "mimeType": "application/json",
+      "name": "Scene component schema",
+      "uri": "rustlua://scene/schema"
+    },
+    {
+      "description": "当前工程的 project.toml 原始文本。",
+      "mimeType": "application/toml",
+      "name": "Project config",
+      "uri": "rustlua://project/config"
+    }
+  ],
+  "tools": [
+    {
+      "description": "返回当前场景的实体树（id、名称、父节点、组件名、子节点）。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "get_scene_tree",
+      "tier": "T0"
+    },
+    {
+      "description": "返回当前选区（主选中 + 全部选中实体）。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "get_selection",
+      "tier": "T0"
+    },
+    {
+      "description": "列出可添加的组件名与类别（add_component 的取值域）。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "list_components",
+      "tier": "T0"
+    },
+    {
+      "description": "返回组件字段 schema。给 entity 时附带该实体各字段当前取值。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "component": {
+            "description": "可选：只返回该组件",
+            "type": "string"
+          },
+          "entity": {
+            "description": "可选：读取当前取值的实体 id",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "get_inspector_schema",
+      "tier": "T0"
+    },
+    {
+      "description": "读取编辑器控制台最近的日志行（按时间正序）。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "contains": {
+            "description": "可选：只保留包含该子串的行",
+            "type": "string"
+          },
+          "limit": {
+            "default": 100,
+            "maximum": 500,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "read_console",
+      "tier": "T0"
+    },
+    {
+      "description": "列出 Lua API 表面（模块 → 函数名）。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "list_lua_api",
+      "tier": "T0"
+    },
+    {
+      "description": "查询 Lua API 签名/文档桩；module 与 function 均可选。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "function": {
+            "type": "string"
+          },
+          "module": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "get_lua_api",
+      "tier": "T0"
+    },
+    {
+      "description": "在隔离的只读 Lua VM 中求值表达式并按 JSON 返回结果；不接触游戏运行态。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "expression": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "expression"
+        ],
+        "type": "object"
+      },
+      "name": "eval_lua_readonly",
+      "tier": "T0"
+    },
+    {
+      "description": "截取编辑器窗口（仅 GUI 运行时可用的 PNG 路径）。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "capture_screenshot",
+      "tier": "T0"
+    },
+    {
+      "description": "返回当前工程根路径与 project.toml 文本。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "get_project_config",
+      "tier": "T0"
+    },
+    {
+      "description": "新建空场景。T3：会清空 Undo 栈，必须显式确认。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "new_scene",
+      "tier": "T3"
+    },
+    {
+      "description": "打开场景/Prefab/Widget 文件。T3：脏文档会挂起等待确认，无头拒绝。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "description": "工程内相对路径",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "open_scene",
+      "tier": "T3"
+    },
+    {
+      "description": "保存当前场景到既有路径。T3：落盘不可撤销。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "save_scene",
+      "tier": "T3"
+    },
+    {
+      "description": "另存当前场景到新路径。T3：落盘不可撤销。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "save_scene_as",
+      "tier": "T3"
+    },
+    {
+      "description": "撤销上一条编辑（T1，可重放）。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "undo",
+      "tier": "T1"
+    },
+    {
+      "description": "重做上一条撤销（T1）。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "redo",
+      "tier": "T1"
+    },
+    {
+      "description": "控制 Play 会话：start/stop/pause/resume/restart（T3）。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "start",
+              "stop",
+              "pause",
+              "resume",
+              "restart"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "set_play_state",
+      "tier": "T3"
+    },
+    {
+      "description": "暂停态下单帧步进（T3）。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "frames": {
+            "default": 1,
+            "maximum": 600,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "step_play",
+      "tier": "T3"
+    },
+    {
+      "description": "创建实体（可选父节点与 3D 变换），返回新实体 id。T1。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "parent": {
+            "description": "可选父实体 id",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "transform_3d": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "create_entity",
+      "tier": "T1"
+    },
+    {
+      "description": "把选区设为单个实体。T1。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "目标实体 id",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "select_entity",
+      "tier": "T1"
+    },
+    {
+      "description": "重命名实体。T1。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "entity": {
+            "description": "目标实体 id",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity",
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "rename_entity",
+      "tier": "T1"
+    },
+    {
+      "description": "复制实体（含子树）。显式实体优先，缺省用当前选区。T1。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "entity": {
+            "description": "可选：要复制的实体 id",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "duplicate_entity",
+      "tier": "T1"
+    },
+    {
+      "description": "删除实体（含子树），一次提交一条 Undo。T2。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "entities": {
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "entities"
+        ],
+        "type": "object"
+      },
+      "name": "delete_entity",
+      "tier": "T2"
+    },
+    {
+      "description": "把实体移到新父节点/场景根。T1。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "entity": {
+            "description": "要移动的实体 id",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "position": {
+            "default": "child",
+            "enum": [
+              "before",
+              "after",
+              "child"
+            ],
+            "type": "string"
+          },
+          "target": {
+            "description": "新父节点；null 表示场景根",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "entity"
+        ],
+        "type": "object"
+      },
+      "name": "reparent_entity",
+      "tier": "T1"
+    },
+    {
+      "description": "给实体添加注册表组件（默认值）。T1。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "component": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "entity": {
+            "description": "目标实体 id",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "entity",
+          "component"
+        ],
+        "type": "object"
+      },
+      "name": "add_component",
+      "tier": "T1"
+    },
+    {
+      "description": "移除实体上的组件。T1。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "component": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "entity": {
+            "description": "目标实体 id",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "entity",
+          "component"
+        ],
+        "type": "object"
+      },
+      "name": "remove_component",
+      "tier": "T1"
+    },
+    {
+      "description": "原子写入组件字段（一次提交一条 Undo）。entities 可选，缺省为当前选区。T1。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "component": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "entities": {
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "fields": {
+            "additionalProperties": {
+              "type": [
+                "string",
+                "number",
+                "integer",
+                "boolean"
+              ]
+            },
+            "minProperties": 1,
+            "type": "object"
+          }
+        },
+        "required": [
+          "component",
+          "fields"
+        ],
+        "type": "object"
+      },
+      "name": "set_component_fields",
+      "tier": "T1"
+    },
+    {
+      "description": "把实例字段写回源 Prefab（T1）。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "entity": {
+            "description": "Prefab 实例 id",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "field": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity",
+          "field"
+        ],
+        "type": "object"
+      },
+      "name": "apply_prefab_override",
+      "tier": "T1"
+    },
+    {
+      "description": "把实例字段还原为源 Prefab 取值（T1）。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "entity": {
+            "description": "Prefab 实例 id",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "field": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity",
+          "field"
+        ],
+        "type": "object"
+      },
+      "name": "revert_prefab_override",
+      "tier": "T1"
+    },
+    {
+      "description": "回退实例上的全部覆盖（T2）。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "entity": {
+            "description": "Prefab 实例 id",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "entity"
+        ],
+        "type": "object"
+      },
+      "name": "revert_prefab_overrides",
+      "tier": "T2"
+    },
+    {
+      "description": "重新应用源 Prefab（T1，仅根实例）。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "entity": {
+            "description": "Prefab 根实例 id",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "entity"
+        ],
+        "type": "object"
+      },
+      "name": "reapply_prefab",
+      "tier": "T1"
+    },
+    {
+      "description": "把实例写回源 Prefab 文件并更新全部实例（T2，跨文件）。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "entity": {
+            "description": "Prefab 根实例 id",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "entity"
+        ],
+        "type": "object"
+      },
+      "name": "save_prefab_to_source",
+      "tier": "T2"
+    },
+    {
+      "description": "解包 Prefab 实例，断开与源的关系（T2）。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "entity": {
+            "description": "Prefab 实例 id",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "entity"
+        ],
+        "type": "object"
+      },
+      "name": "unpack_prefab",
+      "tier": "T2"
+    },
+    {
+      "description": "校验并写入工程内 Lua 脚本。先语法/API 校验，失败返回错误供 AI 修复。T2。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "path": {
+            "description": "工程内相对路径，.lua",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "code"
+        ],
+        "type": "object"
+      },
+      "name": "write_lua_script",
+      "tier": "T2"
+    }
+  ],
+  "transport": "mcp-stdio",
+  "version": 1
+}

@@ -1,6 +1,8 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod actions;
+#[cfg(feature = "ai-bridge")]
+mod ai_host;
 mod command_router;
 mod dnd;
 mod dock;
@@ -85,6 +87,9 @@ struct Arguments {
     gui_smoke: bool,
     /// GUI smoke 报告落盘路径（可选；同时始终打印到 stdout）。
     gui_report: Option<PathBuf>,
+    /// M75：以 MCP stdio server 形态运行（供外部 AI 客户端拉起）。
+    #[cfg(feature = "ai-bridge")]
+    mcp_stdio: bool,
 }
 
 fn parse_arguments() -> Result<Arguments, String> {
@@ -125,13 +130,20 @@ fn parse_arguments() -> Result<Arguments, String> {
                     .ok_or_else(|| "--gui-report 需要一个路径参数".to_owned())?;
                 arguments.gui_report = Some(PathBuf::from(path));
             }
+            #[cfg(feature = "ai-bridge")]
+            "--mcp-stdio" => arguments.mcp_stdio = true,
             "--help" | "-h" => {
+                #[cfg(feature = "ai-bridge")]
+                let mcp_help = "\x20     editor --project <项目路径> --mcp-stdio（JSON-RPC 2.0 over stdio；stdout 只走协议）\n";
+                #[cfg(not(feature = "ai-bridge"))]
+                let mcp_help = "";
                 println!(
                     "用法：editor [--project <项目路径>] [--check]\n\
                      \x20     editor --project <项目路径> --migrate-spatial [--migrate-spatial-write]\n\
                      \x20     editor --project <项目路径> --restore-spatial\n\
                      \x20     editor --perf-baseline [--perf-report <路径>]\n\
                      \x20     editor --gui-smoke [--gui-report <路径>]\n\
+                     {mcp_help}\
                      \x20     （迁移命令可加 --migrate-report <路径> 把报告落盘；有实体被拒绝或出错时退出码为 2）\n\
                      \x20     （--perf-baseline 无窗口运行 docs/55 ER-01 基线场景；有场景不达标时退出码为 2）\n\
                      \x20     （--gui-smoke 无窗口运行 docs/55 阶段 0 的合成输入 GUI 用例；有用例失败时退出码为 2）"
@@ -391,6 +403,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_else(|| PathBuf::from("editor.log"));
     // 实时日志缓冲：控制台面板读取，游戏/引擎日志自动上屏。
     let log_sink = LogSink::new(500);
+    // M75：MCP stdio 形态下 stdout 是协议通道，控制台日志必须改走 stderr，
+    // 否则一行 `[INFO]` 就会让客户端的 JSON-RPC 解析直接失败。
+    #[cfg(feature = "ai-bridge")]
+    let mcp_stdio =
+        arguments.mcp_stdio || std::env::var("RUSTLUA_EDITOR_MCP").is_ok_and(|value| value == "1");
+    #[cfg(feature = "ai-bridge")]
+    let _ = rustlua_infra::logging::init_logging_with_options(
+        &log_path,
+        None,
+        Some(log_sink.clone()),
+        mcp_stdio,
+    );
+    #[cfg(not(feature = "ai-bridge"))]
     let _ = rustlua_infra::logging::init_logging_with_sink(&log_path, None, Some(log_sink.clone()));
     // 编辑器主窗口：初始按常规编辑尺寸打开（默认 800x600 过小）。
     // 标题栏/任务栏图标走引擎共用那张 PNG（出图：engine/tools/gen_engine_icon.py，
@@ -436,6 +461,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             app.set_render_state(creation_context.wgpu_render_state.clone());
             app.initialize_ui_extensions();
             app.project_loaded = arguments.project.is_some();
+            #[cfg(feature = "ai-bridge")]
+            if mcp_stdio && let Err(error) = app.start_ai_bridge(&creation_context.egui_ctx) {
+                eprintln!("{error}");
+                std::process::exit(2);
+            }
             // 资源扫描延后到首帧 update：窗口先绘制，避免启动阻塞。
             app.refresh_pending = true;
             // 启动即把当前项目记入「最近项目」。
@@ -469,6 +499,10 @@ struct EditorApp {
     dock_signature: Option<u64>,
     /// 结构指纹最近一次变化的时刻，`None` = 没有待落盘的布局变化（见 `dock_tree_change`）。
     dock_dirty_since: Option<Instant>,
+    /// 助手设置（服务商/Base URL/模型/max_tokens）最近一次变化的时刻。
+    /// 文本框每击键都会改设置，等到输入停顿再落盘，避免每帧一次原子写。
+    #[cfg(feature = "ai-bridge")]
+    assistant_dirty_since: Option<Instant>,
     document: ProjectDocument,
     tree: SceneTreeState,
     resources: ResourceBrowserState,
@@ -630,6 +664,11 @@ struct EditorApp {
     /// 见 [`EditorApp::set_central_view_visible`]。
     show_scene_view: bool,
     show_game_view: bool,
+    /// M75-03 内置 AI 助手标签的显示开关（与其它常驻面板一样只由 View 菜单写）。
+    show_assistant_panel: bool,
+    /// M75-03 助手会话状态：服务商设置（无密钥）、对话、内联确认与在途请求。
+    #[cfg(feature = "ai-bridge")]
+    assistant: crate::panels::assistant::AssistantState,
     /// M19-03 领域数据面板（Lua 域校验 + 只读视图 + PersistId 注册表）。
     show_domain_data_panel: bool,
     domain_report: Option<crate::panels::domain_data::DomainDataReport>,
@@ -814,6 +853,12 @@ struct EditorApp {
     play_stop_benchmark_ran: bool,
     /// 自动缩略图压测期间保留纹理句柄，避免上传后立即释放。
     benchmark_textures: Vec<egui::TextureHandle>,
+    /// M75：MCP 能力层（协议线程句柄 + 待确认写动作）。默认 detached：不起线程、不监听。
+    #[cfg(feature = "ai-bridge")]
+    ai: rustlua_editor_ai::AiBridge,
+    /// M75：写动作确认策略。默认 T1 也排队等人在编辑器内放行。
+    #[cfg(feature = "ai-bridge")]
+    ai_policy: rustlua_editor_ai::GatePolicy,
 }
 
 #[derive(Clone, Debug)]
@@ -1175,6 +1220,11 @@ impl EditorApp {
     /// dock 布局稳定多久才落盘（`dock_tree_change` 的节流窗口，见那里的说明）。
     const DOCK_LAYOUT_SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
 
+    /// 助手设置稳定多久才落盘。比 dock 树长：它来自自由文本输入，
+    /// 打字过程中的短暂停顿不应各触发一次写盘。
+    #[cfg(feature = "ai-bridge")]
+    const ASSISTANT_LAYOUT_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
+
     fn new(
         project: ProjectInfo,
         gpu: Option<(wgpu::Device, wgpu::Queue)>,
@@ -1189,6 +1239,17 @@ impl EditorApp {
             Err(error) => (RecoveryScan::default(), Some(error.to_string())),
         };
         let publish = crate::publish::PublishState::new(&project.root);
+        // 助手初值（含环境变量解析）同时作为布局基线：否则打开项目后的首次
+        // `maybe_persist_layout_on_change` 会把"默认值"当成用户改动而自动写盘。
+        #[cfg(feature = "ai-bridge")]
+        let assistant = crate::panels::assistant::AssistantState::default();
+        #[cfg(feature = "ai-bridge")]
+        let layout = editor::EditorLayout {
+            assistant: Some(assistant.settings_snapshot()),
+            ..editor::EditorLayout::default()
+        };
+        #[cfg(not(feature = "ai-bridge"))]
+        let layout = editor::EditorLayout::default();
         Self {
             document: ProjectDocument::open(project.clone()),
             project,
@@ -1196,6 +1257,8 @@ impl EditorApp {
             pending_workspace_focus: None,
             dock_signature: None,
             dock_dirty_since: None,
+            #[cfg(feature = "ai-bridge")]
+            assistant_dirty_since: None,
             tree: SceneTreeState::new(),
             resources: ResourceBrowserState::new(),
             selected_resource: None,
@@ -1279,6 +1342,9 @@ impl EditorApp {
             show_inspector_panel: true,
             show_scene_view: true,
             show_game_view: true,
+            show_assistant_panel: true,
+            #[cfg(feature = "ai-bridge")]
+            assistant,
             show_domain_data_panel: false,
             domain_report: None,
             persist_registry: None,
@@ -1330,7 +1396,7 @@ impl EditorApp {
             resource_refresh_job: None,
             file_watcher: None,
             file_watch_interval: std::time::Duration::from_millis(500),
-            layout: editor::EditorLayout::default(),
+            layout,
             layout_load: editor::LayoutLoad::Missing,
             profiler: editor::EditorProfiler::new(editor::DEFAULT_FRAME_BUDGET_MS),
             runtime_perf: crate::runtime_perf::RuntimePerfTracker::default(),
@@ -1375,6 +1441,10 @@ impl EditorApp {
             thumbnail_benchmark_ran: false,
             play_stop_benchmark_ran: false,
             benchmark_textures: Vec::new(),
+            #[cfg(feature = "ai-bridge")]
+            ai: rustlua_editor_ai::AiBridge::detached(),
+            #[cfg(feature = "ai-bridge")]
+            ai_policy: rustlua_editor_ai::GatePolicy::interactive(false),
         }
     }
 
@@ -1695,6 +1765,16 @@ impl EditorApp {
         self.show_lua_console = self.layout.panel_is_visible(editor::PANEL_CONSOLE);
         self.show_hierarchy_panel = self.layout.panel_is_visible(editor::PANEL_HIERARCHY);
         self.show_inspector_panel = self.layout.panel_is_visible(editor::PANEL_INSPECTOR);
+        self.show_assistant_panel = self.layout.panel_is_visible(editor::PANEL_ASSISTANT);
+        #[cfg(feature = "ai-bridge")]
+        {
+            self.assistant.apply_layout(self.layout.assistant.as_ref());
+            if self.layout.assistant.is_none() {
+                // 旧布局没有助手段：把本次实际采用的设置登记成基线，否则打开项目后的
+                // 第一帧会把"默认值"误判成用户改动、立刻自动写盘。
+                self.layout.assistant = Some(self.assistant.settings_snapshot());
+            }
+        }
         self.apply_central_views_from_layout();
         self.restore_dock_tree();
         let central_tab = self.visible_central_tab();
@@ -1828,13 +1908,14 @@ impl EditorApp {
         value
     }
 
-    /// 六个工作台面板的可见性 ↔ `panel_visible` 键（View 菜单是唯一写入口）。
+    /// 七个工作台面板的可见性 ↔ `panel_visible` 键（View 菜单是唯一写入口）。
     /// 返回值而不是直接写 `self.layout`：调用点在借用 `self.layout` 的同时还要读 `self`。
-    fn panel_visibility(&self) -> [(&'static str, bool); 6] {
+    fn panel_visibility(&self) -> [(&'static str, bool); 7] {
         [
             (editor::PANEL_RESOURCE, self.show_resources_panel),
             (editor::PANEL_HIERARCHY, self.show_hierarchy_panel),
             (editor::PANEL_INSPECTOR, self.show_inspector_panel),
+            (editor::PANEL_ASSISTANT, self.show_assistant_panel),
             (editor::PANEL_SCENE_VIEW, self.show_scene_view),
             (editor::PANEL_GAME_VIEW, self.show_game_view),
             (editor::PANEL_CONSOLE, self.show_lua_console),
@@ -1872,6 +1953,12 @@ impl EditorApp {
         self.layout.gizmo_space = self.gizmo_space.as_str().to_owned();
         self.layout.gizmo_pivot = self.gizmo_pivot.as_str().to_owned();
         self.layout.preview_resolution = self.preview_resolution;
+        // 只存助手的非密钥设置；密钥不在 `AssistantState::settings_snapshot` 的返回类型里，
+        // 从类型上杜绝"手滑把它写进布局文件"。
+        #[cfg(feature = "ai-bridge")]
+        {
+            self.layout.assistant = Some(self.assistant.settings_snapshot());
+        }
         // 显式保存（菜单「保存布局」）：无视节流直接抓当前树，用户按了就要拿到现状。
         if let Some(state) = self.dock_state.as_ref() {
             let signature = crate::dock::signature(state);
@@ -1884,11 +1971,17 @@ impl EditorApp {
         self.layout.clamp();
     }
 
-    /// 面板可见性/工作台/视图模式/**dock 树结构**变化后自动保存布局（无变化时不写盘）。
-    fn maybe_persist_layout_on_change(&mut self) {
+    /// 面板可见性/工作台/视图模式/**dock 树结构**/助手设置变化后自动保存布局（无变化时不写盘）。
+    ///
+    /// 返回一个"还需要等多久"的时长（仅助手设置节流未到期时）：调用方要据此安排一次
+    /// 重绘，否则用户停止输入后再没有新帧，节流窗口到期了也没人来写盘。
+    fn maybe_persist_layout_on_change(&mut self) -> Option<std::time::Duration> {
         if !self.project_loaded {
-            return;
+            return None;
         }
+        // 无 ai-bridge 时没人写它，但返回值统一（调用点不必 cfg）。
+        #[cfg_attr(not(feature = "ai-bridge"), allow(unused_mut))]
+        let mut repaint_after = None;
         let mut current = self.layout.clone();
         let saved = current.clone();
         let visibility = self.panel_visibility();
@@ -1919,6 +2012,24 @@ impl EditorApp {
         current.gizmo_space = self.gizmo_space.as_str().to_owned();
         current.gizmo_pivot = self.gizmo_pivot.as_str().to_owned();
         current.preview_resolution = self.preview_resolution;
+        #[cfg(feature = "ai-bridge")]
+        {
+            let settings = self.assistant.settings_snapshot();
+            if self.layout.assistant.as_ref() != Some(&settings) {
+                // 还在输入：本次先不写，`current.assistant` 保持上次落盘值；
+                // 稳定期满后的那一帧再合并成一次写盘。
+                let since = *self.assistant_dirty_since.get_or_insert_with(Instant::now);
+                let elapsed = since.elapsed();
+                if elapsed >= Self::ASSISTANT_LAYOUT_SETTLE {
+                    current.assistant = Some(settings);
+                    self.assistant_dirty_since = None;
+                } else {
+                    repaint_after = Some(Self::ASSISTANT_LAYOUT_SETTLE - elapsed);
+                }
+            } else {
+                self.assistant_dirty_since = None;
+            }
+        }
         // dock 树只在结构指纹变化时序列化（每帧算一次哈希，不做 JSON 编码）。
         if let Some(tree) = self.dock_tree_change() {
             current.dock_tree = Some(Box::new(tree));
@@ -1934,10 +2045,11 @@ impl EditorApp {
             || current.gizmo_pivot != saved.gizmo_pivot
             || (current.scene_zoom - saved.scene_zoom).abs() > f32::EPSILON
             || current.preview_resolution != saved.preview_resolution
+            || current.assistant != saved.assistant
             || current.dock_tree != saved.dock_tree;
         self.layout = current;
         if !changed {
-            return;
+            return repaint_after;
         }
         let root = crate::util::strip_verbatim_prefix(&self.project.root);
         match editor::save_layout(&root, &self.layout) {
@@ -1947,6 +2059,7 @@ impl EditorApp {
                 tracing::warn!(target: "editor", "[layout] auto-save failed: {error}");
             }
         }
+        repaint_after
     }
 
     /// 保存布局（原子写；失败只提示，不中断编辑）。
@@ -1975,7 +2088,7 @@ impl EditorApp {
         match editor::reset_layout(&root) {
             Ok(layout) => {
                 self.layout = layout;
-                self.layout_load = editor::LayoutLoad::Loaded(self.layout.clone());
+                self.layout_load = editor::LayoutLoad::Loaded(Box::new(self.layout.clone()));
                 self.apply_layout();
                 self.profiler.bump("layout_reset");
                 self.status = "已重置为默认布局".to_owned();
@@ -2163,6 +2276,11 @@ impl eframe::App for EditorApp {
     /// `EditorApp` 整体随进程退出、没有 `Drop`，这里是唯一能把 ID 交还给
     /// egui-wgpu 纹理管理器的时机（否则只能等渲染器整体析构）。
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // 设置刚改完（稳定窗口未到）就关窗：退出前把最后一笔补上。
+        #[cfg(feature = "ai-bridge")]
+        if self.assistant_dirty_since.is_some() {
+            self.persist_layout();
+        }
         self.release_scene_view_textures();
     }
 }
@@ -2251,6 +2369,10 @@ impl EditorApp {
         // 复位"本帧谁步进过预览"：Game 视图绘制时会调 `update_preview` 置真；到帧末还是假
         // 就说明这帧没画 Game，需要补一步，否则切到 Scene 页签游戏就停了。
         self.preview_stepped_this_frame = false;
+        // M75：先处理已到达的 MCP 请求（tool → EditorCommand），再画本帧，
+        // 面板看到的就是本帧最新的文档状态。
+        #[cfg(feature = "ai-bridge")]
+        self.pump_ai(context);
         // E06：用户点窗口 X / Alt+F4 —— 若当前文档 dirty，阻止关闭并弹确认窗
         // （确认「保存并继续 / 放弃并继续」后再真正 Close；「取消」保持原状态）。
         self.guard_close_request(context);
@@ -2413,6 +2535,9 @@ impl EditorApp {
         // E06：最后绘制「未保存的更改」确认窗，置于其余窗口之上；仅在 dirty 且
         // 有挂起的离开操作时显示，此时其它面板保持原样、文档不被改动。
         self.draw_pending_change_window(context);
+        // M75：写动作确认窗。放在未保存确认之后画，两个弹窗同在顶层时不会互相遮挡输入。
+        #[cfg(feature = "ai-bridge")]
+        self.draw_ai_gate_window(context);
         // E08：帧末统一提交边界 —— 本帧任意 release/Enter 时收敛 Inspector 挂起
         // 缓冲为一条历史（Inspector 面板与 Scene View 各自的释放提交已先执行，
         // 这里只兜底「释放发生在面板外 / 文本 Enter」等漏网情形；无挂起即 no-op）。
@@ -2426,7 +2551,10 @@ impl EditorApp {
         // 运行时性能：在预览本帧的步进/渲染都完成后取快照；Play 停止时由 tracker 清空。
         self.sample_runtime_performance();
         // 面板可见性/工作台/视图变化后自动落盘布局（一次小文件原子写，仅在真正变化时发生）。
-        self.maybe_persist_layout_on_change();
+        // 助手设置还在输入稳定期内时，安排一次到期重绘，避免停止输入后再无帧可写。
+        if let Some(after) = self.maybe_persist_layout_on_change() {
+            context.request_repaint_after(after);
+        }
         // 帧末汇总：帧耗时 + 会话级 gauge（历史深度/日志行数/资源条目/队列）。
         self.profiler.end_frame(Instant::now());
         self.update_profiler_gauges();
@@ -2704,7 +2832,7 @@ mod layout_tests {
         // ① 全新项目：没有文件 → 默认树，而且**不许报警**（首启就弹"布局损坏"是错的）。
         let (fresh, tree, tabs) = boot(None);
         assert_eq!(tree, default_tree, "全新项目必须是默认面板树");
-        assert_eq!(tabs.len(), 6, "默认树要六个常驻视图都在：{tabs:?}");
+        assert_eq!(tabs.len(), 7, "默认树要七个常驻视图都在：{tabs:?}");
         assert!(
             fresh.console_notices.is_empty(),
             "全新项目不该有布局提示：{:?}",
@@ -2716,7 +2844,7 @@ mod layout_tests {
         let truncated = "{\"version\": 2, \"dock_tree\": {";
         let (broken, tree, tabs) = boot(Some(truncated));
         assert_eq!(tree, default_tree, "损坏必须整棵回落默认，不能留半棵树");
-        assert_eq!(tabs.len(), 6, "损坏回落后六个常驻视图都在：{tabs:?}");
+        assert_eq!(tabs.len(), 7, "损坏回落后七个常驻视图都在：{tabs:?}");
         assert!(
             broken.status.contains("损坏"),
             "状态栏要说明为什么用默认布局：{}",
@@ -2733,7 +2861,7 @@ mod layout_tests {
         let bogus_tree = "{\"version\": 2, \"dock_tree\": {\"nodes\": [[\"NoSuchPanel\"]]}}";
         let (mismatched, tree, tabs) = boot(Some(bogus_tree));
         assert_eq!(tree, default_tree, "认不出的树必须整棵回落默认：{tree}");
-        assert_eq!(tabs.len(), 6, "回落后六个常驻视图都在：{tabs:?}");
+        assert_eq!(tabs.len(), 7, "回落后七个常驻视图都在：{tabs:?}");
         assert!(
             mismatched.layout.dock_tree.is_some(),
             "回落后仍要留着文件里那棵坏树，它是用户的原始数据"
@@ -2896,6 +3024,44 @@ mod layout_tests {
             expected,
             "自动保存的树必须活过一次重启"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 助手设置来自文本框，每击键都会变：稳定窗口内不得写盘，期满那一帧合并写一次。
+    #[cfg(feature = "ai-bridge")]
+    #[test]
+    fn assistant_settings_autosave_waits_for_typing_to_settle() {
+        let root = temp_root("assistant-autosave");
+        let project = || editor::ProjectInfo {
+            root: root.clone(),
+            version: "test".to_owned(),
+            directories: Vec::new(),
+        };
+        let mut app = EditorApp::new(project(), None, LogSink::new(64));
+        app.project_loaded = true;
+        app.maybe_persist_layout_on_change();
+        assert!(!editor::layout_path(&root).exists(), "基线帧不得写盘");
+
+        app.assistant.apply_layout(Some(&editor::AssistantLayout {
+            provider: "openai".to_owned(),
+            base_url: "https://example.invalid/v1".to_owned(),
+            model: "typing-in-progress".to_owned(),
+            max_tokens: 512,
+        }));
+        let pending = app.maybe_persist_layout_on_change();
+        assert!(pending.is_some(), "稳定期内必须返回到期重绘的等待时长");
+        assert!(!editor::layout_path(&root).exists(), "输入稳定期内不得写盘");
+
+        std::thread::sleep(
+            crate::EditorApp::ASSISTANT_LAYOUT_SETTLE + std::time::Duration::from_millis(50),
+        );
+        assert_eq!(app.maybe_persist_layout_on_change(), None);
+        assert_eq!(app.assistant_dirty_since, None, "写成功后脏标记必须清掉");
+        let text = std::fs::read_to_string(editor::layout_path(&root)).expect("layout.json");
+        assert!(!text.contains("api_key"), "布局文件不得含密钥字段");
+        assert!(!text.contains("sk-"), "布局文件不得含密钥");
+        let saved: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(saved["assistant"]["model"], "typing-in-progress");
         let _ = std::fs::remove_dir_all(root);
     }
 

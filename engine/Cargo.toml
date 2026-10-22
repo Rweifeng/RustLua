@@ -14,6 +14,7 @@ members = [
     "crates/rustlua-camera",
     "crates/rustlua-component-codec",
     "crates/rustlua-ecs",
+    "crates/rustlua-editor-ai",
     "crates/rustlua-frame-abi",
     "crates/rustlua-gameplay",
     "crates/rustlua-infra",
@@ -51,6 +52,7 @@ strip = true
 engine = { path = "crates/engine" }
 rustlua-math = { path = "crates/rustlua-math" }
 rustlua-ecs = { path = "crates/rustlua-ecs" }
+rustlua-editor-ai = { path = "crates/rustlua-editor-ai" }
 rustlua-scene = { path = "crates/rustlua-scene" }
 rustlua-camera = { path = "crates/rustlua-camera" }
 rustlua-animation = { path = "crates/rustlua-animation" }

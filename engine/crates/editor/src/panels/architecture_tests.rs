@@ -50,6 +50,8 @@ const WRITE_NEEDLES: &[&str] = &[
 /// - `game_view.rs` / `header.rs`：**已清零**（第 28 轮）——Play 的 Stop 收尾与崩溃快照替换
 ///   都搬到了 shell（`crate::actions`），面板只发 typed action / 请求确认；
 const PINNED_WRITES: &[(&str, usize)] = &[
+    // M75-03：助手把对话存在 `messages`（不是文档历史），写动作只经 `execute_tool`。
+    ("assistant.rs", 0),
     ("atlas.rs", 0),
     ("bundles.rs", 0),
     ("console.rs", 0),

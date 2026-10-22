@@ -722,6 +722,22 @@ impl LuaRuntime {
         result
     }
 
+    /// 只编译、不执行：用于 AI 生成脚本的落盘前校验（M75-02）。
+    ///
+    /// 语法错误在这里变成带 `file:line` 的类型化错误，调用方可以把原文回给模型修；
+    /// 语义/运行时错误留到 `eval_json` 或真实运行。
+    pub fn validate_chunk(&self, name: &str, code: &str) -> Result<(), LuaBridgeError> {
+        self.lua
+            .load(code)
+            .set_name(name)
+            .into_function()
+            .map(|_| ())
+            .map_err(|error| LuaBridgeError::Runtime {
+                path: PathBuf::from(name),
+                reason: error.to_string(),
+            })
+    }
+
     /// Evaluates a Lua expression in the currently loaded VM and converts the
     /// result to JSON (M19-03: the read-only Lua↔JSON bridge used by editor
     /// tooling, e.g. the domain-data panel and the runtime debug panel).
