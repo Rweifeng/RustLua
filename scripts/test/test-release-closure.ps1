@@ -48,6 +48,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# 断言里有中文（「容器不在」「计划外的容器」），而 5.1 控制台默认按 ANSI 解码原生命令输出：
+# assetc 写 UTF-8，不显式设 UTF-8 就会把正确报错读成乱码、误判成"没点名原因"。
+try { [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false) } catch { }
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 if (-not (Test-Path (Join-Path $repo "engine\Cargo.toml"))) {
     throw "找不到仓库根（从 $PSScriptRoot 上溯两层是 $repo）"
