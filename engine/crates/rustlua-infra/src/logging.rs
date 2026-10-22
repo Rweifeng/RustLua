@@ -14,7 +14,7 @@ use std::fs;
 // 原生二进制调用。wasm 侧真正装订阅者的是宿主自己的 `tracing::Subscriber`
 // （`game_web::wasm_log`）。把这块整体 cfg 掉后，`tracing-subscriber` 从 wasm 依赖图里消失。
 #[cfg(not(target_arch = "wasm32"))]
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 static LOG_GUARD: OnceLock<LogGuard> = OnceLock::new();
 
@@ -220,6 +220,20 @@ pub fn init_logging_with_sink(
     filter: Option<&str>,
     sink: Option<LogSink>,
 ) -> Result<(), EngineError> {
+    init_logging_with_options(log_path, filter, sink, false)
+}
+
+/// 同 `init_logging_with_sink`，但可把终端日志改写到 stderr。
+///
+/// MCP stdio 传输占用 stdout：此时任何 `println!`/日志都会污染 JSON-RPC 流，
+/// 编辑器以 `--mcp-stdio` 启动时传 `console_to_stderr=true`。
+#[cfg(not(target_arch = "wasm32"))]
+pub fn init_logging_with_options(
+    log_path: impl AsRef<Path>,
+    filter: Option<&str>,
+    sink: Option<LogSink>,
+    console_to_stderr: bool,
+) -> Result<(), EngineError> {
     if LOG_GUARD.get().is_some() {
         return Ok(());
     }
@@ -238,6 +252,11 @@ pub fn init_logging_with_sink(
     let console = tracing_subscriber::fmt::layer()
         .with_target(true)
         .with_ansi(false);
+    let console = if console_to_stderr {
+        console.with_writer(std::io::stderr).boxed()
+    } else {
+        console.boxed()
+    };
     // 可选：把日志实时回传到共享缓冲（Option<Layer> 作为 Layer 叠加）。
     let sink_layer = sink.map(|sink| {
         tracing_subscriber::fmt::layer()

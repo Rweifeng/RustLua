@@ -1,5 +1,7 @@
 //! 编辑器各面板：每个面板一个文件，`impl EditorApp` 中定义绘制与支撑方法。
 
+#[cfg(feature = "ai-bridge")]
+pub(crate) mod assistant;
 pub(crate) mod atlas;
 pub(crate) mod bundles;
 pub(crate) mod console;
@@ -27,3 +29,12 @@ pub(crate) mod toolbar;
 /// 架构守卫：面板只发 typed action，不直接写文档（棘轮测试）。
 #[cfg(test)]
 mod architecture_tests;
+
+/// `--no-default-features` 构建没有 AI 依赖图：助手标签仍存在（布局/菜单一致），
+/// 但只显示一条说明而不是把整块工作区编译掉。
+#[cfg(not(feature = "ai-bridge"))]
+impl crate::EditorApp {
+    pub(crate) fn draw_assistant_panel(&mut self, ui: &mut eframe::egui::Ui) {
+        ui.weak("内置 AI 助手需要 `ai-bridge` 特性（默认构建已开启）。");
+    }
+}

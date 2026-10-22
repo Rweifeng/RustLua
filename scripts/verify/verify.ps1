@@ -545,13 +545,21 @@ try {
     # places.lua 走的是相对 cwd 的默认路径，换目录跑就静默少一份留白输入，见 gen_manor_scene 的注释）。
     # 缺 python 时按本仓库口径打印原因后跳过，绝不把"跳过"写成通过。
     Write-Step "Decor scatter determinism (python)"
-    if (Get-Command python -ErrorAction SilentlyContinue) {
+    # `Get-Command python` 会被 WindowsApps 占位符骗过：找得到，执行却返回 9009。
+    # 探一次真能跑的解释器，优先 python，回退本机惯例的 py。
+    $pythonExe = $null
+    foreach ($candidate in @("python", "py")) {
+        if (-not (Get-Command $candidate -ErrorAction SilentlyContinue)) { continue }
+        & $candidate -c "import sys" *> $null
+        if ($LASTEXITCODE -eq 0) { $pythonExe = $candidate; break }
+    }
+    if ($pythonExe) {
         # Windows 控制台默认代码页是 GBK，工具输出的中文在编码不匹配时抛 UnicodeEncodeError——
         # 那是门自己的环境问题，不是散布判红。
         $env:PYTHONIOENCODING = "utf-8"
         # 碎屑库自己的门：26 张 PNG（13 形状 × 本体+镜像；旧说法 24 张是 M72-05 那一档）条目齐全、尺寸 == 目录、每个不透明像素都在 `terrain_ramp.json`
         # 覆盖的色族里、alpha 只有 0/255。Rust 那条只比尺寸与明度档，"手改过一张图的像素"只有这里看得见。
-        Invoke-Checked python @(
+        Invoke-Checked $pythonExe @(
             (Join-Path $projectRoot "examples/game_jhyt/tools/gen_decor_art.py"), "--check"
         )
         # 逐图三条门，一张图一轮跑齐：散布确定性 → 建筑占地 solid 对拍 → 逐图量化读数。
@@ -575,24 +583,41 @@ try {
         #    **按实测登记 = 40**（洞穴 57/57/57、铁匠铺 43/43/43、药庐 41/41/41），没有为它们降过
         #    门槛；`main` 仍是旧 6×1 档、还没接进这张循环）。
         foreach ($decorScene in @("manor", "village", "mountain_path", "combat_arena", "cold_spring_cave", "interior_forge", "interior_herb")) {
-            Invoke-Checked python @(
+            Invoke-Checked $pythonExe @(
                 (Join-Path $projectRoot "examples/game_jhyt/tools/set_scatter_decor.py"),
                 (Join-Path $projectRoot "examples/game_jhyt/scenes/$decorScene.scene"),
                 "--check"
             )
-            Invoke-Checked python @(
+            Invoke-Checked $pythonExe @(
                 (Join-Path $projectRoot "examples/game_jhyt/tools/building_kit.py"),
                 (Join-Path $projectRoot "examples/game_jhyt/scenes/$decorScene.scene"),
                 "--check"
             )
-            Invoke-Checked python @(
+            Invoke-Checked $pythonExe @(
                 (Join-Path $projectRoot "examples/game_jhyt/tools/scene_readings.py"),
                 (Join-Path $projectRoot "examples/game_jhyt/scenes/$decorScene.scene"),
                 "--gate"
             )
         }
     } else {
-        Write-Host "  [SKIP] 未找到 python：装饰库色表门、装饰散布确定性门、建筑占地 solid 对拍门与逐图量化读数门未运行（不是通过）" -ForegroundColor Yellow
+        Write-Host "  [SKIP] 未找到可用的 python/py：装饰库色表门、装饰散布确定性门、建筑占地 solid 对拍门与逐图量化读数门未运行（不是通过）" -ForegroundColor Yellow
+    }
+
+    # M75-01：AI 能力层的 tool 面快照门。tool 名/参数/风险档一改，外部 MCP 客户端拿到的
+    # 契约就漂移；口径与 `lua_api_surface.json` 相同：先红，显式
+    # `AI_TOOL_SURFACE_BLESS=1 cargo test -p rustlua-editor-ai surface::tests` 刷基线再提交。
+    Write-Step "AI tool surface snapshot"
+    Invoke-Checked cargo @("test", "-p", "rustlua-editor-ai", "--lib", "surface::tests::tool_surface_matches_baseline")
+
+    # M75-01：feature gate 隔离。`ai-bridge` 只在原生编辑器默认开启；关掉后 editor 的
+    # 依赖图里必须**完全没有** AI crate（它带协议线程与文件写入 tool，绝不能漏进 wasm/游戏包）。
+    Write-Step "AI bridge feature gate"
+    $editorTree = & cargo tree -p editor --no-default-features -e normal --prefix none 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "cargo tree -p editor --no-default-features failed: $editorTree"
+    }
+    if ($editorTree | Select-String -SimpleMatch "rustlua-editor-ai") {
+        throw "feature gate broken: rustlua-editor-ai 出现在 --no-default-features 的 editor 依赖图里"
     }
 
     if (-not $SkipClippy) {
@@ -664,6 +689,12 @@ try {
     }
 
     if (-not $SkipTests) {
+        # M75-02：确定性回放门。fixture 里的 tool 序列（建实体/加组件/写字段/撤销）
+        # 在 CI 上无 LLM 重放，两次独立会话必须得到逐字节同一场景——把"AI 动作"里
+        # 唯一非确定的 LLM 留在环外，进门的只是它产出的 tool 调用。
+        Write-Step "AI deterministic replay"
+        Invoke-Checked cargo @("test", "-p", "editor", "--bin", "editor", "--all-features", "ai_host::tests::replay_fixture_is_deterministic_across_fresh_sessions")
+
         Write-Step "Workspace tests"
         Invoke-Checked cargo @("test", "--workspace", "--all-features")
 

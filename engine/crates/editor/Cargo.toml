@@ -6,6 +6,12 @@ authors.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# M75：AI 能力层（MCP server + 确认网关）只在**原生编辑器**构建里存在。
+# 关闭后 editor 的依赖图里没有 `rustlua-editor-ai`（`--no-default-features` 可量体积差）。
+default = ["ai-bridge"]
+ai-bridge = ["dep:rustlua-editor-ai"]
+
 [dependencies]
 engine.workspace = true
 anyhow.workspace = true
@@ -24,6 +30,7 @@ rustlua-assets-import = { path = "../rustlua-assets-import" }
 rustlua-audio = { path = "../rustlua-audio" }
 rustlua-camera = { path = "../rustlua-camera" }
 rustlua-ecs = { path = "../rustlua-ecs" }
+rustlua-editor-ai = { workspace = true, optional = true }
 rustlua-gameplay = { path = "../rustlua-gameplay" }
 # `bundle-write`：分包面板要在编辑器里**按发布同款编码器**预估每组的落盘字节
 # （zstd 是构建期依赖，编辑器是原生程序，不进 wasm）。

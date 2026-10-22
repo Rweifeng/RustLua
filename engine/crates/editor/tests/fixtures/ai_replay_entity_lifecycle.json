@@ -1,0 +1,19 @@
+{
+  "name": "entity_lifecycle",
+  "description": "M75-02 确定性回放：建实体 → 加组件 → 写字段 → 撤销。全程不出现 LLM。",
+  "steps": [
+    { "tool": "create_entity", "args": { "name": "AI Entity" } },
+    { "tool": "add_component", "args": { "entity": 2, "component": "Sprite" } },
+    {
+      "tool": "set_component_fields",
+      "args": {
+        "entities": [2],
+        "component": "Transform",
+        "fields": { "position": "4,5,0" }
+      }
+    },
+    { "tool": "get_scene_tree", "args": {} },
+    { "tool": "undo", "args": {} },
+    { "tool": "get_scene_tree", "args": {} }
+  ]
+}

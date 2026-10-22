@@ -851,6 +851,7 @@ dependencies = [
  "rustlua-audio",
  "rustlua-camera",
  "rustlua-ecs",
+ "rustlua-editor-ai",
  "rustlua-gameplay",
  "rustlua-infra",
  "rustlua-input",
@@ -3342,6 +3343,14 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "web-time",
+]
+
+[[package]]
+name = "rustlua-editor-ai"
+version = "0.1.1"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

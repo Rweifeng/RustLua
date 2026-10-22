@@ -56,6 +56,8 @@ struct EvidenceStep {
     view_3d: bool,
     /// 采集前是否进入 Play（覆盖内嵌预览的真实 GPU 路径）。
     play: bool,
+    /// 采集前是否聚焦内置 AI 助手标签（M75-03 验收门：证据目录必须包含新面板）。
+    assistant: bool,
 }
 
 /// 一次采集的记录。
@@ -73,6 +75,7 @@ struct CaptureRecord {
     measured_screen_pts: (f32, f32),
     play: bool,
     view_3d: bool,
+    assistant: bool,
     image_size: (u32, u32),
     /// 非黑像素比例：证明"窗口真的渲染出了东西"，而不是一张全黑图。
     lit_ratio: f32,
@@ -214,6 +217,7 @@ impl GuiEvidence {
                 measured_screen_pts: measured_screen_pts(context),
                 play: step.play,
                 view_3d: step.view_3d,
+                assistant: step.assistant,
                 image_size: (0, 0),
                 lit_ratio: 0.0,
                 mean_luma: 0.0,
@@ -278,6 +282,14 @@ impl GuiEvidence {
         } else {
             crate::SceneViewMode::View2D
         };
+        // M75-03：证据目录必须包含内置助手面板。面板可能被 View 菜单关掉过，
+        // 先确保开关为真；标签不在树里则等本帧 `sync_visibility` 补回后再聚焦。
+        if step.assistant {
+            app.show_assistant_panel = true;
+            if let Some(state) = app.dock_state.as_mut() {
+                crate::dock::focus_tab(state, crate::dock::DockTab::Assistant);
+            }
+        }
         if step.play {
             if !app.is_playing() && app.document.current_scene.is_some() {
                 app.play();
@@ -319,6 +331,7 @@ impl GuiEvidence {
                 inner_size: egui::vec2(0.0, 0.0),
                 view_3d: false,
                 play: app.is_playing(),
+                assistant: false,
             });
             let (width, height) = (image.width() as u32, image.height() as u32);
             // 截图那一刻的**实测** DPI 与点尺寸：报告里的标签必须来自这里，而不是脚本的请求值。
@@ -353,6 +366,7 @@ impl GuiEvidence {
                 measured_screen_pts: measured_pts,
                 play: step.play,
                 view_3d: step.view_3d,
+                assistant: step.assistant,
                 image_size: (width, height),
                 lit_ratio,
                 mean_luma,
@@ -405,7 +419,7 @@ impl GuiEvidence {
                 .abs()
                 <= 0.01;
             text.push_str(&format!(
-                "{:<28} req_ppi={:<4} act_ppi={:<4} req={:.0}x{:.0} screen={:.0}x{:.0} play={:<5} 3d={:<5} image={}x{} lit={:.3} luma={:.3} ws={:.1}MiB {}\n",
+                "{:<28} req_ppi={:<4} act_ppi={:<4} req={:.0}x{:.0} screen={:.0}x{:.0} play={:<5} 3d={:<5} assistant={:<5} image={}x{} lit={:.3} luma={:.3} ws={:.1}MiB {}\n",
                 record.label,
                 record.requested_pixels_per_point,
                 record.measured_pixels_per_point,
@@ -415,6 +429,7 @@ impl GuiEvidence {
                 record.measured_screen_pts.1,
                 record.play,
                 record.view_3d,
+                record.assistant,
                 record.image_size.0,
                 record.image_size.1,
                 record.lit_ratio,
@@ -470,6 +485,7 @@ impl GuiEvidence {
                     "measured_screen_pts": [record.measured_screen_pts.0, record.measured_screen_pts.1],
                     "play": record.play,
                     "view_3d": record.view_3d,
+                    "assistant": record.assistant,
                     "image_size": [record.image_size.0, record.image_size.1],
                     "lit_ratio": record.lit_ratio,
                     "mean_luma": record.mean_luma,
@@ -503,6 +519,7 @@ fn evidence_steps() -> Vec<EvidenceStep> {
                 inner_size: egui::vec2(width, height),
                 view_3d: false,
                 play: false,
+                assistant: false,
             });
         }
     }
@@ -512,6 +529,7 @@ fn evidence_steps() -> Vec<EvidenceStep> {
         inner_size: egui::vec2(1280.0, 720.0),
         view_3d: true,
         play: false,
+        assistant: false,
     });
     steps.push(EvidenceStep {
         label: "dpi1.5-1280x720-play".to_owned(),
@@ -519,6 +537,17 @@ fn evidence_steps() -> Vec<EvidenceStep> {
         inner_size: egui::vec2(1280.0, 720.0),
         view_3d: false,
         play: true,
+        assistant: false,
+    });
+    // M75-03 验收门 3：同一份真实窗口证据里必须有一张**助手面板**截图。
+    // 放在最后：切到助手标签后不再回到属性，不影响前面各步的默认观感。
+    steps.push(EvidenceStep {
+        label: "dpi1.5-1280x720-assistant".to_owned(),
+        pixels_per_point: 1.5,
+        inner_size: egui::vec2(1280.0, 720.0),
+        view_3d: false,
+        play: false,
+        assistant: true,
     });
     steps
 }
@@ -1270,6 +1299,10 @@ mod tests {
         assert!(
             steps.iter().any(|step| step.view_3d),
             "必须有一张 3D 视口截图"
+        );
+        assert!(
+            steps.iter().any(|step| step.assistant),
+            "M75-03：证据目录必须包含内置助手面板截图"
         );
         let sizes: std::collections::BTreeSet<(i32, i32)> = steps
             .iter()

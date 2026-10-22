@@ -36,6 +36,8 @@ pub(crate) enum DockTab {
     Scene,
     Game,
     Inspector,
+    /// M75-03 内置 AI 助手：默认与属性同叶（属性仍是活动标签），不改变旧版首帧几何。
+    Assistant,
     Console,
 }
 
@@ -47,6 +49,7 @@ impl DockTab {
             Self::Scene => "Scene",
             Self::Game => "Game",
             Self::Inspector => "属性",
+            Self::Assistant => "AI 助手",
             Self::Console => "控制台",
         }
     }
@@ -58,6 +61,7 @@ impl DockTab {
             Self::Hierarchy => "hierarchy",
             Self::Scene | Self::Game => "workspace",
             Self::Inspector => "inspector",
+            Self::Assistant => "assistant",
             Self::Console => "console",
         }
     }
@@ -108,6 +112,9 @@ pub(crate) fn default_dock_state() -> DockState<DockTab> {
         SIZE_INSPECTOR / (NOMINAL_WIDTH - SIZE_LEFT_COLUMN),
         DockTab::Inspector,
     );
+    // M75-03：助手是属性的第二个标签（属性保持活动）——旧版首帧几何因此完全不变，
+    // 用户需要时点一下标签即可，不必先把属性面板拖小。
+    insert_assistant_beside_inspector(tree);
     split_at(
         tree,
         NodeIndex::root(),
@@ -116,6 +123,22 @@ pub(crate) fn default_dock_state() -> DockState<DockTab> {
         Node::leaf(DockTab::Console),
     );
     state
+}
+
+/// 把助手插进属性所在叶子的第二个位置，然后把活动标签还原成属性。
+fn insert_assistant_beside_inspector(tree: &mut Tree<DockTab>) {
+    let Some((node, index)) = tree.find_tab_from(|candidate| *candidate == DockTab::Inspector)
+    else {
+        // 没有属性面板（默认树里不会发生）：退化成常驻的第一片叶子，面板不能丢。
+        tree.push_to_first_leaf(DockTab::Assistant);
+        return;
+    };
+    let Node::Leaf(leaf) = &mut tree[node] else {
+        tree.push_to_first_leaf(DockTab::Assistant);
+        return;
+    };
+    leaf.insert_tab(index.0 + 1, DockTab::Assistant);
+    leaf.set_active_tab(index);
 }
 
 /// 在 `anchor` 旁边切出占其空间 `new_fraction` 的新标签。
@@ -242,10 +265,21 @@ pub(crate) fn focus_workspace_tab(state: &mut DockState<DockTab>, tab: Workspace
         WorkspaceTab::Scene => DockTab::Scene,
         WorkspaceTab::Game => DockTab::Game,
     };
+    let _ = focus_tab(state, target);
+}
+
+/// 聚焦任意标签（M75-03：GUI 证据要能切到助手；View 菜单/脚本化运行也共用）。
+///
+/// 返回 `false` 表示该标签当前不在树里（被 View 菜单关掉了），调用方应先让
+/// `sync_visibility` 把它补回来再聚焦。
+pub(crate) fn focus_tab(state: &mut DockState<DockTab>, target: DockTab) -> bool {
     let tree = state.main_surface_mut();
     if let Some((node, index)) = tree.find_tab_from(|candidate| *candidate == target) {
         tree.set_focused_node(node);
         tree.set_active_tab(node, index);
+        true
+    } else {
+        false
     }
 }
 
@@ -262,6 +296,7 @@ pub(crate) fn sync_visibility(state: &mut DockState<DockTab>, editor: &EditorApp
     set_tab_present(state, DockTab::Resource, editor.show_resources_panel);
     set_tab_present(state, DockTab::Hierarchy, editor.show_hierarchy_panel);
     set_tab_present(state, DockTab::Inspector, editor.show_inspector_panel);
+    set_tab_present(state, DockTab::Assistant, editor.show_assistant_panel);
     // Scene 先于 Game：两个一起重新显示时，标签顺序仍是「Scene | Game」。
     set_tab_present(state, DockTab::Scene, editor.show_scene_view);
     set_tab_present(state, DockTab::Game, editor.show_game_view);
@@ -318,16 +353,54 @@ fn add_tab(state: &mut DockState<DockTab>, tab: DockTab) {
             }
         }
         DockTab::Inspector => {
-            let anchor = leaf_of(DockTab::Scene)
-                .or_else(|| leaf_of(DockTab::Game))
-                .unwrap_or_else(NodeIndex::root);
-            split_at(
-                tree,
-                anchor,
-                Split::Right,
-                SIZE_INSPECTOR / (NOMINAL_WIDTH - SIZE_LEFT_COLUMN),
-                Node::leaf(tab),
-            );
+            // 助手还在树里时：属性回到助手左边，恢复同一标签组（而不是在中央另开一列，
+            // 那会把用户刚调好的工作区宽度再切一次）。
+            if let Some((node, index)) =
+                tree.find_tab_from(|candidate| *candidate == DockTab::Assistant)
+            {
+                let Node::Leaf(leaf) = &mut tree[node] else {
+                    return;
+                };
+                leaf.insert_tab(index.0, tab);
+                leaf.set_active_tab(index.0);
+            } else {
+                let anchor = leaf_of(DockTab::Scene)
+                    .or_else(|| leaf_of(DockTab::Game))
+                    .unwrap_or_else(NodeIndex::root);
+                split_at(
+                    tree,
+                    anchor,
+                    Split::Right,
+                    SIZE_INSPECTOR / (NOMINAL_WIDTH - SIZE_LEFT_COLUMN),
+                    Node::leaf(tab),
+                );
+            }
+        }
+        DockTab::Assistant => {
+            // 默认与属性同叶；属性不在时按"属性那一列"的锚点新开一块，面板位置仍可预期。
+            if let Some((node, index)) =
+                tree.find_tab_from(|candidate| *candidate == DockTab::Inspector)
+            {
+                let Node::Leaf(leaf) = &mut tree[node] else {
+                    return;
+                };
+                let inspector_was_active = leaf.active == index;
+                leaf.insert_tab(index.0 + 1, tab);
+                if inspector_was_active {
+                    leaf.set_active_tab(index);
+                }
+            } else {
+                let anchor = leaf_of(DockTab::Scene)
+                    .or_else(|| leaf_of(DockTab::Game))
+                    .unwrap_or_else(NodeIndex::root);
+                split_at(
+                    tree,
+                    anchor,
+                    Split::Right,
+                    SIZE_INSPECTOR / (NOMINAL_WIDTH - SIZE_LEFT_COLUMN),
+                    Node::leaf(tab),
+                );
+            }
         }
         // 中央两个标签同属一个标签组：重新显示时插回同一个叶子，不新开一块区域。
         DockTab::Scene | DockTab::Game => {
@@ -475,7 +548,7 @@ pub(crate) fn show_workspace(context: &egui::Context, editor: &mut EditorApp) {
         focus_workspace_tab(&mut dock_state, tab);
     }
     egui::CentralPanel::default().show(context, |ui| {
-        // 这六个面板是常驻视图：可见性只有 View 菜单一个来源，标签上不提供关闭/折叠按钮
+        // 这些面板是常驻视图：可见性只有 View 菜单一个来源，标签上不提供关闭/折叠按钮
         // （关掉的面板下一帧会被 [`sync_visibility`] 补回主表面）。附带一条硬理由：
         // egui_dock 的 tab bar 会为关闭/折叠按钮预留 48px，窄标签页因此能把可用宽度正好
         // 压成 0 并触发其内部断言。浮动窗口的关闭按钮保留（0.18 的替代 setter 尚未提供）。
@@ -555,6 +628,7 @@ impl TabViewer for DockTabViewer<'_> {
                 }
             }
             DockTab::Inspector => editor.draw_inspector_panel(ui),
+            DockTab::Assistant => editor.draw_assistant_panel(ui),
             DockTab::Console => editor.draw_console_body(ui),
         }
         editor
@@ -649,7 +723,7 @@ mod tests {
         }
     }
 
-    /// 默认树必须覆盖迁移前的六个面板区，少一个就是"dock 化后功能消失"。
+    /// 默认树必须覆盖迁移前的六个面板区，外加 M75-03 的助手标签。
     #[test]
     fn default_tree_has_every_previous_panel_region() {
         let mut tabs = tabs_of(&default_dock_state());
@@ -662,6 +736,7 @@ mod tests {
                 DockTab::Scene,
                 DockTab::Game,
                 DockTab::Inspector,
+                DockTab::Assistant,
                 DockTab::Console,
             ]
         );
@@ -762,6 +837,11 @@ mod tests {
             scene,
             "Game 应与 Scene 重叠在同一标签组"
         );
+        assert_eq!(
+            rect_of(&state, DockTab::Assistant),
+            inspector,
+            "AI 助手应与属性重叠在同一标签组（默认不改变旧版几何）"
+        );
     }
 
     /// 隐藏即移除、重新显示即回到原侧（资源在层级左侧、控制台在底部）。
@@ -775,13 +855,13 @@ mod tests {
         let hidden = tabs_of(&state);
         assert!(!hidden.contains(&DockTab::Resource), "资源面板应被移除");
         assert!(!hidden.contains(&DockTab::Console), "控制台应被移除");
-        assert_eq!(hidden.len(), 4, "其余标签不受影响");
+        assert_eq!(hidden.len(), 5, "其余标签不受影响");
 
         editor.show_resources_panel = true;
         editor.show_lua_console = true;
         sync_visibility(&mut state, &editor);
         let shown = tabs_of(&state);
-        assert_eq!(shown.len(), 6, "重新显示后标签数复原");
+        assert_eq!(shown.len(), 7, "重新显示后标签数复原");
         assert!(shown.contains(&DockTab::Resource));
         assert!(shown.contains(&DockTab::Console));
     }
@@ -800,14 +880,14 @@ mod tests {
         for tab in [DockTab::Hierarchy, DockTab::Inspector, DockTab::Scene] {
             assert!(!hidden.contains(&tab), "{tab:?} 应被移除");
         }
-        assert_eq!(hidden.len(), 3, "其余标签不受影响：{hidden:?}");
+        assert_eq!(hidden.len(), 4, "其余标签不受影响：{hidden:?}");
 
         editor.show_hierarchy_panel = true;
         editor.show_inspector_panel = true;
         editor.show_scene_view = true;
         sync_visibility(&mut state, &editor);
         let shown = tabs_of(&state);
-        assert_eq!(shown.len(), 6, "重新显示后标签数复原：{shown:?}");
+        assert_eq!(shown.len(), 7, "重新显示后标签数复原：{shown:?}");
         let node_of = |state: &mut DockState<DockTab>, tab: DockTab| {
             state
                 .main_surface_mut()
@@ -892,7 +972,7 @@ mod tests {
         assert!(text.contains("资源面板"), "资源面板没画出来：{text}");
     }
 
-    /// 极端小窗口：dock 必须仍画完六个标签且不 panic。
+    /// 极端小窗口：dock 必须仍画完七个标签且不 panic。
     ///
     /// egui_dock 0.18 的 tab bar 会为"关闭全部/折叠"按钮预留 48px，窄标签页的可用宽度被
     /// 正好压成 `0.0` 时它内部 `assert_ne!` 直接 panic（阶段 1 实测被 resize 用例打崩过）。
@@ -912,7 +992,7 @@ mod tests {
             let _ = context.run(raw, |context| show_workspace(context, &mut app));
         }
         let state = app.dock_state.take().expect("帧末必须放回 dock 树");
-        assert_eq!(tabs_of(&state).len(), 6, "小窗口不得丢标签");
+        assert_eq!(tabs_of(&state).len(), 7, "小窗口不得丢标签");
     }
 
     /// 结构可读转写（与 [`signature`] 同一趟遍历）：指纹撞车时用它打印出到底哪不同。
@@ -1176,8 +1256,8 @@ mod tests {
             tabs.sort_by_key(|tab| *tab as u8);
             let count = tabs.len();
             tabs.dedup();
-            assert_eq!(count, 6, "step {step}（{note}）标签总数变成 {count}");
-            assert_eq!(tabs.len(), 6, "step {step}（{note}）出现重复标签");
+            assert_eq!(count, 7, "step {step}（{note}）标签总数变成 {count}");
+            assert_eq!(tabs.len(), 7, "step {step}（{note}）出现重复标签");
             assert!(
                 serialize(&state).is_some(),
                 "step {step}（{note}）重排后的树写不进 layout.json"

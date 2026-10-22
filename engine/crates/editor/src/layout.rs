@@ -32,6 +32,8 @@ pub const PANEL_RESOURCE: &str = "resource";
 pub const PANEL_HIERARCHY: &str = "hierarchy";
 pub const PANEL_INSPECTOR: &str = "inspector";
 pub const PANEL_CONSOLE: &str = "console";
+/// M75-03 内置 AI 助手标签（与属性同叶，默认可见）。
+pub const PANEL_ASSISTANT: &str = "assistant";
 /// 中央工作区的两个视图标签（M27-00 阶段 2 收尾：View 菜单逐项可切）。
 /// 只进 `panel_visible`，不进 `panel_widths`——它们的尺寸由所在叶子的拆分比例决定。
 pub const PANEL_SCENE_VIEW: &str = "scene_view";
@@ -52,6 +54,34 @@ const KNOWN_DENSITIES: &[&str] = &["compact", "comfortable"];
 const KNOWN_GIZMO_SPACES: &[&str] = &["world", "local"];
 /// Gizmo 轴心模式（docs/55 P1 的 Pivot/Center）。
 const KNOWN_GIZMO_PIVOTS: &[&str] = &["pivot", "center"];
+/// M75-03 助手服务商（与 `rustlua_editor_ai::ProviderKind` 的 serde 名一致）。
+const KNOWN_ASSISTANT_PROVIDERS: &[&str] = &["openai", "anthropic", "ollama"];
+
+/// 内置 AI 助手的**非密钥**设置（M75-03）。
+///
+/// 密钥永远不在这里：它只驻留 `AssistantState` 的进程内输入框/环境变量，写盘会把它泄露到
+/// `.cache/editor/layout.json`（会进版本库、会被备份、会被崩溃上报收走）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct AssistantLayout {
+    /// `openai` / `anthropic` / `ollama`。
+    pub provider: String,
+    /// 空串 = 用该服务商的默认地址（首次运行可由 `RUSTLUA_AI_*` 环境变量补足）。
+    pub base_url: String,
+    /// 空串 = 用该服务商的默认模型。
+    pub model: String,
+    pub max_tokens: u32,
+}
+
+impl Default for AssistantLayout {
+    fn default() -> Self {
+        Self {
+            provider: "openai".to_owned(),
+            base_url: String::new(),
+            model: String::new(),
+            max_tokens: 4096,
+        }
+    }
+}
 
 /// One persisted layout.
 #[derive(Clone, Debug, PartialEq)]
@@ -76,6 +106,8 @@ pub struct EditorLayout {
     /// 用 `Box` 是为了 `LayoutLoad` 的变体大小（clippy `large_enum_variant`）：这棵树本来
     /// 就只在加载/保存时读一次，多一层间接不影响任何热路径。
     pub dock_tree: Option<Box<serde_json::Value>>,
+    /// 内置 AI 助手的非密钥设置（M75-03）。`None` = 没存过 → 首次运行按环境变量初始化。
+    pub assistant: Option<AssistantLayout>,
 }
 
 impl Default for EditorLayout {
@@ -95,6 +127,7 @@ impl Default for EditorLayout {
                 (PANEL_CONSOLE.to_owned(), true),
                 (PANEL_SCENE_VIEW.to_owned(), true),
                 (PANEL_GAME_VIEW.to_owned(), true),
+                (PANEL_ASSISTANT.to_owned(), true),
             ]),
             workspace_tab: "scene".to_owned(),
             scene_view_mode: "2d".to_owned(),
@@ -105,6 +138,7 @@ impl Default for EditorLayout {
             preview_resolution: (1280, 720),
             density: "compact".to_owned(),
             dock_tree: None,
+            assistant: None,
         }
     }
 }
@@ -178,6 +212,14 @@ impl EditorLayout {
         if !KNOWN_DENSITIES.contains(&self.density.as_str()) {
             self.density = "compact".to_owned();
         }
+        if let Some(assistant) = self.assistant.as_mut() {
+            if !KNOWN_ASSISTANT_PROVIDERS.contains(&assistant.provider.as_str()) {
+                assistant.provider = "openai".to_owned();
+            }
+            if assistant.max_tokens == 0 || assistant.max_tokens > 32_768 {
+                assistant.max_tokens = 4096;
+            }
+        }
     }
 
     /// 校验（`clamp` 已保证合法，这里给出显式报告供测试/诊断使用）。
@@ -216,6 +258,12 @@ impl EditorLayout {
             "preview_resolution": [self.preview_resolution.0, self.preview_resolution.1],
             "density": self.density,
             "dock_tree": self.dock_tree.as_deref().cloned(),
+            "assistant": self.assistant.as_ref().map(|assistant| serde_json::json!({
+                "provider": assistant.provider,
+                "base_url": assistant.base_url,
+                "model": assistant.model,
+                "max_tokens": assistant.max_tokens,
+            })),
         })
     }
 
@@ -277,6 +325,25 @@ impl EditorLayout {
         if let Some(tree) = value.get("dock_tree").filter(|v| v.is_object()) {
             layout.dock_tree = Some(Box::new(tree.clone()));
         }
+        if let Some(assistant) = value.get("assistant").and_then(|v| v.as_object()) {
+            let mut stored = AssistantLayout::default();
+            if let Some(provider) = assistant.get("provider").and_then(|v| v.as_str()) {
+                stored.provider = provider.to_owned();
+            }
+            if let Some(base_url) = assistant.get("base_url").and_then(|v| v.as_str()) {
+                stored.base_url = base_url.to_owned();
+            }
+            if let Some(model) = assistant.get("model").and_then(|v| v.as_str()) {
+                stored.model = model.to_owned();
+            }
+            if let Some(max_tokens) = assistant
+                .get("max_tokens")
+                .and_then(serde_json::Value::as_u64)
+            {
+                stored.max_tokens = u32::try_from(max_tokens).unwrap_or(4096);
+            }
+            layout.assistant = Some(stored);
+        }
         layout.clamp();
         layout
     }
@@ -286,7 +353,10 @@ impl EditorLayout {
 #[derive(Clone, Debug, PartialEq)]
 pub enum LayoutLoad {
     /// 读到并收敛后的布局。
-    Loaded(EditorLayout),
+    ///
+    /// 用 `Box` 压住枚举变体大小（clippy `large_enum_variant`）：布局只在加载/保存时搬一次，
+    /// 多一层间接不在热路径上。
+    Loaded(Box<EditorLayout>),
     /// 文件不存在（首次打开项目）：用默认布局，**不算错误**。
     Missing,
     /// 文件存在但损坏/非法：用默认布局，并给出原因（**不覆盖**源文件）。
@@ -298,7 +368,7 @@ impl LayoutLoad {
     #[must_use]
     pub fn layout(&self) -> EditorLayout {
         match self {
-            Self::Loaded(layout) => layout.clone(),
+            Self::Loaded(layout) => (**layout).clone(),
             Self::Missing | Self::Fallback { .. } => EditorLayout::default(),
         }
     }
@@ -348,7 +418,7 @@ pub fn load_layout(project_root: &Path) -> LayoutLoad {
     }
     let layout = EditorLayout::from_json(&value);
     match layout.validate() {
-        Ok(()) => LayoutLoad::Loaded(layout),
+        Ok(()) => LayoutLoad::Loaded(Box::new(layout)),
         Err(reason) => LayoutLoad::Fallback { reason },
     }
 }
@@ -437,7 +507,7 @@ mod tests {
             LayoutLoad::Loaded(loaded) => {
                 assert_eq!(loaded.gizmo_space, "local", "局部空间必须被记住");
                 assert_eq!(loaded.gizmo_pivot, "center", "中心轴心必须被记住");
-                assert_eq!(loaded, layout);
+                assert_eq!(*loaded, layout);
             }
             other => panic!("加载失败：{other:?}"),
         }
@@ -455,6 +525,48 @@ mod tests {
         let restored = EditorLayout::from_json(&value);
         assert_eq!(restored.gizmo_space, "world");
         assert_eq!(restored.gizmo_pivot, "pivot");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// M75-03：助手的非密钥设置随布局往返；文件里没有密钥字段，越界值收敛。
+    #[test]
+    fn assistant_settings_round_trip_without_a_key_field() {
+        let root = temp_root("assistant");
+        let assistant = AssistantLayout {
+            provider: "anthropic".to_owned(),
+            base_url: "https://api.anthropic.com".to_owned(),
+            model: "claude-sonnet-4".to_owned(),
+            max_tokens: 8192,
+        };
+        let layout = EditorLayout {
+            assistant: Some(assistant.clone()),
+            ..EditorLayout::default()
+        };
+        save_layout(&root, &layout).expect("save");
+        let text = std::fs::read_to_string(layout_path(&root)).expect("read");
+        assert!(
+            !text.contains("api_key") && !text.contains("sk-"),
+            "布局不得出现密钥字段：{text}"
+        );
+        match load_layout(&root) {
+            LayoutLoad::Loaded(loaded) => assert_eq!(loaded.assistant, Some(assistant.clone())),
+            other => panic!("加载失败：{other:?}"),
+        }
+        // 手改/降级值收敛：未知服务商回 openai，0 与超上限的 max_tokens 回默认。
+        let mut broken = layout.clone();
+        broken.assistant = Some(AssistantLayout {
+            provider: "evil".to_owned(),
+            max_tokens: 999_999,
+            ..assistant
+        });
+        broken.clamp();
+        let repaired = broken.assistant.expect("仍然保留助手段");
+        assert_eq!(repaired.provider, "openai");
+        assert_eq!(repaired.max_tokens, 4096);
+        // 没有助手段的老文件 → None（由编辑器按环境变量初始化）。
+        let mut value = layout.to_json();
+        value.as_object_mut().expect("object").remove("assistant");
+        assert_eq!(EditorLayout::from_json(&value).assistant, None);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -484,7 +596,7 @@ mod tests {
                 LayoutLoad::Loaded(layout) => layout,
                 other => panic!("第 {cycle} 次加载失败：{other:?}"),
             };
-            assert_eq!(loaded, layout, "第 {cycle} 次往返必须完全一致");
+            assert_eq!(*loaded, layout, "第 {cycle} 次往返必须完全一致");
             save_layout(&root, &loaded).expect("save");
         }
         let final_bytes = std::fs::read(layout_path(&root)).expect("read");
