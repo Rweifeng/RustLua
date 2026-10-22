@@ -15,6 +15,13 @@
 //!
 //! 失败约定：参数非法时返回 `false`/默认值并记录原因（`last_error`），与桌面
 //! `api_error` 抛错的**行为等价**——JS 桥据此把错误转成 Lua error 或静默默认值。
+//!
+//! ## 状态：诊断镜像，不同步新 API（P5-02）
+//!
+//! 本模块**不在 web 宿主注册路径上**：clock/calendar/day 由
+//! [`rustlua_gameplay::clock_lua`] 在 `register_api` 里直接装进 Lua。这里只作为诊断镜像
+//! 保留，因此**不实现** `calendar.configure`，日历固定按 28×4 语义；接回宿主前必须补齐
+//! 同形 API，否则又会变成两份语义不同且没有说明的镜像。
 
 use js_sys::Object;
 use wasm_bindgen::JsValue;

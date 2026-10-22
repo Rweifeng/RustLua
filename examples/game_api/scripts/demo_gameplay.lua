@@ -134,6 +134,17 @@ function M.on_create()
             .. "5=map.goto(here) 6=map.enter(here) 7=map.go(main) C=interact r=120/24 - " .. api.KEYS_BACK
     )
 
+    -- ⓪ calendar.configure：季节长度与年季数是体裁参数，不是写死的 28×4。这里收紧成
+    --    7 天/季、3 季/年，calendar.set 的第 8 天必须被拒绝；随后恢复默认值——下面 Y 键的
+    --    calendar.set(12,3,2,400) 依赖 28 天/季。
+    calendar.configure({ days_per_season = 7, seasons_per_year = 3 })
+    local day8_rejected = pcall(calendar.set, 8, 1, 1, 0)
+    calendar.configure({ days_per_season = 28, seasons_per_year = 4 })
+    last = string.format(
+        "calendar.configure 7x3: calendar.set(8,1,1,0) rejected=%s, restored 28x4",
+        tostring(not day8_rejected)
+    )
+
     -- ① item.define：注册物品定义。`stack` 是 inv.add 堆叠上限的唯一来源；
     --    没定义过的物品 id 也能 add，只是按引擎默认上限 99 堆叠。
     --    item.def 是这份注册表的读口（下面每帧都会读一次 turnip_seed 打到屏幕上）。

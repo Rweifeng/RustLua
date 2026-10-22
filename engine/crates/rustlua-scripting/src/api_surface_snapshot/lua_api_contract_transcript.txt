@@ -1,5 +1,7 @@
 animation.attach.empty | ok=false/get_after=entity has no animation
 animation.set.idempotent | attach=true/default=c_idle/set_new=true/set_same=false/frame=0/unknown_ok=false/after_unknown=c_walk
+calendar.configure.custom | configured=true/day8=false/day=7/season=3/year=1/absolute_day=21
+calendar.configure.invalid | zero_days=false/zero_seasons=false/missing=false/unchanged=true
 calendar.now.shape | keys(absolute_day,day,minute,season,year)
 calendar.roundtrip | day=14/season=3/year=2/absolute_day=182
 calendar.set.out_of_range | day29=false

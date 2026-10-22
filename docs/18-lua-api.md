@@ -87,26 +87,32 @@ end
 
 以下模块用于把 2D 农场循环下沉为稳定的 Lua API。所有接口都运行在主线程共享状态中，错误转换为 Lua 错误而不是 panic。
 
-| 模块 | API | 说明 |
-|---|---|---|
-| `grid` | `world_to_cell(x,y,tile_size)` / `cell_to_world(cx,cy,tile_size)` / `facing_cell(x,y,facing,tile_size)` / `in_bounds` | 世界坐标与格子坐标互转；`facing` 支持 `up/down/left/right` 及 `n/s/w/e` |
-| `tilemap` | `create(width,height,tile_size[,texture][,name])` / `get(id)` / `is_solid(id,x,y)` / `get_cell(id,x,y)` / `set_cell(id,x,y,value)` / `set_solid(id,x,y,bool)` / `set_texture(id,texture)` / `get_meta(id,x,y,key)` / `set_meta(id,x,y,key,value)` / `find_path(id,fx,fy,tx,ty,diagonal?)` | 运行时创建空 Tilemap 实体（用于数据驱动的农田网格，headless 也适用），或对既有 Tilemap 写视觉格、碰撞层和每格字符串元数据；`set_meta` 空 value 删除键；格子值 `0`=空、`1..=6`=贴图集列（纹理列采样，见 `assets/textures/tileset.png`）；`find_path` 以 solid 为阻挡做 A* 四/八向寻路（可选 diagonal，禁穿角），成功返回含两端的 `{x,y}` 路径表，失败返回 `nil, reason`。**M29**：`get(id)` 的返回表新增 `texture` 字段；`set_texture(id, texture)` 运行期换整张地表贴图（**只动 `Tilemap::texture`，不动 tiles/solid/每格 meta**），渲染器每帧重读该组件、变化时重建这一层网格（下一帧生效）。空串/纯空格纹理、实体没有 Tilemap 组件都直接报 Lua 错误。典型用途：按季节换地表（`examples/game_jhyt` 的 `world/season_visual.lua`） |
-| `clock` | `now` / `set_rate` / `pause` / `add` / `set` / `sleep_to_morning` | 独立游戏时钟，默认第 1 天 06:00；`set_rate(n)` 表示每秒推进 n 个游戏分钟，宿主在固定步进时调用 |
-| `calendar` | `now` / `set` | 日期/季节/年（M16-08）。`now()` 返回 `absolute_day/day/season/year/minute`（`day` 为季节内第几天，1~28，28 天/季 × 4 季/年）；`set(day,season,year,minute)` 按绝对天数写入 |
-| `day` | `sleep` / `now` | 每日生命周期（M16-08）。`sleep()` 推进到次日 06:00 并触发全局 `on_day_end` → `on_day_start` 回调（脚本定义了才调用）；时钟自然跨午夜时宿主也会触发 `on_day_start`。`now()` 返回 `day/minute` |
-| `tag` | `get` / `set` | 给实体附加字符串标签；空 value 删除标签 |
-| `interact` | `query(x,y,radius)` / `prompt(text)` / `clear_prompt` / `get_prompt` | 按距离和 `priority` 排序查询可交互实体，显示/清除交互提示 |
-| `item` | `define(id,def)` / `def(id)` | 注册和查询物品定义（`name/description/stack/buy/sell/texture/kind`） |
-| `inv` | `create/hotbar/capacity/exists/add/remove/count/get/slot/set/swap/move/equip/equip_get/equip_list` | 固定容量背包、堆叠与快捷栏；槽位从 1 开始。`equip(inv,slot,item_id)` 写入/清除（nil 清除）装备槽（M16-07 骨架，暂无属性效果），`equip_get` 查询单槽，`equip_list` 返回槽→物品表 |
-| `container` | `open(entity_id,capacity)` / `get` / `close` / `move` | 把实体 ID 关联为箱子背包，并可与玩家背包互转 |
-| `save` | `blob_write(key,value)` / `blob_read(key)` / `slot(name)` / `slot_get` / `clear()` | 任意 Lua 值（表/数字/字符串/布尔）经 `__blob:<key>` JSON 存入键值存档，可用 `slot(name)` 切换 `save_<slot>.sav`。持久化走 `commit()`（原子写盘）、读档走 `load()`（见上表）。**当前 API 无 `version()`、无 `on_migrate` 迁移钩子**——`load()` 接受 `save_version=1`（旧原始行格式，原样读入、下次保存升级）与 `save_version=2`（转义行格式，写入格式），缺失版本头 / 版本 0 / 高于当前版本返回 false 且不覆盖原文件。`load()` 返回 `(ok, reason)`，`reason ∈ {"no_save_path","missing","corrupt: <err>"}`，用于区分「没有存档」与「存档损坏」。`clear()` 丢弃内存中的全部键值并返回删除条数（新游戏必须调用，否则上一局的键会带进新档）。**平台后端有三份**（2026-10-05）：PC 走 `std::fs` + 临时文件 rename 的原子写；wasm 侧只有只读 VFS，因此 web/微信上的 `save` 是 `plugins/webgl/web-runtime.js` 里 Lua 补丁自写的第三份——行格式与本条同判据，值层换成保留整数键与整数/浮点之分的长度前缀树，落点是 `localStorage` / `wx.setStorageSync`（键 `rustlua:save[_<slot>]`），**没有原子写**（半档会被 `load` 判成 `corrupt` 并保留原文件，但救不回来），也没有跨设备同步。详见 [docs/51](51-平台插件适配.md)「存档落盘」 |
-| `map` | `go(name,x,y)` / `enter(name,x,y)` / `current` / `spawn` / `set_spawn` / `schema(name,spec)` / `state(name[,value])` / `state_clear([name])` | 带出生点切图、当前图查询、分地图 blob 持久化；`schema` 注册分地图状态的轻量结构校验器，`schema(name,nil)` 清除；`state(name,value)` 写入前校验，错误定位到地图名与字段；`state_clear(name)` 删除单张地图状态、`state_clear()` 删除全部 `__mapstate:*`，均返回删除条数（开新游戏用） |
-| `shop` | `set_catalog` / `price` | 商店目录与价格服务（M16-10）。`set_catalog(name,spec)` 注册目录（`{item_id:{buy,sell}}`），`price(name,item_id)` 返回 `{buy,sell}` 或 nil；买卖交易与资金在 Lua 玩法层完成 |
-| `ui` | `panel/image/grid/grid_cell/grid_clear/grid_hit/tooltip/modal/modal_show/modal_hide/clear/drag_begin/drag_end/drag_active/drag_cancel` | 运行时动态面板、图片、背包网格、tooltip、模态层与拖拽回调 |
-| `ui` | `panel_get(id)` | 读回 `ui.panel` 建的动态面板：`{x,y,width,height,r,g,b,a,visible}`；不存在返回 `nil`（M22，UI 动画/可见性的 headless 断言用） |
-| `ui` | `image_get(id)` | 读回 `ui.image` 建的动态图片：`{x,y,width,height,texture,r,g,b}`；不存在返回 `nil`（M29，与 `panel_get` 同构——让"画出来的东西"可以被 headless 直接断言，例如资源条宽度 = 真实数值比例、天气图标是晴还是雨） |
-| `ui` | `text_get(id)` | 读回 `ui.text_at` 建的动态文本：`{text,x,y,scale,size,visible}`；不存在返回 `nil`。`size` 是**渲染用的像素字号**（`ui.text_at` 给了 `font_size` 就是它，否则按 `scale × 12` 折算，与渲染口径一致）。用途：headless 验收读回"真正画出来的那串字"（M30 的排版审计就是逐条量它的宽度） |
-| `ui` | `measure_text(text, size)` | **与渲染同口径**的文字度量：`{width, height, lines, glyphs, missing, missing_count}`。同一个工程字体、同一套 advance 与字间距（`TextStyle::default().spacing = 1.0`，即每个字符后加 1px），只做度量不做光栅化，因此 headless 也能用、且很便宜。`missing` 是字体**没有字形**的字符（例如 emoji），直接用于"缺字/豆腐块"检查；`size` 必须为正数，否则报 Lua 错误。用途：中文排版按真实字宽裁剪/换行，而不是按字数估宽（`examples/game_jhyt` 的 `ui/text_fit.lua` + `ui/ui_text.lua`，验收 `jhyt_m30_cjk_text`） |
+| 模块 | API | 说明 | 层 |
+|---|---|---|---|
+| `grid` | `world_to_cell(x,y,tile_size)` / `cell_to_world(cx,cy,tile_size)` / `facing_cell(x,y,facing,tile_size)` / `in_bounds` | 世界坐标与格子坐标互转；`facing` 支持 `up/down/left/right` 及 `n/s/w/e` | 通用换算 |
+| `tilemap` | `create(width,height,tile_size[,texture][,name])` / `get(id)` / `is_solid(id,x,y)` / `get_cell(id,x,y)` / `set_cell(id,x,y,value)` / `set_solid(id,x,y,bool)` / `set_texture(id,texture)` / `get_meta(id,x,y,key)` / `set_meta(id,x,y,key,value)` / `find_path(id,fx,fy,tx,ty,diagonal?)` | 运行时创建空 Tilemap 实体（用于数据驱动的农田网格，headless 也适用），或对既有 Tilemap 写视觉格、碰撞层和每格字符串元数据；`set_meta` 空 value 删除键；格子值 `0`=空、`1..=6`=贴图集列（纹理列采样，见 `assets/textures/tileset.png`）；`find_path` 以 solid 为阻挡做 A* 四/八向寻路（可选 diagonal，禁穿角），成功返回含两端的 `{x,y}` 路径表，失败返回 `nil, reason`。**M29**：`get(id)` 的返回表新增 `texture` 字段；`set_texture(id, texture)` 运行期换整张地表贴图（**只动 `Tilemap::texture`，不动 tiles/solid/每格 meta**），渲染器每帧重读该组件、变化时重建这一层网格（下一帧生效）。空串/纯空格纹理、实体没有 Tilemap 组件都直接报 Lua 错误。典型用途：按季节换地表（`examples/game_jhyt` 的 `world/season_visual.lua`） | 服务（场景） |
+| `clock` | `now` / `set_rate` / `pause` / `add` / `set` / `sleep_to_morning` | 独立游戏时钟，默认第 1 天 06:00；`set_rate(n)` 表示每秒推进 n 个游戏分钟，宿主在固定步进时调用 | 数据模型（跨 VM 状态） |
+| `calendar` | `now` / `set` / `configure` | 日期/季节/年（M16-08）。`now()` 返回 `absolute_day/day/season/year/minute`（`day` 为季节内第几天，默认 1~28）；`set(day,season,year,minute)` 按绝对天数写入。**28 天/季 × 4 季/年是农场体裁默认值，不是引擎语义**：`configure{days_per_season,seasons_per_year}` 改写派生口径与 `set` 上界（正整数校验，非法值报错且不改状态，P5-02） | 数据模型（体裁已参数化） |
+| `day` | `sleep` / `now` | 每日生命周期（M16-08）。`sleep()` 推进到次日 06:00 并触发全局 `on_day_end` → `on_day_start` 回调（脚本定义了才调用）；时钟自然跨午夜时宿主也会触发 `on_day_start`。`now()` 返回 `day/minute` | 数据模型（跨 VM 状态） |
+| `tag` | `get` / `set` | 给实体附加字符串标签；空 value 删除标签 | 数据模型（ECS 身份，废弃候选） |
+| `interact` | `query(x,y,radius)` / `prompt(text)` / `clear_prompt` / `get_prompt` | 按距离和 `priority` 排序查询可交互实体，显示/清除交互提示 | 数据模型（ECS 身份，废弃候选） |
+| `item` | `define(id,def)` / `def(id)` | 注册和查询物品定义（`name/description/stack/buy/sell/texture/kind`） | 数据模型（跨 VM 状态） |
+| `inv` | `create/hotbar/capacity/exists/add/remove/count/get/slot/set/swap/move/equip/equip_get/equip_list` | 固定容量背包、堆叠与快捷栏；槽位从 1 开始。`equip(inv,slot,item_id)` 写入/清除（nil 清除）装备槽（M16-07 骨架，暂无属性效果），`equip_get` 查询单槽，`equip_list` 返回槽→物品表 | 数据模型（跨 VM 状态） |
+| `container` | `open(entity_id,capacity)` / `get` / `close` / `move` | 把实体 ID 关联为箱子背包，并可与玩家背包互转 | 数据模型（跨 VM 状态，废弃候选） |
+| `save` | `blob_write(key,value)` / `blob_read(key)` / `slot(name)` / `slot_get` / `clear()` | 任意 Lua 值（表/数字/字符串/布尔）经 `__blob:<key>` JSON 存入键值存档，可用 `slot(name)` 切换 `save_<slot>.sav`。持久化走 `commit()`（原子写盘）、读档走 `load()`（见上表）。**当前 API 无 `version()`、无 `on_migrate` 迁移钩子**——`load()` 接受 `save_version=1`（旧原始行格式，原样读入、下次保存升级）与 `save_version=2`（转义行格式，写入格式），缺失版本头 / 版本 0 / 高于当前版本返回 false 且不覆盖原文件。`load()` 返回 `(ok, reason)`，`reason ∈ {"no_save_path","missing","corrupt: <err>"}`，用于区分「没有存档」与「存档损坏」。`clear()` 丢弃内存中的全部键值并返回删除条数（新游戏必须调用，否则上一局的键会带进新档）。**平台后端有三份**（2026-10-05）：PC 走 `std::fs` + 临时文件 rename 的原子写；wasm 侧只有只读 VFS，因此 web/微信上的 `save` 是 `plugins/webgl/web-runtime.js` 里 Lua 补丁自写的第三份——行格式与本条同判据，值层换成保留整数键与整数/浮点之分的长度前缀树，落点是 `localStorage` / `wx.setStorageSync`（键 `rustlua:save[_<slot>]`），**没有原子写**（半档会被 `load` 判成 `corrupt` 并保留原文件，但救不回来），也没有跨设备同步。详见 [docs/51](51-平台插件适配.md)「存档落盘」 | 服务（持久化） |
+| `map` | `go(name,x,y)` / `enter(name,x,y)` / `current` / `spawn` / `set_spawn` / `schema(name,spec)` / `state(name[,value])` / `state_clear([name])` | 带出生点切图、当前图查询、分地图 blob 持久化；`schema` 注册分地图状态的轻量结构校验器，`schema(name,nil)` 清除；`state(name,value)` 写入前校验，错误定位到地图名与字段；`state_clear(name)` 删除单张地图状态、`state_clear()` 删除全部 `__mapstate:*`，均返回删除条数（开新游戏用） | 服务（持久化） |
+| `shop` | `set_catalog` / `price` | 商店目录与价格服务（M16-10）。`set_catalog(name,spec)` 注册目录（`{item_id:{buy,sell}}`），`price(name,item_id)` 返回 `{buy,sell}` 或 nil；买卖交易与资金在 Lua 玩法层完成 | 规则（体裁默认目录） |
+| `ui` | `panel/image/grid/grid_cell/grid_clear/grid_hit/tooltip/modal/modal_show/modal_hide/clear/drag_begin/drag_end/drag_active/drag_cancel` | 运行时动态面板、图片、背包网格、tooltip、模态层与拖拽回调 | 表现层 |
+| `ui` | `panel_get(id)` | 读回 `ui.panel` 建的动态面板：`{x,y,width,height,r,g,b,a,visible}`；不存在返回 `nil`（M22，UI 动画/可见性的 headless 断言用） | 表现层 |
+| `ui` | `image_get(id)` | 读回 `ui.image` 建的动态图片：`{x,y,width,height,texture,r,g,b}`；不存在返回 `nil`（M29，与 `panel_get` 同构——让"画出来的东西"可以被 headless 直接断言，例如资源条宽度 = 真实数值比例、天气图标是晴还是雨） | 表现层 |
+| `ui` | `text_get(id)` | 读回 `ui.text_at` 建的动态文本：`{text,x,y,scale,size,visible}`；不存在返回 `nil`。`size` 是**渲染用的像素字号**（`ui.text_at` 给了 `font_size` 就是它，否则按 `scale × 12` 折算，与渲染口径一致）。用途：headless 验收读回"真正画出来的那串字"（M30 的排版审计就是逐条量它的宽度） | 表现层 |
+| `ui` | `measure_text(text, size)` | **与渲染同口径**的文字度量：`{width, height, lines, glyphs, missing, missing_count}`。同一个工程字体、同一套 advance 与字间距（`TextStyle::default().spacing = 1.0`，即每个字符后加 1px），只做度量不做光栅化，因此 headless 也能用、且很便宜。`missing` 是字体**没有字形**的字符（例如 emoji），直接用于"缺字/豆腐块"检查；`size` 必须为正数，否则报 Lua 错误。用途：中文排版按真实字宽裁剪/换行，而不是按字数估宽（`examples/game_jhyt` 的 `ui/text_fit.lua` + `ui/ui_text.lua`，验收 `jhyt_m30_cjk_text`） | 表现层 |
+
+**分层口径（P5-01，2026-10-21）**：`层` 列回答“这一块归谁”——`规则` 尽量留在工程 Lua；
+`数据模型` 是需要跨 VM 生命周期或 ECS 身份的运行时状态；`服务` 是持久化/平台 IO；`通用换算`
+是与渲染/场景共享的纯函数；`表现层` 是 UI 状态。`container` / `interact` / `tag` 在出货工程
+**0 静态调用点**（2026-10-20 审计），保留给 `game_api` 与行为契约，**删除需 v0.2 兼容窗口**。
+整体下沉的判定与触发条件见 `tasks/plan/P5-玩法层边界与Lua下沉.md`。
 
 `ui.clear(id)` 会同时删掉同 id 的动态**面板、图片、网格**（以及 `<id>:tooltip` / `<id>:title` 文本），
 而 `ui.hide(id)` 只覆盖文本与面板——要让一个图片元素消失必须 `ui.clear(id)`。

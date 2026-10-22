@@ -21,9 +21,7 @@ use mlua::{Function, Lua, Result as LuaResult};
 use rustlua_lua_api::Handle;
 use rustlua_lua_api::api_error;
 
-use crate::gameplay::{
-    DAYS_PER_SEASON, DAYS_PER_YEAR, GameClock, MINUTES_PER_DAY, SEASONS_PER_YEAR,
-};
+use crate::gameplay::{GameClock, MINUTES_PER_DAY};
 
 /// 游戏时钟的能力单元（`what` = `game_clock`，与 Lua 侧的读法一致）。
 #[must_use]
@@ -134,20 +132,59 @@ fn install_calendar(lua: &Lua, clock: &Handle<GameClock>) -> LuaResult<()> {
     )?;
     let s = clock.clone();
     table.set(
+        "configure",
+        lua.create_function(move |_, options: mlua::Table| {
+            let days: Option<i64> = options.get("days_per_season")?;
+            let days =
+                days.ok_or_else(|| api_error("calendar.configure requires days_per_season"))?;
+            let seasons: Option<i64> = options.get("seasons_per_year")?;
+            let seasons =
+                seasons.ok_or_else(|| api_error("calendar.configure requires seasons_per_year"))?;
+            if !(1..=u32::MAX as i64).contains(&days) {
+                return Err(api_error(
+                    "calendar.configure days_per_season must be a positive integer",
+                ));
+            }
+            if !(1..=u32::MAX as i64).contains(&seasons) {
+                return Err(api_error(
+                    "calendar.configure seasons_per_year must be a positive integer",
+                ));
+            }
+            s.borrow_mut()?
+                .configure_calendar(days as u32, seasons as u32)
+                .map_err(|error| api_error(format!("calendar.configure {error}")))
+        })?,
+    )?;
+    let s = clock.clone();
+    table.set(
         "set",
         lua.create_function(
             move |_, (day, season, year, minute): (i64, i64, i64, i64)| {
-                let days = DAYS_PER_SEASON as i64;
+                let (days, seasons, year_days) = {
+                    let clock = s.borrow()?;
+                    (
+                        clock.days_per_season as i64,
+                        clock.seasons_per_year as i64,
+                        clock.days_per_year() as i64,
+                    )
+                };
                 if day < 1 || day > days {
                     return Err(api_error(format!("calendar.set day must be in 1..={days}")));
                 }
-                if !(1..=SEASONS_PER_YEAR as i64).contains(&season) {
-                    return Err(api_error("calendar.set season must be in 1..=4"));
+                if !(1..=seasons).contains(&season) {
+                    return Err(api_error(format!(
+                        "calendar.set season must be in 1..={seasons}"
+                    )));
                 }
                 if year < 1 {
                     return Err(api_error("calendar.set year must be >= 1"));
                 }
-                let absolute = (year - 1) * DAYS_PER_YEAR as i64 + (season - 1) * days + day;
+                let absolute = (year - 1)
+                    .checked_mul(year_days)
+                    .and_then(|base| base.checked_add((season - 1) * days))
+                    .and_then(|base| base.checked_add(day))
+                    .filter(|absolute| *absolute <= u32::MAX as i64)
+                    .ok_or_else(|| api_error("calendar.set date is out of range"))?;
                 s.borrow_mut()?
                     .set_absolute(absolute as u32, minute.max(0) as u32);
                 Ok(())
@@ -213,14 +250,14 @@ mod tests {
         (lua, clock)
     }
 
-    /// 三张表的 Lua 面就这 10 个函数：搬家之后一个都不能少
+    /// 三张表的 Lua 面就这 11 个函数：搬家之后一个都不能少
     /// （`api_surface_snapshot` 盯全量，这条盯"这一步搬全了"）。
     const NAMES: [(&str, &[&str]); 3] = [
         (
             "clock",
             &["now", "set_rate", "pause", "add", "set", "sleep_to_morning"],
         ),
-        ("calendar", &["now", "set"]),
+        ("calendar", &["now", "set", "configure"]),
         ("day", &["sleep", "now"]),
     ];
 
@@ -283,6 +320,65 @@ mod tests {
         .exec()
         .unwrap();
         assert_eq!(clock.borrow().unwrap().day, 29);
+    }
+
+    #[test]
+    fn calendar_configure_changes_bounds_and_derivation() {
+        let (lua, clock) = installed();
+        lua.load(
+            r#"
+            calendar.configure({ days_per_season = 7, seasons_per_year = 3 })
+            local out_of_bounds = pcall(function() calendar.set(8, 1, 1, 0) end)
+            assert(out_of_bounds == false, "8 日超出 7 天/季")
+            calendar.set(7, 3, 1, 60)
+            local now = calendar.now()
+            assert(now.absolute_day == 21 and now.day == 7 and now.season == 3 and now.year == 1)
+            calendar.set(1, 1, 2, 0)
+            local next_year = calendar.now()
+            assert(next_year.absolute_day == 22 and next_year.season == 1 and next_year.year == 2)
+            "#,
+        )
+        .exec()
+        .unwrap();
+        let clock = clock.borrow().unwrap();
+        assert_eq!(
+            (clock.days_per_season, clock.seasons_per_year, clock.day),
+            (7, 3, 22)
+        );
+    }
+
+    #[test]
+    fn calendar_configure_rejects_invalid_values_without_mutation() {
+        let (lua, clock) = installed();
+        for (source, needle) in [
+            (
+                "calendar.configure({ days_per_season = 0, seasons_per_year = 4 })",
+                "days_per_season must be a positive integer",
+            ),
+            (
+                "calendar.configure({ days_per_season = 7, seasons_per_year = 0 })",
+                "seasons_per_year must be a positive integer",
+            ),
+            (
+                "calendar.configure({ days_per_season = 4294967295, seasons_per_year = 2 })",
+                "must fit in u32",
+            ),
+            (
+                "calendar.configure({ days_per_season = 7 })",
+                "requires seasons_per_year",
+            ),
+        ] {
+            let error = lua.load(source).exec().unwrap_err().to_string();
+            assert!(
+                error.contains(needle),
+                "`{source}` 应报 `{needle}`：{error}"
+            );
+        }
+        assert_eq!(
+            *clock.borrow().unwrap(),
+            GameClock::default(),
+            "非法配置不得改动日历"
+        );
     }
 
     #[test]

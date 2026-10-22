@@ -126,6 +126,39 @@ cases['calendar.set.out_of_range'] = function()
   return 'day29=' .. tostring(ok)
 end
 
+-- 体裁尺寸参数化（P5-02）：7 天/季 × 3 季/年下派生与 set 上界都跟着变；用例结束恢复
+-- 默认尺寸与进入时的日期，后面的 calendar 用例不受影响。
+cases['calendar.configure.custom'] = function()
+  local before = calendar.now()
+  local configured = pcall(function()
+    calendar.configure({ days_per_season = 7, seasons_per_year = 3 })
+  end)
+  local day8 = pcall(function() calendar.set(8, 1, 1, 0) end)
+  calendar.set(7, 3, 1, 60)
+  local c = calendar.now()
+  local shape = 'day=' .. tostring(c.day) .. '/season=' .. tostring(c.season)
+    .. '/year=' .. tostring(c.year) .. '/absolute_day=' .. tostring(c.absolute_day)
+  calendar.configure({ days_per_season = 28, seasons_per_year = 4 })
+  calendar.set(before.day, before.season, before.year, before.minute)
+  return 'configured=' .. tostring(configured) .. '/day8=' .. tostring(day8) .. '/' .. shape
+end
+
+cases['calendar.configure.invalid'] = function()
+  local before = calendar.now()
+  local zero_days = pcall(function()
+    calendar.configure({ days_per_season = 0, seasons_per_year = 4 })
+  end)
+  local zero_seasons = pcall(function()
+    calendar.configure({ days_per_season = 7, seasons_per_year = 0 })
+  end)
+  local missing = pcall(function() calendar.configure({ days_per_season = 7 }) end)
+  local after = calendar.now()
+  local unchanged = before.absolute_day == after.absolute_day
+    and before.day == after.day and before.season == after.season
+  return 'zero_days=' .. tostring(zero_days) .. '/zero_seasons=' .. tostring(zero_seasons)
+    .. '/missing=' .. tostring(missing) .. '/unchanged=' .. tostring(unchanged)
+end
+
 cases['day.now.shape'] = function()
   return shape(function() return day.now() end)
 end

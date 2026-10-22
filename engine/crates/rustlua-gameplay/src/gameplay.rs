@@ -8,11 +8,12 @@ use std::collections::BTreeMap;
 pub const MINUTES_PER_DAY: u32 = 24 * 60;
 /// The default wake-up time used by a fresh game clock (06:00).
 pub const DEFAULT_WAKE_MINUTE: u32 = 6 * 60;
-/// Days per season; the farm calendar uses a 28-day season × 4 seasons year.
+/// 每季天数的**农场体裁默认值**（28），不是引擎语义；[`GameClock::days_per_season`] 的初值。
 pub const DAYS_PER_SEASON: u32 = 28;
-/// Seasons per year.
+/// 每年季数的**农场体裁默认值**（4），不是引擎语义；[`GameClock::seasons_per_year`] 的初值。
 pub const SEASONS_PER_YEAR: u32 = 4;
-/// Total days per year (`28 × 4`).
+/// 默认配置下的一年天数（`28 × 4`）。只描述默认值，运行期请读
+/// [`GameClock::days_per_year`]。
 pub const DAYS_PER_YEAR: u32 = DAYS_PER_SEASON * SEASONS_PER_YEAR;
 
 /// Independent game clock decoupled from wall-clock `time.delta()`.
@@ -25,6 +26,10 @@ pub struct GameClock {
     /// Game minutes advanced per real second. `0.0` disables auto-advance.
     pub rate: f32,
     pub paused: bool,
+    /// 每季天数。28 是农场体裁默认值，可通过 `calendar.configure` 改写。
+    pub days_per_season: u32,
+    /// 每年季数。4 是农场体裁默认值，可通过 `calendar.configure` 改写。
+    pub seasons_per_year: u32,
 }
 
 impl Default for GameClock {
@@ -34,6 +39,8 @@ impl Default for GameClock {
             minute: DEFAULT_WAKE_MINUTE,
             rate: 0.0,
             paused: false,
+            days_per_season: DAYS_PER_SEASON,
+            seasons_per_year: SEASONS_PER_YEAR,
         }
     }
 }
@@ -76,22 +83,48 @@ impl GameClock {
         self.day
     }
 
-    /// 1-based season (`1..=4`) derived from the absolute day.
+    /// 当前配置下的一年天数。
+    #[must_use]
+    pub fn days_per_year(&self) -> u32 {
+        self.days_per_season * self.seasons_per_year
+    }
+
+    /// 改写日历的体裁尺寸；非法值返回错误且不改动任何字段。
+    pub fn configure_calendar(
+        &mut self,
+        days_per_season: u32,
+        seasons_per_year: u32,
+    ) -> Result<(), CalendarConfigError> {
+        if days_per_season == 0 {
+            return Err(CalendarConfigError::DaysPerSeasonZero);
+        }
+        if seasons_per_year == 0 {
+            return Err(CalendarConfigError::SeasonsPerYearZero);
+        }
+        if days_per_season.checked_mul(seasons_per_year).is_none() {
+            return Err(CalendarConfigError::DaysPerYearOverflow);
+        }
+        self.days_per_season = days_per_season;
+        self.seasons_per_year = seasons_per_year;
+        Ok(())
+    }
+
+    /// 1-based season (`1..=seasons_per_year`) derived from the absolute day.
     #[must_use]
     pub fn season(&self) -> u32 {
-        ((self.day - 1) / DAYS_PER_SEASON) % SEASONS_PER_YEAR + 1
+        ((self.day - 1) / self.days_per_season) % self.seasons_per_year + 1
     }
 
     /// 1-based year derived from the absolute day.
     #[must_use]
     pub fn year(&self) -> u32 {
-        (self.day - 1) / DAYS_PER_YEAR + 1
+        (self.day - 1) / self.days_per_year() + 1
     }
 
-    /// 1-based day within the current season (`1..=DAYS_PER_SEASON`).
+    /// 1-based day within the current season (`1..=days_per_season`).
     #[must_use]
     pub fn day_of_season(&self) -> u32 {
-        (self.day - 1) % DAYS_PER_SEASON + 1
+        (self.day - 1) % self.days_per_season + 1
     }
 
     /// Sets an absolute day (`>= 1`) and minute-of-day.
@@ -99,6 +132,17 @@ impl GameClock {
         self.day = day.max(1);
         self.minute = minute.min(MINUTES_PER_DAY - 1);
     }
+}
+
+/// [`GameClock::configure_calendar`] 的拒绝原因。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum CalendarConfigError {
+    #[error("days_per_season must be >= 1")]
+    DaysPerSeasonZero,
+    #[error("seasons_per_year must be >= 1")]
+    SeasonsPerYearZero,
+    #[error("days_per_season * seasons_per_year must fit in u32")]
+    DaysPerYearOverflow,
 }
 
 /// Errors produced by inventory operations.
@@ -321,6 +365,74 @@ mod tests {
         assert_eq!((clock.season(), clock.year()), (4, 1));
         clock.day = DAYS_PER_YEAR + 1;
         assert_eq!((clock.season(), clock.year()), (1, 2));
+    }
+
+    #[test]
+    fn calendar_defaults_match_the_farm_genre() {
+        let clock = GameClock::default();
+        assert_eq!(
+            (
+                clock.days_per_season,
+                clock.seasons_per_year,
+                clock.days_per_year()
+            ),
+            (28, 4, 112)
+        );
+        assert_eq!(
+            (clock.season(), clock.year(), clock.day_of_season()),
+            (1, 1, 1)
+        );
+    }
+
+    #[test]
+    fn calendar_custom_dimensions_rederive_season_and_year() {
+        let mut clock = GameClock::default();
+        clock.configure_calendar(7, 3).unwrap();
+        assert_eq!(clock.days_per_year(), 21);
+        clock.day = 8;
+        assert_eq!(
+            (clock.season(), clock.year(), clock.day_of_season()),
+            (2, 1, 1)
+        );
+        clock.day = 21;
+        assert_eq!(
+            (clock.season(), clock.year(), clock.day_of_season()),
+            (3, 1, 7)
+        );
+        clock.day = 22;
+        assert_eq!(
+            (clock.season(), clock.year(), clock.day_of_season()),
+            (1, 2, 1)
+        );
+    }
+
+    #[test]
+    fn calendar_config_rejects_invalid_values_without_mutation() {
+        let mut clock = GameClock {
+            day: 30,
+            ..GameClock::default()
+        };
+        assert_eq!(
+            clock.configure_calendar(0, 4),
+            Err(CalendarConfigError::DaysPerSeasonZero)
+        );
+        assert_eq!(
+            clock.configure_calendar(28, 0),
+            Err(CalendarConfigError::SeasonsPerYearZero)
+        );
+        assert_eq!(
+            clock.configure_calendar(u32::MAX, 2),
+            Err(CalendarConfigError::DaysPerYearOverflow)
+        );
+        assert_eq!(
+            (
+                clock.days_per_season,
+                clock.seasons_per_year,
+                clock.day,
+                clock.minute
+            ),
+            (28, 4, 30, DEFAULT_WAKE_MINUTE)
+        );
     }
 
     #[test]

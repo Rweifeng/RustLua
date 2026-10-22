@@ -1,7 +1,10 @@
 # 任务：P5 玩法层边界（gameplay 数据模型的 Lua 化裁定与体裁假设收口）
 
 - 任务 ID：P5-00（总包；子项 P5-01 … P5-05）
-- 状态：**裁定已给、未开工**（2026-10-20）。P5-01/P5-02 建议做；P5-03/P5-04 **只在 §7 的触发条件下开工**，不默认排期
+- 状态：**P5-01/P5-02 已落地、P5-05 文档已回写（ADR-0017 待单独确认）；P5-03/P5-04 未触发，
+  不排期（2026-10-21）**。2026-10-22 全量 `verify.ps1` 在隔离树通过；因主树转入 P3-R01，
+  P5 改动仍在 `stash@{0}`，恢复方式见 §11 环境备注③。落地读数与门见本文末「实现记录」
+  「验收证据」；§2 的旧读数已按 P1 收口后的工作树复核。
 - 关联：[docs/62 成熟引擎差距分析](../../docs/62-成熟引擎差距分析.md) §6、
   [docs/18 Lua API](../../docs/18-lua-api.md)、
   [docs/19 Lua 热重载](../../docs/19-lua-hot-reload.md)、
@@ -28,13 +31,16 @@
 
 三条事实：
 
-1. **玩法规则已经在 Lua**：`examples/game_jhyt/scripts` **155 个文件 / 约 3.74 万非空行**
-   （全文 39,767 行；种植、战斗、商店、任务、对话、UI）。Rust 侧没有任务/种植/战斗/对话/经济规则。
-2. **Rust 侧可称为 gameplay 的只有 703 行 / 46 个 Lua 函数**：
-   `gameplay.rs` 321 + `clock_lua.rs` 291 + `grid.rs` 91；这 46 个函数占 **42 个模块 / 295 个函数**
-   的 **15.6%**（[lua_api_surface.json](../../engine/crates/rustlua-scripting/src/api_surface_snapshot/lua_api_surface.json)）。
-3. **`rustlua-gameplay` 这个 crate 80% 不是玩法**：settings 1,295 行（37.6%，编辑器与 input
-   共用）+ save 706（20.5%）+ world_data 524（15.2%）+ 绑定胶水 202（5.9%），合计 3,441 行。
+1. **玩法规则已经在 Lua**：`examples/game_jhyt/scripts` **155 个文件 / 37,489 非空行**
+   （全文 39,766 行；种植、战斗、商店、任务、对话、UI）。Rust 侧没有任务/种植/战斗/对话/经济规则。
+2. **Rust 侧可称为 gameplay 的只有 1,968 行 / 47 个 Lua 函数**（P5-02 后 2026-10-21 复核，
+   P1 ⑤ 已把 item/inv/container/shop 绑定搬进本 crate）：`gameplay.rs` 425 + `clock_lua.rs` 403 +
+   `grid.rs` 91 + `grid_lua.rs` 69 + `inventory_state.rs` 391 + `inventory_lua.rs` 589；
+   这 47 个函数占 **42 个模块 / 296 个函数**的 **15.9%**
+   （[lua_api_surface.json](../../engine/crates/rustlua-scripting/src/api_surface_snapshot/lua_api_surface.json)）。
+3. **`rustlua-gameplay` 这个 crate 59.6% 不是玩法**：settings 1,295 行（26.6%，编辑器与 input
+   共用）+ save 761（15.6%）+ world_data 568（11.7%）+ 绑定胶水 237（4.9%）+ `lib.rs` 46，
+   合计 2,907 行；全 crate 4,875 非空行（口径：含测试与文档注释）。
 
 所以问题不是"能不能分层"（已经分完了），而是"**跨 VM 生命周期的可变状态归谁**"。
 §4 的四条边界决定：`save`/`data`/`map`/`health`/`tag` **必须**留 Rust；`inv`/`item`/`clock`
@@ -43,9 +49,9 @@
 
 **建议**（不做 P5-03/04 也能交付）：
 
-- **P5-01（1–2 天）账本与命名**：crate 内四个域写清；`docs/18` 标出"只在 demo/契约里用"的 API。
-- **P5-02（2–3 天）体裁假设参数化**：日历 `28 天/季 × 4 季`；背包容量/堆叠已有 `item.define` 数据面。
-- 只有 §7 的触发条件出现，才开 **P5-03（两个缺失机制）→ P5-04（按顺序下沉）**。
+- **P5-01（1–2 天）账本与命名**：crate 内五个文件域写清；`docs/18` 标出"只在 demo/契约里用"的 API。**✅ 2026-10-21**
+- **P5-02（2–3 天）体裁假设参数化**：日历 `28 天/季 × 4 季`；背包容量/堆叠已有 `item.define` 数据面。**✅ 2026-10-21**
+- 只有 §7 的触发条件出现，才开 **P5-03（两个缺失机制）→ P5-04（按顺序下沉）**。**当前仍未触发。**
 
 ---
 
@@ -53,7 +59,7 @@
 
 | # | 问题 | 现在能回答吗 | 依据 / 缺口 |
 |---|---|---|---|
-| 1 | 玩法到底写在哪？Rust 还剩多少玩法？ | **能** | 本文件 §2.1/§2.2；剩下 703 行数据模型 |
+| 1 | 玩法到底写在哪？Rust 还剩多少玩法？ | **能** | 本文件 §2.1/§2.2；剩下 1,968 行数据模型（47 个 Lua 函数） |
 | 2 | 把 `inv`/`clock` 搬进 Lua，会丢什么？ | **能** | §4.1 热重载换 VM；§4.3 ECS 身份 |
 | 3 | Rust 侧哪些"玩法"其实不是玩法？ | **能** | §2.1：settings + save + world_data 占 80% |
 | 4 | 搬过去要补什么机制？多久？ | **能** | §5 P5-03/P5-04：内置 Lua stdlib + 跨 VM 状态桥 |
@@ -63,49 +69,56 @@
 
 ---
 
-## 2. 现有事实（2026-10-20 实测）
+## 2. 现有事实（2026-10-21 复核）
 
 ### 2.1 代码面
+
+> P5-02 后 2026-10-21 复核（P1 ⑤ 已收口，绑定搬进本 crate）：下面的行数是当前读数；2026-10-20
+> 的旧表（3,441 行）只保留作历史对照，别再引用。口径：非空行，含测试与文档注释。
 
 | 域 | 文件 | 非空行 | 是不是玩法 |
 |---|---|---|---|
 | 设置 | `settings.rs` | **1,295** | ❌ 工程 `settings.toml` 的读/写/迁移；编辑器 `menu.rs`/`input_bindings.rs`/`preview_session.rs` 都读它 |
-| 存档 | `save.rs` 301 + `save_lua.rs` 289 + `save_store.rs` 116 | **706** | ❌ v1/v2 格式、原子写、平台槽 |
-| 世界数据 | `world_data_lua.rs` 456 + `world_data_state.rs` 68 | **524** | ❌ `data.load` 的缓存/schema、`map.state` 的持久键 |
-| 玩法模型 | `gameplay.rs` 321 + `clock_lua.rs` 291 + `grid.rs` 91 | **703** | ✅ 只有这一块 |
-| 绑定胶水 | `audio_lua.rs` 72 + `input_lua.rs` 130 | **202** | ❌ 别的领域的注册入口 |
-| crate 级 | `lib.rs` 11 | 11 | — |
-| **合计** | 12 个文件 | **3,441**（全文 3,859） | 玩法占 **20.4%** |
+| 存档 | `save.rs` 301 + `save_lua.rs` 317 + `save_store.rs` 143 | **761** | ❌ v1/v2 格式、原子写、平台槽 |
+| 世界数据 | `world_data_lua.rs` 486 + `world_data_state.rs` 82 | **568** | ❌ `data.load` 的缓存/schema、`map.state` 的持久键 |
+| 玩法模型 | `gameplay.rs` 425 + `clock_lua.rs` 403 + `grid.rs` 91 + `grid_lua.rs` 69 + `inventory_state.rs` 391 + `inventory_lua.rs` 589 | **1,968** | ✅ 只有这一块（含 item/inv/container/shop 绑定） |
+| 绑定胶水 | `audio_lua.rs` 88 + `input_lua.rs` 149 | **237** | ❌ 别的领域的注册入口 |
+| crate 级 | `lib.rs` | 46 | —（P5-01 后是域账本文档） |
+| **合计** | 15 个文件 | **4,875**（全文 5,209） | 玩法占 **40.4%** |
 
 > 复现：`Get-ChildItem engine\crates\rustlua-gameplay\src -File | ForEach-Object { "{0,5} {1}" -f (Get-Content -LiteralPath $_ | Measure-Object -Line).Lines, $_.Name }`
 > （`Measure-Object -Line` 不计空行；合计行的"全文"是 `ReadAllLines().Count`）
 
 ### 2.2 API 面
 
+> P5-02 之后（2026-10-21）：函数 296（+`calendar.configure`）；模块表仍 42。
+
 | 事实 | 读数 |
 |---|---|
 | Lua 全局模块表 | **42 个** |
-| Lua 函数 | **295 个** |
-| 玩法味模块的函数 | **46 个（15.6%）**：`item` 2 / `inv` 15 / `container` 4 / `shop` 2 / `clock` 6 / `calendar` 2 / `day` 2 / `health` 3 / `tag` 2 / `interact` 4 / `grid` 4 |
+| Lua 函数 | **296 个** |
+| 玩法味模块的函数 | **47 个（15.9%）**：`item` 2 / `inv` 15 / `container` 4 / `shop` 2 / `clock` 6 / `calendar` 3 / `day` 2 / `health` 3 / `tag` 2 / `interact` 4 / `grid` 4 |
 | 服务类（不属于玩法） | `save` 9 / `map` 9 / `data` 4 |
 
 > 复现：`$j = Get-Content -Raw engine\crates\rustlua-scripting\src\api_surface_snapshot\lua_api_surface.json | ConvertFrom-Json; $j.tables.Count; ($j.tables | ForEach-Object { $_.funcs.Count } | Measure-Object -Sum).Sum`
 
 ### 2.3 使用面（`examples/game_jhyt/scripts` 静态调用点）
 
+> 2026-10-21 复跑（P1 收口后）；括号里是 2026-10-20 的旧读数。
+
 | 模块 | 调用点 | 说明 |
 |---|---|---|
-| `inv` | **115** | 背包主路径；`ui/inventory_ui.lua:126` 每帧一次 `inv.get` |
-| `item` | 31 | `item.define` 在数据加载期 |
-| `shop` | 36 | 目录 + 价格查询 |
+| `inv` | **113**（115） | 背包主路径；`ui/inventory_ui.lua:126` 每帧一次 `inv.get` |
+| `item` | **42**（31） | `item.define` 在数据加载期 |
+| `shop` | **33**（36） | 目录 + 价格查询 |
 | `container` | **0** | 只在 `game_api` demo 与契约用例里 |
-| `clock` / `calendar` / `day` | 44 / 25 / 15 | 时间推进与季节 |
-| `health` | 5 | 战斗 |
+| `clock` / `calendar` / `day` | **44 / 25 / 15** | 时间推进与季节 |
+| `health` | **5** | 战斗 |
 | `tag` | **0** | 只在 demo/契约里（`interact.query` 内部读它） |
 | `interact` | **0** | 只在 demo/契约里 |
-| `grid` | 22 | 格子换算 |
-| `save` | 9 | 全部集中在 [save_manager.lua](../../examples/game_jhyt/scripts/core/save_manager.lua)：一个 blob + 版本 + 摘要 |
-| `map` / `data` | 69 / **589** | 场景持久状态 / 数据表加载 |
+| `grid` | **21**（22） | 格子换算 |
+| `save` | **8**（9） | 全部集中在 [save_manager.lua](../../examples/game_jhyt/scripts/core/save_manager.lua)：一个 blob + 版本 + 摘要 |
+| `map` / `data` | **61 / 580**（69 / 589） | 场景持久状态 / 数据表加载 |
 
 > 复现（模块循环，按 `\b<模块>\.` 计）：`foreach ($m in 'item','inv','container','shop','clock','calendar','day','health','tag','interact','grid','save','map','data') { ... }`
 > 数字是**静态调用点**，不是运行期频率；性能结论见 §4.4。
@@ -114,10 +127,10 @@
 
 | 量具 | 读数 / 入口 |
 |---|---|
-| `rustlua-gameplay` 单测 | **52 个 `#[test]`**（静态计数，2026-10-20 工作树；P1 ⑤-4c 记录的运行期读数是 47 条，差集来自 ⑤ 新增的 `clock_lua`/`save_lua`/`world_data` 测试） |
-| `rustlua-scripting` 单测 | **111 条**（P1 记录） |
-| API 面快照门 | `lua_api_surface_matches_baseline`：42 模块 / 295 函数逐项比对 |
-| 行为契约门 | `lua_api_contract.lua` + `lua_api_contract_transcript.txt`，**玩法相关 20 条**（clock 6 / item 5 / calendar 3 / interact 2 / day 1 / container 1 / shop 1 / tag 1；**`inv`/`save`/`health`/`grid`/`map`/`data` 为 0 条**） |
+| `rustlua-gameplay` 单测 | **68 个**（运行期，2026-10-21；含 P5-02 新增 5 条：默认/自定义/非法模型值 + 两条 Lua 面） |
+| `rustlua-scripting` 单测 | **120 条**（运行期，2026-10-21；P5-02 未改本 crate 的单测，只重生成基线） |
+| API 面快照门 | `lua_api_surface_matches_baseline`：42 模块 / **296 函数**逐项比对（P5-02 只加 `calendar.configure`） |
+| 行为契约门 | `lua_api_contract.lua` + `lua_api_contract_transcript.txt`，**38 条 / 玩法相关 22 条**（clock 6 / item 5 / calendar 5 / interact 2 / day 1 / container 1 / shop 1 / tag 1；**`inv`/`save`/`health`/`grid`/`map`/`data` 仍为 0 条**） |
 | 端到端 | `engine/crates/game/examples` **100 个**（大多数是 jhyt 里程碑门） |
 | 架构门 | `scripts/verify/check-decoupling.ps1`（`verify.ps1` 已接） |
 | 文档门 | `scripts/verify/check-docs.ps1`（编号/H1/索引/链接/编码） |
@@ -149,7 +162,7 @@
 | `health` / `tag` / `interact` | 9 | **留（ECS 身份）** | 状态在 `EntityState`，`entity.destroy` 与切场景由 Rust 清理；搬到 Lua 要镜像并有遗漏风险 | — |
 | `grid` | 4 | **可搬（低风险）** | 纯函数、无状态；但它是坐标约定的唯一来源（docs/06），搬走要与 tilemap/camera 同维护 | P5-03 |
 | `shop` | 2 | **可搬 / 可删** | 只是目录 + 查表；`data.load` 可替代 | P5-03 |
-| `calendar` 的季节/年 | 2 | **搬常量** | `28 天/季 × 4 季` 是农场体裁假设，不是引擎语义 | P5-02（参数化）/ P5-03（下沉） |
+| `calendar` 的季节/年 | 3 | **搬常量 → 已参数化** | `28 天/季 × 4 季` 是农场体裁假设，不是引擎语义；P5-02 已让 `calendar.configure` 改写，默认值不变 | ✅ P5-02 落地；继续下沉仍需 P5-03 |
 | `clock` | 6 | **留（推进）** | 固定步进帧系统 `clock_step` 在 Lua `update` 之后推进；状态要跨 VM 存活 | P5-03 |
 | `item` / `inv` / `container` | 21 | **暂不搬** | 热重载会清空背包（§4.1）；`inv.get` 每帧一次，Rust 每帧还要分配 20 个 String，Lua 原生表反而更省；但**体裁耦合**真实存在（固定槽位 + `max_stack`） | P5-03 + 第二体裁 |
 | `container` / `interact` / `tag`（作为 API 面） | 10 | **标废弃，不删** | 出货工程 0 调用点；删除是破坏性改动，需 v0.2 兼容窗口 | P5-01 |
@@ -212,7 +225,7 @@ mlua 单次调用量级在百纳秒，相对每帧一次可忽略。反方向（
 
 ## 5. 工作包
 
-### 5.1 P5-01 账本与废弃标记（建议做，1–2 天）
+### 5.1 P5-01 账本与废弃标记（✅ 已落地 2026-10-21，1–2 天包）
 
 **做什么**
 
@@ -234,7 +247,7 @@ mlua 单次调用量级在百纳秒，相对每帧一次可忽略。反方向（
 
 **风险**：低。只动注释与文档。
 
-### 5.2 P5-02 体裁常量参数化（建议做，2–3 天）
+### 5.2 P5-02 体裁常量参数化（✅ 已落地 2026-10-21，2–3 天包）
 
 **做什么**
 
@@ -301,7 +314,7 @@ mlua 单次调用量级在百纳秒，相对每帧一次可忽略。反方向（
 **风险**：高（第 4 步）。回滚方式：每一步是一次独立提交，删除 Rust 实现放在该步**最后**；
 任何一步判红就停在该步，Lua 版与 Rust 版可以并存一轮（surface 由 Lua 版覆盖、Rust 版标 deprecated）。
 
-### 5.5 P5-05 文档与 ADR（随批，0.5 天）
+### 5.5 P5-05 文档与 ADR（随批；文档已落地，ADR 待单独确认）
 
 - `docs/18`：模块表加"层"列；新增"引擎 stdlib vs 工程 scripts"一节的入口（若 P5-03 落地）；
 - `docs/02`：按 §9 的修订稿更新 ADR-0017（**改 ADR 是治理动作，需单独确认**）；
@@ -362,7 +375,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\scripts\verify\verify.ps1
    玩法语义（而非渲染/编辑器）。
 
 反向条件（**不要**开工）：只有一个工程、且它没有绕开现有模型；或 stdlib 机制没有别的消费者
-（为 46 个函数造一套分发机制，本身就不划算）。
+（为 47 个函数造一套分发机制，本身就不划算）。
 
 ---
 
@@ -400,7 +413,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\scripts\verify\verify.ps1
   体裁相关语义（日历的季节划分、商店目录、未来的装备/属性体系）由工程 Lua 或引擎内置 Lua
   stdlib 实现；引擎不预置第二套体裁假设。
 - 判据：同一份 Rust API 能否被两个体裁差异显著的工程复用而不 fork？能 → 留；不能 → 参数化或下沉。
-- 代价：引擎侧保留 703 行数据模型；新增"内置 Lua stdlib + 跨 VM 状态桥"两个机制（仅在需要
+- 代价：引擎侧保留 1,968 行数据模型；新增"内置 Lua stdlib + 跨 VM 状态桥"两个机制（仅在需要
   下沉时建设）；`container`/`interact`/`tag` 标废弃但保留到 v0.2。
 - 非目标：不在引擎侧实现具体玩法规则（交易资金、任务、剧情）；不为单一工程预置体裁语义。
 - 重新评估条件：出现第二个体裁差异显著的工程；或 P5-03 的状态桥落地使 Lua 持有运行时状态
@@ -415,35 +428,117 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\scripts\verify\verify.ps1
 - **不为单一工程建 stdlib**：P5-03 只在 §7 条件成立时开工。
 - **不删 `container`/`interact`/`tag`**：只标废弃；删除需要 v0.2 兼容窗口与第二次审计。
 - **不改 crate 名**（P5-01b 等 P1 收口）。
-- **不动在途工作树**：P1 ⑤ 的未提交改动不碰；本任务提交时只暂存本文件与 P5-01/02 的改动。
+- **不动无关工作树**：P1 已于 2026-10-21 收口归档；本轮只改 P5 相关源码/文档/基线，未碰
+  工作树里原有的 `docs/69`、`scripts/release/sign-windows.ps1` 与未跟踪的 `sign-local.ps1`。
 - **不把"性能"当搬迁理由**：反方向也不把"性能"当不搬理由（§4.4）。
 
 ---
 
 ## 11. 未完成项 / 已知限制
 
-- [ ] 本文所有读数来自**未提交工作树**（P1 在途），不是 HEAD 干净快照；P1 收口后需复核 §2.3 的调用点数。
-- [ ] `rustlua-gameplay` 52 个 `#[test]` 是静态计数；运行期条数本轮没取到（`cargo test` 被并发
-      的 `cargo fetch` 持有 package-cache 锁），开工前先跑一次 `cargo test -p rustlua-gameplay`
-      并把读数回填 §2.4。`rustlua-scripting` 111 条同属 P1 记录值，未本轮复核。
+- [x] §2 的读数已按 P1 收口后的**当前工作树**复核（2026-10-21）；§2.3 调用点已复跑。
+      残留：工作树仍含 P2 的未提交文件（`docs/69`、`scripts/release/*`），与本任务无关。
+- [x] 运行期测试条数已取：`rustlua-gameplay` **68**、`rustlua-scripting` **120**（2026-10-21）。
 - [ ] 契约覆盖缺 `inv`/`save`/`health`/`grid`/`map`/`data`（0 条）；P5-04 第 0 步必须先补。
 - [ ] §2.3 是静态调用点，不是运行期频率；若将来要论证性能，需 `jhyt_m19_soak` 级别的读数。
-- [ ] P5-02 的 `calendar.configure` 会增加 1 个 API 函数，需在 `docs/18` 与基线的提交说明里
-      写明"为什么值这一个函数"。
-- [ ] 本文未写 CHANGELOG（计划不是能力增量）。
+- [x] `calendar.configure` 的 +1 函数理由已写入 `docs/18`、CHANGELOG 与本文「实现记录」
+      （形状不变、唯一新增；非法值不改状态）。
+- [x] CHANGELOG 已写（P5-01/02 是能力增量）。
+- [ ] **ADR-0017 修订未落盘**：§9 只是修订稿，改 ADR 是治理动作，需用户单独确认；
+      `docs/02` 当前仍是旧口径。
+- [ ] **已知外部红**：`jhyt_m29_season_weather` 在 M29-01⑦ 的 docs/48 资产普查处判红
+      （引用 1065 / 实际 1066，`peach.png` 来自 HEAD `756d8962`），错误自述“不是功能回归”；
+      P5 未改资产，按既有 P2 打包待办处理，不在本任务内改 docs/48。
+- [ ] **环境备注①**：zh-CN PowerShell 5.1（代码页 936）会把 `assetc` 的 UTF-8 中文 stderr
+      解码错位，导致 `test-release-closure.ps1` 的「容器不在」断言误判；`chcp 65001` 下通过。
+- [ ] **环境备注②**：`test-git-hooks.ps1` 的 B10 前提要求 git 执行 hook 时自带 grep/sed/tr；
+      本机 mingw64 git 在 PATH 缺 `C:\Program Files\Git\bin`（`sh.exe`）时 hook 直接
+      “cannot spawn .pre-commit”，把该目录加回 PATH 即绿。两条都**与本任务无关**，
+      记录以免复跑时误归因。
+- [ ] **环境备注③**：2026-10-22 GitHub Desktop 把整棵未提交工作树存入 `stash@{0}`
+      （含 P5 全部改动与 P2 的 `docs/69`、`scripts/release/*`），主树转入 P3-R01。
+      P5 的全量验收在隔离树 `E:\RustLua-p5-verify` 完成；恢复时**按路径**从 stash 取
+      P5 文件（不要整条 pop，避免夹带 P2 文件并与 P3-R01 冲突），隔离树可作对照。
 
 ---
 
 ## 实现记录
 
-（开工后回填：改了哪些文件、为什么这样设计、每步的判据读数）
+### P5-01 账本与废弃标记（2026-10-21）
+
+- `rustlua-gameplay/src/lib.rs`：crate doc 改为五域账本（玩法模型 1,968 / 设置 1,295 / 存档 761 /
+  世界数据 568 / 绑定胶水 237 / `lib.rs` 46 = 4,875 非空行，玩法占 40.4%），写清“留 Rust /
+  参数化 / 废弃候选”三组裁定、判定口径与复现命令；`pub mod` 声明原样保留。
+- `docs/18-lua-api.md`：农场 API 表新增“层”列（18 行全部填写）；新增“分层口径”段；
+  `container` / `interact` / `tag` 标注出货工程 0 静态调用点与 v0.2 删除窗口。
+- `gameplay.rs` 的 `DAYS_PER_SEASON` / `SEASONS_PER_YEAR` 与 `GameClock` 文档注明
+  “农场体裁默认值，不是引擎语义”。
+
+### P5-02 日历参数化（2026-10-21）
+
+- `GameClock` 新增 `days_per_season` / `seasons_per_year`（Default 28/4）；
+  `season()` / `year()` / `day_of_season()` 改读字段；新增 `days_per_year()` 与
+  `configure_calendar()`；新增 `CalendarConfigError`（0 天 / 0 季 / 乘积溢出）。
+- `clock_lua.rs` 新增 `calendar.configure(options)`：缺字段、非正整数、乘积溢出都在**改状态前**
+  报错；`calendar.set` 的日/季上界改读当前配置，绝对天数用 `checked_mul` / `checked_add`
+  并在超出 `u32::MAX` 时拒绝。
+- 为什么用表参数而不是位置参数：两个维度必须同时成立，表参数能一次校验完再落状态，
+  也避免“只改一半”；`calendar.now()` 的返回形状保持不变。
+- `game_web/src/host_api.rs`：保留为诊断镜像/死码，模块文档注明不同步 `calendar.configure`
+  且固定 28×4；web 实际走 Rust wasm Lua 运行时，不受影响。
+
+### 基线与文档
+
+- `lua_api_surface.json` 重生成：42 个模块表不变，函数 295→296（唯一新增 `calendar.configure`）。
+- `lua_api_contract.lua` 新增 2 条（`calendar.configure.custom` / `calendar.configure.invalid`），
+  transcript 只追加 2 行；用例先快照再恢复日期，避免字母序（`configure.*` 在 `now.*` 之前）
+  污染后续用例。
+- docgen：`calendar.md` 补正文（不再是 TODO 桩），`baseline.json` 更新为
+  `funcs=296 / stubs=277 / documented=19`；`clock.md` / `day.md` 仅绑定行号刷新。
+- 示例工程 `examples/game_api/scripts/demo_gameplay.lua` 补 `calendar.configure` 的真实调用
+  （7×3 收紧后 `calendar.set(8,1,1,0)` 被拒，再恢复 28×4），全量测试抓到的
+  `sample_project_demos_cover_every_lua_api` 缺口已闭合。
+- `CHANGELOG.md`、`tasks/README.md`、本文件读数已同步。
+
+### 隔离验收（2026-10-22）
+
+- 主树被 P3-R01（render tonemap）占用，原工作树被 GitHub Desktop 整体存入 `stash@{0}`；
+  在 `E:\RustLua-p5-verify`（detached HEAD `5f1b0533`）按路径从 stash 恢复 P5 文件，
+  完成全量 `verify.ps1`（含 clippy / workspace tests / 构建 / 编辑器 GUI smoke）。
+- 隔离树为通过门额外修的两处既有问题（M75 的 rustdoc 链接、CRLF 检出的 AI 基线）
+  只属于本机验收环境，不随 P5 补丁交付。
+
+### 未做 / 未触发
+
+- P5-03/P5-04 按 §7 未触发：仍只有一个体裁工程；API 面 42 模块 / 296 函数（< 50 / < 350）；
+  未建 stdlib、未搬模块、未删 `container` / `interact` / `tag`。
+- ADR-0017 修订稿（§9）未落盘——需用户单独确认。
 
 ## 验收证据
 
-- [ ] `cargo fmt --all -- --check` 通过
-- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings` 通过
-- [ ] 相关测试通过（§6 ①–③）
-- [ ] Debug 构建通过
-- [ ] Demo / 手工步骤可复现（§6 ③–④）
-- [ ] 注释符合 [章程 §9.7 代码与注释规范](../../docs/00-project-charter.md)（精简中文）
-- [ ] 文档与 CHANGELOG 已更新
+- [x] `cargo fmt --all -- --check` 通过（2026-10-21）
+- [x] `cargo clippy --workspace --all-targets --all-features -- -D warnings` 通过
+      （修掉新增测试触发的 `field_reassign_with_default`）
+- [x] `cargo test -p rustlua-gameplay`：**68 passed**
+- [x] `cargo test -p rustlua-scripting`：**119 lib + 1 集成 = 120 passed**（含 API 面与契约两条门）
+- [x] 端到端（2026-10-22 隔离树复跑）：`jhyt_m17_shop`（`shops=3 money=925`）、
+      `jhyt_m22_save_isolation`（`providers=16 rows=8 day=2`）、
+      `jhyt_m34_festival`（`event_days=24/112 windows=8x3`）exit 0；
+      `jhyt_m29_season_weather` 的季节/天气各步绿，止于既有的 docs/48 资产普查
+      （1065→1066，见 §11），不是 P5 回归
+- [x] `cargo run -q -p game -- --project ../examples/game_jhyt --check`：`game_check_ok`
+- [x] Debug 构建通过
+- [x] `scripts/verify/check-decoupling.ps1` 与 `check-docs.ps1` 绿
+- [x] 全量 `verify.ps1`：**exit 0 / `Quality gate passed`**（2026-10-22，隔离工作树
+      `E:\RustLua-p5-verify`，HEAD `5f1b0533` + P5 补丁；日志
+      `E:\RustLua-p5-verify\artifacts\logs\quality\verify-20261022-104624.log`）。
+      环境：`chcp 65001`、PATH 前置 `C:\Program Files\Git\bin`（hook 需要 `sh.exe`）、
+      使用隔离树自己的 `engine/target`（复用主 target 会让编辑器字体测试按 exe 路径
+      找到主工作区）。隔离树额外修了两处与本任务无关的既有问题才让门可跑：
+      `rustlua-editor-ai/src/provider.rs` 的冗余 intra-doc 链接（M75）与
+      `ai_tool_surface.json` 的 CRLF 检出（内容哈希未变），不随 P5 补丁交付。
+- [x] `verify.ps1 -Quick`：**exit 0 / `Quick gate passed (PARTIAL)`**（2026-10-22，隔离树）
+- [x] 示例工程 API 覆盖门：`sample_project_demos_cover_every_lua_api` 9/9 绿
+      （`demo_gameplay.lua` 真实调用 `calendar.configure`，7×3 越界被拒后恢复 28×4）
+- [x] 注释符合 [章程 §9.7 代码与注释规范](../../docs/00-project-charter.md)（精简中文）
+- [x] 文档与 CHANGELOG 已更新
