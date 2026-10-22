@@ -5,6 +5,35 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — M75 AI 融合：MCP 能力层与确认·回放门（2026-10-22）
+
+- **新增 crate `rustlua-editor-ai`**：自实现最小 MCP JSON-RPC 2.0（stdio），暴露 **34 个 tool**
+  （10 读 + 24 写）与 5 个 resource；依赖仅 `serde`/`serde_json`。编辑器经 `--mcp-stdio` 或
+  `RUSTLUA_EDITOR_MCP=1` 启动，协议线程经 channel 把调用交主线程执行（`EditorApp` 非 Send）。
+- **确认·事务网关**：写动作三档策略（STRICT / interactive / HEADLESS），默认全部确认，编辑器内
+  `draw_ai_gate_window` 批准/拒绝；无头自动放行 T1、拒绝 T2/T3 而不挂起。写动作全部落 typed
+  `EditorCommand`，一次提交一条 Undo。
+- **Lua 生成闭环**：`write_lua_script` 先做语法校验与 API 面幻觉扫描（含 `module.func` 建议），
+  失败回错误供模型修复，通过才落盘。
+- **真实客户端接入修复**：Qoder Desktop 实连暴露"空闲窗口不重绘 → tool 调用挂起、客户端判超时
+  （-32603）"。`AiBridge` 协议线程在投递请求后显式 `request_repaint()` 唤醒 egui；实连闭环
+  `open_scene` → `create_entity` → `undo` 三次确认均落一条命令，场景树与脏标记正确回收。
+- **内置 Assistant 面板（M75-03）**：dock 新增「AI 助手」标签（默认与属性同叶），View 菜单可隐藏/
+  恢复。面板是同一 tool registry 的薄客户端：读工具立即执行，写工具先出内联确认卡，批准后仍走
+  `execute_tool` + `EditorAiHost`，一条命令一条 Undo。Provider 支持 OpenAI 兼容 / Anthropic /
+  本地 Ollama，可切换；拖层级实体进输入框作为上下文；支持 Ctrl+Enter 发送、随时停止。
+- **密钥边界**：API Key 只驻留内存；布局只持久化 provider/base_url/model/max_tokens，类型上没有
+  密钥字段；请求经后台线程 + channel 回到 UI，不阻塞 egui 主线程。
+- **门**：`ai_tool_surface.json` 快照门（反面对照 RED→GREEN）、feature 隔离门（关闭默认 feature 时
+  依赖图不含 AI crate）、确定性回放门（fixture 无 LLM 重放）已接进 `verify.ps1`。GUI 证据 harness
+  新增助手面板截图步骤（真实窗口 12 张，`failed=0`），egui 几何门覆盖面板内输入框/发送按钮布局。
+- **门修正**：`test-release-closure.ps1` 显式按 UTF-8 解码原生输出（修中文断言在 CP936 下假红）；
+  `verify.ps1` 的 python 探测改为试运行并回退 `py`（WindowsApps 占位符能骗过 `Get-Command`）。
+- **裁定**：内置 Assistant 面板（M75-03）经用户要求重开并交付；Track B 端侧推理不立项
+  （论证见 `docs/71` §3.1）；M75-04/05 留待后续批次。
+- **回滚档**：关掉 `editor` 的 `ai-bridge` feature 即回到无 AI 依赖的构建；数据侧只新增 crate 与
+  fixture/基线文件，不改 `.scene`/Lua 资产格式。
+
 ## Unreleased — P5 玩法层边界：账本与日历体裁参数化（2026-10-21）
 
 - **P5-01 域账本**：`rustlua-gameplay/src/lib.rs` 写清 crate 的五个文件域（P5-02 后：玩法模型
