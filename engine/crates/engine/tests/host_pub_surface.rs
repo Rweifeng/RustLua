@@ -11,8 +11,12 @@ fn pin_paths() {
     // 类型与 `host/mod.rs` 的重导出。
     let _ = engine::host::Renderer::new;
     let _ = engine::host::Renderer::cached_mesh_count;
+    let _ = engine::host::Renderer::clear_gpu_particles;
+    let _ = engine::host::Renderer::configure_gpu_particles;
     let _ = engine::host::Renderer::copy_texture_to_cpu;
     let _ = engine::host::Renderer::frame_views;
+    let _ = engine::host::Renderer::gpu_particle_status;
+    let _ = engine::host::Renderer::gpu_particle_systems;
     let _ = engine::host::Renderer::gpu_timestamp_reason;
     let _ = engine::host::Renderer::gpu_timestamp_supported;
     let _ = engine::host::Renderer::last_frame_metrics;
@@ -23,6 +27,8 @@ fn pin_paths() {
     let _ = engine::host::Renderer::new;
     let _ = engine::host::Renderer::new_offscreen;
     let _ = engine::host::Renderer::post_process;
+    let _ = engine::host::Renderer::push_gpu_particle_burst;
+    let _ = engine::host::Renderer::read_gpu_particles;
     let _ = engine::host::Renderer::readback_busy_count;
     let _ = engine::host::Renderer::readback_frame;
     let _ = engine::host::Renderer::readback_in_flight;
@@ -36,6 +42,7 @@ fn pin_paths() {
     let _ = engine::host::Renderer::set_frame_views;
     let _ = engine::host::Renderer::set_post_process;
     let _ = engine::host::Renderer::set_world_sprite_camera;
+    let _ = engine::host::Renderer::step_gpu_particles;
     let _ = engine::host::Renderer::texture_identity_stats;
     let _ = engine::host::Renderer::vertex_buffer_capacity;
     let _ = engine::host::Renderer::vertex_buffer_growths;
@@ -48,10 +55,12 @@ fn pin_paths() {
     let _ = engine::host::RuntimeScene::asset_handle;
     let _ = engine::host::RuntimeScene::asset_count;
     let _ = engine::host::RuntimeScene::camera_center_2d;
+    let _ = engine::host::RuntimeScene::dispatch_gpu_particle_bursts;
     let _ = engine::host::RuntimeScene::from_scene;
     let _ = engine::host::RuntimeScene::from_scene_edit;
     let _ = engine::host::RuntimeScene::gamepad_backend_name;
     let _ = engine::host::RuntimeScene::gamepad_connected;
+    let _ = engine::host::RuntimeScene::last_particle_dispatch;
     let _ = engine::host::RuntimeScene::last_schedule_report;
     let _ = engine::host::RuntimeScene::last_spatial_report;
     let _ = engine::host::RuntimeScene::local_transform_of;
@@ -86,6 +95,7 @@ fn pin_paths() {
     let _ = engine::host::RuntimeScene::set_gamepad_backend;
     let _ = engine::host::RuntimeScene::set_gamepad_deadzone;
     let _ = engine::host::RuntimeScene::set_local_transform;
+    let _ = engine::host::RuntimeScene::set_particle_compute_available;
     let _ = engine::host::RuntimeScene::set_render_ui_overlay;
     let _ = engine::host::RuntimeScene::set_scene_entity_transform_preview;
     let _ = engine::host::RuntimeScene::set_scene_entity_ui_layout_preview;

@@ -1,0 +1,52 @@
+{
+  "caster_height": 1.0,
+  "diffuse_responds_to_light_direction": true,
+  "draw_calls": 2,
+  "light_direction": [
+    0.30000001192092896,
+    -1.0,
+    0.20000000298023224
+  ],
+  "luminance": {
+    "lit": 153.6761932373047,
+    "opposite_light": 59.44239807128906,
+    "shadow": 59.44239807128906
+  },
+  "report_version": "wp0-lighting-golden-v1",
+  "samples": {
+    "lit": [
+      143,
+      155,
+      172
+    ],
+    "opposite_light": [
+      55,
+      60,
+      67
+    ],
+    "shadow": [
+      55,
+      60,
+      67
+    ]
+  },
+  "scene": "lighting-probe (built in memory)",
+  "shadow_darkens_ground": true,
+  "shadow_samples": 256,
+  "shadow_world_bbox": [
+    -0.625,
+    -0.75,
+    1.25,
+    1.125
+  ],
+  "uv": {
+    "lit": [
+      203.81048583984375,
+      180.0
+    ],
+    "shadow": [
+      328.4558410644531,
+      181.68069458007812
+    ]
+  }
+}

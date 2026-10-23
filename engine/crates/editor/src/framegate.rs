@@ -1533,7 +1533,7 @@ fn case_external_dropped_files() -> Vec<Check> {
 
 /// 用例 7：**停靠/面板可见性与布局持久化**（docs/55 §8 质量门枚举项）。
 ///
-/// 断言三件事：① 收起底部控制台后画布**真的变大**（不是只改了个标志位）；
+/// 断言三件事：① 收起底部控制台与时间线后画布**真的变大**（不是只改了个标志位）；
 /// ② `Ctrl+Shift+L` 把当前布局写进 `<项目>/.cache/editor/layout.json`；
 /// ③ 重新读取的布局与内存中的一致（保存/恢复闭环）。
 fn case_dock_panel_visibility_and_layout_persistence() -> Vec<Check> {
@@ -1542,11 +1542,13 @@ fn case_dock_panel_visibility_and_layout_persistence() -> Vec<Check> {
     let mut checks = Vec::new();
 
     let canvas_with_console = smoke.app.scene_canvas_rect;
+    // 控制台与时间线共用一个底部标签组；只收起其中一个，标签组仍在，画布不会变高。
     smoke.app.show_lua_console = false;
+    smoke.app.show_timeline_panel = false;
     smoke.idle(3);
     let canvas_without_console = smoke.app.scene_canvas_rect;
     checks.push(Check::new(
-        "dock/hiding_the_console_gives_the_canvas_more_room",
+        "dock/hiding_the_bottom_tabs_gives_the_canvas_more_room",
         canvas_without_console.height() > canvas_with_console.height() + 1.0,
         format!(
             "画布高度 {:.1} → {:.1}",
@@ -1581,9 +1583,10 @@ fn case_dock_panel_visibility_and_layout_persistence() -> Vec<Check> {
 
     // 恢复显示 → 画布回到原来的量级（可见性不是单向的）。
     smoke.app.show_lua_console = true;
+    smoke.app.show_timeline_panel = true;
     smoke.idle(3);
     checks.push(Check::new(
-        "dock/showing_the_console_again_restores_the_canvas",
+        "dock/showing_the_bottom_tabs_again_restores_the_canvas",
         (smoke.app.scene_canvas_rect.height() - canvas_with_console.height()).abs() < 2.0,
         format!(
             "画布高度 {:.1}（原始 {:.1}）",

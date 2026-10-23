@@ -2,8 +2,8 @@
 //!
 //! docs/55 §3.2 requires "外部文件变化反映到 Project：2 秒内最终一致", and stage 3 asks for a
 //! FileWatcher feeding an incremental asset graph. This module provides the detection half:
-//! a bounded metadata walk of the project's asset/script/scene directories, diffed against the
-//! previous snapshot.
+//! a bounded metadata walk of the project's asset/script/scene/shader directories, diffed
+//! against the previous snapshot.
 //!
 //! Design notes:
 //! * **No new dependencies** — the workspace stays offline/self-contained, so this is a polling
@@ -104,6 +104,9 @@ impl Default for WatchScope {
                 "scripts".to_owned(),
                 "scenes".to_owned(),
                 "data".to_owned(),
+                // P3-R05-4：`shaders/`（内置 shader 的开发期覆盖目录）与资源同权监听。
+                // 没有这个根，改 `shaders/mesh3d.wgsl` 就永远不会产生事件，热重载只能靠重启编辑器。
+                engine::host::shader_library::SHADER_SOURCE_DIR.to_owned(),
             ],
             max_entries: 200_000,
         }
@@ -674,6 +677,29 @@ mod tests {
         };
         let snapshot = scan_tree(&root, &scope, &CancellationToken::new()).expect("scan");
         assert!(snapshot.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// P3-R05-4：默认监听根必须包含 `shaders/`——少了这个根，改覆盖文件不会产生任何事件，
+    /// "热重载"就只能靠重启编辑器，而那是这条验收门要排除掉的行为。
+    #[test]
+    fn default_scope_watches_the_shader_override_directory() {
+        let scope = WatchScope::default();
+        let shaders = engine::host::shader_library::SHADER_SOURCE_DIR;
+        assert!(
+            scope.roots.iter().any(|root| root == shaders),
+            "默认监听根缺少 {shaders}：{:?}",
+            scope.roots
+        );
+        let root = temp_root("shaders");
+        fs::create_dir_all(root.join(shaders)).expect("shaders dir");
+        fs::write(root.join(shaders).join("mesh3d.wgsl"), "// override\n").expect("write");
+        let snapshot = scan_tree(&root, &scope, &CancellationToken::new()).expect("scan");
+        assert!(
+            snapshot.contains_key(Path::new("shaders/mesh3d.wgsl")),
+            "覆盖目录里的文件要进快照：{:?}",
+            snapshot.keys().collect::<Vec<_>>()
+        );
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -1,0 +1,58 @@
+{
+  "collider_half": 32.0,
+  "hud_isolated": true,
+  "layer_order": [
+    "world2d",
+    "overlay2d",
+    "screen_ui"
+  ],
+  "layers": {
+    "overlay2d": 1,
+    "screen_ui": 1,
+    "world2d": 1
+  },
+  "panel_rect": [
+    576.0,
+    296.0,
+    704.0,
+    424.0
+  ],
+  "report_version": "wp0-hud-golden-v1",
+  "samples": {
+    "hud_inside_with_ui": [
+      243,
+      89,
+      243
+    ],
+    "hud_inside_without_ui": [
+      255,
+      0,
+      0
+    ],
+    "overlay_pixel_with_ui": [
+      243,
+      89,
+      243
+    ],
+    "overlay_pixel_without_ui": [
+      137,
+      225,
+      255
+    ],
+    "world_only_with_ui": [
+      255,
+      0,
+      0
+    ]
+  },
+  "sprite_rect": [
+    512.0,
+    232.0,
+    768.0,
+    488.0
+  ],
+  "viewport": [
+    1280,
+    720
+  ]
+}

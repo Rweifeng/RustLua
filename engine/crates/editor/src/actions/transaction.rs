@@ -209,6 +209,7 @@ impl EditorApp {
                     lua_script,
                     collider3d,
                     container,
+                    layout_item,
                     ..
                 }),
             tilemap,
@@ -236,6 +237,7 @@ impl EditorApp {
                 lua_script,
                 collider3d,
                 container,
+                layout_item,
             },
             tilemap.as_deref(),
             animation.as_deref(),
@@ -294,6 +296,7 @@ impl EditorApp {
             lua_script,
             collider3d: has("Collider3d").then_some(self.collider3d.clone()),
             container: has("Container").then_some(self.container.clone()),
+            layout_item: has("LayoutItem").then_some(self.layout_item.clone()),
         };
         // Tilemap / Animation：面板编辑器状态实时编码整串。实体没有该组件时保持
         // None（写入端不写、比较端与基线 None 相等）；面板未编辑时编码串恰与

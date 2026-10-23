@@ -1,0 +1,7 @@
+version=1
+name=p3-r02-shadow-mask-visible
+base_color=0.8,0.8,0.8,0.75
+metallic=0
+roughness=0.6
+alpha_mode=mask
+alpha_cutoff=0.5

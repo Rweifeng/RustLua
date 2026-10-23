@@ -1,5 +1,5 @@
 //! `Renderer` 的测试集合：WP12 阶段 4a 从 `renderer/mod.rs` 末尾的 `#[cfg(test)] mod tests`
-//! 原样搬来，按域分成 7 个文件（源文件 6,089 行里这一段占 1,847 行，超过计划 §2 的 1,500 行
+//! 原样搬来，按域拆成多个文件（源文件 6,089 行里这一段占 1,847 行，超过计划 §2 的 1,500 行
 //! 上限）。断言、造数据与离屏渲染路径一字未改。
 //!
 //! 可见性依据（计划 §3.1.5）：本目录里的每个模块都是 `renderer` 的后代，`use super::*;` 的
@@ -21,11 +21,20 @@ use wgpu::DeviceDescriptor;
 mod capacity_and_caches;
 mod compute;
 mod depth_and_frame_views;
+mod gpu_pass_timings;
+mod hdr;
+mod ibl;
+mod material_preview;
 mod offscreen_and_tetris;
 mod overlay_batching;
+mod particle_dispatch;
 mod passes;
+mod pbr;
 mod readback;
 mod render_metrics;
+#[cfg(not(target_arch = "wasm32"))]
+mod shader_hot_reload;
+mod shader_variants;
 mod texture_upload;
 mod world_sprite;
 

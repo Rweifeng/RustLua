@@ -9,7 +9,9 @@ use crate::script::ScriptState;
 use crate::script::error::LuaBridgeError;
 use crate::script::guard::{BudgetSlot, ScriptErrorPolicy};
 use mlua::Value;
+use rustlua_animation::anim_asset::AnimClip;
 use rustlua_animation::animation::AnimationStateMachine;
+use rustlua_animation::animation_player::AnimationPlayer;
 use rustlua_animation::animation3d::Animation3D;
 use rustlua_animation::animation3d::Animation3dDescriptor;
 use rustlua_ecs::entity::EntityId;
@@ -268,6 +270,16 @@ impl LuaRuntime {
                     self.contain_script_error(BudgetSlot::UiClicks, &error);
                 }
             }
+            // E03-3：点击目标本身挂了实体脚本时，额外投一次 `on_interact`。目标实体即
+            // `target` 参数（v1 没有独立的交互者概念）；没有脚本时 dispatch 返回 `Ok(false)`。
+            let clicked_entity = {
+                let state = self.state.borrow();
+                let entities = state.entity_state.clone();
+                entities.with(|entities| entities.names.get(&target.name))
+            };
+            if let Some(id) = clicked_entity {
+                self.dispatch_entity_event(id, crate::script::EntityEvent::Interact { other: id })?;
+            }
         }
         Ok(())
     }
@@ -463,6 +475,67 @@ impl LuaRuntime {
                 .world_mut()
                 .map_err(world_borrow)?
                 .insert(id, animation)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        // P3-E01-2：`.anim` 时间线播放器。片段在装配时读入并校验（坏 clip 当场点名，不拖到
+        // 第一帧才静默不动），与 `Animation3D` 从 glTF 装载同一条纪律。
+        if let Some(value) = components.get("AnimationPlayer") {
+            let mut player = AnimationPlayer::from_component_str(value).map_err(|error| {
+                LuaBridgeError::Api(format!(
+                    "entity {name:?} has an invalid AnimationPlayer: {error}"
+                ))
+            })?;
+            let root = state
+                .project_root
+                .borrow()
+                .ok()
+                .and_then(|root| root.path().map(PathBuf::from))
+                .ok_or_else(|| {
+                    LuaBridgeError::Api(format!(
+                        "entity {name:?} needs a project root to load its AnimationPlayer clip"
+                    ))
+                })?;
+            let clip_path = root.join(player.clip_path());
+            let text = rustlua_infra::vfs::read_resource(&clip_path)
+                .and_then(|bytes| {
+                    String::from_utf8(bytes).map_err(|error| {
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, error)
+                    })
+                })
+                .map_err(|error| {
+                    LuaBridgeError::Api(format!(
+                        "entity {name:?} AnimationPlayer failed to read {}: {error}",
+                        player.clip_path()
+                    ))
+                })?;
+            let clip = AnimClip::from_text(player.clip_path(), &text).map_err(|error| {
+                LuaBridgeError::Api(format!(
+                    "entity {name:?} has an invalid clip {}: {error}",
+                    player.clip_path()
+                ))
+            })?;
+            player.attach_clip(clip).map_err(|error| {
+                LuaBridgeError::Api(format!(
+                    "entity {name:?} AnimationPlayer cannot use {}: {error}",
+                    player.clip_path()
+                ))
+            })?;
+            let unsupported = player.unsupported_paths();
+            if !unsupported.is_empty() {
+                // UiAnimation 的运行时节点表不在 ECS 世界里（E01-2 的明确边界）：片段本身
+                // 合法，只是这些轨道不写回。加载时点名，避免"播了但没动"只能靠猜。
+                tracing::warn!(
+                    target: "scene",
+                    entity = %name,
+                    clip = %player.clip_path(),
+                    tracks = %unsupported.iter().cloned().collect::<Vec<_>>().join(","),
+                    "AnimationPlayer UiAnimation tracks are parsed but not applied at runtime"
+                );
+            }
+            state
+                .world_mut()
+                .map_err(world_borrow)?
+                .insert(id, player)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         if let Some(value) = components.get("Animation3D") {
@@ -843,7 +916,7 @@ impl LuaRuntime {
     fn prefab_instance_nodes(
         spawn: &PrefabSpawn,
     ) -> BTreeMap<u64, rustlua_ui::ui_scene_layout::UiSceneNode> {
-        rustlua_ui::ui_scene_layout::build_ui_scene_nodes(
+        rustlua_ui::ui_scene_layout::build_ui_scene_nodes_with_intrinsic(
             spawn
                 .sources
                 .values()
@@ -853,6 +926,9 @@ impl LuaRuntime {
                     parent: source.parent,
                     components: &source.components,
                 }),
+            &mut |text, scale| {
+                rustlua_render::text::measure_builtin_text(text, scale).map(|(size, _)| size)
+            },
         )
     }
 

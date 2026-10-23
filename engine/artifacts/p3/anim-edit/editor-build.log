@@ -1,0 +1,9 @@
+warning: linker stdout: 正在创建库 E:\Codex\RustLua\engine\target\debug\deps\paste-0545853f57693019.dll.lib 和对象 E:\Codex\RustLua\engine\target\debug\deps\paste-0545853f57693019.dll.exp
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `paste` (lib) generated 1 warning
+   Compiling editor v0.1.1 (E:\Codex\RustLua\engine\crates\editor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.61s
+  Executable unittests src\lib.rs (engine\target\debug\deps\editor-3dd80dcff3b8a3a4.exe)
+  Executable unittests src\main.rs (engine\target\debug\deps\editor-3fced46228c0a9a3.exe)

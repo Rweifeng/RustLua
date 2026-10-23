@@ -1,0 +1,5 @@
+version=1
+name=p3-e02-m1-r09
+base_color=0.9,0.9,0.9,1
+metallic=1
+roughness=0.9

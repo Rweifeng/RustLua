@@ -245,6 +245,7 @@ fn mesh_identity_cache_is_hit_on_the_second_frame() {
             entity: rustlua_scene::scene::SceneEntityId(1),
             name: "Ground".to_owned(),
             mesh_path: GROUND_PLANE_SENTINEL.to_owned(),
+            material: None,
             mesh_handle: handle,
             model: Mat4::translation(Vec3::new(0.0, 0.0, -1.0)),
             palette: Vec::new(),
@@ -323,4 +324,65 @@ fn mesh_identity_cache_is_hit_on_the_second_frame() {
         "宿主没给身份时不该动身份统计"
     );
     assert_eq!(renderer.cached_mesh_count(), 1);
+}
+
+/// 回归：句柄只在**同一个** `RuntimeScene` 的 `AssetStore` 里唯一。编辑器重建运行时会从
+/// (0, 1) 重新发号，而渲染器寿命更长；命中缓存必须核对映射路径，否则重建后会把旧网格
+/// 当成新网格画出来（P3-R02 调试退化 UV 夹具时实际踩到）。
+#[test]
+fn mesh_identity_rejects_reused_handle_from_another_runtime() {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let Some(adapter) =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            compatible_surface: None,
+            force_fallback_adapter: true,
+        }))
+        .ok()
+    else {
+        return gpu_skipped("request_adapter");
+    };
+    let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
+        label: Some("rustlua-test-device"),
+        required_features: wgpu::Features::empty(),
+        experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        required_limits: wgpu::Limits::default(),
+        memory_hints: wgpu::MemoryHints::Performance,
+        trace: wgpu::Trace::Off,
+    }))
+    .expect("request test device");
+    let root = rustlua_infra::games_dir().join("examples").join("game_api");
+    let triangle = "assets/models/m8-test-triangle.glb";
+    let quad = "assets/models/p3-r02-quad.gltf";
+    if !root.join(triangle).is_file() || !root.join(quad).is_file() {
+        return;
+    }
+    // 离屏渲染器是 Sync 加载模式：`cached_mesh` 返回前资源已解码上传。
+    let mut renderer = Renderer::new_offscreen(device, queue, Some(root), false, false)
+        .expect("offscreen renderer");
+    let reused = AssetHandle::new(0, 1);
+    let vertex_count = |renderer: &mut Renderer, path: &str| {
+        renderer
+            .cached_mesh(Some(reused), path)
+            .map(|mesh| mesh.primitives[0].geometry.vertex_count)
+            .unwrap_or(0)
+    };
+    assert_eq!(
+        vertex_count(&mut renderer, triangle),
+        3,
+        "三角形夹具三个顶点"
+    );
+    // 重建后的新运行时用同一个 (0, 1) 指向另一条路径——不能复用旧网格。
+    assert_eq!(
+        vertex_count(&mut renderer, quad),
+        4,
+        "句柄重号但路径不同：必须按新路径重新解析"
+    );
+    // 回到第一条路径仍按路径命中缓存，而不是又解析一次。
+    assert_eq!(vertex_count(&mut renderer, triangle), 3);
+    assert_eq!(
+        renderer.cached_mesh_count(),
+        2,
+        "两条路径各缓存一份，重号句柄不产生额外副本"
+    );
 }

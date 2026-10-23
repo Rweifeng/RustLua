@@ -508,6 +508,103 @@ E20 + E22
 - ⏳ 待收口：Scroll/AspectRatio 两类、受父级控制 Position 的只读警告 UI、
   运行时 `push_scene_ui` 的容器递归布局（纯函数已具备，接线路径随 E18）。
 
+**P3-E05-1 嵌套两遍布局（2026-10-23）**：
+
+- ✅ `resolve_scene_ui_layout` 改为「自底向上测量 + 自顶向下递归摆放」：容器子项先测固有尺寸
+  （子容器 = 子项内容 + padding/spacing，覆盖 VBox/HBox/Grid/Margin/Center），父容器摆放后再把
+  矩形递归传给子容器；测量结果在一次解算内按子树缓存。
+- ✅ 容器摆放优先于子项自身 `UiLayout`，且与实体 id 顺序无关；父链成环时递归终止并保留
+  `CircularParent` 诊断。
+- ✅ 顺带修正无 `UiLayout` 子节点把父偏移加两次的问题（父矩形非零时坐标翻倍）。
+- 验收：`cargo test -p rustlua-ui` **82/82**（新增三层嵌套 + id 乱序、无布局子节点、环终止）；
+  engine lib **313/313**、editor **203 lib + 450 bin / 2 ignored**；clippy/fmt/docs 全绿。
+- ⏳ E05-4（编辑器字段/overlay/预设）未开工；E05-2/E05-3 见下。
+  本轮没有 3 分辨率截图 golden，也没有开窗 GUI 目视。
+
+**P3-E05-2 wrap / justify / LayoutItem 约束（2026-10-23）**：
+
+- ✅ `ContainerKind::Wrap`：按行贪心换行，行高取行内最高子项；`Justify` 六种主轴分布
+  （Start/Center/End/SpaceBetween/SpaceAround/SpaceEvenly）在 VBox/HBox/Wrap/Grid 生效。
+- ✅ `ChildLayout` 扩展：`grow`（不依赖 `stretch`）、`shrink`（溢出按权重收缩到 min）、
+  `min_size`/`max_size`、`align_self`、`aspect_ratio`、`visible`、`percent`。
+  `ChildLayout::sized` 保持 grow/shrink=0，旧调用零行为变化。
+- ✅ `LayoutItem` 组件串：`min_size/max_size/preferred_size/size_percent/grow/shrink/align_self/
+  aspect_ratio/visible`，全部可选；百分比先做「相对父容器内边距后尺寸」，Auto = 用宿主测量值。
+- ✅ 溢出诊断：`layout_container_with_report` 返回 `LayoutOverflow { axis, needed, available }`；
+  场景解算把它变成 `UiLayoutReason::Overflow` 诊断，不静默裁剪。
+- ✅ 根容器无 `UiLayout` 时填满父矩形（根=画布），普通元素仍用固有尺寸。
+- 验收：`cargo test -p rustlua-ui` **97/97**（六种 justify、wrap 行高、grow/shrink/min/max、
+  aspect、百分比、隐藏子项、align_self、LayoutItem 往返/校验、溢出诊断，以及
+  `three_resolution_layout_rect_golden` 在 1280×720/1920×1080/1080×1920 的 rect 读数）；
+  `rustlua-ecs` schema **16/16**；engine lib **313/313**；editor **203 lib + 450 bin / 2 ignored**；
+  clippy/fmt/docs 全绿。
+- ⏳ 未收口：`LayoutItem` 尚未注册进 `typed_scene` 的 `ComponentId`/组件表（编辑器暂时只能通过
+  组件字符串看到它）；运行时 `push_scene_ui` 尚未接容器递归布局；文本/图片 intrinsic 与布局缓存
+  统计见 E05-3；Inspector 子项约束段与场景 overlay 属 E05-4；3 分辨率是 rect golden，
+  **没有截图 golden**，也没有开窗 GUI 目视。
+
+**P3-E05-3 文本 intrinsic / 缓存统计（2026-10-23）**：
+
+- ✅ `rustlua-render::text::measure_builtin_text(text, scale)`：内置 5×7 位图度量返回
+  `(size, pixel_bounds)`（与 `TextMesh` 同口径），给没有字体图集上下文的宿主共用。
+- ✅ `rustlua-ui::ui_scene_layout::preferred_size_for(components, layout, measure_text)`：固有
+  尺寸规则唯一入口——`Image` 取 `UiLayout` 矩形（UI 贴图按矩形拉伸，PNG 像素不是布局输入）、
+  `Text` 取宿主度量、其余 64×64。
+- ✅ 运行期场景与 `prefab.spawn` 都改走 `build_ui_scene_nodes_with_intrinsic`（内置位图尺子）；
+  编辑器 `scene_ui_nodes` 与 UI 预览诊断复用同一函数，不再用 `[128,32]`/`[64,64]` 两套占位。
+- ✅ 缓存统计：`resolve_scene_ui_layout_with_stats` 返回 `MeasureStats { hits, misses }`；旧
+  `resolve_scene_ui_layout` 签名不变。命中来自「父容器测量子容器 → 摆放子容器时再测一次」。
+- 验收：`cargo test -p rustlua-ui` **99/99**（新增 `measure_stats_count_container_cache_reuse`
+  实际读数 `hits=1/misses=3`、`preferred_size_prefers_text_intrinsic_then_image_layout`）；
+  `cargo test -p rustlua-render text` **18/18**（新增内置度量与 `TextMesh` 逐值一致）；
+  engine lib **314/314**（新增 `container_text_child_uses_measured_intrinsic_size`：HBox
+  padding 10 下 Text 子项矩形 `(10,10,18,9.33)`，宽度对同一把尺子）；editor **203 lib +
+  451 bin / 2 ignored**（新增编辑器节点表同款断言）；scripting **124 + 1 集成**；clippy/fmt 全绿。
+- ⏳ 未收口：未做图片的**纹理像素**固有尺寸（当前语义就是作者矩形）；自定义字体在布局期仍按
+  内置位图度量（渲染走 MSDF，可能一两个像素差异）；编辑器尚无 `MeasureStats` 面板读数
+  （随 E05-4 overlay/预设）；没有开窗 GUI 目视。
+
+**P3-E05-4a/E05-4b Container 作者化与 28 场景回归（2026-10-23）**：
+
+- ✅ Container 检查器补齐 `wrap` 类型与 `justify` 六模式下拉（HBox/VBox/Grid/Wrap 显示；
+  Margin/Center 的主轴分布无意义，不显示）。此前 E05-2 记录称「加 justify 下拉」但代码里
+  实际只有 align，本轮修正了这处文档/实现漂移。
+- ✅ `ContainerPreset`（行 Row/列 Column/网格 Grid/换行 Wrap）只改 Inspector 缓冲
+  （kind/spacing，Grid 空列数补 3），提交仍由 E08 提交点落成一条 Undo，不另开写入路径。
+- ✅ 子项 `LayoutItem` 检查器段：min/max/preferred/percent（四组 DragValue）、grow/shrink、
+  align_self（继承容器/起始/居中/末尾）、宽高比（0 = 关闭）、visible、移除按钮；写回走
+  `LayoutItemFields::to_layout`（引擎解析器是唯一校验门），并接入 Inspector 快照/直写/E08
+  事务基线，因此一次编辑仍是一条 Undo。`LayoutItem` 同时进入 Add Component 的 UI 分组，
+  默认载荷为引擎 `LayoutItem::default()`。
+- ✅ Widget 模式「布局调试」开关（工具栏 → 覆盖层）：所有 UI 元素画布局 bounds，Container
+  画 padding 与主轴相邻子项 gap 带（HBox/VBox/Wrap），`PreviewErrorKind::Layout` 诊断命中的
+  实体标「溢出」。gap 带只覆盖主轴上真实存在的间隙且宽度不超过 spacing×缩放。
+- ✅ `LayoutItem` 已进运行时组件表：`rustlua-ui::scene_codec` 注册（渲染层 6 + UI 层 8 = 14 个
+  codec）、`rustlua-scene::typed_scene::ComponentId`（`ALL`/`as_str`/`component_id_for_opaque`/
+  `SOURCE_SCENE_COMPONENTS`）与 `rustlua-ecs::component_schema`（九个可选字段；`align_self`
+  为 start/center/end，尺寸/增长类字段非负）；`examples/game_api/scenes/ui_test.scene` 增加
+  默认 `LayoutItem` 样本（默认值布局中性，golden 零 diff）。
+- ✅ 28 个 UI 源场景/预制体回归：`editor::panels::scene_view::tests::ui_source_layout_matches_golden`
+  在 1280×720 / 1920×1080 / 1080×1920 下解算 28 个源文件（`.prefab` 先实例化），对每个 UI
+  实体输出 `rect + 诊断` 的 FNV-1a 值（84 行 golden，`diags=0`；20 个文件三分辨率不变，
+  8 个随分辨率变化）。基线是 E05-1..E05-3 之后的值（E05-3 文本 intrinsic 属有意变更，
+  E05 前数值不可重建）；`UPDATE_UI_LAYOUT_GOLDEN=1 cargo test -p editor
+  ui_source_scene_layout_matches_golden` 重新生成。
+- ✅ overlay 溢出角标改按当前预览分辨率解算：`layout_diagnostics` 接收 `preview_resolution`，
+  场景视图绘制前 `refresh_layout_diagnostics_if_resolution_changed` 比对已解算分辨率并重算，
+  切预览后不再沿用固定 1280×720 的旧几何。
+- 验收：`cargo test -p editor` **206 lib + 459 bin / 2 ignored**（新增
+  `ui_source_scene_layout_matches_golden`，84 行断言；此前四条作者化/overlay 用例保留）；
+  `rustlua-scene` **46 lib + 1 + 4 集成**（codec 表 **14**，`LayoutItem` 编成 `Opaque` 且原文保留）；
+  `rustlua-ui` **99/99**；`rustlua-ecs` **161/161**；engine lib **314/314**；
+  `component_schema_parity` **1/1**、`typed_scene_parity` **1/1**、示例场景组件覆盖 **1/1**；
+  clippy **exit 0**、fmt check **0**、check-docs **exit 0**
+  （`docs=66 game_docs=46 h1=114 links=497 ps1_bom_ok=57 ps1_parse_ok=57`）。
+- ⏳ 未收口：overlay 的 gap 只取 children 前两项且仅 HBox/VBox/Wrap，Grid/Margin/Center
+  不画 gap；28 文件回归是**布局数值 golden**（rect + 诊断），不是截屏 baseline，E05 前数值
+  不可重建；没有开窗 GUI 目视（overlay/角标/预设只在测试里驱动）；`verify.ps1`、workspace
+  全量、Web/wasm、真实 GPU 未跑。
+
 ### E18：实现多分辨率预览和 Safe Area
 
 **目标**：在编辑阶段发现不同设备比例下的布局问题。
@@ -524,13 +621,35 @@ E20 + E22
 
 **验收标准**：布局在各预设下可稳定重算；编辑器结果与运行时结果一致；Safe Area 外溢和裁剪区域清晰可见。
 
-**实现状态（E18，批次 B 首步）**：
+**实现状态（E18，批次 B 首步 + 2026-10-23 收口）**：
 
 - ✅ 预设补齐：预览分辨率扩为 800×600、1280×720、1920×1080、2560×1440、
   3440×1440、1080×1920（覆盖 4:3/16:9/21:9/9:16 主流比例）。
 - ✅ Safe Area 数据层：`CanvasConfig.safe_area`（像素 insets）与
   `safe_rect(viewport)`（越界钳制到零尺寸），供 Game View 可视化与运行时共用。
-- ⏳ 待收口：比例切换快捷组、缩放比例/裁剪区域 HUD 显示、GPU 资源复用。
+- ✅ 比例切换快捷组：工具栏直接给 16:9、16:10、21:9、4:3、9:16 五个按钮；
+  `resolution_for_aspect` 保持当前长边换另一条边（1280×720 → 16:10 得 1280×800、
+  21:9 得 1280×549、9:16 得 720×1280），`resolution_matches_aspect` 用 0.5% 容差
+  识别当前比例。切换只改预览目标，不写场景数据。
+- ✅ Safe Area 可视化：Scene 视图改为读取场景 UI Root 的 `canvas.safe_area`
+  （`canvas_config_from_scene` 与选中项无关），用 `CanvasConfig::safe_rect` 按设计
+  分辨率钳制后走设计框同一映射；删掉固定 5% 估算，insets 全 0 时不重复画框。
+- ✅ 画布 HUD：Scene 视图在设计分辨率标签下、Game 视图在预览徽标内，共用
+  `CanvasHud` 同时显示设计分辨率、预览分辨率、屏幕物理像素、显示缩放（物理/设计）、
+  裁剪（设计框被面板裁掉的设计像素）与 Safe Area；Anchor 边界沿用 Phase 5c 的选中
+  实体锚点手柄。Game 视图等比 letterbox，裁剪恒为 0。
+- ✅ GPU 资源复用：切分辨率只调用现有 `PreviewSession::resize`（保留运行时与
+  渲染器），同尺寸帧不再重建渲染目标；GPU 测试断言会话指针不变、尺寸立即生效。
+- 验收：`cargo test -p editor` **203 lib + 457 bin / 2 ignored**（新增 6 条：比例
+  两条、Safe Area 映射/裁剪两条、HUD 字符串一条、GPU 复用一条）；clippy/fmt 全绿；
+  `check-docs.ps1` 退出 0。
+- ⏳ 未收口：裁剪读数只描述 Scene 视图设计框被面板裁掉的部分（不是 Canvas 缩放
+  模式的理论裁剪）；`CanvasConfig.reference/scale_mode` 尚未接入运行时 UI 布局
+  （运行时以预览分辨率作为 UI 参考），HUD 因而不展示未生效的缩放投影；Anchor
+  边界只覆盖选中实体；没有开窗 GUI 目视；`verify.ps1`、workspace 全量、Web/wasm
+  未跑。另：首次并行跑 `cargo test -p editor` 时 bin 测试进程出现过一次
+  `0xc0000005 STATUS_ACCESS_VIOLATION`（当时 lib 203/203 已过），立即重跑
+  457/457 全过；疑为多个 GPU 测试并行 teardown 抖动，尚未定位到具体用例。
 
 ### E19：实现 Widget Designer 与 Palette
 

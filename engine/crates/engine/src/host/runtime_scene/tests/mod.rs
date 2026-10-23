@@ -85,6 +85,7 @@ fn frame_view_scene(
 }
 
 mod animation_layers;
+mod animation_player;
 mod camera_physics;
 mod custom_fonts;
 mod frame_extraction;

@@ -7,7 +7,7 @@
 use rustlua_camera::camera::{Camera2D, RenderView, Viewport};
 use rustlua_ecs::entity::EntityId;
 use rustlua_ecs::hierarchy::SpatialReport;
-use rustlua_ecs::particle::{ParticleEmitter, SceneParticleEmitter};
+use rustlua_ecs::particle::{ParticleCpuReason, ParticlePlacement, SceneParticleEmitter};
 use rustlua_ecs::transform::Transform3D;
 use rustlua_ecs::transform::{Transform, Vec2};
 use rustlua_ecs::world::World;
@@ -16,7 +16,8 @@ use rustlua_math::math3d::Mat4;
 use rustlua_physics::physics::PhysicsAuthority;
 use rustlua_scene::scene::SceneEntityId;
 
-use super::{PhysicsStageOrder, RuntimeScene};
+use super::{ParticleDispatchReport, ParticlePlacementReport, PhysicsStageOrder, RuntimeScene};
+use crate::host::{GpuParticleConfig, Renderer};
 
 /// 按运行时句柄读实体**自己的**局部变换：`Transform3D` 优先，其次能无损压平的 2D
 /// [`Transform`]；两者都没有 ⇒ `None`。
@@ -273,9 +274,15 @@ impl RuntimeScene {
     /// （父链下的子实体因此跟着父一起动）。累计器写回组件，因此帧率变化不改变平均发射量。
     ///
     /// 返回本步发出的粒子数（诊断/验收用）。发射本身复用 Lua `particles.burst` 的同一实现。
+    ///
+    /// P3-R07-1：这一步同时判定每个发射器的**落点**（[`rustlua_ecs::particle::ParticleEmitter::placement`]）。
+    /// GPU 派发要到 R07-2 才接线，因此**今天所有粒子照旧在 CPU 池里生成**——回退不丢粒子、
+    /// 不黑屏；落点分布记在 [`RuntimeScene::last_particle_placement`]，每种回退原因喊一层日志。
     pub fn step_scene_emitters(&mut self, delta_seconds: f32) -> usize {
-        let pending: Vec<(Vec2, ParticleEmitter)> = self.script.with_world_mut(|world| {
+        let compute_available = self.particle_compute_available;
+        let (pending, placement) = self.script.with_world_mut(|world| {
             let mut pending = Vec::new();
+            let mut placement = ParticlePlacementReport::default();
             for id in world.entities_with::<SceneParticleEmitter>() {
                 let Some(mut scene) = world
                     .get::<SceneParticleEmitter>(id)
@@ -301,15 +308,169 @@ impl RuntimeScene {
                 }
                 let mut emitter = scene.emitter;
                 emitter.count = count;
+                placement.record(emitter.placement(compute_available));
                 pending.push((position, emitter));
             }
-            pending
+            (pending, placement)
         });
+        self.note_particle_placement(placement);
         let emitted = pending.len();
         for (position, emitter) in pending {
             self.script.burst_particles(position, &emitter);
         }
         emitted
+    }
+
+    /// 记下本步落点分布，并把**新出现的**回退原因各喊一层日志。
+    fn note_particle_placement(&mut self, placement: ParticlePlacementReport) {
+        self.last_particle_placement = placement;
+        self.note_particle_reasons(placement.fallback_bits, "场景发射器");
+    }
+
+    /// 每种回退原因只喊一层：`particle_warned` 是位图，同一原因不因换发射器、换帧或换
+    /// 通道（场景发射器 / burst 派发）而刷屏。
+    fn note_particle_reasons(&mut self, bits: u32, source: &str) {
+        let new_bits = bits & !self.particle_warned;
+        self.particle_warned |= bits;
+        for reason in ParticleCpuReason::WARNABLE {
+            if new_bits & (1 << reason.index()) == 0 {
+                continue;
+            }
+            tracing::warn!(
+                target: "particles",
+                reason = reason.as_str(),
+                source,
+                "[particles] particle_fallback=cpu：{}要了 mode=gpu，本步在 CPU 上发射",
+                source
+            );
+        }
+    }
+
+    /// 最近一步场景发射器的落点分布。
+    #[must_use]
+    pub const fn last_particle_placement(&self) -> ParticlePlacementReport {
+        self.last_particle_placement
+    }
+
+    /// P3-R07-1：把渲染器的 compute 能力告知运行时。
+    ///
+    /// 判定 [`rustlua_ecs::particle::ParticleEmitter::placement`] 时要用它，而 ECS 层不该知道设备——宿主（`GameApp`、
+    /// 编辑器 Play 预览）拿到渲染器时调一次即可。不调用则按"没有 compute"处理：`mode=gpu`
+    /// 的场景照旧回 CPU，只是报告里写 `no_compute` 而不是 `not_wired`。
+    pub fn set_particle_compute_available(&mut self, compute_available: bool) {
+        self.particle_compute_available = compute_available;
+    }
+
+    /// P3-R07-2：把脚本侧 `mode=gpu` 的爆发交给渲染器的 GPU 粒子池，并步进这个池。
+    ///
+    /// 调用点是宿主的每帧循环：`run_script_steps` **之后**、渲染**之前**——compute 必须在
+    /// 本帧图形 pass 之前提交（见 `dispatch_compute` 的提交点约定）。
+    ///
+    /// 三条保证，各有单测钉住：
+    /// - **不丢粒子**：判定不允许（`ParticleEmitter::placement`）或渲染器拒绝的每一批，都用
+    ///   **同一份参数**退回 CPU 池，照旧被模拟、照旧被画。
+    /// - **Lua 读不到 GPU 粒子**：渲染器收下的一批不进 CPU 池，`particles.count` 因此只数
+    ///   玩法可见的那些（GPU 粒子是视觉层）。
+    /// - **不谎报**：`gpu` 只在渲染器返回 `Ok` 之后加一；能力位每帧从渲染器重取，设备中途
+    ///   丢 compute 也不会继续报成 GPU。
+    #[must_use]
+    pub fn dispatch_gpu_particle_bursts(
+        &mut self,
+        renderer: &mut Renderer,
+        delta_seconds: f32,
+    ) -> ParticleDispatchReport {
+        let compute_available = renderer.compute_enabled();
+        // 能力位每帧刷新（`set_particle_compute_available` 是宿主启动时的一次性下推；
+        // 设备重建/后端切换后只有这里能把它拉回来）。
+        self.particle_compute_available = compute_available;
+        let bursts = self.script.take_gpu_bursts();
+        let mut report = ParticleDispatchReport {
+            requested: bursts.len(),
+            deferred: std::mem::take(&mut self.particle_deferred),
+            overflow: self.script.take_gpu_burst_overflow(),
+            ..ParticleDispatchReport::default()
+        };
+        let mut fallback_bits = 0u32;
+        let mut note_fallback = |report: &mut ParticleDispatchReport, reason: ParticleCpuReason| {
+            report.fallback += 1;
+            report.fallback_reason.get_or_insert(reason);
+            fallback_bits |= 1 << reason.index();
+        };
+        for (position, emitter) in bursts {
+            match emitter.placement(compute_available) {
+                ParticlePlacement::Cpu(reason) => {
+                    note_fallback(&mut report, reason);
+                    self.script.push_particles_cpu(position, &emitter);
+                }
+                ParticlePlacement::Gpu => {
+                    let config = GpuParticleConfig {
+                        origin: [position.x, position.y],
+                        emitter,
+                        // 超过 u32 的 count 会在这里饱和成 `u32::MAX`，于是渲染器的
+                        // "capacity ≥ count" 校验把它拒掉 → 整批回 CPU（不是截断成一小撮）。
+                        capacity: u32::try_from(emitter.count).unwrap_or(u32::MAX),
+                    };
+                    match renderer.push_gpu_particle_burst(config) {
+                        Ok(_) => report.gpu += 1,
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "particles",
+                                error = %error,
+                                count = emitter.count,
+                                "[particles] GPU burst 派发被拒：整批退回 CPU 池"
+                            );
+                            note_fallback(&mut report, ParticleCpuReason::DispatchRejected);
+                            self.script.push_particles_cpu(position, &emitter);
+                        }
+                    }
+                }
+            }
+        }
+        // 队列满时脚本层已经就地回退，这里只把它记进同一个原因位图。
+        if report.overflow > 0 {
+            fallback_bits |= 1 << ParticleCpuReason::DispatchRejected.index();
+        }
+        // 上一帧入队却没人来取：这批已经在本帧开头倒回 CPU 池（保底路径，见 `flush_gpu_bursts`）。
+        if report.deferred > 0 {
+            report.fallback += report.deferred;
+            report
+                .fallback_reason
+                .get_or_insert(ParticleCpuReason::NotWired);
+            fallback_bits |= 1 << ParticleCpuReason::NotWired.index();
+        }
+        // 空池不调用：`step_gpu_particles` 对空池是 `NotConfigured`，那不是错误而是"没这东西"。
+        if renderer.gpu_particle_systems() > 0 {
+            match renderer.step_gpu_particles(delta_seconds) {
+                Ok(step) => {
+                    report.systems = step.systems;
+                    report.recycled = step.recycled;
+                    report.steps = step.steps;
+                }
+                Err(error) => {
+                    tracing::warn!(target: "particles", error = %error, "[particles] GPU 粒子步进失败");
+                }
+            }
+        }
+        report.gpu_particles = renderer
+            .gpu_particle_status()
+            .map_or(0, |status| status.spawned as usize);
+        self.note_particle_reasons(fallback_bits, "burst 派发");
+        self.last_particle_dispatch = report;
+        report
+    }
+
+    /// 最近一次 burst 派发通道的读数（诊断与验收用）。
+    #[must_use]
+    pub const fn last_particle_dispatch(&self) -> ParticleDispatchReport {
+        self.last_particle_dispatch
+    }
+
+    /// 把脚本侧还没被派发的 GPU burst 倒回 CPU 池（P3-R07-2 的保底，宿主每帧开头调用）。
+    ///
+    /// 没有这一步，"宿主没接派发通道"的工程里那些 `mode=gpu` 的粒子会卡在队列里——既不模拟
+    /// 也不画，等于丢粒子。倒回后它们最多晚一帧出现，语义与 CPU 档一致。
+    pub(super) fn requeue_stale_gpu_bursts(&mut self) {
+        self.particle_deferred += self.script.flush_gpu_bursts();
     }
 
     /// 最近一步由场景声明的发射器发出的粒子数。

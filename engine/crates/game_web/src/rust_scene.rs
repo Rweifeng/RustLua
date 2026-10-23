@@ -20,8 +20,8 @@
 
 use std::path::Path;
 
-use engine::host::runtime_scene::TextRenderMode;
-use engine::host::{RuntimeScene, SceneMesh};
+use engine::host::runtime_scene::{ParticleDispatchReport, TextRenderMode};
+use engine::host::{Renderer, RuntimeScene, SceneMesh};
 use rustlua_input::input::InputSnapshot;
 use rustlua_scene::scene::Scene;
 
@@ -253,6 +253,21 @@ impl RustScene {
         self.scene
             .vertices(self.width, self.height)
             .map_err(|error| format!("RuntimeScene::vertices: {error:#}"))
+    }
+
+    /// P3-R07-2：把本帧 Lua 排队的 `mode='gpu'` burst 交给渲染器派发，并推进 GPU 池一次。
+    ///
+    /// 浏览器侧（WebGL2 无 compute）里它**不会**真的建出 GPU 系统：渲染器
+    /// `compute_enabled()` 为假 ⇒ 判定为 `no_compute`，这一批当帧原样落回 CPU 池，
+    /// Lua 仍然读得到它们。不接这一步的话同样不丢粒子（下一帧 `run_script_steps` 入口
+    /// 的整批保底会接管），但会晚一帧、且日志里只剩一句"没接线"。
+    pub fn dispatch_gpu_particles(
+        &mut self,
+        renderer: &mut Renderer,
+        delta_seconds: f32,
+    ) -> ParticleDispatchReport {
+        self.scene
+            .dispatch_gpu_particle_bursts(renderer, delta_seconds)
     }
 
     /// 推进模拟：**与桌面运行器、编辑器预览、headless 运行器同一个入口**（`run_script_steps`）。

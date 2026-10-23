@@ -1,272 +1,255 @@
 //! WGSL shader sources embedded at compile time (renderer-only).
+//!
+//! P3-R04-1：源码放在 `engine/shaders/*.wgsl`，`include_str!` 在**编译期**嵌回二进制——运行
+//! 时不读文件，打包/部署也不需要额外路径。搬运逐字节保真（只去掉了字符串字面量开头的空行），
+//! 管线、绑定与像素行为不变。
+//!
+//! [`ShaderSource`] 给每份源一个稳定身份（名字 + 仓库内路径 + 64 位 FNV-1a），供后续变体
+//! 缓存 / 热重载判断"这份源有没有变"；旧的 `*_SHADER` 常量保留为别名，调用点不用改。
 
-pub const VECTOR_TEXT_SHADER: &str = r#"
-struct Glyph { segment_start: u32, segment_count: u32, _padding: vec2<u32>, bounds: vec4<f32> };
-struct Segment { start: vec2<f32>, end: vec2<f32>, bounds: vec4<f32> };
-@group(0) @binding(0) var<storage, read> glyphs: array<Glyph>;
-@group(0) @binding(1) var<storage, read> segments: array<Segment>;
-struct Out { @builtin(position) position: vec4<f32>, @location(0) local: vec2<f32>, @location(1) color: vec4<f32>, @location(2) glyph: u32 };
-@vertex fn vs_main(@location(0) position: vec2<f32>, @location(1) local: vec2<f32>, @location(2) glyph: u32, @location(3) color: vec4<f32>) -> Out { var o: Out; o.position=vec4<f32>(position,0.0,1.0); o.local=local; o.glyph=glyph; o.color=color; return o; }
-fn winding_at(point: vec2<f32>, segment_start: u32, segment_count: u32) -> i32 {
-  var winding=0i;
-  for (var i=0u; i<segment_count; i++) {
-    let s=segments[segment_start+i];
-    let crosses=(s.start.y <= point.y && point.y < s.end.y) || (s.end.y <= point.y && point.y < s.start.y);
-    if crosses {
-      let x=s.start.x+(point.y-s.start.y)*(s.end.x-s.start.x)/(s.end.y-s.start.y);
-      if x > point.x { winding += select(-1i, 1i, s.end.y > s.start.y); }
-    }
-  }
-  return winding;
+/// 一份内嵌 WGSL 源的身份。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ShaderSource {
+    /// 稳定短名（变体键 / 日志 / Profiler 共用）。
+    pub name: &'static str,
+    /// 仓库内路径，相对仓库根（报错与文档用）。
+    pub path: &'static str,
+    /// 源文本的 64 位 FNV-1a，构建期算好。
+    pub hash: u64,
+    /// 源文本（`include_str!` 嵌入二进制）。
+    pub source: &'static str,
 }
-@fragment fn fs_main(@location(0) local: vec2<f32>, @location(1) color: vec4<f32>, @location(2) glyph: u32) -> @location(0) vec4<f32> {
-  let g=glyphs[glyph];
-  let aa=max(fwidth(local.x), fwidth(local.y)) + 0.002;
-  let margin=aa;
-  if local.x < g.bounds.x - margin || local.y < g.bounds.y - margin || local.x > g.bounds.z + margin || local.y > g.bounds.w + margin { discard; }
-  let winding=winding_at(local,g.segment_start,g.segment_count);
-  var nearest=1e9;
-  for (var i=0u; i<g.segment_count; i++) {
-    let s=segments[g.segment_start+i];
-    let d=s.end-s.start;
-    let q=local-s.start;
-    let in_bounds=!(local.x < s.bounds.x - margin || local.y < s.bounds.y - margin || local.x > s.bounds.z + margin || local.y > s.bounds.w + margin);
-    if in_bounds {
-      let t=clamp(dot(q,d)/max(dot(d,d),1e-8),0.0,1.0);
-      let distance=length(q-d*t);
-      if distance <= aa && dot(d,d) > 0.0 {
-        let closest=s.start+d*t;
-        let normal=normalize(vec2<f32>(-d.y,d.x));
-        let inside_a=winding_at(closest+normal*0.001,g.segment_start,g.segment_count) != 0;
-        let inside_b=winding_at(closest-normal*0.001,g.segment_start,g.segment_count) != 0;
-        if inside_a != inside_b {
-          nearest=min(nearest,distance);
+
+impl ShaderSource {
+    const fn new(name: &'static str, path: &'static str, source: &'static str) -> Self {
+        Self {
+            name,
+            path,
+            hash: fnv1a64(source.as_bytes()),
+            source,
         }
-      }
     }
-  }
-  let signed_distance=select(-nearest, nearest, winding != 0i);
-  let coverage=smoothstep(-aa, aa, signed_distance);
-  return vec4<f32>(color.rgb, coverage*color.a);
-}
-"#;
-
-pub const TEXTURED_SHADER: &str = r#"
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-    @location(1) color: vec4<f32>,
-    @location(2) sdf: u32,
-};
-@group(0) @binding(0) var tex: texture_2d<f32>;
-@group(0) @binding(1) var samp: sampler;
-@vertex fn vs_main(@location(0) position: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>, @location(3) sdf: u32) -> VertexOutput {
-    var out: VertexOutput;
-    out.position = vec4<f32>(position, 0.0, 1.0);
-    out.uv = uv;
-    out.color = color;
-    out.sdf = sdf;
-    return out;
-}
-fn median(a: f32, b: f32, c: f32) -> f32 {
-    return max(min(a, b), min(max(a, b), c));
 }
 
-@fragment fn fs_main(@location(0) uv: vec2<f32>, @location(1) color: vec4<f32>, @location(2) sdf: u32) -> @location(0) vec4<f32> {
-    let sampled = textureSample(tex, samp, uv);
-    if sdf == 1u {
-        // MSDF 使用三个距离通道的中值，避免单通道切换造成笔画断裂和内部孔洞。
-        let d = median(sampled.r, sampled.g, sampled.b);
-        let texture_size = vec2<f32>(textureDimensions(tex));
-        // Distance range in atlas texels. `font.rs` rasterizes with
-        // `Range::symmetric(PAD)` and msdfgen maps distance -> [0,1] as
-        // `(distance/PAD + 1) * 0.5`, so the full [0,1] span covers
-        // `2 * PAD` texels.
-        //
-        // TextMeshPro 对齐：`px_range = PAD`（而非 `2*PAD`）。在 1:1 渲染时
-        // AA 渐变恰好覆盖 1 屏幕像素（锐利边缘）；小字号（如 14px）在
-        // RASTER_SCALE=192 下 texels_per_pixel ≈ 4，screen_px_range ≈ 2，
-        // AA 渐变 ~2px——可接受的清晰度。旧值 `2*PAD=16` 将渐变拉宽到 4px
-        // 是小字号模糊的直接原因（以"填补窄笔画"为名的 workaround，实际效果
-        // 是让所有尺寸的文字都变糊）。
-        let px_range = 8.0;
-        let texels_per_pixel = max(
-            fwidth(uv.x) * texture_size.x,
-            fwidth(uv.y) * texture_size.y,
-        );
-        let screen_px_range = max(
-            px_range / max(texels_per_pixel, 1.0e-6),
-            1.0,
-        );
-
-        let a = clamp(
-            (d - 0.5) * screen_px_range + 0.5,
-            0.0,
-            1.0
-        );
-        // 直通 alpha：管线 ALPHA_BLENDING 已按 alpha 预乘源色，不能再乘 a。
-        return vec4<f32>(color.rgb, a);
+/// FNV-1a 64：只用于"源变没变"的身份，不是密码学哈希。
+///
+/// `pub(crate)`：P3-R05 的覆盖目录源用同一个函数算哈希，内置/覆盖两条路径的哈希口径必须一致，
+/// 否则"同一内容不重复编译"会在切换来源时失效。
+pub(crate) const fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    let mut index = 0;
+    while index < bytes.len() {
+        hash ^= bytes[index] as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        index += 1;
     }
-    if sdf == 2u {
-        // Bitmap 路径：小字号下 Nearest 采样取 MSDF 中值，硬阈值化得到清晰字形边缘。
-        // 避免 Linear 滤波在小尺寸下把距离场平均成模糊一片。
-        let d = median(sampled.r, sampled.g, sampled.b);
-        let a = select(0.0, 1.0, d >= 0.5);
-        return vec4<f32>(color.rgb, a);
-    }
-    return sampled * color;
+    hash
 }
-"#;
+
+pub const VECTOR_TEXT: ShaderSource = ShaderSource::new(
+    "vector_text",
+    "engine/shaders/vector_text.wgsl",
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../shaders/vector_text.wgsl"
+    )),
+);
+
+pub const TEXTURED: ShaderSource = ShaderSource::new(
+    "textured",
+    "engine/shaders/textured.wgsl",
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../shaders/textured.wgsl"
+    )),
+);
 
 /// WP6 世界 Sprite 通道：顶点是**世界坐标** `(x, y, z)`，投影由顶点着色器用 2D 相机的
 /// `view_projection` 完成（`Camera2D::view_projection`，与 CPU 侧 `world_to_screen` 同源）。
-/// 片元与 [`TEXTURED_SHADER`] 的普通纹理分支一致（采样 × 顶点色），因此世界路径与 overlay
+/// 片元与 [`TEXTURED`] 的普通纹理分支一致（采样 × 顶点色），因此世界路径与 overlay
 /// 路径在颜色上不会分叉；两者的差异只有"投影在哪算"和"是否参与深度测试"。
-pub const WORLD_SPRITE_SHADER: &str = r#"
-struct Camera { view_projection: mat4x4<f32> };
-@group(0) @binding(0) var<uniform> camera: Camera;
-@group(1) @binding(0) var tex: texture_2d<f32>;
-@group(1) @binding(1) var samp: sampler;
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-    @location(1) color: vec4<f32>,
-};
-@vertex fn vs_main(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>) -> VertexOutput {
-    var out: VertexOutput;
-    out.position = camera.view_projection * vec4<f32>(position, 1.0);
-    out.uv = uv;
-    out.color = color;
-    return out;
-}
-@fragment fn fs_main(@location(0) uv: vec2<f32>, @location(1) color: vec4<f32>) -> @location(0) vec4<f32> {
-    return textureSample(tex, samp, uv) * color;
-}
-"#;
+pub const WORLD_SPRITE: ShaderSource = ShaderSource::new(
+    "world_sprite",
+    "engine/shaders/world_sprite.wgsl",
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../shaders/world_sprite.wgsl"
+    )),
+);
 
-pub const MESH3D_SHADER: &str = r#"
-struct Camera { view_projection: mat4x4<f32> };
-struct Light { direction: vec4<f32>, color_intensity: vec4<f32> };
-struct Material { base_color: vec4<f32>, surface: vec4<f32> };
-@group(0) @binding(0) var<uniform> camera: Camera;
-@group(0) @binding(1) var<uniform> light: Light;
-@group(0) @binding(2) var<uniform> shadow_camera: Camera;
-@group(0) @binding(3) var shadow_map: texture_depth_2d;
-@group(0) @binding(4) var shadow_sampler: sampler_comparison;
-@group(1) @binding(0) var<uniform> material: Material;
-@group(1) @binding(1) var<uniform> joint_palette: array<mat4x4<f32>, 128>;
-@group(1) @binding(2) var<storage, read> instance_models: array<mat4x4<f32>>;
-@group(1) @binding(3) var albedo: texture_2d<f32>;
-@group(1) @binding(4) var albedo_sampler: sampler;
-struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) normal: vec3<f32>, @location(1) shadow_position: vec4<f32>, @location(2) uv: vec2<f32> };
-@vertex fn vs_main(@builtin(instance_index) instance_index: u32, @location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) joint_indices: vec4<u32>, @location(4) bone_weights: vec4<f32>) -> VertexOutput {
-    var out: VertexOutput;
-    let model = instance_models[instance_index];
-    let skinned = material.surface.z > 0.5;
-    var local_position = vec4<f32>(position, 1.0);
-    var local_normal = vec4<f32>(normal, 0.0);
-    if skinned {
-        var skinned_position = vec3<f32>(0.0);
-        var skinned_normal = vec3<f32>(0.0);
-        skinned_position += (joint_palette[joint_indices.x] * local_position).xyz * bone_weights.x;
-        skinned_position += (joint_palette[joint_indices.y] * local_position).xyz * bone_weights.y;
-        skinned_position += (joint_palette[joint_indices.z] * local_position).xyz * bone_weights.z;
-        skinned_position += (joint_palette[joint_indices.w] * local_position).xyz * bone_weights.w;
-        skinned_normal += (joint_palette[joint_indices.x] * local_normal).xyz * bone_weights.x;
-        skinned_normal += (joint_palette[joint_indices.y] * local_normal).xyz * bone_weights.y;
-        skinned_normal += (joint_palette[joint_indices.z] * local_normal).xyz * bone_weights.z;
-        skinned_normal += (joint_palette[joint_indices.w] * local_normal).xyz * bone_weights.w;
-        local_position = vec4<f32>(skinned_position, 1.0);
-        local_normal = vec4<f32>(skinned_normal, 0.0);
-    }
-    let world_position = model * local_position;
-    out.position = camera.view_projection * world_position;
-    out.normal = local_normal.xyz;
-    out.shadow_position = shadow_camera.view_projection * world_position;
-    out.uv = uv;
-    return out;
-}
-@fragment fn fs_main(@location(0) normal: vec3<f32>, @location(1) shadow_position: vec4<f32>, @location(2) uv: vec2<f32>) -> @location(0) vec4<f32> {
-    let albedo_color = textureSample(albedo, albedo_sampler, uv);
-    let base_rgb = material.base_color.rgb * albedo_color.rgb;
-    let base_alpha = material.base_color.a * albedo_color.a;
-    let n = normalize(normal);
-    let l = normalize(-light.direction.xyz);
-    let diffuse = max(dot(n, l), 0.0);
-    let roughness = clamp(material.surface.y, 0.04, 1.0);
-    let metallic = clamp(material.surface.x, 0.0, 1.0);
-    let specular = pow(max(dot(reflect(-l, n), vec3<f32>(0.0, 0.0, 1.0)), 0.0), 2.0 / (roughness * roughness));
-    let shadow_ndc = shadow_position.xyz / shadow_position.w;
-    let shadow_uv = vec2<f32>(shadow_ndc.x * 0.5 + 0.5, 1.0 - (shadow_ndc.y * 0.5 + 0.5));
-    let shadow_depth = shadow_ndc.z - 0.002;
-    let shadow_visibility = select(1.0, textureSampleCompare(shadow_map, shadow_sampler, shadow_uv, shadow_depth), shadow_uv.x >= 0.0 && shadow_uv.x <= 1.0 && shadow_uv.y >= 0.0 && shadow_uv.y <= 1.0 && shadow_ndc.z >= 0.0 && shadow_ndc.z <= 1.0);
-    let brightness = (0.15 + (diffuse * (1.0 - metallic) + specular * mix(0.04, 1.0, metallic)) * shadow_visibility) * light.color_intensity.w;
-    return vec4<f32>(base_rgb * light.color_intensity.rgb * brightness, base_alpha);
-}
-"#;
+pub const MESH3D: ShaderSource = ShaderSource::new(
+    "mesh3d",
+    "engine/shaders/mesh3d.wgsl",
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../shaders/mesh3d.wgsl"
+    )),
+);
 
-pub const SHADOW_SHADER: &str = r#"
-struct Camera { view_projection: mat4x4<f32> };
-struct Material { base_color: vec4<f32>, surface: vec4<f32> };
-@group(0) @binding(0) var<uniform> camera: Camera;
-@group(1) @binding(0) var<uniform> material: Material;
-@group(1) @binding(1) var<uniform> joint_palette: array<mat4x4<f32>, 128>;
-@group(1) @binding(2) var<storage, read> instance_models: array<mat4x4<f32>>;
-@vertex fn vs_main(@builtin(instance_index) instance_index: u32, @location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) joint_indices: vec4<u32>, @location(4) bone_weights: vec4<f32>) -> @builtin(position) vec4<f32> {
-    let model = instance_models[instance_index];
-    let skinned = material.surface.z > 0.5;
-    var local_position = vec4<f32>(position, 1.0);
-    if skinned {
-        var skinned_position = vec3<f32>(0.0);
-        skinned_position += (joint_palette[joint_indices.x] * local_position).xyz * bone_weights.x;
-        skinned_position += (joint_palette[joint_indices.y] * local_position).xyz * bone_weights.y;
-        skinned_position += (joint_palette[joint_indices.z] * local_position).xyz * bone_weights.z;
-        skinned_position += (joint_palette[joint_indices.w] * local_position).xyz * bone_weights.w;
-        local_position = vec4<f32>(skinned_position, 1.0);
-    }
-    return camera.view_projection * model * local_position;
-}
-"#;
+/// P3-R02：Cook-Torrance PBR 网格着色（`RenderSettings.pbr=off` 时不编译、不使用）。
+///
+/// 与 [`MESH3D`] 共用顶点输入、实例矩阵与阴影采样；差异只在片元：法线走 CPU 算好的
+/// 逆转置矩阵、视线取相机世界位置、光照换成 GGX/Smith/Schlick。保留独立文件而不是
+/// `//#if PBR`，是为了让回滚档的源与管线**一个字节都不变**。
+pub const MESH3D_PBR: ShaderSource = ShaderSource::new(
+    "mesh3d_pbr",
+    "engine/shaders/mesh3d_pbr.wgsl",
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../shaders/mesh3d_pbr.wgsl"
+    )),
+);
+
+pub const SHADOW: ShaderSource = ShaderSource::new(
+    "shadow",
+    "engine/shaders/shadow.wgsl",
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../shaders/shadow.wgsl"
+    )),
+);
 
 /// docs/54 §4.3：后处理通道的全屏 pass。
 ///
 /// 顶点从 `@builtin(vertex_index)` 生成一个覆盖全屏的三角形（不需要顶点缓冲），片元采样场景
 /// 颜色纹理后施加曝光、色调与暗角。`uv` 的 y 需要翻转：纹理坐标原点在左上，而 NDC 的 +y 朝上。
-pub const POST_PROCESS_SHADER: &str = r#"
-struct Params {
-    exposure: f32,
-    vignette: f32,
-    _pad0: f32,
-    _pad1: f32,
-    tint: vec4<f32>,
-};
-@group(0) @binding(0) var source: texture_2d<f32>;
-@group(0) @binding(1) var source_sampler: sampler;
-@group(0) @binding(2) var<uniform> params: Params;
+///
+/// P3-R01：曝光增益是 `exposure * 2^exposure_ev`——LDR 模式没有 Tonemap pass，EV 必须在这里
+/// 生效；HDR 模式由渲染器把 `exposure_ev` 置 0 再上传（曝光已归 Tonemap）。
+pub const POST_PROCESS: ShaderSource = ShaderSource::new(
+    "post_process",
+    "engine/shaders/post_process.wgsl",
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../shaders/post_process.wgsl"
+    )),
+);
 
-struct Out {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-};
+/// P3-R01：HDR 场景颜色 → LDR 的 Tonemap 全屏 pass。
+///
+/// 输入是**线性** `Rgba16Float`（可以 > 1），输出写 8 位 sRGB 目标（硬件负责线性→sRGB 编码）。
+/// 曝光先于曲线：`linear * 2^exposure_ev`，再走 ACES（Narkowicz 拟合）或 Reinhard，最后夹到
+/// `0..=1`。曲线公式必须与 [`rustlua_render::post_process::Tonemap::apply_rgb`] 逐行对应。
+pub const TONEMAP: ShaderSource = ShaderSource::new(
+    "tonemap",
+    "engine/shaders/tonemap.wgsl",
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../shaders/tonemap.wgsl"
+    )),
+);
 
-@vertex fn vs_main(@builtin(vertex_index) index: u32) -> Out {
-    var positions = array<vec2<f32>, 3>(
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>(3.0, -1.0),
-        vec2<f32>(-1.0, 3.0),
-    );
-    let corner = positions[index];
-    var out: Out;
-    out.position = vec4<f32>(corner, 0.0, 1.0);
-    out.uv = vec2<f32>((corner.x + 1.0) * 0.5, (1.0 - corner.y) * 0.5);
-    return out;
+/// 全部内嵌 shader（顺序稳定；新增 shader 必须同时进这里，测试会断言数量）。
+pub const ALL_SHADERS: [&ShaderSource; 8] = [
+    &VECTOR_TEXT,
+    &TEXTURED,
+    &WORLD_SPRITE,
+    &MESH3D,
+    &MESH3D_PBR,
+    &SHADOW,
+    &POST_PROCESS,
+    &TONEMAP,
+];
+
+/// 按稳定短名查找。
+#[must_use]
+pub fn find(name: &str) -> Option<&'static ShaderSource> {
+    ALL_SHADERS
+        .iter()
+        .copied()
+        .find(|shader| shader.name == name)
 }
 
-@fragment fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-    let sampled = textureSample(source, source_sampler, uv);
-    let tinted = sampled.rgb * params.exposure * params.tint.rgb;
-    let centered = uv - vec2<f32>(0.5, 0.5);
-    let falloff = 1.0 - params.vignette * clamp(dot(centered, centered) * 4.0, 0.0, 1.0);
-    return vec4<f32>(tinted * falloff, sampled.a * params.tint.a);
+pub const VECTOR_TEXT_SHADER: &str = VECTOR_TEXT.source;
+pub const TEXTURED_SHADER: &str = TEXTURED.source;
+pub const WORLD_SPRITE_SHADER: &str = WORLD_SPRITE.source;
+pub const MESH3D_SHADER: &str = MESH3D.source;
+pub const MESH3D_PBR_SHADER: &str = MESH3D_PBR.source;
+pub const SHADOW_SHADER: &str = SHADOW.source;
+pub const POST_PROCESS_SHADER: &str = POST_PROCESS.source;
+pub const TONEMAP_SHADER: &str = TONEMAP.source;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 注册表必须覆盖全部内嵌 shader，名字/路径唯一，哈希与源一致。
+    #[test]
+    fn registry_is_unique_and_hashes_match_sources() {
+        assert_eq!(ALL_SHADERS.len(), 8, "新增 shader 必须同步注册表与别名");
+        for (index, shader) in ALL_SHADERS.iter().enumerate() {
+            assert!(!shader.name.is_empty(), "{shader:?}");
+            assert!(
+                shader.path.starts_with("engine/shaders/") && shader.path.ends_with(".wgsl"),
+                "路径口径必须是仓库根相对：{}",
+                shader.path
+            );
+            assert_eq!(
+                shader.hash,
+                fnv1a64(shader.source.as_bytes()),
+                "{} 的哈希与源不一致",
+                shader.name
+            );
+            assert!(
+                shader.source.contains("@vertex"),
+                "{} 缺少顶点入口",
+                shader.name
+            );
+            for other in &ALL_SHADERS[index + 1..] {
+                assert_ne!(shader.name, other.name, "稳定短名重复");
+                assert_ne!(shader.path, other.path, "路径重复");
+                assert_ne!(shader.hash, other.hash, "不同源的哈希不应相同");
+            }
+        }
+    }
+
+    /// 旧常量必须与注册表里的源逐字节相同（调用点继续用别名）。
+    #[test]
+    fn legacy_constants_match_the_registry() {
+        for (constant, shader) in [
+            (VECTOR_TEXT_SHADER, &VECTOR_TEXT),
+            (TEXTURED_SHADER, &TEXTURED),
+            (WORLD_SPRITE_SHADER, &WORLD_SPRITE),
+            (MESH3D_SHADER, &MESH3D),
+            (MESH3D_PBR_SHADER, &MESH3D_PBR),
+            (SHADOW_SHADER, &SHADOW),
+            (POST_PROCESS_SHADER, &POST_PROCESS),
+            (TONEMAP_SHADER, &TONEMAP),
+        ] {
+            assert_eq!(constant, shader.source, "{} 的旧常量已漂移", shader.name);
+        }
+    }
+
+    /// `find` 覆盖命中与未命中；未知名字返回 `None`（调用方据此报错，而不是静默用错源）。
+    #[test]
+    fn find_by_stable_name() {
+        assert_eq!(
+            find("mesh3d").map(|shader| shader.path),
+            Some("engine/shaders/mesh3d.wgsl")
+        );
+        assert_eq!(
+            find("tonemap").map(|shader| shader.hash),
+            Some(TONEMAP.hash)
+        );
+        assert!(find("Mesh3D").is_none(), "短名区分大小写");
+        assert!(find("").is_none());
+    }
+
+    /// 源文件真的被搬出 Rust 字符串：源里不应再有 WGSL 正文的返回类型声明之外的东西。
+    /// 这里只钉住"文件化后内容非空且带入口"；像素行为由旧 golden 复核。
+    #[test]
+    fn sources_are_non_empty_and_end_with_newline() {
+        for shader in ALL_SHADERS {
+            assert!(
+                shader.source.ends_with('\n'),
+                "{} 应以换行结尾（diff 友好）",
+                shader.path
+            );
+            assert!(
+                !shader.source.starts_with('\n'),
+                "{} 不应以空行开头（搬运时已去掉）",
+                shader.path
+            );
+        }
+    }
 }
-"#;

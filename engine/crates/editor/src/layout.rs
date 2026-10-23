@@ -32,6 +32,10 @@ pub const PANEL_RESOURCE: &str = "resource";
 pub const PANEL_HIERARCHY: &str = "hierarchy";
 pub const PANEL_INSPECTOR: &str = "inspector";
 pub const PANEL_CONSOLE: &str = "console";
+/// P3-E01-3 时间线标签（与控制台同叶，默认可见）。
+pub const PANEL_TIMELINE: &str = "timeline";
+/// P3-E03-2 可视化脚本画布（默认隐藏，打开 `.vgraph` 时出现）。
+pub const PANEL_GRAPH: &str = "graph";
 /// M75-03 内置 AI 助手标签（与属性同叶，默认可见）。
 pub const PANEL_ASSISTANT: &str = "assistant";
 /// 中央工作区的两个视图标签（M27-00 阶段 2 收尾：View 菜单逐项可切）。
@@ -125,6 +129,8 @@ impl Default for EditorLayout {
                 (PANEL_HIERARCHY.to_owned(), true),
                 (PANEL_INSPECTOR.to_owned(), true),
                 (PANEL_CONSOLE.to_owned(), true),
+                (PANEL_TIMELINE.to_owned(), true),
+                (PANEL_GRAPH.to_owned(), false),
                 (PANEL_SCENE_VIEW.to_owned(), true),
                 (PANEL_GAME_VIEW.to_owned(), true),
                 (PANEL_ASSISTANT.to_owned(), true),

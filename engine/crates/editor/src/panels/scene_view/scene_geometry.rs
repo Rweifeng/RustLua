@@ -540,23 +540,24 @@ pub(crate) fn scene_ui_nodes(
             let container = entity.components.get("Container").and_then(|raw| {
                 rustlua_ui::ui_layout::ContainerStyle::from_component_str(raw).ok()
             });
-            let preferred_size = if entity.components.contains_key("Image") {
-                layout
-                    .as_ref()
-                    .map(|layout| {
-                        let rect = layout.resolve([0.0, 0.0]);
-                        [rect.w, rect.h]
-                    })
-                    .unwrap_or([64.0, 64.0])
-            } else {
-                [64.0, 64.0]
-            };
+            let layout_item = entity
+                .components
+                .get("LayoutItem")
+                .and_then(|raw| rustlua_ui::ui_layout::LayoutItem::from_component_str(raw).ok());
+            let preferred_size = rustlua_ui::ui_scene_layout::preferred_size_for(
+                &entity.components,
+                layout.as_ref(),
+                &mut |text, scale| {
+                    rustlua_render::text::measure_builtin_text(text, scale).map(|(size, _)| size)
+                },
+            );
             (
                 entity.id.0,
                 UiSceneNode {
                     parent: entity.parent.map(|id| id.0),
                     layout,
                     container,
+                    layout_item,
                     preferred_size,
                 },
             )
@@ -567,16 +568,5 @@ pub(crate) fn scene_ui_nodes(
 /// 无运行时时度量文本：用内置 5x7 位图指标（与运行时无字体回退一致）。
 /// 返回 `(size, pixel_bounds)`，语义同 `RuntimeScene::measure_ui_text`。
 pub(crate) fn measure_text_without_runtime(text: &str, scale: f32) -> ([f32; 2], [f32; 4]) {
-    let atlas = TextAtlas::built_in();
-    TextLayout::build_bitmap(
-        text,
-        [0.0, 0.0],
-        TextStyle {
-            scale,
-            ..Default::default()
-        },
-        &atlas,
-    )
-    .map(|mesh| (mesh.size, mesh.pixel_bounds()))
-    .unwrap_or(([0.0, 0.0], [0.0; 4]))
+    rustlua_render::text::measure_builtin_text(text, scale).unwrap_or(([0.0, 0.0], [0.0; 4]))
 }

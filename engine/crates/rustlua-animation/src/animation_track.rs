@@ -200,7 +200,7 @@ fn lerp_vec3(from: Vec3, to: Vec3, alpha: f32) -> Vec3 {
 ///
 /// 刻意不用"球面插值"的近似说法：工程里没有 `slerp`，而 nlerp 在动画关键帧这种小角度场景下与
 /// 它视觉等价，且**不静默产生非单位四元数**（归一化失败时退回起点）。
-fn lerp_quat(
+pub(crate) fn lerp_quat(
     from: rustlua_math::math3d::Quat,
     to: rustlua_math::math3d::Quat,
     alpha: f32,

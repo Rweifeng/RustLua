@@ -1,0 +1,56 @@
+{
+  "adapter": {
+    "backend": "Dx12",
+    "name": "Microsoft Basic Render Driver"
+  },
+  "checks": {
+    "post_tonemap_within_ldr": true,
+    "pre_tonemap_above_one": true,
+    "ui_bypasses_tonemap": true
+  },
+  "hdr": {
+    "active": true,
+    "post_tonemap_max": 1.0,
+    "pre_tonemap_max": 8.0,
+    "scene_format": "rgba16float",
+    "tonemap": "aces",
+    "ui_delta": 0,
+    "ui_delta_normalized": 0.0,
+    "ui_sample_hdr": [
+      255,
+      0,
+      0,
+      255
+    ],
+    "ui_sample_ldr": [
+      255,
+      0,
+      0,
+      255
+    ],
+    "world_sample_hdr": [
+      255,
+      255,
+      255,
+      255
+    ],
+    "world_sample_ldr": [
+      255,
+      255,
+      255,
+      255
+    ]
+  },
+  "passes": [
+    "Clear",
+    "WorldSprite",
+    "Tonemap",
+    "ScreenUI"
+  ],
+  "report_version": "wp0-hdr-golden-v1",
+  "status": "pass",
+  "target": {
+    "height": 360,
+    "width": 640
+  }
+}

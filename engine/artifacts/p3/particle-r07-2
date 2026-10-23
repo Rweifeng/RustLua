@@ -1,0 +1,25 @@
+{
+  "adapter": {
+    "backend": "Dx12",
+    "name": "Microsoft Basic Render Driver"
+  },
+  "report_version": "wp0-particle-parallel-golden-v1",
+  "scene": "unified.scene (ParticleEmitter rate=24)",
+  "semantic": {
+    "buffer_bytes": 480000,
+    "content_pixels": 11177,
+    "delta": 0.01666666753590107,
+    "draw_calls_par": 4,
+    "draw_calls_seq": 4,
+    "frames": 30,
+    "parallel": "Parallelism::with_threads(4).with_min_items(1)",
+    "pixels_identical": true,
+    "sequential": "Parallelism::SEQUENTIAL",
+    "vertices_par": 0,
+    "vertices_seq": 0
+  },
+  "target": {
+    "height": 300,
+    "width": 400
+  }
+}

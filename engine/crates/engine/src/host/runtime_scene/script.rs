@@ -15,6 +15,14 @@ impl RuntimeScene {
         visit(&mut self.script)
     }
 
+    /// P3-E06-4：Lua VM 当前占用的堆字节（`mlua::Lua::used_memory`）。
+    ///
+    /// 这是真实的 VM 分配量，不是估算；不含 Rust 侧贴图/网格缓存。只读借用，不触发 GC。
+    #[must_use]
+    pub fn lua_memory_bytes(&self) -> u64 {
+        self.script.lua().used_memory() as u64
+    }
+
     /// 设置脚本错误处置策略（见 [`ScriptErrorPolicy`]）。
     ///
     /// **默认严格**：脚本报错 ⇒ `run_script_steps` 返回 `Err`。无头样例、soak 与性能

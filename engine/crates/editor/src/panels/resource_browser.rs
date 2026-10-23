@@ -11,6 +11,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+/// 双击资源树产生的打开请求（Scene/Prefab 与材质两条路）。
+#[derive(Default)]
+struct ResourceOpenRequest {
+    scene: Option<PathBuf>,
+    material: Option<String>,
+    /// P3-E03-2：双击 `.vgraph` 打开可视化脚本画布。
+    graph: Option<PathBuf>,
+}
+
 impl EditorApp {
     /// 资源面板：返回是否需要触发一次资源刷新。
     /// 资源面板主体（M27-00 阶段 1：dock 标签直接渲染，不再自带 SidePanel 外壳）。
@@ -41,11 +50,17 @@ impl EditorApp {
                 // 把资源按目录组织成树（可折叠）；过滤后无可见子项的目录自动隐藏。
                 // 树按 (filter, refresh_count) 缓存，命中时复用上次构建的树，
                 // 避免大资源项目每帧 clone 全部条目重建。
-                let mut resource_to_open = None;
+                let mut open = ResourceOpenRequest::default();
                 let tree = self.resource_tree_for_draw();
-                self.draw_resource_tree(ui, &tree, "", 1, &context, &mut resource_to_open);
-                if let Some(path) = resource_to_open {
+                self.draw_resource_tree(ui, &tree, "", 1, &context, &mut open);
+                if let Some(path) = open.scene {
                     self.open_scene_resource(path);
+                }
+                if let Some(path) = open.material {
+                    self.open_material_resource(&path);
+                }
+                if let Some(path) = open.graph {
+                    self.open_graph_resource(path);
                 }
                 self.resource_tree_cache = Some(ResourceTreeCache {
                     filter: self.resources_filter.clone(),
@@ -62,6 +77,33 @@ impl EditorApp {
         }
         self.draw_resource_drop_zone(ui);
         refresh_resources
+    }
+
+    /// 双击 `.material`：选中场景里第一个把它作为 `MeshRenderer.material` 的实体，
+    /// Inspector 的材质段随选中打开。材质编辑是实体绑定的（要写回覆盖路径），
+    /// 没有引用者时无法独立打开，只给出原因。
+    pub(crate) fn open_material_resource(&mut self, relative: &str) {
+        let normalized = relative.replace('\\', "/");
+        let target = self.current_scene().and_then(|document| {
+            document.scene.entities.iter().find_map(|(id, entity)| {
+                let payload = entity.components.get("MeshRenderer")?;
+                let renderer =
+                    rustlua_render::mesh3d::MeshRenderer::from_component_str(payload).ok()?;
+                let material = renderer.material?;
+                (material.replace('\\', "/") == normalized).then_some(*id)
+            })
+        });
+        match target {
+            Some(id) => {
+                self.selection
+                    .set_single(id, editor::SelectionSource::Inspector);
+                self.status = format!("已打开材质 `{normalized}`（选中引用它的实体）");
+            }
+            None => {
+                self.status =
+                    format!("场景中没有引用 `{normalized}` 的 MeshRenderer；先把它拖到材质字段");
+            }
+        }
     }
 
     /// M27-01：资源面板作为放置区。
@@ -150,7 +192,7 @@ impl EditorApp {
         prefix: &str,
         depth: usize,
         context: &egui::Context,
-        resource_to_open: &mut Option<PathBuf>,
+        open: &mut ResourceOpenRequest,
     ) {
         for (name, child) in &node.folders {
             // 过滤后没有可见内容的目录不展示。
@@ -177,18 +219,11 @@ impl EditorApp {
                 header
             };
             header.show(ui, |ui| {
-                self.draw_resource_tree(
-                    ui,
-                    child,
-                    &child_prefix,
-                    depth + 1,
-                    context,
-                    resource_to_open,
-                );
+                self.draw_resource_tree(ui, child, &child_prefix, depth + 1, context, open);
             });
         }
         for entry in &node.files {
-            self.draw_resource_entry(ui, entry, context, resource_to_open);
+            self.draw_resource_entry(ui, entry, context, open);
         }
     }
 
@@ -259,7 +294,7 @@ impl EditorApp {
         ui: &mut egui::Ui,
         entry: &ResourceEntry,
         context: &egui::Context,
-        resource_to_open: &mut Option<PathBuf>,
+        open: &mut ResourceOpenRequest,
     ) {
         let path_string = entry.path_string();
         let file_name = Path::new(&path_string)
@@ -299,7 +334,13 @@ impl EditorApp {
                     self.select_resource(entry.path.clone());
                 }
                 if response.double_clicked() && entry.kind == ResourceKind::Prefab {
-                    *resource_to_open = Some(entry.path.clone());
+                    open.scene = Some(entry.path.clone());
+                }
+                if response.double_clicked() && entry.kind == ResourceKind::Material {
+                    open.material = Some(path_string.clone());
+                }
+                if response.double_clicked() && is_vgraph(&entry.path) {
+                    open.graph = Some(entry.path.clone());
                 }
                 // 行尾控件右对齐。右缘取**可见裁剪框**而不是 available 宽度：dock 的
                 // ScrollArea 会把内容宽度撑到最长那一行（1193 项资源里总有超长文件名），
@@ -326,7 +367,7 @@ impl EditorApp {
                             )
                             .clicked()
                         {
-                            *resource_to_open = Some(entry.path.clone());
+                            open.scene = Some(entry.path.clone());
                         }
                         ui.dnd_drag_source(
                             egui::Id::new(("texture_drag", path_string.as_str())),
@@ -352,7 +393,10 @@ impl EditorApp {
                 if response.double_clicked()
                     && matches!(entry.kind, ResourceKind::Scene | ResourceKind::Prefab)
                 {
-                    *resource_to_open = Some(entry.path.clone());
+                    open.scene = Some(entry.path.clone());
+                }
+                if response.double_clicked() && is_vgraph(&entry.path) {
+                    open.graph = Some(entry.path.clone());
                 }
                 response.context_menu(|ui| {
                     self.draw_resource_context_menu(ui, entry);
@@ -513,6 +557,8 @@ impl EditorApp {
             }
             self.push_console_notice(format!("检测到外部文件变化（{summary}），正在后台刷新资源"));
             self.status = format!("外部文件变化：{summary}");
+            // P3-R05-4：命中 `shaders/*.wgsl` 时排一次去抖后的管线重载（其余文件与此无关）。
+            self.note_shader_watch(&diff);
             self.refresh_resources();
         }
     }
@@ -857,6 +903,13 @@ fn decode_thumbnail(request: &ThumbnailRequest) -> ThumbnailResult {
             }
         }
     }
+}
+
+/// `.vgraph` 在资源库里是 `ResourceKind::Other`（没有专属导入器），双击按扩展名识别。
+fn is_vgraph(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("vgraph"))
 }
 
 #[cfg(test)]

@@ -4,7 +4,6 @@ use crate::EditorApp;
 use editor::{CommandKind, InspectorError};
 use eframe::egui;
 use rustlua_ecs::component_schema::{builtin_registry, validate_component};
-use rustlua_infra::editor_plugins::EditorPlugin;
 use rustlua_infra::preview_diagnostics::{
     DiagnosticCollector, PreviewDiagnostic, PreviewErrorKind,
 };
@@ -21,40 +20,7 @@ use rustlua_ui::ui_scene_layout::{UiSceneNode, resolve_scene_ui_layout};
 use rustlua_ui::ui_states::ButtonStateSet;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// A tiny built-in plugin proves that the registry is owned by the app and
-/// survives through the whole editor lifetime without touching scene data.
-struct CoreEditorPlugin;
-
-impl EditorPlugin for CoreEditorPlugin {
-    fn name(&self) -> &str {
-        "core"
-    }
-}
-
 impl EditorApp {
-    pub(crate) fn initialize_ui_extensions(&mut self) {
-        if self.plugin_registry.names().is_empty() {
-            match self.plugin_registry.register(Box::new(CoreEditorPlugin)) {
-                Ok(()) => match self.plugin_registry.load("core") {
-                    Ok(()) => {
-                        self.plugin_status
-                            .push("插件 core 已加载（API v1）".to_owned());
-                        tracing::info!(target: "editor", "[plugin] core loaded (API v1)");
-                    }
-                    Err(error) => {
-                        self.plugin_status
-                            .push(format!("插件 core 加载失败：{error}"));
-                        tracing::error!(target: "editor", "[plugin] core load failed: {error}");
-                    }
-                },
-                Err(error) => {
-                    self.plugin_status.push(format!("插件注册失败：{error}"));
-                    tracing::error!(target: "editor", "[plugin] core registration failed: {error}");
-                }
-            }
-        }
-    }
-
     pub(crate) fn refresh_ui_editors(&mut self, id: SceneEntityId) {
         let Some(scene) = self.document.current_scene.clone() else {
             return;
@@ -167,6 +133,15 @@ impl EditorApp {
             Some(self.button_states_editor.to_component_str())
         };
         self.set_ui_component("ButtonStates", value);
+    }
+
+    /// E18：当前场景 UI Root（`ui.root=true`）的 Canvas 配置。
+    /// 与选中项无关——HUD 与 Safe Area 在未选中 Canvas 时也必须读到同一份配置。
+    pub(crate) fn scene_canvas_config(&self) -> CanvasConfig {
+        let Some(document) = self.document.current_scene.as_ref() else {
+            return CanvasConfig::default();
+        };
+        canvas_config_from_scene(&document.scene)
     }
 
     pub(crate) fn apply_canvas_config(&mut self) {
@@ -334,11 +309,28 @@ impl EditorApp {
                     });
                 }
             }
-            diagnostics.extend(layout_diagnostics(scene));
+            diagnostics.extend(layout_diagnostics(
+                scene,
+                [
+                    self.preview_resolution.0 as f32,
+                    self.preview_resolution.1 as f32,
+                ],
+            ));
         }
         let collector = DiagnosticCollector::default();
         self.preview_diagnostics = collector;
         self.preview_diagnostics.replace_all(diagnostics);
+        self.layout_diagnostics_resolution = self.preview_resolution;
+    }
+
+    /// E05-4：布局诊断按**当前预览分辨率**解算，切分辨率后角标不会沿用旧几何。
+    ///
+    /// 只在分辨率变化时重算（`refresh_preview_diagnostics` 会重新解析所有组件）；
+    /// 场景/字段变化仍走各自的既有刷新点。
+    pub(crate) fn refresh_layout_diagnostics_if_resolution_changed(&mut self) {
+        if self.layout_diagnostics_resolution != self.preview_resolution {
+            self.refresh_preview_diagnostics();
+        }
     }
 
     /// 回退 Prefab 实例上的所有覆盖（目标由 typed action 显式给出）。
@@ -431,7 +423,10 @@ pub(crate) fn parse_ui_animation_component(
     Ok(clip)
 }
 
-fn layout_diagnostics(scene: &editor::SceneDocument) -> Vec<PreviewDiagnostic> {
+fn layout_diagnostics(
+    scene: &editor::SceneDocument,
+    resolution: [f32; 2],
+) -> Vec<PreviewDiagnostic> {
     let mut nodes = BTreeMap::new();
     for entity in scene.scene.entities.values() {
         let layout = entity
@@ -442,30 +437,29 @@ fn layout_diagnostics(scene: &editor::SceneDocument) -> Vec<PreviewDiagnostic> {
             .components
             .get("Container")
             .and_then(|raw| ContainerStyle::from_component_str(raw).ok());
-        let preferred_size = if entity.components.contains_key("Image") {
-            layout
-                .as_ref()
-                .map(|layout| {
-                    let rect = layout.resolve([0.0, 0.0]);
-                    [rect.w, rect.h]
-                })
-                .unwrap_or([64.0, 64.0])
-        } else if entity.components.contains_key("Text") {
-            [128.0, 32.0]
-        } else {
-            [64.0, 64.0]
-        };
+        let layout_item = entity
+            .components
+            .get("LayoutItem")
+            .and_then(|raw| rustlua_ui::ui_layout::LayoutItem::from_component_str(raw).ok());
+        let preferred_size = rustlua_ui::ui_scene_layout::preferred_size_for(
+            &entity.components,
+            layout.as_ref(),
+            &mut |text, scale| {
+                rustlua_render::text::measure_builtin_text(text, scale).map(|(size, _)| size)
+            },
+        );
         nodes.insert(
             entity.id.0,
             UiSceneNode {
                 parent: entity.parent.map(|id| id.0),
                 layout,
                 container,
+                layout_item,
                 preferred_size,
             },
         );
     }
-    let (_, diagnostics) = resolve_scene_ui_layout(&nodes, [1280.0, 720.0]);
+    let (_, diagnostics) = resolve_scene_ui_layout(&nodes, resolution);
     diagnostics
         .into_iter()
         .map(|diagnostic| PreviewDiagnostic {
@@ -506,5 +500,94 @@ fn collect_subtree_ids(
     Ok(out)
 }
 
+/// E18：从场景的 UI Root（`ui.root=true`）读取 Canvas 配置。
+/// 无 Root 或 metadata 解析失败时退回默认值（与 `sync_inspector` 同口径）。
+pub(crate) fn canvas_config_from_scene(scene: &rustlua_scene::scene::Scene) -> CanvasConfig {
+    scene
+        .entities
+        .values()
+        .find(|entity| {
+            entity
+                .metadata
+                .get("ui.root")
+                .is_some_and(|value| value.as_str() == "true")
+        })
+        .and_then(|entity| {
+            CanvasConfig::from_metadata(
+                entity.metadata.get("canvas.reference").map(String::as_str),
+                entity.metadata.get("canvas.scale_mode").map(String::as_str),
+                entity.metadata.get("canvas.safe_area").map(String::as_str),
+            )
+            .ok()
+        })
+        .unwrap_or_default()
+}
+
+/// E18：Scene/Game 共用的画布 HUD 读数。
+/// 全部读数描述「当前屏幕上真实发生的事」，不引入未接线的配置投影。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CanvasHud {
+    /// 设计分辨率（= 编辑器预览的 UI 参考尺寸）。
+    pub design: (u32, u32),
+    /// 画布在面板上真实占用的物理像素。
+    pub display: (u32, u32),
+    /// 物理像素 / 设计像素。
+    pub scale: f32,
+    /// 设计框被面板裁掉的设计像素（左/上/右/下）。
+    pub crop: [f32; 4],
+    /// `CanvasConfig.safe_area` 原始 insets（预览像素）。
+    pub safe: [f32; 4],
+}
+
+impl CanvasHud {
+    /// 第二行：预览分辨率 + 屏幕物理像素 + 显示缩放 + 裁剪区域。
+    pub(crate) fn preview_line(&self) -> String {
+        format!(
+            "预览 {}×{} · 显示 {}×{} · 缩放 {:.0}% · 裁剪 L{:.0} T{:.0} R{:.0} B{:.0}",
+            self.design.0,
+            self.design.1,
+            self.display.0,
+            self.display.1,
+            self.scale * 100.0,
+            self.crop[0],
+            self.crop[1],
+            self.crop[2],
+            self.crop[3],
+        )
+    }
+
+    /// 第三行：Safe Area + Anchor 空间边界（设计框）。
+    pub(crate) fn safe_line(&self) -> String {
+        format!(
+            "Safe Area L{:.0} T{:.0} R{:.0} B{:.0} · 锚点框 (0,0)–({},{})",
+            self.safe[0], self.safe[1], self.safe[2], self.safe[3], self.design.0, self.design.1,
+        )
+    }
+}
+
 #[allow(dead_code)]
 fn unused_egui_marker(_: &egui::Context) {}
+
+#[cfg(test)]
+mod tests {
+    use super::CanvasHud;
+
+    #[test]
+    fn canvas_hud_reports_display_scale_crop_and_safe_area() {
+        let hud = CanvasHud {
+            design: (1280, 720),
+            display: (640, 360),
+            scale: 0.5,
+            crop: [240.0, 60.0, 240.0, 60.0],
+            safe: [40.0, 20.0, 40.0, 20.0],
+        };
+        assert_eq!(
+            hud.preview_line(),
+            "预览 1280×720 · 显示 640×360 · 缩放 50% · 裁剪 L240 T60 R240 B60"
+        );
+        assert_eq!(
+            hud.safe_line(),
+            "Safe Area L40 T20 R40 B20 · 锚点框 (0,0)–(1280,720)"
+        );
+    }
+}

@@ -964,18 +964,36 @@ const LIGHT_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("intensity", FieldKind::Number, true),
 ];
 
-/// `MeshRenderer::to_component_str`：`mesh=<项目相对路径>`
+/// `MeshRenderer::to_component_str`：`mesh=<项目相对路径>[;material=<.material 路径>]`
 ///
 /// 规则与 `mesh3d::validate_mesh_path` **同一口径**：非空、工程内相对、
-/// 扩展名 `.glb`/`.gltf`，外加内置哨兵 `__ground_plane__`。
-const MESH_RENDERER_FIELDS: &[FieldSchema] = &[FieldSchema::new("mesh", FieldKind::Text, true)
-    .with_rules(&[
+/// 扩展名 `.glb`/`.gltf`，外加内置哨兵 `__ground_plane__`。`material` 可选。
+const MESH_RENDERER_FIELDS: &[FieldSchema] = &[
+    FieldSchema::new("mesh", FieldKind::Text, true).with_rules(&[
         FieldRule::NonEmpty,
         FieldRule::ProjectPath {
             extensions: &["glb", "gltf"],
             sentinels: &["__ground_plane__"],
         },
-    ])];
+    ]),
+    FieldSchema::new("material", FieldKind::Text, false).with_rules(&[FieldRule::ProjectPath {
+        extensions: &["material"],
+        sentinels: &[],
+    }]),
+];
+
+/// P3-R03-4 `Environment::to_component_str`：`map=<.rlenv|.hdr>[;intensity=][;rotation=]`。
+///
+/// `map` 与 `EnvironmentComponent::validate_map` 同口径（工程内相对路径）；`.hdr` 是源文件，
+/// 运行时映射到同名 `.rlenv`。intensity/rotation 可省略（1.0 / 0.0），负强度由解析器拒绝。
+const ENVIRONMENT_FIELDS: &[FieldSchema] = &[
+    FieldSchema::new("map", FieldKind::Text, true).with_rules(&[FieldRule::ProjectPath {
+        extensions: &["rlenv", "hdr"],
+        sentinels: &[],
+    }]),
+    FieldSchema::new("intensity", FieldKind::Number, false).with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("rotation", FieldKind::Number, false),
+];
 
 /// `SpriteComponent::to_component_str`：尺寸用 `宽x高`，可选 flip/z/flip 等。
 ///
@@ -1062,7 +1080,16 @@ const WORLD_TEXT_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("centered", FieldKind::Bool, false),
 ];
 
-/// `ParticleComponent::to_component_str`：以 `count` 起头，其余按需输出。
+/// `ParticleEmitter::to_component_str`：以 `count` 起头，其余按需输出。
+///
+/// P3-R07-1 补两个可选字段：`mode`（`cpu|gpu`，缺席 = `cpu`，因此**旧场景不会因为
+/// 新字段被判缺**）与 `seed`。`seed` 用 `Int`（u64 种子；超过 `i64::MAX` 的种子在 schema
+/// 里写不出，但那种值只用于对拍，编码端也只会写解析端接受的形态）。
+///
+/// 同一次改动补上 `rotation`/`rotation_speed`：编码器一直会在这两个值非零时写出它们，
+/// schema 却没有登记，于是带自转的真实场景会被审计判成"未知字段"。这条漂移此前没被
+/// `builtin_schemas_match_engine_encoders` 抓到，因为该门只用**默认值**样本（自转为 0，
+/// 规范串里没有）——现在样本换成全字段串，见那个测试。
 const PARTICLE_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("count", FieldKind::Int, true),
     FieldSchema::new("speed", FieldKind::Number, true),
@@ -1074,6 +1101,10 @@ const PARTICLE_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("color_end", FieldKind::Vec4, false),
     FieldSchema::new("gravity", FieldKind::Vec2, false),
     FieldSchema::new("drag", FieldKind::Number, false),
+    FieldSchema::new("rotation", FieldKind::Number, false),
+    FieldSchema::new("rotation_speed", FieldKind::Number, false),
+    FieldSchema::new("mode", FieldKind::Enum, false).with_choices(&["cpu", "gpu"]),
+    FieldSchema::new("seed", FieldKind::Int, false),
 ];
 
 /// `ColliderDesc3d::from_component_str`（组件名 `Collider3d`）：3D 碰撞体。
@@ -1165,13 +1196,41 @@ const TILEMAP_FIELDS: &[FieldSchema] = &[
 /// `spacing`/`padding` 允许负数（重叠布局），不加规则。
 const CONTAINER_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("kind", FieldKind::Enum, false)
-        .with_choices(&["vbox", "hbox", "grid", "margin", "center"]),
+        .with_choices(&["vbox", "hbox", "grid", "wrap", "margin", "center"]),
     FieldSchema::new("padding", FieldKind::Vec4, false),
     FieldSchema::new("spacing", FieldKind::Number, false),
     FieldSchema::new("columns", FieldKind::Int, false).with_rules(&[FieldRule::NonNegative]),
     FieldSchema::new("stretch", FieldKind::Bool, false),
     FieldSchema::new("fill", FieldKind::Bool, false),
     FieldSchema::new("align", FieldKind::Enum, false).with_choices(&["start", "center", "end"]),
+    FieldSchema::new("justify", FieldKind::Enum, false).with_choices(&[
+        "start",
+        "center",
+        "end",
+        "space_between",
+        "space_around",
+        "space_evenly",
+    ]),
+];
+
+/// `LayoutItem::to_component_str`：容器子项约束。
+///
+/// **全字段 optional**：解析器从 `LayoutItem::default()` 起头；`visible` 虽然总会被
+/// 编码器写出，但旧场景没有这个组件、更没有该字段，标成 required 会让无损打开失败。
+/// `aspect_ratio` 不挂 `NonNegative`：0 在这里不是"关闭"而是解析器拒绝的非法值
+/// （关闭靠**省略字段**），挂规则反而把"存在但为 0"放过去。
+const LAYOUT_ITEM_FIELDS: &[FieldSchema] = &[
+    FieldSchema::new("min_size", FieldKind::Vec2, false).with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("max_size", FieldKind::Vec2, false).with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("preferred_size", FieldKind::Vec2, false)
+        .with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("size_percent", FieldKind::Vec2, false).with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("grow", FieldKind::Number, false).with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("shrink", FieldKind::Number, false).with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("align_self", FieldKind::Enum, false)
+        .with_choices(&["start", "center", "end"]),
+    FieldSchema::new("aspect_ratio", FieldKind::Number, false),
+    FieldSchema::new("visible", FieldKind::Bool, false),
 ];
 
 /// `ButtonStateSet::to_component_str`：五个视觉状态的贴图覆盖 + `disabled_state`。
@@ -1326,6 +1385,28 @@ const ANIMATION_3D_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("looped", FieldKind::Enum, false).with_choices(&["true", "false"]),
 ];
 
+/// `AnimationPlayer::from_component_str` / `to_component_str`（P3-E01-2）：
+/// `clip=<.anim 路径>;autoplay=<bool>;speed=<数>;looped=<inherit|true|false>;frames=<N>`。
+///
+/// 与 `Animation`（状态机）、`Animation3D`（glTF 骨骼）并列的第三种动画组件：它消费
+/// `.anim` 时间线。`looped` 的 `inherit` 是播放器特有的"跟随片段自身"取值，所以不能
+/// 用 `Bool`。`frames` 只在片段含 `Sprite.region` 时必须存在（1×N 横排），这条
+/// 跨字段约束由播放器解析器负责；schema 只能表达单字段规则。
+const ANIMATION_PLAYER_FIELDS: &[FieldSchema] = &[
+    FieldSchema::new("clip", FieldKind::Text, true).with_rules(&[
+        FieldRule::NonEmpty,
+        FieldRule::ProjectPath {
+            extensions: &["anim"],
+            sentinels: &[],
+        },
+    ]),
+    FieldSchema::new("autoplay", FieldKind::Bool, false),
+    // `frames=0` 由播放器报错；schema 侧没有"正数"规则，只能到非负（审计偏松，不误报）。
+    FieldSchema::new("speed", FieldKind::Number, false).with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("looped", FieldKind::Enum, false).with_choices(&["inherit", "true", "false"]),
+    FieldSchema::new("frames", FieldKind::Int, false).with_rules(&[FieldRule::NonNegative]),
+];
+
 /// `UiAnimation`（第 40 轮）：`|` 分隔的多条轨道，每条是动态键 `track.<属性名>`。
 ///
 /// 事实源是引擎解析器 `UiAnimationClip::tracks_from_component_str`（第 40 轮从编辑器搬进引擎，
@@ -1367,6 +1448,7 @@ pub fn builtin_registry() -> BTreeMap<&'static str, ComponentSchema> {
         // **统一相机**：判别字段 + 两套字段并集；旧名 `Camera2D`/`Camera3D` 已删除。
         ComponentSchema::new("Camera", 1, CAMERA_FIELDS),
         ComponentSchema::new("Light", 1, LIGHT_FIELDS),
+        ComponentSchema::new("Environment", 1, ENVIRONMENT_FIELDS),
         ComponentSchema::new("MeshRenderer", 1, MESH_RENDERER_FIELDS),
         ComponentSchema::new("Sprite", 1, SPRITE_FIELDS),
         ComponentSchema::new("Quad", 1, QUAD_FIELDS),
@@ -1384,6 +1466,7 @@ pub fn builtin_registry() -> BTreeMap<&'static str, ComponentSchema> {
         // 第 39 轮：审计的 `component_no_schema` 明细暴露的两个真实缺口。
         ComponentSchema::new("Collider", 1, COLLIDER_FIELDS),
         ComponentSchema::new("Animation3D", 1, ANIMATION_3D_FIELDS),
+        ComponentSchema::new("AnimationPlayer", 1, ANIMATION_PLAYER_FIELDS),
         // 第 26 轮：补齐有手写面板、但此前没有 schema 的 4 个组件。
         ComponentSchema::new("Collider3d", 1, COLLIDER_3D_FIELDS),
         ComponentSchema::new("Tilemap", 1, TILEMAP_FIELDS),
@@ -1391,6 +1474,7 @@ pub fn builtin_registry() -> BTreeMap<&'static str, ComponentSchema> {
         // 注册 schema 是为了让审计认识它（否则真实工程里会报 `component_no_schema`）。
         ComponentSchema::new(PERSISTENT_COMPONENT, 1, &[]),
         ComponentSchema::new("Container", 1, CONTAINER_FIELDS),
+        ComponentSchema::new("LayoutItem", 1, LAYOUT_ITEM_FIELDS),
         ComponentSchema::new("ButtonStates", 1, BUTTON_STATES_FIELDS),
         // 第 38 轮：列表/重复字段模型落地后补上的 3 个；第 40 轮补上 `UiAnimation`
         // （先把它的格式搬进引擎 `ui_animation.rs`，schema 才有对拍对象，见 §3.33/§3.35）。
@@ -1438,7 +1522,7 @@ mod tests {
     use rustlua_render::visibility::Visibility;
     use rustlua_ui::ui_binding::{BindingPath, BindingSet, BoundProperty, PropertyBinding};
     use rustlua_ui::ui_events::{UiEventBinding, UiEventType, UiEvents};
-    use rustlua_ui::ui_layout::{ChildAlign, ContainerKind, ContainerStyle};
+    use rustlua_ui::ui_layout::{ChildAlign, ContainerKind, ContainerStyle, Justify};
     use rustlua_ui::ui_states::ButtonStateSet;
     use rustlua_ui::world_text::WorldText;
 
@@ -1518,6 +1602,7 @@ mod tests {
                 vec![
                     MeshRenderer {
                         mesh: "assets/meshes/cube.glb".to_owned(),
+                        material: None,
                     }
                     .to_component_str(),
                 ],
@@ -1552,7 +1637,16 @@ mod tests {
             ),
             (
                 "ParticleEmitter",
-                vec![ParticleEmitter::default().to_component_str()],
+                vec![
+                    ParticleEmitter::default().to_component_str(),
+                    // P3-R07-1：全字段规范串（自转 + mode + seed）。只用默认值样本抓不到
+                    // "编码器会写、schema 没登记"这类漂移——自转为 0 时规范串里没有该键。
+                    ParticleEmitter::from_component_str(
+                        "count=64;rate=12;speed=90;life=0.8;size=4;size_end=1;color=1,0.5,0.2,1;color_end=0.2,0.2,0.2,0;gravity=0,-30;drag=0.4;rotation=0.25;rotation_speed=1.5;mode=gpu;seed=42"
+                    )
+                    .expect("full particle string")
+                    .to_component_str(),
+                ],
             ),
             // 第 26 轮补齐的 4 个组件。`Collider3d` 只有解析器（见 `COLLIDER_3D_INSTANCES`），
             // 其余三个用引擎自己的编码器输出。
@@ -1592,6 +1686,7 @@ mod tests {
                         stretch: true,
                         fill: true,
                         align: ChildAlign::Center,
+                        justify: Justify::SpaceBetween,
                     }
                     .to_component_str(),
                     // 真实工程形态（`rustlua-scene/src/typed_scene.rs` 的样本串）。
@@ -1600,6 +1695,17 @@ mod tests {
                     // 真实工程形态（`examples/game_api/scenes/ui_test.scene` 的面板）：
                     // 编辑器手写面板编码出来的定长小数（`padding=.0000`、`spacing=.000000`）。
                     "kind=vbox;padding=24.0000,24.0000,24.0000,24.0000;spacing=16.000000;columns=0;stretch=false;fill=false;align=center"
+                        .to_owned(),
+                ],
+            ),
+            (
+                "LayoutItem",
+                vec![
+                    // 引擎编码器的全字段规范串（`rustlua_ui::ui_layout::LayoutItem`）；
+                    // ecs 不能依赖 ui，所以这里以字面量钉住契约。
+                    "min_size=0.00,0.00;max_size=0.00,0.00;preferred_size=0.00,0.00;size_percent=0.00,0.00;grow=0.00;shrink=1.00;visible=true"
+                        .to_owned(),
+                    "min_size=10.00,20.00;max_size=0.00,0.00;preferred_size=0.00,0.00;size_percent=50.00,0.00;grow=1.00;shrink=1.00;align_self=end;aspect_ratio=1.5000;visible=false"
                         .to_owned(),
                 ],
             ),
@@ -1635,6 +1741,22 @@ mod tests {
                     }
                     .to_component_str(),
                     ANIMATION_3D_INSTANCES[1].to_owned(),
+                ],
+            ),
+            (
+                "AnimationPlayer",
+                // 默认形态（不写 `looped`/`frames`）+ 全字段形态，均出自引擎编码器。
+                vec![
+                    rustlua_animation::animation_player::AnimationPlayer::from_component_str(
+                        "clip=assets/anim/hero.anim",
+                    )
+                    .expect("valid player")
+                    .to_component_str(),
+                    rustlua_animation::animation_player::AnimationPlayer::from_component_str(
+                        "clip=assets/anim/hero.anim;autoplay=false;speed=2;looped=true;frames=4",
+                    )
+                    .expect("valid player")
+                    .to_component_str(),
                 ],
             ),
             (
@@ -2364,9 +2486,11 @@ mod tests {
                     .to_owned(),
                 true,
             ),
-            // 解析器：`unknown Container kind` / `unknown align`。
+            ("kind=wrap;justify=space_between".to_owned(), true),
+            // 解析器：`unknown Container kind` / `unknown align` / `unknown justify`。
             ("kind=unknown".to_owned(), false),
             ("align=middle".to_owned(), false),
+            ("justify=middle".to_owned(), false),
             // 解析器：`columns` 是 `usize`，`columns=abc` 与负数都报错。
             ("columns=abc".to_owned(), false),
             ("columns=-1".to_owned(), false),

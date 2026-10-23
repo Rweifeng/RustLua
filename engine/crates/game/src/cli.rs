@@ -24,6 +24,9 @@ pub struct Arguments {
     /// 帧调度分档（M74-02 P0 度量闸门）：退出时把每系统 p50/p99、每 stage 合计与
     /// "最慢 stage 占帧比"写成 JSON。`None` = 不开（零成本）。
     pub frame_profile: Option<PathBuf>,
+    /// P3-R05-4：开发期 shader 源覆盖目录（`--shader-dir` 或 `RUSTLUA_SHADER_DIR`）。
+    /// `None` = **不监听**、用内置源——这是发布默认形态，运行时不该有任何 shader 文件 IO。
+    pub shader_dir: Option<PathBuf>,
 }
 
 pub fn parse_arguments() -> Result<Arguments, String> {
@@ -63,6 +66,11 @@ pub fn parse_arguments() -> Result<Arguments, String> {
                     values.next().ok_or("--frame-profile requires a path")?,
                 ));
             }
+            "--shader-dir" => {
+                args.shader_dir = Some(PathBuf::from(
+                    values.next().ok_or("--shader-dir requires a path")?,
+                ));
+            }
             "--help" | "-h" => {
                 println!(
                     "Usage: game [--project <game-project-root>] [--pack <release-pack>] [--title <window-title>] [--check] [--log-filter <tracing-filter>]\n\
@@ -73,13 +81,23 @@ pub fn parse_arguments() -> Result<Arguments, String> {
                      --check           仅校验资源完整性后退出（exit 0/1，不弹窗口）\n\
                      --trace-loads <file>  采集资源加载集（按场景上下文）并写 JSON\n\
                      --frame-profile <file> 退出时把帧调度分档（每系统 p50/p99、每 stage 合计、\n\
-                                       最慢 stage 占帧比）写成 JSON（M74-02 P0）"
+                                       最慢 stage 占帧比）写成 JSON（M74-02 P0）\n\
+                     --shader-dir <dir>    开发期 shader 源覆盖目录（同名 .wgsl 覆盖内置源，\n\
+                                       运行中按 150ms 去抖热重载）；等价于环境变量 RUSTLUA_SHADER_DIR，\n\
+                                       两者都不给时不监听、只用内置源"
                 );
                 std::process::exit(0);
             }
             other => return Err(format!("unknown argument: {other}")),
         }
     }
+    // 环境变量是参数的同义开关（脚本/CI 里比拼参数好注入）；两者都没给就是 `None`，
+    // 运行时不监听覆盖目录——发布路径不该出现任何 shader 文件 IO。
+    args.shader_dir = engine::host::shader_library::shader_override_dir(
+        args.shader_dir,
+        env::var_os(engine::host::shader_library::SHADER_DIR_ENV).as_deref(),
+        None,
+    );
     Ok(args)
 }
 

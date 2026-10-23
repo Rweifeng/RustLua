@@ -290,9 +290,7 @@ impl EditorApp {
         let spawns: Vec<String> = report
             .imported
             .iter()
-            .filter(|relative| {
-                crate::dnd::referenceable(ResourceKind::from_path(Path::new(relative)))
-            })
+            .filter(|relative| crate::dnd::spawnable(ResourceKind::from_path(Path::new(relative))))
             .cloned()
             .collect();
         let ingest = report.status_text();

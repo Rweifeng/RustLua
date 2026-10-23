@@ -1,11 +1,20 @@
-//! GPU 时间戳查询的槽位与状态（WP12 阶段 4a 从 `renderer/mod.rs` 原样搬出）：
+//! GPU 时间戳查询的槽位与状态（WP12 阶段 4a 从 `renderer/mod.rs` 原样搬出；
+//! E06-3 扩展为整帧 + 逐通道）：
 //! `TimestampSlot` / `GpuTimestampState` 两个类型，以及 `impl Renderer` 上读写它们的几条方法。
+//!
+//! 一个查询集同时承载三样东西：帧起点（索引 0）、每条通道的起止、帧终点。槽位保存
+//! [`PassTimestampLayout`]（显式索引），因此中途放弃的通道不会让后面的配对错位；异步回读
+//! 完成后一次解析出整帧与各通道时长，写进 [`GpuPassReport`]。
 //!
 //! 这两个类型是 `Renderer` 的字段类型，`mod.rs` 要按短名写进结构体 ⇒ 放宽为 `pub(super)`
 //! （计划 §3.1.4）；`Renderer` 本身仍定义在 `mod.rs`——固有 `impl` 块分散在同 crate 的兄弟
 //! 模块即可，字段一个都不用动。
 
-use super::Renderer;
+use super::pass_timestamps::{
+    PassTimestampLayout, TIMESTAMP_BUFFER_BYTES, consistency_delta_pct, parse_pass_timings,
+    within_tolerance,
+};
+use super::{GpuPassReport, Renderer};
 use web_time::Instant;
 
 /// One asynchronous whole-frame GPU timestamp readback.
@@ -15,6 +24,8 @@ pub(super) struct TimestampSlot {
     submission: Option<wgpu::SubmissionIndex>,
     map_result: std::sync::Arc<std::sync::atomic::AtomicU8>,
     map_error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// 这次提交里每条通道的查询索引；回读时按它解析。
+    layout: PassTimestampLayout,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,19 +55,20 @@ impl Renderer {
         self.timestamp_slots.push(TimestampSlot {
             resolve_buffer: self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("rustlua-frame-timestamp-resolve"),
-                size: 16,
+                size: TIMESTAMP_BUFFER_BYTES,
                 usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             }),
             buffer: self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("rustlua-frame-timestamp-readback"),
-                size: 16,
+                size: TIMESTAMP_BUFFER_BYTES,
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
             }),
             submission: None,
             map_result,
             map_error,
+            layout: PassTimestampLayout::default(),
         });
         Some(self.timestamp_slots.len() - 1)
     }
@@ -65,18 +77,31 @@ impl Renderer {
         &self,
         encoder: &mut wgpu::CommandEncoder,
         slot_index: usize,
+        layout: &PassTimestampLayout,
     ) {
         let Some(query_set) = &self.timestamp_query_set else {
             return;
         };
-        encoder.write_timestamp(query_set, 1);
+        encoder.write_timestamp(query_set, layout.frame_end);
         let slot = &self.timestamp_slots[slot_index];
-        encoder.resolve_query_set(query_set, 0..2, &slot.resolve_buffer, 0);
-        encoder.copy_buffer_to_buffer(&slot.resolve_buffer, 0, &slot.buffer, 0, 16);
+        encoder.resolve_query_set(query_set, 0..layout.frame_end + 1, &slot.resolve_buffer, 0);
+        encoder.copy_buffer_to_buffer(
+            &slot.resolve_buffer,
+            0,
+            &slot.buffer,
+            0,
+            TIMESTAMP_BUFFER_BYTES,
+        );
     }
 
-    pub(super) fn arm_timestamp_slot(&mut self, index: usize, submission: wgpu::SubmissionIndex) {
+    pub(super) fn arm_timestamp_slot(
+        &mut self,
+        index: usize,
+        submission: wgpu::SubmissionIndex,
+        layout: PassTimestampLayout,
+    ) {
         let slot = &mut self.timestamp_slots[index];
+        slot.layout = layout;
         let result = std::sync::Arc::clone(&slot.map_result);
         let error = std::sync::Arc::clone(&slot.map_error);
         slot.buffer
@@ -108,17 +133,36 @@ impl Renderer {
             match slot.map_result.load(std::sync::atomic::Ordering::Acquire) {
                 0 => continue,
                 1 => {
-                    let bytes = slot.buffer.slice(..).get_mapped_range();
-                    let begin =
-                        u64::from_le_bytes(bytes[0..8].try_into().expect("timestamp begin"));
-                    let end = u64::from_le_bytes(bytes[8..16].try_into().expect("timestamp end"));
-                    drop(bytes);
+                    let parsed = {
+                        let bytes = slot.buffer.slice(..).get_mapped_range();
+                        let timestamps = bytes
+                            .chunks_exact(8)
+                            .map(|chunk| {
+                                u64::from_le_bytes(chunk.try_into().expect("timestamp word"))
+                            })
+                            .collect::<Vec<_>>();
+                        drop(bytes);
+                        parse_pass_timings(&timestamps, &slot.layout, self.timestamp_period_ns)
+                    };
                     slot.buffer.unmap();
                     slot.submission = None;
                     slot.map_result
                         .store(0, std::sync::atomic::Ordering::Release);
-                    let nanos = end.saturating_sub(begin) as f64 * self.timestamp_period_ns as f64;
-                    return Some((nanos / 1_000.0).round() as u64);
+                    let Some((frame_us, passes)) = parsed else {
+                        continue;
+                    };
+                    let pass_sum_us: u64 = passes.iter().map(|timing| timing.gpu_us).sum();
+                    let delta_pct = consistency_delta_pct(frame_us, pass_sum_us);
+                    self.last_gpu_pass_report = GpuPassReport {
+                        supported: true,
+                        reason: None,
+                        frame_us: Some(frame_us),
+                        passes,
+                        pass_sum_us,
+                        delta_pct,
+                        consistent: delta_pct.map(within_tolerance),
+                    };
+                    return Some(frame_us);
                 }
                 _ => {
                     self.timestamp_error = slot

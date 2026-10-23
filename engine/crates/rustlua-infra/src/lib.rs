@@ -2,7 +2,6 @@ pub mod atlas_redirect;
 pub mod bundle;
 /// 分包配置与归约（`bundles.json` → 分组 → 计划表）：`assetc` 与编辑器面板共用一份规则。
 pub mod bundle_plan;
-pub mod editor_plugins;
 pub mod frame_clock;
 /// 跨层共享的标识值对象（`AssetId` 等）：类型下沉、实现留在各领域 crate。
 pub mod ids;

@@ -31,6 +31,8 @@ use std::{
 };
 
 use super::{
+    ParticleDispatchReport,
+    ParticlePlacementReport,
     PhysicsStageOrder,
     RuntimeScene,
     TextRenderMode,
@@ -38,6 +40,7 @@ use super::{
     // `mod.rs` 的 `use camera::{...}` 是私有导入，但私有导入对定义模块的所有后代可见，
     // 所以子模块按 `super::名字` 取用即可，不必再放宽 camera.rs 里那三条。
     declared_camera_2d_in,
+    environment,
     load_runtime_scene,
     project_text_render_mode,
     push_screen_line,
@@ -689,6 +692,7 @@ impl RuntimeScene {
         // 时由 `ensure_font_atlas` 在首次排版文本时按需加载。这样场景编辑（revision
         // 变化 → 运行时重建）不再每次重建都白白预热一遍被丢弃的图集。
         let ui_scene_nodes = build_ui_scene_nodes(&scene, !run_script);
+        let environment = environment::load(project_root, &scene);
         let mut scene = Self {
             script,
             audio,
@@ -716,6 +720,7 @@ impl RuntimeScene {
             ui_reference: UI_REFERENCE_SIZE,
             render_ui_overlay: true,
             project_root: project_root.map(|root| root.to_path_buf()),
+            environment,
             texture_dims: HashMap::new(),
             texture_paths: Vec::new(),
             texture_lookup: HashMap::new(),
@@ -766,6 +771,11 @@ impl RuntimeScene {
             physics_authority: PhysicsAuthority::default(),
             physics_stage_order: PhysicsStageOrder::default(),
             last_scene_emission: 0,
+            particle_compute_available: false,
+            last_particle_placement: ParticlePlacementReport::default(),
+            last_particle_dispatch: ParticleDispatchReport::default(),
+            particle_deferred: 0,
+            particle_warned: 0,
             last_physics_sync: (0, 0),
             last_entity_script_calls: 0,
         };

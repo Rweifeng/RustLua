@@ -11,6 +11,7 @@ use crate::host::frame::{
     Scene3dDrawable, SceneDraw, SceneMesh, WHITE_TEXTURE_PATH, WorldSpriteVertex,
 };
 use rustlua_animation::animation::AnimationStateMachine;
+use rustlua_animation::animation_player::AnimationPlayer;
 use rustlua_animation::animation3d::Animation3D;
 use rustlua_assets::asset_handle::AssetRecord;
 use rustlua_camera::camera::Camera3D;
@@ -157,6 +158,7 @@ impl RuntimeScene {
                     entity: SceneEntityId(id.index() as u64),
                     name,
                     mesh_path,
+                    material: renderer.material.clone(),
                     // docs/54 §4.4：网格也走同一套运行时身份（`ResourceKind::Model`）。3D 提取是
                     // `&self`，因此身份表在 `RefCell` 里——同一网格跨帧恒同句柄，渲染器据此做
                     // O(1) 的网格缓存查找并认出失效引用。
@@ -573,7 +575,36 @@ impl RuntimeScene {
                     if candidates.as_ref().is_some_and(|set| !set.contains(&id)) {
                         return;
                     }
-                    let (texture, sprite) =
+                    // P3-E01-2：`AnimationPlayer` 的 `Sprite.region` 轨道优先于旧状态机。
+                    // 玩家不写 `Sprite`（作者的 UV 保持原样），UV 只在提取这一刻覆盖，且不走
+                    // 图集重定向——`frames` 声明的就是这张贴图的 1×N 横排子区域。
+                    let player_region = world
+                        .get::<AnimationPlayer>(id)
+                        .ok()
+                        .flatten()
+                        .and_then(AnimationPlayer::current_region_uv);
+                    let (texture, sprite) = if let Some((uv_min, uv_max)) = player_region {
+                        let sampled = match sprite.with_uv(uv_min, uv_max) {
+                            Ok(sampled) => sampled,
+                            Err(error) => {
+                                failure = Some(error.into());
+                                return;
+                            }
+                        };
+                        match world.get::<SpriteAsset>(id).ok().flatten() {
+                            Some(asset) => (
+                                texture_id_of(
+                                    asset.path(),
+                                    assets,
+                                    texture_paths,
+                                    texture_lookup,
+                                    texture_handles,
+                                ),
+                                sampled,
+                            ),
+                            None => return,
+                        }
+                    } else {
                         match world.get::<AnimationStateMachine>(id).ok().flatten() {
                             Some(machine) => {
                                 let (uv_min, uv_max) = machine.current_frame_uv();
@@ -648,7 +679,8 @@ impl RuntimeScene {
                                 }
                                 None => return,
                             },
-                        };
+                        }
+                    };
                     let layer = world
                         .get::<SpriteSorting>(id)
                         .ok()

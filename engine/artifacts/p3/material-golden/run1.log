@@ -1,0 +1,12 @@
+warning: linker stdout: 正在创建库 E:\Codex\RustLua\engine\target\debug\deps\paste-0545853f57693019.dll.lib 和对象 E:\Codex\RustLua\engine\target\debug\deps\paste-0545853f57693019.dll.exp
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+group assets/materials/p3-e02-m0-r01.material metallic=0 roughness=0.1 mean=135.00 max=135.00
+group assets/materials/p3-e02-m0-r09.material metallic=0 roughness=0.9 mean=136.00 max=136.00
+group assets/materials/p3-e02-m1-r01.material metallic=1 roughness=0.1 mean=103.00 max=103.00
+group assets/materials/p3-e02-m1-r09.material metallic=1 roughness=0.9 mean=123.56 max=127.00
+
+thread 'main' (11456) panicked at crates\engine\examples\wp0_material_golden.rs:103:5:
+四组材质两两差异太小（最小最大通道差 1）：覆盖或参数没有生效
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

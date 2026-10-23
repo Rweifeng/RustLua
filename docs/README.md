@@ -38,6 +38,7 @@
 - [Lua 脚本错误处置策略](64-Lua脚本错误处置策略.md)：严格/容错两档、按回调的错误预算与停用规则
 - [场景脚本 Demo](21-scene-script-demo.md)
 - [3D 渲染与能力参考](24-3d-rendering.md)
+- [可视化脚本格式与代码生成](72-visual-script.md)：`.vgraph` 节点/类型/校验与 Lua golden（E03-1）
 
 ## 三、编辑器与工具链
 
@@ -47,6 +48,7 @@
 - [E01 状态基线](29-editor-e01-state-baseline.md)
 - [兼容性设计](30-compatibility-designs.md)：兼容边界与新旧字段转换
 - [层级面板优化](31-hierarchy-panel-optimization.md)
+- [编辑器插件 API（E04）](73-plugin-api.md)：静态插件生命周期、六类扩展点、宿主动作通道、panic 隔离、诊断窗口与 Lua v2 决策门
 
 ## 四、质量门、输入与游戏回归
 

@@ -11,6 +11,7 @@ use crate::host::frame::{Scene3d, SceneMesh};
 use rustlua_assets::asset_handle::AssetHandle;
 use rustlua_camera::camera::{CameraView, RenderView, Viewport};
 use rustlua_math::math3d::Mat4;
+use rustlua_render::mesh3d::MaterialAlphaMode;
 
 use super::{
     DepthPass, FrameDraw, GpuMaterial, RenderFrameMetrics, Renderer, StaticGroup,
@@ -121,6 +122,9 @@ impl Renderer {
     }
 
     /// 按 [`SpritePassFilter`] 画世界 Sprite 分段。
+    ///
+    /// `hdr` 选择目标格式对应的管线：HDR 帧的附件是 `Rgba16Float`，绝不能绑 LDR 管线
+    /// （管线与附件格式不符是校验错误，不是"颜色偏一点"）。
     #[allow(clippy::too_many_arguments)]
     pub(super) fn draw_world_sprites(
         &mut self,
@@ -129,6 +133,7 @@ impl Renderer {
         target: (u32, u32),
         world: WorldSpriteView,
         pass_kind: DepthPass,
+        hdr: bool,
         draws: &[rustlua_render::sprite_batch::SpriteDrawBatch],
         paths: &[String],
         handles: &[AssetHandle],
@@ -147,6 +152,28 @@ impl Renderer {
         if selected.is_empty() {
             return;
         }
+        let pipeline = if hdr {
+            match pass_kind {
+                DepthPass::WorldSpriteOpaque => self.hdr_world_sprite_opaque_pipeline.as_ref(),
+                _ => self.hdr_world_sprite_pipeline.as_ref(),
+            }
+        } else {
+            Some(match pass_kind {
+                DepthPass::WorldSpriteOpaque => &self.world_sprite_opaque_pipeline,
+                _ => &self.world_sprite_pipeline,
+            })
+        };
+        let Some(pipeline) = pipeline else {
+            // HDR 激活条件里已经要求两条管线都存在；走到这里说明构造期与运行期分叉了。
+            // 不静默空转：记 dropped 并告警，通道不会出现在 `last_frame_passes` 里，计划对账可查。
+            record_dropped_draw(metrics);
+            tracing::warn!(
+                target: "render",
+                hdr,
+                "[runtime] world sprite pass skipped: pipeline unavailable"
+            );
+            return;
+        };
         let depth_view = if world.shared_depth {
             &self.depth_view
         } else {
@@ -182,10 +209,7 @@ impl Renderer {
             timestamp_writes: None,
             occlusion_query_set: None,
         });
-        pass.set_pipeline(match pass_kind {
-            DepthPass::WorldSpriteOpaque => &self.world_sprite_opaque_pipeline,
-            _ => &self.world_sprite_pipeline,
-        });
+        pass.set_pipeline(pipeline);
         record_set_pass(metrics);
         pass.set_bind_group(0, &self.world_sprite_camera_bind_group, &[]);
         pass.set_vertex_buffer(0, self.world_sprite_buffer.slice(..));
@@ -226,9 +250,24 @@ impl Renderer {
         } else {
             None
         };
-        let mut groups: HashMap<(String, usize), StaticGroup> = HashMap::new();
+        let mut groups: HashMap<(String, usize, Option<String>), StaticGroup> = HashMap::new();
         let mut draws: Vec<FrameDraw> = Vec::new();
+        // P3-R02-4：半透明单独排队，最后按到相机的距离**从远到近**画；不参与实例合批
+        // （合批会打乱逐实例的透明顺序）。
+        let mut blend_draws: Vec<FrameDraw> = Vec::new();
+        let camera_position = scene.camera.position;
         let instancing_enabled = self.instancing_enabled;
+        // 覆盖材质先统一解析：失败会缓存为 `None` 并告警一次，绘制侧回退内嵌材质。
+        // 预解析还避免在遍历 `scene.drawables`（不可变借用）时对 `self` 取可变借用。
+        let mut overrides: HashMap<&str, GpuMaterial> = HashMap::new();
+        for drawable in &scene.drawables {
+            if let Some(path) = drawable.material.as_deref()
+                && !overrides.contains_key(path)
+                && let Some(material) = self.material_override(path)
+            {
+                overrides.insert(path, material);
+            }
+        }
         for drawable in &scene.drawables {
             let Some(cached) = self.cached_mesh(drawable.mesh_handle, &drawable.mesh_path) else {
                 // 这里**刻意只记 debug、不计入 `dropped_draws`**：网格不在缓存绝大多数是
@@ -253,14 +292,23 @@ impl Renderer {
                         continue;
                     }
                 }
-                let material = GpuMaterial::from_material(
-                    &primitive.material,
-                    !drawable.palette.is_empty(),
-                    primitive.albedo,
-                );
-                if drawable.palette.is_empty() && instancing_enabled {
+                let skinned = !drawable.palette.is_empty();
+                let mut material = primitive.material;
+                material.skinned = skinned;
+                if let Some(path) = drawable.material.as_deref()
+                    && let Some(overridden) = overrides.get(path)
+                {
+                    material = *overridden;
+                    material.skinned = skinned;
+                }
+                if !skinned && instancing_enabled && material.alpha_mode != MaterialAlphaMode::Blend
+                {
                     groups
-                        .entry((drawable.mesh_path.clone(), prim_index))
+                        .entry((
+                            drawable.mesh_path.clone(),
+                            prim_index,
+                            drawable.material.clone(),
+                        ))
                         .or_insert_with(|| StaticGroup {
                             geometry: primitive.geometry.clone(),
                             material,
@@ -268,6 +316,13 @@ impl Renderer {
                         })
                         .models
                         .push(drawable.model);
+                } else if material.alpha_mode == MaterialAlphaMode::Blend {
+                    blend_draws.push(FrameDraw {
+                        geometry: primitive.geometry.clone(),
+                        material,
+                        palette: drawable.palette.clone(),
+                        models: vec![drawable.model],
+                    });
                 } else {
                     draws.push(FrameDraw {
                         geometry: primitive.geometry.clone(),
@@ -286,6 +341,21 @@ impl Renderer {
                 models: group.models,
             });
         }
+        // 画家算法：远 → 近。距离取实例平移分量到相机的平方距离；排序是稳定的，
+        // 等距时保留场景声明顺序（golden 可复现）。
+        blend_draws.sort_by(|left, right| {
+            let distance = |draw: &FrameDraw| {
+                let model = &draw.models[0];
+                let dx = model.columns[3][0] - camera_position.x;
+                let dy = model.columns[3][1] - camera_position.y;
+                let dz = model.columns[3][2] - camera_position.z;
+                dx * dx + dy * dy + dz * dz
+            };
+            distance(right)
+                .partial_cmp(&distance(left))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        draws.extend(blend_draws);
         // Periodic M8-08 baseline: instance/draw counts with culling and
         // instancing active, useful for comparing against --no-cull/--no-instance.
         self.frame_count = self.frame_count.wrapping_add(1);

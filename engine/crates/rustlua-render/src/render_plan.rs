@@ -58,6 +58,14 @@ pub enum RenderPass {
     /// 位置在世界空间、半透明，因此排在世界 Sprite 之后、2D overlay/UI 之前。没有
     /// compute 能力或没配置消费者时**不出现**在计划里（不会绑到空管线）。
     Particle,
+    /// HDR 场景颜色 → LDR（P3-R01）。输入是 `Rgba16Float` 场景目标，输出写进 LDR 附件；
+    /// ACES（默认）或 Reinhard，曝光由 `exposure_ev` 换算成线性增益后先乘再走曲线。
+    ///
+    /// **位置是硬约束**：必须在所有 3D 世界内容（网格 / 世界 Sprite / 粒子）之后、
+    /// `Legacy2DOverlay`/`ScreenUI`/`VectorText` 之前。2D/UI 是已经按 sRGB 设计好的颜色，
+    /// 再走一遍 ACES 会把 HUD 的白色压成灰色（P3-R01 的最大风险项）。只有 HDR 真正启用时
+    /// 这条通道才出现。
+    Tonemap,
     /// 旧 2D 叠加顶点，覆盖 `RenderLayer::{World2D, Overlay2D}` 两个桶（同一批顶点、同一条管线，
     /// 桶间按 [`crate::layer::OVERLAY_DRAW_ORDER`] 排序）。
     Legacy2DOverlay,
@@ -74,13 +82,14 @@ pub enum RenderPass {
 
 impl RenderPass {
     /// 规范执行顺序。渲染器按这个顺序执行，计划也必须按这个顺序列出通道。
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Clear,
         Self::WorldSpriteOpaque,
         Self::Shadow,
         Self::DepthOpaque,
         Self::WorldSprite,
         Self::Particle,
+        Self::Tonemap,
         Self::Legacy2DOverlay,
         Self::ScreenUI,
         Self::VectorText,
@@ -97,6 +106,7 @@ impl RenderPass {
             Self::DepthOpaque => "depth_opaque",
             Self::WorldSprite => "world_sprite",
             Self::Particle => "particle",
+            Self::Tonemap => "tonemap",
             Self::Legacy2DOverlay => "legacy_2d_overlay",
             Self::ScreenUI => "screen_ui",
             Self::VectorText => "vector_text",
@@ -132,6 +142,11 @@ pub struct FrameFacts {
     pub world_sprite_shared_depth: bool,
     /// 本帧有 GPU 粒子（已配置消费者且 compute 可用）。
     pub gpu_particles: bool,
+    /// 本帧走 HDR 场景颜色，需要在 3D 内容之后执行 `Tonemap`（P3-R01）。
+    ///
+    /// 为真时场景先画进 `Rgba16Float` 目标，因此**本帧一定会清屏**（离屏 HDR 附件没有
+    /// "上一帧内容"可叠）——与 `post_process` 同一条理由。
+    pub tonemap: bool,
     /// `RenderLayer::World2D` 桶的 draw 数。
     pub world_2d_draws: usize,
     /// `RenderLayer::Overlay2D` 桶的 draw 数。
@@ -164,9 +179,9 @@ impl RenderPlan {
     #[must_use]
     pub fn for_frame(facts: FrameFacts) -> Self {
         let mut passes = Vec::with_capacity(Self::ALL_LEN);
-        // 开后处理时场景先画进**离屏**颜色纹理，那张附件上没有"上一帧留下的内容"，
+        // 后处理 / HDR 都把场景画进**离屏**颜色附件，那张附件上没有"上一帧留下的内容"，
         // 因此 `ClearPolicy::None` 无法照原义执行：本帧必须清屏（渲染器会就此告警一次）。
-        if facts.clear || facts.post_process {
+        if facts.clear || facts.post_process || facts.tonemap {
             passes.push(RenderPass::Clear);
         }
         // 不透明世界 Sprite 只有在"与网格共用深度"时才有意义：独立深度附件下精灵与网格本来
@@ -186,6 +201,9 @@ impl RenderPlan {
         }
         if facts.gpu_particles {
             passes.push(RenderPass::Particle);
+        }
+        if facts.tonemap {
+            passes.push(RenderPass::Tonemap);
         }
         if facts.world_2d_draws + facts.overlay_2d_draws > 0 {
             passes.push(RenderPass::Legacy2DOverlay);
@@ -280,6 +298,7 @@ mod tests {
             world_sprite_opaque_segment: true,
             world_sprite_shared_depth: true,
             gpu_particles: true,
+            tonemap: true,
             world_2d_draws: 2,
             overlay_2d_draws: 1,
             screen_ui_draws: 3,
@@ -301,6 +320,7 @@ mod tests {
                 RenderPass::DepthOpaque,
                 RenderPass::WorldSprite,
                 RenderPass::Particle,
+                RenderPass::Tonemap,
                 RenderPass::Legacy2DOverlay,
                 RenderPass::ScreenUI,
                 RenderPass::VectorText,
@@ -313,7 +333,56 @@ mod tests {
             RenderPass::ALL.len(),
             "ALL_LEN 必须与规范顺序一致"
         );
-        assert_eq!(RenderPass::ALL.len(), 10, "通道数变化必须同步改渲染器");
+        assert_eq!(RenderPass::ALL.len(), 11, "通道数变化必须同步改渲染器");
+    }
+
+    /// P3-R01：HDR 帧的 `Tonemap` 必须**在 2D/UI 之前**，且本身会强制清屏。
+    ///
+    /// 顺序反过来（先 UI 后 Tonemap）不会报错、也画得出东西，但 HUD 会被 ACES 压灰——
+    /// 这是本包最大的风险项，因此用一条不启动 GPU 的断言钉住。
+    #[test]
+    fn tonemap_runs_after_world_content_and_before_2d_ui() {
+        let plan = RenderPlan::for_frame(FrameFacts {
+            clear: false,
+            has_3d_draws: true,
+            world_2d_draws: 1,
+            overlay_2d_draws: 1,
+            screen_ui_draws: 1,
+            vector_text: true,
+            tonemap: true,
+            post_process: true,
+            ..FrameFacts::default()
+        });
+        let passes = plan.passes();
+        let tonemap = passes
+            .iter()
+            .position(|pass| *pass == RenderPass::Tonemap)
+            .expect("HDR 帧必须有 Tonemap");
+        assert_eq!(passes[0], RenderPass::Clear, "Tonemap 强制清屏");
+        for pass in [
+            RenderPass::Shadow,
+            RenderPass::DepthOpaque,
+            RenderPass::Legacy2DOverlay,
+            RenderPass::ScreenUI,
+            RenderPass::VectorText,
+            RenderPass::PostProcess,
+        ] {
+            let index = passes
+                .iter()
+                .position(|candidate| *candidate == pass)
+                .expect("全内容帧必须包含该通道");
+            if matches!(
+                pass,
+                RenderPass::Legacy2DOverlay
+                    | RenderPass::ScreenUI
+                    | RenderPass::VectorText
+                    | RenderPass::PostProcess
+            ) {
+                assert!(tonemap < index, "{pass:?} 必须在 Tonemap 之后");
+            } else {
+                assert!(index < tonemap, "{pass:?} 必须在 Tonemap 之前");
+            }
+        }
     }
 
     /// 空帧：什么都不跑（连清屏都没有 ⇒ 宿主声明了 `ClearPolicy::None`）。
@@ -397,7 +466,7 @@ mod tests {
     /// 计划恒为规范顺序：把 bool 事实穷举一遍，`is_canonical` 必须无例外成立。
     #[test]
     fn every_fact_combination_yields_a_canonical_plan() {
-        for bits in 0u32..(1 << 8) {
+        for bits in 0u32..(1 << 9) {
             let facts = FrameFacts {
                 clear: bits & 1 != 0,
                 has_3d_draws: bits & 2 != 0,
@@ -410,6 +479,7 @@ mod tests {
                 vector_text: false,
                 post_process: bits & 64 != 0,
                 gpu_particles: bits & 128 != 0,
+                tonemap: bits & 256 != 0,
             };
             let plan = RenderPlan::for_frame(facts);
             assert!(plan.is_canonical(), "{facts:?} ⇒ {:?}", plan.passes());

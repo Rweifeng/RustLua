@@ -23,12 +23,17 @@ pub enum ResourceKind {
     Prefab,
     /// Texture atlas definitions.
     Atlas,
+    /// 3D material definitions (`.material`).
+    Material,
     /// 3D models (glTF/GLB).
     Model,
+    /// 环境光照贴图：`.hdr` 源文件与烘焙产物 `.rlenv`（P3-R03-4）。
+    Environment,
     /// Vector fonts (TTF/OTF).
     Font,
-    /// 场景内声明的动画片段：没有文件路径，身份来自内容签名
-    /// （`AnimationClip::resource_key`，docs/54 §4.4）。
+    /// 动画片段：场景内声明的片段没有文件路径，身份来自内容签名
+    /// （`AnimationClip::resource_key`，docs/54 §4.4）；`.anim` 文件同样归入本家族
+    /// （P3-E01-4b），导入器用运行时同一台解析器校验。
     Animation,
     /// Anything the pipeline does not yet understand.
     Other,
@@ -52,8 +57,11 @@ impl ResourceKind {
             "scene" | "ron" | "json" => Self::Scene,
             "prefab" => Self::Prefab,
             "atlas" => Self::Atlas,
+            "material" => Self::Material,
             "glb" | "gltf" => Self::Model,
+            "hdr" | "rlenv" => Self::Environment,
             "ttf" | "otf" => Self::Font,
+            "anim" => Self::Animation,
             _ => Self::Other,
         }
     }
@@ -67,7 +75,9 @@ impl ResourceKind {
             Self::Scene => "场景",
             Self::Prefab => "预制体",
             Self::Atlas => "图集",
+            Self::Material => "材质",
             Self::Model => "模型",
+            Self::Environment => "环境",
             Self::Font => "字体",
             Self::Animation => "动画",
             Self::Other => "其他",
@@ -83,7 +93,9 @@ impl ResourceKind {
             Self::Scene => "scene",
             Self::Prefab => "prefab",
             Self::Atlas => "atlas",
+            Self::Material => "material",
             Self::Model => "model",
+            Self::Environment => "environment",
             Self::Font => "font",
             Self::Animation => "animation",
             Self::Other => "other",
@@ -99,7 +111,9 @@ impl ResourceKind {
             "scene" => Self::Scene,
             "prefab" => Self::Prefab,
             "atlas" => Self::Atlas,
+            "material" => Self::Material,
             "model" => Self::Model,
+            "environment" => Self::Environment,
             "font" => Self::Font,
             "animation" => Self::Animation,
             "other" => Self::Other,
@@ -126,10 +140,23 @@ mod tests {
         assert_eq!(ResourceKind::from_path("a.json"), ResourceKind::Scene);
         assert_eq!(ResourceKind::from_path("a.prefab"), ResourceKind::Prefab);
         assert_eq!(ResourceKind::from_path("a.atlas"), ResourceKind::Atlas);
+        assert_eq!(
+            ResourceKind::from_path("a.material"),
+            ResourceKind::Material
+        );
         assert_eq!(ResourceKind::from_path("a.glb"), ResourceKind::Model);
         assert_eq!(ResourceKind::from_path("a.gltf"), ResourceKind::Model);
+        assert_eq!(ResourceKind::from_path("a.hdr"), ResourceKind::Environment);
+        assert_eq!(
+            ResourceKind::from_path("a.rlenv"),
+            ResourceKind::Environment
+        );
         assert_eq!(ResourceKind::from_path("a.ttf"), ResourceKind::Font);
         assert_eq!(ResourceKind::from_path("a.otf"), ResourceKind::Font);
+        assert_eq!(
+            ResourceKind::from_path("assets/anim/spin.anim"),
+            ResourceKind::Animation
+        );
     }
 
     #[test]
@@ -160,8 +187,11 @@ mod tests {
             ResourceKind::Scene,
             ResourceKind::Prefab,
             ResourceKind::Atlas,
+            ResourceKind::Material,
             ResourceKind::Model,
+            ResourceKind::Environment,
             ResourceKind::Font,
+            ResourceKind::Animation,
             ResourceKind::Other,
         ] {
             assert_eq!(ResourceKind::parse(kind.token()), Some(kind));
@@ -178,8 +208,11 @@ mod tests {
             ResourceKind::Scene,
             ResourceKind::Prefab,
             ResourceKind::Atlas,
+            ResourceKind::Material,
             ResourceKind::Model,
+            ResourceKind::Environment,
             ResourceKind::Font,
+            ResourceKind::Animation,
             ResourceKind::Other,
         ] {
             assert!(!kind.label().is_empty());

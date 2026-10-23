@@ -9,8 +9,10 @@ use crate::host::frame::{Scene3d, SceneMesh};
 use rustlua_camera::camera::{ClearPolicy, DEFAULT_3D_CLEAR, RenderView};
 use rustlua_infra::logging::{EngineError, LogModule};
 use rustlua_render::layer::{RenderLayer, layer_indices};
+use rustlua_render::mesh3d::MaterialAlphaMode;
 use rustlua_render::post_process::PostProcess;
 use rustlua_render::render_plan::{FrameFacts, RenderPass, RenderPlan};
+use rustlua_render::render_settings::{IblMode, SceneColorFormat, hdr_activation};
 // M73-00 WP5：时钟必须走 `web-time` 而不是 `std::time`。`wasm32-unknown-unknown` 的 std
 // 落在 `sys/pal/unsupported` 上，`Instant::now()` 会**直接 panic**（"time not implemented on
 // this platform"，见 std 源码 `sys/time/unsupported.rs`）——渲染器是第一个真在 wasm 上被调用的
@@ -21,6 +23,8 @@ use wgpu::SurfaceError;
 
 use super::world_sprite::SpritePassFilter;
 
+use super::pass_timestamps::{PassTimestampLayout, PassTimestamps};
+use super::pipeline_cache::{ColorTarget, ShaderVariantKey, Shading, SkinMode};
 use super::{
     DepthPass, RenderFrameMetrics, RenderOutcome, Renderer, apply_declared_viewport,
     count_layer_draws, hash_bytes, record_dropped_draw, record_indexed_draw, record_set_pass,
@@ -85,6 +89,65 @@ impl Renderer {
         3
     }
 
+    /// P3-R01：把 HDR 场景颜色（线性、可 >1）经曝光与曲线写进 LDR 目标。
+    ///
+    /// 与后处理共用绑定布局（HDR 纹理 + 线性过滤采样器 + uniform），但参数只有 4 个 f32。
+    /// 输出附件用 Clear 起步：全屏三角形覆盖整个目标，结果与"上一帧残留"无关。
+    fn draw_tonemap(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::TextureView,
+        target: &wgpu::TextureView,
+        settings: PostProcess,
+        target_size: (u32, u32),
+    ) -> u64 {
+        let params = [settings.exposure_ev, settings.tonemap.code(), 0.0, 0.0];
+        self.queue
+            .write_buffer(&self.tonemap_params, 0, bytemuck::cast_slice(&params));
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("rustlua-tonemap-bind-group"),
+            layout: &self.post_process_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(source),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.post_process_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.tonemap_params.as_entire_binding(),
+                },
+            ],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("rustlua-tonemap-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_pipeline(
+            self.tonemap_pipeline
+                .as_ref()
+                .expect("tonemap pipeline checked at activation"),
+        );
+        pass.set_bind_group(0, &bind_group, &[]);
+        apply_declared_viewport(&mut pass, None, target_size);
+        pass.draw(0..3, 0..1);
+        3
+    }
+
     pub fn render(&mut self, mesh: &SceneMesh, scene3d: Option<&Scene3d>) -> RenderOutcome {
         let Some(surface) = &self.surface else {
             tracing::warn!(target: "game", "[render] render() requires a window surface; use render_into_texture");
@@ -126,7 +189,7 @@ impl Renderer {
         {
             encoder.write_timestamp(query_set, 0);
         }
-        let mut metrics = self.render_passes(
+        let (mut metrics, timestamp_layout) = self.render_passes(
             &mut encoder,
             mesh,
             scene3d,
@@ -134,11 +197,11 @@ impl Renderer {
             (self.config.width, self.config.height),
         );
         if let Some(slot) = timestamp_slot {
-            self.finish_gpu_timestamp(&mut encoder, slot);
+            self.finish_gpu_timestamp(&mut encoder, slot, &timestamp_layout);
         }
         let submission = self.queue.submit([encoder.finish()]);
         if let Some(slot) = timestamp_slot {
-            self.arm_timestamp_slot(slot, submission);
+            self.arm_timestamp_slot(slot, submission, timestamp_layout);
         }
         metrics.cpu_frame_us = started.elapsed().as_micros() as u64;
         metrics.gpu_frame_us = completed_gpu_us;
@@ -172,13 +235,14 @@ impl Renderer {
         {
             encoder.write_timestamp(query_set, 0);
         }
-        let mut metrics = self.render_passes(&mut encoder, mesh, scene3d, view, (width, height));
+        let (mut metrics, timestamp_layout) =
+            self.render_passes(&mut encoder, mesh, scene3d, view, (width, height));
         if let Some(slot) = timestamp_slot {
-            self.finish_gpu_timestamp(&mut encoder, slot);
+            self.finish_gpu_timestamp(&mut encoder, slot, &timestamp_layout);
         }
         let submission = self.queue.submit([encoder.finish()]);
         if let Some(slot) = timestamp_slot {
-            self.arm_timestamp_slot(slot, submission);
+            self.arm_timestamp_slot(slot, submission, timestamp_layout);
         }
         metrics.cpu_frame_us = started.elapsed().as_micros() as u64;
         metrics.gpu_frame_us = completed_gpu_us;
@@ -198,7 +262,10 @@ impl Renderer {
         scene3d: Option<&Scene3d>,
         view: &wgpu::TextureView,
         target: (u32, u32),
-    ) -> RenderFrameMetrics {
+    ) -> (RenderFrameMetrics, PassTimestampLayout) {
+        // E06-3：查询集暂时移出字段，避免 `&mut self` 的借用与跨通道写入冲突；函数末尾归还。
+        let timestamp_query_set = self.timestamp_query_set.take();
+        let mut pass_timestamps = PassTimestamps::new(timestamp_query_set.as_ref());
         // 清屏：宿主声明了主视图就按声明走（`ClearPolicy::None` = 不清，叠在已有内容上）；
         // 没声明则保持收敛前的历史默认色，因此"不调用 set_frame_views"像素完全不变。
         let clear = match self.frame_views.clear() {
@@ -218,24 +285,6 @@ impl Renderer {
         };
         let main_viewport = self.frame_views.main.map(|declared| declared.viewport);
         let overlay_viewport = self.frame_views.overlay.map(|declared| declared.viewport);
-        // docs/54 §4.3：打开后处理后场景先画进**离屏**附件，那张附件上没有"上一帧留下的内容"
-        // 可叠，因此 `ClearPolicy::None` 无法照原义执行。这里显式改成历史默认清屏色并告警一次
-        // ——静默把 `None` 当 `Color(默认)` 会让"我声明了不清屏却没生效"变成无从查起的问题。
-        let clear = match clear {
-            None if self.post_process.is_some() => {
-                tracing::warn!(
-                    target: "render",
-                    "[runtime] post-process需要确定的基色：本帧的 ClearPolicy::None 按默认清屏色执行"
-                );
-                Some(wgpu::Color {
-                    r: f64::from(DEFAULT_3D_CLEAR[0]),
-                    g: f64::from(DEFAULT_3D_CLEAR[1]),
-                    b: f64::from(DEFAULT_3D_CLEAR[2]),
-                    a: f64::from(DEFAULT_3D_CLEAR[3]),
-                })
-            }
-            clear => clear,
-        };
         // docs/54 §8-③：本帧世界视图的投影矩阵**只有一份来源**——宿主声明的 `RenderView`。
         // 渲染器不再自己回查 `Camera3D`（那只是"宿主没声明"时的历史回退），回退吃的是
         // 场景提取时就已按视口烘焙好的 `Scene3d.view`（拆分批 7）。
@@ -260,6 +309,23 @@ impl Renderer {
         } else {
             Vec::new()
         };
+        // P3-R02：着色轴由本帧设置决定。`set_render_settings` 已经负责在首次开启 PBR 时
+        // 编译变体；这里再兜一次底，保证绕过 setter 直接改字段的实现路径也不会去查空缓存
+        // （`ensure_pbr_pipelines` 是幂等的，重复调用只读一个 bool）。
+        if self.render_settings.pbr {
+            self.ensure_pbr_pipelines();
+        }
+        let shading = if self.render_settings.pbr {
+            Shading::Pbr
+        } else {
+            Shading::Legacy
+        };
+        // P3-R03-2：IBL 档位是策略 × 环境 × 设备能力的纯解析结果，本帧所有网格共享同一档。
+        let ibl = if shading == Shading::Pbr {
+            self.ibl_mode()
+        } else {
+            IblMode::Off
+        };
         let mut metrics = RenderFrameMetrics::default();
         metrics.dropped_draws += dropped_3d_draws;
         for draw in &frame_draws {
@@ -278,8 +344,8 @@ impl Renderer {
         let particles_active = self.compute_enabled()
             && self
                 .gpu_particles
-                .as_ref()
-                .is_some_and(super::gpu_particles::GpuParticleSystem::is_active);
+                .iter()
+                .any(super::gpu_particles::GpuParticleSystem::is_active);
         let world_view = if mesh.world_sprites.is_empty() && !particles_active {
             None
         } else {
@@ -296,6 +362,105 @@ impl Renderer {
             None
         };
         let draw_target: &wgpu::TextureView = scene_view.as_ref().unwrap_or(view);
+        // P3-R01：HDR 是否真的启用由**策略 + 能力 + 本帧内容 + 曝光归属**四件事共同决定。
+        // 纯 2D 帧不创建 HDR 目标；后处理自带曝光（`exposure != 1.0`）时回退 LDR，避免同一份
+        // 曝光被 Tonemap 与后处理乘两次。降级必须留痕：策略允许却没能启用时告警一次。
+        let scene_content =
+            !frame_draws.is_empty() || !mesh.world_sprites.is_empty() || particles_active;
+        let hdr_capable = self.capabilities.hdr_usable()
+            && self
+                .pipelines
+                .get(&ShaderVariantKey::mesh(
+                    shading,
+                    SkinMode::Off,
+                    ColorTarget::Hdr,
+                ))
+                .is_some()
+            && self.hdr_world_sprite_pipeline.is_some()
+            && self.hdr_world_sprite_opaque_pipeline.is_some()
+            && self.tonemap_pipeline.is_some();
+        let mut hdr_active = hdr_activation(
+            self.render_settings,
+            hdr_capable,
+            scene_content,
+            post_process.map(|settings| settings.exposure),
+        );
+        if self.render_settings.hdr_allowed()
+            && scene_content
+            && !hdr_active
+            && !self.hdr_warning_logged
+        {
+            self.hdr_warning_logged = true;
+            let reason = if !self.capabilities.hdr_usable() {
+                self.capabilities
+                    .hdr_unavailable_reason()
+                    .unwrap_or_else(|| "HDR 能力不可用".to_owned())
+            } else if post_process.is_some_and(|settings| settings.exposure != 1.0) {
+                "HDR 模式要求 PostProcess.exposure == 1.0（曝光只走 exposure_ev）；本帧回退 LDR"
+                    .to_owned()
+            } else {
+                "HDR 管线未构造".to_owned()
+            };
+            tracing::warn!(
+                target: "render",
+                reason = %reason,
+                "[runtime] HDR 未启用，本帧回退 LDR"
+            );
+        }
+        let hdr_view = if hdr_active {
+            self.ensure_hdr_scene_view(target.0, target.1);
+            self.hdr_scene_view.take()
+        } else {
+            None
+        };
+        if hdr_active && hdr_view.is_none() {
+            hdr_active = false;
+            tracing::warn!(
+                target: "render",
+                "[runtime] HDR 场景视图缺失，本帧回退 LDR"
+            );
+        }
+        // 3D / 世界 Sprite / 粒子写 `scene_target`；Tonemap 之后再写 `draw_target`（LDR）。
+        let scene_target: &wgpu::TextureView = if hdr_active {
+            hdr_view.as_ref().expect("HDR view checked above")
+        } else {
+            draw_target
+        };
+        let color_target = if hdr_active {
+            ColorTarget::Hdr
+        } else {
+            ColorTarget::Ldr
+        };
+        // P3-R02-4 / P3-R03-2：只为本帧真正出现的 alpha/双面/IBL 组合补编译管线（每个组合一次）。
+        self.ensure_frame_pipelines(&frame_draws, shading, color_target, ibl);
+        self.write_environment_uniform(ibl);
+        // docs/54 §4.3：打开后处理后场景先画进**离屏**附件，那张附件上没有"上一帧留下的内容"
+        // 可叠；HDR 目标同理（未覆盖区域会是上一帧的残留）。这里显式改成历史默认清屏色并告警
+        // ——静默把 `None` 当 `Color(默认)` 会让"我声明了不清屏却没生效"变成无从查起的问题。
+        let clear = match clear {
+            None if post_process.is_some() || hdr_active => {
+                tracing::warn!(
+                    target: "render",
+                    "[runtime] post-process/HDR 需要确定的基色：本帧的 ClearPolicy::None 按默认清屏色执行"
+                );
+                Some(wgpu::Color {
+                    r: f64::from(DEFAULT_3D_CLEAR[0]),
+                    g: f64::from(DEFAULT_3D_CLEAR[1]),
+                    b: f64::from(DEFAULT_3D_CLEAR[2]),
+                    a: f64::from(DEFAULT_3D_CLEAR[3]),
+                })
+            }
+            clear => clear,
+        };
+        metrics.hdr_active = hdr_active;
+        metrics.tonemap = hdr_active.then(|| post_process.unwrap_or_default().tonemap);
+        metrics.scene_format = if hdr_active {
+            SceneColorFormat::Rgba16Float
+        } else if self.config.format.is_srgb() {
+            SceneColorFormat::Rgba8UnormSrgb
+        } else {
+            SceneColorFormat::Rgba8Unorm
+        };
         // docs/54 §4.3：本帧跑哪些通道由**计划**决定，而不是散在下面的 `if` 里。
         // 计划是纯函数（`RenderPlan::for_frame`）⇒ 顺序与取舍可以在不启动 GPU 的单测里断言。
         let plan = RenderPlan::for_frame(FrameFacts {
@@ -312,6 +477,7 @@ impl Renderer {
             overlay_2d_draws: count_layer_draws(mesh, RenderLayer::Overlay2D),
             screen_ui_draws: count_layer_draws(mesh, RenderLayer::ScreenUI),
             vector_text: !mesh.vector_vertices.is_empty() && self.storage_capable,
+            tonemap: hdr_active,
             post_process: post_process.is_some(),
         });
         // 矢量文字同理：能力不足时不声明该通道（计划里没有 ⇒ 不会绑占位管线），
@@ -323,10 +489,11 @@ impl Renderer {
         if plan.contains(RenderPass::Clear)
             && let Some(clear) = clear
         {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            pass_timestamps.begin(encoder);
+            let clear_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("rustlua-clear-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: draw_target,
+                    view: scene_target,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -338,6 +505,8 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+            drop(clear_pass);
+            pass_timestamps.end(encoder, RenderPass::Clear);
             executed.push(RenderPass::Clear);
         }
         // 深度附件是否已被本帧某个 pass 清过。共用深度时"谁先画谁清"、后面的 pass 只 Load；
@@ -347,12 +516,14 @@ impl Renderer {
         if plan.contains(RenderPass::WorldSpriteOpaque)
             && let Some(world) = world_view.filter(|world| world.shared_depth)
         {
+            pass_timestamps.begin(encoder);
             self.draw_world_sprites(
                 encoder,
-                draw_target,
+                scene_target,
                 target,
                 world,
                 DepthPass::WorldSpriteOpaque,
+                hdr_active,
                 &mesh.world_sprite_draws,
                 &mesh.paths,
                 &mesh.path_handles,
@@ -360,24 +531,38 @@ impl Renderer {
                 true,
                 &mut metrics,
             );
+            pass_timestamps.end(encoder, RenderPass::WorldSpriteOpaque);
             depth_cleared = true;
             executed.push(RenderPass::WorldSpriteOpaque);
         }
         // P0-①：本帧的材质 bind group 在进入任何 pass 前一次性建好（阴影与网格共用同一份），
         // 环形缓冲先复位再填。此前是"每 Draw Call 每 Pass"分配 GPU buffer + bind group。
-        let material_binds: Vec<wgpu::BindGroup> = if !frame_draws.is_empty()
+        // P3-R02：法线矩阵只在 PBR 网格通道需要；旧路径不写这份数据、不占顶点槽。
+        let want_normals = shading == Shading::Pbr && plan.contains(RenderPass::DepthOpaque);
+        let (material_binds, normal_slices): (
+            Vec<wgpu::BindGroup>,
+            Vec<Option<super::arena::NormalMatrixSlice>>,
+        ) = if !frame_draws.is_empty()
             && (plan.contains(RenderPass::Shadow) || plan.contains(RenderPass::DepthOpaque))
         {
             self.material_arena_used = 0;
             self.instance_arena_used = 0;
             frame_draws
                 .iter()
-                .map(|draw| self.material_bind_group(draw.material, &draw.palette, &draw.models))
-                .collect()
+                .map(|draw| {
+                    self.material_bind_group(
+                        draw.material,
+                        &draw.palette,
+                        &draw.models,
+                        want_normals,
+                    )
+                })
+                .unzip()
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         if plan.contains(RenderPass::Shadow) {
+            pass_timestamps.begin(encoder);
             let mut shadow_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("rustlua-shadow-pass"),
                 color_attachments: &[],
@@ -392,10 +577,37 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            shadow_pass.set_pipeline(&self.shadow_pipeline);
-            record_set_pass(&mut metrics);
             shadow_pass.set_bind_group(0, &self.shadow_bind_group, &[]);
+            record_set_pass(&mut metrics);
+            let mut bound_shadow_pipeline = None;
             for (index, draw) in frame_draws.iter().enumerate() {
+                // blend 材质不投影；mask 走带 alpha 剔除的阴影变体，双面走独立剔除状态。
+                let (key, skip) = if shading == Shading::Pbr {
+                    (
+                        ShaderVariantKey::shadow_with_alpha(
+                            SkinMode::from(draw.material.skinned),
+                            draw.material.alpha_mode,
+                            draw.material.double_sided,
+                        ),
+                        draw.material.alpha_mode == MaterialAlphaMode::Blend,
+                    )
+                } else {
+                    (
+                        ShaderVariantKey::shadow(SkinMode::from(draw.material.skinned)),
+                        false,
+                    )
+                };
+                if skip {
+                    continue;
+                }
+                if bound_shadow_pipeline != Some(key) {
+                    let pipeline = self
+                        .pipelines
+                        .get(&key)
+                        .unwrap_or_else(|| panic!("阴影管线变体未在构造期预编译：{}", key.label()));
+                    shadow_pass.set_pipeline(pipeline.as_ref());
+                    bound_shadow_pipeline = Some(key);
+                }
                 shadow_pass.set_bind_group(1, &material_binds[index], &[]);
                 shadow_pass.set_vertex_buffer(0, draw.geometry.vertex_buffer.slice(..));
                 shadow_pass.set_index_buffer(
@@ -408,13 +620,16 @@ impl Renderer {
                     0..draw.models.len() as u32,
                 );
             }
+            drop(shadow_pass);
+            pass_timestamps.end(encoder, RenderPass::Shadow);
             executed.push(RenderPass::Shadow);
         }
         if plan.contains(RenderPass::DepthOpaque) {
+            pass_timestamps.begin(encoder);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("rustlua-mesh3d-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: draw_target,
+                    view: scene_target,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -440,19 +655,51 @@ impl Renderer {
                 occlusion_query_set: None,
             });
             depth_cleared = true;
-            pass.set_pipeline(&self.mesh_pipeline);
             record_set_pass(&mut metrics);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            // P3-R03：只有 PBR 管线布局含环境组；Legacy 布局两组，绑第三组会触发校验错误。
+            if shading == Shading::Pbr {
+                pass.set_bind_group(2, &self.environment_bind_group, &[]);
+            }
             apply_declared_viewport(&mut pass, main_viewport, target);
+            let mut bound_mesh_pipeline = None;
             for (index, draw) in frame_draws.iter().enumerate() {
+                let key = ShaderVariantKey::mesh_with_alpha(
+                    shading,
+                    SkinMode::from(draw.material.skinned),
+                    color_target,
+                    draw.material.alpha_mode,
+                    draw.material.double_sided,
+                )
+                .with_ibl(ibl);
+                if bound_mesh_pipeline != Some(key) {
+                    let pipeline = self.pipelines.get(&key).unwrap_or_else(|| {
+                        panic!("3D 网格管线变体未在构造期预编译：{}", key.label())
+                    });
+                    pass.set_pipeline(pipeline.as_ref());
+                    bound_mesh_pipeline = Some(key);
+                }
                 pass.set_bind_group(1, &material_binds[index], &[]);
                 pass.set_vertex_buffer(0, draw.geometry.vertex_buffer.slice(..));
+                if shading == Shading::Pbr {
+                    let normals = normal_slices[index]
+                        .as_ref()
+                        .expect("PBR 网格通道缺少逐实例法线矩阵");
+                    pass.set_vertex_buffer(
+                        1,
+                        normals
+                            .buffer
+                            .slice(normals.offset..normals.offset + normals.size),
+                    );
+                }
                 pass.set_index_buffer(
                     draw.geometry.index_buffer.slice(..),
                     wgpu::IndexFormat::Uint32,
                 );
                 pass.draw_indexed(0..draw.geometry.index_count, 0, 0..draw.models.len() as u32);
             }
+            drop(pass);
+            pass_timestamps.end(encoder, RenderPass::DepthOpaque);
             executed.push(RenderPass::DepthOpaque);
         }
         if plan.contains(RenderPass::WorldSprite)
@@ -467,12 +714,14 @@ impl Renderer {
                 SpritePassFilter::All
             };
             let clear_world_depth = !depth_cleared;
+            pass_timestamps.begin(encoder);
             self.draw_world_sprites(
                 encoder,
-                draw_target,
+                scene_target,
                 target,
                 world,
                 DepthPass::WorldSprite,
+                hdr_active,
                 &mesh.world_sprite_draws,
                 &mesh.paths,
                 &mesh.path_handles,
@@ -480,6 +729,7 @@ impl Renderer {
                 clear_world_depth,
                 &mut metrics,
             );
+            pass_timestamps.end(encoder, RenderPass::WorldSprite);
             if clear_world_depth {
                 depth_cleared = true;
             }
@@ -489,16 +739,35 @@ impl Renderer {
         // 这里只把顶点缓冲画出来——渲染侧零回读、零上传。
         if plan.contains(RenderPass::Particle)
             && let Some(world) = world_view
-            && self.draw_gpu_particles(
+        {
+            pass_timestamps.begin(encoder);
+            if self.draw_gpu_particles(
                 encoder,
-                draw_target,
+                scene_target,
                 target,
                 world,
+                hdr_active,
                 !depth_cleared,
                 &mut metrics,
-            )
+            ) {
+                pass_timestamps.end(encoder, RenderPass::Particle);
+                executed.push(RenderPass::Particle);
+            } else {
+                pass_timestamps.abandon();
+            }
+        }
+        // P3-R01：Tonemap 必须在 3D/世界内容之后、所有 2D/UI/矢量文字之前执行，
+        // 否则 ACES/Reinhard 会连带改掉 UI 颜色。HDR 关闭时计划里没有这条通道。
+        if plan.contains(RenderPass::Tonemap)
+            && let Some(source) = hdr_view.as_ref()
         {
-            executed.push(RenderPass::Particle);
+            let settings = post_process.unwrap_or_default();
+            pass_timestamps.begin(encoder);
+            let vertices = self.draw_tonemap(encoder, source, draw_target, settings, target);
+            pass_timestamps.end(encoder, RenderPass::Tonemap);
+            record_set_pass(&mut metrics);
+            record_triangle_draw(&mut metrics, vertices as u32);
+            executed.push(RenderPass::Tonemap);
         }
         if plan.contains(RenderPass::Legacy2DOverlay) || plan.contains(RenderPass::ScreenUI) {
             let bytes = bytemuck::cast_slice(&mesh.vertices);
@@ -507,6 +776,7 @@ impl Renderer {
             // 什么线索都没有。现在超限即扩容并留下可诊断的计数与日志。
             self.ensure_2d_vertex_capacity(bytes.len() as u64);
             self.queue.write_buffer(&self.vertex_buffer, 0, bytes);
+            pass_timestamps.begin(encoder);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("rustlua-scene-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -663,6 +933,9 @@ impl Renderer {
                 flush_overlay_batch(&mut pass, &mut metrics, &mut batch);
                 executed.push(stage);
             }
+            drop(pass);
+            // Legacy2DOverlay 与 ScreenUI 共用这一次 pass：ScreenUI 不单列，整段记在 overlay 上。
+            pass_timestamps.end(encoder, RenderPass::Legacy2DOverlay);
         }
         if plan.contains(RenderPass::VectorText)
             && !mesh.vector_vertices.is_empty()
@@ -717,6 +990,7 @@ impl Renderer {
                     }));
             }
             let bind = self.vector_bind_group.as_ref().expect("vector bind group");
+            pass_timestamps.begin(encoder);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("rustlua-vector-text-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -739,19 +1013,28 @@ impl Renderer {
             apply_declared_viewport(&mut pass, overlay_viewport, target);
             pass.draw(0..mesh.vector_vertices.len() as u32, 0..1);
             record_triangle_draw(&mut metrics, mesh.vector_vertices.len() as u32);
+            drop(pass);
+            pass_timestamps.end(encoder, RenderPass::VectorText);
             executed.push(RenderPass::VectorText);
         }
         // docs/54 §4.3：最后一条通道——把离屏场景颜色按曝光/色调/暗角写进**目标附件**。
+        // P3-R01：HDR 帧的曝光已经由 Tonemap 消费，这里把 EV 归零，避免乘两次。
         if plan.contains(RenderPass::PostProcess)
-            && let (Some(source), Some(settings)) = (scene_view.as_ref(), post_process)
+            && let (Some(source), Some(mut settings)) = (scene_view.as_ref(), post_process)
         {
+            if hdr_active {
+                settings.exposure_ev = 0.0;
+            }
+            pass_timestamps.begin(encoder);
             let vertices = self.draw_post_process(encoder, source, view, settings, target);
+            pass_timestamps.end(encoder, RenderPass::PostProcess);
             record_set_pass(&mut metrics);
             record_triangle_draw(&mut metrics, vertices as u32);
             executed.push(RenderPass::PostProcess);
         }
         // 把离屏视图放回（下一帧复用；纹理本体一直在 `self` 里，视图只是个句柄）。
         self.post_process_scene_view = scene_view;
+        self.hdr_scene_view = hdr_view;
         // 计划与执行核对（docs/54 §4.3）：计划驱动的开关如果被运行时条件绕开，就在这里留下
         // 明确的告警与可断言的差异。`last_frame_passes` 与 `last_frame_plan` 都是公开的，
         // 因此"这一帧到底跑了哪些通道"可以在测试里直接断言，不用去数 draw call 反推。
@@ -763,7 +1046,9 @@ impl Renderer {
         }
         self.last_frame_plan = plan;
         self.last_frame_passes = executed;
-        metrics
+        let timestamp_layout = pass_timestamps.finish();
+        self.timestamp_query_set = timestamp_query_set;
+        (metrics, timestamp_layout)
     }
     /// 贴图**解析纪元**：这一组计数只要不变，同一个贴图键在这帧里就解析到同一份内容。
     ///

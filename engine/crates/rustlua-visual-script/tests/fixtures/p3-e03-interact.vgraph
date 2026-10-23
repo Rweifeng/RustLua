@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "name": "p3-e03-interact",
+  "variables": [
+    { "name": "score", "value_type": "number", "default": 0 },
+    { "name": "player_name", "value_type": "string", "default": "player" },
+    { "name": "spawn_at", "value_type": "vec2", "default": [1.0, 2.0] }
+  ],
+  "nodes": [
+    { "id": "start", "kind": "on_start", "position": [0, 0] },
+    { "id": "seq-start", "kind": "sequence", "position": [180, 0] },
+    { "id": "move", "kind": "set_transform", "position": [360, 0] },
+    { "id": "num-x", "kind": "number", "position": [0, 140], "params": { "value": 1.5 } },
+    { "id": "math-y", "kind": "math", "position": [0, 240], "params": { "op": "add" } },
+    { "id": "num-a", "kind": "number", "position": [-160, 340], "params": { "value": 2 } },
+    { "id": "num-b", "kind": "number", "position": [0, 340], "params": { "value": 3 } },
+    { "id": "num-z", "kind": "number", "position": [160, 140], "params": { "value": 0 } },
+    { "id": "save-start", "kind": "save_game", "position": [540, 120] },
+
+    { "id": "tick", "kind": "on_update", "position": [0, 460] },
+    { "id": "gate", "kind": "gate", "position": [180, 460] },
+    { "id": "flag", "kind": "bool", "position": [0, 560], "params": { "value": true } },
+    { "id": "tone", "kind": "play_audio", "position": [360, 460], "params": { "name": "tick" } },
+
+    { "id": "interact", "kind": "on_interact", "position": [0, 660] },
+    { "id": "seq-interact", "kind": "sequence", "position": [180, 660] },
+    { "id": "anim", "kind": "play_animation", "position": [360, 660], "params": { "clip": "spin" } },
+    { "id": "check", "kind": "branch", "position": [540, 760] },
+    { "id": "flag2", "kind": "bool", "position": [360, 860], "params": { "value": true } },
+    { "id": "say", "kind": "ui_set_text", "position": [720, 700], "params": { "element": "hint" } },
+    { "id": "msg", "kind": "string", "position": [540, 860], "params": { "value": "hello \"world\"\n" } },
+    { "id": "nope", "kind": "emit_event", "position": [720, 820], "params": { "name": "no_anim" } },
+
+    { "id": "collide", "kind": "on_collision", "position": [0, 960] },
+    { "id": "seq-hit", "kind": "sequence", "position": [180, 960] },
+    { "id": "hit", "kind": "emit_event", "position": [360, 960], "params": { "name": "hit" } },
+    { "id": "save-hit", "kind": "save_game", "position": [540, 1020] }
+  ],
+  "edges": [
+    { "from": { "node": "start", "port": "then" }, "to": { "node": "seq-start", "port": "in" } },
+    { "from": { "node": "seq-start", "port": "then0" }, "to": { "node": "move", "port": "in" } },
+    { "from": { "node": "seq-start", "port": "then1" }, "to": { "node": "save-start", "port": "in" } },
+    { "from": { "node": "start", "port": "self" }, "to": { "node": "move", "port": "entity" } },
+    { "from": { "node": "num-x", "port": "value" }, "to": { "node": "move", "port": "x" } },
+    { "from": { "node": "math-y", "port": "result" }, "to": { "node": "move", "port": "y" } },
+    { "from": { "node": "num-z", "port": "value" }, "to": { "node": "move", "port": "z" } },
+    { "from": { "node": "num-a", "port": "value" }, "to": { "node": "math-y", "port": "a" } },
+    { "from": { "node": "num-b", "port": "value" }, "to": { "node": "math-y", "port": "b" } },
+
+    { "from": { "node": "tick", "port": "then" }, "to": { "node": "gate", "port": "in" } },
+    { "from": { "node": "flag", "port": "value" }, "to": { "node": "gate", "port": "open" } },
+    { "from": { "node": "gate", "port": "then" }, "to": { "node": "tone", "port": "in" } },
+
+    { "from": { "node": "interact", "port": "then" }, "to": { "node": "seq-interact", "port": "in" } },
+    { "from": { "node": "seq-interact", "port": "then0" }, "to": { "node": "anim", "port": "in" } },
+    { "from": { "node": "interact", "port": "self" }, "to": { "node": "anim", "port": "entity" } },
+    { "from": { "node": "seq-interact", "port": "then1" }, "to": { "node": "check", "port": "in" } },
+    { "from": { "node": "flag2", "port": "value" }, "to": { "node": "check", "port": "condition" } },
+    { "from": { "node": "check", "port": "true" }, "to": { "node": "say", "port": "in" } },
+    { "from": { "node": "msg", "port": "value" }, "to": { "node": "say", "port": "text" } },
+    { "from": { "node": "check", "port": "false" }, "to": { "node": "nope", "port": "in" } },
+
+    { "from": { "node": "collide", "port": "then" }, "to": { "node": "seq-hit", "port": "in" } },
+    { "from": { "node": "seq-hit", "port": "then0" }, "to": { "node": "hit", "port": "in" } },
+    { "from": { "node": "seq-hit", "port": "then1" }, "to": { "node": "save-hit", "port": "in" } }
+  ]
+}

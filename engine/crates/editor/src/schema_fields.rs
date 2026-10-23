@@ -35,6 +35,8 @@ pub const HANDWRITTEN_PANEL_COMPONENTS: &[&str] = &[
     "Tilemap",
     "Animation",
     "Container",
+    // E05-4：容器子项约束有专用面板（子项语义与容器本身不同，混进通用字段行会丢分组）。
+    "LayoutItem",
     "UiEvents",
     "UiBindings",
     "ButtonStates",
@@ -969,9 +971,13 @@ mod tests {
                 // `ParticleEmitter` 是**改名**换来的——注册表原来写的是 `Particle`，
                 // 与运行时读的名字不一致，所以真实工程里的粒子组件一直没被接管。
                 "Animation3D",
+                // P3-E01-2：`.anim` 时间线播放器注册 schema 后自动进入通用编辑器。
+                "AnimationPlayer",
                 // 第 57 轮：统一之后的**唯一**相机组件（旧名 `Camera2D`/`Camera3D` 已从注册表删除）。
                 "Camera",
                 "Collider",
+                // P3-R03-4：`Environment` 注册 schema 后自动进入通用编辑器。
+                "Environment",
                 "Image",
                 "Light",
                 "MeshRenderer",
@@ -1596,6 +1602,52 @@ mod tests {
         );
         assert!(rows_for_component(&entity, "Container").is_none());
         assert!(rows_for_component(&entity, "Nope").is_none());
+    }
+
+    /// P3-R07-1：`mode`/`seed` 由**通用** schema 面板接管——`mode` 画下拉（enum + `cpu|gpu`），
+    /// `seed` 是整数输入；旧场景不带这两个字段时它们是"未设置"，而不是必填。
+    #[test]
+    fn particle_mode_and_seed_arrive_as_schema_driven_widgets() {
+        let payload = "count=8;speed=20;life=1;size=2;color=1,1,1,1";
+        let rows = rows_for_component(
+            &entity_with(&[("ParticleEmitter", payload)]),
+            "ParticleEmitter",
+        )
+        .expect("rows");
+        let mode = rows
+            .iter()
+            .find(|row| row.field == "mode")
+            .expect("mode 行");
+        assert!(mode.is_choice(), "mode 应画下拉而不是输入框");
+        assert_eq!(mode.choices, ["cpu", "gpu"]);
+        assert_eq!(mode.choices_source, ChoiceSource::Static);
+        assert!(!mode.required, "旧场景不带 mode ⇒ 缺席合法");
+        assert!(mode.is_unset());
+        let seed = rows
+            .iter()
+            .find(|row| row.field == "seed")
+            .expect("seed 行");
+        assert_eq!(seed.kind, FieldKind::Int);
+        assert!(!seed.is_choice());
+        assert!(seed.is_unset());
+
+        // 下拉里选 gpu：只动这一个字段，其余逐字节不变（与 `Quad.size` 那条同一口径）。
+        let scene = scene_with(&[("ParticleEmitter", payload)]);
+        let updated =
+            edit_component_field(&scene, SceneEntityId(1), "ParticleEmitter", "mode", "gpu")
+                .expect("edits")
+                .expect("changed");
+        assert_eq!(updated, format!("{payload};mode=gpu"));
+        // 引擎认这个串（schema 与解析器同一口径），且确实判成 gpu。
+        let emitter = rustlua_ecs::particle::ParticleEmitter::from_component_str(&updated)
+            .expect("engine accepts the editor's output");
+        assert_eq!(emitter.mode, rustlua_ecs::particle::ParticleMode::Gpu);
+        // 非法取值在编辑器侧就被拒，不会写进场景再等运行时报错。
+        assert!(
+            edit_component_field(&scene, SceneEntityId(1), "ParticleEmitter", "mode", "warm")
+                .is_err(),
+            "拼错的 mode 不该写进场景"
+        );
     }
 
     #[test]

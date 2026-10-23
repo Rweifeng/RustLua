@@ -5,9 +5,13 @@
 //! - `world_sprite_depth_flag_switches_between_overlay_and_world_vertices`
 //! - `world_channel_does_not_cull_by_the_2d_camera_when_the_scene_has_3d_content`
 //! - `scene_declared_emitter_emits_continuously_through_the_step_pipeline`
+//! - `gpu_mode_emitters_run_on_cpu_and_report_their_fallback`
 
 use super::*;
+use rustlua_ecs::particle::ParticleCpuReason;
 use rustlua_scene::scene::Scene;
+
+use crate::host::runtime_scene::ParticlePlacementReport;
 
 /// WP6：世界文字也进世界坐标深度通道——它此前是唯一仍留在屏幕空间的世界内容。    /// 转换走 `view_projection` 的**逆映射**，因此屏幕观感与 overlay 路径逐个像素一致，
 /// 但顶点有了世界坐标与 `z`，可以和精灵/瓦片一起参与深度测试。
@@ -313,5 +317,71 @@ fn scene_declared_emitter_emits_continuously_through_the_step_pipeline() {
     assert_eq!(
         burst_runtime.with_script(|script| script.particle_count()),
         0
+    );
+}
+
+/// P3-R07-1 出口门：`mode=gpu` 的场景发射器**照样在 CPU 上把粒子发出来**（不丢粒子、
+/// 不黑屏），回退原因如实上报；宿主告知 compute 能力后原因从"设备不行"变成"参数不支持"。
+#[test]
+fn gpu_mode_emitters_run_on_cpu_and_report_their_fallback() {
+    let root = game_root();
+    let input = rustlua_input::input::InputSnapshot::default();
+    let runtime_with_mode = |mode: &str| {
+        let mut scene = Scene::new("particle-mode");
+        let id = rustlua_scene::scene::SceneEntityId(1);
+        scene.add_entity(id, "Sparks", None).unwrap();
+        let entity = scene.entities.get_mut(&id).unwrap();
+        entity.components.insert(
+            "Transform".into(),
+            "position=640,360,0;rotation=0,0,0,1;scale=1,1,1".into(),
+        );
+        entity.components.insert(
+            "ParticleEmitter".into(),
+            format!("count=2;rate=60;speed=10;life=0.5;size=2;color=1,1,1,1;mode={mode}"),
+        );
+        RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime")
+    };
+
+    // 默认档：cpu 发射器的报告是干净的（没有请求、没有回退）。
+    let mut cpu = runtime_with_mode("cpu");
+    cpu.run_script_steps(1, 1.0 / 60.0, &input).expect("step");
+    assert_eq!(cpu.last_scene_emission(), 1);
+    assert_eq!(
+        cpu.last_particle_placement(),
+        ParticlePlacementReport {
+            cpu: 1,
+            ..ParticlePlacementReport::default()
+        },
+        "cpu 发射器不该出现在 gpu 请求或回退里"
+    );
+
+    // 宿主还没告知能力 ⇒ 按"设备没有 compute"回退，但粒子照发。
+    let mut gpu = runtime_with_mode("gpu");
+    gpu.run_script_steps(1, 1.0 / 60.0, &input).expect("step");
+    assert_eq!(gpu.last_scene_emission(), 1, "回退不丢粒子");
+    let report = gpu.last_particle_placement();
+    assert_eq!((report.cpu, report.gpu, report.gpu_requested), (1, 0, 1));
+    assert_eq!(
+        report.fallback,
+        Some(ParticleCpuReason::NoCompute),
+        "没被告知能力时只能说 no_compute，不能假装 GPU 可用"
+    );
+    assert_eq!(
+        report.fallback_bits,
+        1 << ParticleCpuReason::NoCompute.index()
+    );
+
+    // 有了 compute：连续发射（rate > 0）仍是 R07-2 的范围，原因换成 continuous_rate。
+    gpu.set_particle_compute_available(true);
+    gpu.run_script_steps(1, 1.0 / 60.0, &input).expect("step");
+    let report = gpu.last_particle_placement();
+    assert_eq!(gpu.last_scene_emission(), 1, "换原因不换结果：粒子照发");
+    assert_eq!(report.fallback, Some(ParticleCpuReason::ContinuousRate));
+    assert_eq!(report.gpu, 0, "R07-1 还没有 GPU 派发通道");
+    // 每种原因只喊一层：两步两种原因各记一位，不逐帧刷屏。
+    assert_eq!(
+        gpu.particle_warned,
+        (1 << ParticleCpuReason::NoCompute.index())
+            | (1 << ParticleCpuReason::ContinuousRate.index())
     );
 }

@@ -1623,6 +1623,157 @@ impl InputSnapshot {
     pub const fn is_focused(&self) -> bool {
         self.focused
     }
+
+    /// P3-E06-4：把这一帧的输入固化成可持久化的日志条目。
+    ///
+    /// 与编辑器的"捕获面板"、无头重放例子共用：按键/鼠标按稳定文本名记录，
+    /// 手柄按钮与轴按数值记录。集合型字段排过序，同一份输入写两次得到逐字节
+    /// 相同的 JSON。日志只记录**宿主喂进来的**状态，不反推绑定动作。
+    #[must_use]
+    pub fn log_entry(&self, frame: u32) -> InputLogEntry {
+        let mouse = |set: &HashSet<MouseButton>| {
+            let mut names = set
+                .iter()
+                .map(|button| mouse_button_text(*button))
+                .collect::<Vec<_>>();
+            names.sort();
+            names
+        };
+        let keys = |set: &HashSet<KeyCode>| {
+            KeyCode::ALL
+                .iter()
+                .filter(|key| set.contains(key))
+                .map(|key| key.to_text())
+                .collect::<Vec<_>>()
+        };
+        let mut gamepad_axes = self
+            .gamepad_axes
+            .iter()
+            .map(|(axis, value)| (*axis, *value))
+            .collect::<Vec<_>>();
+        gamepad_axes.sort_by_key(|(axis, _)| *axis);
+        let sorted = |set: &HashSet<u8>| {
+            let mut values = set.iter().copied().collect::<Vec<_>>();
+            values.sort_unstable();
+            values
+        };
+        InputLogEntry {
+            frame,
+            cursor: self.cursor_position,
+            cursor_delta: self.cursor_delta,
+            scroll: self.scroll_delta,
+            focused: self.focused,
+            held_keys: keys(&self.held_keys),
+            pressed_keys: keys(&self.pressed_keys),
+            released_keys: keys(&self.released_keys),
+            virtual_keys: keys(&self.virtual_keys),
+            held_mouse: mouse(&self.held_mouse),
+            pressed_mouse: mouse(&self.pressed_mouse),
+            released_mouse: mouse(&self.released_mouse),
+            held_gamepad: sorted(&self.held_gamepad),
+            pressed_gamepad: sorted(&self.pressed_gamepad),
+            released_gamepad: sorted(&self.released_gamepad),
+            gamepad_axes,
+            press_cursor: self.press_cursor,
+            press_cursor_points: self.press_cursors[..usize::from(self.pointer_count)].to_vec(),
+        }
+    }
+}
+
+/// P3-E06-4：一帧输入的稳定记录（见 [`InputSnapshot::log_entry`]）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct InputLogEntry {
+    pub frame: u32,
+    pub cursor: (f64, f64),
+    pub cursor_delta: (f64, f64),
+    pub scroll: (f32, f32),
+    pub focused: bool,
+    pub held_keys: Vec<&'static str>,
+    pub pressed_keys: Vec<&'static str>,
+    pub released_keys: Vec<&'static str>,
+    pub virtual_keys: Vec<&'static str>,
+    pub held_mouse: Vec<String>,
+    pub pressed_mouse: Vec<String>,
+    pub released_mouse: Vec<String>,
+    pub held_gamepad: Vec<u8>,
+    pub pressed_gamepad: Vec<u8>,
+    pub released_gamepad: Vec<u8>,
+    pub gamepad_axes: Vec<(u8, f32)>,
+    pub press_cursor: (f64, f64),
+    pub press_cursor_points: Vec<(f64, f64)>,
+}
+
+impl InputLogEntry {
+    /// 用日志条目重建一份输入快照（重放路径）。
+    ///
+    /// 重建的是**宿主喂进引擎的那一帧状态**：按住/边沿/光标/滚轮/手柄按钮与轴 /
+    /// 虚拟键 / 多指按下点。数字轴的方向边沿（`axis_digital`）没有进日志，属于已知缺口
+    /// （见 docs/68 §11）。
+    #[must_use]
+    pub fn replay(&self) -> InputSnapshot {
+        let keys = |names: &[&'static str]| {
+            names
+                .iter()
+                .filter_map(|name| KeyCode::from_text(name))
+                .collect::<HashSet<_>>()
+        };
+        let mouse = |names: &[String]| {
+            names
+                .iter()
+                .filter_map(|name| parse_mouse_button(name))
+                .collect::<HashSet<_>>()
+        };
+        let mut input = InputSnapshot {
+            held_keys: keys(&self.held_keys),
+            pressed_keys: keys(&self.pressed_keys),
+            released_keys: keys(&self.released_keys),
+            virtual_keys: keys(&self.virtual_keys),
+            held_mouse: mouse(&self.held_mouse),
+            pressed_mouse: mouse(&self.pressed_mouse),
+            released_mouse: mouse(&self.released_mouse),
+            held_gamepad: self.held_gamepad.iter().copied().collect(),
+            pressed_gamepad: self.pressed_gamepad.iter().copied().collect(),
+            released_gamepad: self.released_gamepad.iter().copied().collect(),
+            gamepad_axes: self.gamepad_axes.iter().copied().collect(),
+            cursor_position: self.cursor,
+            cursor_delta: self.cursor_delta,
+            press_cursor: self.press_cursor,
+            scroll_delta: self.scroll,
+            focused: self.focused,
+            ..InputSnapshot::default()
+        };
+        input.pointer_count = self.press_cursor_points.len().min(MAX_POINTERS) as u8;
+        input.press_cursors = [(0.0, 0.0); MAX_POINTERS];
+        for (slot, point) in input
+            .press_cursors
+            .iter_mut()
+            .zip(self.press_cursor_points.iter())
+        {
+            *slot = *point;
+        }
+        input
+    }
+}
+
+fn parse_mouse_button(text: &str) -> Option<MouseButton> {
+    match text {
+        "left" => Some(MouseButton::Left),
+        "right" => Some(MouseButton::Right),
+        "middle" => Some(MouseButton::Middle),
+        other => other
+            .strip_prefix("other:")
+            .and_then(|index| index.parse().ok())
+            .map(MouseButton::Other),
+    }
+}
+
+fn mouse_button_text(button: MouseButton) -> String {
+    match button {
+        MouseButton::Left => "left".to_owned(),
+        MouseButton::Right => "right".to_owned(),
+        MouseButton::Middle => "middle".to_owned(),
+        MouseButton::Other(index) => format!("other:{index}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2033,6 +2184,32 @@ mod tests {
         assert_eq!(input.scroll_delta(), (0.0, 3.0));
         input.finish_frame();
         assert_eq!(input.scroll_delta(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn log_entry_records_stable_sorted_input() {
+        let mut input = InputSnapshot::default();
+        input.cursor_moved(12.0, 34.0);
+        input.key_event(KeyCode::KeyW, true);
+        input.key_event(KeyCode::KeyD, true);
+        input.mouse_event(MouseButton::Left, true);
+        input.scroll_event(1.5, -2.0);
+        input.set_gamepad_button_held(3, true);
+        input.set_gamepad_button_held(1, true);
+        input.set_gamepad_axis(2, 0.5);
+        input.set_focused(true);
+        let entry = input.log_entry(7);
+        assert_eq!(entry.frame, 7);
+        assert_eq!(entry.cursor, (12.0, 34.0));
+        assert_eq!(entry.scroll, (1.5, -2.0));
+        assert!(entry.focused);
+        assert_eq!(entry.held_keys, vec!["keyd", "keyw"]);
+        assert_eq!(entry.pressed_keys, vec!["keyd", "keyw"]);
+        assert_eq!(entry.held_mouse, vec!["left"]);
+        assert_eq!(entry.held_gamepad, vec![1, 3]);
+        assert_eq!(entry.gamepad_axes, vec![(2, 0.5)]);
+        let replayed = entry.replay();
+        assert_eq!(replayed.log_entry(7), entry, "重放快照必须逐字段可再记录");
     }
 
     #[test]

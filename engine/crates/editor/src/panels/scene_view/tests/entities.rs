@@ -701,3 +701,34 @@ fn overlay_status_stays_at_top_when_content_fits() {
         app.scene_overlay_bottom_offset
     );
 }
+
+/// E05-3：容器里的 Text 子项按测得字形盒摆放，不再是 64×64 占位。
+/// 编辑器节点表与运行时共用 `preferred_size_for`，读数对同一把内置位图尺子。
+#[test]
+fn editor_container_text_child_uses_measured_intrinsic_size() {
+    let mut scene = rustlua_scene::scene::Scene::new("editor-container-text");
+    let panel = SceneEntityId(1);
+    let label = SceneEntityId(2);
+    scene.add_entity(panel, "Panel", None).unwrap();
+    scene.entities.get_mut(&panel).unwrap().components.insert(
+        "Container".to_owned(),
+        "kind=vbox;padding=6,6,6,6".to_owned(),
+    );
+    scene.add_entity(label, "Label", Some(panel)).unwrap();
+    scene
+        .entities
+        .get_mut(&label)
+        .unwrap()
+        .components
+        .insert("Text".to_owned(), "text=Hello;font_size=16".to_owned());
+
+    let nodes = scene_ui_nodes(&scene);
+    let (resolved, diagnostics) = resolve_scene_ui_layout(&nodes, [400.0, 200.0]);
+    let text = rustlua_ui::ui::UiText::from_component_str("text=Hello;font_size=16").unwrap();
+    let (expected, _) = measure_text_without_runtime(&text.text, text.effective_scale());
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    assert_eq!(
+        resolved[&label.0].rect,
+        UiRect::new(6.0, 6.0, expected[0], expected[1])
+    );
+}

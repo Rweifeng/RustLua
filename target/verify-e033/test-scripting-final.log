@@ -1,0 +1,145 @@
+   Compiling rustlua-scripting v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-scripting)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 40.32s
+     Running unittests src\lib.rs (target\debug\deps\rustlua_scripting-44efa8afa50055f2.exe)
+
+running 123 tests
+test script::guard::tests::budgets_are_independent_per_slot ... ok
+test script::guard::tests::budget_disables_only_after_consecutive_errors ... ok
+test script::guard::tests::entity_hooks_have_separate_budgets ... ok
+test script::guard::tests::reset_keeps_policy_and_clears_state ... ok
+test script::guard::tests::default_policy_is_strict ... ok
+test script::guard::tests::pruning_drops_dead_entities ... ok
+test script::tests::api_surface::call_update_without_script_idles_instead_of_erroring ... ok
+test script::progress::tests::zero_budget_disables_the_guard ... ok
+test script::tests::api_surface::eval_json_converts_tables_arrays_scalars_and_reports_errors ... ok
+test script::progress::tests::runaway_script_trips_the_budget_with_a_location ... ok
+test script::tests::api_surface::app_exposes_the_project_root_for_cwd_independent_file_checks ... ok
+test api_surface_snapshot::lua_api_surface_matches_baseline ... ok
+test script::tests::animation::lua_animation_events_drain_after_host_advances ... ok
+test script::tests::audio::audio_bus_lua_api_groups_volumes_and_rejects_unknown_bus ... ok
+test api_surface_snapshot::lua_api_contract_matches_transcript ... ok
+test script::tests::api_surface::invalid_entity_is_a_lua_error ... ok
+test script::tests::audio::audio_lua_settings_text_round_trips_and_rejects_bad_version ... ok
+test script::tests::api_surface::registers_log_time_input_and_quit_api ... ok
+test script::tests::animation::lua_3d_animation_queries_and_switches_clips ... ok
+test script::progress::tests::normal_script_leaves_progress_without_error ... ok
+test script::tests::animation::instantiated_animation_is_switchable_from_lua ... ok
+test script::tests::diagnostics::debugger_extracts_line_from_lua_message ... ok
+test script::tests::diagnostics::console_evaluates_values_and_updates_lua_state ... ok
+test script::tests::diagnostics::console_errors_are_recorded_with_console_path ... ok
+test script::tests::entity::entity_find_never_hands_out_a_dead_handle ... ok
+test script::tests::camera::camera_set_active_takes_any_projection ... ok
+test script::tests::audio::audio_lua_project_settings_load_and_save ... ok
+test script::tests::camera::camera_set_moves_position_target_and_fov ... ok
+test script::tests::camera::lua_3d_api_moves_mesh_and_switches_camera ... ok
+test script::tests::diagnostics::runtime_error_is_returned_without_panic ... ok
+test script::tests::entity::entity_handle_lua_matches_the_lua_side_encoding_and_hides_dead_handles ... ok
+test script::tests::camera::camera2d_lua_api_requests_and_validates ... ok
+test script::tests::diagnostics::syntax_error_contains_path_and_line ... ok
+test script::tests::diagnostics::debugger_extracts_location_deduplicates_and_filters ... ok
+test script::tests::entity::entity_lifecycle_matches_the_web_prelude_round_trip ... ok
+test script::tests::entity::first_entity_handle_collides_with_foreign_small_ids ... ok
+test script::tests::entity::entity_predicates_return_false_for_degenerate_handles_but_writers_still_error ... ok
+test script::tests::entity::entity_persist_id_registers_looks_up_and_rejects_duplicates ... ok
+test script::tests::entity::lua_gameplay_api_moves_damages_and_destroys ... ok
+test script::tests::camera::lua_camera_conversions_use_the_rendered_projection ... ok
+test script::tests::camera::lua_camera3d_ray_and_screen_conversions_share_the_rendered_projection ... ok
+test script::tests::globals::calendar_and_day_lifecycle_lua_api ... ok
+test script::tests::globals::event_bus_subscribes_emits_and_unsubscribes ... ok
+test script::tests::animation::runtime_spawned_entity_can_attach_animation ... ok
+test script::tests::entity::entity_name_reverse_index_is_stale_free_and_rebuilds_only_on_change ... ok
+test script::tests::installers::reentrant_handle_borrow_becomes_a_lua_error_not_a_panic ... ok
+test script::tests::entity::lua_visibility_round_trips_and_validates ... ok
+test script::tests::installers::duplicate_module_names_are_rejected_loudly ... ok
+test script::tests::hot_reload::encrypted_project_and_modules_load_via_decode_and_require ... ok
+test script::tests::entity::lua_quad_round_trips_and_validates ... ok
+test script::tests::hot_reload::entity_script_reports_missing_files_and_missing_project_root ... ok
+test script::tests::graph_runtime::vgraph_entity_runs_four_events_and_hot_reloads ... ok
+test script::tests::hot_reload::project_script_can_require_sibling_lua_modules ... ok
+test script::tests::hot_reload::entity_hook_errors_are_contained_per_entity ... ok
+test script::tests::particles::ui_particles_and_audio_lua_api ... ok
+test script::tests::particles::particles_burst_accepts_mode_and_seed ... ok
+test script::tests::hot_reload::hot_reload_detects_changes_and_keeps_old_vm_on_failure ... ok
+test script::tests::particles::gpu_burst_take_and_flush_are_exclusive ... ok
+test script::tests::particles::gpu_burst_queue_overflows_to_cpu_without_loss ... ok
+test script::tests::physics::lua_physics3d_ccd_flag_reaches_the_rigid_body ... ok
+test script::tests::physics::lua_physics_debug_draw_registers_and_consumes_a_request ... ok
+test script::tests::physics::lua_physics_queries_hit_colliders_and_the_position_broad_phase_is_separate ... ok
+test script::tests::particles::particles_burst_options_control_look_and_validate ... ok
+test script::tests::hot_reload::entity_script_component_drives_its_own_entity ... ok
+test script::tests::physics::physics3d_bindings_reject_non_finite_arguments_like_2d_does ... ok
+test script::tests::hot_reload::hot_reload_calls_lifecycle_callbacks ... ok
+test script::tests::physics_handle::the_physics_handle_is_named_in_reentrancy_errors ... ok
+test script::tests::reentrancy::reentrant_entity_api_names_the_entity_state ... ok
+test script::tests::physics::lua_physics_ccd_flag_reaches_the_rigid_body ... ok
+test script::tests::reentrancy::reentrant_lua_api_call_surfaces_as_lua_error_instead_of_panic ... ok
+test script::tests::physics::lua_physics3d_debug_draw_registers_and_consumes_a_request ... ok
+test script::tests::reentrancy::non_reentrant_lua_api_call_still_works ... ok
+test script::tests::physics::lua_query_group_filters_are_shared_between_2d_and_3d ... ok
+test script::tests::physics_handle::scene_transition_replaces_both_physics_worlds ... ok
+test script::tests::sample_project::sample_project_index_scene_runs_the_project_script ... ok
+test script::tests::installers::registry_installs_domain_modules_into_the_vm ... ok
+test script::tests::physics_handle::host_and_script_share_one_physics_state ... ok
+test script::tests::sample_project::sample_project_demo_saves_and_esc_returns_to_menu ... ok
+test script::tests::save_data::map_state_schema_rejects_invalid_writes_and_can_clear ... ok
+test script::tests::sample_project::sample_project_menu_click_loads_the_demo_scene ... ok
+test script::tests::physics::physics_blocks_player_on_tilemap_wall_and_emits_events ... ok
+test script::tests::save_data::clock_save_slots_blobs_map_inventory_and_data_lua_api ... ok
+test script::tests::save_data::data_schema_registration_rejects_invalid_tables_on_load ... ok
+test script::tests::save_data::save_clear_and_map_state_clear_drop_persisted_keys ... ok
+test script::tests::save_data::legacy_v1_save_still_loads_and_upgrades_on_commit ... ok
+test script::tests::save_data::save_write_rejects_empty_key ... ok
+test script::tests::save_data::save_load_rejects_older_save ... ok
+test script::tests::scene_spawn::instantiated_scene_entities_are_shared_with_lua_movement ... ok
+test script::tests::scene_spawn::prefab_ui_nodes_revision_bumps_on_every_mutation_and_only_then ... ok
+test script::tests::save_data::new_game_style_clear_removes_map_keys_and_survives_reload ... ok
+test script::tests::save_data::map_state_tilemap_snapshot_survives_scene_change_and_restart ... ok
+test script::tests::scene_spawn::lua_bridge_accepts_unified_transform_and_camera_components ... ok
+test script::tests::save_data::persistent_component_survives_transition_and_cascades_to_children ... ok
+test script::tests::save_data::persistent_duplicate_name_new_scene_wins ... ok
+test script::tests::save_data::save_write_round_trips_multiline_and_cjk_values_across_sessions ... ok
+test script::tests::tilemap::grid_tilemap_tag_and_interact_lua_api ... ok
+test script::tests::scene_spawn::lua_sprite_set_resolves_atlas_region_reference ... ok
+test script::tests::save_data::save_load_reports_missing_versus_corrupt ... ok
+test script::tests::save_data::persistent_entities_survive_scene_transition ... ok
+test script::tests::scene_spawn::runtime_spawned_entity_can_attach_world_text ... ok
+test script::tests::save_data::save_commit_load_and_scene_transition ... ok
+test script::tests::transform::lua_3d_attach_and_validation_errors ... ok
+test script::tests::transform::lua_transform_api_refuses_ambiguous_rotation_and_unknown_space ... ok
+test script::tests::transform::lua_transform_attach_preserves_rotation_and_refuses_lossy_flatten ... ok
+test script::tests::tilemap::tilemap_find_path_returns_path_or_diagnostic ... ok
+test script::tests::tilemap::instantiated_tilemap_is_queryable_from_lua ... ok
+test script::tests::ui::ui_focus_lua_api_navigates_lists_and_grids ... ok
+test script::tests::transform::lua_transform_api_dispatches_between_2d_and_3d ... ok
+test script::tests::ui::ui_scroll_lua_api_clamps_and_reveals_items ... ok
+test script::tests::world_handle::the_world_handle_is_named_in_reentrancy_errors ... ok
+test script::values::tests::entity_id_encodes_index_and_generation ... ok
+test script::values::tests::lua_values_are_formatted_for_diagnostics ... ok
+test script::tests::transform::lua_transform_world_differs_from_local_under_inheritance ... ok
+test script::tests::ui::ui_text_at_accepts_optional_scale_and_font_size ... ok
+test script::tests::physics::physics3d_body_falls_onto_static_ground_and_syncs_transform3d ... ok
+test script::tests::world_handle::replacing_the_world_through_the_handle_invalidates_old_entities ... ok
+test script::tests::ui::ui_click_error_propagates_in_strict_policy ... ok
+test script::tests::ui::ui_click_error_is_contained_and_later_targets_still_fire ... ok
+test script::tests::ui::ui_panels_images_grids_and_drag_lua_api ... ok
+test script::tests::ui::click_event_dispatches_lua_on_click ... ok
+test script::tests::ui::ui_scene_text_visible_toggles_hidden_set ... ok
+test script::tests::world_handle::host_and_script_share_one_world_behind_the_handle ... ok
+test script::tests::ui::measure_text_and_text_get_lua_api ... ok
+
+test result: ok. 123 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+     Running tests\save_slot_provider.rs (target\debug\deps\save_slot_provider-3cde2268ad98bd47.exe)
+
+running 1 test
+test save_commit_and_load_go_through_the_platform_slot ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests rustlua_scripting
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+SCRIPTING_FINAL_EXIT=0

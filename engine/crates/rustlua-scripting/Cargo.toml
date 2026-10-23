@@ -29,6 +29,8 @@ web-time = "1"
 rustlua-lua-api = { path = "../rustlua-lua-api" }
 rustlua-gameplay = { path = "../rustlua-gameplay" }
 rustlua-infra = { path = "../rustlua-infra" }
+# P3-E03-3：运行时把 `.vgraph` 编译成同一套 Lua，不引入第二套 VM。
+rustlua-visual-script = { path = "../rustlua-visual-script" }
 
 [dev-dependencies]
 # input 绑定下沉后库里不再依赖它（docs/62 P1 阶段 3）；测试仍要造快照。

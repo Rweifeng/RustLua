@@ -21,7 +21,7 @@ use winit::{
 
 use engine::host::{
     FrameProfile, OverlayVertex, RenderOutcome, Renderer, RuntimeScene, SceneDraw, SceneMesh,
-    ScriptErrorPolicy,
+    ScriptErrorPolicy, apply_scene_environment,
 };
 
 pub struct GameApp {
@@ -60,6 +60,13 @@ pub struct GameApp {
     frame_profile: Option<FrameProfile>,
     /// 分档报告的落盘路径（与 `frame_profile` 同生同灭）。
     frame_profile_path: Option<PathBuf>,
+    /// P3-R05-4：开发期 shader 覆盖目录（`--shader-dir`/`RUSTLUA_SHADER_DIR`）。
+    /// `None` = 不监听，`Renderer` 只用编译期内嵌的源。
+    shader_dir: Option<PathBuf>,
+    /// 下一次检查覆盖目录的时刻（`None` = 不检查）。每次检查都往后推一个去抖窗口。
+    shader_reload_due: Option<Instant>,
+    /// 已经打过的重载失败文本：同一条坏源每 150ms 重复报一次会把日志刷废。
+    shader_error_shown: Option<String>,
 }
 
 impl GameApp {
@@ -103,7 +110,20 @@ impl GameApp {
                 profile
             }),
             frame_profile_path,
+            shader_dir: None,
+            shader_reload_due: None,
+            shader_error_shown: None,
         }
+    }
+
+    /// P3-R05-4：接上开发期 shader 覆盖目录（`None` = 保持内置源，不监听）。
+    ///
+    /// 单独一个构造后置方法，而不是再加一个 `new` 参数：`new` 已经在 7 个参数的位置，
+    /// 再塞第 8 个只是为了让签名更难读。
+    #[must_use]
+    pub fn with_shader_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.shader_dir = dir;
+        self
     }
 
     fn initialize_runtime(&mut self, event_loop: &ActiveEventLoop) {
@@ -148,6 +168,32 @@ impl GameApp {
             }
             scene.set_gamepad_deadzone(deadzone);
             tracing::info!(target: "input", stick = deadzone.stick, trigger = deadzone.trigger, "[gamepad] deadzone applied");
+        }
+        // P3-R03-4：场景声明的 `Environment` 在启动时应用一次（只在这里上传 cubemap；
+        // 每帧不重复绑定）。没有声明时不动渲染设置，旧场景像素不受影响。
+        if let (Some(renderer), Some(scene)) = (self.renderer.as_mut(), self.runtime_scene.as_ref())
+            && let Some(report) = scene.environment_report()
+        {
+            let applied = apply_scene_environment(renderer, scene, &report);
+            if let Some(reason) = &applied.fallback_reason {
+                tracing::warn!(target: "render", "[render] {reason}");
+            }
+            tracing::info!(
+                target: "render",
+                map = %report.resolved_path,
+                face_size = report.face_size,
+                mip_count = report.mip_count,
+                ibl = applied.ibl_mode.as_str(),
+                tier = applied.tier.as_str(),
+                "[render] environment applied"
+            );
+        }
+        // P3-R07-1：把渲染器的 compute 能力告知运行时，场景发射器的落点判定才说得出真话
+        // （`mode=gpu` 在无 compute 的设备上是 `no_compute` 回退，而不是假装能用 GPU）。
+        // 一次赋值，无 IO；没有 gpu 模式发射器时运行时只是多存一个布尔。
+        if let (Some(renderer), Some(scene)) = (self.renderer.as_ref(), self.runtime_scene.as_mut())
+        {
+            scene.set_particle_compute_available(renderer.compute_enabled());
         }
         self.input.clear_all();
         self.last_frame = Instant::now();
@@ -266,6 +312,30 @@ impl GameApp {
             let micros = scene.take_script_micros();
             self.performance.record_lua_millis(micros as f32 / 1000.0);
         }
+        // P3-R07-2：脚本步之后、渲染之前，把本帧 Lua 排队的 `mode='gpu'` burst 交给渲染器
+        // 派发，并推进 GPU 粒子池一次（`dispatch_gpu_particle_bursts` 内部 step + 回收）。
+        // 放在这里而不是渲染路径里，是因为派发要读**这一帧**的脚本产物，而渲染函数拿不到 scene。
+        // 失败帧不派发：脚本整体异常时实体/队列状态不可信，下一帧的入口保底会把它们送回 CPU 池。
+        let script_succeeded = result.as_ref().is_some_and(std::result::Result::is_ok);
+        if script_succeeded
+            && let (Some(renderer), Some(scene)) =
+                (self.renderer.as_mut(), self.runtime_scene.as_mut())
+        {
+            let dispatch = scene.dispatch_gpu_particle_bursts(renderer, delta_seconds);
+            if dispatch.requested > 0 {
+                tracing::debug!(
+                    target: "render",
+                    requested = dispatch.requested,
+                    gpu = dispatch.gpu,
+                    fallback = dispatch.fallback,
+                    deferred = dispatch.deferred,
+                    systems = dispatch.systems,
+                    gpu_particles = dispatch.gpu_particles,
+                    reason = dispatch.fallback_reason.map_or("none", |reason| reason.as_str()),
+                    "[particle] gpu burst 派发"
+                );
+            }
+        }
         if let Some(Err(error)) = result {
             // 容错档下这里只可能是**引擎侧**失败（场景/输入/资源），因为 Lua 回调错误已在
             // 脚本层被记账并继续（见 `set_script_error_policy`）。这类失败仍然必须非零退出：
@@ -289,7 +359,73 @@ impl GameApp {
         }
     }
 
+    /// P3-R05-4：把覆盖目录接到刚建好的渲染器上（只有显式开启时才做一次）。
+    ///
+    /// 失败**不**阻止启动，也**不**关监听：项目里一份坏 `.wgsl` 只该让画面停在旧管线上并
+    /// 把原因写进日志；作者改好文件后下一次轮询就恢复。日志按文本去重（见 `shader_error_shown`）。
+    fn attach_shader_override_dir(&mut self, renderer: &mut Renderer) {
+        use engine::host::shader_library::SHADER_RELOAD_DEBOUNCE;
+
+        let Some(dir) = self.shader_dir.clone() else {
+            return;
+        };
+        tracing::info!(target: "game", dir = %dir.display(), "shader 覆盖目录已启用（开发期热重载）");
+        match renderer.set_shader_override_dir(Some(dir)) {
+            Ok(report) => {
+                tracing::info!(target: "game", "shader 源：{}", report.summary());
+                for name in &report.fell_back_to_builtin {
+                    tracing::warn!(target: "game", "shader {name} 的覆盖文件已删除，回退内置源");
+                }
+            }
+            Err(error) => {
+                let text = error.to_string();
+                tracing::error!(target: "game", "shader 覆盖目录初始加载失败（使用内置源）：{text}");
+                self.shader_error_shown = Some(text);
+            }
+        }
+        // 无论成功与否都开轮询：这条时间线只对显式 `--shader-dir` 存在，默认形态一次都不进。
+        self.shader_reload_due = Some(Instant::now() + SHADER_RELOAD_DEBOUNCE);
+    }
+
+    /// P3-R05-4：每帧的覆盖目录检查（去抖 150ms；没开 `--shader-dir` 时是一次 `None` 判断）。
+    ///
+    /// `reload_shaders_if_changed` 内部只读 8 份源算哈希：内容没变 ⇒ 一次编译都不做，
+    /// 所以常态成本是一次小目录扫描，而不是重编管线。
+    fn poll_shader_hot_reload(&mut self) {
+        use engine::host::shader_library::SHADER_RELOAD_DEBOUNCE;
+
+        let Some(due) = self.shader_reload_due else {
+            return;
+        };
+        let now = Instant::now();
+        if now < due {
+            return;
+        }
+        self.shader_reload_due = Some(now + SHADER_RELOAD_DEBOUNCE);
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        match renderer.reload_shaders_if_changed() {
+            Ok(None) => self.shader_error_shown = None,
+            Ok(Some(report)) => {
+                self.shader_error_shown = None;
+                tracing::info!(target: "game", "shader 热重载：{}", report.summary());
+                for name in &report.fell_back_to_builtin {
+                    tracing::warn!(target: "game", "shader {name} 的覆盖文件已删除，回退内置源");
+                }
+            }
+            Err(error) => {
+                let text = error.to_string();
+                if self.shader_error_shown.as_deref() != Some(text.as_str()) {
+                    tracing::error!(target: "game", "shader 重载失败（保留旧管线）：{text}");
+                    self.shader_error_shown = Some(text);
+                }
+            }
+        }
+    }
+
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
+        self.poll_shader_hot_reload();
         if self.lifecycle == AppLifecycle::Initializing && self.splash.is_some() {
             let size = self.window.as_ref().expect("window exists").inner_size();
             if self.occluded || !has_renderable_size(size.width, size.height) {
@@ -568,7 +704,8 @@ impl ApplicationHandler for GameApp {
             self.cull_enabled,
             self.instancing_enabled,
         ) {
-            Ok(renderer) => {
+            Ok(mut renderer) => {
+                self.attach_shader_override_dir(&mut renderer);
                 self.window = Some(window);
                 self.renderer = Some(renderer);
                 let splash = match boot_image {
@@ -1030,5 +1167,26 @@ mod tests {
         };
         // 同一套顶点顺序下，填充越宽 → 所有 x 之和越大。
         assert!(width(&heavy) > width(&light), "指标变差时量条填充应更宽");
+    }
+
+    /// P3-R05-4 的默认形态门：没有 `--shader-dir`/`RUSTLUA_SHADER_DIR` 时运行时**一次
+    /// shader 文件 IO 都不做**——轮询入口必须原地返回，也不排下一次到期。
+    #[test]
+    fn shader_hot_reload_is_off_until_a_directory_is_given() {
+        let mut app = GameApp::new(None, "test".to_owned(), true, true, false, false, None);
+        assert!(app.shader_dir.is_none(), "发布默认不监听覆盖目录");
+        app.poll_shader_hot_reload();
+        assert!(
+            app.shader_reload_due.is_none(),
+            "没开监听时轮询不该排下一次到期"
+        );
+        // 显式开启后才有这条时间线；渲染器尚未建立时按去抖节奏重排，不能停在"永远差一帧"。
+        let mut app = app.with_shader_dir(Some(PathBuf::from("shaders")));
+        app.shader_reload_due = Some(Instant::now() - std::time::Duration::from_millis(1));
+        app.poll_shader_hot_reload();
+        assert!(
+            app.shader_reload_due.is_some(),
+            "渲染器还没建好时要保留轮询时间线"
+        );
     }
 }

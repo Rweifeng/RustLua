@@ -7,12 +7,16 @@ pub(crate) mod bundles;
 pub(crate) mod console;
 pub(crate) mod domain_data;
 pub(crate) mod game_view;
+/// P3-E03-2：可视化脚本（`.vgraph`）画布与编译诊断。
+pub(crate) mod graph;
 pub(crate) mod header;
 pub(crate) mod hierarchy;
 pub(crate) mod input_bindings;
 pub(crate) mod inspector;
 /// egui 键 ⇄ 引擎物理键的唯一转换层（M22/W1）。
 pub(crate) mod keymap;
+/// P3-E02：Inspector 里的 `.material` 编辑段（只发 typed action）。
+pub(crate) mod material;
 /// 性能分析面板（独立弹窗）：Play 运行时帧率/draw/setpass/内存/资源缓存 + 编辑器帧/面板耗时。
 pub(crate) mod performance;
 pub(crate) mod progress;
@@ -24,6 +28,8 @@ pub(crate) mod scene_view;
 /// schema 驱动的通用组件字段编辑器（docs/55 阶段 2：新增组件不改巨型 match）。
 pub(crate) mod schema_inspector;
 pub(crate) mod tilemap_tools;
+/// P3-E01-3：`.anim` 时间线面板（只读预览）。
+pub(crate) mod timeline;
 pub(crate) mod toolbar;
 
 /// 架构守卫：面板只发 typed action，不直接写文档（棘轮测试）。

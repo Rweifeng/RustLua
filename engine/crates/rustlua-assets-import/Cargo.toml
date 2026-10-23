@@ -32,10 +32,14 @@ serde_json = "1"
 # mlua：Lua 源文件的语法校验（只编译不执行）。它只属于导入期，所以跟着搬过来了。
 mlua = { version = "0.11", features = ["lua54", "vendored"] }
 ab_glyph = "0.2"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "hdr"] }
 rodio = { version = "0.19", features = ["wav", "vorbis", "mp3", "flac"] }
 
 rustlua-assets = { path = "../rustlua-assets" }
+# `.anim` 导入器用运行时同一台解析器（`AnimClip::from_text`）；scene 本来就依赖 animation，
+# 这条边不新增方向、也不把任何重型依赖带进导入层。
+rustlua-animation = { path = "../rustlua-animation" }
 rustlua-infra = { path = "../rustlua-infra" }
+rustlua-math = { path = "../rustlua-math" }
 rustlua-scene = { path = "../rustlua-scene" }
 rustlua-ui = { path = "../rustlua-ui" }

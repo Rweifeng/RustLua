@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use rustlua_assets::importer::ImporterRegistry;
 use rustlua_assets::resource_db::{AssetId, ResourceDatabase};
+use rustlua_assets::resource_kind::ResourceKind;
 
 use crate::import_cache::ImportCache;
 /// Result of importing one item within a batch.
@@ -36,6 +37,28 @@ pub struct ImportSummary {
     pub elapsed_ms: u64,
     /// Per-item results, in the same order as `items`.
     pub results: Vec<ImportItemResult>,
+}
+
+/// 一项资源导入成功后，把需要"派生产物"的源文件补齐（P3-R03-4）。
+///
+/// `Environment` 的运行时真源是同名 `.rlenv`（导入期烘焙），组件串里作者写的却是
+/// `.hdr` 源文件；如果只在离线工具里烘焙，设计者往编辑器里丢一个 `.hdr` 就会得到
+/// "读取 xxx.rlenv 失败"。所以这里在导入这一步补齐产物，失败就整项判失败（原因可读）。
+fn bake_companion(source: &Path, kind: ResourceKind) -> Result<(), String> {
+    if kind != ResourceKind::Environment {
+        return Ok(());
+    }
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if extension != "hdr" {
+        return Ok(());
+    }
+    crate::environment::bake_hdr_file(source, crate::environment::BakeOptions::default())
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 /// Runs a batch of imports, writing per-item state back to the database.
@@ -102,12 +125,27 @@ where
                 let cache_path = report.cache_path.clone();
                 let hash = report.fingerprint.clone();
                 match db.mark_ready(*id, cache_path, hash) {
-                    Ok(()) => summary.results.push(ImportItemResult {
-                        source: source.clone(),
-                        reused: report.reused,
-                        cache_path: Some(report.cache_path),
-                        error: None,
-                    }),
+                    Ok(()) => match bake_companion(source, importer.kind()) {
+                        Ok(()) => summary.results.push(ImportItemResult {
+                            source: source.clone(),
+                            reused: report.reused,
+                            cache_path: Some(report.cache_path),
+                            error: None,
+                        }),
+                        Err(error) => {
+                            summary.failed += 1;
+                            let message = format!("{}: {error}", source.display());
+                            summary.results.push(ImportItemResult {
+                                source: source.clone(),
+                                reused: false,
+                                cache_path: None,
+                                error: Some(message.clone()),
+                            });
+                            if let Err(db_error) = db.mark_failed(*id, message) {
+                                tracing::warn!("mark_failed({id}) 失败: {db_error}");
+                            }
+                        }
+                    },
                     Err(error) => {
                         summary.failed += 1;
                         summary.results.push(ImportItemResult {

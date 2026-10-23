@@ -1,0 +1,23 @@
+    Updating `rsproxy-sparse` index
+    Checking serde_json v1.0.151
+    Checking mlua v0.11.6 (E:\Codex\RustLua\engine\vendor\mlua)
+    Checking rustlua-visual-script v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-visual-script)
+warning: associated function `value` is never used
+  --> crates\rustlua-visual-script\src\registry.rs:72:14
+   |
+71 | impl PortType {
+   | ------------- associated function in this implementation
+72 |     const fn value(ty: VT) -> Self {
+   |              ^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `input` is never used
+   --> crates\rustlua-visual-script\src\registry.rs:108:10
+    |
+108 | const fn input(name: &'static str, ty: PortType) -> PortSpec {
+    |          ^^^^^
+
+warning: `rustlua-visual-script` (lib) generated 2 warnings
+warning: `rustlua-visual-script` (lib test) generated 2 warnings (2 duplicates)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.21s

@@ -1,0 +1,18 @@
+   Compiling mlua v0.11.6 (E:\Codex\RustLua\engine\vendor\mlua)
+   Compiling rustlua-math v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-math)
+   Compiling rustlua-infra v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-infra)
+   Compiling rustlua-lua-api v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-lua-api)
+   Compiling rustlua-ecs v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-ecs)
+   Compiling rustlua-assets v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-assets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.37s
+     Running unittests src\lib.rs (engine\target\debug\deps\rustlua_assets-f0c3fe3f8875c961.exe)
+
+running 5 tests
+test resource_kind::tests::labels_are_non_empty ... ok
+test resource_kind::tests::token_round_trips ... ok
+test resource_kind::tests::maps_full_extension_table ... ok
+test resource_kind::tests::extension_matching_is_case_insensitive ... ok
+test resource_kind::tests::unknown_and_unsupported_extensions_fall_to_other ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 80 filtered out; finished in 0.00s
+

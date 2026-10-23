@@ -45,7 +45,10 @@ pub struct UnresolvedRef {
 /// position" exactly like the runtime `verify_project` already does.
 pub fn extract_refs(text: &str, kind: ResourceKind) -> Vec<DependencyRef> {
     match kind {
-        ResourceKind::Scene | ResourceKind::Prefab => extract_scene_assets(text),
+        // `.material` 的贴图行与场景字段同构（`key=assets/...`），共用同一台扫描器。
+        ResourceKind::Scene | ResourceKind::Prefab | ResourceKind::Material => {
+            extract_scene_assets(text)
+        }
         ResourceKind::Atlas => extract_atlas_texture(text),
         ResourceKind::LuaScript => extract_lua_refs(text),
         _ => Vec::new(),
@@ -100,7 +103,7 @@ pub fn resolve_refs(
     (ids, unresolved)
 }
 
-/// Recomputes dependency edges for every container asset (Scene/Prefab/Atlas/LuaScript),
+/// Recomputes dependency edges for every container asset (Scene/Prefab/Atlas/Material/LuaScript),
 /// overwriting the previous edges each time so the operation is idempotent.
 /// `read_source` reads a project-relative source file; returning `None` means
 /// the file is gone and yields no edges. Unresolved references are returned so
@@ -117,6 +120,7 @@ pub fn recompute_edges(
                 ResourceKind::Scene
                     | ResourceKind::Prefab
                     | ResourceKind::Atlas
+                    | ResourceKind::Material
                     | ResourceKind::LuaScript
             )
         })
@@ -819,13 +823,14 @@ mod tests {
     #[test]
     fn scene_refs_sprite_image_animation_tilemap_mesh() {
         // 用 examples 真实组件行：Sprite 结构化 texture=、Animation 冒号分隔、
-        // Tilemap texture=、MeshRenderer mesh=。
+        // Tilemap texture=、MeshRenderer mesh=、AnimationPlayer clip=。
         let scene = "scene_version=2\nname=main\n\
             component 1 Animation clip:idle:assets/textures/hero-idle.png:4:4:true;clip:move:assets/textures/hero-move.png:4:8:true\n\
             component 1 Sprite texture=assets/textures/player.png;size=32x32\n\
             component 2 Tilemap texture=assets/textures/tileset.png;tiles=1111111\n\
             component 4 MeshRenderer mesh=assets/models/m8-test-triangle.glb\n\
-            component 6 Animation3D mesh=assets/models/kaykit-warrior.glb;clip=Idle;looped=true\n";
+            component 6 Animation3D mesh=assets/models/kaykit-warrior.glb;clip=Idle;looped=true\n\
+            component 7 AnimationPlayer clip=assets/anim/spin.anim;autoplay=true\n";
         let refs = extract_refs(scene, ResourceKind::Scene);
         let assets = asset_paths(&refs);
         for expected in [
@@ -835,13 +840,14 @@ mod tests {
             "assets/textures/tileset.png",
             "assets/models/m8-test-triangle.glb",
             "assets/models/kaykit-warrior.glb",
+            "assets/anim/spin.anim",
         ] {
             assert!(
                 assets.contains(&expected.to_owned()),
                 "missing {expected}: {assets:?}"
             );
         }
-        assert_eq!(assets.len(), 6, "dedup + exact extraction: {assets:?}");
+        assert_eq!(assets.len(), 7, "dedup + exact extraction: {assets:?}");
     }
 
     #[test]
@@ -1205,6 +1211,36 @@ mod tests {
         let outcome = propagate(&record_snapshot(&db));
         assert_eq!(applied_state(&outcome, atlas), ResourceState::Invalid);
         assert_eq!(applied_state(&outcome, scene), ResourceState::Invalid);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn recompute_edges_material_points_at_texture_lines() {
+        // P3-R02：`.material` 的 `*_texture=assets/...` 行要进依赖图；注释里的路径不算。
+        let root = temp_root("edges-material");
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let texture = db
+            .register(
+                "assets/textures/p3-r02-orm.png",
+                ResourceKind::Texture,
+                "texture-1",
+            )
+            .unwrap();
+        let material = db
+            .register(
+                "assets/materials/p3-r02.material",
+                ResourceKind::Material,
+                "material-1",
+            )
+            .unwrap();
+        let source = "# base_color_texture=assets/textures/not-a-real.png\n\
+                      version=1\n\
+                      metallic_roughness_texture=assets/textures/p3-r02-orm.png\n";
+        let read = |path: &Path| -> Option<String> {
+            (path == Path::new("assets/materials/p3-r02.material")).then(|| source.to_owned())
+        };
+        assert!(recompute_edges(&mut db, &read).is_empty());
+        assert_eq!(db.get(material).unwrap().dependencies, vec![texture]);
         let _ = std::fs::remove_dir_all(&root);
     }
 

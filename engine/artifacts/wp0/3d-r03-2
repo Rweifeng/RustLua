@@ -1,0 +1,41 @@
+{
+  "adapter": {
+    "backend": "Dx12",
+    "name": "Microsoft Basic Render Driver"
+  },
+  "gpu_timestamp_supported": true,
+  "report_version": "wp0-golden-v1",
+  "scene": "demo3d",
+  "semantic": {
+    "camera_position": [
+      0.0,
+      0.0,
+      6.0
+    ],
+    "camera_target": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "center_non_background_pixels": 6336,
+    "content_bounds": [
+      294,
+      66,
+      434,
+      205
+    ],
+    "draw_calls": 24,
+    "drawable_names": [
+      "ShadowTriangle",
+      "Ground",
+      "SkeletonWarrior"
+    ],
+    "instances": 12,
+    "non_background_pixels": 7311,
+    "triangles": 5937
+  },
+  "target": {
+    "height": 360,
+    "width": 640
+  }
+}

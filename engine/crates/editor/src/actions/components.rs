@@ -283,6 +283,66 @@ impl EditorApp {
             }
         }
     }
+
+    /// P3-E02：移除 `MeshRenderer.material=` 覆盖（一次提交 = 一条 Undo）。
+    pub(crate) fn clear_mesh_renderer_material(&mut self, entity: SceneEntityId) -> CommandResult {
+        if self.is_playing() {
+            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            return CommandResult::Rejected(self.status.clone());
+        }
+        let Some(document) = self.document.current_scene.as_mut() else {
+            self.status = "没有打开的场景".to_owned();
+            return CommandResult::Rejected(self.status.clone());
+        };
+        let Some(payload) = document
+            .scene
+            .entities
+            .get(&entity)
+            .and_then(|instance| instance.components.get("MeshRenderer"))
+            .cloned()
+        else {
+            self.status = "实体没有 MeshRenderer 组件".to_owned();
+            return CommandResult::Rejected(self.status.clone());
+        };
+        let Ok(mut renderer) = rustlua_render::mesh3d::MeshRenderer::from_component_str(&payload)
+        else {
+            self.status = "MeshRenderer 配置无效".to_owned();
+            return CommandResult::Rejected(self.status.clone());
+        };
+        if renderer.material.is_none() {
+            self.status = "MeshRenderer.material 无变化".to_owned();
+            return CommandResult::NoOp;
+        }
+        renderer.material = None;
+        let next = renderer.to_component_str();
+        let result = self.history.execute(
+            document,
+            "Clear MeshRenderer material",
+            CommandKind::Property,
+            move |document| {
+                let Some(instance) = document.scene.entities.get_mut(&entity) else {
+                    return Err(format!("实体不存在：{}", entity.0));
+                };
+                instance.components.insert("MeshRenderer".to_owned(), next);
+                document.mark_dirty();
+                Ok::<(), String>(())
+            },
+        );
+        match result {
+            Ok(true) => {
+                self.status = "已移除材质覆盖（回到 glTF 内嵌材质）".to_owned();
+                CommandResult::Applied
+            }
+            Ok(false) => {
+                self.status = "MeshRenderer.material 无变化".to_owned();
+                CommandResult::NoOp
+            }
+            Err(error) => {
+                self.status = error.clone();
+                CommandResult::Rejected(error)
+            }
+        }
+    }
 }
 /// Inspector 的**实体级 typed action**实现（shell 层，docs/55 §4.1 规则 1）。
 ///

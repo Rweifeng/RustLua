@@ -9,6 +9,8 @@ impl EditorApp {
             self.draw_scene_view_3d(ui);
             return;
         }
+        // E05-4：布局诊断按当前预览分辨率解算；切分辨率后先刷新，避免「溢出」角标沿用旧几何。
+        self.refresh_layout_diagnostics_if_resolution_changed();
         // 画布宽度钉回本标签裁剪框：`available_size` 在窄叶子下可能被上一帧的横向溢出撑大
         // （egui_dock 的 `expand_to_include_rect` 会把溢出宽度回灌进可用矩形，见 `dock::show`
         // 里给工具条套 clip scope 的那段）。若照原样 allocate，画布右边界越出裁剪框、并把
@@ -120,17 +122,19 @@ impl EditorApp {
         if let Some(action) = drop_hint {
             crate::dnd::paint_drop_feedback(ui, rect, 2, &action);
         }
-        if self.show_safe_area {
-            let safe_frame = design_resolution_frame(
+        // E18：Safe Area 由 Canvas 配置驱动（insets 像素按设计分辨率钳制），
+        // 不再用固定的 5% 估算——后者与 Inspector 里的 `canvas.safe_area` 无关。
+        if self.show_safe_area
+            && let Some(safe_frame) = design_safe_frame(
                 rect,
                 self.scene_state.pan,
                 self.scene_zoom,
                 scale,
                 self.game_camera_center_egui(),
                 self.preview_resolution,
-            );
-            let inset = safe_frame.size() * 0.05;
-            let safe_frame = safe_frame.shrink2(inset);
+                &self.scene_canvas_config(),
+            )
+        {
             painter.rect_stroke(
                 safe_frame,
                 0.0_f32,
@@ -395,6 +399,89 @@ impl EditorApp {
                     );
                 }
             }
+            // E05-4：布局调试 overlay——所有 UI 元素的 bounds、容器 padding/gap、
+            // 溢出角标（来自 `layout_diagnostics` 的 Layout 诊断），与选中无关。
+            if self.show_layout_debug {
+                let overflow: std::collections::BTreeSet<u64> = self
+                    .preview_diagnostics
+                    .diagnostics()
+                    .iter()
+                    .filter(|diagnostic| {
+                        diagnostic.kind
+                            == rustlua_infra::preview_diagnostics::PreviewErrorKind::Layout
+                    })
+                    .filter_map(|diagnostic| diagnostic.entity)
+                    .collect();
+                for entity in entities.iter() {
+                    if entity.ui.is_none() {
+                        continue;
+                    }
+                    let bounds = egui::Rect::from_center_size(entity.center, entity.size);
+                    painter.rect_stroke(
+                        bounds,
+                        0.0,
+                        egui::Stroke::new(
+                            1.0_f32,
+                            egui::Color32::from_rgba_unmultiplied(90, 210, 230, 150),
+                        ),
+                        egui::StrokeKind::Inside,
+                    );
+                    if overflow.contains(&entity.id.0) {
+                        painter.text(
+                            bounds.left_top(),
+                            egui::Align2::LEFT_BOTTOM,
+                            "溢出",
+                            egui::FontId::monospace(11.0),
+                            egui::Color32::from_rgb(240, 90, 80),
+                        );
+                    }
+                }
+                if let Some(scene) = panel_scene_document(&self.play_session, &self.document) {
+                    let design_w = self.preview_resolution.0 as f32;
+                    for entity in entities.iter() {
+                        let Some(scene_entity) = scene.scene.entities.get(&entity.id) else {
+                            continue;
+                        };
+                        let Some(container_raw) = scene_entity.components.get("Container") else {
+                            continue;
+                        };
+                        let Ok(style) = rustlua_ui::ui_layout::ContainerStyle::from_component_str(
+                            container_raw,
+                        ) else {
+                            continue;
+                        };
+                        let outer_rect = egui::Rect::from_center_size(entity.center, entity.size);
+                        let design_to_panel = outer_rect.width() / design_w.max(1.0);
+                        scene_resize::draw_padding_overlay(
+                            &painter,
+                            outer_rect,
+                            style.padding,
+                            design_to_panel,
+                        );
+                        let child_rects: Vec<egui::Rect> = scene_entity
+                            .children
+                            .iter()
+                            .filter_map(|child| entities.iter().find(|value| value.id == *child))
+                            .map(|child| egui::Rect::from_center_size(child.center, child.size))
+                            .collect();
+                        if let Some((first, second)) = child_rects.first().zip(child_rects.get(1))
+                            && let Some(band) = container_gap_band(
+                                style.kind,
+                                *first,
+                                *second,
+                                design_to_panel,
+                                style.spacing,
+                            )
+                        {
+                            painter.rect_filled(
+                                band,
+                                0.0,
+                                egui::Color32::from_rgba_unmultiplied(240, 170, 60, 60),
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         let pointer = response.interact_pointer_pos();
@@ -656,12 +743,93 @@ impl EditorApp {
             ),
             egui::StrokeKind::Outside,
         );
+        let base = rect.left_top() + egui::vec2(4.0, self.scene_overlay_bottom_offset + 4.0);
         painter.text(
-            rect.left_top() + egui::vec2(4.0, self.scene_overlay_bottom_offset + 4.0),
+            base,
             egui::Align2::LEFT_TOP,
             format!("设计分辨率 {w}×{h}"),
             egui::FontId::proportional(13.0),
             egui::Color32::from_rgb(150, 205, 255),
         );
+        // E18：设计分辨率之下同时给出预览/缩放/裁剪与 Safe Area/锚点边界读数。
+        let hud = crate::ui_editor::CanvasHud {
+            design: (w, h),
+            display: (
+                (frame.width() * ppp).round().max(0.0) as u32,
+                (frame.height() * ppp).round().max(0.0) as u32,
+            ),
+            scale: self.scene_zoom,
+            crop: design_frame_crop(rect, frame, self.scene_zoom, ppp),
+            safe: self.scene_canvas_config().safe_area,
+        };
+        for (index, line) in [hud.preview_line(), hud.safe_line()]
+            .into_iter()
+            .enumerate()
+        {
+            painter.text(
+                base + egui::vec2(0.0, 18.0 + index as f32 * 14.0),
+                egui::Align2::LEFT_TOP,
+                line,
+                egui::FontId::monospace(11.0),
+                egui::Color32::from_rgb(170, 205, 235),
+            );
+        }
+    }
+}
+
+/// E05-4：主轴上相邻两个子矩形之间的间距带（面板坐标），供布局调试 overlay 使用。
+fn container_gap_band(
+    kind: rustlua_ui::ui_layout::ContainerKind,
+    first: egui::Rect,
+    second: egui::Rect,
+    design_to_panel: f32,
+    spacing: f32,
+) -> Option<egui::Rect> {
+    use rustlua_ui::ui_layout::ContainerKind;
+    let limit = spacing.max(0.0) * design_to_panel.max(0.0);
+    if limit <= 0.0 {
+        return None;
+    }
+    let (start, end) = match kind {
+        ContainerKind::HBox | ContainerKind::Wrap => (first.max.x, second.min.x),
+        ContainerKind::VBox => (first.max.y, second.min.y),
+        ContainerKind::Grid | ContainerKind::Margin | ContainerKind::Center => return None,
+    };
+    if end - start <= 0.5 {
+        return None;
+    }
+    let end = end.min(start + limit);
+    match kind {
+        ContainerKind::HBox | ContainerKind::Wrap => Some(egui::Rect::from_min_max(
+            egui::pos2(start, first.min.y.max(second.min.y)),
+            egui::pos2(end, first.max.y.min(second.max.y)),
+        )),
+        ContainerKind::VBox => Some(egui::Rect::from_min_max(
+            egui::pos2(first.min.x.max(second.min.x), start),
+            egui::pos2(first.max.x.min(second.max.x), end),
+        )),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::container_gap_band;
+    use eframe::egui;
+    use rustlua_ui::ui_layout::ContainerKind;
+
+    #[test]
+    fn gap_band_uses_main_axis_and_respects_spacing() {
+        let first = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 50.0));
+        let second = egui::Rect::from_min_size(egui::pos2(110.0, 0.0), egui::vec2(100.0, 50.0));
+        let band =
+            container_gap_band(ContainerKind::HBox, first, second, 1.0, 8.0).expect("hbox gap");
+        assert_eq!((band.min.x, band.max.x), (100.0, 108.0));
+        let below = egui::Rect::from_min_size(egui::pos2(0.0, 60.0), egui::vec2(100.0, 50.0));
+        let band =
+            container_gap_band(ContainerKind::VBox, first, below, 1.0, 20.0).expect("vbox gap");
+        assert_eq!((band.min.y, band.max.y), (50.0, 60.0));
+        assert!(container_gap_band(ContainerKind::Grid, first, second, 1.0, 8.0).is_none());
+        assert!(container_gap_band(ContainerKind::HBox, first, second, 1.0, 0.0).is_none());
     }
 }

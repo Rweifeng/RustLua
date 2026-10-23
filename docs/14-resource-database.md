@@ -10,7 +10,7 @@ v2 由 v1 的 7 列升级为 **12 列 TSV**，文件头为 `# rustlua-resource-d
 |---|---|---|
 | 1 | id | 资源稳定 UUID（路径+版本种子派生，移动/重命名不丢失） |
 | 2 | source_path | 项目相对路径（正斜杠，可移植） |
-| 3 | kind | 资源类型 token（`texture/audio/script/scene/prefab/atlas/model/font/other`） |
+| 3 | kind | 资源类型 token（`texture/audio/script/scene/prefab/atlas/model/font/environment/material/animation/other`） |
 | 4 | status | 生命周期状态（见下） |
 | 5 | importer_version | 导入器版本（`texture-1` 等，来自 ImporterRegistry） |
 | 6 | cache_path | 缓存产物路径（项目相对，`.cache/cache/...`） |
@@ -124,6 +124,9 @@ rank-max 不动点，单向（依赖→消费者）、幂等、可撤销。状�
 | `scene`（`.json`） | `serde_json` 严格解析 | `<文件>: JSON 解析失败: <原因>（含 line/column）` |
 | `scene`（`.ron`） | 结构级校验（分隔符/字符串配平） | `<文件>: RON 结构错误: 第 N 行第 M 列 ...`（完整 RON 语法解析待引入依赖） |
 | `texture` / `audio` / `font` / `model` / `prefab` | 解码/解析可行性 | `<文件>: <类型>解析失败: <原因>` |
+| `environment`（`.hdr`/`.rlenv`） | HDR 解码；`.rlenv` 二进制（magic/版本/校验和/尺寸一致性） | `<文件>: HDR 解码失败: <原因>` / `<文件>: 环境资产解析失败: <原因>` |
+| `material`（`.material`） | 用**运行时同一台解析器**（`rustlua-assets::mat_asset`）逐行校验：`version=1`、字段白名单、数值范围、贴图路径必须项目相对且 png/jpg | `material <文件>: line N: <原因>`（行号来自源文件；空文件/BOM/非 UTF-8 各给专门诊断） |
+| `animation`（`.anim`） | 用**运行时同一台解析器**（`rustlua_animation::anim_asset::AnimClip::from_text`）校验：版本/必填字段/字段白名单/轨道路径/关键帧时间与值 | `anim <文件>: line N: <原因>`（行号来自源文件；空文件/BOM/非 UTF-8 各给专门诊断） |
 
 发布前检查（`game --check` / `editor --check`）在资源引用检查之外，追加：
 

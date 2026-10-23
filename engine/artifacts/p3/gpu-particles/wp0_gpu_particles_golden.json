@@ -1,0 +1,58 @@
+{
+  "adapter": {
+    "backend": "Dx12",
+    "name": "Microsoft Basic Render Driver"
+  },
+  "capabilities": {
+    "backend": "external",
+    "compute": true,
+    "max_compute_workgroup_size": [
+      256,
+      256,
+      64
+    ],
+    "max_storage_buffer_binding_size": 134217728,
+    "storage_buffers": true
+  },
+  "report_version": "wp0-gpu-particles-golden-v1",
+  "scene": "renderer-level instanced GPU particle burst (mode=gpu, fixed seed)",
+  "semantic": {
+    "capacity": 10000,
+    "content_pixels_far": 6208,
+    "content_pixels_near": 270,
+    "count": 10000,
+    "cpu_ms": 0.9588,
+    "delta_seconds": 0.01666666753590107,
+    "draw_calls": 1,
+    "dropped_draws": 0,
+    "emitter_life": 10.0,
+    "fallback": "none",
+    "far_dead_count": 7982,
+    "far_max_life_seen": 0.999006986618042,
+    "far_min_life": -0.016666149720549583,
+    "far_non_finite": 0,
+    "far_steps": 540,
+    "first_frame_mismatches": 0,
+    "gpu_ms": 11.5631,
+    "instances": 10000,
+    "max_position_error": 0.0,
+    "max_velocity_error": 0.0,
+    "mode": "gpu",
+    "near_non_finite": 0,
+    "near_steps": 30,
+    "pixels_checksum_far": 10328539620044072209,
+    "pixels_checksum_near": 11114321897336091954,
+    "rollback_content_pixels": 0,
+    "rollback_particle_pass": false,
+    "rollback_unsupported": true,
+    "seed": 11400714819323198485,
+    "spawned": 10000,
+    "state_bytes": 480000,
+    "triangles": 20000,
+    "vertices": 40000
+  },
+  "target": {
+    "height": 256,
+    "width": 256
+  }
+}

@@ -198,6 +198,14 @@ impl ComputeState {
         self.pipelines.clear();
         self.bind_groups.clear();
     }
+
+    /// 剔除某个调用方 id 的绑定组缓存条目（消费者回收缓冲时用）。
+    ///
+    /// 只清绑定组、不动管线：管线 key 不含缓冲身份，回收一个消费者不该让别的消费者重编译。
+    /// 没有这一步，"每帧爆发一次"的 GPU 粒子池会把绑定组缓存无限撑大。
+    pub(super) fn retire_bind_group(&mut self, id: u64) {
+        self.bind_groups.retain(|(_, key_id), _| *key_id != id);
+    }
 }
 
 fn shader_hash(shader: &str) -> u64 {
@@ -218,6 +226,15 @@ impl super::Renderer {
     #[must_use]
     pub fn compute_stats(&self) -> ComputeStats {
         self.compute_state.stats
+    }
+
+    /// 绑定组缓存里还有多少条目（P3-R07-2 的回收观测点）。
+    ///
+    /// GPU 粒子池每个系统一份绑定组，回收时必须按调用方 id 精确剔除；这条读数是那个
+    /// "剔除了没有"的唯一证据。它只增不减 ⇒ 池在漏缓存，长跑必然撑大显存侧的宿主对象。
+    #[must_use]
+    pub fn compute_bind_group_cache_len(&self) -> usize {
+        self.compute_state.bind_groups.len()
     }
 
     /// 宿主策略位：关掉后所有 compute 入口返回 `Unsupported`，消费者走 CPU 路径。

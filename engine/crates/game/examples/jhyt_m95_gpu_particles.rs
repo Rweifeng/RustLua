@@ -153,8 +153,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         capacity: PARTICLES as u32,
     })?;
     println!(
-        "  capacity={} spawned={} state={}B vertices={}B backend={}",
-        status.capacity, status.spawned, status.state_bytes, status.vertex_bytes, status.backend
+        "  capacity={} spawned={} state={}B backend={}",
+        status.capacity, status.spawned, status.state_bytes, status.backend
     );
     check(
         "槽位装载量 = 请求粒子数",
@@ -238,8 +238,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         metrics.draw_calls, metrics.instances, metrics.vertices, metrics.dropped_draws
     );
     check(
-        "粒子的 6×capacity 顶点都提交了",
-        metrics.instances >= PARTICLES as u64,
+        "粒子的实例数 = capacity、顶点数 = 4×capacity（instanced triangle strip，没有顶点缓冲）",
+        metrics.instances >= PARTICLES as u64 && metrics.vertices >= 4 * PARTICLES as u64,
     );
     let pixels = renderer.copy_texture_to_cpu(&texture, TARGET, TARGET)?;
     let background = [pixels[0], pixels[1], pixels[2]];
@@ -261,8 +261,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         capacity: 50_000,
     })?;
     println!(
-        "  capacity={} spawned={} state={}B vertices={}B",
-        status_50k.capacity, status_50k.spawned, status_50k.state_bytes, status_50k.vertex_bytes
+        "  capacity={} spawned={} state={}B",
+        status_50k.capacity, status_50k.spawned, status_50k.state_bytes
     );
     let mut cpu_50k = ParticleSystem::new();
     cpu_50k.burst_with(Vec2::new(0.0, 0.0), &emitter_50k);

@@ -1745,8 +1745,12 @@ if ($Benchmarks) {
         $twoDGoldenPath = Join-Path $baselineRoot "wp0-2d-golden.json"
         $mixedGoldenPath = Join-Path $baselineRoot "wp0-mixed-golden.json"
         $hudGoldenPath = Join-Path $baselineRoot "wp0-hud-golden.json"
+        $animGoldenPath = Join-Path $baselineRoot "wp0-anim-golden.json"
+        $materialGoldenPath = Join-Path $baselineRoot "wp0-material-golden.json"
         $lightingGoldenPath = Join-Path $baselineRoot "wp0-lighting-golden.json"
         $editorPreviewPath = Join-Path $baselineRoot "wp0-editor-preview-golden.json"
+        $gpuParticlesGoldenPath = Join-Path $baselineRoot "wp0-gpu-particles-golden.json"
+        $gpuParticles50kPath = Join-Path $baselineRoot "wp0-gpu-particles-50k.json"
         Invoke-Checked cargo @(
             "run", "--quiet", "--release", "-p", "engine", "--example", "ecs_stress", "--",
             "--stairs", "--seconds", "1", "--output", $ecsBaselinePath
@@ -1791,6 +1795,40 @@ if ($Benchmarks) {
             "run", "--quiet", "--release", "-p", "engine", "--example", "wp0_hud_golden", "--",
             "--output", $hudGoldenPath
         )
+        # P3-E01-4a：场景级动画 golden。E01 的播放器此前只有单元测试（采样值），"动画真的
+        # 驱动了渲染"没有被任何 golden 证明过——这条用同一场里的 2D 精灵与 3D 灯各跑一遍
+        # `.anim`，在三个时刻**同时**断言世界坐标、屏幕质心与像素数：采样对了但没写回
+        # Transform、或写回了却没走到提取/投影，都会立刻在这里显形。exit 3 = 本机没有
+        # offscreen adapter，显式跳过而不是通过；RUSTLUA_REQUIRE_GPU=1 时升级为红。
+        $animGoldenSkipped = $false
+        & cargo run --quiet --release -p engine --example wp0_anim_golden -- --output $animGoldenPath
+        $animGoldenExit = $LASTEXITCODE
+        if ($animGoldenExit -eq 3) {
+            if ($env:RUSTLUA_REQUIRE_GPU -eq "1") {
+                throw "anim golden skipped (exit 3) 但 RUSTLUA_REQUIRE_GPU=1：这台机器必须提供 offscreen adapter"
+            }
+            $animGoldenSkipped = $true
+            Write-Host "anim_golden_skipped reason=no_adapter exit=3（不是通过）" -ForegroundColor Yellow
+        }
+        elseif ($animGoldenExit -ne 0) {
+            throw "anim golden FAILED (wp0_anim_golden exit $animGoldenExit)"
+        }
+        # P3-E02-4：材质四组场景级 golden。四块地面只差 `.material` 的 metallic/roughness，
+        # 镜面反射点必须落在采样网格内——否则 0.1 的窄高光会被整片漏采，看起来像参数没生效。
+        # exit 3 与 anim golden 同一语义：无 offscreen adapter 显式跳过，不是通过。
+        $materialGoldenSkipped = $false
+        & cargo run --quiet --release -p engine --example wp0_material_golden -- --output $materialGoldenPath
+        $materialGoldenExit = $LASTEXITCODE
+        if ($materialGoldenExit -eq 3) {
+            if ($env:RUSTLUA_REQUIRE_GPU -eq "1") {
+                throw "material golden skipped (exit 3) 但 RUSTLUA_REQUIRE_GPU=1：这台机器必须提供 offscreen adapter"
+            }
+            $materialGoldenSkipped = $true
+            Write-Host "material_golden_skipped reason=no_adapter exit=3（不是通过）" -ForegroundColor Yellow
+        }
+        elseif ($materialGoldenExit -ne 0) {
+            throw "material golden FAILED (wp0_material_golden exit $materialGoldenExit)"
+        }
         # docs/54 §8-⑩：**材质/光照与阴影**的像素级证据。3D golden 只断言"有内容、几何量对"，
         # 材质颜色错、`Light` 方向反了、阴影贴图没被采样都能蒙过去——这条门就是为它们立的，
         # 也是本轮量出 `Light::direction` 符号缺陷的那个探针。
@@ -1809,6 +1847,40 @@ if ($Benchmarks) {
             "run", "--quiet", "--release", "-p", "editor", "--example", "editor_preview_golden", "--",
             "--output", $editorPreviewPath
         )
+        # P3-R07-3：instanced GPU 粒子的场景级 golden（10k 粒子、固定 seed/dt；首帧逐位对拍 +
+        # 0.5 s 积分对拍 + 9 s 状态在界 + instanced 记账 + 两帧像素校验和 + 回滚档空帧）。
+        # 与上面的 Compute 门同一约定：exit 3 = 本机没有 compute，**显式跳过而不是通过**；
+        # RUSTLUA_REQUIRE_GPU=1 时把跳过升级为红（发布门用）。
+        $gpuParticlesGoldenSkipped = $false
+        & cargo run --quiet --release -p engine --example wp0_gpu_particles_golden -- --output $gpuParticlesGoldenPath
+        $gpuParticlesExit = $LASTEXITCODE
+        if ($gpuParticlesExit -eq 3) {
+            if ($env:RUSTLUA_REQUIRE_GPU -eq "1") {
+                throw "gpu particles golden skipped (exit 3) 但 RUSTLUA_REQUIRE_GPU=1：这台机器必须提供 compute"
+            }
+            $gpuParticlesGoldenSkipped = $true
+            Write-Host "gpu_particles_golden_skipped reason=no_compute exit=3（CPU 粒子仍是默认与回滚档；不是通过）" -ForegroundColor Yellow
+        }
+        elseif ($gpuParticlesExit -ne 0) {
+            throw "gpu particles golden FAILED (wp0_gpu_particles_golden exit $gpuParticlesExit)"
+        }
+        # P3-R07-4：50k 粒子的 CPU/GPU 两档读数与默认档判定。与 golden 同一约定——exit 3 =
+        # 本机没有 compute，显式跳过而不是通过；RUSTLUA_REQUIRE_GPU=1 时升级为红。
+        # 注意这**不是**像素 golden：它刻意只比"两档读数 + instanced 记账 + 内存界"，因为
+        # 默认档结论依赖机器（WARP 上总帧读数不代表性），像素契约由上面的 10k golden 负责。
+        $gpuParticles50kSkipped = $false
+        & cargo run --quiet --release -p engine --example wp0_gpu_particles_50k -- --output $gpuParticles50kPath
+        $gpuParticles50kExit = $LASTEXITCODE
+        if ($gpuParticles50kExit -eq 3) {
+            if ($env:RUSTLUA_REQUIRE_GPU -eq "1") {
+                throw "gpu particles 50k benchmark skipped (exit 3) 但 RUSTLUA_REQUIRE_GPU=1：这台机器必须提供 compute"
+            }
+            $gpuParticles50kSkipped = $true
+            Write-Host "gpu_particles_50k_skipped reason=no_compute exit=3（默认档仍按 CPU 路径，不是通过）" -ForegroundColor Yellow
+        }
+        elseif ($gpuParticles50kExit -ne 0) {
+            throw "gpu particles 50k benchmark FAILED (wp0_gpu_particles_50k exit $gpuParticles50kExit)"
+        }
     }
     finally {
         Pop-Location
@@ -1884,9 +1956,24 @@ if ($Benchmarks) {
         throw "wp0-v4 scene/frame report schema invalid: scenes=$($sceneFrameReport.scene_load.scenes) expected=$sceneFileCount"
     }
     foreach ($entry in $sceneFrameReport.scene_load.entries) {
-        if ($entry.diagnostics -ne 0 -or $entry.typed_components -le 0 -or
-            $entry.load_us.p50_us -le 0 -or $entry.typed_compile_us.p50_us -le 0) {
-            throw "wp0-v4 typed compile entry invalid: $($entry.project)/$($entry.scene)"
+        # M63b 起 `game_jhyt/main.scene` 是**故意留空**的门面（17 个 UI 实体整批搬进
+        # `assets/prefabs/title_menu.prefab`，由 `scripts/ui/title_menu.lua` 进门面时实例化），
+        # 所以"每条 entry 都要有 typed 组件"在它是必然为假。判据改成从场景文本自己推：
+        # **声明了实体的场景**必须有非零 typed 计数与非零 typed 编译耗时，空场景只查"载入没报错"。
+        # 这样"场景有实体但 typed 编译没计数"这类真事故仍然 RED，而不是把整条门下界成 0。
+        $scenePath = Join-Path $gameRoot (Join-Path $entry.project "scenes\$($entry.scene).scene")
+        if (-not (Test-Path -LiteralPath $scenePath)) {
+            throw "wp0-v4 scene file not found for entry $($entry.project)/$($entry.scene): $scenePath"
+        }
+        $entityLines = @(Get-Content -LiteralPath $scenePath -Encoding UTF8 |
+            Where-Object { $_ -match '^entity\s' }).Count
+        if ($entry.diagnostics -ne 0 -or $entry.load_us.p50_us -le 0) {
+            throw "wp0-v4 scene load invalid: $($entry.project)/$($entry.scene) diagnostics=$($entry.diagnostics) load_p50=$($entry.load_us.p50_us)"
+        }
+        if ($entityLines -gt 0 -and ($entry.typed_components -le 0 -or $entry.typed_compile_us.p50_us -le 0)) {
+            throw ("wp0-v4 typed compile entry invalid: {0}/{1} entities={2} typed_components={3} " +
+                "typed_compile_p50={4}") -f $entry.project, $entry.scene, $entityLines, `
+                $entry.typed_components, $entry.typed_compile_us.p50_us
         }
     }
     foreach ($stair in $sceneFrameReport.frame_stairs) {
@@ -2130,6 +2217,76 @@ if ($Benchmarks) {
     if ($hud.world_only_with_ui[0] -le 180 -or $hud.world_only_with_ui[1] -ge 70 -or $hud.world_only_with_ui[2] -ge 70) {
         throw "HUD golden: HUD 矩形之外的世界内容被改了颜色（屏幕 UI 不该影响它矩形外的像素）：$($hud.world_only_with_ui -join ',')"
     }
+    # P3-E01-4a：场景级动画契约。三个时刻的读数都是**精确**的：`.anim` 的线性键
+    # 540→740（2D）与 0→4（3D）在 t=0/0.5/1.0 的世界坐标由插值唯一确定；屏幕质心把
+    # "采样值 → 写回 Transform → 提取 → 投影 → 光栅"整条链钉在一起；像素数 >100 排除
+    # "坐标对了但根本没画出来"；clamp 段证明非循环片段走完停在末键而不是继续推。
+    if (-not $animGoldenSkipped) {
+        $animGolden = Get-Content -LiteralPath $animGoldenPath -Raw | ConvertFrom-Json
+        if ($animGolden.report_version -ne "wp0-anim-golden-v1") {
+            throw "anim golden report version invalid: $($animGolden.report_version)"
+        }
+        if ($animGolden.frames.Count -ne 3) {
+            throw "anim golden must sample three frames, got $($animGolden.frames.Count)"
+        }
+        $animExpected = @(
+            @{ t = 0.0; sprite = 540.0; sun = 0.0; screen = 100.0 },
+            @{ t = 0.5; sprite = 640.0; sun = 2.0; screen = 200.0 },
+            @{ t = 1.0; sprite = 740.0; sun = 4.0; screen = 300.0 }
+        )
+        for ($i = 0; $i -lt 3; $i++) {
+            $frame = $animGolden.frames[$i]
+            $expected = $animExpected[$i]
+            if ([math]::Abs($frame.t - $expected.t) -gt 1e-4 -or
+                [math]::Abs($frame.sprite_world_x - $expected.sprite) -gt 0.05 -or
+                [math]::Abs($frame.sun_world_x - $expected.sun) -gt 0.01) {
+                throw "anim golden frame $i 的世界坐标不对：t=$($frame.t) sprite_x=$($frame.sprite_world_x) sun_x=$($frame.sun_world_x)"
+            }
+            if ([math]::Abs($frame.sprite_screen_center[0] - $expected.screen) -gt 3) {
+                throw "anim golden frame $i 的精灵屏幕质心不对：$($frame.sprite_screen_center -join ',')（期望 x≈$($expected.screen)）"
+            }
+            if ($frame.sprite_pixels -le 100) {
+                throw "anim golden frame $i 的精灵几乎没画出来：pixels=$($frame.sprite_pixels)"
+            }
+        }
+        $clamped = $animGolden.clamped_after_duration
+        if (-not $clamped.unchanged -or
+            [math]::Abs($clamped.after[0] - 740.0) -gt 0.05 -or
+            [math]::Abs($clamped.after[1] - 4.0) -gt 0.01) {
+            throw "anim golden: 非循环片段播完后没有停在末键：$($clamped | ConvertTo-Json -Compress)"
+        }
+        foreach ($check in @("two_d_moves_100px_per_second", "three_d_moves_4units_per_second", "pixels_track_the_transform", "non_loop_stops_at_duration")) {
+            if (-not $animGolden.checks.$check) {
+                throw "anim golden check '$check' is false"
+            }
+        }
+        Write-Host ("anim_golden_ok frames=3 sprite_x={0}/{1}/{2} screen_x={3}/{4}/{5} pixels={6}/{7}/{8}" -f `
+            $animGolden.frames[0].sprite_world_x, $animGolden.frames[1].sprite_world_x, $animGolden.frames[2].sprite_world_x,
+            $animGolden.frames[0].sprite_screen_center[0], $animGolden.frames[1].sprite_screen_center[0], $animGolden.frames[2].sprite_screen_center[0],
+            $animGolden.frames[0].sprite_pixels, $animGolden.frames[1].sprite_pixels, $animGolden.frames[2].sprite_pixels) -ForegroundColor Green
+    }
+    # P3-E02-4：材质参数确实改变着色。四组只差 metallic/roughness，读数来自 640×360 读回：
+    # 电介质平均亮度必须高于同粗糙度的金属（金属没有漫反射）；0.1 粗糙度在镜面采样点的
+    # 峰值必须高于 0.9；任意两组至少在一个通道上差 ≥4（参数真的进了 uniform 与 BRDF）。
+    if (-not $materialGoldenSkipped) {
+        $materialGolden = Get-Content -LiteralPath $materialGoldenPath -Raw | ConvertFrom-Json
+        if ($materialGolden.report_version -ne "wp0-material-golden-v1") {
+            throw "material golden report version invalid: $($materialGolden.report_version)"
+        }
+        foreach ($check in @("groups_are_distinct", "metal_removes_diffuse", "smooth_highlight_peaks_dielectric", "smooth_highlight_peaks_metal")) {
+            if (-not $materialGolden.checks.$check) {
+                throw "material golden check '$check' is false"
+            }
+        }
+        if ($materialGolden.min_pair_delta -lt 4) {
+            throw "material golden: 四组材质几乎没有像素差：min_pair_delta=$($materialGolden.min_pair_delta)"
+        }
+        Write-Host ("material_golden_ok groups={0} min_pair_delta={1} dielectric_mean={2} metal_mean={3} peaks={4}/{5}/{6}/{7}" -f `
+            $materialGolden.groups.Count, $materialGolden.min_pair_delta,
+            $materialGolden.groups[1].mean_luma, $materialGolden.groups[3].mean_luma,
+            $materialGolden.groups[0].max_luma, $materialGolden.groups[1].max_luma,
+            $materialGolden.groups[2].max_luma, $materialGolden.groups[3].max_luma) -ForegroundColor Green
+    }
     # docs/54 §8-⑩：材质/光照与阴影。三条都必须成立，任何一条不成立都说明 3D 着色链断了：
     # ① 漫反射随光照方向变化（光反向 → 地面只剩环境光）；② 阴影把地面压暗；③ 阴影足迹落在
     # "遮挡物足迹 + 光照偏移"处（落点算错/遮挡物尺寸写错都会在这里显形）。
@@ -2295,6 +2452,116 @@ if ($Benchmarks) {
         if ($stair.speedup.for_each_mut -le 1 -or $stair.speedup.remove_half -le 1) {
             throw "wp0-v5 storage speedup invalid for entities=$($stair.entities): dense 未占优"
         }
+    }
+    # P3-R07-3：instanced GPU 粒子的语义契约。只有本机真的跑了 compute 才判；跳过时上面已经
+    # 打印过 gpu_particles_golden_skipped，这里不能把"没跑"读成"通过"。
+    if (-not $gpuParticlesGoldenSkipped) {
+        $gpuParticles = Get-Content -LiteralPath $gpuParticlesGoldenPath -Raw | ConvertFrom-Json
+        if ($gpuParticles.report_version -ne "wp0-gpu-particles-golden-v1") {
+            throw "gpu particles golden report version invalid: $($gpuParticles.report_version)"
+        }
+        $particles = $gpuParticles.semantic
+        if ($particles.mode -ne "gpu" -or $particles.fallback -ne "none") {
+            throw "gpu particles golden is not the GPU path: mode=$($particles.mode) fallback=$($particles.fallback)"
+        }
+        if ($particles.count -ne 10000 -or $particles.spawned -ne 10000) {
+            throw "gpu particles golden scale changed: count=$($particles.count) spawned=$($particles.spawned)（R07-3 的验收规模是 10k）"
+        }
+        if ($particles.first_frame_mismatches -ne 0) {
+            throw "gpu particles golden: 首帧 GPU 状态与 CPU burst 不同（mismatches=$($particles.first_frame_mismatches)）——这不是精度问题，是接线问题"
+        }
+        if ($particles.max_position_error -ge 1e-4 -or $particles.max_velocity_error -ge 1e-4) {
+            throw "gpu particles golden: 0.5 s 对拍超容差 pos=$($particles.max_position_error) vel=$($particles.max_velocity_error)"
+        }
+        if ($particles.near_non_finite -ne 0 -or $particles.far_non_finite -ne 0) {
+            throw "gpu particles golden: 状态里出现非有限值 near=$($particles.near_non_finite) far=$($particles.far_non_finite)"
+        }
+        if ($particles.far_dead_count -le 0) {
+            throw "gpu particles golden: 9 s 时没有粒子死亡（$($particles.far_dead_count)）——寿命门失效，剔除/冻结无从验证"
+        }
+        if ($particles.draw_calls -ne 1 -or $particles.instances -ne 10000) {
+            throw "gpu particles golden: instanced 记账变了 draws=$($particles.draw_calls) instances=$($particles.instances)（一次 draw、实例数 = capacity）"
+        }
+        if ($particles.vertices -ne 40000 -or $particles.triangles -ne 20000) {
+            throw "gpu particles golden: 顶点/三角形不对 vertices=$($particles.vertices) triangles=$($particles.triangles)（4 顶点 triangle strip，期望 4×/2× capacity）"
+        }
+        if ($particles.dropped_draws -ne 0) {
+            throw "gpu particles golden: 本帧丢弃了 $($particles.dropped_draws) 次 draw（管线或绑定组不可用）"
+        }
+        if ($particles.state_bytes -ne 480000) {
+            throw "gpu particles golden: 状态缓冲不是 capacity×48 B（$($particles.state_bytes)）——GpuParticleState 布局漂移"
+        }
+        if ($particles.content_pixels_near -le 200 -or $particles.content_pixels_far -le 200) {
+            throw "gpu particles golden: 粒子几乎没画进附件 near=$($particles.content_pixels_near) far=$($particles.content_pixels_far)"
+        }
+        if ($particles.pixels_checksum_near -eq $particles.pixels_checksum_far) {
+            throw "gpu particles golden: 0.5 s 与 9 s 两帧像素校验和相同（粒子没在动，或读的是同一张图）"
+        }
+        if ($particles.rollback_particle_pass -or $particles.rollback_content_pixels -ne 0 -or -not $particles.rollback_unsupported) {
+            throw "gpu particles golden: 关掉 compute 的回滚档不干净 particle_pass=$($particles.rollback_particle_pass) content=$($particles.rollback_content_pixels) unsupported=$($particles.rollback_unsupported)"
+        }
+        Write-Host ("gpu_particles_golden_ok count=10000 draw_calls=1 instances=10000 vertices=40000 " +
+            "content_near={0} content_far={1} max_position_error={2}" -f `
+            $particles.content_pixels_near, $particles.content_pixels_far, $particles.max_position_error) -ForegroundColor Green
+    }
+    # P3-R07-4：50k 基准的结构性契约。默认档是**结论**而不是前提——这里不判"必须选 gpu"，
+    # 只判读数自洽（规模/内存/instanced 记账/两档门槛的一致性）；本机 WARP 上 total_ratio
+    # 不可代表真实 GPU，所以默认档结论连同理由一起记进报告，由 docs/24 §3.15 解释。
+    if (-not $gpuParticles50kSkipped) {
+        # 报告里有中文的 default_mode_reason：Windows PowerShell 5.1 的 Get-Content 默认按
+        # ANSI 读，会把 UTF-8 字节截断成非法 JSON——必须显式 -Encoding UTF8。
+        $bench50k = Get-Content -LiteralPath $gpuParticles50kPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($bench50k.report_version -ne "wp0-gpu-particles-50k-v1") {
+            throw "gpu particles 50k report version invalid: $($bench50k.report_version)"
+        }
+        $p50 = $bench50k.semantic
+        if ($p50.mode -ne "gpu" -or $p50.fallback -ne "none") {
+            throw "gpu particles 50k is not the GPU path: mode=$($p50.mode) fallback=$($p50.fallback)"
+        }
+        if ($p50.count -ne 50000 -or $p50.capacity -ne 50000 -or $p50.spawned -ne 50000) {
+            throw "gpu particles 50k scale changed: count=$($p50.count) capacity=$($p50.capacity) spawned=$($p50.spawned)（R07-4 的验收规模是 50k）"
+        }
+        if ($p50.state_bytes -ne 2400000 -or $p50.particle_buffer_bytes -ne ($p50.state_bytes + 64)) {
+            throw "gpu particles 50k buffer layout drifted: state=$($p50.state_bytes) total=$($p50.particle_buffer_bytes)（期望 50000×48 B，params 64 B）"
+        }
+        if (-not $p50.memory_ok -or $p50.particle_buffer_bytes -gt $p50.memory_budget_bytes) {
+            throw "gpu particles 50k exceeds memory budget: $($p50.particle_buffer_bytes) > $($p50.memory_budget_bytes)"
+        }
+        if (-not $p50.buffer_stable) {
+            throw "gpu particles 50k: 状态缓冲帧间增长（容量漂移/重复建缓冲）"
+        }
+        if ($p50.draw_calls -ne 1 -or $p50.instances -ne 50000) {
+            throw "gpu particles 50k: instanced 记账变了 draws=$($p50.draw_calls) instances=$($p50.instances)（一次 draw、实例数 = capacity）"
+        }
+        if ($p50.vertices -ne 200000 -or $p50.triangles -ne 100000) {
+            throw "gpu particles 50k: 顶点/三角形不对 vertices=$($p50.vertices) triangles=$($p50.triangles)（4×/2× capacity）"
+        }
+        if ($p50.dropped_draws -ne 0) {
+            throw "gpu particles 50k: 本帧丢弃了 $($p50.dropped_draws) 次 draw（管线或绑定组不可用）"
+        }
+        if ($p50.non_finite -ne 0) {
+            throw "gpu particles 50k: 状态里出现非有限值（$($p50.non_finite)）"
+        }
+        if ($p50.gpu_alive -le 0 -or $p50.gpu_alive -gt 50000 -or $p50.cpu_live -le 0) {
+            throw "gpu particles 50k: 存活数异常 gpu=$($p50.gpu_alive) cpu=$($p50.cpu_live)（应落在 (0, 50000]）"
+        }
+        if ($p50.content_pixels -le 200) {
+            throw "gpu particles 50k: 粒子几乎没画进附件（content=$($p50.content_pixels)）"
+        }
+        if ($p50.default_mode -ne "cpu" -and $p50.default_mode -ne "gpu") {
+            throw "gpu particles 50k: 默认档取值非法（$($p50.default_mode)）"
+        }
+        if ($p50.default_mode -eq "gpu") {
+            # 选 gpu 必须真的有收益：任一条门槛成立，且总帧不慢于 CPU 档。
+            if (-not ($p50.cpu_side_gate -or $p50.total_gate) -or $p50.total_ratio -gt 1.0) {
+                throw "gpu particles 50k: 默认档选了 gpu 但门槛不成立 cpu_side=$($p50.cpu_side_ratio) total=$($p50.total_ratio)"
+            }
+        }
+        elseif ([string]::IsNullOrWhiteSpace($p50.default_mode_reason)) {
+            throw "gpu particles 50k: 默认档为 cpu 但没记录理由（结论必须可复核）"
+        }
+        Write-Host ("gpu_particles_50k_ok count=50000 state_bytes=2400000 default_mode={0} cpu_side_ratio={1:N3} total_ratio={2:N3}" -f `
+            $p50.default_mode, $p50.cpu_side_ratio, $p50.total_ratio) -ForegroundColor Green
     }
     Write-Host "WP0 benchmark baselines and semantic golden written and schema-checked: $baselineRoot" -ForegroundColor Green
 }

@@ -1,0 +1,5 @@
+warning: linker stdout: 正在创建库 E:\Codex\RustLua\engine\target\release\deps\paste-6a0cf11c7d3847fd.dll.lib 和对象 E:\Codex\RustLua\engine\target\release\deps\paste-6a0cf11c7d3847fd.dll.exp
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+report: engine/artifacts/p3/anim-golden/wp0-anim-golden.json

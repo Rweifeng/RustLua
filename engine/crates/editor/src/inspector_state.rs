@@ -129,6 +129,8 @@ pub struct ContainerFields {
     pub fill: bool,
     /// `start|center|end`。
     pub align: String,
+    /// `start|center|end|space_between|space_around|space_evenly`。
+    pub justify: String,
 }
 
 impl ContainerFields {
@@ -137,6 +139,8 @@ impl ContainerFields {
             .ok_or_else(|| format!("未知 Container kind：{}", self.kind))?;
         let align = rustlua_ui::ui_layout::ChildAlign::parse(&self.align)
             .ok_or_else(|| format!("未知对齐：{}", self.align))?;
+        let justify = rustlua_ui::ui_layout::Justify::parse(&self.justify)
+            .ok_or_else(|| format!("未知主轴分布：{}", self.justify))?;
         Ok(rustlua_ui::ui_layout::ContainerStyle {
             kind,
             padding: [
@@ -150,6 +154,7 @@ impl ContainerFields {
             stretch: self.stretch,
             fill: self.fill,
             align,
+            justify,
         })
     }
 
@@ -165,6 +170,7 @@ impl ContainerFields {
             stretch: style.stretch,
             fill: style.fill,
             align: style.align.as_str().to_owned(),
+            justify: style.justify.as_str().to_owned(),
         }
     }
 }
@@ -172,6 +178,121 @@ impl ContainerFields {
 impl Default for ContainerFields {
     fn default() -> Self {
         Self::from_style(rustlua_ui::ui_layout::ContainerStyle::default())
+    }
+}
+
+/// E05-4：Container 常用预设（Row/Column/Grid/Wrap）。
+///
+/// 预设只改**容器样式**（kind/spacing/columns），不写场景：调用方把结果留在
+/// Inspector 缓冲里，仍由 E08 提交点落成一条 Undo。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContainerPreset {
+    Row,
+    Column,
+    Grid,
+    Wrap,
+}
+
+impl ContainerPreset {
+    pub const ALL: [Self; 4] = [Self::Row, Self::Column, Self::Grid, Self::Wrap];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Row => "行 Row",
+            Self::Column => "列 Column",
+            Self::Grid => "网格 Grid",
+            Self::Wrap => "换行 Wrap",
+        }
+    }
+
+    pub fn apply(self, fields: &mut ContainerFields) {
+        match self {
+            Self::Row => {
+                fields.kind = "hbox".to_owned();
+                fields.spacing = 8.0;
+            }
+            Self::Column => {
+                fields.kind = "vbox".to_owned();
+                fields.spacing = 8.0;
+            }
+            Self::Grid => {
+                fields.kind = "grid".to_owned();
+                fields.spacing = 8.0;
+                if fields.columns <= 0 {
+                    fields.columns = 3;
+                }
+            }
+            Self::Wrap => {
+                fields.kind = "wrap".to_owned();
+                fields.spacing = 8.0;
+            }
+        }
+    }
+}
+
+/// E05-4：Inspector 可编辑的 `LayoutItem`（容器对单个子项的约束）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayoutItemFields {
+    pub min_size: [f32; 2],
+    pub max_size: [f32; 2],
+    pub preferred_size: [f32; 2],
+    pub size_percent: [f32; 2],
+    pub grow: f32,
+    pub shrink: f32,
+    /// 空串 = 继承容器对齐。
+    pub align_self: String,
+    /// 0 = 不约束宽高比。
+    pub aspect_ratio: f32,
+    pub visible: bool,
+}
+
+impl LayoutItemFields {
+    pub fn to_layout(&self) -> Result<rustlua_ui::ui_layout::LayoutItem, String> {
+        let align_self = if self.align_self.is_empty() {
+            None
+        } else {
+            Some(
+                rustlua_ui::ui_layout::ChildAlign::parse(&self.align_self)
+                    .ok_or_else(|| format!("未知子项对齐：{}", self.align_self))?,
+            )
+        };
+        let item = rustlua_ui::ui_layout::LayoutItem {
+            min_size: self.min_size,
+            max_size: self.max_size,
+            preferred_size: self.preferred_size,
+            size_percent: self.size_percent,
+            grow: self.grow,
+            shrink: self.shrink,
+            align_self,
+            aspect_ratio: (self.aspect_ratio != 0.0).then_some(self.aspect_ratio),
+            visible: self.visible,
+        };
+        // 引擎解析器是唯一校验门（非负/百分比 <=100/aspect >0），这里用往返调用它。
+        rustlua_ui::ui_layout::LayoutItem::from_component_str(&item.to_component_str())?;
+        Ok(item)
+    }
+
+    pub fn from_layout(item: rustlua_ui::ui_layout::LayoutItem) -> Self {
+        Self {
+            min_size: item.min_size,
+            max_size: item.max_size,
+            preferred_size: item.preferred_size,
+            size_percent: item.size_percent,
+            grow: item.grow,
+            shrink: item.shrink,
+            align_self: item
+                .align_self
+                .map(|align| align.as_str().to_owned())
+                .unwrap_or_default(),
+            aspect_ratio: item.aspect_ratio.unwrap_or(0.0),
+            visible: item.visible,
+        }
+    }
+}
+
+impl Default for LayoutItemFields {
+    fn default() -> Self {
+        Self::from_layout(rustlua_ui::ui_layout::LayoutItem::default())
     }
 }
 
@@ -193,6 +314,8 @@ pub struct InspectorSnapshot {
     /// `Text` / `WorldText` / `Image` / `UiLayout` **不在快照里**：都已迁到 schema 生成的
     /// 字段编辑器（第 22/23/25/31 轮），提交走 `EditorCommand::SetComponentField(s)`。
     pub container: Option<ContainerFields>,
+    /// E05-4：子项约束（实体携带 `LayoutItem` 时才有）。
+    pub layout_item: Option<LayoutItemFields>,
 }
 
 /// Inspector 对单个实体进行读取/编辑的**无状态**文档助手（E03）。
@@ -355,6 +478,26 @@ impl InspectorState {
         Ok(())
     }
 
+    /// E05-4：写回 `LayoutItem`（子项约束）。只在实体已携带该组件时调用；
+    /// 校验由引擎解析器兜底（非负、百分比 <= 100、aspect > 0）。
+    pub fn set_layout_item(
+        &self,
+        document: &mut SceneDocument,
+        id: SceneEntityId,
+        fields: LayoutItemFields,
+    ) -> Result<(), InspectorError> {
+        let item = fields
+            .to_layout()
+            .map_err(InspectorError::InvalidLayoutItem)?;
+        let entity = entity_mut(document, id)?;
+        let value = item.to_component_str();
+        if entity.components.get("LayoutItem") != Some(&value) {
+            entity.components.insert("LayoutItem".into(), value);
+            document.mark_dirty();
+        }
+        Ok(())
+    }
+
     /// E08：把一份完整 Inspector 快照**直写**文档（不建 history、不落盘）。
     ///
     /// 语义与 `apply_inspector` 的 `history.execute` 闭包完全一致，供「Scene View
@@ -399,6 +542,9 @@ impl InspectorState {
         // 批量覆盖意义有限，与 Tilemap/Animation 同策略）。
         if let Some(container) = snapshot.container {
             self.set_container(document, id, container)?;
+        }
+        if let Some(layout_item) = snapshot.layout_item {
+            self.set_layout_item(document, id, layout_item)?;
         }
         if let Some(tilemap) = tilemap_component
             && let Some(entity) = document.scene.entities.get_mut(&id)
@@ -466,6 +612,14 @@ fn snapshot_for(entity: &SceneEntity) -> Result<InspectorSnapshot, InspectorErro
                 rustlua_ui::ui_layout::ContainerStyle::from_component_str(value)
                     .map(|style| Some(ContainerFields::from_style(style)))
                     .map_err(InspectorError::InvalidContainer)
+            })?,
+        layout_item: entity
+            .components
+            .get("LayoutItem")
+            .map_or(Ok(None), |value| {
+                rustlua_ui::ui_layout::LayoutItem::from_component_str(value)
+                    .map(|item| Some(LayoutItemFields::from_layout(item)))
+                    .map_err(InspectorError::InvalidLayoutItem)
             })?,
     })
 }
@@ -620,6 +774,8 @@ pub enum InspectorError {
     InvalidButton(String),
     #[error("Container 数据无效：{0}")]
     InvalidContainer(String),
+    #[error("LayoutItem 数据无效：{0}")]
+    InvalidLayoutItem(String),
 }
 
 #[cfg(test)]
@@ -1091,5 +1247,131 @@ mod tests {
         .expect("引擎解析器必须认得 Text");
         assert_eq!(parsed.font_size, rustlua_ui::ui::UI_TEXT_BASE_PX);
         assert_eq!(parsed.font, "", "默认不写 font 字段");
+    }
+
+    /// E05-4：Inspector 的 Wrap 与 justify 必须真正落到 `Container` 组件串上，
+    /// 并能在回读快照时原样恢复（面板缓冲与文档编码之间不丢字段）。
+    #[test]
+    fn container_wrap_and_justify_round_trip() {
+        let (mut document, inspector, id) = setup();
+        let fields = ContainerFields {
+            kind: "wrap".to_owned(),
+            justify: "space_evenly".to_owned(),
+            spacing: 6.0,
+            ..ContainerFields::default()
+        };
+        inspector
+            .set_container(&mut document, id, fields.clone())
+            .unwrap();
+        let raw = document.scene.entities[&id].components["Container"].clone();
+        assert!(raw.contains("kind=wrap"), "raw={raw}");
+        assert!(raw.contains("justify=space_evenly"), "raw={raw}");
+        let parsed =
+            rustlua_ui::ui_layout::ContainerStyle::from_component_str(&raw).expect("engine parser");
+        assert_eq!(
+            parsed.kind,
+            rustlua_ui::ui_layout::ContainerKind::Wrap,
+            "Wrap 必须是引擎认得的 kind"
+        );
+        assert_eq!(parsed.justify, rustlua_ui::ui_layout::Justify::SpaceEvenly);
+        assert_eq!(
+            inspector
+                .snapshot(&document, id)
+                .unwrap()
+                .container
+                .expect("snapshot"),
+            fields
+        );
+    }
+
+    /// E05-4：预设必须产出引擎能解析的样式；Grid 不覆盖用户已填的列数。
+    #[test]
+    fn container_presets_produce_valid_styles() {
+        let mut row = ContainerFields {
+            columns: 5,
+            ..ContainerFields::default()
+        };
+        ContainerPreset::Row.apply(&mut row);
+        assert_eq!(row.kind, "hbox");
+        assert_eq!(row.spacing, 8.0);
+        ContainerPreset::Grid.apply(&mut row);
+        assert_eq!(row.kind, "grid");
+        assert_eq!(row.columns, 5, "用户已填的列数必须保留");
+        let mut automatic = ContainerFields::default();
+        ContainerPreset::Grid.apply(&mut automatic);
+        assert_eq!(automatic.columns, 3, "自动列数预设为 3");
+        for preset in ContainerPreset::ALL {
+            let mut candidate = ContainerFields::default();
+            preset.apply(&mut candidate);
+            assert!(
+                candidate.to_style().is_ok(),
+                "预设 {} 必须产出引擎可解析的样式",
+                preset.label()
+            );
+        }
+    }
+
+    /// E05-4：LayoutItem 缓冲写回组件串并原样回读；非法值由引擎解析器拒绝。
+    #[test]
+    fn layout_item_round_trip_and_engine_gate() {
+        let (mut document, inspector, id) = setup();
+        document
+            .scene
+            .entities
+            .get_mut(&id)
+            .unwrap()
+            .components
+            .insert(
+                "LayoutItem".to_owned(),
+                rustlua_ui::ui_layout::LayoutItem::default().to_component_str(),
+            );
+        let fields = LayoutItemFields {
+            min_size: [10.0, 20.0],
+            max_size: [200.0, 100.0],
+            size_percent: [50.0, 0.0],
+            grow: 2.0,
+            shrink: 0.5,
+            align_self: "end".to_owned(),
+            aspect_ratio: 1.5,
+            visible: false,
+            ..LayoutItemFields::default()
+        };
+        inspector
+            .set_layout_item(&mut document, id, fields.clone())
+            .unwrap();
+        let raw = document.scene.entities[&id].components["LayoutItem"].clone();
+        for expected in [
+            "min_size=10.00,20.00",
+            "size_percent=50.00,0.00",
+            "align_self=end",
+            "aspect_ratio=1.5000",
+            "visible=false",
+        ] {
+            assert!(raw.contains(expected), "raw={raw} missing {expected}");
+        }
+        assert_eq!(
+            inspector
+                .snapshot(&document, id)
+                .unwrap()
+                .layout_item
+                .expect("snapshot"),
+            fields
+        );
+        let invalid = LayoutItemFields {
+            size_percent: [120.0, 0.0],
+            ..LayoutItemFields::default()
+        };
+        assert!(matches!(
+            inspector.set_layout_item(&mut document, id, invalid),
+            Err(InspectorError::InvalidLayoutItem(_))
+        ));
+        let negative_aspect = LayoutItemFields {
+            aspect_ratio: -1.0,
+            ..LayoutItemFields::default()
+        };
+        assert!(matches!(
+            inspector.set_layout_item(&mut document, id, negative_aspect),
+            Err(InspectorError::InvalidLayoutItem(_))
+        ));
     }
 }

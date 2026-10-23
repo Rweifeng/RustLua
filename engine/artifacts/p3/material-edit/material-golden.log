@@ -1,0 +1,8 @@
+warning: linker stdout: 正在创建库 E:\Codex\RustLua\engine\target\debug\deps\paste-0545853f57693019.dll.lib 和对象 E:\Codex\RustLua\engine\target\debug\deps\paste-0545853f57693019.dll.exp
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+
+thread 'main' (5948) panicked at crates\engine\examples\wp0_material_golden.rs:100:5:
+四组材质两两差异太小（最小最大通道差 1）：覆盖或参数没有生效
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

@@ -35,6 +35,7 @@ rustlua-gameplay = { path = "../rustlua-gameplay" }
 # `bundle-write`：分包面板要在编辑器里**按发布同款编码器**预估每组的落盘字节
 # （zstd 是构建期依赖，编辑器是原生程序，不进 wasm）。
 rustlua-infra = { path = "../rustlua-infra", features = ["bundle-write"] }
+rustlua-editor-api = { path = "../rustlua-editor-api" }
 rustlua-input = { path = "../rustlua-input" }
 rustlua-math = { path = "../rustlua-math" }
 rustlua-physics = { path = "../rustlua-physics" }
@@ -42,6 +43,8 @@ rustlua-render = { path = "../rustlua-render" }
 rustlua-scene = { path = "../rustlua-scene" }
 rustlua-scripting = { path = "../rustlua-scripting" }
 rustlua-ui = { path = "../rustlua-ui" }
+# P3-E03-2：画布编辑器的图模型/校验/代码生成（叶子 crate，不依赖引擎）。
+rustlua-visual-script = { path = "../rustlua-visual-script" }
 [target."cfg(windows)".dependencies]
 # `Win32_System_ProcessStatus` + `Win32_System_Threading`：docs/55 阶段 0 的长会话
 # soak 报告要给出**真实进程工作集**，否则"8 小时无持续内存增长"只能靠感觉判断。

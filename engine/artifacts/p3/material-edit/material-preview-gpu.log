@@ -1,0 +1,15 @@
+warning: linker stdout: 正在创建库 E:\Codex\RustLua\engine\target\debug\deps\paste-0545853f57693019.dll.lib 和对象 E:\Codex\RustLua\engine\target\debug\deps\paste-0545853f57693019.dll.exp
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `paste` (lib) generated 1 warning
+   Compiling engine v0.1.1 (E:\Codex\RustLua\engine\crates\engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.94s
+     Running unittests src\lib.rs (engine\target\debug\deps\engine-52eaba981e5b58ea.exe)
+
+running 1 test
+material_preview_ok disk=[124, 124, 124] preview=[138, 46, 46] delta=78 restored=true
+test host::renderer::tests::material_preview::in_memory_material_preview_shades_and_clears_cleanly ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 312 filtered out; finished in 1.52s
+

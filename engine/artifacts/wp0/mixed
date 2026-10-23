@@ -1,0 +1,51 @@
+{
+  "adapter": {
+    "backend": "Dx12",
+    "name": "Microsoft Basic Render Driver"
+  },
+  "gpu_timestamp_supported": false,
+  "occlusion": {
+    "behind_sprite_occluded": true,
+    "front_sprite_visible": true,
+    "samples": {
+      "behind": [
+        55,
+        60,
+        67,
+        255
+      ],
+      "front": [
+        255,
+        0,
+        0,
+        255
+      ],
+      "veil": [
+        191,
+        42,
+        47,
+        255
+      ],
+      "wall": [
+        55,
+        60,
+        67,
+        255
+      ]
+    },
+    "translucent_blended": true
+  },
+  "report_version": "wp0-mixed-golden-v1",
+  "scene": "mixed",
+  "semantic": {
+    "draw_calls": 5,
+    "instances": 4,
+    "meshes": 1,
+    "triangles": 8,
+    "world_sprites": 3
+  },
+  "target": {
+    "height": 360,
+    "width": 640
+  }
+}

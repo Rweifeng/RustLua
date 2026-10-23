@@ -1,0 +1,7 @@
+version=1
+name=p3-r02-alpha-opaque
+base_color=0.9,0.9,0.9,1
+metallic=0
+roughness=0.6
+base_color_texture=assets/textures/p3-r02-base-alpha.png
+alpha_mode=opaque

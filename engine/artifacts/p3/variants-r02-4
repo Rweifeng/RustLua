@@ -1,0 +1,23 @@
+{
+  "adapter": {
+    "backend": "Dx12",
+    "name": "Microsoft Basic Render Driver"
+  },
+  "budget_ms": 250.0,
+  "cache_hits": 0,
+  "cache_misses": 6,
+  "compile_ms": 243.3548,
+  "deferred_axes": [
+    "normal_map",
+    "ibl"
+  ],
+  "report_version": "wp0-variant-golden-v1",
+  "resource_stats": {
+    "pipeline_compile_ms": 243.3548,
+    "pipeline_variant_hits": 0,
+    "pipeline_variant_misses": 6,
+    "pipeline_variants": 6
+  },
+  "variant_count": 6,
+  "within_budget": true
+}

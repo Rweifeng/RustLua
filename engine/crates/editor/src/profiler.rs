@@ -11,6 +11,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use engine::host::profile_trace::{
+    CaptureLevel, DEFAULT_SPAN_CAPACITY, SpanStat, SpanToken, SpanTrace, SpanTraceSummary,
+};
+
 /// Default per-frame budget (60 FPS) used to count over-budget frames.
 pub const DEFAULT_FRAME_BUDGET_MS: f32 = 16.7;
 /// Default number of retained samples per series (about 4 seconds at 60 FPS).
@@ -189,6 +193,10 @@ pub struct EditorProfiler {
     commands: BTreeMap<String, (SampleRing, f64)>,
     counters: BTreeMap<String, u64>,
     gauges: BTreeMap<String, f64>,
+    /// P3-E06-2：按需开启的 span 采集（默认 Off，不开销）。
+    trace: SpanTrace,
+    /// 当前帧的根 span 令牌；`begin_frame` 开启、`end_frame` 闭合。
+    frame_span: Option<SpanToken>,
 }
 
 impl Default for EditorProfiler {
@@ -214,11 +222,17 @@ impl EditorProfiler {
             commands: BTreeMap::new(),
             counters: BTreeMap::new(),
             gauges: BTreeMap::new(),
+            trace: SpanTrace::new(CaptureLevel::Off, DEFAULT_SPAN_CAPACITY),
+            frame_span: None,
         }
     }
 
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
+        if !enabled {
+            self.frame_span = None;
+            self.trace.abort_open();
+        }
     }
 
     pub fn enabled(&self) -> bool {
@@ -233,6 +247,9 @@ impl EditorProfiler {
     pub fn begin_frame(&mut self, now: Instant) {
         if self.enabled {
             self.frame_started = Some(now);
+            // 重复 begin 时上一帧的未闭合 span 已不可信（结束时间会被算进新帧）。
+            self.trace.abort_open();
+            self.frame_span = self.trace.begin_at("frame", "editor", now, Vec::new());
         }
     }
 
@@ -244,6 +261,9 @@ impl EditorProfiler {
         let Some(started) = self.frame_started.take() else {
             return;
         };
+        if let Some(token) = self.frame_span.take() {
+            self.trace.end_at(token, now);
+        }
         let elapsed_ms = now.saturating_duration_since(started).as_secs_f32() * 1000.0;
         if elapsed_ms > self.frame_budget_ms {
             self.over_budget_frames = self.over_budget_frames.saturating_add(1);
@@ -254,6 +274,13 @@ impl EditorProfiler {
     pub fn record_panel(&mut self, name: &str, elapsed: Duration) {
         if !self.enabled {
             return;
+        }
+        if self.trace.level().allows_fine() {
+            let now = Instant::now();
+            let start = now.checked_sub(elapsed).unwrap_or(now);
+            let start = self.frame_started.map_or(start, |frame| start.max(frame));
+            self.trace
+                .push_span_at(name, "panel", start, elapsed, 1, Vec::new());
         }
         let entry = self
             .panels
@@ -268,6 +295,13 @@ impl EditorProfiler {
         if !self.enabled {
             return;
         }
+        if self.trace.level().allows_fine() {
+            let now = Instant::now();
+            let start = now.checked_sub(elapsed).unwrap_or(now);
+            let start = self.frame_started.map_or(start, |frame| start.max(frame));
+            self.trace
+                .push_span_at(name, "command", start, elapsed, 1, Vec::new());
+        }
         let entry = self
             .commands
             .entry(name.to_owned())
@@ -275,6 +309,82 @@ impl EditorProfiler {
         let ms = elapsed.as_secs_f32() * 1000.0;
         entry.0.push(ms);
         entry.1 += f64::from(ms);
+    }
+
+    /// P3-E06-2：开始 span 捕获（`Off` 等价于停止）。已在捕获中时重新开始会清空
+    /// 旧记录——捕获大小有界，不留两份。
+    pub fn start_span_capture(&mut self, level: CaptureLevel) {
+        self.trace = SpanTrace::new(level, DEFAULT_SPAN_CAPACITY);
+        self.frame_span = None;
+    }
+
+    pub fn stop_span_capture(&mut self) {
+        self.trace.set_level(CaptureLevel::Off);
+        self.frame_span = None;
+    }
+
+    /// 清空已记录的 span（采集档位不变，继续捕获时从头累积）。
+    pub fn clear_span_records(&mut self) {
+        self.trace.clear();
+        self.frame_span = None;
+    }
+
+    #[must_use]
+    pub fn span_capture_level(&self) -> CaptureLevel {
+        self.trace.level()
+    }
+
+    /// 当前档位是否记录运行时系统级 span（`System`/`Fine`）。
+    #[must_use]
+    pub fn capture_records_systems(&self) -> bool {
+        self.trace.level().records_spans()
+    }
+
+    #[must_use]
+    pub fn span_capture_summary(&self) -> SpanTraceSummary {
+        self.trace.summary()
+    }
+
+    #[must_use]
+    pub fn span_top_n(&self, limit: usize) -> Vec<SpanStat> {
+        self.trace.top_n(limit)
+    }
+
+    #[must_use]
+    pub fn span_report_text(&self, top: usize) -> String {
+        self.trace.to_text(top)
+    }
+
+    /// Chrome Trace Event JSON（`traceEvents` / `ph:"X"` / `ts/dur` / `pid/tid` / `args`）。
+    #[must_use]
+    pub fn span_trace_json(&self) -> String {
+        self.trace.to_chrome_trace_json()
+    }
+
+    /// 桥接 `FrameScheduleReport` 的 per-system 耗时。报告只有耗时没有开始时间，
+    /// 调用方按顺序铺开（`synthetic=true`）：trace 里看到的是"同一段调度内谁占了多少"，
+    /// 而不是各系统真实的墙钟起点。
+    pub fn record_runtime_span(
+        &mut self,
+        name: &str,
+        stage: &str,
+        start: Instant,
+        elapsed: Duration,
+    ) {
+        if !self.capture_records_systems() {
+            return;
+        }
+        self.trace.push_span_at(
+            name,
+            "system",
+            start,
+            elapsed,
+            1,
+            vec![
+                ("stage", stage.to_owned()),
+                ("synthetic", "true".to_owned()),
+            ],
+        );
     }
 
     pub fn bump(&mut self, counter: &str) {
@@ -476,5 +586,68 @@ mod tests {
         assert_eq!(profiler.frame_samples(), 0);
         assert!(profiler.report().panels[0].samples == 0);
         assert_eq!(profiler.counter("scan"), 1);
+    }
+
+    /// E06-2：Fine 档记录帧根 span、面板与命令；导出 JSON 能被解析。
+    #[test]
+    fn span_capture_records_frame_panels_and_commands() {
+        let mut profiler = EditorProfiler::new(DEFAULT_FRAME_BUDGET_MS);
+        assert_eq!(profiler.span_capture_level(), CaptureLevel::Off);
+        profiler.start_span_capture(CaptureLevel::Fine);
+        let start = Instant::now();
+        profiler.begin_frame(start);
+        profiler.record_panel("hierarchy", Duration::from_millis(2));
+        profiler.record_command("undo", Duration::from_millis(1));
+        profiler.end_frame(start + Duration::from_millis(8));
+        let summary = profiler.span_capture_summary();
+        assert_eq!(summary.level, CaptureLevel::Fine);
+        assert_eq!(summary.spans, 3, "frame + panel + command");
+        assert_eq!(summary.dropped, 0);
+        let names = profiler
+            .span_top_n(8)
+            .iter()
+            .map(|stat| stat.name.clone())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"frame".to_owned()));
+        assert!(names.contains(&"hierarchy".to_owned()));
+        assert!(names.contains(&"undo".to_owned()));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&profiler.span_trace_json()).expect("trace 必须是合法 JSON");
+        let events = parsed["traceEvents"].as_array().expect("traceEvents");
+        assert_eq!(events.len(), 3);
+        assert!(profiler.span_report_text(5).contains("level=fine"));
+        profiler.stop_span_capture();
+        assert_eq!(profiler.span_capture_level(), CaptureLevel::Off);
+    }
+
+    /// System 档只留帧与系统级 span；面板/命令这类细粒度 scope 不开销。
+    #[test]
+    fn system_capture_level_skips_fine_scopes() {
+        let mut profiler = EditorProfiler::new(DEFAULT_FRAME_BUDGET_MS);
+        profiler.start_span_capture(CaptureLevel::System);
+        let start = Instant::now();
+        profiler.begin_frame(start);
+        profiler.record_panel("hierarchy", Duration::from_millis(2));
+        profiler.record_runtime_span("physics2d_step", "Physics", start, Duration::from_millis(1));
+        profiler.end_frame(start + Duration::from_millis(8));
+        let summary = profiler.span_capture_summary();
+        assert_eq!(summary.spans, 2, "frame + runtime system");
+        assert!(profiler.capture_records_systems());
+        let stats = profiler.span_top_n(4);
+        assert!(stats.iter().any(|stat| stat.name == "physics2d_step"));
+        assert!(!stats.iter().any(|stat| stat.name == "hierarchy"));
+    }
+
+    #[test]
+    fn off_capture_records_no_spans() {
+        let mut profiler = EditorProfiler::new(DEFAULT_FRAME_BUDGET_MS);
+        let start = Instant::now();
+        profiler.begin_frame(start);
+        profiler.record_panel("hierarchy", Duration::from_millis(2));
+        profiler.record_runtime_span("lua_update", "Script", start, Duration::from_millis(1));
+        profiler.end_frame(start + Duration::from_millis(8));
+        assert!(profiler.span_capture_summary().spans == 0);
+        assert!(!profiler.capture_records_systems());
+        assert!(!profiler.span_trace_json().contains("physics"));
     }
 }

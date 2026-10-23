@@ -51,6 +51,83 @@ fn scene_view_3d_cache_records_actual_render_size() {
     ));
 }
 
+/// E18：Safe Area 由 `CanvasConfig.safe_area` 驱动（不再用固定 5%）：
+/// insets 按设计分辨率钳制后走设计框同一映射；全 0 不画；极端 insets 退化为零尺寸。
+#[test]
+fn safe_area_frame_uses_canvas_insets_and_clamps() {
+    let panel = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(800.0, 600.0));
+    let config = rustlua_ui::ui_layout::CanvasConfig {
+        safe_area: [40.0, 20.0, 40.0, 20.0],
+        ..Default::default()
+    };
+    let frame = design_safe_frame(
+        panel,
+        egui::vec2(0.0, 0.0),
+        1.0,
+        1.0,
+        egui::Vec2::ZERO,
+        (1280, 720),
+        &config,
+    )
+    .expect("insets 非零时应有安全区框");
+    // 设计框 1280×720 以面板中心 (400,300) 为中心 → 左上 (-240,-60)；
+    // insets (40,20) 后左上 (-200,-40)，尺寸 1200×680。
+    assert_eq!(frame.min, egui::pos2(-200.0, -40.0));
+    assert_eq!(frame.size(), egui::vec2(1200.0, 680.0));
+
+    let zero = rustlua_ui::ui_layout::CanvasConfig::default();
+    assert!(
+        design_safe_frame(
+            panel,
+            egui::vec2(0.0, 0.0),
+            1.0,
+            1.0,
+            egui::Vec2::ZERO,
+            (1280, 720),
+            &zero
+        )
+        .is_none(),
+        "insets 全 0 时安全区就是整块画布，不重复画框"
+    );
+
+    let huge = rustlua_ui::ui_layout::CanvasConfig {
+        safe_area: [2000.0, 2000.0, 2000.0, 2000.0],
+        ..Default::default()
+    };
+    let clamped = design_safe_frame(
+        panel,
+        egui::vec2(0.0, 0.0),
+        1.0,
+        1.0,
+        egui::Vec2::ZERO,
+        (1280, 720),
+        &huge,
+    )
+    .unwrap();
+    assert_eq!(clamped.size(), egui::vec2(0.0, 0.0));
+}
+
+/// E18：裁剪读数只统计设计框被面板裁掉的设计像素；框完整可见时四边为 0。
+#[test]
+fn design_frame_crop_reports_only_clipped_design_pixels() {
+    let panel = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(800.0, 600.0));
+    let frame = design_resolution_frame(
+        panel,
+        egui::vec2(0.0, 0.0),
+        1.0,
+        1.0,
+        egui::Vec2::ZERO,
+        (1280, 720),
+    );
+    assert_eq!(
+        design_frame_crop(panel, frame, 1.0, 1.0),
+        [240.0, 60.0, 240.0, 60.0]
+    );
+    let larger_panel =
+        egui::Rect::from_min_max(egui::pos2(-400.0, -100.0), egui::pos2(1200.0, 800.0));
+    assert_eq!(design_frame_crop(larger_panel, frame, 1.0, 1.0), [0.0; 4]);
+}
+
 /// 设计分辨率包围框映射：以 `center`（游戏相机中心）为世界中心，尺寸按
 /// zoom/ppp 缩放、按 pan 平移，与 `entity_2d_screen_box` 共用同一世界→面板变换。
 #[test]

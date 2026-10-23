@@ -162,9 +162,15 @@ pub(crate) enum MenuAction {
     ToggleSceneView,
     ToggleGameView,
     ToggleConsole,
+    /// P3-E01-3：`.anim` 时间线面板（与控制台同叶）。
+    ToggleTimeline,
+    /// P3-E03-2：可视化脚本画布（默认隐藏，双击 `.vgraph` 打开）。
+    ToggleGraph,
     ToggleDomainData,
     TogglePublishPanel,
     TogglePerformancePanel,
+    /// P3-E04-4：插件诊断窗口（列表/错误/启停/重载）。
+    TogglePluginDiagnostics,
     TogglePixelGrid,
     ToggleSceneGuides,
     ToggleSafeArea,
@@ -331,6 +337,10 @@ const WINDOW_MENU: &[MenuRow] = &[
         "性能分析面板",
         MenuAction::TogglePerformancePanel,
     )),
+    MenuRow::Item(MenuItem::new(
+        "插件诊断",
+        MenuAction::TogglePluginDiagnostics,
+    )),
     MenuRow::Separator,
     MenuRow::WorkspaceTabs,
     MenuRow::ViewModes,
@@ -373,6 +383,8 @@ impl EditorApp {
                 self.draw_menu_rows(ui, rows);
             });
         }
+        // E04-2：已加载插件声明的菜单条目（禁用/卸载后立即消失）。
+        self.draw_plugin_menu(ui);
         // 崩溃恢复：RustLua 特有，检测到快照时才出现（Unity 没有对应菜单）。
         if !self.recovery_scan.candidates.is_empty() {
             self.draw_recovery_menu(ui);
@@ -472,6 +484,8 @@ impl EditorApp {
                         ("属性", MenuAction::ToggleInspector),
                         ("AI 助手", MenuAction::ToggleAssistant),
                         ("控制台", MenuAction::ToggleConsole),
+                        ("时间线", MenuAction::ToggleTimeline),
+                        ("可视化脚本", MenuAction::ToggleGraph),
                     ] {
                         let mut shown = self.panel_is_shown(action);
                         if ui.checkbox(&mut shown, label).clicked() {
@@ -566,6 +580,8 @@ impl EditorApp {
             MenuAction::ToggleSceneView => self.show_scene_view,
             MenuAction::ToggleGameView => self.show_game_view,
             MenuAction::ToggleConsole => self.show_lua_console,
+            MenuAction::ToggleTimeline => self.show_timeline_panel,
+            MenuAction::ToggleGraph => self.show_graph_panel,
             _ => false,
         }
     }
@@ -658,6 +674,8 @@ impl EditorApp {
             MenuAction::ToggleInspector => self.show_inspector_panel = !self.show_inspector_panel,
             MenuAction::ToggleAssistant => self.show_assistant_panel = !self.show_assistant_panel,
             MenuAction::ToggleConsole => self.show_lua_console = !self.show_lua_console,
+            MenuAction::ToggleTimeline => self.show_timeline_panel = !self.show_timeline_panel,
+            MenuAction::ToggleGraph => self.show_graph_panel = !self.show_graph_panel,
             // 中央两个视图共用一条守卫（最后一个不许关）。
             MenuAction::ToggleSceneView => {
                 let visible = !self.show_scene_view;
@@ -673,6 +691,9 @@ impl EditorApp {
             MenuAction::TogglePublishPanel => self.publish.show_panel = !self.publish.show_panel,
             MenuAction::TogglePerformancePanel => {
                 self.show_performance_panel = !self.show_performance_panel;
+            }
+            MenuAction::TogglePluginDiagnostics => {
+                self.show_plugin_diagnostics = !self.show_plugin_diagnostics;
             }
             MenuAction::TogglePixelGrid => self.show_pixel_grid = !self.show_pixel_grid,
             MenuAction::ToggleSceneGuides => self.show_scene_guides = !self.show_scene_guides,
@@ -861,7 +882,7 @@ mod tests {
                     }
                     app.run_menu_action(item.action);
                 }
-                // 面板开关是复选框行（不是 `Item`），七个动作只在这里可达。
+                // 面板开关是复选框行（不是 `Item`），八个动作只在这里可达。
                 if matches!(row, MenuRow::PanelToggles) {
                     for action in [
                         MenuAction::ToggleResources,
@@ -871,6 +892,8 @@ mod tests {
                         MenuAction::ToggleInspector,
                         MenuAction::ToggleAssistant,
                         MenuAction::ToggleConsole,
+                        MenuAction::ToggleTimeline,
+                        MenuAction::ToggleGraph,
                     ] {
                         app.run_menu_action(action);
                     }
@@ -892,6 +915,8 @@ mod tests {
             MenuAction::ToggleInspector,
             MenuAction::ToggleConsole,
             MenuAction::ToggleAssistant,
+            MenuAction::ToggleTimeline,
+            MenuAction::ToggleGraph,
         ] {
             let before = app.panel_is_shown(action);
             app.run_menu_action(action);

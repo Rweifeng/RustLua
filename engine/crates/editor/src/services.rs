@@ -108,6 +108,13 @@ pub enum EditorCommand {
         field: String,
         value: String,
     },
+    /// P3-E02：移除 `MeshRenderer.material=` 覆盖，回到 glTF 内嵌材质。
+    ///
+    /// 不能复用 `SetComponentField(field="material", value="")`：组件编码器把空 `material=`
+    /// 视为非法（正确行为），所以"删除字段"必须是独立动作。
+    ClearMeshRendererMaterial {
+        entity: SceneEntityId,
+    },
     /// **原子多字段**写入（一次提交 = 一条 Undo）：组件级动作（如 `UiLayout` 的锚点预设）
     /// 会同时改多个字段，逐字段提交会留下多条历史。
     SetComponentFields {
@@ -431,6 +438,7 @@ impl WorkspaceController {
             | EditorCommand::RenameSelection { .. }
             | EditorCommand::PasteComponents { .. }
             | EditorCommand::SetComponentField { .. }
+            | EditorCommand::ClearMeshRendererMaterial { .. }
             | EditorCommand::SetComponentFields { .. }
             | EditorCommand::SetComponentFieldOnSelection { .. }
             | EditorCommand::SetComponentFieldsOnSelection { .. }

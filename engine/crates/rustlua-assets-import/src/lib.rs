@@ -1,4 +1,4 @@
-//! 资源**导入层**：把源文件（png/wav/lua/gltf/atlas/ttf/scene/prefab）校验并加工成运行时能
+//! 资源**导入层**：把源文件（png/wav/lua/gltf/atlas/ttf/scene/prefab/anim）校验并加工成运行时能
 //! 直接读的产物。
 //!
 //! 这一层**只在构建工具与编辑器里编译**：`assetc`（打包/导入 CLI）、`editor`（资源面板），
@@ -11,7 +11,7 @@
 //!
 //! | 模块 | 职责 | 依赖的重东西 |
 //! |---|---|---|
-//! | [`importers`] | 六个内置 [`Importer`](rustlua_assets::importer::Importer) 实现 + 注册表组装 | `image` / `rodio` / `ab_glyph` / `mlua` |
+//! | [`importers`] | 九个内置 [`Importer`](rustlua_assets::importer::Importer) 实现 + 注册表组装 | `image` / `rodio` / `ab_glyph` / `mlua` |
 //! | `batch` | 批量导入驱动（逐项状态写回资源库，一项坏不打断整批） | — |
 //! | `atlas_plan` | 图集规划：配置 → 任务 → 装箱 | `image` |
 //! | `atlas_pack` | 装箱器本体（矩形打包 + 页面合成） | `image` |
@@ -23,6 +23,7 @@ pub mod atlas_pack;
 pub mod atlas_plan;
 pub mod batch;
 pub mod char_collect;
+pub mod environment;
 pub mod import_cache;
 pub mod importers;
 
@@ -31,9 +32,9 @@ pub use batch::{
 };
 pub use importers::{builtin, core_importers};
 
-/// 完整导入注册表：本 crate 的六个核心导入器 + `rustlua-scene` 的 Scene/Prefab 导入器。
+/// 完整导入注册表：本 crate 的九个核心导入器 + `rustlua-scene` 的 Scene/Prefab 导入器。
 ///
-/// 为什么组装点在**这里**而不是 `rustlua-scene`：组装需要同时看见"六个核心导入器"（住本
+/// 为什么组装点在**这里**而不是 `rustlua-scene`：组装需要同时看见"九个核心导入器"（住本
 /// crate，因为要 `image`/`rodio`）和"场景导入器"（住 `rustlua-scene`，因为要用 `Scene`/
 /// `Prefab` 类型）。scene 一旦反过来依赖本 crate，运行时就会被拖进导入层的编译图 —— 那正是
 /// 这次拆分要拆掉的东西。所以：`scene` 提供零件，本 crate 提供装配。
@@ -55,11 +56,15 @@ mod tests {
     use rustlua_assets::resource_kind::ResourceKind;
     use std::path::Path;
 
-    /// 装配出来的注册表必须**八种 kind 齐全**：六个核心 + Scene/Prefab。
+    /// 装配出来的注册表必须**十一种 kind 齐全**：九个核心 + Scene/Prefab。
     ///
     /// 这条测试原先住在 `rustlua_scene::asset_import`（装配点在那里）。搬家时说清了原因
     /// 才不留空洞：装配需要同时看见两侧的零件，而核心零件要 `image`/`rodio`，scene 不能依赖
     /// 它们 —— 所以装配点必须在导入层，测试跟着走。
+    ///
+    /// 这份清单同时也是**回归门**：`ResourceKind::from_path` 认了扩展名却没有导入器时，
+    /// 扫描会把该类型的每一份文件报成「不支持的资源类型」（P3-R02 的 `.material` 就这样
+    /// 漏过一次，示例项目 25 份材质全红）。新增 kind 必须同时在这里加一条。
     #[test]
     fn full_registry_includes_core_and_scene_importers() {
         let registry: ImporterRegistry = full_registry();
@@ -72,6 +77,9 @@ mod tests {
             ResourceKind::Model,
             ResourceKind::Atlas,
             ResourceKind::Font,
+            ResourceKind::Environment,
+            ResourceKind::Material,
+            ResourceKind::Animation,
         ] {
             let importer = registry.get(kind).expect("full importer exists");
             assert_eq!(importer.kind(), kind);

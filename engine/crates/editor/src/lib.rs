@@ -1,6 +1,8 @@
+pub mod anim_ops;
 pub mod diagnostics;
 pub mod file_watcher;
 pub mod layout;
+pub mod material_ops;
 pub mod perf_fixture;
 pub mod play_control;
 pub mod prefab_graph;
@@ -13,8 +15,8 @@ pub use play_control::{
 
 pub use layout::{
     AssistantLayout, EditorLayout, LAYOUT_VERSION, LayoutLoad, PANEL_ASSISTANT, PANEL_CONSOLE,
-    PANEL_GAME_VIEW, PANEL_HIERARCHY, PANEL_INSPECTOR, PANEL_RESOURCE, PANEL_SCENE_VIEW,
-    layout_path, load_layout, reset_layout, save_layout,
+    PANEL_GAME_VIEW, PANEL_GRAPH, PANEL_HIERARCHY, PANEL_INSPECTOR, PANEL_RESOURCE,
+    PANEL_SCENE_VIEW, PANEL_TIMELINE, layout_path, load_layout, reset_layout, save_layout,
 };
 
 pub use file_watcher::{
@@ -74,8 +76,8 @@ pub use rustlua_assets::resource_kind::ResourceKind;
 pub mod inspector_state;
 
 pub use inspector_state::{
-    Collider3dFields, ContainerFields, InspectorError, InspectorSnapshot, InspectorState,
-    TransformFields,
+    Collider3dFields, ContainerFields, ContainerPreset, InspectorError, InspectorSnapshot,
+    InspectorState, LayoutItemFields, TransformFields,
 };
 
 pub mod scene_tree_state;

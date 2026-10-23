@@ -1,0 +1,115 @@
+{
+  "adapter": {
+    "backend": "Dx12",
+    "name": "Microsoft Basic Render Driver"
+  },
+  "report_version": "wp0-2d-golden-v1",
+  "scene": "wp0-2d-golden",
+  "semantic": {
+    "background": [
+      56,
+      75,
+      97
+    ],
+    "center_pixel": [
+      255,
+      0,
+      0
+    ],
+    "collider_debug": {
+      "center_pixel": [
+        255,
+        0,
+        0
+      ],
+      "default_enabled": false,
+      "draw_calls": 4,
+      "extra_vertices": 24,
+      "leaked_pixels": 0,
+      "outline_pixel": [
+        124,
+        255,
+        160
+      ],
+      "total_vertices": 84
+    },
+    "draw_calls": 3,
+    "draw_ranges": 3,
+    "instances": 10,
+    "leaked_pixels": 0,
+    "regions": [
+      {
+        "max": [
+          152.0,
+          182.0
+        ],
+        "min": [
+          88.0,
+          118.0
+        ],
+        "name": "sprite_solid",
+        "non_background_pixels": 4096
+      },
+      {
+        "max": [
+          296.0,
+          166.0
+        ],
+        "min": [
+          264.0,
+          134.0
+        ],
+        "name": "sprite_sheet",
+        "non_background_pixels": 1024
+      },
+      {
+        "max": [
+          168.0,
+          274.0
+        ],
+        "min": [
+          40.0,
+          210.0
+        ],
+        "name": "tilemap",
+        "non_background_pixels": 8192
+      }
+    ],
+    "tile_rows": {
+      "in_order_lower": [
+        454400,
+        360640,
+        343872
+      ],
+      "in_order_upper": [
+        549120,
+        549824,
+        603648
+      ],
+      "row_zero_is_bottom": true,
+      "swapped_lower": [
+        549120,
+        549824,
+        603648
+      ],
+      "swapped_upper": [
+        454400,
+        360640,
+        343872
+      ]
+    },
+    "tilemap_culling": {
+      "both_culled_vertices": 198,
+      "default_enabled": true,
+      "full_vertices": 972,
+      "pixels_identical": true,
+      "tiles_only_vertices": 204
+    },
+    "triangles": 20,
+    "vertices": 60
+  },
+  "target": {
+    "height": 300,
+    "width": 400
+  }
+}

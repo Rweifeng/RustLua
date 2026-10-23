@@ -7,7 +7,10 @@
 use crate::runtime_perf::{PreviewPerfMeter, RuntimePerfSnapshot};
 use eframe::egui;
 use engine::host::frame::{FontAtlasMap, VectorAtlasMap, VectorFontHandle};
-use engine::host::{ReadbackMetrics, ReadbackStatus, Renderer, RuntimeScene, ScriptErrorPolicy};
+use engine::host::{
+    EnvironmentApplyReport, ReadbackMetrics, ReadbackStatus, Renderer, RuntimeScene,
+    ScriptErrorPolicy, apply_scene_environment,
+};
 use rustlua_camera::camera::Viewport;
 use rustlua_infra::time_step::FixedTimeStep;
 use rustlua_input::input::InputSnapshot;
@@ -85,6 +88,8 @@ pub(crate) struct PreviewSession {
     script_errors_seen: u64,
     /// 运行时性能读数：帧间隔 / 一秒滚动帧率 / 本帧更新与 Lua 耗时。
     perf: PreviewPerfMeter,
+    /// P3-R03：创建会话时环境应用的结果（性能面板显示档位/回退原因）。
+    environment_apply: Option<EnvironmentApplyReport>,
 }
 
 enum PreviewTexture {
@@ -106,6 +111,7 @@ impl PreviewSession {
         custom_font_atlases: FontAtlasMap,
         shared_vector_atlas: Option<VectorFontHandle>,
         custom_vector_atlases: VectorAtlasMap,
+        shader_dir: Option<&Path>,
     ) -> Result<Self, String> {
         tracing::info!(target: "editor", "[preview] project_root={}", project_root.display());
         let mut runtime = RuntimeScene::from_scene(Some(project_root), scene.clone())
@@ -144,7 +150,7 @@ impl PreviewSession {
         runtime.set_custom_vector_atlases(custom_vector_atlases);
         // Canvas 空间 UI 参考分辨率 = 设计分辨率（预览渲染尺寸）。
         runtime.set_ui_reference([size.0 as f32, size.1 as f32]);
-        let renderer = Renderer::new_offscreen(
+        let mut renderer = Renderer::new_offscreen(
             device.clone(),
             queue.clone(),
             Some(project_root.to_path_buf()),
@@ -152,6 +158,39 @@ impl PreviewSession {
             false,
         )
         .map_err(|error| error.to_string())?;
+        // P3-R05-4：Play 预览用与 Scene View **同一份**生效源（两条路径读不同的 shader 会让
+        // "Game 视图和 Scene 长得不一样"变成无法解释的现象）。失败只记日志——渲染器保留旧管线，
+        // Play 继续跑。预览每次 Play 新建，改完文件重 Play 即生效（预览不做轮询）。
+        if let Some(dir) = shader_dir {
+            match renderer.set_shader_override_dir(Some(dir.to_path_buf())) {
+                Ok(report) if report.rebuilt > 0 => {
+                    tracing::info!(target: "editor", "[preview] shader：{}", report.summary());
+                }
+                Ok(_) => {}
+                Err(error) => tracing::error!(
+                    target: "editor",
+                    "[preview] shader 覆盖目录失效（旧管线保留）：{error}"
+                ),
+            }
+        }
+        // P3-R03-4：环境是场景级状态，只在会话创建时应用一次（每帧上传 cubemap 太贵）。
+        let environment_apply = runtime.environment_report().map(|report| {
+            let applied = apply_scene_environment(&mut renderer, &runtime, &report);
+            match &applied.fallback_reason {
+                Some(reason) => tracing::warn!(target: "editor", "[preview] {reason}"),
+                None => tracing::info!(
+                    target: "editor",
+                    map = %report.resolved_path,
+                    ibl = applied.ibl_mode.as_str(),
+                    tier = applied.tier.as_str(),
+                    "[preview] environment applied"
+                ),
+            }
+            applied
+        });
+        // P3-R07-1：Play 预览把 compute 能力告知运行时（与 Scene View、GameApp 同一口径），
+        // 场景发射器的落点报告才不会在两条预览路径上各说一套。
+        runtime.set_particle_compute_available(renderer.compute_enabled());
         let (width, height) = size;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("rustlua-editor-preview"),
@@ -186,6 +225,7 @@ impl PreviewSession {
             script_error_note: None,
             script_errors_seen: 0,
             perf: PreviewPerfMeter::default(),
+            environment_apply,
         };
         session.sync_native_texture(device);
         Ok(session)
@@ -288,6 +328,7 @@ impl PreviewSession {
     pub(crate) fn perf_snapshot(&self, process_memory_mib: Option<f64>) -> RuntimePerfSnapshot {
         let metrics = self.renderer.last_frame_metrics();
         let resources = self.renderer.resource_stats();
+        let environment = self.runtime.environment_report();
         let (fps, frame_ms, update_ms, lua_ms, frames) = self.perf.snapshot();
         let gpu_timing_note = if metrics.gpu_frame_us.is_some() {
             None
@@ -322,6 +363,18 @@ impl PreviewSession {
                 .iter()
                 .map(|pass| pass.as_str())
                 .collect(),
+            gpu_passes: self.renderer.gpu_pass_report(),
+            hdr_active: metrics.hdr_active,
+            scene_format: metrics.scene_format,
+            tonemap: metrics.tonemap,
+            ibl_mode: self.renderer.ibl_mode(),
+            ibl_tier: Some(self.renderer.ibl_tier()),
+            environment_map: environment.as_ref().and_then(|report| report.map.clone()),
+            environment_error: self
+                .environment_apply
+                .as_ref()
+                .and_then(|apply| apply.fallback_reason.clone())
+                .or_else(|| environment.and_then(|report| report.error)),
             loaded_textures: resources.loaded_textures,
             font_atlas_textures: resources.font_atlas_textures,
             texture_bytes: resources.texture_bytes,
@@ -338,8 +391,13 @@ impl PreviewSession {
             vertex_buffer_capacity: resources.vertex_buffer_capacity,
             vertex_buffer_growths: resources.vertex_buffer_growths,
             vertex_bytes_peak: resources.vertex_bytes_peak,
+            pipeline_variants: resources.pipeline_variants,
+            pipeline_variant_hits: resources.pipeline_variant_hits,
+            pipeline_variant_misses: resources.pipeline_variant_misses,
+            pipeline_compile_ms: resources.pipeline_compile_ms as f32,
             readback: resources.readback,
             process_memory_mib,
+            lua_heap_bytes: self.runtime.lua_memory_bytes(),
             asset_entries: self.runtime.asset_count(),
             scene_entities: self.runtime.scene_entity_count(),
             runtime_entities: self.runtime.runtime_entity_count(),
@@ -421,6 +479,9 @@ impl PreviewSession {
         // 累加器还没凑够一个固定步：本帧没有跑逻辑步（边沿必须留给下一有效帧），
         // 但仍然渲染当前状态，避免画面停住。
         let stepped = report.steps > 0;
+        // P3-R07-2：脚本步之后、构建网格之前派发 GPU 粒子（与 Play 宿主同一条通道）。
+        // 必须在 `render_into_texture` 之前：那一步只提交本帧已推进的缓冲。
+        self.dispatch_gpu_particles(report.delta_seconds);
         // 容错档下脚本错误不再中断 Play，因此必须**主动显示**：否则"某个回调已经停用"
         // 在编辑器里只表现为"游戏莫名其妙不动了"，没有任何线索。
         self.refresh_script_error_note();
@@ -495,6 +556,28 @@ impl PreviewSession {
         DuePreviewTick {
             tick: stepped_tick(stepped, tick),
             script_micros,
+        }
+    }
+
+    /// P3-R07-2：把本帧 Lua 排队的 `mode='gpu'` burst 交给预览渲染器，并推进 GPU 池一次。
+    ///
+    /// Play 与 GameApp 必须走同一个派发口：否则编辑器里 `mode='gpu'` 的爆发会在
+    /// `run_script_steps` 入口被整批倒回 CPU 池（"不丢粒子"的保底），作者看到的是
+    /// "Play 里没有 GPU 粒子、跑 exe 就有"。
+    fn dispatch_gpu_particles(&mut self, delta_seconds: f32) {
+        let report = self
+            .runtime
+            .dispatch_gpu_particle_bursts(&mut self.renderer, delta_seconds);
+        if report.requested > 0 {
+            tracing::debug!(
+                target: "editor",
+                requested = report.requested,
+                gpu = report.gpu,
+                fallback = report.fallback,
+                systems = report.systems,
+                reason = report.fallback_reason.map_or("none", |reason| reason.as_str()),
+                "[preview] gpu burst 派发"
+            );
         }
     }
 
@@ -721,6 +804,7 @@ mod tests {
                 FontAtlasMap::default(),
                 None,
                 VectorAtlasMap::default(),
+                None,
             )
             .expect("create preview session");
             assert_eq!(session.size(), (width, height));
@@ -764,6 +848,7 @@ mod tests {
             FontAtlasMap::default(),
             None,
             VectorAtlasMap::default(),
+            None,
         )
         .expect("create preview session");
         // 假装这一帧离上一帧已经过去 100ms（≈ 编辑器 10fps）→ 60Hz 下应补 ~6 步。
@@ -803,6 +888,7 @@ mod tests {
             FontAtlasMap::default(),
             None,
             VectorAtlasMap::default(),
+            None,
         )
         .expect("create preview session");
         session.force_tick();
@@ -886,6 +972,7 @@ mod tests {
             FontAtlasMap::default(),
             None,
             VectorAtlasMap::default(),
+            None,
         )
         .expect("create preview session");
         // 驱动多帧让 egui 纹理存在（回读异步，故循环强制到期）。

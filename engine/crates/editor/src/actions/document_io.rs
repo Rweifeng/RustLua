@@ -230,6 +230,7 @@ impl EditorApp {
             self.entity_name = snapshot.name;
             self.collider3d = snapshot.collider3d.unwrap_or_default();
             self.container = snapshot.container.unwrap_or_default();
+            self.layout_item = snapshot.layout_item.unwrap_or_default();
             self.lua_script = snapshot.lua_script.unwrap_or_default();
             self.refresh_ui_editors(id);
             self.tilemap.map = scene

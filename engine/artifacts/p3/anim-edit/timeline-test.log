@@ -1,0 +1,28 @@
+warning: linker stdout: 正在创建库 E:\Codex\RustLua\engine\target\debug\deps\paste-0545853f57693019.dll.lib 和对象 E:\Codex\RustLua\engine\target\debug\deps\paste-0545853f57693019.dll.exp
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `paste` (lib) generated 1 warning
+   Compiling editor v0.1.1 (E:\Codex\RustLua\engine\crates\editor)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.08s
+     Running unittests src\lib.rs (engine\target\debug\deps\editor-3dd80dcff3b8a3a4.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 196 filtered out; finished in 0.00s
+
+     Running unittests src\main.rs (engine\target\debug\deps\editor-3fced46228c0a9a3.exe)
+
+running 9 tests
+test panels::timeline::tests::absent_selection_or_component_is_explained ... ok
+test panels::timeline::tests::selected_entity_lists_its_tracks_and_samples ... ok
+test panels::timeline::tests::renaming_the_entity_does_not_reload_the_clip ... ok
+test panels::timeline::tests::dirty_session_blocks_selection_switch_until_reverted ... ok
+test panels::timeline::tests::track_and_event_editing_is_undoable ... ok
+test panels::timeline::tests::snap_rounds_the_playhead_and_rejects_duplicate_times ... ok
+test panels::timeline::tests::editing_keyframes_updates_preview_undo_and_save ... ok
+test panels::timeline::tests::broken_or_missing_clips_report_what_is_wrong ... ok
+test panels::timeline::tests::preview_never_touches_the_document ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 424 filtered out; finished in 0.02s
+

@@ -37,6 +37,9 @@ const BUDGET: &[(&str, &[&str])] = &[
     // 所有领域 crate 都会被拖进同一张编译图。
     ("rustlua-lua-api", &[]),
     ("rustlua-infra", &[]),
+    // P3-E04-1：编辑器插件 API。纯叶子（std only），编辑器与未来插件共用；
+    // 它不认识 editor/engine，反向依赖一出现就会在这里失败。
+    ("rustlua-editor-api", &[]),
     // P1 ⑤-10：`Transform`/`Entity`/`Tilemap` 的 Lua 面跟着类型进 ECS，因此多认 `lua-api`。
     ("rustlua-ecs", &["infra", "lua-api", "math"]),
     // `lua` 模块：audio 的 Lua 绑定下沉到这里（契约层只依赖 mlua，不成环）。
@@ -50,12 +53,21 @@ const BUDGET: &[(&str, &[&str])] = &[
     // 导入层的实现搬去了下面的 `rustlua-assets-import`，`image`/`rodio`/`ab_glyph`/`mlua`
     // 随之离开运行时编译图。
     ("rustlua-assets", &["ecs", "infra", "math"]),
-    // **导入层**：六个内置导入器 + 图集规划/装箱 + 导入缓存。只在 `assetc`/`editor` 里编译，
+    // **导入层**：八个内置导入器 + 图集规划/装箱 + 导入缓存。只在 `assetc`/`editor` 里编译，
     // `engine`/`game_web` 不许依赖它——那条反向边会把 PNG/JPEG 编解码与整套音频解码器
     // 重新拖进浏览器产物，正是这次拆分要拆掉的东西。
     // `scene`：装配完整的导入注册表要用它的 Scene/Prefab 导入器零件（`scene_importers()`）；
     // 方向是 `assets-import → scene`，不是反过来。
-    ("rustlua-assets-import", &["assets", "infra", "scene", "ui"]),
+    // `math`：P3-R03-1 的 equirect→cubemap 投影与 SH9 预滤波要用 `math3d::Vec3` 做球面
+    // 方向运算（`environment.rs`）。`math` 是叶子 crate（谁都能依赖、它谁也不依赖），
+    // 运行时侧的 `rustlua-assets`/`env_asset` 早就依赖同一个 `Vec3`，所以这条边既不开
+    // 新方向，也不把任何重型依赖带进导入层。
+    // `animation`：P3-E01-4b 的 `.anim` 导入器用运行时同一台解析器（`AnimClip::from_text`）。
+    // `scene` 已经依赖 animation，因此这条边同样不开新方向、不新增传递 crate。
+    (
+        "rustlua-assets-import",
+        &["animation", "assets", "infra", "math", "scene", "ui"],
+    ),
     // P1 ⑤-8：相机绑定（`camera`/`camera3d`/`camera2d`）与拾取共享链都住进相机域，因此多认
     // 一个 `lua-api`（叶子契约层：`Handle`/`api_error`，谁都能依赖它）。
     ("rustlua-camera", &["ecs", "lua-api", "math"]),
@@ -68,6 +80,9 @@ const BUDGET: &[(&str, &[&str])] = &[
     ("rustlua-component-codec", &[]),
     // `lua-api`：`lua_nav` 的导航绑定下沉到 UI 域（P1 ⑤-3）。契约层是叶子，不违反倒置。
     ("rustlua-ui", &["component-codec", "ecs", "lua-api", "math"]),
+    // P3-E03：`.vgraph` 图格式 + 校验 + 确定性 Lua 生成。纯叶子（serde/serde_json/thiserror），
+    // 运行时与编辑器都依赖它，方向只能是"别人 → visual-script"，不能反向拉进场景/渲染。
+    ("rustlua-visual-script", &[]),
     // P1 ⑤-10：动画组件的 Lua 面进 animation 域。
     ("rustlua-animation", &["assets", "ecs", "lua-api", "math"]),
     (
@@ -92,8 +107,10 @@ const BUDGET: &[(&str, &[&str])] = &[
     // ── 聚合层：预算只减不增 ────────────────────────────────────────────────
     // `rustlua-scripting`：P1 已削掉 assets（`AssetId` 下沉到 infra::ids）、audio 与 input
     // （绑定下沉到 `rustlua-audio` / `rustlua-input`，接线在 `rustlua_gameplay::{audio_lua,input_lua}`）。
-    // 剩余 10 条领域依赖 + `lua-api` 契约层里，animation/camera/gameplay/physics/ui 的绑定
+    // 剩余 11 条领域依赖 + `lua-api` 契约层里，animation/camera/gameplay/physics/ui 的绑定
     // 仍是"借 `Rc<RefCell<ScriptState>>` 这个大中枢"的老形状，下沉路线见 docs/62。
+    // `visual-script`（P3-E03-3）：运行时在加载实体脚本时把 `.vgraph` 编译成同一套 Lua；
+    // 它是纯叶子（不依赖任何领域 crate），不会扩大这条聚合边的传递依赖面。
     (
         "rustlua-scripting",
         &[
@@ -108,6 +125,7 @@ const BUDGET: &[(&str, &[&str])] = &[
             "render",
             "scene",
             "ui",
+            "visual-script",
         ],
     ),
     // `rustlua-scene`：**P1 ④ 已收口**（2026-10-20）——表现层组件按注册表处理：

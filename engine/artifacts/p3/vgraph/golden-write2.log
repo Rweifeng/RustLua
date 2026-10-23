@@ -1,0 +1,4 @@
+   Compiling rustlua-visual-script v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-visual-script)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.04s
+     Running `engine\target\debug\examples\wp0_vgraph_golden.exe --write`
+vgraph_golden_written path=baselines/p3-e03-interact.generated.lua bytes=2048

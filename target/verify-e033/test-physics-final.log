@@ -1,0 +1,49 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+     Running unittests src\lib.rs (target\debug\deps\rustlua_physics-fdcfa36cf01a9650.exe)
+
+running 35 tests
+test physics3d::tests::raycast_and_overlap_queries_name_entities ... ok
+test physics3d::tests::parses_ball_cuboid_and_capsule_colliders ... ok
+test physics3d::tests::query_dirty_defers_the_bvh_rebuild_to_the_next_query_or_step ... ok
+test physics3d::tests::debug_shapes_report_pose_dynamic_and_fixed_wireframes ... ok
+test physics3d::tests::dynamic_body_integrates_velocity_in_zero_gravity ... ok
+test physics3d::tests::set_position_teleports_a_body ... ok
+test physics::tests::ccd_is_declared_per_body_and_can_be_toggled_at_runtime ... ok
+test physics::tests::collider_dynamic_flag_parses_and_reaches_the_body ... ok
+test physics::tests::debug_shapes_report_world_pose_offset_and_sensor ... ok
+test physics::tests::dynamic_body_integrates_velocity ... ok
+test physics3d::tests::ccd_stops_a_fast_body_from_tunneling_in_3d ... ok
+test physics::tests::parses_ball_and_cuboid_colliders ... ok
+test physics::tests::queries_hit_colliders_not_entity_positions ... ok
+test physics::tests::ccd_stops_a_fast_body_from_tunneling_through_a_thin_wall ... ok
+test physics_lua::tests::every_physics_function_is_installed ... ok
+test physics_lua::tests::events_are_drained_once ... ok
+test physics_lua::tests::debug_draw_is_recorded_per_dimension ... ok
+test physics_lua::tests::positions_in_radius_scans_ecs_transforms ... ok
+test physics_lua::tests::dead_entity_is_rejected_before_touching_rapier ... ok
+test physics_parity::kinematic_sync_reads_ecs_and_only_dynamic_bodies_in_both_worlds ... ok
+test physics_lua::tests::reentrant_borrow_names_the_physics_state ... ok
+test physics_parity::debug_shapes_expose_the_same_fields_in_both_worlds ... ok
+test physics_state::tests::debug_requests_are_per_dimension_and_one_shot ... ok
+test physics_parity::queries_hit_colliders_and_respect_groups_in_both_worlds ... ok
+test physics_state::tests::handle_names_itself_for_reentrancy_errors ... ok
+test physics_state::tests::pending_writeback_is_taken_once ... ok
+test physics_state::tests::scene_transition_resets_worlds_and_queues ... ok
+test physics::tests::collision_layers_and_masks_filter_contacts ... ok
+test physics::tests::static_wall_blocks_dynamic_body ... ok
+test physics3d::tests::collision_layers_and_masks_filter_contacts ... ok
+test physics3d::tests::sensor_reports_contact_without_blocking ... ok
+test physics3d::tests::static_wall_blocks_dynamic_body ... ok
+test physics::tests::dynamic_body_with_offset_collider_never_orbits_its_entity ... ok
+test physics_parity::dynamic_motion_and_contact_events_agree_across_dimensions ... ok
+test physics3d::tests::body_falls_under_gravity_until_landing_on_ground ... ok
+
+test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+   Doc-tests rustlua_physics
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+PHYSICS_FINAL_EXIT=0

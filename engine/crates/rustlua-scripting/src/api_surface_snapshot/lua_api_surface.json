@@ -8,7 +8,12 @@
         "events",
         "frame",
         "get",
+        "pause",
+        "play",
+        "player_events",
+        "seek",
         "set",
+        "stop",
         "time"
       ],
       "name": "animation"

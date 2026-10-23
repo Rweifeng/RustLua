@@ -26,3 +26,5 @@ entity	8	CcdProbe
 component	8	Transform	position=0.000000000,1.400000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=0.500000000,0.500000000,0.500000000
 component	8	MeshRenderer	mesh=assets/models/m8-test-triangle.glb
 component	8	Collider3d	shape=ball;radius=0.4;ccd=true
+entity	9	StudioEnvironment
+component	9	Environment	map=assets/env/studio.hdr;intensity=1.000000000;rotation=0.000000000

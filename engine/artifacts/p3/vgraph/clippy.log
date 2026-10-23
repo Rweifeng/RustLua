@@ -1,0 +1,26 @@
+    Checking rustlua-visual-script v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-visual-script)
+error: the `Err`-variant returned from this function is very large
+   --> crates\rustlua-visual-script\src\graph.rs:102:37
+    |
+102 |       pub fn from_json(text: &str) -> Result<Self, GraphError> {
+    |                                       ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+   ::: crates\rustlua-visual-script\src\error.rs:81:5
+    |
+ 81 | /     TypeMismatch {
+ 82 | |         from_node: String,
+ 83 | |         from_port: String,
+ 84 | |         from_type: &'static str,
+...   |
+ 87 | |         to_type: &'static str,
+ 88 | |     },
+    | |_____- the largest variant contains at least 128 bytes
+    |
+    = help: try reducing the size of `error::GraphError`, for example by boxing large elements or replacing it with `Box<error::GraphError>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#result_large_err
+    = note: `-D clippy::result-large-err` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::result_large_err)]`
+
+error: could not compile `rustlua-visual-script` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `rustlua-visual-script` (lib test) due to 1 previous error

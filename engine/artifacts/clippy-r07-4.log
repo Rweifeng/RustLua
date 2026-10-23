@@ -1,0 +1,6 @@
+    Checking engine v0.1.1 (E:\Codex\RustLua\engine\crates\engine)
+    Checking editor v0.1.1 (E:\Codex\RustLua\engine\crates\editor)
+    Checking game v0.1.1 (E:\Codex\RustLua\engine\crates\game)
+    Checking gpu-web-probe v0.1.0 (E:\Codex\RustLua\engine\crates\gpu-web-probe)
+    Checking game_web v0.1.1 (E:\Codex\RustLua\engine\crates\game_web)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 24.89s

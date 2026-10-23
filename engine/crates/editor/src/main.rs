@@ -9,6 +9,8 @@ mod dock;
 mod framegate;
 mod geometry;
 mod gizmo;
+/// P3-E03-2：`.vgraph` 文档（加载/编辑/撤销/原子保存 + 生成 Lua）。
+mod graph_ops;
 mod gui_evidence;
 mod hierarchy_ops;
 mod import;
@@ -16,6 +18,7 @@ mod menu;
 mod panels;
 mod perf_baseline;
 mod play_sync;
+mod plugins;
 mod preview_session;
 mod publish;
 mod runtime_perf;
@@ -24,6 +27,7 @@ mod scene_interaction;
 mod scene_ops;
 mod scene_resize;
 mod scene_tools;
+mod shader_watch;
 mod ui_editor;
 mod util;
 
@@ -35,6 +39,7 @@ use crate::scene_interaction::SceneTool;
 use crate::util::{configure_cjk_fallback, format_project_error};
 
 use std::{
+    collections::BTreeMap,
     env,
     error::Error,
     path::{Path, PathBuf},
@@ -54,7 +59,7 @@ use rustlua_camera::camera::DEFAULT_2D_CAMERA_CENTER;
 use rustlua_ecs::tilemap::Tilemap;
 use rustlua_ecs::transform::Transform3D;
 use rustlua_ecs::transform::Vec2;
-use rustlua_infra::editor_plugins::PluginRegistry;
+use rustlua_editor_api::PluginRegistry;
 use rustlua_infra::logging::LogSink;
 use rustlua_infra::preview_diagnostics::DiagnosticCollector;
 use rustlua_input::input::InputSnapshot;
@@ -90,6 +95,8 @@ struct Arguments {
     /// M75：以 MCP stdio server 形态运行（供外部 AI 客户端拉起）。
     #[cfg(feature = "ai-bridge")]
     mcp_stdio: bool,
+    /// P3-R05-4：显式指定 shader 覆盖目录；不给时编辑器用项目 `shaders/`（编辑器默认始终监听）。
+    shader_dir: Option<PathBuf>,
 }
 
 fn parse_arguments() -> Result<Arguments, String> {
@@ -123,6 +130,12 @@ fn parse_arguments() -> Result<Arguments, String> {
                     .ok_or_else(|| "--perf-report 需要一个路径参数".to_owned())?;
                 arguments.perf_report = Some(PathBuf::from(path));
             }
+            "--shader-dir" => {
+                let path = values
+                    .next()
+                    .ok_or_else(|| "--shader-dir 需要一个路径参数".to_owned())?;
+                arguments.shader_dir = Some(PathBuf::from(path));
+            }
             "--gui-smoke" => arguments.gui_smoke = true,
             "--gui-report" => {
                 let path = values
@@ -143,10 +156,13 @@ fn parse_arguments() -> Result<Arguments, String> {
                      \x20     editor --project <项目路径> --restore-spatial\n\
                      \x20     editor --perf-baseline [--perf-report <路径>]\n\
                      \x20     editor --gui-smoke [--gui-report <路径>]\n\
+                     \x20     editor --project <项目路径> [--shader-dir <目录>]\n\
                      {mcp_help}\
                      \x20     （迁移命令可加 --migrate-report <路径> 把报告落盘；有实体被拒绝或出错时退出码为 2）\n\
                      \x20     （--perf-baseline 无窗口运行 docs/55 ER-01 基线场景；有场景不达标时退出码为 2）\n\
-                     \x20     （--gui-smoke 无窗口运行 docs/55 阶段 0 的合成输入 GUI 用例；有用例失败时退出码为 2）"
+                     \x20     （--gui-smoke 无窗口运行 docs/55 阶段 0 的合成输入 GUI 用例；有用例失败时退出码为 2）\n\
+                     \x20     （shader 热重载：编辑器默认监听项目 shaders/，同名 .wgsl 覆盖内置源；\n\
+                     \x20       --shader-dir 或 RUSTLUA_SHADER_DIR 可把覆盖目录指到别处）"
                 );
                 std::process::exit(0);
             }
@@ -461,6 +477,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             app.set_render_state(creation_context.wgpu_render_state.clone());
             app.initialize_ui_extensions();
             app.project_loaded = arguments.project.is_some();
+            // P3-R05-4：`--shader-dir` 只改覆盖目录的位置；不给就是项目 `shaders/`（编辑器默认监听它）。
+            app.shader_dir_flag = arguments.shader_dir.clone();
             #[cfg(feature = "ai-bridge")]
             if mcp_stdio && let Err(error) = app.start_ai_bridge(&creation_context.egui_ctx) {
                 eprintln!("{error}");
@@ -526,6 +544,7 @@ struct EditorApp {
     mesh_renderer: String,
     collider3d: Collider3dFields,
     container: editor::ContainerFields,
+    layout_item: editor::LayoutItemFields,
     tilemap: TilemapEditorState,
     animation: AnimationEditorState,
     lua_script: String,
@@ -629,6 +648,8 @@ struct EditorApp {
     show_scene_guides: bool,
     show_safe_area: bool,
     show_pixel_grid: bool,
+    /// E05-4：Widget 模式布局调试 overlay（bounds/padding/gap/overflow）。
+    show_layout_debug: bool,
     /// 调试覆盖层开关：把当前场景里**所有**碰撞区域（Tilemap solid 格 + 实体 Collider）
     /// 画在 2D Scene 视图上，与选中无关，供跑地图调试用。唯一写入口是 View 菜单。
     show_collision_overlay: bool,
@@ -666,6 +687,17 @@ struct EditorApp {
     show_game_view: bool,
     /// M75-03 内置 AI 助手标签的显示开关（与其它常驻面板一样只由 View 菜单写）。
     show_assistant_panel: bool,
+    /// P3-E01-3 时间线面板（与控制台同叶）的显示开关。
+    show_timeline_panel: bool,
+    /// P3-E03-2 可视化脚本画布：默认隐藏，双击 `.vgraph` 资源时打开。
+    show_graph_panel: bool,
+    /// P3-E03-2 图文档与画布状态（只活在进程内，不反向写场景文档）。
+    graph: crate::panels::graph::GraphPanelState,
+    /// P3-E01-3 时间线预览状态：播放头、最近事件与装配结果。
+    /// 只活在进程内（布局文件不记播放头），也绝不反向写场景文档。
+    timeline: crate::panels::timeline::TimelineState,
+    /// P3-E02 材质编辑会话（Inspector 的「材质」段）：与被编辑的 `.material` 绑定。
+    material: crate::panels::material::MaterialState,
     /// M75-03 助手会话状态：服务商设置（无密钥）、对话、内联确认与在途请求。
     #[cfg(feature = "ai-bridge")]
     assistant: crate::panels::assistant::AssistantState,
@@ -700,6 +732,8 @@ struct EditorApp {
     preview: Option<PreviewSession>,
     /// 设计分辨率（宽×高）：Game 视图渲染目标 / Scene 视图包围框尺寸（Unity 方式）。
     preview_resolution: (u32, u32),
+    /// `preview_diagnostics` 的 Layout 诊断按哪个分辨率解算（E05-4 overlay 角标）。
+    layout_diagnostics_resolution: (u32, u32),
     /// 可用的预览分辨率列表（可增删）。
     preview_resolutions: Vec<(u32, u32)>,
     /// 是否正在输入自定义分辨率。
@@ -756,14 +790,29 @@ struct EditorApp {
     file_watcher: Option<editor::WatchHandle>,
     /// 文件轮询间隔（默认 500 ms：预算 2 秒，留足余量给后台扫描与提交）。
     file_watch_interval: std::time::Duration,
+    /// P3-R05-4：`--shader-dir` 的显式覆盖目录（`None` = 用项目 `shaders/`）。
+    shader_dir_flag: Option<PathBuf>,
+    /// 下一次检查 shader 覆盖目录的时刻（150 ms 去抖；`None` = 这一轮没排队）。
+    shader_watch_due: Option<Instant>,
+    /// 生效的覆盖目录在项目**之外**：文件观察器只走项目相对路径，那种目录只能自轮询。
+    shader_watch_external: bool,
+    /// 已播过的重载失败文本：同一条原因不该每 150ms 刷一行 Console。
+    shader_error_shown: Option<String>,
     /// 持久化布局（docs/55 P1）：面板宽度/可见性、工作台标签、视图模式与缩放。
     layout: editor::EditorLayout,
     /// 布局加载结果（缺失/损坏时的原因，用于状态栏提示与"重置布局"）。
     layout_load: editor::LayoutLoad,
     /// Editor Profiler（docs/55 P0）：帧/面板/命令耗时、计数器与 gauge。
     profiler: editor::EditorProfiler,
+    /// E06-2：上一次桥接进 trace 的调度报告签名 `(steps, total_ns, timings)`。
+    /// 暂停时 `last_schedule_report` 不变，没有这道签名会在每个编辑器帧重复记一遍。
+    last_trace_report: Option<(u32, u128, usize)>,
     /// Play 预览的运行时性能快照与趋势窗口（帧率 / draw / setpass / 内存 / 资源缓存）。
     runtime_perf: crate::runtime_perf::RuntimePerfTracker,
+    /// E06-4：上一次编辑器采集包（本次采集导出时与它对比）。
+    last_capture: Option<engine::host::CaptureBundle>,
+    /// E06-4：采集/对比的一行状态（性能面板顶部显示）。
+    capture_status: Option<String>,
     hierarchy_visible_cache: crate::panels::hierarchy::HierarchyVisibleCache,
     /// Hierarchy 小写化名称缓存（按文档修订失效）：搜索改词不再重算 10k 个名字。
     hierarchy_lower: crate::panels::hierarchy::HierarchyLowerCache,
@@ -822,9 +871,13 @@ struct EditorApp {
     preview_diagnostics: DiagnosticCollector,
     /// E25: layout cache statistics exposed through the performance panel.
     ui_layout_cache: UiLayoutCache,
-    /// E27: fault-isolated extension container held by the editor app.
+    /// E27/E04: fault-isolated extension container held by the editor app.
     plugin_registry: PluginRegistry,
     plugin_status: Vec<String>,
+    /// E04-2：插件面板的开/关状态；禁用插件时保留，重新启用后恢复。
+    plugin_panel_visible: BTreeMap<String, bool>,
+    /// E04-4：插件诊断窗口（列表/错误/启停/重载）。
+    show_plugin_diagnostics: bool,
     /// E06 未保存切换保护：待确认的文档离开操作。挂起时顶层弹「保存并继续 /
     /// 放弃并继续 / 取消」确认窗，确认前**不**改动文档 / 选择 / 视图 / 历史。
     pending_document_change: Option<crate::actions::PendingChange>,
@@ -1274,6 +1327,7 @@ impl EditorApp {
             mesh_renderer: String::new(),
             collider3d: Collider3dFields::default(),
             container: editor::ContainerFields::default(),
+            layout_item: editor::LayoutItemFields::default(),
             tilemap: TilemapEditorState::default(),
             animation: AnimationEditorState::default(),
             lua_script: String::new(),
@@ -1323,6 +1377,7 @@ impl EditorApp {
             show_scene_guides: false,
             show_safe_area: false,
             show_pixel_grid: false,
+            show_layout_debug: false,
             show_collision_overlay: false,
             show_performance_panel: false,
             snap_enabled: false,
@@ -1343,6 +1398,11 @@ impl EditorApp {
             show_scene_view: true,
             show_game_view: true,
             show_assistant_panel: true,
+            show_timeline_panel: true,
+            show_graph_panel: false,
+            graph: crate::panels::graph::GraphPanelState::default(),
+            timeline: crate::panels::timeline::TimelineState::default(),
+            material: crate::panels::material::MaterialState::default(),
             #[cfg(feature = "ai-bridge")]
             assistant,
             show_domain_data_panel: false,
@@ -1363,6 +1423,7 @@ impl EditorApp {
             render_state: None,
             preview: None,
             preview_resolution: (1280, 720),
+            layout_diagnostics_resolution: (0, 0),
             // E18：多分辨率预设（横屏/竖屏/超宽/小屏），覆盖常见设备比例。
             preview_resolutions: vec![
                 (800, 600),
@@ -1396,10 +1457,17 @@ impl EditorApp {
             resource_refresh_job: None,
             file_watcher: None,
             file_watch_interval: std::time::Duration::from_millis(500),
+            shader_dir_flag: None,
+            shader_watch_due: None,
+            shader_watch_external: false,
+            shader_error_shown: None,
             layout,
             layout_load: editor::LayoutLoad::Missing,
             profiler: editor::EditorProfiler::new(editor::DEFAULT_FRAME_BUDGET_MS),
+            last_trace_report: None,
             runtime_perf: crate::runtime_perf::RuntimePerfTracker::default(),
+            last_capture: None,
+            capture_status: None,
             hierarchy_visible_cache: Default::default(),
             hierarchy_lower: Default::default(),
             hierarchy_row_probe: Default::default(),
@@ -1429,6 +1497,8 @@ impl EditorApp {
             ui_layout_cache: UiLayoutCache::default(),
             plugin_registry: PluginRegistry::default(),
             plugin_status: Vec::new(),
+            plugin_panel_visible: BTreeMap::new(),
+            show_plugin_diagnostics: false,
             pending_document_change: None,
             pending_save_failed: false,
             quit_approved: false,
@@ -1766,6 +1836,8 @@ impl EditorApp {
         self.show_hierarchy_panel = self.layout.panel_is_visible(editor::PANEL_HIERARCHY);
         self.show_inspector_panel = self.layout.panel_is_visible(editor::PANEL_INSPECTOR);
         self.show_assistant_panel = self.layout.panel_is_visible(editor::PANEL_ASSISTANT);
+        self.show_timeline_panel = self.layout.panel_is_visible(editor::PANEL_TIMELINE);
+        self.show_graph_panel = self.layout.panel_is_visible(editor::PANEL_GRAPH);
         #[cfg(feature = "ai-bridge")]
         {
             self.assistant.apply_layout(self.layout.assistant.as_ref());
@@ -1908,9 +1980,9 @@ impl EditorApp {
         value
     }
 
-    /// 七个工作台面板的可见性 ↔ `panel_visible` 键（View 菜单是唯一写入口）。
+    /// 九个工作台面板的可见性 ↔ `panel_visible` 键（View 菜单是唯一写入口）。
     /// 返回值而不是直接写 `self.layout`：调用点在借用 `self.layout` 的同时还要读 `self`。
-    fn panel_visibility(&self) -> [(&'static str, bool); 7] {
+    fn panel_visibility(&self) -> [(&'static str, bool); 9] {
         [
             (editor::PANEL_RESOURCE, self.show_resources_panel),
             (editor::PANEL_HIERARCHY, self.show_hierarchy_panel),
@@ -1919,6 +1991,8 @@ impl EditorApp {
             (editor::PANEL_SCENE_VIEW, self.show_scene_view),
             (editor::PANEL_GAME_VIEW, self.show_game_view),
             (editor::PANEL_CONSOLE, self.show_lua_console),
+            (editor::PANEL_TIMELINE, self.show_timeline_panel),
+            (editor::PANEL_GRAPH, self.show_graph_panel),
         ]
     }
 
@@ -2103,13 +2177,162 @@ impl EditorApp {
     /// 面板因此不会显示上一局的过期数字。进程工作集按 tracker 自己的节流窗口采样，
     /// 不是每个编辑器帧都问一次系统。
     fn sample_runtime_performance(&mut self) {
-        let snapshot = if let Some(preview) = self.preview.as_ref() {
+        let (snapshot, systems) = if let Some(preview) = self.preview.as_ref() {
             let memory_mib = self.runtime_perf.memory_mib_now();
-            Some(preview.perf_snapshot(memory_mib))
+            let systems = preview
+                .runtime()
+                .last_schedule_report()
+                .map(|report| {
+                    report
+                        .timings
+                        .iter()
+                        .map(|timing| {
+                            (
+                                timing.name.clone(),
+                                timing.elapsed.as_secs_f64() * 1_000_000.0,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            (Some(preview.perf_snapshot(memory_mib)), systems)
         } else {
-            None
+            (None, Vec::new())
         };
-        self.runtime_perf.sample(snapshot);
+        if let Some(snapshot) = snapshot {
+            // 采集窗口与趋势窗口同帧推进；`capture_frame` 自己按帧号去重。
+            self.runtime_perf.capture_frame(&snapshot, &systems);
+            self.runtime_perf.sample(Some(snapshot));
+        } else {
+            if self.runtime_perf.is_capturing() {
+                self.capture_status = Some("采集随 Play 停止而取消（样本来自上一局）".to_owned());
+            }
+            self.runtime_perf.sample(None);
+        }
+    }
+
+    /// E06-4：把当前采集窗口导出为 `p3-capture-v1`，并与上一份采集对比。
+    ///
+    /// 编辑器采集不记录逐帧输入日志（Play 预览的一次性输入边沿由 `game_view` 消费），
+    /// 因此它只用于**同机前后对比**；跨进程重放证据由无头 `wp0_capture_replay` 给出。
+    fn export_editor_capture(&mut self) {
+        let Some(capture) = self.runtime_perf.take_capture() else {
+            self.capture_status = Some("没有可导出的采集（先开始采集）".to_owned());
+            return;
+        };
+        let Some(document) = self.current_scene() else {
+            self.capture_status = Some("采集导出失败：没有打开场景".to_owned());
+            return;
+        };
+        let scene_hash = engine::host::fingerprint_bytes(document.scene.to_text().as_bytes());
+        let scene_path = document
+            .path
+            .as_ref()
+            .map(|path| path.display().to_string());
+        let scene_name = document.scene.name.clone();
+        let (width, height) = capture.last_snapshot().resolution;
+        let scenario = engine::host::CaptureScenario {
+            name: format!("editor:{scene_name}"),
+            scene_path,
+            scene_hash: scene_hash.clone(),
+            viewport: [width, height],
+            fixed_dt_seconds: 1.0 / 60.0,
+            seed: 0,
+            warmup_frames: 0,
+            frames: capture.len() as u32,
+            input_log: Vec::new(),
+        };
+        let commit = std::env::var("RUSTLUA_GIT_COMMIT").unwrap_or_else(|_| "unknown".to_owned());
+        // 编辑器采集只有场景内容指纹：state_hash 与 scene_hash 同源。它能证明"两次采集
+        // 是同一场景"，不能替代无头重放的状态指纹。
+        let bundle = capture.into_bundle(scenario, commit, scene_hash);
+        let dir = self.project.root.join("target").join("reports");
+        let path = dir.join("editor-capture.json");
+        let written = std::fs::create_dir_all(&dir)
+            .and_then(|()| std::fs::write(&path, bundle.to_json_pretty().as_bytes()));
+        let mut status = match &written {
+            Ok(()) => format!(
+                "采集已导出：{}（{} 帧，{} 系统）",
+                path.display(),
+                bundle.frames.samples,
+                bundle.systems.len()
+            ),
+            Err(error) => format!("采集导出失败：{error}"),
+        };
+        if written.is_ok() {
+            if let Some(previous) = self.last_capture.as_ref() {
+                let diff = previous.diff(&bundle, engine::host::DEFAULT_DRIFT_THRESHOLD_PCT);
+                let diff_path = dir.join("editor-capture-diff.json");
+                let diff_written = serde_json::to_string_pretty(&diff)
+                    .map_err(|error| error.to_string())
+                    .and_then(|json| {
+                        std::fs::write(&diff_path, json.as_bytes())
+                            .map_err(|error| error.to_string())
+                    });
+                status.push_str(&format!(
+                    "；对比 {}：p50 {}%，慢 {} / 增 {} / 删 {}",
+                    diff.verdict,
+                    diff.frames
+                        .delta_pct
+                        .map_or_else(|| "n/a".to_owned(), |pct| format!("{pct:+.2}")),
+                    if diff.slowest.is_empty() {
+                        "无".to_owned()
+                    } else {
+                        diff.slowest.join(",")
+                    },
+                    diff.added.len(),
+                    diff.removed.len()
+                ));
+                if let Err(error) = diff_written {
+                    status.push_str(&format!("；差分写入失败：{error}"));
+                } else {
+                    status.push_str(&format!("（{}）", diff_path.display()));
+                }
+            } else {
+                status.push_str("；这是第一份采集，下次导出会自动对比");
+            }
+        }
+        self.last_capture = Some(bundle);
+        self.capture_status = Some(status);
+    }
+
+    /// E06-2：把本帧的调度报告桥接进 trace。
+    ///
+    /// `FrameScheduleReport` 只有每系统耗时、没有开始时间，因此按报告顺序从
+    /// `now - total_elapsed` 铺开（`synthetic=true`）。暂停时报告不变，用签名去重，
+    /// 否则同一个报告会在每个编辑器帧被记一遍。
+    fn record_schedule_trace(&mut self) {
+        if !self.profiler.capture_records_systems() {
+            return;
+        }
+        let Some(report) = self
+            .preview
+            .as_ref()
+            .and_then(|preview| preview.runtime().last_schedule_report())
+        else {
+            return;
+        };
+        let signature = (
+            report.steps,
+            report.total_elapsed.as_nanos(),
+            report.timings.len(),
+        );
+        if self.last_trace_report == Some(signature) {
+            return;
+        }
+        self.last_trace_report = Some(signature);
+        let now = Instant::now();
+        let start = now.checked_sub(report.total_elapsed).unwrap_or(now);
+        let mut offset = Duration::ZERO;
+        for timing in &report.timings {
+            self.profiler.record_runtime_span(
+                &timing.name,
+                &timing.stage.to_string(),
+                start + offset,
+                timing.elapsed,
+            );
+            offset += timing.elapsed;
+        }
     }
 
     /// 帧末刷新 profiler gauge：历史深度、日志/输出行数、资源条目数与后台队列长度。
@@ -2510,6 +2733,8 @@ impl EditorApp {
         self.poll_resource_refresh();
         // 外部文件变化（保存/生成器/其它工具）：轮询监听 → 触发后台资源刷新。
         self.poll_file_watcher();
+        // P3-R05-4：shader 覆盖目录的去抖到期检查（命中由上面的观察器排入）。
+        self.tick_shader_reload(context);
         // 待导入资源非空且无进行中任务时，启动后台资源导入（不阻塞 UI）。
         self.start_resource_import();
         // 行1 标题栏 + 行2 菜单栏（含崩溃恢复「⚠ 恢复」下拉）。
@@ -2519,6 +2744,10 @@ impl EditorApp {
         // 取代原先硬编码的 TopBottomPanel + 三个 SidePanel + CentralPanel。
         // 面板计时桶（`record_panel`）搬进 `dock::DockTabViewer::ui`，键名不变。
         crate::dock::show_workspace(context, self);
+        // E04-2：插件面板（独立窗口，只发动作；禁用插件的面板不画）。
+        self.draw_plugin_panels(context);
+        // E04-4：插件诊断窗口。
+        self.draw_plugin_diagnostics(context);
 
         self.progress.window(context);
         self.draw_publish_panel(context);
@@ -2550,6 +2779,8 @@ impl EditorApp {
         self.keep_preview_running_without_game_view(context);
         // 运行时性能：在预览本帧的步进/渲染都完成后取快照；Play 停止时由 tracker 清空。
         self.sample_runtime_performance();
+        // E06-2：trace 捕获中时把本帧调度报告桥接进去（签名去重）。
+        self.record_schedule_trace();
         // 面板可见性/工作台/视图变化后自动落盘布局（一次小文件原子写，仅在真正变化时发生）。
         // 助手设置还在输入稳定期内时，安排一次到期重绘，避免停止输入后再无帧可写。
         if let Some(after) = self.maybe_persist_layout_on_change() {
@@ -2832,7 +3063,7 @@ mod layout_tests {
         // ① 全新项目：没有文件 → 默认树，而且**不许报警**（首启就弹"布局损坏"是错的）。
         let (fresh, tree, tabs) = boot(None);
         assert_eq!(tree, default_tree, "全新项目必须是默认面板树");
-        assert_eq!(tabs.len(), 7, "默认树要七个常驻视图都在：{tabs:?}");
+        assert_eq!(tabs.len(), 8, "默认树要八个常驻视图都在：{tabs:?}");
         assert!(
             fresh.console_notices.is_empty(),
             "全新项目不该有布局提示：{:?}",
@@ -2844,7 +3075,7 @@ mod layout_tests {
         let truncated = "{\"version\": 2, \"dock_tree\": {";
         let (broken, tree, tabs) = boot(Some(truncated));
         assert_eq!(tree, default_tree, "损坏必须整棵回落默认，不能留半棵树");
-        assert_eq!(tabs.len(), 7, "损坏回落后七个常驻视图都在：{tabs:?}");
+        assert_eq!(tabs.len(), 8, "损坏回落后八个常驻视图都在：{tabs:?}");
         assert!(
             broken.status.contains("损坏"),
             "状态栏要说明为什么用默认布局：{}",
@@ -2861,7 +3092,7 @@ mod layout_tests {
         let bogus_tree = "{\"version\": 2, \"dock_tree\": {\"nodes\": [[\"NoSuchPanel\"]]}}";
         let (mismatched, tree, tabs) = boot(Some(bogus_tree));
         assert_eq!(tree, default_tree, "认不出的树必须整棵回落默认：{tree}");
-        assert_eq!(tabs.len(), 7, "回落后七个常驻视图都在：{tabs:?}");
+        assert_eq!(tabs.len(), 8, "回落后八个常驻视图都在：{tabs:?}");
         assert!(
             mismatched.layout.dock_tree.is_some(),
             "回落后仍要留着文件里那棵坏树，它是用户的原始数据"

@@ -1,0 +1,15 @@
+    Blocking waiting for file lock on build directory
+   Compiling rustlua-infra v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-infra)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 25s
+     Running tests\architecture_edges.rs (target\debug\deps\architecture_edges-82e14f83a1153019.exe)
+
+running 5 tests
+test lua_contract_crate_stays_a_leaf ... ok
+test component_codec_crate_stays_a_leaf ... ok
+test core_crates_are_not_depended_on_by_their_peers_in_the_wrong_direction ... ok
+test core_crates_stay_within_their_dependency_budget ... ok
+test no_dependency_cycles ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+ARCH_TEST_EXIT=0

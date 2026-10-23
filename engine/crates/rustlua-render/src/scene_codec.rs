@@ -13,6 +13,7 @@
 
 use rustlua_component_codec::ComponentCodec;
 
+use crate::environment::EnvironmentComponent;
 use crate::light::Light;
 use crate::mesh3d::MeshRenderer;
 use crate::quad::Quad;
@@ -75,7 +76,22 @@ fn validate_render_mode(value: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+/// `Environment`：环境贴图 + intensity/rotation。资源路径 = `map`。
+fn validate_environment(value: &str) -> Result<(), String> {
+    EnvironmentComponent::from_component_str(value)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+fn environment_assets(value: &str) -> Vec<String> {
+    EnvironmentComponent::from_component_str(value)
+        .map(|environment| vec![environment.map])
+        .unwrap_or_default()
+}
+
 static LIGHT: ComponentCodec = ComponentCodec::new("Light", validate_light);
+static ENVIRONMENT: ComponentCodec =
+    ComponentCodec::new("Environment", validate_environment).with_assets(environment_assets);
 static MESH: ComponentCodec =
     ComponentCodec::new("MeshRenderer", validate_mesh).with_assets(mesh_assets);
 static QUAD: ComponentCodec = ComponentCodec::new("Quad", validate_quad).with_assets(quad_assets);
@@ -83,10 +99,11 @@ static SPRITE: ComponentCodec =
     ComponentCodec::new("Sprite", validate_sprite).with_assets(sprite_assets);
 static RENDER_MODE: ComponentCodec = ComponentCodec::new("RenderMode", validate_render_mode);
 
-/// 本 crate 负责的五个组件 codec。组合根把它们与 `rustlua_ui::scene_codecs()` 一起装表。
+/// 本 crate 负责的六个组件 codec。组合根把它们与 `rustlua_ui::scene_codecs()` 一起装表。
 #[must_use]
 pub fn scene_codecs() -> &'static [&'static ComponentCodec] {
-    static CODECS: [&ComponentCodec; 5] = [&LIGHT, &MESH, &QUAD, &SPRITE, &RENDER_MODE];
+    static CODECS: [&ComponentCodec; 6] =
+        [&LIGHT, &ENVIRONMENT, &MESH, &QUAD, &SPRITE, &RENDER_MODE];
     &CODECS
 }
 
@@ -94,13 +111,20 @@ pub fn scene_codecs() -> &'static [&'static ComponentCodec] {
 mod tests {
     use super::*;
 
-    /// 五个名字都是场景文件里真实在用的写法（`docs/54` §4.3、26 个源场景普查）。
+    /// 六个名字：五个既有渲染组件 + P3-R03-4 的 `Environment`。
     #[test]
     fn codecs_cover_every_render_component_name() {
         let names: Vec<&str> = scene_codecs().iter().map(|codec| codec.name()).collect();
         assert_eq!(
             names,
-            vec!["Light", "MeshRenderer", "Quad", "Sprite", "RenderMode"]
+            vec![
+                "Light",
+                "Environment",
+                "MeshRenderer",
+                "Quad",
+                "Sprite",
+                "RenderMode"
+            ]
         );
     }
 
@@ -112,6 +136,12 @@ mod tests {
 
         assert!(MESH.validate("mesh=assets/models/hero.glb").is_ok());
         assert!(MESH.validate("mesh").is_err());
+        assert!(
+            ENVIRONMENT
+                .validate("map=assets/env/studio.rlenv;intensity=1.5")
+                .is_ok()
+        );
+        assert!(ENVIRONMENT.validate("map=assets/env/studio.png").is_err());
 
         assert!(RENDER_MODE.validate("mode=world").is_ok());
         assert!(RENDER_MODE.validate("mode=nonsense").is_err());
@@ -129,6 +159,10 @@ mod tests {
         assert_eq!(
             MESH.asset_paths("mesh=assets/hero.glb"),
             vec!["assets/hero.glb".to_owned()]
+        );
+        assert_eq!(
+            ENVIRONMENT.asset_paths("map=assets/env/studio.hdr"),
+            vec!["assets/env/studio.hdr".to_owned()]
         );
         assert!(QUAD.asset_paths("size=8,8;color=1,1,1,1").is_empty());
         assert!(MESH.asset_paths("not a payload").is_empty());

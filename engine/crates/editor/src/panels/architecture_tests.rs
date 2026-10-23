@@ -57,10 +57,13 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     ("console.rs", 0),
     ("domain_data.rs", 0),
     ("game_view.rs", 0),
+    // P3-E03-2：画布只改 `GraphDocument`，不写场景文档。
+    ("graph.rs", 0),
     ("header.rs", 0),
     ("hierarchy.rs", 0),
     ("input_bindings.rs", 0),
     ("inspector.rs", 0),
+    ("material.rs", 0),
     ("keymap.rs", 0),
     ("mod.rs", 0),
     ("performance.rs", 0),
@@ -81,6 +84,8 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     ("scene_view/projection.rs", 0),
     ("schema_inspector.rs", 0),
     ("tilemap_tools.rs", 0),
+    // P3-E01-3：时间线只读预览，播放头状态不进场景文档。
+    ("timeline.rs", 0),
     ("toolbar.rs", 0),
 ];
 

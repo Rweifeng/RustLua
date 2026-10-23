@@ -271,6 +271,9 @@ pub struct Scene3dDrawable {
     pub entity: rustlua_scene::scene::SceneEntityId,
     pub name: String,
     pub mesh_path: String,
+    /// 可选的 `.material` 覆盖（项目相对路径）。`None` = 用 glTF 内嵌材质；
+    /// 解析/加载失败时渲染器告警并回退到内嵌材质，不会静默改观感。
+    pub material: Option<String>,
     /// docs/54 §4.4：与 `mesh_path` 对应的运行时资源身份。渲染器用它做 O(1) 的网格缓存查找，
     /// 因此"同一个网格"跨帧可比、也不会因为路径字符串相同而重复解析。
     ///

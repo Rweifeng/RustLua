@@ -224,6 +224,9 @@ impl EditorApp {
                 field,
                 value,
             } => self.apply_component_field_edit(entity, &component, &field, &value),
+            EditorCommand::ClearMeshRendererMaterial { entity } => {
+                self.clear_mesh_renderer_material(entity)
+            }
             EditorCommand::SetComponentFields {
                 entity,
                 component,

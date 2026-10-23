@@ -1,0 +1,15 @@
+   Compiling rustlua-assets v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-assets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 12.28s
+     Running unittests src\lib.rs (engine\target\debug\deps\rustlua_assets-f0c3fe3f8875c961.exe)
+
+running 7 tests
+test mat_edit::tests::identical_edits_do_not_push_history ... ok
+test mat_edit::tests::a_material_with_embedded_pixels_cannot_be_saved_as_text ... ok
+test mat_edit::tests::edits_are_undoable_and_redoable_byte_exactly ... ok
+test mat_edit::tests::empty_names_and_negative_strengths_are_rejected ... ok
+test mat_edit::tests::marking_saved_keeps_history_so_undo_can_dirty_again ... ok
+test mat_edit::tests::rejected_edits_leave_no_trace ... ok
+test mat_edit::tests::texture_paths_must_stay_inside_the_project ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 85 filtered out; finished in 0.00s
+

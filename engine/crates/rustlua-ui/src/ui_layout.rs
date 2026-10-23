@@ -270,7 +270,7 @@ impl UiLayoutPreset {
     }
 }
 
-/// Container kind for basic auto-layout (E17).
+/// Container kind for basic auto-layout (E17) plus wrapping rows (P3-E05).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ContainerKind {
     /// Children stacked vertically.
@@ -280,6 +280,8 @@ pub enum ContainerKind {
     HBox,
     /// Children in a fixed column count grid.
     Grid,
+    /// Children flow left-to-right and wrap into new rows (E05).
+    Wrap,
     /// All children inset by padding (overlapping).
     Margin,
     /// All children centered, keeping measured sizes.
@@ -294,6 +296,7 @@ impl ContainerKind {
             "vbox" => Some(Self::VBox),
             "hbox" => Some(Self::HBox),
             "grid" => Some(Self::Grid),
+            "wrap" => Some(Self::Wrap),
             "margin" => Some(Self::Margin),
             "center" => Some(Self::Center),
             _ => None,
@@ -307,8 +310,79 @@ impl ContainerKind {
             Self::VBox => "vbox",
             Self::HBox => "hbox",
             Self::Grid => "grid",
+            Self::Wrap => "wrap",
             Self::Margin => "margin",
             Self::Center => "center",
+        }
+    }
+}
+
+/// Main-axis distribution of leftover space (P3-E05). `Start` is the
+/// pre-E05 behavior.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Justify {
+    /// Pack children at the main-axis start.
+    #[default]
+    Start,
+    /// Center the packed children.
+    Center,
+    /// Pack children at the main-axis end.
+    End,
+    /// First/last flush, equal gaps between children.
+    SpaceBetween,
+    /// Equal gaps, half-size gaps at the ends.
+    SpaceAround,
+    /// Equal gaps including both ends.
+    SpaceEvenly,
+}
+
+impl Justify {
+    /// Parses `start|center|end|space_between|space_around|space_evenly`.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "start" => Some(Self::Start),
+            "center" => Some(Self::Center),
+            "end" => Some(Self::End),
+            "space_between" => Some(Self::SpaceBetween),
+            "space_around" => Some(Self::SpaceAround),
+            "space_evenly" => Some(Self::SpaceEvenly),
+            _ => None,
+        }
+    }
+
+    /// Canonical token.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Center => "center",
+            Self::End => "end",
+            Self::SpaceBetween => "space_between",
+            Self::SpaceAround => "space_around",
+            Self::SpaceEvenly => "space_evenly",
+        }
+    }
+
+    /// `(start offset, extra gap)` for `count` children and `free` pixels.
+    #[must_use]
+    fn distribute(self, free: f32, count: usize) -> (f32, f32) {
+        let free = free.max(0.0);
+        match self {
+            Self::Start => (0.0, 0.0),
+            Self::Center => (free * 0.5, 0.0),
+            Self::End => (free, 0.0),
+            Self::SpaceBetween if count > 1 => (0.0, free / (count - 1) as f32),
+            Self::SpaceBetween => (0.0, 0.0),
+            Self::SpaceAround if count > 0 => {
+                let unit = free / count as f32;
+                (unit * 0.5, unit)
+            }
+            Self::SpaceAround => (0.0, 0.0),
+            Self::SpaceEvenly => {
+                let unit = free / (count + 1) as f32;
+                (unit, unit)
+            }
         }
     }
 }
@@ -365,6 +439,8 @@ pub struct ContainerStyle {
     pub fill: bool,
     /// Cross-axis alignment for non-filled children.
     pub align: ChildAlign,
+    /// Main-axis distribution of leftover space (P3-E05).
+    pub justify: Justify,
 }
 
 impl Default for ContainerStyle {
@@ -377,6 +453,7 @@ impl Default for ContainerStyle {
             stretch: false,
             fill: false,
             align: ChildAlign::Start,
+            justify: Justify::Start,
         }
     }
 }
@@ -422,16 +499,21 @@ impl ContainerStyle {
                     style.align =
                         ChildAlign::parse(raw).ok_or_else(|| format!("unknown align: {raw}"))?;
                 }
+                "justify" => {
+                    style.justify =
+                        Justify::parse(raw).ok_or_else(|| format!("unknown justify: {raw}"))?;
+                }
                 _ => return Err(format!("unknown Container field: {key}")),
             }
         }
         Ok(style)
     }
 
-    /// Serializes to the canonical component string.
+    /// Serializes to the canonical component string. `justify` is appended only
+    /// when non-default so pre-E05 component strings stay byte-identical.
     #[must_use]
     pub fn to_component_str(&self) -> String {
-        format!(
+        let mut out = format!(
             "kind={};padding={:.2},{:.2},{:.2},{:.2};spacing={:.2};columns={};stretch={};fill={};align={}",
             self.kind.as_str(),
             self.padding[0],
@@ -443,203 +525,724 @@ impl ContainerStyle {
             self.stretch,
             self.fill,
             self.align.as_str(),
-        )
+        );
+        if self.justify != Justify::Start {
+            out.push_str(&format!(";justify={}", self.justify.as_str()));
+        }
+        out
     }
 }
 
-/// Per-child layout options (E17: Expand / Fill / Alignment).
+/// Per-child layout options (E17: Expand / Fill / Alignment; P3-E05:
+/// grow/shrink, min/max, aspect ratio, hidden children, percent sizes).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ChildLayout {
     /// Measured content size (pixels). `0.0` axes collapse when not expanded.
     pub size: [f32; 2],
-    /// Main-axis expand weight (`0.0` = keep measured size).
+    /// Main-axis expand weight honored only when `ContainerStyle::stretch` is
+    /// on (E17 behavior).
     pub expand: f32,
     /// Whether this child fills the cross axis when the container allows it.
     pub fill: bool,
+    /// Main-axis grow weight; unlike `expand` it works without `stretch`.
+    pub grow: f32,
+    /// Per-axis minimum size applied after grow/shrink.
+    pub min_size: [f32; 2],
+    /// Per-axis maximum size; `0.0` = unconstrained.
+    pub max_size: [f32; 2],
+    /// Overflow shrink weight (`0.0` = never shrink, the pre-E05 behavior).
+    pub shrink: f32,
+    /// Overrides the container's cross-axis alignment for this child.
+    pub align_self: Option<ChildAlign>,
+    /// Width / height. The measured width drives the height (or vice versa).
+    pub aspect_ratio: Option<f32>,
+    /// Hidden children get a zero-size rect and consume no space or gap.
+    pub visible: bool,
+    /// Per-axis size as a percentage of the padded container (`0.0` = unset).
+    pub percent: [f32; 2],
 }
 
 impl ChildLayout {
-    /// A fixed-size child with default options.
+    /// A fixed-size child with default options (grow/shrink disabled, visible).
     #[must_use]
     pub const fn sized(size: [f32; 2]) -> Self {
         Self {
             size,
             expand: 0.0,
             fill: false,
+            grow: 0.0,
+            min_size: [0.0; 2],
+            max_size: [0.0; 2],
+            shrink: 0.0,
+            align_self: None,
+            aspect_ratio: None,
+            visible: true,
+            percent: [0.0; 2],
+        }
+    }
+
+    /// Applies visibility, percent size, aspect ratio, and min/max to `size`.
+    /// `available` is the padded container size; a zero axis keeps the measured
+    /// size, which is what the intrinsic measurement pass uses.
+    #[must_use]
+    pub fn resolved_size(&self, available: [f32; 2]) -> [f32; 2] {
+        if !self.visible {
+            return [0.0, 0.0];
+        }
+        let mut width = if self.percent[0] > 0.0 && available[0] > 0.0 {
+            available[0] * self.percent[0] / 100.0
+        } else {
+            self.size[0].max(0.0)
+        };
+        let mut height = if self.percent[1] > 0.0 && available[1] > 0.0 {
+            available[1] * self.percent[1] / 100.0
+        } else {
+            self.size[1].max(0.0)
+        };
+        if let Some(ratio) = self.aspect_ratio.filter(|ratio| *ratio > 0.0) {
+            if width > 0.0 {
+                height = width / ratio;
+            } else if height > 0.0 {
+                width = height * ratio;
+            }
+        }
+        [
+            clamp_axis(width, self.min_size[0], self.max_size[0]),
+            clamp_axis(height, self.min_size[1], self.max_size[1]),
+        ]
+    }
+
+    fn grow_weight(&self, stretch: bool) -> f32 {
+        let legacy_expand = if stretch { self.expand.max(0.0) } else { 0.0 };
+        self.grow.max(0.0) + legacy_expand
+    }
+}
+
+/// Authored `LayoutItem` component (P3-E05): constraints a parent `Container`
+/// applies to one child. Every field is optional and defaults to the pre-E05
+/// behavior, so adding the component never changes an existing layout by itself.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayoutItem {
+    pub min_size: [f32; 2],
+    pub max_size: [f32; 2],
+    /// Intrinsic size; a zero axis keeps the host-measured size.
+    pub preferred_size: [f32; 2],
+    /// Per-axis percent of the padded container (`0.0` = auto/measured).
+    pub size_percent: [f32; 2],
+    /// Main-axis grow weight; works without `Container.stretch`.
+    pub grow: f32,
+    /// Overflow shrink weight; `0.0` never shrinks.
+    pub shrink: f32,
+    pub align_self: Option<ChildAlign>,
+    pub aspect_ratio: Option<f32>,
+    pub visible: bool,
+}
+
+impl Default for LayoutItem {
+    fn default() -> Self {
+        Self {
+            min_size: [0.0; 2],
+            max_size: [0.0; 2],
+            preferred_size: [0.0; 2],
+            size_percent: [0.0; 2],
+            grow: 0.0,
+            shrink: 1.0,
+            align_self: None,
+            aspect_ratio: None,
+            visible: true,
         }
     }
 }
 
-/// Computes child rects inside `container` (E17). Returned rects are relative
-/// to the container's top-left corner. This is a pure function: the caller
-/// decides when the affected subtree is recomputed.
+impl LayoutItem {
+    /// Parses the `LayoutItem` component string:
+    /// `min_size=w,h;max_size=w,h;preferred_size=w,h;size_percent=w,h;grow=g;shrink=s;align_self=start|center|end;aspect_ratio=r;visible=true`
+    /// (all fields optional).
+    pub fn from_component_str(value: &str) -> Result<Self, String> {
+        let mut item = Self::default();
+        for field in value.split(';') {
+            let field = field.trim();
+            if field.is_empty() {
+                continue;
+            }
+            let Some((key, raw)) = field.split_once('=') else {
+                return Err(format!("malformed LayoutItem field: {field}"));
+            };
+            match key {
+                "min_size" => item.min_size = parse_f32x2(raw)?,
+                "max_size" => item.max_size = parse_f32x2(raw)?,
+                "preferred_size" => item.preferred_size = parse_f32x2(raw)?,
+                "size_percent" => item.size_percent = parse_f32x2(raw)?,
+                "grow" => item.grow = parse_number(raw)?,
+                "shrink" => item.shrink = parse_number(raw)?,
+                "align_self" => {
+                    item.align_self = Some(
+                        ChildAlign::parse(raw)
+                            .ok_or_else(|| format!("unknown LayoutItem align_self: {raw}"))?,
+                    );
+                }
+                "aspect_ratio" => item.aspect_ratio = Some(parse_number(raw)?),
+                "visible" => item.visible = parse_bool(raw)?,
+                _ => return Err(format!("unknown LayoutItem field: {key}")),
+            }
+        }
+        item.validate()?;
+        Ok(item)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        for (name, values) in [
+            ("min_size", self.min_size),
+            ("max_size", self.max_size),
+            ("preferred_size", self.preferred_size),
+            ("size_percent", self.size_percent),
+        ] {
+            if values
+                .iter()
+                .any(|value| !value.is_finite() || *value < 0.0)
+            {
+                return Err(format!("LayoutItem {name} must be finite and >= 0"));
+            }
+        }
+        if self.size_percent.iter().any(|value| *value > 100.0) {
+            return Err("LayoutItem size_percent must be <= 100".to_owned());
+        }
+        if !self.grow.is_finite() || self.grow < 0.0 {
+            return Err("LayoutItem grow must be finite and >= 0".to_owned());
+        }
+        if !self.shrink.is_finite() || self.shrink < 0.0 {
+            return Err("LayoutItem shrink must be finite and >= 0".to_owned());
+        }
+        if let Some(ratio) = self.aspect_ratio
+            && (!ratio.is_finite() || ratio <= 0.0)
+        {
+            return Err("LayoutItem aspect_ratio must be > 0".to_owned());
+        }
+        Ok(())
+    }
+
+    /// Converts to the per-child layout used by [`layout_container`].
+    #[must_use]
+    pub fn child_layout(&self, measured: [f32; 2]) -> ChildLayout {
+        ChildLayout {
+            size: [
+                if self.preferred_size[0] > 0.0 {
+                    self.preferred_size[0]
+                } else {
+                    measured[0]
+                },
+                if self.preferred_size[1] > 0.0 {
+                    self.preferred_size[1]
+                } else {
+                    measured[1]
+                },
+            ],
+            expand: 0.0,
+            fill: false,
+            grow: self.grow,
+            min_size: self.min_size,
+            max_size: self.max_size,
+            shrink: self.shrink,
+            align_self: self.align_self,
+            aspect_ratio: self.aspect_ratio,
+            visible: self.visible,
+            percent: self.size_percent,
+        }
+    }
+
+    /// Serializes to the canonical component string (optional fields omitted
+    /// when unset, `visible` always present).
+    #[must_use]
+    pub fn to_component_str(&self) -> String {
+        let mut out = format!(
+            "min_size={:.2},{:.2};max_size={:.2},{:.2};preferred_size={:.2},{:.2};size_percent={:.2},{:.2};grow={:.2};shrink={:.2}",
+            self.min_size[0],
+            self.min_size[1],
+            self.max_size[0],
+            self.max_size[1],
+            self.preferred_size[0],
+            self.preferred_size[1],
+            self.size_percent[0],
+            self.size_percent[1],
+            self.grow,
+            self.shrink,
+        );
+        if let Some(align) = self.align_self {
+            out.push_str(&format!(";align_self={}", align.as_str()));
+        }
+        if let Some(ratio) = self.aspect_ratio {
+            out.push_str(&format!(";aspect_ratio={ratio:.4}"));
+        }
+        out.push_str(&format!(";visible={}", self.visible));
+        out
+    }
+}
+
+/// Axis of a [`LayoutOverflow`] report.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LayoutAxis {
+    Horizontal,
+    Vertical,
+}
+
+/// Content that could not fit inside a container's padded area.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayoutOverflow {
+    pub axis: LayoutAxis,
+    /// Content extent demanded by the children.
+    pub needed: f32,
+    /// Padded container extent available for content.
+    pub available: f32,
+}
+
+/// One container arrangement: child rects (relative to the container origin)
+/// plus overflow diagnostics. Rects stay parallel to the input children.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContainerLayout {
+    pub rects: Vec<UiRect>,
+    pub overflows: Vec<LayoutOverflow>,
+}
+
+fn align_offset(align: ChildAlign, size: f32, inner: f32) -> f32 {
+    match align {
+        ChildAlign::Start => 0.0,
+        ChildAlign::Center => ((inner - size) * 0.5).max(0.0),
+        ChildAlign::End => (inner - size).max(0.0),
+    }
+}
+
+fn shrink_main(
+    mains: &mut [f32],
+    children: &[ChildLayout],
+    slots: &[usize],
+    main: usize,
+    overflow: f32,
+) {
+    let mut remaining = overflow;
+    // Repeated passes: children that hit their min give the rest of the weight
+    // to the others instead of leaving the container silently overflowing.
+    for _ in 0..=slots.len() {
+        if remaining <= 1e-3 {
+            break;
+        }
+        let total: f32 = slots
+            .iter()
+            .enumerate()
+            .filter(|(slot, index)| {
+                let child = &children[**index];
+                child.shrink > 0.0 && mains[*slot] > child.min_size[main].max(0.0)
+            })
+            .map(|(_, index)| children[*index].shrink)
+            .sum();
+        if total <= 0.0 {
+            break;
+        }
+        let mut taken = 0.0;
+        for (slot, index) in slots.iter().enumerate() {
+            let child = &children[*index];
+            if child.shrink <= 0.0 {
+                continue;
+            }
+            let removable = (mains[slot] - child.min_size[main].max(0.0)).max(0.0);
+            if removable <= 0.0 {
+                continue;
+            }
+            let share = (remaining * child.shrink / total).min(removable);
+            mains[slot] -= share;
+            taken += share;
+        }
+        if taken <= 1e-4 {
+            break;
+        }
+        remaining -= taken;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn layout_linear(
+    children: &[ChildLayout],
+    style: &ContainerStyle,
+    sizes: &[[f32; 2]],
+    rects: &mut [UiRect],
+    overflows: &mut Vec<LayoutOverflow>,
+    inner_w: f32,
+    inner_h: f32,
+    origin_x: f32,
+    origin_y: f32,
+) {
+    let vertical = style.kind == ContainerKind::VBox;
+    let main = usize::from(vertical);
+    let cross = 1 - main;
+    let inner_main = if vertical { inner_h } else { inner_w };
+    let inner_cross = if vertical { inner_w } else { inner_h };
+    let slots: Vec<usize> = (0..children.len())
+        .filter(|index| children[*index].visible)
+        .collect();
+    if slots.is_empty() {
+        return;
+    }
+    let gaps = style.spacing * (slots.len() - 1) as f32;
+    let mut mains: Vec<f32> = slots.iter().map(|index| sizes[*index][main]).collect();
+    let mut used = mains.iter().sum::<f32>() + gaps;
+
+    if used < inner_main {
+        let free = inner_main - used;
+        let weights: Vec<f32> = slots
+            .iter()
+            .map(|index| children[*index].grow_weight(style.stretch))
+            .collect();
+        let total: f32 = weights.iter().sum();
+        if total > 0.0 {
+            for (slot, index) in slots.iter().enumerate() {
+                let weight = weights[slot];
+                if weight <= 0.0 {
+                    continue;
+                }
+                let child = &children[*index];
+                mains[slot] = clamp_axis(
+                    mains[slot] + free * weight / total,
+                    child.min_size[main],
+                    child.max_size[main],
+                );
+            }
+            used = mains.iter().sum::<f32>() + gaps;
+        }
+    } else if used > inner_main {
+        shrink_main(&mut mains, children, &slots, main, used - inner_main);
+        used = mains.iter().sum::<f32>() + gaps;
+        if used > inner_main + 1e-3 {
+            overflows.push(LayoutOverflow {
+                axis: if vertical {
+                    LayoutAxis::Vertical
+                } else {
+                    LayoutAxis::Horizontal
+                },
+                needed: used,
+                available: inner_main,
+            });
+        }
+    }
+
+    let (start, extra_gap) = style
+        .justify
+        .distribute((inner_main - used).max(0.0), slots.len());
+    let mut cursor = start;
+    for (slot, index) in slots.iter().enumerate() {
+        let child = &children[*index];
+        let main_size = mains[slot];
+        let filled = style.fill && child.fill;
+        let cross_size = if filled {
+            clamp_axis(inner_cross, child.min_size[cross], child.max_size[cross])
+        } else {
+            sizes[*index][cross]
+        };
+        let align = child.align_self.unwrap_or(style.align);
+        let cross_offset = if filled {
+            0.0
+        } else {
+            align_offset(align, cross_size, inner_cross)
+        };
+        rects[*index] = if vertical {
+            UiRect::new(
+                origin_x + cross_offset,
+                origin_y + cursor,
+                cross_size,
+                main_size,
+            )
+        } else {
+            UiRect::new(
+                origin_x + cursor,
+                origin_y + cross_offset,
+                main_size,
+                cross_size,
+            )
+        };
+        cursor += main_size + style.spacing + extra_gap;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn layout_grid(
+    children: &[ChildLayout],
+    style: &ContainerStyle,
+    sizes: &[[f32; 2]],
+    rects: &mut [UiRect],
+    overflows: &mut Vec<LayoutOverflow>,
+    inner_w: f32,
+    inner_h: f32,
+    origin_x: f32,
+    origin_y: f32,
+) {
+    let slots: Vec<usize> = (0..children.len())
+        .filter(|index| children[*index].visible)
+        .collect();
+    if slots.is_empty() {
+        return;
+    }
+    let columns = if style.columns > 0 {
+        style.columns
+    } else {
+        (slots.len() as f32).sqrt().ceil().max(1.0) as usize
+    };
+    let spacing = style.spacing;
+    let rows = slots.len().div_ceil(columns);
+    let mut column_widths = vec![0.0_f32; columns];
+    let mut row_heights = vec![0.0_f32; rows];
+    for (slot, index) in slots.iter().enumerate() {
+        let column = slot % columns;
+        let row = slot / columns;
+        column_widths[column] = column_widths[column].max(sizes[*index][0]);
+        row_heights[row] = row_heights[row].max(sizes[*index][1]);
+    }
+    let mut used_w: f32 =
+        column_widths.iter().sum::<f32>() + spacing * columns.saturating_sub(1) as f32;
+    let mut used_h: f32 = row_heights.iter().sum::<f32>() + spacing * rows.saturating_sub(1) as f32;
+    if style.stretch {
+        let free_w = (inner_w - used_w).max(0.0);
+        let extra = free_w / columns as f32;
+        for width in &mut column_widths {
+            *width += extra;
+        }
+        let free_h = (inner_h - used_h).max(0.0);
+        let extra = free_h / rows as f32;
+        for height in &mut row_heights {
+            *height += extra;
+        }
+        used_w = inner_w.min(used_w + free_w);
+        used_h = inner_h.min(used_h + free_h);
+    }
+    if used_w > inner_w + 1e-3 {
+        overflows.push(LayoutOverflow {
+            axis: LayoutAxis::Horizontal,
+            needed: used_w,
+            available: inner_w,
+        });
+    }
+    if used_h > inner_h + 1e-3 {
+        overflows.push(LayoutOverflow {
+            axis: LayoutAxis::Vertical,
+            needed: used_h,
+            available: inner_h,
+        });
+    }
+    let (start_x, extra_gap) = if style.stretch {
+        (0.0, 0.0)
+    } else {
+        style
+            .justify
+            .distribute((inner_w - used_w).max(0.0), columns)
+    };
+    let mut column_x = vec![0.0_f32; columns];
+    let mut acc = origin_x + start_x;
+    for (index, width) in column_widths.iter().enumerate() {
+        column_x[index] = acc;
+        acc += width + spacing + extra_gap;
+    }
+    let mut row_y = vec![0.0_f32; rows];
+    acc = origin_y;
+    for (index, height) in row_heights.iter().enumerate() {
+        row_y[index] = acc;
+        acc += height + spacing;
+    }
+    for (slot, index) in slots.iter().enumerate() {
+        let column = slot % columns;
+        let row = slot / columns;
+        let cell_w = column_widths[column];
+        let cell_h = row_heights[row];
+        let child = &children[*index];
+        let (width, height, dx, dy) = if style.fill && child.fill {
+            (cell_w, cell_h, 0.0, 0.0)
+        } else {
+            let align = child.align_self.unwrap_or(style.align);
+            (
+                sizes[*index][0],
+                sizes[*index][1],
+                align_offset(align, sizes[*index][0], cell_w),
+                align_offset(align, sizes[*index][1], cell_h),
+            )
+        };
+        rects[*index] = UiRect::new(column_x[column] + dx, row_y[row] + dy, width, height);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn layout_wrap(
+    children: &[ChildLayout],
+    style: &ContainerStyle,
+    sizes: &[[f32; 2]],
+    rects: &mut [UiRect],
+    overflows: &mut Vec<LayoutOverflow>,
+    inner_w: f32,
+    origin_x: f32,
+    origin_y: f32,
+) {
+    let slots: Vec<usize> = (0..children.len())
+        .filter(|index| children[*index].visible)
+        .collect();
+    if slots.is_empty() {
+        return;
+    }
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    let mut row_widths: Vec<f32> = Vec::new();
+    let mut current: Vec<usize> = Vec::new();
+    let mut current_width = 0.0;
+    for (slot, index) in slots.iter().enumerate() {
+        let width = sizes[*index][0];
+        let gap = if current.is_empty() {
+            0.0
+        } else {
+            style.spacing
+        };
+        if !current.is_empty() && current_width + gap + width > inner_w {
+            rows.push(std::mem::take(&mut current));
+            row_widths.push(current_width);
+            current_width = 0.0;
+        }
+        if !current.is_empty() {
+            current_width += style.spacing;
+        }
+        current_width += width;
+        current.push(slot);
+    }
+    if !current.is_empty() {
+        rows.push(current);
+        row_widths.push(current_width);
+    }
+
+    let mut row_y = origin_y;
+    let max_row_width = row_widths
+        .iter()
+        .fold(0.0_f32, |max, width| max.max(*width));
+    for (row_index, row) in rows.iter().enumerate() {
+        let row_height = row
+            .iter()
+            .map(|slot| sizes[slots[*slot]][1])
+            .fold(0.0_f32, f32::max);
+        let (start, extra_gap) = style
+            .justify
+            .distribute((inner_w - row_widths[row_index]).max(0.0), row.len());
+        let mut cursor = origin_x + start;
+        for slot in row {
+            let index = slots[*slot];
+            let child = &children[index];
+            let filled = style.fill && child.fill;
+            let height = if filled { row_height } else { sizes[index][1] };
+            let align = child.align_self.unwrap_or(style.align);
+            let dy = if filled {
+                0.0
+            } else {
+                align_offset(align, height, row_height)
+            };
+            rects[index] = UiRect::new(cursor, row_y + dy, sizes[index][0], height);
+            cursor += sizes[index][0] + style.spacing + extra_gap;
+        }
+        row_y += row_height + style.spacing;
+    }
+    if max_row_width > inner_w + 1e-3 {
+        overflows.push(LayoutOverflow {
+            axis: LayoutAxis::Horizontal,
+            needed: max_row_width,
+            available: inner_w,
+        });
+    }
+}
+
+/// Computes child rects inside `container` (E17/E05). Returned rects are
+/// relative to the container's top-left corner and parallel to `children`.
+/// This is a pure function: the caller decides when the affected subtree is
+/// recomputed.
 #[must_use]
 pub fn layout_container(
     container: UiRect,
     children: &[ChildLayout],
     style: &ContainerStyle,
 ) -> Vec<UiRect> {
+    layout_container_with_report(container, children, style).rects
+}
+
+/// Same as [`layout_container`] but also reports content that does not fit,
+/// so callers can surface overflow instead of silently clipping.
+#[must_use]
+pub fn layout_container_with_report(
+    container: UiRect,
+    children: &[ChildLayout],
+    style: &ContainerStyle,
+) -> ContainerLayout {
     if children.is_empty() {
-        return Vec::new();
+        return ContainerLayout {
+            rects: Vec::new(),
+            overflows: Vec::new(),
+        };
     }
     let [inner_w, inner_h] = style.inner_size(container);
     let origin_x = style.padding[0];
     let origin_y = style.padding[1];
-    let cross_align_offset = |child_size: f32, inner: f32| -> f32 {
-        match style.align {
-            ChildAlign::Start => 0.0,
-            ChildAlign::Center => ((inner - child_size) * 0.5).max(0.0),
-            ChildAlign::End => (inner - child_size).max(0.0),
-        }
-    };
+    let sizes: Vec<[f32; 2]> = children
+        .iter()
+        .map(|child| child.resolved_size([inner_w, inner_h]))
+        .collect();
+    let hidden = UiRect::new(origin_x, origin_y, 0.0, 0.0);
+    let mut rects = vec![hidden; children.len()];
+    let mut overflows = Vec::new();
 
     match style.kind {
-        ContainerKind::Margin => children
-            .iter()
-            .map(|_| UiRect::new(origin_x, origin_y, inner_w, inner_h))
-            .collect(),
-        ContainerKind::Center => children
-            .iter()
-            .map(|child| {
-                UiRect::new(
-                    origin_x + ((inner_w - child.size[0]) * 0.5).max(0.0),
-                    origin_y + ((inner_h - child.size[1]) * 0.5).max(0.0),
-                    child.size[0],
-                    child.size[1],
-                )
-            })
-            .collect(),
-        ContainerKind::VBox | ContainerKind::HBox => {
-            let (inner_main, inner_cross, spacing) = if style.kind == ContainerKind::VBox {
-                (inner_h, inner_w, style.spacing)
-            } else {
-                (inner_w, inner_h, style.spacing)
-            };
-            let child_main = |child: &ChildLayout| {
-                if style.kind == ContainerKind::VBox {
-                    child.size[1]
-                } else {
-                    child.size[0]
-                }
-            };
-            let child_cross = |child: &ChildLayout| {
-                if style.kind == ContainerKind::VBox {
-                    child.size[0]
-                } else {
-                    child.size[1]
-                }
-            };
-
-            let total_expand: f32 = if style.stretch {
-                children.iter().map(|child| child.expand.max(0.0)).sum()
-            } else {
-                0.0
-            };
-            let used_main: f32 = children.iter().map(child_main).sum();
-            let gaps = spacing * (children.len().saturating_sub(1)) as f32;
-            let free_main = (inner_main - used_main - gaps).max(0.0);
-
-            let mut cursor = 0.0;
-            children
-                .iter()
-                .map(|child| {
-                    let mut main = child_main(child);
-                    if style.stretch && total_expand > 0.0 && child.expand > 0.0 {
-                        main += free_main * (child.expand / total_expand);
-                    }
-                    let cross = if style.fill && child.fill {
-                        inner_cross
-                    } else {
-                        child_cross(child)
-                    };
-                    let cross_offset = if style.fill && child.fill {
-                        0.0
-                    } else {
-                        cross_align_offset(cross, inner_cross)
-                    };
-                    let rect = if style.kind == ContainerKind::VBox {
-                        UiRect::new(origin_x + cross_offset, origin_y + cursor, cross, main)
-                    } else {
-                        UiRect::new(origin_x + cursor, origin_y + cross_offset, main, cross)
-                    };
-                    cursor += main + spacing;
-                    rect
-                })
-                .collect()
-        }
-        ContainerKind::Grid => {
-            let columns = if style.columns > 0 {
-                style.columns
-            } else {
-                (children.len() as f32).sqrt().ceil().max(1.0) as usize
-            };
-            let spacing = style.spacing;
-            // Measure column/row sizes from children (grid keeps child sizes;
-            // stretch distributes leftover space across columns/rows).
-            let rows = children.len().div_ceil(columns);
-            let mut column_widths = vec![0.0_f32; columns];
-            let mut row_heights = vec![0.0_f32; rows];
+        ContainerKind::Margin => {
             for (index, child) in children.iter().enumerate() {
-                let col = index % columns;
-                let row = index / columns;
-                column_widths[col] = column_widths[col].max(child.size[0]);
-                row_heights[row] = row_heights[row].max(child.size[1]);
-            }
-            if style.stretch {
-                let used_w: f32 = column_widths.iter().sum::<f32>()
-                    + spacing * (columns.saturating_sub(1)) as f32;
-                let free_w = (inner_w - used_w).max(0.0);
-                if columns > 0 {
-                    let extra = free_w / columns as f32;
-                    for width in &mut column_widths {
-                        *width += extra;
-                    }
-                }
-                let used_h: f32 =
-                    row_heights.iter().sum::<f32>() + spacing * (rows.saturating_sub(1)) as f32;
-                let free_h = (inner_h - used_h).max(0.0);
-                if rows > 0 {
-                    let extra = free_h / rows as f32;
-                    for height in &mut row_heights {
-                        *height += extra;
-                    }
+                if child.visible {
+                    rects[index] = UiRect::new(origin_x, origin_y, inner_w, inner_h);
                 }
             }
-            let mut column_x = vec![0.0_f32; columns];
-            let mut acc = origin_x;
-            for (index, width) in column_widths.iter().enumerate() {
-                column_x[index] = acc;
-                acc += width + spacing;
+        }
+        ContainerKind::Center => {
+            for (index, child) in children.iter().enumerate() {
+                if !child.visible {
+                    continue;
+                }
+                let [width, height] = sizes[index];
+                rects[index] = UiRect::new(
+                    origin_x + ((inner_w - width) * 0.5).max(0.0),
+                    origin_y + ((inner_h - height) * 0.5).max(0.0),
+                    width,
+                    height,
+                );
             }
-            let mut row_y = vec![0.0_f32; rows];
-            acc = origin_y;
-            for (index, height) in row_heights.iter().enumerate() {
-                row_y[index] = acc;
-                acc += height + spacing;
-            }
-            children
-                .iter()
-                .enumerate()
-                .map(|(index, child)| {
-                    let col = index % columns;
-                    let row = index / columns;
-                    let cell_w = column_widths[col];
-                    let cell_h = row_heights[row];
-                    let (w, h, dx, dy) = if style.fill && child.fill {
-                        (cell_w, cell_h, 0.0, 0.0)
-                    } else {
-                        (
-                            child.size[0],
-                            child.size[1],
-                            cross_align_offset(child.size[0], cell_w),
-                            cross_align_offset(child.size[1], cell_h),
-                        )
-                    };
-                    UiRect::new(column_x[col] + dx, row_y[row] + dy, w, h)
-                })
-                .collect()
+        }
+        ContainerKind::VBox | ContainerKind::HBox => layout_linear(
+            children,
+            style,
+            &sizes,
+            &mut rects,
+            &mut overflows,
+            inner_w,
+            inner_h,
+            origin_x,
+            origin_y,
+        ),
+        ContainerKind::Grid => layout_grid(
+            children,
+            style,
+            &sizes,
+            &mut rects,
+            &mut overflows,
+            inner_w,
+            inner_h,
+            origin_x,
+            origin_y,
+        ),
+        ContainerKind::Wrap => {
+            layout_wrap(
+                children,
+                style,
+                &sizes,
+                &mut rects,
+                &mut overflows,
+                inner_w,
+                origin_x,
+                origin_y,
+            );
         }
     }
+    ContainerLayout { rects, overflows }
 }
 
 /// Canvas configuration (E15): reference resolution, scale mode, and safe
@@ -977,9 +1580,8 @@ mod tests {
         };
         let children = [
             ChildLayout {
-                size: [60.0, 30.0],
                 expand: 1.0,
-                fill: false,
+                ..ChildLayout::sized([60.0, 30.0])
             },
             ChildLayout::sized([40.0, 30.0]),
         ];
@@ -998,9 +1600,8 @@ mod tests {
         };
         let children = [
             ChildLayout {
-                size: [100.0, 30.0],
-                expand: 0.0,
                 fill: true,
+                ..ChildLayout::sized([100.0, 30.0])
             },
             ChildLayout::sized([50.0, 30.0]),
         ];
@@ -1041,14 +1642,12 @@ mod tests {
         };
         let children = [
             ChildLayout {
-                size: [100.0, 40.0],
-                expand: 0.0,
                 fill: true,
+                ..ChildLayout::sized([100.0, 40.0])
             },
             ChildLayout {
-                size: [100.0, 40.0],
-                expand: 0.0,
                 fill: true,
+                ..ChildLayout::sized([100.0, 40.0])
             },
         ];
         let rects = layout_container(container_rect(), &children, &style);
@@ -1104,19 +1703,303 @@ mod tests {
             stretch: true,
             fill: true,
             align: ChildAlign::Center,
+            justify: Justify::SpaceEvenly,
         };
         let parsed = ContainerStyle::from_component_str(&style.to_component_str()).expect("valid");
         assert_eq!(parsed, style);
     }
 
     #[test]
+    fn default_container_string_stays_pre_e05() {
+        let style = ContainerStyle::default();
+        assert_eq!(
+            style.to_component_str(),
+            "kind=vbox;padding=0.00,0.00,0.00,0.00;spacing=0.00;columns=0;stretch=false;fill=false;align=start"
+        );
+        assert!(!style.to_component_str().contains("justify="));
+    }
+
+    #[test]
     fn container_style_parses_defaults_and_rejects_bad_input() {
         let style = ContainerStyle::from_component_str("").expect("defaults");
         assert_eq!(style.kind, ContainerKind::VBox);
+        assert_eq!(style.justify, Justify::Start);
         assert!(!style.stretch);
         assert!(ContainerStyle::from_component_str("kind=unknown").is_err());
         assert!(ContainerStyle::from_component_str("columns=abc").is_err());
         assert!(ContainerStyle::from_component_str("align=middle").is_err());
+        assert!(ContainerStyle::from_component_str("justify=middle").is_err());
+        let parsed = ContainerStyle::from_component_str("kind=wrap;justify=space_between")
+            .expect("wrap + justify");
+        assert_eq!(parsed.kind, ContainerKind::Wrap);
+        assert_eq!(parsed.justify, Justify::SpaceBetween);
+        assert_eq!(
+            parsed.to_component_str().split(';').next_back(),
+            Some("justify=space_between")
+        );
+    }
+
+    // ---- P3-E05: justify / wrap / LayoutItem constraints ------------------
+
+    #[test]
+    fn justify_distributes_free_space_in_six_modes() {
+        // 400-wide HBox with two 100-wide children: 200 pixels of free space.
+        let cases = [
+            (Justify::Start, [0.0, 100.0]),
+            (Justify::Center, [100.0, 200.0]),
+            (Justify::End, [200.0, 300.0]),
+            (Justify::SpaceBetween, [0.0, 300.0]),
+            (Justify::SpaceAround, [50.0, 250.0]),
+            (Justify::SpaceEvenly, [200.0 / 3.0, 700.0 / 3.0]),
+        ];
+        let children = [
+            ChildLayout::sized([100.0, 20.0]),
+            ChildLayout::sized([100.0, 20.0]),
+        ];
+        for (justify, expected_x) in cases {
+            let style = ContainerStyle {
+                kind: ContainerKind::HBox,
+                justify,
+                ..Default::default()
+            };
+            let rects = layout_container(container_rect(), &children, &style);
+            assert_rect(rects[0], [expected_x[0], 0.0, 100.0, 20.0]);
+            assert_rect(rects[1], [expected_x[1], 0.0, 100.0, 20.0]);
+        }
+    }
+
+    #[test]
+    fn vbox_justify_moves_the_whole_stack() {
+        let children = [
+            ChildLayout::sized([10.0, 40.0]),
+            ChildLayout::sized([10.0, 60.0]),
+        ];
+        let center = ContainerStyle {
+            kind: ContainerKind::VBox,
+            justify: Justify::Center,
+            ..Default::default()
+        };
+        let rects = layout_container(container_rect(), &children, &center);
+        // 300 - 100 = 200 free → start at 100.
+        assert_rect(rects[0], [0.0, 100.0, 10.0, 40.0]);
+        assert_rect(rects[1], [0.0, 140.0, 10.0, 60.0]);
+
+        let end = ContainerStyle {
+            kind: ContainerKind::VBox,
+            justify: Justify::End,
+            ..Default::default()
+        };
+        let rects = layout_container(container_rect(), &children, &end);
+        assert_rect(rects[0], [0.0, 200.0, 10.0, 40.0]);
+        assert_rect(rects[1], [0.0, 240.0, 10.0, 60.0]);
+    }
+
+    #[test]
+    fn grow_expands_without_stretch_and_respects_max_size() {
+        let style = ContainerStyle {
+            kind: ContainerKind::HBox,
+            stretch: false,
+            ..Default::default()
+        };
+        let children = [
+            ChildLayout {
+                grow: 1.0,
+                max_size: [150.0, 0.0],
+                ..ChildLayout::sized([100.0, 20.0])
+            },
+            ChildLayout {
+                grow: 1.0,
+                ..ChildLayout::sized([100.0, 20.0])
+            },
+        ];
+        let rects = layout_container(container_rect(), &children, &style);
+        // 200 free split evenly; the first caps at 150, the second takes 200.
+        assert_rect(rects[0], [0.0, 0.0, 150.0, 20.0]);
+        assert_rect(rects[1], [150.0, 0.0, 200.0, 20.0]);
+    }
+
+    #[test]
+    fn shrink_reduces_overflow_and_falls_back_to_min_size() {
+        let style = ContainerStyle {
+            kind: ContainerKind::HBox,
+            ..Default::default()
+        };
+        // 400 used inside 300: overflow 100. First can only lose 20 (min 180),
+        // so the second absorbs the rest (80).
+        let children = [
+            ChildLayout {
+                shrink: 1.0,
+                min_size: [180.0, 0.0],
+                ..ChildLayout::sized([200.0, 20.0])
+            },
+            ChildLayout {
+                shrink: 1.0,
+                ..ChildLayout::sized([200.0, 20.0])
+            },
+        ];
+        let report =
+            layout_container_with_report(UiRect::new(0.0, 0.0, 300.0, 300.0), &children, &style);
+        assert_rect(report.rects[0], [0.0, 0.0, 180.0, 20.0]);
+        assert_rect(report.rects[1], [180.0, 0.0, 120.0, 20.0]);
+        assert!(report.overflows.is_empty());
+
+        // Neither child can shrink: the report names the horizontal overflow
+        // instead of silently clipping.
+        let rigid = [
+            ChildLayout {
+                shrink: 0.0,
+                min_size: [200.0, 0.0],
+                ..ChildLayout::sized([200.0, 20.0])
+            },
+            ChildLayout {
+                shrink: 0.0,
+                min_size: [200.0, 0.0],
+                ..ChildLayout::sized([200.0, 20.0])
+            },
+        ];
+        let report =
+            layout_container_with_report(UiRect::new(0.0, 0.0, 300.0, 300.0), &rigid, &style);
+        assert_eq!(
+            report.overflows,
+            vec![LayoutOverflow {
+                axis: LayoutAxis::Horizontal,
+                needed: 400.0,
+                available: 300.0,
+            }]
+        );
+    }
+
+    #[test]
+    fn wrap_breaks_rows_and_justifies_each_row() {
+        let style = ContainerStyle {
+            kind: ContainerKind::Wrap,
+            spacing: 10.0,
+            justify: Justify::SpaceBetween,
+            ..Default::default()
+        };
+        let children = [
+            ChildLayout::sized([180.0, 40.0]),
+            ChildLayout::sized([180.0, 60.0]),
+            ChildLayout::sized([80.0, 30.0]),
+        ];
+        let rects = layout_container(container_rect(), &children, &style);
+        // Row 1: 180 + 10 + 180 = 370, 30 free becomes the SpaceBetween gap.
+        assert_rect(rects[0], [0.0, 0.0, 180.0, 40.0]);
+        assert_rect(rects[1], [220.0, 0.0, 180.0, 60.0]);
+        // Row 2 starts below the tallest child (60) plus spacing.
+        assert_rect(rects[2], [0.0, 70.0, 80.0, 30.0]);
+    }
+
+    #[test]
+    fn hidden_child_takes_no_space_or_gap() {
+        let style = ContainerStyle {
+            kind: ContainerKind::HBox,
+            spacing: 10.0,
+            ..Default::default()
+        };
+        let children = [
+            ChildLayout::sized([100.0, 20.0]),
+            ChildLayout {
+                visible: false,
+                ..ChildLayout::sized([100.0, 20.0])
+            },
+            ChildLayout::sized([80.0, 20.0]),
+        ];
+        let rects = layout_container(container_rect(), &children, &style);
+        assert_rect(rects[0], [0.0, 0.0, 100.0, 20.0]);
+        assert_rect(rects[1], [0.0, 0.0, 0.0, 0.0]);
+        // Only one gap between the two visible children.
+        assert_rect(rects[2], [110.0, 0.0, 80.0, 20.0]);
+    }
+
+    #[test]
+    fn aspect_ratio_and_percent_resolve_against_the_container() {
+        let style = ContainerStyle {
+            kind: ContainerKind::HBox,
+            ..Default::default()
+        };
+        let children = [
+            ChildLayout {
+                aspect_ratio: Some(2.0),
+                ..ChildLayout::sized([100.0, 0.0])
+            },
+            ChildLayout {
+                percent: [50.0, 25.0],
+                ..ChildLayout::sized([10.0, 10.0])
+            },
+        ];
+        let rects = layout_container(container_rect(), &children, &style);
+        // 100 wide at 2:1 → 50 tall.
+        assert_rect(rects[0], [0.0, 0.0, 100.0, 50.0]);
+        // 50% of 400 = 200 wide; 25% of 300 = 75 tall.
+        assert_rect(rects[1], [100.0, 0.0, 200.0, 75.0]);
+    }
+
+    #[test]
+    fn align_self_overrides_container_alignment() {
+        let style = ContainerStyle {
+            kind: ContainerKind::VBox,
+            align: ChildAlign::Start,
+            ..Default::default()
+        };
+        let children = [
+            ChildLayout {
+                align_self: Some(ChildAlign::End),
+                ..ChildLayout::sized([100.0, 20.0])
+            },
+            ChildLayout::sized([100.0, 20.0]),
+        ];
+        let rects = layout_container(container_rect(), &children, &style);
+        assert_rect(rects[0], [300.0, 0.0, 100.0, 20.0]);
+        assert_rect(rects[1], [0.0, 20.0, 100.0, 20.0]);
+    }
+
+    #[test]
+    fn layout_item_component_string_round_trip() {
+        let item = LayoutItem {
+            min_size: [40.0, 20.0],
+            max_size: [400.0, 0.0],
+            preferred_size: [120.0, 0.0],
+            size_percent: [50.0, 0.0],
+            grow: 1.0,
+            shrink: 0.5,
+            align_self: Some(ChildAlign::Center),
+            aspect_ratio: Some(1.5),
+            visible: false,
+        };
+        let parsed = LayoutItem::from_component_str(&item.to_component_str()).expect("valid");
+        assert_eq!(parsed, item);
+        let default = LayoutItem::from_component_str("").expect("defaults");
+        assert_eq!(default, LayoutItem::default());
+        assert_eq!(default.shrink, 1.0);
+        assert!(default.visible);
+    }
+
+    #[test]
+    fn layout_item_rejects_invalid_constraints() {
+        assert!(LayoutItem::from_component_str("grow=-1").is_err());
+        assert!(LayoutItem::from_component_str("shrink=-1").is_err());
+        assert!(LayoutItem::from_component_str("min_size=-1,0").is_err());
+        assert!(LayoutItem::from_component_str("size_percent=120,0").is_err());
+        assert!(LayoutItem::from_component_str("aspect_ratio=0").is_err());
+        assert!(LayoutItem::from_component_str("align_self=middle").is_err());
+        assert!(LayoutItem::from_component_str("bogus=1").is_err());
+    }
+
+    #[test]
+    fn layout_item_child_layout_uses_preferred_size_and_constraints() {
+        let item = LayoutItem {
+            preferred_size: [120.0, 0.0],
+            min_size: [80.0, 30.0],
+            grow: 2.0,
+            ..LayoutItem::default()
+        };
+        let child = item.child_layout([64.0, 64.0]);
+        assert_eq!(child.size, [120.0, 64.0]);
+        assert_eq!(child.resolved_size([400.0, 300.0]), [120.0, 64.0]);
+        assert_eq!(child.grow, 2.0);
+        assert_eq!(child.shrink, 1.0);
+        assert_eq!(child.resolved_size([0.0, 0.0]), [120.0, 64.0]);
     }
 
     // ---- E15: CanvasConfig -------------------------------------------------

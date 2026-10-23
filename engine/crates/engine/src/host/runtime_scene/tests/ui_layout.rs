@@ -196,6 +196,48 @@ fn ui_layout_preview_changes_rendered_mesh() {
     assert!(after_x > before_x);
 }
 
+/// 容器里的 Text 子项必须用**测得**的字形盒参与布局，而不是 64×64 占位
+/// （E05-3）。读数直接对同一把内置位图尺子，防止“布局用了另一套字号换算”。
+#[test]
+fn container_text_child_uses_measured_intrinsic_size() {
+    use rustlua_scene::scene::{Scene, SceneEntityId};
+
+    let mut scene = Scene::new("container-text-intrinsic");
+    scene.add_entity(SceneEntityId(1), "Panel", None).unwrap();
+    scene
+        .entities
+        .get_mut(&SceneEntityId(1))
+        .unwrap()
+        .components
+        .insert(
+            "Container".to_owned(),
+            "kind=hbox;padding=10,10,10,10".to_owned(),
+        );
+    scene
+        .add_entity(SceneEntityId(2), "Label", Some(SceneEntityId(1)))
+        .unwrap();
+    scene
+        .entities
+        .get_mut(&SceneEntityId(2))
+        .unwrap()
+        .components
+        .insert("Text".to_owned(), "text=AB;font_size=16".to_owned());
+
+    let text = rustlua_ui::ui::UiText::from_component_str("text=AB;font_size=16").unwrap();
+    let (expected, _) =
+        rustlua_render::text::measure_builtin_text(&text.text, text.effective_scale())
+            .expect("builtin text metrics");
+    assert!(expected[0] > 0.0 && expected[1] > 0.0);
+
+    let mut runtime = RuntimeScene::from_scene_edit(None, scene).unwrap();
+    let rects =
+        runtime.scene_entity_ui_layout_rects([SceneEntityId(1), SceneEntityId(2)], [400.0, 200.0]);
+    assert_eq!(
+        rects.get(&2),
+        Some(&UiRect::new(10.0, 10.0, expected[0], expected[1]))
+    );
+}
+
 /// 首包预热：`load_project_font_atlas` 读到项目根 `chars.txt` 时预生成字形
 /// （图集 version 增加）；无 chars.txt 不预热。
 #[test]

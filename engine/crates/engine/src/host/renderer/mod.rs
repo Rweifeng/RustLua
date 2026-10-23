@@ -6,29 +6,47 @@ use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
     path::PathBuf,
+    sync::Arc,
 };
 
 use rustlua_assets::asset_handle::AssetHandle;
+use rustlua_assets::env_asset::EnvironmentAsset;
 use rustlua_camera::camera::{Camera3D, FrameViews, Viewport};
 use rustlua_math::math3d::{Mat4, Vec3};
 use rustlua_render::async_loader::AsyncLoader;
 use rustlua_render::layer::RenderLayer;
 use rustlua_render::light::Light;
-use rustlua_render::post_process::PostProcess;
+use rustlua_render::post_process::{PostProcess, Tonemap};
 use rustlua_render::render_plan::{RenderPass, RenderPlan};
+use rustlua_render::render_settings::{
+    EnvironmentLighting, EnvironmentSettings, IblMode, IblTier, RenderSettings, SceneColorFormat,
+    ibl_tier, resolve_ibl,
+};
 use wgpu::{Device, Queue, Surface, SurfaceConfiguration};
 
 use crate::host::frame::{Scene3d, SceneMesh};
+
+pub use environment::EnvironmentMapError;
 
 mod arena;
 mod capabilities;
 mod compute;
 mod construct;
+mod environment;
 mod gpu_mesh;
 mod gpu_particles;
 mod gpu_texture;
+mod pass_timestamps;
 mod passes;
+pub mod pbr;
+pub mod pipeline_cache;
 mod readback;
+#[cfg(not(target_arch = "wasm32"))]
+mod shader_hot_reload;
+// R05-4：编辑器与桌面运行时要把重载读数显示给作者，所以这三个类型是**对外**的；
+// wasm 侧没有覆盖目录，也就没有报告类型可导出。
+#[cfg(not(target_arch = "wasm32"))]
+pub use shader_hot_reload::{ShaderReloadError, ShaderReloadReport, ShaderSourceStatus};
 mod targets;
 mod timestamp;
 mod world_sprite;
@@ -36,8 +54,12 @@ pub use capabilities::RendererCapabilities;
 pub use compute::{ComputeBinding, ComputeDispatch, ComputeError, ComputeRequest, ComputeStats};
 pub use gpu_particles::{
     GpuParticleConfig, GpuParticleSnapshot, GpuParticleState, GpuParticleStatus, GpuParticleStep,
+    MAX_GPU_PARTICLE_SLOTS, MAX_GPU_PARTICLE_SYSTEMS,
 };
-pub use readback::{ReadbackMetrics, ReadbackStatus};
+pub use pbr::{DirectBrdf, direct_brdf, normal_matrix};
+use pipeline_cache::PipelineCache;
+pub use pipeline_cache::PipelineCacheStats;
+pub use readback::{ReadbackMetrics, ReadbackStatus, SceneColorReadback};
 use timestamp::{GpuTimestampState, TimestampSlot};
 
 /// 需要深度附件的那几条管线（WP6）。把"要不要写深度"从散落的字段字面量收成一处**类型化**
@@ -128,14 +150,25 @@ struct GpuGeometry {
     bytes: u64,
 }
 
-/// A decoded base-color texture uploaded to the GPU (sRGB) plus its view.
-struct CachedAlbedoTexture {
+/// A decoded material texture uploaded to the GPU (sRGB color or linear data) plus its view.
+struct CachedMaterialTexture {
     /// Kept alive so `view` stays valid; never read directly.
     #[allow(dead_code)]
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     /// RGBA8 像素字节数（显存占用估算）。
     bytes: u64,
+}
+
+/// Resolved GPU texture slots for one material. Indices point into
+/// `Renderer::albedo_textures` (sRGB) or `Renderer::linear_textures` (data).
+#[derive(Clone, Copy, Default)]
+struct MaterialTextureIndices {
+    base_color: Option<u32>,
+    metallic_roughness: Option<u32>,
+    emissive: Option<u32>,
+    normal: Option<u32>,
+    occlusion: Option<u32>,
 }
 
 /// File-authored material parameters for one primitive. The per-draw model
@@ -149,6 +182,23 @@ struct GpuMaterial {
     skinned: bool,
     /// Index into `Renderer::albedo_textures`; `None` samples a white fallback.
     albedo: Option<u32>,
+    /// Index into `Renderer::linear_textures`; `None` samples white (factor passthrough).
+    metallic_roughness: Option<u32>,
+    /// `emissive.rgb * emissive_strength` (linear).
+    emissive: [f32; 3],
+    /// Index into `Renderer::albedo_textures`; `None` samples white.
+    emissive_texture: Option<u32>,
+    /// Index into `Renderer::linear_textures`; `None` samples flat +Y (no perturbation).
+    normal_texture: Option<u32>,
+    normal_scale: f32,
+    /// Index into `Renderer::linear_textures`; `None` samples white (no occlusion).
+    occlusion_texture: Option<u32>,
+    occlusion_strength: f32,
+    /// P3-R02-4：alpha 模式与阈值决定主通道的 discard / 混合管线。
+    alpha_mode: rustlua_render::mesh3d::MaterialAlphaMode,
+    alpha_cutoff: f32,
+    /// 双面材质选独立剔除状态的管线（背面不再被光栅化掉）。
+    double_sided: bool,
 }
 
 /// Cached GPU geometry + file materials for one mesh path.
@@ -157,30 +207,42 @@ struct CachedMesh {
 }
 
 impl GpuMaterial {
-    /// docs/54 §4.3：GPU 材质由统一的 [`rustlua_render::renderable::Material`] 构造——金属度/粗糙度/
-    /// 基色的默认值从此只有一处，精灵与网格不会各自演化出一套"缺省材质"。
+    /// P3-R02：GPU 材质由统一的 [`rustlua_render::mesh3d::MaterialAsset`] 构造。glTF 与
+    /// `.material` 都先落到这个资产类型，GPU 侧因此只有一条材质解释路径。
     fn from_material(
-        material: &rustlua_render::renderable::Material,
+        material: &rustlua_render::mesh3d::MaterialAsset,
+        textures: MaterialTextureIndices,
         skinned: bool,
-        albedo: Option<u32>,
     ) -> Self {
         Self {
             base_color: material.base_color,
             metallic: material.metallic,
             roughness: material.roughness,
             skinned,
-            albedo,
+            albedo: textures.base_color,
+            metallic_roughness: textures.metallic_roughness,
+            emissive: [
+                material.emissive[0] * material.emissive_strength,
+                material.emissive[1] * material.emissive_strength,
+                material.emissive[2] * material.emissive_strength,
+            ],
+            emissive_texture: textures.emissive,
+            normal_texture: textures.normal,
+            normal_scale: material.normal_scale,
+            occlusion_texture: textures.occlusion,
+            occlusion_strength: material.occlusion_strength,
+            alpha_mode: material.alpha_mode,
+            alpha_cutoff: material.alpha_cutoff,
+            double_sided: material.double_sided,
         }
     }
 }
 
 struct CachedPrimitive {
     geometry: GpuGeometry,
-    /// docs/54 §4.3：网格的材质与精灵/Quad 共用同一个 `Material` 类型（"材质是什么"只有一处
-    /// 定义）；`albedo` 是它的贴图在 GPU 底图表里的下标，`None` = 白底。
-    material: rustlua_render::renderable::Material,
-    /// Index into `Renderer::albedo_textures`; `None` samples a white fallback.
-    albedo: Option<u32>,
+    /// GPU 侧已解析的材质（贴图槽位 + 参数）。展平成 `GpuMaterial` 是为了不在每帧
+    /// 克隆 glTF 内嵌像素；`skinned` 由绘制侧的动画调色板决定，这里恒为 false。
+    material: GpuMaterial,
     /// Local-space bounding sphere (center, radius) used for frustum culling.
     bounds: (Vec3, f32),
 }
@@ -245,10 +307,84 @@ pub struct RenderFrameMetrics {
     /// 这是本仓最不能接受的失败类型；readback 侧早有同款计数（`ReadbackMetrics::dropped`），
     /// 这里补齐同一把尺：**`draw_calls` 偏少 + `dropped_draws > 0` 才是"这一帧少了东西"的完整证据**。
     pub dropped_draws: u64,
+    /// P3-R01：本帧场景颜色是否真的走了 HDR（`Rgba16Float` + Tonemap）。
+    ///
+    /// `false` 不代表出错：策略关闭、设备不支持、纯 2D 帧、曝光归属冲突都会得到 `false`；
+    /// 原因由启动日志与每次冲突的一条告警给出。
+    pub hdr_active: bool,
+    /// 本帧 Tonemap 曲线；没有 Tonemap 通道（LDR）时为 `None`。
+    pub tonemap: Option<Tonemap>,
+    /// 本帧场景颜色目标的格式类别（HDR 为 `Rgba16Float`，LDR 按 sRGB/线性归类）。
+    pub scene_format: SceneColorFormat,
 }
 
 fn record_draw_call(metrics: &mut RenderFrameMetrics) {
     metrics.draw_calls += 1;
+}
+
+/// E06-3：一条渲染通道在 GPU 上的时长。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PassGpuTiming {
+    pub pass: RenderPass,
+    pub gpu_us: u64,
+}
+
+/// E06-3：上一帧的逐通道 GPU 时间报告。
+///
+/// `supported=false` 是设备没有 timestamp 查询能力（或回读失败），此时 `passes` 为空、
+/// `frame_us` 为 `None`——**不用 0 冒充**。`consistent` 只在同一次提交同时拿到整帧与
+/// 至少一条通道时间时才有值；判据是 `|pass_sum - frame| / frame ≤ 5%`。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GpuPassReport {
+    pub supported: bool,
+    pub reason: Option<String>,
+    pub frame_us: Option<u64>,
+    pub passes: Vec<PassGpuTiming>,
+    pub pass_sum_us: u64,
+    pub delta_pct: Option<f32>,
+    pub consistent: Option<bool>,
+}
+
+impl GpuPassReport {
+    #[must_use]
+    pub fn pass_us(&self, pass: RenderPass) -> Option<u64> {
+        self.passes
+            .iter()
+            .find(|timing| timing.pass == pass)
+            .map(|timing| timing.gpu_us)
+    }
+
+    /// 面板「复制报告」与无头证据共用的一行式文本。
+    #[must_use]
+    pub fn to_text(&self) -> String {
+        let mut text = match self.frame_us {
+            Some(frame_us) => {
+                let mut line = format!("gpu passes: frame={frame_us}us sum={}us", self.pass_sum_us);
+                if let Some(delta) = self.delta_pct {
+                    line.push_str(&format!(" delta={delta:+.2}%"));
+                }
+                match self.consistent {
+                    Some(true) => line.push_str(" consistent"),
+                    Some(false) => line.push_str(" INCONSISTENT"),
+                    None => {}
+                }
+                line
+            }
+            None if self.supported => "gpu passes: no sample yet".to_owned(),
+            None => format!(
+                "gpu passes: unavailable ({})",
+                self.reason.as_deref().unwrap_or("unsupported")
+            ),
+        };
+        for timing in &self.passes {
+            text.push_str(&format!(
+                "\n  {}: {}us",
+                timing.pass.as_str(),
+                timing.gpu_us
+            ));
+        }
+        text
+    }
 }
 
 /// 记一次 shader 管线状态设置（Unity SetPass Calls 的对应量）。
@@ -281,6 +417,18 @@ fn record_vertex_draw(metrics: &mut RenderFrameMetrics, vertex_count: u32) {
     metrics.vertices += u64::from(vertex_count);
     metrics.instances += u64::from(vertex_count) / 6;
     metrics.triangles += u64::from(vertex_count) / 3;
+}
+
+/// P3-R07-3：instanced quad（GPU 粒子）的一次绘制。
+///
+/// 不能复用 [`record_vertex_draw`]：那条按"非实例化 6 顶点/精灵"折算 `instances`，
+/// 这里 `vertex_count` 恒为 4，除下来会得到 `instances += 0`，读数为"每帧画了几千个粒子、
+/// 实例数却是 0"。分账口径反过来也一样：instanced 的顶点数是**每实例**的，必须乘实例数。
+fn record_instanced_quad_draw(metrics: &mut RenderFrameMetrics, instance_count: u32) {
+    record_draw_call(metrics);
+    metrics.instances += u64::from(instance_count);
+    metrics.vertices += u64::from(gpu_particles::QUAD_VERTEX_COUNT) * u64::from(instance_count);
+    metrics.triangles += 2 * u64::from(instance_count);
 }
 
 fn record_indexed_draw(
@@ -334,6 +482,14 @@ pub struct RendererResourceStats {
     pub vertex_buffer_growths: u64,
     /// 单帧 2D 顶点字节数峰值。
     pub vertex_bytes_peak: u64,
+    /// P3-R04-3：已编译的 3D 网格/阴影 shader 变体数。
+    pub pipeline_variants: usize,
+    /// 变体缓存命中次数（构造期重复请求同一键）。
+    pub pipeline_variant_hits: u64,
+    /// 变体缓存未命中次数（= 编译尝试次数）。
+    pub pipeline_variant_misses: u64,
+    /// 启动期变体编译累计耗时（毫秒）。
+    pub pipeline_compile_ms: f64,
     /// 非阻塞回读账本（槽数 / 丢弃 / CPU 缓冲字节等）。
     pub readback: ReadbackMetrics,
 }
@@ -378,6 +534,22 @@ fn max_model_scale(model: Mat4) -> f32 {
         model.columns[2][0].powi(2) + model.columns[2][1].powi(2) + model.columns[2][2].powi(2);
     sx.max(sy).max(sz).sqrt().max(f32::EPSILON)
 }
+/// 3D 相机 uniform 的 CPU 侧布局（与 `mesh3d_pbr.wgsl` 的 `Camera` 对应）：
+/// 16 个 f32 的列主序视图投影 + 4 个 f32 的世界坐标位置（w 留 1）。
+///
+/// 旧 `mesh3d.wgsl` 只声明前 64 字节；同一个 buffer 因此能同时服务回滚档与 PBR 档。
+pub(super) fn camera_uniform(view_projection: &Mat4, position: Vec3) -> [f32; 20] {
+    let mut data = [0.0; 20];
+    for (index, column) in view_projection.columns.iter().enumerate() {
+        data[index * 4..index * 4 + 4].copy_from_slice(column);
+    }
+    data[16] = position.x;
+    data[17] = position.y;
+    data[18] = position.z;
+    data[19] = 1.0;
+    data
+}
+
 pub struct Renderer {
     /// Present surface in window mode; `None` in offscreen (embedded) mode.
     surface: Option<Surface<'static>>,
@@ -389,13 +561,82 @@ pub struct Renderer {
     capabilities: RendererCapabilities,
     /// M74-03 P1：compute 管线/绑定组缓存、统计与宿主开关。
     compute_state: compute::ComputeState,
-    /// M74-03 P2：GPU 粒子（第一个真实消费者）。`None` = 未启用，不产生任何额外 pass。
-    gpu_particles: Option<gpu_particles::GpuParticleSystem>,
+    /// M74-03 P2：GPU 粒子（第一个真实消费者）。P3-R07-2 起是**池**：一次 burst 一个系统，
+    /// 空 = 未启用，不产生任何额外 pass。
+    gpu_particles: Vec<gpu_particles::GpuParticleSystem>,
+    /// 分配给下一个 GPU 粒子系统的绑定组身份（单调递增，回收时按它剔除缓存）。
+    gpu_particle_generation: u64,
+    /// P3-R07-3：instanced 粒子 draw 段自己的 group2 布局（参数 uniform + 状态只读存储）。
+    ///
+    /// 构造期只建布局、不建管线（见 [`super::construct`] 的注释）：粒子管线按目标格式延迟
+    /// 编译，而布局必须留在渲染器上，否则延迟编译没有第二份"和首帧一致"的描述符可用。
+    gpu_particle_draw_layout: wgpu::BindGroupLayout,
+    /// instanced 粒度的管线布局：group0=世界 Sprite 相机、group1=贴图/采样器（两者与
+    /// [`Self::world_sprite_camera_bind_group`]、`white` 复用同一份绑定组）、group2=粒子资源。
+    gpu_particle_pipeline_layout: wgpu::PipelineLayout,
+    /// 已编译的 instanced 粒子管线与其目标格式。`None` = 本进程还没画过 GPU 粒子。
+    ///
+    /// 只缓存**一条**（不是 Map）：一帧只有一个场景目标格式，HDR 切换最多各编译一次；
+    /// 用格式相等做键，格式变了才重编，与 P3-R02 的 PBR 延迟补编译同一套理由。
+    /// 目标格式取 `self.config.format`（LDR）/`Rgba16Float`（HDR），与后处理离屏纹理、
+    /// 热重载重建 LDR 槽位读的是同一个来源。
+    gpu_particle_pipeline: Option<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
     pipeline: wgpu::RenderPipeline,
-    mesh_pipeline: wgpu::RenderPipeline,
+    /// P3-R04-3：按固定轴缓存的 3D 网格/阴影管线。`Arc` 让绘制侧只借用、不复制；
+    /// 键与统计见 [`pipeline_cache`]。
+    pipelines: PipelineCache<Arc<wgpu::RenderPipeline>>,
+    /// P3-R02/R05：Legacy 网格变体的两组布局（相机 + 材质）。延迟补编译与热重载都要按
+    /// **同一个**布局重建管线，所以布局必须留在渲染器上，而不是只活在构造期的局部变量里。
+    ///
+    /// 只有热重载会读它（延迟补编译在构造期用同一份局部布局），因此与覆盖目录同侧：wasm 不带。
+    #[cfg(not(target_arch = "wasm32"))]
+    mesh_pipeline_layout: wgpu::PipelineLayout,
+    /// P3-R05：shader 源解析层（内置源 + 开发期覆盖目录）。
+    ///
+    /// 只在原生侧存在：wasm/release 不暴露覆盖入口，文件 IO 分支也不该编进浏览器产物。
+    #[cfg(not(target_arch = "wasm32"))]
+    shader_library: crate::host::shader_library::ShaderLibrary,
+    /// 最近一次热重载的结果（`None` = 从没重载过）。编辑器状态栏/Console 与验收样例读它。
+    #[cfg(not(target_arch = "wasm32"))]
+    shader_reload: Option<crate::host::renderer::shader_hot_reload::ShaderReloadReport>,
+    /// 管线里**当前编译着**的源（根名 → 快照），热重载的比较基准。
+    ///
+    /// 不能拿"覆盖目录此刻解析出什么"当基准：删掉覆盖文件时解析结果已经变成内置源，而画面
+    /// 还是旧 shader 画的，两者一比就"没变化"，回退永远不会发生。
+    #[cfg(not(target_arch = "wasm32"))]
+    shader_committed: std::collections::HashMap<
+        &'static str,
+        crate::host::renderer::shader_hot_reload::ActiveSource,
+    >,
+    /// 2D 固定槽位（textured / 矢量文字 / 世界 Sprite / 后处理+Tonemap）的管线布局。
+    ///
+    /// 这几条管线不进 `PipelineCache`（没有变体轴），热重载要按构造期**同一份**描述符重建，
+    /// 所以布局得活到重载期；只在原生侧存在，wasm 产物里不留这个字段。
+    #[cfg(not(target_arch = "wasm32"))]
+    fixed_slot_layouts: crate::host::renderer::shader_hot_reload::FixedSlotLayouts,
+    /// P3-R02：PBR 变体在宿主**首次打开** `RenderSettings.pbr` 时编译，而不是启动期无条件
+    /// 编译——旧 3D 场景永远不付这份启动时间，回滚档的像素与耗时都不变。
+    ///
+    /// P3-R03：PBR 管线布局是相机 + 材质 + 环境三组。Legacy 仍用构造期的两组布局，
+    /// 回滚档因此不声明也不绑定环境组。布局留一份在这里正是为了延迟编译；重复打开只编译一次。
+    pbr_pipeline_layout: wgpu::PipelineLayout,
+    /// P3-R02-4：mask/双面阴影变体也要能延迟补编译，因此阴影布局同样留在渲染器上。
+    shadow_pipeline_layout: wgpu::PipelineLayout,
+    pbr_pipelines_ready: bool,
+    /// P3-R03：环境 uniform（160 B）与 group 2 绑定。未设置环境时写入全零 SH + 1×1 黑 cube，
+    /// 绑定关系不随 IBL 开关变化；设置资产后只替换 cubemap 视图并重建绑定组。
+    environment_buffer: wgpu::Buffer,
+    environment_bind_group: wgpu::BindGroup,
+    environment_bind_group_layout: wgpu::BindGroupLayout,
+    environment_fallback_view: wgpu::TextureView,
+    environment_sampler: wgpu::Sampler,
+    environment_view: wgpu::TextureView,
+    /// 已上传的预过滤 cubemap；`None` = 镜面 IBL 不可用（SH-only 仍可工作）。
+    environment_map: Option<environment::GpuEnvironmentMap>,
+    /// 已设置的环境光照；`None` = 本帧 IBL 为 Off（保留 R02 的常数环境光）。
+    environment: Option<EnvironmentLighting>,
     camera_bind_group: wgpu::BindGroup,
     shadow_bind_group: wgpu::BindGroup,
-    shadow_pipeline: wgpu::RenderPipeline,
     depth_view: wgpu::TextureView,
     /// Current depth-view size; rebuilt when the render target changes size.
     depth_size: (u32, u32),
@@ -481,12 +722,27 @@ pub struct Renderer {
     /// 网格身份缓存命中/未命中次数（诊断/验收用）。
     mesh_identity_hits: u64,
     mesh_identity_misses: u64,
-    /// Base-color textures uploaded from glTF materials (sRGB), indexed by
-    /// `GpuMaterial::albedo`. Index 0 is reserved for the white fallback.
-    albedo_textures: Vec<CachedAlbedoTexture>,
-    /// Shared sampler for base-color textures.
+    /// Color textures (base color / emissive, sRGB), indexed by
+    /// `GpuMaterial::albedo` / `GpuMaterial::emissive_texture`.
+    albedo_textures: Vec<CachedMaterialTexture>,
+    /// Data textures (metallic-roughness, linear), indexed by
+    /// `GpuMaterial::metallic_roughness`.
+    linear_textures: Vec<CachedMaterialTexture>,
+    /// 贴图内容 → 槽位。同一份内嵌像素被多个图元/材质引用时只上传一次；
+    /// 键含尺寸与色彩空间，sRGB 与线性语义不会互相顶替。
+    texture_content_cache: HashMap<(u64, u32, u32, bool), u32>,
+    /// `.material` 路径 → 已解析的 GPU 材质。`None` = 加载/解析失败（已告警，
+    /// 后续帧不再重复尝试，绘制回退到 glTF 内嵌材质）。
+    material_cache: HashMap<String, Option<GpuMaterial>>,
+    /// P3-E02：编辑器实时预览（不改盘）覆盖的路径；同一时刻只有一个路径处于预览。
+    material_preview_path: Option<String>,
+    /// 预览材质最近一次使用的五个贴图路径。路径集合不变时复用已上传的纹理槽，
+    /// 拖数值滑杆不做 PNG 解码/上传。
+    material_preview_textures: Option<[Option<String>; 5]>,
+    material_preview_indices: Option<MaterialTextureIndices>,
+    /// Shared sampler for material textures.
     albedo_sampler: wgpu::Sampler,
-    /// 1x1 white texture view bound when a material has no base-color texture.
+    /// 1x1 white texture view bound when a material texture is absent.
     white_albedo_view: wgpu::TextureView,
     /// CPU frustum culling of scene drawables (M8-08).
     cull_enabled: bool,
@@ -515,6 +771,8 @@ pub struct Renderer {
     /// 静默发生。
     last_frame_plan: RenderPlan,
     last_frame_passes: Vec<RenderPass>,
+    /// E06-3：上一帧逐通道 GPU 时间（与 `gpu_frame_us` 来自同一次提交）。
+    last_gpu_pass_report: GpuPassReport,
     /// WP5：宿主声明的本帧相机侧视图（清屏策略 + 视口）。默认全 `None` ⇒ 渲染器保持
     /// 收敛前的行为（历史默认清屏色、整目标视口），这就是这次接线可回滚的那一档。
     frame_views: FrameViews,
@@ -545,6 +803,19 @@ pub struct Renderer {
     post_process_texture: Option<wgpu::Texture>,
     post_process_scene_view: Option<wgpu::TextureView>,
     post_process_size: (u32, u32),
+    /// P3-R01：工程/场景级渲染开关（HDR 是第一个消费者）。默认全关 ⇒ 与收敛前逐字节相同。
+    render_settings: RenderSettings,
+    /// HDR 因"曝光归属冲突"等原因未能启用时只告警一次（每帧刷屏会淹掉真正的信号）。
+    hdr_warning_logged: bool,
+    /// HDR 场景颜色目标（`Rgba16Float`）。只在真正需要 HDR 的帧按需创建；纯 2D 帧不分配。
+    hdr_scene_texture: Option<wgpu::Texture>,
+    hdr_scene_view: Option<wgpu::TextureView>,
+    hdr_scene_size: (u32, u32),
+    hdr_world_sprite_pipeline: Option<wgpu::RenderPipeline>,
+    hdr_world_sprite_opaque_pipeline: Option<wgpu::RenderPipeline>,
+    /// Tonemap 全屏管线（输入 HDR 场景、输出 LDR 目标）。能力不足时为 `None`。
+    tonemap_pipeline: Option<wgpu::RenderPipeline>,
+    tonemap_params: wgpu::Buffer,
 }
 
 impl Renderer {
@@ -565,10 +836,13 @@ impl Renderer {
             self.write_light_uniforms(scene);
             return;
         };
+        // P3-R02：相机 uniform 扩成「视图投影 + 世界位置」。位置只在 PBR 片元的视线向量里
+        // 用到；旧路径的着色器结构仍是 64 字节，读同一个缓冲区的前 64 字节，像素不变。
+        let camera_uniform = camera_uniform(&matrix, scene.camera.position);
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
-            bytemuck::cast_slice(&matrix.columns),
+            bytemuck::cast_slice(&camera_uniform),
         );
         if view_projection.is_none() {
             // 合法回滚档：宿主没声明视图时回退到场景提取时烘焙的视图。trace 级别，不刷屏。
@@ -629,6 +903,171 @@ impl Renderer {
         self.post_process
     }
 
+    /// P3-R01：设置工程/场景级渲染开关（HDR/PBR/IBL/变体）。
+    ///
+    /// 默认（不调用）是全关：纯 2D 与旧 3D 路径的像素逐字节不变。开关变化时把"只告警一次"
+    /// 的标记复位，新的降级原因因此会重新出现在日志里。
+    pub fn set_render_settings(&mut self, settings: RenderSettings) {
+        if self.render_settings != settings {
+            self.render_settings = settings;
+            self.hdr_warning_logged = false;
+        }
+        if settings.pbr {
+            // 在宿主显式打开 PBR 的这一刻编译变体（通常发生在首帧之前），而不是等第一次
+            // 3D draw 时在通道里编译。重复调用是空操作，统计里的变体数不会涨。
+            self.ensure_pbr_pipelines();
+        }
+    }
+
+    /// PBR 变体是否已经编译（诊断/验收用）。
+    #[must_use]
+    pub fn pbr_pipelines_ready(&self) -> bool {
+        self.pbr_pipelines_ready
+    }
+
+    /// 当前生效的渲染开关（诊断/验收用）。
+    #[must_use]
+    pub fn render_settings(&self) -> RenderSettings {
+        self.render_settings
+    }
+
+    /// P3-R03-3：设置完整环境（`.rlenv` 的预过滤 cubemap + SH9 + 强度/旋转）。
+    ///
+    /// 上传失败返回原因，**不改变**当前环境——调用方可以退到 SH-only 并报警，而不是把
+    /// 半个环境留在渲染器里。设置成功后 `ibl` 策略为 `Auto`/`On` 会解析到 `Full`
+    /// （设备能力不足时由 [`Self::ibl_mode`] 降为 `Diffuse`）。
+    pub fn set_environment_asset(
+        &mut self,
+        asset: &EnvironmentAsset,
+        settings: EnvironmentSettings,
+    ) -> Result<(), EnvironmentMapError> {
+        let (texture, view) = environment::upload(&self.device, &self.queue, asset)?;
+        self.environment_view = view;
+        self.environment_map = Some(environment::GpuEnvironmentMap {
+            _texture: texture,
+            face_size: asset.face_size,
+            mip_count: asset.mip_count(),
+        });
+        self.environment = Some(EnvironmentLighting {
+            sh: asset.sh,
+            settings,
+        });
+        self.rebuild_environment_bind_group();
+        Ok(())
+    }
+
+    /// P3-R03-2：只设置 SH9 环境光照（无 cubemap）：`ibl` 落在 `Diffuse`，是 Tier C 的回退档。
+    pub fn set_environment(&mut self, lighting: EnvironmentLighting) {
+        self.environment = Some(lighting);
+    }
+
+    /// 清除环境（SH 与 cubemap 一起卸载），回到 R02 的常数环境项。
+    pub fn clear_environment(&mut self) {
+        self.environment = None;
+        if self.environment_map.take().is_some() {
+            self.environment_view = self.environment_fallback_view.clone();
+            self.rebuild_environment_bind_group();
+        }
+    }
+
+    /// 当前环境光照（诊断/测试用）。
+    #[must_use]
+    pub fn environment(&self) -> Option<EnvironmentLighting> {
+        self.environment
+    }
+
+    /// 已上传环境 cubemap 的 `(face_size, mip_count)`；`None` = 没有镜面环境。
+    #[must_use]
+    pub fn environment_map_info(&self) -> Option<(u32, u32)> {
+        self.environment_map
+            .as_ref()
+            .map(|map| (map.face_size, map.mip_count))
+    }
+
+    /// P3-R03-4：环境采样的设备档位（A/B/C），编辑器与日志据此显示质量与回退原因。
+    #[must_use]
+    pub fn ibl_tier(&self) -> IblTier {
+        ibl_tier(
+            self.capabilities.hdr_color,
+            self.capabilities.float_linear_filter,
+        )
+    }
+
+    /// Tier C 时镜面 IBL 不可用的**可读原因**（A/B 为 `None`）。
+    #[must_use]
+    pub fn ibl_specular_unavailable_reason(&self) -> Option<String> {
+        let tier = self.ibl_tier();
+        if tier.supports_specular() {
+            return None;
+        }
+        Some(format!(
+            "Tier {}：Rgba16Float cubemap 不可用（backend={}），镜面 IBL 关闭，仅 SH9 漫反射",
+            tier.as_str(),
+            self.capabilities.backend_name()
+        ))
+    }
+
+    /// 本帧实际使用的 IBL 档位：策略 × 有没有环境 × 设备镜面能力。
+    ///
+    /// P3-R03-3 起镜面能力 = 已上传 cubemap 且设备能绑定/采样 `Rgba16Float`；
+    /// 采样器是否线性由构造期能力决定（Nearest 走 Tier B），不影响档位解析。
+    #[must_use]
+    pub fn ibl_mode(&self) -> IblMode {
+        if !self.render_settings.pbr {
+            return IblMode::Off;
+        }
+        let specular_available = self.environment_map.is_some() && self.capabilities.hdr_color;
+        resolve_ibl(
+            self.render_settings,
+            self.environment.is_some(),
+            specular_available,
+        )
+    }
+
+    fn rebuild_environment_bind_group(&mut self) {
+        self.environment_bind_group = environment::bind_group(
+            &self.device,
+            &self.environment_bind_group_layout,
+            &self.environment_buffer,
+            &self.environment_view,
+            &self.environment_sampler,
+        );
+    }
+
+    /// 把本帧的环境 uniform 写进缓冲（160 B，每帧一次）。IBL 关闭时写全零，
+    /// 着色器的 Off 分支根本不读它——写零是为了让"上一帧的环境"不会残留。
+    /// `params.w` = 预过滤 mip 的最大 LOD（`mip_count - 1`），着色器用它映射 roughness。
+    fn write_environment_uniform(&self, mode: IblMode) {
+        let mut uniform = match self.environment {
+            Some(lighting) => lighting.uniform(mode),
+            None => EnvironmentLighting::default().uniform(IblMode::Off),
+        };
+        uniform[39] = self
+            .environment_map
+            .as_ref()
+            .map_or(0.0, |map| map.max_lod());
+        self.queue
+            .write_buffer(&self.environment_buffer, 0, bytemuck::cast_slice(&uniform));
+    }
+
+    /// P3-R04-3：3D 网格/阴影管线变体缓存的命中/未命中/编译耗时/变体数。
+    #[must_use]
+    pub fn pipeline_cache_stats(&self) -> PipelineCacheStats {
+        self.pipelines.stats()
+    }
+
+    /// 最近一次 HDR 场景颜色目标的尺寸；`(0, 0)` = 本进程还没创建过 HDR 目标。
+    #[must_use]
+    pub fn hdr_scene_size(&self) -> (u32, u32) {
+        self.hdr_scene_size
+    }
+
+    /// 最近一帧的 HDR 场景颜色是否启用（与 [`Self::last_frame_metrics`] 同源）。
+    #[must_use]
+    pub fn hdr_active(&self) -> bool {
+        self.last_frame_metrics.hdr_active
+    }
+
     /// 最近一次成功提交的帧统计。GPU timestamp 不可用或尚未完成时为 `None`。
     pub fn last_frame_metrics(&self) -> RenderFrameMetrics {
         self.last_frame_metrics
@@ -648,6 +1087,31 @@ impl Renderer {
     #[must_use]
     pub fn last_frame_passes(&self) -> &[RenderPass] {
         &self.last_frame_passes
+    }
+
+    /// E06-3：上一帧的逐通道 GPU 时间。
+    ///
+    /// 设备不支持 timestamp 查询时返回 `supported=false` + 原因；支持但还没完成第一次
+    /// 异步回读时返回 `supported=true`、`frame_us=None`。两者都不伪造 0。
+    #[must_use]
+    pub fn gpu_pass_report(&self) -> GpuPassReport {
+        match self.timestamp_state {
+            GpuTimestampState::Unsupported => GpuPassReport {
+                supported: false,
+                reason: Some("unsupported".to_owned()),
+                ..GpuPassReport::default()
+            },
+            GpuTimestampState::MapError => GpuPassReport {
+                supported: false,
+                reason: Some(
+                    self.timestamp_error
+                        .clone()
+                        .unwrap_or_else(|| "map_error".to_owned()),
+                ),
+                ..GpuPassReport::default()
+            },
+            GpuTimestampState::Ready => self.last_gpu_pass_report.clone(),
+        }
     }
 
     /// docs/54 §4.4：资源身份缓存的 `(命中, 未命中)` 次数。
@@ -728,6 +1192,7 @@ impl Renderer {
             .flat_map(|mesh| mesh.primitives.iter())
             .map(|primitive| primitive.geometry.bytes)
             .sum();
+        let variant_stats = self.pipelines.stats();
         RendererResourceStats {
             loaded_textures: self.textures.len() + self.albedo_textures.len(),
             texture_bytes: loaded_texture_bytes + albedo_bytes + font_bytes,
@@ -745,6 +1210,10 @@ impl Renderer {
             vertex_buffer_capacity: self.vertex_buffer.size(),
             vertex_buffer_growths: self.vertex_buffer_growths,
             vertex_bytes_peak: self.vertex_bytes_peak,
+            pipeline_variants: variant_stats.variants,
+            pipeline_variant_hits: variant_stats.hits,
+            pipeline_variant_misses: variant_stats.misses,
+            pipeline_compile_ms: variant_stats.compile_ms(),
             readback: self.readback_metrics(),
         }
     }

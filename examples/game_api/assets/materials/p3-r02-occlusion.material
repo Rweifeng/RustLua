@@ -1,0 +1,7 @@
+version=1
+name=p3-r02-occlusion
+base_color=0.9,0.9,0.9,1
+metallic=0
+roughness=0.6
+occlusion_texture=assets/textures/p3-r02-occlusion.png
+occlusion_strength=1

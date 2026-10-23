@@ -39,6 +39,11 @@ pub(crate) enum DockTab {
     /// M75-03 内置 AI 助手：默认与属性同叶（属性仍是活动标签），不改变旧版首帧几何。
     Assistant,
     Console,
+    /// P3-E01-3 `.anim` 时间线（只读预览）：默认与控制台同叶，控制台保持活动标签，
+    /// 因此升级首帧看到的仍是控制台（几何不变）。
+    Timeline,
+    /// P3-E03-2 可视化脚本画布：默认不在树里，双击 `.vgraph` 资源时由 `sync_visibility` 补入。
+    Graph,
 }
 
 impl DockTab {
@@ -51,6 +56,8 @@ impl DockTab {
             Self::Inspector => "属性",
             Self::Assistant => "AI 助手",
             Self::Console => "控制台",
+            Self::Timeline => "时间线",
+            Self::Graph => "可视化脚本",
         }
     }
 
@@ -63,6 +70,8 @@ impl DockTab {
             Self::Inspector => "inspector",
             Self::Assistant => "assistant",
             Self::Console => "console",
+            Self::Timeline => "timeline",
+            Self::Graph => "graph",
         }
     }
 }
@@ -122,7 +131,23 @@ pub(crate) fn default_dock_state() -> DockState<DockTab> {
         SIZE_CONSOLE / NOMINAL_HEIGHT,
         Node::leaf(DockTab::Console),
     );
+    // E01-3：时间线与控制台同叶，控制台仍是活动标签——升级首帧的观感保持不变。
+    insert_timeline_beside_console(tree);
     state
+}
+
+/// 把时间线插进控制台所在叶子的第二个位置，然后把活动标签还原成控制台。
+fn insert_timeline_beside_console(tree: &mut Tree<DockTab>) {
+    let Some((node, index)) = tree.find_tab_from(|candidate| *candidate == DockTab::Console) else {
+        tree.push_to_first_leaf(DockTab::Timeline);
+        return;
+    };
+    let Node::Leaf(leaf) = &mut tree[node] else {
+        tree.push_to_first_leaf(DockTab::Timeline);
+        return;
+    };
+    leaf.insert_tab(index.0 + 1, DockTab::Timeline);
+    leaf.set_active_tab(index);
 }
 
 /// 把助手插进属性所在叶子的第二个位置，然后把活动标签还原成属性。
@@ -301,6 +326,8 @@ pub(crate) fn sync_visibility(state: &mut DockState<DockTab>, editor: &EditorApp
     set_tab_present(state, DockTab::Scene, editor.show_scene_view);
     set_tab_present(state, DockTab::Game, editor.show_game_view);
     set_tab_present(state, DockTab::Console, editor.show_lua_console);
+    set_tab_present(state, DockTab::Timeline, editor.show_timeline_panel);
+    set_tab_present(state, DockTab::Graph, editor.show_graph_panel);
 }
 
 fn set_tab_present(state: &mut DockState<DockTab>, tab: DockTab, present: bool) {
@@ -431,6 +458,36 @@ fn add_tab(state: &mut DockState<DockTab>, tab: DockTab) {
             SIZE_CONSOLE / NOMINAL_HEIGHT,
             Node::leaf(tab),
         ),
+        DockTab::Graph => {
+            // 图与 Scene 并排（右侧），不抢中央标签组；Scene/Game 都不在时挂第一片叶子。
+            match leaf_of(DockTab::Scene).or_else(|| leaf_of(DockTab::Game)) {
+                Some(node) => split_at(tree, node, Split::Right, 0.34, Node::leaf(tab)),
+                None => tree.push_to_first_leaf(tab),
+            }
+        }
+        DockTab::Timeline => {
+            // 时间线的"原侧"是控制台标签组的第二个标签；控制台不在主表面（浮动窗里或
+            // 被关掉）时退回到"底部整宽"，仍可预期。
+            match tree.find_tab_from(|candidate| *candidate == DockTab::Console) {
+                Some((node, index)) => {
+                    let Node::Leaf(leaf) = &mut tree[node] else {
+                        return;
+                    };
+                    let console_was_active = leaf.active == index;
+                    leaf.insert_tab(index.0 + 1, tab);
+                    if console_was_active {
+                        leaf.set_active_tab(index);
+                    }
+                }
+                None => split_at(
+                    tree,
+                    NodeIndex::root(),
+                    Split::Below,
+                    SIZE_CONSOLE / NOMINAL_HEIGHT,
+                    Node::leaf(tab),
+                ),
+            }
+        }
     }
 }
 
@@ -630,6 +687,8 @@ impl TabViewer for DockTabViewer<'_> {
             DockTab::Inspector => editor.draw_inspector_panel(ui),
             DockTab::Assistant => editor.draw_assistant_panel(ui),
             DockTab::Console => editor.draw_console_body(ui),
+            DockTab::Timeline => editor.draw_timeline_panel(ui),
+            DockTab::Graph => editor.draw_graph_panel(ui),
         }
         editor
             .profiler
@@ -723,7 +782,7 @@ mod tests {
         }
     }
 
-    /// 默认树必须覆盖迁移前的六个面板区，外加 M75-03 的助手标签。
+    /// 默认树必须覆盖迁移前的六个面板区，外加 M75-03 的助手与 P3-E01-3 的时间线标签。
     #[test]
     fn default_tree_has_every_previous_panel_region() {
         let mut tabs = tabs_of(&default_dock_state());
@@ -738,6 +797,7 @@ mod tests {
                 DockTab::Inspector,
                 DockTab::Assistant,
                 DockTab::Console,
+                DockTab::Timeline,
             ]
         );
     }
@@ -773,7 +833,7 @@ mod tests {
             ..Default::default()
         };
         let _ = context.run(raw, |context| show_workspace(context, &mut app));
-        let state = app.dock_state.take().expect("帧末必须放回 dock 树");
+        let mut state = app.dock_state.take().expect("帧末必须放回 dock 树");
 
         let close = |label: &str, actual: f32, expected: f32| {
             assert!(
@@ -842,6 +902,17 @@ mod tests {
             inspector,
             "AI 助手应与属性重叠在同一标签组（默认不改变旧版几何）"
         );
+        assert_eq!(
+            rect_of(&state, DockTab::Timeline),
+            console,
+            "时间线应与控制台重叠在同一标签组（默认不改变旧版几何）"
+        );
+        // 控制台必须仍是该标签组里的活动标签：默认首帧看到的仍是控制台。
+        let (_, active) = state
+            .main_surface_mut()
+            .find_active_focused()
+            .expect("默认树必须有活动标签");
+        assert_eq!(*active, DockTab::Console);
     }
 
     /// 隐藏即移除、重新显示即回到原侧（资源在层级左侧、控制台在底部）。
@@ -851,19 +922,23 @@ mod tests {
         let mut editor = sample_app();
         editor.show_resources_panel = false;
         editor.show_lua_console = false;
+        editor.show_timeline_panel = false;
         sync_visibility(&mut state, &editor);
         let hidden = tabs_of(&state);
         assert!(!hidden.contains(&DockTab::Resource), "资源面板应被移除");
         assert!(!hidden.contains(&DockTab::Console), "控制台应被移除");
+        assert!(!hidden.contains(&DockTab::Timeline), "时间线应被移除");
         assert_eq!(hidden.len(), 5, "其余标签不受影响");
 
         editor.show_resources_panel = true;
         editor.show_lua_console = true;
+        editor.show_timeline_panel = true;
         sync_visibility(&mut state, &editor);
         let shown = tabs_of(&state);
-        assert_eq!(shown.len(), 7, "重新显示后标签数复原");
+        assert_eq!(shown.len(), 8, "重新显示后标签数复原");
         assert!(shown.contains(&DockTab::Resource));
         assert!(shown.contains(&DockTab::Console));
+        assert!(shown.contains(&DockTab::Timeline));
     }
 
     /// 阶段 2 收尾：其余四个面板同样按开关增删，且各自回到"原侧"——
@@ -880,14 +955,14 @@ mod tests {
         for tab in [DockTab::Hierarchy, DockTab::Inspector, DockTab::Scene] {
             assert!(!hidden.contains(&tab), "{tab:?} 应被移除");
         }
-        assert_eq!(hidden.len(), 4, "其余标签不受影响：{hidden:?}");
+        assert_eq!(hidden.len(), 5, "其余标签不受影响：{hidden:?}");
 
         editor.show_hierarchy_panel = true;
         editor.show_inspector_panel = true;
         editor.show_scene_view = true;
         sync_visibility(&mut state, &editor);
         let shown = tabs_of(&state);
-        assert_eq!(shown.len(), 7, "重新显示后标签数复原：{shown:?}");
+        assert_eq!(shown.len(), 8, "重新显示后标签数复原：{shown:?}");
         let node_of = |state: &mut DockState<DockTab>, tab: DockTab| {
             state
                 .main_surface_mut()
@@ -972,7 +1047,7 @@ mod tests {
         assert!(text.contains("资源面板"), "资源面板没画出来：{text}");
     }
 
-    /// 极端小窗口：dock 必须仍画完七个标签且不 panic。
+    /// 极端小窗口：dock 必须仍画完八个标签且不 panic。
     ///
     /// egui_dock 0.18 的 tab bar 会为"关闭全部/折叠"按钮预留 48px，窄标签页的可用宽度被
     /// 正好压成 `0.0` 时它内部 `assert_ne!` 直接 panic（阶段 1 实测被 resize 用例打崩过）。
@@ -992,7 +1067,7 @@ mod tests {
             let _ = context.run(raw, |context| show_workspace(context, &mut app));
         }
         let state = app.dock_state.take().expect("帧末必须放回 dock 树");
-        assert_eq!(tabs_of(&state).len(), 7, "小窗口不得丢标签");
+        assert_eq!(tabs_of(&state).len(), 8, "小窗口不得丢标签");
     }
 
     /// 结构可读转写（与 [`signature`] 同一趟遍历）：指纹撞车时用它打印出到底哪不同。
@@ -1218,7 +1293,7 @@ mod tests {
     }
 
     /// M27-03 验收 1 的自动化那一半：把 [`churn`] 跑满 **200 轮**，每轮都必须
-    /// ① 真的改了结构（指纹变）、② 六个常驻视图不丢不重、③ 重排后的树仍可序列化落盘。
+    /// ① 真的改了结构（指纹变）、② 八个常驻视图不丢不重、③ 重排后的树仍可序列化落盘。
     ///
     /// 三条各自挡一种坏形态：只断言"没 panic"的话，负载静默空转也算过；
     /// 不查重复的话，浮动窗搬回来时多出一份控制台要等用户看见才知；
@@ -1256,8 +1331,8 @@ mod tests {
             tabs.sort_by_key(|tab| *tab as u8);
             let count = tabs.len();
             tabs.dedup();
-            assert_eq!(count, 7, "step {step}（{note}）标签总数变成 {count}");
-            assert_eq!(tabs.len(), 7, "step {step}（{note}）出现重复标签");
+            assert_eq!(count, 8, "step {step}（{note}）标签总数变成 {count}");
+            assert_eq!(tabs.len(), 8, "step {step}（{note}）出现重复标签");
             assert!(
                 serialize(&state).is_some(),
                 "step {step}（{note}）重排后的树写不进 layout.json"

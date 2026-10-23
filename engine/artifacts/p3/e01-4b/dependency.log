@@ -1,0 +1,38 @@
+   Compiling rustlua-assets v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-assets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.72s
+     Running unittests src\lib.rs (engine\target\debug\deps\rustlua_assets-f0c3fe3f8875c961.exe)
+
+running 30 tests
+test dependency::tests::module_and_scene_names_become_package_paths ... ok
+test dependency::tests::comment_aware_scan ... ok
+test dependency::tests::lua_require_modules ... ok
+test dependency::tests::lua_scene_load_literal_only ... ok
+test dependency::tests::lua_asset_paths ... ok
+test dependency::tests::comment_only_when_hash_leads_the_line ... ok
+test dependency::tests::lua_scene_load_fallback_literal_is_a_real_edge ... ok
+test dependency::tests::excludes_ground_plane ... ok
+test dependency::tests::dedupe_preserves_order ... ok
+test dependency::tests::atlas_texture_field_is_the_only_edge ... ok
+test dependency::tests::cycle_detection_reports_chain ... ok
+test dependency::tests::path_call_args_are_literal_or_unresolved ... ok
+test dependency::tests::cycle_error_preserved_when_ready ... ok
+test dependency::tests::prefab_uses_same_format ... ok
+test dependency::tests::propagate_chain_a_to_c ... ok
+test dependency::tests::propagate_cycle_terminates ... ok
+test dependency::tests::propagate_import_failed_dep_invalidates ... ok
+test dependency::tests::propagate_missing_dep_invalidates_consumer ... ok
+test dependency::tests::propagate_restore_revokes_invalid ... ok
+test dependency::tests::propagate_self_missing_keeps_missing ... ok
+test dependency::tests::propagate_stale_dep_marks_stale ... ok
+test dependency::tests::recompute_edges_material_points_at_texture_lines ... ok
+test dependency::tests::recompute_edges_chains_scene_atlas_texture ... ok
+test dependency::tests::recompute_edges_reads_sources_and_writes_graph ... ok
+test dependency::tests::region_suffix_is_dropped_when_building_edges ... ok
+test dependency::tests::resolve_asset_and_report_unresolved ... ok
+test dependency::tests::recompute_edges_reports_unresolved ... ok
+test dependency::tests::resolve_self_cycle_excluded ... ok
+test dependency::tests::scene_comment_lines_do_not_produce_refs ... ok
+test dependency::tests::scene_refs_sprite_image_animation_tilemap_mesh ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 55 filtered out; finished in 0.00s
+

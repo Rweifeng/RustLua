@@ -69,6 +69,9 @@ component	6	Image	texture=__white__;color=0.160,0.420,0.720
 component	6	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	6	UiEvents	event=click;function=on_click
 component	6	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=-120.00,-24.00,120.00,24.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# E05-2/E05-4：容器子项约束。默认值（grow=0/shrink=1/visible）不改变既有布局，
+# 这里作为运行时组件的真实样本；改 grow/preferred_size 即可观察 VBox 内的伸缩。
+component	6	LayoutItem	min_size=0.00,0.00;max_size=0.00,0.00;preferred_size=0.00,0.00;size_percent=0.00,0.00;grow=0.00;shrink=1.00;visible=true
 # ⑦ 按钮文字是**子实体**：它的 UiLayout 锚点相对父矩形（按钮的 240×48）解析 → (12,17)，
 #    于是文字始终贴在按钮左上角内侧，按钮被容器挪到哪都跟着走（不需要抄绝对坐标）。
 entity	7	StartLabel	6

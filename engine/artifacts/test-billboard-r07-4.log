@@ -1,0 +1,12 @@
+   Compiling rustlua-gameplay v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-gameplay)
+   Compiling rustlua-scripting v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-scripting)
+   Compiling engine v0.1.1 (E:\Codex\RustLua\engine\crates\engine)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 29.70s
+     Running unittests src\lib.rs (target\debug\deps\engine-b8997a6a524324f7.exe)
+
+running 1 test
+gpu_particle_3d_billboard changed_pixels=1344 passes=[Clear, Particle] instances=1 vertices=4 dropped=0 center=[255, 0, 0, 255]
+test host::renderer::tests::compute::gpu_particle_quads_billboard_to_a_perspective_camera ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 309 filtered out; finished in 0.80s
+

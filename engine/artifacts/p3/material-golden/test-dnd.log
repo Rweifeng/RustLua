@@ -1,0 +1,28 @@
+warning: linker stdout: 正在创建库 E:\Codex\RustLua\engine\target\debug\deps\paste-0545853f57693019.dll.lib 和对象 E:\Codex\RustLua\engine\target\debug\deps\paste-0545853f57693019.dll.exp
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `paste` (lib) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.39s
+     Running unittests src\lib.rs (engine\target\debug\deps\editor-3dd80dcff3b8a3a4.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 202 filtered out; finished in 0.00s
+
+     Running unittests src\main.rs (engine\target\debug\deps\editor-3fced46228c0a9a3.exe)
+
+running 10 tests
+test dnd::tests::a_widget_only_lands_on_the_canvas ... ok
+test dnd::tests::an_asset_plan_per_zone ... ok
+test dnd::tests::every_action_has_a_caption ... ok
+test dnd::tests::a_material_is_referenceable_but_not_spawnable ... ok
+test dnd::tests::a_prefab_plan_per_zone ... ok
+test dnd::tests::external_files_split_into_import_and_spawn ... ok
+test dnd::tests::the_matrix_covers_every_source_and_zone ... ok
+test dnd::tests::an_entity_only_reparents_in_the_hierarchy ... ok
+test dnd::tests::the_inspector_field_takes_one_external_file ... ok
+test dnd::tests::folder_expansion_bounds_depth_and_count ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 433 filtered out; finished in 0.01s
+

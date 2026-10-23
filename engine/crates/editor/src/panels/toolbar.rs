@@ -14,6 +14,34 @@ use eframe::egui;
 /// 缩放滑条的轨道宽度：egui 默认 100pt 在工具栏里太占位，收窄到能稳定拖动即可。
 const ZOOM_SLIDER_WIDTH: f32 = 60.0;
 
+/// E18：比例快捷组（顺序即工具栏顺序），比例为宽/高。
+pub(crate) const PREVIEW_ASPECTS: [(&str, f32); 5] = [
+    ("16:9", 16.0 / 9.0),
+    ("16:10", 16.0 / 10.0),
+    ("21:9", 21.0 / 9.0),
+    ("4:3", 4.0 / 3.0),
+    ("9:16", 9.0 / 16.0),
+];
+
+/// 保持当前长边、按目标比例换掉另一条边（四舍五入，至少 1px）。
+/// 例如 1280×720 → 16:10 得到 1280×800，9:16 得到 720×1280。
+pub(crate) fn resolution_for_aspect(current: (u32, u32), ratio: f32) -> (u32, u32) {
+    let long = current.0.max(current.1).max(1);
+    if ratio >= 1.0 {
+        (long, ((long as f32) / ratio).round().max(1.0) as u32)
+    } else {
+        (((long as f32) * ratio).round().max(1.0) as u32, long)
+    }
+}
+
+/// 当前分辨率是否已落在该比例上（0.5% 容差，覆盖 1919×1080 这类取整结果）。
+pub(crate) fn resolution_matches_aspect(size: (u32, u32), ratio: f32) -> bool {
+    if size.0 == 0 || size.1 == 0 {
+        return false;
+    }
+    ((size.0 as f32 / size.1 as f32) - ratio).abs() <= ratio * 0.005
+}
+
 impl EditorApp {
     pub(crate) fn draw_workspace_toolbar(&mut self, ui: &mut egui::Ui) {
         // 工具栏保持单行；窄面板通过横向滚动访问末尾控件，避免换行挤压 Scene 画布。
@@ -111,6 +139,23 @@ impl EditorApp {
                                 ui.close();
                             }
                         });
+                    // E18：比例快捷组——改的是同一份 `preview_resolution`（不动场景数据）。
+                    ui.separator();
+                    for (label, ratio) in PREVIEW_ASPECTS {
+                        let selected = resolution_matches_aspect(self.preview_resolution, ratio);
+                        if ui
+                            .selectable_label(selected, label)
+                            .on_hover_text(format!("切换为 {label} 比例（保持当前长边）"))
+                            .clicked()
+                        {
+                            let size = resolution_for_aspect(self.preview_resolution, ratio);
+                            if size != self.preview_resolution {
+                                self.preview_resolution = size;
+                                self.adding_preview_resolution = false;
+                                self.scene_view_fit_pending = true;
+                            }
+                        }
+                    }
                     ui.separator();
                     // 单一 3D 切换：默认 2D，点亮进入 3D，取消回到 2D。
                     if icon_toggle(
@@ -258,6 +303,10 @@ impl EditorApp {
                         ui.checkbox(&mut self.show_scene_guides, "辅助线");
                         ui.checkbox(&mut self.show_safe_area, "Safe Area");
                         ui.checkbox(&mut self.show_pixel_grid, "像素网格");
+                        ui.checkbox(&mut self.show_layout_debug, "布局调试")
+                            .on_hover_text(
+                                "Widget 模式下画出所有 UI 元素的布局边界、容器内边距与间距，溢出元素标红",
+                            );
                         ui.checkbox(&mut self.show_collision_overlay, "碰撞区域")
                     .on_hover_text(
                         "画出场景里所有碰撞区域：Tilemap solid 格 + 实体 Collider 轮廓（调试用）",
@@ -321,9 +370,31 @@ impl EditorApp {
 
 #[cfg(test)]
 mod tests {
+    use super::{resolution_for_aspect, resolution_matches_aspect};
     use crate::EditorApp;
     use eframe::egui;
     use rustlua_infra::logging::LogSink;
+
+    /// E18：比例切换保持长边。1280×720 换 21:9 时高变为 549（1280×9/21 取整），
+    /// 换 9:16 时长宽互换为 720×1280。
+    #[test]
+    fn aspect_quick_switch_keeps_long_edge() {
+        assert_eq!(resolution_for_aspect((1280, 720), 16.0 / 9.0), (1280, 720));
+        assert_eq!(resolution_for_aspect((1280, 720), 16.0 / 10.0), (1280, 800));
+        assert_eq!(resolution_for_aspect((1280, 720), 21.0 / 9.0), (1280, 549));
+        assert_eq!(resolution_for_aspect((1280, 720), 4.0 / 3.0), (1280, 960));
+        assert_eq!(resolution_for_aspect((1280, 720), 9.0 / 16.0), (720, 1280));
+        assert_eq!(resolution_for_aspect((720, 1280), 16.0 / 9.0), (1280, 720));
+    }
+
+    #[test]
+    fn aspect_match_tolerates_rounding_but_rejects_wrong_ratio() {
+        assert!(resolution_matches_aspect((1920, 1080), 16.0 / 9.0));
+        assert!(resolution_matches_aspect((1919, 1080), 16.0 / 9.0));
+        assert!(!resolution_matches_aspect((1920, 1080), 16.0 / 10.0));
+        assert!(resolution_matches_aspect((1080, 1920), 9.0 / 16.0));
+        assert!(!resolution_matches_aspect((0, 0), 1.0));
+    }
 
     #[test]
     fn workspace_toolbar_stays_on_one_row_in_narrow_view() {

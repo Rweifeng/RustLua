@@ -1,6 +1,6 @@
 //! 内置 Assistant 的模型 Provider 抽象（M75-03）。
 //!
-//! 外部 MCP 客户端与内置面板共用同一份 [`ToolSpec`](crate::surface::ToolSpec)；本模块只负责
+//! 外部 MCP 客户端与内置面板共用同一份 [`ToolSpec`]；本模块只负责
 //! 把「对话 + 工具面」翻译成 OpenAI 兼容 / Anthropic 的请求，并把响应翻译回 [`ModelResponse`]。
 //! 工具执行不在这里发生——面板拿到 tool call 后仍走 `ToolHost` / `execute_tool`。
 //!

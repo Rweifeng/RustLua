@@ -16,6 +16,10 @@ anyhow.workspace = true
 thiserror.workspace = true
 bytemuck.workspace = true
 tracing.workspace = true
+# P3-E06-4：采集包/差分是有版本的持久化格式，用 derive 固定字段名；
+# serde/serde_json 已在锁文件里（编辑器与示例早就在用），不新增下载。
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 pollster = "0.4"
 # `webgl` **不能无条件开**：wgpu 在 wasm 上默认只给了 `webgpu`（`cargo tree -e features
 # --target wasm32-unknown-unknown` 里没有 `webgl`），而 WebGPU 至今不是所有目标都有——
@@ -65,8 +69,6 @@ rustlua-infra.workspace = true
 # 只在例子/测试里用：`subset_project_font` 要扫工程字符集（`char_collect` 住在导入层，
 # 运行时不许依赖它——那会把 PNG/音频编解码拖回浏览器产物，见 `docs/62` P1 ③）。
 rustlua-assets-import = { path = "../rustlua-assets-import" }
-# wp0_*_golden examples 仍直接依赖（core 拆分后 serde_json 已随模块迁到子 crate）
-serde_json = "1"
 
 # `web_surface`：wasm 上从画布建 surface 需要 JS 对象句柄。
 # 只取 `wasm-bindgen`（`JsValue`）而**不**取 `web-sys`：引擎这层不该认识 DOM 类型，
@@ -90,3 +92,8 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Inpu
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tracing-appender.workspace = true
 wgpu = "27"
+# P3-R05：热重载的**校验层**用 naga 解析 WGSL 并比对绑定接口（纯 CPU，不碰 GPU）。
+# 版本与 wgpu 27 内部用的那条一致（Cargo.lock 里只有 naga 27.0.3），`wgsl-in` 也已经由
+# wgpu/wgpu-core 打开，所以这里不新增下载、不新增编译单元，只是把已有依赖声明成直接依赖。
+# wasm 侧不需要它：release/wasm 不暴露覆盖目录（计划 §6.5），内置源永远走 wgpu 自己的编译路径。
+naga = { version = "27", features = ["wgsl-in"] }

@@ -349,6 +349,24 @@ impl EngineCore {
             }
             None => (scene_mesh(&self.texture_key), true),
         };
+        // P3-R07-2：GPU 粒子派发口（与桌面运行器、编辑器 Play 同一个入口）。
+        // 放在取网格之后没问题：GPU 粒子不进 2D 网格，由渲染器在自己的 pass 里画，
+        // 只需要在下面的 `render_into_texture` 之前把 compute 提交出去。失败帧不派发。
+        if !step_failed && let Some(sim) = self.sim.as_mut() {
+            let dispatch = sim.dispatch_gpu_particles(&mut self.renderer, delta_seconds);
+            if dispatch.requested > 0 {
+                web_sys::console::log_1(&JsValue::from_str(&format!(
+                    "[particle] requested={} gpu={} fallback={} systems={} reason={}",
+                    dispatch.requested,
+                    dispatch.gpu,
+                    dispatch.fallback,
+                    dispatch.systems,
+                    dispatch
+                        .fallback_reason
+                        .map_or("none", |reason| reason.as_str())
+                )));
+            }
+        }
         if !first_frame {
             self.sum_step_ms += step_ms;
             self.sum_mesh_ms += mesh_ms;

@@ -4,7 +4,7 @@
 //! 具体玩法规则（种植、战斗、商店、任务、对话、经济）全部在工程 Lua 里
 //! （`examples/game_jhyt/scripts`：155 个文件 / 37,489 非空行），Rust 侧不实现规则。
 //!
-//! 口径：非空行，含测试与文档注释（与 `tasks/plan/P5-玩法层边界与Lua下沉.md` §2.1 同口径）。
+//! 口径：非空行，含测试与文档注释（与 `tasks/done/P5-玩法层边界与Lua下沉.md` §2.1 同口径）。
 //!
 //! | 域 | 文件（非空行） | 是不是玩法 |
 //! |---|---|---|
@@ -29,7 +29,7 @@
 //! - **废弃候选**：`container` / `interact` / `tag` 在出货工程 0 静态调用点（2026-10-20 审计），
 //!   保留给 `game_api` 与行为契约；删除需 v0.2 兼容窗口。
 //!
-//! 判定口径与触发条件见 `tasks/plan/P5-玩法层边界与Lua下沉.md`；Lua 面分层见 `docs/18-lua-api.md`。
+//! 判定口径与触发条件见 `tasks/done/P5-玩法层边界与Lua下沉.md`；Lua 面分层见 `docs/18-lua-api.md`。
 
 pub mod audio_lua;
 pub mod clock_lua;

@@ -1,9 +1,12 @@
 pub mod asset_handle;
 pub mod atlas_format;
 pub mod dependency;
+pub mod env_asset;
 pub mod gltf_asset;
 pub mod hash;
 pub mod importer;
+pub mod mat_asset;
+pub mod mat_edit;
 pub use rustlua_infra::pack;
 pub mod resource_db;
 pub mod resource_kind;

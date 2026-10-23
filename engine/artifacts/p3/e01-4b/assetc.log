@@ -1,0 +1,107 @@
+   Compiling mlua v0.11.6 (E:\Codex\RustLua\engine\vendor\mlua)
+   Compiling rustlua-infra v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-infra)
+warning: linker stdout: 正在创建库 E:\Codex\RustLua\engine\target\debug\deps\paste-0545853f57693019.dll.lib 和对象 E:\Codex\RustLua\engine\target\debug\deps\paste-0545853f57693019.dll.exp
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `paste` (lib) generated 1 warning
+   Compiling simba v0.9.1
+   Compiling assetc v0.1.1 (E:\Codex\RustLua\engine\crates\assetc)
+   Compiling rustlua-lua-api v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-lua-api)
+   Compiling rustlua-ecs v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-ecs)
+   Compiling nalgebra v0.33.3
+   Compiling rustlua-assets v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-assets)
+   Compiling rustlua-camera v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-camera)
+   Compiling rustlua-ui v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-ui)
+   Compiling rustlua-animation v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-animation)
+   Compiling rustlua-render v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-render)
+   Compiling parry3d v0.17.6
+   Compiling parry2d v0.17.6
+   Compiling rapier2d v0.22.0
+   Compiling rapier3d v0.22.0
+   Compiling rustlua-physics v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-physics)
+   Compiling rustlua-scene v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-scene)
+   Compiling rustlua-assets-import v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-assets-import)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 44.11s
+     Running unittests src\lib.rs (engine\target\debug\deps\assetc-6ab6a3edcf714d93.exe)
+
+running 54 tests
+test atlas_cook::tests::tilemap_texture_is_refused ... ok
+test atlas_cook::tests::cook_writes_rltex_pages_and_redirect_and_removes_sources ... ok
+test atlas_cook::tests::non_sprite_component_texture_is_refused ... ok
+test atlas_cook::tests::format_defaults_to_rltex ... ok
+test atlas_cook::tests::nine_slice_component_is_refused ... ok
+test atlas_cook::tests::auto_format_picks_the_smaller_container_cost ... ok
+test atlas_cook::tests::auto_merges_small_images_in_one_directory ... ok
+test atlas_cook::tests::oversize_can_be_skipped ... ok
+test closure::tests::a_kept_file_that_is_also_inside_a_container_is_reported ... ok
+test closure::tests::container_names_are_recognized_across_transport_renames ... ok
+test closure::tests::a_bare_grouped_output_is_treated_as_the_pack_root ... ok
+test closure::tests::a_keep_path_that_is_also_planned_into_a_container_is_rejected ... ok
+test closure::tests::a_real_grouped_release_is_closed ... ok
+test closure::tests::a_container_in_the_wrong_root_is_reported ... ok
+test tests::boot_closure_sorts_first ... ok
+test closure::tests::a_corrupted_container_is_reported ... ok
+test closure::tests::a_renamed_container_still_closes ... ok
+test closure::tests::a_planned_path_missing_from_the_container_is_reported ... ok
+test tests::benchmark_compression_reports_asset_kinds ... ok
+test closure::tests::cdn_groups_are_checked_against_the_remote_dir ... ok
+test closure::tests::cdn_groups_inside_the_package_are_checked_in_place ... ok
+test closure::tests::cdn_groups_without_a_remote_dir_are_reported_not_silently_skipped ... ok
+test tests::canonical_or_absolute_resolves_missing_paths ... ok
+test closure::tests::kept_files_must_stay_loose_and_are_recorded_in_the_plan ... ok
+test tests::compressible_assets_cover_every_packaged_asset_format ... ok
+test tests::collect_files_rejects_symlink_escaping_the_project ... ok
+test tests::check_deps_empty_when_healthy ... ok
+test atlas_cook::tests::auto_honours_separate_and_large_images ... ok
+test closure::tests::thin_release_checks_every_container_against_the_asset_export ... ok
+test tests::check_deps_reports_full_chain_consumer_to_root ... ok
+test tests::check_deps_truncates_on_cycle ... ok
+test tests::clean_drops_import_cache ... ok
+test tests::declared_splash_rejects_escaping_path ... ok
+test tests::dev_artifacts_are_not_packaged ... ok
+test tests::declared_splash_outside_assets_is_packaged ... ok
+test tests::import_does_not_abort_on_single_bad_asset ... ok
+test tests::bundle_package_leaves_only_skeleton ... ok
+test tests::bundle_report_matches_container ... ok
+test tests::path_containment_detects_escapes ... ok
+test tests::package_compresses_supported_assets_without_compressing_lua ... ok
+test tests::package_allows_output_inside_project_builds_dir ... ok
+test tests::package_copies_data_and_writes_manifest ... ok
+test tests::package_rejects_output_inside_data_dirs_or_equal_to_project ... ok
+test tests::import_is_incremental_and_reuses_cache ... ok
+test tests::package_dependency_index_ignores_bare_assets_prefix_literal ... ok
+test tests::bundle_package_matches_loose_output ... ok
+test tests::scan_registers_supported_and_marks_unsupported ... ok
+test tests::scan_reports_invalid_when_dependency_missing ... ok
+test tests::bundle_package_is_deterministic ... ok
+test tests::package_dependency_index_resolves_dotted_require_to_subdirectory ... ok
+test tests::package_drops_undeclared_fonts_when_requested ... ok
+test tests::package_dependency_index_records_static_edges_and_opaque_sources ... ok
+test tests::sample_project_import_checkdeps_and_package_pass ... ok
+test tests::sample_project_rename_breaks_dependencies_until_consumers_are_updated ... ok
+
+test result: ok. 54 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.26s
+
+     Running unittests src\main.rs (engine\target\debug\deps\assetc-bf22ba83b6c7a058.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\bundle_mount.rs (engine\target\debug\deps\bundle_mount-ef9ea7b5b54bc1ef.exe)
+
+running 4 tests
+test grouped_exclude_cdn_drops_brand_group ... ok
+test grouped_pack_is_covered_by_plan_and_mounts ... ok
+test verify_bundle_equivalence_detects_mismatch ... ok
+test bundle_mount_roundtrip_and_loud_misses ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+   Doc-tests assetc
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -11,7 +11,7 @@
 //! - **调试绘制请求按维数分开**（`collider_debug_request` / `_3d`）：混合场景里"只画 2D
 //!   碰撞体"或"只画 3D"都是常见需求，合成一个布尔会丢掉这个区分。
 
-use crate::physics::{ColliderDebugShape, PhysicsWorld};
+use crate::physics::{ColliderDebugShape, PhysicsContact, PhysicsWorld};
 use crate::physics3d::{ColliderDebugShape3d, PhysicsWorld3d};
 use rustlua_ecs::entity::EntityId;
 use rustlua_lua_api::Handle;
@@ -47,6 +47,15 @@ impl PhysicsState {
 
     pub fn world2d_mut(&mut self) -> &mut PhysicsWorld {
         &mut self.world2d
+    }
+
+    /// E03-3：取走本帧给实体脚本的碰撞事件（2D + 3D）。与 Lua `physics.events()` 的
+    /// 队列相互独立，因此"转发给 on_collision"不会把事件从 Lua 侧抢走。
+    #[must_use]
+    pub fn drain_event_contacts(&mut self) -> Vec<PhysicsContact> {
+        let mut contacts = self.world2d_mut().drain_event_contacts();
+        contacts.extend(self.world3d_mut().drain_event_contacts());
+        contacts
     }
 
     #[must_use]

@@ -8,9 +8,18 @@
 //!
 //! 历史窗口与编辑器 profiler（`profiler.rs`）同口径：固定容量环形缓冲，长会话不会持续吃内存。
 
-use std::{collections::VecDeque, fmt::Write as _, time::Instant};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    fmt::Write as _,
+    time::Instant,
+};
 
-use engine::host::ReadbackMetrics;
+use engine::host::{
+    CaptureBundle, CaptureScenario, FrameStats, GpuPassReport, MemorySnapshot, ReadbackMetrics,
+    SceneColorFormat, TimingStat, now_unix_ms,
+};
+use rustlua_render::post_process::Tonemap;
+use rustlua_render::render_settings::{IblMode, IblTier};
 
 /// 趋势窗口容量：约 4 秒 @ 60 FPS（与编辑器 profiler 的 240 帧同口径）。
 pub(crate) const RUNTIME_SAMPLE_CAPACITY: usize = 240;
@@ -50,6 +59,23 @@ pub(crate) struct RuntimePerfSnapshot {
     pub dropped_draws: u64,
     /// 本帧实际执行的渲染通道（按执行顺序）。
     pub passes: Vec<&'static str>,
+    /// E06-3：上一帧逐通道 GPU 时间（与 `render_gpu_ms` 来自同一次提交）。
+    /// 设备不支持 timestamp 查询时是 `supported=false` + 原因，不是 0 µs。
+    pub gpu_passes: GpuPassReport,
+    /// P3-R01：本帧是否走了 HDR 场景色（不是"策略开没开"，而是真的启用）。
+    pub hdr_active: bool,
+    /// 本帧场景颜色的实际格式（HDR 时为 `Rgba16Float`）。
+    pub scene_format: SceneColorFormat,
+    /// HDR 帧使用的 Tonemap 曲线；LDR 帧为 `None`。
+    pub tonemap: Option<Tonemap>,
+    /// P3-R03：解析后的 IBL 模式（Off/Diffuse/Specular/Full，见 `resolve_ibl`）。
+    pub ibl_mode: IblMode,
+    /// P3-R03：设备档位。C = 只有 SH9（镜面关闭）。`None` 只在默认快照里出现。
+    pub ibl_tier: Option<IblTier>,
+    /// 场景声明的环境贴图（`.rlenv`）；没有 `Environment` 组件时为 `None`。
+    pub environment_map: Option<String>,
+    /// 环境加载/应用失败的人读原因；成功或未声明时为 `None`。
+    pub environment_error: Option<String>,
     pub loaded_textures: usize,
     pub font_atlas_textures: usize,
     pub texture_bytes: u64,
@@ -67,9 +93,19 @@ pub(crate) struct RuntimePerfSnapshot {
     pub vertex_buffer_capacity: u64,
     pub vertex_buffer_growths: u64,
     pub vertex_bytes_peak: u64,
+    /// P3-R04-3：已编译的 3D 网格/阴影 shader 变体数。
+    pub pipeline_variants: usize,
+    /// 变体缓存命中次数（构造期重复请求同一键）。
+    pub pipeline_variant_hits: u64,
+    /// 变体缓存未命中次数（= 编译尝试次数）。
+    pub pipeline_variant_misses: u64,
+    /// 启动期变体编译累计耗时（毫秒）。
+    pub pipeline_compile_ms: f32,
     pub readback: ReadbackMetrics,
     /// 进程工作集（MiB）。非 Windows 平台为 `None`（不假装有数据）。
     pub process_memory_mib: Option<f64>,
+    /// P3-E06-4：Lua VM 实际占用的堆字节（mlua `used_memory`）。
+    pub lua_heap_bytes: u64,
     /// 运行时资源身份表条目数。
     pub asset_entries: usize,
     /// 场景声明的实体数。
@@ -97,6 +133,29 @@ impl RuntimePerfSnapshot {
         self.gpu_timing_note
             .clone()
             .unwrap_or_else(|| "不可用".to_owned())
+    }
+
+    /// P3-R01：Tonemap 曲线的面板读数（LDR 帧明确显示"无"而不是空）。
+    pub(crate) fn tonemap_label(&self) -> &'static str {
+        self.tonemap.map_or("无（LDR）", Tonemap::as_str)
+    }
+
+    /// P3-R03：IBL 模式 + 设备档位（面板一行）。
+    pub(crate) fn ibl_label(&self) -> String {
+        match self.ibl_tier {
+            Some(tier) => format!("{}（Tier {}）", self.ibl_mode.as_str(), tier.as_str()),
+            None => self.ibl_mode.as_str().to_owned(),
+        }
+    }
+
+    /// P3-R03：环境声明与加载状态（面板一行）。
+    pub(crate) fn environment_label(&self) -> String {
+        match (&self.environment_map, &self.environment_error) {
+            (Some(map), Some(error)) => format!("{map}（{error}）"),
+            (Some(map), None) => map.clone(),
+            (None, Some(error)) => error.clone(),
+            (None, None) => "未声明".to_owned(),
+        }
     }
 
     /// 完整文本报告（「复制报告」与测试都走这一条，保证面板与归档口径一致）。
@@ -136,6 +195,53 @@ impl RuntimePerfSnapshot {
         );
         let _ = writeln!(
             out,
+            "gpu_passes: supported={} reason={} frame_us={} sum_us={} delta_pct={} consistent={}",
+            self.gpu_passes.supported,
+            self.gpu_passes.reason.as_deref().unwrap_or("none"),
+            self.gpu_passes
+                .frame_us
+                .map_or_else(|| "none".to_owned(), |us| us.to_string()),
+            self.gpu_passes.pass_sum_us,
+            self.gpu_passes
+                .delta_pct
+                .map_or_else(|| "n/a".to_owned(), |pct| format!("{pct:+.2}")),
+            self.gpu_passes.consistent.map_or("n/a", |consistent| {
+                if consistent { "yes" } else { "NO" }
+            })
+        );
+        for timing in &self.gpu_passes.passes {
+            let _ = writeln!(
+                out,
+                "  gpu_pass {}={}us",
+                timing.pass.as_str(),
+                timing.gpu_us
+            );
+        }
+        let _ = writeln!(
+            out,
+            "hdr: active={} scene_format={} tonemap={}",
+            self.hdr_active,
+            self.scene_format.as_str(),
+            self.tonemap.map_or("none", Tonemap::as_str)
+        );
+        let _ = writeln!(
+            out,
+            "ibl: mode={} tier={} map={} status={}",
+            self.ibl_mode.as_str(),
+            self.ibl_tier.map_or("none", IblTier::as_str),
+            self.environment_map.as_deref().unwrap_or("none"),
+            self.environment_error.as_deref().unwrap_or("ok")
+        );
+        let _ = writeln!(
+            out,
+            "shaders: variants={} compile_ms={:.2} hits={} misses={}",
+            self.pipeline_variants,
+            self.pipeline_compile_ms,
+            self.pipeline_variant_hits,
+            self.pipeline_variant_misses
+        );
+        let _ = writeln!(
+            out,
             "resources: textures={} font_atlases={} texture_bytes={} texture_hits={} \
              texture_misses={} meshes={} mesh_bytes={} mesh_hits={} mesh_misses={} \
              load_mode={} workers={} pending={} completed={}",
@@ -155,10 +261,11 @@ impl RuntimePerfSnapshot {
         );
         let _ = writeln!(
             out,
-            "memory: working_set_mib={} gpu_texture_mib={:.2} gpu_mesh_mib={:.2} \
+            "memory: working_set_mib={} lua_heap_mib={:.2} gpu_texture_mib={:.2} gpu_mesh_mib={:.2} \
              vertex_buffer_mib={:.2} readback_cpu_mib={:.2}",
             self.process_memory_mib
                 .map_or_else(|| "unavailable".to_owned(), |mib| format!("{mib:.1}")),
+            bytes_to_mib(self.lua_heap_bytes),
             bytes_to_mib(self.texture_bytes),
             bytes_to_mib(self.mesh_bytes),
             bytes_to_mib(self.vertex_buffer_capacity),
@@ -402,6 +509,130 @@ pub(crate) struct RuntimePerfTracker {
     paused: bool,
     memory_mib: Option<f64>,
     memory_sampled_at: Option<Instant>,
+    capture: Option<RuntimeCapture>,
+}
+
+/// E06-4：一次采集的帧数上限（600 帧 ≈ 10 秒 @60 FPS），防止忘记停止时无界增长。
+pub(crate) const CAPTURE_FRAME_LIMIT: usize = 600;
+
+/// 编辑器内的一次采集窗口：逐帧帧时间 + 逐系统/逐 GPU 通道样本 + 结束快照。
+///
+/// 与无头 `wp0_capture_replay` 的差别：编辑器没有把输入事件按帧持久化（Play 预览的
+/// 一次性输入边沿在 `game_view` 消费），因此采集包不带可重放的 `input_log`；它只用于
+/// **同机前后对比**，不用于跨进程重放。真正的重放证据由无头例子给出。
+#[derive(Clone, Debug)]
+pub(crate) struct RuntimeCapture {
+    frames: Vec<f64>,
+    systems: BTreeMap<String, Vec<f64>>,
+    gpu_passes: BTreeMap<String, Vec<f64>>,
+    last_snapshot: RuntimePerfSnapshot,
+    last_frames: Option<u64>,
+}
+
+impl RuntimeCapture {
+    fn new(snapshot: RuntimePerfSnapshot) -> Self {
+        Self {
+            frames: Vec::new(),
+            systems: BTreeMap::new(),
+            gpu_passes: BTreeMap::new(),
+            last_frames: Some(snapshot.frames),
+            last_snapshot: snapshot,
+        }
+    }
+
+    /// 收一帧（同一帧号重复喂入会被忽略）。返回是否真的收下。
+    fn push(&mut self, snapshot: &RuntimePerfSnapshot, systems: &[(String, f64)]) -> bool {
+        if self.frames.len() >= CAPTURE_FRAME_LIMIT {
+            return false;
+        }
+        if self.last_frames == Some(snapshot.frames) {
+            return false;
+        }
+        self.last_frames = Some(snapshot.frames);
+        self.frames.push(f64::from(snapshot.frame_ms));
+        for (name, micros) in systems {
+            self.systems.entry(name.clone()).or_default().push(*micros);
+        }
+        if snapshot.gpu_passes.supported {
+            for pass in &snapshot.gpu_passes.passes {
+                self.gpu_passes
+                    .entry(pass.pass.as_str().to_owned())
+                    .or_default()
+                    .push(pass.gpu_us as f64);
+            }
+        }
+        self.last_snapshot = snapshot.clone();
+        true
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.frames.len()
+    }
+
+    pub(crate) fn last_snapshot(&self) -> &RuntimePerfSnapshot {
+        &self.last_snapshot
+    }
+
+    /// 组装采集包。场景描述、状态指纹与提交号由宿主提供（本模块不读文件系统）。
+    pub(crate) fn into_bundle(
+        self,
+        scenario: CaptureScenario,
+        engine_commit: String,
+        state_hash: String,
+    ) -> CaptureBundle {
+        let Self {
+            frames,
+            systems,
+            gpu_passes,
+            last_snapshot,
+            ..
+        } = self;
+        let memory = MemorySnapshot {
+            process_memory_mib: last_snapshot.process_memory_mib,
+            lua_heap_bytes: Some(last_snapshot.lua_heap_bytes),
+            texture_bytes: Some(last_snapshot.texture_bytes),
+            mesh_bytes: Some(last_snapshot.mesh_bytes),
+            vertex_buffer_bytes: Some(last_snapshot.vertex_buffer_capacity),
+            readback_cpu_bytes: Some(last_snapshot.readback.cpu_bytes as u64),
+            asset_entries: Some(last_snapshot.asset_entries as u64),
+            scene_entities: Some(last_snapshot.scene_entities as u64),
+            runtime_entities: Some(last_snapshot.runtime_entities as u64),
+        };
+        let gpu_available = !gpu_passes.is_empty();
+        let gpu_note = if gpu_available {
+            None
+        } else if !last_snapshot.gpu_passes.supported {
+            Some(
+                last_snapshot
+                    .gpu_passes
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| "设备不支持 GPU 通道时间戳".to_owned()),
+            )
+        } else {
+            Some("采集窗口内没有 GPU 通道回读".to_owned())
+        };
+        CaptureBundle {
+            report_version: engine::host::CAPTURE_REPORT_VERSION.to_owned(),
+            engine_version: engine::host::ENGINE_VERSION.to_owned(),
+            engine_commit,
+            captured_at_unix_ms: now_unix_ms(),
+            scenario,
+            state_hash,
+            frames: FrameStats::from_millis(&frames),
+            memory,
+            systems: systems
+                .into_iter()
+                .filter_map(|(name, samples)| TimingStat::from_micros(name, &samples))
+                .collect(),
+            gpu_passes: gpu_passes
+                .into_iter()
+                .filter_map(|(name, samples)| TimingStat::from_micros(name, &samples))
+                .collect(),
+            gpu_available,
+            gpu_note,
+        }
+    }
 }
 
 impl RuntimePerfTracker {
@@ -424,6 +655,46 @@ impl RuntimePerfTracker {
     /// 只清趋势窗口，保留当前快照（用户清空采样后仍能读这一帧的数值）。
     pub(crate) fn clear_history(&mut self) {
         self.history.clear();
+    }
+
+    pub(crate) fn is_capturing(&self) -> bool {
+        self.capture.is_some()
+    }
+
+    pub(crate) fn capture_len(&self) -> usize {
+        self.capture.as_ref().map_or(0, RuntimeCapture::len)
+    }
+
+    /// 开始采集。没有 Play 快照时返回 `false`（不创建空采集）。
+    pub(crate) fn start_capture(&mut self) -> bool {
+        let Some(snapshot) = self.snapshot.clone() else {
+            return false;
+        };
+        self.capture = Some(RuntimeCapture::new(snapshot));
+        true
+    }
+
+    pub(crate) fn cancel_capture(&mut self) {
+        self.capture = None;
+    }
+
+    /// 收一帧系统耗时（微秒）。暂停或没有活动采集时是空操作。
+    pub(crate) fn capture_frame(
+        &mut self,
+        snapshot: &RuntimePerfSnapshot,
+        systems: &[(String, f64)],
+    ) -> bool {
+        if self.paused {
+            return false;
+        }
+        self.capture
+            .as_mut()
+            .is_some_and(|capture| capture.push(snapshot, systems))
+    }
+
+    /// 取出采集窗口（导出后调用方负责组装场景描述与状态指纹）。
+    pub(crate) fn take_capture(&mut self) -> Option<RuntimeCapture> {
+        self.capture.take()
     }
 
     /// 进程工作集（MiB），最多每 [`MEMORY_SAMPLE_INTERVAL`] 采样一次。
@@ -456,9 +727,11 @@ impl RuntimePerfTracker {
     pub(crate) fn sample(&mut self, snapshot: Option<RuntimePerfSnapshot>) {
         let Some(snapshot) = snapshot else {
             // Play 停止：快照与趋势都清掉，避免下次打开面板看到上一次会话的过期读数。
+            // 采集窗口也一起丢弃：它的样本来自上一局，不能和新一局拼成一个采集包。
             self.snapshot = None;
             self.history.clear();
             self.last_frames = None;
+            self.capture = None;
             return;
         };
         if self.paused {
@@ -507,6 +780,14 @@ mod tests {
             vertices: 3600,
             dropped_draws: 0,
             passes: vec!["clear", "legacy_2d_overlay"],
+            gpu_passes: GpuPassReport::default(),
+            hdr_active: true,
+            scene_format: SceneColorFormat::Rgba16Float,
+            tonemap: Some(Tonemap::Aces),
+            ibl_mode: IblMode::Full,
+            ibl_tier: Some(IblTier::A),
+            environment_map: Some("assets/env/studio.rlenv".to_owned()),
+            environment_error: None,
             loaded_textures: 12,
             font_atlas_textures: 1,
             texture_bytes: 4 * 1024 * 1024,
@@ -523,8 +804,13 @@ mod tests {
             vertex_buffer_capacity: 1024 * 1024,
             vertex_buffer_growths: 1,
             vertex_bytes_peak: 900 * 1024,
+            pipeline_variants: 6,
+            pipeline_variant_hits: 0,
+            pipeline_variant_misses: 6,
+            pipeline_compile_ms: 12.5,
             readback: ReadbackMetrics::default(),
             process_memory_mib: Some(512.0),
+            lua_heap_bytes: 86_113,
             asset_entries: 20,
             scene_entities: 40,
             runtime_entities: 43,
@@ -597,9 +883,13 @@ mod tests {
             "vertices=3600",
             "triangles=1200",
             "working_set_mib=512.0",
+            "lua_heap_mib=0.08",
             "textures=12",
             "load_mode=sync",
             "runtime_entities=43",
+            "hdr: active=true scene_format=rgba16float tonemap=aces",
+            "ibl: mode=full tier=A map=assets/env/studio.rlenv status=ok",
+            "shaders: variants=6 compile_ms=12.50 hits=0 misses=6",
         ] {
             assert!(text.contains(expected), "报告缺少 {expected}：\n{text}");
         }
@@ -677,5 +967,70 @@ mod tests {
     #[test]
     fn bytes_to_mib_uses_binary_mebibytes() {
         assert!((bytes_to_mib(1024 * 1024) - 1.0).abs() < f64::EPSILON);
+    }
+
+    fn capture_scenario() -> CaptureScenario {
+        CaptureScenario {
+            name: "editor:test".to_owned(),
+            scene_path: None,
+            scene_hash: "0123456789abcdef".to_owned(),
+            viewport: [1280, 720],
+            fixed_dt_seconds: 1.0 / 60.0,
+            seed: 0,
+            warmup_frames: 0,
+            frames: 3,
+            input_log: Vec::new(),
+        }
+    }
+
+    fn finished_bundle(frames: u64) -> CaptureBundle {
+        let mut tracker = RuntimePerfTracker::default();
+        tracker.sample(Some(snapshot(frames)));
+        assert!(tracker.start_capture());
+        for frame in 1..=3 {
+            let snap = snapshot(frame);
+            tracker.capture_frame(
+                &snap,
+                &[
+                    ("physics".to_owned(), 20.0 + frame as f64),
+                    ("lua_update".to_owned(), 1.0),
+                ],
+            );
+        }
+        tracker.take_capture().expect("capture active").into_bundle(
+            capture_scenario(),
+            "deadbeef".to_owned(),
+            "state".to_owned(),
+        )
+    }
+
+    #[test]
+    fn capture_collects_frames_systems_and_memory() {
+        let bundle = finished_bundle(3);
+        assert_eq!(bundle.frames.samples, 3);
+        assert_eq!(bundle.systems.len(), 2);
+        assert_eq!(bundle.memory.lua_heap_bytes, Some(86_113));
+        assert!(!bundle.gpu_available, "默认快照没有 GPU 通道读数");
+        assert!(bundle.gpu_note.is_some());
+        // 同帧号重复喂入不会重复计数。
+        let mut tracker = RuntimePerfTracker::default();
+        tracker.sample(Some(snapshot(1)));
+        tracker.start_capture();
+        // 开始采集时已经记过的这一帧不再重复收（下一次预览帧才是第一条样本）。
+        let snap = snapshot(2);
+        assert!(tracker.capture_frame(&snap, &[]));
+        assert!(!tracker.capture_frame(&snap, &[]));
+        assert_eq!(tracker.capture_len(), 1);
+    }
+
+    #[test]
+    fn two_identical_editor_captures_diff_stable() {
+        let baseline = finished_bundle(3);
+        let candidate = finished_bundle(3);
+        let diff = baseline.diff(&candidate, engine::host::DEFAULT_DRIFT_THRESHOLD_PCT);
+        assert!(diff.stable, "{diff:?}");
+        assert_eq!(diff.verdict, "stable");
+        assert!(diff.state.equal);
+        assert!(diff.slowest.is_empty());
     }
 }

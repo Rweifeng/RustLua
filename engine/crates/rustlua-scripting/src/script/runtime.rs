@@ -4,11 +4,13 @@
 //! 成功后才把 `self.lua` 换掉——状态在 Rust 侧（`ScriptState`），换 VM 不丢世界数据。
 
 // WP11-USE:BEGIN
+use crate::script::EntityEvent;
 use crate::script::EntityScriptState;
 use crate::script::LuaRuntime;
 use crate::script::ReloadStatus;
 use crate::script::ScriptState;
 use crate::script::api;
+use crate::script::call_entity_event_hook;
 use crate::script::call_entity_hook;
 use crate::script::call_optional;
 use crate::script::error::{LuaBridgeError, ScriptDebugger, bridge_error_parts};
@@ -28,6 +30,29 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 // WP11-USE:END
+
+fn is_vgraph(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("vgraph"))
+}
+
+/// 把 `compile` 产出的模块（`local M = {} ... return M`）包成实体脚本可调用的钩子。
+/// 生成器仍是唯一的图语义实现；这里只做事件名到现有实体脚本 ABI 的映射。
+fn graph_runtime_source(generated: &str) -> String {
+    format!(
+        "local __graph = (function()\n{generated}\nend)()\n\
+         local function __invoke(name, ...)\n\
+         \tlocal callback = __graph[name]\n\
+         \tif callback then return callback(...) end\n\
+         end\n\
+         function on_spawn(owner) return __invoke('on_start', owner) end\n\
+         function on_update(owner, dt) return __invoke('on_update', owner, dt) end\n\
+         function on_interact(owner, target) return __invoke('on_interact', owner, target) end\n\
+         function on_collision(owner, other) return __invoke('on_collision', owner, other) end\n\
+         return __graph\n"
+    )
+}
 
 impl LuaRuntime {
     /// 裸 VM：内建模块 + 心跳/预算钩子，**不含任何领域绑定**。
@@ -105,6 +130,9 @@ impl LuaRuntime {
             entity_script_requests: Vec::new(),
             entity_script_requests_revision: u64::MAX,
             installers,
+            vgraph_trace: std::rc::Rc::new(RefCell::new(
+                super::vgraph_trace::VgraphTrace::default(),
+            )),
         })
     }
 
@@ -241,9 +269,7 @@ impl LuaRuntime {
                 continue;
             }
             let path = root.join(file);
-            let source = read_project_script(&path)?;
-            let lua = self.load_candidate(&path, &source)?;
-            let fingerprint = file_fingerprint(&path, &source)?;
+            let (lua, fingerprint) = self.load_entity_script(&path, file)?;
             self.entity_scripts
                 .insert(file.clone(), EntityScriptState { lua, fingerprint });
         }
@@ -335,7 +361,7 @@ impl LuaRuntime {
             if unchanged {
                 continue;
             }
-            let lua = self.load_candidate(&path, &source)?;
+            let (lua, fingerprint) = self.load_entity_script(&path, &file)?;
             self.entity_scripts
                 .insert(file, EntityScriptState { lua, fingerprint });
             reloaded += 1;
@@ -380,6 +406,124 @@ impl LuaRuntime {
             .prune_entities(requests.iter().map(|(id, _)| id));
         self.entity_script_requests = requests;
         self.entity_script_requests_revision = revision;
+    }
+
+    /// 分发一个运行时实体事件（E03-3）。事件只投给**该实体自己的**脚本；没有脚本、
+    /// 脚本没定义该全局函数或该回调已被停用时返回 `Ok(false)`。
+    ///
+    /// `on_spawn/on_update` 由本运行时自动调用；`on_interact` 由 UI 点击自动转发，
+    /// `on_collision` 由宿主拿到物理接触后调用本入口（`PhysicsContact` 的两个实体各投一次）。
+    pub fn dispatch_entity_event(
+        &self,
+        id: EntityId,
+        event: EntityEvent,
+    ) -> Result<bool, LuaBridgeError> {
+        let (hook, other) = event.parts();
+        let Some(file) = self
+            .entity_script_requests
+            .iter()
+            .find(|(entity, _)| *entity == id)
+            .map(|(_, file)| file.clone())
+        else {
+            return Ok(false);
+        };
+        let Some(state) = self.entity_scripts.get(&file) else {
+            return Ok(false);
+        };
+        let slot = BudgetSlot::Entity(id, hook);
+        if self.guard.borrow().is_disabled(slot) {
+            return Ok(false);
+        }
+        match call_entity_event_hook(&state.lua, hook.name(), id, other, Path::new(&file)) {
+            Ok(()) => {
+                self.guard.borrow_mut().record_success(slot);
+                Ok(true)
+            }
+            Err(error) => {
+                self.contain_entity_hook(id, hook, error)?;
+                Ok(true)
+            }
+        }
+    }
+
+    /// 把本帧物理接触转发给双方实体的 `on_collision`（只投 `started` 边沿）。
+    ///
+    /// 接触来自物理域单独的事件队列，Lua `physics.events()` 仍能拿到同一批事件；
+    /// 每帧由宿主在固定步之后调用一次，返回实际投递成功的实体事件数。
+    pub fn dispatch_collision_contacts(&self) -> Result<usize, LuaBridgeError> {
+        let physics = self.state.borrow().physics.clone();
+        let contacts = physics.with_mut(|physics| physics.drain_event_contacts());
+        let mut delivered = 0;
+        for contact in contacts.into_iter().filter(|contact| contact.started) {
+            if self.dispatch_entity_event(contact.a, EntityEvent::Collision { other: contact.b })? {
+                delivered += 1;
+            }
+            if contact.a != contact.b
+                && self
+                    .dispatch_entity_event(contact.b, EntityEvent::Collision { other: contact.a })?
+            {
+                delivered += 1;
+            }
+        }
+        Ok(delivered)
+    }
+
+    /// 实体脚本可以有两种源：普通 `.lua`，或直接挂 `.vgraph`。
+    /// 后者在加载时编译成同一个 Lua 模块，再由一层薄适配把 4 个事件暴露成
+    /// `on_spawn/on_update/on_interact/on_collision`——运行时不解释图，也没有第二套 VM。
+    fn load_entity_script(
+        &self,
+        path: &Path,
+        script_name: &str,
+    ) -> Result<(Lua, crate::script::error::ScriptFingerprint), LuaBridgeError> {
+        let source = read_project_script(path)?;
+        let lua_source = if is_vgraph(path) {
+            let graph = rustlua_visual_script::Graph::from_json(&source).map_err(|error| {
+                LuaBridgeError::Load {
+                    path: path.to_path_buf(),
+                    reason: format!("vgraph: {error}"),
+                }
+            })?;
+            let generated =
+                rustlua_visual_script::compile_traced(&graph, &path.display().to_string())
+                    .map_err(|errors| LuaBridgeError::Load {
+                        path: path.to_path_buf(),
+                        reason: format!(
+                            "vgraph: {}",
+                            errors
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        ),
+                    })?;
+            graph_runtime_source(&generated)
+        } else {
+            source.clone()
+        };
+        let lua = self.load_candidate(path, &lua_source)?;
+        if is_vgraph(path) {
+            self.install_vgraph_trace(&lua, script_name)?;
+        }
+        let fingerprint = file_fingerprint(path, &source)?;
+        Ok((lua, fingerprint))
+    }
+
+    /// 给一份 vgraph Lua 状态装探针回调。生成物里的调用点带 `if __vgraph_trace then` 守卫，
+    /// 所以只有走这条加载路径的状态才埋点，普通 `.lua` 源码不受影响。
+    fn install_vgraph_trace(&self, lua: &Lua, script_name: &str) -> Result<(), LuaBridgeError> {
+        let trace = Rc::clone(&self.vgraph_trace);
+        let script = script_name.to_owned();
+        let callback = lua
+            .create_function(move |_, node: String| {
+                trace.borrow_mut().record(&script, &node);
+                Ok(())
+            })
+            .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        lua.globals()
+            .set("__vgraph_trace", callback)
+            .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        Ok(())
     }
 
     fn load_candidate(&self, path: &Path, source: &str) -> Result<Lua, LuaBridgeError> {
@@ -536,6 +680,28 @@ impl LuaRuntime {
     #[must_use]
     pub fn last_update_micros(&self) -> u64 {
         self.state.borrow().last_update_micros
+    }
+
+    /// 开关 `.vgraph` 节点探针（E03-4b）。默认关闭：关闭时生成物里的调用点直接返回，
+    /// 不记录也不分配事件。开关跨热重载保持（共享同一份探针）。
+    pub fn set_vgraph_trace_enabled(&mut self, enabled: bool) {
+        self.vgraph_trace.borrow_mut().set_enabled(enabled);
+    }
+
+    /// 最近一次进入的图节点（脚本路径 + 节点 id + 单调序号）；未执行或探针关闭时为 `None`。
+    #[must_use]
+    pub fn vgraph_trace_last(&self) -> Option<super::VgraphTraceEvent> {
+        self.vgraph_trace.borrow().last()
+    }
+
+    /// 探针累计记录的事件数；宿主用它判断"这一帧有没有新事件"，避免重复高亮。
+    #[must_use]
+    pub fn vgraph_trace_sequence(&self) -> u64 {
+        self.vgraph_trace.borrow().sequence()
+    }
+
+    pub fn clear_vgraph_trace(&mut self) {
+        self.vgraph_trace.borrow_mut().clear();
     }
 
     pub fn call_update_debug(&mut self) -> Result<String, LuaBridgeError> {

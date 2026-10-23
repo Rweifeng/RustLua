@@ -69,10 +69,21 @@ Sprite/Mesh/文字/UI 一样是实体组件，不再只能由宿主状态或脚�
   写成 `;enabled=false`。
 - `ParticleEmitter`：`count=<每次爆发的粒子数>`、`rate=<粒子/秒，0=只爆发>`、`speed`、`life`、
   `size`、`size_end`、`color=r,g,b,a`、`color_end`、`gravity=x,y`、`drag`、`rotation`、
-  `rotation_speed`。`size`/`color` 同时设置曲线起止值，`size_end`/`color_end` 可单独覆盖终点。
+  `rotation_speed`、`mode=cpu|gpu`、`seed=<u64>`。`size`/`color` 同时设置曲线起止值，`size_end`/`color_end` 可单独覆盖终点。
   `rate > 0` 时发射器按 `rate × dt` **连续**发射，位置取实体的世界位置（父链下会跟着父一起动）；
   累计器保留分数部分，因此帧率变化不改变平均发射量，长帧最多补发 512 个（不会一步倾泻）。
   未知键与非法数值一律报错，不静默忽略。
+- **`mode` 与 `seed`（P3-R07-1）**：`mode` 决定粒子**在哪一侧模拟**——`cpu`（默认）是玩法可读
+  的那一侧，`gpu` 是纯视觉层（粒子只活在显存里，Lua 与玩法**读不到**它们的位置）。取值必须**逐字**
+  命中 `cpu`/`gpu`：`mode=GPU`、`mode=gpuu` 都报错，绝不静默退回默认值（拼错却悄悄走 CPU 是本类
+  bug 里最难查的一种）。`seed` 给定时**这一次爆发**的抽样序列从该种子起，于是同一份参数产生可复现
+  的初始状态（R07-2 两侧对拍的前提）；不给则沿用粒子系统的 LCG 历史，与旧行为逐位一致。
+  两个字段都在**偏离默认时才写出**，所以既有场景串与粒子 golden 一个字符都不变。
+  落点判定（`ParticleEmitter::placement`）与渲染器 `configure_gpu_particles` 的拒绝条件一致：
+  要 `mode=gpu`、设备有 compute、且是 burst 语义（`rate == 0`）；任何一条不满足都用**同一份参数**
+  回 CPU——回退不丢粒子、不黑屏，原因写进运行时的落点报告（`no_compute` / `continuous_rate` /
+  `not_wired`）并每种原因只喊一层日志。R07-1 阶段场景发射器还没有 GPU 派发通道，因此 `mode=gpu`
+  的场景实际仍跑在 CPU 上，报告里标 `not_wired`（派发在 R07-2 落地）。
 
 ## 一等矩形 `Quad`（docs/54 §4.3）
 

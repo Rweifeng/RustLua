@@ -108,4 +108,36 @@ impl Renderer {
         self.post_process_texture = Some(texture);
         self.post_process_size = (width, height);
     }
+
+    /// P3-R01：确保 HDR 场景颜色纹理（`Rgba16Float`，线性）与目标同尺寸。
+    ///
+    /// 只在**真正走 HDR 的帧**调用（纯 2D 帧不分配）。尺寸变化时旧纹理整体释放；`COPY_SRC`
+    /// 是验收读回（`pre_tonemap_max > 1`）的前提。视图单独存一份，渲染时"取出 → 用完放回"，
+    /// 与后处理场景视图同一模式。
+    pub(super) fn ensure_hdr_scene_view(&mut self, width: u32, height: u32) {
+        let width = width.max(1);
+        let height = height.max(1);
+        if self.hdr_scene_size == (width, height) && self.hdr_scene_view.is_some() {
+            return;
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rustlua-hdr-scene"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        self.hdr_scene_view = Some(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+        self.hdr_scene_texture = Some(texture);
+        self.hdr_scene_size = (width, height);
+    }
 }

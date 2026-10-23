@@ -430,6 +430,9 @@ pub struct PhysicsWorld3d {
     entity_bodies: HashMap<EntityId, RigidBodyHandle>,
     collider_entities: HashMap<ColliderHandle, EntityId>,
     contacts: Vec<PhysicsContact>,
+    /// E03-3：与 `contacts` 同时写入、独立消费，供实体 `on_collision` 分发；
+    /// 不抢 Lua `physics.events()` 的那一份。
+    event_contacts: Vec<PhysicsContact>,
     moved: Vec<(EntityId, Vec3)>,
 }
 
@@ -467,6 +470,7 @@ impl PhysicsWorld3d {
             entity_bodies: HashMap::new(),
             collider_entities: HashMap::new(),
             contacts: Vec::new(),
+            event_contacts: Vec::new(),
             moved: Vec::new(),
         }
     }
@@ -660,11 +664,13 @@ impl PhysicsWorld3d {
                 self.collider_entities.get(&a).copied(),
                 self.collider_entities.get(&b).copied(),
             ) {
-                self.contacts.push(PhysicsContact {
+                let contact = PhysicsContact {
                     a: entity_a,
                     b: entity_b,
                     started,
-                });
+                };
+                self.contacts.push(contact);
+                self.event_contacts.push(contact);
             }
         }
         self.moved.clear();
@@ -683,6 +689,11 @@ impl PhysicsWorld3d {
     /// Drains the collision contacts collected since the last call.
     pub fn drain_contacts(&mut self) -> Vec<PhysicsContact> {
         std::mem::take(&mut self.contacts)
+    }
+
+    /// E03-3：取走本帧给实体脚本的碰撞事件（与 `drain_contacts` 互不影响）。
+    pub fn drain_event_contacts(&mut self) -> Vec<PhysicsContact> {
+        std::mem::take(&mut self.event_contacts)
     }
 
     /// WP7 静态/运动学同步的数据源（**与 2D 同构**）：把**动态**刚体当前的位置从 ECS 取出来

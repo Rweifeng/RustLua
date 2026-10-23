@@ -1,0 +1,20 @@
+   Compiling rustlua-assets v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-assets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.33s
+     Running unittests src\lib.rs (engine\target\debug\deps\rustlua_assets-f0c3fe3f8875c961.exe)
+
+running 12 tests
+test mat_asset::tests::gltf_material_maps_orm_emissive_alpha_and_textures ... ok
+test mat_asset::tests::material_text_defaults_match_gltf_when_fields_are_omitted ... ok
+test mat_edit::tests::identical_edits_do_not_push_history ... ok
+test mat_edit::tests::edits_are_undoable_and_redoable_byte_exactly ... ok
+test mat_edit::tests::rejected_edits_leave_no_trace ... ok
+test mat_asset::tests::material_text_parser_round_trips_every_field ... ok
+test mat_edit::tests::marking_saved_keeps_history_so_undo_can_dirty_again ... ok
+test mat_edit::tests::a_material_with_embedded_pixels_cannot_be_saved_as_text ... ok
+test mat_edit::tests::empty_names_and_negative_strengths_are_rejected ... ok
+test mat_asset::tests::material_text_rejects_bad_versions_fields_paths_and_values ... ok
+test mat_edit::tests::texture_paths_must_stay_inside_the_project ... ok
+test mat_edit::tests::a_drag_gesture_coalesces_into_one_undo_step ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 81 filtered out; finished in 0.00s
+

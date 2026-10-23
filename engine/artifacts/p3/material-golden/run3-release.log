@@ -1,0 +1,11 @@
+warning: linker stdout: 正在创建库 E:\Codex\RustLua\engine\target\release\deps\paste-6a0cf11c7d3847fd.dll.lib 和对象 E:\Codex\RustLua\engine\target\release\deps\paste-6a0cf11c7d3847fd.dll.exp
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+group assets/materials/p3-e02-m0-r01.material metallic=0 roughness=0.1 mean=155.11 max=255.00
+group assets/materials/p3-e02-m0-r09.material metallic=0 roughness=0.9 mean=150.00 max=150.00
+group assets/materials/p3-e02-m1-r01.material metallic=1 roughness=0.1 mean=130.74 max=255.00
+group assets/materials/p3-e02-m1-r09.material metallic=1 roughness=0.9 mean=139.47 max=143.00
+wp0_material_samples min_pair_delta=14 dielectric_mean=150.00 metal_mean=139.47 dielectric_peak=255.00/150.00 metal_peak=255.00/143.00
+report: engine/artifacts/p3/material-golden/wp0-material-golden.json
+wp0_material_golden_ok

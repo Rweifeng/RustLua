@@ -1,5 +1,6 @@
 pub mod async_loader;
 pub mod atlas;
+pub mod environment;
 pub mod font;
 pub mod font_subset;
 pub mod layer;
@@ -11,6 +12,7 @@ pub mod post_process;
 pub mod quad;
 pub mod render_mode;
 pub mod render_plan;
+pub mod render_settings;
 pub mod renderable;
 pub mod renderable_lua;
 pub mod scene_codec;

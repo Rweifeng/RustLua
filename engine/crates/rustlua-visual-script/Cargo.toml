@@ -1,0 +1,18 @@
+[package]
+name = "rustlua-visual-script"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "P3-E03：.vgraph 图资产、端口类型检查与确定性 Lua 代码生成"
+
+# 叶子 crate：格式 + 校验 + 代码生成，不依赖编辑器/运行时，方便 golden 与负向门独立跑。
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror.workspace = true
+
+[dev-dependencies]
+# 生成物必须能被真正的 Lua 5.4 加载；用脚本层同一份 vendored mlua 验语法。
+mlua = { version = "0.11", features = ["lua54", "vendored"] }

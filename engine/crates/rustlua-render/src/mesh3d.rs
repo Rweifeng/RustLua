@@ -5,13 +5,23 @@ use std::path::Path;
 use rustlua_assets::gltf_asset::{GltfAsset, GltfAssetError};
 use rustlua_math::math3d::{Aabb3, Vec3};
 
+// `.material` 的编解码住在运行时层（`rustlua-assets::mat_asset`），因为导入层校验必须用同一台
+// 解析器又不能依赖本 crate。这里原样转发，渲染侧调用点（含 `pub use mesh3d::*`）不变。
+pub use rustlua_assets::mat_asset::{
+    MaterialAlphaMode, MaterialAsset, MaterialAssetError, MaterialTexture,
+};
+
 /// A 3D mesh renderer component attached to an entity, parsed from the
-/// scene's `MeshRenderer` component string: `mesh=<relative glb/gltf path>`.
+/// scene's `MeshRenderer` component string: `mesh=<relative glb/gltf path>`
+/// with an optional `material=<relative .material path>`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MeshRenderer {
     /// Project-relative path to a `.glb`/`.gltf` mesh, or the built-in
     /// ground-plane sentinel `__ground_plane__`.
     pub mesh: String,
+    /// Optional project-relative `.material` override; `None` uses the
+    /// material embedded in the glTF.
+    pub material: Option<String>,
 }
 
 /// The mesh path the renderer synthesizes a ground receiver plane for.
@@ -32,30 +42,43 @@ pub enum MeshRendererError {
     /// The mesh path did not end in `.glb`/`.gltf`.
     #[error("unsupported MeshRenderer mesh extension: {0}")]
     UnsupportedMeshExtension(String),
+    /// The optional material path was not a project-relative `.material`.
+    #[error("invalid MeshRenderer material path: {0}")]
+    InvalidMaterialPath(String),
 }
 
 impl MeshRenderer {
-    /// Parses the scene component string written by the editor: `mesh=<path>`.
+    /// Parses the scene component string written by the editor:
+    /// `mesh=<path>[;material=<path>]`.
     pub fn from_component_str(value: &str) -> Result<Self, MeshRendererError> {
         let mut mesh: Option<String> = None;
+        let mut material: Option<String> = None;
         for field in value.split(';') {
             let (key, raw) = field
                 .split_once('=')
                 .ok_or_else(|| MeshRendererError::MalformedField(field.to_owned()))?;
             match key {
                 "mesh" => mesh = Some(raw.to_owned()),
+                "material" if !raw.is_empty() => material = Some(raw.to_owned()),
+                "material" => return Err(MeshRendererError::InvalidMaterialPath(raw.to_owned())),
                 _ => return Err(MeshRendererError::MalformedField(field.to_owned())),
             }
         }
         let mesh = mesh.ok_or(MeshRendererError::MissingMesh)?;
         validate_mesh_path(&mesh)?;
-        Ok(Self { mesh })
+        if let Some(material) = &material {
+            validate_material_path(material)?;
+        }
+        Ok(Self { mesh, material })
     }
 
     /// Encodes the component back to the editor's string format.
     #[must_use]
     pub fn to_component_str(&self) -> String {
-        format!("mesh={}", self.mesh)
+        match &self.material {
+            Some(material) => format!("mesh={};material={material}", self.mesh),
+            None => format!("mesh={}", self.mesh),
+        }
     }
 }
 
@@ -86,12 +109,30 @@ pub(crate) fn validate_mesh_path(mesh: &str) -> Result<(), MeshRendererError> {
     Ok(())
 }
 
+fn validate_material_path(material: &str) -> Result<(), MeshRendererError> {
+    if material.is_empty()
+        || rustlua_infra::paths::is_absolute_path(material)
+        || rustlua_infra::paths::escapes_project_root(material)
+        || Path::new(material)
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_none_or(|extension| !extension.eq_ignore_ascii_case("material"))
+    {
+        return Err(MeshRendererError::InvalidMaterialPath(material.to_owned()));
+    }
+    Ok(())
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct MeshVertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
     pub texcoord: [f32; 2],
+    /// Tangent (xyz) + bitangent handedness (w). `w = 0` marks a vertex without a
+    /// usable tangent basis (degenerate/mirrored UV or malformed authored data):
+    /// the PBR shader then keeps the geometric normal and skips normal mapping.
+    pub tangent: [f32; 4],
     /// Bone indices for GPU skinning; non-skinned vertices use `[0; 4]`.
     pub joints: [u32; 4],
     /// Bone weights for GPU skinning; non-skinned vertices use `[1, 0, 0, 0]`
@@ -102,6 +143,19 @@ pub struct MeshVertex {
 /// Maximum bones the GPU skinning palette can hold.
 pub const MAX_BONES: usize = 128;
 
+/// Where a primitive's tangent basis came from.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TangentBasis {
+    /// Derived from positions/UVs; all vertices carry `w = ±1`.
+    #[default]
+    Generated,
+    /// glTF TANGENT attribute was present and used as-is.
+    Authored,
+    /// UV degeneracy or mirrored winding made generation unreliable. All vertex
+    /// tangents are zeroed (`w = 0`), so normal maps fall back to flat normals.
+    Degenerate,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct MeshPrimitive {
     pub vertices: Vec<MeshVertex>,
@@ -109,6 +163,7 @@ pub struct MeshPrimitive {
     pub material: Option<usize>,
     /// Whether the primitive carries real bone influences (JOINTS_0/WEIGHTS_0).
     pub skinned: bool,
+    pub tangent_basis: TangentBasis,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -118,15 +173,116 @@ pub struct MeshAsset {
     pub materials: Vec<MaterialAsset>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct MaterialAsset {
-    pub name: Option<String>,
-    pub base_color_factor: [f32; 4],
-    pub base_color_texture: Option<usize>,
-    /// Decoded base-color texture pixels (RGBA8) when the material has one.
-    pub base_color_image: Option<rustlua_assets::gltf_asset::GltfTextureImage>,
-    pub metallic_factor: f32,
-    pub roughness_factor: f32,
+/// 从三角形 UV 导数生成逐顶点切线（Gram-Schmidt 正交化 + 手性）。
+///
+/// UV 退化（|det|≈0）或同一图元内三角形手性不一致（镜像 UV）都会让生成结果
+/// 互相抵消；这里**不硬算**，而是返回全零切线（`w=0`）标记 [`TangentBasis::Degenerate`]，
+/// 让 PBR 着色器退回几何法线，避免法线贴图产生错误光照。
+#[must_use]
+pub fn generate_tangents(
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    texcoords: &[[f32; 2]],
+    indices: &[u32],
+) -> (Vec<[f32; 4]>, TangentBasis) {
+    let count = positions.len();
+    if count == 0 {
+        return (Vec::new(), TangentBasis::Generated);
+    }
+    let invalid = || (vec![[0.0; 4]; count], TangentBasis::Degenerate);
+    if indices.is_empty() || !indices.len().is_multiple_of(3) {
+        return invalid();
+    }
+    let mut tangent_sum = vec![Vec3::ZERO; count];
+    let mut bitangent_sum = vec![Vec3::ZERO; count];
+    let mut saw_positive = false;
+    let mut saw_negative = false;
+    for triangle in indices.chunks_exact(3) {
+        let (i0, i1, i2) = (
+            triangle[0] as usize,
+            triangle[1] as usize,
+            triangle[2] as usize,
+        );
+        if i0 >= count || i1 >= count || i2 >= count {
+            return invalid();
+        }
+        let p0 = Vec3::new(positions[i0][0], positions[i0][1], positions[i0][2]);
+        let edge1 = Vec3::new(positions[i1][0], positions[i1][1], positions[i1][2]) - p0;
+        let edge2 = Vec3::new(positions[i2][0], positions[i2][1], positions[i2][2]) - p0;
+        let duv1 = [
+            texcoords[i1][0] - texcoords[i0][0],
+            texcoords[i1][1] - texcoords[i0][1],
+        ];
+        let duv2 = [
+            texcoords[i2][0] - texcoords[i0][0],
+            texcoords[i2][1] - texcoords[i0][1],
+        ];
+        let determinant = duv1[0] * duv2[1] - duv2[0] * duv1[1];
+        if !determinant.is_finite() || determinant.abs() <= 1e-12 {
+            return invalid();
+        }
+        if determinant > 0.0 {
+            saw_positive = true;
+        } else {
+            saw_negative = true;
+        }
+        let reciprocal = 1.0 / determinant;
+        let tangent = (edge1 * duv2[1] - edge2 * duv1[1]) * reciprocal;
+        let bitangent = (edge2 * duv1[0] - edge1 * duv2[0]) * reciprocal;
+        for index in [i0, i1, i2] {
+            tangent_sum[index] = tangent_sum[index] + tangent;
+            bitangent_sum[index] = bitangent_sum[index] + bitangent;
+        }
+    }
+    if saw_positive && saw_negative {
+        return invalid();
+    }
+    let mut output = Vec::with_capacity(count);
+    for index in 0..count {
+        let normal = Vec3::new(normals[index][0], normals[index][1], normals[index][2]);
+        let normal_length = normal.length();
+        if !normal_length.is_finite() || normal_length <= 1e-12 {
+            return invalid();
+        }
+        let normal = normal * (1.0 / normal_length);
+        let tangent = tangent_sum[index] - normal * normal.dot(tangent_sum[index]);
+        let tangent_length = tangent.length();
+        if !tangent_length.is_finite() || tangent_length <= 1e-12 {
+            return invalid();
+        }
+        let tangent = tangent * (1.0 / tangent_length);
+        let handedness = normal.cross(tangent).dot(bitangent_sum[index]);
+        if !handedness.is_finite() || handedness.abs() <= 1e-12 {
+            return invalid();
+        }
+        output.push([
+            tangent.x,
+            tangent.y,
+            tangent.z,
+            if handedness < 0.0 { -1.0 } else { 1.0 },
+        ]);
+    }
+    (output, TangentBasis::Generated)
+}
+
+/// 使用 glTF 自带的 TANGENT；零长度向量视为不可用（与生成失败同样回退）。
+fn authored_tangents(tangents: &[[f32; 4]]) -> (Vec<[f32; 4]>, TangentBasis) {
+    let mut output = Vec::with_capacity(tangents.len());
+    for tangent in tangents {
+        let xyz = Vec3::new(tangent[0], tangent[1], tangent[2]);
+        let length = xyz.length();
+        if !length.is_finite() || length <= 1e-12 {
+            return (vec![[0.0; 4]; tangents.len()], TangentBasis::Degenerate);
+        }
+        let normalized = xyz * (1.0 / length);
+        output.push([
+            normalized.x,
+            normalized.y,
+            normalized.z,
+            if tangent[3] < 0.0 { -1.0 } else { 1.0 },
+        ]);
+    }
+    (output, TangentBasis::Authored)
 }
 
 impl MeshPrimitive {
@@ -180,9 +336,29 @@ impl MeshAsset {
                             return Err(MeshAssetError::InvalidPrimitive);
                         }
                         let skinned = !primitive.joints.is_empty();
-                        let vertices = primitive
+                        let positions: Vec<[f32; 3]> = primitive
                             .positions
                             .iter()
+                            .map(|position| [position.x, position.y, position.z])
+                            .collect();
+                        let normal_values: Vec<[f32; 3]> = normals
+                            .iter()
+                            .map(|normal| [normal.x, normal.y, normal.z])
+                            .collect();
+                        // 作者数据优先；缺失时从 UV 生成。生成失败会置零切线并标记
+                        // `Degenerate`，由渲染层告警一次，法线贴图退回几何法线。
+                        let (tangents, tangent_basis) = if primitive.tangents.is_empty() {
+                            generate_tangents(
+                                &positions,
+                                &normal_values,
+                                &texcoords,
+                                &primitive.indices,
+                            )
+                        } else {
+                            authored_tangents(&primitive.tangents)
+                        };
+                        let vertices = positions
+                            .into_iter()
                             .zip(normals)
                             .zip(texcoords)
                             .enumerate()
@@ -199,9 +375,10 @@ impl MeshAsset {
                                     [1.0, 0.0, 0.0, 0.0]
                                 };
                                 MeshVertex {
-                                    position: [position.x, position.y, position.z],
+                                    position,
                                     normal: [normal.x, normal.y, normal.z],
                                     texcoord,
+                                    tangent: tangents[index],
                                     joints,
                                     weights,
                                 }
@@ -212,6 +389,7 @@ impl MeshAsset {
                             indices: primitive.indices.clone(),
                             material: primitive.material,
                             skinned,
+                            tangent_basis,
                         })
                     })
                     .collect::<Result<Vec<_>, _>>()?;
@@ -227,19 +405,6 @@ impl MeshAsset {
     pub fn from_gltf_path(path: impl AsRef<std::path::Path>) -> Result<Vec<Self>, MeshAssetError> {
         let asset = GltfAsset::load(path).map_err(MeshAssetError::Import)?;
         Self::from_gltf(&asset)
-    }
-}
-
-impl From<&rustlua_assets::gltf_asset::GltfMaterial> for MaterialAsset {
-    fn from(material: &rustlua_assets::gltf_asset::GltfMaterial) -> Self {
-        Self {
-            name: material.name.clone(),
-            base_color_factor: material.base_color_factor,
-            base_color_texture: material.base_color_texture,
-            base_color_image: material.base_color_image.clone(),
-            metallic_factor: material.metallic_factor,
-            roughness_factor: material.roughness_factor,
-        }
     }
 }
 
@@ -264,6 +429,7 @@ mod tests {
                     position: [-2.0, 0.0, 1.0],
                     normal: [0.0, 1.0, 0.0],
                     texcoord: [0.0, 0.0],
+                    tangent: [1.0, 0.0, 0.0, 1.0],
                     joints: [0; 4],
                     weights: [1.0, 0.0, 0.0, 0.0],
                 },
@@ -271,6 +437,7 @@ mod tests {
                     position: [3.0, 4.0, -1.0],
                     normal: [0.0, 1.0, 0.0],
                     texcoord: [0.0, 0.0],
+                    tangent: [1.0, 0.0, 0.0, 1.0],
                     joints: [0; 4],
                     weights: [1.0, 0.0, 0.0, 0.0],
                 },
@@ -278,6 +445,7 @@ mod tests {
             indices: Vec::new(),
             material: None,
             skinned: false,
+            tangent_basis: TangentBasis::Degenerate,
         };
         assert_eq!(
             primitive.local_bounds().unwrap().min,
@@ -381,5 +549,138 @@ mod tests {
                 .iter()
                 .all(|vertex| vertex.texcoord == [0.0, 0.0])
         );
+    }
+
+    #[test]
+    fn mesh_renderer_carries_optional_material_override() {
+        let renderer = MeshRenderer::from_component_str(
+            "mesh=assets/models/cube.glb;material=assets/materials/rusted.material",
+        )
+        .unwrap();
+        assert_eq!(
+            renderer.material.as_deref(),
+            Some("assets/materials/rusted.material")
+        );
+        assert_eq!(
+            renderer.to_component_str(),
+            "mesh=assets/models/cube.glb;material=assets/materials/rusted.material"
+        );
+        let reordered = MeshRenderer::from_component_str(
+            "material=assets/materials/rusted.material;mesh=assets/models/cube.glb",
+        )
+        .unwrap();
+        assert_eq!(reordered, renderer);
+        assert_eq!(
+            MeshRenderer::from_component_str("mesh=assets/models/cube.glb")
+                .unwrap()
+                .material,
+            None
+        );
+        assert!(matches!(
+            MeshRenderer::from_component_str("mesh=cube.glb;material=assets/rusted.txt"),
+            Err(MeshRendererError::InvalidMaterialPath(_))
+        ));
+        assert!(matches!(
+            MeshRenderer::from_component_str("mesh=cube.glb;material=../rusted.material"),
+            Err(MeshRendererError::InvalidMaterialPath(_))
+        ));
+    }
+
+    type QuadMesh = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>);
+
+    fn quad() -> QuadMesh {
+        (
+            vec![
+                [-2.0, 0.0, -2.0],
+                [2.0, 0.0, -2.0],
+                [2.0, 0.0, 2.0],
+                [-2.0, 0.0, 2.0],
+            ],
+            vec![[0.0, 1.0, 0.0]; 4],
+            vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            vec![0, 2, 1, 0, 3, 2],
+        )
+    }
+
+    #[test]
+    fn generates_orthonormal_tangents_with_handedness() {
+        let (positions, normals, texcoords, indices) = quad();
+        let (tangents, basis) = generate_tangents(&positions, &normals, &texcoords, &indices);
+        assert_eq!(basis, TangentBasis::Generated);
+        assert_eq!(tangents.len(), 4);
+        for tangent in &tangents {
+            assert!((tangent[0] - 1.0).abs() < 1e-6, "期望 +X 切线: {tangent:?}");
+            assert!(tangent[1].abs() < 1e-6 && tangent[2].abs() < 1e-6);
+            // 面朝 +Y、UV 的 v 轴朝 +Z：bitangent = cross(N,T)*w 必须指向 +Z。
+            assert_eq!(tangent[3], -1.0);
+        }
+    }
+
+    #[test]
+    fn degenerate_uv_falls_back_to_flat_normals() {
+        let (positions, normals, _, indices) = quad();
+        let texcoords = vec![[0.0, 0.0]; 4];
+        let (tangents, basis) = generate_tangents(&positions, &normals, &texcoords, &indices);
+        assert_eq!(basis, TangentBasis::Degenerate);
+        assert!(tangents.iter().all(|tangent| *tangent == [0.0; 4]));
+    }
+
+    #[test]
+    fn mirrored_uv_triangles_fall_back_to_flat_normals() {
+        let (positions, normals, mut texcoords, indices) = quad();
+        // 第二个三角形翻转 u：同一图元内手性不一致，累积切线会互相抵消。
+        texcoords[3] = [1.0, 1.0];
+        texcoords[2] = [0.0, 1.0];
+        let (tangents, basis) = generate_tangents(&positions, &normals, &texcoords, &indices);
+        assert_eq!(basis, TangentBasis::Degenerate);
+        assert!(tangents.iter().all(|tangent| *tangent == [0.0; 4]));
+    }
+
+    #[test]
+    fn gltf_fixtures_report_tangent_basis() {
+        let root = rustlua_infra::games_dir().join("examples/game_api/assets/models");
+        let generated = MeshAsset::from_gltf_path(root.join("p3-r02-quad.gltf")).unwrap();
+        assert_eq!(
+            generated[0].primitives[0].tangent_basis,
+            TangentBasis::Generated
+        );
+        assert!(
+            generated[0].primitives[0]
+                .vertices
+                .iter()
+                .all(|vertex| vertex.tangent[3] != 0.0)
+        );
+        let degenerate =
+            MeshAsset::from_gltf_path(root.join("p3-r02-quad-degenerate.gltf")).unwrap();
+        assert_eq!(
+            degenerate[0].primitives[0].tangent_basis,
+            TangentBasis::Degenerate
+        );
+        assert!(
+            degenerate[0].primitives[0]
+                .vertices
+                .iter()
+                .all(|vertex| vertex.tangent == [0.0; 4])
+        );
+        let authored = MeshAsset::from_gltf_path(root.join("p3-r02-material.gltf")).unwrap();
+        assert_eq!(
+            authored[0].primitives[0].tangent_basis,
+            TangentBasis::Authored
+        );
+        assert_eq!(
+            authored[0].primitives[0].vertices[0].tangent,
+            [1.0, 0.0, 0.0, -1.0]
+        );
+    }
+
+    #[test]
+    fn authored_tangents_are_normalized_and_keep_handedness() {
+        let (tangents, basis) = authored_tangents(&[[0.0, 0.0, 2.0, -1.0], [0.0, 0.0, 1.0, 1.0]]);
+        assert_eq!(basis, TangentBasis::Authored);
+        assert_eq!(tangents[0], [0.0, 0.0, 1.0, -1.0]);
+        assert_eq!(tangents[1], [0.0, 0.0, 1.0, 1.0]);
+        let (degenerate, basis) = authored_tangents(&[[0.0, 0.0, 0.0, 1.0]]);
+        assert_eq!(basis, TangentBasis::Degenerate);
+        assert_eq!(degenerate, vec![[0.0; 4]]);
     }
 }

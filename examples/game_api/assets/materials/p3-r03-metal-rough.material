@@ -1,0 +1,5 @@
+version=1
+name=p3-r03-metal-rough
+base_color=1,1,1,1
+metallic=1
+roughness=1

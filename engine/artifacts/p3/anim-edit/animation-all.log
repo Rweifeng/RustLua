@@ -1,0 +1,69 @@
+   Compiling rustlua-animation v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-animation)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.14s
+     Running unittests src\lib.rs (engine\target\debug\deps\rustlua_animation-ef7e73bd4c88d3b7.exe)
+
+running 55 tests
+test anim_asset::tests::rejects_broken_headers_and_unknown_fields ... ok
+test anim_asset::tests::rejects_broken_events ... ok
+test anim_asset::tests::defaults_and_edge_shapes_are_explicit ... ok
+test anim_asset::tests::rejects_broken_values ... ok
+test anim_asset::tests::events_fire_once_across_a_loop_wrap ... ok
+test anim_asset::tests::rejects_broken_track_shapes ... ok
+test anim_asset::tests::documented_example_round_trips_byte_for_byte ... ok
+test anim_asset::tests::spatial_tracks_interpolate_and_normalize_quaternions ... ok
+test anim_asset::tests::step_and_linear_sampling_hit_endpoints_and_midpoints ... ok
+test anim_edit::tests::header_edits_validate_against_content ... ok
+test anim_edit::tests::add_keyframe_inserts_sorted_and_undo_restores_bytes ... ok
+test anim_edit::tests::event_editing_keeps_time_order_and_rejects_duplicates ... ok
+test anim_edit::tests::move_keyframe_reorders_and_rejects_collisions ... ok
+test anim_edit::tests::removing_the_only_keyframe_is_rejected_without_mutation ... ok
+test anim_edit::tests::track_add_remove_validates_path_kind_and_duplicates ... ok
+test anim_edit::tests::undo_redo_follow_the_saved_snapshot_and_new_edits_clear_redo ... ok
+test anim_edit::tests::value_kind_and_constraints_are_enforced ... ok
+test animation3d::tests::descriptor_round_trips ... ok
+test animation3d::tests::clip_advances_loops_and_clamps ... ok
+test animation3d::tests::joint_palette_is_identity_at_bind_pose ... ok
+test animation3d::tests::pause_freezes_time ... ok
+test animation3d::tests::switching_clip_restarts_and_rejects_unknown ... ok
+test animation::tests::advances_looped_clip_frames_and_wraps ... ok
+test animation::tests::a_single_large_step_fires_every_frame_it_crosses ... ok
+test animation::tests::clip_resource_key_is_content_addressed ... ok
+test animation::tests::clip_track_cache_is_reused_across_frames ... ok
+test animation3d::tests::rejects_non_skinned_asset ... ok
+test animation::tests::clip_tracks_agree_with_the_state_machine ... ok
+test animation::tests::clip_tracks_carry_the_frame_events_in_order ... ok
+test animation::tests::frame_events_fire_once_when_the_frame_is_reached ... ok
+test animation::tests::frame_uv_selects_sheet_columns ... ok
+test animation::tests::frame_events_round_trip_and_reject_bad_input ... ok
+test animation::tests::looped_clips_refire_events_on_each_wrap ... ok
+test animation::tests::non_looping_clip_clamps_and_fires_end_event_once ... ok
+test animation::tests::rejects_unknown_state_and_bad_construction ... ok
+test animation::tests::round_trips_through_component_string ... ok
+test animation::tests::state_transition_restarts_clip ... ok
+test animation::tests::switching_state_restarts_event_tracking ... ok
+test animation_player::tests::advances_samples_regions_and_events_once_per_crossing ... ok
+test animation_player::tests::component_string_round_trips_and_rejects_bad_fields ... ok
+test animation_player::tests::non_looping_stops_and_controls_seek_pause_stop ... ok
+test animation_player::tests::sprite_regions_require_frames_and_stay_in_range ... ok
+test animation_player::tests::ui_animation_tracks_are_reported_as_unsupported ... ok
+test animation_track::tests::event_track_reports_due_events_in_time_order ... ok
+test animation_player::tests::unloaded_player_is_inert ... ok
+test animation_track::tests::linear_track_interpolates_rotations_along_the_short_arc ... ok
+test animation_track::tests::linear_track_interpolates_transforms ... ok
+test animation_track::tests::step_sampling_borrows_instead_of_cloning ... ok
+test animation_lua::tests::every_animation_function_is_installed ... ok
+test animation_track::tests::step_track_holds_the_previous_keyframe_and_clamps_outside ... ok
+test animation_lua::tests::reentrant_borrow_names_the_animation_state ... ok
+test animation_lua::tests::events_are_drained_once ... ok
+test animation_lua::tests::player_events_have_their_own_queue ... ok
+test animation_track::tests::validation_rejects_ambiguous_or_broken_tracks ... ok
+test animation_lua::tests::dead_entity_is_rejected_before_touching_the_world ... ok
+
+test result: ok. 55 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests rustlua_animation
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

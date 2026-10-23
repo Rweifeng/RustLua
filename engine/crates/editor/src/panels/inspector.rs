@@ -4,7 +4,7 @@ use crate::ComponentClipboard;
 use crate::EditorApp;
 use crate::panels::tilemap_tools;
 use crate::util::strip_verbatim_prefix;
-use editor::{Collider3dFields, InspectorError, InspectorState};
+use editor::{Collider3dFields, ContainerPreset, InspectorError, InspectorState};
 use eframe::egui;
 use rustlua_scene::prefab::Prefab;
 use rustlua_scene::scene::{SceneEntity, SceneEntityId};
@@ -84,6 +84,11 @@ const COMPONENT_REGISTRY: &[ComponentDescriptor] = &[
         name: "Animation",
         category: ComponentCategory::Gameplay,
     },
+    // P3-E01-2：`.anim` 时间线播放器（与状态机 `Animation`、骨骼 `Animation3D` 并列）。
+    ComponentDescriptor {
+        name: "AnimationPlayer",
+        category: ComponentCategory::Gameplay,
+    },
     ComponentDescriptor {
         name: "MeshRenderer",
         category: ComponentCategory::ThreeD,
@@ -114,6 +119,10 @@ const COMPONENT_REGISTRY: &[ComponentDescriptor] = &[
     },
     ComponentDescriptor {
         name: "Container",
+        category: ComponentCategory::Ui,
+    },
+    ComponentDescriptor {
+        name: "LayoutItem",
         category: ComponentCategory::Ui,
     },
     ComponentDescriptor {
@@ -1006,6 +1015,7 @@ impl EditorApp {
                                     ("vbox", "垂直排列 VBox"),
                                     ("hbox", "水平排列 HBox"),
                                     ("grid", "网格 Grid"),
+                                    ("wrap", "换行 Wrap"),
                                     ("margin", "边距 Margin"),
                                     ("center", "居中 Center"),
                                 ] {
@@ -1016,6 +1026,15 @@ impl EditorApp {
                                     );
                                 }
                             });
+                    });
+                    // E05-4：常用预设只改缓冲（kind/spacing/columns），提交仍走 E08 管线。
+                    ui.horizontal(|ui| {
+                        ui.label("预设");
+                        for preset in ContainerPreset::ALL {
+                            if ui.small_button(preset.label()).clicked() {
+                                preset.apply(&mut self.container);
+                            }
+                        }
                     });
                     ui.horizontal(|ui| {
                         ui.label("内边距");
@@ -1054,8 +1073,92 @@ impl EditorApp {
                                 }
                             });
                     });
+                    if matches!(self.container.kind.as_str(), "hbox" | "vbox" | "grid" | "wrap") {
+                        ui.horizontal(|ui| {
+                            ui.label("主轴分布");
+                            egui::ComboBox::from_id_salt("container_justify")
+                                .selected_text(&self.container.justify)
+                                .show_ui(ui, |ui| {
+                                    for (token, label) in [
+                                        ("start", "起始"),
+                                        ("center", "居中"),
+                                        ("end", "末尾"),
+                                        ("space_between", "两端对齐"),
+                                        ("space_around", "环绕分布"),
+                                        ("space_evenly", "均匀分布"),
+                                    ] {
+                                        ui.selectable_value(
+                                            &mut self.container.justify,
+                                            token.to_owned(),
+                                            label,
+                                        );
+                                    }
+                                });
+                        });
+                    }
                     if ui.button("移除 Container").clicked()
                         && let Err(error) = self.remove_component(selected, "Container")
+                    {
+                        self.status = error;
+                    }
+                }
+                // E05-4：LayoutItem（父容器对该子项的约束）。
+                if has("LayoutItem") {
+                    ui.label("LayoutItem（子项约束）");
+                    for (label, pair) in [
+                        ("最小", &mut self.layout_item.min_size),
+                        ("最大", &mut self.layout_item.max_size),
+                        ("首选", &mut self.layout_item.preferred_size),
+                        ("百分比", &mut self.layout_item.size_percent),
+                    ] {
+                        ui.horizontal(|ui| {
+                            ui.label(label);
+                            ui.add(egui::DragValue::new(&mut pair[0]).range(0.0..=100_000.0));
+                            ui.add(egui::DragValue::new(&mut pair[1]).range(0.0..=100_000.0));
+                        });
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("grow");
+                        ui.add(egui::DragValue::new(&mut self.layout_item.grow).range(0.0..=100.0));
+                        ui.label("shrink");
+                        ui.add(
+                            egui::DragValue::new(&mut self.layout_item.shrink).range(0.0..=100.0),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("自对齐");
+                        let selected_text = if self.layout_item.align_self.is_empty() {
+                            "继承容器".to_owned()
+                        } else {
+                            self.layout_item.align_self.clone()
+                        };
+                        egui::ComboBox::from_id_salt("layout_item_align")
+                            .selected_text(selected_text)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.layout_item.align_self,
+                                    String::new(),
+                                    "继承容器",
+                                );
+                                for (token, label) in
+                                    [("start", "起始"), ("center", "居中"), ("end", "末尾")]
+                                {
+                                    ui.selectable_value(
+                                        &mut self.layout_item.align_self,
+                                        token.to_owned(),
+                                        label,
+                                    );
+                                }
+                            });
+                        ui.label("宽高比");
+                        ui.add(
+                            egui::DragValue::new(&mut self.layout_item.aspect_ratio)
+                                .range(0.0..=10.0),
+                        );
+                        ui.checkbox(&mut self.layout_item.visible, "可见");
+                    });
+                    if ui.button("移除 LayoutItem").clicked()
+                        && let Err(error) = self.remove_component(selected, "LayoutItem")
                     {
                         self.status = error;
                     }
@@ -1082,6 +1185,10 @@ impl EditorApp {
                 // （Camera2D/Quad/RenderMode/Visibility/EntityScript/Particle），
                 // 提交通通走 typed action，不在面板里直接写组件串。
                 self.draw_schema_driven_components(ui);
+                // P3-E02：`.material` 覆盖的字段/贴图编辑（只发 typed action）。
+                self.draw_material_section(ui);
+                // P3-E04-3：插件检查器段（无选中实体时由方法内部跳过）。
+                self.draw_plugin_inspector_sections(ui);
             });
         // E08 帧末边界：缓冲差异已在控件编辑帧随 `mark_inspector_edit` 直写文档，
         // 这里只做提交决策。
@@ -1523,6 +1630,21 @@ impl EditorApp {
                     scene.mark_dirty();
                 }
             }
+            // P3-E01-2：默认指向工程内的 `.anim` 约定目录；用户在通用字段编辑器里改成
+            // 实际片段。运行时会读文件并在缺失/坏格式时点名报错，不会静默空转。
+            "AnimationPlayer" => {
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity.components.insert(
+                        "AnimationPlayer".to_owned(),
+                        rustlua_animation::animation_player::AnimationPlayer::from_component_str(
+                            "clip=assets/anim/hero.anim",
+                        )
+                        .map_err(|error| InspectorError::InvalidAssetReference(error.to_string()))?
+                        .to_component_str(),
+                    );
+                    scene.mark_dirty();
+                }
+            }
             // 唯一的 `Transform`：默认值取**引擎类型**的编码（单位变换），
             // 编辑由通用字段编辑器接管。
             "Transform" => {
@@ -1569,6 +1691,7 @@ impl EditorApp {
                         "MeshRenderer".to_owned(),
                         rustlua_render::mesh3d::MeshRenderer {
                             mesh: rustlua_render::mesh3d::GROUND_PLANE_SENTINEL.to_owned(),
+                            material: None,
                         }
                         .to_component_str(),
                     );
@@ -1637,6 +1760,16 @@ impl EditorApp {
                     entity.components.insert(
                         "Container".to_owned(),
                         rustlua_ui::ui_layout::ContainerStyle::default().to_component_str(),
+                    );
+                    scene.mark_dirty();
+                }
+            }
+            // E05-4：子项约束默认全零 + shrink=1（引擎 `LayoutItem::default()`）。
+            "LayoutItem" => {
+                if let Some(entity) = scene.scene.entities.get_mut(&selected) {
+                    entity.components.insert(
+                        "LayoutItem".to_owned(),
+                        rustlua_ui::ui_layout::LayoutItem::default().to_component_str(),
                     );
                     scene.mark_dirty();
                 }

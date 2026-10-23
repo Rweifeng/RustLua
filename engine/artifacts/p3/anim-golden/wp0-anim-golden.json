@@ -1,0 +1,67 @@
+{
+  "adapter": {
+    "backend": "Dx12",
+    "name": "Microsoft Basic Render Driver"
+  },
+  "checks": {
+    "non_loop_stops_at_duration": true,
+    "pixels_track_the_transform": true,
+    "three_d_moves_4units_per_second": true,
+    "two_d_moves_100px_per_second": true
+  },
+  "clamped_after_duration": {
+    "after": [
+      740.0,
+      4.0
+    ],
+    "before": [
+      740.0,
+      4.0
+    ],
+    "unchanged": true
+  },
+  "clips": {
+    "duration": 1.0,
+    "looped": false,
+    "sprite": "assets/anim/sprite.anim",
+    "sun": "assets/anim/sun.anim"
+  },
+  "frames": [
+    {
+      "sprite_pixels": 1024,
+      "sprite_screen_center": [
+        99.5,
+        149.5
+      ],
+      "sprite_world_x": 540.0,
+      "sun_world_x": 0.0,
+      "t": 0.0
+    },
+    {
+      "sprite_pixels": 1024,
+      "sprite_screen_center": [
+        199.5,
+        149.5
+      ],
+      "sprite_world_x": 640.0,
+      "sun_world_x": 2.0,
+      "t": 0.5
+    },
+    {
+      "sprite_pixels": 1024,
+      "sprite_screen_center": [
+        299.5,
+        149.5
+      ],
+      "sprite_world_x": 740.0,
+      "sun_world_x": 4.0,
+      "t": 1.0
+    }
+  ],
+  "report_version": "wp0-anim-golden-v1",
+  "scene": "wp0-anim-golden",
+  "target": {
+    "height": 300,
+    "width": 400
+  }
+}

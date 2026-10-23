@@ -268,6 +268,14 @@ local function demo_animation()
     -- events：本帧触发的帧事件（取走即清空）。片段 `hit` 声明了 events=0:swing,1:hit。
     local events = animation.events()
     local ended = animation.ended(player)
+    -- P3-E01-2：`.anim` 时间线播放器（`AnimationPlayer`）的调用面。示例工程还没有挂
+    -- 播放器的实体，所以控制类调用由 pcall 接住；事件查询本身总是可用（取走即清）。
+    -- 播放器实体上 `animation.play/pause/stop/seek` 才真正改变采样时刻。
+    pcall(animation.play, player)
+    pcall(animation.pause, player)
+    pcall(animation.stop, player)
+    pcall(animation.seek, player, 0.5)
+    local player_events = animation.player_events()
     local event_name = "none"
     if type(events) == "table" and #events > 0 then
         event_name = tostring(events[1].name) .. "@" .. tostring(events[1].frame)

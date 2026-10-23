@@ -6,18 +6,63 @@
 //! 它被 `scene.rs` 的 `init` 调用、`run_pipelines`/`run_script_steps` 被每帧路径调用，
 //! 方向跨模块 ⇒ `pub(super)`（§3.1.4）。
 
+use rustlua_animation::anim_asset::{AnimPath, AnimValue, TransformChannel};
 use rustlua_animation::animation::{AnimationFrameEvent, AnimationStateMachine};
+use rustlua_animation::animation_player::AnimationPlayer;
 use rustlua_animation::animation3d::Animation3D;
 use rustlua_assets::asset_handle::AssetRecord;
 use rustlua_audio::spatial::Listener;
 use rustlua_camera::camera::Camera3D;
 use rustlua_ecs::entity::EntityId;
 use rustlua_ecs::scheduler::{ScheduleStage, Scheduler, SchedulerError, System, SystemError};
-use rustlua_ecs::transform::integrate_velocity;
+use rustlua_ecs::transform::{Transform, Transform3D, integrate_velocity};
+use rustlua_ecs::world::World;
 use rustlua_input::input::InputSnapshot;
+use rustlua_render::light::Light;
 use rustlua_render::mesh3d::MeshRenderer;
 
 use super::{FrameScheduleReport, PhysicsStageOrder, RuntimeScene};
+
+/// 把一帧的采样值写回实体组件。匹配落空的 `(路径, 值)` 静默跳过：片段里的路径是合法的，
+/// 只是这个实体没挂对应组件（例如 2D 实体上挂了 3D 轨道），那是场景作者的选择而非错误。
+fn apply_player_samples(world: &mut World, id: EntityId, samples: &[(AnimPath, AnimValue)]) {
+    for (path, value) in samples {
+        match (path, value) {
+            (AnimPath::Transform(channel), value) => {
+                if let Ok(Some(transform)) = world.get_mut::<Transform>(id) {
+                    match (channel, value) {
+                        (TransformChannel::Position, AnimValue::Vec2(v)) => transform.position = *v,
+                        (TransformChannel::Rotation, AnimValue::Scalar(rotation)) => {
+                            transform.rotation = *rotation;
+                        }
+                        (TransformChannel::Scale, AnimValue::Vec2(v)) => transform.scale = *v,
+                        _ => {}
+                    }
+                }
+            }
+            (AnimPath::Transform3D(channel), value) => {
+                if let Ok(Some(transform)) = world.get_mut::<Transform3D>(id) {
+                    match (channel, value) {
+                        (TransformChannel::Position, AnimValue::Vec3(v)) => transform.position = *v,
+                        (TransformChannel::Rotation, AnimValue::Quat(rotation)) => {
+                            transform.rotation = *rotation;
+                        }
+                        (TransformChannel::Scale, AnimValue::Vec3(v)) => transform.scale = *v,
+                        _ => {}
+                    }
+                }
+            }
+            (AnimPath::LightIntensity, AnimValue::Scalar(intensity)) => {
+                if let Ok(Some(light)) = world.get_mut::<Light>(id) {
+                    light.intensity = *intensity;
+                }
+            }
+            // `Sprite.region` 由提取阶段读取（不写 `Sprite`，避免覆盖作者保存的 UV）；
+            // `UiAnimation.*` 在加载时已点名"不写回"。
+            _ => {}
+        }
+    }
+}
 
 impl RuntimeScene {
     /// Registers the built-in fixed-stage systems of the runtime frame
@@ -331,6 +376,36 @@ impl RuntimeScene {
                 Ok(())
             },
         ));
+        self.add_builtin_frame_system(System::new(
+            "animation_player_advance",
+            ScheduleStage::Animation,
+            [] as [&str; 0],
+            |scene: &mut RuntimeScene, delta_seconds: f32| {
+                // P3-E01-2：推进与写回分两趟。`for_each_mut` 只借得到 player 自己，而写回要改
+                // 同实体的 `Transform`/`Transform3D`/`Light`，因此先收齐采样值，再统一写。
+                let fired = scene.script.with_world_mut(|world| {
+                    let mut fired = Vec::new();
+                    let mut samples: Vec<(EntityId, Vec<(AnimPath, AnimValue)>)> = Vec::new();
+                    world.for_each_mut::<AnimationPlayer>(|id, player| {
+                        for event in player.advance(delta_seconds) {
+                            fired.push((id, event));
+                        }
+                        // 暂停时也采样：`seek` 后要停在目标姿态，片段的 t=0 姿态也应在第一帧
+                        // 就生效——片段是这个实体的权威姿态来源，不是"播放时才偶尔覆盖"。
+                        let sampled = player.sample_all();
+                        if !sampled.is_empty() {
+                            samples.push((id, sampled));
+                        }
+                    });
+                    for (id, sampled) in &samples {
+                        apply_player_samples(world, *id, sampled);
+                    }
+                    fired
+                });
+                scene.script.push_animation_player_events(fired);
+                Ok(())
+            },
+        ));
     }
 
     /// Advances the runtime by `steps` fixed steps through the shared frame
@@ -353,6 +428,10 @@ impl RuntimeScene {
         delta_seconds: f32,
         input: &InputSnapshot,
     ) -> anyhow::Result<()> {
+        // P3-R07-2：上一帧入队、却没被宿主取走的 GPU burst 在这里回到 CPU 池。
+        // 放在步进之前（而不是之后）：宿主在本函数返回后调用派发通道，取到的必须只是**本帧**
+        // 新产生的爆发；残留则要先回到 CPU，否则它们会在下一次派发里被当成新爆发送去 GPU。
+        self.requeue_stale_gpu_bursts();
         self.script.set_delta(delta_seconds);
         // M20-06：把真实手柄设备状态合并进本帧输入（只改按钮/轴，不影响键鼠）。
         // 无设备时 XInput 返回未连接，快照与传入值等价，headless 行为不变。
@@ -390,6 +469,11 @@ impl RuntimeScene {
             && let Some((low, high, ms)) = self.input.take_rumble_request()
         {
             self.gamepad.rumble(low, high, ms);
+        }
+        if outcome.is_ok() {
+            // E03-3：固定步里的物理接触在整帧收尾统一投给实体 `on_collision`。
+            // 放在传播世界变换之前：回调可以移动实体，渲染必须看到同一帧的结果。
+            self.script.dispatch_collision_contacts()?;
         }
         self.pending_step_input = None;
         // WP2：本帧脚本/物理都改完局部变换后，统一传播一次世界变换——渲染与 Lua 的世界位置

@@ -125,20 +125,38 @@ impl EditorApp {
                 let (width, height) = preview.size();
                 let ppp = ui.ctx().pixels_per_point();
                 let fit = preview_fit_scale(preview_rect, ppp, width);
-                let label = format!("{width}×{height} · {:.0}%", fit * 100.0);
-                let galley = painter.layout_no_wrap(
-                    label.clone(),
-                    egui::FontId::monospace(11.0),
-                    egui::Color32::from_rgb(215, 230, 245),
+                // E18：设计/预览/缩放/裁剪/Safe Area 同屏读数。Game 视图等比
+                // letterbox 整张预览，设计框始终完整可见，故裁剪恒为 0。
+                let hud = crate::ui_editor::CanvasHud {
+                    design: (width, height),
+                    display: (
+                        (preview_rect.width() * ppp).round().max(0.0) as u32,
+                        (preview_rect.height() * ppp).round().max(0.0) as u32,
+                    ),
+                    scale: fit,
+                    crop: [0.0; 4],
+                    safe: self.scene_canvas_config().safe_area,
+                };
+                let lines = [
+                    format!("{width}×{height} · {:.0}%", fit * 100.0),
+                    hud.preview_line(),
+                    hud.safe_line(),
+                ];
+                let color = egui::Color32::from_rgb(215, 230, 245);
+                let font = egui::FontId::monospace(11.0);
+                let galleys = lines
+                    .iter()
+                    .map(|line| painter.layout_no_wrap(line.clone(), font.clone(), color))
+                    .collect::<Vec<_>>();
+                let line_height = galleys.iter().map(|g| g.size().y).fold(0.0_f32, f32::max);
+                let text_size = egui::vec2(
+                    galleys.iter().map(|g| g.size().x).fold(0.0_f32, f32::max),
+                    line_height * galleys.len() as f32,
                 );
                 let pad = egui::vec2(8.0, 4.0);
-                let badge = egui::Rect::from_min_max(
+                let badge = egui::Rect::from_min_size(
                     response.rect.left_top() + egui::vec2(6.0, 6.0),
-                    response.rect.left_top()
-                        + egui::vec2(
-                            6.0 + galley.size().x + pad.x * 2.0,
-                            6.0 + galley.size().y + pad.y * 2.0,
-                        ),
+                    text_size + pad * 2.0,
                 );
                 painter.rect_filled(
                     badge,
@@ -154,13 +172,13 @@ impl EditorApp {
                     ),
                     egui::StrokeKind::Inside,
                 );
-                painter.text(
-                    badge.left_center() + egui::vec2(pad.x, 0.0),
-                    egui::Align2::LEFT_CENTER,
-                    label,
-                    egui::FontId::monospace(11.0),
-                    egui::Color32::from_rgb(215, 230, 245),
-                );
+                for (index, galley) in galleys.into_iter().enumerate() {
+                    painter.galley(
+                        badge.left_top() + egui::vec2(pad.x, pad.y + index as f32 * line_height),
+                        galley,
+                        color,
+                    );
+                }
             } else {
                 let text = if self.is_playing() {
                     "GAME VIEW\n(preview unavailable)"
@@ -273,6 +291,8 @@ impl EditorApp {
         };
         // Windows 逐字前缀 `\\?\` 会破坏 Lua require 的 searchpath 解析，去除后再传运行时。
         let root = strip_verbatim_prefix(&self.project.root);
+        // P3-R05-4：Play 与 Scene View 读同一份 shader 源（目录口径由 `shader_override_dir` 给）。
+        let shader_dir = self.shader_override_dir();
         PreviewSession::create(
             device,
             queue,
@@ -284,6 +304,7 @@ impl EditorApp {
             self.custom_font_atlases.clone(),
             self.scene_vector_atlas.clone(),
             self.custom_vector_atlases.clone(),
+            Some(shader_dir.as_path()),
         )
     }
 
@@ -1268,5 +1289,46 @@ mod tests {
             (0.0, 0.0),
             "指针在预览外不更新光标"
         );
+    }
+
+    /// E18：切换预览分辨率只 resize **现有** `PreviewSession`（保留运行时与渲染器），
+    /// 同尺寸重复帧不重建目标；分辨率变化时尺寸立即生效。
+    #[test]
+    fn preview_resolution_switch_reuses_the_same_session() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let root = copy_sample_project("preview-resize-reuse");
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, Some((device, queue)), LogSink::new(64));
+        app.refresh_resources();
+        app.open_scene_resource(PathBuf::from("scenes/ui_test.scene"));
+        app.play();
+        assert!(app.preview.is_some(), "play 应创建预览会话");
+        let session_before = app.preview.as_ref().unwrap() as *const PreviewSession;
+        let size_before = app.preview.as_ref().unwrap().size();
+
+        let ctx = egui::Context::default();
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(320.0, 180.0));
+        ctx.begin_pass(RawInput::default());
+        app.update_preview(&ctx, false, true, rect);
+        let _ = ctx.end_pass();
+        assert_eq!(
+            app.preview.as_ref().unwrap().size(),
+            size_before,
+            "同尺寸不应重建渲染目标"
+        );
+
+        app.preview_resolution = (640, 360);
+        ctx.begin_pass(RawInput::default());
+        app.update_preview(&ctx, false, true, rect);
+        let _ = ctx.end_pass();
+        assert_eq!(app.preview.as_ref().unwrap().size(), (640, 360));
+        assert_eq!(
+            app.preview.as_ref().unwrap() as *const PreviewSession,
+            session_before,
+            "切分辨率应复用同一 PreviewSession（不重建运行时/渲染器）"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }

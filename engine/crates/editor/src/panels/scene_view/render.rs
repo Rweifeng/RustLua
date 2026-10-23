@@ -18,6 +18,9 @@ impl EditorApp {
         self.scene_screen_texture = None;
         self.scene_screen_tex_id = None;
         self.scene_screen_cache_key = None;
+        // 失败去抖是按文本记的：不清掉，切到另一个项目里**同名同错**的坏 shader 就一句都不播了。
+        self.shader_error_shown = None;
+        self.shader_watch_due = None;
     }
 
     /// 确保 3D 场景视图的离屏渲染器存在；按视图尺寸重建纹理（M10-04）。
@@ -31,6 +34,13 @@ impl EditorApp {
             self.scene_renderer =
                 Renderer::new_offscreen(device.clone(), queue.clone(), Some(root), false, false)
                     .ok();
+            // P3-R05-4：新建的渲染器立刻接上覆盖目录，Scene View 与 Play 读同一份源。
+            // 目录为空/不存在时 `rebuilt = 0`（与内置源逐字节相同，一次重编都不做）。
+            self.attach_scene_shader_overrides();
+            // 运行时可能先于渲染器建立（2D 视图先建运行时）；渲染器一就绪就把场景环境
+            // 上传一次，避免 Scene 3D 首帧缺环境。
+            self.apply_scene_environment_settings();
+            self.sync_particle_compute();
         }
         let size_changed = self
             .scene_texture
@@ -119,6 +129,8 @@ impl EditorApp {
                     entity: entity.id,
                     name: entity.name.clone(),
                     mesh_path: entity.mesh_path.clone(),
+                    // typed 预览缓存只提取网格路径；主路径（`scene_3d_with_camera`）已带材质覆盖。
+                    material: None,
                     // 编辑器预览自己拼 drawable（没有运行时身份表）：渲染器按路径解析。
                     mesh_handle: None,
                     model,
@@ -208,12 +220,20 @@ impl EditorApp {
             vector_glyphs: Vec::new(),
             vector_segments: Vec::new(),
         };
+        let material_preview_enabled = !self.is_playing();
         let Some(renderer) = &mut self.scene_renderer else {
             return;
         };
         let Some((texture, view)) = &self.scene_texture else {
             return;
         };
+        // P3-E02：材质段的内存预览——不写盘、不改文档，只替换该路径本次渲染的解析结果。
+        // Play 期间清掉预览，避免编辑器会话漏进运行时画面。
+        if material_preview_enabled {
+            renderer.set_material_preview(self.material.preview());
+        } else {
+            renderer.set_material_preview(None);
+        }
         // WP5：编辑器视图也走统一的视图描述——3D 视图声明主视图（清屏色 + 视口），
         // 而不是让渲染器自己写死清屏色。
         // 拆分批 7：声明的主视图就是**提取时烘焙的那一份**（同一个视口烘焙一次）。
@@ -311,7 +331,62 @@ impl EditorApp {
                 tracing::warn!(target: "editor", "[scene view] 2D runtime rebuild failed: {error}");
             }
         }
+        self.apply_scene_environment_settings();
+        self.sync_particle_compute();
         self.scene_runtime_revision = revision;
+    }
+
+    /// P3-R07-1：把渲染器的 compute 能力同步给 Scene View 运行时。
+    ///
+    /// Scene View 与 Play 必须读同一份能力：两条路径判出不同落点，作者看到的就是
+    /// "编辑器里说 `no_compute`、Play 里却说 `not_wired`"这类无法解释的差别。运行时或
+    /// 渲染器缺席时不调用——那种形态下场景发射器本来就不跑。
+    pub(crate) fn sync_particle_compute(&mut self) {
+        let (Some(renderer), Some(runtime)) =
+            (self.scene_renderer.as_ref(), self.scene_runtime.as_mut())
+        else {
+            return;
+        };
+        runtime.set_particle_compute_available(renderer.compute_enabled());
+    }
+
+    /// P3-R03-4：把编辑场景声明的环境应用到 Scene View 渲染器。
+    ///
+    /// 只在运行时按 revision 重建或渲染器首次创建时调用（`ensure_scene_*` 的早退已保证），
+    /// 因此 cubemap 不会每帧重传。失败/回退原因写进 Scene View 诊断与日志，而不是静默降级。
+    pub(crate) fn apply_scene_environment_settings(&mut self) {
+        let Some(report) = self
+            .scene_runtime
+            .as_ref()
+            .and_then(RuntimeScene::environment_report)
+        else {
+            if let Some(renderer) = self.scene_renderer.as_mut() {
+                renderer.clear_environment();
+            }
+            return;
+        };
+        let (Some(renderer), Some(runtime)) =
+            (self.scene_renderer.as_mut(), self.scene_runtime.as_ref())
+        else {
+            return;
+        };
+        let applied = apply_scene_environment(renderer, runtime, &report);
+        if let Some(reason) = &applied.fallback_reason {
+            tracing::warn!(target: "editor", "[scene view] {reason}");
+        } else {
+            tracing::info!(
+                target: "editor",
+                map = %report.resolved_path,
+                face_size = report.face_size,
+                mip_count = report.mip_count,
+                ibl = applied.ibl_mode.as_str(),
+                tier = applied.tier.as_str(),
+                "[scene view] environment applied"
+            );
+        }
+        if let Some(reason) = applied.fallback_reason {
+            self.set_scene_view_diagnostic(format!("环境回退：{reason}"));
+        }
     }
 
     /// 渲染 2D 场景视图（编辑场景，匹配编辑器 pan/zoom）到离屏纹理并更新 egui 预览。

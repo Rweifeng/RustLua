@@ -1,0 +1,16 @@
+   Compiling rustlua-animation v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-animation)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.64s
+     Running unittests src\lib.rs (engine\target\debug\deps\rustlua_animation-ef7e73bd4c88d3b7.exe)
+
+running 8 tests
+test anim_edit::tests::undo_redo_follow_the_saved_snapshot_and_new_edits_clear_redo ... ok
+test anim_edit::tests::removing_the_only_keyframe_is_rejected_without_mutation ... ok
+test anim_edit::tests::header_edits_validate_against_content ... ok
+test anim_edit::tests::event_editing_keeps_time_order_and_rejects_duplicates ... ok
+test anim_edit::tests::value_kind_and_constraints_are_enforced ... ok
+test anim_edit::tests::track_add_remove_validates_path_kind_and_duplicates ... ok
+test anim_edit::tests::add_keyframe_inserts_sorted_and_undo_restores_bytes ... ok
+test anim_edit::tests::move_keyframe_reorders_and_rejects_collisions ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 47 filtered out; finished in 0.00s
+

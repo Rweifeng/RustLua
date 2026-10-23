@@ -1,8 +1,11 @@
-//! 六个内置导入器（assets 层）+ 注册表组装。
+//! 九个内置导入器（assets 层）+ 注册表组装。
 //!
 //! 每个 [`ResourceKind`] 恰好一个内置导入器：`Texture`（`image` 解码）、`Audio`（`rodio`
 //! 解码 + WAV 读头）、`LuaScript`（`mlua` 只编译不执行）、`Model`（`gltf`）、`Atlas`
-//! （纯文本）、`Font`（`ab_glyph`）。Scene/Prefab 两个导入器在 `rustlua_scene::asset_import`
+//! （纯文本）、`Font`（`ab_glyph`）、`Environment`（HDR 解码 / `.rlenv` 校验）、`Material`
+//! （`.material` 文本，用运行时同一台解析器 `rustlua_assets::mat_asset::MaterialAsset`）、
+//! `Animation`（`.anim` 文本，用 `rustlua_animation::anim_asset::AnimClip::from_text`）。
+//! Scene/Prefab 两个导入器在 `rustlua_scene::asset_import`
 //! 里（它们的校验要用 `Scene`/`Prefab` 类型），由本 crate 的
 //! [`crate::full_registry`] 装配成完整注册表。
 //!
@@ -12,9 +15,12 @@
 
 use std::path::Path;
 
+use rustlua_animation::anim_asset::AnimClip;
 use rustlua_assets::atlas_format::AtlasDefinition;
+use rustlua_assets::env_asset::EnvironmentAsset;
 use rustlua_assets::gltf_asset::GltfAsset;
 use rustlua_assets::importer::{Importer, ImporterRegistry, reject_bom, reject_empty};
+use rustlua_assets::mat_asset::MaterialAsset;
 use rustlua_assets::resource_kind::ResourceKind;
 
 struct TextureImporter;
@@ -23,6 +29,9 @@ struct ScriptImporter;
 struct ModelImporter;
 struct AtlasImporter;
 struct FontImporter;
+struct EnvironmentImporter;
+struct MaterialImporter;
+struct AnimImporter;
 
 impl Importer for TextureImporter {
     fn version(&self) -> &'static str {
@@ -128,6 +137,80 @@ impl Importer for AtlasImporter {
     }
 }
 
+impl Importer for EnvironmentImporter {
+    fn version(&self) -> &'static str {
+        "environment-1"
+    }
+    fn kind(&self) -> ResourceKind {
+        ResourceKind::Environment
+    }
+    fn extensions(&self) -> &'static [&'static str] {
+        &["rlenv", "hdr"]
+    }
+    fn validate(&self, source: &Path, bytes: &[u8]) -> Result<(), String> {
+        reject_empty(source, bytes)?;
+        let extension = source
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        if extension.eq_ignore_ascii_case("rlenv") {
+            EnvironmentAsset::decode(bytes)
+                .map_err(|error| format!("{}: 环境资产解析失败: {error}", source.display()))?;
+            return Ok(());
+        }
+        crate::environment::decode_hdr(bytes)
+            .map(|_| ())
+            .map_err(|error| format!("{}: HDR 解码失败: {error}", source.display()))
+    }
+}
+
+impl Importer for MaterialImporter {
+    fn version(&self) -> &'static str {
+        "material-1"
+    }
+    fn kind(&self) -> ResourceKind {
+        ResourceKind::Material
+    }
+    fn extensions(&self) -> &'static [&'static str] {
+        &["material"]
+    }
+    fn validate(&self, source: &Path, bytes: &[u8]) -> Result<(), String> {
+        reject_empty(source, bytes)?;
+        reject_bom(source, bytes, "材质定义")?;
+        let text = std::str::from_utf8(bytes)
+            .map_err(|error| format!("{}: 材质编码非法（需 UTF-8）: {error}", source.display()))?;
+        // 用运行时的同一台解析器（`rustlua-assets::mat_asset`）：渲染器读到的字段与导入期
+        // 校验的字段必须是同一份规则，否则资源浏览器说"导入成功"而物体在场景里悄悄坏掉。
+        MaterialAsset::from_text(source, text).map_err(|error| error.to_string())?;
+        Ok(())
+    }
+}
+
+impl Importer for AnimImporter {
+    fn version(&self) -> &'static str {
+        "anim-1"
+    }
+    fn kind(&self) -> ResourceKind {
+        ResourceKind::Animation
+    }
+    fn extensions(&self) -> &'static [&'static str] {
+        &["anim"]
+    }
+    fn validate(&self, source: &Path, bytes: &[u8]) -> Result<(), String> {
+        reject_empty(source, bytes)?;
+        reject_bom(source, bytes, "动画片段")?;
+        let text = std::str::from_utf8(bytes).map_err(|error| {
+            format!(
+                "{}: 动画片段编码非法（需 UTF-8）: {error}",
+                source.display()
+            )
+        })?;
+        // 与运行时共用 `AnimClip::from_text`：导入期放过的文件，运行时也必须读得出来。
+        AnimClip::from_text(source, text).map_err(|error| error.to_string())?;
+        Ok(())
+    }
+}
+
 impl Importer for FontImporter {
     fn version(&self) -> &'static str {
         "font-1"
@@ -146,9 +229,9 @@ impl Importer for FontImporter {
     }
 }
 
-/// 进程级的六个内置导入器注册表（**不含** Scene/Prefab）。
+/// 进程级的九个内置导入器注册表（**不含** Scene/Prefab）。
 ///
-/// 只导入普通资源（纹理/音频/脚本/模型/图集/字体）时用它；要导入 `.scene` / `.prefab`
+/// 只导入普通资源（纹理/音频/脚本/模型/图集/字体/环境/材质/动画）时用它；要导入 `.scene` / `.prefab`
 /// 必须用 [`crate::full_registry`]，否则那两类会报"不支持的资源类型"。
 #[must_use]
 pub fn builtin() -> &'static ImporterRegistry {
@@ -157,9 +240,9 @@ pub fn builtin() -> &'static ImporterRegistry {
     REGISTRY.get_or_init(|| ImporterRegistry::from_importers(&core_importers()))
 }
 
-/// 六个核心导入器，顺序固定（注册表按 kind 建索引，顺序只影响可读性）。
+/// 九个核心导入器，顺序固定（注册表按 kind 建索引，顺序只影响可读性）。
 #[must_use]
-pub fn core_importers() -> [&'static dyn Importer; 6] {
+pub fn core_importers() -> [&'static dyn Importer; 9] {
     [
         &TextureImporter,
         &AudioImporter,
@@ -167,6 +250,9 @@ pub fn core_importers() -> [&'static dyn Importer; 6] {
         &ModelImporter,
         &AtlasImporter,
         &FontImporter,
+        &EnvironmentImporter,
+        &MaterialImporter,
+        &AnimImporter,
     ]
 }
 
@@ -269,6 +355,9 @@ mod tests {
             ResourceKind::Model,
             ResourceKind::Atlas,
             ResourceKind::Font,
+            ResourceKind::Environment,
+            ResourceKind::Material,
+            ResourceKind::Animation,
         ] {
             let importer = registry.get(kind).expect("builtin importer exists");
             assert_eq!(importer.kind(), kind);
@@ -278,6 +367,108 @@ mod tests {
         assert!(registry.get(ResourceKind::Scene).is_none());
         assert!(registry.get(ResourceKind::Prefab).is_none());
         assert!(registry.get(ResourceKind::Other).is_none());
+    }
+
+    /// P3-R02 补漏：`.material` 以前只有 `ResourceKind`、没有导入器，于是示例项目里每一份
+    /// 材质都报「不支持的资源类型」。这条门钉住补上后的三件事：合法材质通过、字段/版本/贴图
+    /// 路径非法的**在导入期**就报错（诊断含路径与行号，用的是运行时那台解析器）、BOM 被拦。
+    #[test]
+    fn material_importer_validates_with_the_runtime_parser() {
+        let root = root("material");
+        let importer = builtin().get(ResourceKind::Material).unwrap();
+
+        let good = write_source(
+            &root,
+            "assets/materials/rusted.material",
+            b"version=1\nname=rusted\nmetallic=0.9\nroughness=0.2\nbase_color_texture=assets/textures/rust.png\n",
+        );
+        importer
+            .validate(&good, &fs::read(&good).unwrap())
+            .expect("合法材质必须通过导入校验");
+
+        for (bytes, expected) in [
+            ("version=1\nmetallic=banana\n", "not a number"),
+            ("metallic=0.5\n", "missing required `version=1`"),
+            ("version=2\nmetallic=0.5\n", "unsupported version"),
+            ("version=1\nfoo=1\n", "unknown field"),
+            (
+                "version=1\nbase_color_texture=../escape.png\n",
+                "invalid texture path",
+            ),
+        ] {
+            let bad = write_source(&root, "assets/materials/bad.material", bytes.as_bytes());
+            let error = importer
+                .validate(&bad, &fs::read(&bad).unwrap())
+                .expect_err("非法材质必须在导入期报错");
+            assert!(
+                error.contains(expected),
+                "源文本 `{bytes}`：诊断 `{error}` 应包含 `{expected}`"
+            );
+            assert!(
+                error.contains("bad.material: line"),
+                "诊断需含文件路径与行号: {error}"
+            );
+        }
+
+        let bom = write_source(
+            &root,
+            "assets/materials/bom.material",
+            b"\xEF\xBB\xBFversion=1\n",
+        );
+        let error = importer
+            .validate(&bom, &fs::read(&bom).unwrap())
+            .expect_err("bom material must be rejected");
+        assert!(error.contains("BOM"), "诊断需含 BOM 提示: {error}");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// P3-E01-4b：`.anim` 进入资源家族。导入器必须用运行时同一台解析器：合法片段通过，
+    /// 坏字段/缺版本/坏轨道在导入期就带文件与行号报错，BOM 被拦。否则资源浏览器会登记一个
+    /// 「导入成功」而 `AnimationPlayer` 在场景加载时读不出的片段。
+    #[test]
+    fn anim_importer_validates_with_the_runtime_parser() {
+        let root = root("anim");
+        let importer = builtin().get(ResourceKind::Animation).unwrap();
+
+        let good = write_source(
+            &root,
+            "assets/anim/spin.anim",
+            b"version=1\nname=spin\nduration=1\nlooped=false\ntrack=Transform.position;interp=linear;keys=0:0,0;1:4,0\n",
+        );
+        importer
+            .validate(&good, &fs::read(&good).unwrap())
+            .expect("合法动画片段必须通过导入校验");
+
+        for (bytes, expected) in [
+            ("version=1\nfoo=1\n", "unknown field"),
+            ("name=spin\nduration=1\n", "missing `version=1`"),
+            (
+                "version=1\nname=spin\nduration=1\ntrack=Bogus.position;interp=linear;keys=0:0,0\n",
+                "unsupported track path",
+            ),
+        ] {
+            let bad = write_source(&root, "assets/anim/bad.anim", bytes.as_bytes());
+            let error = importer
+                .validate(&bad, &fs::read(&bad).unwrap())
+                .expect_err("非法动画片段必须在导入期报错");
+            assert!(
+                error.contains(expected),
+                "源文本 `{bytes}`：诊断 `{error}` 应包含 `{expected}`"
+            );
+            assert!(
+                error.contains("bad.anim: line"),
+                "诊断需含文件路径与行号: {error}"
+            );
+        }
+
+        let bom = write_source(&root, "assets/anim/bom.anim", b"\xEF\xBB\xBFversion=1\n");
+        let error = importer
+            .validate(&bom, &fs::read(&bom).unwrap())
+            .expect_err("bom anim must be rejected");
+        assert!(error.contains("BOM"), "诊断需含 BOM 提示: {error}");
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -567,6 +758,47 @@ mod tests {
         assert_eq!(summary.total, 1);
         assert!(summary.results.is_empty(), "cancelled before any import");
         assert_eq!(db.get(id).unwrap().status, ResourceState::Discovered);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// P3-R03-4：导入 `.hdr` 必须顺带烘出运行时真正读取的同名 `.rlenv`。
+    ///
+    /// 组件串里作者写的是 `.hdr` 源文件，但 `RuntimeScene` 读的是 `.rlenv`；只有离线工具
+    /// 会烘焙的话，设计者把 `.hdr` 丢进编辑器就会得到"读取 xxx.rlenv 失败"。
+    #[test]
+    fn batch_import_of_hdr_bakes_the_runtime_rlenv_sidecar() {
+        let root = root("hdr-bake");
+        let pixels = vec![[1.0_f32, 0.5, 0.25]; 8 * 4];
+        let image = crate::environment::HdrImage::new(8, 4, pixels).expect("hdr image");
+        let hdr = crate::environment::encode_radiance(&image);
+        let source = write_source(&root, "assets/env/test.hdr", &hdr);
+        let product = root.join("assets/env/test.rlenv");
+        assert!(!product.exists(), "导入前不该已经存在产物");
+
+        let mut db = ResourceDatabase::open(&root).unwrap();
+        let id = db
+            .register(
+                "assets/env/test.hdr",
+                ResourceKind::Environment,
+                "environment-1",
+            )
+            .unwrap();
+        let mut cache = ImportCache::open(&root).unwrap();
+        let cancel = AtomicBool::new(false);
+        let items = vec![(id, source.clone())];
+        let summary = run_import_batch(&root, &mut db, &mut cache, builtin(), &items, &cancel);
+        assert_eq!(summary.failed, 0, "{:?}", summary.results);
+        assert_eq!(db.get(id).unwrap().status, ResourceState::Ready);
+
+        let baked = fs::read(&product).expect("导入 .hdr 必须烘出同名 .rlenv");
+        let asset = EnvironmentAsset::decode(&baked).expect("产物必须是合法 .rlenv");
+        assert_eq!(asset.face_size, crate::environment::DEFAULT_FACE_SIZE);
+        assert_eq!(asset.mip_count(), crate::environment::DEFAULT_MIP_COUNT);
+
+        // 再跑一次（缓存命中也一样）：产物必须逐字节不变，不能被反复重写。
+        let again = run_import_batch(&root, &mut db, &mut cache, builtin(), &items, &cancel);
+        assert_eq!(again.failed, 0, "{:?}", again.results);
+        assert_eq!(fs::read(&product).expect("second read"), baked);
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -712,6 +712,37 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    /// P3-E01-4b：`.anim` 是资源浏览器里的**一等行**——不是 Other，也不是「不支持的资源类型」；
+    /// 它进待导入队列（编辑器会跑真实导入器校验），并被场景里的 `AnimationPlayer clip=`
+    /// 引用成依赖边（提取规则见 `rustlua_assets::dependency`）。
+    #[test]
+    fn anim_files_are_first_class_resources() {
+        let root = temp_root("anim-asset");
+        file(
+            &root,
+            "assets/anim/spin.anim",
+            b"version=1\nname=spin\nduration=1\nlooped=false\ntrack=Transform.position;interp=linear;keys=0:0,0;1:4,0\n",
+        );
+        let mut browser = ResourceBrowserState::new();
+        browser.refresh(&root).unwrap();
+
+        let anim = browser
+            .entries()
+            .iter()
+            .find(|entry| entry.path_string() == "assets/anim/spin.anim")
+            .expect(".anim must be registered");
+        assert_eq!(anim.kind, ResourceKind::Animation);
+        assert!(anim.asset_id.is_some(), "资源库必须为 .anim 建记录");
+        assert!(
+            browser
+                .pending_imports()
+                .iter()
+                .any(|(_, path)| path == &PathBuf::from("assets/anim/spin.anim")),
+            "未导入的 .anim 要进待导入队列，编辑器才会跑导入器校验"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
     /// 批 E（`docs/63`）：图集在资源浏览器里是一行**真资产**，并且
     /// `scene → atlas → texture` 两级边参与失效传导；`#区域名` 后缀不参与建边。
     #[test]

@@ -2,8 +2,34 @@
 //! 状态的真相在 `EditorApp::scene_view` 里，这里只做读写编排。
 
 use super::*;
+use rustlua_render::render_settings::{IblMode, IblTier};
+
+/// P3-R03-4：3D 场景视图状态行的 IBL 读数（计划 §6.4「场景视图显示当前 tier」）。
+///
+/// 纯函数：面板每帧拿渲染器的实际档位与场景的环境声明拼这一小段文字，测试不需要 GPU。
+fn ibl_status_label(mode: IblMode, tier: IblTier, has_environment: bool) -> String {
+    if !has_environment {
+        return format!("环境未声明 · Tier {}", tier.as_str());
+    }
+    format!("IBL {}（Tier {}）", mode.as_str(), tier.as_str())
+}
 
 impl EditorApp {
+    /// P3-R03-4：Scene View 状态行要显示的那段 IBL/tier 文字；渲染器还没建好时不显示。
+    pub(crate) fn scene_view_ibl_label(&self) -> Option<String> {
+        let renderer = self.scene_renderer.as_ref()?;
+        let has_environment = self
+            .scene_runtime
+            .as_ref()
+            .and_then(RuntimeScene::environment_report)
+            .is_some();
+        Some(ibl_status_label(
+            renderer.ibl_mode(),
+            renderer.ibl_tier(),
+            has_environment,
+        ))
+    }
+
     /// 诊断提示（`pub(crate)`：拖拽/框选的提交层在 `crate::scene_drag` 里也要报诊断）。
     pub(crate) fn set_scene_view_diagnostic(&mut self, message: impl Into<String>) {
         let message = message.into();
@@ -80,6 +106,33 @@ pub(crate) fn log_scene_view_frame(started: std::time::Instant, size: (u32, u32)
             elapsed.as_millis(),
             size.0,
             size.1
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ibl_status_label;
+    use rustlua_render::render_settings::{IblMode, IblTier};
+
+    #[test]
+    fn status_row_reports_mode_and_device_tier() {
+        assert_eq!(
+            ibl_status_label(IblMode::Full, IblTier::A, true),
+            "IBL full（Tier A）"
+        );
+        assert_eq!(
+            ibl_status_label(IblMode::Diffuse, IblTier::C, true),
+            "IBL diffuse（Tier C）"
+        );
+    }
+
+    /// 没有环境声明时模式必然是 off，状态行要说清「是场景没环境」而不是「设备不行」。
+    #[test]
+    fn status_row_distinguishes_missing_environment_from_a_disabled_tier() {
+        assert_eq!(
+            ibl_status_label(IblMode::Off, IblTier::A, false),
+            "环境未声明 · Tier A"
         );
     }
 }

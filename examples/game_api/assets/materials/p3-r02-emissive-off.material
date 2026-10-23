@@ -1,0 +1,6 @@
+version=1
+name=p3-r02-emissive-off
+base_color=0.08,0.08,0.08,1
+metallic=0
+roughness=1
+emissive=0,0,0

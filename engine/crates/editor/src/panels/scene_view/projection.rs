@@ -2,6 +2,7 @@
 //! 这些都是纯函数，`tests` 里用"手写映射"逐点对照。
 
 use super::*;
+use rustlua_ui::ui_layout::CanvasConfig;
 
 impl EditorApp {
     /// 编辑器取景相机：面板的 pan/zoom 决定姿态，投影参数固定（fov 60°、near 0.1、far 200）。
@@ -131,6 +132,52 @@ pub(crate) fn design_rect_to_panel(
     let min = scene_view_world_to_panel(panel, pan, zoom, ppp, Vec2::new(world_x, world_y));
     let size = egui::vec2(size[0] * zoom / ppp, size[1] * zoom / ppp);
     egui::Rect::from_min_size(min, size)
+}
+
+/// E18：`CanvasConfig.safe_area`（预览像素 insets）在设计框内的面板矩形。
+/// 先按设计分辨率走 `CanvasConfig::safe_rect` 钳制（极端 insets 退化为零尺寸），
+/// 再与设计框共用同一套设计像素 → 面板变换。四边全 0 时返回 `None`——
+/// 安全区就是整块画布，再画一圈只会和设计框重叠。
+pub(crate) fn design_safe_frame(
+    panel: egui::Rect,
+    pan: egui::Vec2,
+    zoom: f32,
+    ppp: f32,
+    center: egui::Vec2,
+    design: (u32, u32),
+    config: &CanvasConfig,
+) -> Option<egui::Rect> {
+    if config.safe_area.iter().all(|inset| *inset == 0.0) {
+        return None;
+    }
+    let safe = config.safe_rect([design.0 as f32, design.1 as f32]);
+    Some(design_rect_to_panel(
+        panel,
+        pan,
+        zoom,
+        ppp,
+        center,
+        design,
+        [safe.x, safe.y],
+        [safe.w, safe.h],
+    ))
+}
+
+/// 设计框被面板裁掉的部分（设计像素，左/上/右/下）。
+/// `zoom` 与设计框同口径（物理像素/设计像素）；框完整落在面板内时四边均为 0。
+pub(crate) fn design_frame_crop(
+    panel: egui::Rect,
+    frame: egui::Rect,
+    zoom: f32,
+    ppp: f32,
+) -> [f32; 4] {
+    let design_per_point = ppp.max(1.0e-3) / zoom.max(1.0e-3);
+    [
+        ((panel.left() - frame.left()) * design_per_point).max(0.0),
+        ((panel.top() - frame.top()) * design_per_point).max(0.0),
+        ((frame.right() - panel.right()) * design_per_point).max(0.0),
+        ((frame.bottom() - panel.bottom()) * design_per_point).max(0.0),
+    ]
 }
 
 /// 5b：面板逻辑坐标 → 设计分辨率像素（`design_rect_to_panel` 的逆）。

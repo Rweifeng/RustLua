@@ -1,0 +1,61 @@
+{
+  "adapter": {
+    "backend": "Dx12",
+    "name": "Microsoft Basic Render Driver"
+  },
+  "capabilities": {
+    "backend": "external",
+    "compute": true,
+    "max_compute_workgroup_size": [
+      256,
+      256,
+      64
+    ],
+    "max_storage_buffer_binding_size": 134217728
+  },
+  "report_version": "wp0-gpu-particles-50k-v1",
+  "scene": "renderer-level 50k GPU particle burst vs CPU particle emission (fixed seed/dt)",
+  "semantic": {
+    "buffer_stable": true,
+    "capacity": 50000,
+    "content_pixels": 578,
+    "count": 50000,
+    "cpu_emit_ms": 6.284560000000001,
+    "cpu_frame_ms": 6.67238,
+    "cpu_live": 50000,
+    "cpu_side_gate": true,
+    "cpu_side_ratio": 0.05505531759282294,
+    "cpu_step_ms": 0.38782,
+    "default_mode": "cpu",
+    "default_mode_reason": "总帧时间未优于 CPU 档（gpu_wall=220.322 ms vs cpu_frame=6.672 ms，ratio=33.020）；本机是 WARP（Microsoft Basic Render Driver），总帧读数不代表真实 GPU，保留 cpu 默认档",
+    "delta_seconds": 0.01666666753590107,
+    "draw_calls": 1,
+    "dropped_draws": 0,
+    "fallback": "none",
+    "frames": 10,
+    "gpu_alive": 50000,
+    "gpu_cpu_frame_ms": 0.36734999999999995,
+    "gpu_dispatch_ms": 0.17529,
+    "gpu_draw_ms": 0.19205999999999998,
+    "gpu_wall_ms": 220.32228,
+    "instances": 50000,
+    "memory_budget_bytes": 16777216,
+    "memory_ok": true,
+    "mode": "gpu",
+    "non_finite": 0,
+    "particle_buffer_bytes": 2400064,
+    "seed": 11400714819323198485,
+    "spawned": 50000,
+    "state_bytes": 2400000,
+    "steps": 12,
+    "total_gate": false,
+    "total_ratio": 33.020043822444165,
+    "triangles": 100000,
+    "vertices": 200000,
+    "warmup_frames": 2
+  },
+  "target": {
+    "height": 256,
+    "width": 256
+  }
+}

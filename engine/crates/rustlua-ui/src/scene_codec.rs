@@ -13,7 +13,7 @@ use rustlua_component_codec::ComponentCodec;
 use crate::ui::UiImage;
 use crate::ui::UiText;
 use crate::ui_events::UiEvents;
-use crate::ui_layout::{ContainerStyle, UiRectLayout};
+use crate::ui_layout::{ContainerStyle, LayoutItem, UiRectLayout};
 use crate::ui_states::ButtonStateSet;
 use crate::world_text::WorldText;
 
@@ -25,6 +25,11 @@ fn validate_layout(value: &str) -> Result<(), String> {
 /// `Container`：容器样式（方向/间距/对齐/内边距）。
 fn validate_container(value: &str) -> Result<(), String> {
     ContainerStyle::from_component_str(value).map(|_| ())
+}
+
+/// `LayoutItem`：容器子项约束（min/max/preferred/percent/grow/shrink/align/aspect/visible）。
+fn validate_layout_item(value: &str) -> Result<(), String> {
+    LayoutItem::from_component_str(value).map(|_| ())
 }
 
 /// `Text`：文字 + 字号 + 颜色 + 可选自定义字体。资源路径 = `font`（非空时）。
@@ -88,6 +93,7 @@ fn world_text_assets(value: &str) -> Vec<String> {
 
 static LAYOUT: ComponentCodec = ComponentCodec::new("UiLayout", validate_layout);
 static CONTAINER: ComponentCodec = ComponentCodec::new("Container", validate_container);
+static LAYOUT_ITEM: ComponentCodec = ComponentCodec::new("LayoutItem", validate_layout_item);
 static TEXT: ComponentCodec = ComponentCodec::new("Text", validate_text).with_assets(text_assets);
 static IMAGE: ComponentCodec =
     ComponentCodec::new("Image", validate_image).with_assets(image_assets);
@@ -96,12 +102,13 @@ static BUTTON_STATES: ComponentCodec = ComponentCodec::new("ButtonStates", valid
 static WORLD_TEXT: ComponentCodec =
     ComponentCodec::new("WorldText", validate_world_text).with_assets(world_text_assets);
 
-/// 本 crate 负责的七个组件 codec。组合根把它们与 `rustlua_render::scene_codecs()` 一起装表。
+/// 本 crate 负责的八个组件 codec。组合根把它们与 `rustlua_render::scene_codecs()` 一起装表。
 #[must_use]
 pub fn scene_codecs() -> &'static [&'static ComponentCodec] {
-    static CODECS: [&ComponentCodec; 7] = [
+    static CODECS: [&ComponentCodec; 8] = [
         &LAYOUT,
         &CONTAINER,
+        &LAYOUT_ITEM,
         &TEXT,
         &IMAGE,
         &EVENTS,
@@ -123,6 +130,7 @@ mod tests {
             vec![
                 "UiLayout",
                 "Container",
+                "LayoutItem",
                 "Text",
                 "Image",
                 "UiEvents",
@@ -147,6 +155,12 @@ mod tests {
                 .validate("texture=assets/ui/panel.png;color=1,1,1,1")
                 .is_ok()
         );
+        assert!(
+            LAYOUT_ITEM
+                .validate("grow=1;size_percent=50,0;visible=true")
+                .is_ok()
+        );
+        assert!(LAYOUT_ITEM.validate("aspect_ratio=-1").is_err());
         assert!(EVENTS.validate("event=click;function=on_click").is_ok());
         assert!(EVENTS.validate("event=bogus;function=f").is_err());
         assert!(
@@ -180,6 +194,7 @@ mod tests {
             vec!["assets/ui/panel.png".to_owned()]
         );
         assert!(CONTAINER.asset_paths("kind=hbox;spacing=8").is_empty());
+        assert!(LAYOUT_ITEM.asset_paths("grow=1;visible=true").is_empty());
         assert_eq!(
             WORLD_TEXT.asset_paths("text=HP;font_size=16;font=assets/fonts/My.ttf"),
             vec!["assets/fonts/My.ttf".to_owned()]

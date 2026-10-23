@@ -212,7 +212,8 @@ fn scene_declared_camera_bounds_refresh_after_scene_switch() {
 /// 固定步顺序必须与原手工编排一致：
 /// input_apply → lua_update → ui_click_dispatch → physics2d → physics3d →
 /// particles → clock → scene_transition；帧级系统每调用一次：
-/// integrate_velocity → animation_state_advance → animation3d_advance。
+/// integrate_velocity → animation_state_advance → animation3d_advance →
+/// animation_player_advance。
 #[test]
 fn builtin_pipeline_preserves_legacy_stage_order() {
     let mut runtime = sample_runtime();
@@ -282,6 +283,7 @@ fn builtin_pipeline_preserves_legacy_stage_order() {
             "camera2d_controller",
             "animation_state_advance",
             "animation3d_advance",
+            "animation_player_advance",
             "spatial_propagate",
         ]
     );
@@ -310,6 +312,7 @@ fn schedule_report_collects_steps_and_timings() {
         "integrate_velocity",
         "animation_state_advance",
         "animation3d_advance",
+        "animation_player_advance",
     ] {
         assert!(names.contains(&expected), "missing timing: {expected}");
     }

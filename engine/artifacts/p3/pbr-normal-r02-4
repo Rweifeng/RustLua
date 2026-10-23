@@ -1,0 +1,209 @@
+{
+  "camera": [
+    0.0,
+    3.5,
+    6.5
+  ],
+  "checks": {
+    "degenerate_tangents_fall_back": true,
+    "legacy_shader_ignores_normal_map": true,
+    "normal_map_is_sampled": true,
+    "normal_scale_is_applied": true,
+    "occlusion_is_sampled": true,
+    "uv_only_baseline_matches": true
+  },
+  "degenerate_normal": [
+    [
+      135,
+      135,
+      135
+    ],
+    [
+      135,
+      135,
+      135
+    ],
+    [
+      135,
+      135,
+      135
+    ],
+    [
+      135,
+      135,
+      135
+    ]
+  ],
+  "degenerate_off": [
+    [
+      135,
+      135,
+      135
+    ],
+    [
+      135,
+      135,
+      135
+    ],
+    [
+      135,
+      135,
+      135
+    ],
+    [
+      135,
+      135,
+      135
+    ]
+  ],
+  "draw_calls": 2,
+  "height": 360,
+  "light_direction": [
+    0.800000011920929,
+    -0.3499999940395355,
+    0.20000000298023224
+  ],
+  "max_channel_delta": {
+    "degenerate_normal_vs_off": 0,
+    "legacy_normal_on_vs_off": 0,
+    "no_map_uv_baseline": 0,
+    "normal_on_vs_off": 32,
+    "normal_scale_zero_vs_off": 0,
+    "occlusion_on_vs_off": 36
+  },
+  "normal": [
+    [
+      135,
+      135,
+      135
+    ],
+    [
+      135,
+      135,
+      135
+    ],
+    [
+      103,
+      103,
+      103
+    ],
+    [
+      103,
+      103,
+      103
+    ]
+  ],
+  "normal_off": [
+    [
+      135,
+      135,
+      135
+    ],
+    [
+      135,
+      135,
+      135
+    ],
+    [
+      135,
+      135,
+      135
+    ],
+    [
+      135,
+      135,
+      135
+    ]
+  ],
+  "normal_scale_zero": [
+    [
+      135,
+      135,
+      135
+    ],
+    [
+      135,
+      135,
+      135
+    ],
+    [
+      135,
+      135,
+      135
+    ],
+    [
+      135,
+      135,
+      135
+    ]
+  ],
+  "occlusion": [
+    [
+      135,
+      135,
+      135
+    ],
+    [
+      135,
+      135,
+      135
+    ],
+    [
+      99,
+      99,
+      99
+    ],
+    [
+      99,
+      99,
+      99
+    ]
+  ],
+  "occlusion_off": [
+    [
+      135,
+      135,
+      135
+    ],
+    [
+      135,
+      135,
+      135
+    ],
+    [
+      135,
+      135,
+      135
+    ],
+    [
+      135,
+      135,
+      135
+    ]
+  ],
+  "report_version": "wp0-pbr-normal-golden-v1",
+  "sample_points": [
+    [
+      -1.5,
+      0.0,
+      -0.5
+    ],
+    [
+      -1.5,
+      0.0,
+      0.5
+    ],
+    [
+      1.5,
+      0.0,
+      -0.5
+    ],
+    [
+      1.5,
+      0.0,
+      0.5
+    ]
+  ],
+  "scene": "UV quad + normal/occlusion .material overrides",
+  "width": 640
+}

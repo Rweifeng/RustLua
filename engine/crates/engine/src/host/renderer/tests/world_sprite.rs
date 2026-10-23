@@ -251,6 +251,7 @@ fn world_sprites_and_meshes_occlude_each_other_in_one_view() {
             entity: rustlua_scene::scene::SceneEntityId(1),
             name: "Ground".to_owned(),
             mesh_path: GROUND_PLANE_SENTINEL.to_owned(),
+            material: None,
             // 测试手写场景：给一个本地句柄即可（渲染器只把它当缓存键）。
             mesh_handle: Some(AssetHandle::new(0, 1)),
             model: mesh_model,

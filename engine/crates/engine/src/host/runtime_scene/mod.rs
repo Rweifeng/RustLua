@@ -18,6 +18,7 @@ use rustlua_camera::camera::Camera3D;
 use rustlua_camera::camera::{Camera2D, RenderView, Viewport};
 use rustlua_ecs::entity::EntityId;
 use rustlua_ecs::hierarchy::SpatialReport;
+use rustlua_ecs::particle::{ParticleCpuReason, ParticlePlacement};
 use rustlua_ecs::scheduler::{ScheduleReport, Scheduler, SystemTiming};
 use rustlua_ecs::tilemap::Tilemap;
 use rustlua_ecs::transform::{Transform, Vec2};
@@ -39,6 +40,7 @@ use crate::host::frame::{
 use crate::host::gamepad::{GamepadBackend, GamepadDeadzone, GamepadPoller};
 
 mod camera;
+mod environment;
 mod fonts;
 mod frame_data;
 mod mesh_ui;
@@ -59,6 +61,9 @@ pub use fonts::{
     load_project_vector_atlas,
 };
 // 编辑器 Play 期间的层级同步要用它列出脚本运行期生成的实体（见 `RuntimeScene::runtime_spawned_entities`）。
+pub use environment::{
+    EnvironmentApplyReport, EnvironmentReport, RuntimeSceneEnvironment, apply_to_renderer,
+};
 pub use scene::RuntimeSpawnedEntity;
 
 /// 本帧的 3D 视图（相机拆分批 8）：`vertices()` **定帧**时解析一次、烘焙一次，同一帧的消费方
@@ -152,6 +157,8 @@ pub struct RuntimeScene {
     pub(crate) render_ui_overlay: bool,
     /// 项目根目录（纹理路径解析用，与渲染器 `project_root.join(path)` 一致）。
     pub(crate) project_root: Option<PathBuf>,
+    /// P3-R03-4：场景 `Environment` 组件的加载结果（没有声明时为 `None`）。
+    pub(crate) environment: Option<environment::RuntimeSceneEnvironment>,
     /// 九宫格 UV 计算用的纹理像素尺寸缓存（惰性、按 path）。
     pub(crate) texture_dims: HashMap<String, (u32, u32)>,
     pub(crate) texture_paths: Vec<String>,
@@ -262,6 +269,21 @@ pub struct RuntimeScene {
     pub(crate) world_sprite_depth: bool,
     /// docs/54 §8-①：最近一步由**场景声明的发射器**发出的粒子个数（诊断与验收用）。
     pub(crate) last_scene_emission: usize,
+    /// P3-R07-1：渲染器有没有 compute 能力（宿主拿到渲染器时告知一次）。
+    ///
+    /// 默认 `false`：没人接线时，`mode=gpu` 的发射器只是按"设备没有 compute"回 CPU，
+    /// 报告不会谎称 GPU 已生效。
+    pub(crate) particle_compute_available: bool,
+    /// P3-R07-1：最近一步场景发射器的落点分布（诊断与验收用；不参与玩法）。
+    pub(crate) last_particle_placement: ParticlePlacementReport,
+    /// P3-R07-2：最近一次 GPU burst 派发的结果（诊断与验收用；不参与玩法）。
+    pub(crate) last_particle_dispatch: ParticleDispatchReport,
+    /// P3-R07-2：自上次派发以来，"入队了但宿主没来取"而被倒回 CPU 池的 burst 数。
+    pub(crate) particle_deferred: usize,
+    /// 已经就哪些回退原因喊过一层的位图（`ParticleCpuReason::index` 为位）。
+    /// 按原因去重而不是"只喊一次"：同一步里一个 `continuous_rate` 加一个 `no_compute`
+    /// 会逐帧交替出现，"上次原因"式的去重会每帧刷屏。
+    pub(crate) particle_warned: u32,
     /// WP7：最近一步 `physics_sync` 同步的刚体数 `(2D, 3D)`。0 表示这一步没做步前同步
     /// （默认 authority=Physics，或回滚档 `Legacy`）——因此它同时也是"回滚档真的生效"的证据。
     pub(crate) last_physics_sync: (usize, usize),
@@ -279,6 +301,76 @@ pub struct RuntimeScene {
     /// 用 `Cell` 是因为 `scene_3d` 是 `&self`（编辑器与宿主都只借用），而它同样要记这个数。
     /// 语义与 `take_script_micros` 一致：**取走即清空**。
     pub(crate) view_filtered: std::cell::Cell<usize>,
+}
+
+/// P3-R07-1：一步里**场景声明的发射器**的落点分布（诊断/验收用，不参与玩法）。
+///
+/// 语义边界：`gpu` 一侧的粒子只活在显存里，Lua 与玩法**读不到**它们的位置。R07-1 只交付
+/// 落点判定与回退标记，GPU 派发在 R07-2 —— 所以本步的 `gpu` 恒为 0，`cpu` 是"照旧在 CPU
+/// 上发射"的真实计数（含回退、含尚未接线的 gpu 请求）。字段按 R07-2 的形状一次定好，
+/// 避免那时再改一遍所有读它的测试与报告。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ParticlePlacementReport {
+    /// 本步在 CPU 侧发射的发射器数（每个都真的发了粒子）。
+    pub cpu: usize,
+    /// 本步真的由 GPU 模拟的发射器数（R07-1 = 0）。
+    pub gpu: usize,
+    /// 作者声明了 `mode=gpu` 的发射器数（无论最终落在哪侧）。
+    pub gpu_requested: usize,
+    /// 本步第一个回退原因（`None` = 没有"要了 gpu 却跑 cpu"）。
+    pub fallback: Option<ParticleCpuReason>,
+    /// 本步出现过的**全部**回退原因位图（`ParticleCpuReason::index` 为位）。
+    /// 单靠 `fallback` 会漏掉同一步里的另一种原因，逐原因去重的日志因此要用它。
+    pub fallback_bits: u32,
+}
+
+impl ParticlePlacementReport {
+    /// 记一个发射器的判定结果。
+    fn record(&mut self, placement: ParticlePlacement) {
+        // R07-2 之前没有派发通道：判定为 `Gpu` 的发射器照旧在 CPU 池发射，原因记 not_wired。
+        let effective = match placement {
+            ParticlePlacement::Gpu => ParticleCpuReason::NotWired,
+            ParticlePlacement::Cpu(reason) => reason,
+        };
+        self.cpu += 1;
+        if effective != ParticleCpuReason::Requested {
+            self.gpu_requested += 1;
+        }
+        if effective.is_fallback() {
+            self.fallback.get_or_insert(effective);
+            self.fallback_bits |= 1 << effective.index();
+        }
+    }
+}
+
+/// P3-R07-2：一次 **burst 派发通道**的结果（诊断/验收用，不参与玩法）。
+///
+/// 为什么场景发射器的报告（[`ParticlePlacementReport`]）不够用：发射器按 `rate` 连续发射，
+/// 而 compute 侧只实现了一次性 burst，所以场景发射器恒定回退 `continuous_rate`——它测不出
+/// 派发通道本身通不通。通道的一端是脚本/宿主的 `mode=gpu` burst（Lua `particles.burst`），
+/// 另一端是渲染器的 GPU 粒子池，本结构就是这两端之间的账。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ParticleDispatchReport {
+    /// 本次从脚本侧取到的 GPU burst 条数（含随后被拒的）。
+    pub requested: usize,
+    /// 渲染器**真的收下**的条数（保守口径：收下才加一）。
+    pub gpu: usize,
+    /// 退回 CPU 池的条数（能力缺失 / 参数不支持 / 池预算 / dispatch 失败）。
+    pub fallback: usize,
+    /// 上一次派发之后没被宿主取走、在本帧开头倒回 CPU 池的条数（`not_wired` 的实证）。
+    pub deferred: usize,
+    /// 脚本侧队列满、当场落 CPU 的累计次数增量。
+    pub overflow: usize,
+    /// 本次第一个回退原因（`None` = 全留在 GPU 或全在 CPU 池外）。
+    pub fallback_reason: Option<ParticleCpuReason>,
+    /// 派发并步进之后仍在 GPU 池里的系统数。
+    pub systems: usize,
+    /// 本次步进回收（寿命走完）的系统数。
+    pub recycled: usize,
+    /// GPU 侧累计步进次数（池里最老的系统）。
+    pub steps: u64,
+    /// GPU 池里的粒子总数（`read_gpu_particles` 的槽位数口径）。
+    pub gpu_particles: usize,
 }
 
 /// WP7 阶段顺序（回滚档）。
@@ -501,15 +593,18 @@ fn build_ui_scene_nodes(scene: &Scene, honor_editor_hidden: bool) -> BTreeMap<u6
         }
         id_to_key.insert(entity.id.0, id_to_key.len() as u64);
     }
-    rustlua_ui::ui_scene_layout::build_ui_scene_nodes(scene.entities.values().filter_map(
-        |entity| {
+    rustlua_ui::ui_scene_layout::build_ui_scene_nodes_with_intrinsic(
+        scene.entities.values().filter_map(|entity| {
             Some(UiSceneNodeSource {
                 key: *id_to_key.get(&entity.id.0)?,
                 parent: entity.parent.and_then(|id| id_to_key.get(&id.0)).copied(),
                 components: &entity.components,
             })
+        }),
+        &mut |text, scale| {
+            rustlua_render::text::measure_builtin_text(text, scale).map(|(size, _)| size)
         },
-    ))
+    )
 }
 
 fn startup_scene_path(project_root: &Path) -> String {

@@ -30,13 +30,14 @@ fn installing_the_render_and_ui_tables_enables_sprite_and_text() {
     assert!(component_codec::is_installed());
     assert_eq!(
         component_codec::global().len(),
-        12,
-        "渲染层 5 个 + UI 层 7 个 = 12"
+        14,
+        "渲染层 6 个 + UI 层 8 个 = 14"
     );
 
     let scene = scene_with(&[
         ("Sprite", "texture=assets/hero.png;size=8x8"),
         ("Text", "text=Hello;font_size=24;font=assets/fonts/My.ttf"),
+        ("LayoutItem", "grow=1;visible=true"),
     ]);
     let typed = TypedScene::compile_v2(&scene).expect("装表后应能编译");
 
@@ -60,4 +61,12 @@ fn installing_the_render_and_ui_tables_enables_sprite_and_text() {
         panic!("Text 应编译成 Opaque 组件");
     };
     assert_eq!(assets, &vec![("assets/fonts/My.ttf".to_owned(), None)]);
+
+    // E05-2/E05-4：`LayoutItem` 是运行时认识的容器子项组件，不再是"未知组件"。
+    let Some(TypedComponent::Opaque { payload, .. }) =
+        typed.entities[0].components.get(&ComponentId::LayoutItem)
+    else {
+        panic!("LayoutItem 应编译成 Opaque 组件");
+    };
+    assert_eq!(payload, "grow=1;visible=true");
 }

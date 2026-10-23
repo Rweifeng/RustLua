@@ -13,7 +13,7 @@
 //! 跑场景校验的 examples/tests。不编译场景的进程（纯运行时帧循环）不调也行：
 //! 它读的是 ECS 里的类型化组件，不是字符串。
 
-/// 装一次表现层组件 codec 表（渲染层 5 个 + UI 层 7 个 = 12 个）。
+/// 装一次表现层组件 codec 表（渲染层 6 个 + UI 层 8 个 = 14 个）。
 ///
 /// 幂等：已经装过（或别的入口先装了）就返回 `false`，不报错。**不要**用它来检测"是不是我装的"
 /// ——需要那个语义时用 `rustlua_scene::component_codec::is_installed()`。
@@ -40,8 +40,8 @@ mod tests {
         assert!(rustlua_scene::component_codec::is_installed());
         assert_eq!(
             rustlua_scene::component_codec::global().len(),
-            12,
-            "渲染层 5 个 + UI 层 7 个 = 12"
+            14,
+            "渲染层 6 个 + UI 层 8 个 = 14"
         );
     }
 

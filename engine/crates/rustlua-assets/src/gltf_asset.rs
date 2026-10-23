@@ -5,7 +5,7 @@ use std::path::Path;
 use rustlua_infra::pack;
 use rustlua_math::math3d::Vec3;
 
-pub const IMPORTER_VERSION: &str = "gltf-m8-07";
+pub const IMPORTER_VERSION: &str = "gltf-p3-r02-2";
 
 /// Identity matrix used for absent inverse bind matrices.
 const IDENTITY_MAT4: [[f32; 4]; 4] = [
@@ -36,6 +36,8 @@ pub struct GltfPrimitive {
     pub positions: Vec<Vec3>,
     pub normals: Vec<Vec3>,
     pub texcoords: Vec<[f32; 2]>,
+    /// Authored TANGENT vectors (xyz + handedness in w); empty when absent.
+    pub tangents: Vec<[f32; 4]>,
     pub indices: Vec<u32>,
     pub material: Option<usize>,
     /// Skinned vertex bone indices (JOINTS_0); empty when the mesh is static.
@@ -97,6 +99,13 @@ pub struct GltfTextureImage {
     pub rgba: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GltfAlphaMode {
+    Opaque,
+    Mask,
+    Blend,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct GltfMaterial {
     pub name: Option<String>,
@@ -106,6 +115,21 @@ pub struct GltfMaterial {
     pub base_color_image: Option<GltfTextureImage>,
     pub metallic_factor: f32,
     pub roughness_factor: f32,
+    pub metallic_roughness_texture: Option<usize>,
+    pub metallic_roughness_image: Option<GltfTextureImage>,
+    pub normal_texture: Option<usize>,
+    pub normal_image: Option<GltfTextureImage>,
+    pub normal_scale: f32,
+    pub occlusion_texture: Option<usize>,
+    pub occlusion_image: Option<GltfTextureImage>,
+    pub occlusion_strength: f32,
+    pub emissive_texture: Option<usize>,
+    pub emissive_image: Option<GltfTextureImage>,
+    pub emissive_factor: [f32; 3],
+    pub emissive_strength: f32,
+    pub alpha_mode: GltfAlphaMode,
+    pub alpha_cutoff: f32,
+    pub double_sided: bool,
 }
 
 impl GltfAsset {
@@ -132,21 +156,51 @@ impl GltfAsset {
                 reason: error.to_string(),
             })?
         };
+        let decode_image = |texture: gltf::texture::Texture<'_>| -> Option<GltfTextureImage> {
+            let image_index = texture.source().index();
+            let image = images.get(image_index)?;
+            Some(GltfTextureImage {
+                width: image.width,
+                height: image.height,
+                rgba: image.pixels.clone(),
+            })
+        };
         let materials = document
             .materials()
             .map(|material| {
                 let pbr = material.pbr_metallic_roughness();
+                let base_color_info = pbr.base_color_texture();
                 let base_color_texture =
-                    pbr.base_color_texture().map(|info| info.texture().index());
-                let base_color_image = base_color_texture.and_then(|tex_index| {
-                    let image_index = document.textures().nth(tex_index)?.source().index();
-                    let image = images.get(image_index)?;
-                    Some(GltfTextureImage {
-                        width: image.width,
-                        height: image.height,
-                        rgba: image.pixels.clone(),
-                    })
-                });
+                    base_color_info.as_ref().map(|info| info.texture().index());
+                let base_color_image = base_color_info
+                    .as_ref()
+                    .and_then(|info| decode_image(info.texture()));
+                let mr_info = pbr.metallic_roughness_texture();
+                let metallic_roughness_texture =
+                    mr_info.as_ref().map(|info| info.texture().index());
+                let metallic_roughness_image = mr_info
+                    .as_ref()
+                    .and_then(|info| decode_image(info.texture()));
+                let normal = material.normal_texture();
+                let normal_texture = normal.as_ref().map(|info| info.texture().index());
+                let normal_image = normal
+                    .as_ref()
+                    .and_then(|info| decode_image(info.texture()));
+                let occlusion = material.occlusion_texture();
+                let occlusion_texture = occlusion.as_ref().map(|info| info.texture().index());
+                let occlusion_image = occlusion
+                    .as_ref()
+                    .and_then(|info| decode_image(info.texture()));
+                let emissive_info = material.emissive_texture();
+                let emissive_texture = emissive_info.as_ref().map(|info| info.texture().index());
+                let emissive_image = emissive_info
+                    .as_ref()
+                    .and_then(|info| decode_image(info.texture()));
+                let alpha_mode = match material.alpha_mode() {
+                    gltf::material::AlphaMode::Opaque => GltfAlphaMode::Opaque,
+                    gltf::material::AlphaMode::Mask => GltfAlphaMode::Mask,
+                    gltf::material::AlphaMode::Blend => GltfAlphaMode::Blend,
+                };
                 GltfMaterial {
                     name: material.name().map(str::to_owned),
                     base_color_factor: pbr.base_color_factor(),
@@ -154,6 +208,21 @@ impl GltfAsset {
                     base_color_image,
                     metallic_factor: pbr.metallic_factor(),
                     roughness_factor: pbr.roughness_factor(),
+                    metallic_roughness_texture,
+                    metallic_roughness_image,
+                    normal_texture,
+                    normal_image,
+                    normal_scale: normal.as_ref().map_or(1.0, |info| info.scale()),
+                    occlusion_texture,
+                    occlusion_image,
+                    occlusion_strength: occlusion.as_ref().map_or(1.0, |info| info.strength()),
+                    emissive_texture,
+                    emissive_image,
+                    emissive_factor: material.emissive_factor(),
+                    emissive_strength: material.emissive_strength().unwrap_or(1.0),
+                    alpha_mode,
+                    alpha_cutoff: material.alpha_cutoff().unwrap_or(0.5),
+                    double_sided: material.double_sided(),
                 }
             })
             .collect();
@@ -211,6 +280,26 @@ impl GltfAsset {
                         detail: "TEXCOORD_0 count differs from POSITION count".to_owned(),
                     });
                 }
+                let tangents: Vec<[f32; 4]> = reader
+                    .read_tangents()
+                    .map(|values| values.collect())
+                    .unwrap_or_default();
+                if !tangents.is_empty() && tangents.len() != positions.len() {
+                    return Err(GltfAssetError::InvalidMesh {
+                        path: path.display().to_string(),
+                        detail: "TANGENT count differs from POSITION count".to_owned(),
+                    });
+                }
+                if tangents
+                    .iter()
+                    .flatten()
+                    .any(|component| !component.is_finite())
+                {
+                    return Err(GltfAssetError::InvalidMesh {
+                        path: path.display().to_string(),
+                        detail: "TANGENT contains non-finite components".to_owned(),
+                    });
+                }
                 let indices: Vec<u32> = reader
                     .read_indices()
                     .map(|values| values.into_u32().collect())
@@ -251,6 +340,7 @@ impl GltfAsset {
                     positions,
                     normals,
                     texcoords,
+                    tangents,
                     indices,
                     material: primitive.material().index(),
                     joints,
@@ -496,6 +586,51 @@ mod tests {
         assert_eq!(primitive.weights.len(), 4);
         assert_eq!(primitive.joints[1], [0, 1, 0, 0]);
         assert_eq!(primitive.weights[1], [0.0, 1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn imports_pbr_material_with_tangents_orm_emissive_and_alpha() {
+        let path =
+            rustlua_infra::games_dir().join("examples/game_api/assets/models/p3-r02-material.gltf");
+        let asset = GltfAsset::load(path).expect("P3-R02-3 fixture must import");
+        let primitive = &asset.meshes[0].primitives[0];
+        assert_eq!(primitive.tangents, vec![[1.0, 0.0, 0.0, -1.0]; 4]);
+        assert_eq!(primitive.texcoords.len(), 4);
+        let material = &asset.materials[0];
+        assert_eq!(material.base_color_factor, [0.9, 0.8, 0.7, 0.6]);
+        assert_eq!(material.metallic_factor, 0.8);
+        assert_eq!(material.roughness_factor, 0.4);
+        assert_eq!(material.normal_scale, 0.5);
+        assert_eq!(material.occlusion_strength, 0.7);
+        assert_eq!(material.emissive_factor, [1.0, 0.4, 0.0]);
+        assert_eq!(material.emissive_strength, 3.0);
+        assert_eq!(material.alpha_mode, GltfAlphaMode::Mask);
+        assert_eq!(material.alpha_cutoff, 0.25);
+        assert!(material.double_sided);
+        assert_eq!(
+            (
+                material.base_color_texture,
+                material.metallic_roughness_texture,
+                material.normal_texture,
+                material.occlusion_texture,
+                material.emissive_texture,
+            ),
+            (Some(0), Some(1), Some(2), Some(3), Some(4))
+        );
+        for (image, size) in [
+            (&material.base_color_image, (8, 8)),
+            // 复用 R02-2 的 4x4 ORM 图，证明不同尺寸的贴图各自独立解码。
+            (&material.metallic_roughness_image, (4, 4)),
+            (&material.normal_image, (8, 8)),
+            (&material.occlusion_image, (8, 8)),
+            (&material.emissive_image, (8, 8)),
+        ] {
+            let image = image.as_ref().expect("decoded fixture texture");
+            assert_eq!((image.width, image.height), size);
+        }
+        // 基色贴图右半 alpha=64：蒙版模式下可断言导入保留了 alpha 通道。
+        let base = material.base_color_image.as_ref().unwrap();
+        assert_eq!(base.rgba[4 * 4 + 3], 64);
     }
 
     #[test]

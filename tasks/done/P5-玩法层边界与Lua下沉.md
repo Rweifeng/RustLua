@@ -2,15 +2,15 @@
 
 - 任务 ID：P5-00（总包；子项 P5-01 … P5-05）
 - 状态：**P5-01/P5-02 已落地、P5-05 文档已回写（ADR-0017 待单独确认）；P5-03/P5-04 未触发，
-  不排期（2026-10-21）**。2026-10-22 全量 `verify.ps1` 在隔离树通过；因主树转入 P3-R01，
-  P5 改动仍在 `stash@{0}`，恢复方式见 §11 环境备注③。落地读数与门见本文末「实现记录」
-  「验收证据」；§2 的旧读数已按 P1 收口后的工作树复核。
+  不排期（2026-10-21）**。2026-10-22 全量 `verify.ps1` 在隔离树通过；2026-10-23 收口归档，
+  P5 已提交 `main`（`7ef0eebe` + `24442fef`，未推送），不再位于 `stash@{0}`。落地读数与门见
+  本文末「实现记录」「验收证据」；§2 的旧读数已按 P1 收口后的工作树复核。
 - 关联：[docs/62 成熟引擎差距分析](../../docs/62-成熟引擎差距分析.md) §6、
   [docs/18 Lua API](../../docs/18-lua-api.md)、
   [docs/19 Lua 热重载](../../docs/19-lua-hot-reload.md)、
   [docs/02 ADR-0017](../../docs/02-technical-decisions.md)、
   [P1 降耦合收口](../done/P1-降耦合收口.md)（前置：同一批文件在途）、
-  [P3 渲染与编辑器能力](P3-渲染与编辑器能力.md)、[P4 性能与测试度量](P4-性能与测试度量.md)
+  [P3 渲染与编辑器能力](../plan/P3-渲染与编辑器能力.md)、[P4 性能与测试度量](P4-性能与测试度量.md)
 - 创建日期：2026-10-20
 - 基线：`b7958560`（2026-10-20）+ **未提交工作树**（P1 ⑤ 在途）。本文只新增计划文件，
   不改代码、不碰在途改动
@@ -455,10 +455,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\scripts\verify\verify.ps1
       本机 mingw64 git 在 PATH 缺 `C:\Program Files\Git\bin`（`sh.exe`）时 hook 直接
       “cannot spawn .pre-commit”，把该目录加回 PATH 即绿。两条都**与本任务无关**，
       记录以免复跑时误归因。
-- [ ] **环境备注③**：2026-10-22 GitHub Desktop 把整棵未提交工作树存入 `stash@{0}`
+- [x] **环境备注③（已解除）**：2026-10-22 GitHub Desktop 把整棵未提交工作树存入 `stash@{0}`
       （含 P5 全部改动与 P2 的 `docs/69`、`scripts/release/*`），主树转入 P3-R01。
-      P5 的全量验收在隔离树 `E:\RustLua-p5-verify` 完成；恢复时**按路径**从 stash 取
-      P5 文件（不要整条 pop，避免夹带 P2 文件并与 P3-R01 冲突），隔离树可作对照。
+      P5 的全量验收在隔离树 `E:\RustLua-p5-verify` 完成；2026-10-23 已按路径取回并提交 `main`
+      （`7ef0eebe` + `24442fef`）。**不要整条 pop `stash@{0}`**（会夹带 P2 文件并与 P3-R01
+      冲突）；隔离树与补丁仅作历史证据。
 
 ---
 
@@ -542,3 +543,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ..\scripts\verify\verify.ps1
       （`demo_gameplay.lua` 真实调用 `calendar.configure`，7×3 越界被拒后恢复 28×4）
 - [x] 注释符合 [章程 §9.7 代码与注释规范](../../docs/00-project-charter.md)（精简中文）
 - [x] 文档与 CHANGELOG 已更新
+
+## 归档记录（2026-10-23）
+
+- 归档性质：**收口归档**（非“主树验收通过”）。P5-01/P5-02/P5-05 文档已落地；
+  P5-03/P5-04 按 §7 未触发、不排期，不是欠账。
+- 已入库：`7ef0eebe feat(p5): 收口玩法层边界与日历体裁参数化`（17 文件）与
+  `24442fef fix(p5): 恢复被 P5 提交覆盖的 M75 文档条目`；`main` ahead 2，**未推送**。
+- 验收来源：隔离树 `E:\RustLua-p5-verify`（detached `5f1b0533` + P5 补丁）2026-10-22 全量
+  `verify.ps1` exit 0、`-Quick` exit 0（日志见「验收证据」）。**主树 HEAD 未复跑全量门**，
+  归档时工作树由 P3-R02 占用，当前工作树读数不能当作 P5 读数。
+- 隔离树绿门的两处非 P5 修复（M75 rustdoc 链接、AI 基线 CRLF 检出）不随 P5 交付；其中
+  `rustlua-editor-ai/src/provider.rs` 的 rustdoc 修复在归档时仍只在工作树未提交。
+- 未收口项（只登记，不另开包）：
+  1. **ADR-0017 修订未落盘**：§9 修订稿待用户单独确认；2026-10-23 用户裁定“先归档，ADR 待办”，
+     `docs/02` 仍为旧口径。
+  2. P5-03/P5-04 未触发：仍只有一个体裁工程；API 面 42 模块 / 296 函数（< 50 / < 350）。
+  3. `container`/`interact`/`tag` 只标废弃未删除，需 v0.2 兼容窗口。
+  4. `jhyt_m29_season_weather` 的 docs/48 资产普查外部红（1065→1066），不是 P5 回归。
+  5. P5 两笔提交未推送到远端。

@@ -1,0 +1,6 @@
+version=1
+name=p3-r02-shadow-blend
+base_color=0.8,0.2,0.2,0.75
+metallic=0
+roughness=0.6
+alpha_mode=blend

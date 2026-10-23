@@ -1,0 +1,37 @@
+{
+  "adapter": {
+    "backend": "Dx12",
+    "name": "Microsoft Basic Render Driver"
+  },
+  "capabilities": {
+    "compute": true,
+    "max_compute_invocations_per_workgroup": 256,
+    "max_compute_workgroup_size": [
+      256,
+      256,
+      64
+    ],
+    "max_compute_workgroups_per_dimension": 65535,
+    "max_storage_buffer_binding_size": 134217728,
+    "storage_buffers": true
+  },
+  "gates": {
+    "disabled_dispatch_unsupported": true,
+    "disabled_readback_unsupported": true,
+    "float_max_abs_error": 0.0,
+    "float_tolerance": 1e-6,
+    "int_exact_mismatches": 0,
+    "second_dispatch_bind_group_created": false,
+    "second_dispatch_pipeline_compiled": false,
+    "slots": 256,
+    "workgroup_size": 64
+  },
+  "report_version": "wp0-compute-readback-v1",
+  "stats": {
+    "bind_group_cache_hits": 1,
+    "bind_group_creates": 1,
+    "dispatches": 2,
+    "pipeline_cache_hits": 1,
+    "pipeline_compiles": 1
+  }
+}

@@ -46,9 +46,13 @@ pub enum ComponentId {
     /// 唯一的相机组件（`Camera` 里带显式投影分支）。
     Camera,
     Light,
+    /// P3-R03-4：场景级环境光照（附着实体不参与空间语义）。
+    Environment,
     MeshRenderer,
     UiLayout,
     Container,
+    /// P3-E05-2：容器子项约束（`LayoutItem`），运行时布局与编辑器共用同一文法。
+    LayoutItem,
     Text,
     Image,
     UiEvents,
@@ -84,9 +88,11 @@ impl ComponentId {
         Self::Transform,
         Self::Camera,
         Self::Light,
+        Self::Environment,
         Self::MeshRenderer,
         Self::UiLayout,
         Self::Container,
+        Self::LayoutItem,
         Self::Text,
         Self::Image,
         Self::UiEvents,
@@ -111,9 +117,11 @@ impl ComponentId {
             Self::Transform => "Transform",
             Self::Camera => rustlua_camera::camera::CAMERA_COMPONENT,
             Self::Light => "Light",
+            Self::Environment => "Environment",
             Self::MeshRenderer => "MeshRenderer",
             Self::UiLayout => "UiLayout",
             Self::Container => "Container",
+            Self::LayoutItem => "LayoutItem",
             Self::Text => "Text",
             Self::Image => "Image",
             Self::UiEvents => "UiEvents",
@@ -200,6 +208,7 @@ pub struct TypedSceneDiagnostic {
 fn component_id_for_opaque(name: &str) -> Option<ComponentId> {
     Some(match name {
         "Light" => ComponentId::Light,
+        "Environment" => ComponentId::Environment,
         "MeshRenderer" => ComponentId::MeshRenderer,
         "Sprite" => ComponentId::Sprite,
         // docs/54 §4.3：Quad 与 `Sprite` 是两个独立组件，不是一个槽的两种写法——
@@ -210,6 +219,7 @@ fn component_id_for_opaque(name: &str) -> Option<ComponentId> {
         "RenderMode" => ComponentId::RenderMode,
         "UiLayout" => ComponentId::UiLayout,
         "Container" => ComponentId::Container,
+        "LayoutItem" => ComponentId::LayoutItem,
         "Text" => ComponentId::Text,
         "Image" => ComponentId::Image,
         "UiEvents" => ComponentId::UiEvents,
@@ -584,6 +594,11 @@ mod tests {
             "kind=vbox;padding=0,0,0,0;spacing=4;columns=1;stretch=true;fill=false;align=center",
             ComponentId::Container,
         ),
+        (
+            "LayoutItem",
+            "grow=1;shrink=1;visible=true",
+            ComponentId::LayoutItem,
+        ),
         ("Text", "text=Hello;font_size=24", ComponentId::Text),
         (
             "Image",
@@ -951,6 +966,7 @@ mod tests {
             ("Collider", "shape=ball"),
             ("UiLayout", "anchors=2,0,0,0"),
             ("Container", "kind=unknown"),
+            ("LayoutItem", "visible=maybe"),
             ("Text", "text=Hi;font_size=0"),
             ("UiEvents", "event=bogus;function=f"),
             ("ButtonStates", "bad=1"),

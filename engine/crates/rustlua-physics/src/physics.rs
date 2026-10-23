@@ -391,6 +391,9 @@ pub struct PhysicsWorld {
     entity_bodies: HashMap<EntityId, RigidBodyHandle>,
     collider_entities: HashMap<ColliderHandle, EntityId>,
     contacts: Vec<PhysicsContact>,
+    /// E03-3：与 `contacts` 同时写入、独立消费，供实体 `on_collision` 分发；
+    /// 不抢 Lua `physics.events()` 的那一份。
+    event_contacts: Vec<PhysicsContact>,
     moved: Vec<(EntityId, Vec2)>,
 }
 
@@ -414,6 +417,7 @@ impl Default for PhysicsWorld {
             entity_bodies: HashMap::new(),
             collider_entities: HashMap::new(),
             contacts: Vec::new(),
+            event_contacts: Vec::new(),
             moved: Vec::new(),
         }
     }
@@ -812,11 +816,13 @@ impl PhysicsWorld {
                 self.collider_entities.get(&a).copied(),
                 self.collider_entities.get(&b).copied(),
             ) {
-                self.contacts.push(PhysicsContact {
+                let contact = PhysicsContact {
                     a: entity_a,
                     b: entity_b,
                     started,
-                });
+                };
+                self.contacts.push(contact);
+                self.event_contacts.push(contact);
             }
         }
         self.moved.clear();
@@ -835,6 +841,11 @@ impl PhysicsWorld {
     /// Drains the collision contacts collected since the last call.
     pub fn drain_contacts(&mut self) -> Vec<PhysicsContact> {
         std::mem::take(&mut self.contacts)
+    }
+
+    /// E03-3：取走本帧给实体脚本的碰撞事件（与 `drain_contacts` 互不影响）。
+    pub fn drain_event_contacts(&mut self) -> Vec<PhysicsContact> {
+        std::mem::take(&mut self.event_contacts)
     }
 }
 

@@ -15,6 +15,7 @@ members = [
     "crates/rustlua-component-codec",
     "crates/rustlua-ecs",
     "crates/rustlua-editor-ai",
+    "crates/rustlua-editor-api",
     "crates/rustlua-frame-abi",
     "crates/rustlua-gameplay",
     "crates/rustlua-infra",
@@ -25,6 +26,7 @@ members = [
     "crates/rustlua-render",
     "crates/rustlua-scene",
     "crates/rustlua-scripting",
+    "crates/rustlua-visual-script",
     "crates/rustlua-ui",
     "crates/wasm-lua-spike",
 ]
@@ -68,6 +70,7 @@ rustlua-input = { path = "crates/rustlua-input" }
 rustlua-lua-api = { path = "crates/rustlua-lua-api" }
 rustlua-gameplay = { path = "crates/rustlua-gameplay" }
 rustlua-scripting = { path = "crates/rustlua-scripting" }
+rustlua-visual-script = { path = "crates/rustlua-visual-script" }
 rustlua-infra = { path = "crates/rustlua-infra" }
 # P2 follow-up：关闭 eframe 默认启用的 accesskit（会拉入 Linux-only 的
 # accesskit_unix -> atspi -> zbus 5 链，RustSec 已把 zbus_names/zvariant/zvariant_derive
@@ -78,7 +81,7 @@ eframe = { version = "0.33", default-features = false, features = ["wgpu", "glow
 # `serde` feature（阶段 2）：DockState 本身带 serde derive，布局树直接落 layout.json；
 # 代价是同时打开 egui/serde。
 egui_dock = { version = "=0.18.0", features = ["serde"] }
-gltf = { version = "1.4", features = ["import"] }
+gltf = { version = "1.4", features = ["import", "KHR_materials_emissive_strength"] }
 bytemuck = { version = "1", features = ["derive"] }
 tracing = "0.1"
 tracing-appender = "0.2"

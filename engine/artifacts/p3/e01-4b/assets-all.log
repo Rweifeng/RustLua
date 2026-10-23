@@ -1,0 +1,99 @@
+   Compiling rustlua-assets v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-assets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.86s
+     Running unittests src\lib.rs (engine\target\debug\deps\rustlua_assets-f0c3fe3f8875c961.exe)
+
+running 85 tests
+test asset_handle::tests::release_is_idempotent_and_ignores_stale_handles ... ok
+test asset_handle::tests::intern_is_idempotent_and_stable_across_calls ... ok
+test asset_handle::tests::released_handles_go_stale_and_never_alias_the_reused_slot ... ok
+test asset_handle::tests::entries_are_sorted_by_handle ... ok
+test atlas_format::tests::duplicate_region_name_last_wins ... ok
+test atlas_format::tests::skips_comments_and_blank_lines ... ok
+test dependency::tests::atlas_texture_field_is_the_only_edge ... ok
+test atlas_format::tests::roundtrip_is_deterministic_and_sorted ... ok
+test dependency::tests::comment_aware_scan ... ok
+test dependency::tests::comment_only_when_hash_leads_the_line ... ok
+test atlas_format::tests::rejects_missing_and_malformed_records ... ok
+test dependency::tests::cycle_detection_reports_chain ... ok
+test dependency::tests::dedupe_preserves_order ... ok
+test dependency::tests::cycle_error_preserved_when_ready ... ok
+test dependency::tests::excludes_ground_plane ... ok
+test dependency::tests::lua_asset_paths ... ok
+test dependency::tests::lua_require_modules ... ok
+test dependency::tests::lua_scene_load_fallback_literal_is_a_real_edge ... ok
+test dependency::tests::lua_scene_load_literal_only ... ok
+test dependency::tests::module_and_scene_names_become_package_paths ... ok
+test dependency::tests::path_call_args_are_literal_or_unresolved ... ok
+test dependency::tests::prefab_uses_same_format ... ok
+test dependency::tests::propagate_chain_a_to_c ... ok
+test dependency::tests::propagate_cycle_terminates ... ok
+test dependency::tests::propagate_import_failed_dep_invalidates ... ok
+test dependency::tests::propagate_missing_dep_invalidates_consumer ... ok
+test dependency::tests::propagate_restore_revokes_invalid ... ok
+test dependency::tests::propagate_self_missing_keeps_missing ... ok
+test dependency::tests::propagate_stale_dep_marks_stale ... ok
+test dependency::tests::recompute_edges_material_points_at_texture_lines ... ok
+test dependency::tests::recompute_edges_chains_scene_atlas_texture ... ok
+test dependency::tests::recompute_edges_reads_sources_and_writes_graph ... ok
+test dependency::tests::region_suffix_is_dropped_when_building_edges ... ok
+test dependency::tests::recompute_edges_reports_unresolved ... ok
+test dependency::tests::resolve_asset_and_report_unresolved ... ok
+test dependency::tests::resolve_self_cycle_excluded ... ok
+test dependency::tests::scene_comment_lines_do_not_produce_refs ... ok
+test dependency::tests::scene_refs_sprite_image_animation_tilemap_mesh ... ok
+test env_asset::tests::decode_rejects_truncation_and_trailing_bytes ... ok
+test env_asset::tests::decode_rejects_bad_magic_version_and_checksum ... ok
+test env_asset::tests::encode_rejects_mismatched_shape_and_negative_texels ... ok
+test env_asset::tests::encoding_is_byte_deterministic ... ok
+test env_asset::tests::f16_helpers_match_known_values_and_roundtrip ... ok
+test env_asset::tests::sh_irradiance_of_constant_environment_is_one ... ok
+test env_asset::tests::roundtrip_preserves_header_sh_and_mips ... ok
+test gltf_asset::tests::imports_cc0_kaykit_warrior_skin_and_animations ... ok
+test gltf_asset::tests::imports_skinned_animated_quad ... ok
+test gltf_asset::tests::loads_self_authored_glb_mesh ... ok
+test hash::tests::different_bytes_produce_different_hash ... ok
+test hash::tests::hash_is_stable_hex_string ... ok
+test hash::tests::same_bytes_produce_same_hash ... ok
+test mat_asset::tests::gltf_material_maps_orm_emissive_alpha_and_textures ... ok
+test mat_asset::tests::material_text_defaults_match_gltf_when_fields_are_omitted ... ok
+test mat_asset::tests::material_text_parser_round_trips_every_field ... ok
+test mat_asset::tests::material_text_rejects_bad_versions_fields_paths_and_values ... ok
+test resource_db::tests::consumers_of_reports_dependents ... ok
+test resource_db::tests::duplicate_registration_is_idempotent ... ok
+test resource_db::tests::duplicate_registration_refreshes_kind_and_version ... ok
+test resource_db::tests::id_round_trips ... ok
+test resource_db::tests::find_by_path_ci_falls_back_on_case ... ok
+test resource_db::tests::iter_returns_all_records ... ok
+test resource_db::tests::mark_ready_records_hash_and_clears_error ... ok
+test resource_db::tests::move_preserves_identity_and_remove_reports_dependents ... ok
+test resource_db::tests::reconcile_changed_invalid_becomes_stale ... ok
+test resource_db::tests::reconcile_normalizes_backslash_scan_paths ... ok
+test resource_db::tests::reconcile_marks_out_of_scope_as_orphaned ... ok
+test resource_db::tests::reconcile_tracks_add_change_delete_and_restore ... ok
+test resource_kind::tests::extension_matching_is_case_insensitive ... ok
+test resource_kind::tests::labels_are_non_empty ... ok
+test resource_kind::tests::maps_full_extension_table ... ok
+test resource_kind::tests::token_round_trips ... ok
+test rltex::tests::encode_rejects_size_mismatch ... ok
+test resource_kind::tests::unknown_and_unsupported_extensions_fall_to_other ... ok
+test rltex::tests::header_is_exactly_sixteen_bytes ... ok
+test rltex::tests::rejects_bad_input_loudly ... ok
+test rltex::tests::roundtrip_preserves_pixels ... ok
+test gltf_asset::tests::imports_pbr_material_with_tangents_orm_emissive_and_alpha ... ok
+test gltf_asset::tests::rejects_invalid_glb_with_path_context ... ok
+test resource_db::tests::rejects_v1_database ... ok
+test resource_db::tests::invalid_state_persists_roundtrip ... ok
+test resource_db::tests::concurrent_saves_on_the_same_database_both_succeed ... ok
+test resource_db::tests::unsupported_schema_version_is_rejected ... ok
+test resource_db::tests::persistence_keeps_failed_state_and_metadata ... ok
+test resource_db::tests::open_recoverable_quarantines_corrupt_database ... ok
+test resource_db::tests::transient_states_fall_back_on_save ... ok
+
+test result: ok. 85 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests rustlua_assets
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

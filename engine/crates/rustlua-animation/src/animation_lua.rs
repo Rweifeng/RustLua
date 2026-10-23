@@ -9,6 +9,7 @@
 //! 让调用方拿到指向死句柄的事件。
 
 use crate::animation::{AnimationFrameEvent, AnimationStateMachine};
+use crate::animation_player::{AnimationPlayer, AnimationPlayerEvent};
 use crate::animation3d::Animation3D;
 use mlua::Lua;
 use mlua::Result as LuaResult;
@@ -18,9 +19,14 @@ use rustlua_lua_api::{Handle, api_error};
 use std::cell::{Ref, RefMut};
 
 /// 动画域里"跨帧的脚本可见状态"：本帧触发、尚未被脚本取走的帧事件。
+///
+/// 两套事件队列彼此独立：`events` 属于旧 `Animation` 状态机（帧号），`player_events` 属于
+/// `AnimationPlayer`（`.anim` 时间线上的命名事件，带秒数）。合成一条队列会让脚本拿错
+/// `frame`/`time` 语义，因此分开存放、分开取走。
 #[derive(Debug, Default)]
 pub struct AnimationState {
     events: Vec<(EntityId, AnimationFrameEvent)>,
+    player_events: Vec<(EntityId, AnimationPlayerEvent)>,
 }
 
 impl AnimationState {
@@ -39,6 +45,15 @@ impl AnimationState {
         std::mem::take(&mut self.events)
     }
 
+    /// `AnimationPlayer` 的命名事件，同样的"取走即清"语义。
+    pub fn push_player_events(&mut self, events: Vec<(EntityId, AnimationPlayerEvent)>) {
+        self.player_events.extend(events);
+    }
+
+    pub fn take_player_events(&mut self) -> Vec<(EntityId, AnimationPlayerEvent)> {
+        std::mem::take(&mut self.player_events)
+    }
+
     #[must_use]
     pub fn pending_len(&self) -> usize {
         self.events.len()
@@ -46,6 +61,7 @@ impl AnimationState {
 
     pub fn clear_for_scene_transition(&mut self) {
         self.events.clear();
+        self.player_events.clear();
     }
 }
 
@@ -74,6 +90,10 @@ impl Bindings {
 
     fn take_events(&self) -> LuaResult<Vec<(EntityId, AnimationFrameEvent)>> {
         Ok(self.state.borrow_mut()?.take_events())
+    }
+
+    fn take_player_events(&self) -> LuaResult<Vec<(EntityId, AnimationPlayerEvent)>> {
+        Ok(self.state.borrow_mut()?.take_player_events())
     }
 }
 
@@ -250,6 +270,94 @@ pub fn install(lua: &Lua, state: &Handle<AnimationState>, world: &Handle<World>)
             Ok(machine.time())
         })?,
     )?;
+    // P3-E01-2：`AnimationPlayer`（`.anim` 时间线）的播放控制。与旧状态机的
+    // `animation.set` 不同，这里操作的是**时刻**而不是命名状态；实体没有 player 时报
+    // "no animation player"，与 `animation.get` 的 "no animation" 区分开。
+    let s = Bindings::new(world, state);
+    animation.set(
+        "play",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = &s;
+            require_alive(state, id)?;
+            let mut world = state.world_mut()?;
+            let player = world
+                .get_mut::<AnimationPlayer>(id)
+                .map_err(world_error)?
+                .ok_or_else(|| api_error("entity has no animation player"))?;
+            player.set_playing(true);
+            Ok(true)
+        })?,
+    )?;
+    let s = Bindings::new(world, state);
+    animation.set(
+        "pause",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = &s;
+            require_alive(state, id)?;
+            let mut world = state.world_mut()?;
+            let player = world
+                .get_mut::<AnimationPlayer>(id)
+                .map_err(world_error)?
+                .ok_or_else(|| api_error("entity has no animation player"))?;
+            player.set_playing(false);
+            Ok(true)
+        })?,
+    )?;
+    let s = Bindings::new(world, state);
+    animation.set(
+        "stop",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let state = &s;
+            require_alive(state, id)?;
+            let mut world = state.world_mut()?;
+            let player = world
+                .get_mut::<AnimationPlayer>(id)
+                .map_err(world_error)?
+                .ok_or_else(|| api_error("entity has no animation player"))?;
+            player.stop();
+            Ok(true)
+        })?,
+    )?;
+    let s = Bindings::new(world, state);
+    animation.set(
+        "seek",
+        lua.create_function(move |_, (id, seconds): (i64, f64)| {
+            let id = entity_from_lua(id)?;
+            let state = &s;
+            require_alive(state, id)?;
+            let mut world = state.world_mut()?;
+            let player = world
+                .get_mut::<AnimationPlayer>(id)
+                .map_err(world_error)?
+                .ok_or_else(|| api_error("entity has no animation player"))?;
+            player
+                .seek(seconds as f32)
+                .map_err(|error| api_error(error.to_string()))?;
+            Ok(true)
+        })?,
+    )?;
+    // 与 `animation.events()` 相同的"取走即清"；条目多一个 `time`（秒），因为 `.anim`
+    // 的命名事件落在时间轴上，不折算成帧号。
+    let s = Bindings::new(world, state);
+    animation.set(
+        "player_events",
+        lua.create_function(move |lua, ()| {
+            let state = &s;
+            let events = state.take_player_events()?;
+            let result = lua.create_table()?;
+            for (index, (id, event)) in events.into_iter().enumerate() {
+                let entry = lua.create_table()?;
+                entry.set("entity", entity_to_lua(id))?;
+                entry.set("name", event.name)?;
+                entry.set("time", event.time)?;
+                result.set(index + 1, entry)?;
+            }
+            Ok(result)
+        })?,
+    )?;
     lua.globals().set("animation", animation)?;
     // WP4：世界空间文字运行期挂载。与 `animation.attach` 同理——`entity.spawn` 只插
     // Transform，运行期创建的实体（伤害数字、名牌）否则无法带世界文字。
@@ -361,7 +469,7 @@ pub fn install(lua: &Lua, state: &Handle<AnimationState>, world: &Handle<World>)
 mod tests {
     use super::*;
 
-    /// 两张表合计 14 个函数，一个不少。
+    /// 两张表合计 19 个函数，一个不少（14 个旧绑定 + 5 个 `AnimationPlayer`）。
     #[test]
     fn every_animation_function_is_installed() {
         let lua = Lua::new();
@@ -373,7 +481,7 @@ mod tests {
             let table: mlua::Table = lua.globals().get(table).unwrap();
             total += table.pairs::<mlua::Value, mlua::Value>().count();
         }
-        assert_eq!(total, 14, "animation + animation3d 合计 14 个函数");
+        assert_eq!(total, 19, "animation + animation3d 合计 19 个函数");
     }
 
     /// 宿主塞进来的帧事件，脚本取一次就空（一次性队列的语义）。
@@ -399,6 +507,46 @@ mod tests {
         assert_eq!(second.raw_len(), 0, "取走即清，不能再读一次");
     }
 
+    /// 玩家事件与旧帧事件是两条独立队列：各自的取走不会清掉对方。
+    #[test]
+    fn player_events_have_their_own_queue() {
+        let lua = Lua::new();
+        let state = AnimationState::handle();
+        let world = Handle::new(World::new(), "world");
+        install(&lua, &state, &world).unwrap();
+        let id = world.with_mut(|world| world.spawn());
+        state.with_mut(|state| {
+            state.push_events(vec![(
+                id,
+                AnimationFrameEvent {
+                    frame: 3,
+                    name: "hit".into(),
+                },
+            )]);
+            state.push_player_events(vec![(
+                id,
+                AnimationPlayerEvent {
+                    time: 0.5,
+                    name: "footstep".into(),
+                },
+            )]);
+        });
+        let players: mlua::Table = lua.load("return animation.player_events()").eval().unwrap();
+        assert_eq!(players.raw_len(), 1);
+        assert_eq!(
+            players
+                .get::<mlua::Table>(1)
+                .unwrap()
+                .get::<f32>("time")
+                .unwrap(),
+            0.5
+        );
+        let frames: mlua::Table = lua.load("return animation.events()").eval().unwrap();
+        assert_eq!(frames.raw_len(), 1, "取走 player 事件不影响帧事件");
+        let empty: mlua::Table = lua.load("return animation.player_events()").eval().unwrap();
+        assert_eq!(empty.raw_len(), 0);
+    }
+
     /// 死实体在碰到组件之前就被拒（错误串点名实体 id）。
     #[test]
     fn dead_entity_is_rejected_before_touching_the_world() {
@@ -411,6 +559,8 @@ mod tests {
             format!("return animation.get({dead})"),
             format!("return animation.set({dead}, 'idle', 'loop')"),
             format!("return animation3d.list({dead})"),
+            format!("return animation.play({dead})"),
+            format!("return animation.seek({dead}, 0.5)"),
         ] {
             let message = lua
                 .load(call)

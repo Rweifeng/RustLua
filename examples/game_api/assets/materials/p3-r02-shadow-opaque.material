@@ -1,0 +1,5 @@
+version=1
+name=p3-r02-shadow-opaque
+base_color=0.8,0.8,0.8,1
+metallic=0
+roughness=0.6

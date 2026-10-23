@@ -1,0 +1,45 @@
+   Compiling rustlua-visual-script v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-visual-script)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.24s
+     Running unittests src\lib.rs (engine\target\debug\deps\rustlua_visual_script-83a42c984d5fc009.exe)
+
+running 6 tests
+test registry::tests::every_event_output_has_a_lua_binding ... ok
+test codegen::tests::numbers_and_strings_are_quoted_for_lua ... ok
+test registry::tests::registry_has_unique_kinds_and_at_least_one_event_per_kind ... ok
+test graph::tests::unknown_version_is_rejected_before_semantic_checks ... ok
+test graph::tests::unknown_fields_are_parse_errors_with_line_numbers ... ok
+test graph::tests::json_round_trip_keeps_ids_positions_params_and_variables ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\vgraph.rs (engine\target\debug\deps\vgraph-87e23f65786d594d.exe)
+
+running 12 tests
+test duplicate_and_missing_events_are_rejected ... ok
+test data_cycle_is_rejected ... ok
+test type_mismatch_is_rejected ... ok
+test missing_required_input_and_unknown_node_type_are_rejected ... ok
+test flow_fanout_and_duplicate_input_edges_are_rejected ... ok
+test duplicate_ids_and_sanitized_collisions_are_rejected ... ok
+test dangling_edges_and_unknown_ports_are_rejected ... ok
+test variables_are_validated_even_though_v1_has_no_get_set_nodes ... ok
+test generated_variables_are_derived_from_stable_node_ids_and_are_deterministic ... ok
+test flow_cycles_need_a_gate_or_sequence_guard ... ok
+test random_and_all_action_calls_are_generated ... FAILED
+test fixture_round_trips_and_matches_the_checked_in_golden ... ok
+
+failures:
+
+---- random_and_all_action_calls_are_generated stdout ----
+
+thread 'random_and_all_action_calls_are_generated' (14108) panicked at crates\rustlua-visual-script\tests\vgraph.rs:194:55:
+编译: [UnknownPort { node: "anim", port: "then", side: "输出" }, UnknownPort { node: "sound", port: "then", side: "输出" }, UnknownPort { node: "text", port: "then", side: "输出" }, UnknownPort { node: "emit", port: "then", side: "输出" }, MissingInput { node: "sound", port: "in" }, MissingInput { node: "text", port: "in" }, MissingInput { node: "emit", port: "in" }, MissingInput { node: "save", port: "in" }]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    random_and_all_action_calls_are_generated
+
+test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p rustlua-visual-script --test vgraph`

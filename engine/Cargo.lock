@@ -852,6 +852,7 @@ dependencies = [
  "rustlua-camera",
  "rustlua-ecs",
  "rustlua-editor-ai",
+ "rustlua-editor-api",
  "rustlua-gameplay",
  "rustlua-infra",
  "rustlua-input",
@@ -861,6 +862,7 @@ dependencies = [
  "rustlua-scene",
  "rustlua-scripting",
  "rustlua-ui",
+ "rustlua-visual-script",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -1037,6 +1039,7 @@ dependencies = [
  "bytemuck",
  "getrandom 0.2.17",
  "image",
+ "naga",
  "pollster",
  "rustlua-animation",
  "rustlua-assets",
@@ -1055,6 +1058,7 @@ dependencies = [
  "rustlua-scene",
  "rustlua-scripting",
  "rustlua-ui",
+ "serde",
  "serde_json",
  "thiserror 2.0.20",
  "tracing",
@@ -3286,8 +3290,10 @@ dependencies = [
  "image",
  "mlua",
  "rodio",
+ "rustlua-animation",
  "rustlua-assets",
  "rustlua-infra",
+ "rustlua-math",
  "rustlua-scene",
  "rustlua-ui",
  "serde",
@@ -3351,6 +3357,13 @@ version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "rustlua-editor-api"
+version = "0.1.1"
+dependencies = [
+ "egui",
 ]
 
 [[package]]
@@ -3491,6 +3504,7 @@ dependencies = [
  "rustlua-render",
  "rustlua-scene",
  "rustlua-ui",
+ "rustlua-visual-script",
  "serde_json",
  "thiserror 2.0.20",
  "tracing",
@@ -3507,6 +3521,16 @@ dependencies = [
  "rustlua-lua-api",
  "rustlua-math",
  "rustlua-scene",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "rustlua-visual-script"
+version = "0.1.1"
+dependencies = [
+ "mlua",
+ "serde",
+ "serde_json",
  "thiserror 2.0.20",
 ]
 

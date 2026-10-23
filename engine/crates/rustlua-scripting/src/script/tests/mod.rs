@@ -28,6 +28,7 @@ mod camera;
 mod diagnostics;
 mod entity;
 mod globals;
+mod graph_runtime;
 mod hot_reload;
 mod installers;
 mod particles;

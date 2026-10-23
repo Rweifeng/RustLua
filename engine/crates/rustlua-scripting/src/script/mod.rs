@@ -24,6 +24,7 @@ mod scene_spawn;
 mod step;
 mod transition;
 mod values;
+mod vgraph_trace;
 
 // 跨 crate 的公开面（`editor` / `game_web` / `host` 用到）：消费方沿用的 `rustlua_scripting::script::*`
 // 由 engine 的 core.rs 门面再导出，路径与拆分前一字不变。
@@ -35,14 +36,16 @@ pub use guard::{
 pub use progress::{DEFAULT_INSTRUCTION_BUDGET, ScriptProgress, script_progress};
 pub use require::{install_web_require, read_project_script};
 pub use values::entity_lua_id;
+pub use vgraph_trace::VgraphTraceEvent;
 
 // WP11-USE:BEGIN
 use error::ScriptFingerprint;
 use rustlua_animation::animation::AnimationFrameEvent;
+use rustlua_animation::animation_player::AnimationPlayerEvent;
 use rustlua_camera::camera::{Camera2D, Camera3D};
 use rustlua_ecs::{
     entity::EntityId,
-    particle::{Particle, ParticleEmitter, ParticleSystem},
+    particle::{Particle, ParticleEmitter, ParticleMode, ParticleSystem},
     world::World,
 };
 use rustlua_gameplay::gameplay::GameClock;
@@ -148,6 +151,13 @@ impl PrefabUiNodes {
     }
 }
 
+/// 一帧里最多排多少条待派发的 GPU burst（P3-R07-2）。
+///
+/// 这是"脚本在一帧内能要多少批 GPU 粒子"的硬上限：超出的 burst 当场回 CPU，因此队列不会
+/// 变成第二个粒子池，也不会因为宿主没接线而无界涨内存。渲染器侧还有一道更贵的闸
+/// （`MAX_GPU_PARTICLE_SYSTEMS` / `MAX_GPU_PARTICLE_SLOTS`），被拒的批照样回 CPU。
+pub const MAX_GPU_BURSTS_PER_FRAME: usize = 32;
+
 #[derive(Debug, Default)]
 pub(crate) struct ScriptState {
     delta_seconds: f32,
@@ -180,6 +190,16 @@ pub(crate) struct ScriptState {
     /// `rustlua-camera`，绑定见 `rustlua_camera::camera_lua`）。
     camera: Handle<rustlua_camera::camera_state::CameraState>,
     particles: ParticleSystem,
+    /// P3-R07-2：`mode=gpu` 的 burst 先进这条队列，宿主在同一帧里把它们交给渲染器
+    /// （`RuntimeScene::dispatch_gpu_particle_bursts`）。
+    ///
+    /// 为什么不直接进 CPU 池：那样 GPU 永远拿不到它们，`mode=gpu` 就只是句空话。
+    /// 为什么不只是进队列：宿主没来接（编辑器停 Play、纯脚本单测、无渲染器的 headless 跑法）
+    /// 时粒子会卡在队列里——**既没被模拟也没被画**，那是丢粒子。所以下一次脚本步进开头会把
+    /// 还没被取走的残留倒回 CPU 池（[`LuaRuntime::flush_gpu_bursts`]），队列长度因此恒 ≤ 一帧。
+    gpu_bursts: Vec<(Vec2, ParticleEmitter)>,
+    /// 累计有多少次 `mode=gpu` 的 burst 因为队列已满而直接落在 CPU 上（诊断用）。
+    gpu_burst_overflow: usize,
     /// 动画域能力单元（P1 ⑤-10）：帧事件队列归动画域（rustlua-animation）。
     animation: Handle<rustlua_animation::animation_lua::AnimationState>,
     /// 渲染域的脚本可见状态（P1 ⑤-10：本帧主光的选择归 `rustlua-render`）。
@@ -234,6 +254,21 @@ impl ScriptState {
         self.world.borrow_mut()
     }
 
+    /// 发射的统一入口（P3-R07-2）：`mode=gpu` 进派发队列等宿主交给渲染器，其余直接进 CPU 池。
+    ///
+    /// 队列满时**当场回 CPU**并计数：宁可在 CPU 上多跑一批，也不丢作者要的爆发，也不让队列
+    /// 长成第二个粒子池。参数非法时与 CPU 路径一致——不生成粒子（校验由调用方报错）。
+    fn spawn_particles(&mut self, position: Vec2, emitter: &ParticleEmitter) {
+        if emitter.mode == ParticleMode::Gpu {
+            if self.gpu_bursts.len() < MAX_GPU_BURSTS_PER_FRAME {
+                self.gpu_bursts.push((position, *emitter));
+                return;
+            }
+            self.gpu_burst_overflow += 1;
+        }
+        self.particles.burst_with(position, emitter);
+    }
+
     /// 懒加载字体度量探针（`ui.measure_text`）：要工程根才能找到 `project.toml`
     /// 里的字体配置，故第一次调用才读盘；失败结果也会缓存（`Some(None)`），
     /// 避免每帧重复尝试读一个不存在的字体。切工程（`set_project_root`）会清缓存。
@@ -269,6 +304,23 @@ pub enum ReloadStatus {
     Reloaded,
 }
 
+/// 每实体脚本的宿主事件。`other` 是交互目标/碰撞对方；`on_spawn`/`on_update`
+/// 由运行时自动调用，不在此列。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EntityEvent {
+    Interact { other: EntityId },
+    Collision { other: EntityId },
+}
+
+impl EntityEvent {
+    fn parts(self) -> (EntityHook, EntityId) {
+        match self {
+            Self::Interact { other } => (EntityHook::Interact, other),
+            Self::Collision { other } => (EntityHook::Collision, other),
+        }
+    }
+}
+
 /// Main-thread Lua runtime for project scripts.
 pub struct LuaRuntime {
     lua: Lua,
@@ -296,6 +348,8 @@ pub struct LuaRuntime {
     /// 用 `Rc` 持有：热重载会重建 VM，每个新 VM 都要装同一套安装器；安装器本身捕获的
     /// 是 `rustlua-lua-api` 的 `Handle`（宿主能力单元），所以注册表可以被多个 VM 共享。
     installers: Rc<rustlua_lua_api::Registry>,
+    /// E03-4b：`.vgraph` 当前执行节点探针；热重载重建 VM 后回调仍写同一份。
+    vgraph_trace: vgraph_trace::SharedVgraphTrace,
 }
 
 /// 一份每实体脚本的运行时状态：Lua 状态 + 用于热重载比对的指纹。
@@ -592,7 +646,49 @@ impl LuaRuntime {
     ///
     /// 给宿主/基准用：不必为了发粒子而绕一趟 Lua。参数非法时**不生成粒子**
     /// （调用方应先用 [`ParticleEmitter::validate`] 报错）。
+    ///
+    /// P3-R07-2：`emitter.mode == gpu` 时进的是**派发队列**而不是 CPU 池；宿主没来接就走
+    /// [`LuaRuntime::flush_gpu_bursts`] 回 CPU。要强制在 CPU 上发射（派发被拒时的回退）用
+    /// [`LuaRuntime::push_particles_cpu`]。
     pub fn burst_particles(&mut self, position: Vec2, emitter: &ParticleEmitter) {
+        self.state.borrow_mut().spawn_particles(position, emitter);
+    }
+
+    /// 取走本帧待派发到 GPU 的爆发（取走即清空）。
+    ///
+    /// 调用点是宿主的每帧循环（`run_script_steps` 之后、渲染之前）；这些粒子**不在** CPU 池里，
+    /// `with_particles` / Lua `particles.count` 读不到它们——GPU 粒子是视觉层（docs/54 §8-⑧）。
+    pub fn take_gpu_bursts(&mut self) -> Vec<(Vec2, ParticleEmitter)> {
+        std::mem::take(&mut self.state.borrow_mut().gpu_bursts)
+    }
+
+    /// 队列里还有多少没被派发的 GPU burst（诊断用）。
+    #[must_use]
+    pub fn gpu_burst_count(&self) -> usize {
+        self.state.borrow().gpu_bursts.len()
+    }
+
+    /// 取走"队列满、当场落 CPU"的累计次数（取走即清零，与 `take_script_micros` 同口径）。
+    pub fn take_gpu_burst_overflow(&mut self) -> usize {
+        let state = &mut *self.state.borrow_mut();
+        std::mem::take(&mut state.gpu_burst_overflow)
+    }
+
+    /// 把**还没被取走**的 GPU burst 倒回 CPU 池，返回倒回的数量。
+    ///
+    /// 这是"回退不丢粒子"的那条保底：宿主没有派发通道（没渲染器、Play 未接线、单测）时，
+    /// 上一帧入队的爆发在本帧开头回到 CPU 池——最多晚一帧，但一定会出现。
+    pub fn flush_gpu_bursts(&mut self) -> usize {
+        let state = &mut *self.state.borrow_mut();
+        let count = state.gpu_bursts.len();
+        for (position, emitter) in std::mem::take(&mut state.gpu_bursts) {
+            state.particles.burst_with(position, &emitter);
+        }
+        count
+    }
+
+    /// 绕过 GPU 路由，直接进 CPU 池（派发被渲染器拒绝时用）。
+    pub fn push_particles_cpu(&mut self, position: Vec2, emitter: &ParticleEmitter) {
         self.state
             .borrow_mut()
             .particles
@@ -617,6 +713,11 @@ impl LuaRuntime {
     pub fn push_animation_events(&mut self, events: Vec<(EntityId, AnimationFrameEvent)>) {
         let animation = self.state.borrow().animation.clone();
         animation.with_mut(|state| state.push_events(events));
+    }
+    /// P3-E01-2：`AnimationPlayer` 的命名事件，与帧事件同一条"取走即清"通道。
+    pub fn push_animation_player_events(&mut self, events: Vec<(EntityId, AnimationPlayerEvent)>) {
+        let animation = self.state.borrow().animation.clone();
+        animation.with_mut(|state| state.push_player_events(events));
     }
     /// 物理世界里当前所有 2D 碰撞体的姿态与形状，供宿主做 collider 调试绘制。
     pub fn collider_debug_shapes(&self) -> Vec<rustlua_physics::physics::ColliderDebugShape> {
@@ -864,6 +965,33 @@ fn call_entity_hook(
         path: path.to_path_buf(),
         reason: format!("{name}: {error}"),
     })
+}
+
+/// `on_interact(owner, target)` / `on_collision(owner, other)`：两个实体参数都是 Lua 句柄，
+/// 与 `transform`/`physics` 收的 id 同一套编码。
+fn call_entity_event_hook(
+    lua: &Lua,
+    name: &str,
+    id: EntityId,
+    other: EntityId,
+    path: &Path,
+) -> Result<(), LuaBridgeError> {
+    let callback: Value = lua
+        .globals()
+        .get(name)
+        .map_err(|error| LuaBridgeError::Runtime {
+            path: path.to_path_buf(),
+            reason: error.to_string(),
+        })?;
+    let Value::Function(function) = callback else {
+        return Ok(());
+    };
+    function
+        .call::<()>((entity_lua_id(id), entity_lua_id(other)))
+        .map_err(|error| LuaBridgeError::Runtime {
+            path: path.to_path_buf(),
+            reason: format!("{name}: {error}"),
+        })
 }
 // 相机快照的取用（`camera_view_from` / `camera3d_view_from`）随绑定搬到了
 // `rustlua_camera::camera_lua`（P1 ⑤-8）：那是"没渲染过一帧"这条口径的唯一实现点。

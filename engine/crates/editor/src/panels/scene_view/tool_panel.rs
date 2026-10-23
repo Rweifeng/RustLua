@@ -133,6 +133,17 @@ impl EditorApp {
                                 self.gizmo_pivot = self.gizmo_pivot.toggled();
                             }
                         }
+                        // P3-R03-4：3D 状态行尾挂 IBL 档位（计划 §6.4「场景视图显示当前 tier」）。
+                        if !is_2d {
+                            let label = self
+                                .scene_view_ibl_label()
+                                .unwrap_or_else(|| "IBL 未就绪".to_owned());
+                            ui.separator();
+                            ui.label(egui::RichText::new(label).size(11.0)).on_hover_text(
+                                "环境 IBL 的实际档位：Tier A=浮点 cubemap+线性过滤，\
+                                 B=浮点无线性过滤，C=只有 SH9 漫反射；模式是策略×环境×能力解析的结果",
+                            );
+                        }
                     });
                     ui.min_rect().width()
                 })

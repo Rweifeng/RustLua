@@ -570,9 +570,45 @@ fn bitmap(character: char) -> [u8; 7] {
     }
 }
 
+/// Measures text with the built-in 5x7 bitmap metrics, returning
+/// `(size, pixel_bounds)` exactly like `TextMesh`.
+///
+/// Hosts without a font atlas (scene UI layout, editor bounding boxes) use this
+/// so intrinsic sizes and rendered glyphs share one measurement path. `None`
+/// only when the style is invalid (`scale` non-finite or `<= 0`).
+#[must_use]
+pub fn measure_builtin_text(text: &str, scale: f32) -> Option<([f32; 2], [f32; 4])> {
+    let atlas = TextAtlas::built_in();
+    let style = TextStyle {
+        scale,
+        ..Default::default()
+    };
+    TextLayout::build_bitmap(text, [0.0, 0.0], style, &atlas)
+        .ok()
+        .map(|mesh| (mesh.size, mesh.pixel_bounds()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn measure_builtin_text_matches_the_bitmap_mesh() {
+        let atlas = TextAtlas::built_in();
+        let mesh = TextLayout::build_bitmap(
+            "Wg",
+            [0.0, 0.0],
+            TextStyle {
+                scale: 2.0,
+                ..Default::default()
+            },
+            &atlas,
+        )
+        .unwrap();
+        let expected = (mesh.size, mesh.pixel_bounds());
+        assert_eq!(measure_builtin_text("Wg", 2.0), Some(expected));
+        assert_eq!(measure_builtin_text("Wg", 0.0), None);
+    }
 
     #[test]
     fn atlas_has_expected_dimensions_and_non_empty_glyph() {

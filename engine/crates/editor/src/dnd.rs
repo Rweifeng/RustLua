@@ -141,25 +141,46 @@ fn displayed_name(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-/// 能变成场景实体/资产引用的资源家族。其余只能进资源库：音频/字体/Lua/场景本就不是
-/// 场景引用目标，图集要靠 `图集路径#区域名` 指到某个区域，整张 `.atlas` 直接当引用会缺
-/// 区域信息（装配期报错），所以也不给拖成实体或填进引用字段。
+/// 能直接生成场景实体的资源家族（纹理→精灵、模型→MeshRenderer、预制体→实例）。
 #[must_use]
-pub(crate) fn referenceable(kind: ResourceKind) -> bool {
+pub(crate) fn spawnable(kind: ResourceKind) -> bool {
     matches!(
         kind,
         ResourceKind::Texture | ResourceKind::Model | ResourceKind::Prefab
     )
 }
 
+/// 能作为资产引用拖进 Inspector 字段的资源家族：可生成实体的三类，
+/// 外加 `.material`（拖到 `MeshRenderer` 的 `material` 字段）。
+///
+/// 其余只能进资源库：音频/字体/Lua/场景本就不是场景引用目标，图集要靠
+/// `图集路径#区域名` 指到某个区域，整张 `.atlas` 直接当引用会缺区域信息（装配期报错）。
+#[must_use]
+pub(crate) fn referenceable(kind: ResourceKind) -> bool {
+    spawnable(kind) || kind == ResourceKind::Material
+}
+
 /// 外部文件批次里"能建实体的"与"只能入库的"各多少个（文案与提交都用这个划分）。
+/// `.material` 属于"只能入库"：它不会自己变成实体，要拖进材质字段。
 #[must_use]
 pub(crate) fn partition(files: &[PathBuf]) -> (usize, usize) {
     let spawns = files
         .iter()
-        .filter(|path| referenceable(ResourceKind::from_path(path)))
+        .filter(|path| spawnable(ResourceKind::from_path(path)))
         .count();
     (spawns, files.len() - spawns)
+}
+
+/// 内部资产拖到画布/层级：只有能生成实体的家族才收；材质要落到 `material` 字段。
+fn spawn_asset_plan(path: &str, as_child: bool) -> DropAction {
+    if !spawnable(ResourceKind::from_path(Path::new(path))) {
+        return reject("材质不能生成实体：请拖到 MeshRenderer 的 material 字段");
+    }
+    if as_child {
+        DropAction::SpawnAssetsAsChild(vec![path.to_owned()])
+    } else {
+        DropAction::SpawnAssets(vec![path.to_owned()])
+    }
 }
 
 /// 非法落点：不做任何事，只带一句原因文案。
@@ -172,10 +193,10 @@ fn reject(reason: impl Into<String>) -> DropAction {
 pub(crate) fn plan(source: &DragSource, zone: DropZone) -> DropAction {
     match (source, zone) {
         (DragSource::Internal(DropPayload::Asset(path)), DropZone::SceneCanvas) => {
-            DropAction::SpawnAssets(vec![path.clone()])
+            spawn_asset_plan(path, false)
         }
         (DragSource::Internal(DropPayload::Asset(path)), DropZone::Hierarchy) => {
-            DropAction::SpawnAssetsAsChild(vec![path.clone()])
+            spawn_asset_plan(path, true)
         }
         (DragSource::Internal(DropPayload::Asset(path)), DropZone::InspectorField) => {
             DropAction::SetAssetRef(path.clone())
@@ -225,7 +246,7 @@ pub(crate) fn plan(source: &DragSource, zone: DropZone) -> DropAction {
             [one] if referenceable(ResourceKind::from_path(one)) => {
                 DropAction::ImportAndSetRef(one.clone())
             }
-            [_] => reject("这个字段要的是纹理/模型/预制体，拖进来的文件不是"),
+            [_] => reject("这个字段要的是纹理/模型/预制体/材质，拖进来的文件不是"),
             many => reject(format!(
                 "资源引用字段一次只收一个文件，本次拖入 {} 个",
                 many.len()
@@ -452,6 +473,8 @@ fn kind_directory(kind: ResourceKind) -> &'static str {
         ResourceKind::LuaScript => "scripts",
         ResourceKind::Scene => "scenes",
         ResourceKind::Atlas => "atlases",
+        ResourceKind::Material => "materials",
+        ResourceKind::Environment => "env",
         ResourceKind::Animation | ResourceKind::Other => "imports",
     }
 }
@@ -636,6 +659,38 @@ mod tests {
             DropAction::SetAssetRef("assets/textures/slime.png".to_owned())
         );
         assert!(plan(&source, DropZone::ResourceBrowser).is_reject());
+    }
+
+    /// `.material` 是可引用资产，但不会自己变成实体：只有 Inspector 字段收它。
+    #[test]
+    fn a_material_is_referenceable_but_not_spawnable() {
+        const MATERIAL: &str = "assets/materials/rusted.material";
+        let material = asset(MATERIAL);
+        assert_eq!(
+            plan(&material, DropZone::InspectorField),
+            DropAction::SetAssetRef(MATERIAL.to_owned())
+        );
+        for zone in [DropZone::SceneCanvas, DropZone::Hierarchy] {
+            let action = plan(&material, zone);
+            assert!(action.is_reject(), "{zone:?} 不该为材质生成实体");
+            assert!(action.caption().contains("material 字段"));
+        }
+
+        let external = DragSource::External(vec![path("C:/tmp/rusted.material")]);
+        assert_eq!(
+            plan(&external, DropZone::InspectorField),
+            DropAction::ImportAndSetRef(path("C:/tmp/rusted.material"))
+        );
+        assert_eq!(
+            plan(&external, DropZone::SceneCanvas),
+            DropAction::Import(vec![path("C:/tmp/rusted.material")]),
+            "外部材质只入库，不建实体"
+        );
+        assert_eq!(
+            partition(&[path("a.png"), path("b.material")]),
+            (1, 1),
+            "材质与外部的只能入库家族一样，不算实体来源"
+        );
     }
 
     /// 控件 × 四个落点：只有画布可收。

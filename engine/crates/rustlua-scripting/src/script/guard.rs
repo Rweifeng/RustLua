@@ -47,11 +47,13 @@ pub enum BudgetSlot {
     Entity(EntityId, EntityHook),
 }
 
-/// 每实体脚本的两个钩子。
+/// 每实体脚本的钩子。`Interact`/`Collision` 由宿主事件入口分发（E03-3）。
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum EntityHook {
     Spawn,
     Update,
+    Interact,
+    Collision,
 }
 
 impl EntityHook {
@@ -60,6 +62,8 @@ impl EntityHook {
         match self {
             Self::Spawn => "on_spawn",
             Self::Update => "on_update",
+            Self::Interact => "on_interact",
+            Self::Collision => "on_collision",
         }
     }
 }

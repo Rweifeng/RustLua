@@ -1,0 +1,3 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.18s
+     Running `engine\target\debug\examples\wp0_vgraph_golden.exe`
+{"gate":"wp0_vgraph_golden","graph":"p3-e03-interact","nodes":25,"edges":23,"functions":4,"bytes":2048,"lua_load":"ok","golden":"match"}

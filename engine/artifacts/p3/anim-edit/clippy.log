@@ -1,0 +1,13 @@
+warning: linker stdout: 正在创建库 E:\Codex\RustLua\engine\target\debug\deps\paste-0545853f57693019.dll.lib 和对象 E:\Codex\RustLua\engine\target\debug\deps\paste-0545853f57693019.dll.exp
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `paste` (lib) generated 1 warning
+    Checking rustlua-animation v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-animation)
+    Checking rustlua-scene v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-scene)
+    Checking rustlua-render v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-render)
+    Checking rustlua-scripting v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-scripting)
+    Checking rustlua-assets-import v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-assets-import)
+    Checking engine v0.1.1 (E:\Codex\RustLua\engine\crates\engine)
+    Checking editor v0.1.1 (E:\Codex\RustLua\engine\crates\editor)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 31.15s

@@ -34,6 +34,135 @@ pub struct ParticleEmitter {
     pub rotation: f32,
     /// 每秒角速度（弧度）。
     pub rotation_speed: f32,
+    /// 模拟落在哪一侧（P3-R07）。默认 [`ParticleMode::Cpu`]：**旧场景不带这个字段**，
+    /// 而缺席就是 cpu，因此既有场景与粒子 golden 逐字节不变。
+    pub mode: ParticleMode,
+    /// 随机种子覆盖。`None` = 沿用粒子系统自己的 LCG 状态（旧行为）。
+    ///
+    /// 给定时，**这一次 burst** 的抽样序列从该 seed 起，于是同一份 emitter 参数在
+    /// CPU 与 GPU 两侧能生成同一份初始状态（P3-R07 的对拍前提）。
+    pub seed: Option<u64>,
+}
+
+/// 粒子模拟落在哪一侧（P3-R07）。
+///
+/// 这不是"性能开关"而是**语义边界**：`Gpu` 的粒子只存在于显存里，玩法与 Lua **读不到**
+/// 它们的位置（读回要卡帧）。需要参与玩法（命中、遮挡、音效触发）的粒子必须用 `Cpu`。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ParticleMode {
+    /// CPU 池模拟，玩法可读（默认）。
+    #[default]
+    Cpu,
+    /// compute 模拟，只做视觉层。
+    Gpu,
+}
+
+impl ParticleMode {
+    /// 全部合法取值（错误信息与健康检查都从这里取，避免两处文案漂移）。
+    pub const ALL: [Self; 2] = [Self::Cpu, Self::Gpu];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Gpu => "gpu",
+        }
+    }
+
+    /// 允许取值列表，供错误信息用（`cpu|gpu`）。
+    #[must_use]
+    pub const fn choices() -> &'static str {
+        "cpu|gpu"
+    }
+
+    /// 解析组件串/Lua 选项里的 mode。取值必须**逐字**命中 [`ParticleMode::ALL`]
+    /// （`GPU` 不行）：schema 的 `FieldKind::Enum` 就是精确匹配，两边口径不一致会让
+    /// "引擎能加载、审计报红"的漂移永远查不出来。拼错也不许静默退回默认值——
+    /// `mode=gpuu` 悄悄走 CPU 是本包最难查的一类 bug。
+    ///
+    /// # Errors
+    ///
+    /// 取值不在 [`ParticleMode::ALL`] 里。
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let raw = raw.trim();
+        Self::ALL
+            .into_iter()
+            .find(|mode| mode.as_str() == raw)
+            .ok_or_else(|| format!("particle mode must be one of {}", Self::choices()))
+    }
+}
+
+/// CPU 侧模拟的原因（P3-R07 的可诊断落点）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParticleCpuReason {
+    /// 作者要的就是 cpu。
+    Requested,
+    /// 要了 gpu，但这个设备/构建没有 compute 能力。
+    NoCompute,
+    /// 要了 gpu，但 `rate > 0` 的连续发射在 compute 侧还没实现（R07-2 的 spawn 环形队列）。
+    ContinuousRate,
+    /// 要了 gpu、compute 也可用，但这一批没能走到派发通道（宿主没来取 / 队列保底）。
+    NotWired,
+    /// 派发通道在，但渲染器拒了这批 burst（池满、槽位预算、参数校验）。
+    DispatchRejected,
+}
+
+impl ParticleCpuReason {
+    /// 宿主"每种原因只喊一层日志"要遍历的取值（不含 [`Self::Requested`]：作者选 cpu 不是回退）。
+    pub const WARNABLE: [Self; 4] = [
+        Self::NoCompute,
+        Self::ContinuousRate,
+        Self::NotWired,
+        Self::DispatchRejected,
+    ];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Requested => "requested",
+            Self::NoCompute => "no_compute",
+            Self::ContinuousRate => "continuous_rate",
+            Self::NotWired => "not_wired",
+            Self::DispatchRejected => "dispatch_rejected",
+        }
+    }
+
+    /// "作者要了 gpu、这一帧却跑在 cpu" —— 只有这种需要在日志/Profiler 上标出来。
+    #[must_use]
+    pub const fn is_fallback(self) -> bool {
+        !matches!(self, Self::Requested)
+    }
+
+    /// 稳定编号（宿主用它做"同一原因只喊一层"的位图；新增取值请保持在末尾）。
+    #[must_use]
+    pub const fn index(self) -> u32 {
+        match self {
+            Self::Requested => 0,
+            Self::NoCompute => 1,
+            Self::ContinuousRate => 2,
+            Self::NotWired => 3,
+            Self::DispatchRejected => 4,
+        }
+    }
+}
+
+/// [`ParticleEmitter::placement`] 的判定结果。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParticlePlacement {
+    /// 参数与能力都允许 GPU 模拟。
+    Gpu,
+    /// 用**同一份**参数在 CPU 模拟（不丢粒子、不黑屏）。
+    Cpu(ParticleCpuReason),
+}
+
+impl ParticlePlacement {
+    #[must_use]
+    pub const fn cpu_reason(self) -> Option<ParticleCpuReason> {
+        match self {
+            Self::Gpu => None,
+            Self::Cpu(reason) => Some(reason),
+        }
+    }
 }
 
 impl Default for ParticleEmitter {
@@ -51,6 +180,8 @@ impl Default for ParticleEmitter {
             drag: 0.0,
             rotation: 0.0,
             rotation_speed: 0.0,
+            mode: ParticleMode::Cpu,
+            seed: None,
         }
     }
 }
@@ -106,7 +237,7 @@ impl ParticleEmitter {
     ///
     /// 文法（`;` 分隔、`key=value`，未知键一律报错而不是静默忽略）：
     /// `count`、`rate`、`speed`、`life`、`size`、`size_end`、`color`、`color_end`、
-    /// `gravity`、`drag`、`rotation`、`rotation_speed`。`size`/`color` 同时设置曲线的**起止**
+    /// `gravity`、`drag`、`rotation`、`rotation_speed`、`mode`、`seed`。`size`/`color` 同时设置曲线的**起止**
     /// 值，`size_end`/`color_end` 覆盖终点（与书写顺序无关，见下方 `seen_*_end`）。
     pub fn from_component_str(value: &str) -> Result<Self, ParticleComponentError> {
         let mut emitter = ParticleEmitter::default();
@@ -161,6 +292,20 @@ impl ParticleEmitter {
                 "drag" => emitter.drag = parse_number(raw, field)?,
                 "rotation" => emitter.rotation = parse_number(raw, field)?,
                 "rotation_speed" => emitter.rotation_speed = parse_number(raw, field)?,
+                "mode" => {
+                    emitter.mode = ParticleMode::parse(raw).map_err(|reason| {
+                        ParticleComponentError::InvalidChoice {
+                            field: field.to_owned(),
+                            reason,
+                        }
+                    })?
+                }
+                "seed" => {
+                    emitter.seed = Some(
+                        raw.parse::<u64>()
+                            .map_err(|_| ParticleComponentError::InvalidField(field.to_owned()))?,
+                    )
+                }
                 _ => return Err(ParticleComponentError::UnknownField(field.to_owned())),
             }
         }
@@ -205,7 +350,37 @@ impl ParticleEmitter {
         if self.rotation_speed != 0.0 {
             out.push_str(&format!(";rotation_speed={:.6}", self.rotation_speed));
         }
+        // `mode=cpu` 与 `seed` 缺席同义，所以两者都只在**偏离默认**时才写——旧场景的规范串
+        // 一个字符都不变（粒子 golden 零 diff 的前提）。
+        if self.mode != ParticleMode::default() {
+            out.push_str(&format!(";mode={}", self.mode.as_str()));
+        }
+        if let Some(seed) = self.seed {
+            out.push_str(&format!(";seed={seed}"));
+        }
         out
+    }
+
+    /// 这份发射参数**实际**落在哪一侧模拟（P3-R07 的落点判定）。
+    ///
+    /// 判定条件与渲染器 `configure_gpu_particles` 的拒绝条件一致：要 `mode=gpu`、设备有
+    /// compute、且是 burst 语义（`rate == 0`；连续发射要等 R07-2 的 spawn 环形队列）。
+    /// 任何一条不满足都用**同一份参数**回 CPU——回退不丢粒子，也不黑屏。
+    ///
+    /// `compute_available` 由宿主从渲染器能力（或 wasm/release 的"根本没有 compute 接缝"）
+    /// 传来；ECS 自己不知道设备的事，这是这层不依赖渲染器的边界。
+    #[must_use]
+    pub fn placement(&self, compute_available: bool) -> ParticlePlacement {
+        if self.mode != ParticleMode::Gpu {
+            return ParticlePlacement::Cpu(ParticleCpuReason::Requested);
+        }
+        if !compute_available {
+            return ParticlePlacement::Cpu(ParticleCpuReason::NoCompute);
+        }
+        if self.rate > 0.0 {
+            return ParticlePlacement::Cpu(ParticleCpuReason::ContinuousRate);
+        }
+        ParticlePlacement::Gpu
     }
 }
 
@@ -221,6 +396,9 @@ pub enum ParticleComponentError {
     /// 未知键：**报错**而不是忽略，避免"写了 `rate` 却拼成 `reate`"被静默吞掉。
     #[error("unknown particle field: {0}")]
     UnknownField(String),
+    /// 枚举键的取值不在允许列表里（`mode=gpuu` 拼错不许悄悄退回 `cpu`）。
+    #[error("invalid value for particle field {field}: {reason}")]
+    InvalidChoice { field: String, reason: String },
     /// 数值通过文法但语义非法（非有限、`life <= 0`、`drag < 0` 等）。
     #[error("invalid particle emitter: {0}")]
     Invalid(String),
@@ -387,9 +565,15 @@ impl ParticleSystem {
 
     /// 按发射参数生成一次爆发。参数非有限时**不生成任何粒子**（调用方应先用
     /// [`ParticleEmitter::validate`] 报错）。
+    ///
+    /// `emitter.seed` 给定时先把 LCG 复位到该 seed：同一份参数的两次 burst 逐位相同，
+    /// CPU 与 GPU 两侧也才能对拍。缺席时沿用系统的历史状态（旧行为，一个 bit 都不变）。
     pub fn burst_with(&mut self, position: Vec2, emitter: &ParticleEmitter) {
         if emitter.count == 0 || emitter.validate().is_err() {
             return;
+        }
+        if let Some(seed) = emitter.seed {
+            self.seed = seed;
         }
         self.particles.reserve(emitter.count);
         for _ in 0..emitter.count {
@@ -746,6 +930,172 @@ mod tests {
             ParticleEmitter::from_component_str("count=1;color=1,0,0"),
             Err(ParticleComponentError::InvalidField(_))
         ));
+    }
+
+    /// P3-R07-1：`mode`/`seed` 是**可选**字段——旧场景串的规范输出必须一字符不变，
+    /// 拼错的 `mode` 不许静默退回 cpu。
+    #[test]
+    fn mode_and_seed_round_trip_without_touching_legacy_strings() {
+        // 默认（cpu、无 seed）的规范串里不出现新字段：粒子 golden 的字节前提。
+        let legacy = ParticleEmitter::default().to_component_str();
+        assert!(
+            !legacy.contains("mode") && !legacy.contains("seed"),
+            "默认串不该变长: {legacy}"
+        );
+        // 既有场景串的**规范形**逐字节不变（编码器一直会把数值写成 6 位小数，
+        // 这里钉的是"加了 mode/seed 之后规范形没变长/没变味"）。
+        let text = "count=4;rate=30;speed=90;life=0.5;size=3;color=1,0.7,0.3,1";
+        assert_eq!(
+            ParticleEmitter::from_component_str(text)
+                .expect("legacy parse")
+                .to_component_str(),
+            "count=4;rate=30.000000;speed=90.000000;life=0.500000;size=3.000000;color=1.000,0.700,0.300,1.000"
+        );
+
+        let emitter =
+            ParticleEmitter::from_component_str("count=4;mode=gpu;seed=42").expect("parse mode");
+        assert_eq!(emitter.mode, ParticleMode::Gpu);
+        assert_eq!(emitter.seed, Some(42));
+        assert_eq!(
+            emitter.to_component_str(),
+            "count=4;speed=120.000000;life=0.600000;size=6.000000;color=1.000,0.600,0.200,1.000;mode=gpu;seed=42"
+        );
+        // 显式写 cpu 与缺席同义，因此写回时省略。
+        assert!(
+            !ParticleEmitter::from_component_str("count=4;mode=cpu")
+                .expect("explicit cpu")
+                .to_component_str()
+                .contains("mode")
+        );
+
+        // 取值必须逐字命中（与 schema 的 `FieldKind::Enum` 同一口径），拼错要报出允许列表。
+        assert!(matches!(
+            ParticleEmitter::from_component_str("count=4;mode=GPU"),
+            Err(ParticleComponentError::InvalidChoice { .. })
+        ));
+        let error = ParticleEmitter::from_component_str("count=4;mode=gpuu")
+            .expect_err("bad mode must fail");
+        assert!(matches!(
+            error,
+            ParticleComponentError::InvalidChoice { .. }
+        ));
+        assert!(error.to_string().contains("cpu|gpu"), "{error}");
+        assert!(matches!(
+            ParticleEmitter::from_component_str("count=4;seed=-1"),
+            Err(ParticleComponentError::InvalidField(_))
+        ));
+        // seed=0 是合法种子（LCG 从 0 也能推出确定序列）。
+        assert_eq!(
+            ParticleEmitter::from_component_str("count=4;seed=0")
+                .expect("zero seed")
+                .seed,
+            Some(0)
+        );
+    }
+
+    /// `seed` 让同一份参数在两个系统里生成**逐位相同**的 burst；不给则沿用历史状态（旧行为）。
+    #[test]
+    fn seed_replays_a_burst_and_absence_keeps_the_stream() {
+        let seeded = ParticleEmitter {
+            count: 8,
+            seed: Some(0xCAFE),
+            ..ParticleEmitter::default()
+        };
+        let mut first = ParticleSystem::new();
+        let mut second = ParticleSystem::new();
+        first.burst_with(Vec2::zero(), &seeded);
+        second.burst_with(Vec2::new(3.0, 3.0), &seeded);
+        let offset = Vec2::new(3.0, 3.0);
+        for (a, b) in first.particles().iter().zip(second.particles()) {
+            assert_eq!(a.velocity, b.velocity, "同 seed 的角度/速度抽样必须一致");
+            assert_eq!(a.life, b.life);
+            assert_eq!(a.position + offset, b.position, "位置只随发射点平移");
+        }
+        // 无 seed 的第二次 burst 接着上一次的序列走 ⇒ 与第一次不同（旧行为，没有被 seed 钉住）。
+        let unseeded = ParticleEmitter {
+            count: 8,
+            ..ParticleEmitter::default()
+        };
+        let mut system = ParticleSystem::new();
+        system.burst_with(Vec2::zero(), &unseeded);
+        let before: Vec<_> = system.particles().to_vec();
+        system.burst_with(Vec2::zero(), &unseeded);
+        let after: Vec<_> = system.particles()[8..].to_vec();
+        assert_ne!(before, after, "不带 seed 时抽样序列应继续前进");
+        // mode 单独出现**不**改变 CPU 抽样（回退/派发都不动数据）。
+        let mut gpu_mode = ParticleSystem::new();
+        gpu_mode.burst_with(
+            Vec2::zero(),
+            &ParticleEmitter {
+                count: 8,
+                mode: ParticleMode::Gpu,
+                ..ParticleEmitter::default()
+            },
+        );
+        let mut cpu_mode = ParticleSystem::new();
+        cpu_mode.burst_with(Vec2::zero(), &ParticleEmitter::default());
+        assert_eq!(gpu_mode.particles(), cpu_mode.particles());
+    }
+
+    /// 落点判定与渲染器 `configure_gpu_particles` 的拒绝条件一致；回退用同一份参数走 CPU。
+    #[test]
+    fn placement_falls_back_to_cpu_whenever_gpu_cannot_take_it() {
+        let burst = ParticleEmitter {
+            count: 8,
+            ..ParticleEmitter::default()
+        };
+        assert_eq!(
+            burst.placement(false),
+            ParticlePlacement::Cpu(ParticleCpuReason::Requested),
+            "默认 cpu：不是回退"
+        );
+        let continuous = ParticleEmitter {
+            mode: ParticleMode::Gpu,
+            rate: 30.0,
+            ..burst
+        };
+        let gpu = ParticleEmitter {
+            mode: ParticleMode::Gpu,
+            ..burst
+        };
+        assert_eq!(
+            gpu.placement(false),
+            ParticlePlacement::Cpu(ParticleCpuReason::NoCompute)
+        );
+        assert_eq!(
+            gpu.placement(true),
+            ParticlePlacement::Gpu,
+            "compute 可用 + burst 语义才落 GPU"
+        );
+        assert_eq!(
+            continuous.placement(true),
+            ParticlePlacement::Cpu(ParticleCpuReason::ContinuousRate),
+            "连续发射在 compute 侧还没实现，必须回 CPU 而不是静默忽略 rate"
+        );
+        assert_eq!(
+            continuous.placement(false),
+            ParticlePlacement::Cpu(ParticleCpuReason::NoCompute),
+            "能力缺失先于参数不支持上报"
+        );
+        // "回退"只属于"要了 gpu 却落在 cpu"；作者选 cpu 不算回退。
+        assert!(
+            !ParticlePlacement::Cpu(ParticleCpuReason::Requested)
+                .cpu_reason()
+                .is_some_and(ParticleCpuReason::is_fallback)
+        );
+        for reason in [
+            ParticleCpuReason::NoCompute,
+            ParticleCpuReason::ContinuousRate,
+            ParticleCpuReason::NotWired,
+        ] {
+            assert!(
+                ParticlePlacement::Cpu(reason)
+                    .cpu_reason()
+                    .is_some_and(ParticleCpuReason::is_fallback),
+                "{reason:?} 是可诊断的回退"
+            );
+            assert_ne!(reason.as_str(), "requested");
+        }
     }
 
     /// 连续发射按**速率 × 时间**累计：帧率变化不改变平均发射量，长帧也不会整批补发。

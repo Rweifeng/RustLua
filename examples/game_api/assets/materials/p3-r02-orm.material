@@ -1,0 +1,6 @@
+version=1
+name=p3-r02-orm
+base_color=0.9,0.9,0.9,1
+metallic=1
+roughness=1
+metallic_roughness_texture=assets/textures/p3-r02-orm.png

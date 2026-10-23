@@ -34,6 +34,72 @@ pub enum ReadbackStatus {
     Failed(String),
 }
 
+/// HDR 场景颜色的 CPU 回读（P3-R01）。
+///
+/// `pixels` 是**线性** RGBA f32（`Rgba16Float` 解码后），不做 sRGB 转换——tonemap 的输入
+/// 就是线性值，验收要证明"tonemap 前确实有 >1 的颜色"。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SceneColorReadback {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<[f32; 4]>,
+}
+
+impl SceneColorReadback {
+    /// 全图 RGB 三个通道的最大值（忽略 NaN）。
+    #[must_use]
+    pub fn max_rgb(&self) -> f32 {
+        self.pixels
+            .iter()
+            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
+            .filter(|value| !value.is_nan())
+            .fold(0.0_f32, f32::max)
+    }
+
+    /// 按像素坐标取 RGBA；越界返回 `None`。
+    #[must_use]
+    pub fn pixel(&self, x: u32, y: u32) -> Option<[f32; 4]> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        self.pixels
+            .get((y as usize) * (self.width as usize) + (x as usize))
+            .copied()
+    }
+}
+
+/// 把 IEEE 754 binary16 的位模式解码成 f32。
+///
+/// 为什么不引入 `half`：全仓只在 HDR 读回这一处需要它，而且必须能在 wasm 上编译；
+/// 这段位运算与 `half::f16::to_f32` 的口径一致（含次正规数、±inf、NaN）。
+#[must_use]
+pub(crate) fn f16_bits_to_f32(bits: u16) -> f32 {
+    let sign = u32::from(bits & 0x8000) << 16;
+    let exponent = (bits >> 10) & 0x1f;
+    let mantissa = u32::from(bits & 0x03ff);
+    let decoded = if exponent == 0 {
+        if mantissa == 0 {
+            sign
+        } else {
+            // 次正规数：归一化到 f32 的指数范围。
+            let mut mantissa = mantissa;
+            let mut exponent = -14_i32;
+            while mantissa & 0x0400 == 0 {
+                mantissa <<= 1;
+                exponent -= 1;
+            }
+            mantissa &= 0x03ff;
+            sign | (((exponent + 127) as u32) << 23) | (mantissa << 13)
+        }
+    } else if exponent == 0x1f {
+        // inf / NaN：保留尾数，NaN 的 payload 不丢。
+        sign | 0x7f80_0000 | (mantissa << 13)
+    } else {
+        sign | (u32::from(exponent) + 112) << 23 | (mantissa << 13)
+    };
+    f32::from_bits(decoded)
+}
+
 /// 单个回读槽轮询的结果（M11-03）：未就绪 / 就绪像素 / 映射失败。
 enum ReadbackPoll {
     NotReady,
@@ -108,6 +174,92 @@ impl Renderer {
             pixels.extend_from_slice(&padded[start..start + row_bytes as usize]);
         }
         Ok(pixels)
+    }
+
+    /// P3-R01：把 HDR 场景颜色目标（`Rgba16Float`）同步回读到 CPU。
+    ///
+    /// 返回的是**线性** f32（不做 sRGB 转换）——Tonemap 的输入就是线性值，验收要证明
+    /// `pre_tonemap_max > 1`。没有创建过 HDR 目标时返回错误而不是空数据：调用方必须能区分
+    /// "这一帧没走 HDR"与"HDR 读了但全是 0"。
+    pub fn read_scene_color_to_cpu(&self) -> anyhow::Result<SceneColorReadback> {
+        let texture = self
+            .hdr_scene_texture
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("HDR scene color target has not been created yet"))?;
+        let (width, height) = self.hdr_scene_size;
+        if width == 0 || height == 0 {
+            anyhow::bail!("HDR scene color target has zero size ({width}x{height})");
+        }
+        let row_bytes = 8 * width;
+        let bytes_per_row = row_bytes.div_ceil(256) * 256;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("rustlua-hdr-scene-readback"),
+            size: u64::from(bytes_per_row) * u64::from(height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("rustlua-hdr-scene-copy"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit([encoder.finish()]);
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+        let map_result = rx
+            .recv()
+            .map_err(|error| anyhow::anyhow!("HDR scene readback channel error: {error}"))?;
+        map_result.map_err(|error| anyhow::anyhow!("HDR scene texture map failed: {error}"))?;
+        let padded = slice.get_mapped_range();
+        let mut pixels = Vec::with_capacity((width * height) as usize);
+        for row in 0..height as usize {
+            let start = row * bytes_per_row as usize;
+            for column in 0..width as usize {
+                let offset = start + column * 8;
+                let channel = |index: usize| {
+                    f16_bits_to_f32(u16::from_le_bytes([
+                        padded[offset + index * 2],
+                        padded[offset + index * 2 + 1],
+                    ]))
+                };
+                pixels.push([channel(0), channel(1), channel(2), channel(3)]);
+            }
+        }
+        drop(padded);
+        buffer.unmap();
+        Ok(SceneColorReadback {
+            width,
+            height,
+            pixels,
+        })
     }
 
     /// 非阻塞离屏回读：总是提交一次纹理拷贝（写进环中下一空闲槽），同时尝试

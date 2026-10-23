@@ -1,0 +1,336 @@
+{
+  "blend": {
+    "background": [
+      56,
+      75,
+      97
+    ],
+    "blue_only": [
+      61,
+      81,
+      137
+    ],
+    "both_forward": [
+      128,
+      79,
+      108
+    ],
+    "both_reverse": [
+      128,
+      79,
+      108
+    ],
+    "red_only": [
+      127,
+      76,
+      83
+    ],
+    "reversed_samples": [
+      [
+        128,
+        79,
+        108
+      ],
+      [
+        128,
+        79,
+        109
+      ],
+      [
+        129,
+        80,
+        110
+      ],
+      [
+        127,
+        78,
+        108
+      ],
+      [
+        128,
+        79,
+        108
+      ],
+      [
+        128,
+        80,
+        110
+      ],
+      [
+        127,
+        78,
+        108
+      ],
+      [
+        127,
+        78,
+        108
+      ],
+      [
+        128,
+        79,
+        108
+      ]
+    ],
+    "solid_red": [
+      167,
+      77,
+      65
+    ],
+    "sorted_samples": [
+      [
+        128,
+        79,
+        108
+      ],
+      [
+        128,
+        79,
+        109
+      ],
+      [
+        129,
+        80,
+        110
+      ],
+      [
+        127,
+        78,
+        108
+      ],
+      [
+        128,
+        79,
+        108
+      ],
+      [
+        128,
+        80,
+        110
+      ],
+      [
+        127,
+        78,
+        108
+      ],
+      [
+        127,
+        78,
+        108
+      ],
+      [
+        128,
+        79,
+        108
+      ]
+    ]
+  },
+  "checks": {
+    "blend_is_excluded_from_shadow": true,
+    "blend_mixes_with_background": true,
+    "both_blend_layers_contribute": true,
+    "double_sided_removes_culling": true,
+    "legacy_shader_ignores_alpha": true,
+    "mask_discards_below_cutoff": true,
+    "mask_passes_above_cutoff": true,
+    "shadow_respects_alpha_mask": true,
+    "transparent_sort_is_stable": true
+  },
+  "double_sided": {
+    "back_background": [
+      56,
+      75,
+      97
+    ],
+    "back_double": [
+      167,
+      167,
+      167
+    ],
+    "back_single": [
+      56,
+      75,
+      97
+    ],
+    "front_double": [
+      167,
+      167,
+      167
+    ],
+    "front_single": [
+      167,
+      167,
+      167
+    ]
+  },
+  "draw_calls": 2,
+  "height": 360,
+  "legacy_mask_samples": [
+    [
+      185,
+      26,
+      26
+    ],
+    [
+      185,
+      26,
+      26
+    ],
+    [
+      26,
+      185,
+      26
+    ],
+    [
+      26,
+      185,
+      26
+    ]
+  ],
+  "legacy_opaque_samples": [
+    [
+      185,
+      26,
+      26
+    ],
+    [
+      185,
+      26,
+      26
+    ],
+    [
+      26,
+      185,
+      26
+    ],
+    [
+      26,
+      185,
+      26
+    ]
+  ],
+  "mask_background": [
+    56,
+    75,
+    97
+  ],
+  "mask_low_samples": [
+    [
+      135,
+      21,
+      21
+    ],
+    [
+      135,
+      21,
+      21
+    ],
+    [
+      19,
+      135,
+      19
+    ],
+    [
+      19,
+      135,
+      19
+    ]
+  ],
+  "mask_samples": [
+    [
+      135,
+      21,
+      21
+    ],
+    [
+      135,
+      21,
+      21
+    ],
+    [
+      56,
+      75,
+      97
+    ],
+    [
+      56,
+      75,
+      97
+    ]
+  ],
+  "max_channel_delta": {
+    "blend_declaration_order": 0,
+    "blend_vs_background": 71,
+    "blend_vs_solid": 40,
+    "double_sided_back": 111,
+    "double_sided_front": 0,
+    "legacy_alpha_axis": 0,
+    "mask_left_vs_background": 79,
+    "mask_low_right_vs_background": 78,
+    "mask_low_vs_opaque": 0,
+    "mask_right_vs_background": 0,
+    "shadow_blend": 0,
+    "shadow_mask_clear": 0,
+    "shadow_mask_visible_darkening": 65,
+    "shadow_mask_visible_vs_opaque": 0,
+    "shadow_opaque_darkening": 65,
+    "single_sided_back": 0
+  },
+  "opaque_samples": [
+    [
+      135,
+      21,
+      21
+    ],
+    [
+      135,
+      21,
+      21
+    ],
+    [
+      19,
+      135,
+      19
+    ],
+    [
+      19,
+      135,
+      19
+    ]
+  ],
+  "report_version": "wp0-pbr-alpha-golden-v1",
+  "scene": "p3-r02 quad overrides: mask/blend/double-sided + shadow caster",
+  "shadow": {
+    "blend_caster": [
+      162,
+      162,
+      162
+    ],
+    "ground_only": [
+      162,
+      162,
+      162
+    ],
+    "mask_clear_caster": [
+      162,
+      162,
+      162
+    ],
+    "mask_visible_caster": [
+      97,
+      97,
+      97
+    ],
+    "opaque_caster": [
+      97,
+      97,
+      97
+    ],
+    "sample_point": [
+      0.4000000059604645,
+      0.0,
+      0.20000000298023224
+    ]
+  },
+  "width": 640
+}

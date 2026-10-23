@@ -1,0 +1,21 @@
+   Compiling syn v2.0.119
+   Compiling simd-adler32 v0.3.10
+   Compiling miniz_oxide v0.8.9
+   Compiling flate2 v1.1.9
+   Compiling tracing-attributes v0.1.31
+   Compiling tracing v0.1.44
+   Compiling tracing-subscriber v0.3.23
+   Compiling tracing-appender v0.2.5
+   Compiling rustlua-infra v0.1.1 (E:\Codex\RustLua\engine\crates\rustlua-infra)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.87s
+     Running tests\architecture_edges.rs (engine\target\debug\deps\architecture_edges-128f9396ea6da9c0.exe)
+
+running 5 tests
+test core_crates_are_not_depended_on_by_their_peers_in_the_wrong_direction ... ok
+test lua_contract_crate_stays_a_leaf ... ok
+test core_crates_stay_within_their_dependency_budget ... ok
+test component_codec_crate_stays_a_leaf ... ok
+test no_dependency_cycles ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
