@@ -570,10 +570,13 @@ pub struct Renderer {
     ///
     /// 构造期只建布局、不建管线（见 [`super::construct`] 的注释）：粒子管线按目标格式延迟
     /// 编译，而布局必须留在渲染器上，否则延迟编译没有第二份"和首帧一致"的描述符可用。
-    gpu_particle_draw_layout: wgpu::BindGroupLayout,
+    ///
+    /// `None` = 设备没有存储缓冲（WebGL2），布局无法创建；GPU 粒子在这种设备上走 CPU。
+    gpu_particle_draw_layout: Option<wgpu::BindGroupLayout>,
     /// instanced 粒度的管线布局：group0=世界 Sprite 相机、group1=贴图/采样器（两者与
     /// [`Self::world_sprite_camera_bind_group`]、`white` 复用同一份绑定组）、group2=粒子资源。
-    gpu_particle_pipeline_layout: wgpu::PipelineLayout,
+    /// 与 [`Self::gpu_particle_draw_layout`] 同生共死。
+    gpu_particle_pipeline_layout: Option<wgpu::PipelineLayout>,
     /// 已编译的 instanced 粒子管线与其目标格式。`None` = 本进程还没画过 GPU 粒子。
     ///
     /// 只缓存**一条**（不是 Map）：一帧只有一个场景目标格式，HDR 切换最多各编译一次；

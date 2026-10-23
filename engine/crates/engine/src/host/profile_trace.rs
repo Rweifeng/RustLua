@@ -20,8 +20,11 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     fmt::Write as _,
-    time::{Duration, Instant},
+    time::Duration,
 };
+
+// wasm32-unknown-unknown 的 std `Instant::now()` 直接 panic；`web_time` 在原生上是同一类型。
+use web_time::Instant;
 
 /// 默认缓冲容量。按 120 帧、每帧约 25 个 span（frame + script + 20 systems + 提取）
 /// 估算约 3k span；8k 留出余量，也能覆盖编辑器约 10 秒的面板/命令 scope。

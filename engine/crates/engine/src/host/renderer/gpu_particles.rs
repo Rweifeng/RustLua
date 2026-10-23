@@ -478,6 +478,13 @@ impl Renderer {
             .emitter
             .validate()
             .map_err(|error| ComputeError::InvalidConfig(error.to_owned()))?;
+        if self.gpu_particle_draw_layout.is_none() {
+            return Err(ComputeError::Unsupported {
+                reason: "设备没有存储缓冲（max_storage_buffers_per_shader_stage=0）：\
+                         GPU 粒子 draw 布局未创建，走 CPU 粒子"
+                    .to_owned(),
+            });
+        }
         if config.emitter.rate > 0.0 {
             return Err(ComputeError::InvalidConfig(
                 "GPU 粒子 v1 只支持 burst（rate > 0 的连续发射尚未实现，拒绝而不是静默忽略）"
@@ -571,7 +578,10 @@ impl Renderer {
         // 实例流就是状态本身，所以一个系统只需要一条绑定组，也不需要顶点缓冲。
         let draw_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("rustlua-gpu-particles-draw"),
-            layout: &self.gpu_particle_draw_layout,
+            layout: self
+                .gpu_particle_draw_layout
+                .as_ref()
+                .expect("build_gpu_particle_system 入口已拒绝无布局的设备"),
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -925,9 +935,13 @@ impl Renderer {
                     label: Some("rustlua-gpu-particles-draw-shader"),
                     source: wgpu::ShaderSource::Wgsl(GPU_PARTICLE_DRAW_SHADER.into()),
                 });
+            let layout = self
+                .gpu_particle_pipeline_layout
+                .as_ref()
+                .expect("池里有系统 ⇒ 配置时已确认布局存在");
             let pipeline = build_gpu_particle_pipeline(
                 &self.device,
-                &self.gpu_particle_pipeline_layout,
+                layout,
                 &module,
                 DepthPass::WorldSprite,
                 format,

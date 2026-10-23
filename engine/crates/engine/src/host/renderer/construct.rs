@@ -969,8 +969,11 @@ impl Renderer {
         // 这里只建两条布局，不建管线：管线要按目标格式（LDR/HDR）延迟编译，理由与 R02 的 PBR
         // 变体一样——启动预算（`compile_ms`）里没有理由为一条"没配 GPU 粒子就永远用不到"的
         // 管线付钱。布局必须留在渲染器上：延迟编译与（未来的）热重载都要按同一份描述符重建。
-        let gpu_particle_draw_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        // 无存储缓冲的设备（WebGL2 即如此）不建这两条布局：binding 1 是只读存储，
+        // `create_bind_group_layout` 会直接报校验错误，而 wasm 上的未捕获校验错误是 abort。
+        // GPU 粒子在这些设备上本来就走 CPU，`configure_gpu_particles` 会返回 Unsupported。
+        let (gpu_particle_draw_layout, gpu_particle_pipeline_layout) = if storage_capable {
+            let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("rustlua-gpu-particles-draw-layout"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
@@ -995,18 +998,21 @@ impl Renderer {
                     },
                 ],
             });
-        // group0/group1 与世界 Sprite 管线**共用同两个布局对象**，所以相机绑定组与白贴图绑定组
-        // 可以直接复用——粒子不需要自己的相机 uniform，也不需要第二张贴图。
-        let gpu_particle_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            // group0/group1 与世界 Sprite 管线**共用同两个布局对象**，所以相机绑定组与白贴图绑定组
+            // 可以直接复用——粒子不需要自己的相机 uniform，也不需要第二张贴图。
+            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("rustlua-gpu-particles-pipeline-layout"),
                 bind_group_layouts: &[
                     &world_sprite_camera_layout,
                     &texture_bind_group_layout,
-                    &gpu_particle_draw_layout,
+                    &draw_layout,
                 ],
                 push_constant_ranges: &[],
             });
+            (Some(draw_layout), Some(pipeline_layout))
+        } else {
+            (None, None)
+        };
         let world_sprite_depth_view = Self::create_depth_view(&device, 1, 1);
         // docs/54 §4.3：后处理通道的管线与资源。宿主不打开时这些都只是闲置对象（不产生 pass、
         // 不产生离屏纹理），因此"没开后处理"的运行时代价与收敛前一致。

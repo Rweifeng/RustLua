@@ -11,12 +11,10 @@
 //! - **同键只编译一次**：`get_or_create` 命中直接返回；`Arc` 让渲染循环借出管线时不必再分配。
 //! - **统计可查**：命中/未命中/编译耗时/变体数由构造期请求累计，Profiler 与验收命令读同一份数。
 
-use std::{
-    collections::HashMap,
-    fmt,
-    hash::Hash,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, fmt, hash::Hash, time::Duration};
+
+// wasm32-unknown-unknown 的 std `Instant::now()` 直接 panic；`web_time` 在原生上是同一类型。
+use web_time::Instant;
 
 use rustlua_render::mesh3d::MaterialAlphaMode;
 use rustlua_render::render_settings::IblMode;

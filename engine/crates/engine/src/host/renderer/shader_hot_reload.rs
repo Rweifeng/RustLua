@@ -21,8 +21,10 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Instant,
 };
+
+// wasm32-unknown-unknown 的 std `Instant::now()` 直接 panic；`web_time` 在原生上是同一类型。
+use web_time::Instant;
 
 use super::DepthPass;
 use super::Renderer;
