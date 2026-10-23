@@ -27,7 +27,7 @@ pub struct Graph {
 pub struct Node {
     /// 稳定 id：`[A-Za-z0-9_-]{1,64}`。生成 Lua 的变量名由它派生，改名即改生成物。
     pub id: String,
-    /// 节点类型名，必须在 [`crate::registry`] 里注册。
+    /// 节点类型名，必须在 `crate::registry` 里注册。
     pub kind: String,
     /// 编辑器画布坐标；无 UI 时也照样读写，保证往返不丢。
     #[serde(default)]

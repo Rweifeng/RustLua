@@ -1,6 +1,6 @@
 //! 有界 span 环形缓冲与 Chrome Trace Event 导出（P3-E06-2）。
 //!
-//! 为什么不是扩展 [`super::frame_profile::FrameProfile`]：那个模块只保留**分布**
+//! 为什么不是扩展 [`crate::host::frame_profile::FrameProfile`]：那个模块只保留**分布**
 //! （p50/p95/max），导出 trace 需要每个 span 的**开始时间、耗时、嵌套深度与参数**；
 //! 二者回答的问题不同——FrameProfile 回答"稳态分布"，trace 回答"这一帧到底按什么
 //! 顺序花了多久"。本模块只管采集与导出，不解析场景、不认识渲染器，编辑器与 headless

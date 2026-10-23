@@ -1163,11 +1163,18 @@ try {
                 }
                 $jhytPayload = Get-Content -LiteralPath $jhytSummary.FullName -Raw | ConvertFrom-Json
                 if ($jhytPayload.PSObject.Properties.Name -contains 'driveJhyt') {
-                    if ($jhytPayload.driveJhyt -ne 'done') {
+                    if ($jhytPayload.driveJhyt -eq 'skipped') {
+                        # B8：剧本写者（旧 JS 世界）已删除。子脚本在页面自报 `legacy JS world skipped`
+                        # 时判黄跳过并写 `skipped`；`absent`/`failed` 仍然是真红（请求了剧本却连自报都没有）。
+                        Write-Host "webgl_playthrough_skipped reason=writer_retired (旧 JS 世界写者已随 B8 删除；引擎侧玩法证据见 tasks/plan/M73-00 WP3)" -ForegroundColor Yellow
+                    }
+                    elseif ($jhytPayload.driveJhyt -ne 'done') {
                         throw "webgl complete playthrough gate FAILED: driveJhyt=$($jhytPayload.driveJhyt) detail=$($jhytPayload.driveJhytDetail)"
                     }
+                    else {
+                        Write-Host "webgl_playthrough_ok driveJhyt=$($jhytPayload.driveJhyt) milestones=$($jhytPayload.driveJhytDetail)" -ForegroundColor Green
+                    }
                 }
-                Write-Host "webgl_playthrough_ok driveJhyt=$($jhytPayload.driveJhyt) milestones=$($jhytPayload.driveJhytDetail)" -ForegroundColor Green
             }
 
             # ③″ L3 行为契约层（docs/51）：把桌面那份 `lua_api_contract.lua` 注进**这个已打完
@@ -1192,13 +1199,20 @@ try {
                     throw "webgl API contract reported success but wrote no FRESH bundle-summary JSON"
                 }
                 $contractPayload = Get-Content -LiteralPath $contractSummary.FullName -Raw | ConvertFrom-Json
-                if ($contractPayload.apiContract -ne 'ok') {
+                if ($contractPayload.apiContract -eq 'skipped') {
+                    # B8：L3 契约注入的是旧 JS 世界的活体 Lua 状态，写者已删除 ⇒ 没有被测物。
+                    # 等价覆盖在微信 harness（同一份契约文件、经 wasm 桥，l3_api_contract=ok）。
+                    Write-Host "webgl_api_contract_skipped reason=writer_retired (L3 契约写者已随 B8 删除；等价覆盖见微信 harness l3_api_contract)" -ForegroundColor Yellow
+                }
+                elseif ($contractPayload.apiContract -ne 'ok') {
                     throw "webgl API contract gate FAILED: api_contract=$($contractPayload.apiContract) cases=$($contractPayload.apiContractCases)"
                 }
-                if ($contractPayload.apiContractCases -le 0) {
+                elseif ($contractPayload.apiContractCases -le 0) {
                     throw "webgl API contract reports ok with cases=$($contractPayload.apiContractCases) (0 条用例的绿不算证据)"
                 }
-                Write-Host "webgl_api_contract_ok cases=$($contractPayload.apiContractCases) report=$($contractPayload.apiContractReport)" -ForegroundColor Green
+                else {
+                    Write-Host "webgl_api_contract_ok cases=$($contractPayload.apiContractCases) report=$($contractPayload.apiContractReport)" -ForegroundColor Green
+                }
             }
 
             # ③ 新 EH（try_table/exnref）跨浏览器层：本产物是纯新 EH，低于门槛的引擎连编译都

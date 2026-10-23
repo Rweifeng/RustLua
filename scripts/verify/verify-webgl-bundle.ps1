@@ -751,12 +751,15 @@ $summary = [ordered]@{
     tileLayers     = if ($null -eq $tileDrawn) { "absent" } else { "$tileDrawn/$tileDeclared" }
     drive          = $driveState
     driveDetail    = $driveStateDetail
-    driveJhyt      = if ($DriveJhyt) { $driveState } else { "not-requested" }
+    # `skipped` 与 `absent` 必须分开：前者 = 写者(旧 JS 世界)已随 B8 删除、本门没有被测物
+    # （见 911 行的跳过分支），后者 = 请求了剧本却连自报都没有（真的坏了）。调用方按这个字段判。
+    driveJhyt      = if (-not $DriveJhyt) { "not-requested" } elseif ($driveState -ne "done" -and $jsHostSkipped) { "skipped" } else { $driveState }
     driveJhytDetail = if ($DriveJhyt) { $driveStateDetail } else { "" }
     sceneVerify    = $sceneVerifyState
     sceneVerifyDetail = $sceneVerifyDetail
     audio          = $audioEvidence
-    apiContract    = $contractVerdict
+    # 同上：`unavailable` 是因为旧 JS 世界的 Lua 状态随 B8 删除、没有可注的被测物，不是契约失败。
+    apiContract    = if ($ApiContract -and $contractVerdict -ne "ok" -and $jsHostSkipped) { "skipped" } else { $contractVerdict }
     apiContractCases = $contractCases
     apiContractReport = $contractReportPath
     domDump        = $domPath

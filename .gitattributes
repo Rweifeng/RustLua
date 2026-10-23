@@ -14,3 +14,8 @@ git-hooks/* text eol=lf
 # 检出的 .txt 变成 CRLF，于是这条门在干净仓库上也红，且失败信息里一个字符都看不出差别
 # （整份 33 行"全都不一致"）。同一类坑在黄金表上已经踩过一次（BOM 沉底错位）。
 engine/crates/rustlua-scripting/src/api_surface_snapshot/*.txt text eol=lf
+
+# 内置 shader 源也必须是 LF：`include_str!` 在编译期把工作区字节嵌进二进制，而空 feature 表
+# 的预处理只按 `\n` 切/拼行（`shader_hot_reload` 的字节恒等断言）。autocrlf=true 会把检出的
+# .wgsl 变成 CRLF ⇒ 预处理"改变了源"，这条门在干净仓库上也会红。
+engine/shaders/*.wgsl text eol=lf
