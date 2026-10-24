@@ -1,0 +1,502 @@
+{
+  "spec_version": 1,
+  "document": {
+    "kind": "widget",
+    "name": "matrix",
+    "canvas": {
+      "reference": [
+        1280.0,
+        720.0
+      ],
+      "scale_mode": "fit_both",
+      "safe_area": false
+    }
+  },
+  "tokens": {
+    "color.block": "#31404f",
+    "color.flow": "#3f5566",
+    "color.text": "#e6edf3"
+  },
+  "styles": {
+    "anchor_dot": {
+      "base": {
+        "bg": "@color.block",
+        "color": "@color.text",
+        "font_size": 14,
+        "opacity": 1.0
+      },
+      "states": {}
+    },
+    "flow_row": {
+      "base": {
+        "bg": "@color.flow",
+        "color": "@color.text",
+        "font_size": 16
+      },
+      "states": {}
+    }
+  },
+  "root": {
+    "key": "matrix_root",
+    "type": "panel",
+    "layout": {
+      "anchor": "full_rect"
+    },
+    "children": [
+      {
+        "key": "a_top_left",
+        "type": "text",
+        "text": "TL",
+        "style": "anchor_dot",
+        "layout": {
+          "anchor": "top_left",
+          "size": [
+            90.0,
+            24.0
+          ]
+        }
+      },
+      {
+        "key": "a_top_center",
+        "type": "text",
+        "text": "TC",
+        "style": "anchor_dot",
+        "layout": {
+          "anchor": "top_center",
+          "size": [
+            90.0,
+            24.0
+          ]
+        }
+      },
+      {
+        "key": "a_top_right",
+        "type": "text",
+        "text": "TR",
+        "style": "anchor_dot",
+        "layout": {
+          "anchor": "top_right",
+          "size": [
+            90.0,
+            24.0
+          ]
+        }
+      },
+      {
+        "key": "a_center_left",
+        "type": "text",
+        "text": "CL",
+        "style": "anchor_dot",
+        "layout": {
+          "anchor": "center_left",
+          "size": [
+            90.0,
+            24.0
+          ]
+        }
+      },
+      {
+        "key": "a_center",
+        "type": "text",
+        "text": "CC",
+        "style": "anchor_dot",
+        "layout": {
+          "anchor": "center",
+          "size": [
+            90.0,
+            24.0
+          ]
+        }
+      },
+      {
+        "key": "a_center_right",
+        "type": "text",
+        "text": "CR",
+        "style": "anchor_dot",
+        "layout": {
+          "anchor": "center_right",
+          "size": [
+            90.0,
+            24.0
+          ]
+        }
+      },
+      {
+        "key": "a_bottom_left",
+        "type": "text",
+        "text": "BL",
+        "style": "anchor_dot",
+        "layout": {
+          "anchor": "bottom_left",
+          "size": [
+            90.0,
+            24.0
+          ]
+        }
+      },
+      {
+        "key": "a_bottom_center",
+        "type": "text",
+        "text": "BC",
+        "style": "anchor_dot",
+        "layout": {
+          "anchor": "bottom_center",
+          "size": [
+            90.0,
+            24.0
+          ]
+        }
+      },
+      {
+        "key": "a_bottom_right",
+        "type": "text",
+        "text": "BR",
+        "style": "anchor_dot",
+        "layout": {
+          "anchor": "bottom_right",
+          "size": [
+            90.0,
+            24.0
+          ]
+        }
+      },
+      {
+        "key": "insets",
+        "type": "panel",
+        "style": "anchor_dot",
+        "layout": {
+          "offsets": [
+            16.0,
+            48.0,
+            1000.0,
+            640.0
+          ]
+        }
+      },
+      {
+        "key": "inside_box_absolute",
+        "type": "panel",
+        "style": "flow_row",
+        "layout": {
+          "anchor": "top_left",
+          "position": [
+            290.0,
+            150.0
+          ],
+          "size": [
+            160.0,
+            80.0
+          ]
+        }
+      },
+      {
+        "key": "sliding",
+        "type": "panel",
+        "style": "anchor_dot",
+        "layout": {
+          "anchor": "top_left",
+          "percent": [
+            25.0,
+            10.0
+          ],
+          "position": [
+            260.0,
+            16.0
+          ]
+        }
+      },
+      {
+        "key": "band_h",
+        "type": "panel",
+        "style": "anchor_dot",
+        "layout": {
+          "anchor": "stretch_horizontal",
+          "position": [
+            0.0,
+            420.0
+          ],
+          "size": [
+            120.0,
+            16.0
+          ]
+        }
+      },
+      {
+        "key": "box_v",
+        "type": "container",
+        "direction": "v_box",
+        "padding": [
+          10.0,
+          8.0,
+          10.0,
+          8.0
+        ],
+        "spacing": 6.0,
+        "justify": "start",
+        "align": "start",
+        "style": "anchor_dot",
+        "layout": {
+          "anchor": "top_left",
+          "position": [
+            260.0,
+            120.0
+          ],
+          "size": [
+            220.0,
+            140.0
+          ]
+        },
+        "children": [
+          {
+            "key": "v_row_1",
+            "type": "text",
+            "text": "row 1",
+            "style": "flow_row",
+            "layout": {
+              "size": [
+                180.0,
+                26.0
+              ]
+            }
+          },
+          {
+            "key": "v_row_2",
+            "type": "text",
+            "text": "row 2",
+            "style": "flow_row",
+            "layout": {
+              "size": [
+                180.0,
+                40.0
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "key": "box_h",
+        "type": "container",
+        "direction": "h_box",
+        "padding": [
+          8.0,
+          8.0,
+          8.0,
+          8.0
+        ],
+        "spacing": 8.0,
+        "justify": "space_between",
+        "align": "center",
+        "style": "anchor_dot",
+        "layout": {
+          "anchor": "top_left",
+          "position": [
+            520.0,
+            120.0
+          ],
+          "size": [
+            260.0,
+            70.0
+          ]
+        },
+        "children": [
+          {
+            "key": "h_half",
+            "type": "panel",
+            "style": "flow_row",
+            "layout": {
+              "percent": [
+                40.0,
+                60.0
+              ]
+            }
+          },
+          {
+            "key": "h_fixed",
+            "type": "text",
+            "text": "h",
+            "style": "flow_row",
+            "layout": {
+              "size": [
+                48.0,
+                24.0
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "key": "box_grid",
+        "type": "container",
+        "direction": "grid",
+        "columns": 3,
+        "padding": [
+          6.0,
+          6.0,
+          6.0,
+          6.0
+        ],
+        "spacing": 4.0,
+        "style": "anchor_dot",
+        "layout": {
+          "anchor": "top_left",
+          "position": [
+            260.0,
+            290.0
+          ],
+          "size": [
+            220.0,
+            100.0
+          ]
+        },
+        "children": [
+          {
+            "key": "g_1",
+            "type": "panel",
+            "style": "flow_row",
+            "layout": {
+              "size": [
+                66.6,
+                30.0
+              ]
+            }
+          },
+          {
+            "key": "g_2",
+            "type": "panel",
+            "style": "flow_row",
+            "layout": {
+              "size": [
+                66.6,
+                30.0
+              ]
+            }
+          },
+          {
+            "key": "g_3",
+            "type": "panel",
+            "style": "flow_row",
+            "layout": {
+              "size": [
+                66.6,
+                30.0
+              ]
+            }
+          },
+          {
+            "key": "g_4",
+            "type": "panel",
+            "style": "flow_row",
+            "layout": {
+              "size": [
+                66.6,
+                30.0
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "key": "box_wrap",
+        "type": "container",
+        "direction": "wrap",
+        "padding": [
+          6.0,
+          6.0,
+          6.0,
+          6.0
+        ],
+        "spacing": 6.0,
+        "style": "anchor_dot",
+        "layout": {
+          "anchor": "top_left",
+          "position": [
+            520.0,
+            220.0
+          ],
+          "size": [
+            260.0,
+            170.0
+          ]
+        },
+        "children": [
+          {
+            "key": "w_1",
+            "type": "panel",
+            "style": "flow_row",
+            "layout": {
+              "size": [
+                120.0,
+                40.0
+              ]
+            }
+          },
+          {
+            "key": "w_2",
+            "type": "panel",
+            "style": "flow_row",
+            "layout": {
+              "size": [
+                120.0,
+                40.0
+              ]
+            }
+          },
+          {
+            "key": "w_3",
+            "type": "panel",
+            "style": "flow_row",
+            "layout": {
+              "size": [
+                120.0,
+                40.0
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "key": "ok_button",
+        "type": "button",
+        "text": "OK",
+        "style": "flow_row",
+        "events": {
+          "click": "on_matrix_ok",
+          "pointer_enter": "on_matrix_hover"
+        },
+        "layout": {
+          "anchor": "bottom_right",
+          "position": [
+            -24.0,
+            -24.0
+          ],
+          "size": [
+            160.0,
+            48.0
+          ]
+        }
+      },
+      {
+        "key": "quit_button",
+        "type": "button",
+        "text": "QUIT",
+        "style": "flow_row",
+        "events": {
+          "pointer_down": "on_matrix_quit"
+        },
+        "layout": {
+          "anchor": "bottom_right",
+          "position": [
+            -208.0,
+            -24.0
+          ],
+          "size": [
+            160.0,
+            48.0
+          ]
+        }
+      }
+    ]
+  },
+  "assets": [],
+  "bindings": []
+}

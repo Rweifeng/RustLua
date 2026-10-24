@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "documents": {
+    "ui/matrix.ui.json": {
+      "pc": {
+        "command": "cd engine && cargo run -q -p editor --example m76_ui_matrix -- --document ui/matrix.ui.json --output ../examples/game_api/artifacts/ui-matrix/pc.json",
+        "checks": [
+          "layout_rects",
+          "draw_order"
+        ],
+        "artifact": "artifacts/ui-matrix/pc.json",
+        "revision": 5733351176405973,
+        "note": "编辑器侧确定性导出（docs/75 §4.4）→ RuntimeScene 无头构建；版面逐键对照预览器（最大 0.133 px）、30 个图块的提交顶点下标随文档前序单调递增。字形顶点 0（无头宿主没装字体图集），故 draw_order 只覆盖图块层。web/微信本批未做，留无条目 = untested。"
+      }
+    }
+  }
+}

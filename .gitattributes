@@ -19,3 +19,11 @@ engine/crates/rustlua-scripting/src/api_surface_snapshot/*.txt text eol=lf
 # 的预处理只按 `\n` 切/拼行（`shader_hot_reload` 的字节恒等断言）。autocrlf=true 会把检出的
 # .wgsl 变成 CRLF ⇒ 预处理"改变了源"，这条门在干净仓库上也会红。
 engine/crates/rustlua-gpu/shaders/*.wgsl text eol=lf
+
+# UI 文档与宿主证据产物必须是 LF：三宿主证据门的判据是 `revision_hash(工作区字节)`，
+# 产物里写死同一个数。core.autocrlf=true 的克隆把 `.ui.json` 检成 CRLF，revision 就地漂移，
+# 于是别人干净检出后第一次跑门就报"产物已过期"——红的是行尾，不是版面。
+# 同一类"字节恒等才是判据"的坑已在 api_surface_snapshot 与 shader 源上踩过两次。
+examples/**/ui/*.ui.json text eol=lf
+examples/**/ui/hosts.json text eol=lf
+examples/**/artifacts/**/*.json text eol=lf

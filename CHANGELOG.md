@@ -5,6 +5,30 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — UI 宿主证据的生产端（pc 半区）：`.ui.json` 与真实运行时逐键对账（2026-10-25）
+
+- **桥**：`engine/crates/editor/src/ui_scene_export.rs` 把 `UiSpec` 确定性地导成 `.scene` 片段——锚点
+  预设 → `UiRectLayout`、样式 → `Image`/`Text` 组件串、`padding`/`spacing` 流向容器按内框度量子项。
+  按 docs/75 的裁定这是**编辑器侧适配层**，运行时不读 `.ui.json`，游戏包不为 UI 文档带解析器。
+- **生产端**：`engine/crates/editor/examples/m76_ui_matrix.rs`（无头）加载新建的
+  `examples/game_api/ui/matrix.ui.json`（31 节点、零资产的形状矩阵：九锚点 / 四边内缩 / percent +
+  position / 横向·纵向·网格·换行四种流向 / 三种事件按钮），经上面那座桥喂进**真实的运行时布局解算与
+  网格绘制**，逐键对拍预览器矩形、逐图块对拍绘制次序；两项全绿才写产物并登记进新建的
+  `examples/game_api/ui/hosts.json`，红了不落盘（一份"结构合法、内容判红"的产物会被消费端当成已测）。
+- **为什么重要**：`ui/hosts.json` 这份证据契约此前**只有消费端**——`ui_asset_gate` 拿到空清单就一直
+  报 untested，门绿得毫无意义。现在 pc 有真实读数，`scripts/verify/verify.ps1` 也加了一步
+  「M76-① PC UI host evidence」把生产端本身钉进门（产物写 %TEMP%，不动工作区）。
+- **顺带修掉一个真实缺陷**：spec 的 `offsets` 是四边内缩口径，运行时是"远锚边再加偏移"，导出漏取
+  负号会让右/下锚整体漂移（`insets` 节点实测 2264 对 264），现由单测钉住。
+- **硬拒而不是静默降级**：v1 表达不了的形状（流向容器里的 `offsets`、`grow`、`align_self`、时态
+  样式、7 个之外的样式键）在导出端直接报错——"写了会丢"必须当场说出来。
+- **证据**：`ui_scene_export` 17 单测 + `cargo test -p editor --lib` 275 全绿；example 现跑产物与入库
+  那份 14986 字节逐位相同；发布门 `error 0 · warning 0 · 未测宿主 5`；两条反面对照（手改产物
+  revision → warning 并降级为 untested；指定不存在的文档 → exit 1 且不生成产物）。
+- **边界（没买到的）**：web 与微信两个生产端仍缺，`hosts.json` 里无条目 = untested，不写成通过；
+  无头宿主没有字体图集，字形顶点为 0，`draw_order` 只覆盖图块层；预览器与运行时另有三条真实分歧
+  （`grow`、`align_self`、网格列距）本批只量化未修，细节与数字见 docs/75 §14。
+
 ## Unreleased — DSH 一句话创建 UI 预设：MCP 直连与提案式新建（2026-10-24）
 
 - **新 tool `ui_create_preset`（T1）**：只新建 `.ui.json`，已存在直接拒绝；内部仍走

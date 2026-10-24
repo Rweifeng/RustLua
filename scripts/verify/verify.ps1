@@ -633,6 +633,19 @@ try {
         "test", "-p", "editor", "--test", "ui_asset_gate", "--", "--nocapture"
     )
 
+    # M76-①：上面那条门只有**消费端**——`ui/hosts.json` 里没条目时它永远报 untested，绿得毫无意义。
+    # 这一步是生产端：把 `ui/matrix.ui.json` 走编辑器侧确定性导出桥（`ui_scene_export`）喂进真实的
+    # 运行时布局解算与网格绘制，逐键对拍预览器矩形、逐图块对拍绘制次序；两项检查全绿才写产物。
+    # 产物只写 %TEMP% 的固定文件名：入库那份是 bless 后提交的，这一步证明"当前代码在这台机器上跑得
+    # 出同样绿"，不改动工作区（10-25 实测：现跑产物与入库那份 14986 字节逐位相同）。它**不与**入库
+    # 那份对账——那是上面 ui_asset_gate 用 revision 做的事；这里只买"生产端没有烂掉"。
+    Write-Step "M76-① PC UI host evidence"
+    $pcUiEvidencePath = Join-Path $env:TEMP "rustlua-m76-pc-ui-evidence.json"
+    Invoke-Checked cargo @(
+        "run", "--quiet", "-p", "editor", "--example", "m76_ui_matrix", "--",
+        "--document", "ui/matrix.ui.json", "--output", $pcUiEvidencePath
+    )
+
     # M72-10b：UI 资源契约（Python 只读量具）。九宫格半句查 8 份 prefab 的 54 行
     # `_9s`：必须带 nine_slice、等于 manifest、且 UiLayout 宽高装得下边距；
     # 图标半句查 93 张 32×32 的硬边/6bit/非纯色/非噪点。审美精修仍是外部委托，

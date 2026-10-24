@@ -335,6 +335,8 @@ UI Studio 的价值取决于运行时闭环。M1 的优先级：
 
 **反面对照**：每个新门必须跑一次"故意破坏"验证它会红，否则视为假绿。
 
+**本表是目标口径，不是当前状态。** 截至 2026-10-25，只有"布局 golden / 绘制顺序"的 **pc 半区**有真实读数（`m76_ui_matrix` + `ui/hosts.json`，细节见 §14）：逐键矩形最大残差 0.1333 px（门容差 0.51 px——运行时与预览器是两套解算器，**上表的"误差 0"是要求，实测是量出来的浮点残差**）；绘制次序是 30 个图块各自在合并网格里找到预期角点（最大角点误差 0.0006 NDC ≈ 0.4 px）且顶点区间严格单调，字形层没有覆盖（无头宿主没有字体图集，字形顶点为 0）。web 与微信依然没有条目 = untested；"交互序列"这一行没有生产端。
+
 ---
 
 ## 11. 路线图（M0–M6）
@@ -393,5 +395,7 @@ M4 可与 M3 后半并行，M5 可与 M4 并行，M6 必须最后。
 | 2026-10-24 | **入库**：M76 与 M77 一笔带走 `c247fe99`（233 个文件、30248 插入 / 2677 删除），并行批次在途内容（game_api 2.0 演示、`docs/74`、assetc 拆分、`scene_shot.rs`、M78-00）全部排除 | 门读数：`check-docs.ps1` → `docs=69 game_docs=46 h1=117 links=513`；`verify.ps1 -MvpOnly` → `executed=78 expected=78`；`cargo test -p rustlua-ui-spec` 59、`-p rustlua-editor-ai` 65(+1 ignored)、`-p editor --lib` 249。pre-commit 的 workspace clippy `-D warnings` 两次拒笔，M76 文件里 7 个 lint 点逐个真修（没有 `-A`、没有 `--no-verify`）。提交态三条（`--all-targets` / GPU 单线程 138+153 / 反面对照 7×E0432）见 [M77-00 §归档记录](../tasks/done/M77-00-宿主侧模块化与渲染器下沉-总览与依赖顺序.md)。**没买到的**：`-Web`、`-Benchmarks` 两段没跑；三宿主 golden 与 `ui/hosts.json` 生产端仍缺 |
 | 2026-10-24 | **归档**：`tasks/plan/M76-00..07` 与 `tasks/plan/M77-00`、`M77-02` 移入 `tasks/done/`，路径引用同笔更新 | 未收口项按「只登记，不开新包」保留在各包 §未完成项 |
 | 2026-10-24 | 本批提交状态：M76 与并行的 M77（渲染器下沉，52 条已在索引里的重命名）以及 `examples/game_api` 的 Lua 迁移同处一个工作区，`engine/Cargo.toml`、`main.rs`、`dock.rs`、game_api 样例都被两边共同改动 | 因此**没有可单独编译的 M76-only 路径子集**，本批按路径切提交会同时带走别人的在途改动；收口先落在文档与本批门读数，提交集等 M77 落地后按 `tasks/done/M76-00`「提交集」的命令重建（当日即按此执行，见下两行） |
+| 2026-10-25 | **三宿主 golden 的生产端（pc 半区，§10 那条"untested 不算通过"补上另一头）**：`ui_scene_export` 是编辑器侧确定性 `.ui.json`→`.scene` 桥，运行时不读 spec（按裁定不改运行时）；`m76_ui_matrix`（无头 example）把 `examples/game_api/ui/matrix.ui.json`（31 节点、零资产的形状矩阵：九锚点、insets、percent、横向/纵向/网格/换行四种流向、按钮三事件）经该桥喂进真实的运行时布局解算与网格绘制，逐键对拍预览器矩形、逐图块对拍绘制次序，两项全绿才写 `artifacts/ui-matrix/pc.json` 并登记进新建的 `ui/hosts.json`；`verify.ps1` 加一步「M76-① PC UI host evidence」把生产端本身钉进门（产物写 %TEMP%，不动工作区）；`.gitattributes` 给 `ui/*.ui.json`、`ui/hosts.json`、`artifacts/**/*.json` 钉 LF——`revision_hash` 逐字节，autocrlf 换 CRLF 会让别的机器一检出就把证据判成陈旧 | 读数：`ui_scene_export` 单测 17/17、`cargo test -p editor --lib` 275/275；example 现跑 `revision=5733351176405973 entities=31 layout_max_delta=0.1333 draw_rank_max_error=0.0006`，与入库产物 14986 字节逐位相同（`cmp` 静默）；`cargo test -p editor --test ui_asset_gate -- --nocapture` → `汇总：2 个工程 · 2 份 .ui.json · error 0 · warning 0 · 资产 0 B · 未测宿主 5`（证据槽 6 条，`matrix.ui.json` 的 pc 由 untested 翻成 tested，web/微信仍空）。**反面对照两条**：手改产物里的 `revision` → `warning 1 / 未测宿主 6`（按契约只降级不判红）；`--document ui/blacksmith.ui.json` 跑 example → exit 1 且**不生成**产物文件。**买到的新认知**（不是收尾顺带）：① `offsets` 在 spec/预览口径是"四边内缩"、运行时是"远锚边再加偏移"，导出漏取负号右/下锚整体漂移（`insets` 实测 2264 对 264），现已由 `offsets_export_negates_the_far_edges` 钉住；② 流向容器里的子项写 `offsets` 想让它在流里断开，运行时把它排进流塌成 0×0 而预览器让它退出流向——两侧口径不兼容的形状在导出端硬拒（`offsets_child_inside_flow_container_is_rejected`），v1 桥的原则是**表达不了就报错，不静默降级**（同样硬拒的还有 `grow`、`align_self`、时态样式、7 个之外的样式键） |
+| 2026-10-25 | 本批**没买到的部分**：web 与微信两个生产端仍缺（`hosts.json` 里无条目 = untested，不写成通过）；无头宿主没有字体图集，字形顶点为 0，所以 `draw_order` 只覆盖图块层（30 个图块），文字层次序仍是空白；预览器与运行时另有三条真实分歧本批只量化未修——`grow`（预览不实现）、`align_self`（同上）、网格列距（预览按内框等分列宽，运行时按自然尺寸 + spacing），`box_grid` 是靠把条目尺寸调到 66.6 让两边恰好相等才进矩阵的，属于绕开不是修好；修 `preview.rs` 另开批 | 三宿主一致性的"字形层"要等 web/微信批一起补 |
 
 后续每批落地在本表追加一行：日期、提交、门读数（命令 + 结果），不写"已完成"四个字了事。

@@ -1,0 +1,805 @@
+{
+  "canvas": [
+    1280,
+    720
+  ],
+  "checks": [
+    "layout_rects",
+    "draw_order"
+  ],
+  "command": "cargo run -q -p editor --example m76_ui_matrix -- --project {project} --document ui/matrix.ui.json",
+  "document": "ui/matrix.ui.json",
+  "draw_order": {
+    "blocks": 30,
+    "max_vertex_error": 0.0006250143051147461,
+    "monotonic_preorder": true,
+    "placed": 30,
+    "rows": [
+      {
+        "expected_ndc": [
+          -1.0,
+          1.0
+        ],
+        "first_vertex": 0,
+        "key": "a_top_left",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.0703125,
+          1.0
+        ],
+        "first_vertex": 6,
+        "key": "a_top_center",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          0.859375,
+          1.0
+        ],
+        "first_vertex": 12,
+        "key": "a_top_right",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -1.0,
+          0.03333336114883423
+        ],
+        "first_vertex": 18,
+        "key": "a_center_left",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.0703125,
+          0.03333336114883423
+        ],
+        "first_vertex": 24,
+        "key": "a_center",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          0.859375,
+          0.03333336114883423
+        ],
+        "first_vertex": 30,
+        "key": "a_center_right",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -1.0,
+          -0.9333332777023315
+        ],
+        "first_vertex": 36,
+        "key": "a_bottom_left",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.0703125,
+          -0.9333332777023315
+        ],
+        "first_vertex": 42,
+        "key": "a_bottom_center",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          0.859375,
+          -0.9333332777023315
+        ],
+        "first_vertex": 48,
+        "key": "a_bottom_right",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.9750000238418579,
+          0.8666666746139526
+        ],
+        "first_vertex": 54,
+        "key": "insets",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.546875,
+          0.5833333730697632
+        ],
+        "first_vertex": 60,
+        "key": "inside_box_absolute",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.59375,
+          0.9555555582046509
+        ],
+        "first_vertex": 66,
+        "key": "sliding",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -1.0,
+          -1.144444465637207
+        ],
+        "first_vertex": 72,
+        "key": "band_h",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.59375,
+          0.6666666269302368
+        ],
+        "first_vertex": 78,
+        "key": "box_v",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.578125,
+          0.644444465637207
+        ],
+        "first_vertex": 84,
+        "key": "v_row_1",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.578125,
+          0.5555555820465088
+        ],
+        "first_vertex": 90,
+        "key": "v_row_2",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.1875,
+          0.6666666269302368
+        ],
+        "first_vertex": 96,
+        "key": "box_h",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.17500001192092896,
+          0.6144444346427917
+        ],
+        "first_vertex": 102,
+        "key": "h_half",
+        "vertex_abs_error": 0.000555574893951416
+      },
+      {
+        "expected_ndc": [
+          0.1312500238418579,
+          0.6027777791023254
+        ],
+        "first_vertex": 108,
+        "key": "h_fixed",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.59375,
+          0.1944444179534912
+        ],
+        "first_vertex": 114,
+        "key": "box_grid",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.5843750238418579,
+          0.17777776718139648
+        ],
+        "first_vertex": 120,
+        "key": "g_1",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.4740625023841858,
+          0.17777776718139648
+        ],
+        "first_vertex": 126,
+        "key": "g_2",
+        "vertex_abs_error": 0.0006250143051147461
+      },
+      {
+        "expected_ndc": [
+          -0.36374998092651367,
+          0.17777776718139648
+        ],
+        "first_vertex": 132,
+        "key": "g_3",
+        "vertex_abs_error": 0.00031250715255737305
+      },
+      {
+        "expected_ndc": [
+          -0.5843750238418579,
+          0.08333331346511841
+        ],
+        "first_vertex": 138,
+        "key": "g_4",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.1875,
+          0.3888888955116272
+        ],
+        "first_vertex": 144,
+        "key": "box_wrap",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.1781250238418579,
+          0.37222224473953247
+        ],
+        "first_vertex": 150,
+        "key": "w_1",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          0.01874995231628418,
+          0.37222224473953247
+        ],
+        "first_vertex": 156,
+        "key": "w_2",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.1781250238418579,
+          0.24444442987442017
+        ],
+        "first_vertex": 162,
+        "key": "w_3",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          0.7124999761581421,
+          -0.7999999523162842
+        ],
+        "first_vertex": 168,
+        "key": "ok_button",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          0.4249999523162842,
+          -0.7999999523162842
+        ],
+        "first_vertex": 174,
+        "key": "quit_button",
+        "vertex_abs_error": 0.0
+      }
+    ],
+    "tolerance": 0.0007812500116415322
+  },
+  "entities": 31,
+  "host": "pc",
+  "layout_rects": {
+    "compared": 31,
+    "max_abs_delta": 0.13330078125,
+    "missing_in_host": [],
+    "rows": [
+      {
+        "abs_delta": 0.0,
+        "host": [
+          0.0,
+          0.0,
+          1280.0,
+          720.0
+        ],
+        "key": "matrix_root",
+        "preview": [
+          0.0,
+          0.0,
+          1280.0,
+          720.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          0.0,
+          0.0,
+          90.0,
+          24.0
+        ],
+        "key": "a_top_left",
+        "preview": [
+          0.0,
+          0.0,
+          90.0,
+          24.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          595.0,
+          0.0,
+          90.0,
+          24.0
+        ],
+        "key": "a_top_center",
+        "preview": [
+          595.0,
+          0.0,
+          90.0,
+          24.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          1190.0,
+          0.0,
+          90.0,
+          24.0
+        ],
+        "key": "a_top_right",
+        "preview": [
+          1190.0,
+          0.0,
+          90.0,
+          24.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          0.0,
+          348.0,
+          90.0,
+          24.0
+        ],
+        "key": "a_center_left",
+        "preview": [
+          0.0,
+          348.0,
+          90.0,
+          24.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          595.0,
+          348.0,
+          90.0,
+          24.0
+        ],
+        "key": "a_center",
+        "preview": [
+          595.0,
+          348.0,
+          90.0,
+          24.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          1190.0,
+          348.0,
+          90.0,
+          24.0
+        ],
+        "key": "a_center_right",
+        "preview": [
+          1190.0,
+          348.0,
+          90.0,
+          24.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          0.0,
+          696.0,
+          90.0,
+          24.0
+        ],
+        "key": "a_bottom_left",
+        "preview": [
+          0.0,
+          696.0,
+          90.0,
+          24.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          595.0,
+          696.0,
+          90.0,
+          24.0
+        ],
+        "key": "a_bottom_center",
+        "preview": [
+          595.0,
+          696.0,
+          90.0,
+          24.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          1190.0,
+          696.0,
+          90.0,
+          24.0
+        ],
+        "key": "a_bottom_right",
+        "preview": [
+          1190.0,
+          696.0,
+          90.0,
+          24.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          16.0,
+          48.0,
+          264.0,
+          32.0
+        ],
+        "key": "insets",
+        "preview": [
+          16.0,
+          48.0,
+          264.0,
+          32.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          290.0,
+          150.0,
+          160.0,
+          80.0
+        ],
+        "key": "inside_box_absolute",
+        "preview": [
+          290.0,
+          150.0,
+          160.0,
+          80.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          260.0,
+          16.0,
+          320.0,
+          72.0
+        ],
+        "key": "sliding",
+        "preview": [
+          260.0,
+          16.0,
+          320.0,
+          72.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          0.0,
+          772.0,
+          1280.0,
+          16.0
+        ],
+        "key": "band_h",
+        "preview": [
+          0.0,
+          772.0,
+          1280.0,
+          16.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          260.0,
+          120.0,
+          220.0,
+          140.0
+        ],
+        "key": "box_v",
+        "preview": [
+          260.0,
+          120.0,
+          220.0,
+          140.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          270.0,
+          128.0,
+          180.0,
+          26.0
+        ],
+        "key": "v_row_1",
+        "preview": [
+          270.0,
+          128.0,
+          180.0,
+          26.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          270.0,
+          160.0,
+          180.0,
+          40.0
+        ],
+        "key": "v_row_2",
+        "preview": [
+          270.0,
+          160.0,
+          180.0,
+          40.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          520.0,
+          120.0,
+          260.0,
+          70.0
+        ],
+        "key": "box_h",
+        "preview": [
+          520.0,
+          120.0,
+          260.0,
+          70.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          528.0,
+          138.8000030517578,
+          97.5999984741211,
+          32.400001525878906
+        ],
+        "key": "h_half",
+        "preview": [
+          528.0,
+          138.8000030517578,
+          97.5999984741211,
+          32.400001525878906
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          724.0,
+          143.0,
+          48.0,
+          24.0
+        ],
+        "key": "h_fixed",
+        "preview": [
+          724.0,
+          143.0,
+          48.0,
+          24.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          260.0,
+          290.0,
+          220.0,
+          100.0
+        ],
+        "key": "box_grid",
+        "preview": [
+          260.0,
+          290.0,
+          220.0,
+          100.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          266.0,
+          296.0,
+          66.5999984741211,
+          30.0
+        ],
+        "key": "g_1",
+        "preview": [
+          266.0,
+          296.0,
+          66.5999984741211,
+          30.0
+        ]
+      },
+      {
+        "abs_delta": 0.066650390625,
+        "host": [
+          336.6000061035156,
+          296.0,
+          66.5999984741211,
+          30.0
+        ],
+        "key": "g_2",
+        "preview": [
+          336.6666564941406,
+          296.0,
+          66.5999984741211,
+          30.0
+        ]
+      },
+      {
+        "abs_delta": 0.13330078125,
+        "host": [
+          407.20001220703125,
+          296.0,
+          66.5999984741211,
+          30.0
+        ],
+        "key": "g_3",
+        "preview": [
+          407.33331298828125,
+          296.0,
+          66.5999984741211,
+          30.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          266.0,
+          330.0,
+          66.5999984741211,
+          30.0
+        ],
+        "key": "g_4",
+        "preview": [
+          266.0,
+          330.0,
+          66.5999984741211,
+          30.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          520.0,
+          220.0,
+          260.0,
+          170.0
+        ],
+        "key": "box_wrap",
+        "preview": [
+          520.0,
+          220.0,
+          260.0,
+          170.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          526.0,
+          226.0,
+          120.0,
+          40.0
+        ],
+        "key": "w_1",
+        "preview": [
+          526.0,
+          226.0,
+          120.0,
+          40.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          652.0,
+          226.0,
+          120.0,
+          40.0
+        ],
+        "key": "w_2",
+        "preview": [
+          652.0,
+          226.0,
+          120.0,
+          40.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          526.0,
+          272.0,
+          120.0,
+          40.0
+        ],
+        "key": "w_3",
+        "preview": [
+          526.0,
+          272.0,
+          120.0,
+          40.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          1096.0,
+          648.0,
+          160.0,
+          48.0
+        ],
+        "key": "ok_button",
+        "preview": [
+          1096.0,
+          648.0,
+          160.0,
+          48.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          912.0,
+          648.0,
+          160.0,
+          48.0
+        ],
+        "key": "quit_button",
+        "preview": [
+          912.0,
+          648.0,
+          160.0,
+          48.0
+        ]
+      }
+    ],
+    "tolerance": 0.5099999904632568
+  },
+  "paths": [
+    "__white__"
+  ],
+  "report_version": "m76-ui-host-evidence-v1",
+  "revision": 5733351176405973,
+  "sdf_vertices": 0,
+  "segments": 1,
+  "vertices": 180
+}

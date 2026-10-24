@@ -33,6 +33,8 @@ pub mod resource_refresh;
 pub mod review;
 pub mod schema_fields;
 pub mod services;
+/// M76-①：UiSpec → `.scene` 的确定性导出（docs/75 §4.4 编辑器侧适配层，宿主证据的生产真源）。
+pub mod ui_scene_export;
 /// M76-03：UI 文档（`.ui.json`）宿主——读写/revision/校验/预览/提案，不依赖 egui。
 pub mod ui_spec_host;
 /// M76-04：UI Studio 的无头状态层（层级/检查器/预览/提案箱），egui 面板只做绘制。
