@@ -9,11 +9,11 @@ use editor::ui_spec_host::{
 };
 use editor::{CommandResult, EditorCommand, ReparentPosition, SceneDocument, SelectionSource};
 use rustlua_editor_ai::ui_tools::{
-    ApplyPatchRequest, ApplyResponse, ApplySpecRequest, ExportSpecRequest, ExportSpecResponse,
-    GenerateAssetsRequest, GenerateAssetsResponse, GeneratedAsset, ListAssetsRequest,
-    ListAssetsResponse, PreviewSpecRequest, PromoteAssetRequest, PromoteAssetResponse,
-    SliceAssetRequest, SliceAssetResponse, SlicedAssetEntry, UiAssetEntry, ValidateSpecRequest,
-    ValidateSpecResponse,
+    ApplyPatchRequest, ApplyResponse, ApplySpecRequest, CreatePresetRequest, CreatePresetResponse,
+    ExportSpecRequest, ExportSpecResponse, GenerateAssetsRequest, GenerateAssetsResponse,
+    GeneratedAsset, ListAssetsRequest, ListAssetsResponse, PreviewSpecRequest, PromoteAssetRequest,
+    PromoteAssetResponse, SliceAssetRequest, SliceAssetResponse, SlicedAssetEntry, UiAssetEntry,
+    ValidateSpecRequest, ValidateSpecResponse,
 };
 use rustlua_editor_ai::{
     AiBridge, ImageProvider, ImageRequest, LocalImageProvider, RemoteImageConfig,
@@ -421,6 +421,40 @@ impl EditorAiHost<'_> {
                     .submit_patch(&request.document, request.patch)
                     .map_err(ui_tool_error)?;
                 to_json(ApplyResponse { proposal })
+            }
+            ui::CREATE_PRESET => {
+                let request: CreatePresetRequest = parse_ui_request(args)?;
+                // 只新建：已存在时绝不覆盖，避免「一句话」把别人正在编辑的文档冲掉。
+                let path = store.resolve(&request.document).map_err(ui_tool_error)?;
+                if path.exists() {
+                    return Err(ToolError::Rejected(format!(
+                        "UI 预设已存在：{}；先 ui_export_spec 取 revision，再用 ui_apply_patch 修改",
+                        request.document
+                    )));
+                }
+                let diagnostics = store.validate(&request.spec).map_err(ui_tool_error)?;
+                // 走与 UI Studio 相同的提案 → 接受路径；区别只是新文档的 base_revision 固定为 0。
+                let proposal = store
+                    .submit_spec(&request.document, 0, request.spec.clone())
+                    .map_err(ui_tool_error)?;
+                let accepted = store.accept(&proposal.proposal_id).map_err(ui_tool_error)?;
+                let preview_png_base64 = if request.preview {
+                    let png = store
+                        .preview(&accepted.spec, request.width, request.height, request.scale)
+                        .map_err(ui_tool_error)?;
+                    Some(base64_encode(&png))
+                } else {
+                    None
+                };
+                to_json(CreatePresetResponse {
+                    document: accepted.document,
+                    revision: accepted.revision,
+                    spec: accepted.spec,
+                    diagnostics,
+                    preview_png_base64,
+                    width: request.width,
+                    height: request.height,
+                })
             }
             ui::PROMOTE_ASSET => {
                 let request: PromoteAssetRequest = parse_ui_request(args)?;
@@ -970,6 +1004,7 @@ impl ToolHost for EditorAiHost<'_> {
                     ToolError::Rejected(format!("读取 {} 失败：{error}", path.display()))
                 })
             }
+            "rustlua://ui/guide" => Ok(rustlua_editor_ai::UI_GUIDE.to_owned()),
             other => Err(ToolError::UnknownTool(format!("resource {other}"))),
         }
     }
@@ -1561,7 +1596,16 @@ mod tests {
         )
         .expect("tools/call 必须回包");
         let result = response.get("result").expect("tools/call result");
-        let structured = result["structuredContent"].clone();
+        let mut structured = result["structuredContent"].clone();
+        // MCP 把预览图放进 image content block、从 structuredContent 里摘掉 base64；
+        // 双通道对拍时把它还原回内部 API 的形状，比较的才是同一份数据。
+        if let Some(data) = result["content"]
+            .as_array()
+            .and_then(|items| items.iter().find(|item| item["type"] == "image"))
+            .and_then(|image| image["data"].as_str())
+        {
+            structured["png_base64"] = json!(data);
+        }
         if result["isError"].as_bool().unwrap_or(false) {
             Err(structured.get("error").cloned().unwrap_or(structured))
         } else {
@@ -1576,6 +1620,57 @@ mod tests {
         let encoded = editor::ui_spec_host::encode_spec(&spec).unwrap();
         std::fs::write(&path, &encoded).unwrap();
         rustlua_ui_spec::revision_hash(&encoded)
+    }
+
+    #[test]
+    fn ui_create_preset_writes_a_new_document_and_refuses_to_overwrite() {
+        let (mut app, root) = test_app("ui-create-preset");
+        let created = direct(
+            &mut app,
+            "ui_create_preset",
+            json!({
+                "document": "ui/tavern.ui.json",
+                "spec": ui_spec_json(),
+                "preview": true,
+                "width": 320,
+                "height": 180
+            }),
+        )
+        .expect("创建 UI 预设");
+        assert_eq!(created["document"], "ui/tavern.ui.json");
+        assert!(
+            created["revision"]
+                .as_u64()
+                .is_some_and(|revision| revision > 0),
+            "{created}"
+        );
+        assert!(
+            created["preview_png_base64"]
+                .as_str()
+                .is_some_and(|png| png.starts_with("iVBORw0KGgo")),
+            "预览必须是真 PNG：{created}"
+        );
+        let path = root.join("ui/tavern.ui.json");
+        assert!(path.is_file(), "接受后必须落盘");
+        let loaded = direct(
+            &mut app,
+            "ui_export_spec",
+            json!({"document": "ui/tavern.ui.json"}),
+        )
+        .expect("回读");
+        assert_eq!(loaded["revision"], created["revision"]);
+
+        let error = direct(
+            &mut app,
+            "ui_create_preset",
+            json!({
+                "document": "ui/tavern.ui.json",
+                "spec": ui_spec_json(),
+                "preview": false
+            }),
+        )
+        .expect_err("已存在的文档不得被 create 覆盖");
+        assert!(error.message().contains("已存在"), "{}", error.message());
     }
 
     #[test]

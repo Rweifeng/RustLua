@@ -135,7 +135,7 @@ where
                     "resources": {"subscribe": false, "listChanged": false}
                 },
                 "serverInfo": {"name": "rustlua-editor-ai", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": "RustLua 编辑器 AI 能力层。写 tool 受确认网关约束，所有场景编辑经 EditorCommand 落一条 Undo。"
+                "instructions": "RustLua 编辑器 AI 能力层。用户要求创建游戏 UI 预设/界面时：先读 resource rustlua://ui/guide，按契约构造 UiSpec；调用 ui_validate_spec 修到 0 error；调用 ui_preview_spec 自检布局；最后调用 ui_create_preset 落盘（只新建，已存在会拒绝）。写 tool 受确认网关约束，场景编辑经 EditorCommand 落一条 Undo。"
             }))
         }
         "notifications/initialized" | "notifications/cancelled" => Ok(json!({})),
@@ -203,11 +203,31 @@ where
 
 fn tool_content(result: Result<Value, ToolError>, name: &str) -> Value {
     match result {
-        Ok(value) => json!({
-            "content": [{"type": "text", "text": serde_json::to_string(&value).unwrap_or_default()}],
-            "structuredContent": value,
-            "isError": false
-        }),
+        Ok(mut value) => {
+            // UI 预览图走 MCP image 内容块：base64 留在图片里，不再塞进 structuredContent
+            // 的文本，否则 640×360 的 PNG 会把模型上下文和回执一起撑爆。
+            let image = value
+                .get("preview_png_base64")
+                .or_else(|| value.get("png_base64"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if image.is_some()
+                && let Value::Object(map) = &mut value
+            {
+                map.remove("preview_png_base64");
+                map.remove("png_base64");
+            }
+            let text = serde_json::to_string(&value).unwrap_or_default();
+            let mut content = vec![json!({"type": "text", "text": text})];
+            if let Some(data) = image {
+                content.push(json!({"type": "image", "data": data, "mimeType": "image/png"}));
+            }
+            json!({
+                "content": content,
+                "structuredContent": value,
+                "isError": false
+            })
+        }
         Err(error) => json!({
             "content": [{"type": "text", "text": error.message()}],
             "structuredContent": {"tool": name, "error": error},
@@ -301,6 +321,31 @@ mod tests {
         let input = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
         let responses = run(&input);
         assert_eq!(responses[0]["result"], json!({}));
+    }
+
+    #[test]
+    fn image_payload_becomes_an_image_content_block() {
+        let value = tool_content(
+            Ok(json!({
+                "document": "ui/forge.ui.json",
+                "preview_png_base64": "iVBORw0KGgo="
+            })),
+            "ui_create_preset",
+        );
+        assert_eq!(value["content"][0]["type"], "text");
+        assert!(
+            !value["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("preview_png_base64")
+        );
+        assert_eq!(value["content"][1]["type"], "image");
+        assert_eq!(value["content"][1]["mimeType"], "image/png");
+        assert!(
+            value["structuredContent"]
+                .get("preview_png_base64")
+                .is_none()
+        );
     }
 
     #[test]

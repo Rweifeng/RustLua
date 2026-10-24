@@ -5,6 +5,22 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — DSH 一句话创建 UI 预设：MCP 直连与提案式新建（2026-10-24）
+
+- **新 tool `ui_create_preset`（T1）**：只新建 `.ui.json`，已存在直接拒绝；内部仍走
+  `submit_spec → accept` 的同一条提案路径，新文档的 `base_revision` 固定 0，接受时复核文件是否
+  在提案期间被创建。
+- **新 resource `rustlua://ui/guide`**：节点类型、锚点、样式属性白名单与一份完整示例；示例由
+  `ui_guide_example_passes_the_validator` 真跑校验器，指南与运行时能力漂移会红。
+- **预览走 MCP image content block**：`preview_png_base64` 从 `structuredContent` 摘掉、作为
+  `image` 内容块返回，默认 640×360；避免把近 1 MB 的 base64 塞进模型文本上下文。
+- **DSH 接入**：`tools/dsh/install-mcp.mjs` 往 profile 的 `cordis.patch.yml` 写带标记的
+  `insert` 块（`@deepseek-ai/dsh-mcp-client`、stdio、`editor --mcp-stdio`）；
+  `RUSTLUA_EDITOR_AI_AUTO_T1=1` 只自动放行 T1，T2/T3 仍在编辑器里弹确认窗。
+- **无 LLM 验收**：`scripts/ai/mcp-ui-preset-smoke.mjs` 跑同一条 MCP 通道的
+  initialize → guide → create → export → 重复创建拒绝；产物见 `examples/game_api/ui/forge.ui.json`。
+- **边界**：预览是布局线框（文本按块绘制），不是最终美术；T2/T3 与 Play 控制仍需人工确认。
+
 ## Unreleased — M77 宿主侧模块化：渲染器下沉成 `rustlua-gpu`（2026-10-24）
 
 - **新增 crate `rustlua-gpu`**：`engine/src/host/renderer/`（约 11.6K 源 + 6.2K 测试）与

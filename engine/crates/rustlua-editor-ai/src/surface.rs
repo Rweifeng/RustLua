@@ -46,6 +46,10 @@ pub struct McpResource {
     pub description: &'static str,
 }
 
+/// 创建 UI 预设的机器可读契约：节点类型、锚点、样式属性、完整示例与工具调用顺序。
+/// 由 MCP resource `rustlua://ui/guide` 提供，客户端不需要把这份契约硬编码进提示词。
+pub const UI_GUIDE: &str = include_str!("ui_guide.md");
+
 const RESOURCES: &[McpResource] = &[
     McpResource {
         uri: "rustlua://lua-api/surface",
@@ -76,6 +80,12 @@ const RESOURCES: &[McpResource] = &[
         name: "Project config",
         mime_type: "application/toml",
         description: "当前工程的 project.toml 原始文本。",
+    },
+    McpResource {
+        uri: "rustlua://ui/guide",
+        name: "UI preset guide",
+        mime_type: "text/markdown",
+        description: "UiSpec 契约、能力矩阵、完整示例与「校验→预览→创建」调用顺序，供一句话创建 UI 预设。",
     },
 ];
 
@@ -485,6 +495,22 @@ fn build_tools() -> Vec<ToolSpec> {
             ),
         },
         ToolSpec {
+            name: ui::CREATE_PRESET,
+            description: "创建**新**的 .ui.json UI 预设（只新建；已存在会拒绝）。用户要求「做一个商店/背包/对话框界面」时：先读 resource rustlua://ui/guide 构造 UiSpec，用 ui_validate_spec 修到 0 error，再调用本工具；落盘后返回 revision 与预览 PNG（MCP image 内容块）。T1。",
+            tier: ToolTier::T1,
+            input_schema: schema_object(
+                json!({
+                    "document": {"type": "string", "minLength": 1, "description": "工程内 .ui.json 相对路径，例如 ui/tavern.ui.json"},
+                    "spec": {"type": "object", "description": "UiSpec JSON（见 rustlua://ui/guide）"},
+                    "preview": {"type": "boolean", "default": true, "description": "是否返回预览 PNG"},
+                    "width": {"type": "integer", "minimum": 1, "maximum": 8192, "default": 640},
+                    "height": {"type": "integer", "minimum": 1, "maximum": 8192, "default": 360},
+                    "scale": {"type": "number", "minimum": 0.1, "maximum": 8.0, "default": 1.0}
+                }),
+                &["document", "spec"],
+            ),
+        },
+        ToolSpec {
             name: ui::PROMOTE_ASSET,
             description: "把审阅通过的资产生成登记提升进工程并写入 provenance。T2。",
             tier: ToolTier::T2,
@@ -613,6 +639,29 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
+    fn ui_guide_example_passes_the_validator() {
+        let block = UI_GUIDE
+            .split("```json")
+            .nth(1)
+            .and_then(|rest| rest.split("```").next())
+            .expect("指南必须包含一个 json 代码块");
+        let spec: rustlua_ui_spec::UiSpec =
+            serde_json::from_str(block).expect("指南示例必须是合法 UiSpec JSON");
+        let diagnostics =
+            rustlua_ui_spec::validate_spec(&spec, &rustlua_ui_spec::Capabilities::core());
+        let errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == rustlua_ui_spec::Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "指南示例必须 0 error：{errors:#?}");
+        // 契约里的枚举是 v_box/h_box：写成 vbox 会让客户端第一次调用就被 serde 拒绝。
+        assert!(
+            !UI_GUIDE.contains("`vbox`") && !UI_GUIDE.contains("`hbox`"),
+            "指南不能用 vbox/hbox，必须写 v_box/h_box"
+        );
+    }
+
+    #[test]
     fn tool_names_are_unique_and_structured() {
         let mut names = BTreeSet::new();
         for tool in tools() {
@@ -633,7 +682,7 @@ mod tests {
             14,
             "只读 tool 数"
         );
-        assert_eq!(tools().iter().filter(|t| t.tier.is_write()).count(), 30);
+        assert_eq!(tools().iter().filter(|t| t.tier.is_write()).count(), 31);
     }
 
     #[test]
@@ -645,6 +694,7 @@ mod tests {
             (ui::LIST_ASSETS, ToolTier::Read),
             (ui::APPLY_SPEC, ToolTier::T1),
             (ui::APPLY_PATCH, ToolTier::T1),
+            (ui::CREATE_PRESET, ToolTier::T1),
             (ui::PROMOTE_ASSET, ToolTier::T2),
             (ui::GENERATE_ASSETS, ToolTier::T2),
             (ui::SLICE_ASSET, ToolTier::T2),

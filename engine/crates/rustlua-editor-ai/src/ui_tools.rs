@@ -18,6 +18,7 @@ pub mod names {
     pub const LIST_ASSETS: &str = "ui_list_assets";
     pub const APPLY_SPEC: &str = "ui_apply_spec";
     pub const APPLY_PATCH: &str = "ui_apply_patch";
+    pub const CREATE_PRESET: &str = "ui_create_preset";
     pub const PROMOTE_ASSET: &str = "ui_promote_asset";
     pub const GENERATE_ASSETS: &str = "ui_generate_assets";
     pub const SLICE_ASSET: &str = "ui_slice_asset";
@@ -30,6 +31,7 @@ pub const TOOL_NAMES: &[&str] = &[
     names::LIST_ASSETS,
     names::APPLY_SPEC,
     names::APPLY_PATCH,
+    names::CREATE_PRESET,
     names::PROMOTE_ASSET,
     names::GENERATE_ASSETS,
     names::SLICE_ASSET,
@@ -129,6 +131,15 @@ fn default_preview_height() -> u32 {
     720
 }
 
+/// 新建预设默认给 640×360 预览：足够看清布局，又不会让 MCP 回执膨胀到数 MB。
+fn default_preset_width() -> u32 {
+    640
+}
+
+fn default_preset_height() -> u32 {
+    360
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PreviewSpecRequest {
     pub spec: UiSpec,
@@ -191,6 +202,42 @@ pub struct ApplyPatchRequest {
 pub struct ApplyResponse {
     /// 写动作先成为提案；人工接受后才开事务、落命令、进 Undo 栈。
     pub proposal: UiProposal,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// 新建 UI 预设：只允许创建**不存在**的文档，已存在时拒绝并提示走 `ui_apply_patch`。
+///
+/// 与 `ui_apply_spec` 的区别是它把「提案 → 接受」一次做完，因为新文件没有可回滚的
+/// 旧内容；`base_revision` 固定为 0，接受时再校验文件是否已被别人创建。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CreatePresetRequest {
+    pub document: String,
+    pub spec: UiSpec,
+    /// 是否随回执返回预览 PNG（base64）。默认 true，模型可据此自检布局。
+    #[serde(default = "default_true")]
+    pub preview: bool,
+    #[serde(default = "default_preset_width")]
+    pub width: u32,
+    #[serde(default = "default_preset_height")]
+    pub height: u32,
+    #[serde(default = "default_preview_scale")]
+    pub scale: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CreatePresetResponse {
+    pub document: String,
+    pub revision: u64,
+    pub spec: UiSpec,
+    #[serde(default)]
+    pub diagnostics: Vec<Diagnostic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_png_base64: Option<String>,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -279,6 +326,11 @@ pub trait UiToolRegistry {
     fn list_assets(&mut self, request: &ListAssetsRequest) -> UiToolResult<ListAssetsResponse>;
     fn apply_spec(&mut self, request: &ApplySpecRequest) -> UiToolResult<ApplyResponse>;
     fn apply_patch(&mut self, request: &ApplyPatchRequest) -> UiToolResult<ApplyResponse>;
+    /// 新建 `.ui.json` 预设（只新建，不覆盖）。T1：一次提案 + 接受，落盘后返回 revision。
+    fn create_preset(
+        &mut self,
+        request: &CreatePresetRequest,
+    ) -> UiToolResult<CreatePresetResponse>;
     fn promote_asset(
         &mut self,
         request: &PromoteAssetRequest,
@@ -302,8 +354,9 @@ mod tests {
         assert_object_safe(&NoopRegistry);
         let unique: std::collections::BTreeSet<&str> = TOOL_NAMES.iter().copied().collect();
         assert_eq!(unique.len(), TOOL_NAMES.len());
-        assert_eq!(TOOL_NAMES.len(), 9);
+        assert_eq!(TOOL_NAMES.len(), 10);
         assert!(is_ui_tool("ui_apply_patch"));
+        assert!(is_ui_tool("ui_create_preset"));
         assert!(is_ui_tool("ui_slice_asset"));
         assert!(!is_ui_tool("write_lua_script"));
     }
@@ -329,6 +382,22 @@ mod tests {
         let decoded: ApplyPatchRequest =
             serde_json::from_str(&serde_json::to_string(&patch).unwrap()).unwrap();
         assert_eq!(decoded, patch);
+    }
+
+    #[test]
+    fn create_preset_defaults_to_a_small_preview() {
+        let request: CreatePresetRequest = serde_json::from_value(serde_json::json!({
+            "document": "ui/forge.ui.json",
+            "spec": minimal_spec()
+        }))
+        .expect("create preset request");
+        assert!(request.preview, "默认要返回预览，用户才看得到结果");
+        assert_eq!(
+            (request.width, request.height),
+            (640, 360),
+            "默认预览不能回到 1280×720，否则回执会膨胀到数 MB"
+        );
+        assert_eq!(request.scale, 1.0);
     }
 
     #[test]
@@ -403,6 +472,13 @@ mod tests {
         }
 
         fn apply_patch(&mut self, _: &ApplyPatchRequest) -> UiToolResult<ApplyResponse> {
+            Err(UiToolError::new(
+                UiToolErrorCode::Unavailable,
+                "M76-03 落地前无执行体",
+            ))
+        }
+
+        fn create_preset(&mut self, _: &CreatePresetRequest) -> UiToolResult<CreatePresetResponse> {
             Err(UiToolError::new(
                 UiToolErrorCode::Unavailable,
                 "M76-03 落地前无执行体",

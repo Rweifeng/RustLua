@@ -12,6 +12,7 @@
 | `dev/` | 本地运行、静态服务与探针 |
 | `docgen/` | 文档与代码生成 |
 | `repo/` | 仓库维护 |
+| `ai/` | AI 客户端与 MCP 验收（一句话创建 UI 预设的确定性 smoke） |
 | `lib/` | 跨类别公共件（被上面几类复用） |
 | `metrics/` | P4 度量：覆盖率归一化、cfg 扫描、趋势库（Python stdlib sqlite3）、编译/二进制/包体测量 |
 
@@ -43,6 +44,12 @@
 | `gen-sbom.mjs` | 生成/校验 CycloneDX 1.5 SBOM（整 workspace，含 fork 标记与 SHA-256） |
 | `sign-windows.ps1` | Authenticode 签名/验证；`-SelfTest` 自签 + 篡改检测；无证书退 3，`-RequireSignature` 退 1 |
 | `release-notes.ps1` | 从 CHANGELOG + 资产哈希 + 构建证据生成 GitHub Release 说明 |
+
+## ai/ —— MCP 与 AI 客户端验收
+
+| 脚本 | 作用 |
+|---|---|
+| `mcp-ui-preset-smoke.mjs` | 不经过 LLM 跑通 MCP 的 initialize → guide → `ui_create_preset` → `ui_export_spec` → 重复创建拒绝；成功打印 `MCP_UI_PRESET_OK`，用于 DSH/CI 的确定性验收入口 |
 
 ## verify/ —— 质量门与验收
 

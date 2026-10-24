@@ -34,7 +34,7 @@ pub use provider::{
 };
 pub use replay::{ReplayError, ReplayFixture, ReplayReport, ReplayStep, run_replay};
 pub use surface::{
-    McpResource, ToolSpec, ToolTier, resource_list, resource_surface_json, surface_json,
+    McpResource, ToolSpec, ToolTier, UI_GUIDE, resource_list, resource_surface_json, surface_json,
     tool_by_name, tools,
 };
 pub use ui_provider::{

@@ -29,6 +29,12 @@
       "mimeType": "application/toml",
       "name": "Project config",
       "uri": "rustlua://project/config"
+    },
+    {
+      "description": "UiSpec 契约、能力矩阵、完整示例与「校验→预览→创建」调用顺序，供一句话创建 UI 预设。",
+      "mimeType": "text/markdown",
+      "name": "UI preset guide",
+      "uri": "rustlua://ui/guide"
     }
   ],
   "tools": [
@@ -843,6 +849,53 @@
         "type": "object"
       },
       "name": "ui_apply_patch",
+      "tier": "T1"
+    },
+    {
+      "description": "创建**新**的 .ui.json UI 预设（只新建；已存在会拒绝）。用户要求「做一个商店/背包/对话框界面」时：先读 resource rustlua://ui/guide 构造 UiSpec，用 ui_validate_spec 修到 0 error，再调用本工具；落盘后返回 revision 与预览 PNG（MCP image 内容块）。T1。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "document": {
+            "description": "工程内 .ui.json 相对路径，例如 ui/tavern.ui.json",
+            "minLength": 1,
+            "type": "string"
+          },
+          "height": {
+            "default": 360,
+            "maximum": 8192,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "preview": {
+            "default": true,
+            "description": "是否返回预览 PNG",
+            "type": "boolean"
+          },
+          "scale": {
+            "default": 1.0,
+            "maximum": 8.0,
+            "minimum": 0.1,
+            "type": "number"
+          },
+          "spec": {
+            "description": "UiSpec JSON（见 rustlua://ui/guide）",
+            "type": "object"
+          },
+          "width": {
+            "default": 640,
+            "maximum": 8192,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "document",
+          "spec"
+        ],
+        "type": "object"
+      },
+      "name": "ui_create_preset",
       "tier": "T1"
     },
     {
