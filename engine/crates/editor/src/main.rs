@@ -149,7 +149,8 @@ fn parse_arguments() -> Result<Arguments, String> {
             "--help" | "-h" => {
                 #[cfg(feature = "ai-bridge")]
                 let mcp_help = "\x20     editor --project <项目路径> --mcp-stdio（JSON-RPC 2.0 over stdio；stdout 只走协议）\n\
-                     \x20     RUSTLUA_EDITOR_AI_AUTO_T1=1 让本次进程的 MCP 写请求自动批准 T1（T2/T3 仍拒绝）\n";
+                     \x20     RUSTLUA_EDITOR_AI_AUTO_T1=1 让本次进程的 MCP 写请求自动批准 T1（T2/T3 仍拒绝）\n\
+                     \x20     RUSTLUA_EDITOR_AI_AUTO_TOOLS=ui_create_preset 只自动放行列出的 T1 tool（逗号分隔；T2/T3 仍拒绝）\n";
                 #[cfg(not(feature = "ai-bridge"))]
                 let mcp_help = "";
                 println!(

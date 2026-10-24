@@ -69,7 +69,7 @@ function renderBlock() {
   return [
     BEGIN,
     '# RustLua 编辑器 MCP：DSH 通过 stdio 拉起 editor --mcp-stdio。',
-    '# 只自动放行 T1（含 ui_create_preset）；T2/T3 仍会在编辑器里弹确认窗。',
+    '# 只自动放行 ui_create_preset 这一个 T1；其它 T1/T2/T3 仍会在编辑器里弹确认窗。',
     '# 必须放在 insert 列表里：mcp-client 不在 dsh-base 的默认插件集中。',
     '- insert:',
     '    - id: mcp-rustlua',
@@ -81,7 +81,7 @@ function renderBlock() {
     `        args: ['--project', ${quote(toPosix(project))}, '--mcp-stdio']`,
     `        cwd: ${quote(toPosix(engineDir))}`,
     '        env:',
-    "          RUSTLUA_EDITOR_AI_AUTO_T1: '1'",
+    "          RUSTLUA_EDITOR_AI_AUTO_TOOLS: 'ui_create_preset'",
     '        toolCallTimeoutMs: 120000',
     '        failOnStartupError: false',
     END,

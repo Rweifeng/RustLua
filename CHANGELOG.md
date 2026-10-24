@@ -16,7 +16,8 @@
   `image` 内容块返回，默认 640×360；避免把近 1 MB 的 base64 塞进模型文本上下文。
 - **DSH 接入**：`tools/dsh/install-mcp.mjs` 往 profile 的 `cordis.patch.yml` 写带标记的
   `insert` 块（`@deepseek-ai/dsh-mcp-client`、stdio、`editor --mcp-stdio`）；
-  `RUSTLUA_EDITOR_AI_AUTO_T1=1` 只自动放行 T1，T2/T3 仍在编辑器里弹确认窗。
+  `RUSTLUA_EDITOR_AI_AUTO_TOOLS=ui_create_preset` 只按工具名放行这一个 T1，其它 T1/T2/T3
+  仍在编辑器里弹确认窗。
 - **无 LLM 验收**：`scripts/ai/mcp-ui-preset-smoke.mjs` 跑同一条 MCP 通道的
   initialize → guide → create → export → 重复创建拒绝；产物见 `examples/game_api/ui/forge.ui.json`。
 - **边界**：预览是布局线框（文本按块绘制），不是最终美术；T2/T3 与 Play 控制仍需人工确认。

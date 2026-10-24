@@ -39,7 +39,7 @@ node tools/dsh/install-mcp.mjs --remove
     args: ['--project', 'C:/GitHub/RustLua/examples/game_api', '--mcp-stdio']
     cwd: 'C:/GitHub/RustLua/engine'
     env:
-      RUSTLUA_EDITOR_AI_AUTO_T1: '1'
+      RUSTLUA_EDITOR_AI_AUTO_TOOLS: 'ui_create_preset'
     toolCallTimeoutMs: 120000
     failOnStartupError: false
 ```
@@ -68,14 +68,15 @@ DSH 侧的调用顺序（由 MCP `initialize.instructions` 与 tool 描述引导
 - **只新建**：`document` 已存在时返回错误，提示改用 `ui_export_spec` + `ui_apply_patch`，绝不覆盖；
 - 路径必须是工程内 `.ui.json` 相对路径（拒绝绝对路径、`..`、盘符）；
 - 与 UI Studio 共用 `submit_spec → accept` 的同一条写路径，落盘前过能力矩阵与校验器；
-- 默认预览 640×360，可用 `width/height/scale` 调整；`preview: false` 可省掉 base64。
+- 默认预览 640×360，可用 `width/height/scale` 调整；`preview: false` 可省掉预览图。
 
 ## 4. 权限与安全
 
-- 该 server 的 `RUSTLUA_EDITOR_AI_AUTO_T1=1` 只自动放行 **T1**（新建 UI 预设、场景内一条 Undo 的编辑）。
+- 该 server 的 `RUSTLUA_EDITOR_AI_AUTO_TOOLS=ui_create_preset` **只**自动放行这一个 T1
+  tool；其它 T1（场景编辑、`ui_apply_patch`）仍会排队等确认。
 - **T2/T3 仍会弹编辑器确认窗**：删除实体、写 Lua、切换工程、Play 控制都需要人工点「批准」。
 - 无头/Docker 里没有确认通道时，T2/T3 会被拒绝而不是挂死；要跑纯无头验收用
-  `scripts/ai/mcp-ui-preset-smoke.mjs`（它只调用 T1 的 `ui_create_preset`）。
+  `scripts/ai/mcp-ui-preset-smoke.mjs`（它只调用被白名单放行的 `ui_create_preset`）。
 - 密钥、模型 Provider 与 MCP 无关：DSH 只通过 stdio 传结构化 tool 参数。
 
 ## 5. 验收
@@ -107,7 +108,7 @@ cargo test -p editor --test ui_asset_gate         # 新预设不破坏工程级�
 
 | 项 | 读数 |
 |---|---|
-| `cargo test -p rustlua-editor-ai --lib` | 68 passed / 0 failed / 1 ignored |
+| `cargo test -p rustlua-editor-ai --lib` | 70 passed / 0 failed / 1 ignored |
 | `cargo test -p editor --bin editor ui_create_preset` | 1 passed |
 | `cargo test -p editor --lib ui_spec_host` | 25 passed |
 | `cargo test -p editor --test ui_asset_gate` | 1 passed（仓库内 `.ui.json` 全过） |

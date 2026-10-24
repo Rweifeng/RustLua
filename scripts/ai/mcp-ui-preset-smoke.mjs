@@ -86,7 +86,7 @@ const spec = {
 
 const child = spawn(editor, ['--project', project, '--mcp-stdio'], {
   cwd: path.join(repoRoot, 'engine'),
-  env: { ...process.env, RUSTLUA_EDITOR_AI_AUTO_T1: '1' },
+  env: { ...process.env, RUSTLUA_EDITOR_AI_AUTO_TOOLS: 'ui_create_preset' },
   stdio: ['pipe', 'pipe', 'pipe'],
 });
 

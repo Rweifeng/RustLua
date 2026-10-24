@@ -156,6 +156,29 @@ impl GatePolicy {
     }
 }
 
+/// 显式 T1 工具白名单（逗号分隔）。只对这些 tool 跳过确认，不影响其它 T1——
+/// 避免为了让 `ui_create_preset` 一句话落盘，把整个场景编辑 T1 也变成无人确认。
+pub const AUTO_TOOLS_ENV: &str = "RUSTLUA_EDITOR_AI_AUTO_TOOLS";
+
+fn auto_tool_listed(name: &str, raw: Option<&str>) -> bool {
+    raw.is_some_and(|raw| raw.split(',').any(|item| item.trim() == name))
+}
+
+fn auto_tools_allowlist() -> Option<String> {
+    std::env::var(AUTO_TOOLS_ENV).ok()
+}
+
+/// 策略放行，或 T1 工具级白名单放行。白名单**只**覆盖 T1：T2/T3 即使写进名单
+/// 也必须走确认，避免把破坏性动作藏进一个“自动批准”的开关里。
+fn allowed_by_policy_or_allowlist(
+    policy: GatePolicy,
+    tier: ToolTier,
+    name: &str,
+    allowlist: Option<&str>,
+) -> bool {
+    policy.allows(tier) || (tier == ToolTier::T1 && auto_tool_listed(name, allowlist))
+}
+
 /// 直接执行一次 tool（不经传输层）：内置面板、agent 与回放门共用。
 pub fn execute_tool(
     host: &mut dyn ToolHost,
@@ -164,7 +187,10 @@ pub fn execute_tool(
     args: &Value,
 ) -> Result<Value, ToolError> {
     let spec = tool_by_name(name).ok_or_else(|| ToolError::UnknownTool(name.to_owned()))?;
-    if spec.tier.is_write() && !policy.allows(spec.tier) {
+    let allowlist = auto_tools_allowlist();
+    if spec.tier.is_write()
+        && !allowed_by_policy_or_allowlist(policy, spec.tier, name, allowlist.as_deref())
+    {
         return Err(ToolError::NeedsConfirmation {
             tool: name.to_owned(),
             tier: tier_label(spec.tier),
@@ -362,7 +388,16 @@ impl AiBridge {
                         handled += 1;
                         continue;
                     };
-                    if spec.tier.is_write() && !policy.allows(spec.tier) {
+                    // T1 工具级白名单与 `execute_tool` 走同一判定；否则 MCP 通道
+                    // 会先在这里排队，白名单永远到不了执行体。
+                    let allowlist = auto_tools_allowlist();
+                    let allowed = allowed_by_policy_or_allowlist(
+                        policy,
+                        spec.tier,
+                        &name,
+                        allowlist.as_deref(),
+                    );
+                    if spec.tier.is_write() && !allowed {
                         if policy.queue_unconfirmed {
                             self.pending.push(PendingToolCall {
                                 name,
@@ -631,6 +666,61 @@ mod tests {
         fn read_resource(&mut self, _uri: &str) -> Result<String, ToolError> {
             Ok(String::new())
         }
+    }
+
+    #[test]
+    fn auto_tool_allowlist_matches_exact_names_only() {
+        assert!(auto_tool_listed(
+            "ui_create_preset",
+            Some("ui_create_preset")
+        ));
+        assert!(auto_tool_listed(
+            "ui_create_preset",
+            Some("create_entity, ui_create_preset")
+        ));
+        assert!(!auto_tool_listed(
+            "ui_create_preset",
+            Some("ui_create_preset_extra")
+        ));
+        assert!(!auto_tool_listed("ui_create_preset", None));
+        assert!(!auto_tool_listed("ui_create_preset", Some("")));
+    }
+
+    #[test]
+    fn allowlist_only_relaxes_the_named_t1_tool() {
+        let strict = GatePolicy::interactive(false);
+        let allow = Some("ui_create_preset");
+        assert!(allowed_by_policy_or_allowlist(
+            strict,
+            ToolTier::T1,
+            "ui_create_preset",
+            allow
+        ));
+        assert!(!allowed_by_policy_or_allowlist(
+            strict,
+            ToolTier::T1,
+            "create_entity",
+            allow
+        ));
+        assert!(!allowed_by_policy_or_allowlist(
+            strict,
+            ToolTier::T2,
+            "ui_create_preset",
+            allow
+        ));
+        assert!(!allowed_by_policy_or_allowlist(
+            strict,
+            ToolTier::T3,
+            "ui_create_preset",
+            allow
+        ));
+        // 策略本身放行时不受白名单影响。
+        assert!(allowed_by_policy_or_allowlist(
+            GatePolicy::HEADLESS,
+            ToolTier::T1,
+            "create_entity",
+            None
+        ));
     }
 
     #[test]
