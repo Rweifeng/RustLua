@@ -134,8 +134,9 @@ impl SpriteBatchMesh {
 /// 最终 overlay 顶点类型（WP6 单趟化）。
 ///
 /// 核心这一侧只负责算 **NDC 位置 + UV + 颜色**；顶点具体长什么样（有没有额外字段、
-/// 对齐如何）由宿主的类型决定。这样 `core` 不必知道 `host::frame::OverlayVertex` 的布局，
-/// "`core` 不得依赖 `host`"的分层约束（有架构测试）不被破坏。
+/// 对齐如何）由落点的类型决定。这样批处理器不把布局钉死在 [`crate::frame::OverlayVertex`]
+/// 上（M77-01 之前那份布局住在宿主 `host::frame`，靠"core 不得依赖 host"的分层约束才有
+/// 意义；布局回到本 crate 后，剩下的理由是同一套批处理也要喂给测试与别的落点）。
 ///
 /// 存在的理由：此前每帧先把顶点物化成一份 `SpriteVertex`，再由宿主逐顶点转成
 /// `OverlayVertex`——10k 精灵是 1.9 MB 写 + 1.9 MB 读 + 2.2 MB 写，其中前两项纯属白做。
@@ -799,8 +800,7 @@ mod tests {
     use super::*;
     use rustlua_math::math2d::Vec2;
 
-    /// 测试用的世界顶点类型（宿主用 `host::frame::WorldSpriteVertex`；core 不得依赖 host，
-    /// 有架构测试把关）。
+    /// 测试用的世界顶点类型：证明 sink 不锁布局（生产落点是 [`crate::frame::WorldSpriteVertex`]）。
     #[derive(Clone, Copy, Debug, PartialEq)]
     struct WorldSpriteVertex {
         position: [f32; 3],

@@ -7,12 +7,12 @@
 
 use std::{collections::HashMap, path::PathBuf};
 
-use crate::host::frame::{OverlayVertex, WorldSpriteVertex};
 use rustlua_camera::camera::{CameraBounds, OrthoTerms, Viewport};
 use rustlua_ecs::entity::EntityId;
 use rustlua_ecs::hierarchy::GlobalTransform;
 use rustlua_ecs::tilemap::Tilemap;
 use rustlua_ecs::transform::{Transform, Vec2};
+use rustlua_render::frame::{OverlayVertex, WorldSpriteVertex};
 use rustlua_render::sprite_batch::{
     OverlayVertexSink, SpriteDrawBatch, WorldSpriteVertexSink, ndc_from_screen,
 };

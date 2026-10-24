@@ -31,6 +31,8 @@ pub(crate) mod tilemap_tools;
 /// P3-E01-3：`.anim` 时间线面板（只读预览）。
 pub(crate) mod timeline;
 pub(crate) mod toolbar;
+/// M76-04：UI Studio（层级/检查器/多分辨率预览/提案箱）。
+pub(crate) mod ui_studio;
 
 /// 架构守卫：面板只发 typed action，不直接写文档（棘轮测试）。
 #[cfg(test)]

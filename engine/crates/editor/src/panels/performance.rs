@@ -805,7 +805,7 @@ fn runtime_perf_sections(snapshot: Option<&RuntimePerfSnapshot>) -> Vec<Performa
                     format!("{:.2} ms", snapshot.pipeline_compile_ms),
                     "runtime.pipeline_compile_ms",
                     snapshot.pipeline_compile_ms
-                        > engine::host::renderer::pipeline_cache::VARIANT_COMPILE_BUDGET_MS as f32,
+                        > rustlua_gpu::renderer::pipeline_cache::VARIANT_COMPILE_BUDGET_MS as f32,
                 ),
                 row(
                     "变体缓存命中 / 未命中",
@@ -1732,8 +1732,9 @@ mod tests {
     use super::*;
     use crate::framegate::GuiSmoke;
     use editor::{DEFAULT_FRAME_BUDGET_MS, EditorProfiler};
-    use engine::host::{ReadbackMetrics, SceneColorFormat};
+    use engine::host::SceneColorFormat;
     use rustlua_ecs::scheduler::{ScheduleStage, SystemTiming};
+    use rustlua_gpu::ReadbackMetrics;
     use rustlua_render::post_process::Tonemap;
     use rustlua_render::render_settings::{IblMode, IblTier};
     use std::time::{Duration, Instant};
@@ -2375,7 +2376,7 @@ mod tests {
     /// E06-3：有样本时逐通道列行；偏差越界必须标警示，而不是只显示数字。
     #[test]
     fn gpu_pass_section_lists_each_pass_and_flags_inconsistency() {
-        use engine::host::{GpuPassReport, PassGpuTiming};
+        use rustlua_gpu::{GpuPassReport, PassGpuTiming};
         use rustlua_render::render_plan::RenderPass;
 
         let mut snapshot = RuntimePerfSnapshot {

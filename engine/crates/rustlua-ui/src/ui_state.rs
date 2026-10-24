@@ -10,6 +10,7 @@
 
 use crate::lua_nav::NavState;
 use crate::ui::{DynamicUiImage, UiGrid, UiPanel};
+use crate::ui_binding::BindingValue;
 use rustlua_lua_api::Handle;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -67,11 +68,18 @@ pub struct UiState {
     /// 语义与 web 兼容层 `__rustlua_scene_text_hidden` 对齐：实体仍在场景里
     /// （照常参与 UiLayout 布局），仅绘制场景文字时跳过该实体。
     pub(crate) scene_text_hidden: BTreeSet<String>,
+    /// M76-02：`UiBindings` 的视图模型（`ui.view_model_set` 写入）。键是**点分源路径**
+    /// （如 `data.score`），与 `BindingSet::resolve` 的查表口径一致。
+    /// 场景切换时清空：绑定源属于当前场景的数据面。
+    pub(crate) view_model: BTreeMap<String, BindingValue>,
     pub(crate) drag: Option<UiDrag>,
     pub(crate) viewport: [f32; 2],
     /// Canvas 空间 UI 参考分辨率（设计分辨率），与运行时渲染保持一致，
     /// 供 Lua 侧 `process_ui_clicks` / `grid_hit` 命中测试使用。
     pub(crate) reference: [f32; 2],
+    /// M76-07：`ui.virtual_list` / `ui.rich_text` / `ui.text_input` / `ui.nav_stack`
+    /// 的内核状态。都属于场景生命周期内的 UI 状态，切场景一并丢弃。
+    pub(crate) advanced: crate::lua_advanced::AdvancedState,
 }
 
 impl UiState {
@@ -139,6 +147,15 @@ impl UiState {
     }
 
     #[must_use]
+    pub fn view_model(&self) -> &BTreeMap<String, BindingValue> {
+        &self.view_model
+    }
+
+    pub fn view_model_mut(&mut self) -> &mut BTreeMap<String, BindingValue> {
+        &mut self.view_model
+    }
+
+    #[must_use]
     pub fn drag(&self) -> Option<&UiDrag> {
         self.drag.as_ref()
     }
@@ -173,7 +190,9 @@ impl UiState {
         self.panels.clear();
         self.images.clear();
         self.grids.clear();
+        self.view_model.clear();
         self.drag = None;
+        self.advanced.clear_for_scene_transition();
         // 焦点环/滚动位置已在 UI 域（P1 ⑤-3），经能力单元清空。
         if let Ok(mut nav) = nav.borrow_mut() {
             nav.clear();
@@ -220,18 +239,36 @@ mod tests {
                 },
             );
             ui.hide_scene_text("label".into());
+            ui.view_model_mut()
+                .insert("data.score".into(), BindingValue::Number(3.0));
             ui.set_viewport(800, 600);
             ui.set_reference([1280.0, 720.0]);
             ui.set_drag(Some(UiDrag {
                 from_id: "slot".into(),
                 from_index: 2,
             }));
+            ui.advanced.virtual_lists.insert(
+                "bag".into(),
+                crate::lua_advanced::VirtualListBinding {
+                    list: crate::ui_virtual_list::VirtualList::new(Default::default(), 10, 100.0),
+                    pool: Default::default(),
+                },
+            );
+            ui.advanced.inputs.insert(
+                "name".into(),
+                crate::ui_text_input::TextInputState::with_text("a"),
+            );
+            ui.advanced.navigation = Some(crate::ui_nav_stack::NavigationStack::new("title"));
         });
         ui.with_mut(|ui| ui.clear_for_scene_transition(&nav));
         ui.with(|ui| {
             assert!(ui.texts().is_empty());
             assert!(ui.bars().is_empty());
+            assert!(ui.view_model().is_empty());
             assert!(ui.drag().is_none());
+            assert!(ui.advanced.virtual_lists.is_empty());
+            assert!(ui.advanced.inputs.is_empty());
+            assert!(ui.advanced.navigation.is_none());
             assert!(ui.scene_text_hidden().contains("label"));
             assert_eq!(ui.viewport(), [800.0, 600.0]);
             assert_eq!(ui.reference(), [1280.0, 720.0]);

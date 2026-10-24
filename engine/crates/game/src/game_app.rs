@@ -20,9 +20,10 @@ use winit::{
 };
 
 use engine::host::{
-    FrameProfile, OverlayVertex, RenderOutcome, Renderer, RuntimeScene, SceneDraw, SceneMesh,
-    ScriptErrorPolicy, apply_scene_environment,
+    FrameProfile, OverlayVertex, RuntimeScene, SceneDraw, SceneMesh, ScriptErrorPolicy,
+    apply_scene_environment,
 };
+use rustlua_gpu::{RenderOutcome, Renderer};
 
 pub struct GameApp {
     window: Option<Arc<Window>>,
@@ -364,7 +365,7 @@ impl GameApp {
     /// 失败**不**阻止启动，也**不**关监听：项目里一份坏 `.wgsl` 只该让画面停在旧管线上并
     /// 把原因写进日志；作者改好文件后下一次轮询就恢复。日志按文本去重（见 `shader_error_shown`）。
     fn attach_shader_override_dir(&mut self, renderer: &mut Renderer) {
-        use engine::host::shader_library::SHADER_RELOAD_DEBOUNCE;
+        use rustlua_gpu::shader_library::SHADER_RELOAD_DEBOUNCE;
 
         let Some(dir) = self.shader_dir.clone() else {
             return;
@@ -392,7 +393,7 @@ impl GameApp {
     /// `reload_shaders_if_changed` 内部只读 8 份源算哈希：内容没变 ⇒ 一次编译都不做，
     /// 所以常态成本是一次小目录扫描，而不是重编管线。
     fn poll_shader_hot_reload(&mut self) {
-        use engine::host::shader_library::SHADER_RELOAD_DEBOUNCE;
+        use rustlua_gpu::shader_library::SHADER_RELOAD_DEBOUNCE;
 
         let Some(due) = self.shader_reload_due else {
             return;
@@ -544,7 +545,7 @@ impl GameApp {
                 if uses_atlas {
                     // 内置 5x7 字模图集是渲染器的保留纹理，走 `paths` 索引即可。
                     mesh.paths
-                        .push(engine::host::frame::ATLAS_TEXTURE_PATH.to_owned());
+                        .push(rustlua_render::frame::ATLAS_TEXTURE_PATH.to_owned());
                 }
             }
         }

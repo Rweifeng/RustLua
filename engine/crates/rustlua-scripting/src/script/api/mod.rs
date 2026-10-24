@@ -117,6 +117,11 @@ pub(super) fn register_all(
         let nav = state.borrow().nav.clone();
         rustlua_ui::lua_nav::install(lua, &ui, &nav)?;
     }
+    // M76-07：虚拟列表 / 富文本 / 文本输入 / 导航栈四个高级控件内核。
+    {
+        let ui_state = state.borrow().ui_state.clone();
+        rustlua_ui::lua_advanced::install(lua, &ui, &ui_state)?;
+    }
     ui_measure::register(lua, ui.clone(), Rc::clone(&state))?;
     lua.globals().set("ui", ui)?;
     // 背包绑定已下沉到物品域（P1 ⑤-6）：`item` / `inv` / `container` / `shop` 四张表。

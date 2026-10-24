@@ -6,8 +6,8 @@
 //! `engine/crates/engine/tests/host_pub_surface.rs` 与 `baselines/engine-pub-surface.json`）。
 //! `prewarm_font_atlas` 只被 `load_project_font_atlas` 调用，保持私有。
 
-use crate::host::frame::FontHandle;
 use rustlua_render::font::{FontAtlas, FontVectorAtlas, project_font};
+use rustlua_render::frame::FontHandle;
 use std::{
     path::Path,
     sync::{Arc, Mutex},

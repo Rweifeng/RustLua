@@ -18,6 +18,8 @@ struct ResourceOpenRequest {
     material: Option<String>,
     /// P3-E03-2：双击 `.vgraph` 打开可视化脚本画布。
     graph: Option<PathBuf>,
+    /// M76-04：双击 `.ui.json` 打开 UI Studio。
+    ui_studio: Option<String>,
 }
 
 impl EditorApp {
@@ -62,6 +64,9 @@ impl EditorApp {
                 if let Some(path) = open.graph {
                     self.open_graph_resource(path);
                 }
+                if let Some(document) = open.ui_studio {
+                    self.open_ui_studio_resource(&document);
+                }
                 self.resource_tree_cache = Some(ResourceTreeCache {
                     filter: self.resources_filter.clone(),
                     refresh_count: self.resources.refresh_count(),
@@ -77,6 +82,24 @@ impl EditorApp {
         }
         self.draw_resource_drop_zone(ui);
         refresh_resources
+    }
+
+    /// M76-04：双击 `.ui.json` 在 UI Studio 标签里打开。只读加载，不写场景文档。
+    pub(crate) fn open_ui_studio_resource(&mut self, relative: &str) {
+        let normalized = relative.replace('\\', "/");
+        let root = strip_verbatim_prefix(&self.project.root);
+        let mut studio = editor::ui_studio::UiStudio::new(root);
+        match studio.open(&normalized) {
+            Ok(()) => {
+                self.ui_studio_panel.studio = Some(studio);
+                self.ui_studio_panel.document_input = normalized.clone();
+                self.ui_studio_panel.preview = None;
+                self.show_ui_studio = true;
+                self.pending_ui_studio_focus = true;
+                self.status = format!("已打开 UI Studio `{normalized}`");
+            }
+            Err(error) => self.status = error.to_string(),
+        }
     }
 
     /// 双击 `.material`：选中场景里第一个把它作为 `MeshRenderer.material` 的实体，
@@ -342,6 +365,9 @@ impl EditorApp {
                 if response.double_clicked() && is_vgraph(&entry.path) {
                     open.graph = Some(entry.path.clone());
                 }
+                if response.double_clicked() && is_ui_json(&entry.path) {
+                    open.ui_studio = Some(path_string.clone());
+                }
                 // 行尾控件右对齐。右缘取**可见裁剪框**而不是 available 宽度：dock 的
                 // ScrollArea 会把内容宽度撑到最长那一行（1193 项资源里总有超长文件名），
                 // 贴 available 右缘等于贴到视口之外——第一版就是这么写的，目验时铅笔
@@ -397,6 +423,9 @@ impl EditorApp {
                 }
                 if response.double_clicked() && is_vgraph(&entry.path) {
                     open.graph = Some(entry.path.clone());
+                }
+                if response.double_clicked() && is_ui_json(&entry.path) {
+                    open.ui_studio = Some(path_string.clone());
                 }
                 response.context_menu(|ui| {
                     self.draw_resource_context_menu(ui, entry);
@@ -863,14 +892,6 @@ fn decode_thumbnail(request: &ThumbnailRequest) -> ThumbnailResult {
     let key = request.key.clone();
     match TextureAsset::load_png(&request.path, TextureColorSpace::Srgb) {
         Ok(asset) => {
-            use std::io::Write as _;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("thumb_debug.log")
-            {
-                let _ = writeln!(f, "OK   {}", request.path.display());
-            }
             let (pixels, width, height) = downscale_rgba(
                 asset.pixels(),
                 asset.width() as usize,
@@ -886,14 +907,11 @@ fn decode_thumbnail(request: &ThumbnailRequest) -> ThumbnailResult {
             }
         }
         Err(error) => {
-            use std::io::Write as _;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("thumb_debug.log")
-            {
-                let _ = writeln!(f, "FAIL {}: {error}", request.path.display());
-            }
+            tracing::warn!(
+                target: "editor",
+                "[thumbnail] decode failed {}: {error}",
+                request.path.display()
+            );
             ThumbnailResult {
                 key,
                 pixels: None,
@@ -912,12 +930,27 @@ fn is_vgraph(path: &Path) -> bool {
         .is_some_and(|value| value.eq_ignore_ascii_case("vgraph"))
 }
 
+/// `.ui.json` 的完整后缀是两段（`shop.ui.json`），不能只看 `extension()`。
+fn is_ui_json(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.to_ascii_lowercase().ends_with(".ui.json"))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{build_resource_tree, downscale_rgba};
+    use super::{build_resource_tree, downscale_rgba, is_ui_json};
     use crate::EditorApp;
     use editor::{ResourceEntry, ResourceKind, open_project};
     use rustlua_infra::logging::LogSink;
+
+    #[test]
+    fn ui_json_suffix_is_two_segments() {
+        assert!(is_ui_json(std::path::Path::new("ui/shop.ui.json")));
+        assert!(is_ui_json(std::path::Path::new("ui/SHOP.UI.JSON")));
+        assert!(!is_ui_json(std::path::Path::new("ui/shop.json")));
+        assert!(!is_ui_json(std::path::Path::new("ui/ui.json")));
+    }
     use std::{
         fs,
         path::PathBuf,

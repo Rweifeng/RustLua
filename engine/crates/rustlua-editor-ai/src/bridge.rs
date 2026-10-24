@@ -11,6 +11,35 @@ use serde_json::Value;
 use std::io::{BufRead, Write};
 use std::panic::AssertUnwindSafe;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::Duration;
+
+/// 单条 tool 调用等主线程回话的上限。写请求要进 GUI 确认队列，人工批准通常落在
+/// 这个量级之外，所以宁可回一条「已排队」也不能把整条 stdio 通道挂死。
+pub const DEFAULT_REPLY_WAIT: Duration = Duration::from_secs(30);
+
+/// 超时后按 tier 组装「已排队」读数；未知 tool 由协议层先拦掉，不会走到这里。
+fn queued_for_confirmation(name: &str) -> ToolError {
+    ToolError::QueuedForConfirmation {
+        tool: name.to_owned(),
+        tier: tool_by_name(name).map_or("T?", |spec| tier_label(spec.tier)),
+    }
+}
+
+/// 等主线程回话，但不许超过 `reply_wait`：请求可能只是停在确认队列里等人点，
+/// 传输线程必须带着一条明确读数回到 stdio 循环去接下一个请求。
+fn await_tool_reply(
+    result: &Receiver<Result<Value, ToolError>>,
+    name: &str,
+    reply_wait: Duration,
+) -> Result<Value, ToolError> {
+    match result.recv_timeout(reply_wait) {
+        Ok(value) => value,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(queued_for_confirmation(name)),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(ToolError::Host("工具执行通道已关闭".to_owned()))
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum ToolError {
@@ -20,6 +49,13 @@ pub enum ToolError {
     Rejected(String),
     /// 确认网关未放行（无头/回放出现时是测试判红信号，不是可重试错误）。
     NeedsConfirmation {
+        tool: String,
+        tier: &'static str,
+    },
+    /// 写请求已在编辑器「AI 动作确认」里排队，但传输层不等人工点：先回这条，
+    /// 否则一条未确认的写会把 stdio 通道连同后续所有只读调用一起挂死。
+    /// 批准后动作仍会执行，拒绝则不改工作区。
+    QueuedForConfirmation {
         tool: String,
         tier: &'static str,
     },
@@ -38,6 +74,9 @@ impl ToolError {
             Self::NeedsConfirmation { tool, tier } => {
                 format!("{tool}（{tier}）需要编辑器内确认")
             }
+            Self::QueuedForConfirmation { tool, tier } => format!(
+                "{tool}（{tier}）已在编辑器「AI 动作确认」里排队等待人工批准；批准后才会执行，重复提交只会多排一条"
+            ),
             Self::Host(reason) => format!("宿主错误：{reason}"),
             Self::Unavailable(reason) => format!("不可用：{reason}"),
         }
@@ -165,8 +204,8 @@ pub fn tier_label(tier: ToolTier) -> &'static str {
     }
 }
 
-/// 协议线程 → 主线程的请求。写请求的 `reply` 在确认之前一直挂着，MCP 客户端因此
-/// 看到的是「等待人工确认」而不是静默成功。
+/// 协议线程 → 主线程的请求。写请求在人工确认之前留在 [`AiBridge::pending`]，
+/// 传输层按 [`DEFAULT_REPLY_WAIT`] 先回一条「已排队」，不挂住整条 stdio 通道。
 pub enum HostRequest {
     Call {
         name: String,
@@ -250,14 +289,19 @@ impl AiBridge {
         Self::start_io(
             std::io::BufReader::new(std::io::stdin()),
             std::io::stdout(),
+            DEFAULT_REPLY_WAIT,
             wake,
         )
     }
 
     /// 可注入流的版本（测试用内存管道）。
+    ///
+    /// `reply_wait` 是单条请求等主线程回话的上限；超时只影响这一条请求的读数，
+    /// 传输线程必须继续读下一行。
     pub fn start_io<R, W>(
         reader: R,
         writer: W,
+        reply_wait: Duration,
         wake: impl Fn() + Send + 'static,
     ) -> std::io::Result<Self>
     where
@@ -272,13 +316,12 @@ impl AiBridge {
                     match request {
                         mcp::HostCall::Tool { name, args } => {
                             let (reply, result) = mpsc::channel();
+                            let tool = name.clone();
                             request_tx
                                 .send(HostRequest::Call { name, args, reply })
                                 .map_err(|_| ToolError::Host("编辑器主线程已退出".to_owned()))?;
                             wake();
-                            result
-                                .recv()
-                                .map_err(|_| ToolError::Host("工具执行通道已关闭".to_owned()))?
+                            await_tool_reply(&result, &tool, reply_wait)
                         }
                         mcp::HostCall::Resource { uri } => {
                             let (reply, result) = mpsc::channel();
@@ -287,7 +330,7 @@ impl AiBridge {
                                 .map_err(|_| ToolError::Host("编辑器主线程已退出".to_owned()))?;
                             wake();
                             let text = result
-                                .recv()
+                                .recv_timeout(reply_wait)
                                 .map_err(|_| ToolError::Host("资源读取通道已关闭".to_owned()))??;
                             Ok(Value::String(text))
                         }
@@ -414,6 +457,118 @@ mod tests {
         fn snapshot(&mut self) -> Option<Value> {
             Some(self.snapshot.clone())
         }
+    }
+
+    /// 停在确认队列里的写请求不能让 stdio 通道挂死：必须有界等待、回一条明确读数。
+    #[test]
+    fn unconfirmed_write_times_out_as_queued_instead_of_wedging_the_transport() {
+        let (_sender, result) = mpsc::channel::<Result<Value, ToolError>>();
+        let error = await_tool_reply(&result, "delete_entity", Duration::from_millis(20))
+            .expect_err("主线程没回话，不该有 Ok");
+        assert!(
+            matches!(
+                error,
+                ToolError::QueuedForConfirmation { tier, .. } if tier == "T2"
+            ),
+            "{error}"
+        );
+
+        // 主线程照常回话时不引入任何延迟或语义变化。
+        let (sender, answered) = mpsc::channel();
+        sender.send(Ok(json!({"ok": true}))).expect("投递");
+        assert_eq!(
+            await_tool_reply(&answered, "create_entity", Duration::from_millis(500)),
+            Ok(json!({"ok": true}))
+        );
+
+        // 通道关闭仍是宿主错误，不能冒充「已排队」。
+        let (sender, closed) = mpsc::channel::<Result<Value, ToolError>>();
+        drop(sender);
+        assert!(matches!(
+            await_tool_reply(&closed, "create_entity", Duration::from_millis(500)),
+            Err(ToolError::Host(_))
+        ));
+    }
+
+    /// 人在回路的完整一轮：写请求停在队列里（宿主没被碰、传输层按超时回「已排队」），
+    /// 宿主批准后才执行，并把真实结果送回还在等的客户端。
+    #[test]
+    fn interactive_policy_queues_the_write_until_the_host_approves_it() {
+        let (sender, requests) = mpsc::channel();
+        let mut bridge = AiBridge {
+            requests,
+            pending: Vec::new(),
+            _transport: None,
+        };
+        let (reply, result) = mpsc::channel();
+        sender
+            .send(HostRequest::Call {
+                name: "delete_entity".to_owned(),
+                args: json!({"entities": [1]}),
+                reply,
+            })
+            .expect("投递");
+
+        let mut host = FakeHost::default();
+        // 第 1 帧：排队，不放行；客户端只能拿到有界的「已排队」读数。
+        assert_eq!(bridge.pump(&mut host, GatePolicy::interactive(false)), 1);
+        assert_eq!(bridge.pending().len(), 1);
+        assert!(host.calls.is_empty(), "未批准的写不得到达宿主");
+        assert!(matches!(
+            await_tool_reply(&result, "delete_entity", Duration::from_millis(20)),
+            Err(ToolError::QueuedForConfirmation { tier: "T2", .. })
+        ));
+        // 客户端超时不等于取消：队列项仍在，批准时照常执行（结果送回已丢弃的通道也只影响投递）。
+        let (reply, result) = mpsc::channel();
+        sender
+            .send(HostRequest::Call {
+                name: "delete_entity".to_owned(),
+                args: json!({"entities": [2]}),
+                reply,
+            })
+            .expect("投递");
+        assert_eq!(bridge.pump(&mut host, GatePolicy::interactive(false)), 1);
+        assert_eq!(bridge.pending().len(), 2);
+        assert!(bridge.approve(1, &mut host));
+        assert_eq!(
+            await_tool_reply(&result, "delete_entity", Duration::from_millis(500)),
+            Ok(json!({"ok": true, "tool": "delete_entity"}))
+        );
+        assert_eq!(bridge.pending().len(), 1, "批准只收走选中的那一条");
+        // 拒绝同样不动文档，并且把原因回给客户端。
+        bridge.reject(0, "用户在编辑器内拒绝");
+        assert!(host.calls.len() == 1, "只有批准过的那条到达宿主");
+
+        // 反面对照：显式放行的策略必须当帧执行、一条都不进队列——否则上面的
+        // 「拦住」读数就只是队列本身的形状，测不到 policy 是否真的被读。
+        let (sender, requests) = mpsc::channel();
+        let mut bridge = AiBridge {
+            requests,
+            pending: Vec::new(),
+            _transport: None,
+        };
+        let (reply, result) = mpsc::channel();
+        sender
+            .send(HostRequest::Call {
+                name: "delete_entity".to_owned(),
+                args: json!({"entities": [3]}),
+                reply,
+            })
+            .expect("投递");
+        let allow_all = GatePolicy {
+            auto_t1: true,
+            allow_t2: true,
+            allow_t3: true,
+            queue_unconfirmed: true,
+        };
+        let mut host = FakeHost::default();
+        assert_eq!(bridge.pump(&mut host, allow_all), 1);
+        assert!(!bridge.has_pending(), "放行策略下不该留下队列项");
+        assert_eq!(host.calls.len(), 1);
+        assert_eq!(
+            await_tool_reply(&result, "delete_entity", Duration::from_millis(500)),
+            Ok(json!({"ok": true, "tool": "delete_entity"}))
+        );
     }
 
     #[test]

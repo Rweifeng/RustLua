@@ -16,7 +16,8 @@ pub use play_control::{
 pub use layout::{
     AssistantLayout, EditorLayout, LAYOUT_VERSION, LayoutLoad, PANEL_ASSISTANT, PANEL_CONSOLE,
     PANEL_GAME_VIEW, PANEL_GRAPH, PANEL_HIERARCHY, PANEL_INSPECTOR, PANEL_RESOURCE,
-    PANEL_SCENE_VIEW, PANEL_TIMELINE, layout_path, load_layout, reset_layout, save_layout,
+    PANEL_SCENE_VIEW, PANEL_TIMELINE, PANEL_UI_STUDIO, layout_path, load_layout, reset_layout,
+    save_layout,
 };
 
 pub use file_watcher::{
@@ -28,8 +29,14 @@ pub mod profiler;
 pub mod resource_browser_state;
 pub mod resource_ops;
 pub mod resource_refresh;
+/// M76-06：发布前审查报告（诊断/资产/许可/体积/宿主证据/未收口项）。
+pub mod review;
 pub mod schema_fields;
 pub mod services;
+/// M76-03：UI 文档（`.ui.json`）宿主——读写/revision/校验/预览/提案，不依赖 egui。
+pub mod ui_spec_host;
+/// M76-04：UI Studio 的无头状态层（层级/检查器/预览/提案箱），egui 面板只做绘制。
+pub mod ui_studio;
 
 pub use resource_ops::{
     RewriteReport, normalize_relative, paths_match, rewrite_component_reference,

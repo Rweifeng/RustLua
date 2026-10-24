@@ -39,12 +39,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use engine::host::frame::WorldSpriteVertex;
-use engine::host::{GpuParticleConfig, Renderer, SceneMesh};
+use engine::host::SceneMesh;
 use rustlua_camera::camera::{Camera2D, FrameViews, RenderView, Viewport};
 use rustlua_ecs::particle::{ParticleEmitter, ParticleMode, ParticleSystem};
 use rustlua_ecs::transform::{Transform, Vec2};
+use rustlua_gpu::{GpuParticleConfig, OffscreenRequest, OffscreenTarget, Renderer};
 use rustlua_infra::par::Parallelism;
+use rustlua_render::frame::WorldSpriteVertex;
 use rustlua_render::sprite::Sprite;
 use rustlua_render::sprite_batch::{SpriteBatch, SpriteBatchItem, SpriteDrawBatch};
 use serde_json::json;
@@ -64,35 +65,26 @@ const TARGET: u32 = 256;
 
 fn main() -> ExitCode {
     let output = parse_output();
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let Some(adapter) =
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::LowPower,
-            compatible_surface: None,
-            force_fallback_adapter: true,
-        }))
-        .ok()
-    else {
-        return blocked("没有可用的 GPU 适配器，50k 粒子基准无法运行");
+    let fixture = match OffscreenTarget::acquire(&OffscreenRequest::new(
+        "wp0-gpu-particles-50k",
+        TARGET,
+        TARGET,
+    )) {
+        Ok(fixture) => fixture,
+        Err(error) => return blocked(&format!("离屏设备与目标纹理起不来：{error}")),
     };
-    let info = adapter.get_info();
-    let (device, queue) =
-        match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("wp0-gpu-particles-50k"),
-            required_features: wgpu::Features::empty(),
-            experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            required_limits: wgpu::Limits::default(),
-            memory_hints: wgpu::MemoryHints::Performance,
-            trace: wgpu::Trace::Off,
-        })) {
-            Ok(pair) => pair,
-            Err(error) => return blocked(&format!("默认限制的设备建不出来：{error}")),
-        };
-    let mut renderer =
-        match Renderer::new_offscreen(device.clone(), queue.clone(), None, false, false) {
-            Ok(renderer) => renderer,
-            Err(error) => return blocked(&format!("离屏渲染器建不出来：{error}")),
-        };
+    let device = fixture.device();
+    let info = fixture.adapter_info();
+    let mut renderer = match Renderer::new_offscreen(
+        device.clone(),
+        fixture.queue().clone(),
+        None,
+        false,
+        false,
+    ) {
+        Ok(renderer) => renderer,
+        Err(error) => return blocked(&format!("离屏渲染器建不出来：{error}")),
+    };
     let capabilities = renderer.capabilities();
     if !capabilities.compute || !renderer.compute_enabled() {
         let reason = capabilities
@@ -144,21 +136,8 @@ fn main() -> ExitCode {
         Viewport::new(TARGET as f32, TARGET as f32).expect("viewport"),
         [0.0, 0.0, 0.0, 1.0],
     )));
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("wp0-gpu-particles-50k-target"),
-        size: wgpu::Extent3d {
-            width: TARGET,
-            height: TARGET,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let texture = fixture.texture();
+    let view = fixture.view();
     let mesh = empty_mesh();
 
     // ── CPU 档：同一套积分 + 逐粒子发射 + 世界 Sprite 顶点展开 ───────────────────────
@@ -221,7 +200,7 @@ fn main() -> ExitCode {
         }
         gpu_dispatch += started.elapsed();
         let started = Instant::now();
-        renderer.render_into_texture(&mesh, None, &view, TARGET, TARGET);
+        renderer.render_into_texture(&mesh, None, view, TARGET, TARGET);
         gpu_draw += started.elapsed();
         if let Err(error) = device.poll(wgpu::PollType::Wait {
             submission_index: None,
@@ -262,7 +241,7 @@ fn main() -> ExitCode {
         .filter(|particle| particle.life > 0.0)
         .count();
     let pixels = renderer
-        .copy_texture_to_cpu(&texture, TARGET, TARGET)
+        .copy_texture_to_cpu(texture, TARGET, TARGET)
         .expect("final pixel readback");
     let background = [pixels[0], pixels[1], pixels[2]];
     let content_pixels = pixels

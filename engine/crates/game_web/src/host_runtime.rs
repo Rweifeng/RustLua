@@ -322,7 +322,7 @@ async fn begin_inner(
                 .map_err(|error| host_error("engine-core", error))?;
                 // **逻辑视口 = 设计分辨率**（与浏览器宿主 `GpuHost::fit_now` 同一说法，任务 #20）：
                 // 表面/后备缓冲是设备像素（接管形态下必须整屏），投影按设计盒算，渲染器再把设计盒
-                // **等比居中**摆进表面（`engine::host::fit::contain_rect`）。此前这里把表面尺寸直接
+                // **等比居中**摆进表面（`rustlua_render::fit::contain_rect`）。此前这里把表面尺寸直接
                 // 当逻辑视口 ⇒ 1 世界单位 = 1 设备像素，画面停在表面一角（run10 实测内容块
                 // `1380×720` / 表面 `2532×1170`，非底色像素只占 31.1%）。
                 let fit_note = fit_scene_viewport(&mut engine_host, width, height);
@@ -351,7 +351,7 @@ async fn begin_inner(
                     backends: wgpu::Backends::GL,
                     ..Default::default()
                 });
-                let surface = engine::host::web_surface::canvas_surface(&instance, &gpu_canvas)
+                let surface = rustlua_gpu::web_surface::canvas_surface(&instance, &gpu_canvas)
                     .map_err(|error| host_error("canvas_surface", error))?;
                 let adapter = instance
                     .request_adapter(&wgpu::RequestAdapterOptions {
@@ -493,7 +493,7 @@ async fn begin_inner(
 /// scene 档的几何收敛：把核心的**逻辑视口**收到设计分辨率，并返回这一帧的几何读数。
 ///
 /// 为什么两侧都要"逻辑视口 ≠ 表面尺寸"：投影矩阵按声明盒取景，pass 视口再把声明盒
-/// 等比居中映射进附件（`engine::host::fit::contain_rect`）。浏览器外壳靠 `fit_now`
+/// 等比居中映射进附件（`rustlua_render::fit::contain_rect`）。浏览器外壳靠 `fit_now`
 /// 把后备缓冲缩到等比适配盒（表面宽高比 ≡ 设计比 ⇒ 矩形贴满、无偏移）；微信接管形态
 /// 的表面必须是整屏设备像素（缩放由平台把画布拉到屏幕，改后备尺寸就是非等比拉伸），
 /// 因此留边必须发生在**表面内部**——这一步就是那条路的入口。
@@ -510,7 +510,7 @@ fn fit_scene_viewport(
     match engine_host.core.sim_mut() {
         Some(sim) => {
             sim.set_viewport(crate::DESIGN_WIDTH, crate::DESIGN_HEIGHT);
-            let (x, y, width, height) = engine::host::fit::contain_rect(
+            let (x, y, width, height) = rustlua_render::fit::contain_rect(
                 (crate::DESIGN_WIDTH as f32, crate::DESIGN_HEIGHT as f32),
                 (surface_width, surface_height),
             );

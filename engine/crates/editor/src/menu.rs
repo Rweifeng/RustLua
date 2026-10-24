@@ -166,6 +166,8 @@ pub(crate) enum MenuAction {
     ToggleTimeline,
     /// P3-E03-2：可视化脚本画布（默认隐藏，双击 `.vgraph` 打开）。
     ToggleGraph,
+    /// M76-04：UI Studio（默认隐藏）。
+    ToggleUiStudio,
     ToggleDomainData,
     TogglePublishPanel,
     TogglePerformancePanel,
@@ -486,6 +488,7 @@ impl EditorApp {
                         ("控制台", MenuAction::ToggleConsole),
                         ("时间线", MenuAction::ToggleTimeline),
                         ("可视化脚本", MenuAction::ToggleGraph),
+                        ("UI Studio", MenuAction::ToggleUiStudio),
                     ] {
                         let mut shown = self.panel_is_shown(action);
                         if ui.checkbox(&mut shown, label).clicked() {
@@ -582,6 +585,7 @@ impl EditorApp {
             MenuAction::ToggleConsole => self.show_lua_console,
             MenuAction::ToggleTimeline => self.show_timeline_panel,
             MenuAction::ToggleGraph => self.show_graph_panel,
+            MenuAction::ToggleUiStudio => self.show_ui_studio,
             _ => false,
         }
     }
@@ -676,6 +680,7 @@ impl EditorApp {
             MenuAction::ToggleConsole => self.show_lua_console = !self.show_lua_console,
             MenuAction::ToggleTimeline => self.show_timeline_panel = !self.show_timeline_panel,
             MenuAction::ToggleGraph => self.show_graph_panel = !self.show_graph_panel,
+            MenuAction::ToggleUiStudio => self.show_ui_studio = !self.show_ui_studio,
             // 中央两个视图共用一条守卫（最后一个不许关）。
             MenuAction::ToggleSceneView => {
                 let visible = !self.show_scene_view;
@@ -882,7 +887,7 @@ mod tests {
                     }
                     app.run_menu_action(item.action);
                 }
-                // 面板开关是复选框行（不是 `Item`），八个动作只在这里可达。
+                // 面板开关是复选框行（不是 `Item`），九个动作只在这里可达。
                 if matches!(row, MenuRow::PanelToggles) {
                     for action in [
                         MenuAction::ToggleResources,
@@ -894,6 +899,7 @@ mod tests {
                         MenuAction::ToggleConsole,
                         MenuAction::ToggleTimeline,
                         MenuAction::ToggleGraph,
+                        MenuAction::ToggleUiStudio,
                     ] {
                         app.run_menu_action(action);
                     }
@@ -917,6 +923,7 @@ mod tests {
             MenuAction::ToggleAssistant,
             MenuAction::ToggleTimeline,
             MenuAction::ToggleGraph,
+            MenuAction::ToggleUiStudio,
         ] {
             let before = app.panel_is_shown(action);
             app.run_menu_action(action);

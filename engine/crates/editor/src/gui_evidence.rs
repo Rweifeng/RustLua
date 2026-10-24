@@ -58,6 +58,8 @@ struct EvidenceStep {
     play: bool,
     /// 采集前是否聚焦内置 AI 助手标签（M75-03 验收门：证据目录必须包含新面板）。
     assistant: bool,
+    /// 采集前是否打开 UI Studio 标签并加载演示文档（M76-04 验收门：真窗口证据）。
+    ui_studio: bool,
 }
 
 /// 一次采集的记录。
@@ -76,6 +78,7 @@ struct CaptureRecord {
     play: bool,
     view_3d: bool,
     assistant: bool,
+    ui_studio: bool,
     image_size: (u32, u32),
     /// 非黑像素比例：证明"窗口真的渲染出了东西"，而不是一张全黑图。
     lit_ratio: f32,
@@ -218,6 +221,7 @@ impl GuiEvidence {
                 play: step.play,
                 view_3d: step.view_3d,
                 assistant: step.assistant,
+                ui_studio: step.ui_studio,
                 image_size: (0, 0),
                 lit_ratio: 0.0,
                 mean_luma: 0.0,
@@ -290,6 +294,36 @@ impl GuiEvidence {
                 crate::dock::focus_tab(state, crate::dock::DockTab::Assistant);
             }
         }
+        // M76-04：证据目录必须包含 UI Studio 面板。演示文档写进 `.cache/`（工程内相对
+        // 路径、已在 .gitignore），不碰用户工程的 `ui/` 目录。
+        if step.ui_studio {
+            app.show_ui_studio = true;
+            let root = crate::util::strip_verbatim_prefix(&app.project.root);
+            let document = ".cache/gui_evidence/ui_studio.ui.json";
+            let path = root.join(document);
+            if !path.exists() {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(&path, UI_STUDIO_DEMO_SPEC);
+            }
+            if app.ui_studio_panel.studio.is_none() {
+                let mut studio = editor::ui_studio::UiStudio::new(root);
+                match studio.open(document) {
+                    Ok(()) => {
+                        app.ui_studio_panel.document_input = document.to_owned();
+                        app.ui_studio_panel.studio = Some(studio);
+                    }
+                    Err(error) => tracing::warn!(
+                        target: "editor",
+                        "[gui-evidence] 打开 UI Studio 演示文档失败：{error}"
+                    ),
+                }
+            }
+            if let Some(state) = app.dock_state.as_mut() {
+                crate::dock::focus_tab(state, crate::dock::DockTab::UiStudio);
+            }
+        }
         if step.play {
             if !app.is_playing() && app.document.current_scene.is_some() {
                 app.play();
@@ -332,6 +366,7 @@ impl GuiEvidence {
                 view_3d: false,
                 play: app.is_playing(),
                 assistant: false,
+                ui_studio: false,
             });
             let (width, height) = (image.width() as u32, image.height() as u32);
             // 截图那一刻的**实测** DPI 与点尺寸：报告里的标签必须来自这里，而不是脚本的请求值。
@@ -367,6 +402,7 @@ impl GuiEvidence {
                 play: step.play,
                 view_3d: step.view_3d,
                 assistant: step.assistant,
+                ui_studio: step.ui_studio,
                 image_size: (width, height),
                 lit_ratio,
                 mean_luma,
@@ -419,7 +455,7 @@ impl GuiEvidence {
                 .abs()
                 <= 0.01;
             text.push_str(&format!(
-                "{:<28} req_ppi={:<4} act_ppi={:<4} req={:.0}x{:.0} screen={:.0}x{:.0} play={:<5} 3d={:<5} assistant={:<5} image={}x{} lit={:.3} luma={:.3} ws={:.1}MiB {}\n",
+                "{:<28} req_ppi={:<4} act_ppi={:<4} req={:.0}x{:.0} screen={:.0}x{:.0} play={:<5} 3d={:<5} assistant={:<5} studio={:<5} image={}x{} lit={:.3} luma={:.3} ws={:.1}MiB {}\n",
                 record.label,
                 record.requested_pixels_per_point,
                 record.measured_pixels_per_point,
@@ -430,6 +466,7 @@ impl GuiEvidence {
                 record.play,
                 record.view_3d,
                 record.assistant,
+                record.ui_studio,
                 record.image_size.0,
                 record.image_size.1,
                 record.lit_ratio,
@@ -486,6 +523,7 @@ impl GuiEvidence {
                     "play": record.play,
                     "view_3d": record.view_3d,
                     "assistant": record.assistant,
+                    "ui_studio": record.ui_studio,
                     "image_size": [record.image_size.0, record.image_size.1],
                     "lit_ratio": record.lit_ratio,
                     "mean_luma": record.mean_luma,
@@ -520,6 +558,7 @@ fn evidence_steps() -> Vec<EvidenceStep> {
                 view_3d: false,
                 play: false,
                 assistant: false,
+                ui_studio: false,
             });
         }
     }
@@ -530,6 +569,7 @@ fn evidence_steps() -> Vec<EvidenceStep> {
         view_3d: true,
         play: false,
         assistant: false,
+        ui_studio: false,
     });
     steps.push(EvidenceStep {
         label: "dpi1.5-1280x720-play".to_owned(),
@@ -538,6 +578,7 @@ fn evidence_steps() -> Vec<EvidenceStep> {
         view_3d: false,
         play: true,
         assistant: false,
+        ui_studio: false,
     });
     // M75-03 验收门 3：同一份真实窗口证据里必须有一张**助手面板**截图。
     // 放在最后：切到助手标签后不再回到属性，不影响前面各步的默认观感。
@@ -548,9 +589,50 @@ fn evidence_steps() -> Vec<EvidenceStep> {
         view_3d: false,
         play: false,
         assistant: true,
+        ui_studio: false,
+    });
+    // M76-04 验收门：UI Studio 的面板/画布必须在**真实窗口**里留下一张 PNG。
+    // 放在助手之后：切到 UI Studio 标签会关掉助手标签的观感，前面各步不受影响。
+    steps.push(EvidenceStep {
+        label: "dpi1.5-1280x720-ui-studio".to_owned(),
+        pixels_per_point: 1.5,
+        inner_size: egui::vec2(1280.0, 720.0),
+        view_3d: false,
+        play: false,
+        assistant: false,
+        ui_studio: true,
     });
     steps
 }
+
+/// UI Studio 证据步骤加载的演示文档（写进工程 `.cache/`，不污染 `ui/`）。
+const UI_STUDIO_DEMO_SPEC: &str = r##"{
+  "spec_version": 1,
+  "document": {"kind": "widget", "name": "gui_evidence"},
+  "tokens": {"color.surface": "#101014", "color.accent": "#d09040"},
+  "styles": {},
+  "root": {
+    "key": "root",
+    "type": "panel",
+    "layout": {"anchor": "center", "size": [640.0, 360.0]},
+    "children": [
+      {
+        "key": "title",
+        "type": "text",
+        "text": "UI Studio",
+        "layout": {"anchor": "top_center", "size": [320.0, 48.0]}
+      },
+      {
+        "key": "buy",
+        "type": "button",
+        "text": "Buy",
+        "layout": {"anchor": "center", "size": [160.0, 48.0]},
+        "events": {"click": "shop.buy"}
+      }
+    ]
+  }
+}
+"##;
 
 // ---------------------------------------------------------------------------
 // 长会话 soak
@@ -1303,6 +1385,10 @@ mod tests {
         assert!(
             steps.iter().any(|step| step.assistant),
             "M75-03：证据目录必须包含内置助手面板截图"
+        );
+        assert!(
+            steps.iter().any(|step| step.ui_studio),
+            "M76-04：证据目录必须包含 UI Studio 面板截图"
         );
         let sizes: std::collections::BTreeSet<(i32, i32)> = steps
             .iter()

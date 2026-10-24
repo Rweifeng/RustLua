@@ -1385,6 +1385,7 @@ impl EditorApp {
                             "value".to_owned(),
                         ]),
                         default: None,
+                        flow: rustlua_ui::ui_binding::BindingFlow::OneWay,
                     });
             }
             if ui.button("应用 Bindings").clicked() {

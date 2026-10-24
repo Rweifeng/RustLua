@@ -371,23 +371,39 @@ impl TextLayout {
         let mut x = origin[0];
         let mut y = origin[1] + ascent * base_px;
         let mut out = Vec::new();
+        let s = EM_PX * style.scale;
         for ch in text.chars() {
             if ch == '\n' {
                 x = origin[0];
                 y += EM_PX * style.scale * LINE_HEIGHT_EM + style.line_spacing;
                 continue;
             }
+            if ch == ' ' {
+                // 空格没有轮廓、`glyph()` 把它记成 missing，但它的 hmtx 仍要推进，
+                // 否则整句空格零宽（"Rust Lua" 画成 "RustLua"），与 SDF 档不一致。
+                x += font.advance_em(' ') * s + style.spacing;
+                continue;
+            }
             let Some(glyph) = font.glyph(ch).cloned() else {
                 x += style.spacing;
                 continue;
             };
-            let s = EM_PX * style.scale;
             // bounds 是 y 向下的 [left, top, right, bottom]（相对笔位，em 单位）。
             let [min_x, min_y, max_x, max_y] = glyph.bounds;
-            let x0 = x + min_x * s;
-            let y0 = y + min_y * s;
-            let x1 = x + max_x * s;
-            let y1 = y + max_y * s;
+            // 墨迹窄于一个像素的笔画（Noto Sans SC 子集里的 `i` 在 13 px 下只有
+            // 0.86 px）会被 1x 光栅化整个丢掉——片元着色器的 AA 只在四边形内部
+            // 生效，救不了一个采样点都没落进来的情况。按墨迹中心补到 1 px 见方；
+            // 常规字形（≥1 px）逐字节不变，因此锚点/包围盒对齐不受影响。
+            let ink_w = ((max_x - min_x) * s).max(0.0);
+            let ink_h = ((max_y - min_y) * s).max(0.0);
+            let cx = x + (min_x + max_x) * 0.5 * s;
+            let cy = y + (min_y + max_y) * 0.5 * s;
+            let w = ink_w.max(1.001);
+            let h = ink_h.max(1.001);
+            let x0 = cx - w * 0.5;
+            let y0 = cy - h * 0.5;
+            let x1 = cx + w * 0.5;
+            let y1 = cy + h * 0.5;
             let corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
             for &p in &[
                 corners[0], corners[1], corners[2], corners[0], corners[2], corners[3],
@@ -690,6 +706,60 @@ mod tests {
         assert!((glyph_center_y - mesh_center_y).abs() > 0.01);
     }
 
+    /// 墨迹窄于一个像素的笔画必须仍然被光栅化：矢量档的 AA 在片元里做，但光栅化是
+    /// 1x 采样，`i` 的竖笔在 6 px 字号下只有 0.73 px 宽——不补到一像素，整个四边形
+    /// 可以一个采样中心都不落在里面，字就凭空消失。
+    #[test]
+    fn vector_quads_never_fall_below_one_pixel() {
+        let font_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../editor/fonts/NotoSansSC-VF.ttf");
+        let bytes = std::fs::read(&font_path).unwrap();
+        let mut vector = crate::font::FontVectorAtlas::load(&bytes).unwrap();
+        let style = TextStyle {
+            scale: 0.5,
+            ..Default::default()
+        };
+        let s = EM_PX * style.scale;
+        let bounds = vector.glyph('i').cloned().unwrap().bounds;
+        assert!(
+            (bounds[2] - bounds[0]) * s < 1.0,
+            "前提不成立：`i` 的墨迹宽度已不小于一个像素"
+        );
+        let run = TextLayout::build_vector("i", [0.0, 0.0], style, &mut vector).unwrap();
+        let min_x = run.iter().map(|v| v.position[0]).fold(f32::MAX, f32::min);
+        let max_x = run.iter().map(|v| v.position[0]).fold(f32::MIN, f32::max);
+        assert!(
+            max_x - min_x >= 1.0,
+            "`i` 的四边形只有 {} px，可能一个采样中心都盖不住",
+            max_x - min_x
+        );
+        // 补宽只能按墨迹中心对称外扩，且不得超过片元着色器的裁剪余量
+        // （`bounds ± fwidth` ≈ 一个像素），否则补出来的那一圈会被 discard 掉。
+        let local_min = run.iter().map(|v| v.local[0]).fold(f32::MAX, f32::min);
+        let local_max = run.iter().map(|v| v.local[0]).fold(f32::MIN, f32::max);
+        let ink_center = (bounds[0] + bounds[2]) * 0.5;
+        assert!(
+            ((local_min + local_max) * 0.5 - ink_center).abs() < 1e-3,
+            "补宽把笔画推离了墨迹中心：{} vs {ink_center}",
+            (local_min + local_max) * 0.5
+        );
+        let overflow = run
+            .iter()
+            .map(|v| {
+                (v.local[0] - bounds[2])
+                    .max(bounds[0] - v.local[0])
+                    .max(v.local[1] - bounds[3])
+                    .max(bounds[1] - v.local[1])
+            })
+            .fold(0.0_f32, f32::max);
+        assert!(
+            overflow <= 0.5 / s + 1e-3,
+            "补宽外扩 {} em 超过了片元裁剪余量 {}",
+            overflow,
+            0.5 / s
+        );
+    }
+
     #[test]
     fn vector_and_sdf_layouts_share_the_baseline() {
         let font_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -715,6 +785,42 @@ mod tests {
         assert!(
             (sdf_top - vector_top).abs() < 0.01,
             "sdf_top={sdf_top}, vector_top={vector_top}"
+        );
+    }
+
+    /// 矢量档必须为空格推进：空格没有轮廓、进不了字形缓存，但它的 hmtx 仍是排版
+    /// 宽度。此前零宽空格把整句压成 "RustLua"，且与 SDF 档同一句话宽度不一致。
+    #[test]
+    fn vector_layout_advances_spaces() {
+        let font_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../editor/fonts/NotoSansSC-VF.ttf");
+        let bytes = std::fs::read(&font_path).unwrap();
+        let style = TextStyle {
+            scale: 2.0,
+            ..Default::default()
+        };
+        let mut msdf = crate::font::FontAtlas::load(&bytes).unwrap();
+        let mut vector = crate::font::FontVectorAtlas::load(&bytes).unwrap();
+        let right = |run: &[VectorTextVertex]| {
+            run.iter()
+                .map(|vertex| vertex.position[0])
+                .fold(f32::NEG_INFINITY, f32::max)
+        };
+        let spaced = TextLayout::build_vector("Rust Lua", [0.0, 0.0], style, &mut vector).unwrap();
+        let joined = TextLayout::build_vector("RustLua", [0.0, 0.0], style, &mut vector).unwrap();
+        let vector_gap = right(&spaced) - right(&joined);
+        assert!(
+            vector_gap > 5.0,
+            "矢量档的空格被压成零宽：spaced={} joined={} gap={vector_gap}",
+            right(&spaced),
+            right(&joined)
+        );
+        let sdf_spaced = TextLayout::build("Rust Lua", [0.0, 0.0], style, &mut msdf).unwrap();
+        let sdf_joined = TextLayout::build("RustLua", [0.0, 0.0], style, &mut msdf).unwrap();
+        let sdf_gap = sdf_spaced.size[0] - sdf_joined.size[0];
+        assert!(
+            (vector_gap - sdf_gap).abs() < 0.5,
+            "两条通道的空格推进不一致：vector={vector_gap} sdf={sdf_gap}"
         );
     }
 

@@ -6,15 +6,15 @@
 
 use crate::runtime_perf::{PreviewPerfMeter, RuntimePerfSnapshot};
 use eframe::egui;
-use engine::host::frame::{FontAtlasMap, VectorAtlasMap, VectorFontHandle};
 use engine::host::{
-    EnvironmentApplyReport, ReadbackMetrics, ReadbackStatus, Renderer, RuntimeScene,
-    ScriptErrorPolicy, apply_scene_environment,
+    EnvironmentApplyReport, RuntimeScene, ScriptErrorPolicy, apply_scene_environment,
 };
 use rustlua_camera::camera::Viewport;
+use rustlua_gpu::{ReadbackMetrics, ReadbackStatus, Renderer};
 use rustlua_infra::time_step::FixedTimeStep;
 use rustlua_input::input::InputSnapshot;
 use rustlua_render::font::FontAtlas;
+use rustlua_render::frame::{FontAtlasMap, VectorAtlasMap, VectorFontHandle};
 use rustlua_scene::scene::Scene;
 use std::path::Path;
 use std::sync::{Arc, Mutex};

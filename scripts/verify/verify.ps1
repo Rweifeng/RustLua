@@ -492,8 +492,13 @@ try {
         #      （Rust 键表 / 预置层 bindings / 宿主 DOM 键名归一），构建前即可判红。
         Write-Step "Input frame ABI key table (static parity)"
         Invoke-Checked node @((Join-Path $projectRoot "scripts/verify/check-input-abi-parity.mjs"))
+        #   ⑥ flaky skip 账本：CI 用 RUSTLUA_SKIP_CI_FLAKY=1 少跑的用例，必须逐条有原因/读者/
+        #      恢复条件/复审日期（scripts/verify/flaky-skips.json）。门扫所有读该变量的代码，
+        #      拦三种静默失效：新加 skip 不登记、登记的读者/发放点被删、skip 代码只跳名字不打。
+        Write-Step "Flaky CI skip ledger (static parity)"
+        Invoke-Checked node @((Join-Path $projectRoot "scripts/verify/check-flaky-skips.mjs"))
     } else {
-        Write-Host "  [SKIP] 未找到 node：Lua API 文档桩门、微信资源路由门、wasm 兜底通道门、固定时间步门与输入键表门未运行（不是通过）" -ForegroundColor Yellow
+        Write-Host "  [SKIP] 未找到 node：Lua API 文档桩门、微信资源路由门、wasm 兜底通道门、固定时间步门、输入键表门与 flaky skip 账本门未运行（不是通过）" -ForegroundColor Yellow
     }
 
     # ---------- 发布闭包（容器内容）：此前没有任何自动化入口 ----------
@@ -620,6 +625,14 @@ try {
         throw "feature gate broken: rustlua-editor-ai 出现在 --no-default-features 的 editor 依赖图里"
     }
 
+    # M76-05/06：UI 发布门。扫工程内全部 `.ui.json` + provenance 边车：坏 JSON、
+    # 生成计划缺来源、未审阅被引用、单件/总包超体积都是 error。三宿主未测只打印读数，
+    # 不写成通过（报告里固定是 untested）。反面对照在该测试文件的单元测试里。
+    Write-Step "UI asset provenance & review gate"
+    Invoke-Checked cargo @(
+        "test", "-p", "editor", "--test", "ui_asset_gate", "--", "--nocapture"
+    )
+
     # M72-10b：UI 资源契约（Python 只读量具）。九宫格半句查 8 份 prefab 的 54 行
     # `_9s`：必须带 nine_slice、等于 manifest、且 UiLayout 宽高装得下边距；
     # 图标半句查 93 张 32×32 的硬边/6bit/非纯色/非噪点。审美精修仍是外部委托，
@@ -658,21 +671,27 @@ try {
             $env:RUSTDOCFLAGS = $previousDocFlags
         }
 
-        # WP12 阶段 0：`engine` 对外 Rust 符号面的基线门。它读的就是上面 `cargo doc` 刚生成的产物
-        # （`engine/target/doc/engine`），所以必须紧跟在那一步之后；判据是"路径 + 项的种类 + 方法还挂在
-        # 哪个类型上"逐项与 `baselines/engine-pub-surface.json` 相同。
+        # WP12 阶段 0：crate 对外 Rust 符号面的基线门。它读的就是上面 `cargo doc` 刚生成的产物
+        # （`engine/target/doc/<crate>`），所以必须紧跟在那一步之后；判据是"路径 + 项的种类 + 方法还挂在
+        # 哪个类型上"逐项与本地基线相同。
         # 抓的是模块拆分这一类事故：`impl` 块搬进 `pub mod` 子模块、`pub use` 漏了一项，都会多/少一条路径。
         # 缺 node 时按本仓库口径打印原因后跳过，绝不把"跳过"写成通过。
         # `baselines/` 在 .gitignore 里（本地基线不入库），干净 CI 必然没有这份 JSON；
         # 没有基线就显式跳过并说明，而不是让每个 push 都红在"baseline_missing"。
-        Write-Step "Engine public Rust surface"
+        # M77-01：渲染器搬进 `rustlua-gpu` 之后这条门盯**两份**基线（`engine` + `rustlua-gpu`），
+        # 少任何一份都算"未运行"——只比对 engine 会漏掉整套 GPU 符号面。
+        Write-Step "Crate public Rust surface"
         $baselinesDir = if ($env:RUSTLUA_BASELINES_DIR) { $env:RUSTLUA_BASELINES_DIR } else { Join-Path $projectRoot "baselines" }
-        $pubSurfaceBaseline = Join-Path $baselinesDir "engine-pub-surface.json"
+        $pubSurfaceBaselines = @(
+            (Join-Path $baselinesDir "engine-pub-surface.json"),
+            (Join-Path $baselinesDir "rustlua-gpu-pub-surface.json")
+        )
+        $missingBaselines = @($pubSurfaceBaselines | Where-Object { -not (Test-Path -LiteralPath $_) })
         if (Get-Command node -ErrorAction SilentlyContinue) {
-            if (Test-Path -LiteralPath $pubSurfaceBaseline) {
+            if ($missingBaselines.Count -eq 0) {
                 Invoke-Checked node @((Join-Path $projectRoot "scripts/verify/engine-pub-surface.mjs"), "--check")
             } else {
-                Write-Host "  [SKIP] 缺少本地基线 $pubSurfaceBaseline（baselines/ 不入库；先跑 node scripts/verify/engine-pub-surface.mjs --update，或设 RUSTLUA_BASELINES_DIR）：对外 Rust 符号面基线门未运行（不是通过）" -ForegroundColor Yellow
+                Write-Host "  [SKIP] 缺少本地基线 $($missingBaselines -join '、')（baselines/ 不入库；先跑 node scripts/verify/engine-pub-surface.mjs --update，或设 RUSTLUA_BASELINES_DIR）：对外 Rust 符号面基线门未运行（不是通过）" -ForegroundColor Yellow
             }
         } else {
             Write-Host "  [SKIP] 未找到 node：对外 Rust 符号面基线门未运行（不是通过）" -ForegroundColor Yellow
@@ -1686,6 +1705,30 @@ if ($Mvp -or $MvpOnly) {
         }
     }
 
+    # 「由总门其它段执行」的门——第四件事：它们**真的在跑、仍然必须过**，只是不在 MVP 这一段。
+    # 登记进来的唯一理由是退出码语义与 `Invoke-Checked`（任何非零即红）冲突：
+    # `jhyt_m95_gpu_particles` 在没有 compute 的机器上按仓内约定退 **3**（环境受限，不是通过），
+    # 由本文件的 "Compute / GPU particles" 步骤带 exit-3 分支执行，`RUSTLUA_REQUIRE_GPU=1`
+    # 时把跳过升级为红。登记进 `$examples` 会让所有无 GPU 机器与 CI runner 恒红，
+    # 而恒红的门等于没有门。
+    # 防漂移：这张表里的每一项必须在脚本里有一处**真实调用点**（`--example <名字>`）。
+    # 只登记不调用 = 把回归藏进第四张表，那正是本段要防的「静默少跑」。
+    $gatedElsewhereExamples = @(
+        "jhyt_m95_gpu_particles"
+    )
+    $verifySource = Get-Content -LiteralPath $PSCommandPath -Raw
+    foreach ($example in $gatedElsewhereExamples) {
+        if (-not (Test-Path -LiteralPath (Join-Path $exampleDir ($example + ".rs")))) {
+            throw ("elsewhere-gated example list names $example but the file is gone; drop the entry (a missing gate is a lost gate)")
+        }
+        if (($examples -contains $example) -or ($retiredExamples -contains $example) -or ($releaseExamples.Name -contains $example)) {
+            throw ("$example appears in more than one example list; pick one")
+        }
+        if ($verifySource -notmatch [regex]::Escape("--example $example")) {
+            throw ("$example 登记为「其它段执行」，但 verify.ps1 里没有 --example $example 的调用点：没有任何门真的在跑它")
+        }
+    }
+
     # 1) 先全量校验清单，缺失/多余都直接失败（缺失 = 回归消失，多余 = 清单漏登记）。
     $missing = @()
     foreach ($example in $examples) {
@@ -1698,7 +1741,7 @@ if ($Mvp -or $MvpOnly) {
         throw ("MVP example list is missing $($missing.Count) file(s): " + ($missing -join ", ") + " (expected under $exampleDir)")
     }
     $onDisk = @(Get-ChildItem -LiteralPath $exampleDir -Filter "jhyt_*.rs" -File | ForEach-Object { $_.BaseName })
-    $unlisted = @($onDisk | Where-Object { $examples -notcontains $_ -and $retiredExamples -notcontains $_ -and @($releaseExamples | ForEach-Object { $_.Name }) -notcontains $_ })
+    $unlisted = @($onDisk | Where-Object { $examples -notcontains $_ -and $retiredExamples -notcontains $_ -and $gatedElsewhereExamples -notcontains $_ -and @($releaseExamples | ForEach-Object { $_.Name }) -notcontains $_ })
     if ($unlisted.Count -gt 0) {
         throw ("jhyt_* example(s) exist but are not in the MVP list: " + ($unlisted -join ", ") + " (add them to verify.ps1 or delete them)")
     }

@@ -4,90 +4,184 @@
 //! `compute_click_targets` 与 `text_hit_rect` 跟着进来：点击矩形与绘制矩形必须同源，
 //! 分开两个模块就成了"同一事实两处算"（计划 §2.2 的那类病）。
 
-use crate::host::frame::{
-    ATLAS_TEXTURE_PATH, FONT_ATLAS_TEXTURE_PATH, OverlayVertex, SceneDraw, VectorGlyphSnapshot,
-    VectorSegmentSnapshot, VectorTextVertex as FrameVectorTextVertex,
-};
 use rustlua_camera::camera::{OrthoTerms, Viewport};
 use rustlua_ecs::entity::EntityId;
 use rustlua_ecs::transform::Transform;
+use rustlua_render::frame::{
+    ATLAS_TEXTURE_PATH, FONT_ATLAS_TEXTURE_PATH, OverlayVertex, SceneDraw, VectorGlyphSnapshot,
+    VectorSegmentSnapshot, VectorTextVertex as FrameVectorTextVertex,
+};
 use rustlua_render::layer::RenderLayer;
 use rustlua_render::sprite::Sprite;
 use rustlua_ui::ui::{
     DynamicUiImage, UiImage, UiText, nine_slice_cells, resolve_ui_rect, ui_text_effective_scale,
 };
 use rustlua_ui::ui_events::{UiClickTarget, UiEvents};
+use rustlua_ui::ui_interaction::UiRect as ClipRect;
 use rustlua_ui::ui_layout::UiRect;
 use rustlua_ui::ui_scene_layout::resolve_scene_ui_layout;
+use rustlua_ui::ui_states::{ButtonStateSet, ButtonVisualState};
 
 use super::{RuntimeScene, nine_slice_quad, screen_rect_ndc, text, text_to_ndc};
 use crate::host::runtime_scene::camera::sprite_screen_rect;
 
+/// 命中所需的一份实体数据（屏幕像素）。
+///
+/// 点击目标与运行时交互树都从这里派生：矩形只算一次，"画在哪、点在哪、hover
+/// 在哪"因此不会分叉。`button_states` 只用于交互树（禁用/状态贴图），旧点击
+/// 路径不读它。
+pub(super) struct UiHitData {
+    pub slot: u64,
+    pub name: String,
+    /// 屏幕空间（已含滚动位移、已按视口收窄）：旧点击路径与命中读数用。
+    pub rect: ([f32; 2], [f32; 2]),
+    /// 内容空间（滚动位移已扣回、未按视口收窄）：交互树自己按 `UiScroll` 平移，
+    /// 若把屏幕空间矩形再喂给它就会平移两遍。
+    pub tree_rect: ([f32; 2], [f32; 2]),
+    pub events: Option<UiEvents>,
+    pub button_states: Option<ButtonStateSet>,
+}
+
 impl RuntimeScene {
-    /// 计算当前所有 `UiEvents` 实体的命中目标（屏幕像素）。
+    /// 收集当前所有可交互实体（带 `UiEvents` 或 `ButtonStates`）。
     ///
     /// Image/Text 用 UI 解析（viewport=实际渲染尺寸、reference=设计分辨率），
-    /// Sprite 用相机投影到屏幕；供 `process_ui_clicks` 点选分发。
-    pub(super) fn compute_click_targets(&mut self) -> Vec<UiClickTarget> {
+    /// Sprite 用相机投影到屏幕。无名实体没有 Lua 目标名，直接跳过。
+    pub(super) fn ui_hit_data(&mut self) -> Vec<UiHitData> {
         let viewport = Viewport {
             width: self.viewport_width.max(1) as f32,
             height: self.viewport_height.max(1) as f32,
         };
         let viewport_arr = [viewport.width, viewport.height];
         self.ensure_scene_ui_layout(viewport_arr);
-        // 先提取 UiEvents 实体及其视觉组件（world 借用结束后再计算，避免借用冲突）。
-        type UiEventComponents = (
-            EntityId,
+        type HitComponents = (
             Option<UiImage>,
             Option<UiText>,
             Option<(Sprite, Transform)>,
-            Option<rustlua_ui::ui_events::UiEvents>,
+            Option<UiEvents>,
+            Option<ButtonStateSet>,
+            Option<rustlua_ui::ui_scroll_view::ScrollView>,
         );
-        let entities: Vec<UiEventComponents> = self.script.with_world(|world| {
-            let mut out = Vec::new();
-            for id in world.entities_with::<rustlua_ui::ui_events::UiEvents>() {
-                let image = world.get::<UiImage>(id).ok().flatten().cloned();
-                let text = world.get::<UiText>(id).ok().flatten().cloned();
-                let sprite = world.get::<Sprite>(id).ok().flatten().cloned();
-                let transform = world.get::<Transform>(id).ok().flatten().cloned();
-                let events = world
-                    .get::<rustlua_ui::ui_events::UiEvents>(id)
-                    .ok()
-                    .flatten()
-                    .cloned();
-                out.push((id, image, text, sprite.zip(transform), events));
+        let mut ids = self.script.with_world(|world| {
+            let mut ids = world.entities_with::<UiEvents>();
+            for id in world.entities_with::<ButtonStateSet>() {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
             }
-            out
+            // M76-02：滚动容器即使没有事件也要进树——滚轮要先命中它。
+            for id in world.entities_with::<rustlua_ui::ui_scroll_view::ScrollView>() {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            ids
+        });
+        // 体素槽位序 = 绘制序：排序让交互树的可绘制顺序与 `entities_with` 的存储序无关。
+        ids.sort_by_key(|id| id.index());
+        let entities: Vec<(EntityId, HitComponents)> = self.script.with_world(|world| {
+            ids.into_iter()
+                .map(|id| {
+                    let image = world.get::<UiImage>(id).ok().flatten().cloned();
+                    let text = world.get::<UiText>(id).ok().flatten().cloned();
+                    let sprite = world.get::<Sprite>(id).ok().flatten().cloned();
+                    let transform = world.get::<Transform>(id).ok().flatten().cloned();
+                    let events = world.get::<UiEvents>(id).ok().flatten().cloned();
+                    let states = world.get::<ButtonStateSet>(id).ok().flatten().cloned();
+                    let scroll = world
+                        .get::<rustlua_ui::ui_scroll_view::ScrollView>(id)
+                        .ok()
+                        .flatten()
+                        .copied();
+                    (
+                        id,
+                        (image, text, sprite.zip(transform), events, states, scroll),
+                    )
+                })
+                .collect()
         });
         let camera = OrthoTerms::new(self.camera, viewport).ok();
         entities
             .into_iter()
-            .filter_map(|(id, image, text, sprite, events)| {
-                let name = self.script.entity_name(id)?;
-                let rect: ([f32; 2], [f32; 2]) = if image.is_some() {
-                    let layout_rect = self.scene_ui_layout_rect(id, viewport_arr)?;
-                    (
-                        [layout_rect.x, layout_rect.y],
-                        [layout_rect.w, layout_rect.h],
-                    )
-                } else if let Some(text) = text {
-                    let layout_rect = self.scene_ui_layout_rect(id, viewport_arr)?;
-                    self.text_hit_rect(&layout_rect, &text)?
-                } else if let Some((sprite, transform)) = sprite {
-                    sprite_screen_rect(&sprite, &transform, camera?)?
-                } else {
-                    return None;
-                };
-                let functions =
-                    events.map_or_else(Vec::new, |events| UiEvents::click_functions(&events));
+            .filter_map(
+                |(id, (image, text, sprite, events, button_states, _scroll))| {
+                    let name = self.script.entity_name(id)?;
+                    let slot = id.index() as u64;
+                    // M76-02：`image.visible=false` 的绑定目标既不可见也不可点（与绘制同源）。
+                    if image.is_some() && self.ui_binding_hidden_images.contains(&name) {
+                        return None;
+                    }
+                    let rect: ([f32; 2], [f32; 2]) = if image.is_some() {
+                        let layout_rect = self.scene_ui_layout_rect(id, viewport_arr)?;
+                        (
+                            [layout_rect.x, layout_rect.y],
+                            [layout_rect.w, layout_rect.h],
+                        )
+                    } else if let Some(text) = text {
+                        let layout_rect = self.scene_ui_layout_rect(id, viewport_arr)?;
+                        self.text_hit_rect(&layout_rect, &text)?
+                    } else if let Some((sprite, transform)) = sprite {
+                        sprite_screen_rect(&sprite, &transform, camera?)?
+                    } else {
+                        // 只有 `ButtonStates`/`ScrollView` 的实体仍然按布局矩形参与命中
+                        // （禁用态要挡住自己的悬停；滚动容器要接住滚轮）。
+                        let layout_rect = self.scene_ui_layout_rect(id, viewport_arr)?;
+                        (
+                            [layout_rect.x, layout_rect.y],
+                            [layout_rect.w, layout_rect.h],
+                        )
+                    };
+                    // 交互树的矩形在内容空间（扣回滚动位移）：树自己会按 `UiScroll` 平移。
+                    let shift = self
+                        .ui_scroll_shifts
+                        .get(&slot)
+                        .copied()
+                        .unwrap_or([0.0, 0.0]);
+                    let tree_rect = ([rect.0[0] - shift[0], rect.0[1] - shift[1]], rect.1);
+                    // M76-02：滚动视口外/部分在外的命中框收窄到裁剪矩形；完全在外就不进树。
+                    let rect = match self.ui_clip_rects.get(&slot) {
+                        Some(clip) => {
+                            let hit = ClipRect::new(rect.0[0], rect.0[1], rect.1[0], rect.1[1]);
+                            let visible = clip.intersect(hit)?;
+                            ([visible.x, visible.y], [visible.w, visible.h])
+                        }
+                        None => rect,
+                    };
+                    Some(UiHitData {
+                        slot,
+                        name,
+                        rect,
+                        tree_rect,
+                        events,
+                        button_states,
+                    })
+                },
+            )
+            .collect()
+    }
+
+    /// 从命中数据派生旧点击目标（只保留带 `UiEvents` 的实体）。
+    pub(super) fn click_targets_from(data: &[UiHitData]) -> Vec<UiClickTarget> {
+        data.iter()
+            .filter_map(|item| {
+                let events = item.events.as_ref()?;
                 Some(UiClickTarget {
-                    name,
-                    origin: rect.0,
-                    size: rect.1,
-                    functions,
+                    name: item.name.clone(),
+                    origin: item.rect.0,
+                    size: item.rect.1,
+                    functions: events.click_functions(),
                 })
             })
             .collect()
+    }
+
+    /// 计算当前所有 `UiEvents` 实体的命中目标（屏幕像素）。
+    ///
+    /// Image/Text 用 UI 解析（viewport=实际渲染尺寸、reference=设计分辨率），
+    /// Sprite 用相机投影到屏幕；供 `process_ui_clicks` 点选分发。
+    pub(super) fn compute_click_targets(&mut self) -> Vec<UiClickTarget> {
+        let data = self.ui_hit_data();
+        Self::click_targets_from(&data)
     }
 
     /// 文本 hit 矩形：与编辑器 UI 包围框同款——resolve 出网格原点，度量字形
@@ -110,6 +204,25 @@ impl RuntimeScene {
     /// E16：实体带 `UiLayout` 组件时，其四边 Anchor+Offset 布局优先于
     /// Text/Image 的内联位置数据。把解析矩形回写为 Screen/[0,0] 内联值即可
     /// 复用既有渲染路径——视觉属性（纹理/颜色/文本）仍来自原组件。
+    /// 交互树当前视觉状态对应的贴图覆盖（未启用交互 / 无覆盖时保留作者贴图）。
+    ///
+    /// 状态按实体名查：交互树的 key 就是名字，渲染侧没有 tree 下标。
+    fn state_texture(&self, id: EntityId, base: &str, states: Option<&ButtonStateSet>) -> String {
+        let Some(states) = states else {
+            return base.to_owned();
+        };
+        let Some(name) = self.script.entity_name(id) else {
+            return base.to_owned();
+        };
+        let Some(state) = self.ui_visual_states.get(&name).copied() else {
+            return base.to_owned();
+        };
+        if state == ButtonVisualState::Normal {
+            return base.to_owned();
+        }
+        states.texture(state).unwrap_or(base).to_owned()
+    }
+
     fn scene_ui_layout_rect(&self, id: EntityId, _viewport: [f32; 2]) -> Option<UiRect> {
         self.ui_layout_rects
             .get(&(id.index() as u64))
@@ -129,6 +242,8 @@ impl RuntimeScene {
                     .get(id)
                     .is_some_and(|node| node.layout.is_some())
         });
+        // M76-02：滚动偏移在布局之后应用，命中/绘制/交互树都读同一份结果。
+        self.apply_scroll_layout(&mut resolved);
         self.ui_layout_rects = resolved;
     }
 
@@ -242,7 +357,7 @@ impl RuntimeScene {
     ) -> anyhow::Result<()> {
         let images = self.script.with_dynamic_ui(|_, images, _| images.clone());
         for image in images.values() {
-            self.push_image_quad(vertices, draws, width, height, image)?;
+            self.push_image_quad(vertices, draws, width, height, image, None)?;
         }
         Ok(())
     }
@@ -326,7 +441,7 @@ impl RuntimeScene {
                         anchor: [0.0, 0.0],
                         nine_slice: None,
                     };
-                    self.push_image_quad(vertices, draws, width, height, &image)?;
+                    self.push_image_quad(vertices, draws, width, height, &image, None)?;
                 }
             }
         }
@@ -489,21 +604,33 @@ impl RuntimeScene {
         // （面板/血条/网格）不是实体，因此不受遮罩影响。
         let overlay_mask = self.view_overlay_mask;
         let mut filtered = 0usize;
-        let images: Vec<(EntityId, UiImage)> = self.script.with_world(|world| {
-            let mut images = Vec::new();
-            world.for_each::<UiImage>(|id, image| {
-                if rustlua_render::visibility::entity_visible_in(world, id, overlay_mask) {
-                    images.push((id, image.clone()));
-                } else {
-                    filtered += 1;
-                }
+        let images: Vec<(EntityId, UiImage, Option<ButtonStateSet>)> =
+            self.script.with_world(|world| {
+                let mut images = Vec::new();
+                world.for_each::<UiImage>(|id, image| {
+                    if rustlua_render::visibility::entity_visible_in(world, id, overlay_mask) {
+                        let states = world.get::<ButtonStateSet>(id).ok().flatten().cloned();
+                        images.push((id, image.clone(), states));
+                    } else {
+                        filtered += 1;
+                    }
+                });
+                images
             });
-            images
-        });
-        for (id, image) in images {
+        for (id, image, states) in images {
+            // M76-02：绑定把 `image.visible` 置 false 时跳过绘制；实体与布局都保留。
+            if self
+                .script
+                .entity_name(id)
+                .is_some_and(|name| self.ui_binding_hidden_images.contains(&name))
+            {
+                filtered += 1;
+                continue;
+            }
             if let Some(rect) = self.scene_ui_layout_rect(id, viewport) {
+                let texture = self.state_texture(id, &image.texture, states.as_ref());
                 let image = DynamicUiImage {
-                    texture: image.texture,
+                    texture,
                     position: [rect.x, rect.y],
                     size: [rect.w, rect.h],
                     color: [image.color[0], image.color[1], image.color[2]],
@@ -512,7 +639,8 @@ impl RuntimeScene {
                     anchor: [0.0, 0.0],
                     nine_slice: image.nine_slice,
                 };
-                self.push_image_quad(vertices, draws, width, height, &image)?;
+                let clip = self.ui_clip_rects.get(&(id.index() as u64)).copied();
+                self.push_image_quad(vertices, draws, width, height, &image, clip)?;
             }
         }
         self.view_filtered.set(self.view_filtered.get() + filtered);
@@ -563,6 +691,9 @@ impl RuntimeScene {
         for (id, text) in texts {
             let rect = self.scene_ui_layout_rect(id, viewport);
             if let Some(rect) = rect {
+                // M76-02：滚动视口裁剪。字形按整块取舍（部分重叠的字形整块丢弃），
+                // 矢量文字路径没有逐字形裁剪，裁剪区内退回 SDF/点阵路径。
+                let clip = self.ui_clip_rects.get(&(id.index() as u64)).copied();
                 // 点锚点（w=h=0）的 Text：按 pivot 在该点居中文字。
                 // 否则文字从 pivot 点开始左对齐向下排，偏出按钮中心。
                 let pivot = self
@@ -573,11 +704,12 @@ impl RuntimeScene {
                     .unwrap_or([0.5, 0.5]);
                 let mut position = [rect.x, rect.y];
                 // 先判断渲染路径，measure 必须与渲染走同一路径，否则字体度量不一致。
-                let use_vector = self.should_render_vector(
-                    Some(text.font.as_str()),
-                    text.effective_scale(),
-                    text.text.chars().count(),
-                );
+                let use_vector = clip.is_none()
+                    && self.should_render_vector(
+                        Some(text.font.as_str()),
+                        text.effective_scale(),
+                        text.text.chars().count(),
+                    );
                 if rect.w < 1.0 && rect.h < 1.0 {
                     // 收集实际渲染顶点的包围盒（origin=[0,0] 时）。
                     let mut bbox: Option<(f32, f32, f32, f32)> = None;
@@ -673,7 +805,7 @@ impl RuntimeScene {
                 if vector_ok {
                     continue;
                 }
-                let (mesh, is_sdf, font_key) = match self.layout_scene_text(&text, position) {
+                let (mut mesh, is_sdf, font_key) = match self.layout_scene_text(&text, position) {
                     Ok(result) => result,
                     Err(error) => {
                         tracing::warn!(
@@ -686,6 +818,39 @@ impl RuntimeScene {
                         continue;
                     }
                 };
+                if let Some(clip) = clip
+                    && mesh.vertices.len() % 6 == 0
+                {
+                    mesh.vertices = mesh
+                        .vertices
+                        .chunks_exact(6)
+                        .filter(|glyph| {
+                            let (min_x, max_x, min_y, max_y) = glyph.iter().fold(
+                                (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
+                                |(min_x, max_x, min_y, max_y), vertex| {
+                                    (
+                                        min_x.min(vertex.position[0]),
+                                        max_x.max(vertex.position[0]),
+                                        min_y.min(vertex.position[1]),
+                                        max_y.max(vertex.position[1]),
+                                    )
+                                },
+                            );
+                            clip.intersect(ClipRect::new(
+                                min_x,
+                                min_y,
+                                max_x - min_x,
+                                max_y - min_y,
+                            ))
+                            .is_some()
+                        })
+                        .flatten()
+                        .copied()
+                        .collect();
+                    if mesh.vertices.is_empty() {
+                        continue;
+                    }
+                }
                 let is_bitmap = mesh.bitmap;
                 let text_vertices = text_to_ndc(mesh, is_sdf, width, height);
                 self.push_text_run(
@@ -705,6 +870,9 @@ impl RuntimeScene {
     }
 
     /// Pushes a screen-space textured quad for the `Image` component.
+    ///
+    /// `clip` 是滚动视口的裁剪矩形（屏幕像素）：矩形按它收窄、UV 同步重映射，
+    /// 九宫格的每一格各自裁。无裁剪时走原路径，顶点逐字节不变。
     fn push_image_quad(
         &mut self,
         vertices: &mut Vec<OverlayVertex>,
@@ -712,6 +880,7 @@ impl RuntimeScene {
         width: u32,
         height: u32,
         image: &DynamicUiImage,
+        clip: Option<ClipRect>,
     ) -> anyhow::Result<()> {
         let sw = width.max(1) as f32;
         let sh = height.max(1) as f32;
@@ -756,11 +925,38 @@ impl RuntimeScene {
                 if cw <= 0.0 || ch <= 0.0 {
                     continue;
                 }
-                let x0 = (origin[0] + cell.dest[0]) / sw * 2.0 - 1.0;
-                let y0 = 1.0 - (origin[1] + cell.dest[1]) / sh * 2.0;
-                let x1 = (origin[0] + cell.dest[2]) / sw * 2.0 - 1.0;
-                let y1 = 1.0 - (origin[1] + cell.dest[3]) / sh * 2.0;
-                vertices.extend(nine_slice_quad(x0, y0, x1, y1, cell.src, color));
+                let cell_rect =
+                    ClipRect::new(origin[0] + cell.dest[0], origin[1] + cell.dest[1], cw, ch);
+                let (view, src) = match clip {
+                    Some(clip) => {
+                        let Some(view) = clip.intersect(cell_rect) else {
+                            continue;
+                        };
+                        if view == cell_rect {
+                            (cell_rect, cell.src)
+                        } else {
+                            let fx0 = (view.x - cell_rect.x) / cw;
+                            let fx1 = (view.x + view.w - cell_rect.x) / cw;
+                            let fy0 = (view.y - cell_rect.y) / ch;
+                            let fy1 = (view.y + view.h - cell_rect.y) / ch;
+                            (
+                                view,
+                                [
+                                    cell.src[0] + (cell.src[2] - cell.src[0]) * fx0,
+                                    cell.src[1] + (cell.src[3] - cell.src[1]) * fy0,
+                                    cell.src[0] + (cell.src[2] - cell.src[0]) * fx1,
+                                    cell.src[1] + (cell.src[3] - cell.src[1]) * fy1,
+                                ],
+                            )
+                        }
+                    }
+                    None => (cell_rect, cell.src),
+                };
+                let x0 = view.x / sw * 2.0 - 1.0;
+                let y0 = 1.0 - view.y / sh * 2.0;
+                let x1 = (view.x + view.w) / sw * 2.0 - 1.0;
+                let y1 = 1.0 - (view.y + view.h) / sh * 2.0;
+                vertices.extend(nine_slice_quad(x0, y0, x1, y1, src, color));
             }
             if vertices.len() as u32 > start {
                 draws.push(SceneDraw {
@@ -775,10 +971,18 @@ impl RuntimeScene {
             }
             return Ok(());
         }
-        let x0 = origin[0] / sw * 2.0 - 1.0;
-        let y0 = 1.0 - origin[1] / sh * 2.0;
-        let x1 = (origin[0] + size[0]) / sw * 2.0 - 1.0;
-        let y1 = 1.0 - (origin[1] + size[1]) / sh * 2.0;
+        let rect = ClipRect::new(origin[0], origin[1], size[0], size[1]);
+        let view = match clip {
+            Some(clip) => match clip.intersect(rect) {
+                Some(view) => view,
+                None => return Ok(()),
+            },
+            None => rect,
+        };
+        let x0 = view.x / sw * 2.0 - 1.0;
+        let y0 = 1.0 - view.y / sh * 2.0;
+        let x1 = (view.x + view.w) / sw * 2.0 - 1.0;
+        let y1 = 1.0 - (view.y + view.h) / sh * 2.0;
         // 图集重定向（`docs/67` §6.4）：UI `Image` 是**另一条装配路径**（不是场景里的
         // `SpriteAsset`），所以这里也要查一次。命中时贴图换成页、UV 换成区域子矩形。
         //
@@ -797,6 +1001,37 @@ impl RuntimeScene {
                 region.uv_max.y,
             ),
             None => (0.0, 0.0, 1.0, 1.0),
+        };
+        // 滚动裁剪：UV 按可见子矩形重映射（无裁剪时整条路径逐字节不变）。
+        let (u0, v0, u1, v1) = if view == rect {
+            (u0, v0, u1, v1)
+        } else {
+            let fx0 = if size[0] > f32::EPSILON {
+                (view.x - rect.x) / size[0]
+            } else {
+                0.0
+            };
+            let fx1 = if size[0] > f32::EPSILON {
+                (view.x + view.w - rect.x) / size[0]
+            } else {
+                1.0
+            };
+            let fy0 = if size[1] > f32::EPSILON {
+                (view.y - rect.y) / size[1]
+            } else {
+                0.0
+            };
+            let fy1 = if size[1] > f32::EPSILON {
+                (view.y + view.h - rect.y) / size[1]
+            } else {
+                1.0
+            };
+            (
+                u0 + (u1 - u0) * fx0,
+                v0 + (v1 - v0) * fy0,
+                u0 + (u1 - u0) * fx1,
+                v0 + (v1 - v0) * fy1,
+            )
         };
         let quad = [
             OverlayVertex {

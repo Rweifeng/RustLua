@@ -20,9 +20,8 @@
 //! 运行时状态（当前时间、是否播放、已加载片段）**不写回组件串**：`to_component_str` 只输出
 //! 上面那行配置，因此保存场景不会把播放进度写进文档。
 //!
-//! 有意不处理的目标：`UiAnimation.<property>`。UI 域目前没有运行期节点属性存储（`UiAnimation`
-//! 组件只是编辑器里的轨道表），所以这些轨道会被采样但不写任何东西；加载时由宿主喊一层，
-//! 面板预览在 E01-3。旧 `AnimationStateMachine` 完全不经过本模块。
+//! `UiAnimation.<property>` 不写 ECS 组件：UI 域的运行期存储是视图模型，宿主把采样值
+//! 发布成 `anim.<实体名>.<属性>`（M76-02，见 `RuntimeScene::publish_ui_animation_samples`）。
 
 use std::collections::BTreeSet;
 use std::path::{Component as PathComponent, Path};
@@ -429,7 +428,7 @@ impl AnimationPlayer {
         Some((Vec2::new(start, 0.0), Vec2::new(end, 1.0)))
     }
 
-    /// 片段里本运行时**不写回**的目标（目前只有 `UiAnimation.*`）。宿主在加载时喊一层。
+    /// 片段里**不写回 ECS 组件**的目标（目前只有 `UiAnimation.*`：宿主改发视图模型）。
     #[must_use]
     pub fn unsupported_paths(&self) -> BTreeSet<String> {
         let Some(clip) = &self.clip else {

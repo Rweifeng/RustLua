@@ -11,6 +11,7 @@ use rustlua_render::environment::EnvironmentComponent;
 use rustlua_render::render_settings::{
     EnvironmentLighting, EnvironmentSettings, IblMode, IblTier, RenderSettings, ToggleMode,
 };
+use rustlua_render::runtime_gpu::EnvironmentRenderer;
 use rustlua_scene::scene::Scene;
 
 use super::RuntimeScene;
@@ -161,7 +162,7 @@ fn read_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
 /// 没有声明 `Environment` 时**不动**渲染设置（保持宿主默认），只清掉上一次的环境，
 /// 因此旧场景的像素不受影响。
 pub fn apply_to_renderer(
-    renderer: &mut crate::host::renderer::Renderer,
+    renderer: &mut impl EnvironmentRenderer,
     scene: &RuntimeScene,
     report: &EnvironmentReport,
 ) -> EnvironmentApplyReport {

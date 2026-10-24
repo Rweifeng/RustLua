@@ -106,10 +106,23 @@ impl RuntimeScene {
             "ui_click_dispatch",
             ScheduleStage::Script,
             ["lua_update"],
-            |scene: &mut RuntimeScene, _| {
+            |scene: &mut RuntimeScene, delta_seconds: f32| {
                 let Some(input) = scene.pending_step_input.clone() else {
                     return Err(SystemError::new("pending step input is missing"));
                 };
+                // M76-02：交互路由是开关。关闭时保持旧路径（按下即 click、只分发
+                // click、所有重叠目标都派发）逐字节不变。
+                if scene.ui_interaction_enabled {
+                    let data = scene.ui_hit_data();
+                    scene.sync_ui_interaction(&data);
+                    for dispatch in scene.route_ui_input(&input, delta_seconds) {
+                        scene
+                            .script
+                            .process_ui_event(&dispatch.name, dispatch.event, &dispatch.functions)
+                            .map_err(|error| SystemError::new(error.to_string()))?;
+                    }
+                    return Ok(());
+                }
                 let targets = scene.compute_click_targets();
                 // 左键点击边沿与光标位置在这里算好再交给脚本层：输入快照归
                 // `rustlua-input`（`docs/62` P1 阶段 3），脚本层只收"点在哪"。
@@ -135,6 +148,17 @@ impl RuntimeScene {
                     .call_entity_scripts(delta_seconds)
                     .map_err(|error| SystemError::new(error.to_string()))?;
                 scene.last_entity_script_calls = called;
+                Ok(())
+            },
+        ));
+        // M76-02：绑定 resolve 排在**所有脚本之后**（工程脚本与实体脚本都可能写视图模型），
+        // 物理之前——目标只读到本步最终的源值，不会出现"脚本改了半截被物理帧看到"。
+        self.add_builtin_step_system(System::new(
+            "ui_bindings_resolve",
+            ScheduleStage::Script,
+            ["entity_scripts"],
+            |scene: &mut RuntimeScene, _| {
+                scene.resolve_ui_bindings();
                 Ok(())
             },
         ));
@@ -383,9 +407,10 @@ impl RuntimeScene {
             |scene: &mut RuntimeScene, delta_seconds: f32| {
                 // P3-E01-2：推进与写回分两趟。`for_each_mut` 只借得到 player 自己，而写回要改
                 // 同实体的 `Transform`/`Transform3D`/`Light`，因此先收齐采样值，再统一写。
-                let fired = scene.script.with_world_mut(|world| {
+                let (fired, ui_samples) = scene.script.with_world_mut(|world| {
                     let mut fired = Vec::new();
                     let mut samples: Vec<(EntityId, Vec<(AnimPath, AnimValue)>)> = Vec::new();
+                    let mut ui_samples: Vec<(EntityId, Vec<(String, f32)>)> = Vec::new();
                     world.for_each_mut::<AnimationPlayer>(|id, player| {
                         for event in player.advance(delta_seconds) {
                             fired.push((id, event));
@@ -394,15 +419,28 @@ impl RuntimeScene {
                         // 就生效——片段是这个实体的权威姿态来源，不是"播放时才偶尔覆盖"。
                         let sampled = player.sample_all();
                         if !sampled.is_empty() {
+                            let ui = sampled
+                                .iter()
+                                .filter_map(|(path, value)| match (path, value) {
+                                    (AnimPath::UiAnimation(property), AnimValue::Scalar(value)) => {
+                                        Some((property.clone(), *value))
+                                    }
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>();
+                            if !ui.is_empty() {
+                                ui_samples.push((id, ui));
+                            }
                             samples.push((id, sampled));
                         }
                     });
                     for (id, sampled) in &samples {
                         apply_player_samples(world, *id, sampled);
                     }
-                    fired
+                    (fired, ui_samples)
                 });
                 scene.script.push_animation_player_events(fired);
+                scene.publish_ui_animation_samples(&ui_samples);
                 Ok(())
             },
         ));

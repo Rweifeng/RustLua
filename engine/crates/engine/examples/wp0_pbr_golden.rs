@@ -19,8 +19,9 @@
 
 use std::{env, fs, path::PathBuf};
 
-use engine::host::{RenderOutcome, Renderer, RuntimeScene};
+use engine::host::RuntimeScene;
 use rustlua_camera::camera::Viewport;
+use rustlua_gpu::{OffscreenRequest, OffscreenTarget, RenderOutcome, Renderer};
 use rustlua_infra::games_dir;
 use rustlua_math::math3d::{Quat, Vec3};
 use rustlua_render::picking::screen_from_world;
@@ -53,40 +54,15 @@ const ROTATION_TOLERANCE: u32 = 2;
 fn main() {
     let output = parse_output();
     let root = games_dir().join("examples").join("game_api");
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::LowPower,
-        compatible_surface: None,
-        force_fallback_adapter: true,
-    }))
-    .expect("a fallback GPU adapter is required for the PBR golden");
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("wp0-pbr-golden"),
-        required_features: wgpu::Features::empty(),
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        required_limits: wgpu::Limits::default(),
-        memory_hints: wgpu::MemoryHints::Performance,
-        trace: wgpu::Trace::Off,
-    }))
-    .expect("request golden device");
+    let fixture = OffscreenTarget::acquire(&OffscreenRequest::new("wp0-pbr-golden", WIDTH, HEIGHT))
+        .expect("offscreen fixture for wp0-pbr-golden");
+    let device = fixture.device();
+    let queue = fixture.queue().clone();
     let mut renderer =
         Renderer::new_offscreen(device.clone(), queue, Some(root.clone()), false, true)
             .expect("offscreen renderer");
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("wp0-pbr-golden-target"),
-        size: wgpu::Extent3d {
-            width: WIDTH,
-            height: HEIGHT,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let texture = fixture.texture();
+    let view = fixture.view();
     let samples = sample_points();
 
     // ---------- 旧路径（pbr=off）：基准、刚体旋转、相机绕点 ----------
@@ -94,8 +70,8 @@ fn main() {
     let legacy_base = render_scene(
         &mut renderer,
         &root,
-        &texture,
-        &view,
+        texture,
+        view,
         Quat::identity(),
         BASE_CAMERA,
         &samples,
@@ -103,8 +79,8 @@ fn main() {
     let legacy_rotated = render_scene(
         &mut renderer,
         &root,
-        &texture,
-        &view,
+        texture,
+        view,
         rotation_z(),
         BASE_CAMERA,
         &samples,
@@ -115,8 +91,8 @@ fn main() {
             render_scene(
                 &mut renderer,
                 &root,
-                &texture,
-                &view,
+                texture,
+                view,
                 Quat::identity(),
                 *camera,
                 &samples,
@@ -130,8 +106,8 @@ fn main() {
     let pbr_base = render_scene(
         &mut renderer,
         &root,
-        &texture,
-        &view,
+        texture,
+        view,
         Quat::identity(),
         BASE_CAMERA,
         &samples,
@@ -139,8 +115,8 @@ fn main() {
     let pbr_rotated = render_scene(
         &mut renderer,
         &root,
-        &texture,
-        &view,
+        texture,
+        view,
         rotation_z(),
         BASE_CAMERA,
         &samples,
@@ -151,8 +127,8 @@ fn main() {
             render_scene(
                 &mut renderer,
                 &root,
-                &texture,
-                &view,
+                texture,
+                view,
                 Quat::identity(),
                 *camera,
                 &samples,

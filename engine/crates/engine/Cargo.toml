@@ -6,36 +6,14 @@ authors.workspace = true
 license.workspace = true
 publish = false
 
-[features]
-# WebGL2（wasm 上的 GL 后端）开关。默认**关**，理由见下面 wgpu 依赖那段注释：打开它会给每个
-# 依赖 engine 的 wasm 产物加 3.33 MB 原始体积。WP5 把 web 渲染路径接上时，由那一条路径开。
-webgl = ["wgpu/webgl"]
-
 [dependencies]
 anyhow.workspace = true
 thiserror.workspace = true
-bytemuck.workspace = true
 tracing.workspace = true
 # P3-E06-4：采集包/差分是有版本的持久化格式，用 derive 固定字段名；
 # serde/serde_json 已在锁文件里（编辑器与示例早就在用），不新增下载。
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-pollster = "0.4"
-# `webgl` **不能无条件开**：wgpu 在 wasm 上默认只给了 `webgpu`（`cargo tree -e features
-# --target wasm32-unknown-unknown` 里没有 `webgl`），而 WebGPU 至今不是所有目标都有——
-# **微信小游戏没有 WebGPU**，只打 default 的产物在微信上根本起不来渲染。
-# 但后端不该由"恰好依赖了 engine"的产物替所有人埋单，所以它做成**按需特性**：由真正要画的
-# 那条路径（WP5 的 web 渲染路径）显式开启。
-# 代价实测（同一次 A/B，`cargo build -p game_web --release --target wasm32-unknown-unknown`，
-# 其余输入不变）：默认 8,711,933 字节 → `-F engine/webgl` 8,851,119 字节，**+139,186 字节（+1.6%）**。
-# 现在没有任何 wasm 代码在用 GL 后端，game_web 也就没开它。
-#
-# **wasm 与非 wasm 分开声明**（2026-10-17 体积优化）：上面那条"默认特性"在浏览器里全是死重——
-# wgpu 的 `default` 会拖进 `dx12`/`metal`/`vulkan`/`gles`/`webgpu` 五个后端开关，其中
-# `webgpu` 还会拉 **naga 的 `wgsl-out`（整条 WGSL 后端）**。wasm32 上这些代码一行都跑不到，
-# 却实打实占体积。wasm 侧只留两块：`std` 与 `wgsl`（着色器是运行期 WGSL，需要 `wgsl-in`），
-# `webgl` 仍由上面的 `webgl` 特性按需开。桌面/编辑器照旧吃 default。
-# `resolver = "2"` 保证两个 target 的 features 不互相统一。
 winit = "0.30"
 # WP5：`wasm32-unknown-unknown` 的 std 落在 `sys/pal/unsupported`，`Instant::now()` 会 panic
 # （"time not implemented on this platform"）；渲染器在 wasm 上跑起来后帧计时就会踩到它。
@@ -69,16 +47,27 @@ rustlua-infra.workspace = true
 # 只在例子/测试里用：`subset_project_font` 要扫工程字符集（`char_collect` 住在导入层，
 # 运行时不许依赖它——那会把 PNG/音频编解码拖回浏览器产物，见 `docs/62` P1 ③）。
 rustlua-assets-import = { path = "../rustlua-assets-import" }
-
-# `web_surface`：wasm 上从画布建 surface 需要 JS 对象句柄。
-# 只取 `wasm-bindgen`（`JsValue`）而**不**取 `web-sys`：引擎这层不该认识 DOM 类型，
-# `HtmlCanvasElement → JsValue` 的转换由本来就依赖 web-sys 的宿主做。
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2"
-# wasm 侧的最小 wgpu：只留 `std` + `wgsl`（运行期 WGSL 需要 naga `wgsl-in`），
-# `webgl` 后端由上面的 `webgl` 特性按需开；默认特性会拖进 dx12/metal/vulkan/gles/webgpu
-# 与 naga 的 wgsl-out，在浏览器里全是死重（见 `[dependencies]` 那段注释）。
-wgpu = { version = "27", default-features = false, features = ["std", "wgsl"] }
+rustlua-gpu.workspace = true
+# M77-01：渲染器实现搬进 `rustlua-gpu` 后，engine 的 normal 依赖里没有 wgpu（这是本包的
+# 验收门：`cargo tree -p engine -e normal` 对 wgpu 零命中）。
+# M77-02 offscreen 合并（已执行）：22 个自建 adapter 的 `examples/wp0_*.rs` **全部**改走
+# `rustlua_gpu` 的 fixture——20 个用 `OffscreenTarget::acquire`（要自己那张目标纹理），2 个用
+# `OffscreenDevice::acquire`（只要设备，画面缓冲由 `Renderer::new_offscreen(.., None, ..)` 造）。
+# 复现：`grep -l OffscreenTarget::acquire examples/wp0_*.rs | wc -l` = 20、
+# `grep -l OffscreenDevice::acquire examples/wp0_*.rs | wc -l` = 2、
+# `grep -l request_adapter examples/*.rs` 只剩 `scene_shot.rs`（未入库，属 game_api 2.0 那路）。
+# wgpu/pollster/bytemuck 这三条 dev 依赖**摘不掉**，与合并前预计的「能摘」不同，按实测的残余写在这里：
+# - wgpu：22 个例子里 9 个整份文件已不再摸 wgpu（`grep -l Offscreen.*acquire *.rs | xargs grep -L 'wgpu::' | wc -l`），
+#   其余 13 个里 11 个只剩辅助函数形参 `texture: &wgpu::Texture` / `view: &wgpu::TextureView`
+#   （把形参换成 `&OffscreenTarget` 能清掉，但那是 9 条 release 像素 golden 加 3d_stress /
+#   shader_hot_reload 的改动面，换不到任何依赖摘除，本批不动）；真用法两条：`wp0_compute_readback` 的 STORAGE buffer 与
+#   `wgpu::util::DeviceExt` 就是那条门的被测对象，`wp0_gpu_particles_50k` 要 `device.poll(PollType::Wait)`。
+# - pollster：本仓库的例子已全都不再用它，唯一使用者是在途未入库的 `scene_shot.rs`——不替别人决定形状。
+# - bytemuck：只剩 `wp0_compute_readback` 用它把 readback 字节切成 `&[f32]`。
+# dev 依赖不进下游 crate 的编译面，留原位不影响任何门读数。
+bytemuck.workspace = true
+pollster = "0.4"
+wgpu = "27"
 
 # M20-06：桌面手柄设备轮询。原计划的 gilrs 在本机离线环境下无法解析
 # （crates 已缓存但索引不可用，见任务文档），改用已在依赖树中的 windows-sys
@@ -88,12 +77,5 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Inpu
 
 # 文件日志（tracing-appender）在 wasm32-unknown-unknown 上不可用（无 symlink/
 # 文件系统），wasm 构建只保留 console/sink 层。
-# 桌面 / 编辑器 / 验收样例：原生后端要全，保留 wgpu 的默认特性。
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tracing-appender.workspace = true
-wgpu = "27"
-# P3-R05：热重载的**校验层**用 naga 解析 WGSL 并比对绑定接口（纯 CPU，不碰 GPU）。
-# 版本与 wgpu 27 内部用的那条一致（Cargo.lock 里只有 naga 27.0.3），`wgsl-in` 也已经由
-# wgpu/wgpu-core 打开，所以这里不新增下载、不新增编译单元，只是把已有依赖声明成直接依赖。
-# wasm 侧不需要它：release/wasm 不暴露覆盖目录（计划 §6.5），内置源永远走 wgpu 自己的编译路径。
-naga = { version = "27", features = ["wgsl-in"] }

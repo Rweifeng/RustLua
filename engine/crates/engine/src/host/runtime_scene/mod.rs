@@ -1,12 +1,12 @@
 //! Runtime scene: instantiates the project scene/scripts and produces
-//! per-frame [`SceneMesh`](crate::host::frame::SceneMesh) (2D) and
-//! [`Scene3d`](crate::host::frame::Scene3d) draw data for the renderer.
+//! per-frame [`SceneMesh`](rustlua_render::frame::SceneMesh) (2D) and
+//! [`Scene3d`](rustlua_render::frame::Scene3d) draw data for the renderer.
 //!
 //! 这两个链接写全路径：`SceneMesh`/`Scene3d` 的 `use` 跟着建帧代码搬进了 `frame_data.rs`，
 //! 父模块只剩这段文档注释需要它们，短名会让 rustdoc 报 unresolved link。
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
@@ -32,12 +32,12 @@ use rustlua_scene::scene::{Scene, SceneEntityId};
 use rustlua_scripting::script::LuaRuntime;
 use rustlua_ui::ui_scene_layout::{ResolvedUiNode, UiSceneNode, UiSceneNodeSource};
 
-use crate::host::frame::{
+use crate::host::gamepad::{GamepadBackend, GamepadDeadzone, GamepadPoller};
+use rustlua_render::frame::{
     FONT_ATLAS_TEXTURE_PATH, FontAtlasMap, OverlayVertex, SceneDraw, VectorAtlasMap,
     VectorGlyphSnapshot, VectorSegmentSnapshot, VectorTextVertex as FrameVectorTextVertex,
     WorldSpriteVertex, font_texture_path,
 };
-use crate::host::gamepad::{GamepadBackend, GamepadDeadzone, GamepadPoller};
 
 mod camera;
 mod environment;
@@ -54,6 +54,9 @@ mod spatial;
 mod tests;
 mod text;
 mod tilemap;
+mod ui_bindings;
+mod ui_input;
+mod ui_scroll;
 
 use camera::declared_camera_2d_in;
 pub use fonts::{
@@ -202,6 +205,37 @@ pub struct RuntimeScene {
     pub(crate) text_render_mode: TextRenderMode,
     pub(crate) ui_scene_nodes: BTreeMap<u64, UiSceneNode>,
     pub(crate) ui_layout_rects: BTreeMap<u64, ResolvedUiNode>,
+    /// M76-02：交互路由开关（默认关，见 `ui_input` 模块文档）。
+    pub(crate) ui_interaction_enabled: bool,
+    pub(crate) ui_keyboard_nav: bool,
+    /// 跨帧交互状态：命中树（hover/pressed/focus/scroll 的唯一定义处）。
+    pub(crate) ui_interaction: rustlua_ui::ui_interaction::UiInteraction,
+    /// 上次建树时的数据签名；相等即不重建。
+    pub(crate) ui_interaction_signature: Option<u64>,
+    /// 交互 key → 该实体的结构化事件绑定。
+    pub(crate) ui_bindings: BTreeMap<String, rustlua_ui::ui_events::UiEvents>,
+    /// 交互 key → 实体名（key 在重名时带槽位后缀，派发仍用原名）。
+    pub(crate) ui_key_names: BTreeMap<String, String>,
+    /// 实体名 → 当前视觉状态（渲染侧按名字取状态贴图）。
+    pub(crate) ui_visual_states: BTreeMap<String, rustlua_ui::ui_states::ButtonVisualState>,
+    /// 实体名 → 滚动偏移（`ScrollView`；由交互树写入，布局解算时消费）。
+    pub(crate) ui_scroll_offsets: BTreeMap<String, f32>,
+    /// 槽位 → 滚动范围（内容尺寸来自布局树子节点包围盒）。
+    pub(crate) ui_scroll_ranges: BTreeMap<u64, rustlua_ui::ui_interaction::UiScroll>,
+    /// 槽位 → 可见裁剪矩形（滚动视口交集）；绘制与命中都读它。
+    pub(crate) ui_clip_rects: BTreeMap<u64, rustlua_ui::ui_interaction::UiRect>,
+    /// 槽位 → 相对布局矩形的滚动位移（内容空间 → 屏幕空间的偏移量）。
+    ///
+    /// 交互树按 `UiScroll` 自己平移子节点，喂进去的矩形必须是**扣回位移**的内容空间值；
+    /// 绘制/旧点击路径则要屏幕空间值。两者相差的就是这张表。
+    pub(crate) ui_scroll_shifts: BTreeMap<u64, [f32; 2]>,
+    pub(crate) ui_focused: Option<String>,
+    /// M76-02：`UiBindings` 的跨帧 resolve 状态（只发变化过的目标）。
+    pub(crate) ui_binding_runtime: rustlua_ui::ui_binding::BindingRuntime,
+    /// `image.visible=false` 的目标名（渲染与命中都读它；绑定删除后自动失效）。
+    pub(crate) ui_binding_hidden_images: BTreeSet<String>,
+    /// 最近一次 resolve 的诊断（目标实体/组件/进度条缺失）。
+    pub(crate) ui_binding_report: Vec<String>,
     /// 已经并进 `ui_scene_nodes` 的**运行期 spawn** 节点（脚本侧报告的那一份的副本）。
     /// 判断"有没有改动"用的是**修订号**（见 [`Self::applied_prefab_ui_revision`]），
     /// 不是每帧比对这两张表——比对前得先把脚本那侧的表克隆出来，所以原注释里"没变就一个分配

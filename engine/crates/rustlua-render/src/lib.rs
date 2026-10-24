@@ -1,8 +1,10 @@
 pub mod async_loader;
 pub mod atlas;
 pub mod environment;
+pub mod fit;
 pub mod font;
 pub mod font_subset;
+pub mod frame;
 pub mod layer;
 pub mod light;
 pub mod lod;
@@ -15,6 +17,7 @@ pub mod render_plan;
 pub mod render_settings;
 pub mod renderable;
 pub mod renderable_lua;
+pub mod runtime_gpu;
 pub mod scene_codec;
 pub mod spatial_index;
 pub mod sprite;

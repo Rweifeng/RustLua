@@ -26,11 +26,13 @@ crate-type = ["cdylib"]
 # 判非黑屏）今天已经满足，所以这行保持默认开。
 [features]
 default = ["gpu2d"]
-gpu2d = ["dep:wgpu", "wgpu/webgl"]
+gpu2d = ["dep:wgpu", "dep:rustlua-gpu", "wgpu/webgl", "rustlua-gpu/webgl"]
 
 [dependencies]
 anyhow.workspace = true
 engine = { path = "../engine" }
+rustlua-gpu = { workspace = true, optional = true }
+rustlua-render.workspace = true
 # 每帧输入线格式（`RLFI` 批量 ABI）：布局与键表只有这一份，JS 侧经
 # `input_frame_layout_json()` 取，避免两处各写一份偏移。
 rustlua-frame-abi.workspace = true

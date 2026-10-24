@@ -10,9 +10,10 @@
 
 use std::{env, fs, path::PathBuf};
 
-use engine::host::{RenderOutcome, Renderer, RuntimeScene};
+use engine::host::RuntimeScene;
 use rustlua_camera::camera::{Camera2D, DEFAULT_2D_CAMERA_CENTER, Viewport};
 use rustlua_ecs::transform::Vec2;
+use rustlua_gpu::{OffscreenRequest, OffscreenTarget, RenderOutcome, Renderer};
 use rustlua_infra::games_dir;
 use rustlua_scene::scene::{Scene, SceneEntityId};
 use serde_json::json;
@@ -27,41 +28,20 @@ fn main() {
     let camera = Camera2D::new(DEFAULT_2D_CAMERA_CENTER, 1.0).expect("camera");
     let scene = golden_scene(camera, viewport);
 
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::LowPower,
-        compatible_surface: None,
-        force_fallback_adapter: true,
-    }))
-    .expect("a fallback GPU adapter is required for the spatial-index golden");
-    let info = adapter.get_info();
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("wp0-spatial-index-golden"),
-        required_features: wgpu::Features::empty(),
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        required_limits: wgpu::Limits::default(),
-        memory_hints: wgpu::MemoryHints::Performance,
-        trace: wgpu::Trace::Off,
-    }))
-    .expect("request golden device");
+    let fixture = OffscreenTarget::acquire(&OffscreenRequest::new(
+        "wp0-spatial-index-golden",
+        WIDTH,
+        HEIGHT,
+    ))
+    .expect("offscreen fixture for wp0-spatial-index-golden");
+    let device = fixture.device();
+    let queue = fixture.queue().clone();
+    let info = fixture.adapter_info();
     let mut renderer =
         Renderer::new_offscreen(device.clone(), queue, Some(root.clone()), false, true)
             .expect("offscreen renderer");
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("wp0-spatial-index-golden-target"),
-        size: wgpu::Extent3d {
-            width: WIDTH,
-            height: HEIGHT,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let texture = fixture.texture();
+    let view = fixture.view();
 
     // A：关闭空间索引（线性扫描基线）；B：开启（grid 查询）。
     // `set_spatial_index` 返回**旧值**（回滚档），默认关闭；这里只关心最终开关状态。
@@ -94,22 +74,22 @@ fn main() {
     // push 被 cull 拒绝的净效果一致——预筛跳过的实体仍占序号，不产顶点）。因此
     // 开/关索引的顶点数可以不同（这是预筛的预期副作用）；**像素逐字节一致**才是契约。
 
-    let render_off = renderer.render_into_texture(&mesh_off, None, &view, WIDTH, HEIGHT);
+    let render_off = renderer.render_into_texture(&mesh_off, None, view, WIDTH, HEIGHT);
     assert!(
         matches!(render_off, RenderOutcome::Presented),
         "index-off 渲染未呈现"
     );
     let pixels_off = renderer
-        .copy_texture_to_cpu(&texture, WIDTH, HEIGHT)
+        .copy_texture_to_cpu(texture, WIDTH, HEIGHT)
         .expect("golden readback (index off)");
 
-    let render_on = renderer.render_into_texture(&mesh_on, None, &view, WIDTH, HEIGHT);
+    let render_on = renderer.render_into_texture(&mesh_on, None, view, WIDTH, HEIGHT);
     assert!(
         matches!(render_on, RenderOutcome::Presented),
         "index-on 渲染未呈现"
     );
     let pixels_on = renderer
-        .copy_texture_to_cpu(&texture, WIDTH, HEIGHT)
+        .copy_texture_to_cpu(texture, WIDTH, HEIGHT)
         .expect("golden readback (index on)");
 
     // ② 像素：开/关空间索引必须逐字节一致（索引只是查询优化）。

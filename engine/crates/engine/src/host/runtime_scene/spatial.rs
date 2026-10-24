@@ -14,10 +14,10 @@ use rustlua_ecs::world::World;
 use rustlua_infra::par::Parallelism;
 use rustlua_math::math3d::Mat4;
 use rustlua_physics::physics::PhysicsAuthority;
+use rustlua_render::runtime_gpu::ParticleRenderer;
 use rustlua_scene::scene::SceneEntityId;
 
 use super::{ParticleDispatchReport, ParticlePlacementReport, PhysicsStageOrder, RuntimeScene};
-use crate::host::{GpuParticleConfig, Renderer};
 
 /// 按运行时句柄读实体**自己的**局部变换：`Transform3D` 优先，其次能无损压平的 2D
 /// [`Transform`]；两者都没有 ⇒ `None`。
@@ -352,6 +352,15 @@ impl RuntimeScene {
         self.last_particle_placement
     }
 
+    /// 已经喊过一层的回退原因位图（`ParticleCpuReason::index` 为位）。
+    ///
+    /// 渲染器侧的派发门要断言"全走 GPU ⇒ 一条回退日志都不该喊"，而那位图是宿主状态；
+    /// 放成读取器而不是把字段公开，位图怎么编码就不会漏进调用方。
+    #[must_use]
+    pub const fn particle_warned_bits(&self) -> u32 {
+        self.particle_warned
+    }
+
     /// P3-R07-1：把渲染器的 compute 能力告知运行时。
     ///
     /// 判定 [`rustlua_ecs::particle::ParticleEmitter::placement`] 时要用它，而 ECS 层不该知道设备——宿主（`GameApp`、
@@ -376,7 +385,7 @@ impl RuntimeScene {
     #[must_use]
     pub fn dispatch_gpu_particle_bursts(
         &mut self,
-        renderer: &mut Renderer,
+        renderer: &mut impl ParticleRenderer,
         delta_seconds: f32,
     ) -> ParticleDispatchReport {
         let compute_available = renderer.compute_enabled();
@@ -403,15 +412,11 @@ impl RuntimeScene {
                     self.script.push_particles_cpu(position, &emitter);
                 }
                 ParticlePlacement::Gpu => {
-                    let config = GpuParticleConfig {
-                        origin: [position.x, position.y],
-                        emitter,
-                        // 超过 u32 的 count 会在这里饱和成 `u32::MAX`，于是渲染器的
-                        // "capacity ≥ count" 校验把它拒掉 → 整批回 CPU（不是截断成一小撮）。
-                        capacity: u32::try_from(emitter.count).unwrap_or(u32::MAX),
-                    };
-                    match renderer.push_gpu_particle_burst(config) {
-                        Ok(_) => report.gpu += 1,
+                    // 超过 u32 的 count 会饱和成 `u32::MAX`，由渲染器的容量校验整批拒绝。
+                    let capacity = u32::try_from(emitter.count).unwrap_or(u32::MAX);
+                    match renderer.push_particle_burst([position.x, position.y], emitter, capacity)
+                    {
+                        Ok(()) => report.gpu += 1,
                         Err(error) => {
                             tracing::warn!(
                                 target: "particles",
@@ -438,9 +443,9 @@ impl RuntimeScene {
                 .get_or_insert(ParticleCpuReason::NotWired);
             fallback_bits |= 1 << ParticleCpuReason::NotWired.index();
         }
-        // 空池不调用：`step_gpu_particles` 对空池是 `NotConfigured`，那不是错误而是"没这东西"。
-        if renderer.gpu_particle_systems() > 0 {
-            match renderer.step_gpu_particles(delta_seconds) {
+        // 空池不调用：步进空池是 `NotConfigured`，那不是错误而是"没这东西"。
+        if renderer.particle_systems() > 0 {
+            match renderer.step_particles(delta_seconds) {
                 Ok(step) => {
                     report.systems = step.systems;
                     report.recycled = step.recycled;
@@ -452,8 +457,8 @@ impl RuntimeScene {
             }
         }
         report.gpu_particles = renderer
-            .gpu_particle_status()
-            .map_or(0, |status| status.spawned as usize);
+            .spawned_particles()
+            .map_or(0, |count| count as usize);
         self.note_particle_reasons(fallback_bits, "burst 派发");
         self.last_particle_dispatch = report;
         report

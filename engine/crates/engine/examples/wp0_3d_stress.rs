@@ -8,7 +8,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use engine::host::{RenderOutcome, Renderer, RuntimeScene};
+use engine::host::RuntimeScene;
+use rustlua_gpu::{OffscreenRequest, OffscreenTarget, RenderOutcome, Renderer};
 use rustlua_infra::games_dir;
 use rustlua_scene::scene::{Scene, SceneEntityId};
 
@@ -147,57 +148,26 @@ fn parse_config() -> Config {
 fn run_stair(root: &Path, mesh_count: usize, cycles: usize) -> String {
     let mut runtime =
         RuntimeScene::from_scene_edit(Some(root), build_scene(mesh_count)).expect("runtime scene");
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::LowPower,
-        compatible_surface: None,
-        force_fallback_adapter: true,
-    }))
-    .expect("a fallback GPU adapter is required for the 3D benchmark");
-    let timestamp_features =
-        wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
-    let required_features = if adapter.features().contains(timestamp_features) {
-        timestamp_features
-    } else {
-        wgpu::Features::empty()
-    };
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("wp0-3d-stress"),
-        required_features,
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        required_limits: wgpu::Limits::default(),
-        memory_hints: wgpu::MemoryHints::Performance,
-        trace: wgpu::Trace::Off,
-    }))
-    .expect("request benchmark device");
+    let fixture = OffscreenTarget::acquire(
+        &OffscreenRequest::new("wp0-3d-stress", 640, 360).with_timestamps(),
+    )
+    .expect("offscreen fixture for wp0-3d-stress");
+    let device = fixture.device();
+    let queue = fixture.queue().clone();
     let mut renderer =
         Renderer::new_offscreen(device.clone(), queue, Some(root.to_path_buf()), true, true)
             .expect("renderer");
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("wp0-3d-target"),
-        size: wgpu::Extent3d {
-            width: 640,
-            height: 360,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let view = fixture.view();
     let mut samples = Vec::with_capacity(cycles);
     let mut gpu_samples = Vec::with_capacity(cycles);
     let mut last = DefaultMetrics::default();
     for _ in 0..3 {
-        render_once(&mut runtime, &mut renderer, &view, &mut last);
+        render_once(&mut runtime, &mut renderer, view, &mut last);
     }
     reset_allocations();
     for _ in 0..cycles {
         let started = Instant::now();
-        render_once(&mut runtime, &mut renderer, &view, &mut last);
+        render_once(&mut runtime, &mut renderer, view, &mut last);
         samples.push(started.elapsed());
         if let Some(gpu_us) = last.gpu_frame_us {
             gpu_samples.push(Duration::from_micros(gpu_us));

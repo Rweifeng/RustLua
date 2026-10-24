@@ -1,0 +1,45 @@
+{
+  "name": "ui_spec_surface",
+  "description": "M76-03 回放：UiSpec 校验/离屏预览，以及 T2 图生成在无头策略下被确认门拒绝。全程无网络、无 LLM。",
+  "steps": [
+    {
+      "tool": "ui_validate_spec",
+      "args": {
+        "spec": {
+          "spec_version": 1,
+          "document": { "kind": "widget", "name": "replay" },
+          "tokens": { "color.surface": "#101014" },
+          "styles": { "card": { "base": { "bg": "@color.surface" } } },
+          "root": {
+            "key": "root",
+            "type": "panel",
+            "style": "card",
+            "children": [{ "key": "title", "type": "text", "text": "Replay" }]
+          }
+        }
+      }
+    },
+    {
+      "tool": "ui_preview_spec",
+      "args": {
+        "spec": {
+          "spec_version": 1,
+          "document": { "kind": "widget", "name": "replay" },
+          "root": {
+            "key": "root",
+            "type": "panel",
+            "children": [{ "key": "title", "type": "text", "text": "Replay" }]
+          }
+        },
+        "width": 160,
+        "height": 90
+      }
+    },
+    {
+      "tool": "ui_generate_assets",
+      "args": { "plan": [{ "key": "icon", "role": "icon" }] },
+      "expect_ok": false,
+      "expect_error_contains": "确认"
+    }
+  ]
+}

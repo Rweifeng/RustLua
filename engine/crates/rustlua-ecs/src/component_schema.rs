@@ -1250,6 +1250,10 @@ const BUTTON_STATES_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("disabled_state", FieldKind::Bool, false),
 ];
 
+/// M76-02：滚动容器的轴向。内容尺寸由布局树子节点包围盒算出，因此不在组件里。
+const SCROLL_VIEW_FIELDS: &[FieldSchema] =
+    &[FieldSchema::new("horizontal", FieldKind::Bool, false)];
+
 // ---------------------------------------------------------------------------
 // 列表/重复字段模型（第 38 轮）：`Animation` / `UiEvents` / `UiBindings` / `UiAnimation`
 // ---------------------------------------------------------------------------
@@ -1317,7 +1321,7 @@ const UI_EVENTS_LIST: ListModel = ListModel {
     dynamic: UI_EVENTS_DYNAMIC,
 };
 
-/// `UiBindings`：`|` 分隔的多条记录，每条 `property=/target=/source=[/default=]`。
+/// `UiBindings`：`|` 分隔的多条记录，每条 `property=/target=/source=[/default=][/mode=]`。
 const UI_BINDINGS_FIELDS: &[FieldSchema] = &[
     // 与 `BoundProperty::parse` 的三个变体一一对应（未知名在引擎里会退化成
     // `MissingTargetOrProperty`，所以这里用 `Enum` 精确表达）。
@@ -1330,6 +1334,8 @@ const UI_BINDINGS_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("target", FieldKind::Text, true).with_rules(&[FieldRule::NonEmpty]),
     FieldSchema::new("source", FieldKind::Text, true),
     FieldSchema::new("default", FieldKind::Text, false),
+    // M76-02：双向绑定写回；缺省 = 单向，与运行时 `BindingFlow::parse` 的默认一致。
+    FieldSchema::new("mode", FieldKind::Enum, false).with_choices(&["one_way", "two_way"]),
 ];
 
 const UI_BINDINGS_LIST: ListModel = ListModel {
@@ -1476,6 +1482,8 @@ pub fn builtin_registry() -> BTreeMap<&'static str, ComponentSchema> {
         ComponentSchema::new("Container", 1, CONTAINER_FIELDS),
         ComponentSchema::new("LayoutItem", 1, LAYOUT_ITEM_FIELDS),
         ComponentSchema::new("ButtonStates", 1, BUTTON_STATES_FIELDS),
+        // M76-02：实体 UI 的滚动容器（运行时按子节点包围盒算内容尺寸）。
+        ComponentSchema::new("ScrollView", 1, SCROLL_VIEW_FIELDS),
         // 第 38 轮：列表/重复字段模型落地后补上的 3 个；第 40 轮补上 `UiAnimation`
         // （先把它的格式搬进引擎 `ui_animation.rs`，schema 才有对拍对象，见 §3.33/§3.35）。
         ComponentSchema::new("Animation", 1, ANIMATION_FIELDS).with_list(ANIMATION_LIST),
@@ -1520,7 +1528,9 @@ mod tests {
     use rustlua_render::render_mode::RenderMode;
     use rustlua_render::sprite::SpriteComponent;
     use rustlua_render::visibility::Visibility;
-    use rustlua_ui::ui_binding::{BindingPath, BindingSet, BoundProperty, PropertyBinding};
+    use rustlua_ui::ui_binding::{
+        BindingFlow, BindingPath, BindingSet, BoundProperty, PropertyBinding,
+    };
     use rustlua_ui::ui_events::{UiEventBinding, UiEventType, UiEvents};
     use rustlua_ui::ui_layout::{ChildAlign, ContainerKind, ContainerStyle, Justify};
     use rustlua_ui::ui_states::ButtonStateSet;
@@ -2002,17 +2012,20 @@ mod tests {
                     target: "Title".to_owned(),
                     source: BindingPath(vec!["vm".to_owned(), "title".to_owned()]),
                     default: None,
+                    flow: BindingFlow::OneWay,
                 },
                 PropertyBinding {
                     property: Some(BoundProperty::ImageVisible),
                     target: "Icon".to_owned(),
                     source: BindingPath(vec!["vm".to_owned(), "visible".to_owned()]),
                     default: Some("true".to_owned()),
+                    flow: BindingFlow::TwoWay,
                 },
             ],
         };
         let encoded = bindings.to_component_str();
         assert_eq!(encoded.matches("target=").count(), 2, "{encoded}");
+        assert!(encoded.contains("mode=two_way"), "{encoded}");
         round_trip("UiBindings", &encoded);
         for bad in [
             "property=bogus;target=t;source=s",
@@ -2199,17 +2212,20 @@ mod tests {
                     target: "Title".to_owned(),
                     source: BindingPath(vec!["vm".to_owned(), "title".to_owned()]),
                     default: None,
+                    flow: BindingFlow::OneWay,
                 },
                 PropertyBinding {
                     property: Some(BoundProperty::ImageVisible),
                     target: "Icon".to_owned(),
                     source: BindingPath(vec!["vm".to_owned(), "visible".to_owned()]),
                     default: Some("true".to_owned()),
+                    flow: BindingFlow::TwoWay,
                 },
             ],
         };
         let encoded = bindings.to_component_str();
         assert!(encoded.contains('|'), "{encoded}");
+        assert!(encoded.contains("mode=two_way"), "{encoded}");
         assert_eq!(encoded.matches("target=").count(), 2, "{encoded}");
 
         // ④ `UiAnimation`：`track.<属性名>=<time>:<value>:<easing>,…`，键名来自作者内容

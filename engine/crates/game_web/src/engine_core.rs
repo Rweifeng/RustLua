@@ -28,8 +28,9 @@ use std::collections::HashSet;
 
 use wasm_bindgen::JsValue;
 
-use engine::host::{OverlayVertex, RenderOutcome, Renderer, SceneDraw, SceneMesh};
+use engine::host::{OverlayVertex, SceneDraw, SceneMesh};
 use rustlua_frame_abi::FrameInput;
+use rustlua_gpu::{RenderOutcome, Renderer};
 
 use crate::rust_scene::{RustScene, SimRoute};
 
@@ -76,7 +77,7 @@ pub(crate) async fn build_gpu_stack(
     });
     // 引擎里那**唯一**一份"从画布建 surface"的实现（web_surface 模块注释解释了这个
     // 不得已而为之的 unsafe 通路：wgpu 27 的 `create_surface(canvas)` 在本版本用不了）。
-    let surface = engine::host::web_surface::canvas_surface(&instance, canvas)
+    let surface = rustlua_gpu::web_surface::canvas_surface(&instance, canvas)
         .map_err(|error| format!("canvas_surface: {error}"))?;
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
@@ -492,8 +493,8 @@ impl EngineCore {
         let mut failed = 0usize;
         let mut png_bytes = 0usize;
         for path in paths {
-            if path == engine::host::frame::WHITE_TEXTURE_PATH
-                || path == engine::host::frame::ATLAS_TEXTURE_PATH
+            if path == rustlua_render::frame::WHITE_TEXTURE_PATH
+                || path == rustlua_render::frame::ATLAS_TEXTURE_PATH
             {
                 continue;
             }

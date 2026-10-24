@@ -22,10 +22,11 @@
 
 use std::time::Instant;
 
-use engine::host::{ComputeError, GpuParticleConfig, Renderer, SceneMesh};
+use engine::host::SceneMesh;
 use rustlua_camera::camera::{Camera2D, FrameViews, RenderView, Viewport};
 use rustlua_ecs::particle::{ParticleEmitter, ParticleSystem};
 use rustlua_ecs::transform::Vec2;
+use rustlua_gpu::{ComputeError, GpuParticleConfig, Renderer};
 use rustlua_render::render_plan::RenderPass;
 
 const PARTICLES: usize = 10_000;

@@ -6,10 +6,6 @@
 //! 这个不变量就跨文件了，正是本次拆分要避免的方向。
 //! 每帧主路径的调用方（`mod.rs` 与兄弟子模块）用的私有方法标 `pub(super)`（计划 §3.1.4）。
 
-use crate::host::frame::{
-    BoundsSource, CustomFontAtlasPixels, FontAtlasPixels, OverlayVertex, Scene3d, Scene3dBounds,
-    Scene3dDrawable, SceneDraw, SceneMesh, WHITE_TEXTURE_PATH, WorldSpriteVertex,
-};
 use rustlua_animation::animation::AnimationStateMachine;
 use rustlua_animation::animation_player::AnimationPlayer;
 use rustlua_animation::animation3d::Animation3D;
@@ -21,6 +17,10 @@ use rustlua_ecs::hierarchy::GlobalTransform;
 use rustlua_ecs::transform::Transform3D;
 use rustlua_ecs::transform::{Transform, Vec2};
 use rustlua_math::math3d::{Mat4, Vec3};
+use rustlua_render::frame::{
+    BoundsSource, CustomFontAtlasPixels, FontAtlasPixels, OverlayVertex, Scene3d, Scene3dBounds,
+    Scene3dDrawable, SceneDraw, SceneMesh, WHITE_TEXTURE_PATH, WorldSpriteVertex,
+};
 use rustlua_render::layer::RenderLayer;
 use rustlua_render::light::Light;
 use rustlua_render::mesh3d::MeshRenderer;

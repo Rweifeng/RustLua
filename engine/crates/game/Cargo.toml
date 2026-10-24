@@ -22,6 +22,7 @@ rustlua-audio = { path = "../rustlua-audio" }
 rustlua-camera = { path = "../rustlua-camera" }
 rustlua-ecs = { path = "../rustlua-ecs" }
 rustlua-gameplay = { path = "../rustlua-gameplay" }
+rustlua-gpu.workspace = true
 rustlua-infra = { path = "../rustlua-infra" }
 rustlua-input = { path = "../rustlua-input" }
 rustlua-math = { path = "../rustlua-math" }

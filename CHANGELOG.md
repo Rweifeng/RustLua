@@ -5,6 +5,72 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — M77 宿主侧模块化：渲染器下沉成 `rustlua-gpu`（2026-10-24）
+
+- **新增 crate `rustlua-gpu`**：`engine/src/host/renderer/`（约 11.6K 源 + 6.2K 测试）与
+  `host/{shader*,web_surface}.rs`、`engine/shaders/*.wgsl` 整体搬出；`fit`/`frame` 归
+  `rustlua-render`。52 条 rename 里 44 条是 `R100` 纯搬运（逐字节未改），接线（`mod`/`use`/
+  可见性放宽）与之分层可核对；搬运前后 `#[test]` 属性 143 条两侧闭合。
+- **组合根摘掉 GPU 栈**：`cargo tree -p engine -e normal` 里 `wgpu`/`naga` 零命中；降耦合门
+  新增第⑥⑦条（engine 不许碰 GPU 栈、`gpu-web-probe` 不许再依赖 engine），并各跑过反面对照
+  （加回依赖 → 当场红）。探针改直连 `rustlua-gpu`，`RUSTLUA_REQUIRE_GPU=1` 单线程 138/138。
+- **两套 offscreen renderer 合并（engine 侧）**：`rustlua-gpu/src/offscreen.rs`（194 行）收走
+  设备管子，22 个 `wp0_*` 例子改走它，例子侧净 −487 行；editor 侧合并因与 M76 在途文件交错
+  留给后续。
+- **产物身份不变**：wasm 依赖面第三方 crate 0 增减（唯一新增是 path crate 自己），`wgpu` 启用
+  特性集逐字相同；无头浏览器打开真发布包读数 `frame owner ok: engine GPU host (data-rustlua-gpu)`。
+- **边界（不粉饰）**：本批与 M76 同一笔入库（`engine/Cargo.toml` 同段 hunk 并排带两批成员行，
+  切不出独立可编译子集）；提交态 `cargo check --all-targets` 与 `tasks/plan → done` 归档在
+  入库复跑后才闭合；`-Benchmarks` 全量段仍欠一次复跑。逐条见 `tasks/done/M77-00`。
+
+## Unreleased — MCP：一条连接器切换多个工程（2026-10-24）
+
+- **新增 T3 tool `open_project`**：`editor --project A --mcp-stdio` 起来后可以直接切到工程 B，
+  不必每个工程占一条 MCP 连接器（此前 `rustlua-editor` 与 `rustlua-editor-game-api` 就是同一条
+  命令的两个实例，整套 tool 面在客户端上下文里翻一倍）。实现是复用「文件 > 打开项目」那条路
+  （`PendingChange::SwitchProject` → 后台导入），没有第二套工程加载逻辑。
+- **读数只承诺「已排队」**：导入跑在后台线程，真正的文档替换发生在 `poll_progress` 落地那一帧，
+  所以 tool 回 `{"result":"queued","target_root":…}`，并要求用 `get_project_config` 的 `root`
+  轮询确认——在主线程阻塞等会冻住事件循环，进度反而永不落地。四条前置在排队前就判掉：目标不是
+  工程、目标就是当前工程、后台任务在跑（`start_import` 对它静默 return）、已挂着一条待确认的文档
+  操作；脏文档沿用同一个确认网关挂起等人裁决，无头策略按 T3 直接拒绝。
+- **买不到的部分**：切换是会话级全局的，两个工程不能同时在线；落地时 `apply_progress_result`
+  会 `history.clear()`，旧工程的 Undo 栈随之清空（脏文档已被前一条挡住，但已保存未 Undo 的栈救不回来）。
+- **活体双向读数**（Qoder 连接器拉起 `editor --project examples/game_jhyt --mcp-stdio`）：无人批准时
+  `open_project` 在 30.0s 回 `isError=true` 的「已排队」，前后两次 `get_project_config` 的 `root` 逐字节
+  相同——确认门没有放水；在编辑器「AI 动作确认」里点批准后，同一条 tool 当帧执行、约 12s 后台导入落地，
+  `root` 换成 `examples/game_api`，即一个 stdio 会话确实服务了两个工程。
+- 复现：`cargo test -p editor --bins open_project`（4 条前置/排队/挂起判据）；快照门
+  `AI_TOOL_SURFACE_BLESS=1 cargo test -p rustlua-editor-ai tool_surface`；活体负对照
+  `node target/m78-negative.mjs`（本机探针脚本，在 gitignored 的 `target/` 下、不入库；需 30s，且不要点弹窗）。
+
+## Unreleased — M76 UI Studio 与 AI 全流程：契约、工具面与编辑器内闭环（2026-10-24）
+
+- **新增 crate `rustlua-ui-spec`**：UI 文档的单一契约层——`.ui.json` Spec（令牌/类/状态、锚点布局、
+  资产预算）、`UiPatch`（`replace/insert/remove/move/set_token/remove_token/set_event`）、提案与
+  成本、能力矩阵、校验器与编译器。修订号（revision）是内容哈希，且**压进 JSON 安全整数位宽**：
+  不压的话任何 JS 客户端回传的 `base_revision` 都会被 f64 舍入，补丁永远判成过期。
+- **UI 工具面进同一 registry**：9 条 `ui_*` tool（4×T0 读、2×T1 写、3×T2 资产），内部 API 与外部
+  MCP 共用同一份规格、tier、确认网关与事务；`ai_tool_surface.json` 快照门覆盖全部 44 条 tool。
+- **编辑器内 UI Studio**：`.ui.json` 双击进标签，层级拖拽、检查器写回、画布拖动与 8 手柄缩放、
+  令牌编辑、提案箱逐条拆分接受、Undo/Redo 以原始字节还原（外部改过文件就判 `StaleRevision`，
+  不动文件也不丢栈）。所有写动作都走「提案 → 接受 → 一条事务」，没有绕过历史的直写。
+- **资产侧**：ImageProvider（本地 + 远程 OpenAI/Anthropic 兼容，密钥只从环境读）、候选审阅条与
+  provenance 边车（`ui/provenance`，入库）、手工矩形切图落盘 + `ui_slice_asset`、工程级发布门
+  （坏 JSON / 缺资产 / 引用未审阅的生成资产 / 超体积都是 error，已接进 `verify.ps1`）。
+- **运行时前置（M1）**：输入路由与 `ButtonStates`、绑定、动画发布、ScrollView 裁剪滚动、`UiKey`；
+  高级控件内核（虚拟列表 / 富文本解析 / 输入控件 / 导航栈）挂进 `ui.*` 运行期命令表，
+  编辑器 1000 项虚拟列表性能基线进 `--perf-baseline`。
+- **MCP stdio 活体接入**（Qoder 连接器拉起 `editor --project <path> --mcp-stdio`，实测
+  `examples/game_api`）：T0 读通并原样往返 revision；T1 `ui_apply_patch` 生成提案；T2/T3 停在
+  「AI 动作确认」队列。修掉两个只有真实客户端才能暴露的缺陷——一条未确认的写会把整条 stdio
+  通道连同后续只读调用一起挂死（现在按 `DEFAULT_REPLY_WAIT` 有界等待，回一条明确的「已排队」，
+  动作仍在 GUI 批准时执行）；`--help` 与控制台同源登记 `RUSTLUA_EDITOR_AI_AUTO_T1=1` 这条
+  只放行 T1 的开关。
+- **边界（不粉饰）**：三宿主（PC/Web/微信）golden 矩阵仍未跑，且 `ui/hosts.json` 只有消费端、
+  仓库里没有生产端，报告只会是 `untested`；吸附/量距、富文本绘制、宿主 IME 桥、虚拟列表宿主
+  绘制循环未接；远程 Provider 活体与系统密钥库未联网验证。逐条见 `tasks/plan/M76-00..07`。
+
 ## Unreleased — M75 AI 融合：MCP 能力层与确认·回放门（2026-10-22）
 
 - **新增 crate `rustlua-editor-ai`**：自实现最小 MCP JSON-RPC 2.0（stdio），暴露 **34 个 tool**

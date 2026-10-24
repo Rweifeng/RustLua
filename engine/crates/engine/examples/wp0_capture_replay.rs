@@ -363,8 +363,8 @@ fn next_u64(state: &mut u64) -> u64 {
 fn hash_frame(
     fingerprint: &mut FingerprintBuilder,
     frame: usize,
-    mesh: &engine::host::SceneMesh,
-    scene3d: Option<&engine::host::Scene3d>,
+    mesh: &rustlua_render::frame::SceneMesh,
+    scene3d: Option<&rustlua_render::frame::Scene3d>,
 ) {
     fingerprint.push_u64(frame as u64);
     fingerprint.push_u64(mesh.vertices.len() as u64);

@@ -34,12 +34,14 @@
 
 use std::{env, fs, path::PathBuf, process::ExitCode, time::Instant};
 
-use engine::host::{
-    ComputeError, GpuParticleConfig, GpuParticleSnapshot, RenderOutcome, Renderer, SceneMesh,
-};
+use engine::host::SceneMesh;
 use rustlua_camera::camera::{Camera2D, FrameViews, RenderView, Viewport};
 use rustlua_ecs::particle::{ParticleEmitter, ParticleMode, ParticleSystem};
 use rustlua_ecs::transform::Vec2;
+use rustlua_gpu::{
+    ComputeError, GpuParticleConfig, GpuParticleSnapshot, OffscreenRequest, OffscreenTarget,
+    RenderOutcome, Renderer,
+};
 use rustlua_render::render_plan::RenderPass;
 use serde_json::json;
 
@@ -61,32 +63,22 @@ const TARGET: u32 = 256;
 
 fn main() -> ExitCode {
     let output = parse_output();
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let Some(adapter) =
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::LowPower,
-            compatible_surface: None,
-            force_fallback_adapter: true,
-        }))
-        .ok()
-    else {
-        return blocked("没有可用的 GPU 适配器，instanced 粒子门无法运行");
+    let fixture = match OffscreenTarget::acquire(&OffscreenRequest::new(
+        "wp0-gpu-particles-golden",
+        TARGET,
+        TARGET,
+    )) {
+        Ok(fixture) => fixture,
+        Err(error) => return blocked(&format!("离屏设备与目标纹理起不来：{error}")),
     };
-    let info = adapter.get_info();
-    let (device, queue) =
-        match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("wp0-gpu-particles-golden"),
-            required_features: wgpu::Features::empty(),
-            experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            required_limits: wgpu::Limits::default(),
-            memory_hints: wgpu::MemoryHints::Performance,
-            trace: wgpu::Trace::Off,
-        })) {
-            Ok(pair) => pair,
-            Err(error) => return blocked(&format!("默认限制的设备建不出来：{error}")),
-        };
-    let renderer = match Renderer::new_offscreen(device.clone(), queue.clone(), None, false, false)
-    {
+    let info = fixture.adapter_info();
+    let renderer = match Renderer::new_offscreen(
+        fixture.device().clone(),
+        fixture.queue().clone(),
+        None,
+        false,
+        false,
+    ) {
         Ok(renderer) => renderer,
         Err(error) => return blocked(&format!("离屏渲染器建不出来：{error}")),
     };
@@ -153,7 +145,7 @@ fn main() -> ExitCode {
     let gpu_near_ms = gpu_near_started.elapsed().as_secs_f64() * 1_000.0;
     let near = renderer.read_gpu_particles().expect("near-frame readback");
     let (max_position_error, max_velocity_error, near_bounds) = compare_with_cpu(&near, &cpu);
-    let near_frame = render_frame(&mut renderer, &device);
+    let near_frame = render_frame(&mut renderer, &fixture);
 
     // ── ③ 画面帧（9.0 s）：多数粒子已死，剔除与冻结都必须仍然成立 ───────────────────
     for step in NEAR_STEPS..FAR_STEPS {
@@ -165,10 +157,10 @@ fn main() -> ExitCode {
     let far = renderer.read_gpu_particles().expect("far-frame readback");
     let far_bounds = state_bounds(&far);
     let dead_far = far.iter().filter(|p| p.life <= 0.0).count();
-    let far_frame = render_frame(&mut renderer, &device);
+    let far_frame = render_frame(&mut renderer, &fixture);
     // 关闭 compute 之后的同一帧：通道消失、像素回到背景（回滚档不残留半帧）。
     renderer.set_compute_enabled(false);
-    let rollback = render_frame(&mut renderer, &device);
+    let rollback = render_frame(&mut renderer, &fixture);
     let rollback_rejected = matches!(
         renderer.configure_gpu_particles(GpuParticleConfig {
             origin: [0.0, 0.0],
@@ -359,7 +351,7 @@ struct FrameReading {
 }
 
 /// 渲染一帧到离屏附件并读回全部像素。`renderer` 必须是**已经步进过**的那一份。
-fn render_frame(renderer: &mut Renderer, device: &wgpu::Device) -> FrameReading {
+fn render_frame(renderer: &mut Renderer, fixture: &OffscreenTarget) -> FrameReading {
     let viewport = Viewport::new(TARGET as f32, TARGET as f32).expect("viewport");
     let camera = Camera2D::new(Vec2::new(0.0, 0.0), 1.0)
         .expect("camera")
@@ -371,29 +363,16 @@ fn render_frame(renderer: &mut Renderer, device: &wgpu::Device) -> FrameReading 
         viewport,
         [0.0, 0.0, 0.0, 1.0],
     )));
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("wp0-gpu-particles-golden-target"),
-        size: wgpu::Extent3d {
-            width: TARGET,
-            height: TARGET,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let outcome = renderer.render_into_texture(&empty_mesh(), None, &view, TARGET, TARGET);
+    let texture = fixture.texture();
+    let view = fixture.view();
+    let outcome = renderer.render_into_texture(&empty_mesh(), None, view, TARGET, TARGET);
     assert!(
         matches!(outcome, RenderOutcome::Presented),
         "离屏渲染没有产出画面"
     );
     let metrics = renderer.last_frame_metrics();
     let pixels = renderer
-        .copy_texture_to_cpu(&texture, TARGET, TARGET)
+        .copy_texture_to_cpu(texture, TARGET, TARGET)
         .expect("pixel readback");
     let background = [pixels[0], pixels[1], pixels[2]];
     FrameReading {

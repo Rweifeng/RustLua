@@ -9,45 +9,45 @@
 #[allow(dead_code, unused_variables)]
 fn pin_paths() {
     // 类型与 `host/mod.rs` 的重导出。
-    let _ = engine::host::Renderer::new;
-    let _ = engine::host::Renderer::cached_mesh_count;
-    let _ = engine::host::Renderer::clear_gpu_particles;
-    let _ = engine::host::Renderer::configure_gpu_particles;
-    let _ = engine::host::Renderer::copy_texture_to_cpu;
-    let _ = engine::host::Renderer::frame_views;
-    let _ = engine::host::Renderer::gpu_particle_status;
-    let _ = engine::host::Renderer::gpu_particle_systems;
-    let _ = engine::host::Renderer::gpu_timestamp_reason;
-    let _ = engine::host::Renderer::gpu_timestamp_supported;
-    let _ = engine::host::Renderer::last_frame_metrics;
-    let _ = engine::host::Renderer::last_frame_passes;
-    let _ = engine::host::Renderer::last_frame_plan;
-    let _ = engine::host::Renderer::loaded_texture_count;
-    let _ = engine::host::Renderer::mesh_identity_stats;
-    let _ = engine::host::Renderer::new;
-    let _ = engine::host::Renderer::new_offscreen;
-    let _ = engine::host::Renderer::post_process;
-    let _ = engine::host::Renderer::push_gpu_particle_burst;
-    let _ = engine::host::Renderer::read_gpu_particles;
-    let _ = engine::host::Renderer::readback_busy_count;
-    let _ = engine::host::Renderer::readback_frame;
-    let _ = engine::host::Renderer::readback_in_flight;
-    let _ = engine::host::Renderer::readback_metrics;
-    let _ = engine::host::Renderer::readback_pending;
-    let _ = engine::host::Renderer::readback_slot_count;
-    let _ = engine::host::Renderer::render;
-    let _ = engine::host::Renderer::render_into_texture;
-    let _ = engine::host::Renderer::resize;
-    let _ = engine::host::Renderer::resource_stats;
-    let _ = engine::host::Renderer::set_frame_views;
-    let _ = engine::host::Renderer::set_post_process;
-    let _ = engine::host::Renderer::set_world_sprite_camera;
-    let _ = engine::host::Renderer::step_gpu_particles;
-    let _ = engine::host::Renderer::texture_identity_stats;
-    let _ = engine::host::Renderer::vertex_buffer_capacity;
-    let _ = engine::host::Renderer::vertex_buffer_growths;
-    let _ = engine::host::Renderer::vertex_bytes_peak;
-    let _ = engine::host::Renderer::wait_for_gpu_timestamp;
+    let _ = rustlua_gpu::Renderer::new;
+    let _ = rustlua_gpu::Renderer::cached_mesh_count;
+    let _ = rustlua_gpu::Renderer::clear_gpu_particles;
+    let _ = rustlua_gpu::Renderer::configure_gpu_particles;
+    let _ = rustlua_gpu::Renderer::copy_texture_to_cpu;
+    let _ = rustlua_gpu::Renderer::frame_views;
+    let _ = rustlua_gpu::Renderer::gpu_particle_status;
+    let _ = rustlua_gpu::Renderer::gpu_particle_systems;
+    let _ = rustlua_gpu::Renderer::gpu_timestamp_reason;
+    let _ = rustlua_gpu::Renderer::gpu_timestamp_supported;
+    let _ = rustlua_gpu::Renderer::last_frame_metrics;
+    let _ = rustlua_gpu::Renderer::last_frame_passes;
+    let _ = rustlua_gpu::Renderer::last_frame_plan;
+    let _ = rustlua_gpu::Renderer::loaded_texture_count;
+    let _ = rustlua_gpu::Renderer::mesh_identity_stats;
+    let _ = rustlua_gpu::Renderer::new;
+    let _ = rustlua_gpu::Renderer::new_offscreen;
+    let _ = rustlua_gpu::Renderer::post_process;
+    let _ = rustlua_gpu::Renderer::push_gpu_particle_burst;
+    let _ = rustlua_gpu::Renderer::read_gpu_particles;
+    let _ = rustlua_gpu::Renderer::readback_busy_count;
+    let _ = rustlua_gpu::Renderer::readback_frame;
+    let _ = rustlua_gpu::Renderer::readback_in_flight;
+    let _ = rustlua_gpu::Renderer::readback_metrics;
+    let _ = rustlua_gpu::Renderer::readback_pending;
+    let _ = rustlua_gpu::Renderer::readback_slot_count;
+    let _ = rustlua_gpu::Renderer::render;
+    let _ = rustlua_gpu::Renderer::render_into_texture;
+    let _ = rustlua_gpu::Renderer::resize;
+    let _ = rustlua_gpu::Renderer::resource_stats;
+    let _ = rustlua_gpu::Renderer::set_frame_views;
+    let _ = rustlua_gpu::Renderer::set_post_process;
+    let _ = rustlua_gpu::Renderer::set_world_sprite_camera;
+    let _ = rustlua_gpu::Renderer::step_gpu_particles;
+    let _ = rustlua_gpu::Renderer::texture_identity_stats;
+    let _ = rustlua_gpu::Renderer::vertex_buffer_capacity;
+    let _ = rustlua_gpu::Renderer::vertex_buffer_growths;
+    let _ = rustlua_gpu::Renderer::vertex_bytes_peak;
+    let _ = rustlua_gpu::Renderer::wait_for_gpu_timestamp;
     // `RuntimeScene`。
     let _ = engine::host::RuntimeScene::add_frame_system;
     let _ = engine::host::RuntimeScene::add_step_system;
@@ -55,7 +55,6 @@ fn pin_paths() {
     let _ = engine::host::RuntimeScene::asset_handle;
     let _ = engine::host::RuntimeScene::asset_count;
     let _ = engine::host::RuntimeScene::camera_center_2d;
-    let _ = engine::host::RuntimeScene::dispatch_gpu_particle_bursts;
     let _ = engine::host::RuntimeScene::from_scene;
     let _ = engine::host::RuntimeScene::from_scene_edit;
     let _ = engine::host::RuntimeScene::gamepad_backend_name;
@@ -134,34 +133,43 @@ fn pin_paths() {
     let _ = engine::host::runtime_scene::load_custom_vector_atlas;
     let _ = engine::host::runtime_scene::load_custom_font_atlas;
     // 其余对外类型（`host/mod.rs` 的 `pub use` 面）。
-    let _: Option<engine::host::BoundsSource> = None;
-    let _: Option<engine::host::OverlayVertex> = None;
-    let _: Option<engine::host::Scene3d> = None;
-    let _: Option<engine::host::Scene3dBounds> = None;
-    let _: Option<engine::host::Scene3dDrawable> = None;
-    let _: Option<engine::host::SceneDraw> = None;
-    let _: Option<engine::host::SceneMesh> = None;
+    let _: Option<rustlua_render::frame::BoundsSource> = None;
+    let _: Option<rustlua_render::frame::OverlayVertex> = None;
+    let _: Option<rustlua_render::frame::Scene3d> = None;
+    let _: Option<rustlua_render::frame::Scene3dBounds> = None;
+    let _: Option<rustlua_render::frame::Scene3dDrawable> = None;
+    let _: Option<rustlua_render::frame::SceneDraw> = None;
+    let _: Option<rustlua_render::frame::SceneMesh> = None;
     let _: Option<engine::host::FakeBackend> = None;
     let _: Option<Box<dyn engine::host::GamepadBackend>> = None;
     let _: Option<engine::host::GamepadDeadzone> = None;
     let _: Option<engine::host::GamepadFrame> = None;
     let _: Option<engine::host::GamepadPoller> = None;
-    let _: Option<engine::host::ReadbackMetrics> = None;
-    let _: Option<engine::host::ReadbackStatus> = None;
-    let _: Option<engine::host::RenderFrameMetrics> = None;
-    let _: Option<engine::host::RenderOutcome> = None;
-    let _: Option<engine::host::RendererResourceStats> = None;
+    let _: Option<rustlua_gpu::ReadbackMetrics> = None;
+    let _: Option<rustlua_gpu::ReadbackStatus> = None;
+    let _: Option<rustlua_gpu::RenderFrameMetrics> = None;
+    let _: Option<rustlua_gpu::RenderOutcome> = None;
+    let _: Option<rustlua_gpu::RendererResourceStats> = None;
     let _: Option<engine::host::RuntimeScene> = None;
     let _: Option<engine::host::RuntimeSpawnedEntity> = None;
     let _: Option<engine::host::ScriptErrorPolicy> = None;
 }
 
-/// 两个入参是 `impl Trait` 的方法（`scene_entity_ui_layout_rects` 收 `impl IntoIterator`、
+/// 入参是 `impl Trait` 的方法与自由函数（`scene_entity_ui_layout_rects` 收 `impl IntoIterator`、
 /// `with_script` 收 `impl FnOnce`）取不出路径值，用一次**只编译、不运行**的调用钉住路径。
+///
+/// M77-01 之后 `dispatch_gpu_particle_bursts` 收 `impl ParticleRenderer`：这里把实参写成
+/// `rustlua_gpu::Renderer`，同时钉住"trait 解耦后 GPU 渲染器依然接得上"这条接缝。
 #[allow(dead_code)]
-fn pin_impl_trait_methods(scene: &mut engine::host::RuntimeScene) {
+fn pin_impl_trait_methods(
+    scene: &mut engine::host::RuntimeScene,
+    renderer: &mut rustlua_gpu::Renderer,
+    report: &engine::host::EnvironmentReport,
+) {
     let _ = scene.scene_entity_ui_layout_rects([], [800.0, 600.0]);
     let _ = scene.with_script(|_runtime| 1_u32);
+    let _ = scene.dispatch_gpu_particle_bursts(renderer, 1.0 / 60.0);
+    let _ = engine::host::apply_scene_environment(renderer, scene, report);
 }
 
 #[test]

@@ -32,6 +32,7 @@ rustlua-camera = { path = "../rustlua-camera" }
 rustlua-ecs = { path = "../rustlua-ecs" }
 rustlua-editor-ai = { workspace = true, optional = true }
 rustlua-gameplay = { path = "../rustlua-gameplay" }
+rustlua-gpu.workspace = true
 # `bundle-write`：分包面板要在编辑器里**按发布同款编码器**预估每组的落盘字节
 # （zstd 是构建期依赖，编辑器是原生程序，不进 wasm）。
 rustlua-infra = { path = "../rustlua-infra", features = ["bundle-write"] }
@@ -43,6 +44,8 @@ rustlua-render = { path = "../rustlua-render" }
 rustlua-scene = { path = "../rustlua-scene" }
 rustlua-scripting = { path = "../rustlua-scripting" }
 rustlua-ui = { path = "../rustlua-ui" }
+# M76-03：`.ui.json` 文档宿主（编译/校验/预览/提案）复用契约层，不再另写一份。
+rustlua-ui-spec = { path = "../rustlua-ui-spec" }
 # P3-E03-2：画布编辑器的图模型/校验/代码生成（叶子 crate，不依赖引擎）。
 rustlua-visual-script = { path = "../rustlua-visual-script" }
 [target."cfg(windows)".dependencies]

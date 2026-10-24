@@ -18,9 +18,10 @@
 
 use std::{env, fs, path::PathBuf};
 
-use engine::host::{RenderOutcome, Renderer, RuntimeScene};
+use engine::host::RuntimeScene;
 use rustlua_camera::camera::{Camera2D, Viewport};
 use rustlua_ecs::transform::Vec2;
+use rustlua_gpu::{OffscreenRequest, OffscreenTarget, RenderOutcome, Renderer};
 use rustlua_infra::games_dir;
 use rustlua_scene::scene::{Scene, SceneEntityId};
 use serde_json::json;
@@ -46,40 +47,15 @@ fn main() {
     let mut runtime =
         RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("instantiate HUD golden");
 
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::LowPower,
-        compatible_surface: None,
-        force_fallback_adapter: true,
-    }))
-    .expect("a fallback GPU adapter is required for the HUD golden");
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("wp0-hud-golden"),
-        required_features: wgpu::Features::empty(),
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        required_limits: wgpu::Limits::default(),
-        memory_hints: wgpu::MemoryHints::Performance,
-        trace: wgpu::Trace::Off,
-    }))
-    .expect("request golden device");
+    let fixture = OffscreenTarget::acquire(&OffscreenRequest::new("wp0-hud-golden", WIDTH, HEIGHT))
+        .expect("offscreen fixture for wp0-hud-golden");
+    let device = fixture.device();
+    let queue = fixture.queue().clone();
     let mut renderer =
         Renderer::new_offscreen(device.clone(), queue, Some(root.clone()), false, true)
             .expect("offscreen renderer");
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("wp0-hud-golden-target"),
-        size: wgpu::Extent3d {
-            width: WIDTH,
-            height: HEIGHT,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let texture = fixture.texture();
+    let view = fixture.view();
 
     // 调试绘制打开：这样 Overlay2D 层里一定有一段几何**压在 HUD 面板的位置上**。
     runtime.set_collider_debug_draw(true);
@@ -89,7 +65,7 @@ fn main() {
     let mesh_without_ui = runtime
         .vertices(WIDTH, HEIGHT)
         .expect("extraction without screen UI");
-    let layers = |mesh: &engine::host::SceneMesh| -> (usize, usize, usize) {
+    let layers = |mesh: &rustlua_render::frame::SceneMesh| -> (usize, usize, usize) {
         let mut counts = (0, 0, 0);
         for draw in &mesh.draws {
             match draw.render_layer {
@@ -110,11 +86,11 @@ fn main() {
         "关掉屏幕 UI 后不该还有 ScreenUI 层的 draw"
     );
     assert!(matches!(
-        renderer.render_into_texture(&mesh_without_ui, None, &view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh_without_ui, None, view, WIDTH, HEIGHT),
         RenderOutcome::Presented
     ));
     let pixels_without_ui = renderer
-        .copy_texture_to_cpu(&texture, WIDTH, HEIGHT)
+        .copy_texture_to_cpu(texture, WIDTH, HEIGHT)
         .expect("readback without screen UI");
 
     // ② ScreenUI 打开（默认）：同一批世界/叠加内容，HUD 画在它们之上。
@@ -133,11 +109,11 @@ fn main() {
         "开关屏幕 UI 不该改变世界层与叠加层的 draw 数"
     );
     assert!(matches!(
-        renderer.render_into_texture(&mesh_with_ui, None, &view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh_with_ui, None, view, WIDTH, HEIGHT),
         RenderOutcome::Presented
     ));
     let pixels_with_ui = renderer
-        .copy_texture_to_cpu(&texture, WIDTH, HEIGHT)
+        .copy_texture_to_cpu(texture, WIDTH, HEIGHT)
         .expect("readback with screen UI");
 
     // 采样点：碰撞体轮廓的左边缘（Overlay2D 经过 HUD 面板内部）、纯世界区域、HUD 内部。

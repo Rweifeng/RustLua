@@ -106,7 +106,7 @@ impl Default for WatchScope {
                 "data".to_owned(),
                 // P3-R05-4：`shaders/`（内置 shader 的开发期覆盖目录）与资源同权监听。
                 // 没有这个根，改 `shaders/mesh3d.wgsl` 就永远不会产生事件，热重载只能靠重启编辑器。
-                engine::host::shader_library::SHADER_SOURCE_DIR.to_owned(),
+                rustlua_gpu::shader_library::SHADER_SOURCE_DIR.to_owned(),
             ],
             max_entries: 200_000,
         }
@@ -685,7 +685,7 @@ mod tests {
     #[test]
     fn default_scope_watches_the_shader_override_directory() {
         let scope = WatchScope::default();
-        let shaders = engine::host::shader_library::SHADER_SOURCE_DIR;
+        let shaders = rustlua_gpu::shader_library::SHADER_SOURCE_DIR;
         assert!(
             scope.roots.iter().any(|root| root == shaders),
             "默认监听根缺少 {shaders}：{:?}",

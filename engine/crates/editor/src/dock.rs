@@ -44,6 +44,8 @@ pub(crate) enum DockTab {
     Timeline,
     /// P3-E03-2 可视化脚本画布：默认不在树里，双击 `.vgraph` 资源时由 `sync_visibility` 补入。
     Graph,
+    /// M76-04 UI Studio：默认不在树里，View 菜单打开时补入中央标签组。
+    UiStudio,
 }
 
 impl DockTab {
@@ -58,6 +60,7 @@ impl DockTab {
             Self::Console => "控制台",
             Self::Timeline => "时间线",
             Self::Graph => "可视化脚本",
+            Self::UiStudio => "UI Studio",
         }
     }
 
@@ -72,6 +75,7 @@ impl DockTab {
             Self::Console => "console",
             Self::Timeline => "timeline",
             Self::Graph => "graph",
+            Self::UiStudio => "ui_studio",
         }
     }
 }
@@ -308,6 +312,21 @@ pub(crate) fn focus_tab(state: &mut DockState<DockTab>, target: DockTab) -> bool
     }
 }
 
+/// 当前活动标签：优先读聚焦表面；首帧尚未渲染（`focused_surface` 为空）时退回主表面。
+///
+/// 全局 Undo 的「UI Studio 聚焦时消费 UI 撤销栈」按这个结果分流。
+pub(crate) fn active_tab(state: &mut DockState<DockTab>) -> Option<DockTab> {
+    state
+        .find_active_focused()
+        .map(|(_, tab)| *tab)
+        .or_else(|| {
+            state
+                .main_surface_mut()
+                .find_active_focused()
+                .map(|(_, tab)| *tab)
+        })
+}
+
 /// 面板可见性 ↔ 树的成员关系（View 菜单只改 `show_*` 布尔，这里负责落到树上）。
 ///
 /// 查找必须跨**所有表面**：标签被用户拖成浮动窗口时它不在主表面，按主表面判断会每帧
@@ -328,6 +347,7 @@ pub(crate) fn sync_visibility(state: &mut DockState<DockTab>, editor: &EditorApp
     set_tab_present(state, DockTab::Console, editor.show_lua_console);
     set_tab_present(state, DockTab::Timeline, editor.show_timeline_panel);
     set_tab_present(state, DockTab::Graph, editor.show_graph_panel);
+    set_tab_present(state, DockTab::UiStudio, editor.show_ui_studio);
 }
 
 fn set_tab_present(state: &mut DockState<DockTab>, tab: DockTab, present: bool) {
@@ -430,6 +450,16 @@ fn add_tab(state: &mut DockState<DockTab>, tab: DockTab) {
             }
         }
         // 中央两个标签同属一个标签组：重新显示时插回同一个叶子，不新开一块区域。
+        DockTab::UiStudio => {
+            // UI Studio 与 Game 同叶：打开时默认贴着中央标签组，不额外切宽。
+            match tree
+                .find_tab_from(|candidate| *candidate == DockTab::Game)
+                .or_else(|| tree.find_tab_from(|candidate| *candidate == DockTab::Scene))
+            {
+                Some((node, index)) => tree[node].insert_tab((index.0 + 1).into(), tab),
+                None => tree.push_to_first_leaf(tab),
+            }
+        }
         DockTab::Scene | DockTab::Game => {
             let other = if tab == DockTab::Scene {
                 DockTab::Game
@@ -599,6 +629,10 @@ pub(crate) fn show_workspace(context: &egui::Context, editor: &mut EditorApp) {
         return;
     };
     sync_visibility(&mut dock_state, editor);
+    if editor.pending_ui_studio_focus {
+        editor.pending_ui_studio_focus = false;
+        let _ = focus_tab(&mut dock_state, DockTab::UiStudio);
+    }
     // 上一帧面板 body 里发出的聚焦请求（如工具栏 Play 自动切 Game）：树已放回、
     // 可见性已同步（标签被隐藏过时先补回再聚焦），画之前补应用。
     if let Some(tab) = editor.pending_workspace_focus.take() {
@@ -689,6 +723,7 @@ impl TabViewer for DockTabViewer<'_> {
             DockTab::Console => editor.draw_console_body(ui),
             DockTab::Timeline => editor.draw_timeline_panel(ui),
             DockTab::Graph => editor.draw_graph_panel(ui),
+            DockTab::UiStudio => editor.draw_ui_studio_panel(ui),
         }
         editor
             .profiler

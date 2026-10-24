@@ -3,6 +3,7 @@
 //! `ai_tool_surface.json` 由 [`surface_json`] 生成；测试把它与仓库基线逐字节比对。
 //! 新增/删除/改签名必须先让快照门变红，再显式刷新基线（等价于一次 API review）。
 
+use crate::ui_tools::names as ui;
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 
@@ -407,6 +408,138 @@ fn build_tools() -> Vec<ToolSpec> {
                 &["path", "code"],
             ),
         },
+        ToolSpec {
+            name: "open_project",
+            description: "把编辑器切到另一个工程目录（一份 stdio 会话服务多个工程，不必每个工程开一条连接器）。path 可为绝对路径，或相对当前工程根的路径（允许 ..）。切换是后台导入：本调用只代表「已排队」，落地后用 get_project_config 的 root 确认。脏文档会挂起等编辑器内确认，无头拒绝。T3。",
+            tier: ToolTier::T3,
+            input_schema: schema_object(
+                json!({"path": {"type": "string", "minLength": 1, "description": "目标工程根目录"}}),
+                &["path"],
+            ),
+        },
+        // ── UI 文档 tool（M76 契约；执行体在 M76-03）──────────────────────
+        ToolSpec {
+            name: ui::EXPORT_SPEC,
+            description: "导出 UI 文档的 UiSpec 与 revision。T0。",
+            tier: ToolTier::Read,
+            input_schema: schema_object(
+                json!({"document": {"type": "string", "minLength": 1, "description": "工程内 .ui.json 相对路径"}}),
+                &["document"],
+            ),
+        },
+        ToolSpec {
+            name: ui::VALIDATE_SPEC,
+            description: "按运行时能力矩阵校验 UiSpec，返回诊断（不落盘）。T0。",
+            tier: ToolTier::Read,
+            input_schema: schema_object(
+                json!({"spec": {"type": "object", "description": "UiSpec JSON"}}),
+                &["spec"],
+            ),
+        },
+        ToolSpec {
+            name: ui::PREVIEW_SPEC,
+            description: "离屏渲染 UiSpec 预览图（PNG 字节）。T0。",
+            tier: ToolTier::Read,
+            input_schema: schema_object(
+                json!({
+                    "spec": {"type": "object", "description": "UiSpec JSON"},
+                    "width": {"type": "integer", "minimum": 1, "maximum": 8192, "default": 1280},
+                    "height": {"type": "integer", "minimum": 1, "maximum": 8192, "default": 720},
+                    "scale": {"type": "number", "minimum": 0.1, "maximum": 8.0, "default": 1.0}
+                }),
+                &["spec"],
+            ),
+        },
+        ToolSpec {
+            name: ui::LIST_ASSETS,
+            description: "列出 UI 资产及其 provenance（未审阅/生成/人工）。T0。",
+            tier: ToolTier::Read,
+            input_schema: schema_object(
+                json!({"document": {"type": "string", "description": "可选：只列出该文档引用的资产"}}),
+                &[],
+            ),
+        },
+        ToolSpec {
+            name: ui::APPLY_SPEC,
+            description: "把 UiSpec 编译为提案（diff+预览+成本）；接受后一次事务、一条 Undo。T1。",
+            tier: ToolTier::T1,
+            input_schema: schema_object(
+                json!({
+                    "document": {"type": "string", "minLength": 1, "description": "工程内 .ui.json 相对路径"},
+                    "base_revision": {"type": "integer", "minimum": 0},
+                    "spec": {"type": "object", "description": "UiSpec JSON"}
+                }),
+                &["document", "base_revision", "spec"],
+            ),
+        },
+        ToolSpec {
+            name: ui::APPLY_PATCH,
+            description: "把 UiPatch 应用到指定 revision 并生成提案；base_revision 过期直接拒绝。T1。",
+            tier: ToolTier::T1,
+            input_schema: schema_object(
+                json!({
+                    "document": {"type": "string", "minLength": 1, "description": "工程内 .ui.json 相对路径"},
+                    "patch": {"type": "object", "description": "UiPatch JSON（含 base_revision 与 ops）"}
+                }),
+                &["document", "patch"],
+            ),
+        },
+        ToolSpec {
+            name: ui::PROMOTE_ASSET,
+            description: "把审阅通过的资产生成登记提升进工程并写入 provenance。T2。",
+            tier: ToolTier::T2,
+            input_schema: schema_object(
+                json!({
+                    "asset_id": {"type": "string", "minLength": 1},
+                    "reviewed": {"type": "boolean", "description": "人工审阅结果；false 不得提升"},
+                    "license": {"type": "string", "description": "许可标识，发布清单必填"},
+                    "used_by": {"type": "array", "items": {"type": "string"}}
+                }),
+                &["asset_id", "reviewed"],
+            ),
+        },
+        ToolSpec {
+            name: ui::GENERATE_ASSETS,
+            description: "按 AssetPlan 生成候选图；逐项预算与确认，超限拒绝。T2。",
+            tier: ToolTier::T2,
+            input_schema: schema_object(
+                json!({
+                    "plan": {"type": "array", "items": {"type": "object"}, "minItems": 1},
+                    "max_images": {"type": "integer", "minimum": 1, "maximum": 64}
+                }),
+                &["plan"],
+            ),
+        },
+        ToolSpec {
+            name: ui::SLICE_ASSET,
+            description: "按手工矩形从源 PNG 裁片并写 slices.json（写工程文件）。T2。",
+            tier: ToolTier::T2,
+            input_schema: schema_object(
+                json!({
+                    "source": {"type": "string", "minLength": 1, "description": "工程内源 PNG 相对路径"},
+                    "output_dir": {"type": "string", "minLength": 1, "description": "裁片与 slices.json 的输出目录"},
+                    "regions": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string", "minLength": 1},
+                                "rect": {
+                                    "type": "array",
+                                    "items": {"type": "integer", "minimum": 0},
+                                    "minItems": 4,
+                                    "maxItems": 4,
+                                    "description": "[x, y, width, height]"
+                                }
+                            },
+                            "required": ["name", "rect"]
+                        }
+                    }
+                }),
+                &["source", "output_dir", "regions"],
+            ),
+        },
     ]
 }
 
@@ -497,10 +630,31 @@ mod tests {
         }
         assert_eq!(
             tools().iter().filter(|t| !t.tier.is_write()).count(),
-            10,
+            14,
             "只读 tool 数"
         );
-        assert_eq!(tools().iter().filter(|t| t.tier.is_write()).count(), 24);
+        assert_eq!(tools().iter().filter(|t| t.tier.is_write()).count(), 30);
+    }
+
+    #[test]
+    fn ui_tools_are_registered_with_expected_tiers() {
+        for (name, tier) in [
+            (ui::EXPORT_SPEC, ToolTier::Read),
+            (ui::VALIDATE_SPEC, ToolTier::Read),
+            (ui::PREVIEW_SPEC, ToolTier::Read),
+            (ui::LIST_ASSETS, ToolTier::Read),
+            (ui::APPLY_SPEC, ToolTier::T1),
+            (ui::APPLY_PATCH, ToolTier::T1),
+            (ui::PROMOTE_ASSET, ToolTier::T2),
+            (ui::GENERATE_ASSETS, ToolTier::T2),
+            (ui::SLICE_ASSET, ToolTier::T2),
+        ] {
+            let spec = tool_by_name(name).unwrap_or_else(|| panic!("缺少 UI tool：{name}"));
+            assert_eq!(spec.tier, tier, "{name} 的 tier");
+        }
+        for name in crate::ui_tools::TOOL_NAMES {
+            assert!(tool_by_name(name).is_some(), "UI tool 未进 surface：{name}");
+        }
     }
 
     /// 工具面快照门：**先红后刷**。改签名会先在这里变红；确认是有意变更后

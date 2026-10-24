@@ -13,7 +13,8 @@
 
 use std::{env, fs, path::PathBuf};
 
-use engine::host::{RenderOutcome, Renderer, RuntimeScene};
+use engine::host::RuntimeScene;
+use rustlua_gpu::{OffscreenRequest, OffscreenTarget, RenderOutcome, Renderer};
 use rustlua_infra::games_dir;
 use rustlua_input::input::InputSnapshot;
 use rustlua_scene::scene::{Scene, SceneEntityId};
@@ -45,75 +46,33 @@ fn main() {
     let mut runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), scene)
         .expect("instantiate anim golden");
 
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::LowPower,
-        compatible_surface: None,
-        force_fallback_adapter: true,
-    })) {
-        Ok(adapter) => adapter,
-        Err(error) => {
-            eprintln!("wp0_anim_golden_skipped reason=no_gpu error={error} exit=3");
-            std::process::exit(3);
-        }
-    };
-    let info = adapter.get_info();
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("wp0-anim-golden"),
-        required_features: wgpu::Features::empty(),
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        required_limits: wgpu::Limits::default(),
-        memory_hints: wgpu::MemoryHints::Performance,
-        trace: wgpu::Trace::Off,
-    }))
-    .expect("request golden device");
+    let fixture =
+        match OffscreenTarget::acquire(&OffscreenRequest::new("wp0-anim-golden", WIDTH, HEIGHT)) {
+            Ok(fixture) => fixture,
+            Err(error) => {
+                eprintln!("wp0_anim_golden_skipped reason=no_gpu error={error} exit=3");
+                std::process::exit(3);
+            }
+        };
+    let device = fixture.device();
+    let queue = fixture.queue().clone();
+    let info = fixture.adapter_info();
     let mut renderer =
         Renderer::new_offscreen(device.clone(), queue, Some(root.clone()), false, true)
             .expect("offscreen renderer");
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("wp0-anim-golden-target"),
-        size: wgpu::Extent3d {
-            width: WIDTH,
-            height: HEIGHT,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let texture = fixture.texture();
+    let view = fixture.view();
 
     let mut frames = Vec::new();
-    frames.push(read_frame(
-        &mut runtime,
-        &mut renderer,
-        &texture,
-        &view,
-        0.0,
-    ));
+    frames.push(read_frame(&mut runtime, &mut renderer, texture, view, 0.0));
     runtime
         .run_script_steps(1, 0.5, &InputSnapshot::default())
         .expect("step to 0.5s");
-    frames.push(read_frame(
-        &mut runtime,
-        &mut renderer,
-        &texture,
-        &view,
-        0.5,
-    ));
+    frames.push(read_frame(&mut runtime, &mut renderer, texture, view, 0.5));
     runtime
         .run_script_steps(1, 0.5, &InputSnapshot::default())
         .expect("step to 1.0s");
-    frames.push(read_frame(
-        &mut runtime,
-        &mut renderer,
-        &texture,
-        &view,
-        1.0,
-    ));
+    frames.push(read_frame(&mut runtime, &mut renderer, texture, view, 1.0));
 
     // 非循环片段：再推 0.5 s，两个实体的姿态都必须停在末键。
     let clamped_before = [

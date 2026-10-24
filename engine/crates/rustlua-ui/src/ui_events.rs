@@ -137,19 +137,22 @@ impl UiEvents {
         }
     }
 
-    /// Functions bound to the click event; `None` means the default click.
+    /// Functions bound to one structured event. `event: None` is the legacy
+    /// click shorthand.
     #[must_use]
-    pub fn click_functions(&self) -> Vec<String> {
+    pub fn functions_for(&self, event: UiEventType) -> Vec<String> {
         self.bindings
             .iter()
-            .filter(|binding| {
-                binding
-                    .event
-                    .is_none_or(|event| event == UiEventType::Click)
-            })
+            .filter(|binding| binding.event.unwrap_or(UiEventType::Click) == event)
             .map(|binding| binding.function.clone())
             .filter(|function| !function.is_empty())
             .collect()
+    }
+
+    /// Functions bound to the click event; `None` means the default click.
+    #[must_use]
+    pub fn click_functions(&self) -> Vec<String> {
+        self.functions_for(UiEventType::Click)
     }
 
     pub fn parse(raw: &str) -> Result<Self, UiEventError> {

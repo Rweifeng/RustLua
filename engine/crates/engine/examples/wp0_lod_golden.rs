@@ -9,8 +9,9 @@
 
 use std::{env, fs, path::PathBuf};
 
-use engine::host::{RenderOutcome, Renderer, RuntimeScene};
+use engine::host::RuntimeScene;
 use rustlua_camera::camera::{Camera3D, Viewport};
+use rustlua_gpu::{OffscreenRequest, OffscreenTarget, RenderOutcome, Renderer};
 use rustlua_infra::games_dir;
 use rustlua_render::lod::LodGroup;
 use rustlua_render::mesh3d::MeshRenderer;
@@ -117,59 +118,34 @@ fn main() {
     );
 
     // ③ 渲染层：近/远快照都渲染成功，两帧像素必须明显不同（网格真的换了）。
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::LowPower,
-        compatible_surface: None,
-        force_fallback_adapter: true,
-    }))
-    .expect("a fallback GPU adapter is required for the LOD golden");
-    let info = adapter.get_info();
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("wp0-lod-golden"),
-        required_features: wgpu::Features::empty(),
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        required_limits: wgpu::Limits::default(),
-        memory_hints: wgpu::MemoryHints::Performance,
-        trace: wgpu::Trace::Off,
-    }))
-    .expect("request golden device");
+    let fixture = OffscreenTarget::acquire(&OffscreenRequest::new("wp0-lod-golden", WIDTH, HEIGHT))
+        .expect("offscreen fixture for wp0-lod-golden");
+    let device = fixture.device();
+    let queue = fixture.queue().clone();
+    let info = fixture.adapter_info();
     let mut renderer =
         Renderer::new_offscreen(device.clone(), queue, Some(root.clone()), false, true)
             .expect("offscreen renderer");
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("wp0-lod-golden-target"),
-        size: wgpu::Extent3d {
-            width: WIDTH,
-            height: HEIGHT,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let texture = fixture.texture();
+    let view = fixture.view();
 
     let mesh_near = runtime.vertices(WIDTH, HEIGHT).expect("2D extraction");
     assert!(matches!(
-        renderer.render_into_texture(&mesh_near, Some(&near), &view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh_near, Some(&near), view, WIDTH, HEIGHT),
         RenderOutcome::Presented
     ));
     let pixels_near = renderer
-        .copy_texture_to_cpu(&texture, WIDTH, HEIGHT)
+        .copy_texture_to_cpu(texture, WIDTH, HEIGHT)
         .expect("golden readback (near)");
     let metrics_near = renderer.last_frame_metrics();
 
     let mesh_far = runtime.vertices(WIDTH, HEIGHT).expect("2D extraction");
     assert!(matches!(
-        renderer.render_into_texture(&mesh_far, Some(&far), &view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh_far, Some(&far), view, WIDTH, HEIGHT),
         RenderOutcome::Presented
     ));
     let pixels_far = renderer
-        .copy_texture_to_cpu(&texture, WIDTH, HEIGHT)
+        .copy_texture_to_cpu(texture, WIDTH, HEIGHT)
         .expect("golden readback (far)");
     let metrics_far = renderer.last_frame_metrics();
 

@@ -465,6 +465,30 @@ impl LuaRuntime {
         ui.with(|ui| f(ui.texts(), ui.bars()))
     }
 
+    /// M76-02：`UiBindings` 的视图模型只读视图（`ui.view_model_set` 写入）。
+    pub fn with_ui_view_model<R>(
+        &self,
+        f: impl FnOnce(&BTreeMap<String, rustlua_ui::ui_binding::BindingValue>) -> R,
+    ) -> R {
+        let ui = self.state.borrow().ui_state.clone();
+        ui.with(|ui| f(ui.view_model()))
+    }
+
+    /// 双向绑定的写回入口：只改视图模型，目标（文字/可见性/进度）由宿主下一步 resolve。
+    pub fn with_ui_view_model_mut<R>(
+        &mut self,
+        f: impl FnOnce(&mut BTreeMap<String, rustlua_ui::ui_binding::BindingValue>) -> R,
+    ) -> R {
+        let ui = self.state.borrow().ui_state.clone();
+        ui.with_mut(|ui| f(ui.view_model_mut()))
+    }
+
+    /// `progress.value` 绑定的落点：按 id 改动态进度条的填充比例（不创建新条）。
+    pub fn with_ui_bars_mut<R>(&mut self, f: impl FnOnce(&mut BTreeMap<String, UiBar>) -> R) -> R {
+        let ui = self.state.borrow().ui_state.clone();
+        ui.with_mut(|ui| f(ui.bars_mut()))
+    }
+
     /// 场景文字按名隐藏集（`ui.scene_text_visible` 写入）的只读视图。
     #[must_use]
     pub fn scene_text_hidden(&self) -> BTreeSet<String> {
@@ -525,6 +549,21 @@ impl LuaRuntime {
                     .map(|(name, handle)| (handle.index() as u64, name.clone()))
             })
             .collect()
+    }
+
+    /// 「名字 → 活实体句柄」；查不到或那个名字指向的实体已经不在世 ⇒ `None`。
+    ///
+    /// 与 [`Self::entity_handle_lua`] 同一张登记表，只是交回引擎侧的类型（宿主接线用）。
+    #[must_use]
+    pub fn entity_handle(&self, name: &str) -> Option<EntityId> {
+        let state = self.state.borrow();
+        let entities = state.entity_state.clone();
+        let handle = entities.with(|entities| entities.names.get(name))?;
+        state
+            .world()
+            .ok()
+            .is_some_and(|world| world.is_alive(handle))
+            .then_some(handle)
     }
 
     /// 「名字 → **引擎句柄**」，按 Lua 侧编码（`index << 32 | generation`）返回；查不到或那个

@@ -19,8 +19,9 @@
 
 use std::{env, fs, path::PathBuf};
 
-use engine::host::{RenderOutcome, Renderer, RuntimeScene};
+use engine::host::RuntimeScene;
 use rustlua_camera::camera::Viewport;
+use rustlua_gpu::{OffscreenRequest, OffscreenTarget, RenderOutcome, Renderer};
 use rustlua_infra::games_dir;
 use rustlua_math::math3d::Vec3;
 use rustlua_render::picking::screen_from_world;
@@ -37,48 +38,24 @@ const CASTER_HEIGHT: f32 = 1.0;
 fn main() {
     let output = parse_output();
     let root = games_dir().join("examples").join("game_api");
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::LowPower,
-        compatible_surface: None,
-        force_fallback_adapter: true,
-    }))
-    .expect("a fallback GPU adapter is required for the lighting golden");
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("wp0-lighting-golden"),
-        required_features: wgpu::Features::empty(),
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        required_limits: wgpu::Limits::default(),
-        memory_hints: wgpu::MemoryHints::Performance,
-        trace: wgpu::Trace::Off,
-    }))
-    .expect("request golden device");
+    let fixture =
+        OffscreenTarget::acquire(&OffscreenRequest::new("wp0-lighting-golden", WIDTH, HEIGHT))
+            .expect("offscreen fixture for wp0-lighting-golden");
+    let device = fixture.device();
+    let queue = fixture.queue().clone();
     let mut renderer =
         Renderer::new_offscreen(device.clone(), queue, Some(root.clone()), false, true)
             .expect("offscreen renderer");
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("wp0-lighting-golden-target"),
-        size: wgpu::Extent3d {
-            width: WIDTH,
-            height: HEIGHT,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let texture = fixture.texture();
+    let view = fixture.view();
 
     // ---------- 受光那一次：光自上而下 ----------
-    let lit = render_scene(&mut renderer, &root, &texture, &view, false);
+    let lit = render_scene(&mut renderer, &root, texture, view, false);
     // ---------- 光照反向那一次：光自下而上（地面法线背离光源），漫反射应当消失 ----------
     //
     // 刻意用"翻转光"而不是"翻转地面"：地面绕 X 转 180° 会把面的绕序一起翻过来，被
     // `cull_mode: Back` 剔掉，测到的就成了背景色而不是漫反射（本轮实测踩到过）。
-    let flipped = render_scene(&mut renderer, &root, &texture, &view, true);
+    let flipped = render_scene(&mut renderer, &root, texture, view, true);
 
     let luminance = |pixel: [u8; 3]| -> f32 {
         0.2126 * f32::from(pixel[0]) + 0.7152 * f32::from(pixel[1]) + 0.0722 * f32::from(pixel[2])

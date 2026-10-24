@@ -18,9 +18,10 @@ use std::{
     process::ExitCode,
 };
 
-use engine::host::shader::MESH3D;
-use engine::host::{RenderOutcome, Renderer, RuntimeScene};
+use engine::host::RuntimeScene;
 use rustlua_camera::camera::Viewport;
+use rustlua_gpu::shader::MESH3D;
+use rustlua_gpu::{OffscreenRequest, OffscreenTarget, RenderOutcome, Renderer};
 use rustlua_scene::scene::{Scene, SceneEntityId};
 use serde_json::json;
 
@@ -141,48 +142,27 @@ fn center_pixel(
 
 fn main() -> ExitCode {
     let output = parse_output();
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let Some(adapter) =
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::LowPower,
-            compatible_surface: None,
-            force_fallback_adapter: true,
-        }))
-        .ok()
-    else {
-        eprintln!("BLOCKED: no GPU adapter available; shader hot reload cannot run (没跑 ≠ 通过)");
-        return ExitCode::from(3);
-    };
-    let info = adapter.get_info();
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("wp0-shader-hot-reload"),
-        required_features: wgpu::Features::empty(),
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        required_limits: wgpu::Limits::default(),
-        memory_hints: wgpu::MemoryHints::Performance,
-        trace: wgpu::Trace::Off,
-    }))
-    .expect("request golden device");
+    let fixture =
+        match OffscreenTarget::acquire(&OffscreenRequest::new("wp0-shader-hot-reload", SIZE, SIZE))
+        {
+            Ok(fixture) => fixture,
+            Err(_) => {
+                eprintln!(
+                    "BLOCKED: no GPU adapter available; shader hot reload cannot run (没跑 ≠ 通过)"
+                );
+                return ExitCode::from(3);
+            }
+        };
+    let device = fixture.device();
+    let queue = fixture.queue().clone();
+    let info = fixture.adapter_info();
     let mut renderer =
         Renderer::new_offscreen(device.clone(), queue, None, false, false).expect("offscreen");
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("wp0-shader-hot-reload-target"),
-        size: wgpu::Extent3d {
-            width: SIZE,
-            height: SIZE,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let texture = fixture.texture();
+    let view = fixture.view();
 
     // 第 0 步：内置档读数。
-    let before = center_pixel(&mut renderer, &texture, &view);
+    let before = center_pixel(&mut renderer, texture, view);
     let dir = TempDir::new();
     renderer
         .set_shader_override_dir(Some(dir.0.clone()))
@@ -206,7 +186,7 @@ fn main() -> ExitCode {
         }
     };
     let reload_ms = report.validate_ms + report.compile_ms;
-    let after = center_pixel(&mut renderer, &texture, &view);
+    let after = center_pixel(&mut renderer, texture, view);
 
     // ② 文件没动：一次编译都不做。
     let idle = renderer
@@ -219,7 +199,7 @@ fn main() -> ExitCode {
         .set_shader_override_dir(Some(dir.0.clone()))
         .err()
         .map(|error| error.to_string());
-    let pixels_after_type_error = center_pixel(&mut renderer, &texture, &view);
+    let pixels_after_type_error = center_pixel(&mut renderer, texture, view);
 
     // ④ 绑定接口漂移：拒绝，并给出 diff 文本。
     write_file(&dir.0, "mesh3d.wgsl", &binding_moved());
@@ -227,7 +207,7 @@ fn main() -> ExitCode {
         .set_shader_override_dir(Some(dir.0.clone()))
         .err()
         .map(|error| error.to_string());
-    let pixels_after_interface_error = center_pixel(&mut renderer, &texture, &view);
+    let pixels_after_interface_error = center_pixel(&mut renderer, texture, view);
 
     // ⑤ 删掉覆盖：回退内置源并点名。
     fs::remove_file(dir.0.join("mesh3d.wgsl")).expect("remove override file");
@@ -235,7 +215,7 @@ fn main() -> ExitCode {
         .reload_shaders_if_changed()
         .expect("删除覆盖不是错误")
         .expect("删除改变了生效源，必须有报告");
-    let pixels_after_fallback = center_pixel(&mut renderer, &texture, &view);
+    let pixels_after_fallback = center_pixel(&mut renderer, texture, view);
 
     let report_json = json!({
         "report_version": "wp0-shader-hot-reload-v1",

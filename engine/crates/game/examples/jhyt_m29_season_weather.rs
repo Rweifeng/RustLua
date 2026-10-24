@@ -58,13 +58,16 @@ const NOON: i64 = 720;
 ///   的出图中间帧；运行期寻址走图集 `manor_crops.png` + `data/crop_art.lua` 的 `CropGrid`）
 ///   + **21** 个拆层整图 / 阴影中间件 / 改色备份（`docs/48` §2 逐目录登记）。
 ///
-/// 那 122 个中间帧**是否进发行包属 P2 打包口径**，本样例不判：先按"计划"登记。
-/// 一旦 `assetc::is_dev_artifact` 认下它们，这里应改成 1065 / **145** / **21**。
-const EXPECTED_DEV_ARTIFACTS: usize = 23;
-// 内容缺口里 122 个是 crops 中间帧、21 个是拆层整图/阴影/备份，理由见上面那条。
-const EXPECTED_CONTENT_ORPHANS: usize = 143;
-// 已引用：扫描口径未变，984（2026-10-07）→ 1065 全部来自 M72 各批产出与新增引用点。
-const EXPECTED_REFERENCED: usize = 1065;
+/// **2026-10-24 P2 打包口径定案（路线①）**：那 122 个中间帧由 `assetc::is_dev_artifact`
+/// 认下（`crops/<crop>/stage_*.png`），从内容缺口转开发产物 → 145 / 21；`docs/48` §2
+/// 的 29 行 crops 一并删除。同批 `assets/art/items/peach.png`（2026-10-21 入库、
+/// 已被 `data/items.lua` 引用）把已引用顶到 1066、总数顶到 1232。
+const EXPECTED_DEV_ARTIFACTS: usize = 145;
+// 内容缺口 21 个是拆层整图/阴影中间件/改色备份（crops 中间帧已归开发产物），理由见上面两条。
+const EXPECTED_CONTENT_ORPHANS: usize = 21;
+// 已引用：扫描口径未变，984（2026-10-07）→ 1065 来自 M72 各批产出与新增引用点，
+// 1065 → 1066 来自 2026-10-21 入库的 `assets/art/items/peach.png`（`data/items.lua` 的 icon）。
+const EXPECTED_REFERENCED: usize = 1066;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
@@ -634,43 +637,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     // 三条基准数一起比：只报第一条会让"到底差多少"看不见，而这里的失败**几乎总是基准过期**
-    // （资源在长、表没跟），不是回归。所以把三条实测值、已知构成与两条收口路线一次说清。
+    // （资源在长、表没跟），不是回归。所以把三条实测值与逐条缺口一次说清。
     if audit.dev.len() != EXPECTED_DEV_ARTIFACTS
         || audit.content.len() != EXPECTED_CONTENT_ORPHANS
         || audit.referenced.len() != EXPECTED_REFERENCED
     {
-        let nongap: Vec<&str> = audit
-            .content
-            .iter()
-            .filter(|rel| !rel.starts_with("assets/art/crops/"))
-            .map(String::as_str)
-            .collect();
         return Err(format!(
             "docs/48 §1 的基准过期（不是功能回归）：钉的是 已引用 {EXPECTED_REFERENCED} / \
              开发产物 {EXPECTED_DEV_ARTIFACTS} / 内容缺口 {EXPECTED_CONTENT_ORPHANS}，\
              实测 已引用 {} / 开发产物 {} / 内容缺口 {}（assets 共 {}）。\n\
-             已知构成：crops 中间帧 {} 个（`assets/art/crops/<crop>/stage_*.png`——运行期读的是\
-             图集 `manor_crops.png` + `CropGrid`，这些是 `tools/gen_crop_art.py` 的中间帧）+ \
-             其余 {} 个：{:?}\n\
-             两条收口路线（由 P2 资源打包口径定案，本样例不自作主张）：\n\
-             ① 认下 crops 中间帧 → 扩 `assetc::is_dev_artifact` 把 `art/crops/*/stage_*.png` \
-             归开发产物，§1 改成 已引用 {} / 开发产物 {} / 内容缺口 {}；\n\
-             ② 不认 → 全部按前缀登记 docs/48 §2（crops 每个作物一行、其余按目录一行），\
-             §1 改成 已引用 {} / 开发产物 {} / 内容缺口 {}。\n\
+             当前内容缺口逐条：{:?}\n\
+             打包口径已定案（2026-10-24，P2）：`assets/art/crops/<crop>/stage_*.png` 由 \
+             `assetc::is_dev_artifact` 归**开发产物**（运行期只读图集 `manor_crops.png` + \
+             `CropGrid`），不再计入内容缺口，也不进发行包；\
+             资源增减时同步 docs/48 §1 与本文件这三条常量。\n\
              取数命令：`RUSTLUA_M29_DUMP_GAPS=1 cargo run -p game --example jhyt_m29_season_weather`",
             audit.referenced.len(),
             audit.dev.len(),
             audit.content.len(),
             audit.total,
-            audit.content.len() - nongap.len(),
-            nongap.len(),
-            nongap,
-            audit.referenced.len(),
-            audit.dev.len() + audit.content.len() - nongap.len(),
-            nongap.len(),
-            audit.referenced.len(),
-            audit.dev.len(),
-            audit.content.len(),
+            audit.content,
         )
         .into());
     }
@@ -809,9 +795,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 // ---------- 资源审计 ----------
 
 /// `assetc::is_dev_artifact` 的同口径副本：`assets/` 里的 `_` 前缀、含 `preview` 的
-/// PNG、`manifest.json` 都是生成器产出的开发用文件（预览拼图 / 美术清单），
-/// **不进发行包**。权威实现在 `engine/crates/assetc/src/lib.rs`（有自己的单测），
-/// 这里复制一份是因为本样例要独立核对 `docs/48` 的"开发产物 46 个"这一声明；
+/// PNG、`manifest.json`、`crops/<crop>/stage_*.png` 都是生成器产出的开发用文件
+/// （预览拼图 / 美术清单 / 出图集的中间帧），**不进发行包**。权威实现在
+/// `engine/crates/assetc/src/lib.rs`（有自己的单测），
+/// 这里复制一份是因为本样例要独立核对 `docs/48` 的开发产物声明；
 /// 两边不一致时 `jhyt_m29` 与 assetc 单测会同时报错。
 fn is_dev_artifact(rel: &str) -> bool {
     let name = rel.rsplit('/').next().unwrap_or(rel);
@@ -819,10 +806,16 @@ fn is_dev_artifact(rel: &str) -> bool {
     if lower == "manifest.json" {
         return true;
     }
-    if lower.ends_with(".png") && lower.contains("preview") {
+    if lower.ends_with(".png") && (lower.contains("preview") || is_crop_stage_frame(rel, &lower)) {
         return true;
     }
     name.starts_with('_')
+}
+
+/// `<...>/crops/<crop>/stage_<n>.png`：祖父目录必须叫 `crops`，
+/// 图集本体（`crops/manor_crops.png`，由场景按 texture 引用）不受影响。
+fn is_crop_stage_frame(rel: &str, lower_name: &str) -> bool {
+    lower_name.starts_with("stage_") && rel.rsplit('/').nth(2) == Some("crops")
 }
 
 /// 剥掉 Lua 注释（`--` 到行尾、`--[[ ... ]]` 与 `--[==[ ... ]==]` 长注释），保留字符串。

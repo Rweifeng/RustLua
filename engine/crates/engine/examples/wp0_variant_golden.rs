@@ -14,36 +14,30 @@
 
 use std::{env, fs, path::PathBuf, process::ExitCode};
 
-use engine::host::Renderer;
-use engine::host::renderer::pipeline_cache::VARIANT_COMPILE_BUDGET_MS;
+use rustlua_gpu::renderer::pipeline_cache::VARIANT_COMPILE_BUDGET_MS;
+use rustlua_gpu::{OffscreenDevice, Renderer};
 use serde_json::json;
 
 fn main() -> ExitCode {
     let output = parse_output();
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let Some(adapter) =
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::LowPower,
-            compatible_surface: None,
-            force_fallback_adapter: true,
-        }))
-        .ok()
-    else {
-        eprintln!("BLOCKED: no GPU adapter available; variant golden cannot run (没跑 ≠ 通过)");
-        return ExitCode::from(3);
+    let fixture = match OffscreenDevice::acquire("wp0-variant-golden") {
+        Ok(fixture) => fixture,
+        Err(error) => {
+            eprintln!(
+                "BLOCKED: no GPU adapter available; variant golden cannot run (没跑 ≠ 通过) error={error}"
+            );
+            return ExitCode::from(3);
+        }
     };
-    let info = adapter.get_info();
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("wp0-variant-golden"),
-        required_features: wgpu::Features::empty(),
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        required_limits: wgpu::Limits::default(),
-        memory_hints: wgpu::MemoryHints::Performance,
-        trace: wgpu::Trace::Off,
-    }))
-    .expect("request golden device");
-    let renderer =
-        Renderer::new_offscreen(device, queue, None, false, false).expect("offscreen renderer");
+    let info = fixture.adapter_info();
+    let renderer = Renderer::new_offscreen(
+        fixture.device().clone(),
+        fixture.queue().clone(),
+        None,
+        false,
+        false,
+    )
+    .expect("offscreen renderer");
     let stats = renderer.pipeline_cache_stats();
     let resources = renderer.resource_stats();
     let compile_ms = stats.compile_ms();

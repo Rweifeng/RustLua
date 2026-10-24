@@ -32,6 +32,21 @@ pub use batch::{
 };
 pub use importers::{builtin, core_importers};
 
+/// 把 PNG 字节解码成 `(宽, 高, RGBA8)`，供切图等需要原始像素的流程使用。
+///
+/// 解码能力留在导入层：编辑器不直接依赖 `image`，切图与导入走同一套 PNG 口径
+/// （含调色板/16 位等变体统一展开到 RGBA8），避免两处解码结果不一致。
+pub fn decode_png_rgba(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
+    let image = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
+        .map_err(|error| format!("PNG 解码失败：{error}"))?;
+    let rgba = image.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    if width == 0 || height == 0 {
+        return Err("PNG 尺寸为 0".to_owned());
+    }
+    Ok((width, height, rgba.into_raw()))
+}
+
 /// 完整导入注册表：本 crate 的九个核心导入器 + `rustlua-scene` 的 Scene/Prefab 导入器。
 ///
 /// 为什么组装点在**这里**而不是 `rustlua-scene`：组装需要同时看见"九个核心导入器"（住本

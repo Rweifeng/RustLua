@@ -5,7 +5,7 @@ pub mod bundle_plan;
 pub mod frame_clock;
 /// 跨层共享的标识值对象（`AssetId` 等）：类型下沉、实现留在各领域 crate。
 pub mod ids;
-// `logging` 模块**必须两个 target 都在**：渲染器（`engine/src/host/renderer/passes.rs`）
+// `logging` 模块**必须两个 target 都在**：渲染器（`rustlua-gpu/src/renderer/passes.rs`）
 // 在 wasm 上也用它的 `EngineError` / `LogModule`。真正只有原生需要的订阅者装配
 // （registry + fmt + `EnvFilter`）在 `logging.rs` 内部按 `cfg(not(wasm32))` 关掉了。
 pub mod logging;

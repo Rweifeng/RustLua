@@ -33,8 +33,10 @@ use rustlua_render::sprite::SpriteAsset;
 use rustlua_render::sprite::SpriteComponent;
 use rustlua_scene::scene::Scene;
 use rustlua_ui::ui_events::UiClickTarget;
+use rustlua_ui::ui_events::UiEventType;
 use rustlua_ui::ui_events::UiEvents;
 use rustlua_ui::ui_layout::UiRectLayout;
+use rustlua_ui::ui_states::ButtonStateSet;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -284,6 +286,41 @@ impl LuaRuntime {
         Ok(())
     }
 
+    /// M76-02：派发**任意**结构化 UI 事件到 Lua。
+    ///
+    /// 与 [`Self::process_ui_clicks`] 的分工：命中与阶段（捕获/目标/冒泡、hover/press/focus）
+    /// 由宿主的交互树决定，这里只按"哪个实体、哪个事件、绑了哪些函数"执行。`Click`
+    /// 额外投一次实体 `on_interact`（与旧点击路径保持一致），其余事件不投。
+    pub fn process_ui_event(
+        &self,
+        target_name: &str,
+        event: UiEventType,
+        functions: &[String],
+    ) -> Result<(), LuaBridgeError> {
+        if self.guard.borrow().is_disabled(BudgetSlot::UiClicks) {
+            return Ok(());
+        }
+        for function_name in functions {
+            if let Err(error) = self.call_ui_callback(function_name, target_name) {
+                if self.guard.borrow().policy() == ScriptErrorPolicy::Strict {
+                    return Err(error);
+                }
+                self.contain_script_error(BudgetSlot::UiClicks, &error);
+            }
+        }
+        if event == UiEventType::Click {
+            let clicked_entity = {
+                let state = self.state.borrow();
+                let entities = state.entity_state.clone();
+                entities.with(|entities| entities.names.get(target_name))
+            };
+            if let Some(id) = clicked_entity {
+                self.dispatch_entity_event(id, crate::script::EntityEvent::Interact { other: id })?;
+            }
+        }
+        Ok(())
+    }
+
     /// 取全局回调并调用，把两次可能失败的动作（取函数、调用）包成一条错误链。
     fn call_ui_callback(
         &self,
@@ -520,18 +557,8 @@ impl LuaRuntime {
                     player.clip_path()
                 ))
             })?;
-            let unsupported = player.unsupported_paths();
-            if !unsupported.is_empty() {
-                // UiAnimation 的运行时节点表不在 ECS 世界里（E01-2 的明确边界）：片段本身
-                // 合法，只是这些轨道不写回。加载时点名，避免"播了但没动"只能靠猜。
-                tracing::warn!(
-                    target: "scene",
-                    entity = %name,
-                    clip = %player.clip_path(),
-                    tracks = %unsupported.iter().cloned().collect::<Vec<_>>().join(","),
-                    "AnimationPlayer UiAnimation tracks are parsed but not applied at runtime"
-                );
-            }
+            // M76-02：`UiAnimation.*` 轨道不写 ECS 组件，由宿主每帧采样后发布到
+            // 视图模型 `anim.<实体名>.<属性>`（`publish_ui_animation_samples`）。
             state
                 .world_mut()
                 .map_err(world_borrow)?
@@ -674,6 +701,44 @@ impl LuaRuntime {
                 .world_mut()
                 .map_err(world_borrow)?
                 .insert(id, events)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        // M76-02：`UiBindings` 进世界。此前它只注册了 schema（编辑器能编辑、运行时零消费），
+        // 绑定因此只能由脚本手写。运行期由宿主每步 resolve，目标按名字落到
+        // `Text` / `Image` / 动态进度条上。
+        if let Some(raw) = components.get("UiBindings") {
+            let bindings = rustlua_ui::ui_binding::UiBindings::parse(raw).map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has invalid UiBindings: {error}"))
+            })?;
+            state
+                .world_mut()
+                .map_err(world_borrow)?
+                .insert(id, bindings)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        // M76-02：滚动容器进世界；内容尺寸由布局树计算，组件只携带轴向。
+        if let Some(raw) = components.get("ScrollView") {
+            let scroll = rustlua_ui::ui_scroll_view::ScrollView::from_component_str(raw).map_err(
+                |error| {
+                    LuaBridgeError::Api(format!("entity {name:?} has invalid ScrollView: {error}"))
+                },
+            )?;
+            state
+                .world_mut()
+                .map_err(world_borrow)?
+                .insert(id, scroll)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        // M76-02：`ButtonStates` 进世界。此前它只在编辑器侧消费，"悬停换图"在运行时
+        // 根本无数据可读；交互树按状态覆盖贴图需要它作为运行时组件。
+        if let Some(raw) = components.get("ButtonStates") {
+            let states = ButtonStateSet::from_component_str(raw).map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has invalid ButtonStates: {error}"))
+            })?;
+            state
+                .world_mut()
+                .map_err(world_borrow)?
+                .insert(id, states)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         // E16：可选 `UiLayout` 组件——四边 Anchor+Offset 布局，存在时优先于

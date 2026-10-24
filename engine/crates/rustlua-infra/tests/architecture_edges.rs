@@ -85,6 +85,15 @@ const BUDGET: &[(&str, &[&str])] = &[
     ("rustlua-visual-script", &[]),
     // P1 ⑤-10：动画组件的 Lua 面进 animation 域。
     ("rustlua-animation", &["assets", "ecs", "lua-api", "math"]),
+    // M77-01：wgpu 渲染器从组合根 `engine/src/host/renderer/` 下沉成独立 crate。
+    // 它的预算就是"渲染数据 + 相机/ECS 读数"那几个核心 crate：gpu 不许反向依赖 `engine`
+    // （normal 面），要复用运行时装配的宿主自己把 `engine` 接上（宿主本来就是组合根）。
+    // 帧结构（`frame`/`fit`）在 M77-01 里进了 `rustlua-render`，所以这里不需要 `engine`
+    // 那一份共享 ABI。
+    (
+        "rustlua-gpu",
+        &["assets", "camera", "ecs", "infra", "math", "render"],
+    ),
     (
         "rustlua-render",
         &[
@@ -161,6 +170,11 @@ const BUDGET: &[(&str, &[&str])] = &[
 /// `gpu-web-probe` 在这里（同日补上）：它是 `[lib] crate-type = ["cdylib"]` 的 wasm 探针
 /// 产物，**刻意**驱动真渲染器而不是另写玩具渲染器，所以依赖 `engine` 是对的；它同时必须
 /// 保持"没有任何 crate 依赖我"（扫描器现在看得见这条边了）。
+///
+/// `rustlua-gpu` **不在这里**（M77-01）：它是库，不是"把东西接起来的应用"——它自己就是
+/// 被接的那件东西。它对宿主暴露的是具体渲染器类型，而宿主之间不互相依赖，所以它受
+/// "核心 crate 不许反向依赖组合根"这条约束，也受 [`composition_roots_do_not_reach_the_gpu_stack`]
+/// 那条更窄的门约束（engine 的 normal 图不许碰 wgpu）。
 const COMPOSITION_ROOTS: &[&str] = &["engine", "game", "game_web", "editor", "gpu-web-probe"];
 
 fn workspace_crates() -> PathBuf {
@@ -423,5 +437,91 @@ fn component_codec_crate_stays_a_leaf() {
         deps.is_empty(),
         "rustlua-component-codec 必须保持叶子（只依赖 thiserror），否则 scene/render/ui \
          的倒置支点就没了；现在它依赖了：{deps:?}"
+    );
+}
+
+/// GPU 栈的成员名（外部 crate，不在 `partners` 里，因此只出现在清单扫描那一步）。
+///
+/// 为什么是这两个：`wgpu` 带着整套原生后端（vulkan/metal/gl，`cargo tree` 里那一坨
+/// `ash`/`metal`/`hal`）与浏览器侧的 `web-sys` 面，`naga` 带着 WGSL 编译器——M77-01 之后
+/// 它们只许住在 `rustlua-gpu`。**不**列 `pollster`：它只是一个 `block_on`，不拉任何设备
+/// 代码，把它算进这条门只会让读数变吵，抓不到真回归。
+const GPU_STACK: &[&str] = &["wgpu", "naga"];
+
+/// `crates/` 下每个 crate 的清单路径，键和 [`graph()`] 用同一套短名。
+fn crate_manifests() -> BTreeMap<String, PathBuf> {
+    let crates_dir = workspace_crates().join("crates");
+    let mut out = BTreeMap::new();
+    for entry in std::fs::read_dir(&crates_dir)
+        .unwrap_or_else(|error| panic!("读不了 {}：{error}", crates_dir.display()))
+    {
+        let path = entry.expect("crates/ 下的目录项").path();
+        let manifest = path.join("Cargo.toml");
+        if !manifest.is_file() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .expect("目录名")
+            .to_string_lossy()
+            .into_owned();
+        out.insert(short_name(&name).to_owned(), manifest);
+    }
+    out
+}
+
+/// M77-01 的验收门：**组合根 `engine` 的 normal 依赖图里不许出现 wgpu/naga**。
+///
+/// 这条门是那次搬迁的全部意义所在。搬迁之前，渲染器住在 `engine/src/host/renderer/`，
+/// 于是"engine 是唯一持有 wgpu 实现的地方"——任何宿主想要渲染器就得把整个组合根（连带
+/// 脚本、物理、音频、场景装配）拖进编译图。搬迁之后 `engine` 只做装配，GPU 那半边在
+/// `rustlua-gpu`：改 PBR/粒子不再重编 engine 的下游，`gpu-web-probe` 也不再为拿渲染器
+/// 而依赖 engine。
+///
+/// 查法是**传递闭包**而不是只看 `engine/Cargo.toml` 那一行：往 engine 的 normal 依赖里加
+/// `rustlua-gpu` 同样会把 wgpu 拖回来，而那正是这条门要拦的形状（BUDGET 抓不到它——
+/// `gpu` 是合法的核心 crate，只是它带着 wgpu）。
+///
+/// `[dev-dependencies]` 不算（`lib_dependencies` 的口径）：engine 的 23 个 `wp0_*_golden.rs`
+/// 基准例子仍然自己建 adapter/device/离屏纹理，那段 GPU 管子等 M77-02 的"两套 offscreen
+/// renderer 合并"收进 `rustlua-gpu` 之后才会从 engine 消失；dev 依赖不进任何下游 crate 的
+/// 编译面，因此它既不改变产物依赖图，也不影响增量编译半径——本的门保护的就是这两件事。
+#[test]
+fn composition_roots_do_not_reach_the_gpu_stack() {
+    let graph = graph();
+    let manifests = crate_manifests();
+    let mut offenders: Vec<String> = Vec::new();
+    // `reach` 既是已访问集合，也记"engine 经哪条 normal 边走到这里"。
+    let mut reach: BTreeMap<&str, String> = BTreeMap::new();
+    reach.insert("engine", "engine（组合根本身）".to_owned());
+    let mut queue = std::collections::VecDeque::from(["engine"]);
+    while let Some(crate_name) = queue.pop_front() {
+        let here = reach[crate_name].clone();
+        if let Some(manifest) = manifests.get(crate_name) {
+            for dep in lib_dependencies(manifest) {
+                if GPU_STACK.contains(&short_name(&dep)) {
+                    offenders.push(format!("{here}：normal 依赖里有 {dep}"));
+                }
+            }
+        }
+        for next in graph.get(crate_name).into_iter().flatten() {
+            if !reach.contains_key(next.as_str()) {
+                reach.insert(next.as_str(), format!("{here} → {next}"));
+                queue.push_back(next.as_str());
+            }
+        }
+    }
+    assert!(
+        reach.contains_key("scripting") && reach.contains_key("render"),
+        "没从 engine 走到 rustlua-scripting/rustlua-render，扫描器失效了（门不能静默变绿）"
+    );
+    assert!(
+        offenders.is_empty(),
+        "M77-01：engine 的 normal 依赖图不许出现 GPU 栈（wgpu/naga），现在命中 {n} 条：\n  - {list}\n\
+         渲染器实现住在 crates/rustlua-gpu；宿主想用 GPU 就**直接**依赖它（game/editor/game_web/gpu-web-probe \
+         都是这么接的），不许经 engine 转发，也不许把 rustlua-gpu 加回 engine 的 [dependencies]。\n\
+         复现读数：cargo tree -p engine -e normal -i wgpu（交付后应零命中）",
+        n = offenders.len(),
+        list = offenders.join("\n  - ")
     );
 }

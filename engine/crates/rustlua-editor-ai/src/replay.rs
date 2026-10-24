@@ -19,6 +19,10 @@ pub struct ReplayStep {
     /// 期望错误消息包含的子串（仅 expect_ok=false 时有意义）。
     #[serde(default)]
     pub expect_error_contains: Option<String>,
+    /// 期望成功结果包含的 JSON 子集（对象递归、数组逐项、标量相等）。
+    /// 修改类 fixture 用它锁住期望 diff，而不必整份结果逐字节相等。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect_json: Option<Value>,
 }
 
 fn default_true() -> bool {
@@ -53,6 +57,12 @@ pub enum ReplayError {
         tool: String,
         error: String,
     },
+    ResultMismatch {
+        index: usize,
+        tool: String,
+        expected: Value,
+        actual: Value,
+    },
     SnapshotMismatch {
         expected: Value,
         actual: Option<Value>,
@@ -78,6 +88,15 @@ impl std::fmt::Display for ReplayError {
             Self::UnexpectedFailure { index, tool, error } => {
                 write!(formatter, "第 {index} 步 `{tool}` 失败：{error}")
             }
+            Self::ResultMismatch {
+                index,
+                tool,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "第 {index} 步 `{tool}` 结果不含期望子集\n期望：{expected}\n实际：{actual}"
+            ),
             Self::SnapshotMismatch { expected, actual } => write!(
                 formatter,
                 "最终文档快照不一致\n期望：{expected}\n实际：{}",
@@ -125,6 +144,16 @@ pub fn run_replay(
                         result,
                     });
                 }
+                if let Some(expected) = &step.expect_json
+                    && !json_contains(&result, expected)
+                {
+                    return Err(ReplayError::ResultMismatch {
+                        index,
+                        tool: step.tool.clone(),
+                        expected: expected.clone(),
+                        actual: result,
+                    });
+                }
             }
             Err(error) => {
                 if step.expect_ok {
@@ -160,6 +189,26 @@ pub fn run_replay(
         steps: fixture.steps.len(),
         failures: Vec::new(),
     })
+}
+
+/// 子集匹配：对象只要求期望键存在且递归匹配；数组要求等长逐项匹配；
+/// 标量完全相等。`null` 也按标量处理，避免把“显式 null”当成通配。
+fn json_contains(actual: &Value, expected: &Value) -> bool {
+    match (actual, expected) {
+        (Value::Object(actual), Value::Object(expected)) => expected.iter().all(|(key, value)| {
+            actual
+                .get(key)
+                .is_some_and(|found| json_contains(found, value))
+        }),
+        (Value::Array(actual), Value::Array(expected)) => {
+            actual.len() == expected.len()
+                && actual
+                    .iter()
+                    .zip(expected)
+                    .all(|(found, want)| json_contains(found, want))
+        }
+        _ => actual == expected,
+    }
 }
 
 #[cfg(test)]
@@ -251,5 +300,46 @@ mod tests {
         );
         let mut host = Host::default();
         assert!(run_replay(&fixture, &mut host).unwrap().ok());
+    }
+
+    #[test]
+    fn replay_checks_expected_result_subset() {
+        let good = fixture(
+            json!([{
+                "tool": "create_entity",
+                "args": {"name": "A"},
+                "expect_json": {"id": 1}
+            }]),
+            json!({"value": 1}),
+        );
+        let mut host = Host::default();
+        assert!(run_replay(&good, &mut host).unwrap().ok());
+
+        let bad = fixture(
+            json!([{
+                "tool": "create_entity",
+                "args": {"name": "A"},
+                "expect_json": {"id": 2}
+            }]),
+            json!({"value": 1}),
+        );
+        let mut host = Host::default();
+        assert!(matches!(
+            run_replay(&bad, &mut host),
+            Err(ReplayError::ResultMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn expected_subset_does_not_accept_nested_mismatch() {
+        assert!(json_contains(
+            &json!({"proposal": {"diff": {"nodes_changed": 1}}}),
+            &json!({"proposal": {"diff": {"nodes_changed": 1}}})
+        ));
+        assert!(!json_contains(
+            &json!({"proposal": {"diff": {"nodes_changed": 2}}}),
+            &json!({"proposal": {"diff": {"nodes_changed": 1}}})
+        ));
+        assert!(!json_contains(&json!({"a": 1}), &json!({"a": 1, "b": 2})));
     }
 }

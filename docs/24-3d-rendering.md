@@ -97,7 +97,12 @@
 
 ## 3. 渲染管线
 
-宿主渲染器（[host/renderer/](../engine/crates/engine/src/host/renderer/mod.rs)、[host/shader.rs](../engine/crates/engine/src/host/shader.rs)）每帧执行的通道由 [`RenderPlan`](../engine/crates/rustlua-render/src/render_plan.rs) **统一决定**（纯函数，单测可断言顺序；渲染循环不再各自写 `if`）：
+> 本节写的 `engine/crates/rustlua-gpu/` 是 M77-01（2026-10-24）的落点，**提交集尚未入库**：HEAD 上
+> 渲染器仍住 `engine/crates/engine/src/host/renderer/`。本文与 `docs/62` 必须与该批**同一笔**入库，
+> 否则指向新 crate 的链接会在干净检出上被 `check-docs.ps1` 判红（工作区里 `Test-Path` 走文件系统，
+> 当场看不出来）。见 [M77-00 交接清单](../tasks/plan/M77-00-宿主侧模块化与渲染器下沉-总览与依赖顺序.md)。
+
+宿主渲染器（[rustlua-gpu `src/renderer/`](../engine/crates/rustlua-gpu/src/renderer/mod.rs)、[shader.rs](../engine/crates/rustlua-gpu/src/shader.rs)）每帧执行的通道由 [`RenderPlan`](../engine/crates/rustlua-render/src/render_plan.rs) **统一决定**（纯函数，单测可断言顺序；渲染循环不再各自写 `if`）：
 
 ```text
 Clear → WorldSpriteOpaque → Shadow → DepthOpaque → WorldSprite → Particle
@@ -143,7 +148,7 @@ PBR 变体额外使用顶点缓冲槽 1 传逐实例法线矩阵（4×`vec4<f32>
 
 ### 3.2 Shader 源文件与预处理（P3-R04）
 
-- **源文件**：8 份 WGSL 在 [engine/shaders/](../engine/shaders/)，由 [host/shader.rs](../engine/crates/engine/src/host/shader.rs) 的 `include_str!` 在**编译期**嵌入二进制；运行时不读文件，部署不需要附带 shader 目录。旧的 `*_SHADER` 常量保留为别名，调用点不变。
+- **源文件**：8 份 WGSL 在 [crates/rustlua-gpu/shaders/](../engine/crates/rustlua-gpu/shaders/)，由 [rustlua-gpu `src/shader.rs`](../engine/crates/rustlua-gpu/src/shader.rs) 的 `include_str!` 在**编译期**嵌入二进制；运行时不读文件，部署不需要附带 shader 目录。旧的 `*_SHADER` 常量保留为别名，调用点不变。
 - **身份**：`ShaderSource` 提供 `name` / 仓库内 `path` / 64 位 FNV-1a `hash` / `source`；`ALL_SHADERS` 与 `find(name)` 是唯一注册表。新增 shader 必须同时注册——单测钉住数量、名字/路径唯一性与 hash。
 - **预处理器**：`host::shader_preprocess` 支持 `//#if` / `//#elif` / `//#else` / `//#endif` / `//#include "x.wgsl"`：
   - feature 必须出现在调用方给的 `known_features` 里，拼错（如 `SKN`）直接报错，不会静默走 `#else`；未激活分支同样校验；
@@ -307,6 +312,11 @@ PBR 变体额外使用顶点缓冲槽 1 传逐实例法线矩阵（4×`vec4<f32>
   布局与 params 模式码）；`cargo test -p rustlua-render --lib` 144 条通过。回归：
   `wp0_3d_golden`/`wp0_pbr_golden` 报告与 R02-4 逐字节相同（无环境时零变化）；
   `wp0_variant_golden` `variant_count=6`、`cache_hits=0`、`compile_ms=226.6 < 250`。
+- **250 ms 预算的机器相关性（2026-10-24 复测，未标机型的旧读数要按这条打折看）**：本机 WARP
+  （`Dx12 / Microsoft Basic Render Driver`）上 4 次跑稳定读 `compile_ms=501~521`、
+  `variant_count=6` 与 `cache_hits=0` 都不变，只有编译耗时越过预算 ⇒ `within_budget=false`。
+  上面那条 226.6 没有记机型，不能拿来当同机对照；这条门要判"预编译有没有变慢"，必须先确认
+  adapter 是同一档（`wp0_variant_golden` 不在 `verify.ps1` 的任何门里，靠手工跑，所以不会自己显形）。
 
 ### 3.9 镜面 IBL：预过滤 cubemap + EnvBRDFApprox + mip 选择（P3-R03-3）
 

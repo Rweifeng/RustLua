@@ -53,13 +53,14 @@ use editor::{
     SelectionModel, TransformFields, check_project, open_project,
 };
 use eframe::egui;
-use engine::host::{Renderer, RuntimeScene};
+use engine::host::RuntimeScene;
 use rustlua_animation::animation::{AnimationClip, AnimationStateMachine};
 use rustlua_camera::camera::DEFAULT_2D_CAMERA_CENTER;
 use rustlua_ecs::tilemap::Tilemap;
 use rustlua_ecs::transform::Transform3D;
 use rustlua_ecs::transform::Vec2;
 use rustlua_editor_api::PluginRegistry;
+use rustlua_gpu::Renderer;
 use rustlua_infra::logging::LogSink;
 use rustlua_infra::preview_diagnostics::DiagnosticCollector;
 use rustlua_input::input::InputSnapshot;
@@ -147,7 +148,8 @@ fn parse_arguments() -> Result<Arguments, String> {
             "--mcp-stdio" => arguments.mcp_stdio = true,
             "--help" | "-h" => {
                 #[cfg(feature = "ai-bridge")]
-                let mcp_help = "\x20     editor --project <项目路径> --mcp-stdio（JSON-RPC 2.0 over stdio；stdout 只走协议）\n";
+                let mcp_help = "\x20     editor --project <项目路径> --mcp-stdio（JSON-RPC 2.0 over stdio；stdout 只走协议）\n\
+                     \x20     RUSTLUA_EDITOR_AI_AUTO_T1=1 让本次进程的 MCP 写请求自动批准 T1（T2/T3 仍拒绝）\n";
                 #[cfg(not(feature = "ai-bridge"))]
                 let mcp_help = "";
                 println!(
@@ -691,6 +693,12 @@ struct EditorApp {
     show_timeline_panel: bool,
     /// P3-E03-2 可视化脚本画布：默认隐藏，双击 `.vgraph` 资源时打开。
     show_graph_panel: bool,
+    /// M76-04 UI Studio 标签：默认隐藏，EditorApp 内由 View 菜单打开。
+    show_ui_studio: bool,
+    /// 双击 `.ui.json` 后下一帧把焦点给 UI Studio（标签可能刚被补进树）。
+    pending_ui_studio_focus: bool,
+    /// M76-04 UI Studio 面板状态（打开文档只在面板内发生，不进场景文档）。
+    ui_studio_panel: crate::panels::ui_studio::UiStudioPanel,
     /// P3-E03-2 图文档与画布状态（只活在进程内，不反向写场景文档）。
     graph: crate::panels::graph::GraphPanelState,
     /// P3-E01-3 时间线预览状态：播放头、最近事件与装配结果。
@@ -759,12 +767,12 @@ struct EditorApp {
     scene_font_atlas: Option<Arc<Mutex<FontAtlas>>>,
     /// 共享默认矢量轮廓图集：Vector 模式下运行时随 revision 重建时复用，
     /// 避免每次拖动重新解析大字体文件。项目切换时重置。
-    scene_vector_atlas: Option<engine::host::frame::VectorFontHandle>,
+    scene_vector_atlas: Option<rustlua_render::frame::VectorFontHandle>,
     /// 场景 Text 自定义字体的共享缓存（key = `font://<asset>`）。编辑器注入同一
     /// 实例给场景视图/预览运行时，跨重建复用字形；项目切换/重新收集字符时清空。
-    custom_font_atlases: engine::host::frame::FontAtlasMap,
+    custom_font_atlases: rustlua_render::frame::FontAtlasMap,
     /// 场景 Text 自定义字体的矢量轮廓共享缓存（key = `font://<asset>`）。
-    custom_vector_atlases: engine::host::frame::VectorAtlasMap,
+    custom_vector_atlases: rustlua_render::frame::VectorAtlasMap,
     /// 2D 场景视图显示用的 egui 纹理（有窗口时为原生 GPU 纹理，否则为回读上传）。
     scene_2d_tex: Option<SceneViewTexture>,
     /// 游戏画面（设计分辨率 + 游戏相机 + UI 覆盖层）离屏纹理 + 视图：在 Scene 视图
@@ -1400,6 +1408,9 @@ impl EditorApp {
             show_assistant_panel: true,
             show_timeline_panel: true,
             show_graph_panel: false,
+            show_ui_studio: false,
+            pending_ui_studio_focus: false,
+            ui_studio_panel: crate::panels::ui_studio::UiStudioPanel::default(),
             graph: crate::panels::graph::GraphPanelState::default(),
             timeline: crate::panels::timeline::TimelineState::default(),
             material: crate::panels::material::MaterialState::default(),
@@ -1443,8 +1454,8 @@ impl EditorApp {
             scene_runtime: None,
             scene_font_atlas: None,
             scene_vector_atlas: None,
-            custom_font_atlases: engine::host::frame::FontAtlasMap::default(),
-            custom_vector_atlases: engine::host::frame::VectorAtlasMap::default(),
+            custom_font_atlases: rustlua_render::frame::FontAtlasMap::default(),
+            custom_vector_atlases: rustlua_render::frame::VectorAtlasMap::default(),
             scene_2d_tex: None,
             scene_screen_texture: None,
             scene_screen_tex_id: None,
@@ -1514,7 +1525,9 @@ impl EditorApp {
             #[cfg(feature = "ai-bridge")]
             ai: rustlua_editor_ai::AiBridge::detached(),
             #[cfg(feature = "ai-bridge")]
-            ai_policy: rustlua_editor_ai::GatePolicy::interactive(false),
+            ai_policy: rustlua_editor_ai::GatePolicy::interactive(
+                std::env::var("RUSTLUA_EDITOR_AI_AUTO_T1").is_ok_and(|value| value == "1"),
+            ),
         }
     }
 
@@ -1838,6 +1851,7 @@ impl EditorApp {
         self.show_assistant_panel = self.layout.panel_is_visible(editor::PANEL_ASSISTANT);
         self.show_timeline_panel = self.layout.panel_is_visible(editor::PANEL_TIMELINE);
         self.show_graph_panel = self.layout.panel_is_visible(editor::PANEL_GRAPH);
+        self.show_ui_studio = self.layout.panel_is_visible(editor::PANEL_UI_STUDIO);
         #[cfg(feature = "ai-bridge")]
         {
             self.assistant.apply_layout(self.layout.assistant.as_ref());
@@ -1980,9 +1994,9 @@ impl EditorApp {
         value
     }
 
-    /// 九个工作台面板的可见性 ↔ `panel_visible` 键（View 菜单是唯一写入口）。
+    /// 十个工作台面板的可见性 ↔ `panel_visible` 键（View 菜单是唯一写入口）。
     /// 返回值而不是直接写 `self.layout`：调用点在借用 `self.layout` 的同时还要读 `self`。
-    fn panel_visibility(&self) -> [(&'static str, bool); 9] {
+    fn panel_visibility(&self) -> [(&'static str, bool); 10] {
         [
             (editor::PANEL_RESOURCE, self.show_resources_panel),
             (editor::PANEL_HIERARCHY, self.show_hierarchy_panel),
@@ -1993,6 +2007,7 @@ impl EditorApp {
             (editor::PANEL_CONSOLE, self.show_lua_console),
             (editor::PANEL_TIMELINE, self.show_timeline_panel),
             (editor::PANEL_GRAPH, self.show_graph_panel),
+            (editor::PANEL_UI_STUDIO, self.show_ui_studio),
         ]
     }
 

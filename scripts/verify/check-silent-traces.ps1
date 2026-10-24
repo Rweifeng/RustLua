@@ -28,16 +28,16 @@ function Assert-Contains([string]$rel, [string]$needle, [int]$min = 1) {
 }
 
 # 1) draw 级丢弃记账：两条 2D 通道 + 世界精灵（渲染器）
-Assert-Contains 'engine/crates/engine/src/host/renderer/passes.rs' 'record_dropped_draw(&mut metrics);' 2
-Assert-Contains 'engine/crates/engine/src/host/renderer/world_sprite.rs' 'record_dropped_draw(metrics);' 1
-Assert-Contains 'engine/crates/engine/src/host/renderer/mod.rs' 'pub dropped_draws: u64,' 1
+Assert-Contains 'engine/crates/rustlua-gpu/src/renderer/passes.rs' 'record_dropped_draw(&mut metrics);' 2
+Assert-Contains 'engine/crates/rustlua-gpu/src/renderer/world_sprite.rs' 'record_dropped_draw(metrics);' 1
+Assert-Contains 'engine/crates/rustlua-gpu/src/renderer/mod.rs' 'pub dropped_draws: u64,' 1
 # 2) 三条静默链的根因告警：字体图集上传失败 / 矢量文字字形缺失 / 自定义字体快照锁中毒
-Assert-Contains 'engine/crates/engine/src/host/renderer/passes.rs' 'font atlas upload failed' 1
+Assert-Contains 'engine/crates/rustlua-gpu/src/renderer/passes.rs' 'font atlas upload failed' 1
 Assert-Contains 'engine/crates/engine/src/host/runtime_scene/text.rs' 'glyph missing from atlas' 1
 Assert-Contains 'engine/crates/engine/src/host/runtime_scene/frame_data.rs' 'custom font atlas lock poisoned' 1
 # 3) GPU 用例的"跳过"必须留痕（默认静默跳过 = 假绿）
-Assert-Contains 'engine/crates/engine/src/host/renderer/tests/mod.rs' 'fn gpu_skipped(' 1
-Assert-Contains 'engine/crates/engine/src/host/renderer/tests/mod.rs' 'RUSTLUA_REQUIRE_GPU' 1
+Assert-Contains 'engine/crates/rustlua-gpu/src/renderer/tests/mod.rs' 'fn gpu_skipped(' 1
+Assert-Contains 'engine/crates/rustlua-gpu/src/renderer/tests/mod.rs' 'RUSTLUA_REQUIRE_GPU' 1
 
 if ($script:fail -gt 0) {
     Write-Host "silent_traces FAILED: $($script:fail) 项 / $($script:checks) 条断言" -ForegroundColor Red

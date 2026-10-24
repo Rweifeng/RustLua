@@ -17,10 +17,11 @@
 
 use std::{env, fs, path::PathBuf, process::ExitCode};
 
-use engine::host::frame::{
+use engine::host::{RenderSettings, ToggleMode};
+use rustlua_gpu::{OffscreenRequest, OffscreenTarget, RenderOutcome, Renderer};
+use rustlua_render::frame::{
     OverlayVertex, SceneDraw, SceneMesh, WHITE_TEXTURE_PATH, WorldSpriteVertex,
 };
-use engine::host::{RenderOutcome, RenderSettings, Renderer, ToggleMode};
 
 use rustlua_camera::camera::{Camera2D, Viewport};
 use rustlua_ecs::transform::Vec2;
@@ -37,28 +38,17 @@ const UI_COLOR: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 
 fn main() -> ExitCode {
     let output = parse_output();
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let Some(adapter) =
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::LowPower,
-            compatible_surface: None,
-            force_fallback_adapter: true,
-        }))
-        .ok()
-    else {
-        eprintln!("BLOCKED: no GPU adapter available; HDR golden cannot run (没跑 ≠ 通过)");
-        return ExitCode::from(3);
-    };
-    let info = adapter.get_info();
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("wp0-hdr-golden"),
-        required_features: wgpu::Features::empty(),
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        required_limits: wgpu::Limits::default(),
-        memory_hints: wgpu::MemoryHints::Performance,
-        trace: wgpu::Trace::Off,
-    }))
-    .expect("request golden device");
+    let fixture =
+        match OffscreenTarget::acquire(&OffscreenRequest::new("wp0-hdr-golden", WIDTH, HEIGHT)) {
+            Ok(fixture) => fixture,
+            Err(_) => {
+                eprintln!("BLOCKED: no GPU adapter available; HDR golden cannot run (没跑 ≠ 通过)");
+                return ExitCode::from(3);
+            }
+        };
+    let device = fixture.device();
+    let queue = fixture.queue().clone();
+    let info = fixture.adapter_info();
     let mut renderer = Renderer::new_offscreen(device.clone(), queue, None, false, false)
         .expect("offscreen renderer");
     let capabilities = renderer.capabilities();
@@ -72,26 +62,13 @@ fn main() -> ExitCode {
     );
 
     let mesh = hdr_mesh();
-    let target = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("wp0-hdr-golden-target"),
-        size: wgpu::Extent3d {
-            width: WIDTH,
-            height: HEIGHT,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let target = fixture.texture();
+    let view = fixture.view();
 
     // ① HDR 开启：世界 8.0 → 线性 f16 场景目标 → ACES → LDR；UI 在之后。
     renderer.set_render_settings(RenderSettings::default().with_hdr(ToggleMode::On));
     assert!(matches!(
-        renderer.render_into_texture(&mesh, None, &view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh, None, view, WIDTH, HEIGHT),
         RenderOutcome::Presented
     ));
     let hdr_metrics = renderer.last_frame_metrics();
@@ -105,7 +82,7 @@ fn main() -> ExitCode {
     if !hdr_metrics.hdr_active {
         // LDR 分支：仍然出图并报告，但这不是 HDR 证据，退出码必须是 BLOCKED。
         let ldr_pixels = renderer
-            .copy_texture_to_cpu(&target, WIDTH, HEIGHT)
+            .copy_texture_to_cpu(target, WIDTH, HEIGHT)
             .expect("LDR fallback readback");
         let report = json!({
             "report_version": "wp0-hdr-golden-v1",
@@ -136,7 +113,7 @@ fn main() -> ExitCode {
         .expect("HDR scene color readback");
     let pre_tonemap_max = scene.max_rgb();
     let hdr_pixels = renderer
-        .copy_texture_to_cpu(&target, WIDTH, HEIGHT)
+        .copy_texture_to_cpu(target, WIDTH, HEIGHT)
         .expect("HDR frame readback");
     let post = post_tonemap_max(&hdr_pixels);
     let ui_hdr = sample_ui(&hdr_pixels, WIDTH);
@@ -144,7 +121,7 @@ fn main() -> ExitCode {
     // ② 同一帧关闭 HDR：UI 像素必须一致（UI 画在 Tonemap 之后）。
     renderer.set_render_settings(RenderSettings::default());
     assert!(matches!(
-        renderer.render_into_texture(&mesh, None, &view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh, None, view, WIDTH, HEIGHT),
         RenderOutcome::Presented
     ));
     assert!(
@@ -152,7 +129,7 @@ fn main() -> ExitCode {
         "回滚档必须是 LDR"
     );
     let ldr_pixels = renderer
-        .copy_texture_to_cpu(&target, WIDTH, HEIGHT)
+        .copy_texture_to_cpu(target, WIDTH, HEIGHT)
         .expect("LDR frame readback");
     let ui_ldr = sample_ui(&ldr_pixels, WIDTH);
     let ui_delta = (0..4)
@@ -265,7 +242,7 @@ fn ui_quad() -> Vec<OverlayVertex> {
     .collect()
 }
 
-fn blocked_reason(capabilities: &engine::host::RendererCapabilities) -> String {
+fn blocked_reason(capabilities: &rustlua_gpu::RendererCapabilities) -> String {
     capabilities
         .hdr_unavailable_reason()
         .unwrap_or_else(|| "HDR 管线未构造".to_owned())

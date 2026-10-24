@@ -474,8 +474,10 @@
         "modal",
         "modal_hide",
         "modal_show",
+        "nav_stack",
         "panel",
         "panel_get",
+        "rich_text",
         "scene_text_visible",
         "scroll_by",
         "scroll_close",
@@ -491,8 +493,13 @@
         "text",
         "text_at",
         "text_get",
+        "text_input",
         "tooltip",
-        "tooltip_hide"
+        "tooltip_hide",
+        "view_model",
+        "view_model_clear",
+        "view_model_set",
+        "virtual_list"
       ],
       "name": "ui"
     },

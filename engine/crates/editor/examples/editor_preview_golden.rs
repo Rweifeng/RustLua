@@ -19,9 +19,10 @@
 use std::{env, fs, path::PathBuf, time::Instant};
 
 use editor::{CommandHistory, CommandKind, SceneDocument, document_space};
-use engine::host::{OverlayVertex, RenderOutcome, Renderer, RuntimeScene};
+use engine::host::{OverlayVertex, RuntimeScene};
 use rustlua_ecs::spatial_transform::LocalTransform;
 use rustlua_ecs::transform::Vec2;
+use rustlua_gpu::{RenderOutcome, Renderer};
 use rustlua_infra::games_dir;
 use rustlua_scene::scene::{Scene, SceneEntityId};
 use serde_json::json;

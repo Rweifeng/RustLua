@@ -298,7 +298,7 @@ impl EditorApp {
                 if let Some(reference) = entity.components.get("Image").map(String::as_str)
                     && let Ok(image) = rustlua_ui::ui::UiImage::from_component_str(reference)
                     && !image.texture.is_empty()
-                    && image.texture != engine::host::frame::WHITE_TEXTURE_PATH
+                    && image.texture != rustlua_render::frame::WHITE_TEXTURE_PATH
                     && !self.project.root.join(&image.texture).is_file()
                 {
                     diagnostics.push(PreviewDiagnostic {

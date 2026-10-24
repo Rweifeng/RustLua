@@ -13,9 +13,10 @@
 
 use std::{env, fs, path::PathBuf};
 
-use engine::host::{RenderOutcome, Renderer, RuntimeScene};
+use engine::host::RuntimeScene;
 use rustlua_camera::camera::{Camera2D, DEFAULT_2D_CAMERA_CENTER, Viewport};
 use rustlua_ecs::transform::Vec2;
+use rustlua_gpu::{OffscreenRequest, OffscreenTarget, RenderOutcome, Renderer};
 use rustlua_infra::games_dir;
 use rustlua_scene::scene::{Scene, SceneEntityId};
 use serde_json::json;
@@ -52,49 +53,24 @@ fn main() {
     let mut runtime =
         RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("instantiate 2D golden");
 
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::LowPower,
-        compatible_surface: None,
-        force_fallback_adapter: true,
-    }))
-    .expect("a fallback GPU adapter is required for the 2D golden");
-    let info = adapter.get_info();
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("wp0-2d-golden"),
-        required_features: wgpu::Features::empty(),
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        required_limits: wgpu::Limits::default(),
-        memory_hints: wgpu::MemoryHints::Performance,
-        trace: wgpu::Trace::Off,
-    }))
-    .expect("request golden device");
+    let fixture = OffscreenTarget::acquire(&OffscreenRequest::new("wp0-2d-golden", WIDTH, HEIGHT))
+        .expect("offscreen fixture for wp0-2d-golden");
+    let device = fixture.device();
+    let queue = fixture.queue().clone();
+    let info = fixture.adapter_info();
     let mut renderer =
         Renderer::new_offscreen(device.clone(), queue, Some(root.clone()), false, true)
             .expect("offscreen renderer");
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("wp0-2d-golden-target"),
-        size: wgpu::Extent3d {
-            width: WIDTH,
-            height: HEIGHT,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let texture = fixture.texture();
+    let view = fixture.view();
     let mesh = runtime.vertices(WIDTH, HEIGHT).expect("2D extraction");
     // 2D 场景没有 3D 提取物：这里必须能只画 overlay 而不依赖 3D 快照。
     assert!(matches!(
-        renderer.render_into_texture(&mesh, None, &view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh, None, view, WIDTH, HEIGHT),
         RenderOutcome::Presented
     ));
     let pixels = renderer
-        .copy_texture_to_cpu(&texture, WIDTH, HEIGHT)
+        .copy_texture_to_cpu(texture, WIDTH, HEIGHT)
         .expect("golden readback");
     let metrics = renderer.last_frame_metrics();
 
@@ -184,11 +160,11 @@ fn main() {
         "collider 调试轮廓的顶点数不对（box 4 段 × 6 顶点）"
     );
     assert!(matches!(
-        renderer.render_into_texture(&debug_mesh, None, &view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&debug_mesh, None, view, WIDTH, HEIGHT),
         RenderOutcome::Presented
     ));
     let debug_pixels = renderer
-        .copy_texture_to_cpu(&texture, WIDTH, HEIGHT)
+        .copy_texture_to_cpu(texture, WIDTH, HEIGHT)
         .expect("golden readback (debug)");
     let debug_metrics = renderer.last_frame_metrics();
     assert!(
@@ -233,11 +209,11 @@ fn main() {
         "交换瓦片行不该改变顶点数"
     );
     assert!(matches!(
-        renderer.render_into_texture(&swapped_mesh, None, &view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&swapped_mesh, None, view, WIDTH, HEIGHT),
         RenderOutcome::Presented
     ));
     let swapped = renderer
-        .copy_texture_to_cpu(&texture, WIDTH, HEIGHT)
+        .copy_texture_to_cpu(texture, WIDTH, HEIGHT)
         .expect("golden readback (swapped)");
     let lower = region_signature(&pixels, background, [40.0, 242.0], [168.0, 274.0]);
     let upper = region_signature(&pixels, background, [40.0, 210.0], [168.0, 242.0]);
@@ -261,7 +237,7 @@ fn main() {
         RuntimeScene::from_scene_edit(Some(root.as_path()), culling_scene(camera, viewport))
             .expect("instantiate culling scene");
     let (culling_full_vertices, culling_culled_vertices, culling_both_vertices) =
-        prove_culling_keeps_pixels(&mut culling_runtime, &mut renderer, &view, &texture);
+        prove_culling_keeps_pixels(&mut culling_runtime, &mut renderer, view, texture);
 
     let report = json!({
         "report_version": "wp0-2d-golden-v1",

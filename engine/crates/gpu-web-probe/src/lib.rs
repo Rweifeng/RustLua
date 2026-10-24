@@ -169,7 +169,7 @@ async fn probe_config(backends: wgpu::Backends, out: &mut Value) -> Result<(), S
         "downlevel_flags": format!("{:?}", downlevel.flags),
         "downlevel_shader_model": format!("{:?}", downlevel.shader_model),
         // M74-03 P0 硬门：WebGL2 必须把 compute 报成 false。这里给两条独立证据
-        // （downlevel flag + 限制值），与 `engine::host::RendererCapabilities::probe` 同一口径。
+        // （downlevel flag + 限制值），与 `rustlua_gpu::RendererCapabilities::probe` 同一口径。
         "downlevel_compute_shaders": downlevel
             .flags
             .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS),
@@ -237,7 +237,7 @@ async fn probe_config(backends: wgpu::Backends, out: &mut Value) -> Result<(), S
 
 /// 从游离 canvas 建 surface。
 ///
-/// **实现已收编到引擎**（`engine::host::web_surface::canvas_surface`）：web 宿主 `game_web`
+/// **实现已收编到引擎**（`rustlua_gpu::web_surface::canvas_surface`）：web 宿主 `game_web`
 /// 与探针都要走这一步，两份带 `unsafe` 的副本就是两个"只修好一份"的机会。
 /// 这里保留一个薄封装，只为把 `HtmlCanvasElement` 转成引擎那层要的 `JsValue`——
 /// 引擎不该认识 DOM 类型，宿主本来就依赖 `web-sys`。
@@ -245,10 +245,10 @@ fn create_canvas_surface(
     instance: &wgpu::Instance,
     canvas: &web_sys::HtmlCanvasElement,
 ) -> Result<wgpu::Surface<'static>, String> {
-    engine::host::web_surface::canvas_surface(instance, &JsValue::from(canvas.clone()))
+    rustlua_gpu::web_surface::canvas_surface(instance, &JsValue::from(canvas.clone()))
 }
 
-/// 与 `engine/crates/engine/src/host/renderer/construct.rs` 里 `request_device` 的字段集逐字段
+/// 与 `engine/crates/rustlua-gpu/src/renderer/construct.rs` 里 `request_device` 的字段集逐字段
 /// 对齐（这是本仓 wgpu 27 的"正确写法"基准），只把 `required_limits` 参数化。
 fn device_descriptor(label: &str, required_limits: wgpu::Limits) -> wgpu::DeviceDescriptor<'_> {
     wgpu::DeviceDescriptor {
@@ -526,7 +526,7 @@ async fn storage_buffer_probe(device: &wgpu::Device) -> Value {
 // **本仓那台按 WebGPU 规格写的渲染器，原样接到 WebGL2 上能不能把一帧画对**。
 // 两者的差别是本质的：能力探针挂了不代表渲染器挂了——渲染器的坑在别处（几十条管线的
 // WGSL→GLSL 翻译、绑定组布局、深度附件格式、顶点步长、帧计时用的时钟、构造期的
-// `pollster::block_on`）。所以这一片**不做玩具渲染器**，直接把 `engine::host::Renderer`
+// `pollster::block_on`）。所以这一片**不做玩具渲染器**，直接把 `rustlua_gpu::Renderer`
 // 在浏览器里跑起来，用像素和它自己的帧计数说话。
 //
 // 场景刻意手工合成、且**只引用内建白贴图**：`RuntimeScene` 那条路要读工程文件，而 wasm 上
@@ -660,7 +660,7 @@ async fn run_render_probe() -> Result<Value, String> {
     // 阶段标记放在构造**之前**：构造要建十几条管线（naga 翻 WGSL→GLSL + GL 链接），
     // 在软件光栅上可能非常慢——卡住时这个值就是答案。
     set_stage("constructing");
-    let created = engine::host::Renderer::new_offscreen_async(
+    let created = rustlua_gpu::Renderer::new_offscreen_async(
         device.clone(),
         queue.clone(),
         None,
@@ -737,7 +737,7 @@ async fn run_render_probe() -> Result<Value, String> {
 
     let mesh = synthetic_mesh();
     let outcome = renderer.render_into_texture(&mesh, None, &view, RENDER_SIZE, RENDER_SIZE);
-    let presented = matches!(outcome, engine::host::RenderOutcome::Presented);
+    let presented = matches!(outcome, rustlua_gpu::RenderOutcome::Presented);
     set_stage("rendered");
     let pixels = read_back(&mut renderer, &target).await?;
     set_stage("readback_ok");
@@ -910,7 +910,7 @@ async fn run_render_probe() -> Result<Value, String> {
                         RENDER_SIZE,
                     );
                     surface_present["outcome_presented"] =
-                        json!(matches!(outcome, engine::host::RenderOutcome::Presented));
+                        json!(matches!(outcome, rustlua_gpu::RenderOutcome::Presented));
                     set_stage("surface_rendered");
                     frame.present();
                     set_stage("surface_presented");
@@ -1029,14 +1029,14 @@ async fn run_render_probe() -> Result<Value, String> {
 
 /// 手工合成最小 2D 场景：三个四边形（两块内建白贴图 + 一块内存上传的 2×2 棋盘），
 /// NDC 坐标（`OverlayVertex` 就是 NDC）。
-fn synthetic_mesh() -> engine::host::SceneMesh {
+fn synthetic_mesh() -> rustlua_render::frame::SceneMesh {
     let rects = [QUADS[0], QUADS[1], TEXTURED_QUAD];
     let mut vertices = Vec::with_capacity(rects.len() * 6);
     let mut draws = Vec::with_capacity(rects.len());
     for (index, quad) in rects.iter().enumerate() {
         let [x0, x1, y0, y1] = *quad;
         let start = vertices.len() as u32;
-        let corner = |x: f32, y: f32, u: f32, v: f32| engine::host::OverlayVertex {
+        let corner = |x: f32, y: f32, u: f32, v: f32| rustlua_render::frame::OverlayVertex {
             position: [x, y],
             uv: [u, v],
             // 顶点色全白：白贴图那块因此恒白，棋盘那块**逐纹素等于上传的字节**。
@@ -1053,9 +1053,11 @@ fn synthetic_mesh() -> engine::host::SceneMesh {
         // 前两块 `texture == 0` = 内建白贴图，完全不解析路径；第三块 `texture == 1` 指向
         // `paths[0]`，也就是上面上传进缓存的那个**非文件**键。
         let texture = if index == rects.len() - 1 { 1 } else { 0 };
-        draws.push(engine::host::SceneDraw::screen_ui(texture, start, 6));
+        draws.push(rustlua_render::frame::SceneDraw::screen_ui(
+            texture, start, 6,
+        ));
     }
-    engine::host::SceneMesh {
+    rustlua_render::frame::SceneMesh {
         vertices,
         draws,
         world_sprites: Vec::new(),
@@ -1099,17 +1101,17 @@ fn pixel_at(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
 /// 宏任务里通常还没 SIGNALED），promise microtask 不够，必须 `setTimeout(0)`
 /// （见 `yield_to_event_loop` 的注释）。
 async fn read_back(
-    renderer: &mut engine::host::Renderer,
+    renderer: &mut rustlua_gpu::Renderer,
     target: &wgpu::Texture,
 ) -> Result<Vec<u8>, String> {
     let mut status = renderer.readback_frame(target, RENDER_SIZE, RENDER_SIZE);
     for _ in 0..60 {
         match status {
-            engine::host::ReadbackStatus::Ready { pixels, .. } => return Ok(pixels),
-            engine::host::ReadbackStatus::Failed(error) => {
+            rustlua_gpu::ReadbackStatus::Ready { pixels, .. } => return Ok(pixels),
+            rustlua_gpu::ReadbackStatus::Failed(error) => {
                 return Err(format!("readback failed: {error}"));
             }
-            engine::host::ReadbackStatus::Pending => {
+            rustlua_gpu::ReadbackStatus::Pending => {
                 yield_to_event_loop().await;
                 status = renderer.readback_pending();
             }

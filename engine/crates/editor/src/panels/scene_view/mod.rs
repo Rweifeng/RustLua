@@ -25,14 +25,15 @@ use crate::{
 use editor::{SelectionSource, TransformFields};
 use eframe::egui;
 use engine::host::{
-    BoundsSource, ReadbackStatus, Renderer, RuntimeScene, Scene3d, Scene3dBounds, Scene3dDrawable,
-    SceneMesh, apply_scene_environment, load_project_font_atlas, load_project_vector_atlas,
+    BoundsSource, RuntimeScene, Scene3d, Scene3dBounds, Scene3dDrawable, SceneMesh,
+    apply_scene_environment, load_project_font_atlas, load_project_vector_atlas,
 };
 use rustlua_camera::camera::Camera2D;
 use rustlua_camera::camera::{Camera3D, DEFAULT_3D_CLEAR, FrameViews, Ray3, RenderView, Viewport};
 use rustlua_ecs::tilemap::Tilemap;
 use rustlua_ecs::transform::Transform3D;
 use rustlua_ecs::transform::Vec2;
+use rustlua_gpu::{ReadbackStatus, Renderer};
 use rustlua_math::math3d::{Quat, Vec3};
 use rustlua_physics::physics::ColliderDesc;
 use rustlua_render::light::Light;

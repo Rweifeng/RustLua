@@ -3,7 +3,7 @@
 //! ## 这一步在补什么
 //!
 //! M73-00 之前，web/微信上的画面全部由 `plugins/webgl/web-runtime.js` 的 Canvas2D 路径画出来，
-//! `game_web` 里**连 `engine::host::Renderer` 都没有**——引擎那台按 WebGPU 规格写的渲染器
+//! `game_web` 里**连 `rustlua_gpu::Renderer` 都没有**——引擎那台按 WebGPU 规格写的渲染器
 //! 在浏览器里从未被宿主用过。WP5 前四片把这条路的每个前提单独验通了（能建、能按期望值画对、
 //! 内存贴图能交进来、能渲进画布纹理并 present），本片把它们**接起来**。
 //!
@@ -1119,7 +1119,7 @@ async fn run_inner(canvas_id: &str, scene_path: &str) -> Result<String, String> 
 /// [`gpu_host_run`] 是先 `document.get_element_by_id(canvas_id)` 再
 /// `dyn_into::<HtmlCanvasElement>()`——`dyn_into` **会**做构造器判定，小游戏里必然失败
 /// （见 `lib.rs` 里 [`crate::start_wechat`] 的说明）。而引擎真正需要的那一步
-/// （`engine::host::web_surface::canvas_surface(&instance, &JsValue)`）本来就只收**原始对象**。
+/// （`rustlua_gpu::web_surface::canvas_surface(&instance, &JsValue)`）本来就只收**原始对象**。
 /// 所以"能不能在小游戏上沿用同一条渲染通道"这个问题，可以在**不引入任何浏览器构造器依赖**的
 /// 前提下，由引擎自己回答——这也正是唯一能在真机上被回答的问题。
 ///
@@ -1173,7 +1173,7 @@ async fn probe_canvas_host_inner(
         backends: wgpu::Backends::GL,
         ..Default::default()
     });
-    let surface = engine::host::web_surface::canvas_surface(&instance, &gpu_canvas)
+    let surface = rustlua_gpu::web_surface::canvas_surface(&instance, &gpu_canvas)
         .map_err(|error| format!("canvas_surface: {error}"))?;
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {

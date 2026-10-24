@@ -212,6 +212,130 @@ impl UiAnimationClip {
     }
 }
 
+/// Runtime driver for a UI clip. Uses the same sampling/looping rules as
+/// [`UiAnimationPreview`], but reports changed track values and can be reset
+/// when a state transition interrupts an entry/exit animation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UiAnimationDriver {
+    clip: UiAnimationClip,
+    time: f32,
+    playing: bool,
+    looping: bool,
+    speed: f32,
+    values: BTreeMap<String, f32>,
+}
+
+impl UiAnimationDriver {
+    #[must_use]
+    pub fn new(clip: UiAnimationClip, looping: bool) -> Self {
+        Self {
+            clip,
+            time: 0.0,
+            playing: true,
+            looping,
+            speed: 1.0,
+            values: BTreeMap::new(),
+        }
+    }
+
+    pub fn set_speed(&mut self, speed: f32) {
+        if speed.is_finite() {
+            self.speed = speed.max(0.0);
+        }
+    }
+
+    pub fn restart(&mut self) {
+        self.time = 0.0;
+        self.playing = true;
+        self.values.clear();
+    }
+
+    pub fn stop(&mut self) {
+        self.playing = false;
+    }
+
+    #[must_use]
+    pub fn is_playing(&self) -> bool {
+        self.playing
+    }
+
+    #[must_use]
+    pub fn time(&self) -> f32 {
+        self.time
+    }
+
+    #[must_use]
+    pub fn clip(&self) -> &UiAnimationClip {
+        &self.clip
+    }
+
+    /// Advances the clock and returns tracks whose sampled value changed.
+    pub fn advance(&mut self, delta: f32) -> Vec<(String, f32)> {
+        if !self.playing || !delta.is_finite() {
+            return Vec::new();
+        }
+        let duration = self.clip.duration();
+        self.time += delta.max(0.0) * self.speed;
+        if duration > 0.0 && self.time >= duration {
+            if self.looping {
+                self.time %= duration;
+            } else {
+                self.time = duration;
+                self.playing = false;
+            }
+        }
+        let mut changed = Vec::new();
+        for (property, track) in &self.clip.tracks {
+            let value = track.sample(self.time);
+            if self.values.get(property).is_none_or(|last| *last != value) {
+                self.values.insert(property.clone(), value);
+                changed.push((property.clone(), value));
+            }
+        }
+        changed
+    }
+
+    #[must_use]
+    pub fn values(&self) -> &BTreeMap<String, f32> {
+        &self.values
+    }
+}
+
+/// Named clip set for entry/state/hint animations. Later clips override earlier
+/// ones for the same property, matching "state overrides entry" in the scheme.
+#[derive(Clone, Debug, Default)]
+pub struct UiAnimationRuntime {
+    drivers: BTreeMap<String, UiAnimationDriver>,
+}
+
+impl UiAnimationRuntime {
+    pub fn play(&mut self, name: impl Into<String>, clip: UiAnimationClip, looping: bool) {
+        self.drivers
+            .insert(name.into(), UiAnimationDriver::new(clip, looping));
+    }
+
+    pub fn stop(&mut self, name: &str) {
+        if let Some(driver) = self.drivers.get_mut(name) {
+            driver.stop();
+        }
+    }
+
+    pub fn advance(&mut self, delta: f32) -> BTreeMap<String, f32> {
+        let mut merged = BTreeMap::new();
+        for driver in self.drivers.values_mut() {
+            for (property, value) in driver.advance(delta) {
+                merged.insert(property, value);
+            }
+        }
+        merged
+    }
+
+    #[must_use]
+    pub fn driver(&self, name: &str) -> Option<&UiAnimationDriver> {
+        self.drivers.get(name)
+    }
+}
+
 /// Preview-only playback state. It never writes to a `SceneDocument`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UiAnimationPreview {
@@ -361,6 +485,56 @@ mod tests {
                 "{bad:?} 必须被拒"
             );
         }
+    }
+
+    #[test]
+    fn driver_reports_changed_tracks_and_honours_speed_and_stop() {
+        let mut clip = UiAnimationClip::new("fade");
+        clip.add_track(track()).unwrap();
+        clip.add_track(
+            UiAnimationTrack::new(
+                "scale",
+                vec![
+                    UiKeyframe {
+                        time: 0.0,
+                        value: 1.0,
+                        easing: UiEasing::Linear,
+                    },
+                    UiKeyframe {
+                        time: 2.0,
+                        value: 2.0,
+                        easing: UiEasing::Linear,
+                    },
+                ],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut driver = UiAnimationDriver::new(clip.clone(), false);
+        let first = driver.advance(0.25);
+        assert_eq!(first.len(), 2);
+        assert_eq!(driver.values()["scale"], 1.125);
+        // Same clock: no changed values.
+        assert!(driver.advance(0.0).is_empty());
+        driver.set_speed(2.0);
+        let second = driver.advance(0.25);
+        assert_eq!(second.len(), 2);
+        // 0.25s at 2× speed → t=0.75 of a 2s linear track → 1.375.
+        assert!((driver.values()["scale"] - 1.375).abs() < 1e-6);
+        driver.advance(10.0);
+        assert!(!driver.is_playing());
+        assert_eq!(driver.values()["scale"], 2.0);
+        driver.restart();
+        assert!(driver.is_playing());
+        assert_eq!(driver.time(), 0.0);
+
+        let mut runtime = UiAnimationRuntime::default();
+        runtime.play("enter", clip.clone(), false);
+        runtime.play("hint", clip, true);
+        assert_eq!(runtime.advance(0.5).len(), 2);
+        runtime.stop("hint");
+        assert!(!runtime.driver("hint").unwrap().is_playing());
+        assert!(runtime.driver("enter").unwrap().is_playing());
     }
 
     #[test]

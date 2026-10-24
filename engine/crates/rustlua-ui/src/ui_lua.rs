@@ -6,12 +6,36 @@
 //! 唯一留在脚本层的是 `ui.measure_text`：它要读工程字体探针并调 `rustlua_render::text`，
 //! 为了一个度量函数让 UI 域依赖整个渲染 crate（含 wgpu）不划算。
 
+use crate::ui_binding::{BindingPath, BindingValue};
 use crate::ui_state::{UiBar, UiState, UiText};
 use mlua::Lua;
 use mlua::Result as LuaResult;
 use mlua::Table;
+use mlua::Value;
 use rustlua_lua_api::Handle;
 use std::cell::{Ref, RefMut};
+
+/// Lua 标量 → 绑定值。表/函数没有绑定语义，宁可当场报错也不静默转成字符串。
+fn binding_value_from_lua(value: Value) -> LuaResult<BindingValue> {
+    match value {
+        Value::String(text) => Ok(BindingValue::Text(text.to_str()?.to_owned())),
+        Value::Integer(number) => Ok(BindingValue::Number(number as f32)),
+        Value::Number(number) => Ok(BindingValue::Number(number as f32)),
+        Value::Boolean(enabled) => Ok(BindingValue::Bool(enabled)),
+        other => Err(mlua::Error::RuntimeError(format!(
+            "ui.view_model_set expects string/number/boolean, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn binding_value_to_lua(lua: &Lua, value: &BindingValue) -> LuaResult<Value> {
+    match value {
+        BindingValue::Text(text) => Ok(Value::String(lua.create_string(text)?)),
+        BindingValue::Number(number) => Ok(Value::Number(f64::from(*number))),
+        BindingValue::Bool(enabled) => Ok(Value::Boolean(*enabled)),
+    }
+}
 
 /// 绑定侧的借用面：一个 `Handle<UiState>` + 与脚本层同名的 `ui()` / `ui_mut()` 短写。
 #[derive(Clone)]
@@ -206,6 +230,52 @@ pub fn install(lua: &Lua, table: Table, state: &Handle<UiState>) -> LuaResult<()
             )?;
             result.set("visible", text.visible)?;
             Ok(Some(result))
+        })?,
+    )?;
+    // M76-02：`UiBindings` 的视图模型。源路径与组件里的 `source=` 同一种点分写法
+    // （`data.score`），`default=` 只在键缺席时生效；写回（双向绑定）也落在这张表里。
+    let s = Bindings::new(state);
+    ui.set(
+        "view_model_set",
+        lua.create_function(move |_, (path, value): (String, Value)| {
+            let path = BindingPath::parse(&path).map_err(|error| {
+                mlua::Error::RuntimeError(format!("invalid binding path: {error}"))
+            })?;
+            s.ui_mut()?
+                .view_model_mut()
+                .insert(path.0.join("."), binding_value_from_lua(value)?);
+            Ok(())
+        })?,
+    )?;
+    let s = Bindings::new(state);
+    ui.set(
+        "view_model",
+        lua.create_function(move |lua, path: String| {
+            let path = BindingPath::parse(&path).map_err(|error| {
+                mlua::Error::RuntimeError(format!("invalid binding path: {error}"))
+            })?;
+            let ui = s.ui()?;
+            match ui.view_model().get(&path.0.join(".")) {
+                Some(value) => Ok(Some(binding_value_to_lua(lua, value)?)),
+                None => Ok(None),
+            }
+        })?,
+    )?;
+    let s = Bindings::new(state);
+    ui.set(
+        "view_model_clear",
+        lua.create_function(move |_, path: Option<String>| {
+            let mut ui = s.ui_mut()?;
+            match path {
+                Some(path) => {
+                    let path = BindingPath::parse(&path).map_err(|error| {
+                        mlua::Error::RuntimeError(format!("invalid binding path: {error}"))
+                    })?;
+                    ui.view_model_mut().remove(&path.0.join("."));
+                }
+                None => ui.view_model_mut().clear(),
+            }
+            Ok(())
         })?,
     )?;
     Ok(())

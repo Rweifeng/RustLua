@@ -854,6 +854,7 @@ dependencies = [
  "rustlua-editor-ai",
  "rustlua-editor-api",
  "rustlua-gameplay",
+ "rustlua-gpu",
  "rustlua-infra",
  "rustlua-input",
  "rustlua-math",
@@ -862,6 +863,7 @@ dependencies = [
  "rustlua-scene",
  "rustlua-scripting",
  "rustlua-ui",
+ "rustlua-ui-spec",
  "rustlua-visual-script",
  "serde",
  "serde_json",
@@ -1039,7 +1041,6 @@ dependencies = [
  "bytemuck",
  "getrandom 0.2.17",
  "image",
- "naga",
  "pollster",
  "rustlua-animation",
  "rustlua-assets",
@@ -1049,6 +1050,7 @@ dependencies = [
  "rustlua-component-codec",
  "rustlua-ecs",
  "rustlua-gameplay",
+ "rustlua-gpu",
  "rustlua-infra",
  "rustlua-input",
  "rustlua-lua-api",
@@ -1063,7 +1065,6 @@ dependencies = [
  "thiserror 2.0.20",
  "tracing",
  "tracing-appender",
- "wasm-bindgen",
  "web-time",
  "wgpu",
  "windows-sys 0.61.2",
@@ -1245,6 +1246,7 @@ dependencies = [
  "rustlua-camera",
  "rustlua-ecs",
  "rustlua-gameplay",
+ "rustlua-gpu",
  "rustlua-infra",
  "rustlua-input",
  "rustlua-math",
@@ -1271,9 +1273,11 @@ dependencies = [
  "rustlua-camera",
  "rustlua-frame-abi",
  "rustlua-gameplay",
+ "rustlua-gpu",
  "rustlua-infra",
  "rustlua-input",
  "rustlua-math",
+ "rustlua-render",
  "rustlua-scene",
  "rustlua-scripting",
  "serde",
@@ -1531,10 +1535,11 @@ dependencies = [
 name = "gpu-web-probe"
 version = "0.1.0"
 dependencies = [
- "engine",
  "js-sys",
  "rustlua-camera",
+ "rustlua-gpu",
  "rustlua-math",
+ "rustlua-render",
  "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -3355,6 +3360,7 @@ dependencies = [
 name = "rustlua-editor-ai"
 version = "0.1.1"
 dependencies = [
+ "rustlua-ui-spec",
  "serde",
  "serde_json",
 ]
@@ -3386,6 +3392,33 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tracing",
+]
+
+[[package]]
+name = "rustlua-gpu"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "engine",
+ "getrandom 0.2.17",
+ "image",
+ "naga",
+ "pollster",
+ "rustlua-assets",
+ "rustlua-camera",
+ "rustlua-ecs",
+ "rustlua-infra",
+ "rustlua-input",
+ "rustlua-math",
+ "rustlua-render",
+ "rustlua-scene",
+ "thiserror 2.0.20",
+ "tracing",
+ "wasm-bindgen",
+ "web-time",
+ "wgpu",
+ "winit",
 ]
 
 [[package]]
@@ -3522,6 +3555,14 @@ dependencies = [
  "rustlua-math",
  "rustlua-scene",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "rustlua-ui-spec"
+version = "0.1.1"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

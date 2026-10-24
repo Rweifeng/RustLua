@@ -11,11 +11,11 @@ use super::*;
 
 // WP12 阶段 3b：这些名字原先由 `runtime_scene.rs` 顶部的 use 块带进来（测试靠 glob 取用）。
 // 生产代码搬走后父模块的导入被裁掉，这里改由测试自己声明——断言与造数据的路径一字未改。
-use crate::host::frame::SceneMesh;
 use rustlua_assets::resource_kind::ResourceKind;
 use rustlua_ecs::scheduler::{ScheduleStage, SchedulerError, System};
 use rustlua_ecs::transform::Transform3D;
 use rustlua_math::math3d::Vec3;
+use rustlua_render::frame::SceneMesh;
 use rustlua_render::layer::RenderLayer;
 use rustlua_render::quad::Quad;
 use rustlua_render::sprite::Sprite;
@@ -102,5 +102,8 @@ mod spatial;
 mod tilemap;
 mod transforms;
 mod ui;
+mod ui_bindings;
+mod ui_interaction;
 mod ui_layout;
+mod ui_scroll;
 mod world_depth;

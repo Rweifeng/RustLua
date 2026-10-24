@@ -127,19 +127,7 @@ impl FontVectorAtlas {
             return None;
         }
         if !self.cached.contains_key(&character) {
-            let primary = self.font.glyph_id(character);
-            let (font, glyph_id) = if primary.0 != 0 {
-                (&self.font, primary)
-            } else if let Some(fallback) = &self.fallback {
-                let id = fallback.glyph_id(character);
-                if id.0 != 0 {
-                    (fallback, id)
-                } else {
-                    (&self.font, primary)
-                }
-            } else {
-                (&self.font, primary)
-            };
+            let (font, glyph_id) = self.font_for(character);
             let Some(outline) = font.outline(glyph_id) else {
                 self.missing.insert(character);
                 return None;
@@ -168,6 +156,30 @@ impl FontVectorAtlas {
             self.cached.insert(character, glyph);
         }
         self.cached.get(&character)
+    }
+
+    /// 该字符的 em 相对 advance（`advance / units_per_em`），与
+    /// [`FontProbe::advance_em`] 同一口径。空白字符没有轮廓、进不了 `glyph()`，
+    /// 但排版必须照它的 hmtx 推进——矢量档因此需要这条只读通道。
+    #[must_use]
+    pub fn advance_em(&self, character: char) -> f32 {
+        let (font, glyph_id) = self.font_for(character);
+        font.h_advance_unscaled(glyph_id) / font.units_per_em().unwrap_or(1000.0)
+    }
+
+    /// 主字体没有该字形时回落到后备字体（与 [`FontVectorAtlas::glyph`] 同一选择顺序）。
+    fn font_for(&self, character: char) -> (&FontArc, ab_glyph::GlyphId) {
+        let primary = self.font.glyph_id(character);
+        if primary.0 != 0 {
+            return (&self.font, primary);
+        }
+        if let Some(fallback) = &self.fallback {
+            let id = fallback.glyph_id(character);
+            if id.0 != 0 {
+                return (fallback, id);
+            }
+        }
+        (&self.font, primary)
     }
 
     pub fn prewarm(&mut self, chars: impl Iterator<Item = char>) -> usize {

@@ -16,7 +16,7 @@
 
 use std::{env, fs, path::PathBuf, process::ExitCode};
 
-use engine::host::{ComputeBinding, ComputeError, ComputeRequest, Renderer};
+use rustlua_gpu::{ComputeBinding, ComputeError, ComputeRequest, OffscreenDevice, Renderer};
 use serde_json::json;
 use wgpu::util::DeviceExt;
 
@@ -50,30 +50,20 @@ fn scale(@builtin(global_invocation_id) id: vec3<u32>) {
 
 fn main() -> ExitCode {
     let output = parse_output();
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let Some(adapter) =
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::LowPower,
-            compatible_surface: None,
-            force_fallback_adapter: true,
-        }))
-        .ok()
-    else {
-        eprintln!("BLOCKED: no GPU adapter available; compute readback cannot run (没跑 ≠ 通过)");
-        return ExitCode::from(3);
+    let fixture = match OffscreenDevice::acquire("wp0-compute-readback") {
+        Ok(fixture) => fixture,
+        Err(error) => {
+            eprintln!(
+                "BLOCKED: no GPU adapter available; compute readback cannot run (没跑 ≠ 通过) error={error}"
+            );
+            return ExitCode::from(3);
+        }
     };
-    let info = adapter.get_info();
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("wp0-compute-readback"),
-        required_features: wgpu::Features::empty(),
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        required_limits: wgpu::Limits::default(),
-        memory_hints: wgpu::MemoryHints::Performance,
-        trace: wgpu::Trace::Off,
-    }))
-    .expect("request golden device");
+    let device = fixture.device();
+    let info = fixture.adapter_info();
     let mut renderer =
-        Renderer::new_offscreen(device.clone(), queue, None, false, false).expect("offscreen");
+        Renderer::new_offscreen(device.clone(), fixture.queue().clone(), None, false, false)
+            .expect("offscreen");
     let capabilities = renderer.capabilities();
     if !capabilities.compute {
         eprintln!(

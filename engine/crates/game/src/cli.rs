@@ -93,9 +93,9 @@ pub fn parse_arguments() -> Result<Arguments, String> {
     }
     // 环境变量是参数的同义开关（脚本/CI 里比拼参数好注入）；两者都没给就是 `None`，
     // 运行时不监听覆盖目录——发布路径不该出现任何 shader 文件 IO。
-    args.shader_dir = engine::host::shader_library::shader_override_dir(
+    args.shader_dir = rustlua_gpu::shader_library::shader_override_dir(
         args.shader_dir,
-        env::var_os(engine::host::shader_library::SHADER_DIR_ENV).as_deref(),
+        env::var_os(rustlua_gpu::shader_library::SHADER_DIR_ENV).as_deref(),
         None,
     );
     Ok(args)

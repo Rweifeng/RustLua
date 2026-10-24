@@ -15,9 +15,10 @@ use std::{
 };
 
 use engine::host::{
-    CaptureBundle, CaptureScenario, FrameStats, GpuPassReport, MemorySnapshot, ReadbackMetrics,
-    SceneColorFormat, TimingStat, now_unix_ms,
+    CaptureBundle, CaptureScenario, FrameStats, MemorySnapshot, SceneColorFormat, TimingStat,
+    now_unix_ms,
 };
+use rustlua_gpu::{GpuPassReport, ReadbackMetrics};
 use rustlua_render::post_process::Tonemap;
 use rustlua_render::render_settings::{IblMode, IblTier};
 

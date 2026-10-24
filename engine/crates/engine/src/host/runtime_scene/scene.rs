@@ -5,7 +5,6 @@
 //! 线框方法被**留在 `mod.rs` 的每帧主路径**调用，方向是子→父，故标 `pub(super)`（§3.1.4）。
 //! 结构体本身仍定义在 `mod.rs`——搬走它会逼着约 40 个字段逐个放宽可见性。
 
-use crate::host::frame::{OverlayVertex, SceneDraw, VectorFontHandle};
 use crate::host::gamepad::GamepadPoller;
 use rustlua_assets::asset_handle::{AssetHandle, AssetRecord, AssetStore};
 use rustlua_camera::camera::{Camera2D, OrthoTerms, Viewport};
@@ -18,6 +17,7 @@ use rustlua_ecs::transform::{Transform, Transform3D, Vec2};
 use rustlua_infra::par::Parallelism;
 use rustlua_physics::physics::PhysicsAuthority;
 use rustlua_render::font::FontAtlas;
+use rustlua_render::frame::{OverlayVertex, SceneDraw, VectorFontHandle};
 use rustlua_render::layer::RenderLayer;
 use rustlua_render::sprite_batch::SpriteBatch;
 use rustlua_scene::scene::{Scene, SceneEntityId};
@@ -25,7 +25,7 @@ use rustlua_scripting::script::LuaRuntime;
 use rustlua_ui::ui::UI_REFERENCE_SIZE;
 use rustlua_ui::ui_layout::{UiRect, UiRectLayout};
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -743,6 +743,21 @@ impl RuntimeScene {
             text_render_mode,
             ui_scene_nodes,
             ui_layout_rects: BTreeMap::new(),
+            ui_interaction_enabled: false,
+            ui_keyboard_nav: false,
+            ui_interaction: rustlua_ui::ui_interaction::UiInteraction::new(),
+            ui_interaction_signature: None,
+            ui_bindings: BTreeMap::new(),
+            ui_key_names: BTreeMap::new(),
+            ui_visual_states: BTreeMap::new(),
+            ui_scroll_offsets: BTreeMap::new(),
+            ui_scroll_ranges: BTreeMap::new(),
+            ui_clip_rects: BTreeMap::new(),
+            ui_scroll_shifts: BTreeMap::new(),
+            ui_focused: None,
+            ui_binding_runtime: rustlua_ui::ui_binding::BindingRuntime::default(),
+            ui_binding_hidden_images: BTreeSet::new(),
+            ui_binding_report: Vec::new(),
             applied_prefab_ui_nodes: BTreeMap::new(),
             applied_prefab_ui_revision: 0,
             step_scheduler: Scheduler::new(),

@@ -986,6 +986,8 @@ mod tests {
                 "Persistent",
                 "Quad",
                 "RenderMode",
+                // M76-02：`ScrollView` 只有轴向一个字段，注册 schema 即进入通用编辑器。
+                "ScrollView",
                 "Sprite",
                 "Text",
                 // 唯一的变换组件（旧名 `Transform3D` 已从注册表删除）。

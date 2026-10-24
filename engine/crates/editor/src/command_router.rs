@@ -83,6 +83,25 @@ impl EditorApp {
                 }
             }
             EditorCommand::Undo => {
+                // M76-06：UI Studio 聚焦时先消费它的「接受」栈；否则 Ctrl+Z / 菜单
+                // 仍走场景历史。两条栈互不共享，但对外是同一个 Undo 入口。
+                let studio_focused = self.dock_state.as_mut().and_then(crate::dock::active_tab)
+                    == Some(crate::dock::DockTab::UiStudio);
+                if studio_focused
+                    && let Some(studio) = self.ui_studio_panel.studio.as_mut()
+                    && studio.can_undo()
+                {
+                    return match studio.undo() {
+                        Ok(true) => {
+                            let revision = studio.revision();
+                            self.status = format!("已撤销 UI Studio 接受（revision {revision}）");
+                            self.ui_studio_panel.preview = None;
+                            CommandResult::Applied
+                        }
+                        Ok(false) => CommandResult::NoOp,
+                        Err(error) => CommandResult::Rejected(error.to_string()),
+                    };
+                }
                 // E07/E08 网关：先取消活动事务并收敛挂起编辑，再撤销。
                 if !self.history.can_undo() {
                     self.status = "Nothing to undo".to_owned();
@@ -92,6 +111,24 @@ impl EditorApp {
                 CommandResult::Applied
             }
             EditorCommand::Redo => {
+                // M76-06：与 Undo 对称，UI Studio 聚焦时先消费它的重做栈。
+                let studio_focused = self.dock_state.as_mut().and_then(crate::dock::active_tab)
+                    == Some(crate::dock::DockTab::UiStudio);
+                if studio_focused
+                    && let Some(studio) = self.ui_studio_panel.studio.as_mut()
+                    && studio.can_redo()
+                {
+                    return match studio.redo() {
+                        Ok(true) => {
+                            let revision = studio.revision();
+                            self.status = format!("已重做 UI Studio 接受（revision {revision}）");
+                            self.ui_studio_panel.preview = None;
+                            CommandResult::Applied
+                        }
+                        Ok(false) => CommandResult::NoOp,
+                        Err(error) => CommandResult::Rejected(error.to_string()),
+                    };
+                }
                 if !self.history.can_redo() {
                     self.status = "Nothing to redo".to_owned();
                     return CommandResult::NoOp;
@@ -492,6 +529,196 @@ mod tests {
             .unwrap();
         app.document.current_scene = Some(document);
         app
+    }
+
+    /// UI Studio 已打开 `ui/shop.ui.json`，且 UI Studio 标签处于聚焦状态。
+    fn ui_studio_app(label: &str) -> (EditorApp, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "rustlua-command-router-{label}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("ui")).unwrap();
+        let spec: rustlua_ui_spec::UiSpec = serde_json::from_value(serde_json::json!({
+            "spec_version": 1,
+            "document": {"kind": "widget", "name": "shop"},
+            "root": {"key": "root", "type": "panel",
+                     "children": [{"key": "title", "type": "text", "text": "Shop"}]}
+        }))
+        .unwrap();
+        let encoded = editor::ui_spec_host::encode_spec(&spec).unwrap();
+        std::fs::write(root.join("ui/shop.ui.json"), &encoded).unwrap();
+
+        let mut app = test_app();
+        app.project = ProjectInfo {
+            root: root.clone(),
+            version: "test".to_owned(),
+            directories: Vec::new(),
+        };
+        app.project_loaded = true;
+        let mut studio = editor::ui_studio::UiStudio::new(root.clone());
+        studio.open("ui/shop.ui.json").expect("打开 UI 文档");
+        app.ui_studio_panel.studio = Some(studio);
+        app.show_ui_studio = true;
+        let mut dock = crate::dock::default_dock_state();
+        dock.main_surface_mut()
+            .push_to_first_leaf(crate::dock::DockTab::UiStudio);
+        assert!(crate::dock::focus_tab(
+            &mut dock,
+            crate::dock::DockTab::UiStudio
+        ));
+        app.dock_state = Some(dock);
+        (app, root)
+    }
+
+    /// 全局 Undo 按聚焦标签分流：UI Studio 聚焦且还有「接受」可撤时优先消费它；
+    /// 栈空后自动落回场景历史。两条栈互不共享（UI Undo 不得吞掉场景历史，反之亦然）。
+    #[test]
+    fn focused_ui_studio_consumes_undo_before_scene_history() {
+        use rustlua_ui_spec::{UiPatch, UiPatchOp};
+
+        let (mut app, root) = ui_studio_app("ui-undo");
+        let original = app.ui_studio_panel.studio.as_ref().unwrap().revision();
+        // 场景侧先造一条历史：UI Studio 聚焦时它必须原地不动。
+        assert_eq!(
+            app.dispatch(EditorCommand::CreateEntity {
+                name: "SceneChild".to_owned(),
+                parent: Some(SceneEntityId(1)),
+                transform_3d: false,
+            }),
+            CommandResult::Applied
+        );
+        assert_eq!(app.history.undo_len(), 1);
+
+        let accepted_revision = {
+            let studio = app.ui_studio_panel.studio.as_mut().unwrap();
+            let proposal = studio
+                .submit_patch(UiPatch {
+                    base_revision: original,
+                    ops: vec![UiPatchOp::SetEvent {
+                        key: "title".to_owned(),
+                        event: "click".to_owned(),
+                        function: "shop.open".to_owned(),
+                    }],
+                })
+                .expect("提交提案");
+            studio
+                .accept(&proposal.proposal_id)
+                .expect("接受提案")
+                .revision
+        };
+        assert_ne!(accepted_revision, original);
+
+        // UI Studio 聚焦 → Undo 消费 UI 栈，场景历史不动。
+        let dock = app.dock_state.as_mut().unwrap();
+        assert!(crate::dock::focus_tab(dock, crate::dock::DockTab::UiStudio));
+        assert_eq!(
+            crate::dock::active_tab(app.dock_state.as_mut().unwrap()),
+            Some(crate::dock::DockTab::UiStudio),
+            "前置：UI Studio 必须是活动标签"
+        );
+        assert_eq!(
+            app.ui_studio_panel.studio.as_ref().unwrap().undo_len(),
+            1,
+            "前置：接受一次后必须有可撤销项"
+        );
+        assert_eq!(app.dispatch(EditorCommand::Undo), CommandResult::Applied);
+        assert_eq!(
+            app.ui_studio_panel.studio.as_ref().unwrap().revision(),
+            original,
+            "撤销接受必须把 revision 还原"
+        );
+        assert_eq!(app.history.undo_len(), 1, "场景历史不得被 UI Undo 消费");
+        // UI 栈已空 → 同一个焦点下继续 Undo 才落回场景历史。
+        assert_eq!(app.dispatch(EditorCommand::Undo), CommandResult::Applied);
+        assert_eq!(app.history.undo_len(), 0);
+        assert_eq!(
+            app.ui_studio_panel.studio.as_ref().unwrap().revision(),
+            original,
+            "已空的 UI 栈不因场景 Undo 改变"
+        );
+
+        // Scene 聚焦 → 同一条命令直接走场景历史。
+        assert_eq!(
+            app.dispatch(EditorCommand::CreateEntity {
+                name: "Second".to_owned(),
+                parent: None,
+                transform_3d: false,
+            }),
+            CommandResult::Applied
+        );
+        let dock = app.dock_state.as_mut().unwrap();
+        assert!(crate::dock::focus_tab(dock, crate::dock::DockTab::Scene));
+        assert_eq!(app.dispatch(EditorCommand::Undo), CommandResult::Applied);
+        assert_eq!(app.history.undo_len(), 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 全局 Redo 与 Undo 对称：UI Studio 聚焦且重做栈非空时优先消费它；
+    /// 栈空后落回场景历史，两条栈互不吞。
+    #[test]
+    fn focused_ui_studio_consumes_redo_before_scene_history() {
+        use rustlua_ui_spec::{UiPatch, UiPatchOp};
+
+        let (mut app, root) = ui_studio_app("ui-redo");
+        let original = app.ui_studio_panel.studio.as_ref().unwrap().revision();
+        // 场景侧先造一条「可重做」：创建实体再撤销。
+        assert_eq!(
+            app.dispatch(EditorCommand::CreateEntity {
+                name: "SceneChild".to_owned(),
+                parent: Some(SceneEntityId(1)),
+                transform_3d: false,
+            }),
+            CommandResult::Applied
+        );
+        assert_eq!(app.dispatch(EditorCommand::Undo), CommandResult::Applied);
+        assert!(app.history.can_redo());
+
+        let accepted_revision = {
+            let studio = app.ui_studio_panel.studio.as_mut().unwrap();
+            let proposal = studio
+                .submit_patch(UiPatch {
+                    base_revision: original,
+                    ops: vec![UiPatchOp::SetEvent {
+                        key: "title".to_owned(),
+                        event: "click".to_owned(),
+                        function: "shop.open".to_owned(),
+                    }],
+                })
+                .expect("提交提案");
+            studio
+                .accept(&proposal.proposal_id)
+                .expect("接受提案")
+                .revision
+        };
+        let dock = app.dock_state.as_mut().unwrap();
+        assert!(crate::dock::focus_tab(dock, crate::dock::DockTab::UiStudio));
+        assert_eq!(app.dispatch(EditorCommand::Undo), CommandResult::Applied);
+        assert_eq!(
+            app.ui_studio_panel.studio.as_ref().unwrap().revision(),
+            original
+        );
+        assert!(app.ui_studio_panel.studio.as_ref().unwrap().can_redo());
+
+        // UI Studio 聚焦 → Redo 消费 UI 栈，场景重做栈原地不动。
+        assert_eq!(app.dispatch(EditorCommand::Redo), CommandResult::Applied);
+        assert_eq!(
+            app.ui_studio_panel.studio.as_ref().unwrap().revision(),
+            accepted_revision,
+            "重做接受必须回到接受后的 revision"
+        );
+        assert!(app.history.can_redo(), "场景重做栈不得被 UI Redo 消费");
+        assert!(!app.ui_studio_panel.studio.as_ref().unwrap().can_redo());
+
+        // UI 栈已空 → 同一条命令落回场景历史。
+        assert_eq!(app.dispatch(EditorCommand::Redo), CommandResult::Applied);
+        assert!(!app.history.can_redo());
+        assert_eq!(
+            app.ui_studio_panel.studio.as_ref().unwrap().revision(),
+            accepted_revision,
+            "已空的 UI 栈不因场景 Redo 改变"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// **唯一的变换与相机组件**（第 57 轮）：从"添加组件"入口加进来的默认载荷必须是

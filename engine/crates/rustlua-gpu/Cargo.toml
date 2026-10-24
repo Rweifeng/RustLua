@@ -1,0 +1,44 @@
+[package]
+name = "rustlua-gpu"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+webgl = ["wgpu/webgl"]
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+bytemuck.workspace = true
+tracing.workspace = true
+pollster = "0.4"
+winit = "0.30"
+web-time = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rustlua-assets.workspace = true
+rustlua-camera.workspace = true
+rustlua-ecs.workspace = true
+rustlua-infra.workspace = true
+rustlua-math.workspace = true
+rustlua-render.workspace = true
+# `rustlua-infra` 的 `rand` 在 wasm32-unknown-unknown 上要 getrandom 的 `js` 后端，否则
+# 该 crate 直接 compile_error。原先这条由 `engine`（渲染器的旧住址）代 Decl；渲染器搬出来后
+# 本 crate 必须自己声明，不然单独 `cargo check -p rustlua-gpu --target wasm32-unknown-unknown`
+# 和只依赖它的 `gpu-web-probe` 都编不过。原生上 `js` 是空特性，不改变行为。
+getrandom.workspace = true
+
+[dev-dependencies]
+engine.workspace = true
+rustlua-input.workspace = true
+rustlua-scene.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wgpu = { version = "27", default-features = false, features = ["std", "wgsl"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+wgpu = "27"
+naga = { version = "27", features = ["wgsl-in"] }

@@ -1,7 +1,8 @@
 //! Native startup image; no runtime scene, text or progress is needed to present it.
 use std::path::{Component, Path, PathBuf};
 
-use engine::host::{OverlayVertex, RenderOutcome, Renderer, SceneDraw, SceneMesh};
+use engine::host::{OverlayVertex, SceneDraw, SceneMesh};
+use rustlua_gpu::{RenderOutcome, Renderer};
 
 const TEXTURE_KEY: &str = "native-splash://startup-image";
 

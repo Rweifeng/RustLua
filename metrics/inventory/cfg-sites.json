@@ -1,15 +1,15 @@
 {
   "schema": 1,
-  "generated_at": "2026-10-21T07:55:38.276Z",
+  "generated_at": "2026-10-24T11:32:49.680Z",
   "counts": {
-    "wasm_attrs": 48,
+    "wasm_attrs": 53,
     "wasm_macros": 4,
-    "not_wasm_attrs": 37,
+    "not_wasm_attrs": 62,
     "platform": 50,
-    "feature": 10,
-    "test": 254,
+    "feature": 41,
+    "test": 331,
     "other": 5,
-    "total": 408
+    "total": 546
   },
   "sites": [
     {
@@ -33,16 +33,6 @@
       "attr_or_macro": "attr"
     },
     {
-      "key": "assetc|crates/assetc/src/lib.rs|not(windows)||1",
-      "crate": "assetc",
-      "file": "crates/assetc/src/lib.rs",
-      "predicate": "not(windows)",
-      "item": "(none)",
-      "occurrence": 1,
-      "kind": "platform",
-      "attr_or_macro": "attr"
-    },
-    {
       "key": "assetc|crates/assetc/src/lib.rs|test||1",
       "crate": "assetc",
       "file": "crates/assetc/src/lib.rs",
@@ -53,19 +43,29 @@
       "attr_or_macro": "attr"
     },
     {
-      "key": "assetc|crates/assetc/src/lib.rs|test||2",
+      "key": "assetc|crates/assetc/src/package.rs|test||1",
       "crate": "assetc",
-      "file": "crates/assetc/src/lib.rs",
+      "file": "crates/assetc/src/package.rs",
       "predicate": "test",
       "item": "(none)",
-      "occurrence": 2,
+      "occurrence": 1,
       "kind": "test",
       "attr_or_macro": "attr"
     },
     {
-      "key": "assetc|crates/assetc/src/lib.rs|windows||1",
+      "key": "assetc|crates/assetc/src/tests.rs|not(windows)||1",
       "crate": "assetc",
-      "file": "crates/assetc/src/lib.rs",
+      "file": "crates/assetc/src/tests.rs",
+      "predicate": "not(windows)",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "platform",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "assetc|crates/assetc/src/tests.rs|windows||1",
+      "crate": "assetc",
+      "file": "crates/assetc/src/tests.rs",
       "predicate": "windows",
       "item": "(none)",
       "occurrence": 1,
@@ -89,6 +89,46 @@
       "predicate": "test",
       "item": "(none)",
       "occurrence": 2,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/ai_host.rs|test||1",
+      "crate": "editor",
+      "file": "crates/editor/src/ai_host.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/ai_host.rs|test||2",
+      "crate": "editor",
+      "file": "crates/editor/src/ai_host.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 2,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/ai_host.rs|test||3",
+      "crate": "editor",
+      "file": "crates/editor/src/ai_host.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 3,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/anim_ops.rs|test||1",
+      "crate": "editor",
+      "file": "crates/editor/src/anim_ops.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
       "kind": "test",
       "attr_or_macro": "attr"
     },
@@ -283,6 +323,16 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "editor|crates/editor/src/graph_ops.rs|test||1",
+      "crate": "editor",
+      "file": "crates/editor/src/graph_ops.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "editor|crates/editor/src/gui_evidence.rs|debug_assertions||1",
       "crate": "editor",
       "file": "crates/editor/src/gui_evidence.rs",
@@ -423,6 +473,296 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||1",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||10",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 10,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||11",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 11,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||12",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 12,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||13",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 13,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||14",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 14,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||15",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 15,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||16",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 16,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||17",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 17,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||18",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 18,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||19",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 19,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||2",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 2,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||20",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 20,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||21",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 21,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||22",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 22,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||23",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 23,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||24",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 24,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||25",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 25,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||3",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 3,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||4",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 4,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||5",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 5,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||6",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 6,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||7",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 7,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||8",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 8,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|feature = \"ai-bridge\"||9",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 9,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|not(feature = \"ai-bridge\"), allow(unused_mut)||1",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "not(feature = \"ai-bridge\"), allow(unused_mut)",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|not(feature = \"ai-bridge\")||1",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "not(feature = \"ai-bridge\")",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|not(feature = \"ai-bridge\")||2",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "not(feature = \"ai-bridge\")",
+      "item": "(none)",
+      "occurrence": 2,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/main.rs|not(feature = \"ai-bridge\")||3",
+      "crate": "editor",
+      "file": "crates/editor/src/main.rs",
+      "predicate": "not(feature = \"ai-bridge\")",
+      "item": "(none)",
+      "occurrence": 3,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "editor|crates/editor/src/main.rs|test||1",
       "crate": "editor",
       "file": "crates/editor/src/main.rs",
@@ -453,6 +793,16 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "editor|crates/editor/src/material_ops.rs|test||1",
+      "crate": "editor",
+      "file": "crates/editor/src/material_ops.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "editor|crates/editor/src/menu.rs|test||1",
       "crate": "editor",
       "file": "crates/editor/src/menu.rs",
@@ -469,6 +819,66 @@
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/panels/assistant.rs|test||1",
+      "crate": "editor",
+      "file": "crates/editor/src/panels/assistant.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/panels/assistant.rs|test||2",
+      "crate": "editor",
+      "file": "crates/editor/src/panels/assistant.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 2,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/panels/assistant.rs|test||3",
+      "crate": "editor",
+      "file": "crates/editor/src/panels/assistant.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 3,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/panels/assistant.rs|test||4",
+      "crate": "editor",
+      "file": "crates/editor/src/panels/assistant.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 4,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/panels/assistant.rs|test||5",
+      "crate": "editor",
+      "file": "crates/editor/src/panels/assistant.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 5,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/panels/assistant.rs|test||6",
+      "crate": "editor",
+      "file": "crates/editor/src/panels/assistant.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 6,
       "kind": "test",
       "attr_or_macro": "attr"
     },
@@ -516,6 +926,16 @@
       "key": "editor|crates/editor/src/panels/game_view.rs|test||1",
       "crate": "editor",
       "file": "crates/editor/src/panels/game_view.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/panels/graph.rs|test||1",
+      "crate": "editor",
+      "file": "crates/editor/src/panels/graph.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,
@@ -603,6 +1023,36 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "editor|crates/editor/src/panels/material.rs|test||1",
+      "crate": "editor",
+      "file": "crates/editor/src/panels/material.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/panels/mod.rs|feature = \"ai-bridge\"||1",
+      "crate": "editor",
+      "file": "crates/editor/src/panels/mod.rs",
+      "predicate": "feature = \"ai-bridge\"",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/panels/mod.rs|not(feature = \"ai-bridge\")||1",
+      "crate": "editor",
+      "file": "crates/editor/src/panels/mod.rs",
+      "predicate": "not(feature = \"ai-bridge\")",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "feature",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "editor|crates/editor/src/panels/mod.rs|test||1",
       "crate": "editor",
       "file": "crates/editor/src/panels/mod.rs",
@@ -653,9 +1103,29 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "editor|crates/editor/src/panels/scene_view/draw.rs|test||1",
+      "crate": "editor",
+      "file": "crates/editor/src/panels/scene_view/draw.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "editor|crates/editor/src/panels/scene_view/mod.rs|test||1",
       "crate": "editor",
       "file": "crates/editor/src/panels/scene_view/mod.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/panels/scene_view/view_state.rs|test||1",
+      "crate": "editor",
+      "file": "crates/editor/src/panels/scene_view/view_state.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,
@@ -683,9 +1153,29 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "editor|crates/editor/src/panels/timeline.rs|test||1",
+      "crate": "editor",
+      "file": "crates/editor/src/panels/timeline.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "editor|crates/editor/src/panels/toolbar.rs|test||1",
       "crate": "editor",
       "file": "crates/editor/src/panels/toolbar.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/panels/ui_studio.rs|test||1",
+      "crate": "editor",
+      "file": "crates/editor/src/panels/ui_studio.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,
@@ -746,6 +1236,16 @@
       "key": "editor|crates/editor/src/play_sync.rs|test||1",
       "crate": "editor",
       "file": "crates/editor/src/play_sync.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/plugins.rs|test||1",
+      "crate": "editor",
+      "file": "crates/editor/src/plugins.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,
@@ -893,6 +1393,16 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "editor|crates/editor/src/review.rs|test||1",
+      "crate": "editor",
+      "file": "crates/editor/src/review.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "editor|crates/editor/src/runtime_perf.rs|not(windows), allow(dead_code)||1",
       "crate": "editor",
       "file": "crates/editor/src/runtime_perf.rs",
@@ -1033,6 +1543,46 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "editor|crates/editor/src/shader_watch.rs|test||1",
+      "crate": "editor",
+      "file": "crates/editor/src/shader_watch.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/ui_editor.rs|test||1",
+      "crate": "editor",
+      "file": "crates/editor/src/ui_editor.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/ui_spec_host.rs|test||1",
+      "crate": "editor",
+      "file": "crates/editor/src/ui_spec_host.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "editor|crates/editor/src/ui_studio.rs|test||1",
+      "crate": "editor",
+      "file": "crates/editor/src/ui_studio.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "editor|crates/editor/src/util.rs|all(windows, not(test))||1",
       "crate": "editor",
       "file": "crates/editor/src/util.rs",
@@ -1110,16 +1660,6 @@
       "item": "(none)",
       "occurrence": 1,
       "kind": "platform",
-      "attr_or_macro": "attr"
-    },
-    {
-      "key": "engine|crates/engine/src/host/fit.rs|test||1",
-      "crate": "engine",
-      "file": "crates/engine/src/host/fit.rs",
-      "predicate": "test",
-      "item": "(none)",
-      "occurrence": 1,
-      "kind": "test",
       "attr_or_macro": "attr"
     },
     {
@@ -1323,16 +1863,6 @@
       "attr_or_macro": "attr"
     },
     {
-      "key": "engine|crates/engine/src/host/mod.rs|target_arch = \"wasm32\"||1",
-      "crate": "engine",
-      "file": "crates/engine/src/host/mod.rs",
-      "predicate": "target_arch = \"wasm32\"",
-      "item": "(none)",
-      "occurrence": 1,
-      "kind": "wasm",
-      "attr_or_macro": "attr"
-    },
-    {
       "key": "engine|crates/engine/src/host/mod.rs|test||1",
       "crate": "engine",
       "file": "crates/engine/src/host/mod.rs",
@@ -1343,9 +1873,29 @@
       "attr_or_macro": "attr"
     },
     {
-      "key": "engine|crates/engine/src/host/renderer/mod.rs|test||1",
+      "key": "engine|crates/engine/src/host/profile_capture.rs|test||1",
       "crate": "engine",
-      "file": "crates/engine/src/host/renderer/mod.rs",
+      "file": "crates/engine/src/host/profile_capture.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "engine|crates/engine/src/host/profile_trace.rs|test||1",
+      "crate": "engine",
+      "file": "crates/engine/src/host/profile_trace.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "engine|crates/engine/src/host/runtime_scene/environment.rs|test||1",
+      "crate": "engine",
+      "file": "crates/engine/src/host/runtime_scene/environment.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,
@@ -2043,9 +2593,39 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "rustlua-animation|crates/rustlua-animation/src/anim_asset.rs|test||1",
+      "crate": "rustlua-animation",
+      "file": "crates/rustlua-animation/src/anim_asset.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-animation|crates/rustlua-animation/src/anim_edit.rs|test||1",
+      "crate": "rustlua-animation",
+      "file": "crates/rustlua-animation/src/anim_edit.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "rustlua-animation|crates/rustlua-animation/src/animation_lua.rs|test||1",
       "crate": "rustlua-animation",
       "file": "crates/rustlua-animation/src/animation_lua.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-animation|crates/rustlua-animation/src/animation_player.rs|test||1",
+      "crate": "rustlua-animation",
+      "file": "crates/rustlua-animation/src/animation_player.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,
@@ -2113,6 +2693,16 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "rustlua-assets-import|crates/rustlua-assets-import/src/environment.rs|test||1",
+      "crate": "rustlua-assets-import",
+      "file": "crates/rustlua-assets-import/src/environment.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "rustlua-assets-import|crates/rustlua-assets-import/src/import_cache.rs|test||1",
       "crate": "rustlua-assets-import",
       "file": "crates/rustlua-assets-import/src/import_cache.rs",
@@ -2173,6 +2763,16 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "rustlua-assets|crates/rustlua-assets/src/env_asset.rs|test||1",
+      "crate": "rustlua-assets",
+      "file": "crates/rustlua-assets/src/env_asset.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "rustlua-assets|crates/rustlua-assets/src/gltf_asset.rs|test||1",
       "crate": "rustlua-assets",
       "file": "crates/rustlua-assets/src/gltf_asset.rs",
@@ -2186,6 +2786,26 @@
       "key": "rustlua-assets|crates/rustlua-assets/src/hash.rs|test||1",
       "crate": "rustlua-assets",
       "file": "crates/rustlua-assets/src/hash.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-assets|crates/rustlua-assets/src/mat_asset.rs|test||1",
+      "crate": "rustlua-assets",
+      "file": "crates/rustlua-assets/src/mat_asset.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-assets|crates/rustlua-assets/src/mat_edit.rs|test||1",
+      "crate": "rustlua-assets",
+      "file": "crates/rustlua-assets/src/mat_edit.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,
@@ -2613,6 +3233,126 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "rustlua-editor-ai|crates/rustlua-editor-ai/src/bridge.rs|test||1",
+      "crate": "rustlua-editor-ai",
+      "file": "crates/rustlua-editor-ai/src/bridge.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-editor-ai|crates/rustlua-editor-ai/src/image_provider.rs|test||1",
+      "crate": "rustlua-editor-ai",
+      "file": "crates/rustlua-editor-ai/src/image_provider.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-editor-ai|crates/rustlua-editor-ai/src/import_tools.rs|test||1",
+      "crate": "rustlua-editor-ai",
+      "file": "crates/rustlua-editor-ai/src/import_tools.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-editor-ai|crates/rustlua-editor-ai/src/lua_check.rs|test||1",
+      "crate": "rustlua-editor-ai",
+      "file": "crates/rustlua-editor-ai/src/lua_check.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-editor-ai|crates/rustlua-editor-ai/src/mcp.rs|test||1",
+      "crate": "rustlua-editor-ai",
+      "file": "crates/rustlua-editor-ai/src/mcp.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-editor-ai|crates/rustlua-editor-ai/src/provider.rs|test||1",
+      "crate": "rustlua-editor-ai",
+      "file": "crates/rustlua-editor-ai/src/provider.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-editor-ai|crates/rustlua-editor-ai/src/replay.rs|test||1",
+      "crate": "rustlua-editor-ai",
+      "file": "crates/rustlua-editor-ai/src/replay.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-editor-ai|crates/rustlua-editor-ai/src/surface.rs|test||1",
+      "crate": "rustlua-editor-ai",
+      "file": "crates/rustlua-editor-ai/src/surface.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-editor-ai|crates/rustlua-editor-ai/src/ui_provider.rs|test||1",
+      "crate": "rustlua-editor-ai",
+      "file": "crates/rustlua-editor-ai/src/ui_provider.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-editor-ai|crates/rustlua-editor-ai/src/ui_tools.rs|test||1",
+      "crate": "rustlua-editor-ai",
+      "file": "crates/rustlua-editor-ai/src/ui_tools.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-editor-ai|crates/rustlua-editor-ai/src/vision_provider.rs|test||1",
+      "crate": "rustlua-editor-ai",
+      "file": "crates/rustlua-editor-ai/src/vision_provider.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-editor-api|crates/rustlua-editor-api/src/lib.rs|test||1",
+      "crate": "rustlua-editor-api",
+      "file": "crates/rustlua-editor-api/src/lib.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "rustlua-frame-abi|crates/rustlua-frame-abi/src/lib.rs|test||1",
       "crate": "rustlua-frame-abi",
       "file": "crates/rustlua-frame-abi/src/lib.rs",
@@ -2726,6 +3466,426 @@
       "key": "rustlua-gameplay|crates/rustlua-gameplay/src/world_data_state.rs|test||1",
       "crate": "rustlua-gameplay",
       "file": "crates/rustlua-gameplay/src/world_data_state.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/lib.rs|not(target_arch = \"wasm32\")||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/lib.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/lib.rs|not(target_arch = \"wasm32\")||2",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/lib.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 2,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/lib.rs|not(target_arch = \"wasm32\")||3",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/lib.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 3,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/lib.rs|not(target_arch = \"wasm32\")||4",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/lib.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 4,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/lib.rs|not(target_arch = \"wasm32\")||5",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/lib.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 5,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/lib.rs|target_arch = \"wasm32\"||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/lib.rs",
+      "predicate": "target_arch = \"wasm32\"",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/capabilities.rs|not(target_arch = \"wasm32\")||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/capabilities.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/capabilities.rs|not(target_arch = \"wasm32\")||2",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/capabilities.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 2,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/capabilities.rs|not(target_arch = \"wasm32\")||3",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/capabilities.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 3,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/capabilities.rs|target_arch = \"wasm32\"||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/capabilities.rs",
+      "predicate": "target_arch = \"wasm32\"",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/capabilities.rs|target_arch = \"wasm32\"||2",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/capabilities.rs",
+      "predicate": "target_arch = \"wasm32\"",
+      "item": "(none)",
+      "occurrence": 2,
+      "kind": "wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/capabilities.rs|test||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/capabilities.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/capabilities.rs|test||2",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/capabilities.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 2,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/capabilities.rs|test||3",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/capabilities.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 3,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/compute.rs|not(target_arch = \"wasm32\")||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/compute.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/compute.rs|not(target_arch = \"wasm32\")||2",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/compute.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 2,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/compute.rs|target_arch = \"wasm32\"||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/compute.rs",
+      "predicate": "target_arch = \"wasm32\"",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/compute.rs|target_arch = \"wasm32\"||2",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/compute.rs",
+      "predicate": "target_arch = \"wasm32\"",
+      "item": "(none)",
+      "occurrence": 2,
+      "kind": "wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct.rs|not(target_arch = \"wasm32\")||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/construct.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct.rs|not(target_arch = \"wasm32\")||2",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/construct.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 2,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct.rs|not(target_arch = \"wasm32\")||3",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/construct.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 3,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct.rs|not(target_arch = \"wasm32\")||4",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/construct.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 4,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct.rs|not(target_arch = \"wasm32\")||5",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/construct.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 5,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct.rs|not(target_arch = \"wasm32\")||6",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/construct.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 6,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/construct.rs|target_arch = \"wasm32\"||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/construct.rs",
+      "predicate": "target_arch = \"wasm32\"",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/gpu_particles.rs|test||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/gpu_particles.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/mod.rs|not(target_arch = \"wasm32\")||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/mod.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/mod.rs|not(target_arch = \"wasm32\")||2",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/mod.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 2,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/mod.rs|not(target_arch = \"wasm32\")||3",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/mod.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 3,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/mod.rs|not(target_arch = \"wasm32\")||4",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/mod.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 4,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/mod.rs|not(target_arch = \"wasm32\")||5",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/mod.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 5,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/mod.rs|not(target_arch = \"wasm32\")||6",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/mod.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 6,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/mod.rs|not(target_arch = \"wasm32\")||7",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/mod.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 7,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/mod.rs|test||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/mod.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/pass_timestamps.rs|test||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/pass_timestamps.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/pipeline_cache.rs|test||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/pipeline_cache.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/shader_hot_reload.rs|test||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/shader_hot_reload.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/renderer/tests/mod.rs|not(target_arch = \"wasm32\")||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/renderer/tests/mod.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/shader_library.rs|test||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/shader_library.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/shader_preprocess.rs|test||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/shader_preprocess.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/shader_reload.rs|test||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/shader_reload.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-gpu|crates/rustlua-gpu/src/shader.rs|test||1",
+      "crate": "rustlua-gpu",
+      "file": "crates/rustlua-gpu/src/shader.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,
@@ -2873,16 +4033,6 @@
       "attr_or_macro": "attr"
     },
     {
-      "key": "rustlua-infra|crates/rustlua-infra/src/editor_plugins.rs|test||1",
-      "crate": "rustlua-infra",
-      "file": "crates/rustlua-infra/src/editor_plugins.rs",
-      "predicate": "test",
-      "item": "(none)",
-      "occurrence": 1,
-      "kind": "test",
-      "attr_or_macro": "attr"
-    },
-    {
       "key": "rustlua-infra|crates/rustlua-infra/src/frame_clock.rs|test||1",
       "crate": "rustlua-infra",
       "file": "crates/rustlua-infra/src/frame_clock.rs",
@@ -2909,6 +4059,16 @@
       "predicate": "not(target_arch = \"wasm32\")",
       "item": "(none)",
       "occurrence": 1,
+      "kind": "not-wasm",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-infra|crates/rustlua-infra/src/logging.rs|not(target_arch = \"wasm32\")||10",
+      "crate": "rustlua-infra",
+      "file": "crates/rustlua-infra/src/logging.rs",
+      "predicate": "not(target_arch = \"wasm32\")",
+      "item": "(none)",
+      "occurrence": 10,
       "kind": "not-wasm",
       "attr_or_macro": "attr"
     },
@@ -3573,6 +4733,26 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "rustlua-render|crates/rustlua-render/src/environment.rs|test||1",
+      "crate": "rustlua-render",
+      "file": "crates/rustlua-render/src/environment.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-render|crates/rustlua-render/src/fit.rs|test||1",
+      "crate": "rustlua-render",
+      "file": "crates/rustlua-render/src/fit.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "rustlua-render|crates/rustlua-render/src/font_subset.rs|test||1",
       "crate": "rustlua-render",
       "file": "crates/rustlua-render/src/font_subset.rs",
@@ -3686,6 +4866,16 @@
       "key": "rustlua-render|crates/rustlua-render/src/render_plan.rs|test||1",
       "crate": "rustlua-render",
       "file": "crates/rustlua-render/src/render_plan.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-render|crates/rustlua-render/src/render_settings.rs|test||1",
+      "crate": "rustlua-render",
+      "file": "crates/rustlua-render/src/render_settings.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,
@@ -3953,6 +5143,106 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "rustlua-ui-spec|crates/rustlua-ui-spec/src/asset.rs|test||1",
+      "crate": "rustlua-ui-spec",
+      "file": "crates/rustlua-ui-spec/src/asset.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-ui-spec|crates/rustlua-ui-spec/src/capabilities.rs|test||1",
+      "crate": "rustlua-ui-spec",
+      "file": "crates/rustlua-ui-spec/src/capabilities.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-ui-spec|crates/rustlua-ui-spec/src/compiler.rs|test||1",
+      "crate": "rustlua-ui-spec",
+      "file": "crates/rustlua-ui-spec/src/compiler.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-ui-spec|crates/rustlua-ui-spec/src/patch.rs|test||1",
+      "crate": "rustlua-ui-spec",
+      "file": "crates/rustlua-ui-spec/src/patch.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-ui-spec|crates/rustlua-ui-spec/src/preview.rs|test||1",
+      "crate": "rustlua-ui-spec",
+      "file": "crates/rustlua-ui-spec/src/preview.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-ui-spec|crates/rustlua-ui-spec/src/proposal.rs|test||1",
+      "crate": "rustlua-ui-spec",
+      "file": "crates/rustlua-ui-spec/src/proposal.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-ui-spec|crates/rustlua-ui-spec/src/slice.rs|test||1",
+      "crate": "rustlua-ui-spec",
+      "file": "crates/rustlua-ui-spec/src/slice.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-ui-spec|crates/rustlua-ui-spec/src/spec.rs|test||1",
+      "crate": "rustlua-ui-spec",
+      "file": "crates/rustlua-ui-spec/src/spec.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-ui-spec|crates/rustlua-ui-spec/src/validate.rs|test||1",
+      "crate": "rustlua-ui-spec",
+      "file": "crates/rustlua-ui-spec/src/validate.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-ui|crates/rustlua-ui/src/lua_advanced.rs|test||1",
+      "crate": "rustlua-ui",
+      "file": "crates/rustlua-ui/src/lua_advanced.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "rustlua-ui|crates/rustlua-ui/src/lua_nav.rs|test||1",
       "crate": "rustlua-ui",
       "file": "crates/rustlua-ui/src/lua_nav.rs",
@@ -4013,6 +5303,16 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "rustlua-ui|crates/rustlua-ui/src/ui_interaction.rs|test||1",
+      "crate": "rustlua-ui",
+      "file": "crates/rustlua-ui/src/ui_interaction.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "rustlua-ui|crates/rustlua-ui/src/ui_layout_cache.rs|test||1",
       "crate": "rustlua-ui",
       "file": "crates/rustlua-ui/src/ui_layout_cache.rs",
@@ -4033,6 +5333,16 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "rustlua-ui|crates/rustlua-ui/src/ui_nav_stack.rs|test||1",
+      "crate": "rustlua-ui",
+      "file": "crates/rustlua-ui/src/ui_nav_stack.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "rustlua-ui|crates/rustlua-ui/src/ui_navigation.rs|test||1",
       "crate": "rustlua-ui",
       "file": "crates/rustlua-ui/src/ui_navigation.rs",
@@ -4043,9 +5353,29 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "rustlua-ui|crates/rustlua-ui/src/ui_rich_text.rs|test||1",
+      "crate": "rustlua-ui",
+      "file": "crates/rustlua-ui/src/ui_rich_text.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "rustlua-ui|crates/rustlua-ui/src/ui_scene_layout.rs|test||1",
       "crate": "rustlua-ui",
       "file": "crates/rustlua-ui/src/ui_scene_layout.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-ui|crates/rustlua-ui/src/ui_scroll_view.rs|test||1",
+      "crate": "rustlua-ui",
+      "file": "crates/rustlua-ui/src/ui_scroll_view.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,
@@ -4073,6 +5403,26 @@
       "attr_or_macro": "attr"
     },
     {
+      "key": "rustlua-ui|crates/rustlua-ui/src/ui_text_input.rs|test||1",
+      "crate": "rustlua-ui",
+      "file": "crates/rustlua-ui/src/ui_text_input.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-ui|crates/rustlua-ui/src/ui_virtual_list.rs|test||1",
+      "crate": "rustlua-ui",
+      "file": "crates/rustlua-ui/src/ui_virtual_list.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
       "key": "rustlua-ui|crates/rustlua-ui/src/ui.rs|test||1",
       "crate": "rustlua-ui",
       "file": "crates/rustlua-ui/src/ui.rs",
@@ -4086,6 +5436,36 @@
       "key": "rustlua-ui|crates/rustlua-ui/src/world_text.rs|test||1",
       "crate": "rustlua-ui",
       "file": "crates/rustlua-ui/src/world_text.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-visual-script|crates/rustlua-visual-script/src/codegen.rs|test||1",
+      "crate": "rustlua-visual-script",
+      "file": "crates/rustlua-visual-script/src/codegen.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-visual-script|crates/rustlua-visual-script/src/graph.rs|test||1",
+      "crate": "rustlua-visual-script",
+      "file": "crates/rustlua-visual-script/src/graph.rs",
+      "predicate": "test",
+      "item": "(none)",
+      "occurrence": 1,
+      "kind": "test",
+      "attr_or_macro": "attr"
+    },
+    {
+      "key": "rustlua-visual-script|crates/rustlua-visual-script/src/registry.rs|test||1",
+      "crate": "rustlua-visual-script",
+      "file": "crates/rustlua-visual-script/src/registry.rs",
       "predicate": "test",
       "item": "(none)",
       "occurrence": 1,

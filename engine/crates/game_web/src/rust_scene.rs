@@ -21,7 +21,8 @@
 use std::path::Path;
 
 use engine::host::runtime_scene::{ParticleDispatchReport, TextRenderMode};
-use engine::host::{Renderer, RuntimeScene, SceneMesh};
+use engine::host::{RuntimeScene, SceneMesh};
+use rustlua_gpu::Renderer;
 use rustlua_input::input::InputSnapshot;
 use rustlua_scene::scene::Scene;
 

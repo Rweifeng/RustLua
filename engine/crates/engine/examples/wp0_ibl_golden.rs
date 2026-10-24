@@ -22,12 +22,13 @@
 
 use std::{env, fs, path::PathBuf};
 
-use engine::host::frame::{Scene3d, SceneMesh};
-use engine::host::{RenderOutcome, Renderer, RuntimeScene, apply_scene_environment};
+use engine::host::{RuntimeScene, apply_scene_environment};
 use rustlua_assets_import::environment::{BakeOptions, bake_hdr_bytes};
 use rustlua_camera::camera::Viewport;
+use rustlua_gpu::{OffscreenRequest, OffscreenTarget, RenderOutcome, Renderer};
 use rustlua_infra::games_dir;
 use rustlua_math::math3d::Vec3;
+use rustlua_render::frame::{Scene3d, SceneMesh};
 use rustlua_render::picking::screen_from_world;
 use rustlua_render::render_settings::{IblMode, RenderSettings, ToggleMode};
 use rustlua_scene::scene::{Scene, SceneEntityId};
@@ -49,22 +50,10 @@ fn main() {
     let root = games_dir().join("examples").join("game_api");
     let (bake_ms, env_bytes, source_bytes) = verify_committed_environment(&root);
 
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::LowPower,
-        compatible_surface: None,
-        force_fallback_adapter: true,
-    }))
-    .expect("a fallback GPU adapter is required for the IBL golden");
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("wp0-ibl-golden"),
-        required_features: wgpu::Features::empty(),
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        required_limits: wgpu::Limits::default(),
-        memory_hints: wgpu::MemoryHints::Performance,
-        trace: wgpu::Trace::Off,
-    }))
-    .expect("request golden device");
+    let fixture = OffscreenTarget::acquire(&OffscreenRequest::new("wp0-ibl-golden", WIDTH, HEIGHT))
+        .expect("offscreen fixture for wp0-ibl-golden");
+    let device = fixture.device();
+    let queue = fixture.queue().clone();
     let mut renderer =
         Renderer::new_offscreen(device.clone(), queue, Some(root.clone()), false, true)
             .expect("offscreen renderer");
@@ -73,21 +62,8 @@ fn main() {
         tier.supports_specular(),
         "golden 需要 Tier A/B 设备来验证预过滤镜面；当前 {tier:?}"
     );
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("wp0-ibl-golden-target"),
-        size: wgpu::Extent3d {
-            width: WIDTH,
-            height: HEIGHT,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let texture = fixture.texture();
+    let view = fixture.view();
     let viewport = Viewport::new(WIDTH as f32, HEIGHT as f32).expect("viewport");
 
     // ---------- 1. 未声明 Environment + LDR 默认设置：R02 基线 ----------
@@ -95,7 +71,7 @@ fn main() {
     let mut plain = RuntimeScene::from_scene_edit(Some(&root), scene(false)).expect("plain scene");
     let plain_mesh = plain.vertices(WIDTH, HEIGHT).expect("plain 2D extraction");
     let plain_3d = plain.scene_3d(viewport).expect("plain 3D extraction");
-    let baseline = render(&mut renderer, &plain_mesh, &plain_3d, &texture, &view);
+    let baseline = render(&mut renderer, &plain_mesh, &plain_3d, texture, view);
 
     // ---------- 2. 声明 Environment 但 ibl=off：必须与基线逐字节相同 ----------
     let mut runtime = RuntimeScene::from_scene_edit(Some(&root), scene(true)).expect("IBL scene");
@@ -107,7 +83,7 @@ fn main() {
     let extracted = runtime.scene_3d(viewport).expect("IBL 3D extraction");
     upload_environment_only(&mut renderer, &runtime);
     assert_eq!(renderer.ibl_mode(), IblMode::Off);
-    let env_off = render(&mut renderer, &mesh, &extracted, &texture, &view);
+    let env_off = render(&mut renderer, &mesh, &extracted, texture, view);
     assert_eq!(
         baseline, env_off,
         "ibl=off 且声明了 Environment 时必须保持 R02 像素（LDR 默认设置）"
@@ -122,7 +98,7 @@ fn main() {
         "cubemap 应为 128px/5mip：{applied:?}"
     );
     assert_eq!(renderer.ibl_mode(), IblMode::Full);
-    let full = render(&mut renderer, &mesh, &extracted, &texture, &view);
+    let full = render(&mut renderer, &mesh, &extracted, texture, view);
     let (full_vs_off, full_vs_off_at) = max_channel_delta(&full, &env_off);
     assert!(
         full_vs_off >= 8,
@@ -203,7 +179,7 @@ fn main() {
         "只有 SH 时 IBL 必须落在 Diffuse（Tier C 的回退档）"
     );
     assert_eq!(renderer.environment_map_info(), None);
-    let sh_only = render(&mut renderer, &mesh, &extracted, &texture, &view);
+    let sh_only = render(&mut renderer, &mesh, &extracted, texture, view);
     let (sh_vs_full, sh_vs_full_at) = max_channel_delta(&sh_only, &full);
     assert!(
         sh_vs_full >= 8,
@@ -212,7 +188,7 @@ fn main() {
 
     // ---------- 5. 再关掉 IBL：回到与基线完全相同的 LDR 像素 ----------
     renderer.set_render_settings(RenderSettings::default());
-    let restored = render(&mut renderer, &mesh, &extracted, &texture, &view);
+    let restored = render(&mut renderer, &mesh, &extracted, texture, view);
     assert_eq!(
         baseline, restored,
         "ibl=off 必须逐字节恢复 R02 输出（环境 uniform 不参与 Off 变体）"

@@ -14,6 +14,7 @@ use editor::{
 use rustlua_ecs::transform::Transform3D;
 use rustlua_infra::logging::LogSink;
 use rustlua_scene::scene::SceneEntityId;
+use rustlua_ui::ui_virtual_list::{SlotPool, VirtualList, VirtualListConfig, bind_window};
 use std::{fs, path::PathBuf, time::Instant};
 
 /// One measured scenario.
@@ -1621,6 +1622,47 @@ pub(crate) fn run_baseline() -> BaselineReport {
         let ok = parse_ns * 10.0 < rows_per_call_ns && notes_ns * 3.0 < rows_per_call_ns;
         let _ = &rows_samples;
         scenarios.push(summarize("inspector_schema_path", &samples, notes, ok));
+    }
+
+    // M76-07：1000 项虚拟列表的逐帧绑定开销。量的是"算窗口 + 绑槽位 + 算矩形"，
+    // 不含文本测量/绘制/上传；内存也没有堆计数器，只钉结构性上界（槽位池不随总项数增长）。
+    {
+        let total = 1_000;
+        let viewport = 720.0;
+        let frames = 1_000usize;
+        let keys = (0..total)
+            .map(|index| format!("item-{index}"))
+            .collect::<Vec<_>>();
+        let mut list = VirtualList::new(VirtualListConfig::default(), total, viewport);
+        let mut pool = SlotPool::default();
+        let mut samples = Vec::with_capacity(frames);
+        let mut bound_total = 0usize;
+        let mut bound_max = 0usize;
+        for _ in 0..frames {
+            let started = Instant::now();
+            let bound = bind_window(&list, list.window(), &keys, &mut pool);
+            samples.push(started.elapsed().as_secs_f32() * 1000.0);
+            bound_total += bound.len();
+            bound_max = bound_max.max(bound.len());
+            list.scroll_by(7.0);
+            if list.offset() + viewport >= list.total_height() {
+                list.scroll_to(0.0);
+            }
+        }
+        let per_frame = bound_total / frames;
+        let capacity = pool.capacity();
+        scenarios.push(summarize(
+            "ui_virtual_list_1k",
+            &samples,
+            vec![
+                format!("total={total} frames={frames} viewport={viewport}"),
+                format!("bound_per_frame={per_frame} max={bound_max}"),
+                format!("slot_pool_capacity={capacity} bound_keys={}", pool.bound()),
+                "note: 只量逻辑层（窗口+槽位+矩形）；无文本测量/绘制/上传，也没有堆内存计数器"
+                    .to_owned(),
+            ],
+            per_frame <= 40 && bound_max <= 40 && capacity <= 40,
+        ));
     }
 
     BaselineReport { scenarios }

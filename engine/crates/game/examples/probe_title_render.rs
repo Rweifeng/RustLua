@@ -3,8 +3,9 @@
 //!
 //! Usage: cargo run -q -p game --example probe_title_render -- <game_jhyt-root> --offscreen
 
-use engine::host::{Renderer, RuntimeScene};
+use engine::host::RuntimeScene;
 use rustlua_camera::camera::Viewport;
+use rustlua_gpu::Renderer;
 use rustlua_input::input::InputSnapshot;
 use rustlua_scene::prefab::Prefab;
 use rustlua_scene::scene::Scene;
@@ -118,14 +119,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut pixels = None;
     for _ in 0..30 {
         match renderer.readback_frame(&target, VIEW_W, VIEW_H) {
-            engine::host::ReadbackStatus::Ready { pixels: got, .. } => {
+            rustlua_gpu::ReadbackStatus::Ready { pixels: got, .. } => {
                 pixels = Some(got);
                 break;
             }
-            engine::host::ReadbackStatus::Failed(error) => {
+            rustlua_gpu::ReadbackStatus::Failed(error) => {
                 return Err(format!("readback failed: {error}").into());
             }
-            engine::host::ReadbackStatus::Pending => {
+            rustlua_gpu::ReadbackStatus::Pending => {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
         }

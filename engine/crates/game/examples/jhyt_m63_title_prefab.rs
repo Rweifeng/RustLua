@@ -605,7 +605,7 @@ fn draw_span(mesh: &SceneMesh, name: &str) -> Option<(usize, usize)> {
 }
 
 /// 字形图集在读数表里的末段名：引擎侧的哨兵路径见
-/// `engine/crates/engine/src/host/frame.rs:173`（`FONT_ATLAS_TEXTURE_PATH`）。
+/// `engine/crates/rustlua-render/src/frame.rs`（`FONT_ATLAS_TEXTURE_PATH`）。
 const FONT_SEGMENT: &str = "__font_atlas__";
 
 /// 白图（纯色块）在读数表里的角色名：它没有文件名，`mesh.draws` 里以 `texture == 0` 出现。

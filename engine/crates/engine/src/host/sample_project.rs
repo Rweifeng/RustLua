@@ -1,21 +1,24 @@
 //! `examples/game_api` 的**工程级门**：示例工程是"活文档"，它的价值全在"真的能跑"。
 //!
-//! 四条漂移只有跑起来才看得见，所以这里各有一条门钉住：
+//! 五类漂移只有跑起来才看得见，所以这里各有一条门钉住：
 //!
 //! | 门 | 钉住的漂移 |
 //! |---|---|
 //! | [`sample_project_runs_every_scene_headless`] | 场景加载不了、脚本在实例化或步进期报错 |
+//! | [`sample_project_demos_self_test`] | API 还能调用，但读回语义已经错了（步骤的 `check` 失败） |
 //! | [`sample_project_scripts_all_compile`] | 演示模块语法错（`require` 不到就整段失效） |
 //! | [`sample_project_demos_cover_every_lua_api`] | 引擎加了 API 却没有演示 |
 //! | [`sample_project_scenes_cover_every_runtime_component`] | 引擎加了组件却没进场景 |
 //! | [`sample_project_index_menu_lists_every_scene`] | 新增演示场景却没进入口菜单 |
 //! | [`sample_project_index_click_opens_the_demo`] | 菜单点击没有真的切场景 |
+//! | [`sample_project_index_labels_are_inside_their_cards`] | 卡片文字偏出父矩形（子实体锚点是父矩形） |
+//! | [`sample_project_index_labels_fit_their_cards`] | 卡片文字实测宽度顶出卡片右缘（字号/文案变长） |
 //!
 //! 覆盖面的**事实源是运行期**（`_G` 里的表与函数），不是任何文档或手抄清单：
 //! 引擎新注册一个 Lua 函数，这条门立刻要求示例工程补上演示。
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -317,6 +320,62 @@ fn sample_project_runs_every_scene_headless() {
     assert!(
         stepped >= 10,
         "示例工程的场景太少（{stepped}），门没有实际意义"
+    );
+}
+
+/// 行为自检：每个非夹具场景的 `M.self_test()` 必须全绿。
+///
+/// 名字/覆盖率这两类门只能证明"API 被调用过"，证明不了读回语义——
+/// 例如 `transform.set` 没有真的生效、`inv.add` 没计数、`calendar.configure`
+/// 没改上界。2.0 的每个步骤都声明自己的 `check`，这里把它们统一跑一遍。
+#[test]
+fn sample_project_demos_self_test() {
+    let root = project_root();
+    let mut checked = 0;
+    for path in scene_files(&root) {
+        let name = scene_name(&path);
+        // 入口菜单不是演示；两个夹具由渲染 golden 钉住，没有步骤。
+        if name == "index" || name == "demo3d" || name == "mixed" {
+            continue;
+        }
+        let scene = Scene::load(&path).unwrap_or_else(|error| panic!("加载 {name} 失败：{error}"));
+        let mut runtime = RuntimeScene::from_scene(Some(&root), scene)
+            .unwrap_or_else(|error| panic!("实例化 {name} 失败：{error}"));
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
+            .unwrap_or_else(|error| panic!("首帧步进 {name} 失败：{error}"));
+        let value = runtime
+            .script
+            .eval_json("__api_demo_self_test()")
+            .unwrap_or_else(|error| panic!("{name} 自检调用失败：{error}"));
+        let result = value
+            .as_str()
+            .unwrap_or_else(|| panic!("{name} 自检应返回字符串，实际 {value}"));
+        assert!(result.starts_with("ok "), "{name} 行为自检失败：\n{result}");
+
+        let mut steps = 0usize;
+        let mut checks = 0usize;
+        for part in result.split_whitespace() {
+            if let Some(value) = part.strip_prefix("steps=") {
+                steps = value.parse().unwrap_or(0);
+            }
+            if let Some(value) = part.strip_prefix("checks=") {
+                checks = value.parse().unwrap_or(0);
+            }
+        }
+        assert!(
+            steps >= 3,
+            "{name} 只有 {steps} 个步骤（非夹具场景至少 3 步）：{result}"
+        );
+        assert!(
+            checks >= 3,
+            "{name} 只有 {checks} 条断言（非夹具场景至少 3 条）：{result}"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 13,
+        "参与行为自检的演示太少（{checked}），门没有实际意义"
     );
 }
 
@@ -674,4 +733,163 @@ fn sample_project_index_cards_are_clickable() {
             "在 {name} 卡片中心按左键后应当切到该场景（矩形 {rect:?}）"
         );
     }
+}
+
+/// 入口菜单每张卡片的三行文字必须**落在自己那张卡片里**，并且自上而下、左对齐。
+///
+/// 为什么单独一条门：`UiLayout` 的锚点矩形是**父实体的矩形**（Unity 式），而卡片文字正是
+/// 卡片的子实体。偏移一旦按"屏幕坐标"写（2.0 第一版就是这么错的），每张卡的文字会整体偏出
+/// 父矩形——场景照样加载、卡片照样点得中、`sample_project_index_cards_are_clickable` 照样绿，
+/// 只有眼睛看得出来。这条门把"眼睛看得出来"翻译成断言。
+#[test]
+fn sample_project_index_labels_are_inside_their_cards() {
+    let root = project_root();
+    let registered = registered_scenes(&root);
+    let scene = Scene::load(root.join("scenes").join("index.scene")).expect("加载入口场景");
+    let ids: Vec<_> = scene.entities.keys().copied().collect();
+    let by_name: BTreeMap<String, u64> = scene
+        .entities
+        .values()
+        .map(|entity| (entity.name.clone(), entity.id.0))
+        .collect();
+    let mut runtime = RuntimeScene::from_scene(Some(&root), scene).expect("实例化入口场景");
+    let rects = runtime.scene_entity_ui_layout_rects(ids, [1280.0, 720.0]);
+
+    let mut checked = 0;
+    for name in &registered {
+        let card = *by_name
+            .get(name.as_str())
+            .unwrap_or_else(|| panic!("入口菜单没有名为 {name} 的卡片实体"));
+        let card_rect = *rects
+            .get(&card)
+            .unwrap_or_else(|| panic!("{name} 的卡片没有解算出矩形"));
+        assert!(
+            card_rect.x >= 0.0
+                && card_rect.y >= 0.0
+                && card_rect.x + card_rect.w <= 1280.0
+                && card_rect.y + card_rect.h <= 720.0,
+            "{name} 的卡片跑出视口：{card_rect:?}"
+        );
+
+        let mut previous_y = f32::MIN;
+        let mut left_edge = None;
+        for suffix in ["_title", "_detail", "_meta"] {
+            let key = format!("{name}{suffix}");
+            let id = *by_name
+                .get(key.as_str())
+                .unwrap_or_else(|| panic!("入口菜单缺少 {key}"));
+            let rect = *rects
+                .get(&id)
+                .unwrap_or_else(|| panic!("{key} 没有解算出矩形（UiLayout 缺失或非法）"));
+            // 点锚（w=h=0）：矩形就是文字左上角落在屏幕上的那个点。留 24px 右边距
+            // 是因为文字从这里往右长，锚点贴到卡片右缘就意味着文字必然出界。
+            assert!(
+                rect.x > card_rect.x
+                    && rect.x + 24.0 < card_rect.x + card_rect.w
+                    && rect.y >= card_rect.y
+                    && rect.y + 8.0 < card_rect.y + card_rect.h,
+                "{key} 的文字锚点偏出卡片：锚点=({}, {}) 卡片={card_rect:?}",
+                rect.x,
+                rect.y
+            );
+            assert!(
+                rect.y > previous_y,
+                "{key} 不在上一行之下（三行必须自上而下）：锚点 y={} 上一行 y={previous_y}",
+                rect.y
+            );
+            previous_y = rect.y;
+            match left_edge {
+                None => left_edge = Some(rect.x),
+                Some(x) => assert!(
+                    (x - rect.x).abs() < 0.5,
+                    "{key} 没有和同卡其它文字左对齐：x={} 应为 {x}",
+                    rect.x
+                ),
+            }
+        }
+        checked += 1;
+    }
+    assert!(
+        checked >= 13,
+        "只核对了 {checked} 张卡片的文字，入口菜单结构可能被改坏"
+    );
+}
+
+/// 卡片三行的**实测宽度**必须留在卡片里（右缘至少留 8 px）。
+///
+/// 上一条门只看锚点，看不见文字往右长多远：字号调大或文案调长时锚点门照样全绿，
+/// 屏幕上却是最后一行顶出卡片右缘。判据用 `ui.measure_text`——与渲染同一套 advance，
+/// 不是"字数 × 系数"的估算。
+#[test]
+fn sample_project_index_labels_fit_their_cards() {
+    let root = project_root();
+    let registered = registered_scenes(&root);
+    let scene = Scene::load(root.join("scenes").join("index.scene")).expect("加载入口场景");
+    let ids: Vec<_> = scene.entities.keys().copied().collect();
+    let mut by_name: BTreeMap<String, u64> = BTreeMap::new();
+    let mut label_of: BTreeMap<String, (String, f32)> = BTreeMap::new();
+    for entity in scene.entities.values() {
+        by_name.insert(entity.name.clone(), entity.id.0);
+        for (component, payload) in &entity.components {
+            if component != "Text" {
+                continue;
+            }
+            if let Ok(text) = rustlua_ui::ui::UiText::from_component_str(payload) {
+                label_of.insert(entity.name.clone(), (text.text, text.font_size));
+            }
+        }
+    }
+    let mut runtime = RuntimeScene::from_scene(Some(&root), scene).expect("实例化入口场景");
+    let rects = runtime.scene_entity_ui_layout_rects(ids, [1280.0, 720.0]);
+    let mut probe =
+        LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).expect("lua vm");
+    probe.set_project_root(root.clone());
+
+    let mut checked = 0;
+    for name in &registered {
+        let card_id = *by_name
+            .get(name.as_str())
+            .unwrap_or_else(|| panic!("入口菜单没有名为 {name} 的卡片实体"));
+        let card = *rects
+            .get(&card_id)
+            .unwrap_or_else(|| panic!("{name} 的卡片没有解算出矩形"));
+        for suffix in ["_title", "_detail", "_meta"] {
+            let key = format!("{name}{suffix}");
+            let label_id = *by_name
+                .get(key.as_str())
+                .unwrap_or_else(|| panic!("入口菜单缺少 {key}"));
+            let anchor = *rects
+                .get(&label_id)
+                .unwrap_or_else(|| panic!("{key} 没有解算出矩形"));
+            let (text, font_size) = label_of
+                .get(key.as_str())
+                .unwrap_or_else(|| panic!("{key} 没有 Text 组件"))
+                .clone();
+            assert!(
+                !text.contains("]==========]"),
+                "{key} 的文案里有长括号终止串，门的取值会失真"
+            );
+            let script = format!(
+                "(function() return ui.measure_text([==========[{text}]==========], {font_size}) end)()"
+            );
+            let value = probe
+                .eval_json(&script)
+                .unwrap_or_else(|error| panic!("度量 {key} 的 {text:?} 失败：{error}"));
+            let width = value["width"].as_f64().unwrap_or(0.0) as f32;
+            let used = anchor.x - card.x + width;
+            assert!(
+                used <= card.w - 8.0,
+                "{key} 的文字顶出卡片：文案 {text:?} 在 {font_size}px 下实测 {width:.1}px，\
+                 从卡片左缘 {inset:.1}px 起共占 {used:.1}px，卡片宽 {}px（右缘只剩 {:.1}px）",
+                card.w,
+                used - card.w,
+                inset = anchor.x - card.x,
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked >= 39,
+        "只量了 {checked} 行卡片文字（15 张卡 × 3 行 = 45），门没有实际意义"
+    );
 }

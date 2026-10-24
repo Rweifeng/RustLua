@@ -87,6 +87,8 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     // P3-E01-3：时间线只读预览，播放头状态不进场景文档。
     ("timeline.rs", 0),
     ("toolbar.rs", 0),
+    // M76-04：UI Studio 只经 Spec 宿主提案写 `.ui.json`，不碰场景文档。
+    ("ui_studio.rs", 0),
 ];
 
 fn normalized(source: &str) -> String {

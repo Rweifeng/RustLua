@@ -23,10 +23,10 @@ use std::{
 
 use editor::WatchDiff;
 use eframe::egui;
-use engine::host::shader_library::{
+use rustlua_gpu::shader_library::{
     SHADER_DIR_ENV, SHADER_RELOAD_DEBOUNCE, SHADER_SOURCE_DIR, shader_override_dir,
 };
-use engine::host::{Renderer, ShaderReloadError, ShaderReloadReport};
+use rustlua_gpu::{Renderer, ShaderReloadError, ShaderReloadReport};
 
 use crate::EditorApp;
 use crate::util::strip_verbatim_prefix;
@@ -282,7 +282,7 @@ mod tests {
     use super::*;
     use crate::SceneViewCache3d;
     use editor::ProjectInfo;
-    use engine::host::shader_reload::ShaderValidateError;
+    use rustlua_gpu::shader_reload::ShaderValidateError;
     use rustlua_infra::logging::LogSink;
     use std::{fs, time::Duration};
 

@@ -13,7 +13,7 @@
 #                    坑都在后者），所以这一段不做玩具渲染器。
 #
 # 这一步的结论直接决定 WP5（GPU 2D 渲染器）怎么做：如果 WebGL2 上 `Limits::default()` 建不出
-# 设备、或者只读存储缓冲绑定必失败，那么现有的 `engine/src/host/renderer` 就不能原样搬上 web，
+# 设备、或者只读存储缓冲绑定必失败，那么现有的 `engine/crates/rustlua-gpu/src/renderer` 就不能原样搬上 web，
 # 必须先给一条"无存储缓冲 + downlevel 限制"的路径。
 #
 # 产物布局（都在 artifacts 下，不进发布包）：

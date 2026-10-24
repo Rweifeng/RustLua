@@ -683,6 +683,279 @@
       },
       "name": "write_lua_script",
       "tier": "T2"
+    },
+    {
+      "description": "把编辑器切到另一个工程目录（一份 stdio 会话服务多个工程，不必每个工程开一条连接器）。path 可为绝对路径，或相对当前工程根的路径（允许 ..）。切换是后台导入：本调用只代表「已排队」，落地后用 get_project_config 的 root 确认。脏文档会挂起等编辑器内确认，无头拒绝。T3。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "description": "目标工程根目录",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "open_project",
+      "tier": "T3"
+    },
+    {
+      "description": "导出 UI 文档的 UiSpec 与 revision。T0。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "document": {
+            "description": "工程内 .ui.json 相对路径",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "document"
+        ],
+        "type": "object"
+      },
+      "name": "ui_export_spec",
+      "tier": "T0"
+    },
+    {
+      "description": "按运行时能力矩阵校验 UiSpec，返回诊断（不落盘）。T0。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "spec": {
+            "description": "UiSpec JSON",
+            "type": "object"
+          }
+        },
+        "required": [
+          "spec"
+        ],
+        "type": "object"
+      },
+      "name": "ui_validate_spec",
+      "tier": "T0"
+    },
+    {
+      "description": "离屏渲染 UiSpec 预览图（PNG 字节）。T0。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "height": {
+            "default": 720,
+            "maximum": 8192,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "scale": {
+            "default": 1.0,
+            "maximum": 8.0,
+            "minimum": 0.1,
+            "type": "number"
+          },
+          "spec": {
+            "description": "UiSpec JSON",
+            "type": "object"
+          },
+          "width": {
+            "default": 1280,
+            "maximum": 8192,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "spec"
+        ],
+        "type": "object"
+      },
+      "name": "ui_preview_spec",
+      "tier": "T0"
+    },
+    {
+      "description": "列出 UI 资产及其 provenance（未审阅/生成/人工）。T0。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "document": {
+            "description": "可选：只列出该文档引用的资产",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "ui_list_assets",
+      "tier": "T0"
+    },
+    {
+      "description": "把 UiSpec 编译为提案（diff+预览+成本）；接受后一次事务、一条 Undo。T1。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "base_revision": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "document": {
+            "description": "工程内 .ui.json 相对路径",
+            "minLength": 1,
+            "type": "string"
+          },
+          "spec": {
+            "description": "UiSpec JSON",
+            "type": "object"
+          }
+        },
+        "required": [
+          "document",
+          "base_revision",
+          "spec"
+        ],
+        "type": "object"
+      },
+      "name": "ui_apply_spec",
+      "tier": "T1"
+    },
+    {
+      "description": "把 UiPatch 应用到指定 revision 并生成提案；base_revision 过期直接拒绝。T1。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "document": {
+            "description": "工程内 .ui.json 相对路径",
+            "minLength": 1,
+            "type": "string"
+          },
+          "patch": {
+            "description": "UiPatch JSON（含 base_revision 与 ops）",
+            "type": "object"
+          }
+        },
+        "required": [
+          "document",
+          "patch"
+        ],
+        "type": "object"
+      },
+      "name": "ui_apply_patch",
+      "tier": "T1"
+    },
+    {
+      "description": "把审阅通过的资产生成登记提升进工程并写入 provenance。T2。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "license": {
+            "description": "许可标识，发布清单必填",
+            "type": "string"
+          },
+          "reviewed": {
+            "description": "人工审阅结果；false 不得提升",
+            "type": "boolean"
+          },
+          "used_by": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "asset_id",
+          "reviewed"
+        ],
+        "type": "object"
+      },
+      "name": "ui_promote_asset",
+      "tier": "T2"
+    },
+    {
+      "description": "按 AssetPlan 生成候选图；逐项预算与确认，超限拒绝。T2。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "max_images": {
+            "maximum": 64,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "plan": {
+            "items": {
+              "type": "object"
+            },
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "plan"
+        ],
+        "type": "object"
+      },
+      "name": "ui_generate_assets",
+      "tier": "T2"
+    },
+    {
+      "description": "按手工矩形从源 PNG 裁片并写 slices.json（写工程文件）。T2。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "output_dir": {
+            "description": "裁片与 slices.json 的输出目录",
+            "minLength": 1,
+            "type": "string"
+          },
+          "regions": {
+            "items": {
+              "properties": {
+                "name": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "rect": {
+                  "description": "[x, y, width, height]",
+                  "items": {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 4,
+                  "minItems": 4,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "name",
+                "rect"
+              ],
+              "type": "object"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "source": {
+            "description": "工程内源 PNG 相对路径",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "output_dir",
+          "regions"
+        ],
+        "type": "object"
+      },
+      "name": "ui_slice_asset",
+      "tier": "T2"
     }
   ],
   "transport": "mcp-stdio",

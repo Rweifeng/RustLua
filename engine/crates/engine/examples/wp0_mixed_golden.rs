@@ -17,8 +17,9 @@
 
 use std::{env, fs, path::PathBuf};
 
-use engine::host::{RenderOutcome, Renderer, RuntimeScene};
+use engine::host::RuntimeScene;
 use rustlua_camera::camera::{DEFAULT_3D_CLEAR, FrameViews, RenderView, Viewport};
+use rustlua_gpu::{OffscreenRequest, OffscreenTarget, RenderOutcome, Renderer};
 use rustlua_infra::games_dir;
 use rustlua_scene::scene::Scene;
 use serde_json::json;
@@ -58,23 +59,12 @@ fn main() {
         "网格墙的名字变了：采样点基于它覆盖全屏"
     );
 
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::LowPower,
-        compatible_surface: None,
-        force_fallback_adapter: true,
-    }))
-    .expect("a fallback GPU adapter is required for the mixed golden");
-    let info = adapter.get_info();
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("wp0-mixed-golden"),
-        required_features: wgpu::Features::empty(),
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        required_limits: wgpu::Limits::default(),
-        memory_hints: wgpu::MemoryHints::Performance,
-        trace: wgpu::Trace::Off,
-    }))
-    .expect("request golden device");
+    let fixture =
+        OffscreenTarget::acquire(&OffscreenRequest::new("wp0-mixed-golden", WIDTH, HEIGHT))
+            .expect("offscreen fixture for wp0-mixed-golden");
+    let device = fixture.device();
+    let queue = fixture.queue().clone();
+    let info = fixture.adapter_info();
     let mut renderer =
         Renderer::new_offscreen(device.clone(), queue, Some(root.clone()), false, true)
             .expect("offscreen renderer");
@@ -93,27 +83,14 @@ fn main() {
         renderer.set_world_sprite_camera(view_projection);
     }
 
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("wp0-mixed-golden-target"),
-        size: wgpu::Extent3d {
-            width: WIDTH,
-            height: HEIGHT,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let texture = fixture.texture();
+    let view = fixture.view();
     assert!(matches!(
-        renderer.render_into_texture(&mesh, Some(&scene3d), &view, WIDTH, HEIGHT),
+        renderer.render_into_texture(&mesh, Some(&scene3d), view, WIDTH, HEIGHT),
         RenderOutcome::Presented
     ));
     let pixels = renderer
-        .copy_texture_to_cpu(&texture, WIDTH, HEIGHT)
+        .copy_texture_to_cpu(texture, WIDTH, HEIGHT)
         .expect("mixed golden readback");
     let metrics = renderer.last_frame_metrics();
 

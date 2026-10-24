@@ -363,3 +363,38 @@ fn ui_scroll_lua_api_clamps_and_reveals_items() {
         )
         .unwrap();
 }
+
+/// M76-07：四个高级控件入口由 `register_all` 装进 `ui` 表，且状态跨脚本调用存活。
+///
+/// 这里只证明"接线通了、状态落在能力单元里"；富文本仍是纯文本绘制、输入事件循环
+/// 也还没有宿主驱动，那两段能力不在本测试的断言范围内。
+#[test]
+fn advanced_ui_kernels_are_wired_into_the_ui_table() {
+    let mut runtime = LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).unwrap();
+    runtime
+        .execute_console(
+            "assert(type(ui.virtual_list) == 'function')\n\
+             assert(type(ui.rich_text) == 'function')\n\
+             assert(type(ui.text_input) == 'function')\n\
+             assert(type(ui.nav_stack) == 'function')\n\
+             local w = ui.virtual_list{ id = 'bag', op = 'open', total = 1000, viewport = 200, item_height = 20 }\n\
+             assert(w.start == 0 and w['end'] > 10)\n\
+             assert(#ui.virtual_list{ id = 'bag', op = 'bind' } < 30)\n\
+             assert(ui.rich_text('<b>x</b>').plain == 'x')\n\
+             ui.text_input{ id = 'name', op = 'open', text = '角色' }\n\
+             assert(ui.text_input{ id = 'name', op = 'edit', action = 'insert', value = '名' }.text == '角色名')\n\
+             assert(ui.nav_stack{ op = 'open', root = 'title' } == 1)\n\
+             ui.nav_stack{ op = 'push', page = 'bag' }\n\
+             return 'ok'",
+        )
+        .unwrap();
+    // 第二次调用沿用同一个 VM/能力单元：内核状态不是脚本局部变量的影子。
+    runtime
+        .execute_console(
+            "assert(ui.nav_stack{ op = 'state' }.depth == 2)\n\
+             assert(ui.text_input{ id = 'name', op = 'state' }.text == '角色名')\n\
+             assert(ui.virtual_list{ id = 'bag', op = 'window' }.total_height > 1000)\n\
+             return 'ok'",
+        )
+        .unwrap();
+}

@@ -27,7 +27,7 @@ use super::{
     load_custom_font_atlas, load_custom_vector_atlas, load_project_font_atlas,
     load_project_vector_atlas, text_to_ndc,
 };
-use crate::host::frame::{ATLAS_TEXTURE_PATH, FontAtlasMap, FontHandle, VectorAtlasMap};
+use rustlua_render::frame::{ATLAS_TEXTURE_PATH, FontAtlasMap, FontHandle, VectorAtlasMap};
 
 /// 一段文字 run 的渲染种类：决定绑哪张图集、走 SDF 还是 bitmap 分支。
 /// SDF run 携带自己的 font key（自定义字体是 `font://...`，否则是默认图集哨兵）；
