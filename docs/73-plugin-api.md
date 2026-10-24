@@ -83,4 +83,4 @@ clippy（editor-api 与 editor，`-D warnings`）、`cargo fmt --all -- --check`
 未完成/未验证：没有开窗 GUI 目视（诊断窗口与面板只有无头 egui 绘制断言）；
 导入器不执行自定义导入；节点无反注册；快捷键只显示未绑定；`verify.ps1`、workspace
 全量测试、Web/wasm 与真实 GPU 未跑。P3-E04 的计划与逐条读数见
-[P3 渲染与编辑器能力计划](../tasks/plan/P3-渲染与编辑器能力.md)。
+[P3 渲染与编辑器能力计划](../tasks/done/P3-渲染与编辑器能力.md)。
