@@ -129,6 +129,36 @@ fn parent_flows(kind: Option<&UiNodeKind>) -> bool {
     )
 }
 
+/// 此刻**不能**拿预览器对账的键集：流向容器（`v_box`/`h_box`/`grid`/`wrap`）的子项，
+/// 以及它们的整棵子树。
+///
+/// 原因不在本桥：入库这版的预览器还不推进流向子项（同一容器的子项全叠在容器中心），运行时会
+/// 推进（docs/75 §14 记的第 4 条分歧）。子项自己的 `offsets`/锚点都以**它的父矩形**为参考，父
+/// 被叠到中心，整棵子树都跟着漂——所以排除必须传递下去，只排一层照样红（`corner` 实测 90 对
+/// 165）。预览补齐推进之后，把这份键集纳回对账才算买到了那一层。
+pub fn preview_unreconciled_keys(spec: &UiSpec) -> BTreeSet<String> {
+    let mut keys = BTreeSet::new();
+    collect_unreconciled(&spec.root, &mut keys);
+    keys
+}
+
+fn collect_unreconciled(node: &UiNode, keys: &mut BTreeSet<String>) {
+    for child in &node.children {
+        if parent_flows(Some(&node.kind)) {
+            mark_subtree(child, keys);
+        } else {
+            collect_unreconciled(child, keys);
+        }
+    }
+}
+
+fn mark_subtree(node: &UiNode, keys: &mut BTreeSet<String>) {
+    keys.insert(node.key.clone());
+    for child in &node.children {
+        mark_subtree(child, keys);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn walk(
     spec: &UiSpec,
@@ -1051,8 +1081,9 @@ mod tests {
         assert_rects_match_preview(&spec, &scene);
     }
 
-    /// 把导出的场景喂给运行时解算器，逐键对齐预览器的矩形。
-    fn assert_rects_match_preview(spec: &UiSpec, scene: &Scene) {
+    /// 导出件喂给**运行时**解算器后的矩形，按节点 key（= 实体名）取。
+    /// 解算诊断只允许 `Overflow`：别的理由意味着节点根本没进布局。
+    fn host_rects(scene: &Scene) -> BTreeMap<String, [f32; 4]> {
         let nodes = rustlua_ui::ui_scene_layout::build_ui_scene_nodes(scene.entities.iter().map(
             |(id, entity)| rustlua_ui::ui_scene_layout::UiSceneNodeSource {
                 key: id.0,
@@ -1069,19 +1100,46 @@ mod tests {
             )),
             "{diagnostics:?}"
         );
+        scene
+            .entities
+            .values()
+            .filter_map(|entity| {
+                resolved.get(&entity.id.0).map(|node| {
+                    (
+                        entity.name.clone(),
+                        [node.rect.x, node.rect.y, node.rect.w, node.rect.h],
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// 逐键对齐预览器的矩形。
+    ///
+    /// 流向子项**及其子树**不参与对账（[`preview_unreconciled_keys`]：HEAD 的预览器还不推进
+    /// 它们，同容器的子项全叠在容器中心，子的参考父矩形也跟着错），它们只断言运行时**解出了
+    /// 正尺寸**——"0×0 塌掉"才是这座桥真正会犯的错。
+    /// 内框口径由 `padded_flow_container_uses_inner_rect_for_children` 直接钉运行时的数字。
+    fn assert_rects_match_preview(spec: &UiSpec, scene: &Scene) {
+        let resolved = host_rects(scene);
+        let unreconciled = preview_unreconciled_keys(spec);
         for item in rustlua_ui_spec::preview::layout_rects(spec) {
-            let id = scene
-                .entities
-                .values()
-                .find(|entity| entity.name == item.key)
-                .unwrap()
-                .id;
-            let rect = resolved[&id.0].rect;
+            let rect = resolved[&item.key];
+            if unreconciled.contains(&item.key) {
+                assert!(
+                    rect[2] > 0.0 && rect[3] > 0.0,
+                    "{}: 流向子项在运行时塌成 {:?}（预览给 {:?}）",
+                    item.key,
+                    [rect[2], rect[3]],
+                    [item.rect[2], item.rect[3]]
+                );
+                continue;
+            }
             for (actual, expected) in [
-                (rect.x, item.rect[0]),
-                (rect.y, item.rect[1]),
-                (rect.w, item.rect[2]),
-                (rect.h, item.rect[3]),
+                (rect[0], item.rect[0]),
+                (rect[1], item.rect[1]),
+                (rect[2], item.rect[2]),
+                (rect[3], item.rect[3]),
             ] {
                 assert!(
                     (actual - expected).abs() < 0.51,
@@ -1123,6 +1181,15 @@ mod tests {
         };
         assert_eq!(layout("corner").offsets[0], 80.0);
         assert_eq!(layout("corner").offsets[1], 30.0);
+        // 运行时侧的同一件事：`half` 解出来的尺寸必须是**内框** 280×100 的 50%，不是外框
+        // 300×120 的。这条不看预览器（HEAD 的预览器还不推进流向子项），钉的是导出件真的被
+        // 运行时按内框度量。
+        let host = host_rects(&scene);
+        assert!(
+            (host["half"][2] - 140.0).abs() < 0.51 && (host["half"][3] - 50.0).abs() < 0.51,
+            "half 实际矩形 {:?}",
+            host["half"]
+        );
         assert_rects_match_preview(&spec, &scene);
     }
 

@@ -22,12 +22,26 @@
   负号会让右/下锚整体漂移（`insets` 节点实测 2264 对 264），现由单测钉住。
 - **硬拒而不是静默降级**：v1 表达不了的形状（流向容器里的 `offsets`、`grow`、`align_self`、时态
   样式、7 个之外的样式键）在导出端直接报错——"写了会丢"必须当场说出来。
-- **证据**：`ui_scene_export` 17 单测 + `cargo test -p editor --lib` 275 全绿；example 现跑产物与入库
-  那份 14986 字节逐位相同；发布门 `error 0 · warning 0 · 未测宿主 5`；两条反面对照（手改产物
-  revision → warning 并降级为 untested；指定不存在的文档 → exit 1 且不生成产物）。
+- **减证（本段的上一笔 `ed8934ab` 在提交树上红）**：把本批拿到干净检出的 worktree 复验，消费端门是
+  绿的，生产端 `m76_ui_matrix` 却 exit 1（`layout_max_delta=98.0`）、`ui_scene_export` 15 过 2 红。
+  根因不在桥：**入库这版的 `preview.rs` 不推进流向子项**（同容器子项全叠在容器中心，实测
+  `g_1..g_4` 都是 (336.7, 325)），而运行时会推进；上一笔那份"31 键全绿"是对着并行会话**未提交**的
+  `preview.rs` bless 的。处置按用户裁定走"顶上补一笔、不改历史"：`preview_unreconciled_keys` 把流向
+  子项**连同整棵子树**摘出对账（只排一层不够，`corner` 实测 90 对 165），这些键改断言"运行时解出正
+  尺寸"，产物里不记预览数字——于是产物与预览器哪一版无关（HEAD worktree 与主工作区两棵树跑出的
+  13583 字节逐位相同）。流程账：一条"工作树绿"证明不了提交树。
+- **证据**（下列全部在**提交树**上跑，不是工作区读数）：`ui_scene_export` 17 单测、
+  `cargo test -p editor --lib` 270 全绿、`cargo fmt --all -- --check` 0 处 Diff；example 读数
+  `entities=31 layout_compared=20 layout_unreconciled=11` + `layout_max_delta=0.0000
+  draw_rank_max_error=0.0006`，现跑产物与入库那份逐位相同（`cmp` 静默）；发布门
+  `4 份 .ui.json · error 0 · warning 0 · 未测宿主 11`（12 个证据槽里只有 `matrix.pc` 已测）。
+  反面对照三条：手改**产物**的 `revision` → `warning 1 / 未测宿主 12`（按契约只降级不判红）；
+  指定不存在的文档 → exit 1 且**不生成**产物；只改 `ui/hosts.json` 声明的 `revision` 而产物不动 →
+  门毫无反应，**清单里那个数只是给人看的**，真判据是产物 `revision` 对文档实算哈希。
 - **边界（没买到的）**：web 与微信两个生产端仍缺，`hosts.json` 里无条目 = untested，不写成通过；
-  无头宿主没有字体图集，字形顶点为 0，`draw_order` 只覆盖图块层；预览器与运行时另有三条真实分歧
-  （`grow`、`align_self`、网格列距）本批只量化未修，细节与数字见 docs/75 §14。
+  无头宿主没有字体图集，字形顶点为 0，`draw_order` 只覆盖图块层；pc 的版面证据此刻只覆盖 20 个非
+  流向键，流向层是"断言正尺寸"而不是"两边一致"；预览器与运行时的四条真实分歧（`grow`、
+  `align_self`、网格列距、流向子项不推进）本批只量化未修，细节与数字见 docs/75 §14。
 
 ## Unreleased — DSH 一句话创建 UI 预设：MCP 直连与提案式新建（2026-10-24）
 

@@ -9,7 +9,9 @@
 //!
 //! 两项检查（都是宿主实测，不拿预览器的数字自证）：
 //! 1. `layout_rects`：`RuntimeScene::ui_rects_by_name` 的本帧矩形 vs 预览器
-//!    `rustlua_ui_spec::preview::layout_rects` 逐键对齐，最大偏差进产物；
+//!    `rustlua_ui_spec::preview::layout_rects` 逐键对齐，最大偏差进产物。**流向子项例外**
+//!    （见 `check_layout_rects`）：入库这版的预览器不推进它们，两边比必然红，所以那些键只断言
+//!    运行时解出正尺寸，宿主矩形照记进 `unreconciled_rows` 供预览补齐后对账；
 //! 2. `draw_order`：`RuntimeScene::vertices` 提交序列里，每个带 `Image` 的节点其四边形
 //!    顶点的**首次出现下标**单调递增，且等于场景实体前序（= 文档树前序 = 画家顺序）。
 //!
@@ -18,7 +20,7 @@
 
 use std::{env, fs, path::PathBuf, process};
 
-use editor::ui_scene_export::export_ui_scene;
+use editor::ui_scene_export::{export_ui_scene, preview_unreconciled_keys};
 use editor::ui_spec_host::UiSpecStore;
 use engine::host::{OverlayVertex, RuntimeScene, SceneMesh};
 use rustlua_ui_spec::preview::layout_rects;
@@ -71,10 +73,16 @@ fn main() {
     let problems = collect_problems(&report);
     let text = serde_json::to_string_pretty(&report).expect("序列化产物");
     println!(
-        "m76_ui_matrix document={} revision={} entities={} layout_max_delta={:.4} draw_rank_max_error={:.4}",
+        "m76_ui_matrix document={} revision={} entities={} layout_compared={} layout_unreconciled={} layout_max_delta={:.4} draw_rank_max_error={:.4}",
         args.document,
         document.revision,
         scene.entities.len(),
+        report["layout_rects"]["compared"]
+            .as_u64()
+            .unwrap_or_default(),
+        report["layout_rects"]["unreconciled_rows_count"]
+            .as_u64()
+            .unwrap_or_default(),
         report["layout_rects"]["max_abs_delta"]
             .as_f64()
             .unwrap_or_default(),
@@ -164,11 +172,19 @@ fn default_project() -> PathBuf {
 }
 
 /// ① 版面：宿主本帧真正用于绘制的矩形，逐键对齐预览器。
+///
+/// **流向子项及其子树此刻还不参与对账**（[`preview_unreconciled_keys`]）：入库这版的预览器不
+/// 推进它们，同一容器的子项全叠在容器中心，而运行时会推进（docs/75 §14 第 4 条分歧）。对这些键
+/// 只断言运行时解出**正尺寸**——"塌成 0×0"才是这座桥真会犯的错。产物里把它们的宿主矩形照原样
+/// 记下（不写预览数字，免得产物内容跟着预览器哪一版跑而变），预览补齐后重刷就能逐键纳回。
 fn check_layout_rects(
     spec: &rustlua_ui_spec::UiSpec,
     rects: &std::collections::BTreeMap<String, rustlua_ui::ui_layout::UiRect>,
 ) -> Value {
+    let unreconciled = preview_unreconciled_keys(spec);
     let mut rows = Vec::new();
+    let mut unreconciled_rows = Vec::new();
+    let mut collapsed = Vec::new();
     let mut max_delta = 0.0_f32;
     let mut missing = Vec::new();
     for item in layout_rects(spec) {
@@ -177,6 +193,14 @@ fn check_layout_rects(
             missing.push(item.key.clone());
             continue;
         };
+        let host = [rect.x, rect.y, rect.w, rect.h];
+        if unreconciled.contains(&item.key) {
+            if rect.w <= 0.0 || rect.h <= 0.0 {
+                collapsed.push(item.key.clone());
+            }
+            unreconciled_rows.push(json!({ "key": item.key, "host": host }));
+            continue;
+        }
         let delta = [
             (rect.x - item.rect[0]).abs(),
             (rect.y - item.rect[1]).abs(),
@@ -188,7 +212,7 @@ fn check_layout_rects(
         max_delta = max_delta.max(delta);
         rows.push(json!({
             "key": item.key,
-            "host": [rect.x, rect.y, rect.w, rect.h],
+            "host": host,
             "preview": item.rect,
             "abs_delta": delta,
         }));
@@ -198,7 +222,10 @@ fn check_layout_rects(
         "max_abs_delta": max_delta,
         "tolerance": RECT_TOLERANCE,
         "missing_in_host": missing,
+        "collapsed_in_host": collapsed,
+        "unreconciled_rows_count": unreconciled_rows.len(),
         "rows": rows,
+        "unreconciled_rows": unreconciled_rows,
     })
 }
 
@@ -297,6 +324,22 @@ fn collect_problems(report: &Value) -> Vec<String> {
     }
     if layout["compared"].as_u64().unwrap_or(0) == 0 {
         problems.push("版面逐项对照一行都没跑（等于没测）".to_owned());
+    }
+    if !layout["collapsed_in_host"]
+        .as_array()
+        .is_some_and(|items| items.is_empty())
+    {
+        problems.push(format!(
+            "流向子项在宿主塌成 0×0：{}",
+            layout["collapsed_in_host"]
+                .as_array()
+                .map(|items| items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(","))
+                .unwrap_or_default()
+        ));
     }
     let draw = &report["draw_order"];
     if draw["placed"].as_u64().unwrap_or(0) == 0 {
