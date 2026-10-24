@@ -20,6 +20,9 @@
   仍在编辑器里弹确认窗。
 - **无 LLM 验收**：`scripts/ai/mcp-ui-preset-smoke.mjs` 跑同一条 MCP 通道的
   initialize → guide → create → export → 重复创建拒绝；产物见 `examples/game_api/ui/forge.ui.json`。
+- **资源面板显示 UI 预设**：`ui/` 纳入资源扫描；`.ui.json` 以 `Other/Ready` 行展示
+  （不进导入队列、不按 Scene cook），双击直接打开 UI Studio；`ui/` 同时加入文件监听。
+  示例工程的资源面板现在直接列出 `ui/{forge,shop,tavern}.ui.json`。
 - **边界**：预览是布局线框（文本按块绘制），不是最终美术；T2/T3 与 Play 控制仍需人工确认。
 
 ## Unreleased — M77 宿主侧模块化：渲染器下沉成 `rustlua-gpu`（2026-10-24）
@@ -37,8 +40,9 @@
 - **产物身份不变**：wasm 依赖面第三方 crate 0 增减（唯一新增是 path crate 自己），`wgpu` 启用
   特性集逐字相同；无头浏览器打开真发布包读数 `frame owner ok: engine GPU host (data-rustlua-gpu)`。
 - **边界（不粉饰）**：本批与 M76 同一笔入库（`engine/Cargo.toml` 同段 hunk 并排带两批成员行，
-  切不出独立可编译子集）；提交态 `cargo check --all-targets` 与 `tasks/plan → done` 归档在
-  入库复跑后才闭合；`-Benchmarks` 全量段仍欠一次复跑。逐条见 `tasks/done/M77-00`。
+  切不出独立可编译子集）；提交态三条（`cargo check --all-targets`、GPU 单线程 138/138、
+  只回退 10 个消费者文件就报 7×`E0432` 的反面对照）与 `tasks/plan → done` 归档都在入库之后才闭合，
+  归档读数见 `tasks/done/M77-00` §归档记录；`-Benchmarks` 全量段仍欠一次复跑。逐条见 `tasks/done/M77-00`。
 
 ## Unreleased — MCP：一条连接器切换多个工程（2026-10-24）
 
@@ -86,7 +90,12 @@
   只放行 T1 的开关。
 - **边界（不粉饰）**：三宿主（PC/Web/微信）golden 矩阵仍未跑，且 `ui/hosts.json` 只有消费端、
   仓库里没有生产端，报告只会是 `untested`；吸附/量距、富文本绘制、宿主 IME 桥、虚拟列表宿主
-  绘制循环未接；远程 Provider 活体与系统密钥库未联网验证。逐条见 `tasks/plan/M76-00..07`。
+  绘制循环未接；远程 Provider 活体与系统密钥库未联网验证。逐条见 `tasks/done/M76-00..07`。
+- **入库与归档**：`c247fe99`（与 M77 同笔，233 个文件）；`check-docs` `docs=69 game_docs=46
+  h1=117 links=513`、`verify.ps1 -MvpOnly` `executed=78/78`、`rustlua-ui-spec` 59 /
+  `rustlua-editor-ai` 65(+1 ignored) / `editor --lib` 249。pre-commit 的 workspace clippy
+  `-D warnings` 两次拒笔，本批 7 个 lint 点逐个真修（没有 `-A`、没有 `--no-verify`）。
+  八份 `M76-00..07` 随批移入 `tasks/done/`，未收口项按「只登记，不开新包」保留（归档 ≠ 收口）。
 
 ## Unreleased — M75 AI 融合：MCP 能力层与确认·回放门（2026-10-22）
 

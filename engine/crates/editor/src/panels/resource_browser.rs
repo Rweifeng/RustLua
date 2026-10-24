@@ -931,10 +931,9 @@ fn is_vgraph(path: &Path) -> bool {
 }
 
 /// `.ui.json` 的完整后缀是两段（`shop.ui.json`），不能只看 `extension()`。
+/// 判定与资源扫描共用 `resource_browser_state::is_ui_document`，避免两处漂移。
 fn is_ui_json(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|value| value.to_str())
-        .is_some_and(|value| value.to_ascii_lowercase().ends_with(".ui.json"))
+    editor::resource_browser_state::is_ui_document(path)
 }
 
 #[cfg(test)]
@@ -991,6 +990,15 @@ mod tests {
         fs::write(root.join("scripts/main.lua"), b"return true\n").unwrap();
         fs::write(root.join("scenes/main.scene"), b"name = \"main\"\n").unwrap();
         root
+    }
+
+    #[test]
+    fn tree_shows_ui_documents_under_the_ui_folder() {
+        let entries = vec![entry("ui/forge.ui.json", ResourceKind::Other)];
+        let tree = build_resource_tree(&entries);
+        let ui = tree.folders.get("ui").expect("ui 目录必须出现在资源树里");
+        assert_eq!(ui.files.len(), 1);
+        assert_eq!(ui.files[0].path_string(), "ui/forge.ui.json");
     }
 
     #[test]

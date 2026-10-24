@@ -165,6 +165,20 @@ impl ResourceBrowserState {
                 self.last_error = Some(error.to_string());
             })?;
         }
+        // UI 预设目录（ui/）：只收 `.ui.json`，不把 provenance 边车之类的普通 JSON
+        // 当成场景资源去导入；双击由资源面板交给 UI Studio。
+        let ui_root = project_root.join("ui");
+        if ui_root.is_dir() {
+            let mut ui_files = Vec::new();
+            collect_files(&ui_root, &mut ui_files).inspect_err(|error| {
+                self.last_error = Some(error.to_string());
+            })?;
+            found.extend(
+                ui_files
+                    .into_iter()
+                    .filter(|(path, _)| is_ui_document(path)),
+            );
+        }
         found.sort_by(|a, b| a.0.cmp(&b.0));
 
         let mut database = ResourceDatabase::open(project_root)?;
@@ -180,6 +194,18 @@ impl ResourceBrowserState {
                 .expect("asset path must be inside project root")
                 .to_path_buf();
             self.current_signatures.insert(relative.clone(), modified);
+            // `.ui.json` 是编辑器文档，不是可导入资产：给它一条 Ready 的资源行，
+            // 但绝不注册进 ResourceDatabase（否则会被 Scene 导入器当成场景去 cook）。
+            if is_ui_document(&relative) {
+                self.entries.push(ResourceEntry {
+                    path: relative,
+                    kind: ResourceKind::Other,
+                    status: ResourceState::Ready,
+                    asset_id: None,
+                    error: None,
+                });
+                continue;
+            }
             disk_assets.push(DiskAsset {
                 path: relative.clone(),
                 modified,
@@ -218,7 +244,7 @@ impl ResourceBrowserState {
 
         // 用本次扫描结果协调状态（变更/删除/移出扫描根）。
         let mut scan_roots = Vec::new();
-        for dir in ["assets", "scenes", "scripts"] {
+        for dir in ["assets", "scenes", "scripts", "ui"] {
             if project_root.join(dir).is_dir() {
                 scan_roots.push(PathBuf::from(dir));
             }
@@ -286,6 +312,14 @@ impl ResourceBrowserState {
             })
             .collect();
     }
+}
+
+/// `.ui.json` 的完整后缀是两段（`shop.ui.json`），不能只看 `extension()`。
+/// 单独抽出来，让资源扫描、资源面板双击与测试共用同一判定。
+pub fn is_ui_document(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().ends_with(".ui.json"))
 }
 
 fn collect_files(
@@ -434,6 +468,65 @@ mod tests {
         );
         assert_eq!(browser.refresh_count(), 1);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn refresh_shows_ui_documents_without_importing_them() {
+        let root = temp_root("ui-documents");
+        file(&root, "assets/player.png", b"png");
+        file(&root, "ui/forge.ui.json", b"{\"spec_version\":1}");
+        // provenance 边车是普通 JSON，不能混进资源树，更不能被当成场景去导入。
+        file(&root, "ui/provenance/forge_bg.json", b"{}");
+        let mut browser = ResourceBrowserState::new();
+        browser.refresh(&root).unwrap();
+        let entry = browser
+            .entries()
+            .iter()
+            .find(|entry| entry.path_string() == "ui/forge.ui.json")
+            .expect("UI 预设必须出现在资源浏览器里");
+        assert_eq!(entry.kind, ResourceKind::Other);
+        assert_eq!(entry.status, ResourceState::Ready);
+        assert!(entry.asset_id.is_none());
+        assert!(entry.error.is_none());
+        assert!(
+            !browser
+                .entries()
+                .iter()
+                .any(|entry| entry.path_string().contains("provenance")),
+            "provenance 边车不应出现在资源树：{:?}",
+            browser
+                .entries()
+                .iter()
+                .map(ResourceEntry::path_string)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !browser
+                .pending_imports()
+                .iter()
+                .any(|(_, path)| path.starts_with("ui")),
+            "UI 预设不得进入导入队列"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sample_project_lists_ui_presets() {
+        let root = sample_project_root();
+        if !root.join("ui/forge.ui.json").is_file() {
+            return;
+        }
+        let mut browser = ResourceBrowserState::new();
+        browser.refresh(&root).unwrap();
+        let paths: Vec<String> = browser
+            .entries()
+            .iter()
+            .map(ResourceEntry::path_string)
+            .collect();
+        assert!(
+            paths.iter().any(|path| path == "ui/forge.ui.json"),
+            "示例工程的 UI 预设必须出现在资源列表：{paths:?}"
+        );
     }
 
     #[test]

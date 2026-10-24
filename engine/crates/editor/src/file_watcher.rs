@@ -104,6 +104,9 @@ impl Default for WatchScope {
                 "scripts".to_owned(),
                 "scenes".to_owned(),
                 "data".to_owned(),
+                // UI 预设（`.ui.json`）由资源面板展示；不监听 `ui/` 的话，AI/外部工具
+                // 新建的预设不会触发资源刷新。
+                "ui".to_owned(),
                 // P3-R05-4：`shaders/`（内置 shader 的开发期覆盖目录）与资源同权监听。
                 // 没有这个根，改 `shaders/mesh3d.wgsl` 就永远不会产生事件，热重载只能靠重启编辑器。
                 rustlua_gpu::shader_library::SHADER_SOURCE_DIR.to_owned(),
