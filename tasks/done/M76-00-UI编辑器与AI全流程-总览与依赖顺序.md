@@ -1,9 +1,10 @@
 # 任务：UI 编辑器与 AI 全流程 - 总览与依赖顺序
 
 - 任务 ID：M76-00
-- 状态：进行中
+- 状态：已归档（2026-10-24 随 `c247fe99` 入库，与 M77 同笔；归档口径见文末 §归档记录）
 - 关联里程碑：M76
 - 创建日期：2026-10-24
+- 归档日期：2026-10-24（由 `tasks/plan/` 移入 `tasks/done/`，文件名不变）
 
 ## 目标
 
@@ -67,21 +68,50 @@ scripts/verify/verify.ps1 -MvpOnly   # 涉及运行时/UI 时
 
 逐包读数回填各包「验收证据」。
 
-## 提交集（等 M77 落地后重建）
+## 提交集（已执行：与 M77 一笔带走 `c247fe99`）
 
 本批**没有可单独编译的 M76-only 路径子集**：M77（渲染器下沉）已在索引里带了 52 条重命名，
 `engine/Cargo.toml`、`engine/crates/editor/src/main.rs`、`dock.rs`、`examples/game_api/scripts/**`
 都被两批共同改动，而 M76 的编辑器侧文件全部引用 HEAD 里还不存在的 `rustlua-ui-spec`。
-按路径切会同时带走别人的在途改动，所以先不提交。M77 落地后按这个口径重建提交集：
+按路径切会同时带走别人的在途改动，所以先不提交。
+
+实际处置（2026-10-24 22:0x 用户裁定三条：**一笔带走 M76+M77 / 快路 + 提交态三条 / 并行批次在途内容全部排除**）：
+提交集不是按关键字 grep 收的，而是按 [M77-00 §M77-01 提交交接清单](M77-00-宿主侧模块化与渲染器下沉-总览与依赖顺序.md)
+的桶表（①105 ②5 ③52 ④2 ⑤5 ⑥CHANGELOG）逐条按**内容归属**重建，共 **233 条路径**入笔，
+工作区里剩下的 36 条并行在途（game_api 2.0 演示批、`docs/74`、assetc 拆分 5 条、`scene_shot.rs`、
+M78-00 核对清单等）一条没带。`docs/README.md` 用 blob 手术只取本批两行（并行会话那行指向未入库的
+`docs/74`，整文件入笔会在提交树里留一条死链）。
+
+入库前门（当时读数，复现命令即本节末尾）：
+
+| 门 | 读数 |
+|---|---|
+| `scripts/verify/check-docs.ps1` | `check_docs_ok docs=69 game_docs=46 h1=117 links=513` |
+| `scripts/verify/verify.ps1 -MvpOnly` | `executed=78 expected=78` 全绿（日志 `artifacts/logs/quality/verify-20261024-223006.log`） |
+| `cargo test -p rustlua-ui-spec` | 59 passed |
+| `cargo test -p rustlua-editor-ai` | 65 passed / 1 ignored |
+| `cargo test -p editor --lib` | 249 passed |
+
+三条非平凡读数要留档：
+
+- **`jhyt_m31_pc_release` 首跑红是"缺前置"，不是缺陷**：`release is missing pack/chars.txt`，
+  本地 `builds/pc` 是 10-19 的陈旧产物（gitignored）。跑
+  `powershell -File scripts/build/package.ps1 -ProjectRoot examples/game_jhyt -Platform pc`
+  重打包后单例与整条 `-MvpOnly` 复跑全绿——没有为它改任何代码。
+- **pre-commit hook（workspace clippy `-D warnings`）两次拒笔**，M76 文件里共 7 个 lint 点
+  （`collapsible_if`×2、`needless_borrows_for_generic_args`、`map_err` 闭包×2、
+  `unnecessary_lazy_evaluations`、`type_complexity`、`derivable_impls`）逐个真修；
+  没有用 `RUSTLUA_SKIP_PRECOMMIT=1`，也没有 `--no-verify`。
+  `type AssetDetails` 第一版写在 `impl` 块里得到 E0658（inherent associated types 未稳定），
+  模块级别名才是可编译形状。
+- 提交后 `main` 又前进两笔（`7b27d21c`、`309db4d0`，并行会话的 `ui_create_preset` 与 T1 白名单），
+  本批的三条提交态复跑跑的是 `c247fe99` 那棵树，不是最新 HEAD。
 
 ```powershell
-# 1) 只列 M76 的路径，逐条确认 diff 里没有 M77 的行（尤其 main.rs / dock.rs / Cargo.toml）
-git status --porcelain
-git diff --stat -- engine/crates/rustlua-ui-spec engine/crates/rustlua-editor-ai
-# 2) 提交前必跑：这批自己绿 + 全量门不新增红
-cargo test -p rustlua-ui-spec; cargo test -p rustlua-editor-ai; cargo test -p editor --lib
+# 复现（本批门）
 scripts/verify/check-docs.ps1
 scripts/verify/verify.ps1 -MvpOnly
+cargo test -p rustlua-ui-spec; cargo test -p rustlua-editor-ai; cargo test -p editor --lib
 ```
 
 ## 实现记录
@@ -177,8 +207,7 @@ scripts/verify/verify.ps1 -MvpOnly
   - 门读数（同日复跑）：`rustlua-ui-spec` 59、`rustlua-editor-ai` 65（+1 ignored）、
     `rustlua-ui` 132、`editor --lib` 249 全绿；`editor --bin editor ui_` 36/1（仍是并行批次的
     `.scene` 基线漂移）。
-  - **本批未提交**，原因与重建口径见本文「提交集」：与在途的 M77 重命名/共享文件同树，
-    切不出能单独编译的 M76-only 子集。
+  - 提交状态：本批与 M77 同笔入 `c247fe99`（切不出能单独编译的 M76-only 子集，见本文「提交集」）。
 
 ## 未完成项 / 已知限制
 
@@ -206,3 +235,18 @@ scripts/verify/verify.ps1 -MvpOnly
     `--project` 路径，不是任务原定的项目级形态。新注册的 tool 面要**新会话**才可见。
   - 三宿主：`ui/hosts.json` 只有消费端（校验四件套），仓库里没有生产端，PC/Web/微信在任何
     报告里都只会是 `untested`；这条与 M76-06/07 的"未测"是同一个缺口，不要重复计数。
+
+## 归档记录
+
+- 2026-10-24 归档：M76-00..07 八份随批移入 `tasks/done/`，代码在 `c247fe99`。归档依据是
+  M77-00 定下的**提交态三条**已在该提交树上复跑（①`cargo check -p engine -p editor -p game_web
+  --all-targets` = `CHECK_EXIT=0`；②`RUSTLUA_REQUIRE_GPU=1 cargo test -p rustlua-gpu -p rustlua-render
+  -- --test-threads=1` = 138 + 153 + 1 全绿、`GPU_TEST_EXIT=0`；③反面对照见 M77-00 §归档记录）。
+- **归档时没收口什么**（口径仍是「只登记，不开新包」，逐条在各包 §未完成项）：键盘导航 e2e、
+  三宿主 golden 矩阵与 `ui/hosts.json` 生产端、吸附/量距、富文本绘制循环、宿主输入事件/IME 桥、
+  图集写盘（归 `assetc cook`）、远程 Provider 与系统密钥库活体、`-Web` 与 `-Benchmarks` 全量段。
+- **本批没做、留给下一批的一件事**：编辑器侧 offscreen renderer 合并（M77-02 唯一不依赖度量判据的
+  硬收益项）仍阻塞在 `editor/src/preview_session.rs` 与 `panels/scene_view/mod.rs` 上。
+- 文内的 `tasks/plan/*` 字样按 M72 那一批的口径处理：剩下的命中都是**批号通配或历史引文**，
+  可打开的旧文件路径 0 处。复现（判"可打开的旧文件路径"）：
+  `grep -c "tasks/plan/M7[67]-[0-9][0-9]*-[^ )、，。]*\.md" tasks/done/M76-00-*.md tasks/done/M77-00-*.md`。

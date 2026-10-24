@@ -2,7 +2,7 @@
 
 > **一句话状态**：设计定稿；M0 契约层已交付（`rustlua-ui-spec` 接入 workspace，66 项测试绿，
 > 8 条 UI tool 规格进快照门，Provider 录制/回放可用）。M1–M6 尚未开工，计划包见
-> [M76-00 总览](../tasks/plan/M76-00-UI编辑器与AI全流程-总览与依赖顺序.md)。
+> [M76-00 总览](../tasks/done/M76-00-UI编辑器与AI全流程-总览与依赖顺序.md)。
 >
 > **本文回答什么**：主流引擎与 UI 工具各自怎么做、RustLua 抄哪条丢哪条、如何把「设计 → 出图 → 切图 →
 > 布局 → 修改」做成编辑器内的一条 AI 主链路，以及这条链路上每个产物的契约、校验、权限与验收门。
@@ -352,7 +352,7 @@ UI Studio 的价值取决于运行时闭环。M1 的优先级：
 合计约 15–17 周（与方案 v1 的 MVP-C 估算一致）。**顺序不可压缩的是 M0→M1/M2→M3**；
 M4 可与 M3 后半并行，M5 可与 M4 并行，M6 必须最后。
 
-**M0–M6 的逐包验收与文件清单**见 `tasks/plan/M76-01` 至 `M76-07`。
+**M0–M6 的逐包验收与文件清单**见 `tasks/done/M76-01` 至 `M76-07`。
 
 ---
 
@@ -390,6 +390,8 @@ M4 可与 M3 后半并行，M5 可与 M4 并行，M6 必须最后。
 | 2026-10-24 | M0 收口：能力矩阵可序列化、Provider 抽象与录制回放、8 条 UI tool 规格进快照门 | ui-spec 22 passed；editor-ai 44 passed；快照篡改反面对照 exit 101→恢复 0；`cargo build -p editor` 42.44s；`check-docs.ps1` 绿 |
 | 2026-10-24 | M1–M6 交付面：运行时输入路由/`ButtonStates`/绑定/动画/裁剪滚动、`ui_*` 执行体与提案门、UI Studio（层级拖拽·检查器写回·画布缩放·令牌·提案箱拆分接受·Undo/Redo）、出图/切图/provenance/工程级发布门、补丁与导入审查、四个高级控件内核 + `ui.*` 运行期接线 | `cargo test -p rustlua-ui-spec` 59/0、`-p rustlua-editor-ai` 65/0(+1 ignored)、`-p rustlua-ui` 132/0、`cargo test -p editor --lib` 249/0；`cargo test -p editor --bin editor ui_` 36/1（那 1 条是并行批次的 `index.scene`/`api_prefab.scene` 基线漂移，未刷基线） |
 | 2026-10-24 | MCP stdio 活体接入 `examples/game_api`（连接器拉起 `editor --project <路径> --mcp-stdio`）：43 tool / 9 条 `ui_*`、tier 分布 T0=14 T1=15 T2=8 T3=6；T0 读通且 revision 原样往返、T1 写生成提案、T2/T3 停在「AI 动作确认」。修掉两条只有真实 JS 客户端才能暴露的缺陷：revision 是 u64 内容哈希、超出 2^53 会被 f64 舍入导致补丁永远判过期（`revision_hash` 压进安全位宽 + 单测）；一条未确认的写会把整条 stdio 通道连同后续只读调用一起挂死（`DEFAULT_REPLY_WAIT` 有界等待 + `QueuedForConfirmation`，批准后动作照常执行） | 读数：`ui_export_spec` 4ms → `revision=4421840451047808`（2^53=9007199254740992）；`ui_apply_patch`（T1，`RUSTLUA_EDITOR_AI_AUTO_T1=1`）25ms → 提案 `uip_793631c4d8a22f71`、`nodes_changed=1`；同一次会话里 `ui_promote_asset`（T2）30001ms → 「已排队」，随后 T0 仍 3ms 应答；不带该环境变量时 T1/T2/T3 四条写全部排队、只读照常——门读数由 `bridge::tests::interactive_policy_queues_the_write_until_the_host_approves_it` 与 `unconfirmed_write_times_out_as_queued_instead_of_wedging_the_transport` 锁住 |
-| 2026-10-24 | 本批提交状态：M76 与并行的 M77（渲染器下沉，52 条已在索引里的重命名）以及 `examples/game_api` 的 Lua 迁移同处一个工作区，`engine/Cargo.toml`、`main.rs`、`dock.rs`、game_api 样例都被两边共同改动 | 因此**没有可单独编译的 M76-only 路径子集**，本批按路径切提交会同时带走别人的在途改动；收口先落在文档与本批门读数，提交集等 M77 落地后按 `tasks/plan/M76-00`「提交集」的命令重建 |
+| 2026-10-24 | **入库**：M76 与 M77 一笔带走 `c247fe99`（233 个文件、30248 插入 / 2677 删除），并行批次在途内容（game_api 2.0 演示、`docs/74`、assetc 拆分、`scene_shot.rs`、M78-00）全部排除 | 门读数：`check-docs.ps1` → `docs=69 game_docs=46 h1=117 links=513`；`verify.ps1 -MvpOnly` → `executed=78 expected=78`；`cargo test -p rustlua-ui-spec` 59、`-p rustlua-editor-ai` 65(+1 ignored)、`-p editor --lib` 249。pre-commit 的 workspace clippy `-D warnings` 两次拒笔，M76 文件里 7 个 lint 点逐个真修（没有 `-A`、没有 `--no-verify`）。提交态三条（`--all-targets` / GPU 单线程 138+153 / 反面对照 7×E0432）见 [M77-00 §归档记录](../tasks/done/M77-00-宿主侧模块化与渲染器下沉-总览与依赖顺序.md)。**没买到的**：`-Web`、`-Benchmarks` 两段没跑；三宿主 golden 与 `ui/hosts.json` 生产端仍缺 |
+| 2026-10-24 | **归档**：`tasks/plan/M76-00..07` 与 `tasks/plan/M77-00`、`M77-02` 移入 `tasks/done/`，路径引用同笔更新 | 未收口项按「只登记，不开新包」保留在各包 §未完成项 |
+| 2026-10-24 | 本批提交状态：M76 与并行的 M77（渲染器下沉，52 条已在索引里的重命名）以及 `examples/game_api` 的 Lua 迁移同处一个工作区，`engine/Cargo.toml`、`main.rs`、`dock.rs`、game_api 样例都被两边共同改动 | 因此**没有可单独编译的 M76-only 路径子集**，本批按路径切提交会同时带走别人的在途改动；收口先落在文档与本批门读数，提交集等 M77 落地后按 `tasks/done/M76-00`「提交集」的命令重建（当日即按此执行，见下两行） |
 
 后续每批落地在本表追加一行：日期、提交、门读数（命令 + 结果），不写"已完成"四个字了事。

@@ -97,10 +97,10 @@
 
 ## 3. 渲染管线
 
-> 本节写的 `engine/crates/rustlua-gpu/` 是 M77-01（2026-10-24）的落点，**提交集尚未入库**：HEAD 上
-> 渲染器仍住 `engine/crates/engine/src/host/renderer/`。本文与 `docs/62` 必须与该批**同一笔**入库，
-> 否则指向新 crate 的链接会在干净检出上被 `check-docs.ps1` 判红（工作区里 `Test-Path` 走文件系统，
-> 当场看不出来）。见 [M77-00 交接清单](../tasks/plan/M77-00-宿主侧模块化与渲染器下沉-总览与依赖顺序.md)。
+> 本节写的 `engine/crates/rustlua-gpu/` 是 M77-01（2026-10-24）的落点，**已随 `c247fe99` 入库**：
+> 本文与 `docs/62` 当时和该批的目录形状同笔提交，否则指向新 crate 的链接会在干净检出上被
+> `check-docs.ps1` 判红（工作区里 `Test-Path` 走文件系统，当场看不出来）。交接口径与提交态三条复跑
+> 见 [M77-00 交接清单](../tasks/done/M77-00-宿主侧模块化与渲染器下沉-总览与依赖顺序.md)。
 
 宿主渲染器（[rustlua-gpu `src/renderer/`](../engine/crates/rustlua-gpu/src/renderer/mod.rs)、[shader.rs](../engine/crates/rustlua-gpu/src/shader.rs)）每帧执行的通道由 [`RenderPlan`](../engine/crates/rustlua-render/src/render_plan.rs) **统一决定**（纯函数，单测可断言顺序；渲染循环不再各自写 `if`）：
 
