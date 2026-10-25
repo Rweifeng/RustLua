@@ -1,7 +1,7 @@
 [project]
 # RustLua API 演示工程：每个 Lua API 模块一个可交互场景（入口 scenes/index.scene）。
 name = "game_api"
-version = "0.1.0"
+version = "0.1.1"
 engine = "RustLua"
 main_script = "scripts/main.lua"
 startup_scene = "scenes/index.scene"

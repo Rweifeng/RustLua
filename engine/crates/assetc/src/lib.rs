@@ -1,7 +1,7 @@
 //! assetc — 资源构建工具（M7-01）。
 //!
 //! 扫描项目数据文件（`project.toml`、`scenes/`、`scripts/`、`assets/`），
-//! 注册到 [`ResourceDatabase`]，并通过 [`ImportCache`] 增量导入缓存，
+//! 注册到 [`rustlua_assets::resource_db::ResourceDatabase`]，并通过 [`ImportCache`] 增量导入缓存，
 //! 最后可打包为发布资源目录并生成清单。
 //!
 //! 命令（见 `main.rs`）：`scan` / `import` / `clean` / `list` / `package` / `--check`。

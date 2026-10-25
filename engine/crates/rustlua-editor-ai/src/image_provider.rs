@@ -108,7 +108,7 @@ impl ImageProvider for LocalImageProvider {
     }
 }
 
-/// 远程出图的配置。密钥不在这里——见 [`RemoteImageProvider::key_source`]。
+/// 远程出图的配置。密钥不在这里——见 `RemoteImageProvider` 的 `key_source` 字段（宿主注入）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteImageConfig {
     pub endpoint: String,

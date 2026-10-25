@@ -15,8 +15,8 @@ param(
     # docs/54 §8-⑨：跑 Web 平台证据（浏览器契约层 + 已发布产物的启动层）。
     # 环境受限（无浏览器/无 node/无 wasm32 目标）时**显式**跳过并打印原因，不伪造通过。
     [switch]$Web,
-    # wasm Lua 运行期验证门（scripts/verify/verify-wasm-lua.ps1）：spike（vendored mlua 移植）
-    # + no-modules 桥（game_web Lua 桥）的 Node 验证。退出码 0=通过/1=判红/3=环境受限跳过，
+    # wasm Lua 运行期验证门（scripts/verify/verify-wasm-lua.ps1）：no-modules 桥（game_web Lua 桥）
+    # + gpu2d 宿主画布探针的 Node 验证。退出码 0=通过/1=判红/3=环境受限跳过，
     # 与 -Web 同一哲学：缺 node/wasm32/zig/wasm-bindgen 时显式跳过，绝不把"跳过"当"通过"。
     [switch]$WasmLua,
     # 供应链安全门（P2-01）：cargo-audit / cargo-deny / fork 同步 / SBOM 一致性。
@@ -43,7 +43,7 @@ param(
 # `validate_data.lua`、组件 schema）此前只存在于总门里。总门在 8 核 / 16 GB 的开发机上要几十分钟
 # 到几小时，于是「想拿一次读数」的成本高到没人愿意付——代价已经真实发生过：`scenes/main.scene`
 # 的一句中文注释让 `game --check` 判红，这条红在本地 HEAD 里活了 5 个提交才被发现
-# （见 CHANGELOG「场景注释不再冒充依赖」）。`-Quick` 把这一类红的发现成本降到几十秒（热缓存）。
+# （见 `docs/changelog/发布-CI与质量门.md`「场景注释不再冒充依赖」）。`-Quick` 把这一类红的发现成本降到几十秒（热缓存）。
 #
 # 跑什么：文档门、vendor 补丁门、cargo metadata、fmt、Lua API 文档桩、Web API 覆盖清单、
 #         git diff --check、两个判据自测、`game --check`、`editor --check`（两个工程）。
@@ -387,6 +387,22 @@ else {
     throw "check-toolchain-lock.ps1 missing: $toolchainLockScript"
 }
 
+# 版本一致性门（P0-02）：引擎 workspace 版本与两个示例工程的 project.toml 版本必须一致，
+# 且编辑器新建工程模板不再写死字面量版本（历史漂移：header.rs 写死 0.1.0 而引擎已 0.1.1）。
+# 纯文件检查、约 1 秒，与文档门同段：`-MvpOnly` 也跑，版本漂移不该被快速路径跳过。
+Write-Step "Project version consistency"
+$versionGateScript = Join-Path $projectRoot "scripts/verify/check-project-version.ps1"
+if (Test-Path -LiteralPath $versionGateScript) {
+    $versionOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File $versionGateScript
+    $versionExit = $LASTEXITCODE
+    $versionOutput | ForEach-Object { Write-Host $_ }
+    if ($versionExit -ne 0) {
+        throw "check-project-version.ps1 failed (exit code $versionExit)"
+    }
+}
+else {
+    throw "check-project-version.ps1 missing: $versionGateScript"
+}
 # 降耦合门（`docs/62` P1 ③④⑤）：wasm 图里的音频后端、`rustlua-scene` 图里的渲染/UI 层、
 # 契约层 `rustlua-lua-api` 的本仓依赖，三条都必须为 0。跑三次 `cargo tree`（已编译时约 1-2 秒），
 # 放在编译之前——它只看依赖图，不改产物；退化时能直接指到"哪一层又被拖回来了"。
@@ -2638,7 +2654,7 @@ if ($Benchmarks) {
     Write-Host "WP0 benchmark baselines and semantic golden written and schema-checked: $baselineRoot" -ForegroundColor Green
 }
 
-# wasm Lua 运行期验证门：把 scripts/lib/wasm-lua 下的两个 Node 用例（spike + no-modules 桥）
+# wasm Lua 运行期验证门：把 scripts/lib/wasm-lua 下的两个 Node 用例（no-modules 桥 + gpu2d 宿主画布探针）
 # 纳入可重复门。与 -Web 同一子进程约定——Start-Process -PassThru 在重定向下 ExitCode 是
 # $null，退出码**只**认子进程写的 StatusFile；缺失即判失败。0=通过 / 1=判红 / 3=环境受限跳过。
 if ($WasmLua) {
@@ -2695,7 +2711,7 @@ if ($WasmLua) {
         if (-not $hasOk) {
             throw "wasm-lua verification reported success but wrote no wasm_lua_ok line (stale evidence is not evidence)"
         }
-        Write-Host "wasm_lua_ok (spike + no-modules bridge passed)" -ForegroundColor Green
+        Write-Host "wasm_lua_ok (no-modules bridge + gpu2d host probe passed)" -ForegroundColor Green
     }
     else {
         Write-Host "wasm_lua_skipped reason=environment_limited exit=$exitCode (缺 node/wasm32 target/zig/wasm-bindgen)" -ForegroundColor Yellow

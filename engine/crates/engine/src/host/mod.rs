@@ -3,7 +3,7 @@
 //!
 //! - [`RuntimeScene`] instantiates the project scene/scripts and produces
 //!   per-frame [`SceneMesh`] (2D) and [`Scene3d`] draw data.
-//! - [`Renderer`] consumes those frames and renders 2D/3D passes to a window
+//! - `Renderer` consumes those frames and renders 2D/3D passes to a window
 //!   surface (and, in M10-02, an offscreen texture target).
 
 /// 帧调度分档统计（M74-02 P0 度量闸门）：每系统 p50/p99、每 stage 合计与占帧比。
