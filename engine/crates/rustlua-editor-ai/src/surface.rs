@@ -186,6 +186,15 @@ fn build_tools() -> Vec<ToolSpec> {
             tier: ToolTier::Read,
             input_schema: schema_object(json!({}), &[]),
         },
+        ToolSpec {
+            name: "read_resource",
+            description: "读取编辑器资源文本（与 MCP resources/read 同一份内容）。一句话创建 UI 预设前必须先读 `rustlua://ui/guide`（UiSpec 契约、节点类型、完整示例与调用顺序），再按它的结构构造 spec。可用资源：rustlua://ui/guide、rustlua://lua-api/docs、rustlua://lua-api/surface、rustlua://components、rustlua://scene/schema、rustlua://project/config。T0。",
+            tier: ToolTier::Read,
+            input_schema: schema_object(
+                json!({"uri": {"type": "string", "minLength": 1, "description": "资源 URI，例如 rustlua://ui/guide"}}),
+                &["uri"],
+            ),
+        },
         // ── 写 tool（T1–T3）──────────────────────────────────────────────
         ToolSpec {
             name: "new_scene",
@@ -679,10 +688,15 @@ mod tests {
         }
         assert_eq!(
             tools().iter().filter(|t| !t.tier.is_write()).count(),
-            14,
+            15,
             "只读 tool 数"
         );
         assert_eq!(tools().iter().filter(|t| t.tier.is_write()).count(), 31);
+        assert_eq!(
+            tool_by_name("read_resource").map(|tool| tool.tier),
+            Some(ToolTier::Read),
+            "read_resource 必须是免确认的只读工具"
+        );
     }
 
     #[test]

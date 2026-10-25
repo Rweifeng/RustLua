@@ -1,0 +1,61 @@
+=== RustLua editor GUI/GPU evidence (docs/55 阶段 0) ===
+profile=debug os=windows started_unix=1792897950
+windows=14 wall_seconds=31.3 prepare_seconds=3.9 scene=scenes/main.scene
+
+note: pixels_per_point 是 egui 的 DPI 覆盖（等价于显示器缩放 100/150/200%），
+      不是操作系统设置本身；每张截图都带非黑像素比例，全黑图会被判定为失败。
+
+dpi1-1280x720-2d             req_ppi=1    act_ppi=1    req=1280x720 screen=1280x720 play=false 3d=false assistant=false studio=false game=false image=1280x720 lit=0.978 luma=0.132 ws=508.9MiB 01-dpi1-1280x720-2d.png
+dpi1-1024x700-2d             req_ppi=1    act_ppi=1    req=1024x700 screen=1024x700 play=false 3d=false assistant=false studio=false game=false image=1024x700 lit=0.983 luma=0.136 ws=514.1MiB 02-dpi1-1024x700-2d.png
+dpi1-1600x900-2d             req_ppi=1    act_ppi=1    req=1600x900 screen=1600x900 play=false 3d=false assistant=false studio=false game=false image=1600x900 lit=0.978 luma=0.128 ws=541.3MiB 03-dpi1-1600x900-2d.png
+dpi1.5-1280x720-2d           req_ppi=1.5  act_ppi=1.5  req=1280x720 screen=1280x720 play=false 3d=false assistant=false studio=false game=false image=1920x1080 lit=0.978 luma=0.130 ws=567.8MiB 04-dpi1.5-1280x720-2d.png
+dpi1.5-1024x700-2d           req_ppi=1.5  act_ppi=1.5  req=1024x700 screen=1024x700 play=false 3d=false assistant=false studio=false game=false image=1536x1050 lit=0.983 luma=0.134 ws=558.9MiB 05-dpi1.5-1024x700-2d.png
+dpi1.5-1600x900-2d           req_ppi=1.5  act_ppi=1.5  req=1600x900 screen=1600x900 play=false 3d=false assistant=false studio=false game=false image=2400x1350 lit=0.978 luma=0.127 ws=616.1MiB 06-dpi1.5-1600x900-2d.png
+dpi2-1280x720-2d             req_ppi=2    act_ppi=2    req=1280x720 screen=1280x720 play=false 3d=false assistant=false studio=false game=false image=2560x1440 lit=0.978 luma=0.129 ws=625.3MiB 07-dpi2-1280x720-2d.png
+dpi2-1024x700-2d             req_ppi=2    act_ppi=2    req=1024x700 screen=1024x700 play=false 3d=false assistant=false studio=false game=false image=2048x1400 lit=0.982 luma=0.133 ws=588.9MiB 08-dpi2-1024x700-2d.png
+dpi2-1600x900-2d             req_ppi=2    act_ppi=2    req=1600x900 screen=1600x900 play=false 3d=false assistant=false studio=false game=false image=3200x1800 lit=0.978 luma=0.126 ws=694.6MiB 09-dpi2-1600x900-2d.png
+dpi1.5-1280x720-3d           req_ppi=1.5  act_ppi=1.5  req=1280x720 screen=1280x720 play=false 3d=true  assistant=false studio=false game=false image=1920x1080 lit=0.978 luma=0.130 ws=637.3MiB 10-dpi1.5-1280x720-3d.png
+dpi1.5-1280x720-play         req_ppi=1.5  act_ppi=1.5  req=1280x720 screen=1280x720 play=true  3d=false assistant=false studio=false game=false image=1920x1080 lit=1.000 luma=0.167 ws=603.5MiB 11-dpi1.5-1280x720-play.png
+dpi1.5-1280x720-assistant    req_ppi=1.5  act_ppi=1.5  req=1280x720 screen=1280x720 play=false 3d=false assistant=true  studio=false game=false image=1920x1080 lit=0.978 luma=0.130 ws=602.0MiB 12-dpi1.5-1280x720-assistant.png
+dpi1.5-1280x720-ui-studio    req_ppi=1.5  act_ppi=1.5  req=1280x720 screen=1280x720 play=false 3d=false assistant=false studio=true  game=false image=1920x1080 lit=1.000 luma=0.125 ws=603.3MiB 13-dpi1.5-1280x720-ui-studio.png
+dpi1.5-1280x720-edit-game    req_ppi=1.5  act_ppi=1.5  req=1280x720 screen=1280x720 play=false 3d=false assistant=false studio=false game=true  image=1920x1080 lit=0.978 luma=0.130 ws=603.4MiB 14-dpi1.5-1280x720-edit-game.png
+
+frame_samples=240 panels=6 commands=2
+editor profiler: enabled=true budget=16.7ms samples=240 over_budget=62
+frame: last=6.59ms p50=7.90ms p95=190.92ms p99=220.31ms max=273.25ms
+panel assistant: last=0.32ms p95=0.83ms max=4.98ms n=240
+panel console: last=2.09ms p95=4.59ms max=14.96ms n=240
+panel hierarchy: last=1.23ms p95=3.47ms max=4.36ms n=240
+panel resource_browser: last=1.16ms p95=2.99ms max=4.42ms n=240
+panel ui_studio: last=22.31ms p95=29.37ms max=44.48ms n=29
+panel workspace: last=0.60ms p95=180.69ms max=264.13ms n=240
+command file_watch_ui_poll: last=0.00ms p95=0.00ms n=240 total=1.0ms
+command resource_refresh_apply: last=0.13ms p95=0.13ms n=2 total=0.2ms
+counter console_index_cache_hit = 420
+counter console_index_cache_miss = 33
+counter hierarchy_cache_hit = 450
+counter hierarchy_cache_miss = 3
+counter hierarchy_rows_drawn = 6431
+counter layout_auto_saved = 4
+counter resource_refresh_applied = 2
+counter resource_refresh_started = 2
+gauge console_notice_lines = 0.000
+gauge console_row_content_height = 15.344
+gauge console_rows_indexed = 71.000
+gauge file_watch_last_scan_ms = 2.492
+gauge file_watch_scanned_entries = 109.000
+gauge file_watch_worker_events = 0.000
+gauge file_watch_worker_scans = 62.000
+gauge hierarchy_row_content_height = 18.000
+gauge hierarchy_visible_rows = 22.000
+gauge history_dropped_entries = 0.000
+gauge history_redo_len = 0.000
+gauge history_undo_len = 0.000
+gauge log_sink_lines = 73.000
+gauge resource_entries = 106.000
+gauge resource_pending_imports = 0.000
+gauge resource_refresh_in_flight = 0.000
+gauge scene_entities = 22.000
+gauge thumbnail_cache_entries = 0.000
+
+captures=14 failed=0 result=ok

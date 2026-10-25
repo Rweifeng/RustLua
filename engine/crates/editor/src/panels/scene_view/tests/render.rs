@@ -51,3 +51,59 @@ fn ui_test_scene_renders_offscreen_with_gpu() {
     renderer.render_into_texture(&mesh, None, &view, 1280, 720);
     let _ = fs::remove_dir_all(&root);
 }
+
+/// 有 3D 时游戏画面**不得**声明 2D 主视图：渲染器把声明的 `RenderView` 优先当成
+/// 3D 的投影矩阵（`passes.rs` 的 `main_matrix`），3D 会被 2D 正交矩阵拍扁。
+#[test]
+fn game_screen_skips_2d_main_view_when_scene_has_3d() {
+    let camera = Camera2D::new(Vec2::new(0.0, 0.0), 1.0).expect("camera");
+    let viewport = render_viewport(1280, 720);
+    let flat = super::super::render::game_screen_frame_views(camera, viewport, false);
+    let main = flat.main.expect("纯 2D 用游戏相机作主视图");
+    assert_eq!(main.viewport, viewport);
+
+    let with_3d = super::super::render::game_screen_frame_views(camera, viewport, true);
+    assert!(
+        with_3d.main.is_none(),
+        "有 3D 时必须不声明，让渲染器回退到 Scene3d::view"
+    );
+    assert!(with_3d.overlay.is_none());
+}
+
+/// 未 Play 时游戏画面也要能画出 3D：`render_scene_screen` 走与 Play 同一条
+/// `scene_3d` 提取（Game 视图的编辑预览复用它）。
+#[test]
+fn edit_game_screen_renders_3d_scene_without_play() {
+    let Some((device, queue)) = test_device() else {
+        return;
+    };
+    let root = copy_sample_project("game-screen-3d");
+    let project = open_project(&root).unwrap();
+    let mut app = EditorApp::new(project, Some((device, queue)), LogSink::new(64));
+    app.refresh_resources();
+    app.open_scene_resource(PathBuf::from("scenes/demo3d.scene"));
+    app.ensure_scene_runtime();
+    app.ensure_scene_renderer_instance();
+    let runtime = app.scene_runtime.as_ref().expect("edit runtime");
+    let viewport = render_viewport(app.preview_resolution.0, app.preview_resolution.1);
+    assert!(
+        runtime.scene_3d(viewport).is_some(),
+        "样例 3D 场景必须提取出 drawable，否则本用例没有覆盖 3D 分支"
+    );
+
+    let ctx = egui::Context::default();
+    ctx.begin_pass(egui::RawInput::default());
+    app.render_scene_screen(&ctx);
+    let _ = ctx.end_pass();
+
+    assert!(!app.is_playing(), "编辑预览不得进入 Play");
+    assert!(
+        app.scene_screen_texture.is_some(),
+        "3D 场景的游戏画面纹理应已建出"
+    );
+    assert!(
+        app.scene_screen_cache_key.is_some(),
+        "渲染路径应真的跑过（不是提前返回）"
+    );
+    let _ = fs::remove_dir_all(root);
+}

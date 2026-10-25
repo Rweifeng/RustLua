@@ -130,12 +130,14 @@ impl EditorApp {
                 egui::Color32::WHITE,
             );
         }
+        // 导航提示贴左下、11px 灰字：左上角留给状态胶囊（世界/轴心 + IBL），
+        // 原来的大号标题会压在上面叠字；视图模式由顶栏 3D 开关表达，不必再写标题。
         painter.text(
-            rect.left_top() + egui::vec2(12.0, 12.0),
-            egui::Align2::LEFT_TOP,
-            "3D 场景视图  -  中键旋转 / 右键平移 / 滚轮缩放",
-            egui::FontId::proportional(15.0),
-            egui::Color32::LIGHT_GRAY,
+            rect.left_bottom() + egui::vec2(12.0, -10.0),
+            egui::Align2::LEFT_BOTTOM,
+            "中键旋转 · 右键平移 · 滚轮缩放",
+            egui::FontId::proportional(11.0),
+            egui::Color32::from_rgba_unmultiplied(170, 180, 195, 150),
         );
 
         // 收集 3D 实体（Transform3D），投影到屏幕。typed 提取按文档 revision 缓存，
@@ -183,45 +185,48 @@ impl EditorApp {
             })
             .collect();
 
-        // 绘制实体标记（投影后的菱形 + 名称；拖拽预览优先）。
-        for (id, name, transform, _) in &entities3d {
-            let position = self
-                .scene_state
-                .preview3d_transform
-                .get(id)
-                .map(|t| t.position)
-                .unwrap_or(transform.position);
-            let Some(screen) = self.project_to_screen(position, rect) else {
-                continue;
-            };
-            let selected = self.selection.contains(*id);
-            let half = 8.0;
-            let stroke = egui::Stroke::new(
-                if selected { 2.0_f32 } else { 1.0_f32 },
-                egui::Color32::from_rgb(230, 170, 60),
-            );
-            let corners = [
-                screen + egui::vec2(-half, 0.0),
-                screen + egui::vec2(0.0, -half),
-                screen + egui::vec2(half, 0.0),
-                screen + egui::vec2(0.0, half),
-            ];
-            painter.add(egui::Shape::convex_polygon(
-                corners.to_vec(),
-                if selected {
-                    egui::Color32::from_rgb(120, 90, 40)
-                } else {
-                    egui::Color32::from_rgb(58, 66, 80)
-                },
-                stroke,
-            ));
-            painter.text(
-                screen + egui::vec2(0.0, half + 10.0),
-                egui::Align2::CENTER_CENTER,
-                name,
-                egui::FontId::proportional(14.0),
-                egui::Color32::WHITE,
-            );
+        // 绘制实体标记（投影后的菱形 + 名称；拖拽预览优先）。覆盖层「标记与名字」只关画层，
+        // 点选与 Gizmo 仍用上面同一份 `entities3d`。
+        if self.show_entity_labels {
+            for (id, name, transform, _) in &entities3d {
+                let position = self
+                    .scene_state
+                    .preview3d_transform
+                    .get(id)
+                    .map(|t| t.position)
+                    .unwrap_or(transform.position);
+                let Some(screen) = self.project_to_screen(position, rect) else {
+                    continue;
+                };
+                let selected = self.selection.contains(*id);
+                let half = 8.0;
+                let stroke = egui::Stroke::new(
+                    if selected { 2.0_f32 } else { 1.0_f32 },
+                    egui::Color32::from_rgb(230, 170, 60),
+                );
+                let corners = [
+                    screen + egui::vec2(-half, 0.0),
+                    screen + egui::vec2(0.0, -half),
+                    screen + egui::vec2(half, 0.0),
+                    screen + egui::vec2(0.0, half),
+                ];
+                painter.add(egui::Shape::convex_polygon(
+                    corners.to_vec(),
+                    if selected {
+                        egui::Color32::from_rgb(120, 90, 40)
+                    } else {
+                        egui::Color32::from_rgb(58, 66, 80)
+                    },
+                    stroke,
+                ));
+                painter.text(
+                    screen + egui::vec2(0.0, half + 10.0),
+                    egui::Align2::CENTER_CENTER,
+                    name,
+                    egui::FontId::proportional(14.0),
+                    egui::Color32::WHITE,
+                );
+            }
         }
 
         // 点选：由屏幕坐标构造真实世界射线，按最近 bounds 命中实体。

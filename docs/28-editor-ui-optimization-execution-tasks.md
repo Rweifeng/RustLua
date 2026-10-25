@@ -627,17 +627,19 @@ E20 + E22
   3440×1440、1080×1920（覆盖 4:3/16:9/21:9/9:16 主流比例）。
 - ✅ Safe Area 数据层：`CanvasConfig.safe_area`（像素 insets）与
   `safe_rect(viewport)`（越界钳制到零尺寸），供 Game View 可视化与运行时共用。
-- ✅ 比例切换快捷组：工具栏直接给 16:9、16:10、21:9、4:3、9:16 五个按钮；
+- ✅ 比例切换快捷组：16:9、16:10、21:9、4:3、9:16 五个比例收在**分辨率下拉**里
+  （下拉选中文本带当前比例，如 `1280×720 · 16:9`），顶栏不再常驻一排按钮；
   `resolution_for_aspect` 保持当前长边换另一条边（1280×720 → 16:10 得 1280×800、
   21:9 得 1280×549、9:16 得 720×1280），`resolution_matches_aspect` 用 0.5% 容差
-  识别当前比例。切换只改预览目标，不写场景数据。
+  识别当前比例、`aspect_label_for` 给出标签。切换只改预览目标，不写场景数据。
 - ✅ Safe Area 可视化：Scene 视图改为读取场景 UI Root 的 `canvas.safe_area`
   （`canvas_config_from_scene` 与选中项无关），用 `CanvasConfig::safe_rect` 按设计
   分辨率钳制后走设计框同一映射；删掉固定 5% 估算，insets 全 0 时不重复画框。
 - ✅ 画布 HUD：Scene 视图在设计分辨率标签下、Game 视图在预览徽标内，共用
-  `CanvasHud` 同时显示设计分辨率、预览分辨率、屏幕物理像素、显示缩放（物理/设计）、
-  裁剪（设计框被面板裁掉的设计像素）与 Safe Area；Anchor 边界沿用 Phase 5c 的选中
-  实体锚点手柄。Game 视图等比 letterbox，裁剪恒为 0。
+  `CanvasHud`。常驻只画一行 `宽×高 · 缩放%`（Game 视图 1:1 时补 ` · 1:1`），
+  设计分辨率、预览分辨率、屏幕物理像素、显示缩放、裁剪与 Safe Area 的完整读数
+  收进该行的悬停提示（`CanvasHud::details`），不再三行常驻压画布；Anchor 边界沿用
+  Phase 5c 的选中实体锚点手柄。Game 视图等比 letterbox，裁剪恒为 0。
 - ✅ GPU 资源复用：切分辨率只调用现有 `PreviewSession::resize`（保留运行时与
   渲染器），同尺寸帧不再重建渲染目标；GPU 测试断言会话指针不变、尺寸立即生效。
 - 验收：`cargo test -p editor` **203 lib + 457 bin / 2 ignored**（新增 6 条：比例

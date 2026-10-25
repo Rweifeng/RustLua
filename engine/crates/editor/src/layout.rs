@@ -60,6 +60,8 @@ const KNOWN_DENSITIES: &[&str] = &["compact", "comfortable"];
 const KNOWN_GIZMO_SPACES: &[&str] = &["world", "local"];
 /// Gizmo 轴心模式（docs/55 P1 的 Pivot/Center）。
 const KNOWN_GIZMO_PIVOTS: &[&str] = &["pivot", "center"];
+/// Game 视图缩放模式：`fit`（等比适配）/ `actual`（1:1 物理像素）。
+const KNOWN_GAME_VIEW_ZOOMS: &[&str] = &["fit", "actual"];
 /// M75-03 助手服务商（与 `rustlua_editor_ai::ProviderKind` 的 serde 名一致）。
 const KNOWN_ASSISTANT_PROVIDERS: &[&str] = &["openai", "anthropic", "ollama"];
 
@@ -109,6 +111,8 @@ pub struct EditorLayout {
     pub gizmo_pivot: String,
     pub scene_zoom: f32,
     pub preview_resolution: (u32, u32),
+    /// Game 视图缩放模式：`fit` / `actual`。
+    pub game_view_zoom: String,
     pub density: String,
     /// dock 树（egui_dock 的 serde 输出，原样存取）。`None` = 没存过 → 用默认布局树。
     ///
@@ -150,6 +154,7 @@ impl Default for EditorLayout {
             gizmo_pivot: "pivot".to_owned(),
             scene_zoom: 1.0,
             preview_resolution: (1280, 720),
+            game_view_zoom: "fit".to_owned(),
             density: "compact".to_owned(),
             dock_tree: None,
             assistant: None,
@@ -223,6 +228,9 @@ impl EditorLayout {
         if !KNOWN_GIZMO_PIVOTS.contains(&self.gizmo_pivot.as_str()) {
             self.gizmo_pivot = "pivot".to_owned();
         }
+        if !KNOWN_GAME_VIEW_ZOOMS.contains(&self.game_view_zoom.as_str()) {
+            self.game_view_zoom = "fit".to_owned();
+        }
         if !KNOWN_DENSITIES.contains(&self.density.as_str()) {
             self.density = "compact".to_owned();
         }
@@ -270,6 +278,7 @@ impl EditorLayout {
             "gizmo_pivot": self.gizmo_pivot,
             "scene_zoom": self.scene_zoom,
             "preview_resolution": [self.preview_resolution.0, self.preview_resolution.1],
+            "game_view_zoom": self.game_view_zoom,
             "density": self.density,
             "dock_tree": self.dock_tree.as_deref().cloned(),
             "assistant": self.assistant.as_ref().map(|assistant| serde_json::json!({
@@ -330,6 +339,9 @@ impl EditorLayout {
             .and_then(|[width, height]| Some([width?, height?]))
         {
             layout.preview_resolution = (width as u32, height as u32);
+        }
+        if let Some(zoom) = value.get("game_view_zoom").and_then(|v| v.as_str()) {
+            layout.game_view_zoom = zoom.to_owned();
         }
         if let Some(density) = value.get("density").and_then(|v| v.as_str()) {
             layout.density = density.to_owned();
@@ -539,6 +551,32 @@ mod tests {
         let restored = EditorLayout::from_json(&value);
         assert_eq!(restored.gizmo_space, "world");
         assert_eq!(restored.gizmo_pivot, "pivot");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Game 视图缩放模式随布局往返；未知值收敛回 `fit`，缺字段的老文件也回落默认。
+    #[test]
+    fn game_view_zoom_persists_and_converges() {
+        let root = temp_root("game-view-zoom");
+        let layout = EditorLayout {
+            game_view_zoom: "actual".to_owned(),
+            ..EditorLayout::default()
+        };
+        save_layout(&root, &layout).expect("save");
+        match load_layout(&root) {
+            LayoutLoad::Loaded(loaded) => assert_eq!(loaded.game_view_zoom, "actual"),
+            other => panic!("加载失败：{other:?}"),
+        }
+        let mut broken = layout.clone();
+        broken.game_view_zoom = "百分之百".to_owned();
+        broken.clamp();
+        assert_eq!(broken.game_view_zoom, "fit");
+        let mut value = layout.to_json();
+        value
+            .as_object_mut()
+            .expect("object")
+            .remove("game_view_zoom");
+        assert_eq!(EditorLayout::from_json(&value).game_view_zoom, "fit");
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -23,25 +23,31 @@ impl EditorApp {
         self.shader_watch_due = None;
     }
 
+    /// 确保离屏渲染器**实例**存在；不建视图纹理（Game 视图的编辑预览只要渲染器）。
+    pub(crate) fn ensure_scene_renderer_instance(&mut self) {
+        if self.scene_renderer.is_some() {
+            return;
+        }
+        let Some((device, queue)) = &self.gpu else {
+            return;
+        };
+        let root = strip_verbatim_prefix(&self.project.root);
+        self.scene_renderer =
+            Renderer::new_offscreen(device.clone(), queue.clone(), Some(root), false, false).ok();
+        // P3-R05-4：新建的渲染器立刻接上覆盖目录，Scene View 与 Play 读同一份源。
+        // 目录为空/不存在时 `rebuilt = 0`（与内置源逐字节相同，一次重编都不做）。
+        self.attach_scene_shader_overrides();
+        // 运行时可能先于渲染器建立（2D 视图先建运行时）；渲染器一就绪就把场景环境
+        // 上传一次，避免 Scene 3D 首帧缺环境。
+        self.apply_scene_environment_settings();
+        self.sync_particle_compute();
+    }
+
     /// 确保 3D 场景视图的离屏渲染器存在；按视图尺寸重建纹理（M10-04）。
     pub(crate) fn ensure_scene_renderer(&mut self, width: u32, height: u32) {
         let width = width.max(1);
         let height = height.max(1);
-        if self.scene_renderer.is_none()
-            && let Some((device, queue)) = &self.gpu
-        {
-            let root = strip_verbatim_prefix(&self.project.root);
-            self.scene_renderer =
-                Renderer::new_offscreen(device.clone(), queue.clone(), Some(root), false, false)
-                    .ok();
-            // P3-R05-4：新建的渲染器立刻接上覆盖目录，Scene View 与 Play 读同一份源。
-            // 目录为空/不存在时 `rebuilt = 0`（与内置源逐字节相同，一次重编都不做）。
-            self.attach_scene_shader_overrides();
-            // 运行时可能先于渲染器建立（2D 视图先建运行时）；渲染器一就绪就把场景环境
-            // 上传一次，避免 Scene 3D 首帧缺环境。
-            self.apply_scene_environment_settings();
-            self.sync_particle_compute();
-        }
+        self.ensure_scene_renderer_instance();
         let size_changed = self
             .scene_texture
             .as_ref()
@@ -596,16 +602,19 @@ impl EditorApp {
         let Some((_, view)) = &self.scene_screen_texture else {
             return;
         };
-        // WP5：游戏画面同样是这一帧的底 ⇒ 主 2D 视图（游戏相机 + 设计分辨率视口）。
-        renderer.set_frame_views(FrameViews {
-            main: Some(RenderView::main_2d(
-                game_camera,
-                render_viewport(dw, dh),
-                DEFAULT_3D_CLEAR,
-            )),
-            overlay: None,
-        });
-        renderer.render_into_texture(&mesh, None, view, dw, dh);
+        // 3D 也要进游戏画面：与 Play 的 `PreviewSession` 同一条提取。`vertices()` 刚在
+        // 同视口定过帧，`scene_3d` 直接吃那一份（纯 2D 场景返回 None）。
+        let viewport = render_viewport(dw, dh);
+        let scene3d = self
+            .scene_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.scene_3d(viewport));
+        renderer.set_frame_views(game_screen_frame_views(
+            game_camera,
+            viewport,
+            scene3d.is_some(),
+        ));
+        renderer.render_into_texture(&mesh, scene3d.as_ref(), view, dw, dh);
         self.sync_scene_screen_texture();
         self.scene_screen_cache_key = key;
         ctx.request_repaint();
@@ -810,5 +819,28 @@ impl EditorApp {
                 tracing::warn!(target: "editor", "[scene view] 3D readback drain failed: {error}");
             }
         }
+    }
+}
+
+/// 游戏画面的视图声明。
+///
+/// 纯 2D 时主视图就是游戏相机（清屏 + 设计分辨率视口）；**有 3D 时不能声明 2D 主视图**：
+/// 渲染器把声明的 `RenderView` 优先当作 3D 的投影矩阵（`passes.rs` 的 `main_matrix`），
+/// 3D 会被 2D 正交矩阵拍扁。有 3D 时与 Play 的 `PreviewSession` 一致——不声明，让渲染器
+/// 回退到场景提取时按同一视口烘焙的 `Scene3d::view`。
+pub(crate) fn game_screen_frame_views(
+    camera: Camera2D,
+    viewport: Viewport,
+    has_3d: bool,
+) -> FrameViews {
+    if has_3d {
+        return FrameViews {
+            main: None,
+            overlay: None,
+        };
+    }
+    FrameViews {
+        main: Some(RenderView::main_2d(camera, viewport, DEFAULT_3D_CLEAR)),
+        overlay: None,
     }
 }

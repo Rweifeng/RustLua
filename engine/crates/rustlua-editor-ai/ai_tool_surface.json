@@ -184,6 +184,25 @@
       "tier": "T0"
     },
     {
+      "description": "读取编辑器资源文本（与 MCP resources/read 同一份内容）。一句话创建 UI 预设前必须先读 `rustlua://ui/guide`（UiSpec 契约、节点类型、完整示例与调用顺序），再按它的结构构造 spec。可用资源：rustlua://ui/guide、rustlua://lua-api/docs、rustlua://lua-api/surface、rustlua://components、rustlua://scene/schema、rustlua://project/config。T0。",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "uri": {
+            "description": "资源 URI，例如 rustlua://ui/guide",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "uri"
+        ],
+        "type": "object"
+      },
+      "name": "read_resource",
+      "tier": "T0"
+    },
+    {
       "description": "新建空场景。T3：会清空 Undo 栈，必须显式确认。",
       "inputSchema": {
         "additionalProperties": false,

@@ -560,10 +560,21 @@ pub(crate) struct CanvasHud {
 }
 
 impl CanvasHud {
-    /// 第二行：预览分辨率 + 屏幕物理像素 + 显示缩放 + 裁剪区域。
-    pub(crate) fn preview_line(&self) -> String {
+    /// 常驻单行读数：设计分辨率 + 显示缩放。其余读数收进悬停提示（[`Self::details`]），
+    /// 视口角落不再铺三行等宽调试文本。
+    pub(crate) fn compact_line(&self) -> String {
         format!(
-            "预览 {}×{} · 显示 {}×{} · 缩放 {:.0}% · 裁剪 左{:.0} 上{:.0} 右{:.0} 下{:.0}",
+            "{}×{} · {:.0}%",
+            self.design.0,
+            self.design.1,
+            self.scale * 100.0
+        )
+    }
+
+    /// 悬停展开的完整体检读数（E18）：预览/显示/裁剪 + Safe Area/锚点框。
+    pub(crate) fn details(&self) -> String {
+        format!(
+            "预览 {}×{} · 显示 {}×{}\n缩放 {:.0}% · 裁剪 左{:.0} 上{:.0} 右{:.0} 下{:.0}\n安全区 左{:.0} 上{:.0} 右{:.0} 下{:.0} · 锚点框 (0,0)–({},{})",
             self.design.0,
             self.design.1,
             self.display.0,
@@ -573,14 +584,12 @@ impl CanvasHud {
             self.crop[1],
             self.crop[2],
             self.crop[3],
-        )
-    }
-
-    /// 第三行：Safe Area + Anchor 空间边界（设计框）。
-    pub(crate) fn safe_line(&self) -> String {
-        format!(
-            "安全区 左{:.0} 上{:.0} 右{:.0} 下{:.0} · 锚点框 (0,0)–({},{})",
-            self.safe[0], self.safe[1], self.safe[2], self.safe[3], self.design.0, self.design.1,
+            self.safe[0],
+            self.safe[1],
+            self.safe[2],
+            self.safe[3],
+            self.design.0,
+            self.design.1,
         )
     }
 }
@@ -593,7 +602,7 @@ mod tests {
     use super::CanvasHud;
 
     #[test]
-    fn canvas_hud_reports_display_scale_crop_and_safe_area() {
+    fn canvas_hud_stays_compact_and_expands_details_on_hover() {
         let hud = CanvasHud {
             design: (1280, 720),
             display: (640, 360),
@@ -601,13 +610,13 @@ mod tests {
             crop: [240.0, 60.0, 240.0, 60.0],
             safe: [40.0, 20.0, 40.0, 20.0],
         };
+        assert_eq!(hud.compact_line(), "1280×720 · 50%");
+        assert!(!hud.compact_line().contains("裁剪"), "常驻行不再带调试读数");
         assert_eq!(
-            hud.preview_line(),
-            "预览 1280×720 · 显示 640×360 · 缩放 50% · 裁剪 左240 上60 右240 下60"
-        );
-        assert_eq!(
-            hud.safe_line(),
-            "安全区 左40 上20 右40 下20 · 锚点框 (0,0)–(1280,720)"
+            hud.details(),
+            "预览 1280×720 · 显示 640×360\n\
+             缩放 50% · 裁剪 左240 上60 右240 下60\n\
+             安全区 左40 上20 右40 下20 · 锚点框 (0,0)–(1280,720)"
         );
     }
 }

@@ -17,13 +17,13 @@ entity	6	Prop3d
 component	6	MeshRenderer	mesh=assets/models/m8-test-triangle.glb
 component	6	Transform	position=0.000000000,0.600000024,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=0.800000012,0.800000012,0.800000012
 entity	7	Runner
+component	7	RenderMode	mode=overlay
 component	7	Sprite	texture=assets/textures/player.png;size=40x40;pivot=0.500,0.500;tint=0.400,1.000,0.400,1.000;sorting_layer=default;order=2;z=0
 component	7	Transform	position=640.000000000,360.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
-component	7	RenderMode	mode=overlay
 entity	8	Marker
 component	8	Quad	size=18,18;color=1.000,0.900,0.200,1.000;pivot=0.500,0.500;z=0;order=3
-component	8	Transform	position=640.000000000,360.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	8	RenderMode	mode=overlay
+component	8	Transform	position=636.631835938,307.606658936,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 entity	9	Hud
 component	9	Text	text=HUD (screen space Text + UiLayout): no camera ever moves this;font_size=13.00;color=0.760,0.880,0.980
 component	9	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000

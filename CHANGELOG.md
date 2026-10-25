@@ -5,6 +5,34 @@
 度量数字（µs、分配字节、测试计数）、逐条证据、golden 断言与实施细节留在能力文档与任务文件里，不在本文重复：
 重构过程见 [docs/53](docs/53-WP0增量场景帧基准与每帧分配.md) 与 [docs/40](docs/40-引擎全面重构计划.md)，已完成任务的验收记录见 `tasks/done/`。
 
+## Unreleased — 编辑器视口与顶栏去噪：读数压成一行、比例收进下拉（2026-10-25）
+
+- **视口叠层**：2D 设计框与 Game 预览共用的 `CanvasHud` 平时只画一行 `宽×高 · 缩放%`
+  （Game 视图 1:1 时补 ` · 1:1`）；设计/预览/显示分辨率、物理像素、裁剪与 Safe Area 的完整
+  读数收进这一行的悬停提示。2D 左上状态胶囊只列**已启用**项（吸附步长、像素网格）再跟轴心/空间，
+  默认态不再逐条写「无吸附/无网格」；3D 的「中键旋转 · 右键平移 · 滚轮缩放」从视口中央的大标题
+  挪到左下角 11px 半透明，不再压住状态行。E18 的读数与开关能力一项没少，只是默认收起。
+- **顶栏**：5 个比例快捷按钮（16:9…9:16）收进分辨率下拉，下拉选中文本带当前比例
+  （`1280×720 · 16:9`）；缩放滑杆读数从 `0.726` 改成 `73%`。窄面板仍走原有横向滚动。
+- **证据**：真窗口 `RUSTLUA_EDITOR_GUI_EVIDENCE` 14 张（2D 九档 DPI×尺寸 + 3D/Play/助手/
+  UI 工作室/编辑态 Game），逐张目验单行 HUD、3D 提示与状态行不重叠、工具栏无比例按钮行；
+  `cargo check -p editor --all-targets` 与 `cargo clippy -p editor --all-targets -- -D warnings`
+  退出 0，HUD/工具栏/状态行单测全绿。`cargo fmt -p editor -- --check` 仍只红在并行会话在途的
+  `ai_host.rs`（本批未触碰）。docs/28 E18 与 docs/25 工具栏/2D 视图两节同步改口径。
+
+## Unreleased — 内置助手补 `read_resource`：一句话生成 UI 预设拿到契约（2026-10-25）
+
+- **缺口**：工具面早就有 `ui_create_preset` / `ui_apply_spec`，但 UI 契约只放在 MCP resource
+  `rustlua://ui/guide`，外部客户端能 `resources/read`，**内置助手却没有对应工具**——模型只能猜
+  `UiSpec` 字段，一句话生成成功率低。
+- **新增 `read_resource`（T0）**：`surface.rs` 工具面 + `EditorAiHost::read_tool` 分发，与 MCP
+  `resources/read` 返回同一份内容（`rustlua://ui/guide`、Lua API、组件/场景 schema、工程配置）；
+  写操作仍走既有 T1/T2/T3 确认门。
+- **证据**：`ai_host::tests::read_resource_tool_returns_the_ui_guide_for_preset_generation`（guide
+  逐字节等于常量、未知 URI 报错）；`rustlua-editor-ai` 工具面快照基线 +19 行（只新增该工具），
+  只读 tool 数 14→15。读数：`cargo test -p rustlua-editor-ai --lib` 70 绿；`cargo test -p editor
+  --bin editor ai_host::` 21 绿；`panels::assistant::` 17 绿。
+
 ## Unreleased — UI 宿主证据的生产端（pc 半区）：`.ui.json` 与真实运行时逐键对账（2026-10-25）
 
 - **桥**：`engine/crates/editor/src/ui_scene_export.rs` 把 `UiSpec` 确定性地导成 `.scene` 片段——锚点

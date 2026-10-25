@@ -259,6 +259,10 @@ impl EditorAiHost<'_> {
                     "project_toml": text,
                 }))
             }
+            "read_resource" => {
+                let uri = string_arg(args, "uri")?;
+                self.read_resource(uri).map(Value::String)
+            }
             other => Err(ToolError::UnknownTool(other.to_owned())),
         }
     }
@@ -976,7 +980,8 @@ impl ToolHost for EditorAiHost<'_> {
             | "get_lua_api"
             | "eval_lua_readonly"
             | "capture_screenshot"
-            | "get_project_config" => self.read_tool(name, args),
+            | "get_project_config"
+            | "read_resource" => self.read_tool(name, args),
             name if rustlua_editor_ai::ui_tools::is_ui_tool(name) => self.ui_tool(name, args),
             _ => self.call_write(name, args),
         }
@@ -1552,6 +1557,27 @@ mod tests {
                 .as_array()
                 .is_some_and(|tables| !tables.is_empty())
         );
+    }
+
+    /// 内置助手生成 UI 预设前必须能拿到契约：`read_resource` 与 MCP `resources/read`
+    /// 返回同一份 `rustlua://ui/guide`，否则模型只能猜字段。
+    #[test]
+    fn read_resource_tool_returns_the_ui_guide_for_preset_generation() {
+        let (mut app, _root) = test_app("read-resource");
+        let guide = direct(
+            &mut app,
+            "read_resource",
+            json!({"uri": "rustlua://ui/guide"}),
+        )
+        .unwrap();
+        let text = guide.as_str().expect("read_resource 返回文本");
+        assert_eq!(text, rustlua_editor_ai::UI_GUIDE);
+        assert!(text.contains("UiSpec"));
+        assert!(text.len() > 1_000);
+
+        let error =
+            direct(&mut app, "read_resource", json!({"uri": "rustlua://nope"})).unwrap_err();
+        assert!(error.message().contains("未知资源"), "{}", error.message());
     }
 
     fn ui_spec_json() -> Value {

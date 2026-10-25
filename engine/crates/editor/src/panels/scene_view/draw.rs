@@ -111,7 +111,7 @@ impl EditorApp {
             );
         }
         // 设计分辨率包围框（Unity Camera Preview 风格）：标注游戏取景范围。
-        self.draw_design_resolution_box(&painter, rect, scale);
+        self.draw_design_resolution_box(ui, &painter, rect, scale);
         // 拖放反馈画在场景渲染之后（否则会被整张离屏纹理盖掉）。
         let pointer = ui.input(|input| input.pointer.hover_pos());
         let drop_hint = drop_hint.or_else(|| {
@@ -713,6 +713,7 @@ impl EditorApp {
     /// 在视图左上角标题下方（包围框可能被缩放/平移推出可视区域，固定标注始终可见）。
     pub(crate) fn draw_design_resolution_box(
         &self,
+        ui: &mut egui::Ui,
         painter: &egui::Painter,
         rect: egui::Rect,
         ppp: f32,
@@ -744,14 +745,8 @@ impl EditorApp {
             egui::StrokeKind::Outside,
         );
         let base = rect.left_top() + egui::vec2(4.0, self.scene_overlay_bottom_offset + 4.0);
-        painter.text(
-            base,
-            egui::Align2::LEFT_TOP,
-            format!("设计分辨率 {w}×{h}"),
-            egui::FontId::proportional(13.0),
-            egui::Color32::from_rgb(150, 205, 255),
-        );
-        // E18：设计分辨率之下同时给出预览/缩放/裁剪与 Safe Area/锚点边界读数。
+        // E18 的完整体检读数默认收起：常驻只留「分辨率 · 缩放」一行，悬停看
+        // 预览/显示/裁剪/安全区/锚点框，视口角落不再被三行等宽文本占住。
         let hud = crate::ui_editor::CanvasHud {
             design: (w, h),
             display: (
@@ -762,18 +757,19 @@ impl EditorApp {
             crop: design_frame_crop(rect, frame, self.scene_zoom, ppp),
             safe: self.scene_canvas_config().safe_area,
         };
-        for (index, line) in [hud.preview_line(), hud.safe_line()]
-            .into_iter()
-            .enumerate()
-        {
-            painter.text(
-                base + egui::vec2(0.0, 18.0 + index as f32 * 14.0),
-                egui::Align2::LEFT_TOP,
-                line,
-                egui::FontId::monospace(11.0),
-                egui::Color32::from_rgb(170, 205, 235),
-            );
-        }
+        let hud_rect = painter.text(
+            base,
+            egui::Align2::LEFT_TOP,
+            hud.compact_line(),
+            egui::FontId::proportional(12.0),
+            egui::Color32::from_rgb(150, 195, 235),
+        );
+        ui.interact(
+            hud_rect.expand(2.0),
+            ui.id().with("design_resolution_hud"),
+            egui::Sense::hover(),
+        )
+        .on_hover_text(hud.details());
     }
 }
 

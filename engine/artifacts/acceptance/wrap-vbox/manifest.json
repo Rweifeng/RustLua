@@ -1,0 +1,388 @@
+{
+  "captures": [
+    {
+      "assistant": false,
+      "error": null,
+      "file": "01-dpi1-1280x720-2d.png",
+      "game": false,
+      "image_size": [
+        1280,
+        720
+      ],
+      "label": "dpi1-1280x720-2d",
+      "lit_ratio": 0.9777256846427917,
+      "mean_luma": 0.1316365748643875,
+      "measured_pixels_per_point": 1.0,
+      "measured_screen_pts": [
+        1280.0,
+        720.0
+      ],
+      "play": false,
+      "requested_inner_size_pts": [
+        1280.0,
+        720.0
+      ],
+      "requested_pixels_per_point": 1.0,
+      "ui_studio": false,
+      "view_3d": false,
+      "working_set_mib": 508.86328125
+    },
+    {
+      "assistant": false,
+      "error": null,
+      "file": "02-dpi1-1024x700-2d.png",
+      "game": false,
+      "image_size": [
+        1024,
+        700
+      ],
+      "label": "dpi1-1024x700-2d",
+      "lit_ratio": 0.9826130270957947,
+      "mean_luma": 0.13591322302818298,
+      "measured_pixels_per_point": 1.0,
+      "measured_screen_pts": [
+        1024.0,
+        700.0
+      ],
+      "play": false,
+      "requested_inner_size_pts": [
+        1024.0,
+        700.0
+      ],
+      "requested_pixels_per_point": 1.0,
+      "ui_studio": false,
+      "view_3d": false,
+      "working_set_mib": 514.12109375
+    },
+    {
+      "assistant": false,
+      "error": null,
+      "file": "03-dpi1-1600x900-2d.png",
+      "game": false,
+      "image_size": [
+        1600,
+        900
+      ],
+      "label": "dpi1-1600x900-2d",
+      "lit_ratio": 0.9780701398849487,
+      "mean_luma": 0.12821422517299652,
+      "measured_pixels_per_point": 1.0,
+      "measured_screen_pts": [
+        1600.0,
+        900.0
+      ],
+      "play": false,
+      "requested_inner_size_pts": [
+        1600.0,
+        900.0
+      ],
+      "requested_pixels_per_point": 1.0,
+      "ui_studio": false,
+      "view_3d": false,
+      "working_set_mib": 541.34375
+    },
+    {
+      "assistant": false,
+      "error": null,
+      "file": "04-dpi1.5-1280x720-2d.png",
+      "game": false,
+      "image_size": [
+        1920,
+        1080
+      ],
+      "label": "dpi1.5-1280x720-2d",
+      "lit_ratio": 0.9780464172363281,
+      "mean_luma": 0.13014036417007446,
+      "measured_pixels_per_point": 1.5,
+      "measured_screen_pts": [
+        1280.0,
+        720.0
+      ],
+      "play": false,
+      "requested_inner_size_pts": [
+        1280.0,
+        720.0
+      ],
+      "requested_pixels_per_point": 1.5,
+      "ui_studio": false,
+      "view_3d": false,
+      "working_set_mib": 567.8359375
+    },
+    {
+      "assistant": false,
+      "error": null,
+      "file": "05-dpi1.5-1024x700-2d.png",
+      "game": false,
+      "image_size": [
+        1536,
+        1050
+      ],
+      "label": "dpi1.5-1024x700-2d",
+      "lit_ratio": 0.9827591776847839,
+      "mean_luma": 0.13389946520328522,
+      "measured_pixels_per_point": 1.5,
+      "measured_screen_pts": [
+        1024.0,
+        700.0
+      ],
+      "play": false,
+      "requested_inner_size_pts": [
+        1024.0,
+        700.0
+      ],
+      "requested_pixels_per_point": 1.5,
+      "ui_studio": false,
+      "view_3d": false,
+      "working_set_mib": 558.9140625
+    },
+    {
+      "assistant": false,
+      "error": null,
+      "file": "06-dpi1.5-1600x900-2d.png",
+      "game": false,
+      "image_size": [
+        2400,
+        1350
+      ],
+      "label": "dpi1.5-1600x900-2d",
+      "lit_ratio": 0.9779910445213318,
+      "mean_luma": 0.12697267532348633,
+      "measured_pixels_per_point": 1.5,
+      "measured_screen_pts": [
+        1600.0,
+        900.0
+      ],
+      "play": false,
+      "requested_inner_size_pts": [
+        1600.0,
+        900.0
+      ],
+      "requested_pixels_per_point": 1.5,
+      "ui_studio": false,
+      "view_3d": false,
+      "working_set_mib": 616.109375
+    },
+    {
+      "assistant": false,
+      "error": null,
+      "file": "07-dpi2-1280x720-2d.png",
+      "game": false,
+      "image_size": [
+        2560,
+        1440
+      ],
+      "label": "dpi2-1280x720-2d",
+      "lit_ratio": 0.9781998991966248,
+      "mean_luma": 0.12939630448818207,
+      "measured_pixels_per_point": 2.0,
+      "measured_screen_pts": [
+        1280.0,
+        720.0
+      ],
+      "play": false,
+      "requested_inner_size_pts": [
+        1280.0,
+        720.0
+      ],
+      "requested_pixels_per_point": 2.0,
+      "ui_studio": false,
+      "view_3d": false,
+      "working_set_mib": 625.3046875
+    },
+    {
+      "assistant": false,
+      "error": null,
+      "file": "08-dpi2-1024x700-2d.png",
+      "game": false,
+      "image_size": [
+        2048,
+        1400
+      ],
+      "label": "dpi2-1024x700-2d",
+      "lit_ratio": 0.9824891686439514,
+      "mean_luma": 0.13317838311195374,
+      "measured_pixels_per_point": 2.0,
+      "measured_screen_pts": [
+        1024.0,
+        700.0
+      ],
+      "play": false,
+      "requested_inner_size_pts": [
+        1024.0,
+        700.0
+      ],
+      "requested_pixels_per_point": 2.0,
+      "ui_studio": false,
+      "view_3d": false,
+      "working_set_mib": 588.8828125
+    },
+    {
+      "assistant": false,
+      "error": null,
+      "file": "09-dpi2-1600x900-2d.png",
+      "game": false,
+      "image_size": [
+        3200,
+        1800
+      ],
+      "label": "dpi2-1600x900-2d",
+      "lit_ratio": 0.9779194593429565,
+      "mean_luma": 0.12615029513835907,
+      "measured_pixels_per_point": 2.0,
+      "measured_screen_pts": [
+        1600.0,
+        900.0
+      ],
+      "play": false,
+      "requested_inner_size_pts": [
+        1600.0,
+        900.0
+      ],
+      "requested_pixels_per_point": 2.0,
+      "ui_studio": false,
+      "view_3d": false,
+      "working_set_mib": 694.58203125
+    },
+    {
+      "assistant": false,
+      "error": null,
+      "file": "10-dpi1.5-1280x720-3d.png",
+      "game": false,
+      "image_size": [
+        1920,
+        1080
+      ],
+      "label": "dpi1.5-1280x720-3d",
+      "lit_ratio": 0.9780464172363281,
+      "mean_luma": 0.13014036417007446,
+      "measured_pixels_per_point": 1.5,
+      "measured_screen_pts": [
+        1280.0,
+        720.0
+      ],
+      "play": false,
+      "requested_inner_size_pts": [
+        1280.0,
+        720.0
+      ],
+      "requested_pixels_per_point": 1.5,
+      "ui_studio": false,
+      "view_3d": true,
+      "working_set_mib": 637.31640625
+    },
+    {
+      "assistant": false,
+      "error": null,
+      "file": "11-dpi1.5-1280x720-play.png",
+      "game": false,
+      "image_size": [
+        1920,
+        1080
+      ],
+      "label": "dpi1.5-1280x720-play",
+      "lit_ratio": 1.0,
+      "mean_luma": 0.1670185625553131,
+      "measured_pixels_per_point": 1.5,
+      "measured_screen_pts": [
+        1280.0,
+        720.0
+      ],
+      "play": true,
+      "requested_inner_size_pts": [
+        1280.0,
+        720.0
+      ],
+      "requested_pixels_per_point": 1.5,
+      "ui_studio": false,
+      "view_3d": false,
+      "working_set_mib": 603.53515625
+    },
+    {
+      "assistant": true,
+      "error": null,
+      "file": "12-dpi1.5-1280x720-assistant.png",
+      "game": false,
+      "image_size": [
+        1920,
+        1080
+      ],
+      "label": "dpi1.5-1280x720-assistant",
+      "lit_ratio": 0.9780464172363281,
+      "mean_luma": 0.13019171357154846,
+      "measured_pixels_per_point": 1.5,
+      "measured_screen_pts": [
+        1280.0,
+        720.0
+      ],
+      "play": false,
+      "requested_inner_size_pts": [
+        1280.0,
+        720.0
+      ],
+      "requested_pixels_per_point": 1.5,
+      "ui_studio": false,
+      "view_3d": false,
+      "working_set_mib": 602.03125
+    },
+    {
+      "assistant": false,
+      "error": null,
+      "file": "13-dpi1.5-1280x720-ui-studio.png",
+      "game": false,
+      "image_size": [
+        1920,
+        1080
+      ],
+      "label": "dpi1.5-1280x720-ui-studio",
+      "lit_ratio": 1.0,
+      "mean_luma": 0.12498553842306137,
+      "measured_pixels_per_point": 1.5,
+      "measured_screen_pts": [
+        1280.0,
+        720.0
+      ],
+      "play": false,
+      "requested_inner_size_pts": [
+        1280.0,
+        720.0
+      ],
+      "requested_pixels_per_point": 1.5,
+      "ui_studio": true,
+      "view_3d": false,
+      "working_set_mib": 603.27734375
+    },
+    {
+      "assistant": false,
+      "error": null,
+      "file": "14-dpi1.5-1280x720-edit-game.png",
+      "game": true,
+      "image_size": [
+        1920,
+        1080
+      ],
+      "label": "dpi1.5-1280x720-edit-game",
+      "lit_ratio": 0.9780464172363281,
+      "mean_luma": 0.13017867505550385,
+      "measured_pixels_per_point": 1.5,
+      "measured_screen_pts": [
+        1280.0,
+        720.0
+      ],
+      "play": false,
+      "requested_inner_size_pts": [
+        1280.0,
+        720.0
+      ],
+      "requested_pixels_per_point": 1.5,
+      "ui_studio": false,
+      "view_3d": false,
+      "working_set_mib": 603.3671875
+    }
+  ],
+  "kind": "docs55-phase0-gui-evidence",
+  "os": "windows",
+  "prepare_seconds": 3.9364609718322754,
+  "profile": "debug",
+  "scene": "scenes/main.scene",
+  "wall_seconds": 31.30327033996582
+}

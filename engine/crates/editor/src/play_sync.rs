@@ -141,6 +141,11 @@ impl EditorApp {
             return;
         }
         if let Some(preview) = self.preview.as_mut() {
+            // 看不见的时候没有降采样的必要：回到原生尺寸，走零拷贝原生纹理
+            // （否则每帧都要回读 + 盒式滤波算一帧没人看的图）。
+            let native = preview.size();
+            let device = self.gpu.as_ref().map(|(device, _)| device);
+            preview.set_display_size(device, native);
             preview.update(context, &InputSnapshot::default());
             self.preview_stepped_this_frame = true;
         }

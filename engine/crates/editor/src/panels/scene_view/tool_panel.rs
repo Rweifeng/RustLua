@@ -58,14 +58,17 @@ impl EditorApp {
             self.set_scene_tool(tool);
         }
         let tools_row_width = tools_content_width;
-        // RustLua-②c：左上角状态胶囊——2D 下回显视图/吸附/像素网格的**显式**状态，
-        // 外加 Gizmo 空间/轴心切换（原先贴在右上角工具条尾部，挪到这里与状态同侧）。
+        // RustLua-②c：左上角状态胶囊只回显**已开启**的辅助状态（吸附 / 像素网格），
+        // 关闭态不再用「无吸附 / 无网格」占字；Gizmo 空间/轴心切换与 3D 的 IBL 档位
+        // 跟在后面。2D/3D 本身由顶栏的 3D/UI 开关表达，这里不重复。
         let gizmo_toggle_visible = matches!(
             self.scene_tool(),
             SceneTool::Move | SceneTool::Rotate | SceneTool::Scale | SceneTool::Select
         );
         let is_2d = self.scene_view_mode == crate::SceneViewMode::View2D;
-        if is_2d || gizmo_toggle_visible {
+        let has_status_content =
+            gizmo_toggle_visible || (is_2d && (self.snap_enabled || self.show_pixel_grid));
+        if has_status_content {
             // 两条带子一个贴左一个贴右、宽度按内容走：画布窄到装不下两者时，
             // 「轴心」会和「选择」叠成乱码（1024 窗实测）。装不下就把状态行下移一行
             // （与 TilePaint 第二行的 +32 同构）。工具条宽度本帧量得到，状态行宽度用
@@ -86,29 +89,28 @@ impl EditorApp {
                     // 起行，18 高的标签会贴在这条 26 高带子的顶上，比右侧真正居中的 24 高
                     // 图标按钮高 4px。前者按整条带子居中，两组才在同一条水平线上。
                     ui.horizontal_centered(|ui| {
+                        let mut any = false;
                         if is_2d {
-                            ui.label(egui::RichText::new("2D").strong());
-                            ui.separator();
                             if self.snap_enabled {
                                 // 位移步长与**角度**步长各报各的（M27-02）：一个 0.5 不代表旋转也吸附。
                                 ui.label(format!(
                                     "吸附 {} · {:.0}°",
                                     self.snap_step, self.snap_angle_step
                                 ));
-                            } else {
-                                ui.label("无吸附");
+                                any = true;
                             }
-                            ui.separator();
                             if self.show_pixel_grid {
+                                if any {
+                                    ui.separator();
+                                }
                                 ui.label("像素网格");
-                            } else {
-                                ui.label("无网格");
-                            }
-                            if gizmo_toggle_visible {
-                                ui.separator();
+                                any = true;
                             }
                         }
                         if gizmo_toggle_visible {
+                            if any {
+                                ui.separator();
+                            }
                             if ui
                                 .selectable_label(
                                     self.gizmo_space == crate::scene_interaction::GizmoSpace::Local,
@@ -132,13 +134,16 @@ impl EditorApp {
                             {
                                 self.gizmo_pivot = self.gizmo_pivot.toggled();
                             }
+                            any = true;
                         }
                         // P3-R03-4：3D 状态行尾挂 IBL 档位（计划 §6.4「场景视图显示当前 tier」）。
                         if !is_2d {
+                            if any {
+                                ui.separator();
+                            }
                             let label = self
                                 .scene_view_ibl_label()
                                 .unwrap_or_else(|| "IBL 未就绪".to_owned());
-                            ui.separator();
                             ui.label(egui::RichText::new(label).size(11.0)).on_hover_text(
                                 "环境 IBL 的实际档位：Tier A=浮点 cubemap+线性过滤，\
                                  B=浮点无线性过滤，C=只有 SH9 漫反射；模式是策略×环境×能力解析的结果",
@@ -149,8 +154,13 @@ impl EditorApp {
                 })
                 .inner;
             self.scene_status_row_width = status_content_width;
+            self.scene_status_rect = egui::Rect::from_min_size(
+                status_rect.min,
+                egui::vec2(status_content_width, status_rect.height()),
+            );
             self.scene_overlay_bottom_offset = status_top - rect.top() + 26.0;
         } else {
+            self.scene_status_rect = egui::Rect::NOTHING;
             self.scene_overlay_bottom_offset = 0.0;
         }
         // M19-03 Tile 生产工具第二行：编辑模式 + 区域剪贴板状态（仅 TilePaint 工具下显示）。

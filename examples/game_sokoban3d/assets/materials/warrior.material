@@ -1,0 +1,13 @@
+version=1
+name=Warrior
+base_color=1,1,1,1
+metallic=1
+roughness=1
+emissive=0,0,0
+emissive_strength=1
+normal_scale=1
+occlusion_strength=1
+alpha_mode=opaque
+alpha_cutoff=0.5
+double_sided=false
+ibl_intensity=1

@@ -70,6 +70,12 @@ pub(crate) struct PreviewSession {
     preview_texture: Option<PreviewTexture>,
     width: u32,
     height: u32,
+    /// 预览最终在屏幕上占用的**物理像素**尺寸（由 Game 视图按面板几何给出）。
+    ///
+    /// 小于 `width × height` 时走「回读 + 面积降采样」：设计分辨率纹理先按这个尺寸
+    /// 做盒式滤波再上传。直接用 NEAREST 画到更小的矩形里会整行整列丢样本，1px 的
+    /// 字形笔画会被吃掉（Game 视图 59% 缩放下中文完全不可读的根因）。
+    display: (u32, u32),
     /// 距上次步进的时间（~60fps 节流）。
     last_tick: Option<std::time::Instant>,
     /// 固定步累加器（M22/W4）：按**真实经过时间**决定本帧要跑几个逻辑步。
@@ -218,6 +224,7 @@ impl PreviewSession {
             preview_texture: None,
             width,
             height,
+            display: (width, height),
             last_tick: None,
             time_step: FixedTimeStep::new(PREVIEW_STEPS_PER_SECOND, PREVIEW_MAX_CATCH_UP_STEPS)
                 .expect("valid preview fixed timestep"),
@@ -234,6 +241,43 @@ impl PreviewSession {
     /// 当前分辨率（宽×高）。
     pub(crate) fn size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    /// 声明预览在屏幕上实际占用的物理像素尺寸（Game 视图每帧按面板几何调用）。
+    ///
+    /// 低于设计分辨率时改走「回读 + 面积降采样」；回到 >= 设计分辨率时切回原生纹理
+    /// （零拷贝）。切换只影响取样方式，不重建渲染纹理，也不影响游戏看到的视口。
+    pub(crate) fn set_display_size(&mut self, device: Option<&wgpu::Device>, size: (u32, u32)) {
+        let size = (size.0.max(1), size.1.max(1));
+        if size == self.display {
+            return;
+        }
+        self.display = size;
+        // 回到不缩小的档位：立刻重新挂上原生纹理（它直接绑 `texture_view`，
+        // 拿到的是最近一次渲染结果，不会有空帧）。没有原生能力时保持 managed，
+        // 否则会先丢掉唯一那张纹理、白闪一帧「无法预览」。
+        if !self.downscales()
+            && self.render_state.is_some()
+            && let Some(device) = device
+        {
+            self.drop_managed_texture();
+            self.sync_native_texture(device);
+        }
+        // 转进缩小档位：**先留着**当前纹理。下一次降采样上传会把它换成 managed，
+        // 在此之前面板继续显示上一帧而不是闪成「无法预览」。
+    }
+
+    /// 降采样后的上传尺寸：显示尺寸，且不超过设计分辨率。
+    fn target_size(&self) -> (u32, u32) {
+        (
+            self.display.0.clamp(1, self.width.max(1)),
+            self.display.1.clamp(1, self.height.max(1)),
+        )
+    }
+
+    /// 是否要把设计分辨率纹理缩小以后再上屏。
+    pub(crate) fn downscales(&self) -> bool {
+        self.target_size() != (self.width, self.height)
     }
 
     /// 更新 Canvas 空间 UI 参考分辨率（设计分辨率）。运行时在 Play 期间改
@@ -312,7 +356,7 @@ impl PreviewSession {
 
     /// 回读指标（slot 数、busy/drop/rebuild 等），供视图与诊断显示。
     pub(crate) fn readback_metrics(&self) -> ReadbackMetrics {
-        if self.uses_native_texture() {
+        if !self.downscales() && self.uses_native_texture() {
             ReadbackMetrics::default()
         } else {
             self.renderer.readback_metrics()
@@ -514,7 +558,7 @@ impl PreviewSession {
             self.width,
             self.height,
         );
-        if self.uses_native_texture() {
+        if self.uses_native_texture() && !self.downscales() {
             self.diagnostic = self.script_error_note.clone();
             self.record_presented_frame();
             self.record_tick_window();
@@ -625,7 +669,11 @@ impl PreviewSession {
         self.texture_view = texture_view;
         self.width = width;
         self.height = height;
-        self.sync_native_texture(device);
+        // 缩小档位走 managed：别在这里重挂原生纹理，否则下一帧上传又要把它交还，
+        // 每次改分辨率都白建一张。
+        if !self.downscales() {
+            self.sync_native_texture(device);
+        }
         tracing::debug!(target: "editor", "[preview] resized {}x{}", width, height);
     }
 
@@ -645,10 +693,32 @@ impl PreviewSession {
     }
 
     /// 把回读像素上传到 egui 纹理（复用同尺寸纹理，仅 ready 时上传）。
+    ///
+    /// 显示尺寸小于设计分辨率时先做面积降采样：`NEAREST` 在 0.59 这类分数比例下
+    /// 会把源图整行整列丢掉（1px 笔画直接消失），必须先在 CPU 上把整块面积平均掉，
+    /// 再按 1:1 上传——这样 egui 那边仍然可以用 `NEAREST`（像素风不糊）。
     fn upload_frame(&mut self, ctx: &egui::Context, pixels: Vec<u8>, width: u32, height: u32) {
+        let (out_w, out_h) = self.target_size();
+        // 回读尺寸与声明不符时（不该发生）宁可原样上传，也不要按对不上的尺寸切图。
+        let downscaled = if (out_w, out_h) != (width, height) {
+            box_downsample(&pixels, width, height, out_w, out_h)
+        } else {
+            None
+        };
+        let (pixels, width, height) = match downscaled {
+            Some(pixels) => (pixels, out_w, out_h),
+            None => (pixels, width, height),
+        };
         let nonzero = pixels.iter().any(|&byte| byte > 0);
         if !nonzero {
             tracing::warn!(target: "editor", "[preview] readback frame is all-zero");
+        }
+        // 降到 managed 路径的第一帧：把原生纹理交还渲染器，避免两套纹理同时常驻。
+        if let Some(PreviewTexture::Native(id)) = self.preview_texture
+            && let Some(render_state) = &self.render_state
+        {
+            render_state.renderer.write().free_texture(&id);
+            self.preview_texture = None;
         }
         let image =
             egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &pixels);
@@ -664,6 +734,12 @@ impl PreviewSession {
             Some(PreviewTexture::Native(_)) => {}
         }
         self.record_presented_frame();
+    }
+
+    fn drop_managed_texture(&mut self) {
+        if matches!(self.preview_texture, Some(PreviewTexture::Managed(_))) {
+            self.preview_texture = None;
+        }
     }
 
     fn uses_native_texture(&self) -> bool {
@@ -743,6 +819,54 @@ impl PreviewSession {
     pub(crate) fn force_elapsed(&mut self, elapsed: std::time::Duration) {
         self.last_tick = Some(std::time::Instant::now() - elapsed);
     }
+}
+
+/// 面积降采样（盒式滤波）：每个输出像素取源图对应矩形内所有像素的平均。
+///
+/// 为什么不用 GPU 的 `FilterMode::Linear`：egui 的托管/原生纹理都没有 mip 链，
+/// 单次双线性在 0.59 倍下每个输出像素只读到 2×2 个 texel，而实际覆盖约 2.9×2.9，
+/// 仍然丢样本——实测中文整行发糊。盒式滤波把整块面积平均掉，笔画不会整列消失。
+///
+/// 像素按 sRGB 编码值直接平均（与截图缩放的通行做法一致）；预览只用于观看，
+/// 这点暗部偏差不影响可读性。
+///
+/// `None` = 输入长度与 `sw × sh` 不符（调用方应按原尺寸上传）。
+fn box_downsample(pixels: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Option<Vec<u8>> {
+    let (sw, sh, dw, dh) = (sw.max(1), sh.max(1), dw.max(1), dh.max(1));
+    if pixels.len() != (sw as usize * sh as usize * 4) {
+        return None;
+    }
+    if (dw, dh) == (sw, sh) {
+        return Some(pixels.to_vec());
+    }
+    let mut out = vec![0u8; dw as usize * dh as usize * 4];
+    let scale_x = sw as f32 / dw as f32;
+    let scale_y = sh as f32 / dh as f32;
+    for oy in 0..dh {
+        let y0 = (oy as f32 * scale_y).floor() as u32;
+        let y1 = (((oy + 1) as f32 * scale_y).ceil() as u32).clamp(y0 + 1, sh);
+        for ox in 0..dw {
+            let x0 = (ox as f32 * scale_x).floor() as u32;
+            let x1 = (((ox + 1) as f32 * scale_x).ceil() as u32).clamp(x0 + 1, sw);
+            let mut acc = [0u32; 4];
+            let mut count = 0u32;
+            for y in y0..y1 {
+                let row = (y * sw) as usize * 4;
+                for x in x0..x1 {
+                    let index = row + x as usize * 4;
+                    for channel in 0..4 {
+                        acc[channel] += u32::from(pixels[index + channel]);
+                    }
+                    count += 1;
+                }
+            }
+            let target = ((oy * dw + ox) as usize) * 4;
+            for channel in 0..4 {
+                out[target + channel] = ((acc[channel] + count / 2) / count) as u8;
+            }
+        }
+    }
+    Some(out)
 }
 
 impl Drop for PreviewSession {
@@ -992,5 +1116,94 @@ mod tests {
         assert_eq!(session.size(), (640, 360));
         let id_after = session.texture_id();
         assert_eq!(Some(id_before), id_after, "resize 应复用 egui 纹理句柄");
+    }
+
+    /// 盒式滤波：每个输出像素是该源矩形内所有像素的平均。
+    #[test]
+    fn box_downsample_averages_the_covered_area() {
+        // 2×2：左上白、其余黑 → 1×1 应是四分之一白（63/64）。
+        let mut source = vec![0u8; 2 * 2 * 4];
+        source[0..4].copy_from_slice(&[255, 255, 255, 255]);
+        for pixel in source.chunks_exact_mut(4).skip(1) {
+            pixel[3] = 255; // alpha 全不透明
+        }
+        let out = box_downsample(&source, 2, 2, 1, 1).expect("2×2 → 1×1");
+        assert_eq!(out.len(), 4);
+        assert_eq!(out[0], 64, "255/4 四舍五入");
+        assert_eq!(out[3], 255, "alpha 取平均后仍不透明");
+    }
+
+    /// 回归「59% 缩放下 1px 笔画被整列吃掉」：把 1px 竖线放到**每一个**相位上，
+    /// 降采样后都必须还有可见列。最近邻只采样一部分源列，总会有某个相位被整列丢光。
+    #[test]
+    fn box_downsample_keeps_thin_strokes_at_every_phase() {
+        let (sw, sh) = (40u32, 10u32);
+        for stroke in 0..sw {
+            let mut source = vec![0u8; (sw * sh * 4) as usize];
+            for y in 0..sh {
+                for x in 0..sw {
+                    let index = ((y * sw + x) * 4) as usize;
+                    let value = if x == stroke { 255 } else { 0 };
+                    source[index] = value;
+                    source[index + 1] = value;
+                    source[index + 2] = value;
+                    source[index + 3] = 255;
+                }
+            }
+            let (dw, dh) = (24u32, 6u32); // 0.6 倍，与 Game 视图 59% 同量级
+            let out = box_downsample(&source, sw, sh, dw, dh).expect("40×10 → 24×6");
+            let lit_columns = (0..dw)
+                .filter(|x| (0..dh).any(|y| out[(y * dw + x) as usize * 4] > 0))
+                .count();
+            assert!(
+                lit_columns >= 1,
+                "stroke at x={stroke} vanished after 0.6x downsample"
+            );
+        }
+    }
+
+    #[test]
+    fn box_downsample_is_identity_at_same_size() {
+        let source: Vec<u8> = (0..(4 * 4 * 4) as u8).collect();
+        let out = box_downsample(&source, 4, 4, 4, 4).expect("same size");
+        assert_eq!(out, source);
+    }
+
+    /// 长度与声明的尺寸不符时不给结果，调用方按原尺寸上传（不切错图）。
+    #[test]
+    fn box_downsample_rejects_mismatched_buffer() {
+        assert!(box_downsample(&[0u8; 12], 4, 4, 2, 2).is_none());
+    }
+
+    /// 显示尺寸不小于设计分辨率时不得走降采样（1:1/放大保持像素风锐利）。
+    #[test]
+    fn display_size_at_or_above_native_does_not_downscale() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let scene = Scene::new("display-size");
+        let mut session = PreviewSession::create(
+            &device,
+            &queue,
+            None,
+            Path::new("."),
+            &scene,
+            (640, 360),
+            None,
+            FontAtlasMap::default(),
+            None,
+            VectorAtlasMap::default(),
+            None,
+        )
+        .expect("create preview session");
+        assert!(!session.downscales(), "默认显示尺寸 = 设计分辨率");
+        session.set_display_size(Some(&device), (640, 360));
+        assert!(!session.downscales());
+        session.set_display_size(Some(&device), (1280, 720));
+        assert!(!session.downscales(), "放大不需要降采样");
+        session.set_display_size(Some(&device), (384, 216));
+        assert!(session.downscales(), "0.6 倍需要降采样");
+        session.set_display_size(Some(&device), (640, 360));
+        assert!(!session.downscales(), "回到 1:1 应退出降采样");
     }
 }

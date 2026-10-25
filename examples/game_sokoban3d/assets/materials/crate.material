@@ -1,0 +1,5 @@
+version=1
+name=crate
+base_color=0.820,0.550,0.280,1
+metallic=0.050
+roughness=0.700

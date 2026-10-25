@@ -1,0 +1,16 @@
+[project]
+# 3D 推箱子：引擎 3D 能力与 AI(MCP) 通道的验收工程。
+# 关卡数据在 scripts/sokoban.lua 的 LEVEL 表里，scenes/main.scene 由
+# tools/gen_level_scene.mjs 从同一张表生成（两边按格子名字对账）。
+name = "game_sokoban3d"
+version = "0.1.0"
+engine = "RustLua"
+main_script = "scripts/main.lua"
+startup_scene = "scenes/main.scene"
+# 拉丁字形：HUD 全英文，走引擎默认矢量档，不额外内置字体。
+font = ""
+font_fallback = ""
+font_weight = 400.0
+text_render_mode = "vector"
+window_width = 1280
+window_height = 720

@@ -42,6 +42,15 @@ pub(crate) fn resolution_matches_aspect(size: (u32, u32), ratio: f32) -> bool {
     ((size.0 as f32 / size.1 as f32) - ratio).abs() <= ratio * 0.005
 }
 
+/// 当前分辨率命中的比例标签（如 `16:9`）：进分辨率下拉的选中文本，
+/// 不必再常驻一排比例按钮。
+pub(crate) fn aspect_label_for(size: (u32, u32)) -> Option<&'static str> {
+    PREVIEW_ASPECTS
+        .iter()
+        .find(|(_, ratio)| resolution_matches_aspect(size, *ratio))
+        .map(|(label, _)| *label)
+}
+
 impl EditorApp {
     pub(crate) fn draw_workspace_toolbar(&mut self, ui: &mut egui::Ui) {
         // 工具栏保持单行；窄面板通过横向滚动访问末尾控件，避免换行挤压 Scene 画布。
@@ -111,12 +120,20 @@ impl EditorApp {
                         self.dispatch(editor::EditorCommand::RestartPlay);
                     }
                     // 设计分辨率：Game 视图渲染目标 / Scene 视图包围框尺寸（下次 Play 生效；可自定义增删）。
+                    // 比例快捷组收进同一菜单，选中文本带上当前比例，顶上不再常驻一排按钮。
                     let resolutions = self.preview_resolutions.clone();
-                    egui::ComboBox::from_id_salt("preview_resolution")
-                        .selected_text(format!(
+                    let resolution_text = match aspect_label_for(self.preview_resolution) {
+                        Some(label) => format!(
+                            "{}×{} · {label}",
+                            self.preview_resolution.0, self.preview_resolution.1
+                        ),
+                        None => format!(
                             "{}×{}",
                             self.preview_resolution.0, self.preview_resolution.1
-                        ))
+                        ),
+                    };
+                    egui::ComboBox::from_id_salt("preview_resolution")
+                        .selected_text(resolution_text)
                         .show_ui(ui, |ui| {
                             for (w, h) in &resolutions {
                                 if ui
@@ -133,29 +150,61 @@ impl EditorApp {
                             }
 
                             ui.separator();
+                            ui.label(egui::RichText::new("按比例切换（保持长边）").weak().size(11.0));
+                            ui.horizontal(|ui| {
+                                for (label, ratio) in PREVIEW_ASPECTS {
+                                    let selected =
+                                        resolution_matches_aspect(self.preview_resolution, ratio);
+                                    if ui
+                                        .selectable_label(selected, label)
+                                        .on_hover_text(format!(
+                                            "切换为 {label} 比例（保持当前长边）"
+                                        ))
+                                        .clicked()
+                                    {
+                                        let size =
+                                            resolution_for_aspect(self.preview_resolution, ratio);
+                                        if size != self.preview_resolution {
+                                            self.preview_resolution = size;
+                                            self.adding_preview_resolution = false;
+                                            self.scene_view_fit_pending = true;
+                                        }
+                                        ui.close();
+                                    }
+                                }
+                            });
+
+                            ui.separator();
                             if ui.button("＋ 自定义…").clicked() {
                                 self.custom_preview_resolution = self.preview_resolution;
                                 self.adding_preview_resolution = true;
                                 ui.close();
                             }
                         });
-                    // E18：比例快捷组——改的是同一份 `preview_resolution`（不动场景数据）。
                     ui.separator();
-                    for (label, ratio) in PREVIEW_ASPECTS {
-                        let selected = resolution_matches_aspect(self.preview_resolution, ratio);
-                        if ui
-                            .selectable_label(selected, label)
-                            .on_hover_text(format!("切换为 {label} 比例（保持当前长边）"))
-                            .clicked()
-                        {
-                            let size = resolution_for_aspect(self.preview_resolution, ratio);
-                            if size != self.preview_resolution {
-                                self.preview_resolution = size;
-                                self.adding_preview_resolution = false;
-                                self.scene_view_fit_pending = true;
+                    // Game 视图缩放：`适应` 可能低于 100%（此时文字只是变小、不再糊成一片），
+                    // 想看字就切 `1:1`（1 设计像素 = 1 物理像素，超出部分裁剪 + 中键拖动）。
+                    egui::ComboBox::from_id_salt("game_view_zoom")
+                        .selected_text(self.game_view_zoom.label())
+                        .width(66.0)
+                        .show_ui(ui, |ui| {
+                            for zoom in crate::panels::game_view::GameViewZoom::ALL {
+                                if ui
+                                    .selectable_value(
+                                        &mut self.game_view_zoom,
+                                        zoom,
+                                        zoom.label(),
+                                    )
+                                    .changed()
+                                {
+                                    self.game_view_pan = egui::Vec2::ZERO;
+                                }
                             }
-                        }
-                    }
+                        })
+                        .response
+                        .on_hover_text(
+                            "Game 视图缩放：适应窗口 / 1:1（1 设计像素 = 1 物理像素，可中键拖动）",
+                        );
                     ui.separator();
                     // 单一 3D 切换：默认 2D，点亮进入 3D，取消回到 2D。
                     if icon_toggle(
@@ -307,6 +356,10 @@ impl EditorApp {
                             .on_hover_text(
                                 "控件模式下画出所有界面元素的布局边界、容器内边距与间距，溢出元素标红",
                             );
+                        ui.checkbox(&mut self.show_entity_labels, "标记与名字")
+                            .on_hover_text(
+                                "3D 场景视图里每个实体的菱形标记与名称；关闭后场景不再被文字遮挡（点选与 Gizmo 照常可用）",
+                            );
                         ui.checkbox(&mut self.show_collision_overlay, "碰撞区域")
                     .on_hover_text(
                         "画出场景里所有碰撞区域：瓦片地图碰撞格 + 实体碰撞体轮廓（调试用）",
@@ -325,10 +378,13 @@ impl EditorApp {
                     // spacing 改动只在 scope 内生效，否则会连带改窄本面板其它滑条。
                     ui.scope(|ui| {
                         ui.spacing_mut().slider_width = ZOOM_SLIDER_WIDTH;
-                        ui.add(egui::Slider::new(
-                            &mut self.scene_zoom,
-                            SCENE_ZOOM_MIN..=SCENE_ZOOM_MAX,
-                        ))
+                        ui.add(
+                            egui::Slider::new(
+                                &mut self.scene_zoom,
+                                SCENE_ZOOM_MIN..=SCENE_ZOOM_MAX,
+                            )
+                            .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+                        )
                         .on_hover_text("场景缩放");
                     });
                     self.set_scene_zoom_centered(zoom_before_slider, self.scene_zoom);
@@ -370,7 +426,7 @@ impl EditorApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolution_for_aspect, resolution_matches_aspect};
+    use super::{aspect_label_for, resolution_for_aspect, resolution_matches_aspect};
     use crate::EditorApp;
     use eframe::egui;
     use rustlua_infra::logging::LogSink;
@@ -394,6 +450,10 @@ mod tests {
         assert!(!resolution_matches_aspect((1920, 1080), 16.0 / 10.0));
         assert!(resolution_matches_aspect((1080, 1920), 9.0 / 16.0));
         assert!(!resolution_matches_aspect((0, 0), 1.0));
+        // 选中文本用比例标签：命中预设给标签，非预设比例不给。
+        assert_eq!(aspect_label_for((1280, 720)), Some("16:9"));
+        assert_eq!(aspect_label_for((1280, 800)), Some("16:10"));
+        assert_eq!(aspect_label_for((1000, 1000)), None);
     }
 
     #[test]

@@ -145,3 +145,4 @@ mod render;
 mod sample_project;
 mod tilemap;
 mod ui_source_layout;
+mod view_3d;

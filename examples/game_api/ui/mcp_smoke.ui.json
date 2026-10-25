@@ -1,0 +1,99 @@
+{
+  "spec_version": 1,
+  "document": {
+    "kind": "widget",
+    "name": "mcp_smoke",
+    "canvas": {
+      "reference": [
+        1280,
+        720
+      ],
+      "scale_mode": "fit_both",
+      "safe_area": false
+    }
+  },
+  "tokens": {
+    "color.bg": "#101820",
+    "color.fg": "#f5e6c8"
+  },
+  "styles": {
+    "panel": {
+      "base": {
+        "bg": "@color.bg",
+        "padding": [
+          16,
+          16,
+          16,
+          16
+        ],
+        "radius": 10
+      },
+      "states": {}
+    },
+    "title": {
+      "base": {
+        "color": "@color.fg",
+        "font_size": 24
+      },
+      "states": {}
+    }
+  },
+  "root": {
+    "key": "root",
+    "type": "panel",
+    "layout": {
+      "anchor": "center",
+      "size": [
+        420,
+        240
+      ]
+    },
+    "style": "panel",
+    "children": [
+      {
+        "key": "root_body",
+        "type": "container",
+        "direction": "v_box",
+        "padding": [
+          16,
+          16,
+          16,
+          16
+        ],
+        "spacing": 12,
+        "justify": "center",
+        "align": "center",
+        "layout": {
+          "anchor": "full_rect"
+        },
+        "children": [
+          {
+            "key": "title",
+            "type": "text",
+            "text": "MCP Smoke",
+            "layout": {
+              "size": [
+                240,
+                32
+              ]
+            },
+            "style": "title"
+          },
+          {
+            "key": "ok",
+            "type": "button",
+            "text": "OK",
+            "layout": {
+              "size": [
+                160,
+                40
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "assets": [],
+  "bindings": []
+}

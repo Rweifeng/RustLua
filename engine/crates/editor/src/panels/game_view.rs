@@ -11,6 +11,93 @@ use rustlua_infra::preview_diagnostics::PreviewErrorKind;
 use rustlua_input::input::{InputSnapshot, MouseButton};
 use rustlua_scene::scene::Scene;
 
+/// Game 视图缩放模式（Unity Game 视图的 Scale 选择）。
+///
+/// 为什么要给用户这个开关：`Fit` 在面板小于设计分辨率时会低于 100%，1280×720 的
+/// 12px 文字落到屏幕上是 7px——**能看但读不了**。想看字就得有 1:1。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum GameViewZoom {
+    /// 等比适配面板，可能小于 100%（此时会话先做面积降采样，笔画不会整列消失）。
+    #[default]
+    Fit,
+    /// 1 设计像素 = 1 物理像素；超出面板的部分按 `game_view_pan` 平移并裁剪。
+    Actual,
+}
+
+impl GameViewZoom {
+    pub(crate) const ALL: [Self; 2] = [Self::Fit, Self::Actual];
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fit => "fit",
+            Self::Actual => "actual",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "fit" => Some(Self::Fit),
+            "actual" => Some(Self::Actual),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Fit => "适应",
+            Self::Actual => "1:1",
+        }
+    }
+}
+
+impl EditorApp {
+    /// Game 视图里预览画面实际绘制的矩形（按当前缩放模式解算）。
+    fn game_view_rect(&self, panel: egui::Rect, size: (u32, u32), ppp: f32) -> egui::Rect {
+        game_view_rect_for(self.game_view_zoom, panel, size, ppp, self.game_view_pan)
+    }
+
+    /// 1:1 模式下把平移量夹在「内容仍然铺满面板」的范围内；其它模式复位。
+    fn clamp_game_view_pan(&mut self, panel: egui::Rect, size: (u32, u32), ppp: f32) {
+        let limit = game_view_pan_limit(self.game_view_zoom, panel, size, ppp);
+        self.game_view_pan.x = self.game_view_pan.x.clamp(-limit.x, limit.x);
+        self.game_view_pan.y = self.game_view_pan.y.clamp(-limit.y, limit.y);
+    }
+}
+
+/// Game 视图绘制矩形的纯计算（Fit / 1:1 + 平移）。抽成自由函数便于单测。
+fn game_view_rect_for(
+    zoom: GameViewZoom,
+    panel: egui::Rect,
+    size: (u32, u32),
+    ppp: f32,
+    pan: egui::Vec2,
+) -> egui::Rect {
+    match zoom {
+        GameViewZoom::Fit => fit_rect_to_aspect(panel, size),
+        GameViewZoom::Actual => {
+            let logical = egui::vec2(size.0 as f32, size.1 as f32) / ppp.max(f32::EPSILON);
+            egui::Rect::from_center_size(panel.center() + pan, logical)
+        }
+    }
+}
+
+/// 1:1 模式的平移上限：只在内容比面板大时才允许拖动（各轴独立）。
+fn game_view_pan_limit(
+    zoom: GameViewZoom,
+    panel: egui::Rect,
+    size: (u32, u32),
+    ppp: f32,
+) -> egui::Vec2 {
+    if zoom != GameViewZoom::Actual {
+        return egui::Vec2::ZERO;
+    }
+    let logical = egui::vec2(size.0 as f32, size.1 as f32) / ppp.max(f32::EPSILON);
+    egui::vec2(
+        ((logical.x - panel.width()) * 0.5).max(0.0),
+        ((logical.y - panel.height()) * 0.5).max(0.0),
+    )
+}
+
 impl EditorApp {
     /// 进入 Play：创建内嵌游戏预览（运行 Lua + 物理 + 渲染），并把编辑器场景隔离快照。
     /// M11-01 状态机：`Editing → Starting → Playing`；初始化失败进入 `StartFailed`，
@@ -104,108 +191,56 @@ impl EditorApp {
     pub(crate) fn draw_game_view(&mut self, ui: &mut egui::Ui) {
         let (response, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::hover());
         painter.rect_filled(response.rect, 0.0, egui::Color32::from_rgb(18, 20, 24));
+        let ctx = ui.ctx().clone();
+        let ppp = ctx.pixels_per_point();
+        let panel = response.rect;
+        // 内容比面板大时（1:1 模式常见）允许中键拖动平移。用中键而不是滚轮：
+        // 滚轮已经桥接给游戏了。
+        let size_at_input = self
+            .preview
+            .as_ref()
+            .map(PreviewSession::size)
+            .unwrap_or(self.preview_resolution);
+        let overflow = {
+            let rect = self.game_view_rect(panel, size_at_input, ppp);
+            rect.width() > panel.width() + 0.5 || rect.height() > panel.height() + 0.5
+        };
+        if overflow {
+            let delta = ctx.input(|input| {
+                if input.pointer.middle_down() {
+                    input.pointer.delta()
+                } else {
+                    egui::Vec2::ZERO
+                }
+            });
+            if delta != egui::Vec2::ZERO {
+                self.game_view_pan += delta;
+            }
+        }
+        self.clamp_game_view_pan(panel, size_at_input, ppp);
         if self.preview.is_some() {
             // 鼠标事件要求指针在 Game 视图内；键盘只要求编辑器窗口持有焦点（M22 修复，
             // 见 `update_preview` 的文档）。
-            let pointer_over = ui.rect_contains_pointer(response.rect);
-            let window_focused = ui.ctx().input(|i| i.focused);
-            let preview_rect = self.preview_rect(response.rect);
-            self.update_preview(ui.ctx(), pointer_over, window_focused, preview_rect);
-            if let Some(preview) = &self.preview
-                && let Some(tex) = preview.texture_id()
-            {
-                painter.image(
-                    tex,
-                    preview_rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-                // 右上角徽标：设计分辨率 + 当前显示缩放比（Unity Game 视图风格）。
-                // 面板小于原生分辨率时按比例等比缩小适配，徽标实时反映该缩放比。
-                let (width, height) = preview.size();
-                let ppp = ui.ctx().pixels_per_point();
-                let fit = preview_fit_scale(preview_rect, ppp, width);
-                // E18：设计/预览/缩放/裁剪/Safe Area 同屏读数。Game 视图等比
-                // letterbox 整张预览，设计框始终完整可见，故裁剪恒为 0。
-                let hud = crate::ui_editor::CanvasHud {
-                    design: (width, height),
-                    display: (
-                        (preview_rect.width() * ppp).round().max(0.0) as u32,
-                        (preview_rect.height() * ppp).round().max(0.0) as u32,
-                    ),
-                    scale: fit,
-                    crop: [0.0; 4],
-                    safe: self.scene_canvas_config().safe_area,
-                };
-                let lines = [
-                    format!("{width}×{height} · {:.0}%", fit * 100.0),
-                    hud.preview_line(),
-                    hud.safe_line(),
-                ];
-                let color = egui::Color32::from_rgb(215, 230, 245);
-                let font = egui::FontId::monospace(11.0);
-                let galleys = lines
-                    .iter()
-                    .map(|line| painter.layout_no_wrap(line.clone(), font.clone(), color))
-                    .collect::<Vec<_>>();
-                let line_height = galleys.iter().map(|g| g.size().y).fold(0.0_f32, f32::max);
-                let text_size = egui::vec2(
-                    galleys.iter().map(|g| g.size().x).fold(0.0_f32, f32::max),
-                    line_height * galleys.len() as f32,
-                );
-                let pad = egui::vec2(8.0, 4.0);
-                let badge = egui::Rect::from_min_size(
-                    response.rect.left_top() + egui::vec2(6.0, 6.0),
-                    text_size + pad * 2.0,
-                );
-                painter.rect_filled(
-                    badge,
-                    4.0,
-                    egui::Color32::from_rgba_unmultiplied(20, 28, 40, 210),
-                );
-                painter.rect_stroke(
-                    badge,
-                    4.0,
-                    egui::Stroke::new(
-                        1.0_f32,
-                        egui::Color32::from_rgba_unmultiplied(130, 170, 220, 140),
-                    ),
-                    egui::StrokeKind::Inside,
-                );
-                for (index, galley) in galleys.into_iter().enumerate() {
-                    painter.galley(
-                        badge.left_top() + egui::vec2(pad.x, pad.y + index as f32 * line_height),
-                        galley,
-                        color,
-                    );
-                }
-            } else {
-                let text = if self.is_playing() {
-                    "游戏视图\n（预览不可用）"
-                } else {
-                    "游戏视图\n点击播放运行场景"
-                };
-                painter.text(
-                    response.rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    text,
-                    egui::FontId::proportional(20.0),
-                    egui::Color32::LIGHT_GRAY,
-                );
-            }
-        } else {
-            let text = if self.is_playing() {
-                "游戏视图\n（预览不可用）"
-            } else {
-                "游戏视图\n点击播放运行场景"
-            };
-            painter.text(
-                response.rect.center(),
-                egui::Align2::CENTER_CENTER,
-                text,
-                egui::FontId::proportional(20.0),
-                egui::Color32::LIGHT_GRAY,
+            let pointer_over = ui.rect_contains_pointer(panel);
+            let window_focused = ctx.input(|i| i.focused);
+            let preview_rect = self.game_view_rect(panel, size_at_input, ppp);
+            self.update_preview(&ctx, pointer_over, window_focused, preview_rect);
+        } else if !self.is_playing() {
+            // 未 Play：编辑预览（不跑脚本）。Scene 页签激活时才有人调游戏画面渲染，
+            // Game 页签自己就是唯一入口——这里不烘就只能是空白。
+            self.render_edit_game_preview(&ctx);
+        }
+        if let Some((texture, size)) = self.game_view_frame() {
+            // 纹理句柄必须在 `update_preview` **之后**取：降采样切换会换掉句柄。
+            let preview_rect = self.game_view_rect(panel, size, ppp);
+            // 1:1 模式下画面会超出面板，必须按面板裁剪，否则会盖到工具栏/别的面板上。
+            painter.with_clip_rect(panel).image(
+                texture,
+                preview_rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
             );
+            self.paint_game_view_hud(ui, &painter, panel, preview_rect, size);
         }
         if let Some(message) = self.preview.as_ref().and_then(PreviewSession::diagnostic) {
             let metrics = self.preview.as_ref().map(PreviewSession::readback_metrics);
@@ -284,7 +319,93 @@ impl EditorApp {
         }
     }
 
-    /// 创建内嵌游戏预览会话：运行时 + 离屏渲染器 + 预览纹理（委托 PreviewSession）。
+    /// Game 视图当前该显示的那一帧：Play 期间是预览会话的纹理；未 Play 是编辑预览
+    /// 烘出来的那格游戏画面（游戏相机 + UI 叠层，2D/3D 同源）。
+    fn game_view_frame(&self) -> Option<(egui::TextureId, (u32, u32))> {
+        if let Some(preview) = &self.preview {
+            return preview.texture_id().map(|id| (id, preview.size()));
+        }
+        self.game_screen_texture_id()
+            .map(|id| (id, self.preview_resolution))
+    }
+
+    /// 未 Play 时 Game 视图的编辑预览：用编辑运行时按游戏相机（3D 走场景相机）重画
+    /// 当前场景，**不跑脚本**——画面里只有场景已摆好的内容，没有 Lua 生成的界面与状态。
+    ///
+    /// 与 Scene 2D 设计分辨率框里那格游戏画面同源（同一份运行时、同一张纹理、同一套
+    /// revision 缓存键）：两个页签同时可见时第二个调用命中缓存，不会重复渲染。
+    fn render_edit_game_preview(&mut self, ctx: &egui::Context) {
+        if self.preview_resolution.0 == 0 || self.preview_resolution.1 == 0 {
+            return;
+        }
+        self.ensure_scene_runtime();
+        if self.scene_runtime.is_none() {
+            return;
+        }
+        // 只要渲染器实例：画面渲进设计分辨率纹理，用不到面板尺寸的 `scene_texture`。
+        self.ensure_scene_renderer_instance();
+        if self.scene_renderer.is_none() {
+            return;
+        }
+        self.render_scene_screen(ctx);
+    }
+
+    /// Game 视图左上角徽标：设计分辨率 + 显示缩放（Unity Game 视图风格）。
+    /// 面板小于原生分辨率时按比例等比缩小适配，徽标实时反映该缩放比；
+    /// 预览/显示/裁剪/安全区等体检读数收进悬停提示，不再常驻三行。
+    fn paint_game_view_hud(
+        &self,
+        ui: &mut egui::Ui,
+        painter: &egui::Painter,
+        panel: egui::Rect,
+        preview_rect: egui::Rect,
+        size: (u32, u32),
+    ) {
+        let (width, height) = size;
+        let ppp = painter.ctx().pixels_per_point();
+        let fit = preview_fit_scale(preview_rect, ppp, width);
+        // E18：设计/预览/缩放/裁剪/Safe Area 同屏读数。Game 视图等比
+        // letterbox 整张预览，设计框始终完整可见，故裁剪恒为 0。
+        let hud = crate::ui_editor::CanvasHud {
+            design: (width, height),
+            display: (
+                (preview_rect.width() * ppp).round().max(0.0) as u32,
+                (preview_rect.height() * ppp).round().max(0.0) as u32,
+            ),
+            scale: fit,
+            crop: [0.0; 4],
+            safe: self.scene_canvas_config().safe_area,
+        };
+        let line = match self.game_view_zoom {
+            GameViewZoom::Fit => hud.compact_line(),
+            GameViewZoom::Actual => format!("{} · 1:1", hud.compact_line()),
+        };
+        let color = egui::Color32::from_rgb(205, 218, 232);
+        let galley = painter.layout_no_wrap(line, egui::FontId::proportional(11.5), color);
+        let pad = egui::vec2(7.0, 3.0);
+        let badge = egui::Rect::from_min_size(
+            panel.left_top() + egui::vec2(8.0, 8.0),
+            galley.size() + pad * 2.0,
+        );
+        painter.rect_filled(
+            badge,
+            4.0,
+            egui::Color32::from_rgba_unmultiplied(16, 21, 30, 165),
+        );
+        painter.rect_stroke(
+            badge,
+            4.0,
+            egui::Stroke::new(
+                1.0_f32,
+                egui::Color32::from_rgba_unmultiplied(130, 170, 220, 70),
+            ),
+            egui::StrokeKind::Inside,
+        );
+        painter.galley(badge.left_top() + pad, galley, color);
+        ui.interact(badge, ui.id().with("game_view_hud"), egui::Sense::hover())
+            .on_hover_text(hud.details());
+    }
+
     fn create_preview(&self, scene: &Scene) -> Result<PreviewSession, String> {
         let Some((device, queue)) = &self.gpu else {
             return Err("编辑器缺少 wgpu 上下文，无法内嵌游戏预览".to_owned());
@@ -349,6 +470,17 @@ impl EditorApp {
                 // UI 参考分辨率（设计分辨率）随分辨率变更同步更新，保证 Canvas 适配一致。
                 preview.set_ui_reference([width as f32, height as f32]);
             }
+        }
+        // 把预览最终占用的物理像素尺寸告诉会话：小于设计分辨率时它会先做面积
+        // 降采样再上屏（NEAREST 直接缩小会整列吃掉字形笔画）。
+        let ppp = ctx.pixels_per_point();
+        let display_size = (
+            (preview_rect.width() * ppp).round().max(1.0) as u32,
+            (preview_rect.height() * ppp).round().max(1.0) as u32,
+        );
+        let device = self.gpu.as_ref().map(|(device, _)| device);
+        if let Some(preview) = &mut self.preview {
+            preview.set_display_size(device, display_size);
         }
         if window_focused {
             let (width, height) = self
@@ -429,29 +561,7 @@ impl EditorApp {
     }
 
     /// 从 egui 输入构建游戏输入快照（M20-08：**全键位**键盘 + 鼠标 + 滚轮）。
-    /// 预览在 Game 视图内纵横比居中后的实际绘制矩形。
-    fn preview_rect(&self, rect: egui::Rect) -> egui::Rect {
-        let Some(preview) = &self.preview else {
-            return rect;
-        };
-        let (width, height) = preview.size();
-        let aspect = width as f32 / height.max(1) as f32;
-        let mut rect = rect;
-        let avail = rect.width() / rect.height().max(1.0);
-        if avail > aspect {
-            let width = rect.height() * aspect;
-            let extra = (rect.width() - width) / 2.0;
-            rect.min.x += extra;
-            rect.max.x -= extra;
-        } else {
-            let height = rect.width() / aspect;
-            let extra = (rect.height() - height) / 2.0;
-            rect.min.y += extra;
-            rect.max.y -= extra;
-        }
-        rect
-    }
-    /// 跨帧 held 状态；M11-02）。预览在 Game 视图内纵横比居中后的实际绘制矩形。
+    /// 复用跨帧 held 状态；M11-02）。
     ///
     /// M22/W1：键盘仍按**全键位**桥接，但键集合不再手写——它等于引擎键表
     /// [`KeyCode::ALL`] 在 egui 上的像（`panels::keymap::preview_keys()`），
@@ -517,6 +627,26 @@ impl EditorApp {
             }
         });
     }
+}
+
+/// 在面板内按 `size` 的纵横比居中（等比 letterbox，不放大到超出面板）。
+fn fit_rect_to_aspect(rect: egui::Rect, size: (u32, u32)) -> egui::Rect {
+    let (width, height) = size;
+    let aspect = width as f32 / height.max(1) as f32;
+    let mut rect = rect;
+    let avail = rect.width() / rect.height().max(1.0);
+    if avail > aspect {
+        let width = rect.height() * aspect;
+        let extra = (rect.width() - width) / 2.0;
+        rect.min.x += extra;
+        rect.max.x -= extra;
+    } else {
+        let height = rect.width() / aspect;
+        let extra = (rect.height() - height) / 2.0;
+        rect.min.y += extra;
+        rect.max.y -= extra;
+    }
+    rect
 }
 
 /// Game 视图显示缩放比：预览纹理像素宽以物理像素显示时的放大/缩小比例
@@ -931,6 +1061,74 @@ mod tests {
 
     /// 显示缩放比 = 面板逻辑宽 × pixels_per_point ÷ 原生宽：
     /// 面板小于原生分辨率时 < 1（等比缩小适配），面板更大或高 DPI 时放大。
+    /// 1:1 模式：1 设计像素 = 1 物理像素（150% DPI 下 1280×720 占 853⅓×480 逻辑点）。
+    #[test]
+    fn actual_zoom_maps_one_design_pixel_to_one_physical_pixel() {
+        let panel = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(500.0, 280.0));
+        let rect = game_view_rect_for(
+            GameViewZoom::Actual,
+            panel,
+            (1280, 720),
+            1.5,
+            egui::Vec2::ZERO,
+        );
+        assert!((rect.width() - 1280.0 / 1.5).abs() < 1e-3);
+        assert!((rect.height() - 720.0 / 1.5).abs() < 1e-3);
+        // 物理像素数就是设计分辨率 → 会话不必降采样，NEAREST 1:1 锐利。
+        assert!((rect.width() * 1.5 - 1280.0).abs() < 1e-2);
+        // 居中：中心与面板一致。
+        assert!((rect.center().x - panel.center().x).abs() < 1e-3);
+        assert!((rect.center().y - panel.center().y).abs() < 1e-3);
+    }
+
+    /// 适应模式沿用等比 letterbox（页面内完整可见，可能 < 1 倍）。
+    #[test]
+    fn fit_zoom_letterboxes_the_whole_frame() {
+        let panel = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(500.0, 280.0));
+        let rect = game_view_rect_for(GameViewZoom::Fit, panel, (1280, 720), 1.5, egui::Vec2::ZERO);
+        assert!(rect.width() <= panel.width() + 0.5);
+        assert!(rect.height() <= panel.height() + 0.5);
+        assert!((rect.width() / rect.height() - 16.0 / 9.0).abs() < 1e-3);
+        // 平移量在适应模式下不参与计算。
+        let shifted = game_view_rect_for(
+            GameViewZoom::Fit,
+            panel,
+            (1280, 720),
+            1.5,
+            egui::vec2(40.0, 0.0),
+        );
+        assert_eq!(rect, shifted);
+    }
+
+    /// 1:1 的平移上限：内容超出面板才有可拖的余量，且两轴独立。
+    #[test]
+    fn actual_zoom_pan_limit_only_covers_overflow() {
+        // 面板 500×400 逻辑，内容 853⅓×480 逻辑 → x 余量 (853.3-500)/2，y 余量 (480-400)/2。
+        let panel = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(500.0, 400.0));
+        let limit = game_view_pan_limit(GameViewZoom::Actual, panel, (1280, 720), 1.5);
+        assert!((limit.x - (1280.0 / 1.5 - 500.0) * 0.5).abs() < 1e-3);
+        assert!((limit.y - (720.0 / 1.5 - 400.0) * 0.5).abs() < 1e-3);
+        // 面板比内容还大 → 不许拖（余量为 0），否则会把画面拖离面板中心。
+        let big = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+        let none = game_view_pan_limit(GameViewZoom::Actual, big, (1280, 720), 1.5);
+        assert_eq!(none, egui::Vec2::ZERO);
+        // 适应模式恒无可拖余量。
+        assert_eq!(
+            game_view_pan_limit(GameViewZoom::Fit, panel, (1280, 720), 1.5),
+            egui::Vec2::ZERO
+        );
+    }
+
+    /// 缩放模式字符串要能往返，未知值由 `parse` 拒绝（布局层回落 `fit`）。
+    #[test]
+    fn game_view_zoom_parses_its_persisted_names() {
+        for zoom in GameViewZoom::ALL {
+            assert_eq!(GameViewZoom::parse(zoom.as_str()), Some(zoom));
+        }
+        assert_eq!(GameViewZoom::parse("100%"), None);
+        assert_eq!(GameViewZoom::default(), GameViewZoom::Fit);
+    }
+
     #[test]
     fn preview_fit_scale_measures_display_scale() {
         // 原生 1280，显示宽 640 逻辑像素、ppp 1 → 等比缩小到一半。
@@ -1325,6 +1523,37 @@ mod tests {
             app.preview.as_ref().unwrap() as *const PreviewSession,
             session_before,
             "切分辨率应复用同一 PreviewSession（不重建运行时/渲染器）"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 未 Play 时 Game 视图显示当前场景（编辑预览，不跑脚本）：没有 `PreviewSession`
+    /// 也要把游戏画面烘出来，且不得因此进入 Play。
+    #[test]
+    fn edit_game_view_renders_scene_without_play() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let root = copy_sample_project("edit-game-view");
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, Some((device, queue)), LogSink::new(64));
+        app.refresh_resources();
+        app.open_scene_resource(PathBuf::from("scenes/ui_test.scene"));
+
+        let ctx = egui::Context::default();
+        ctx.begin_pass(RawInput::default());
+        app.render_edit_game_preview(&ctx);
+        let _ = ctx.end_pass();
+
+        assert!(!app.is_playing(), "编辑预览不得进入 Play");
+        assert!(app.preview.is_none(), "编辑预览不创建 Play 预览会话");
+        assert!(
+            app.scene_screen_texture.is_some(),
+            "未 Play 也要烘出游戏画面纹理"
+        );
+        assert!(
+            app.scene_screen_cache_key.is_some(),
+            "渲染路径应真的跑过（不是提前返回）"
         );
         let _ = fs::remove_dir_all(root);
     }

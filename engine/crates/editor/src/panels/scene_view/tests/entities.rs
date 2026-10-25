@@ -633,42 +633,18 @@ fn overlay_status_row_shares_one_vertical_center() {
         )),
         ..Default::default()
     };
-    let output = context.run(raw, |context| {
+    let _ = context.run(raw, |context| {
         crate::dock::show_workspace(context, &mut app)
     });
-    // 两条带子都要真的量到：`scene_tools_rect` 只有画过一帧才有值。
-    let band = app.scene_tools_rect.expand(2.0);
-    let mut framed = Vec::new();
-    for clipped in &output.shapes {
-        if let egui::Shape::Rect(shape) = &clipped.shape {
-            let rect = shape.rect;
-            let center = rect.center();
-            if (14.0..=30.0).contains(&rect.height())
-                && app.workspace_rect.x_range().contains(center.x)
-                && band.contains(center)
-            {
-                framed.push(rect);
-            }
-        }
-    }
-    // 右侧工具条的按钮是 24 高，左侧状态胶囊的标签是 18 高——两组都得在场，
-    // 否则这条断言会退化成"只检查了一组自己跟自己齐"。
-    // （未选中的 `selectable_label` 背景透明、不落 Shape，所以左侧只要求量到 1 个。）
-    let tall = framed.iter().filter(|r| r.height() >= 22.0).count();
-    let short = framed.len() - tall;
-    assert!(tall >= 2, "没量到右上角工具条按钮：{framed:?}");
-    assert!(short >= 1, "没量到左上角状态胶囊：{framed:?}");
-    let min = framed
-        .iter()
-        .fold(f32::INFINITY, |acc, r| acc.min(r.center().y));
-    let max = framed
-        .iter()
-        .fold(f32::NEG_INFINITY, |acc, r| acc.max(r.center().y));
-    assert!(
-        max - min < 1.0,
-        "浮层一行的外框中心散布 {min:.1}..{max:.1}（差 {:.1}），左右两组没对齐",
-        max - min
-    );
+    // 两条带子的布局矩形都由画布自己写入：状态胶囊只报已开启项，默认只剩「世界/轴心」
+    // 两个切换，未选中时背景透明、不落 Shape，所以不再从 shapes 里量。
+    let status = app.scene_status_rect;
+    let tools = app.scene_tools_rect;
+    assert!(status.width() > 0.0, "没画左上角状态胶囊：{status:?}");
+    assert!(tools.width() > 0.0, "没画右上角工具条：{tools:?}");
+    assert!(status.left() < tools.left(), "状态胶囊应在工具条左侧");
+    let delta = (status.center().y - tools.center().y).abs();
+    assert!(delta < 1.0, "浮层一行的中心差 {delta:.1}px，左右两组没对齐");
 }
 
 #[test]

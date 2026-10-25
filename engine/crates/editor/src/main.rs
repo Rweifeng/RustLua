@@ -645,6 +645,9 @@ struct EditorApp {
     pub(crate) perf_panel_rect: egui::Rect,
     /// 本帧 Scene 视图右上角工具条（选择/移动/旋转/缩放）的屏幕矩形。
     pub(crate) scene_tools_rect: egui::Rect,
+    /// 本帧 Scene 左上角状态胶囊（已开启的吸附/网格 + 世界/轴心）的屏幕矩形；
+    /// `NOTHING` = 该帧没有状态内容可显示。用于断言左右两条带子共用同一条水平中线。
+    pub(crate) scene_status_rect: egui::Rect,
     /// 上一帧 Scene 左上角状态胶囊行的内容宽度：窄叶子下决定状态行是否下移一行
     /// （首帧为 0，按单行画，下一帧收敛）。
     pub(crate) scene_status_row_width: f32,
@@ -669,6 +672,9 @@ struct EditorApp {
     show_pixel_grid: bool,
     /// E05-4：Widget 模式布局调试 overlay（bounds/padding/gap/overflow）。
     show_layout_debug: bool,
+    /// 3D 场景视图的实体标记（投影后的菱形 + 名字）开关。关掉只是不画，
+    /// 点选与 Gizmo 仍吃同一份实体列表，所以清场目验/截图不会丢交互。
+    show_entity_labels: bool,
     /// 调试覆盖层开关：把当前场景里**所有**碰撞区域（Tilemap solid 格 + 实体 Collider）
     /// 画在 2D Scene 视图上，与选中无关，供跑地图调试用。唯一写入口是 View 菜单。
     show_collision_overlay: bool,
@@ -757,6 +763,10 @@ struct EditorApp {
     preview: Option<PreviewSession>,
     /// 设计分辨率（宽×高）：Game 视图渲染目标 / Scene 视图包围框尺寸（Unity 方式）。
     preview_resolution: (u32, u32),
+    /// Game 视图缩放模式（适应窗口 / 1:1），随布局持久化。
+    game_view_zoom: crate::panels::game_view::GameViewZoom,
+    /// Game 视图在 1:1 模式下的平移量（点）。纯视图态，不持久化。
+    game_view_pan: egui::Vec2,
     /// `preview_diagnostics` 的 Layout 诊断按哪个分辨率解算（E05-4 overlay 角标）。
     layout_diagnostics_resolution: (u32, u32),
     /// 可用的预览分辨率列表（可增删）。
@@ -1388,6 +1398,7 @@ impl EditorApp {
             hierarchy_filter_rect: egui::Rect::NOTHING,
             perf_panel_rect: egui::Rect::NOTHING,
             scene_tools_rect: egui::Rect::NOTHING,
+            scene_status_rect: egui::Rect::NOTHING,
             scene_status_row_width: 0.0,
             scene_overlay_bottom_offset: 30.0,
             workspace_rect: egui::Rect::NOTHING,
@@ -1401,6 +1412,7 @@ impl EditorApp {
             show_safe_area: false,
             show_pixel_grid: false,
             show_layout_debug: false,
+            show_entity_labels: true,
             show_collision_overlay: false,
             show_performance_panel: false,
             snap_enabled: false,
@@ -1449,6 +1461,8 @@ impl EditorApp {
             render_state: None,
             preview: None,
             preview_resolution: (1280, 720),
+            game_view_zoom: Default::default(),
+            game_view_pan: egui::Vec2::ZERO,
             layout_diagnostics_resolution: (0, 0),
             // E18：多分辨率预设（横屏/竖屏/超宽/小屏），覆盖常见设备比例。
             preview_resolutions: vec![
@@ -1896,6 +1910,9 @@ impl EditorApp {
         self.gizmo_pivot = crate::scene_interaction::GizmoPivot::parse(&self.layout.gizmo_pivot)
             .unwrap_or_default();
         self.preview_resolution = self.layout.preview_resolution;
+        self.game_view_zoom =
+            crate::panels::game_view::GameViewZoom::parse(&self.layout.game_view_zoom)
+                .unwrap_or_default();
     }
 
     /// 布局里的中央视图可见性可以自相矛盾（两个都存成 `false`）。这里不做修复、也不报
@@ -2055,6 +2072,7 @@ impl EditorApp {
         self.layout.gizmo_space = self.gizmo_space.as_str().to_owned();
         self.layout.gizmo_pivot = self.gizmo_pivot.as_str().to_owned();
         self.layout.preview_resolution = self.preview_resolution;
+        self.layout.game_view_zoom = self.game_view_zoom.as_str().to_owned();
         // 助手设置不在这里：它属于用户而不是工程（见 `enable_user_config` 与
         // `maybe_persist_user_config_on_change`）。
         // 显式保存（菜单「保存布局」）：无视节流直接抓当前树，用户按了就要拿到现状。

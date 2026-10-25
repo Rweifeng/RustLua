@@ -60,6 +60,8 @@ struct EvidenceStep {
     assistant: bool,
     /// 采集前是否打开 UI Studio 标签并加载演示文档（M76-04 验收门：真窗口证据）。
     ui_studio: bool,
+    /// 采集前是否聚焦 Game 标签且**不进入 Play**（编辑期游戏画面预览的真窗口证据）。
+    game: bool,
 }
 
 /// 一次采集的记录。
@@ -79,6 +81,7 @@ struct CaptureRecord {
     view_3d: bool,
     assistant: bool,
     ui_studio: bool,
+    game: bool,
     image_size: (u32, u32),
     /// 非黑像素比例：证明"窗口真的渲染出了东西"，而不是一张全黑图。
     lit_ratio: f32,
@@ -222,6 +225,7 @@ impl GuiEvidence {
                 view_3d: step.view_3d,
                 assistant: step.assistant,
                 ui_studio: step.ui_studio,
+                game: step.game,
                 image_size: (0, 0),
                 lit_ratio: 0.0,
                 mean_luma: 0.0,
@@ -286,6 +290,17 @@ impl GuiEvidence {
         } else {
             crate::SceneViewMode::View2D
         };
+        // 2D/3D 步展示的是 Scene 页签：布局可能停在 Game/AI 页签（上一次证据或用户拖拽
+        // 会把它持久化），不先聚焦就会拍到别的标签。Play/助手/UI Studio/Game 步各有
+        // 自己的目标页签，不在这里抢焦点。
+        if !step.play
+            && !step.assistant
+            && !step.ui_studio
+            && !step.game
+            && let Some(state) = app.dock_state.as_mut()
+        {
+            crate::dock::focus_tab(state, crate::dock::DockTab::Scene);
+        }
         // M75-03：证据目录必须包含内置助手面板。面板可能被 View 菜单关掉过，
         // 先确保开关为真；标签不在树里则等本帧 `sync_visibility` 补回后再聚焦。
         if step.assistant {
@@ -322,6 +337,15 @@ impl GuiEvidence {
             }
             if let Some(state) = app.dock_state.as_mut() {
                 crate::dock::focus_tab(state, crate::dock::DockTab::UiStudio);
+            }
+        }
+        // 编辑期游戏画面预览：聚焦 Game 标签但**不 Play**（`step.play` 为假时下面的分支
+        // 会确保退出 Play）。Game 与 Scene 同叶，聚焦即让 Scene 失活——正好证明画面由
+        // Game 自己渲染，而不是蹭 Tab 还开着时 Scene 的那张纹理。
+        if step.game {
+            app.show_game_view = true;
+            if let Some(state) = app.dock_state.as_mut() {
+                crate::dock::focus_tab(state, crate::dock::DockTab::Game);
             }
         }
         if step.play {
@@ -367,6 +391,7 @@ impl GuiEvidence {
                 play: app.is_playing(),
                 assistant: false,
                 ui_studio: false,
+                game: false,
             });
             let (width, height) = (image.width() as u32, image.height() as u32);
             // 截图那一刻的**实测** DPI 与点尺寸：报告里的标签必须来自这里，而不是脚本的请求值。
@@ -403,6 +428,7 @@ impl GuiEvidence {
                 view_3d: step.view_3d,
                 assistant: step.assistant,
                 ui_studio: step.ui_studio,
+                game: step.game,
                 image_size: (width, height),
                 lit_ratio,
                 mean_luma,
@@ -455,7 +481,7 @@ impl GuiEvidence {
                 .abs()
                 <= 0.01;
             text.push_str(&format!(
-                "{:<28} req_ppi={:<4} act_ppi={:<4} req={:.0}x{:.0} screen={:.0}x{:.0} play={:<5} 3d={:<5} assistant={:<5} studio={:<5} image={}x{} lit={:.3} luma={:.3} ws={:.1}MiB {}\n",
+                "{:<28} req_ppi={:<4} act_ppi={:<4} req={:.0}x{:.0} screen={:.0}x{:.0} play={:<5} 3d={:<5} assistant={:<5} studio={:<5} game={:<5} image={}x{} lit={:.3} luma={:.3} ws={:.1}MiB {}\n",
                 record.label,
                 record.requested_pixels_per_point,
                 record.measured_pixels_per_point,
@@ -467,6 +493,7 @@ impl GuiEvidence {
                 record.view_3d,
                 record.assistant,
                 record.ui_studio,
+                record.game,
                 record.image_size.0,
                 record.image_size.1,
                 record.lit_ratio,
@@ -524,6 +551,7 @@ impl GuiEvidence {
                     "view_3d": record.view_3d,
                     "assistant": record.assistant,
                     "ui_studio": record.ui_studio,
+                    "game": record.game,
                     "image_size": [record.image_size.0, record.image_size.1],
                     "lit_ratio": record.lit_ratio,
                     "mean_luma": record.mean_luma,
@@ -546,7 +574,8 @@ impl GuiEvidence {
     }
 }
 
-/// 采集脚本：3 档 DPI × 3 档窗口尺寸（含 2D 与 3D），外加一次 Play 下的内嵌预览。
+/// 采集脚本：3 档 DPI × 3 档窗口尺寸（含 2D 与 3D），外加一次 Play 下的内嵌预览、
+/// 一次**未 Play 的 Game 标签**（编辑期游戏画面预览）、助手面板与 UI Studio。
 fn evidence_steps() -> Vec<EvidenceStep> {
     let mut steps = Vec::new();
     for pixels_per_point in [1.0_f32, 1.5, 2.0] {
@@ -559,6 +588,7 @@ fn evidence_steps() -> Vec<EvidenceStep> {
                 play: false,
                 assistant: false,
                 ui_studio: false,
+                game: false,
             });
         }
     }
@@ -570,6 +600,7 @@ fn evidence_steps() -> Vec<EvidenceStep> {
         play: false,
         assistant: false,
         ui_studio: false,
+        game: false,
     });
     steps.push(EvidenceStep {
         label: "dpi1.5-1280x720-play".to_owned(),
@@ -579,6 +610,7 @@ fn evidence_steps() -> Vec<EvidenceStep> {
         play: true,
         assistant: false,
         ui_studio: false,
+        game: false,
     });
     // M75-03 验收门 3：同一份真实窗口证据里必须有一张**助手面板**截图。
     // 放在最后：切到助手标签后不再回到属性，不影响前面各步的默认观感。
@@ -590,6 +622,7 @@ fn evidence_steps() -> Vec<EvidenceStep> {
         play: false,
         assistant: true,
         ui_studio: false,
+        game: false,
     });
     // M76-04 验收门：UI Studio 的面板/画布必须在**真实窗口**里留下一张 PNG。
     // 放在助手之后：切到 UI Studio 标签会关掉助手标签的观感，前面各步不受影响。
@@ -601,6 +634,19 @@ fn evidence_steps() -> Vec<EvidenceStep> {
         play: false,
         assistant: false,
         ui_studio: true,
+        game: false,
+    });
+    // 编辑期游戏画面预览：Game 标签在**不 Play** 时也必须画出当前场景。追加在末尾，
+    // 前面各步的截图序号（归档文档里按序号引用）保持不变。
+    steps.push(EvidenceStep {
+        label: "dpi1.5-1280x720-edit-game".to_owned(),
+        pixels_per_point: 1.5,
+        inner_size: egui::vec2(1280.0, 720.0),
+        view_3d: false,
+        play: false,
+        assistant: false,
+        ui_studio: false,
+        game: true,
     });
     steps
 }
@@ -1389,6 +1435,10 @@ mod tests {
         assert!(
             steps.iter().any(|step| step.ui_studio),
             "M76-04：证据目录必须包含 UI Studio 面板截图"
+        );
+        assert!(
+            steps.iter().any(|step| step.game && !step.play),
+            "Game 标签在未 Play 时必须有一张编辑期画面截图"
         );
         let sizes: std::collections::BTreeSet<(i32, i32)> = steps
             .iter()
