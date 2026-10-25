@@ -431,9 +431,19 @@ if ($Security) {
     }
     $securityArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $securityScript, "-FetchForkUpstream")
     $sbomCandidate = Join-Path $projectRoot "artifacts\reports\rustlua.cdx.json"
-    if (Test-Path -LiteralPath $sbomCandidate) {
-        $securityArgs += @("-SbomPath", $sbomCandidate)
+    # M78 §26.3-30：缺 SBOM 不再静默跳过——先生成再比。gen-sbom.mjs 离线可跑
+    # （输入只有 cargo metadata + engine/Cargo.lock，不联网、不重新解析依赖）；
+    # 生成失败判红，杜绝"缺文件就把跳过态读成通过"。
+    if (-not (Test-Path -LiteralPath $sbomCandidate)) {
+        Write-Host "==> Generating SBOM (missing): $sbomCandidate" -ForegroundColor Cyan
+        $genOutput = & node (Join-Path $projectRoot "scripts/release/gen-sbom.mjs") "--output" $sbomCandidate 2>&1
+        $genExit = $LASTEXITCODE
+        $genOutput | ForEach-Object { Write-Host $_ }
+        if ($genExit -ne 0 -or -not (Test-Path -LiteralPath $sbomCandidate)) {
+            throw "SBOM generation failed (exit code $genExit): $sbomCandidate"
+        }
     }
+    $securityArgs += @("-SbomPath", $sbomCandidate)
     $securityOutput = & powershell @securityArgs 2>&1
     $securityExit = $LASTEXITCODE
     $securityOutput | ForEach-Object { Write-Host $_ }
@@ -866,19 +876,23 @@ try {
         }
         # Second real project (2D + 3D + UI + prefabs): auditing ONE project is how "required
         # field is wrong" drift stayed invisible. example game_api is the 3D-heavy one.
+        # M78 §26.3-31：不许软跳——第二个工程不在时**必须红**。历史教训：`if (Test-Path …)`
+        # 软跳让 game_api 目录缺失时整段静默不执行，第二个工程从此无人审计。
         $secondProject = Join-Path $gameRoot "game_api"
-        if (Test-Path (Join-Path $secondProject "project.toml")) {
-            $secondCheck = Invoke-Captured cargo @("run", "--quiet", "--manifest-path", "engine/Cargo.toml", "-p", "editor", "--", "--project", $secondProject, "--check")
-            $secondOutput = $secondCheck.Output
-            $secondExit = $secondCheck.ExitCode
-            $secondOutput | ForEach-Object { Write-Host $_ }
-            if ($secondExit -ne 0) {
-                throw "editor project check failed for game_api (exit code $secondExit)"
-            }
-            $secondText = $secondOutput -join "`n"
-            if ($secondText -notmatch "schema_errors=0") {
-                throw "editor project check reports component schema drift on game_api (schema_errors != 0)"
-            }
+        $secondToml = Join-Path $secondProject "project.toml"
+        if (-not (Test-Path -LiteralPath $secondToml)) {
+            throw "second project missing: $secondToml (game_api 必须存在并被 editor --check 审计；目录缺失不再静默跳过)"
+        }
+        $secondCheck = Invoke-Captured cargo @("run", "--quiet", "--manifest-path", "engine/Cargo.toml", "-p", "editor", "--", "--project", $secondProject, "--check")
+        $secondOutput = $secondCheck.Output
+        $secondExit = $secondCheck.ExitCode
+        $secondOutput | ForEach-Object { Write-Host $_ }
+        if ($secondExit -ne 0) {
+            throw "editor project check failed for game_api (exit code $secondExit)"
+        }
+        $secondText = $secondOutput -join "`n"
+        if ($secondText -notmatch "schema_errors=0") {
+            throw "editor project check reports component schema drift on game_api (schema_errors != 0)"
         }
     }
     finally {

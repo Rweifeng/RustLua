@@ -280,6 +280,11 @@ jobs:
       - name: Editor project check
         run: cargo run --quiet --manifest-path engine/Cargo.toml -p editor -- --project "${{ github.workspace }}\examples\game_jhyt" --check
 
+      # M78 §26.3-31：第二个真实工程（3D 重的 game_api）必须进 CI——只审一个工程正是
+      # "必填字段漂移看不见"的根因；本地总门已去掉对 game_api 的软跳，CI 覆盖要齐。
+      - name: Editor project check (game_api)
+        run: cargo run --quiet --manifest-path engine/Cargo.toml -p editor -- --project "${{ github.workspace }}\examples\game_api" --check
+
       - name: Game headless regression suite
         run: pwsh -NoProfile -File scripts/verify/verify.ps1 -MvpOnly
 
@@ -357,10 +362,10 @@ jobs:
       - name: Web platform evidence
         run: pwsh -NoProfile -File scripts/verify/verify.ps1 -Web
 
-      # wasm Lua 运行期验证门：spike（vendored mlua 的 wasm32 移植）+ no-modules 桥（game_web
-      # 的 Lua 桥导出）的 Node 验证。**直接**调 wrapper（不经 verify.ps1），避免把整套常规门再跑
+      # wasm Lua 运行期验证门：no-modules 桥（game_web 的 Lua 桥导出）+ gpu2d 宿主画布探针的
+      # Node 验证。**直接**调 wrapper（不经 verify.ps1），避免把整套常规门再跑
       # 一遍；退出码 0=通过 / 1=判红 / 3=环境受限跳过。装了 zig 后本地/CI 行为一致：真的构建
-      # wasm 并跑完 spike+bridge。
+      # wasm 并跑完 bridge+probe。
       - name: wasm Lua runtime evidence
         shell: pwsh
         run: |
@@ -378,7 +383,7 @@ jobs:
           }
           if ($code -eq 1) { throw "wasm-lua verification FAILED (verify-wasm-lua.ps1 exit 1)" }
           if ($code -eq 3) { Write-Host "wasm_lua_skipped reason=environment_limited exit=3 (runner lacks zig/wasm32 target/node)" }
-          else { Write-Host "wasm_lua_ok exit=0 (spike + no-modules bridge passed)" }
+          else { Write-Host "wasm_lua_ok exit=0 (no-modules bridge + gpu2d host probe passed)" }
 
       # webgl 新 EH（try_table/exnref）跨浏览器覆盖门：把真实产物的 game_web_bg.wasm 送进本机每个
       # 浏览器编译一遍，证明它所用的新异常处理被支持（门槛 Chrome/Edge 137、Firefox 131、Safari/iOS
