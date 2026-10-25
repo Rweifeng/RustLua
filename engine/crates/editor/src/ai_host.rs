@@ -1005,7 +1005,7 @@ impl ToolHost for EditorAiHost<'_> {
                 })
             }
             "rustlua://ui/guide" => Ok(rustlua_editor_ai::UI_GUIDE.to_owned()),
-            other => Err(ToolError::UnknownTool(format!("resource {other}"))),
+            other => Err(ToolError::UnknownTool(format!("未知资源：{other}"))),
         }
     }
 

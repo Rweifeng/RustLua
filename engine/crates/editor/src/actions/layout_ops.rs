@@ -7,7 +7,7 @@ impl EditorApp {
     /// 对齐选中实体：网格吸附 / 水平 / 垂直。
     pub(crate) fn align_selected(&mut self, mode: AlignMode) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return;
         }
         let Some(scene) = self.document.current_scene.as_ref() else {
@@ -66,7 +66,7 @@ impl EditorApp {
         };
         let _ = self
             .history
-            .execute(scene, "Align", CommandKind::Property, move |scene| {
+            .execute(scene, "对齐", CommandKind::Property, move |scene| {
                 for (id, transform) in &new_targets {
                     if let Some(entity) = scene.scene.entities.get_mut(id) {
                         entity
@@ -96,7 +96,7 @@ impl EditorApp {
         to: &std::path::Path,
     ) -> Result<String, String> {
         if self.is_playing() {
-            return Err("Play mode locks resource moves; click Stop first".to_owned());
+            return Err("播放模式下不能移动资源，请先点击停止".to_owned());
         }
         let root = self.project.root.clone();
         let from_relative = editor::normalize_relative(from)
@@ -187,7 +187,7 @@ impl EditorApp {
     /// 让选中的 2D 实体在水平或垂直方向上按首末锚点等间距分布。
     pub(crate) fn distribute_selected(&mut self, horizontal: bool) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return;
         }
         let Some(scene) = self.document.current_scene.as_ref() else {
@@ -196,7 +196,7 @@ impl EditorApp {
         let ids: Vec<_> = self.selection.ids();
         let targets = collect_selected_transforms(scene, &ids);
         if targets.len() < 3 {
-            self.status = "等间距至少需要 3 个带 Transform 的实体".to_owned();
+            self.status = "等间距至少需要 3 个带变换组件的实体".to_owned();
             return;
         }
         let axis = if horizontal {
@@ -210,7 +210,7 @@ impl EditorApp {
         };
         let _ = self
             .history
-            .execute(scene, "Distribute", CommandKind::Property, move |scene| {
+            .execute(scene, "分布", CommandKind::Property, move |scene| {
                 for (id, transform) in &new_targets {
                     if let Some(entity) = scene.scene.entities.get_mut(id) {
                         entity
@@ -231,7 +231,7 @@ impl EditorApp {
     /// 批量调整选中 Sprite 的 sorting.order，便于快速前后排层。
     pub(crate) fn nudge_selected_sprite_order(&mut self, delta: i32) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return;
         }
         let Some(scene) = self.document.current_scene.as_ref() else {
@@ -253,7 +253,7 @@ impl EditorApp {
             updates.push((id, sprite.to_component_str()));
         }
         if updates.is_empty() {
-            self.status = "请先选中带 Sprite 的实体".to_owned();
+            self.status = "请先选中带精灵组件的实体".to_owned();
             return;
         }
         let Some(scene) = self.document.current_scene.as_mut() else {
@@ -261,7 +261,7 @@ impl EditorApp {
         };
         let _ = self
             .history
-            .execute(scene, "Sprite Order", CommandKind::Property, move |scene| {
+            .execute(scene, "精灵排序", CommandKind::Property, move |scene| {
                 for (id, sprite) in &updates {
                     if let Some(entity) = scene.scene.entities.get_mut(id) {
                         entity
@@ -275,13 +275,13 @@ impl EditorApp {
         if let Some(selected) = self.selection.primary() {
             self.sync_inspector(selected);
         }
-        self.status = format!("已批量调整 Sprite 排序：{delta:+}");
+        self.status = format!("已批量调整精灵排序：{delta:+}");
     }
 
     /// 按实体 Y 坐标重新生成选中 Sprite 的 sorting.order，适合 2D 俯视/伪等轴生产流程。
     pub(crate) fn sort_selected_sprites_by_y(&mut self, descending: bool) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return;
         }
         let Some(scene) = self.document.current_scene.as_ref() else {
@@ -313,7 +313,7 @@ impl EditorApp {
             });
         }
         if targets.len() < 2 {
-            self.status = "至少选择 2 个带 Sprite 的实体才能批量排序".to_owned();
+            self.status = "至少选择 2 个带精灵组件的实体才能批量排序".to_owned();
             return;
         }
         let updates = sorted_sprite_order_updates(&targets, descending);
@@ -322,7 +322,7 @@ impl EditorApp {
         };
         let _ = self.history.execute(
             scene,
-            "Sort Sprite Order",
+            "重排精灵顺序",
             CommandKind::Property,
             move |scene| {
                 for (id, sprite) in &updates {
@@ -340,9 +340,9 @@ impl EditorApp {
             self.sync_inspector(selected);
         }
         self.status = if descending {
-            "已按 Y 从高到低重排 Sprite 顺序".to_owned()
+            "已按 Y 从高到低重排精灵顺序".to_owned()
         } else {
-            "已按 Y 从低到高重排 Sprite 顺序".to_owned()
+            "已按 Y 从低到高重排精灵顺序".to_owned()
         };
     }
 }

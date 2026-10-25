@@ -20,7 +20,7 @@ impl EditorApp {
             return;
         }
         let Some(document) = self.current_scene().cloned() else {
-            self.status = "Please create or open a scene first".to_owned();
+            self.status = "请先创建或打开场景".to_owned();
             return;
         };
         // H02：进入 Play 前终止行内重命名会话，避免编辑会话跨运行上下文。
@@ -47,7 +47,7 @@ impl EditorApp {
                 }
                 // 运行预览时自动切到 Game 视图（dock 的活动标签一起动，见 focus_workspace_tab）。
                 self.focus_workspace_tab(WorkspaceTab::Game);
-                self.status = "Play mode started; runtime changes stay isolated".to_owned();
+                self.status = "已开始运行，运行期改动与编辑数据隔离".to_owned();
             }
             Err(error) => {
                 tracing::error!(target: "editor", "[preview] create failed: {error}");
@@ -181,9 +181,9 @@ impl EditorApp {
                 }
             } else {
                 let text = if self.is_playing() {
-                    "GAME VIEW\n(preview unavailable)"
+                    "游戏视图\n（预览不可用）"
                 } else {
-                    "GAME VIEW\nPress Play to run the scene"
+                    "游戏视图\n点击播放运行场景"
                 };
                 painter.text(
                     response.rect.center(),
@@ -195,9 +195,9 @@ impl EditorApp {
             }
         } else {
             let text = if self.is_playing() {
-                "GAME VIEW\n(preview unavailable)"
+                "游戏视图\n（预览不可用）"
             } else {
-                "GAME VIEW\nPress Play to run the scene"
+                "游戏视图\n点击播放运行场景"
             };
             painter.text(
                 response.rect.center(),
@@ -226,7 +226,7 @@ impl EditorApp {
             );
             if let Some(metrics) = metrics {
                 let caption = format!(
-                    "readback: {} slots / {} busy / {} dropped / {} rebuilds / {:.1} KiB cpu",
+                    "回读：{} 槽位 / {} 占用 / {} 丢弃 / {} 重建 / {:.1} KiB CPU",
                     metrics.slot_count,
                     metrics.busy_count,
                     metrics.dropped,
@@ -825,7 +825,7 @@ mod tests {
         assert_eq!(app.scene_zoom, original_zoom);
         assert_eq!(app.scene_state.pan, original_pan);
         assert_eq!(app.document.current_scene.as_ref().unwrap(), &original);
-        assert_eq!(app.status, "Play stopped; runtime changes were discarded");
+        assert_eq!(app.status, "运行已停止，运行期改动已丢弃");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -849,10 +849,7 @@ mod tests {
         );
         assert!(app.preview.is_some(), "play should create preview session");
         assert_eq!(app.workspace_tab, WorkspaceTab::Game);
-        assert_eq!(
-            app.status,
-            "Play mode started; runtime changes stay isolated"
-        );
+        assert_eq!(app.status, "已开始运行，运行期改动与编辑数据隔离");
         assert_eq!(
             app.preview.as_ref().map(PreviewSession::size),
             Some(app.preview_resolution)

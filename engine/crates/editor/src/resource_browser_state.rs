@@ -43,6 +43,8 @@ pub struct ResourceBrowserState {
     entries: Vec<ResourceEntry>,
     last_error: Option<String>,
     last_refresh: Option<SystemTime>,
+    /// 刷新代数。以它为键的 UI 缓存（资源目录树）靠它失效，所以**跨后台状态替换
+    /// 必须保持单调递增**（接线见 `adopt_from`）。
     refresh_count: u64,
     /// 需要后台导入的资源（asset id + 项目相对路径），由 `refresh` 产出。
     pending_imports: Vec<(AssetId, PathBuf)>,
@@ -116,7 +118,7 @@ impl ResourceBrowserState {
         self.import_attempted.clear();
     }
 
-    /// 跨刷新保留"已尝试"签名表，并按保留后的表**重算待导入队列**。
+    /// 把后台产出的新状态接到主线程这一支上，并按接上后的表**重算待导入队列**。
     ///
     /// 后台刷新（`RefreshHandle`）产出的是**全新**的 `ResourceBrowserState`
     /// （`import_attempted` 为空），其 `pending_imports` 是在空表下算出来的——未就绪
@@ -124,8 +126,13 @@ impl ResourceBrowserState {
     /// 记的是**尝试时签名**，`current_signatures` 仍取新扫描的结果），再重算队列，
     /// 去重守卫才真正生效——否则未就绪资源每次刷新都重新导入，"导入资源"弹窗
     /// 无限重开、进度条反复停在 100% 进行中（第 49 轮报障的形态）。
-    pub fn preserve_attempted_from(&mut self, previous: &Self) {
+    ///
+    /// `refresh_count` 也必须接着旧值数：worker 每个状态都是从零起算的（落盘后恒为 1），
+    /// 原样应用会让以它为键的 UI 缓存（资源目录树）在第一次刷新之后永远命中旧结果——
+    /// 外部删掉/新增的文件不会出现在面板里。
+    pub fn adopt_from(&mut self, previous: &Self) {
         self.import_attempted = previous.import_attempted.clone();
+        self.refresh_count = previous.refresh_count.saturating_add(1);
         self.recompute_pending();
     }
     /// 该路径在**最近一次刷新**里的签名（不在盘上 = 0）。
@@ -289,7 +296,7 @@ impl ResourceBrowserState {
     }
 
     /// 按当前条目与"已尝试"签名表重算待导入队列（`refresh` 与
-    /// `preserve_attempted_from` 共用）。
+    /// `adopt_from` 共用）。
     fn recompute_pending(&mut self) {
         let attempted = &self.import_attempted;
         self.pending_imports = self
@@ -717,14 +724,14 @@ mod tests {
         applied.record_import_attempts(&pending);
 
         // 导入完成后再刷新：worker 产出全新状态（import_attempted 为空），
-        // 主线程应用前必须 preserve_attempted_from 旧状态，否则去重失效。
+        // 主线程应用前必须 adopt_from 旧状态，否则去重失效。
         let mut worker_state = ResourceBrowserState::new();
         worker_state.refresh(&root).unwrap();
         assert!(
             worker_state.pending_imports().len() == 1,
             "worker 全新状态没有去重记录，待导入项重新出现"
         );
-        worker_state.preserve_attempted_from(&applied);
+        worker_state.adopt_from(&applied);
         assert!(
             worker_state.pending_imports().is_empty(),
             "preserve 后同一内容不得再次排队"
@@ -733,7 +740,7 @@ mod tests {
         for _ in 0..3 {
             let mut next = ResourceBrowserState::new();
             next.refresh(&root).unwrap();
-            next.preserve_attempted_from(&worker_state);
+            next.adopt_from(&worker_state);
             assert!(next.pending_imports().is_empty());
             worker_state = next;
         }
@@ -741,12 +748,49 @@ mod tests {
         file(&root, "assets/player.png", b"png3");
         let mut changed = ResourceBrowserState::new();
         changed.refresh(&root).unwrap();
-        changed.preserve_attempted_from(&worker_state);
+        changed.adopt_from(&worker_state);
         assert_eq!(
             changed.pending_imports().len(),
             1,
             "内容变了就该自动再试一次"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// **回归**（本轮报障）：外部删掉 `ui/shop.ui.json` 后，资源面板还挂着这一行。
+    ///
+    /// 资源目录树按 `(filter, refresh_count)` 缓存；而后台刷新产出的是**全新**状态，
+    /// 每次都是从零起算、`refresh_count` 恒为 1。主线程接线时不把旧计数接上，缓存键
+    /// 自第一次刷新之后就不再变化，树永远复用第一次画出来的那份——删除（新增同理）
+    /// 永远不会反映到面板里。`refresh_count` 必须跨状态替换保持单调递增。
+    #[test]
+    fn refresh_count_stays_monotonic_across_state_replacement() {
+        let root = temp_root("count-monotonic");
+        file(&root, "assets/player.png", b"png");
+        let mut applied = ResourceBrowserState::new();
+        applied.refresh(&root).unwrap();
+        applied.refresh(&root).unwrap();
+        assert_eq!(applied.refresh_count(), 2);
+
+        // worker 的每个状态都只扫过一次。
+        let mut worker_state = ResourceBrowserState::new();
+        worker_state.refresh(&root).unwrap();
+        assert_eq!(worker_state.refresh_count(), 1);
+        worker_state.adopt_from(&applied);
+        assert_eq!(
+            worker_state.refresh_count(),
+            3,
+            "接线后的计数必须比旧值大，否则以它为键的 UI 缓存永远命中旧结果"
+        );
+
+        // 连续多轮替换也必须一直递增。
+        for expected in 4..=6 {
+            let mut next = ResourceBrowserState::new();
+            next.refresh(&root).unwrap();
+            next.adopt_from(&worker_state);
+            assert_eq!(next.refresh_count(), expected);
+            worker_state = next;
+        }
         let _ = fs::remove_dir_all(root);
     }
 

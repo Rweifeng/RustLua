@@ -150,14 +150,14 @@ fn format_combo(ui: &mut egui::Ui, id: &str, value: &mut String) {
     let current = match value.as_str() {
         "rltex" => "rltex（裸像素）",
         "png" => "png",
-        "auto" => "auto（逐页取小）",
+        "auto" => "自动（逐页取小）",
         other => other,
     };
     egui::ComboBox::from_id_salt(id)
         .selected_text(current)
         .show_ui(ui, |ui| {
             for (code, label) in [
-                ("auto", "auto（逐页取小）"),
+                ("auto", "自动（逐页取小）"),
                 ("rltex", "rltex（裸像素）"),
                 ("png", "png"),
             ] {
@@ -187,7 +187,7 @@ impl EditorApp {
         let mut open = self.atlas.show_panel;
         let root = crate::util::strip_verbatim_prefix(&self.project.root);
         let project_loaded = self.project_loaded;
-        egui::Window::new("图集（Atlas）")
+        egui::Window::new("图集")
             .open(&mut open)
             .default_width(900.0)
             .default_height(640.0)
@@ -304,7 +304,7 @@ impl EditorApp {
                 ui.label("页编码");
                 format_combo(ui, "atlas_auto_format", &mut auto.format);
                 ui.label(
-                    egui::RichText::new("auto = 逐页在 PNG 与裸像素之间取落盘字节小者")
+                    egui::RichText::new("自动 = 逐页在 PNG 与裸像素之间取落盘字节小者")
                         .small()
                         .weak(),
                 );
@@ -318,7 +318,7 @@ impl EditorApp {
         }
 
         ui.add_space(6.0);
-        ui.heading("单独成集（separate）");
+        ui.heading("单独成集");
         ui.label(
             egui::RichText::new("被点名的图不进目录默认页，各自成为单图集。")
                 .small()
@@ -357,9 +357,9 @@ impl EditorApp {
         });
 
         ui.add_space(6.0);
-        ui.heading("显式图集（atlases）");
+        ui.heading("显式图集");
         ui.label(
-            egui::RichText::new("按 include 前缀手工装箱；优先级高于目录聚合。")
+            egui::RichText::new("按「包含前缀」手工装箱；优先级高于目录聚合。")
                 .small()
                 .weak(),
         );
@@ -377,14 +377,14 @@ impl EditorApp {
                     );
                     ui.label("边距");
                     ui.add(egui::DragValue::new(&mut spec.padding).range(0..=16));
-                    ui.checkbox(&mut spec.pot, "POT");
+                    ui.checkbox(&mut spec.pot, "POT（边长取 2 的幂）");
                     format_combo(ui, &format!("atlas_spec_format_{index}"), &mut spec.format);
                     if ui.small_button("删除").clicked() {
                         remove_spec = Some(index);
                     }
                 });
                 ui.horizontal(|ui| {
-                    ui.label("include");
+                    ui.label("包含前缀");
                     let mut text = spec.include.join(", ");
                     let response = ui.add(
                         egui::TextEdit::singleline(&mut text)

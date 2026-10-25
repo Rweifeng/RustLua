@@ -8,6 +8,10 @@ pub mod play_control;
 pub mod prefab_graph;
 pub mod runtime_sync;
 pub mod schema_audit;
+/// 用户级编辑器设置（`<用户主目录>/.rustlua`）：服务商设置与 DPAPI 加密的 API Key。
+pub mod user_config;
+
+pub use user_config::UserConfigStore;
 
 pub use play_control::{
     FramePlan, MAX_CATCH_UP_STEPS, PlayControlError, PlayController, PlayState, STEPS_PER_SECOND,

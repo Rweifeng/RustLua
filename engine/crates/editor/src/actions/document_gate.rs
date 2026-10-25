@@ -11,7 +11,7 @@ impl EditorApp {
     /// 属于提交边界；面板只发 `EditorCommand::StopPlay`（docs/55 §4.1 规则 1）。
     pub(crate) fn stop(&mut self) {
         let Some(session) = self.play_session.take() else {
-            self.status = "Not currently in Play mode".to_owned();
+            self.status = "当前不在运行模式".to_owned();
             return;
         };
         if let Err(error) = self.play.begin_stop() {
@@ -45,7 +45,7 @@ impl EditorApp {
         if let Err(error) = self.play.finish_stop() {
             tracing::warn!(target: "editor", "[preview] state machine: {error}");
         }
-        self.status = "Play stopped; runtime changes were discarded".to_owned();
+        self.status = "运行已停止，运行期改动已丢弃".to_owned();
     }
 
     /// 实际替换为崩溃快照文档（仅由确认流或 clean 快速路径调用）。

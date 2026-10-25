@@ -43,6 +43,45 @@
   流向键，流向层是"断言正尺寸"而不是"两边一致"；预览器与运行时的四条真实分歧（`grow`、
   `align_self`、网格列距、流向子项不推进）本批只量化未修，细节与数字见 docs/75 §14。
 
+## Unreleased — 用户级编辑器设置 `~/.rustlua`：服务商与 API Key 不再每次重设（2026-10-25）
+
+- **服务商设置搬到用户级**：地址/模型/max_tokens 从工程 `.cache/editor/layout.json` 迁到
+  `<用户主目录>/.rustlua/editor.json`。此前它跟着工程走，不带 `--project` 启动或换工程就会看起来
+  “全丢了”；现在跨工程、跨启动都是同一份。`RUSTLUA_HOME` 可覆盖目录（便携版/测试）。
+- **API Key 首次可持久化**：单独存 `~/.rustlua/assistant.key`，Windows 用 DPAPI
+  （`CryptProtectData`）绑定当前用户账户，拷到别的账户/机器解不开；解密失败会在控制台说明原因
+  而不是静默当没填。非 Windows 平台退回 0600 权限的明文文件。`editor.json` 与工程布局都不含 Key。
+- **旧工程值只读迁移**：布局加载器仍读 `assistant` 段，作为旧工程的迁移来源；用户级文件一旦
+  提供设置（或本进程保存过一次），工程布局不再覆盖它，新版本也不再往工程里写助手段。
+- **保存时机**：文本输入稳定 500ms 后合并写一次；关窗时补最后一笔。写盘失败进控制台提示，
+  下次改动再重试（不每帧重试打满磁盘）。
+- **证据**：`editor` lib 4 条 `user_config` 测试（往返/未知键保留/损坏回落/密文不含明文）；
+  `assistant_settings_autosave_waits_for_typing_to_settle` 改为断言用户级文件与 `assistant.key`。
+- **边界**：本次只迁移助手服务商；面板密度等其余偏好仍按工程布局保存，`editor.json` 已预留
+  顶层扩展位（未知键原样保留）。Key 仍不进模型上下文与命令行参数。
+
+## Unreleased — UI Studio 画布：按 spec 画真实内容、滚轴缩放/拖动平移、拖拽调整节点（2026-10-24）
+
+- **画布不再只是线框**：`panels/ui_studio.rs` 的预览纹理换成 `editor/src/ui_canvas.rs`，直接按
+  `UiSpec` 画——样式 `bg`/圆角/描边/`opacity`、令牌解引用（`@color.x`）、`text`/`button` 文案
+  （`color`、`font_size`、`text_align`）、`image` 与 `panel/button src`（`asset:<key>` → 工程内
+  PNG，支持 `nine_slice`）。线框 PNG 只保留给 `ui_preview_spec` 与发布门。
+- **容器开始真布局**：`rustlua-ui-spec::preview` 新增 `resolve_children`（`v_box`/`h_box`/`grid`/
+  `wrap` + `padding`/`spacing`/`justify`/`align`），`layout_rects`、线框预览与画布共用同一份几何；
+  在此之前 `v_box` 的子项全叠在容器中心（酒馆示例的三个按钮就是叠着的）。带 `offsets` 的子项
+  退出流按绝对定位摆——画布拖拽写回的就是 `offsets`，否则拖完会被下一帧排回原处。
+- **导航**：滚轴以光标为锚点缩放（10%–800%，`CanvasView::zoomed_at` 保证缩放前后光标下的设计点
+  不漂），右键/中键拖动与空白处左键拖动平移，工具栏「适应窗口」+ 百分比读数。
+- **直接操作**：左键点选最深的命中节点；拖节点本体改位置、拖 8 个手柄改尺寸，拖动中画幽灵框与
+  实时间距，松手生成一条提案并立刻接受（一次拖动 = 一条撤销），状态栏给 revision；hover 时按
+  手柄给缩放光标、按主体给抓手。
+- **证据**：`rustlua-ui-spec` 61 测试（新增 v_box/h_box/offsets 三组几何用例）；`editor --bin
+  editor` 的 `ui_canvas` 7 测试（含“paint 真的产出 Text/Rect 形状”、缩放锚点不漂、命中测试）与
+  `panels::ui_studio` 6 测试；`ui_asset_gate` 仍全绿；示例预设 `examples/game_api/ui/blacksmith.ui.json`
+  用 `text_align: center` + v_box 摆出设计稿的三键布局。
+- **边界**：多选/旋转/吸附对齐线仍未做；画布直接操作只处理单个节点；`text_align` 目前只有编辑器
+  画布消费（运行期 UI 走 Lua `ui.*`），把 `.ui.json` 导到运行期不保证生效。
+
 ## Unreleased — DSH 一句话创建 UI 预设：MCP 直连与提案式新建（2026-10-24）
 
 - **新 tool `ui_create_preset`（T1）**：只新建 `.ui.json`，已存在直接拒绝；内部仍走

@@ -96,11 +96,11 @@ impl EditorApp {
             self.edit_transaction.consumed = true;
         }
         if !self.project_loaded {
-            self.status = "Import a game project before editing".to_owned();
+            self.status = "请先导入游戏工程再编辑".to_owned();
             return false;
         }
         let Some(doc) = self.document.current_scene.as_mut() else {
-            self.status = "No scene".into();
+            self.status = "请先创建场景".into();
             return false;
         };
         // docs/55 阶段 3 的数据安全半边：**磁盘上的文件在外部被改过就不要静默覆盖**。
@@ -149,9 +149,9 @@ impl EditorApp {
                 self.autosave.reset();
                 self.refresh_recovery_scan();
                 if is_prefab_document {
-                    "Prefab 已保存".into()
+                    "预制体已保存".into()
                 } else {
-                    "Scene saved".into()
+                    "场景已保存".into()
                 }
             }
             Err(error) => error,
@@ -196,7 +196,7 @@ impl EditorApp {
                 self.status = if relative_path.extension().and_then(|value| value.to_str())
                     == Some("prefab")
                 {
-                    format!("已打开 Prefab：{}", relative_path.display())
+                    format!("已打开预制体：{}", relative_path.display())
                 } else {
                     format!("已打开场景：{}", relative_path.display())
                 };

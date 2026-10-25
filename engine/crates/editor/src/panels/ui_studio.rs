@@ -11,26 +11,36 @@ use eframe::egui;
 use rustlua_ui_spec::{ResizeHandle, SliceRegion};
 use std::collections::BTreeMap;
 
-/// 画布拖动：移动整块或拖某个手柄。`total` 是跨帧累计的屏幕位移。
+/// 画布拖动：移动整块、拖某个手柄，或在空白处平移画布。
+/// `total` 是跨帧累计的屏幕位移；`start` 是按下时的设计矩形（幽灵框与提交都用它）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum CanvasDragMode {
     Move,
     Resize(ResizeHandle),
+    Pan,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CanvasDrag {
     pub(crate) mode: CanvasDragMode,
     pub(crate) total: egui::Vec2,
+    pub(crate) start: [f32; 4],
+    pub(crate) key: String,
 }
 
-/// 面板级缓存：预览纹理按 (revision, 分辨率) 失效；文档输入框不在 UiStudio 里。
-#[derive(Default)]
+/// 面板级缓存：画布的缩放/平移与图片纹理。文档或 revision 变了就清纹理。
 pub(crate) struct UiStudioPanel {
     pub(crate) studio: Option<UiStudio>,
     pub(crate) document_input: String,
     pub(crate) status: String,
-    pub(crate) preview: Option<(u64, [u32; 2], egui::TextureHandle)>,
+    /// 画布缩放：1.0 = 适应窗口。
+    pub(crate) canvas_zoom: f32,
+    /// 画布屏幕位移（与缩放解耦，缩放锚点由 [`crate::ui_canvas::CanvasView`] 算）。
+    pub(crate) canvas_pan: egui::Vec2,
+    /// 画布图片纹理缓存：工程内相对路径 → 纹理。
+    pub(crate) canvas_textures: BTreeMap<String, egui::TextureHandle>,
+    /// 画布真正绘制过的帧数（测试用来确认面板走到了画布路径）。
+    pub(crate) canvas_paints: u64,
     /// 每个补丁提案的逐 op 勾选状态（true = 会被「接受选中」落盘）。
     pub(crate) proposal_selection: BTreeMap<String, Vec<bool>>,
     /// 令牌编辑：名字与值都先攒在输入框，提交时生成提案。
@@ -56,6 +66,34 @@ pub(crate) struct UiStudioPanel {
     pub(crate) slice_regions: String,
     /// 资产列表/审查缓存：审查要做图集装箱与全工程扫描，不能每帧跑。
     pub(crate) asset_cache: Option<AssetCache>,
+}
+
+impl Default for UiStudioPanel {
+    fn default() -> Self {
+        Self {
+            studio: None,
+            document_input: String::new(),
+            status: String::new(),
+            canvas_zoom: 1.0,
+            canvas_pan: egui::Vec2::ZERO,
+            canvas_textures: BTreeMap::new(),
+            canvas_paints: 0,
+            proposal_selection: BTreeMap::new(),
+            token_name: String::new(),
+            token_value: String::new(),
+            field_inputs: BTreeMap::new(),
+            hierarchy_drag: None,
+            canvas_drag: None,
+            wrap_key: String::new(),
+            asset_selected: None,
+            asset_license: String::new(),
+            asset_textures: BTreeMap::new(),
+            slice_source: String::new(),
+            slice_output: String::new(),
+            slice_regions: String::new(),
+            asset_cache: None,
+        }
+    }
 }
 
 /// 一次资产审查的读数；`revision` 变了（文档被接受/撤销）才失效。
@@ -97,6 +135,16 @@ impl AssetCache {
 }
 
 /// 提案箱里的 op 摘要：只取变体名，避免把整份补丁打印成多行 Debug。
+/// 提案类型的中文名（面板不直接上屏 Rust 枚举名）。
+fn proposal_kind_label(kind: rustlua_ui_spec::ProposalKind) -> &'static str {
+    use rustlua_ui_spec::ProposalKind;
+    match kind {
+        ProposalKind::Spec => "整份规格",
+        ProposalKind::Patch => "补丁",
+        ProposalKind::AssetPlan => "资产生成计划",
+    }
+}
+
 fn patch_op_label(op: &rustlua_ui_spec::UiPatchOp) -> String {
     let debug = format!("{op:?}");
     debug
@@ -127,31 +175,16 @@ fn draw_toolbar(ui: &mut egui::Ui, studio: &mut UiStudio) {
     }
 }
 
-/// 设计坐标 → 屏幕矩形：先按预览取景（fit/offset）落到图像素，再按图像显示尺寸缩放。
-fn design_rect_to_screen(
-    design: [f32; 4],
-    image: egui::Rect,
-    image_size: [u32; 2],
-    fit: f32,
-    offset: [f32; 2],
-) -> egui::Rect {
-    let scale = image.width() / image_size[0] as f32;
-    let min = image.min
-        + egui::vec2(
-            (offset[0] + design[0] * fit) * scale,
-            (offset[1] + design[1] * fit) * scale,
-        );
-    egui::Rect::from_min_size(
-        min,
-        egui::vec2(design[2] * fit * scale, design[3] * fit * scale),
-    )
-}
-
 /// 画布叠层：安全区框、选中节点轮廓、锚点十字、九宫格线、缩放手柄、间距标尺。
-fn draw_overlays(ui: &egui::Ui, studio: &UiStudio, image: egui::Rect, image_size: [u32; 2]) {
-    let (fit, offset) = studio.preview_fit();
-    let painter = ui.painter_at(image);
-    let to_screen = |design| design_rect_to_screen(design, image, image_size, fit, offset);
+/// `ghost` 是拖动中的实时矩形（设计坐标）：叠层跟着指针走，松手才提交提案。
+fn draw_overlays(
+    ui: &egui::Ui,
+    studio: &UiStudio,
+    view: crate::ui_canvas::CanvasView,
+    ghost: Option<([f32; 4], &str)>,
+) {
+    let painter = ui.painter_at(view.viewport);
+    let to_screen = |design| view.design_to_screen(design);
     if studio.safe_area() {
         painter.rect_stroke(
             to_screen(studio.safe_area_rect()),
@@ -188,51 +221,60 @@ fn draw_overlays(ui: &egui::Ui, studio: &UiStudio, image: egui::Rect, image_size
     }
     let selection = studio.selection().map(str::to_owned);
     let rows = studio.layout_rects();
-    let Some(selected) = rows.iter().find(|row| Some(&row.key) == selection.as_ref()) else {
-        return;
+    let (key, design_rect) = match ghost {
+        Some((rect, key)) => (key.to_owned(), rect),
+        None => {
+            let Some(selected) = rows.iter().find(|row| Some(&row.key) == selection.as_ref())
+            else {
+                return;
+            };
+            (selected.key.clone(), selected.rect)
+        }
     };
-    let rect = to_screen(selected.rect);
+    let rect = to_screen(design_rect);
     let accent = egui::Color32::from_rgb(96, 200, 255);
-    // 间距标尺：选中框到父框四边的设计像素距离。
-    if let Some(parent) = selected
-        .parent
-        .as_ref()
-        .and_then(|key| rows.iter().find(|row| &row.key == key).map(|row| row.rect))
+    // 间距标尺：选中框到父框四边的设计像素距离（拖动中不画，父级距离已过期）。
+    if ghost.is_none()
+        && let Some(parent) = rows
+            .iter()
+            .find(|row| row.key == key)
+            .and_then(|selected| selected.parent.as_ref())
+            .and_then(|key| rows.iter().find(|row| &row.key == key).map(|row| row.rect))
     {
         let gaps = [
             (
                 [
-                    selected.rect[0] - parent[0],
-                    selected.rect[1],
+                    design_rect[0] - parent[0],
+                    design_rect[1],
                     0.0,
-                    selected.rect[3],
+                    design_rect[3],
                 ],
-                selected.rect[0] - parent[0],
+                design_rect[0] - parent[0],
                 egui::Align2::RIGHT_CENTER,
             ),
             (
                 [
-                    selected.rect[0] + selected.rect[2],
-                    selected.rect[1],
+                    design_rect[0] + design_rect[2],
+                    design_rect[1],
                     0.0,
-                    selected.rect[3],
+                    design_rect[3],
                 ],
-                parent[0] + parent[2] - (selected.rect[0] + selected.rect[2]),
+                parent[0] + parent[2] - (design_rect[0] + design_rect[2]),
                 egui::Align2::LEFT_CENTER,
             ),
             (
-                [selected.rect[0], selected.rect[1], selected.rect[2], 0.0],
-                selected.rect[1] - parent[1],
+                [design_rect[0], design_rect[1], design_rect[2], 0.0],
+                design_rect[1] - parent[1],
                 egui::Align2::CENTER_BOTTOM,
             ),
             (
                 [
-                    selected.rect[0],
-                    selected.rect[1] + selected.rect[3],
-                    selected.rect[2],
+                    design_rect[0],
+                    design_rect[1] + design_rect[3],
+                    design_rect[2],
                     0.0,
                 ],
-                parent[1] + parent[3] - (selected.rect[1] + selected.rect[3]),
+                parent[1] + parent[3] - (design_rect[1] + design_rect[3]),
                 egui::Align2::CENTER_TOP,
             ),
         ];
@@ -276,9 +318,9 @@ fn draw_overlays(ui: &egui::Ui, studio: &UiStudio, image: egui::Rect, image_size
         [center - egui::vec2(0.0, 6.0), center + egui::vec2(0.0, 6.0)],
         egui::Stroke::new(1.0_f32, accent),
     );
-    // 九宫格：四边内缩线（设计像素 × fit × 显示缩放）。
+    // 九宫格：四边内缩线（设计像素 × 画布总缩放）。
     if let Some(insets) = studio.selected_nine_slice() {
-        let px = fit * (image.width() / image_size[0] as f32);
+        let px = view.design_scale();
         let (left, right) = (rect.left() + insets[0] * px, rect.right() - insets[2] * px);
         let (top, bottom) = (rect.top() + insets[1] * px, rect.bottom() - insets[3] * px);
         let stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(255, 120, 120));
@@ -311,48 +353,239 @@ fn draw_overlays(ui: &egui::Ui, studio: &UiStudio, image: egui::Rect, image_size
     painter.text(
         rect.left_top() + egui::vec2(2.0, -2.0),
         egui::Align2::LEFT_BOTTOM,
-        &selected.key,
+        &key,
         egui::FontId::monospace(10.0),
         accent,
     );
 }
 
-fn draw_preview(
-    ui: &mut egui::Ui,
-    studio: &UiStudio,
-    preview: &mut Option<(u64, [u32; 2], egui::TextureHandle)>,
-) -> Option<egui::Response> {
-    let revision = studio.revision();
-    let size = studio.resolution().size();
-    let stale = preview
-        .as_ref()
-        .is_none_or(|(cached_revision, cached_size, _)| {
-            *cached_revision != revision || *cached_size != size
-        });
-    if stale
-        && let Ok(png) = studio.preview_png()
-        && let Ok(icon) = eframe::icon_data::from_png_bytes(&png)
-    {
-        let image = egui::ColorImage::from_rgba_unmultiplied(
-            [icon.width as usize, icon.height as usize],
-            &icon.rgba,
-        );
-        let handle = ui.ctx().load_texture(
-            format!("ui_studio_preview_{revision}_{}x{}", size[0], size[1]),
-            image,
-            egui::TextureOptions::NEAREST,
-        );
-        *preview = Some((revision, size, handle));
+/// 画布视口高度：面板高度有限，画布优先，令牌/提案箱在它下面滚动。
+const CANVAS_HEIGHT: f32 = 380.0;
+
+fn cursor_for_handle(handle: ResizeHandle) -> egui::CursorIcon {
+    match handle {
+        ResizeHandle::Left | ResizeHandle::Right => egui::CursorIcon::ResizeHorizontal,
+        ResizeHandle::Top | ResizeHandle::Bottom => egui::CursorIcon::ResizeVertical,
+        ResizeHandle::TopLeft | ResizeHandle::BottomRight => egui::CursorIcon::ResizeNwSe,
+        ResizeHandle::TopRight | ResizeHandle::BottomLeft => egui::CursorIcon::ResizeNeSw,
     }
-    let Some((_, _, texture)) = preview else {
-        return None;
-    };
-    let natural = texture.size_vec2();
-    let max = egui::vec2(ui.available_width().max(64.0), 240.0);
-    let scale = (max.x / natural.x).min(max.y / natural.y).min(1.0);
-    let response = ui.add(egui::Image::new((texture.id(), natural * scale)));
-    draw_overlays(ui, studio, response.rect, size);
-    Some(response)
+}
+
+/// 画布拖动松手后：提案立刻接受（一次拖动 = 一条撤销），状态栏给出 revision。
+fn commit_canvas_proposal(
+    studio: &mut UiStudio,
+    outcome: Result<rustlua_ui_spec::UiProposal, String>,
+    status: &mut String,
+) {
+    match outcome {
+        Ok(proposal) => match studio.accept(&proposal.proposal_id) {
+            Ok(accepted) => {
+                *status = format!(
+                    "画布已落盘（revision {}），可用「撤销接受」回退",
+                    accepted.revision
+                );
+            }
+            Err(error) => *status = error.to_string(),
+        },
+        Err(error) => *status = error,
+    }
+}
+
+/// 画布：按 spec 画真实内容（底色/文字/图片），并接缩放、平移与节点拖动。
+///
+/// 直接操作走「拖动中画幽灵框 → 松手生成一条提案 → 立刻接受」：画布能看到手指
+/// 下的真实几何，落盘仍经过 Spec 宿主的提案与撤销快照。
+#[allow(clippy::too_many_arguments)]
+fn draw_canvas(
+    ui: &mut egui::Ui,
+    studio: &mut UiStudio,
+    zoom: &mut f32,
+    pan: &mut egui::Vec2,
+    textures: &mut BTreeMap<String, egui::TextureHandle>,
+    drag: &mut Option<CanvasDrag>,
+    status: &mut String,
+) {
+    ui.horizontal(|ui| {
+        if ui.small_button("适应窗口").clicked() {
+            *zoom = 1.0;
+            *pan = egui::Vec2::ZERO;
+        }
+        ui.label(format!("{:.0}%", f64::from(*zoom) * 100.0));
+        ui.weak("滚轴缩放 · 右键/空白处左键拖动平移 · 拖节点或手柄调整");
+    });
+    let (response, _) = ui.allocate_painter(
+        egui::vec2(ui.available_width().max(240.0), CANVAS_HEIGHT),
+        egui::Sense::click_and_drag(),
+    );
+    let resolution = studio.resolution().size();
+    let reference = studio
+        .spec()
+        .map_or([1280.0, 720.0], |spec| spec.document.canvas.reference);
+    let size = [resolution[0] as f32, resolution[1] as f32];
+    let mut view = crate::ui_canvas::CanvasView::new(response.rect, size, reference, *zoom, *pan);
+
+    // 滚轴缩放：以光标为锚点。
+    if response.hovered() {
+        let scroll = ui.input(|input| input.smooth_scroll_delta.y);
+        if scroll.abs() > 0.5 {
+            let cursor = response.hover_pos().unwrap_or(response.rect.center());
+            let (next_zoom, next_pan) = view.zoomed_at((scroll * 0.0015).exp(), cursor);
+            *zoom = next_zoom;
+            *pan = next_pan;
+            view = crate::ui_canvas::CanvasView::new(response.rect, size, reference, *zoom, *pan);
+        }
+    }
+    // 右键 / 中键拖动平移。
+    let panning = ui.input(|input| {
+        input.pointer.button_down(egui::PointerButton::Secondary)
+            || input.pointer.button_down(egui::PointerButton::Middle)
+    });
+    if panning && response.hovered() {
+        *pan += ui.input(|input| input.pointer.delta());
+        view = crate::ui_canvas::CanvasView::new(response.rect, size, reference, *zoom, *pan);
+    }
+
+    let rows = studio.layout_rects();
+    let selection_frame = studio.selection_frame();
+    if let Some(pointer) = response.hover_pos() {
+        let selection_screen = selection_frame
+            .as_ref()
+            .map(|(_, rect, _)| view.design_to_screen(*rect));
+        let icon = match canvas_drag_mode(pointer, selection_screen) {
+            Some(CanvasDragMode::Resize(handle)) => cursor_for_handle(handle),
+            Some(CanvasDragMode::Move) => egui::CursorIcon::Grab,
+            _ => egui::CursorIcon::Default,
+        };
+        ui.ctx().set_cursor_icon(icon);
+    }
+
+    if response.drag_started_by(egui::PointerButton::Primary)
+        && let Some(pointer) = response.interact_pointer_pos()
+    {
+        let design = view.screen_to_design(pointer);
+        let hit = crate::ui_canvas::pick_node(&rows, design).map(|row| row.key.clone());
+        let selection_screen = selection_frame
+            .as_ref()
+            .map(|(_, rect, _)| view.design_to_screen(*rect));
+        match canvas_drag_mode(pointer, selection_screen) {
+            Some(CanvasDragMode::Resize(handle)) => {
+                if let Some((key, rect, _)) = &selection_frame {
+                    *drag = Some(CanvasDrag {
+                        mode: CanvasDragMode::Resize(handle),
+                        total: egui::Vec2::ZERO,
+                        start: *rect,
+                        key: key.clone(),
+                    });
+                }
+            }
+            Some(CanvasDragMode::Move) => {
+                if let Some((key, rect, _)) = &selection_frame {
+                    *drag = Some(CanvasDrag {
+                        mode: CanvasDragMode::Move,
+                        total: egui::Vec2::ZERO,
+                        start: *rect,
+                        key: key.clone(),
+                    });
+                }
+            }
+            _ => match hit {
+                Some(key) => {
+                    studio.select(&key);
+                    if let Some((key, rect, _)) = studio.selection_frame() {
+                        *drag = Some(CanvasDrag {
+                            mode: CanvasDragMode::Move,
+                            total: egui::Vec2::ZERO,
+                            start: rect,
+                            key,
+                        });
+                    }
+                }
+                // 空白处左键拖动 = 平移画布。
+                None => {
+                    *drag = Some(CanvasDrag {
+                        mode: CanvasDragMode::Pan,
+                        total: egui::Vec2::ZERO,
+                        start: [0.0; 4],
+                        key: String::new(),
+                    });
+                }
+            },
+        }
+    }
+    if response.dragged_by(egui::PointerButton::Primary)
+        && let Some(state) = drag.as_mut()
+    {
+        let delta = response.drag_delta();
+        if state.mode == CanvasDragMode::Pan {
+            *pan += delta;
+            view = crate::ui_canvas::CanvasView::new(response.rect, size, reference, *zoom, *pan);
+        } else {
+            state.total += delta;
+        }
+    }
+    if response.drag_stopped_by(egui::PointerButton::Primary)
+        && let Some(state) = drag.take()
+        && state.mode != CanvasDragMode::Pan
+    {
+        let scale = view.design_scale().max(1e-4);
+        let delta = [state.total.x / scale, state.total.y / scale];
+        if state.total.length() > 1.0 {
+            let outcome = match state.mode {
+                CanvasDragMode::Move => studio.move_selection_by(delta),
+                CanvasDragMode::Resize(handle) => studio.resize_selection(handle, delta),
+                CanvasDragMode::Pan => unreachable!(),
+            }
+            .map_err(|error| error.to_string());
+            commit_canvas_proposal(studio, outcome, status);
+        }
+    }
+    if response.clicked()
+        && let Some(pointer) = response.interact_pointer_pos()
+        && let Some(hit) = crate::ui_canvas::pick_node(&rows, view.screen_to_design(pointer))
+    {
+        studio.select(&hit.key);
+    }
+
+    if let Some(spec) = studio.spec() {
+        let ctx = ui.ctx().clone();
+        let mut load = |path: &str| -> Option<egui::TextureHandle> {
+            if let Some(texture) = textures.get(path) {
+                return Some(texture.clone());
+            }
+            let bytes = studio.read_asset_bytes(path)?;
+            let icon = eframe::icon_data::from_png_bytes(&bytes).ok()?;
+            let image = egui::ColorImage::from_rgba_unmultiplied(
+                [icon.width as usize, icon.height as usize],
+                &icon.rgba,
+            );
+            let texture = ctx.load_texture(
+                format!("ui_canvas::{path}"),
+                image,
+                egui::TextureOptions::NEAREST,
+            );
+            textures.insert(path.to_owned(), texture.clone());
+            Some(texture)
+        };
+        crate::ui_canvas::paint(ui, spec, view, &mut load);
+    }
+    let ghost = drag.as_ref().map(|state| {
+        let scale = view.design_scale().max(1e-4);
+        let delta = [state.total.x / scale, state.total.y / scale];
+        let rect = match state.mode {
+            CanvasDragMode::Move => [
+                state.start[0] + delta[0],
+                state.start[1] + delta[1],
+                state.start[2],
+                state.start[3],
+            ],
+            CanvasDragMode::Resize(handle) => {
+                rustlua_ui_spec::resize_rect(state.start, handle, delta, 8.0)
+            }
+            CanvasDragMode::Pan => state.start,
+        };
+        (rect, state.key.as_str())
+    });
+    draw_overlays(ui, studio, view, ghost);
 }
 
 /// 屏幕点落在哪个手柄上；四角优先，其次是距边 6px 的带状区域。
@@ -761,11 +994,11 @@ fn draw_asset_section(
         ui.weak(format!(
             "{} · {} · {} · {}",
             source,
-            field("provider", provenance.provider.as_deref()),
-            field("model", provenance.model.as_deref()),
+            field("服务商", provenance.provider.as_deref()),
+            field("模型", provenance.model.as_deref()),
             provenance
                 .seed
-                .map_or_else(|| "seed —".to_owned(), |seed| format!("seed {seed}"))
+                .map_or_else(|| "种子 —".to_owned(), |seed| format!("种子 {seed}"))
         ));
         let prompt = provenance
             .prompt_hash
@@ -773,7 +1006,7 @@ fn draw_asset_section(
             .map(|hash| hash.chars().take(12).collect::<String>())
             .unwrap_or_else(|| "—".to_owned());
         ui.weak(format!(
-            "prompt {prompt} · {} · {}",
+            "提示词 {prompt} · {} · {}",
             field("许可", provenance.license.as_deref()),
             if provenance.reviewed {
                 "已审阅"
@@ -930,7 +1163,7 @@ fn report_proposal(
 impl EditorApp {
     pub(crate) fn draw_ui_studio_panel(&mut self, ui: &mut egui::Ui) {
         if !self.project_loaded {
-            ui.weak("UI Studio 需要打开工程（project.toml）");
+            ui.weak("UI 工作室需要打开工程（project.toml）");
             return;
         }
 
@@ -980,7 +1213,7 @@ impl EditorApp {
             match studio.open(&document) {
                 Ok(()) => {
                     self.ui_studio_panel.status = format!("已打开 {document}");
-                    self.ui_studio_panel.preview = None;
+                    self.ui_studio_panel.canvas_textures.clear();
                     self.ui_studio_panel.studio = Some(studio);
                 }
                 Err(error) => self.ui_studio_panel.status = error.to_string(),
@@ -990,7 +1223,7 @@ impl EditorApp {
             match studio.reload() {
                 Ok(()) => {
                     self.ui_studio_panel.status = "已刷新".to_owned();
-                    self.ui_studio_panel.preview = None;
+                    self.ui_studio_panel.canvas_textures.clear();
                 }
                 Err(error) => self.ui_studio_panel.status = error.to_string(),
             }
@@ -1000,7 +1233,7 @@ impl EditorApp {
                 Ok(true) => {
                     self.ui_studio_panel.status =
                         format!("已撤销一次接受（revision {}）", studio.revision());
-                    self.ui_studio_panel.preview = None;
+                    self.ui_studio_panel.canvas_textures.clear();
                 }
                 Ok(false) => self.ui_studio_panel.status = "没有可撤销的接受".to_owned(),
                 Err(error) => self.ui_studio_panel.status = error.to_string(),
@@ -1011,7 +1244,7 @@ impl EditorApp {
                 Ok(true) => {
                     self.ui_studio_panel.status =
                         format!("已重做一次接受（revision {}）", studio.revision());
-                    self.ui_studio_panel.preview = None;
+                    self.ui_studio_panel.canvas_textures.clear();
                 }
                 Ok(false) => self.ui_studio_panel.status = "没有可重做的接受".to_owned(),
                 Err(error) => self.ui_studio_panel.status = error.to_string(),
@@ -1021,7 +1254,10 @@ impl EditorApp {
         let UiStudioPanel {
             studio: Some(studio),
             status,
-            preview,
+            canvas_zoom,
+            canvas_pan,
+            canvas_textures,
+            canvas_paints,
             proposal_selection,
             token_name,
             token_value,
@@ -1043,53 +1279,20 @@ impl EditorApp {
             return;
         };
 
+        *canvas_paints += 1;
         draw_toolbar(ui, studio);
         ui.separator();
         // 画布放在层级/检查器之前：面板高度有限时先保证画布可见（证据截图与日常编辑
         // 都以画布为主），令牌与提案箱向下滚动。
-        let preview_response = draw_preview(ui, studio, preview);
-        if let Some(response) = preview_response {
-            let size = studio.resolution().size();
-            let (fit, offset) = studio.preview_fit();
-            let scale = fit * response.rect.width() / size[0] as f32;
-            let selection_screen = studio
-                .selection_frame()
-                .map(|(_, rect, _)| design_rect_to_screen(rect, response.rect, size, fit, offset));
-            let drag = ui.interact(
-                response.rect,
-                ui.id().with("ui_studio_canvas"),
-                egui::Sense::click_and_drag(),
-            );
-            if drag.drag_started()
-                && let Some(point) = drag.interact_pointer_pos()
-                && let Some(mode) = canvas_drag_mode(point, selection_screen)
-            {
-                *canvas_drag = Some(CanvasDrag {
-                    mode,
-                    total: egui::Vec2::ZERO,
-                });
-            }
-            if drag.dragged()
-                && let Some(state) = canvas_drag.as_mut()
-            {
-                state.total += drag.drag_delta();
-            }
-            if drag.drag_stopped()
-                && let Some(state) = canvas_drag.take()
-                && state.total.length() > 1.0
-            {
-                let delta = [
-                    state.total.x / scale.max(1e-4),
-                    state.total.y / scale.max(1e-4),
-                ];
-                let outcome = match state.mode {
-                    CanvasDragMode::Move => studio.move_selection_by(delta),
-                    CanvasDragMode::Resize(handle) => studio.resize_selection(handle, delta),
-                }
-                .map_err(|error| error.to_string());
-                report_proposal(outcome, "画布", status);
-            }
-        }
+        draw_canvas(
+            ui,
+            studio,
+            canvas_zoom,
+            canvas_pan,
+            canvas_textures,
+            canvas_drag,
+            status,
+        );
         ui.separator();
         let rows = studio.hierarchy();
         let mut row_rects: Vec<(String, egui::Rect)> = Vec::new();
@@ -1103,8 +1306,12 @@ impl EditorApp {
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             for row in &rows {
-                                let label =
-                                    format!("{}{} · {}", "  ".repeat(row.depth), row.key, row.kind);
+                                let label = format!(
+                                    "{}{} · {}",
+                                    "  ".repeat(row.depth),
+                                    row.key,
+                                    crate::util::widget_display_name(row.kind)
+                                );
                                 let selected = studio.selection() == Some(row.key.as_str());
                                 // 可拖动：松手时按落点决定“成为子节点”还是“插到兄弟前/后”。
                                 let response = ui
@@ -1261,7 +1468,7 @@ impl EditorApp {
             ui.add(
                 egui::TextEdit::singleline(wrap_key)
                     .desired_width(110.0)
-                    .hint_text("新容器 key"),
+                    .hint_text("新容器标识"),
             );
             if ui
                 .add_enabled(
@@ -1306,7 +1513,7 @@ impl EditorApp {
                 .proposal_ops(&proposal.proposal_id)
                 .unwrap_or_default();
             ui.horizontal(|ui| {
-                ui.label(format!("{:?}", proposal.kind));
+                ui.label(proposal_kind_label(proposal.kind));
                 ui.label(format!(
                     "+{} ~{} -{} 资产+{} 令牌~{}",
                     proposal.diff.nodes_added,
@@ -1363,8 +1570,8 @@ impl EditorApp {
             proposal_selection.remove(&id);
             match studio.accept(&id) {
                 Ok(accepted) => {
-                    *status = format!("已接受提案，revision {}", accepted.revision);
-                    *preview = None;
+                    *status = format!("已接受提案（版本 {}）", accepted.revision);
+                    canvas_textures.clear();
                 }
                 Err(error) => *status = error.to_string(),
             }
@@ -1373,11 +1580,11 @@ impl EditorApp {
             match studio.accept_subset(&id, &indices) {
                 Ok(accepted) => {
                     *status = format!(
-                        "已接受选中 {} 个操作，revision {}",
+                        "已接受选中 {} 个操作（版本 {}）",
                         indices.len(),
                         accepted.revision
                     );
-                    *preview = None;
+                    canvas_textures.clear();
                 }
                 Err(error) => *status = error.to_string(),
             }
@@ -1438,28 +1645,38 @@ mod tests {
     }
 
     #[test]
-    fn overlay_maps_design_coordinates_into_the_displayed_image() {
-        let image = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(640.0, 360.0));
-        let mapped = design_rect_to_screen(
-            [540.0, 310.0, 200.0, 100.0],
-            image,
-            [1280, 720],
+    fn canvas_maps_design_coordinates_into_the_viewport() {
+        let view = crate::ui_canvas::CanvasView::new(
+            egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(640.0, 360.0)),
+            [1280.0, 720.0],
+            [1280.0, 720.0],
             1.0,
-            [0.0, 0.0],
+            egui::Vec2::ZERO,
         );
-        assert_eq!(mapped.min, egui::pos2(280.0, 175.0));
-        assert_eq!(mapped.size(), egui::vec2(100.0, 50.0));
+        let mapped = view.design_to_screen([540.0, 310.0, 200.0, 100.0]);
+        let scale = view.design_scale();
+        assert!((mapped.width() - 200.0 * scale).abs() < 1e-3);
+        let back = view.screen_to_design(mapped.min);
+        assert!((back[0] - 540.0).abs() < 1e-3, "{back:?}");
+        assert!((back[1] - 310.0).abs() < 1e-3, "{back:?}");
 
-        // 手机档 375×667 + 1280×720 参考：fit≈0.29297、纵向信箱 offset≈228.03，
-        // 整块画布应正好落在可见的 375×210.9375 区域。
-        let (fit, offset) = rustlua_ui_spec::preview_fit([1280.0, 720.0], 375, 667, 1.0);
-        let image = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(375.0, 667.0));
-        let canvas =
-            design_rect_to_screen([0.0, 0.0, 1280.0, 720.0], image, [375, 667], fit, offset);
-        assert!(canvas.left().abs() < 1e-4);
-        assert!((canvas.top() - 228.031_25).abs() < 1e-3);
-        assert!((canvas.width() - 375.0).abs() < 1e-4);
-        assert!((canvas.height() - 210.937_5).abs() < 1e-3);
+        // 375×667 手机档 + 1280×720 参考：整张预览必须完整落在视口内（留边距）。
+        let view = crate::ui_canvas::CanvasView::new(
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(375.0, 667.0)),
+            [375.0, 667.0],
+            [1280.0, 720.0],
+            1.0,
+            egui::Vec2::ZERO,
+        );
+        let canvas = view.canvas_rect();
+        assert!(
+            canvas.left() >= -1.0 && canvas.right() <= 376.0,
+            "{canvas:?}"
+        );
+        assert!(
+            canvas.top() >= -1.0 && canvas.bottom() <= 668.0,
+            "{canvas:?}"
+        );
     }
 
     #[test]
@@ -1525,7 +1742,7 @@ mod tests {
     }
 
     #[test]
-    fn studio_tab_enters_the_dock_and_renders_its_preview() {
+    fn studio_tab_enters_the_dock_and_draws_its_canvas() {
         let examples = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../examples/game_api");
         let project = open_project(&examples).expect("样板工程");
         let mut app = EditorApp::new(project, None, LogSink::new(16));
@@ -1560,8 +1777,12 @@ mod tests {
         });
 
         assert!(
-            app.ui_studio_panel.preview.is_some(),
-            "第一帧聚焦后必须解码并上传预览纹理"
+            app.ui_studio_panel.canvas_paints > 0,
+            "第一帧聚焦后画布必须真正绘制（不是只读文档）"
+        );
+        assert!(
+            app.ui_studio_panel.canvas_zoom > 0.0,
+            "画布缩放初始为适应窗口"
         );
         assert!(
             app.ui_studio_panel

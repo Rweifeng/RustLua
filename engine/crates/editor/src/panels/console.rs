@@ -155,17 +155,17 @@ impl EditorApp {
                         ui.selectable_value(
                             &mut self.console_log_level_filter,
                             ConsoleLogLevelFilter::Error,
-                            "Error",
+                            "错误",
                         );
                         ui.selectable_value(
                             &mut self.console_log_level_filter,
                             ConsoleLogLevelFilter::Warning,
-                            "Warning",
+                            "警告",
                         );
                         ui.selectable_value(
                             &mut self.console_log_level_filter,
                             ConsoleLogLevelFilter::Info,
-                            "Info",
+                            "信息",
                         );
                         ui.selectable_value(
                             &mut self.console_log_level_filter,

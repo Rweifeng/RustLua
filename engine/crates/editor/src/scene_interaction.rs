@@ -55,11 +55,11 @@ pub enum SceneTool {
 impl fmt::Display for SceneTool {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Select => "Select",
-            Self::Move => "Move",
-            Self::Rotate => "Rotate",
-            Self::Scale => "Scale",
-            Self::TilePaint => "Tile Paint",
+            Self::Select => "选择",
+            Self::Move => "移动",
+            Self::Rotate => "旋转",
+            Self::Scale => "缩放",
+            Self::TilePaint => "瓦片画笔",
         })
     }
 }

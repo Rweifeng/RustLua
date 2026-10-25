@@ -183,7 +183,7 @@ impl EditorApp {
                         ui,
                         self.scene_view_mode == SceneViewMode::Widget,
                         "UI",
-                        "Widget Mode（UI 画布）",
+                        "控件模式（界面画布）",
                     )
                     .clicked()
                     {
@@ -198,10 +198,10 @@ impl EditorApp {
                     if self.scene_view_mode == SceneViewMode::Widget {
                         // Unity 式分层：调色板收进「控件」下拉，不再整排常驻工具栏。
                         ui.menu_button("控件", |ui| {
-                            if ui.button("New Widget").clicked() {
+                            if ui.button("新建控件").clicked() {
                                 self.request_document_change(
                                     crate::actions::PendingChange::CreateWidget {
-                                        name: "New Widget".to_owned(),
+                                        name: "新建控件".to_owned(),
                                     },
                                 );
                                 ui.close();
@@ -214,7 +214,7 @@ impl EditorApp {
                                 let source = ui.dnd_drag_source(
                                     egui::Id::new(("widget_palette", kind)),
                                     crate::dnd::DropPayload::Widget(kind),
-                                    |ui| ui.button(*kind),
+                                    |ui| ui.button(crate::util::widget_display_name(kind)),
                                 );
                                 if source.inner.clicked() {
                                     self.create_widget_at_center(kind);
@@ -285,15 +285,15 @@ impl EditorApp {
                     // Sprite 排序是 2D 精灵专属，Widget 画布上没有作用对象，直接不出现。
                     if self.scene_view_mode != SceneViewMode::Widget {
                         ui.menu_button("排序", |ui| {
-                            if ui.button("Sprite 排序层级 -1").clicked() {
+                            if ui.button("精灵排序层级 -1").clicked() {
                                 self.nudge_selected_sprite_order(-1);
                                 ui.close();
                             }
-                            if ui.button("Sprite 排序层级 +1").clicked() {
+                            if ui.button("精灵排序层级 +1").clicked() {
                                 self.nudge_selected_sprite_order(1);
                                 ui.close();
                             }
-                            if ui.button("按 Y 重排 Sprite 排序").clicked() {
+                            if ui.button("按 Y 重排精灵排序").clicked() {
                                 self.sort_selected_sprites_by_y(true);
                                 ui.close();
                             }
@@ -301,24 +301,24 @@ impl EditorApp {
                     }
                     ui.menu_button("覆盖层", |ui| {
                         ui.checkbox(&mut self.show_scene_guides, "辅助线");
-                        ui.checkbox(&mut self.show_safe_area, "Safe Area");
+                        ui.checkbox(&mut self.show_safe_area, "安全区");
                         ui.checkbox(&mut self.show_pixel_grid, "像素网格");
                         ui.checkbox(&mut self.show_layout_debug, "布局调试")
                             .on_hover_text(
-                                "Widget 模式下画出所有 UI 元素的布局边界、容器内边距与间距，溢出元素标红",
+                                "控件模式下画出所有界面元素的布局边界、容器内边距与间距，溢出元素标红",
                             );
                         ui.checkbox(&mut self.show_collision_overlay, "碰撞区域")
                     .on_hover_text(
-                        "画出场景里所有碰撞区域：Tilemap solid 格 + 实体 Collider 轮廓（调试用）",
+                        "画出场景里所有碰撞区域：瓦片地图碰撞格 + 实体碰撞体轮廓（调试用）",
                     );
                         ui.checkbox(&mut self.show_performance_panel, "性能")
                             .on_hover_text(
-                                "性能分析面板（独立弹窗：Play 运行时帧率 / draw call / set pass / 顶点面数 / CPU/GPU / 内存 / 资源缓存，以及编辑器各面板耗时）",
+                                "性能分析面板（独立弹窗：播放运行时帧率 / 绘制调用 / 设置通道 / 顶点面数 / CPU/GPU / 内存 / 资源缓存，以及编辑器各面板耗时）",
                             );
                         // M19-03：出口/地点只读覆盖层 + 两个可开关的生产工具窗口。
                         ui.checkbox(&mut self.show_domain_overlay, "出口/地点");
                         ui.checkbox(&mut self.show_domain_data_panel, "领域数据面板")
-                            .on_hover_text("Lua 校验 / PersistId / 出口地点");
+                            .on_hover_text("Lua 校验 / 持久化 ID / 出口地点");
                     });
                     ui.separator();
                     let zoom_before_slider = self.scene_zoom;

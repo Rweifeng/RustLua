@@ -1294,7 +1294,7 @@ pub(crate) fn run_baseline() -> BaselineReport {
     // ① `to_text` → `from_text` → `to_text` 逐字节相同（序列化是定点的，不会每次多/少一个字段）；
     // ② 写盘 → 读回 → 再写盘的字节哈希与首次相同（磁盘往返也不引入漂移）；
     // ③ 实例化 → 落盘场景 → 重新打开之后，实例上的覆盖字段**逐字**保持原值；
-    // ④ 把"实例 vs 源 Prefab"重新 diff 出来，覆盖集合与写入前**完全相同**（幂等，不会越用越多）。
+    // ④ 把"实例 vs 源预制体"重新 diff 出来，覆盖集合与写入前**完全相同**（幂等，不会越用越多）。
     {
         use rustlua_assets::resource_db::AssetId;
         use rustlua_scene::prefab::Prefab;

@@ -15,8 +15,8 @@ use rustlua_scene::scene::SceneEntityId;
 use rustlua_ui::ui_animation::UiAnimationPreview;
 use rustlua_ui::ui_binding::BindingSet;
 use rustlua_ui::ui_events::UiEvents;
-use rustlua_ui::ui_layout::{CanvasConfig, ContainerStyle, UiRectLayout};
-use rustlua_ui::ui_scene_layout::{UiSceneNode, resolve_scene_ui_layout};
+use rustlua_ui::ui_layout::{CanvasConfig, ContainerStyle, LayoutAxis, UiRectLayout};
+use rustlua_ui::ui_scene_layout::{UiLayoutReason, UiSceneNode, resolve_scene_ui_layout};
 use rustlua_ui::ui_states::ButtonStateSet;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -69,7 +69,7 @@ impl EditorApp {
 
     fn set_ui_component(&mut self, key: &'static str, value: Option<String>) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return;
         }
         let Some(selected) = self.selection.primary() else {
@@ -80,7 +80,7 @@ impl EditorApp {
         };
         let result = self.history.execute(
             scene,
-            format!("Set {key}"),
+            format!("设置{}", crate::util::component_display_name(key)),
             CommandKind::Property,
             move |scene| {
                 if let Some(entity) = scene.scene.entities.get_mut(&selected) {
@@ -146,7 +146,7 @@ impl EditorApp {
 
     pub(crate) fn apply_canvas_config(&mut self) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return;
         }
         let Some(selected) = self.selection.primary() else {
@@ -158,7 +158,7 @@ impl EditorApp {
         };
         let result = self.history.execute(
             scene,
-            "Set Canvas Config",
+            "设置画布配置",
             CommandKind::Property,
             move |scene| {
                 let Some(entity) = scene.scene.entities.get_mut(&selected) else {
@@ -170,7 +170,7 @@ impl EditorApp {
                     .is_none_or(|value| value != "true")
                 {
                     return Err(InspectorError::InvalidAssetReference(
-                        "Canvas 配置只适用于 UI Root".to_owned(),
+                        "画布配置只适用于界面根节点".to_owned(),
                     ));
                 }
                 entity.metadata.insert(
@@ -305,7 +305,7 @@ impl EditorApp {
                         kind: PreviewErrorKind::AssetMissing,
                         entity: Some(entity.id.0),
                         component: Some("Image".to_owned()),
-                        message: format!("texture {} was not found", image.texture),
+                        message: format!("找不到纹理 {}", image.texture),
                     });
                 }
             }
@@ -336,25 +336,25 @@ impl EditorApp {
     /// 回退 Prefab 实例上的所有覆盖（目标由 typed action 显式给出）。
     pub(crate) fn revert_prefab_overrides(&mut self, selected: SceneEntityId) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return;
         }
         let Some(scene) = self.current_scene().cloned() else {
             return;
         };
         let Some(entity) = scene.scene.entities.get(&selected) else {
-            self.status = "Prefab 根实例不存在".to_owned();
+            self.status = "预制体根实例不存在".to_owned();
             return;
         };
         let Some(prefab_source) = entity.metadata.get("prefab.source").cloned() else {
-            self.status = "当前实体没有 Prefab 来源".to_owned();
+            self.status = "当前实体没有预制体来源".to_owned();
             return;
         };
         let root = crate::util::strip_verbatim_prefix(&self.project.root);
         let prefab = match rustlua_scene::prefab::Prefab::load(root.join(&prefab_source)) {
             Ok(prefab) => prefab,
             Err(error) => {
-                self.status = format!("加载源 Prefab 失败：{error}");
+                self.status = format!("加载源预制体失败：{error}");
                 return;
             }
         };
@@ -363,7 +363,7 @@ impl EditorApp {
         };
         let result = self.history.execute(
             doc,
-            "Revert Prefab Overrides",
+            "还原预制体覆盖",
             CommandKind::Property,
             move |scene| {
                 if let Some(parent_id) = scene.scene.entities.get(&selected).and_then(|e| e.parent)
@@ -402,9 +402,9 @@ impl EditorApp {
         match result {
             Ok(_) => {
                 self.on_document_changed(crate::actions::DocumentChange::PrefabApply);
-                self.status = "已还原 Prefab 覆盖".to_owned();
+                self.status = "已还原预制体覆盖".to_owned();
             }
-            Err(error) => self.status = format!("还原 Prefab 覆盖失败：{error}"),
+            Err(error) => self.status = format!("还原预制体覆盖失败：{error}"),
         }
     }
 }
@@ -466,9 +466,29 @@ fn layout_diagnostics(
             kind: PreviewErrorKind::Layout,
             entity: Some(diagnostic.entity),
             component: Some("UiLayout".to_owned()),
-            message: format!("{:?}", diagnostic.reason),
+            message: layout_reason_text(diagnostic.reason),
         })
         .collect()
+}
+
+fn layout_reason_text(reason: UiLayoutReason) -> String {
+    match reason {
+        UiLayoutReason::MissingParent => "父节点缺失".to_owned(),
+        UiLayoutReason::CircularParent => "父节点循环引用".to_owned(),
+        UiLayoutReason::InvalidLayout => "布局参数无法解析".to_owned(),
+        UiLayoutReason::InvalidContainer => "容器样式无法解析".to_owned(),
+        UiLayoutReason::Overflow {
+            axis,
+            needed,
+            available,
+        } => {
+            let axis = match axis {
+                LayoutAxis::Horizontal => "水平",
+                LayoutAxis::Vertical => "垂直",
+            };
+            format!("{axis}方向溢出：需要 {needed:.1}，可用 {available:.1}")
+        }
+    }
 }
 
 fn collect_subtree_ids(
@@ -482,12 +502,12 @@ fn collect_subtree_ids(
         seen: &mut BTreeSet<SceneEntityId>,
     ) -> Result<(), String> {
         if !seen.insert(id) {
-            return Err("Prefab subtree contains a cycle".to_owned());
+            return Err("预制体子树存在循环引用".to_owned());
         }
         let entity = scene
             .entities
             .get(&id)
-            .ok_or_else(|| format!("missing entity {}", id.0))?;
+            .ok_or_else(|| format!("缺少实体 {}", id.0))?;
         for child in &entity.children {
             visit(scene, *child, out, seen)?;
         }
@@ -543,7 +563,7 @@ impl CanvasHud {
     /// 第二行：预览分辨率 + 屏幕物理像素 + 显示缩放 + 裁剪区域。
     pub(crate) fn preview_line(&self) -> String {
         format!(
-            "预览 {}×{} · 显示 {}×{} · 缩放 {:.0}% · 裁剪 L{:.0} T{:.0} R{:.0} B{:.0}",
+            "预览 {}×{} · 显示 {}×{} · 缩放 {:.0}% · 裁剪 左{:.0} 上{:.0} 右{:.0} 下{:.0}",
             self.design.0,
             self.design.1,
             self.display.0,
@@ -559,7 +579,7 @@ impl CanvasHud {
     /// 第三行：Safe Area + Anchor 空间边界（设计框）。
     pub(crate) fn safe_line(&self) -> String {
         format!(
-            "Safe Area L{:.0} T{:.0} R{:.0} B{:.0} · 锚点框 (0,0)–({},{})",
+            "安全区 左{:.0} 上{:.0} 右{:.0} 下{:.0} · 锚点框 (0,0)–({},{})",
             self.safe[0], self.safe[1], self.safe[2], self.safe[3], self.design.0, self.design.1,
         )
     }
@@ -583,11 +603,11 @@ mod tests {
         };
         assert_eq!(
             hud.preview_line(),
-            "预览 1280×720 · 显示 640×360 · 缩放 50% · 裁剪 L240 T60 R240 B60"
+            "预览 1280×720 · 显示 640×360 · 缩放 50% · 裁剪 左240 上60 右240 下60"
         );
         assert_eq!(
             hud.safe_line(),
-            "Safe Area L40 T20 R40 B20 · 锚点框 (0,0)–(1280,720)"
+            "安全区 左40 上20 右40 下20 · 锚点框 (0,0)–(1280,720)"
         );
     }
 }

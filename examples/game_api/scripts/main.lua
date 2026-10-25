@@ -34,3 +34,11 @@ end
 function on_day_end()
     return route.on_day_end()
 end
+
+--- 自检契约：新门 `sample_project_demos_self_test` 逐场景调用它。
+---
+--- 返回 `"ok steps=<N> checks=<M> failed=0"` 或 `"FAIL <scene>: <step>: <message>; ..."`。
+--- 由 `router` 转给当前演示模块的 `self_test()`；fixture 场景返回 ok 0/0。
+function __api_demo_self_test()
+    return route.self_test()
+end

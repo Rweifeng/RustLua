@@ -28,6 +28,8 @@ mod scene_ops;
 mod scene_resize;
 mod scene_tools;
 mod shader_watch;
+/// UI Studio 画布：按 spec 画真实内容（样式/文字/图片）与坐标、命中测试。
+mod ui_canvas;
 mod ui_editor;
 mod util;
 
@@ -479,6 +481,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             app.evidence_failed_flag = evidence_failed_for_app;
             app.set_render_state(creation_context.wgpu_render_state.clone());
             app.initialize_ui_extensions();
+            // 用户级设置（`~/.rustlua`）先于工程布局加载：服务商属于用户，工程布局
+            // 只作为旧版本的迁移来源。
+            #[cfg(feature = "ai-bridge")]
+            app.enable_user_config();
             app.project_loaded = arguments.project.is_some();
             // P3-R05-4：`--shader-dir` 只改覆盖目录的位置；不给就是项目 `shaders/`（编辑器默认监听它）。
             app.shader_dir_flag = arguments.shader_dir.clone();
@@ -520,10 +526,20 @@ struct EditorApp {
     dock_signature: Option<u64>,
     /// 结构指纹最近一次变化的时刻，`None` = 没有待落盘的布局变化（见 `dock_tree_change`）。
     dock_dirty_since: Option<Instant>,
-    /// 助手设置（服务商/Base URL/模型/max_tokens）最近一次变化的时刻。
-    /// 文本框每击键都会改设置，等到输入停顿再落盘，避免每帧一次原子写。
+    /// 用户级配置目录（`<用户主目录>/.rustlua`）。`None` = 没拿到主目录或当前流程
+    /// 未启用持久化（单测不落真实用户目录）。
     #[cfg(feature = "ai-bridge")]
-    assistant_dirty_since: Option<Instant>,
+    user_config: Option<editor::UserConfigStore>,
+    /// 上一次落盘（或启动时观察到的）助手设置 + Key：变化检测与基线。
+    #[cfg(feature = "ai-bridge")]
+    user_config_saved: Option<(editor::AssistantLayout, String)>,
+    /// 用户配置文件里已经提供 `assistant` 段：是则不再套用旧工程布局里的值。
+    #[cfg(feature = "ai-bridge")]
+    user_config_loaded: bool,
+    /// 助手设置（服务商/地址/模型/Key）最近一次变化的时刻。
+    /// 文本框每击键都会改设置，等到输入停顿再落盘，避免每帧一次加密与原子写。
+    #[cfg(feature = "ai-bridge")]
+    assistant_config_dirty_since: Option<Instant>,
     document: ProjectDocument,
     tree: SceneTreeState,
     resources: ResourceBrowserState,
@@ -576,7 +592,7 @@ struct EditorApp {
     recovery: RecoveryManager,
     autosave: AutoSaveController,
     recovery_scan: RecoveryScan,
-    /// Inspector Override 摘要的源 Prefab 缓存（按文件 (长度, mtime) 失效）。
+    /// Inspector Override 摘要的源预制体 缓存（按文件 (长度, mtime) 失效）。
     /// 之前每帧都 `Prefab::load`：读文件 + 解析 + 建 BTreeMap。
     pub(crate) prefab_source_cache:
         std::collections::HashMap<std::path::PathBuf, crate::panels::inspector::CachedPrefabSource>,
@@ -1301,16 +1317,8 @@ impl EditorApp {
             Err(error) => (RecoveryScan::default(), Some(error.to_string())),
         };
         let publish = crate::publish::PublishState::new(&project.root);
-        // 助手初值（含环境变量解析）同时作为布局基线：否则打开项目后的首次
-        // `maybe_persist_layout_on_change` 会把"默认值"当成用户改动而自动写盘。
         #[cfg(feature = "ai-bridge")]
         let assistant = crate::panels::assistant::AssistantState::default();
-        #[cfg(feature = "ai-bridge")]
-        let layout = editor::EditorLayout {
-            assistant: Some(assistant.settings_snapshot()),
-            ..editor::EditorLayout::default()
-        };
-        #[cfg(not(feature = "ai-bridge"))]
         let layout = editor::EditorLayout::default();
         Self {
             document: ProjectDocument::open(project.clone()),
@@ -1320,7 +1328,13 @@ impl EditorApp {
             dock_signature: None,
             dock_dirty_since: None,
             #[cfg(feature = "ai-bridge")]
-            assistant_dirty_since: None,
+            user_config: None,
+            #[cfg(feature = "ai-bridge")]
+            user_config_saved: None,
+            #[cfg(feature = "ai-bridge")]
+            user_config_loaded: false,
+            #[cfg(feature = "ai-bridge")]
+            assistant_config_dirty_since: None,
             tree: SceneTreeState::new(),
             resources: ResourceBrowserState::new(),
             selected_resource: None,
@@ -1344,7 +1358,7 @@ impl EditorApp {
             inspector_tilemap_open: true,
             inspector_animation_open: true,
             inspector_add_component: "Transform".to_owned(),
-            entity_name: "Entity".to_owned(),
+            entity_name: "实体".to_owned(),
             status: recovery_scan_error.map_or_else(
                 || "尚未创建场景".to_owned(),
                 |error| format!("恢复快照扫描失败：{error}"),
@@ -1855,11 +1869,9 @@ impl EditorApp {
         self.show_ui_studio = self.layout.panel_is_visible(editor::PANEL_UI_STUDIO);
         #[cfg(feature = "ai-bridge")]
         {
-            self.assistant.apply_layout(self.layout.assistant.as_ref());
-            if self.layout.assistant.is_none() {
-                // 旧布局没有助手段：把本次实际采用的设置登记成基线，否则打开项目后的
-                // 第一帧会把"默认值"误判成用户改动、立刻自动写盘。
-                self.layout.assistant = Some(self.assistant.settings_snapshot());
+            // 用户级配置已经给过服务商设置：旧工程布局里的副本不再覆盖它。
+            if !self.user_config_loaded {
+                self.assistant.apply_layout(self.layout.assistant.as_ref());
             }
         }
         self.apply_central_views_from_layout();
@@ -1926,7 +1938,7 @@ impl EditorApp {
             WorkspaceTab::Game => self.show_scene_view,
         };
         if !visible && !other_visible {
-            self.status = "Scene 与 Game 至少要保留一个中央视图".to_owned();
+            self.status = "场景与游戏至少要保留一个中央视图".to_owned();
             return;
         }
         match tab {
@@ -2043,12 +2055,8 @@ impl EditorApp {
         self.layout.gizmo_space = self.gizmo_space.as_str().to_owned();
         self.layout.gizmo_pivot = self.gizmo_pivot.as_str().to_owned();
         self.layout.preview_resolution = self.preview_resolution;
-        // 只存助手的非密钥设置；密钥不在 `AssistantState::settings_snapshot` 的返回类型里，
-        // 从类型上杜绝"手滑把它写进布局文件"。
-        #[cfg(feature = "ai-bridge")]
-        {
-            self.layout.assistant = Some(self.assistant.settings_snapshot());
-        }
+        // 助手设置不在这里：它属于用户而不是工程（见 `enable_user_config` 与
+        // `maybe_persist_user_config_on_change`）。
         // 显式保存（菜单「保存布局」）：无视节流直接抓当前树，用户按了就要拿到现状。
         if let Some(state) = self.dock_state.as_ref() {
             let signature = crate::dock::signature(state);
@@ -2061,17 +2069,14 @@ impl EditorApp {
         self.layout.clamp();
     }
 
-    /// 面板可见性/工作台/视图模式/**dock 树结构**/助手设置变化后自动保存布局（无变化时不写盘）。
+    /// 面板可见性/工作台/视图模式/**dock 树结构**变化后自动保存工程布局（无变化时不写盘）。
     ///
-    /// 返回一个"还需要等多久"的时长（仅助手设置节流未到期时）：调用方要据此安排一次
-    /// 重绘，否则用户停止输入后再没有新帧，节流窗口到期了也没人来写盘。
+    /// 返回一个"还需要等多久"的时长（dock 树节流未到期时）：调用方要据此安排一次
+    /// 重绘，否则用户停止拖动后再没有新帧，节流窗口到期了也没人来写盘。
     fn maybe_persist_layout_on_change(&mut self) -> Option<std::time::Duration> {
         if !self.project_loaded {
             return None;
         }
-        // 无 ai-bridge 时没人写它，但返回值统一（调用点不必 cfg）。
-        #[cfg_attr(not(feature = "ai-bridge"), allow(unused_mut))]
-        let mut repaint_after = None;
         let mut current = self.layout.clone();
         let saved = current.clone();
         let visibility = self.panel_visibility();
@@ -2102,24 +2107,6 @@ impl EditorApp {
         current.gizmo_space = self.gizmo_space.as_str().to_owned();
         current.gizmo_pivot = self.gizmo_pivot.as_str().to_owned();
         current.preview_resolution = self.preview_resolution;
-        #[cfg(feature = "ai-bridge")]
-        {
-            let settings = self.assistant.settings_snapshot();
-            if self.layout.assistant.as_ref() != Some(&settings) {
-                // 还在输入：本次先不写，`current.assistant` 保持上次落盘值；
-                // 稳定期满后的那一帧再合并成一次写盘。
-                let since = *self.assistant_dirty_since.get_or_insert_with(Instant::now);
-                let elapsed = since.elapsed();
-                if elapsed >= Self::ASSISTANT_LAYOUT_SETTLE {
-                    current.assistant = Some(settings);
-                    self.assistant_dirty_since = None;
-                } else {
-                    repaint_after = Some(Self::ASSISTANT_LAYOUT_SETTLE - elapsed);
-                }
-            } else {
-                self.assistant_dirty_since = None;
-            }
-        }
         // dock 树只在结构指纹变化时序列化（每帧算一次哈希，不做 JSON 编码）。
         if let Some(tree) = self.dock_tree_change() {
             current.dock_tree = Some(Box::new(tree));
@@ -2135,11 +2122,10 @@ impl EditorApp {
             || current.gizmo_pivot != saved.gizmo_pivot
             || (current.scene_zoom - saved.scene_zoom).abs() > f32::EPSILON
             || current.preview_resolution != saved.preview_resolution
-            || current.assistant != saved.assistant
             || current.dock_tree != saved.dock_tree;
         self.layout = current;
         if !changed {
-            return repaint_after;
+            return None;
         }
         let root = crate::util::strip_verbatim_prefix(&self.project.root);
         match editor::save_layout(&root, &self.layout) {
@@ -2149,7 +2135,103 @@ impl EditorApp {
                 tracing::warn!(target: "editor", "[layout] auto-save failed: {error}");
             }
         }
-        repaint_after
+        None
+    }
+
+    /// 启用用户级设置（`<用户主目录>/.rustlua`）并加载服务商设置与 Key。
+    ///
+    /// 找不到主目录时如实提示：设置只在本次进程内有效，而不是假装已经保存。
+    #[cfg(feature = "ai-bridge")]
+    pub(crate) fn enable_user_config(&mut self) {
+        let Some(store) = editor::UserConfigStore::default_store() else {
+            self.push_console_notice(
+                "找不到用户主目录：AI 服务商设置与 Key 只在本次进程内有效".to_owned(),
+            );
+            return;
+        };
+        let stored = store.load_assistant();
+        if stored.is_some() {
+            self.assistant.apply_layout(stored.as_ref());
+            self.user_config_loaded = true;
+        }
+        match store.load_api_key() {
+            Ok(Some(key)) => self.assistant.restore_api_key(key),
+            Ok(None) => {}
+            Err(reason) => self.push_console_notice(reason),
+        }
+        self.assistant.set_user_config_available(true);
+        // 基线由第一帧的 `maybe_persist_user_config_on_change` 建立（见那里），
+        // 这样旧工程布局迁移过来的值不会被立刻当成"用户改动"再写一遍。
+        self.user_config_saved = None;
+        self.user_config = Some(store);
+    }
+
+    /// 用户级设置（地址/模型/max_tokens + DPAPI 加密的 Key）变化后落盘。
+    ///
+    /// 与工程布局不同，这里**不要求** `project_loaded`：不带 `--project` 打开编辑器
+    /// 也要能记住服务商。返回值同 [`Self::maybe_persist_layout_on_change`]：
+    /// 输入还没稳定时给出到期重绘的等待时长。
+    #[cfg(feature = "ai-bridge")]
+    fn maybe_persist_user_config_on_change(&mut self) -> Option<std::time::Duration> {
+        self.user_config.as_ref()?;
+        let current = (
+            self.assistant.settings_snapshot(),
+            self.assistant.api_key_snapshot(),
+        );
+        let Some(saved) = self.user_config_saved.as_ref() else {
+            // 第一帧只登记基线：启动时加载的值（含旧工程布局迁移）不算用户改动。
+            // 进程内之后打开别的工程带来的旧值变化按一次改动落盘（首个工程播种全局设置）。
+            self.user_config_saved = Some(current);
+            return None;
+        };
+        if *saved == current {
+            self.assistant_config_dirty_since = None;
+            return None;
+        }
+        let since = *self
+            .assistant_config_dirty_since
+            .get_or_insert_with(Instant::now);
+        let elapsed = since.elapsed();
+        if elapsed < Self::ASSISTANT_LAYOUT_SETTLE {
+            return Some(Self::ASSISTANT_LAYOUT_SETTLE - elapsed);
+        }
+        self.flush_user_config();
+        None
+    }
+
+    /// 立即落盘用户级设置（无视输入稳定窗口）：节流到期或关窗时调用。
+    #[cfg(feature = "ai-bridge")]
+    fn flush_user_config(&mut self) {
+        let Some(store) = self.user_config.clone() else {
+            return;
+        };
+        let current = (
+            self.assistant.settings_snapshot(),
+            self.assistant.api_key_snapshot(),
+        );
+        if self.user_config_saved.as_ref() == Some(&current) {
+            return;
+        }
+        // Key 为空 = 删除密文文件（用户主动清空）；非密钥设置与 Key 分两个文件写。
+        let outcome = store
+            .save_assistant(&current.0)
+            .and_then(|()| store.save_api_key(&current.1));
+        // 本进程已经做出过一次明确选择：此后打开别的工程，旧布局不再覆盖它。
+        self.user_config_loaded = true;
+        match outcome {
+            Ok(()) => self.profiler.bump("user_config_saved"),
+            Err(error) => {
+                self.profiler.bump("user_config_save_failed");
+                tracing::warn!(target: "editor", "[user-config] save failed: {error}");
+                self.push_console_notice(format!(
+                    "保存用户级编辑器设置失败（{}）：{error}",
+                    store.root().display()
+                ));
+            }
+        }
+        // 写失败也登记基线：否则每帧重试会把磁盘打满；下次改动会再试一次。
+        self.user_config_saved = Some(current);
+        self.assistant_config_dirty_since = None;
     }
 
     /// 保存布局（原子写；失败只提示，不中断编辑）。
@@ -2221,7 +2303,7 @@ impl EditorApp {
             self.runtime_perf.sample(Some(snapshot));
         } else {
             if self.runtime_perf.is_capturing() {
-                self.capture_status = Some("采集随 Play 停止而取消（样本来自上一局）".to_owned());
+                self.capture_status = Some("采集随播放停止而取消（样本来自上一局）".to_owned());
             }
             self.runtime_perf.sample(None);
         }
@@ -2516,10 +2598,9 @@ impl eframe::App for EditorApp {
     /// egui-wgpu 纹理管理器的时机（否则只能等渲染器整体析构）。
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // 设置刚改完（稳定窗口未到）就关窗：退出前把最后一笔补上。
+        // 布局与用户级设置各自判断有没有变化，没变不会写盘。
         #[cfg(feature = "ai-bridge")]
-        if self.assistant_dirty_since.is_some() {
-            self.persist_layout();
-        }
+        self.flush_user_config();
         self.release_scene_view_textures();
     }
 }
@@ -2798,8 +2879,12 @@ impl EditorApp {
         // E06-2：trace 捕获中时把本帧调度报告桥接进去（签名去重）。
         self.record_schedule_trace();
         // 面板可见性/工作台/视图变化后自动落盘布局（一次小文件原子写，仅在真正变化时发生）。
-        // 助手设置还在输入稳定期内时，安排一次到期重绘，避免停止输入后再无帧可写。
         if let Some(after) = self.maybe_persist_layout_on_change() {
+            context.request_repaint_after(after);
+        }
+        // 用户级设置（服务商 + Key）不受 `project_loaded` 限制；输入稳定期内安排到期重绘。
+        #[cfg(feature = "ai-bridge")]
+        if let Some(after) = self.maybe_persist_user_config_on_change() {
             context.request_repaint_after(after);
         }
         // 帧末汇总：帧耗时 + 会话级 gauge（历史深度/日志行数/资源条目/队列）。
@@ -3274,11 +3359,13 @@ mod layout_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// 助手设置来自文本框，每击键都会变：稳定窗口内不得写盘，期满那一帧合并写一次。
+    /// 助手设置来自文本框，每击键都会变：稳定窗口内不得写盘，期满那一帧合并写一次；
+    /// 落点是**用户级** `~/.rustlua`（不是工程布局），Key 单独加密存。
     #[cfg(feature = "ai-bridge")]
     #[test]
     fn assistant_settings_autosave_waits_for_typing_to_settle() {
         let root = temp_root("assistant-autosave");
+        let user_home = root.join("user-home");
         let project = || editor::ProjectInfo {
             root: root.clone(),
             version: "test".to_owned(),
@@ -3286,8 +3373,10 @@ mod layout_tests {
         };
         let mut app = EditorApp::new(project(), None, LogSink::new(64));
         app.project_loaded = true;
-        app.maybe_persist_layout_on_change();
-        assert!(!editor::layout_path(&root).exists(), "基线帧不得写盘");
+        app.user_config = Some(editor::UserConfigStore::at(&user_home));
+        // 第一帧只登记基线：启动加载不算用户改动。
+        assert_eq!(app.maybe_persist_user_config_on_change(), None);
+        assert!(!user_home.join("editor.json").exists(), "基线帧不得写盘");
 
         app.assistant.apply_layout(Some(&editor::AssistantLayout {
             provider: "openai".to_owned(),
@@ -3295,20 +3384,57 @@ mod layout_tests {
             model: "typing-in-progress".to_owned(),
             max_tokens: 512,
         }));
-        let pending = app.maybe_persist_layout_on_change();
+        let pending = app.maybe_persist_user_config_on_change();
         assert!(pending.is_some(), "稳定期内必须返回到期重绘的等待时长");
-        assert!(!editor::layout_path(&root).exists(), "输入稳定期内不得写盘");
+        assert!(
+            !user_home.join("editor.json").exists(),
+            "输入稳定期内不得写盘"
+        );
 
         std::thread::sleep(
             crate::EditorApp::ASSISTANT_LAYOUT_SETTLE + std::time::Duration::from_millis(50),
         );
-        assert_eq!(app.maybe_persist_layout_on_change(), None);
-        assert_eq!(app.assistant_dirty_since, None, "写成功后脏标记必须清掉");
-        let text = std::fs::read_to_string(editor::layout_path(&root)).expect("layout.json");
-        assert!(!text.contains("api_key"), "布局文件不得含密钥字段");
-        assert!(!text.contains("sk-"), "布局文件不得含密钥");
+        assert_eq!(app.maybe_persist_user_config_on_change(), None);
+        assert_eq!(
+            app.assistant_config_dirty_since, None,
+            "写成功后脏标记必须清掉"
+        );
+        let text = std::fs::read_to_string(user_home.join("editor.json")).expect("editor.json");
+        assert!(!text.contains("api_key"), "非密钥文件不得出现 api_key");
+        assert!(!text.contains("sk-"), "非密钥文件不得出现密钥");
         let saved: serde_json::Value = serde_json::from_str(&text).expect("json");
         assert_eq!(saved["assistant"]["model"], "typing-in-progress");
+        assert!(
+            !editor::layout_path(&root).exists(),
+            "助手设置不得再写进工程布局"
+        );
+
+        // Key 单独进 `assistant.key`，Windows 下必须是 DPAPI 密文。
+        app.assistant
+            .set_api_key_for_test("sk-test-only-in-ciphertext");
+        assert!(
+            app.maybe_persist_user_config_on_change().is_some(),
+            "Key 变化同样要等输入稳定"
+        );
+        std::thread::sleep(
+            crate::EditorApp::ASSISTANT_LAYOUT_SETTLE + std::time::Duration::from_millis(50),
+        );
+        assert_eq!(app.maybe_persist_user_config_on_change(), None);
+        let key_path = user_home.join("assistant.key");
+        assert!(
+            key_path.exists(),
+            "填了 Key 必须落盘：{}",
+            key_path.display()
+        );
+        #[cfg(windows)]
+        {
+            let raw = std::fs::read(&key_path).unwrap();
+            assert!(
+                !raw.windows(b"sk-test-only-in-ciphertext".len())
+                    .any(|window| window == b"sk-test-only-in-ciphertext"),
+                "密钥不得以明文落盘"
+            );
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 

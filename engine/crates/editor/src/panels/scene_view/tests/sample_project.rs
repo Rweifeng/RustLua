@@ -86,7 +86,7 @@ fn sample_project_tile_paint_persists_after_save_and_reopen() {
     assert!(document.is_dirty(), "tile paint should dirty the scene");
 
     app.save_scene();
-    assert_eq!(app.status, "Scene saved");
+    assert_eq!(app.status, "场景已保存");
     app.open_scene_resource(PathBuf::from("scenes/api_gameplay.scene"));
     let reopened = app.document.current_scene.as_ref().unwrap();
     let reopened_component =

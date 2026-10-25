@@ -84,8 +84,8 @@ impl ToolMode {
         match self {
             Self::TwoD => "2D 视图",
             Self::ThreeD => "3D 视图",
-            Self::Widget => "Widget 视图",
-            Self::Prefab => "Prefab 视图",
+            Self::Widget => "控件视图",
+            Self::Prefab => "预制体视图",
         }
     }
 
@@ -101,7 +101,7 @@ impl ToolMode {
             (_, SceneTool::Move) => "移动（W）",
             (_, SceneTool::Rotate) => "旋转（E）",
             (_, SceneTool::Scale) => "缩放（R）",
-            (_, SceneTool::TilePaint) => "Tile 画笔",
+            (_, SceneTool::TilePaint) => "瓦片画笔",
         }
     }
 }

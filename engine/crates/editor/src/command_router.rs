@@ -94,8 +94,8 @@ impl EditorApp {
                     return match studio.undo() {
                         Ok(true) => {
                             let revision = studio.revision();
-                            self.status = format!("已撤销 UI Studio 接受（revision {revision}）");
-                            self.ui_studio_panel.preview = None;
+                            self.status = format!("已撤销 UI 工作室接受（版本 {revision}）");
+                            self.ui_studio_panel.canvas_textures.clear();
                             CommandResult::Applied
                         }
                         Ok(false) => CommandResult::NoOp,
@@ -104,7 +104,7 @@ impl EditorApp {
                 }
                 // E07/E08 网关：先取消活动事务并收敛挂起编辑，再撤销。
                 if !self.history.can_undo() {
-                    self.status = "Nothing to undo".to_owned();
+                    self.status = "没有可撤销的操作".to_owned();
                     return CommandResult::NoOp;
                 }
                 self.undo_with_transaction_guard();
@@ -121,8 +121,8 @@ impl EditorApp {
                     return match studio.redo() {
                         Ok(true) => {
                             let revision = studio.revision();
-                            self.status = format!("已重做 UI Studio 接受（revision {revision}）");
-                            self.ui_studio_panel.preview = None;
+                            self.status = format!("已重做 UI 工作室接受（版本 {revision}）");
+                            self.ui_studio_panel.canvas_textures.clear();
                             CommandResult::Applied
                         }
                         Ok(false) => CommandResult::NoOp,
@@ -130,7 +130,7 @@ impl EditorApp {
                     };
                 }
                 if !self.history.can_redo() {
-                    self.status = "Nothing to redo".to_owned();
+                    self.status = "没有可重做的操作".to_owned();
                     return CommandResult::NoOp;
                 }
                 self.finish_inspector_edits_if_dirty();
@@ -218,9 +218,9 @@ impl EditorApp {
                 // 实体创建沿用面板的既有实现：名称缓冲 + 统一创建入口（含默认组件）。
                 self.entity_name = if name.trim().is_empty() {
                     if transform_3d {
-                        "3D Entity"
+                        "3D 实体"
                     } else {
-                        "New Entity"
+                        "新实体"
                     }
                     .to_owned()
                 } else {
@@ -374,7 +374,7 @@ impl EditorApp {
         target: PrefabTarget,
     ) -> Option<CommandResult> {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return Some(CommandResult::Rejected(self.status.clone()));
         }
         let Some(document) = self.document.current_scene.as_ref() else {
@@ -391,8 +391,8 @@ impl EditorApp {
         };
         if !ready {
             self.status = match target {
-                PrefabTarget::Instance => "当前实体不是 Prefab 实例".to_owned(),
-                PrefabTarget::Root => "只有 Prefab 根实例支持该操作".to_owned(),
+                PrefabTarget::Instance => "当前实体不是预制体实例".to_owned(),
+                PrefabTarget::Root => "只有预制体根实例支持该操作".to_owned(),
             };
             return Some(CommandResult::Rejected(self.status.clone()));
         }
@@ -1077,13 +1077,13 @@ mod tests {
             CommandResult::Rejected(reason) => assert!(reason.contains("42"), "{reason}"),
             other => panic!("expected Rejected, got {other:?}"),
         }
-        // 2) 普通实体不是 Prefab 实例 → 字段级操作被拒绝。
+        // 2) 普通实体不是 预制体实例 → 字段级操作被拒绝。
         match app.dispatch(EditorCommand::ApplyPrefabOverride {
             entity: root,
             field: "property:Transform.x".to_owned(),
         }) {
             CommandResult::Rejected(reason) => {
-                assert!(reason.contains("不是 Prefab 实例"), "{reason}")
+                assert!(reason.contains("不是预制体实例"), "{reason}")
             }
             other => panic!("expected Rejected, got {other:?}"),
         }
@@ -1092,13 +1092,13 @@ mod tests {
             field: "property:Transform.x".to_owned(),
         }) {
             CommandResult::Rejected(reason) => {
-                assert!(reason.contains("不是 Prefab 实例"), "{reason}")
+                assert!(reason.contains("不是预制体实例"), "{reason}")
             }
             other => panic!("expected Rejected, got {other:?}"),
         }
         match app.dispatch(EditorCommand::RevertPrefabOverrides { entity: root }) {
             CommandResult::Rejected(reason) => {
-                assert!(reason.contains("不是 Prefab 实例"), "{reason}")
+                assert!(reason.contains("不是预制体实例"), "{reason}")
             }
             other => panic!("expected Rejected, got {other:?}"),
         }
@@ -1139,7 +1139,7 @@ mod tests {
         match app.dispatch(EditorCommand::ReapplyPrefab {
             entity: SceneEntityId(1),
         }) {
-            CommandResult::Rejected(reason) => assert!(reason.contains("Play mode"), "{reason}"),
+            CommandResult::Rejected(reason) => assert!(reason.contains("播放模式下"), "{reason}"),
             other => panic!("expected Rejected, got {other:?}"),
         }
         assert_eq!(app.history.undo_len(), 0);

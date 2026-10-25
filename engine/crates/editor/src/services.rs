@@ -136,29 +136,29 @@ pub enum EditorCommand {
         component: String,
         fields: Vec<(String, String)>,
     },
-    /// Prefab 实例的字段级覆盖：把实例取值写回源 Prefab 并更新全部实例。
+    /// Prefab 实例的字段级覆盖：把实例取值写回源预制体 并更新全部实例。
     ApplyPrefabOverride {
         entity: SceneEntityId,
         field: String,
     },
-    /// Prefab 实例的字段级覆盖：把该字段还原为源 Prefab 的取值。
+    /// Prefab 实例的字段级覆盖：把该字段还原为源预制体 的取值。
     RevertPrefabOverride {
         entity: SceneEntityId,
         field: String,
     },
-    /// 重新应用源 Prefab（重建实例，保留已记录的覆盖）。
+    /// 重新应用源预制体（重建实例，保留已记录的覆盖）。
     ReapplyPrefab {
         entity: SceneEntityId,
     },
-    /// 把实例写回源 Prefab 文件（并更新全部实例）。
+    /// 把实例写回源预制体 文件（并更新全部实例）。
     SavePrefabToSource {
         entity: SceneEntityId,
     },
-    /// 解包：断开实例与源 Prefab 的关系，实体留在场景里。
+    /// 解包：断开实例与源预制体 的关系，实体留在场景里。
     UnpackPrefab {
         entity: SceneEntityId,
     },
-    /// 回退实例上的**全部**覆盖（用源 Prefab 重建实例）。
+    /// 回退实例上的**全部**覆盖（用源预制体 重建实例）。
     RevertPrefabOverrides {
         entity: SceneEntityId,
     },
@@ -229,18 +229,15 @@ impl WorkspaceService {
 
     pub fn start_play(&mut self) -> Result<(), &'static str> {
         if self.play_session.is_some() {
-            return Err("play session already active");
+            return Err("播放已经开始");
         }
-        let scene = self.current_scene().ok_or("no scene is open")?;
+        let scene = self.current_scene().ok_or("没有打开的场景")?;
         self.play_session = Some(PlaySession::start(scene));
         Ok(())
     }
 
     pub fn stop_play(&mut self) -> Result<(), &'static str> {
-        let session = self
-            .play_session
-            .take()
-            .ok_or("play session is not active")?;
+        let session = self.play_session.take().ok_or("当前没有正在播放的游戏")?;
         self.document.current_scene = Some(session.stop());
         Ok(())
     }

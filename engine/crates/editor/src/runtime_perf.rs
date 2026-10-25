@@ -24,6 +24,16 @@ use rustlua_render::render_settings::{IblMode, IblTier};
 
 /// 趋势窗口容量：约 4 秒 @ 60 FPS（与编辑器 profiler 的 240 帧同口径）。
 pub(crate) const RUNTIME_SAMPLE_CAPACITY: usize = 240;
+
+/// IBL 模式的中文名（面板只显示这个，不上屏 `off/diffuse/specular/full`）。
+fn ibl_mode_label(mode: IblMode) -> &'static str {
+    match mode {
+        IblMode::Off => "关闭",
+        IblMode::Diffuse => "漫反射",
+        IblMode::Specular => "镜面反射",
+        IblMode::Full => "完整",
+    }
+}
 /// 进程工作集的采样间隔。`GetProcessMemoryInfo` 很便宜，但没必要每个渲染帧都问一次。
 #[cfg_attr(not(windows), allow(dead_code))]
 const MEMORY_SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
@@ -144,8 +154,12 @@ impl RuntimePerfSnapshot {
     /// P3-R03：IBL 模式 + 设备档位（面板一行）。
     pub(crate) fn ibl_label(&self) -> String {
         match self.ibl_tier {
-            Some(tier) => format!("{}（Tier {}）", self.ibl_mode.as_str(), tier.as_str()),
-            None => self.ibl_mode.as_str().to_owned(),
+            Some(tier) => format!(
+                "{}（档位 {}）",
+                ibl_mode_label(self.ibl_mode),
+                tier.as_str()
+            ),
+            None => ibl_mode_label(self.ibl_mode).to_owned(),
         }
     }
 
@@ -332,8 +346,8 @@ impl RuntimeSeries {
             Self::FrameMs => "帧间隔（ms）",
             Self::RenderCpuMs => "CPU 渲染（ms）",
             Self::RenderGpuMs => "GPU 渲染（ms）",
-            Self::DrawCalls => "Draw Calls",
-            Self::SetPassCalls => "Set Pass",
+            Self::DrawCalls => "绘制调用",
+            Self::SetPassCalls => "设置通道",
             Self::Triangles => "三角形",
             Self::Vertices => "顶点",
             Self::MemoryMib => "进程工作集（MiB）",

@@ -363,7 +363,7 @@ impl EditorApp {
 
     fn focus_selected_scene_view(&mut self) {
         let Some(id) = self.selection.primary() else {
-            self.status = "请先在 Hierarchy 中选择实体".to_owned();
+            self.status = "请先在层级面板中选择实体".to_owned();
             return;
         };
         let Some(entity) = self
@@ -381,7 +381,7 @@ impl EditorApp {
                 .map(|transform| transform.position)
                 .unwrap_or(rustlua_math::math3d::Vec3::ZERO);
             self.editor_camera.target = target;
-            self.status = "3D Scene View 已聚焦实体".to_owned();
+            self.status = "3D 场景视图已聚焦实体".to_owned();
             return;
         }
         let transform = entity
@@ -393,12 +393,12 @@ impl EditorApp {
             -transform.position_x * self.scene_zoom,
             transform.position_y * self.scene_zoom,
         );
-        self.status = "Scene View 已聚焦实体".to_owned();
+        self.status = "场景视图已聚焦实体".to_owned();
     }
 
     pub(crate) fn copy_selected_entity(&mut self) {
         let Some(id) = self.selection.primary() else {
-            self.status = "请先在 Hierarchy 中选择实体".to_owned();
+            self.status = "请先在层级面板中选择实体".to_owned();
             return;
         };
         let Some(entity) = self
@@ -409,7 +409,7 @@ impl EditorApp {
             return;
         };
         self.hierarchy_clipboard = Some(entity.clone());
-        self.status = "Entity copied".to_owned();
+        self.status = "实体已复制到剪贴板".to_owned();
     }
 
     // `paste_entity` **已搬到 shell**（`crate::hierarchy_ops`，第 28 轮）：提交边界不在面板里。
@@ -737,7 +737,7 @@ impl EditorApp {
     /// H02：进入行内重命名（F2 / 双击 / 菜单）。
     fn begin_hierarchy_rename(&mut self, id: SceneEntityId) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return;
         }
         let Some(name) = self
@@ -1054,7 +1054,7 @@ impl EditorApp {
             .and_then(|entity| entity.parent);
         if ui.button("新建子节点").clicked() {
             self.dispatch(editor::EditorCommand::CreateEntity {
-                name: "New Entity".to_owned(),
+                name: "新实体".to_owned(),
                 parent: Some(id),
                 transform_3d: false,
             });
@@ -1062,7 +1062,7 @@ impl EditorApp {
         }
         if ui.button("新建同级节点").clicked() {
             self.dispatch(editor::EditorCommand::CreateEntity {
-                name: "New Entity".to_owned(),
+                name: "新实体".to_owned(),
                 parent,
                 transform_3d: false,
             });
@@ -1084,19 +1084,19 @@ impl EditorApp {
             ui.close();
         }
         ui.separator();
-        if ui.button("创建 Prefab").clicked() {
+        if ui.button("创建预制体").clicked() {
             self.selection.set_single(id, SelectionSource::Hierarchy);
             self.create_prefab_from_selected();
             ui.close();
         }
-        if ui.button("重新应用 Prefab").clicked() {
+        if ui.button("重新应用预制体").clicked() {
             self.selection.set_single(id, SelectionSource::Hierarchy);
             // typed action：目标显式携带（菜单不再依赖"先改选区"这个隐藏前提）。
             self.dispatch(editor::EditorCommand::ReapplyPrefab { entity: id });
             ui.close();
         }
         ui.separator();
-        if ui.button("聚焦 Scene View").clicked() {
+        if ui.button("聚焦场景视图").clicked() {
             self.selection.set_single(id, SelectionSource::Hierarchy);
             self.focus_selected_scene_view();
             ui.close();
@@ -1160,7 +1160,7 @@ impl EditorApp {
         }
         if ui.button("新建空实体").clicked() {
             self.dispatch(editor::EditorCommand::CreateEntity {
-                name: "New Entity".to_owned(),
+                name: "新实体".to_owned(),
                 parent,
                 transform_3d: false,
             });
@@ -1168,7 +1168,7 @@ impl EditorApp {
         }
         if ui.button("新建 3D 实体").clicked() {
             self.dispatch(editor::EditorCommand::CreateEntity {
-                name: "3D Entity".to_owned(),
+                name: "3D 实体".to_owned(),
                 parent,
                 transform_3d: true,
             });
@@ -1560,11 +1560,11 @@ impl EditorApp {
     /// 并在冲突时自动去重（见 [`Self::next_new_scene_name`]），因此不会默默覆盖已有场景文件。
     pub(crate) fn create_scene(&mut self) {
         if !self.project_loaded {
-            self.status = "Import a game project before editing".to_owned();
+            self.status = "请先导入游戏工程再编辑".to_owned();
             return;
         }
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return;
         }
         let name = self.next_new_scene_name();
@@ -1605,24 +1605,23 @@ impl EditorApp {
     /// 把选中实体保存为预制体（assets/prefabs/<name>.prefab）。
     pub(crate) fn create_prefab_from_selected(&mut self) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return;
         }
         let Some(selected) = self.selection.primary() else {
-            self.status = "请先在 Hierarchy 中选中实体".to_owned();
+            self.status = "请先在层级面板中选中实体".to_owned();
             return;
         };
         let Some(scene) = self.current_scene() else {
             return;
         };
         // **嵌套 Prefab 尚不支持**（第 47 轮）：从"已经是 Prefab 实例"的实体（或包含实例的
-        // 子树）创建 Prefab 会写出一份**嵌套源**——根/后代带着 `prefab.source`，此后
+        // 子树）创建预制体 会写出一份**嵌套源**——根/后代带着 `prefab.source`，此后
         // `reapply_prefab` / 写回源都会把它当成另一个 Prefab 的实例来重建。
         // 与其悄悄生成这种数据，不如拒绝并让作者先 Unpack（编辑器里有这个动作）。
         if let Some(nested) = subtree_prefab_source(&scene.scene, selected) {
-            self.status = format!(
-                "所选实体里包含 Prefab 实例（{nested}）：嵌套 Prefab 尚不支持，请先 Unpack 再创建"
-            );
+            self.status =
+                format!("所选实体里包含预制体实例（{nested}）：嵌套预制体尚不支持，请先解包再创建");
             return;
         }
         let name = scene
@@ -1658,7 +1657,7 @@ impl EditorApp {
 }
 
 /// 子树里出现的第一个 `prefab.source`（含根自己）：非 `None` 说明这份子树里已经有
-/// Prefab 实例，从它创建 Prefab 会产生**嵌套**（编辑器目前不支持）。
+/// Prefab 实例，从它创建预制体 会产生**嵌套**（编辑器目前不支持）。
 fn subtree_prefab_source(
     scene: &rustlua_scene::scene::Scene,
     root: SceneEntityId,
@@ -1713,7 +1712,7 @@ mod tests {
 
     /// 新建场景的默认名：`main` 可用就用它；`scenes/main.scene` 已存在则 `main2`…
     /// 菜单里没有名字输入框，名字必须由这里保证"不覆盖已有场景"。
-    /// **嵌套 Prefab 的创建边界**（第 47 轮）：从 Prefab 实例（或含实例的子树）创建 Prefab
+    /// **嵌套 Prefab 的创建边界**（第 47 轮）：从 Prefab 实例（或含实例的子树）创建预制体
     /// 必须被拒绝——那会写出一份嵌套源，之后的 reapply/写回都会把它当成两份实例；
     /// 平实体照常创建成功。
     #[test]
@@ -1762,7 +1761,7 @@ mod tests {
 
         app.create_prefab_from_selected();
         assert!(
-            app.status.contains("嵌套 Prefab 尚不支持"),
+            app.status.contains("嵌套预制体尚不支持"),
             "必须明确拒绝并说明原因：{}",
             app.status
         );

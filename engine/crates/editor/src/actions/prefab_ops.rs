@@ -7,12 +7,12 @@ use super::prefab_rebuild::{
 use super::*;
 
 impl EditorApp {
-    /// 把**单个字段**还原为源 Prefab 的取值（docs/55 阶段 3：选择性 Revert）。
+    /// 把**单个字段**还原为源预制体 的取值（docs/55 阶段 3：选择性 Revert）。
     ///
     /// 走统一的 history 网关：一条 Undo 即可收回；Play 中拒绝；不触碰其它覆盖字段。
     pub(crate) fn revert_prefab_override_field(&mut self, selected: SceneEntityId, field: &str) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return;
         }
         let Some((prefab_source, source_id, parent)) = (|| {
@@ -29,12 +29,12 @@ impl EditorApp {
                 entity.parent,
             ))
         })() else {
-            self.status = "当前实体不是 Prefab 实例".to_owned();
+            self.status = "当前实体不是预制体实例".to_owned();
             return;
         };
         let path = strip_verbatim_prefix(&self.project.root).join(&prefab_source);
         if let Err(error) = self.ensure_prefab_source_cached(&path) {
-            self.status = format!("加载源 Prefab 失败：{error}");
+            self.status = format!("加载源预制体失败：{error}");
             return;
         }
         let Some(source_entity) = self
@@ -43,7 +43,7 @@ impl EditorApp {
             .and_then(|cached| cached.prefab.entities.get(&source_id))
             .cloned()
         else {
-            self.status = format!("源 Prefab 中缺少实体 {}", source_id.0);
+            self.status = format!("源预制体中缺少实体 {}", source_id.0);
             return;
         };
         let field = field.to_owned();
@@ -53,7 +53,7 @@ impl EditorApp {
         };
         let result = self.history.execute(
             doc,
-            format!("Revert Override {field_label}"),
+            format!("还原覆盖 {field_label}"),
             CommandKind::Property,
             move |scene| {
                 let entity = scene
@@ -68,7 +68,7 @@ impl EditorApp {
                         .components
                         .get(key)
                         .cloned()
-                        .ok_or_else(|| format!("源 Prefab 缺少组件 {key}"))?;
+                        .ok_or_else(|| format!("源预制体缺少组件 {key}"))?;
                     entity.components.insert(key.to_owned(), payload);
                 } else if let Some(raw_path) = field.strip_prefix("property:") {
                     let path = rustlua_ecs::property_path::PropertyPath::parse(raw_path)
@@ -76,7 +76,7 @@ impl EditorApp {
                     let source_payload = source_entity
                         .components
                         .get(&path.component)
-                        .ok_or_else(|| format!("源 Prefab 缺少组件 {}", path.component))?;
+                        .ok_or_else(|| format!("源预制体缺少组件 {}", path.component))?;
                     let value = rustlua_ecs::property_path::read_field_text(source_payload, &path)
                         .map_err(|error| error.to_string())?;
                     let current = entity
@@ -98,7 +98,7 @@ impl EditorApp {
                         }
                     }
                 } else {
-                    return Err(format!("不支持的 Prefab override 字段 {field}"));
+                    return Err(format!("不支持的预制体覆盖字段 {field}"));
                 }
                 scene.mark_dirty();
                 Ok::<(), String>(())
@@ -107,27 +107,32 @@ impl EditorApp {
         match result {
             Ok(true) => {
                 self.on_document_changed(DocumentChange::PrefabApply);
-                self.status = format!("已回退覆盖字段：{field_label}（父节点 {parent:?}）");
+                self.status = match parent {
+                    Some(parent) => {
+                        format!("已回退覆盖字段：{field_label}（父节点 {}）", parent.0)
+                    }
+                    None => format!("已回退覆盖字段：{field_label}（根节点）"),
+                };
             }
             Ok(false) => self.status = format!("字段已是源取值：{field_label}"),
             Err(error) => self.status = format!("回退覆盖失败：{error}"),
         }
     }
 
-    /// 重新应用源 Prefab（docs/55 §4.1：**目标由 typed action 显式给出**，不再偷偷读选区）。
+    /// 重新应用源预制体（docs/55 §4.1：**目标由 typed action 显式给出**，不再偷偷读选区）。
     ///
     /// 之前这里读 `selection.primary()`，于是 Hierarchy 的右键菜单必须先"设为单选"才能调用——
     /// 一个隐藏的选区依赖。现在目标作为参数传进来，视图侧只负责发命令。
     pub(crate) fn reapply_prefab(&mut self, selected: SceneEntityId) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return;
         }
         let Some(scene) = self.current_scene() else {
             return;
         };
         let Some(entity) = scene.scene.entities.get(&selected) else {
-            self.status = "Prefab 根实例不存在".to_owned();
+            self.status = "预制体根实例不存在".to_owned();
             return;
         };
         if entity
@@ -135,18 +140,18 @@ impl EditorApp {
             .get("prefab.root")
             .is_none_or(|value| value != "true")
         {
-            self.status = "只有 Prefab 根实例支持重新应用源".to_owned();
+            self.status = "只有预制体根实例支持重新应用源".to_owned();
             return;
         }
         let Some(prefab_source) = entity.metadata.get("prefab.source").cloned() else {
-            self.status = "当前实体没有 Prefab 来源".to_owned();
+            self.status = "当前实体没有预制体来源".to_owned();
             return;
         };
         let root = strip_verbatim_prefix(&self.project.root);
         let prefab = match Prefab::load(root.join(&prefab_source)) {
             Ok(prefab) => prefab,
             Err(error) => {
-                self.status = format!("重新加载 Prefab 失败：{error}");
+                self.status = format!("重新加载预制体失败：{error}");
                 return;
             }
         };
@@ -166,7 +171,7 @@ impl EditorApp {
         };
         let result = self.history.execute(
             scene,
-            "Reapply Prefab Source",
+            "重新应用预制体源",
             CommandKind::Property,
             move |scene| {
                 if let Some(parent_id) = rebuild.parent
@@ -204,23 +209,23 @@ impl EditorApp {
                         .set_single(new_root, editor::SelectionSource::Inspector);
                     self.on_document_changed(DocumentChange::PrefabApply);
                 }
-                self.status = format!("已重新应用 Prefab：{prefab_source}");
+                self.status = format!("已重新应用预制体：{prefab_source}");
             }
-            Err(error) => self.status = format!("重新应用 Prefab 失败：{error}"),
+            Err(error) => self.status = format!("重新应用预制体失败：{error}"),
         }
     }
 
-    /// 把实例写回源 Prefab 文件（目标由 typed action 显式给出）。
+    /// 把实例写回源预制体 文件（目标由 typed action 显式给出）。
     pub(crate) fn save_prefab_to_source(&mut self, selected: SceneEntityId) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return;
         }
         let Some(scene) = self.current_scene() else {
             return;
         };
         let Some(entity) = scene.scene.entities.get(&selected) else {
-            self.status = "Prefab 根实例不存在".to_owned();
+            self.status = "预制体根实例不存在".to_owned();
             return;
         };
         if entity
@@ -228,11 +233,11 @@ impl EditorApp {
             .get("prefab.root")
             .is_none_or(|value| value != "true")
         {
-            self.status = "只有 Prefab 根实例支持写回源 Prefab".to_owned();
+            self.status = "只有预制体根实例支持写回源预制体".to_owned();
             return;
         }
         let Some(prefab_source) = entity.metadata.get("prefab.source").cloned() else {
-            self.status = "当前实体没有 Prefab 来源".to_owned();
+            self.status = "当前实体没有预制体来源".to_owned();
             return;
         };
         let root = strip_verbatim_prefix(&self.project.root);
@@ -240,7 +245,7 @@ impl EditorApp {
         let existing_prefab = match Prefab::load(&prefab_path) {
             Ok(prefab) => prefab,
             Err(error) => {
-                self.status = format!("加载源 Prefab 失败：{error}");
+                self.status = format!("加载源预制体失败：{error}");
                 return;
             }
         };
@@ -248,7 +253,7 @@ impl EditorApp {
             match build_prefab_from_instance_root(&scene.scene, selected, &existing_prefab) {
                 Ok(prefab) => prefab,
                 Err(error) => {
-                    self.status = format!("生成源 Prefab 失败：{error}");
+                    self.status = format!("生成源预制体失败：{error}");
                     return;
                 }
             };
@@ -266,7 +271,7 @@ impl EditorApp {
                 path: &prefab_path,
                 prefab: new_prefab,
                 selected,
-                label: "Save Prefab Source",
+                label: "保存预制体源",
             },
             &new_selected_root,
         );
@@ -278,21 +283,21 @@ impl EditorApp {
                         .set_single(new_root, editor::SelectionSource::Inspector);
                     self.on_document_changed(DocumentChange::PrefabApply);
                 }
-                self.status = format!("已写回 Prefab 源并更新实例：{prefab_source}");
+                self.status = format!("已写回预制体源并更新实例：{prefab_source}");
             }
-            Err(error) => self.status = format!("更新 Prefab 实例失败：{error}"),
+            Err(error) => self.status = format!("更新预制体实例失败：{error}"),
         }
     }
 
-    /// 把一个字段的**实例取值**应用回源 Prefab 文件，并同步更新场景里的全部实例
+    /// 把一个字段的**实例取值**应用回源预制体 文件，并同步更新场景里的全部实例
     /// （docs/55 阶段 3：逐字段 Apply）。应用后该字段不再是覆盖。
     pub(crate) fn apply_prefab_override_field(&mut self, selected: SceneEntityId, field: &str) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return;
         }
         let Some((prefab_source, source_id)) = self.prefab_instance_source(selected) else {
-            self.status = "当前实体不是 Prefab 实例".to_owned();
+            self.status = "当前实体不是预制体实例".to_owned();
             return;
         };
         let Some(instance_value) = self.prefab_override_instance_value(selected, field) else {
@@ -303,13 +308,13 @@ impl EditorApp {
         let mut prefab = match Prefab::load(&prefab_path) {
             Ok(prefab) => prefab,
             Err(error) => {
-                self.status = format!("加载源 Prefab 失败：{error}");
+                self.status = format!("加载源预制体失败：{error}");
                 return;
             }
         };
-        // 只改源 Prefab 里的目标字段；失败则**不落盘、不改场景**。
+        // 只改源预制体 里的目标字段；失败则**不落盘、不改场景**。
         let Some(source_entity) = prefab.entities.get_mut(&source_id) else {
-            self.status = format!("源 Prefab 中缺少实体 {}", source_id.0);
+            self.status = format!("源预制体中缺少实体 {}", source_id.0);
             return;
         };
         if field == "name" {
@@ -324,7 +329,7 @@ impl EditorApp {
                 return;
             };
             let Some(payload) = source_entity.components.get(&path.component).cloned() else {
-                self.status = format!("源 Prefab 缺少组件 {}", path.component);
+                self.status = format!("源预制体 缺少组件 {}", path.component);
                 return;
             };
             match rustlua_ecs::property_path::write_builtin(&payload, &path, &instance_value) {
@@ -341,7 +346,7 @@ impl EditorApp {
                 .metadata
                 .insert(key.to_owned(), instance_value);
         } else {
-            self.status = format!("不支持的 Prefab override 字段 {field}");
+            self.status = format!("不支持的预制体覆盖字段 {field}");
             return;
         }
 
@@ -359,7 +364,7 @@ impl EditorApp {
                 path: &prefab_path,
                 prefab,
                 selected,
-                label: &format!("Apply Override {field_label}"),
+                label: &format!("应用覆盖 {field_label}"),
             },
             &new_selected_root,
         );
@@ -371,23 +376,23 @@ impl EditorApp {
                         .set_single(new_root, editor::SelectionSource::Inspector);
                     self.on_document_changed(DocumentChange::PrefabApply);
                 }
-                self.status = format!("已把字段应用到源 Prefab 并更新全部实例：{field_label}");
+                self.status = format!("已把字段应用到源预制体并更新全部实例：{field_label}");
             }
             Err(error) => self.status = format!("应用覆盖失败：{error}"),
         }
     }
 
-    /// 解包 Prefab 实例（目标由 typed action 显式给出）。
+    /// 解包 预制体实例（目标由 typed action 显式给出）。
     pub(crate) fn unpack_prefab(&mut self, selected: SceneEntityId) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return;
         }
         let Some(scene) = self.current_scene() else {
             return;
         };
         let Some(entity) = scene.scene.entities.get(&selected) else {
-            self.status = "Prefab 根实例不存在".to_owned();
+            self.status = "预制体根实例不存在".to_owned();
             return;
         };
         if entity
@@ -395,7 +400,7 @@ impl EditorApp {
             .get("prefab.root")
             .is_none_or(|value| value != "true")
         {
-            self.status = "只有 Prefab 根实例支持 Unpack".to_owned();
+            self.status = "只有预制体根实例支持解包".to_owned();
             return;
         }
         let Some(doc) = self.document.current_scene.as_mut() else {
@@ -403,7 +408,7 @@ impl EditorApp {
         };
         let result = self
             .history
-            .execute(doc, "Unpack Prefab", CommandKind::Property, |scene| {
+            .execute(doc, "解包预制体", CommandKind::Property, |scene| {
                 let ids = collect_scene_subtree(&scene.scene, selected)?;
                 for id in ids {
                     let Some(entity) = scene.scene.entities.get_mut(&id) else {
@@ -417,9 +422,9 @@ impl EditorApp {
         match result {
             Ok(_) => {
                 self.on_document_changed(DocumentChange::PrefabApply);
-                self.status = "Prefab 实例已解包为普通实体".to_owned();
+                self.status = "预制体实例已解包为普通实体".to_owned();
             }
-            Err(error) => self.status = format!("Unpack 失败：{error}"),
+            Err(error) => self.status = format!("解包失败：{error}"),
         }
     }
 
@@ -455,7 +460,7 @@ impl EditorApp {
         }
         new_prefab
             .save(prefab_path)
-            .map_err(|error| format!("写回源 Prefab 失败：{error}"))?;
+            .map_err(|error| format!("写回源预制体失败：{error}"))?;
 
         let prefab_source_owned = prefab_source.to_owned();
         let selected_root = new_selected_root.clone();

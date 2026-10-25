@@ -46,7 +46,7 @@ impl MenuGate {
         match self {
             Self::Always => "",
             Self::ProjectLoaded => "需要先打开一个项目",
-            Self::HasSelection => "需要先在 Hierarchy / Scene 视图中选中实体",
+            Self::HasSelection => "需要先在层级 / 场景视图中选中实体",
         }
     }
 }
@@ -93,8 +93,6 @@ pub(crate) enum MenuRow {
         label: &'static str,
         rows: &'static [MenuRow],
     },
-    /// 游戏对象 ▸ 创建空对象：实体名输入行 + 按钮。
-    EntityNameField,
     /// 文件 ▸ 最近项目（运行时列表，最多 5 条）。
     RecentProjects,
     /// 组件：由 `COMPONENT_REGISTRY` 的类别分组生成。
@@ -296,27 +294,27 @@ const ASSETS_MENU: &[MenuRow] = &[
 ];
 
 const GAMEOBJECT_MENU: &[MenuRow] = &[
-    MenuRow::EntityNameField,
+    MenuRow::Item(MenuItem::new("创建空对象", MenuAction::CreateEmptyEntity)),
     MenuRow::Separator,
     MenuRow::SubMenu {
         label: "2D 对象",
         rows: &[
-            MenuRow::Item(MenuItem::new("Sprite", MenuAction::CreateSprite)),
-            MenuRow::Item(MenuItem::new("Tilemap", MenuAction::CreateTilemap)),
+            MenuRow::Item(MenuItem::new("精灵", MenuAction::CreateSprite)),
+            MenuRow::Item(MenuItem::new("瓦片地图", MenuAction::CreateTilemap)),
         ],
     },
     MenuRow::SubMenu {
         label: "3D 对象",
         rows: &[MenuRow::Item(MenuItem::new(
-            "空 3D 实体（Transform3D）",
+            "空 3D 实体",
             MenuAction::Create3dEntity,
         ))],
     },
     MenuRow::SubMenu {
-        label: "UI",
+        label: "界面",
         rows: &[
-            MenuRow::Item(MenuItem::new("Text", MenuAction::CreateUiText)),
-            MenuRow::Item(MenuItem::new("Image", MenuAction::CreateUiImage)),
+            MenuRow::Item(MenuItem::new("文本", MenuAction::CreateUiText)),
+            MenuRow::Item(MenuItem::new("图片", MenuAction::CreateUiImage)),
         ],
     },
     MenuRow::Separator,
@@ -419,16 +417,6 @@ impl EditorApp {
                 MenuRow::SubMenu { label, rows } => {
                     ui.menu_button(*label, |ui| self.draw_menu_rows(ui, rows));
                 }
-                MenuRow::EntityNameField => {
-                    ui.horizontal(|ui| {
-                        ui.label("实体名");
-                        ui.text_edit_singleline(&mut self.entity_name);
-                    });
-                    if ui.button("创建空对象").clicked() {
-                        self.run_menu_action(MenuAction::CreateEmptyEntity);
-                        ui.close();
-                    }
-                }
                 MenuRow::RecentProjects => {
                     ui.menu_button("最近项目", |ui| {
                         if self.recent_projects.is_empty() {
@@ -450,7 +438,10 @@ impl EditorApp {
                     for (category, names) in crate::panels::inspector::component_menu_groups() {
                         ui.menu_button(category, |ui| {
                             for name in names {
-                                if ui.button(name).clicked() {
+                                if ui
+                                    .button(crate::util::component_display_name(name))
+                                    .clicked()
+                                {
                                     if let Err(error) = self.add_component(name) {
                                         self.status = error;
                                     }
@@ -481,14 +472,14 @@ impl EditorApp {
                     for (label, action) in [
                         ("资源浏览器", MenuAction::ToggleResources),
                         ("层级", MenuAction::ToggleHierarchy),
-                        ("Scene", MenuAction::ToggleSceneView),
-                        ("Game", MenuAction::ToggleGameView),
+                        ("场景", MenuAction::ToggleSceneView),
+                        ("游戏", MenuAction::ToggleGameView),
                         ("属性", MenuAction::ToggleInspector),
                         ("AI 助手", MenuAction::ToggleAssistant),
                         ("控制台", MenuAction::ToggleConsole),
                         ("时间线", MenuAction::ToggleTimeline),
                         ("可视化脚本", MenuAction::ToggleGraph),
-                        ("UI Studio", MenuAction::ToggleUiStudio),
+                        ("UI 工作室", MenuAction::ToggleUiStudio),
                     ] {
                         let mut shown = self.panel_is_shown(action);
                         if ui.checkbox(&mut shown, label).clicked() {
@@ -501,8 +492,8 @@ impl EditorApp {
                     for (label, mode) in [
                         ("2D", crate::SceneViewMode::View2D),
                         ("3D", crate::SceneViewMode::View3D),
-                        ("Widget", crate::SceneViewMode::Widget),
-                        ("Prefab", crate::SceneViewMode::Prefab),
+                        ("控件", crate::SceneViewMode::Widget),
+                        ("预制体", crate::SceneViewMode::Prefab),
                     ] {
                         if ui
                             .selectable_label(self.scene_view_mode == mode, label)
@@ -666,12 +657,20 @@ impl EditorApp {
                 crate::util::open_in_explorer(&self.project.root);
             }
             // ---- 游戏对象 ----
-            MenuAction::CreateEmptyEntity => self.add_entity(None),
-            MenuAction::CreateSprite => self.add_entity_with_component("Sprite", "Sprite"),
-            MenuAction::CreateTilemap => self.add_entity_with_component("Tilemap", "Tilemap"),
-            MenuAction::Create3dEntity => self.add_3d_entity(None),
-            MenuAction::CreateUiText => self.add_entity_with_component("UiText", "Text"),
-            MenuAction::CreateUiImage => self.add_entity_with_component("UiImage", "Image"),
+            // 菜单里没有名字输入框：新建名字取默认值（与层级「+」菜单同口径），
+            // 想改名走层级 F2 / Inspector 的名称缓冲。
+            MenuAction::CreateEmptyEntity => {
+                self.entity_name = "新实体".to_owned();
+                self.add_entity(None);
+            }
+            MenuAction::CreateSprite => self.add_entity_with_component("精灵", "Sprite"),
+            MenuAction::CreateTilemap => self.add_entity_with_component("瓦片地图", "Tilemap"),
+            MenuAction::Create3dEntity => {
+                self.entity_name = "3D 实体".to_owned();
+                self.add_3d_entity(None);
+            }
+            MenuAction::CreateUiText => self.add_entity_with_component("文本", "Text"),
+            MenuAction::CreateUiImage => self.add_entity_with_component("图片", "Image"),
             // ---- 窗口（面板开关） ----
             MenuAction::ToggleResources => self.show_resources_panel = !self.show_resources_panel,
             MenuAction::ToggleHierarchy => self.show_hierarchy_panel = !self.show_hierarchy_panel,
@@ -779,6 +778,34 @@ mod tests {
                 assert!(
                     !matches!(row, MenuRow::Item(item) if item.label.contains("场景名")),
                     "菜单里不该出现场景名输入行"
+                );
+            });
+        }
+    }
+
+    /// 「创建空对象」必须是**一条菜单项**、不要实体名输入行（与层级「+」菜单同口径）：
+    /// 名字由创建入口取默认值，改名走层级 F2 / Inspector 的名称缓冲。
+    #[test]
+    fn create_empty_object_is_a_plain_menu_item() {
+        let (title, rows) = MENU_BAR
+            .iter()
+            .find(|(title, _)| *title == "游戏对象")
+            .copied()
+            .expect("缺少游戏对象菜单");
+        assert_eq!(title, "游戏对象");
+        match rows.first() {
+            Some(MenuRow::Item(item)) => {
+                assert_eq!(item.label, "创建空对象");
+                assert_eq!(item.action, MenuAction::CreateEmptyEntity);
+            }
+            other => panic!("游戏对象菜单第一项必须是「创建空对象」条目，实际 {other:?}"),
+        }
+        // 整棵菜单树里都不该再有实体名输入行。
+        for (_, rows) in MENU_BAR {
+            walk(rows, &mut |row| {
+                assert!(
+                    !matches!(row, MenuRow::Item(item) if item.label.contains("实体名")),
+                    "菜单里不该出现实体名输入行"
                 );
             });
         }

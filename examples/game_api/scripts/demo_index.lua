@@ -1,69 +1,97 @@
--- index：入口菜单。演示 `ui` 的**焦点环**（`ui.focus_*`）与**滚动**（`ui.scroll_*`）、
--- 读回接口（`ui.panel_get` / `ui.text_get` / `ui.measure_text`）以及命名动作导航。
+-- index：入口菜单。三列卡片 + 右侧**运行期 API 索引**，演示：
+--   * `ui.focus_*` 焦点环与方向键/Tab 导航；
+--   * `UiEvents` 点击分发（卡片实体名就是目标场景名）；
+--   * `_G` 枚举：API 表清单不再手写，运行期有多少模块表就显示多少。
 --
--- 场景侧的按钮（`scenes/index.scene` 的 13 个实体）演示 `UiEvents` 点击分发：
--- 实体名就是目标场景名，点击回调因此可以直接 `scene.load(name)`。
-local api = require("api_demo")
+-- 卡片是**场景实体**（`scenes/index.scene` 由 `scripts/docgen/gen-api-showcase-index.ps1`
+-- 生成）。动态 UI 画在场景 Image 之上、场景 Text 之下，因此这里的页眉/API 面板不会盖住
+-- 卡片文字，也不会盖住卡片图——三者各在自己的层里。
 
 local M = {}
 
 local entries = require("demos")
-local COLUMNS = 2
--- 与 `scripts/gen-api-showcase-index.ps1` 生成的卡片网格一致（卡片 560×50、行距 58、首行 y=148）。
-local ROW_H = 58
-local LIST_TOP = 148
-local CARD_W = 560
-local CARD_H = 50
-local VIEWPORT_H = 330
+-- 卡片网格的唯一真源（生成器读同一份）：焦点环因此不可能和卡片错位。
+local grid = require("menu_grid")
+local COLUMNS = grid.columns
+
+-- 右侧 API 面板的排版：42 个模块表按两列排，行高与字号一起算过（21 行 × 20 px
+-- 从 y=176 铺到 576，面板底在 610）。字号再大就得减行数，减行数会让新模块没地方放。
+local LIST_FONT = 14
+local LIST_ROW_H = 20
+local ROWS_PER_COLUMN = 21
+local LIST_COLUMNS = 2
+
+local STDLIB = {
+    string = true, table = true, math = true, io = true, os = true, coroutine = true,
+    debug = true, utf8 = true, package = true, _G = true, bit32 = true, arg = true,
+}
 
 local focus = 0
 local opened = 0
-local last_scroll = 0
+local api_tables = {}
+local api_functions = 0
 
--- 41 个 API 表名（`ui.scroll_*` 演示用的"内容比视口高"的虚拟列表）。
-local api_tables = {
-    "animation", "animation3d", "app", "asset", "audio", "calendar", "camera",
-    "camera2d", "camera3d", "clock", "container", "data", "day", "entity",
-    "event", "grid", "health", "input", "interact", "inv", "item", "light",
-    "log", "map", "mesh", "particles", "physics", "physics3d", "quad", "save",
-    "scene", "shop", "sprite", "tag", "tilemap", "time", "transform",
-    "transform3d", "ui", "visibility", "world_text",
-}
-
-local function entry_at(index)
-    return entries[index + 1]
+--- 运行期枚举 `_G` 里的 API 表（与 `LUA_API_PROBE` 同一条判据），
+--- 顺手统计函数总数——菜单不再维护任何"41 个模块"之类的手写数字。
+local function scan_api_surface()
+    local tables = {}
+    local total = 0
+    for key, value in pairs(_G) do
+        if type(value) == "table" and not STDLIB[key] then
+            local count = 0
+            for _, inner in pairs(value) do
+                if type(inner) == "function" then
+                    count = count + 1
+                end
+            end
+            if count > 0 then
+                tables[#tables + 1] = { name = tostring(key), count = count }
+                total = total + count
+            end
+        end
+    end
+    table.sort(tables, function(a, b)
+        return a.name < b.name
+    end)
+    return tables, total
 end
 
---- 焦点项的屏幕位置：2 列网格，与 `scenes/index.scene` 的按钮布局一致。
-local function focus_rect(index)
+local function card_rect(index)
     local column = index % COLUMNS
     local row = math.floor(index / COLUMNS)
-    local left = 120 + column * 580
-    local top = LIST_TOP + row * ROW_H
-    return left, top
+    return grid.left + column * grid.col_w, grid.top + row * grid.row_h
 end
 
 function M.on_create()
-    api.title("RustLua API Showcase")
-    api.hint(
-        "Arrows/Tab move focus - Enter/Space or click opens - wheel scrolls the API list - "
-            .. api.KEYS_BACK
-    )
-    -- 背景用**动态面板**而不是场景实体：场景里的 Image/Text 永远画在动态 UI 之上，
-    -- 铺满屏幕的场景背景会把下面的取景框与卡片高亮整片盖住（面板在同批里按 id 字典序排，
-    -- 所以 "menu_backdrop" 一定排在 "menu_focus" 之前）。
-    ui.panel("menu_backdrop", 0, 0, 1280, 720, 0.070, 0.085, 0.120, 1.0)
-    -- 焦点环：15 项、2 列布局（序号 0 基）。
+    focus = 0
+    opened = 0
+    api_tables, api_functions = scan_api_surface()
+
+    -- 焦点环：`columns=3` 让方向键按三列网格移动（序号 0 基）。
     ui.focus_open("menu", #entries, COLUMNS)
     ui.focus_select("menu", 0)
-    -- 滚动状态：内容（41 个 API 表 × 22px）比视口高，因此会出现真实的最大偏移。
-    ui.scroll_open("api_list", VIEWPORT_H, #api_tables * 22)
-    log.info("index: menu ready, use arrows or the mouse, ESC returns here")
+
+    log.info(
+        string.format(
+            "index: %d demos, runtime API %d tables / %d functions",
+            #entries,
+            #api_tables,
+            api_functions
+        )
+    )
+end
+
+local function open_entry(entry, how)
+    if not entry then
+        return false
+    end
+    opened = opened + 1
+    scene.load(entry.scene)
+    log.info(string.format("index: %s opens %s (%s)", how, entry.scene, entry.module))
+    return true
 end
 
 function M.update()
-    -- 菜单导航：`action_repeat` 是"菜单导航专用"的边沿+连发语义，
-    -- 键盘方向键与手柄 DPad/摇杆共用同一条动作名。
     if input.action_repeat("ui_down") then
         focus = ui.focus_move("menu", "down") or focus
     elseif input.action_repeat("ui_up") then
@@ -73,99 +101,77 @@ function M.update()
     elseif input.action_repeat("ui_right") then
         focus = ui.focus_move("menu", "right") or focus
     end
-    -- TAB 循环（Shift+TAB 反向）：`focus_cycle` 用**物理键**查询，命名动作只覆盖方向键。
     if input.just_pressed("tab") then
         focus = ui.focus_cycle("menu", not input.is_down("shiftleft")) or focus
     end
-
     if input.action_pressed("confirm") then
-        local entry = entry_at(focus)
-        if entry then
-            opened = opened + 1
-            scene.load(entry.scene)
-            return string.format("index_open scene=%s", entry.scene)
+        if open_entry(entries[focus + 1], "confirm") then
+            return "index_open scene=" .. entries[focus + 1].scene
         end
     end
 
-    -- 滚轮滚动虚拟 API 列表：`input.scroll_delta()` 返回数组（`[1]`=x、`[2]`=y），
-    -- `scroll_by` 返回**实际生效**的增量（已按内容高度钳制，不会滚出空白）。
-    local wheel = input.scroll_delta()
-    local wheel_y = wheel and wheel[2] or 0
-    if wheel_y ~= 0 then
-        local applied = ui.scroll_by("api_list", wheel_y * 40)
-        last_scroll = applied or 0
-    end
-    ui.scroll_extents("api_list", VIEWPORT_H, #api_tables * 22)
+    -- 页眉条与右侧 API 面板：动态面板在场景图之上、场景文字之下。
+    ui.panel("menu_header", 0, 0, 1280, 96, 0.070, 0.085, 0.120, 0.96)
+    ui.panel("menu_header_line", 0, 94, 1280, 2, 0.30, 0.55, 0.90, 1.0)
+    ui.panel("menu_api_panel", 936, grid.top, 328, 510, 0.085, 0.100, 0.140, 0.96)
+    ui.panel("menu_footer", 0, 610, 1280, 110, 0.060, 0.075, 0.105, 0.96)
 
-    -- 当前焦点项的取景框：位置由焦点序号算出来，尺寸与卡片一致。
-    local left, top = focus_rect(focus)
-    ui.panel("menu_focus", left - 6, top - 6, CARD_W + 12, CARD_H + 12, 0.16, 0.30, 0.46, 0.80)
-    ui.image("menu_icon", left + 522, top + 12, 24, 24, "assets/textures/coin.png", 1, 1, 1)
+    local left, top = card_rect(focus)
+    -- 焦点高亮：半透明覆盖在卡片图上；卡片文字是场景 Text，仍画在它上面。
+    ui.panel("menu_focus", left - 4, top - 4, grid.card_w + 8, grid.card_h + 8, 0.22, 0.42, 0.72, 0.34)
 
-    -- 读回：面板与文本的真实矩形（`panel_get` / `text_get` / `image_get`）。
-    local panel = ui.panel_get("menu_focus")
-    local entry = entry_at(focus)
-    local label = entry and entry.label or "(no entry)"
-    local measured = ui.measure_text(label, 14)
-    local drawn = ui.text_get("api_status")
-
-    -- 虚拟列表：只画可见区间（`scroll_visible` 给出 `{start, stop}`，字段名避开 `end`）。
-    local offset = ui.scroll_offset("api_list") or 0
-    local visible = ui.scroll_visible("api_list")
-    local first = math.floor(offset / 22) + 1
-    local last = math.min(#api_tables, first + math.floor(VIEWPORT_H / 22) - 1)
-    -- 上一帧画过的条目先清掉，否则滚出去的旧 id 会留在屏幕上（`ui.clear` 同时删面板/图片/网格）。
-    for i = 1, #api_tables do
-        ui.clear("api_table_" .. i)
-    end
-    ui.panel("api_list_panel", 820, LIST_TOP, 380, VIEWPORT_H, 0.10, 0.12, 0.16, 0.92)
-    for i = first, last do
-        local y = LIST_TOP + 6 + (i - 1) * 22 - offset
-        ui.text_at("api_table_" .. i, 834, y, api_tables[i], 1.0)
-    end
+    ui.text_at("menu_api_title", 952, 112, "RUNTIME API SURFACE", 1.0, 18)
     ui.text_at(
-        "api_list_info",
-        820,
-        LIST_TOP + VIEWPORT_H + 6,
-        string.format(
-            "visible %s..%s of %d - offset %.0f / max %.0f - wheel %.0f",
-            tostring(visible and visible.start or 0),
-            tostring(visible and visible.stop or 0),
-            #api_tables,
-            offset,
-            ui.scroll_max("api_list") or 0,
-            wheel_y
-        ),
-        1.0
+        "menu_api_count",
+        952,
+        142,
+        string.format("%d tables / %d functions - from _G", #api_tables, api_functions),
+        1.0,
+        14
     )
+    for i, table_info in ipairs(api_tables) do
+        local column = math.floor((i - 1) / ROWS_PER_COLUMN)
+        local row = (i - 1) % ROWS_PER_COLUMN
+        local x = 952 + column * 156
+        local y = 176 + row * LIST_ROW_H
+        ui.text_at(
+            "menu_api_" .. i,
+            x,
+            y,
+            string.format("%s %d", table_info.name, table_info.count),
+            1.0,
+            LIST_FONT
+        )
+    end
+    for i = #api_tables + 1, LIST_COLUMNS * ROWS_PER_COLUMN do
+        ui.clear("menu_api_" .. i)
+    end
 
-    -- 焦点序号同时用 `focus_count` / `focus_index` 读回（0 基）。
-    api.status(
+    ui.text_at(
+        "menu_status",
+        48,
+        620,
         string.format(
-            "focus %d/%d - %s - label %.0fx%.0f px - card %sx%s - last wheel %.0f - opened %d - status_text %s",
+            "focus %d/%d - %s - opened %d - %s",
             (ui.focus_index("menu") or 0) + 1,
             ui.focus_count("menu") or 0,
-            entry and entry.scene or "?",
-            measured and measured.width or 0,
-            measured and measured.height or 0,
-            panel and string.format("%.0f", panel.width) or "?",
-            panel and string.format("%.0f", panel.height) or "?",
-            last_scroll,
+            entries[focus + 1] and entries[focus + 1].scene or "?",
             opened,
-            drawn and drawn.text or "(none)"
-        )
+            M.KEYS_BACK
+        ),
+        1.0,
+        15
     )
-    return string.format("index_ok focus=%d", focus)
+    return string.format("index_ok focus=%d tables=%d", focus, #api_tables)
 end
+
+M.KEYS_BACK = "ESC / pad B returns to the menu"
 
 function M.on_click(name)
     for index, entry in ipairs(entries) do
         if entry.scene == name then
-            opened = opened + 1
             ui.focus_select("menu", index - 1)
-            scene.load(entry.scene)
-            log.info("index: click opens " .. entry.scene)
-            return true
+            return open_entry(entry, "click")
         end
     end
     log.warn("index: unknown button " .. tostring(name))
@@ -174,7 +180,17 @@ end
 
 function M.on_destroy()
     ui.focus_close("menu")
-    ui.scroll_close("api_list")
+    for _, id in ipairs({
+        "menu_header", "menu_header_line", "menu_api_panel", "menu_footer",
+        "menu_focus", "menu_api_title", "menu_api_count", "menu_status",
+    }) do
+        ui.hide(id)
+        ui.clear(id)
+    end
+    for i = 1, LIST_COLUMNS * ROWS_PER_COLUMN do
+        ui.hide("menu_api_" .. i)
+        ui.clear("menu_api_" .. i)
+    end
 end
 
 return M

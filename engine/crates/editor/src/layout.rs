@@ -65,8 +65,11 @@ const KNOWN_ASSISTANT_PROVIDERS: &[&str] = &["openai", "anthropic", "ollama"];
 
 /// 内置 AI 助手的**非密钥**设置（M75-03）。
 ///
-/// 密钥永远不在这里：它只驻留 `AssistantState` 的进程内输入框/环境变量，写盘会把它泄露到
-/// `.cache/editor/layout.json`（会进版本库、会被备份、会被崩溃上报收走）。
+/// 新版本把它写在**用户级** `<用户主目录>/.rustlua/editor.json`（见 [`crate::user_config`]）：
+/// 服务商属于这台机器的这个用户，换工程不该重置。本类型仍被布局加载器读取，只为了
+/// 迁移旧工程里已经存过的值。
+///
+/// 密钥永远不在这里：Windows 下它由 DPAPI 加密后单独存 `assistant.key`。
 #[derive(Clone, Debug, PartialEq)]
 pub struct AssistantLayout {
     /// `openai` / `anthropic` / `ollama`。
@@ -112,7 +115,9 @@ pub struct EditorLayout {
     /// 用 `Box` 是为了 `LayoutLoad` 的变体大小（clippy `large_enum_variant`）：这棵树本来
     /// 就只在加载/保存时读一次，多一层间接不影响任何热路径。
     pub dock_tree: Option<Box<serde_json::Value>>,
-    /// 内置 AI 助手的非密钥设置（M75-03）。`None` = 没存过 → 首次运行按环境变量初始化。
+    /// 内置 AI 助手的非密钥设置（M75-03）。`None` = 没存过。
+    ///
+    /// 只读：新版本不再把助手设置写进工程布局（它们属于用户，见 [`crate::user_config`]）。
     pub assistant: Option<AssistantLayout>,
 }
 

@@ -71,17 +71,17 @@ pub struct CommandHistory {
 /// 事务 API 错误：违反事务状态机（嵌套 begin / 无活动事务时提交或取消）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum TransactionError {
-    #[error("a transaction is already active")]
+    #[error("已有活动事务")]
     AlreadyActive,
-    #[error("no active transaction")]
+    #[error("没有活动事务")]
     NotActive,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum HistoryError {
-    #[error("nothing to undo")]
+    #[error("没有可撤销的操作")]
     NothingToUndo,
-    #[error("nothing to redo")]
+    #[error("没有可重做的操作")]
     NothingToRedo,
 }
 

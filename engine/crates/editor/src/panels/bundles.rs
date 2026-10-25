@@ -479,7 +479,7 @@ impl EditorApp {
         let mut open = self.bundles.show_panel;
         let root = crate::util::strip_verbatim_prefix(&self.project.root);
         let project_loaded = self.project_loaded;
-        egui::Window::new("资源分包（Bundles）")
+        egui::Window::new("资源分包")
             .open(&mut open)
             .default_width(960.0)
             .default_height(700.0)
@@ -515,7 +515,7 @@ impl EditorApp {
                 self.bundles.reseed(root);
                 self.bundles.message = "已从磁盘重载".to_owned();
             }
-            if ui.button("保存 bundles.json").clicked() {
+            if ui.button("保存配置").clicked() {
                 match self.bundles.save(root) {
                     Ok(path) => self.bundles.message = format!("已保存 {}", path.display()),
                     Err(error) => self.bundles.message = format!("保存失败：{error}"),
@@ -659,7 +659,7 @@ impl EditorApp {
                     self.bundles.message = format!("已应用 {applied} 条建议（记得保存）");
                 }
                 ui.label(
-                    egui::RichText::new("只改 unit；应用后需重新扫描/读取观测")
+                    egui::RichText::new("只改单元；应用后需重新扫描/读取观测")
                         .small()
                         .weak(),
                 );
@@ -678,7 +678,7 @@ impl EditorApp {
                 egui::TextEdit::singleline(&mut self.bundles.config.default_group)
                     .desired_width(140.0),
             )
-            .on_hover_text("没被任何 include/assign 命中的文件落这里；发布期默认拒绝非空。");
+            .on_hover_text("没被任何包含规则或逐路径指派命中的文件落这里；发布期默认拒绝非空。");
             ui.label("默认单元");
             ui.add(
                 egui::TextEdit::singleline(&mut self.bundles.config.default_unit)
@@ -728,7 +728,7 @@ impl EditorApp {
                     }
                 });
                 ui.horizontal(|ui| {
-                    ui.label("include");
+                    ui.label("包含前缀");
                     let mut text = group.include.join("\n");
                     let response = ui.add(
                         egui::TextEdit::multiline(&mut text)
@@ -766,7 +766,7 @@ impl EditorApp {
         });
 
         ui.add_space(6.0);
-        ui.heading("逐路径指派（assign，优先于组规则）");
+        ui.heading("逐路径指派（优先于组规则）");
         let mut remove_assign: Option<String> = None;
         let rows: Vec<(String, String)> = self
             .bundles
@@ -815,7 +815,7 @@ impl EditorApp {
         let Some(preview) = self.bundles.preview.as_ref() else {
             ui.label(
                 egui::RichText::new(
-                    "点「扫描并预估」：按当前 bundles.json 归组，并用发布同款 zstd 编码器估算每组的落盘字节。",
+                    "点「扫描并预估」：按当前分包配置归组，并用发布同款 zstd 编码器估算每组的落盘字节。",
                 )
                 .weak(),
             );

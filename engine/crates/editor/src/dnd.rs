@@ -93,7 +93,9 @@ impl DropAction {
         match self {
             Self::SpawnAssets(paths) => spawn_caption(paths.len(), false),
             Self::SpawnAssetsAsChild(paths) => spawn_caption(paths.len(), true),
-            Self::CreateWidget(kind) => format!("创建 {kind} 控件"),
+            Self::CreateWidget(kind) => {
+                format!("创建{}控件", crate::util::widget_display_name(kind))
+            }
             Self::Import(files) => format!("导入 {} 个文件", files.len()),
             Self::ImportAndSpawn(files) => import_spawn_caption(files, false),
             Self::ImportAndSpawnAsChild(files) => import_spawn_caption(files, true),
@@ -174,7 +176,7 @@ pub(crate) fn partition(files: &[PathBuf]) -> (usize, usize) {
 /// 内部资产拖到画布/层级：只有能生成实体的家族才收；材质要落到 `material` 字段。
 fn spawn_asset_plan(path: &str, as_child: bool) -> DropAction {
     if !spawnable(ResourceKind::from_path(Path::new(path))) {
-        return reject("材质不能生成实体：请拖到 MeshRenderer 的 material 字段");
+        return reject("材质不能生成实体：请拖到网格渲染器的材质字段");
     }
     if as_child {
         DropAction::SpawnAssetsAsChild(vec![path.to_owned()])
@@ -211,7 +213,7 @@ pub(crate) fn plan(source: &DragSource, zone: DropZone) -> DropAction {
             DropAction::CreateWidget(kind)
         }
         (DragSource::Internal(DropPayload::Widget(_)), DropZone::Hierarchy) => {
-            reject("控件只能拖到 Widget 模式的画布上")
+            reject("控件只能拖到控件模式的画布上")
         }
         (DragSource::Internal(DropPayload::Widget(_)), DropZone::ResourceBrowser) => {
             reject("控件不是资产，无法导入资源库")
@@ -673,7 +675,7 @@ mod tests {
         for zone in [DropZone::SceneCanvas, DropZone::Hierarchy] {
             let action = plan(&material, zone);
             assert!(action.is_reject(), "{zone:?} 不该为材质生成实体");
-            assert!(action.caption().contains("material 字段"));
+            assert!(action.caption().contains("材质字段"));
         }
 
         let external = DragSource::External(vec![path("C:/tmp/rusted.material")]);

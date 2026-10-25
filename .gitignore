@@ -31,9 +31,6 @@ Thumbs.db
 # Game project runtime temp: editor autosave/crash-recovery snapshots
 **/.temp/
 
-# Test-generated debug logs (thumbnail_stress etc.)
-**/thumb_debug.log
-
 # Game API build output
 examples/**/builds/
 

@@ -44,7 +44,7 @@ pub(crate) fn is_shader_override_path(path: &Path) -> bool {
 }
 
 /// 失败诊断的行首：成功重载时按它认出"Scene View 上那句是我写的"，只擦自己那句。
-const SHADER_FAILURE_PREFIX: &str = "shader 重载失败（旧管线保留）：";
+const SHADER_FAILURE_PREFIX: &str = "着色器重载失败（旧管线保留）：";
 
 /// 一次覆盖目录应用/重载的**结果**，还没变成 UI 文本（见模块注释里的借用约束）。
 pub(crate) enum ShaderWatchOutcome {
@@ -107,7 +107,7 @@ fn outcome_from_report(report: &ShaderReloadReport) -> ShaderWatchOutcome {
         return ShaderWatchOutcome::Unchanged;
     }
     let mut lines = vec![format!(
-        "shader：{} · 覆盖源 {}",
+        "着色器：{} · 覆盖源 {}",
         report.summary(),
         if overridden.is_empty() {
             "无".to_owned()
@@ -117,13 +117,13 @@ fn outcome_from_report(report: &ShaderReloadReport) -> ShaderWatchOutcome {
     )];
     for name in &report.fell_back_to_builtin {
         lines.push(format!(
-            "shader {name} 的覆盖文件已删除，已回退内置源（画面回到发布形态）"
+            "着色器 {name} 的覆盖文件已删除，已回退内置源（画面回到发布形态）"
         ));
     }
     ShaderWatchOutcome::Reloaded {
         lines,
         status: format!(
-            "shader 重载 {}/{} 个变体 · {:.1}ms",
+            "着色器重载 {}/{} 个变体 · {:.1}ms",
             report.rebuilt,
             report.variants,
             report.validate_ms + report.compile_ms
@@ -232,9 +232,9 @@ impl EditorApp {
                     return false;
                 }
                 self.push_console_notice(
-                    "shader 覆盖目录已回到可用状态（生效源与管线一致，无需重建）".to_owned(),
+                    "着色器覆盖目录已回到可用状态（生效源与管线一致，无需重建）".to_owned(),
                 );
-                self.status = "shader 源正常".to_owned();
+                self.status = "着色器源正常".to_owned();
                 true
             }
             ShaderWatchOutcome::Reloaded {
@@ -270,7 +270,7 @@ impl EditorApp {
                 // 不走 `set_scene_view_diagnostic`：它自己会再推一行 `[scene view] …`，
                 // 同一条失败会在 Console 出现两次。这里只要 Scene View 的浮层文本。
                 self.preview_diagnostic = Some(message);
-                self.status = "shader 重载失败".to_owned();
+                self.status = "着色器重载失败".to_owned();
                 true
             }
         }
@@ -450,7 +450,7 @@ mod tests {
             "诊断要带原文件行号：{}",
             notices[0]
         );
-        assert_eq!(app.status, "shader 重载失败");
+        assert_eq!(app.status, "着色器重载失败");
         assert!(
             app.preview_diagnostic.is_some(),
             "Scene View 诊断里要能看到失败原因"
@@ -480,8 +480,8 @@ mod tests {
             "没重编就不该作废缓存"
         );
         let outcome = ShaderWatchOutcome::Reloaded {
-            lines: vec!["shader：重载 1/6 个变体".to_owned()],
-            status: "shader 重载 1/6 个变体 · 30.0ms".to_owned(),
+            lines: vec!["着色器：重载 1/6 个变体".to_owned()],
+            status: "着色器重载 1/6 个变体 · 30.0ms".to_owned(),
             validate_ms: 12.0,
             compile_ms: 18.0,
         };
@@ -490,7 +490,7 @@ mod tests {
             app.scene_view_cache_3d.revision, None,
             "重编后两个视图都要重画"
         );
-        assert_eq!(app.status, "shader 重载 1/6 个变体 · 30.0ms");
+        assert_eq!(app.status, "着色器重载 1/6 个变体 · 30.0ms");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -505,7 +505,7 @@ mod tests {
         assert!(app.record_shader_watch(&failure));
         let reloaded = ShaderWatchOutcome::Reloaded {
             lines: vec![],
-            status: "shader 重载 1/1 个变体 · 5.0ms".to_owned(),
+            status: "着色器重载 1/1 个变体 · 5.0ms".to_owned(),
             validate_ms: 2.0,
             compile_ms: 3.0,
         };
@@ -550,7 +550,7 @@ mod tests {
             .find(|notice| notice.contains("textured.wgsl:"))
             .unwrap_or_else(|| panic!("诊断要带原文件行号：{notices:?}"));
         assert!(line.contains(":4:"), "应指向第 4 行的坏 token：{line}");
-        assert_eq!(app.status, "shader 重载失败");
+        assert_eq!(app.status, "着色器重载失败");
         assert!(
             app.preview_diagnostic.is_some(),
             "Scene View 浮层要看到失败"
@@ -583,7 +583,7 @@ mod tests {
             "恢复后 Scene View 不该留着失败：{:?}",
             app.preview_diagnostic
         );
-        assert_eq!(app.status, "shader 源正常");
+        assert_eq!(app.status, "着色器源正常");
         assert_eq!(
             (
                 app.scene_view_cache_2d.revision,

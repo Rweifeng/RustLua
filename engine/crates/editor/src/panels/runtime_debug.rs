@@ -265,7 +265,7 @@ impl EditorApp {
     pub(crate) fn refresh_runtime_probes(&mut self) {
         let Some(preview) = self.preview.as_mut() else {
             self.runtime_probe_results = None;
-            self.runtime_probe_error = Some("无运行态（未 Play）".to_owned());
+            self.runtime_probe_error = Some("无运行态（尚未开始播放）".to_owned());
             return;
         };
         let results = preview.with_script(|runtime| run_runtime_probes(runtime));

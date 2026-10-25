@@ -132,7 +132,7 @@ impl EditPatch {
         after: impl Into<String>,
     ) -> Self {
         Self::new(
-            "Set Component",
+            "设置组件",
             CommandKind::Property,
             vec![FieldChange::Component {
                 entity,
@@ -150,7 +150,7 @@ impl EditPatch {
         after: impl Into<String>,
     ) -> Self {
         Self::new(
-            "Rename",
+            "重命名",
             CommandKind::Rename,
             vec![FieldChange::Name {
                 entity,
@@ -385,7 +385,7 @@ mod tests {
             snapshot_history
                 .execute(
                     &mut snapshot_doc,
-                    "Set Component",
+                    "设置组件",
                     crate::CommandKind::Property,
                     |document| {
                         document

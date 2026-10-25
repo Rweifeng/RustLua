@@ -21,6 +21,16 @@ fn invalid_argument(message: impl Into<String>) -> UiHostError {
     UiHostError::new(UiHostErrorCode::InvalidArgument, message)
 }
 
+/// 样式状态的中文显示名（检查器只展示这个，不上屏 `hover/pressed/...`）。
+fn style_state_label(state: StyleState) -> &'static str {
+    match state {
+        StyleState::Hover => "悬停",
+        StyleState::Pressed => "按下",
+        StyleState::Disabled => "禁用",
+        StyleState::Focused => "聚焦",
+    }
+}
+
 /// 找到 `key` 的父级 key 与它在父级子表里的下标；根节点返回 `None`。
 fn parent_slot(root: &UiNode, key: &str) -> Option<(String, usize)> {
     fn visit(node: &UiNode, key: &str, parent: &str, out: &mut Option<(String, usize)>) -> bool {
@@ -392,7 +402,7 @@ impl UiStudio {
                 style
                     .states
                     .keys()
-                    .map(|state| format!("{state:?}"))
+                    .map(|state| style_state_label(*state).to_owned())
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -468,7 +478,7 @@ impl UiStudio {
         self.document.clone().ok_or_else(|| {
             crate::ui_spec_host::UiHostError::new(
                 crate::ui_spec_host::UiHostErrorCode::InvalidArgument,
-                "UI Studio 尚未打开文档",
+                "UI 工作室尚未打开文档",
             )
         })
     }
@@ -825,7 +835,7 @@ impl UiStudio {
     fn require_spec(&self) -> UiHostResult<&UiSpec> {
         self.spec
             .as_ref()
-            .ok_or_else(|| invalid_argument("UI Studio 尚未打开文档"))
+            .ok_or_else(|| invalid_argument("UI 工作室尚未打开文档"))
     }
 
     /// 接受提案并重新载入文档；接受前的原始字节进撤销栈（一次 Undo 复原）。
@@ -1059,7 +1069,7 @@ mod tests {
         );
         studio.set_section(InspectorSection::State);
         let rows = studio.inspector_rows();
-        assert!(rows.iter().any(|row| row.value.contains("Hover")));
+        assert!(rows.iter().any(|row| row.value.contains("悬停")));
 
         studio.select("title");
         studio.set_section(InspectorSection::Binding);

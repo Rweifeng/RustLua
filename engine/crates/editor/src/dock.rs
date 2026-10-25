@@ -23,7 +23,10 @@
 
 use crate::{EditorApp, WorkspaceTab};
 use eframe::egui::{self, Id, WidgetText};
-use egui_dock::{DockArea, DockState, Node, NodeIndex, Split, TabViewer, Tree};
+use egui_dock::{
+    DockArea, DockState, LeafTranslations, Node, NodeIndex, Split, TabContextMenuTranslations,
+    TabViewer, Translations, Tree,
+};
 
 /// 可停靠面板全集（阶段 1）。
 ///
@@ -53,14 +56,14 @@ impl DockTab {
         match self {
             Self::Resource => "资源面板",
             Self::Hierarchy => "层级",
-            Self::Scene => "Scene",
-            Self::Game => "Game",
+            Self::Scene => "场景",
+            Self::Game => "游戏",
             Self::Inspector => "属性",
             Self::Assistant => "AI 助手",
             Self::Console => "控制台",
             Self::Timeline => "时间线",
             Self::Graph => "可视化脚本",
-            Self::UiStudio => "UI Studio",
+            Self::UiStudio => "UI 工作室",
         }
     }
 
@@ -96,13 +99,41 @@ const SIZE_LEFT_COLUMN: f32 = SIZE_RESOURCE + SIZE_HIERARCHY;
 /// 所以重新显示资源面板时锚点（层级）正好是整个左列。
 const RESOURCE_OF_LEFT_COLUMN: f32 = SIZE_RESOURCE / SIZE_LEFT_COLUMN;
 
+/// egui_dock 内置文案（标签右键菜单、浮动窗口按钮与提示）默认英文，这里统一换成中文。
+///
+/// 这份文案会随 `DockState` 一起落盘；[`deserialize`] 读回后都会再覆盖一次，
+/// 所以旧布局里存下的英文/旧措辞不会顶掉当前文案。
+fn chinese_translations() -> Translations {
+    Translations {
+        tab_context_menu: TabContextMenuTranslations {
+            close_button: "关闭".to_owned(),
+            eject_button: "弹出为独立窗口".to_owned(),
+        },
+        leaf: LeafTranslations {
+            close_button_disabled_tooltip: "此面板组包含不可关闭的标签。".to_owned(),
+            close_all_button: "关闭窗口".to_owned(),
+            close_all_button_menu_hint: "右键关闭此窗口。".to_owned(),
+            close_all_button_modifier_hint: "按住修饰键（默认 Shift）关闭此窗口。".to_owned(),
+            close_all_button_modifier_menu_hint: "按住修饰键（默认 Shift）或右键关闭此窗口。"
+                .to_owned(),
+            close_all_button_disabled_tooltip: "此窗口包含不可关闭的标签。".to_owned(),
+            minimize_button: "最小化窗口".to_owned(),
+            minimize_button_menu_hint: "右键最小化此窗口。".to_owned(),
+            minimize_button_modifier_hint: "按住修饰键（默认 Shift）最小化此窗口。".to_owned(),
+            minimize_button_modifier_menu_hint: "按住修饰键（默认 Shift）或右键最小化此窗口。"
+                .to_owned(),
+        },
+    }
+}
+
 /// 迁移前的布局：`[资源 | 层级 | (Scene+Game) | 属性]`，底部整宽控制台。
 ///
 /// 从"中央 Scene+Game 标签组"出发逐次拆分：每次都用 [`Tree::find_tab_from`] 重新定位
 /// 叶子，因为拆分会搬动其它 `NodeIndex`。
 #[must_use]
 pub(crate) fn default_dock_state() -> DockState<DockTab> {
-    let mut state = DockState::new(vec![DockTab::Scene, DockTab::Game]);
+    let mut state = DockState::new(vec![DockTab::Scene, DockTab::Game])
+        .with_translations(chinese_translations());
     let tree = state.main_surface_mut();
     split_tab(
         tree,
@@ -224,7 +255,9 @@ pub(crate) fn serialize(state: &DockState<DockTab>) -> Option<serde_json::Value>
 /// 读回 dock 树；格式不符、含 `null` 浮点、标签重复都返回 `None`，由调用方回落默认树。
 #[must_use]
 pub(crate) fn deserialize(value: &serde_json::Value) -> Option<DockState<DockTab>> {
-    let state = serde_json::from_value::<DockState<DockTab>>(value.clone()).ok()?;
+    let mut state = serde_json::from_value::<DockState<DockTab>>(value.clone()).ok()?;
+    // 布局文件里存的是写入当时的文案（可能是英文），读回后一律换成当前中文。
+    state.translations = chinese_translations();
     // 同一个标签出现两份会打断 [`sync_visibility`] 的前提（它按"树里有没有这个标签"来决定
     // 补还是删）：藏掉一处，另一处仍在。这种树按损坏处理，不做修复。
     let mut tabs = state
@@ -1139,6 +1172,27 @@ mod tests {
             Node::Vertical(split) | Node::Horizontal(split) => split.fraction,
             other => panic!("默认树的根必须是拆分节点：{other:?}"),
         }
+    }
+
+    /// egui_dock 内置文案（标签右键菜单、浮动窗口按钮）必须是中文；
+    /// 旧布局里存下的英文文案读回后也要被覆盖，不能顶掉当前文案。
+    #[test]
+    fn dock_chrome_text_is_chinese_even_from_an_old_layout() {
+        let mut app = sample_app();
+        draw_once(&mut app, NOMINAL_WIDTH, NOMINAL_HEIGHT);
+        let state = app.dock_state.take().expect("帧末必须放回 dock 树");
+        assert_eq!(
+            state.translations.tab_context_menu.eject_button,
+            "弹出为独立窗口"
+        );
+
+        let mut value = serialize(&state).expect("画过一帧的树必须能序列化");
+        value["translations"] =
+            serde_json::to_value(Translations::english()).expect("英文文案必须能序列化");
+        let restored = deserialize(&value).expect("英文文案的旧布局也必须读得回来");
+        assert_eq!(restored.translations.tab_context_menu.close_button, "关闭");
+        assert_eq!(restored.translations.leaf.close_all_button, "关闭窗口");
+        assert_eq!(restored.translations.leaf.minimize_button, "最小化窗口");
     }
 
     /// 阶段 2 的核心验收：用户重排后的树能存能读，读回来的结构与指纹完全一致。

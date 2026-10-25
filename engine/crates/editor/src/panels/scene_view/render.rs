@@ -276,7 +276,7 @@ impl EditorApp {
                 ReadbackStatus::Failed(error) => {
                     tracing::warn!(target: "editor", "[scene view] 3D readback failed: {error}");
                     self.scene_view_cache_3d = SceneViewCache3d::default();
-                    self.set_scene_view_diagnostic(format!("Scene View 3D 回读失败：{error}"));
+                    self.set_scene_view_diagnostic(format!("3D 场景视图回读失败：{error}"));
                     ctx.request_repaint();
                 }
             }
@@ -446,7 +446,7 @@ impl EditorApp {
                 Ok(mesh) => mesh,
                 Err(error) => {
                     tracing::error!(target: "editor", "[scene view] 2D render failed: {error}");
-                    self.set_scene_view_diagnostic(format!("Scene View 渲染失败：{error}"));
+                    self.set_scene_view_diagnostic(format!("场景视图渲染失败：{error}"));
                     return;
                 }
             };
@@ -499,13 +499,13 @@ impl EditorApp {
                     self.set_scene_2d_texture(pixels, width, height, ctx);
                 }
                 ReadbackStatus::Pending => {
-                    self.set_scene_view_diagnostic("Scene View 等待 GPU 回读……显示上一帧");
+                    self.set_scene_view_diagnostic("场景视图等待 GPU 回读……显示上一帧");
                     ctx.request_repaint();
                 }
                 ReadbackStatus::Failed(error) => {
                     tracing::warn!(target: "editor", "[scene view] 2D readback failed: {error}");
                     self.scene_view_cache_2d = SceneViewCache2d::default();
-                    self.set_scene_view_diagnostic(format!("Scene View 回读失败：{error}"));
+                    self.set_scene_view_diagnostic(format!("场景视图回读失败：{error}"));
                     ctx.request_repaint();
                 }
             }

@@ -149,7 +149,7 @@ impl PendingChange {
                 format!("打开 {}", relative_path.display())
             }
             Self::CreateScene { name } => format!("新建场景 {name}"),
-            Self::CreateWidget { name } => format!("新建 Widget {name}"),
+            Self::CreateWidget { name } => format!("新建控件 {name}"),
             Self::Recover { .. } => "恢复崩溃快照".to_owned(),
             Self::SwitchProject { path } => format!("切换到项目：{}", path),
             Self::QuitEditor => "关闭编辑器".to_owned(),

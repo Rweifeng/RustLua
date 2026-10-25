@@ -1,19 +1,15 @@
 -- 场景路由：把工程级回调分发给当前场景对应的演示模块（`scripts/demos.lua` 是清单真源）。
 --
 -- 为什么用"工程级一份路由"而不是每个场景一个 `Script` 组件：演示模块之间共享
--- 入口菜单、ESC 返回、状态行这些横切行为，路由是它们的唯一落点；每实体 `Script`
+-- 入口菜单、ESC 返回、自检入口这些横切行为，路由是它们的唯一落点；每实体 `Script`
 -- 的用法由 `api_script` 场景单独演示（`scripts/entity/*.lua`）。
-local api = require("api_demo")
-
 local M = {}
 
 -- 场景名 → 模块名。演示清单（`scripts/demos.lua`）是唯一真源，但**入口菜单自己不是演示**：
 -- 它不列进清单（不进菜单卡片、不计入覆盖率清单），因此单独挂在 `ROUTES` 里。
 local ROUTES = { index = "demo_index" }
-local LABELS = {}
 for _, entry in ipairs(require("demos")) do
     ROUTES[entry.scene] = entry.module
-    LABELS[entry.scene] = entry.label
 end
 
 local current = "index"
@@ -29,10 +25,6 @@ end
 
 function M.scene_name()
     return current
-end
-
-function M.label(scene_name)
-    return LABELS[scene_name]
 end
 
 function M.on_create()
@@ -63,15 +55,23 @@ function M.update()
     if active and active.update then
         result = active.update() or result
     end
-    api.render()
     return result
+end
+
+--- 行为自检入口：由 `main.lua` 暴露成全局 `__api_demo_self_test()`，
+--- 新门 `sample_project_demos_self_test` 逐场景调它。fixture 场景没有步骤，返回 0/0。
+function M.self_test()
+    if active and active.self_test then
+        return active.self_test()
+    end
+    return string.format("ok steps=0 checks=0 failed=0 scene=%s", current)
 end
 
 function M.on_destroy()
     if active and active.on_destroy then
         active.on_destroy()
     end
-    api.clear()
+    active = nil
 end
 
 function M.on_click(name)

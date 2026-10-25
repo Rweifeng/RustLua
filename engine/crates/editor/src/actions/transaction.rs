@@ -92,7 +92,7 @@ impl EditorApp {
         if label.is_some() {
             self.on_document_changed(DocumentChange::Undo);
         }
-        self.status = label.map_or_else(|| "Nothing to undo".into(), |x| format!("Undo: {x}"));
+        self.status = label.map_or_else(|| "没有可撤销的操作".into(), |x| format!("撤销：{x}"));
     }
 
     /// E07 事务网关：撤销必须先取消活动事务（取消不产生历史、不改 dirty）；
@@ -182,7 +182,7 @@ impl EditorApp {
     /// 返回本帧是否有内容差异被直写（区别于“已提交”）。
     pub(crate) fn update_inspector_write(&mut self) -> bool {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return false;
         }
         let Some(snapshot) = self.current_inspector_edit_snapshot() else {
@@ -200,7 +200,7 @@ impl EditorApp {
         // 自动开事务（幂等：拖动中已开则沿用）。Scene View 拖拽的事务不同 ——
         // 正常 UI 同一物理指针只能操作一个目标，Escape/Undo 的取消在顶层统一处理。
         let doc_id = snapshot.doc_id;
-        self.begin_edit_transaction("Inspector", editor::CommandKind::Property, Some(doc_id));
+        self.begin_edit_transaction("属性面板", editor::CommandKind::Property, Some(doc_id));
         let EditSnapshot {
             snapshot:
                 Some(InspectorSnapshot {
@@ -245,7 +245,7 @@ impl EditorApp {
         );
         match write {
             Ok(changed) => {
-                self.status = format!("Inspector 已更新：EntityId={}", entity_id.0);
+                self.status = format!("属性面板已更新：实体 ID={}", entity_id.0);
                 changed
             }
             Err(error) => {
@@ -482,6 +482,6 @@ impl EditorApp {
         if label.is_some() {
             self.on_document_changed(DocumentChange::Redo);
         }
-        self.status = label.map_or_else(|| "Nothing to redo".into(), |x| format!("Redo: {x}"));
+        self.status = label.map_or_else(|| "没有可重做的操作".into(), |x| format!("重做：{x}"));
     }
 }

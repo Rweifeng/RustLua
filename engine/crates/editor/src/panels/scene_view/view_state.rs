@@ -4,14 +4,24 @@
 use super::*;
 use rustlua_render::render_settings::{IblMode, IblTier};
 
+/// IBL 模式的中文名（状态行只显示这个，不上屏 `off/diffuse/specular/full`）。
+fn ibl_mode_label(mode: IblMode) -> &'static str {
+    match mode {
+        IblMode::Off => "关闭",
+        IblMode::Diffuse => "漫反射",
+        IblMode::Specular => "镜面反射",
+        IblMode::Full => "完整",
+    }
+}
+
 /// P3-R03-4：3D 场景视图状态行的 IBL 读数（计划 §6.4「场景视图显示当前 tier」）。
 ///
 /// 纯函数：面板每帧拿渲染器的实际档位与场景的环境声明拼这一小段文字，测试不需要 GPU。
 fn ibl_status_label(mode: IblMode, tier: IblTier, has_environment: bool) -> String {
     if !has_environment {
-        return format!("环境未声明 · Tier {}", tier.as_str());
+        return format!("环境未声明 · 档位 {}", tier.as_str());
     }
-    format!("IBL {}（Tier {}）", mode.as_str(), tier.as_str())
+    format!("IBL {}（档位 {}）", ibl_mode_label(mode), tier.as_str())
 }
 
 impl EditorApp {
@@ -119,11 +129,11 @@ mod tests {
     fn status_row_reports_mode_and_device_tier() {
         assert_eq!(
             ibl_status_label(IblMode::Full, IblTier::A, true),
-            "IBL full（Tier A）"
+            "IBL 完整（档位 A）"
         );
         assert_eq!(
             ibl_status_label(IblMode::Diffuse, IblTier::C, true),
-            "IBL diffuse（Tier C）"
+            "IBL 漫反射（档位 C）"
         );
     }
 
@@ -132,7 +142,7 @@ mod tests {
     fn status_row_distinguishes_missing_environment_from_a_disabled_tier() {
         assert_eq!(
             ibl_status_label(IblMode::Off, IblTier::A, false),
-            "环境未声明 · Tier A"
+            "环境未声明 · 档位 A"
         );
     }
 }

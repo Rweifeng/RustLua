@@ -80,13 +80,13 @@ impl PlayState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PlayControlError {
     /// 该操作在当前状态下无意义（例如编辑态调用 pause）。
-    #[error("{action} 在 {} 状态下无效", state.label())]
+    #[error("{action}在{}状态下无效", state.label())]
     InvalidTransition {
         action: &'static str,
         state: PlayState,
     },
     /// 已经在运行/已经暂停等重复请求。
-    #[error("{action} 已在 {} 状态", state.label())]
+    #[error("{action}：已在{}状态", state.label())]
     AlreadyInState {
         action: &'static str,
         state: PlayState,

@@ -677,7 +677,7 @@ fn parse_validate_result(value: &Value) -> DomainModuleStatus {
             value
                 .get("error")
                 .and_then(Value::as_str)
-                .unwrap_or("require failed")
+                .unwrap_or("模块加载失败（require 返回失败）")
                 .to_owned(),
         );
     }
@@ -1248,7 +1248,7 @@ impl EditorApp {
                         .unwrap_or_else(|| "(缺 to_cell)".to_owned());
                     ui.label(
                         egui::RichText::new(format!(
-                            "{} · {} cell={} → {} {}  「{}」",
+                            "{} · {} 格子={} → {} {}  「{}」",
                             map.id, exit.id, cell, exit.to, to_cell, exit.label
                         ))
                         .monospace(),
@@ -1273,7 +1273,7 @@ impl EditorApp {
                     .unwrap_or_else(|| "(缺 cell)".to_owned());
                 ui.label(
                     egui::RichText::new(format!(
-                        "{} · map={} cell={}  「{}」",
+                        "{} · 地图={} 格子={}  「{}」",
                         place.name, place.map, cell, place.label
                     ))
                     .monospace(),
@@ -1292,7 +1292,7 @@ impl EditorApp {
         for npc in &view.npcs {
             ui.label(
                 egui::RichText::new(format!(
-                    "{}（{}，{}） home={} schedule={}",
+                    "{}（{}，{}） 住所={} 日程={}",
                     npc.persist_id, npc.name, npc.character, npc.home, npc.schedule
                 ))
                 .monospace(),
@@ -1305,7 +1305,7 @@ impl EditorApp {
                 .iter()
                 .map(|entry| {
                     format!(
-                        "{}[price={},limit={}]",
+                        "{}[价格={},限购={}]",
                         entry.item,
                         entry
                             .price
@@ -1319,7 +1319,7 @@ impl EditorApp {
                 .join(",");
             ui.label(
                 egui::RichText::new(format!(
-                    "{} keeper={} place={} stock=[{}] buys=[{}]",
+                    "{} 店主={} 地点={} 库存=[{}] 收购=[{}]",
                     shop.id,
                     shop.keeper,
                     shop.place,

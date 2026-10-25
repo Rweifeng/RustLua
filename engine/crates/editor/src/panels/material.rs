@@ -190,11 +190,11 @@ impl MaterialState {
         });
         let intent = match &mut self.status {
             MaterialStatus::NoSelection => {
-                ui.weak("在层级或 Scene 视图里选中一个带 MeshRenderer 的实体。");
+                ui.weak("在层级或场景视图里选中一个带网格渲染器的实体。");
                 None
             }
             MaterialStatus::NoMeshRenderer { name } => {
-                ui.weak(format!("实体 `{name}` 没有 MeshRenderer 组件。"));
+                ui.weak(format!("实体 `{name}` 没有网格渲染器组件。"));
                 None
             }
             MaterialStatus::NoOverride {
@@ -207,7 +207,7 @@ impl MaterialState {
                     "实体 `{name}` 使用 glTF 内嵌材质（网格 `{mesh}`）。"
                 ));
                 ui.weak(
-                    "创建覆盖后会把材质参数保存成工程内 .material，并写回 MeshRenderer.material。",
+                    "创建覆盖后会把材质参数保存成工程内 .material，并写回网格渲染器的材质字段。",
                 );
                 ui.label(format!("建议路径：{suggested}"));
                 if ui.button("创建覆盖").clicked() {
@@ -251,7 +251,7 @@ fn load_status(
 ) -> MaterialStatus {
     let renderer = match MeshRenderer::from_component_str(payload) {
         Ok(renderer) => renderer,
-        Err(error) => return MaterialStatus::Error(format!("MeshRenderer 配置无效：{error}")),
+        Err(error) => return MaterialStatus::Error(format!("网格渲染器配置无效：{error}")),
     };
     let Some(material_path) = renderer.material.clone() else {
         return MaterialStatus::NoOverride {
@@ -372,7 +372,7 @@ impl MaterialPreview {
             }
             if ui
                 .button("另存为")
-                .on_hover_text("写入新的 .material 并把 MeshRenderer.material 切过去")
+                .on_hover_text("写入新的 .material 并把网格渲染器的材质切换到它")
                 .clicked()
             {
                 self.save_as_path = Some(editor::material_ops::suggest_override_path(
@@ -470,7 +470,7 @@ impl MaterialPreview {
                 }
                 ui.end_row();
 
-                ui.label("Metallic");
+                ui.label("金属度");
                 let response = number(ui, &mut metallic, 0.0..=1.0, 0.01);
                 if response.drag_started() {
                     self.session.break_coalescing();
@@ -480,7 +480,7 @@ impl MaterialPreview {
                 }
                 ui.end_row();
 
-                ui.label("Roughness");
+                ui.label("粗糙度");
                 let response = number(ui, &mut roughness, 0.0..=1.0, 0.01);
                 if response.drag_started() {
                     self.session.break_coalescing();
@@ -535,7 +535,7 @@ impl MaterialPreview {
                 }
                 ui.end_row();
 
-                ui.label("Alpha 模式");
+                ui.label("透明模式");
                 egui::ComboBox::from_id_salt("material_alpha_mode")
                     .selected_text(alpha_label(alpha_mode))
                     .show_ui(ui, |ui| {
@@ -552,7 +552,7 @@ impl MaterialPreview {
                 }
                 ui.end_row();
 
-                ui.label("Alpha 阈值");
+                ui.label("透明阈值");
                 let response = ui.add_enabled(
                     current.alpha_mode == MaterialAlphaMode::Mask,
                     egui::DragValue::new(&mut alpha_cutoff)
@@ -585,7 +585,7 @@ impl MaterialPreview {
 
         ui.separator();
         ui.strong("贴图");
-        for (index, label) in ["基础色", "Metallic/Roughness", "法线", "遮挡", "自发光"]
+        for (index, label) in ["基础色", "金属度/粗糙度", "法线", "遮挡", "自发光"]
             .into_iter()
             .enumerate()
         {
@@ -771,9 +771,9 @@ fn texture_mut(material: &mut MaterialAsset, index: usize) -> &mut Option<Materi
 
 fn alpha_label(mode: MaterialAlphaMode) -> &'static str {
     match mode {
-        MaterialAlphaMode::Opaque => "opaque",
-        MaterialAlphaMode::Mask => "mask",
-        MaterialAlphaMode::Blend => "blend",
+        MaterialAlphaMode::Opaque => "不透明",
+        MaterialAlphaMode::Mask => "遮罩",
+        MaterialAlphaMode::Blend => "混合",
     }
 }
 

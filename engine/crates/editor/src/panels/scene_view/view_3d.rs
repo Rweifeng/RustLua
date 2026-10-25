@@ -133,7 +133,7 @@ impl EditorApp {
         painter.text(
             rect.left_top() + egui::vec2(12.0, 12.0),
             egui::Align2::LEFT_TOP,
-            "Scene View  -  3D  中键旋转 / 右键平移 / 滚轮缩放",
+            "3D 场景视图  -  中键旋转 / 右键平移 / 滚轮缩放",
             egui::FontId::proportional(15.0),
             egui::Color32::LIGHT_GRAY,
         );

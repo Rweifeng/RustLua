@@ -946,7 +946,7 @@ impl GuiSoak {
             let target = crate::dnd::target_path(&app.project.root, &source);
             let entities_before = scene_entity_count(app);
             let note = app.ingest_and_spawn(std::slice::from_ref(&source), None);
-            if note.contains("未导入任何文件") || note.starts_with("Play mode locks") {
+            if note.contains("未导入任何文件") || note.starts_with("播放模式下") {
                 load.skipped += 1;
             } else {
                 load.drop_imports += 1;

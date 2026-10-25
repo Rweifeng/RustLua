@@ -474,7 +474,7 @@ pub(crate) fn performance_sections(
         note: None,
     });
     sections.push(PerformanceSection {
-        title: "Gauge（本帧快照）",
+        title: "仪表（本帧快照）",
         default_open: false,
         rows: report
             .gauges
@@ -500,17 +500,17 @@ pub(crate) fn performance_sections(
 fn runtime_perf_sections(snapshot: Option<&RuntimePerfSnapshot>) -> Vec<PerformanceSection> {
     let Some(snapshot) = snapshot else {
         return vec![PerformanceSection {
-            title: "运行时（Play 预览）",
+            title: "运行时（播放预览）",
             default_open: true,
             rows: vec![row(
                 "状态",
-                "未运行（点击 Play 开始实时采样）",
+                "未运行（点击播放开始实时采样）",
                 "runtime.status",
                 false,
             )],
             note: Some(
-                "Play 后本组显示帧率 / draw call / set pass / 顶点面数 / CPU/GPU / 内存 / \
-                 资源加载与缓存。停止 Play 会清空，不保留上一局的过期读数。"
+                "开始播放后本组显示帧率 / 绘制调用 / 设置通道 / 顶点面数 / CPU/GPU / 内存 / \
+                 资源加载与缓存。停止播放会清空，不保留上一局的过期读数。"
                     .to_owned(),
             ),
         }];
@@ -630,7 +630,7 @@ fn runtime_perf_sections(snapshot: Option<&RuntimePerfSnapshot>) -> Vec<Performa
                     false,
                 ),
                 row(
-                    "Tonemap",
+                    "色调映射",
                     snapshot.tonemap_label(),
                     "runtime.tonemap",
                     false,
@@ -648,13 +648,13 @@ fn runtime_perf_sections(snapshot: Option<&RuntimePerfSnapshot>) -> Vec<Performa
                     snapshot.environment_error.is_some(),
                 ),
                 row(
-                    "Draw Calls",
+                    "绘制调用",
                     snapshot.draw_calls.to_string(),
                     "runtime.draw_calls",
                     snapshot.draw_calls > 2000,
                 ),
                 row(
-                    "Set Pass",
+                    "设置通道",
                     snapshot.set_pass_calls.to_string(),
                     "runtime.set_pass_calls",
                     snapshot.set_pass_calls > 200,
@@ -795,7 +795,7 @@ fn runtime_perf_sections(snapshot: Option<&RuntimePerfSnapshot>) -> Vec<Performa
                     false,
                 ),
                 row(
-                    "Shader 变体",
+                    "着色器变体",
                     snapshot.pipeline_variants.to_string(),
                     "runtime.pipeline_variants",
                     false,
@@ -937,10 +937,7 @@ fn gpu_pass_rows(snapshot: &RuntimePerfSnapshot) -> Vec<PerformanceRow> {
     if !report.supported {
         return vec![row(
             "状态",
-            format!(
-                "不可用（{}）",
-                report.reason.as_deref().unwrap_or("unsupported")
-            ),
+            format!("不可用（{}）", report.reason.as_deref().unwrap_or("不支持")),
             "runtime.gpu_pass_supported",
             false,
         )];
@@ -1145,9 +1142,9 @@ fn counter_label(name: &str) -> String {
         "layout_auto_saved" => "布局自动保存",
         "layout_save_failed" => "布局保存失败",
         "layout_reset" => "布局重置",
-        "shader_watch_hits" => "shader 文件事件命中",
-        "shader_reloads" => "shader 重载成功",
-        "shader_reload_failures" => "shader 重载失败",
+        "shader_watch_hits" => "着色器文件事件命中",
+        "shader_reloads" => "着色器重载成功",
+        "shader_reload_failures" => "着色器重载失败",
         other => other,
     }
     .to_owned()
@@ -1170,8 +1167,8 @@ fn gauge_label(name: &str) -> String {
         "hierarchy_row_content_height" => "层级行内容高度",
         "console_row_content_height" => "控制台行内容高度",
         "thumbnail_cache_entries" => "缩略图缓存条目",
-        "shader_reload_validate_ms" => "shader 校验耗时(ms)",
-        "shader_reload_compile_ms" => "shader 编译耗时(ms)",
+        "shader_reload_validate_ms" => "着色器校验耗时(ms)",
+        "shader_reload_compile_ms" => "着色器编译耗时(ms)",
         other => other,
     }
     .to_owned()
@@ -1188,7 +1185,7 @@ const TREND_GAP: f32 = 8.0;
 /// 最小/最大刻度，趋势细节靠折线形状表达。
 fn draw_runtime_trends(ui: &mut egui::Ui, history: &RuntimePerfHistory) {
     if history.is_empty() {
-        ui.weak("（Play 运行后开始记录；窗口容量 240 帧）");
+        ui.weak("（开始播放后记录；窗口容量 240 帧）");
         return;
     }
     ui.weak(format!(
@@ -1429,7 +1426,7 @@ impl EditorApp {
         let capturing = self.runtime_perf.is_capturing();
         let capture_frames = self.runtime_perf.capture_len();
         let capture_status = self.capture_status.clone();
-        let response = egui::Window::new("性能分析（Editor + Runtime）")
+        let response = egui::Window::new("性能分析（编辑器 + 运行时）")
             .open(&mut open)
             .default_pos(default_pos)
             .default_size(default_size)
@@ -1494,10 +1491,10 @@ impl EditorApp {
                         }
                     }
                     if ui
-                        .button(if trace_active { "停止 trace" } else { "开始 trace" })
+                        .button(if trace_active { "停止追踪" } else { "开始追踪" })
                         .on_hover_text(
-                            "E06-2：捕获帧/面板/命令/调度系统 span（有界 8192，重开会清空）；\
-                             用「导出 trace」在 chrome://tracing 或 Perfetto 打开",
+                            "E06-2：捕获帧/面板/命令/调度系统的区间记录（有界 8192，重开会清空）；\
+                             用「导出追踪」在 chrome://tracing 或 Perfetto 打开",
                         )
                         .clicked()
                     {
@@ -1506,7 +1503,7 @@ impl EditorApp {
                     if ui
                         .add_enabled(
                             trace_summary.spans > 0,
-                            egui::Button::new("导出 trace"),
+                            egui::Button::new("导出追踪"),
                         )
                         .on_hover_text("写 Chrome Trace Event JSON 到项目的 target/reports/editor-profile-trace.json")
                         .clicked()
@@ -1515,7 +1512,7 @@ impl EditorApp {
                     }
                     if trace_active {
                         ui.weak(format!(
-                            "trace {} spans（丢 {}）",
+                            "追踪 {} 个区间（丢弃 {}）",
                             trace_summary.spans, trace_summary.dropped
                         ));
                     }
@@ -1538,7 +1535,7 @@ impl EditorApp {
                             ui.weak(format!("运行时 {:.1} FPS", snapshot.fps));
                         }
                         None => {
-                            ui.weak("运行时不采样（Play 后开始）");
+                            ui.weak("运行时不采样（开始播放后记录）");
                         }
                     }
                 });
@@ -1591,27 +1588,27 @@ impl EditorApp {
                         });
                 }
                 if trace_active || trace_summary.spans > 0 {
-                    egui::CollapsingHeader::new("trace 捕获")
+                    egui::CollapsingHeader::new("追踪捕获")
                         .id_salt("trace_capture")
                         .default_open(true)
                         .show(ui, |ui| {
                             ui.weak(format!(
-                                "档位 {} · span {}/{} · 丢弃 {} · 覆盖 {:.3} ms",
-                                trace_level.as_str(),
+                                "档位 {} · 区间 {}/{} · 丢弃 {} · 覆盖 {:.3} ms",
+                                trace_level_label(trace_level),
                                 trace_summary.spans,
                                 trace_summary.capacity,
                                 trace_summary.dropped,
                                 trace_summary.covered_ns as f64 / 1_000_000.0
                             ));
                             if trace_stats.is_empty() {
-                                ui.weak("（暂无 span）");
+                                ui.weak("（暂无区间）");
                             } else {
                                 egui::Grid::new("trace_top_spans")
                                     .num_columns(3)
                                     .striped(true)
                                     .spacing([12.0, 2.0])
                                     .show(ui, |ui| {
-                                        ui.label("span");
+                                        ui.label("区间");
                                         ui.label("合计");
                                         ui.label("p95");
                                         ui.end_row();
@@ -1628,7 +1625,7 @@ impl EditorApp {
                                     });
                             }
                             ui.weak(
-                                "完整时间线用「导出 trace」在 chrome://tracing / Perfetto 打开；\
+                                "完整时间线用「导出追踪」在 chrome://tracing / Perfetto 打开；\
                                  Fine 档的开销门见 wp0_profile_capture（≤2%）。",
                             );
                         });
@@ -1647,8 +1644,7 @@ impl EditorApp {
             self.profiler.clear_span_records();
             self.last_trace_report = None;
             self.runtime_perf.clear_history();
-            self.status =
-                "已清空性能采样与 trace 记录（计数器、gauge 与当前运行时快照保留）".to_owned();
+            self.status = "已清空性能采样与追踪记录（计数器、仪表与当前运行时快照保留）".to_owned();
         }
         if toggle_pause {
             let next = !self.runtime_perf.paused();
@@ -1661,9 +1657,9 @@ impl EditorApp {
         }
         if start_capture {
             if self.runtime_perf.start_capture() {
-                self.capture_status = Some("采集中：Play 预览的逐帧样本已开始记录".to_owned());
+                self.capture_status = Some("采集中：播放预览的逐帧样本已开始记录".to_owned());
             } else {
-                self.status = "采集需要先 Play（没有运行时快照）".to_owned();
+                self.status = "采集需要先开始播放（当前没有运行时快照）".to_owned();
             }
         }
         if cancel_capture {
@@ -1693,14 +1689,11 @@ impl EditorApp {
         if toggle_trace {
             if trace_active {
                 self.profiler.stop_span_capture();
-                self.status = format!(
-                    "trace 捕获已停止（保留 {} 个 span，可导出）",
-                    trace_summary.spans
-                );
+                self.status = format!("追踪已停止（保留 {} 个区间，可导出）", trace_summary.spans);
             } else {
                 self.profiler.start_span_capture(CaptureLevel::Fine);
                 self.last_trace_report = None;
-                self.status = "trace 捕获已开始（Fine：帧/面板/命令/调度系统）".to_owned();
+                self.status = "追踪已开始（精细：帧/面板/命令/调度系统）".to_owned();
             }
         }
         if export_trace {
@@ -1711,10 +1704,19 @@ impl EditorApp {
                 .map_or(Ok(()), std::fs::create_dir_all)
                 .and_then(|()| std::fs::write(&path, json.as_bytes()));
             self.status = match written {
-                Ok(()) => format!("trace 已导出：{}（{} 字节）", path.display(), json.len()),
-                Err(error) => format!("trace 导出失败：{error}"),
+                Ok(()) => format!("追踪已导出：{}（{} 字节）", path.display(), json.len()),
+                Err(error) => format!("追踪导出失败：{error}"),
             };
         }
+    }
+}
+
+/// 追踪档位的中文名（面板只显示这个，不上屏 `off/system/fine` 这类取值）。
+fn trace_level_label(level: CaptureLevel) -> &'static str {
+    match level {
+        CaptureLevel::Off => "关闭",
+        CaptureLevel::System => "系统",
+        CaptureLevel::Fine => "精细",
     }
 }
 
@@ -2167,21 +2169,17 @@ mod tests {
             None,
         );
         assert_eq!(sections.len(), 8, "七个编辑器分组 + 一个运行时占位分组");
-        for title in [
-            "面板耗时",
-            "命令耗时",
-            "计数器（累计）",
-            "Gauge（本帧快照）",
-        ] {
+        for title in ["面板耗时", "命令耗时", "计数器（累计）", "仪表（本帧快照）"]
+        {
             assert!(
                 section(&sections, title).rows.is_empty(),
                 "{title} 在空报告下应为空（由绘制层显示占位）"
             );
         }
-        let runtime = section(&sections, "运行时（Play 预览）");
+        let runtime = section(&sections, "运行时（播放预览）");
         assert_eq!(runtime.rows[0].raw_key, "runtime.status");
         assert_eq!(
-            runtime.rows[0].value, "未运行（点击 Play 开始实时采样）",
+            runtime.rows[0].value, "未运行（点击播放开始实时采样）",
             "未 Play 时必须明确说没在采样"
         );
         // `enabled=false` 的报告必须自曝"没在记录"，而不是显示一排 0 让人误解。
@@ -2295,7 +2293,7 @@ mod tests {
             ("runtime.hdr_active", "是"),
             ("runtime.scene_format", "rgba16float"),
             ("runtime.tonemap", "aces"),
-            ("runtime.ibl", "full（Tier A）"),
+            ("runtime.ibl", "完整（档位 A）"),
             ("runtime.environment", "assets/env/studio.rlenv"),
             ("runtime.draw_calls", "42"),
             ("runtime.set_pass_calls", "6"),
@@ -2330,7 +2328,7 @@ mod tests {
             .iter()
             .find(|row| row.raw_key == "runtime.gpu_pass_supported")
             .expect("GPU 通道分组必须给出可用性");
-        assert_eq!(unsupported.value, "不可用（unsupported）");
+        assert_eq!(unsupported.value, "不可用（不支持）");
 
         let resources = section(&sections, "运行时 · 资源与缓存");
         for (key, value) in [

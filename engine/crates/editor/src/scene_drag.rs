@@ -85,11 +85,7 @@ impl EditorApp {
             return;
         };
         // 写入文档前开启事务（幂等：已开启则直接沿用）。
-        self.begin_edit_transaction(
-            "Scene Transform",
-            CommandKind::Transform(first),
-            Some(first),
-        );
+        self.begin_edit_transaction("场景变换", CommandKind::Transform(first), Some(first));
         let Some(scene) = self.document.current_scene.as_mut() else {
             return;
         };
@@ -212,7 +208,7 @@ impl EditorApp {
                 let changed = self.history.execute(
                     scene,
                     if written > 1 {
-                        "3D Transform (multi)"
+                        "3D 变换（多选）"
                     } else {
                         "3D Transform"
                     },

@@ -8,6 +8,69 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// 组件类型的中文显示名（**仅界面用**）。
+///
+/// 组件名同时是存盘数据、命令与 AI 契约里的标识，因此底层一律保留英文；
+/// 这里只负责属性面板标题、组件菜单等处的展示。未登记的组件原样返回。
+pub(crate) fn component_display_name(name: &str) -> &str {
+    match name {
+        "Transform" => "变换",
+        "Camera" => "相机",
+        "Sprite" => "精灵",
+        "Tilemap" => "瓦片地图",
+        "Persistent" => "跨场景保留",
+        "Animation" => "动画状态机",
+        "AnimationPlayer" => "动画播放器",
+        "Animation3D" => "3D 动画",
+        "MeshRenderer" => "网格渲染器",
+        "Light" => "灯光",
+        "Collider" => "2D 碰撞体",
+        "Collider3d" => "3D 碰撞体",
+        "Text" => "文本",
+        "WorldText" => "世界文本",
+        "Image" => "图片",
+        "UiLayout" => "界面布局",
+        "Container" => "容器",
+        "LayoutItem" => "布局项",
+        "UiEvents" => "界面事件",
+        "UiBindings" => "属性绑定",
+        "ButtonStates" => "按钮状态",
+        "UiAnimation" => "界面动画",
+        "Script" => "Lua 脚本",
+        "Environment" => "环境",
+        "Quad" => "四边形",
+        "RenderMode" => "渲染模式",
+        "Visibility" => "可见性",
+        "ParticleEmitter" => "粒子发射器",
+        "ScrollView" => "滚动视图",
+        _ => name,
+    }
+}
+
+/// 控件类型的中文显示名（调色板/新建菜单/UI 工作室层级用；类型标识仍是英文）。
+pub(crate) fn widget_display_name(kind: &str) -> &str {
+    match kind {
+        "Text" | "text" => "文本",
+        "Image" | "image" => "图片",
+        "Button" | "button" => "按钮",
+        "Panel" | "panel" => "面板",
+        "Container" | "container" => "容器",
+        "toggle" => "开关",
+        "slider" => "滑块",
+        "progress" => "进度条",
+        "input" => "输入框",
+        "scroll_view" => "滚动视图",
+        "list" => "列表",
+        "grid" => "网格",
+        "tabs" => "标签页",
+        "modal" => "模态框",
+        "tooltip" => "提示气泡",
+        "spacer" => "间隔",
+        "safe_area" => "安全区",
+        _ => kind,
+    }
+}
+
 /// 测试用唯一令牌：进程 ID + 原子计数 + 时间戳。
 ///
 /// 只取时间戳不够——Windows 时钟粒度下并行测试可能拿到同一个纳秒值，临时目录互撞，
@@ -373,7 +436,7 @@ pub(crate) fn chevron_down_button(ui: &mut Ui, tooltip: &str) -> Response {
 /// 与字体安装情况无关。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DrawIcon {
-    /// 斜铅笔：编辑入口（如「打开 Prefab 编辑」）。
+    /// 斜铅笔：编辑入口（如「打开预制体编辑」）。
     Pencil,
     /// 叉：缺失 / 导入失败 / 清除。
     Cross,

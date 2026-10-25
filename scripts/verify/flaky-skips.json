@@ -1,0 +1,17 @@
+{
+  "format": "rustlua-flaky-skips-1",
+  "env_var": "RUSTLUA_SKIP_CI_FLAKY",
+  "note": "本表是「CI 少跑了哪些测试」的唯一账本。判定门：scripts/verify/check-flaky-skips.mjs（任何读取 RUSTLUA_SKIP_CI_FLAKY 的测试源文件都必须在这里登记，缺字段或登记过期都会判红）。",
+  "skips": [
+    {
+      "test": "title_scene_stick_navigation_works_through_runtime_scene",
+      "reader": "engine/crates/engine/src/host/runtime_scene/tests/gamepad_input.rs",
+      "issuer": ".github/workflows/quality.yml",
+      "since": "2026-10-21",
+      "reason": "CI windows-latest 上该用例在 Lua 脚本步之后以 0xC0000005 崩溃，导致整个 engine 测试二进制失败；同一二进制本地单线程通过，因此先显式隔离这一条而不是让它带崩全量测试。",
+      "restore_condition": "CI 上以默认线程数连续 3 次跑通该用例（崩溃根因定位为设备丢失/并发 GPU 还是栈边界并修好）后，删除本条并把 quality.yml 的 RUSTLUA_SKIP_CI_FLAKY 一起摘掉。",
+      "impact": "CI 的 engine --lib 不执行手柄运行时场景这条摇杆导航用例；标题屏导航回归只能靠本地 `cargo test -p engine -- --test-threads=1` 或 GUI 目验发现。",
+      "review_by": "2026-12-31"
+    }
+  ]
+}

@@ -265,13 +265,11 @@ impl TimelineState {
         ui.separator();
         match &mut self.status {
             TimelineStatus::NoSelection => {
-                ui.weak("在层级或 Scene 视图里选中一个带 AnimationPlayer 的实体。");
+                ui.weak("在层级或场景视图里选中一个带动画播放器的实体。");
             }
             TimelineStatus::NoPlayer { name } => {
-                ui.label(format!("实体 `{name}` 没有 AnimationPlayer 组件。"));
-                ui.weak(
-                    "在属性面板添加 AnimationPlayer（clip=assets/anim/<name>.anim）后即可预览。",
-                );
+                ui.label(format!("实体 `{name}` 没有动画播放器组件。"));
+                ui.weak("在属性面板添加动画播放器（clip=assets/anim/<name>.anim）后即可预览。");
             }
             TimelineStatus::Error(error) => {
                 ui.colored_label(egui::Color32::from_rgb(226, 148, 92), error);

@@ -14,22 +14,22 @@ use rustlua_scene::scene::SceneEntityId;
 impl EditorApp {
     pub(crate) fn paste_entity(&mut self, parent: Option<SceneEntityId>) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return;
         }
         let Some(source) = self.hierarchy_clipboard.clone() else {
-            self.status = "Entity clipboard is empty".to_owned();
+            self.status = "实体剪贴板为空".to_owned();
             return;
         };
         let tree = self.tree.clone();
         let created = std::cell::Cell::new(None::<SceneEntityId>);
         let Some(scene) = self.document.current_scene.as_mut() else {
-            self.status = "Create a scene first".to_owned();
+            self.status = "请先创建场景".to_owned();
             return;
         };
         let result = self
             .history
-            .execute(scene, "Paste entity", CommandKind::Create, |scene| {
+            .execute(scene, "粘贴实体", CommandKind::Create, |scene| {
                 let id = tree
                     .duplicate_subtree(scene, &source, parent)
                     .map_err(|error| error.to_string())?;
@@ -42,9 +42,9 @@ impl EditorApp {
                     self.selection.set_single(id, SelectionSource::Hierarchy);
                     self.sync_inspector(id);
                 }
-                self.status = "Entity pasted".to_owned();
+                self.status = "实体已粘贴".to_owned();
             }
-            Ok(false) => self.status = "No change".to_owned(),
+            Ok(false) => self.status = "没有变化".to_owned(),
             Err(error) => self.status = error,
         }
     }
@@ -58,7 +58,7 @@ impl EditorApp {
         position: ReparentPosition,
     ) {
         let Some(scene) = self.document.current_scene.as_ref() else {
-            self.status = "Create a scene first".to_owned();
+            self.status = "请先创建场景".to_owned();
             return;
         };
         let batch: Vec<SceneEntityId> =
@@ -76,13 +76,13 @@ impl EditorApp {
             }
         }
         let primary = batch[0];
-        if !self.begin_edit_transaction("Reparent entities", CommandKind::Reparent, Some(primary)) {
+        if !self.begin_edit_transaction("更改父实体", CommandKind::Reparent, Some(primary)) {
             self.status = "重挂载事务已激活，无法重复开始".to_owned();
             return;
         }
         let Some(scene) = self.document.current_scene.as_mut() else {
             self.cancel_edit_transaction();
-            self.status = "Create a scene first".to_owned();
+            self.status = "请先创建场景".to_owned();
             return;
         };
         let mut error = None;
@@ -126,7 +126,7 @@ impl EditorApp {
             self.status = if batch.len() > 1 {
                 format!("已移动 {} 个实体", batch.len())
             } else {
-                "Reparented by drag".to_owned()
+                "已通过拖拽更改父实体".to_owned()
             };
         }
     }
@@ -145,7 +145,7 @@ impl EditorApp {
         let mut document = editor::SceneDocument::new_widget(name.clone());
         let scene = &mut document.scene;
         scene
-            .add_entity(SceneEntityId(1), "Canvas", None)
+            .add_entity(SceneEntityId(1), "画布", None)
             .expect("a new scene can accept the Canvas root");
         if let Some(entity) = scene.entities.get_mut(&SceneEntityId(1)) {
             entity
@@ -158,66 +158,68 @@ impl EditorApp {
         self.scene_view_mode = crate::SceneViewMode::Widget;
         self.on_document_changed(crate::actions::DocumentChange::Created);
         self.scene_view_fit_pending = true;
-        self.status = format!("已创建 Widget {name}（未保存）");
+        self.status = format!("已创建控件文档 {name}（未保存）");
     }
 
     /// 创建一个带 Transform3D 组件的 3D 实体（M9-03）。
     pub(crate) fn add_3d_entity(&mut self, parent: Option<SceneEntityId>) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".into();
+            self.status = "播放模式下不能编辑场景，请先点击停止".into();
             return;
         }
         let name = self.entity_name.trim().to_owned();
         if name.is_empty() {
-            self.status = "Entity name cannot be empty".into();
+            self.status = "实体名不能为空".into();
             return;
         }
         let tree = self.tree.clone();
         let created = std::cell::Cell::new(None::<SceneEntityId>);
         let Some(scene) = self.document.current_scene.as_mut() else {
-            self.status = "Create a scene first".into();
+            self.status = "请先创建场景".into();
             return;
         };
-        let result =
-            self.history
-                .execute(scene, "Create 3D entity", CommandKind::Create, |scene| {
-                    let id = tree
-                        .create_entity(scene, name.clone(), parent)
-                        .map_err(|e| e.to_string())?;
-                    if let Some(entity) = scene.scene.entities.get_mut(&id) {
-                        entity.components.insert(
-                            "Transform".into(),
-                            Transform3D::default().to_component_str(),
-                        );
-                    }
-                    created.set(Some(id));
-                    Ok::<(), String>(())
-                });
+        let result = self
+            .history
+            .execute(scene, "创建 3D 实体", CommandKind::Create, |scene| {
+                let id = tree
+                    .create_entity(scene, name.clone(), parent)
+                    .map_err(|e| e.to_string())?;
+                if let Some(entity) = scene.scene.entities.get_mut(&id) {
+                    entity.components.insert(
+                        "Transform".into(),
+                        Transform3D::default().to_component_str(),
+                    );
+                }
+                created.set(Some(id));
+                Ok::<(), String>(())
+            });
         match result {
             Ok(true) => {
                 if let Some(id) = created.get() {
                     self.selection.add(id, SelectionSource::Command);
                     self.sync_inspector(id);
                 }
-                self.status = "3D entity created".into();
+                self.status = "3D 实体已创建".into();
             }
-            Ok(false) => self.status = "No change".into(),
+            Ok(false) => self.status = "没有变化".into(),
             Err(e) => self.status = e,
         }
     }
 
     pub(crate) fn set_ui_root(&mut self, id: SceneEntityId) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return;
         }
         let Some(scene) = self.document.current_scene.as_mut() else {
-            self.status = "Create a scene first".to_owned();
+            self.status = "请先创建场景".to_owned();
             return;
         };
-        let result = self
-            .history
-            .execute(scene, "Set UI root", CommandKind::Property, |scene| {
+        let result = self.history.execute(
+            scene,
+            "设置界面根节点",
+            CommandKind::Property,
+            |scene| {
                 for entity in scene.scene.entities.values_mut() {
                     entity.metadata.remove("ui.root");
                 }
@@ -231,13 +233,14 @@ impl EditorApp {
                     .insert("ui.root".to_owned(), "true".to_owned());
                 scene.mark_dirty();
                 Ok::<(), String>(())
-            });
+            },
+        );
         match result {
             Ok(true) => {
                 self.on_document_changed(crate::actions::DocumentChange::UiRootChanged);
-                self.status = "已设置 UI 根节点".to_owned();
+                self.status = "已设置界面根节点".to_owned();
             }
-            Ok(false) => self.status = "No change".to_owned(),
+            Ok(false) => self.status = "没有变化".to_owned(),
             Err(error) => self.status = error,
         }
     }
@@ -259,26 +262,26 @@ impl EditorApp {
             return;
         }
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return;
         }
         let tree = self.tree.clone();
         let Some(scene) = self.document.current_scene.as_mut() else {
-            self.status = "Create a scene first".to_owned();
+            self.status = "请先创建场景".to_owned();
             return;
         };
         let result =
             self.history
-                .execute(scene, "Rename entity", CommandKind::Rename, move |scene| {
+                .execute(scene, "重命名实体", CommandKind::Rename, move |scene| {
                     tree.rename(scene, id, name)
                         .map_err(|error| error.to_string())
                 });
         match result {
             Ok(true) => {
                 self.on_document_changed(crate::actions::DocumentChange::EntityRenamed);
-                self.status = "Entity renamed".to_owned();
+                self.status = "实体已重命名".to_owned();
             }
-            Ok(false) => self.status = "No change".to_owned(),
+            Ok(false) => self.status = "没有变化".to_owned(),
             Err(error) => self.status = error,
         }
     }
@@ -287,11 +290,11 @@ impl EditorApp {
     /// 一个 Create 事务（Undo 一步整体回滚）。
     pub(crate) fn duplicate_selected_entity(&mut self) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return;
         }
         let Some(source_id) = self.selection.primary() else {
-            self.status = "请先在 Hierarchy 中选择实体".to_owned();
+            self.status = "请先在层级面板中选择实体".to_owned();
             return;
         };
         let Some(source) = self
@@ -306,20 +309,20 @@ impl EditorApp {
         let tree = self.tree.clone();
         let created = std::cell::Cell::new(None::<SceneEntityId>);
         let Some(scene) = self.document.current_scene.as_mut() else {
-            self.status = "Create a scene first".to_owned();
+            self.status = "请先创建场景".to_owned();
             return;
         };
-        let result =
-            self.history
-                .execute(scene, "Duplicate entity", CommandKind::Create, |scene| {
-                    let copy_id = tree
-                        .duplicate_subtree(scene, &source, parent)
-                        .map_err(|error| error.to_string())?;
-                    tree.reparent_at(scene, copy_id, source_id, ReparentPosition::After)
-                        .map_err(|error| error.to_string())?;
-                    created.set(Some(copy_id));
-                    Ok::<(), String>(())
-                });
+        let result = self
+            .history
+            .execute(scene, "复制实体", CommandKind::Create, |scene| {
+                let copy_id = tree
+                    .duplicate_subtree(scene, &source, parent)
+                    .map_err(|error| error.to_string())?;
+                tree.reparent_at(scene, copy_id, source_id, ReparentPosition::After)
+                    .map_err(|error| error.to_string())?;
+                created.set(Some(copy_id));
+                Ok::<(), String>(())
+            });
         match result {
             Ok(true) => {
                 if let Some(id) = created.get() {
@@ -327,9 +330,9 @@ impl EditorApp {
                     self.selection_anchor = Some(id);
                     self.sync_inspector(id);
                 }
-                self.status = "Entity duplicated".to_owned();
+                self.status = "实体已复制".to_owned();
             }
-            Ok(false) => self.status = "No change".to_owned(),
+            Ok(false) => self.status = "没有变化".to_owned(),
             Err(error) => self.status = error,
         }
     }

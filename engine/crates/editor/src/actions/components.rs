@@ -47,9 +47,10 @@ impl EditorApp {
         fields: &[(String, String)],
     ) -> CommandResult {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return CommandResult::Rejected(self.status.clone());
         }
+        let display = crate::util::component_display_name(component);
         let selected = self.selection.ids();
         if selected.is_empty() {
             self.status = "请先选择实体".to_owned();
@@ -72,7 +73,7 @@ impl EditorApp {
             })
             .collect();
         if targets.is_empty() {
-            self.status = format!("选中的实体都没有组件 {component}");
+            self.status = format!("选中的实体都没有组件 {display}");
             return CommandResult::Rejected(self.status.clone());
         }
         let mut updated: Vec<(SceneEntityId, String)> = Vec::new();
@@ -102,10 +103,10 @@ impl EditorApp {
             }
         }
         if updated.is_empty() {
-            self.status = format!("{component} 无变化");
+            self.status = format!("{display} 无变化");
             return CommandResult::NoOp;
         }
-        let label = format!("Set {component}（{} 个实体）", updated.len());
+        let label = format!("设置{display}（{} 个实体）", updated.len());
         let written = updated.len();
         let key = component.to_owned();
         let document = self
@@ -126,11 +127,11 @@ impl EditorApp {
                 });
         match result {
             Ok(true) => {
-                self.status = format!("已批量写入 {component}（{written} 个实体）");
+                self.status = format!("已批量写入 {display}（{written} 个实体）");
                 CommandResult::Applied
             }
             Ok(false) => {
-                self.status = format!("{component} 无变化");
+                self.status = format!("{display} 无变化");
                 CommandResult::NoOp
             }
             Err(error) => {
@@ -153,9 +154,10 @@ impl EditorApp {
         fields: &[(String, String)],
     ) -> CommandResult {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return CommandResult::Rejected(self.status.clone());
         }
+        let display = crate::util::component_display_name(component);
         let Some(document) = self.document.current_scene.as_ref() else {
             self.status = "没有打开的场景".to_owned();
             return CommandResult::Rejected(self.status.clone());
@@ -165,7 +167,7 @@ impl EditorApp {
             return CommandResult::Rejected(self.status.clone());
         };
         let Some(original) = instance.components.get(component).cloned() else {
-            self.status = format!("实体 {} 没有组件 {component}", entity.0);
+            self.status = format!("实体 {} 没有组件 {display}", entity.0);
             return CommandResult::Rejected(self.status.clone());
         };
         let mut payload = original.clone();
@@ -184,10 +186,10 @@ impl EditorApp {
             }
         }
         if payload == original {
-            self.status = format!("{component} 无变化");
+            self.status = format!("{display} 无变化");
             return CommandResult::NoOp;
         }
-        let label = format!("Set {component}.{}", changed_fields.join("+"));
+        let label = format!("设置{display}.{}", changed_fields.join("+"));
         let key = component.to_owned();
         let document = self
             .document
@@ -207,7 +209,7 @@ impl EditorApp {
         match result {
             Ok(true) => {
                 self.status = format!(
-                    "已写入 {component}（{}）",
+                    "已写入 {display}（{}）",
                     if changed_fields.is_empty() {
                         "无字段变化".to_owned()
                     } else {
@@ -217,7 +219,7 @@ impl EditorApp {
                 CommandResult::Applied
             }
             Ok(false) => {
-                self.status = format!("{component} 无变化");
+                self.status = format!("{display} 无变化");
                 CommandResult::NoOp
             }
             Err(error) => {
@@ -236,9 +238,10 @@ impl EditorApp {
         value: &str,
     ) -> CommandResult {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return CommandResult::Rejected(self.status.clone());
         }
+        let display = crate::util::component_display_name(component);
         let Some(document) = self.document.current_scene.as_mut() else {
             self.status = "没有打开的场景".to_owned();
             return CommandResult::Rejected(self.status.clone());
@@ -253,10 +256,10 @@ impl EditorApp {
                 }
             };
         let editor::FieldEdit::Changed { path, payload } = preview else {
-            self.status = format!("{component}.{field} 无变化");
+            self.status = format!("{display}.{field} 无变化");
             return CommandResult::NoOp;
         };
-        let label = format!("Set {path}");
+        let label = format!("设置{path}");
         let key = component.to_owned();
         let result =
             self.history
@@ -270,11 +273,11 @@ impl EditorApp {
                 });
         match result {
             Ok(true) => {
-                self.status = format!("已写入 {component}.{field}");
+                self.status = format!("已写入 {display}.{field}");
                 CommandResult::Applied
             }
             Ok(false) => {
-                self.status = format!("{component}.{field} 无变化");
+                self.status = format!("{display}.{field} 无变化");
                 CommandResult::NoOp
             }
             Err(error) => {
@@ -287,7 +290,7 @@ impl EditorApp {
     /// P3-E02：移除 `MeshRenderer.material=` 覆盖（一次提交 = 一条 Undo）。
     pub(crate) fn clear_mesh_renderer_material(&mut self, entity: SceneEntityId) -> CommandResult {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return CommandResult::Rejected(self.status.clone());
         }
         let Some(document) = self.document.current_scene.as_mut() else {
@@ -301,23 +304,23 @@ impl EditorApp {
             .and_then(|instance| instance.components.get("MeshRenderer"))
             .cloned()
         else {
-            self.status = "实体没有 MeshRenderer 组件".to_owned();
+            self.status = "实体没有网格渲染器组件".to_owned();
             return CommandResult::Rejected(self.status.clone());
         };
         let Ok(mut renderer) = rustlua_render::mesh3d::MeshRenderer::from_component_str(&payload)
         else {
-            self.status = "MeshRenderer 配置无效".to_owned();
+            self.status = "网格渲染器配置无效".to_owned();
             return CommandResult::Rejected(self.status.clone());
         };
         if renderer.material.is_none() {
-            self.status = "MeshRenderer.material 无变化".to_owned();
+            self.status = "网格渲染器材质无变化".to_owned();
             return CommandResult::NoOp;
         }
         renderer.material = None;
         let next = renderer.to_component_str();
         let result = self.history.execute(
             document,
-            "Clear MeshRenderer material",
+            "清除网格渲染器材质",
             CommandKind::Property,
             move |document| {
                 let Some(instance) = document.scene.entities.get_mut(&entity) else {
@@ -334,7 +337,7 @@ impl EditorApp {
                 CommandResult::Applied
             }
             Ok(false) => {
-                self.status = "MeshRenderer.material 无变化".to_owned();
+                self.status = "网格渲染器材质无变化".to_owned();
                 CommandResult::NoOp
             }
             Err(error) => {
@@ -356,7 +359,7 @@ impl EditorApp {
     /// 用当前 Inspector 的 Collider3d 字段缓冲为实体添加/更新 Collider3d（一条历史）。
     pub(crate) fn add_collider3d_component(&mut self, entity: SceneEntityId) -> Result<(), String> {
         if self.is_playing() {
-            return Err("Play mode locks scene editing; click Stop first".to_owned());
+            return Err("播放模式下不能编辑场景，请先点击停止".to_owned());
         }
         let inspector = self.inspector.clone();
         let collider3d = self.collider3d.clone();
@@ -365,7 +368,7 @@ impl EditorApp {
         };
         let result = self.history.execute(
             scene,
-            "Add Collider3d",
+            "添加 3D 碰撞体",
             CommandKind::Property,
             move |scene| {
                 inspector.set_collider3d(scene, entity, collider3d)?;
@@ -384,7 +387,7 @@ impl EditorApp {
         entity: SceneEntityId,
     ) -> Result<(), String> {
         if self.is_playing() {
-            return Err("Play mode locks scene editing; click Stop first".to_owned());
+            return Err("播放模式下不能编辑场景，请先点击停止".to_owned());
         }
         let inspector = self.inspector.clone();
         let Some(scene) = self.document.current_scene.as_mut() else {
@@ -392,7 +395,7 @@ impl EditorApp {
         };
         let result = self.history.execute(
             scene,
-            "Remove Collider3d",
+            "移除 3D 碰撞体",
             CommandKind::Property,
             move |scene| {
                 inspector.clear_collider3d(scene, entity)?;
@@ -411,7 +414,7 @@ impl EditorApp {
     /// [`Self::add_component_to`]（typed action 的落点）。
     pub(crate) fn add_component(&mut self, name: &str) -> Result<(), String> {
         if self.is_playing() {
-            return Err("Play mode locks scene editing; click Stop first".to_owned());
+            return Err("播放模式下不能编辑场景，请先点击停止".to_owned());
         }
         if !Self::component_registered(name) {
             return Err(format!("未注册组件：{name}"));
@@ -429,7 +432,7 @@ impl EditorApp {
         name: &str,
     ) -> Result<(), String> {
         if self.is_playing() {
-            return Err("Play mode locks scene editing; click Stop first".to_owned());
+            return Err("播放模式下不能编辑场景，请先点击停止".to_owned());
         }
         if !Self::component_registered(name) {
             return Err(format!("未注册组件：{name}"));
@@ -438,19 +441,22 @@ impl EditorApp {
             return Ok(());
         };
         if scene.scene.entities[&entity].components.contains_key(name) {
-            return Err(format!("实体已有 {name} 组件"));
+            return Err(format!(
+                "实体已有{}组件",
+                crate::util::component_display_name(name)
+            ));
         }
+        let label = format!("添加{}", crate::util::component_display_name(name));
         let inspector = self.inspector.clone();
         let name = name.to_owned();
         let Some(scene) = self.document.current_scene.as_mut() else {
             return Ok(());
         };
-        let result = self.history.execute(
-            scene,
-            format!("Add {name}"),
-            CommandKind::Property,
-            move |scene| Self::insert_default_component(scene, &inspector, entity, &name),
-        );
+        let result = self
+            .history
+            .execute(scene, label, CommandKind::Property, move |scene| {
+                Self::insert_default_component(scene, &inspector, entity, &name)
+            });
         match result {
             Ok(_) => {
                 self.sync_inspector(entity);
@@ -467,24 +473,22 @@ impl EditorApp {
         name: &str,
     ) -> Result<(), String> {
         if self.is_playing() {
-            return Err("Play mode locks scene editing; click Stop first".to_owned());
+            return Err("播放模式下不能编辑场景，请先点击停止".to_owned());
         }
+        let label = format!("移除{}", crate::util::component_display_name(name));
         let name = name.to_owned();
         let Some(scene) = self.document.current_scene.as_mut() else {
             return Ok(());
         };
-        let result = self.history.execute(
-            scene,
-            format!("Remove {name}"),
-            CommandKind::Property,
-            move |scene| {
+        let result = self
+            .history
+            .execute(scene, label, CommandKind::Property, move |scene| {
                 if let Some(entity) = scene.scene.entities.get_mut(&entity) {
                     entity.components.remove(&name);
                     scene.mark_dirty();
                 }
                 Ok::<(), InspectorError>(())
-            },
-        );
+            });
         match result {
             Ok(_) => {
                 self.sync_inspector(entity);
@@ -497,7 +501,7 @@ impl EditorApp {
     /// 用 Inspector 的名称缓冲重命名**当前选中**实体（菜单「重命名」入口）。
     pub(crate) fn rename_selected(&mut self) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".into();
+            self.status = "播放模式下不能编辑场景，请先点击停止".into();
             return;
         }
         let Some(selected) = self.selection.primary() else {
@@ -511,25 +515,25 @@ impl EditorApp {
     /// 重命名 `entity`（目标与名称都由 typed action 显式携带）。
     pub(crate) fn rename_entity(&mut self, entity: SceneEntityId, name: String) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".into();
+            self.status = "播放模式下不能编辑场景，请先点击停止".into();
             return;
         }
         let tree = self.tree.clone();
         let Some(scene) = self.document.current_scene.as_mut() else {
-            self.status = "Create a scene first".into();
+            self.status = "请先创建场景".into();
             return;
         };
         let result =
             self.history
-                .execute(scene, "Rename entity", CommandKind::Rename, move |scene| {
+                .execute(scene, "重命名实体", CommandKind::Rename, move |scene| {
                     tree.rename(scene, entity, name).map_err(|e| e.to_string())
                 });
         match result {
             Ok(true) => {
-                self.status = "Entity renamed".into();
+                self.status = "实体已重命名".into();
                 self.on_document_changed(DocumentChange::EntityRenamed);
             }
-            Ok(false) => self.status = "No change".into(),
+            Ok(false) => self.status = "没有变化".into(),
             Err(e) => self.status = e,
         }
     }
@@ -537,7 +541,7 @@ impl EditorApp {
     /// 把**当前选中**实体重挂到 `parent` 下（Hierarchy 拖放与命令层共用）。
     pub(crate) fn reparent_selected(&mut self, parent: Option<SceneEntityId>) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".into();
+            self.status = "播放模式下不能编辑场景，请先点击停止".into();
             return;
         }
         let Some(selected) = self.selection.primary() else {
@@ -545,7 +549,7 @@ impl EditorApp {
             return;
         };
         let Some(scene) = self.document.current_scene.as_ref() else {
-            self.status = "Create a scene first".into();
+            self.status = "请先创建场景".into();
             return;
         };
         if let Err(error) = self.validate_reparent_target(scene, selected, parent) {
@@ -553,13 +557,13 @@ impl EditorApp {
             return;
         }
 
-        if !self.begin_edit_transaction("Reparent entity", CommandKind::Reparent, Some(selected)) {
+        if !self.begin_edit_transaction("更改父实体", CommandKind::Reparent, Some(selected)) {
             self.status = "重挂载事务已激活，无法重复开始".into();
             return;
         }
         let Some(scene) = self.document.current_scene.as_mut() else {
             self.cancel_edit_transaction();
-            self.status = "Create a scene first".into();
+            self.status = "请先创建场景".into();
             return;
         };
         let result = self.tree.reparent(scene, selected, parent);
@@ -567,7 +571,7 @@ impl EditorApp {
             Ok(()) => {
                 self.commit_edit_transaction();
                 self.on_document_changed(DocumentChange::EntityReparented);
-                self.status = "Parent updated".into();
+                self.status = "父实体已更新".into();
             }
             Err(e) => {
                 self.cancel_edit_transaction();
@@ -605,7 +609,7 @@ impl EditorApp {
     /// 删除当前选中的实体集合（仅保留顶层根，整批一条历史）。
     pub(crate) fn delete_selected_entity(&mut self) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".into();
+            self.status = "播放模式下不能编辑场景，请先点击停止".into();
             return;
         }
         // H03：按选中集合删除（仅保留顶层根，子孙随根整棵移除），整批一条历史。
@@ -627,23 +631,20 @@ impl EditorApp {
         ));
         let removed_out = removed.clone();
         let Some(scene) = self.document.current_scene.as_mut() else {
-            self.status = "Create a scene first".into();
+            self.status = "请先创建场景".into();
             return;
         };
-        let result = self.history.execute(
-            scene,
-            "Delete entities",
-            CommandKind::Delete,
-            move |scene| {
-                let mut deleted_all = std::collections::BTreeSet::new();
-                for target in targets {
-                    let deleted = tree.delete(scene, target).map_err(|e| e.to_string())?;
-                    deleted_all.extend(deleted);
-                }
-                removed.set(Some(deleted_all));
-                Ok::<(), String>(())
-            },
-        );
+        let result =
+            self.history
+                .execute(scene, "删除实体", CommandKind::Delete, move |scene| {
+                    let mut deleted_all = std::collections::BTreeSet::new();
+                    for target in targets {
+                        let deleted = tree.delete(scene, target).map_err(|e| e.to_string())?;
+                        deleted_all.extend(deleted);
+                    }
+                    removed.set(Some(deleted_all));
+                    Ok::<(), String>(())
+                });
         match result {
             Ok(true) => {
                 if let Some(deleted) = removed_out.take() {
@@ -653,9 +654,9 @@ impl EditorApp {
                 // 的 `had_selection` 无法感知“删除前有选中实体”，故在此显式复位）。
                 self.delete_target = crate::DeleteTarget::None;
                 self.on_document_changed(DocumentChange::EntityDeleted);
-                self.status = "Entity deleted".into();
+                self.status = "实体已删除".into();
             }
-            Ok(false) => self.status = "No change".into(),
+            Ok(false) => self.status = "没有变化".into(),
             Err(e) => self.status = e,
         }
     }
@@ -674,22 +675,22 @@ impl EditorApp {
             return;
         }
         let Some(clipboard) = self.inspector_clipboard.clone() else {
-            self.status = "Component clipboard is empty".to_owned();
+            self.status = "组件剪贴板为空".to_owned();
             return;
         };
         if let Some(scene) = self.document.current_scene.as_mut() {
-            let _ =
-                self.history
-                    .execute(scene, "Paste Components", CommandKind::Property, |scene| {
-                        let target = scene.scene.entities.get_mut(&entity).ok_or(())?;
-                        target.components = clipboard.components.clone();
-                        target.resources = clipboard.resources.clone();
-                        target.metadata = clipboard.metadata.clone();
-                        scene.mark_dirty();
-                        Ok::<(), ()>(())
-                    });
+            let _ = self
+                .history
+                .execute(scene, "粘贴组件", CommandKind::Property, |scene| {
+                    let target = scene.scene.entities.get_mut(&entity).ok_or(())?;
+                    target.components = clipboard.components.clone();
+                    target.resources = clipboard.resources.clone();
+                    target.metadata = clipboard.metadata.clone();
+                    scene.mark_dirty();
+                    Ok::<(), ()>(())
+                });
         }
         self.sync_inspector(entity);
-        self.status = "Components pasted".to_owned();
+        self.status = "组件已粘贴".to_owned();
     }
 }

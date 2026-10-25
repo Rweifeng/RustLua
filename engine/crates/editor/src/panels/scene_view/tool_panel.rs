@@ -114,7 +114,7 @@ impl EditorApp {
                                     self.gizmo_space == crate::scene_interaction::GizmoSpace::Local,
                                     self.gizmo_space.label(),
                                 )
-                                .on_hover_text("Gizmo 变换空间：世界轴 / 实体局部轴（点击切换）")
+                                .on_hover_text("变换控件空间：世界轴 / 实体局部轴（点击切换）")
                                 .clicked()
                             {
                                 self.gizmo_space = self.gizmo_space.toggled();
@@ -126,7 +126,7 @@ impl EditorApp {
                                     self.gizmo_pivot.label(),
                                 )
                                 .on_hover_text(
-                                    "Gizmo 轴心：实体原点 / 选中内容包围盒中心（点击切换）",
+                                    "变换控件轴心：实体原点 / 选中内容包围盒中心（点击切换）",
                                 )
                                 .clicked()
                             {
@@ -186,7 +186,7 @@ impl EditorApp {
                 let has_clipboard = self.tilemap.clipboard.is_some();
                 if ui
                     .add_enabled(has_clipboard, egui::Button::new("×"))
-                    .on_hover_text("清空 Tile 剪贴板")
+                    .on_hover_text("清空瓦片剪贴板")
                     .clicked()
                 {
                     self.tilemap.clipboard = None;

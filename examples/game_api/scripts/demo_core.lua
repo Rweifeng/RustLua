@@ -1,115 +1,67 @@
--- api_core：把 `log` / `time` / `entity` / `event` / `tag` / `health` / `asset` /
--- `scene` / `save` / `data` 这十个"核心模块"的每一个函数都真的调用一次。
+-- api_core：核心运行时的七个步骤 —— 实体身份 / 代际 / 生命值与标签 / 事件总线 /
+-- 数据 schema / 资源与平台 / 存档。
 --
--- 这个演示想证明什么
--- ------------------
--- ① **状态行里的每个值都来自一次 API 读回**：`health.get` / `tag.get` / `save.read` /
---    `save.blob_read` / `data.load` / `asset.load` / `scene.reload` … 脚本自己不编造任何
---    "演示数字"。于是它同时证明了两件事：接口存在，而且读回来的东西是对的。
--- ② **每帧只做内存内的读写**。`save.write` / `save.blob_write` / `save.read` 在
---    `engine/crates/engine/src/core/script.rs` 里只碰 `ScriptState::save_data`（纯内存哈希表），
---    **不碰磁盘**；真正碰磁盘 / 切场景 / 退出请求的五个调用
---    （`save.commit` / `save.load` / `save.clear` / `scene.load` / `app.quit`）
---    **全部锁在按键分支里** —— 引擎的 headless 门会**无输入**地步进 `update()`，
---    它们一旦每帧执行，测试就会偷偷写盘、换场景、甚至直接退出。
--- ③ **半数 API 只有按键才看得见**（`log.warn` / `health.damage` / `event.off` /
---    `save.slot` / `app.quit` …），提示行逐条列出键位，按完键看状态行的 `key=` 段。
--- ④ **读回值一律取在按键之后**：`key=` 说"刚做了什么"，同一行后面的数字说"做完之后世界
---    是什么样"。两者必须自洽（先读后做会让它们差一帧，看起来像互相矛盾）。
+-- 每个步骤只主张一件事，右侧 API 卡列出这一步**真实调用**的函数，页脚写着按键与结论。
+-- 所有读数都来自 API 读回（脚本不编造演示数字），因此读回值对了就等于接口语义还在。
 --
--- 屏幕上能看到的
--- --------------
---   * 场景中间三只实体：`Hero`（Sprite + 圆形碰撞体）、`Dummy`（Sprite + 传感器碰撞体）、
---     `Pickup`（金币）。它们是 `entity.find` 的查询目标；本演示**不移动**它们
---     （移动、物理、动画各有别的演示模块）。
---   * 左上角标题、左下角状态行（= 本帧的事实）与提示行（= 按键）。
---   * 状态行里唯一"会变形状"的一段是 `ghost`：按 G 销毁、按 H 重生之后 `gen=` 会 +1。
---     引擎把实体 id 编码成 `index << 32 | generation`（`script.rs::entity_lua_id`），
---     销毁**不会**让旧 id 指向新实体 —— 换代靠的就是 generation 这一段。
+-- 硬规则（README §2）：
+--   * 顶层只定义常量与函数；
+--   * `run()` 在 headless 下安全：只做内存读写，不落盘、不切场景、不退出、不模拟输入；
+--   * `save.commit` / `save.load` / `save.clear` / `scene.load` / `scene.reload` /
+--     `data.reload` / `app.quit` 全锁在按键分支里（F5 的自检碰不到它们）；
+--   * 自检按 enter → run×3 → check 执行，所以每个 `enter` 都把本步依赖的状态写回初始值
+--     （幽灵实体重生、血量/标签复位、订阅表重建、缓存与存档键重写）。
 --
--- 硬规则（README §2）：顶层只定义函数与常量；`update()` 在 headless 下跑通（无按键时只读）；
--- `entity.destroy` 这类破坏性调用只在按键分支里发生。
+-- 场景里的 Hero / Dummy / Pickup 是 `entity.find` 的目标，本演示只给 Hero 上色，
+-- 不移动任何场景实体（移动/物理/动画各有别的 Lab）。
 
-local api = require("api_demo")
+local lab = require("lab")
 
 local M = {}
 
--- ---------------------------------------------------------------------------
--- 常量：实体名 / 资源路径 / 事件名 / 键名
--- 模块顶层**只放常量与函数定义**（README §2 硬规则 1）：顶层任何一句引擎调用都会在
--- "只是加载这个模块"时执行，而那一刻实体还没生成、宿主也还没回填相机。
--- ---------------------------------------------------------------------------
-local HERO_NAME = "Hero" -- 场景里 `entity.find` 的查询目标
+local HERO_NAME = "Hero"
 local DUMMY_NAME = "Dummy"
 local PICKUP_NAME = "Pickup"
-local COIN_TEXTURE = "assets/textures/coin.png" -- `asset.load` 的入参（工程里真实存在）
-local DATA_PATH = "data/cache_demo.json" -- `data.*` 的演示数据（与 `CACHE_SPEC` 匹配）
-local EVENT_HIT = "api_core.hit" -- `event.*` 的事件名
-local GHOST_NAME = "GhostProbe" -- 运行期生成的临时实体名
-local GHOST_PERSIST = "demo.ghost" -- 它的**稳定 ID**（`entity.find_id` 查它）
-local TAG_KEY = "mood" -- `tag.get` / `tag.set` 的键
-local SAVE_KEY = "api_core.frame" -- `save.write` / `save.read` 的键（值必须是字符串）
-local BLOB_KEY = "api_core.snapshot" -- `save.blob_write` / `save.blob_read` 的键（任意 Lua 表）
-local SAVE_SLOT = "demo" -- `save.slot` 的槽名
+local COIN_TEXTURE = "assets/textures/coin.png"
+local DATA_PATH = "data/cache_demo.json"
+local EVENT_HIT = "api_core.hit"
+local GHOST_NAME = "GhostProbe"
+local GHOST_PERSIST = "demo.ghost"
+local TAG_KEY = "mood"
+local SAVE_KEY = "api_core.frame"
+local BLOB_KEY = "api_core.snapshot"
+local SAVE_SLOT = "demo"
 local HERO_MAX_HP = 100
 local HIT_DAMAGE = 7
--- 实体 id 的低 32 位是 generation（代际），高 32 位是 index。
-local GENERATION_MOD = 4294967296 -- 2^32
+-- 实体句柄 = index << 32 | generation；低 32 位是代际，销毁后重生会 +1。
+local GENERATION_MOD = 4294967296
 
-local TITLE =
-    "api_core - log / time / entity / event / tag / health / asset / scene / save / data"
--- 提示行（scale 1.0）在 1280px 下大约装得下 190 个字符：这里按"一组一个 `|`"排，长度约 145。
-local HINT = "SPACE hit | R heal | T tag | 1/2/3 unsub(on/sub)/resub | G/H ghost -/+ | "
-    .. "K bad-destroy | S commit | L load | C clear | V data-clear | F scene | Q quit | ESC menu"
-
--- `api_demo` 只提供三行（标题 / 状态行 / 提示行），而状态行（scale 1.1）在 1280px 下大约
--- 只装得下 170 个字符 —— 本演示要同时显示四十个 API 的读回值，一行装不完。因此在状态行
--- **上方**（y=610，不压住任何东西）自画一行"只放读回值"的私有行。
--- 离开场景时要自己 `ui.clear`：`api_demo.clear` 只清它自己登记的那三行。
-local FACTS_ID = "api_core_facts"
-local FACTS_Y = 610
-
--- ---------------------------------------------------------------------------
--- 演示自己的记账。都是普通 Lua 局部变量（模块状态），不是引擎状态。
--- ---------------------------------------------------------------------------
-local frame = 0 -- 本帧序号（`time.delta` 之外的另一个"事实"）
-local hits_by_on = 0 -- 被 `event.on` 订阅的那个回调收到的次数
-local hits_by_subscribe = 0 -- 被 `event.subscribe` 订阅的那个回调收到的次数
-local last_hit_payload = "-" -- 最近一次 `event.emit` 带过去的数据
-local last_key = "-" -- 最近一次按键分支做了什么（状态行的 `key=` 段）
-local ghost = nil -- `entity.spawn` / `entity.find_id` 拿到的临时实体 id
-local hero_hp = 0 -- 本帧 `health.get(hero)` 的读回值
-local hero_tag = nil -- 本帧 `tag.get(hero, TAG_KEY)` 的读回值
-local save_readback = nil -- 本帧 `save.read(SAVE_KEY)` 的读回值
-local save_slot_now = nil -- 本帧 `save.slot_get()` 的读回值
-local blob_hp = nil -- 本帧 `save.blob_read(BLOB_KEY).hp` 的读回值
-local asset_token = nil -- 本帧 `asset.load` 的返回值（字符串 `asset:<路径>`）
-local data_counts = "0/0/0" -- 本帧三次 data 读取各自看到的条目数
-local data_version = nil -- 本帧 `data.load` 读回的 version 字段
+-- 模块状态（普通 Lua 局部变量，不是引擎状态）。
+local frame = 0
+local hero = nil
+local ghost = nil
 local scene_name = "?"
+local action = "-"
+local hits_by_on = 0
+local hits_by_sub = 0
+local last_payload = "-"
+local ghost_alive_now = false
+local ghost_pid = nil
+local ghost_by_id = nil
+local ghost_by_name = nil
+local hero_hp = 0
+local hero_tag = nil
+local save_readback = nil
+local save_slot_now = nil
+local blob_hp = nil
+local asset_token = nil
+local platform = "-"
+local project_root = ""
+local data_version = nil
+local data_entries = 0
+local data_source = "-"
 
--- `event.on` 与 `event.subscribe` 是**同一总线的两个名字**：`script.rs` 里两个函数往同一张
--- `subscribers` 表里塞回调。这里故意用两个不同的回调分别订阅，于是状态行 `ev on=/sub=`
--- 两个计数器一起涨 —— "一次 emit 打到两个名字上"是**看得见**的，而不是文档里的承诺。
-local function on_hit_by_on(data)
-    hits_by_on = hits_by_on + 1
-    if type(data) == "table" then
-        -- 回调收到的就是 `event.emit` 传的那个表（引擎不做 JSON 往返）。
-        last_hit_payload = string.format("amount=%s frame=%s", tostring(data.amount), tostring(data.frame))
-    end
-end
-
-local function on_hit_by_subscribe()
-    hits_by_subscribe = hits_by_subscribe + 1
-end
-
--- `data.schema(path, spec)` 的校验器：一份"物品表"的形状声明。
--- 语法见 `engine/crates/engine/src/core/data_schema.rs`：
---   * 字符串 = 基本类型名（`string` / `number` / `integer` / `boolean` / `any`）；
---   * `{ "$kind" = "map", values = <schema> }` = 字符串键字典，逐值校验；
---   * `{ "$kind" = "object", fields = {...}, required = {...} }` = 字段表。
--- 判别字段刻意叫 `$kind` 而不是 `kind`：游戏数据里本来就常有真实的 `kind` 字段
---（`entries` 里每一项就是），叫 `kind` 会撞名。
+-- `data.schema` 的校验器：与 data/cache_demo.json 的形状一致。
 local CACHE_SPEC = {
     ["$kind"] = "object",
     fields = {
@@ -119,11 +71,7 @@ local CACHE_SPEC = {
             ["$kind"] = "map",
             values = {
                 ["$kind"] = "object",
-                fields = {
-                    name = "string",
-                    value = "integer",
-                    stack = "integer",
-                },
+                fields = { name = "string", value = "integer", stack = "integer" },
                 required = { "name", "value", "stack" },
             },
         },
@@ -131,7 +79,6 @@ local CACHE_SPEC = {
     required = { "version", "entries" },
 }
 
---- nil -> "-"（状态行里"没有值"和"值是 nil"必须一眼分得开）。
 local function dash(value)
     if value == nil then
         return "-"
@@ -139,17 +86,7 @@ local function dash(value)
     return tostring(value)
 end
 
---- 折成一行并截断：引擎的 Lua 错误信息**带多行栈回溯**，直接塞进状态行会把画面顶掉。
-local function one_line(value, limit)
-    local text = tostring(value):gsub("%s+", " ")
-    if #text > limit then
-        return text:sub(1, limit) .. "…"
-    end
-    return text
-end
-
---- 数一张表里有多少个键（`data.load` 读回的是**字符串键字典**，`#` 对它没有意义）。
-local function key_count(value)
+local function count_keys(value)
     if type(value) ~= "table" then
         return 0
     end
@@ -160,375 +97,558 @@ local function key_count(value)
     return count
 end
 
---- 只在进入本场景时调用一次：登记初始状态。
---- 这里**不做**每帧该做的事，也**不做**破坏性操作（销毁/写盘/切场景）。
-function M.on_create()
-    api.title(TITLE)
-    api.hint(HINT)
-
-    -- ① entity：生成一个**只活在数据里**的临时实体（没有 Sprite，因此不占画面）。
-    --    它的存在意义是把 entity 的六个函数串成一条链：
-    --    生成 → 按名字查 → 按稳定 ID 反查 → 读回稳定 ID → 判活 → 销毁 → 再判活。
-    --    先 `find_id` 再 `spawn` 是为了**幂等**：热重载与 `scene.load` 都会在**同一个世界**
-    --    上重跑 `on_create`，而 `entity.spawn` 对"仍被活实体占用着的稳定 ID"会明确报错
-    --    `persist_id already in use` —— 幂等才不会一换场景就炸。
-    ghost = entity.find_id(GHOST_PERSIST)
-    if ghost == nil or not entity.is_alive(ghost) then
-        ghost = entity.spawn(GHOST_NAME, GHOST_PERSIST)
-    end
-
-    -- ② health / tag：给 Hero 一份初始血量与一个初始标签，之后每帧读回。
-    local hero = entity.find(HERO_NAME)
-    if hero ~= nil then
-        health.set(hero, HERO_MAX_HP)
-        tag.set(hero, TAG_KEY, "calm")
-    end
-
-    -- ③ event：两个名字各订阅一次（同一总线，因此一次 emit 会打到两个回调）。
-    event.on(EVENT_HIT, on_hit_by_on)
-    event.subscribe(EVENT_HIT, on_hit_by_subscribe)
-
-    -- ④ data.schema：注册校验器。注册本身就会让该路径的旧缓存失效
-    --    （见 script.rs 的 `data.schema`），因此下一次 `data.load` 一定会按这份 spec 校验。
-    data.schema(DATA_PATH, CACHE_SPEC)
-
-    -- `scene.reload()` 返回的是**当前场景名**（不是"重新加载"）：它是宿主真源。
-    scene_name = dash(scene.reload())
-    log.info("api_core demo ready: scene=" .. scene_name .. " ghost=" .. dash(ghost))
+local function is_ghost_alive()
+    return ghost ~= nil and entity.is_alive(ghost)
 end
 
---- 每个固定步一次。返回的字符串会进引擎日志（`run_script_steps` / 编辑器 Play 都能看到）。
----
---- 顺序刻意是「先按键、后读回」：按键分支里做动作，读回段统一在最后取值，
---- 这样状态行里 `key=` 描述的动作与同一行的数值永远指同一帧的世界。
+local function drop_ghost()
+    if is_ghost_alive() then
+        entity.destroy(ghost)
+    end
+    ghost = nil
+end
+
+--- 重生幽灵：先销毁上一代再生成，保证每次 enter 都从同一状态出发。
+--- `entity.spawn` 对仍被活实体占用的稳定 ID 会报错，所以必须先判活。
+local function ensure_ghost()
+    drop_ghost()
+    ghost = entity.spawn(GHOST_NAME, GHOST_PERSIST)
+    return ghost
+end
+
+--- 事件订阅表按事件名整体重建：`event.on` / `event.subscribe` 不做去重，
+--- 不清掉旧回调的话 F5 会把同一个函数再压一遍、计数翻倍。
+local function reset_events()
+    event.off(EVENT_HIT)
+    event.unsubscribe(EVENT_HIT)
+    hits_by_on = 0
+    hits_by_sub = 0
+    last_payload = "-"
+    event.on(EVENT_HIT, on_hit)
+    event.subscribe(EVENT_HIT, on_sub)
+end
+
+--- 用 Sprite 的 tint 把血量画在 Hero 身上（读回 + 写回同一份组件串）。
+local function tint_hero(r, g, b)
+    if hero == nil or not entity.is_alive(hero) then
+        return
+    end
+    local current = lab.try(sprite.get, hero)
+    if current == nil or current.texture == nil then
+        return
+    end
+    sprite.set(
+        hero,
+        string.format(
+            "texture=%s;size=%dx%d;pivot=%.2f,%.2f;tint=%.3f,%.3f,%.3f,%.3f;sorting_layer=%s;order=%d",
+            current.texture,
+            current.size_x,
+            current.size_y,
+            current.pivot_x,
+            current.pivot_y,
+            r,
+            g,
+            b,
+            current.tint_a,
+            current.sorting_layer or "default",
+            current.order or 0
+        )
+    )
+end
+
+local function paint_by_hp(hp)
+    local ratio = math.max(0.0, math.min(1.0, hp / HERO_MAX_HP))
+    tint_hero(0.45 + 0.55 * (1.0 - ratio), 0.35 + 0.65 * ratio, 0.35 + 0.20 * ratio)
+end
+
+local function reset_hero()
+    hero = entity.find(HERO_NAME)
+    if hero == nil then
+        return
+    end
+    health.set(hero, HERO_MAX_HP)
+    tag.set(hero, TAG_KEY, "calm")
+    tint_hero(1.0, 1.0, 1.0)
+end
+
+-- 事件回调：`event.on` 与 `event.subscribe` 是同一总线的两个入口，
+-- 这里用两个不同的函数订阅，一次 emit 应该让两个计数器同时 +1。
+function on_hit(data)
+    hits_by_on = hits_by_on + 1
+    if type(data) == "table" then
+        last_payload = string.format("amount=%s frame=%s", tostring(data.amount), tostring(data.frame))
+    end
+end
+
+function on_sub()
+    hits_by_sub = hits_by_sub + 1
+end
+
+local steps = {
+    {
+        id = "entity_ids",
+        title = "Entity IDs",
+        claim = "名字、稳定 ID 与实体句柄是三条查询路径，指向同一个实体",
+        api = { "entity.spawn", "entity.find", "entity.find_id", "entity.persist_id", "entity.is_alive" },
+        code = "id = entity.spawn(name, persist); entity.find(name); entity.find_id(persist)",
+        enter = function()
+            ensure_ghost()
+            action = "spawned " .. dash(ghost)
+        end,
+        run = function()
+            ghost_alive_now = is_ghost_alive()
+            ghost_pid = ghost_alive_now and entity.persist_id(ghost) or nil
+            ghost_by_id = entity.find_id(GHOST_PERSIST)
+            ghost_by_name = entity.find(GHOST_NAME)
+            lab.note("g destroy / h respawn; find / find_id should both follow")
+        end,
+        read = function()
+            return {
+                handle = dash(ghost),
+                generation = dash(ghost_alive_now and (ghost % GENERATION_MOD) or nil),
+                persist = dash(ghost_pid),
+                find_id = dash(ghost_by_id),
+                find_name = dash(ghost_by_name),
+                alive = tostring(ghost_alive_now),
+            }
+        end,
+        check = function(t)
+            t:ok(ghost ~= nil, "entity.spawn returned a handle")
+            t:eq(entity.find(GHOST_NAME), ghost, "entity.find resolves the runtime name")
+            t:eq(entity.find_id(GHOST_PERSIST), ghost, "entity.find_id resolves the stable id")
+            t:eq(entity.persist_id(ghost), GHOST_PERSIST, "entity.persist_id reads the stable id back")
+            t:ok(entity.is_alive(ghost), "entity.is_alive sees the spawned entity")
+        end,
+    },
+    {
+        id = "entity_generation",
+        title = "Generation",
+        claim = "销毁会注销名字与稳定 ID；重生拿到的是换代的新句柄",
+        api = { "entity.destroy", "entity.is_alive", "entity.spawn", "entity.find", "entity.find_id" },
+        code = "entity.destroy(id); entity.is_alive(id) -> false; id2 = entity.spawn(name, persist)",
+        enter = function()
+            ensure_ghost()
+            action = "generation " .. dash(ghost % GENERATION_MOD)
+        end,
+        run = function()
+            ghost_alive_now = is_ghost_alive()
+            ghost_by_id = entity.find_id(GHOST_PERSIST)
+            ghost_by_name = entity.find(GHOST_NAME)
+            lab.note("g destroys the handle; x repeats destroy to show the error contract")
+        end,
+        read = function()
+            return {
+                handle = dash(ghost),
+                generation = dash(ghost_alive_now and (ghost % GENERATION_MOD) or nil),
+                alive = tostring(ghost_alive_now),
+                find_name = dash(ghost_by_name),
+                find_id = dash(ghost_by_id),
+            }
+        end,
+        check = function(t)
+            local before = ghost
+            local before_generation = before % GENERATION_MOD
+            entity.destroy(before)
+            t:ok(not entity.is_alive(before), "destroyed handle is no longer alive")
+            t:eq(entity.find(GHOST_NAME), nil, "destroy unregisters the name")
+            t:eq(entity.find_id(GHOST_PERSIST), nil, "destroy unregisters the stable id")
+            ghost = entity.spawn(GHOST_NAME, GHOST_PERSIST)
+            t:ok(entity.is_alive(ghost), "respawn with the same stable id succeeds")
+            t:ok(ghost ~= before, "respawn gets a new generation")
+            t:eq(entity.find_id(GHOST_PERSIST), ghost, "stable id now resolves to the new handle")
+            t:ok((ghost % GENERATION_MOD) ~= before_generation, "generation part changed")
+        end,
+    },
+    {
+        id = "health_tag",
+        title = "Health & Tag",
+        claim = "血量是数值账本（damage 读改写），标签是键值袋（空串即删除）",
+        api = { "health.set", "health.get", "health.damage", "tag.set", "tag.get" },
+        code = "health.damage(id, 7); health.get(id); tag.set(id, 'mood', 'calm'); tag.get(id, 'mood')",
+        enter = function()
+            reset_hero()
+            action = "hero reset"
+        end,
+        run = function()
+            if hero ~= nil and entity.is_alive(hero) then
+                hero_hp = health.get(hero)
+                hero_tag = tag.get(hero, TAG_KEY)
+                paint_by_hp(hero_hp)
+            end
+            lab.note("k damage / y heal / t toggle tag; Hero tint follows hp")
+        end,
+        read = function()
+            return {
+                hp = string.format("%.0f", hero_hp),
+                max = tostring(HERO_MAX_HP),
+                tag = dash(hero_tag),
+                tag_key = TAG_KEY,
+                damage = tostring(HIT_DAMAGE),
+            }
+        end,
+        check = function(t)
+            if hero == nil or not entity.is_alive(hero) then
+                t:ok(false, "scene Hero is missing")
+                return
+            end
+            health.set(hero, HERO_MAX_HP)
+            t:near(health.get(hero), HERO_MAX_HP, 0.001, "health.set writes the value")
+            local left = health.damage(hero, HIT_DAMAGE)
+            t:near(left, HERO_MAX_HP - HIT_DAMAGE, 0.001, "health.damage returns remaining hp")
+            t:near(health.get(hero), HERO_MAX_HP - HIT_DAMAGE, 0.001, "damage is readable back")
+            t:near(health.damage(hero, 1000), 0.0, 0.001, "damage clamps at zero")
+            health.set(hero, HERO_MAX_HP)
+            t:eq(tag.get(hero, TAG_KEY), "calm", "tag.get reads the seeded tag")
+            tag.set(hero, TAG_KEY, "")
+            t:eq(tag.get(hero, TAG_KEY), nil, "empty value removes the tag")
+            tag.set(hero, TAG_KEY, "calm")
+            t:eq(tag.get(hero, TAG_KEY), "calm", "tag.set writes the tag back")
+        end,
+    },
+    {
+        id = "event_bus",
+        title = "Event bus",
+        claim = "on 与 subscribe 是同一总线的两个名字；off/unsubscribe 只摘各自那个回调",
+        api = { "event.on", "event.subscribe", "event.emit", "event.off", "event.unsubscribe" },
+        code = "event.on(name, cb); event.subscribe(name, cb2); event.emit(name, data)",
+        enter = function()
+            reset_events()
+            action = "subscriptions rebuilt"
+        end,
+        run = function()
+            event.emit(EVENT_HIT, { amount = HIT_DAMAGE, frame = frame })
+            lab.note(string.format("emit every frame: on=%d sub=%d", hits_by_on, hits_by_sub))
+        end,
+        read = function()
+            return {
+                on_count = tostring(hits_by_on),
+                sub_count = tostring(hits_by_sub),
+                payload = last_payload,
+                key_off = "o",
+                key_unsub = "u",
+                key_resub = "i",
+            }
+        end,
+        check = function(t)
+            local before_on, before_sub = hits_by_on, hits_by_sub
+            event.emit(EVENT_HIT, { amount = 1, frame = 0 })
+            t:eq(hits_by_on, before_on + 1, "emit reaches the on() subscriber")
+            t:eq(hits_by_sub, before_sub + 1, "emit reaches the subscribe() subscriber")
+            t:ok(last_payload:find("amount=1", 1, true) ~= nil, "payload arrives unchanged")
+            event.off(EVENT_HIT, on_hit)
+            event.emit(EVENT_HIT, { amount = 2 })
+            t:eq(hits_by_on, before_on + 1, "off removes only the on() callback")
+            t:eq(hits_by_sub, before_sub + 2, "subscribe() keeps receiving")
+            event.on(EVENT_HIT, on_hit)
+            event.unsubscribe(EVENT_HIT, on_sub)
+            event.emit(EVENT_HIT, { amount = 3 })
+            t:eq(hits_by_on, before_on + 2, "on() restores the callback")
+            t:eq(hits_by_sub, before_sub + 2, "unsubscribe removes only the subscribe() callback")
+            event.subscribe(EVENT_HIT, on_sub)
+            event.emit(EVENT_HIT, { amount = 4 })
+            t:eq(hits_by_on, before_on + 3, "on() still subscribed")
+            t:eq(hits_by_sub, before_sub + 3, "subscribe() restored")
+        end,
+    },
+    {
+        id = "data_schema",
+        title = "Data schema",
+        claim = "schema 注册后真的在 data.load 上校验；cache_clear 只清缓存不改文件",
+        api = { "data.schema", "data.load", "data.reload", "data.cache_clear" },
+        code = "data.schema(path, spec); data.load(path); data.reload(path); data.cache_clear()",
+        enter = function()
+            data.schema(DATA_PATH, CACHE_SPEC)
+            data.cache_clear()
+            local loaded = lab.try(data.load, DATA_PATH)
+            data_version = loaded and loaded.version or nil
+            data_entries = loaded and count_keys(loaded.entries) or 0
+            data_source = loaded and dash(loaded.source) or "-"
+            action = "schema + cache reset"
+        end,
+        run = function()
+            local loaded = lab.try(data.load, DATA_PATH)
+            if loaded ~= nil then
+                data_version = loaded.version
+                data_entries = count_keys(loaded.entries)
+                data_source = dash(loaded.source)
+            end
+            lab.note("d data.reload / c cache_clear then load; READ shows the parsed table")
+        end,
+        read = function()
+            return {
+                path = DATA_PATH,
+                version = dash(data_version),
+                entries = tostring(data_entries),
+                source = data_source,
+                schema = "registered",
+            }
+        end,
+        check = function(t)
+            local loaded = lab.try(data.load, DATA_PATH)
+            t:ok(loaded ~= nil, "data.load parses data/cache_demo.json")
+            if loaded == nil then
+                return
+            end
+            t:eq(loaded.version, 1, "version field round-trips as an integer")
+            t:eq(count_keys(loaded.entries), 2, "entries map has two keys")
+            t:eq(loaded.entries.coin.value, 5, "nested integer reads back")
+            -- 反向验证：换一份不匹配的 schema，下一次 load 必须被拒绝。
+            data.schema(DATA_PATH, { ["$kind"] = "object", fields = { version = "string" }, required = { "version" } })
+            data.cache_clear()
+            local rejected = lab.try(data.load, DATA_PATH)
+            t:eq(rejected, nil, "schema rejects a table that misses a required field")
+            data.schema(DATA_PATH, CACHE_SPEC)
+            data.cache_clear()
+            t:ok(lab.try(data.load, DATA_PATH) ~= nil, "restored schema loads again")
+            t:eq(count_keys(loaded.entries), data_entries, "cache_clear does not change content")
+        end,
+    },
+    {
+        id = "asset_app",
+        title = "Asset & app",
+        claim = "asset.load 返回可归还的句柄字符串；app 给平台与工程根两条只读事实",
+        api = { "asset.load", "asset.release", "app.platform", "app.project_root", "scene.load", "scene.reload", "app.quit" },
+        code = "token = asset.load(path); asset.release(token); app.platform(); scene.reload()",
+        enter = function()
+            local token = asset.load(COIN_TEXTURE)
+            asset.release(token)
+            action = "handle acquired + released"
+        end,
+        run = function()
+            asset_token = asset.load(COIN_TEXTURE)
+            asset.release(asset_token)
+            platform = app.platform()
+            project_root = app.project_root()
+            lab.note("n scene.reload / v scene.load(index) / q app.quit (keys only)")
+        end,
+        read = function()
+            return {
+                token = dash(asset_token),
+                platform = platform,
+                scene = scene_name,
+                project_root = project_root ~= "" and project_root or "(unset)",
+                bind = "n / v / q",
+            }
+        end,
+        check = function(t)
+            local token = asset.load(COIN_TEXTURE)
+            t:eq(token, "asset:" .. COIN_TEXTURE, "asset.load returns the handle string")
+            asset.release(token)
+            t:ok(app.platform() == "desktop" or app.platform() == "webgl", "app.platform is a host id")
+            local root = app.project_root()
+            t:ok(root == "" or root:find("game_api", 1, true) ~= nil, "app.project_root points at the project")
+            t:eq(scene_name, "api_core", "scene.reload reported the current scene")
+        end,
+    },
+    {
+        id = "save_slots",
+        title = "Save slots",
+        claim = "键值、任意表与槽位都往返一次；落盘的 commit 只放在按键里",
+        api = { "save.write", "save.read", "save.blob_write", "save.blob_read", "save.slot", "save.slot_get", "save.commit", "save.load", "save.clear" },
+        code = "save.write(k, v); save.read(k); save.blob_write(k, t); save.slot('demo')",
+        enter = function()
+            save.slot(nil)
+            save.write(SAVE_KEY, "enter")
+            save.blob_write(BLOB_KEY, { hp = HERO_MAX_HP, frame = 0 })
+            save_readback = save.read(SAVE_KEY)
+            save_slot_now = save.slot_get()
+            action = "in-memory save keys seeded"
+        end,
+        run = function()
+            local hp = 0
+            if hero ~= nil and entity.is_alive(hero) then
+                hp = health.get(hero)
+            end
+            save.write(SAVE_KEY, string.format("frame=%d hp=%.0f", frame, hp))
+            save_readback = save.read(SAVE_KEY)
+            save.blob_write(BLOB_KEY, { hp = hp, frame = frame, ghost = is_ghost_alive() })
+            local blob = save.blob_read(BLOB_KEY)
+            blob_hp = type(blob) == "table" and blob.hp or nil
+            save_slot_now = save.slot_get()
+            lab.note("s commit / l load / c clear; write & read stay in memory")
+        end,
+        read = function()
+            return {
+                key = SAVE_KEY,
+                value = dash(save_readback),
+                slot = dash(save_slot_now),
+                blob_hp = dash(blob_hp),
+                bind_commit = "s",
+                bind_load = "l",
+                bind_clear = "c",
+                scope = "in-memory",
+            }
+        end,
+        check = function(t)
+            save.write(SAVE_KEY, "probe")
+            t:eq(save.read(SAVE_KEY), "probe", "save.write round-trips through save.read")
+            save.blob_write(BLOB_KEY, { hp = 42, tags = { "a", "b" } })
+            local blob = save.blob_read(BLOB_KEY)
+            t:ok(type(blob) == "table", "blob_read returns a table")
+            t:eq(blob.hp, 42, "blob numbers round-trip")
+            t:eq(blob.tags[2], "b", "blob arrays round-trip")
+            save.slot(SAVE_SLOT)
+            t:eq(save.slot_get(), SAVE_SLOT, "save.slot switches the active slot")
+            save.slot(nil)
+            t:eq(save.slot_get(), nil, "save.slot(nil) restores the default slot")
+            t:eq(save.read("api_core.missing"), nil, "unknown key reads nil")
+        end,
+    },
+}
+
+function M.on_create()
+    scene_name = scene.reload() or "api_core"
+    hero = entity.find(HERO_NAME)
+    lab.start({
+        scene = "api_core",
+        title = "Core Runtime",
+        category = "Core",
+        steps = steps,
+        hide_scene_text = {},
+    })
+    log.info(string.format("api_core lab: %d steps, scene=%s", #steps, scene_name))
+end
+
 function M.update()
     frame = frame + 1
+    local step = lab.step()
+    local id = step and step.id or ""
 
-    -- ① time.delta：宿主喂进来的步长（headless 下是测试传的 dt）。
-    --    本演示不假设它是 1/60 —— 状态行直接把它显示出来。
-    local dt = time.delta()
-
-    -- ② entity.find：按名字查三只实体。查不到返回 nil（**不报错**），
-    --    因此后面每个用到 id 的地方都必须先判 nil / 判活。
-    local hero = entity.find(HERO_NAME)
-    local dummy = entity.find(DUMMY_NAME)
-    local pickup = entity.find(PICKUP_NAME)
-    local found = 0
-    if hero ~= nil then
-        found = found + 1
-    end
-    if dummy ~= nil then
-        found = found + 1
-    end
-    if pickup ~= nil then
-        found = found + 1
-    end
-
-    -- -----------------------------------------------------------------------
-    -- ③ 按键分支：破坏性的 / 碰磁盘的 / 换场景的调用只能出现在这里。
-    --    headless 步进门没有按键，因此这些分支在测试里永不触发。
-    -- -----------------------------------------------------------------------
-    if input.just_pressed("space") then
-        if hero ~= nil and entity.is_alive(hero) then
-            -- `health.damage(id, n)` 返回扣血**之后**的血量，并把它钳在 0（不会变负）。
-            local left = health.damage(hero, HIT_DAMAGE)
-            local readback = health.get(hero) -- 紧接着读回：返回值与读回值必须一致
-            last_key = string.format("SPACE damage(-%d) left=%.0f get=%.0f", HIT_DAMAGE, left, readback)
-            -- `log.warn`：走引擎的 WARN 级日志（target: "script"），控制台里能看到。
-            log.warn("api_core hero hit: " .. last_key)
-            if readback <= 0.0 then
-                -- 归零了就复位：`health.set` 是"直接写值"，与 damage 的"读改写"是两条路。
-                health.set(hero, HERO_MAX_HP)
-                last_key = last_key .. " -> refilled " .. tostring(HERO_MAX_HP)
-                log.info("api_core hero refilled by health.set")
+    if id == "entity_ids" or id == "entity_generation" then
+        local managed = id == "entity_ids" or id == "entity_generation"
+        if managed and input.just_pressed("g") then
+            if is_ghost_alive() then
+                entity.destroy(ghost)
+                action = "g destroy -> dead"
+                log.info("api_core ghost destroyed")
+            else
+                action = "g ghost already dead"
             end
-        end
-    end
-
-    if input.just_pressed("r") then
-        if hero ~= nil and entity.is_alive(hero) then
-            health.set(hero, HERO_MAX_HP)
-            last_key = string.format("R health.set=%d", HERO_MAX_HP)
-        end
-    end
-
-    if input.just_pressed("t") then
-        if hero ~= nil and entity.is_alive(hero) then
-            -- `tag.set` 的**空字符串 = 删除该标签**（见 script.rs 的 tag.set）。
-            -- 于是"打标签 / 删标签"是同一个函数的两半：状态行 `tag=` 在值 / `-` 之间切换。
-            local current = tag.get(hero, TAG_KEY)
-            local next_value = "calm"
-            local action = "set"
-            if current ~= nil then
-                next_value = ""
-                action = "remove"
+        elseif managed and input.just_pressed("h") then
+            if is_ghost_alive() then
+                action = "h ghost still alive"
+            else
+                ensure_ghost()
+                action = "h respawn id=" .. dash(ghost)
             end
-            tag.set(hero, TAG_KEY, next_value)
-            last_key = string.format("T tag.%s(%s)", action, TAG_KEY)
-        end
-    end
-
-    if input.just_pressed("1") then
-        -- `event.off(name, callback)`：只摘掉这一个回调（不传 callback 才是清掉整个事件名）。
-        event.off(EVENT_HIT, on_hit_by_on)
-        last_key = "1 event.off(on)"
-    end
-
-    if input.just_pressed("2") then
-        event.unsubscribe(EVENT_HIT, on_hit_by_subscribe)
-        last_key = "2 event.unsubscribe(subscribe)"
-    end
-
-    if input.just_pressed("3") then
-        event.on(EVENT_HIT, on_hit_by_on)
-        event.subscribe(EVENT_HIT, on_hit_by_subscribe)
-        last_key = "3 resubscribed both names"
-    end
-
-    if input.just_pressed("g") then
-        if ghost ~= nil and entity.is_alive(ghost) then
-            -- `entity.destroy` 返回 true；它同时注销名字、稳定 ID、血量与物理刚体。
-            entity.destroy(ghost)
-            last_key = string.format(
-                "G destroy id=%s alive=%s",
-                dash(ghost),
-                tostring(entity.is_alive(ghost))
-            )
-            log.info("api_core ghost destroyed: " .. last_key)
-        else
-            last_key = "G ghost already dead"
-        end
-    end
-
-    if input.just_pressed("h") then
-        if ghost ~= nil and entity.is_alive(ghost) then
-            last_key = "H ghost still alive (press G first)"
-        else
-            -- 重生拿到的是**新一代**的 id：index 段通常被复用，generation 段 +1。
-            local previous_gen = ghost ~= nil and ghost % GENERATION_MOD or nil
-            ghost = entity.spawn(GHOST_NAME, GHOST_PERSIST)
-            last_key = string.format(
-                "H respawn gen %s->%s id=%s",
-                dash(previous_gen),
-                dash(ghost % GENERATION_MOD),
-                dash(ghost)
-            )
-        end
-    end
-
-    if input.just_pressed("k") then
-        -- 想让人看到**错误契约**：对已销毁的 id 再调用 `entity.destroy`，
-        -- 引擎明确报 Lua 错误（`require_alive`），而不是静默返回 false。
-        if ghost ~= nil and entity.is_alive(ghost) then
-            entity.destroy(ghost) -- 先把它变成"已销毁的 id"
-        end
-        if ghost ~= nil then
+        elseif id == "entity_generation" and input.just_pressed("x") then
+            -- 预期失败：对已销毁的句柄再 destroy，引擎报 Lua 错误而不是静默返回 false。
+            if is_ghost_alive() then
+                entity.destroy(ghost)
+            end
             local ok, err = pcall(function()
                 entity.destroy(ghost)
             end)
             if ok then
-                last_key = "K unexpected: second destroy succeeded"
-                log.warn("api_core " .. last_key)
+                action = "x unexpected: second destroy succeeded"
             else
-                -- `log.error` 的用法：把"被预期拒绝的调用"的原因打进日志（**原文**，含栈回溯）。
                 log.error("api_core expected failure: " .. tostring(err))
-                -- 状态行只有一行，所以这里先折成一行、掐掉栈回溯与 `runtime error:` 前缀。
-                local reason = tostring(err):gsub("%s+", " ")
-                reason = reason:match("^(.-) stack traceback") or reason
-                reason = reason:gsub("^runtime error: ", "")
-                last_key = "K destroy#2 -> " .. one_line(reason, 44)
+                action = "x second destroy rejected"
             end
         end
-    end
-
-    if input.just_pressed("s") then
-        -- 写盘只在按键分支里（README 硬规则 2）。槽名先切到 "demo" 再切回默认槽，
-        -- 免得本演示把别的存档写到 demo 槽去（`save.slot(nil)` = 回到默认槽）。
-        save.slot(SAVE_SLOT)
-        local slot_while_set = save.slot_get()
-        local committed = save.commit()
-        save.slot(nil)
-        last_key = string.format("S slot=%s commit=%s", dash(slot_while_set), tostring(committed))
-        log.info("api_core save.commit -> " .. tostring(committed))
-    end
-
-    if input.just_pressed("l") then
-        -- 读盘同样只在按键分支里。`save.load()` 返回 `(是否成功, 原因)`：
-        -- 还没存过档是 `false, "missing"`，与"存档损坏"（`false, "corrupt: ..."`）分得开。
-        save.slot(SAVE_SLOT) -- 与 S 键同一个槽，因此 S 之后按 L 应该真的读回来
-        local loaded_ok, reason = save.load()
-        local restored = save.read(SAVE_KEY) -- 读档之后同一个键拿到的是**存档里的**值
-        save.slot(nil)
-        if loaded_ok then
-            -- 注意：读回来的值是**提交那一刻**内存里的那份，因此会比当前帧旧一点。
-            last_key = string.format("L loaded ok '%s'", dash(restored))
-        else
-            last_key = string.format("L load refused: %s", dash(reason))
+    elseif id == "health_tag" then
+        if hero == nil or not entity.is_alive(hero) then
+            hero = entity.find(HERO_NAME)
+        end
+        if hero ~= nil and entity.is_alive(hero) then
+            if input.just_pressed("k") then
+                local left = health.damage(hero, HIT_DAMAGE)
+                if left <= 0.0 then
+                    health.set(hero, HERO_MAX_HP)
+                end
+                action = string.format("k damage -%d left=%.0f", HIT_DAMAGE, left)
+                log.warn("api_core hero hit: " .. action)
+            elseif input.just_pressed("y") then
+                health.set(hero, HERO_MAX_HP)
+                action = string.format("y health.set(%d)", HERO_MAX_HP)
+            elseif input.just_pressed("t") then
+                if tag.get(hero, TAG_KEY) ~= nil then
+                    tag.set(hero, TAG_KEY, "")
+                    action = "t tag removed"
+                else
+                    tag.set(hero, TAG_KEY, "calm")
+                    action = "t tag=calm"
+                end
+            end
+        end
+    elseif id == "event_bus" then
+        if input.just_pressed("o") then
+            event.off(EVENT_HIT, on_hit)
+            action = "o off(on)"
+        elseif input.just_pressed("u") then
+            event.unsubscribe(EVENT_HIT, on_sub)
+            action = "u unsubscribe(sub)"
+        elseif input.just_pressed("i") then
+            reset_events()
+            action = "i resubscribed both"
+        elseif input.just_pressed("e") then
+            event.emit(EVENT_HIT, { amount = 1, frame = frame, manual = true })
+            action = "e manual emit"
+        end
+    elseif id == "data_schema" then
+        if input.just_pressed("d") then
+            local value = lab.try(data.reload, DATA_PATH)
+            action = value ~= nil and "d data.reload ok" or "d data.reload failed"
+        elseif input.just_pressed("c") then
+            data.cache_clear()
+            lab.try(data.load, DATA_PATH)
+            action = "c cache_clear + load"
+        end
+    elseif id == "asset_app" then
+        if input.just_pressed("n") then
+            scene_name = scene.reload() or scene_name
+            action = "n scene.reload -> " .. scene_name
+        elseif input.just_pressed("v") then
+            local exists = scene.load("index")
+            action = "v scene.load(index)=" .. tostring(exists)
+        elseif input.just_pressed("q") then
+            app.quit()
+            action = "q app.quit requested"
+        end
+    elseif id == "save_slots" then
+        if input.just_pressed("s") then
+            save.slot(SAVE_SLOT)
+            local committed = save.commit()
+            local slot_now = save.slot_get()
+            save.slot(nil)
+            action = string.format("s slot=%s commit=%s", dash(slot_now), tostring(committed))
+            log.info("api_core save.commit -> " .. tostring(committed))
+        elseif input.just_pressed("l") then
+            save.slot(SAVE_SLOT)
+            local loaded_ok, reason = save.load()
+            local restored = save.read(SAVE_KEY)
+            save.slot(nil)
+            if loaded_ok then
+                action = "l loaded " .. dash(restored)
+            else
+                action = "l load refused: " .. dash(reason)
+            end
+        elseif input.just_pressed("c") then
+            action = "c save.clear removed=" .. tostring(save.clear())
         end
     end
 
-    if input.just_pressed("c") then
-        -- `save.clear()` 清空**内存**里的全部键并返回清掉的条数
-        --（磁盘文件要等下一次 `save.commit` 才被整体替换）。
-        local removed = save.clear()
-        last_key = string.format("C save.clear removed=%s", dash(removed))
+    -- 页脚右侧那一小段：按键刚做了什么（claim 在左边，两者互不遮挡）。
+    if action ~= "-" then
+        lab.status(action)
     end
-
-    if input.just_pressed("v") then
-        data.cache_clear()
-        data.schema(DATA_PATH, CACHE_SPEC) -- 重新登记校验器（顺带让该路径的缓存失效）
-        last_key = "V data.cache_clear + schema re-registered"
-    end
-
-    if input.just_pressed("f") then
-        -- `scene.load(name)` 返回"场景文件是否存在"；真正的切换由宿主在**步与步之间**执行
-        -- （`RuntimeScene` 的 `scene_transition` 系统 → `process_scene_transition`）。
-        local exists = scene.load("index")
-        last_key = string.format("F scene.load(index)=%s", tostring(exists))
-        log.info("api_core scene.load(index) -> " .. tostring(exists))
-    end
-
-    if input.just_pressed("q") then
-        app.quit() -- 只置引擎的退出请求标记，桌面运行器在帧末真正退出
-        last_key = "Q app.quit requested"
-        log.info("api_core app.quit requested")
-    end
-
-    -- -----------------------------------------------------------------------
-    -- ④ 本帧的读回：全部发生在按键之后，因此这一行是**按键之后**的世界。
-    -- -----------------------------------------------------------------------
-
-    -- entity 生命周期：`is_alive` 对未知/已销毁 id 返回 false（不报错），所以它是这条链的
-    -- 第一道判活；`persist_id` / `find_id` 在销毁后都返回 nil —— 稳定 ID 随实体一起注销。
-    local ghost_alive = ghost ~= nil and entity.is_alive(ghost)
-    local ghost_gen = nil
-    local ghost_pid = nil
-    if ghost_alive then
-        ghost_gen = ghost % GENERATION_MOD -- 低 32 位 = generation（代际）
-        ghost_pid = entity.persist_id(ghost) -- 反方向查询：从实体读回它注册过的稳定 ID
-    end
-    local ghost_lookup = entity.find_id(GHOST_PERSIST) -- 按稳定 ID 反查实体
-    local ghost_by_name = entity.find(GHOST_NAME) -- 按名字查（销毁后名字也被注销）
-
-    -- health / tag：读之前判活 —— 对已销毁的 id 调用它们会报 Lua 错误（docs/18）。
-    if hero ~= nil and entity.is_alive(hero) then
-        hero_hp = health.get(hero)
-        hero_tag = tag.get(hero, TAG_KEY)
-    end
-
-    -- event：每帧发一次事件。放在按键之后，所以按 1 / 2 的那一帧就能看到对应计数器停住。
-    event.emit(EVENT_HIT, { amount = HIT_DAMAGE, frame = frame })
-
-    -- asset：取句柄 → 归还。句柄是**字符串** `asset:<路径>`（不是对象，也没有引用计数），
-    -- 这里取完立刻还，因此状态行里那一串就是 `asset.load` 的真实返回值。
-    asset_token = asset.load(COIN_TEXTURE)
-    asset.release(asset_token)
-
-    -- scene：`scene.reload()` 是"当前场景名"的读法，直接显示；切场景在 F 键分支里。
-    scene_name = dash(scene.reload())
-
-    -- app：`app.quit()` 见 Q 键分支；`app.project_root()` 是只读查询——工程根的绝对路径
-    -- （正斜杠；未配置工程根时为空串）。它存在的理由是 `io.open` 的相对路径按**进程工作
-    -- 目录**解析，跨文件契约校验器必须靠它拼绝对路径，否则会静默跳过检查。
-    local project_root = app.project_root()
-    log.info("api_core app.project_root -> " .. dash(project_root))
-    -- `app.platform()`：宿主形态标识（桌面 `"desktop"`、wasm（浏览器/微信）`"webgl"`）。
-    -- 用途是"这台设备有没有键盘"：触屏要靠屏上摇杆与虚拟按钮，桌面不需要，
-    -- 所以该判平台，而不是判"宿主有没有实现 `input.virtual_key`"（那条 API 桌面也注册了）。
-    log.info("api_core app.platform -> " .. dash(app.platform()))
-
-    -- save：键值 + 任意表 + 槽。这三条读/写路径**都只写内存**（`ScriptState::save_data`）。
-    save.write(SAVE_KEY, string.format("frame=%d hp=%.0f", frame, hero_hp))
-    save_readback = save.read(SAVE_KEY)
-    save.blob_write(BLOB_KEY, { hp = hero_hp, frame = frame, ghost_alive = ghost_alive })
-    local blob = save.blob_read(BLOB_KEY)
-    if type(blob) == "table" then
-        blob_hp = blob.hp -- 任意 Lua 表往返一趟之后读回来（blob_read 返回 nil 表示没有这个键）
-    end
-    save_slot_now = save.slot_get()
-
-    -- data：注册过校验器（on_create）之后，三条读路径必须给出同一份内容：
-    --   load = 命中缓存（第一次真读盘）、reload = 无条件绕过缓存重读、
-    --   cache_clear 之后 load = 缓存已空所以又读了一次盘。
-    -- 三条一致才说明"缓存没有把数据变旧"。这里一次都不写盘。
-    local loaded = data.load(DATA_PATH)
-    local reloaded = data.reload(DATA_PATH)
-    data.cache_clear() -- 注意：清的是**全部** data 缓存，不是只清这一个路径
-    local after_clear = data.load(DATA_PATH)
-    data_counts = string.format(
-        "%d/%d/%d",
-        key_count(loaded.entries),
-        key_count(reloaded.entries),
-        key_count(after_clear.entries)
-    )
-    data_version = loaded.version
-
-    -- -----------------------------------------------------------------------
-    -- ⑤ 本帧的事实：全部来自上面那些 API 的读回值，分两行画。
-    --    状态行（`api.status`）= 会随按键变化的交互事实；私有行（`ui.text_at`）= IO 读回值。
-    --    `ev on=/sub=` 是最直观的一处：按 1、2 之后其中一个会当场停住。
-    -- -----------------------------------------------------------------------
-    api.status(
-        string.format(
-            "f%d dt=%.1fms | key=%s | ghost g=%s alive=%s pid=%s fid=%s | hp=%.0f tag=%s "
-                .. "| ev on=%d sub=%d | find %d/3",
-            frame,
-            dt * 1000.0,
-            one_line(last_key, 44),
-            dash(ghost_gen),
-            tostring(ghost_alive),
-            dash(ghost_pid),
-            dash(ghost_lookup),
-            hero_hp,
-            dash(hero_tag),
-            hits_by_on,
-            hits_by_subscribe,
-            found
-        )
-    )
-    -- 第二行只放"从引擎读回来的存储/资源事实"，每一个都对应一次 API 调用：
-    --   scene.reload()、save.read()、save.slot_get()、save.blob_read()、
-    --   data.load()（版本与条目数）、asset.load()（句柄原文）、event 载荷。
-    ui.text_at(
-        FACTS_ID,
-        24,
-        FACTS_Y,
-        string.format(
-            "scene=%s | save.read='%s' slot=%s | blob.hp=%s | data v=%s e=%s | asset=%s | "
-                .. "find(name)=%s | emit[%s]",
-            scene_name,
-            dash(save_readback),
-            dash(save_slot_now),
-            dash(blob_hp),
-            dash(data_version),
-            data_counts,
-            dash(asset_token),
-            dash(ghost_by_name),
-            last_hit_payload
-        ),
-        1.0
-    )
-    return string.format(
-        "api_core_ok frame=%d scene=%s hp=%.0f tag=%s ghost_alive=%s events=%d/%d",
-        frame,
-        scene_name,
-        hero_hp,
-        dash(hero_tag),
-        tostring(ghost_alive),
-        hits_by_on,
-        hits_by_subscribe
-    )
+    return lab.tick()
 end
 
---- 离开场景时释放动态 UI：私有读回行 + `api_demo` 登记的三行。
----
---- 这里两个调用都要写：`script.rs` 的 `ui.clear(id)` 只删**面板/图片/网格**（以及
---- `id:title` / `id:tooltip` 两个变体），**不碰** `ui.text_at` 建的那条普通命名文本
---- （它在 `ScriptState::ui` 里）。所以真正让这一行从画面上消失的是 `ui.hide`。
+function M.self_test()
+    return lab.self_test()
+end
+
 function M.on_destroy()
-    ui.hide(FACTS_ID)
-    ui.clear(FACTS_ID)
-    api.clear()
+    drop_ghost()
+    event.off(EVENT_HIT)
+    event.unsubscribe(EVENT_HIT)
+    if hero ~= nil and entity.is_alive(hero) then
+        health.set(hero, HERO_MAX_HP)
+        tag.set(hero, TAG_KEY, "calm")
+        tint_hero(1.0, 1.0, 1.0)
+    end
+    lab.stop()
 end
 
 return M

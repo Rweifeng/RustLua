@@ -3,9 +3,10 @@
 这个示例工程的唯一目的：**让引擎当前的每一个 Lua API 都有一处可运行、可交互、可读的演示**。
 它不是玩法样本（玩法样本是 `examples/game_jhyt`），而是一份"活文档"。
 
-- 一个场景 = 一个 API 模块组：`scenes/api_*.scene` + `scripts/demo_*.lua`
+- 一个场景 = 一个分步 Lab：`scenes/api_*.scene` + `scripts/demo_*.lua`
+- 每个 Lab 由 3–12 个**步骤**组成；每步声明主张、真实调用、读数与自检断言
 - 入口菜单 `scenes/index.scene` 列出全部演示，点击卡片或按 Enter 进入，ESC 返回
-- 演示清单的唯一真源是 `scripts/demos.lua`（场景名 ↔ 模块名 ↔ 菜单文案）
+- 演示清单的唯一真源是 `scripts/demos.lua`（场景名 ↔ 模块名 ↔ 菜单文案 ↔ 步骤数）
 - 工程入口 `scripts/main.lua` 只转发生命周期，真正的分发在 `scripts/router.lua`
 
 ## 1. 目录约定
@@ -14,17 +15,17 @@
 examples/game_api/
 ├── project.toml            # main_script=scripts/main.lua, startup_scene=scenes/index.scene
 ├── scenes/
-│   ├── index.scene         # 入口菜单（焦点环 + 滚动 + UiEvents 点击）
+│   ├── index.scene         # 入口菜单（3 列卡片 + UiEvents 点击）
 │   ├── main.scene          # 2D 综合：Sprite/Quad/Animation/Particles/Tilemap/物理/文字
 │   ├── unified.scene       # 一份场景表达全部渲染类别（2D + 3D + UI + 粒子 + 世界文字）
 │   ├── api_*.scene         # 每个 API 模块组一个场景
 │   ├── demo3d.scene        # 3D 渲染 fixture（被 wp0_3d_golden 逐项断言，**不要改内容**）
 │   └── mixed.scene         # 混合 2D/3D fixture（被 wp0_mixed_golden 逐项断言，**不要改内容**）
 ├── scripts/
-│   ├── main.lua            # 工程级回调 → router
-│   ├── router.lua          # 场景 → 演示模块分发 + ESC 返回 + 状态行渲染
+│   ├── main.lua            # 工程级回调 → router；暴露 __api_demo_self_test
+│   ├── router.lua          # 场景 → 演示模块分发 + ESC 返回 + 自检入口
+│   ├── lab.lua             # 2.0 框架：shell / 步骤引擎 / 读回卡片 / 断言
 │   ├── demos.lua           # 演示清单（真源）
-│   ├── api_demo.lua        # 共用工具：标题/状态行/按键提示、宿主帧依赖调用的安全包装
 │   ├── demo_*.lua          # 每个场景一个演示模块
 │   └── entity/*.lua        # 每实体 `Script` 组件的钩子演示（on_spawn / on_update）
 ├── data/*.json             # `data.load` / `data.schema` 的演示数据
@@ -35,56 +36,97 @@ examples/game_api/
 
 ```lua
 -- api_xxx：演示 <模块名> 的 <函数清单>。
-local api = require("api_demo")
+local lab = require("lab")
 
 local M = {}
 
---- 只在进入本场景时调用一次：注册动态 UI、初始化演示状态。
+local steps = {
+    {
+        id = "readback",
+        title = "Readback",              -- 步骤轨里的短标题
+        claim = "一句话主张：读者按完键应能验证的事",
+        api = { "transform.set", "transform.get" },
+        code = "transform.set(id, x, y); transform.get(id)",
+        enter = function() ... end,      -- 进入步骤时布景（自检也走这里）
+        run = function(dt) ... end,      -- 每帧推进；headless 下必须安全
+        read = function() return { key = value } end,
+        check = function(t)              -- 自检断言
+            t:eq(transform.get(id).x, 10, "x moved")
+        end,
+    },
+}
+
 function M.on_create()
-    api.title("api_xxx - <一句话说明>")
-    api.hint("<按键> ... - " .. api.KEYS_BACK)
+    lab.start({
+        scene = "api_xxx",
+        title = "Xxx API",
+        category = "Core",
+        steps = steps,
+        hide_scene_text = { "SomeHudLabel" }, -- 会压住 shell 的场景文字
+    })
 end
 
---- 每个固定步一次。返回的字符串会进引擎日志（`run_script_steps` / 编辑器 Play 都能看到）。
 function M.update()
-    api.status("<本帧想让人看到的事实：读回的数值、计数、状态>")
-    return "api_xxx_ok <关键值>"
+    return lab.tick()
 end
 
---- 可选：场景里 `UiEvents` 组件的点击回调（实体名就是参数）。
-function M.on_click(name) end
+function M.self_test()
+    return lab.self_test()
+end
 
---- 可选：`ui.drag_end` 触发的全局拖拽回调。
-function M.on_drag(from_id, from_index, to_id, to_index) end
-
---- 可选：`day.sleep()` / 时钟跨午夜触发的日循环钩子。
-function M.on_day_start() end
-function M.on_day_end() end
-
---- 可选：离开场景时释放（`ui.focus_close` / `ui.scroll_close` / `ui.clear`）。
-function M.on_destroy() end
+function M.on_destroy()
+    lab.stop()
+end
 
 return M
 ```
+
+### Lab 的交互与版面
+
+| 键 | 作用 |
+|---|---|
+| `Space` / `→` / `PageDown` | 下一步 |
+| `←` / `Backspace` / `PageUp` | 上一步 |
+| `1`–`9` | 跳到第 N 步 |
+| `R` | 复位当前步（重跑 `enter`） |
+| `F` | 聚焦模式（隐藏左右栏与页眉页脚） |
+| `F5` | 运行本场景全部 `check()`，结果显示在左栏 |
+| `ESC` / 手柄 B | 回入口菜单（由 `router` 处理） |
+
+**这些键由框架保留，步骤自己的交互不要占用**。步骤可用字母、鼠标、手柄或方向键之外的动作。
+
+版面（1280×720）：页眉 0..64，左栏 16..280，舞台 296..936（y 76..644），
+右侧 API 卡 952..1264，页脚 656..720。步骤自己画的动态 UI 请留在舞台内；
+场景 `Text` 画在动态 UI **之上**，压到页眉/页脚的标签用 `hide_scene_text` 隐藏。
 
 ### 硬规则（会被自动化门检查）
 
 1. **顶层只定义函数与常量。** 模块文件会被单独编译（`lua_check`）与加载，顶层不得调用引擎
    API：进入场景前的状态（实体还没生成、宿主还没回填相机）会让"只是加载一个模块"报错。
-2. **`update()` 必须能在 headless 下跑通。** 引擎测试会实例化每个场景并步进若干帧：
-   - 不要在 `update()` 里写盘（`save.commit` / `save.write` / `audio.save_settings` /
-     `input.save_settings` / `settings.toml`），除非按键触发；
-   - 不要在 `update()` 里无条件切场景（`scene.load` / `map.go` / `map.enter` / `app.quit`），
+2. **`run()` 必须能在 headless 下跑通。** 引擎测试会实例化每个场景、步进一帧，然后调用
+   `__api_demo_self_test()` 依次跑每个步骤的 `enter` + `run` × 3 + `check`：
+   - 不要在 `run()` 里写盘（`save.commit` / `save.write` / `audio.save_settings` /
+     `input.save_settings`），除非按键触发；
+   - 不要在 `run()` 里无条件切场景（`scene.load` / `map.go` / `map.enter` / `app.quit`），
      除非按键触发；
-   - 宿主帧依赖的调用必须用 `api.try` 包一层并写明原因：
+   - 宿主帧依赖的调用必须用 `lab.try` 包一层并写明原因：
      `camera2d.get/screen_to_world/world_to_screen/mouse_world`、
      `camera3d.ray/mouse_ray/world_to_screen/get/pick_plane`、
      `physics.debug_draw` / `physics3d.debug_draw`（渲染期消费）。
 3. **每个函数都要真的被调用一次。** 覆盖率门按 `模块.函数(` 的文本出现判定，
    因此不要用变量间接调用（`local f = ui.panel` 这种写法在门里等于没演示）。
-4. **场景必须过 schema。** `editor --project examples/game_api --check` 要求
+4. **每步都要有 `check()`。** 新门 `sample_project_demos_self_test` 要求非夹具场景
+   `steps >= 3`、`checks >= 3`、`failed = 0`。`check` 里用 `t:eq / t:near / t:ok`；
+   断言必须与宿主帧无关（相机快照、渲染结果不能作为自检依据）。
+5. **场景必须过 schema。** `editor --project examples/game_api --check` 要求
    `schema_errors=0`、`unknown_components=0`；组件串字段名/类型见第 3 节。
-5. **注释写明"看什么"**：演示的价值在于读代码的人知道该按哪个键、该看哪个数值。
+6. **注释写明"看什么"**：演示的价值在于读代码的人知道该按哪个键、该看哪个数值。
+
+### 保留交互键
+
+`Space` / 方向键 / `Backspace` / `PageUp` / `PageDown` / `Home` / `End` / `1`–`9` / `R` / `F` /
+`F5` 由 Lab 保留。步骤的按键演示请用字母、鼠标或手柄动作；如果某个 API 必须演示方向键，
+请在步骤 `enter` 里把该键的真实读回值写进 `read()`，而不是拦它的按下事件。
 
 ## 3. 场景文件格式
 
@@ -127,8 +169,18 @@ component	<id>	<组件名>	<组件串>
 | `UiBindings` | `property=text.text\|image.visible\|progress.value;target=<实体名>;source=<数据源>;default=<值>`，多条用 `\|` 分隔。**只注册了 schema**（编辑器 UI Designer 侧），`typed_scene` 没有它的分支 → 写进场景会判红"源组件数 == typed 组件数" |
 | `UiAnimation` | `track.<属性名>=<时间>:<值>:<缓动>\|...`，多条用 `\|` 分隔。同上：schema-only，运行时不消费 |
 
-`UiLayout` 的锚点+偏移是**屏幕空间**：`anchors=0.5,0.5,0.5,0.5;offsets=-100,-50,100,50`
-= 以屏幕中心为锚点、宽 200 高 100 的矩形。零尺寸（四条偏移相等）是"点锚"，文字从该点开始画。
+`UiLayout` 的锚点矩形是**父实体的解算矩形**（Unity 式），不是屏幕：`anchors` 四边取 0..1，
+在该矩形内插值出锚点，`offsets` 四边是相对**父矩形中心**的像素。于是同一个数字，挂的父不同，
+落点完全不同——
+
+* 挂在 `Canvas` 下：`Canvas` 是"屏幕中心的**零尺寸**矩形"（`canvas.reference` 只决定缩放），
+  所以偏移等价于"相对屏幕中心的屏幕坐标"：`offsets=-592,-342,...` = 屏幕 (48, 18)。
+* 挂在卡片下：偏移相对**卡片中心**，卡片移动时文字跟着走。按屏幕坐标写就会整体偏出卡片
+  （`sample_project_index_labels_are_inside_their_cards` 抓这个）。
+
+四条偏移相等 = 点锚（零尺寸矩形）。此时 `pivot` 决定文字盒如何贴在这个点上：
+`pivot=0,0` 让点就是文字**左上角**；`pivot=0.5,0.5` 把文字盒**居中**到该点——长文案因此会
+向左溢出锚点，居中排版要的是"锚点在中心"而不是"偏移在中心"。
 
 ### 两条会被门拦住的场景约束
 
@@ -136,16 +188,17 @@ component	<id>	<组件名>	<组件串>
    "父当作组织关系"与"父当作局部空间"两种解释下世界位置相同（它**不读 `meta spatial`**），
    所以示例场景里的父子对都把父放在 (0,0,0)；要演示"子跟着父走"，请在运行期用
    `transform.move` 移动父。
-2. **场景 `Image`/`Text` 永远画在 Lua 动态 UI 之上**（`runtime_scene.rs` 的绘制顺序）。
+2. **场景 `Text` 永远画在动态 UI 之上，场景 `Image` 画在动态 UI 之下**（`runtime_scene.rs` 的绘制顺序）。
    铺满屏幕的背景**不能**写成场景 `Image` 实体——它会把脚本的状态行整片盖住；背景请用
    `Quad`（世界通道）或 `ui.panel`（动态面板）。`sample_project_shared_overlay_is_not_covered`
    会抓这类覆盖。
 
 ### 屏幕版式
 
-`api_demo` 的三行取景框：标题在左上 (24,16)；状态行与按键提示**从屏幕底部往上排**
-（提示贴 y≈688，状态行压在它上方，两段都按自己的行数算高度，因此多行状态不会压住提示）。
-演示自己画的说明行请留在 **y ≤ 600**，把 600..720 留给共享取景框。
+Lab 的固定分栏见 §2：页眉 0..64、左栏 16..280、舞台 296..936（y 76..644）、
+右侧 API 卡 952..1264、页脚 656..720。演示自己画的动态 UI 请留在舞台内；
+会压到分栏的场景文字用 `hide_scene_text` 让位。`api_demo` 的三行取景框只服务于
+`demo_fixture.lua`（渲染 fixture），不再参与 Lab 版面。
 
 ## 4. 自检命令
 
@@ -157,20 +210,20 @@ cargo run -q -p engine --example lua_check -- ../examples/game_api (Get-ChildIte
 # ② 场景 schema / 组件漂移（要求 schema_errors=0 unknown_components=0）
 cargo run -q -p editor -- --project ../examples/game_api --check
 
-# ③ 全部工程门：逐场景 headless 实例化+步进、脚本编译、API 覆盖率、组件覆盖率、
-#    入口菜单接线、卡片命中、共享取景框、字体缺字
+# ③ 全部工程门：逐场景 headless 实例化+步进、行为自检、脚本编译、API 覆盖率、
+#    组件覆盖率、入口菜单接线、卡片命中、共享取景框、字体缺字
 cargo test -p engine --lib sample_project
 
 # ④ 改文案后重新子集化工程字体（缺字会让 ③ 里的字形门判红）
-cargo run -q -p engine --example subset_project_font -- examples/game_api
+cargo run -q -p engine --example subset_project_font -- ../examples/game_api --source ../engine/crates/editor/fonts/NotoSansSC-VF.ttf
 ```
 
 ## 5. 两个生成物（改完要重跑工具）
 
 | 生成物 | 生成器 | 说明 |
 |---|---|---|
-| `scenes/index.scene` | `scripts/docgen/gen-api-showcase-index.ps1` | 从 `scripts/demos.lua` 读清单，铺成 2 列卡片网格；手改会在下次生成时丢失。一致性由 `sample_project_index_menu_lists_every_scene` 兜底 |
-| `assets/fonts/NotoSansSC-VF.ttf` | `cargo run -q -p engine --example subset_project_font -- examples/game_api` | 按**工程实际用字**（场景文本 + Lua 字符串字面量）子集化。文案里新增汉字就要重跑，否则屏幕上出现方框（`sample_project_scene_text_has_every_glyph` 会判红） |
+| `scenes/index.scene` | `scripts/docgen/gen-api-showcase-index.ps1` | 从 `scripts/demos.lua` 读清单，铺成 3 列卡片网格；手改会在下次生成时丢失。一致性由 `sample_project_index_menu_lists_every_scene` 兜底 |
+| `assets/fonts/NotoSansSC-VF.ttf` | `cargo run -q -p engine --example subset_project_font -- ../examples/game_api --source ../engine/crates/editor/fonts/NotoSansSC-VF.ttf` | 按**工程实际用字**（场景文本 + Lua 字符串字面量）子集化。文案里新增汉字就要重跑，否则屏幕上出现方框（`sample_project_scene_text_has_every_glyph` 会判红） |
 
 新增一个演示的完整步骤：① 写 `scenes/api_xxx.scene` + `scripts/demo_xxx.lua`；
 ② 在 `scripts/demos.lua` 里登记（场景名 / 模块名 / 菜单文案）；

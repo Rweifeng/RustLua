@@ -427,19 +427,26 @@ impl Transport for CurlTransport {
             .map_err(|error| ProviderError::Transport(format!("写请求临时文件失败：{error}")))?;
         let config = self.curl_config(request, &body_path, &response_path);
 
-        let mut child = Command::new(&self.program)
+        let mut command = Command::new(&self.program);
+        command
             .arg("--config")
             .arg("-")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| {
-                ProviderError::Transport(format!(
-                    "无法启动 curl（{}）：{error}；可用 RUSTLUA_CURL 指定路径",
-                    self.program
-                ))
-            })?;
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        {
+            // 编辑器是 GUI 进程（无控制台）：curl.exe 是控制台程序，不设 CREATE_NO_WINDOW
+            // 每次请求都会新开一个黑窗。
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let mut child = command.spawn().map_err(|error| {
+            ProviderError::Transport(format!(
+                "无法启动 curl（{}）：{error}；可用 RUSTLUA_CURL 指定路径",
+                self.program
+            ))
+        })?;
         {
             let mut stdin = child
                 .stdin

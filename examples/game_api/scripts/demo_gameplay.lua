@@ -1,44 +1,50 @@
--- api_gameplay：玩法层 API 一个场景看完 —— clock / calendar / day / item / inv /
--- container / shop / interact / map（外加 tag.get / tag.set：interact.query 的候选集就是
--- 按实体的 tag 筛出来的，所以这两个顺手一起演示）。
+-- api_gameplay：玩法层 API 的分步 Lab —— clock / calendar / day / item / inv /
+-- container / shop / interact / map / tag 各主张一件事。
 --
--- 这个演示想证明的四件事（读代码时按这个顺序看，屏幕上也是按这个顺序分行显示的）：
+-- 一句话主线：这些模块是**同一份运行期状态的几个视角**，不是各自独立的仪表。
+--   * clock / calendar / day 是同一台游戏时钟：`clock.now()` 给「第几天 + 当天分钟」，
+--     `calendar.now()` 把它换算成季节/年，`day.now()` 是日循环钩子的入口读数。
+--   * `item.define` 注册的定义是 `inv` 堆叠上限的唯一来源；`inv.add` 的返回值是塞不进去的余数。
+--   * `container.open(实体, 容量)` 把场景实体变成第二个背包，返回的 `container:<id>` 就是
+--     `inv.move` 的目标 id —— 玩家背包与箱子走同一套接口。
+--   * `map.state` / `map.schema` 是分地图持久状态；`map.goto/go/enter` 只排队切图，
+--     所以那一组只放在按键分支里（自检不按任何键）。
+--   * `interact.query` 的候选集按实体 tag 筛（`interact` 或 `kind`），`interact.prompt` 写的是
+--     引擎侧提示文本；`day.sleep` 依次触发 `on_day_end` → 次日 06:00 → `on_day_start`，
+--     本模块的两个钩子把触发次数记在 `hooks` 里，read/check 都能读回。
 --
--- ① clock / calendar / day 是**同一份游戏时钟**的三个视角，不是三份状态：
---    clock.now() 给「第几天 + 当天已过的分钟数」，calendar.now() 把它换算成
---    「季节 / 季节内第几天 / 年」，day.now() 是日循环钩子的入口读数。按 SPACE
---    （clock.add）或 R（clock.set_rate）之后**后续帧的读数会继续变**——这就是
---    「时钟真的在被宿主推进」的证据。只打印一次常量的话，时钟不走的 bug 是看不出来的。
--- ② clock.sleep_to_morning() 与 day.sleep() 只差一件事：后者按顺序触发全局
---    on_day_end → on_day_start（本模块把两个回调的次数打在屏幕上，见 M.on_day_end /
---    M.on_day_start）。所以这两个键只放在按键分支里：headless 的自动步进没有输入，
---    不该被日循环回调打断。
--- ③ item.define 注册的定义是 inv 堆叠上限的**唯一来源**；inv.add 的返回值是「塞不进去的
---    余数」。container.open(实体 id, 容量) 把实体关联成第二个背包，键是
---    "container:<实体 id>"，而这个键就是 inv.move / inv.swap 的 inventory id ——
---    玩家背包与箱子背包走的是同一套接口，不需要第二套搬运代码。
--- ④ map 把「分地图持久状态」与「切场景」分成两件事：map.state / map.schema 随时可读写，
---    map.go / map.enter / map.goto 会真的换场景，所以只在按键分支里调用。
+-- 交互键（Lab 保留 space/方向键/1-9/r/f/f5，不用它们）：
+--   clock_views      t=+60m  p=pause  n=advance
+--   clock_advance    t=重置  n=+60m   s=换 rate  p=pause
+--   day_sleep        n=day.sleep()  m=clock.sleep_to_morning()
+--   calendar_config  y=calendar.set(12,3,2,400)  u=7x3  i=28x4
+--   inventory        i=+5 种子  k=-2 种子  v=切 slot5
+--   bag_slots        b=bag1→hotbar1  g=bag2↔hotbar2  v=set slot5
+--   equipment        e=切 tool  q=切 trinket
+--   containers       o=open  c=close  u=container.move→BAG5  l=bag→chest
+--   shop             x=全价/半价目录
+--   interact         c=半径 120/24  q=切农夫 role 标签
+--   map_state        s=set_spawn  w=写 plots  d=清本图  a=清全部
+--   map_switch       g=map.goto  e=map.enter  j=map.go（都自跳本场景）
 --
--- 硬规则：本文件顶层只定义常量与函数，不调用任何引擎 API（模块会被单独 load 做语法检查）。
-local api = require("api_demo")
+-- 硬规则（README §2）：顶层只定义常量与函数；`run()` 在 headless 下只做内存读写；
+-- 每个 `enter` 都重建该步依赖的时钟、日历、背包、容器、商店与地图状态。
+local lab = require("lab")
 
 local M = {}
 
--- ── 常量 ───────────────────────────────────────────────────────────────────────
-local BAG = "bag"                      -- inv.create 建的固定容量背包
-local HOTBAR = "hotbar"                -- inv.hotbar 建的快捷栏（同一套 inv.* 接口）
+-- ── 常量 ─────────────────────────────────────────────────────────────────────
+local BAG = "lab_bag"
+local HOTBAR = "lab_hotbar"
 local BAG_CAPACITY = 12
 local HOTBAR_SIZE = 9
 local CHEST_CAPACITY = 8
-local SHOP = "farm_stand"              -- shop.set_catalog / shop.price 的目录名
-local MAP_STATE = "api_gameplay_farm"  -- map.schema / map.state 的地图名
-local MAP_HERE = "api_gameplay"        -- 切图目标之一：本场景自身（自跳，安全）
-local MAP_OTHER = "main"               -- 切图目标之二：工程里另一个真实存在的场景
-local SEASONS = { "Spring", "Summer", "Autumn", "Winter" }
-local RATES = { 0.0, 2.0, 60.0, 240.0 }   -- clock.set_rate 的档位（每秒推进多少游戏分钟）
-local RADII = { 120.0, 24.0 }             -- interact.query 的半径档位
-local EQUIP_SLOTS = { "tool", "trinket" }
+local SHOP = "lab_stand"
+local MAP_STATE = "lab_gameplay_farm"
+local MAP_HERE = "api_gameplay"
+local RADII = { 120.0, 24.0 }
+local RATES = { 0.0, 60.0, 240.0 }
+
 local FULL_CATALOG = {
     turnip_seed = { buy = 20, sell = 10 },
     watering_can = { buy = 120, sell = 60 },
@@ -50,104 +56,69 @@ local SALE_CATALOG = {
     coin = { buy = 1, sell = 1 },
 }
 
--- ── 运行期状态（on_create 里填）────────────────────────────────────────────────
-local chest_id = nil            -- Chest 实体 id（container.* 的关联键）
-local farmer_id = nil           -- Farmer 实体 id（interact 查询原点 + tag 演示用）
-local radius_index = 1          -- RADII 的下标
-local rate_index = 2            -- RATES 的下标（默认 2 游戏分钟/秒）
-local hooks = { day_end = 0, day_start = 0 }   -- on_day_end / on_day_start 的触发次数
-local last = "on_create"        -- 最近一次操作的结果（打在状态行的最后一段）
-local schema_probe = "(not probed)"            -- map.schema 的拒绝实验结论
-local catalog_sale = false      -- 当前用的是原价目录还是半价目录
+-- 分地图状态的轻量校验器（与 map.state 的写入形状一致）。
+local MAP_SCHEMA = {
+    ["$kind"] = "object",
+    fields = {
+        version = "integer",
+        plots = "integer",
+        sky = "string",
+        notes = { ["$kind"] = "map", values = "any" },
+    },
+    required = { "version", "plots", "sky" },
+}
 
--- ── 小工具（都是纯 Lua，不碰引擎 API）──────────────────────────────────────────
+-- 舞台里的世界布景：场景实体原本在左栏下面，这里把它们摆进舞台（x=296..936）。
+local WORLD = {
+    -- 菜地也搬进舞台：原场景把它摆在 x=80（左栏后面），只剩一条边可见。
+    { name = "FarmPlot", x = 340.0, y = 150.0 },
+    { name = "Farmer", x = 560.0, y = 360.0 },
+    { name = "Chest", x = 640.0, y = 382.0 },
+    { name = "Shopkeeper", x = 660.0, y = 340.0 },
+}
 
---- 时钟读数 → "HH:MM"（clock.now() 的 minute 是「当天已过的分钟数」，hour 已经除好了）
+-- ── 运行期状态（普通 Lua 局部变量，不是引擎状态）─────────────────────────────
+local chest_id = nil
+local farmer_id = nil
+local radius_index = 1
+local rate_index = 1
+local advance = 0
+local action = "ready"
+local last_step = ""
+local catalog_sale = false
+local hooks = { day_end = 0, day_start = 0 }
+
+-- ── 小工具（纯 Lua 或只读 API）───────────────────────────────────────────────
+
+local function dash(value)
+    if value == nil then
+        return "-"
+    end
+    return tostring(value)
+end
+
 local function hhmm(now)
-    if not now then
+    if now == nil then
         return "--:--"
     end
-    return string.format("%02d:%02d", now.hour or 0, (now.minute or 0) % 60)
+    return string.format("%02d:%02d", now.hour or 0, (now.minute_of_day or 0) % 60)
 end
 
-local function season_name(index)
-    return SEASONS[index] or ("S" .. tostring(index))
+--- 时钟三件套的复位：rate=0 冻结宿主推进，pause=false，再写死到指定时刻。
+--- 每个依赖时钟的 `enter` 都先走这里，F5 才能从同一状态出发。
+local function reset_clock(day, minute)
+    clock.set_rate(0.0)
+    clock.pause(false)
+    clock.set(day, minute)
 end
 
---- 截断过长的文本（引擎的错误信息带完整字段路径，屏幕上放不下）
-local function clip(text, limit)
-    local value = tostring(text)
-    if #value <= limit then
-        return value
-    end
-    return value:sub(1, limit) .. "..."
-end
-
---- 背包概览，返回 `文本, 已占格数, 总格数`。
---- inv.get 给 {id, capacity, slots, occupied}；inv.slot 按 **1 基**槽位读单格，空格返回 nil。
-local function bag_text(id, limit)
-    if not inv.exists(id) then
-        return id .. " (absent)", 0, 0
-    end
-    local data = inv.get(id)
-    local parts = {}
-    for index = 1, math.min(limit, data.capacity) do
-        local slot = inv.slot(id, index)
-        if slot then
-            parts[#parts + 1] = string.format("[%d]%s x%d", index, slot.item, slot.count)
-        else
-            parts[#parts + 1] = string.format("[%d]-", index)
-        end
-    end
-    local text = string.format("%s %d/%d %s", id, data.occupied, data.capacity, table.concat(parts, " "))
-    return text, data.occupied, data.capacity
-end
-
---- 装备槽概览：equip_list 一次读回「槽 → 物品 id」整表，equip_get 读单槽（没装备返回 nil）。
-local function equip_text(id)
-    if not inv.exists(id) then
-        return "(absent)"
-    end
-    local parts = {}
-    local count = 0
-    for slot, item_id in pairs(inv.equip_list(id)) do
-        count = count + 1
-        parts[#parts + 1] = string.format("%s=%s", slot, item_id)
-    end
-    for _, name in ipairs(EQUIP_SLOTS) do
-        if inv.equip_get(id, name) == nil then
-            parts[#parts + 1] = name .. "=-"
-        end
-    end
-    return string.format("%s (%d slot)", table.concat(parts, " "), count)
-end
-
--- ── 进入场景：注册定义 / 建背包 / 关联箱子 / 打标签 / 注册地图状态校验器 ────────
-function M.on_create()
-    api.title("api_gameplay - clock / calendar / day / item / inv / container / shop / interact / map")
-    api.hint(
-        "CLOCK SPACE=clock.add(30m) R=clock.set_rate(0/2/60/240) P=clock.pause T=clock.set(5,480) "
-            .. "M=clock.sleep_to_morning N=day.sleep Y=calendar.set(12,3,2,400)\n"
-            .. "BAG I=inv.add K=inv.remove F=inv.move G=inv.swap V=inv.set(slot5) J=inv.equip Q=tag.set/get "
-            .. "CHEST U=container.move L=inv.move(to chest) Z=container.close/open SHOP X=shop.price\n"
-            .. "MAP 1=map.set_spawn 2=map.state(write) 3=map.state_clear(name) 4=map.state_clear() "
-            .. "5=map.goto(here) 6=map.enter(here) 7=map.go(main) C=interact r=120/24 - " .. api.KEYS_BACK
-    )
-
-    -- ⓪ calendar.configure：季节长度与年季数是体裁参数，不是写死的 28×4。这里收紧成
-    --    7 天/季、3 季/年，calendar.set 的第 8 天必须被拒绝；随后恢复默认值——下面 Y 键的
-    --    calendar.set(12,3,2,400) 依赖 28 天/季。
-    calendar.configure({ days_per_season = 7, seasons_per_year = 3 })
-    local day8_rejected = pcall(calendar.set, 8, 1, 1, 0)
+--- 日历体裁参数复位（默认 28 天/季、4 季/年）。
+local function reset_calendar()
     calendar.configure({ days_per_season = 28, seasons_per_year = 4 })
-    last = string.format(
-        "calendar.configure 7x3: calendar.set(8,1,1,0) rejected=%s, restored 28x4",
-        tostring(not day8_rejected)
-    )
+end
 
-    -- ① item.define：注册物品定义。`stack` 是 inv.add 堆叠上限的唯一来源；
-    --    没定义过的物品 id 也能 add，只是按引擎默认上限 99 堆叠。
-    --    item.def 是这份注册表的读口（下面每帧都会读一次 turnip_seed 打到屏幕上）。
+--- 注册三个演示物品；`stack` 是 inv 堆叠上限的唯一来源。
+local function define_items()
     item.define("turnip_seed", {
         name = "Turnip Seed",
         description = "Sow it in a tilled cell; one watered day per stage.",
@@ -168,363 +139,981 @@ function M.on_create()
     })
     item.define("coin", {
         name = "Coin",
-        description = "Currency. The wallet itself is Lua-side, the engine only prices items.",
+        description = "Currency. The engine only prices items.",
         stack = 999,
         buy = 1,
         sell = 1,
         texture = "assets/textures/coin.png",
         kind = "currency",
     })
+end
 
-    -- ② shop.set_catalog：目录只是 {item_id = {buy, sell}}；买卖交易与钱包留在 Lua 玩法层，
-    --    引擎侧只有这一份价格服务（shop.price 是它的读口）。
-    shop.set_catalog(SHOP, FULL_CATALOG)
-    catalog_sale = false
-
-    -- ③ inv.create / inv.hotbar：两个独立命名的背包，接口完全一样（hotbar 只是默认 9 格的 create）。
+--- 固定初始背包：create 会重建整份背包（含装备槽），所以它同时是背包重置。
+local function reset_bag()
     inv.create(BAG, BAG_CAPACITY)
     inv.hotbar(HOTBAR, HOTBAR_SIZE)
-    inv.add(BAG, "turnip_seed", 5)   -- 返回值 = 没塞进去的余数（这里 stack=99，必然是 0）
+    inv.add(BAG, "turnip_seed", 5)
     inv.add(BAG, "watering_can", 1)
     inv.add(BAG, "coin", 12)
-    inv.equip(BAG, "tool", "hoe")    -- 装备槽骨架：只记物品 id，属性效果留给玩法层
+    inv.equip(BAG, "tool", "hoe")
+end
 
-    -- ④ container.open：把 Chest 实体关联成第二个背包，并把 container.get 读回的键
-    --    直接当 inv 的 id 用一次 —— 证明两种背包是同一套接口。
+local function reset_shop()
+    shop.set_catalog(SHOP, FULL_CATALOG)
+    catalog_sale = false
+end
+
+--- 打开箱子背包并放 10 枚金币；`container.open` 会重建，等价于容器重置。
+local function open_chest()
+    chest_id = entity.find("Chest")
+    if chest_id == nil then
+        return nil
+    end
+    local key = container.open(chest_id, CHEST_CAPACITY)
+    inv.add(key, "coin", 10)
+    return key
+end
+
+--- 世界布景：把三个场景实体摆进舞台、写好 interact 候选标签、清掉旧提示。
+--- 位置每步都从同一组常数写回，读者按过任何键之后 F5 仍可复现。
+local function reset_world()
+    for _, spot in ipairs(WORLD) do
+        local id = entity.find(spot.name)
+        if id ~= nil and entity.is_alive(id) then
+            transform.set(id, spot.x, spot.y)
+        end
+    end
     chest_id = entity.find("Chest")
     farmer_id = entity.find("Farmer")
-    if chest_id then
-        container.open(chest_id, CHEST_CAPACITY)
-        local chest_key = container.get(chest_id)
-        if chest_key then
-            inv.add(chest_key, "coin", 10)
-        end
-        -- tag：interact.query 只挑带 "interact" 或 "kind" 标签的实体，并按 priority 参与排序
+    local shopkeeper_id = entity.find("Shopkeeper")
+    if chest_id ~= nil then
         tag.set(chest_id, "kind", "chest")
         tag.set(chest_id, "interact", "open")
         tag.set(chest_id, "priority", "5")
     end
-    local shopkeeper_id = entity.find("Shopkeeper")
-    if shopkeeper_id then
+    if shopkeeper_id ~= nil then
         tag.set(shopkeeper_id, "kind", "shop")
         tag.set(shopkeeper_id, "interact", "trade")
         tag.set(shopkeeper_id, "priority", "1")
     end
-    if farmer_id then
-        -- role 不是 interact 认的两个键之一，所以农夫自己不会出现在交互候选里
+    if farmer_id ~= nil then
         tag.set(farmer_id, "role", "player")
     end
+    interact.clear_prompt()
+end
 
-    -- ⑤ map.schema + map.state：注册分地图状态的轻量校验器。
-    --    spec 形态见 docs/18 与 core/data_schema.rs：$kind = object/array/map，
-    --    叶子是 "integer"/"number"/"string"/"boolean"/"any"。
-    --    注册之后 map.state 的**写入**先校验，错误定位到地图名与字段 —— 所以下面故意
-    --    写一份非法状态并用 pcall 断言「确实被拒绝」，把结论打到屏幕上（校验器不是摆设）。
-    map.schema(MAP_STATE, {
-        ["$kind"] = "object",
-        fields = {
-            version = "integer",
-            plots = "integer",
-            sky = "string",
-            notes = { ["$kind"] = "map", values = "any" },
-        },
-        required = { "version", "plots", "sky" },
-    })
+--- 分地图状态复位：先注册 schema，再写一份合法状态并记住出生点。
+local function reset_map_state()
+    map.schema(MAP_STATE, MAP_SCHEMA)
     map.state(MAP_STATE, {
         version = 1,
         plots = 3,
         sky = "Sunny",
         notes = { owner = "Farmer", season = 1 },
     })
-    local accepted, reason = pcall(function()
-        map.state(MAP_STATE, { version = "not-an-integer", plots = 1, sky = "Sunny" })
-    end)
-    if accepted then
-        schema_probe = "ACCEPTED (bug!)"
-    else
-        schema_probe = "rejected"
-        log.info("map.schema rejected the invalid write: " .. clip(reason, 160))
-    end
-
-    -- ⑥ map.set_spawn：map.spawn() 的读口；map.goto / map.enter 带坐标时会覆盖它。
-    map.set_spawn(144, 176)
-
-    -- ⑦ 时钟：引擎默认 rate = 0（时钟是**冻结**的，每一步都由 set_rate 决定），
-    --    所以先显式设一次，让「时间自己在走」这件事在本场景里直接可见；
-    --    之后按 R 就在 0 / 2 / 60 / 240（游戏分钟每秒）之间切换。
-    clock.set_rate(RATES[rate_index])
-
-    last = "on_create: items/bag/hotbar/chest/tags/map-state/clock ready"
-    log.info(string.format(
-        "api_gameplay: bag=%d hotbar=%d chest=%s map=%s",
-        BAG_CAPACITY, HOTBAR_SIZE, tostring(chest_id), tostring(map.current())
-    ))
+    map.set_spawn(144.0, 176.0)
 end
 
--- ── 每帧 ───────────────────────────────────────────────────────────────────────
-function M.update()
-    -- ══ ① 输入 → 改状态（所有会改变后续帧读数的东西都在这里）══════════════════
-
-    -- 时钟三件套：add / set_rate / pause 的效果**看得见地延续到后续帧**，这是本演示的重点。
-    if input.just_pressed("space") then
-        clock.add(30)
-        last = string.format("clock.add(30) -> %s (day %s)", hhmm(clock.now()), tostring(clock.now().day))
-    elseif input.just_pressed("keyr") then
-        rate_index = rate_index % #RATES + 1
-        clock.set_rate(RATES[rate_index])
-        last = string.format("clock.set_rate(%.0f min/s)", RATES[rate_index])
-    elseif input.just_pressed("keyp") then
-        local paused = clock.now().paused
-        clock.pause(not paused)
-        last = string.format("clock.pause(%s)", tostring(not paused))
-    elseif input.just_pressed("keyt") then
-        clock.set(5, 480)
-        last = "clock.set(5,480) -> day 5, 08:00"
-    elseif input.just_pressed("keym") then
-        -- sleep_to_morning **不**触发日循环钩子（对比下面的 day.sleep）
-        local day_number = clock.sleep_to_morning()
-        last = string.format("clock.sleep_to_morning -> day %d (no hooks fired)", day_number)
-    elseif input.just_pressed("keyn") then
-        -- day.sleep() = on_day_end → 次日 06:00 → on_day_start，所以只允许按键触发
-        local day_number = day.sleep()
-        last = string.format(
-            "day.sleep -> day %d, on_day_end=%d on_day_start=%d",
-            day_number, hooks.day_end, hooks.day_start
-        )
-    elseif input.just_pressed("keyy") then
-        calendar.set(12, 3, 2, 400)   -- 第 2 年 秋（第 3 季）第 12 天，当天第 400 分钟
-        last = "calendar.set(day 12, season 3, year 2, minute 400)"
+--- 以农夫为原点查一次交互候选，并把最近的一个写进引擎提示。
+local function refresh_prompt()
+    local x, y = 144.0, 176.0
+    if farmer_id ~= nil and entity.is_alive(farmer_id) then
+        local here = transform.get(farmer_id)
+        x, y = here.x, here.y
     end
-
-    -- 背包：每条 inv 接口都真的被调用一次，返回值本身就是「发生了多少」。
-    if input.just_pressed("keyi") then
-        local leftover = inv.add(BAG, "turnip_seed", 5)
-        last = string.format("inv.add(turnip_seed x5) leftover=%d count=%d", leftover, inv.count(BAG, "turnip_seed"))
-    elseif input.just_pressed("keyk") then
-        local removed = inv.remove(BAG, "turnip_seed", 2)
-        last = string.format("inv.remove(turnip_seed x2) removed=%d left=%d", removed, inv.count(BAG, "turnip_seed"))
-    elseif input.just_pressed("keyf") then
-        -- inv.move(from_id, from_index, to_id, to_index, count)；count=nil = 全搬
-        local moved = inv.move(BAG, 1, HOTBAR, 1, nil)
-        last = string.format("inv.move(bag1 -> hotbar1) moved=%d", moved)
-    elseif input.just_pressed("keyg") then
-        -- inv.swap 是**整格对调**：目标格里的东西会回到来源格，不会丢
-        inv.swap(BAG, 2, HOTBAR, 2)
-        last = "inv.swap(bag2 <-> hotbar2)"
-    elseif input.just_pressed("keyv") then
-        -- inv.set(id, index, item_id, count)：数量为 nil（或 <=0）等价于「清空这一格」
-        if inv.slot(BAG, 5) then
-            inv.set(BAG, 5, nil, nil)
-            last = "inv.set(bag slot5, nil, nil) -> cleared"
-        else
-            inv.set(BAG, 5, "watering_can", 1)
-            last = "inv.set(bag slot5, watering_can x1)"
-        end
-    elseif input.just_pressed("keyj") then
-        -- 装备槽骨架：inv.equip(id, slot, item_id)，item_id=nil 清空该槽
-        if inv.equip_get(BAG, "tool") then
-            inv.equip(BAG, "tool", nil)
-            last = "inv.equip(bag, tool, nil) -> slot cleared"
-        else
-            inv.equip(BAG, "tool", "hoe")
-            last = "inv.equip(bag, tool, hoe)"
-        end
-    elseif input.just_pressed("keyq") then
-        -- tag.set 的**空 value = 删除标签**，所以这个键是「有/无」的切换
-        if farmer_id and tag.get(farmer_id, "role") then
-            tag.set(farmer_id, "role", "")
-            last = "tag.set(farmer role, '') -> tag removed"
-        elseif farmer_id then
-            tag.set(farmer_id, "role", "player")
-            last = "tag.set(farmer role, player)"
-        end
-    end
-
-    -- 箱子与商店
-    if input.just_pressed("keyu") then
-        if chest_id then
-            -- container.move(entity_id, from_index, to_id, to_index)：来源永远是箱子
-            local moved = container.move(chest_id, 1, BAG, 1)
-            last = string.format("container.move(chest1 -> bag1) moved=%d", moved)
-        end
-    elseif input.just_pressed("keyl") then
-        local chest_key = chest_id and container.get(chest_id) or nil
-        if chest_key then
-            -- container.get 返回的 "container:<id>" 就是 inv.move 的目标 id
-            local moved = inv.move(BAG, 1, chest_key, 1, nil)
-            last = string.format("inv.move(bag1 -> %s) moved=%d", chest_key, moved)
-        else
-            last = "inv.move skipped: container.get -> nil (press Z to open)"
-        end
-    elseif input.just_pressed("keyz") then
-        if chest_id and container.get(chest_id) then
-            -- close 把 "container:<id>" 整个背包从注册表里删掉（里面的东西一起没了）
-            container.close(chest_id)
-            last = "container.close(chest) -> chest backpack dropped"
-        elseif chest_id then
-            container.open(chest_id, CHEST_CAPACITY)
-            last = string.format("container.open(chest, %d) -> new empty backpack", CHEST_CAPACITY)
-        end
-    elseif input.just_pressed("keyx") then
-        -- set_catalog 是幂等覆盖：换一份目录，shop.price 立刻给新价
-        catalog_sale = not catalog_sale
-        shop.set_catalog(SHOP, catalog_sale and SALE_CATALOG or FULL_CATALOG)
-        local price = shop.price(SHOP, "turnip_seed")
-        last = string.format(
-            "shop.set_catalog(%s) -> turnip_seed buy=%s",
-            catalog_sale and "sale" or "full", price and tostring(price.buy) or "nil"
-        )
-    end
-
-    -- 地图状态与切图。**切场景只允许出现在这一块**：headless 的自动步进没有输入。
-    if input.just_pressed("digit1") then
-        map.set_spawn(160, 200)
-        last = "map.set_spawn(160,200)"
-    elseif input.just_pressed("digit2") then
-        local saved = map.state(MAP_STATE)
-        local plots = (saved and tonumber(saved.plots) or 0) + 1
-        local sky = (plots % 2 == 0) and "Rainy" or "Sunny"
-        local ok, reason = pcall(function()
-            map.state(MAP_STATE, {
-                version = 1,
-                plots = plots,
-                sky = sky,
-                notes = { owner = "Farmer", last_action = "till" },
-            })
-        end)
-        if ok then
-            last = string.format("map.state(write) plots=%d sky=%s", plots, sky)
-        else
-            last = "map.state(write) rejected: " .. clip(reason, 72)
-        end
-    elseif input.just_pressed("digit3") then
-        local removed = map.state_clear(MAP_STATE)   -- 只清这一张地图，返回删除条数
-        last = string.format("map.state_clear(%s) removed=%d", MAP_STATE, removed)
-    elseif input.just_pressed("digit4") then
-        local removed = map.state_clear()            -- 无参 = 清掉全部 __mapstate:*（开新游戏用）
-        last = string.format("map.state_clear() removed=%d", removed)
-    elseif input.just_pressed("digit5") then
-        -- 注意：`goto` 是 **Lua 保留字**，`map.goto(...)` 这种写法直接编译不过，
-        -- 只能写成 map["goto"](...)（`examples/game_jhyt/scripts/world/map_manager.lua`
-        -- 同样是这么调的）。引擎侧的 API 名字仍然是 map.goto，语义见 core/script.rs。
-        local queued = map["goto"](MAP_HERE, 144, 176)   -- 自跳：本场景重载，on_create 会重跑
-        last = string.format("map.goto(%s,144,176) queued=%s", MAP_HERE, tostring(queued))
-    elseif input.just_pressed("digit6") then
-        local queued = map.enter(MAP_HERE, 176, 176)
-        last = string.format("map.enter(%s,176,176) queued=%s", MAP_HERE, tostring(queued))
-    elseif input.just_pressed("digit7") then
-        local queued = map.go(MAP_OTHER)
-        last = string.format("map.go(%s) queued=%s", MAP_OTHER, tostring(queued))
-    elseif input.just_pressed("keyc") then
-        radius_index = radius_index % #RADII + 1
-        last = string.format("interact.query radius -> %.0f", RADII[radius_index])
-    end
-
-    -- ══ ② 读回本帧事实（全部现场读，不缓存 —— 上面改过的东西必须立刻看见）══════
-    local now = clock.now()
-    local cal = calendar.now()
-    local today = day.now()
-    local bag, bag_used, bag_cap = bag_text(BAG, 6)
-    local hotbar = bag_text(HOTBAR, 3)
-    local equip = equip_text(BAG)
-    -- inv.capacity 是「固定容量背包」的容量读口（create / hotbar 之后就不再变）；
-    -- 它和 inv.get 里的 capacity 是同一个值，这里故意两条路都走一遍给读者看。
-    local bag_capacity = inv.capacity(BAG)
-    local hotbar_capacity = inv.capacity(HOTBAR)
-
-    -- interact.query(x, y, radius)：按距离升序（同距离按 priority）给出候选实体。
-    -- 查询原点用农夫自己的 Transform，这样「谁在附近」是真的按世界坐标算的。
-    local here = farmer_id and transform.get(farmer_id) or nil
     local radius = RADII[radius_index]
-    local hits = interact.query(here and here.x or 144.0, here and here.y or 176.0, radius)
+    local hits = interact.query(x, y, radius)
     local nearest = hits[1]
-    if nearest then
-        -- interact.prompt 写的是**引擎侧**的交互提示文本（左上角 y=48），不是我们自己画的
-        interact.prompt(string.format("E - %s #%s", nearest.kind, tostring(nearest.id)))
+    local prompt = nil
+    if nearest ~= nil then
+        prompt = string.format("E - %s #%s", tostring(nearest.kind), tostring(nearest.id))
+        interact.prompt(prompt)
     else
-        -- 半径 24 时没人进圈 → 走 clear_prompt 分支（按 C 切换半径就能看到提示被清掉）
         interact.clear_prompt()
     end
-    local prompt = interact.get_prompt()
-
-    local turnip = item.def("turnip_seed")        -- 定义注册表是显示名/价格的唯一真源
-    local price = shop.price(SHOP, "turnip_seed") -- {buy, sell} 或 nil（目录/条目不存在）
-    local current_map = map.current()
-    local spawn = map.spawn()
-    local farm_state = map.state(MAP_STATE)
-    local chest_key = chest_id and container.get(chest_id) or nil
-
-    -- ══ ③ 上屏：api.status 是头条事实（含背包每一格），下面按模块分列细节 ══
-    api.status(string.format(
-        "T=%s day=%s rate=%.0f paused=%s | %s | last: %s",
-        hhmm(now), tostring(now.day), now.rate, tostring(now.paused), bag, last
-    ))
-    ui.text_at("gameplay_clock", 24, 508, string.format(
-        "CLOCK  hour=%s minute_of_day=%s rate=%.0f paused=%s  ||  DAY  day=%s minute=%s  ||  calendar.now absolute_day=%s season=%s(%s) day=%s year=%s",
-        tostring(now.hour), tostring(now.minute_of_day), now.rate, tostring(now.paused),
-        tostring(today.day), tostring(today.minute),
-        tostring(cal.absolute_day), tostring(cal.season), season_name(cal.season),
-        tostring(cal.day), tostring(cal.year)
-    ), 1.0)
-    ui.text_at("gameplay_item", 24, 526, string.format(
-        "ITEM  item.def('turnip_seed') -> name=%s stack=%s buy=%s sell=%s kind=%s  ||  SHOP  %s turnip_seed buy=%s sell=%s catalog=%s",
-        turnip and turnip.name or "?", tostring(turnip and turnip.stack),
-        tostring(turnip and turnip.buy), tostring(turnip and turnip.sell), tostring(turnip and turnip.kind),
-        SHOP, price and tostring(price.buy) or "nil", price and tostring(price.sell) or "nil",
-        catalog_sale and "sale" or "full"
-    ), 1.0)
-    ui.text_at("gameplay_inv", 24, 544, string.format(
-        "INV  %s inv.capacity=%s  ||  HOTBAR %s inv.capacity=%s",
-        bag, tostring(bag_capacity), hotbar, tostring(hotbar_capacity)
-    ), 1.0)
-    ui.text_at("gameplay_equip", 24, 562, string.format(
-        "EQUIP(inv.equip_list / inv.equip_get)  %s  ||  TAG role=%s  ||  day hooks on_day_end=%d on_day_start=%d  ||  map.schema on an invalid write: %s",
-        equip, tostring(farmer_id and tag.get(farmer_id, "role") or "nil"),
-        hooks.day_end, hooks.day_start, schema_probe
-    ), 1.0)
-    ui.text_at("gameplay_map", 24, 580, string.format(
-        "MAP  map.current=%s map.spawn=(%s,%s)  ||  map.state('%s') plots=%s sky=%s (写入前经 map.schema 校验)",
-        tostring(current_map),
-        spawn and string.format("%.0f", spawn.x) or "-", spawn and string.format("%.0f", spawn.y) or "-",
-        MAP_STATE, farm_state and tostring(farm_state.plots) or "nil", farm_state and tostring(farm_state.sky) or "nil"
-    ), 1.0)
-    ui.text_at("gameplay_interact", 24, 598, string.format(
-        "CHEST  %s  ||  INTERACT  interact.query(r=%.0f) hits=%d  interact.get_prompt()=%s",
-        chest_key and bag_text(chest_key, 3) or "closed (container.get -> nil)",
-        radius, #hits, prompt and ("'" .. prompt .. "'") or "nil"
-    ), 1.0)
-
-    -- 返回值进引擎日志（`run_script_steps` / 编辑器 Play 的日志页都能看到）
-    return string.format(
-        "api_gameplay_ok t=%s day=%s bag=%d/%d chest=%s map=%s",
-        hhmm(now), tostring(now.day), bag_used, bag_cap,
-        chest_key and "open" or "closed", tostring(current_map)
-    )
+    return hits, prompt
 end
 
--- ── 日循环钩子：day.sleep() 与「时钟自然跨午夜」都会走到这里（这就是 day 模块的演示）──
+--- 背包占用概览；背包不存在时返回 0/0（read 不抛错）。
+local function bag_usage(inventory)
+    if not inv.exists(inventory) then
+        return 0, 0
+    end
+    local data = inv.get(inventory)
+    return data.occupied, data.capacity
+end
+
+--- 单格文本（空格返回 "-"）。
+local function slot_text(inventory, index)
+    if not inv.exists(inventory) then
+        return "-"
+    end
+    local slot = inv.slot(inventory, index)
+    if slot == nil then
+        return "-"
+    end
+    return string.format("%s x%d", slot.item, slot.count)
+end
+
+local steps = {
+    {
+        id = "clock_views",
+        title = "Clock views",
+        claim = "clock / calendar / day 是同一台时钟的三个视角；rate=0 时它冻结，读数可复现",
+        api = { "clock.now", "clock.set", "clock.set_rate", "clock.pause", "calendar.now", "day.now" },
+        code = "clock.now(); calendar.now(); day.now(); clock.set(3, 480)",
+        enter = function()
+            reset_calendar()
+            reset_clock(3, 480)
+            hooks.day_end, hooks.day_start = 0, 0
+            lab.note("t sets day 5 / n adds 60m / p pauses")
+        end,
+        run = function()
+            local now = clock.now()
+            local cal = calendar.now()
+            local today = day.now()
+            lab.note(string.format(
+                "%s day=%d | calendar S%d d%d y%d | day.now=%d",
+                hhmm(now),
+                now.day,
+                cal.season,
+                cal.day,
+                cal.year,
+                today.day
+            ))
+        end,
+        read = function()
+            local now = clock.now()
+            local cal = calendar.now()
+            return {
+                { label = "clock", value = hhmm(now) },
+                { label = "day", value = tostring(now.day) },
+                { label = "minute_of_day", value = tostring(now.minute_of_day) },
+                { label = "rate", value = string.format("%.0f", now.rate) },
+                { label = "paused", value = tostring(now.paused) },
+                { label = "calendar", value = string.format("S%d d%d y%d", cal.season, cal.day, cal.year) },
+                { label = "absolute_day", value = tostring(cal.absolute_day) },
+            }
+        end,
+        check = function(t)
+            local now = clock.now()
+            t:eq(now.day, 3, "clock.set writes the day")
+            t:eq(now.minute_of_day, 480, "clock.set writes the minute of day")
+            t:eq(now.hour, 8, "clock.now derives hour from minute_of_day")
+            t:near(now.rate, 0.0, 0.001, "rate 0 freezes the host advance")
+            t:eq(now.paused, false, "the clock is running (rate 0 is not pause)")
+            local cal = calendar.now()
+            t:eq(cal.absolute_day, 3, "calendar.now reads the same clock")
+            t:eq(cal.season, 1, "day 3 is still season 1")
+            t:eq(cal.day, 3, "day of season matches")
+            t:eq(cal.year, 1, "day 3 is still year 1")
+            local today = day.now()
+            t:eq(today.day, 3, "day.now agrees on the day")
+            t:eq(today.minute, 480, "day.now agrees on the minute")
+        end,
+    },
+    {
+        id = "clock_advance",
+        title = "Advance clock",
+        claim = "clock.add 直接改写同一台时钟；set_rate / pause 是宿主推进它的两个开关",
+        api = { "clock.add", "clock.now", "clock.set", "clock.set_rate", "clock.pause" },
+        code = "clock.add(2); clock.set_rate(60); clock.pause(true)",
+        enter = function()
+            reset_clock(4, 600)
+            advance = 0
+            lab.note("every frame adds 2 game minutes; s cycles the host rate")
+        end,
+        run = function()
+            clock.add(2.0)
+            advance = advance + 2
+            local now = clock.now()
+            lab.note(string.format("%s day=%d (+%d min by run)", hhmm(now), now.day, advance))
+        end,
+        read = function()
+            local now = clock.now()
+            return {
+                { label = "clock", value = hhmm(now) },
+                { label = "day", value = tostring(now.day) },
+                { label = "added", value = tostring(advance) },
+                { label = "rate", value = string.format("%.0f", now.rate) },
+                { label = "paused", value = tostring(now.paused) },
+            }
+        end,
+        check = function(t)
+            local now = clock.now()
+            t:eq(now.minute_of_day, 600 + advance, "clock.add advanced the same clock")
+            t:eq(now.day, 4, "small additions stay inside day 4")
+            t:ok(advance > 0, "run() added at least one frame worth of minutes")
+            clock.set_rate(60.0)
+            t:near(clock.now().rate, 60.0, 0.001, "set_rate writes the host advance rate")
+            clock.pause(true)
+            t:eq(clock.now().paused, true, "pause(true) freezes the host advance")
+            clock.pause(false)
+            clock.set_rate(0.0)
+            t:eq(clock.now().paused, false, "pause(false) resumes")
+            t:near(clock.now().rate, 0.0, 0.001, "rate 0 freezes the clock again")
+        end,
+    },
+    {
+        id = "day_sleep",
+        title = "Day sleep",
+        claim = "day.sleep 先 on_day_end、再睡到次日 06:00、最后 on_day_start；clock.sleep_to_morning 不碰钩子",
+        api = { "day.sleep", "day.now", "clock.sleep_to_morning", "clock.now", "clock.set", "clock.set_rate" },
+        code = "day.sleep()  -- on_day_end -> next 06:00 -> on_day_start",
+        enter = function()
+            reset_calendar()
+            reset_clock(6, 1200)
+            hooks.day_end, hooks.day_start = 0, 0
+            lab.note("n = day.sleep() (hooks fire) / m = clock.sleep_to_morning()")
+        end,
+        run = function()
+            local now = clock.now()
+            local today = day.now()
+            lab.note(string.format(
+                "day %d %s | on_day_end=%d on_day_start=%d",
+                today.day,
+                hhmm(now),
+                hooks.day_end,
+                hooks.day_start
+            ))
+        end,
+        read = function()
+            local now = clock.now()
+            return {
+                { label = "day", value = tostring(now.day) },
+                { label = "clock", value = hhmm(now) },
+                { label = "on_day_end", value = tostring(hooks.day_end) },
+                { label = "on_day_start", value = tostring(hooks.day_start) },
+                { label = "wake", value = "06:00" },
+            }
+        end,
+        check = function(t)
+            local before = clock.now().day
+            local skipped = clock.sleep_to_morning()
+            t:eq(skipped, before + 1, "sleep_to_morning advances the day")
+            t:eq(clock.now().minute_of_day, 360, "sleep_to_morning wakes at 06:00")
+            t:eq(hooks.day_end, 0, "sleep_to_morning fires no on_day_end")
+            t:eq(hooks.day_start, 0, "sleep_to_morning fires no on_day_start")
+            clock.set(before + 1, 1200)
+            local slept = day.sleep()
+            t:eq(slept, before + 2, "day.sleep advances the day")
+            t:eq(hooks.day_end, 1, "day.sleep fires on_day_end once")
+            t:eq(hooks.day_start, 1, "day.sleep fires on_day_start once")
+            t:eq(day.now().day, before + 2, "day.now reads the new day")
+        end,
+    },
+    {
+        id = "calendar_config",
+        title = "Calendar config",
+        claim = "calendar.configure 改的是季长/年季数；越界日期在 calendar.set 写入处就被拒绝",
+        api = { "calendar.configure", "calendar.set", "calendar.now", "clock.set", "clock.set_rate" },
+        code = "calendar.configure({days_per_season=7,seasons_per_year=3}); calendar.set(7,3,1,120)",
+        enter = function()
+            reset_calendar()
+            reset_clock(1, 360)
+            lab.note("u=7x3 i=28x4 y=calendar.set(12,3,2,400)")
+        end,
+        run = function()
+            local cal = calendar.now()
+            lab.note(string.format(
+                "absolute_day=%d -> S%d d%d y%d (default 28x4)",
+                cal.absolute_day,
+                cal.season,
+                cal.day,
+                cal.year
+            ))
+        end,
+        read = function()
+            local cal = calendar.now()
+            return {
+                { label = "absolute_day", value = tostring(cal.absolute_day) },
+                { label = "season", value = tostring(cal.season) },
+                { label = "day", value = tostring(cal.day) },
+                { label = "year", value = tostring(cal.year) },
+                { label = "check_wrote", value = "7x3 then restored" },
+            }
+        end,
+        check = function(t)
+            local configured = pcall(function()
+                calendar.configure({ days_per_season = 7, seasons_per_year = 3 })
+            end)
+            t:ok(configured, "calendar.configure accepts 7 days x 3 seasons")
+            local rejected = pcall(calendar.set, 8, 1, 1, 0)
+            t:ok(not rejected, "calendar.set rejects day 8 under a 7-day season")
+            calendar.set(7, 3, 1, 120)
+            local cal = calendar.now()
+            t:eq(cal.absolute_day, 21, "7x3 calendar maps S3 d7 to absolute day 21")
+            t:eq(cal.season, 3, "season derives from the absolute day")
+            t:eq(cal.day, 7, "day of season derives from the absolute day")
+            t:eq(cal.year, 1, "absolute day 21 is still year 1")
+            calendar.set(1, 1, 2, 0)
+            local next_year = calendar.now()
+            t:eq(next_year.absolute_day, 22, "year 2 starts at absolute day 22")
+            t:eq(next_year.year, 2, "calendar.now reports year 2")
+            calendar.configure({ days_per_season = 28, seasons_per_year = 4 })
+            clock.set(1, 360)
+            t:eq(calendar.now().absolute_day, 1, "restoring 28x4 puts the clock back on day 1")
+        end,
+    },
+    {
+        id = "inventory",
+        title = "Inventory",
+        claim = "item.define 的 stack 是堆叠上限；inv.add 返回塞不进去的余数，其余接口读写同一份背包",
+        api = { "item.define", "item.def", "inv.create", "inv.hotbar", "inv.add", "inv.count", "inv.remove", "inv.slot" },
+        code = "inv.add('lab_bag','turnip_seed',3) -> leftover; inv.count(...); inv.remove(...)",
+        enter = function()
+            define_items()
+            reset_bag()
+            lab.note("i adds 5 seeds / k removes 2 / v toggles slot 5")
+        end,
+        run = function()
+            local used, capacity = bag_usage(BAG)
+            lab.note(string.format(
+                "bag %d/%d seeds=%d coins=%d",
+                used,
+                capacity,
+                inv.count(BAG, "turnip_seed"),
+                inv.count(BAG, "coin")
+            ))
+        end,
+        read = function()
+            local used, capacity = bag_usage(BAG)
+            return {
+                { label = "bag", value = string.format("%d/%d", used, capacity) },
+                { label = "seeds", value = tostring(inv.count(BAG, "turnip_seed")) },
+                { label = "cans", value = tostring(inv.count(BAG, "watering_can")) },
+                { label = "coins", value = tostring(inv.count(BAG, "coin")) },
+                { label = "slot1", value = slot_text(BAG, 1) },
+                { label = "slot5", value = slot_text(BAG, 5) },
+            }
+        end,
+        check = function(t)
+            t:eq(inv.exists(BAG), true, "inv.create registered the bag")
+            t:eq(inv.capacity(BAG), BAG_CAPACITY, "inv.capacity reads the create capacity")
+            t:eq(inv.count(BAG, "turnip_seed"), 5, "inv.add seeded five seeds")
+            t:eq(inv.add(BAG, "turnip_seed", 3), 0, "inv.add returns the leftover (none)")
+            t:eq(inv.count(BAG, "turnip_seed"), 8, "stacking respects the item definition")
+            t:eq(inv.remove(BAG, "turnip_seed", 2), 2, "inv.remove takes the requested count")
+            t:eq(inv.count(BAG, "turnip_seed"), 6, "inv.count reads the remainder")
+            local slot = inv.slot(BAG, 1)
+            t:ok(slot ~= nil, "slot 1 holds the seed stack")
+            if slot ~= nil then
+                t:eq(slot.item, "turnip_seed", "slot 1 is the seed")
+                t:eq(slot.count, 6, "slot 1 count matches inv.count")
+            end
+            local def = item.def("turnip_seed")
+            t:ok(def ~= nil, "item.def returns the registered definition")
+            if def ~= nil then
+                t:eq(def.stack, 99, "item.def exposes the stack limit")
+                t:eq(def.name, "Turnip Seed", "item.def exposes the display name")
+            end
+            t:eq(inv.get(BAG).capacity, BAG_CAPACITY, "inv.get reports the capacity")
+        end,
+    },
+    {
+        id = "bag_slots",
+        title = "Bag slots",
+        claim = "inv.get/slot 读整包与单格；inv.move/swap/set 是同一套搬运接口",
+        api = { "inv.get", "inv.slot", "inv.set", "inv.swap", "inv.move", "inv.capacity", "inv.exists", "inv.count" },
+        code = "inv.move(BAG,1,HOTBAR,1,nil); inv.swap(BAG,2,HOTBAR,2); inv.set(BAG,5,'coin',7)",
+        enter = function()
+            define_items()
+            reset_bag()
+            lab.note("b moves bag1 -> hotbar1 / g swaps bag2 <-> hotbar2 / v writes slot 5")
+        end,
+        run = function()
+            local used = bag_usage(BAG)
+            local hot = bag_usage(HOTBAR)
+            lab.note(string.format("bag %d/%d | hotbar %d/%d", used, BAG_CAPACITY, hot, HOTBAR_SIZE))
+        end,
+        read = function()
+            local used, capacity = bag_usage(BAG)
+            local hot_used, hot_capacity = bag_usage(HOTBAR)
+            return {
+                { label = "bag", value = string.format("%d/%d", used, capacity) },
+                { label = "hotbar", value = string.format("%d/%d", hot_used, hot_capacity) },
+                { label = "bag1", value = slot_text(BAG, 1) },
+                { label = "bag2", value = slot_text(BAG, 2) },
+                { label = "bag5", value = slot_text(BAG, 5) },
+                { label = "hotbar1", value = slot_text(HOTBAR, 1) },
+                { label = "hotbar2", value = slot_text(HOTBAR, 2) },
+            }
+        end,
+        check = function(t)
+            local data = inv.get(BAG)
+            t:eq(data.occupied, 3, "the seeded bag occupies three slots")
+            t:eq(inv.capacity(HOTBAR), HOTBAR_SIZE, "inv.hotbar built a 9-slot hotbar")
+            t:eq(inv.move(BAG, 1, HOTBAR, 1, nil), 5, "inv.move moves the whole stack")
+            t:eq(inv.count(BAG, "turnip_seed"), 0, "the source stack is gone")
+            t:eq(inv.count(HOTBAR, "turnip_seed"), 5, "the target stack arrived")
+            inv.swap(BAG, 2, HOTBAR, 2)
+            local swapped = inv.slot(HOTBAR, 2)
+            t:ok(swapped ~= nil and swapped.item == "watering_can", "inv.swap moved the can to the hotbar")
+            t:eq(inv.slot(BAG, 2), nil, "the bag slot is now empty")
+            inv.set(BAG, 5, "coin", 7)
+            local placed = inv.slot(BAG, 5)
+            t:ok(placed ~= nil and placed.count == 7, "inv.set writes a stack")
+            inv.set(BAG, 5, nil, nil)
+            t:eq(inv.slot(BAG, 5), nil, "inv.set with nil clears the slot")
+        end,
+    },
+    {
+        id = "equipment",
+        title = "Equipment",
+        claim = "装备槽只是「槽名 → 物品 id」的账本：equip 写、equip_get 读单槽、equip_list 读整表",
+        api = { "inv.create", "inv.add", "inv.equip", "inv.equip_get", "inv.equip_list", "inv.exists" },
+        code = "inv.equip(BAG,'tool','hoe'); inv.equip_get(BAG,'tool'); inv.equip_list(BAG)",
+        enter = function()
+            define_items()
+            reset_bag()
+            lab.note("e toggles the tool slot / q toggles a trinket")
+        end,
+        run = function()
+            local parts = {}
+            for slot, item_id in pairs(inv.equip_list(BAG)) do
+                parts[#parts + 1] = slot .. "=" .. item_id
+            end
+            lab.note(#parts .. " equipped: " .. table.concat(parts, " "))
+        end,
+        read = function()
+            local rows = {
+                { label = "tool", value = "-" },
+                { label = "trinket", value = "-" },
+            }
+            if not inv.exists(BAG) then
+                return rows
+            end
+            rows[1].value = dash(inv.equip_get(BAG, "tool"))
+            rows[2].value = dash(inv.equip_get(BAG, "trinket"))
+            local count = 0
+            for _ in pairs(inv.equip_list(BAG)) do
+                count = count + 1
+            end
+            rows[#rows + 1] = { label = "slots", value = tostring(count) }
+            return rows
+        end,
+        check = function(t)
+            t:eq(inv.equip_get(BAG, "tool"), "hoe", "reset_bag equipped the hoe")
+            local list = inv.equip_list(BAG)
+            t:eq(list.tool, "hoe", "equip_list exposes the tool slot")
+            inv.equip(BAG, "tool", nil)
+            t:eq(inv.equip_get(BAG, "tool"), nil, "inv.equip with nil clears the slot")
+            inv.equip(BAG, "trinket", "charm")
+            t:eq(inv.equip_get(BAG, "trinket"), "charm", "inv.equip writes an arbitrary slot")
+            local count = 0
+            for _ in pairs(inv.equip_list(BAG)) do
+                count = count + 1
+            end
+            t:eq(count, 1, "equip_list lists exactly the filled slot")
+            inv.equip(BAG, "tool", "hoe")
+            t:eq(inv.equip_get(BAG, "tool"), "hoe", "the tool slot can be restored")
+        end,
+    },
+    {
+        id = "containers",
+        title = "Containers",
+        claim = "container.open 把实体变成第二个背包；返回的 container:<id> 就是 inv.move 的目标 id",
+        api = { "container.open", "container.get", "container.close", "container.move", "inv.add", "inv.count", "inv.exists" },
+        code = "key = container.open(chest, 8); container.move(chest,1,BAG,5); container.close(chest)",
+        enter = function()
+            define_items()
+            reset_bag()
+            open_chest()
+            lab.note("o reopens the chest / c closes it / u chest->bag5 / l bag->chest")
+        end,
+        run = function()
+            local key = chest_id ~= nil and container.get(chest_id) or nil
+            lab.note(string.format(
+                "chest=%s coins=%d | bag coins=%d",
+                dash(key),
+                key ~= nil and inv.count(key, "coin") or 0,
+                inv.count(BAG, "coin")
+            ))
+        end,
+        read = function()
+            local key = chest_id ~= nil and container.get(chest_id) or nil
+            local capacity = "-"
+            if key ~= nil and inv.exists(key) then
+                capacity = tostring(inv.capacity(key))
+            end
+            return {
+                { label = "chest", value = dash(chest_id) },
+                { label = "key", value = dash(key) },
+                { label = "capacity", value = capacity },
+                { label = "chest_coins", value = tostring(key ~= nil and inv.count(key, "coin") or 0) },
+                { label = "bag_coins", value = tostring(inv.count(BAG, "coin")) },
+            }
+        end,
+        check = function(t)
+            t:ok(chest_id ~= nil, "the scene has a Chest entity")
+            if chest_id == nil then
+                return
+            end
+            local key = container.get(chest_id)
+            t:eq(key, "container:" .. tostring(chest_id), "container.get returns the entity key")
+            t:eq(inv.count(key, "coin"), 10, "the chest backpack holds the seeded coins")
+            local bag_coins = inv.count(BAG, "coin")
+            t:eq(inv.slot(BAG, 5), nil, "bag slot 5 starts empty")
+            t:eq(container.move(chest_id, 1, BAG, 5), 10, "container.move moves the chest stack into bag slot 5")
+            t:eq(inv.count(key, "coin"), 0, "the chest slot is now empty")
+            t:eq(inv.count(BAG, "coin"), bag_coins + 10, "the bag received the coins")
+            t:eq(container.close(chest_id), true, "container.close removes the backpack")
+            t:eq(container.get(chest_id), nil, "container.get returns nil after close")
+            t:ok(not inv.exists(key), "the container inventory id is gone")
+            local reopened = container.open(chest_id, CHEST_CAPACITY)
+            local reopened_check = container.get(chest_id)
+            t:eq(reopened_check, reopened, "container.open rebuilds the backpack")
+            inv.add(reopened, "coin", 10)
+        end,
+    },
+    {
+        id = "shop",
+        title = "Shop",
+        claim = "shop.set_catalog 是幂等覆盖；shop.price 立刻给新价，目录外的条目返回 nil",
+        api = { "item.define", "item.def", "shop.set_catalog", "shop.price" },
+        code = "shop.set_catalog(SHOP, catalog); shop.price(SHOP, 'turnip_seed')",
+        enter = function()
+            define_items()
+            reset_shop()
+            lab.note("x toggles full / half price catalog")
+        end,
+        run = function()
+            local price = shop.price(SHOP, "turnip_seed")
+            lab.note(string.format(
+                "turnip_seed buy=%s sell=%s",
+                price ~= nil and tostring(price.buy) or "nil",
+                price ~= nil and tostring(price.sell) or "nil"
+            ))
+        end,
+        read = function()
+            local def = item.def("turnip_seed")
+            local price = shop.price(SHOP, "turnip_seed")
+            return {
+                { label = "item", value = def ~= nil and def.name or "-" },
+                { label = "stack", value = def ~= nil and tostring(def.stack) or "-" },
+                { label = "buy", value = price ~= nil and tostring(price.buy) or "-" },
+                { label = "sell", value = price ~= nil and tostring(price.sell) or "-" },
+                { label = "catalog", value = catalog_sale and "sale" or "full" },
+            }
+        end,
+        check = function(t)
+            local def = item.def("turnip_seed")
+            t:ok(def ~= nil, "item.def returns the registered definition")
+            if def ~= nil then
+                t:eq(def.buy, 20, "item.def exposes the catalog price")
+                t:eq(def.stack, 99, "item.def exposes the stack limit")
+            end
+            local price = shop.price(SHOP, "turnip_seed")
+            t:ok(price ~= nil, "shop.price returns the catalog entry")
+            if price ~= nil then
+                t:eq(price.buy, 20, "shop.price reads the full catalog")
+                t:eq(price.sell, 10, "shop.price reads the sell price")
+            end
+            shop.set_catalog(SHOP, SALE_CATALOG)
+            t:eq(shop.price(SHOP, "turnip_seed").buy, 10, "set_catalog overwrites the catalog")
+            t:eq(shop.price(SHOP, "missing_item"), nil, "unknown items have no price")
+            shop.set_catalog(SHOP, FULL_CATALOG)
+            t:eq(shop.price(SHOP, "turnip_seed").buy, 20, "the full catalog can be restored")
+        end,
+    },
+    {
+        id = "interact",
+        title = "Interact",
+        claim = "interact.query 只挑带 kind/interact 标签的实体；prompt/clear_prompt/get_prompt 是引擎提示",
+        api = { "interact.query", "interact.prompt", "interact.get_prompt", "interact.clear_prompt", "tag.set", "tag.get", "transform.get" },
+        code = "hits = interact.query(x, y, 120); interact.prompt('E - chest'); interact.get_prompt()",
+        enter = function()
+            reset_world()
+            radius_index = 1
+            lab.note("c cycles radius 120/24 / q toggles the farmer role tag")
+        end,
+        run = function()
+            local hits, prompt = refresh_prompt()
+            lab.note(string.format("r=%.0f hits=%d prompt=%s", RADII[radius_index], #hits, dash(prompt)))
+        end,
+        read = function()
+            local fx, fy = 144.0, 176.0
+            local alive = farmer_id ~= nil and entity.is_alive(farmer_id)
+            if alive then
+                local here = transform.get(farmer_id)
+                fx, fy = here.x, here.y
+            end
+            local hits = interact.query(fx, fy, RADII[radius_index])
+            local role = nil
+            if alive then
+                role = tag.get(farmer_id, "role")
+            end
+            return {
+                { label = "radius", value = string.format("%.0f", RADII[radius_index]) },
+                { label = "hits", value = tostring(#hits) },
+                { label = "prompt", value = dash(interact.get_prompt()) },
+                { label = "farmer", value = string.format("%.0f,%.0f", fx, fy) },
+                { label = "role", value = dash(role) },
+            }
+        end,
+        check = function(t)
+            t:ok(chest_id ~= nil and farmer_id ~= nil, "the scene has a Chest and a Farmer")
+            if chest_id == nil or farmer_id == nil then
+                return
+            end
+            local here = transform.get(farmer_id)
+            local wide = interact.query(here.x, here.y, 120.0)
+            t:ok(#wide >= 2, "chest and shopkeeper are candidates within 120 px")
+            local narrow = interact.query(here.x, here.y, 24.0)
+            t:eq(#narrow, 0, "a 24 px radius finds nobody")
+            tag.set(chest_id, "kind", "")
+            t:eq(tag.get(chest_id, "kind"), nil, "empty tag value removes the tag")
+            tag.set(chest_id, "kind", "chest")
+            t:eq(tag.get(chest_id, "kind"), "chest", "tag.set writes the tag back")
+            interact.prompt("E - chest")
+            t:eq(interact.get_prompt(), "E - chest", "interact.prompt is readable back")
+            interact.clear_prompt()
+            t:eq(interact.get_prompt(), nil, "interact.clear_prompt removes the prompt")
+        end,
+    },
+    {
+        id = "map_state",
+        title = "Map state",
+        claim = "map.schema 在 map.state 写入时校验；状态按地图名隔离，clear 只动指定名字",
+        api = { "map.schema", "map.state", "map.state_clear", "map.set_spawn", "map.spawn", "map.current" },
+        code = "map.schema(name, spec); map.state(name, {plots=3}); map.state_clear(name)",
+        enter = function()
+            reset_map_state()
+            lab.note("s set_spawn / w write plots / d clear this map / a clear all")
+        end,
+        run = function()
+            local state = map.state(MAP_STATE)
+            local spawn = map.spawn()
+            lab.note(string.format(
+                "map=%s plots=%s spawn=%s,%s",
+                dash(map.current()),
+                state ~= nil and tostring(state.plots) or "nil",
+                spawn ~= nil and string.format("%.0f", spawn.x) or "-",
+                spawn ~= nil and string.format("%.0f", spawn.y) or "-"
+            ))
+        end,
+        read = function()
+            local state = map.state(MAP_STATE)
+            local spawn = map.spawn()
+            return {
+                { label = "current", value = dash(map.current()) },
+                { label = "plots", value = state ~= nil and tostring(state.plots) or "-" },
+                { label = "sky", value = state ~= nil and tostring(state.sky) or "-" },
+                { label = "spawn_x", value = spawn ~= nil and string.format("%.0f", spawn.x) or "-" },
+                { label = "spawn_y", value = spawn ~= nil and string.format("%.0f", spawn.y) or "-" },
+            }
+        end,
+        check = function(t)
+            map.schema(MAP_STATE, MAP_SCHEMA)
+            map.state(MAP_STATE, {
+                version = 1,
+                plots = 3,
+                sky = "Sunny",
+                notes = { owner = "Farmer" },
+            })
+            local state = map.state(MAP_STATE)
+            t:eq(state.plots, 3, "map.state round-trips a declared integer")
+            t:eq(state.sky, "Sunny", "map.state round-trips a declared string")
+            local rejected = pcall(function()
+                map.state(MAP_STATE, { version = "not-an-integer", plots = 1, sky = "Sunny" })
+            end)
+            t:ok(not rejected, "map.schema rejects an invalid write")
+            t:eq(map.state_clear(MAP_STATE), 1, "map.state_clear(name) removes the named state")
+            t:eq(map.state(MAP_STATE), nil, "the named state is gone")
+            map.state(MAP_STATE, { version = 1, plots = 3, sky = "Sunny" })
+            map.set_spawn(144.0, 176.0)
+            local spawn = map.spawn()
+            t:ok(spawn ~= nil, "map.spawn returns the stored spawn point")
+            if spawn ~= nil then
+                t:near(spawn.x, 144.0, 0.01, "spawn x round-trips")
+                t:near(spawn.y, 176.0, 0.01, "spawn y round-trips")
+            end
+            t:ok(type(map.current()) == "string", "map.current reports a map id")
+        end,
+    },
+    {
+        id = "map_switch",
+        title = "Map switch",
+        claim = "map.goto / map.enter / map.go 只排队切图，不立即换场景；三个键都自跳回本场景",
+        api = { "map.current", "map.spawn", 'map["goto"]', "map.enter", "map.go", "map.set_spawn" },
+        code = "map[\"goto\"]('api_gameplay',144,176); map.enter('api_gameplay',176,176)",
+        enter = function()
+            reset_map_state()
+            lab.note("g = map.goto / e = map.enter / j = map.go (all self-reload, on_create reruns)")
+        end,
+        run = function()
+            local spawn = map.spawn()
+            lab.note(string.format(
+                "map=%s spawn=%s,%s | g / e / j queue a real switch",
+                dash(map.current()),
+                spawn ~= nil and string.format("%.0f", spawn.x) or "-",
+                spawn ~= nil and string.format("%.0f", spawn.y) or "-"
+            ))
+        end,
+        read = function()
+            local spawn = map.spawn()
+            return {
+                { label = "current", value = dash(map.current()) },
+                { label = "scene", value = dash(scene.reload()) },
+                { label = "spawn_x", value = spawn ~= nil and string.format("%.0f", spawn.x) or "-" },
+                { label = "spawn_y", value = spawn ~= nil and string.format("%.0f", spawn.y) or "-" },
+                { label = "keys", value = "g / e / j" },
+            }
+        end,
+        check = function(t)
+            local current = map.current()
+            t:ok(type(current) == "string" and #current > 0, "map.current reports a map id")
+            t:eq(scene.reload(), MAP_HERE, "scene.reload returns the loaded scene name")
+            local spawn = map.spawn()
+            t:ok(spawn ~= nil, "map.spawn is readable before a queued switch")
+            if spawn ~= nil then
+                t:near(spawn.x, 144.0, 0.01, "the spawn point survives until a switch is queued")
+                t:near(spawn.y, 176.0, 0.01, "the spawn point keeps its y")
+            end
+        end,
+    },
+}
+
+-- ── 日循环钩子：day.sleep() 与自然跨午夜都会走到这里 ─────────────────────────
 function M.on_day_end()
     hooks.day_end = hooks.day_end + 1
-    last = string.format("on_day_end #%d fired", hooks.day_end)
-    log.info(string.format("api_gameplay: on_day_end #%d (day %s)", hooks.day_end, tostring(clock.now().day)))
+    log.info(string.format("api_gameplay on_day_end #%d day=%d", hooks.day_end, clock.now().day))
 end
 
 function M.on_day_start()
     hooks.day_start = hooks.day_start + 1
-    last = string.format("on_day_start #%d fired (new day)", hooks.day_start)
-    log.info(string.format("api_gameplay: on_day_start #%d (day %s)", hooks.day_start, tostring(clock.now().day)))
+    log.info(string.format("api_gameplay on_day_start #%d day=%d", hooks.day_start, clock.now().day))
 end
 
--- ── 离开场景 ───────────────────────────────────────────────────────────────────
+-- ── 生命周期 ────────────────────────────────────────────────────────────────
+function M.on_create()
+    -- 场景实体原本落在左栏下面：先摆进舞台，再开始分步演示。
+    reset_world()
+    define_items()
+    reset_shop()
+    lab.start({
+        scene = "api_gameplay",
+        title = "Gameplay",
+        category = "Gameplay",
+        steps = steps,
+        -- SceneHud 在页眉位置（y=52），会压住 Lab 的 shell，隐藏它（stop 时恢复）。
+        hide_scene_text = { "SceneHud" },
+    })
+    log.info(string.format("api_gameplay lab: %d steps, chest=%s", #steps, dash(chest_id)))
+end
+
+function M.update()
+    local step = lab.step()
+    local id = step and step.id or ""
+    if id ~= last_step then
+        last_step = id
+        action = "-"
+    end
+
+    if id == "clock_views" then
+        if input.just_pressed("t") then
+            clock.set(5, 480)
+            action = "clock.set(5, 480) -> day 5, 08:00"
+        elseif input.just_pressed("n") then
+            clock.add(60)
+            action = "clock.add(60) -> " .. hhmm(clock.now())
+        elseif input.just_pressed("p") then
+            local paused = clock.now().paused
+            clock.pause(not paused)
+            action = string.format("clock.pause(%s)", tostring(not paused))
+        end
+    elseif id == "clock_advance" then
+        if input.just_pressed("t") then
+            clock.set(1, 0)
+            advance = 0
+            action = "clock.set(1, 0)"
+        elseif input.just_pressed("n") then
+            clock.add(60)
+            advance = advance + 60
+            action = "clock.add(60) -> " .. hhmm(clock.now())
+        elseif input.just_pressed("s") then
+            rate_index = rate_index % #RATES + 1
+            clock.set_rate(RATES[rate_index])
+            action = string.format("clock.set_rate(%.0f min/s)", RATES[rate_index])
+        elseif input.just_pressed("p") then
+            local paused = clock.now().paused
+            clock.pause(not paused)
+            action = string.format("clock.pause(%s)", tostring(not paused))
+        end
+    elseif id == "day_sleep" then
+        if input.just_pressed("n") then
+            local next_day = day.sleep()
+            action = string.format(
+                "day.sleep -> day %d (on_day_end=%d on_day_start=%d)",
+                next_day,
+                hooks.day_end,
+                hooks.day_start
+            )
+        elseif input.just_pressed("m") then
+            local next_day = clock.sleep_to_morning()
+            action = string.format("clock.sleep_to_morning -> day %d (no hooks)", next_day)
+        end
+    elseif id == "calendar_config" then
+        if input.just_pressed("y") then
+            local ok = pcall(calendar.set, 12, 3, 2, 400)
+            action = "calendar.set(12,3,2,400) ok=" .. tostring(ok)
+        elseif input.just_pressed("u") then
+            calendar.configure({ days_per_season = 7, seasons_per_year = 3 })
+            action = "calendar.configure 7x3"
+        elseif input.just_pressed("i") then
+            calendar.configure({ days_per_season = 28, seasons_per_year = 4 })
+            action = "calendar.configure 28x4"
+        end
+    elseif id == "inventory" then
+        if input.just_pressed("i") then
+            local leftover = inv.add(BAG, "turnip_seed", 5)
+            action = string.format(
+                "inv.add x5 leftover=%d count=%d",
+                leftover,
+                inv.count(BAG, "turnip_seed")
+            )
+        elseif input.just_pressed("k") then
+            local removed = inv.remove(BAG, "turnip_seed", 2)
+            action = string.format(
+                "inv.remove x2 removed=%d left=%d",
+                removed,
+                inv.count(BAG, "turnip_seed")
+            )
+        elseif input.just_pressed("v") then
+            if inv.slot(BAG, 5) ~= nil then
+                inv.set(BAG, 5, nil, nil)
+                action = "inv.set slot5 cleared"
+            else
+                inv.set(BAG, 5, "coin", 7)
+                action = "inv.set slot5 coin x7"
+            end
+        end
+    elseif id == "bag_slots" then
+        if input.just_pressed("b") then
+            local moved = inv.move(BAG, 1, HOTBAR, 1, nil)
+            action = string.format("inv.move bag1 -> hotbar1 moved=%d", moved)
+        elseif input.just_pressed("g") then
+            inv.swap(BAG, 2, HOTBAR, 2)
+            action = "inv.swap bag2 <-> hotbar2"
+        elseif input.just_pressed("v") then
+            inv.set(BAG, 5, "coin", 7)
+            action = "inv.set bag slot5 coin x7"
+        end
+    elseif id == "equipment" then
+        if input.just_pressed("e") then
+            if inv.equip_get(BAG, "tool") ~= nil then
+                inv.equip(BAG, "tool", nil)
+                action = "inv.equip(tool, nil)"
+            else
+                inv.equip(BAG, "tool", "hoe")
+                action = "inv.equip(tool, hoe)"
+            end
+        elseif input.just_pressed("q") then
+            if inv.equip_get(BAG, "trinket") ~= nil then
+                inv.equip(BAG, "trinket", nil)
+                action = "inv.equip(trinket, nil)"
+            else
+                inv.equip(BAG, "trinket", "charm")
+                action = "inv.equip(trinket, charm)"
+            end
+        end
+    elseif id == "containers" then
+        if input.just_pressed("o") then
+            action = "container.open -> " .. dash(open_chest())
+        elseif input.just_pressed("c") then
+            if chest_id ~= nil then
+                local removed = container.close(chest_id)
+                action = "container.close removed=" .. tostring(removed)
+            end
+        elseif input.just_pressed("u") then
+            if chest_id ~= nil then
+                local moved = container.move(chest_id, 1, BAG, 5)
+                action = string.format("container.move chest1 -> bag5 moved=%d", moved)
+            end
+        elseif input.just_pressed("l") then
+            local key = chest_id ~= nil and container.get(chest_id) or nil
+            if key ~= nil then
+                local moved = inv.move(BAG, 1, key, 1, nil)
+                action = string.format("inv.move bag1 -> %s moved=%d", key, moved)
+            else
+                action = "container.get -> nil (press o)"
+            end
+        end
+    elseif id == "shop" then
+        if input.just_pressed("x") then
+            catalog_sale = not catalog_sale
+            shop.set_catalog(SHOP, catalog_sale and SALE_CATALOG or FULL_CATALOG)
+            local price = shop.price(SHOP, "turnip_seed")
+            action = string.format(
+                "shop.set_catalog(%s) buy=%s",
+                catalog_sale and "sale" or "full",
+                price ~= nil and tostring(price.buy) or "nil"
+            )
+        end
+    elseif id == "interact" then
+        if input.just_pressed("c") then
+            radius_index = radius_index % #RADII + 1
+            action = string.format("interact.query radius -> %.0f", RADII[radius_index])
+        elseif input.just_pressed("q") then
+            if farmer_id ~= nil and tag.get(farmer_id, "role") ~= nil then
+                tag.set(farmer_id, "role", "")
+                action = "tag.set(farmer role, '') -> removed"
+            elseif farmer_id ~= nil then
+                tag.set(farmer_id, "role", "player")
+                action = "tag.set(farmer role, player)"
+            end
+        end
+    elseif id == "map_state" then
+        if input.just_pressed("s") then
+            map.set_spawn(160, 200)
+            action = "map.set_spawn(160, 200)"
+        elseif input.just_pressed("w") then
+            local state = map.state(MAP_STATE)
+            local plots = (state ~= nil and tonumber(state.plots) or 0) + 1
+            map.state(MAP_STATE, {
+                version = 1,
+                plots = plots,
+                sky = "Rainy",
+                notes = { owner = "Farmer" },
+            })
+            action = string.format("map.state plots=%d", plots)
+        elseif input.just_pressed("d") then
+            local removed = map.state_clear(MAP_STATE)
+            action = string.format("map.state_clear(name) removed=%d", removed)
+        elseif input.just_pressed("a") then
+            local removed = map.state_clear()
+            action = string.format("map.state_clear() removed=%d", removed)
+        end
+    elseif id == "map_switch" then
+        if input.just_pressed("g") then
+            local queued = map["goto"](MAP_HERE, 144, 176)
+            action = "map.goto(self,144,176) queued=" .. tostring(queued)
+        elseif input.just_pressed("e") then
+            local queued = map.enter(MAP_HERE, 176, 176)
+            action = "map.enter(self,176,176) queued=" .. tostring(queued)
+        elseif input.just_pressed("j") then
+            local queued = map.go(MAP_HERE)
+            action = "map.go(self) queued=" .. tostring(queued)
+        end
+    end
+
+    if action ~= "-" then
+        lab.status(action)
+    end
+    return lab.tick()
+end
+
+function M.self_test()
+    return lab.self_test()
+end
+
 function M.on_destroy()
-    -- 只收起本模块自己画的那六行细节；api_title / api_status / api_hint 由 api.clear() 统一处理。
-    -- （`ui.hide` 对文本与同 id 面板都生效；`ui.clear` 只删面板/图片/网格。）
-    ui.hide("gameplay_clock")
-    ui.hide("gameplay_item")
-    ui.hide("gameplay_inv")
-    ui.hide("gameplay_equip")
-    ui.hide("gameplay_map")
-    ui.hide("gameplay_interact")
+    -- 本模块自己开过箱子背包、写过引擎交互提示：离开场景前收回。
+    if chest_id ~= nil and entity.is_alive(chest_id) then
+        container.close(chest_id)
+    end
+    interact.clear_prompt()
+    lab.stop()
 end
 
 return M

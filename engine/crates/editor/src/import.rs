@@ -31,7 +31,7 @@ impl EditorApp {
     pub(crate) fn start_import(&mut self) {
         let path = self.import_path.trim().to_owned();
         if path.is_empty() {
-            self.status = "Enter a game project directory first".to_owned();
+            self.status = "请先输入游戏工程目录".to_owned();
             return;
         }
         if self.progress.running {
@@ -121,7 +121,7 @@ impl EditorApp {
                     // 项目切换：清空旧项目缩略图缓存并让后台解码结果失效。
                     self.thumbnails.clear();
                     self.thumbnail_worker.clear();
-                    // 源 Prefab 缓存按项目根解析出的绝对路径缓存，跨项目清空避免残留。
+                    // 源预制体 缓存按项目根解析出的绝对路径缓存，跨项目清空避免残留。
                     self.prefab_source_cache.clear();
                     // 字体图集按项目缓存（project.toml `font` 键）：切换项目后重建。
                     self.scene_font_atlas = None;
@@ -153,10 +153,7 @@ impl EditorApp {
                     self.load_hierarchy_collapsed();
                     self.delete_target = crate::DeleteTarget::None;
                     self.project_loaded = true;
-                    self.status = format!(
-                        "Imported game project: {}",
-                        display_path(&self.project.root)
-                    );
+                    self.status = format!("已导入游戏工程：{}", display_path(&self.project.root));
                     let root = self.project.root.clone();
                     self.record_recent_project(&root);
                     // 导入成功：自动关闭进度面板（失败保留窗口查看原因）。
@@ -284,7 +281,7 @@ impl EditorApp {
         parent: Option<SceneEntityId>,
     ) -> String {
         if self.is_playing() {
-            return "Play mode locks scene editing; click Stop first".to_owned();
+            return "播放模式下不能编辑场景，请先点击停止".to_owned();
         }
         let report = self.import_external_files(files);
         let spawns: Vec<String> = report

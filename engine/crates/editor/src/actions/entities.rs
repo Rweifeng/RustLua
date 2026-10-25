@@ -19,7 +19,7 @@ impl EditorApp {
         persist_id: Option<String>,
     ) -> Result<bool, String> {
         if self.is_playing() {
-            return Err("Play 模式锁定场景编辑，请先停止运行".to_owned());
+            return Err("播放模式下不能编辑场景，请先点击停止".to_owned());
         }
         let value = persist_id
             .map(|value| value.trim().to_owned())
@@ -32,15 +32,15 @@ impl EditorApp {
                 })
             });
             if duplicate {
-                return Err(format!("本场景已存在 persist_id：「{value}」"));
+                return Err(format!("本场景已存在持久化 ID「{value}」"));
             }
         }
         let Some(scene) = self.document.current_scene.as_mut() else {
             return Err("没有打开的场景".to_owned());
         };
         let label = match value.as_deref() {
-            Some(value) => format!("PersistId {value}"),
-            None => "Clear PersistId".to_owned(),
+            Some(value) => format!("持久化 ID {value}"),
+            None => "清除持久化 ID".to_owned(),
         };
         let changed = self
             .history
@@ -81,23 +81,23 @@ impl EditorApp {
 
     pub(crate) fn add_entity(&mut self, parent: Option<SceneEntityId>) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".into();
+            self.status = "播放模式下不能编辑场景，请先点击停止".into();
             return;
         }
         let name = self.entity_name.trim().to_owned();
         if name.is_empty() {
-            self.status = "Entity name cannot be empty".into();
+            self.status = "实体名不能为空".into();
             return;
         }
         let tree = self.tree.clone();
         let created = std::cell::Cell::new(None::<SceneEntityId>);
         let Some(scene) = self.document.current_scene.as_mut() else {
-            self.status = "Create a scene first".into();
+            self.status = "请先创建场景".into();
             return;
         };
         let result = self
             .history
-            .execute(scene, "Create entity", CommandKind::Create, |scene| {
+            .execute(scene, "创建实体", CommandKind::Create, |scene| {
                 let id = tree
                     .create_entity(scene, name.clone(), parent)
                     .map_err(|e| e.to_string())?;
@@ -117,9 +117,9 @@ impl EditorApp {
                     self.selection.add(id, editor::SelectionSource::Command);
                     self.sync_inspector(id);
                 }
-                self.status = "Entity created".into();
+                self.status = "实体已创建".into();
             }
-            Ok(false) => self.status = "No change".into(),
+            Ok(false) => self.status = "没有变化".into(),
             Err(e) => self.status = e,
         }
     }
@@ -128,18 +128,18 @@ impl EditorApp {
     /// 新 UI 实体挂到 Canvas 下。已有 Canvas 就直接复用。
     pub(crate) fn create_ui_entity(&mut self) {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".into();
+            self.status = "播放模式下不能编辑场景，请先点击停止".into();
             return;
         }
         let Some(scene) = self.document.current_scene.as_mut() else {
-            self.status = "Create a scene first".into();
+            self.status = "请先创建场景".into();
             return;
         };
         let tree = self.tree.clone();
         let created = std::cell::Cell::new(None::<SceneEntityId>);
         let result = self
             .history
-            .execute(scene, "Create UI entity", CommandKind::Create, |scene| {
+            .execute(scene, "创建界面实体", CommandKind::Create, |scene| {
                 // 1. 找或建 UI 根节点（metadata ui.root=true）。
                 let root_id = scene.scene.entities.values()
                     .find(|e| e.metadata.get("ui.root").map(|v| v == "true").unwrap_or(false))
@@ -147,7 +147,7 @@ impl EditorApp {
                 let root_id = if let Some(id) = root_id {
                     id
                 } else {
-                    let id = tree.create_entity(scene, "UIRoot", None).map_err(|e| e.to_string())?;
+                    let id = tree.create_entity(scene, "界面根节点", None).map_err(|e| e.to_string())?;
                     if let Some(root) = scene.scene.entities.get_mut(&id) {
                         root.metadata.insert("ui.root".into(), "true".into());
                         root.components.insert(
@@ -158,7 +158,7 @@ impl EditorApp {
                     id
                 };
                 // 2. 在 UI 根下建 UI 实体。
-                let id = tree.create_entity(scene, "UI Element", Some(root_id))
+                let id = tree.create_entity(scene, "界面元素", Some(root_id))
                     .map_err(|e| e.to_string())?;
                 if let Some(entity) = scene.scene.entities.get_mut(&id) {
                     entity.components.insert(
@@ -175,9 +175,9 @@ impl EditorApp {
                     self.selection.add(id, editor::SelectionSource::Command);
                     self.sync_inspector(id);
                 }
-                self.status = "UI entity created under UI root".into();
+                self.status = "界面实体已创建到界面根节点下".into();
             }
-            Ok(false) => self.status = "No change".into(),
+            Ok(false) => self.status = "没有变化".into(),
             Err(e) => self.status = e,
         }
     }
@@ -200,31 +200,28 @@ impl EditorApp {
         let Some(scene) = self.document.current_scene.as_mut() else {
             return;
         };
-        let _ = self.history.execute(
-            scene,
-            "Position widget",
-            CommandKind::Property,
-            move |scene| {
+        let _ = self
+            .history
+            .execute(scene, "摆放控件", CommandKind::Property, move |scene| {
                 if let Some(entity) = scene.scene.entities.get_mut(&id) {
                     crate::scene_drag::set_ui_component_layout(entity, offsets);
                 }
                 scene.mark_dirty();
                 Ok::<(), InspectorError>(())
-            },
-        );
+            });
     }
 
     /// 5b：在设计分辨率指定位置创建 widget（面板 → 设计像素已换算）。
     /// 默认 200×100 尺寸，中心锚点，按 widget 类型附加视觉/事件组件。
     pub(crate) fn create_widget_at(&mut self, widget: &str, design_pos: egui::Pos2) {
         let (name, component) = match widget {
-            "Text" => ("New Text", "Text"),
-            "Image" => ("New Image", "Image"),
-            "Button" => ("New Button", "Image"),
-            "Panel" => ("New Panel", "Image"),
-            "Container" => ("New Container", "Container"),
+            "Text" => ("新建文本", "Text"),
+            "Image" => ("新建图片", "Image"),
+            "Button" => ("新建按钮", "Image"),
+            "Panel" => ("新建面板", "Image"),
+            "Container" => ("新建容器", "Container"),
             _ => {
-                self.status = format!("未知 Widget 类型：{widget}");
+                self.status = format!("未知控件类型：{widget}");
                 return;
             }
         };

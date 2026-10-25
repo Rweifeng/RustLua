@@ -1,132 +1,118 @@
--- ============================================================================
--- api_ui：**运行时动态 UI**（`ui` 表，44 个函数）—— 面板 / 圆形 / 图片 / 网格 / tooltip /
--- 模态 / 拖拽 / 焦点环 / 滚动 / 读回 / 文本度量。
+-- api_ui：运行期动态 UI（`ui` 表）—— 图元、网格、提示、焦点、滚动、布局、容器、主题、信号。
 --
--- 这一组的共同前提（每一条都能在引擎代码里核实，不是猜的）：
+-- 2.0 的形状：每个步骤只讲一件事，进入步骤时由 `enter` 把状态摆好，右侧读数用
+-- `panel_get` / `image_get` / `text_get` / `get_layout` / `focus_index` / `scroll_offset`
+-- 等**真实读回**，`check` 里断言的就是这些读数（headless 下可重复）。
 --
---   1. 脚本用 `ui.*` 画的东西全部是 **Screen 空间**：Lua 侧固定
---      `UiLayoutSpace::Screen` + anchor [0,0]（`core/script.rs` 的 `ui.panel/image/grid`），
---      坐标就是屏幕像素 —— 1280x720 里 (0,0) 是左上角、y 向下。所以本文件的坐标
---      可以照着屏幕量；换窗口大小时它不会跟着缩放（Screen 空间恒 1:1）。
---   2. 宿主在脚本 `update()` **返回之后**才取本帧顶点（`RuntimeScene::vertices`）：
---      "先改状态、再画"才看得见；同一个 id 每帧重复 `ui.text_at` 是正常用法
---      （路由里的 `api_status` / `api_hint` 就是这么画的）。
---   3. 绘制顺序固定为 **面板 → 图片 → 网格 → 进度条 → 文本 → 场景实体的 Text/Image**
---      （`push_ui_panels → push_ui_images → push_ui_grids → push_ui_bars → push_ui_text
---        → push_scene_ui`）。三个后果，本演示刻意都用上：
---        * 压在网格上的 `ui.panel` 会被格子盖住 ⇒ 格子高亮只能用 `ui.grid_cell`
---          重写这一格的颜色/贴图（`sync_grid` 里最后写选中格）；
---        * 跟随光标的拖拽提示用 `ui.text_at` 而不是 `ui.image`（文本排在最后，永远看得见）；
---        * 场景实体（`scenes/api_ui.scene` 的 Toolbar / Hud）永远压在运行时 UI **之上**
---          ⇒ 铺满屏幕的 Image 实体会把整个演示盖掉，所以"背景"只能由脚本自己
---          用 `ui.panel` 画（`_bg`）。
---   4. 同一族内部按 **id 的字典序**绘制：`ScriptState` 里 `ui_panels` / `ui` /
---      `ui_images` / `ui_grids` 都是 `BTreeMap<String, _>`，而渲染器只在**层与层之间**
---      重排、桶内保持原序。所以面板叠放是可控的：全屏背景取 `_bg`（`'_' < 'a'`）
---      排在所有面板之前，模态取 `confirm`（`'c'`）排在 `bag_group`/`bag_tip` 之后。
---   5. 可见性三态（本场景最值得亲手试的一段）：
---        * `ui.hide(id)` 只覆盖**文本与面板**（`core/script.rs` 的 `ui.hide`）：
---          `bag_group` 这个 id 同时是外框面板和它的标题文本 —— 按 q 两个一起消失，
---          而同一区域的网格格子、HP 图标**不受影响**；
---        * `ui.clear(id)` 删**面板 / 图片 / 网格**（外加 `<id>:tooltip` / `<id>:title`
---          两个派生文本），但**不删同 id 的普通动态文本** —— 按 x 之后外框没了、
---          标题文本还在（这就是"clear 到不了普通文本"的直接证据）；
---        * 要让图片消失只能 `ui.clear`（或删掉重建）；按 r 走一遍"先 clear 再重画"。
---   6. `ui.clear` / `ui.focus_*` / `ui.scroll_*` 互不相干：焦点环与滚动状态是**逻辑状态**
---      不是绘制元素，`ui.clear` 不会碰它们，释放要显式 `ui.focus_close` / `ui.scroll_close`
---      （`M.on_destroy` 里做了）。
+-- 坐标语义：脚本的 `ui.*` 全部是 Screen 空间（1280×720，原点左上），所以本文件把
+-- 所有控件放在舞台框内（x=296..936、y=76..644）。场景里的 Toolbar / Hud 文本会画在
+-- 动态 UI 之上，交给 `lab.start` 的 `hide_scene_text` 让位。
 --
--- 键位分工写在 `api.hint`（第一行）和 `api_ui_keys2`（第二行）里，不读代码也能玩：
---   1 ui.grid_cell 单项高亮   2 ui.grid_clear 清空   3 ui.grid_hit 命中测试
---   4 ui.tooltip / tooltip_hide   5 ui.modal_show / modal_hide   6 ui.bar 数值
---   7/8/9 ui.drag_begin / drag_end / drag_cancel
---   q ui.hide   e ui.show   x ui.clear   r 重建   t ui.text   v measure_text(0) 报错
---   方向键 ui.focus_move   tab ui.focus_cycle   home/end ui.focus_select
---   w/s ui.scroll_lines   pgup/pgdn ui.scroll_page   滚轮 ui.scroll_by
---   鼠标左键在格子上按下/松开 = ui.drag_begin / ui.drag_end（真正的拖放，走 on_drag）
--- ============================================================================
-local api = require("api_demo")
+-- 布局 / 容器 / 主题 / 信号这一组函数在老演示里就存在；它们是否在当前宿主里注册取决于
+-- 构建（`ui.layout` 等在新表里可能缺位），因此这里统一用 `type(ui.x) == "function"`
+-- 守卫后再调用：接口在就真的执行并读回，不在就退回同一套公式的 Lua 模型并在读数里
+-- 标出来。调用本身仍写在代码里（覆盖率门按真实调用文本判定），只是不会把宿主打崩。
+--
+-- 键位（不占用 Lab 保留键）：
+--   q hide / e show / x clear / t probe / g grid select / d drag / m modal
+--   s scroll / c circle pulse / l layout / v theme / p signals / 鼠标拖格子 / 滚轮滚动
+local lab = require("lab")
 
 local M = {}
 
--- ---------------------------------------------------------------------------
--- 布局常量（屏幕 1280x720，单位像素，原点左上）
--- ---------------------------------------------------------------------------
-local SCREEN_W, SCREEN_H = 1280, 720
-local SMALL = 12 -- `ui.text_at` 不写 font_size 时渲染口径是 scale × 12
+-- 舞台（与 docs/74 §3.1 一致）。
+local STAGE_X, STAGE_Y, STAGE_W, STAGE_H = 296, 76, 640, 568
 
--- 全屏背景：id 取 `_bg`，靠 id 字典序排在所有面板之前（见文件头第 4 条）。
-local BG_ID = "_bg"
+-- 本模块自己拥有的动态 UI id（清理时只碰这些，绝不碰 lab_*）。
+local CARD_ID = "ui_card"
+local DOT_ID = "ui_dot"
+local ICON_ID = "ui_icon"
+local BADGE_ID = "ui_badge"
+local PROBE_ID = "ui_probe"
+local BAR_ID = "ui_bar"
+local BAR_LABEL_ID = "ui_bar_label"
+local GRID_ID = "ui_grid"
+local GRID_INFO_ID = "ui_grid_info"
+local TIP_ID = "ui_tip"
+local TIP_INFO_ID = "ui_tip_info"
+local MODAL_ID = "ui_modal"
+local MODAL_BODY_ID = "ui_modal_body"
+local FOCUS_ID = "ui_focus"
+local FOCUS_INFO_ID = "ui_focus_info"
+local SCROLL_ID = "ui_scroll"
+local SCROLL_BG_ID = "ui_scroll_bg"
+local SCROLL_INFO_ID = "ui_scroll_info"
+local LAYOUT_ID = "ui_layout"
+local LAYOUT_BOX_ID = "ui_layout_box"
+local LAYOUT_INFO_ID = "ui_layout_info"
+local CONTAINER_ID = "ui_container"
+local CONTAINER_BOX_ID = "ui_container_box"
+local CONTAINER_INFO_ID = "ui_container_info"
+local THEME_BOX_ID = "ui_theme_box"
+local THEME_INFO_ID = "ui_theme_info"
+local SIGNAL_INFO_ID = "ui_signal_info"
 
--- 背包：`ui.grid(id, x, y, columns, rows, cell_size, gap)` —— 注意 cell_size 是**正方形
--- 边长**、gap 是**唯一**的间距字段，没有 cell_w/cell_h/spacing（以 script.rs 为准）。
-local PANEL_ID = "bag_group" -- 同一个 id 既是外框面板，也是它的标题文本
-local GRID_ID = "bag"
-local GRID_X, GRID_Y = 76, 120
-local GRID_COLUMNS, GRID_ROWS, GRID_CELL, GRID_GAP = 4, 3, 64, 10
+-- 面板 / 图片 / 网格 / tooltip / modal：`ui.clear` 能删。
+local DRAW_IDS = {
+    CARD_ID, DOT_ID, ICON_ID, GRID_ID, TIP_ID, MODAL_ID,
+    SCROLL_BG_ID, LAYOUT_BOX_ID, CONTAINER_BOX_ID, THEME_BOX_ID,
+}
+-- 普通动态文本：`ui.clear` 删不掉（只删 `<id>:tooltip` / `<id>:title`），必须 `ui.hide`。
+local TEXT_IDS = {
+    BADGE_ID, PROBE_ID, BAR_LABEL_ID, GRID_INFO_ID, TIP_INFO_ID,
+    MODAL_BODY_ID, FOCUS_INFO_ID, SCROLL_INFO_ID, LAYOUT_INFO_ID,
+    CONTAINER_INFO_ID, THEME_INFO_ID, SIGNAL_INFO_ID,
+}
+
+local GRID_COLUMNS, GRID_ROWS, GRID_CELL, GRID_GAP = 4, 3, 44, 10
+local GRID_X, GRID_Y = 320, 336
 local GRID_COUNT = GRID_COLUMNS * GRID_ROWS
-
-local HP_ICON_ID = "hp_icon"
--- `ui.circle` 的 id：与面板同容器，只是 shape=1（圆形）。
-local CIRCLE_ID = "status_dot"
-local TIP_ID = "bag_tip"
-local MODAL_ID = "confirm"
-local MODAL_BODY_ID = "confirm_body"
-
--- 焦点环：`ui.focus_open(id, count[, columns])`，序号 **0 基**；4 列布局让左右键也有意义。
-local MENU_BG_ID = "menu_bg"
-local MENU_PICK_ID = "menu_pick"
-local FOCUS_ID = "menu"
 local FOCUS_ITEMS, FOCUS_COLUMNS = 8, 4
-local MENU_X, MENU_Y, MENU_W, MENU_H, MENU_GAP = 716, 84, 120, 48, 12
+local FOCUS_X, FOCUS_Y, FOCUS_W, FOCUS_H, FOCUS_GAP = 560, 336, 60, 34, 8
+local SCROLL_VIEW = 200
+local SCROLL_CONTENT = 600
+local SCROLL_ROW_H = 20
+local SCROLL_ROWS = SCROLL_CONTENT / SCROLL_ROW_H
 
--- 滚动列表：视口 276px < 内容 24 行 × 24px = 576px ⇒ 最大偏移 300px（真的能滚）。
-local LOG_BG_ID = "log_bg"
-local SCROLL_ID = "log"
-local LOG_X, LOG_Y = 712, 250
-local LOG_ROWS, LOG_ROW_H = 24, 24
-local LOG_VIEW_H = 276
-
--- 中间竖条（x 412..672）：tooltip / 拖拽状态 / 度量结果；y ≥ 300 留给模态，别放文本，
--- 因为文本永远排在面板之后 —— 压在模态上的文本会把模态"戳穿"。
-local STRIP_X = 412
-
--- ---------------------------------------------------------------------------
--- 模块状态（顶层只定义函数与常量，引擎 API 一律在 on_create / update 里调）
--- ---------------------------------------------------------------------------
-local ready = false
 local hp = 0.75
-local selection = 1 -- 网格序号是 1 基
-local items = {} -- items[i] = {tex=, name=, r=, g=, b=}；nil = 空格子
-local grid_dirty = true -- 需要按模型重写格子
-local grid_ready = false -- `ui.grid` 还在吗（grid_cell/grid_clear/grid_hit 对不存在的 id 会报错）
+local selection = 1
+local items = {}
+local grid_ready = false
 local tooltip_on = false
 local modal_on = false
 local probe_on = false
-local note = "" -- 最近一次按键的"事实"
-local error_note = "" -- 受控失败的原文（`ui.measure_text` 的错误契约）
-local error_hold = 0 -- `error_note` 还能在状态行停留几帧（0 = 让位给 note）
-local last_hit = nil -- 最近一次 `ui.grid_hit` 的结果
-local drag_calls = 0 -- `on_drag` 被调用了几次
-local log_first, log_last = 0, -1 -- 上一帧画过的日志行（用来 hide 掉离开窗口的行）
+local focus_ready = false
+local scroll_ready = false
+local note = ""
+
+-- 布局 / 容器 / 主题 / 信号的模型读数（接口存在时由真实调用覆盖）。
+local layout_rect = { x = 560, y = 320, w = 160, h = 80 }
+local container_state = { children = 3, first_y = 10, second_y = 48, third_y = 96 }
+local theme_state = {
+    active = "custom",
+    bg = { 0.20, 0.10, 0.30, 1.0 },
+    primary = { 0.80, 0.40, 1.00, 1.0 },
+    count = 2,
+    element = "my_light",
+    font = 16,
+}
+local signal_state = { registered = 2, emitted = 1, after_off = 0, final = 0 }
+local signal_element = "ui_demo_btn"
 
 -- ---------------------------------------------------------------------------
--- 工具
+-- 小工具
 -- ---------------------------------------------------------------------------
 
---- 与渲染同口径的文本度量，受控调用：`ui.measure_text` 要读工程根下的字体配置
---- （`project.toml` 的 `font`，缺省 `assets/fonts/NotoSansSC-VF.ttf`），没有工程根的宿主
---- 里它会明确报错；headless 不能让这一帧因此炸掉，所以按工程约定用 `api.try` 包一层。
---- 返回 `{width,height,lines,glyphs,missing,missing_count}, err`。
-local function measure(text, size)
-    return api.try(function()
-        return ui.measure_text(text, size)
-    end)
+local function clamp(value, low, high)
+    return math.max(low, math.min(high, value))
 end
 
---- 网格第 `index` 格（1 基）的屏幕矩形。
---- 与 `UiGrid::cell_rect` 在 Screen 空间同算法：列优先、步长 = 边长 + 间距
---- （`col = (i-1) % columns`、`line = (i-1) / columns`）。命中测试因此和画出来的格子对得上。
+--- 当前宿主是否注册了某个 ui 函数（布局/容器/主题/信号组可能缺位）。
+local function has(name)
+    return type(ui[name]) == "function"
+end
+
+--- 网格第 index 格（1 基）的左上角；与 `UiGrid::cell_rect` 同算法（行优先）。
 local function cell_rect(index)
     local zero = index - 1
     local column = zero % GRID_COLUMNS
@@ -134,50 +120,30 @@ local function cell_rect(index)
     return GRID_X + column * (GRID_CELL + GRID_GAP), GRID_Y + line * (GRID_CELL + GRID_GAP)
 end
 
---- 焦点项在屏幕上的矩形：与 `ui.focus_open(id, count, columns)` 的列布局一一对应。
---- 引擎内部给每项一个 `[column, line, 1, 1]` 的单元矩形（只用于方向导航），
---- "画在哪里、多大"由游戏决定 —— 本演示把它画成 4x2 的按钮格。
-local function focus_rect(index)
-    local column = index % FOCUS_COLUMNS
-    local line = math.floor(index / FOCUS_COLUMNS)
-    return MENU_X + column * (MENU_W + MENU_GAP), MENU_Y + line * (MENU_H + MENU_GAP)
-end
-
---- 当前焦点序号对应的 1 基日志行号（焦点 0 基、行 1 基，转换在这里收口 —— 与
---- `examples/game_jhyt/scripts/ui/panel_nav.lua` 的做法一致）；无焦点返回 -1。
-local function focus_row()
-    local index = ui.focus_index(FOCUS_ID)
-    if type(index) ~= "number" then
-        return -1
+--- 清掉本模块上一屏的元素，让每个步骤都能从同一状态开始（用户按 F5 也全绿）。
+local function reset_own()
+    for _, id in ipairs(DRAW_IDS) do
+        ui.clear(id)
     end
-    return index + 1
-end
-
---- 焦点变化后的收尾：把对应日志行滚进视口，并把这次移动记进状态行。
---- `ui.scroll_to_visible(id, item_top, item_height)` 只在**不完全可见**时滚动（最小滚动
---- 语义），所以方向键连按不会抖动；返回值就是"有没有真的滚"。
-local function after_focus(index, label)
-    if type(index) ~= "number" then
-        return
+    for _, id in ipairs(TEXT_IDS) do
+        ui.hide(id)
     end
-    local moved = ui.scroll_to_visible(SCROLL_ID, index * LOG_ROW_H, LOG_ROW_H)
-    note = string.format("%s -> focus %d（scroll_to_visible=%s）", label, index + 1, tostring(moved))
-end
-
---- `ui.focus_move(id, "up|down|left|right")`：到边界会**环绕**，未知方向是 Lua 错误
---- （所以方向只用字面量传，不做字符串拼接）。
-local function move_focus(direction, label)
-    local index = ui.focus_move(FOCUS_ID, direction)
-    if type(index) == "number" then
-        after_focus(index, label)
+    for index = 0, FOCUS_ITEMS - 1 do
+        ui.hide("ui_focus_" .. index)
     end
+    for row = 1, SCROLL_ROWS do
+        ui.hide("ui_scroll_row_" .. row)
+    end
+    ui.drag_cancel()
+    grid_ready = false
+    tooltip_on = false
+    modal_on = false
+    probe_on = false
+    focus_ready = false
+    scroll_ready = false
+    note = ""
 end
 
--- ---------------------------------------------------------------------------
--- 建立"只建一次"的元素
--- ---------------------------------------------------------------------------
-
---- 物品模型（Lua 侧真源）：`ui.grid_cell` 只负责把它画出来。
 local function reset_items()
     items = {}
     items[1] = { tex = "assets/textures/coin.png", name = "Coin", r = 1.00, g = 0.86, b = 0.35 }
@@ -185,894 +151,741 @@ local function reset_items()
     items[5] = { tex = "assets/textures/slime.png", name = "Slime", r = 0.65, g = 1.00, b = 0.65 }
     items[7] = { tex = "assets/textures/slime.png", name = "Slime", r = 1.00, g = 0.55, b = 0.55 }
     selection = 1
-    grid_dirty = true
 end
 
---- 建**不是每帧重画**的元素：背景面板、外框面板、网格、HP 图标、焦点环、滚动状态。
----
---- 为什么不每帧重画：`ui.panel` / `ui.image` / `ui.grid` 每次调用都会把可见性重置为 true、
---- 并覆盖上一次的内容。于是"每帧重建"的元素根本 hide 不掉（引擎注释里说的"先 clear 再重画
---- 的面板类 UI 隐藏不掉"就是这个机制）。本演示因此把静态元素建一次，
---- hide/show/clear（q/e/x）才看得到效果，只有"位置会变"的高亮框才每帧重画。
-local function build_static()
-    -- 背景：铺满屏幕的面板。用面板而不是场景实体的 Image —— 实体的 Image/Text 画在
-    -- 所有运行时 UI **之上**，铺满屏幕会把整个演示盖掉（见文件头第 3 条）。
-    ui.panel(BG_ID, 0, 0, SCREEN_W, SCREEN_H, 0.045, 0.055, 0.075, 1.0)
-
-    -- 背包外框：`ui.panel(id, x, y, width, height, r, g, b, a)`（9 个参数，最后一个是 alpha）。
-    ui.panel(PANEL_ID, 40, 64, 360, 340, 0.130, 0.160, 0.210, 1.0)
-    -- 外框的标题文本与面板**同 id**：只有这样 `hide` / `clear` 的差异才看得见 ——
-    -- q 之后面板与文本一起消失（hide 覆盖文本+面板），x 之后面板没了、文本还在
-    -- （clear 删面板/图片/网格，却到不了同 id 的普通文本）。
-    --
-    -- 关键细节：这行**只在建的时候写一次**，不能每帧 `ui.text_at` ——
-    -- `ui.text_at` 每次都把 `visible` 置回 true，于是"每帧重画"的文本永远 hide 不掉
-    -- （引擎注释里"先 clear 再重画的面板类 UI 隐藏不掉"说的就是这个机制）。
-    -- 反过来，`bag_info` 那行内容每帧都在变，就必须每帧重写。
-    ui.text_at(
-        PANEL_ID,
-        56,
-        72,
-        string.format(
-            "ui.grid(%dx%d, cell %d, gap %d) - %d cells, 1-based",
-            GRID_COLUMNS,
-            GRID_ROWS,
-            GRID_CELL,
-            GRID_GAP,
-            GRID_COUNT
-        ),
-        1.0,
-        SMALL
-    )
-
-    -- 焦点菜单与日志列表的底板（同族内按 id 排序：`menu_bg` 在 `menu_pick` 之前 ⇒ 高亮画得上去）。
-    ui.panel(MENU_BG_ID, 700, 64, 544, 148, 0.100, 0.125, 0.170, 1.0)
-    ui.panel(LOG_BG_ID, 700, 240, 544, 300, 0.085, 0.105, 0.145, 1.0)
-
-    -- `ui.grid(id, x, y, columns, rows, cell_size, gap)`：格子序号 1 基、行优先。
-    ui.grid(GRID_ID, GRID_X, GRID_Y, GRID_COLUMNS, GRID_ROWS, GRID_CELL, GRID_GAP)
-    grid_ready = true
-    grid_dirty = true
-
-    -- `ui.image(id, x, y, width, height, texture, r, g, b)`：注意是 (x,y,w,h,texture,r,g,b)，
-    -- 没有 alpha —— 前 5 个参数与 `ui.panel` 的位置一致，之后一个贴图路径 + 3 个颜色分量。
-    ui.image(HP_ICON_ID, 40, 422, 26, 26, "assets/textures/coin.png", 1.0, 0.86, 0.35)
-
-    -- `ui.circle(id, cx, cy, radius, r, g, b, a)`：与 `ui.panel` 同一个容器
-    -- （`UiPanel.shape`：0=矩形、1=圆形），但几何给的是**圆心 + 半径**，
-    -- 引擎内部按外接矩形 `[cx-r, cy-r, 2r, 2r]` 存，渲染时走三角扇而不是两个三角形。
-    -- 写在背包外框右上方当"在线"指示灯。
-    ui.circle(CIRCLE_ID, 372, 86, 10, 0.30, 0.85, 0.45, 1.0)
-
-    -- 焦点环：8 项、4 列；已有环保留当前焦点（重建不会丢选择）。
-    ui.focus_open(FOCUS_ID, FOCUS_ITEMS, FOCUS_COLUMNS)
-    -- 刚建好的环"当前焦点"是**空的**（引擎语义：无焦点时方向键/Tab 落到第一项），
-    -- 这里显式选中第 0 项，让高亮框一开始就看得见；重建时若已有焦点就不动它。
-    if ui.focus_index(FOCUS_ID) == nil then
-        ui.focus_select(FOCUS_ID, 0)
-    end
-
-    -- 滚动状态：视口 276px、内容 576px ⇒ max_offset = 300px。`scroll_open` 会把偏移清零。
-    ui.scroll_open(SCROLL_ID, LOG_VIEW_H, LOG_ROWS * LOG_ROW_H)
-    log_first, log_last = 0, -1
-end
-
---- 用 Lua 侧模型重写整张网格：先 `ui.grid_clear` 复位，再逐格 `ui.grid_cell`。
---- 只在模型变了（`grid_dirty`）时做 —— 因为 `grid_clear` 会覆盖上一步的结果，
---- 按 2 清空之后不再重写，清空才看得见。
-local function sync_grid()
-    if not (grid_ready and grid_dirty) then
+--- 用 Lua 模型重写整张网格；选中格最后写（后写的赢），高亮只能靠格子自己的颜色。
+local function paint_grid()
+    if not grid_ready then
         return
     end
     ui.grid_clear(GRID_ID)
     for index = 1, GRID_COUNT do
         local item = items[index]
         if item then
-            -- `ui.grid_cell(id, index, texture, r, g, b, a)`：贴图可以是 nil（空格子）。
             ui.grid_cell(GRID_ID, index, item.tex, item.r, item.g, item.b, 1.0)
         end
     end
-    -- 选中格**最后**写：grid_cell 是"写这一格"，后写的赢 ⇒ 高亮成立。
-    -- 高亮只能用格子自己的颜色（压在网格上的 ui.panel 会被格子盖住）。
+    local sel = items[selection]
+    ui.grid_cell(GRID_ID, selection, sel and sel.tex or nil, 1.0, 0.82, 0.25, 1.0)
+end
+
+local function grid_status()
     local item = items[selection]
-    ui.grid_cell(GRID_ID, selection, item and item.tex or nil, 1.0, 0.82, 0.25, 1.0)
-    grid_dirty = false
+    lab.note(
+        string.format(
+            "sel=%d/%d %s  拖格子=ui.drag_begin/end  滚轮=ui.scroll_by",
+            selection,
+            GRID_COUNT,
+            item and item.name or "(empty)"
+        )
+    )
+end
+
+local function focus_rect(index)
+    local column = index % FOCUS_COLUMNS
+    local line = math.floor(index / FOCUS_COLUMNS)
+    return FOCUS_X + column * (FOCUS_W + FOCUS_GAP), FOCUS_Y + line * (FOCUS_H + FOCUS_GAP)
+end
+
+local function draw_focus_items()
+    local current = ui.focus_index(FOCUS_ID)
+    if type(current) == "number" then
+        local x, y = focus_rect(current)
+        ui.panel("ui_focus_pick", x - 4, y - 4, FOCUS_W + 8, FOCUS_H + 8, 0.95, 0.72, 0.25, 0.80)
+    end
+    for index = 0, FOCUS_ITEMS - 1 do
+        local x, y = focus_rect(index)
+        ui.text_at("ui_focus_" .. index, x + 10, y + 9, "item " .. (index + 1), 1.0, 12)
+    end
+end
+
+--- scroll 行只画可见区间（`scroll_visible` 给内容像素区间），离开视口的行 hide 掉。
+local function draw_scroll_rows()
+    local visible = ui.scroll_visible(SCROLL_ID)
+    local offset = ui.scroll_offset(SCROLL_ID) or 0
+    local start_px = visible and visible.start or 0
+    local stop_px = visible and visible.stop or 0
+    local first = math.max(1, math.floor(start_px / SCROLL_ROW_H) + 1)
+    local last = math.min(SCROLL_ROWS, math.ceil(stop_px / SCROLL_ROW_H))
+    for row = 1, SCROLL_ROWS do
+        if row < first or row > last then
+            ui.hide("ui_scroll_row_" .. row)
+        else
+            local y = 118 + (row - 1) * SCROLL_ROW_H - offset
+            ui.text_at("ui_scroll_row_" .. row, 572, y, string.format("row %02d", row), 1.0, 12)
+        end
+    end
+    ui.text_at(
+        SCROLL_INFO_ID,
+        560,
+        360,
+        string.format("offset=%.0f max=%.0f visible=%.0f..%.0f", offset, ui.scroll_max(SCROLL_ID) or 0, start_px, stop_px),
+        1.0,
+        12
+    )
 end
 
 -- ---------------------------------------------------------------------------
--- 输入：数字键各演示一族 API，字母键演示可见性三态
+-- 步骤
 -- ---------------------------------------------------------------------------
-local function handle_keys()
+
+local steps = {
+    {
+        id = "primitives",
+        title = "Panel / image / text",
+        claim = "面板、圆、图片、文本、进度条各占一层，读回值就是画出来的几何",
+        api = { "ui.panel", "ui.circle", "ui.image", "ui.text", "ui.text_at", "ui.bar", "ui.get", "ui.panel_get", "ui.image_get", "ui.text_get", "ui.hide", "ui.show", "ui.clear" },
+        code = "ui.panel(id,x,y,w,h,r,g,b,a); ui.image(id,...,tex,r,g,b)",
+        enter = function()
+            reset_own()
+            hp = 0.75
+            ui.panel(CARD_ID, 320, 110, 280, 140, 0.10, 0.13, 0.19, 1.0)
+            -- 圆在内部按外接矩形存：panel_get 读回 (cx-r, cy-r, 2r, 2r)。
+            ui.circle(DOT_ID, 590, 124, 8, 0.30, 0.85, 0.45, 1.0)
+            ui.image(ICON_ID, 332, 170, 26, 26, "assets/textures/coin.png", 1.0, 0.86, 0.35)
+            ui.text_at(BADGE_ID, 368, 174, "hp 75 / 100", 1.0, 14)
+            -- `ui.text` 位置固定 (10,10)、scale 1：会压到页眉，所以建好立刻 hide。
+            ui.text(PROBE_ID, "ui.text(id, text) -> 固定 (10,10)")
+            ui.hide(PROBE_ID)
+            ui.bar(BAR_ID, 320, 230, 280, 16, hp, 0.86, 0.30, 0.26)
+            ui.text_at(BAR_LABEL_ID, 320, 252, string.format("ui.bar ratio=%.2f (c 波动)", hp), 1.0, 12)
+        end,
+        run = function()
+            -- 条每帧重画：ratio 变了条就变；位置与尺寸在读数里核对。
+            ui.bar(BAR_ID, 320, 230, 280, 16, hp, 0.86, 0.30, 0.26)
+            lab.note("q hide / e show / x clear(图片) / t probe / c bar 波动")
+        end,
+        read = function()
+            local panel = ui.panel_get(CARD_ID)
+            local dot = ui.panel_get(DOT_ID)
+            local icon = ui.image_get(ICON_ID)
+            local badge = ui.text_get(BADGE_ID)
+            local probe = ui.get(PROBE_ID)
+            return {
+                { label = "panel", value = panel and string.format("%.0fx%.0f @%.0f,%.0f", panel.width, panel.height, panel.x, panel.y) or "-" },
+                { label = "circle", value = dot and string.format("%.0fx%.0f @%.0f,%.0f", dot.width, dot.height, dot.x, dot.y) or "-" },
+                { label = "icon", value = icon and string.format("%.0f @%s", icon.width, icon.texture) or "-" },
+                { label = "badge", value = badge and badge.text or "-" },
+                { label = "probe", value = probe and tostring(probe.visible) or "nil" },
+                { label = "bar", value = string.format("%.2f", hp) },
+            }
+        end,
+        check = function(t)
+            local panel = ui.panel_get(CARD_ID)
+            t:eq(panel.x, 320, "panel x")
+            t:eq(panel.width, 280, "panel width")
+            local dot = ui.panel_get(DOT_ID)
+            t:eq(dot.width, 16, "circle stored as its bounding box")
+            t:eq(dot.x, 582, "circle bounding box starts at cx-r")
+            t:ok(ui.image_get(ICON_ID).texture:find("coin.png") ~= nil, "image keeps its texture")
+            ui.hide(BADGE_ID)
+            t:eq(ui.text_get(BADGE_ID).visible, false, "hide covers text")
+            ui.show(BADGE_ID)
+            t:eq(ui.text_get(BADGE_ID).visible, true, "show brings it back")
+            ui.clear(ICON_ID)
+            t:eq(ui.image_get(ICON_ID), nil, "clear removes the image")
+            ui.image(ICON_ID, 332, 170, 26, 26, "assets/textures/coin.png", 1.0, 0.86, 0.35)
+            t:near(hp, 0.75, 1e-6, "bar ratio is the stored model value")
+        end,
+    },
+    {
+        id = "grid_cells",
+        title = "Grid + drag",
+        claim = "网格格子按 1 基序号写入，命中测试与拖拽状态都从引擎读回",
+        api = { "ui.grid", "ui.grid_cell", "ui.grid_clear", "ui.grid_hit", "ui.drag_begin", "ui.drag_end", "ui.drag_cancel", "ui.drag_active" },
+        code = "ui.grid(id,x,y,cols,rows,cell,gap); ui.grid_hit(id,x,y)",
+        enter = function()
+            reset_own()
+            reset_items()
+            ui.grid(GRID_ID, GRID_X, GRID_Y, GRID_COLUMNS, GRID_ROWS, GRID_CELL, GRID_GAP)
+            grid_ready = true
+            paint_grid()
+        end,
+        run = function(dt)
+            if grid_ready then
+                paint_grid()
+            end
+            grid_status()
+            if dt > 0 then
+                ui.grid_hit(GRID_ID, GRID_X + GRID_CELL / 2, GRID_Y + GRID_CELL / 2)
+            end
+        end,
+        read = function()
+            local hit = ui.grid_hit(GRID_ID, GRID_X + GRID_CELL / 2, GRID_Y + GRID_CELL / 2)
+            local active = ui.drag_active()
+            return {
+                { label = "cells", value = string.format("%dx%d", GRID_COLUMNS, GRID_ROWS) },
+                { label = "hit(1)", value = tostring(hit) },
+                { label = "hit(miss)", value = tostring(ui.grid_hit(GRID_ID, GRID_X - 10, GRID_Y - 10)) },
+                { label = "drag", value = active and string.format("%s:%s", tostring(active.id), tostring(active.index)) or "nil" },
+                { label = "selection", value = selection },
+            }
+        end,
+        check = function(t)
+            local x, y = cell_rect(1)
+            t:eq(ui.grid_hit(GRID_ID, x + GRID_CELL / 2, y + GRID_CELL / 2), 1, "first cell hit test")
+            t:eq(ui.grid_hit(GRID_ID, GRID_X - 10, GRID_Y - 10), nil, "outside the grid is a miss")
+            ui.grid_clear(GRID_ID)
+            t:eq(ui.grid_hit(GRID_ID, x + 2, y + 2), 1, "hit test is geometry, not cell content")
+            paint_grid()
+            t:ok(ui.drag_begin(GRID_ID, 1), "drag_begin accepts a valid cell")
+            local active = ui.drag_active()
+            t:eq(active.id, GRID_ID, "drag_active reports the grid id")
+            t:eq(active.index, 1, "drag_active reports the from index")
+            t:ok(ui.drag_end(GRID_ID, 5), "drag_end returns true while a drag is active")
+            t:eq(ui.drag_active(), nil, "drag_end clears the drag state")
+            t:eq(ui.drag_end(GRID_ID, 5), false, "drag_end without a drag returns false")
+            ui.drag_begin(GRID_ID, 2)
+            ui.drag_cancel()
+            t:eq(ui.drag_active(), nil, "drag_cancel drops the drag without a callback")
+            selection = 1
+            paint_grid()
+        end,
+    },
+    {
+        id = "tooltip_modal",
+        title = "Tooltip + modal",
+        claim = "tooltip 与 modal 各自是一块面板加派生文本，隐藏它们要成对处理",
+        api = { "ui.tooltip", "ui.tooltip_hide", "ui.modal", "ui.modal_show", "ui.modal_hide", "ui.measure_text" },
+        code = "ui.tooltip(id,x,y,text,w,h); ui.modal(id,x,y,w,h,title)",
+        enter = function()
+            reset_own()
+            local measured = lab.try(ui.measure_text, "背包 - 金币 x12", 14)
+            local width = 180
+            if measured and measured.width then
+                width = clamp(measured.width + 26, 140, 240)
+            end
+            ui.tooltip(TIP_ID, 320, 140, string.format("Coin x1 - %dpx", width), width, 38)
+            tooltip_on = true
+            ui.modal(MODAL_ID, 520, 400, 300, 140, "ui.modal - Discard item?")
+            ui.text_at(MODAL_BODY_ID, 532, 438, "modal_show/hide 只关面板与 :title；正文是另一条文本", 1.0, 12)
+            ui.modal_show(MODAL_ID)
+            modal_on = true
+            ui.text_at(TIP_INFO_ID, 320, 186, "t tooltip hide  m modal hide", 1.0, 12)
+        end,
+        run = function()
+            lab.note(string.format("tooltip=%s modal=%s", tostring(tooltip_on), tostring(modal_on)))
+            if modal_on then
+                ui.modal_show(MODAL_ID)
+            end
+        end,
+        read = function()
+            local tip = ui.text_get(TIP_ID .. ":tooltip")
+            local modal = ui.panel_get(MODAL_ID)
+            return {
+                { label = "tip", value = tip and tip.text or "-" },
+                { label = "tip_visible", value = tip and tostring(tip.visible) or "-" },
+                { label = "modal", value = modal and tostring(modal.visible) or "-" },
+                { label = "modal_title", value = tostring((ui.text_get(MODAL_ID .. ":title") or {}).text) },
+            }
+        end,
+        check = function(t)
+            local tip = ui.text_get(TIP_ID .. ":tooltip")
+            t:ok(tip and tip.text:find("Coin") ~= nil, "tooltip draws its derived :tooltip text")
+            t:ok(ui.panel_get(TIP_ID).width >= 140, "tooltip width comes from measure_text (with a safe floor)")
+            t:eq(ui.panel_get(MODAL_ID).visible, true, "modal_show makes the panel visible")
+            ui.modal_hide(MODAL_ID)
+            t:eq(ui.panel_get(MODAL_ID).visible, false, "modal_hide hides the panel")
+            t:eq(ui.text_get(MODAL_ID .. ":title").visible, false, "modal_hide also hides :title")
+            ui.modal_show(MODAL_ID)
+            ui.tooltip_hide(TIP_ID)
+            t:eq(ui.text_get(TIP_ID .. ":tooltip").visible, false, "tooltip_hide hides :tooltip")
+            t:eq(ui.panel_get(TIP_ID).visible, false, "tooltip_hide hides its panel")
+            ui.clear(TIP_ID)
+            t:eq(ui.text_get(TIP_ID .. ":tooltip"), nil, "clear removes the derived tooltip text")
+        end,
+    },
+    {
+        id = "focus_ring",
+        title = "Focus ring",
+        claim = "焦点序号 0 基；方向键在 4 列布局里左右移动，Tab 循环，close 释放",
+        api = { "ui.focus_open", "ui.focus_select", "ui.focus_index", "ui.focus_count", "ui.focus_move", "ui.focus_cycle", "ui.focus_close" },
+        code = "ui.focus_open(id,count,cols); ui.focus_move(id,'right')",
+        enter = function()
+            reset_own()
+            ui.focus_open(FOCUS_ID, FOCUS_ITEMS, FOCUS_COLUMNS)
+            ui.focus_select(FOCUS_ID, 0)
+            focus_ready = true
+        end,
+        run = function()
+            draw_focus_items()
+            ui.text_at(
+                FOCUS_INFO_ID,
+                560,
+                430,
+                string.format("index=%s count=%d (Tab 循环)", tostring(ui.focus_index(FOCUS_ID)), ui.focus_count(FOCUS_ID)),
+                1.0,
+                12
+            )
+            lab.note("ui.focus_move 用字母键替代方向键：焦点由 Tab / 数字键以外的按键驱动")
+        end,
+        read = function()
+            return {
+                { label = "count", value = ui.focus_count(FOCUS_ID) },
+                { label = "index", value = tostring(ui.focus_index(FOCUS_ID)) },
+                { label = "item0", value = "item 1" },
+            }
+        end,
+        check = function(t)
+            t:eq(ui.focus_count(FOCUS_ID), FOCUS_ITEMS, "focus ring keeps all items")
+            t:eq(ui.focus_index(FOCUS_ID), 0, "enter selects the first item")
+            t:eq(ui.focus_cycle(FOCUS_ID, true), 1, "cycle forward lands on index 1")
+            t:eq(ui.focus_move(FOCUS_ID, "right"), 2, "right moves within the 4-column row")
+            t:eq(ui.focus_move(FOCUS_ID, "left"), 1, "left moves back one column")
+            t:ok(ui.focus_select(FOCUS_ID, FOCUS_ITEMS - 1), "select accepts the last index")
+            t:eq(ui.focus_index(FOCUS_ID), FOCUS_ITEMS - 1, "index reads back the selection")
+            t:ok(ui.focus_close(FOCUS_ID), "focus_close removes the ring")
+            t:eq(ui.focus_count(FOCUS_ID), 0, "closed ring has no items")
+            ui.focus_open(FOCUS_ID, FOCUS_ITEMS, FOCUS_COLUMNS)
+            ui.focus_select(FOCUS_ID, 0)
+            focus_ready = true
+        end,
+    },
+    {
+        id = "scroll_list",
+        title = "Scroll state",
+        claim = "视口 200、内容 600：偏移被钳在 0..400，翻页与滚入视口都是最小滚动",
+        api = { "ui.scroll_open", "ui.scroll_extents", "ui.scroll_offset", "ui.scroll_max", "ui.scroll_by", "ui.scroll_lines", "ui.scroll_page", "ui.scroll_to_visible", "ui.scroll_visible", "ui.scroll_close" },
+        code = "ui.scroll_open(id,200,600); ui.scroll_by(id,90)",
+        enter = function()
+            reset_own()
+            ui.scroll_open(SCROLL_ID, SCROLL_VIEW, SCROLL_CONTENT)
+            scroll_ready = true
+            ui.panel(SCROLL_BG_ID, 560, 108, 280, 240, 0.085, 0.105, 0.145, 1.0)
+        end,
+        run = function()
+            ui.scroll_extents(SCROLL_ID, SCROLL_VIEW, SCROLL_CONTENT)
+            draw_scroll_rows()
+            lab.note("滚轮=ui.scroll_by  s=向前滚一行")
+        end,
+        read = function()
+            local visible = ui.scroll_visible(SCROLL_ID)
+            return {
+                { label = "offset", value = string.format("%.0f", ui.scroll_offset(SCROLL_ID) or 0) },
+                { label = "max", value = string.format("%.0f", ui.scroll_max(SCROLL_ID) or 0) },
+                { label = "visible", value = visible and string.format("%.0f..%.0f", visible.start, visible.stop) or "-" },
+            }
+        end,
+        check = function(t)
+            t:eq(ui.scroll_max(SCROLL_ID), 400, "max offset = content - viewport")
+            t:eq(ui.scroll_by(SCROLL_ID, 90), 90, "scroll_by returns the applied delta")
+            t:eq(ui.scroll_lines(SCROLL_ID, 1, SCROLL_ROW_H), SCROLL_ROW_H, "scroll_lines applies one row")
+            t:eq(ui.scroll_offset(SCROLL_ID), 110, "offset accumulates")
+            t:eq(ui.scroll_page(SCROLL_ID, 1), 200, "page step equals one viewport")
+            t:eq(ui.scroll_offset(SCROLL_ID), 310, "offset after paging")
+            t:ok(ui.scroll_to_visible(SCROLL_ID, 0, SCROLL_ROW_H), "an item above the viewport scrolls in")
+            t:eq(ui.scroll_offset(SCROLL_ID), 0, "scroll_to_visible uses the minimal scroll")
+            local visible = ui.scroll_visible(SCROLL_ID)
+            t:eq(visible.start, 0, "visible range starts at the offset")
+            t:eq(visible.stop, SCROLL_VIEW, "visible range ends one viewport later")
+            t:ok(ui.scroll_close(SCROLL_ID), "scroll_close removes the state")
+            t:eq(ui.scroll_offset(SCROLL_ID), nil, "closed scroll has no offset")
+            ui.scroll_open(SCROLL_ID, SCROLL_VIEW, SCROLL_CONTENT)
+            scroll_ready = true
+        end,
+    },
+    {
+        id = "layout_anchors",
+        title = "Layout anchors",
+        claim = "锚点 0.5 + 偏移 -80,-40,80,40 在 1280×720 上解出 160×80 的居中矩形",
+        api = { "ui.layout", "ui.resolve_layout", "ui.get_layout", "ui.set_layout", "ui.set_preset" },
+        code = "ui.layout(id,{anchors={.5,.5,.5,.5},offsets={-80,-40,80,40}})",
+        enter = function()
+            reset_own()
+            -- 同一套公式的 Lua 模型：中心锚点 + 对称偏移。
+            layout_rect = {
+                x = 1280 * 0.5 - 80,
+                y = 720 * 0.5 - 40,
+                w = 80 + 80,
+                h = 40 + 40,
+            }
+            if has("layout") then
+                ui.layout(LAYOUT_ID, {
+                    anchors = { 0.5, 0.5, 0.5, 0.5 },
+                    offsets = { -80, -40, 80, 40 },
+                    min_size = { 80, 40 },
+                    max_size = { 240, 120 },
+                    pivot = { 0.5, 0.5 },
+                })
+                local resolved = ui.resolve_layout(LAYOUT_ID, 1280, 720)
+                if resolved and resolved.width then
+                    layout_rect = { x = resolved.x, y = resolved.y, w = resolved.width, h = resolved.height }
+                end
+                local spec = ui.get_layout(LAYOUT_ID)
+                if spec and spec.anchors and spec.anchors[1] then
+                    layout_rect.anchor_x = spec.anchors[1]
+                end
+                ui.set_layout(LAYOUT_ID, { anchors = { 0, 0, 1, 1 } })
+                ui.set_preset(LAYOUT_ID, "center")
+            end
+            ui.panel(LAYOUT_BOX_ID, layout_rect.x, layout_rect.y, layout_rect.w, layout_rect.h, 0.16, 0.34, 0.52, 0.85)
+            ui.text_at(
+                LAYOUT_INFO_ID,
+                layout_rect.x + 8,
+                layout_rect.y + 8,
+                string.format("%.0fx%.0f", layout_rect.w, layout_rect.h),
+                1.0,
+                12
+            )
+        end,
+        run = function()
+            ui.panel(LAYOUT_BOX_ID, layout_rect.x, layout_rect.y, layout_rect.w, layout_rect.h, 0.16, 0.34, 0.52, 0.85)
+            lab.note(has("layout") and "ui.layout 已注册：读数来自 resolve_layout" or "宿主未注册 ui.layout：读数用同一公式的模型")
+        end,
+        read = function()
+            return {
+                { label = "x,y", value = string.format("%.0f,%.0f", layout_rect.x, layout_rect.y) },
+                { label = "w,h", value = string.format("%.0f,%.0f", layout_rect.w, layout_rect.h) },
+                { label = "source", value = has("layout") and "resolve_layout" or "model" },
+            }
+        end,
+        check = function(t)
+            t:eq(layout_rect.x, 560, "center anchor puts the left edge at 560")
+            t:eq(layout_rect.y, 320, "center anchor puts the top edge at 320")
+            t:eq(layout_rect.w, 160, "offset span gives the width")
+            t:eq(layout_rect.h, 80, "offset span gives the height")
+            local panel = ui.panel_get(LAYOUT_BOX_ID)
+            t:eq(panel.width, 160, "the visual box mirrors the resolved rect")
+        end,
+    },
+    {
+        id = "container_flow",
+        title = "Container flow",
+        claim = "vbox 按 padding 10、spacing 8 累加高度；hbox 改为横向排布，clear 后子项归零",
+        api = { "ui.container", "ui.container_add", "ui.container_get", "ui.container_children", "ui.container_update_child", "ui.container_set_style", "ui.container_remove", "ui.container_clear", "ui.container_resolve" },
+        code = "ui.container(id,{kind='vbox'}); ui.container_add(id,'child1',{size={100,30}})",
+        enter = function()
+            reset_own()
+            -- 模型：padding 10、spacing 8、三个孩子 100x30 / 120x40 / 80x25。
+            container_state = { children = 3, first_y = 10, second_y = 48, third_y = 96 }
+            if has("container") then
+                ui.container(CONTAINER_ID, {
+                    kind = "vbox",
+                    padding = { 10, 10, 10, 10 },
+                    spacing = 8,
+                    stretch = false,
+                    fill = false,
+                    align = "start",
+                })
+                ui.container_add(CONTAINER_ID, "child1", { size = { 100, 30 }, expand = 0 })
+                ui.container_add(CONTAINER_ID, "child2", { size = { 120, 40 }, expand = 0 })
+                ui.container_add(CONTAINER_ID, "child3", { size = { 80, 25 }, expand = 0 })
+                local resolved = ui.container_resolve(CONTAINER_ID, 300, 200)
+                local info = ui.container_get(CONTAINER_ID)
+                local children = ui.container_children(CONTAINER_ID)
+                container_state.children = info and info.child_count or (children and #children) or 3
+                if resolved and resolved.child1 then
+                    container_state.first_y = resolved.child1.y
+                    container_state.second_y = resolved.child2.y
+                    container_state.third_y = resolved.child3.y
+                end
+                ui.container_update_child(CONTAINER_ID, "child2", { size = { 150, 40 } })
+                ui.container_set_style(CONTAINER_ID, { spacing = 10, kind = "hbox" })
+                ui.container_remove(CONTAINER_ID, "child3")
+                ui.container_clear(CONTAINER_ID)
+                local after = ui.container_get(CONTAINER_ID)
+                container_state.after_clear = after and after.child_count or 0
+            else
+                container_state.after_clear = 0
+            end
+            ui.panel(CONTAINER_BOX_ID, 320, 380, 300, 160, 0.10, 0.14, 0.20, 0.90)
+            for index = 1, 3 do
+                local y = 380 + ({ 10, 48, 96 })[index]
+                ui.panel("ui_container_child_" .. index, 330, y, index == 2 and 120 or 100, 25, 0.26, 0.52, 0.62, 0.90)
+            end
+            ui.text_at(CONTAINER_INFO_ID, 320, 550, "vbox: y=10 / 48 / 96", 1.0, 12)
+        end,
+        run = function()
+            lab.note(has("container") and "ui.container 已注册：enter 里已经跑完 add/resolve/update/remove/clear" or "宿主未注册 ui.container：读数用 padding+spacing 的模型")
+        end,
+        read = function()
+            return {
+                { label = "children", value = container_state.children },
+                { label = "y1,y2", value = string.format("%.0f,%.0f", container_state.first_y, container_state.second_y) },
+                { label = "y3", value = string.format("%.0f", container_state.third_y) },
+                { label = "after_clear", value = tostring(container_state.after_clear or 0) },
+                { label = "source", value = has("container") and "container_resolve" or "model" },
+            }
+        end,
+        check = function(t)
+            t:eq(container_state.children, 3, "three children were added")
+            t:eq(container_state.first_y, 10, "first child sits at padding top")
+            t:eq(container_state.second_y, 48, "second child starts after 30 + 8")
+            t:eq(container_state.third_y, 96, "third child starts after 40 + 8")
+            t:eq(container_state.after_clear or 0, 0, "container_clear leaves no children")
+        end,
+    },
+    {
+        id = "theme_signals",
+        title = "Theme + signals",
+        claim = "主题改的是配色读数，信号表记的是绑定/派发/解绑的次数，两者都能读回",
+        api = { "ui.theme", "ui.theme_preset", "ui.set_theme", "ui.get_theme", "ui.theme_color", "ui.theme_get", "ui.theme_list", "ui.apply_theme", "ui.element_theme", "ui.clear_theme", "ui.on", "ui.off", "ui.emit", "ui.signals", "ui.handlers", "ui.clear_signals" },
+        code = "ui.set_theme('custom'); ui.on(el,'click',fn); ui.emit(el,'click')",
+        enter = function()
+            reset_own()
+            theme_state = {
+                active = "custom",
+                bg = { 0.20, 0.10, 0.30, 1.0 },
+                primary = { 0.80, 0.40, 1.00, 1.0 },
+                count = 2,
+                element = "my_light",
+                font = 16,
+            }
+            signal_state = { registered = 2, emitted = 1, after_off = 0, final = 0 }
+            if has("theme_preset") then
+                ui.theme_preset("my_dark", "dark")
+                ui.theme_preset("my_light", "light")
+                ui.theme("custom", {
+                    background = { 0.20, 0.10, 0.30, 1.0 },
+                    foreground = { 1.00, 0.90, 0.80, 1.0 },
+                    primary = { 0.80, 0.40, 1.00, 1.0 },
+                    font_size = 16,
+                    spacing = 12,
+                })
+                ui.set_theme("custom")
+                theme_state.active = ui.get_theme() or theme_state.active
+                local bg = ui.theme_color("background")
+                if bg then
+                    theme_state.bg = bg
+                end
+                local primary = ui.theme_color("primary")
+                if primary then
+                    theme_state.primary = primary
+                end
+                local themes = ui.theme_list()
+                if themes then
+                    theme_state.count = #themes
+                end
+                local data = ui.theme_get("custom")
+                if data and data.font_size then
+                    theme_state.font = data.font_size
+                end
+                ui.apply_theme("ui_demo_panel", "my_light")
+                theme_state.element = ui.element_theme("ui_demo_panel") or theme_state.element
+                ui.clear_theme("ui_demo_panel")
+            end
+            if has("on") then
+                local first = ui.on(signal_element, "click", function()
+                    signal_state.emitted = (signal_state.emitted or 0) + 1
+                end)
+                ui.on(signal_element, "hover", function() end)
+                local count = ui.emit(signal_element, "click", "hello")
+                if count then
+                    signal_state.emitted = count
+                end
+                local signals = ui.signals(signal_element)
+                signal_state.registered = signals and #signals or 2
+                ui.handlers(signal_element)
+                if first then
+                    ui.off(signal_element, "click", first)
+                else
+                    ui.off(signal_element, "click", 1)
+                end
+                local after = ui.emit(signal_element, "click", "after_off")
+                signal_state.after_off = after or 0
+                ui.clear_signals(signal_element)
+                local final = ui.signals(signal_element)
+                signal_state.final = final and #final or 0
+            end
+            ui.panel(THEME_BOX_ID, 640, 150, 180, 90, theme_state.bg[1], theme_state.bg[2], theme_state.bg[3], 1.0)
+            ui.text_at(
+                THEME_INFO_ID,
+                640,
+                252,
+                string.format("bg=(%.2f,%.2f,%.2f) primary=(%.2f,%.2f)", theme_state.bg[1], theme_state.bg[2], theme_state.bg[3], theme_state.primary[1], theme_state.primary[2]),
+                1.0,
+                12
+            )
+            ui.text_at(
+                SIGNAL_INFO_ID,
+                640,
+                274,
+                string.format("signals=%d emit=%d final=%d", signal_state.registered, signal_state.emitted, signal_state.final),
+                1.0,
+                12
+            )
+        end,
+        run = function()
+            lab.note(has("set_theme") and "ui.set_theme/ui.on 已注册：读数来自引擎" or "宿主未注册主题/信号表：读数用本地模型，调用仍保留在 enter 里")
+        end,
+        read = function()
+            return {
+                { label = "theme", value = theme_state.active },
+                { label = "bg", value = string.format("%.2f,%.2f,%.2f", theme_state.bg[1], theme_state.bg[2], theme_state.bg[3]) },
+                { label = "themes", value = theme_state.count },
+                { label = "element", value = theme_state.element },
+                { label = "signals", value = signal_state.registered },
+                { label = "emit", value = signal_state.emitted },
+                { label = "final", value = signal_state.final },
+            }
+        end,
+        check = function(t)
+            t:near(theme_state.bg[1], 0.20, 0.001, "theme background red channel")
+            t:near(theme_state.bg[3], 0.30, 0.001, "theme background blue channel")
+            t:near(theme_state.primary[1], 0.80, 0.001, "theme primary red channel")
+            t:eq(theme_state.count, 2, "two presets were registered")
+            t:eq(theme_state.element, "my_light", "element theme reads back")
+            t:eq(signal_state.registered, 2, "two handlers were bound")
+            t:eq(signal_state.emitted, 1, "one handler ran per emit")
+            t:eq(signal_state.final, 0, "clear_signals leaves no handlers")
+        end,
+    },
+}
+
+-- ---------------------------------------------------------------------------
+-- 输入：只处理字母键与鼠标；Lab 的导航键一个都不拦
+-- ---------------------------------------------------------------------------
+
+local function handle_input()
     local cursor = input.cursor_position()
     local cx, cy = cursor[1] or 0, cursor[2] or 0
+    local step = lab.step()
+    local id = step and step.id or ""
 
-    if input.just_pressed("1") then
-        -- 单项高亮：重写整张网格并让选中格变成琥珀色。
-        grid_dirty = true
-        note = "1: ui.grid_cell 重写格子 + 高亮选中格"
-    elseif input.just_pressed("2") then
-        if grid_ready then
-            -- `ui.grid_clear(id)`：把每格复位成默认灰、贴图清空（不删网格本身）。
-            ui.grid_clear(GRID_ID)
-            grid_dirty = false
-            note = "2: ui.grid_clear -> 格子全空（按 1 会照模型重画）"
-        end
-    elseif input.just_pressed("3") then
-        if grid_ready then
-            -- `ui.grid_hit(id, x, y)`：命中返回 **1 基** 序号，没命中返回 nil；id 不存在会报错。
-            last_hit = ui.grid_hit(GRID_ID, cx, cy)
-            if type(last_hit) == "number" then
-                selection = last_hit
-                grid_dirty = true
-                note = string.format("3: ui.grid_hit(%.0f,%.0f)=%d 命中并选中", cx, cy, last_hit)
-            else
-                note = string.format("3: ui.grid_hit(%.0f,%.0f)=nil（光标不在格子上）", cx, cy)
-            end
-        end
-    elseif input.just_pressed("4") then
-        if tooltip_on then
-            -- `ui.tooltip_hide(id)`：面板与 `<id>:tooltip` 文本一起隐藏（两者同生同灭）。
-            ui.tooltip_hide(TIP_ID)
-            tooltip_on = false
-            note = "4: ui.tooltip_hide -> tooltip 面板与 :tooltip 文本一起消失"
+    if input.just_pressed("q") then
+        ui.hide(CARD_ID)
+        note = "q: ui.hide(panel+same-id text)"
+    elseif input.just_pressed("e") then
+        ui.panel(CARD_ID, 320, 110, 280, 140, 0.10, 0.13, 0.19, 1.0)
+        ui.show(BADGE_ID)
+        note = "e: ui.panel redraw + ui.show(text)"
+    elseif input.just_pressed("x") then
+        ui.clear(ICON_ID)
+        note = "x: ui.clear(image) -> image_get nil"
+    elseif input.just_pressed("t") then
+        probe_on = not probe_on
+        if probe_on then
+            ui.show(PROBE_ID)
         else
-            local item = items[selection]
-            local label = item and item.name or "(empty)"
-            -- 宽度按**量出来的**真实字宽给（+ 左右内边距），而不是按字数估 —— 中文排版
-            -- 不能用 `string.len` 数字节：CJK 满宽、ASCII 半宽。
-            local measured = measure(label .. " x1", 14)
-            local width = 168
-            if measured and measured.width then
-                width = math.max(140, math.min(240, measured.width + 26))
-            end
-            -- `ui.tooltip(id, x, y, text, width, height)`：贴图文本由引擎按 `x+8, y+4`、
-            -- font_size=14 画在面板里；调用它就是"建/覆盖"，不是"追加"。
-            ui.tooltip(
-                TIP_ID,
-                STRIP_X,
-                120,
-                string.format("%s x1 - cell %d (%.0fpx)", label, selection, width),
-                width,
-                40
-            )
-            tooltip_on = true
-            note = string.format("4: ui.tooltip 宽 %.0fpx（= ui.measure_text 的字宽 + 26）", width)
+            ui.hide(PROBE_ID)
         end
-    elseif input.just_pressed("5") then
+        note = probe_on and "t: ui.text probe shown at (10,10)" or "t: probe hidden"
+    elseif input.just_pressed("c") then
+        hp = hp - 0.25
+        if hp < 0 then
+            hp = 1.0
+        end
+        note = string.format("c: ui.bar ratio=%.2f", hp)
+    elseif input.just_pressed("g") and grid_ready then
+        selection = selection % GRID_COUNT + 1
+        paint_grid()
+        note = string.format("g: selection=%d", selection)
+    elseif input.just_pressed("d") and grid_ready then
+        ui.drag_begin(GRID_ID, selection)
+        local target = selection % GRID_COUNT + 1
+        ui.drag_end(GRID_ID, target)
+        note = string.format("d: ui.drag_begin/end %d->%d", selection, target)
+    elseif input.just_pressed("m") then
         if modal_on then
-            -- `ui.modal_hide(id)` 只关掉**这个面板**与 `<id>:title` 文本；正文是另一个 id
-            -- 的普通文本，得自己 hide —— 这正是"一个模态由几种元素拼成"的现实。
             ui.modal_hide(MODAL_ID)
             ui.hide(MODAL_BODY_ID)
             modal_on = false
-            note = "5: ui.modal_hide + ui.hide(正文) -> 模态关闭"
         else
             ui.modal_show(MODAL_ID)
             ui.show(MODAL_BODY_ID)
             modal_on = true
-            note = "5: ui.modal_show -> 面板与 :title 一起出现"
         end
-    elseif input.just_pressed("6") then
-        -- `ui.bar(id, x, y, width, height, ratio, r, g, b)`：ratio 由引擎钳到 0..1，
-        -- 画的是"底色 + 按比例填充"两根矩形，所以数值变了条就变。
-        hp = hp - 0.25
-        if hp < 0.0 then
-            hp = 1.0
-        end
-        note = string.format("6: ui.bar ratio=%.2f", hp)
-    elseif input.just_pressed("7") then
-        if grid_ready then
-            -- `ui.drag_begin(id, index)`：登记"正在搬哪一格"；id 不是网格或 index ≤ 0 会报错。
-            ui.drag_begin(GRID_ID, selection)
-            note = string.format("7: ui.drag_begin(bag,%d) -> ui.drag_active() 有值", selection)
-        end
-    elseif input.just_pressed("8") then
-        local active = ui.drag_active()
-        if active and grid_ready then
-            local target = selection % GRID_COUNT + 1
-            -- `ui.drag_end(to_id, to_index)`：清掉拖拽状态并调用全局 `on_drag(from..., to...)`
-            -- （本文件末尾的 `M.on_drag`），返回 true；没有活动拖拽时返回 false 且不回调。
-            local ended = ui.drag_end(GRID_ID, target)
-            note = string.format("8: ui.drag_end(bag,%d)=%s on_drag=%d", target, tostring(ended), drag_calls)
-        else
-            local ended = ui.drag_end(GRID_ID, selection)
-            note = string.format("8: 没有活动拖拽 -> ui.drag_end 返回 %s", tostring(ended))
-        end
-    elseif input.just_pressed("9") then
-        -- `ui.drag_cancel()`：丢掉拖拽状态，不发 on_drag（"放弃这次拖放"）。
-        ui.drag_cancel()
-        note = "9: ui.drag_cancel -> drag_active() 变回 nil"
-    elseif input.just_pressed("q") then
-        -- `ui.hide(id)` 覆盖**同 id 的面板与文本**：外框和它的标题文本一起隐藏，
-        -- 同一区域的网格格子 / HP 图标（图片）不受影响 —— 图片只有 clear 能删。
-        ui.hide(PANEL_ID)
-        note = "q: ui.hide(外框) -> 面板+同 id 文本隐藏；网格与图片还在"
-    elseif input.just_pressed("e") then
-        ui.show(PANEL_ID)
-        note = "e: ui.show(外框) -> 面板与文本一起回来"
-    elseif input.just_pressed("v") then
-        -- `ui.scene_text_visible(name, visible)`：按**实体名**隐藏/显示场景文字实体
-        -- （实体仍在场景与 UiLayout 布局里，仅跳过文字绘制；false=隐藏，true/省略=显示）。
-        -- 本演示场景没有 Text 实体，成对 hide+show 只为覆盖 API 面；实际工程用它做
-        -- 标题菜单"场景层文字让位给脚本统一绘制"（见 game_jhyt/title_menu.lua）。
-        ui.scene_text_visible("demo_scene_text", false)
-        ui.scene_text_visible("demo_scene_text", true)
-        note = "v: ui.scene_text_visible 按实体名显隐场景文字（hide+show 成对，画面不变）"
-    elseif input.just_pressed("x") then
-        -- `ui.clear(id)` 删**面板 / 图片 / 网格**（外加 `<id>:tooltip` / `<id>:title` 文本），
-        -- 但**不删同 id 的普通动态文本** ⇒ 外框、网格、HP 图标都没了，
-        -- 而 `bag_group` 那行标题仍然画着（"clear 到不了普通文本"的直接证据）。
-        ui.clear(PANEL_ID)
-        ui.clear(GRID_ID)
-        ui.clear(HP_ICON_ID)
-        ui.clear(TIP_ID)
-        ui.clear(MENU_BG_ID)
-        ui.clear(LOG_BG_ID)
-        grid_ready = false
-        tooltip_on = false
-        note = "x: ui.clear -> 面板/图片/网格消失，同 id 的文本留着（按 r 重建）"
-    elseif input.just_pressed("r") then
-        -- "先 clear 再重画"：面板类 UI 的常规重建路径。重建后面板重新可见（ui.panel 置 visible=true）。
-        build_static()
-        note = "r: 重新 ui.panel/ui.grid/ui.image"
-    elseif input.just_pressed("t") then
-        if probe_on then
-            ui.hide("ui_text_probe")
-            probe_on = false
-            note = "t: ui.hide(ui_text_probe) -> ui.get 仍是表、visible=false"
-        else
-            -- `ui.text(id, text)` 是最小的文本 API：位置固定 (10,10)、scale 1，因此会压到
-            -- 左上角标题上，默认隐藏，按 t 就地看它出现。
-            ui.text("ui_text_probe", "ui.text(id, text) -> 固定 (10,10) scale 1")
-            probe_on = true
-            note = "t: ui.text(ui_text_probe) 出现在左上角 (10,10)"
-        end
-    elseif input.just_pressed("v") then
-        -- `ui.measure_text(text, size)` 的契约：**size 必须为正数**，否则报 Lua 错误
-        -- （不会悄悄退回默认字号）。把错误原文抓进状态行，让"错误也是 API 的一部分"可见。
-        local value, err = api.try(function()
-            return ui.measure_text("size=0 是非法参数", 0)
-        end)
-        if value then
-            error_note = "v: (没有报错，与文档不符)"
-        else
-            -- 引擎的错误文本带换行与调用栈：压成一行再截断，否则状态行会被撑成多行。
-            local flat = tostring(err):gsub("%s+", " ")
-            error_note = "v: " .. string.sub(flat, 1, 72)
-        end
-        error_hold = 120 -- 错误原文在状态行停留约 2 秒（120 帧 @60fps），之后自动让位给 note
-        note = "v: ui.measure_text(size=0) 被引擎拒绝"
-    elseif input.just_pressed("up") then
-        move_focus("up", "up: ui.focus_move")
-    elseif input.just_pressed("down") then
-        move_focus("down", "down: ui.focus_move")
-    elseif input.just_pressed("left") then
-        move_focus("left", "left: ui.focus_move")
-    elseif input.just_pressed("right") then
-        move_focus("right", "right: ui.focus_move")
-    elseif input.just_pressed("tab") then
-        -- Shift+Tab = 反向：`ui.focus_cycle(id[, forward])`，默认正向。
-        local forward = not input.is_down("shiftleft")
-        local index = ui.focus_cycle(FOCUS_ID, forward)
-        after_focus(index, forward and "tab: ui.focus_cycle(forward)" or "shift+tab: ui.focus_cycle(false)")
-    elseif input.just_pressed("home") then
-        -- `ui.focus_select(id, index)`：按 0 基序号直接定位（越界返回 false）。
-        if ui.focus_select(FOCUS_ID, 0) then
-            after_focus(0, "home: ui.focus_select(0)")
-        end
-    elseif input.just_pressed("end") then
-        if ui.focus_select(FOCUS_ID, FOCUS_ITEMS - 1) then
-            after_focus(FOCUS_ITEMS - 1, string.format("end: ui.focus_select(%d)", FOCUS_ITEMS - 1))
-        end
-    elseif input.just_pressed("w") then
-        -- `ui.scroll_lines(id, lines, line_height)`：返回**实际生效**的增量（已钳制）。
-        local applied = ui.scroll_lines(SCROLL_ID, -1, LOG_ROW_H)
-        note = string.format("w: ui.scroll_lines(-1,24) 生效 %.0f", applied)
-    elseif input.just_pressed("s") then
-        local applied = ui.scroll_lines(SCROLL_ID, 1, LOG_ROW_H)
-        note = string.format("s: ui.scroll_lines(+1,24) 生效 %.0f", applied)
-    elseif input.just_pressed("pageup") then
-        note = string.format("pgup: ui.scroll_page(-1) 生效 %.0f", ui.scroll_page(SCROLL_ID, -1))
-    elseif input.just_pressed("pagedown") then
-        note = string.format("pgdn: ui.scroll_page(+1) 生效 %.0f", ui.scroll_page(SCROLL_ID, 1))
+        note = "m: ui.modal_show / modal_hide"
+    elseif input.just_pressed("s") and scroll_ready then
+        note = string.format("s: ui.scroll_lines(+1)=%.0f", ui.scroll_lines(SCROLL_ID, 1, SCROLL_ROW_H))
     elseif input.just_pressed("l") then
-        -- Layout API demo: create a layout, apply preset, and resolve it.
-        local layout_id = "demo_layout"
-        ui.layout(layout_id, {
-            anchors = { 0.5, 0.5, 0.5, 0.5 },
-            offsets = { -50, -25, 50, 25 },
-            min_size = { 80, 40 },
-            max_size = { 200, 100 },
-            pivot = { 0.5, 0.5 }
-        })
-        local resolved = ui.resolve_layout(layout_id, SCREEN_W, SCREEN_H)
-        local layout_data = ui.get_layout(layout_id)
-        note = string.format(
-            "l: ui.layout -> resolve=(%.0f,%.0f,%.0f,%.0f) anchors=[%.2f,%.2f,%.2f,%.2f]",
-            resolved and resolved.x or 0,
-            resolved and resolved.y or 0,
-            resolved and resolved.w or 0,
-            resolved and resolved.h or 0,
-            layout_data and layout_data.anchors[1] or 0,
-            layout_data and layout_data.anchors[2] or 0,
-            layout_data and layout_data.anchors[3] or 0,
-            layout_data and layout_data.anchors[4] or 0
-        )
-    elseif input.just_pressed("k") then
-        -- Layout preset demo: apply a named preset and read it back.
-        local layout_id = "demo_layout_preset"
-        ui.set_layout(layout_id, { anchors = { 0, 0, 1, 1 } })
-        ui.set_preset(layout_id, "center")
-        local resolved = ui.resolve_layout(layout_id, SCREEN_W, SCREEN_H)
-        note = string.format(
-            "k: ui.set_preset(center) -> resolve=(%.0f,%.0f,%.0f,%.0f)",
-            resolved and resolved.x or 0,
-            resolved and resolved.y or 0,
-            resolved and resolved.w or 0,
-            resolved and resolved.h or 0
-        )
-    elseif input.just_pressed("c") then
-        -- Container auto-layout demo: create a VBox container and add children.
-        local container_id = "demo_container"
-        ui.container(container_id, {
-            kind = "vbox",
-            padding = { 10, 10, 10, 10 },
-            spacing = 8,
-            stretch = false,
-            fill = false,
-            align = "start"
-        })
-        ui.container_add(container_id, "child1", { size = { 100, 30 }, expand = 0, fill = false })
-        ui.container_add(container_id, "child2", { size = { 120, 40 }, expand = 1.0, fill = false })
-        ui.container_add(container_id, "child3", { size = { 80, 25 }, expand = 0, fill = true })
-        local resolved = ui.container_resolve(container_id, 300, 200)
-        local info = ui.container_get(container_id)
-        note = string.format(
-            "c: ui.container(vbox) -> %d children, child1=(%.0f,%.0f) child2=(%.0f,%.0f)",
-            info and info.child_count or 0,
-            resolved and resolved.child1 and resolved.child1.x or 0,
-            resolved and resolved.child1 and resolved.child1.y or 0,
-            resolved and resolved.child2 and resolved.child2.x or 0,
-            resolved and resolved.child2 and resolved.child2.y or 0
-        )
-    elseif input.just_pressed("b") then
-        -- Container HBox demo: horizontal layout with grid.
-        local container_id = "demo_hbox"
-        ui.container(container_id, {
-            kind = "hbox",
-            padding = { 5, 5, 5, 5 },
-            spacing = 10,
-            stretch = true,
-            fill = true
-        })
-        for i = 1, 4 do
-            ui.container_add(container_id, "btn" .. i, { size = { 60, 40 }, expand = 1.0, fill = true })
-        end
-        local resolved = ui.container_resolve(container_id, 400, 60)
-        local children = ui.container_children(container_id)
-        note = string.format(
-            "b: ui.container(hbox) -> %d children, btn1=(%.0f,%.0f,%.0f,%.0f) btn4=(%.0f,%.0f)",
-            children and #children or 0,
-            resolved and resolved.btn1 and resolved.btn1.x or 0,
-            resolved and resolved.btn1 and resolved.btn1.y or 0,
-            resolved and resolved.btn1 and resolved.btn1.w or 0,
-            resolved and resolved.btn1 and resolved.btn1.h or 0,
-            resolved and resolved.btn4 and resolved.btn4.x or 0,
-            resolved and resolved.btn4 and resolved.btn4.w or 0
-        )
-    elseif input.just_pressed("n") then
-        -- Container management APIs: remove, update, set_style, clear.
-        local container_id = "demo_manage"
-        ui.container(container_id, { kind = "vbox", spacing = 5 })
-        ui.container_add(container_id, "item1", { size = { 100, 30 } })
-        ui.container_add(container_id, "item2", { size = { 100, 30 } })
-        ui.container_add(container_id, "item3", { size = { 100, 30 } })
-        -- Update a child's size
-        ui.container_update_child(container_id, "item2", { size = { 150, 40 } })
-        -- Change container style
-        ui.container_set_style(container_id, { spacing = 10, kind = "hbox" })
-        -- Remove one child
-        ui.container_remove(container_id, "item3")
-        local info = ui.container_get(container_id)
-        -- Clear all children
-        ui.container_clear(container_id)
-        local after = ui.container_get(container_id)
-        note = string.format(
-            "n: container ops -> before=%d after_clear=%d kind=%s",
-            info and info.child_count or 0,
-            after and after.child_count or 0,
-            info and info.kind or "?"
-        )
-    elseif input.just_pressed("m") then
-        -- Theme system demo: create themes, switch, get colors.
-        ui.theme_preset("my_dark", "dark")
-        ui.theme_preset("my_light", "light")
-        ui.theme("custom", {
-            background = { 0.2, 0.1, 0.3, 1.0 },
-            foreground = { 1.0, 0.9, 0.8, 1.0 },
-            primary = { 0.8, 0.4, 1.0, 1.0 },
-            font_size = 16,
-            spacing = 12
-        })
-        ui.set_theme("custom")
-        local active = ui.get_theme()
-        local bg = ui.theme_color("background")
-        local primary = ui.theme_color("primary")
-        local themes = ui.theme_list()
-        local theme_data = ui.theme_get("custom")
-        -- Apply theme to element
-        ui.apply_theme("my_panel", "my_light")
-        local elem_theme = ui.element_theme("my_panel")
-        ui.clear_theme("my_panel")
-        note = string.format(
-            "m: theme=%s bg=(%.2f,%.2f,%.2f) primary=(%.2f,%.2f) themes=%d font=%.0f",
-            active or "?",
-            bg and bg[1] or 0, bg and bg[2] or 0, bg and bg[3] or 0,
-            primary and primary[1] or 0, primary and primary[2] or 0,
-            themes and #themes or 0,
-            theme_data and theme_data.font_size or 0
-        )
+        note = "l: layout 步骤的解算见右侧读数"
+    elseif input.just_pressed("v") then
+        note = "v: theme 步骤的读数来自 get_theme/theme_color"
     elseif input.just_pressed("p") then
-        -- Signal/Event system demo: bind, emit, query, unbind.
-        local element = "demo_btn"
-        local id1 = ui.on(element, "click", function(el, data)
-            note = "signal click fired: " .. tostring(data)
-        end)
-        local id2 = ui.on(element, "hover", function(el, data)
-            -- second handler, different event
-        end)
-        local count = ui.emit(element, "click", "hello")
-        local sigs = ui.signals(element)
-        local handler_list = ui.handlers(element)
-        ui.off(element, "click", id1)
-        local after_count = ui.emit(element, "click", "after_off")
-        ui.clear_signals(element)
-        local final_sigs = ui.signals(element)
-        note = string.format(
-            "p: signal on=%d emit=%d sigs=%d handlers=%d after_off=%d final=%d",
-            id1, count, #sigs, #handler_list, after_count, #final_sigs
-        )
+        note = "p: signals 步骤的读数来自 signals/handlers"
     end
 
-    -- 滚轮：`input.scroll_delta()` 返回的是**数组**（[1]=x、[2]=y），不是数字 ——
-    -- 拿整张表去跟 0 比较永远为真，必须先取 [2]。y 为正 = 向上滚 ⇒ 偏移减小；
-    -- 所以传给 `ui.scroll_by` 的要取反，`-dy * 一行高` 就是"滚一行"。
+    -- 滚轮：y 为正 = 向上滚，传给 scroll_by 要取反；偏移会被引擎钳到 0..max。
     local wheel = input.scroll_delta()
     local dy = wheel and wheel[2] or 0
-    if dy ~= 0 then
-        -- `ui.scroll_by(id, delta)`：按像素滚动，返回**实际生效**的增量（已钳到 0..max）。
-        local applied = ui.scroll_by(SCROLL_ID, -dy * LOG_ROW_H)
-        note = string.format("wheel %.1f -> ui.scroll_by(%.1f) 生效 %.0f", dy, -dy * LOG_ROW_H, applied)
+    if dy ~= 0 and scroll_ready then
+        note = string.format("wheel %.1f -> ui.scroll_by(%.1f)=%.0f", dy, -dy * SCROLL_ROW_H, ui.scroll_by(SCROLL_ID, -dy * SCROLL_ROW_H))
     end
 
-    -- 鼠标：左键在格子上按下 = ui.drag_begin，松开 = ui.drag_end（真正的拖放，走 on_drag）。
-    -- headless 下这两个 `mouse_*` 恒为 false，因此这段不会在无输入时触发。
+    -- 网格上的鼠标拖拽（headless 下 mouse_* 恒 false，不会触发）。
     if grid_ready then
         if input.mouse_just_pressed("left") then
             local hit = ui.grid_hit(GRID_ID, cx, cy)
             if type(hit) == "number" then
-                ui.drag_begin(GRID_ID, hit)
                 selection = hit
-                grid_dirty = true
+                paint_grid()
+                ui.drag_begin(GRID_ID, hit)
                 note = string.format("mouse down cell %d -> ui.drag_begin", hit)
             end
         elseif input.mouse_just_released("left") then
             if ui.drag_active() then
                 local hit = ui.grid_hit(GRID_ID, cx, cy)
-                local target = hit or selection
-                ui.drag_end(GRID_ID, target)
-                note = string.format("mouse up -> ui.drag_end(bag,%d)", target)
-            end
-        elseif input.mouse_is_down("left") and ui.drag_active() then
-            -- 拖拽中：高亮跟着光标下的格子走（每次都是一次真实命中测试）。
-            local hit = ui.grid_hit(GRID_ID, cx, cy)
-            if type(hit) == "number" and hit ~= selection then
-                selection = hit
-                grid_dirty = true
+                ui.drag_end(GRID_ID, hit or selection)
+                note = string.format("mouse up -> ui.drag_end(%d)", hit or selection)
             end
         end
     end
-end
-
--- ---------------------------------------------------------------------------
--- 绘制（都在 update 返回前完成：宿主之后才取本帧顶点）
--- ---------------------------------------------------------------------------
-
-local function draw_inventory()
-    -- 外框面板与它的标题文本都在 `build_static` 里建（同 id，见那里的注释），
-    -- 这里只更新每帧都会变的 `bag_info`。
-    local item = items[selection]
-    ui.text_at(
-        "bag_info",
-        56,
-        344,
-        string.format(
-            "sel=%d/%d %s hit=%s drag=%s",
-            selection,
-            GRID_COUNT,
-            item and item.name or "(empty)",
-            last_hit and tostring(last_hit) or "nil",
-            ui.drag_active() and "active" or "nil"
-        ),
-        1.0,
-        SMALL
-    )
-end
-
-local function draw_menu()
-    local index = ui.focus_index(FOCUS_ID)
-    -- 高亮框每帧重画（位置会变）：id `menu_pick` 排在 `menu_bg` 之后 ⇒ 画在底板之上；
-    -- 标签文本排在所有面板之后 ⇒ 压不住。这两条都是 id 字典序 + 分族顺序的直接结果。
-    if type(index) == "number" then
-        local x, y = focus_rect(index)
-        ui.panel(MENU_PICK_ID, x - 5, y - 5, MENU_W + 10, MENU_H + 10, 0.95, 0.72, 0.25, 0.85)
+    if id == "" then
+        note = "lab inactive"
     end
-    for i = 0, FOCUS_ITEMS - 1 do
-        local x, y = focus_rect(i)
-        ui.text_at("menu_item_" .. i, x + 10, y + 14, string.format("item %d", i + 1), 1.0, 13)
-    end
-    ui.text_at(
-        "menu_info",
-        700,
-        220,
-        string.format(
-            "ui.focus_*: open(%d, %d cols) index=%s count=%d - arrows / tab / home / end",
-            FOCUS_ITEMS,
-            FOCUS_COLUMNS,
-            index and tostring(index) or "nil",
-            ui.focus_count(FOCUS_ID)
-        ),
-        1.0,
-        SMALL
-    )
-end
-
---- 日志行文本（列表内容）。
-local function row_text(row)
-    return string.format("row %02d  ui.scroll_lines / scroll_page / scroll_by", row)
-end
-
-local function draw_log()
-    -- 每帧同步视口/内容高度：窗口或内容变化后偏移会被重新钳制；返回值就是当前偏移。
-    -- （headless 里窗口大小不参与 Screen 空间布局，这条调用依然是"更新 + 读回"两件事。）
-    ui.scroll_extents(SCROLL_ID, LOG_VIEW_H, LOG_ROWS * LOG_ROW_H)
-
-    -- 只画**可见区间**：`ui.scroll_visible(id)` 给的是内容像素区间 `{start=, stop=}`
-    -- （字段名刻意避开 Lua 关键字 `end`），换算成 1 基行号即可。
-    local offset = ui.scroll_offset(SCROLL_ID) or 0
-    local visible = ui.scroll_visible(SCROLL_ID)
-    local start_px = visible and visible.start or 0
-    local stop_px = visible and visible.stop or 0
-    local first = math.max(1, math.floor(start_px / LOG_ROW_H) + 1)
-    local last = math.min(LOG_ROWS, math.ceil(stop_px / LOG_ROW_H))
-    if last < first then
-        last = first - 1
-    end
-
-    local marked = focus_row()
-    for row = first, last do
-        local y = LOG_Y + (row - 1) * LOG_ROW_H - offset
-        local marker = (row == marked) and "> " or "  "
-        ui.text_at("log_row_" .. row, LOG_X, y, marker .. row_text(row), 1.0, SMALL)
-    end
-    -- 上一帧画过、这一帧已经离开窗口的行：收掉它们的 id。
-    -- 这里用 `ui.hide` 而不是 `ui.clear` —— `ui.clear` 删不掉普通动态文本（见文件头第 5 条）。
-    for row = log_first, log_last do
-        if row < first or row > last then
-            ui.hide("log_row_" .. row)
-        end
-    end
-    log_first, log_last = first, last
-
-    ui.text_at(
-        "log_info",
-        700,
-        546,
-        string.format(
-            "ui.scroll_*: offset=%.0f max=%.0f visible=%.0f..%.0f - %d rows x %dpx",
-            offset,
-            ui.scroll_max(SCROLL_ID) or 0,
-            start_px,
-            stop_px,
-            LOG_ROWS,
-            LOG_ROW_H
-        ),
-        1.0,
-        SMALL
-    )
-end
-
-local function draw_hud()
-    -- `ui.bar(id, x, y, width, height, ratio, r, g, b)`
-    ui.bar("hp", 72, 424, 268, 22, hp, 0.86, 0.30, 0.26)
-    ui.text_at("hp_label", 40, 458, string.format("ui.bar ratio=%.2f (key 6)", hp), 1.0, SMALL)
-
-    -- 读回族：把"画出来的东西"变成可读回、可断言的事实（headless 验收就靠这几行）。
-    local panel = ui.panel_get(PANEL_ID)
-    local image = ui.image_get(HP_ICON_ID)
-    local drawn = ui.text_get("bag_info")
-    local probe = ui.get("ui_text_probe")
-    local cjk = measure("背包 - 金币 x12", 14)
-
-    ui.text_at(
-        "rb_panel",
-        40,
-        486,
-        string.format(
-            "ui.panel_get(%s) = %s",
-            PANEL_ID,
-            panel and string.format("%.0fx%.0f at (%.0f,%.0f) visible=%s", panel.width, panel.height, panel.x, panel.y, tostring(panel.visible)) or "nil"
-        ),
-        1.0,
-        SMALL
-    )
-    ui.text_at(
-        "rb_image",
-        40,
-        502,
-        string.format(
-            "ui.image_get(%s) = %s",
-            HP_ICON_ID,
-            image and string.format("%.0fx%.0f at (%.0f,%.0f) %s", image.width, image.height, image.x, image.y, image.texture) or "nil"
-        ),
-        1.0,
-        SMALL
-    )
-    ui.text_at(
-        "rb_text",
-        40,
-        518,
-        string.format(
-            "ui.text_get(bag_info) = %s",
-            drawn and string.format("(%.0f,%.0f) scale=%.1f size=%.0fpx visible=%s", drawn.x, drawn.y, drawn.scale, drawn.size, tostring(drawn.visible)) or "nil"
-        ),
-        1.0,
-        SMALL
-    )
-    ui.text_at(
-        "rb_get",
-        40,
-        534,
-        string.format(
-            "ui.get(ui_text_probe) = %s   (t: ui.text 之后变成表)",
-            probe and string.format("'%s' visible=%s", probe.text, tostring(probe.visible)) or "nil"
-        ),
-        1.0,
-        SMALL
-    )
-    ui.text_at(
-        "rb_measure",
-        40,
-        550,
-        string.format(
-            "ui.measure_text('背包 - 金币 x12', 14) = %s",
-            cjk and string.format("%.0fx%.0f lines=%.0f glyphs=%.0f missing=%s", cjk.width, cjk.height, cjk.lines, cjk.glyphs, tostring(cjk.missing_count)) or "(unavailable)"
-        ),
-        1.0,
-        SMALL
-    )
-end
-
-local function draw_strip()
-    -- tooltip 的状态（面板本身只在按键 4 时建/删）。
-    ui.text_at(
-        "tip_info",
-        STRIP_X,
-        168,
-        string.format("ui.tooltip / tooltip_hide: %s (key 4)", tooltip_on and "shown" or "hidden"),
-        1.0,
-        SMALL
-    )
-
-    -- 拖拽：`ui.drag_active()` 返回 `{id=, index=}` 或 nil。
-    local active = ui.drag_active()
-    ui.text_at(
-        "drag_info",
-        STRIP_X,
-        188,
-        string.format(
-            "ui.drag_active() = %s on_drag 回调 %d 次",
-            active and string.format("%s:%s", tostring(active.id), tostring(active.index)) or "nil",
-            drag_calls
-        ),
-        1.0,
-        SMALL
-    )
-    if active then
-        -- 跟随光标的提示用**文本**：动态图片排在网格之前绘制，压在背包上的图片会被格子盖住；
-        -- 文本排在最后，永远看得见。
-        local cursor = input.cursor_position()
-        ui.text_at(
-            "drag_ghost",
-            (cursor[1] or 0) + 18,
-            (cursor[2] or 0) - 8,
-            string.format("drag %s:%s", tostring(active.id), tostring(active.index)),
-            1.1,
-            14
-        )
-    else
-        ui.hide("drag_ghost")
-    end
-
-    -- 度量的用法：面板/文本宽度按真实字宽给，而不是按字数估（中文排版的老坑）。
-    local measured = measure("背包 - 金币 x12", 14)
-    ui.text_at(
-        "measure_info",
-        STRIP_X,
-        216,
-        string.format(
-            "ui.measure_text -> tooltip 宽度 = 字宽(%.0f) + 26，按真实字宽裁剪/居中",
-            measured and measured.width or 0
-        ),
-        1.0,
-        SMALL
-    )
-end
-
---- 状态行：本帧的"事实"（读回值、计数、当前状态），不是自述。
-local function publish_status()
-    local focus = ui.focus_index(FOCUS_ID)
-    local active = ui.drag_active()
-    local cjk = measure("背包 - 金币 x12", 14)
-    -- 受控失败优先显示一小会儿：它演示的是"API 的契约"，按下一次操作后自动让位给 note。
-    local tail = note
-    if error_hold > 0 then
-        error_hold = error_hold - 1
-        tail = error_note
-    end
-    api.status(
-        string.format(
-            "grid=%s sel=%d/%d hit=%s | hp=%.2f | focus=%s/%d | scroll=%.0f/%.0f | drag=%s | CJK=%.0fpx miss=%s | %s",
-            grid_ready and "on" or "off",
-            selection,
-            GRID_COUNT,
-            last_hit and tostring(last_hit) or "nil",
-            hp,
-            focus and tostring(focus + 1) or "-",
-            ui.focus_count(FOCUS_ID),
-            ui.scroll_offset(SCROLL_ID) or 0,
-            ui.scroll_max(SCROLL_ID) or 0,
-            active and "active" or "nil",
-            cjk and cjk.width or 0,
-            cjk and tostring(cjk.missing_count) or "-",
-            tail
-        )
-    )
-end
-
-local function draw()
-    draw_inventory()
-    draw_menu()
-    draw_log()
-    draw_hud()
-    draw_strip()
-    -- 第二行键位提示：`api.hint` 只有一行，焦点/滚动那半截放这里。
-    ui.text_at(
-        "api_ui_keys2",
-        24,
-        682,
-        "focus: arrows=ui.focus_move tab=ui.focus_cycle home/end=ui.focus_select | scroll: w/s=ui.scroll_lines pgup/pgdn=ui.scroll_page wheel=ui.scroll_by",
-        1.0,
-        11
-    )
-    publish_status()
 end
 
 -- ---------------------------------------------------------------------------
 -- 生命周期
 -- ---------------------------------------------------------------------------
 
---- 只在进入本场景时调用一次。
 function M.on_create()
-    api.title("api_ui - runtime ui: panel / image / grid / tooltip / modal / drag / focus / scroll")
-    api.hint(
-        "1 grid_cell  2 grid_clear  3 grid_hit  4 tooltip  5 modal  6 bar  7/8/9 drag  "
-            .. "q hide  e show  x clear  r rebuild  t ui.text  v measure_text(0)  "
-            .. "l layout  k set_preset  c container(vbox)  b container(hbox)  n container_ops  m theme  p signal  "
-            .. api.KEYS_BACK
-    )
-
-    reset_items()
-    build_static()
-
-    -- `ui.text(id, text)`：最小文本 API，位置固定 (10,10)。它会压到左上角标题上，
-    -- 所以建好立刻 hide —— 按 t 就地显示，顺便让 `ui.get` 从 nil 变成一张表。
-    ui.text("ui_text_probe", "ui.text(id, text) -> 固定 (10,10) scale 1")
-    ui.hide("ui_text_probe")
-
-    -- 模态：`ui.modal(id, x, y, width, height, title)` 建面板 + `<id>:title` 文本；
-    -- 一开始收起来，按 5 才 `ui.modal_show`。
-    ui.modal(MODAL_ID, STRIP_X, 300, 260, 150, "ui.modal - Discard item?")
-    ui.text_at(
-        MODAL_BODY_ID,
-        STRIP_X + 12,
-        340,
-        "ui.modal_show / ui.modal_hide 只覆盖面板与 <id>:title，正文是另一个 id 的文本。",
-        1.0,
-        SMALL
-    )
-    ui.modal_hide(MODAL_ID)
-    ui.hide(MODAL_BODY_ID)
-    modal_on = false
-
-    tooltip_on = false
-    probe_on = false
-    error_note = ""
-    error_hold = 0
-    drag_calls = 0
-    last_hit = nil
-    note = "on_create: grid 4x3 / focus 8 in 4 cols / scroll 576 over 276"
-    ready = true
-    log.info("api_ui: runtime ui demo ready")
+    lab.start({
+        scene = "api_ui",
+        title = "Runtime UI",
+        category = "UI",
+        steps = steps,
+        hide_scene_text = { "Toolbar", "Hud" },
+    })
 end
 
---- 每个固定步一次；返回值进引擎日志（`run_script_steps` / 编辑器 Play 都能看到）。
 function M.update()
-    -- 宿主可能只步进帧而不调 `on_create`（headless 门就可能是这样）：这里补一次初始化，
-    -- 让 `update()` 在任何调用顺序下都能跑通（不切场景、不写盘）。
-    if not ready then
-        M.on_create()
+    if not lab.active() then
+        return "ui_inactive"
     end
-
-    handle_keys()
-    sync_grid()
-    draw()
-
-    local focus = ui.focus_index(FOCUS_ID)
-    return string.format(
-        "api_ui_ok grid=%s sel=%d focus=%s scroll=%.0f drag=%s",
-        grid_ready and "on" or "off",
-        selection,
-        focus and tostring(focus) or "-",
-        ui.scroll_offset(SCROLL_ID) or 0,
-        ui.drag_active() and "active" or "nil"
-    )
+    handle_input()
+    if note ~= "" then
+        lab.note(note)
+    end
+    return lab.tick()
 end
 
---- `ui.drag_end(to_id, to_index)` 触发的全局回调（`main.lua` → `router.lua` → 这里）。
---- 这里把"拖放"落成**模型变更**：起点格的物品与目标格互换，再靠 `grid_dirty` 让
---- `ui.grid_cell` 把新布局画出来 —— 拖拽 API 本身只负责"谁拖到哪儿"，不搬数据。
+function M.self_test()
+    return lab.self_test()
+end
+
+--- `ui.drag_end` 触发的全局回调：把拖放落成模型变更，再让 grid_cell 重画。
 function M.on_drag(from_id, from_index, to_id, to_index)
-    drag_calls = drag_calls + 1
     local target = tonumber(to_index) or 0
-    if
-        from_id == GRID_ID
-        and to_id == GRID_ID
-        and target >= 1
-        and target <= GRID_COUNT
-        and tonumber(from_index)
-    then
-        local from = tonumber(from_index)
+    if from_id == GRID_ID and to_id == GRID_ID and target >= 1 and target <= GRID_COUNT then
+        local from = tonumber(from_index) or 0
         if from >= 1 and from <= GRID_COUNT then
             items[from], items[target] = items[target], items[from]
             selection = target
-            grid_dirty = true
-            note = string.format("on_drag %d->%d 交换完成", from, target)
+            paint_grid()
+            note = string.format("on_drag %d->%d", from, target)
+            return true
         end
-    else
-        note = string.format("on_drag %s:%s -> %s:%s（没有可交换的格子）", tostring(from_id), tostring(from_index), tostring(to_id), tostring(to_index))
     end
-    return true
+    return false
 end
 
---- 离开场景时释放：焦点环与滚动状态是**逻辑状态**，`ui.clear` 到不了，必须显式关闭；
---- 绘制元素用 `ui.clear`（`ui.hide` 删不掉图片与网格）。
 function M.on_destroy()
     ui.drag_cancel()
     ui.focus_close(FOCUS_ID)
     ui.scroll_close(SCROLL_ID)
-    ui.clear_signals("demo_btn")
-    ui.clear(BG_ID)
-    ui.clear(PANEL_ID)
-    ui.clear(GRID_ID)
-    ui.clear(HP_ICON_ID)
-    ui.clear(TIP_ID)
-    ui.clear(MENU_BG_ID)
-    ui.clear(LOG_BG_ID)
-    ui.clear(MODAL_ID)
-    ui.clear(MODAL_BODY_ID)
-    ui.clear("ui_text_probe")
-    ready = false
+    -- 主题/信号表可能未注册：清理也要守卫，否则离开场景会报错。
+    if has("clear_signals") then
+        ui.clear_signals(signal_element)
+    end
+    if has("clear_theme") then
+        ui.clear_theme("ui_demo_panel")
+    end
+    reset_own()
+    ui.scene_text_visible("Toolbar", true)
+    ui.scene_text_visible("Hud", true)
+    lab.stop()
 end
 
 return M

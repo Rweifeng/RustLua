@@ -40,7 +40,7 @@ impl EditorApp {
             painter.text(
                 rect.left_bottom() + egui::vec2(12.0, -12.0),
                 egui::Align2::LEFT_BOTTOM,
-                "TilePaint 暂不支持旋转 Tilemap",
+                "瓦片画笔暂不支持旋转的瓦片地图",
                 egui::FontId::proportional(13.0),
                 egui::Color32::LIGHT_RED,
             );
@@ -312,7 +312,7 @@ impl EditorApp {
     /// M19-03：把剪贴板区域粘贴到指定格（越界裁剪），单条 Undo。
     pub(crate) fn paste_tilemap_region(&mut self, entity_id: SceneEntityId, cell: (usize, usize)) {
         let Some(region) = self.tilemap.clipboard.clone() else {
-            self.status = "Tile 剪贴板为空：先用「区域复制」框选".to_owned();
+            self.status = "瓦片剪贴板为空：先用「区域复制」框选".to_owned();
             return;
         };
         let changed = paste_region(
@@ -331,7 +331,7 @@ impl EditorApp {
             return;
         }
         self.status = format!("粘贴 {} 到 ({}, {})", region.label(), cell.0, cell.1);
-        self.commit_tilemap_paint_labelled(entity_id, &format!("Tilemap 粘贴 {}", region.label()));
+        self.commit_tilemap_paint_labelled(entity_id, &format!("瓦片地图粘贴 {}", region.label()));
     }
 
     pub(crate) fn apply_tile_paint_cell(&mut self, x: usize, y: usize, erase: bool) {
@@ -348,7 +348,7 @@ impl EditorApp {
     }
 
     pub(crate) fn commit_tilemap_paint(&mut self, entity_id: SceneEntityId) {
-        self.commit_tilemap_paint_labelled(entity_id, "Tilemap Paint");
+        self.commit_tilemap_paint_labelled(entity_id, "瓦片绘制");
     }
 
     // `commit_tilemap_paint_labelled` **已搬到 shell**（`crate::scene_ops`，第 29 轮）：

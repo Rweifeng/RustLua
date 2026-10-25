@@ -230,7 +230,10 @@ impl EditorApp {
             if current_component != Some(row.component) {
                 current_component = Some(row.component);
                 ui.add_space(2.0);
-                ui.label(format!("▸ {}", row.component));
+                ui.label(format!(
+                    "▸ {}",
+                    crate::util::component_display_name(row.component)
+                ));
                 // 编辑器态开关（不写文档）：如 Transform/Transform3D 的"锁定比例"。
                 let mut open_toggles = Vec::new();
                 for toggle in editor::component_toggles(row.component) {
@@ -664,10 +667,7 @@ impl EditorApp {
             if let Some((_, drop)) =
                 self.claim_external_drop(crate::dnd::DropZone::InspectorField, row_rect)
             {
-                self.status = format!(
-                    "Play mode locks scene editing; click Stop first{}",
-                    drop.notes()
-                );
+                self.status = format!("播放模式下不能编辑场景，请先点击停止{}", drop.notes());
             }
             return None;
         }

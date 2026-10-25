@@ -1,55 +1,41 @@
--- ui_test：**场景 UI 组件**与 `UiEvents` 点击事件的演示（运行时动态 `ui.*` 那一组在 api_ui 场景）。
+-- ui_test：**场景 UI 组件**的运行时读回与交互（运行时动态 `ui.*` 的深入演示在 api_ui）。
 --
--- 看什么（屏幕上从左到右）：
---   · 左侧按钮列由 scenes/ui_test.scene 的 `Container kind=vbox` 自动排列：它们的位置不是手写坐标，
---     而是容器按每个子实体 Image 的 UiLayout 尺寸累加出来的。
---   · 左键点任意按钮 → 引擎 `process_ui_clicks` 命中带 `UiEvents event=click` 的实体 → 调用
---     **工程级全局** `on_click(实体名)`（scripts/main.lua 转交 router → 本模块）。
---   · 点下去看得见三件事：
---     ① 屏幕左下状态行写出"最近一次收到的事件 + 实体名 + 计数"（`api.status`）；
---     ② 右侧 InfoPanel 里的 clicks / submits 两个数值由本脚本每帧用 `ui.text_at` 重画
---        （场景里的 Text 组件是静态的：Lua 没有"写场景实体 Text"的 API，`ui.*` 只管动态 UI）；
---     ③ 被点中的按钮外面出现一圈 `ui.panel` 高亮框。
---   · CloseButton 用 `visibility.set(id, 0)` 把 InfoPanel 那一组**场景实体**藏起来，再点一次恢复，
---     状态行里的 InfoPanel=hidden/visible 与返回串里的 panel_mask 都是**引擎侧读回**的事实
---     （`visibility.get`），不是脚本自己的布尔值。
---   · StartButton 计数 +1、ResetButton 清零、SubmitButton 提交次数 +1。
+-- 本场景的 UI 是"数据"：按钮列由 Container(kind=vbox) 摆放、信息面板用九宫格 Image、
+-- 六种容器 kind 各有一份样本。Lua 侧没有"读场景实体布局矩形"的 API，所以这里做两件事：
+--   1. 用 `entity.find` / `visibility.get` / `visibility.set` 读写**引擎侧**的场景实体状态；
+--   2. 把 Container 的排布规则用同一套公式复算一份（脚本里的 BUTTON_RECTS / 内缩矩形），
+--      自检断言就落在"引擎状态 + 同一公式"这两个可重复的事实上。
 --
--- 两个"运行时不消费"的组件（因此**不写进场景文件**，否则会被 typed 组件的覆盖门判红）：
---   `UiBindings`（property=text.text;target=..;source=..）：只有 schema，只有编辑器 UI Designer
---   可编辑，运行时没有消费方 —— 本场景的"绑定"由脚本每帧重画文本代替。
---   `UiAnimation`（track.<属性>=<时间>:<值>:<缓动>）：同上 —— 右下角那条提示条的位移由脚本用
---   `time.delta()` 累计相位 + `math.sin` 驱动，效果与"一条往返位移轨道"一致。
---   对照：`ButtonStates` 同样只在编辑器侧消费（运行时渲染读 Image.texture），但它在运行时组件
---   集合里有分支（typed_scene），所以它**可以**写在场景里 —— 这是两者的区别。
+-- 点击走引擎 `process_ui_clicks`：命中带 `UiEvents event=click` 的实体后调用全局
+-- `on_click(实体名)`（main.lua → router → 本模块），计数与高亮只在这里更新。
 --
--- 硬规则：update() 必须在 headless（无输入、无鼠标）下跑通：本模块只读实体状态 + 画动态 UI，
--- 不切场景、不写盘；顶层只定义常量与函数（不调用引擎 API）。
-local api = require("api_demo")
+-- 场景里的 TitleText / HeaderComponentsText 在页眉上，InfoPanel 的文本压在右侧 API 卡上，
+-- 它们由 `hide_scene_text` 让位；按钮与图标（演示对象）保持可见。
+local lab = require("lab")
 
 local M = {}
 
--- ---------------------------------------------------------------------------
--- 常量：场景布局的镜像 + 本模块拥有的动态 UI id
--- ---------------------------------------------------------------------------
-
--- 五个**可点**按钮在屏幕上的矩形（1280×720）。
--- 它们由场景里的 ButtonColumn（Container kind=vbox、padding 16、spacing 12、align=center，
--- 容器矩形 (60,120)-(340,560)）算出来：每个按钮 240×48，首个孩子落在 (80,136)，逐个下移 60。
--- 为什么脚本里还要抄一份：Lua 侧没有"读场景实体解析后的 UI 矩形"的 API（命中测试在引擎内部
--- `compute_click_targets` 里做），而高亮框必须自己给坐标。改了场景里 ButtonColumn 的矩形 /
--- padding / spacing 或那个 -120,-24,120,24 的 UiLayout，这里要同步改。
--- （场景里的 DisabledButton 故意没有 UiEvents：它点不动，所以也不会进这张表。）
-local BUTTON_RECTS = {
-    StartButton = { 80, 136, 240, 48 },
-    ResetButton = { 80, 196, 240, 48 },
-    CloseButton = { 80, 256, 240, 48 },
-    PointerButton = { 80, 316, 240, 48 },
-    SubmitButton = { 80, 376, 240, 48 },
+-- 五个可点按钮 + 一个禁用按钮的屏幕矩形（Container vbox：padding 16、spacing 12、
+-- 容器 (60,120)-(340,560)、按钮 240x48 ⇒ 首个 (80,136)，逐个下移 60）。
+local BUTTON_ORDER = {
+    "StartButton",
+    "ResetButton",
+    "CloseButton",
+    "PointerButton",
+    "SubmitButton",
+    "DisabledButton",
 }
+local LABEL_OF = {
+    StartButton = "StartLabel",
+    ResetButton = "ResetLabel",
+    CloseButton = "CloseLabel",
+    PointerButton = "PointerLabel",
+    SubmitButton = "SubmitLabel",
+    DisabledButton = "DisabledLabel",
+}
+local BUTTON_X, BUTTON_Y, BUTTON_W, BUTTON_H, BUTTON_STEP = 80, 136, 240, 48, 60
 
--- CloseButton 负责隐藏/恢复的**场景**实体：右侧那块九宫格 InfoPanel 与其 6 个子实体。
--- `Visibility` 是每实体一份的层遮罩，所以"整块 UI"要逐个点名；顺序与场景里的 id 一致。
+-- CloseButton 负责藏起来的场景实体（Visibility 是逐实体的层遮罩）。
 local INFO_PANEL_ENTITIES = {
     "InfoPanel",
     "InfoPanelTitle",
@@ -60,20 +46,20 @@ local INFO_PANEL_ENTITIES = {
     "InfoPanelHint",
 }
 
--- 动态 UI 的 id：本场景里 `ui.panel` / `ui.text_at` 建的东西全部由本模块拥有。
+-- 六种容器 kind 的模型矩形（与 ui_test.scene 的 UiLayout / Container 字段一致）。
+local COLUMN_RECT = { 60, 120, 340, 560 }
+local LEGEND_RECT = { 380, 120, 860, 180 }
+local GRID_RECT = { 380, 220, 640, 416 }
+local CENTER_RECT = { 380, 456, 560, 552 }
+local MARGIN_RECT = { 600, 456, 860, 552 }
+
+-- 本模块拥有的动态 UI id。
 local ID_CLICKS = "ui_events_clicks"
 local ID_SUBMITS = "ui_events_submits"
+local ID_INFO = "ui_events_info"
+local ID_NOTE = "ui_events_note"
 local ID_HIGHLIGHT = "ui_events_highlight"
-local ID_STRIP = "ui_events_strip"
-local ID_STRIP_LABEL = "ui_events_strip_label"
-
--- 提示条（脚本驱动的位移动画）所在的"跑道"：矩形 (620,570)-(1000,606) 是场景 UI 的空隙
--- （中间那排 Container 到 y=552 为止，右侧 InfoPanel 到 y=560 为止，左下角留给状态行）。
-local STRIP_Y = 570
-local STRIP_WIDTH = 200
-local STRIP_HEIGHT = 36
-local STRIP_CENTER_X = 800
-local STRIP_SWING = 80
+local ID_SCRATCH = "ui_events_scratch"
 
 local clicks = 0
 local submits = 0
@@ -81,17 +67,32 @@ local last_event = "none"
 local last_target = "-"
 local panel_visible = true
 local highlighted = nil
-local strip_phase = 0
+local found = {}
 
--- ---------------------------------------------------------------------------
--- 内部工具
--- ---------------------------------------------------------------------------
+local function reset_dynamic()
+    ui.clear(ID_CLICKS)
+    ui.clear(ID_SUBMITS)
+    ui.clear(ID_HIGHLIGHT)
+    ui.clear(ID_SCRATCH)
+    ui.hide(ID_INFO)
+    ui.hide(ID_NOTE)
+end
 
---- 把 InfoPanel 那一组场景实体的可见层遮罩设成"全可见"或 0。
----
---- 场景 UI 没有"隐藏某个实体"的专用 API：渲染时每个实体都要过 `Visibility` 层遮罩
---- （`visibility::entity_visible_in`），因此 `visibility.set(id, 0)` 就是"藏起来"，
---- 再写回 `visibility.all()` 就是"恢复"。实体名找不到时跳过（不猜、不报错）。
+--- 把场景实体按名字抓一遍；缺实体时返回 nil，后续读回会跳过而不是崩。
+local function bind_entities()
+    found = {}
+    for _, name in ipairs(BUTTON_ORDER) do
+        found[name] = entity.find(name)
+    end
+    found.InfoPanel = entity.find("InfoPanel")
+    found.InfoPreviewIcon = entity.find("InfoPreviewIcon")
+end
+
+local function button_rect(index)
+    return BUTTON_X, BUTTON_Y + (index - 1) * BUTTON_STEP, BUTTON_W, BUTTON_H
+end
+
+--- Visibility 读写：0 = 藏起来，`visibility.all()` = 全可见。
 local function set_panel_visible(visible)
     local layers = visible and visibility.all() or 0
     for _, name in ipairs(INFO_PANEL_ENTITIES) do
@@ -103,10 +104,8 @@ local function set_panel_visible(visible)
     panel_visible = visible
 end
 
---- 读回第一块面板实体的遮罩（0 = 藏起来了，4294967295 = 全可见）。
---- 用它而不是脚本里的布尔值，是为了让"藏起来了"这件事在 headless 日志里也可核对。
-local function panel_mask()
-    local id = entity.find(INFO_PANEL_ENTITIES[1])
+local function panel_mask(name)
+    local id = entity.find(name)
     if not id then
         return nil
     end
@@ -114,91 +113,281 @@ local function panel_mask()
 end
 
 -- ---------------------------------------------------------------------------
--- 生命周期（router 分发）
+-- 步骤
 -- ---------------------------------------------------------------------------
 
---- 进入本场景时调用一次：重置演示状态、把标题/按键提示交给 api_demo 的状态行。
+local steps = {
+    {
+        id = "button_column",
+        title = "Container vbox",
+        claim = "按钮列的位置不是手写的：vbox 用 padding 16、spacing 12 把 6 个按钮逐个排下来",
+        api = { "entity.find", "ui.text_at", "ui.text_get" },
+        code = "entity.find('StartButton'); 80 + (i-1)*(48+12)",
+        enter = function()
+            reset_dynamic()
+            bind_entities()
+            highlighted = nil
+            last_event = "none"
+            last_target = "-"
+        end,
+        run = function()
+            local count = 0
+            for _, name in ipairs(BUTTON_ORDER) do
+                if found[name] then
+                    count = count + 1
+                end
+            end
+            ui.text_at(
+                ID_INFO,
+                360,
+                500,
+                string.format("6 buttons, first (80,136), step 60, %d found", count),
+                1.0,
+                13
+            )
+            lab.note("容器按 UiLayout 尺寸摆放子实体；按钮矩形只是同一公式的镜像")
+        end,
+        read = function()
+            local _, y6 = button_rect(6)
+            return {
+                { label = "buttons", value = #BUTTON_ORDER },
+                { label = "first", value = string.format("%d,%d", BUTTON_X, BUTTON_Y) },
+                { label = "last_y", value = y6 },
+                { label = "column_h", value = COLUMN_RECT[4] - COLUMN_RECT[2] },
+            }
+        end,
+        check = function(t)
+            t:ok(found.StartButton ~= nil, "StartButton is in the scene")
+            t:ok(found.SubmitButton ~= nil, "SubmitButton is in the scene")
+            t:ok(found.DisabledButton ~= nil, "DisabledButton is in the scene")
+            local x, y = button_rect(1)
+            t:eq(x, 80, "vbox padding+alignment puts the first button at x=80")
+            t:eq(y, 136, "first button starts at 120 + 16")
+            local _, last_y = button_rect(6)
+            t:eq(last_y, 436, "sixth button sits at the last vbox slot")
+            t:eq(last_y + BUTTON_H, 484, "last button bottom stays inside the column")
+        end,
+    },
+    {
+        id = "click_counters",
+        title = "Runtime bindings",
+        claim = "场景 Text 是静态的：计数由脚本每帧用 ui.text_at 重画，ui.text_get 读回同一串字",
+        api = { "ui.text_at", "ui.text_get", "ui.clear", "entity.find" },
+        code = "ui.text_at('ui_events_clicks', x, y, tostring(clicks), 1.3)",
+        enter = function()
+            reset_dynamic()
+            bind_entities()
+            clicks = 0
+            submits = 0
+            last_event = "none"
+            last_target = "-"
+            set_panel_visible(true)
+        end,
+        run = function()
+            ui.text_at(ID_CLICKS, 360, 300, "clicks = " .. tostring(clicks), 1.0, 16)
+            ui.text_at(ID_SUBMITS, 360, 326, "submits = " .. tostring(submits), 1.0, 16)
+            ui.text_at(
+                ID_NOTE,
+                360,
+                352,
+                "last event = " .. last_event .. " / " .. last_target,
+                1.0,
+                12
+            )
+            lab.note("LMB 点按钮 -> 引擎 on_click(name) -> 计数与高亮")
+        end,
+        read = function()
+            local drawn = ui.text_get(ID_CLICKS)
+            return {
+                { label = "clicks", value = clicks },
+                { label = "submits", value = submits },
+                { label = "drawn", value = drawn and drawn.text or "-" },
+                { label = "event", value = last_event },
+            }
+        end,
+        check = function(t)
+            local drawn = ui.text_get(ID_CLICKS)
+            t:ok(drawn ~= nil, "the counter text was drawn")
+            t:eq(drawn and drawn.text, "clicks = 0", "the drawn string matches the model")
+            t:eq(ui.text_get(ID_SUBMITS).text, "submits = 0", "submits starts at zero too")
+            -- `ui.clear` 删不掉同 id 的普通文本，所以这里清的是派生提示；再用 text_at 重建。
+            ui.clear(ID_SCRATCH)
+            ui.text_at(ID_SCRATCH, 360, 380, "scratch", 1.0, 12)
+            t:eq(ui.text_get(ID_SCRATCH).text, "scratch", "text_at creates the scratch label")
+            ui.clear(ID_SCRATCH)
+            t:eq(ui.text_get(ID_SCRATCH).text, "scratch", "ui.clear does not remove plain dynamic text")
+            ui.hide(ID_SCRATCH)
+            t:eq(ui.text_get(ID_SCRATCH).visible, false, "ui.hide is the way to drop plain text")
+            t:eq(clicks, 0, "counting starts from zero")
+        end,
+    },
+    {
+        id = "info_visibility",
+        title = "Visibility mask",
+        claim = "CloseButton 的隐藏是 visibility.set(id, 0)，读回 0 与 visibility.all() 都是引擎侧事实",
+        api = { "visibility.all", "visibility.get", "visibility.set", "entity.find" },
+        code = "visibility.set(entity.find('InfoPanel'), visibility.all())",
+        enter = function()
+            reset_dynamic()
+            bind_entities()
+            set_panel_visible(true)
+        end,
+        run = function()
+            ui.text_at(
+                ID_INFO,
+                360,
+                300,
+                string.format("InfoPanel mask = %s (all = %s)", tostring(panel_mask("InfoPanel")), tostring(visibility.all())),
+                1.0,
+                13
+            )
+            lab.note("visibility.get 读的是实体层遮罩；0 = 整块隐藏")
+        end,
+        read = function()
+            return {
+                { label = "mask", value = tostring(panel_mask("InfoPanel")) },
+                { label = "all", value = tostring(visibility.all()) },
+                { label = "visible", value = tostring(panel_visible) },
+            }
+        end,
+        check = function(t)
+            local all = visibility.all()
+            t:ok(all > 0, "visibility.all is a non-empty layer mask")
+            t:eq(panel_mask("InfoPanel"), all, "the panel starts fully visible")
+            set_panel_visible(false)
+            t:eq(panel_mask("InfoPanel"), 0, "hiding writes the zero mask")
+            t:eq(panel_mask("InfoPreviewIcon"), 0, "every child of the block is hidden")
+            set_panel_visible(true)
+            t:eq(panel_mask("InfoPanel"), all, "restoring writes visibility.all back")
+        end,
+    },
+    {
+        id = "container_kinds",
+        title = "Five container kinds",
+        claim = "vbox/hbox/grid/center/margin 的差别只在解算规则：同一组 UiLayout 得到不同矩形",
+        api = { "entity.find", "ui.text_at" },
+        code = "entity.find('LegendRow') / entity.find('IconGrid') / entity.find('MarginCard')",
+        enter = function()
+            reset_dynamic()
+            bind_entities()
+        end,
+        run = function()
+            ui.text_at(
+                ID_INFO,
+                360,
+                430,
+                "hbox chips 140x40 @10 | grid 100x80 @8 | center 120x60 | margin 234x70",
+                1.0,
+                12
+            )
+            lab.note("每个 kind 的容器都在场景里；这里是它们解算后的模型矩形")
+        end,
+        read = function()
+            return {
+                { label = "legend_inner", value = "460x40" },
+                { label = "grid_cell", value = "100x80" },
+                { label = "center_chip", value = "120x60" },
+                { label = "margin_inner", value = "234x70" },
+            }
+        end,
+        check = function(t)
+            t:ok(entity.find("ButtonColumn") ~= nil, "vbox container exists")
+            t:ok(entity.find("LegendRow") ~= nil, "hbox container exists")
+            t:ok(entity.find("IconGrid") ~= nil, "grid container exists")
+            t:ok(entity.find("CenterBadge") ~= nil, "center container exists")
+            t:ok(entity.find("MarginCard") ~= nil, "margin container exists")
+            -- 模型：hbox 内宽 = 480 - 2*10 = 460；三个 140 宽 + 两个 10 间距 = 440。
+            t:eq(LEGEND_RECT[3] - LEGEND_RECT[1] - 20, 460, "hbox inner width")
+            t:eq(140 * 3 + 10 * 2, 440, "hbox content width fits the inner width")
+            -- margin：600..860 减左右 padding 10/16 = 234；456..552 减上下 10/16 = 70。
+            t:eq(MARGIN_RECT[3] - MARGIN_RECT[1] - 26, 234, "margin inner width")
+            t:eq(MARGIN_RECT[4] - MARGIN_RECT[2] - 26, 70, "margin inner height")
+            -- center：120x60 在 180x96 的内区里居中。
+            t:eq(CENTER_RECT[1] + (CENTER_RECT[3] - CENTER_RECT[1] - 120) / 2, 410, "center chip x")
+            -- grid：2x2、每格 100x80、间距 8。
+            t:eq(GRID_RECT[1] + 8, 388, "grid starts after padding")
+        end,
+    },
+    {
+        id = "highlight_overlay",
+        title = "Highlight overlay",
+        claim = "动态高亮画在按钮外圈 8px：面板读回矩形，文字读回内容，点击只改模型",
+        api = { "ui.panel", "ui.panel_get", "ui.text_at", "ui.text_get", "ui.clear", "entity.find" },
+        code = "ui.panel('ui_events_highlight', x-8, y-8, w+16, h+16, 1.0,0.82,0.22,1.0)",
+        enter = function()
+            reset_dynamic()
+            bind_entities()
+            highlighted = "StartButton"
+        end,
+        run = function()
+            local rect = { button_rect(1) }
+            if highlighted == "StartButton" then
+                ui.panel(ID_HIGHLIGHT, rect[1] - 8, rect[2] - 8, rect[3] + 16, rect[4] + 16, 1.0, 0.82, 0.22, 0.85)
+            end
+            ui.text_at(ID_INFO, 360, 300, "highlight = " .. tostring(highlighted), 1.0, 14)
+            lab.note("点击按钮会换高亮目标；框在按钮外圈，露出来的那一圈才看得见")
+        end,
+        read = function()
+            local panel = ui.panel_get(ID_HIGHLIGHT)
+            local text = ui.text_get(ID_INFO)
+            return {
+                { label = "target", value = tostring(highlighted) },
+                { label = "frame", value = panel and string.format("%.0fx%.0f @%.0f,%.0f", panel.width, panel.height, panel.x, panel.y) or "-" },
+                { label = "label", value = text and text.text or "-" },
+            }
+        end,
+        check = function(t)
+            local panel = ui.panel_get(ID_HIGHLIGHT)
+            t:ok(panel ~= nil, "the highlight panel exists")
+            t:eq(panel.x, 72, "frame starts 8px left of the button")
+            t:eq(panel.y, 128, "frame starts 8px above the button")
+            t:eq(panel.width, 256, "frame is 16px wider than the button")
+            t:eq(panel.height, 64, "frame is 16px taller than the button")
+            t:eq(ui.text_get(ID_INFO).text, "highlight = StartButton", "the caption reads back")
+            ui.clear(ID_HIGHLIGHT)
+            t:eq(ui.panel_get(ID_HIGHLIGHT), nil, "clear removes the frame")
+        end,
+    },
+}
+
+-- ---------------------------------------------------------------------------
+-- 生命周期
+-- ---------------------------------------------------------------------------
+
 function M.on_create()
-    api.title("ui_test - scene UI components and UiEvents clicks")
-    api.hint("LMB click a button: on_click(name) receives the entity name - " .. api.KEYS_BACK)
-    clicks = 0
-    submits = 0
-    last_event = "none"
-    last_target = "-"
-    highlighted = nil
-    strip_phase = 0
-    -- 场景刚实例化时实体本来就是全可见的；这里显式写一次，让"进入场景 = 面板可见"成为契约
-    -- （脚本状态与引擎状态因此一定一致，不会出现"变量说可见、引擎说不可见"）。
-    set_panel_visible(true)
-    log.info("ui_events: scene UI ready - 5 clickable buttons + 1 drag declaration, 5 container kinds")
+    lab.start({
+        scene = "ui_test",
+        title = "Scene UI",
+        category = "UI",
+        steps = steps,
+        -- 只让页眉 / 右栏上确实压住 shell 的文本让位；按钮与图标（演示对象）保留。
+        hide_scene_text = {
+            "TitleText",
+            "HeaderComponentsText",
+            "VBoxLabel",
+            "InfoPanelLabel",
+            "InfoPanelTitle",
+            "InfoClicksLabel",
+            "InfoSubmitsLabel",
+            "InfoBindNote",
+            "InfoPanelHint",
+        },
+    })
+    log.info("ui_events: 6 buttons + 5 container kinds + nine-slice InfoPanel")
 end
 
---- 每个固定步一次；返回的字符串进引擎日志（`run_script_steps` / 编辑器 Play 都能看到）。
 function M.update()
-    -- ① 提示条位移：`UiAnimation` 组件运行时不消费（见文件头），所以这条位移动画由脚本驱动，
-    --    时间仍然来自引擎：`time.delta()`（固定步长）→ 相位 → `math.sin` 做往返缓动。
-    strip_phase = strip_phase + time.delta() * 1.2
-    local strip_x = STRIP_CENTER_X + math.sin(strip_phase) * STRIP_SWING
-    ui.panel(ID_STRIP, strip_x, STRIP_Y, STRIP_WIDTH, STRIP_HEIGHT, 0.16, 0.34, 0.52, 1.0)
-    ui.text_at(ID_STRIP_LABEL, strip_x + 12, STRIP_Y + 10, "script motion", 1.0)
-
-    -- ② 绑定文本：场景里那两个标签是静态 `Text`，数值由脚本每帧画在标签右边。
-    --    `UiBindings` 运行时不消费（见文件头），所以"绑定"在这里由脚本代替。
-    if panel_visible then
-        ui.text_at(ID_CLICKS, 1000, 184, tostring(clicks), 1.3)
-        ui.text_at(ID_SUBMITS, 1000, 220, tostring(submits), 1.3)
-    else
-        -- InfoPanel 整块被 visibility.set 藏起来了，脚本画的数值也必须跟着消失，
-        -- 否则会留下一串浮在空处的数字。
-        ui.clear(ID_CLICKS)
-        ui.clear(ID_SUBMITS)
+    if not lab.active() then
+        return "ui_events_inactive"
     end
-
-    -- ③ 高亮框：动态 UI 画在**场景 UI 之下**（`RuntimeScene::vertices` 的顺序是
-    --    动态面板 → 动态文本 → 场景 Text/Image），所以框画在按钮外圈 8px —— 压住按钮的
-    --    那一部分会被按钮自己的 Image 盖掉，露在外面的这一圈才是看得见的高亮。
-    if highlighted and BUTTON_RECTS[highlighted] then
-        local rect = BUTTON_RECTS[highlighted]
-        ui.panel(
-            ID_HIGHLIGHT,
-            rect[1] - 8,
-            rect[2] - 8,
-            rect[3] + 16,
-            rect[4] + 16,
-            1.00,
-            0.82,
-            0.22,
-            1.0
-        )
-    end
-
-    -- ④ 本帧的事实：最近一次收到的事件 + 实体名、两个计数，以及"这一帧真的画出来的那串字"
-    --    （`ui.text_get` 读回动态文本：headless 下也能断言渲染口径的值）。
-    local drawn = ui.text_get(ID_CLICKS)
-    local drawn_text = drawn and drawn.text or "(hidden)"
-    api.status(
-        string.format(
-            "event=%s target=%s | clicks=%d submits=%d | InfoPanel=%s | drawn=%s",
-            last_event,
-            last_target,
-            clicks,
-            submits,
-            panel_visible and "visible" or "hidden",
-            drawn_text
-        )
-    )
-    return string.format(
-        "ui_events_ok event=%s target=%s clicks=%d submits=%d panel_mask=%s",
-        last_event,
-        last_target,
-        clicks,
-        submits,
-        tostring(panel_mask())
-    )
+    return lab.tick()
 end
 
---- `UiEvents event=click` 的全局回调：参数就是**实体名**（引擎 `process_ui_clicks` 的契约）。
---- 场景里 5 个按钮把 click 都绑到这个函数名上，所以这里按名字分支。
+function M.self_test()
+    return lab.self_test()
+end
+
+--- `UiEvents event=click` 的全局回调：参数是实体名（引擎 `process_ui_clicks` 的契约）。
 function M.on_click(name)
     last_event = "click"
     last_target = tostring(name)
@@ -215,50 +404,30 @@ function M.on_click(name)
         submits = submits + 1
         highlighted = name
     elseif name == "PointerButton" then
-        -- 这个实体声明的是 pointer_enter / pointer_exit / pointer_down / pointer_up 那组事件；
-        -- 运行时只分发 click（`UiEvents::click_functions`），所以这里只当"被点了"记录。
         highlighted = name
     else
-        -- 别的实体名（别处动态创建的、或以后新增的按钮）：不猜语义，只上报。
         highlighted = nil
     end
-    log.info(
-        "ui_events: on_click "
-            .. tostring(name)
-            .. " clicks="
-            .. tostring(clicks)
-            .. " submits="
-            .. tostring(submits)
-    )
+    log.info("ui_events: on_click " .. tostring(name) .. " clicks=" .. tostring(clicks))
     return true
 end
 
---- `ui.drag_end` 触发的全局拖拽回调（动态集合的拖拽落点）。
----
---- 本场景没有 `ui.grid`（动态网格在 api_ui 场景演示），所以它只在"别处建过动态网格"时才会被调用。
---- 场景里 DragHandle 上那条 `event=drag;function=on_drag` 是**声明**：运行时不分发场景 UiEvents
---- 的 drag 绑定（`process_ui_clicks` 只认 click），拖拽这条通路的事实源是 `ui.drag_begin` /
---- `ui.drag_end` 这对 API —— 函数名写 `on_drag` 是为了让声明指向真实存在的工程级回调。
+--- 场景 UiEvents 的 drag 声明在运行时不派发；真正的拖拽入口是 `ui.drag_end`（api_ui 演示）。
 function M.on_drag(from_id, from_index, to_id, to_index)
     last_event = "drag"
-    last_target = string.format(
-        "%s#%d -> %s#%d",
-        tostring(from_id),
-        from_index or 0,
-        tostring(to_id),
-        to_index or 0
-    )
-    log.info("ui_events: on_drag " .. last_target)
+    last_target = string.format("%s#%d -> %s#%d", tostring(from_id), from_index or 0, tostring(to_id), to_index or 0)
     return true
 end
 
---- 离开场景时释放本模块建的动态 UI（`api.clear()` 由 router 负责标题/状态行/提示行）。
 function M.on_destroy()
     ui.clear(ID_CLICKS)
     ui.clear(ID_SUBMITS)
     ui.clear(ID_HIGHLIGHT)
-    ui.clear(ID_STRIP)
-    ui.clear(ID_STRIP_LABEL)
+    ui.clear(ID_SCRATCH)
+    ui.hide(ID_INFO)
+    ui.hide(ID_NOTE)
+    set_panel_visible(true)
+    lab.stop()
 end
 
 return M

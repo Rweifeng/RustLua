@@ -55,7 +55,7 @@ impl EditorApp {
         parent: Option<SceneEntityId>,
     ) -> String {
         if self.is_playing() {
-            return "Play mode locks scene editing; click Stop first".to_owned();
+            return "播放模式下不能编辑场景，请先点击停止".to_owned();
         }
         if paths.is_empty() {
             return "没有可创建的资产".to_owned();
@@ -74,7 +74,7 @@ impl EditorApp {
         let label = if specs.len() == 1 {
             specs[0].label().to_owned()
         } else {
-            "Drop Assets".to_owned()
+            "放置资源".to_owned()
         };
         let tree = self.tree.clone();
         let created = std::cell::RefCell::new(Vec::new());
@@ -93,7 +93,7 @@ impl EditorApp {
         let created = created.into_inner();
         match result {
             Err(error) => error,
-            Ok(false) => "No change".to_owned(),
+            Ok(false) => "没有变化".to_owned(),
             Ok(true) => {
                 let Some(&first) = created.first() else {
                     return "没有可创建的资产".to_owned();
@@ -149,17 +149,17 @@ impl SpawnSpec {
 
     fn label(&self) -> &'static str {
         match self {
-            Self::Prefab { .. } => "Instantiate Prefab",
-            Self::Model { .. } => "Create Model",
-            Self::Sprite { .. } => "Create Sprite",
+            Self::Prefab { .. } => "实例化预制体",
+            Self::Model { .. } => "创建模型",
+            Self::Sprite { .. } => "创建精灵",
         }
     }
 
     fn name(&self) -> String {
         let fallback = match self {
-            Self::Prefab { .. } => "Prefab",
-            Self::Model { .. } => "Model",
-            Self::Sprite { .. } => "Sprite",
+            Self::Prefab { .. } => "预制体",
+            Self::Model { .. } => "模型",
+            Self::Sprite { .. } => "精灵",
         };
         Path::new(self.path())
             .file_stem()
@@ -349,7 +349,7 @@ mod tests {
         app.play.set_state_for_test(editor::PlayState::Playing);
         let before = entity_count(&app);
         let text = app.spawn_dropped_batch(&["assets/a.png".to_owned()], None);
-        assert!(text.contains("Play"), "文案要说清为什么不行：{text}");
+        assert!(text.contains("播放模式下"), "文案要说清为什么不行：{text}");
         assert_eq!(entity_count(&app), before);
         assert_eq!(app.history.undo_len(), 0);
         let _ = std::fs::remove_dir_all(root);

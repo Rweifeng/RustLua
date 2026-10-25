@@ -91,11 +91,11 @@ pub struct RecoveryIssue {
 
 #[derive(Debug, thiserror::Error)]
 pub enum RecoveryError {
-    #[error("recovery I/O failed: {}: {message}", path.display())]
+    #[error("恢复快照读写失败：{}：{message}", path.display())]
     Io { path: PathBuf, message: String },
-    #[error("recovery scene is invalid: {0}")]
+    #[error("恢复快照中的场景无效：{0}")]
     Scene(#[source] SceneError),
-    #[error("invalid recovery file {}: {message}", path.display())]
+    #[error("恢复快照文件无效 {}：{message}", path.display())]
     Invalid { path: PathBuf, message: String },
 }
 
@@ -240,23 +240,22 @@ fn parse_candidate(path: &Path) -> Result<RecoveryCandidate, RecoveryError> {
         }
     }
     if version != Some(RECOVERY_VERSION) {
-        return Err(invalid(path, "unsupported recovery version"));
+        return Err(invalid(path, "不支持的恢复快照版本"));
     }
-    let timestamp_ns = timestamp.ok_or_else(|| invalid(path, "missing timestamp"))?;
-    let original = original.ok_or_else(|| invalid(path, "missing original path"))?;
-    let payload = payload.ok_or_else(|| invalid(path, "missing payload"))?;
-    let checksum = checksum.ok_or_else(|| invalid(path, "missing checksum"))?;
+    let timestamp_ns = timestamp.ok_or_else(|| invalid(path, "缺少时间戳"))?;
+    let original = original.ok_or_else(|| invalid(path, "缺少原文件路径"))?;
+    let payload = payload.ok_or_else(|| invalid(path, "缺少数据负载"))?;
+    let checksum = checksum.ok_or_else(|| invalid(path, "缺少校验和"))?;
     if fnv1a(&payload) != checksum {
-        return Err(invalid(path, "checksum mismatch"));
+        return Err(invalid(path, "校验和不匹配"));
     }
-    let scene_text =
-        String::from_utf8(payload).map_err(|_| invalid(path, "payload is not UTF-8"))?;
+    let scene_text = String::from_utf8(payload).map_err(|_| invalid(path, "数据负载不是 UTF-8"))?;
     let scene = Scene::from_text(&scene_text).map_err(RecoveryError::Scene)?;
     let original_path = if original.is_empty() {
         None
     } else {
         Some(PathBuf::from(
-            String::from_utf8(original).map_err(|_| invalid(path, "original path is not UTF-8"))?,
+            String::from_utf8(original).map_err(|_| invalid(path, "原文件路径不是 UTF-8"))?,
         ))
     };
     Ok(RecoveryCandidate {
@@ -298,13 +297,13 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 fn hex_decode(text: &str) -> Result<Vec<u8>, String> {
     if !text.len().is_multiple_of(2) {
-        return Err("hex payload has odd length".into());
+        return Err("十六进制负载长度为奇数".into());
     }
     (0..text.len())
         .step_by(2)
         .map(|index| {
             u8::from_str_radix(&text[index..index + 2], 16)
-                .map_err(|_| "invalid hex payload".to_owned())
+                .map_err(|_| "十六进制负载无效".to_owned())
         })
         .collect()
 }

@@ -3,7 +3,7 @@
 use crate::ComponentClipboard;
 use crate::EditorApp;
 use crate::panels::tilemap_tools;
-use crate::util::strip_verbatim_prefix;
+use crate::util::{component_display_name, strip_verbatim_prefix};
 use editor::{Collider3dFields, ContainerPreset, InspectorError, InspectorState};
 use eframe::egui;
 use rustlua_scene::prefab::Prefab;
@@ -164,14 +164,14 @@ pub(crate) fn component_menu_groups() -> Vec<(&'static str, Vec<&'static str>)> 
         .collect()
 }
 
-/// Inspector Override 摘要用的源 Prefab 缓存条目。
+/// Inspector Override 摘要用的源预制体 缓存条目。
 pub(crate) struct CachedPrefabSource {
     /// (文件长度, mtime)。`None` = 读取元数据失败（例如文件不存在）。
     pub(crate) stamp: Option<(u64, Option<SystemTime>)>,
     pub(crate) prefab: Prefab,
 }
 
-/// 源 Prefab 的失效戳：长度 + mtime。任一变化即视为需要重载。
+/// 源预制体 的失效戳：长度 + mtime。任一变化即视为需要重载。
 fn prefab_stamp(path: &Path) -> Option<(u64, Option<SystemTime>)> {
     let metadata = fs::metadata(path).ok()?;
     Some((metadata.len(), metadata.modified().ok()))
@@ -202,7 +202,7 @@ impl EditorApp {
                         ui.separator();
                         ui.horizontal(|ui| {
                             ui.label("类型：");
-                            ui.label(egui::RichText::new(format!("{:?}", entry.kind)).monospace());
+                            ui.label(egui::RichText::new(entry.kind.label()).monospace());
                         });
                         let (status_text, status_color) = match entry.status {
                             rustlua_assets::resource_db::ResourceState::Ready => ("已就绪".to_owned(), egui::Color32::from_rgb(120,200,130)),
@@ -211,7 +211,7 @@ impl EditorApp {
                             rustlua_assets::resource_db::ResourceState::Missing => ("文件缺失".to_owned(), egui::Color32::GRAY),
                             rustlua_assets::resource_db::ResourceState::ImportFailed => ("导入失败".to_owned(), egui::Color32::RED),
                             rustlua_assets::resource_db::ResourceState::Invalid => ("依赖断链".to_owned(), egui::Color32::RED),
-                            _ => (format!("{:?}", entry.status), ui.visuals().weak_text_color()),
+                            _ => ("未知状态".to_owned(), ui.visuals().weak_text_color()),
                         };
                         ui.horizontal(|ui| {
                             ui.label("状态：");
@@ -252,7 +252,7 @@ impl EditorApp {
                     .current_scene()
                     .is_some_and(|scene| scene.is_prefab_document())
                 {
-                    ui.label("当前文档：Prefab 编辑模式");
+                    ui.label("当前文档：预制体编辑模式");
                 }
                 let Some(selected) = self.selection.primary() else {
                     ui.label("请先在层级中选择实体");
@@ -305,8 +305,8 @@ impl EditorApp {
                         .and_then(|entity| entity.metadata.get("ui.root"))
                         .is_some_and(|value| value == "true")
                 }) {
-                    ui.colored_label(egui::Color32::from_rgb(100, 190, 230), "UI Root / Canvas");
-                    ui.label("Canvas");
+                    ui.colored_label(egui::Color32::from_rgb(100, 190, 230), "界面根节点 / 画布");
+                    ui.label("画布");
                     ui.horizontal(|ui| {
                         ui.label("参考");
                         ui.add(
@@ -321,7 +321,7 @@ impl EditorApp {
                     ui.horizontal(|ui| {
                         ui.label("缩放");
                         egui::ComboBox::from_id_salt("canvas_scale_mode")
-                            .selected_text(self.canvas_config.scale_mode.as_str())
+                            .selected_text(canvas_scale_mode_label(self.canvas_config.scale_mode))
                             .show_ui(ui, |ui| {
                                 for mode in [
                                     rustlua_ui::ui_layout::CanvasScaleMode::None,
@@ -332,18 +332,18 @@ impl EditorApp {
                                     ui.selectable_value(
                                         &mut self.canvas_config.scale_mode,
                                         mode,
-                                        mode.as_str(),
+                                        canvas_scale_mode_label(mode),
                                     );
                                 }
                             });
                     });
                     ui.horizontal(|ui| {
-                        ui.label("Safe Area");
+                        ui.label("安全区");
                         for inset in &mut self.canvas_config.safe_area {
                             ui.add(egui::DragValue::new(inset).range(0.0..=512.0));
                         }
                     });
-                    if ui.button("应用 Canvas 配置").clicked() {
+                    if ui.button("应用画布配置").clicked() {
                         self.apply_canvas_config();
                     }
                 }
@@ -368,7 +368,7 @@ impl EditorApp {
                     })
                 {
                     ui.label(format!(
-                        "Prefab 来源：{}{}",
+                        "预制体来源：{}{}",
                         prefab_source,
                         if is_prefab_root {
                             "（根实例）"
@@ -377,19 +377,19 @@ impl EditorApp {
                         }
                     ));
                     // docs/55 §4.1：面板只发 typed action（目标显式携带），不直接调用文档写入方法。
-                    if is_prefab_root && ui.button("重新应用源 Prefab").clicked() {
+                    if is_prefab_root && ui.button("重新应用源预制体").clicked() {
                         self.dispatch(editor::EditorCommand::ReapplyPrefab { entity: selected });
                     }
-                    if ui.button("打开源 Prefab").clicked() {
+                    if ui.button("打开源预制体").clicked() {
                         self.open_scene_resource(std::path::PathBuf::from(&prefab_source));
                     }
                     if is_prefab_root && ui.button("写回源并更新实例").clicked() {
                         self.dispatch(editor::EditorCommand::SavePrefabToSource { entity: selected });
                     }
-                    if is_prefab_root && ui.button("Unpack").clicked() {
+                    if is_prefab_root && ui.button("解包预制体").clicked() {
                         self.dispatch(editor::EditorCommand::UnpackPrefab { entity: selected });
                     }
-                    if is_prefab_root && ui.button("Revert Overrides").clicked() {
+                    if is_prefab_root && ui.button("还原覆盖").clicked() {
                         self.dispatch(editor::EditorCommand::RevertPrefabOverrides {
                             entity: selected,
                         });
@@ -399,21 +399,21 @@ impl EditorApp {
                     match prefab_state {
                         Ok(prefab_overrides) => {
                             if prefab_overrides.is_empty() {
-                                ui.label("Prefab Override：无");
+                                ui.label("预制体覆盖：无");
                             } else {
                                 // 逐字段选择性 Apply / Revert（docs/55 阶段 3）：
-                                // 每行显示「源 → 实例」，并可单独把该字段推回源 Prefab 或还原为源取值。
+                                // 每行显示「源 → 实例」，并可单独把该字段推回源预制体 或还原为源取值。
                                 let mut revert_field: Option<String> = None;
                                 let mut apply_field: Option<String> = None;
                                 ui.collapsing(
-                                    format!("Prefab Override（{}）", prefab_overrides.len()),
+                                    format!("预制体覆盖（{}）", prefab_overrides.len()),
                                     |ui| {
                                         for row in &prefab_overrides {
                                             ui.horizontal(|ui| {
                                                 if ui
                                                     .small_button("应用")
                                                     .on_hover_text(format!(
-                                                        "把实例取值写回源 Prefab 并更新全部实例：{}",
+                                                        "把实例取值写回源预制体并更新全部实例：{}",
                                                         compact_value(&row.instance_value)
                                                     ))
                                                     .clicked()
@@ -423,7 +423,7 @@ impl EditorApp {
                                                 if ui
                                                     .small_button("回退")
                                                     .on_hover_text(format!(
-                                                        "把这个字段还原为源 Prefab 的取值：{}",
+                                                        "把这个字段还原为源预制体的取值：{}",
                                                         row.source_value
                                                     ))
                                                     .clicked()
@@ -450,7 +450,7 @@ impl EditorApp {
                         Err(error) => {
                             ui.colored_label(
                                 egui::Color32::from_rgb(220, 140, 80),
-                                format!("Prefab 诊断：{error}"),
+                                format!("预制体诊断：{error}"),
                             );
                         }
                     }
@@ -465,7 +465,7 @@ impl EditorApp {
                 // PersistId 注册表与 Lua data.npcs 校验器负责，编辑器不硬编码领域规则。
                 ui.separator();
                 ui.horizontal(|ui| {
-                    ui.label("PersistId");
+                    ui.label("持久化 ID");
                     if self.persist_id_editing != Some(selected) {
                         self.reload_persist_id_buffer(selected);
                     }
@@ -491,14 +491,14 @@ impl EditorApp {
                             Ok(true) => {
                                 self.reload_persist_id_buffer(selected);
                                 self.status = if self.persist_id_buffer.is_empty() {
-                                    "PersistId 已清除".to_owned()
+                                    "持久化 ID 已清除".to_owned()
                                 } else {
-                                    format!("PersistId 已设置：{}", self.persist_id_buffer)
+                                    format!("持久化 ID 已设置：{}", self.persist_id_buffer)
                                 };
                             }
                             Ok(false) => {
                                 self.reload_persist_id_buffer(selected);
-                                self.status = "PersistId 无变化".to_owned();
+                                self.status = "持久化 ID 无变化".to_owned();
                             }
                             Err(error) => self.status = error,
                         }
@@ -517,7 +517,7 @@ impl EditorApp {
                 ui.horizontal(|ui| {
                     ui.label("添加组件");
                     egui::ComboBox::from_id_salt("inspector_add_component")
-                        .selected_text(&self.inspector_add_component)
+                        .selected_text(component_display_name(&self.inspector_add_component))
                         .show_ui(ui, |ui| {
                             // E13：按类别分组展示注册表（顺序固定，避免漂移）。
                             for category in ComponentCategory::ALL.iter().copied() {
@@ -528,7 +528,7 @@ impl EditorApp {
                                     ui.selectable_value(
                                         &mut self.inspector_add_component,
                                         descriptor.name.to_owned(),
-                                        descriptor.name,
+                                        component_display_name(descriptor.name),
                                     );
                                 }
                                 ui.separator();
@@ -548,7 +548,7 @@ impl EditorApp {
                     ui.label("组件：");
                     for key in &components {
                         ui.horizontal(|ui| {
-                            ui.label(key);
+                            ui.label(component_display_name(key));
                             if ui.small_button("移除").clicked() {
                                 let key = key.clone();
                                 if let Err(error) = self.remove_component(selected, &key) {
@@ -567,7 +567,7 @@ impl EditorApp {
                 // 迁移后刻意不再有"2D/3D 空间切换"（WP9）：两个组件**同时**在字段区里显示，
                 // 不存在"被切走的那一种看不见"的问题，也就不用再存一个编辑器态；混合值仍由
                 // 通用编辑器逐字段标注（`SchemaFieldRow.mixed`）。
-                // `Copy/Paste Components` 按钮随面板一并删除——它们在**编辑菜单**里仍然可用
+                // `Copy/粘贴组件` 按钮随面板一并删除——它们在**编辑菜单**里仍然可用
                 // （typed 命令 `CopyComponents`/`PasteComponents`）。
                 // `MeshRenderer` 的手写面板**已删除**（第 21 轮）：与 `Light` 同样由
                 // `draw_schema_driven_components` 按 schema 生成（`mesh` 字段，带
@@ -584,9 +584,9 @@ impl EditorApp {
                 // 提交走 `EditorCommand::SetComponentField`。
                 if has("Collider3d") {
                     let collider3d_header = if self.inspector_collider3d_open {
-                        "Collider3d  v"
+                        "3D 碰撞体  v"
                     } else {
-                        "Collider3d  >"
+                        "3D 碰撞体  >"
                     };
                     if ui.button(collider3d_header).clicked() {
                         self.inspector_collider3d_open = !self.inspector_collider3d_open;
@@ -596,26 +596,26 @@ impl EditorApp {
                             ui.horizontal(|ui| {
                                 ui.label("形状");
                                 egui::ComboBox::from_id_salt("collider3d_shape")
-                                    .selected_text(&self.collider3d.shape)
+                                    .selected_text(collider3d_shape_label(&self.collider3d.shape))
                                     .show_ui(ui, |ui| {
                                         ui.selectable_value(
                                             &mut self.collider3d.shape,
                                             "ball".to_owned(),
-                                            "Ball",
+                                            "球体",
                                         );
                                         ui.selectable_value(
                                             &mut self.collider3d.shape,
                                             "cuboid".to_owned(),
-                                            "Cuboid",
+                                            "长方体",
                                         );
                                         ui.selectable_value(
                                             &mut self.collider3d.shape,
                                             "capsule".to_owned(),
-                                            "Capsule",
+                                            "胶囊",
                                         );
                                     });
-                                ui.checkbox(&mut self.collider3d.sensor, "sensor");
-                                ui.checkbox(&mut self.collider3d.dynamic, "dynamic");
+                                ui.checkbox(&mut self.collider3d.sensor, "传感器");
+                                ui.checkbox(&mut self.collider3d.dynamic, "动态");
                             });
                             match self.collider3d.shape.as_str() {
                                 "cuboid" => {
@@ -653,12 +653,12 @@ impl EditorApp {
                                 ui.add(egui::DragValue::new(&mut self.collider3d.offset_z));
                             });
                             ui.horizontal(|ui| {
-                                if ui.button("添加 Collider3d").clicked()
+                                if ui.button("添加 3D 碰撞体").clicked()
                                     && let Err(error) = self.add_collider3d_component(selected)
                                 {
                                     self.status = error;
                                 }
-                                if ui.button("移除 Collider3d").clicked()
+                                if ui.button("移除 3D 碰撞体").clicked()
                                     && let Err(error) = self.remove_collider3d_component(selected)
                                 {
                                     self.status = error;
@@ -685,9 +685,9 @@ impl EditorApp {
                 // 多选批量与"混合"显示由通用编辑器的批量命令承担（第 33 轮）。
                 if has("Tilemap") {
                     let tilemap_header = if self.inspector_tilemap_open {
-                        "Tilemap  v"
+                        "瓦片地图  v"
                     } else {
-                        "Tilemap  >"
+                        "瓦片地图  >"
                     };
                     if ui.button(tilemap_header).clicked() {
                         self.inspector_tilemap_open = !self.inspector_tilemap_open;
@@ -699,7 +699,7 @@ impl EditorApp {
                                 ui.text_edit_singleline(&mut self.tilemap.map.texture);
                             });
                             ui.horizontal(|ui| {
-                                ui.label("Tile 尺寸");
+                                ui.label("瓦片尺寸");
                                 ui.add(egui::DragValue::new(&mut self.tilemap.map.tile_size.x));
                                 ui.add(egui::DragValue::new(&mut self.tilemap.map.tile_size.y));
                             });
@@ -759,7 +759,7 @@ impl EditorApp {
                             });
                             let mut layout_error: Option<String> = None;
                             ui.horizontal(|ui| {
-                                ui.checkbox(&mut self.tilemap.map.autotile, "自动瓦片(4-bit)");
+                                ui.checkbox(&mut self.tilemap.map.autotile, "自动瓦片（4 位）");
                                 if ui
                                     .button(
                                         "重排变体种子",
@@ -775,7 +775,7 @@ impl EditorApp {
                                         .wrapping_mul(1_664_525)
                                         .wrapping_add(1_013_904_223);
                                 }
-                                ui.label(format!("seed={}", self.tilemap.map.variant_seed));
+                                ui.label(format!("种子={}", self.tilemap.map.variant_seed));
                             });
                             if let Err(error) = self.tilemap.map.validate_layout() {
                                 layout_error = Some(error.to_string());
@@ -897,7 +897,7 @@ impl EditorApp {
                                         }
                                     });
                             });
-                            if ui.button("移除 Tilemap").clicked()
+                            if ui.button("移除瓦片地图").clicked()
                                 && let Err(error) = self.remove_component(selected, "Tilemap")
                             {
                                 self.status = error;
@@ -907,9 +907,9 @@ impl EditorApp {
                 }
                 if has("Animation") {
                     let animation_header = if self.inspector_animation_open {
-                        "Animation  v"
+                        "动画状态机  v"
                     } else {
-                        "Animation  >"
+                        "动画状态机  >"
                     };
                     if ui.button(animation_header).clicked() {
                         self.inspector_animation_open = !self.inspector_animation_open;
@@ -925,7 +925,7 @@ impl EditorApp {
                             {
                                 ui.separator();
                                 ui.horizontal(|ui| {
-                                    ui.label(format!("Clip {}", index + 1));
+                                    ui.label(format!("动画片段 {}", index + 1));
                                     if ui.small_button("删除").clicked() {
                                         remove_index = Some(index);
                                     }
@@ -935,7 +935,7 @@ impl EditorApp {
                                     ui.text_edit_singleline(&mut clip.name);
                                 });
                                 ui.horizontal(|ui| {
-                                    ui.label("Sheet");
+                                    ui.label("图集");
                                     ui.text_edit_singleline(&mut clip.sheet);
                                 });
                                 ui.horizontal(|ui| {
@@ -974,7 +974,7 @@ impl EditorApp {
                                         self.animation.machine.clips[0].name.clone();
                                 }
                             }
-                            if ui.button("添加 Clip").clicked() {
+                            if ui.button("添加动画片段").clicked() {
                                 self.animation.machine.clips.push(
                                     rustlua_animation::animation::AnimationClip {
                                         name: format!(
@@ -989,8 +989,8 @@ impl EditorApp {
                                     },
                                 );
                             }
-                            ui.label("动画数据通过 Inspector 编辑，运行时仍由 Lua 控制切换。");
-                            if ui.button("移除 Animation").clicked()
+                            ui.label("动画数据通过属性面板编辑，运行时仍由 Lua 脚本控制切换。");
+                            if ui.button("移除动画状态机").clicked()
                                 && let Err(error) = self.remove_component(selected, "Animation")
                             {
                                 self.status = error;
@@ -1007,17 +1007,17 @@ impl EditorApp {
                 // E17：Container（自动布局容器）编辑组。
                 if has("Container") {
                     ui.horizontal(|ui| {
-                        ui.label("Container");
+                        ui.label("容器");
                         egui::ComboBox::from_id_salt("container_kind")
-                            .selected_text(&self.container.kind)
+                            .selected_text(container_kind_label(&self.container.kind))
                             .show_ui(ui, |ui| {
                                 for (token, label) in [
-                                    ("vbox", "垂直排列 VBox"),
-                                    ("hbox", "水平排列 HBox"),
-                                    ("grid", "网格 Grid"),
-                                    ("wrap", "换行 Wrap"),
-                                    ("margin", "边距 Margin"),
-                                    ("center", "居中 Center"),
+                                    ("vbox", "垂直排列"),
+                                    ("hbox", "水平排列"),
+                                    ("grid", "网格"),
+                                    ("wrap", "换行"),
+                                    ("margin", "边距"),
+                                    ("center", "居中"),
                                 ] {
                                     ui.selectable_value(
                                         &mut self.container.kind,
@@ -1060,7 +1060,7 @@ impl EditorApp {
                     ui.horizontal(|ui| {
                         ui.label("对齐");
                         egui::ComboBox::from_id_salt("container_align")
-                            .selected_text(&self.container.align)
+                            .selected_text(container_align_label(&self.container.align))
                             .show_ui(ui, |ui| {
                                 for (token, label) in
                                     [("start", "起始"), ("center", "居中"), ("end", "末尾")]
@@ -1077,7 +1077,7 @@ impl EditorApp {
                         ui.horizontal(|ui| {
                             ui.label("主轴分布");
                             egui::ComboBox::from_id_salt("container_justify")
-                                .selected_text(&self.container.justify)
+                                .selected_text(container_justify_label(&self.container.justify))
                                 .show_ui(ui, |ui| {
                                     for (token, label) in [
                                         ("start", "起始"),
@@ -1096,7 +1096,7 @@ impl EditorApp {
                                 });
                         });
                     }
-                    if ui.button("移除 Container").clicked()
+                    if ui.button("移除容器").clicked()
                         && let Err(error) = self.remove_component(selected, "Container")
                     {
                         self.status = error;
@@ -1104,7 +1104,7 @@ impl EditorApp {
                 }
                 // E05-4：LayoutItem（父容器对该子项的约束）。
                 if has("LayoutItem") {
-                    ui.label("LayoutItem（子项约束）");
+                    ui.label("布局项（子项约束）");
                     for (label, pair) in [
                         ("最小", &mut self.layout_item.min_size),
                         ("最大", &mut self.layout_item.max_size),
@@ -1118,9 +1118,9 @@ impl EditorApp {
                         });
                     }
                     ui.horizontal(|ui| {
-                        ui.label("grow");
+                        ui.label("伸展");
                         ui.add(egui::DragValue::new(&mut self.layout_item.grow).range(0.0..=100.0));
-                        ui.label("shrink");
+                        ui.label("收缩");
                         ui.add(
                             egui::DragValue::new(&mut self.layout_item.shrink).range(0.0..=100.0),
                         );
@@ -1157,7 +1157,7 @@ impl EditorApp {
                         );
                         ui.checkbox(&mut self.layout_item.visible, "可见");
                     });
-                    if ui.button("移除 LayoutItem").clicked()
+                    if ui.button("移除布局项").clicked()
                         && let Err(error) = self.remove_component(selected, "LayoutItem")
                     {
                         self.status = error;
@@ -1177,7 +1177,7 @@ impl EditorApp {
                 }
                 if has("Script") {
                     ui.horizontal(|ui| {
-                        ui.label("Lua");
+                        ui.label("Lua 脚本");
                         ui.text_edit_singleline(&mut self.lua_script);
                     });
                 }
@@ -1214,7 +1214,7 @@ impl EditorApp {
 
     fn draw_ui_events_editor(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        ui.strong("UI Events");
+        ui.strong("界面事件");
         let mut changed = false;
         for index in 0..self.events_editor.bindings.len() {
             let mut binding = self.events_editor.bindings[index].clone();
@@ -1223,7 +1223,7 @@ impl EditorApp {
                     .event
                     .unwrap_or(rustlua_ui::ui_events::UiEventType::Click);
                 if egui::ComboBox::from_id_salt(format!("ui_event_type_{index}"))
-                    .selected_text(event.as_str())
+                    .selected_text(ui_event_label(event))
                     .show_ui(ui, |ui| {
                         for candidate in [
                             rustlua_ui::ui_events::UiEventType::Click,
@@ -1236,7 +1236,7 @@ impl EditorApp {
                             rustlua_ui::ui_events::UiEventType::ValueChanged,
                             rustlua_ui::ui_events::UiEventType::Drag,
                         ] {
-                            ui.selectable_value(&mut event, candidate, candidate.as_str());
+                            ui.selectable_value(&mut event, candidate, ui_event_label(candidate));
                         }
                     })
                     .response
@@ -1248,7 +1248,7 @@ impl EditorApp {
                 if ui
                     .add(
                         egui::TextEdit::singleline(binding.target.get_or_insert_with(String::new))
-                            .hint_text("target"),
+                            .hint_text("目标"),
                     )
                     .changed()
                 {
@@ -1258,7 +1258,7 @@ impl EditorApp {
                     changed = true;
                 }
                 if ui
-                    .add(egui::TextEdit::singleline(&mut binding.function).hint_text("function"))
+                    .add(egui::TextEdit::singleline(&mut binding.function).hint_text("函数"))
                     .changed()
                 {
                     changed = true;
@@ -1270,7 +1270,7 @@ impl EditorApp {
                     .collect::<Vec<_>>()
                     .join(",");
                 if ui
-                    .add(egui::TextEdit::singleline(&mut args).hint_text("k=v,k2=v2"))
+                    .add(egui::TextEdit::singleline(&mut args).hint_text("键=值,键2=值2"))
                     .changed()
                 {
                     binding.arguments = args
@@ -1293,7 +1293,7 @@ impl EditorApp {
             }
         }
         ui.horizontal(|ui| {
-            if ui.button("添加 Event").clicked() {
+            if ui.button("添加事件").clicked() {
                 self.events_editor
                     .bindings
                     .push(rustlua_ui::ui_events::UiEventBinding {
@@ -1303,7 +1303,7 @@ impl EditorApp {
                         arguments: Default::default(),
                     });
             }
-            if ui.button("应用 Events").clicked() {
+            if ui.button("应用事件").clicked() {
                 self.apply_events_editor();
             }
         });
@@ -1311,7 +1311,7 @@ impl EditorApp {
 
     fn draw_ui_bindings_editor(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        ui.strong("Property Bindings");
+        ui.strong("属性绑定");
         let mut changed = false;
         for index in 0..self.bindings_editor.bindings.len() {
             let mut binding = self.bindings_editor.bindings[index].clone();
@@ -1320,7 +1320,7 @@ impl EditorApp {
                     .property
                     .unwrap_or(rustlua_ui::ui_binding::BoundProperty::TextText);
                 if egui::ComboBox::from_id_salt(format!("binding_property_{index}"))
-                    .selected_text(property.as_str())
+                    .selected_text(bound_property_label(property))
                     .show_ui(ui, |ui| {
                         for candidate in [
                             rustlua_ui::ui_binding::BoundProperty::TextText,
@@ -1330,7 +1330,7 @@ impl EditorApp {
                             ui.selectable_value(
                                 &mut binding.property,
                                 Some(candidate),
-                                candidate.as_str(),
+                                bound_property_label(candidate),
                             );
                         }
                     })
@@ -1340,14 +1340,14 @@ impl EditorApp {
                     changed = true;
                 }
                 if ui
-                    .add(egui::TextEdit::singleline(&mut binding.target).hint_text("target"))
+                    .add(egui::TextEdit::singleline(&mut binding.target).hint_text("目标"))
                     .changed()
                 {
                     changed = true;
                 }
                 let mut source = binding.source.0.join(".");
                 if ui
-                    .add(egui::TextEdit::singleline(&mut source).hint_text("data.path"))
+                    .add(egui::TextEdit::singleline(&mut source).hint_text("数据路径"))
                     .changed()
                     && let Ok(path) = rustlua_ui::ui_binding::BindingPath::parse(&source)
                 {
@@ -1356,7 +1356,7 @@ impl EditorApp {
                 }
                 let mut default = binding.default.clone().unwrap_or_default();
                 if ui
-                    .add(egui::TextEdit::singleline(&mut default).hint_text("default"))
+                    .add(egui::TextEdit::singleline(&mut default).hint_text("默认值"))
                     .changed()
                 {
                     binding.default = (!default.trim().is_empty()).then_some(default);
@@ -1374,7 +1374,7 @@ impl EditorApp {
             }
         }
         ui.horizontal(|ui| {
-            if ui.button("添加 Binding").clicked() {
+            if ui.button("添加绑定").clicked() {
                 self.bindings_editor
                     .bindings
                     .push(rustlua_ui::ui_binding::PropertyBinding {
@@ -1388,7 +1388,7 @@ impl EditorApp {
                         flow: rustlua_ui::ui_binding::BindingFlow::OneWay,
                     });
             }
-            if ui.button("应用 Bindings").clicked() {
+            if ui.button("应用绑定").clicked() {
                 self.apply_bindings_editor();
             }
         });
@@ -1396,14 +1396,14 @@ impl EditorApp {
 
     fn draw_button_states_editor(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        ui.strong("Button States");
+        ui.strong("按钮状态");
         let states = &mut self.button_states_editor;
         for (label, value) in [
-            ("Normal", &mut states.normal),
-            ("Hover", &mut states.hover),
-            ("Pressed", &mut states.pressed),
-            ("Disabled", &mut states.disabled),
-            ("Focused", &mut states.focused),
+            ("正常", &mut states.normal),
+            ("悬停", &mut states.hover),
+            ("按下", &mut states.pressed),
+            ("禁用", &mut states.disabled),
+            ("聚焦", &mut states.focused),
         ] {
             let mut text = value.clone().unwrap_or_default();
             if ui
@@ -1417,18 +1417,18 @@ impl EditorApp {
             .checkbox(&mut self.button_states_editor.disabled_state, "禁用状态")
             .changed()
         {
-            self.status = "ButtonStates 已在缓冲中修改".to_owned();
+            self.status = "按钮状态已在缓冲中修改".to_owned();
         }
-        if ui.button("应用 Button States").clicked() {
+        if ui.button("应用按钮状态").clicked() {
             self.apply_button_states_editor();
         }
     }
 
     fn draw_ui_animation_editor(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        ui.strong("UI Animation");
+        ui.strong("界面动画");
         for (property, track) in self.ui_animation_editor.tracks.clone() {
-            ui.label(format!("轨道：{property}"));
+            ui.label(format!("轨道：{}", ui_animation_property_label(&property)));
             for (index, mut keyframe) in track.keyframes.into_iter().enumerate() {
                 ui.horizontal(|ui| {
                     let animation_changed = ui
@@ -1444,12 +1444,16 @@ impl EditorApp {
                     }
                     let mut easing = keyframe.easing;
                     egui::ComboBox::from_id_salt(format!("animation_easing_{property}_{index}"))
-                        .selected_text(easing.as_str())
+                        .selected_text(ui_easing_label(easing))
                         .show_ui(ui, |ui| {
                             for candidate in
                                 [UiEasing::Linear, UiEasing::Step, UiEasing::SmoothStep]
                             {
-                                ui.selectable_value(&mut easing, candidate, candidate.as_str());
+                                ui.selectable_value(
+                                    &mut easing,
+                                    candidate,
+                                    ui_easing_label(candidate),
+                                );
                             }
                         });
                     if easing != keyframe.easing
@@ -1473,7 +1477,7 @@ impl EditorApp {
             });
         }
         ui.horizontal(|ui| {
-            if ui.button("添加 opacity 轨道").clicked() {
+            if ui.button("添加不透明度轨道").clicked() {
                 let track = rustlua_ui::ui_animation::UiAnimationTrack::new(
                     "opacity",
                     vec![UiKeyframe {
@@ -1507,7 +1511,7 @@ impl EditorApp {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn apply_inspector(&mut self) -> bool {
         if self.is_playing() {
-            self.status = "Play mode locks scene editing; click Stop first".to_owned();
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
             return false;
         }
         if self.selection.primary().is_none() {
@@ -1838,13 +1842,13 @@ impl EditorApp {
             resources: entity.resources.clone(),
             metadata: entity.metadata.clone(),
         });
-        self.status = "Components copied".to_owned();
+        self.status = "组件已复制".to_owned();
     }
 
     // 粘贴组件（`EditorCommand::PasteComponents`）与重命名（`RenameSelection`）的实现体
     // 都已搬到 shell（`crate::actions`）：面板按钮只发 typed action。
 
-    /// 确保源 Prefab 已缓存（必要时重新读盘）。返回后不再持有 `&mut self` 借用，
+    /// 确保源预制体 已缓存（必要时重新读盘）。返回后不再持有 `&mut self` 借用，
     /// 调用方随后从 `prefab_source_cache` 取不可变引用即可。
     pub(crate) fn ensure_prefab_source_cached(&mut self, path: &Path) -> Result<(), String> {
         let stamp = prefab_stamp(path);
@@ -1856,7 +1860,7 @@ impl EditorApp {
         if cached_fresh {
             return Ok(());
         }
-        let prefab = Prefab::load(path).map_err(|error| format!("无法加载源 Prefab：{error}"))?;
+        let prefab = Prefab::load(path).map_err(|error| format!("无法加载源预制体：{error}"))?;
         self.prefab_source_cache
             .insert(path.to_path_buf(), CachedPrefabSource { stamp, prefab });
         Ok(())
@@ -1889,7 +1893,7 @@ impl EditorApp {
             .get(&path)
             .map(|cached| &cached.prefab)?;
         let Some(source_entity) = prefab.entities.get(&source_id) else {
-            return Some(Err(format!("源 Prefab 中缺少实体 {}", source_id.0)));
+            return Some(Err(format!("源预制体中缺少实体 {}", source_id.0)));
         };
         let scene = self.current_scene()?;
         let entity = scene.scene.entities.get(&selected)?;
@@ -1899,10 +1903,10 @@ impl EditorApp {
     // 选择性 Revert（`EditorCommand::RevertPrefabOverride`）的实现体已搬到 shell
     // （`crate::actions` 的 `revert_prefab_override_field`）：面板只发 typed action。
 
-    // 重新应用源 Prefab（`EditorCommand::ReapplyPrefab`）的实现体已搬到 shell
+    // 重新应用源预制体（`EditorCommand::ReapplyPrefab`）的实现体已搬到 shell
     // （`crate::actions` 的 `reapply_prefab`）：目标由 typed action 显式携带。
 
-    /// 把实例写回源 Prefab 文件（`EditorCommand::SavePrefabToSource`）与逐字段 Apply
+    /// 把实例写回源预制体 文件（`EditorCommand::SavePrefabToSource`）与逐字段 Apply
     /// （`EditorCommand::ApplyPrefabOverride`）的实现体都已搬到 shell（`crate::actions` 的
     /// `save_prefab_to_source` / `apply_prefab_override_field`）：面板只发 typed action。
     /// 是否是 Prefab 实例（有 `prefab.source`）。typed action 的前置条件检查用它，
@@ -2036,6 +2040,97 @@ fn compact_value(value: &str) -> String {
     }
     let head: String = value.chars().take(MAX).collect();
     format!("{head}…")
+}
+
+fn canvas_scale_mode_label(mode: rustlua_ui::ui_layout::CanvasScaleMode) -> &'static str {
+    use rustlua_ui::ui_layout::CanvasScaleMode;
+    match mode {
+        CanvasScaleMode::None => "不缩放",
+        CanvasScaleMode::FitWidth => "适配宽度",
+        CanvasScaleMode::FitHeight => "适配高度",
+        CanvasScaleMode::FitBoth => "双向适配",
+    }
+}
+
+fn collider3d_shape_label(shape: &str) -> &str {
+    match shape {
+        "ball" => "球体",
+        "cuboid" => "长方体",
+        "capsule" => "胶囊",
+        _ => shape,
+    }
+}
+
+fn container_kind_label(kind: &str) -> &str {
+    match kind {
+        "vbox" => "垂直排列",
+        "hbox" => "水平排列",
+        "grid" => "网格",
+        "wrap" => "换行",
+        "margin" => "边距",
+        "center" => "居中",
+        _ => kind,
+    }
+}
+
+fn container_align_label(align: &str) -> &str {
+    match align {
+        "start" => "起始",
+        "center" => "居中",
+        "end" => "末尾",
+        _ => align,
+    }
+}
+
+fn container_justify_label(justify: &str) -> &str {
+    match justify {
+        "start" => "起始",
+        "center" => "居中",
+        "end" => "末尾",
+        "space_between" => "两端对齐",
+        "space_around" => "环绕分布",
+        "space_evenly" => "均匀分布",
+        _ => justify,
+    }
+}
+
+fn ui_event_label(event: rustlua_ui::ui_events::UiEventType) -> &'static str {
+    use rustlua_ui::ui_events::UiEventType;
+    match event {
+        UiEventType::PointerEnter => "指针进入",
+        UiEventType::PointerExit => "指针离开",
+        UiEventType::PointerDown => "指针按下",
+        UiEventType::PointerUp => "指针抬起",
+        UiEventType::Click => "点击",
+        UiEventType::Focus => "聚焦",
+        UiEventType::Submit => "提交",
+        UiEventType::ValueChanged => "值改变",
+        UiEventType::Drag => "拖动",
+    }
+}
+
+fn bound_property_label(property: rustlua_ui::ui_binding::BoundProperty) -> &'static str {
+    use rustlua_ui::ui_binding::BoundProperty;
+    match property {
+        BoundProperty::TextText => "文本内容",
+        BoundProperty::ImageVisible => "图片可见",
+        BoundProperty::ProgressValue => "进度值",
+    }
+}
+
+fn ui_easing_label(easing: UiEasing) -> &'static str {
+    match easing {
+        UiEasing::Linear => "线性",
+        UiEasing::Step => "阶跃",
+        UiEasing::SmoothStep => "平滑",
+    }
+}
+
+fn ui_animation_property_label(property: &str) -> &str {
+    match property {
+        "opacity" => "不透明度",
+        _ => property,
+    }
 }
 
 pub(crate) fn diff_prefab_entity(source: &SceneEntity, instance: &SceneEntity) -> Vec<String> {
@@ -2457,7 +2552,7 @@ mod tests {
         );
     }
 
-    /// 源 Prefab 缓存：命中时不再读盘；文件被改动后必须重载，不能显示过期差异。
+    /// 源预制体 缓存：命中时不再读盘；文件被改动后必须重载，不能显示过期差异。
     #[test]
     fn prefab_source_cache_hits_and_invalidates_on_file_change() {
         let (mut app, root) = sample_app_with_production_scene("prefab-cache");
@@ -2489,7 +2584,7 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(app.prefab_source_cache.len(), 1);
 
-        // 外部改动源 Prefab：mtime/长度变化后必须重新加载并反映新内容。
+        // 外部改动源预制体：mtime/长度变化后必须重新加载并反映新内容。
         let prefab_path = root.join("assets/prefabs/slime_green.prefab");
         let mut prefab = Prefab::load(&prefab_path).unwrap();
         prefab.name = "renamed-by-tool".to_owned();
@@ -2510,7 +2605,7 @@ mod tests {
             cached.prefab.name, "renamed-by-tool",
             "文件改动后缓存必须重载"
         );
-        // 差异集合仍然来自源 Prefab 的真实内容（改名 override 依旧列出）。
+        // 差异集合仍然来自源预制体 的真实内容（改名 override 依旧列出）。
         assert!(third.iter().any(|row| row.field == "name"), "{third:?}");
         let _ = fs::remove_dir_all(root);
     }
@@ -2540,7 +2635,7 @@ mod tests {
             editor::CommandResult::Applied
         );
         assert!(
-            app.status.contains("已重新应用 Prefab"),
+            app.status.contains("已重新应用预制体"),
             "status should confirm prefab reapply"
         );
         let selected = app.selection.primary().unwrap();
@@ -2548,7 +2643,7 @@ mod tests {
         let entity = scene.entities.get(&selected).unwrap();
         assert_eq!(entity.name, "BossGreen");
         // 逐字段语义：被覆盖的字段保留实例取值（原始文本 `77`/`19` 不被规范化），
-        // 其余字段跟随源 Prefab。这里用类型化读取断言，避免绑定源文件的格式细节。
+        // 其余字段跟随源预制体。这里用类型化读取断言，避免绑定源文件的格式细节。
         let payload = entity
             .components
             .get("Transform")
@@ -2580,7 +2675,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    /// Revert = 丢弃全部覆盖：实例字段回到源 Prefab 取值（逐字），名字覆盖同样被清掉。
+    /// Revert = 丢弃全部覆盖：实例字段回到源预制体 取值（逐字），名字覆盖同样被清掉。
     #[test]
     fn sample_project_revert_prefab_overrides_restores_source_values() {
         let (mut app, root) = sample_app_with_production_scene("revert");
@@ -2638,7 +2733,7 @@ mod tests {
             editor::CommandResult::Applied
         );
         assert!(
-            app.status.contains("已还原 Prefab 覆盖"),
+            app.status.contains("已还原预制体覆盖"),
             "status should confirm the revert: {}",
             app.status
         );
@@ -2675,7 +2770,7 @@ mod tests {
         assert_eq!(
             reverted.len(),
             1,
-            "恰有一个实例根回到源 Prefab 取值（逐字）：{expected}"
+            "恰有一个实例根回到源预制体 取值（逐字）：{expected}"
         );
         assert_eq!(
             reverted[0]
@@ -2780,7 +2875,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    /// 逐字段 Apply（docs/55 阶段 3）：把实例取值写回**源 Prefab 文件**并更新全部实例；
+    /// 逐字段 Apply（docs/55 阶段 3）：把实例取值写回**源预制体 文件**并更新全部实例；
     /// 应用后该字段不再是覆盖，其它覆盖保持不变。
     #[test]
     fn apply_prefab_override_field_writes_source_and_drops_that_override() {
@@ -2817,12 +2912,12 @@ mod tests {
         let undo_before = app.history.undo_len();
         app.apply_prefab_override_field(target, "property:Transform.position");
         assert!(
-            app.status.contains("已把字段应用到源 Prefab"),
+            app.status.contains("已把字段应用到源预制体"),
             "status: {}",
             app.status
         );
 
-        // 1) 源 Prefab 文件里该字段已更新。
+        // 1) 源预制体 文件里该字段已更新。
         let prefab = Prefab::load(root.join("assets/prefabs/slime_green.prefab"))
             .expect("source prefab reloads");
         let registry = rustlua_ecs::component_schema::builtin_registry();
@@ -2838,7 +2933,7 @@ mod tests {
             )
             .expect("source position"),
             rustlua_ecs::component_schema::FieldValue::Tuple(vec![999.0, 0.0, 0.0]),
-            "源 Prefab 文件必须被更新"
+            "源预制体 文件必须被更新"
         );
 
         // 2) 该字段不再是覆盖（实例 == 源），名字覆盖仍在。
@@ -2898,7 +2993,7 @@ mod tests {
             editor::CommandResult::Applied
         );
         assert!(
-            app.status.contains("已写回 Prefab 源并更新实例"),
+            app.status.contains("已写回预制体源并更新实例"),
             "status should confirm prefab save, got: {}",
             app.status
         );

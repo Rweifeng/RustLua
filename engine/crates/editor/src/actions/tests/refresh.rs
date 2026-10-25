@@ -213,7 +213,7 @@ fn examples_main_delete_selected_root_routes_unified_refresh() {
 
     // 删除根实体：删除成功后统一入口必须清理悬空选择与陈旧缓存。
     app.delete_selected_entity();
-    assert_eq!(app.status, "Entity deleted");
+    assert_eq!(app.status, "实体已删除");
     let scene = app.document.current_scene.as_ref().unwrap();
     assert_eq!(
         scene.scene.entities.len(),
@@ -246,7 +246,7 @@ fn examples_main_undo_redo_routes_unified_refresh() {
     poison_scene_view_caches(&mut app);
 
     app.delete_selected_entity();
-    assert_eq!(app.status, "Entity deleted");
+    assert_eq!(app.status, "实体已删除");
     assert_eq!(
         app.document
             .current_scene
@@ -261,7 +261,7 @@ fn examples_main_undo_redo_routes_unified_refresh() {
 
     // Undo 走统一入口：整文档回到删除前快照，Selection/缓存一并收敛。
     app.undo();
-    assert_eq!(app.status, "Undo: Delete entities");
+    assert_eq!(app.status, "撤销：删除实体");
     let scene = app.document.current_scene.as_ref().unwrap();
     assert_eq!(scene.scene.entities.len(), before);
     assert!(scene.scene.entities.contains_key(&target));
@@ -271,7 +271,7 @@ fn examples_main_undo_redo_routes_unified_refresh() {
 
     // Redo 同样经统一入口：删除再次生效。
     app.redo();
-    assert_eq!(app.status, "Redo: Delete entities");
+    assert_eq!(app.status, "重做：删除实体");
     let scene = app.document.current_scene.as_ref().unwrap();
     assert_eq!(scene.scene.entities.len(), before - 1);
     assert!(!scene.scene.entities.contains_key(&target));
@@ -298,7 +298,7 @@ fn game_production_rename_selected_routes_unified_refresh() {
     app.entity_name = "HeroRenamed".to_owned();
     app.rename_selected();
 
-    assert_eq!(app.status, "Entity renamed");
+    assert_eq!(app.status, "实体已重命名");
     let scene = app.document.current_scene.as_ref().unwrap();
     assert_eq!(
         scene.scene.entities.get(&SceneEntityId(2)).unwrap().name,
@@ -312,7 +312,7 @@ fn game_production_rename_selected_routes_unified_refresh() {
     let _ = fs::remove_dir_all(root);
 }
 
-/// E02 Prefab Apply 收敛：重新应用源 Prefab 会把整棵实例替换为重建的新实体，
+/// E02 Prefab Apply 收敛：重新应用源预制体 会把整棵实例替换为重建的新实体，
 /// 统一入口必须让选择指向新的根 ID、保持其仍有效，并清理陈旧缓存与元数据。
 #[test]
 fn game_production_reapply_prefab_routes_unified_refresh() {
@@ -345,7 +345,7 @@ fn game_production_reapply_prefab_routes_unified_refresh() {
         editor::CommandResult::Applied
     );
     assert!(
-        app.status.contains("已重新应用 Prefab"),
+        app.status.contains("已重新应用预制体"),
         "status should confirm prefab reapply, got: {}",
         app.status
     );
@@ -417,7 +417,7 @@ fn game_production_playback_stop_routes_unified_refresh() {
     assert_eq!(app.selection.primary(), None);
     assert!(matches!(app.delete_target, crate::DeleteTarget::None));
     assert_scene_view_and_metadata_invalidated(&app);
-    assert_eq!(app.status, "Play stopped; runtime changes were discarded");
+    assert_eq!(app.status, "运行已停止，运行期改动已丢弃");
 
     let _ = fs::remove_dir_all(root);
 }

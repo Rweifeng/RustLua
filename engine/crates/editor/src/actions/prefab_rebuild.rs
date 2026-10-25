@@ -3,7 +3,7 @@
 
 use super::*;
 
-/// 重建一个 Prefab 实例所需的全部信息（写回/重新应用共用）。
+/// 重建一个 预制体实例所需的全部信息（写回/重新应用共用）。
 ///
 /// 写路径辅助是**纯函数**：只吃显式传入的场景/Prefab，不持有 `EditorApp`
 /// （面板棘轮扫描的是 `self.document` / `self.history` 这类直写）。
@@ -25,7 +25,7 @@ pub(crate) fn collect_prefab_rebuild_state(
     let root = scene
         .entities
         .get(&instance_root)
-        .ok_or_else(|| format!("场景中不存在 Prefab 根实例 {}", instance_root.0))?;
+        .ok_or_else(|| format!("场景中不存在预制体根实例 {}", instance_root.0))?;
     let instance_entities = collect_scene_subtree(scene, instance_root)?;
     let mut source_to_instance = std::collections::BTreeMap::new();
     for entity_id in &instance_entities {
@@ -38,7 +38,7 @@ pub(crate) fn collect_prefab_rebuild_state(
             .get("prefab.source")
             .is_none_or(|value| value != prefab_source)
         {
-            return Err("Prefab 实例子树包含非同源节点，暂不支持自动重建".to_owned());
+            return Err("预制体实例子树包含非同源节点，暂不支持自动重建".to_owned());
         }
         let source_id = entity
             .metadata
@@ -48,7 +48,7 @@ pub(crate) fn collect_prefab_rebuild_state(
             .map(SceneEntityId)
             .map_err(|_| format!("实体 {} 的 prefab.source_id 非法", entity_id.0))?;
         if source_to_instance.insert(source_id, *entity_id).is_some() {
-            return Err(format!("Prefab 实例中出现重复的源实体 {}", source_id.0));
+            return Err(format!("预制体实例中出现重复的源实体 {}", source_id.0));
         }
     }
     let prefab_ids = prefab
@@ -61,7 +61,7 @@ pub(crate) fn collect_prefab_rebuild_state(
         .copied()
         .collect::<std::collections::BTreeSet<_>>();
     if prefab_ids != instance_ids {
-        return Err("Prefab 实例子树和源 Prefab 结构不一致，暂不支持自动重建".to_owned());
+        return Err("预制体实例子树和源预制体结构不一致，暂不支持自动重建".to_owned());
     }
     let overrides = collect_prefab_overrides(scene, prefab, &source_to_instance)?;
     Ok(PrefabRebuildState {
@@ -118,7 +118,7 @@ pub(crate) fn build_prefab_from_instance_root(
             .filter_map(|id| source_ids.get(&id).copied())
             .collect();
         if remapped.insert(source_id, entity).is_some() {
-            return Err(format!("Prefab 写回时出现重复源实体 {}", source_id.0));
+            return Err(format!("预制体写回时出现重复源实体 {}", source_id.0));
         }
     }
     prefab.root = root;
@@ -201,7 +201,7 @@ pub(crate) fn prefab_override_value(instance: &SceneEntity, field: &str) -> Resu
             .cloned()
             .ok_or_else(|| format!("实例缺少元数据 {key}"))
     } else {
-        Err(format!("不支持的 Prefab override 字段 {field}"))
+        Err(format!("不支持的预制体覆盖字段 {field}"))
     }
 }
 

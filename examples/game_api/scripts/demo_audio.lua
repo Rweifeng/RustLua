@@ -1,168 +1,95 @@
--- api_audio：演示 audio 模块的**全部** 17 个函数（播放 / 音量分组（总线）/ 设置文件往返 /
--- 空间化）。
+-- api_audio：audio 模块的 2.0 分步 Lab（总线 / 音量 / 播放 / 空间化 / 设置）。
 --
--- 这个演示想证明什么：
---   ① 播放接口只提交"播放请求"，返回值比想象中少：`audio.play` / `audio.music` /
---      `audio.stop_music` **没有返回值**，只有 `audio.play_on` 返回 `ok, reason`。
---      没有输出设备时引擎**静默降级**（只记一行日志就跳过，M19-02 策略），所以
---      `ok=true` 的准确含义是"这个请求被接受了（文件读到了、能解码）"，而不是
---      "你一定听得见声音"。状态行把返回值原样贴出来，就是为了让这条语义可见。
---   ② 音量是**两级乘法**：`bus_volume(bus)` 是分组自己的音量（不含主音量），
---      `effective_volume(bus)` = 主音量 × 分组音量 —— 后者才是真正灌进音频 sink 的值。
---      `audio.volume(v)` 改的是主音量，`set_bus_volume(bus, v)` 改的是某一路；
---      master 那一路上两者等价（`bus_volume("master")` 读回来就是主音量）。
---   ③ 设置能往返、也能落盘：`settings_text()` 给出四路音量的**版本化文本**
---      （首行版本头 `rustlua-audio-v1`，之后每行 `bus=0.000`），`apply_settings(text)`
---      把它灌回引擎；`settings_path()` / `load_settings()` / `save_settings()` 读写工程
---      设置文件 `settings.toml` 的 `[audio]` 段。设置文件是**可选**的：缺失时
---      `load_settings()` 返回 `false, "missing"`，这是"第一次运行"的正常路径，不是错误。
---   ④ 空间化（M74-01）是**引擎定模型、平台尽力**：听者位姿由宿主每帧从活动相机灌进来
---      （`listener()` 读回来就能看见），`play_at(name,x,y[,z])` 返回 `ok, gain, pan`。
---      `gain` 已经乘进了这次播放的音量；`pan` 只有能真正做声像的平台用得上 ——
---      桌面会左右偏，web/微信只能改音量（引擎日志里显式记一条"声像未应用"）。
---      `set_listener` 手设的位姿**下一帧就会被宿主按相机盖回去**，本演示用它来证明
---      "这条线是活的"，而不是接管听者。
+-- 一条主线：**主音量 × 分组音量 = 实际音量**；播放接口只登记一次请求；设置文本可往返。
+-- 每一步都把自己的状态写在舞台里，右侧卡片读回本帧真实值；F5 会依次跑
+-- enter → run × 3 → check，因此"读完就把状态改乱"的写法会当场变红。
 --
--- 看什么：
---   * 三个精灵 = 三张音量表：Speaker（主音量 master）/ Bgm（bgm 总线）/ Sfx（sfx 与 ui 总线）。
---     **亮度 = 该通道的实际生效音量**（把主音量或该路分组音量调小，它就暗下去 ——
---     "主 × 分组"这层乘法因此看得见）；**往上跳一下 = 这一路刚发声**。
---     Bgm 金色 = 音乐在循环、灰色 = 已停；Sfx 白闪 = sfx 总线（按 2）、蓝闪 = ui 总线
---     （按 3；ui 没有专属精灵，所以借 Sfx 精灵用颜色区分，数值见左下状态行的 ui 一路）。
---   * 精灵下面五行是**每帧读回来的事实**：`buses()` 的固定顺序、四路的 独立/生效 音量、
---     `settings_text()` 的版本化文本、`settings_path()` 的路径、三个设置函数的返回值。
---   * 左下状态行：主音量、当前选中的总线、BGM 状态、三条通道的播放次数、最近一次操作。
+-- 为什么每条 `enter` 都要复位总线：读者可能按过 `, . [ ]` 调过音量、按过 M 播过音乐；
+-- 若不复位，F5 的结论就依赖上一次操作，不再可重复。
 --
--- 素材名（最容易踩的坑）：`audio.play/play_on/music` 的 `name` **不是工程相对路径**，
--- 而是**相对于 `assets/audio/` 的裸文件名** —— 宿主用
--- `set_audio_asset_dir(<project>/assets/audio)` 配好目录，引擎再依次试 `<name>.wav` 与
--- `<name>.ogg`（见 `core/audio.rs` 的 `sound_bytes`）。所以这里写 `"pickup"`；
--- 写成 `"assets/audio/pickup.ogg"` 会去找 `assets/audio/assets/audio/pickup.ogg.ogg` 而失败。
+-- 交互键（Lab 保留 space/方向键/1..9/R/F/F5，这里只用字母与标点）：
+--   [ ] 主音量 ±0.1    , . 选中总线 ±0.1    B 切换选中总线    X 还原混音
+--   P play  H play_on(sfx)  U play_on(ui)  O play_at  M music  N stop_music
+--   L load_settings    S save_settings（唯一写盘调用）  P 应用设置文本（settings 步）
 --
--- 硬规则（README §2）：顶层只定义函数与常量（不调用任何引擎 API）；`update()` 在 headless
--- （无窗口 / 无音频设备 / 无按键）下跑通 —— 它每帧只**读**引擎状态（含读设置文件），
--- 唯一会写盘的 `audio.save_settings()` 只待在按键分支里。
---
--- 为什么屏幕上的文案全是 ASCII：本工程 `assets/fonts/NotoSansSC-VF.ttf` 是被裁剪过的
--- **子集字体**（242KB，完整字体在 `engine/crates/editor/fonts/` 里是 17.7MB），
--- 它缺很多汉字字形（`ui.measure_text` 能直接量出来：`missing_count > 0`，渲染成占位方框）。
--- 所以"看得见的字"只用 ASCII，中文解释全部放在注释与日志里 —— 日志用编辑器自己的字体，
--- 不受这个子集影响。
-local api = require("api_demo")
+-- 硬规则（README §2）：顶层只定义常量与函数；`run` 在 headless 下只读；
+-- `audio.save_settings()` 只待在按键分支里，`load/apply` 都包在 `lab.try` 里。
+local lab = require("lab")
 
 local M = {}
 
--- ---------------------------------------------------------------------------
--- 常量
--- ---------------------------------------------------------------------------
+-- 场景实体名（scenes/api_audio.scene）：三个精灵就是三路音量的"表"。
+local SPEAKER, BGM, SFX = "Speaker", "Bgm", "Sfx"
 
--- 素材名：相对 `assets/audio/` 的裸文件名（见文件头"素材名"一段）。四个文件都已存在：
--- pickup.ogg / hit.ogg / attack.ogg / bgm.ogg。
+-- 素材名是相对 `assets/audio/` 的裸文件名（pickup/hit/attack/bgm 都已存在）。
 local CLIP_PICKUP = "pickup"
 local CLIP_HIT = "hit"
 local CLIP_ATTACK = "attack"
 local CLIP_BGM = "bgm"
 
--- 每次按键的音量步长（超界由引擎钳制到 0..1，本文件不自己夹）。
-local STEP = 0.1
+-- 复位值：主 0.8、bgm 0.7、sfx 0.9、ui 0.6（每一步 enter 都推回这组数）。
+local MASTER = 0.8
+local MIX = { bgm = 0.7, sfx = 0.9, ui = 0.6 }
 
--- 三个可视化通道：`entity_name` 是场景里的实体名（运行期用 `entity.find` 换 id），
--- `base` 是基色（只负责"看出这是哪一路"），亮度才是数据。
-local CHANNELS = {
-    {
-        key = "speaker",
-        entity_name = "Speaker",
-        base = { 0.60, 0.82, 1.00 },
-        flash_color = { 0.92, 0.96, 1.00 },
-    },
-    {
-        key = "bgm",
-        entity_name = "Bgm",
-        base = { 1.00, 0.86, 0.38 },
-        flash_color = { 1.00, 1.00, 0.80 },
-    },
-    {
-        key = "sfx",
-        entity_name = "Sfx",
-        base = { 1.00, 0.62, 0.78 },
-        flash_color = { 1.00, 1.00, 1.00 },
-    },
+local BUS_KEYS = { "master", "bgm", "sfx", "ui" }
+local ACTOR_X = { 400, 640, 880 }
+local METER_X = { 370, 510, 650, 790 }
+local METER_Y = 400
+local METER_W = 90
+local METER_H = 110
+
+-- 动态 UI 的 id 清单：`lab.stop()` 只清 shell，不会替模块清这些图；离开时必须逐个清。
+local UI_IDS = {
+    "audio_head", "audio_mix_line", "audio_mix_line2", "audio_sel",
+    "audio_meter_bg_1", "audio_meter_bg_2", "audio_meter_bg_3", "audio_meter_bg_4",
+    "audio_meter_fill_1", "audio_meter_fill_2", "audio_meter_fill_3", "audio_meter_fill_4",
+    "audio_meter_txt_1", "audio_meter_txt_2", "audio_meter_txt_3", "audio_meter_txt_4",
+    "audio_flash",
+    "audio_listener_dot", "audio_emitter_dot", "audio_spatial_line",
+    "audio_spatial_txt", "audio_spatial_txt2",
+    "audio_settings_1", "audio_settings_2", "audio_settings_3", "audio_settings_4",
 }
 
--- 音乐停掉时 Bgm 精灵的底色（灰）：与播放中的金色对比，"BGM 在不在响"一眼可见。
-local BGM_STOPPED_COLOR = { 0.42, 0.44, 0.52 }
--- ui 总线的一次性音效用**蓝色**闪光（ui 没有专属精灵，借 Sfx 精灵 + 颜色区分）。
-local UI_FLASH_COLOR = { 0.45, 0.85, 1.00 }
+local ids = {}
+local selected = 2
+local emitter_x = 4
+local flash = 0
+local flash_x = 640
+local flash_y = 220
 
--- 总线名 → 闪光通道：master 由 Speaker 精灵表达，bgm / sfx 各有自己的精灵，
--- ui 借 Sfx 精灵（蓝色闪光）。
-local FLASH_CHANNEL = { master = "speaker", bgm = "bgm", sfx = "sfx", ui = "ui" }
-
--- 闪光与抬升：按键发声那一帧置满，之后线性衰减 —— 视觉上的"这一路刚响过"。
-local FLASH_SECONDS = 0.45
-local LIFT_PX = 16
--- 音乐循环播放时 Bgm 精灵的常驻抬升（"在响"的静态标记，不依赖闪光）。
-local BGM_LIFT_PX = 10
-
--- 按键：全部是 **v2 物理键名**（`input.just_pressed` 的严格解析会拒绝拼错的键，
--- 大写/`key:` 前缀也接受，但这里统一小写形式，和 `input.rebind` 的绑定文本同源）。
-local KEY_PLAY = "digit1"
-local KEY_HIT = "digit2"
-local KEY_UI = "digit3"
-local KEY_MUSIC = "digit4"
-local KEY_STOP = "digit5"
-local KEY_BUS_NEXT = "tab"
-local KEY_BUS_DOWN = "comma"
-local KEY_BUS_UP = "period"
-local KEY_MASTER_DOWN = "bracketleft"
-local KEY_MASTER_UP = "bracketright"
-local KEY_APPLY = "keyp"
-local KEY_LOAD = "keyl"
-local KEY_SAVE = "keys"
-local KEY_SPATIAL = "digit6"
-
--- 本模块自己的动态 UI 行 id（`api_demo` 负责 api_title / api_status / api_hint 三行）。
-local ROW_BUSES = "api_audio_buses"
-local ROW_TABLE = "api_audio_table"
-local ROW_TEXT = "api_audio_text"
-local ROW_PATH = "api_audio_path"
-local ROW_OPS = "api_audio_ops"
-local ROW_SPATIAL = "api_audio_spatial"
-
--- ---------------------------------------------------------------------------
--- 模块内状态（脚本侧的观察值，不是引擎状态）
--- ---------------------------------------------------------------------------
-
--- 每个通道的剩余闪光秒数（按键那一帧置 FLASH_SECONDS，之后每帧衰减）。
-local flash = { speaker = 0, bgm = 0, sfx = 0, ui = 0 }
--- 1..3 → { id, x, y, head }：on_create 里从场景读回来的**基座标**与"除 tint 以外的
--- Sprite 组件串"。必须缓存：本演示每帧都会写回位置与 tint，不缓存就会把上一次的抬升
--- 当成新基座（位置一路飘走），或把上一次的 tint 当成原色（越调越暗）。
-local actor = {}
--- BGM 状态：引擎没有"正在播什么 / 有没有在播"的查询接口，所以这里存的是
--- `audio.music()` / `audio.stop_music()` 的**最后一次调用意图**（不假装知道引擎内部状态）。
-local music_playing = false
--- 当前选中的总线下标（1..4，顺序同 `buses()` 的返回值）：`,` / `.` 改的就是这一路。
-local selected = 1
-
-local S = {
-    apply = "apply_settings(text) -> press P",
-    load = "load_settings() -> see on_create result",
-    save = "save_settings() -> press S to write",
-    last = "no key pressed yet",
-    settings_path = "(read in on_create)",
-    listener = "listener() -> (read in update)",
-    spatial = "play_at() -> press 6",
-    sfx_plays = 0,
-    bgm_plays = 0,
-    ui_plays = 0,
+-- 脚本侧观察值（每帧由 run 重算；不做业务累积，避免读数漂移）。
+local obs = {
+    master = MASTER,
+    bgm = MIX.bgm,
+    sfx = MIX.sfx,
+    ui = MIX.ui,
+    eff_bgm = MASTER * MIX.bgm,
+    eff_sfx = MASTER * MIX.sfx,
+    eff_ui = MASTER * MIX.ui,
+    path = "",
+    text = "",
+    text_lines = 0,
+    listener = 0,
+    last_gain = "-",
+    last_pan = "-",
+    op = "ready",
 }
 
 -- ---------------------------------------------------------------------------
 -- 纯值工具（不碰引擎 API）
 -- ---------------------------------------------------------------------------
 
---- 浮点短文本：`short(56.0)` → `"56"`，`short(0.5)` → `"0.50"`。
+local function clamp(value, low, high)
+    if value < low then
+        return low
+    end
+    if value > high then
+        return high
+    end
+    return value
+end
+
+--- 浮点短文本：整数值不显示小数点，便于一眼读。
 local function short(value)
     if math.abs(value - math.floor(value + 0.5)) < 0.001 then
         return string.format("%d", math.floor(value + 0.5))
@@ -170,460 +97,641 @@ local function short(value)
     return string.format("%.2f", value)
 end
 
---- 夹到 0..1（只用于颜色通道，音量本身交给引擎钳制）。
-local function clamp01(value)
-    if value < 0 then
-        return 0
+--- 统计行数（设置文本的版本头 + 四行音量，共 5 行）。
+local function count_lines(text)
+    local lines = 0
+    for _ in string.gmatch(text, "[^\n]+") do
+        lines = lines + 1
     end
-    if value > 1 then
-        return 1
-    end
-    return value
+    return lines
 end
 
---- 亮度系数：0 音量 → 0.30（暗但还看得见），满音量 → 1.0（原色）。
---- 这就是 `effective_volume` 的可视化：主 × 分组之后剩多少，精灵就亮多少。
-local function brightness(effective)
-    return 0.30 + 0.70 * clamp01(tonumber(effective) or 0)
+-- ---------------------------------------------------------------------------
+-- 场景 / 音频状态工具
+-- ---------------------------------------------------------------------------
+
+--- 按名字取实体；场景被改名/删实体时返回 nil，调用点先判空（不硬崩）。
+local function find_ids()
+    ids.speaker = entity.find(SPEAKER)
+    ids.bgm = entity.find(BGM)
+    ids.sfx = entity.find(SFX)
 end
 
---- 颜色 = 基色 × 亮度，再朝 `flash_color` 混合 `t`（0..1，闪光强度）。
-local function shade(base, effective, flash_color, t)
-    local level = brightness(effective)
-    local out = { 0, 0, 0 }
-    for index = 1, 3 do
-        local value = base[index] * level
-        if t > 0 then
-            value = value + (flash_color[index] - value) * t
+--- 把四路音量推回本演示的基准值（enter 与按键分支共用）。
+local function reset_mix()
+    audio.volume(MASTER)
+    audio.set_bus_volume("bgm", MIX.bgm)
+    audio.set_bus_volume("sfx", MIX.sfx)
+    audio.set_bus_volume("ui", MIX.ui)
+end
+
+--- 清掉本模块的动态 UI（切步骤 / 销毁时调用；不会碰 shell 的 id）。
+local function clear_ui()
+    for _, id in ipairs(UI_IDS) do
+        ui.clear(id)
+    end
+end
+
+--- 当前选中总线的下标（跳过 master：主音量由 [ ] 管）。
+local function cycle_bus(step)
+    selected = selected + step
+    if selected < 2 then
+        selected = 4
+    elseif selected > 4 then
+        selected = 2
+    end
+    return BUS_KEYS[selected]
+end
+
+--- 精灵纵向位置 = 实际音量（主 × 分组）：0 时落到 300，1 时升到 180。
+local function draw_actor(id, home_x, effective)
+    if id then
+        transform.set(id, home_x, 300 - 120 * clamp(effective, 0.0, 1.0))
+    end
+end
+
+--- 四根竖条 + 读数行：亮度/高度都是 effective_volume，主 × 分组这层乘法因此看得见。
+local function draw_meters()
+    ui.text_at("audio_head", 330, 96, "AUDIO MIX   master x bus = effective", 1.0, 14)
+    for index, key in ipairs(BUS_KEYS) do
+        local x = METER_X[index]
+        local effective = audio.effective_volume(key)
+        if index == selected and selected > 1 then
+            ui.image("audio_sel", x - 4, METER_Y - 4, METER_W + 8, METER_H + 8, "__white__", 0.18, 0.30, 0.52)
         end
-        out[index] = clamp01(value)
+        ui.image("audio_meter_bg_" .. index, x, METER_Y, METER_W, METER_H, "__white__", 0.15, 0.18, 0.25)
+        local height = math.max(2, METER_H * clamp(effective, 0.0, 1.0))
+        local r, g, b = 0.42, 0.62, 1.00
+        if key == "bgm" then
+            r, g, b = 0.96, 0.78, 0.34
+        elseif key == "sfx" then
+            r, g, b = 1.00, 0.58, 0.74
+        elseif key == "ui" then
+            r, g, b = 0.42, 0.86, 0.72
+        end
+        ui.image(
+            "audio_meter_fill_" .. index,
+            x,
+            METER_Y + METER_H - height,
+            METER_W,
+            height,
+            "__white__",
+            r,
+            g,
+            b
+        )
+        ui.text_at(
+            "audio_meter_txt_" .. index,
+            x,
+            METER_Y + METER_H + 8,
+            string.format("%s %s", key, short(effective)),
+            1.0,
+            12
+        )
     end
-    return out
+    draw_actor(ids.speaker, ACTOR_X[1], audio.effective_volume("master"))
+    draw_actor(ids.bgm, ACTOR_X[2], audio.effective_volume("bgm"))
+    draw_actor(ids.sfx, ACTOR_X[3], audio.effective_volume("sfx"))
+
+    ui.text_at(
+        "audio_mix_line",
+        330,
+        342,
+        string.format(
+            "master %s   bgm %s x %s = %s   sfx %s x %s = %s",
+            short(audio.bus_volume("master")),
+            short(audio.bus_volume("master")),
+            short(audio.bus_volume("bgm")),
+            short(audio.effective_volume("bgm")),
+            short(audio.bus_volume("master")),
+            short(audio.bus_volume("sfx")),
+            short(audio.effective_volume("sfx"))
+        ),
+        1.0,
+        13
+    )
+    ui.text_at(
+        "audio_mix_line2",
+        330,
+        366,
+        string.format(
+            "ui %s x %s = %s   (brightness / bar height = effective volume)",
+            short(audio.bus_volume("master")),
+            short(audio.bus_volume("ui")),
+            short(audio.effective_volume("ui"))
+        ),
+        1.0,
+        12
+    )
 end
 
---- 把一路通道画出来：**位置** = 基座标 - 抬升量，**颜色** = tint。
---- `transform.set(id, x, y)` 只改位置；`sprite.set(id, 组件串)` 重写整条 Sprite 组件串 ——
---- 除 tint 以外的部分用 on_create 从 `sprite.get` 读回的原值拼回去（贴图/尺寸/枢轴不改），
---- 这样"亮度 = 生效音量"这条映射不会顺手动到别的字段。
-local function paint(index, color, lift)
-    local state = actor[index]
-    if state == nil then
+--- 一次播放的闪光（只画一次进度；flash 归零后把图清掉，避免留下残影）。
+local function draw_flash(dt)
+    if flash <= 0 then
+        ui.clear("audio_flash")
         return
     end
-    transform.set(state.id, state.x, state.y - lift)
-    sprite.set(
-        state.id,
-        string.format("%s;tint=%.3f,%.3f,%.3f,1.000", state.head, color[1], color[2], color[3])
+    flash = math.max(0, flash - dt * 1.6)
+    local size = 28 + 44 * flash
+    ui.image(
+        "audio_flash",
+        clamp(flash_x - size * 0.5, 300, 930 - size),
+        clamp(flash_y - size * 0.5, 90, 520 - size),
+        size,
+        size,
+        "__white__",
+        1.0,
+        0.98,
+        0.72
+    )
+end
+
+local function draw_spatial()
+    ui.text_at("audio_head", 330, 96, "SPATIAL   listener pose + play_at gain/pan", 1.0, 14)
+    local lx, ly = 420, 462
+    local ex = 420 + emitter_x * 40
+    ui.image("audio_spatial_line", lx + 10, ly - 2, ex - lx - 20, 4, "__white__", 0.28, 0.38, 0.58)
+    ui.image("audio_listener_dot", lx - 10, ly - 10, 20, 20, "__white__", 0.36, 0.64, 1.00)
+    ui.image("audio_emitter_dot", ex - 10, ly - 10, 20, 20, "__white__", 1.00, 0.62, 0.32)
+    ui.text_at(
+        "audio_spatial_txt",
+        330,
+        500,
+        string.format(
+            "listener (0,0,5) forward -Z   emitter x=%d   last gain=%s pan=%s",
+            emitter_x,
+            tostring(obs.last_gain),
+            tostring(obs.last_pan)
+        ),
+        1.0,
+        13
+    )
+    ui.text_at(
+        "audio_spatial_txt2",
+        330,
+        528,
+        "comma / period moves the emitter; O plays once at its world position",
+        1.0,
+        12
+    )
+end
+
+local function draw_settings()
+    ui.text_at("audio_settings_1", 330, 120, "SETTINGS   versioned text (four volumes only)", 1.0, 14)
+    ui.text_at("audio_settings_2", 330, 152, "path: " .. obs.path, 1.0, 12)
+    ui.text_at(
+        "audio_settings_3",
+        330,
+        184,
+        "text: " .. string.gsub(obs.text, "\n", " | "),
+        1.0,
+        12
+    )
+    ui.text_at(
+        "audio_settings_4",
+        330,
+        240,
+        "P applies the text above   L load_settings   S save_settings (writes the file)",
+        1.0,
+        12
     )
 end
 
 -- ---------------------------------------------------------------------------
--- 场景生命周期
+-- 步骤
 -- ---------------------------------------------------------------------------
 
---- 进入本场景一次：取实体 id、读回基座标与 Sprite 组件串，并做一次"开机应用玩家设置"。
-function M.on_create()
-    api.title("api_audio - play / buses / music / settings.toml")
-    api.hint(
-        "1 pickup  2 hit-sfx  3 attack-ui  4 music  5 stop_music | TAB bus  , . bus vol  "
-            .. "[ ] master | P apply text  L load  S save | "
-            .. api.KEYS_BACK
-    )
+local steps = {
+    {
+        id = "buses_and_mix",
+        title = "Buses & mix",
+        claim = "四条总线固定顺序，实际音量 = 主音量 × 分组音量（master 只等于主音量）",
+        api = { "audio.buses", "audio.bus_volume", "audio.effective_volume", "audio.volume" },
+        code = 'audio.buses(); audio.volume(0.8); audio.effective_volume("bgm")',
+        enter = function()
+            find_ids()
+            clear_ui()
+            reset_mix()
+            selected = 2
+            obs.op = "mix reset to 0.80 / 0.70 / 0.90 / 0.60"
+        end,
+        run = function()
+            local list = audio.buses()
+            obs.master = audio.bus_volume("master")
+            obs.bgm = audio.bus_volume("bgm")
+            obs.sfx = audio.bus_volume("sfx")
+            obs.ui = audio.bus_volume("ui")
+            obs.eff_bgm = audio.effective_volume("bgm")
+            obs.eff_sfx = audio.effective_volume("sfx")
+            obs.eff_ui = audio.effective_volume("ui")
+            draw_meters()
+            obs.op = string.format(
+                "buses=%d master=%s bgm=%s sfx=%s ui=%s",
+                #list,
+                short(obs.master),
+                short(obs.bgm),
+                short(obs.sfx),
+                short(obs.ui)
+            )
+            lab.note(obs.op .. " | brightness = master x bus")
+        end,
+        read = function()
+            return {
+                { label = "master", value = short(obs.master) },
+                { label = "bgm", value = short(obs.bgm) },
+                { label = "sfx", value = short(obs.sfx) },
+                { label = "ui", value = short(obs.ui) },
+                { label = "bgm effective", value = short(obs.eff_bgm) },
+            }
+        end,
+        check = function(t)
+            local list = audio.buses()
+            t:eq(#list, 4, "buses() lists four buses")
+            t:eq(list[1], "master", "master comes first")
+            t:eq(list[2], "bgm", "bgm comes second")
+            t:eq(list[3], "sfx", "sfx comes third")
+            t:eq(list[4], "ui", "ui comes last")
+            t:near(audio.bus_volume("master"), 0.8, 0.001, "master volume reads back")
+            t:near(audio.bus_volume("bgm"), 0.7, 0.001, "bgm volume reads back")
+            t:near(audio.effective_volume("bgm"), 0.56, 0.001, "bgm effective = 0.8 x 0.7")
+            t:near(audio.effective_volume("master"), audio.bus_volume("master"), 0.0001, "master effective is the master volume")
+        end,
+    },
+    {
+        id = "bus_and_master",
+        title = "Bus vs master",
+        claim = "分组音量独立可调且被钳制；主音量只影响 effective，不改分组读数",
+        api = { "audio.set_bus_volume", "audio.bus_volume", "audio.effective_volume", "audio.volume" },
+        code = 'audio.set_bus_volume("sfx", 0.25); audio.volume(0.5); audio.effective_volume("sfx")',
+        enter = function()
+            find_ids()
+            clear_ui()
+            reset_mix()
+            selected = 2
+            obs.op = "mix reset"
+        end,
+        run = function()
+            obs.master = audio.bus_volume("master")
+            obs.bgm = audio.bus_volume("bgm")
+            obs.sfx = audio.bus_volume("sfx")
+            obs.ui = audio.bus_volume("ui")
+            obs.eff_bgm = audio.effective_volume("bgm")
+            obs.eff_sfx = audio.effective_volume("sfx")
+            obs.eff_ui = audio.effective_volume("ui")
+            draw_meters()
+            obs.op = string.format("selected=%s %s", BUS_KEYS[selected], short(audio.bus_volume(BUS_KEYS[selected])))
+            lab.note(obs.op .. " | [ ] master   , . selected bus   B switch   X reset")
+        end,
+        read = function()
+            return {
+                { label = "master", value = short(obs.master) },
+                { label = "selected", value = BUS_KEYS[selected] },
+                { label = "bus volume", value = short(audio.bus_volume(BUS_KEYS[selected])) },
+                { label = "effective", value = short(audio.effective_volume(BUS_KEYS[selected])) },
+                { label = "bgm effective", value = short(obs.eff_bgm) },
+                { label = "sfx effective", value = short(obs.eff_sfx) },
+                { label = "ui effective", value = short(obs.eff_ui) },
+            }
+        end,
+        check = function(t)
+            t:eq(audio.set_bus_volume("sfx", 0.25), true, "set_bus_volume returns true")
+            t:near(audio.bus_volume("sfx"), 0.25, 0.001, "the sfx bus reads back 0.25")
+            t:near(audio.effective_volume("sfx"), 0.2, 0.001, "sfx effective = 0.8 x 0.25")
 
-    -- 三个精灵：id 用 `entity.find`（按实体名查），基座标与"除 tint 以外的 Sprite 串"
-    -- 都从**场景里读回来**（`transform.get` / `sprite.get`），不在这里硬编码，
-    -- 这样改了场景文件也不会与本文件漂移。查不到实体时该通道只是没有可视化，不影响其余演示。
-    for index = 1, #CHANNELS do
-        local channel = CHANNELS[index]
-        local id = entity.find(channel.entity_name)
-        if id == nil then
-            actor[index] = nil
-            log.warn("api_audio 场景里找不到实体 " .. channel.entity_name .. "（该通道没有可视化）")
-        else
-            local position = transform.get(id) -- 2D 变换：x / y（单位 = 屏幕像素）
-            local info = sprite.get(id) -- 贴图 / 尺寸 / 枢轴 / 当前 tint
-            if info.texture == nil then
-                -- 场景里的 Sprite 组件一定会同时建出 SpriteAsset，所以这里理论上读得到贴图；
-                -- 真读不到就让这一路没有可视化，而不是让 string.format 卡住整个 update。
-                actor[index] = nil
-                log.warn("api_audio 实体 " .. channel.entity_name .. " 读不回贴图，跳过可视化")
+            audio.volume(0.5)
+            t:near(audio.bus_volume("master"), 0.5, 0.001, "volume() sets the master bus")
+            t:near(audio.bus_volume("bgm"), 0.7, 0.001, "changing master leaves bgm alone")
+            t:near(audio.effective_volume("bgm"), 0.35, 0.001, "bgm effective follows the new master")
+
+            audio.set_bus_volume("ui", 4.0)
+            t:near(audio.bus_volume("ui"), 1.0, 0.001, "bus volume is clamped to 1")
+            audio.volume(2.0)
+            t:near(audio.bus_volume("master"), 1.0, 0.001, "master volume is clamped to 1")
+
+            local value, reason = lab.try(function()
+                return audio.set_bus_volume("no_such_bus", 0.5)
+            end)
+            t:ok(value == nil and type(reason) == "string", "an unknown bus raises a Lua error")
+
+            reset_mix()
+        end,
+    },
+    {
+        id = "playback",
+        title = "Playback",
+        claim = "play / play_on / play_at / music 只登记播放，stop_music 对未播放状态是空操作",
+        api = { "audio.play", "audio.play_on", "audio.play_at", "audio.music", "audio.stop_music", "audio.settings_text" },
+        code = 'audio.play_on("sfx", "hit"); audio.play_at("attack", 4, 0); audio.music("bgm")',
+        enter = function()
+            find_ids()
+            clear_ui()
+            reset_mix()
+            audio.set_listener(0, 0, 0, 0, 0, -1)
+            audio.stop_music()
+            flash = 0
+            selected = 2
+            obs.op = "no clip requested yet"
+        end,
+        run = function(dt)
+            obs.master = audio.bus_volume("master")
+            draw_meters()
+            draw_flash(dt)
+            lab.note("P play  H play_on sfx  U play_on ui  O play_at  M music  N stop_music")
+        end,
+        read = function()
+            return {
+                { label = "last op", value = obs.op },
+                { label = "pickup", value = "play(pickup)" },
+                { label = "hit", value = "play_on(sfx,hit)" },
+                { label = "attack", value = "play_on(ui,attack)" },
+                { label = "spatial", value = "play_at(attack,4,0)" },
+                { label = "music", value = "music(bgm) / stop_music" },
+            }
+        end,
+        check = function(t)
+            local played = lab.try(function()
+                audio.play(CLIP_PICKUP)
+                return true
+            end)
+            t:eq(played, true, "play() returns without raising")
+
+            local played_on, reason = lab.try(function()
+                return audio.play_on("sfx", CLIP_HIT)
+            end)
+            t:ok(played_on == true or played_on == false, "play_on returns an ok flag")
+            t:eq(type(reason), "string", "play_on returns a reason string")
+
+            local spot = lab.try(function()
+                local ok, gain, pan = audio.play_at(CLIP_ATTACK, 3, 0, 0)
+                return { ok = ok, gain = gain, pan = pan }
+            end)
+            t:ok(spot == nil or type(spot.ok) == "boolean", "play_at returns an ok flag or a controlled error")
+            t:ok(spot == nil or type(spot.gain) == "number", "play_at reports a numeric gain")
+            t:ok(spot == nil or type(spot.pan) == "number", "play_at reports a numeric pan")
+
+            local started = lab.try(function()
+                audio.music(CLIP_BGM)
+                return true
+            end)
+            t:eq(started, true, "music() returns without raising")
+            local stopped = lab.try(function()
+                audio.stop_music()
+                return true
+            end)
+            t:eq(stopped, true, "stop_music() is safe")
+
+            local text = audio.settings_text()
+            t:eq(type(text), "string", "settings_text returns a string")
+            t:ok(text:find("rustlua-audio-v1", 1, true) ~= nil, "settings_text carries the version header")
+        end,
+    },
+    {
+        id = "spatial",
+        title = "Spatial",
+        claim = "set_listener 写听者位姿，listener 读回六个分量；play_at 的 gain 随距离线性下降",
+        api = { "audio.set_listener", "audio.listener", "audio.play_at" },
+        code = 'audio.set_listener(0,0,5,0,0,-1); audio.play_at("attack", 4, 0, 5)',
+        enter = function()
+            find_ids()
+            clear_ui()
+            reset_mix()
+            emitter_x = 4
+            obs.last_gain = "-"
+            obs.last_pan = "-"
+            audio.set_listener(0, 0, 5, 0, 0, -1)
+            obs.op = "listener fixed at (0,0,5) facing -Z"
+        end,
+        run = function()
+            local pose = audio.listener()
+            obs.listener = #pose
+            draw_actor(ids.speaker, ACTOR_X[1], 0.8)
+            draw_spatial()
+            obs.op = string.format("listener components=%d emitter x=%d", obs.listener, emitter_x)
+            lab.note(obs.op .. " | comma / period move the emitter; O plays at it")
+        end,
+        read = function()
+            local pose = audio.listener()
+            return {
+                { label = "listener", value = pose[1] and string.format("%s,%s,%s", short(pose[1]), short(pose[2]), short(pose[3])) or "(none)" },
+                { label = "forward", value = pose[4] and string.format("%s,%s,%s", short(pose[4]), short(pose[5]), short(pose[6])) or "(none)" },
+                { label = "emitter x", value = emitter_x },
+                { label = "last gain", value = obs.last_gain },
+                { label = "last pan", value = obs.last_pan },
+            }
+        end,
+        check = function(t)
+            audio.set_listener(0, 0, 5, 0, 0, -1)
+            local pose = audio.listener()
+            t:eq(#pose, 6, "listener() reports position + forward")
+            t:near(pose[1], 0, 0.001, "listener x is 0")
+            t:near(pose[3], 5, 0.001, "listener z is 5")
+            t:near(pose[6], -1, 0.001, "listener faces -Z")
+
+            local near_spot, near_error = lab.try(function()
+                local ok, gain, pan = audio.play_at(CLIP_ATTACK, 1, 0, 5)
+                return { ok = ok, gain = gain, pan = pan }
+            end)
+            local far_spot, far_error = lab.try(function()
+                local ok, gain, pan = audio.play_at(CLIP_ATTACK, 40, 0, 5)
+                return { ok = ok, gain = gain, pan = pan }
+            end)
+            t:ok(near_spot ~= nil or near_error ~= nil, "a near play_at returns or reports an error")
+            t:ok(far_spot ~= nil or far_error ~= nil, "a far play_at returns or reports an error")
+            if near_spot and far_spot and near_spot.ok and far_spot.ok then
+                t:ok(near_spot.gain >= far_spot.gain, "a nearer emitter is not quieter")
+                t:ok(near_spot.pan > 0, "an emitter on +X pans to the right")
             else
-                actor[index] = {
-                    id = id,
-                    x = position.x,
-                    y = position.y,
-                    -- `sprite.set` 要一条完整的 Sprite 组件串（`texture=` 必须在第一段），
-                    -- 这里只把 tint 留出来由每帧填，其余字段原样保留。
-                    head = string.format(
-                        "texture=%s;size=%sx%s;pivot=%.3f,%.3f;sorting_layer=default;order=1",
-                        info.texture,
-                        short(info.size_x),
-                        short(info.size_y),
-                        info.pivot_x,
-                        info.pivot_y
-                    ),
-                }
+                t:ok(true, "gain comparison skipped (no listener or no audio device)")
+                t:ok(true, "pan check skipped (no listener or no audio device)")
+            end
+        end,
+    },
+    {
+        id = "settings",
+        title = "Settings text",
+        claim = "settings_text 是带版本头的五行文本，apply_settings 往返后四路音量完全还原",
+        api = { "audio.settings_text", "audio.apply_settings", "audio.settings_path", "audio.load_settings", "audio.save_settings" },
+        code = 'local text = audio.settings_text(); audio.apply_settings(text); audio.settings_path()',
+        enter = function()
+            find_ids()
+            clear_ui()
+            -- load_settings 只读文件，缺失是正常状态：统一用 lab.try 容错，再复位到基准值。
+            lab.try(function()
+                return audio.load_settings()
+            end)
+            reset_mix()
+            obs.op = "mix reset after load_settings"
+        end,
+        run = function()
+            obs.text = audio.settings_text()
+            obs.text_lines = count_lines(obs.text)
+            obs.path = audio.settings_path() or "(none)"
+            draw_settings()
+            obs.op = string.format("text lines=%d path=%s", obs.text_lines, obs.path)
+            lab.note(obs.op .. " | P apply  L load  S save")
+        end,
+        read = function()
+            return {
+                { label = "version", value = string.match(obs.text, "^[^\n]+") or "?" },
+                { label = "lines", value = obs.text_lines },
+                { label = "master", value = string.match(obs.text, "master=([%d%.]+)") or "?" },
+                { label = "bgm", value = string.match(obs.text, "bgm=([%d%.]+)") or "?" },
+                { label = "path", value = obs.path == "" and "(none)" or obs.path },
+                { label = "last op", value = obs.op },
+            }
+        end,
+        check = function(t)
+            local text = audio.settings_text()
+            t:ok(type(text) == "string" and #text > 0, "settings_text is non-empty")
+            t:eq(string.match(text, "^[^\n]+"), "rustlua-audio-v1", "the version header is stable")
+            t:ok(text:find("master=0.800", 1, true) ~= nil, "the master line keeps three decimals")
+            t:ok(text:find("bgm=0.700", 1, true) ~= nil, "the bgm line reads back")
+
+            local applied = lab.try(function()
+                return audio.apply_settings(text)
+            end)
+            t:eq(applied, true, "apply_settings accepts its own text")
+            audio.volume(0.25)
+            t:near(audio.bus_volume("master"), 0.25, 0.001, "the live master was changed before the round-trip")
+            local restored = lab.try(function()
+                return audio.apply_settings(text)
+            end)
+            t:eq(restored, true, "the same text can be re-applied")
+            t:near(audio.bus_volume("master"), 0.8, 0.001, "applying the text restores the master")
+            t:near(audio.bus_volume("bgm"), 0.7, 0.001, "applying the text restores bgm")
+
+            local accepted, reason = lab.try(function()
+                return audio.apply_settings("rustlua-audio-v9\nmaster=1.000")
+            end)
+            t:eq(accepted, false, "a wrong version is rejected")
+            t:eq(type(reason), "string", "the rejection carries a reason")
+
+            local path = audio.settings_path()
+            t:ok(path ~= nil and #path > 0, "settings_path points at the project settings file")
+
+            local loaded = lab.try(function()
+                return audio.load_settings()
+            end)
+            t:ok(loaded == true or loaded == false or loaded == nil, "load_settings returns a flag or a controlled error")
+            reset_mix()
+        end,
+    },
+}
+
+-- ---------------------------------------------------------------------------
+-- 生命周期
+-- ---------------------------------------------------------------------------
+
+function M.on_create()
+    find_ids()
+    lab.start({
+        scene = "api_audio",
+        title = "Audio API",
+        category = "Audio",
+        steps = steps,
+        -- 场景 Text 画在动态 UI 之上：六块说明/标签都会压住 shell 或读数，全部让位。
+        hide_scene_text = { "Legend", "SpeakerLabel", "BgmLabel", "SfxLabel", "HudNote", "Keys" },
+    })
+    log.info("api_audio: lab ready (buses / mix / playback / spatial / settings)")
+end
+
+-- 按步骤分支的字母/标点交互（Lab 保留 space/方向键/1..9/R/F/F5，这里不碰）。
+function M.update()
+    local step = lab.step()
+    if step then
+        if step.id == "bus_and_master" then
+            if input.just_pressed("bracketleft") then
+                audio.volume(clamp(audio.bus_volume("master") - 0.1, 0.0, 1.0))
+                obs.op = "master -0.1"
+            elseif input.just_pressed("bracketright") then
+                audio.volume(clamp(audio.bus_volume("master") + 0.1, 0.0, 1.0))
+                obs.op = "master +0.1"
+            elseif input.just_pressed("comma") then
+                local key = BUS_KEYS[selected]
+                audio.set_bus_volume(key, clamp(audio.bus_volume(key) - 0.1, 0.0, 1.0))
+                obs.op = key .. " -0.1"
+            elseif input.just_pressed("period") then
+                local key = BUS_KEYS[selected]
+                audio.set_bus_volume(key, clamp(audio.bus_volume(key) + 0.1, 0.0, 1.0))
+                obs.op = key .. " +0.1"
+            elseif input.just_pressed("keyb") then
+                obs.op = "selected " .. cycle_bus(1)
+            elseif input.just_pressed("keyx") then
+                reset_mix()
+                obs.op = "mix reset"
+            end
+        elseif step.id == "playback" then
+            if input.just_pressed("keyp") then
+                audio.play(CLIP_PICKUP)
+                flash, flash_x, flash_y = 1, ACTOR_X[1], 220
+                obs.op = 'play("pickup")'
+            elseif input.just_pressed("keyh") then
+                local ok, reason = audio.play_on("sfx", CLIP_HIT)
+                flash, flash_x, flash_y = 1, ACTOR_X[3], 220
+                obs.op = string.format('play_on("sfx","hit") ok=%s %s', tostring(ok), tostring(reason))
+            elseif input.just_pressed("keyu") then
+                local ok, reason = audio.play_on("ui", CLIP_ATTACK)
+                flash, flash_x, flash_y = 1, ACTOR_X[3], 220
+                obs.op = string.format('play_on("ui","attack") ok=%s %s', tostring(ok), tostring(reason))
+            elseif input.just_pressed("keyo") then
+                local ok, gain, pan = audio.play_at(CLIP_ATTACK, 4, 0, 0)
+                flash, flash_x, flash_y = 1, ACTOR_X[3], 220
+                obs.op = string.format('play_at("attack",4,0) ok=%s gain=%.2f pan=%+.2f', tostring(ok), gain, pan)
+            elseif input.just_pressed("keym") then
+                audio.music(CLIP_BGM)
+                flash, flash_x, flash_y = 1, ACTOR_X[2], 220
+                obs.op = 'music("bgm") (loops on the bgm bus)'
+            elseif input.just_pressed("keyn") then
+                audio.stop_music()
+                obs.op = "stop_music()"
+            end
+        elseif step.id == "spatial" then
+            if input.just_pressed("comma") then
+                emitter_x = math.max(1, emitter_x - 1)
+                obs.op = "emitter x=" .. emitter_x
+            elseif input.just_pressed("period") then
+                emitter_x = math.min(9, emitter_x + 1)
+                obs.op = "emitter x=" .. emitter_x
+            elseif input.just_pressed("keyo") then
+                local ok, gain, pan = audio.play_at(CLIP_ATTACK, emitter_x, 0, 5)
+                obs.last_gain = string.format("%.2f", ok and gain or 0)
+                obs.last_pan = string.format("%+.2f", ok and pan or 0)
+                obs.op = string.format("play_at x=%d ok=%s", emitter_x, tostring(ok))
+            end
+        elseif step.id == "settings" then
+            if input.just_pressed("keyp") then
+                local ok, reason = lab.try(function()
+                    return audio.apply_settings(audio.settings_text())
+                end)
+                obs.op = string.format("apply_settings=%s/%s", tostring(ok), tostring(reason))
+            elseif input.just_pressed("keyl") then
+                local ok, reason = lab.try(function()
+                    return audio.load_settings()
+                end)
+                obs.op = string.format("load_settings=%s/%s", tostring(ok), tostring(reason))
+            elseif input.just_pressed("keys") then
+                -- 唯一写盘调用：只放在按键分支里（headless 门不允许每帧写盘）。
+                local ok, reason = audio.save_settings()
+                obs.op = string.format("save_settings=%s/%s", tostring(ok), tostring(reason))
+            elseif input.just_pressed("keyx") then
+                reset_mix()
+                obs.op = "mix reset"
             end
         end
     end
-
-    -- `audio.settings_path()`：设置文件（`settings.toml`）的绝对路径；无工程根返回 nil，
-    -- 发布包里由宿主指向**用户数据目录**（`%APPDATA%\<name>\settings.toml`）。
-    local settings_path = audio.settings_path()
-    if settings_path == nil then
-        settings_path = "(no project root / settings_root unset)"
-    end
-    S.settings_path = settings_path
-
-    -- `audio.load_settings()`：读 `settings.toml` 的 `[audio]` 段并**应用**四路音量。
-    -- 在 on_create 调一次是安全的：它是**读**，不写盘（headless 门允许）。
-    -- 文件缺失 → `false, "missing"`：设置文件本来就是可选的，这条路径不是错误。
-    local ok, detail = audio.load_settings()
-    S.load = string.format('load_settings() -> %s, "%s"', tostring(ok), tostring(detail))
-    log.info("api_audio on_create " .. S.load .. " path=" .. tostring(settings_path))
+    return lab.tick()
 end
 
---- 每个固定步一次。顺序是刻意的：先按键（只改世界），**之后**才读回事实并画出来 ——
---- 因此屏幕上的每个数字都是"这一帧刚改完的值"，不会慢一帧。
-function M.update()
-    local dt = time.delta()
-
-    -- ① 事实源：`buses()` 返回**固定顺序**的四个总线名（master / bgm / sfx / ui）——
-    --    顺序本身就是这个接口的契约（设置面板、本演示的 TAB 循环选中都按它来）。
-    local buses = audio.buses()
-    if #buses == 0 then
-        -- 引擎保证四个名字；真出现空表就只报告，不让 update 报错（headless 门要能跑通）。
-        api.status("audio.buses() returned an empty table (should not happen)")
-        return "api_audio_ok buses=0"
-    end
-    if selected > #buses then
-        selected = 1
-    end
-
-    -- ② 按键分支：所有播放 / 停止 / 改音量 / 读写设置都只在这里发生。
-    --    headless 步进没有输入，因此这一段在测试里永不执行（写盘的 save_settings 就在其中）。
-    if input.just_pressed(KEY_PLAY) then
-        -- `audio.play(name)`：等价于 `play_on("sfx", name)`，**没有返回值**。
-        -- 成功与否只能看引擎日志（失败会记一行 `[audio] play failed`）；
-        -- 没有音频设备时它同样安静地返回 —— 这就是"静默降级"。
-        audio.play(CLIP_PICKUP)
-        S.sfx_plays = S.sfx_plays + 1
-        flash.sfx = FLASH_SECONDS
-        S.last = string.format('play("%s") -> no return value (= play_on("sfx", ...))', CLIP_PICKUP)
-        log.info("api_audio " .. S.last)
-    end
-
-    if input.just_pressed(KEY_HIT) then
-        -- `audio.play_on(bus, name)`：唯一有返回值的播放接口，`ok, reason`。
-        -- `ok=true` 只说明**请求被接受**（找到文件、能解码）；无输出设备时引擎静默降级，
-        -- 仍然返回 true 并且只记一行日志 —— 所以 true 不等于"你听到了"。
-        local ok, reason = audio.play_on("sfx", CLIP_HIT)
-        S.sfx_plays = S.sfx_plays + 1
-        flash.sfx = FLASH_SECONDS
-        S.last = string.format(
-            'play_on("sfx", "%s") -> ok=%s reason="%s"',
-            CLIP_HIT,
-            tostring(ok),
-            tostring(reason)
-        )
-        log.info("api_audio " .. S.last)
-    end
-
-    if input.just_pressed(KEY_UI) then
-        -- 同一条音效走**另一条总线**：ui（界面音）。总线不同 → 生效音量不同
-        -- （主 × ui），精灵闪光颜色也不同（蓝），这就是"分组"的意义。
-        local ok, reason = audio.play_on("ui", CLIP_ATTACK)
-        S.ui_plays = S.ui_plays + 1
-        flash.ui = FLASH_SECONDS
-        S.last = string.format(
-            'play_on("ui", "%s") -> ok=%s reason="%s" (ui bus %.2f)',
-            CLIP_ATTACK,
-            tostring(ok),
-            tostring(reason),
-            audio.bus_volume("ui")
-        )
-        log.info("api_audio " .. S.last)
-    end
-
-    if input.just_pressed(KEY_SPATIAL) then
-        -- `audio.set_listener(x, y, z, fx, fy, fz)`：手设听者（位置 + 前方向；上方向固定 +Y）。
-        -- 宿主每帧都会按活动相机把它盖回去，所以这里设的值只活到下一帧 —— 本演示用它证明
-        -- "听者这条线是活的"，而不是接管听者。非法值（NaN / 零向量 / 与 +Y 平行）不会当场
-        -- 报错，而是在下一次 play_at 时被 `spatial::evaluate` 统一拒绝（校验只有一处）。
-        audio.set_listener(0, 0, 5, 0, 0, -1)
-
-        -- `audio.play_at(name, x, y[, z])`：按**世界坐标**播放，返回 `ok, gain, pan`。
-        -- 2D 工程省略 z（按 0 处理）；`y` 参与距离、`x` 决定左右（右轴 = +X）。
-        -- gain ∈ [0,1] 已乘进这次播放的音量；pan ∈ [-1,1]（-1 全左 / +1 全右）。
-        -- 这里的 (4, 0) 相对默认听者（原点朝 -Z、上 +Y）是"右前方"：距离 √41 ≈ 6.4 m、
-        -- 线性模型下 gain ≈ 0.81、pan ≈ +0.62 —— 状态行会把实际值原样贴出来。
-        local ok, gain, pan = audio.play_at(CLIP_ATTACK, 4, 0, 0)
-        S.sfx_plays = S.sfx_plays + 1
-        flash.sfx = FLASH_SECONDS
-        S.spatial = string.format(
-            'play_at("%s", 4, 0) -> ok=%s gain=%.2f pan=%+.2f',
-            CLIP_ATTACK,
-            tostring(ok),
-            gain,
-            pan
-        )
-        S.last = S.spatial
-        log.info("api_audio " .. S.last)
-    end
-
-    if input.just_pressed(KEY_MUSIC) then
-        -- `audio.music(name)`：在 **bgm 总线**上循环播放（重复调用会先停掉上一首），
-        -- 同样**没有返回值**。引擎不回报"音乐在不在播"，所以下面的 music_playing
-        -- 记的是本脚本的调用意图，只用来画精灵与状态行。
-        audio.music(CLIP_BGM)
-        music_playing = true
-        S.bgm_plays = S.bgm_plays + 1
-        flash.bgm = FLASH_SECONDS
-        S.last = string.format('music("%s") -> no return value (loops on the bgm bus)', CLIP_BGM)
-        log.info("api_audio " .. S.last)
-    end
-
-    if input.just_pressed(KEY_STOP) then
-        -- `audio.stop_music()`：停掉常驻音乐 sink；本来就没在播时是**空操作**（不报错）。
-        audio.stop_music()
-        music_playing = false
-        S.last = "stop_music() -> no return value"
-        log.info("api_audio " .. S.last)
-    end
-
-    if input.just_pressed(KEY_MASTER_UP) or input.just_pressed(KEY_MASTER_DOWN) then
-        local up = input.just_pressed(KEY_MASTER_UP)
-        local before = audio.bus_volume("master")
-        local target = before + (up and STEP or -STEP)
-        -- `audio.volume(v)`：主音量，超界由引擎钳制到 0..1（`AudioSystem::set_volume`）。
-        -- 紧接着读回来：`bus_volume("master")` 与 `audio.volume` 是同一份值。
-        audio.volume(target)
-        local after = audio.bus_volume("master")
-        flash.speaker = FLASH_SECONDS
-        S.last = string.format(
-            'volume(%.3f) -> bus_volume("master")=%.3f (clamped by the engine)',
-            target,
-            after
-        )
-        log.info("api_audio " .. S.last)
-    end
-
-    if input.just_pressed(KEY_BUS_NEXT) then
-        -- 在 `buses()` 的固定顺序里循环选中（顺序本身就是这个接口的契约）。
-        selected = (selected % #buses) + 1
-        S.last = string.format("selected bus = %s (%d / %d)", tostring(buses[selected]), selected, #buses)
-        log.info("api_audio " .. S.last)
-    end
-
-    if input.just_pressed(KEY_BUS_UP) or input.just_pressed(KEY_BUS_DOWN) then
-        local up = input.just_pressed(KEY_BUS_UP)
-        local bus = buses[selected]
-        local before = audio.bus_volume(bus)
-        local target = before + (up and STEP or -STEP)
-        -- `audio.set_bus_volume(bus, v)`：改**某一路**的音量（超界钳制），返回 true。
-        -- 总线名写错会报 Lua 错误，所以这里用 `buses()` 给的名字（永远合法）。
-        -- 选中的是 master 时这一条与 `audio.volume` 等价（引擎里 Master 走同一个字段）。
-        local ok = audio.set_bus_volume(bus, target)
-        local after = audio.bus_volume(bus)
-        -- 改哪一路就闪哪个精灵（master -> Speaker，bgm -> Bgm，sfx / ui -> Sfx）。
-        flash[FLASH_CHANNEL[bus] or "sfx"] = FLASH_SECONDS
-        S.last = string.format(
-            'set_bus_volume("%s", %.3f) -> %s; bus=%.2f effective=%.2f',
-            bus,
-            target,
-            tostring(ok),
-            after,
-            audio.effective_volume(bus)
-        )
-        log.info("api_audio " .. S.last)
-    end
-
-    if input.just_pressed(KEY_APPLY) then
-        -- `settings_text()` → `apply_settings(text)` 往返。为了证明"文本真的带着值"
-        -- （而不是一个恒返回 true 的空操作），先把主音量砸到 0.05，再灌回**刚读出的文本**，
-        -- 然后读回主音量：它必须回到文本里的那个数。
-        local text = audio.settings_text()
-        local before = audio.bus_volume("master")
-        audio.volume(0.05)
-        local ok, reason = audio.apply_settings(text)
-        local after = audio.bus_volume("master")
-        local from_text = tonumber(string.match(text, "master=([%d%.]+)"))
-        -- 成功的 `reason` 是空串（失败才是版本头不符之类的原因），所以状态行只贴 ok 与两个数值。
-        local _ = reason
-        S.apply = string.format(
-            'apply_settings(text) -> ok=%s; master %.2f -> 0.05 -> %.2f (text says %s)',
-            tostring(ok),
-            before,
-            after,
-            from_text and string.format("%.3f", from_text) or "?"
-        )
-        S.last = S.apply
-        flash.speaker = FLASH_SECONDS
-        log.info("api_audio " .. S.apply)
-    end
-
-    if input.just_pressed(KEY_LOAD) then
-        -- `audio.load_settings()`：读 `settings.toml` 的 `[audio]` 段并应用到内存。
-        -- 文件缺失（可选文件）→ `false, "missing"`；没有工程根 → `false, "no_project_root"`。
-        local ok, detail = audio.load_settings()
-        S.load = string.format('load_settings() -> %s, "%s"', tostring(ok), tostring(detail))
-        S.last = S.load
-        log.info("api_audio " .. S.last)
-    end
-
-    if input.just_pressed(KEY_SAVE) then
-        -- `audio.save_settings()`：把当前四路音量**保序**写回 `settings.toml`（保留注释与其他段）。
-        -- 这是本演示里**唯一会写盘**的调用，所以它只待在按键分支里：headless 门会每帧步进，
-        -- 放在 `update()` 顶层就会变成"每帧写一次盘"。
-        local ok, detail = audio.save_settings()
-        S.save = string.format('save_settings() -> %s, "%s"', tostring(ok), tostring(detail))
-        -- 写完立刻读回来一次：`load_settings` 是这条链路的下半截，一起看才知道真的落盘了。
-        local read_ok, read_detail = audio.load_settings()
-        S.load = string.format('load_settings() -> %s, "%s"', tostring(read_ok), tostring(read_detail))
-        S.last = S.save .. " ; then " .. S.load
-        log.info("api_audio " .. S.last)
-    end
-
-    -- ③ 读回"这一帧的事实"。刻意放在按键分支**之后**：本演示的卖点就是"屏幕上的数字就是你
-    --    刚改完的值"，若在按键前读，按一下 `[` 要等下一帧才看到主音量变化。
-    --    对每个总线名各读两次：`bus_volume`（分组自己的音量，不含主音量）与
-    --    `effective_volume`（主 × 分组，真正灌进 sink 的值）。喂进去的名字都来自 `buses()`，
-    --    所以永远是合法总线名 —— 拼错名字会直接报 Lua 错误（`unknown audio bus: ...`），
-    --    这是引擎刻意的设计，本演示用"只用引擎给的名字"来规避。
-    local own = {}
-    local effective = {}
-    local bus_parts = {}
-    for index = 1, #buses do
-        local bus = buses[index]
-        own[bus] = audio.bus_volume(bus)
-        effective[bus] = audio.effective_volume(bus)
-        bus_parts[index] = string.format("%s %.2f->%.2f", bus, own[bus], effective[bus])
-    end
-
-    -- 主音量：`bus_volume("master")` 读回来的就是 `audio.volume(v)` 写进去的那个值
-    -- （`AudioSystem::bus_volume(Master)` 直接返回 `volume`，`effective_volume("master")` 同理）。
-    local master = audio.bus_volume("master")
-    local master_effective = audio.effective_volume("master")
-
-    -- `audio.listener()`（M74-01）：宿主每帧从活动相机灌进来的听者位姿
-    -- `{x, y, z, fx, fy, fz}`；空表 = 还没接线（此时 `play_at` 会拒绝，不会按原点瞎衰减）。
-    -- 只读：改听者用 `set_listener`，而正常游戏里宿主会替你管这件事。
-    local listener = audio.listener()
-    if #listener == 6 then
-        S.listener = string.format(
-            "listener() -> pos(%.1f,%.1f,%.1f) fwd(%.1f,%.1f,%.1f)",
-            listener[1], listener[2], listener[3],
-            listener[4], listener[5], listener[6]
-        )
-    else
-        S.listener = "listener() -> (empty: host has not wired a camera yet)"
-    end
-
-    -- `settings_text()`：四路音量的版本化文本（首行 `rustlua-audio-v1`，之后每行 `bus=0.000`）。
-    -- 每帧读一次是纯内存操作（不写盘）；显示时把换行折成 " | "，好让人看到行的格式。
-    local settings_text = audio.settings_text()
-    local settings_oneline = string.gsub(settings_text, "\n", " | ")
-
-    -- ④ 闪光衰减（按键那一帧置满，之后每帧线性落下）。
-    for index = 1, #CHANNELS do
-        local key = CHANNELS[index].key
-        if flash[key] > 0 then
-            flash[key] = math.max(0, flash[key] - dt)
-        end
-    end
-
-    -- ⑤ 三张"音量表"：亮度 = 实际生效音量，位置 = 这一路刚发声就往上跳。
-    local speaker_flash = flash.speaker / FLASH_SECONDS
-    paint(
-        1,
-        shade(CHANNELS[1].base, master_effective, CHANNELS[1].flash_color, speaker_flash),
-        LIFT_PX * speaker_flash
-    )
-
-    -- Bgm：在循环就金色 + 常驻抬升（"在响"），停了就灰色 + 落回基座（"没响"）。
-    local bgm_flash = flash.bgm / FLASH_SECONDS
-    local bgm_color = music_playing and CHANNELS[2].base or BGM_STOPPED_COLOR
-    paint(
-        2,
-        shade(bgm_color, effective["bgm"] or 0, CHANNELS[2].flash_color, bgm_flash),
-        (music_playing and BGM_LIFT_PX or 0) + LIFT_PX * bgm_flash
-    )
-
-    -- Sfx：白闪 = sfx 总线（按 2），蓝闪 = ui 总线（按 3）；两者同帧时用更强的那个。
-    local sfx_flash = math.max(flash.sfx, flash.ui) / FLASH_SECONDS
-    local sfx_flash_color = (flash.ui > flash.sfx) and UI_FLASH_COLOR or CHANNELS[3].flash_color
-    paint(
-        3,
-        shade(CHANNELS[3].base, effective["sfx"] or 0, sfx_flash_color, sfx_flash),
-        LIFT_PX * sfx_flash
-    )
-
-    -- ⑥ 五行"每帧读回来的事实"（`ui.text_at` 是屏幕空间的运行期文字，位置固定）。
-    --    每行都刻意压在一屏宽度内（用 `ui.measure_text` 量过），不让内容被右边缘切掉。
-    ui.text_at(
-        ROW_BUSES,
-        24,
-        348,
-        string.format(
-            "buses() -> [%s]  (fixed order; selected = %d)",
-            table.concat(buses, ", "),
-            selected
-        ),
-        1.0
-    )
-    ui.text_at(
-        ROW_TABLE,
-        24,
-        372,
-        "bus_volume -> effective_volume (master x bus): " .. table.concat(bus_parts, " | "),
-        1.0
-    )
-    ui.text_at(ROW_TEXT, 24, 396, "settings_text(): " .. settings_oneline, 1.0)
-    ui.text_at(ROW_PATH, 24, 420, "settings_path(): " .. tostring(S.settings_path), 1.0)
-    ui.text_at(ROW_OPS, 24, 444, S.apply .. " | " .. S.load .. " | " .. S.save, 1.0)
-    -- 听者与空间化单独一行（M74-01）：位置/朝向 + 最近一次 `play_at` 的增益与声像。
-    ui.text_at(ROW_SPATIAL, 24, 468, S.listener .. " | " .. S.spatial, 1.0)
-
-    -- ⑦ 本帧的事实（左下状态行）。
-    api.status(
-        string.format(
-            "master=%.2f | selected=%s bus=%.2f eff=%.2f | BGM=%s | plays sfx=%d bgm=%d ui=%d | last: %s",
-            master,
-            tostring(buses[selected]),
-            own[buses[selected]] or -1,
-            effective[buses[selected]] or -1,
-            music_playing and "looping" or "stopped",
-            S.sfx_plays,
-            S.bgm_plays,
-            S.ui_plays,
-            S.last
-        )
-    )
-
-    return string.format(
-        "api_audio_ok master=%.2f buses=%s selected=%s music=%s sfx=%d bgm=%d ui=%d",
-        master,
-        table.concat(buses, ","),
-        tostring(buses[selected]),
-        music_playing and "on" or "off",
-        S.sfx_plays,
-        S.bgm_plays,
-        S.ui_plays
-    )
+function M.self_test()
+    return lab.self_test()
 end
 
---- 离开场景：注销本模块的动态 UI。`ui.clear(id)` 负责该 id 下的面板/图片/网格；
---- 运行期**文字**（`ui.text_at` 写进 `state.ui`）由宿主在切场景时整体清掉
---- （`script.rs` 的 `state.ui.clear()`），所以这里和 `api.clear()` 一样只是把
---- "这个 id 归我管"这件事写清楚，不留悬空的图片/面板。
 function M.on_destroy()
-    ui.clear(ROW_BUSES)
-    ui.clear(ROW_TABLE)
-    ui.clear(ROW_TEXT)
-    ui.clear(ROW_PATH)
-    ui.clear(ROW_OPS)
-    ui.clear(ROW_SPATIAL)
-    api.clear()
+    -- 动态 UI 是自己画的：先清图，再停掉本模块可能启动的音乐，最后交回 shell。
+    clear_ui()
+    audio.stop_music()
+    reset_mix()
+    lab.stop()
 end
 
 return M

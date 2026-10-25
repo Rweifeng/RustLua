@@ -5,7 +5,9 @@
 //! wireframe: colours identify widget classes and the exact rectangles match the
 //! layout contract, which is enough to review structure before acceptance.
 
-use crate::spec::{AnchorPreset, UiLayoutSpec, UiNode, UiNodeKind, UiSpec};
+use crate::spec::{
+    Align, AnchorPreset, ContainerDirection, Justify, UiLayoutSpec, UiNode, UiNodeKind, UiSpec,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Color([u8; 4]);
@@ -160,12 +162,11 @@ pub fn offsets_for_rect(parent: [f32; 4], rect: [f32; 4]) -> [f32; 4] {
 pub fn layout_rects(spec: &UiSpec) -> Vec<LayoutRect> {
     fn visit(
         node: &UiNode,
-        parent: Rect,
+        rect: Rect,
         parent_key: Option<String>,
         inherited_clip: Option<Rect>,
         out: &mut Vec<LayoutRect>,
     ) {
-        let rect = resolve_rect(&node.layout, parent);
         let clip = match (inherited_clip, &node.kind) {
             (Some(parent_clip), UiNodeKind::ScrollView { .. }) => parent_clip.intersect(rect),
             (Some(parent_clip), _) => Some(parent_clip),
@@ -178,20 +179,21 @@ pub fn layout_rects(spec: &UiSpec) -> Vec<LayoutRect> {
             parent: parent_key,
             clip: clip.map(|clip| [clip.x, clip.y, clip.w, clip.h]),
         });
-        for child in &node.children {
-            visit(child, rect, Some(node.key.clone()), clip, out);
+        for (child, child_rect) in node.children.iter().zip(resolve_children(node, rect)) {
+            visit(child, child_rect, Some(node.key.clone()), clip, out);
         }
     }
     let reference = spec.document.canvas.reference;
+    let canvas = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: reference[0],
+        h: reference[1],
+    };
     let mut out = Vec::new();
     visit(
         &spec.root,
-        Rect {
-            x: 0.0,
-            y: 0.0,
-            w: reference[0],
-            h: reference[1],
-        },
+        resolve_rect(&spec.root.layout, canvas),
         None,
         None,
         &mut out,
@@ -242,7 +244,7 @@ pub fn render_rgba(
     };
     draw_node(
         &spec.root,
-        canvas,
+        resolve_rect(&spec.root.layout, canvas),
         None,
         fit,
         offset_x,
@@ -257,7 +259,7 @@ pub fn render_rgba(
 #[allow(clippy::too_many_arguments)]
 fn draw_node(
     node: &UiNode,
-    parent: Rect,
+    rect: Rect,
     inherited_clip: Option<Rect>,
     fit: f32,
     offset_x: f32,
@@ -266,7 +268,6 @@ fn draw_node(
     height: u32,
     pixels: &mut [u8],
 ) {
-    let rect = resolve_rect(&node.layout, parent);
     let clip = match (inherited_clip, &node.kind) {
         (Some(parent_clip), UiNodeKind::ScrollView { .. }) => parent_clip.intersect(rect),
         (Some(parent_clip), _) => Some(parent_clip),
@@ -285,9 +286,9 @@ fn draw_node(
             pixels, width, height, rect, clip, ACCENT, fit, offset_x, offset_y,
         );
     }
-    for child in &node.children {
+    for (child, child_rect) in node.children.iter().zip(resolve_children(node, rect)) {
         draw_node(
-            child, rect, clip, fit, offset_x, offset_y, width, height, pixels,
+            child, child_rect, clip, fit, offset_x, offset_y, width, height, pixels,
         );
     }
 }
@@ -322,6 +323,242 @@ fn anchor_fraction(anchor: AnchorPreset) -> ([f32; 2], bool, bool) {
         AnchorPreset::StretchVertical => ([0.5, 0.5], false, true),
         AnchorPreset::FullRect => ([0.5, 0.5], true, true),
     }
+}
+
+/// 容器的子项矩形。
+///
+/// 有流向的容器（`v_box` / `h_box` / `grid` / `wrap`）按方向、`spacing`、`padding`、
+/// `justify`、`align` 排布子项——预览器、`layout_rects` 与编辑器画布共用这一套几何，
+/// 三者不会各算一套。没有流向的节点（面板、文本、`center`/`margin` 容器）保持
+/// 子项各自锚定的绝对定位。
+fn resolve_children(node: &UiNode, rect: Rect) -> Vec<Rect> {
+    let UiNodeKind::Container {
+        direction,
+        padding,
+        spacing,
+        justify,
+        align,
+        columns,
+    } = &node.kind
+    else {
+        return node
+            .children
+            .iter()
+            .map(|child| resolve_rect(&child.layout, rect))
+            .collect();
+    };
+    if matches!(
+        direction,
+        ContainerDirection::Center | ContainerDirection::Margin
+    ) {
+        return node
+            .children
+            .iter()
+            .map(|child| resolve_rect(&child.layout, rect))
+            .collect();
+    }
+    let pad = padding.unwrap_or([0.0; 4]);
+    let inner = Rect {
+        x: rect.x + pad[0],
+        y: rect.y + pad[1],
+        w: (rect.w - pad[0] - pad[2]).max(0.0),
+        h: (rect.h - pad[1] - pad[3]).max(0.0),
+    };
+    let spacing = spacing.unwrap_or(0.0).max(0.0);
+    // `offsets` = 画布拖拽后的手动定位：它退出流，按绝对矩形摆；兄弟项不吃它的槽位。
+    let flow: Vec<usize> = node
+        .children
+        .iter()
+        .enumerate()
+        .filter(|(_, child)| child.layout.offsets.is_none())
+        .map(|(index, _)| index)
+        .collect();
+    let sizes: Vec<[f32; 2]> = flow
+        .iter()
+        .map(|index| measure_child(&node.children[*index].layout, inner))
+        .collect();
+    let slots = match direction {
+        ContainerDirection::VBox => stack(&sizes, inner, spacing, true, *justify, *align),
+        ContainerDirection::HBox => stack(&sizes, inner, spacing, false, *justify, *align),
+        ContainerDirection::Grid => grid(&sizes, inner, spacing, columns.unwrap_or(2)),
+        ContainerDirection::Wrap => wrap(&sizes, inner, spacing),
+        ContainerDirection::Center | ContainerDirection::Margin => unreachable!(),
+    };
+    let mut out: Vec<Rect> = node
+        .children
+        .iter()
+        .map(|child| resolve_rect(&child.layout, rect))
+        .collect();
+    for (index, mut slot) in flow.iter().copied().zip(slots) {
+        // 流式布局里的 `position` 是相对槽位的微调，不是绝对坐标。
+        if let Some(offset) = node.children[index].layout.position {
+            slot.x += offset[0];
+            slot.y += offset[1];
+        }
+        out[index] = slot;
+    }
+    out
+}
+
+/// 子项在设计坐标下的尺寸：显式 `size` → 相对父级的 `percent` → 与绝对定位一致的默认值。
+fn measure_child(layout: &UiLayoutSpec, inner: Rect) -> [f32; 2] {
+    let mut w = layout
+        .size
+        .map(|size| size[0])
+        .or_else(|| {
+            layout
+                .percent
+                .map(|percent| inner.w * percent[0] / 100.0)
+                .filter(|value| *value > 0.0)
+        })
+        .unwrap_or(120.0);
+    let mut h = layout
+        .size
+        .map(|size| size[1])
+        .or_else(|| {
+            layout
+                .percent
+                .map(|percent| inner.h * percent[1] / 100.0)
+                .filter(|value| *value > 0.0)
+        })
+        .unwrap_or(32.0);
+    if let Some(min) = layout.min_size {
+        w = w.max(min[0]);
+        h = h.max(min[1]);
+    }
+    if let Some(max) = layout.max_size {
+        w = w.min(max[0]);
+        h = h.min(max[1]);
+    }
+    [w.max(0.0), h.max(0.0)]
+}
+
+fn cross_offset(align: Align, span: f32, size: f32) -> f32 {
+    match align {
+        Align::Start => 0.0,
+        Align::Center => (span - size) * 0.5,
+        Align::End => span - size,
+        Align::Stretch => 0.0,
+    }
+}
+
+/// 主轴起点与步进（步进已含 `spacing`）。
+fn main_step(sizes: &[f32], spacing: f32, available: f32, justify: Justify) -> (f32, f32) {
+    if sizes.is_empty() {
+        return (0.0, spacing);
+    }
+    let used: f32 = sizes.iter().sum::<f32>() + spacing * (sizes.len() as f32 - 1.0);
+    let free = (available - used).max(0.0);
+    match justify {
+        Justify::Start => (0.0, spacing),
+        Justify::Center => (free * 0.5, spacing),
+        Justify::End => (free, spacing),
+        Justify::SpaceBetween if sizes.len() > 1 => {
+            (0.0, spacing + free / (sizes.len() as f32 - 1.0))
+        }
+        Justify::SpaceBetween => (0.0, spacing),
+        Justify::SpaceAround => {
+            let extra = free / sizes.len() as f32;
+            (extra * 0.5, spacing + extra)
+        }
+        Justify::SpaceEvenly => {
+            let extra = free / (sizes.len() as f32 + 1.0);
+            (extra, spacing + extra)
+        }
+    }
+}
+
+fn stack(
+    sizes: &[[f32; 2]],
+    inner: Rect,
+    spacing: f32,
+    vertical: bool,
+    justify: Justify,
+    align: Align,
+) -> Vec<Rect> {
+    let spans: Vec<f32> = if vertical {
+        sizes.iter().map(|size| size[1]).collect()
+    } else {
+        sizes.iter().map(|size| size[0]).collect()
+    };
+    let available = if vertical { inner.h } else { inner.w };
+    let (start, step) = main_step(&spans, spacing, available, justify);
+    let mut cursor = start;
+    sizes
+        .iter()
+        .map(|size| {
+            let rect = if vertical {
+                let width = if align == Align::Stretch {
+                    inner.w
+                } else {
+                    size[0]
+                };
+                Rect {
+                    x: inner.x + cross_offset(align, inner.w, width),
+                    y: inner.y + cursor,
+                    w: width,
+                    h: size[1],
+                }
+            } else {
+                let height = if align == Align::Stretch {
+                    inner.h
+                } else {
+                    size[1]
+                };
+                Rect {
+                    x: inner.x + cursor,
+                    y: inner.y + cross_offset(align, inner.h, height),
+                    w: size[0],
+                    h: height,
+                }
+            };
+            cursor += if vertical { size[1] } else { size[0] } + step;
+            rect
+        })
+        .collect()
+}
+
+fn grid(sizes: &[[f32; 2]], inner: Rect, spacing: f32, columns: u32) -> Vec<Rect> {
+    let columns = columns.max(1) as usize;
+    let cell_w = (inner.w - spacing * (columns as f32 - 1.0)).max(0.0) / columns as f32;
+    let mut out = Vec::with_capacity(sizes.len());
+    let mut y = inner.y;
+    for row in sizes.chunks(columns) {
+        let row_h = row.iter().map(|size| size[1]).fold(0.0, f32::max);
+        for (column, size) in row.iter().enumerate() {
+            out.push(Rect {
+                x: inner.x + column as f32 * (cell_w + spacing),
+                y,
+                w: if size[0] > 0.0 { size[0] } else { cell_w },
+                h: size[1],
+            });
+        }
+        y += row_h + spacing;
+    }
+    out
+}
+
+fn wrap(sizes: &[[f32; 2]], inner: Rect, spacing: f32) -> Vec<Rect> {
+    let mut out = Vec::with_capacity(sizes.len());
+    let mut x = inner.x;
+    let mut y = inner.y;
+    let mut row_h = 0.0_f32;
+    for size in sizes {
+        if x > inner.x && x + size[0] > inner.x + inner.w {
+            x = inner.x;
+            y += row_h + spacing;
+            row_h = 0.0;
+        }
+        out.push(Rect {
+            x,
+            y,
+            w: size[0],
+            h: size[1],
+        });
+        x += size[0] + spacing;
+        row_h = row_h.max(size[1]);
+    }
+    out
 }
 
 fn resolve_rect(layout: &UiLayoutSpec, parent: Rect) -> Rect {
@@ -643,6 +880,100 @@ mod tests {
         let out = rects.iter().find(|rect| rect.key == "out").unwrap();
         assert_eq!(out.rect, [80.0, 0.0, 40.0, 40.0], "矩形本身不被改写");
         assert_eq!(out.clip, Some([0.0, 0.0, 100.0, 50.0]), "子节点继承裁剪");
+    }
+
+    #[test]
+    fn flow_containers_stack_children_with_spacing_and_alignment() {
+        let spec: UiSpec = serde_json::from_value(serde_json::json!({
+            "spec_version": 1,
+            "document": {"name": "flow", "canvas": {"reference": [400, 300]}},
+            "root": {"key": "root", "type": "panel",
+                     "layout": {"anchor": "top_left", "size": [400, 300]},
+                     "children": [{
+                         "key": "box", "type": "container", "direction": "v_box",
+                         "padding": [10, 20, 10, 20], "spacing": 8, "align": "center",
+                         "layout": {"anchor": "top_left", "size": [300, 200]},
+                         "children": [
+                             {"key": "a", "type": "button", "text": "A",
+                              "layout": {"size": [100, 40]}},
+                             {"key": "b", "type": "button", "text": "B",
+                              "layout": {"size": [160, 40]}},
+                             {"key": "c", "type": "button", "text": "C",
+                              "layout": {"size": [60, 40]}}
+                         ]
+                     }]}
+        }))
+        .unwrap();
+        let rows = layout_rects(&spec);
+        let rect = |key: &str| rows.iter().find(|row| row.key == key).unwrap().rect;
+        // 内容区 = (10,20,280,160)：v_box 按 spacing 8 竖排，交叉轴居中。
+        assert_eq!(rect("a"), [100.0, 20.0, 100.0, 40.0]);
+        assert_eq!(rect("b"), [70.0, 68.0, 160.0, 40.0]);
+        assert_eq!(rect("c"), [120.0, 116.0, 60.0, 40.0]);
+
+        // h_box + 主轴居中：三块 60 宽、间距 10，可用宽度 300。
+        let hbox: UiSpec = serde_json::from_value(serde_json::json!({
+            "spec_version": 1,
+            "document": {"name": "row", "canvas": {"reference": [400, 300]}},
+            "root": {"key": "root", "type": "panel",
+                     "layout": {"anchor": "top_left", "size": [400, 300]},
+                     "children": [{
+                         "key": "row", "type": "container", "direction": "h_box",
+                         "spacing": 10, "justify": "center",
+                         "layout": {"anchor": "top_left", "size": [300, 100]},
+                         "children": [
+                             {"key": "a", "type": "button", "text": "A",
+                              "layout": {"size": [60, 40]}},
+                             {"key": "b", "type": "button", "text": "B",
+                              "layout": {"size": [60, 40]}},
+                             {"key": "c", "type": "button", "text": "C",
+                              "layout": {"size": [60, 40]}}
+                         ]
+                     }]}
+        }))
+        .unwrap();
+        let rows = layout_rects(&hbox);
+        let rect = |key: &str| rows.iter().find(|row| row.key == key).unwrap().rect;
+        assert_eq!(rect("a")[0], 50.0, "主轴居中：(300 - 200) / 2");
+        assert_eq!(rect("b")[0], 120.0);
+        assert_eq!(rect("c")[0], 190.0);
+        assert_eq!(rect("a")[1], 0.0, "交叉轴默认 start");
+    }
+
+    #[test]
+    fn flow_children_with_offsets_are_absolutely_placed() {
+        let mut spec: UiSpec = serde_json::from_value(serde_json::json!({
+            "spec_version": 1,
+            "document": {"name": "drag", "canvas": {"reference": [400, 300]}},
+            "root": {"key": "root", "type": "panel",
+                     "layout": {"anchor": "top_left", "size": [400, 300]},
+                     "children": [{
+                         "key": "box", "type": "container", "direction": "v_box",
+                         "spacing": 8,
+                         "layout": {"anchor": "top_left", "size": [300, 200]},
+                         "children": [
+                             {"key": "a", "type": "button", "text": "A",
+                              "layout": {"size": [100, 40]}},
+                             {"key": "b", "type": "button", "text": "B",
+                              "layout": {"size": [100, 40]}}
+                         ]
+                     }]}
+        }))
+        .unwrap();
+        assert_eq!(layout_rects(&spec)[2].rect, [0.0, 0.0, 100.0, 40.0]);
+        // 画布把 a 拖到 (50,60)：offsets 是相对容器的四边距离，之后就按绝对定位走。
+        let box_node = &mut spec.root.children[0];
+        let a = &mut box_node.children[0];
+        a.layout.offsets = Some([50.0, 60.0, 150.0, 100.0]);
+        a.layout.size = None;
+        let rows = layout_rects(&spec);
+        let rect = |key: &str| rows.iter().find(|row| row.key == key).unwrap().rect;
+        assert_eq!(rect("a"), [50.0, 60.0, 100.0, 40.0]);
+        assert_eq!(
+            rect("b"),
+            [0.0, 0.0, 100.0, 40.0],
+            "a 脱离流之后 b 顶上第一槽，不留空位"
+        );
     }
 
     #[test]

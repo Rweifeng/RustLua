@@ -16,12 +16,12 @@ impl PreviewErrorKind {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::SceneLoad => "SceneLoad",
-            Self::ScriptRuntime => "ScriptRuntime",
-            Self::AssetMissing => "AssetMissing",
-            Self::Render => "Render",
-            Self::Input => "Input",
-            Self::Layout => "Layout",
+            Self::SceneLoad => "场景加载",
+            Self::ScriptRuntime => "脚本运行",
+            Self::AssetMissing => "资源缺失",
+            Self::Render => "渲染",
+            Self::Input => "输入",
+            Self::Layout => "布局",
         }
     }
 }

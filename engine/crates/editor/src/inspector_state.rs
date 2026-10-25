@@ -136,7 +136,7 @@ pub struct ContainerFields {
 impl ContainerFields {
     pub fn to_style(&self) -> Result<rustlua_ui::ui_layout::ContainerStyle, String> {
         let kind = rustlua_ui::ui_layout::ContainerKind::parse(&self.kind)
-            .ok_or_else(|| format!("未知 Container kind：{}", self.kind))?;
+            .ok_or_else(|| format!("未知容器布局类型：{}", self.kind))?;
         let align = rustlua_ui::ui_layout::ChildAlign::parse(&self.align)
             .ok_or_else(|| format!("未知对齐：{}", self.align))?;
         let justify = rustlua_ui::ui_layout::Justify::parse(&self.justify)
@@ -742,39 +742,39 @@ fn read_lua_script(entity: &SceneEntity) -> Option<String> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum InspectorError {
-    #[error("Inspector 中不存在实体 {}", .0 .0)]
+    #[error("属性面板中不存在实体 {}", .0 .0)]
     UnknownEntity(SceneEntityId),
-    #[error("Inspector 尚未选择实体")]
+    #[error("属性面板尚未选择实体")]
     NothingSelected,
     #[error("实体名称不能为空")]
     EmptyName,
-    #[error("Transform 必须是有限数值")]
+    #[error("变换必须是有限数值")]
     NonFiniteTransform,
-    #[error("Transform 缩放必须大于 0")]
+    #[error("变换缩放必须大于 0")]
     InvalidScale,
-    #[error("Transform 数据无效：{0}")]
+    #[error("变换数据无效：{0}")]
     InvalidTransform(String),
-    #[error("Sprite 资源引用无效：{0}")]
+    #[error("精灵资源引用无效：{0}")]
     InvalidAssetReference(String),
     #[error("Lua 脚本路径无效：{0}")]
     InvalidLuaScript(String),
-    #[error("Transform3D 数据无效：{0}")]
+    #[error("3D 变换数据无效：{0}")]
     InvalidTransform3d(String),
-    #[error("MeshRenderer 资源引用无效：{0}")]
+    #[error("网格渲染器资源引用无效：{0}")]
     InvalidMeshRenderer(String),
-    #[error("Light 数据无效：{0}")]
+    #[error("灯光数据无效：{0}")]
     InvalidLight(String),
-    #[error("Collider3d 数据无效：{0}")]
+    #[error("3D 碰撞体数据无效：{0}")]
     InvalidCollider3d(String),
-    #[error("WorldText 数据无效：{0}")]
+    #[error("世界文本数据无效：{0}")]
     InvalidWorldText(String),
-    #[error("Image 数据无效：{0}")]
+    #[error("图片数据无效：{0}")]
     InvalidImage(String),
-    #[error("Button 数据无效：{0}")]
+    #[error("按钮数据无效：{0}")]
     InvalidButton(String),
-    #[error("Container 数据无效：{0}")]
+    #[error("容器数据无效：{0}")]
     InvalidContainer(String),
-    #[error("LayoutItem 数据无效：{0}")]
+    #[error("布局项数据无效：{0}")]
     InvalidLayoutItem(String),
 }
 

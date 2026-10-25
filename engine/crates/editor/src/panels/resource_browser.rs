@@ -93,10 +93,10 @@ impl EditorApp {
             Ok(()) => {
                 self.ui_studio_panel.studio = Some(studio);
                 self.ui_studio_panel.document_input = normalized.clone();
-                self.ui_studio_panel.preview = None;
+                self.ui_studio_panel.canvas_textures.clear();
                 self.show_ui_studio = true;
                 self.pending_ui_studio_focus = true;
-                self.status = format!("已打开 UI Studio `{normalized}`");
+                self.status = format!("已打开 UI 工作室 `{normalized}`");
             }
             Err(error) => self.status = error.to_string(),
         }
@@ -389,7 +389,7 @@ impl EditorApp {
                             && crate::util::draw_icon_button(
                                 ui,
                                 crate::util::DrawIcon::Pencil,
-                                "打开 Prefab 编辑",
+                                "打开预制体编辑",
                             )
                             .clicked()
                         {
@@ -617,8 +617,9 @@ impl EditorApp {
         let started = Instant::now();
         // 后台刷新产出的是全新状态（`import_attempted` 为空）：应用前把旧状态的
         // 已尝试签名表搬过来，去重守卫才能跨刷新存活（否则未就绪资源每次刷新都
-        // 重新排队 → "导入资源"弹窗无限重开）。
-        result.state.preserve_attempted_from(&self.resources);
+        // 重新排队 → "导入资源"弹窗无限重开）；刷新计数也一并接上，目录树缓存
+        // 才能按它失效（否则删掉/新增的文件不会出现在面板里）。
+        result.state.adopt_from(&self.resources);
         self.resources = result.state;
         if self.selected_resource.as_ref().is_some_and(|selected| {
             self.resources
@@ -636,7 +637,7 @@ impl EditorApp {
 
     pub(crate) fn delete_selected_resource(&mut self) {
         if self.is_playing() {
-            self.status = "Play mode locks resource deletion; click Stop first".to_owned();
+            self.status = "播放模式下不能删除资源，请先点击停止".to_owned();
             return;
         }
         let Some(relative_path) = self.selected_resource.clone() else {
@@ -739,6 +740,14 @@ fn build_resource_tree(entries: &[ResourceEntry]) -> ResourceTree {
         }
     }
     sort_tree(&mut root);
+    // UI 预设是编辑器文档，不是普通资源；置顶，避免被 assets/scenes 的长列表压到折叠区外，
+    // 用户误以为“没有显示 .ui.json”。
+    if let Some(ui) = root.folders.remove("ui") {
+        let mut reordered = BTreeMap::new();
+        reordered.insert("ui".to_owned(), ui);
+        reordered.extend(std::mem::take(&mut root.folders));
+        root.folders = reordered;
+    }
     root
 }
 
@@ -941,6 +950,7 @@ mod tests {
     use super::{build_resource_tree, downscale_rgba, is_ui_json};
     use crate::EditorApp;
     use editor::{ResourceEntry, ResourceKind, open_project};
+    use eframe::egui;
     use rustlua_infra::logging::LogSink;
 
     #[test]
@@ -990,6 +1000,17 @@ mod tests {
         fs::write(root.join("scripts/main.lua"), b"return true\n").unwrap();
         fs::write(root.join("scenes/main.scene"), b"name = \"main\"\n").unwrap();
         root
+    }
+
+    #[test]
+    fn ui_folder_is_pinned_before_assets() {
+        let entries = vec![
+            entry("ui/forge.ui.json", ResourceKind::Other),
+            entry("assets/player.png", ResourceKind::Texture),
+        ];
+        let tree = build_resource_tree(&entries);
+        let keys: Vec<&str> = tree.folders.keys().map(String::as_str).collect();
+        assert_eq!(keys, vec!["ui", "assets"], "UI 预设目录必须置顶");
     }
 
     #[test]
@@ -1203,6 +1224,92 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    /// **回归**（本轮报障）：外部删掉 `ui/shop.ui.json` 后，资源面板还画着这一行。
+    ///
+    /// 接线级用例：真画一帧面板 → 填上目录树缓存 → 删文件 → 等后台刷新落地 → 再画一帧，
+    /// 断言第二帧的文本里没有该条目。它挡的是「缓存键（filter + refresh_count）在后台
+    /// 状态替换后不再变化」这类静默陈旧——状态单测只盯计数本身，管不到面板这一层。
+    #[test]
+    fn deleted_ui_preset_disappears_from_the_drawn_resource_panel() {
+        let root = temp_project_root("ui-preset-deleted");
+        fs::create_dir_all(root.join("ui")).unwrap();
+        fs::write(root.join("ui/shop.ui.json"), b"{\"spec_version\":1}").unwrap();
+        fs::write(root.join("ui/blacksmith.ui.json"), b"{\"spec_version\":1}").unwrap();
+
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.project_loaded = true;
+        app.refresh_resources();
+        wait_for_resource_entries(&mut app, |app| {
+            app.resources
+                .entries()
+                .iter()
+                .any(|entry| entry.path_string() == "ui/shop.ui.json")
+        });
+        let drawn = draw_panel_text(&mut app);
+        assert!(
+            drawn.contains("shop.ui.json"),
+            "首帧必须画出 UI 预设：{drawn}"
+        );
+        assert!(drawn.contains("blacksmith.ui.json"), "{drawn}");
+
+        fs::remove_file(root.join("ui/shop.ui.json")).unwrap();
+        app.refresh_resources();
+        wait_for_resource_entries(&mut app, |app| {
+            !app.resources
+                .entries()
+                .iter()
+                .any(|entry| entry.path_string() == "ui/shop.ui.json")
+        });
+        let drawn = draw_panel_text(&mut app);
+        assert!(
+            !drawn.contains("shop.ui.json"),
+            "删除后资源面板不得再画这一行：{drawn}"
+        );
+        assert!(drawn.contains("blacksmith.ui.json"), "{drawn}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 轮询后台资源刷新直到判定成立（提交点在 `poll_resource_refresh`）。
+    fn wait_for_resource_entries(app: &mut EditorApp, mut done: impl FnMut(&EditorApp) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            app.poll_resource_refresh();
+            if done(app) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "后台资源刷新超时：{:?}",
+                app.resources
+                    .entries()
+                    .iter()
+                    .map(editor::ResourceEntry::path_string)
+                    .collect::<Vec<_>>()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// 无头画一帧资源面板，返回这一帧画出来的所有文本（`Shape::Text` 的 galley 内容）。
+    fn draw_panel_text(app: &mut EditorApp) -> String {
+        let context = egui::Context::default();
+        let output = context.run(egui::RawInput::default(), |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                app.draw_resource_browser_body(ui);
+            });
+        });
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text_shape) => Some(text_shape.galley.text().to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
     fn delete_shortcut_removes_selected_resource_from_browser() {
         let root = temp_project_root("delete-resource");
@@ -1257,7 +1364,7 @@ mod tests {
         );
         assert!(app.selection.is_empty());
         assert_eq!(app.delete_target, crate::DeleteTarget::None);
-        assert!(app.status.contains("Entity deleted"));
+        assert!(app.status.contains("实体已删除"));
         let _ = fs::remove_dir_all(root);
     }
 

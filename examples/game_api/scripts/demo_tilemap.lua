@@ -1,434 +1,877 @@
--- api_tilemap：演示 `tilemap` 与 `grid` 两个模块，共 14 个函数。
+-- api_tilemap：2.0 分步 Lab。主题是"格子数据是可读可写的一等公民"。
 --
--- tilemap：create / get / is_solid / get_cell / set_cell / set_solid / set_texture /
---          get_meta / set_meta / find_path
--- grid：   world_to_cell / cell_to_world / facing_cell / in_bounds
+-- 这个演示只做内存里的读写，所以 headless 自检与交互演示走同一条路径：
+--   1. 场景里的 GroundMap 组件串被引擎解析成 10x10 的格子，`tilemap.get` 读回的
+--      width/height/tile_size/texture 与场景字段一致；`grid.*` 负责世界坐标 ↔ 格子换算；
+--   2. `tilemap.create` 在运行期长出一张 4x3 菜地（返回实体 id，名字可被 `entity.find`），
+--      图集布局、kind 解析、A* 寻路与场景地图完全同一套；
+--   3. `set_cell` 画什么与 `set_solid` 挡不挡人是**两层**，可以一格空着但仍然实心；
+--   4. `set_tint`/`clear_tint` 是逐格顶点色，`set_meta` 的 key 是地图自带的轻量注释；
+--   5. `find_path` 失败用 `nil, reason` 返回（不是抛错），对角寻路不会切实心角；
+--   6. `transform.get/set` 与 `world_text.attach` 把"格子中心"落实成可见的实体位置。
 --
--- 这个演示想证明四件事（每一条都对应下面的某一段代码）：
---   1. 场景里写死的 `Tilemap` 组件串（`tiles`/`solid` 逐格字符）就是引擎解析出来的网格，
---      Lua 读到的 `width/height/tile_size/texture` 与场景文件里的字段一一对应；
---   2. 运行期用 `tilemap.create(width, height, tile_size[, texture][, name])` 造出来的
---      第二张地图（一块 4x3 菜地）**不需要预先写进场景**，返回的是实体 id，
---      `get` 能把它（含 M29 的 `texture`）读回来，`set_cell/set_solid/set_texture/
---      get_cell/is_solid/set_meta/get_meta` 都能在这张"数据驱动的网格"上原地改；
---   3. `find_path(id, fx, fy, tx, ty[, diagonal])` 以 solid 为阻挡做 A*：成功返回含两端的
---      `{x,y}` 路径表，失败返回 `nil, reason`（是返回值，**不是报错**），Walker 会沿它走；
---   4. `grid` 的四个换算把"世界坐标 ↔ 格子坐标"讲清楚：鼠标指向哪一格、那一格的中心在
---      哪里、朝前走一格是哪一格、以及越界判定——全部用鼠标位置实时演示。
+-- 为什么把场景地图挪到 MAP_POS：2.0 shell 的左栏/右卡会盖住世界左下角；把 GroundMap
+-- 与三个场景实体一起平移到舞台内，格子数学仍然按"地图原点"计算（查询前减去 MAP_POS），
+-- 这样 `grid.world_to_cell(80,80,32) == (2,2)` 这类断言与视觉位置互不干扰。
 --
--- 引擎坐标约定（在下面各处都会用到）：
---   * 格子是 0-index、**y 朝上**（row 0 在地图最底，见 docs/16 与 core/tilemap.rs）；
---   * 格子 (x, y) 的中心在世界坐标 ((x+0.5)*tile, (y+0.5)*tile)（Tilemap 实体 Transform
---     在原点时成立，本场景的 GroundMap 就是 position=0,0）；
---   * 格子值是"贴图集第几列"：0=空、1=墙、3=地面（本场景只用到这三列；菜地还会用 2=湿地）；
---   * `solid` 是**独立的一层**（1=阻挡，与"画了什么"无关）——寻路只看它，不看 tiles；
---   * `grid.world_to_cell` / `grid.facing_cell` 返回的是 **1 基数组**：`[1]`=x、`[2]`=y；
---     `grid.cell_to_world` 返回的也是数组 `[1]`=x、`[2]`=y（core/script.rs 的 table_i32_pair）。
-local api = require("api_demo")
+-- 顶层只定义常量与函数（README 硬规则 1）。
+
+local lab = require("lab")
 
 local M = {}
 
--- 场景里 GroundMap 的格子边长（与组件串 `tile_size=32x32` 必须一致：格子换算只有这一处真源）。
+-- 场景 GroundMap 的格子边长；与 scenes/api_tilemap.scene 的 tile_size 一致。
 local TILE = 32
--- 场景文件里 Walker 的初始格 / Target 精灵标记的终点格（两格都是 non-solid，中间那堵墙
--- 让路径必须绕行；`GOAL` 与 scenes/api_tilemap.scene 里 Target 的 position 是同一个格子）。
+-- 运行期把地图放进舞台：舞台屏幕区 296..936 / 76..644，默认 2D 相机把世界 y=0 画在
+-- 屏幕底部（screen_y = 720 - world_y），所以 (320, 96) 正好把 10x10 地图放到舞台左半。
+local MAP_POS = { x = 320, y = 96 }
+-- 场景里 Walker / Target 的初始格（0 基、y 朝上）。
 local WALK = { x = 2, y = 2 }
 local GOAL = { x = 7, y = 7 }
--- 菜地（运行期 tilemap.create 出来的第二张地图）。
-local FARM_W, FARM_H, FARM_TILE = 4, 3, 32
-local FARM_POS = { x = 384, y = 32 }
--- 菜地视觉：1..6 = tileset 的列（见 assets/textures/tileset.png）。
-local TILE_DRY, TILE_WET = 1, 2
--- 这张占位图集的布局声明（M72-01）：6 列 × 1 行。格子值的上界从此由布局算出。
-local FARM_ATLAS_COLS, FARM_ATLAS_ROWS = 6, 1
--- 浇水后的湿地染色（M72-02 的 per-tile tint，顶点色**乘法**染色）：偏冷的 0.72/0.84/1.0。
+-- 内墙 (5,4) 是 solid：用它证明"终点实心"是返回值而不是报错。
+local SOLID_ENDPOINT = { x = 5, y = 4 }
+-- 运行期菜地：4x3，和场景地图一样用 32px 格子。
+local FARM_W, FARM_H = 4, 3
+local FARM_POS = { x = 680, y = 120 }
+local FARM_NAME = "LabTilemapFarm"
+local FARM_DRY, FARM_WET = 1, 2
+-- 占位图集是 6 列 1 行；显式声明布局后，格子值不会再随贴图尺寸漂移。
+local ATLAS_COLS, ATLAS_ROWS = 6, 1
+-- 浇水后的冷色乘法染色。
 local TINT_WET = { r = 0.72, g = 0.84, b = 1.0 }
--- 沿路径推进的节拍：每 6 个固定步走一格（约 0.1s/格 @60Hz），看得清但不会一晃而过。
-local STEP_FRAMES = 6
--- `grid.facing_cell` 的 facing 参数：四个方向词 + n/s/e 三个短码，每帧轮换一个。
--- （`w` 与 `left` 同义，这里不重复列；`n`/`s`/`e` 用来证明短码也被解析。）
-local FACINGS = { "up", "down", "left", "right", "n", "s", "e" }
 
-local ground_id = nil       -- 场景声明的 GroundMap
-local walker_id = nil       -- 场景声明的 Walker（Sprite + Transform）
-local sign_id = nil         -- 场景声明的 Sign（WorldText）
-local farm_id = nil         -- 运行期 tilemap.create 出来的菜地
+local ground_id = nil
+local walker_id = nil
+local target_id = nil
+local sign_id = nil
+local farm_id = nil
 local ground_w, ground_h = 10, 10
+local ground_tile = TILE
 
-local facing_index = 0
-local line = ""             -- 本帧拼好的状态行（update 末尾一次性 api.status）
-local last_path, last_reason, last_terrain = nil, "-", "-"
-local last_diagonal = false  -- 上一次 find_path 是否允许走对角线（T=四向 / N=八向）
-local last_farm_path, last_farm_reason = nil, "-"  -- 菜地自己的 find_path 结果
-local path_active = false
-local path_step = 0         -- 已走到的路径下标（1 = 起点）
-local walk_tick = 0
-local watered = false
-local last_sign = ""
+-- 缓存每一步 run 里算出来的只读结果（check 再断言，避免在 check 里制造副作用）。
+local straight_path, diagonal_path, same_path, farm_path = nil, nil, nil, nil
+local straight_reason, diagonal_reason = "-", "-"
+local same_reason, farm_reason = "-", "-"
+local solid_reason, oob_reason = "-", "-"
+local hover = { cx = WALK.x, cy = WALK.y, wx = 0, wy = 0, inside = true }
+local last_action = "ready"
+local last_sign_text = nil
 
---- 实体 id 是否"存在且活着"：`tilemap.*` 对没有 Tilemap 组件的实体会直接报 Lua 错误，
---- 所以调用前必须先问清楚（实体被销毁/名字拼错时返回 nil，而不是抛错）。
+--- 实体 id 是否"存在且活着"：tilemap.* 对没有 Tilemap 组件的实体会直接报 Lua 错误，
+--- 所以每次查询前都要先问清楚（实体被销毁或名字拼错时返回 nil，而不是抛错）。
 local function live(id)
     return id ~= nil and entity.is_alive(id)
 end
 
---- 当前 Walker 所在格（1 基数组 → 具名字段；y 朝上）。
-local function walker_cell()
-    if not live(walker_id) then
-        return { x = WALK.x, y = WALK.y }
+--- 绑定场景实体。entity.find 找不到返回 nil；tilemap.get 对"没有 Tilemap 组件的实体"
+--- 也会报错，因此两个条件都要过。
+local function bind_scene()
+    ground_id = entity.find("GroundMap")
+    if not live(ground_id) then
+        ground_id = nil
     end
-    local pos = transform.get(walker_id)
-    local cell = grid.world_to_cell(pos.x, pos.y, TILE)
-    return { x = cell[1], y = cell[2] }
-end
-
-local function walker_world()
+    walker_id = entity.find("Walker")
     if not live(walker_id) then
-        local p = grid.cell_to_world(WALK.x, WALK.y, TILE)
-        return { x = p[1], y = p[2] }
+        walker_id = nil
     end
-    local pos = transform.get(walker_id)
-    return { x = pos.x, y = pos.y }
+    target_id = entity.find("Target")
+    if not live(target_id) then
+        target_id = nil
+    end
+    sign_id = entity.find("Sign")
+    if not live(sign_id) then
+        sign_id = nil
+    end
+    if ground_id ~= nil then
+        local info = tilemap.get(ground_id)
+        if info ~= nil then
+            ground_w, ground_h = info.width, info.height
+            ground_tile = info.tile_size
+        end
+    end
 end
 
---- 把 (cx, cy) 格刷成 `value`，并同步 solid —— `set_solid` 会立刻重建这张地图的固定物理
---- 碰撞体（core/script.rs 的 refresh_tilemap_physics），因此改完就能被寻路与物理同时看到。
---- 越界已经先用 `grid.in_bounds` 挡掉：两条 API 的"越界"报错路径也就不必靠报错来演示。
-local function carve(cx, cy, value, blocked)
-    tilemap.set_cell(farm_id, cx, cy, value)
-    tilemap.set_solid(farm_id, cx, cy, blocked)
+--- 场景地图的格子边长为 TILE，但地图被整体挪到 MAP_POS；下面两个换算把"地图局部坐标"
+--- 与"实体世界坐标"分开，格子数学只认局部坐标。
+local function cell_center(cx, cy)
+    local local_pos = grid.cell_to_world(cx, cy, TILE)
+    return {
+        x = MAP_POS.x + local_pos[1],
+        y = MAP_POS.y + local_pos[2],
+    }
 end
 
---- 空 value = 删除键（core/tilemap.rs 的 Tilemap::set_meta）。key 为空才是报错。
-local function mark(cx, cy, key, value)
-    tilemap.set_meta(farm_id, cx, cy, key, value)
+local function cell_of_world(wx, wy)
+    local cell = grid.world_to_cell(wx - MAP_POS.x, wy - MAP_POS.y, TILE)
+    return cell[1], cell[2]
 end
 
---- 每格 meta 的两个键：`crop`（种的是什么）与 `watered`（浇没浇水）。
-local function crop_tag(cx, cy)
-    return string.format("%d,%d:%s/%s", cx, cy,
-        tostring(tilemap.get_meta(farm_id, cx, cy, "crop")),
-        tostring(tilemap.get_meta(farm_id, cx, cy, "watered")))
+--- 把场景地图与三个场景实体放到舞台内；rotation/scale 用 transform.get 读回再原样传回，
+--- 因为 transform.set 省略的参数表示"保持不变"，这里显式传入是为了证明这一点。
+local function place_scene()
+    if live(ground_id) then
+        local pos = transform.get(ground_id)
+        transform.set(ground_id, MAP_POS.x, MAP_POS.y, pos.rotation, pos.scale_x, pos.scale_y)
+    end
+    if live(walker_id) then
+        local p = cell_center(WALK.x, WALK.y)
+        transform.set(walker_id, p.x, p.y)
+    end
+    if live(target_id) then
+        local p = cell_center(GOAL.x, GOAL.y)
+        transform.set(target_id, p.x, p.y)
+    end
+    if live(sign_id) then
+        -- 告示牌放在地图上方（世界 y 更大 = 屏幕更靠上）。
+        local pos = transform.get(sign_id)
+        transform.set(sign_id, MAP_POS.x + 112, MAP_POS.y + 352, pos.rotation, pos.scale_x, pos.scale_y)
+    end
 end
 
---- 把菜地整块重画：浇过水就换成"湿地"列（2），否则"干地"列（1）。
---- 这一段只用 set_cell / set_solid / get_cell / is_solid，证明运行期地图是**可读可写**的。
---- `tilemap.*` 对不存在的实体 id 会报 Lua 错误（`bad argument #1`），所以先确认菜地在。
-local function paint_farm()
+--- 把场景地图恢复到本演示依赖的基线：只有 (8,8) 会被"格子编辑"步骤改写；
+--- (5,4) 必须实心，起点/终点必须可走。用 grid.in_bounds 先挡越界，避免错误路径。
+local function reset_ground()
+    if not live(ground_id) then
+        return
+    end
+    if grid.in_bounds(8, 8, ground_w, ground_h) then
+        tilemap.set_cell(ground_id, 8, 8, 3)
+        tilemap.set_solid(ground_id, 8, 8, false)
+    end
+    if grid.in_bounds(SOLID_ENDPOINT.x, SOLID_ENDPOINT.y, ground_w, ground_h) then
+        tilemap.set_solid(ground_id, SOLID_ENDPOINT.x, SOLID_ENDPOINT.y, true)
+    end
+    if grid.in_bounds(WALK.x, WALK.y, ground_w, ground_h) then
+        tilemap.set_solid(ground_id, WALK.x, WALK.y, false)
+    end
+    if grid.in_bounds(GOAL.x, GOAL.y, ground_w, ground_h) then
+        tilemap.set_solid(ground_id, GOAL.x, GOAL.y, false)
+    end
+end
+
+--- 运行期菜地的所有配置：贴图、图集布局、kind 语义、位置。id 已存在时也要重新声明，
+--- 因为用户可能在别的步骤里换过贴图/布局（本演示只用内存状态，重声明是幂等的）。
+local function configure_farm(id)
+    farm_id = id
+    tilemap.set_texture(farm_id, "assets/textures/tileset.png")
+    tilemap.set_atlas(farm_id, ATLAS_COLS, ATLAS_ROWS)
+    -- (kinds, variants, autotile) = (6, 1, false)：格子值就是图集条目号（恒等档）。
+    tilemap.set_kinds(farm_id, ATLAS_COLS, 1, false)
+    local pos = transform.get(farm_id)
+    transform.set(farm_id, FARM_POS.x, FARM_POS.y, pos.rotation, pos.scale_x, pos.scale_y)
+end
+
+--- 优先复用同名实体：`tilemap.create` 会给实体登记名字（entity.find 同源），
+--- 这样反复进入步骤不会长出一堆菜地。尺寸不符时才重新 create。
+local function ensure_farm()
+    if live(farm_id) then
+        return farm_id
+    end
+    local found = entity.find(FARM_NAME)
+    if live(found) then
+        local info = tilemap.get(found)
+        if info ~= nil and info.width == FARM_W and info.height == FARM_H then
+            configure_farm(found)
+            return farm_id
+        end
+    end
+    local id = tilemap.create(FARM_W, FARM_H, TILE, "assets/textures/tileset.png", FARM_NAME)
+    if id ~= nil then
+        configure_farm(id)
+    end
+    return farm_id
+end
+
+--- 菜地基线：全部干地、不实心、无 meta、无染色。每一步都能从这里重新开始，
+--- 所以用户在任意步骤里浇水/收获后按 F5，自检仍然可重复。
+local function reset_farm()
+    ensure_farm()
     if not live(farm_id) then
         return
     end
-    local want = watered and TILE_WET or TILE_DRY
     for cy = 0, FARM_H - 1 do
         for cx = 0, FARM_W - 1 do
-            if tilemap.get_cell(farm_id, cx, cy) ~= want then
-                carve(cx, cy, want, false)
+            if tilemap.get_cell(farm_id, cx, cy) ~= FARM_DRY then
+                tilemap.set_cell(farm_id, cx, cy, FARM_DRY)
+            end
+            if tilemap.is_solid(farm_id, cx, cy) then
+                tilemap.set_solid(farm_id, cx, cy, false)
+            end
+            if tilemap.get_meta(farm_id, cx, cy, "crop") ~= nil then
+                tilemap.set_meta(farm_id, cx, cy, "crop", "")
+            end
+            if tilemap.get_meta(farm_id, cx, cy, "watered") ~= nil then
+                tilemap.set_meta(farm_id, cx, cy, "watered", "")
+            end
+            local wash = tilemap.tint(farm_id, cx, cy)
+            if wash.r ~= 1 or wash.g ~= 1 or wash.b ~= 1 or wash.a ~= 1 then
+                tilemap.clear_tint(farm_id, cx, cy)
             end
         end
     end
 end
 
---- 种一茬麦子并浇水：每格写 crop=wheat / watered=1，再**读回来**放进状态行。
---- 读回来的值就是"真的写进去了"的证据，而不是把刚才写的变量再打印一遍。
-local function plant()
-    if not live(farm_id) then
+--- `world_text.attach` 是整串组件描述（与场景文件同语法）。同一段文本不重复写，
+--- 免得每帧都改一次 WorldText 组件。它必须先于 reset_world 定义：reset_world 会调用它。
+local function attach_sign(text)
+    if not live(sign_id) then
         return
     end
-    watered = true
-    paint_farm()
-    for cy = 0, FARM_H - 1 do
-        for cx = 0, FARM_W - 1 do
-            mark(cx, cy, "crop", "wheat")
-            mark(cx, cy, "watered", "1")
-            tilemap.set_tint(farm_id, cx, cy, TINT_WET.r, TINT_WET.g, TINT_WET.b)
-        end
+    if text == last_sign_text then
+        return
+    end
+    last_sign_text = text
+    world_text.attach(
+        sign_id,
+        "text=" .. text .. ";font_size=14;color=0.900,1.000,0.700;offset=0,0;centered=true"
+    )
+end
+
+--- 每一步 enter 的统一复位：重新绑定实体（场景可能刚加载）、放回舞台、恢复地图/菜地、
+--- 重置 Walker 与所有路径缓存。这样"任何用户交互之后按 F5"都能从同一基线开始。
+local function reset_world()
+    bind_scene()
+    place_scene()
+    reset_ground()
+    reset_farm()
+    if live(walker_id) then
+        local p = cell_center(WALK.x, WALK.y)
+        transform.set(walker_id, p.x, p.y)
+    end
+    straight_path, diagonal_path, same_path, farm_path = nil, nil, nil, nil
+    straight_reason, diagonal_reason = "-", "-"
+    same_reason, farm_reason = "-", "-"
+    solid_reason, oob_reason = "-", "-"
+    last_sign_text = nil
+    attach_sign("tilemap lab")
+    hover = { cx = WALK.x, cy = WALK.y, wx = 0, wy = 0, inside = true }
+    last_action = "ready"
+end
+
+--- `camera2d.mouse_world()` 需要宿主回填的相机快照；headless 下会明确报错。
+--- 用 lab.try 的闭包形式包起来：既保留真实调用文本，又把"没有渲染帧"变成可回退的 nil。
+local function read_mouse_world()
+    return lab.try(function()
+        return camera2d.mouse_world()
+    end)
+end
+
+--- 一次算齐四种寻路结果。失败分支返回 `nil, reason`，所以 reason 要单独保存，
+--- 不能在 read 里重新调用（read 必须无副作用）。
+local function compute_paths()
+    ensure_farm()
+    if live(ground_id) then
+        straight_path, straight_reason =
+            tilemap.find_path(ground_id, WALK.x, WALK.y, GOAL.x, GOAL.y, false)
+        diagonal_path, diagonal_reason =
+            tilemap.find_path(ground_id, WALK.x, WALK.y, GOAL.x, GOAL.y, true)
+        same_path, same_reason =
+            tilemap.find_path(ground_id, WALK.x, WALK.y, WALK.x, WALK.y, false)
+        local _, blocked = tilemap.find_path(
+            ground_id,
+            WALK.x,
+            WALK.y,
+            SOLID_ENDPOINT.x,
+            SOLID_ENDPOINT.y,
+            false
+        )
+        local _, outside = tilemap.find_path(ground_id, WALK.x, WALK.y, 99, 99, false)
+        solid_reason = blocked or "-"
+        oob_reason = outside or "-"
+    end
+    straight_reason = straight_reason or "-"
+    diagonal_reason = diagonal_reason or "-"
+    same_reason = same_reason or "-"
+    if live(farm_id) then
+        farm_path, farm_reason = tilemap.find_path(farm_id, 0, 0, FARM_W - 1, FARM_H - 1, false)
+        farm_reason = farm_reason or "-"
     end
 end
 
---- 收获：空 value 删掉 `watered` 键，`get_meta` 读回就是 nil（区分"键不存在"与"值是空串"）。
---- 顺手把染色一起撤掉——`clear_tint` 之后 `tint` 读回的是白色（无染色 = 恒等乘法）。
-local function harvest()
+--- 浇水：整块菜地换成湿地列、写 crop/watered、上冷色 tint。写进去马上能读回来，
+--- 这是运行期地图"可读可写"的直接证据。
+local function water_farm()
+    ensure_farm()
     if not live(farm_id) then
         return
     end
-    watered = false
-    paint_farm()
     for cy = 0, FARM_H - 1 do
         for cx = 0, FARM_W - 1 do
-            mark(cx, cy, "crop", "")
-            mark(cx, cy, "watered", "")
+            tilemap.set_cell(farm_id, cx, cy, FARM_WET)
+            tilemap.set_tint(farm_id, cx, cy, TINT_WET.r, TINT_WET.g, TINT_WET.b)
+            tilemap.set_meta(farm_id, cx, cy, "crop", "wheat")
+            tilemap.set_meta(farm_id, cx, cy, "watered", "1")
+        end
+    end
+    last_action = "farm watered: 12 cells wet, crop=wheat"
+end
+
+--- 收获：格子换回干地，meta 用空串删键（get_meta 读回 nil），染色撤销回白色。
+local function harvest_farm()
+    ensure_farm()
+    if not live(farm_id) then
+        return
+    end
+    for cy = 0, FARM_H - 1 do
+        for cx = 0, FARM_W - 1 do
+            tilemap.set_cell(farm_id, cx, cy, FARM_DRY)
+            tilemap.set_meta(farm_id, cx, cy, "crop", "")
+            tilemap.set_meta(farm_id, cx, cy, "watered", "")
             tilemap.clear_tint(farm_id, cx, cy)
         end
     end
+    last_action = "farm harvested: meta keys removed, tint cleared"
 end
 
---- `find_path` 的失败是**返回值**（nil, reason），不是 Lua 错误：
----   * 起点/终点越界 → "path endpoint (x, y) is out of bounds"
----   * 起点/终点是 solid → "path endpoint (x, y) is solid"
----   * 绕不过去 → "no path from (x, y) to (x, y)"
---- 因此这里只按返回值分支，不需要 pcall。`map_id` 为 nil（地图不存在）时直接记原因，
---- 因为 `tilemap.*` 收到不存在的实体 id 会报 Lua 错误而不是返回 nil。
-local function set_path(map_id, from, to, diagonal)
-    path_step = 0
-    walk_tick = 0
-    if not live(map_id) then
-        last_path, last_reason, path_active = nil, "no tilemap entity", false
+--- 格子编辑：把 (8,8) 的画（tile 值）与阻挡（solid）分开翻转，证明两层互不绑定。
+local function toggle_ground_cell()
+    if not live(ground_id) then
         return
     end
-    local path, reason = tilemap.find_path(map_id, from.x, from.y, to.x, to.y, diagonal)
-    last_diagonal = diagonal and true or false
-    last_reason = reason or "-"
-    if path then
-        last_path = path
-        path_active = true
-        path_step = 1
-    else
-        -- 失败（nil, reason）：不留上一次的路径，step 也归零，免得状态行显示过期的进度。
-        last_path = nil
-        path_active = false
-    end
-end
-
---- 运行期菜地也能寻路：4x3 里从 (0,0) 走到 (3,2)，证明 `create` 出来的地图和场景里声明的地图
---- 走的是同一套 A*（返回含两端的路径表）。这一段只读，不驱动 Walker。
-local function farm_path()
-    local path, reason = tilemap.find_path(farm_id, 0, 0, FARM_W - 1, FARM_H - 1, false)
-    last_farm_path, last_farm_reason = path, reason or "-"
-end
-
---- 沿路径格心逐格推进（不是瞬移）：先把目标点换算成世界坐标（`grid.cell_to_world`），
---- 再用 `transform.get/set` 把 Walker 挪过去。路径走完就停下。
-local function advance_walker()
-    if not path_active or not live(walker_id) or not last_path then
+    if not grid.in_bounds(8, 8, ground_w, ground_h) then
         return
     end
-    walk_tick = walk_tick + 1
-    local goal_index = #last_path
-    if walk_tick >= STEP_FRAMES and path_step < goal_index then
-        walk_tick = 0
-        path_step = path_step + 1
-    end
-    local cell = last_path[path_step]
-    local pos = grid.cell_to_world(cell.x, cell.y, TILE)
-    transform.set(walker_id, pos[1], pos[2])
-    if path_step >= goal_index then
-        path_active = false
-    end
+    local value = tilemap.get_cell(ground_id, 8, 8)
+    local solid = tilemap.is_solid(ground_id, 8, 8)
+    tilemap.set_cell(ground_id, 8, 8, value == 0 and 3 or 0)
+    tilemap.set_solid(ground_id, 8, 8, not solid)
+    last_action = string.format("cell(8,8) art=%d solid=%s", value == 0 and 3 or 0, tostring(not solid))
 end
 
---- WorldText 运行期挂载：`Sign` 场景里带的是占位文字，这里把"下一个格子"贴到它头上。
-local function set_sign(text)
-    if not live(sign_id) or text == last_sign then
+local steps = {
+    {
+        id = "scene_grid",
+        title = "Scene grid",
+        claim = "场景 Tilemap 就是 10x10 格子数据；鼠标悬停读格，T/D/S/O/C/J 切换寻路分支",
+        api = {
+            "tilemap.get",
+            "tilemap.get_cell",
+            "tilemap.is_solid",
+            "grid.world_to_cell",
+            "grid.cell_to_world",
+            "grid.in_bounds",
+            "camera2d.mouse_world",
+            "entity.find",
+        },
+        code = "tilemap.get(id) / grid.world_to_cell(80,80,32)",
+        enter = function()
+            reset_world()
+        end,
+        run = function(dt)
+            local world = read_mouse_world()
+            if world ~= nil and world.x ~= nil then
+                hover.wx, hover.wy = world.x, world.y
+            else
+                local p = cell_center(WALK.x, WALK.y)
+                hover.wx, hover.wy = p.x, p.y
+            end
+            hover.cx, hover.cy = cell_of_world(hover.wx, hover.wy)
+            hover.inside = grid.in_bounds(hover.cx, hover.cy, ground_w, ground_h)
+            last_action = string.format(
+                "GroundMap %dx%d tile=%.0f  hover cell (%d,%d) inside=%s",
+                ground_w,
+                ground_h,
+                ground_tile,
+                hover.cx,
+                hover.cy,
+                tostring(hover.inside)
+            )
+            lab.note(last_action)
+        end,
+        read = function()
+            local info = live(ground_id) and tilemap.get(ground_id) or nil
+            local center = grid.cell_to_world(WALK.x, WALK.y, TILE)
+            return {
+                { "size", info and string.format("%dx%d", info.width, info.height) or "-" },
+                { "tile", info and string.format("%.0f", info.tile_size) or "-" },
+                { "texture", info and info.texture or "-" },
+                { "cell(2,2)", live(ground_id) and tilemap.get_cell(ground_id, WALK.x, WALK.y) or "-" },
+                { "solid(2,2)", live(ground_id) and tostring(tilemap.is_solid(ground_id, WALK.x, WALK.y)) or "-" },
+                { "center", string.format("%.0f,%.0f", center[1], center[2]) },
+                { "hover", string.format("(%d,%d)", hover.cx, hover.cy) },
+            }
+        end,
+        check = function(t)
+            t:ok(live(ground_id), "GroundMap entity exists")
+            if not live(ground_id) then
+                return
+            end
+            local info = tilemap.get(ground_id)
+            t:ok(info ~= nil, "GroundMap has a Tilemap component")
+            if info == nil then
+                return
+            end
+            t:eq(info.width, 10, "map width comes from the scene")
+            t:eq(info.height, 10, "map height comes from the scene")
+            t:eq(info.tile_size, TILE, "tile size comes from the scene")
+            t:ok(tostring(info.texture):find("tileset.png") ~= nil, "map samples the tileset")
+            t:eq(tilemap.get_cell(ground_id, WALK.x, WALK.y), 3, "cell(2,2) is ground art")
+            t:eq(tilemap.is_solid(ground_id, WALK.x, WALK.y), false, "start cell is walkable")
+            t:eq(
+                tilemap.is_solid(ground_id, SOLID_ENDPOINT.x, SOLID_ENDPOINT.y),
+                true,
+                "interior wall cell is solid"
+            )
+            local cell = grid.world_to_cell(80, 80, TILE)
+            t:eq(cell[1], 2, "world_to_cell x")
+            t:eq(cell[2], 2, "world_to_cell y")
+            local center = grid.cell_to_world(2, 2, TILE)
+            t:near(center[1], 80, 0.001, "cell_to_world x")
+            t:near(center[2], 80, 0.001, "cell_to_world y")
+            t:eq(grid.in_bounds(9, 9, ground_w, ground_h), true, "last cell is in bounds")
+            t:eq(grid.in_bounds(10, 0, ground_w, ground_h), false, "x=10 is out of bounds")
+            t:eq(entity.find("GroundMap"), ground_id, "entity.find resolves GroundMap")
+            if walker_id ~= nil then
+                t:eq(entity.is_alive(walker_id), true, "Walker stays alive")
+            end
+        end,
+    },
+    {
+        id = "runtime_farm",
+        title = "Runtime farm",
+        claim = "tilemap.create 在运行期长出一张 4x3 菜地：布局声明与 kind 解析立刻生效（W/H 改菜地）",
+        api = {
+            "tilemap.create",
+            "tilemap.set_texture",
+            "tilemap.set_atlas",
+            "tilemap.set_kinds",
+            "tilemap.get",
+            "tilemap.get_cell",
+            "tilemap.atlas_index",
+            "tilemap.autotile_mask",
+        },
+        code = "tilemap.create(4,3,32) / set_atlas(6,1) / set_kinds(6,1,false)",
+        enter = function()
+            reset_world()
+            ensure_farm()
+        end,
+        run = function(dt)
+            ensure_farm()
+            if live(farm_id) then
+                local info = tilemap.get(farm_id)
+                local mask = tilemap.autotile_mask(farm_id, 1, 1)
+                last_action = string.format(
+                    "farm %dx%d atlas=%dx%d mask(1,1)=%d",
+                    info.width,
+                    info.height,
+                    info.atlas_cols,
+                    info.atlas_rows,
+                    mask
+                )
+            else
+                last_action = "farm missing"
+            end
+            lab.note(last_action)
+        end,
+        read = function()
+            local info = live(farm_id) and tilemap.get(farm_id) or nil
+            return {
+                { "size", info and string.format("%dx%d", info.width, info.height) or "-" },
+                { "tile", info and string.format("%.0f", info.tile_size) or "-" },
+                { "atlas", info and string.format("%dx%d", info.atlas_cols, info.atlas_rows) or "-" },
+                { "texture", info and info.texture or "-" },
+                { "cell(1,1)", live(farm_id) and tilemap.get_cell(farm_id, 1, 1) or "-" },
+                { "atlas_index", live(farm_id) and tilemap.atlas_index(farm_id, 1, 1) or "-" },
+                { "mask(1,1)", live(farm_id) and tilemap.autotile_mask(farm_id, 1, 1) or "-" },
+            }
+        end,
+        check = function(t)
+            t:ok(live(farm_id), "runtime farm entity exists")
+            if not live(farm_id) then
+                return
+            end
+            local info = tilemap.get(farm_id)
+            t:ok(info ~= nil, "created entity really has a Tilemap")
+            if info == nil then
+                return
+            end
+            t:eq(info.width, FARM_W, "runtime map width")
+            t:eq(info.height, FARM_H, "runtime map height")
+            t:eq(info.tile_size, TILE, "runtime map tile size")
+            t:eq(info.atlas_cols, ATLAS_COLS, "declared atlas columns")
+            t:eq(info.atlas_rows, ATLAS_ROWS, "declared atlas rows")
+            t:ok(tostring(info.texture):find("tileset.png") ~= nil, "texture swap is readable")
+            t:eq(tilemap.get_cell(farm_id, 1, 1), FARM_DRY, "cell reset to dry ground")
+            t:eq(tilemap.is_solid(farm_id, 1, 1), false, "farm cells are walkable")
+            -- 恒等档下，格子值就是图集条目号；四个邻居同 id -> mask = 0b1111 = 15。
+            t:eq(tilemap.atlas_index(farm_id, 1, 1), FARM_DRY, "identity atlas lookup")
+            t:eq(tilemap.autotile_mask(farm_id, 1, 1), 15, "interior cell sees four same neighbours")
+            t:ok(entity.find(FARM_NAME) ~= nil, "tilemap.create registered a findable name")
+        end,
+    },
+    {
+        id = "cell_editing",
+        title = "Cell editing",
+        claim = "set_cell 改的是画、set_solid 改的是阻挡，两层可以独立翻转（E 翻转 (8,8)）",
+        api = {
+            "tilemap.set_cell",
+            "tilemap.set_solid",
+            "tilemap.get_cell",
+            "tilemap.is_solid",
+            "tilemap.get",
+            "grid.in_bounds",
+        },
+        code = "set_cell(id,8,8,0); set_solid(id,8,8,true)",
+        enter = function()
+            reset_world()
+        end,
+        run = function(dt)
+            if live(ground_id) and grid.in_bounds(8, 8, ground_w, ground_h) then
+                tilemap.set_cell(ground_id, 8, 8, 0)
+                tilemap.set_solid(ground_id, 8, 8, true)
+            end
+            last_action = "cell(8,8) art=0 but solid=true"
+            lab.note(last_action)
+        end,
+        read = function()
+            if not live(ground_id) then
+                return { { "map", "missing" } }
+            end
+            return {
+                { "art", tilemap.get_cell(ground_id, 8, 8) },
+                { "solid", tostring(tilemap.is_solid(ground_id, 8, 8)) },
+                { "tile", string.format("%.0f", ground_tile) },
+            }
+        end,
+        check = function(t)
+            t:ok(live(ground_id), "GroundMap exists for editing")
+            if not live(ground_id) then
+                return
+            end
+            t:eq(tilemap.get_cell(ground_id, 8, 8), 0, "run cleared the tile art")
+            t:eq(tilemap.is_solid(ground_id, 8, 8), true, "run made the same cell solid")
+            tilemap.set_cell(ground_id, 8, 8, 4)
+            t:eq(tilemap.get_cell(ground_id, 8, 8), 4, "set_cell writes any in-range id")
+            tilemap.set_solid(ground_id, 8, 8, false)
+            t:eq(tilemap.is_solid(ground_id, 8, 8), false, "set_solid clears independently")
+            tilemap.set_cell(ground_id, 8, 8, 3)
+            t:eq(tilemap.get_cell(ground_id, 8, 8), 3, "cell restored for the next step")
+        end,
+    },
+    {
+        id = "tint_meta",
+        title = "Tint and meta",
+        claim = "逐格 tint 是顶点色、meta 是地图自带的注释；空串会删除 meta 键（W 浇水 / H 收获）",
+        api = {
+            "tilemap.set_tint",
+            "tilemap.tint",
+            "tilemap.clear_tint",
+            "tilemap.set_meta",
+            "tilemap.get_meta",
+            "tilemap.get_cell",
+            "tilemap.atlas_index",
+            "tilemap.autotile_mask",
+        },
+        code = "set_tint(id,0,0,.72,.84,1) / set_meta(id,0,0,'crop','wheat')",
+        enter = function()
+            reset_world()
+        end,
+        run = function(dt)
+            ensure_farm()
+            if live(farm_id) then
+                -- 一格湿地夹在干地里：atlas_index 跟着格子值，mask 只数同 id 邻居。
+                tilemap.set_cell(farm_id, 0, 0, FARM_WET)
+                tilemap.set_tint(farm_id, 0, 0, TINT_WET.r, TINT_WET.g, TINT_WET.b)
+                tilemap.set_meta(farm_id, 0, 0, "crop", "wheat")
+                tilemap.set_meta(farm_id, 0, 0, "watered", "1")
+            end
+            last_action = "cell(0,0): wet art, cold tint, crop=wheat"
+            lab.note(last_action)
+        end,
+        read = function()
+            if not live(farm_id) then
+                return { { "farm", "missing" } }
+            end
+            local wash = tilemap.tint(farm_id, 0, 0)
+            return {
+                { "cell(0,0)", tilemap.get_cell(farm_id, 0, 0) },
+                { "atlas", tilemap.atlas_index(farm_id, 0, 0) },
+                { "mask", tilemap.autotile_mask(farm_id, 0, 0) },
+                { "crop", tilemap.get_meta(farm_id, 0, 0, "crop") },
+                { "watered", tilemap.get_meta(farm_id, 0, 0, "watered") },
+                { "tint", string.format("%.2f,%.2f,%.2f", wash.r, wash.g, wash.b) },
+            }
+        end,
+        check = function(t)
+            t:ok(live(farm_id), "farm exists for tint and meta")
+            if not live(farm_id) then
+                return
+            end
+            t:eq(tilemap.get_cell(farm_id, 0, 0), FARM_WET, "wet art is readable")
+            t:eq(tilemap.atlas_index(farm_id, 0, 0), FARM_WET, "atlas index follows the cell id")
+            -- 四邻都是干地 1，与当前格 2 不同 -> mask 0。
+            t:eq(tilemap.autotile_mask(farm_id, 0, 0), 0, "mask counts same-id neighbours only")
+            local wash = tilemap.tint(farm_id, 0, 0)
+            t:near(wash.r, TINT_WET.r, 0.001, "tint red")
+            t:near(wash.g, TINT_WET.g, 0.001, "tint green")
+            t:near(wash.b, TINT_WET.b, 0.001, "tint blue")
+            t:near(wash.a, 1.0, 0.001, "tint alpha")
+            t:eq(tilemap.get_meta(farm_id, 0, 0, "crop"), "wheat", "crop meta round-trips")
+            t:eq(tilemap.get_meta(farm_id, 0, 0, "watered"), "1", "watered meta round-trips")
+            tilemap.set_meta(farm_id, 0, 0, "watered", "")
+            t:eq(tilemap.get_meta(farm_id, 0, 0, "watered"), nil, "empty string removes the key")
+            t:eq(tilemap.get_meta(farm_id, 0, 0, "crop"), "wheat", "other meta keys survive")
+            tilemap.clear_tint(farm_id, 0, 0)
+            local plain = tilemap.tint(farm_id, 0, 0)
+            t:near(plain.r, 1.0, 0.001, "clear_tint returns to white r")
+            t:near(plain.g, 1.0, 0.001, "clear_tint returns to white g")
+            t:near(plain.b, 1.0, 0.001, "clear_tint returns to white b")
+        end,
+    },
+    {
+        id = "pathfinding",
+        title = "A* paths",
+        claim = "find_path 返回含两端的格子表或 nil,reason；对角更短（T/D/S/O/C/J 切换分支）",
+        api = {
+            "tilemap.find_path",
+            "tilemap.is_solid",
+            "tilemap.get",
+            "entity.find",
+        },
+        code = "tilemap.find_path(id,2,2,7,7,false)",
+        enter = function()
+            reset_world()
+        end,
+        run = function(dt)
+            compute_paths()
+            last_action = string.format(
+                "4-dir=%s diag=%s solid='%s' oob='%s'",
+                straight_path and tostring(#straight_path) or "nil",
+                diagonal_path and tostring(#diagonal_path) or "nil",
+                solid_reason,
+                oob_reason
+            )
+            lab.note(last_action)
+        end,
+        read = function()
+            return {
+                { "4-dir", straight_path and #straight_path or "nil" },
+                { "diagonal", diagonal_path and #diagonal_path or "nil" },
+                { "solid end", solid_reason },
+                { "oob end", oob_reason },
+                { "same cell", same_path and #same_path or "nil" },
+                { "farm", farm_path and #farm_path or "nil" },
+                { "start", string.format("%d,%d", WALK.x, WALK.y) },
+            }
+        end,
+        check = function(t)
+            t:ok(live(ground_id), "GroundMap exists for pathfinding")
+            if not live(ground_id) then
+                return
+            end
+            t:ok(straight_path ~= nil, "4-directional path is found")
+            if straight_path ~= nil then
+                -- 绕墙的唯一最短路线：先沿 y=2 往右 5 格，再沿 x=7 往上 5 格 -> 11 个格心。
+                t:eq(#straight_path, 11, "4-dir shortest length")
+                t:eq(straight_path[1].x, WALK.x, "path includes the start x")
+                t:eq(straight_path[1].y, WALK.y, "path includes the start y")
+                t:eq(straight_path[#straight_path].x, GOAL.x, "path includes the goal x")
+                t:eq(straight_path[#straight_path].y, GOAL.y, "path includes the goal y")
+                local clear = true
+                for _, cell in ipairs(straight_path) do
+                    if tilemap.is_solid(ground_id, cell.x, cell.y) then
+                        clear = false
+                    end
+                end
+                t:ok(clear, "every path cell is non-solid")
+            end
+            t:ok(diagonal_path ~= nil, "diagonal path is found")
+            if diagonal_path ~= nil and straight_path ~= nil then
+                t:ok(#diagonal_path <= #straight_path, "diagonal path is not longer")
+            end
+            t:ok(solid_reason:find("solid") ~= nil, "solid endpoint returns a reason")
+            t:ok(oob_reason:find("out of bounds") ~= nil, "out-of-bounds endpoint returns a reason")
+            t:ok(same_path ~= nil and #same_path == 1, "start == goal returns one cell")
+            if farm_path ~= nil then
+                t:eq(#farm_path, FARM_W + FARM_H - 1, "4x3 farm Manhattan path length")
+            else
+                t:ok(false, "farm path is found")
+            end
+        end,
+    },
+    {
+        id = "world_sign",
+        title = "Cells and world",
+        claim = "格子中心经 transform.set 落到实体身上；V 把悬停格贴到 WorldText 告示牌",
+        api = {
+            "transform.get",
+            "transform.set",
+            "grid.world_to_cell",
+            "grid.cell_to_world",
+            "grid.facing_cell",
+            "grid.in_bounds",
+            "world_text.attach",
+            "entity.is_alive",
+        },
+        code = "transform.set(walker, cell_to_world(2,2)) / world_text.attach(sign, ...)",
+        enter = function()
+            reset_world()
+        end,
+        run = function(dt)
+            if live(walker_id) then
+                -- 只传 x/y：rotation 与 scale 由 transform.set 保留，这也是"省略即不改"的实证。
+                local p = cell_center(2, 2)
+                local pos = transform.get(walker_id)
+                transform.set(walker_id, p.x, p.y, pos.rotation, pos.scale_x, pos.scale_y)
+            end
+            attach_sign("next cell (3,3)")
+            last_action = "walker on cell(2,2); sign says next cell (3,3)"
+            lab.note(last_action)
+        end,
+        read = function()
+            if not live(walker_id) then
+                return { { "walker", "missing" } }
+            end
+            local pos = transform.get(walker_id)
+            local cx, cy = cell_of_world(pos.x, pos.y)
+            return {
+                { "world", string.format("%.0f,%.0f", pos.x, pos.y) },
+                { "cell", string.format("%d,%d", cx, cy) },
+                { "scale", string.format("%.0f,%.0f", pos.scale_x, pos.scale_y) },
+                { "sign", live(sign_id) and "alive" or "missing" },
+                { "sign text", tostring(last_sign_text) },
+            }
+        end,
+        check = function(t)
+            t:ok(live(walker_id), "Walker exists")
+            if not live(walker_id) then
+                return
+            end
+            local pos = transform.get(walker_id)
+            t:near(pos.x, MAP_POS.x + 80, 0.001, "Walker world x is the cell center")
+            t:near(pos.y, MAP_POS.y + 80, 0.001, "Walker world y is the cell center")
+            t:near(pos.scale_x, 1.0, 0.001, "transform.set preserved scale")
+            local cx, cy = cell_of_world(pos.x, pos.y)
+            t:eq(cx, 2, "world_to_cell recovers x")
+            t:eq(cy, 2, "world_to_cell recovers y")
+            local center = grid.cell_to_world(2, 2, TILE)
+            t:near(center[1], 80, 0.001, "cell_to_world local x")
+            t:near(center[2], 80, 0.001, "cell_to_world local y")
+            local front = grid.facing_cell(80, 80, "up", TILE)
+            t:eq(front[1], 2, "facing up keeps x")
+            t:eq(front[2], 3, "facing up steps one row")
+            t:eq(grid.in_bounds(2, 2, ground_w, ground_h), true, "Walker cell is in bounds")
+            t:ok(live(sign_id), "Sign entity exists")
+            if sign_id ~= nil then
+                t:eq(entity.is_alive(sign_id), true, "Sign stays alive after attach")
+            end
+            t:eq(entity.find("Sign"), sign_id, "entity.find resolves Sign")
+        end,
+    },
+}
+
+--- 每帧鼠标悬停读数：只画自己的一块面板（tm_*），不动 lab_* 元素；
+--- 面板固定在舞台右上角，永远落在 296..936 / 76..644 的取景框内。
+local function draw_hover()
+    if not live(ground_id) then
+        ui.hide("tm_hover_text")
+        ui.clear("tm_hover_text")
+        ui.clear("tm_hover")
         return
     end
-    last_sign = text
-    world_text.attach(sign_id, "text=" .. text .. ";font_size=14;color=0.900,1.000,0.700;offset=0,0;centered=true")
-end
-
---- 本帧的格子换算（这一整段就是 `grid` 的四个函数）：
----   ① world_to_cell：光标世界坐标 → 它指着哪一格
----   ② cell_to_world：那一格的**中心**在世界哪里（= 把格子换算回去）
----   ③ in_bounds：那一格在这张地图里吗（越界的光标格不该被当成合法农田）
----   ④ facing_cell：从光标格朝某个方向走一格是哪一格
-local function grid_state()
-    local cursor = input.cursor_position()
-    local sx, sy = cursor[1], cursor[2]
-    -- `camera2d.mouse_world()` 把宿主回填的相机快照与光标屏幕像素一次换算成世界坐标，
-    -- 返回 `{x, y}`（core/script.rs：`table_vec`），所以不是多返回值——要取字段。
-    -- 没有渲染帧时（headless / 编辑器未 Play）它会明确报错，`api.try` 把它变成
-    -- `nil + 原因`，这时退回"Walker 所在的格子"，演示照样可读。
-    local wx, wy = nil, nil
-    local world = api.try(camera2d.mouse_world)
-    if world ~= nil and world.x ~= nil then
-        wx, wy = world.x, world.y
-    else
-        local pos = walker_world()
-        wx, wy = pos.x, pos.y
-    end
-    local cell = grid.world_to_cell(wx, wy, TILE)
-    local cx, cy = cell[1], cell[2]
-    local center = grid.cell_to_world(cx, cy, TILE)
-    local inside = grid.in_bounds(cx, cy, ground_w, ground_h)
-
-    facing_index = facing_index % #FACINGS + 1
-    local facing = FACINGS[facing_index]
-    local front = grid.facing_cell(wx, wy, facing, TILE)
-
-    return {
-        screen_x = sx,
-        screen_y = sy,
-        world_x = wx,
-        world_y = wy,
-        cx = cx,
-        cy = cy,
-        center_x = center[1],
-        center_y = center[2],
-        inside = inside,
-        facing = facing,
-        front_x = front[1],
-        front_y = front[2],
-    }
-end
-
---- 绑定场景里已经声明好的实体。`entity.find` 找不到返回 nil，`tilemap.get` 对"没有 Tilemap
---- 组件的实体"会报 Lua 错误，所以两个条件都要过。
-local function bind_maps()
-    ground_id = entity.find("GroundMap")
-    if not live(ground_id) or tilemap.get(ground_id) == nil then
-        ground_id = nil
-        api.status("api_tilemap: scene has no GroundMap Tilemap entity")
+    local world = read_mouse_world()
+    if world == nil or world.x == nil then
+        ui.hide("tm_hover_text")
+        ui.clear("tm_hover_text")
+        ui.clear("tm_hover")
         return
     end
-    walker_id = entity.find("Walker")
-    sign_id = entity.find("Sign")
-    local info = tilemap.get(ground_id)
-    ground_w, ground_h = info.width, info.height
-end
-
---- 用 `tilemap.create` 造第二张地图（4x3 菜地）。这是"数据驱动的网格不需要预先写进场景"：
---- 场景里只有 GroundMap，菜地完全是运行期长出来的。返回的是实体 id，`get` 再读回字段。
-local function seed_farm()
-    farm_id = tilemap.create(FARM_W, FARM_H, FARM_TILE, "assets/textures/tileset.png", "TilemapFarmDemo")
-    tilemap.set_texture(farm_id, "assets/textures/tileset.png")
-    local pos = transform.get(farm_id)
-    transform.set(farm_id, FARM_POS.x, FARM_POS.y, pos.rotation, pos.scale_x, pos.scale_y)
-    -- M72-01/02：图集寻址与格子语义由数据声明，不再从贴图尺寸反推。这张占位图集一直是
-    -- 6 列 1 行的画法，所以显式声明 6×1 画面不变；声明成装不下现有格子的布局会当场报错。
-    tilemap.set_atlas(farm_id, FARM_ATLAS_COLS, FARM_ATLAS_ROWS)
-    -- (kinds, variant_count, autotile) = (6, 1, false) 是恒等档：格子值**就是**图集条目号，
-    -- 与菜地现有画法同义。开变体或 autotile 后格子值改成逻辑瓦 kind（见 docs/16）。
-    tilemap.set_kinds(farm_id, FARM_ATLAS_COLS, 1, false)
-    paint_farm()
-    mark(0, 0, "crop", "wheat")
-    mark(0, 0, "watered", "1")
-    mark(1, 0, "crop", "carrot")
-    mark(0, 1, "tilled", "1")
+    local cx, cy = cell_of_world(world.x, world.y)
+    if not grid.in_bounds(cx, cy, ground_w, ground_h) then
+        ui.hide("tm_hover_text")
+        ui.clear("tm_hover_text")
+        ui.clear("tm_hover")
+        return
+    end
+    local value = tilemap.get_cell(ground_id, cx, cy)
+    local solid = tilemap.is_solid(ground_id, cx, cy)
+    ui.panel("tm_hover", 664, 96, 256, 46, 0.075, 0.090, 0.130, 1.0)
+    ui.text_at(
+        "tm_hover_text",
+        676,
+        104,
+        string.format("cell (%d,%d)  art %d  solid %s", cx, cy, value, tostring(solid)),
+        1.0,
+        12
+    )
+    lab.note(string.format("hover cell (%d,%d) art=%d solid=%s", cx, cy, value, tostring(solid)))
 end
 
 function M.on_create()
-    api.title("api_tilemap - scene Tilemap + runtime tilemap.create + A* + grid 换算")
-    api.hint("T path  N diagonal  P solid-end  I oob-end  Y same-cell  J farm-A*  M plant  R harvest  - mouse over a cell to see it - " .. api.KEYS_BACK)
-    bind_maps()
-    if ground_id ~= nil then
-        seed_farm()
-    end
-    log.info("api_tilemap: demo ready (scene Tilemap + runtime farm + grid)")
+    -- 先绑定/摆放/建菜地，再 start：lab.start 会立刻执行第一步的 enter，那里要能读到资源。
+    bind_scene()
+    place_scene()
+    ensure_farm()
+    reset_world()
+    lab.start({
+        scene = "api_tilemap",
+        title = "Tilemap",
+        category = "2D",
+        steps = steps,
+        hide_scene_text = { "Hud" },
+    })
+    log.info(string.format("api_tilemap: tread %dx%d, runtime farm 4x3", ground_w, ground_h))
 end
 
 function M.update()
-    line = ""
-    local from = walker_cell()
+    if not lab.active() then
+        return lab.tick()
+    end
 
-    -- 键盘（键名用 v1 可读名：`t`/`n`/`p`/`i`/`y`/`j`/`m`/`r`，`input.just_pressed` 也认 `key:t`）。
+    -- 键位避开 lab 保留键（space/方向键/数字/r/f/f5 等），只做本模块的交互：
+    -- T/D/S/O/C/J 寻路分支，E 编辑格子，W/H 浇水/收获，V 换告示牌。
     if input.just_pressed("t") then
-        -- 主线：从 Walker 当前格寻到终点格（终点在场景声明的 GroundMap 上，四向）。
-        set_path(ground_id, from, GOAL, false)
-    elseif input.just_pressed("n") then
-        -- 同一个起终点、允许对角线：路径更短（状态行的 diagonal / path_len 会变）。
-        set_path(ground_id, from, GOAL, true)
-    elseif input.just_pressed("p") then
-        -- 终点是 solid 的那一格（中间那堵墙）：find_path 返回 nil, reason。
-        set_path(ground_id, from, { x = 5, y = 4 }, false)
-    elseif input.just_pressed("i") then
-        -- 终点越界：同样返回 nil, reason，而不是报错。
-        set_path(ground_id, from, { x = 99, y = 99 }, false)
-    elseif input.just_pressed("y") then
-        -- 起点 = 终点：返回只含一个格子的路径（也是成功返回，不是报错）。
-        set_path(ground_id, from, from, false)
+        compute_paths()
+        last_action = "4-dir A*: len=" .. tostring(straight_path and #straight_path or "nil")
+    elseif input.just_pressed("d") then
+        compute_paths()
+        last_action = "diagonal A*: len=" .. tostring(diagonal_path and #diagonal_path or "nil")
+    elseif input.just_pressed("s") then
+        compute_paths()
+        last_action = "solid endpoint: " .. solid_reason
+    elseif input.just_pressed("o") then
+        compute_paths()
+        last_action = "out-of-bounds endpoint: " .. oob_reason
+    elseif input.just_pressed("c") then
+        compute_paths()
+        last_action = "same cell path: " .. tostring(same_path and #same_path or "nil")
     elseif input.just_pressed("j") then
-        -- 运行期菜地（4x3）自己的 A*：证明 create 出来的地图走同一套寻路。
-        farm_path()
-    elseif input.just_pressed("m") then
-        -- 种 + 浇：给整块菜地写 crop=wheat / watered=1。
-        plant()
-    elseif input.just_pressed("r") then
-        -- 收获：空 value 删掉两个键，`get_meta` 随即读回 nil。
-        harvest()
+        compute_paths()
+        last_action = "farm A*: len=" .. tostring(farm_path and #farm_path or "nil")
+    elseif input.just_pressed("e") then
+        toggle_ground_cell()
+    elseif input.just_pressed("w") then
+        water_farm()
+    elseif input.just_pressed("h") then
+        harvest_farm()
+    elseif input.just_pressed("v") then
+        attach_sign(string.format("next cell (%d,%d)", hover.cx, hover.cy))
+        last_action = "WorldText attached to Sign"
     end
 
-    advance_walker()
-
-    -- 场景声明的 Tilemap：把游标指着的那一格的事实读出来。
-    if ground_id == nil then
-        api.status("GroundMap missing: tilemap.* needs a Tilemap entity")
-        return "api_tilemap_ok ground=none"
+    draw_hover()
+    if last_action ~= "ready" then
+        lab.note(last_action)
     end
-    local g = grid_state()
-    -- `tilemap.get(id)` 读回的是组件字段：tile_size / width / height / texture（texture 是
-    -- M29 新增字段——运行期换过的贴图在这里就能看见）。
-    local ground = tilemap.get(ground_id)
-    local cell_value = tilemap.get_cell(ground_id, g.cx, g.cy)
-    -- `is_solid` 对越界格返回 false（core/script.rs：`is_solid(x, y).unwrap_or(false)`），
-    -- 所以"越界"与"实心"要靠 in_bounds 分开判断，这里两个都打出来。
-    local solid = tilemap.is_solid(ground_id, g.cx, g.cy)
-    local path_len = last_path and #last_path or 0
+    return lab.tick()
+end
 
-    -- 运行期菜地：只认"光标格确实落在菜地范围内"的查询，否则 tilemap.* 会因越界报错。
-    local terrain = last_terrain
-    if live(farm_id) and grid.in_bounds(g.cx, g.cy, FARM_W, FARM_H) then
-        local info = tilemap.get(farm_id)
-        -- 解算的只读视图：`atlas_index` 是本帧真正取样哪个图集条目（0 = 什么都不画），
-        -- `autotile_mask` 是该格四个方向的同 kind 邻居位（bit0=y-1、bit1=x+1、bit2=y+1、
-        -- bit3=x-1，越界算"没有邻居"），`tint` 是顶点色。恒等档下三者都该是"直读"的结果。
-        local entry = tilemap.atlas_index(farm_id, g.cx, g.cy)
-        local mask = tilemap.autotile_mask(farm_id, g.cx, g.cy)
-        local wash = tilemap.tint(farm_id, g.cx, g.cy)
-        terrain = string.format("cell(%d,%d)=%d solid=%s %s atlas=%d mask=%d tint=(%.2f,%.2f,%.2f,%.2f)",
-            g.cx, g.cy,
-            tilemap.get_cell(farm_id, g.cx, g.cy),
-            tostring(tilemap.is_solid(farm_id, g.cx, g.cy)),
-            crop_tag(g.cx, g.cy), entry, mask, wash.r, wash.g, wash.b, wash.a)
-        last_terrain = terrain
-        if info.texture ~= nil then
-            terrain = terrain .. " tex=" .. tostring(info.texture)
-        end
-    end
-
-    -- 状态行拆三行：`api.status` 只是一串文本，渲染器会按 `\n` 换行（text.rs 的换行布局），
-    -- 三行 × ~80 字符在 1280 宽的取景框里放得下，不会被裁掉。
-    line = string.format(
-        "GROUND %dx%d tile32 | cursor=(%.0f,%.0f)screen -> world(%.1f,%.1f) -> cell(%d,%d) center=(%.1f,%.1f) in_bounds=%s solid=%s tile=%s",
-        ground.width, ground.height, g.screen_x, g.screen_y, g.world_x, g.world_y,
-        g.cx, g.cy, g.center_x, g.center_y, tostring(g.inside), tostring(solid), tostring(cell_value))
-    line = line .. string.format(
-        "\nFACING %s from (%.0f,%.0f) -> cell(%d,%d) | FARM %s | farm .tex=%s path=%s reason=%s",
-        g.facing, g.world_x, g.world_y, g.front_x, g.front_y, terrain,
-        live(farm_id) and tostring(tilemap.get(farm_id).texture) or "-",
-        last_farm_path and tostring(#last_farm_path) or "nil", tostring(last_farm_reason))
-    line = line .. string.format(
-        "\nPATH walker=cell(%d,%d) goal=cell(%d,%d) len=%d step=%d diagonal=%s reason=%s",
-        from.x, from.y, GOAL.x, GOAL.y, path_len, path_step, tostring(last_diagonal), tostring(last_reason))
-
-    if last_path then
-        local head = last_path[1]
-        local mid = last_path[math.min(2, path_len)]
-        local tail = last_path[path_len]
-        line = line .. string.format(" first=(%d,%d) next=(%d,%d) last=(%d,%d)",
-            head.x, head.y, mid.x, mid.y, tail.x, tail.y)
-    else
-        line = line .. " (nil: T=try again, P/I=fail cases, J=farm route)"
-    end
-
-    api.status(line)
-    set_sign(string.format("next cell (%d,%d)", g.front_x, g.front_y))
-
-    -- 返回值进引擎日志：headless 也能看到这一帧的路径长度 / 失败原因 / 元数据。
-    return string.format(
-        "api_tilemap_ok cursor_cell=(%d,%d) in_bounds=%s solid=%s tile=%s walker=(%d,%d) path_len=%d step=%d diag=%s reason=%s farm_path=%s",
-        g.cx, g.cy, tostring(g.inside), tostring(solid), tostring(cell_value),
-        from.x, from.y, path_len, path_step, tostring(last_diagonal), tostring(last_reason),
-        last_farm_path and tostring(#last_farm_path) or "nil")
+function M.self_test()
+    return lab.self_test()
 end
 
 function M.on_destroy()
+    -- 只清自己的动态 UI：lab_* 归 lab.stop() 管，不能在这里 ui.clear。
+    ui.hide("tm_hover_text")
+    ui.clear("tm_hover_text")
+    ui.clear("tm_hover")
     ground_id = nil
     walker_id = nil
+    target_id = nil
     sign_id = nil
     farm_id = nil
-    last_path = nil
-    last_farm_path = nil
-    path_active = false
-    last_sign = ""
+    last_sign_text = nil
+    lab.stop()
 end
 
 return M

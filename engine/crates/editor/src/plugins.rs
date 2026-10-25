@@ -32,6 +32,19 @@ const LOG_NODE: rustlua_visual_script::NodeSpec = rustlua_visual_script::NodeSpe
     params: &[],
 };
 
+/// 能力位的中文名（诊断页只展示这个，不上屏 `Panel/Command/...`）。
+fn capability_label(capability: Capability) -> &'static str {
+    match capability {
+        Capability::Panel => "面板",
+        Capability::MenuItem => "菜单项",
+        Capability::Command => "命令",
+        Capability::InspectorSection => "属性区段",
+        Capability::AssetImporter => "资源导入器",
+        Capability::VisualScriptNode => "可视化脚本节点",
+        Capability::SettingsPage => "设置页",
+    }
+}
+
 /// 核心编辑器不是特殊路径：它也只是注册表里的一个（空）插件。
 pub(crate) struct CoreEditorPlugin;
 
@@ -400,7 +413,7 @@ impl EditorApp {
                         let capabilities = status
                             .capabilities
                             .iter()
-                            .map(|capability| format!("{capability:?}"))
+                            .map(|capability| capability_label(*capability))
                             .collect::<Vec<_>>()
                             .join(", ");
                         ui.label(format!("能力：{capabilities}"));
