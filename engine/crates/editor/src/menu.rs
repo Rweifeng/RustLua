@@ -595,7 +595,9 @@ impl EditorApp {
         match action {
             // ---- 文件 ----
             MenuAction::NewScene => self.create_scene(),
-            MenuAction::NewProject => self.create_new_project(),
+            MenuAction::NewProject => {
+                self.create_new_project(crate::panels::header::ProjectTemplate::Blank)
+            }
             MenuAction::OpenProject => self.open_project_menu(),
             MenuAction::SaveScene => {
                 self.dispatch(editor::EditorCommand::Save);

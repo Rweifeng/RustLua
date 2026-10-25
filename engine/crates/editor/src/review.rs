@@ -2,7 +2,7 @@
 //!
 //! 报告只汇总既有事实：Spec 校验诊断、资产来源/许可/体积门、三宿主证据状态与
 //! 未收口项。这里不产生新的“绿”：没跑过的宿主一律标 `untested`，调用方要用
-//! [`ReviewReport::record_host`] 显式写入实测证据才能改成 `tested`。
+//! `ReviewReport::record_host` 显式写入实测证据才能改成 `tested`。
 
 use crate::ui_spec_host::{UiHostResult, UiSpecStore};
 use rustlua_ui_spec::{AssetLimits, Diagnostic, Severity, validate_spec};

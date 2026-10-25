@@ -1,7 +1,7 @@
 //! M76-04：UI Studio 的无头状态层。
 //!
 //! 画布/层级/检查器/预览/提案箱的**数据与动作**集中在这里，egui 面板只做绘制与转调。
-//! 所有写入仍走 [`UiSpecStore`]：提案 → 接受/拒绝/拆分接受，UI Studio 不维护第二份
+//! 所有写入仍走 `UiSpecStore`：提案 → 接受/拒绝/拆分接受，UI Studio 不维护第二份
 //! 文档状态。多分辨率预览与安全区只影响绘制参数，不写回 Spec。
 
 use crate::ui_spec_host::{UiHostError, UiHostErrorCode, UiHostResult, UiSpecStore};
