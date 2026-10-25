@@ -1,9 +1,14 @@
 ﻿# release-notes.ps1 —— 生成 GitHub Release 说明（P2-01 ⑤）
 #
 # 说明只由三样东西组成，避免"手写一段和产物对不上"：
-#   1. CHANGELOG 里对应版本的段落（找不到就退到最新 Unreleased，并明确写出来）；
+#   1. 变更记录里对应版本的段落（`docs/changelog/版本历史.md`；找不到就退到
+#      `docs/changelog/最新条目.md` 并**聚合全部 Unreleased 批次**，批次标题去掉
+#      "Unreleased" 前缀、按出现顺序保留，明确写出来源与条数）；
 #   2. 构建证据（commit / 工具链 / SBOM 文件哈希）；
 #   3. 每个发布资产的字节数与 SHA-256。
+#
+# 破坏性变更约定（§26.3-28）：批次内写 `### 破坏性变更` 子标题即为机器可见的
+# breaking 通道——聚合时会检测该子标题并在「变更」区顶部给出醒目提示。
 #
 # 用法：
 #   pwsh -NoProfile -File scripts/release/release-notes.ps1 -Version 0.1.0 -Assets a.zip,b.zip
@@ -35,7 +40,7 @@ if ([string]::IsNullOrWhiteSpace($Output)) {
 # positional）。允许逗号/分号分隔的单个字符串，CI 用 `-Assets ($assets -join ',')`。
 $Assets = @($Assets | ForEach-Object { $_ -split '[,;]' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 
-# 从 CHANGELOG 找 `## vX.Y.Z` / `## X.Y.Z` / `## [X.Y.Z]`；找不到则用第一条 Unreleased。
+# 从变更记录文本里找 `## vX.Y.Z` / `## X.Y.Z` / `## [X.Y.Z]`；找不到则用第一条 Unreleased。
 function Get-ChangelogSection([string]$Text, [string]$Ver) {
     $lines = $Text -split "`r?`n"
     $escaped = [regex]::Escape($Ver)
@@ -60,10 +65,47 @@ function Get-ChangelogSection([string]$Text, [string]$Ver) {
     return $null
 }
 
-$changelogPath = Join-Path $projectRoot "CHANGELOG.md"
+# 聚合 `## Unreleased — …` 的全部批次（§26.3-28 兜底）：每条保留原批次内容，
+# 但标题去掉 "Unreleased — " 前缀、降为 `### `，避免把 Unreleased 字样带到发布页，
+# 且不再只取第一条——9+ 条批次一条都不能丢。
+function Get-UnreleasedBatches([string]$Text) {
+    $lines = $Text -split "`r?`n"
+    $batches = @()
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match '^##\s+Unreleased(?:\s|$)') {
+            $j = $i + 1
+            while ($j -lt $lines.Count -and $lines[$j] -notmatch '^##\s+') { $j++ }
+            $batchBody = ($lines[$i..($j - 1)] -join "`n").Trim()
+            $batchBody = $batchBody -replace '^##\s+Unreleased\s*—\s*', '### '
+            $batches += [pscustomobject]@{ Body = $batchBody }
+            $i = $j - 1
+        }
+    }
+    return $batches
+}
+
 $section = $null
-if (Test-Path -LiteralPath $changelogPath) {
-    $section = Get-ChangelogSection ([System.IO.File]::ReadAllText($changelogPath, [System.Text.UTF8Encoding]::new($false))) $Version
+$sectionSource = ""
+# 1) 版本历史.md 里找版本段（那是"真正的版本段落"）。
+$historyPath = Join-Path $projectRoot "docs\changelog\版本历史.md"
+if (Test-Path -LiteralPath $historyPath) {
+    $candidate = Get-ChangelogSection ([System.IO.File]::ReadAllText($historyPath, [System.Text.UTF8Encoding]::new($false))) $Version
+    if ($candidate) {
+        $section = $candidate
+        $sectionSource = "docs\changelog\版本历史.md"
+    }
+}
+# 2) 没有版本段 → 聚合最新条目.md 的**全部** Unreleased 批次（不是只取第一条）。
+if (-not $section) {
+    $latestPath = Join-Path $projectRoot "docs\changelog\最新条目.md"
+    if (Test-Path -LiteralPath $latestPath) {
+        $batches = @(Get-UnreleasedBatches ([System.IO.File]::ReadAllText($latestPath, [System.Text.UTF8Encoding]::new($false))))
+        if ($batches.Count -gt 0) {
+            $joined = ($batches | ForEach-Object { $_.Body }) -join "`n`n"
+            $section = [pscustomobject]@{ Kind = "unreleased"; Body = $joined; BatchCount = $batches.Count }
+            $sectionSource = "docs\changelog\最新条目.md"
+        }
+    }
 }
 
 $commit = (& git -C $projectRoot rev-parse HEAD 2>$null)
@@ -94,17 +136,27 @@ $sb = New-Object System.Text.StringBuilder
 [void]$sb.AppendLine()
 if ($section) {
     if ($section.Kind -eq "unreleased") {
-        [void]$sb.AppendLine("> 说明：CHANGELOG 中没有 ``v$Version`` 的段落，下面取最新 Unreleased 段落。")
+        [void]$sb.AppendLine("> 说明：``docs\changelog\版本历史.md`` 中没有 ``v$Version`` 的段落，下面聚合 ``$sectionSource`` 的全部 $($section.BatchCount) 条 Unreleased 批次。")
         [void]$sb.AppendLine()
     }
-    # 段落本身带 `## Unreleased ...` / `## vX ...` 标题；发布页统一成中性的「变更」，
-    # 避免把 "Unreleased" 原样带到已发布页面上。
-    $body = ($section.Body -replace '\A##[^\r\n]*(\r?\n)?', '').Trim()
+    # 版本段以 `## vX ...` 开头：发布页统一成中性的「变更」，剥掉段标题；
+    # 聚合的 Unreleased 批次已把标题转成 `### `（保留来源批次），**不能**再用
+    # `\A##` 剥——那会把第一条批次的 `### ` 前两个 `#` 误当段标题剥掉。
+    if ($section.Kind -eq "version") {
+        $body = ($section.Body -replace '\A##[^\r\n]*(\r?\n)?', '').Trim()
+    } else {
+        $body = $section.Body.Trim()
+    }
+    # 破坏性变更约定（§26.3-28）：`### 破坏性变更` 子标题是机器可见的 breaking 通道。
+    if ($body -match '(?m)^###\s+破坏性变更\s*$') {
+        [void]$sb.AppendLine("> **注意：本版本含破坏性变更（批次内写明「破坏性变更」子标题），升级前请先读迁移说明。**")
+        [void]$sb.AppendLine()
+    }
     [void]$sb.AppendLine("## 变更")
     [void]$sb.AppendLine()
     [void]$sb.AppendLine($body)
 } else {
-    [void]$sb.AppendLine("> 说明：CHANGELOG 中没有 ``v$Version`` 或 Unreleased 段落，本页只列构建证据与资产。")
+    [void]$sb.AppendLine("> 说明：``docs\changelog\`` 里没有 ``v$Version`` 版本段，也没有 Unreleased 段落，本页只列构建证据与资产。")
 }
 [void]$sb.AppendLine()
 [void]$sb.AppendLine("## 发布资产")

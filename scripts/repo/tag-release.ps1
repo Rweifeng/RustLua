@@ -53,12 +53,15 @@ if ($LASTEXITCODE -eq 0 -and $existing) {
     throw "tag $tag already exists locally ($existing)"
 }
 
-$changelog = Join-Path $projectRoot "CHANGELOG.md"
+$changelog = Join-Path $projectRoot "docs\changelog\版本历史.md"
 if (Test-Path -LiteralPath $changelog) {
     $hasSection = Select-String -Path $changelog -Pattern ('^##\s+\[?v?' + [regex]::Escape($Version) + '\]?(?:\s|$)') -Quiet
-    if (-not $hasSection) {
-        Write-Host "warning: CHANGELOG.md has no section for v$Version; release notes will fall back to Unreleased." -ForegroundColor Yellow
+    if ($hasSection) {
+        # §26.3-28：重复发同一个版本号只会带出旧段落（release notes 不会新增内容），
+        # 且版本段必须"比已发布段落更新"才合法——已存在即判红，不许静默重发。
+        throw "v$Version already has a section in docs\changelog\版本历史.md — re-publishing the same version would emit only the old section. Bump the version first."
     }
+    Write-Host "info: docs\changelog\版本历史.md has no section for v$Version; release notes will aggregate all Unreleased batches." -ForegroundColor Yellow
 }
 
 $commit = (& git -C $projectRoot rev-parse --short HEAD 2>$null)
