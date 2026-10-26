@@ -871,7 +871,7 @@ impl UiStudio {
     ///
     /// 计数只在 [`UiStudio::accept`] 真正入栈时变大（撤销/重做只挪栈）；深度项在换工程
     /// 清空两条栈后回落到 0，负责把归属从账本上摘走。只用深度会在"撤销一步后紧接着
-    /// 再接受一步"时回到同一个数，也会在栈到达 [`UNDO_LIMIT`] 后停止变化。
+    /// 再接受一步"时回到同一个数，也会在栈到达 `UNDO_LIMIT` 后停止变化。
     /// 消费方见 editor bin 的 `actions/undo_ledger.rs`。
     #[must_use]
     pub fn undo_signature(&self) -> (u64, usize) {

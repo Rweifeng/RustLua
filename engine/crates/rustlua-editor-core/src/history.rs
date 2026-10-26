@@ -38,7 +38,7 @@ pub enum CommandKind {
 /// **补丁**（成本只与改动成正比），结构变更仍存**整文档快照**（增删实体要带"被删掉的那棵
 /// 子树"，补丁通道不假装支持）。两种形态对外语义逐字相同：`undo`/`redo` 之后场景内容、
 /// `path`、`dirty`、`revision`、`disk_signature` 都和纯快照实现一项一项对得上——
-/// 后四项由 [`DocumentAnchor`] 显式记住，不是跟着整份文档免费带的。
+/// 后四项由 `DocumentAnchor` 显式记住，不是跟着整份文档免费带的。
 #[derive(Clone, Debug)]
 pub struct EditCommand {
     pub label: String,

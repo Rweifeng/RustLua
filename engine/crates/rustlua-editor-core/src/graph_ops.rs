@@ -91,7 +91,7 @@ impl GraphDocument {
     }
 
     /// 跨面板全局 Undo 的**编辑签名**：`(累计编辑次数, undo+redo 深度)`。
-    /// 计数只在真正新增一步（[`Self::checkpoint`]）时变大；深度项在换文档/清空时回落，
+    /// 计数只在真正新增一步（`Self::checkpoint`）时变大；深度项在换文档/清空时回落，
     /// 两者缺一不可（理由见 `history.rs` 的同名方法）。
     /// 消费方见 editor bin 的 `actions/undo_ledger.rs`。
     #[must_use]

@@ -79,7 +79,7 @@ impl MaterialEditSession {
     }
 
     /// 跨面板全局 Undo 的**编辑签名**：`(累计编辑次数, undo+redo 深度)`。计数只在真正
-    /// 新增一步（[`Self::commit`] 的实际压栈分支）时变大；换素材时整个会话被重建，
+    /// 新增一步（`Self::commit` 的实际压栈分支）时变大；换素材时整个会话被重建，
     /// 两项一起回到 (0, 0)。消费方见 editor bin 的 `actions/undo_ledger.rs`。
     #[must_use]
     pub fn undo_signature(&self) -> (u64, usize) {
