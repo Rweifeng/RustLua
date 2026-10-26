@@ -211,8 +211,10 @@ jobs:
         # 2026-10-21 CI：默认并行 test 线程下 engine --lib 偶发 0xC0000005
         # （STATUS_ACCESS_VIOLATION）；同一二进制单线程本地与覆盖率采集均通过。
         # 固定单线程换取可复现性，代价是测试墙钟时间变长。
+        # 2026-10-26：RUST_TEST_THREADS 实际配的是 2（并行），e69fdc53 在
+        # editor 上复现 0xC0000005；改回 1 与注释意图一致，AV 消失。
         env:
-          RUST_TEST_THREADS: "2"
+          RUST_TEST_THREADS: "1"
         run: cargo test --workspace --all-features
 
       - name: Debug build

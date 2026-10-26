@@ -267,6 +267,8 @@ fn builtin_pipeline_preserves_legacy_stage_order() {
             "ui_click_dispatch",
             // docs/54 §4.1：每实体脚本紧跟工程级脚本（`ui_click_dispatch` 之后、用户系统之前）
             "entity_scripts",
+            // UI 绑定解析：实体脚本把绑定的值写入后、用户系统读之前解析（M7x 新增 stage）
+            "ui_bindings_resolve",
             "user_script_probe",
             "physics_sync",
             "physics2d_step",

@@ -6,7 +6,7 @@ use editor::{ResourceBrowserState, ResourceEntry, ResourceKind};
 use eframe::egui;
 use rustlua_assets::resource_db::ResourceState;
 use rustlua_render::texture::{TextureAsset, TextureColorSpace};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -708,10 +708,10 @@ fn draw_status_marker(ui: &mut egui::Ui, marker: &StatusMarker, color: egui::Col
     }
 }
 
-/// 资源目录树节点：子文件夹（递归）+ 直接文件。
+/// 资源目录树节点：子文件夹（递归，保序）+ 直接文件。
 #[derive(Default)]
 pub(crate) struct ResourceTree {
-    folders: BTreeMap<String, ResourceTree>,
+    folders: Vec<(String, ResourceTree)>,
     files: Vec<ResourceEntry>,
 }
 
@@ -735,26 +735,35 @@ fn build_resource_tree(entries: &[ResourceEntry]) -> ResourceTree {
                 // 最后一段是文件名。
                 node.files.push(entry.clone());
             } else {
-                node = node.folders.entry(segment.to_owned()).or_default();
+                let next = node.folders.iter().position(|(name, _)| name == segment);
+                node = match next {
+                    Some(index) => &mut node.folders[index].1,
+                    None => {
+                        node.folders
+                            .push((segment.to_owned(), ResourceTree::default()));
+                        &mut node.folders.last_mut().expect("just pushed").1
+                    }
+                };
             }
         }
     }
     sort_tree(&mut root);
     // UI 预设是编辑器文档，不是普通资源；置顶，避免被 assets/scenes 的长列表压到折叠区外，
     // 用户误以为“没有显示 .ui.json”。
-    if let Some(ui) = root.folders.remove("ui") {
-        let mut reordered = BTreeMap::new();
-        reordered.insert("ui".to_owned(), ui);
-        reordered.extend(std::mem::take(&mut root.folders));
-        root.folders = reordered;
+    if let Some(index) = root.folders.iter().position(|(name, _)| name == "ui") {
+        // remove/insert 而不是 swap：swap 会把原来排第一的目录甩到 `ui` 的位置，
+        // 破坏其余目录的字典序。
+        let pinned = root.folders.remove(index);
+        root.folders.insert(0, pinned);
     }
     root
 }
 
-/// 递归排序文件（BTreeMap 的文件夹键天然字典序）。
+/// 递归排序：目录按名字典序（根层的 `ui` 随后被置顶覆盖），文件按相对路径序。
 fn sort_tree(node: &mut ResourceTree) {
+    node.folders.sort_by(|a, b| a.0.cmp(&b.0));
     node.files.sort_by_key(|entry| entry.path.clone());
-    for child in node.folders.values_mut() {
+    for (_, child) in &mut node.folders {
         sort_tree(child);
     }
 }
@@ -1009,7 +1018,7 @@ mod tests {
             entry("assets/player.png", ResourceKind::Texture),
         ];
         let tree = build_resource_tree(&entries);
-        let keys: Vec<&str> = tree.folders.keys().map(String::as_str).collect();
+        let keys: Vec<&str> = tree.folders.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(keys, vec!["ui", "assets"], "UI 预设目录必须置顶");
     }
 
@@ -1017,7 +1026,12 @@ mod tests {
     fn tree_shows_ui_documents_under_the_ui_folder() {
         let entries = vec![entry("ui/forge.ui.json", ResourceKind::Other)];
         let tree = build_resource_tree(&entries);
-        let ui = tree.folders.get("ui").expect("ui 目录必须出现在资源树里");
+        let ui = &tree
+            .folders
+            .iter()
+            .find(|(name, _)| name == "ui")
+            .expect("ui 目录必须出现在资源树里")
+            .1;
         assert_eq!(ui.files.len(), 1);
         assert_eq!(ui.files[0].path_string(), "ui/forge.ui.json");
     }
@@ -1034,17 +1048,27 @@ mod tests {
         let tree = build_resource_tree(&entries);
         // 顶层目录：assets / scenes / scripts。
         assert_eq!(tree.folders.len(), 3);
-        assert!(tree.folders.contains_key("assets"));
-        assert!(tree.folders.contains_key("scenes"));
-        assert!(tree.folders.contains_key("scripts"));
+        assert!(tree.folders.iter().any(|(name, _)| name == "assets"));
+        assert!(tree.folders.iter().any(|(name, _)| name == "scenes"));
+        assert!(tree.folders.iter().any(|(name, _)| name == "scripts"));
         // assets 下：文件排序 + 子目录 sprites。
-        let assets = &tree.folders["assets"];
+        let assets = &tree
+            .folders
+            .iter()
+            .find(|(name, _)| name == "assets")
+            .expect("assets 目录必须存在")
+            .1;
         assert_eq!(assets.files.len(), 1);
         assert_eq!(assets.files[0].path_string(), "assets/player.png");
         assert_eq!(assets.folders.len(), 1);
-        assert!(assets.folders.contains_key("sprites"));
+        assert!(assets.folders.iter().any(|(name, _)| name == "sprites"));
         // sprites 下两个文件按名排序。
-        let sprites = &assets.folders["sprites"];
+        let sprites = &assets
+            .folders
+            .iter()
+            .find(|(name, _)| name == "sprites")
+            .expect("sprites 目录必须存在")
+            .1;
         assert_eq!(sprites.files.len(), 2);
         assert_eq!(sprites.files[0].path_string(), "assets/sprites/bg.png");
         assert_eq!(sprites.files[1].path_string(), "assets/sprites/player.png");

@@ -725,7 +725,9 @@ mod tests {
     /// `AI_TOOL_SURFACE_BLESS=1 cargo test -p rustlua-editor-ai snapshot` 刷新基线。
     #[test]
     fn tool_surface_matches_baseline() {
-        let baseline = include_str!("../ai_tool_surface.json");
+        // 基线文件历史上以 CRLF 入库（Windows checkout 转化后提交）；include_str! 保留原始
+        // 字节，与生成器（LF）逐字节比对会假红。归一化行尾后只比内容，双端 checkout 均绿。
+        let baseline = include_str!("../ai_tool_surface.json").replace("\r\n", "\n");
         let current = surface_json();
         if std::env::var("AI_TOOL_SURFACE_BLESS").as_deref() == Ok("1") {
             std::fs::write(

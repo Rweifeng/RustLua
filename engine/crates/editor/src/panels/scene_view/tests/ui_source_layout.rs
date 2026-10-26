@@ -160,8 +160,8 @@ fn ui_source_scene_layout_matches_golden() {
     let reports = layout_reports(&root);
     assert_eq!(
         reports.len(),
-        28 * RESOLUTIONS.len(),
-        "UI 源场景/预制体数量变了（规划口径 28 个）：{}",
+        29 * RESOLUTIONS.len(),
+        "UI 源场景/预制体数量变了（规划口径 29 个）：{}",
         reports
             .iter()
             .map(|report| report.split('|').next().unwrap())
