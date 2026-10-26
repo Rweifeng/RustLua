@@ -73,12 +73,20 @@ const NOON: i64 = 720;
 /// （`skin.lua` 同步换 path）。净变化：已引用 −3 +2 = −1 → **1065**；内容缺口 +3
 /// （`ui_title_logo.png`、`ui_menu_btn_wuxia_9s.png`、`ui_menu_btn_wuxia_hover_9s.png`）
 /// → **25**（docs/48 §2 决定表登记三行下架）。开发产物 145 不变。
-const EXPECTED_DEV_ARTIFACTS: usize = 145;
-// 内容缺口 25 个是拆层整图/阴影中间件/改色备份/下架贴图（crops 中间帧已归开发产物），理由见上面两条。
-const EXPECTED_CONTENT_ORPHANS: usize = 25;
+///
+/// **2026-10-25 美术批（`gen_manor_art.py` 重做）补齐两个漏登记的生成产物**：
+/// `assets/art/buildings/_preview.png` 是生成器的建筑放大预览（`_` 前缀 → **开发产物
+/// 145 → 146**）；`assets/art/shadows/blob_45x15.png` 是按影子尺寸新出的中间件
+/// （与其余三张同族，运行期投影由 `data/lighting.lua` 现算 → **内容缺口 25 → 26**，
+/// docs/48 §2 的 `shadows/` 行 3 → 4）。基准因此是 `assets/` 共 **1237** =
+/// 已引用 **1065** + 开发产物 **146** + 内容缺口 **26**。
+/// 这两个文件此前被 145/25 的旧基准漏掉，`-MvpOnly` 与 CI 的 gates 第 8 步因此恒红。
+const EXPECTED_DEV_ARTIFACTS: usize = 146;
+// 内容缺口 26 个是拆层整图/阴影中间件/改色备份/下架贴图（crops 中间帧已归开发产物），理由见上面两条。
+const EXPECTED_CONTENT_ORPHANS: usize = 26;
 // 已引用：扫描口径未变，984（2026-10-07）→ 1065 来自 M72 各批产出与新增引用点，
 // 1065 → 1066 来自 2026-10-21 入库的 `assets/art/items/peach.png`（`data/items.lua` 的 icon），
-// 1066 → 1065 来自 2026-10-25 门面换肤（见上一条注释）。
+// 1066 → 1065 来自 2026-10-25 门面换肤与美术批（见上两条注释）。
 const EXPECTED_REFERENCED: usize = 1065;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
