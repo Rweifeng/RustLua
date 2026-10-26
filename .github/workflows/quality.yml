@@ -211,12 +211,28 @@ jobs:
         # 2026-10-21 CI：默认并行 test 线程下 engine --lib 偶发 0xC0000005
         # （STATUS_ACCESS_VIOLATION）；同一二进制单线程本地与覆盖率采集均通过。
         # 固定单线程换取可复现性，代价是测试墙钟时间变长。
+        # 2026-10-26：RUST_TEST_THREADS 实际配的是 2（并行），e69fdc53 在
+        # editor 上复现 0xC0000005；改回 1 与注释意图一致，AV 消失。
         env:
-          RUST_TEST_THREADS: "2"
-        run: cargo test --workspace --all-features
+          RUST_TEST_THREADS: "1"
+        run: |
+          New-Item -ItemType Directory -Force -Path "${{ github.workspace }}\artifacts\logs\quality" | Out-Null
+          $log = "${{ github.workspace }}\artifacts\logs\quality\build-test-tests.log"
+          cargo test --workspace --all-features 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) { Write-Host "tests failed (exit $code); full log: $log" }
+          exit $code
 
       - name: Debug build
         run: cargo build --workspace
+
+      - name: Upload build-test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-test-logs
+          path: artifacts/logs/quality/*
+          if-no-files-found: warn
 
   # 发布闭包（容器内容）：`assetc closure` 直接读 RLB 索引，断言"计划里的每条逻辑路径都在容器里"、
   # 条目数/块大小/字节数/FNV 与计划一致。此前它只在发布机上有真产物时才跑（apply-bundle-layout /
@@ -360,7 +376,13 @@ jobs:
       # 浏览器/已发布产物时这两层会**显式**打印跳过原因并以 2/3 退出（不是伪造通过）；真失败
       # （页面能跑却没画面、引导失败）仍是退出码 1，会让这一步判红。
       - name: Web platform evidence
-        run: pwsh -NoProfile -File scripts/verify/verify.ps1 -Web
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "${{ github.workspace }}\artifacts\logs\quality" | Out-Null
+          $log = "${{ github.workspace }}\artifacts\logs\quality\web-evidence.log"
+          pwsh -NoProfile -File scripts/verify/verify.ps1 -Web 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) { Write-Host "web evidence failed (exit $code); full log: $log"; exit $code }
 
       # wasm Lua 运行期验证门：no-modules 桥（game_web 的 Lua 桥导出）+ gpu2d 宿主画布探针的
       # Node 验证。**直接**调 wrapper（不经 verify.ps1），避免把整套常规门再跑
@@ -408,6 +430,14 @@ jobs:
           if ($code -eq 3) { Write-Host "webgl_eh_skipped reason=environment_limited exit=3 (no browser or no published webgl bundle)" }
           else { Write-Host "webgl_eh_ok exit=0 (new-EH wasm compiles in all discovered browsers)" }
 
+      - name: Upload web-evidence logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-evidence-logs
+          path: artifacts/logs/quality/*
+          if-no-files-found: warn
+
   # P4-01 覆盖率棘轮：llvm-cov 全 workspace 采集 → 归一化 → 与基线比（总 −0.5pp /
   # 单 crate −2.0pp 判红）。只覆盖"本次改动真正碰到的树"这一层判断由 workflow 级
   # paths 承担（engine/** + metrics/**）；基线未就位时退 3（BLOCKED），绝不冒充通过。
@@ -452,10 +482,12 @@ jobs:
       - name: Coverage ratchet
         shell: pwsh
         run: |
-          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/check-coverage.ps1 -RequireTool
+          New-Item -ItemType Directory -Force -Path "${{ github.workspace }}\artifacts\logs\quality" | Out-Null
+          $log = "${{ github.workspace }}\artifacts\logs\quality\coverage-ratchet.log"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify/check-coverage.ps1 -RequireTool 2>&1 | Tee-Object -FilePath $log
           $code = $LASTEXITCODE
           if ($code -eq 3) { Write-Host "coverage_blocked reason=no_baseline (baseline not committed yet; first run must be reviewed and --update locally)" }
-          if ($code -ne 0) { throw "coverage gate failed (exit $code)" }
+          if ($code -ne 0) { Write-Host "coverage gate failed (exit $code); full log: $log"; throw "coverage gate failed (exit $code)" }
 
       - name: Upload coverage evidence
         uses: actions/upload-artifact@v4
@@ -467,4 +499,12 @@ jobs:
             artifacts/metrics/coverage-summary.md
             artifacts/metrics/lcov.info
             artifacts/metrics/html/
+          if-no-files-found: warn
+
+      - name: Upload coverage logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-logs
+          path: artifacts/logs/quality/*
           if-no-files-found: warn

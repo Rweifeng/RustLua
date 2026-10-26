@@ -521,7 +521,7 @@ try {
         #   ⑥ flaky skip 账本：CI 用 RUSTLUA_SKIP_CI_FLAKY=1 少跑的用例，必须逐条有原因/读者/
         #      恢复条件/复审日期（scripts/verify/flaky-skips.json）。门扫所有读该变量的代码，
         #      拦三种静默失效：新加 skip 不登记、登记的读者/发放点被删、skip 代码只跳名字不打。
-        Write-Step "Flaky CI skip ledger (static parity)"
+        Write-Step "Flaky CI skip-ledger (static parity)"
         Invoke-Checked node @((Join-Path $projectRoot "scripts/verify/check-flaky-skips.mjs"))
     } else {
         Write-Host "  [SKIP] 未找到 node：Lua API 文档桩门、微信资源路由门、wasm 兜底通道门、固定时间步门、输入键表门与 flaky skip 账本门未运行（不是通过）" -ForegroundColor Yellow

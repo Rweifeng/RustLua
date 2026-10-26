@@ -81,8 +81,8 @@ fn sample_project_menu_click_loads_the_demo_scene() {
     );
     let result = runtime.call_update().unwrap();
     assert!(
-        result.starts_with("api_core_ok"),
-        "目标场景的演示模块应当接手 update：{result}"
+        result.starts_with("lab scene=api_core"),
+        "目标场景的演示模块（lab）应当接手 update：{result}"
     );
 }
 
@@ -116,6 +116,19 @@ fn sample_project_demo_saves_and_esc_returns_to_menu() {
         .expect("load sample main.lua");
 
     // S = `save.slot("demo")` + `save.commit()`（演示里写明的落盘键）。
+    // lab 演示从第 1 步开始，S 只在 save_slots 步骤生效；先用 SPACE 推进到该步骤。
+    let mut nav = InputSnapshot::default();
+    let mut guard = 0;
+    loop {
+        nav.key_event(KeyCode::Space, true);
+        host.input.set_input(nav.clone());
+        let result = runtime.call_update().unwrap();
+        guard += 1;
+        if result.contains("step=save_slots") || guard > 60 {
+            break;
+        }
+    }
+    assert!(guard <= 60, "应在 60 帧内推进到 save_slots 步骤");
     let mut save_input = InputSnapshot::default();
     save_input.key_event(KeyCode::KeyS, true);
     host.input.set_input(save_input);
