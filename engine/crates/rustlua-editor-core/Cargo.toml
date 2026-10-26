@@ -1,0 +1,28 @@
+[package]
+name = "rustlua-editor-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+thiserror.workspace = true
+serde_json = "1"
+
+rustlua-animation.workspace = true
+rustlua-assets.workspace = true
+rustlua-assets-import.workspace = true
+rustlua-camera.workspace = true
+rustlua-ecs.workspace = true
+rustlua-infra.workspace = true
+rustlua-math.workspace = true
+rustlua-physics.workspace = true
+rustlua-render.workspace = true
+rustlua-scene.workspace = true
+rustlua-ui.workspace = true
+rustlua-visual-script.workspace = true
+
+[target."cfg(windows)".dependencies]
+# `user_config` 的 API Key 落盘走 DPAPI（当前用户加密），与其他平台无关。
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }

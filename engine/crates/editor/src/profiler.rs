@@ -12,7 +12,8 @@ use std::{
 };
 
 use engine::host::profile_trace::{
-    CaptureLevel, DEFAULT_SPAN_CAPACITY, SpanStat, SpanToken, SpanTrace, SpanTraceSummary,
+    CaptureLevel, DEFAULT_SPAN_CAPACITY, SpanRecord, SpanStat, SpanToken, SpanTrace,
+    SpanTraceSummary,
 };
 
 /// Default per-frame budget (60 FPS) used to count over-budget frames.
@@ -348,6 +349,13 @@ impl EditorProfiler {
     #[must_use]
     pub fn span_top_n(&self, limit: usize) -> Vec<SpanStat> {
         self.trace.top_n(limit)
+    }
+
+    /// 面板时间线的输入：最近 `limit` 条已闭合 span（捕获顺序，环形缓冲的尾部）。
+    /// 拷贝上限就是 `limit`，不随 `DEFAULT_SPAN_CAPACITY` 涨——面板每帧都要取一次。
+    #[must_use]
+    pub fn span_records_for_timeline(&self, limit: usize) -> Vec<SpanRecord> {
+        self.trace.latest_records(limit)
     }
 
     #[must_use]

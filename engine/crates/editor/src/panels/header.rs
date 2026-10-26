@@ -129,7 +129,7 @@ impl EditorApp {
     /// 骨架的尾门校验：结构（`editor --check` 同源）+ 启动场景可读且带相机 +
     /// `scripts/**/*.lua` 全部语法可编译（`game --check` 同源的那段）。
     fn verify_scaffold(dir: &Path) -> Result<String, String> {
-        let report = crate::check_project(dir).map_err(|error| error.to_string())?;
+        let report = rustlua_editor_core::check_project(dir).map_err(|error| error.to_string())?;
         let summary = report
             .lines()
             .next()

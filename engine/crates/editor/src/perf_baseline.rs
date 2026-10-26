@@ -1531,6 +1531,135 @@ pub(crate) fn run_baseline() -> BaselineReport {
         ));
     }
 
+    // 32b. **生产通道的实测**（M79 P1-2b）：上一条款量的是原型（`PatchHistory` 自己那条栈），
+    // 这一条量的是接进 `CommandHistory` 之后的真实历史：同一串组件写入，
+    // `CommandHistory::new()`（补丁通道开）对 `CommandHistory::without_patch_compression()`
+    // （纯快照）。三个读数各有各的用处：
+    //   * **保留字节**——省内存的那一半，用 `retained_bytes_estimate()`（两侧同一口径，见其文档）；
+    //   * **等价性**——撤销到底 / 重做到底必须逐字节对得上快照那一侧（docs/55 §8 的硬阻断项）；
+    //   * **提交点耗时**——省内存不是免费的：补丁形态每次提交多做一次 `Scene` 克隆 + 全字段比较。
+    //     这一栏就是"买不到的部分"的价格，跑出来若比快照侧更慢，慢多少一目了然。
+    //
+    // 跑**两档夹具**是刻意的：Medium（1,000 实体）是给"大场景会不会疼"的答案，
+    // `patch_history_production_small`（100 实体）才是日常工程的大小——同一份判据在两个规模上
+    // 各报一次，才能把"提交点成本随场景规模走"这句话变成数字，而不是留成未测项。
+    {
+        use rustlua_scene::scene::SceneEntityId;
+
+        for (label, size, edits) in [
+            ("patch_history_production", FixtureSize::Medium, 1_000usize),
+            ("patch_history_production_small", FixtureSize::Small, 200),
+        ] {
+            let fixture = build_scene_fixture(size.spec());
+            let mut base = fixture.document;
+            let targets: Vec<SceneEntityId> =
+                base.scene.entities.keys().copied().take(200).collect();
+            for id in &targets {
+                if let Some(entity) = base.scene.entities.get_mut(id) {
+                    entity
+                        .components
+                        .insert("Quad".to_owned(), "size=64,32;color=1,1,1,1".to_owned());
+                }
+            }
+            let original_text = base.scene.to_text();
+
+            let mut patch_document = base.clone();
+            let mut snapshot_document = base;
+            let mut patch_history = editor::CommandHistory::new();
+            let mut snapshot_history = editor::CommandHistory::without_patch_compression();
+            let mut samples = Vec::with_capacity(edits);
+            let mut snapshot_samples = Vec::with_capacity(edits);
+
+            for step in 0..edits {
+                let id = targets[step % targets.len()];
+                let after = format!("size={},{};color=1,1,1,1", 1000 + step, 900 + step);
+
+                let started = Instant::now();
+                let value = after.clone();
+                patch_history
+                    .execute(
+                        &mut patch_document,
+                        "Set Component",
+                        CommandKind::Property,
+                        move |document| {
+                            if let Some(entity) = document.scene.entities.get_mut(&id) {
+                                entity.components.insert("Quad".to_owned(), value.clone());
+                            }
+                            Ok::<(), ()>(())
+                        },
+                    )
+                    .expect("补丁通道编辑");
+                samples.push(started.elapsed().as_secs_f32() * 1000.0);
+
+                let started = Instant::now();
+                let value = after;
+                snapshot_history
+                    .execute(
+                        &mut snapshot_document,
+                        "Set Component",
+                        CommandKind::Property,
+                        move |document| {
+                            if let Some(entity) = document.scene.entities.get_mut(&id) {
+                                entity.components.insert("Quad".to_owned(), value.clone());
+                            }
+                            Ok::<(), ()>(())
+                        },
+                    )
+                    .expect("快照通道编辑");
+                snapshot_samples.push(started.elapsed().as_secs_f32() * 1000.0);
+            }
+
+            let same_after_edits =
+                patch_document.scene.to_text() == snapshot_document.scene.to_text();
+            let final_text = patch_document.scene.to_text();
+            while patch_history.can_undo() {
+                patch_history.undo(&mut patch_document).unwrap();
+                snapshot_history.undo(&mut snapshot_document).unwrap();
+            }
+            let undo_equivalent = patch_document.scene.to_text() == original_text
+                && snapshot_document.scene.to_text() == original_text;
+            while patch_history.can_redo() {
+                patch_history.redo(&mut patch_document).unwrap();
+                snapshot_history.redo(&mut snapshot_document).unwrap();
+            }
+            let redo_equivalent = patch_document.scene.to_text() == final_text
+                && snapshot_document.scene.to_text() == final_text;
+
+            let (patch_entries, snapshot_entries) = patch_history.storage_counts();
+            let patch_bytes = patch_history.retained_bytes_estimate();
+            let snapshot_bytes = snapshot_history.retained_bytes_estimate();
+            let patch_commit_p50 = percentiles_ms(&samples).unwrap_or_default().p50;
+            let snapshot_commit_p50 = percentiles_ms(&snapshot_samples).unwrap_or_default().p50;
+            scenarios.push(summarize(
+                label,
+                &samples,
+                vec![
+                    format!(
+                        "edits={edits} entities={} entries={} patch_form={patch_entries} snapshot_form={snapshot_entries}",
+                        patch_document.scene.entities.len(),
+                        patch_history.undo_len()
+                    ),
+                    format!(
+                        "retained_bytes patch={patch_bytes} snapshot={snapshot_bytes} ratio={:.3}%",
+                        100.0 * patch_bytes as f64 / snapshot_bytes.max(1) as f64
+                    ),
+                    format!(
+                        "commit_p50_ms patch={patch_commit_p50:.4} snapshot={snapshot_commit_p50:.4}"
+                    ),
+                    format!(
+                        "same_after_edits={same_after_edits} undo_equivalent={undo_equivalent} redo_equivalent={redo_equivalent}"
+                    ),
+                ],
+                same_after_edits
+                    && undo_equivalent
+                    && redo_equivalent
+                    && patch_entries == edits
+                    && snapshot_entries == 0
+                    && patch_bytes * 10 < snapshot_bytes,
+            ));
+        }
+    }
+
     // 33. Inspector 的 schema 路径（批 10 的量尺）：**每帧到底在解析上花多少**。
     //
     // 背景：CHANGELOG 里有一条长期"有意未做"的偏离——"Inspector 每帧解析不做缓存"，理由是

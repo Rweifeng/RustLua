@@ -20,6 +20,7 @@ use crate::runtime_perf::{RuntimePerfHistory, RuntimePerfSnapshot, RuntimeSeries
 use editor::{ProfilerReport, TimingSummary};
 use eframe::egui;
 use engine::host::CaptureLevel;
+use engine::host::profile_trace::SpanRecord;
 use engine::host::runtime_scene::FrameScheduleReport;
 use rustlua_ui::ui_layout_cache::LayoutCacheStats;
 
@@ -1383,6 +1384,13 @@ impl EditorApp {
         let trace_summary = self.profiler.span_capture_summary();
         let trace_stats = self.profiler.span_top_n(8);
         let trace_active = trace_level != CaptureLevel::Off;
+        // 时间线的输入：只取面板画得起的那一段（`MAX_BARS` 条），不在这里拷满 8192。
+        let trace_records = if trace_summary.spans > 0 {
+            self.profiler
+                .span_records_for_timeline(crate::trace_timeline::MAX_BARS)
+        } else {
+            Vec::new()
+        };
         let sections = performance_sections(
             &report,
             self.ui_layout_cache.stats(),
@@ -1624,9 +1632,13 @@ impl EditorApp {
                                         }
                                     });
                             }
+                            ui.add_space(4.0);
+                            draw_trace_timeline(ui, &trace_records);
                             ui.weak(
-                                "完整时间线用「导出追踪」在 chrome://tracing / Perfetto 打开；\
-                                 Fine 档的开销门见 wp0_profile_capture（≤2%）。",
+                                "面板里这条是尾部粗时间线（只画最近若干条，合成区间画暗一档、\
+                                 被抬到最小宽度的那条描红边）；完整时间线用「导出追踪」在\
+                                 chrome://tracing / Perfetto 打开，Fine 档的开销门见\
+                                 wp0_profile_capture（≤2%）。",
                             );
                         });
                 }
@@ -1708,6 +1720,48 @@ impl EditorApp {
                 Err(error) => format!("追踪导出失败：{error}"),
             };
         }
+    }
+}
+
+/// 「追踪捕获」里的尾部粗时间线：泳道 = 嵌套深度，横轴 = 相对捕获起点。
+///
+/// 几何与落笔都在 `crate::trace_timeline`（那层有像素门），这里只负责三件面板才有的事：
+/// 把**当帧**的 `available_width` 交给布局（宽度变了必须重算，否则落笔像素与布局对不上）、
+/// 把鼠标点从"相对分配矩形"换成"相对泳道原点"（差一个刻度行高）、以及没有悬停时给一行
+/// 概况。合成区间与"被抬到最小宽度"的区间由那层自己标色，这里不重复判断。
+fn draw_trace_timeline(ui: &mut egui::Ui, records: &[SpanRecord]) {
+    use crate::trace_timeline as tl;
+
+    let timeline = tl::layout(records, &tl::TimelineOptions::new(ui.available_width()));
+    if timeline.bars.is_empty() {
+        ui.weak("（没有可画的区间：未捕获，或留下的全是零时长）");
+        return;
+    }
+    let Some(response) = tl::paint(ui, &timeline) else {
+        return;
+    };
+    // 用当帧的指针位置，而不是 `response.hovered()`：后者要等交互解算完的那一帧才为真，
+    // 鼠标刚划进来时会慢一拍。
+    let hovered = ui.input(|input| input.pointer.hover_pos()).and_then(|pos| {
+        tl::hover_at(
+            &timeline,
+            [pos.x - response.rect.min.x, pos.y - response.rect.min.y],
+        )
+    });
+    // 两种文案占同一行，避免鼠标划过时面板高度跳动。
+    if let Some(bar) = hovered {
+        ui.label(tl::bar_hint(bar));
+    } else {
+        let mut caption = format!(
+            "时间线：{} 条 · 窗口 {:.2} ms · {} 条泳道（悬停看单条）",
+            timeline.bars.len(),
+            timeline.window_ns as f64 / 1_000_000.0,
+            timeline.lanes,
+        );
+        if timeline.dropped > 0 {
+            caption += &format!(" · 另有 {} 条超出绘制预算", timeline.dropped);
+        }
+        ui.weak(caption);
     }
 }
 
@@ -2557,5 +2611,201 @@ mod tests {
         let path = super::trace_export_path(std::path::Path::new("C:/game"));
         assert!(path.ends_with("target/reports/editor-profile-trace.json"));
         assert!(path.starts_with("C:/game"));
+    }
+
+    // ---- 面板里的尾部时间线（M79 P2）------------------------------------
+    // 绝对像素（纳秒→像素、泳道、最小宽度）由 `crate::trace_timeline` 自己的门钉；这里
+    // 只钉**面板这一侧**才成立的三件事：宽度取的是当帧可用宽度、鼠标点是相对分配矩形换算
+    // 的（差一个刻度行高）、以及"没有可画的区间"时不许画半条时间线。
+
+    fn trace_span(
+        name: &str,
+        category: &'static str,
+        start_ns: u64,
+        dur_ns: u64,
+        depth: u16,
+    ) -> SpanRecord {
+        SpanRecord {
+            name: name.to_owned(),
+            category,
+            start_ns,
+            dur_ns,
+            depth,
+            args: Vec::new(),
+        }
+    }
+
+    fn run_trace_probe(
+        records: &[SpanRecord],
+        screen_width: f32,
+        pointer: Option<egui::Pos2>,
+    ) -> egui::FullOutput {
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(screen_width, 700.0),
+            )),
+            ..Default::default()
+        };
+        if let Some(pos) = pointer {
+            input.events.push(egui::Event::PointerMoved(pos));
+        }
+        egui::Context::default().run(input, |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                draw_trace_timeline(ui, records);
+            });
+        })
+    }
+
+    fn trace_filled(output: &egui::FullOutput, fill: egui::Color32, tag: &str) -> egui::Rect {
+        let hits = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(shape) if shape.fill == fill && shape.stroke.is_empty() => {
+                    Some(shape.rect)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(hits.len(), 1, "{tag} 的底色应当只被画一次：{hits:?}");
+        hits[0]
+    }
+
+    fn trace_texts(output: &egui::FullOutput) -> Vec<String> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    }
+
+    #[test]
+    fn the_trace_timeline_follows_the_panel_width() {
+        use crate::trace_timeline as tl;
+
+        // 窗口 = 最晚结束 = 8 ms：frame 占满、lua 从 1/4 到 5/8、tick 只有 1 µs。
+        let records = vec![
+            trace_span("frame", "frame", 0, 8_000_000, 0),
+            trace_span("lua", "script", 2_000_000, 3_000_000, 1),
+            trace_span("tick", "system", 6_000_000, 1_000, 2),
+        ];
+        let wide = run_trace_probe(&records, 1000.0, None);
+        let narrow = run_trace_probe(&records, 700.0, None);
+        let bg_wide = trace_filled(&wide, tl::BACKGROUND, "背景（宽）");
+        let bg_narrow = trace_filled(&narrow, tl::BACKGROUND, "背景（窄）");
+        assert!(
+            bg_wide.width() - bg_narrow.width() > 50.0,
+            "时间线宽度没跟着面板可用宽度走：{bg_wide:?} vs {bg_narrow:?}"
+        );
+        // 按比例的两条：相对位置 = 起点/时长占窗口的比例，与屏宽无关。写死任何像素都会在这里红。
+        for (name, category, lane, x_fraction, w_fraction) in [
+            ("frame", "frame", 0.0_f32, 0.0_f32, 1.0_f32),
+            ("lua", "script", 1.0, 0.25, 0.375),
+        ] {
+            for (output, bg) in [(&wide, bg_wide), (&narrow, bg_narrow)] {
+                let rect = trace_filled(output, tl::category_color(category), name);
+                let near = |actual: f32, expected: f32, tag: &str| {
+                    assert!(
+                        (actual - expected).abs() < 0.05,
+                        "{name} 在宽 {bg:?} 下 {tag} 不对：期望 {expected}，实际 {actual}"
+                    );
+                };
+                near(rect.min.x - bg.min.x, bg.width() * x_fraction, "x");
+                near(rect.width(), bg.width() * w_fraction, "宽");
+                near(
+                    rect.min.y - bg.min.y - tl::TICK_LABEL_HEIGHT,
+                    lane * (12.0 + 3.0),
+                    "泳道 y",
+                );
+                near(rect.height(), 12.0, "高");
+            }
+        }
+        // 1 µs 那条不按比例：抬到最小宽度并画红描边，面板不许把它当成真实耗时。
+        let tick = trace_filled(&wide, tl::category_color("system"), "tick");
+        assert!(
+            (tick.width() - 2.0).abs() < 0.05,
+            "零碎区间必须抬到最小宽度而不是真实宽度：{tick:?}"
+        );
+        let stroked = wide
+            .shapes
+            .iter()
+            .filter(|clipped| {
+                matches!(&clipped.shape, egui::Shape::Rect(shape)
+                    if shape.stroke.color == tl::WIDENED_STROKE)
+            })
+            .count();
+        assert_eq!(stroked, 1, "只该有一条被标成未按比例：{stroked}");
+        let texts = trace_texts(&wide);
+        assert!(
+            texts.iter().any(|text| text.starts_with("时间线：3 条")
+                && text.contains("窗口 8.00 ms")
+                && text.contains("3 条泳道")),
+            "概况行没写清画了几条/多大窗口：{texts:?}"
+        );
+    }
+
+    #[test]
+    fn hovering_a_timeline_bar_replaces_the_caption_with_its_hint() {
+        use crate::trace_timeline as tl;
+
+        let records = vec![
+            trace_span("frame", "frame", 0, 8_000_000, 0),
+            trace_span("lua", "script", 2_000_000, 3_000_000, 1),
+        ];
+        let plain = run_trace_probe(&records, 1000.0, None);
+        let bg = trace_filled(&plain, tl::BACKGROUND, "背景");
+        // lua 那条：x 在窗口的 1/4~5/8 之间，泳道 1 的 y = 刻度行 + 15..27。
+        let pointer = egui::pos2(
+            bg.min.x + bg.width() * 0.3,
+            bg.min.y + tl::TICK_LABEL_HEIGHT + 20.0,
+        );
+        let hovered = run_trace_probe(&records, 1000.0, Some(pointer));
+        let texts = trace_texts(&hovered);
+        assert!(
+            texts
+                .iter()
+                .any(|text| text == "lua · script · 3.000 ms · 深度 1"),
+            "悬停没把那条区间的说明打出来：{texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|text| text.starts_with("时间线：")),
+            "悬停时概况行应当被单条说明顶掉（两种文案占同一行，面板高度不许跳）：{texts:?}"
+        );
+        // 指针还在刻度行上时不许命中：行高偏移必须减掉。
+        let on_ticks = run_trace_probe(
+            &records,
+            1000.0,
+            Some(egui::pos2(bg.min.x + 20.0, bg.min.y + 4.0)),
+        );
+        let texts = trace_texts(&on_ticks);
+        assert!(
+            texts.iter().any(|text| text.starts_with("时间线：2 条")),
+            "刻度行上应当仍是概况行：{texts:?}"
+        );
+    }
+
+    #[test]
+    fn an_empty_capture_draws_no_timeline_but_says_so() {
+        use crate::trace_timeline as tl;
+
+        let output = run_trace_probe(&[], 1000.0, None);
+        assert!(
+            !output.shapes.iter().any(|clipped| matches!(
+                &clipped.shape,
+                egui::Shape::Rect(shape) if shape.fill == tl::BACKGROUND
+            )),
+            "没捕获时不许画一条空时间线背景"
+        );
+        let texts = trace_texts(&output);
+        assert!(
+            texts
+                .iter()
+                .any(|text| text.starts_with("（没有可画的区间")),
+            "空捕获要说清楚为什么没有图：{texts:?}"
+        );
     }
 }

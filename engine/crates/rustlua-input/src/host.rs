@@ -58,6 +58,10 @@ impl HostInput {
         self.state.with_mut(|state| {
             state.advance(delta);
             next.inherit_virtual_keys(&state.snapshot);
+            // M79-04：收字声明与虚拟键同构——它是脚本侧的**意图**，不是宿主本帧的数据。
+            // 不把它带回来的话，`input.text_events{capture=true}` 只活一步，下一帧宿主
+            // 就会把系统输入法关掉，中文打两个字就断。
+            next.set_text_capture(state.snapshot.text_capture());
             state.snapshot = next;
         });
         // 指针位置顺带发布给其它领域绑定（`camera3d.mouse_ray`）：它不属于任何一边的
@@ -108,6 +112,15 @@ impl HostInput {
     #[must_use]
     pub fn pointer(&self) -> Option<(f32, f32)> {
         self.pointer.get()
+    }
+
+    /// 脚本声明的收字模式（M79-04）：宿主每帧读它，决定要不要把系统输入法交给 UI 字段。
+    ///
+    /// 读的是**共享状态**而不是宿主自己的快照——写这个位的是脚本（`input.text_events`），
+    /// 宿主那份 `InputSnapshot` 只往里放 winit 送来的文本事件。
+    #[must_use]
+    pub fn text_capture(&self) -> bool {
+        self.state.with(|state| state.snapshot.text_capture())
     }
 
     /// 与 Lua 侧共享状态是否同一份（组合根自检用）。

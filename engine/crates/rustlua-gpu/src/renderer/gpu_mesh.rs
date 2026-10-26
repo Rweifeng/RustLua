@@ -171,8 +171,9 @@ impl Renderer {
                         if self.texture_paths.contains_key(asset.key.as_str()) {
                             continue; // 已上传过（并发请求去重后的兜底）。
                         }
-                        match self.upload_texture(&texture, &asset.key) {
-                            Some(bind) => {
+                        let settings = self.texture_settings_for(&asset.key);
+                        match self.upload_texture_with(&texture, &asset.key, settings) {
+                            Some((bind, view)) => {
                                 self.texture_paths
                                     .insert(asset.key.clone(), self.textures.len());
                                 self.textures.push(LoadedTexture {
@@ -180,11 +181,15 @@ impl Renderer {
                                     bytes: u64::from(texture.width())
                                         * u64::from(texture.height())
                                         * 4,
+                                    view,
+                                    sampling: settings,
                                 });
                                 tracing::info!(
                                     target: "render",
                                     path = %asset.key,
                                     dimensions = ?(texture.width(), texture.height()),
+                                    filter = settings.filter.token(),
+                                    wrap = settings.wrap.token(),
                                     "[render] texture loaded (async)"
                                 );
                             }

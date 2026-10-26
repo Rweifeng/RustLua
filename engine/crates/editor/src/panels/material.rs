@@ -110,6 +110,46 @@ impl MaterialState {
             _ => None,
         }
     }
+
+    // ---- 跨面板全局 Undo 的入口（M79 P1-2，消费方 `crate::actions::undo_ledger`）----
+    //
+    // 材质会话原本**只有按钮**能撤（Ctrl+Z 全给了场景栈），所以在材质面板里改完参数
+    // 按 Ctrl+Z 会莫名其妙撤掉场景的某一步。接进全局账本后按键撤的是"最近提交的那个"。
+
+    pub(crate) fn undo_signature(&self) -> (u64, usize) {
+        match &self.status {
+            MaterialStatus::Ready(preview) => preview.session.undo_signature(),
+            _ => (0, 0),
+        }
+    }
+
+    pub(crate) fn undo_can_undo(&self) -> bool {
+        match &self.status {
+            MaterialStatus::Ready(preview) => preview.session.can_undo(),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn undo_can_redo(&self) -> bool {
+        match &self.status {
+            MaterialStatus::Ready(preview) => preview.session.can_redo(),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn undo_step(&mut self) -> bool {
+        match &mut self.status {
+            MaterialStatus::Ready(preview) => preview.session.undo(),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn redo_step(&mut self) -> bool {
+        match &mut self.status {
+            MaterialStatus::Ready(preview) => preview.session.redo(),
+            _ => false,
+        }
+    }
 }
 
 /// 「创建覆盖」的副作用：先原子写默认材质，成功后由调用方发写回路径的 action。

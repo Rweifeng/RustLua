@@ -22,6 +22,10 @@ fn usage() {
          \x20                              keep 条目必须在目录里且不在任何容器中；\n\
          \x20                              --allow-cdn-skip 显式声明这次不查远端（日志仍打印跳过数）\n\
 \x20 assetc inspect <包目录|.rlb>       打印容器索引摘要与启动闭包落在第几块（docs/67）\n\
+\x20 assetc preview <包目录> [--top N]  产物预览：逐组体积、最大的 N 个条目、留在目录的 keep、\n\
+         \x20                              启动条目落在第几块（只读已打好的包，不重打）\n\
+\x20 assetc diff <旧包> <新包>        包间增量：按内容指纹列 added/removed/changed，\n\
+         \x20                              并按 bundle_plan 的组哈希给出要重下的容器\n\
          \x20 assetc list <项目目录>           列出已注册资源\n\
          \x20 assetc benchmark <项目目录>      输出各类资产压缩/解压基准\n\
          \x20 assetc package <项目目录> -o <输出目录>   打包发布资源并生成清单\n\
@@ -69,6 +73,27 @@ fn run(args: &[String]) -> anyhow::Result<String> {
         Some("inspect") => {
             let target = arg(args, 2, "包目录或 .rlb 文件")?;
             assetc::inspect_bundles(&target)
+        }
+        Some("preview") => {
+            let target = arg(args, 2, "包目录")?;
+            // `--top N`：最大的 N 个条目（默认 10）。体积归因先看大头，N 条之外基本是噪声。
+            let top = args
+                .iter()
+                .position(|value| value == "--top")
+                .and_then(|index| args.get(index + 1))
+                .map(|value| {
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| anyhow!("--top 只认整数，收到 {value}"))
+                })
+                .transpose()?
+                .unwrap_or(10);
+            assetc::preview_text(&target, top)
+        }
+        Some("diff") => {
+            let previous = arg(args, 2, "旧包目录")?;
+            let current = arg(args, 3, "新包目录")?;
+            assetc::diff_text(&previous, &current)
         }
         Some("closure") => {
             let base = arg(args, 2, "发布根")?;

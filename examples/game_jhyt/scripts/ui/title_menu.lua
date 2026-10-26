@@ -85,10 +85,10 @@ local function preset_spawn()
 end
 
 -- 与预设里按钮实体的 `UiLayout` 对齐（M63b 前住在 `main.scene`，**横屏 1280×720**，M32；2026-09-27）：
--- 三块木牌按钮水平排列在匾额下方，`layout.PANEL.title_btn` 给出第一个按钮的矩形，
--- 每项向右偏移 `title_btn_gap + w`。
+-- 三块木牌按钮垂直排列在匾额下方，`layout.PANEL.title_btn` 给出第一个按钮的矩形，
+-- 每项向下偏移 `title_btn_gap + h`（start 420 / continue 500 / exit 580，与预设对齐）。
 local BTN = layout.PANEL.title_btn
-local BTN_STEP = BTN.w + layout.METRIC.title_btn_gap
+local BTN_STEP = BTN.h + layout.METRIC.title_btn_gap
 local BTN_LABEL_FONT = 24.0
 -- 标签在按钮里水平居中：按真实字宽算左边缘（`ui.measure_text` 与渲染同口径），
 -- 不再用"每字 25px"的估算——估宽会让「开始新游戏」与「继续江湖」看起来偏左/偏右。
@@ -112,13 +112,13 @@ local OPTIONS = {
     id = "BtnContinue",
     label_text = "继续江湖",
     scene_label = "BtnContinueLabel",
-    panel = { BTN.x + BTN_STEP, BTN.y, BTN.x + BTN_STEP + BTN.w, BTN.y + BTN.h },
+    panel = { BTN.x, BTN.y + BTN_STEP, BTN.x + BTN.w, BTN.y + BTN_STEP + BTN.h },
   },
   {
     id = "BtnExit",
     label_text = "退出江湖",
     scene_label = "BtnExitLabel",
-    panel = { BTN.x + BTN_STEP * 2, BTN.y, BTN.x + BTN_STEP * 2 + BTN.w, BTN.y + BTN.h },
+    panel = { BTN.x, BTN.y + BTN_STEP * 2, BTN.x + BTN.w, BTN.y + BTN_STEP * 2 + BTN.h },
   },
 }
 -- 实体层（预设里那三份 `Text`）的左上角 = 标签居中位置 + 垂直居中（文字高按 30px 计，与它一致）。

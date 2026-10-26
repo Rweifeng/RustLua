@@ -67,8 +67,17 @@ impl RuntimeScene {
     /// 宿主此前只调 `reload_if_changed()`，那只会看到 `scripts/main.lua`；实体脚本改了却"状态
     /// 未变"会让"热重载不生效"变成一个没有线索的问题。这个入口一次返回两件事：
     /// 工程级脚本的状态与**被重载的实体脚本文件数**。
+    ///
+    /// **没有工程级入口时不报错**（纯实体脚本工程、引擎诊断模式）：那种情况下问
+    /// `reload_if_changed` 必然得到 "no project script is loaded"，而宿主真正想知道的是
+    /// "实体脚本变了没有"。静默返回 `Unchanged` 并继续重载实体脚本，否则这类工程的
+    /// 每一次去抖检查都会变成一条假红字。
     pub fn reload_scripts(&mut self) -> anyhow::Result<(ReloadStatus, usize)> {
-        let status = self.script.reload_if_changed()?;
+        let status = if self.script.has_project_script() {
+            self.script.reload_if_changed()?
+        } else {
+            ReloadStatus::Unchanged
+        };
         let entity_scripts = self.script.reload_entity_scripts()?;
         Ok((status, entity_scripts))
     }

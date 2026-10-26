@@ -1,13 +1,13 @@
 ﻿<#
 .SYNOPSIS
-    wasm Lua 运行期验证门：spike（vendored mlua 移植）+ no-modules 桥（game_web Lua 桥）。
+    wasm Lua 运行期验证门：no-modules 桥（game_web Lua 桥）+ gpu2d 宿主画布探针。
 
 .DESCRIPTION
-    把此前只在 artifacts/ 里手动跑的两个 Node 验证脚本纳入可重复的门：
-      ① scripts/lib/wasm-lua/run-spike.mjs            —— 直接实例化 wasm_lua_spike.wasm，
-         验证 vendored mlua 的 wasm32-unknown-unknown 移植（EH/longjmp、libc shim、%g 精度）。
-      ② scripts/lib/wasm-lua/verify-no-modules-bridge.mjs —— 在 no-modules 胶水（微信形态）下
+    把此前只在 artifacts/ 里手动跑的 Node 验证脚本纳入可重复的门：
+      ① scripts/lib/wasm-lua/verify-no-modules-bridge.mjs —— 在 no-modules 胶水（微信形态）下
          验证 game_web 的 Lua 桥导出（lua_boot/lua_do_string/lua_call_global/…）。
+      ② scripts/lib/wasm-lua/verify-canvas-host-probe.mjs —— gpu2d 档胶水上的宿主画布探针
+         （见第 4 步）。
 
     退出码语义与 verify-webgl*.ps1 一致（供 verify.ps1 / CI 消费）：
       0 = 全部通过；
@@ -57,7 +57,6 @@ $glueDir = Join-Path $workspaceRoot "artifacts\wasm-lua-verify\no-modules-test"
 # 第二档胶水（带 `gpu2d` 特性，WP8 微信半边第一片）：与默认档产物**分开**放，
 # 两档的导出清单不同（默认档没有 GPU 那条路上的任何导出）。
 $glueGpuDir = Join-Path $workspaceRoot "artifacts\wasm-lua-verify\no-modules-gpu"
-$spikeWasm = Join-Path $wasmReleaseRoot "wasm_lua_spike.wasm"
 $gameWebWasm = Join-Path $wasmReleaseRoot "game_web.wasm"
 
 $logRoot = Join-Path $workspaceRoot "artifacts\logs\wasm-lua"
@@ -109,7 +108,7 @@ function Invoke-NodeScript([string[]]$Flags, [string]$Script, [string]$Argument)
     return $LASTEXITCODE
 }
 
-Write-Log "==> wasm Lua verification (spike + no-modules bridge)" Cyan
+Write-Log "==> wasm Lua verification (no-modules bridge + gpu2d host probe)" Cyan
 
 # ---------- 0. 环境前置检查：缺任何一个都按"环境受限"跳过（exit 3），不判红 ----------
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
@@ -175,10 +174,6 @@ if (-not $SkipBuild) {
 
     Push-Location $engineRoot
     try {
-        Write-Log "==> 构建 wasm-lua-spike (release, wasm32)"
-        $spikeBuild = Invoke-Native cargo @("build", "-p", "wasm-lua-spike", "--release", "--target", "wasm32-unknown-unknown")
-        if ($spikeBuild -ne 0) { throw "wasm-lua-spike wasm 构建失败 (exit $spikeBuild)" }
-
         Write-Log "==> 构建 game_web (release, wasm32)"
         $webBuild = Invoke-Native cargo @("build", "-p", "game_web", "--release", "--target", "wasm32-unknown-unknown")
         if ($webBuild -ne 0) { throw "game_web wasm 构建失败 (exit $webBuild)" }
@@ -243,25 +238,17 @@ if (-not $SkipBuild) {
     }
 }
 
-# ---------- 2. spike 验证 ----------
-if (-not (Test-Path -LiteralPath $spikeWasm)) {
-    Write-Log "wasm_lua_skipped reason=spike_wasm_missing ($spikeWasm)" Yellow
-    Exit-With 3
-}
-Write-Log "==> run-spike.mjs"
-$spikeExit = Invoke-NodeScript $nodeFlags (Join-Path $scriptDir "run-spike.mjs") $spikeWasm
-
-# ---------- 3. no-modules 桥验证 ----------
+# ---------- 2. no-modules 桥验证 ----------
 Write-Log "==> verify-no-modules-bridge.mjs"
 $bridgeExit = Invoke-NodeScript $nodeFlags (Join-Path $scriptDir "verify-no-modules-bridge.mjs") $glueDir
 
-# ---------- 4. 输入批量线格式的语义对拍 ----------
+# ---------- 3. 输入批量线格式的语义对拍（已退休） ----------
 # 新协议（`RLFI` 批量二进制）必须与旧协议（每帧编译源码）逐步等价：两边都从出厂源码里抽
 # （旧的序列化器 / 新的打包器），配上真 wasm。省下的开销容易量，语义漂移不会自己变红。
 Write-Log "==> input-frame-abi-test.mjs（已随 B8 退休：旧协议那套连写者都没有了，见上方说明）"
-# （原第 4 步的对拍调用已删：`input-frame-abi-test.mjs` 随旧世界一起退休。）
+# （原这一步的对拍调用已删：`input-frame-abi-test.mjs` 随旧世界一起退休。）
 
-# ---------- 5. 宿主画布探针的契约（WP8 微信半边第一片） ----------
+# ---------- 4. 宿主画布探针的契约（WP8 微信半边第一片） ----------
 # `probe_canvas_host` 是"引擎能不能在小游戏那种没有浏览器构造器的宿主上起渲染栈"的判据。
 # 它只在 `gpu2d` 特性下存在 ⇒ 用上面那一档（带特性的）胶水来验。离线能钉死的部分：
 # 入口可调用、**普通对象**能进到 GL 层（⇒ 路径里没有 `dyn_into` 那种构造器判定）、
@@ -276,19 +263,19 @@ else {
     $probeExit = 3
 }
 
-Write-Log "==> 汇总: spike_exit=$spikeExit bridge_exit=$bridgeExit probe_exit=$probeExit"
+Write-Log "==> 汇总: bridge_exit=$bridgeExit probe_exit=$probeExit"
 
 # 任一为 3（输入缺失/环境受限）且无真失败 → 整体按环境受限跳过；其余非零一律判红。
-$exits = @($spikeExit, $bridgeExit, $probeExit)
+$exits = @($bridgeExit, $probeExit)
 $realFailures = @($exits | Where-Object { $_ -ne 0 -and $_ -ne 3 })
 if (($exits -contains 3) -and ($realFailures.Count -eq 0)) {
     Write-Log "wasm_lua_skipped reason=node_input_missing" Yellow
     Exit-With 3
 }
 if ($realFailures.Count -gt 0) {
-    Write-Log "wasm_lua_FAILED spike_exit=$spikeExit bridge_exit=$bridgeExit probe_exit=$probeExit" Red
+    Write-Log "wasm_lua_FAILED bridge_exit=$bridgeExit probe_exit=$probeExit" Red
     Exit-With 1
 }
 
-Write-Log "wasm_lua_ok spike=pass bridge=pass abi=pass probe=pass" Green
+Write-Log "wasm_lua_ok bridge=pass probe=pass" Green
 Exit-With 0

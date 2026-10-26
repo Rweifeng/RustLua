@@ -121,8 +121,21 @@ impl EditorApp {
                     // 项目切换：清空旧项目缩略图缓存并让后台解码结果失效。
                     self.thumbnails.clear();
                     self.thumbnail_worker.clear();
+                    // 贴图预览窗同理：路径按旧项目根解析，跨项目必须整窗作废。
+                    self.texture_preview.clear();
+                    // 断链清单是"某一次扫描的快照"，换工程后逐条都不再指向前工程的东西。
+                    self.broken_refs.clear();
+                    // 全局 Undo 账本记的是"上一份工程里谁最后改过"，换工程后整本作废：
+                    // 各归属的栈深会直接跳到另一份工程的数，不摘就会把新工程的第一次撤销
+                    // 派给一个已经不存在的面板。
+                    self.clear_undo_ledger();
+                    // M79 P1-4：in-context 口袋里的场景文档属于**上一份工程**，换工程后
+                    // 「返回场景」会返回到一个已经不存在的工程，口袋整份作废。
+                    self.prefab_stage = None;
                     // 源预制体 缓存按项目根解析出的绝对路径缓存，跨项目清空避免残留。
                     self.prefab_source_cache.clear();
+                    // M79 P2：整实例覆盖列表是"源 vs 实例"的 diff，源缓存清了它就必须跟着作废。
+                    self.invalidate_prefab_override_cache();
                     // 字体图集按项目缓存（project.toml `font` 键）：切换项目后重建。
                     self.scene_font_atlas = None;
                     self.scene_vector_atlas = None;

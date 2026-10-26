@@ -161,6 +161,15 @@ fn unique_suffix() -> u128 {
         .as_nanos()
 }
 
+/// 打包产物目录（每次调用唯一，避免并发会话互相覆盖）。
+fn temp_out(label: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "rustlua-assetc-{label}-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ))
+}
+
 fn sample_project_root() -> PathBuf {
     rustlua_infra::games_dir().join("examples").join("game_api")
 }
@@ -1036,29 +1045,156 @@ fn boot_closure_sorts_first() {
         "scenes/main.scene".to_owned(),
         "project.toml".to_owned(),
         "atlas_redirect.json".to_owned(),
+        "resources.meta".to_owned(),
     ];
     paths.sort_by(|a, b| {
         boot_priority(a)
             .cmp(&boot_priority(b))
             .then_with(|| a.cmp(b))
     });
-    let head: Vec<&str> = paths.iter().take(4).map(String::as_str).collect();
+    let head: Vec<&str> = paths.iter().take(5).map(String::as_str).collect();
     assert_eq!(
         head,
         vec![
             "atlas_redirect.json",
             "project.toml",
+            "resources.meta",
             "scenes/main.scene",
             "scripts/main.lua"
         ],
         "启动闭包必须全部排在前面：{paths:?}"
     );
-    // 0 档 = 四个锚点（字典序）；1 档 = 其余脚本；2 档 = 美术等
+    // 0 档 = 五个锚点（字典序）；1 档 = 其余脚本；2 档 = 美术等
     assert_eq!(
-        paths[4], "scripts/data/items.lua",
+        paths[5], "scripts/data/items.lua",
         "1 档是其余脚本：{paths:?}"
     );
-    assert_eq!(paths[5], "assets/art/ui/hud/a.png", "2 档才是美术");
+    assert_eq!(paths[6], "assets/art/ui/hud/a.png", "2 档才是美术");
+}
+
+/// 资源库元数据段（`resources.meta`）必须**随包走**，目录形态和容器形态都要有。
+///
+/// 为什么单独钉这条：发布包里所有贴图的采样档位由这份文件决定（运行期渲染器
+/// `ensure_resource_meta` 读它），而它既不在 `assets/` 也不在 `scripts/`——是工程根下的
+/// 旁路文件，`package()` 的拷贝清单少列一条就"编辑器里生效、发出去不生效"。
+/// 容器形态这一半更阴：文件进不了 `core` 组时 `validate_plan` 会直接拒（`allow_unowned
+/// = false`），所以两边都得钉。
+#[test]
+fn resource_meta_is_packaged_and_reaches_the_container() {
+    use rustlua_assets::import_settings::{
+        ResourceMeta, TextureFilter, TextureImportSettings, TextureWrap,
+    };
+    use rustlua_infra::bundle::{BundleIndex, BundleReader, MemSource};
+
+    let root = bundle_project("resource-meta");
+    let mut meta = ResourceMeta::open(&root).expect("空工程也该能开表");
+    meta.set_texture_settings(
+        "assets/ui/panel.png",
+        TextureImportSettings::new(TextureFilter::Linear, TextureWrap::Repeat),
+    )
+    .expect("登记设置");
+    meta.save().expect("写盘");
+    let source = fs::read(root.join("resources.meta")).expect("源文件");
+
+    let loose = temp_out("resource-meta-loose");
+    let _ = fs::remove_dir_all(&loose);
+    package(&root, &loose, false, false, false).unwrap();
+    assert_eq!(
+        fs::read(loose.join("resources.meta")).expect("目录形态少了 resources.meta"),
+        source,
+        "目录形态必须是逐字节同一份：运行期按行解析，改一个 tab 就整行不认"
+    );
+    assert!(
+        fs::read_to_string(loose.join("manifest.txt"))
+            .unwrap()
+            .lines()
+            .any(|line| line.starts_with("resources.meta\t")),
+        "清单要覆盖它，否则完整性校验看不见这份文件"
+    );
+
+    let packed = temp_out("resource-meta-packed");
+    let _ = fs::remove_dir_all(&packed);
+    let report = package_bundled(&root, &packed, false, false, false, &[]).unwrap();
+    // 单包形态下它不再是磁盘文件，而是容器里的一条——和 project.toml 同族但归宿不同。
+    assert!(
+        !packed.join("resources.meta").exists(),
+        "骨架里不该留第二份"
+    );
+    let bytes = fs::read(packed.join(&report.bundle_path)).unwrap();
+    let index = BundleIndex::parse(&bytes).unwrap();
+    let mut reader = BundleReader::new(index, MemSource::new(bytes));
+    assert_eq!(
+        reader
+            .read("resources.meta")
+            .unwrap()
+            .expect("容器里没有 resources.meta：发布包会全按默认档"),
+        source,
+        "容器条目必须与源逐字节相等"
+    );
+
+    fs::remove_dir_all(&loose).ok();
+    fs::remove_dir_all(&packed).ok();
+    cleanup(&root);
+}
+
+/// 反向对照（缺前置那条路）：工程里**没设过**任何一张图时，产物里不许出现这个文件。
+///
+/// 空表写盘会破坏"默认档不入库"的口径（每个发布包多一个字节不同的文件，diff 里像有人
+/// 改过设置）。这条和上一条是一对：只跑一条证明不了拷贝清单真的在看这个键。
+#[test]
+fn an_undocumented_project_packages_no_resource_meta() {
+    let root = bundle_project("resource-meta-absent");
+    assert!(
+        !root.join("resources.meta").exists(),
+        "前置：这个工程一份设置都没登记"
+    );
+    let out = temp_out("resource-meta-absent");
+    let _ = fs::remove_dir_all(&out);
+    package(&root, &out, false, false, false).unwrap();
+    assert!(
+        !out.join("resources.meta").exists(),
+        "没有源文件时不许造一个空的出来"
+    );
+    fs::remove_dir_all(&out).ok();
+    cleanup(&root);
+}
+
+/// 跨 crate 的文件名不许漂（`rustlua-infra` 不能依赖 `rustlua-assets`，只能写常量）。
+///
+/// 这条看着像"抬杠门"，但漂了的症状是**打包静默漏文件**：分组规则按名字匹配，
+/// 名字两边不一样时 `resources.meta` 变成 unowned（或被 core 组漏掉），而编译一切正常。
+/// 顺带钉住 boot 优先级与两个分组预设都认领了它。
+#[test]
+fn resource_meta_file_name_does_not_drift_between_crates() {
+    use rustlua_infra::bundle_plan;
+
+    assert_eq!(
+        bundle_plan::RESOURCE_META_FILE,
+        rustlua_assets::import_settings::RESOURCE_META_FILE,
+        "两份常量必须逐字一致（真正的定义在 rustlua-assets）"
+    );
+    assert_eq!(
+        boot_priority(bundle_plan::RESOURCE_META_FILE),
+        0,
+        "运行期 boot 就读它，必须排进启动闭包"
+    );
+    for domains in [
+        bundle_plan::BundleConfig::generic_domains(),
+        bundle_plan::BundleConfig::default_domains(),
+    ] {
+        let core = domains
+            .groups
+            .iter()
+            .find(|group| group.name == "core")
+            .expect("core 组");
+        assert!(
+            core.include
+                .iter()
+                .any(|item| item.as_str() == bundle_plan::RESOURCE_META_FILE),
+            "core 组必须认领它，否则它会落进默认分包（启动读不到）：{:?}",
+            core.include
+        );
+    }
 }
 
 /// 单包产物 = 骨架 + 容器 + 报告 + 清单，且目录形态的数据目录**全部消失**。
@@ -1231,4 +1367,364 @@ fn bundle_report_matches_container() {
 
     fs::remove_dir_all(&out).ok();
     cleanup(&root);
+}
+
+// ------------------------------------------------- 批 P2-17：产物预览与包间增量
+
+/// 建一个分组形态的包（有 `package-report.json` + `bundle_plan.json` + 多个容器）。
+fn grouped_pack(label: &str, root: &Path) -> PathBuf {
+    let out = temp_out(label);
+    let _ = fs::remove_dir_all(&out);
+    package_grouped_keep(root, &out, false, false, false, &[]).unwrap();
+    out
+}
+
+fn preview_lines(text: &str, prefix: &str) -> Vec<String> {
+    text.lines()
+        .filter(|line| line.starts_with(prefix))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// 预览必须**逐条目**报出包里有什么、从哪儿读的。
+///
+/// 为什么钉这条而不是只钉"总字节"：作者问的是"这张图进没进包"，一个总数答不了。
+/// 目录形态那份是 8 条（工程 6 个文件 + `chars.txt` + `dependencies.json`），
+/// 容器形态同 8 条但来源不同（`project.toml` 两份都有，见 `load` 的白名单注释）。
+#[test]
+fn preview_lists_every_entry_with_a_content_fingerprint() {
+    let root = bundle_project("preview-entries");
+    let packed = grouped_pack("preview-entries-packed", &root);
+    let text = preview_text(&packed, 10).unwrap();
+
+    let summary = text.lines().next().expect("第一行是摘要");
+    assert!(
+        summary.starts_with("assetc_preview mode=grouped entries=8 raw_kb="),
+        "{summary}"
+    );
+    let bundled = preview_lines(&text, "largest ").len();
+    assert_eq!(bundled, 8, "最大的 8 个条目 = 全部条目：{text}");
+    assert!(
+        preview_lines(&text, "group ").len() == 2,
+        "core + assets 两个组：{text}"
+    );
+    let ok = text.lines().last().expect("最后一行是结论");
+    assert!(
+        ok.starts_with("assetc_preview_ok entries=8 bundled=8 loose=1 kept=0 duplicated=1"),
+        "容器 8 条 + 磁盘上的骨架 project.toml（唯一合法的双份）：{ok}"
+    );
+    // 逐条带指纹：没有指纹的清单做不了增量对比，也证明不了"这张图就是那张图"。
+    for line in preview_lines(&text, "largest ") {
+        assert!(line.contains("sum=") && line.contains("source="), "{line}");
+    }
+    // 启动条目落在第几块（`inspect` 的同一条判据，见 `is_boot_entry`）。
+    let boot = preview_lines(&text, "boot ");
+    assert!(
+        boot.iter().any(|line| line.ends_with(" project.toml")),
+        "启动闭包要能看见：{boot:?}"
+    );
+
+    // 目录形态没有报告/计划，但条目一个不少。
+    let loose = temp_out("preview-entries-loose");
+    let _ = fs::remove_dir_all(&loose);
+    package(&root, &loose, false, false, false).unwrap();
+    let loose_text = preview_text(&loose, 10).unwrap();
+    assert!(
+        loose_text.starts_with("assetc_preview mode=none entries=8"),
+        "{}",
+        loose_text.lines().next().unwrap_or("-")
+    );
+    assert!(
+        !loose_text.contains("\nboot "),
+        "目录形态没有块，不该编出 boot 读数：{loose_text}"
+    );
+
+    fs::remove_dir_all(&packed).ok();
+    fs::remove_dir_all(&loose).ok();
+    cleanup(&root);
+}
+
+/// 同一份产物两次读数逐字节相同，且重打出来的包读数也相同。
+///
+/// 这条是"能不能拿它当门/喂发布脚本"的前提：读数里只要混进耗时、时间戳或哈希表遍历序，
+/// 第二次就不一样了（`PackageReport` 的确定性纪律在 §4.5，这里是它的读数侧）。
+#[test]
+fn preview_readout_is_deterministic() {
+    let root = bundle_project("preview-determinism");
+    let first = grouped_pack("preview-det-a", &root);
+    let second = grouped_pack("preview-det-b", &root);
+    let a = preview_text(&first, 5).unwrap();
+    let b = preview_text(&first, 5).unwrap();
+    assert_eq!(a, b, "同一个包读两次必须逐字节相同");
+    let c = preview_text(&second, 5).unwrap();
+    assert_eq!(
+        a.lines().count(),
+        c.lines().count(),
+        "重打的包条目数都变了：\n{a}\n---\n{c}"
+    );
+    // 组哈希相同 = 内容相同（增量分发就是比这个字段）。
+    let hash = |text: &str| {
+        text.lines()
+            .find(|line| line.starts_with("group core "))
+            .and_then(|line| line.split("hash=").nth(1))
+            .map(|tail| tail.split_whitespace().next().unwrap_or("-").to_owned())
+    };
+    assert_eq!(
+        hash(&a),
+        hash(&c),
+        "同一工程的组哈希必须稳定：{:?}",
+        hash(&a)
+    );
+
+    fs::remove_dir_all(&first).ok();
+    fs::remove_dir_all(&second).ok();
+    cleanup(&root);
+}
+
+/// 跨形态对比必须**被拒**，不许报出一份看着合理的 diff。
+///
+/// 目录形态（尤其带 `--compress`）落盘的是编码后的字节，容器形态存的是原始字节：
+/// 两边指纹本来就对不上。让它比下去，"换了打包方式"会被报成"三百个资源都改了"。
+#[test]
+fn diff_refuses_to_compare_different_pack_forms() {
+    let root = bundle_project("diff-forms");
+    let loose = temp_out("diff-forms-loose");
+    let _ = fs::remove_dir_all(&loose);
+    package(&root, &loose, false, false, false).unwrap();
+    let packed = grouped_pack("diff-forms-packed", &root);
+
+    let error = diff_text(&loose, &packed)
+        .expect_err("跨形态对比必须报错")
+        .to_string();
+    assert!(error.contains("同形态"), "{error}");
+    let error = diff_text(&packed, &loose)
+        .expect_err("反过来也一样")
+        .to_string();
+    assert!(error.contains("同形态"), "{error}");
+
+    fs::remove_dir_all(&loose).ok();
+    fs::remove_dir_all(&packed).ok();
+    cleanup(&root);
+}
+
+/// 增量的三条判据：新增、删除、**改内容但字节数没变**。
+///
+/// 第三条是这条门的意义所在：换一张同名同尺寸的贴图、改一个常量的一行，长度都不变。
+/// 只看长度（或只看 mtime）的实现在这份产物上会**全绿**，而发出去的包是错的。
+#[test]
+fn diff_reports_added_removed_and_a_same_size_content_change() {
+    let root = bundle_project("diff-changes");
+    let before = grouped_pack("diff-before", &root);
+
+    let panel = root.join("assets/ui/panel.txt");
+    let old_text = fs::read_to_string(&panel).unwrap();
+    let new_text = old_text.replace("border=4", "border=5");
+    assert_eq!(
+        old_text.len(),
+        new_text.len(),
+        "前置：这是一次**字节数不变**的改动"
+    );
+    fs::write(&panel, new_text).unwrap();
+    fs::write(root.join("assets/ui/extra.txt"), "return 1\n").unwrap();
+    fs::remove_file(root.join("assets/textures/red-1x1.png")).unwrap();
+    let after = grouped_pack("diff-after", &root);
+
+    let diff = diff_packages(&before, &after).unwrap();
+    let paths: Vec<&str> = diff.added.iter().map(|entry| entry.path.as_str()).collect();
+    assert_eq!(paths, ["assets/ui/extra.txt"], "{diff:?}");
+    let paths: Vec<&str> = diff
+        .removed
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect();
+    assert_eq!(paths, ["assets/textures/red-1x1.png"], "{diff:?}");
+    assert_eq!(diff.changed.len(), 1, "{diff:?}");
+    let (old, new) = &diff.changed[0];
+    assert_eq!(old.path, "assets/ui/panel.txt");
+    assert_eq!(
+        old.size, new.size,
+        "前置：这是一次同字节数的改动，只有内容指纹能抓到"
+    );
+    assert_ne!(old.checksum, new.checksum);
+    assert_eq!(diff.unchanged, 6, "其余条目一个都不许多报：{diff:?}");
+
+    let text = diff_text(&before, &after).unwrap();
+    assert!(
+        text.contains(&format!(
+            "changed assets/ui/panel.txt bytes={0}→{0} ",
+            old.size
+        )),
+        "{text}"
+    );
+    assert!(text.contains("assetc_diff_ok download="), "{text}");
+
+    fs::remove_dir_all(&before).ok();
+    fs::remove_dir_all(&after).ok();
+    cleanup(&root);
+}
+
+/// 没改东西时 diff 必须是**空的**（这条是上一条的反面对照）。
+///
+/// 只做"改了就红"的门，实现退化成"什么都算 changed"也能绿；这条逼它给出零改动。
+#[test]
+fn an_unchanged_repackage_diffs_to_nothing() {
+    let root = bundle_project("diff-nothing");
+    let first = grouped_pack("diff-nothing-a", &root);
+    let second = grouped_pack("diff-nothing-b", &root);
+    let diff = diff_packages(&first, &second).unwrap();
+    assert!(diff.added.is_empty() && diff.removed.is_empty(), "{diff:?}");
+    assert_eq!(diff.changed.len(), 0, "{diff:?}");
+    assert_eq!(diff.unchanged, 8, "{diff:?}");
+    assert!(
+        diff.download.is_empty(),
+        "内容没变就不该要求重下任何容器：{diff:?}"
+    );
+
+    fs::remove_dir_all(&first).ok();
+    fs::remove_dir_all(&second).ok();
+    cleanup(&root);
+}
+
+/// 容器索引里的逐条目校验和与清单用的是**同一个哈希函数**。
+///
+/// 预览把两种形态的条目放进同一张表里比，靠的就是这条。哪天有人把 `fnv1a` 换成别的
+/// （或反过来），跨形态的指纹就失去意义，而 diff 会静默把每个条目报成"变了"。
+#[test]
+fn preview_entry_checksum_function_matches_the_container() {
+    let bytes = b"rustlua-preview-checksum";
+    assert_eq!(
+        fnv1a(bytes),
+        rustlua_infra::bundle::checksum(bytes),
+        "assetc 的清单与容器的逐条目校验和必须同一个函数"
+    );
+}
+
+/// 预览对"同一份字节既在容器里又在目录里"必须报错（`--keep` 失效的形状）。
+///
+/// 这里不靠改打包代码造场景，而是**照着容器的字节往磁盘写一份**——正是 keep 没生效时
+/// 产物目录的样子。`project.toml` 是唯一被允许的重复（见 `load`），所以挑 `scripts/main.lua`。
+#[test]
+fn preview_flags_an_entry_that_is_both_in_a_container_and_on_disk() {
+    use rustlua_infra::bundle::{BundleIndex, BundleReader, MemSource};
+
+    let root = bundle_project("preview-duplicated");
+    let packed = grouped_pack("preview-duplicated", &root);
+    let container = preview_lines(&preview_text(&packed, 1).unwrap(), "group core ")
+        .first()
+        .and_then(|line| line.split("bundle=").nth(1))
+        .map(|tail| tail.trim().to_owned())
+        .expect("core 组要有容器名");
+    let bytes = fs::read(packed.join(&container)).unwrap();
+    let index = BundleIndex::parse(&bytes).unwrap();
+    let mut reader = BundleReader::new(index, MemSource::new(bytes));
+    let main = reader
+        .read("scripts/main.lua")
+        .unwrap()
+        .expect("容器里有主脚本");
+    let loose = packed.join("scripts").join("main.lua");
+    fs::create_dir_all(loose.parent().unwrap()).unwrap();
+    fs::write(&loose, &main).unwrap();
+
+    let error = preview_text(&packed, 5)
+        .expect_err("双份条目必须报错")
+        .to_string();
+    assert!(
+        error.contains("--keep") && error.contains("scripts/main.lua"),
+        "{error}"
+    );
+
+    fs::remove_dir_all(&packed).ok();
+    cleanup(&root);
+}
+
+/// `assetc inspect` 的读数门（此前**零覆盖**：它只被人和发布脚本 grep，没有一条测试）。
+///
+/// 钉三件事：① 每个容器一行摘要 + 每块一行；② 启动闭包逐条报出落在第几块，且
+/// `boot_blocks` 是**去重后**的块数（散在三个块里才是这条读数要暴露的问题）；
+/// ③ 目录形态没有容器 ⇒ 明确报错，不许给一份空读数装成"查过了"。
+#[test]
+fn inspect_reports_blocks_and_boot_closure_placement() {
+    let root = bundle_project("inspect-readout");
+    let packed = grouped_pack("inspect-readout", &root);
+    let text = inspect_bundles(&packed).unwrap();
+
+    let bundles = preview_lines(&text, "bundle ");
+    assert_eq!(bundles.len(), 2, "core + assets 两个容器：{text}");
+    for line in &bundles {
+        assert!(
+            line.contains(" blocks=")
+                && line.contains(" entries=")
+                && line.contains(" block_size="),
+            "{line}"
+        );
+    }
+    assert!(
+        text.lines().any(|line| line.starts_with("  block 0 ")),
+        "逐块读数：{text}"
+    );
+    let boot = preview_lines(&text, "boot ");
+    assert!(
+        boot.iter().all(|line| line.contains(" block=")) && !boot.is_empty(),
+        "启动闭包要逐条给块号：{boot:?}"
+    );
+    let ok = text.lines().last().expect("最后一行是结论");
+    assert!(ok.starts_with("inspect_ok bundles=2 boot_entries="), "{ok}");
+    let boot_blocks: u64 = ok
+        .split("boot_blocks=")
+        .nth(1)
+        .and_then(|tail| tail.split_whitespace().next())
+        .and_then(|value| value.parse().ok())
+        .expect("读数里要有 boot_blocks");
+    let distinct = boot
+        .iter()
+        .map(|line| {
+            line.split_whitespace()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .len() as u64;
+    assert_eq!(
+        boot_blocks, distinct,
+        "boot_blocks 必须是去重后的 (容器, 块) 数：{ok} / {boot:?}"
+    );
+
+    // 目录形态：没有容器就明确报错，而不是给一份空读数。
+    let loose = temp_out("inspect-loose");
+    let _ = fs::remove_dir_all(&loose);
+    package(&root, &loose, false, false, false).unwrap();
+    let error = inspect_bundles(&loose)
+        .expect_err("目录形态没有容器")
+        .to_string();
+    assert!(error.contains(".rlb"), "{error}");
+
+    fs::remove_dir_all(&packed).ok();
+    fs::remove_dir_all(&loose).ok();
+    cleanup(&root);
+}
+
+/// 启动闭包的名单只有一份（`boot_priority` 的 0 档 == `is_boot_entry`）。
+///
+/// 此前 `inspect` 里另抄了一份五个名字的清单，加锚点（`resources.meta` 就是这么补进去的）
+/// 要记得改两处。这条钉住"只有一处"，以后加第六个锚点不用再碰读数代码。
+#[test]
+fn boot_anchors_have_a_single_source_of_truth() {
+    for anchor in [
+        "project.toml",
+        "atlas_redirect.json",
+        "resources.meta",
+        "scenes/main.scene",
+        "scripts/main.lua",
+    ] {
+        assert!(is_boot_entry(anchor), "{anchor} 是启动锚点");
+        assert_eq!(boot_priority(anchor), 0, "{anchor}");
+    }
+    for other in [
+        "scripts/data/items.lua",
+        "scenes/village.scene",
+        "assets/textures/red-1x1.png",
+    ] {
+        assert!(!is_boot_entry(other), "{other} 不该算进启动闭包");
+    }
 }

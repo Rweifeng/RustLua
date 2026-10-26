@@ -16,6 +16,8 @@ members = [
     "crates/rustlua-ecs",
     "crates/rustlua-editor-ai",
     "crates/rustlua-editor-api",
+    "crates/rustlua-editor-core",
+    "crates/rustlua-editor-ui-studio",
     "crates/rustlua-frame-abi",
     "crates/rustlua-gameplay",
     "crates/rustlua-gpu",
@@ -30,7 +32,6 @@ members = [
     "crates/rustlua-visual-script",
     "crates/rustlua-ui",
     "crates/rustlua-ui-spec",
-    "crates/wasm-lua-spike",
 ]
 
 [workspace.package]
@@ -57,6 +58,8 @@ engine = { path = "crates/engine" }
 rustlua-math = { path = "crates/rustlua-math" }
 rustlua-ecs = { path = "crates/rustlua-ecs" }
 rustlua-editor-ai = { path = "crates/rustlua-editor-ai" }
+rustlua-editor-core = { path = "crates/rustlua-editor-core" }
+rustlua-editor-ui-studio = { path = "crates/rustlua-editor-ui-studio" }
 rustlua-scene = { path = "crates/rustlua-scene" }
 rustlua-camera = { path = "crates/rustlua-camera" }
 rustlua-animation = { path = "crates/rustlua-animation" }

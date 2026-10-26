@@ -1,7 +1,9 @@
 //! `actions` 的回归测试：文档切换闸门（E06）、编辑事务与撤销（E07）、
 //! Inspector 脏编辑（E08）、统一刷新路由，以及布局/预设辅助函数。
 //!
-//! 按主题分家：`document_gate` / `transactions` / `layout` / `refresh`；本文件只放
+//! 按主题分家：`document_gate` / `transactions` / `layout` / `refresh` / `prefab_stage`
+//! （P1-4 in-context 预制体编辑）/ `prefab_overrides`（P2 整实例覆盖视图与逐项还原）/
+//! `broken_refs`（P1-3b 断链审计）；本文件只放
 //! 各主题共用的导入与辅助函数（临时工程、样例工程拷贝、Scene 视图缓存探针）。
 
 use super::*;
@@ -171,7 +173,10 @@ fn test_context() -> egui::Context {
     egui::Context::default()
 }
 
+mod broken_refs;
 mod document_gate;
 mod layout;
+mod prefab_overrides;
+mod prefab_stage;
 mod refresh;
 mod transactions;

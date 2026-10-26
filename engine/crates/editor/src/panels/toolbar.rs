@@ -119,6 +119,25 @@ impl EditorApp {
                     {
                         self.dispatch(editor::EditorCommand::RestartPlay);
                     }
+                    // P1：Play 期调参的出口。按钮只在运行中出现，角标是"记下来几个字段值"；
+                    // 不点它、直接 Stop 就是 Unity 的默认语义（回滚到编辑快照）。
+                    if in_play {
+                        let pending = self.pending_play_edit_count();
+                        let label = if pending == 0 {
+                            "应用到场景".to_owned()
+                        } else {
+                            format!("应用到场景（{pending}）")
+                        };
+                        if ui
+                            .add_enabled(pending > 0, egui::Button::new(label).small())
+                            .on_hover_text(
+                                "把这次运行里改过的取值写回场景（一条撤销）；不点则 Stop 后丢弃",
+                            )
+                            .clicked()
+                        {
+                            self.dispatch(editor::EditorCommand::ApplyPlayEdits);
+                        }
+                    }
                     // 设计分辨率：Game 视图渲染目标 / Scene 视图包围框尺寸（下次 Play 生效；可自定义增删）。
                     // 比例快捷组收进同一菜单，选中文本带上当前比例，顶上不再常驻一排按钮。
                     let resolutions = self.preview_resolutions.clone();

@@ -1258,7 +1258,7 @@ fn draw_code_frame(ui: &mut egui::Ui, text: &str) {
 }
 
 fn draw_json_block(ui: &mut egui::Ui, body: &str, expanded: &mut bool) {
-    const COLLAPSED_LINES: usize = 8;
+    const COLLAPSED_LINES: usize = 3;
     let lines: Vec<&str> = body.lines().collect();
     let overflow = lines.len() > COLLAPSED_LINES;
     let shown = if *expanded || !overflow {

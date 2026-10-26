@@ -30,6 +30,9 @@ pub struct MaterialEditSession {
     redo: Vec<MaterialAsset>,
     /// 上一次提交是否处于同一段连续手势（拖动数值）里；用于把拖拽合并成一条撤销。
     coalescing: bool,
+    /// 累计**编辑**次数（一步 = 一次压栈；撤销/重做的挪动不计数）。
+    /// 跨面板全局 Undo 的签名用它区分"这个材质刚刚又提交了"，见 [`Self::undo_signature`]。
+    edits: u64,
 }
 
 impl MaterialEditSession {
@@ -41,6 +44,7 @@ impl MaterialEditSession {
             undo: Vec::new(),
             redo: Vec::new(),
             coalescing: false,
+            edits: 0,
         }
     }
 
@@ -72,6 +76,14 @@ impl MaterialEditSession {
     #[must_use]
     pub fn undo_depth(&self) -> usize {
         self.undo.len()
+    }
+
+    /// 跨面板全局 Undo 的**编辑签名**：`(累计编辑次数, undo+redo 深度)`。计数只在真正
+    /// 新增一步（[`Self::commit`] 的实际压栈分支）时变大；换素材时整个会话被重建，
+    /// 两项一起回到 (0, 0)。消费方见 editor bin 的 `actions/undo_ledger.rs`。
+    #[must_use]
+    pub fn undo_signature(&self) -> (u64, usize) {
+        (self.edits, self.undo.len() + self.redo.len())
     }
 
     /// 把当前内容记为「已保存」。撤销历史保留：越过保存点后 `is_dirty()` 会重新变真。
@@ -160,6 +172,7 @@ impl MaterialEditSession {
             self.undo.remove(0);
         }
         self.redo.clear();
+        self.edits = self.edits.wrapping_add(1);
         self.coalescing = coalesce;
         Ok(())
     }

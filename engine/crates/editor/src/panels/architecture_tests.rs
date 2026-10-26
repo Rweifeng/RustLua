@@ -53,6 +53,9 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     // M75-03：助手把对话存在 `messages`（不是文档历史），写动作只经 `execute_tool`。
     ("assistant.rs", 0),
     ("atlas.rs", 0),
+    // P1-3b：断链检查窗只发 `ScanBrokenReferences` / `RepairBrokenReference`；
+    // 扫描与改写都在 shell（`crate::actions::broken_refs`），面板不碰文档。
+    ("broken_refs.rs", 0),
     ("bundles.rs", 0),
     ("console.rs", 0),
     ("domain_data.rs", 0),
@@ -86,6 +89,8 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     ("tilemap_tools.rs", 0),
     // P3-E01-3：时间线只读预览，播放头状态不进场景文档。
     ("timeline.rs", 0),
+    // P1-3a：贴图预览窗只解码与显示，状态是窗内缓存（不是文档）。
+    ("texture_preview.rs", 0),
     ("toolbar.rs", 0),
     // M76-04：UI Studio 只经 Spec 宿主提案写 `.ui.json`，不碰场景文档。
     ("ui_studio.rs", 0),
@@ -134,10 +139,22 @@ fn collect_panel_sources(dir: &Path, prefix: &str, sources: &mut BTreeMap<String
 }
 
 fn count_writes(source: &str) -> Vec<String> {
-    // 只统计**生产代码**：面板文件的测试模块按惯例放在文件末尾（顶格 `#[cfg(test)]` +
-    // `mod …`）。测试里直接写文档是正当的，不该被算成"视图越权"。
-    // 用"顶格属性 + 下一行是 mod"来识别，而不是最后一个 `#[cfg(test)]`——测试模块内部
-    // 自己也会出现这个属性。
+    let text = production_text(source);
+    let mut hits = Vec::new();
+    for needle in WRITE_NEEDLES {
+        let count = text.matches(needle).count();
+        for _ in 0..count {
+            hits.push((*needle).to_owned());
+        }
+    }
+    hits
+}
+
+/// 只看**生产代码**：面板文件的测试模块按惯例放在文件末尾（顶格 `#[cfg(test)]` +
+/// `mod …`）。测试里直接写文档是正当的，不该被算成"视图越权"。
+/// 用"顶格属性 + 下一行是 mod"来识别，而不是最后一个 `#[cfg(test)]`——测试模块内部
+/// 自己也会出现这个属性。返回去掉全部空白后的文本，跨行链式调用同样能被抓到。
+fn production_text(source: &str) -> String {
     let lines: Vec<&str> = source.lines().collect();
     let mut cut = lines.len();
     for (index, line) in lines.iter().enumerate() {
@@ -151,15 +168,7 @@ fn count_writes(source: &str) -> Vec<String> {
             break;
         }
     }
-    let text = normalized(&lines[..cut].join("\n"));
-    let mut hits = Vec::new();
-    for needle in WRITE_NEEDLES {
-        let count = text.matches(needle).count();
-        for _ in 0..count {
-            hits.push((*needle).to_owned());
-        }
-    }
-    hits
+    normalized(&lines[..cut].join("\n"))
 }
 
 #[test]
@@ -257,4 +266,35 @@ fn ratchet_detects_direct_document_writes() {
         }
     "#;
     assert!(count_writes(clean).is_empty());
+}
+
+/// 撤销/重做快捷键的特征（去空白后比较）。**一次按键只能被一个地方听到**：
+/// shell 在帧入口读它并派发 `EditorCommand::Undo`，面板再私读一遍就会同键消费两步
+/// （历史上正是 `graph.rs` 的画布快捷键让"撤一步图"顺手也撤掉了场景的一步）。
+const UNDO_SHORTCUT_NEEDLES: &[&str] = &["key_pressed(egui::Key::Z", "key_pressed(egui::Key::Y"];
+
+#[test]
+fn panels_never_read_the_undo_shortcut() {
+    let mut offenders = Vec::new();
+    for (name, source) in panel_sources() {
+        let text = production_text(&source);
+        for needle in UNDO_SHORTCUT_NEEDLES {
+            if text.contains(needle) {
+                offenders.push(format!("{name} 命中 {needle}"));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "面板私读了 Ctrl+Z / Ctrl+Y（M79 P1-2 起撤销由全局账本统一路由）。\n\
+         请删掉这段键盘读取，需要按钮入口就调 `crate::actions::undo_ledger` 的归属入口：\n  {}",
+        offenders.join("\n  ")
+    );
+
+    // 守卫自己也要能判红：反面样例必须被抓到。
+    let sample = "impl GraphPanelState {\n    fn shortcuts(&mut self) {\n        let undo = ui.input(|i| i.key_pressed(egui::Key::Z));\n    }\n}\n";
+    assert!(
+        production_text(sample).contains(UNDO_SHORTCUT_NEEDLES[0]),
+        "反面样例必须命中"
+    );
 }

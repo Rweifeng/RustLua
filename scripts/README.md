@@ -1,7 +1,7 @@
 # scripts —— 仓库自动化脚本索引
 
 本目录按功能分层。CI、根 README、`docs/` 与各 `*.bat` 双击入口使用的路径均已同步到新位置；
-`CHANGELOG.md` 与 `tasks/done/` 是历史归档，保留旧路径不改，以本页为新口径。
+`docs/changelog/`（原 `CHANGELOG.md`）与 `tasks/done/` 是历史归档，保留旧路径不改，以本页为新口径。
 
 | 目录 | 职责 |
 |---|---|
@@ -60,7 +60,7 @@
 | `verify-webgl-bundle.ps1` | 验证真实发布出来的 WebGL 包能启动并跑通场景切换（含 grouped 产物的容器内容闭包） |
 | `verify-webgl-eh.ps1` | wasm 异常处理（EH）探针门 |
 | `verify-wechat-minigame.ps1` | 微信小游戏发布包静态布局/配额 + 容器内容闭包（`assetc closure`，`-CdnDir` 可核对远端组）+ 无头运行验证 |
-| `verify-wasm-lua.ps1` | wasm Lua 运行期验证（spike + no-modules 桥） |
+| `verify-wasm-lua.ps1` | wasm Lua 运行期验证（no-modules 桥 + gpu2d 宿主画布探针） |
 | `check-docs.ps1` | 文档一致性门（编号/H1/索引/链接/历史路径/BOM/解析） |
 | `check-silent-traces.ps1` | 静默失败"留痕"回归门 |
 | `check-vendor-patches.ps1` | vendor 补丁基线自动校验 |
@@ -158,7 +158,7 @@
 | `web-api-contract.js` | Web 侧行为契约执行器共用件（页面表达式 + 对拍） |
 | `webgl-cdp-wait.js` | 通过 Chrome DevTools Protocol 轮询页面状态并 dump DOM |
 | `analyze-soak.ps1` | soak 归档判据分析（窗口谷值/中位/峰值） |
-| `wasm-lua/` | wasm Lua 探针与后处理：`downgrade-noextern`、`strip-wasm-globals`、`strip-wasm-tags`、`verify-wasm-host`、`measure-lua-boundary`、`run-spike`、`verify-no-modules-bridge`、`verify-canvas-host-probe`、`eh-probe-*` |
+| `wasm-lua/` | wasm Lua 探针与后处理：`downgrade-noextern`、`strip-wasm-globals`、`strip-wasm-tags`、`verify-wasm-host`、`measure-lua-boundary`、`verify-no-modules-bridge`、`verify-canvas-host-probe`、`eh-probe-*` |
 
 ## 调用关系
 

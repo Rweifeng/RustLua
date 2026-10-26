@@ -220,6 +220,7 @@
         "set_action_map",
         "set_nav_settings",
         "settings_path",
+        "text_events",
         "unbind",
         "virtual_key",
         "virtual_pressed"

@@ -422,3 +422,140 @@ fn pointer_is_published_for_other_domain_bindings() {
 fn axis_direction_is_public() {
     assert_eq!(AxisDirection::Positive, AxisDirection::Positive);
 }
+
+/// M79-04 主链路：宿主从系统输入法拿到的文本，脚本在**同一帧**就能读到，且不跨帧残留。
+///
+/// 事件顺序照 winit 0.30.13 的拼音形状（`Preedit` 逐字增长 → 空 `Preedit` 清屏 → `Commit`）。
+#[test]
+fn host_text_events_are_visible_to_lua_the_same_frame() {
+    let (registry, host, _settings) = setup();
+    let lua = runtime(&registry);
+    let mut snapshot = InputSnapshot::default();
+
+    snapshot.set_text_preedit("ni");
+    host.set_input(snapshot.clone());
+    let read: (Option<String>, usize) = lua
+        .load("local e = input.text_events() return e.composition, #e.committed")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        read,
+        (Some("ni".to_owned()), 0),
+        "组合中的拼音可读，正文还没有"
+    );
+
+    snapshot.set_text_preedit("");
+    snapshot.push_text_commit("你好");
+    host.set_input(snapshot.clone());
+    let read: (Option<String>, String) = lua
+        .load("local e = input.text_events() return e.composition, e.committed[1]")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        read,
+        (None, "你好".to_owned()),
+        "提交后组合串清掉，上屏串进本帧读数"
+    );
+
+    // 宿主帧末清点（真实帧就是这样），下一帧脚本读到的是干净的。
+    snapshot.finish_frame();
+    host.set_input(snapshot);
+    let read: (bool, usize) = lua
+        .load("local e = input.text_events() return e.composition == nil, #e.committed")
+        .eval()
+        .unwrap();
+    assert_eq!(read, (true, 0), "文本是本帧数据，不跨帧残留");
+}
+
+/// 没有系统输入法的宿主（Web 的 composition 事件、微信原生输入桥）与无窗口自检，
+/// 用同一个门面向快照注入——形状必须与宿主写进来的完全一致，否则演示绿而真机是另一套。
+#[test]
+fn lua_can_inject_text_events_through_the_same_channel() {
+    let (registry, host, _settings) = setup();
+    let lua = runtime(&registry);
+    host.set_input(InputSnapshot::default());
+
+    let read: (Option<String>, usize) = lua
+        .load(
+            r#"
+            local e = input.text_events({ composition = "ni" })
+            return e.composition, #e.committed
+            "#,
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(read, (Some("ni".to_owned()), 0), "注入的预编辑串可读");
+
+    let read: (Option<String>, Vec<String>) = lua
+        .load(
+            r#"
+            local e = input.text_events({ composition = "", commit = "你好" })
+            return e.composition, { e.committed[1] }
+            "#,
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        read,
+        (None, vec!["你好".to_owned()]),
+        "空 composition = 取消组合；commit 落正文"
+    );
+
+    // 一帧内两次提交要都读得到（连续确认两个候选），不是"只留最后一条"。
+    let count: usize = lua
+        .load(
+            r#"
+            input.text_events({ commit = "a" })
+            return #input.text_events().committed
+            "#,
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(count, 2, "提交串是列表，不覆盖");
+
+    // 字段类型不对是错误，不是静默忽略：mlua 的 `bool` 走 Lua 真值语义，`capture = "yes"`
+    // 会当成 true——所以 `capture` 只认布尔，报错带字段名。
+    let error = lua
+        .load(r#"return input.text_events({ capture = "yes" })"#)
+        .eval::<bool>()
+        .unwrap_err();
+    assert!(error.to_string().contains("capture"), "{error}");
+    let error = lua
+        .load(r#"return input.text_events({ commit = { "你" } })"#)
+        .eval::<bool>()
+        .unwrap_err();
+    assert!(error.to_string().contains("commit"), "{error}");
+}
+
+/// 收字声明是**脚本的跨帧意图**，宿主下一次整份替换快照时必须还在（与虚拟键同一条约定）。
+///
+/// 这条如果漂了，症状是"中文打两个字输入法就关掉"——只在真机上出现，最难查。
+#[test]
+fn text_capture_declaration_survives_the_next_host_frame() {
+    let (registry, host, _settings) = setup();
+    let lua = runtime(&registry);
+    host.set_input(InputSnapshot::default());
+    assert!(!host.text_capture(), "默认不收字：玩法按键不该被输入法吃掉");
+
+    let capturing: bool = lua
+        .load("return input.text_events({ capture = true }).capturing")
+        .eval()
+        .unwrap();
+    assert!(capturing, "声明当帧可读");
+
+    // 宿主整份替换快照（真实帧就是这样），不带这个位就等于把声明丢了。
+    host.set_input(InputSnapshot::default());
+    assert!(host.text_capture(), "收字声明跨帧保持");
+    let read: (bool, bool) = lua
+        .load("local e = input.text_events() return e.capturing, e.composition == nil")
+        .eval()
+        .unwrap();
+    assert!(read.0, "脚本侧也还读得到自己的声明");
+    assert!(read.1, "跨帧保持的只有声明，文本仍是本帧的");
+
+    lua.load("input.text_events({ capture = false })")
+        .exec()
+        .unwrap();
+    host.set_input(InputSnapshot::default());
+    assert!(!host.text_capture(), "关掉声明后宿主要把输入法交还系统");
+}

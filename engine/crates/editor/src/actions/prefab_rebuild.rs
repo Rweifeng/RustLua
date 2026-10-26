@@ -22,6 +22,22 @@ pub(crate) fn collect_prefab_rebuild_state(
     prefab_source: &str,
     prefab: &Prefab,
 ) -> Result<PrefabRebuildState, String> {
+    collect_prefab_rebuild_state_with_baseline(scene, instance_root, prefab_source, prefab, None)
+}
+
+/// 同一条收集路径，但**覆盖值按 `baseline` diff**（结构与实例校验始终按 `prefab`）。
+///
+/// in-context 编辑必须走这里：阶段里改的是**源**，如果拿"改过的新源"去 diff 实例，
+/// 刚被改掉的那个字段会因为"实例还留着老值"而被判成实例自己的覆盖，重建时再按回去
+/// ——源改动被实例的老值顶回，等于同步失败（这条正是回归门抓出来的）。
+/// 用进入阶段时那份源当基线，覆盖集合才是"实例与源真正的不同"。
+pub(crate) fn collect_prefab_rebuild_state_with_baseline(
+    scene: &rustlua_scene::scene::Scene,
+    instance_root: SceneEntityId,
+    prefab_source: &str,
+    prefab: &Prefab,
+    baseline: Option<&Prefab>,
+) -> Result<PrefabRebuildState, String> {
     let root = scene
         .entities
         .get(&instance_root)
@@ -63,7 +79,8 @@ pub(crate) fn collect_prefab_rebuild_state(
     if prefab_ids != instance_ids {
         return Err("预制体实例子树和源预制体结构不一致，暂不支持自动重建".to_owned());
     }
-    let overrides = collect_prefab_overrides(scene, prefab, &source_to_instance)?;
+    let overrides =
+        collect_prefab_overrides(scene, baseline.unwrap_or(prefab), &source_to_instance)?;
     Ok(PrefabRebuildState {
         instance_root,
         parent: root.parent,
@@ -310,4 +327,10 @@ pub(crate) struct PrefabWriteRequest<'a> {
     pub(crate) selected: SceneEntityId,
     /// Undo/Redo 菜单里显示的命令名。
     pub(crate) label: &'a str,
+    /// 覆盖 diff 的**基线源**；`None` = 用 `prefab` 自己当基线。
+    ///
+    /// 整体写回 / 逐字段应用都不需要它（那两条里"实例就是事实源"，新源与实例天然一致）。
+    /// in-context 退出必须给出进入时那份源：否则刚在阶段里改掉的字段会被实例的老值
+    /// 当成覆盖按回去（见 [`collect_prefab_rebuild_state_with_baseline`]）。
+    pub(crate) baseline: Option<&'a Prefab>,
 }

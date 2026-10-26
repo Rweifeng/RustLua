@@ -853,6 +853,8 @@ dependencies = [
  "rustlua-ecs",
  "rustlua-editor-ai",
  "rustlua-editor-api",
+ "rustlua-editor-core",
+ "rustlua-editor-ui-studio",
  "rustlua-gameplay",
  "rustlua-gpu",
  "rustlua-infra",
@@ -3373,6 +3375,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustlua-editor-core"
+version = "0.1.1"
+dependencies = [
+ "rustlua-animation",
+ "rustlua-assets",
+ "rustlua-assets-import",
+ "rustlua-camera",
+ "rustlua-ecs",
+ "rustlua-infra",
+ "rustlua-math",
+ "rustlua-physics",
+ "rustlua-render",
+ "rustlua-scene",
+ "rustlua-ui",
+ "rustlua-visual-script",
+ "serde_json",
+ "thiserror 2.0.20",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "rustlua-editor-ui-studio"
+version = "0.1.1"
+dependencies = [
+ "rustlua-assets-import",
+ "rustlua-scene",
+ "rustlua-ui",
+ "rustlua-ui-spec",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rustlua-frame-abi"
 version = "0.1.1"
 dependencies = [
@@ -4396,13 +4431,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23f0c9c52aa7cd7d77769a4cfe2a9adb1b331f489a41d912ce14513d5ab995c6"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "wasm-lua-spike"
-version = "0.1.0"
-dependencies = [
- "mlua",
 ]
 
 [[package]]

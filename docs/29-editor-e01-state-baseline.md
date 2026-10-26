@@ -3,6 +3,9 @@
 > 依据 [28-editor-ui-optimization-execution-tasks.md](./28-editor-ui-optimization-execution-tasks.md) 阶段 0 / E01 执行。
 > 本文档为只读基线：**不改动任何编辑器运行行为**，只做状态梳理与问题登记，供 E02–E10 在批次 A 内落地时引用。
 > 涉及源码行号基于 `engine/crates/editor` 当前工作区（HEAD fbb2acc），如后续重构行号漂移，以代码为准。
+> 2026-10-25 补注：`document`/`history`/`recovery` 等纯领域模块已随 crate 拆分原样搬到
+> `engine/crates/rustlua-editor-core/src/`（`editor` 以 glob re-export 保持旧路径可用），
+> 文中路径已指向新位置；行号未变。
 
 ---
 
@@ -14,15 +17,15 @@
 |---|---|---|
 | 二进制 crate 主循环 | `engine/crates/editor/src/main.rs` | EditorApp 字段、update 顺序、场景视图缓存、DeleteTarget |
 | 变更入口 | `engine/crates/editor/src/actions.rs` | set_current_scene_document / undo/redo / save_scene / open_scene_resource / sync_inspector / 批量对齐 |
-| 文档模型 | `engine/crates/editor/src/document.rs` | SceneDocument / PlaySession / ProjectDocument |
-| 历史 | `engine/crates/editor/src/history.rs` | CommandKind / EditCommand / execute 合并与 no-op |
+| 文档模型 | `engine/crates/rustlua-editor-core/src/document.rs` | SceneDocument / PlaySession / ProjectDocument |
+| 历史 | `engine/crates/rustlua-editor-core/src/history.rs` | CommandKind / EditCommand / execute 合并与 no-op |
 | 层级 | `engine/crates/editor/src/panels/hierarchy.rs` | 选择、过滤、隐藏/锁定、create_scene、sync_hierarchy_metadata |
 | Scene/Game | `engine/crates/editor/src/panels/game_view.rs` | play/stop 状态机与测试 |
 | Header | `engine/crates/editor/src/panels/header.rs` | 菜单、recover_candidate、窗口标题 |
 | 导入 | `engine/crates/editor/src/import.rs` | 项目/资源导入与 apply_progress_result |
 | 预览会话 | `engine/crates/editor/src/preview_session.rs` | PreviewSession 生命周期与节流 |
-| 恢复 | `engine/crates/editor/src/recovery.rs` | RecoveryManager / AutoSaveController |
-| 选择/状态结构 | `scene_tree_state.rs`、`inspector_state.rs`、`resource_browser_state.rs` | 三类选择与资源浏览 |
+| 恢复 | `engine/crates/rustlua-editor-core/src/recovery.rs` | RecoveryManager / AutoSaveController |
+| 选择/状态结构 | `rustlua-editor-core/src/scene_tree_state.rs`、`inspector_state.rs`、`resource_browser_state.rs` | 三类选择与资源浏览 |
 | 库 crate 边界 | `engine/crates/editor/src/lib.rs` | editor::* 公开面 |
 | Scene View | `engine/crates/editor/src/panels/scene_view.rs`（关键交互段） | 拖拽/框选/图块/3D gizmo 提交点 |
 | Inspector | `engine/crates/editor/src/panels/inspector.rs`（关键函数） | apply_inspector / rename / reparent / delete / prefab 相关 |
@@ -37,9 +40,9 @@ E01 要求“列出当前所有选择状态、Inspector 状态、Hierarchy 状�
 
 | 状态 | 位置 | 说明 |
 |---|---|---|
-| `ProjectDocument` | `document`（EditorApp 字段） | 项目级：内含 `current_scene: Option<SceneDocument>`、最近保存等信息（[document.rs](../engine/crates/editor/src/document.rs#L147-L155)） |
+| `ProjectDocument` | `document`（EditorApp 字段） | 项目级：内含 `current_scene: Option<SceneDocument>`、最近保存等信息（[document.rs](../engine/crates/rustlua-editor-core/src/document.rs#L147-L155)） |
 | `SceneDocument` | `document.current_scene` | 当前编辑文档；含 `path` / `scene` / `dirty` / `revision` |
-| `PlaySession`（1:1） | `play_session: Option<PlaySession>` | `editor_snapshot` + `runtime_document`，见 [document.rs](../engine/crates/editor/src/document.rs#L114-L141) |
+| `PlaySession`（1:1） | `play_session: Option<PlaySession>` | `editor_snapshot` + `runtime_document`，见 [document.rs](../engine/crates/rustlua-editor-core/src/document.rs#L114-L141) |
 | `preview: Option<PreviewSession>` | `preview` | GPU/运行时预览会话（Game 视图消费） |
 
 ### 1.2 场景数据 vs 会话状态
@@ -120,7 +123,7 @@ Inspector 输入框不直接读写场景，而是读写 EditorApp 上的**快照
 
 ### 3.1 History 命令类型
 
-见 [history.rs](../engine/crates/editor/src/history.rs)：
+见 [history.rs](../engine/crates/rustlua-editor-core/src/history.rs)：
 
 | CommandKind | 场景 |
 |---|---|
@@ -131,8 +134,8 @@ Inspector 输入框不直接读写场景，而是读写 EditorApp 上的**快照
 | `Property` | 批量属性修改、Tilemap Paint、Prefab Apply、Inspector 提交等 |
 
 关键语义：
-- `execute`：clone before → 执行闭包 → 若 `*document == before` 判定 no-op **不记录**（PartialEq 忽略 revision，[document.rs](../engine/crates/editor/src/document.rs#L20-L36)）；否则 clone after、清空 redo；**仅相邻同类 Transform/Transform3D 命令合并**（用新 after 覆盖前一条的 after）。
-- `undo/redo`：只 clone-swap 文档（含 before/after 快照），**不触发任何状态同步 / selection repair / inspector refresh / cache invalidation**（[history.rs](../engine/crates/editor/src/history.rs) undo/redo 实现）。
+- `execute`：clone before → 执行闭包 → 若 `*document == before` 判定 no-op **不记录**（PartialEq 忽略 revision，[document.rs](../engine/crates/rustlua-editor-core/src/document.rs#L20-L36)）；否则 clone after、清空 redo；**仅相邻同类 Transform/Transform3D 命令合并**（用新 after 覆盖前一条的 after）。
+- `undo/redo`：只 clone-swap 文档（含 before/after 快照），**不触发任何状态同步 / selection repair / inspector refresh / cache invalidation**（[history.rs](../engine/crates/rustlua-editor-core/src/history.rs) undo/redo 实现）。
 - no-op 检测的副作用：纯 revision 递增不产生命令（例如先 mark_dirty 再做结构不变编辑）。
 
 ### 3.2 保存触发点
@@ -143,8 +146,8 @@ Inspector 输入框不直接读写场景，而是读写 EditorApp 上的**快照
 | 保存实体 | `save_scene()` | [actions/document_io.rs](../engine/crates/editor/src/actions/document_io.rs)：无 path 时写 `scenes/<name>.scene`；有 path 走 `recovery.save_document`（validate → save → clear_for）；Prefab 走独立分支 |
 | 场景视图拖拽提交 | scene_view.rs `commit_scene_drag`/`commit_gizmo_drag3d`（[scene_view/pointer.rs](../engine/crates/editor/src/panels/scene_view/pointer.rs)） | **history.execute 成功后立刻 `save_scene()`**（“拖一下存一下”） |
 | Tilemap Paint / 批量属性 / Prefab Apply | 各提交点 | 部分提交点同样带 `save_scene`（scene_view）；Inspector/tree 走 apply 后手动保存与否不一致 |
-| 自动保存 | 主循环 [main.rs](../engine/crates/editor/src/main.rs#L915-L919) | `autosave.tick`（10s 周期，dirty 才写 recovery 快照）；AutoSaveController 在 [recovery.rs](../engine/crates/editor/src/recovery.rs#L19-L71) |
-| 崩溃快照 | `RecoveryManager::autosave/save_document/clear_for` | [recovery.rs](../engine/crates/editor/src/recovery.rs#L123-L228)：正式保存后清对应 recovery 快照 |
+| 自动保存 | 主循环 [main.rs](../engine/crates/editor/src/main.rs#L915-L919) | `autosave.tick`（10s 周期，dirty 才写 recovery 快照）；AutoSaveController 在 [recovery.rs](../engine/crates/rustlua-editor-core/src/recovery.rs#L19-L71) |
+| 崩溃快照 | `RecoveryManager::autosave/save_document/clear_for` | [recovery.rs](../engine/crates/rustlua-editor-core/src/recovery.rs#L123-L228)：正式保存后清对应 recovery 快照 |
 | 编辑器关闭 | — | 依赖 autosave tick 兜底 + 启动时 scan 弹恢复 |
 
 ### 3.3 自动保存 / 恢复

@@ -1,8 +1,10 @@
 //! 预设实例命令：重应用、写回源文件、逐字段覆盖与还原、解包为普通实体。
 //! 重建实例所需的数据收集在 `prefab_rebuild`。
 
+use super::prefab_overrides::{InstanceOverrides, revert_prefab_field_from_source};
 use super::prefab_rebuild::{
-    PrefabWriteRequest, collect_scene_subtree, prefab_root_ids, preserve_prefab_editor_flags,
+    PrefabWriteRequest, collect_prefab_rebuild_state_with_baseline, collect_scene_subtree,
+    prefab_root_ids, preserve_prefab_editor_flags,
 };
 use super::*;
 
@@ -61,45 +63,9 @@ impl EditorApp {
                     .entities
                     .get_mut(&selected)
                     .ok_or_else(|| format!("场景中不存在实体 {}", selected.0))?;
-                if field == "name" {
-                    entity.name = source_entity.name.clone();
-                } else if let Some(key) = field.strip_prefix("component:") {
-                    let payload = source_entity
-                        .components
-                        .get(key)
-                        .cloned()
-                        .ok_or_else(|| format!("源预制体缺少组件 {key}"))?;
-                    entity.components.insert(key.to_owned(), payload);
-                } else if let Some(raw_path) = field.strip_prefix("property:") {
-                    let path = rustlua_ecs::property_path::PropertyPath::parse(raw_path)
-                        .map_err(|error| error.to_string())?;
-                    let source_payload = source_entity
-                        .components
-                        .get(&path.component)
-                        .ok_or_else(|| format!("源预制体缺少组件 {}", path.component))?;
-                    let value = rustlua_ecs::property_path::read_field_text(source_payload, &path)
-                        .map_err(|error| error.to_string())?;
-                    let current = entity
-                        .components
-                        .get(&path.component)
-                        .cloned()
-                        .ok_or_else(|| format!("实例缺少组件 {}", path.component))?;
-                    let updated =
-                        rustlua_ecs::property_path::write_builtin(&current, &path, &value)
-                            .map_err(|error| error.to_string())?;
-                    entity.components.insert(path.component.clone(), updated);
-                } else if let Some(key) = field.strip_prefix("metadata:") {
-                    match source_entity.metadata.get(key) {
-                        Some(value) => {
-                            entity.metadata.insert(key.to_owned(), value.clone());
-                        }
-                        None => {
-                            entity.metadata.remove(key);
-                        }
-                    }
-                } else {
-                    return Err(format!("不支持的预制体覆盖字段 {field}"));
-                }
+                // 写法语义与"整实例逐项还原"共用同一个函数（`prefab_overrides`），
+                // 这里不再自己抄一遍 `property_path` 的最小改写规则。
+                revert_prefab_field_from_source(entity, &field, &source_entity)?;
                 scene.mark_dirty();
                 Ok::<(), String>(())
             },
@@ -116,6 +82,112 @@ impl EditorApp {
             }
             Ok(false) => self.status = format!("字段已是源取值：{field_label}"),
             Err(error) => self.status = format!("回退覆盖失败：{error}"),
+        }
+    }
+
+    /// M79 P2：把**整棵实例**的字段级覆盖一次还原（一条 Undo、不换实体 id）。
+    ///
+    /// 与既有那条「还原覆盖」（`revert_prefab_overrides`：删掉子树后按空覆盖重新实例化）的分工：
+    /// 那条能连结构性差异（新增/缺失的子节点）一起摆平，代价是实例里所有实体 id 重排、
+    /// 且是一条整文档快照历史；这条只写"源取值 → 实例字段"，id 全不动，
+    /// 且因为全是字段级变更，在历史里压成**一条补丁**（docs/25 §24）。
+    /// 结构性差异不在本命令范围内：列表里以 note 显示，还原请走重建那条。
+    pub(crate) fn revert_all_prefab_field_overrides(&mut self, selected: SceneEntityId) {
+        if self.is_playing() {
+            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
+            return;
+        }
+        let Some(root) = self.prefab_instance_root(selected) else {
+            self.status = "当前实体不是预制体实例".to_owned();
+            return;
+        };
+        let prefab_source = {
+            let Some(scene) = self.current_scene() else {
+                return;
+            };
+            match scene
+                .scene
+                .entities
+                .get(&root)
+                .and_then(|entity| entity.metadata.get("prefab.source"))
+            {
+                Some(value) => value.clone(),
+                None => {
+                    self.status = "当前实体没有预制体来源".to_owned();
+                    return;
+                }
+            }
+        };
+        let overrides: InstanceOverrides = match self.prefab_instance_overrides(root) {
+            Some(Ok(overrides)) => overrides,
+            Some(Err(error)) => {
+                self.status = error;
+                return;
+            }
+            None => {
+                self.status = "当前实体不是预制体实例".to_owned();
+                return;
+            }
+        };
+        if overrides.rows.is_empty() {
+            self.status = if overrides.notes.is_empty() {
+                "该实例没有字段级覆盖".to_owned()
+            } else {
+                "该实例只有结构性差异，请用「还原覆盖」重建实例".to_owned()
+            };
+            return;
+        }
+        // 规划在网关外做（读缓存里的源预制体），网关内只做写入——闭包里不能读盘。
+        let path = strip_verbatim_prefix(&self.project.root).join(&prefab_source);
+        let Some(prefab) = self
+            .prefab_source_cache
+            .get(&path)
+            .map(|cached| cached.prefab.clone())
+        else {
+            self.status = format!("加载源预制体失败：{}", path.display());
+            return;
+        };
+        let mut plan = Vec::with_capacity(overrides.rows.len());
+        for row in &overrides.rows {
+            let Some(source_entity) = prefab.entities.get(&row.source).cloned() else {
+                self.status = format!("源预制体中缺少实体 {}", row.source.0);
+                return;
+            };
+            plan.push((row.entity, row.field.clone(), source_entity));
+        }
+        let applied = plan.len();
+        let note_count = overrides.notes.len();
+        let Some(doc) = self.document.current_scene.as_mut() else {
+            return;
+        };
+        let result = self.history.execute(
+            doc,
+            "逐项还原实例全部字段覆盖",
+            CommandKind::Property,
+            move |scene| {
+                for (entity_id, field, source_entity) in &plan {
+                    let entity = scene
+                        .scene
+                        .entities
+                        .get_mut(entity_id)
+                        .ok_or_else(|| format!("场景中不存在实体 {}", entity_id.0))?;
+                    revert_prefab_field_from_source(entity, field, source_entity)?;
+                }
+                scene.mark_dirty();
+                Ok::<(), String>(())
+            },
+        );
+        match result {
+            Ok(true) => {
+                self.on_document_changed(DocumentChange::PrefabApply);
+                self.status = if note_count == 0 {
+                    format!("已逐项还原 {applied} 个字段覆盖（一条 Undo）")
+                } else {
+                    format!("已逐项还原 {applied} 个字段覆盖；另有 {note_count} 项结构性差异未处理")
+                };
+            }
+            Ok(false) => self.status = "该实例的字段覆盖已是源取值".to_owned(),
+            Err(error) => self.status = format!("逐项还原失败：{error}"),
         }
     }
 
@@ -272,6 +344,8 @@ impl EditorApp {
                 prefab: new_prefab,
                 selected,
                 label: "保存预制体源",
+                // 整体写回 = 实例本身就是新源，diff 基线不需要另给。
+                baseline: None,
             },
             &new_selected_root,
         );
@@ -365,6 +439,8 @@ impl EditorApp {
                 prefab,
                 selected,
                 label: &format!("应用覆盖 {field_label}"),
+                // 逐字段应用同样以"实例=事实源"：被应用的那个字段与实例天然一致。
+                baseline: None,
             },
             &new_selected_root,
         );
@@ -447,15 +523,17 @@ impl EditorApp {
             prefab: new_prefab,
             selected,
             label,
+            baseline,
         } = request;
         let roots = prefab_root_ids(&scene.scene, prefab_source);
         let mut rebuilds = Vec::new();
         for root_id in roots {
-            rebuilds.push(collect_prefab_rebuild_state(
+            rebuilds.push(collect_prefab_rebuild_state_with_baseline(
                 &scene.scene,
                 root_id,
                 prefab_source,
                 &new_prefab,
+                baseline,
             )?);
         }
         new_prefab

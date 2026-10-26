@@ -240,7 +240,7 @@ impl EditorApp {
                     let key = egui::Id::new(("schema_toggle", selected, toggle.key));
                     let mut on = ui
                         .data_mut(|data| *data.get_temp_mut_or_insert_with(key, || toggle.default));
-                    ui.add_enabled(!playing, egui::Checkbox::new(&mut on, toggle.label));
+                    ui.add(egui::Checkbox::new(&mut on, toggle.label));
                     ui.data_mut(|data| data.insert_temp(key, on));
                     if on {
                         open_toggles.push(toggle.clone());
@@ -259,7 +259,7 @@ impl EditorApp {
                     let mut choice = selected_label;
                     ui.horizontal(|ui| {
                         ui.add_sized([84.0, 18.0], egui::Label::new("预设").truncate());
-                        ui.add_enabled_ui(!playing, |ui| {
+                        ui.scope(|ui| {
                             egui::ComboBox::from_id_salt(egui::Id::new((
                                 "schema_component_action",
                                 selected,
@@ -285,6 +285,12 @@ impl EditorApp {
                 }
             }
             let key = egui::Id::new(("schema_field", selected, row.path.as_str()));
+            // P1：Play 中**取值可以改**（Unity 式运行中调参）——写入的是运行态镜像，
+            // Stop 默认丢弃，点工具栏「应用到场景」才进编辑文档（见 shell 的
+            // `crate::actions::apply_play_field_edit`）。
+            // 唯一仍然锁着的是**资源引用类**字段：预览里的贴图/网格不会因为镜像换了路径而
+            // 重新加载，放开编辑只会让"改了看着生效、其实什么都没动"。
+            let ref_locked = playing && row.path_rule;
             let mut buffer: FieldBuffer = ui.data_mut(|data| {
                 data.get_temp_mut_or_insert_with(key, || FieldBuffer {
                     seed: row.text.clone(),
@@ -308,8 +314,7 @@ impl EditorApp {
                 match widget {
                     FieldWidget::Checkbox => {
                         let mut flag = matches!(buffer.text.trim(), "true" | "1");
-                        let response =
-                            ui.add_enabled(!playing, egui::Checkbox::without_text(&mut flag));
+                        let response = ui.add(egui::Checkbox::without_text(&mut flag));
                         if response.changed() {
                             pending = Some((
                                 row.component.to_owned(),
@@ -329,7 +334,7 @@ impl EditorApp {
                             } else {
                                 Vec::new()
                             };
-                        let response = ui.add_enabled_ui(!playing, |ui| {
+                        let response = ui.add_enabled_ui(!ref_locked, |ui| {
                             egui::ComboBox::from_id_salt(key.with("combo"))
                                 .selected_text(if choice.is_empty() {
                                     if project_fonts.is_empty() {
@@ -377,8 +382,7 @@ impl EditorApp {
                         let stored: f64 = buffer.text.trim().parse().unwrap_or_default();
                         let mut value = row.unit.to_display(stored);
                         let response = ui
-                            .add_enabled(
-                                !playing,
+                            .add(
                                 egui::DragValue::new(&mut value)
                                     .speed(if integer { 1.0 } else { 0.1 })
                                     .max_decimals(if integer { 0 } else { 4 }),
@@ -413,10 +417,8 @@ impl EditorApp {
                             if index > 0 {
                                 ui.weak(separator.to_string());
                             }
-                            let drag = ui.add_enabled(
-                                !playing,
-                                egui::DragValue::new(value).speed(0.1).max_decimals(4),
-                            );
+                            let drag =
+                                ui.add(egui::DragValue::new(value).speed(0.1).max_decimals(4));
                             changed |= drag.changed();
                             response = Some(drag);
                         }
@@ -447,7 +449,7 @@ impl EditorApp {
                         let mut color = egui::Rgba::from_rgba_unmultiplied(
                             values[0], values[1], values[2], values[3],
                         );
-                        let response = ui.add_enabled_ui(!playing, |ui| {
+                        let response = ui.scope(|ui| {
                             egui::color_picker::color_edit_button_rgba(
                                 ui,
                                 &mut color,
@@ -476,7 +478,7 @@ impl EditorApp {
                         // 规则被拒绝时的原因也由引擎给出，面板不自己发明校验。
                         let response = ui
                             .add_enabled(
-                                !playing,
+                                !ref_locked,
                                 egui::TextEdit::singleline(&mut buffer.text)
                                     .desired_width(130.0)
                                     .hint_text(row.hint.clone()),
@@ -737,7 +739,7 @@ impl EditorApp {
 mod tests {
     use super::{FieldWidget, field_widget};
     use crate::EditorApp;
-    use editor::{CommandResult, EditorCommand, ProjectInfo, SceneDocument};
+    use editor::{CommandResult, EditorCommand, PlaySession, ProjectInfo, SceneDocument};
     use rustlua_ecs::component_schema::FieldKind;
     use rustlua_infra::logging::LogSink;
     use rustlua_scene::scene::SceneEntityId;
@@ -2281,9 +2283,9 @@ mod tests {
         assert_eq!(app.history.undo_len(), 0);
     }
 
-    /// Play 中字段编辑被拒绝（运行态与编辑态隔离）。
+    /// 过渡态（状态机已进 Playing、运行态镜像还没建好）：仍然是拒绝，而不是 panic。
     #[test]
-    fn field_edit_is_rejected_while_playing() {
+    fn field_edit_is_rejected_before_the_runtime_mirror_exists() {
         let mut app = app_with_quad();
         app.play.set_state_for_test(editor::PlayState::Playing);
         let before = app.document.current_scene.clone();
@@ -2293,11 +2295,279 @@ mod tests {
             field: "size".to_owned(),
             value: "8,8".to_owned(),
         }) {
-            CommandResult::Rejected(_) => {}
+            CommandResult::Rejected(reason) => {
+                assert!(reason.contains("镜像"), "{reason}");
+            }
             other => panic!("expected Rejected, got {other:?}"),
         }
         assert_eq!(app.history.undo_len(), 0);
         assert_eq!(app.document.current_scene, before);
+    }
+
+    /// P1 用例的公共前置：进入 Play，并先把编辑文档置为"已保存"。
+    ///
+    /// 为什么要置干净：`SceneDocument::new_scene` 生成的文档天生 dirty，
+    /// 那样"镜像不该新增未保存标记""Apply 后标记要重新出现"两条断言都会白过。
+    fn start_play_with_clean_document(app: &mut EditorApp) -> SceneDocument {
+        let mut original = app
+            .document
+            .current_scene
+            .as_ref()
+            .expect("测试自带场景")
+            .clone();
+        original.dirty = false;
+        app.document.current_scene = Some(original.clone());
+        app.play_session = Some(PlaySession::start(&original));
+        app.play.set_state_for_test(editor::PlayState::Playing);
+        original
+    }
+
+    /// P1：Play 中改字段 = **只写运行态镜像**并登记取值。
+    ///
+    /// 编辑文档一字未改、不产生历史、镜像也不标脏（那份改动 Stop 必然丢弃，
+    /// 标了只会挂一个存不掉的「● 未保存」）。
+    #[test]
+    fn field_edit_while_playing_writes_the_mirror_and_records_the_tweak() {
+        let mut app = app_with_quad();
+        let original = start_play_with_clean_document(&mut app);
+
+        assert_eq!(
+            app.dispatch(EditorCommand::SetComponentField {
+                entity: SceneEntityId(1),
+                component: "Quad".to_owned(),
+                field: "size".to_owned(),
+                value: "8,8".to_owned(),
+            }),
+            CommandResult::Applied
+        );
+        assert_eq!(app.history.undo_len(), 0, "运行态改动不进撤销栈");
+        assert_eq!(
+            app.document.current_scene.as_ref().unwrap(),
+            &original,
+            "编辑文档不得被 Play 期的调参碰过"
+        );
+        let mirror = app.play_session.as_ref().unwrap().runtime_document();
+        assert_eq!(
+            mirror.scene.entities[&SceneEntityId(1)].components["Quad"],
+            "size=8.000000,8.000000;color=1,1,1,1"
+        );
+        assert!(!mirror.is_dirty(), "镜像永不落盘，不该标脏");
+        assert_eq!(app.pending_play_edit_count(), 1);
+        assert!(
+            app.status.contains("应用到场景"),
+            "状态栏要指出出口在哪：{}",
+            app.status
+        );
+    }
+
+    /// P1：不点 Apply 直接 Stop = Unity 的默认语义（运行期改动全部丢弃）。
+    #[test]
+    fn stop_without_apply_rolls_back_play_tweaks() {
+        let mut app = app_with_quad();
+        let original = start_play_with_clean_document(&mut app);
+        assert_eq!(
+            app.dispatch(EditorCommand::SetComponentField {
+                entity: SceneEntityId(1),
+                component: "Quad".to_owned(),
+                field: "size".to_owned(),
+                value: "8,8".to_owned(),
+            }),
+            CommandResult::Applied
+        );
+        assert_eq!(app.pending_play_edit_count(), 1);
+
+        app.stop();
+
+        assert_eq!(app.play_session, None);
+        assert_eq!(app.pending_play_edit_count(), 0, "待应用表随会话一起丢弃");
+        assert_eq!(app.document.current_scene.as_ref().unwrap(), &original);
+        assert_eq!(
+            app.history.undo_len(),
+            0,
+            "回滚不是撤销，历史里不该有这一笔"
+        );
+    }
+
+    /// P1：「应用到场景」把这次 Play 里填过的**几个字段**合并成**恰好一条**历史，
+    /// 并且改动能活过 Stop（快照与编辑文档同时写）。
+    #[test]
+    fn apply_play_edits_commits_one_undo_entry_and_survives_stop() {
+        let mut app = app_with_quad();
+        start_play_with_clean_document(&mut app);
+        for field in ["size", "color"] {
+            let value = if field == "size" { "8,8" } else { "0,1,0,1" };
+            assert_eq!(
+                app.dispatch(EditorCommand::SetComponentField {
+                    entity: SceneEntityId(1),
+                    component: "Quad".to_owned(),
+                    field: field.to_owned(),
+                    value: value.to_owned(),
+                }),
+                CommandResult::Applied
+            );
+        }
+        assert_eq!(app.pending_play_edit_count(), 2);
+
+        assert_eq!(
+            app.dispatch(EditorCommand::ApplyPlayEdits),
+            CommandResult::Applied
+        );
+        assert_eq!(app.history.undo_len(), 1, "两个字段必须合成一条撤销");
+        let applied = app.document.current_scene.as_ref().unwrap().scene.entities
+            [&SceneEntityId(1)]
+            .components["Quad"]
+            .clone();
+        assert!(applied.contains("size=8.000000,8.000000"), "{applied}");
+        assert_ne!(applied, "size=64,32;color=1,1,1,1");
+
+        // 应用过的取值要活过 Stop：Stop 把会话的编辑器快照交回来，那份快照也得是改过的。
+        app.stop();
+        let after_stop = &app.document.current_scene.as_ref().unwrap().scene.entities
+            [&SceneEntityId(1)]
+            .components["Quad"];
+        assert_eq!(after_stop, &applied, "点了 Apply 的字段不该被 Stop 回滚");
+        assert!(
+            app.document.current_scene.as_ref().unwrap().is_dirty(),
+            "Stop 后仍是未保存状态，否则这次改动没人会去存"
+        );
+        assert_eq!(app.dispatch(EditorCommand::Undo), CommandResult::Applied);
+        assert_eq!(
+            &app.document.current_scene.as_ref().unwrap().scene.entities[&SceneEntityId(1)]
+                .components["Quad"],
+            "size=64,32;color=1,1,1,1",
+            "一条 Undo 就要回到 Play 前的取值"
+        );
+    }
+
+    /// P1：运行期生成的实体（镜像里有、编辑文档里没有）在 Apply 时按实体跳过——
+    /// 它们不属于这份场景，写进去等于把一次运行的产物当作者意图。
+    #[test]
+    fn apply_play_edits_skips_entities_that_only_exist_at_runtime() {
+        let mut app = app_with_quad();
+        let original = app.document.current_scene.as_ref().unwrap().clone();
+        let mut session = PlaySession::start(&original);
+        session
+            .runtime_document_mut()
+            .scene
+            .add_entity(SceneEntityId(9), "Spawned", None)
+            .unwrap();
+        session
+            .runtime_document_mut()
+            .scene
+            .entities
+            .get_mut(&SceneEntityId(9))
+            .unwrap()
+            .components
+            .insert("Quad".to_owned(), "size=1,1;color=1,1,1,1".to_owned());
+        app.play_session = Some(session);
+        app.play.set_state_for_test(editor::PlayState::Playing);
+
+        for entity in [SceneEntityId(1), SceneEntityId(9)] {
+            assert_eq!(
+                app.dispatch(EditorCommand::SetComponentField {
+                    entity,
+                    component: "Quad".to_owned(),
+                    field: "size".to_owned(),
+                    value: "8,8".to_owned(),
+                }),
+                CommandResult::Applied
+            );
+        }
+        assert_eq!(app.pending_play_edit_count(), 2);
+
+        assert_eq!(
+            app.dispatch(EditorCommand::ApplyPlayEdits),
+            CommandResult::Applied
+        );
+        assert!(app.status.contains("跳过 1"), "{}", app.status);
+        assert_eq!(app.history.undo_len(), 1);
+        let document = app.document.current_scene.as_ref().unwrap();
+        assert!(
+            !document.scene.entities.contains_key(&SceneEntityId(9)),
+            "运行期生成的实体不能被写进场景"
+        );
+        assert_eq!(
+            document.scene.entities[&SceneEntityId(1)].components["Quad"],
+            "size=8.000000,8.000000;color=1,1,1,1"
+        );
+    }
+
+    /// P1：Play 里的非法取值照样拒绝，而且**一格都不写**（半套运行态修改最难排查）。
+    #[test]
+    fn a_rejected_play_edit_leaves_the_mirror_untouched() {
+        let mut app = app_with_quad();
+        let original = app.document.current_scene.as_ref().unwrap().clone();
+        app.play_session = Some(PlaySession::start(&original));
+        app.play.set_state_for_test(editor::PlayState::Playing);
+        match app.dispatch(EditorCommand::SetComponentFields {
+            entity: SceneEntityId(1),
+            component: "Quad".to_owned(),
+            fields: vec![
+                ("size".to_owned(), "8,8".to_owned()),
+                ("nope".to_owned(), "1".to_owned()),
+            ],
+        }) {
+            CommandResult::Rejected(reason) => assert!(!reason.is_empty(), "{reason}"),
+            other => panic!("expected Rejected, got {other:?}"),
+        }
+        let mirror = app.play_session.as_ref().unwrap().runtime_document();
+        assert_eq!(
+            mirror.scene.entities[&SceneEntityId(1)].components["Quad"],
+            "size=64,32;color=1,1,1,1",
+            "第一个字段合法也不能留下它"
+        );
+        assert_eq!(app.pending_play_edit_count(), 0);
+    }
+
+    /// P1：多选在 Play 里同样可改（逐个写镜像、各自登记），Apply 合并成**一条**历史写回。
+    #[test]
+    fn a_multi_selection_play_edit_applies_as_one_undo() {
+        let mut app = app_with_quad();
+        let (b, c) = (SceneEntityId(2), SceneEntityId(3));
+        {
+            let scene = &mut app.document.current_scene.as_mut().unwrap().scene;
+            for id in [b, c] {
+                scene.add_entity(id, "Peer", None).unwrap();
+            }
+            scene
+                .entities
+                .get_mut(&b)
+                .unwrap()
+                .components
+                .insert("Quad".to_owned(), "size=8,8;color=1,1,1,1".to_owned());
+        }
+        app.selection
+            .set_single(SceneEntityId(1), editor::SelectionSource::Hierarchy);
+        app.selection.add(b, editor::SelectionSource::Hierarchy);
+        app.selection.add(c, editor::SelectionSource::Hierarchy);
+        start_play_with_clean_document(&mut app);
+
+        assert_eq!(
+            app.dispatch(EditorCommand::SetComponentFieldOnSelection {
+                component: "Quad".to_owned(),
+                field: "size".to_owned(),
+                value: "128,64".to_owned(),
+            }),
+            CommandResult::Applied
+        );
+        // c 没有 Quad：不参与、不报错；a/b 各记一条 → 角标 2。
+        assert_eq!(app.pending_play_edit_count(), 2);
+        assert!(app.status.contains("2 个实体"), "{}", app.status);
+
+        assert_eq!(
+            app.dispatch(EditorCommand::ApplyPlayEdits),
+            CommandResult::Applied
+        );
+        assert_eq!(app.history.undo_len(), 1, "多选一次应用 = 一条撤销");
+        let document = app.document.current_scene.as_ref().unwrap();
+        for id in [SceneEntityId(1), b] {
+            assert_eq!(
+                document.scene.entities[&id].components["Quad"],
+                "size=128.000000,64.000000;color=1,1,1,1",
+                "实体 {id:?} 应拿到应用后的取值"
+            );
+        }
+        assert!(!document.scene.entities[&c].components.contains_key("Quad"));
     }
 
     // ---- M27-01：资源引用字段的落点结算 ----

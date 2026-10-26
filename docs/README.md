@@ -113,7 +113,11 @@
 
 ## 版本历史
 
-- [CHANGELOG](../CHANGELOG.md)
+变更记录已从根文件 `CHANGELOG.md` 整体迁到 [`changelog/`](changelog/README.md)（2026-10-25）：
+
+- [变更记录索引](changelog/README.md)：最新条目、版本段与按主题归档的历史段落
+- [最新条目](changelog/最新条目.md)：最近 15 条 `Unreleased` 增量，**新条目写在这里**
+- [版本历史](changelog/版本历史.md)：`v0.0.1-baseline`～`v0.1.1` 全部版本段，`release-notes.ps1` 的取段来源
 
 ## 里程碑记录
 

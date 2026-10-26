@@ -6,11 +6,11 @@ mod ai_host;
 mod command_router;
 mod dnd;
 mod dock;
+/// 外部代码编辑器：诊断的 `file:line` 与脚本文件交给用户自己的编辑器（不内置文本编辑器）。
+mod external_editor;
 mod framegate;
 mod geometry;
 mod gizmo;
-/// P3-E03-2：`.vgraph` 文档（加载/编辑/撤销/原子保存 + 生成 Lua）。
-mod graph_ops;
 mod gui_evidence;
 mod hierarchy_ops;
 mod import;
@@ -23,11 +23,11 @@ mod preview_session;
 mod publish;
 mod runtime_perf;
 mod scene_drag;
-mod scene_interaction;
 mod scene_ops;
 mod scene_resize;
-mod scene_tools;
 mod shader_watch;
+/// 性能面板的 span 时间线：把 `SpanTrace` 的记录画成"泳道 = 深度、横轴 = 时间"的条形。
+mod trace_timeline;
 /// UI Studio 画布：按 spec 画真实内容（样式/文字/图片）与坐标、命中测试。
 mod ui_canvas;
 mod ui_editor;
@@ -49,11 +49,14 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+// 三个纯领域模块已下沉到 `rustlua-editor-core`；在 bin 根上再导出一次，保留
+// `crate::scene_interaction::…` 这类既有路径，避免把拆分变成全仓路径改写。
 use editor::{
     AutoSaveController, Collider3dFields, InspectorState, PlaySession, ProjectDocument,
     ProjectInfo, RecoveryManager, RecoveryScan, ResourceBrowserState, SceneTreeState,
     SelectionModel, TransformFields, check_project, open_project,
 };
+use editor::{graph_ops, scene_interaction, scene_tools};
 use eframe::egui;
 use engine::host::RuntimeScene;
 use rustlua_animation::animation::{AnimationClip, AnimationStateMachine};
@@ -556,6 +559,11 @@ struct EditorApp {
     /// 控制台行索引缓存（按分类/过滤/级别/来源代数失效），配合固定行高虚拟滚动。
     console_rows_cache: crate::panels::console::ConsoleRowCache,
     console_filter: String,
+    /// 外部编辑器试运行：`true` 时只算命令行、不 spawn 进程（`RUSTLUA_EDITOR_DRY_RUN=1`）。
+    ///
+    /// 做成实例字段而不是在读处查环境变量，是因为验收门要在**不弹窗**的前提下断言跳转
+    /// 行为；edition 2024 里测试改全局环境是 `unsafe` 且并发不安全。
+    external_editor_dry_run: bool,
     console_log_level_filter: ConsoleLogLevelFilter,
     /// 控制台左侧分类导航当前选中的日志来源。
     console_tab: ConsoleTab,
@@ -596,6 +604,12 @@ struct EditorApp {
     /// 之前每帧都 `Prefab::load`：读文件 + 解析 + 建 BTreeMap。
     pub(crate) prefab_source_cache:
         std::collections::HashMap<std::path::PathBuf, crate::panels::inspector::CachedPrefabSource>,
+    /// `prefab_source_cache` 的**重载次数**：每次真的重新读盘都 +1。
+    /// M79 P2 的整实例覆盖缓存键带着它，所以"文档一个字没改、磁盘上的源被别人存了"也会让列表失效。
+    pub(crate) prefab_source_generation: u64,
+    /// M79 P2：选中预制体实例时那份**整棵子树**的覆盖列表（缓存键见 actions::prefab_overrides）。
+    /// 只在 shell 里读写，面板经 `prefab_instance_overrides` 取。
+    pub(crate) prefab_override_cache: Option<crate::actions::prefab_overrides::PrefabOverrideCache>,
     project_loaded: bool,
     import_path: String,
     workspace_tab: WorkspaceTab,
@@ -700,6 +714,12 @@ struct EditorApp {
     atlas: crate::panels::atlas::AtlasPanelState,
     /// 分包面板（bundles.json 配置 + 落盘字节预估）：资源 ▸ 分包 ▸ 配置与预览。
     bundles: crate::panels::bundles::BundlePanelState,
+    /// 贴图预览窗（资源面板双击贴图）：全尺寸解码 + 逐像素开关，只读、不写盘。
+    texture_preview: crate::panels::texture_preview::TexturePreviewState,
+    /// 断链检查窗（资源 ▸ 断链检查…）：一次扫描的结果行，改指动作只发命令。
+    broken_refs: crate::panels::broken_refs::BrokenRefsPanelState,
+    /// 跨面板全局 Undo 的账本：只记"下一个该问哪个面板"，撤的动作仍归各面板自己。
+    undo_ledger: crate::actions::undo_ledger::UndoLedger,
     /// 六个工作台面板的显示开关（M27-00 阶段 2 收尾：View 菜单逐项可切）。
     /// 唯一写入口是 [`crate::menu::MenuAction`]，dock 树每帧按这里同步成员关系。
     show_resources_panel: bool,
@@ -919,6 +939,12 @@ struct EditorApp {
     /// 确认窗内「保存并继续」保存失败：保留 pending（文档保持 dirty、不切换），
     /// 弹窗内显示失败原因并允许重试或放弃。
     pending_save_failed: bool,
+    /// M79 P1-4：预制体 in-context 编辑的口袋。
+    ///
+    /// `Some` 时**当前编辑文档是源 `.prefab`**，而发起它的那份场景文档（含未保存改动与
+    /// 它自己的撤销栈）暂存在这里，退出时原样放回。E06 的脏文档闸门只看当前文档，
+    /// 所以换文档保护必须额外读这个字段（见 `actions::document_gate::perform_pending_change`）。
+    prefab_stage: Option<crate::actions::PrefabStage>,
     /// E06：用户已在确认窗里批准关闭（「保存并继续」或「放弃并继续」）。
     /// 我们发的 `ViewportCommand::Close` 会再次触发 `CloseRequested`，而"放弃"路径
     /// 文档仍是 dirty——`guard_close_request` 必须凭此标志放行，否则重新弹窗，
@@ -1354,6 +1380,7 @@ impl EditorApp {
             console_notices: Vec::new(),
             console_rows_cache: Default::default(),
             console_filter: String::new(),
+            external_editor_dry_run: std::env::var_os("RUSTLUA_EDITOR_DRY_RUN").is_some(),
             console_log_level_filter: ConsoleLogLevelFilter::All,
             console_tab: ConsoleTab::Editor,
             inspector: InspectorState::new(),
@@ -1383,6 +1410,8 @@ impl EditorApp {
             autosave: AutoSaveController::new(Duration::from_secs(10)),
             recovery_scan,
             prefab_source_cache: std::collections::HashMap::new(),
+            prefab_source_generation: 0,
+            prefab_override_cache: None,
             project_loaded,
             import_path: String::new(),
             workspace_tab: WorkspaceTab::Scene,
@@ -1426,6 +1455,9 @@ impl EditorApp {
             publish,
             atlas: crate::panels::atlas::AtlasPanelState::new(),
             bundles: crate::panels::bundles::BundlePanelState::new(),
+            texture_preview: crate::panels::texture_preview::TexturePreviewState::new(),
+            broken_refs: crate::panels::broken_refs::BrokenRefsPanelState::new(),
+            undo_ledger: crate::actions::undo_ledger::UndoLedger::default(),
             show_resources_panel: true,
             show_lua_console: true,
             show_hierarchy_panel: true,
@@ -1541,6 +1573,7 @@ impl EditorApp {
             show_plugin_diagnostics: false,
             pending_document_change: None,
             pending_save_failed: false,
+            prefab_stage: None,
             quit_approved: false,
             last_metadata_key: None,
             preview_input_state: InputSnapshot::default(),
@@ -2693,6 +2726,10 @@ impl EditorApp {
     }
 
     pub(crate) fn draw_frame(&mut self, context: &egui::Context) {
+        // M79 P1-2：全局 Undo 的"最近提交在谁那里"每帧刷一次。放在帧首是因为上一帧所有
+        // 面板的绘制（含材质/动画/图会话的提交）都已经结束，本帧的 Ctrl+Z 于是能看到
+        // 真实的先后；签名没变时这里只做几次整数比较（口径见 `actions/undo_ledger.rs`）。
+        self.poll_undo_owners();
         // docs/55 阶段 0：真实窗口证据 / 长会话 soak 的推进点。
         //
         // 放在帧首是刻意的：`set_pixels_per_point` 与 `InnerSize` 都在**下一次 pass** 生效，
@@ -2868,6 +2905,10 @@ impl EditorApp {
         self.draw_publish_panel(context);
         self.draw_atlas_panel(context);
         self.draw_bundle_panel(context);
+        // P1：贴图预览窗（资源面板双击贴图打开，独立窗口、只读）。
+        self.draw_texture_preview(context);
+        // P1：断链检查窗（资源 ▸ 断链检查…；扫描与改指都由 shell 执行）。
+        self.draw_broken_refs_panel(context);
         self.draw_project_settings_panel(context);
         // M19-03：领域数据面板（Lua 校验 / PersistId 注册表）与运行时调试面板
         // （只读探针）都是可开关的独立窗口。

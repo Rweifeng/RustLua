@@ -125,6 +125,32 @@ STRAW = rgb("#C9A05A")
 STRAW_DARK = rgb("#A8813F")
 STRAW_LIGHT = rgb("#E4C078")
 
+# ---------------------------------------------------------------------------
+# 山庄本地色板（P0 闪屏收敛 · 路径 B 隔离）
+#
+# 上面 WOOD / BAMBOO / PLASTER / LEAF / STRAW 等共享常量被 `gen_interior_art`
+# （五栋可建造建筑 + 家具 + 设施）、`gen_village_art`、`gen_wilds_art`、
+# `gen_decor_art` 直接 import 复用，改一个 hex 会把别的场景一起换掉。本轮只重绘山庄
+# 建筑 / 道具，收敛到下面这套 `M_*` 别名里、只在山庄函数内使用；共享常量保持现值不动，
+# 五栋建筑 / 家具 / 村庄 / 山道 / 装饰再生后逐字节不变。目标色值来自
+# `.temp/baseline/splash_palette.md` §B（闪屏受光平涂目检）。
+# ---------------------------------------------------------------------------
+M_PLASTER = rgb("#E3D3B4")        # 暖奶油上墙
+M_PLASTER_DARK = rgb("#C4B498")   # 檐下 / 阴影
+M_WOOD = rgb("#8A6242")           # 暖棕（柱 / 梁 / 门框）
+M_WOOD_LIGHT = rgb("#A87C52")     # 受光边
+M_WOOD_MID = rgb("#6B4A32")       # 裙墙 / 门扇
+# M_WOOD_DARK 仍取 utility wood（墨级深木，描边 / 门缝用，不另起色相）
+M_BAMBOO = rgb("#8CAE6E")         # 竹秆
+M_BAMBOO_LIGHT = rgb("#B8D29A")   # 秆面高光
+M_BAMBOO_DARK = rgb("#4E7046")    # 竹节 / 背边
+M_LEAF_DARK = rgb("#3E5E34")      # 树冠底层
+M_LEAF = rgb("#6E9250")           # 树冠中层
+M_LEAF_LIGHT = rgb("#93B268")     # 冠顶受光团
+M_STRAW = rgb("#D8B458")          # 旧金茅草
+M_STRAW_DARK = rgb("#B8903E")
+M_STRAW_LIGHT = rgb("#E8CC78")
+
 
 # ---------------------------------------------------------------------------
 # 通用小工具
@@ -170,6 +196,30 @@ def lattice_window(canvas, x0, y0, x1, y1, mullion=4):
     for gx in range(x0 + 2, x1 - 1, mullion):
         canvas.vline(gx, y0 + 2, y1 - 2, WOOD_MID)
     canvas.hline(x0 + 2, x1 - 2, (y0 + y1) // 2, WOOD_MID)
+    canvas.hline(x0, x1, y0, edge_light)
+    canvas.hline(x0, x1, y1, edge_dark)
+    canvas.vline(x0, y0, y1, edge_light)
+    canvas.vline(x1, y0, y1, edge_dark)
+
+
+def m_wood_post(canvas, x0, y0, x1, y1):
+    """山庄本地木柱 / 梁：暖棕三档，受光边跟 `lighting.lua` 的 sun（与 `wood_post` 同判据）。"""
+    canvas.rect(x0, y0, x1, y1, M_WOOD_MID)
+    near, far = (M_WOOD_LIGHT, WOOD_DARK) if lit_sides()["left"] else (WOOD_DARK, M_WOOD_LIGHT)
+    canvas.vline(x0, y0, y1, near)
+    canvas.vline(x1, y0, y1, far)
+
+
+def m_lattice_window(canvas, x0, y0, x1, y1, mullion=4):
+    """山庄本地木格窗：暖棕框 + 暖纸 + 棂格；明暗边跟 sun，结构与 `lattice_window` 一致。"""
+    lit = lit_sides()
+    edge_light = M_WOOD_LIGHT if lit["left"] else WOOD_DARK
+    edge_dark = WOOD_DARK if lit["left"] else M_WOOD_LIGHT
+    canvas.rect(x0, y0, x1, y1, M_WOOD_MID)
+    canvas.rect(x0 + 2, y0 + 2, x1 - 2, y1 - 2, PAPER)
+    for gx in range(x0 + 2, x1 - 1, mullion):
+        canvas.vline(gx, y0 + 2, y1 - 2, M_WOOD_MID)
+    canvas.hline(x0 + 2, x1 - 2, (y0 + y1) // 2, M_WOOD_MID)
     canvas.hline(x0, x1, y0, edge_light)
     canvas.hline(x0, x1, y1, edge_dark)
     canvas.vline(x0, y0, y1, edge_light)
@@ -231,12 +281,16 @@ def tiled_roof(canvas, polygon_rows, column=16, palette=None):
 
 
 def building_house():
-    """正房 224×224（7×7 格）：悬山瓦顶 + 白灰墙 + 木格窗 + 板门 + 石台基。"""
+    """正房 224×224（7×7 格）：悬山瓦顶 + 奶油上墙 / 木板裙墙 + 木格窗 + 板门 + 石台基。
+
+    几何包围盒、拆层切点（roof 0..126 / body 127..223）与基线一致；只收敛本地色板与
+    材质层次（闪屏 house.png）：上暖奶油灰泥、下木板裙墙、暖棕柱梁、灯笼金帽红穗。
+    """
     cv = Canvas(224, 224)
-    # --- 屋顶：上窄下宽（檐口出挑）---
+    # --- 屋顶：上窄下宽（檐口出挑）；瓦面仍取锁定 roof 三档 ---
     rows = roof_rows(10, 124, 36, 188, 8, 216)
     tiled_roof(cv, rows)
-    # 正脊 + 鸱吻
+    # 正脊 + 脊端饰块
     cv.rect(30, 6, 194, 20, TILE_RIDGE)
     cv.hline(30, 194, 6, TILE_ROOF_LIGHT)
     cv.hline(30, 194, 20, TILE_ROOF_DARK)
@@ -244,40 +298,45 @@ def building_house():
     cv.rect(190, 2, 202, 20, TILE_ROOF_DARK)
     cv.set(26, 4, TILE_ROOF_LIGHT)
     cv.set(198, 4, TILE_ROOF_LIGHT)
-    # 檐口
+    # 檐口 + 檐底阴影
     cv.rect(6, 118, 217, 126, TILE_ROOF_DARK)
     cv.hline(6, 217, 117, TILE_ROOF_LIGHT)
-    # --- 墙身 ---
-    cv.rect(20, 126, 203, 196, PLASTER)
-    # 檐下阴影
-    cv.rect(20, 126, 203, 134, mix(PLASTER, INK, 0.28))
-    cv.hline(20, 203, 135, mix(PLASTER, INK, 0.14))
-    # 木柱
-    wood_post(cv, 20, 126, 30, 196)
-    wood_post(cv, 96, 126, 106, 196)
-    wood_post(cv, 193, 126, 203, 196)
-    # 窗（木格 + 纸）
+    # --- 墙身：上奶油灰泥（127..176）+ 下木板裙墙（177..196）---
+    cv.rect(20, 127, 203, 176, M_PLASTER)
+    cv.rect(20, 177, 203, 196, M_WOOD_MID)
+    for x in range(26, 203, 8):
+        cv.vline(x, 177, 196, WOOD_DARK)
+    # 檐下阴影（只压在灰泥上墙）
+    cv.rect(20, 127, 203, 134, mix(M_PLASTER, INK, 0.28))
+    cv.hline(20, 203, 135, mix(M_PLASTER, INK, 0.14))
+    # 木柱（本地暖棕）
+    m_wood_post(cv, 20, 127, 30, 196)
+    m_wood_post(cv, 96, 127, 106, 196)
+    m_wood_post(cv, 193, 127, 203, 196)
+    # 窗（本地木格 + 暖纸）
     for wx in (40, 146):
-        lattice_window(cv, wx, 146, wx + 38, 172)
+        m_lattice_window(cv, wx, 146, wx + 38, 172)
     # 门
-    cv.rect(94, 138, 130, 196, WOOD_MID)
+    cv.rect(94, 138, 130, 196, M_WOOD_MID)
     cv.rect(98, 142, 126, 196, WOOD_DARK)
-    cv.vline(112, 142, 196, WOOD)
+    cv.vline(112, 142, 196, M_WOOD)
     cv.set(106, 162, GOLD)
     cv.set(107, 162, GOLD_LIGHT)
     cv.set(118, 162, GOLD)
     cv.set(117, 162, GOLD_LIGHT)
-    cv.hline(94, 130, 138, WOOD)
+    cv.hline(94, 130, 138, M_WOOD)
     # 门楣匾额「山庄」（中文，走 cjk_text 的 GDI+ 栅格化）
     draw_plaque(cv, 84, 122, 140, 138, "山庄", size=12)
-    # 灯笼（门两侧）
+    # 灯笼（门两侧）：金帽 + 红身 + 金座 + 红穗
     for lx in (84, 136):
         cv.vline(lx + 5, 128, 136, WOOD_DARK)
         cv.rect(lx, 136, lx + 11, 150, CINNABAR)
-        cv.hline(lx, lx + 11, 136, GOLD)
+        cv.hline(lx, lx + 11, 136, GOLD_LIGHT)
         cv.hline(lx, lx + 11, 150, GOLD)
-        cv.vline(lx + 5, 151, 154, CINNABAR)
-    # --- 台基与台阶 ---
+        cv.rect(lx + 3, 151, lx + 8, 153, GOLD_LIGHT)
+        cv.vline(lx + 5, 154, 157, CINNABAR)
+        cv.vline(lx + 4, 154, 156, CINNABAR)
+    # --- 台基与台阶（锁定石族，几何不变）---
     cv.rect(12, 196, 211, 207, STONE)
     cv.hline(12, 211, 196, STONE_LIGHT)
     cv.hline(12, 211, 207, STONE_MORTAR)
@@ -295,25 +354,35 @@ def building_house():
 
 
 def building_shed():
-    """柴房 160×128（5×4 格）：茅草顶 + 木板墙 + 柴堆。"""
+    """柴房 160×128（5×4 格）：茅草顶 + 木板墙 + 柴堆 + 石台基。
+
+    几何包围盒、拆层切点（roof 0..68 / body 69..127）与基线一致；茅草换旧金三层色，
+    墙体 / 柴堆换本地暖棕系（闪屏左侧偏厦木构语言）。
+    """
     cv = Canvas(160, 128)
     rows = roof_rows(8, 68, 30, 130, 6, 154)
     for y, x0, x1 in rows:
-        cv.hline(x0, x1, y, STRAW if (y // 3) % 2 == 0 else STRAW_DARK)
+        cv.hline(x0, x1, y, M_STRAW if (y // 3) % 2 == 0 else M_STRAW_DARK)
+    # 竖草茎：列位与基线逐列一致（单列，不并列出第二列——轮廓宽度必须不变）
     for x in range(10, 152, 7):
-        cv.vline(x, 10 + (x % 5), 66, STRAW_DARK)
-    cv.hline(6, 154, 68, STRAW_DARK)
-    # 木板墙
-    cv.rect(24, 72, 136, 112, WOOD_MID)
+        cv.vline(x, 10 + (x % 5), 66, M_STRAW_DARK)
+    cv.hline(6, 154, 68, M_STRAW_DARK)
+    # 檐口锯齿（行 66..68 内，不扩列）
+    for x in range(8, 152, 6):
+        cv.set(x, 67, M_STRAW_DARK)
+    # 木板墙（本地暖棕）
+    cv.rect(24, 72, 136, 112, M_WOOD_MID)
     for x in range(26, 136, 6):
         cv.vline(x, 72, 112, WOOD_DARK)
     cv.rect(60, 76, 100, 112, WOOD_DARK)
     cv.rect(64, 80, 96, 112, shade(WOOD_DARK, 0.82))
-    # 柴堆
+    # 柴堆：木段 + 断面年轮
     for index, y in enumerate(range(96, 112, 5)):
-        cv.rect(104, y, 134, y + 4, WOOD if index % 2 == 0 else WOOD_LIGHT)
+        cv.rect(104, y, 134, y + 4, M_WOOD if index % 2 == 0 else M_WOOD_LIGHT)
         cv.hline(104, 134, y + 4, WOOD_DARK)
-    # 台基
+        cv.set(130, y + 1, M_WOOD_MID)
+        cv.set(131, y + 2, M_WOOD_MID)
+    # 台基（锁定石族）
     cv.rect(18, 112, 142, 121, STONE)
     cv.hline(18, 142, 112, STONE_LIGHT)
     cv.hline(18, 142, 121, STONE_MORTAR)
@@ -341,21 +410,23 @@ def building_gate():
     cv.rect(82, 0, 94, 10, TILE_ROOF_DARK)
     cv.hline(0, 95, 14, TILE_ROOF_DARK)
     cv.hline(0, 95, 15, shade(TILE_ROOF_DARK, 0.8))
-    # 额枋 + 匾额「山庄」（行 16..31，全在通道格 32..63 之外）
-    cv.rect(6, 16, 89, 31, WOOD_MID)
-    cv.hline(6, 89, 16, WOOD_LIGHT)
+    # 额枋 + 匾额「山庄」（行 16..31，全在通道格 32..63 之外；本地暖棕）
+    cv.rect(6, 16, 89, 31, M_WOOD_MID)
+    cv.hline(6, 89, 16, M_WOOD_LIGHT)
     cv.hline(6, 89, 31, WOOD_DARK)
     draw_plaque(cv, 24, 16, 72, 31, "山庄", size=12)
     # 檐内阴影：通道顶上一道，读成"门里面有进深"，只吃掉通道格 12% 的面积
     cv.rect(20, 32, 76, 35, shade(INK, 1.6))
-    # 立柱
-    wood_post(cv, 6, 32, 20, 87)
-    wood_post(cv, 76, 32, 90, 87)
-    # 灯笼挂在两柱内侧（列 22..30 / 66..74，都在通道格 32..63 之外）
+    # 立柱（本地暖棕）
+    m_wood_post(cv, 6, 32, 20, 87)
+    m_wood_post(cv, 76, 32, 90, 87)
+    # 灯笼挂在两柱内侧（列 22..30 / 66..74，都在通道格 32..63 之外）。
+    # 几何沿用基线：灯身 35..46 行，金帽金座只落在基线灯身上下沿；不画基线之外的穗座，
+    # 否则投影接触轮廓与门洞不透明占比都会漂。
     for cx in (22, 66):
         cv.vline(cx + 4, 32, 35, WOOD_DARK)
         cv.rect(cx, 35, cx + 8, 46, CINNABAR)
-        cv.hline(cx, cx + 8, 35, GOLD)
+        cv.hline(cx, cx + 8, 35, GOLD_LIGHT)
         cv.hline(cx, cx + 8, 46, GOLD)
     # 门槛 + 台基（行 84 以下是 y=0 那一格，不是通道格）
     cv.rect(20, 84, 76, 87, STONE_DARK)
@@ -383,29 +454,32 @@ def prop_well():
         cv.vline(x, 23, 35, STONE_MORTAR)
     cv.rect(10, 22, 22, 28, WATER_DEEP)
     cv.hline(10, 22, 23, WATER_LIGHT)
-    # 木架 + 辘轳
-    wood_post(cv, 3, 6, 7, 24)
-    wood_post(cv, 25, 6, 29, 24)
-    cv.rect(3, 6, 29, 10, WOOD)
-    cv.hline(3, 29, 6, WOOD_LIGHT)
-    cv.rect(10, 10, 22, 16, WOOD_MID)
+    # 木架 + 辘轳（本地暖棕；石圈 / 井水保持锁定石族与水族）
+    wood_post(cv, 3, 6, 7, 24, light=M_WOOD_LIGHT, base=M_WOOD_MID, dark=WOOD_DARK)
+    wood_post(cv, 25, 6, 29, 24, light=M_WOOD_LIGHT, base=M_WOOD_MID, dark=WOOD_DARK)
+    cv.rect(3, 6, 29, 10, M_WOOD)
+    cv.hline(3, 29, 6, M_WOOD_LIGHT)
+    cv.rect(10, 10, 22, 16, M_WOOD_MID)
     cv.vline(22, 12, 14, WOOD_DARK)
     # 绳与桶
-    cv.vline(15, 16, 24, WOOD_LIGHT)
-    cv.rect(11, 24, 21, 32, WOOD)
-    cv.hline(11, 21, 24, WOOD_LIGHT)
+    cv.vline(15, 16, 24, M_WOOD_LIGHT)
+    cv.rect(11, 24, 21, 32, M_WOOD)
+    cv.hline(11, 21, 24, M_WOOD_LIGHT)
     cv.hline(11, 21, 28, WOOD_DARK)
     cv.outline(INK)
     return cv
 
 
 def prop_jar():
+    """陶缸 24×30：腰鼓形青灰陶身 + 口沿 + 内水（形状与几何沿用基线，体积层次略补）。"""
     cv = Canvas(24, 30)
     for y in range(6, 28):
         t = (y - 6) / 21.0
         half = 4 + int(round(6 * (1 - abs(t - 0.4) * 1.8)))
         half = max(4, min(9, half))
         cv.hline(12 - half, 12 + half, y, TILE_ROOF)
+        # 背侧暗边只落在基线陶身最右列内，不外扩轮廓
+        cv.set(12 + half - 1, y, TILE_ROOF_DARK)
     cv.rect(4, 4, 20, 8, TILE_ROOF_DARK)
     cv.hline(4, 20, 4, TILE_ROOF_LIGHT)
     cv.rect(7, 8, 17, 10, WATER_DEEP)
@@ -415,30 +489,31 @@ def prop_jar():
 
 
 def prop_haystack():
+    """草垛 36×34：旧金三层色 + 竖亮茎 + 顶竿；几何轮廓沿用基线。"""
     cv = Canvas(36, 34)
     for y in range(6, 32):
         t = (y - 6) / 25.0
         half = int(round(4 + 14 * (1 - (1 - t) ** 2)))
-        cv.hline(18 - half, 18 + half, y, STRAW if (y // 3) % 2 == 0 else STRAW_DARK)
-    cv.vline(18, 0, 10, WOOD_MID)
+        cv.hline(18 - half, 18 + half, y, M_STRAW if (y // 3) % 2 == 0 else M_STRAW_DARK)
+    cv.vline(18, 0, 10, M_WOOD_MID)
     for x in range(6, 32, 5):
-        cv.vline(x, 12, 30, STRAW_LIGHT)
-    cv.hline(2, 34, 32, shade(STRAW_DARK, 0.8))
+        cv.vline(x, 12, 30, M_STRAW_LIGHT)
+    cv.hline(2, 34, 32, shade(M_STRAW_DARK, 0.8))
     cv.outline(INK)
     return cv
 
 
 def prop_rack():
-    """晒谷架 64×46：木架 + 竹席 + 摊晒的谷粒。"""
+    """晒谷架 64×46（box 碰撞）：本地暖棕木架 + 本地竹席 + 摊晒的谷粒；几何沿用基线。"""
     cv = Canvas(64, 46)
     for x in (3, 19, 39, 55):
-        wood_post(cv, x, 14, x + 4, 44)
-    cv.rect(3, 14, 59, 18, WOOD)
-    cv.rect(3, 26, 59, 30, WOOD)
-    cv.rect(2, 6, 62, 26, BAMBOO)
-    cv.hline(2, 62, 6, BAMBOO_LIGHT)
+        wood_post(cv, x, 14, x + 4, 44, light=M_WOOD_LIGHT, base=M_WOOD_MID, dark=WOOD_DARK)
+    cv.rect(3, 14, 59, 18, M_WOOD)
+    cv.rect(3, 26, 59, 30, M_WOOD)
+    cv.rect(2, 6, 62, 26, M_BAMBOO)
+    cv.hline(2, 62, 6, M_BAMBOO_LIGHT)
     for x in range(4, 62, 4):
-        cv.vline(x, 7, 25, BAMBOO_DARK)
+        cv.vline(x, 7, 25, M_BAMBOO_DARK)
     for x in range(5, 60, 3):
         cv.set(x, 12 + (x % 5), GOLD_LIGHT)
         cv.set(x + 1, 18 + (x % 4), GOLD)
@@ -447,63 +522,77 @@ def prop_rack():
 
 
 def prop_sign():
-    """药田木牌 32×42：牌子写「药田」。"""
+    """药田木牌 32×42：本地暖棕立柱 + 「药田」匾；几何沿用基线。"""
     cv = Canvas(32, 42)
-    wood_post(cv, 14, 16, 18, 40)
+    wood_post(cv, 14, 16, 18, 40, light=M_WOOD_LIGHT, base=M_WOOD_MID, dark=WOOD_DARK)
     draw_plaque(cv, 2, 2, 30, 20, "药田", size=11)
     cv.outline(INK)
     return cv
 
 
 def prop_fence():
-    """竹篱 24×64（南北走向的一段）：竖栏 + 三道横档。"""
+    """竹篱 24×64（南北走向一段，box 碰撞）：竖竹桩 + 三道横档；本地竹色，几何沿用基线。"""
     cv = Canvas(24, 64)
-    wood_post(cv, 2, 0, 6, 63, light=BAMBOO_LIGHT, base=BAMBOO, dark=BAMBOO_DARK)
-    wood_post(cv, 18, 0, 22, 63, light=BAMBOO_LIGHT, base=BAMBOO, dark=BAMBOO_DARK)
+    wood_post(cv, 2, 0, 6, 63, light=M_BAMBOO_LIGHT, base=M_BAMBOO, dark=M_BAMBOO_DARK)
+    wood_post(cv, 18, 0, 22, 63, light=M_BAMBOO_LIGHT, base=M_BAMBOO, dark=M_BAMBOO_DARK)
     for y in (10, 30, 50):
-        cv.rect(2, y, 22, y + 3, BAMBOO_LIGHT)
-        cv.hline(2, 22, y + 3, BAMBOO_DARK)
+        cv.rect(2, y, 22, y + 3, M_BAMBOO_LIGHT)
+        cv.hline(2, 22, y + 3, M_BAMBOO_DARK)
     for y in (16, 36, 56):
-        cv.hline(2, 22, y, BAMBOO_DARK)
+        cv.hline(2, 22, y, M_BAMBOO_DARK)
     cv.outline(INK)
     return cv
 
 
 def prop_bamboo():
-    """竹丛 48×76。"""
+    """竹丛 48×76：本地竹色三秆 + 竹节 + 三层色尖长叶；几何轮廓与基线逐点一致。"""
     cv = Canvas(48, 76)
     for x0, top in ((6, 0), (18, 4), (32, 2)):
         x1 = x0 + 6
-        cv.rect(x0, top, x1, 75, BAMBOO)
-        cv.vline(x0, top, 75, BAMBOO_LIGHT)
-        cv.vline(x1, top, 75, BAMBOO_DARK)
+        cv.rect(x0, top, x1, 75, M_BAMBOO)
+        cv.vline(x0, top, 75, M_BAMBOO_LIGHT)
+        cv.vline(x1, top, 75, M_BAMBOO_DARK)
         for y in range(top + 6, 74, 14):
-            cv.hline(x0, x1, y, BAMBOO_DARK)
-            cv.hline(x0, x1, y - 1, BAMBOO_LIGHT)
-    # 竹叶：上部斜向短笔
-    for x, y in ((2, 14), (10, 8), (16, 20), (24, 12), (30, 18), (36, 8), (40, 16), (12, 28), (28, 30)):
-        cv.hline(x, x + 3, y, LEAF_LIGHT)
-        cv.hline(x + 1, x + 4, y + 1, LEAF)
-        cv.set(x + 4, y + 2, LEAF_LIGHT)
+            cv.hline(x0, x1, y, M_BAMBOO_DARK)
+            cv.hline(x0, x1, y - 1, M_BAMBOO_LIGHT)
+    # 竹叶：九组叶位与基线逐点一致（只在基线叶位上换三层色）。叶位全在 30 行以上，
+    # 不进底部 1/4 接触带——接触跨度必须保持基线轮廓，投影半轴
+    # （`jhyt_m72_foreground_occlusion` §⑥）按本体落地行独立复算，轮廓一动影子就红。
+    leaves = (
+        (2, 14, M_LEAF_LIGHT), (10, 8, M_LEAF_LIGHT), (16, 20, M_LEAF),
+        (24, 12, M_LEAF_LIGHT), (30, 18, M_LEAF), (36, 8, M_LEAF_LIGHT),
+        (40, 16, M_LEAF), (12, 28, M_LEAF_DARK), (28, 30, M_LEAF_DARK),
+    )
+    for x, y, tone in leaves:
+        cv.hline(x, x + 3, y, tone)
+        cv.hline(x + 1, x + 4, y + 1, mix(tone, INK, 0.12))
+        cv.set(x + 4, y + 2, tone)
     cv.outline(INK)
     return cv
 
 
 def prop_tree():
-    """老树 64×88：树干 + 三层树冠。"""
+    """老树 64×88：暖棕分叉树干 + 三层团簇树冠；切点 canopy 0..39 / trunk 40..87 不变。"""
     cv = Canvas(64, 88)
-    wood_post(cv, 28, 54, 38, 88, light=WOOD_LIGHT, base=WOOD_MID, dark=WOOD_DARK)
+    # 树干（本地暖棕）+ 基部根脚
+    wood_post(cv, 28, 54, 38, 88, light=M_WOOD_LIGHT, base=M_WOOD_MID, dark=WOOD_DARK)
     cv.rect(24, 84, 42, 87, WOOD_DARK)
-    fill_ellipse(cv, 32, 30, 24, 22, LEAF)
-    fill_ellipse(cv, 15, 44, 14, 12, LEAF)
-    fill_ellipse(cv, 49, 44, 14, 12, LEAF)
-    fill_ellipse(cv, 26, 22, 12, 10, LEAF_LIGHT)
+    # 上斜枝叉（行 40..53，随 trunk 块；落在冠团既有投影内，不新增占地格）
+    cv.rect(29, 44, 32, 54, M_WOOD_MID)
+    cv.rect(35, 44, 38, 54, M_WOOD_MID)
+    # 树冠三层团簇（外轮廓几何沿用基线，只换层次色）
+    fill_ellipse(cv, 32, 30, 24, 22, M_LEAF_DARK)
+    fill_ellipse(cv, 32, 30, 22, 19, M_LEAF)
+    fill_ellipse(cv, 15, 44, 14, 12, M_LEAF)
+    fill_ellipse(cv, 49, 44, 14, 12, M_LEAF)
+    fill_ellipse(cv, 26, 22, 12, 10, M_LEAF_LIGHT)
+    fill_ellipse(cv, 40, 24, 8, 7, M_LEAF_LIGHT)
     rnd = hash_stream(404)
     for _ in range(34):
         x = rnd(64)
         y = rnd(60)
-        if cv.get(x, y)[:3] == LEAF[:3]:
-            cv.set(x, y, LEAF_LIGHT if rnd(2) == 0 else LEAF_DARK)
+        if cv.get(x, y)[:3] == M_LEAF[:3]:
+            cv.set(x, y, M_LEAF_LIGHT if rnd(2) == 0 else M_LEAF_DARK)
     cv.outline(INK)
     return cv
 

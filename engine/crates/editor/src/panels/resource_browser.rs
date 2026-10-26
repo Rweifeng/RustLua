@@ -6,7 +6,7 @@ use editor::{ResourceBrowserState, ResourceEntry, ResourceKind};
 use eframe::egui;
 use rustlua_assets::resource_db::ResourceState;
 use rustlua_render::texture::{TextureAsset, TextureColorSpace};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -20,6 +20,8 @@ struct ResourceOpenRequest {
     graph: Option<PathBuf>,
     /// M76-04：双击 `.ui.json` 打开 UI Studio。
     ui_studio: Option<String>,
+    /// P1：双击贴图打开全尺寸预览窗（只读，见 `panels/texture_preview.rs`）。
+    texture: Option<String>,
 }
 
 impl EditorApp {
@@ -66,6 +68,9 @@ impl EditorApp {
                 }
                 if let Some(document) = open.ui_studio {
                     self.open_ui_studio_resource(&document);
+                }
+                if let Some(relative) = open.texture {
+                    self.open_texture_preview(relative);
                 }
                 self.resource_tree_cache = Some(ResourceTreeCache {
                     filter: self.resources_filter.clone(),
@@ -263,6 +268,33 @@ impl EditorApp {
             self.resource_rename = Some((entry.path.clone(), file_name));
             ui.close();
         }
+        // P0：脚本/文本类资源在编辑器里没有视图，右键唯一该给的是"交给我自己的编辑器"。
+        if crate::external_editor::is_text_source(&entry.path)
+            && ui.button("在外部编辑器打开").clicked()
+        {
+            self.open_resource_externally(&entry.path);
+            ui.close();
+        }
+    }
+
+    /// P0（脚本迭代闭环）：把脚本/文本资源交给**用户自己的**编辑器打开。
+    ///
+    /// 刻意不在编辑器里做文本视图（`docs/55` §2.2：不用自研控件替代成熟库），但"双击
+    /// `.lua` 什么都没发生"也不是答案——把文件连同它的位置交给已经配好 LSP 的编辑器。
+    pub(crate) fn open_resource_externally(&mut self, relative: &Path) {
+        let absolute = self.project.root.join(relative);
+        if !absolute.is_file() {
+            self.status = format!("文件已不在磁盘上：{}", absolute.display());
+            return;
+        }
+        match crate::external_editor::open_in_external_editor(
+            &absolute,
+            None,
+            self.external_editor_dry_run,
+        ) {
+            Ok(plan) => self.status = crate::external_editor::describe(&plan, &absolute, None),
+            Err(error) => self.status = error,
+        }
     }
 
     /// 重命名输入行（只在右键"重命名…"之后出现）。确认时调用 shell 的
@@ -368,6 +400,17 @@ impl EditorApp {
                 if response.double_clicked() && is_ui_json(&entry.path) {
                     open.ui_studio = Some(path_string.clone());
                 }
+                // P1：贴图双击看原图。只在这一条分支挂——贴图属于可拖放家族
+                // （`dnd::referenceable`），下面那条"其它资源"的路永远走不到它，
+                // 两处都写等于留一份不会红的死代码。
+                if response.double_clicked() && entry.kind == ResourceKind::Texture {
+                    open.texture = Some(path_string.clone());
+                }
+                // P0：双击 `.lua`（及其它文本资源）交给外部编辑器——编辑器内没有文本视图，
+                // 但"双击没反应"比"打开了别的程序"更难解释。
+                if response.double_clicked() && entry.kind == ResourceKind::LuaScript {
+                    self.open_resource_externally(&entry.path);
+                }
                 // 行尾控件右对齐。右缘取**可见裁剪框**而不是 available 宽度：dock 的
                 // ScrollArea 会把内容宽度撑到最长那一行（1193 项资源里总有超长文件名），
                 // 贴 available 右缘等于贴到视口之外——第一版就是这么写的，目验时铅笔
@@ -426,6 +469,9 @@ impl EditorApp {
                 }
                 if response.double_clicked() && is_ui_json(&entry.path) {
                     open.ui_studio = Some(path_string.clone());
+                }
+                if response.double_clicked() && entry.kind == ResourceKind::LuaScript {
+                    self.open_resource_externally(&entry.path);
                 }
                 response.context_menu(|ui| {
                     self.draw_resource_context_menu(ui, entry);
@@ -711,8 +757,21 @@ fn draw_status_marker(ui: &mut egui::Ui, marker: &StatusMarker, color: egui::Col
 /// 资源目录树节点：子文件夹（递归）+ 直接文件。
 #[derive(Default)]
 pub(crate) struct ResourceTree {
-    folders: BTreeMap<String, ResourceTree>,
+    /// 子文件夹，**顺序即展示顺序**。用 `Vec` 而不是 `BTreeMap`：根层的「ui 置顶」
+    /// 需要真实生效，而 `BTreeMap` 会按键重排，插入顺序（也就是置顶）会被静默吃掉。
+    folders: Vec<(String, ResourceTree)>,
     files: Vec<ResourceEntry>,
+}
+
+impl ResourceTree {
+    fn folder_mut(&mut self, name: &str) -> &mut ResourceTree {
+        if let Some(index) = self.folders.iter().position(|(n, _)| n == name) {
+            return &mut self.folders[index].1;
+        }
+        self.folders
+            .push((name.to_owned(), ResourceTree::default()));
+        &mut self.folders.last_mut().expect("just pushed").1
+    }
 }
 
 /// 资源目录树缓存：过滤词与资源刷新计数不变时复用上次构建的树，避免大资源
@@ -735,26 +794,27 @@ fn build_resource_tree(entries: &[ResourceEntry]) -> ResourceTree {
                 // 最后一段是文件名。
                 node.files.push(entry.clone());
             } else {
-                node = node.folders.entry(segment.to_owned()).or_default();
+                node = node.folder_mut(segment);
             }
         }
     }
     sort_tree(&mut root);
     // UI 预设是编辑器文档，不是普通资源；置顶，避免被 assets/scenes 的长列表压到折叠区外，
     // 用户误以为“没有显示 .ui.json”。
-    if let Some(ui) = root.folders.remove("ui") {
-        let mut reordered = BTreeMap::new();
-        reordered.insert("ui".to_owned(), ui);
-        reordered.extend(std::mem::take(&mut root.folders));
-        root.folders = reordered;
+    if let Some(index) = root.folders.iter().position(|(name, _)| name == "ui") {
+        // remove/insert 而不是 swap：swap 会把原来排第一的目录甩到 `ui` 的位置，
+        // 破坏其余目录的字典序。
+        let pinned = root.folders.remove(index);
+        root.folders.insert(0, pinned);
     }
     root
 }
 
-/// 递归排序文件（BTreeMap 的文件夹键天然字典序）。
+/// 递归排序：目录按名字典序（根层的 `ui` 随后被置顶覆盖），文件按相对路径序。
 fn sort_tree(node: &mut ResourceTree) {
+    node.folders.sort_by(|a, b| a.0.cmp(&b.0));
     node.files.sort_by_key(|entry| entry.path.clone());
-    for child in node.folders.values_mut() {
+    for (_, child) in &mut node.folders {
         sort_tree(child);
     }
 }
@@ -947,7 +1007,7 @@ fn is_ui_json(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_resource_tree, downscale_rgba, is_ui_json};
+    use super::{ResourceTree, build_resource_tree, downscale_rgba, is_ui_json};
     use crate::EditorApp;
     use editor::{ResourceEntry, ResourceKind, open_project};
     use eframe::egui;
@@ -974,6 +1034,15 @@ mod tests {
             asset_id: None,
             error: None,
         }
+    }
+
+    /// 按名取子目录：`folders` 的顺序就是展示顺序，所以断言顺序要直接读 Vec。
+    fn folder<'a>(tree: &'a ResourceTree, name: &str) -> &'a ResourceTree {
+        tree.folders
+            .iter()
+            .find(|(node, _)| node == name)
+            .map(|(_, node)| node)
+            .unwrap_or_else(|| panic!("目录 {name} 必须出现在资源树里"))
     }
 
     fn unique_suffix() -> u128 {
@@ -1009,15 +1078,45 @@ mod tests {
             entry("assets/player.png", ResourceKind::Texture),
         ];
         let tree = build_resource_tree(&entries);
-        let keys: Vec<&str> = tree.folders.keys().map(String::as_str).collect();
+        let keys: Vec<&str> = tree.folders.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(keys, vec!["ui", "assets"], "UI 预设目录必须置顶");
+    }
+
+    /// 扫描结果的顺序不保证（`ui` 可能排在最后），置顶必须把它换到第一位。
+    #[test]
+    fn ui_folder_is_pinned_even_when_listed_last() {
+        let entries = vec![
+            entry("assets/player.png", ResourceKind::Texture),
+            entry("scenes/main.scene", ResourceKind::Scene),
+            entry("ui/forge.ui.json", ResourceKind::Other),
+        ];
+        let tree = build_resource_tree(&entries);
+        let keys: Vec<&str> = tree.folders.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(keys, vec!["ui", "assets", "scenes"], "置顶必须覆盖字典序");
+    }
+
+    /// 置顶只在根层生效：子目录里的 `ui` 是普通目录，跟着字典序走。
+    #[test]
+    fn ui_pin_applies_only_at_the_root() {
+        let entries = vec![
+            entry("assets/ui/icons.png", ResourceKind::Texture),
+            entry("assets/audio/bgm.ogg", ResourceKind::Audio),
+        ];
+        let tree = build_resource_tree(&entries);
+        let assets = folder(&tree, "assets");
+        let keys: Vec<&str> = assets
+            .folders
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert_eq!(keys, vec!["audio", "ui"]);
     }
 
     #[test]
     fn tree_shows_ui_documents_under_the_ui_folder() {
         let entries = vec![entry("ui/forge.ui.json", ResourceKind::Other)];
         let tree = build_resource_tree(&entries);
-        let ui = tree.folders.get("ui").expect("ui 目录必须出现在资源树里");
+        let ui = folder(&tree, "ui");
         assert_eq!(ui.files.len(), 1);
         assert_eq!(ui.files[0].path_string(), "ui/forge.ui.json");
     }
@@ -1032,19 +1131,14 @@ mod tests {
             entry("assets/sprites/bg.png", ResourceKind::Texture),
         ];
         let tree = build_resource_tree(&entries);
-        // 顶层目录：assets / scenes / scripts。
-        assert_eq!(tree.folders.len(), 3);
-        assert!(tree.folders.contains_key("assets"));
-        assert!(tree.folders.contains_key("scenes"));
-        assert!(tree.folders.contains_key("scripts"));
+        // 顶层目录按字典序：assets / scenes / scripts（没有 ui，置顶不触发）。
+        let keys: Vec<&str> = tree.folders.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(keys, vec!["assets", "scenes", "scripts"]);
         // assets 下：文件排序 + 子目录 sprites。
-        let assets = &tree.folders["assets"];
+        let assets = folder(&tree, "assets");
         assert_eq!(assets.files.len(), 1);
         assert_eq!(assets.files[0].path_string(), "assets/player.png");
-        assert_eq!(assets.folders.len(), 1);
-        assert!(assets.folders.contains_key("sprites"));
-        // sprites 下两个文件按名排序。
-        let sprites = &assets.folders["sprites"];
+        let sprites = folder(assets, "sprites");
         assert_eq!(sprites.files.len(), 2);
         assert_eq!(sprites.files[0].path_string(), "assets/sprites/bg.png");
         assert_eq!(sprites.files[1].path_string(), "assets/sprites/player.png");
@@ -1308,6 +1402,126 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// 第一帧：找出某一行的文字位置，作为合成点击的落点。
+    /// 行宽会随缩略图/状态标记变化，文字起点是稳定锚点（`TextShape.pos` 是文字左上角，
+    /// 所以往右下各偏几像素才落在这一行的矩形里）。
+    fn locate_row_label(app: &mut EditorApp, needle: &str) -> egui::Pos2 {
+        let context = egui::Context::default();
+        let output = context.run(egui::RawInput::default(), |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                app.draw_resource_browser_body(ui);
+            });
+        });
+        for clipped in &output.shapes {
+            if let egui::Shape::Text(text_shape) = &clipped.shape
+                && text_shape.galley.text().contains(needle)
+            {
+                return text_shape.pos + egui::vec2(6.0, 6.0);
+            }
+        }
+        panic!("资源面板没有画出 {needle}");
+    }
+
+    /// 合成 `clicks` 次点击：**共用一个 `Context`，先空跑一帧做布局，每一下单独一帧**。
+    /// 两个坑都是实测出来的：点击计数跨帧累积在 egui 的 memory 里（同帧连发两下不算
+    /// 双击），而第一帧的矩形还没进 hit-test 表（不先空跑一帧，单击会谁都点不到）。
+    fn click_row(app: &mut EditorApp, pos: egui::Pos2, clicks: usize) {
+        let context = egui::Context::default();
+        let mut draw = |context: &egui::Context, raw: egui::RawInput| {
+            let _ = context.run(raw, |context| {
+                egui::CentralPanel::default().show(context, |ui| {
+                    app.draw_resource_browser_body(ui);
+                });
+            });
+        };
+        draw(&context, egui::RawInput::default());
+        for _ in 0..clicks {
+            let button = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            };
+            let raw = egui::RawInput {
+                events: vec![egui::Event::PointerMoved(pos), button(true), button(false)],
+                ..Default::default()
+            };
+            draw(&context, raw);
+        }
+    }
+
+    /// P1：双击贴图行必须开出预览窗——分支挂在"可拖放家族"那一条路上，
+    /// 只测 `open_texture_preview` 本身证不了这一点。
+    /// 文件内容是假的 `b"png"`：窗照样要开，解码失败由预览窗自己报（不在这里断言）。
+    #[test]
+    fn a_double_click_on_a_texture_row_opens_the_preview_window() {
+        let root = temp_project_root("texture-double-click");
+        fs::write(root.join("assets/player.png"), b"png").unwrap();
+        fs::write(root.join("assets/other.png"), b"png").unwrap();
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.refresh_resources();
+        wait_for_resource_entries(&mut app, |app| {
+            app.resources
+                .entries()
+                .iter()
+                .any(|entry| entry.path_string() == "assets/player.png")
+        });
+
+        let pos = locate_row_label(&mut app, "player.png");
+        click_row(&mut app, pos, 2);
+        assert!(app.texture_preview.show, "双击贴图必须开预览窗");
+        assert_eq!(
+            app.texture_preview.relative.as_deref(),
+            Some("assets/player.png"),
+            "窗里必须是被双击的那一张，不是列表里的第一张"
+        );
+
+        // 反面对照 1：单击同一行只选中，不开窗。
+        let mut other = EditorApp::new(open_project(&root).unwrap(), None, LogSink::new(64));
+        other.refresh_resources();
+        wait_for_resource_entries(&mut other, |other| {
+            other
+                .resources
+                .entries()
+                .iter()
+                .any(|entry| entry.path_string() == "assets/player.png")
+        });
+        let pos = locate_row_label(&mut other, "player.png");
+        click_row(&mut other, pos, 1);
+        assert!(!other.texture_preview.show, "单击不该开预览窗");
+        assert_eq!(
+            other.selected_resource,
+            Some(PathBuf::from("assets/player.png")),
+            "单击仍然要走原来的选中语义"
+        );
+
+        // 反面对照 2：非贴图资源双击不得开这个窗。用 `notes.txt`（`Other` 家族）而不是
+        // `.lua`——脚本那条分支会真的去拉外部编辑器，测试里不该有这种副作用。
+        fs::write(root.join("assets/notes.txt"), "hello").unwrap();
+        other.refresh_resources();
+        wait_for_resource_entries(&mut other, |other| {
+            other
+                .resources
+                .entries()
+                .iter()
+                .any(|entry| entry.path_string() == "assets/notes.txt")
+        });
+        let text_pos = locate_row_label(&mut other, "notes.txt");
+        click_row(&mut other, text_pos, 2);
+        // 先证明这一下确实点中了那一行——否则"窗没开"可能只是"什么都没点到"。
+        assert_eq!(
+            other.selected_resource,
+            Some(PathBuf::from("assets/notes.txt")),
+            "对照 2 的点击必须落在 notes.txt 那一行"
+        );
+        assert!(
+            !other.texture_preview.show,
+            "预览窗只认领贴图；`notes.txt` 不是预览目标"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

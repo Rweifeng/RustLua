@@ -383,6 +383,14 @@ impl EditorApp {
                     if ui.button("打开源预制体").clicked() {
                         self.open_scene_resource(std::path::PathBuf::from(&prefab_source));
                     }
+                    // P1-4：in-context 编辑（对标 Unity 的 Prefab Mode）——不打断场景，
+                    // 场景文档连同未保存改动一起暂存在 shell 的 `PrefabStage` 口袋里。
+                    if is_prefab_root
+                        && self.prefab_stage().is_none()
+                        && ui.button("在上下文中编辑").clicked()
+                    {
+                        self.dispatch(editor::EditorCommand::EnterPrefabStage { entity: selected });
+                    }
                     if is_prefab_root && ui.button("写回源并更新实例").clicked() {
                         self.dispatch(editor::EditorCommand::SavePrefabToSource { entity: selected });
                     }
@@ -453,6 +461,98 @@ impl EditorApp {
                                 format!("预制体诊断：{error}"),
                             );
                         }
+                    }
+                }
+                // M79 P2：**整棵实例**的覆盖一览。上面那段是"选中谁看谁"，深层子节点被改过
+                // 就得逐个点开找；这里补上 Unity 在实例根上给的那一眼——按节点路径列出全部
+                // 字段级覆盖，逐条可「回退」，也可一次「逐项还原全部」（一条 Undo、不重建实例）。
+                if self.is_prefab_root(selected) {
+                    match self.prefab_instance_overrides(selected) {
+                        Some(Ok(overrides)) => {
+                            if overrides.rows.is_empty() && overrides.notes.is_empty() {
+                                ui.label("整个实例的覆盖：无");
+                            } else {
+                                let mut revert_row: Option<(SceneEntityId, String)> = None;
+                                let mut focus_entity: Option<SceneEntityId> = None;
+                                let mut revert_all = false;
+                                ui.collapsing(
+                                    format!(
+                                        "整个实例的覆盖（{} 项 / {} 个节点）",
+                                        overrides.rows.len(),
+                                        overrides.entity_count()
+                                    ),
+                                    |ui| {
+                                        for row in &overrides.rows {
+                                            ui.horizontal(|ui| {
+                                                if ui
+                                                    .small_button("回退")
+                                                    .on_hover_text(format!(
+                                                        "把 {}/{} 还原为源取值：{}",
+                                                        row.entity_label, row.field, row.source_value
+                                                    ))
+                                                    .clicked()
+                                                {
+                                                    revert_row =
+                                                        Some((row.entity, row.field.clone()));
+                                                }
+                                                if ui
+                                                    .small_button("选中")
+                                                    .on_hover_text("在层级树里选中这个节点")
+                                                    .clicked()
+                                                {
+                                                    focus_entity = Some(row.entity);
+                                                }
+                                                ui.monospace(&row.entity_label);
+                                                ui.weak("源=");
+                                                ui.monospace(compact_value(&row.source_value));
+                                                ui.weak("实例=");
+                                                ui.monospace(compact_value(&row.instance_value));
+                                            });
+                                        }
+                                        // 还原不了的那部分也要说出来，否则"列表里没有"会被读成"没覆盖"。
+                                        for note in &overrides.notes {
+                                            ui.weak(note.display());
+                                        }
+                                        if !overrides.rows.is_empty()
+                                            && ui
+                                                .button("逐项还原全部字段覆盖")
+                                                .on_hover_text(
+                                                    "一条 Undo 还原上面列出的全部字段覆盖；\
+                                                     不重建实例、实体 id 不变。\n\
+                                                     结构性差异（源里已无对应实体的子节点）不在范围内，\
+                                                     那种请用「还原覆盖」重建。",
+                                                )
+                                                .clicked()
+                                        {
+                                            revert_all = true;
+                                        }
+                                    },
+                                );
+                                if let Some((entity, field)) = revert_row {
+                                    self.dispatch(editor::EditorCommand::RevertPrefabOverride {
+                                        entity,
+                                        field,
+                                    });
+                                }
+                                if let Some(entity) = focus_entity {
+                                    self.dispatch(editor::EditorCommand::SelectEntity { id: entity });
+                                }
+                                if revert_all {
+                                    self.dispatch(
+                                        editor::EditorCommand::RevertAllPrefabFieldOverrides {
+                                            entity: selected,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        Some(Err(error)) => {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(220, 140, 80),
+                                format!("整实例覆盖扫描：{error}"),
+                            );
+                        }
+                        None => {}
                     }
                 }
                 // 运行时切场景不销毁改由实体组件 `Persistent` 表达（Add Component ▸ 玩法）。
@@ -1861,6 +1961,9 @@ impl EditorApp {
             return Ok(());
         }
         let prefab = Prefab::load(path).map_err(|error| format!("无法加载源预制体：{error}"))?;
+        // M79 P2：真的重读了一次磁盘 = 源取值可能变了。整实例覆盖列表的缓存键带着这个计数，
+        // 于是"场景文档一个字没改、源被别的会话（或 in-context 阶段）存了盘"也会让列表失效。
+        self.prefab_source_generation = self.prefab_source_generation.wrapping_add(1);
         self.prefab_source_cache
             .insert(path.to_path_buf(), CachedPrefabSource { stamp, prefab });
         Ok(())
@@ -1989,7 +2092,10 @@ struct PrefabOverrideRow {
 }
 
 /// 由覆盖字段串计算某一侧的原始文本（源或实例）。
-fn prefab_override_side_value(entity: &SceneEntity, field: &str) -> String {
+///
+/// `pub(crate)`：M79 P2 的整实例覆盖聚合（`crate::actions::prefab_overrides`）要用同一个口径
+/// 生成"源 / 实例"两侧显示，避免出现第二份字段读取规则。
+pub(crate) fn prefab_override_side_value(entity: &SceneEntity, field: &str) -> String {
     if field == "name" {
         return entity.name.clone();
     }
@@ -2166,6 +2272,9 @@ pub(crate) fn diff_prefab_entity(source: &SceneEntity, instance: &SceneEntity) -
                 let mut fields = std::collections::BTreeSet::new();
                 for (field, source_field) in &source_data {
                     match instance_data.get(field) {
+                        // 比较的是 `FieldValue`（解析后的类型值），不是文本：`0.600` 与
+                        // `0.600000` 是同一个值。逐字段还原经 `write_builtin` 重排位数，
+                        // 按文本比会把刚还原好的字段永远列成"覆盖"。
                         Some(instance_field) if instance_field == source_field => {}
                         Some(_) => {
                             fields.insert(field.clone());

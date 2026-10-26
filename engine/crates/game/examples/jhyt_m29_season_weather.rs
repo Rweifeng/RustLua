@@ -62,12 +62,24 @@ const NOON: i64 = 720;
 /// 认下（`crops/<crop>/stage_*.png`），从内容缺口转开发产物 → 145 / 21；`docs/48` §2
 /// 的 29 行 crops 一并删除。同批 `assets/art/items/peach.png`（2026-10-21 入库、
 /// 已被 `data/items.lua` 引用）把已引用顶到 1066、总数顶到 1232。
+///
+/// **2026-10-25 门面改日间背景**：`title_menu.prefab` 的底图换成
+/// `assets/art/ui/title/title_bg_pixel_day.png`（已引用 1066 不变：−1 夜间 +1 日间），
+/// 夜间底图 `title_bg_pixel.png` 失去引用 → 内容缺口 21 → 22（`docs/48` §2 补一行）。
+/// **2026-10-25 门面 UI 换肤（去 Logo + 日间竹编按钮）**：`title_menu.prefab` 删除
+/// `Logo` 实体（`ui_title_logo.png` 不再被引用，`skin.lua` 的 `title_logo` key 一并删除）；
+/// 三块按钮贴图从 `ui_menu_btn_wuxia_9s.png` 换成 `ui_menu_btn_day_9s.png`，
+/// hover 从 `ui_menu_btn_wuxia_hover_9s.png` 换成 `ui_menu_btn_day_hover_9s.png`
+/// （`skin.lua` 同步换 path）。净变化：已引用 −3 +2 = −1 → **1065**；内容缺口 +3
+/// （`ui_title_logo.png`、`ui_menu_btn_wuxia_9s.png`、`ui_menu_btn_wuxia_hover_9s.png`）
+/// → **25**（docs/48 §2 决定表登记三行下架）。开发产物 145 不变。
 const EXPECTED_DEV_ARTIFACTS: usize = 145;
-// 内容缺口 21 个是拆层整图/阴影中间件/改色备份（crops 中间帧已归开发产物），理由见上面两条。
-const EXPECTED_CONTENT_ORPHANS: usize = 21;
+// 内容缺口 25 个是拆层整图/阴影中间件/改色备份/下架贴图（crops 中间帧已归开发产物），理由见上面两条。
+const EXPECTED_CONTENT_ORPHANS: usize = 25;
 // 已引用：扫描口径未变，984（2026-10-07）→ 1065 来自 M72 各批产出与新增引用点，
-// 1065 → 1066 来自 2026-10-21 入库的 `assets/art/items/peach.png`（`data/items.lua` 的 icon）。
-const EXPECTED_REFERENCED: usize = 1066;
+// 1065 → 1066 来自 2026-10-21 入库的 `assets/art/items/peach.png`（`data/items.lua` 的 icon），
+// 1066 → 1065 来自 2026-10-25 门面换肤（见上一条注释）。
+const EXPECTED_REFERENCED: usize = 1065;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let project = env::args().nth(1).map(PathBuf::from).unwrap_or_else(|| {
@@ -749,13 +761,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     if !project
-        .join("assets/art/ui/title/title_bg_pixel.png")
+        .join("assets/art/ui/title/title_bg_pixel_day.png")
         .is_file()
     {
-        return Err("缺少像素化标题背景 assets/art/ui/title/title_bg_pixel.png".into());
+        return Err("缺少像素化标题背景 assets/art/ui/title/title_bg_pixel_day.png".into());
     }
     let title_prefab = fs::read_to_string(project.join("assets/prefabs/ui/title_menu.prefab"))?;
-    if !title_prefab.contains("assets/art/ui/title/title_bg_pixel.png") {
+    if !title_prefab.contains("assets/art/ui/title/title_bg_pixel_day.png") {
         return Err("标题预设没有引用像素化背景（门面会缺底图）".into());
     }
     // 开发产物一律不进发行包（引擎规则，assetc 侧另有单测守住同一条规则）。

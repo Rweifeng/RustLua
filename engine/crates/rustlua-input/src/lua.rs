@@ -24,6 +24,17 @@ fn table_vec(lua: &Lua, x: f32, y: f32) -> LuaResult<mlua::Table> {
     Ok(table)
 }
 
+/// `input.text_events` 命令表字段的错误文本：带**字段名**（见注册处注释为什么不能静默忽略）。
+fn text_field_error(field: &str, expects: &str) -> impl FnOnce(mlua::Error) -> mlua::Error {
+    let field = field.to_owned();
+    let expects = expects.to_owned();
+    move |error| {
+        mlua::Error::RuntimeError(format!(
+            "input.text_events 的 {field} 需要{expects}：{error}"
+        ))
+    }
+}
+
 /// Lua `input.is_down/just_pressed/just_released` 的键名解析（M22/W1 起**严格**）。
 ///
 /// 接受三种写法，与设置文件 / 编辑器捕获共用同一套键身份：
@@ -192,6 +203,61 @@ pub fn install(lua: &Lua, host: &HostInput, settings: &Rc<dyn SettingsPort>) -> 
         lua.create_function(move |lua, ()| {
             let p = st.borrow()?.snapshot.scroll_delta();
             table_vec(lua, p.0, p.1)
+        })?,
+    )?;
+    // ---- M79-04：文本/IME 通道 ----------------------------------------------
+    // 一次调用两用：带命令表就先把命令落到本帧快照，然后返回本帧读数。
+    // * `capture`（布尔）= 脚本的**跨帧意图**：宿主每帧读它开/关系统输入法。默认关——
+    //   Windows 上开着输入法会把玩法按键送进组合窗（中文输入法下按 W 不再前进）。
+    // * `composition` / `commit` = **注入**本帧的预编辑串/上屏串，形状与宿主从 winit
+    //   `Ime::Preedit`/`Ime::Commit` 写进来的完全一致：无窗口的自检、以及没有系统输入法
+    //   通道的宿主（Web 的 composition 事件、微信原生输入桥）都走同一个读出口。
+    //   `composition = ""` 表示取消组合（winit 提交前后各发一次空 Preedit 来清屏）。
+    let st = host.state();
+    input.set(
+        "text_events",
+        lua.create_function(move |lua, command: Option<mlua::Table>| {
+            if let Some(command) = command {
+                let mut state = st.borrow_mut()?;
+                // `capture` 严格只认布尔：mlua 的 `bool` 转换是 Lua 的真值语义（任何非
+                // nil/false 都算 true），所以 `capture = "yes"` 这种拼错会**静默变成 true**。
+                // 宁可当场报错，也不要"声明了收字却查不到"的哑故障。
+                match command.get::<mlua::Value>("capture")? {
+                    mlua::Value::Nil => {}
+                    mlua::Value::Boolean(capturing) => state.snapshot.set_text_capture(capturing),
+                    other => {
+                        return Err(mlua::Error::RuntimeError(format!(
+                            "input.text_events 的 capture 需要布尔，收到 {}（nil 表示不改）",
+                            other.type_name()
+                        )));
+                    }
+                }
+                let composition = command
+                    .get::<Option<String>>("composition")
+                    .map_err(text_field_error("composition", "字符串（取消组合给空串）"))?;
+                if let Some(text) = composition {
+                    state.snapshot.set_text_preedit(&text);
+                }
+                let commit = command
+                    .get::<Option<String>>("commit")
+                    .map_err(text_field_error("commit", "字符串"))?;
+                if let Some(text) = commit {
+                    state.snapshot.push_text_commit(&text);
+                }
+            }
+            let state = st.borrow()?;
+            let out = lua.create_table()?;
+            match state.snapshot.text_preedit() {
+                Some(text) => out.set("composition", text.to_owned())?,
+                None => out.set("composition", mlua::Value::Nil)?,
+            }
+            let committed = lua.create_table()?;
+            for (index, text) in state.snapshot.text_commits().iter().enumerate() {
+                committed.set(index + 1, text.clone())?;
+            }
+            out.set("committed", committed)?;
+            out.set("capturing", state.snapshot.text_capture())?;
+            Ok(out)
         })?,
     )?;
     // ---- M20-07：命名动作层 + [input] 设置持久化 ---------------------------

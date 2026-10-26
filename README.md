@@ -1,6 +1,6 @@
 # RustLua
 
-Rust 写的 2D/3D 游戏引擎 + Lua 玩法脚本运行时，配套一个可视化编辑器、一个资源打包器（assetc）、
+Rust 写的游戏引擎 + Lua 玩法脚本运行时，配套一个可视化编辑器、一个资源打包器（assetc）、
 一个 Windows 桌面游戏运行器，以及两个示例工程：完整玩法样板《江湖有田》（`examples/game_jhyt`）
 与引擎 API 活文档（`examples/game_api`）。
 
@@ -98,6 +98,7 @@ advisory DB，默认不进全量门；用 `verify.ps1 -Security` 或 CI 的 `sec
 
 - 项目章程与协作规则：[docs/00-project-charter.md](docs/00-project-charter.md)（含路径换算：历史文档里的旧检出路径等价于当前 `E:\Codex\RustLua`）
 - 全部文档索引与编号约定：[docs/README.md](docs/README.md)
+- 变更记录（能力增量与版本段）：[docs/changelog/](docs/changelog/README.md)——原根文件 `CHANGELOG.md` 已于 2026-10-25 迁入
 - Lua API 参考：[docs/18-lua-api.md](docs/18-lua-api.md)；编辑器指南：[docs/25-editor-guide.md](docs/25-editor-guide.md)
 - 发布包与用户数据目录：[docs/50-发布包与用户数据目录.md](docs/50-发布包与用户数据目录.md)
 - 性能与测试度量（覆盖率/cfg/矩阵/趋势/编译/体积，schema 与命令）：[docs/70-性能与测试度量.md](docs/70-性能与测试度量.md)

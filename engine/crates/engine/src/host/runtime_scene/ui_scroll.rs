@@ -7,8 +7,11 @@
 //!
 //! 裁剪矩形存在 `ui_clip_rects` 而不是写进 `SceneDraw`：渲染层没有 scissor 字段，
 //! 图像按矩形裁 UV、文字按字形过滤（部分重叠的字形整块取舍），三条宿主走同一份网格。
+//!
+//! 第 4 件事（M79）：**视口外条目不进装配**（[`RuntimeScene::scrolled_away_slots`]），
+//! 长列表的每帧代价从"总项数"降到"窗口项数"。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rustlua_ui::ui_interaction::UiRect;
 use rustlua_ui::ui_interaction::UiScroll;
@@ -16,6 +19,9 @@ use rustlua_ui::ui_scene_layout::ResolvedUiNode;
 use rustlua_ui::ui_scroll_view::ScrollView;
 
 use super::RuntimeScene;
+
+/// 滚出视口判定的余量（设计像素）：条目矩形先放大这个数再与裁剪矩形求交。
+const SCROLL_CULL_MARGIN_PX: f32 = 1.0;
 
 impl RuntimeScene {
     /// 在 `ensure_scene_ui_layout` 完成解析后调用：算滚动范围、平移子孙、生成裁剪矩形。
@@ -163,5 +169,41 @@ impl RuntimeScene {
             cursor = self.layout_parent(slot);
         }
         false
+    }
+
+    /// 本帧**完全滚出视口**的场景 UI 槽位（放大 [`SCROLL_CULL_MARGIN_PX`] 后仍不相交）。
+    ///
+    /// 为什么绘制趟已经"交集为空就不写顶点"了还要这一层：早退发生在**装配之后**。
+    /// 进趟之前每条目都要全额付一次：实体遍历、组件克隆（`UiImage`/`UiText` 整份 clone）、
+    /// 贴图重定向查表、状态贴图查名，文字那条更要紧——`prewarm_frame_glyphs` 会把
+    /// 拿到的**每一条**文字都栅格化进图集，滚出视口的 988 项照样栅格化。
+    /// 1000 项列表里只有十几项真的进网格，其余的代价过去每帧都付。
+    ///
+    /// 判据与绘制趟同源（同一份 `ui_layout_rects` ∩ `ui_clip_rects`），但先把条目矩形
+    /// 放大 1 px 再判：边界条目宁可多留进装配（那里绘制趟仍会按真实交集裁），
+    /// 也不许把一个本帧画得出来的条目摘掉——症状会是"滚动时边缘闪一下白"，
+    /// 而那正是最难复现、最难归因的一类红。
+    ///
+    /// 没有滚动容器时返回空集（逐帧行为与今天逐字节一致）。
+    pub(crate) fn scrolled_away_slots(&self) -> BTreeSet<u64> {
+        let mut away = BTreeSet::new();
+        if self.ui_scroll_ranges.is_empty() {
+            return away;
+        }
+        for (slot, node) in &self.ui_layout_rects {
+            let Some(clip) = self.ui_clip_rects.get(slot) else {
+                continue;
+            };
+            let inflated = UiRect::new(
+                node.rect.x - SCROLL_CULL_MARGIN_PX,
+                node.rect.y - SCROLL_CULL_MARGIN_PX,
+                node.rect.w + SCROLL_CULL_MARGIN_PX * 2.0,
+                node.rect.h + SCROLL_CULL_MARGIN_PX * 2.0,
+            );
+            if inflated.intersect(*clip).is_none() {
+                away.insert(*slot);
+            }
+        }
+        away
     }
 }

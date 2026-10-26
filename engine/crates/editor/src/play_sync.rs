@@ -389,7 +389,9 @@ mod tests {
 
         let (rows, ui_rows) = {
             let mirror = app.play_session.as_ref().unwrap().runtime_document();
-            // Hero（编辑文档里那一个声明实体）+ 预设的 18 个节点。
+            // Hero（编辑文档里那一个声明实体）+ 预设的 17 个节点。
+            // 18 → 17 是门面换肤那一批造成的：title_menu.prefab 去掉了 Logo 节点
+            // （UI 布局基线同一处从 18 变 17）。
             let rows = mirror.scene.entities.len();
             let ui_rows = mirror
                 .scene
@@ -403,10 +405,10 @@ mod tests {
                 .count();
             (rows, ui_rows)
         };
-        assert_eq!(rows, 19, "Hero + 预设的 18 个节点");
+        assert_eq!(rows, 18, "Hero + 预设的 17 个节点");
         assert_eq!(
-            ui_rows, 18,
-            "整屏运行期 UI 没被标成 UI 行——Scene 视图会把 18 个框全叠在世界原点"
+            ui_rows, 17,
+            "整屏运行期 UI 没被标成 UI 行——Scene 视图会把 17 个框全叠在世界原点"
         );
 
         let context = egui::Context::default();

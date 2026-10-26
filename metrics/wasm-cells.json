@@ -4,8 +4,8 @@
   "cells": [
     {
       "id": "wasm-default",
-      "cmd": "cargo check -p game_web -p gpu-web-probe -p wasm-lua-spike --target wasm32-unknown-unknown",
-      "packages": ["game_web", "gpu-web-probe", "wasm-lua-spike"],
+      "cmd": "cargo check -p game_web -p gpu-web-probe --target wasm32-unknown-unknown",
+      "packages": ["game_web", "gpu-web-probe"],
       "role": "blocking"
     },
     {

@@ -19,7 +19,10 @@ use super::shader::{ALL_SHADERS, ShaderSource, fnv1a64};
 
 /// 项目里放 shader 覆盖文件的目录名（计划 §6.5）。编辑器监听根、运行时默认路径、
 /// 报错文案都读这一个名字——两边各写一遍 `"shaders"` 是"改了没反应"这类问题的温床。
-pub const SHADER_SOURCE_DIR: &str = "shaders";
+///
+/// 权威定义在 `rustlua-infra::paths`：无 GPU 的编辑器领域层（文件监听）也要读它，
+/// 这里只做再导出，保证调用方路径不变。
+pub use rustlua_infra::paths::SHADER_SOURCE_DIR;
 
 /// `--shader-dir` 之外的开关：环境变量（脚本与 CI 里比参数好注入）。
 pub const SHADER_DIR_ENV: &str = "RUSTLUA_SHADER_DIR";

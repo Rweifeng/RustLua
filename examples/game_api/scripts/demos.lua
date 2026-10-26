@@ -91,10 +91,10 @@ return {
         module = "demo_ui",
         category = "UI",
         title = "Runtime UI",
-        label = "Panel / Grid / Modal / Focus",
-        summary = "动态面板与文本、背包网格、模态层、拖拽、焦点与滚动",
+        label = "Panel / Grid / VList / IME",
+        summary = "动态面板与文本、背包网格、模态层、拖拽、焦点、滚动、虚拟列表、富文本、输入与导航栈",
         modules = { "ui" },
-        steps = 8,
+        steps = 12,
     },
     {
         scene = "ui_test",

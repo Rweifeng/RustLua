@@ -3,6 +3,8 @@ pub mod bundle;
 /// 分包配置与归约（`bundles.json` → 分组 → 计划表）：`assetc` 与编辑器面板共用一份规则。
 pub mod bundle_plan;
 pub mod frame_clock;
+/// 宿主侧脚本热重载的去抖节律与结果文案（编辑器 Play 与桌面 `game` 共用）。
+pub mod hot_reload;
 /// 跨层共享的标识值对象（`AssetId` 等）：类型下沉、实现留在各领域 crate。
 pub mod ids;
 // `logging` 模块**必须两个 target 都在**：渲染器（`rustlua-gpu/src/renderer/passes.rs`）

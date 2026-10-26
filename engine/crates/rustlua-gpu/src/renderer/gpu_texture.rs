@@ -5,6 +5,9 @@
 //! 同一类型、同 crate 的另一个固有 `impl` 块；可见性口径见 `gpu_mesh.rs` 的文件头。
 
 use rustlua_assets::asset_handle::AssetHandle;
+use rustlua_assets::import_settings::{
+    ResourceMeta, TextureFilter, TextureImportSettings, TextureWrap,
+};
 use rustlua_render::frame::{
     ATLAS_TEXTURE_PATH, FONT_ATLAS_TEXTURE_PATH, FontAtlasPixels, WHITE_TEXTURE_PATH,
     font_asset_from_texture_path, is_font_texture_path,
@@ -478,18 +481,29 @@ impl Renderer {
     }
 
     /// 两个公开入口的共用实现：上传 GPU 资源 + 按 `key` 登记/替换槽位，返回槽位号。
+    ///
+    /// 采样设置在这里解析：`key` 就是 `resources.meta` 里的键（工程相对路径），所以"登记过
+    /// nearest 的那张图"无论从哪条路进来（原生磁盘加载、编辑器预览、web 预上传），拿到的都是
+    /// 同一个采样器——不存在"编辑器里看着对、跑起来糊"的两套解析。
     fn register_texture_asset(&mut self, key: &str, asset: &TextureAsset) -> anyhow::Result<u32> {
-        let bind_group = self
-            .upload_texture(asset, key)
+        let settings = self.texture_settings_for(key);
+        let (bind_group, view) = self
+            .upload_texture_with(asset, key, settings)
             .ok_or_else(|| anyhow::anyhow!("贴图 GPU 上传失败（{key}）"))?;
+        let bytes = u64::from(asset.width()) * u64::from(asset.height()) * 4;
         let slot = if let Some(&slot) = self.texture_paths.get(key) {
-            self.textures[slot].bind_group = bind_group;
-            self.textures[slot].bytes = u64::from(asset.width()) * u64::from(asset.height()) * 4;
+            let entry = &mut self.textures[slot];
+            entry.bind_group = bind_group;
+            entry.view = view;
+            entry.bytes = bytes;
+            entry.sampling = settings;
             slot
         } else {
             self.textures.push(LoadedTexture {
                 bind_group,
-                bytes: u64::from(asset.width()) * u64::from(asset.height()) * 4,
+                bytes,
+                view,
+                sampling: settings,
             });
             let slot = self.textures.len() - 1;
             self.texture_paths.insert(key.to_owned(), slot);
@@ -501,16 +515,32 @@ impl Renderer {
             width = asset.width(),
             height = asset.height(),
             slot,
+            filter = settings.filter.token(),
+            wrap = settings.wrap.token(),
             "[render] 2D texture uploaded from memory"
         );
         Ok(slot as u32)
     }
 
+    /// 既有调用点（白纹理、内建图集、材质贴图）保持原样：走默认档 = 今天的全局采样器。
     pub(super) fn upload_texture(
         &self,
         asset: &TextureAsset,
         label: &str,
     ) -> Option<wgpu::BindGroup> {
+        self.upload_texture_with(asset, label, TextureImportSettings::default())
+            .map(|(bind_group, _view)| bind_group)
+    }
+
+    /// 上传一张 2D 贴图并按 `settings` 绑采样器，返回（绑定组，纹理视图）。
+    ///
+    /// 视图要留着：改导入设置时**只重建绑定组**，不重传像素（`reload_texture_settings`）。
+    pub(super) fn upload_texture_with(
+        &self,
+        asset: &TextureAsset,
+        label: &str,
+        settings: TextureImportSettings,
+    ) -> Option<(wgpu::BindGroup, wgpu::TextureView)> {
         let format = match asset.color_space() {
             TextureColorSpace::Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
             TextureColorSpace::Linear => wgpu::TextureFormat::Rgba8Unorm,
@@ -549,6 +579,7 @@ impl Renderer {
             },
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = self.sampler_for(settings);
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(label),
             layout: &self.texture_bind_group_layout,
@@ -559,10 +590,140 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    resource: wgpu::BindingResource::Sampler(sampler),
                 },
             ],
         });
-        Some(bind_group)
+        Some((bind_group, view))
+    }
+
+    /// 设置 → 采样器表下标（表在 `construct.rs` 里按同一序预建）。
+    fn sampler_index(settings: TextureImportSettings) -> usize {
+        settings.filter.index() * TextureWrap::COUNT + settings.wrap.index()
+    }
+
+    #[must_use]
+    pub(crate) fn wgpu_filter_mode(filter: TextureFilter) -> wgpu::FilterMode {
+        match filter {
+            TextureFilter::Nearest => wgpu::FilterMode::Nearest,
+            TextureFilter::Linear => wgpu::FilterMode::Linear,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn wgpu_address_mode(wrap: TextureWrap) -> wgpu::AddressMode {
+        match wrap {
+            TextureWrap::ClampToEdge => wgpu::AddressMode::ClampToEdge,
+            TextureWrap::Repeat => wgpu::AddressMode::Repeat,
+            TextureWrap::MirroredRepeat => wgpu::AddressMode::MirrorRepeat,
+        }
+    }
+
+    /// 这张设置对应的那个预建采样器。
+    #[must_use]
+    pub(super) fn sampler_for(&self, settings: TextureImportSettings) -> &wgpu::Sampler {
+        &self.texture_samplers[Self::sampler_index(settings)]
+    }
+
+    /// 读工程根下的 `resources.meta`（**只读一次盘**）。
+    ///
+    /// 读不到/读坏都不升级成错误：渲染器不该因为一份可选的作者设置打不开游戏，
+    /// 但必须留一条 warn——静默降级成"全默认"会让人以为设置没生效是引擎的 bug。
+    fn ensure_resource_meta(&mut self) {
+        if self.resource_meta_loaded {
+            return;
+        }
+        self.resource_meta_loaded = true;
+        let Some(root) = self.project_root.as_ref() else {
+            return;
+        };
+        match ResourceMeta::open(root) {
+            Ok(meta) => {
+                if !meta.is_empty() {
+                    tracing::info!(
+                        target: "render",
+                        entries = meta.len(),
+                        "[render] 资源元数据段已加载（逐纹理采样设置）"
+                    );
+                }
+                self.resource_meta = Some(meta);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "render",
+                    error = %error,
+                    "[render] 资源元数据段读不了，本进程按默认采样（nearest/clamp）"
+                );
+            }
+        }
+    }
+
+    /// 某张贴图该用哪档采样。没登记过 = 默认档（与引擎今天的全局采样器逐参数一致）。
+    pub fn texture_settings_for(&mut self, key: &str) -> TextureImportSettings {
+        self.ensure_resource_meta();
+        self.resource_meta
+            .as_ref()
+            .map_or_else(TextureImportSettings::default, |meta| {
+                meta.texture_settings(key)
+            })
+    }
+
+    /// **已上传**槽位当前真正绑着的采样设置（门与面板用它自证"设置落到了 GPU 上"）。
+    /// 没上传过该键 → `None`，与"上传了但用默认档"是两件事，不许混。
+    #[must_use]
+    pub fn texture_sampling_of(&self, key: &str) -> Option<TextureImportSettings> {
+        let slot = *self.texture_paths.get(key)?;
+        self.textures.get(slot).map(|entry| entry.sampling)
+    }
+
+    /// 重读 `resources.meta`，把设置变了的**已上传**槽位就地换绑定组，返回换了几张。
+    ///
+    /// 为什么需要它而不是"重启预览"：编辑器里改一张图的滤镜要立刻在 Play 画面上看到，
+    /// 而重传像素等于把整批纹理作废（换设备丢失、下一帧露白）。只重建绑定组的代价是
+    /// 每张一个 `create_bind_group`。
+    ///
+    /// 换过就要 bump `sampling_epoch`：2D 保序合并按 `(texture, sdf, bitmap)` 缓存绑定组，
+    /// 槽位号没变 ⇒ 不含纪元的话会继续用旧绑定组，表现为"改了没反应"。
+    pub fn reload_texture_settings(&mut self) -> usize {
+        self.resource_meta = None;
+        self.resource_meta_loaded = false;
+        let keys: Vec<String> = self.texture_paths.keys().cloned().collect();
+        let mut changed = 0;
+        for key in keys {
+            let settings = self.texture_settings_for(&key);
+            let Some(&slot) = self.texture_paths.get(&key) else {
+                continue;
+            };
+            if self.textures[slot].sampling == settings {
+                continue;
+            }
+            // 先把手上的东西拷出来，避免"读 self.device + 写 self.textures"同时借用 self。
+            let device = self.device.clone();
+            let layout = self.texture_bind_group_layout.clone();
+            let sampler = self.sampler_for(settings).clone();
+            let view = self.textures[slot].view.clone();
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(&format!("rustlua-texture-{key}")),
+                layout: &layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                ],
+            });
+            let entry = &mut self.textures[slot];
+            entry.bind_group = bind_group;
+            entry.sampling = settings;
+            changed += 1;
+        }
+        if changed > 0 {
+            self.sampling_epoch += 1;
+        }
+        changed
     }
 }

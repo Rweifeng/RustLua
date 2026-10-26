@@ -122,10 +122,15 @@ fn next_2d_vertex_capacity(required: u64) -> u64 {
 
 /// A texture uploaded to the GPU and ready to sample. The path index lives in
 /// `Renderer::texture_paths`, so the entry itself only carries the bind group.
+///
+/// `view` + `sampling` 是 M79 P1-3c 加的：换导入设置（滤镜/寻址）要**就地重建绑定组**，
+/// 而重建只需要视图和采样器——没有视图就得重传像素，没有记录当前采样就不知道该不该重建。
 struct LoadedTexture {
     bind_group: wgpu::BindGroup,
     /// RGBA8 像素字节数（显存占用估算；性能面板的「贴图显存」由它汇总）。
     bytes: u64,
+    view: wgpu::TextureView,
+    sampling: rustlua_assets::import_settings::TextureImportSettings,
 }
 
 /// GPU upload state for one per-Text custom font atlas, keyed by namespaced
@@ -644,6 +649,20 @@ pub struct Renderer {
     shadow_view: wgpu::TextureView,
     texture_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// M79 P1-3c：**逐纹理**采样器表（`滤镜 × 寻址` 全组合，构造时一次建好）。
+    ///
+    /// 为什么预建而不是惰性缓存：取采样器的那条路（`upload_texture*`）是 `&self`，
+    /// 往里写要 `&mut self` 或锁；全组合只有 [`TextureFilter::COUNT`] × [`TextureWrap::COUNT`]
+    /// 个、每个几十字节，换来的是"解析采样器"全程不可变、也不随纹理数增长。
+    /// 下标 = `filter.index() * TextureWrap::COUNT + wrap.index()`。
+    texture_samplers: Vec<wgpu::Sampler>,
+    /// 工程根下那份可提交的资源元数据段（`resources.meta`）。`None` = 没登记任何设置。
+    resource_meta: Option<rustlua_assets::import_settings::ResourceMeta>,
+    /// 只读一次盘（每次 `Renderer` 生命周期内）；改设置后由 `reload_texture_settings` 强制重读。
+    resource_meta_loaded: bool,
+    /// 有槽位的绑定组被**就地换掉**过（设置改了）。2D 保序合并的纪元必须含它，
+    /// 否则改设置后同一 `(texture, sdf, bitmap)` 键会继续沿用旧绑定组 = 看不到变化。
+    sampling_epoch: u64,
     vertex_buffer: wgpu::Buffer,
     /// 2D 顶点缓冲扩容次数（诊断/验收用；正常游戏内应保持很小的值）。
     vertex_buffer_growths: u64,

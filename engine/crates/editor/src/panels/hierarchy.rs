@@ -450,6 +450,8 @@ impl EditorApp {
                 });
             });
         });
+        // P1-4：预制体 in-context 编辑横幅（阶段里树显示的是**源**，不是场景）。
+        self.draw_prefab_stage_banner(ui);
         // 场景切换下拉：列出 scenes/ 目录全部场景文件。
         let scene_files = self.scene_files();
         let current_path = self
@@ -732,6 +734,42 @@ impl EditorApp {
                 self.collect_visible_rows(document, &children, index, depth + 1, out);
             }
         }
+    }
+
+    /// P1-4：预制体 in-context 编辑横幅。
+    ///
+    /// 阶段里这份树显示的是**源预制体**（不是场景），所以必须明确告诉用户"你现在改的是
+    /// 源，返回时同步 N 个实例"——否则很容易改完就去找场景、以为改动丢了。
+    /// 面板只读 `prefab_stage_banner()` 的事实并发 typed action，退出路径的实现体在
+    /// shell（`crate::actions::prefab_stage`）。
+    pub(crate) fn draw_prefab_stage_banner(&mut self, ui: &mut egui::Ui) {
+        // 先拷成拥有值的字符串：`prefab_stage_banner()` 借用了 self，
+        // 下面每个按钮都要 `&mut self`。
+        let Some((source, instances)) = self.prefab_stage_banner().map(|(s, n)| (s.to_owned(), n))
+        else {
+            return;
+        };
+        let unsaved = self.prefab_stage_unsaved();
+        ui.horizontal(|ui| {
+            ui.colored_label(egui::Color32::from_rgb(120, 200, 255), "预制体编辑中");
+            ui.label(format!("{source}｜返回时同步 {instances} 个实例"));
+        });
+        ui.horizontal(|ui| {
+            if ui
+                .button(if unsaved {
+                    "保存并返回 ●"
+                } else {
+                    "保存并返回"
+                })
+                .clicked()
+            {
+                self.dispatch(editor::EditorCommand::ExitPrefabStage { save: true });
+            }
+            if ui.button("放弃并返回").clicked() {
+                self.dispatch(editor::EditorCommand::ExitPrefabStage { save: false });
+            }
+        });
+        ui.separator();
     }
 
     /// H02：进入行内重命名（F2 / 双击 / 菜单）。
@@ -1089,6 +1127,16 @@ impl EditorApp {
             self.create_prefab_from_selected();
             ui.close();
         }
+        // M79 P1-4：根实例才有「进入预制体编辑」。已经在阶段里时不画这一项：
+        // 阶段文档不是场景，它的实体上没有 `prefab.root`，但把入口摆出来只会让人以为能套两层。
+        if self.prefab_stage().is_none()
+            && self.is_prefab_root(id)
+            && ui.button("编辑预制体").clicked()
+        {
+            self.selection.set_single(id, SelectionSource::Hierarchy);
+            self.dispatch(editor::EditorCommand::EnterPrefabStage { entity: id });
+            ui.close();
+        }
         if ui.button("重新应用预制体").clicked() {
             self.selection.set_single(id, SelectionSource::Hierarchy);
             // typed action：目标显式携带（菜单不再依赖"先改选区"这个隐藏前提）。
@@ -1345,8 +1393,17 @@ impl EditorApp {
                         let name_response =
                             ui.add_enabled(!locked, egui::Button::selectable(selected, text));
                         // H02：双击进入行内重命名。
+                        // P1-4：预制体**根实例**的双击改道给 in-context 编辑（Unity 同手势），
+                        // 根实例改名因此只剩 F2 与右键菜单——代价已写进 docs/25 §23。
                         if name_response.double_clicked() {
-                            self.begin_hierarchy_rename(id);
+                            if self.is_prefab_root(id) && self.prefab_stage().is_none() {
+                                self.selection.set_single(id, SelectionSource::Hierarchy);
+                                self.dispatch(editor::EditorCommand::EnterPrefabStage {
+                                    entity: id,
+                                });
+                            } else {
+                                self.begin_hierarchy_rename(id);
+                            }
                         }
                         // H03：Ctrl/Cmd 加减选，Shift 范围选，普通点击单选。
                         if name_response.clicked() {

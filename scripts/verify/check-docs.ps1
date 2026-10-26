@@ -132,9 +132,14 @@ $legacyAllow = @(
 )
 $scanTargets = New-Object System.Collections.Generic.List[string]
 foreach ($doc in $allDocs) { $scanTargets.Add($doc) }
-foreach ($extra in @("engine\README.md", "tasks\README.md", "CHANGELOG.md")) {
+foreach ($extra in @("engine\README.md", "tasks\README.md")) {
     $p = Join-Path $repoRoot $extra
     if (Test-Path $p) { $scanTargets.Add($p) }
+}
+# 变更记录已从根文件 `CHANGELOG.md` 整体迁到 `docs/changelog/`。该子目录不在 ①②③⑤ 的扫描面里
+# （子目录没有 NN- 编号与索引要求），但历史路径这一项必须继续覆盖它，否则迁移等于给旧路径放行。
+foreach ($f in Get-ChildItem (Join-Path $repoRoot "docs\changelog") -Filter *.md -File -ErrorAction SilentlyContinue) {
+    $scanTargets.Add($f.FullName)
 }
 foreach ($suffix in @("*.rs", "*.lua")) {
     foreach ($f in Get-ChildItem (Join-Path $repoRoot "engine\crates") -Recurse -Filter $suffix -File) {

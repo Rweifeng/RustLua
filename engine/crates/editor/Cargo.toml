@@ -31,6 +31,8 @@ rustlua-audio = { path = "../rustlua-audio" }
 rustlua-camera = { path = "../rustlua-camera" }
 rustlua-ecs = { path = "../rustlua-ecs" }
 rustlua-editor-ai = { workspace = true, optional = true }
+rustlua-editor-core.workspace = true
+rustlua-editor-ui-studio.workspace = true
 rustlua-gameplay = { path = "../rustlua-gameplay" }
 rustlua-gpu.workspace = true
 # `bundle-write`：分包面板要在编辑器里**按发布同款编码器**预估每组的落盘字节

@@ -112,7 +112,6 @@ const PROBES: &[Probe] = &[
     entity_probe("bg/night", "BgNight", Kind::Image),
     entity_probe("bg/vignette", "BgVignette", Kind::Image),
     entity_probe("ink/band", "InkBand", Kind::Image),
-    entity_probe("logo", "Logo", Kind::Image),
     entity_probe("lantern/left", "LanternL", Kind::Image),
     entity_probe("lantern/right", "LanternR", Kind::Image),
     entity_probe("btn/BtnStart", "BtnStart", Kind::Image),
@@ -146,12 +145,11 @@ const PROBES: &[Probe] = &[
     dynamic_probe("hint", "title:hint", Kind::Text),
 ];
 
-/// ② 的 `authored` 行顺序 = 这 17 个实体名（门面上带版面数据的全部节点）。
+/// ② 的 `authored` 行顺序 = 这 16 个实体名（门面上带版面数据的全部节点）。
 const NODES: &[&str] = &[
     "BgNight",
     "BgVignette",
     "InkBand",
-    "Logo",
     "LanternL",
     "LanternR",
     "BtnStart",
@@ -435,7 +433,7 @@ fn compare_golden(dump: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 // ---------- ② authored 组件读数 ----------
 
-/// 一次借用把 17 个节点的组件读全（`entity.find` 走的是全局名表，场景与 spawn 实例同源）。
+/// 一次借用把 16 个节点的组件读全（`entity.find` 走的是全局名表，场景与 spawn 实例同源）。
 fn read_nodes(
     runtime: &mut RuntimeScene,
 ) -> Result<BTreeMap<&'static str, Node>, Box<dyn std::error::Error>> {
@@ -479,7 +477,7 @@ fn read_nodes(
     });
     if read.len() != NODES.len() {
         return Err(format!(
-            "17 个门面节点只查到 {} 个（{} 个名字在活世界里查不到）",
+            "16 个门面节点只查到 {} 个（{} 个名字在活世界里查不到）",
             read.len(),
             NODES.len() - read.len()
         )
@@ -635,30 +633,28 @@ const WHITE_ROLE: &str = "<内置白图>";
 /// 决定性的：M63b 搬家时这条序是反的（预设整批最后画 ⇒ 背景把脚本的高亮/hover 全埋掉），
 /// 修它=这次把 `push_scene_ui_images` 挪到 `push_ui_*` 之前。
 const ORDER_GOLDEN: &[&str] = &[
-    "title_bg_pixel.png",
+    "title_bg_pixel_day.png",
     "ui_menu_vignette.png",
     "ui_menu_ink_band.png",
-    "ui_title_logo.png",
     "ui_menu_lantern.png",
-    "ui_menu_btn_wuxia_9s.png",
+    "ui_menu_btn_day_9s.png",
     "ui_menu_panel_scroll_9s.png",
     WHITE_ROLE,
-    "ui_menu_btn_wuxia_hover_9s.png",
+    "ui_menu_btn_day_hover_9s.png",
     FONT_SEGMENT,
 ];
 
 /// 门面上要点名的角色（末段名），逐个报它在提交序列里的区间。
 const ORDER_ROLES: &[&str] = &[
     WHITE_ROLE,
-    "ui_menu_btn_wuxia_hover_9s.png",
+    "ui_menu_btn_day_hover_9s.png",
     "ui_menu_divider_bamboo.png",
     "ui_menu_ornament_corner.png",
     "ui_menu_seal_jianghu.png",
-    "title_bg_pixel.png",
+    "title_bg_pixel_day.png",
     "ui_menu_vignette.png",
-    "ui_title_logo.png",
     "ui_menu_lantern.png",
-    "ui_menu_btn_wuxia_9s.png",
+    "ui_menu_btn_day_9s.png",
     "ui_menu_panel_scroll_9s.png",
 ];
 

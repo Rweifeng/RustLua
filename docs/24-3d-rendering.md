@@ -444,7 +444,7 @@ PBR 变体额外使用顶点缓冲槽 1 传逐实例法线矩阵（4×`vec4<f32>
   （两条路径不许读不同的源），但不每帧轮询——改完文件要重 Play 才进预览（刻意的取舍：预览线程不该带文件 IO 节奏）。
 - **Web/release 无入口**：`shader_library`、`shader_reload`、`renderer::shader_hot_reload` 三个模块
   与渲染器的覆盖字段都是 `#[cfg(not(target_arch = "wasm32"))]`；wasm 目标只有内置源，
-  `cargo check -p game_web -p gpu-web-probe -p wasm-lua-spike --target wasm32-unknown-unknown` 是这条门的形状证明。
+  `cargo check -p game_web -p gpu-web-probe --target wasm32-unknown-unknown` 是这条门的形状证明。
 - **不在范围内**：`renderer/compute.rs` 的计算管线由设备创建时编译，覆盖目录不影响它（§3.12）。
 - **验收**：`cargo test -p engine --lib shader`（50 条）、`cargo test -p editor`（bin 422 条 / lib 190 条，
   含 8 条 `shader_watch`）、`cargo test -p game`（24 条）、`cargo run -p engine --example wp0_shader_hot_reload`

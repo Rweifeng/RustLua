@@ -14,8 +14,9 @@ use rustlua_input::input::{InputSnapshot, MouseButton};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
-    event::{ElementState, WindowEvent},
+    event::{ElementState, Ime, WindowEvent},
     event_loop::ActiveEventLoop,
+    keyboard::ModifiersState,
     window::{Icon, Window, WindowId},
 };
 
@@ -32,6 +33,18 @@ pub struct GameApp {
     occluded: bool,
     time_step: FixedTimeStep,
     input: InputSnapshot,
+    /// 上一次真正下发给窗口的输入法开关（M79-04）。
+    ///
+    /// 只在**变化**时调用 `set_ime_allowed`：Windows 那侧每帧重复下发会打断正在进行的
+    /// 组合（打一半的拼音消失），而 `ime_allowed` 默认是 `false`——不主动开就只有
+    /// 键盘 Unicode 字符，中文输入法拿不到。
+    ime_allowed: bool,
+    /// 最近一次 `WindowEvent::ModifiersChanged` 的修饰键状态（M79-04）。
+    ///
+    /// winit 0.30.13 把修饰键从 `KeyEvent` 里**移走了**（六个字段里没有 `modifiers`），
+    /// 只在独立的 `ModifiersChanged` 事件里下发，所以收字时要自己留一份——Ctrl+A 是否
+    /// 「全选命令」只能这么判。
+    modifiers: ModifiersState,
     last_frame: Instant,
     performance: PerformanceStats,
     /// 调试 overlay（帧率/耗时文本）是否绘制。**默认关闭**：发布包不应带开发者
@@ -68,6 +81,18 @@ pub struct GameApp {
     shader_reload_due: Option<Instant>,
     /// 已经打过的重载失败文本：同一条坏源每 150ms 重复报一次会把日志刷废。
     shader_error_shown: Option<String>,
+    /// P0（脚本迭代闭环）：Lua 磁盘检查的去抖节律（节律与文案与编辑器 Play 共用
+    /// [`rustlua_infra::hot_reload`]，两条宿主不再各写一套）。
+    script_cadence: rustlua_infra::hot_reload::ReloadCadence,
+    /// 工程脚本目录；`None` = **不轮询**（发布包 / 无工程根 / 项目里没有脚本层）。
+    scripts_dir: Option<PathBuf>,
+    /// 已经打过的脚本重载结果文本：同一条报错每 250ms 重复一次会把日志刷废。
+    script_note_shown: Option<String>,
+    /// 设计分辨率（`project.toml` 的 `window_width`/`window_height`，缺省 1280×720）。
+    /// B 阶段（contain 等比适配）：运行期的**逻辑屏幕空间**固定为设计分辨率——
+    /// 场景/UI 顶点、2D 相机与声明视口全按它烘焙，渲染器再 `contain_rect` 到窗口
+    /// （黑边居中）。区别于窗口物理尺寸（`renderer.config` / `inner_size`）。
+    design_size: (u32, u32),
 }
 
 impl GameApp {
@@ -82,6 +107,16 @@ impl GameApp {
         deferred_verify: bool,
         frame_profile_path: Option<PathBuf>,
     ) -> Self {
+        // P0（脚本迭代闭环）：开发期才轮询磁盘 Lua。发布包（`--pack`）不轮询——包内脚本
+        // 来自 bundle，改盘上的 `scripts/` 不该改变发行产物；没有脚本目录的工程则一次都不查。
+        let scripts_dir = if packaged {
+            None
+        } else {
+            project_root
+                .as_deref()
+                .map(|root| root.join("scripts"))
+                .filter(|dir| dir.is_dir())
+        };
         Self {
             window: None,
             renderer: None,
@@ -89,6 +124,8 @@ impl GameApp {
             occluded: false,
             time_step: FixedTimeStep::new(60, 8).expect("valid fixed timestep"),
             input: InputSnapshot::default(),
+            ime_allowed: false,
+            modifiers: ModifiersState::empty(),
             last_frame: Instant::now(),
             performance: PerformanceStats::new(),
             // 发布默认不带帧率 overlay（F3 可手动开启，见字段注释）。
@@ -114,6 +151,10 @@ impl GameApp {
             shader_dir: None,
             shader_reload_due: None,
             shader_error_shown: None,
+            script_cadence: rustlua_infra::hot_reload::ReloadCadence::script_default(),
+            scripts_dir,
+            script_note_shown: None,
+            design_size: rustlua_infra::project_config::DEFAULT_WINDOW_SIZE,
         }
     }
 
@@ -294,6 +335,28 @@ impl GameApp {
         }
     }
 
+    /// 把脚本的收字声明（`input.text_events{ capture = true }`）下发给窗口。
+    ///
+    /// * 读的是 `RuntimeScene`（脚本写的那份共享状态），不是宿主自己的快照：写这个位的
+    ///   是 Lua，宿主那份只负责往里放 winit 送来的文本事件。
+    /// * **只在变化时调用** `set_ime_allowed`：每帧重复下发会让 Windows 输入法重置组合，
+    ///   打一半的拼音直接消失。
+    /// * 没有 `RuntimeScene`（初始化失败/未启动）时按"不收字"处理，输入法保持交还系统。
+    fn sync_ime_allowed(&mut self) {
+        let wanted = self
+            .runtime_scene
+            .as_ref()
+            .is_some_and(RuntimeScene::text_capture_requested);
+        if wanted == self.ime_allowed {
+            return;
+        }
+        self.ime_allowed = wanted;
+        if let Some(window) = self.window.as_ref() {
+            window.set_ime_allowed(wanted);
+            tracing::debug!(target: "game", "[input] ime_allowed={wanted}");
+        }
+    }
+
     fn run_simulation_steps(
         &mut self,
         steps: u32,
@@ -425,6 +488,46 @@ impl GameApp {
         }
     }
 
+    /// P0（脚本迭代闭环）：每帧的 Lua 磁盘检查（去抖 250ms；没工程根/发布包/无脚本目录时
+    /// 是一次 `None` 判断，常态零成本）。节律与文案与编辑器 Play 共用
+    /// [`rustlua_infra::hot_reload`]。
+    ///
+    /// 引擎侧保证**失败保旧 VM**（`reload_if_changed` 先立候选、后破旧状态），所以这里只把
+    /// 结果写进日志：独立 runner 的可见通道是日志与退出码，F3 overlay 是帧率读数、不该被
+    /// 借来传脚本状态。同一条结果文本只打一次——否则 250ms 一次的重复刷屏会把真实线索挤掉。
+    fn poll_script_hot_reload(&mut self, frame_elapsed: std::time::Duration) {
+        if self.scripts_dir.is_none() || !self.script_cadence.advance(frame_elapsed) {
+            return;
+        }
+        let Some(runtime) = self.runtime_scene.as_mut() else {
+            return;
+        };
+        let (note, failed) = match runtime.reload_scripts() {
+            Ok((status, entity_files)) => (
+                rustlua_infra::hot_reload::script_reload_note(status.is_reloaded(), entity_files),
+                false,
+            ),
+            Err(error) => (
+                Some(rustlua_infra::hot_reload::script_reload_failure_note(
+                    &error.to_string(),
+                )),
+                true,
+            ),
+        };
+        let Some(note) = note else {
+            return;
+        };
+        if self.script_note_shown.as_deref() == Some(note.as_str()) {
+            return;
+        }
+        self.script_note_shown = Some(note.clone());
+        if failed {
+            tracing::error!(target: "game", "[script] {note}");
+        } else {
+            tracing::info!(target: "game", "[script] {note}");
+        }
+    }
+
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
         self.poll_shader_hot_reload();
         if self.lifecycle == AppLifecycle::Initializing && self.splash.is_some() {
@@ -473,6 +576,9 @@ impl GameApp {
         self.performance.reset_lua_sample();
         let elapsed = self.last_frame.elapsed().as_secs_f64();
         self.last_frame = Instant::now();
+        // P0（脚本迭代闭环）：先查磁盘 Lua 再跑本帧固定步——重载成功的那份脚本立刻参与
+        // 这一帧的 `update()`，用户感到的延迟只剩一次去抖。
+        self.poll_script_hot_reload(std::time::Duration::from_secs_f64(elapsed));
         let report = self.time_step.advance(elapsed);
         if report.dropped_steps > 0 {
             tracing::warn!(target: "engine", "[time] dropped catch-up steps: dropped={} total_dropped={} accumulator={:.6}s", report.dropped_steps, report.total_dropped_steps, report.accumulator_seconds);
@@ -480,6 +586,8 @@ impl GameApp {
         if report.steps > 0 && report.total_steps % 60 < u64::from(report.steps) {
             tracing::info!(target: "engine", "[time] fixed-step stats: steps={} dt={:.6}s accumulator={:.6}s total_steps={} total_dropped={}", report.steps, report.delta_seconds, report.accumulator_seconds, report.total_steps, report.total_dropped_steps);
         }
+        // M79-04：脚本的收字声明要变成窗口级的输入法开关，本帧生效、只在下发变化时动它。
+        self.sync_ime_allowed();
         self.run_simulation_steps(report.steps, report.delta_seconds, event_loop);
         if self.lifecycle != AppLifecycle::Running {
             return;
@@ -496,9 +604,13 @@ impl GameApp {
         let snapshot = self.performance.snapshot();
         // 先在不借用 `self.runtime_scene` 的作用域里取回结果，再处理失败——
         // 失败处理需要 `&mut self`（记录失败态并退出），不能在借用期间调用。
+        // B 阶段：逻辑屏幕空间 = 设计分辨率（`self.design_size`），与窗口物理尺寸解耦。
+        // 场景/UI 顶点按设计分辨率烘焙成 NDC，渲染器再按声明视口 `contain_rect` 到
+        // surface（等比居中 + 黑边）。窗口任意尺寸/最大化都保持 16:9 完整画面。
+        let (design_w, design_h) = self.design_size;
         let mesh_result: Result<SceneMesh, String> = match self.runtime_scene.as_mut() {
             Some(scene) => scene
-                .vertices(renderer.config.width, renderer.config.height)
+                .vertices(design_w, design_h)
                 .map_err(|error| error.to_string()),
             None => Ok(SceneMesh {
                 vertices: Vec::new(),
@@ -524,7 +636,7 @@ impl GameApp {
             }
         };
         if self.overlay_enabled {
-            let overlay = build_overlay(snapshot, renderer.config.width, renderer.config.height);
+            let overlay = build_overlay(snapshot, design_w, design_h);
             if !overlay.ranges.is_empty() {
                 let base = mesh.vertices.len() as u32;
                 let atlas_texture = mesh.paths.len() as u32 + 1;
@@ -550,14 +662,12 @@ impl GameApp {
             }
         }
         // 拆分批 7：视口（而不是一个裸比例）是宽高比的唯一来源；`scene_3d` 不再改写相机载荷。
-        let viewport = Viewport::new(
-            renderer.config.width.max(1) as f32,
-            renderer.config.height.max(1) as f32,
-        )
-        .unwrap_or(Viewport {
-            width: 1.0,
-            height: 1.0,
-        });
+        // B 阶段：视口声明 = 设计分辨率 → 渲染器 `apply_declared_viewport` 等比 contain 到 surface。
+        let viewport =
+            Viewport::new(design_w.max(1) as f32, design_h.max(1) as f32).unwrap_or(Viewport {
+                width: 1.0,
+                height: 1.0,
+            });
         let scene3d = self
             .runtime_scene
             .as_ref()
@@ -566,7 +676,7 @@ impl GameApp {
         // 渲染器不再自己写死。2D 视图与上面 `vertices()` 用的是同一个 `RuntimeScene` 相机，
         // 因此"取景"和"清屏/视口"不会各说一套。
         if let Some(scene) = self.runtime_scene.as_ref() {
-            let overlay = scene.render_view_2d(renderer.config.width, renderer.config.height);
+            let overlay = scene.render_view_2d(design_w, design_h);
             // 3D 主视图直接用**提取时烘焙好的那一份**（拆分批 7）：再调一次 `main_3d`
             // 等于把同一个视口烘焙两遍，还多一个"两次烘焙会不会不一致"的问题。
             let main = scene3d.as_ref().map(|scene3d| scene3d.view);
@@ -575,9 +685,7 @@ impl GameApp {
                 overlay: Some(overlay),
             });
             // WP6：世界 Sprite 深度通道打开时把 2D 相机的矩阵喂给渲染器（关闭时为 None）。
-            if let Some(view_projection) =
-                scene.sprite_view_projection(renderer.config.width, renderer.config.height)
-            {
+            if let Some(view_projection) = scene.sprite_view_projection(design_w, design_h) {
                 renderer.set_world_sprite_camera(view_projection);
             }
         }
@@ -616,6 +724,24 @@ fn icon_rgba(root: Option<&std::path::Path>, side: u32) -> image::RgbaImage {
 /// `base` 逻辑像素按 DPI 放大成物理像素；上限 256 是 winit 对 `ICON_BIG` 的建议天花板。
 fn icon_side(base: f64, scale_factor: f64) -> u32 {
     (base * scale_factor).round().clamp(base, 256.0) as u32
+}
+
+/// B 阶段：窗口物理光标 → 设计分辨率坐标。与渲染器 `apply_declared_viewport` 共用
+/// [`rustlua_render::fit::contain_rect`] 几何：先求设计盒在窗口里的居中矩形，再按比例
+/// 逆变换；黑边区域（盒外）clamp 到设计空间边缘，点击黑边等价于点边缘像素、永不越界。
+fn cursor_to_design(design: (u32, u32), window: (u32, u32), pos: (f64, f64)) -> (f64, f64) {
+    let (x, y, width, height) =
+        rustlua_render::fit::contain_rect((design.0 as f32, design.1 as f32), window);
+    let scale_x = design.0 as f64 / width.max(1) as f64;
+    let scale_y = design.1 as f64 / height.max(1) as f64;
+    (
+        (pos.0 - x as f64)
+            .mul_add(scale_x, 0.0)
+            .clamp(0.0, design.0.saturating_sub(1) as f64),
+        (pos.1 - y as f64)
+            .mul_add(scale_y, 0.0)
+            .clamp(0.0, design.1.saturating_sub(1) as f64),
+    )
 }
 
 /// 标题栏图标（`WM_SETICON(ICON_SMALL)`），尺寸 = 16 × DPI。
@@ -680,6 +806,10 @@ impl ApplicationHandler for GameApp {
                 scale_factor,
             )))
             .with_inner_size(PhysicalSize::new(window_width, window_height));
+        // B 阶段（contain 等比适配）：运行期逻辑屏幕空间 = 设计分辨率，与窗口物理尺寸解耦。
+        // 窗口可自由缩放/最大化，渲染器按 `contain_rect` 把设计盒等比居中到窗口（黑边），
+        // 详见 `redraw` 与 `CursorMoved` 的适配注释。
+        self.design_size = (window_width, window_height);
         // 任务栏图标：winit 的 `with_window_icon` 只设 `ICON_SMALL`，大图标得自己补。
         #[cfg(windows)]
         let attributes = {
@@ -781,8 +911,21 @@ impl ApplicationHandler for GameApp {
             | WindowEvent::MouseInput { .. }
             | WindowEvent::CursorMoved { .. }
             | WindowEvent::MouseWheel { .. }
+            | WindowEvent::ModifiersChanged(_)
+            | WindowEvent::Ime(_)
                 if self.lifecycle == AppLifecycle::Initializing => {}
-            WindowEvent::KeyboardInput { event, .. } => {
+            // M79-04：输入法事件是**文本**，不是键位。winit 0.30.13 在 Windows 上发
+            // `Preedit`（组合中的拼音，带候选区间）/`Commit`（上屏串）/`Enabled`/`Disabled`，
+            // 且**不发** `CharacterReceived`——所以英文字符只能从 `KeyboardInput.logical_key`
+            // 取（见下面的 `keyboard_text`）。
+            WindowEvent::Ime(ime) => apply_ime_event(&mut self.input, ime),
+            // M79-04：修饰键是独立事件，`KeyEvent` 里没有（见 `modifiers` 字段注释）。
+            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::KeyboardInput {
+                event,
+                is_synthetic,
+                ..
+            } => {
                 // M22/W1：**物理键**身份（`PhysicalKey::Code`），经 `host::keymap`
                 // 转换——宿主只做类型转换，不再按 `logical_key` 的字符猜键位。
                 // AZERTY/Dvorak 上「W 位置」因此仍是 `move_up`，而 Tab/Enter/F5/
@@ -790,6 +933,22 @@ impl ApplicationHandler for GameApp {
                 if let Some(key) = engine::host::keymap::map_key_event(&event) {
                     self.input
                         .key_event(key, event.state == ElementState::Pressed);
+                }
+                // M79-04：收字模式下键盘的 Unicode 字符就是正文（英文/数字直接打，不必
+                // 绕输入法）。`self.ime_allowed` 是上一帧从脚本读到的收字声明，也是"现在
+                // 字段在等字"的唯一口径；组合进行中时不取——那截拼音已经由 `Preedit`/`Commit`
+                // 负责，键盘再送一遍会插两次。
+                if let Some(text) = keyboard_text(
+                    &KeyPress {
+                        logical_key: &event.logical_key,
+                        pressed: event.state == ElementState::Pressed,
+                        synthetic: is_synthetic,
+                        modifiers: self.modifiers,
+                    },
+                    self.ime_allowed,
+                    self.input.text_preedit().is_some(),
+                ) {
+                    self.input.push_text_commit(&text);
                 }
                 // 下面这条是**宿主自身的界面快捷键**（性能叠加层开关），不是玩法
                 // 输入，因此继续按逻辑键判定：它不该受改键表影响，也不该因为键盘
@@ -809,7 +968,15 @@ impl ApplicationHandler for GameApp {
                     .mouse_event(map_mouse_button(button), state == ElementState::Pressed);
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.input.cursor_moved(position.x, position.y);
+                // B 阶段：窗口物理光标 → 设计分辨率坐标（与渲染 `contain_rect` 同一几何）。
+                // Lua UI（`ui.panel` 等）按设计分辨率命中，黑边区域 clamp 到画面边缘。
+                let size = self.window.as_ref().expect("window exists").inner_size();
+                let (design_x, design_y) = cursor_to_design(
+                    self.design_size,
+                    (size.width, size.height),
+                    (position.x, position.y),
+                );
+                self.input.cursor_moved(design_x, design_y);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
@@ -1061,6 +1228,64 @@ fn rect_vertices_colored(
     ]
 }
 
+/// 输入法事件 → 本帧输入快照上的文本动作（M79-04，纯函数：不开窗口也能测）。
+///
+/// 口径照 winit 0.30.13 的事件语义（`winit/src/event.rs` 的 `Ime` 文档）：拼音打字是
+/// `Preedit("a") → Preedit("a b") → Preedit("") → Commit("啊不")`，**提交前一定先发一条
+/// 空 Preedit**。`Disabled` 按文档要清掉组合串——否则脚本侧会一直挂着一截已经不在屏上
+/// 编辑的拼音。
+fn apply_ime_event(input: &mut InputSnapshot, ime: Ime) {
+    match ime {
+        // 输入法就绪本身不带文本；开了 `set_ime_allowed` 之后才有 Preedit/Commit。
+        Ime::Enabled => {}
+        Ime::Preedit(text, _) => input.set_text_preedit(&text),
+        Ime::Commit(text) => input.push_text_commit(&text),
+        Ime::Disabled => input.set_text_preedit(""),
+    }
+}
+
+/// 一次按键里收字要看的四个读数（M79-04）。
+///
+/// 不直接吃 `&winit::event::KeyEvent`，是因为 0.30 的 `KeyEvent` 带**私有字段**
+/// `platform_specific`——结构体字面量在 winit 之外写不出来，于是这条规则就只能靠真机
+/// 点鼠标验。这里只收宿主真正读的四个量，判定逻辑一字不动地留在 [`keyboard_text`]。
+struct KeyPress<'a> {
+    /// `logical_key`：字符键带正文，命名键（Enter/Backspace/方向键）不带。
+    logical_key: &'a winit::keyboard::Key,
+    /// 是不是真的按下（抬起不插字）。
+    pressed: bool,
+    /// winit 补发的合成事件：换焦点时给「已经按住的键」补 Pressed。
+    synthetic: bool,
+    /// 修饰键——0.30 把它从 `KeyEvent` 挪到了独立的 `ModifiersChanged` 事件。
+    modifiers: ModifiersState,
+}
+
+/// 收字模式下这次按键要不要当成正文（M79-04）。
+///
+/// winit 0.30.13 在 Windows 上**不发** `CharacterReceived`，可用的 Unicode 字符只在
+/// `logical_key` 的 `Character` 里；命名键（Enter/Backspace/方向键）不是字符，删除由
+/// 玩法键位走 `ui.text_input{op="edit"}`。五条例外：
+/// * 没在收字——玩法态的按键是动作，不是文本；
+/// * 正在组合——那截拼音由 `Preedit`/`Commit` 负责，键盘再送一遍会插两次（winit 明确
+///   说过组合期间仍会发 KeyboardInput）；
+/// * 不是按下（抬起不插字）；
+/// * 合成事件——切回窗口时那串补发的 Pressed 不是我打的字，否则凭空多一个字符；
+/// * Ctrl/Alt/Win 组合——Ctrl+A 是"全选"命令，不该往字段里塞一个 a（Shift 放过：它只
+///   负责大小写，`logical_key` 已经带上了）。
+fn keyboard_text(key: &KeyPress<'_>, capturing: bool, composing: bool) -> Option<String> {
+    if !capturing || composing || key.synthetic || !key.pressed {
+        return None;
+    }
+    let modifiers = key.modifiers;
+    if modifiers.control_key() || modifiers.alt_key() || modifiers.super_key() {
+        return None;
+    }
+    match key.logical_key {
+        winit::keyboard::Key::Character(text) => Some(text.to_string()),
+        _ => None,
+    }
+}
+
 fn map_mouse_button(button: winit::event::MouseButton) -> MouseButton {
     match button {
         winit::event::MouseButton::Left => MouseButton::Left,
@@ -1071,10 +1296,150 @@ fn map_mouse_button(button: winit::event::MouseButton) -> MouseButton {
         winit::event::MouseButton::Forward => MouseButton::Other(5),
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use winit::keyboard::{Key, ModifiersState, NamedKey};
+
+    /// 造一次「真实按下、非合成、无修饰键」的按键读数。
+    ///
+    /// 这里给的是 [`KeyPress`] 而不是 `KeyEvent`：后者有私有字段 `platform_specific`，
+    /// 在 winit 之外构造不出来（E0063），于是收字规则就只能真机点验。要打破哪条门槛，
+    /// 测试里直接改对应字段。
+    fn key_press(logical_key: &Key) -> KeyPress<'_> {
+        KeyPress {
+            logical_key,
+            pressed: true,
+            synthetic: false,
+            modifiers: ModifiersState::empty(),
+        }
+    }
+
+    /// 拼音打字的完整一节（winit 文档给的形状）：组合串逐字增长，提交前先发一条空
+    /// `Preedit` 清屏，再发 `Commit`。
+    #[test]
+    fn ime_pinyin_sequence_reaches_the_snapshot() {
+        let mut input = InputSnapshot::default();
+        apply_ime_event(&mut input, Ime::Preedit("a".to_owned(), Some((1, 1))));
+        assert_eq!(input.text_preedit(), Some("a"), "组合中的拼音可读");
+        assert!(
+            input.text_commits().is_empty(),
+            "还没上屏，一个字符都没提交"
+        );
+        apply_ime_event(&mut input, Ime::Preedit("啊".to_owned(), Some((3, 3))));
+        assert_eq!(input.text_preedit(), Some("啊"), "候选确认后组合串换成汉字");
+        apply_ime_event(&mut input, Ime::Preedit(String::new(), None));
+        assert_eq!(
+            input.text_preedit(),
+            None,
+            "空 Preedit = 取消组合，不是空组合串"
+        );
+        apply_ime_event(&mut input, Ime::Commit("啊不".to_owned()));
+        assert_eq!(input.text_commits(), ["啊不"], "提交串进了本帧文本事件");
+        assert_eq!(input.text_preedit(), None, "提交后不该还挂着组合串");
+    }
+
+    /// 输入法被关掉（切窗口/切布局）时那截拼音必须消失：否则脚本会一直显示一个
+    /// 已经不在屏上编辑的组合串。
+    #[test]
+    fn ime_disabled_clears_a_stale_preedit() {
+        let mut input = InputSnapshot::default();
+        apply_ime_event(&mut input, Ime::Preedit("ni".to_owned(), Some((2, 2))));
+        // 先证"确实挂上了"：否则下面那条 `None` 一个什么都不做的实现也能满足
+        // （反面对照 A 就是靠这一点发现的）。
+        assert_eq!(
+            input.text_preedit(),
+            Some("ni"),
+            "Disabled 之前必须真的挂着组合串"
+        );
+        apply_ime_event(&mut input, Ime::Disabled);
+        assert_eq!(input.text_preedit(), None, "Disabled 要清掉残留组合串");
+        assert!(input.text_commits().is_empty(), "关掉输入法不产生任何正文");
+        apply_ime_event(&mut input, Ime::Enabled);
+        assert_eq!(input.text_preedit(), None, "Enabled 只是就绪，不带文本");
+    }
+
+    /// 收字声明是跨帧意图，本帧文本读数却必须一步一清：两者不能同一个生命周期，
+    /// 否则"字段还在等字"和"这帧打了什么字"会互相污染。
+    #[test]
+    fn text_frame_clears_each_frame_but_capture_declared_survives() {
+        let mut input = InputSnapshot::default();
+        input.set_text_capture(true);
+        apply_ime_event(&mut input, Ime::Preedit("a".to_owned(), Some((1, 1))));
+        // 清之前的"有"必须自己证一次：只断言清完之后为空，空实现也能过。
+        assert_eq!(input.text_preedit(), Some("a"), "帧边界前挂着组合串");
+        apply_ime_event(&mut input, Ime::Commit("啊".to_owned()));
+        assert_eq!(input.text_commits(), ["啊"], "帧边界前有提交串");
+        input.finish_frame();
+        assert_eq!(input.text_preedit(), None, "预编辑不跨帧");
+        assert!(input.text_commits().is_empty(), "提交串不跨帧");
+        assert!(input.text_capture(), "收字声明要活着，宿主下一帧还得读它");
+        input.set_text_capture(false);
+        input.clear_all();
+        assert!(
+            !input.text_capture(),
+            "显式关闭后才关；clear_all 不替脚本改意图"
+        );
+    }
+
+    /// 只有"在收字、没在组合、不是合成、真的按下、没有命令修饰键"的 Unicode 字符才算正文。
+    #[test]
+    fn keyboard_text_requires_capture_and_no_composing_or_command_modifiers() {
+        let letter = Key::Character("a".into());
+        let pressed = key_press(&letter);
+        assert_eq!(
+            keyboard_text(&pressed, true, false).as_deref(),
+            Some("a"),
+            "收字模式下的字母就是正文"
+        );
+        assert_eq!(
+            keyboard_text(&pressed, false, false),
+            None,
+            "玩法态的按键是动作不是文本"
+        );
+        assert_eq!(
+            keyboard_text(&pressed, true, true),
+            None,
+            "组合期间不取——那截拼音由 Preedit/Commit 负责，取了两遍会重复插入"
+        );
+        let mut synthetic = key_press(&letter);
+        synthetic.synthetic = true;
+        assert_eq!(
+            keyboard_text(&synthetic, true, false),
+            None,
+            "换焦点时补发的合成按下不是我打的字"
+        );
+        let mut released = key_press(&letter);
+        released.pressed = false;
+        assert_eq!(keyboard_text(&released, true, false), None, "抬起不插字");
+        for modifiers in [
+            ModifiersState::CONTROL,
+            ModifiersState::ALT,
+            ModifiersState::SUPER,
+        ] {
+            let mut chord = key_press(&letter);
+            chord.modifiers = modifiers;
+            assert_eq!(
+                keyboard_text(&chord, true, false),
+                None,
+                "带命令修饰键的组合不该往字段里塞字母: {modifiers:?}"
+            );
+        }
+        let upper = Key::Character("A".into());
+        let mut shifted = key_press(&upper);
+        shifted.modifiers = ModifiersState::SHIFT;
+        assert_eq!(
+            keyboard_text(&shifted, true, false).as_deref(),
+            Some("A"),
+            "Shift 只管大小写，logical_key 已经带上去了"
+        );
+        let enter = Key::Named(NamedKey::Enter);
+        assert_eq!(
+            keyboard_text(&key_press(&enter), true, false),
+            None,
+            "Enter 是命名键：删除/确认走玩法键位，不是插一个控制字符"
+        );
+    }
 
     fn snapshot(fps: f32, frame_ms: f32, update_ms: f32, lua_ms: f32) -> PerformanceSnapshot {
         PerformanceSnapshot {
@@ -1189,5 +1554,51 @@ mod tests {
             app.shader_reload_due.is_some(),
             "渲染器还没建好时要保留轮询时间线"
         );
+    }
+
+    /// P0（脚本迭代闭环）的宿主开关门：**只有开发期的 loose 工程**才轮询磁盘 Lua。
+    /// 没有工程根、发布包（`--pack`）、项目里没有 `scripts/` 目录——三种情况都必须一次 IO
+    /// 都不做：否则每 250ms 白查一次，而且发布包会因盘上的文件改变运行内容（包内脚本来自
+    /// bundle）。去抖节律本身由 `rustlua_infra::hot_reload` 的单测覆盖。
+    #[test]
+    fn script_hot_reload_only_polls_a_loose_script_project() {
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let tag = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("rustlua-m79-script-{}-{tag}", std::process::id()));
+        let scripts = root.join("scripts");
+        let new = |root: Option<PathBuf>, packaged: bool| {
+            GameApp::new(root, "t".to_owned(), true, true, packaged, false, None)
+        };
+
+        std::fs::create_dir_all(&root).expect("造临时工程根");
+        assert!(
+            new(Some(root.clone()), false).scripts_dir.is_none(),
+            "项目里没有 scripts/ ⇒ 没有脚本层，一次都不查"
+        );
+
+        std::fs::create_dir_all(&scripts).expect("造脚本目录");
+        std::fs::write(scripts.join("main.lua"), "function update() end\n").expect("写脚本");
+        assert_eq!(
+            new(Some(root.clone()), false).scripts_dir.as_deref(),
+            Some(scripts.as_path()),
+            "开发期工程要把 scripts/ 纳入轮询"
+        );
+        assert!(
+            new(Some(root.clone()), true).scripts_dir.is_none(),
+            "发布包不许因盘上的 scripts/ 改变运行内容"
+        );
+        assert!(new(None, false).scripts_dir.is_none(), "没有工程根不轮询");
+
+        // 不轮询的宿主连节律都不推进：一次 `advance` 都不该发生。
+        let mut idle = new(None, false);
+        idle.poll_script_hot_reload(std::time::Duration::from_secs(1));
+        assert_eq!(
+            idle.script_cadence,
+            rustlua_infra::hot_reload::ReloadCadence::script_default(),
+            "未轮询时节律必须保持初值（不许白烧窗口）"
+        );
+        assert!(idle.script_note_shown.is_none(), "没查过就不该有结果文本");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

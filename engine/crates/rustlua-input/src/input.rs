@@ -1166,6 +1166,19 @@ pub struct InputSnapshot {
     /// 本帧按下的指针数（0 = 没有多指信息，例如旧版写者送来的帧）。
     pointer_count: u8,
     scroll_delta: (f32, f32),
+    /// 本帧的 IME **预编辑串**（还没上屏的那截，如拼音 `ni`）。`None` = 没有进行中的组合。
+    ///
+    /// 与 `scroll_delta` 同一节奏：宿主写、脚本读、`finish_frame` 清。之所以不放进
+    /// `InputState` 而放快照里：它属于"这一帧宿主看到了什么"，不是脚本的持久意图。
+    text_preedit: Option<String>,
+    /// 本帧宿主提交上屏的字符串（可能一帧内多条：连续两次候选确认）。
+    text_commits: Vec<String>,
+    /// 脚本声明的**收字模式**（`input.text_events{ capture = true }`）。
+    ///
+    /// 它是意图、不是本帧数据，所以**不被 `finish_frame`/`clear_transitions` 清**：
+    /// 宿主每帧读它决定 `set_ime_allowed`。默认关——Windows 上开着 IME 会把玩法按键
+    /// 送进输入法组合窗（中文输入法下按 W 不再前进），只有真要打字才该开。
+    text_capture: bool,
     focused: bool,
 }
 
@@ -1193,6 +1206,9 @@ impl Default for InputSnapshot {
             press_cursors: [(0.0, 0.0); MAX_POINTERS],
             pointer_count: 0,
             scroll_delta: (0.0, 0.0),
+            text_preedit: None,
+            text_commits: Vec::new(),
+            text_capture: false,
             focused: true,
         }
     }
@@ -1480,6 +1496,51 @@ impl InputSnapshot {
         self.scroll_delta.1 += dy;
     }
 
+    /// 宿主送来的 IME 预编辑串（winit 的 `Ime::Preedit`）。
+    ///
+    /// 空串 = 取消组合（Windows 上 winit 在提交前后各发一次空 `Preedit` 来清屏），
+    /// 与 `None` 同义；不把空串存成"有一个空的组合窗"——那样脚本会一直以为在打字。
+    pub fn set_text_preedit(&mut self, text: &str) {
+        self.text_preedit = if text.is_empty() {
+            None
+        } else {
+            Some(text.to_owned())
+        };
+    }
+
+    /// 宿主提交上屏的一串文本（winit 的 `Ime::Commit`，或收字模式下的键盘 Unicode 字符）。
+    ///
+    /// 空串忽略并顺带清掉预编辑：那是"组合结束但什么都没提交"（Esc 取消候选）的形状。
+    pub fn push_text_commit(&mut self, text: &str) {
+        self.text_preedit = None;
+        if !text.is_empty() {
+            self.text_commits.push(text.to_owned());
+        }
+    }
+
+    /// 本帧的预编辑串；`None` 表示没有进行中的组合。
+    #[must_use]
+    pub fn text_preedit(&self) -> Option<&str> {
+        self.text_preedit.as_deref()
+    }
+
+    /// 本帧已提交的字符串（最新在后）。
+    #[must_use]
+    pub fn text_commits(&self) -> &[String] {
+        &self.text_commits
+    }
+
+    /// 声明/关闭收字模式（脚本意图，跨帧保持；宿主据此开/关系统 IME）。
+    pub fn set_text_capture(&mut self, capturing: bool) {
+        self.text_capture = capturing;
+    }
+
+    /// 脚本是否要求收字。
+    #[must_use]
+    pub const fn text_capture(&self) -> bool {
+        self.text_capture
+    }
+
     /// Clears edge transitions and cursor/scroll deltas after the frame.
     pub fn finish_frame(&mut self) {
         self.pressed_keys.clear();
@@ -1492,6 +1553,8 @@ impl InputSnapshot {
         self.released_axes.clear();
         self.cursor_delta = (0.0, 0.0);
         self.scroll_delta = (0.0, 0.0);
+        self.text_preedit = None;
+        self.text_commits.clear();
     }
 
     /// Clears held and transient state, used when pausing or losing focus.
@@ -1516,6 +1579,8 @@ impl InputSnapshot {
         self.released_axes.clear();
         self.cursor_delta = (0.0, 0.0);
         self.scroll_delta = (0.0, 0.0);
+        self.text_preedit = None;
+        self.text_commits.clear();
     }
 
     #[must_use]

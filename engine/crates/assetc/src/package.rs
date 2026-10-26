@@ -292,6 +292,19 @@ pub fn package(
     ensure_project(project)?;
     ensure_distinct_output(project, out)?;
     copy_file(&project.join("project.toml"), &out.join("project.toml"))?;
+    // 资源库元数据段（`resources.meta`：逐张贴图的导入采样设置）。可选——工程里没设过
+    // 任何一张图时它不存在，这时候不该凭空造一个空文件（那会让 diff 里多一个字节，
+    // 而"默认档不入库"正是这份文件的口径）。
+    // 为什么必须随包：运行期渲染器读的键就是这里的工程相对路径（`gpu_texture.rs` 的
+    // `ensure_resource_meta`），少了它发布包里所有贴图回到默认档——
+    // "编辑器里设了、Play 里生效、发出去不生效"是最难发现的一种假绿。
+    let resource_meta = project.join(rustlua_assets::import_settings::RESOURCE_META_FILE);
+    if resource_meta.is_file() {
+        copy_file(
+            &resource_meta,
+            &out.join(rustlua_assets::import_settings::RESOURCE_META_FILE),
+        )?;
+    }
     copy_dir_encoded(
         &project.join("scenes"),
         &out.join("scenes"),
@@ -508,11 +521,17 @@ fn is_kept(relative: &str, keep: KeepPrefixes<'_>) -> bool {
 /// 判据只列**确实在 boot 期间被读**的东西（见 `game` / `game_web` 的启动序列）：
 /// `project.toml`、启动场景、主脚本、图集重定向表。字体不算——容器形态下它被 `--keep`
 /// 留在目录里，根本不进块。
+///
+/// 这一档同时也是**"什么算启动条目"的唯一答案**：`inspect` 与产物预览都问
+/// [`is_boot_entry`]，不再各自抄一份名单（此前两份名单靠人肉对齐，加一个锚点要记得改两处）。
 pub(crate) fn boot_priority(relative: &str) -> u8 {
-    // 0 = 引擎**确定**在 boot 期读的四个文件：project.toml、图集重定向表、启动场景、主脚本。
-    //     它们合计约 75 KB，排在一起就能塞进同一个块。
+    // 0 = 引擎**确定**在 boot 期读的五个文件：project.toml、图集重定向表、资源元数据段、
+    //     启动场景、主脚本。合计约 75 KB，排在一起就能塞进同一个块。
+    //     场景只认 `scenes/main.scene` 这一个：把所有 `scenes/*` 都算进来会得到"启动要解 3 个块"
+    //     的假读数（其余场景切图时才用）。这条判据同时是 `inspect` 与产物预览的启动闭包判据。
     if relative == "project.toml"
         || relative == "atlas_redirect.json"
+        || relative == rustlua_assets::import_settings::RESOURCE_META_FILE
         || relative == "scenes/main.scene"
         || relative == "scripts/main.lua"
     {
@@ -525,6 +544,50 @@ pub(crate) fn boot_priority(relative: &str) -> u8 {
     }
     // 2 = 其余（场景、预制体…）：启动只读其中一个场景，其余按需。
     2
+}
+
+/// 这个包内条目是不是**启动就要读**的那几个（与 [`boot_priority`] 的 0 档同一判据）。
+///
+/// 放在这里而不是各读数处另写一份：装配次序（决定落在第几块）和"启动闭包"本来就是同一件事
+/// 的两个问法，两份名单迟早漂移。
+#[must_use]
+pub fn is_boot_entry(relative: &str) -> bool {
+    boot_priority(relative) == 0
+}
+
+/// 目标下的 `.rlb` 容器（升序）。`target` 可以是单个容器文件、包目录，或 `bundles/` 目录本身。
+///
+/// `inspect` 与产物预览共用：两者对"这个包由哪些容器组成"必须给同一个答案，
+/// 否则一个说 3 个包、另一个说 2 个包，读数就没法对照。
+pub(crate) fn container_files(target: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    if target.is_file() {
+        return Ok(vec![target.to_path_buf()]);
+    }
+    let nested = target.join(BUNDLE_DIR);
+    let dir = if nested.is_dir() {
+        nested
+    } else {
+        target.to_path_buf()
+    };
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut files = Vec::new();
+    for entry in fs::read_dir(&dir)
+        .map_err(|error| anyhow!("读 {} 失败：{error}", dir.display()))?
+        .flatten()
+    {
+        let path = entry.path();
+        if path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("rlb"))
+        {
+            files.push(path);
+        }
+    }
+    files.sort();
+    Ok(files)
 }
 
 /// 单包形态：先按目录形态产出（复用字体子集/依赖索引/安全边界检查），
@@ -1091,41 +1154,7 @@ pub fn distribution_layout_report(target: &Path) -> anyhow::Result<String> {
 pub fn inspect_bundles(target: &Path) -> anyhow::Result<String> {
     use rustlua_infra::bundle::BundleIndex;
 
-    // 启动闭包：boot 期间确实会读的条目（与 `boot_priority` 同口径）。
-    let is_boot = |name: &str| {
-        name == "project.toml"
-            || name == "atlas_redirect.json"
-            // 只认**启动场景**：把所有 scenes/* 都算进来会得到 3 个块的假读数
-            // （那些场景启动时根本不读，只在切场景时才用）。
-            || name == "scenes/main.scene"
-            || name == "scripts/main.lua"
-    };
-
-    let mut files: Vec<PathBuf> = Vec::new();
-    if target.is_file() {
-        files.push(target.to_path_buf());
-    } else {
-        let nested = target.join(BUNDLE_DIR);
-        let dir = if nested.is_dir() {
-            nested
-        } else {
-            target.to_path_buf()
-        };
-        for entry in fs::read_dir(&dir)
-            .map_err(|error| anyhow!("读 {} 失败：{error}", dir.display()))?
-            .flatten()
-        {
-            let path = entry.path();
-            if path
-                .extension()
-                .and_then(|value| value.to_str())
-                .is_some_and(|value| value.eq_ignore_ascii_case("rlb"))
-            {
-                files.push(path);
-            }
-        }
-        files.sort();
-    }
+    let files = container_files(target)?;
     if files.is_empty() {
         return Err(anyhow!("没有找到 .rlb 容器：{}", target.display()));
     }
@@ -1168,7 +1197,7 @@ pub fn inspect_bundles(target: &Path) -> anyhow::Result<String> {
             ));
         }
         for entry in index.entries() {
-            if is_boot(&entry.path) {
+            if is_boot_entry(&entry.path) {
                 boot_places.push((name.clone(), entry.block, entry.path.clone()));
             }
         }

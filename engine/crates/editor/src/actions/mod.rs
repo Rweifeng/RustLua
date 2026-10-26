@@ -3,7 +3,8 @@
 //! 第 41 轮从单文件（4,604 行）拆成目录：本文件只留共享类型（`EditState` / `EditSnapshot` /
 //! `DocumentChange` / `PendingChange` / `PendingDecision`）与跨模块再导出；命令按
 //! 文档闸门 `document_gate`、编辑事务 `transaction`、文档读写 `document_io`、布局 `layout_ops`、
-//! 实体 `entities`、组件 `components`、预设命令 `prefab_ops`、预设重建 `prefab_rebuild` 分家。
+//! 实体 `entities`、组件 `components`、预设命令 `prefab_ops`、预设重建 `prefab_rebuild`、
+//! 预设 in-context 编辑 `prefab_stage` 分家。
 //! 拆分是纯搬运：只切行 + 补模块头，跨子模块用到的条目从"文件内私有"抬到 `pub(crate)`。
 
 use crate::AlignMode;
@@ -168,6 +169,8 @@ pub(crate) enum PendingDecision {
     Cancel,
 }
 
+/// P1-3b：断链审计（扫全工程引用字段）与「同名唯一命中」一键改指。
+mod broken_refs;
 mod components;
 mod document_gate;
 mod document_io;
@@ -175,9 +178,17 @@ mod entities;
 mod layout_ops;
 mod prefab_ops;
 mod prefab_rebuild;
+// M79 P2：预制体实例**整棵子树**的覆盖聚合与就地还原。`pub(crate)` 是因为 `EditorApp` 的
+// 缓存字段要按路径写出这个类型（与 `undo_ledger` 同一个理由）。
+pub(crate) mod prefab_overrides;
+// M79 P1-4：预制体 in-context 编辑（把场景文档整份装进口袋，改完源再放回）。
+mod prefab_stage;
 #[cfg(test)]
 mod tests;
 mod transaction;
+// 跨面板全局 Undo 的账本（M79 P1-2）。`pub(crate)` 是因为 `EditorApp` 的字段要按路径写出
+// 这个类型；账本本身只在 shell 里被读写。
+pub(crate) mod undo_ledger;
 
 // 跨模块命令入口：其余模块一律经 `crate::actions::` 引用这些名字。
 #[cfg(test)]
@@ -185,3 +196,5 @@ pub(crate) use layout_ops::{distribute_targets, sorted_sprite_order_updates};
 pub(crate) use prefab_rebuild::{
     apply_prefab_instance_metadata, build_prefab_from_instance_root, collect_prefab_rebuild_state,
 };
+// `EditorApp` 的字段要按路径写出这个类型（阶段本身只在 shell 里被读写）。
+pub(crate) use prefab_stage::PrefabStage;

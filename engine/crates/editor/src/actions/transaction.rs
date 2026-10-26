@@ -14,6 +14,10 @@ impl EditorApp {
     /// - `DocumentChange::PlaybackStopped` 时使用 Play 会话的编辑器快照（此时已取回
     ///   到 `current_scene`），其余变更类别由各入口保持等价行为。
     pub(crate) fn on_document_changed(&mut self, change: DocumentChange) {
+        // M79 P2：任何"文档变了"的通知都先把整实例覆盖列表作废。缓存键本身已经能看出内容变化
+        // （`revision` / 历史签名 / 源重载次数），这里再扫一次是为了让**没走网关**的写入也失效——
+        // 那种写入本来就是这套口径要防的东西，宁可多算一次 diff。
+        self.invalidate_prefab_override_cache();
         // 1. 选择修复。
         //
         // 整表切换路径（打开/新建/恢复/Stop）把 `current_scene` 替换为**另一份文档**，

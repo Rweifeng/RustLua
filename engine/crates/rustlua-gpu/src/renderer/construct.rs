@@ -355,6 +355,43 @@ impl Renderer {
             mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
+        // M79 P1-3c：逐纹理采样器表（滤镜 × 寻址 的全组合，下标 = `filter * Wrap::COUNT + wrap`）。
+        // **第一格必须与上面那个全局 `sampler` 同参数**（Nearest + ClampToEdge）——那是"没在
+        // `resources.meta` 里登记过的贴图"走的路径，它要逐字节维持今天的样子，这条由
+        // `the_undocumented_texture_path_keeps_todays_pixels` 钉住。
+        let mut texture_samplers = Vec::new();
+        for filter in [
+            rustlua_assets::import_settings::TextureFilter::Nearest,
+            rustlua_assets::import_settings::TextureFilter::Linear,
+        ] {
+            use rustlua_assets::import_settings::TextureWrap;
+            for wrap in [
+                TextureWrap::ClampToEdge,
+                TextureWrap::Repeat,
+                TextureWrap::MirroredRepeat,
+            ] {
+                texture_samplers.push(device.create_sampler(&wgpu::SamplerDescriptor {
+                    label: Some(&format!(
+                        "rustlua-texture-sampler-{}-{}",
+                        filter.token(),
+                        wrap.token()
+                    )),
+                    mag_filter: Renderer::wgpu_filter_mode(filter),
+                    min_filter: Renderer::wgpu_filter_mode(filter),
+                    // 本批不生成 mipmap（`mip_level_count` 恒为 1），三线性采样无从谈起。
+                    mipmap_filter: wgpu::FilterMode::Nearest,
+                    address_mode_u: Renderer::wgpu_address_mode(wrap),
+                    address_mode_v: Renderer::wgpu_address_mode(wrap),
+                    address_mode_w: Renderer::wgpu_address_mode(wrap),
+                    ..Default::default()
+                }));
+            }
+        }
+        debug_assert_eq!(
+            texture_samplers.len(),
+            rustlua_assets::import_settings::TextureFilter::COUNT
+                * rustlua_assets::import_settings::TextureWrap::COUNT
+        );
         // SDF 文本需要 Linear 采样（距离场插值）；精灵保持 Nearest。
         let sdf_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("rustlua-sdf-sampler"),
@@ -1150,6 +1187,10 @@ impl Renderer {
             shadow_view,
             texture_bind_group_layout,
             sampler,
+            texture_samplers,
+            resource_meta: None,
+            resource_meta_loaded: false,
+            sampling_epoch: 0,
             vertex_buffer,
             vertex_buffer_growths: 0,
             vertex_bytes_peak: 0,

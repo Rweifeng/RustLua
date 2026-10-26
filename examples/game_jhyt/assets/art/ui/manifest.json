@@ -42,6 +42,8 @@
       "files": [
         "menu/ui_menu_vignette.png",
         "menu/ui_menu_ink_band.png",
+        "menu/ui_menu_btn_day_9s.png",
+        "menu/ui_menu_btn_day_hover_9s.png",
         "menu/ui_menu_btn_wuxia_9s.png",
         "menu/ui_menu_btn_wuxia_hover_9s.png",
         "menu/ui_menu_btn_wuxia_pressed_9s.png",
@@ -516,6 +518,32 @@
       "size": "960x240",
       "spec": "960x240 墨色横幅",
       "nine_slice": null
+    },
+    {
+      "module": "menu",
+      "name": "ui_menu_btn_day_9s",
+      "path": "assets/art/ui/menu/ui_menu_btn_day_9s.png",
+      "size": "256x72",
+      "spec": "256x72 9S 18 日间竹编按钮",
+      "nine_slice": [
+        18,
+        18,
+        18,
+        18
+      ]
+    },
+    {
+      "module": "menu",
+      "name": "ui_menu_btn_day_hover_9s",
+      "path": "assets/art/ui/menu/ui_menu_btn_day_hover_9s.png",
+      "size": "256x72",
+      "spec": "256x72 9S 18 日间竹编按钮悬停（金边）",
+      "nine_slice": [
+        18,
+        18,
+        18,
+        18
+      ]
     },
     {
       "module": "menu",

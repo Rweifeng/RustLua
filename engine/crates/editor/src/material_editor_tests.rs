@@ -407,3 +407,78 @@ fn material_editor_double_click_selects_the_referencing_mesh_renderer() {
     );
     assert!(app.status.contains("没有引用"), "{}", app.status);
 }
+
+/// 材质此前只有面板按钮能撤（Ctrl+Z 全归场景栈）。接进全局账本后（M79 P1-2），
+/// 在材质里改完一个数值直接按 Ctrl+Z，撤的是这一步而不是场景的某一步；
+/// 两条栈互不共享——场景那一步要等材质栈空了才轮到。
+#[test]
+fn material_edit_joins_the_global_undo_stack() {
+    let (mut app, _root) = app_with_mesh(
+        "global-undo",
+        "mesh=assets/models/ball.glb;material=assets/materials/rusted.material",
+    );
+    app.sync_material_from_selection();
+    assert_eq!(app.material.undo_signature(), (0, 0), "刚同步不该带历史");
+
+    // 场景先提交一步，材质再提交一步：账本应按"最近提交"把材质排在前面。
+    // 面板写入类命令有一道"工程未加载"闸门（见 `command_router.rs` 的 CreateEntity 分支），
+    // 这里要的是"场景真的提交了一步"，所以把闸门打开。
+    app.project_loaded = true;
+    assert_eq!(
+        app.dispatch(EditorCommand::CreateEntity {
+            name: "Other".to_owned(),
+            parent: None,
+            transform_3d: false,
+        }),
+        editor::CommandResult::Applied
+    );
+    app.poll_undo_owners();
+    ready_mut(&mut app)
+        .session
+        .edit(|material| material.roughness = 0.11)
+        .expect("编辑粗糙度");
+    app.poll_undo_owners();
+    assert_eq!(app.material.undo_signature().1, 1, "材质应有一条可撤历史");
+
+    assert_eq!(
+        app.dispatch(EditorCommand::Undo),
+        editor::CommandResult::Applied
+    );
+    assert_eq!(
+        ready(&app).session.material().roughness,
+        0.35,
+        "第一次按键撤的是材质那一步"
+    );
+    assert_eq!(
+        app.history.undo_len(),
+        1,
+        "同一次按键不得顺手撤掉场景的一步"
+    );
+    assert_eq!(app.history.redo_len(), 0);
+    assert!(app.status.contains("材质"), "{}", app.status);
+
+    // 材质栈空了，第二次按键才轮到场景。
+    assert_eq!(
+        app.dispatch(EditorCommand::Undo),
+        editor::CommandResult::Applied
+    );
+    assert_eq!(app.history.undo_len(), 0);
+    assert_eq!(app.history.redo_len(), 1);
+
+    // 重做回到"刚撤掉的那个归属"（场景），材质栈原地不动——这就是各归属
+    // 自己收场的代价：跨面板的相对顺序只按提交时刻排，不按撤销时刻重排。
+    assert_eq!(
+        app.dispatch(EditorCommand::Redo),
+        editor::CommandResult::Applied
+    );
+    assert_eq!(app.history.undo_len(), 1);
+    assert_eq!(
+        ready(&app).session.material().roughness,
+        0.35,
+        "重做撤掉的是场景那一步，材质不得跟着复活"
+    );
+    assert!(
+        app.material.undo_can_redo(),
+        "材质的那一步应留在它自己的 redo 栈里"
+    );
+}

@@ -41,14 +41,15 @@ impl EditorApp {
     /// - 每个目标独立走 schema/PropertyPath 校验（`edit_component_payload`），
     ///   **任一目标失败就整体不写**（不会写一半实体）；
     /// - 全部无净变化 → `NoOp`；否则**一条**历史（多选一次操作 = 一条 Undo）。
+    ///
+    /// Play 中不锁：改走运行态镜像（见 [`EditorApp::plan_play_edits`]）。
     pub(crate) fn apply_component_edit_on_selection(
         &mut self,
         component: &str,
         fields: &[(String, String)],
     ) -> CommandResult {
         if self.is_playing() {
-            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
-            return CommandResult::Rejected(self.status.clone());
+            return self.apply_play_field_edit_on_selection(component, fields);
         }
         let display = crate::util::component_display_name(component);
         let selected = self.selection.ids();
@@ -141,6 +142,303 @@ impl EditorApp {
         }
     }
 
+    /// **Play 期间的字段写入**（Unity 式"运行中调参"）：只改**运行态镜像**，
+    /// 并把用户填进去的取值记进会话的待应用表（见 `PlaySession::apply_runtime_edit`）。
+    ///
+    /// 三条语义：
+    /// - **不产生历史、不标脏**：镜像 Stop 时必然丢弃，撤销它没有意义（想反悔就再填一次）；
+    /// - **Inspector 立刻看到新值**：面板在 Play 中读的就是这份镜像
+    ///   （`main.rs::current_scene` → `PlaySession::runtime_document`）；被脚本每帧覆盖的
+    ///   字段（如 transform 位置）会在下一次回灌时回到活世界的读数，这与 Unity 一致；
+    /// - **想留下取值要显式应用**：[`EditorApp::apply_play_edits`]（工具栏「应用到场景」）。
+    pub(crate) fn apply_play_field_edit(
+        &mut self,
+        entity: SceneEntityId,
+        component: &str,
+        fields: &[(String, String)],
+    ) -> CommandResult {
+        if fields.is_empty() {
+            self.status = "没有要写入的字段".to_owned();
+            return CommandResult::NoOp;
+        }
+        let display = crate::util::component_display_name(component);
+        let targets = [entity];
+        let planned = match self.plan_play_edits(&targets, component, fields) {
+            Ok(planned) => planned,
+            Err(error) => {
+                self.status = error.clone();
+                return CommandResult::Rejected(error);
+            }
+        };
+        let written = self.write_play_edits(component, fields, &planned);
+        if written == 0 {
+            self.status = format!("实体不存在：{}", entity.0);
+            return CommandResult::Rejected(self.status.clone());
+        }
+        let names = field_names(fields);
+        self.status =
+            format!("播放模式：已记录 {display}（{names}）·Stop 丢弃，点「应用到场景」保留");
+        CommandResult::Applied
+    }
+
+    /// 多选批量 Play 写入：目标 = 选区里**在镜像里拥有该组件**的实体（与编辑态同一口径）。
+    fn apply_play_field_edit_on_selection(
+        &mut self,
+        component: &str,
+        fields: &[(String, String)],
+    ) -> CommandResult {
+        let display = crate::util::component_display_name(component);
+        let selected = self.selection.ids();
+        if selected.is_empty() {
+            self.status = "请先选择实体".to_owned();
+            return CommandResult::Rejected(self.status.clone());
+        }
+        let Some(session) = self.play_session.as_ref() else {
+            self.status = "运行态镜像还没准备好，请稍后再试".to_owned();
+            return CommandResult::Rejected(self.status.clone());
+        };
+        let targets: Vec<SceneEntityId> = selected
+            .iter()
+            .copied()
+            .filter(|id| {
+                session
+                    .runtime_document()
+                    .scene
+                    .entities
+                    .get(id)
+                    .is_some_and(|entity| entity.components.contains_key(component))
+            })
+            .collect();
+        if targets.is_empty() {
+            self.status = format!("选中的实体都没有组件 {display}");
+            return CommandResult::Rejected(self.status.clone());
+        }
+        let planned = match self.plan_play_edits(&targets, component, fields) {
+            Ok(planned) => planned,
+            Err(error) => {
+                self.status = error.clone();
+                return CommandResult::Rejected(error);
+            }
+        };
+        let written = self.write_play_edits(component, fields, &planned);
+        let names = field_names(fields);
+        self.status = format!(
+            "播放模式：已记录 {display}（{written} 个实体 · {names}）·Stop 丢弃，点「应用到场景」保留"
+        );
+        CommandResult::Applied
+    }
+
+    /// 只读校验：把 `fields` 逐个打在**镜像里各目标的当前组件串**上，算出新串。
+    ///
+    /// 与编辑态的批量路径一样是"全成才写"：任一目标取值非法就整体返回原因、
+    /// 镜像一格不动（半套运行态修改比拒绝更难排查）。
+    /// 失败还包括"会话还没建好"（Starting/Stopping 过渡态）与"实体没有该组件"。
+    fn plan_play_edits(
+        &self,
+        targets: &[SceneEntityId],
+        component: &str,
+        fields: &[(String, String)],
+    ) -> Result<Vec<(SceneEntityId, String)>, String> {
+        let display = crate::util::component_display_name(component);
+        let Some(session) = self.play_session.as_ref() else {
+            return Err("运行态镜像还没准备好，请稍后再试".to_owned());
+        };
+        let mirror = session.runtime_document();
+        let mut planned = Vec::new();
+        for entity in targets {
+            let Some(original) = mirror
+                .scene
+                .entities
+                .get(entity)
+                .and_then(|instance| instance.components.get(component))
+            else {
+                return Err(format!("实体 {} 没有组件 {display}", entity.0));
+            };
+            let mut payload = original.clone();
+            for (field, value) in fields {
+                match editor::edit_component_payload(component, &payload, field, value) {
+                    Ok(Some(next)) => payload = next,
+                    Ok(None) => {}
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+            // 即使镜像已经是这个取值也要入列：登记的是"用户提交过的字段"（见
+            // `write_play_edits`），写回同一个串对镜像没有影响。
+            planned.push((*entity, payload));
+        }
+        Ok(planned)
+    }
+
+    /// 把校验好的新组件串写进镜像并登记取值；返回真正登记下的实体数。
+    ///
+    /// 登记的永远是**用户提交的那批字段**（即使镜像此刻已经是这个值）：
+    /// 场景里 x=5、脚本把它跑到 100，我填 100 是想让 100 留下——按"镜像无变化"跳过
+    /// 就会把我刚填的取值忘掉。写回同一个串对镜像本身没有影响。
+    /// 返回 0 = 这些实体在这一帧被运行期销毁了（`entity.destroy`），调用方据此拒绝。
+    fn write_play_edits(
+        &mut self,
+        component: &str,
+        fields: &[(String, String)],
+        planned: &[(SceneEntityId, String)],
+    ) -> usize {
+        let Some(session) = self.play_session.as_mut() else {
+            return 0;
+        };
+        let mut written = 0;
+        for (entity, payload) in planned {
+            if session.apply_runtime_edit(*entity, component, payload.clone(), fields) {
+                written += 1;
+            }
+        }
+        written
+    }
+
+    /// 本次 Play 里记录了几个待应用的字段值（工具栏按钮上的角标）。
+    pub(crate) fn pending_play_edit_count(&self) -> usize {
+        self.play_session
+            .as_ref()
+            .map_or(0, |session| session.play_edits().len())
+    }
+
+    /// **「应用到场景」**（Unity 的显式保留）：把本次 Play 里填过的取值写回**编辑文档**，
+    /// 合并成**恰好一条** Undo；不点它、直接 Stop 就是默认回滚。
+    ///
+    /// 带走的是"我填的那个数"（会话里那份表），不是游戏此刻的读数——否则会把手忙脚乱跑出来
+    /// 的运行时状态写进场景文件。运行期生成的实体（`entity.spawn`）、以及编辑文档里已经不存在
+    /// 的组件按实体计数跳过并在状态栏说明，它们本来就不属于这份场景。
+    pub(crate) fn apply_play_edits(&mut self) -> CommandResult {
+        let Some(edits) = self
+            .play_session
+            .as_ref()
+            .map(|session| session.play_edits().clone())
+        else {
+            self.status = "没有在运行，没有可应用的运行态修改".to_owned();
+            return CommandResult::Rejected(self.status.clone());
+        };
+        if edits.is_empty() {
+            self.status = "本次运行没有记录到运行态修改".to_owned();
+            return CommandResult::NoOp;
+        }
+        let Some(document) = self.document.current_scene.as_ref() else {
+            self.status = "没有打开的场景".to_owned();
+            return CommandResult::Rejected(self.status.clone());
+        };
+        // 按 (实体, 组件) 归并：一个组件的多个字段要合成一条写入，否则字段会互相覆盖。
+        let mut groups: std::collections::BTreeMap<(SceneEntityId, String), Vec<(String, String)>> =
+            std::collections::BTreeMap::new();
+        for ((entity, component, field), value) in &edits {
+            groups
+                .entry((*entity, component.clone()))
+                .or_default()
+                .push((field.clone(), value.clone()));
+        }
+        let mut updated: Vec<(SceneEntityId, String, String)> = Vec::new();
+        let mut skipped = 0usize;
+        let mut failure: Option<String> = None;
+        for ((entity, component), fields) in groups {
+            let Some(original) = document
+                .scene
+                .entities
+                .get(&entity)
+                .and_then(|instance| instance.components.get(&component))
+                .cloned()
+            else {
+                // 运行期生成的实体 / 编辑文档里已删除的组件：这份场景里没有落点。
+                skipped += 1;
+                continue;
+            };
+            let mut payload = original.clone();
+            for (field, value) in &fields {
+                match editor::edit_component_payload(&component, &payload, field, value) {
+                    Ok(Some(next)) => payload = next,
+                    Ok(None) => {}
+                    Err(error) => {
+                        failure = Some(error.to_string());
+                        break;
+                    }
+                }
+            }
+            if failure.is_some() {
+                break;
+            }
+            if payload != original {
+                updated.push((entity, component, payload));
+            }
+        }
+        if let Some(error) = failure {
+            self.status = error.clone();
+            return CommandResult::Rejected(error);
+        }
+        if updated.is_empty() {
+            self.status = if skipped == 0 {
+                "运行态修改与场景取值已一致，无需应用".to_owned()
+            } else {
+                format!("可应用的运行态修改为 0（跳过 {skipped} 个不属于本场景的实体/组件）")
+            };
+            return CommandResult::NoOp;
+        }
+        let written = updated.len();
+        // Stop 会把会话里的**编辑器快照**交还给当前文档（`actions::document_gate::stop`），
+        // 所以刚应用的取值必须同时落进那份快照，否则"点了 Apply 再 Stop"照样被覆盖回去。
+        // Play 期间除了本路径没有任何写入碰得到编辑文档（结构编辑、组件增删全部锁着），
+        // 两份拷贝不会各自漂移。
+        let carried = updated.clone();
+        let result = self.history.execute(
+            self.document
+                .current_scene
+                .as_mut()
+                .expect("已确认存在当前文档"),
+            "应用运行态修改到场景",
+            CommandKind::Property,
+            move |document| {
+                for (entity, component, payload) in &carried {
+                    let Some(instance) = document.scene.entities.get_mut(entity) else {
+                        return Err(format!("实体不存在：{}", entity.0));
+                    };
+                    instance
+                        .components
+                        .insert(component.clone(), payload.clone());
+                }
+                document.mark_dirty();
+                Ok::<(), String>(())
+            },
+        );
+        match result {
+            Ok(true) => {
+                if let Some(session) = self.play_session.as_mut() {
+                    let snapshot = session.editor_snapshot_mut();
+                    for (entity, component, payload) in &updated {
+                        if let Some(instance) = snapshot.scene.entities.get_mut(entity) {
+                            instance
+                                .components
+                                .insert(component.clone(), payload.clone());
+                        }
+                    }
+                    // 标脏：Stop 之后当前文档就是这份快照，脏标记只能由它带回去。
+                    snapshot.mark_dirty();
+                }
+                self.status = if skipped == 0 {
+                    format!(
+                        "已把 {written} 个实体的运行态修改写入场景（一条撤销，Stop 不再回滚这些字段）"
+                    )
+                } else {
+                    format!(
+                        "已把 {written} 个实体的运行态修改写入场景（跳过 {skipped} 个运行期生成的实体/已删组件）"
+                    )
+                };
+                CommandResult::Applied
+            }
+            Ok(false) => {
+                self.status = "运行态修改与场景取值已一致，无需应用".to_owned();
+                CommandResult::NoOp
+            }
+            Err(error) => {
+                self.status = error.clone();
+                CommandResult::Rejected(error)
+            }
+        }
+    }
+
     /// **原子多字段**写入（组件级动作的落点，如 `UiLayout` 的锚点预设）：
     ///
     /// - 逐字段走同一条 schema/PropertyPath 校验路径（`edit_component_payload`），
@@ -154,8 +452,7 @@ impl EditorApp {
         fields: &[(String, String)],
     ) -> CommandResult {
         if self.is_playing() {
-            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
-            return CommandResult::Rejected(self.status.clone());
+            return self.apply_play_field_edit(entity, component, fields);
         }
         let display = crate::util::component_display_name(component);
         let Some(document) = self.document.current_scene.as_ref() else {
@@ -238,8 +535,11 @@ impl EditorApp {
         value: &str,
     ) -> CommandResult {
         if self.is_playing() {
-            self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
-            return CommandResult::Rejected(self.status.clone());
+            return self.apply_play_field_edit(
+                entity,
+                component,
+                &[(field.to_owned(), value.to_owned())],
+            );
         }
         let display = crate::util::component_display_name(component);
         let Some(document) = self.document.current_scene.as_mut() else {
@@ -347,6 +647,16 @@ impl EditorApp {
         }
     }
 }
+/// 状态栏里的字段名摘要：最多列 3 个，再多折算成数量（工具栏那一行装不下长串）。
+fn field_names(fields: &[(String, String)]) -> String {
+    let names: Vec<&str> = fields.iter().map(|(field, _)| field.as_str()).collect();
+    match names.len() {
+        0 => "无字段".to_owned(),
+        1..=3 => names.join("+"),
+        more => format!("{more} 个字段"),
+    }
+}
+
 /// Inspector 的**实体级 typed action**实现（shell 层，docs/55 §4.1 规则 1）。
 ///
 /// 面板只发 `EditorCommand`：提交边界（`history.execute`）、Play 锁定、状态文案都住在这里。

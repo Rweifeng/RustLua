@@ -3,6 +3,8 @@
 // 做什么：从**运行期 API 面基线** `lua_api_surface.json` 出发，为每个 Lua 模块表生成一节
 // markdown 文档桩（每个绑定函数一个小节，含从 Rust 绑定源码推断出的 Lua 侧签名），并生成
 // `engine::lua_api::<模块>` 这个纯文档模块把它们挂进 rustdoc——发布站上可以直接按模块浏览。
+// 同一趟再生成还产出 LuaLS 类型定义 `rustlua_api.d.lua`（`---@meta`，给外部编辑器的补全与
+// 拼写检查用）：签名推断只有一份，文档桩与类型提示不该各活一份、互相说不清谁是真的。
 //
 // 为什么事实源是基线而不是源码：运行期真正暴露的函数清单由快照门（`rustlua-scripting` 的
 // `src/api_surface_snapshot/`）钉成基线；而源码里的注册点有 ①直写 ②宏展开 ③循环注册 三种形状（见下）。以基线为主、源码为辅，
@@ -34,6 +36,11 @@ const API_DIR = path.join(REPO_ROOT, 'engine/crates/rustlua-scripting/src/script
 const DOC_RS = path.join(REPO_ROOT, 'engine/crates/engine/src/lua_api.rs');
 const DOC_DIR = path.join(REPO_ROOT, 'engine/crates/engine/src/lua_api/doc');
 const BASELINE_JSON = path.join(DOC_DIR, 'baseline.json');
+// LuaLS 类型定义（`---@meta`）与文档桩同源：同一个签名推断、同一次运行，免得两份"事实"漂移。
+const META_LUA = path.join(
+  REPO_ROOT,
+  'engine/crates/rustlua-scripting/src/api_surface_snapshot/rustlua_api.d.lua',
+);
 const STUB_MARKER = 'TODO(文档桩)';
 const HEADER_END = '<!-- 以上为自动生成头，以下第一段散文是模块说明（再生成时保留） -->';
 
@@ -360,11 +367,162 @@ const drift = [];
 let stubs = 0;
 let funcs = 0;
 const generatedModules = [];
+/** `---@meta` 的正文按模块累加（与文档桩同一趟生成：签名与说明只有一份来源）。 */
+const metaLines = [];
+/** 类型推断覆盖率：具名参数 / 参数未知 / 零参数，供读这份定义的人知道它有多"实"。 */
+let metaTyped = 0;
+let metaUnknown = 0;
+let metaZero = 0;
+
+// ------------------------------------------------------------------ LuaLS 类型定义
+//
+// LuaLS（`lua-language-server`，VS Code / Neovim / Helix 的 Lua 插件都用它）把带 `---@meta`
+// 的文件当"环境定义"：不进运行时、只喂补全与拼写检查。脚本作者真正的痛点是 `audio.plat` 这种
+// 打错的名字——没有定义文件时 LuaLS 只会提示"未知全局"，有了它才会在补全列表里给出真实名字。
+//
+// 类型来自同一份签名推断（`byKey`），因此**继承它的两个边界**：定位不到绑定点的函数只能发
+// `---@param ... any`；返回类型在绑定源码里没有事实可依据，一律 `any`（宁可不收窄，也不发一条
+// 会让 `local h = audio.play(x)` 被判成"拿到 nil"的假声明）。
+
+const LUA_KEYWORDS = new Set([
+  'and', 'break', 'do', 'else', 'elseif', 'end', 'false', 'for', 'function', 'if', 'in', 'local',
+  'nil', 'not', 'or', 'repeat', 'return', 'then', 'true', 'until', 'while', 'goto',
+]);
+
+/** 参数位上的关键字改名（`goto` 在 Lua 5.4 是保留字，做参数名同样解析失败）。 */
+function keywordSafe(name) {
+  return LUA_KEYWORDS.has(name) ? `${name}_` : name;
+}
+
+/** Rust 类型 → LuaLS 类型；认不出的落到 `any`，不猜。 */
+function luaTypeOf(rustType) {
+  const text = rustType.trim();
+  const option = /^Option<(.+)>$/.exec(text);
+  if (option) return `${luaTypeOf(option[1])}?`;
+  const vec = /^Vec<(.+)>$/.exec(text);
+  if (vec) return `${luaTypeOf(vec[1])}[]`;
+  const map = /^HashMap</.test(text) || /^BTreeMap</.test(text);
+  if (map) return 'table<string, any>';
+  switch (text.replace(/^mlua::/, '')) {
+    case 'String':
+    case '&str':
+    case 'str':
+      return 'string';
+    case 'f32':
+    case 'f64':
+      return 'number';
+    case 'i64':
+    case 'u64':
+    case 'i32':
+    case 'u32':
+    case 'i16':
+    case 'u16':
+    case 'i8':
+    case 'u8':
+    case 'usize':
+    case 'isize':
+      return 'integer';
+    case 'bool':
+      return 'boolean';
+    case 'Table':
+    case 'LuaTable':
+      return 'table';
+    case 'Function':
+    case 'LuaFunction':
+      return 'fun(...)';
+    default:
+      return 'any';
+  }
+}
+
+/**
+ * 签名字符串 → 一个函数的全部 `---@meta` 行（注解 + 空实现）。
+ *
+ * 发射形状有三种（零参数与"参数未知"绝不能合并，见 `metaFunction` 里的 `shape`）：
+ * - 具名参数：`---@param` + `function 模块.名(a, b) end`（LuaLS 对这种写法支持最直接）。
+ * - 零参数：`function 模块.名() end`，不带 `---@param`。
+ * - 参数未知：`---@param ... any` + `function 模块.名(...) end`。
+ *
+ * 另外，名字撞 Lua 关键字时（实测只有 `map.goto`）**不能**写 `function map.goto(...) end`——
+ * `goto` 是 Lua 5.4 保留字，整份定义文件解析失败。改发 `---@type fun(...)` +
+ * `map["goto"] = function(...) end`，字段名走字符串下标，LuaLS 仍把它认成 `map.goto`。
+ */
+function metaFunction(module, func, sig) {
+  const identifier = /^[A-Za-z_]\w*$/;
+  /** `[{name, type}]`，仅在 `shape === 'typed'` 时非空。 */
+  let typed = [];
+  /**
+   * 三种形状必须分开：**未知**（发 `...`，不收参数检查）/ **零参数**（`sig === ''`，就是不收
+   * 参数，发空括号——LuaLS 于是能对 `physics.events(1)` 报"不该有实参"）/ **具名**。
+   * 把零参数并进未知会让 52 个零参函数在补全里显示成"接受任意参数"；把未知并进零参数更糟，
+   * 调用 `physics.set_velocity(id, comp)` 会被判成实参过多——两种都是假诊断。
+   */
+  let shape = 'typed';
+  if (sig === undefined || sig === '…') shape = 'unknown';
+  else if (sig === '') shape = 'zero';
+  else {
+    const bare = /^\((?<names>.*)\)$/.exec(sig);
+    const parts = (bare
+      ? splitTopLevel(bare.groups.names).map((name) => [name, 'any'])
+      : splitTopLevel(sig).map((part) => {
+          const pair = /^(?<name>[A-Za-z_]\w*)\s*:\s*(?<type>.+)$/s.exec(part);
+          return pair === null ? null : [pair.groups.name, luaTypeOf(pair.groups.type)];
+        })
+    ).filter((entry) => entry !== null && identifier.test(entry[0]));
+    // 一条都对不上就是推断器给出的第三种兜底形状（实测有宏的 `id $(, $component)+` 与
+    // 结构体入参 `(id, x, …): Transform3dSetArgs`）：降级成未知，也不发名字是乱码的声明。
+    if (parts.length === 0) shape = 'unknown';
+    else typed = parts.map(([name, type]) => ({ name: keywordSafe(name), type }));
+  }
+  if (shape === 'typed') metaTyped += 1;
+  else if (shape === 'zero') metaZero += 1;
+  else metaUnknown += 1;
+
+  const argList = typed.map((p) => `${p.name}: ${p.type}`).join(', ');
+  const args = shape === 'unknown' ? '...' : typed.map((p) => p.name).join(', ');
+  if (LUA_KEYWORDS.has(func)) {
+    // 关键字名只能走字符串下标 + `---@type`（注解行里的 `---@param` 对下标赋值不生效）。
+    const signature = shape === 'unknown' ? 'fun(...): any' : `fun(${argList}): any`;
+    return [`---@type ${signature}`, `${module}["${func}"] = function(${args}) end`];
+  }
+  const lines = shape === 'typed'
+    ? typed.map((p) => `---@param ${p.name} ${p.type}`)
+    : shape === 'unknown'
+      ? ['---@param ... any']
+      : [];
+  lines.push('---@return any');
+  lines.push(`function ${module}.${func}(${args}) end`);
+  return lines;
+}
+
+/** 小节正文里第一句人话（补过说明的函数才有）；文档桩标题下的引用行与列表不算。 */
+function metaDescription(sectionBody) {
+  if (sectionBody === undefined || sectionBody.includes(STUB_MARKER)) return null;
+  for (const line of sectionBody.split('\n').slice(1)) {
+    const text = line.trim();
+    if (
+      text === '' ||
+      text.startsWith('#') ||
+      text.startsWith('>') ||
+      text.startsWith('- ') ||
+      text.startsWith('```')
+    ) {
+      continue;
+    }
+    return text.length > 160 ? `${text.slice(0, 160)}…` : text;
+  }
+  return null;
+}
 
 fs.mkdirSync(DOC_DIR, { recursive: true });
 
 for (const [module, list] of [...modules.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
   const existing = readExistingDoc(module);
+  const moduleNote = metaDescription(`## ${module}\n${existing.preamble}`);
+  if (moduleNote !== null) metaLines.push(`--- ${moduleNote}`);
+  metaLines.push(`--- ${module}：运行期 API 面基线里的 ${list.length} 个函数`);
+  metaLines.push(`${module} = {}`);
+  metaLines.push('');
   const out = [
     `# Lua 模块 \`${module}\``,
     '',
@@ -381,6 +539,10 @@ for (const [module, list] of [...modules.entries()].sort((a, b) => a[0].localeCo
     const binding = byKey.get(`${module}.${func}`);
     const previous = existing.sections.get(func);
     const keep = previous !== undefined && !previous.includes(STUB_MARKER);
+    const note = metaDescription(previous);
+    if (note !== null) metaLines.push(`--- ${note}`);
+    metaLines.push(...metaFunction(module, func, binding?.sig));
+    metaLines.push('');
     // 人工说明保留，但标题里的签名跟着源码走（绑定参数变了，文档桩立刻反映）。
     const section = keep
       ? `${sectionHeading(module, func, binding?.sig)}\n${previous.split('\n').slice(1).join('\n')}`
@@ -396,6 +558,34 @@ for (const [module, list] of [...modules.entries()].sort((a, b) => a[0].localeCo
     else fs.writeFileSync(file, expected);
   }
   generatedModules.push({ module, count: list.length });
+}
+
+// ------------------------------------------------------------------ `---@meta` 落盘
+const metaExpected = `${[
+  '---@meta',
+  '-- 生成物，请勿手改：`node scripts/docgen/gen-lua-api-docs.js`（与 `doc/*.md` 文档桩同源、同一次运行）。',
+  '-- 事实源：同目录 `lua_api_surface.json`——运行期 `_G` 探针导出的 API 面基线，由快照门钉住。',
+  '-- 参数名与类型来自绑定源码的签名推断；推断不到的（未定位到绑定点、或签名形状解析不出）' +
+    '发成 `---@param ... any`，本文件 ' +
+    metaUnknown +
+    ' 个；另有 ' +
+    metaZero +
+    ' 个真的不收参数。两种声明不合并（合并 = 假诊断）。',
+  '-- 返回类型在绑定源码里没有事实可依据，一律 `any`：不拿"没有信息"冒充"返回 nil"，否则',
+  '-- `local h = audio.play(x)` 会被 LuaLS 判成拿到 nil。',
+  '-- 装进工程：编辑器菜单「项目 → 导出 Lua 类型提示（LuaLS）」会把这份写到工程根 `.cache/`，',
+  '-- 并保证 `.luarc.json` 的 `workspace.library` 挂着它。',
+  '',
+  ...metaLines,
+].join('\n').replace(/\n+$/, '')}\n`;
+const metaCurrent = fs.existsSync(META_LUA) ? readText(META_LUA) : null;
+if (metaCurrent !== metaExpected) {
+  if (CHECK) {
+    drift.push(`${rel(META_LUA)} 与再生成结果不一致（API 面或签名变了：跑生成器并提交）`);
+  } else {
+    fs.mkdirSync(path.dirname(META_LUA), { recursive: true });
+    fs.writeFileSync(META_LUA, metaExpected);
+  }
 }
 
 // 基线里有、源码定位不到 ⇒ 解析器覆盖不足（打印出来，别当成"没有签名"就行）。
@@ -466,7 +656,7 @@ if (UPDATE_BASELINE) {
 // ------------------------------------------------------------------ 汇报
 const mode = CHECK ? 'check' : UPDATE_BASELINE ? 'update-baseline' : 'write';
 console.log(
-  `lua_api_docs mode=${mode} tables=${modules.size} funcs=${funcs} stubs=${stubs} documented=${funcs - stubs}`,
+  `lua_api_docs mode=${mode} tables=${modules.size} funcs=${funcs} stubs=${stubs} documented=${funcs - stubs} meta_typed=${metaTyped} meta_zero=${metaZero} meta_unknown=${metaUnknown}`,
 );
 if (unmatched.length > 0) {
   console.log(

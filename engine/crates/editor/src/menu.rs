@@ -113,12 +113,16 @@ pub(crate) enum MenuAction {
     // 文件
     NewScene,
     NewProject,
+    /// 文件 ▸ 新建 2D 起步项目…（与空白项目同一条骨架，多一块可控角色与它的实体脚本）。
+    NewProject2d,
     OpenProject,
     SaveScene,
     /// docs/55 阶段 3：明知磁盘被外部改动也覆盖（显式动作，不绑快捷键）。
     ForceSaveScene,
     ProjectSettings,
     PublishProject,
+    /// M79-03：把内置的 LuaLS 类型定义装进工程（`.cache/rustlua_api.d.lua` + `.luarc.json`）。
+    ExportLuaTypeHints,
     Quit,
     // 编辑
     Undo,
@@ -143,6 +147,8 @@ pub(crate) enum MenuAction {
     OpenAtlasPanel,
     /// 资源 ▸ 分包 ▸ 配置与预览：`bundles.json` 编辑 + 落盘字节预估（不产容器）。
     OpenBundlePanel,
+    /// 资源 ▸ 断链检查…：审计全工程引用字段里指向不存在资源的那些（扫描才读盘）。
+    OpenBrokenRefsPanel,
     RevealProjectRoot,
     // 游戏对象
     CreateEmptyEntity,
@@ -188,7 +194,8 @@ const FILE_MENU: &[MenuRow] = &[
     // 场景名由 `create_scene` 自动取（`main`，冲突时 `main2`…）。
     MenuRow::Item(MenuItem::new("新建场景", MenuAction::NewScene).gate(MenuGate::ProjectLoaded)),
     MenuRow::Separator,
-    MenuRow::Item(MenuItem::new("新建项目…", MenuAction::NewProject)),
+    MenuRow::Item(MenuItem::new("新建空白项目…", MenuAction::NewProject)),
+    MenuRow::Item(MenuItem::new("新建 2D 起步项目…", MenuAction::NewProject2d)),
     MenuRow::Item(MenuItem::new("打开项目…", MenuAction::OpenProject)),
     MenuRow::RecentProjects,
     MenuRow::Separator,
@@ -208,6 +215,10 @@ const FILE_MENU: &[MenuRow] = &[
         MenuItem::new("项目设置…", MenuAction::ProjectSettings).gate(MenuGate::ProjectLoaded),
     ),
     MenuRow::Item(MenuItem::new("发布项目…", MenuAction::PublishProject)),
+    MenuRow::Item(
+        MenuItem::new("导出 Lua 类型提示（LuaLS）", MenuAction::ExportLuaTypeHints)
+            .gate(MenuGate::ProjectLoaded),
+    ),
     MenuRow::Separator,
     MenuRow::Item(MenuItem::new("退出", MenuAction::Quit)),
 ];
@@ -286,6 +297,9 @@ const ASSETS_MENU: &[MenuRow] = &[
                 .gate(MenuGate::ProjectLoaded),
         )],
     },
+    MenuRow::Item(
+        MenuItem::new("断链检查…", MenuAction::OpenBrokenRefsPanel).gate(MenuGate::ProjectLoaded),
+    ),
     MenuRow::Separator,
     MenuRow::Item(
         MenuItem::new("在资源管理器中打开项目根", MenuAction::RevealProjectRoot)
@@ -598,6 +612,9 @@ impl EditorApp {
             MenuAction::NewProject => {
                 self.create_new_project(crate::panels::header::ProjectTemplate::Blank)
             }
+            MenuAction::NewProject2d => {
+                self.create_new_project(crate::panels::header::ProjectTemplate::Starter2d)
+            }
             MenuAction::OpenProject => self.open_project_menu(),
             MenuAction::SaveScene => {
                 self.dispatch(editor::EditorCommand::Save);
@@ -607,6 +624,7 @@ impl EditorApp {
             }
             MenuAction::ProjectSettings => self.open_project_settings(),
             MenuAction::PublishProject => self.publish.show_panel = true,
+            MenuAction::ExportLuaTypeHints => self.export_lua_type_hints(),
             MenuAction::Quit => {
                 self.request_document_change(crate::actions::PendingChange::QuitEditor)
             }
@@ -655,6 +673,7 @@ impl EditorApp {
             MenuAction::CollectFontChars => self.collect_font_chars(),
             MenuAction::OpenAtlasPanel => self.open_atlas_panel(),
             MenuAction::OpenBundlePanel => self.open_bundle_panel(),
+            MenuAction::OpenBrokenRefsPanel => self.open_broken_refs_panel(),
             MenuAction::RevealProjectRoot => {
                 crate::util::open_in_explorer(&self.project.root);
             }
@@ -713,6 +732,38 @@ impl EditorApp {
             // ---- 帮助 ----
             MenuAction::OpenManual => self.open_help(),
             MenuAction::About => self.show_about = true,
+        }
+    }
+
+    /// 把编辑器内置的 LuaLS 类型定义装进当前工程。
+    ///
+    /// 只做两件事：写出 `.cache/rustlua_api.d.lua`、保证 `.luarc.json` 的
+    /// `workspace.library` 挂上了 `.cache`。用户已有的配置键一律原样保留，
+    /// 类型定义每次都用同一份产物覆盖，因此重复点击是幂等的。
+    fn export_lua_type_hints(&mut self) {
+        if !self.project_loaded {
+            self.status = "导出 Lua 类型提示需要先打开项目".to_owned();
+            return;
+        }
+        match rustlua_scripting::lua_lsp::install_lua_lsp_meta(&self.project.root) {
+            Ok(install) => {
+                let config = match install.luarc {
+                    rustlua_scripting::lua_lsp::LuarcState::Created => "已生成 .luarc.json",
+                    rustlua_scripting::lua_lsp::LuarcState::LibraryAdded => {
+                        "已在 .luarc.json 补上 .cache 目录"
+                    }
+                    rustlua_scripting::lua_lsp::LuarcState::AlreadyConfigured => {
+                        ".luarc.json 已配置，未改动"
+                    }
+                };
+                self.status = format!(
+                    "已导出 {} 个 Lua 函数声明：{}（{}）",
+                    install.functions,
+                    install.meta_path.display(),
+                    config
+                );
+            }
+            Err(error) => self.status = format!("导出 Lua 类型提示失败：{error}"),
         }
     }
 
@@ -891,10 +942,10 @@ mod tests {
     /// - **运行控制**（播放/停止/暂停/步进）：会真的尝试创建 GPU 预览会话，无窗口环境下要等到
     ///   初始化超时，单测会从毫秒级变成几十秒；这四条由
     ///   `command_router::play_control_commands_follow_the_state_machine` 等专门测试覆盖；
-    /// - **新建/打开项目**：会弹出**原生目录选择对话框**（`choose_project_directory`），
-    ///   单元测试不该弹窗。
+    /// - **新建/打开项目**（空白 / 2D 起步 / 打开）：会弹出**原生目录选择对话框**
+    ///   （`choose_project_directory`），单元测试不该弹窗。
     ///
-    /// 其余条目（约 35 个）在这条测试里必须"无项目、无选中"也能安全执行。
+    /// 其余条目在这条测试里必须"无项目、无选中"也能安全执行。
     #[test]
     fn every_menu_action_is_executable_without_panicking() {
         let mut app = menu_test_app();
@@ -909,6 +960,7 @@ mod tests {
                             | MenuAction::PlayTogglePause
                             | MenuAction::PlayStep
                             | MenuAction::NewProject
+                            | MenuAction::NewProject2d
                             | MenuAction::OpenProject
                     ) {
                         skipped += 1;
@@ -935,7 +987,7 @@ mod tests {
                 }
             });
         }
-        assert_eq!(skipped, 6, "被跳过的动作数量变了，请同步本测试说明");
+        assert_eq!(skipped, 7, "被跳过的动作数量变了，请同步本测试说明");
         // 无项目时"需要项目"的条目全部灰置，但动作本身也必须安全可执行。
         assert!(!app.project_loaded);
     }
@@ -1014,6 +1066,42 @@ mod tests {
         assert!(!app.menu_gate_open(MenuGate::HasSelection));
         // 无项目时"复制组件"等需要选中的条目也必须灰置。
         assert!(MenuGate::HasSelection.reason().contains("选中"));
+    }
+
+    /// 「导出 Lua 类型提示（LuaLS）」把内置的 `.d.lua` 写进工程 `.cache/` 并挂好 `.luarc.json`；
+    /// 没有项目时只给状态提示，不创建任何目录。
+    #[test]
+    fn export_lua_type_hints_installs_meta_into_the_project() {
+        let mut app = menu_test_app();
+        app.run_menu_action(MenuAction::ExportLuaTypeHints);
+        assert!(app.status.contains("需要先打开项目"), "{}", app.status);
+        assert!(
+            !app.project.root.join(".cache").exists(),
+            "无项目时不该写盘"
+        );
+
+        let root =
+            std::env::temp_dir().join(format!("rustlua-menu-meta-{}", crate::util::test_token()));
+        std::fs::create_dir_all(&root).expect("临时工程目录");
+        std::fs::write(root.join("project.toml"), b"id = \"game_menu_meta\"\n")
+            .expect("project.toml");
+        app.project = editor::ProjectInfo {
+            root: root.clone(),
+            version: "test".to_owned(),
+            directories: Vec::new(),
+        };
+        app.project_loaded = true;
+        app.run_menu_action(MenuAction::ExportLuaTypeHints);
+        assert!(app.status.contains("个 Lua 函数声明"), "{}", app.status);
+        assert!(
+            root.join(".cache").join("rustlua_api.d.lua").is_file(),
+            "类型定义要落盘"
+        );
+        assert!(root.join(".luarc.json").is_file(), "LuaLS 配置要落盘");
+        // 再点一次：配置保持不动，只刷新类型定义（重复点击是幂等的）。
+        app.run_menu_action(MenuAction::ExportLuaTypeHints);
+        assert!(app.status.contains("未改动"), "{}", app.status);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 组件菜单由注册表生成：类别齐全，且每个组件名都能被 `add_component` 认识。

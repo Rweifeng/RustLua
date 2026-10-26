@@ -304,6 +304,14 @@ pub enum ReloadStatus {
     Reloaded,
 }
 
+impl ReloadStatus {
+    /// 本次检查是否真的换掉了脚本（宿主用它决定"要不要告诉用户重载发生过"）。
+    #[must_use]
+    pub fn is_reloaded(self) -> bool {
+        matches!(self, Self::Reloaded)
+    }
+}
+
 /// 每实体脚本的宿主事件。`other` 是交互目标/碰撞对方；`on_spawn`/`on_update`
 /// 由运行时自动调用，不在此列。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

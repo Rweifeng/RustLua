@@ -44,8 +44,8 @@ M.tex = {
   -- menu 主入口门面（14 张）
   menu_vignette = { path = DIR .. "menu/ui_menu_vignette.png" },
   menu_ink_band = { path = DIR .. "menu/ui_menu_ink_band.png" },
-  menu_btn_wuxia = { path = DIR .. "menu/ui_menu_btn_wuxia_9s.png", slice = "18,18,18,18" },
-  menu_btn_wuxia_hover = { path = DIR .. "menu/ui_menu_btn_wuxia_hover_9s.png", slice = "18,18,18,18" },
+  menu_btn_wuxia = { path = DIR .. "menu/ui_menu_btn_day_9s.png", slice = "18,18,18,18" },
+  menu_btn_wuxia_hover = { path = DIR .. "menu/ui_menu_btn_day_hover_9s.png", slice = "18,18,18,18" },
   menu_btn_wuxia_pressed = { path = DIR .. "menu/ui_menu_btn_wuxia_pressed_9s.png", slice = "18,18,18,18" },
   menu_panel_scroll = { path = DIR .. "menu/ui_menu_panel_scroll_9s.png", slice = "20,20,20,20" },
   menu_ornament_corner = { path = DIR .. "menu/ui_menu_ornament_corner.png" },
@@ -119,8 +119,6 @@ M.tex = {
   touch_close = { path = DIR .. "touch/ui_touch_close.png" },
   -- 动作盘（M34-06 批 2）：9 个生活/建造动作共用这一张，标签由 `ui_text` 各画自己的。
   touch_btn_action = { path = DIR .. "touch/ui_touch_btn_action.png" },
-  -- logo 标题（1 张）
-  title_logo = { path = DIR .. "logo/ui_title_logo.png" }
 }
 
 -- 画 9-slice 面板/控件：id 唯一；key 必须带 slice（普通贴图请用 icon）。

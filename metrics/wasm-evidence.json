@@ -39,13 +39,13 @@
     {
       "target": "rustlua-scripting globals.rs cfg!(target_arch=\"wasm32\")",
       "kind": "compile-only",
-      "commands": ["cargo check -p game_web -p gpu-web-probe -p wasm-lua-spike --target wasm32-unknown-unknown"],
+      "commands": ["cargo check -p game_web -p gpu-web-probe --target wasm32-unknown-unknown"],
       "notes": "宏分支随 wasm-default cell 编译；运行期语义由 wasm Lua 门覆盖。"
     },
     {
       "target": "rustlua-infra par.rs / user_dir.rs cfg! macros",
       "kind": "compile-only",
-      "commands": ["cargo check -p game_web -p gpu-web-probe -p wasm-lua-spike --target wasm32-unknown-unknown"],
+      "commands": ["cargo check -p game_web -p gpu-web-probe --target wasm32-unknown-unknown"],
       "notes": "代码内 cfg! 随闭包编译覆盖；user_dir.rs:213 是文档注释（扫描器跳过），不计。"
     }
   ]

@@ -23,11 +23,13 @@ editor [--project <项目路径>] [--check] [--help]
 | `RUSTLUA_EDITOR_THUMBNAIL_BENCH=<n>` | 跑缩略图基准后退出（默认 1000） |
 | `RUSTLUA_EDITOR_PLAYSTOP_BENCH=<n>` | 跑 Play/Stop 基准后退出（默认 100） |
 
+脚本迭代相关的 `RUSTLUA_EDITOR` / `RUSTLUA_EDITOR_DRY_RUN` 见第 19 节（面向用户，不是基准钩子）。
+
 ## 2. 项目工作流
 
 - 窗口标题：`RustLua 编辑器 - <项目路径>`。
-- 菜单 **项目**：
-  - **新建项目**：目录选择后，若目录不是工程则自动搭骨架（`project.toml`、`scripts/main.lua`、`scenes/main.scene`、`assets/`），随后后台导入。
+- 菜单 **文件**（M76 起按 Unity 的七个顶级菜单组织）：
+  - **新建空白项目…** / **新建 2D 起步项目…**：目录选择后，若目录不是工程则自动搭骨架（`project.toml`、`scripts/main.lua`、`scenes/main.scene`、`assets/`，2D 起步再多一块可控方块 `Player` 和它的实体脚本 `scripts/entity/player.lua`），随后跑一次**尾门校验**（结构 + 启动场景可读且带相机 + 全部 Lua 语法），通过了才切项目并在状态栏报出读数；不通过则把原因写进状态栏、文件留在磁盘上但不切项目（见第 20 节）。
   - **打开项目**：目录选择 → 后台导入（目录必须有 `project.toml`）。
   - **最近项目**：最多 5 个，最新在前，点击即重开。
   - **保存项目**（`Ctrl+S`）：保存当前场景到 `scenes/<场景名>.scene`。
@@ -57,6 +59,8 @@ editor [--project <项目路径>] [--check] [--help]
 ## 4. 工具栏
 
 - **Play/Stop 单按钮**：`▶` 开始运行 / `■` 停止运行（无文字，悬停有提示）。未加载工程时禁用。
+- **应用到场景（N）**：只在运行/暂停时出现，是 Play 期调参的出口（`N` = 记下来的字段值个数，
+  为 0 时禁用）。语义与限制见第 9 节。
 - **设计分辨率**：选中文本带当前比例（如 `1280×720 · 16:9`）；下拉里切换预置、用
   16:9 / 16:10 / 21:9 / 4:3 / 9:16 按比例换边（保持长边），或 `＋ 自定义…` 添加（宽高 100..7680 × 100..4320）。Play 中修改会实时重建预览。
 - **3D 开关**：点亮显示 3D 视图（XZ 俯视），取消回到 2D。
@@ -94,6 +98,8 @@ editor [--project <项目路径>] [--check] [--help]
 - 标题 **层级** + 保存状态（`● 未保存` / `已保存`）。
 - **场景选择**下拉：列出 `scenes/*.scene`，当前未保存场景显示 `●未保存`，并显示路径。
 - 实体树：`▸/▾` 展开/收起子实体，`◉/◌` 隐藏，`⊡/⊠` 锁定，点击行 `"name [id]"` 选中（锁定行不可选）。隐藏/锁定状态持久化到场景元数据（`editor.hidden.<id>` / `editor.locked.<id>`）。
+- **双击行**：普通实体 = 行内改名；**预制体根实例** = 进入 in-context 编辑（§23）。根实例改名请用 `F2` 或右键菜单「重命名」。
+- 处于 in-context 预制体编辑时，标题行下方出现横幅（源路径 + 返回时同步几个实例 + 「保存并返回」/「放弃并返回」），此时这份树显示的是**源预制体**，不是场景。
 - 无场景时显示「请先新建场景」。
 
 ## 7. 属性（Inspector）
@@ -101,7 +107,7 @@ editor [--project <项目路径>] [--check] [--help]
 - 右侧 **属性** 面板（min 340）。
 - 实体元信息：实体 ID、父实体、子实体数量、Prefab 来源与 Override 列表。
 - 运行时切场景不销毁：挂 **`Persistent` 组件**（**添加组件 ▸ 玩法**）。无载荷标记组件，挂在父节点上会级联到整棵子树；移除组件即恢复普通实体。旧的 `entity_meta persistent=true` 场景仍由运行时兼容读取，但编辑器不再写入该标志。
-- Prefab 根实例操作：**重新应用源 Prefab**、**打开源 Prefab**、**写回源并更新实例**。
+- Prefab 根实例操作：**重新应用源 Prefab**、**打开源 Prefab**、**在上下文中编辑**（§23）、**写回源并更新实例**、**解包预制体**、**还原覆盖**。
 - **父级**：输入父实体 ID → **设置父级** / **解除父级**；**重新命名** 改名。
 - **添加组件**：可选 `Sprite, Tilemap, Persistent, Animation, Transform3D, MeshRenderer, Camera3D, Light, Collider3d, Text, WorldText, Image, UiLayout, Container, UiEvents, UiBindings, ButtonStates, UiAnimation`；组件各有 **移除**。
 - 可编辑组件：
@@ -120,7 +126,8 @@ editor [--project <项目路径>] [--check] [--help]
   - **Tilemap**：纹理、Tile 尺寸、网格 width×height（1..256）、画笔、碰撞层、内联网格预览（≤24×24）。
   - **Animation**：默认状态、clips（名称/Sheet/列数/FPS/循环）。
   - **LuaScript**：Lua 路径。
-- 所有修改可撤销（Ctrl+Z / Ctrl+Y），应用即自动保存场景；Play 期间全部编辑被锁定。
+- 所有修改可撤销（Ctrl+Z / Ctrl+Y），应用即自动保存场景；Play 期间**取值可以改**（写运行态镜像，
+  出口是工具栏「应用到场景」，见第 9 节），结构类操作与资源引用字段仍然锁定。
 
 ## 8. 资源面板
 
@@ -128,6 +135,7 @@ editor [--project <项目路径>] [--check] [--help]
 - 目录树（顶层默认展开，空文件夹隐藏）。
 - 可拖拽类型：**纹理 / 预制体 / 模型 / 材质**（拖柄 `::`）；纹理与预制体显示 20×20 缩略图（后台线程解码、缓存）。材质只能拖到 Inspector 的路径字段（如 `MeshRenderer.material`），不能拖到 Scene/层级生成实体。
 - 双击 `.material` 选中场景里引用它的 `MeshRenderer` 并打开材质段；双击 Scene/Prefab 仍打开文档。
+- 双击 **PNG 贴图**打开「贴图预览」窗（第 21.1 节）：看的是**原尺寸**，不是列表里那张 64 像素缩略图。
 - 状态标记：`▲` 过期、`✕` 缺失/孤立、`✕`(红) 导入失败、`断链` 依赖失效。
 - 双击打开 Scene/Prefab；`Delete` 删除选中资源（当前打开的场景不可删）。
 - 待导入资源在后台批量导入，进度窗按项显示；成功自动关闭，失败保留。
@@ -147,13 +155,36 @@ editor [--project <项目路径>] [--check] [--help]
   （`FixedTimeStep::advance(elapsed)`；丢掉超出上限的步数会打 `[preview] dropped catch-up steps` 日志）。
 - 失败时红色诊断覆盖层 + readback 指标。
 - **Stop（`■`）**：丢弃全部运行时修改，**恢复 Play 前的编辑快照**，清空输入/选中，返回场景工作区。
-- Play 期间锁定编辑（拖拽/Gizmo/Inspector/删除/添加/拖放/导入/发布均提示「Play mode locks scene editing; click Stop first」）。
+- Play 期间**结构类**操作一律锁定（层级的增删/改名/父子、Gizmo 拖动、添加与移除组件、Prefab 动作、
+  拖放、导入、发布），状态栏提示「播放模式下不能编辑场景，请先点击停止」。
+- **取值可以在 Play 里直接改（M79，Unity 式运行中调参）**：Inspector 的数值/向量/颜色/布尔/枚举
+  与组件预设动作（如 `UiLayout` 锚点预设）照常可编辑，多选批量同样放开。写进去的是**运行态镜像**
+  （Play 中 Inspector 与层级读的就是那份），因此**不产生撤销、不标脏**，游戏也不会因此变行为：
+  预览的活世界是另一份状态。
+  - 想留下取值 → 点工具栏的 **应用到场景（N）**（`N` 是记下来的字段值个数）。它把这次运行里
+    **你亲手填过的取值**（不是游戏此刻的读数）合并成**恰好一条**撤销写回场景，同时落进会话的
+    编辑器快照，所以**点了 Apply 再 Stop 也不会被回滚**，之后一条 `Ctrl+Z` 能整批撤掉。
+  - 不点 Apply 直接 Stop → 默认回滚（Unity 语义）：恢复 Play 前的编辑快照，改动全部丢弃。
+  - 要在游戏里看效果：先 **应用到场景**，再点 **⟲ 重新开始运行**——重启按当前编辑文档重建会话，
+    带上的就是你刚应用的取值。
+  - 运行期生成的实体（`entity.spawn`）在场景里没有落点，Apply 时**按实体跳过**并在状态栏报数。
+  - 资源引用类字段（贴图/网格/字体路径）在 Play 中**仍然锁着**：预览不会因为镜像里换了路径而
+    重新导入资源，放开只会让"看着改了、其实什么都没动"。
+  - 证据：`cargo test -p editor --bin editor -- --test-threads=1 schema_inspector` 里
+    `field_edit_while_playing_*` / `stop_without_apply_rolls_back_play_tweaks` /
+    `apply_play_edits_*` / `a_rejected_play_edit_*` / `a_multi_selection_play_edit_*` 六条。
+    其中"Apply 后 Stop 仍保留"做过反面对照：去掉快照同写，该断言立刻红（实测报
+    `left: "size=64,32;…"` vs `right: "size=8.000000,8.000000;…"`）。代价：镜像写不进活世界，
+    所以调完参想在游戏视图里看到，只有 Apply + 重启这一条路。
+- **例外：脚本不用 Stop**。`scripts/` 目录里的 Lua 存盘后按 ~250ms 节律热重载，成功/失败都显示在
+  游戏视图的诊断位（见第 19.1 节）。
 
 ## 10. 控制台
 
 - 底部控制台面板（无标题行）；左侧 `⚙` 编辑器日志 / `🕹` 游戏 Lua 日志。
 - 过滤框 + 级别 **全部 / Info / Warning / Error** + **清空**。
-- Play 预览诊断（含布局溢出告警）归编辑器日志分类；点击日志行复制全文，带位置的诊断行可点击跳转。
+- Play 预览诊断（含布局溢出告警）归编辑器日志分类；点击日志行复制全文，带位置的诊断行可点击跳转
+  （选中实体 / 打开文档 / 交给外部编辑器定位到行，见第 19 节）。
 
 ### 10.1 时间线（动画预览与编辑）
 
@@ -264,8 +295,8 @@ editor [--project <项目路径>] [--check] [--help]
 
 | 快捷键 | 作用 |
 |---|---|
-| `Ctrl+S` | 保存当前场景 |
-| `Ctrl+Z` / `Ctrl+Y` | 撤销 / 重做 |
+| `Ctrl+S` | 保存当前场景；处于 in-context 预制体编辑时保存的是那份**预制体资产**（§23） |
+| `Ctrl+Z` / `Ctrl+Y` | 撤销 / 重做（跨面板按「最近提交的归属」分流，见 §22） |
 | `Delete` | 删除选中（层级聚焦时删实体，否则删选中资源） |
 | `Enter` | 控制台执行 Lua |
 | `Q` / `W` / `E` / `R` | 场景视图工具：选择 / 移动 / 旋转 / 缩放 |
@@ -412,7 +443,7 @@ editor [--project <项目路径>] [--check] [--help]
   帧末清扫没被认领的并说明原因（"落点不在任何面板内"），不会静默丢弃。
 - **拖拽期间**目标区画 2px 高亮边框，右上角显示松手会执行的动作（"导入 3 个文件" / "实例化 prefab" /
   "设为字段值"）；非法目标画红框、松手无副作用。
-- **Play 期间一律拒绝**，提示与第 9 节一致（`Play mode locks scene editing; click Stop first`），
+- **Play 期间一律拒绝**，提示与第 9 节一致（`播放模式下不能编辑场景，请先点击停止`），
   且拒绝发生在任何写盘/写文档之前。
 - 已知边界：浏览器来源"只有字节没有路径"的拖入条目直接拒绝；Inspector 只认 schema 中的资源引用行；
   真实窗口下的拖放丢失率尚未量化（见 M27-03）。
@@ -443,7 +474,7 @@ editor [--project <项目路径>] [--check] [--help]
 | 外部多文件 / 不可引用后缀 → Inspector | 拒绝 | `资源引用字段一次只收一个文件，本次拖入 2 个` / `这个字段要的是纹理/模型/预制体，拖进来的文件不是` | `the_inspector_field_takes_one_external_file` |
 | 空批次 → 任意落点 | 拒绝 | `没有可导入的文件` | 同上（四格逐一断言） |
 | 外部文件落在所有面板之外 | 帧末扫尾说明，零改动 | `释放位置不在可放置的面板内，未做任何改动` | `dnd/a_drop_outside_every_zone_is_explained_not_silently_dropped` |
-| 任意来源 → 任意落点（Play 期间） | 拒绝，且拒绝发生在任何写盘/写文档之前 | `Play mode locks scene editing; click Stop first` | `scene_ops::tests::play_mode_refuses_a_drop_without_touching_the_document` + `import.rs` 的 Play 门禁 |
+| 任意来源 → 任意落点（Play 期间） | 拒绝，且拒绝发生在任何写盘/写文档之前 | `播放模式下不能编辑场景，请先点击停止` | `scene_ops::tests::play_mode_refuses_a_drop_without_touching_the_document` + `import.rs` 的 Play 门禁 |
 
 本轮为这张表补的三格真实帧证据：**实体→层级行的重排（含环校验）**、**外部批次→层级行**，并把
 prefab 从"资产"里单拆成一行（`a_prefab_plan_per_zone`）；`--gui-smoke` 的 `dnd/*` 断言由 8 条增至
@@ -559,3 +590,769 @@ schema 字段 id 反查；结算层已有逐动作单测，接线部分列进 M2
 - **顶点/三角形**按实际提交统计；3D 按"每实例顶点数 × 实例数"统计一次，不因阴影 pass 重复。
 - **贴图身份命中率**按 draw 的资源句柄解析计，不是磁盘缓存命中率；显存是上传时记录的估算值。
 - **进程工作集**在 Windows 上是真实 RSS；非 Windows 显示"不可用"，不拿 0 冒充。
+
+## 19. 脚本迭代：热重载与外部编辑器（M79）
+
+这一节回答"改完 Lua 之后要做什么"。口径是 Unity 式的：**编辑器不自己写文本编辑器**，
+运行时改脚本不用 Stop，报错不吞掉也不谎报。
+
+### 19.1 热重载（Play 与独立 `game` 都生效）
+
+- 工程根下存在 `scripts/` **目录**时，Play 预览和桌面 `game` 每 250ms 检查一次脚本磁盘状态，
+  走同一条引擎入口（先立候选 VM、旧 VM 后破），所以语法错不会把正在跑的游戏打回空状态。
+  打包形态（`--pack` / 发布包）不监听——玩家目录里的脚本不该被热重载。
+- **成功**：编辑器在游戏视图的诊断位显示 `Lua 脚本已热重载：…`（约 2 秒后自动消失，只报真的
+  变了的那部分：工程级入口 / 实体脚本数量分开写）；`game` 侧打成一行 `[script]` 日志。
+  磁盘没变时**什么都不显示**，不会挂一条"已热重载 0 个文件"。
+- **失败**：提示 `Lua 热重载失败（旧脚本继续运行）：<原因>` 常驻到下一次成功，游戏继续跑改坏
+  之前的逻辑——这句必须写出来，否则"画面还在动"很容易被读成"刚才那次保存生效了"。
+- 只有 `scripts/main.lua` 而无实体脚本的工程同样能重载；反向（只有实体脚本）也不会因为
+  "工程级入口没跑过"而报错。
+
+### 19.2 一键跳到外部编辑器的 `file:line`
+
+- 控制台里带位置的诊断行（`scripts/player.lua:12`、`layout overflow entity=1` 这类）点击即跳转：
+  能定位到实体的先选中实体；指向项目内已存在的文档（`.scene`/`.prefab`）走统一打开入口（含未保存
+  保护）；指向 `scripts/*.lua` 等**文本源码**且文件真在磁盘上时，把它交给外部编辑器并定位到行，
+  同时按来源过滤控制台。文件已被删掉就只做过滤，不谎称打开了编辑器。
+- 资源面板双击 `.lua`（以及 `.luae`/`.ron`/`.toml`/`.txt`/`.wgsl`/`.md`/`.rs`）同样打开外部编辑器；
+  右键菜单里有 **在外部编辑器打开**。`.json`/`.vgraph` 刻意不算文本源码——它们各有自己的面板。
+- 选哪个编辑器（依次尝试）：
+  1. `RUSTLUA_EDITOR`：命令模板，`{file}` 与 `{line}` 是占位符，例如
+    `code -g "{file}":{line}`。模板里没写 `{line}` 就**不会**声称定位到了行。
+  2. 已安装且认识的编辑器，按优先级：VS Code / Notepad++ / Neovim / Vim / Sublime Text /
+     IDEA / Helix。
+  3. 都没有时退回系统文件关联（能打开，但定位不了行——状态栏会明说，并提示设 `RUSTLUA_EDITOR`）。
+- 路径带空格会整体加引号；跳转不会阻塞编辑器帧循环（起进程不等它退出）。
+
+### 19.3 LuaLS 类型提示（补全与参数提示）
+
+- 菜单 **文件 ▸ 导出 Lua 类型提示（LuaLS）** 把编辑器内置的一份 `---@meta` 定义写进
+  当前工程的 `.cache/rustlua_api.d.lua`，并保证 `.luarc.json` 的 `workspace.library`
+  挂上了 `.cache`；状态栏报出「多少个函数声明 + 配置文件是新建、补挂还是已配好」。
+- 这份定义由 API 面快照（`lua_api_surface.json`，42 张表 / 308 个函数）连同绑定源码
+  一起再生成，和 Lua API 文档桩**共用同一个签名推断**，因此不会出现文档说三个参数、
+  补全说两个参数。生成器 `--check` 门同时盯这两份产物：只改脚本不改产物就会红。
+- 已有的 `.luarc.json` **只补 `workspace.library`**，其余键原样保留；坏 JSON / 结构不对
+  会报错并保留原文件，不静默覆盖。重复点击幂等（第二次配置写「未改动」）。
+- 边界要说清楚：参数名与类型来自绑定源码的推断，推断不出来时发 `...`（不检查实参），
+  零参数函数发空括号（`physics.events(1)` 会被 LuaLS 判成实参过多——这是有意的）；
+  **返回值一律 `any`**，因为运行时登记表不记录返回类型。补全、参数名、拼写检查是绿的，
+  返回类型检查买不到。
+- VS Code 需要装 Lua 扩展（sumneko Lua / LuaLS），装好后重开工程即生效。
+
+### 19.4 相关环境变量
+
+| 变量 | 作用 |
+|---|---|
+| `RUSTLUA_EDITOR=<模板>` | 指定外部编辑器命令行（`{file}` / `{line}` 占位符） |
+| `RUSTLUA_EDITOR_DRY_RUN=1` | 启动编辑器时只计算命令行、**不真的起进程**（结果照常写进状态栏；无头门与验收用它） |
+
+## 20. 第一次打开：十分钟跑通一个会动的画面（M79）
+
+一页教程，按顺序做即可；每步都写明"看什么"，看不到就照最后一条排查。前面章节只按需引用，
+不必先读完。
+
+1. **建项目**：菜单 **文件 ▸ 新建 2D 起步项目…**，选一个空目录。状态栏出现
+   「已创建 2D 起步项目：…（editor_project_ok … scene_entities=3 scripts=2）」才算建好——
+   这一串是骨架的尾门读数（结构 + 启动场景可读且带相机 + 全部 Lua 语法），
+   写歪了会直接说「骨架已写入但校验未通过：…」并且不切项目。
+   想从零开始就选 **新建空白项目…**（同样自带相机与背景，只是没有可控角色）。
+2. **认界面**：左边 **层级**（实体树）与 **资源**（`assets/`、`scripts/`、`scenes/`），
+   中间 **Scene**（设计分辨率框内的那格）与 **Game**，右边 **Inspector**，底部 **控制台**。
+   层级里选中 `Player`，Inspector 能看到 `Transform`/`Quad`/`Script` 三个组件。
+3. **先看编辑预览**：**Game** 标签里不用 Play 就有画面（相机 + 深蓝背景 + 绿方块），
+   这是编辑预览，**不跑 Lua/物理**；脚本动态生成的界面要 Play 才出现。
+4. **跑起来**：点工具栏 **▶ 播放**（自动切到游戏工作区）。在 Game 视图里按 **WASD 或方向键**，
+   方块跟着走——这一步证明输入桥、逻辑步与实体脚本钩子都接上了。按 **■ 停止** 回到场景工作区，
+   Play 期间的一切运行时修改都被丢弃（恢复 Play 前的编辑快照）。
+5. **改一行 Lua，不用 Stop**：用任意外部编辑器打开工程里的 `scripts/entity/player.lua`，
+   把 `local SPEED = 240.0` 改成 `480.0` 保存。Play 中约 250ms 内生效，Game 视图的诊断位显示
+   `Lua 脚本已热重载：…`（约 2 秒后消失）。故意删掉一个 `end` 再保存：提示变成
+   `Lua 热重载失败（旧脚本继续运行）：…` 并常驻，游戏仍按改坏之前的逻辑跑——
+   这句必须看得见，否则"画面还在动"很容易被读成"刚才那次保存生效了"。
+6. **让补全认识引擎 API**：菜单 **文件 ▸ 导出 Lua 类型提示（LuaLS）**，
+   工程里出现 `.cache/rustlua_api.d.lua` 与 `.luarc.json`；VS Code 装了 Lua 扩展后，
+   在 `scripts/**.lua` 里打 `input.` 就能看到 42 张表 / 308 个函数的补全与参数名（见第 19.3 节）。
+7. **报错跳过去**：控制台里带位置的行（例如 `scripts/entity/player.lua:7`）点一下，
+   文件交给外部编辑器并定位到那一行（选编辑器的三步优先级见第 19.2 节）；
+   资源面板里双击 `.lua` 也是同一件事。
+8. **发布前自查**（可选）：命令行 `game --check --project <工程目录>` 与
+   `editor --check --project <工程目录>`——第 1 步的尾门用的就是这两套口径，
+   之后自己改坏了也靠它们当场报红。
+
+看不到画面先确认第 4 步有没有真进 `Playing`（状态机 `Editing → Starting → Playing`，
+启动失败会给红色诊断覆盖层与可读错误）；按键不动则确认焦点在 Game 视图里、
+以及 Inspector 中 `Player` 的 `Script` 组件串仍是 `file=scripts/entity/player.lua`。
+
+这一页**不覆盖**：物理碰撞、UI 布局、动画与预制体的完整用法——分别见第 9、10.1 节与
+`docs/22-使用手册.md`；也不覆盖 Web/微信发布（见 `docs/34-质量门与发布清单.md`）。
+
+## 21. 贴图预览、导入设置与断链检查（M79 P1）
+
+### 21.1 贴图预览窗（资源面板双击 PNG）
+
+Unity 里双击贴图会开一张原尺寸的预览图；这里同形。窗里只有一个能改磁盘的控件：「导入采样」
+那一行的**应用**按钮（见 §21.3），它写的是工程根下那份入库的 `resources.meta`，PNG 本身
+一个字节都不改；除此之外全是读数。
+
+- **看的是全尺寸**：解码走运行时同一条路径（`TextureAsset::load_png`），列表里那张缩略图被压到
+  64 像素以内，用它判断"边缘有没有锯齿"是判断不出来的。实测口径：门
+  `panels::texture_preview::tests::a_real_png_decodes_at_full_size_and_uploads_one_texture`
+  写一张 **128×96** 的 PNG，断言窗内尺寸就是 128×96（缩略图链永远到不了这个数）。
+- **「逐像素 / 平滑」是预览态开关**，只作用于这张预览图自己的采样器，不写任何工程数据，
+  也不代表运行结果——运行期用哪一档由下面 §21.3 的「导入采样」决定。两者挨在一起是有意
+  的（作者在同一屏比较"我看到的"和"游戏会用到的"），但语义完全不同，所以文案分开写，
+  并有一条门专门钉住这条边界：
+  `panels::texture_preview::tests::the_preview_pixel_toggle_touches_no_project_data`
+  （勾完开关后断言工程里**没多出** `resources.meta`，且导入设置那一档没被改掉）。
+- **代价**：解码在 UI 线程同步做。一张几千像素的图在 Debug 构建下是几十毫秒量级的一次卡顿，
+  因为它是显式点击才发生的，没有做成后台队列。切图（换一张）会丢掉上一张的解码结果，
+  来回切就是来回解码。
+- **解码失败给原因**，不给空白窗：窗里第一行会变成 `解码失败：…`（例如把 `.jpg` 改名成
+  `.png` 的那类文件——解码器只认 PNG）。
+- 顺手可用的两个按钮：「重新解码」（怀疑缓存过期时，顺带作废导入设置的缓存）与
+  「在资源面板中定位」。
+- 换工程、以及把这张图重命名/移动走时，窗会当场作废——否则留着的是"工程里已经不存在的图"。
+
+**没做的部分（是取舍，不是漏）**：导入设置里仍然**没有** 9-slice 与色彩空间。filter/wrap 这一
+轮做完了（§21.3），剩下两项没有能存的地方：`resources.meta` 的行格式是按"运行期真的会读"
+设计的，采样两档直接对应渲染器预建的采样器；9-slice 要改的是**几何/UV 生成**（装配期），
+色彩空间要改的是**上传时的纹理解码路径**（今天是按调用点硬编码），两者都不是"登记一个
+作者意图"就生效的东西。把它们塞进同一份文件里会造出"面板能勾、画面不动"的假设置。
+
+### 21.2 断链检查（菜单 **资源 ▸ 断链检查…**）
+
+Inspector 的 `⚠ 工程内找不到该资源` 只看**当前选中的实体**，而断链最常见的来源恰恰是
+"今天没打开过的那份场景/预制体"。这个窗把全工程汇总成一份清单，单位是**一条断掉的路径**
+（同一条路径通常被几十处引用，修复动作也天然是路径级的）。
+
+- 「扫描全工程」读一遍所有 `.scene`/`.prefab`，外加当前打开文档的**内存版**（含未保存编辑）。
+  代价是逐份解析，大工程是百毫秒级，所以只在显式点击时做；扫描只读，Play 期间也能扫。
+- 读数旁边永远跟着两个自检：**读过几份文档**、以及**读不动的文档是哪几份**（解析失败会被点名，
+  并写明"这些里面的断链不在下面清单里"）。少了这两行，"没有断链"和"没看得见"就长得一样。
+  对应的门：`actions::tests::broken_refs::an_unreadable_document_is_named_not_silently_dropped`
+  与 `a_missing_index_never_claims_there_are_no_broken_links`（后者是反向负控：资源索引还没建立时
+  扫描**拒绝出清单**，而不是报一屏假断链）。
+- **一键「改指」只认同名且工程里唯一命中**的那一份。同名有多份 → 列出候选让你自己判断；
+  工程里没有同名文件 → 让你回 Inspector 重选。猜一个填进去，比留着断链更难发现。
+- 点「改指」之后：其它文档**直接写盘**，当前打开的文档只在内存里改并留下**恰好一条 Undo**
+  （它的磁盘文件保持原样，未保存的编辑不会被连带覆盖）。这条 skip 语义有门守着：
+  `repair_rewrites_other_documents_on_disk_and_keeps_the_open_document_unsaved`。
+- 改完的那一行立刻从清单里摘掉，但**不自动重扫**——清单仍是"上一次扫描"的快照，
+  窗里会写这句话。要最新状态就再点一次扫描。
+- Play 期间点改指会被拒（与资源重命名同一条闸门），拒绝不产生历史、不动磁盘。
+- `__white__` 这类**内置哨兵**不算断链（运行时认识它，不查工程文件系统）。Inspector 的 ⚠
+  与这个窗共用同一个判据（`schema_fields::is_builtin_asset_reference`），两边不会再一个亮一个不亮。
+
+### 21.3 纹理导入设置（预览窗里的「导入采样」那一行）
+
+Unity 的 Inspector 顶部那张 Import Settings 面板，这里缩成两档：**滤镜**（放大怎么取色）和
+**寻址**（UV 越出 `0..1` 怎么取）。这一轮的裁定是"必须真落到 GPU 采样器上"，所以判据不是
+"面板显示对了"，而是**像素变了**。
+
+- **存哪儿**：工程根下 `resources.meta`——资源库的**持久那一半**（`.cache/resources.db` 在
+  `.gitignore` 里，是"可重建缓存"；导入设置是作者意图，换台机器必须还在）。格式是带表头的
+  tab 分隔文本（`# rustlua-resource-meta-v1` + `texture<TAB>相对路径<TAB>滤镜<TAB>寻址`），
+  与 `resource_db` 同一套无序列化运行时的行格式，能直接 review。
+- **键是工程相对路径，不是 `AssetId`**：`AssetId::from_seed` 的种子含 `importer_version`，
+  导入器将来升版会让同一张图换 UUID，设置不能跟着漂。
+- **只登记非默认档**：默认档 = `nearest` + `clamp`，与引擎今天那个全局采样器
+  （`rustlua-texture-sampler`）逐参数一致。写回默认档会**删掉那一行**，表空了会**删掉文件**
+  （diff 里不该留"某人把设置改回原样"）。未知记录类型跳过（新版本引擎写的设置不该让老引擎
+  打不开工程），未知**取值**报错而不是猜。
+- **生效链（一次点击走完）**：面板「应用」→ 写盘 → **重读磁盘**并把读到的那一档写回面板
+  （回执引用的是盘上的事实，不是内存里的期望）→ Scene 视图渲染器与 Play 预览会话各自
+  `reload_texture_settings()` **就地换绑定组**（不重传像素、不清缓存）。
+- **为什么"不重传"也要立刻见效**：2D 保序合并按 `(texture, sdf, bitmap)` 缓存绑定组，
+  换采样器时槽位号没变——所以纪元（`texture_epoch`）里必须有第四项 `sampling_epoch`，
+  少了它症状正是"改了没反应"。这条由 NC-B 单独钉住（见下面的证据）。
+- **发布包也带着走**：`assetc package` 把 `resources.meta` 拷进产物根，`boot_priority` 把它
+  排进 0 档（和 `project.toml`、`atlas_redirect.json` 同族），分包规则的 `core` 组认领它。
+  运行期读取走 `vfs::read` + `pack::decode` 而**不是** `Path::exists()` + `std::fs`——
+  容器形态下磁盘上根本没有这个文件，用 `exists()` 判"不存在"会让**整份设置被静默跳过**，
+  那比读错更糟（看起来像"没人登记过"）。
+
+**证据**（四条命令，本机实测；GPU 那组必须单线程，并发跑会拿到 `Device(Lost)` 假红）：
+
+```
+RUSTLUA_REQUIRE_GPU=1 cargo test -q -p rustlua-gpu --lib texture_sampling -- --test-threads=1
+cargo test -q -p editor --bin editor texture_preview -- --test-threads=1
+cargo test -q -p rustlua-assets --lib import_settings -- --test-threads=1
+cargo test -q -p assetc --lib -- --test-threads=1
+```
+
+读数：**4 passed** / **15 passed** / **6 passed** / **57 passed**，四条全 0 failed（2026-10-26，
+格式化后重跑）。GPU 那 4 条是**像素门**，形状是"64×64 四色棋盘 + 离屏渲染 + 回读"：
+
+- `a_documented_linear_texture_is_filtered_on_the_gpu`——登记成线性后，采样点取到的**不再是任何
+  一颗纹素**、每通道落在 `(0,255)` 之间、四通道极差 ≤ 64。混合的具体数值不钉（sRGB 空间
+  过滤还是线性空间过滤由 wgpu 决定，两种都满足这三条），钉的是"糊了 vs 没糊"。
+- `the_undocumented_texture_path_keeps_todays_pixels`——**反向**：同一张图、同一次绘制，没登记过
+  的那个键四角逐字节等于纹素原样，中心点也等于 nearest 该取的那颗（(列1,行0)=绿：采样点在
+  **像素中心**，`u=0.5078` 已越过列边界而 `v=0.4922` 没有——这条第一次跑就是红的，期望写成了黄）。
+- `reload_swaps_the_sampler_without_reuploading`——`reload_texture_settings()` 返回 `1`、
+  `loaded_texture_count` 不变、纪元变了、像素从"纹素原样"→"混合"→改回默认后又变回"纹素原样"。
+- `the_documented_wrap_mode_reaches_the_sampler`——`uv_scale=2` 让 UV 越界，clamp/repeat/mirror
+  三档的两点读数两两不等（只设滤镜的话这三档看起来一模一样）。
+
+编辑器那 15 条里新增的是 7 条导入设置门（读盘显示、按相对路径写键、写回默认档删行、换图重读、
+「重新解码」也重读、预览态开关不碰工程数据、`resources.meta` 读坏了不覆盖别人那份）；
+assetc 那 57 条里新增 3 条（随包 + 进容器、没登记过就不许造空文件、两份文件名常量不许漂）。
+
+**反面对照**（每条跑完即还原；用环境变量把摘掉的分支做成可开关，同一份二进制正反各跑一遍）：
+
+- **NC-A 摘掉"读盘→设置"这一环**（`texture_settings_for` 恒返回默认档）→ **1 passed / 3 failed**，
+  三条分别红在"槽位记的设置不是 meta 那一档"、"重读盘没生效（返回 0）"、"寻址档没落到槽位上"；
+  唯一绿的正是那条**没登记过**的——它对这条断链天然不敏感，这正是它存在的理由。
+- **NC-B 把 `sampling_epoch` 从纪元里摘掉**（第四项恒 0）→ **3 passed / 1 failed**，只红在
+  `reload_swaps_the_sampler_without_reuploading`，红在纪元断言 `left: (1,0,false,0) right: (1,0,false,0)`。
+  另三条全绿——它们要么一次通过（不经过缓存），要么根本不碰合批。
+- **NC-C 让「重新解码」不作废导入设置缓存**（`invalidate()` 不清 `import_for`）→
+  **17 passed / 1 failed**（`texture` 这一族），只红 `the_redecode_button_drops_the_cached_import_settings_too`。
+  第一版这条对照**跑出来是 14 全绿**：换图那条门靠的是"键不一样"，跟 `invalidate()` 无关，
+  说明它钉不住这条线——于是补了"同一张图重走一遍"这条门，再跑才拿到红。**门是先补了才有红的**。
+- **NC-D 摘掉打包拷贝**（`package()` 里那个 `if` 恒假）→ **2 passed / 1 failed**，只红
+  `resource_meta_is_packaged_and_reaches_the_container`（红在目录形态读不到那份文件），
+  另两条（没登记过不许造文件 / 常量不漂）全绿——它们本来就不依赖拷贝。
+
+**代价**：构造期预建 `2 × 3 = 6` 个采样器（一次性，几个对象）；每张登记的贴图一个绑定组
+（没登记的共用默认档那一格，布局不变——`SamplerBindingType::Filtering` 下 nearest 与 linear
+共用同一份管线布局）；换一次设置会让当帧的 2D 合批缓存作废**一次**（纪元 bump，不是每帧）；
+「应用」是显式点击（与 §6 Play 期调参同口径），不做"改了自动写盘"；每张图首次进窗读一次盘，
+同一张反复绘制不反复读。
+
+**买不到的部分（是边界，不是漏）**：**没有 mipmap**——`mip_level_count` 恒为 1，线性档同时换了
+min/mag，但"缩小时不闪烁"这件事这一档买不到（三线性无从谈起）；SDF 文本、字体图集、shadow/IBL
+有各自的专用采样器，不受这份设置影响；**图集是一张纹理**——`.rltex`/`.atlas` 里的区域共享同一
+纹理键，改一档是整张一起改，做不到"只糊这一格"；3D 材质贴图是否走同一个键空间本轮没查，
+门只钉 2D（`main_2d`/`overlay_2d`）那条管线；色彩空间与 9-slice 不在这一档（见 §21.1 末）；
+容器/web/微信宿主这一侧只做到"随包 + 读取走 `vfs`"这条机制（与 `atlas_redirect.json` 同族），
+**浏览器与真机里的实际读数未取**；真窗口里那一行长什么样也没有 `gui_evidence` 截图，
+本节全为 headless。
+
+## 22. 跨面板全局 Undo（M79 P1-2）
+
+Unity 的 `Ctrl+Z` 背后是**一条**历史。这里是**五条各自的栈 + 一条只管顺序的账本**：场景、
+UI 工作室、可视化脚本、材质、动画每个都存着自己的历史，全局那一层只决定"这次按键先问谁"。
+
+### 22.1 按下 Ctrl+Z 时发生了什么
+
+- **顺序由"最近提交"推导，不靠调用点自觉。** 每个归属暴露一个编辑签名
+  `(累计提交次数, undo 栈 + redo 栈深度)`：前者只在真正新增一步时变大（撤销/重做只是把条目
+  在两条栈之间挪动、拖动数值的连续手势被合并，都不计数），后者在换文档、换素材、关面板时
+  随栈回落到 0 → 该归属从账本上摘掉。生产侧的提交点因此**没有"忘记记账"这条路**：新增一个
+  提交点不需要动账本。
+- **只用深度会在两个常见序列上判错**，所以签名是二元组：撤销一步后紧接着重新编辑会回到
+  **同一个深度**（3→2 再 2→3），深度看不出"又提交了"；栈到达上限后（图 64 步、材质与动画各
+  128 步、UI 工作室 16 步）深度再也不变。负面对照就是这两条：
+  `actions::undo_ledger::tests::re_editing_after_an_undo_regains_priority` 与
+  `undoing_does_not_reorder_the_ledger`。
+- **每帧轮询一次**（`EditorApp::poll_undo_owners`，在 `draw_frame` 开头），按按键时再刷一遍。
+  轮询越密，两次轮询之间就越可能只有一个归属变化，"最近提交"越接近真实顺序。签名没变时
+  轮询只是几次整数比较，不分配、不挪历史。
+- **重做优先回到刚才撤销掉的那个归属**（Unity 的 Redo 是上一次 Undo 的逆），它没有可重做的了
+  才按账本顺序找下一个。
+- **撤的动作交回归属自己**：场景栈要先收敛 Inspector 的挂起编辑并退出活动事务，UI 工作室按
+  **文件字节**判陈旧（外部改过盘就不敢撤），材质/动画会话各有各的合并与"回读校验通过才算一步"
+  规则，图有步数上限与手势合并。把这些塞进同一条栈等于给五种语义取并集——那会做错每一件。
+
+### 22.2 这次改掉了什么
+
+- **一次按键只消费一步。** 可视化脚图画布原本自己读 `Ctrl+Z`/`Ctrl+Y`，和全局那条叠在一起，
+  按一次会撤掉两步（画布一步 + 场景一步）。画布的私读已删除，回归门
+  `command_router::tests::one_undo_consumes_exactly_one_owner_step`。
+- **材质与动画第一次有了键盘撤销**（此前只有面板上的「撤销」按钮）。门：
+  `panels::material::material_editor::material_edit_joins_the_global_undo_stack`、
+  `panels::timeline::tests::timeline_edit_joins_the_global_undo_stack`——两条都同时断言
+  **场景历史原地不动**，以及第二次按键才轮到场景。
+- **与哪个标签页聚焦无关**：归属只看提交顺序。门
+  `command_router::tests::ui_studio_owner_is_undone_before_scene_history_regardless_of_focus`
+  故意把焦点放在场景标签上，UI 工作室那一步仍然先被撤。
+- **新门**：`panels::architecture_tests::panels_never_read_the_undo_shortcut`——任何面板源码里
+  出现 `key_pressed(egui::Key::Z` / `…Key::Y` 就红（和写入类 ratchet 共用同一段"只看生产代码"的
+  文本裁剪）。负面对照写在门自己里：给守卫一段含该 needle 的样例源码，它必须判红。
+
+### 22.3 代价与没做的部分
+
+- **同一帧内两个面板都提交**时先后无从判断，按声明顺序兜底（场景 > UI 工作室 > 图 > 材质 >
+  动画）。这条不是"正确行为"，是**显式登记的已知代价**，门
+  `simultaneous_pushes_fall_back_to_the_declared_order` 同时断言"分两批轮询（真实的隔帧编辑）
+  顺序就恢复"。一次点击只能碰一个面板，真撞上了丢的是顺序，不是历史。
+- **全局 ≠ 一条合并的历史**：撤材质那一步不会把同一次操作里场景的改动一起撤掉。Unity 那种
+  "字段级一次修改 = 一条历史"已由 §24 的补丁通道落地（P1-2b），但那是**同一条栈内部**的字段级粒度；
+  跨归属（材质 ↔ 场景 ↔ 图）仍然各撤各的，没有合并成一次操作。
+- **账本只活在本次会话**，换工程整本作废（`clear_undo_ledger`，调用点见 `import.rs` 的换工程
+  路径）；它也不持久化到磁盘。
+- **撤销只回内存**：材质/动画会话的 undo 不写盘，已经保存过的资产不会因此回滚文件（与之前
+  点按钮时一致）。
+- **累计提交次数用 `wrapping_add`**：u64 溢出在本机的使用周期里到不了，但登记在这里——它不是
+  无代价的。
+
+## 23. 预制体 in-context 编辑（M79 P1-4）
+
+双击层级面板里的**预制体根实例**（或 Inspector 的「在上下文中编辑」按钮、右键菜单「编辑预制体」）
+就进到那份源预制体里改；场景文档**连同未保存改动**一起被收进口袋（`actions::prefab_stage::PrefabStage`），
+从层级面板顶部的横幅「保存并返回」时写回源文件、并用**一条 Undo** 重建场景里全部同源实例。
+入口是两条 typed action：`EditorCommand::EnterPrefabStage { entity }` / `ExitPrefabStage { save }`，
+实现体在 shell，面板只发命令。
+
+### 23.1 它比「打开源预制体」多买了什么
+
+「打开源预制体」早就存在，但它是一次**文档切换**：场景脏了要先过 E06 闸门回答「要不要保存」，
+改完还得自己从场景下拉里找回那份场景。in-context 走的是另一条路——不换文档请求、不动场景：
+口袋里装着场景文档 + 它自己的撤销栈 + 选区 + Scene 视图模式，退出时整份还原。
+断言这件事的门是 `enter_prefab_stage_pockets_the_dirty_scene_and_starts_a_fresh_stack`
+（进去前留一条改名历史和一处未保存改动，进袋后断言它们都在，而阶段自己的栈深度是 0）。
+
+### 23.2 覆盖从哪儿来：diff 的基线才是关键
+
+这里没有"覆盖账本"，覆盖是**diff 实例与源**得出的（既有通道）。于是退出时用什么当基线就是全部区别：
+
+- 基线必须是**进入时那份源**（`PrefabStage::baseline`，进入时从磁盘读到的副本）。
+- 拿**新源**当基线是错的：刚在阶段里改掉的那个字段，实例上还留着老值，diff 会把它判成
+  "实例自己的覆盖"，重建时再按回老值——源改动被实例顶回，等于同步静默失败。
+- 拿进入时的源当基线，覆盖集合才是"这个实例本来就和源不一样的地方"，被改掉的字段自动从
+  覆盖列表里消失，实例因此拿到新值，而各自的名字/位置仍在。
+
+实测口径：这条门 `stage_save_and_return_syncs_every_instance_with_one_undo` 第一次跑就是红的
+（`SlimeGreen1` 的 tint：左 `[0.6, 1.0, 0.6, 1.0]`、右 `[0.125, 0.875, 0.25, 1.0]`），改成按基线 diff
+之后才绿。它是这次实现里唯一被门抓出来的真缺陷，也是全部 7 条门里唯一一条"先红后绿"的。
+这条基线接线本身也跑过一次**反面对照**：把 `prefab_stage.rs` 退出路径里的
+`baseline: Some(&stage.baseline)` 改成 `None`，`cargo test -q -p editor --bin editor -- --test-threads=1 prefab_stage`
+得到 **6 passed / 1 failed**，红的正是上面那一句（其余 6 条不受影响）——门确实会抓这条回归，不是摆设。
+代价：一次对照要重编 `editor` bin（约 1 分钟），而且只能改完立刻改回来，别让它留在工作树里。
+同一条门还断言：磁盘上的 `.prefab` 真的更新了、场景里两个同源实例都同步、`slime_red` 那两个实例
+一个字节没被牵连（同步按源 scoped）、整件事只多**一条**历史。
+
+### 23.3 会被拒绝的形状（每条都有门）
+
+- Play 中不进阶段；阶段里不放 Play（阶段文档是预制体，播它等于播一个不像场景的东西）。
+- 目标不是预制体**根**实例，或没有 `prefab.source`。
+- 当前编辑的文档本身就是一份 `.prefab`（资源面板双击打开那条路）——直接改、`Ctrl+S` 就行。
+- 已经在阶段里（再进一次会把口袋套娃，第一份场景就丢了）。
+- 源里有**嵌套预制体**（`Prefab::nested_sources()` 非空）：拒绝并把内层源报名出来。
+- 阶段里把结构改成"实例无法按新源重建"（增删节点、改父子）：退出前**预演**一遍
+  （`collect_prefab_rebuild_state_with_baseline`），失败就留在阶段里，状态栏写「已阻止退出」并
+  指回「放弃并返回」。落盘发生在预演之后，不会出现「文件改了、实例没跟上」的半状态。
+- 阶段文档脏时换文档 / 新建 / 切工程 / 退出：拦住并给「已阻止…」文案。拦截点在
+  `request_document_change` 而**不是** `perform_pending_change`——放后者会先挂出 pending、
+  弹一个「保存并继续」，用户已经做完选择才被拒绝，只会更懵。门：
+  `dirty_stage_blocks_document_switch_and_clean_stage_returns_silently`（顺带断言干净阶段是
+  **静默**返回场景再走正常闸门）。
+
+### 23.4 代价与没做的部分
+
+- **双击手势从"根实例改名"手里被拿走**：预制体根实例的双击现在是进入阶段，改名改用 `F2`
+  或右键菜单「重命名」。普通实体的双击改名不变（改前确认过：没有任何门断言"双击 = 改名"）。
+- **阶段内是一条全新的撤销栈**：返回场景后阶段里那几步撤不回来——与「打开另一份文档」的既有
+  口径一致，不是新行为。场景自己的栈在口袋里，返回后原样还在。
+- **`Ctrl+S` 在阶段里保存的是预制体资产**（与「保存并返回」走同一条转换：
+  `SceneDocument::prefab_asset()`，门 `prefab_asset_matches_the_saved_asset_and_rejects_scene_documents`
+  断言两条路径写出**逐字节相同**的资产）。因此「放弃并返回」只丢"还没保存的那部分"，
+  **不回滚已经 `Ctrl+S` 落盘的内容**。
+- **Undo 只回内存里的场景，不回磁盘上的源**（与既有「写回源并更新实例」同口径，门里显式断言
+  撤销后文件仍是新源）。
+- **结构改动仍然不支持**：增删节点、改父子在既有重建通道上就会报「预制体实例子树和源预制体
+  结构不一致，暂不支持自动重建」。in-context 没有绕过这条限制，只是把它从"退出后才发现"
+  提前到"退出前就拦住"。
+- **没有 Unity 的灰显上下文**：阶段期间层级树与 Scene 视图显示的是源，看不到场景里其它实例的
+  实时投影；唯一的提醒是横幅（源路径 + 返回时同步 N 个实例，N 在进入时对暂存场景算一次，
+  整个阶段里稳定）与状态栏文案。
+- **嵌套预制体后置**（本次明确拒绝，见 23.3）。
+- **两次克隆的代价**：进入时克隆一份 `Prefab` 当 diff 基线，退出时克隆一份场景文档还原口袋。
+  两者都在点击触发的路径上，不在每帧热路；沿用了 `sync_inspector` 早就在用的同形克隆。
+- **门是 headless 的 dispatch 级**（`cargo test -p editor --bin editor`，跑在示例工程
+  `scenes/api_prefab.scene` 上：2 个 `slime_green` 实例 + 2 个 `slime_red` 实例，
+  各自带 name 与 position 覆盖）。真窗口里的双击/横幅目验本次未拍图。
+
+## 24. 字段级撤销上生产：一条栈、两种存储形态（M79 P1-2b）
+
+docs/55 ER-03 的补丁原型（`rustlua-editor-core/src/patch_history.rs`）这一轮接进了生产历史
+`CommandHistory`：**同一条 undo/redo 栈上共存两种存储形态**——字段级编辑（Inspector 组件载荷
+写入、组件增删、实体改名）只保留一条 `EditPatch` + 一份文档锚点，结构变更（新建/删除实体、
+换父、场景级字段）仍旧保留两份整文档快照。判据、实测与代价都在这一节。
+
+### 24.1 为什么是同一条栈，而不是新加一条
+
+§22 的跨面板全局 Undo 只认**一条栈的顺序**：账本用 `(累计提交次数, undo + redo 深度)` 判断
+"最近提交在哪个归属"。如果把字段级编辑另开一条 `PatchHistory`，场景这一个归属就有了两条栈，
+"这次按键先撤哪条"要再造一层排序——而那层排序买不到任何东西，只会让 §22 刚删掉的
+"调用点自觉"从后门回来。所以形态可以有两种，**栈必须只有一条**。
+
+也因此开关做成 `CommandHistory` 上的**否定**字段 `no_patch_compression`：`CommandHistory::new()`、
+`Default`、`#[derive(Default)]` 带出来的历史全是"开补丁"。若写成肯定字段（`patch_compression`），
+任何走 `default()` 的构造点都会静默退回整文档快照，而且没有一条测试会因此变红——这类"默认值
+反了"的坑 §22 的账本已经踩过一次（`CommandService` 那段注释就是当时的登记）。关掉它只有一个
+入口：`CommandHistory::without_patch_compression()`，仅供差分门使用。
+
+### 24.2 压不压得动：判据是"构造 + 回读"，不是白名单
+
+`scene_field_patch(label, kind, before, after)` 先把两份 `Scene` 的差集写成 `FieldChange`
+（实体名、组件载荷的增/改/删），**再把补丁打到 `before` 的副本上，要求结果与 `after` 逐字段相同**；
+对不上就返回 `None`，调用方退回快照形态。
+
+这样"哪些改动不属于字段级通道"就不需要在这里逐个列：`Scene::version`、`Scene::name`、两级
+`metadata`、实体 `resources`、父子关系一旦变化，回读这一步就对不上。以后给 `Scene` 加字段也
+不用同步改这里——这是刻意选的口径，代价与它换来的义务写在 24.8。
+
+实体数不等（增删实体）直接早退：那种改动天然需要"被删掉的那棵子树"，补丁形态不假装支持（§23
+的预制体重建对结构改动同样是拒绝口径，两边一致）。
+
+### 24.3 文档级四项必须显式记住
+
+`SceneDocument` 里除 `scene` 之外还有 `path` / `dirty` / `revision` / `disk_signature`，
+而 `SceneDocument` 的 `PartialEq` **刻意不比较**后两项（免得纯修订号变化搅浑 history 的空操作检测）。
+快照形态里这四项跟着整份文档免费带回；补丁形态只保存改动，必须自己记住——这就是
+`DocumentAnchor`（`history.rs`）。`dirty` 决定 E06 换文档闸门，`revision` 决定外部改动检测与
+收敛判断，撤销时它们要是被改了，就不是"只省了内存"而是改了语义。
+
+门：`history::tests::patch_channel_matches_the_snapshot_channel_edit_by_edit`。同一串编辑（含
+改名、组件增删、连续拖动合并、建实体、换父、场景级字段）在两种形态下各跑一遍，**每一步提交后、
+每一步撤销后、每一步重做后**都逐字段比（`assert_documents_identical` 把四个被 `PartialEq` 排除的
+字段单独列出来比，否则等于没校）。它还断言两条栈深一致、`undo_signature()` 一致（§22 的账本
+因此对形态变化无感），以及 `storage_counts() == (5, 3)`——即字段级那五步**确实**被压成了补丁，
+而不是整条门都在测回退路径。
+
+### 24.4 合并：同目标**同字段**才并
+
+拖动里的连续小步要并成一条（§22 提过，快照形态本来就有这规则）。补丁形态按
+`same_slot` 配对：同一个实体**且**同一个可写字段才只把终点推到最新，这一步新触碰到的字段
+原样追加到同一条补丁上。只按实体配对（原型最初只比枚举判别式的写法）会把同一实体上的
+`Quad` 与 `Transform` 并成一条、先前的终点被后一次覆盖——那是**丢编辑**，不是合并。
+门：`a_drag_that_newly_touches_another_component_still_reverts_both`。
+
+合并这一步压不动时（拖动里夹了结构改动）`merge_after` 返回 `false`，调用方**另起一条**让快照
+去装它——绝不在补丁形态下整份替换文档，那样省下的内存又回来了。
+
+### 24.5 补丁形态的撤销是外科式的（既定口径）
+
+快照形态的撤销 = 整份还原，会把"提交之后从别处写进文档的改动"一起吃掉；补丁形态的撤销只送回
+它自己碰过的字段，带外写入存活。这个差别是真的，所以两条行为都写在同一道门里而不是留给以后发现：
+`patch_undo_leaves_fields_it_never_touched_alone`。选补丁这个口径的理由：撤销顺手吃掉别处的改动
+比留下它更难被发现。24.3 的等价门只保证**全部编辑都走 history 网关**时两种形态逐项相同——
+生产侧的写入面就是 E06/E07 网关（`request_document_change` / `begin`+`commit_transaction`），
+一次连续手势由事务收在手势结束（`actions/transaction.rs`），所以补丁的成本落在**提交点**，
+不落进每帧热路。
+
+### 24.6 实测（`editor --perf-baseline` 新场景 `patch_history_production` / `_small`）
+
+新增的两个场景名各量一档：**Medium fixture**（1,000 实体、单份文档序列化 198,945 字节，与 ER-03
+原型场景 `patch_history_memory_1k_edits` 同一份夹具、同一串 1,000 次组件写入）场景名
+`patch_history_production`；**Small fixture**（100 实体 / 200 次写入，即工程里最常见的那一档大小）
+场景名 `patch_history_production_small`。两遍比的都是**生产那一条栈**：
+`CommandHistory::new()` 对 `CommandHistory::without_patch_compression()`。
+复现（Debug，`verify.ps1` 用的就是这一档）：
+
+```powershell
+cd engine
+cargo run -q -p editor --bin editor -- --perf-baseline   # 读 patch_history_production{,_small} 两段
+```
+
+Medium（1,000 实体 / 1,000 次写入）：
+
+| 读数 | Debug | Release |
+|---|---|---|
+| 保留字节（`retained_bytes_estimate`，两侧同口径） | 补丁 **573,000** vs 快照 **399,647,000** ⇒ **0.143%**（约 697×），两个 profile 字节相同 | 同左 |
+| 生产预算 200 条换算 | 约 **112 KiB** vs 约 **76 MB**（每条形态 × 200） | 同左 |
+| 形态分布 `storage_counts()` | `patch_form=1000 snapshot_form=0`（全是字段级，压到底） | 同左 |
+| 等价性 | `same_after_edits / undo_equivalent / redo_equivalent` 全 `true` | 全 `true` |
+| 提交点耗时 p50 | 补丁 **9.65 ms** vs 快照 **1.99 ms** | 补丁 **5.14 ms** vs 快照 **1.24 ms** |
+
+Small（100 实体 / 200 次写入）——**这一档才是日常工程会撞到的量级**，成本与收益都按比例缩。
+注意预算换算那一行仍然是约 112 KiB：补丁侧每条历史存的是"改了哪几个字段"，与场景大小无关，
+所以 1,000 实体与 100 实体下 200 条历史的内存几乎同价；快照侧则从约 76 MB 缩到约 8.9 MB（`Scene`
+大小线性）。于是**大场景省的比例更夸张，但内存绝对值收益在小场景也一样拿到**。
+
+| 读数 | Debug | Release |
+|---|---|---|
+| 保留字节 | 补丁 **114,200** vs 快照 **9,354,200** ⇒ **1.221%**（约 82×） | 同左 |
+| 预算 200 条换算 | 约 **112 KiB** vs 约 **8.9 MB** | 同左 |
+| 形态分布 | `edits=200 entities=100 entries=200 patch_form=200 snapshot_form=0` | 同左 |
+| 等价性 | 三个标志全 `true` | 全 `true` |
+| 提交点耗时 p50 | 补丁 **1.10 ms** vs 快照 **0.24 ms** | 补丁 **0.52 ms** vs 快照 **0.13 ms** |
+
+复现命令同上，Release 档换成 `cargo run -q --release -p editor --bin editor -- --perf-baseline`。
+**release 只比 debug 快 1.88 倍**（9.65 / 5.14；而 Inspector 那条纯计算路径是 7~8 倍）——因为这里的成本是
+`Scene` 克隆带来的分配与内存搬运，不是可优化的算术；这也解释了为什么"提交点变贵"这一条不能靠
+换 profile 消掉。同一台机器 Medium 档的 debug 前后跑过两次：p50 9.65 与 8.83 ms（p95 12.34 / 12.14，
+max 18.63 / 29.31）——表里取较新那一次，与字节读数同一批。
+
+判据（写进场景自己）：三个等价标志必须为真、`patch_form == edits && snapshot_form == 0`、
+`patch_bytes × 10 < snapshot_bytes`（small 档 82× 也过）。**刻意不钉绝对耗时**——时间随 profile 与机器变
+（本场景 debug/release 只差 1.88 倍，纯计算场景差 7~8 倍，跨机器还要再飘），这一条只认领"补丁确实压下去了、
+撤销确实等价、字节确实小一个数量级"。
+
+原型那一档（215,000 B / 0.054%）比生产这一档小 2.67 倍，差的是生产必须多带的东西：每条一份
+`DocumentAnchor`（×2）、label、`EditCommand` 自身。**这是语义对齐的价格，不是回归**：原型只回放
+`Scene`，生产还要还原 `dirty`/`revision`/`path`/`disk_signature`（24.3）。
+
+### 24.7 负面对照（两条都跑过，跑完即还原）
+
+| 破坏点 | 结果 |
+|---|---|
+| `DocumentAnchor::restore_into` 改成空操作 | `cargo test -q -p rustlua-editor-core --lib` → **197 passed / 2 failed**：`patch_channel_matches_the_snapshot_channel_edit_by_edit` 红在 `undo drop glow 后：revision 不一致 left: 7 right: 6`，既有门 `dirty_transaction_finish_flushes_single_entry` 同时红 |
+| `same_slot` 的两个组件名比较改成恒真（判别式配对） | **198 passed / 1 failed**：只有 `a_drag_that_newly_touches_another_component_still_reverts_both` 红，报 `中途新触碰的 Quad 也必须一起回去 left: "color=1,0,0,1" right: "color=0,0,0,1"` |
+
+第二行要老实写出来：**主等价门在判别式配对下仍然是绿的**——探针序列里没有"一步同时碰两个字段"
+的合并场景，所以抓它的只有合并那一条门。两条门不是冗余，各管一件事。代价：一次对照要重编并重跑
+`rustlua-editor-core --lib`（约 40 秒），改完必须立刻改回来。
+
+### 24.8 代价与没做的部分
+
+- **提交点变贵**：每次提交多一次 `Scene` 克隆 + 一次全字段比较（24.2 的回读判据）。Debug 下
+  p50 从 1.99 ms 涨到 9.65 ms（1,000 实体场景）；日常工程那一档（100 实体）从 0.24 ms 涨到 1.10 ms。
+  这是**买"提交点正确性"的钱**，不在每帧热路：一次连续手势（Inspector 拖数值滑杆）由 E07 事务
+  收在手势结束——拖拽期间每帧只改文档、不追加历史，所以补丁的构造与回读**一次手势只跑一遍**，
+  成本与撤销步数同阶，不与帧数同阶。
+- **撤销语义变了**（外科式，见 24.5）：带外写入不再被撤销连带抹掉。
+- **结构变更仍走快照**：新建/删除实体、换父、场景级字段、`resources`、两级 `metadata` 都没省到内存。
+  长会话里"改属性"占多数，所以总账仍然划算，但**删除一棵子树那一步依旧是两份文档**。
+- **补丁通道的可压性由 `Scene` 的字段形状决定**：以后若给 `SceneEntity` 加一个"补丁能表达但
+  `scene_field_patch` 没写进去"的可写字段，它会被回读判成压不动、静默退回快照（不会错，只是白花钱）；
+  反过来若加一个"看起来一样但语义不同"的字段，`Scene` 的 `PartialEq` 就得跟着变对，否则等价门
+  和回读会一起失明。这一条是这套判据换来的**义务**，不是缺陷。
+- **不做两栈、不做跨归属合并**（24.1）：撤材质那一步仍然不会连带撤掉同一次操作里场景的改动。
+- **门是单元级**：差分门与合并门在 `rustlua-editor-core`，性能事实在 `editor --perf-baseline`；
+  本轮**没有**新增 editor bin 侧的 dispatch 级撤销门，真窗口里连按 `Ctrl+Z` 的目验未拍图。
+
+## 25. 整实例覆盖视图与逐项还原（M79 P2）
+
+选中预制体实例的**任意一个节点**（不只是根），Inspector 的覆盖区下面多一段
+「整个实例的覆盖（N 项 / M 个节点）」：它从**实例根**往下走一整棵子树，把每一个节点与源预制体
+逐字段对拍，按 `Root/Body/Head` 这样的**名字路径**列出全部字段级覆盖，每行给「回退」与「选中」
+两个按钮，末尾一枚「逐项还原全部字段覆盖」。数据侧是 `actions::prefab_overrides` 的纯函数
+`collect_instance_overrides`，写侧是一条新的 typed action
+`EditorCommand::RevertAllPrefabFieldOverrides { entity }`（面板只发命令，实现体在 shell）。
+
+它买到的不是"多一个按钮"，而是 docs/55 阶段 3 那套逐节点视图唯一没覆盖的那一眼：**这个实例到底被改了什么**。
+改动多发生在深层子节点上，逐节点点开找等于把层级树重走一遍。
+
+### 25.1 两条还原路径的分工（刻意不合并）
+
+| | 既有「还原覆盖」`RevertPrefabOverrides` | 本轮「逐项还原全部字段覆盖」 |
+|---|---|---|
+| 做法 | 删掉子树，按**空覆盖**重新实例化 | 就地把每个字段写回源取值 |
+| 实体 id | **全部重排**（场景里指向它们的引用都可能断） | 一个不换 |
+| 结构性差异（源里已无对应实体的子节点） | 一并抹平 | **不碰**，只在列表里 note、状态里报数 |
+| 历史形态 | 整文档快照（结构变更压不动，见 §24） | 一条 `EditPatch`（§24 的字段级通道） |
+| Undo | 一条 | 一条（N 个字段也一条） |
+
+两条都留着，因为各自买的正是对方给不了的：要 id 稳定就逐字段，要摆平结构就重建。面板的悬浮文案把
+这个分工写在按钮上，避免用户以为「逐项还原」是「还原覆盖」的升级版。
+
+### 25.2 门（5 条，`actions::tests::prefab_overrides`）
+
+跨节点那两条用**合成夹具** `tower_instance()`（三节点 `Tower/Body/Head`）：示例工程
+`scenes/api_prefab.scene` 里四个 slime 实例都是**单实体**，拿它测"深层子节点的覆盖"等于没测。
+需要真实工程、真实历史与真实网关的那三条走 `open_sample_production`，基线覆盖（`SlimeGreen1` 出厂就带
+`name` + `property:Transform.position`）由门自己先读出来断言，场景改了会红在"基线变了"这一句，而不是
+红在后面的数量。
+
+| 门 | 钉住的事 |
+|---|---|
+| `the_aggregate_list_walks_the_whole_subtree_with_readable_paths` | 三个不同深度各改一处，列表要按 `TowerPrime/Body/Head` 给出 `name` / `component:Quad` / `property:Transform.position` 三行，`entity_count()==3`；每行带的 `source` 必须等于该节点的 `prefab.source_id`（还原键对得上），两侧取值是**字段级**文本（`0,0,0`），不是整条组件串 |
+| `nodes_the_source_cannot_answer_for_are_notes_not_rows` | 手加的子节点记 `SourceEntityMissing`、混进来的另一张预制体记 `ForeignPrefabNode` 且**不展开它的子树**；两者都是 note，不进 rows，路径口径与 rows 一致（`Tower/HandWelded`） |
+| `reverting_the_whole_instance_is_one_undo_and_keeps_entity_ids` | 三处覆盖（含出厂那两处）一次还原 ⇒ `undo_len` 只 **+1**、`storage_counts()` 增量 **`(1, 0)`**（补丁形态）、实体 id 集合逐个相同、状态栏报「已逐项还原 3 个字段覆盖」、列表随后为空，再按**一次** `Undo` 三处一起回来 |
+| `the_in_place_revert_leaves_structural_differences_alone` | 源里没有对应实体的那个子节点**不许被删**，状态栏必须认领剩下那项（含「结构性差异」） |
+| `the_override_list_cache_invalidates_on_content_history_and_source_file` | 同键两次调用必须复用同一份列表；一次真实编辑要换键；**文档一个字没改、源被外部存盘**也要换键并给出新的 `source_value` |
+
+### 25.3 负面对照（跑完即还原）
+
+| 破坏点 | 结果 |
+|---|---|
+| A：把 `ensure_prefab_source_cached`（查磁盘）挪到**比缓存键之后** ＋ B：`collect_instance_overrides` 不展开 children（只看实例根本身）。两条一起改、一起跑 | **1 passed / 4 failed**。红点各自独立可归因：`the_override_list_cache_invalidates…` 红在「无变化时不该换键」（A：第一次调用把键算在重载**之前**、存进去的键与下一次算出的键永远差一代）；`…walks_the_whole_subtree…` 红在跨节点那三行（B）；`nodes_the_source_cannot_answer_for…` 红在 `notes == []`（B）；`…leaves_structural_differences_alone` 红在状态栏没有「结构性差异」（B） |
+| C：`revert_all_prefab_field_overrides` 里一个字段开**一条**历史 | **4 passed / 1 failed**：只有"一条历史"那条红，报 `整实例逐项还原必须是一条历史 left: 3 right: 1` |
+
+A 是这轮真正抓出来的设计缺陷：第一版把缓存键算在查磁盘**之前**，于是"源被别的会话存了盘"永远命中旧
+列表——键里的代际只有在真重载时才变，而它根本没机会被调用。顺序调过来才是对的，反面对照证明这条门会红。
+代价：一次对照要重编 `editor` bin（约 1 分钟），三条只能串行做，改完立刻改回来。
+
+### 25.4 每帧成本与缓存键
+
+`prefab_instance_overrides` 的键是 `(revision, edits, depth, generation, entity)`：`revision` 是文档内容
+（`mark_dirty` 递增），`(edits, depth)` 与 §22 全局账本**同一口径**的历史签名（撤销不动 `revision`、但动深度），
+`generation` 是源预制体的**重载次数**，`entity` 是选中的实例根。命中时不碰 diff。`on_document_changed`
+里还无条件作废一次缓存，覆盖"绕开网关的写入"这种理论路径——宁可多算一次 diff。
+
+继承下来的一个口径洞要写清楚：源预制体的新鲜度判据是 `prefab_stamp` = `(文件长度, mtime)`，
+所以**同长度同 mtime 的改写**不会被发现（这条不是本轮新增，是 `ensure_prefab_source_cached` 既有口径）。
+
+没量过的部分：缓存**未命中**那一次要走完整棵子树——一次遍历 + 每节点一次 `diff_prefab_entity` +
+一份 `Prefab` 克隆。本轮没给它加 perf 场景：它落在选中/编辑后的第一帧，不在每帧热路，示例工程那种
+单节点实例上它显然是微秒级；但"几百个节点的实例第一次点开"这个量级**没测**，真要是撞上了，
+代价与 §24 那条提交点（一次全字段比较）同一族，而不是与渲染帧同一族。
+
+### 25.5 代价与没做的部分
+
+- **层级面板上的覆盖徽标没做**（Unity 在实例根右侧那个小标记 + 下拉）。这一轮只做 Inspector 那一段，
+  因为它已经回答了"改了啥"，而徽标要在层级树的行绘制里加一次每帧的覆盖计数——先记下，不做。
+- **逐字段还原写回的是 `write_builtin` 的规范文本**，不是源里的原始写法：实测 `tint` 从 `0.600,…` 变成
+  `0.600000,…`。数值相同，所以它**不会**留下"还原不掉幽灵覆盖"（`diff_prefab_entity` 比的是解析后的
+  `FieldValue`，不是文本），但**落盘后场景文件里那一处的写法会变**，`git diff` 会看到一行噪音。
+- **名字路径只作显示**：同名兄弟会让 `Root/Body/Body` 这种路径不唯一，精确定位靠那一行的「选中」按钮
+  （发 `SelectEntity`），不是靠读路径。
+- **结构性差异只报不修**：note 里没有「一键删除这个多出来的节点」，要摆平仍然走「还原覆盖」重建。
+- **嵌套预制体的子树不展开**（与 §23.3 同口径，嵌套本身还是被拒绝的状态），因此整实例视图对嵌套实例
+  给的是"另一张预制体，本列表不展开"，不是它的覆盖。
+- **只覆盖 `.scene` 里的实例**：`instantiate` 时带进来的 `PrefabInstance.overrides` 账本不是数据源，
+  这里读的仍然是"实例 vs 源"的 diff——与逐节点视图同一条基线，不会出现两边说法不一致。
+- **门是 headless 的 dispatch 级**（`cargo test -q -p editor --bin editor -- --test-threads=1`）。
+  真窗口里那段折叠面板的排版与截图本轮未拍。
+
+---
+
+## 26. UI Studio 画布的像素几何门（M79 P2）
+
+### 26.1 为什么这一轮只加门、不改几何
+
+§23 之后画布、预览器与运行时共用同一份 `rustlua_ui_spec::layout_rects`（`ui_canvas.rs` 顶部就是这么声明的），
+所以"编辑器里看到的位置和运行时算的位置是两套"这个风险已经被架构堵住了。这一轮补的是**屏幕那一半**：
+同一个节点，画布画出来的矩形、点下去命中的节点、`scroll_view` 裁掉的可见区域，三者必须是同一块像素。
+这三件事各走各的代码——`CanvasView::design_to_screen` / `pick_node` / painter 的 `with_clip_rect`——
+谁都可能单独漂移，而漂移的症状是"我明明点在这块上"，正是 Unity 用户最不能容忍的那类不对齐。
+
+门全部是 headless 的：`egui::Context::default().run(...)` 跑一次画布，读输出里的**形状表**，
+按节点专属底色把矩形认领回节点（同一族的取数办法已经在 `panels/assistant.rs` 的对齐门里用过：
+不开窗口、从 `Context::run` 的返回里读形状）。不开真窗口，单条 0.02 秒级。
+
+### 26.2 夹具与认领
+
+参考分辨率 = 预览分辨率 = 1280×720，视口固定 1000×600 ⇒ 适配比 `base = 976/1280 = 0.7625`、`fit = 1`、
+信箱边 `[12, 25.5]`。七个节点的设计矩形是**手算**的，写死在 `GEOMETRY_GOLDEN` 里：
+
+| 节点 | 作者写的锚定 | 设计矩形 | 为什么摆它 |
+|---|---|---|---|
+| `root` | `top_left` + position [80,60]，size [400,300] | `[80, 60, 400, 300]` | Absolute 定位那一档 |
+| `title` | `top_center` + position [0,12]，size [200,40] | `[180, 72, 200, 40]` | 锚点 fraction 与 pivot 同时参与（x 要减掉半个宽） |
+| `list` | `top_left` + position [10,120]，size [200,100] | `[90, 180, 200, 100]` | `v_box`，`padding [8,8,8,8]` ⇒ inner `[98,188,184,84]` |
+| `row1` / `row2` | 流内，size [60,30] | `[98, 188, 60, 30]` / `[98, 228, 60, 30]` | 步进 = 高 + `spacing` 10 |
+| `clip` | `bottom_left` + position [10,-40]，size [120,60] | `[90, 260, 120, 60]` | `scroll_view`：自己的矩形就是自己的 clip |
+| `far` | `top_left` + position [100,40]，size [60,50] | `[190, 300, 60, 50]` | 故意伸出 clip 的下边与右边 |
+
+底色是唯一认领手段：`rect_of` 断言"这个颜色必须只被画一次"，所以夹具里一个颜色一个节点；
+两个节点同色（或某节点画了两块同色）会先把这条断言弄红——那是**夹具约束**，不是产品判据。
+形状只取 `Shape::Rect` 且 `stroke.is_empty()` 的那些，边框与文字不参与认领。
+
+### 26.3 四条门
+
+| 门 | 认领的不变量 |
+|---|---|
+| `the_canvas_draws_every_node_exactly_at_its_authored_layout_rect` | 双向：`layout_rects` 给的矩形 == 手算表；把**画出来的**矩形两端用 `screen_to_design` 折回设计坐标，也 == 手算表。画在任何别处都会折回别的数字 |
+| `zoom_and_pan_move_the_drawn_geometry_by_the_view_law` | 同一份 spec 在 `zoom=2 + pan(30,-20)` 下画出的每个节点矩形，必须等于 `zoom=1` 那块按"绕视口中心等比 2 倍再平移"的律走出来的结果；另外单独钉一个绝对像素：画布框 `zoom=1` 是 `[12, 25.5, 976, 549]`，`zoom=2 + pan` 后是 `[-446, -269, 1952, 1098]` |
+| `a_click_on_a_drawn_rect_lands_on_that_node` | 每个节点取"左上角往里 1 设计像素"（兄弟与父节点会盖住中心，盖不住这里）：`design_to_screen` → `screen_to_design` 必须原样回来；同一点 `pick_node` 必须给出这个节点。再从**画出来的**矩形左上角走一遍屏幕→设计，同样必须命中自己 |
+| `a_scroll_view_clips_both_the_pixels_and_the_hit_area` | `clip` 与 `far` 的 `LayoutRect.clip` 都是 `[90,260,120,60]`；`far` 那次绘制的 `clip_rect` == clip 换算到屏幕的矩形；设计点 `(200,310)`（clip 内）命中 `far`，`(215,310)`（clip 外但仍在 `far` 矩形内）落回 `root` |
+
+夹具另有一处刻意：`root` 的中心 `(280,210)` 其实落在 `list` 里，所以第三条门不能用中心点——用它就把
+"后画的赢"这条规则测成了假命题。
+
+### 26.4 反面对照（跑完即还原）
+
+三条各自单独改、单独跑（每条一次 `editor` bin 重编，约 1 分钟，必须串行）：
+
+| 破坏点 | 结果与红点 |
+|---|---|
+| A：`draw_node` 里把画的位置改成 `row.rect[0] + 1.0`（画比布局偏一设计像素） | **10 passed / 1 failed**，只红第一条：`root：[81.0, 60.0, 400.0, 300.0] 与手算的 [80.0, 60.0, 400.0, 300.0] 差 1.0`。第二条不红是律本身仍成立（两块一起挪）；第三条不红是因为偏移只有 1.3 屏幕像素，往里 1 像素那个点仍然在节点内 |
+| B：`pick_node` 去掉 `row.clip.is_none_or(...)`（命中区不看裁剪） | **9 passed / 2 failed**：新门红在 `clip 右边界之外不该还能点中 far left: Some("far")`，既有那条 `hit_testing_prefers_the_deepest_node_and_respects_clip` 一起红（同一判据，不是重复门）。新门里"绘制裁剪矩形"那半**没红**——它管的是 painter 的 `clip_rect`，与命中区是两条独立代码，两条都该留 |
+| C：`resolution_to_screen` 只把 `pan.x` 加进去、漏掉 `pan.y` | **10 passed / 1 failed**，只红第二条：`root：[-324.0, -157.5, ...] 与手算的 [-324.0, -177.5, ...] 差 20.0`（正好是 `pan.y`）。其余三条视口平移为 0，天然不受影响 |
+
+A 与 C 各自只红一条，说明这四条门确实分得开：画的位置、缩放平移的律、命中、裁剪不是同一件事。
+
+### 26.5 代价与没做的部分
+
+- 门跑在 `fit = 1`（参考分辨率 == 预览分辨率）这一档。信箱边只由 `base` 那条除法保证，
+  **`reference ≠ resolution` 时 `offset` 参与的那条支路本轮没有门**——那是预览器与多分辨率档位的事。
+- 只钉**节点矩形**。文字基线、图标位置、`font_size` 与 `border_width` 的等比（都乘 `design_scale`）
+  没有像素门：既有那条只数"出了几个文字形状"。所以"字号不跟缩放"这类 bug 现在不会被这四条门抓住。
+- 断言靠底色认领，节点一旦画两块同色（例如 `bg` 与 `border_color` 相同且边框够粗）就会先撞
+  `rect_of` 的"只画一次"。改夹具时要换颜色，不要改断言。
+- 容差 1e-3 设计像素。这个量级只有 f32 舍入，任何真实的错位（哪怕 0.01）都会红。
+- **真窗口里 UI Studio 面板的整体排版仍未拍**（§25 同一条欠项），层级/工具条的对齐门在
+  `panels/ui_studio.rs` 之外，跟这组画布几何门不重叠。
+- 没改一行业务代码：三条对照跑完立刻从 `.temp/p2-geo-canvas-backup.rs` 还原，
+  `git diff --stat` 对 `ui_canvas.rs` 只剩 `308 insertions(+) / 0 deletions`——纯新增测试。
+
+## 27. 性能面板的 span 时间线（M79 P2）
+
+### 27.1 补的是哪一段
+
+[docs/68 §12](68-编辑器运行时性能分析面板.md) 一直挂着一条欠项：「trace 是 top-N + 合成时间线，面板没有
+egui 自绘 flame chart」。导出 Chrome Trace 早就有，但要**看一眼这一帧谁套在谁里面**就得离开编辑器、
+开浏览器。这一轮补的就是那一眼：性能面板「追踪捕获」段里加一条**尾部粗时间线**——泳道 = 嵌套深度，
+横轴 = 相对捕获起点的纳秒，条形按 category 上色。
+
+分两层是有意的：
+
+- `crates/editor/src/trace_timeline.rs`——**纯几何 + 落笔**。进纳秒、出像素，不读任何面板状态，
+  所以"哪条 span 落在哪个像素、哪条不是真实宽度、刻度为什么这么密"都能不开窗口钉住。
+- `panels/performance.rs::draw_trace_timeline`——只做面板才有的三件事：把**当帧**的
+  `ui.available_width()` 交给布局、把鼠标点从"相对分配矩形"换成"相对泳道原点"（差一个
+  `TICK_LABEL_HEIGHT = 12`）、没悬停时写概况行。
+
+### 27.2 数据面：只拷面板画得起的那一段
+
+`SpanTrace` 原来只有 `top_n` / `to_text` / `to_chrome_trace_json` 三种出口，没有能拿到**逐条记录**的
+只读口。新加的是 `SpanTrace::latest_records(count)`（环形缓冲留下的那段尾部里最近的 `count` 条，
+**捕获顺序**，字段一个都不加工——排序仍归消费方）与 `Profiler::span_records_for_timeline(limit)`。
+面板传的是 `trace_timeline::MAX_BARS = 512`，于是每帧拷贝上限是 512 条，不随缓冲区的 8192 涨。
+捕获顺序与起点顺序不同（嵌套 span 的子总比父早闭合），`layout` 里按 `(start_ns, depth, name)`
+重排，与 Chrome 导出用的是**同一条序**——面板里的顺序和 Perfetto 里对得上。
+
+### 27.3 十三条门
+
+跑法（子集，全绿用时 0.05 秒）：
+
+```
+cargo test -q -p editor --bin editor trace -- --test-threads=1
+```
+
+命中 14 条 = 本节新加的 13 条 + 既有的 `trace_export_path_is_under_project_target_reports`。
+
+| 门 | 认领的不变量 |
+|---|---|
+| `bars_map_nanoseconds_onto_the_window_in_pixels` | 窗口取"留下那段的最晚结束"；宽 800 px / 16 ms ⇒ 50 px/ms，三条的 `[x,y,w,h]` 逐个手算钉死（`[0,0,800,12]`、`[100,15,200,12]`、`[300,30,25,12]`），总高 `3×(12+3)−3 = 42` |
+| `a_span_too_thin_to_see_is_widened_and_says_so` | 1 µs 在 50 px/ms 下只有 0.05 px ⇒ 抬到 `min_bar_px = 2` 且 `widened = true`，`bar_hint` 里必须写「不足最小宽度」；同窗口里 16 ms 那条不许被抬 |
+| `depth_is_the_lane_and_a_tail_bar_clamps_instead_of_leaking_out` | `depth` 就是泳道（`deep` 在 y=45）；贴在窗口右端的**零时长**记录不许画出一条 2 px 的假条形；贴右端的窄条给宽度时被右边可用量夹住，不出界 |
+| `only_the_newest_tail_is_drawn_once_it_exceeds_the_budget` | 600 条 / 预算 512 ⇒ `dropped = 88`、画的是 `s088…s599`（**最近**那段），窗口仍是整段 600 ms |
+| `synthetic_schedule_spans_are_flagged_from_their_args` | 合成判定只认 `args` 里的 `synthetic=true`；`stage` 之类的别的 args 不许被误认 |
+| `hover_picks_the_last_drawn_bar_covering_the_point` | 反序扫描（后画的赢）；泳道间的 3 px 缝隙、窗口外的点都不许命中；`hover_at` 先减掉刻度行高再命中，指针还在刻度行上时不许命中 |
+| `axis_ticks_pick_a_one_two_five_step_that_stays_readable` | `1,2,5×10ⁿ` 里第一个满足"相邻刻度 ≥ `min_spacing_px`"的档位：16 ms/800 px ⇒ 1 ms 档只有 50 px（<56）被跳过，取 2 ms ⇒ 9 根、`[0,100,…,800]`；900 µs/450 px/min 40 ⇒ 0.1 ms 档在 50 px |
+| `an_empty_or_broken_window_draws_nothing_instead_of_dividing_by_zero` | 空记录 ⇒ 没有条形、`window_ns = 0`，但**保留当帧宽度**；零时长记录把窗口抬到至少 1 ns 而不是除以 0；宽度 0 / NaN ⇒ 一条都不画 |
+| `the_paint_emits_one_rectangle_per_bar_at_the_laid_out_pixels` | `egui::Context::run` 读形状表：背景矩形高 = `height + 12`；每条按自己的底色（合成那条用暗化后的色）认领**恰好一块**填充矩形，且落笔像素 == 布局像素（相对背景原点 + 刻度行偏移）；只有被抬宽的那条有红描边；刻度文字确实进了形状表 |
+| `paint_draws_nothing_when_the_width_is_unusable` | 宽度 0 / 负 / NaN 时 `paint` 返回 `None` 且**不画背景**（不留一条 1 px 高的假时间线） |
+| `the_trace_timeline_follows_the_panel_width`（面板） | 同一段记录在 1000 与 700 两种屏宽下各跑一次：背景宽度必须差出来（不是写死的数），`frame`/`lua` 两条的相对 x、宽、泳道 y 在两种宽度下**同一个比例**（0 与 1/4、1 与 3/8）；1 µs 那条在两种宽度下都是 2 px 且只有一条红描边；概况行写清「3 条 / 窗口 8.00 ms / 3 条泳道」 |
+| `hovering_a_timeline_bar_replaces_the_caption_with_its_hint`（面板） | 往 `RawInput.events` 塞 `Event::PointerMoved` 落在 `lua` 那条上：面板必须打出一行 `lua · script · 3.000 ms · 深度 1` 并且**不再**打概况行（两种文案占同一行，划过时面板高度不许跳）；指针落在刻度行上时仍要是概况行 |
+| `an_empty_capture_draws_no_timeline_but_says_so`（面板） | 没捕获时不许画时间线背景，只写「（没有可画的区间…）」 |
+
+绝对像素只由前 10 条钉；后 3 条钉的是**面板这一侧**（宽度跟随、鼠标换算、空态），两层各管各的，
+所以反面对照里它们红的门不一样。
+
+### 27.4 反面对照（跑完即还原）
+
+三条各自单独改、单独跑（每条一次 `editor` bin 重编，约 2 分钟，必须串行）：
+
+| 破坏点 | 结果与红点 |
+|---|---|
+| A：`layout` 取 `&ordered[..max_bars]`（画最早那 512 条而不是最近那 512 条） | **13 passed / 1 failed**，只红 `only_the_newest_tail_is_drawn_once_it_exceeds_the_budget`：`left: "s000" right: "s088"`。其余 12 条全绿——它们的数据都少于预算，`dropped = 0` 时两种取法一样 |
+| C：面板写死 `TimelineOptions::new(800.0)`（不吃 `available_width`） | **13 passed / 1 failed**，只红 `the_trace_timeline_follows_the_panel_width`：`时间线宽度没跟着面板可用宽度走：[[8.0 8.0] - [808.0 62.0]] vs [[8.0 8.0] - [808.0 62.0]]`——两个屏宽下**同一块矩形**，正是写死的形状。`trace_timeline` 那 10 条全绿：几何层本来就不该知道面板多宽 |
+| D：面板调 `bar_at` 而不是 `hover_at`（忘了减刻度行高） | 第一次跑（子集）是**14 全绿**——见下面那段；`touch` 后单跑 `cargo test -q -p editor --bin editor hovering_a_timeline_bar -- --test-threads=1` 拿到 **0 passed / 1 failed**：`悬停没把那条区间的说明打出来：[… "时间线：2 条 · 窗口 8.00 ms · 2 条泳道（悬停看单条）"]`。临时打的 `DBG` 给出证据：条形是 `frame [0,0,984,12]` / `lua [246,15,369,12]`、分配矩形 `[[8,8]-[992,47]]`、指针 `Some([303.2, 40.0])` ⇒ 相对点 `[295.2, 32]` 落在两条之外（lua 只到 27），而 `hover_at` 减掉 12 后是 20，正落在 lua 上 |
+
+D 这条第一次跑出来是 **14 全绿**，红的不是门而是**没重编**：`cp` 还原 + 紧跟一次编辑之后，
+`cargo` 沿用了上一个二进制。加 `touch crates/editor/src/panels/performance.rs` 重跑才拿到上面那条红。
+反面对照只有在"改完的二进制确实是它"时才算证据——看红点之前先看它有没有重编。
+
+### 27.5 代价与没做的部分
+
+- **它不是 flame chart**：`SpanRecord` 只有 `depth`，没有父子 id，所以"谁套在谁里面"表达成泳道而不是
+  真正的父子收缩；同一泳道里相邻的两条会重叠覆盖（后画的赢，`hover_at` 也按这个口径）。
+- **没有时间缩放、拖拽、搜索**，也没有"点一条跳到 top-N 表"。要完整时间线仍然只有导出那条路。
+- **调度 system 那一段仍是合成的**（`args.synthetic=true`，帧末按顺序铺开）：条形暗一档、悬停写
+  「合成」。这类条形**不能**读成真实交错时刻，与 docs/68 §6.2 同一条口径。
+- **绘制开销没有单列读数**：`wp0_profile_capture` 的 ≤2% 门量的是**采集**开销，不含本层每帧最多
+  512 个矩形的落笔；面板关着时这层一次都不跑（`draw_performance_panel` 开头就返回）。
+- **真窗口观感未拍**：本节全部是 headless（`Context::run` 读形状表）。Play 一段之后这条时间线在
+  真窗口里长什么样、够不够一眼看懂，没有 `gui_evidence` 截图证据。
+- **像素容差 0.01 px / 0.05 px**：纳秒→像素走 f32，误差在这个量级；任何真实的错位（错泳道、
+  取了最早那段、宽度写死）都是几像素以上的量级，不会从这个容差里漏过去。
+- 底色是门唯一的认领手段：夹具里一条一个 category，**两个 category 撞色或同一条画两次**会先把
+  "只被画一次"那条断言弄红——那是夹具约束，不是产品判据。

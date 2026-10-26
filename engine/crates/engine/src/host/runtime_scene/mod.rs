@@ -544,6 +544,15 @@ impl RuntimeScene {
     pub fn gamepad_backend_name(&self) -> &'static str {
         self.gamepad.backend_name()
     }
+
+    /// 脚本是否要求收字（`input.text_events{ capture = true }`，M79-04）。
+    ///
+    /// 宿主据此开/关系统输入法：Windows 上输入法一旦接管，玩法按键会先进组合窗
+    /// （中文输入法下按 W 不再前进），所以默认必须关着；只有字段真的在等字才开。
+    #[must_use]
+    pub fn text_capture_requested(&self) -> bool {
+        self.input.text_capture()
+    }
 }
 
 /// 屏幕空间的一条细线 → 6 个 NDC 顶点（两个三角形）。

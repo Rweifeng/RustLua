@@ -1,4 +1,5 @@
--- api_ui：运行期动态 UI（`ui` 表）—— 图元、网格、提示、焦点、滚动、布局、容器、主题、信号。
+-- api_ui：运行期动态 UI（`ui` 表）—— 图元、网格、提示、焦点、滚动、布局、容器、主题、信号、
+-- 虚拟列表、受限富文本、文本输入（IME 生命周期）、导航栈与视图模型。
 --
 -- 2.0 的形状：每个步骤只讲一件事，进入步骤时由 `enter` 把状态摆好，右侧读数用
 -- `panel_get` / `image_get` / `text_get` / `get_layout` / `focus_index` / `scroll_offset`
@@ -13,9 +14,14 @@
 -- 守卫后再调用：接口在就真的执行并读回，不在就退回同一套公式的 Lua 模型并在读数里
 -- 标出来。调用本身仍写在代码里（覆盖率门按真实调用文本判定），只是不会把宿主打崩。
 --
+-- 后四步（虚拟列表 / 富文本 / 文本输入 / 导航栈+视图模型）是 M76-07 的内核：它们由
+-- `rustlua-scripting` 的安装器无条件注册，所以这几步直接拿引擎读数做断言，不做模型兜底；
+-- 只有清理路径还留着 `has()` 守卫（离开场景时宿主可能已经换了表）。
+--
 -- 键位（不占用 Lab 保留键）：
 --   q hide / e show / x clear / t probe / g grid select / d drag / m modal
---   s scroll / c circle pulse / l layout / v theme / p signals / 鼠标拖格子 / 滚轮滚动
+--   s scroll / c circle pulse / l layout / v theme / p signals / i 组合串 / n 返回键
+--   鼠标拖格子 / 滚轮滚动（scroll 步骤驱动 ui.scroll_by，virtual_list 步骤驱动 ui.virtual_list）
 local lab = require("lab")
 
 local M = {}
@@ -51,17 +57,24 @@ local CONTAINER_INFO_ID = "ui_container_info"
 local THEME_BOX_ID = "ui_theme_box"
 local THEME_INFO_ID = "ui_theme_info"
 local SIGNAL_INFO_ID = "ui_signal_info"
+local ADV_PANEL_ID = "ui_adv_panel"
+local ADV_INFO_ID = "ui_adv_info"
 
 -- 面板 / 图片 / 网格 / tooltip / modal：`ui.clear` 能删。
 local DRAW_IDS = {
     CARD_ID, DOT_ID, ICON_ID, GRID_ID, TIP_ID, MODAL_ID,
     SCROLL_BG_ID, LAYOUT_BOX_ID, CONTAINER_BOX_ID, THEME_BOX_ID,
+    ADV_PANEL_ID,
 }
 -- 普通动态文本：`ui.clear` 删不掉（只删 `<id>:tooltip` / `<id>:title`），必须 `ui.hide`。
 local TEXT_IDS = {
     BADGE_ID, PROBE_ID, BAR_LABEL_ID, GRID_INFO_ID, TIP_INFO_ID,
     MODAL_BODY_ID, FOCUS_INFO_ID, SCROLL_INFO_ID, LAYOUT_INFO_ID,
-    CONTAINER_INFO_ID, THEME_INFO_ID, SIGNAL_INFO_ID,
+    CONTAINER_INFO_ID, THEME_INFO_ID, SIGNAL_INFO_ID, ADV_INFO_ID,
+    -- 高级内核步骤里的补充读数行（面板统一用 ADV_PANEL_ID）。
+    "ui_rich_line_2", "ui_rich_line_3", "ui_rich_line_4", "ui_rich_line_5",
+    "ui_input_line_2", "ui_input_line_3",
+    "ui_nav_line_2", "ui_nav_line_3", "ui_nav_line_4", "ui_nav_line_5",
 }
 
 local GRID_COLUMNS, GRID_ROWS, GRID_CELL, GRID_GAP = 4, 3, 44, 10
@@ -99,6 +112,19 @@ local theme_state = {
 local signal_state = { registered = 2, emitted = 1, after_off = 0, final = 0 }
 local signal_element = "ui_demo_btn"
 
+-- M76-07 的四个高级内核：虚拟列表 / 受限富文本 / 文本输入（IME）/ 导航栈 + 视图模型。
+-- 读数一律来自引擎侧的返回值（`ui.*` 的直接结果），模型值只用于接口缺位时的兜底显示。
+local VLIST_ID = "ui_vlist"
+local VLIST_TOTAL, VLIST_VIEW, VLIST_ITEM_H, VLIST_OVERSCAN = 40, 120, 24, 1
+local VLIST_ROWS_SHOWN = 12
+local VLIST_TOP_Y = 120
+local INPUT_ID = "ui_input"
+local vlist_ready = false
+local vlist_state = { start = 0, finish = 0, bound = 0, onscreen = 0, first_key = "-", slot = -1, offset = 0, height = 0 }
+local rich_state = { plain = "Hi", lines = 1, spans = 1, unsupported = 0, bold = "-", color = "-", icon = "-" }
+local input_state = { cursor = 0, text = "-", composition = "-", committed = "-", backend = "-", selection = "-" }
+local nav_state = { depth = 1, current = "shop", modal = "-", accepts = true, back_kind = "-", hp = "-", name = "-", nested = "-" }
+
 -- ---------------------------------------------------------------------------
 -- 小工具
 -- ---------------------------------------------------------------------------
@@ -134,6 +160,27 @@ local function reset_own()
     for row = 1, SCROLL_ROWS do
         ui.hide("ui_scroll_row_" .. row)
     end
+    for row = 1, VLIST_ROWS_SHOWN do
+        ui.hide("ui_vlist_row_" .. row)
+    end
+    -- 高级内核的状态是运行期表：逐个关掉，别把上一步的窗口/输入栈/视图模型留给下一步。
+    if has("virtual_list") then
+        ui.virtual_list({ op = "close", id = VLIST_ID })
+        ui.virtual_list({ op = "close", id = "ui_vlist_empty" })
+    end
+    if has("text_input") then
+        ui.text_input({ op = "close", id = INPUT_ID })
+    end
+    -- 收字声明是跨帧的意图（宿主每帧读它来决定开不开系统输入法），所以换屏时必须显式关掉，
+    -- 否则上一步的字段会把玩法按键一直当正文吃掉。
+    if type(input.text_events) == "function" then
+        input.text_events({ capture = false })
+    end
+    if has("view_model_clear") then
+        ui.view_model_clear()
+    end
+    nav_state.back_kind = "-"
+    vlist_ready = false
     ui.drag_cancel()
     grid_ready = false
     tooltip_on = false
@@ -223,6 +270,112 @@ local function draw_scroll_rows()
         1.0,
         12
     )
+end
+
+-- ---------------------------------------------------------------------------
+-- 高级内核（M76-07）的小工具
+-- ---------------------------------------------------------------------------
+
+--- 富文本演示用的原文：四种受支持标签 + 一个必须按字面量渲染的未知标签。
+local RICH_SOURCE = "<b>Shop</b> <color=#ffcc00>+12</color><icon=coin><br/>next <script>alert(1)</script>"
+
+--- 在 `ui.rich_text` 的 span 数组里找第一个 text 等于 want 的 span。
+local function find_span(rich, want)
+    for index = 1, (rich and #rich.spans or 0) do
+        if rich.spans[index].text == want then
+            return rich.spans[index]
+        end
+    end
+    return nil
+end
+
+--- 找图标 span（`icon` 非空的段，它的 `text` 是空串）。
+local function find_icon_span(rich)
+    for index = 1, (rich and #rich.spans or 0) do
+        local span = rich.spans[index]
+        if span.icon then
+            return span
+        end
+    end
+    return nil
+end
+
+--- 把窗口内的行画成文本；overscan 行虽然绑定了槽位，但落在视口外，不画。
+--- 返回（行数组, 绑定数, 视口内数）。
+local function draw_vlist_rows()
+    local rows = ui.virtual_list({ op = "bind", id = VLIST_ID })
+    local bound = rows and #rows or 0
+    local drawn = 0
+    for position = 1, VLIST_ROWS_SHOWN do
+        local row = rows and rows[position]
+        local on_screen = row ~= nil and row.y >= 0 and row.y < VLIST_VIEW
+        if on_screen then
+            ui.text_at(
+                "ui_vlist_row_" .. position,
+                332,
+                VLIST_TOP_Y + row.y + 4,
+                string.format("item %02d  slot %d  y %+d", row.index + 1, row.slot, math.floor(row.y)),
+                1.0,
+                12
+            )
+            drawn = drawn + 1
+        else
+            ui.hide("ui_vlist_row_" .. position)
+        end
+    end
+    return rows, bound, drawn
+end
+
+--- 重算窗口、绑定并画行；`enter` 与 `run` 都走这里，读数因此永远来自引擎。
+local function refresh_vlist()
+    local win = ui.virtual_list({ op = "window", id = VLIST_ID })
+    if win then
+        vlist_state.start = win.start
+        vlist_state.finish = win["end"]
+        vlist_state.offset = win.offset
+        vlist_state.height = win.total_height
+    end
+    local rows, bound, drawn = draw_vlist_rows()
+    vlist_state.bound = bound
+    vlist_state.onscreen = drawn
+    local first = rows and rows[1]
+    vlist_state.first_key = first and first.key or "-"
+    vlist_state.slot = first and first.slot or -1
+end
+
+--- 把 plain 里的换行显示成 `\n`，并截到面板一行放得下的长度。
+local function fit_plain(text)
+    local one = (tostring(text):gsub("\n", "\\n"))
+    if #one > 30 then
+        return one:sub(1, 30) .. ".."
+    end
+    return one
+end
+
+--- 把导航栈与视图模型的读数同步进 nav_state，并重画面板行（enter/run/check 都走这里）。
+local function nav_sync()
+    local st = ui.nav_stack({ op = "state" })
+    if st then
+        nav_state.depth = st.depth
+        nav_state.current = tostring(st.current)
+        nav_state.modal = st.modal == nil and "-" or tostring(st.modal)
+        nav_state.accepts = st.accepts_input
+    end
+    nav_state.hp = tostring(ui.view_model("player.hp"))
+    nav_state.name = tostring(ui.view_model("player.name"))
+    nav_state.nested = tostring(ui.view_model("shop.items"))
+    ui.text_at(
+        ADV_INFO_ID,
+        332,
+        146,
+        string.format("depth=%s current=%s modal=%s", nav_state.depth, nav_state.current, nav_state.modal),
+        1.0,
+        12
+    )
+    ui.text_at("ui_nav_line_2", 332, 166, string.format("accepts_input=%s", tostring(nav_state.accepts)), 1.0, 12)
+    ui.text_at("ui_nav_line_3", 332, 186, string.format("last back=%s", nav_state.back_kind), 1.0, 12)
+    ui.text_at("ui_nav_line_4", 332, 206, string.format("player.hp=%s", nav_state.hp), 1.0, 12)
+    ui.text_at("ui_nav_line_5", 332, 226, string.format("shop.items=%s", nav_state.nested), 1.0, 12)
 end
 
 -- ---------------------------------------------------------------------------
@@ -730,6 +883,350 @@ local steps = {
             t:eq(signal_state.final, 0, "clear_signals leaves no handlers")
         end,
     },
+    {
+        id = "virtual_list",
+        title = "Virtual list",
+        claim = "40 项只绑定窗口里的 7 项：overscan 多绑一行，槽位随滚出滚入复用",
+        api = { "ui.virtual_list" },
+        code = 'ui.virtual_list{op="open",total=40,viewport=120,item_height=24,overscan=1} / bind / scroll_to',
+        enter = function()
+            reset_own()
+            ui.virtual_list({
+                op = "open",
+                id = VLIST_ID,
+                total = VLIST_TOTAL,
+                viewport = VLIST_VIEW,
+                item_height = VLIST_ITEM_H,
+                spacing = 0,
+                overscan = VLIST_OVERSCAN,
+            })
+            vlist_ready = true
+            ui.panel(ADV_PANEL_ID, 320, VLIST_TOP_Y - 12, 280, VLIST_VIEW + 24, 0.085, 0.105, 0.145, 1.0)
+            refresh_vlist()
+        end,
+        run = function()
+            refresh_vlist()
+            lab.note("滚轮=ui.virtual_list scroll（每格一行）  窗口外的行已 hide，槽位仍占用")
+        end,
+        read = function()
+            return {
+                { label = "window", value = string.format("%d..%d", vlist_state.start, vlist_state.finish) },
+                { label = "offset", value = string.format("%.0f / %.0f", vlist_state.offset, vlist_state.height - VLIST_VIEW) },
+                { label = "bound", value = string.format("%d / %d 项", vlist_state.bound, VLIST_TOTAL) },
+                { label = "onscreen", value = vlist_state.onscreen },
+                { label = "first", value = string.format("key %s slot %d", vlist_state.first_key, vlist_state.slot) },
+                { label = "total_h", value = string.format("%.0f", vlist_state.height) },
+            }
+        end,
+        check = function(t)
+            local win = ui.virtual_list({ op = "window", id = VLIST_ID })
+            t:eq(win.total_height, VLIST_ITEM_H * VLIST_TOTAL, "total height is item_height times total")
+            t:eq(win.start, 0, "the window starts at the top")
+            t:eq(win["end"], 7, "viewport 120 over 24 gives 5 rows, plus 1 and plus 1 overscan")
+            local rows = ui.virtual_list({ op = "bind", id = VLIST_ID })
+            t:eq(#rows, 7, "only the window is bound")
+            t:eq(rows[1].key, "0", "the first key is the first item")
+            t:eq(rows[1].slot, 0, "a fresh pool hands out slot zero first")
+            t:eq(rows[7].index, 6, "index is the item number, not the slot")
+            t:eq(rows[7].content_y, 144, "content_y is stride times index")
+            t:eq(rows[7].height, VLIST_ITEM_H, "every row is one item_height tall")
+            -- 滚到底：请求 9999，引擎只允许走到 max_offset = 960 - 120。
+            t:near(ui.virtual_list({ op = "scroll", id = VLIST_ID, delta = 9999 }), 840, 1e-3, "scroll is clamped to the bottom")
+            local bottom = ui.virtual_list({ op = "window", id = VLIST_ID })
+            t:eq(bottom.start, 34, "overscan pulls one extra row into the window")
+            t:eq(bottom["end"], 40, "the window stops at the total")
+            -- 跳到第 21 项：它在当前视口之上，最小滚动把它的顶边贴住视口上沿。
+            t:ok(ui.virtual_list({ op = "scroll_to", id = VLIST_ID, index = 20 }), "scroll_to moves an item that is out of view")
+            local mid = ui.virtual_list({ op = "window", id = VLIST_ID })
+            t:near(mid.offset, 480, 1e-3, "an item above the viewport scrolls to the top edge")
+            local rebound = ui.virtual_list({ op = "bind", id = VLIST_ID })
+            t:eq(#rebound, 8, "the window is eight items wide at this offset")
+            t:eq(rebound[1].key, "19", "the first bound key is the overscan row")
+            t:eq(rebound[1].slot, 0, "released slots are reused from the front")
+            t:eq(rebound[8].slot, 7, "the eighth key grows the pool by exactly one")
+            t:near(rebound[1].y, -24, 1e-3, "the overscan row above the viewport is bound but off-screen")
+            -- 已经完整可见的项不再滚动。
+            t:eq(ui.virtual_list({ op = "scroll_to", id = VLIST_ID, index = 20 }), false, "a visible item does not move the list")
+            -- 往下跳：第 31 项的底边 744 超出视口下沿 600，最小滚动对齐到 744-120。
+            t:ok(ui.virtual_list({ op = "scroll_to", id = VLIST_ID, index = 30 }), "scroll_to also moves for an item below the viewport")
+            t:near((ui.virtual_list({ op = "window", id = VLIST_ID })).offset, 624, 1e-3, "an item below the viewport scrolls to the bottom edge")
+            local kept = ui.virtual_list({ op = "bind", id = VLIST_ID })
+            t:eq(kept[1].key, "25", "the new window starts one overscan row earlier")
+            t:eq(kept[1].slot, 6, "a key that stayed in the window keeps its slot")
+            t:eq(kept[2].slot, 7, "the neighbour keeps its slot too")
+            ui.virtual_list({ op = "scroll_to", id = VLIST_ID, index = 0 })
+            refresh_vlist()
+            -- 边界：视口为 0 的列表没有任何可见项。
+            ui.virtual_list({ op = "open", id = "ui_vlist_empty", total = 10, viewport = 0, item_height = 24 })
+            t:eq((ui.virtual_list({ op = "window", id = "ui_vlist_empty" }))["end"], 0, "a zero viewport binds nothing")
+            t:eq(ui.virtual_list({ op = "close", id = "ui_vlist_empty" }), true, "close reports that the list existed")
+            t:eq(ui.virtual_list({ op = "window", id = "ui_vlist_empty" }), nil, "a closed list has no window")
+        end,
+    },
+    {
+        id = "rich_text",
+        title = "Rich text (limited)",
+        claim = "只认 b / color / icon / br，其余尖括号按字面量渲染：外部文本改不了排版",
+        api = { "ui.rich_text" },
+        code = 'ui.rich_text("<b>x</b><color=#rrggbb>y</color><icon=name><br/>")',
+        enter = function()
+            reset_own()
+            local rich = ui.rich_text(RICH_SOURCE)
+            rich_state.plain = rich and rich.plain or ""
+            rich_state.lines = rich and rich.lines or 1
+            rich_state.spans = rich and #rich.spans or 0
+            rich_state.unsupported = rich and #rich.unsupported or 0
+            local shop = rich and find_span(rich, "Shop")
+            rich_state.bold = shop and tostring(shop.bold) .. " color=" .. tostring(shop.color) or "-"
+            local plus = rich and find_span(rich, "+12")
+            rich_state.color = plus and tostring(plus.color) or "-"
+            local icon = rich and find_icon_span(rich)
+            rich_state.icon = icon and string.format("%s text=%q", tostring(icon.icon), icon.text) or "-"
+            ui.panel(ADV_PANEL_ID, 320, 120, 280, 120, 0.085, 0.105, 0.145, 1.0)
+            -- 当前宿主的富文本仍按纯文本排版绘制（分段样式只在读数里可见）。
+            ui.text_at(ADV_INFO_ID, 332, 136, fit_plain(rich_state.plain), 1.0, 12)
+            ui.text_at("ui_rich_line_2", 332, 156, string.format("spans=%d lines=%d", rich_state.spans, rich_state.lines), 1.0, 12)
+            ui.text_at("ui_rich_line_3", 332, 176, string.format("unsupported=%d bold=%s", rich_state.unsupported, rich_state.bold), 1.0, 12)
+            ui.text_at("ui_rich_line_4", 332, 196, string.format("color=%s", rich_state.color), 1.0, 12)
+            ui.text_at("ui_rich_line_5", 332, 216, string.format("icon=%s", rich_state.icon), 1.0, 12)
+        end,
+        run = function()
+            lab.note("ui.rich_text 是纯解析：不建行、不占状态，绘制仍走宿主文本排版")
+        end,
+        read = function()
+            return {
+                { label = "spans", value = rich_state.spans },
+                { label = "lines", value = rich_state.lines },
+                { label = "unsupported", value = rich_state.unsupported },
+                { label = "bold span", value = rich_state.bold },
+                { label = "color span", value = rich_state.color },
+                { label = "icon span", value = rich_state.icon },
+                { label = "plain", value = fit_plain(rich_state.plain) },
+            }
+        end,
+        check = function(t)
+            local rich = ui.rich_text(RICH_SOURCE)
+            t:eq(rich.plain, "Shop +12\nnext <script>alert(1)</script>", "known tags are stripped, unknown tags stay literal")
+            t:eq(rich.lines, 2, "one br means two lines")
+            t:eq(#rich.spans, 6, "two styled spans, a space, the icon, the break and the literal tail")
+            t:eq(#rich.unsupported, 2, "the unknown element reports both its open and close tag")
+            local shop = find_span(rich, "Shop")
+            t:eq(shop.bold, true, "the b span carries bold")
+            t:eq(shop.color, nil, "bold does not invent a colour")
+            local plus = find_span(rich, "+12")
+            t:eq(plus.color, "#ffcc00", "colour is normalised to rrggbb hex")
+            t:eq(plus.bold, false, "bold was closed before the colour span")
+            local icon = find_icon_span(rich)
+            t:eq(icon.icon, "coin", "the icon span names the icon")
+            t:eq(icon.text, "", "an icon span has no text of its own")
+            t:eq(rich.spans[6].text, "next <script>alert(1)</script>", "the unknown tags are one literal span")
+            t:ok(rich.plain:find("<b>") == nil, "no supported tag survives into the plain text")
+            -- 认识但没闭合的标签：标签本身被吃掉，样式一路作用到结尾（不报错、不吞正文）。
+            local half = ui.rich_text("<b>open")
+            t:eq(half.plain, "open", "an unclosed known tag still strips its own marker")
+            t:eq(#half.spans, 1, "the half input still parses as one span")
+            t:eq(half.spans[1].bold, true, "the style runs to the end of the string")
+            -- 连 `>` 都没有的截断标签：整段按字面量留着，避免半截输入吃掉文案。
+            local broken = ui.rich_text("<color=#ff0000")
+            t:eq(broken.plain, "<color=#ff0000", "a tag without a closing bracket is kept literally")
+            t:eq(#broken.unsupported, 0, "it is not reported as an unknown tag")
+            t:eq(broken.lines, 1, "the truncated input does not invent a line break")
+        end,
+    },
+    {
+        id = "text_input",
+        title = "Text input + IME",
+        claim = "宿主 IME 事件进 input.text_events；组合串只进 composition，提交才落到文本",
+        api = { "ui.text_input", "input.text_events" },
+        code = 'input.text_events{composition="ni"}; ui.text_input{op="composition",action="commit"}',
+        enter = function()
+            reset_own()
+            local cursor = ui.text_input({ op = "open", id = INPUT_ID, text = "Ni " })
+            input_state.cursor = cursor or 0
+            local st = ui.text_input({ op = "state", id = INPUT_ID })
+            input_state.text = st and st.text or "-"
+            input_state.selection = st and string.format("%q", st.selection) or "-"
+            local desktop = ui.text_input({ op = "policy", host = "desktop" })
+            input_state.backend = desktop and desktop.backend or "-"
+            ui.panel(ADV_PANEL_ID, 320, 130, 280, 84, 0.085, 0.105, 0.145, 1.0)
+            ui.text_at(ADV_INFO_ID, 332, 146, string.format("text=%q cursor=%d", input_state.text, input_state.cursor), 1.0, 12)
+            ui.text_at("ui_input_line_2", 332, 166, string.format("backend=%s", input_state.backend), 1.0, 12)
+            ui.text_at("ui_input_line_3", 332, 186, "i: begin/update/commit 组合串", 1.0, 12)
+        end,
+        run = function()
+            local st = ui.text_input({ op = "state", id = INPUT_ID })
+            if st then
+                input_state.text = st.text
+                input_state.cursor = st.cursor
+                input_state.composition = tostring(st.composition)
+                input_state.selection = string.format("%q", st.selection)
+            end
+            ui.text_at(ADV_INFO_ID, 332, 146, string.format("text=%q cursor=%d", input_state.text, input_state.cursor), 1.0, 12)
+            ui.text_at("ui_input_line_2", 332, 166, string.format("composition=%s sel=%s", input_state.composition, input_state.selection), 1.0, 12)
+            lab.note("i: 走一遍组合串  宿主事件走 input.text_events（这里用注入，真机由 IME 写）")
+        end,
+        read = function()
+            return {
+                { label = "text", value = input_state.text },
+                { label = "cursor", value = input_state.cursor },
+                { label = "selection", value = input_state.selection },
+                { label = "composition", value = input_state.composition },
+                { label = "committed", value = input_state.committed },
+                { label = "backend", value = input_state.backend },
+            }
+        end,
+        check = function(t)
+            t:eq(input_state.cursor, 3, "open focuses and leaves the caret after the text")
+            t:eq(input_state.backend, "native_composition", "desktop gets the native composition backend")
+            local begin = ui.text_input({ op = "composition", id = INPUT_ID, action = "begin", value = "ni" })
+            t:eq(begin.composition, "ni", "composition begins with the first keystrokes")
+            t:eq(begin.text, "Ni ", "pre-edit text is not inserted yet")
+            local update = ui.text_input({ op = "composition", id = INPUT_ID, action = "update", value = "nihao" })
+            t:eq(update.composition, "nihao", "update replaces the whole composition")
+            t:eq(update.committed, nil, "update commits nothing")
+            local commit = ui.text_input({ op = "composition", id = INPUT_ID, action = "commit" })
+            t:eq(commit.committed, "nihao", "commit hands the final string back")
+            t:eq(commit.text, "Ni nihao", "commit inserts at the caret")
+            t:eq(commit.cursor, 8, "the caret lands after the committed text")
+            t:eq(commit.composition, nil, "commit clears the composition")
+            t:eq(commit.focused, true, "commit does not steal focus")
+            -- 取消：预编辑消失，正文一个字都不动。
+            ui.text_input({ op = "composition", id = INPUT_ID, action = "begin", value = "zz" })
+            local canceled = ui.text_input({ op = "composition", id = INPUT_ID, action = "cancel" })
+            t:eq(canceled.composition, nil, "cancel drops the composition")
+            t:eq(canceled.text, "Ni nihao", "cancel never touched the text")
+            -- 编辑动作按字符索引，不是字节。
+            ui.text_input({ op = "edit", id = INPUT_ID, action = "home" })
+            local right = ui.text_input({ op = "edit", id = INPUT_ID, action = "right" })
+            t:eq(right.cursor, 1, "right moves one char")
+            local del = ui.text_input({ op = "edit", id = INPUT_ID, action = "delete" })
+            t:eq(del.text, "N nihao", "delete removes the char under the caret")
+            local all = ui.text_input({ op = "edit", id = INPUT_ID, action = "select_all" })
+            t:eq(all.selection, "N nihao", "select_all covers the whole text")
+            local typed = ui.text_input({ op = "edit", id = INPUT_ID, action = "insert", value = "N" })
+            t:eq(typed.text, "N", "typing replaces the selection")
+            t:eq(typed.cursor, 1, "the caret lands after the typed char")
+            -- 中文按字符数走：两个汉字是两个索引，不是六个字节。
+            ui.text_input({ op = "edit", id = INPUT_ID, action = "insert", value = "你好" })
+            local cjk = ui.text_input({ op = "edit", id = INPUT_ID, action = "backspace" })
+            t:eq(cjk.text, "N你", "backspace removes one whole char")
+            t:eq(cjk.cursor, 2, "the caret counts chars, not bytes")
+            local blurred = ui.text_input({ op = "edit", id = INPUT_ID, action = "blur" })
+            t:eq(blurred.focused, false, "blur clears focus")
+            -- 宿主策略：微信没有原生输入桥就是只读。
+            local wechat = ui.text_input({ op = "policy", host = "wechat", bridge = true })
+            t:eq(wechat.backend, "wechat_native_bridge", "wechat with the bridge uses the host input box")
+            t:eq(wechat.supports_selection, false, "the native bridge gives no in-engine selection")
+            t:eq(ui.text_input({ op = "policy", host = "wechat", bridge = false }).backend, "read_only", "no bridge means read-only")
+            t:eq(ui.text_input({ op = "policy", host = "web" }).backend, "browser_composition", "the web host composes in the browser")
+            -- 边界：id 不存在时静默返回 nil，既不报错也不造状态。
+            t:eq(ui.text_input({ op = "edit", id = "ui_input_ghost", action = "home" }), nil, "an unknown id edits nothing")
+            t:eq(ui.text_input({ op = "state", id = "ui_input_ghost" }), nil, "an unknown id has no state")
+            -- ---- M79-04：宿主文本通道 ----
+            -- PC 宿主把 winit 的 IME/键盘事件写进输入快照，脚本从 input.text_events 读；
+            -- 这里注入的就是宿主那一帧写进来的同一个形状，编排与真机一致。
+            local cap = input.text_events({ capture = true })
+            t:eq(cap.capturing, true, "the script can ask the host to hand over the IME")
+            local pre = input.text_events({ composition = "ni" })
+            t:eq(pre.composition, "ni", "the host preedit string is readable in the same frame")
+            ui.text_input({ op = "open", id = INPUT_ID, text = "" })
+            ui.text_input({ op = "composition", id = INPUT_ID, action = "begin", value = pre.composition })
+            -- winit 在 Commit 前一定先发一条空 Preedit：空串是「清掉组合串」，不是「没有组合串」。
+            local done = input.text_events({ composition = "", commit = "你" })
+            t:eq(done.composition, nil, "an empty composition clears the preedit")
+            t:eq(#done.committed, 1, "one commit arrived this frame")
+            t:eq(done.committed[1], "你", "the commit carries the final text")
+            ui.text_input({ op = "composition", id = INPUT_ID, action = "update", value = done.committed[1] })
+            local landed = ui.text_input({ op = "composition", id = INPUT_ID, action = "commit" })
+            t:eq(landed.text, "你", "the host commit ends up as field text")
+            local again = input.text_events()
+            -- 声明是跨帧意图、文本是本帧数据：同一帧里再读一次，两者都还在——清掉它们的是帧边界。
+            t:eq(again.capturing, true, "the capture declaration survives repeated reads in the frame")
+            t:eq(#again.committed, 1, "the frame's commits stay readable until the frame ends")
+            input.text_events({ capture = false })
+            -- 收尾：摆回 enter 的样子，F5 之后读数一致。
+            ui.text_input({ op = "close", id = INPUT_ID })
+            input_state.cursor = ui.text_input({ op = "open", id = INPUT_ID, text = "Ni " })
+            input_state.text = "Ni "
+            input_state.composition = "nil"
+        end,
+    },
+    {
+        id = "nav_view_model",
+        title = "Nav stack + view model",
+        claim = "返回键先关模态、再弹页、根页不弹；视图模型是扁平键，点号路径不会展开成树",
+        api = { "ui.nav_stack", "ui.view_model", "ui.view_model_set", "ui.view_model_clear" },
+        code = 'ui.nav_stack{op="push",page="bag",restore_focus=7}; ui.view_model_set("player.hp",42)',
+        enter = function()
+            reset_own()
+            nav_state.depth = ui.nav_stack({ op = "open", root = "shop" }) or 1
+            local bag = ui.nav_stack({ op = "push", page = "bag", restore_focus = 7 })
+            ui.nav_stack({ op = "modal", id = "confirm", restore_focus = 11 })
+            nav_state.depth = bag and bag.depth or 2
+            ui.view_model_set("player.hp", 42)
+            ui.view_model_set("player.name", "Rei")
+            ui.view_model_set("player.alive", true)
+            ui.view_model_set("shop.items.count", 3)
+            ui.panel(ADV_PANEL_ID, 320, 130, 280, 130, 0.085, 0.105, 0.145, 1.0)
+            nav_sync()
+        end,
+        run = function()
+            nav_sync()
+            lab.note("n: 走一遍 back（模态 -> 页 -> 根）  视图模型见右侧读数")
+        end,
+        read = function()
+            return {
+                { label = "depth", value = nav_state.depth },
+                { label = "current", value = nav_state.current },
+                { label = "modal", value = nav_state.modal },
+                { label = "accepts", value = tostring(nav_state.accepts) },
+                { label = "last back", value = nav_state.back_kind },
+                { label = "player.hp", value = nav_state.hp },
+                { label = "shop.items", value = nav_state.nested },
+            }
+        end,
+        check = function(t)
+            local state = ui.nav_stack({ op = "state" })
+            t:eq(state.depth, 2, "one root plus one pushed page")
+            t:eq(state.current, "bag", "the top page is the pushed one")
+            t:eq(state.modal, "confirm", "the modal sits above the page stack")
+            t:eq(state.accepts_input, false, "a modal swallows input meant for the page")
+            local closed = ui.nav_stack({ op = "back" })
+            t:eq(closed.kind, "modal", "back closes the modal first")
+            t:eq(closed.id, "confirm", "back reports which modal it closed")
+            t:eq(closed.focus, 11, "back hands the modal restore focus back to the caller")
+            local after = ui.nav_stack({ op = "state" })
+            t:eq(after.modal, nil, "no modal is left")
+            t:eq(after.accepts_input, true, "the page accepts input again")
+            local popped = ui.nav_stack({ op = "back" })
+            t:eq(popped.kind, "page", "the next back pops the page")
+            t:eq(popped.page, "bag", "back reports the popped page")
+            t:eq(popped.focus, 7, "the page carries its own restore focus")
+            local root = ui.nav_stack({ op = "back" })
+            t:eq(root.kind, "root", "the root page is never popped")
+            t:eq((ui.nav_stack({ op = "state" })).depth, 1, "depth stays at one")
+            local raised = not pcall(ui.nav_stack, { op = "close_modal", id = "ghost" })
+            t:ok(raised, "closing a modal that is not open raises instead of editing the stack")
+            -- 视图模型：值原样读回，点号路径只是一个扁平键。
+            t:near(ui.view_model("player.hp"), 42, 1e-6, "numbers come back")
+            t:eq(ui.view_model("player.name"), "Rei", "strings come back")
+            t:eq(ui.view_model("player.alive"), true, "booleans come back")
+            t:eq(ui.view_model("shop.items"), nil, "a dotted path does not grow a tree")
+            t:eq(ui.view_model("shop.items.count"), 3, "the full dotted key reads back")
+            ui.view_model_clear("player.name")
+            t:eq(ui.view_model("player.name"), nil, "clear with a path removes that one key")
+            t:eq(ui.view_model("player.alive"), true, "the other keys survive")
+            ui.view_model_clear()
+            t:eq(ui.view_model("player.hp"), nil, "clear without a path empties the model")
+            -- 收尾：恢复 enter 的栈与视图模型，下一帧的读数仍然完整。
+            ui.nav_stack({ op = "open", root = "shop" })
+            ui.nav_stack({ op = "push", page = "bag", restore_focus = 7 })
+            ui.nav_stack({ op = "modal", id = "confirm", restore_focus = 11 })
+            ui.view_model_set("player.hp", 42)
+            ui.view_model_set("player.name", "Rei")
+            nav_sync()
+        end,
+    },
 }
 
 -- ---------------------------------------------------------------------------
@@ -794,12 +1291,33 @@ local function handle_input()
         note = "v: theme 步骤的读数来自 get_theme/theme_color"
     elseif input.just_pressed("p") then
         note = "p: signals 步骤的读数来自 signals/handlers"
+    elseif input.just_pressed("i") then
+        -- 走一遍 IME 生命周期：预编辑不落到正文，提交才落。
+        ui.text_input({ op = "composition", id = INPUT_ID, action = "begin", value = "ni" })
+        ui.text_input({ op = "composition", id = INPUT_ID, action = "update", value = "你好" })
+        local commit = ui.text_input({ op = "composition", id = INPUT_ID, action = "commit" })
+        input_state.committed = commit and tostring(commit.committed) or "-"
+        local text = commit and commit.text or "-"
+        if commit then
+            input_state.text = text
+            input_state.cursor = commit.cursor
+        end
+        note = string.format("i: composition commit %q -> text %q", input_state.committed, tostring(text))
+    elseif input.just_pressed("n") then
+        local back = ui.nav_stack({ op = "back" })
+        if back then
+            nav_state.back_kind = string.format("%s/%s", tostring(back.kind), tostring(back.id or back.page or "-"))
+        end
+        note = string.format("n: ui.nav_stack back -> %s", nav_state.back_kind)
     end
 
-    -- 滚轮：y 为正 = 向上滚，传给 scroll_by 要取反；偏移会被引擎钳到 0..max。
+    -- 滚轮：y 为正 = 向上滚，传给 scroll_by / virtual_list 要取反；偏移会被引擎钳到 0..max。
     local wheel = input.scroll_delta()
     local dy = wheel and wheel[2] or 0
-    if dy ~= 0 and scroll_ready then
+    if dy ~= 0 and vlist_ready then
+        local applied = ui.virtual_list({ op = "scroll", id = VLIST_ID, delta = -dy * VLIST_ITEM_H })
+        note = string.format("wheel %.1f -> ui.virtual_list scroll %.0f (applied %.0f)", dy, -dy * VLIST_ITEM_H, applied or 0)
+    elseif dy ~= 0 and scroll_ready then
         note = string.format("wheel %.1f -> ui.scroll_by(%.1f)=%.0f", dy, -dy * SCROLL_ROW_H, ui.scroll_by(SCROLL_ID, -dy * SCROLL_ROW_H))
     end
 

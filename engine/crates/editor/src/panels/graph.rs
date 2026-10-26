@@ -90,6 +90,60 @@ impl GraphPanelState {
         self.status = message;
     }
 
+    /// 测试用的文档入口：跨面板全局 Undo 的回归测试要往图里提交一步（`command_router` 的
+    /// `graph_app`）。编辑仍只走 [`GraphDocument`] 自己的方法，撤销栈由它自己维护。
+    #[cfg(test)]
+    pub(crate) fn doc_mut(&mut self) -> Option<&mut GraphDocument> {
+        self.doc.as_mut()
+    }
+
+    // ---- 跨面板全局 Undo 的三个入口（M79 P1-2，消费方 `crate::actions::undo_ledger`）----
+    //
+    // 刻意**不在这里读键盘**：画布原来自己监听 Ctrl+Z/Ctrl+Y，而 shell 的全局入口也在听，
+    // 一次按键于是被消费两遍（图撤一步、场景也撤一步）。快捷键归 shell，面板只留按钮。
+
+    /// 编辑签名（无文档 = `(0, 0)`），全局账本用它判断"这张图刚刚是不是又提交了"。
+    pub(crate) fn undo_signature(&self) -> (u64, usize) {
+        self.doc
+            .as_ref()
+            .map_or((0, 0), GraphDocument::undo_signature)
+    }
+
+    pub(crate) fn undo_can_undo(&self) -> bool {
+        self.doc.as_ref().is_some_and(GraphDocument::can_undo)
+    }
+
+    pub(crate) fn undo_can_redo(&self) -> bool {
+        self.doc.as_ref().is_some_and(GraphDocument::can_redo)
+    }
+
+    pub(crate) fn undo_step(&mut self) -> bool {
+        let Some(doc) = self.doc.as_mut() else {
+            return false;
+        };
+        if !doc.undo() {
+            return false;
+        }
+        // 选中集是按节点 id 记的，越过一步之后它可能已经不在图里了。
+        self.selected.clear();
+        self.primary = None;
+        self.status = "已撤销图编辑".to_owned();
+        true
+    }
+
+    pub(crate) fn redo_step(&mut self) -> bool {
+        let Some(doc) = self.doc.as_mut() else {
+            return false;
+        };
+        if !doc.redo() {
+            return false;
+        }
+        self.selected.clear();
+        self.primary = None;
+        self.status = "已重做图编辑".to_owned();
+        true
+    }
+
     fn draw(&mut self, ui: &mut egui::Ui, root: &Path, trace: Option<VgraphTraceEvent>) {
         let Some(mut doc) = self.doc.take() else {
             self.draw_empty(ui);
@@ -219,30 +273,13 @@ impl GraphPanelState {
         ui.weak(&self.status);
     }
 
+    /// 画布私有的快捷键。**刻意不含 Ctrl+Z / Ctrl+Y**（M79 P1-2）：撤销与重做由 shell 的
+    /// 全局账本统一路由，面板再听一遍会让同一次按键消费两步（图撤一步、场景也撤一步）。
     fn take_shortcuts(&mut self, ui: &egui::Ui, doc: &mut GraphDocument) {
         if ui.ctx().wants_keyboard_input() {
             return;
         }
-        let (undo, redo, delete) = ui.input(|input| {
-            let command = input.modifiers.command;
-            (
-                command && !input.modifiers.shift && input.key_pressed(egui::Key::Z),
-                command
-                    && ((input.modifiers.shift && input.key_pressed(egui::Key::Z))
-                        || input.key_pressed(egui::Key::Y)),
-                input.key_pressed(egui::Key::Delete),
-            )
-        });
-        if undo && doc.undo() {
-            self.selected.clear();
-            self.primary = None;
-            self.status = "已撤销".to_owned();
-        }
-        if redo && doc.redo() {
-            self.selected.clear();
-            self.primary = None;
-            self.status = "已重做".to_owned();
-        }
+        let delete = ui.input(|input| input.key_pressed(egui::Key::Delete));
         if delete {
             let removed = doc.remove_nodes(&self.selected);
             if removed > 0 {

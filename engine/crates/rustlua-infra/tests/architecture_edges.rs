@@ -157,6 +157,32 @@ const BUDGET: &[(&str, &[&str])] = &[
             "physics",
         ],
     ),
+    // M79 编辑器 crate 拆分：`editor` 的无界面领域层。它是库不是组合根，因此：
+    // ① 不许依赖 `engine` / `editor`（引擎运行时桥与 GUI shell 都留在上层）；
+    // ② 不许依赖 `gpu` / `wgpu`——文件监听只读 `infra::paths::SHADER_SOURCE_DIR` 这个常量。
+    // `assets-import` 是资源面板状态与图集预览要用的导入层，运行时 crate 不许反向依赖它。
+    (
+        "rustlua-editor-core",
+        &[
+            "animation",
+            "assets",
+            "assets-import",
+            "camera",
+            "ecs",
+            "infra",
+            "math",
+            "physics",
+            "render",
+            "scene",
+            "ui",
+            "visual-script",
+        ],
+    ),
+    // UI 文档宿主与 UI Studio 无头层：零 egui、零 `EditorApp`，只认契约层与场景/UI 数据。
+    (
+        "rustlua-editor-ui-studio",
+        &["assets-import", "scene", "ui", "ui-spec"],
+    ),
 ];
 
 /// 组合根：允许依赖全部核心 crate（它们的职责就是接线），但**不得被核心 crate 反向依赖**。

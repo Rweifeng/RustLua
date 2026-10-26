@@ -345,21 +345,6 @@ pub(crate) fn focus_tab(state: &mut DockState<DockTab>, target: DockTab) -> bool
     }
 }
 
-/// 当前活动标签：优先读聚焦表面；首帧尚未渲染（`focused_surface` 为空）时退回主表面。
-///
-/// 全局 Undo 的「UI Studio 聚焦时消费 UI 撤销栈」按这个结果分流。
-pub(crate) fn active_tab(state: &mut DockState<DockTab>) -> Option<DockTab> {
-    state
-        .find_active_focused()
-        .map(|(_, tab)| *tab)
-        .or_else(|| {
-            state
-                .main_surface_mut()
-                .find_active_focused()
-                .map(|(_, tab)| *tab)
-        })
-}
-
 /// 面板可见性 ↔ 树的成员关系（View 菜单只改 `show_*` 布尔，这里负责落到树上）。
 ///
 /// 查找必须跨**所有表面**：标签被用户拖成浮动窗口时它不在主表面，按主表面判断会每帧

@@ -162,6 +162,16 @@ impl LuaRuntime {
         Ok(())
     }
 
+    /// 是否已执行过工程级入口脚本（`scripts/main.lua`）。
+    ///
+    /// 宿主用它决定要不要调 `reload_if_changed`：纯实体脚本工程与引擎诊断模式从来没
+    /// 装载过入口，问它"变了吗"只会得到 "no project script is loaded" —— 那是问错了，
+    /// 不是脚本坏了。
+    #[must_use]
+    pub fn has_project_script(&self) -> bool {
+        self.current_path.is_some()
+    }
+
     pub fn reload_if_changed(&mut self) -> Result<ReloadStatus, LuaBridgeError> {
         let path = self
             .current_path

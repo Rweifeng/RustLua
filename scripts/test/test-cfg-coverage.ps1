@@ -22,7 +22,7 @@ New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 
 # 合成闭包（wasm 站点 crate 都在这里；game_web 靠 wasm-default cell 的 packages 覆盖）
 $tree = Join-Path $tmp "closure.txt"
-@("rustlua-infra", "rustlua-audio", "rustlua-render", "engine", "rustlua-scripting", "gpu-web-probe", "wasm-lua-spike", "rustlua-assets", "rustlua-math") |
+@("rustlua-infra", "rustlua-audio", "rustlua-render", "engine", "rustlua-scripting", "gpu-web-probe", "rustlua-assets", "rustlua-math") |
     Set-Content -LiteralPath $tree -Encoding UTF8
 
 # 合成 sites：真实清单里只保留 wasm / not-wasm 站点（覆盖断言只关心这两类）
@@ -52,7 +52,7 @@ function Get-CellsJson([string]$Path, [scriptblock]$Mutate) {
     $cells = @{
         schema = 1
         cells = @(
-            @{ id = "wasm-default"; cmd = "cargo check -p game_web -p gpu-web-probe -p wasm-lua-spike --target wasm32-unknown-unknown"; packages = @("game_web", "gpu-web-probe", "wasm-lua-spike"); role = "blocking" },
+            @{ id = "wasm-default"; cmd = "cargo check -p game_web -p gpu-web-probe --target wasm32-unknown-unknown"; packages = @("game_web", "gpu-web-probe"); role = "blocking" },
             @{ id = "wasm-gpu2d-off"; cmd = "cargo check -p game_web --no-default-features --target wasm32-unknown-unknown"; packages = @("game_web"); role = "blocking" },
             @{ id = "native-windows"; cmd = "cargo check --workspace --all-targets"; packages = @("*"); role = "blocking" }
         )
@@ -70,14 +70,14 @@ Get-CellsJson $cellsBase { param($c) }
 $cellsNoGameWeb = Join-Path $tmp "cells-no-game-web.json"
 Get-CellsJson $cellsNoGameWeb {
     param($c)
-    $c.cells[0].packages = @("gpu-web-probe", "wasm-lua-spike")
+    $c.cells[0].packages = @("gpu-web-probe")
     $c.cells[1].packages = @()
 }
 
 $cellsNoProbe = Join-Path $tmp "cells-no-probe.json"
 Get-CellsJson $cellsNoProbe {
     param($c)
-    $c.cells[0].packages = @("game_web", "wasm-lua-spike")
+    $c.cells[0].packages = @("game_web")
 }
 
 $cellsExpired = Join-Path $tmp "cells-expired.json"

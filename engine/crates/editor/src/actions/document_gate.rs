@@ -76,6 +76,28 @@ impl EditorApp {
             // 已有待确认操作：防止重复触发切换请求与重复弹窗。
             return;
         }
+        // M79 P1-4：in-context 编辑中换文档会把「回到场景」的口袋整份丢掉（场景文档与它的
+        // 撤销栈只存在那儿）。闸门放在**这里**而不是 `perform_pending_change`，因为脏阶段文档
+        // 在下一行就会被挂成 pending、弹出「保存并继续」——那时用户已经选了"保存"，再拒绝
+        // 只会让他对着一个既不保存也不切换的对话框发懵。
+        // 阶段文档 clean 时先静默返回场景（没东西可丢），再让**原来的**闸门重新判一遍：
+        // 这时当前文档是那份场景，它若 dirty 就会正常弹窗，而不是把用户的场景改动静默换掉。
+        if self.prefab_stage.is_some() {
+            if self.prefab_stage_unsaved() {
+                self.status = format!(
+                    "已阻止{action}：正在预制体编辑上下文中（{source} 有未保存改动）。请先用横幅里的「保存并返回」或「放弃并返回」。",
+                    action = change.action_label(),
+                    source = self
+                        .prefab_stage
+                        .as_ref()
+                        .map(|stage| stage.source.clone())
+                        .unwrap_or_default(),
+                );
+                self.set_scene_view_diagnostic(self.status.clone());
+                return;
+            }
+            self.close_prefab_stage(false);
+        }
         let dirty = self
             .document
             .current_scene

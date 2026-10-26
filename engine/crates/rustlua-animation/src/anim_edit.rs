@@ -71,6 +71,9 @@ pub struct AnimEditSession {
     saved: AnimClip,
     undo: Vec<AnimClip>,
     redo: Vec<AnimClip>,
+    /// 累计**编辑**次数（一步 = 一次压栈；撤销/重做的挪动不计数）。
+    /// 跨面板全局 Undo 的签名用它区分"这条剪辑刚刚又提交了"，见 [`Self::undo_signature`]。
+    edits: u64,
 }
 
 impl AnimEditSession {
@@ -82,6 +85,7 @@ impl AnimEditSession {
             clip,
             undo: Vec::new(),
             redo: Vec::new(),
+            edits: 0,
         }
     }
 
@@ -120,6 +124,14 @@ impl AnimEditSession {
     #[must_use]
     pub fn undo_depth(&self) -> usize {
         self.undo.len()
+    }
+
+    /// 跨面板全局 Undo 的**编辑签名**：`(累计编辑次数, undo+redo 深度)`。计数只在 [`Self::commit`]
+    /// 真正压栈时变大；[`Self::revert_to_saved`] 把两条栈一起清掉，深度项负责把归属从账本摘走。
+    /// 消费方见 editor bin 的 `actions/undo_ledger.rs`。
+    #[must_use]
+    pub fn undo_signature(&self) -> (u64, usize) {
+        (self.edits, self.undo.len() + self.redo.len())
     }
 
     /// 调用方成功写盘后调用：把当前剪辑设为保存点。撤销历史保留，撤销回旧内容会再次变脏。
@@ -517,6 +529,7 @@ impl AnimEditSession {
             self.undo.remove(0);
         }
         self.redo.clear();
+        self.edits = self.edits.wrapping_add(1);
         Ok(output)
     }
 }

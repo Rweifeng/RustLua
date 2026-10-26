@@ -9,6 +9,13 @@
 
 use std::path::{Component, Path, PathBuf};
 
+/// 项目里放 shader 覆盖文件的目录名（计划 §6.5）。
+///
+/// 权威定义在这里而不是渲染 crate：编辑器领域层的文件监听（`rustlua-editor-core`）
+/// 也要把它列进默认监听根，但那一层不该为了一个目录名依赖 `rustlua-gpu`（wgpu）。
+/// 运行时默认路径、报错文案与监听根都读同一个常量。
+pub const SHADER_SOURCE_DIR: &str = "shaders";
+
 /// 当前游戏工程根目录（仓库内 examples）。
 ///
 /// 解析顺序：

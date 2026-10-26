@@ -16,7 +16,7 @@ use rustlua_input::input::InputSnapshot;
 use rustlua_render::font::FontAtlas;
 use rustlua_render::frame::{FontAtlasMap, VectorAtlasMap, VectorFontHandle};
 use rustlua_scene::scene::Scene;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// 游戏预览的重绘节流：~60fps，保证持续运行而不忙转。
@@ -92,6 +92,18 @@ pub(crate) struct PreviewSession {
     script_error_note: Option<String>,
     /// 已提示过的脚本错误计数：只在增长时重建提示字符串，避免每帧分配。
     script_errors_seen: u64,
+    /// P0（脚本迭代闭环）：磁盘 Lua 改动的去抖节律（250ms 一查，编辑器不另造口径）。
+    script_cadence: rustlua_infra::hot_reload::ReloadCadence,
+    /// 工程脚本目录（`<project_root>/scripts`）；`None` = 本轮**不轮询**。
+    ///
+    /// 判据取**目录**而不是 `main.lua`：纯实体脚本工程没有入口，但它的实体脚本照样要能
+    /// 热重载（引擎侧的 `reload_scripts` 对"没有入口"返回 `Unchanged`，不会抛假错）。
+    /// 目录不存在 ⇒ 这个项目根本没有脚本层，每 250ms 查一次纯属浪费。
+    scripts_dir: Option<PathBuf>,
+    /// 最近一次热重载的结果（成功范围 / 失败原因），常驻显示若干帧后被错误提示接管。
+    script_notice: Option<String>,
+    /// `script_notice` 的剩余显示帧数（到期只清空文本，不重建会话）。
+    script_notice_left: u32,
     /// 运行时性能读数：帧间隔 / 一秒滚动帧率 / 本帧更新与 Lua 耗时。
     perf: PreviewPerfMeter,
     /// P3-R03：创建会话时环境应用的结果（性能面板显示档位/回退原因）。
@@ -231,6 +243,11 @@ impl PreviewSession {
             diagnostic: None,
             script_error_note: None,
             script_errors_seen: 0,
+            script_cadence: rustlua_infra::hot_reload::ReloadCadence::script_default(),
+            scripts_dir: (project_root.join("scripts").is_dir())
+                .then(|| project_root.join("scripts")),
+            script_notice: None,
+            script_notice_left: 0,
             perf: PreviewPerfMeter::default(),
             environment_apply,
         };
@@ -328,6 +345,71 @@ impl PreviewSession {
         });
     }
 
+    /// P0（脚本迭代闭环）：按去抖节律检查磁盘上的 Lua，有改动就热重载进正在跑的 Play。
+    ///
+    /// 节律与文案和独立 `game` 宿主共用 [`rustlua_infra::hot_reload`]，两条路径不再各写
+    /// 一套。**失败保持旧 VM** 是引擎侧的既有保证（`reload_if_changed` 先立新、后破旧），
+    /// 这里只负责让它**看得见**：成功报本次重载的范围，失败把错误原样进提示与日志，
+    /// Play 不停下——此前"改了脚本没反应"在编辑器里没有任何线索。
+    ///
+    /// 时钟由调用方喂本帧真实经过时长，因此无头测试可以完全确定地推进节律。
+    fn poll_script_hot_reload(&mut self, frame_elapsed: std::time::Duration) {
+        if self.scripts_dir.is_none() || !self.script_cadence.advance(frame_elapsed) {
+            return;
+        }
+        match self.runtime.reload_scripts() {
+            Ok((status, entity_files)) => {
+                if let Some(note) = rustlua_infra::hot_reload::script_reload_note(
+                    status.is_reloaded(),
+                    entity_files,
+                ) {
+                    tracing::info!(target: "editor", "[preview] {note}");
+                    self.set_script_notice(note, false);
+                }
+            }
+            Err(error) => {
+                let note =
+                    rustlua_infra::hot_reload::script_reload_failure_note(&error.to_string());
+                tracing::warn!(target: "editor", "[preview] {note}");
+                self.set_script_notice(note, true);
+            }
+        }
+    }
+
+    /// 挂一条热重载提示。
+    ///
+    /// `sticky` = 失败用的：错误**不随时间消失**，只在下一次检查（改对了→成功提示接管，
+    /// 还是错的→同一条继续挂）时被替换。2 秒后自动消失的报错等于没报——用户那时已经回到
+    /// 编辑器窗口，而"脚本没更新"在 Play 里的表现只是"游戏照旧"。
+    fn set_script_notice(&mut self, note: String, sticky: bool) {
+        self.script_notice_left = if sticky {
+            u32::MAX
+        } else {
+            rustlua_infra::hot_reload::SCRIPT_NOTICE_FRAMES
+        };
+        self.script_notice = Some(note);
+    }
+
+    /// 当前该常驻显示的提示（只读，不动倒计时）：热重载结果优先，其次未修复的脚本错误。
+    ///
+    /// 未到期帧也读它，否则一条"已重载"提示会被下一行的错误提示冲掉、在屏幕上闪一下。
+    fn current_note(&self) -> Option<String> {
+        self.script_notice
+            .clone()
+            .or_else(|| self.script_error_note.clone())
+    }
+
+    /// 到期帧走一格热重载提示的倒计时；归零时把字符串一起释放（不重建会话、不丢错误提示）。
+    fn tick_script_notice(&mut self) {
+        if self.script_notice_left == 0 {
+            return;
+        }
+        self.script_notice_left -= 1;
+        if self.script_notice_left == 0 {
+            self.script_notice = None;
+        }
+    }
+
     /// M19-03：把预览运行时的 Lua VM 借给运行时调试面板做只读探针读取。
     /// 与 `RuntimeScene::with_script` 同语义：不创建副本、不修改运行态，
     /// 调用方负责只做读取。
@@ -361,6 +443,15 @@ impl PreviewSession {
         } else {
             self.renderer.readback_metrics()
         }
+    }
+
+    /// 资源导入设置变了之后刷新预览渲染器：就地换已上传贴图的采样器，返回刷了几张。
+    ///
+    /// 这条是「贴图预览窗改滤镜 → Play 画面立刻变糊/变锐」的通路。渲染器读的是工程根下
+    /// 那份**入库**的 `resources.meta`，而预览会话在建会话时只读一次盘，所以写完必须显式
+    /// 通知它，否则症状是"设置存下了、下一帧还是老样子"。
+    pub(crate) fn reload_texture_settings(&mut self) -> usize {
+        self.renderer.reload_texture_settings()
     }
 
     /// 本帧运行时性能快照（Play 预览的实时读数）。
@@ -464,7 +555,7 @@ impl PreviewSession {
             // 未到期：仅排空在途回读（补上滞后帧），保持游戏匀速。
             let uploaded = self.drain_readback(ctx);
             if uploaded {
-                self.diagnostic = self.script_error_note.clone();
+                self.diagnostic = self.current_note();
             }
             ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
             return PreviewTick::Idle;
@@ -479,6 +570,9 @@ impl PreviewSession {
 
         let tick_started = std::time::Instant::now();
         let result = self.update_due(elapsed, ctx, input);
+        // 热重载提示在**帧体之后**才走倒计时：本帧刚挂上的那条必须完整显示，
+        // 而不是刚写进 overlay 就先被自己扣掉一格。
+        self.tick_script_notice();
         // 帧率用「tick 开始 → tick 开始」的间隔；`update_ms` 是本帧实际工作量。
         // 两者分开，才能区分"游戏慢"（间隔长）与"这一帧算得重"（update 长）。
         self.perf.record_tick(
@@ -496,6 +590,9 @@ impl PreviewSession {
         ctx: &egui::Context,
         input: &InputSnapshot,
     ) -> DuePreviewTick {
+        // P0（脚本迭代闭环）：先按节律查磁盘上的 Lua，再跑本帧逻辑步——重载成功时新脚本
+        // 立刻参与这一帧的 `update()`，用户感到的延迟只剩一次去抖（250ms）。
+        self.poll_script_hot_reload(std::time::Duration::from_secs_f64(elapsed));
         let report = self.time_step.advance(elapsed);
         if report.dropped_steps > 0 {
             tracing::warn!(
@@ -559,7 +656,7 @@ impl PreviewSession {
             self.height,
         );
         if self.uses_native_texture() && !self.downscales() {
-            self.diagnostic = self.script_error_note.clone();
+            self.diagnostic = self.current_note();
             self.record_presented_frame();
             self.record_tick_window();
             ctx.request_repaint_after(PREVIEW_FRAME_INTERVAL);
@@ -580,7 +677,7 @@ impl PreviewSession {
                 height,
             } => {
                 self.upload_frame(ctx, pixels, width, height);
-                self.diagnostic = self.script_error_note.clone();
+                self.diagnostic = self.current_note();
                 PreviewTick::Rendered
             }
             ReadbackStatus::Pending => {

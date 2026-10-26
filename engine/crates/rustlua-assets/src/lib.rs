@@ -4,6 +4,7 @@ pub mod dependency;
 pub mod env_asset;
 pub mod gltf_asset;
 pub mod hash;
+pub mod import_settings;
 pub mod importer;
 pub mod mat_asset;
 pub mod mat_edit;

@@ -24,6 +24,14 @@ pub const MAX_BUNDLE_BYTES: u64 = 4 * 1024 * 1024;
 /// 微信小游戏"主包 + 全部分包"的总量上限。
 pub const MAX_TOTAL_BYTES: u64 = 20 * 1024 * 1024;
 
+/// 资源库元数据段（逐张贴图的导入设置）的文件名。
+///
+/// 这里只能是字面量：`rustlua-infra` 是运行时底座，反向依赖 `rustlua-assets`
+/// 会成环（那边已经依赖本 crate）。真正的定义在
+/// `rustlua_assets::import_settings::RESOURCE_META_FILE`，两者由
+/// `assetc` 的 `resource_meta_file_name_does_not_drift_between_crates` 钉在一起。
+pub const RESOURCE_META_FILE: &str = "resources.meta";
+
 /// 分发单元的解析结果。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnitKind<'a> {
@@ -214,6 +222,7 @@ impl BundleConfig {
                         "dependencies.json",
                         "bundles.json",
                         "atlas_redirect.json",
+                        RESOURCE_META_FILE,
                         "scripts/",
                         "scenes/",
                         "assets/prefabs/",
@@ -257,6 +266,7 @@ impl BundleConfig {
                         "bundles.json",
                         // 图集重定向表：装配期**启动就要**查（Sprite 组装的第一步）。
                         "atlas_redirect.json",
+                        RESOURCE_META_FILE,
                         "scripts/",
                         "scenes/",
                         "assets/prefabs/",

@@ -45,7 +45,7 @@ jobs:
             experimental: false
           - id: windows-wasm
             os: windows-latest
-            cmd: cargo check -p game_web -p gpu-web-probe -p wasm-lua-spike --target wasm32-unknown-unknown
+            cmd: cargo check -p game_web -p gpu-web-probe --target wasm32-unknown-unknown
             target: wasm32-unknown-unknown
             tier: blocking
             experimental: false
@@ -63,7 +63,7 @@ jobs:
             experimental: true
           - id: linux-wasm
             os: ubuntu-latest
-            cmd: cargo check -p game_web -p gpu-web-probe -p wasm-lua-spike --target wasm32-unknown-unknown
+            cmd: cargo check -p game_web -p gpu-web-probe --target wasm32-unknown-unknown
             target: wasm32-unknown-unknown
             tier: advisory
             experimental: true
@@ -75,7 +75,7 @@ jobs:
             experimental: true
           - id: macos-wasm
             os: macos-latest
-            cmd: cargo check -p game_web -p gpu-web-probe -p wasm-lua-spike --target wasm32-unknown-unknown
+            cmd: cargo check -p game_web -p gpu-web-probe --target wasm32-unknown-unknown
             target: wasm32-unknown-unknown
             tier: advisory
             experimental: true

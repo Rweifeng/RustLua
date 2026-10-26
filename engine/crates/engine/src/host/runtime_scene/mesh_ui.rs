@@ -588,6 +588,39 @@ impl RuntimeScene {
         Ok(())
     }
 
+    /// 本帧真正进入图像装配趟的条目，以及被**可见性遮罩**拦下的条数（`view_filtered` 的口径）。
+    ///
+    /// 拆成独立方法只为让门数得到这一层：绘制趟会把视口外的条目写成零顶点，但在那之前
+    /// 每条目已经付过一次组件克隆 + 贴图重定向/状态贴图查表。1000 项列表滚出视口的 993 项
+    /// 过去每帧都走这条账，省掉的正是它（见 `scrolled_away_slots`）。
+    pub(crate) fn scene_ui_image_candidates(
+        &self,
+    ) -> (Vec<(EntityId, UiImage, Option<ButtonStateSet>)>, usize) {
+        // docs/54 §4.2：实体身份的 UI 吃 **overlay 视图**的可见遮罩；按名字注册的画布 UI
+        // （面板/血条/网格）不是实体，因此不受遮罩影响。
+        let overlay_mask = self.view_overlay_mask;
+        // M79：滚出视口的条目**在克隆之前**就摘掉。**不记进 `view_filtered`**——那个数的口径是
+        // "被可见性遮罩拦下"，混进视口裁剪会让相机/遮罩那几条门读的不再是同一件事。
+        let away = self.scrolled_away_slots();
+        let mut filtered = 0usize;
+        let images = self.script.with_world(|world| {
+            let mut images = Vec::new();
+            world.for_each::<UiImage>(|id, image| {
+                if away.contains(&(id.index() as u64)) {
+                    return;
+                }
+                if rustlua_render::visibility::entity_visible_in(world, id, overlay_mask) {
+                    let states = world.get::<ButtonStateSet>(id).ok().flatten().cloned();
+                    images.push((id, image.clone(), states));
+                } else {
+                    filtered += 1;
+                }
+            });
+            images
+        });
+        (images, filtered)
+    }
+
     /// 预设/场景实体 `Image` 趟（静态骨架）。**必须在动态层 `push_ui_*` 之前提交**：
     /// M66–M71 六屏迁移的前提就是"骨架在下、脚本每帧写的元素在上"，顺序反了卡底
     /// （`ui_skill_card_9s.png` 全不透明）会整块埋掉压在它上面的 24×24 招式图标。
@@ -600,23 +633,8 @@ impl RuntimeScene {
         height: u32,
     ) -> anyhow::Result<()> {
         let viewport = [width.max(1) as f32, height.max(1) as f32];
-        // docs/54 §4.2：实体身份的 UI 吃 **overlay 视图**的可见遮罩；按名字注册的画布 UI
-        // （面板/血条/网格）不是实体，因此不受遮罩影响。
-        let overlay_mask = self.view_overlay_mask;
-        let mut filtered = 0usize;
-        let images: Vec<(EntityId, UiImage, Option<ButtonStateSet>)> =
-            self.script.with_world(|world| {
-                let mut images = Vec::new();
-                world.for_each::<UiImage>(|id, image| {
-                    if rustlua_render::visibility::entity_visible_in(world, id, overlay_mask) {
-                        let states = world.get::<ButtonStateSet>(id).ok().flatten().cloned();
-                        images.push((id, image.clone(), states));
-                    } else {
-                        filtered += 1;
-                    }
-                });
-                images
-            });
+        let (images, masked) = self.scene_ui_image_candidates();
+        let mut filtered = masked;
         for (id, image, states) in images {
             // M76-02：绑定把 `image.visible` 置 false 时跳过绘制；实体与布局都保留。
             if self
@@ -647,6 +665,39 @@ impl RuntimeScene {
         Ok(())
     }
 
+    /// 本帧真正进入文字装配趟的条目，以及被拦下的条数（可见遮罩 + 按名字隐藏）。
+    ///
+    /// 与 [`Self::scene_ui_image_candidates`] 同一个理由，且这一趟省得更多：拿到的每一条文字
+    /// 都会进 `prewarm_frame_glyphs` 栅格化进图集（见下面的"关键"注释），滚出视口的条目过去
+    /// 图集与 CPU 时间都付了、画面却没有它。门要能数到"预热吃了多少条"。
+    pub(crate) fn scene_ui_text_candidates(&self) -> (Vec<(EntityId, UiText)>, usize) {
+        let overlay_mask = self.view_overlay_mask;
+        // M79：同图像趟，视口外的文字在**克隆与字形预热之前**就摘掉。
+        let away = self.scrolled_away_slots();
+        let mut filtered = 0usize;
+        let texts = self.script.with_world(|world| {
+            let mut texts = Vec::new();
+            world.for_each::<UiText>(|id, text| {
+                if away.contains(&(id.index() as u64)) {
+                    return;
+                }
+                // `ui.scene_text_visible(name, false)` 按实体名隐藏场景文字：
+                // 实体仍在场景与 UiLayout 布局里，仅跳过绘制（语义与 web 兼容层一致）。
+                // P3-②：换成免克隆判定（旧实现每文字每帧 clone 整份隐藏集）。
+                let name_hidden = self.script.is_entity_scene_text_hidden(id);
+                if rustlua_render::visibility::entity_visible_in(world, id, overlay_mask)
+                    && !name_hidden
+                {
+                    texts.push((id, text.clone()));
+                } else {
+                    filtered += 1;
+                }
+            });
+            texts
+        });
+        (texts, filtered)
+    }
+
     /// 预设/场景实体 `Text` 趟：仍然**最后**提交。`prewarm_frame_glyphs` 必须是本帧最后一个
     /// 会撑大字体图集的人——图集增长只重缩放已缓存字形的 UV、不回改已写进顶点缓冲的 UV，
     /// 所以这一趟不能挪到动态层文字（`push_ui_text`）之前。
@@ -662,26 +713,8 @@ impl RuntimeScene {
         height: u32,
     ) -> anyhow::Result<()> {
         let viewport = [width.max(1) as f32, height.max(1) as f32];
-        let overlay_mask = self.view_overlay_mask;
-        let mut filtered = 0usize;
-        let texts: Vec<(EntityId, UiText)> = self.script.with_world(|world| {
-            let mut texts = Vec::new();
-            world.for_each::<UiText>(|id, text| {
-                // `ui.scene_text_visible(name, false)` 按实体名隐藏场景文字：
-                // 实体仍在场景与 UiLayout 布局里，仅跳过绘制（语义与 web 兼容层一致）。
-                // P3-②：换成免克隆判定（旧实现每文字每帧 clone 整份隐藏集）。
-                let name_hidden = self.script.is_entity_scene_text_hidden(id);
-                if rustlua_render::visibility::entity_visible_in(world, id, overlay_mask)
-                    && !name_hidden
-                {
-                    texts.push((id, text.clone()));
-                } else {
-                    filtered += 1;
-                }
-            });
-            texts
-        });
-        self.view_filtered.set(self.view_filtered.get() + filtered);
+        let (texts, masked) = self.scene_ui_text_candidates();
+        self.view_filtered.set(self.view_filtered.get() + masked);
         // 关键：先把本帧全部文本的字形预热进图集，再逐条构建网格。若在排版过程
         // 中才光栅化，图集会增长（1024→2048…）；`FontAtlas::grow` 只重缩放已缓存
         // 字形的归一化 UV，不会修正已经写进顶点缓冲的 UV，于是同一帧内先构建的

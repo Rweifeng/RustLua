@@ -3,6 +3,8 @@
 #[cfg(feature = "ai-bridge")]
 pub(crate) mod assistant;
 pub(crate) mod atlas;
+/// P1-3b：断链检查窗（全工程引用审计 + 同名唯一命中的一键改指）。
+pub(crate) mod broken_refs;
 pub(crate) mod bundles;
 pub(crate) mod console;
 pub(crate) mod domain_data;
@@ -27,6 +29,8 @@ pub(crate) mod runtime_debug;
 pub(crate) mod scene_view;
 /// schema 驱动的通用组件字段编辑器（docs/55 阶段 2：新增组件不改巨型 match）。
 pub(crate) mod schema_inspector;
+/// P1：贴图双击预览窗（全尺寸解码 + 逐像素开关，只读）。
+pub(crate) mod texture_preview;
 pub(crate) mod tilemap_tools;
 /// P3-E01-3：`.anim` 时间线面板（只读预览）。
 pub(crate) mod timeline;

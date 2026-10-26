@@ -31,7 +31,9 @@ const SAMPLES: [(f32, f32, [u8; 4]); 4] = [
     (0.75, 0.75, [255, 255, 0, 255]),
 ];
 
-fn request_gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
+/// 拿一个软渲染适配器 + 设备。`texture_sampling.rs` 复用这一份（同一台机器上两种失败形态
+/// 的判据该同源，否则一边能跑一边静默跳过就是假绿）。
+pub(super) fn request_gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::LowPower,

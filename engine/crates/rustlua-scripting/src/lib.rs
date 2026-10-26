@@ -1,3 +1,4 @@
+pub mod lua_lsp;
 pub mod script;
 
 #[cfg(test)]

@@ -356,6 +356,43 @@ M4 可与 M3 后半并行，M5 可与 M4 并行，M6 必须最后。
 
 **M0–M6 的逐包验收与文件清单**见 `tasks/done/M76-01` 至 `M76-07`。
 
+### 11.1 M6 的两处补齐（2026-10-26）
+
+M76-07 把四个内核（虚拟列表 / 受限富文本 / 文本输入 / 导航栈）挂上了 `ui` 表，但**运行期侧留了两个真空**，
+本轮补掉，并顺手把长列表的每帧成本压下来：
+
+- **装配前的视口裁剪**（`engine/crates/engine/src/host/runtime_scene/ui_scroll.rs` 的
+  `scrolled_away_slots()`）：`ScrollView` 的裁剪此前只在**绘制趟**生效，装配趟照样为 1000 行各付一次
+  组件克隆、纹理重定向查表与字形预热。现在实体矩形放大 1 px 后与裁剪矩形不相交就不进候选集，
+  1000 行 / 100 px 视口 / 20 px 行高下峰值装配从 1000 图降到 **7 图 / 7 文**，顶点输出逐字节不变。
+  刻意**不计进** `view_filtered`：那个口径是"被可见性遮罩拦下"，由 `tests/camera_physics.rs` 钉住。
+  没接 `spec` 的 `list{virtualized}`——所以 §3.3 的能力矩阵仍然成立：内核在运行期可用，
+  但 AI 产出的"虚拟列表"字段在 M1 落地前照旧被稳定拒绝。
+- **`api_ui` 的高级内核演示**（`examples/game_api/scripts/demo_ui.lua`，8 步 → 12 步）：
+  每步的 `check` 断言的是引擎返回值，不是脚本自己的模型。取数口径写在门里，例如虚拟列表
+  总高 `item_height × total = 960`、`overscan=1` 时窗口 `[0,7)`、滚到底只走 `max_offset = 840`、
+  `scroll_to` 对**视口之上**的项对齐顶边（480）、对**视口之下**的项对齐底边（624），
+  以及"留在窗口里的 key 保住原槽位"这条池子承诺；富文本按 `spans=6 / lines=2 / unsupported=2`
+  钉住"未知标签按字面量渲染"，并分开两种未闭合：认识但没闭合的 `<b>` 被吃掉、样式一路到结尾，
+  连 `>` 都没有的 `<color=` 整段留字面量；文本输入走完 `begin/update/commit/cancel` 与
+  四宿主策略读数，加上宿主文本通道注入的 8 条（`input.text_events`，见下）；导航栈走 `模态 → 页 → 根` 的返回顺序与 `close_modal` 的硬错。
+  自检取数：**`ok steps=12 checks=170 failed=0`**（M79 P2 交付时为 162，M79-04 补 8 条宿主文本断言），
+  `cargo test -q -p engine --lib sample_project` **14/14**。
+
+仍缺的两件事，按代价从小到大：`Capabilities::core()` 放进 `list{virtualized}` 与 `richText` 字段
+（要同步三宿主 golden）；富文本的分段**绘制**（当前只有解析与读数）。
+第三条——宿主 IME 事件——本轮**只接了 PC**：`game/` 的 `game_app.rs` 处理 `WindowEvent::Ime`，按脚本的
+收字声明（`input.text_events{capture=true}`）调 `Window::set_ime_allowed`（winit 的 `ime_allowed` 默认
+`false`，且**只在读数变化时下发**——关掉允许会终止正在进行的组合，重复下发有风险；但这条因果**没实测**，
+实现选择只是保守做法），把 `Preedit`/`Commit` 与
+收字模式下键盘的 Unicode 字符写进 `InputSnapshot` 的本帧文本槽，脚本从 `input.text_events()` 读
+（组合串与提交是**本帧数据**、`finish_frame` 清空；收字声明是**跨帧意图**、由 `HostInput::set_input` 显式继承）。
+还没接的三处，写清楚免得被当成已完成：`game_web/src/gpu_host.rs::install_input_listeners` 只注册
+keydown/keyup/pointer，IME 键在 `frame_input.rs` 里是**明确丢弃**的；微信的原生输入桥
+（`ui_text_input.rs` 的 `WechatNativeBridge` 只是策略读数，`wechat-adapter.js` 里没有 `wx.showKeyboard`）；
+编辑器 Play 每帧喂 `InputSnapshot::default()`，egui 自己吞掉输入法。另外引擎**不绘制**文本字段，
+组合串只是状态、不上屏，`set_ime_cursor_area` 也没用——候选窗位置交给系统。别按"三宿主已通"排期。
+
 ---
 
 ## 12. 风险与缓解

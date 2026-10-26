@@ -4,7 +4,8 @@
 //! 注册到 [`rustlua_assets::resource_db::ResourceDatabase`]，并通过 [`ImportCache`] 增量导入缓存，
 //! 最后可打包为发布资源目录并生成清单。
 //!
-//! 命令（见 `main.rs`）：`scan` / `import` / `clean` / `list` / `package` / `--check`。
+//! 命令（见 `main.rs`）：`scan` / `import` / `clean` / `list` / `package` / `inspect` /
+//! `preview`（产物预览）/ `diff`（两个包的增量）/ `--check`。
 
 use rustlua_assets_import::import_cache::ImportCache;
 use std::{
@@ -173,6 +174,8 @@ pub struct PackageManifest {
 
 pub mod deps;
 pub mod package;
+/// 产物预览与包间增量对比：读**已打出来的包**回答"什么进了包、和上次差在哪"。
+pub mod preview;
 pub mod scan;
 
 /// 文件级拆分（M77-05 §2）后的根再导出：这些项的**规范住址在子模块**，根只给 `main.rs`、
@@ -181,9 +184,13 @@ pub mod scan;
 pub use deps::{BrokenLink, check_dependencies};
 pub use package::{
     BundleMode, GroupReport, PackageReport, benchmark_compression, distribution_layout_json,
-    distribution_layout_report, init_bundles, inspect_bundles, package, package_bundled,
-    package_bundled_with, package_grouped, package_grouped_keep, package_grouped_keep_with,
-    verify_bundle_equivalence,
+    distribution_layout_report, init_bundles, inspect_bundles, is_boot_entry, package,
+    package_bundled, package_bundled_with, package_grouped, package_grouped_keep,
+    package_grouped_keep_with, verify_bundle_equivalence,
+};
+pub use preview::{
+    ArtifactEntry, ArtifactPreview, EntrySource, PackageDiff, diff_packages, diff_text,
+    preview_text,
 };
 pub use scan::{collect_data_files, collect_files, ensure_project, import, scan};
 

@@ -162,6 +162,10 @@ impl EditorApp {
         }
 
         self.thumbnails.remove(&from_text);
+        // 预览窗指着刚被搬走的那张图：当场作废，否则窗里会留着一张"工程里已经不存在"的图。
+        if self.texture_preview.relative.as_deref() == Some(from_text.as_str()) {
+            self.texture_preview.invalidate();
+        }
         self.refresh_resources();
         self.selected_resource = Some(to_relative.clone());
         let mut status = format!(

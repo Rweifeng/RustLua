@@ -175,6 +175,15 @@ impl SpanTrace {
         self.dropped
     }
 
+    /// 最近 `count` 条已闭合记录的快照（**捕获顺序**，未按起点排序；排序由调用方决定，
+    /// Chrome 导出与面板时间线用的是同一条序）。面板只画得起像素预算内的那一段，所以
+    /// 这里就把它截掉，而不是先拷 8192 条再让调用方丢弃。
+    #[must_use]
+    pub fn latest_records(&self, count: usize) -> Vec<SpanRecord> {
+        let skip = self.spans.len().saturating_sub(count);
+        self.spans.iter().skip(skip).cloned().collect()
+    }
+
     pub fn clear(&mut self) {
         self.spans.clear();
         self.dropped = 0;
@@ -519,6 +528,55 @@ mod tests {
         assert!(json.contains("\"span9\""));
         assert!(json.contains("\"span6\""));
         assert!(!json.contains("\"span5\""), "最旧的 span 必须被淘汰");
+    }
+
+    /// 面板时间线的入口：`latest_records(count)` 给的是**被留下的那段尾部**里最近的
+    /// `count` 条，顺序是捕获顺序而不是起点顺序（嵌套 span 的子总比父早闭合），字段一个
+    /// 都不加工——排序、合成判定都归消费方。
+    #[test]
+    fn latest_records_gives_the_newest_tail_in_capture_order() {
+        let mut trace = SpanTrace::new(CaptureLevel::System, 3);
+        trace.push_span_ns("outer", "frame", 40_000, 20_000, 0, Vec::new());
+        trace.push_span_ns(
+            "inner",
+            "script",
+            10_000,
+            5_000,
+            1,
+            vec![("synthetic", "true".to_owned())],
+        );
+        trace.push_span_ns("last", "system", 30_000, 1_000, 1, Vec::new());
+        trace.push_span_ns("dropped", "command", 0, 1, 0, Vec::new());
+        let all = trace.latest_records(8);
+        assert_eq!(trace.dropped(), 1);
+        assert_eq!(
+            all.iter()
+                .map(|span| span.name.as_str())
+                .collect::<Vec<_>>(),
+            ["inner", "last", "dropped"],
+            "留下的必须是最新那段，且按捕获顺序"
+        );
+        assert_eq!(all[0].category, "script");
+        assert_eq!(all[0].depth, 1);
+        assert_eq!(all[0].args, vec![("synthetic", "true".to_owned())]);
+        assert_eq!(all[1].start_ns, 30_000);
+        assert_eq!(all[1].dur_ns, 1_000);
+        assert_eq!(
+            trace
+                .latest_records(2)
+                .iter()
+                .map(|span| span.name.as_str())
+                .collect::<Vec<_>>(),
+            ["last", "dropped"],
+            "按像素预算截断时丢的是更旧的那些"
+        );
+        assert!(trace.latest_records(0).is_empty());
+        let mut off = SpanTrace::new(CaptureLevel::Off, 4);
+        assert!(
+            !off.push_span_ns("nope", "test", 0, 1, 0, Vec::new()),
+            "Off 档登记必须失败"
+        );
+        assert!(off.latest_records(8).is_empty());
     }
 
     #[test]

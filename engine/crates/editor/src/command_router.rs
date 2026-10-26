@@ -83,63 +83,20 @@ impl EditorApp {
                 }
             }
             EditorCommand::Undo => {
-                // M76-06：UI Studio 聚焦时先消费它的「接受」栈；否则 Ctrl+Z / 菜单
-                // 仍走场景历史。两条栈互不共享，但对外是同一个 Undo 入口。
-                let studio_focused = self.dock_state.as_mut().and_then(crate::dock::active_tab)
-                    == Some(crate::dock::DockTab::UiStudio);
-                if studio_focused
-                    && let Some(studio) = self.ui_studio_panel.studio.as_mut()
-                    && studio.can_undo()
-                {
-                    return match studio.undo() {
-                        Ok(true) => {
-                            let revision = studio.revision();
-                            self.status = format!("已撤销 UI 工作室接受（版本 {revision}）");
-                            self.ui_studio_panel.canvas_textures.clear();
-                            CommandResult::Applied
-                        }
-                        Ok(false) => CommandResult::NoOp,
-                        Err(error) => CommandResult::Rejected(error.to_string()),
-                    };
-                }
-                // E07/E08 网关：先取消活动事务并收敛挂起编辑，再撤销。
-                if !self.history.can_undo() {
-                    self.status = "没有可撤销的操作".to_owned();
-                    return CommandResult::NoOp;
-                }
-                self.undo_with_transaction_guard();
-                CommandResult::Applied
+                // M79 P1-2：全局单栈。不再问"哪个标签聚焦"，而是问账本"最近一次提交落在哪个
+                // 归属"（场景 / UI 工作室 / 图 / 材质 / 动画），撤的动作仍由那个归属自己执行。
+                self.undo_global()
             }
-            EditorCommand::Redo => {
-                // M76-06：与 Undo 对称，UI Studio 聚焦时先消费它的重做栈。
-                let studio_focused = self.dock_state.as_mut().and_then(crate::dock::active_tab)
-                    == Some(crate::dock::DockTab::UiStudio);
-                if studio_focused
-                    && let Some(studio) = self.ui_studio_panel.studio.as_mut()
-                    && studio.can_redo()
-                {
-                    return match studio.redo() {
-                        Ok(true) => {
-                            let revision = studio.revision();
-                            self.status = format!("已重做 UI 工作室接受（版本 {revision}）");
-                            self.ui_studio_panel.canvas_textures.clear();
-                            CommandResult::Applied
-                        }
-                        Ok(false) => CommandResult::NoOp,
-                        Err(error) => CommandResult::Rejected(error.to_string()),
-                    };
-                }
-                if !self.history.can_redo() {
-                    self.status = "没有可重做的操作".to_owned();
-                    return CommandResult::NoOp;
-                }
-                self.finish_inspector_edits_if_dirty();
-                self.redo();
-                CommandResult::Applied
-            }
+            EditorCommand::Redo => self.redo_global(),
             EditorCommand::StartPlay => {
                 if self.play_state().is_in_play_mode() {
                     return CommandResult::NoOp;
+                }
+                // M79 P1-4：阶段文档是一份预制体。把它当场景播放，跑的是"预制体根当场景根"，
+                // 与用户在场景里看到的东西不是一回事——先返回场景再播放（Unity 同口径）。
+                if self.prefab_stage.is_some() {
+                    self.status = "预制体编辑中不能播放，请先返回场景".to_owned();
+                    return CommandResult::Rejected(self.status.clone());
                 }
                 self.play();
                 match self.play_state() {
@@ -207,6 +164,9 @@ impl EditorApp {
                 }
                 _ => CommandResult::NoOp,
             },
+            // P1：Play 期调参的"显式保留"入口（Unity 里改完不点 Apply 就被 Stop 吞掉）。
+            // 写的是**编辑文档**并合并成一条历史，所以必须在 Stop 之前点。
+            EditorCommand::ApplyPlayEdits => self.apply_play_edits(),
             EditorCommand::CreateEntity {
                 name,
                 parent,
@@ -345,6 +305,32 @@ impl EditorApp {
                 }
                 self.document_edit(|app| app.revert_prefab_overrides(entity))
             }
+            // M79 P2：逐项还原整棵实例的字段级覆盖。目标允许是实例里的任意节点
+            // （命令内部沿 `parent` 找到实例根），所以前置条件按 Instance 判。
+            EditorCommand::RevertAllPrefabFieldOverrides { entity } => {
+                if let Some(rejected) = self.prefab_precondition(entity, PrefabTarget::Instance) {
+                    return rejected;
+                }
+                self.document_edit(|app| app.revert_all_prefab_field_overrides(entity))
+            }
+            // M79 P1-4：in-context 预制体编辑。前置条件写在动作自己里（进入要判"当前文档
+            // 是不是已经是预制体"、退出要判"有没有口袋"），因此不走 `prefab_precondition`，
+            // 也不走 `document_edit`——进入/退出**不产生**场景历史条目，用"undo_len 变长"
+            // 判成功会把正常的进入误报成 NoOp。
+            EditorCommand::EnterPrefabStage { entity } => self.enter_prefab_stage(entity),
+            EditorCommand::ExitPrefabStage { save } => self.close_prefab_stage(save),
+            // P1-3b：断链审计只读文档（Play 期间也能扫），改指则在自己内部按
+            // `perform_resource_move` 的同一套闸门拒绝 Play 态写入。
+            EditorCommand::ScanBrokenReferences => self.scan_broken_references(),
+            EditorCommand::RepairBrokenReference { from, to } => {
+                match self.repair_broken_reference(&from, &to) {
+                    Ok(status) => {
+                        self.status = status;
+                        CommandResult::Applied
+                    }
+                    Err(reason) => CommandResult::Rejected(reason),
+                }
+            }
             EditorCommand::SelectEntity { id } => {
                 let exists = self
                     .document
@@ -442,11 +428,13 @@ impl EditorApp {
 
     /// Jump to a location parsed out of a console line or diagnostic (docs/55 §5 P1).
     ///
-    /// Three behaviours, in priority order:
+    /// Four behaviours, in priority order:
     /// 1. a referenced entity that exists in the open scene - select it (Inspector follows);
     /// 2. a scene/prefab/widget path that exists in the project - open it through the 常规
     ///    未保存保护网关（dirty 时挂起确认，不静默丢弃编辑）。
-    /// 3. otherwise - narrow the console filter to that file name and report the location,
+    /// 3. a script/text file that exists on disk - hand `file:line` to the user's external
+    ///    editor (no in-editor text view, docs/55 §2.2) and narrow the console filter to it;
+    /// 4. otherwise - narrow the console filter to that file name and report the location,
     ///    so a script error at least lands on the file's log lines.
     pub(crate) fn jump_to_diagnostic(
         &mut self,
@@ -484,6 +472,33 @@ impl EditorApp {
                 .map(|value| value.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.to_string_lossy().into_owned());
             self.console_filter = name;
+            // P0（脚本迭代闭环）：脚本类文件在编辑器里**没有视图**，"定位到它"唯一有意义的
+            // 实现就是把 `file:line` 交给用户自己的编辑器（不内置文本编辑器，见 docs/55 §2.2）。
+            // 顺带把控制台过滤收窄到该文件——多条报错堆在一起时，这一步才是能读的那一条。
+            let absolute = if path.is_absolute() {
+                path.clone()
+            } else {
+                self.project.root.join(path)
+            };
+            if crate::external_editor::is_text_source(&absolute) && absolute.is_file() {
+                return match crate::external_editor::open_in_external_editor(
+                    &absolute,
+                    location.line,
+                    self.external_editor_dry_run,
+                ) {
+                    Ok(plan) => {
+                        self.status = format!(
+                            "{}（已按来源过滤控制台）",
+                            crate::external_editor::describe(&plan, &absolute, location.line)
+                        );
+                        CommandResult::Applied
+                    }
+                    Err(error) => {
+                        self.status = format!("已按来源过滤控制台，但外部编辑器没起来：{error}");
+                        CommandResult::Rejected(error)
+                    }
+                };
+            }
             self.status = format!("已按来源过滤控制台：{}", location.describe());
             return CommandResult::Applied;
         }
@@ -571,10 +586,87 @@ mod tests {
         (app, root)
     }
 
-    /// 全局 Undo 按聚焦标签分流：UI Studio 聚焦且还有「接受」可撤时优先消费它；
-    /// 栈空后自动落回场景历史。两条栈互不共享（UI Undo 不得吞掉场景历史，反之亦然）。
+    /// 打开一张最小 `.vgraph` 的工程（可视化脚本归属在账本上有自己的栈）。
+    fn graph_app(label: &str) -> (EditorApp, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "rustlua-command-router-{label}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("graphs")).unwrap();
+        std::fs::write(
+            root.join("graphs/flow.vgraph"),
+            r#"{"version":1,"name":"flow","nodes":[]}"#,
+        )
+        .unwrap();
+        let mut app = test_app();
+        app.project = ProjectInfo {
+            root: root.clone(),
+            version: "test".to_owned(),
+            directories: Vec::new(),
+        };
+        app.project_loaded = true;
+        app.graph
+            .open(&root, std::path::Path::new("graphs/flow.vgraph"))
+            .expect("打开图");
+        (app, root)
+    }
+
+    /// **一次 Ctrl+Z 只消费一步**（M79 P1-2 的回归）：图与场景各有历史时，一次撤销只
+    /// 挪其中一条栈，另一条纹丝不动。历史上画布私读快捷键会让同一次按键吃两步。
     #[test]
-    fn focused_ui_studio_consumes_undo_before_scene_history() {
+    fn one_undo_consumes_exactly_one_owner_step() {
+        let (mut app, root) = graph_app("undo-one-step");
+        // 场景一步。
+        assert_eq!(
+            app.dispatch(EditorCommand::CreateEntity {
+                name: "Root2".to_owned(),
+                parent: None,
+                transform_3d: false,
+            }),
+            CommandResult::Applied
+        );
+        assert_eq!(app.history.undo_len(), 1);
+        app.poll_undo_owners();
+        // 图一步（加一个节点）。
+        app.graph
+            .doc_mut()
+            .expect("文档已打开")
+            .add_node("on_start", [0.0, 0.0])
+            .expect("加节点");
+        assert!(app.graph.undo_can_undo());
+        app.poll_undo_owners();
+
+        // 撤销：只动图，场景历史原地不动。
+        assert_eq!(app.dispatch(EditorCommand::Undo), CommandResult::Applied);
+        assert!(!app.graph.undo_can_undo(), "图的那一步应被撤掉");
+        assert_eq!(
+            app.history.undo_len(),
+            1,
+            "同一次按键不得顺手撤掉场景的一步"
+        );
+        assert_eq!(app.history.redo_len(), 0);
+
+        // 再撤一次：这时才轮到场景。
+        assert_eq!(app.dispatch(EditorCommand::Undo), CommandResult::Applied);
+        assert_eq!(app.history.undo_len(), 0);
+        assert_eq!(app.history.redo_len(), 1);
+
+        // 两条栈都空了：第三次按键必须是 no-op，而不是继续吃别的面板。
+        assert_eq!(
+            app.dispatch(EditorCommand::Undo),
+            CommandResult::NoOp,
+            "没有历史时不得凭空报成功：{}",
+            app.status
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 全局 Undo 按「最近提交的归属」分流，**与哪个标签聚焦无关**（M79 P1-2）：
+    /// UI 工作室刚接受过一步就先撤它，栈空后才自动落回场景历史。两条栈互不共享
+    /// （UI Undo 不得吞掉场景历史，反之亦然）。
+    #[test]
+    fn ui_studio_owner_is_undone_before_scene_history_regardless_of_focus() {
         use rustlua_ui_spec::{UiPatch, UiPatchOp};
 
         let (mut app, root) = ui_studio_app("ui-undo");
@@ -589,6 +681,8 @@ mod tests {
             CommandResult::Applied
         );
         assert_eq!(app.history.undo_len(), 1);
+        // 帧首轮询：场景那一步属于"上一帧"，账本先看到它。
+        app.poll_undo_owners();
 
         let accepted_revision = {
             let studio = app.ui_studio_panel.studio.as_mut().unwrap();
@@ -609,14 +703,9 @@ mod tests {
         };
         assert_ne!(accepted_revision, original);
 
-        // UI Studio 聚焦 → Undo 消费 UI 栈，场景历史不动。
+        // 前台故意切到场景标签：分流只看账本，不看谁在前台。
         let dock = app.dock_state.as_mut().unwrap();
-        assert!(crate::dock::focus_tab(dock, crate::dock::DockTab::UiStudio));
-        assert_eq!(
-            crate::dock::active_tab(app.dock_state.as_mut().unwrap()),
-            Some(crate::dock::DockTab::UiStudio),
-            "前置：UI Studio 必须是活动标签"
-        );
+        assert!(crate::dock::focus_tab(dock, crate::dock::DockTab::Scene));
         assert_eq!(
             app.ui_studio_panel.studio.as_ref().unwrap().undo_len(),
             1,
@@ -638,7 +727,7 @@ mod tests {
             "已空的 UI 栈不因场景 Undo 改变"
         );
 
-        // Scene 聚焦 → 同一条命令直接走场景历史。
+        // 场景侧又提交一步 → 最近归属换回场景，撤的是它，不是 UI 工作室。
         assert_eq!(
             app.dispatch(EditorCommand::CreateEntity {
                 name: "Second".to_owned(),
@@ -647,17 +736,22 @@ mod tests {
             }),
             CommandResult::Applied
         );
-        let dock = app.dock_state.as_mut().unwrap();
-        assert!(crate::dock::focus_tab(dock, crate::dock::DockTab::Scene));
+        app.poll_undo_owners();
         assert_eq!(app.dispatch(EditorCommand::Undo), CommandResult::Applied);
-        assert_eq!(app.history.undo_len(), 0);
+        assert_eq!(app.history.undo_len(), 0, "刚提交的场景那步被撤掉了");
+        assert_eq!(app.history.redo_len(), 1, "重做栈只应有这一步");
+        assert_eq!(
+            app.ui_studio_panel.studio.as_ref().unwrap().revision(),
+            original,
+            "UI 工作室的历史不得被场景 Undo 挪动"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// 全局 Redo 与 Undo 对称：UI Studio 聚焦且重做栈非空时优先消费它；
-    /// 栈空后落回场景历史，两条栈互不吞。
+    /// 全局 Redo 与 Undo 对称：先回到**刚才撤销掉的那个归属**（Unity 的 Redo 是上一次
+    /// Undo 的逆），它没有可重做的了才按账本顺序找下一个；两条栈互不吞。
     #[test]
-    fn focused_ui_studio_consumes_redo_before_scene_history() {
+    fn redo_goes_back_to_the_owner_that_was_just_undone() {
         use rustlua_ui_spec::{UiPatch, UiPatchOp};
 
         let (mut app, root) = ui_studio_app("ui-redo");
@@ -1176,6 +1270,58 @@ mod tests {
         // 3) 空位置是 no-op（不误改过滤词）。
         let empty = editor::DiagnosticLocation::default();
         assert_eq!(app.jump_to_diagnostic(&empty), editor::CommandResult::NoOp);
+    }
+
+    /// P0（脚本迭代闭环）：脚本文件**在盘上**时，点击诊断行就是把它连同行号交给外部编辑器
+    /// （编辑器内不做文本视图），同时把控制台过滤收窄到该文件。
+    ///
+    /// 走 dry-run：只验证"命令已交给外部编辑器这一层"，不在验收门里真的起进程。
+    #[test]
+    fn diagnostic_jump_hands_an_existing_script_to_the_external_editor() {
+        let mut app = test_app();
+        app.project_loaded = true;
+        app.external_editor_dry_run = true;
+        let root = app.project.root.clone();
+        std::fs::create_dir_all(root.join("scripts")).expect("scripts dir");
+        std::fs::write(
+            root.join("scripts/player.lua"),
+            "function on_spawn(id) end\n",
+        )
+        .expect("write script");
+
+        let location = editor::parse_location("ERROR script: load failed scripts/player.lua:12")
+            .expect("file");
+        assert_eq!(
+            app.jump_to_diagnostic(&location),
+            editor::CommandResult::Applied
+        );
+        assert!(app.status.contains("player.lua"), "{}", app.status);
+        assert!(
+            app.status.contains("12"),
+            "状态栏要带上行号：{}",
+            app.status
+        );
+        assert_eq!(app.console_filter, "player.lua", "同时收窄控制台过滤");
+    }
+
+    /// 盘上没有的脚本路径**不许**起外部编辑器：只按来源过滤（旧行为保持）。
+    #[test]
+    fn diagnostic_jump_does_not_launch_an_editor_for_a_missing_script() {
+        let mut app = test_app();
+        app.project_loaded = true;
+        app.external_editor_dry_run = true;
+        app.status = "哨兵".to_owned();
+        let location =
+            editor::parse_location("ERROR script: load failed scripts/gone.lua:3").expect("file");
+        assert_eq!(
+            app.jump_to_diagnostic(&location),
+            editor::CommandResult::Applied
+        );
+        assert!(
+            app.status.contains("已按来源过滤控制台") && !app.status.contains("打开"),
+            "缺文件时只过滤，不声称打开了编辑器：{}",
+            app.status
+        );
     }
 
     /// 诊断跳转到**项目内已存在**的文档时走统一打开入口（含未保存保护）。

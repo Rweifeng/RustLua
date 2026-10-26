@@ -232,6 +232,48 @@ fn load_preview(
     })
 }
 
+impl TimelineState {
+    // ---- 跨面板全局 Undo 的入口（M79 P1-2，消费方 `crate::actions::undo_ledger`）----
+    //
+    // 动画会话原本只有面板按钮能撤（Ctrl+Z 全归场景栈）。接进全局账本后，
+    // 在时间线里加完关键帧直接按 Ctrl+Z，撤的是这一步而不是场景的某一步。
+
+    pub(crate) fn undo_signature(&self) -> (u64, usize) {
+        match &self.status {
+            TimelineStatus::Ready(preview) => preview.session.undo_signature(),
+            _ => (0, 0),
+        }
+    }
+
+    pub(crate) fn undo_can_undo(&self) -> bool {
+        match &self.status {
+            TimelineStatus::Ready(preview) => preview.session.can_undo(),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn undo_can_redo(&self) -> bool {
+        match &self.status {
+            TimelineStatus::Ready(preview) => preview.session.can_redo(),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn undo_step(&mut self) -> bool {
+        match &mut self.status {
+            TimelineStatus::Ready(preview) => preview.undo_edit(),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn redo_step(&mut self) -> bool {
+        match &mut self.status {
+            TimelineStatus::Ready(preview) => preview.redo_edit(),
+            _ => false,
+        }
+    }
+}
+
 impl EditorApp {
     /// 从当前选中实体摘出预览目标（只读文档）。
     fn sync_timeline_from_selection(&mut self) {
@@ -851,17 +893,23 @@ impl TimelinePreview {
         }
     }
 
-    fn undo_edit(&mut self) {
+    fn undo_edit(&mut self) -> bool {
         if self.session.undo() {
             self.selected_key = None;
             self.refresh_after_edit();
+            true
+        } else {
+            false
         }
     }
 
-    fn redo_edit(&mut self) {
+    fn redo_edit(&mut self) -> bool {
         if self.session.redo() {
             self.selected_key = None;
             self.refresh_after_edit();
+            true
+        } else {
+            false
         }
     }
 
@@ -1285,6 +1333,72 @@ event=0.5:step
         app.sync_timeline_from_selection();
         let preview = ready(&app);
         assert_eq!(preview.entity_name, "hero_renamed");
+    }
+
+    /// 时间线此前只有面板按钮能撤（Ctrl+Z 全归场景栈）。接进全局账本后（M79 P1-2），
+    /// 加完关键帧直接按 Ctrl+Z 撤的是这一步；场景那一步要等时间线栈空了才轮到。
+    #[test]
+    fn timeline_edit_joins_the_global_undo_stack() {
+        let mut app = app_with_entity(
+            "global-undo",
+            Some("clip=assets/anim/hero.anim"),
+            Some(CLIP),
+        );
+        app.sync_timeline_from_selection();
+        assert_eq!(app.timeline.undo_signature(), (0, 0), "刚同步不该带历史");
+
+        // 场景先提交一步，时间线再提交一步：账本应按"最近提交"把时间线排在前面。
+        // 面板写入类命令有一道"工程未加载"闸门（见 `command_router.rs` 的 CreateEntity 分支）。
+        app.project_loaded = true;
+        assert_eq!(
+            app.dispatch(editor::EditorCommand::CreateEntity {
+                name: "Shadow".to_owned(),
+                parent: None,
+                transform_3d: false,
+            }),
+            editor::CommandResult::Applied
+        );
+        app.poll_undo_owners();
+        {
+            let preview = ready_mut(&mut app);
+            preview.player.seek(0.25).expect("seek");
+            preview.add_key_at_playhead();
+        }
+        app.poll_undo_owners();
+        assert_eq!(app.timeline.undo_signature().1, 1, "时间线应有一条可撤历史");
+
+        assert_eq!(
+            app.dispatch(editor::EditorCommand::Undo),
+            editor::CommandResult::Applied
+        );
+        {
+            let preview = ready(&app);
+            assert_eq!(
+                key_times(preview, 0),
+                vec![0.0, 1.0],
+                "第一次按键撤的是时间线那一步"
+            );
+        }
+        assert_eq!(
+            app.history.undo_len(),
+            1,
+            "同一次按键不得顺手撤掉场景的一步"
+        );
+        assert_eq!(app.history.redo_len(), 0);
+        assert!(app.status.contains("动画"), "{}", app.status);
+
+        // 时间线栈空了，第二次按键才轮到场景。
+        assert_eq!(
+            app.dispatch(editor::EditorCommand::Undo),
+            editor::CommandResult::Applied
+        );
+        assert_eq!(app.history.undo_len(), 0);
+        assert_eq!(app.history.redo_len(), 1);
+        assert!(!app.timeline.undo_can_undo(), "时间线没有第二步可撤");
+        assert!(
+            app.timeline.undo_can_redo(),
+            "撤掉的那步应留在时间线自己的 redo 栈"
+        );
     }
 
     /// 测试专用的小口子：拿可变的 Ready 预览（生产代码只经 `draw` 使用）。

@@ -35,6 +35,7 @@ mod render_metrics;
 #[cfg(not(target_arch = "wasm32"))]
 mod shader_hot_reload;
 mod shader_variants;
+mod texture_sampling;
 mod texture_upload;
 mod world_sprite;
 

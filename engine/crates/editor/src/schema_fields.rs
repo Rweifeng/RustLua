@@ -450,6 +450,9 @@ pub fn component_notes(entity: &SceneEntity, component: &str) -> Vec<SchemaCompo
 /// 为什么是诊断而不是拒绝：`FieldRule` 是纯字段规则、查不了资源库；而且作者经常会
 /// "先写引用、后补资源"。用 `BTreeSet<String>`（而不是 `ResourceBrowserState`）当输入，
 /// 是为了让这条逻辑与编辑器状态解耦、可单测。
+///
+/// 内置哨兵（[`is_builtin_asset_reference`]）永远不在资源索引里，因此**跳过**：给一个
+/// 运行时本来就认识的的名字挂 ⚠，是一条永远修不掉的噪音。
 pub fn mark_missing_assets(
     rows: &mut [SchemaFieldRow],
     assets: &std::collections::BTreeSet<String>,
@@ -460,10 +463,30 @@ pub fn mark_missing_assets(
     }
     for row in rows {
         let text = row.text.trim().replace('\\', "/");
-        if row.path_rule && !text.is_empty() && !assets.contains(&text) {
+        if row.path_rule
+            && !text.is_empty()
+            && !assets.contains(&text)
+            && !is_builtin_asset_reference(&text)
+        {
             row.missing_asset = true;
         }
     }
+}
+
+/// 引擎**内置纹理的哨兵名**：运行时按这两个名字直接走内置纹理，不查工程文件系统，
+/// 所以它们永远不该被当成"找不到的资源"。
+const BUILTIN_ASSET_SENTINELS: &[&str] = &[
+    rustlua_render::frame::WHITE_TEXTURE_PATH,
+    rustlua_render::frame::ATLAS_TEXTURE_PATH,
+];
+
+/// 这个引用值是不是内置哨兵（与 [`mark_missing_assets`] 同一判据，断链审计也用它）。
+#[must_use]
+pub fn is_builtin_asset_reference(text: &str) -> bool {
+    let text = text.trim().replace('\\', "/");
+    BUILTIN_ASSET_SENTINELS
+        .iter()
+        .any(|sentinel| *sentinel == text)
 }
 
 /// 取出路径规则的扩展名白名单（第一条路径规则为准；没有路径规则就是空 = 不限制）。
