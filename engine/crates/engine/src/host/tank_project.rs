@@ -67,7 +67,10 @@ fn tank_project_self_test() {
     let result = value
         .as_str()
         .unwrap_or_else(|| panic!("自检应返回字符串，实际 {value}"));
-    assert!(result.starts_with("ok "), "TankBattle 行为自检失败：\n{result}");
+    assert!(
+        result.starts_with("ok "),
+        "TankBattle 行为自检失败：\n{result}"
+    );
     assert!(
         result.contains("failed=0"),
         "TankBattle 行为自检有失败项：\n{result}"
@@ -105,10 +108,7 @@ fn tank_project_input_drives_player_and_combat() {
         moved_x > start_x + 8.0,
         "按住 D 后玩家没有右移：{start_x} -> {moved_x}"
     );
-    assert!(
-        moved_x <= 648.0 - 20.0,
-        "玩家越过棋盘右缘：x={moved_x}"
-    );
+    assert!(moved_x <= 648.0 - 20.0, "玩家越过棋盘右缘：x={moved_x}");
 
     // 归位后再按 J 一秒：出生点上方有砖墙，子弹必须真的把它打掉。
     runtime
@@ -116,9 +116,7 @@ fn tank_project_input_drives_player_and_combat() {
         .execute_console("__tank_debug_restart()")
         .expect("重开失败");
     step(&mut runtime, &InputSnapshot::default(), 1);
-    let walls_before = debug_state(&runtime)["walls"]
-        .as_u64()
-        .expect("walls");
+    let walls_before = debug_state(&runtime)["walls"].as_u64().expect("walls");
 
     let mut fire = InputSnapshot::default();
     fire.key_event(KeyCode::KeyJ, true);
@@ -130,9 +128,5 @@ fn tank_project_input_drives_player_and_combat() {
         "按住 J 一秒后砖墙没有被击毁：{walls_before} -> {walls_after}"
     );
 
-    assert_eq!(
-        runtime.script_error_total(),
-        0,
-        "输入驱动期间出现脚本错误"
-    );
+    assert_eq!(runtime.script_error_total(), 0, "输入驱动期间出现脚本错误");
 }
