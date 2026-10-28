@@ -12,6 +12,8 @@ use eframe::egui;
 use rustlua_ui_spec::{AnchorPreset, ResizeHandle, SliceRegion, UiNodeKind};
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::tree;
+
 /// 拖动吸附阈值（设计像素）：比这个更近才吸到参考线。
 const SNAP_THRESHOLD: f32 = 6.0;
 
@@ -47,6 +49,8 @@ pub(crate) struct UiStudioPanel {
     pub(crate) canvas_textures: BTreeMap<String, egui::TextureHandle>,
     /// 画布真正绘制过的帧数（测试用来确认面板走到了画布路径）。
     pub(crate) canvas_paints: u64,
+    /// 本帧交给行渲染的层级节点数（测试用来确认树走的是共用行控件，而不是空列表）。
+    pub(crate) hierarchy_rows: u64,
     /// 每个补丁提案的逐 op 勾选状态（true = 会被「接受选中」落盘）。
     pub(crate) proposal_selection: BTreeMap<String, Vec<bool>>,
     /// 令牌编辑：名字与值都先攒在输入框，提交时生成提案。
@@ -86,6 +90,7 @@ impl Default for UiStudioPanel {
             canvas_pan: egui::Vec2::ZERO,
             canvas_textures: BTreeMap::new(),
             canvas_paints: 0,
+            hierarchy_rows: 0,
             proposal_selection: BTreeMap::new(),
             token_name: String::new(),
             token_value: String::new(),
@@ -1425,27 +1430,36 @@ fn hierarchy_drop(
     pointer_y: f32,
     target_rect: egui::Rect,
 ) -> Option<(String, Option<i32>)> {
-    if source == target {
+    if source == target || is_descendant(studio, source, target) {
         return None;
     }
-    let fraction =
-        ((pointer_y - target_rect.top()) / target_rect.height().max(1.0)).clamp(0.0, 1.0);
-    if (0.3..=0.7).contains(&fraction) && studio.accepts_children(target) {
+    let slot =
+        tree::DropSlot::from_pointer(target_rect, pointer_y, studio.accepts_children(target));
+    if slot == tree::DropSlot::Child {
         return Some((target.to_owned(), None));
     }
     let (parent, index) = studio.parent_and_index(target)?;
-    let mut index = index as i32;
-    if fraction >= 0.3 {
-        index += 1;
-    }
     // 同一父级里先把源摘走会前移目标下标。
-    if let Some((source_parent, source_index)) = studio.parent_and_index(source)
-        && source_parent == parent
-        && source_index < index as usize
-    {
-        index -= 1;
+    let same_parent_source = studio
+        .parent_and_index(source)
+        .filter(|(source_parent, _)| *source_parent == parent)
+        .map(|(_, source_index)| source_index);
+    Some((
+        parent,
+        Some(tree::sibling_index(index, slot, same_parent_source) as i32),
+    ))
+}
+
+/// `node` 是否在 `ancestor` 的子树里（含自身）：把节点拖进自己的子树没有落点。
+fn is_descendant(studio: &UiStudio, ancestor: &str, node: &str) -> bool {
+    let mut current = Some(node.to_owned());
+    while let Some(key) = current {
+        if key == ancestor {
+            return true;
+        }
+        current = studio.parent_and_index(&key).map(|(parent, _)| parent);
     }
-    Some((parent, Some(index)))
+    false
 }
 
 /// 预设落盘的默认路径（「导出为 UI 预设」）：工程内相对路径，与手写文档同一扩展名。
@@ -1569,6 +1583,7 @@ impl EditorApp {
             canvas_pan,
             canvas_textures,
             canvas_paints,
+            hierarchy_rows,
             proposal_selection,
             token_name,
             token_value,
@@ -1607,6 +1622,7 @@ impl EditorApp {
         );
         ui.separator();
         let rows = studio.hierarchy();
+        *hierarchy_rows = rows.len() as u64;
         let selected_keys: BTreeSet<String> = studio.selected_keys().into_iter().collect();
         let additive = ui.input(|input| {
             input.modifiers.command || input.modifiers.ctrl || input.modifiers.shift
@@ -1623,31 +1639,52 @@ impl EditorApp {
                         .show(ui, |ui| {
                             for row in &rows {
                                 let label = format!(
-                                    "{}{} · {}",
-                                    "  ".repeat(row.depth),
+                                    "{} · {}",
                                     row.key,
                                     crate::util::widget_display_name(row.kind)
                                 );
                                 let selected = selected_keys.contains(&row.key);
-                                // 可拖动：松手时按落点决定“成为子节点”还是“插到兄弟前/后”。
-                                let response = ui
-                                    .add(
-                                        egui::Button::new(label)
-                                            .selected(selected)
-                                            .sense(egui::Sense::click_and_drag()),
-                                    )
+                                // 与场景层级同一套行：缩进参考线 + 可点可拖的标签。
+                                let row_response = ui
+                                    .horizontal(|ui| {
+                                        ui.set_min_width(ui.available_width());
+                                        tree::indent(ui, row.depth);
+                                        tree::label_button(
+                                            ui,
+                                            selected,
+                                            true,
+                                            egui::Sense::click_and_drag(),
+                                            label,
+                                        )
+                                    })
+                                    .inner
                                     .on_hover_text("拖动改父级/排序；点击选中，Ctrl/Shift 加选");
-                                if response.clicked() {
+                                if row_response.clicked() {
                                     if additive {
                                         studio.toggle_select(&row.key);
                                     } else {
                                         studio.select(&row.key);
                                     }
                                 }
-                                if response.drag_started() {
+                                if row_response.drag_started() {
                                     *hierarchy_drag = Some(row.key.clone());
                                 }
-                                row_rects.push((row.key.clone(), response.rect));
+                                row_rects.push((row.key.clone(), row_response.rect));
+                            }
+                            // 拖动中的落点提示：与场景层级同一条横线/描边。
+                            if let Some(source) = hierarchy_drag.as_ref()
+                                && let Some(point) = ui.input(|input| input.pointer.interact_pos())
+                                && let Some((target, rect)) =
+                                    row_rects.iter().find(|(_, rect)| rect.contains(point))
+                            {
+                                let slot = tree::DropSlot::from_pointer(
+                                    *rect,
+                                    point.y,
+                                    studio.accepts_children(target),
+                                );
+                                let valid = hierarchy_drop(studio, source, target, point.y, *rect)
+                                    .is_some();
+                                tree::paint_drop_target(ui.painter(), *rect, slot, valid);
                             }
                         });
                 },
@@ -2082,6 +2119,16 @@ mod tests {
             "叶子控件中线不能当父级，退化成“放到它后面”"
         );
         assert_eq!(hierarchy_drop(&studio, "buy", "buy", 10.0, row(0.0)), None);
+        assert_eq!(
+            hierarchy_drop(&studio, "root", "title", 10.0, row(0.0)),
+            None,
+            "不能把节点拖进自己的子树"
+        );
+        assert_eq!(
+            hierarchy_drop(&studio, "root", "buy", 19.0, row(0.0)),
+            None,
+            "拖进子树的兄弟带同样没有落点"
+        );
         let _ = std::fs::remove_dir_all(&temp);
     }
 
@@ -2129,11 +2176,9 @@ mod tests {
             "画布缩放初始为适应窗口"
         );
         assert!(
-            app.ui_studio_panel
-                .studio
-                .as_ref()
-                .is_some_and(|studio| studio.hierarchy().len() == 3),
-            "层级应读到 root/title/buy 三个节点"
+            app.ui_studio_panel.hierarchy_rows == 3,
+            "层级行必须交给共用行控件绘制（root/title/buy 三行），实际 {}",
+            app.ui_studio_panel.hierarchy_rows
         );
         let _ = std::fs::remove_dir_all(&temp);
     }

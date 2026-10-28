@@ -35,6 +35,8 @@ pub(crate) mod tilemap_tools;
 /// P3-E01-3：`.anim` 时间线面板（只读预览）。
 pub(crate) mod timeline;
 pub(crate) mod toolbar;
+/// 与模型无关的树控件原语（缩进/行标签/拖放落点），场景层级与 UI 工作室共用。
+pub(crate) mod tree;
 /// M76-04：UI Studio（层级/检查器/多分辨率预览/提案箱）。
 pub(crate) mod ui_studio;
 

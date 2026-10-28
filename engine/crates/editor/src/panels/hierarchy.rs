@@ -11,6 +11,8 @@ use rustlua_scene::scene::SceneEntityId;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use super::tree;
+
 /// One flattened Hierarchy row: everything the row renderer needs, captured at flatten time
 /// so drawing never walks the tree and never clones the document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -324,38 +326,6 @@ enum HierarchyNav {
     Right,
     Rename,
     Focus,
-}
-
-/// 紧凑三角形展开/折叠按钮：用 painter 直接绘制，不依赖字体字形。
-fn triangle_disclosure_button(ui: &mut egui::Ui, expanded: bool, tooltip: &str) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
-    let color = if response.hovered() || response.is_pointer_button_down_on() {
-        ui.visuals().widgets.hovered.fg_stroke.color
-    } else {
-        ui.visuals().widgets.inactive.fg_stroke.color
-    };
-    let c = rect.center();
-    let points: Vec<egui::Pos2> = if expanded {
-        // 向下：底边在上，尖端朝下。
-        vec![
-            egui::pos2(c.x - 5.0, c.y - 3.0),
-            egui::pos2(c.x + 5.0, c.y - 3.0),
-            egui::pos2(c.x, c.y + 4.0),
-        ]
-    } else {
-        // 向右：底边在左，尖端朝右。
-        vec![
-            egui::pos2(c.x - 3.0, c.y - 5.0),
-            egui::pos2(c.x - 3.0, c.y + 5.0),
-            egui::pos2(c.x + 4.0, c.y),
-        ]
-    };
-    ui.painter().add(egui::Shape::convex_polygon(
-        points,
-        color,
-        egui::Stroke::NONE,
-    ));
-    response.on_hover_text(tooltip)
 }
 
 impl EditorApp {
@@ -1300,31 +1270,15 @@ impl EditorApp {
         let (row_zone, drop_payload) =
             ui.dnd_drop_zone::<crate::dnd::DropPayload, _>(egui::Frame::default(), |ui| {
                 let inner = ui.horizontal(|ui| {
-                    // H06：缩进参考线（每层一条淡色竖线）。
-                    let row_left = ui.cursor().left();
-                    let row_top = ui.cursor().top();
-                    let guide_color = ui
-                        .visuals()
-                        .widgets
-                        .noninteractive
-                        .fg_stroke
-                        .color
-                        .gamma_multiply(0.35);
-                    for level in 0..depth {
-                        let x = row_left + level as f32 * 14.0 + 6.0;
-                        ui.painter().line_segment(
-                            [egui::pos2(x, row_top + 2.0), egui::pos2(x, row_top + 22.0)],
-                            egui::Stroke::new(1.0_f32, guide_color),
-                        );
-                    }
-                    ui.add_space(depth as f32 * 14.0);
+                    // H06：缩进参考线（每层一条淡色竖线）与行首控件的缩进由共用原语负责。
+                    tree::indent(ui, depth);
                     // H10：行首控件统一 18×18、1px 间距；折叠箭头为绘制的三角形。
                     let active_color = ui.visuals().text_color();
                     let weak_color = ui.visuals().weak_text_color();
                     ui.scope(|ui| {
                         ui.spacing_mut().item_spacing.x = 1.0;
                         if has_children {
-                            let arrow_response = triangle_disclosure_button(
+                            let arrow_response = tree::disclosure_button(
                                 ui,
                                 !effective_collapsed,
                                 "展开或折叠子节点（Alt+点击折叠整棵子树）",
@@ -1391,7 +1345,7 @@ impl EditorApp {
                             text = text.color(egui::Color32::from_rgb(255, 200, 100));
                         }
                         let name_response =
-                            ui.add_enabled(!locked, egui::Button::selectable(selected, text));
+                            tree::label_button(ui, selected, !locked, egui::Sense::click(), text);
                         // H02：双击进入行内重命名。
                         // P1-4：预制体**根实例**的双击改道给 in-context 编辑（Unity 同手势），
                         // 根实例改名因此只剩 F2 与右键菜单——代价已写进 docs/25 §23。
@@ -1471,22 +1425,17 @@ impl EditorApp {
         let drop_invalid = matches!(drag_target_state, Some((_, Err(_))));
         // 只有重排才分 Before/After/Child 三条带；资产落点是"成为这一行的子节点"，
         // 画一条横线会把语义说反。
-        let drop_position = if drops_asset {
-            ReparentPosition::Child
+        let drop_slot = if drops_asset {
+            tree::DropSlot::Child
         } else {
             pointer
-                .map(|position| position.y)
-                .map(|pointer_y| {
-                    let fraction = (pointer_y - row_rect.top()) / row_rect.height();
-                    if fraction < 0.33 {
-                        ReparentPosition::Before
-                    } else if fraction > 0.66 {
-                        ReparentPosition::After
-                    } else {
-                        ReparentPosition::Child
-                    }
-                })
-                .unwrap_or(ReparentPosition::Child)
+                .map(|position| tree::DropSlot::from_pointer(row_rect, position.y, true))
+                .unwrap_or(tree::DropSlot::Child)
+        };
+        let drop_position = match drop_slot {
+            tree::DropSlot::Before => ReparentPosition::Before,
+            tree::DropSlot::Child => ReparentPosition::Child,
+            tree::DropSlot::After => ReparentPosition::After,
         };
         // 系统文件拖到某一行上：导入并建成这一行的子节点（行矩形互不重叠，谁包住指针谁认领）。
         if let Some((action, drop)) =
@@ -1500,29 +1449,7 @@ impl EditorApp {
             crate::dnd::paint_drop_feedback(ui, row_rect, 4, &action);
         }
         if drop_valid || drop_invalid {
-            let stroke = egui::Stroke::new(
-                2.0_f32,
-                if drop_valid {
-                    egui::Color32::from_rgb(110, 210, 130)
-                } else {
-                    egui::Color32::from_rgb(220, 100, 100)
-                },
-            );
-            let rect = row_rect;
-            match drop_position {
-                ReparentPosition::Before => {
-                    ui.painter()
-                        .line_segment([rect.left_top(), rect.right_top()], stroke);
-                }
-                ReparentPosition::After => {
-                    ui.painter()
-                        .line_segment([rect.left_bottom(), rect.right_bottom()], stroke);
-                }
-                ReparentPosition::Child => {
-                    ui.painter()
-                        .rect_stroke(rect, 0.0_f32, stroke, egui::StrokeKind::Inside);
-                }
-            }
+            tree::paint_drop_target(ui.painter(), row_rect, drop_slot, drop_valid);
         }
         let Some(source) = dragged.map(crate::dnd::DragSource::Internal) else {
             return;

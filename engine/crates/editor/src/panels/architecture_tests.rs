@@ -98,6 +98,8 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     // P1-3a：贴图预览窗只解码与显示，状态是窗内缓存（不是文档）。
     ("texture_preview.rs", 0),
     ("toolbar.rs", 0),
+    // 树控件原语（缩进/行标签/拖放落点）：纯绘制与几何，不碰任何文档。
+    ("tree.rs", 0),
     // M76-04：UI Studio 只经 Spec 宿主提案写 `.ui.json`，不碰场景文档。
     ("ui_studio.rs", 0),
 ];
