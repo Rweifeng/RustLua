@@ -1,7 +1,7 @@
 ---@meta
 -- 生成物，请勿手改：`node scripts/docgen/gen-lua-api-docs.js`（与 `doc/*.md` 文档桩同源、同一次运行）。
 -- 事实源：同目录 `lua_api_surface.json`——运行期 `_G` 探针导出的 API 面基线，由快照门钉住。
--- 参数名与类型来自绑定源码的签名推断；推断不到的（未定位到绑定点、或签名形状解析不出）发成 `---@param ... any`，本文件 3 个；另有 58 个真的不收参数。两种声明不合并（合并 = 假诊断）。
+-- 参数名与类型来自绑定源码的签名推断；推断不到的（未定位到绑定点、或签名形状解析不出）发成 `---@param ... any`，本文件 3 个；另有 59 个真的不收参数。两种声明不合并（合并 = 假诊断）。
 -- 返回类型在绑定源码里没有事实可依据，一律 `any`：不拿"没有信息"冒充"返回 nil"，否则
 -- `local h = audio.play(x)` 会被 LuaLS 判成拿到 nil。
 -- 装进工程：编辑器菜单「项目 → 导出 Lua 类型提示（LuaLS）」会把这份写到工程根 `.cache/`，
@@ -914,7 +914,7 @@ function nav.grid_info(id) end
 function nav.set_blocked(id, x, y, blocked) end
 
 --- 一条到中继服务器（`ClashRoyale/server/server.mjs`）的长连接。桌面走裸 TCP
---- net：运行期 API 面基线里的 8 个函数
+--- net：运行期 API 面基线里的 9 个函数
 net = {}
 
 --- 这个进程/页面是否被要求"启动就联机"。桌面读环境变量 `RUSTLUA_NET_AUTO`，
@@ -938,6 +938,10 @@ function net.default_room() end
 --- 默认服务器地址：桌面取 `RUSTLUA_NET_SERVER`，默认 `tcp://127.0.0.1:8787`；
 ---@return any
 function net.default_server() end
+
+--- 单调毫秒时钟（桌面取进程启动后的 `Instant`，浏览器取 `performance.now()`）。给消息打时间戳、
+---@return any
+function net.now() end
 
 --- 取一条已经到达的二进制消息（FIFO）。空字符串也是一条消息；没有消息时返回 `nil`。
 ---@return any

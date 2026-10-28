@@ -615,9 +615,31 @@ pub fn install(lua: &Lua, state: &Handle<NetState>) -> LuaResult<()> {
         "auto_start",
         lua.create_function(move |_, ()| Ok(auto_start()))?,
     )?;
+    net.set("now", lua.create_function(move |_, ()| Ok(now_ms()))?)?;
 
     lua.globals().set("net", net)?;
     Ok(())
+}
+
+/// 单调毫秒时钟：脚本用它给 ping 打时间戳，算 RTT。
+///
+/// 不能用 `time.delta()` 累加：它是固定的逻辑步长，渲染掉到 30fps 时每帧仍只加 1/60，
+/// 累出来的"时钟"只有真实时间的一半，量到的 RTT 会偏小一半。
+fn now_ms() -> f64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::sync::OnceLock;
+        use std::time::Instant;
+        static START: OnceLock<Instant> = OnceLock::new();
+        START.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        web_sys::window()
+            .and_then(|window| window.performance())
+            .map(|performance| performance.now())
+            .unwrap_or(0.0)
+    }
 }
 
 fn lua_string_bytes(value: &mlua::String) -> Vec<u8> {
@@ -635,6 +657,19 @@ mod tests {
         assert!(!valid_room(""));
         assert!(!valid_room("a b"));
         assert!(!valid_room(&"x".repeat(33)));
+    }
+
+    #[test]
+    fn clock_is_monotonic_and_milliseconds() {
+        let start = now_ms();
+        std::thread::sleep(std::time::Duration::from_millis(12));
+        let later = now_ms();
+        assert!(start >= 0.0);
+        let elapsed = later - start;
+        assert!(
+            (8.0..200.0).contains(&elapsed),
+            "expected ~12ms elapsed, measured {elapsed}"
+        );
     }
 
     #[test]

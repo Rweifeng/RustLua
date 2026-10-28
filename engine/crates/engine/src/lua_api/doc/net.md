@@ -1,6 +1,6 @@
 # Lua 模块 `net`
 
-> 运行期 API 面基线里本模块有 8 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
+> 运行期 API 面基线里本模块有 9 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
 > **函数清单与标题里的签名**不要手改；在每个小节里把
 > `TODO(文档桩)` 换成真实说明即可，再生成会保留已补的内容。
 
@@ -12,6 +12,10 @@
 服务器把房间配成 2 人：满员时给两端下发 `you:<player>:<players>`，之后二进制消息
 原样互转。本模块只搬字节，不管帧同步规则——帧号、输入负载、校验和都由工程脚本
 （`scripts/netplay.lua`）定义。
+
+`net.now()` 是同一层的单调毫秒时钟，专给协议自带的时间戳用（ping/pong 算 RTT）。
+它和 `time.delta()` 不是一回事：后者是固定的逻辑步长，渲染掉到 30fps 时每帧仍只加 1/60，
+累加出来的时间只有真实时间的一半。
 
 ```lua
 net.connect(net.default_server(), net.default_room())
@@ -81,6 +85,20 @@ net.connect(net.default_server(), net.default_room())
 - 返回：`String`。
 - 失败：不会抛错；页面没有 `window.location` 时退回 `ws://127.0.0.1:8787/ws`。
 - 示例：`local server = net.default_server()`
+
+## `net.now()`
+
+> 绑定：`engine/crates/rustlua-gameplay/src/net_lua.rs:618`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+单调毫秒时钟（桌面取进程启动后的 `Instant`，浏览器取 `performance.now()`）。给消息打时间戳、
+量 RTT 用；不跟随系统时间，也不受帧率影响。
+
+不要用 `time.delta()` 累加代替：那是固定的逻辑步长，掉帧时每帧仍只加 1/60，累出来会偏慢。
+
+- 参数：无。
+- 返回：`number` —— 毫秒（f64，单调递增，起点随进程）。
+- 失败：不会抛错；浏览器拿不到 `performance` 时返回 `0`。
+- 示例：`local t0 = net.now(); -- 收到回声后 local rtt = net.now() - t0`
 
 ## `net.recv()`
 

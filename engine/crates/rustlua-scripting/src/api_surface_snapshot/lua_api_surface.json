@@ -319,6 +319,7 @@
         "connect",
         "default_room",
         "default_server",
+        "now",
         "recv",
         "send",
         "status"

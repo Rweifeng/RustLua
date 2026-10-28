@@ -33,6 +33,7 @@ web-sys = { version = "0.3", features = [
     "Event",
     "Location",
     "MessageEvent",
+    "Performance",
     "UrlSearchParams",
     "WebSocket",
     "Window",
