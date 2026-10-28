@@ -1590,7 +1590,7 @@ mod tests {
                 "key": "root",
                 "type": "panel",
                 "style": "card",
-                "children": [{"key": "title", "type": "text", "text": "Shop"}]
+                "children": [{"key": "title", "type": "text", "text": "Shop", "rich_text": false}]
             }
         })
     }

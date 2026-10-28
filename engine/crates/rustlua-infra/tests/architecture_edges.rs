@@ -179,9 +179,14 @@ const BUDGET: &[(&str, &[&str])] = &[
         ],
     ),
     // UI 文档宿主与 UI Studio 无头层：零 egui、零 `EditorApp`，只认契约层与场景/UI 数据。
+    // `ui-scene-export`（M80-07）：导出桥从本 crate 的 `ui_scene_export.rs` 搬成独立叶子
+    // crate，因为三宿主证据 harness 也要用它，而 harness 编进 wasm 产物、不能拖进整个
+    // studio。studio 用 `pub use rustlua_ui_scene_export as ui_scene_export;` 保住既有路径，
+    // 所以这条边的方向是 studio → 叶子，不开新方向，也不新增传递 crate（它只依赖
+    // scene/ui/ui-spec，studio 本来就有）。
     (
         "rustlua-editor-ui-studio",
-        &["assets-import", "scene", "ui", "ui-spec"],
+        &["assets-import", "scene", "ui", "ui-scene-export", "ui-spec"],
     ),
 ];
 
@@ -202,6 +207,17 @@ const BUDGET: &[(&str, &[&str])] = &[
 /// "核心 crate 不许反向依赖组合根"这条约束，也受 [`composition_roots_do_not_reach_the_gpu_stack`]
 /// 那条更窄的门约束（engine 的 normal 图不许碰 wgpu）。
 const COMPOSITION_ROOTS: &[&str] = &["engine", "game", "game_web", "editor", "gpu-web-probe"];
+
+/// 证据探针：**刻意**驱动真实运行时或复用探针读数，而不是另写一套玩具实现。
+///
+/// 它们不是组合根——不接产品、不产出产物——但和 `gpu-web-probe` 是同一个形状：整份代码的
+/// 意义就是拿真实的 `RuntimeScene`（或真实的导出桥 + 读数函数）去量，另写一份"等价实现"
+/// 只会让证据失去意义。因此它们允许依赖组合根 `engine`。
+///
+/// 代价必须由下面两条同时钉住：① 产品侧任何 crate 都不许依赖探针（否则探针混进产物图）；
+/// ② 探针之间可以互相依赖（harness → evidence 是同一份读数的两层壳），但探针不许被
+/// 当成"可复用库"再往上接。
+const EVIDENCE_PROBES: &[&str] = &["ui-host-evidence", "ui-host-harness"];
 
 fn workspace_crates() -> PathBuf {
     // crates/rustlua-infra → crates → engine
@@ -420,7 +436,9 @@ fn core_crates_are_not_depended_on_by_their_peers_in_the_wrong_direction() {
     // 肉眼看不出来，但会让产物多编一整个应用。
     let mut problems = Vec::new();
     for (crate_name, deps) in &graph {
-        if COMPOSITION_ROOTS.contains(&crate_name.as_str()) {
+        if COMPOSITION_ROOTS.contains(&crate_name.as_str())
+            || EVIDENCE_PROBES.contains(&crate_name.as_str())
+        {
             continue;
         }
         for root in COMPOSITION_ROOTS {
@@ -430,6 +448,51 @@ fn core_crates_are_not_depended_on_by_their_peers_in_the_wrong_direction() {
         }
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// 探针的豁免只能**向下**：`EVIDENCE_PROBES` 可以依赖组合根（它们量的就是真货），但产品侧
+/// 任何 crate 都不许依赖探针——那会把"只该在门里跑的壳"编进产物，也会让 `ui-host-evidence`
+/// 事实上升级成一个库。上一条测试放过了探针的入边，这条把出边钉住，豁免才是单向的。
+#[test]
+fn evidence_probes_stay_off_the_product_graph() {
+    let graph = graph();
+    let mut problems = Vec::new();
+    for probe in EVIDENCE_PROBES {
+        let Some(deps) = graph.get(*probe) else {
+            problems.push(format!(
+                "探针 {probe} 在 crates/ 下不存在（扫描器失效或已改名）"
+            ));
+            continue;
+        };
+        // 探针必须还挂在真东西上：直接依赖组合根，或经由另一个探针的读数。
+        let wired = deps.contains("engine")
+            || EVIDENCE_PROBES
+                .iter()
+                .any(|other| other != probe && deps.contains(*other));
+        if !wired {
+            problems.push(format!(
+                "{probe} 既不依赖 engine、也不复用别的探针：它已经不再量真货，\
+                 就不该留在 EVIDENCE_PROBES 里（放回 BUDGET 或删掉）"
+            ));
+        }
+        for (crate_name, edges) in &graph {
+            if EVIDENCE_PROBES.contains(&crate_name.as_str()) {
+                continue;
+            }
+            if edges.contains(*probe) {
+                problems.push(format!(
+                    "产品 crate {crate_name} 依赖了探针 {probe}：探针不进产物依赖图，\
+                     需要读数就先把它收进独立的叶子 crate"
+                ));
+            }
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "探针豁免被用到了产品侧（{} 条）：\n  - {}",
+        problems.len(),
+        problems.join("\n  - ")
+    );
 }
 
 #[test]
