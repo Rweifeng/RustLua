@@ -153,7 +153,7 @@ function writeHostsWithRetry(text) {
   }
 }
 
-/// 清单 note 的默认文案：先写"证明到什么"，再写"没证明什么"，最后把本次原始计数摊开。
+// 清单 note 的默认文案：先写"证明到什么"，再写"没证明什么"，最后把本次原始计数摊开。
 function defaultNote(host, report) {
   const layout = report.layout_rects;
   const draw = report.draw_order;
