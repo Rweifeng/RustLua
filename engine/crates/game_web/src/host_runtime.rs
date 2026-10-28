@@ -509,16 +509,13 @@ fn fit_scene_viewport(
 ) -> String {
     match engine_host.core.sim_mut() {
         Some(sim) => {
-            sim.set_viewport(crate::DESIGN_WIDTH, crate::DESIGN_HEIGHT);
+            let (design_w, design_h) = crate::fit::design_size();
+            sim.set_viewport(design_w, design_h);
             let (x, y, width, height) = rustlua_render::fit::contain_rect(
-                (crate::DESIGN_WIDTH as f32, crate::DESIGN_HEIGHT as f32),
+                (design_w as f32, design_h as f32),
                 (surface_width, surface_height),
             );
-            format!(
-                "declared={}x{} rect={width}x{height}+{x}+{y}",
-                crate::DESIGN_WIDTH,
-                crate::DESIGN_HEIGHT
-            )
+            format!("declared={design_w}x{design_h} rect={width}x{height}+{x}+{y}")
         }
         // 核心自己退化成了内建档（场景没起来）：没有逻辑视口可收，读数留空。
         None => String::new(),

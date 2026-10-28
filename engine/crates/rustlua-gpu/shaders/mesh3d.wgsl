@@ -8,15 +8,24 @@ struct Material { base_color: vec4<f32>, surface: vec4<f32> };
 @group(0) @binding(4) var shadow_sampler: sampler_comparison;
 @group(1) @binding(0) var<uniform> material: Material;
 @group(1) @binding(1) var<uniform> joint_palette: array<mat4x4<f32>, 128>;
+//#if STORAGE_INSTANCES
 @group(1) @binding(2) var<storage, read> instance_models: array<mat4x4<f32>>;
+//#else
+// WebGL2 没有存储缓冲：每条 draw 一个模型矩阵，走 64 字节 uniform（实例化合批已关）。
+@group(1) @binding(2) var<uniform> instance_model: mat4x4<f32>;
+//#endif
 @group(1) @binding(3) var albedo: texture_2d<f32>;
 @group(1) @binding(4) var albedo_sampler: sampler;
 struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) normal: vec3<f32>, @location(1) shadow_position: vec4<f32>, @location(2) uv: vec2<f32> };
 @vertex fn vs_main(@builtin(instance_index) instance_index: u32, @location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) joint_indices: vec4<u32>, @location(4) bone_weights: vec4<f32>) -> VertexOutput {
     var out: VertexOutput;
-    let model = instance_models[instance_index];
     var local_position = vec4<f32>(position, 1.0);
     var local_normal = vec4<f32>(normal, 0.0);
+//#if STORAGE_INSTANCES
+    let model = instance_models[instance_index];
+//#else
+    let model = instance_model;
+//#endif
 //#if SKIN
     var skinned_position = vec3<f32>(0.0);
     var skinned_normal = vec3<f32>(0.0);

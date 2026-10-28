@@ -1010,6 +1010,22 @@ if ($jsHostSkipped -and -not $painterOptedOut -and -not $jsHostRequested) {
 # 实测窗口是 756×441（不是 16:9），旧行为下 GPU 内容被纵向拉伸约 7%，两层画的是两个不同的盒子。
 # 这里只断言"盒子是 DesignWidth:DesignHeight 的比例、且不超出游戏画布"，不去钉死具体像素
 # （无头窗口尺寸会变）；比例如不对、或超出了画布，就是回归。
+#
+# **期望比例取自产物里的工程配置**（`pack/project.toml` 的 `window_width`/`window_height`），
+# 不是写死的 16:9：设计分辨率由工程声明（竖屏 720×1280 的工程在这个门里必须按 9:16 判）。
+# 缺项时退回引擎默认 1280×720（`game_web::fit::DEFAULT_DESIGN_WIDTH/HEIGHT`）。
+$designW = 1280
+$designH = 720
+$projectToml = Join-Path $bundle "pack/project.toml"
+if (Test-Path -LiteralPath $projectToml) {
+    $tomlText = Get-Content -LiteralPath $projectToml -Raw -Encoding UTF8
+    $widthMatch = [regex]::Match($tomlText, '(?m)^\s*window_width\s*=\s*(\d+)')
+    $heightMatch = [regex]::Match($tomlText, '(?m)^\s*window_height\s*=\s*(\d+)')
+    if ($widthMatch.Success -and $heightMatch.Success) {
+        $designW = [int]$widthMatch.Groups[1].Value
+        $designH = [int]$heightMatch.Groups[1].Value
+    }
+}
 if ($Gpu2d -and $gpuState -like "presented*") {
     $fitOk = $false
     $fitDetail = "missing"
@@ -1019,9 +1035,9 @@ if ($Gpu2d -and $gpuState -like "presented*") {
         $vh = [int]$fitMatch.Groups[2].Value
         $fw = [int]$fitMatch.Groups[3].Value
         $fh = [int]$fitMatch.Groups[4].Value
-        $wantRatio = 1280.0 / 720.0
+        $wantRatio = $designW / [double]$designH
         $gotRatio = if ($fh -gt 0) { $fw / [double]$fh } else { 0.0 }
-        $fitDetail = "viewport=${vw}x${vh} fit=${fw}x${fh} ratio=$([math]::Round($gotRatio, 4))"
+        $fitDetail = "viewport=${vw}x${vh} fit=${fw}x${fh} design=${designW}x${designH} ratio=$([math]::Round($gotRatio, 4)) want=$([math]::Round($wantRatio, 4))"
         # 1% 容差 = 整数像素取整（756×425 相对 1.7778 差 0.0004；钉死具体像素反而会假红）。
         $fitOk = ($fw -gt 0) -and ($fh -gt 0) -and ($fw -le $vw) -and ($fh -le $vh) -and `
             ([math]::Abs($gotRatio - $wantRatio) -lt ($wantRatio * 0.01))

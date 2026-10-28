@@ -51,6 +51,46 @@ impl From<bool> for SkinMode {
     }
 }
 
+/// 逐实例模型矩阵的**取法**（P3-R06 / WebGL2 补片）：有存储缓冲的设备走 storage 数组，
+/// 没有的（WebGL2 `max_storage_buffers_per_shader_stage=0`）走 64 字节 uniform。
+///
+/// 这不是变体键的一根轴：同一台设备上它恒定，同一份缓存里不会同时出现两种；它只决定
+/// 预处理器给不给 `STORAGE_INSTANCES`，以及材质布局 binding 2 的缓冲类型。
+/// 两条路画的**是同一批 draw**——无 storage 时实例化合批已关（每条 draw 一个模型）。
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum InstanceMode {
+    /// `var<storage, read> instance_models: array<mat4x4<f32>>`，支持实例化合批。
+    Storage,
+    /// `var<uniform> instance_model: mat4x4<f32>`，每条 draw 一次绑定。
+    Uniform,
+}
+
+impl InstanceMode {
+    /// 传给预处理器的 feature 列表；`Uniform` 是空集（历史分支）。
+    #[must_use]
+    pub const fn features(self) -> &'static [&'static str] {
+        match self {
+            Self::Storage => &["STORAGE_INSTANCES"],
+            Self::Uniform => &[],
+        }
+    }
+
+    /// 设备能力（`max_storage_buffers_per_shader_stage > 0`）→ 取法。
+    #[must_use]
+    pub const fn from_storage_capable(storage_capable: bool) -> Self {
+        if storage_capable {
+            Self::Storage
+        } else {
+            Self::Uniform
+        }
+    }
+
+    #[must_use]
+    pub const fn uses_storage(self) -> bool {
+        matches!(self, Self::Storage)
+    }
+}
+
 /// 颜色目标轴。阴影不写颜色，构造键时固定为 [`ColorTarget::Ldr`]。
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ColorTarget {

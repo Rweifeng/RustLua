@@ -1,9 +1,10 @@
 //! ClashRoyale 的 3D 像素证据：离屏跑 900 个固定步（AI 自走 + nav 寻路），
 //! 用真实 `Renderer` 把场景里的透视相机 + 竞技场网格 + HUD 合成成一张 PNG。
 //!
-//! 浏览器 WebGL 宿主当前**不渲染 3D**（`game_web/src/rust_scene.rs` 的 `scene_3d` 分支
-//! 留空），所以浏览器截图在这里没有证明力；本示例走与 `wp0_3d_golden` 相同的
-//! 离屏管线，直接给出像素读数与图片。
+//! 浏览器 WebGL2 宿主现在也喂 3D（`game_web/src/rust_scene.rs` 的 `scene_3d`，与桌面同一个
+//! `RuntimeScene::scene_3d` 调用）；本示例仍走与 `wp0_3d_golden` 相同的离屏管线，给出
+//! 不经浏览器的逐像素基线。把 `RUSTLUA_WEBGL2_LIMITS=1` 设在环境里，同一条命令就会用
+//! WebGL2 的 downlevel 限额建设备，复现"没有存储缓冲"的那条 3D 路径。
 //!
 //!     cargo run -q -p engine --example royale_shot -- E:/Qoder/ClashRoyale
 //!

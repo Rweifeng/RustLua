@@ -135,7 +135,10 @@ pub struct GltfMaterial {
 impl GltfAsset {
     pub fn load(path: impl AsRef<Path>) -> Result<Self, GltfAssetError> {
         let path = path.as_ref();
-        let raw = std::fs::read(path).map_err(|error| GltfAssetError::Import {
+        // 经 vfs 取字节（不是 `std::fs::read`）：wasm 上没有文件系统，裸读恒 ENOSYS，
+        // Web 产物里的 3D 网格会整批落到 "operation not supported" 并静默消失。
+        // 桌面无 provider 时 `vfs::read` 就是 `fs::read`，行为不变。
+        let raw = rustlua_infra::vfs::read(path).map_err(|error| GltfAssetError::Import {
             path: path.display().to_string(),
             reason: error.to_string(),
         })?;
@@ -143,18 +146,18 @@ impl GltfAsset {
             path: path.display().to_string(),
             reason,
         })?;
-        let (document, buffers, images) = if decoded.starts_with(pack::PACK_MAGIC) {
-            unreachable!("pack::decode removes pack magic")
-        } else if raw.starts_with(pack::PACK_MAGIC) {
-            gltf::import_slice(&decoded).map_err(|error| GltfAssetError::Import {
-                path: path.display().to_string(),
-                reason: error.to_string(),
-            })?
+        // 打包资源与内存里的 GLB 都走 `import_slice`（不需要文件系统）：
+        // 前者由 `pack::decode` 解出，后者本身就以 `glTF` 魔数开头。
+        let in_memory = raw.starts_with(pack::PACK_MAGIC) || decoded.starts_with(b"glTF");
+        let import_error = |error: gltf::Error| GltfAssetError::Import {
+            path: path.display().to_string(),
+            reason: error.to_string(),
+        };
+        let (document, buffers, images) = if in_memory {
+            gltf::import_slice(&decoded).map_err(import_error)?
         } else {
-            gltf::import(path).map_err(|error| GltfAssetError::Import {
-                path: path.display().to_string(),
-                reason: error.to_string(),
-            })?
+            // 未打包、带外部 .bin/.png 的 `.gltf`：只有这条分支需要文件系统。
+            gltf::import(path).map_err(import_error)?
         };
         let decode_image = |texture: gltf::texture::Texture<'_>| -> Option<GltfTextureImage> {
             let image_index = texture.source().index();

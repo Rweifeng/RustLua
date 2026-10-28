@@ -374,6 +374,9 @@ impl EngineCore {
         }
         let mut scene_note = String::new();
         let mut scene_delta = [0i64; 3];
+        // 3D 场景（相机/光源/网格 drawable）：与桌面运行器同一处提取，必须排在 `mesh()` 之后
+        // （`vertices()` 是"本帧只解析一次相机"的定帧点）。内建场景档没有模拟，保持 `None`。
+        let mut scene3d: Option<rustlua_render::frame::Scene3d> = None;
         if !builtin {
             if !self.textures_ensured {
                 self.textures_ensured = true;
@@ -385,9 +388,44 @@ impl EngineCore {
                     self.texture_stats.0 + self.texture_stats.1
                 ));
             }
-            let views = self.sim.as_ref().map(|sim| sim.frame_views());
+            scene3d = self.sim.as_ref().and_then(|sim| sim.scene_3d());
+            if first_frame && let Some(scene) = scene3d.as_ref() {
+                // 首帧的 3D 喂给读数的现场证据：宿主到底把哪些 drawable、放在什么位置、
+                // 用哪台相机交给了渲染器。此前 web 宿主**根本不喂 3D**，而读数里只有
+                // "draws 比桌面少"这一个间接信号，定位不到交界处。
+                let items = scene
+                    .drawables
+                    .iter()
+                    .take(16)
+                    .map(|drawable| {
+                        format!(
+                            "{}@({:.1},{:.1},{:.1})",
+                            drawable.name,
+                            drawable.model.columns[3][0],
+                            drawable.model.columns[3][1],
+                            drawable.model.columns[3][2]
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                web_sys::console::log_1(&JsValue::from_str(&format!(
+                    "[gpu] 3d_first draws={} camera=({:.1},{:.1},{:.1})->({:.1},{:.1},{:.1}) items=[{items}]",
+                    scene.drawables.len(),
+                    scene.camera.position.x,
+                    scene.camera.position.y,
+                    scene.camera.position.z,
+                    scene.camera.target.x,
+                    scene.camera.target.y,
+                    scene.camera.target.z,
+                )));
+            }
+            let views = self
+                .sim
+                .as_ref()
+                .map(|sim| sim.frame_views(scene3d.as_ref()));
             if let Some(views) = views {
                 // 2D 取景由**场景自己的相机**给出（与桌面运行器同源）：不清屏/视口两套说法。
+                // 有 3D 内容时主视图也在里面（`Scene3d::view` 的烘焙结果，与桌面同源）。
                 self.renderer.set_frame_views(views);
             }
             // 世界 Sprite 的深度通道：与桌面运行器同一处调用（场景说没有就保持渲染器默认）。
@@ -395,7 +433,10 @@ impl EngineCore {
             if let Some(camera) = camera {
                 self.renderer.set_world_sprite_camera(camera);
             }
-            let stats = self.sim.as_ref().map(|sim| sim.note(&mesh));
+            let stats = self
+                .sim
+                .as_ref()
+                .map(|sim| sim.note(&mesh, scene3d.as_ref()));
             if let Some(stats) = stats {
                 // 场景输出基线：稳态第一帧记下 draw/顶点/路径三项，之后每帧报**差值**
                 // （为什么是差值、为什么基线不含首帧：见旧 `gpu_host` 的同款注释）。
@@ -420,7 +461,7 @@ impl EngineCore {
         let render_started = web_time::Instant::now();
         let outcome = self.renderer.render_into_texture(
             &mesh,
-            None,
+            scene3d.as_ref(),
             &view,
             self.stack.config.width,
             self.stack.config.height,
@@ -483,7 +524,9 @@ impl EngineCore {
 
     /// 把本帧网格引用的贴图从资源表（或已装的 vfs provider）交进渲染器。
     ///
-    /// 跳过两个**不是路径**的保留项：白纹理（渲染器就地造）与内建字模图集（保留纹理）。
+    /// 跳过三个**不是路径**的保留项：白纹理（渲染器就地造）、内建字模图集、以及 SDF
+    /// 文字的字体图集（由 `load_project_font_atlas` 直接上传）——它们都不在资源表里，
+    /// 走正常路径只会把"资源表没有贴图"当成失败。
     fn ensure_textures(&mut self, paths: &[String]) {
         // PNG 解码前后各一次读数（docs/65 P0 阶段遥测）：这一批是首帧之后最大的一次
         // 突发性分配（每张图 解码 RGBA + GPU 上传），要能和字体图集的账分开。
@@ -495,6 +538,7 @@ impl EngineCore {
         for path in paths {
             if path == rustlua_render::frame::WHITE_TEXTURE_PATH
                 || path == rustlua_render::frame::ATLAS_TEXTURE_PATH
+                || path == rustlua_render::frame::FONT_ATLAS_TEXTURE_PATH
             {
                 continue;
             }

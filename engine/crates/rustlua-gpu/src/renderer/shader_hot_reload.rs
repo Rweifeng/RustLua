@@ -33,6 +33,8 @@ use super::construct::{
     build_world_sprite_pipeline, create_mesh_pipeline, create_shadow_pipeline,
     module_from_preprocessed, preprocessed_variant, variant_root,
 };
+#[cfg(test)]
+use super::pipeline_cache::InstanceMode;
 use super::pipeline_cache::{ColorTarget, PipelineFamily, ShaderVariantKey, Shading, SkinMode};
 use crate::shader::{ALL_SHADERS, ShaderSource};
 use crate::shader_library::{ResolvedShader, ShaderLibrary, ShaderOrigin, ShaderOverrideError};
@@ -131,7 +133,7 @@ pub enum ShaderReloadError {
     Validate(ShaderValidateError),
     /// 设备侧校验错误（wgpu）：着色器编译不过或管线描述不合法。
     Device { variant: String, message: String },
-    /// 这台设备没有存储缓冲，3D 变体是占位管线，热重载没有可重建的对象。
+    /// 构造期一条 3D 变体都没建出来，热重载没有可重建的对象。
     ///
     /// 这不是失败（调用方按"没有变化"处理），但必须**显式**说出来：否则作者会以为
     /// 是自己的覆盖文件写错了。
@@ -153,7 +155,7 @@ impl std::fmt::Display for ShaderReloadError {
             }
             Self::PlaceholderOnly => write!(
                 f,
-                "设备不支持存储缓冲：3D 通道是占位管线，覆盖目录对本次绘制没有效果"
+                "当前渲染器没有已编译的 3D 变体，覆盖目录对本次绘制没有效果"
             ),
         }
     }
@@ -421,8 +423,8 @@ impl Renderer {
         proposed: &ShaderLibrary,
     ) -> Result<ShaderReloadReport, ShaderReloadError> {
         let keys = self.pipelines.keys();
-        if keys.is_empty() || !self.storage_capable {
-            // 占位档（WebGL2 之类）里 3D 变体不是真管线；明确报告，不静默。
+        if keys.is_empty() {
+            // 构造期一条 3D 变体都没建出来 ⇒ 没有可重建的对象；明确报告，不静默。
             return Err(ShaderReloadError::PlaceholderOnly);
         }
         let variant_count = keys.len() + FixedSlot::ALL.len();
@@ -567,11 +569,16 @@ impl Renderer {
             return Ok(None);
         }
         let pre = |source: &ActiveSource| {
-            preprocessed_variant(&source.error_path, &source.text, skin, ibl).map_err(|error| {
-                ShaderReloadError::Preprocess {
-                    variant: variant.to_owned(),
-                    message: error.to_string(),
-                }
+            preprocessed_variant(
+                &source.error_path,
+                &source.text,
+                skin,
+                ibl,
+                self.instance_mode(),
+            )
+            .map_err(|error| ShaderReloadError::Preprocess {
+                variant: variant.to_owned(),
+                message: error.to_string(),
             })
         };
         let active_pre = pre(active)?;
@@ -828,9 +835,14 @@ mod tests {
     fn two_d_builtin_shaders_are_byte_identical_after_preprocessing() {
         for slot in FixedSlot::ALL {
             let root = slot.root();
-            let preprocessed =
-                preprocessed_variant(root.path, root.source, SkinMode::Off, IblMode::Off)
-                    .unwrap_or_else(|error| panic!("{} 预处理失败：{error}", root.name));
+            let preprocessed = preprocessed_variant(
+                root.path,
+                root.source,
+                SkinMode::Off,
+                IblMode::Off,
+                InstanceMode::Storage,
+            )
+            .unwrap_or_else(|error| panic!("{} 预处理失败：{error}", root.name));
             assert_eq!(
                 preprocessed.source(),
                 root.source,

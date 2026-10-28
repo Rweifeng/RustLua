@@ -22,8 +22,10 @@ use std::path::Path;
 
 use engine::host::runtime_scene::{ParticleDispatchReport, TextRenderMode};
 use engine::host::{RuntimeScene, SceneMesh};
+use rustlua_camera::camera::{DEFAULT_3D_CLEAR, FrameViews, Viewport};
 use rustlua_gpu::Renderer;
 use rustlua_input::input::InputSnapshot;
+use rustlua_render::frame::Scene3d;
 use rustlua_scene::scene::Scene;
 
 use crate::VIRTUAL_PROJECT_ROOT;
@@ -494,23 +496,32 @@ impl RustScene {
         self.height = height;
     }
 
-    /// 本帧的取景：2D 视图由**场景自己的相机**给出（与桌面运行器同源）。
-    /// 3D 主视图这里留空——本片不碰 3D（`scene_3d` 的相机载荷另说）。
+    /// 本帧的 3D 场景（与桌面运行器同一个调用）：相机、光源、网格 drawable 全部由 ECS 实时提取。
     ///
-    /// 清屏必须在这里显式声明：`overlay_2d` 的语义是"叠在已有内容上"（`ClearPolicy::None`），
-    /// 而 Web 宿主这里**没有任何主视图垫底**——不声明就由整帧负责的这个视图也不清屏，
+    /// 必须在 [`Self::mesh`] **之后**调用——`vertices()` 是"本帧只解析一次相机"的定帧点，
+    /// 这里再解析一次会多算一遍（引擎的账本会记成同帧两次解析）。
+    pub fn scene_3d(&self) -> Option<Scene3d> {
+        let viewport = Viewport::new(self.width.max(1) as f32, self.height.max(1) as f32).ok()?;
+        self.scene.scene_3d(viewport)
+    }
+
+    /// 本帧的取景：2D 视图由**场景自己的相机**给出（与桌面运行器同源）。
+    ///
+    /// 有 3D 内容时主视图用**提取时烘焙好的那一份**（`Scene3d::view`），与桌面 runner
+    /// 的 `FrameViews` 拼法逐字相同；没有 3D 内容时主视图留空，由 overlay 负责清屏。
+    ///
+    /// 清屏必须显式声明：`overlay_2d` 的语义是"叠在已有内容上"（`ClearPolicy::None`），
+    /// 而 Web 宿主在纯 2D 档**没有任何主视图垫底**——不声明就由整帧负责的这个视图也不清屏，
     /// 未画区域停在后备缓冲的透明黑上（run8 四角 [0,0,0,0] 的机制；微信接管形态下四角
-    /// 透页面背景）。底色取 `DEFAULT_3D_CLEAR`：与渲染器"没声明主视图"的历史默认色**同值**，
-    /// 因此场景档与内建档（走渲染器默认清屏）从此是同一个基色，画面不随退化切换。
-    pub fn frame_views(&self) -> rustlua_camera::camera::FrameViews {
-        rustlua_camera::camera::FrameViews {
-            main: None,
+    /// 透页面背景）。底色取 `DEFAULT_3D_CLEAR`：与主 3D 视图的清屏色**同值**，
+    /// 因此 2D/3D 两档从此是同一个基色，画面不随切换闪色。
+    pub fn frame_views(&self, scene3d: Option<&Scene3d>) -> FrameViews {
+        FrameViews {
+            main: scene3d.map(|scene| scene.view),
             overlay: Some(
                 self.scene
                     .render_view_2d(self.width, self.height)
-                    .with_clear(rustlua_camera::camera::ClearPolicy::Color(
-                        rustlua_camera::camera::DEFAULT_3D_CLEAR,
-                    )),
+                    .with_clear(rustlua_camera::camera::ClearPolicy::Color(DEFAULT_3D_CLEAR)),
             ),
         }
     }
@@ -531,7 +542,7 @@ impl RustScene {
     /// 分通道一起报，是因为"总数在涨"这件事单看总数定不了性：原生测试已经证明**同一份世界**
     /// 连提多次是逐通道稳定的（`host::runtime_scene::tests::frame_extraction`），所以浏览器里
     /// 的数字变化只可能来自"世界真的变了"——而要知道变的是哪一路，就必须把每一路分开读。
-    pub fn note(&self, mesh: &SceneMesh) -> String {
+    pub fn note(&self, mesh: &SceneMesh, scene3d: Option<&Scene3d>) -> String {
         let tail = match &self.last_step_error {
             Some(error) => format!(
                 " step_errors={} last_step_error=\"{error}\"",
@@ -570,13 +581,14 @@ impl RustScene {
             )
         };
         format!(
-            "{} assets={} vertices={} draws={} paths={} world_sprites={}/{} vector={}/{} script={} \
+            "{} assets={} vertices={} draws={} paths={} mesh3d={} world_sprites={}/{} vector={}/{} script={} \
              steps={} spawned={} script_errors={} input_edges={} {}{tail}{sched}{lua}",
             self.scene_desc,
             self.assets,
             mesh.vertices.len(),
             mesh.draws.len(),
             mesh.paths.len(),
+            scene3d.map_or(0, |scene| scene.drawables.len()),
             mesh.world_sprites.len(),
             mesh.world_sprite_draws.len(),
             mesh.vector_vertices.len(),

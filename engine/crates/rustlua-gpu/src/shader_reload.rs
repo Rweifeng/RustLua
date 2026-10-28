@@ -492,7 +492,9 @@ struct VertexOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32>
     /// 的内置源，热重载就会把工程自带的 shader 也判成坏源——那是比漏判更糟的失败。
     #[test]
     fn every_builtin_shader_yields_a_valid_interface() {
-        const FEATURES: [&str; 3] = ["SKIN", "IBL_DIFFUSE", "IBL_SPECULAR"];
+        // 全轴同时打开（含 `STORAGE_INSTANCES`）是最宽的展开：每份源只留一条分支，
+        // 任何一条分支单独写坏都会在这里的校验里暴露。
+        const FEATURES: [&str; 4] = ["SKIN", "IBL_DIFFUSE", "IBL_SPECULAR", "STORAGE_INSTANCES"];
         for shader in crate::shader::ALL_SHADERS {
             let preprocessed = crate::shader_preprocess::preprocess(
                 shader.path,

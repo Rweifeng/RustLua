@@ -107,12 +107,20 @@ impl OffscreenDevice {
         } else {
             wgpu::Features::empty()
         };
+        // 诊断开关：设置 `RUSTLUA_WEBGL2_LIMITS=1` 时用 WebGL2 的 downlevel 限额建设备，
+        // 让原生离屏渲染也走"没有存储缓冲"的那条路径（不用开浏览器就能复现 web 的 3D 表现，
+        // 见 `docs/32` 的复现命令）。缺省不改变任何例子的既有行为。
+        let required_limits = if std::env::var_os("RUSTLUA_WEBGL2_LIMITS").is_some() {
+            wgpu::Limits::downlevel_webgl2_defaults()
+        } else {
+            wgpu::Limits::default()
+        };
         let (device, queue) =
             match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some(request.label),
                 required_features,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                required_limits: wgpu::Limits::default(),
+                required_limits,
                 memory_hints: wgpu::MemoryHints::Performance,
                 trace: wgpu::Trace::Off,
             })) {

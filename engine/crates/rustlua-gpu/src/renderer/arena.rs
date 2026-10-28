@@ -7,6 +7,19 @@ use rustlua_math::math3d::Mat4;
 
 use super::{GpuMaterial, Renderer, joint_palette_data, next_2d_vertex_capacity};
 
+/// 无存储缓冲时材质布局 binding 2 的 64 字节：一条 draw 只有一个模型矩阵（列主序）。
+///
+/// 展开口径与 storage 路径同为「每模型 4 个 vec4 列」。曾被按行取 `..16`，而列只有 4 个，
+/// 于是每条 draw 都落回单位矩阵——所有网格叠在原点，画面里只剩最后画的那个。
+pub(super) fn single_instance_uniform(models: &[Mat4]) -> [u8; 64] {
+    let columns = models
+        .first()
+        .map_or(super::IDENTITY_MAT4, |model| model.columns);
+    let mut bytes = [0u8; 64];
+    bytes.copy_from_slice(bytemuck::bytes_of(&columns));
+    bytes
+}
+
 /// P3-R02：PBR 逐实例法线矩阵在帧级环形缓冲里的位置。绘制时作为顶点缓冲槽 1 绑定，
 /// 与模型矩阵的存储绑定共用同一块缓冲、不同偏移。
 pub(super) struct NormalMatrixSlice {
@@ -129,12 +142,19 @@ impl Renderer {
                 let size = self.identity_palette.size();
                 (self.identity_palette.clone(), 0, size)
             };
-        let mut instance_data = Vec::with_capacity(models.len() * 4);
-        for model in models {
-            instance_data.extend_from_slice(&model.columns);
-        }
-        let (instance_buffer, instance_offset, instance_size) =
-            self.push_frame_storage(bytemuck::cast_slice(&instance_data));
+        // 没有存储缓冲的设备（WebGL2）：binding 2 是 64 字节 uniform，每条 draw 只装一个
+        // 模型矩阵。实例化合批在构造期已按能力关掉，`frame_3d_draws` 因此不会产出多条
+        // 实例合批（每条 draw 的 `models.len()` 恒为 1）——这里取首个模型就是全部。
+        let (instance_buffer, instance_offset, instance_size) = if self.storage_capable {
+            let mut instance_data = Vec::with_capacity(models.len() * 4);
+            for model in models {
+                instance_data.extend_from_slice(&model.columns);
+            }
+            self.push_frame_storage(bytemuck::cast_slice(&instance_data))
+        } else {
+            debug_assert_eq!(models.len(), 1, "无存储缓冲时每条 3D draw 只该有一个模型");
+            self.push_frame_uniform(&single_instance_uniform(models))
+        };
         // P3-R02：法线矩阵必须按每个实例各算一份（非均匀缩放下模型矩阵的 3x3 不能直接当
         // 法线变换用）。只在 PBR 路径写入；旧路径一个字节都不多写，`pbr=off` 的旧 golden
         // 因此仍逐字节一致。走顶点缓冲而不是新增存储绑定：多一个布局条目会明显拉长启动期
@@ -267,5 +287,37 @@ impl Renderer {
         });
         self.vertex_buffer_growths += 1;
         capacity
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::single_instance_uniform;
+    use rustlua_math::math3d::Mat4;
+
+    /// WebGL2 的 3D 路径把模型矩阵塞进 64 字节 uniform：这份字节必须真是**这条 draw 的模型**。
+    /// 曾经按行取 `..16`（列只有 4 个）⇒ 恒落回单位矩阵，所有网格叠在原点。
+    #[test]
+    fn single_instance_uniform_carries_the_model_columns() {
+        let model = Mat4 {
+            columns: [
+                [2.0, 0.0, 0.0, 4.5],
+                [0.0, 1.0, 0.0, 0.02],
+                [0.0, 0.0, 3.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+        };
+        let bytes = single_instance_uniform(&[model]);
+        assert_eq!(bytes.len(), 64);
+        let decoded: [[f32; 4]; 4] = bytemuck::cast(bytes);
+        assert_eq!(decoded, model.columns);
+        assert_ne!(decoded, super::super::IDENTITY_MAT4);
+    }
+
+    /// 没有模型（不该发生，但底线要明确）：落单位矩阵，而不是零矩阵（零矩阵会把网格缩成不可见）。
+    #[test]
+    fn single_instance_uniform_falls_back_to_identity() {
+        let decoded: [[f32; 4]; 4] = bytemuck::cast(single_instance_uniform(&[]));
+        assert_eq!(decoded, super::super::IDENTITY_MAT4);
     }
 }

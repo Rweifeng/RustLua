@@ -70,6 +70,12 @@ mod frame_input;
 /// 同样**刻意不门到 wasm**（`any(target_arch = "wasm32", test)`）：纯数学 + 纯 `u32`，
 /// 桌面单测守住"适配盒与设计分辨率同比"这条契约。它一旦错，GPU 层会被非等比拉伸，
 /// 而画布属性/帧率读数**全都正常**——这种错只能靠小测试抓（见模块内 `tests`）。
+///
+/// 设计分辨率**不是常量**：`project.toml` 声明了 `window_width`/`window_height` 就用工程的
+/// （竖屏 720×1280 与横屏 1280×720 都是合法工程），没声明才回退到默认 1280×720。
+/// `start()` 读到 `project.toml` 后调用 [`fit::set_design_size`] 覆盖一次；之后所有消费者
+/// （contain 适配、光标换算、视口）都从 [`fit::design_size`] 读——各写各的常量就会出现
+/// "画的是竖屏、点的是横屏"。微信入口没有这个读取时机（设备像素 + contain），保持默认。
 #[cfg(any(target_arch = "wasm32", test))]
 mod fit;
 
@@ -152,15 +158,6 @@ pub use wasm_log::set_frame_logs;
 /// 项目根（虚拟）：Web 端没有真实文件系统，脚本/数据都挂在 `/project/` 下，
 /// 与桌面端的 `project_root` 语义一致（`data.load` 用 `root.join(path)`）。
 pub const VIRTUAL_PROJECT_ROOT: &str = "/project";
-
-/// 游戏画布的**横版设计分辨率**。游戏画布把它当 backing store 尺寸（见 `start()`），
-/// GPU 画布也必须用它——引擎的 2D 取景是按设计分辨率算的，两者不一致就会拉成另一个宽高比。
-///
-/// 必须与 `scripts/ui/layout.lua` 的 DESIGN_W/DESIGN_H、`project.toml` 的
-/// window_width/height、以及微信适配层的 VIEW_WIDTH/VIEW_HEIGHT 一致：
-/// Lua 动态 UI 画在**屏幕像素空间**、不做缩放，画布尺寸不对就是面板溢出画布。
-pub const DESIGN_WIDTH: u32 = 1280;
-pub const DESIGN_HEIGHT: u32 = 720;
 
 /// 资源读取器的跨端形态：桌面 `vfs::set_provider` 走 `OnceLock` 要求 `Send + Sync`；
 /// wasm 单线程（`thread_local`），允许捕获非 `Send` 句柄（如 `js_sys::Function`）。
@@ -403,9 +400,6 @@ mod wasm {
             .get_element_by_id(canvas_id)
             .ok_or_else(|| JsValue::from_str("missing canvas"))?
             .dyn_into::<HtmlCanvasElement>()?;
-        // 画布尺寸 = 游戏的横版设计分辨率（见 `DESIGN_WIDTH`/`DESIGN_HEIGHT`：GPU 画布用同一对常量）。
-        canvas.set_width(super::DESIGN_WIDTH);
-        canvas.set_height(super::DESIGN_HEIGHT);
         let manifest = fetch_text("pack/manifest.txt").await?;
         // 容器形态（`docs/67` §7.3 批 B）：清单里有 `bundles/*.rlb` 就只抓容器、不抓条目。
         // 挂载之后 `project.toml` 与启动场景改走 `read_virtual`（容器优先、HTTP 兜底）。
@@ -456,6 +450,16 @@ mod wasm {
             count
         };
         let project = read_virtual_text("project.toml").await?;
+        // 设计分辨率由**工程**声明（竖屏工程 720×1280 与横屏工程 1280×720 都合法）。
+        // 必须在任何几何消费者之前定下来：画布后备尺寸、GPU 画布的 contain 盒、引擎视口
+        // 与光标换算都读 `fit::design_size()`——晚一步就是"UI 按竖屏画、画面按横屏摆"。
+        let (design_w, design_h) = project_design_size(&project);
+        super::fit::set_design_size(design_w, design_h);
+        canvas.set_width(design_w);
+        canvas.set_height(design_h);
+        web_sys::console::log_1(&JsValue::from_str(&format!(
+            "[render] design={design_w}x{design_h} (project.toml window_width/window_height)"
+        )));
         let startup_scene = project_key(&project, "startup_scene")
             .unwrap_or_else(|| "scenes/main.scene".to_owned());
         let scene = read_virtual_bytes(&startup_scene).await?;
@@ -782,6 +786,23 @@ mod wasm {
                 .map(|value| value.trim().trim_matches('"').to_owned())
                 .filter(|value| !value.trim().is_empty())
         })
+    }
+
+    /// 工程声明的设计分辨率：`window_width`/`window_height` 各自独立回退到默认值。
+    ///
+    /// 两个键都缺 ⇒ 历史横版 1280×720（桌面 `game_app` 的 `DEFAULT_WINDOW_SIZE` 同一对；
+    /// 微信入口也走这份默认）。只声明一个键时另一个回退，而不是整对丢弃——半份配置仍然
+    /// 比"默默用横版"更接近工程意图，且 `[render] design=` 那行读数会把它暴露出来。
+    fn project_design_size(project: &str) -> (u32, u32) {
+        let dimension = |key: &str| {
+            project_key(project, key)
+                .and_then(|value| value.trim().parse::<u32>().ok())
+                .filter(|value| *value > 0)
+        };
+        (
+            dimension("window_width").unwrap_or(super::fit::DEFAULT_DESIGN_WIDTH),
+            dimension("window_height").unwrap_or(super::fit::DEFAULT_DESIGN_HEIGHT),
+        )
     }
 
     /// 解析 `assetc package` 产出的 `manifest.txt`：

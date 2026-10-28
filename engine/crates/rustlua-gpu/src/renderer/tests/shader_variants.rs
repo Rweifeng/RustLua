@@ -7,7 +7,7 @@
 use super::*;
 use crate::renderer::construct::{create_mesh_pipeline, variant_shader_module};
 use crate::renderer::pipeline_cache::{
-    ColorTarget, PipelineCache, ShaderVariantKey, Shading, SkinMode,
+    ColorTarget, InstanceMode, PipelineCache, ShaderVariantKey, Shading, SkinMode,
 };
 use crate::shader::{MESH3D, MESH3D_PBR, SHADOW, ShaderSource};
 use crate::shader_preprocess::{PreprocessOptions, preprocess};
@@ -16,16 +16,20 @@ use rustlua_render::render_settings::{
     EnvironmentLighting, EnvironmentSettings, IblMode, RenderSettings, ToggleMode,
 };
 
-const KNOWN_FEATURES: &[&str] = &["SKIN", "IBL_DIFFUSE", "IBL_SPECULAR"];
+const KNOWN_FEATURES: &[&str] = &["SKIN", "IBL_DIFFUSE", "IBL_SPECULAR", "STORAGE_INSTANCES"];
 
-fn expand(
+fn expand_mode(
     shader: &ShaderSource,
     skin: SkinMode,
     ibl: IblMode,
+    instance_mode: InstanceMode,
 ) -> crate::shader_preprocess::PreprocessedShader {
-    let mut features = Vec::with_capacity(skin.features().len() + ibl.features().len());
+    let mut features = Vec::with_capacity(
+        skin.features().len() + ibl.features().len() + instance_mode.features().len(),
+    );
     features.extend_from_slice(skin.features());
     features.extend_from_slice(ibl.features());
+    features.extend_from_slice(instance_mode.features());
     preprocess(
         shader.path,
         shader.source,
@@ -36,6 +40,15 @@ fn expand(
         },
     )
     .unwrap_or_else(|error| panic!("{} 预处理失败：{error}", shader.path))
+}
+
+/// 有存储缓冲（原生 / WebGPU）时的展开结果；离线断言默认走这条。
+fn expand(
+    shader: &ShaderSource,
+    skin: SkinMode,
+    ibl: IblMode,
+) -> crate::shader_preprocess::PreprocessedShader {
+    expand_mode(shader, skin, ibl, InstanceMode::Storage)
 }
 
 fn expand_skin(
@@ -202,6 +215,70 @@ fn shadow_variants_differ_only_in_skinning() {
         assert!(source.contains("@fragment fn fs_main"));
         assert!(source.contains("flags.z"));
         assert!(source.contains("instance_models[instance_index]"));
+    }
+}
+
+/// WebGL2 路径：`InstanceMode::Uniform` 把逐实例模型矩阵换成 `@binding(2)` 的 64 字节 uniform，
+/// 三份 3D 源都不再声明存储缓冲；`Storage` 展开则相反。两条分支互斥，指令行必须被吃掉。
+#[test]
+fn uniform_instance_mode_replaces_storage_buffer() {
+    for shader in [&MESH3D, &MESH3D_PBR, &SHADOW] {
+        let uniform = expand_mode(shader, SkinMode::Off, IblMode::Off, InstanceMode::Uniform);
+        let source = uniform.source();
+        assert!(
+            !source.contains("//#"),
+            "{}：指令行必须被预处理掉",
+            shader.path
+        );
+        assert!(
+            source.contains("@group(1) @binding(2) var<uniform> instance_model: mat4x4<f32>;"),
+            "{}：无存储档必须声明 uniform 模型矩阵",
+            shader.path
+        );
+        assert!(
+            source.contains("let model = instance_model;"),
+            "{}：顶点阶段必须读 uniform",
+            shader.path
+        );
+        assert!(
+            !source.contains("instance_models"),
+            "{}：无存储档不得残留存储缓冲标识符",
+            shader.path
+        );
+        assert!(
+            !source.contains("var<storage"),
+            "{}：WebGL2 没有存储缓冲，任何 var<storage> 都会让管线创建失败",
+            shader.path
+        );
+
+        let storage = expand_mode(shader, SkinMode::Off, IblMode::Off, InstanceMode::Storage);
+        assert!(
+            storage.source().contains(
+                "@group(1) @binding(2) var<storage, read> instance_models: array<mat4x4<f32>>;"
+            ),
+            "{}：有存储档必须保留存储缓冲声明",
+            shader.path
+        );
+        assert!(
+            !storage.source().contains("var<uniform> instance_model"),
+            "{}：有存储档不得同时声明 uniform 模型矩阵",
+            shader.path
+        );
+    }
+}
+
+/// 无存储档的展开结果必须通过 naga 的**完整校验**（语法 + 类型/语义）。
+///
+/// 原生测试设备都有存储缓冲，`uniform` 分支在 GPU 上跑不到；这条是它的离线证据：
+/// 绑定声明与顶点阶段的读取类型对得上，WebGL2 建管线时不会因为源本身不合法而失败。
+#[test]
+fn uniform_instance_variant_passes_naga_validation() {
+    for shader in [&MESH3D, &MESH3D_PBR, &SHADOW] {
+        for skin in [SkinMode::Off, SkinMode::On] {
+            let preprocessed = expand_mode(shader, skin, IblMode::Off, InstanceMode::Uniform);
+            crate::shader_reload::validate_module(shader.path, preprocessed.source())
+                .unwrap_or_else(|error| panic!("{}（{skin:?}）：{error}", shader.path));
+        }
     }
 }
 
@@ -412,6 +489,7 @@ fn ibl_diffuse_variant_compiles_with_environment_binding() {
         &MESH3D_PBR,
         SkinMode::Off,
         IblMode::Diffuse,
+        renderer.instance_mode(),
         "rustlua-test-ibl-shader",
     );
     let pipeline = create_mesh_pipeline(
@@ -501,6 +579,7 @@ fn ibl_specular_variant_compiles_with_prefiltered_cube() {
         &MESH3D_PBR,
         SkinMode::Off,
         IblMode::Full,
+        renderer.instance_mode(),
         "rustlua-test-ibl-specular-shader",
     );
     let pipeline = create_mesh_pipeline(

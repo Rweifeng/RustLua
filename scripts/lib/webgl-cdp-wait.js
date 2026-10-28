@@ -601,6 +601,16 @@ if (pointerProbe) await runPointerProbe(send);
     }
   }
   console.log('[cdp] timeout waiting for ' + mode + ' (last boot=' + stateOf(lastDom, 'data-rustlua-boot') + ')');
+  // 截图在超时路径也要拍：引擎宿主独占这一帧时（B8 之后默认形态）旧 JS 世界的场景读数
+  // 没有写者，`settled` 永远不真 ⇒ 走的就是这条路。不补这一下，`-Shot` 在这个形态下
+  // **一张也拍不出来**（而且日志里只剩一句 timeout，读起来像"页面没起来"）。
+  if (shotFile) {
+    try {
+      await captureShot(send, shotFile, shotUnderFile);
+    } catch (e) {
+      console.log('[cdp] screenshot failed: ' + e);
+    }
+  }
   process.exit(1);
 }
 

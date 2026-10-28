@@ -111,7 +111,10 @@ Clear → WorldSpriteOpaque → Shadow → DepthOpaque → WorldSprite → Parti
 
 1. **阴影 pass**（`SHADOW_SHADER`）：从**光源那一侧**（`-light.direction`）渲染深度到阴影贴图（`texture_depth_2d`）。
 2. **3D pass**（`MESH3D_SHADER`）：
-   - 实例化绘制：所有 3D 网格用同一个绘制调用，实例模型矩阵存在 `instance_models` storage buffer。
+   - 逐实例模型矩阵只有一条语义、两种取法：有存储缓冲的设备走 `instance_models` storage 数组并按网格合批；
+     没有存储缓冲的设备（WebGL2）把 binding 2 换成 **64 字节 uniform**，`instance_model` 每条 draw 一个，
+     实例化合批在构造期按能力关掉（`InstanceMode::{Storage,Uniform}`，`construct.rs`）。两条路都真画网格与阴影，
+     不再有"能力不足就把 3D 通道整个占位"的分支。
    - 材质 uniform（P3-R02 起 5×`vec4`）：`base_color`、`surface`（`x=metallic`、`y=roughness`、`z=skinned`）、
      `emissive`（已乘强度）、`params`（`x=有 MR 贴图`、`y=有 emissive 贴图`、`z=有 normal 贴图`、`w=normal_scale`）、
      `flags`（`x=有 occlusion 贴图`、`y=occlusion_strength`、`z=alpha_mode`（0=opaque/1=mask/2=blend）、`w=alpha_cutoff`）。旧 `mesh3d.wgsl` 只读前两个 `vec4`，缓冲区扩大不影响旧像素。
@@ -161,7 +164,8 @@ PBR 变体额外使用顶点缓冲槽 1 传逐实例法线矩阵（4×`vec4<f32>
   - 绘制循环按 `draw.material.skinned` + 当前颜色目标 + `alpha_mode`/`double_sided` 选键，**只在键变化时** `set_pipeline`（同一材质的连续 draw 不重复设置）。alpha/双面组合在首次出现时按需编译（见 §3.6）。
   - 硬上限：每个 family 32、全局 64；超限返回带键的错误，**不淘汰**旧变体。统计 `hits/misses/compile_ms/variants` 进 `RendererResourceStats` 与性能面板「Shader 变体」三行，复制报告的 `shaders:` 行同源。
   - 启动预编译预算 `VARIANT_COMPILE_BUDGET_MS = 250`；超出只告警并保留已编译变体，避免把卡顿挪到首帧。
-  - 设备无存储缓冲（WebGL2）时只放占位管线，3D/阴影通道本来就不在计划里；真实变体一个也不编译。
+  - 设备无存储缓冲（WebGL2）时按 `InstanceMode::Uniform` 编译**真管线**：网格与阴影变体全都在，
+    只是材质布局 binding 2 是 uniform 缓冲；只有矢量文字那两个存储绑定不构造。
   - **尚未接线**的轴：`shadow`（R03 后续接入）；`normal_map` 不设变体轴——是否采样由材质 uniform 在片元里分支。R02-4 已把 `alpha`/`double_sided` 接入（§3.6），R03-2 已把 `ibl` 接入（§3.8，仅 PBR 网格；Legacy/阴影恒为 Off）。现在不伪造这些读数。
 - **验收**：`cargo test -p engine host::shader`（4 条）、`cargo test -p engine shader_preprocess`（10 条）、`cargo test -p engine shader_variants`（4 条，含真实设备上的变体矩阵编译）、`wp0_variant_golden`（`variant_count/compile_ms/cache_hits` 与预算）、`wp0_3d_golden`/`wp0_2d_golden` 报告零 diff。
 
@@ -172,7 +176,7 @@ PBR 变体额外使用顶点缓冲槽 1 传逐实例法线矩阵（4×`vec4<f32>
 - **几何修正**：法线乘 `transpose(inverse(mat3(model)))`，逆转置在 CPU 侧按实例算（WGSL 无 `inverse` 内建）；相机视线用 `normalize(camera.position - world_position)`，不再是固定 `(0,0,1)`。蒙皮法线先过 joint palette 再过法线矩阵。
 - **法线矩阵传递**：顶点缓冲槽 1（`@location(6..9)`，4×`vec4<f32>`、`Instance` 步进、stride 64），与模型矩阵共用帧级环形缓冲的不同偏移。不用存储绑定，是因为在软件适配器上新增一个 bind group 布局条目会把启动编译从 233ms 推到 255–276ms，越过 250ms 预算。
 - **相机 uniform**：`view_projection` + `position`（80 字节）；旧 `mesh3d.wgsl` 只读前 64 字节，缓冲区扩大不影响旧像素。
-- **变体**：`ShaderVariantKey` 增加 `shading: Legacy | Pbr` 轴；PBR 变体在首次 `pbr=true` 时编译（静态/蒙皮 × LDR/HDR），不占默认启动预算，编译耗时单独告警。设备无存储缓冲（WebGL2）时 PBR 保持占位并告警。
+- **变体**：`ShaderVariantKey` 增加 `shading: Legacy | Pbr` 轴；PBR 变体在首次 `pbr=true` 时编译（静态/蒙皮 × LDR/HDR），不占默认启动预算，编译耗时单独告警。设备无存储缓冲（WebGL2）时 PBR 走同一套 uniform 变体，着色结果一致。
 - **验收**：`cargo test -p engine pbr`（8 条：非均匀缩放/刚体旋转/奇异矩阵/5×5 金属度-粗糙度网格/退化输入/旋转不变性）；`wp0_pbr_golden` 读数 `switch=34`、PBR 刚体旋转差 `0`（旧路径 `57`）、PBR 相机环绕差 `8`（旧路径 `0`）；engine lib 254 条测试通过。
 
 ### 3.4 材质资产与 ORM/自发光（P3-R02-2）

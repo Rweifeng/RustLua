@@ -202,6 +202,27 @@ audio: kind=browser created=1 played=1 gated=0 music_played=1 music=pack/assets/
 CDP 轮询真实时钟等状态落定再 dump（常规 bundle 等 `boot`、scene-verify 等 scene 落定、
 剧本门等 `drive` 落定，超时判红）。
 
+**引擎宿主 3D + 工程设计分辨率（2026-10-28）**：`ClashRoyale`（720×1280 竖屏）的 WebGL 包在
+无头 Edge 里由引擎宿主画出完整 3D 竞技场：
+
+- 设计分辨率取自 `pack/project.toml` 的 `window_width/window_height`（不再写死 1280×720）；
+  canvas 756×441 上按 contain 落成 `fit=248x441`，门读数
+  `webgl_bundle_gpu_fit_ok viewport=756x441 fit=248x441 design=720x1280 ratio=0.5624 want=0.5625`。
+- 宿主把 3D 喂进渲染器的现场读数（首帧一次）：
+  `[gpu] 3d_first draws=10 camera=(0.0,44.0,-20.0)->(0.0,0.0,-4.0) items=[ArenaGround@(0.0,0.0,0.0)
+  River@(0.0,0.0,0.0) BridgeLeft@(-4.5,0.0,0.0) BridgeRight@(4.5,0.0,0.0) P1King@(0.0,1.4,-11.0) …]`。
+- WebGL2 报告 `max_storage_buffers_per_shader_stage=0`：3D 网格/阴影走 `InstanceMode::Uniform`
+  （材质布局 binding 2 = 64 字节模型矩阵），浏览器里
+  `[render] 3D baseline draws/instances draws=48 instances=48 cull=false instancing=false`。
+- 门：`webgl_bundle_engine_state_ok … draws=109 tris=2164`、`webgl_bundle_ok wasm=5955.5KB`，
+  截图写在 `-Shot` 给的路径（fit 盒内是竞技场，盒外是页面底色）。
+- **不靠浏览器也能复现这条路径**：`RUSTLUA_WEBGL2_LIMITS=1 cargo run -q -p engine --example
+  royale_shot` 用 `Limits::downlevel_webgl2_defaults()` 建离屏设备，实测
+  `drawables=12 instances=72 triangles=1956 draw_calls=124 nonbg=903559 green=482374 blue=53638
+  red=11024`；不开该变量走存储缓冲路径（同一场景 `triangles=2440 draw_calls=99`）。
+  `arena.rs::single_instance_uniform` 的两条单测钉住"这 64 字节里装的是这条 draw 的模型矩阵"——
+  它曾按行取 `..16`（列只有 4 个）恒落回单位矩阵，所有网格叠在原点。
+
 ## 4. 已知限制
 
 - **宿主 API 子集**（原"M31/P3 实测未解决"一条已推进，2026-09-19 复测）：真发布包在无头 Edge 里

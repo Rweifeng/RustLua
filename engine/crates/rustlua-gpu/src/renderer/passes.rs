@@ -293,19 +293,12 @@ impl Renderer {
             .main
             .and_then(RenderView::matrix)
             .or_else(|| scene3d.and_then(|scene| scene.view.matrix()));
-        // 设备没有存储缓冲时（WebGL2 就是这样），3D 网格/阴影这两条路在构造期就没建出真管线
-        // （见 `construct.rs` 的 `storage_capable`）。这里**不取帧内 3D draw**：`FrameFacts` 随之
-        // 为假，通道计划里就不会有 `Shadow`/`DepthOpaque`，因此那条占位管线不可能被绑上。
-        // 代价必须可见：丢弃的 draw 记进 `metrics.dropped_draws`（构造期另有一条告警）。
-        let mut dropped_3d_draws = 0u64;
+        // 3D 网格/阴影两条路不再看设备能力：没有存储缓冲时（WebGL2）实例模型矩阵改走
+        // `@binding(2)` 的 64 字节 uniform，`frame_3d_draws` 因实例化关闭本来就一条 draw
+        // 一个模型（见 `construct.rs` 的 `InstanceMode`）。
         let frame_draws = if let Some(scene) = scene3d {
-            if self.storage_capable {
-                self.update_3d_uniforms(scene, main_matrix);
-                self.frame_3d_draws(scene)
-            } else {
-                dropped_3d_draws = scene.drawables.len() as u64;
-                Vec::new()
-            }
+            self.update_3d_uniforms(scene, main_matrix);
+            self.frame_3d_draws(scene)
         } else {
             Vec::new()
         };
@@ -327,7 +320,6 @@ impl Renderer {
             IblMode::Off
         };
         let mut metrics = RenderFrameMetrics::default();
-        metrics.dropped_draws += dropped_3d_draws;
         for draw in &frame_draws {
             record_indexed_draw(
                 &mut metrics,

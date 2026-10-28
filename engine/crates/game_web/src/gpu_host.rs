@@ -287,15 +287,11 @@ struct InputShared {
 
 impl Default for InputShared {
     fn default() -> Self {
+        let (design_w, design_h) = crate::fit::design_size();
         Self {
             producer: crate::frame_input::FrameInputProducer::new(),
             // 还没对齐几何前，退化成"CSS 像素即设计像素"（第一帧之前不会有真实操作）。
-            map: [
-                0.0,
-                0.0,
-                crate::DESIGN_WIDTH as f64,
-                crate::DESIGN_HEIGHT as f64,
-            ],
+            map: [0.0, 0.0, design_w as f64, design_h as f64],
             events: 0,
             touch_downs: 0,
             touch_ups: 0,
@@ -433,9 +429,10 @@ fn canvas_size(canvas: &web_sys::HtmlCanvasElement) -> (u32, u32) {
     }
 }
 
-/// 等比适配盒（算法在 `crate::fit`，与 Canvas2D 层同一套；这里有原生单测守着）。
+/// 等比适配盒（算法在 `crate::fit`，与渲染器同一套；这里有原生单测守着）。
 fn contain_box(box_w: u32, box_h: u32) -> (u32, u32) {
-    crate::fit::contain_box(box_w, box_h, crate::DESIGN_WIDTH, crate::DESIGN_HEIGHT)
+    let (design_w, design_h) = crate::fit::design_size();
+    crate::fit::contain_box(box_w, box_h, design_w, design_h)
 }
 
 impl GpuHost {
@@ -702,7 +699,8 @@ impl GpuHost {
             if let Some(sim) = self.host.core.sim_mut() {
                 // Keep scene extraction in design coordinates; the surface/backbuffer size is
                 // only the raster target. Passing the fitted pixel size here scales Canvas UI twice.
-                sim.set_viewport(crate::DESIGN_WIDTH, crate::DESIGN_HEIGHT);
+                let (design_w, design_h) = crate::fit::design_size();
+                sim.set_viewport(design_w, design_h);
             }
         }
         // CSS：把画布摆到游戏画布内容盒的正中，尺寸按同一个比例换回 CSS 像素。
@@ -963,8 +961,9 @@ fn create_gpu_canvas(document: &web_sys::Document) -> Result<web_sys::HtmlCanvas
     // 这里只给一个与设计分辨率同比例的初值，让第一帧之前也不至于是一张 0×0 的画布。
     // 曾用"固定设计分辨率 + CSS 铺满视口"：窗口不是 16:9 时本层被**非等比拉伸**，
     // 与 Canvas2D 层的 contain 盒子对不上，而这种错在属性读数里完全看不出来。
-    canvas.set_width(crate::DESIGN_WIDTH);
-    canvas.set_height(crate::DESIGN_HEIGHT);
+    let (design_w, design_h) = crate::fit::design_size();
+    canvas.set_width(design_w);
+    canvas.set_height(design_h);
     let style = canvas.style();
     let _ = style.set_property("position", "fixed");
     // 首帧之前（还没有适配读数）不铺满：显式给 0，避免用"铺满"当成默认行为。

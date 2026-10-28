@@ -29,7 +29,7 @@ use wgpu::{
 use winit::window::Window;
 
 use super::pipeline_cache::{
-    ColorTarget, PipelineCache, PipelineFamily, ShaderVariantKey, Shading, SkinMode,
+    ColorTarget, InstanceMode, PipelineCache, PipelineFamily, ShaderVariantKey, Shading, SkinMode,
     VARIANT_COMPILE_BUDGET_MS,
 };
 use super::world_sprite::WORLD_SPRITE_BUFFER_BYTES;
@@ -199,11 +199,13 @@ impl Renderer {
             };
             (device, queue, None, format, config, "offscreen".to_owned())
         };
-        // 设备有没有存储缓冲（WebGL2 / 任何 downlevel 设备上都是 0）。构造路径上有三处要用它：
-        // 矢量文字的两个绑定、3D 材质的实例矩阵、以及实例环。不该建的去建**不是**"功能少一点"，
-        // 而是在 `create_bind_group_layout` 上直接吃一条校验错误——wgpu 对未被 error scope 捕获的
+        // 设备有没有存储缓冲（WebGL2 / 任何 downlevel 设备上都是 0）。构造路径上有三处要看它：
+        // 矢量文字的两个绑定、3D 材质的逐实例矩阵（storage 数组 ↔ 64 字节 uniform 两种取法）、
+        // 以及实例环/实例化合批。不该建的去建**不是**"功能少一点"，而是在
+        // `create_bind_group_layout` 上直接吃一条校验错误——wgpu 对未被 error scope 捕获的
         // 校验错误走默认 handler，wasm 上是 `panic=abort`，整个渲染器就此死掉。
-        // 所以这里按**设备能力**（而不是按平台 `cfg`）分叉：原生桌面照旧，web 走"没有这两条路"的构造。
+        // 所以这里按**设备能力**（而不是按平台 `cfg`）分叉：原生桌面照旧走存储缓冲，
+        // web 走"没有矢量文字、3D 换 uniform 取法"的构造。
         let storage_capable = device.limits().max_storage_buffers_per_shader_stage > 0;
         // M74-03 P0：能力快照在构造期采一次。`adapter_for_caps` 只有窗口路径才有——
         // 离屏渲染器拿的是外部 device（编辑器 eframe），没有 downlevel flag 可查，
@@ -250,11 +252,14 @@ impl Renderer {
         // 这是"同一件事的两条实现里选不需要存储缓冲的那条"，不是少画。
         let instancing_enabled = instancing_enabled && storage_capable;
         if !storage_capable {
-            // 一次告警，而不是每帧：每帧的信号在 `dropped_draws` 上（少画东西而日志里一个字
-            // 都没有，是本仓最不能接受的失败类型）。
+            // 一次告警，而不是每帧：矢量文字的两个绑定是存储缓冲，这条设备上只剩 SDF 文字
+            // 与 2D 通路；3D 网格/阴影改走 64 字节 uniform 的模型矩阵（**照样画**，只是
+            // 逐 draw 一次绑定、不做实例化合批）。漏画而日志里一个字都没有，是本仓最不能
+            // 接受的失败类型，所以这里明确说清"哪条路换了实现、哪条路真的没有"。
             tracing::warn!(target: "game",
                 "设备没有存储缓冲（max_storage_buffers_per_shader_stage=0，WebGL2 即如此）：\
-                 矢量文字与 3D 网格/阴影两条路不构造，它们的 draw 会计入 dropped_draws");
+                 3D 网格/阴影改走 per-draw uniform 模型矩阵（实例化合批关闭），\
+                 矢量文字不构造（宿主应改用 SDF 文字，未改的 draw 会计入 dropped_draws）");
         }
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -511,18 +516,24 @@ impl Renderer {
                 count: None,
             },
         ];
-        if storage_capable {
-            material_entries.push(wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(64),
+        // 材质布局的 binding 2 是**逐实例模型矩阵**。有存储缓冲的设备走 storage 数组（支持
+        // 实例化合批）；没有的设备（WebGL2）换成 64 字节 uniform——同一批 draw，只是取法不同。
+        // 两条路都真画，不再"能力不足就整条 3D 通道占位"（见 `passes.rs` 的帧内 draw 与
+        // `arena.rs` 的绑定端）。
+        material_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: if storage_capable {
+                    wgpu::BufferBindingType::Storage { read_only: true }
+                } else {
+                    wgpu::BufferBindingType::Uniform
                 },
-                count: None,
-            });
-        }
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(64),
+            },
+            count: None,
+        });
         material_entries.extend([
             wgpu::BindGroupLayoutEntry {
                 binding: 3,
@@ -792,94 +803,68 @@ impl Renderer {
                 push_constant_ranges: &[],
             });
         // P3-R04-3：按固定轴预编译变体。LDR 目标格式来自表面配置；HDR 变体只在能力允许时
-        // 存在（与 R01 的门控一致）。设备没有存储缓冲时每个 family 只放一条占位管线——
-        // `passes.rs` 的 `storage_capable` 守卫保证它不会被绑定。
+        // 存在（与 R01 的门控一致）。实例矩阵的取法由设备能力决定（storage 数组 / 64 字节
+        // uniform）——两条路都编译**真管线**：WebGL2 没有存储缓冲，但画的是同一批网格/阴影。
+        let instance_mode = InstanceMode::from_storage_capable(storage_capable);
         let mut pipelines: PipelineCache<Arc<wgpu::RenderPipeline>> = PipelineCache::new();
-        if storage_capable {
-            let hdr_format = capabilities
-                .hdr_usable()
-                .then_some(wgpu::TextureFormat::Rgba16Float);
-            for skin in [SkinMode::Off, SkinMode::On] {
-                let shader = variant_shader_module(
-                    &device,
-                    &MESH3D,
-                    skin,
-                    IblMode::Off,
-                    &format!("rustlua-mesh3d-{}-shader", skin_tag(skin)),
-                );
-                let targets = if let Some(hdr) = hdr_format {
-                    vec![(ColorTarget::Ldr, format), (ColorTarget::Hdr, hdr)]
-                } else {
-                    vec![(ColorTarget::Ldr, format)]
-                };
-                for (target, target_format) in targets {
-                    let key = ShaderVariantKey::mesh(Shading::Legacy, skin, target);
-                    let label = format!("rustlua-{}-pipeline", key.label());
-                    pipelines
-                        .get_or_create(key, || {
-                            Ok::<_, std::convert::Infallible>(Arc::new(create_mesh_pipeline(
-                                &device,
-                                &mesh_pipeline_layout,
-                                &shader,
-                                target_format,
-                                &label,
-                                false,
-                                rustlua_render::mesh3d::MaterialAlphaMode::Opaque,
-                                false,
-                            )))
-                        })
-                        .expect("3D 网格变体数远低于 family/全局上限");
-                }
-            }
-            for skin in [SkinMode::Off, SkinMode::On] {
-                let shader = variant_shader_module(
-                    &device,
-                    &SHADOW,
-                    skin,
-                    IblMode::Off,
-                    &format!("rustlua-shadow-{}-shader", skin_tag(skin)),
-                );
-                let key = ShaderVariantKey::shadow(skin);
+        let hdr_format = capabilities
+            .hdr_usable()
+            .then_some(wgpu::TextureFormat::Rgba16Float);
+        for skin in [SkinMode::Off, SkinMode::On] {
+            let shader = variant_shader_module(
+                &device,
+                &MESH3D,
+                skin,
+                IblMode::Off,
+                instance_mode,
+                &format!("rustlua-mesh3d-{}-shader", skin_tag(skin)),
+            );
+            let targets = if let Some(hdr) = hdr_format {
+                vec![(ColorTarget::Ldr, format), (ColorTarget::Hdr, hdr)]
+            } else {
+                vec![(ColorTarget::Ldr, format)]
+            };
+            for (target, target_format) in targets {
+                let key = ShaderVariantKey::mesh(Shading::Legacy, skin, target);
                 let label = format!("rustlua-{}-pipeline", key.label());
                 pipelines
                     .get_or_create(key, || {
-                        Ok::<_, std::convert::Infallible>(Arc::new(create_shadow_pipeline(
+                        Ok::<_, std::convert::Infallible>(Arc::new(create_mesh_pipeline(
                             &device,
-                            &shadow_pipeline_layout,
+                            &mesh_pipeline_layout,
                             &shader,
+                            target_format,
                             &label,
+                            false,
+                            rustlua_render::mesh3d::MaterialAlphaMode::Opaque,
                             false,
                         )))
                     })
-                    .expect("阴影变体数远低于 family/全局上限");
+                    .expect("3D 网格变体数远低于 family/全局上限");
             }
-        } else {
-            // 3D 网格/阴影着色器声明了 `instance_models` 存储绑定，而布局在能力不足时不含它
-            // ⇒ 真管线建不出来（校验错误）。占位管线永远不该被绑定：`passes.rs` 在能力不足时
-            // 不声明 3D 通道，并把丢弃的 draw 记进 `dropped_draws`。
-            let mesh_placeholder = Arc::new(placeholder_pipeline(
+        }
+        for skin in [SkinMode::Off, SkinMode::On] {
+            let shader = variant_shader_module(
                 &device,
-                format,
-                "rustlua-mesh3d-placeholder-pipeline",
-            ));
-            let shadow_placeholder = Arc::new(placeholder_pipeline(
-                &device,
-                format,
-                "rustlua-shadow-placeholder-pipeline",
-            ));
-            for skin in [SkinMode::Off, SkinMode::On] {
-                pipelines
-                    .get_or_create(
-                        ShaderVariantKey::mesh(Shading::Legacy, skin, ColorTarget::Ldr),
-                        || Ok::<_, std::convert::Infallible>(mesh_placeholder.clone()),
-                    )
-                    .expect("占位变体不超限");
-                pipelines
-                    .get_or_create(ShaderVariantKey::shadow(skin), || {
-                        Ok::<_, std::convert::Infallible>(shadow_placeholder.clone())
-                    })
-                    .expect("占位变体不超限");
-            }
+                &SHADOW,
+                skin,
+                IblMode::Off,
+                instance_mode,
+                &format!("rustlua-shadow-{}-shader", skin_tag(skin)),
+            );
+            let key = ShaderVariantKey::shadow(skin);
+            let label = format!("rustlua-{}-pipeline", key.label());
+            pipelines
+                .get_or_create(key, || {
+                    Ok::<_, std::convert::Infallible>(Arc::new(create_shadow_pipeline(
+                        &device,
+                        &shadow_pipeline_layout,
+                        &shader,
+                        &label,
+                        false,
+                    )))
+                })
+                .expect("阴影变体数远低于 family/全局上限");
         }
         // P3-R04-4：预编译发生在启动期（构造 `Renderer` 时），统计随资源快照暴露给 Profiler。
         // 超预算只告警一次：此刻管线已经建好，取消它们只会把同样的卡顿挪到首帧。
@@ -1320,20 +1305,13 @@ impl Renderer {
     /// 管线付启动时间。这里仍然不是"每帧补编译"——`pbr_pipelines_ready` 一旦置位，后续
     /// 帧只做缓存查找；重复 `set_render_settings` 也不会重新编译。
     ///
-    /// 阴影变体与着色模型无关，不在这里重复创建；不支持存储缓冲的设备（WebGL2）3D 通道
-    /// 本来就是占位档，这里只留一条一次性告警并置位，避免每次设置都刷屏。
+    /// 阴影变体与着色模型无关，不在这里重复创建；不支持存储缓冲的设备（WebGL2）改走
+    /// `InstanceMode::Uniform` 的着色器变体，PBR 同样可用（材质布局的 binding 2 是 uniform）。
     pub(super) fn ensure_pbr_pipelines(&mut self) {
         if self.pbr_pipelines_ready {
             return;
         }
         self.pbr_pipelines_ready = true;
-        if !self.storage_capable {
-            tracing::warn!(
-                target: "render",
-                "[render] RenderSettings.pbr=true 但设备不支持存储缓冲（逐实例模型矩阵）；3D 通道保持占位档"
-            );
-            return;
-        }
         let started = web_time::Instant::now();
         let hdr_supported = self.capabilities.hdr_usable();
         let ldr_only = [ColorTarget::Ldr];
@@ -1392,7 +1370,7 @@ impl Renderer {
         target: ColorTarget,
         ibl: IblMode,
     ) {
-        if shading != Shading::Pbr || !self.storage_capable {
+        if shading != Shading::Pbr {
             return;
         }
         use rustlua_render::mesh3d::MaterialAlphaMode;
@@ -1516,21 +1494,28 @@ impl Renderer {
         let root = variant_root(key);
         let label = format!("rustlua-{}-shader", key.label());
         let (path, source) = self.variant_source(root);
-        let preprocessed = match preprocessed_variant(path, &source, key.skin, key.ibl) {
-            Ok(preprocessed) => preprocessed,
-            Err(error) => {
-                // 覆盖文件里 `//#if` 拼错时，延迟补编译（首次打开 PBR 那一帧）正好撞上它。
-                // panic 会把整个进程带走；这里沿用内置源并报 warning，逐变体的错误文本由
-                // `set_shader_override_dir` 那条路负责返回。
-                tracing::warn!(
-                    target: "render",
-                    "[render] {path} 预处理失败：{error}；本次沿用内置源"
-                );
-                preprocessed_variant(root.path, root.source, key.skin, key.ibl)
-                    .unwrap_or_else(|error| panic!("内置源 {} 预处理失败：{error}", root.path))
-            }
-        };
+        let instance_mode = self.instance_mode();
+        let preprocessed =
+            match preprocessed_variant(path, &source, key.skin, key.ibl, instance_mode) {
+                Ok(preprocessed) => preprocessed,
+                Err(error) => {
+                    // 覆盖文件里 `//#if` 拼错时，延迟补编译（首次打开 PBR 那一帧）正好撞上它。
+                    // panic 会把整个进程带走；这里沿用内置源并报 warning，逐变体的错误文本由
+                    // `set_shader_override_dir` 那条路负责返回。
+                    tracing::warn!(
+                        target: "render",
+                        "[render] {path} 预处理失败：{error}；本次沿用内置源"
+                    );
+                    preprocessed_variant(root.path, root.source, key.skin, key.ibl, instance_mode)
+                        .unwrap_or_else(|error| panic!("内置源 {} 预处理失败：{error}", root.path))
+                }
+            };
         module_from_preprocessed(&self.device, &preprocessed, &label)
+    }
+
+    /// 本设备逐实例模型矩阵的取法（能力在构造期采一次，之后恒定）。
+    pub(super) const fn instance_mode(&self) -> InstanceMode {
+        InstanceMode::from_storage_capable(self.storage_capable)
     }
 }
 
@@ -1543,9 +1528,18 @@ pub(super) fn variant_shader_module(
     shader: &ShaderSource,
     skin: SkinMode,
     ibl: IblMode,
+    instance_mode: InstanceMode,
     label: &str,
 ) -> wgpu::ShaderModule {
-    variant_shader_module_from(device, shader.path, shader.source, skin, ibl, label)
+    variant_shader_module_from(
+        device,
+        shader.path,
+        shader.source,
+        skin,
+        ibl,
+        instance_mode,
+        label,
+    )
 }
 
 /// 上一函数的另一半：根 shader 的**源文本由调用方给**（P3-R05 的覆盖目录走这条路）。
@@ -1559,9 +1553,10 @@ pub(super) fn variant_shader_module_from(
     source: &str,
     skin: SkinMode,
     ibl: IblMode,
+    instance_mode: InstanceMode,
     label: &str,
 ) -> wgpu::ShaderModule {
-    let preprocessed = preprocessed_variant(path, source, skin, ibl)
+    let preprocessed = preprocessed_variant(path, source, skin, ibl, instance_mode)
         .unwrap_or_else(|error| panic!("{path} 预处理失败：{error}"));
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
@@ -1848,10 +1843,14 @@ pub(super) fn preprocessed_variant(
     source: &str,
     skin: SkinMode,
     ibl: IblMode,
+    instance_mode: InstanceMode,
 ) -> Result<PreprocessedShader, PreprocessError> {
-    let mut features = Vec::with_capacity(skin.features().len() + ibl.features().len());
+    let mut features = Vec::with_capacity(
+        skin.features().len() + ibl.features().len() + instance_mode.features().len(),
+    );
     features.extend_from_slice(skin.features());
     features.extend_from_slice(ibl.features());
+    features.extend_from_slice(instance_mode.features());
     preprocess(
         path,
         source,
@@ -1864,7 +1863,8 @@ pub(super) fn preprocessed_variant(
 }
 
 /// 预处理器认识的 feature 全集（与 `//#if` 指令同源；拼错的名字按未知 feature 报错）。
-pub(super) const KNOWN_FEATURES: &[&str] = &["SKIN", "IBL_DIFFUSE", "IBL_SPECULAR"];
+pub(super) const KNOWN_FEATURES: &[&str] =
+    &["SKIN", "IBL_DIFFUSE", "IBL_SPECULAR", "STORAGE_INSTANCES"];
 
 /// 变体键 → 根 shader（重建与接口比对都从这张表出发）。
 ///
@@ -2067,16 +2067,17 @@ pub(super) fn create_shadow_pipeline(
     })
 }
 
-/// 设备能力不足时给"吃存储缓冲"的管线槽位填一条**占位管线**（矢量文字 / 3D 网格 / 阴影）。
+/// 设备能力不足时给"吃存储缓冲"的管线槽位填一条**占位管线**（目前只剩矢量文字）。
 ///
-/// 为什么要占位而不是把字段改成 `Option`：那三个字段在 `passes.rs`、`gpu_texture.rs`、
+/// 为什么要占位而不是把字段改成 `Option`：那个字段在 `passes.rs`、`gpu_texture.rs`、
 /// `arena.rs`、`world_sprite.rs` 和全部原生测试里被引用一百多次，`Option` 化会让整个渲染器
 /// 的签名扩散开，而收益只是"少画一条本来就不该画的路径"。占位管线是合法对象、几乎零成本，
 /// 而且**不可能**画出看起来对的东西：顶点着色器只吐一个退化点，片元写全 0（含 alpha），
 /// 即使被误绑也只是什么都没画。
 ///
 /// 它永远不该被绑定——由 `passes.rs` 的 `storage_capable` 守卫保证（能力不足时计划里就没有
-/// 矢量文字与 3D 两个通道，同时把丢弃的 draw 记进 `dropped_draws`）。
+/// 矢量文字通道，同时把丢弃的 draw 记进 `dropped_draws`）。3D 网格/阴影不再需要占位：
+/// 它们在没有存储缓冲时走 `@binding(2)` 的 uniform 模型矩阵（见 `InstanceMode`）。
 fn placeholder_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,

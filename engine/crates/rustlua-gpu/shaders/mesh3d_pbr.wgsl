@@ -15,7 +15,12 @@ struct Material {
 @group(0) @binding(4) var shadow_sampler: sampler_comparison;
 @group(1) @binding(0) var<uniform> material: Material;
 @group(1) @binding(1) var<uniform> joint_palette: array<mat4x4<f32>, 128>;
+//#if STORAGE_INSTANCES
 @group(1) @binding(2) var<storage, read> instance_models: array<mat4x4<f32>>;
+//#else
+// WebGL2 没有存储缓冲：每条 draw 一个模型矩阵，走 64 字节 uniform（实例化合批已关）。
+@group(1) @binding(2) var<uniform> instance_model: mat4x4<f32>;
+//#endif
 @group(1) @binding(3) var albedo: texture_2d<f32>;
 @group(1) @binding(4) var albedo_sampler: sampler;
 // P3-R02：glTF ORM 约定（G=粗糙度，B=金属度）与自发光。缺省贴图是 1x1 白，
@@ -58,7 +63,11 @@ struct VertexOutput {
 
 @vertex fn vs_main(@builtin(instance_index) instance_index: u32, @location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @location(5) tangent: vec4<f32>, @location(3) joint_indices: vec4<u32>, @location(4) bone_weights: vec4<f32>, @location(6) normal_m0: vec4<f32>, @location(7) normal_m1: vec4<f32>, @location(8) normal_m2: vec4<f32>, @location(9) normal_m3: vec4<f32>) -> VertexOutput {
     var out: VertexOutput;
+//#if STORAGE_INSTANCES
     let model = instance_models[instance_index];
+//#else
+    let model = instance_model;
+//#endif
     let normal_matrix = mat4x4<f32>(normal_m0, normal_m1, normal_m2, normal_m3);
     var local_position = vec4<f32>(position, 1.0);
     var local_normal = vec4<f32>(normal, 0.0);
