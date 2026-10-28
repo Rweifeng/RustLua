@@ -48,7 +48,10 @@ foreach ($required in @($probeHtml, $probeServer)) {
 . (Join-Path $PSScriptRoot "..\lib\bundle-discovery.ps1")
 if ([string]::IsNullOrWhiteSpace($BundleRoot)) {
     $BundleRoot = Resolve-GameBundle -Platform "webgl" -WorkspaceRoot $workspaceRoot
-    if (-not $BundleRoot) { Exit-With 3 }
+    if (-not $BundleRoot) {
+        Write-Host "webgl_eh_blocked reason=no_bundle（本机没有合格 webgl 产物；先跑 scripts\build\package.ps1 -Platform webgl。exit 3 = 环境缺失，不是代码红）" -ForegroundColor Yellow
+        Exit-With 3
+    }
 }
 if (-not (Test-Path -LiteralPath $BundleRoot)) {
     Write-Host "[YELLOW] webgl bundle not found: $BundleRoot (先跑 scripts\build\package.ps1 -Platform webgl)"
