@@ -303,6 +303,17 @@
     },
     {
       "funcs": [
+        "create_grid",
+        "destroy_grid",
+        "find_path",
+        "find_world_path",
+        "grid_info",
+        "set_blocked"
+      ],
+      "name": "nav"
+    },
+    {
+      "funcs": [
         "burst",
         "count"
       ],

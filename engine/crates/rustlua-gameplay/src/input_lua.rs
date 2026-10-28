@@ -159,5 +159,10 @@ pub fn registry_with_handles() -> (Rc<Registry>, Handles) {
         rustlua_input::lua::install(lua, &input_installer, &input_settings)
     });
 
+    // `nav` 网格状态跟注册表同寿命：热重载重建 VM 时同一份状态被重新装回去，
+    // 脚本按名字 `nav.create_grid` 会替换旧网格而不是每次 reload 漏一张。
+    let nav = crate::nav_lua::state();
+    registry.add("nav", move |lua| crate::nav_lua::install(lua, &nav));
+
     (Rc::new(registry), Handles { audio, input })
 }

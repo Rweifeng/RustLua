@@ -862,6 +862,57 @@ function mesh.get(id) end
 ---@return any
 function mesh.set(id, path) end
 
+--- nav：运行期 API 面基线里的 6 个函数
+nav = {}
+
+--- 创建（或按名字替换）一张全可走的矩形导航网格，返回 1 基网格 id。
+---@param name string
+---@param width integer
+---@param height integer
+---@param cell_size number
+---@param origin_x number
+---@param origin_z number
+---@return any
+function nav.create_grid(name, width, height, cell_size, origin_x, origin_z) end
+
+--- 销毁一张网格并释放它占用的槽位。
+---@param id integer
+---@return any
+function nav.destroy_grid(id) end
+
+--- 在格坐标上跑 A*，返回**未平滑**的格子路径（含起点与终点）。
+---@param id integer
+---@param sx integer
+---@param sy integer
+---@param gx integer
+---@param gy integer
+---@param diagonal boolean?
+---@return any
+function nav.find_path(id, sx, sy, gx, gy, diagonal) end
+
+--- 世界坐标版本的寻路：先换算到格、跑 A*，再用视线检测做**字符串拉直**，
+---@param id integer
+---@param sx number
+---@param sz number
+---@param gx number
+---@param gz number
+---@param diagonal boolean?
+---@return any
+function nav.find_world_path(id, sx, sz, gx, gz, diagonal) end
+
+--- 读取网格尺寸与原点，供脚本做坐标换算或自检。
+---@param id integer
+---@return any
+function nav.grid_info(id) end
+
+--- 标记单格是否阻挡。塔基、静态障碍在战斗开始前写成 `true`；单位不占用导航格
+---@param id integer
+---@param x integer
+---@param y integer
+---@param blocked boolean
+---@return any
+function nav.set_blocked(id, x, y, blocked) end
+
 --- particles：运行期 API 面基线里的 2 个函数
 particles = {}
 

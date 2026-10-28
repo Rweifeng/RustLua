@@ -1044,6 +1044,7 @@ dependencies = [
  "bytemuck",
  "getrandom 0.2.17",
  "image",
+ "mlua",
  "pollster",
  "rustlua-animation",
  "rustlua-assets",
@@ -1058,6 +1059,7 @@ dependencies = [
  "rustlua-input",
  "rustlua-lua-api",
  "rustlua-math",
+ "rustlua-net",
  "rustlua-physics",
  "rustlua-render",
  "rustlua-scene",
@@ -3426,6 +3428,7 @@ dependencies = [
  "rustlua-infra",
  "rustlua-input",
  "rustlua-lua-api",
+ "rustlua-navigation",
  "serde_json",
  "thiserror 2.0.20",
  "tracing",
@@ -3497,6 +3500,21 @@ dependencies = [
 
 [[package]]
 name = "rustlua-math"
+version = "0.1.1"
+dependencies = [
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "rustlua-navigation"
+version = "0.1.1"
+dependencies = [
+ "rustlua-math",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "rustlua-net"
 version = "0.1.1"
 dependencies = [
  "thiserror 2.0.20",

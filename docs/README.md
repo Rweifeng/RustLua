@@ -96,7 +96,7 @@
 ## 八、示例工程
 
 - [示例工程 game_api 与 API 覆盖率门](59-示例工程game_api与API覆盖率门.md)：1.0 形态的历史记录（覆盖率门语义、fixture 与渲染顺序约束仍有效）
-- [game_api 演示工程 2.0](74-game_api演示工程2.0.md)：分步 Lab、行为自检与生成式目录；42 个模块表 / 313 个函数、五条标准、shell 版面、自检契约与新门
+- [game_api 演示工程 2.0](74-game_api演示工程2.0.md)：分步 Lab、行为自检与生成式目录；43 个模块表 / 319 个函数、五条标准、shell 版面、自检契约与新门
 - [Demos 总览](demos/README.md)：两个示例工程（game_api / game_jhyt）的定位、入口与 game_api 演示地图
 
 ## 九、复盘与优化

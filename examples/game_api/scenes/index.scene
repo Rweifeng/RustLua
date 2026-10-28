@@ -97,7 +97,7 @@ component	21	Text	text=PBR / IBL / Skinning / Body;font_size=16.00;color=0.660,0
 component	21	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	21	UiLayout	anchors=0.5000,0.5000,0.5000,0.5000;offsets=-128.00,-6.00,-128.00,-6.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	22	api_3d_meta	19
-component	22	Text	text=3D / 8 steps;font_size=15.00;color=0.980,0.720,0.340
+component	22	Text	text=3D / 9 steps;font_size=15.00;color=0.980,0.720,0.340
 component	22	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	22	UiLayout	anchors=0.5000,0.5000,0.5000,0.5000;offsets=-128.00,20.00,-128.00,20.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	23	api_gameplay	0
@@ -161,11 +161,11 @@ component	36	Text	text=Runtime UI;font_size=24.00;color=0.960,0.970,1.000
 component	36	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	36	UiLayout	anchors=0.5000,0.5000,0.5000,0.5000;offsets=-128.00,-38.00,-128.00,-38.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	37	api_ui_detail	35
-component	37	Text	text=Panel / Grid / Modal / Focus;font_size=16.00;color=0.660,0.750,0.880
+component	37	Text	text=Panel / Grid / VList / IME;font_size=16.00;color=0.660,0.750,0.880
 component	37	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	37	UiLayout	anchors=0.5000,0.5000,0.5000,0.5000;offsets=-128.00,-6.00,-128.00,-6.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	38	api_ui_meta	35
-component	38	Text	text=UI / 8 steps;font_size=15.00;color=0.980,0.720,0.340
+component	38	Text	text=UI / 12 steps;font_size=15.00;color=0.980,0.720,0.340
 component	38	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	38	UiLayout	anchors=0.5000,0.5000,0.5000,0.5000;offsets=-128.00,20.00,-128.00,20.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 entity	39	ui_test	0

@@ -33,6 +33,11 @@ use std::path::{Path, PathBuf};
 const BUDGET: &[(&str, &[&str])] = &[
     // ── 叶子：只允许纯基础（math/infra）与框架依赖 ───────────────────────────
     ("rustlua-math", &[]),
+    // 导航网格与路径跟随：纯几何 + `thiserror`，只依赖数学基座。运行时、编辑器与
+    // 无头验收驱动共用同一份实现，因此它必须是叶子，不能反向认识 ECS/场景。
+    ("rustlua-navigation", &["math"]),
+    // 网络层只依赖 std 与 thiserror：传输、lockstep 与校验和都不碰引擎其他层。
+    ("rustlua-net", &[]),
     // P1 新增：Lua 绑定的契约层。**只许 mlua**：它是倒置的支点，一旦它依赖领域 crate，
     // 所有领域 crate 都会被拖进同一张编译图。
     ("rustlua-lua-api", &[]),
@@ -111,7 +116,7 @@ const BUDGET: &[(&str, &[&str])] = &[
     // `settings.toml`（wasm 无文件系统），注册表与能力单元来自 `lua-api`。
     (
         "rustlua-gameplay",
-        &["audio", "ecs", "infra", "input", "lua-api"],
+        &["audio", "ecs", "infra", "input", "lua-api", "navigation"],
     ),
     // ── 聚合层：预算只减不增 ────────────────────────────────────────────────
     // `rustlua-scripting`：P1 已削掉 assets（`AssetId` 下沉到 infra::ids）、audio 与 input

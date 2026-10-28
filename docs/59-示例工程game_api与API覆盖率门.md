@@ -15,7 +15,7 @@
 ## 1. 一句话状态
 
 `examples/game_api` 从"一个能力一个场景的展示工程"改成 **"每个 Lua API 都有一处可运行演示"的
-活文档**：42 个模块表 / 313 个 Lua 函数、30 个运行时组件，全部有演示；演示能否跑起来由
+活文档**：43 个模块表 / 319 个 Lua 函数、30 个运行时组件，全部有演示；演示能否跑起来由
 `host::sample_project` 的 12 条门在 `cargo test -p engine` 里自动验证。
 
 旧的玩法型场景（`arena` / `production` / `menu` / `game3d` / `ui_layout` / `tilemap` /
@@ -39,7 +39,7 @@
 | `api_ui` | `demo_ui` | `ui` 全部 43 个（面板 / 图片 / 网格 / tooltip / modal / 拖拽 / 焦点环 / 滚动 / 度量 / 读回） |
 | `ui_test` | `demo_ui_events` | 场景侧 UI 组件与事件：`Text`/`Image`（含 `nine_slice`）/`UiLayout`/`Container`（五种 kind）/`UiEvents`（九种事件）/`ButtonStates` |
 | `api_camera` | `demo_camera` | `camera2d`（10）/ `camera3d`（5） |
-| `api_3d` | `demo_3d` | `transform3d` / `animation3d`（骨骼动画，运行期列出 95 条剪辑）/ `physics3d`（9） |
+| `api_3d` | `demo_3d` | `transform3d` / `animation3d`（骨骼动画，运行期列出 95 条剪辑）/ `physics3d`（9）/ `nav`（6：建格 / 封格 / 寻路 / 世界路径 / 查询 / 销毁） |
 | `api_tilemap` | `demo_tilemap` | `tilemap`（10，含运行期 `create` 与 A* `find_path`）/ `grid`（4） |
 | `api_script` | `demo_script` | 每实体 `Script` 组件的 `on_spawn` / `on_update` + `entity` 稳定 ID（`persist_id` / `find_id`） |
 | `api_prefab` | `demo_prefab` | 预制体实例在**运行期就是普通实体**（含两个 Prefab 源的真实实例） |

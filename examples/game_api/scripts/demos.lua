@@ -52,9 +52,9 @@ return {
         category = "3D",
         title = "3D Rendering",
         label = "PBR / IBL / Skinning / Body",
-        summary = "材质球、环境光、骨骼剪辑与 3D 物理查询",
-        modules = { "transform3d", "animation3d", "physics3d", "mesh", "light", "camera" },
-        steps = 8,
+        summary = "材质球、环境光、骨骼剪辑、3D 物理查询与 XZ 平面导航",
+        modules = { "transform3d", "animation3d", "physics3d", "nav", "mesh", "light", "camera" },
+        steps = 9,
     },
     {
         scene = "api_gameplay",

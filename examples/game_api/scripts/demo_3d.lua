@@ -32,6 +32,14 @@ local ENV = "StudioEnvironment"
 local SUN = "Sun"
 local ATTACH_NAME = "AttachProbe3d"
 
+-- 导航演示：一张 12x12 的 XZ 网格（世界范围 [-12,12]，格子 2.0），
+-- x=6 的竖墙只在 z=5 留一个门——4 向 A* 必须绕到那个门。
+local NAV_NAME = "Lab3dNav"
+local NAV_SIZE = 12
+local NAV_CELL = 2.0
+local NAV_ORIGIN = -12.0
+local NAV_RUNNER = "NavRunner3d"
+
 -- 演示常量。
 local BALL_HOME = { x = 0.0, y = 2.2, z = 0.0 }
 local PROBE_HOME = { x = 0.0, y = 1.4, z = 0.0 }
@@ -49,6 +57,13 @@ local env_id = nil
 local sun_id = nil
 local warrior_id = nil
 
+-- 导航网格与"在 XZ 平面上跟着路径走"的运行期实体。
+local nav_id = nil
+local nav_info = nil
+local nav_cells, nav_world = nil, nil
+local nav_destroyed = false
+local nav_runner = nil
+
 --- `entity.find` + 存活校验：缺实体时返回 nil，调用方据此跳过而不是让 API 报错。
 local function live(name)
     local id = entity.find(name)
@@ -65,6 +80,35 @@ local function ensure_probe()
     end
     probe_entity = entity.spawn(ATTACH_NAME)
     return probe_entity
+end
+
+--- 导航演示自己的跑者：不复用 AttachProbe3d，否则会先给它附上 Transform3D，
+--- 让 "Spawn + attach" 步骤的 `attach` 返回值变成 false。
+local function ensure_nav_runner()
+    if nav_runner and entity.is_alive(nav_runner) then
+        return nav_runner
+    end
+    nav_runner = entity.spawn(NAV_RUNNER)
+    if nav_runner then
+        transform3d.attach(nav_runner)
+    end
+    return nav_runner
+end
+
+--- 建网格、加墙、留门，然后一次算齐格子路径（含两端）与世界路径。
+--- 同名 create 是**替换**：反复进入步骤不会漏网格，id 也保持不变。
+local function build_nav()
+    nav_id = nav.create_grid(NAV_NAME, NAV_SIZE, NAV_SIZE, NAV_CELL, NAV_ORIGIN, NAV_ORIGIN)
+    for y = 0, NAV_SIZE - 1 do
+        nav.set_blocked(nav_id, 6, y, true)
+    end
+    nav.set_blocked(nav_id, 6, 5, false)
+    nav_info = nav.grid_info(nav_id)
+    nav_cells = nav.find_path(nav_id, 0, 0, NAV_SIZE - 1, NAV_SIZE - 1, false)
+    -- 世界路径的端点就是两端的格心：(-11,-11) 与 (11,11)。
+    nav_world = nav.find_world_path(nav_id, -11.0, -11.0, 11.0, 11.0, false)
+    local temp = nav.create_grid(NAV_NAME .. "Temp", 2, 2, 1.0, 0.0, 0.0)
+    nav_destroyed = nav.destroy_grid(temp)
 end
 
 --- 剪辑清单来自运行期（`animation3d.list`），不靠写死的名字：
@@ -552,6 +596,94 @@ local steps = {
             t:eq(lab.try(physics3d.debug_draw, false), false, "debug_draw returns the flag it registered")
         end,
     },
+    {
+        id = "nav_world_path",
+        title = "Nav grid",
+        claim = "nav 在 XZ 平面上做 4 向 A*；find_world_path 的点直接就是 transform3d 的 x/z",
+        api = {
+            "nav.create_grid",
+            "nav.grid_info",
+            "nav.set_blocked",
+            "nav.find_path",
+            "nav.find_world_path",
+            "nav.destroy_grid",
+            "entity.spawn",
+            "transform3d.attach",
+            "transform3d.set",
+        },
+        code = "nav.create_grid('Lab3dNav',12,12,2,-12,-12); nav.find_world_path(id,-11,-11,11,11)",
+        enter = function()
+            reset_world()
+            build_nav()
+            local runner = ensure_nav_runner()
+            if runner and nav_world and #nav_world > 0 then
+                local start = nav_world[1]
+                transform3d.set(runner, start.x, 0, start.z, 0, 0, 0, 1, 1, 1, 1)
+            end
+        end,
+        run = function()
+            local runner = ensure_nav_runner()
+            if runner and nav_world and #nav_world > 0 then
+                -- 站到平滑后路径的中点：那是墙上的门，能直观看出"绕墙"。
+                local p = nav_world[math.max(1, math.floor(#nav_world / 2))]
+                transform3d.set(runner, p.x, 0, p.z, 0, 0, 0, 1, 1, 1, 1)
+            end
+            lab.note(
+                string.format(
+                    "nav %dx%d cells=%s world=%s destroyed=%s",
+                    nav_info and nav_info.width or -1,
+                    nav_info and nav_info.height or -1,
+                    nav_cells and #nav_cells or "nil",
+                    nav_world and #nav_world or "nil",
+                    tostring(nav_destroyed)
+                )
+            )
+        end,
+        read = function()
+            local runner = nav_runner and entity.is_alive(nav_runner) and transform3d.get(nav_runner) or nil
+            return {
+                { "grid", nav_info and string.format("%dx%d @ %.0f", nav_info.width, nav_info.height, nav_info.cell_size) or "-" },
+                { "cells", nav_cells and #nav_cells or "nil" },
+                { "world pts", nav_world and #nav_world or "nil" },
+                { "destroyed", tostring(nav_destroyed) },
+                { "runner", runner and string.format("%.1f,%.1f", runner.x, runner.z) or "-" },
+            }
+        end,
+        check = function(t)
+            t:ok(nav_info ~= nil, "grid_info returns a live grid")
+            if not nav_info then
+                return
+            end
+            t:eq(nav_info.width, NAV_SIZE, "grid width comes from create_grid")
+            t:eq(nav_info.height, NAV_SIZE, "grid height comes from create_grid")
+            t:near(nav_info.cell_size, NAV_CELL, 1e-6, "cell size is 2 world units")
+            t:near(nav_info.origin_x, NAV_ORIGIN, 1e-6, "origin x is -12")
+            t:near(nav_info.origin_z, NAV_ORIGIN, 1e-6, "origin z is -12")
+            t:ok(nav_destroyed, "destroy_grid removes a grid")
+            t:ok(nav_cells ~= nil, "find_path returns a path")
+            if nav_cells then
+                t:eq(#nav_cells, 23, "shortest 4-dir route detours through the door")
+                t:eq(nav_cells[1].x, 0, "path includes the start cell")
+                t:eq(nav_cells[1].y, 0, "path includes the start cell")
+                t:eq(nav_cells[#nav_cells].x, NAV_SIZE - 1, "path includes the goal cell")
+                t:eq(nav_cells[#nav_cells].y, NAV_SIZE - 1, "path includes the goal cell")
+                local crossed_wall = false
+                for _, cell in ipairs(nav_cells) do
+                    if cell.x == 6 and cell.y ~= 5 then
+                        crossed_wall = true
+                    end
+                end
+                t:ok(not crossed_wall, "path only crosses x=6 through the door cell")
+            end
+            if nav_world then
+                t:near(nav_world[1].x, -11.0, 1e-6, "world path starts at the start cell centre")
+                t:near(nav_world[1].z, -11.0, 1e-6, "world path starts at the start cell centre")
+                t:near(nav_world[#nav_world].x, 11.0, 1e-6, "world path ends at the goal cell centre")
+                t:near(nav_world[#nav_world].z, 11.0, 1e-6, "world path ends at the goal cell centre")
+                t:ok(#nav_world < #nav_cells, "string pull keeps fewer waypoints than cells")
+            end
+        end,
+    },
 }
 
 function M.on_create()
@@ -631,6 +763,10 @@ function M.on_destroy()
     if probe_entity and entity.is_alive(probe_entity) then
         entity.destroy(probe_entity)
         probe_entity = nil
+    end
+    if nav_runner and entity.is_alive(nav_runner) then
+        entity.destroy(nav_runner)
+        nav_runner = nil
     end
     reset_world()
     lab.stop()

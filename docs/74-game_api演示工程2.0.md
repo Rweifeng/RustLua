@@ -3,8 +3,8 @@
 > 状态：方案定稿并实施（2026-10-24）。取代 [docs/59](59-示例工程game_api与API覆盖率门.md)
 > 中"一个模块一组按键、状态行刷读数"的 1.0 形态；覆盖率底线、fixture 场景与既有门全部保留。
 >
-> 基线读数（2026-10-24，本机）：
-> - 运行期 Lua API 面 **42 个模块表 / 313 个函数**（`engine/crates/rustlua-scripting/src/api_surface_snapshot/lua_api_surface.json`）；
+> 基线读数（2026-10-28 刷新；2026-10-24 的旧读数见 git 历史）：
+> - 运行期 Lua API 面 **43 个模块表 / 319 个函数**（`engine/crates/rustlua-scripting/src/api_surface_snapshot/lua_api_surface.json`）；
 > - 运行时组件 **23 个**（`ComponentId::ALL`，P3 后新增 `Environment` / `LayoutItem`）；
 > - `examples/game_api` 改造前 **15 个场景 / 103 个文件 / 6.6 MB**；
 > - `cargo test -p engine --lib sample_project` **11 条门全绿（0.85s）**——这是改造前必须守住的底线。
@@ -35,7 +35,7 @@
 | 1 | **一步一个可验证主张** | 每个演示由有序步骤组成；每步声明 `claim`（人话）、`api`/`code`（调了什么）、`read`（读回什么）、`run`（真实调用）、`check`（断言） | `__api_demo_self_test()` 逐场景跑完所有步骤的 `check` |
 | 2 | **画面优先，读数克制** | 左侧步骤轨、中间舞台、右侧 API 卡；一次只展示当前步骤的 3–5 个关键读数 | 新 shell 几何由固定布局给出；场景文案缺字由既有字形门兜底 |
 | 3 | **可操作、可复位** | `Space/→` 下一步、`←/Backspace` 上一步、`R` 复位当前步、`F` 聚焦模式、`Esc` 回目录；键盘/手柄走同一套命名动作 | 菜单卡片命中门 + 自检门 |
-| 4 | **覆盖率不回退** | 每个函数仍要求在演示脚本里有真实调用点 | 既有 `sample_project_demos_cover_every_lua_api`（42/313） |
+| 4 | **覆盖率不回退** | 每个函数仍要求在演示脚本里有真实调用点 | 既有 `sample_project_demos_cover_every_lua_api`（43/319） |
 | 5 | **目录、文档、数字都有单一真源** | 目录从 `demos.lua` 生成；API 索引从运行期 `_G` 枚举；README 规则写死"改哪里、跑哪条门" | 入口菜单三方一致门 + 本文复现命令 |
 
 ## 3. 结构与交互
@@ -153,7 +153,7 @@ FAIL steps=<N> checks=<M> failed=<K> | <step id>: <message> | ...
 |---|---|---|
 | 逐场景 headless 实例化 + 步进 | `sample_project_runs_every_scene_headless` | 场景/脚本在无输入下能跑 |
 | 脚本全量编译 | `sample_project_scripts_all_compile` | 语法与 `require` |
-| Lua API 覆盖 | `sample_project_demos_cover_every_lua_api` | 42/313 每个函数都有真实调用点 |
+| Lua API 覆盖 | `sample_project_demos_cover_every_lua_api` | 43/319 每个函数都有真实调用点 |
 | 组件覆盖 | `sample_project_scenes_cover_every_runtime_component` | 30 个运行时组件 |
 | 目录三方一致 | `sample_project_index_menu_lists_every_scene` | `demos.lua` ↔ `scenes/*.scene` ↔ 卡片 |
 | 卡片可点 | `sample_project_index_cards_are_clickable` | 解算矩形 + 真实点击切场景 |

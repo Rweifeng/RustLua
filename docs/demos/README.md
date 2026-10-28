@@ -4,7 +4,7 @@
 
 | 工程 | 定位 | 入口 |
 |---|---|---|
-| `examples/game_api` | **API 演示工程**：每个 Lua API 都有一处可运行演示（42 个模块表 / 313 个函数 / 30 个运行时组件），每个场景是分步 Lab | `scenes/index.scene`（菜单）→ ESC 返回 |
+| `examples/game_api` | **API 演示工程**：每个 Lua API 都有一处可运行演示（43 个模块表 / 319 个函数 / 30 个运行时组件），每个场景是分步 Lab | `scenes/index.scene`（菜单）→ ESC 返回 |
 | `examples/game_jhyt` | 玩法样板（生活模拟 / 生产向） | 见 [`examples/game_jhyt/docs/`](../../examples/game_jhyt/docs/) |
 
 启动后先进入 `scenes/index.scene`，每张卡片对应一个聚焦演示；按 `Escape`（或手柄 B）返回入口菜单。

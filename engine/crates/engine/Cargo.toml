@@ -47,6 +47,9 @@ rustlua-infra.workspace = true
 # 只在例子/测试里用：`subset_project_font` 要扫工程字符集（`char_collect` 住在导入层，
 # 运行时不许依赖它——那会把 PNG/音频编解码拖回浏览器产物，见 `docs/62` P1 ③）。
 rustlua-assets-import = { path = "../rustlua-assets-import" }
+# `examples/royale_verify.rs`：两个裸 Lua VM 各跑 battle.lua，经真实 TCP 做帧同步对拍。
+rustlua-net = { path = "../rustlua-net" }
+mlua = { version = "0.11", features = ["lua54", "vendored"] }
 rustlua-gpu.workspace = true
 # M77-01：渲染器实现搬进 `rustlua-gpu` 后，engine 的 normal 依赖里没有 wgpu（这是本包的
 # 验收门：`cargo tree -p engine -e normal` 对 wgpu 零命中）。

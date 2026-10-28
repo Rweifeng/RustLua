@@ -25,6 +25,8 @@ members = [
     "crates/rustlua-input",
     "crates/rustlua-lua-api",
     "crates/rustlua-math",
+    "crates/rustlua-navigation",
+    "crates/rustlua-net",
     "crates/rustlua-physics",
     "crates/rustlua-render",
     "crates/rustlua-scene",
@@ -59,6 +61,8 @@ strip = true
 [workspace.dependencies]
 engine = { path = "crates/engine" }
 rustlua-math = { path = "crates/rustlua-math" }
+rustlua-navigation = { path = "crates/rustlua-navigation" }
+rustlua-net = { path = "crates/rustlua-net" }
 rustlua-ecs = { path = "crates/rustlua-ecs" }
 rustlua-editor-ai = { path = "crates/rustlua-editor-ai" }
 rustlua-editor-core = { path = "crates/rustlua-editor-core" }
