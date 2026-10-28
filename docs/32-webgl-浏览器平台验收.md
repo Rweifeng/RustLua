@@ -223,6 +223,41 @@ CDP 轮询真实时钟等状态落定再 dump（常规 bundle 等 `boot`、scene
   `arena.rs::single_instance_uniform` 的两条单测钉住"这 64 字节里装的是这条 draw 的模型矩阵"——
   它曾按行取 `..16`（列只有 4 个）恒落回单位矩阵，所有网格叠在原点。
 
+**开始界面落在 WebGL 包里 + SDF 小字号补齐（2026-10-28 同日第二批）**：ClashRoyale 加开始界面后重新
+打包/过门，落地读数与修复如下：
+
+- 开始界面 = 3D 竞技场背景 + 标题/起始手牌/`PLAY`/`WATCH AI` 叠层；`scripts/main.lua` 用
+  `screen="menu"` 把战斗核冻住，菜单帧不推进 `battle`、也不进输入序列（否则确定性对拍会漂）。
+  只有 PLAY/WATCH 按钮与 `Space`/`Enter` 起效——菜单底下就是竞技场，任意点开局会变成"开战 + 同帧部署"。
+- 官方门（退出码 0）读数：`webgl_bundle_ok wasm=5956.6KB`、
+  `webgl_bundle_engine_state_ok builtin=False sim=rust(boot ok) draws=84 tris=1868`、
+  `webgl_bundle_gpu_fit_ok viewport=756x441 fit=248x441 design=720x1280 ratio=0.5624 want=0.5625`。
+  `draws=84 tris=1868` 是**菜单落点**的读数，比之前纯战斗的 `draws=109 tris=2164` 低，不是回归：
+  同一浏览器会话点 PLAY 后探测到 `draw_calls=109 triangles=2164`。2D 贴图这一轮是
+  `textures_done=6/6`（结算横幅 + 4 张起始手牌 + 按钮），3D baseline 为 `draws=38 instances=38`。
+- 点击链路实测（CDP，`artifacts/logs/webgl/menu-click-probe.js`）：点击前
+  `presented frames=60 draw_calls=84 triangles=1868 input_edges=0`；点 PLAY 中心后
+  `presented frames=330 draw_calls=109 triangles=2164 input_edges=2 ptrM=1/1`——**帧推进 270**，
+  菜单隐藏、战斗接管。截图 `artifacts/logs/webgl/menu-webgl.png` 与 `menu-click-battle.png`
+  （工程内副本为 `E:/Qoder/ClashRoyale/artifacts/webgl-menu*.png`）。
+- 桌面侧不靠浏览器的断言：`royale_verify` 新增
+  `menu ok: title="CLASH ROYALE" frame_in_menu=0 spawned_in_menu=0 frame_after_play=1 hidden_after_play=true`，
+  后续战斗读数不变（`frame=900 spawned=6 … checksum="92cc5d0c"`）。
+- **SDF 小字号整字消失**：WebGL2 没有矢量文字，宿主强制 `TextRenderMode::Sdf`；桌面 `Auto` 走矢量档
+  （fontdue 按精确字号光栅化），所以这类问题桌面看不到。Noto Sans SC 的 `I` 在 18px 墨迹只有
+  0.67px 宽、`-` 只有 0.63px 高，`TextLayout::build` 原来按墨迹收紧四边形，可能一个像素中心都不覆盖
+  → 整条笔画消失（实测 "OPEN NG HAND"、"1 4 CARD"、"RUSTLUA ENG NE"；先试过片元着色器 4 采样
+  超采样，画面零变化，排除采样问题；只把四边形拉到 1.001px 仍会漏，因为退化采样点仍可能落在墨迹外）。
+  最终修法（`engine/crates/rustlua-render/src/text.rs`）：墨迹窄于 1px 时四边形铺**整个带 padding 的
+  图集格**，墨迹保持原尺寸落在格内，边缘由 SDF 过渡区解出；单测
+  `sdf_quads_never_fall_below_one_pixel` 钉住"每个字形四边形 ≥1px"，与矢量档的
+  `vector_quads_never_fall_below_one_pixel` 成对。片元侧保留 4 点覆盖超采样
+  （`engine/crates/rustlua-gpu/shaders/textured.wgsl`），`cargo test -p rustlua-gpu
+  every_builtin_shader_yields_a_valid_interface` 通过。修复后菜单文案与战斗 HUD
+  （"ELIXIR 6.1"、"HP 320"、"DMG 52"、"RNG 1.4"）在 WebGL2 下完整。
+- 菜单文案统一 ≥18px：15px 下同一批字仍会丢笔画（"KN GHT"、"DEI ERM N STIC"）。这是**当前 WebGL2
+  SDF 档的下限经验值**，不是排版偏好；小字号排版要先复核这条。
+
 ## 4. 已知限制
 
 - **宿主 API 子集**（原"M31/P3 实测未解决"一条已推进，2026-09-19 复测）：真发布包在无头 Edge 里

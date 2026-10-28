@@ -902,14 +902,11 @@ impl TextLayout {
                 let rect = metrics.cell_rect;
                 let atlas_w = font.width() as f32;
                 let atlas_h = font.height() as f32;
-                let u0 = metrics.uv[0] + rect[0] / atlas_w;
-                let v0 = metrics.uv[1] + rect[1] / atlas_h;
-                let u1 = metrics.uv[0] + rect[2] / atlas_w;
-                let v1 = metrics.uv[1] + rect[3] / atlas_h;
                 let mut glyph_w = (rect[2] - rect[0]) * tex_scale;
                 let mut glyph_h = (rect[3] - rect[1]) * tex_scale;
                 let mut x0 = x + metrics.bounds[0] * tex_scale;
                 let mut y0 = baseline + metrics.bounds[1] * tex_scale;
+                let (u0, v0, u1, v1);
                 if pixel {
                     // 整数吸附：点阵的一个 texel 必须正好盖住整数个设备像素。次像素
                     // 定位下 Nearest 采样会把边界 texel 采到两次（或零次），字形边缘
@@ -918,6 +915,32 @@ impl TextLayout {
                     y0 = y0.round();
                     glyph_w = glyph_w.round();
                     glyph_h = glyph_h.round();
+                    u0 = metrics.uv[0] + rect[0] / atlas_w;
+                    v0 = metrics.uv[1] + rect[1] / atlas_h;
+                    u1 = metrics.uv[0] + rect[2] / atlas_w;
+                    v1 = metrics.uv[1] + rect[3] / atlas_h;
+                } else if glyph_w < 1.001 || glyph_h < 1.001 {
+                    // 墨迹窄于 1px 的笔画会让四边形一个像素中心都盖不住。实测
+                    // Noto Sans SC 的 `I` 在 18px 只有 0.67px 宽、`-` 只有 0.63px 高，
+                    // WebGL2 强制走 SDF 时整字消失（桌面矢量档掩盖了这个问题）。
+                    // 这里改铺**整个带 padding 的格**：四边形足够大，墨迹仍按原尺寸
+                    // 落在格内，边缘由 SDF 的过渡区解出——不能只把墨迹 UV 拉伸到
+                    // 1px，否则笔画会变粗，且 1.001px 仍可能压不到采样中心。
+                    let cell_w = (metrics.uv[2] - metrics.uv[0]) * atlas_w;
+                    let cell_h = (metrics.uv[3] - metrics.uv[1]) * atlas_h;
+                    glyph_w = cell_w * tex_scale;
+                    glyph_h = cell_h * tex_scale;
+                    x0 = x + (metrics.bounds[0] - rect[0]) * tex_scale;
+                    y0 = baseline + (metrics.bounds[1] - rect[1]) * tex_scale;
+                    u0 = metrics.uv[0];
+                    v0 = metrics.uv[1];
+                    u1 = metrics.uv[2];
+                    v1 = metrics.uv[3];
+                } else {
+                    u0 = metrics.uv[0] + rect[0] / atlas_w;
+                    v0 = metrics.uv[1] + rect[1] / atlas_h;
+                    u1 = metrics.uv[0] + rect[2] / atlas_w;
+                    v1 = metrics.uv[1] + rect[3] / atlas_h;
                 }
                 let shifts: &[f32] = if character.bold {
                     &[0.0, bold_shift]
@@ -1202,6 +1225,39 @@ mod tests {
             overflow,
             0.5 / s
         );
+    }
+
+    /// SDF 档的同一道门：Noto Sans SC 的 `I` 在 18px 只有 0.67px 宽、`-` 只有
+    /// 0.63px 高——紧贴墨迹的四边形可以一个采样中心都不落进去，字就整条消失
+    /// （WebGL2 强制走 SDF 时实测）。窄墨迹必须铺满带 padding 的整格。
+    #[test]
+    fn sdf_quads_never_fall_below_one_pixel() {
+        let font_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../editor/fonts/NotoSansSC-VF.ttf");
+        let bytes = std::fs::read(&font_path).unwrap();
+        let mut font = crate::font::FontAtlas::load(&bytes).unwrap();
+        let style = TextStyle {
+            scale: 18.0 / EM_PX,
+            ..Default::default()
+        };
+        let mesh = TextLayout::build("I-", [0.0, 0.0], style, &mut font).unwrap();
+        assert_eq!(mesh.glyph_count, 2);
+        for (index, quad) in mesh.vertices.chunks(6).enumerate() {
+            let min_x = quad.iter().map(|v| v.position[0]).fold(f32::MAX, f32::min);
+            let max_x = quad.iter().map(|v| v.position[0]).fold(f32::MIN, f32::max);
+            let min_y = quad.iter().map(|v| v.position[1]).fold(f32::MAX, f32::min);
+            let max_y = quad.iter().map(|v| v.position[1]).fold(f32::MIN, f32::max);
+            assert!(
+                max_x - min_x >= 1.0,
+                "第 {index} 个字形四边形只有 {} px 宽，可能一个采样中心都盖不住",
+                max_x - min_x
+            );
+            assert!(
+                max_y - min_y >= 1.0,
+                "第 {index} 个字形四边形只有 {} px 高，可能一个采样中心都盖不住",
+                max_y - min_y
+            );
+        }
     }
 
     #[test]

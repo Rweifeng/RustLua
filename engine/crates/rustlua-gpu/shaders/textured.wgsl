@@ -18,11 +18,16 @@ fn median(a: f32, b: f32, c: f32) -> f32 {
     return max(min(a, b), min(max(a, b), c));
 }
 
+fn msdf_alpha(sampled: vec4<f32>, screen_px_range: f32) -> f32 {
+    let d = median(sampled.r, sampled.g, sampled.b);
+    return clamp((d - 0.5) * screen_px_range + 0.5, 0.0, 1.0);
+}
+
 @fragment fn fs_main(@location(0) uv: vec2<f32>, @location(1) color: vec4<f32>, @location(2) sdf: u32) -> @location(0) vec4<f32> {
     let sampled = textureSample(tex, samp, uv);
     if sdf == 1u {
-        // MSDF 使用三个距离通道的中值，避免单通道切换造成笔画断裂和内部孔洞。
-        let d = median(sampled.r, sampled.g, sampled.b);
+        // MSDF 使用三个距离通道的中值（见 msdf_alpha），避免单通道切换造成笔画
+        // 断裂和内部孔洞。
         let texture_size = vec2<f32>(textureDimensions(tex));
         // Distance range in atlas texels. `font.rs` rasterizes with
         // `Range::symmetric(PAD)` and msdfgen maps distance -> [0,1] as
@@ -45,10 +50,16 @@ fn median(a: f32, b: f32, c: f32) -> f32 {
             1.0,
         );
 
-        let a = clamp(
-            (d - 0.5) * screen_px_range + 0.5,
-            0.0,
-            1.0
+        // 每像素只取一个高分辨率图集采样点时，约 1.7px 宽的竖笔画（I、连字符）
+        // 可能整条落在采样点之间而消失（WebGL2 小字号实测）。在像素内取 4 个
+        // 象限角点做覆盖超采样：笔画至少被一个角点覆盖，平均后仍有 alpha。
+        // 偏移量跟着 fwidth 缩放，大字号下退化为同一采样点，不会把大字糊掉。
+        let half_px = vec2<f32>(fwidth(uv.x), fwidth(uv.y)) * 0.25;
+        let a = 0.25 * (
+            msdf_alpha(textureSampleLevel(tex, samp, uv + vec2<f32>(-half_px.x, -half_px.y), 0.0), screen_px_range)
+            + msdf_alpha(textureSampleLevel(tex, samp, uv + vec2<f32>(half_px.x, -half_px.y), 0.0), screen_px_range)
+            + msdf_alpha(textureSampleLevel(tex, samp, uv + vec2<f32>(-half_px.x, half_px.y), 0.0), screen_px_range)
+            + msdf_alpha(textureSampleLevel(tex, samp, uv + vec2<f32>(half_px.x, half_px.y), 0.0), screen_px_range)
         );
         // 直通 alpha：管线 ALPHA_BLENDING 已按 alpha 预乘源色，不能再乘 a。
         return vec4<f32>(color.rgb, a);

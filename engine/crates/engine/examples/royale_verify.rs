@@ -8,9 +8,10 @@
 //! 2. **联网模式**：两个裸 Lua VM 各装一份 `nav` 与 `battle.lua`，经 127.0.0.1 的真实
 //!    TCP 用 `rustlua-net` 的帧同步会话交换输入与校验和，跑 600 帧后要求两侧逐帧
 //!    checksum 完全相等且无 desync。
-//! 3. **竖屏 UI 交互**：用真实 `InputSnapshot` 注入鼠标按下/抬起，先点第 4 张手牌，
-//!    再点屏幕下方（己方半场）——要求选中槽位生效、`camera3d.pick_plane` 把点击落到
-//!    点击处附近（而不是固定出生点）、手牌轮转、圣水扣费。
+//! 3. **竖屏 UI 交互**：先确认开始界面可见且战斗帧号停在 0，点 PLAY 后开局、菜单隐藏；
+//!    重置后再用真实 `InputSnapshot` 注入鼠标按下/抬起：先点第 4 张手牌，再点屏幕下方
+//!    （己方半场）——要求选中槽位生效、`camera3d.pick_plane` 把点击落到点击处附近
+//!    （而不是固定出生点）、手牌轮转、圣水扣费。
 //!
 //! 运行：
 //!
@@ -338,6 +339,61 @@ fn run_interaction(root: &Path) -> InteractionReport {
     let mut runtime = RuntimeScene::from_scene(Some(root), scene).expect("实例化 ClashRoyale 场景");
     // 竖屏设计分辨率：既给 HUD，也把 3D 相机视口回填给 `camera3d.pick_plane`。
     runtime.vertices(SCREEN_W, SCREEN_H).expect("竖屏 HUD 顶点");
+
+    // 开始界面：默认落在 menu，战斗一帧都不推进。先走一帧菜单，断言标题画出来了、
+    // 帧号仍是 0；点 PLAY 之后才开始计时、菜单才隐藏。
+    let idle = InputSnapshot::default();
+    runtime
+        .run_script_steps(1, 1.0 / 60.0, &idle)
+        .expect("菜单帧");
+    let menu = runtime
+        .with_script(|script| script.eval_json("ui.text_get('royale_menu_title')"))
+        .expect("读取开始界面标题");
+    assert_eq!(
+        menu["text"].as_str(),
+        Some("CLASH ROYALE"),
+        "开始界面没有画出标题"
+    );
+    assert_eq!(
+        menu["visible"].as_bool(),
+        Some(true),
+        "开始界面标题应是可见的"
+    );
+    let menu_stats = read_stats(&mut runtime);
+    assert_eq!(
+        menu_stats["frame"].as_u64(),
+        Some(0),
+        "开始界面里战斗不应推进"
+    );
+    assert_eq!(
+        menu_stats["spawned"].as_i64(),
+        Some(0),
+        "开始界面里不应有部署"
+    );
+
+    click_at(&mut runtime, 360.0, 780.0); // PLAY 按钮中心
+    let started = read_stats(&mut runtime);
+    assert!(
+        started["frame"].as_u64().unwrap_or(0) >= 1,
+        "点 PLAY 后战斗没有推进"
+    );
+    let hidden_menu = runtime
+        .with_script(|script| script.eval_json("ui.text_get('royale_menu_title')"))
+        .expect("读取开局后的标题");
+    assert_eq!(
+        hidden_menu["visible"].as_bool(),
+        Some(false),
+        "开局后开始界面没有隐藏"
+    );
+    println!(
+        "menu ok: title={:?} frame_in_menu=0 spawned_in_menu=0 frame_after_play={} hidden_after_play=true",
+        menu["text"].as_str().unwrap_or(""),
+        started["frame"],
+    );
+    // 回到干净的第 0 帧再验卡牌交互（点 PLAY 的两帧会推进战斗，AI 也可能已出手）。
+    runtime
+        .with_script(|script| script.eval_json("__royale_reset() or true"))
+        .expect("重置战斗");
 
     let before = read_stats(&mut runtime);
     let hand_before = hand_names(&before);
