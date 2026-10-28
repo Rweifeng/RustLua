@@ -2,20 +2,24 @@
 //! snapshot; drives the fixed-timestep simulation and frame redraw; maps
 //! winit events to engine input.
 
-use std::{path::PathBuf, sync::Arc, time::Instant};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use rustlua_camera::camera::{FrameViews, Viewport};
 use rustlua_ecs::scheduler::ScheduleStage;
 use rustlua_infra::logging::{EngineError, LogModule};
 use rustlua_infra::performance::{PerformanceSnapshot, PerformanceStats};
-use rustlua_infra::time_step::FixedTimeStep;
+use rustlua_infra::time_step::{FixedTimeStep, StepReport};
 use rustlua_infra::window::{AppLifecycle, has_renderable_size};
 use rustlua_input::input::{InputSnapshot, MouseButton};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
     event::{ElementState, Ime, WindowEvent},
-    event_loop::ActiveEventLoop,
+    event_loop::{ActiveEventLoop, ControlFlow},
     keyboard::ModifiersState,
     window::{Icon, Window, WindowId},
 };
@@ -312,26 +316,34 @@ impl GameApp {
         }
     }
 
-    fn update_pause_state(&mut self, size: PhysicalSize<u32>) {
-        let should_pause = self.occluded || !has_renderable_size(size.width, size.height);
-        match (should_pause, self.lifecycle) {
-            (true, AppLifecycle::Running) => {
-                self.input.clear_all();
-                self.transition(AppLifecycle::Paused);
-            }
-            (false, AppLifecycle::Paused) => self.transition(AppLifecycle::Running),
-            _ => {}
+    /// 窗口当前能不能出画：被遮挡或尺寸为 0（最小化）时都算不能。
+    ///
+    /// 这两种情况下 Windows 的 present 要么挂住、要么没人看，所以只停**画面**——
+    /// 逻辑仍由 [`Self::about_to_wait`] 的定时器按 60Hz 推进：联机时一端被别的窗口
+    /// 盖住，不能让对端跟着等。
+    fn renderable(&self) -> bool {
+        if self.occluded {
+            return false;
         }
-        if should_pause {
+        self.window.as_ref().is_some_and(|window| {
+            let size = window.inner_size();
+            has_renderable_size(size.width, size.height)
+        })
+    }
+
+    /// 尺寸/遮挡变化后同步渲染状态：能画就立刻补一帧（恢复可见要马上出画面），
+    /// 不能画就只记一行日志，仿真照跑。
+    fn sync_render_state(&mut self, size: PhysicalSize<u32>) {
+        if self.occluded || !has_renderable_size(size.width, size.height) {
             tracing::info!(target: "game",
-                "[window] simulation paused: size={}x{} occluded={}",
+                "[window] render suppressed: size={}x{} occluded={}; simulation keeps ticking",
                 size.width, size.height, self.occluded
             );
-        } else {
-            tracing::info!(target: "game", "[window] renderable size: {}x{}", size.width, size.height);
-            if let Some(window) = &self.window {
-                window.request_redraw();
-            }
+            return;
+        }
+        tracing::info!(target: "game", "[window] renderable size: {}x{}", size.width, size.height);
+        if let Some(window) = &self.window {
+            window.request_redraw();
         }
     }
 
@@ -355,6 +367,30 @@ impl GameApp {
             window.set_ime_allowed(wanted);
             tracing::debug!(target: "game", "[input] ime_allowed={wanted}");
         }
+    }
+
+    /// 按墙钟推进固定步时钟，返回本次调度结果。
+    ///
+    /// 渲染帧与被遮挡时的定时器共用这一个入口：`elapsed` 一律取"距上一次推进"的墙钟，
+    /// 谁先到谁推，同一段时间不会被跑两遍。
+    fn advance_clock(&mut self) -> StepReport {
+        // 每帧清零：`lua_ms` 是"本次推进里 Lua update() 的耗时"，不是累计值。
+        self.performance.reset_lua_sample();
+        let elapsed = self.last_frame.elapsed().as_secs_f64();
+        self.last_frame = Instant::now();
+        // P0（脚本迭代闭环）：先查磁盘 Lua 再跑本帧固定步——重载成功的那份脚本立刻参与
+        // 这一帧的 `update()`，用户感到的延迟只剩一次去抖。
+        self.poll_script_hot_reload(Duration::from_secs_f64(elapsed));
+        let report = self.time_step.advance(elapsed);
+        if report.dropped_steps > 0 {
+            tracing::warn!(target: "engine", "[time] dropped catch-up steps: dropped={} total_dropped={} accumulator={:.6}s", report.dropped_steps, report.total_dropped_steps, report.accumulator_seconds);
+        }
+        if report.steps > 0 && report.total_steps % 60 < u64::from(report.steps) {
+            tracing::info!(target: "engine", "[time] fixed-step stats: steps={} dt={:.6}s accumulator={:.6}s total_steps={} total_dropped={}", report.steps, report.delta_seconds, report.accumulator_seconds, report.total_steps, report.total_dropped_steps);
+        }
+        // M79-04：脚本的收字声明要变成窗口级的输入法开关，本帧生效、只在下发变化时动它。
+        self.sync_ime_allowed();
+        report
     }
 
     fn run_simulation_steps(
@@ -531,8 +567,7 @@ impl GameApp {
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
         self.poll_shader_hot_reload();
         if self.lifecycle == AppLifecycle::Initializing && self.splash.is_some() {
-            let size = self.window.as_ref().expect("window exists").inner_size();
-            if self.occluded || !has_renderable_size(size.width, size.height) {
+            if !self.renderable() {
                 return;
             }
             if self
@@ -569,25 +604,16 @@ impl GameApp {
         if self.lifecycle != AppLifecycle::Running {
             return;
         }
+        // 遮挡/最小化时不提交画面（present 会挂在不可见表面上），逻辑不在这里推进——
+        // `about_to_wait` 的定时器接上了这一段，恢复可见时这里从当前画面接着画。
+        if !self.renderable() {
+            return;
+        }
         // M74-02 P0：整帧墙钟从这里起算（固定步 + 提取 + 提交都在里面）。调度器只知道自己
         // 那一段，用它的总耗时当分母会把"串行系统占帧比"算大好几倍。
         let frame_started = Instant::now();
         self.performance.begin_frame();
-        self.performance.reset_lua_sample();
-        let elapsed = self.last_frame.elapsed().as_secs_f64();
-        self.last_frame = Instant::now();
-        // P0（脚本迭代闭环）：先查磁盘 Lua 再跑本帧固定步——重载成功的那份脚本立刻参与
-        // 这一帧的 `update()`，用户感到的延迟只剩一次去抖。
-        self.poll_script_hot_reload(std::time::Duration::from_secs_f64(elapsed));
-        let report = self.time_step.advance(elapsed);
-        if report.dropped_steps > 0 {
-            tracing::warn!(target: "engine", "[time] dropped catch-up steps: dropped={} total_dropped={} accumulator={:.6}s", report.dropped_steps, report.total_dropped_steps, report.accumulator_seconds);
-        }
-        if report.steps > 0 && report.total_steps % 60 < u64::from(report.steps) {
-            tracing::info!(target: "engine", "[time] fixed-step stats: steps={} dt={:.6}s accumulator={:.6}s total_steps={} total_dropped={}", report.steps, report.delta_seconds, report.accumulator_seconds, report.total_steps, report.total_dropped_steps);
-        }
-        // M79-04：脚本的收字声明要变成窗口级的输入法开关，本帧生效、只在下发变化时动它。
-        self.sync_ime_allowed();
+        let report = self.advance_clock();
         self.run_simulation_steps(report.steps, report.delta_seconds, event_loop);
         if self.lifecycle != AppLifecycle::Running {
             return;
@@ -897,7 +923,7 @@ impl ApplicationHandler for GameApp {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size);
                 }
-                self.update_pause_state(size);
+                self.sync_render_state(size);
             }
             WindowEvent::Occluded(occluded) => {
                 self.occluded = occluded;
@@ -905,7 +931,7 @@ impl ApplicationHandler for GameApp {
                     splash.stage = crate::splash::Stage::AwaitingPresent;
                 }
                 let size = self.window.as_ref().expect("window exists").inner_size();
-                self.update_pause_state(size);
+                self.sync_render_state(size);
             }
             WindowEvent::KeyboardInput { .. }
             | WindowEvent::MouseInput { .. }
@@ -995,13 +1021,10 @@ impl ApplicationHandler for GameApp {
             }
             WindowEvent::RedrawRequested => {
                 self.redraw(event_loop);
-                let size = self.window.as_ref().expect("window exists").inner_size();
                 if !event_loop.exiting()
+                    && self.renderable()
                     && (self.lifecycle == AppLifecycle::Running
-                        || (self.lifecycle == AppLifecycle::Initializing
-                            && self.splash.is_some()
-                            && !self.occluded
-                            && has_renderable_size(size.width, size.height)))
+                        || (self.lifecycle == AppLifecycle::Initializing && self.splash.is_some()))
                 {
                     self.window
                         .as_ref()
@@ -1012,6 +1035,32 @@ impl ApplicationHandler for GameApp {
 
             _ => {}
         }
+    }
+
+    /// 画面被抑制（遮挡/最小化）时 winit 不再发 `RedrawRequested`，仿真改由这里的定时器推进：
+    /// 睡到下一个固定步到期 → 醒来跑该跑的步 → 再睡。可见时不需要它——渲染循环每帧本来就会
+    /// 调 [`Self::advance_clock`]，两条路径靠 `elapsed` 互斥，不会把同一段时间跑两遍。
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.lifecycle != AppLifecycle::Running || self.renderable() {
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        }
+        let report = self.advance_clock();
+        // 0 步的那次唤醒不跑管线：`run_script_steps` 即使 0 步也会跑一遍帧管线，
+        // 被遮挡时一秒多跑几十次没有意义。
+        if report.steps > 0 {
+            self.run_simulation_steps(report.steps, report.delta_seconds, event_loop);
+            self.input.finish_frame();
+        }
+        if self.lifecycle != AppLifecycle::Running {
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        }
+        let remaining =
+            f64::from(self.time_step.fixed_delta_seconds()) - self.time_step.accumulator_seconds();
+        event_loop.set_control_flow(ControlFlow::WaitUntil(
+            Instant::now() + Duration::from_secs_f64(remaining.max(0.001)),
+        ));
     }
 }
 /// 一帧 overlay 的顶点与绘制范围（`start`/`count` 相对 `vertices`）。
