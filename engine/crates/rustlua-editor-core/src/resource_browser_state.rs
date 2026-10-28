@@ -28,8 +28,6 @@ impl ResourceEntry {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ResourceBrowserError {
-    #[error("资源目录不存在：{}", .0.display())]
-    MissingAssetsDirectory(PathBuf),
     #[error("扫描资源失败：{}：{message}", path.display())]
     Io { path: PathBuf, message: String },
     #[error("资源数据库错误：{0}")]
@@ -58,6 +56,12 @@ pub struct ResourceBrowserState {
     import_attempted: HashMap<PathBuf, u64>,
     /// 最近一次 `refresh` 看到的文件签名（相对路径 → mtime；不在盘上的记 0）。
     current_signatures: HashMap<PathBuf, u64>,
+    /// `assets/` 缺失时记下它的绝对路径。
+    ///
+    /// 缺目录**不是**扫描失败：`scenes/`、`scripts/`、`ui/` 照常扫，工程仍能打开；
+    /// 资源面板据此显示警告与「创建 assets 目录」按钮。真实 I/O 错误仍走
+    /// [`ResourceBrowserError`]——这条只表示"这个可选目录还没有"。
+    missing_assets_directory: Option<PathBuf>,
 }
 
 impl ResourceBrowserState {
@@ -93,6 +97,11 @@ impl ResourceBrowserState {
 
     pub fn last_refresh(&self) -> Option<SystemTime> {
         self.last_refresh
+    }
+
+    /// 最近一次刷新时 `assets/` 不存在（绝对路径）；存在则为 `None`。
+    pub fn missing_assets_directory(&self) -> Option<&Path> {
+        self.missing_assets_directory.as_deref()
     }
 
     pub fn refresh_count(&self) -> u64 {
@@ -140,24 +149,28 @@ impl ResourceBrowserState {
         self.current_signatures.get(path).copied().unwrap_or(0)
     }
 
-    /// 扫描项目 assets 目录，并同步已识别资源到 ResourceDatabase。
+    /// 扫描项目资源目录，并同步已识别资源到 ResourceDatabase。
+    ///
+    /// `assets/` 是**可选**目录（`GAME_PROJECT_OPTIONAL_DIRECTORIES` 同口径）：缺失时
+    /// 跳过它继续扫 `scenes/`、`scripts/`、`ui/`，并把缺失路径暴露给面板
+    /// （[`Self::missing_assets_directory`]）；不把它当扫描失败——否则一个只有脚本和
+    /// 场景的工程在导入阶段就直接报「资源目录不存在」，编辑器连打开都做不到。
     pub fn refresh(&mut self, project_root: impl AsRef<Path>) -> Result<(), ResourceBrowserError> {
         let project_root = project_root.as_ref();
         let assets_root = project_root.join("assets");
         self.entries.clear();
         self.last_error = None;
+        self.missing_assets_directory = None;
         self.refresh_count = self.refresh_count.saturating_add(1);
 
-        if !assets_root.is_dir() {
-            let error = ResourceBrowserError::MissingAssetsDirectory(assets_root);
-            self.last_error = Some(error.to_string());
-            return Err(error);
-        }
-
         let mut found = Vec::new();
-        collect_files(&assets_root, &mut found).inspect_err(|error| {
-            self.last_error = Some(error.to_string());
-        })?;
+        if assets_root.is_dir() {
+            collect_files(&assets_root, &mut found).inspect_err(|error| {
+                self.last_error = Some(error.to_string());
+            })?;
+        } else {
+            self.missing_assets_directory = Some(assets_root);
+        }
         // 场景文件目录（scenes/）。
         let scenes_root = project_root.join("scenes");
         if scenes_root.is_dir() {
@@ -812,12 +825,41 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    /// **回归**（TankBattle 报障「资源扫描失败：资源目录不存在 …\\assets」）：
+    /// `assets/` 是可选目录，缺失时刷新不得失败；`scenes/`、`scripts/`、`ui/` 照常
+    /// 扫到，缺失本身作为警告交给面板，而不是把整个工程判成打不开。
     #[test]
-    fn missing_assets_directory_is_visible_as_error() {
+    fn missing_assets_directory_is_a_warning_not_a_scan_failure() {
         let root = temp_root("missing");
+        file(&root, "scripts/main.lua", b"return {}");
+        file(&root, "scenes/main.scene", b"[scene]\n");
+        file(&root, "ui/shop.ui.json", b"{\"spec_version\":1}");
+        let assets_root = root.join("assets");
+
         let mut browser = ResourceBrowserState::new();
-        assert!(browser.refresh(&root).is_err());
-        assert!(browser.last_error().unwrap().contains("资源目录不存在"));
+        browser
+            .refresh(&root)
+            .expect("缺 assets 目录不能让扫描失败");
+        assert!(browser.last_error().is_none(), "缺目录不是错误状态");
+        assert_eq!(
+            browser.missing_assets_directory(),
+            Some(assets_root.as_path())
+        );
+        let paths: Vec<String> = browser
+            .entries()
+            .iter()
+            .map(ResourceEntry::path_string)
+            .collect();
+        assert_eq!(
+            paths,
+            vec!["scenes/main.scene", "scripts/main.lua", "ui/shop.ui.json"],
+            "没有 assets/ 也必须扫到场景、脚本与 UI 预设"
+        );
+
+        // 建好目录再刷新：警告消失，回到正常扫描。
+        fs::create_dir_all(&assets_root).unwrap();
+        browser.refresh(&root).unwrap();
+        assert!(browser.missing_assets_directory().is_none());
         let _ = fs::remove_dir_all(root);
     }
 

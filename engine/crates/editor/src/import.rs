@@ -607,6 +607,63 @@ mod import_tests {
         );
     }
 
+    /// **回归**（TankBattle 报障「资源扫描失败：资源目录不存在 …\\assets」）：
+    /// 没有 `assets/` 的游戏工程必须能导入成功。扫描层把 assets 当可选目录，
+    /// `scripts/` 照常进资源列表；缺失本身作为警告交给面板。
+    #[test]
+    fn importing_a_game_project_without_assets_scans_scripts() {
+        let root = std::env::temp_dir().join(format!(
+            "rustlua-import-no-assets-{}",
+            crate::util::test_token()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("scripts")).unwrap();
+        std::fs::write(
+            root.join("project.toml"),
+            "[project]\nname = \"no-assets\"\nversion = \"0.1.0\"\nengine = \"RustLua\"\nmain_script = \"scripts/main.lua\"\nstartup_scene = \"scenes/main.scene\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("scripts/main.lua"), b"return {}\n").unwrap();
+        assert!(!root.join("assets").exists(), "夹具必须是缺 assets 的工程");
+        // 导入流程里 `open_project` 会规范化根路径；这里先规范化，比较才对得上
+        // （临时目录的短路径 `ADMINI~1` 会被展开成 `Administrator`）。
+        let root = std::fs::canonicalize(&root).unwrap();
+
+        let (tx, rx) = channel();
+        spawn_import(root.clone(), tx);
+        let mut output = String::new();
+        let mut outcome = None;
+        while let Ok(event) = rx.recv() {
+            match event {
+                ProgressEvent::Line(text) => output.push_str(&text),
+                ProgressEvent::Progress(_) => {}
+                ProgressEvent::Finished { success, result } => {
+                    assert!(success, "没有 assets/ 的工程必须导入成功；输出：\n{output}");
+                    let result = result.expect("成功导入应带回 ImportOutcome");
+                    outcome = Some(*result.downcast::<ImportOutcome>().expect("ImportOutcome"));
+                    break;
+                }
+            }
+        }
+        let outcome = outcome.expect("导入流程应当结束");
+        let paths: Vec<String> = outcome
+            .resources
+            .entries()
+            .iter()
+            .map(|entry| entry.path_string())
+            .collect();
+        assert!(
+            paths.iter().any(|path| path == "scripts/main.lua"),
+            "导入后必须扫到 scripts/：{paths:?}"
+        );
+        assert_eq!(
+            outcome.resources.missing_assets_directory(),
+            Some(root.join("assets").as_path()),
+            "缺失的 assets 目录要交给面板显示警告"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     // ---- M27-01：系统拖放入库的三条不变量 ----
 
     /// 一个临时工程 + 一个"资源管理器里的外部目录"。

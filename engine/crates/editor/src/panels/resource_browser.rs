@@ -42,6 +42,32 @@ impl EditorApp {
             ui.label(format!("{} 项", self.resources.visible_entries().len()));
         });
         ui.text_edit_singleline(&mut self.resources_filter);
+        // 扫描层把 `assets/` 视为可选：缺目录不再让工程打不开（scenes/scripts/ui 照
+        // 扫），但"没有资源目录"仍是要处理的状态——给一行警告和一个就地修复的按钮。
+        let missing_assets = self
+            .resources
+            .missing_assets_directory()
+            .map(Path::to_path_buf);
+        if let Some(missing) = missing_assets {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(
+                    egui::Color32::YELLOW,
+                    "警告：assets 目录不存在，资源扫描已跳过（scenes/scripts/ui 仍可浏览）",
+                );
+                if ui.button("创建 assets 目录").clicked() {
+                    match fs::create_dir_all(&missing) {
+                        Ok(()) => {
+                            self.status = format!("已创建 {}，正在刷新资源…", missing.display());
+                            refresh_resources = true;
+                        }
+                        Err(error) => {
+                            self.status =
+                                format!("创建 assets 目录失败：{}：{error}", missing.display());
+                        }
+                    }
+                }
+            });
+        }
         // P1：重命名（引用保持）。改名走 shell 的 `perform_resource_move`：
         // 搬文件 + 改写工程里所有引用（当前文档走内存 + Undo）。
         self.draw_resource_rename_row(ui);
@@ -1361,6 +1387,33 @@ mod tests {
             "删除后资源面板不得再画这一行：{drawn}"
         );
         assert!(drawn.contains("blacksmith.ui.json"), "{drawn}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// **回归**（TankBattle 报障）：扫描层把 `assets/` 当可选目录后，面板必须把
+    /// "缺目录"说清楚，并给一个就地修复的按钮——按钮要真的建出目录。
+    #[test]
+    fn missing_assets_directory_shows_a_warning_and_is_created_from_the_panel() {
+        let root = temp_project_root("missing-assets");
+        fs::remove_dir_all(root.join("assets")).unwrap();
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.project_loaded = true;
+        let mut browser = editor::ResourceBrowserState::new();
+        browser.refresh(&root).unwrap();
+        app.resources = browser;
+
+        let drawn = draw_panel_text(&mut app);
+        assert!(
+            drawn.contains("assets 目录不存在"),
+            "面板必须显示警告：{drawn}"
+        );
+        assert!(drawn.contains("创建 assets 目录"), "{drawn}");
+
+        let pos = locate_row_label(&mut app, "创建 assets 目录");
+        click_row(&mut app, pos, 1);
+        assert!(root.join("assets").is_dir(), "点按钮必须真的建出目录");
+        assert!(app.status.contains("已创建"), "{:?}", app.status);
         let _ = fs::remove_dir_all(root);
     }
 
