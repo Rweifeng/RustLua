@@ -314,6 +314,19 @@
     },
     {
       "funcs": [
+        "auto_start",
+        "close",
+        "connect",
+        "default_room",
+        "default_server",
+        "recv",
+        "send",
+        "status"
+      ],
+      "name": "net"
+    },
+    {
+      "funcs": [
         "burst",
         "count"
       ],

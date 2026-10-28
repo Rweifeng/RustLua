@@ -371,7 +371,7 @@ fn run_interaction(root: &Path) -> InteractionReport {
         "开始界面里不应有部署"
     );
 
-    click_at(&mut runtime, 360.0, 780.0); // PLAY 按钮中心
+    click_at(&mut runtime, 186.0, 759.0); // PLAY 按钮中心（左半，ONLINE 在右侧）
     let started = read_stats(&mut runtime);
     assert!(
         started["frame"].as_u64().unwrap_or(0) >= 1,

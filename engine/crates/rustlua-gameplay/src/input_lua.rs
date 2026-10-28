@@ -164,5 +164,9 @@ pub fn registry_with_handles() -> (Rc<Registry>, Handles) {
     let nav = crate::nav_lua::state();
     registry.add("nav", move |lua| crate::nav_lua::install(lua, &nav));
 
+    // `net` 连接也跨热重载保留：重载脚本不该顺手掐断已经配对的对战连接。
+    let net = crate::net_lua::state();
+    registry.add("net", move |lua| crate::net_lua::install(lua, &net));
+
     (Rc::new(registry), Handles { audio, input })
 }

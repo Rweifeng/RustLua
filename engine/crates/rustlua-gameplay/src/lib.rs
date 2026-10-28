@@ -40,6 +40,7 @@ pub mod input_lua;
 pub mod inventory_lua;
 pub mod inventory_state;
 pub mod nav_lua;
+pub mod net_lua;
 pub mod save;
 pub mod save_lua;
 pub mod save_store;

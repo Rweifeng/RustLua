@@ -1,7 +1,7 @@
 ---@meta
 -- 生成物，请勿手改：`node scripts/docgen/gen-lua-api-docs.js`（与 `doc/*.md` 文档桩同源、同一次运行）。
 -- 事实源：同目录 `lua_api_surface.json`——运行期 `_G` 探针导出的 API 面基线，由快照门钉住。
--- 参数名与类型来自绑定源码的签名推断；推断不到的（未定位到绑定点、或签名形状解析不出）发成 `---@param ... any`，本文件 3 个；另有 52 个真的不收参数。两种声明不合并（合并 = 假诊断）。
+-- 参数名与类型来自绑定源码的签名推断；推断不到的（未定位到绑定点、或签名形状解析不出）发成 `---@param ... any`，本文件 3 个；另有 58 个真的不收参数。两种声明不合并（合并 = 假诊断）。
 -- 返回类型在绑定源码里没有事实可依据，一律 `any`：不拿"没有信息"冒充"返回 nil"，否则
 -- `local h = audio.play(x)` 会被 LuaLS 判成拿到 nil。
 -- 装进工程：编辑器菜单「项目 → 导出 Lua 类型提示（LuaLS）」会把这份写到工程根 `.cache/`，
@@ -912,6 +912,45 @@ function nav.grid_info(id) end
 ---@param blocked boolean
 ---@return any
 function nav.set_blocked(id, x, y, blocked) end
+
+--- 一条到中继服务器（`ClashRoyale/server/server.mjs`）的长连接。桌面走裸 TCP
+--- net：运行期 API 面基线里的 8 个函数
+net = {}
+
+--- 这个进程/页面是否被要求"启动就联机"。桌面读环境变量 `RUSTLUA_NET_AUTO`，
+---@return any
+function net.auto_start() end
+
+--- 主动断开当前连接（没有连接时是空操作）。连接中/等待中/已配对都会转为 `closed`；
+---@return any
+function net.close() end
+
+--- 连接中继服务器并加入房间。已有连接会先关闭；房间名必须匹配 `[A-Za-z0-9_-]{1,32}`。
+---@param server string
+---@param room string
+---@return any
+function net.connect(server, room) end
+
+--- 默认房间码：桌面取 `RUSTLUA_NET_ROOM`，浏览器取查询参数 `?room=`，都没有时是 `royale`。
+---@return any
+function net.default_room() end
+
+--- 默认服务器地址：桌面取 `RUSTLUA_NET_SERVER`，默认 `tcp://127.0.0.1:8787`；
+---@return any
+function net.default_server() end
+
+--- 取一条已经到达的二进制消息（FIFO）。空字符串也是一条消息；没有消息时返回 `nil`。
+---@return any
+function net.recv() end
+
+--- 发送一条二进制消息（对端 `net.recv` 原样收到）。只在 `online` 状态可发；
+---@param bytes string
+---@return any
+function net.send(bytes) end
+
+--- 读取连接状态表，并把传输层已到达的事件并入状态（桌面侧在此刻收事件）。
+---@return any
+function net.status() end
 
 --- particles：运行期 API 面基线里的 2 个函数
 particles = {}
