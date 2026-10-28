@@ -682,9 +682,10 @@ pub(crate) fn show_workspace(context: &egui::Context, editor: &mut EditorApp) {
     sync_visibility(&mut dock_state, editor);
     if editor.pending_ui_studio_focus {
         editor.pending_ui_studio_focus = false;
-        // 内嵌的 UI 检查器画在「属性」标签里：它若被 AI 助手挡在后面，打开 UI 工作室
-        // 就等于什么也没多看到。先把属性标签带到前台（用户关掉了属性面板时跳过，
-        // 不强行补回），再把焦点交给 UI 工作室。
+        // UI 节点树/检查器分别画在「层级」「属性」标签里：它们若被别的标签挡在后面，
+        // 打开 UI 工作室就等于什么也没多看到。先把这两块带到前台（用户关掉了面板时
+        // 跳过，不强行补回），再把焦点交给 UI 工作室。
+        let _ = focus_tab(&mut dock_state, DockTab::Hierarchy);
         let _ = focus_tab(&mut dock_state, DockTab::Inspector);
         let _ = focus_tab(&mut dock_state, DockTab::UiStudio);
     }

@@ -1,20 +1,17 @@
-//! M76-04：UI Studio 面板（egui 薄壳）：画布、层级、令牌、资产与提案箱。
+//! M76-04：UI Studio 面板（egui 薄壳）：画布、令牌、资产与提案箱。
 //!
 //! 状态与动作全在 `editor::ui_studio::UiStudio`；这里只负责绘制与转调。
 //! 写入仍走 Spec 宿主的提案 → 接受/撤销/拒绝，面板不直接改 `.ui.json`。
 //!
-//! 节点检查器不在这里：它内嵌在通用属性面板里（`ui_studio_inspector.rs`），工作区
-//! 停在 UI 工作室标签时属性面板整体切过去，本标签因此只剩画布与结构操作。
+//! 节点树与节点检查器都不在这里：它们内嵌在通用面板里（`ui_studio_hierarchy.rs`、
+//! `ui_studio_inspector.rs`），工作区停在 UI 工作室标签时层级/属性面板整体切过去，
+//! 本标签因此只留画布与文档级操作。
 
 use crate::EditorApp;
-use editor::ui_studio::{
-    AlignMode, AssetCandidate, DistributeAxis, PreviewResolution, SnapGuides, UiStudio,
-};
+use editor::ui_studio::{AssetCandidate, PreviewResolution, SnapGuides, UiStudio};
 use eframe::egui;
-use rustlua_ui_spec::{ResizeHandle, SliceRegion, UiNodeKind};
-use std::collections::{BTreeMap, BTreeSet};
-
-use super::tree;
+use rustlua_ui_spec::{ResizeHandle, SliceRegion};
+use std::collections::BTreeMap;
 
 /// 拖动吸附阈值（设计像素）：比这个更近才吸到参考线。
 const SNAP_THRESHOLD: f32 = 6.0;
@@ -706,163 +703,6 @@ fn node_rect(rows: &[rustlua_ui_spec::LayoutRect], key: &str) -> Option<[f32; 4]
     rows.iter().find(|row| row.key == key).map(|row| row.rect)
 }
 
-/// 可添加的控件类型（顺序即下拉框顺序）；新节点布局由模型按类型给默认值。
-fn addable_kinds() -> Vec<(UiNodeKind, &'static str)> {
-    vec![
-        (UiNodeKind::Panel { src: None }, "panel"),
-        (
-            UiNodeKind::Container {
-                direction: Default::default(),
-                padding: None,
-                spacing: None,
-                justify: Default::default(),
-                align: Default::default(),
-                columns: None,
-            },
-            "container",
-        ),
-        (
-            UiNodeKind::Text {
-                text: "文本".to_owned(),
-                rich_text: false,
-            },
-            "text",
-        ),
-        (
-            UiNodeKind::Image {
-                src: String::new(),
-                nine_slice: None,
-            },
-            "image",
-        ),
-        (
-            UiNodeKind::Button {
-                text: Some("按钮".to_owned()),
-                src: None,
-            },
-            "button",
-        ),
-        (
-            UiNodeKind::Toggle {
-                text: Some("开关".to_owned()),
-                checked: false,
-            },
-            "toggle",
-        ),
-        (
-            UiNodeKind::Slider {
-                min: 0.0,
-                max: 1.0,
-                value: 0.5,
-            },
-            "slider",
-        ),
-        (UiNodeKind::Progress { value: 0.5 }, "progress"),
-        (
-            UiNodeKind::Scrollbar {
-                value: 0.0,
-                size: 0.4,
-                direction: Default::default(),
-                handle: None,
-            },
-            "scrollbar",
-        ),
-        (UiNodeKind::Input { placeholder: None }, "input"),
-        (UiNodeKind::ScrollView { horizontal: false }, "scroll_view"),
-        (UiNodeKind::Mask { padding: None }, "mask"),
-        (
-            UiNodeKind::CanvasGroup {
-                alpha: 1.0,
-                interactable: true,
-                blocks_raycasts: true,
-            },
-            "canvas_group",
-        ),
-        (UiNodeKind::List { virtualized: false }, "list"),
-        (UiNodeKind::Grid { columns: 2 }, "grid"),
-        (UiNodeKind::Tabs { selected: 0 }, "tabs"),
-        (UiNodeKind::Modal, "modal"),
-        (
-            UiNodeKind::Tooltip {
-                text: "提示".to_owned(),
-            },
-            "tooltip",
-        ),
-        (UiNodeKind::Spacer, "spacer"),
-        (UiNodeKind::SafeArea, "safe_area"),
-    ]
-}
-
-/// 多选对齐/分布 + 添加子节点：与 Unity 的 Align/Distribute 和 Hierarchy 菜单同语义。
-fn draw_edit_ops(
-    ui: &mut egui::Ui,
-    studio: &UiStudio,
-    add_child_kind: &mut usize,
-    status: &mut String,
-) {
-    let count = studio.selection_count();
-    ui.horizontal_wrapped(|ui| {
-        ui.label(format!("对齐（已选 {count}）"));
-        for mode in AlignMode::ALL {
-            if ui
-                .add_enabled(count >= 2, egui::Button::new(mode.label()))
-                .clicked()
-            {
-                let outcome = studio
-                    .align_selection(mode)
-                    .map_err(|error| error.to_string());
-                report_proposal(outcome, mode.label(), status);
-            }
-        }
-        ui.separator();
-        for (axis, label) in [
-            (DistributeAxis::Horizontal, "水平分布"),
-            (DistributeAxis::Vertical, "垂直分布"),
-        ] {
-            if ui
-                .add_enabled(count >= 3, egui::Button::new(label))
-                .clicked()
-            {
-                let outcome = studio
-                    .distribute_selection(axis)
-                    .map_err(|error| error.to_string());
-                report_proposal(outcome, label, status);
-            }
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.label("添加子节点");
-        let kinds = addable_kinds();
-        let index = (*add_child_kind).min(kinds.len() - 1);
-        egui::ComboBox::from_id_salt("ui_studio_add_child_kind")
-            .selected_text(kinds[index].1)
-            .show_ui(ui, |ui| {
-                for (candidate, (_, label)) in kinds.iter().enumerate() {
-                    ui.selectable_value(add_child_kind, candidate, *label);
-                }
-            });
-        let parent = studio
-            .selection()
-            .filter(|key| studio.accepts_children(key))
-            .map(str::to_owned);
-        if ui
-            .add_enabled(parent.is_some(), egui::Button::new("添加到选中"))
-            .clicked()
-            && let Some(parent) = parent
-        {
-            match studio.add_node(&parent, kinds[index].0.clone()) {
-                Ok((proposal, key)) => {
-                    *status = format!(
-                        "已生成添加提案：{parent} → {key}（{}）",
-                        proposal.proposal_id
-                    );
-                }
-                Err(error) => *status = error.to_string(),
-            }
-        }
-    });
-}
-
 /// 屏幕点落在哪个手柄上；四角优先，其次是距边 6px 的带状区域。
 fn handle_at(point: egui::Pos2, rect: egui::Rect) -> Option<ResizeHandle> {
     let tol = 7.0;
@@ -1387,53 +1227,8 @@ fn draw_slice_form(
     wrote
 }
 
-/// 层级拖动落点 → (父级 key, 插入下标)。中线附近落成子节点，靠边落成兄弟。
-fn hierarchy_drop(
-    studio: &UiStudio,
-    source: &str,
-    target: &str,
-    pointer_y: f32,
-    target_rect: egui::Rect,
-) -> Option<(String, Option<i32>)> {
-    if source == target || is_descendant(studio, source, target) {
-        return None;
-    }
-    let slot =
-        tree::DropSlot::from_pointer(target_rect, pointer_y, studio.accepts_children(target));
-    if slot == tree::DropSlot::Child {
-        return Some((target.to_owned(), None));
-    }
-    let (parent, index) = studio.parent_and_index(target)?;
-    // 同一父级里先把源摘走会前移目标下标。
-    let same_parent_source = studio
-        .parent_and_index(source)
-        .filter(|(source_parent, _)| *source_parent == parent)
-        .map(|(_, source_index)| source_index);
-    Some((
-        parent,
-        Some(tree::sibling_index(index, slot, same_parent_source) as i32),
-    ))
-}
-
-/// `node` 是否在 `ancestor` 的子树里（含自身）：把节点拖进自己的子树没有落点。
-fn is_descendant(studio: &UiStudio, ancestor: &str, node: &str) -> bool {
-    let mut current = Some(node.to_owned());
-    while let Some(key) = current {
-        if key == ancestor {
-            return true;
-        }
-        current = studio.parent_and_index(&key).map(|(parent, _)| parent);
-    }
-    false
-}
-
-/// 预设落盘的默认路径（「导出为 UI 预设」）：工程内相对路径，与手写文档同一扩展名。
-/// 目标已存在时 `export_prefab` 会直接拒绝——导出只负责新建，不覆盖别人正在编辑的文档。
-fn prefab_document_path(key: &str) -> String {
-    format!("ui/prefabs/{key}.ui.json")
-}
-
-/// 提交结果写进状态行；UI 属性联动面板（`ui_studio_inspector.rs`）共用同一套措辞。
+/// 提交结果写进状态行；UI 层级/属性联动面板（`ui_studio_hierarchy.rs`、
+/// `ui_studio_inspector.rs`）共用同一套措辞。
 pub(super) fn report_proposal(
     outcome: Result<rustlua_ui_spec::UiProposal, String>,
     action: &str,
@@ -1549,14 +1344,10 @@ impl EditorApp {
             canvas_pan,
             canvas_textures,
             canvas_paints,
-            hierarchy_rows,
             proposal_selection,
             token_name,
             token_value,
-            hierarchy_drag,
             canvas_drag,
-            wrap_key,
-            add_child_kind,
             asset_selected,
             asset_license,
             asset_textures,
@@ -1574,8 +1365,8 @@ impl EditorApp {
         *canvas_paints += 1;
         draw_toolbar(ui, studio);
         ui.separator();
-        // 画布放在层级之前：面板高度有限时先保证画布可见（证据截图与日常编辑都以
-        // 画布为主），令牌与提案箱向下滚动。
+        // 画布独占本标签：节点树与层级操作内嵌在通用层级面板里（`ui_studio_hierarchy.rs`），
+        // 令牌/资产/提案箱向下滚动。
         draw_canvas(
             ui,
             studio,
@@ -1585,157 +1376,6 @@ impl EditorApp {
             canvas_drag,
             status,
         );
-        ui.separator();
-        let rows = studio.hierarchy();
-        *hierarchy_rows = rows.len() as u64;
-        let selected_keys: BTreeSet<String> = studio.selected_keys().into_iter().collect();
-        let additive = ui.input(|input| {
-            input.modifiers.command || input.modifiers.ctrl || input.modifiers.shift
-        });
-        let mut row_rects: Vec<(String, egui::Rect)> = Vec::new();
-        // 检查器搬到右侧联动标签（UI 属性）后，层级独占本标签的整幅宽度；高度仍封顶，
-        // 下面的层级操作/令牌/资产/提案不会被无限往下推。
-        egui::ScrollArea::vertical()
-            .id_salt("ui_studio_hierarchy")
-            .max_height(240.0)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                for row in &rows {
-                    let label = format!(
-                        "{} · {}",
-                        row.key,
-                        crate::util::widget_display_name(row.kind)
-                    );
-                    let selected = selected_keys.contains(&row.key);
-                    // 与场景层级同一套行：缩进参考线 + 可点可拖的标签。
-                    let row_response = ui
-                        .horizontal(|ui| {
-                            ui.set_min_width(ui.available_width());
-                            tree::indent(ui, row.depth);
-                            tree::label_button(
-                                ui,
-                                selected,
-                                true,
-                                egui::Sense::click_and_drag(),
-                                label,
-                            )
-                        })
-                        .inner
-                        .on_hover_text("拖动改父级/排序；点击选中，Ctrl/Shift 加选");
-                    if row_response.clicked() {
-                        if additive {
-                            studio.toggle_select(&row.key);
-                        } else {
-                            studio.select(&row.key);
-                        }
-                    }
-                    if row_response.drag_started() {
-                        *hierarchy_drag = Some(row.key.clone());
-                    }
-                    row_rects.push((row.key.clone(), row_response.rect));
-                }
-                // 拖动中的落点提示：与场景层级同一条横线/描边。
-                if let Some(source) = hierarchy_drag.as_ref()
-                    && let Some(point) = ui.input(|input| input.pointer.interact_pos())
-                    && let Some((target, rect)) =
-                        row_rects.iter().find(|(_, rect)| rect.contains(point))
-                {
-                    let slot = tree::DropSlot::from_pointer(
-                        *rect,
-                        point.y,
-                        studio.accepts_children(target),
-                    );
-                    let valid = hierarchy_drop(studio, source, target, point.y, *rect).is_some();
-                    tree::paint_drop_target(ui.painter(), *rect, slot, valid);
-                }
-            });
-
-        // 层级拖动落点：中线以上/下是兄弟，中间是子节点（叶子控件不做父级）。
-        if let Some(source) = hierarchy_drag.clone() {
-            if ui.input(|input| input.pointer.any_down()) {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-            }
-            if ui.input(|input| input.pointer.any_released()) {
-                if let Some(point) = ui.input(|input| input.pointer.interact_pos())
-                    && let Some((target, rect)) =
-                        row_rects.iter().find(|(_, rect)| rect.contains(point))
-                {
-                    *status = match hierarchy_drop(studio, &source, target, point.y, *rect) {
-                        Some((parent, index)) => match studio.move_node(&source, &parent, index) {
-                            Ok(proposal) => format!(
-                                "已生成移动提案：{} → {}（revision {}）",
-                                source,
-                                parent,
-                                proposal.base_revision + 1
-                            ),
-                            Err(error) => error.to_string(),
-                        },
-                        None => format!("{source} 没有有效落点"),
-                    };
-                }
-                *hierarchy_drag = None;
-            }
-        }
-
-        // 层级操作：复制 / 删除 / 包裹进新容器，仍然全部走提案。
-        ui.horizontal(|ui| {
-            ui.label("层级操作");
-            let selected = studio.selection().map(str::to_owned);
-            if ui
-                .add_enabled(selected.is_some(), egui::Button::new("复制"))
-                .clicked()
-                && let Some(key) = selected.clone()
-            {
-                let outcome = studio
-                    .duplicate_node(&key)
-                    .map_err(|error| error.to_string());
-                report_proposal(outcome, "复制", status);
-            }
-            if ui
-                .add_enabled(selected.is_some(), egui::Button::new("删除"))
-                .clicked()
-                && let Some(key) = selected.clone()
-            {
-                let outcome = studio.remove_node(&key).map_err(|error| error.to_string());
-                report_proposal(outcome, "删除", status);
-            }
-            if ui
-                .add_enabled(selected.is_some(), egui::Button::new("导出为 UI 预设"))
-                .on_hover_text("把选中的子树落成 ui/prefabs/<节点>.ui.json")
-                .clicked()
-                && let Some(key) = selected.clone()
-            {
-                match studio.export_prefab(&key, &prefab_document_path(&key)) {
-                    Ok(accepted) => {
-                        *status = format!(
-                            "已导出预设：{}（版本 {}）",
-                            accepted.document, accepted.revision
-                        );
-                    }
-                    Err(error) => *status = error.to_string(),
-                }
-            }
-            ui.add(
-                egui::TextEdit::singleline(wrap_key)
-                    .desired_width(110.0)
-                    .hint_text("新容器标识"),
-            );
-            if ui
-                .add_enabled(
-                    selected.is_some() && !wrap_key.trim().is_empty(),
-                    egui::Button::new("包裹"),
-                )
-                .clicked()
-                && let Some(key) = selected
-            {
-                let outcome = studio
-                    .wrap_node(&key, wrap_key.trim())
-                    .map_err(|error| error.to_string());
-                report_proposal(outcome, "包裹", status);
-            }
-        });
-        draw_edit_ops(ui, studio, add_child_kind, status);
-
         ui.separator();
         draw_token_section(ui, studio, token_name, token_value, status);
         ui.separator();
@@ -1959,50 +1599,6 @@ mod tests {
     }
 
     #[test]
-    fn hierarchy_drop_maps_pointer_band_to_parent_or_sibling() {
-        let temp =
-            std::env::temp_dir().join(format!("rustlua-m76-hierarchy-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&temp);
-        write_spec(&temp);
-        let mut studio = UiStudio::new(&temp);
-        studio.open("ui/panel.ui.json").expect("打开文档");
-        let row = |y: f32| egui::Rect::from_min_size(egui::pos2(0.0, y), egui::vec2(100.0, 20.0));
-
-        assert_eq!(
-            hierarchy_drop(&studio, "title", "root", 10.0, row(0.0)),
-            Some(("root".to_owned(), None)),
-            "容器中线落成子节点"
-        );
-        assert_eq!(
-            hierarchy_drop(&studio, "title", "buy", 1.0, row(0.0)),
-            Some(("root".to_owned(), Some(0))),
-            "上带落成兄弟，且同父级源在前要先扣下标"
-        );
-        assert_eq!(
-            hierarchy_drop(&studio, "title", "buy", 19.0, row(0.0)),
-            Some(("root".to_owned(), Some(1))),
-            "下带落成兄弟：摘掉 title 后插到 buy 之后"
-        );
-        assert_eq!(
-            hierarchy_drop(&studio, "buy", "title", 10.0, row(0.0)),
-            Some(("root".to_owned(), Some(1))),
-            "叶子控件中线不能当父级，退化成“放到它后面”"
-        );
-        assert_eq!(hierarchy_drop(&studio, "buy", "buy", 10.0, row(0.0)), None);
-        assert_eq!(
-            hierarchy_drop(&studio, "root", "title", 10.0, row(0.0)),
-            None,
-            "不能把节点拖进自己的子树"
-        );
-        assert_eq!(
-            hierarchy_drop(&studio, "root", "buy", 19.0, row(0.0)),
-            None,
-            "拖进子树的兄弟带同样没有落点"
-        );
-        let _ = std::fs::remove_dir_all(&temp);
-    }
-
-    #[test]
     fn studio_tab_enters_the_dock_and_draws_its_canvas() {
         let examples = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../examples/game_api");
         let project = open_project(&examples).expect("样板工程");
@@ -2047,7 +1643,7 @@ mod tests {
         );
         assert!(
             app.ui_studio_panel.hierarchy_rows == 3,
-            "层级行必须交给共用行控件绘制（root/title/buy 三行），实际 {}",
+            "层级面板里的 UI 节点行必须交给共用行控件绘制（root/title/buy 三行），实际 {}",
             app.ui_studio_panel.hierarchy_rows
         );
         let _ = std::fs::remove_dir_all(&temp);

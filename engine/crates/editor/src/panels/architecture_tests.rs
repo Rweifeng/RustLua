@@ -104,6 +104,8 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     ("ui_studio.rs", 0),
     // M80：内嵌在属性面板里的 UI 节点检查器同样只生成提案，不写文档。
     ("ui_studio_inspector.rs", 0),
+    // M81：内嵌在层级面板里的 UI 节点树同样只生成提案，不写文档。
+    ("ui_studio_hierarchy.rs", 0),
 ];
 
 fn normalized(source: &str) -> String {

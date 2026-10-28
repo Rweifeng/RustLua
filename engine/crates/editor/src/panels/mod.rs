@@ -37,8 +37,10 @@ pub(crate) mod timeline;
 pub(crate) mod toolbar;
 /// 与模型无关的树控件原语（缩进/行标签/拖放落点），场景层级与 UI 工作室共用。
 pub(crate) mod tree;
-/// M76-04：UI Studio（层级/画布/令牌/资产/提案箱）。
+/// M76-04：UI Studio（画布/令牌/资产/提案箱；节点树与检查器内嵌在通用面板里）。
 pub(crate) mod ui_studio;
+/// M81：UI 节点树，内嵌在通用层级面板里（UI 工作室在前台时接管层级面板）。
+pub(crate) mod ui_studio_hierarchy;
 /// M80：UI 节点检查器，内嵌在通用属性面板里（UI 工作室在前台时接管属性面板）。
 pub(crate) mod ui_studio_inspector;
 

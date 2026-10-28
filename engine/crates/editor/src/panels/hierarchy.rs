@@ -397,6 +397,11 @@ impl EditorApp {
 
     /// 层级面板主体（M27-00 阶段 1：dock 标签直接渲染，外壳宽度只服务合成帧路径）。
     pub(crate) fn draw_hierarchy_body(&mut self, ui: &mut egui::Ui) {
+        // M81：工作区停在 UI 工作室标签时，本面板整体切成 UI 节点树（与属性面板内嵌
+        // UI 检查器同一套上下文替换）；切回 Scene/Game 即回到实体层级。
+        if self.draw_ui_studio_hierarchy_section(ui) {
+            return;
+        }
         // 场景文件集成：标题 + 「+」创建菜单 + 当前场景保存状态。
         ui.horizontal(|ui| {
             ui.heading("层级");
