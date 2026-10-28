@@ -345,6 +345,23 @@ pub(crate) fn focus_tab(state: &mut DockState<DockTab>, target: DockTab) -> bool
     }
 }
 
+/// 标签是否是**它所在标签组**的活动标签（跨所有表面，浮动窗也算）。
+///
+/// 与 [`Tree::find_active_focused`] 的区别：那个只看"当前聚焦"的那个叶子，窗口焦点
+/// 一旦落到别的叶子就回答不了"这个标签是不是正画着"；而 egui_dock 只画活动标签的
+/// body，所以"正画着"才是 M80 属性面板要问的问题。
+#[must_use]
+pub(crate) fn tab_is_active(state: &DockState<DockTab>, tab: DockTab) -> bool {
+    state.iter_surfaces().any(|surface| {
+        surface.node_tree().is_some_and(|tree| {
+            tree.iter().any(|node| match node {
+                Node::Leaf(leaf) => leaf.tabs.get(leaf.active.0) == Some(&tab),
+                _ => false,
+            })
+        })
+    })
+}
+
 /// 面板可见性 ↔ 树的成员关系（View 菜单只改 `show_*` 布尔，这里负责落到树上）。
 ///
 /// 查找必须跨**所有表面**：标签被用户拖成浮动窗口时它不在主表面，按主表面判断会每帧
@@ -474,7 +491,23 @@ fn add_tab(state: &mut DockState<DockTab>, tab: DockTab) {
                 .find_tab_from(|candidate| *candidate == DockTab::Game)
                 .or_else(|| tree.find_tab_from(|candidate| *candidate == DockTab::Scene))
             {
-                Some((node, index)) => tree[node].insert_tab((index.0 + 1).into(), tab),
+                Some((node, index)) => {
+                    let Node::Leaf(leaf) = &mut tree[node] else {
+                        return;
+                    };
+                    // 补进树 ≠ 用户打开了它：`insert_tab` 会把新标签设为活动标签，
+                    // 这里还原原活动标签。属性面板的上下文切换只由显式聚焦
+                    // （`pending_ui_studio_focus`）驱动，不能靠"刚补进树"触发。
+                    let previous = leaf.tabs.get(leaf.active.0).copied();
+                    leaf.insert_tab(index.0 + 1, tab);
+                    if let Some(position) = previous.and_then(|previous| {
+                        leaf.tabs
+                            .iter()
+                            .position(|candidate| *candidate == previous)
+                    }) {
+                        leaf.set_active_tab(position);
+                    }
+                }
                 None => tree.push_to_first_leaf(tab),
             }
         }
@@ -649,8 +682,15 @@ pub(crate) fn show_workspace(context: &egui::Context, editor: &mut EditorApp) {
     sync_visibility(&mut dock_state, editor);
     if editor.pending_ui_studio_focus {
         editor.pending_ui_studio_focus = false;
+        // 内嵌的 UI 检查器画在「属性」标签里：它若被 AI 助手挡在后面，打开 UI 工作室
+        // 就等于什么也没多看到。先把属性标签带到前台（用户关掉了属性面板时跳过，
+        // 不强行补回），再把焦点交给 UI 工作室。
+        let _ = focus_tab(&mut dock_state, DockTab::Inspector);
         let _ = focus_tab(&mut dock_state, DockTab::UiStudio);
     }
+    // M80：属性面板内嵌的 UI 检查器只看"UI 工作室标签此刻是不是它所在标签组的活动
+    // 标签"。这个判断放画之前做，面板 body 不必关心标签被拖到了哪个叶子。
+    editor.ui_studio_active = tab_is_active(&dock_state, DockTab::UiStudio);
     // 上一帧面板 body 里发出的聚焦请求（如工具栏 Play 自动切 Game）：树已放回、
     // 可见性已同步（标签被隐藏过时先补回再聚焦），画之前补应用。
     if let Some(tab) = editor.pending_workspace_focus.take() {
@@ -1031,6 +1071,37 @@ mod tests {
             node_of(&mut state, DockTab::Resource),
             node_of(&mut state, DockTab::Hierarchy),
             "层级应作为资源右侧的独立叶子回来，而不是叠成同一标签组"
+        );
+    }
+
+    /// M80：属性面板靠"UI 工作室标签是不是活动标签"决定是否内嵌 UI 检查器。
+    /// 切到别的标签（Scene/Game）就必须回到 false，否则属性会一直停在 UI 上下文中。
+    #[test]
+    fn ui_studio_active_follows_the_active_tab_only() {
+        let mut state = default_dock_state();
+        let mut editor = sample_app();
+        editor.show_ui_studio = true;
+        sync_visibility(&mut state, &editor);
+        assert!(
+            !tab_is_active(&state, DockTab::UiStudio),
+            "UI 工作室刚补进树时仍是后台标签，属性面板不该切上下文"
+        );
+        focus_tab(&mut state, DockTab::UiStudio);
+        assert!(
+            tab_is_active(&state, DockTab::UiStudio),
+            "聚焦 UI 工作室后它应是活动标签"
+        );
+        focus_tab(&mut state, DockTab::Scene);
+        assert!(
+            !tab_is_active(&state, DockTab::UiStudio),
+            "切回 Scene 后 UI 工作室不再是活动标签"
+        );
+
+        editor.show_ui_studio = false;
+        sync_visibility(&mut state, &editor);
+        assert!(
+            !tab_is_active(&state, DockTab::UiStudio),
+            "关掉 UI 工作室后这个判断必须为假"
         );
     }
 

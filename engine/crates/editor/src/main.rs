@@ -466,8 +466,13 @@ struct EditorApp {
     show_graph_panel: bool,
     /// M76-04 UI Studio 标签：默认隐藏，EditorApp 内由 View 菜单打开。
     show_ui_studio: bool,
-    /// 双击 `.ui.json` 后下一帧把焦点给 UI Studio（标签可能刚被补进树）。
+    /// 打开 UI Studio（View 菜单/双击 `.ui.json`/证据步骤）后下一帧把「UI 工作室」
+    /// 标签带到前台（它可能刚被补进树），并把「属性」标签一并带到前台——内嵌的
+    /// UI 检查器画在属性面板里，属性标签被助手挡住时它是看不到的。
     pending_ui_studio_focus: bool,
+    /// UI 工作室标签是否是它所在标签组的**活动**标签（每帧画之前由 `show_workspace`
+    /// 写入）。属性面板只在它为真时内嵌 UI 节点检查器，切回 Scene/Game 即回实体属性。
+    pub(crate) ui_studio_active: bool,
     /// M76-04 UI Studio 面板状态（打开文档只在面板内发生，不进场景文档）。
     ui_studio_panel: crate::panels::ui_studio::UiStudioPanel,
     /// P3-E03-2 图文档与画布状态（只活在进程内，不反向写场景文档）。
@@ -1180,6 +1185,7 @@ impl EditorApp {
             show_graph_panel: false,
             show_ui_studio: false,
             pending_ui_studio_focus: false,
+            ui_studio_active: false,
             ui_studio_panel: crate::panels::ui_studio::UiStudioPanel::default(),
             graph: crate::panels::graph::GraphPanelState::default(),
             timeline: crate::panels::timeline::TimelineState::default(),

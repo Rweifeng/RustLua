@@ -204,6 +204,12 @@ impl EditorApp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.heading("属性");
+                // M80：工作区停在 UI 工作室标签时，属性面板整体切到 UI 节点检查器
+                // （与"选中资源时显示资源详情"同一种上下文替换）；切回 Scene/Game
+                // 标签即恢复实体属性。检查器本体在 `panels/ui_studio_inspector.rs`。
+                if self.draw_ui_studio_inspector_section(ui) {
+                    return;
+                }
 // 资源面板选中资源时：属性面板显示资源详情，不显示实体属性。
                 if let Some(resource_path) = &self.selected_resource {
                     ui.heading("资源");

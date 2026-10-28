@@ -335,6 +335,9 @@ impl GuiEvidence {
                     ),
                 }
             }
+            // M80：标签可能刚补进树，聚焦请求挂给 `show_workspace`；属性面板据此
+            // 切到内嵌的 UI 节点检查器，证据图里能看到这块联动。
+            app.pending_ui_studio_focus = true;
             if let Some(state) = app.dock_state.as_mut() {
                 crate::dock::focus_tab(state, crate::dock::DockTab::UiStudio);
             }

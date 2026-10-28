@@ -1,15 +1,17 @@
-//! M76-04：UI Studio 面板（egui 薄壳）。
+//! M76-04：UI Studio 面板（egui 薄壳）：画布、层级、令牌、资产与提案箱。
 //!
 //! 状态与动作全在 `editor::ui_studio::UiStudio`；这里只负责绘制与转调。
 //! 写入仍走 Spec 宿主的提案 → 接受/撤销/拒绝，面板不直接改 `.ui.json`。
+//!
+//! 节点检查器不在这里：它内嵌在通用属性面板里（`ui_studio_inspector.rs`），工作区
+//! 停在 UI 工作室标签时属性面板整体切过去，本标签因此只剩画布与结构操作。
 
 use crate::EditorApp;
 use editor::ui_studio::{
-    AlignMode, AssetCandidate, DistributeAxis, InspectorEdit, InspectorSection, PreviewResolution,
-    SnapGuides, UiStudio,
+    AlignMode, AssetCandidate, DistributeAxis, PreviewResolution, SnapGuides, UiStudio,
 };
 use eframe::egui;
-use rustlua_ui_spec::{AnchorPreset, ResizeHandle, SliceRegion, UiNodeKind};
+use rustlua_ui_spec::{ResizeHandle, SliceRegion, UiNodeKind};
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::tree;
@@ -51,6 +53,8 @@ pub(crate) struct UiStudioPanel {
     pub(crate) canvas_paints: u64,
     /// 本帧交给行渲染的层级节点数（测试用来确认树走的是共用行控件，而不是空列表）。
     pub(crate) hierarchy_rows: u64,
+    /// 内嵌检查器最近一帧画出的字段行数（测试用来确认属性面板真的切到了 UI 上下文）。
+    pub(crate) inspector_rows: u64,
     /// 每个补丁提案的逐 op 勾选状态（true = 会被「接受选中」落盘）。
     pub(crate) proposal_selection: BTreeMap<String, Vec<bool>>,
     /// 令牌编辑：名字与值都先攒在输入框，提交时生成提案。
@@ -91,6 +95,7 @@ impl Default for UiStudioPanel {
             canvas_textures: BTreeMap::new(),
             canvas_paints: 0,
             hierarchy_rows: 0,
+            inspector_rows: 0,
             proposal_selection: BTreeMap::new(),
             token_name: String::new(),
             token_value: String::new(),
@@ -699,46 +704,6 @@ fn draw_canvas(
 /// 层级行里找某个节点的当前设计矩形（面板只读用途，不重新解析布局）。
 fn node_rect(rows: &[rustlua_ui_spec::LayoutRect], key: &str) -> Option<[f32; 4]> {
     rows.iter().find(|row| row.key == key).map(|row| row.rect)
-}
-
-/// 锚点预设短标签，顺序与 [`AnchorPreset::ALL`] 一致（九宫格 + 横/纵/全拉伸）。
-const ANCHOR_PRESET_LABELS: [&str; 12] = [
-    "左上", "上中", "右上", "左中", "居中", "右中", "左下", "下中", "右下", "横拉", "纵拉", "全铺",
-];
-
-/// 锚点预设面板：换锚点但保持当前矩形（与 Unity 的 Anchor Presets 同语义）。
-fn draw_anchor_presets(ui: &mut egui::Ui, studio: &UiStudio, key: &str, status: &mut String) {
-    let current = studio
-        .inspector_rows()
-        .into_iter()
-        .find(|row| row.field == "anchor")
-        .map(|row| row.value);
-    ui.label("锚点预设（保持当前矩形）");
-    egui::Grid::new(("ui_studio_anchor_presets", key))
-        .num_columns(3)
-        .spacing([2.0, 2.0])
-        .show(ui, |ui| {
-            for (index, preset) in AnchorPreset::ALL.iter().enumerate() {
-                let selected = current.as_deref() == Some(preset.as_str());
-                if ui
-                    .add(
-                        egui::Button::new(ANCHOR_PRESET_LABELS[index])
-                            .min_size(egui::vec2(34.0, 18.0))
-                            .selected(selected),
-                    )
-                    .on_hover_text(preset.as_str())
-                    .clicked()
-                {
-                    let outcome = studio
-                        .apply_anchor_preset(key, *preset)
-                        .map_err(|error| error.to_string());
-                    report_proposal(outcome, "锚点", status);
-                }
-                if (index + 1) % 3 == 0 {
-                    ui.end_row();
-                }
-            }
-        });
 }
 
 /// 可添加的控件类型（顺序即下拉框顺序）；新节点布局由模型按类型给默认值。
@@ -1468,7 +1433,8 @@ fn prefab_document_path(key: &str) -> String {
     format!("ui/prefabs/{key}.ui.json")
 }
 
-fn report_proposal(
+/// 提交结果写进状态行；UI 属性联动面板（`ui_studio_inspector.rs`）共用同一套措辞。
+pub(super) fn report_proposal(
     outcome: Result<rustlua_ui_spec::UiProposal, String>,
     action: &str,
     status: &mut String,
@@ -1587,7 +1553,6 @@ impl EditorApp {
             proposal_selection,
             token_name,
             token_value,
-            field_inputs,
             hierarchy_drag,
             canvas_drag,
             wrap_key,
@@ -1609,8 +1574,8 @@ impl EditorApp {
         *canvas_paints += 1;
         draw_toolbar(ui, studio);
         ui.separator();
-        // 画布放在层级/检查器之前：面板高度有限时先保证画布可见（证据截图与日常编辑
-        // 都以画布为主），令牌与提案箱向下滚动。
+        // 画布放在层级之前：面板高度有限时先保证画布可见（证据截图与日常编辑都以
+        // 画布为主），令牌与提案箱向下滚动。
         draw_canvas(
             ui,
             studio,
@@ -1628,130 +1593,62 @@ impl EditorApp {
             input.modifiers.command || input.modifiers.ctrl || input.modifiers.shift
         });
         let mut row_rects: Vec<(String, egui::Rect)> = Vec::new();
-        let mut inspector_apply: Option<(editor::ui_studio::InspectorRow, String)> = None;
-        ui.horizontal_top(|ui| {
-            ui.allocate_ui_with_layout(
-                egui::vec2(200.0, 240.0),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            for row in &rows {
-                                let label = format!(
-                                    "{} · {}",
-                                    row.key,
-                                    crate::util::widget_display_name(row.kind)
-                                );
-                                let selected = selected_keys.contains(&row.key);
-                                // 与场景层级同一套行：缩进参考线 + 可点可拖的标签。
-                                let row_response = ui
-                                    .horizontal(|ui| {
-                                        ui.set_min_width(ui.available_width());
-                                        tree::indent(ui, row.depth);
-                                        tree::label_button(
-                                            ui,
-                                            selected,
-                                            true,
-                                            egui::Sense::click_and_drag(),
-                                            label,
-                                        )
-                                    })
-                                    .inner
-                                    .on_hover_text("拖动改父级/排序；点击选中，Ctrl/Shift 加选");
-                                if row_response.clicked() {
-                                    if additive {
-                                        studio.toggle_select(&row.key);
-                                    } else {
-                                        studio.select(&row.key);
-                                    }
-                                }
-                                if row_response.drag_started() {
-                                    *hierarchy_drag = Some(row.key.clone());
-                                }
-                                row_rects.push((row.key.clone(), row_response.rect));
-                            }
-                            // 拖动中的落点提示：与场景层级同一条横线/描边。
-                            if let Some(source) = hierarchy_drag.as_ref()
-                                && let Some(point) = ui.input(|input| input.pointer.interact_pos())
-                                && let Some((target, rect)) =
-                                    row_rects.iter().find(|(_, rect)| rect.contains(point))
-                            {
-                                let slot = tree::DropSlot::from_pointer(
-                                    *rect,
-                                    point.y,
-                                    studio.accepts_children(target),
-                                );
-                                let valid = hierarchy_drop(studio, source, target, point.y, *rect)
-                                    .is_some();
-                                tree::paint_drop_target(ui.painter(), *rect, slot, valid);
-                            }
-                        });
-                },
-            );
-            ui.separator();
-            ui.vertical(|ui| {
-                let mut section = studio.section();
-                ui.horizontal(|ui| {
-                    for candidate in InspectorSection::ALL {
-                        if ui
-                            .selectable_label(section == candidate, candidate.label())
-                            .clicked()
-                        {
-                            section = candidate;
+        // 检查器搬到右侧联动标签（UI 属性）后，层级独占本标签的整幅宽度；高度仍封顶，
+        // 下面的层级操作/令牌/资产/提案不会被无限往下推。
+        egui::ScrollArea::vertical()
+            .id_salt("ui_studio_hierarchy")
+            .max_height(240.0)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                for row in &rows {
+                    let label = format!(
+                        "{} · {}",
+                        row.key,
+                        crate::util::widget_display_name(row.kind)
+                    );
+                    let selected = selected_keys.contains(&row.key);
+                    // 与场景层级同一套行：缩进参考线 + 可点可拖的标签。
+                    let row_response = ui
+                        .horizontal(|ui| {
+                            ui.set_min_width(ui.available_width());
+                            tree::indent(ui, row.depth);
+                            tree::label_button(
+                                ui,
+                                selected,
+                                true,
+                                egui::Sense::click_and_drag(),
+                                label,
+                            )
+                        })
+                        .inner
+                        .on_hover_text("拖动改父级/排序；点击选中，Ctrl/Shift 加选");
+                    if row_response.clicked() {
+                        if additive {
+                            studio.toggle_select(&row.key);
+                        } else {
+                            studio.select(&row.key);
                         }
                     }
-                });
-                studio.set_section(section);
-                if studio.selection_count() > 1 {
-                    ui.weak(format!(
-                        "多选 {} 个：检查器编辑主选中，对齐/分布用下方按钮",
-                        studio.selection_count()
-                    ));
+                    if row_response.drag_started() {
+                        *hierarchy_drag = Some(row.key.clone());
+                    }
+                    row_rects.push((row.key.clone(), row_response.rect));
                 }
-                let inspector = studio.inspector_rows();
-                if inspector.is_empty() {
-                    ui.weak(studio.section_placeholder());
-                } else {
-                    egui::Grid::new("ui_studio_inspector")
-                        .num_columns(3)
-                        .striped(true)
-                        .show(ui, |ui| {
-                            for row in &inspector {
-                                ui.label(&row.field);
-                                if row.read_only {
-                                    ui.weak(&row.value);
-                                    ui.label("");
-                                } else {
-                                    // 缓存键带 revision：接受提案后输入框自动回填新值。
-                                    let id = format!(
-                                        "{}/{}/{}",
-                                        studio.revision(),
-                                        studio.selection().unwrap_or(""),
-                                        row.field
-                                    );
-                                    let buffer =
-                                        field_inputs.entry(id).or_insert_with(|| row.value.clone());
-                                    ui.add(
-                                        egui::TextEdit::singleline(buffer)
-                                            .desired_width(220.0)
-                                            .font(egui::TextStyle::Monospace),
-                                    );
-                                    if ui.button("应用").clicked() {
-                                        inspector_apply = Some((row.clone(), buffer.clone()));
-                                    }
-                                }
-                                ui.end_row();
-                            }
-                        });
-                }
-                if section == InspectorSection::Layout
-                    && let Some(key) = studio.selection().map(str::to_owned)
+                // 拖动中的落点提示：与场景层级同一条横线/描边。
+                if let Some(source) = hierarchy_drag.as_ref()
+                    && let Some(point) = ui.input(|input| input.pointer.interact_pos())
+                    && let Some((target, rect)) =
+                        row_rects.iter().find(|(_, rect)| rect.contains(point))
                 {
-                    draw_anchor_presets(ui, studio, &key, status);
+                    let slot = tree::DropSlot::from_pointer(
+                        *rect,
+                        point.y,
+                        studio.accepts_children(target),
+                    );
+                    let valid = hierarchy_drop(studio, source, target, point.y, *rect).is_some();
+                    tree::paint_drop_target(ui.painter(), *rect, slot, valid);
                 }
             });
-        });
 
         // 层级拖动落点：中线以上/下是兄弟，中间是子节点（叶子控件不做父级）。
         if let Some(source) = hierarchy_drag.clone() {
@@ -1777,33 +1674,6 @@ impl EditorApp {
                     };
                 }
                 *hierarchy_drag = None;
-            }
-        }
-
-        if let Some((row, text)) = inspector_apply
-            && let Some(key) = studio.selection().map(str::to_owned)
-        {
-            match row.edit {
-                InspectorEdit::None => {}
-                InspectorEdit::LayoutField(field) => {
-                    let outcome = studio
-                        .set_layout_field(&key, field, &text)
-                        .map_err(|error| error.to_string());
-                    report_proposal(outcome, field.label(), status);
-                }
-                InspectorEdit::Style => {
-                    let style = text.trim().to_owned();
-                    let outcome = studio
-                        .set_style(&key, (!style.is_empty()).then_some(style.as_str()))
-                        .map_err(|error| error.to_string());
-                    report_proposal(outcome, "样式", status);
-                }
-                InspectorEdit::Event(event) => {
-                    let outcome = studio
-                        .set_event(&key, &event, text.trim())
-                        .map_err(|error| error.to_string());
-                    report_proposal(outcome, "事件", status);
-                }
             }
         }
 

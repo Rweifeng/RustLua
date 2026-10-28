@@ -102,6 +102,8 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     ("tree.rs", 0),
     // M76-04：UI Studio 只经 Spec 宿主提案写 `.ui.json`，不碰场景文档。
     ("ui_studio.rs", 0),
+    // M80：内嵌在属性面板里的 UI 节点检查器同样只生成提案，不写文档。
+    ("ui_studio_inspector.rs", 0),
 ];
 
 fn normalized(source: &str) -> String {

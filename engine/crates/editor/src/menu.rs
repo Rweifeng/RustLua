@@ -699,7 +699,14 @@ impl EditorApp {
             MenuAction::ToggleConsole => self.show_lua_console = !self.show_lua_console,
             MenuAction::ToggleTimeline => self.show_timeline_panel = !self.show_timeline_panel,
             MenuAction::ToggleGraph => self.show_graph_panel = !self.show_graph_panel,
-            MenuAction::ToggleUiStudio => self.show_ui_studio = !self.show_ui_studio,
+            MenuAction::ToggleUiStudio => {
+                self.show_ui_studio = !self.show_ui_studio;
+                // 与双击 `.ui.json` 同一条路径：打开即切到 UI 工作室标签，属性面板
+                // 随之切到内嵌的 UI 节点检查器（见 `ui_studio_inspector.rs`）。
+                if self.show_ui_studio {
+                    self.pending_ui_studio_focus = true;
+                }
+            }
             // 中央两个视图共用一条守卫（最后一个不许关）。
             MenuAction::ToggleSceneView => {
                 let visible = !self.show_scene_view;
