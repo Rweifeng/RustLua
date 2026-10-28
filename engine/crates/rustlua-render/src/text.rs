@@ -4,6 +4,11 @@ use crate::font::FontAtlas;
 use crate::font::FontAtlasError;
 use crate::font::FontVectorAtlas;
 
+/// Glyph size inside the built-in atlas: 5x7 pixels at the top-left of an
+/// 8x8 cell. The rest of the cell is transparent padding.
+const GLYPH_W: u32 = 5;
+const GLYPH_H: u32 = 7;
+
 /// The built-in monochrome ASCII glyph atlas used by the first text renderer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TextAtlas {
@@ -57,7 +62,14 @@ impl TextAtlas {
         self.width * 4
     }
 
-    /// Returns normalized UVs for one printable ASCII cell.
+    /// Returns normalized UVs for the 5x7 glyph inside one printable ASCII cell.
+    ///
+    /// The atlas cell is 8x8 with the glyph in the top-left and transparent
+    /// padding on the right/bottom. `build_bitmap` draws the glyph into a
+    /// `5xscale` by `7xscale` quad, so the UV must cover exactly the 5x7
+    /// content: sampling the whole 8x8 cell squeezes 8 texels into 5 px and
+    /// Nearest drops whole glyph columns (P loses its right stem and reads
+    /// as F at `font_size` 13).
     #[must_use]
     pub fn uv(&self, character: char) -> ([f32; 2], [f32; 2]) {
         let code = if character.is_ascii() && (character as u8) >= 32 && (character as u8) <= 127 {
@@ -71,8 +83,8 @@ impl TextAtlas {
         (
             [x as f32 / self.width as f32, y as f32 / self.height as f32],
             [
-                (x + 8) as f32 / self.width as f32,
-                (y + 8) as f32 / self.height as f32,
+                (x + GLYPH_W) as f32 / self.width as f32,
+                (y + GLYPH_H) as f32 / self.height as f32,
             ],
         )
     }
@@ -1035,6 +1047,27 @@ mod tests {
         let expected = (mesh.size, mesh.pixel_bounds());
         assert_eq!(measure_builtin_text("Wg", 2.0), Some(expected));
         assert_eq!(measure_builtin_text("Wg", 0.0), None);
+    }
+
+    #[test]
+    fn builtin_atlas_uv_covers_only_the_5x7_glyph() {
+        let atlas = TextAtlas::built_in();
+        let (min, max) = atlas.uv('P');
+        let texels = [
+            (max[0] - min[0]) * atlas.width() as f32,
+            (max[1] - min[1]) * atlas.height() as f32,
+        ];
+        assert!((texels[0] - GLYPH_W as f32).abs() < 1e-4);
+        assert!((texels[1] - GLYPH_H as f32).abs() < 1e-4);
+
+        // A 5x7 quad must sample exactly one texel per pixel column at scale 1,
+        // otherwise Nearest drops the glyph's right stem (P renders as F).
+        let mesh = TextLayout::build_bitmap("P", [0.0, 0.0], TextStyle::default(), &atlas).unwrap();
+        let u_max = mesh.vertices[1].uv[0];
+        let u_min = mesh.vertices[0].uv[0];
+        let quad_width = mesh.vertices[1].position[0] - mesh.vertices[0].position[0];
+        assert_eq!(quad_width, GLYPH_W as f32);
+        assert!((u_max - u_min) * atlas.width() as f32 <= quad_width);
     }
 
     #[test]
