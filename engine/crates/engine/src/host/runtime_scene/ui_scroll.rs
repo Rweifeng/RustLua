@@ -1,20 +1,22 @@
-//! M76-02：实体 UI 的滚动与裁剪。
+//! M76-02 / M80-02：实体 UI 的滚动、遮罩与透明度继承。
 //!
-//! 布局解算之后做三件事（顺序固定）：
+//! 布局解算之后做五件事（顺序固定）：
 //! 1. **内容尺寸**：滚动节点的内容包围盒 = 其子孙节点布局矩形的最大右下角，不含滚动节点自身；
 //! 2. **偏移**：`ui_scroll_offsets`（交互树按名字写）按轴向平移子孙矩形，越界值夹回范围；
-//! 3. **裁剪**：每个节点拿到所有滚动祖先视口矩形的交集，绘制与命中共用这份矩形。
+//! 3. **裁剪**：每个节点拿到所有滚动视口与 `Mask` 矩形的交集，绘制与命中共用这份矩形；
+//! 4. **透明度继承**：`CanvasGroup.alpha` 沿父链相乘，绘制按最终 alpha 合成；
+//! 5. **视口外条目不进装配**（[`RuntimeScene::scrolled_away_slots`]），
+//!    长列表的每帧代价从"总项数"降到"窗口项数"。
 //!
 //! 裁剪矩形存在 `ui_clip_rects` 而不是写进 `SceneDraw`：渲染层没有 scissor 字段，
 //! 图像按矩形裁 UV、文字按字形过滤（部分重叠的字形整块取舍），三条宿主走同一份网格。
-//!
-//! 第 4 件事（M79）：**视口外条目不进装配**（[`RuntimeScene::scrolled_away_slots`]），
-//! 长列表的每帧代价从"总项数"降到"窗口项数"。
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use rustlua_ui::ui_canvas_group::CanvasGroup;
 use rustlua_ui::ui_interaction::UiRect;
 use rustlua_ui::ui_interaction::UiScroll;
+use rustlua_ui::ui_mask::Mask;
 use rustlua_ui::ui_scene_layout::ResolvedUiNode;
 use rustlua_ui::ui_scroll_view::ScrollView;
 
@@ -24,19 +26,29 @@ use super::RuntimeScene;
 const SCROLL_CULL_MARGIN_PX: f32 = 1.0;
 
 impl RuntimeScene {
-    /// 在 `ensure_scene_ui_layout` 完成解析后调用：算滚动范围、平移子孙、生成裁剪矩形。
+    /// 在 `ensure_scene_ui_layout` 完成解析后调用：算滚动范围、平移子孙、生成裁剪矩形与
+    /// `CanvasGroup` 的累计 alpha。
     pub(super) fn apply_scroll_layout(&mut self, resolved: &mut BTreeMap<u64, ResolvedUiNode>) {
-        let scrolls: BTreeMap<u64, bool> = self.script.with_world(|world| {
-            let mut found = BTreeMap::new();
+        let (scrolls, masks, groups) = self.script.with_world(|world| {
+            let mut scrolls = BTreeMap::new();
             world.for_each::<ScrollView>(|id, scroll| {
-                found.insert(id.index() as u64, scroll.horizontal);
+                scrolls.insert(id.index() as u64, scroll.horizontal);
             });
-            found
+            let mut masks = BTreeMap::new();
+            world.for_each::<Mask>(|id, mask| {
+                masks.insert(id.index() as u64, *mask);
+            });
+            let mut groups = BTreeMap::new();
+            world.for_each::<CanvasGroup>(|id, group| {
+                groups.insert(id.index() as u64, *group);
+            });
+            (scrolls, masks, groups)
         });
-        if scrolls.is_empty() {
+        if scrolls.is_empty() && masks.is_empty() && groups.is_empty() {
             self.ui_scroll_ranges.clear();
             self.ui_clip_rects.clear();
             self.ui_scroll_shifts.clear();
+            self.ui_group_alpha.clear();
             return;
         }
         let base: BTreeMap<u64, UiRect> = resolved
@@ -90,20 +102,47 @@ impl RuntimeScene {
             }
         }
 
-        // 每个节点的累计平移与裁剪矩形：walk 父链，遇到滚动祖先就累加/求交。
+        // 每个节点的累计平移、裁剪矩形与 alpha：walk 父链，滚动祖先累加平移并求交视口，
+        // `Mask` 祖先求交裁剪矩形，`CanvasGroup` 祖先连乘 alpha。
         // 先算平移再求交：外层滚动节点的视口自身也可能被更外层推着走。
         let mut shifts: BTreeMap<u64, [f32; 2]> = BTreeMap::new();
         let mut clips: BTreeMap<u64, UiRect> = BTreeMap::new();
+        let mut alphas: BTreeMap<u64, f32> = BTreeMap::new();
+        let depth_limit = self.ui_scene_nodes.len() + 1;
         for &slot in resolved.keys() {
             let shift = self.accumulated_scroll_shift(slot, &ranges);
             let mut clip: Option<UiRect> = None;
+            let mut alpha = self
+                .ui_scene_nodes
+                .get(&slot)
+                .and_then(|node| node.canvas_group)
+                .map_or(1.0, |group| group.alpha);
             let mut ancestor = self.layout_parent(slot);
+            let mut guard = 0usize;
             while let Some(parent) = ancestor {
+                guard += 1;
+                if guard > depth_limit {
+                    break;
+                }
+                let parent_shift = self.accumulated_scroll_shift(parent, &ranges);
+                if let Some(node) = self.ui_scene_nodes.get(&parent) {
+                    if let Some(group) = node.canvas_group {
+                        alpha *= group.alpha;
+                    }
+                    if let Some(mask) = node.mask
+                        && let Some(rect) = base.get(&parent)
+                    {
+                        let masked = mask.clip_rect(rect.translated(parent_shift));
+                        clip = Some(match clip {
+                            Some(current) => current.intersect(masked).unwrap_or(UiRect::ZERO),
+                            None => masked,
+                        });
+                    }
+                }
                 if ranges.contains_key(&parent)
                     && let Some(viewport) = base.get(&parent)
                 {
-                    let viewport =
-                        viewport.translated(self.accumulated_scroll_shift(parent, &ranges));
+                    let viewport = viewport.translated(parent_shift);
                     clip = Some(match clip {
                         Some(current) => current.intersect(viewport).unwrap_or(UiRect::ZERO),
                         None => viewport,
@@ -114,6 +153,9 @@ impl RuntimeScene {
             shifts.insert(slot, shift);
             if let Some(clip) = clip {
                 clips.insert(slot, clip);
+            }
+            if alpha != 1.0 {
+                alphas.insert(slot, alpha.clamp(0.0, 1.0));
             }
         }
 
@@ -126,6 +168,7 @@ impl RuntimeScene {
         self.ui_scroll_ranges = ranges;
         self.ui_clip_rects = clips;
         self.ui_scroll_shifts = shifts;
+        self.ui_group_alpha = alphas;
     }
 
     fn layout_parent(&self, slot: u64) -> Option<u64> {
@@ -155,7 +198,7 @@ impl RuntimeScene {
     }
 
     /// `child` 是否在 `ancestor` 的布局子树里（父链闭环时按"不是"处理）。
-    fn is_layout_descendant(&self, child: u64, ancestor: u64) -> bool {
+    pub(super) fn is_layout_descendant(&self, child: u64, ancestor: u64) -> bool {
         let mut cursor = self.layout_parent(child);
         let mut guard = 0usize;
         while let Some(slot) = cursor {

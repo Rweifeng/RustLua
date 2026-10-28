@@ -26,6 +26,8 @@ mod api_surface;
 mod audio;
 mod camera;
 mod diagnostics;
+/// 门面棘轮：`script/` 的生产代码只经 `domain` 认领域 crate（见 `script/domain.rs`）。
+mod domain_facade;
 mod entity;
 mod globals;
 mod graph_runtime;

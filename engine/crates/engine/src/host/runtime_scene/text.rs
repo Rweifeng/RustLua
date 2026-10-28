@@ -21,6 +21,49 @@ use rustlua_render::text::{TextAtlas, TextLayout, TextMesh, TextStyle};
 use rustlua_ui::ui::UiText;
 use rustlua_ui::world_text::WorldText;
 
+use rustlua_render::text::{TextAlign, TextOverflow, TextVAlign, TextVOverflow};
+
+/// 场景 `Text` 组件 → 渲染排版样式（M80-03）。`box_size` 非空时启用矩形对齐/
+/// 换行/截断；点尺寸实体传 `None`，保持旧的 pivot 居中路径。
+pub(crate) fn ui_text_style(text: &UiText, box_size: Option<[f32; 2]>, alpha: f32) -> TextStyle {
+    let align = match text.align {
+        rustlua_ui::ui::TextAlign::Left => TextAlign::Left,
+        rustlua_ui::ui::TextAlign::Center => TextAlign::Center,
+        rustlua_ui::ui::TextAlign::Right => TextAlign::Right,
+    };
+    let valign = match text.valign {
+        rustlua_ui::ui::TextVAlign::Top => TextVAlign::Top,
+        rustlua_ui::ui::TextVAlign::Middle => TextVAlign::Middle,
+        rustlua_ui::ui::TextVAlign::Bottom => TextVAlign::Bottom,
+    };
+    let overflow = match text.overflow {
+        rustlua_ui::ui::TextOverflow::Overflow => TextOverflow::Overflow,
+        rustlua_ui::ui::TextOverflow::Wrap => TextOverflow::Wrap,
+        rustlua_ui::ui::TextOverflow::Truncate => TextOverflow::Truncate,
+        rustlua_ui::ui::TextOverflow::Ellipsis => TextOverflow::Ellipsis,
+    };
+    let voverflow = match text.voverflow {
+        rustlua_ui::ui::TextVOverflow::Overflow => TextVOverflow::Overflow,
+        rustlua_ui::ui::TextVOverflow::Truncate => TextVOverflow::Truncate,
+    };
+    TextStyle {
+        scale: text.effective_scale(),
+        color: [
+            text.color[0],
+            text.color[1],
+            text.color[2],
+            alpha.clamp(0.0, 1.0),
+        ],
+        box_size,
+        align,
+        valign,
+        overflow,
+        voverflow,
+        rich_text: text.rich_text,
+        ..Default::default()
+    }
+}
+
 use super::{
     FONT_ATLAS_TEXTURE_PATH, FrameVectorTextVertex, OverlayVertex, SceneDraw, TextRenderMode,
     VectorGlyphSnapshot, VectorSegmentSnapshot, WorldSpriteVertex, font_texture_path,
@@ -140,11 +183,19 @@ impl super::RuntimeScene {
     /// 紧致范围（包围框贴合文字用）。与渲染同路径：SDF 字体存在时用真实
     /// 字体，否则用内置 5x7 位图。
     pub fn measure_ui_text(&mut self, text: &str, scale: f32) -> ([f32; 2], [f32; 4]) {
+        self.measure_ui_text_styled(
+            text,
+            TextStyle {
+                scale,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// [`Self::measure_ui_text`] with a full typesetting style (alignment box,
+    /// wrap, rich text): the natural size and tight glyph bounds of that style.
+    pub fn measure_ui_text_styled(&mut self, text: &str, style: TextStyle) -> ([f32; 2], [f32; 4]) {
         self.ensure_font_atlas();
-        let style = TextStyle {
-            scale,
-            ..Default::default()
-        };
         if let Some(font) = &self.font_atlas {
             let mut font = font.lock().expect("font atlas lock");
             TextLayout::build(text, [0.0, 0.0], style, &mut font)
@@ -187,29 +238,37 @@ impl super::RuntimeScene {
     /// Measures scene-node UI text with the same backend choice as rendering.
     /// `auto` keeps the default-font heuristic; forced modes apply to every text.
     pub fn measure_scene_ui_text(&mut self, text: &UiText) -> ([f32; 2], [f32; 4]) {
-        let scale = text.effective_scale();
-        let use_vector =
-            self.should_render_vector(Some(text.font.as_str()), scale, text.text.chars().count());
+        self.measure_scene_ui_text_in(text, None)
+    }
+
+    /// [`Self::measure_scene_ui_text`] inside a layout box: alignment and wrap
+    /// move glyphs, so hit rects / editor bounds must use the same box as draw.
+    pub fn measure_scene_ui_text_in(
+        &mut self,
+        text: &UiText,
+        box_size: Option<[f32; 2]>,
+    ) -> ([f32; 2], [f32; 4]) {
+        let style = ui_text_style(text, box_size, 1.0);
+        let use_vector = self.should_render_vector(
+            Some(text.font.as_str()),
+            style.scale,
+            text.text.chars().count(),
+        );
         if use_vector
-            && let Some(measured) = self.measure_vector_text(&text.text, scale, &text.font)
+            && let Some(measured) = self.measure_vector_text_styled(&text.text, style, &text.font)
         {
             return measured;
         }
-        self.measure_ui_text(&text.text, scale)
+        self.measure_ui_text_styled(&text.text, style)
     }
 
-    pub(crate) fn measure_vector_text(
+    fn measure_vector_text_styled(
         &mut self,
         text: &str,
-        scale: f32,
+        style: TextStyle,
         font_asset: &str,
     ) -> Option<([f32; 2], [f32; 4])> {
         let atlas = self.ensure_vector_font(font_asset)?;
-        let style = TextStyle {
-            scale,
-            color: [1.0, 1.0, 1.0, 1.0],
-            ..Default::default()
-        };
         let mut atlas = atlas.lock().expect("vector atlas lock");
         let layout = TextLayout::build_vector(text, [0.0, 0.0], style, &mut atlas).ok()?;
         if layout.is_empty() {
@@ -303,22 +362,21 @@ impl super::RuntimeScene {
                 text.text.text.chars().count(),
             );
             if use_vector
-                && self.push_vector_text_run(
+                && self.push_vector_text_run_ui(
                     vector_vertices,
                     vector_glyphs,
                     vector_segments,
-                    &text.text.text,
+                    &text.text,
                     origin,
-                    text.text.effective_scale(),
-                    text.text.color,
-                    Some(&text.text.font),
+                    None,
                     width,
                     height,
+                    1.0,
                 )?
             {
                 continue;
             }
-            let (mesh, is_sdf, font_key) = self.layout_scene_text(&text.text, origin)?;
+            let (mesh, is_sdf, font_key) = self.layout_scene_text(&text.text, origin, 1.0, None)?;
             if self.world_sprite_depth {
                 // WP6：世界文字也进世界坐标深度通道。做法是把**像素空间**的字形顶点经
                 // `view_projection` 的逆映射回世界坐标——因此屏幕上的观感与 overlay 路径
@@ -384,13 +442,26 @@ impl super::RuntimeScene {
         position: [f32; 2],
         scale: f32,
         color: [f32; 3],
+        alpha: f32,
+    ) -> anyhow::Result<(TextMesh, bool)> {
+        self.layout_text_with_style(
+            text,
+            position,
+            TextStyle {
+                scale,
+                color: [color[0], color[1], color[2], alpha.clamp(0.0, 1.0)],
+                ..Default::default()
+            },
+        )
+    }
+
+    fn layout_text_with_style(
+        &mut self,
+        text: &str,
+        position: [f32; 2],
+        style: TextStyle,
     ) -> anyhow::Result<(TextMesh, bool)> {
         self.ensure_font_atlas();
-        let style = TextStyle {
-            scale,
-            color: [color[0], color[1], color[2], 1.0],
-            ..Default::default()
-        };
         if let Some(font) = &self.font_atlas {
             let mut font = font.lock().expect("font atlas lock");
             Ok(TextLayout::build(text, position, style, &mut font).map(|mesh| (mesh, true))?)
@@ -416,15 +487,64 @@ impl super::RuntimeScene {
         font_asset: Option<&str>,
         width: u32,
         height: u32,
+        alpha: f32,
+    ) -> anyhow::Result<bool> {
+        let style = TextStyle {
+            scale,
+            color: [color[0], color[1], color[2], alpha.clamp(0.0, 1.0)],
+            ..Default::default()
+        };
+        self.push_vector_text_run_styled(
+            vertices, glyphs, segments, text, position, style, font_asset, width, height,
+        )
+    }
+
+    /// Scene `Text` vector run with M80-03 typesetting (box alignment / wrap /
+    /// rich text). Kept separate from [`Self::push_vector_text_run`] so dynamic
+    /// and world text keep their legacy style.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn push_vector_text_run_ui(
+        &mut self,
+        vertices: &mut Vec<FrameVectorTextVertex>,
+        glyphs: &mut Vec<VectorGlyphSnapshot>,
+        segments: &mut Vec<VectorSegmentSnapshot>,
+        text: &UiText,
+        position: [f32; 2],
+        box_size: Option<[f32; 2]>,
+        width: u32,
+        height: u32,
+        alpha: f32,
+    ) -> anyhow::Result<bool> {
+        let style = ui_text_style(text, box_size, alpha);
+        self.push_vector_text_run_styled(
+            vertices,
+            glyphs,
+            segments,
+            &text.text,
+            position,
+            style,
+            Some(text.font.as_str()),
+            width,
+            height,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_vector_text_run_styled(
+        &mut self,
+        vertices: &mut Vec<FrameVectorTextVertex>,
+        glyphs: &mut Vec<VectorGlyphSnapshot>,
+        segments: &mut Vec<VectorSegmentSnapshot>,
+        text: &str,
+        position: [f32; 2],
+        style: TextStyle,
+        font_asset: Option<&str>,
+        width: u32,
+        height: u32,
     ) -> anyhow::Result<bool> {
         let atlas = self.ensure_vector_font(font_asset.unwrap_or_default());
         let Some(atlas) = atlas else {
             return Ok(false);
-        };
-        let style = TextStyle {
-            scale,
-            color: [color[0], color[1], color[2], 1.0],
-            ..Default::default()
         };
         let mut atlas = atlas.lock().expect("vector atlas lock");
         let layout = TextLayout::build_vector(text, position, style, &mut atlas)?;
@@ -526,18 +646,15 @@ impl super::RuntimeScene {
         &mut self,
         text: &UiText,
         position: [f32; 2],
+        alpha: f32,
+        box_size: Option<[f32; 2]>,
     ) -> anyhow::Result<(TextMesh, bool, String)> {
-        let effective_scale = text.effective_scale();
+        let style = ui_text_style(text, box_size, alpha);
         if !text.font.is_empty()
             && let Some(handle) = self.ensure_custom_font(&text.font)
         {
             let mesh = {
                 let mut atlas = handle.lock().expect("font atlas lock");
-                let style = TextStyle {
-                    scale: effective_scale,
-                    color: [text.color[0], text.color[1], text.color[2], 1.0],
-                    ..Default::default()
-                };
                 TextLayout::build(&text.text, position, style, &mut atlas)?
             };
             let key = font_texture_path(&text.font);
@@ -545,7 +662,7 @@ impl super::RuntimeScene {
             return Ok((mesh, true, key));
         }
         // 无自定义字体，或自定义字体缺失/不可读：回退默认字体路径。
-        let (mesh, is_sdf) = self.layout_text(&text.text, position, effective_scale, text.color)?;
+        let (mesh, is_sdf) = self.layout_text_with_style(&text.text, position, style)?;
         let key = if is_sdf {
             FONT_ATLAS_TEXTURE_PATH.to_owned()
         } else {

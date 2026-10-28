@@ -710,15 +710,26 @@ fn sample_project_index_cards_are_clickable() {
             "{name} 的卡片矩形是空的：{rect:?}"
         );
 
-        let mut input = InputSnapshot::default();
-        input.cursor_moved(
+        let point = (
             (rect.x + rect.w / 2.0) as f64,
             (rect.y + rect.h / 2.0) as f64,
         );
-        input.mouse_event(MouseButton::Left, true);
+        // click 在**抬起**时派发（M80-07）：按下与抬起要分两帧喂，
+        // 且抬起快照自己带一次"先按下再清边沿"，才有 `just_released`。
+        let mut press = InputSnapshot::default();
+        press.cursor_moved(point.0, point.1);
+        press.mouse_event(MouseButton::Left, true);
         runtime
-            .run_script_steps(1, 1.0 / 60.0, &input)
-            .unwrap_or_else(|error| panic!("点击 {name} 的卡片失败：{error}"));
+            .run_script_steps(1, 1.0 / 60.0, &press)
+            .unwrap_or_else(|error| panic!("按下 {name} 的卡片失败：{error}"));
+        let mut release = InputSnapshot::default();
+        release.cursor_moved(point.0, point.1);
+        release.mouse_event(MouseButton::Left, true);
+        release.finish_frame();
+        release.mouse_event(MouseButton::Left, false);
+        runtime
+            .run_script_steps(1, 1.0 / 60.0, &release)
+            .unwrap_or_else(|error| panic!("抬起 {name} 的卡片失败：{error}"));
         runtime
             .script
             .process_scene_transition()

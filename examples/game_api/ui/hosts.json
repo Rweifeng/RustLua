@@ -9,8 +9,28 @@
           "draw_order"
         ],
         "artifact": "artifacts/ui-matrix/pc.json",
-        "revision": 5733351176405973,
-        "note": "编辑器侧确定性导出（docs/75 §4.4）→ RuntimeScene 无头构建。版面逐键对照预览器：20 键、最大偏差 0.000 px。另有 11 个流向子树键此刻不对账——入库这版的预览器不推进流向子项（同一容器的子项全叠在容器中心，实测 g_1..g_4 都是 336.7,325、w_1..w_3 都是 590,285），只对它们断言运行时解出正尺寸；预览补齐后逐键纳回，见 docs/75 §14 第 4 条分歧。draw_order：30 个图块的提交顶点下标随文档前序单调递增，角点最大误差 0.0006 NDC；字形顶点 0（无头宿主没装字体图集），故层序只覆盖图块层。web/微信本批未做，留无条目 = untested。"
+        "revision": 2927121506108137,
+        "note": "编辑器侧确定性导出（docs/75 §4.4）→ RuntimeScene 无头构建，45 节点形状矩阵：九锚点 / 四边内缩 / percent + 位置 / 四种流向 / 按钮三事件，本批新加 rich_text 文本、toggle（value_changed）、slider（value_changed+drag）、progress、scrollbar（handle 子项）、mask、canvas_group、list 与一份带 states+transition 的按钮（hover/pressed 底色 + 0.15s smooth_step）。版面逐键对照预览器：33 键、最大偏差 0.000 px。另有 12 个键此刻不对账——11 个流向子树键（预览器不推进流向子项，同一容器的子项全叠在容器中心，实测 g_1..g_4 都是 336.7,325、w_1..w_3 都是 590,285）加 scroll_knob（宿主按 value 把滑块改写成 1080,255,16,72，预览器只算作者布局那一份），只对它们断言运行时解出正尺寸；预览补齐口径后逐键纳回，见 docs/75 §14 第 4 条分歧。draw_order：44 个图块的提交顶点下标随文档前序单调递增，角点最大误差 0.0006 NDC；字形顶点 0（无头宿主没装字体图集），故层序只覆盖图块层。Web/微信由 `scripts/verify/ui-host-evidence.ps1` 各跑一份无头 harness（wasm32 + 各自胶水），读数实现是同一份 `rustlua-ui-host-evidence`。"
+      },
+      "web": {
+        "command": "powershell -NoProfile -File scripts/verify/ui-host-evidence.ps1 -Target web",
+        "checks": [
+          "layout_rects",
+          "draw_order"
+        ],
+        "artifact": "artifacts/ui-matrix/web.json",
+        "revision": 2927121506108137,
+        "note": "Web harness：`--target web` 胶水在 Node 的 WebAssembly 里执行同一台 RuntimeScene，工程配置经 vfs 挂载；读数：版面 33 键（最大偏差 0 px）、块序 44 块（单调）；原始 vertices=612、segments=6、sdf_vertices=0——本 harness 不带工程资源，文本回落到内建图集，原始计数高于 pc；两项检查不含文本。不加载浏览器/小游戏 canvas 与 WebGL，也不证明 WXWebAssembly 真机行为（docs/52 R1）。"
+      },
+      "wechat": {
+        "command": "powershell -NoProfile -File scripts/verify/ui-host-evidence.ps1 -Target wechat",
+        "checks": [
+          "layout_rects",
+          "draw_order"
+        ],
+        "artifact": "artifacts/ui-matrix/wechat.json",
+        "revision": 2927121506108137,
+        "note": "微信 harness：同一份 wasm 产物按 `--target no-modules` 胶水装载（module.exports 补丁，与 wechat-minigame-harness 同款）；读数：版面 33 键（最大偏差 0 px）、块序 44 块（单调）；原始 vertices=612、segments=6、sdf_vertices=0——本 harness 不带工程资源，文本回落到内建图集，原始计数高于 pc；两项检查不含文本。不加载浏览器/小游戏 canvas 与 WebGL，也不证明 WXWebAssembly 真机行为（docs/52 R1）。"
       }
     }
   }

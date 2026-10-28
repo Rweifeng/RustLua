@@ -865,6 +865,7 @@ dependencies = [
  "rustlua-scene",
  "rustlua-scripting",
  "rustlua-ui",
+ "rustlua-ui-host-evidence",
  "rustlua-ui-spec",
  "rustlua-visual-script",
  "serde",
@@ -3402,6 +3403,7 @@ dependencies = [
  "rustlua-assets-import",
  "rustlua-scene",
  "rustlua-ui",
+ "rustlua-ui-scene-export",
  "rustlua-ui-spec",
  "serde",
  "serde_json",
@@ -3590,6 +3592,38 @@ dependencies = [
  "rustlua-math",
  "rustlua-scene",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "rustlua-ui-host-evidence"
+version = "0.1.1"
+dependencies = [
+ "engine",
+ "rustlua-scene",
+ "rustlua-ui",
+ "rustlua-ui-scene-export",
+ "rustlua-ui-spec",
+ "serde_json",
+]
+
+[[package]]
+name = "rustlua-ui-host-harness"
+version = "0.1.1"
+dependencies = [
+ "rustlua-infra",
+ "rustlua-ui-host-evidence",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "rustlua-ui-scene-export"
+version = "0.1.1"
+dependencies = [
+ "rustlua-scene",
+ "rustlua-ui",
+ "rustlua-ui-spec",
+ "serde_json",
 ]
 
 [[package]]

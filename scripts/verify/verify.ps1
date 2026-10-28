@@ -34,8 +34,17 @@ param(
     # 限制 cargo 编译并行度与 benchmark rayon 线程池上限，防止完整回归把 CPU/内存打满导致系统崩溃。
     # 未指定时自动取 CPU 核数的一半（最少 2），已足够在 8 核 / 16 GB 机器上把峰值内存与 CPU 占用
     # 控制在安全范围。CI 不受影响（runner 资源固定，可显式传 -MaxJobs 覆盖）。
-    [int]$MaxJobs = 0
+    [int]$MaxJobs = 0,
+    # 起跑前的「树是否在动」探针阈值（秒）：源文件在这个窗口内被写过就退 3（blocked，不是红）。
+    # 完整门要 25–45 分钟，边写边跑会把半保存态编译成假红（2026-10-27 实测三次）。
+    # 0 = 关闭探针；`-Quick` 不受影响（它的语义就是「刚存完，现在到底红不红」）。
+    [int]$TreeQuietSeconds = 60
 )
+
+# 证据模式（-Web / -Benchmarks / -WasmLua / -Coverage / -Metrics）的语义：
+# 只跑对应证据段，不串行跑预检与主门；完整认证仍然是不带这些开关跑一次。
+# 这样 Web/基准不会因为无关的文档/lint 在途红而“一行都没执行”（M78 §26.3 第 24 条）。
+# 预检跳过时会显式打印未验证的步骤——跳过绝不写成通过。
 
 # ── -Quick：回答「这棵树现在是不是红的」的便宜读数 ─────────────────────────────
 # 为什么需要它：pre-commit hook 只镜像 CI 的 lint job（`git diff --cached --check` + fmt + clippy），
@@ -328,7 +337,36 @@ if ($cleanedBytes -gt 0) {
     Write-Host "  no stale artifacts found" -ForegroundColor DarkGray
 }
 
-$runGates = -not $MvpOnly
+# 证据模式只跑自己的段：`-Mvp` 仍含全量门，`-MvpOnly` 仍跑预检（文档/版本等廉价门），
+# `-Security` 也保留预检（它要工具链锁定），其余五个证据开关不跑预检/主门。
+$evidenceOnly = $Web -or $Benchmarks -or $WasmLua -or $Coverage -or $Metrics
+$runPreflight = (-not $evidenceOnly) -or $MvpOnly -or $Security
+$runGates = -not ($MvpOnly -or $evidenceOnly)
+
+if ($runPreflight) {
+
+# 树稳定性探针（放在所有门之前，毫秒级）：源文件最近被写过就说明有人在边写边跑，
+# 后续 25–45 分钟的编译/测试读数全部不可信——这里退 **3 = blocked**（与 GPU/wasm 的
+# exit 3 同一语义），而不是跑完再交一份"看起来像回归"的日志。探针自己扫不到文件时判红
+# （配错的守卫不能放行）。`-Quick` 跳过：它的定义就是"刚存完，现在红不红"。
+# CI 上 checkout 把整棵树写在同一秒，wrapper 自己按 env:CI 显式跳过并打印原因。
+if (-not $Quick) {
+    Write-Step "Tree stability probe"
+    $treeQuietScript = Join-Path $projectRoot "scripts/verify/check-tree-quiet.ps1"
+    if (-not (Test-Path -LiteralPath $treeQuietScript)) {
+        throw "check-tree-quiet.ps1 missing: $treeQuietScript"
+    }
+    $treeOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File $treeQuietScript -QuietSeconds $TreeQuietSeconds
+    $treeExit = $LASTEXITCODE
+    $treeOutput | ForEach-Object { Write-Host $_ }
+    if ($treeExit -eq 3) {
+        Write-Host "quality_gate_blocked reason=tree_busy window_s=$TreeQuietSeconds（读数不可信，不是代码红；等保存停手后重跑）" -ForegroundColor Yellow
+        exit 3
+    }
+    if ($treeExit -ne 0) {
+        throw "check-tree-quiet.ps1 failed (exit code $treeExit)"
+    }
+}
 
 # 文档一致性门（P4）：编号唯一、H1、索引可达、相对链接、历史路径、UTF-8 可解码。
 # 放在最前面：它只读文本、约 1 秒，且 `-MvpOnly` 也跑（文档失真不该被快速路径跳过）。
@@ -342,6 +380,37 @@ if (Test-Path $docsScript) {
         throw "check-docs.ps1 failed (exit code $docsExit)"
     }
 }
+
+# 文档声明数字门：README/docs 里人写的「42 个模块表 / 313 个 Lua 函数」「29 个运行时组件」
+# 必须等于机器事实（API 快照 + `ComponentId::ALL`）。`check-docs.ps1` 只查链接/编号/H1，
+# 查不出摘要数字过期；`gen-lua-api-docs.js --check` 只查文档桩清单，同样不覆盖摘要。
+# 纯文本 + 两个源文件，毫秒级，`-MvpOnly` 也跑。缺 node 时显式跳过并注明未验证，不写成通过。
+Write-Step "Documentation claims"
+$docClaimsScript = Join-Path $projectRoot "scripts/verify/check-doc-claims.mjs"
+if (Test-Path -LiteralPath $docClaimsScript) {
+    $nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $nodeCommand) {
+        Write-Host "doc_claims_skipped reason=node_missing (NOT verified)" -ForegroundColor Yellow
+    }
+    else {
+        $claimsOutput = & node $docClaimsScript 2>&1
+        $claimsExit = $LASTEXITCODE
+        $claimsOutput | ForEach-Object { Write-Host $_ }
+        if ($claimsExit -ne 0) {
+            throw "check-doc-claims.mjs failed (exit code $claimsExit)"
+        }
+        $claimsSelfTest = & node $docClaimsScript "--self-test" 2>&1
+        $claimsSelfExit = $LASTEXITCODE
+        $claimsSelfTest | ForEach-Object { Write-Host $_ }
+        if ($claimsSelfExit -ne 0) {
+            throw "check-doc-claims.mjs --self-test failed (exit code $claimsSelfExit)"
+        }
+    }
+}
+else {
+    throw "check-doc-claims.mjs missing: $docClaimsScript"
+}
+
 # 静默留痕门：把"已经决定要留痕的点"钉住。测试门守不住"只缺留痕"这类缺陷——见 docs/60 §10.7 的
 # 反面对照（把已修的静默点合并回旧写法，全量测试照样全绿）。纯文件检查、毫秒级，与文档门同段：
 # 放在最前面，`-MvpOnly` 也跑，留痕约定不该被快速路径跳过。
@@ -455,10 +524,21 @@ if ($Security) {
         $securityBlocked = $true
     }
 }
+}
+else {
+    Write-Host "==> Preflight skipped: evidence-only mode (-Web/-Benchmarks/-WasmLua/-Coverage/-Metrics)." -ForegroundColor Yellow
+    Write-Host "    NOT verified in this run: documentation consistency, documentation claims, silent-failure traces," -ForegroundColor Yellow
+    Write-Host "    vendor patches, toolchain lock, project version consistency, decoupling, supply-chain security." -ForegroundColor Yellow
+    Write-Host "    This run is evidence for the selected mode only; it is NOT a full quality-gate pass." -ForegroundColor Yellow
+}
 
-if ($runGates) {
+# `-Web` 只跑 Web 证据段：进入下面这个大块是为了复用它的日志/收尾结构，但主门那部分
+# 由块内的 `if ($runGates)` 守；其余证据开关（-Benchmarks/-WasmLua/-Coverage/-Metrics）
+# 的证据段在各自顶层，连这个块都不进。
+if ($runGates -or $Web) {
 Push-Location $engineRoot
 try {
+    if ($runGates) {
     Write-Step "Cargo metadata"
     Invoke-Checked cargo @("metadata", "--no-deps", "--format-version", "1") -QuietOutput
 
@@ -993,6 +1073,7 @@ try {
             Pop-Location
         }
     }
+    } # end of mainstream gate steps (skipped in evidence-only mode)
 
     # docs/54 §8-⑨：Web 平台的可重复证据。两层，退出码语义严格区分：
     #   ① 浏览器契约层（verify-webgl.ps1）：真实浏览器 + Node 静态服务器跑资源获取/解析、
@@ -1321,6 +1402,10 @@ try {
         # 「跳过绝不等于通过」：`-Quick` 的绿灯必须与「跑过全部」区分开——措辞与清单两处一起区分。
         $quickCompleted = $true
         Write-Host "`nQuick gate passed (PARTIAL). Log: $logPath" -ForegroundColor Green
+    }
+    elseif ($evidenceOnly) {
+        # 证据模式的绿灯只证明这一段证据，不证明主门/预检；措辞上必须与"门全绿"区分。
+        Write-Host "`nEvidence run completed (selected mode only; NOT a full quality-gate pass). Log: $logPath" -ForegroundColor Yellow
     }
     elseif ($securityBlocked) {
         # 环境受限不是通过：措辞与退出码都要与"全绿"区分。

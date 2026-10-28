@@ -122,7 +122,7 @@ History，但缺独立 UI 工作区与样式层。**选 A 的运行时 + B 的�
 
 | 契约 | 作用 | 关键字段 | 现状 |
 |---|---|---|---|
-| `UiSpec` | 可编辑、可版本化的 UI 文档 | `spec_version`、`document`、`tokens`、`styles`、`root`、`assets`、`bindings` | 已定义于 `engine/crates/rustlua-ui-spec/src/spec.rs`，22 项单测绿 |
+| `UiSpec` | 可编辑、可版本化的 UI 文档 | `spec_version`、`document`、`tokens`、`styles`、`root`、`assets`、`bindings` | 已定义于 `engine/crates/rustlua-ui-spec/src/spec.rs`，67 项单测绿（2026-10-28） |
 | `UiPatch` | AI 的增量修改，避免全量重写 | `base_revision`、`ops[]`（Replace/Insert/Remove/SetEvent/SetStyle） | `.../src/patch.rs` |
 | `UiProposal` | 人工审阅单位 | `proposal_id`、`kind`、`base_revision`、`diagnostics`、`diff`、`preview_png`、`cost`、`expires_at` | `.../src/proposal.rs` |
 | `AssetProvenance` | 生成资产的可追溯记录 | `asset_id`、`source`、`provider`、`model`、`prompt_hash`、`seed`、`license`、`reviewed`、`used_by` | `.../src/asset.rs` |
@@ -136,9 +136,15 @@ History，但缺独立 UI 工作区与样式层。**选 A 的运行时 + B 的�
 
 ### 3.3 能力矩阵（诚实边界）
 
-`Capabilities::core()` 只声明今天运行时真的支持的能力：5 种节点、`click`、无状态样式、无绑定/裁剪/富文本/
-虚拟列表。`Capabilities::planned()` 是目标态。**校验器以传入的能力为准**：AI 产出目标态字段时，
-在 M1/M4 未落地前会被稳定拒绝，而不是"看起来能跑"。
+`Capabilities::core()` 只声明今天运行时真的支持的能力。M80-07 收口后（2026-10-28）是
+**13 种节点**（panel / container / text / image / button / scroll_view / list / mask /
+canvas_group / toggle / slider / progress / scrollbar）、**9 个事件**（pointer_enter /
+pointer_exit / pointer_down / pointer_up / click / focus / submit / value_changed / drag）、
+**4 种状态样式**（hover / pressed / disabled / focused），`bindings`、`clipping`、`transitions`、
+`rich_text` 为真；只有**虚拟列表**仍为假（`list{virtualized=true}` 可写，但运行时窗口化未落地，
+导出端显式报错）。
+`Capabilities::planned()` 是目标态。**校验器以传入的能力为准**：AI 产出目标态字段时会被稳定拒绝，
+而不是"看起来能跑"。缺口清单见 [docs/76](76-UI子系统五星期收口.md) §7。
 
 ---
 
@@ -320,7 +326,7 @@ UI Studio 的价值取决于运行时闭环。M1 的优先级：
 
 | 门 | 量什么 | 通过标准 |
 |---|---|---|
-| 契约单测 | Spec/Patch/Proposal/Provenance 序列化与校验 | `cargo test -p rustlua-ui-spec` 22 项全绿（2026-10-24） |
+| 契约单测 | Spec/Patch/Proposal/Provenance 序列化与校验 | `cargo test -p rustlua-ui-spec` 67 项全绿（2026-10-28） |
 | 编译确定性 | 同 Spec 两次编译命令序列 | 字节等价 |
 | 布局 golden | 三档分辨率下节点矩形 | PC/Web/微信逐字段一致（误差 0） |
 | 绘制顺序 | 重叠层级的绘制序列 | 三宿主一致 |
@@ -335,7 +341,7 @@ UI Studio 的价值取决于运行时闭环。M1 的优先级：
 
 **反面对照**：每个新门必须跑一次"故意破坏"验证它会红，否则视为假绿。
 
-**本表是目标口径，不是当前状态。** 截至 2026-10-25，只有"布局 golden / 绘制顺序"的 **pc 半区**有真实读数（`m76_ui_matrix` + `ui/hosts.json`，细节见 §14）：**20 个键**逐键矩形对拍预览器，最大残差 **0.000 px**（门容差 0.51 px——运行时与预览器是两套解算器，上表的"误差 0"是要求，实测才是量出来的）；**另有 11 个流向子树键此刻不参与对账**，因为入库这版的预览器根本不推进流向子项（见 §14 第 4 条分歧），对它们只断言运行时解出正尺寸。绘制次序是 30 个图块各自在合并网格里找到预期角点（最大角点误差 0.0006 NDC ≈ 0.4 px）且顶点区间严格单调，字形层没有覆盖（无头宿主没有字体图集，字形顶点为 0）。web 与微信依然没有条目 = untested；"交互序列"这一行没有生产端。
+**本表是目标口径，不是当前状态。** 截至 2026-10-28，"布局 golden / 绘制顺序"的**三个宿主**都有真实读数（`m76_ui_matrix` + `scripts/verify/ui-host-evidence.ps1` + `ui/hosts.json`，细节见 §14 与 [docs/76](76-UI子系统五星期收口.md)）：矩阵是 45 节点，**33 个键**逐键矩形对拍预览器，最大残差 **0.000 px**（门容差 0.51 px——运行时与预览器是两套解算器，上表的"误差 0"是要求，实测才是量出来的）；**另有 12 个键**不参与对账——流向容器的子项及其子树（预览与运行时的列宽、流内 `percent` 口径未对齐，见 §14 第 4 条分歧）、`Scrollbar` 的 `handle` 子项（宿主按 `value` 改写矩形），对它们只断言运行时解出正尺寸。绘制次序是 44 个图块各自在合并网格里找到预期角点（最大角点误差 0.0006 NDC ≈ 0.4 px）且顶点区间严格单调，字形层没有覆盖（三个宿主都没有字体图集，字形顶点为 0）。PC / Web / 微信两项检查的读数逐位相同，但 Web/微信是 wasm 无头 harness（Node 里跑，不加载 canvas/WebGL，不证明 WXWebAssembly 真机行为），且不带工程资源、文本回落内建图集，原始顶点数高于 PC（264 vs 612）；"交互序列"这一行仍没有生产端。M80 把 v1 导出扩到 13 种节点（新增 toggle / slider / progress / scrollbar / list / mask / canvas_group）。
 
 ---
 
@@ -435,5 +441,7 @@ keydown/keyup/pointer，IME 键在 `frame_input.rs` 里是**明确丢弃**的；
 | 2026-10-25 | **三宿主 golden 的生产端（pc 半区，§10 那条"untested 不算通过"补上另一头）**：`ui_scene_export` 是编辑器侧确定性 `.ui.json`→`.scene` 桥，运行时不读 spec（按裁定不改运行时）；`m76_ui_matrix`（无头 example）把 `examples/game_api/ui/matrix.ui.json`（31 节点、零资产的形状矩阵：九锚点、insets、percent、横向/纵向/网格/换行四种流向、按钮三事件）经该桥喂进真实的运行时布局解算与网格绘制，逐键对拍预览器矩形、逐图块对拍绘制次序，两项全绿才写 `artifacts/ui-matrix/pc.json` 并登记进新建的 `ui/hosts.json`；`verify.ps1` 加一步「M76-① PC UI host evidence」把生产端本身钉进门（产物写 %TEMP%，不动工作区）；`.gitattributes` 给 `ui/*.ui.json`、`ui/hosts.json`、`artifacts/**/*.json` 钉 LF——`revision_hash` 逐字节，autocrlf 换 CRLF 会让别的机器一检出就把证据判成陈旧 | 读数：**第一笔 `ed8934ab` 的读数是工作树读数**（当时只跑了工作区，没复验提交树）——`ui_scene_export` 单测 17/17、`cargo test -p editor --lib` 275/275；example `revision=5733351176405973 entities=31 layout_max_delta=0.1333 draw_rank_max_error=0.0006`，与当时代入库的产物逐位相同（`cmp` 静默）；`ui_asset_gate` → `2 个工程 · 2 份 .ui.json · error 0 · warning 0 · 未测宿主 5`（那份读数里 `scanned=2` 是因为并行会话当下删了 `forge/shop/tavern.ui.json`，**同一门在不同树上的分母不一样**，写数必须带树）。**反面对照两条**：手改产物里的 `revision` → `warning 1 / 未测宿主 6`（按契约只降级不判红）；`--document ui/blacksmith.ui.json` 跑 example → exit 1 且**不生成**产物文件。而那句"31 键逐位相同"是对着并行会话**未提交**的 `preview.rs` 跑出来的，提交树上复现不了——复验与减证见下一行。**买到的新认知**（不是收尾顺带）：① `offsets` 在 spec/预览口径是"四边内缩"、运行时是"远锚边再加偏移"，导出漏取负号右/下锚整体漂移（`insets` 实测 2264 对 264），现已由 `offsets_export_negates_the_far_edges` 钉住；② 流向容器里的子项写 `offsets` 想让它在流里断开，运行时把它排进流塌成 0×0 而预览器让它退出流向——两侧口径不兼容的形状在导出端硬拒（`offsets_child_inside_flow_container_is_rejected`），v1 桥的原则是**表达不了就报错，不静默降级**（同样硬拒的还有 `grow`、`align_self`、时态样式、7 个之外的样式键） |
 | 2026-10-25 | **减证（第二笔，`ed8934ab` 的后续）**：按用户裁定"顶上补一笔减证、不改历史"。起因是把这批拿到**干净检出的 worktree** 复验——消费端门是绿的，但生产端 `m76_ui_matrix` 在提交树上 exit 1（`layout_max_delta=98.0`）、`cargo test -p editor --lib ui_scene_export` 15 过 2 红。根因不在桥：**入库这版的 `preview.rs` 不推进流向子项**，同一容器的子项全叠在容器中心（实测 `g_1..g_4` 都是 (336.7, 325)、`w_1..w_3` 都是 (590, 285)、`v_row_1/v_row_2` 中心同为 y=190），而运行时会推进；我那份"31 键全绿"的产物是对着并行会话**未提交**的 `preview.rs`（+347/−16，正在补这件事）bless 的。处置：`preview_unreconciled_keys`（流向子项**连同整棵子树**排除，只排一层不够——`corner` 实测 90 对 165）+ 这些键改断言"运行时解出正尺寸"，产物里记宿主矩形、**不记预览数字**（于是产物内容与预览器哪一版无关：两棵树跑出的 13583 字节逐位相同，`cmp` 静默）；内框口径不再靠预览，改由 `padded_flow_container_uses_inner_rect_for_children` 直接钉运行时的 `half = 140×50` | 提交树读数：`ui_scene_export` 17/17、example `layout_compared=20 layout_unreconciled=11 layout_max_delta=0.0000 draw_rank_max_error=0.0006`、`ui_asset_gate` → `汇总：2 个工程 · 4 份 .ui.json · error 0 · warning 0 · 资产 91 B · 未测宿主 11`（12 个证据槽里 `matrix.pc` 已测）；反面对照在提交树上重跑：手改**产物**的 `revision` → `warning 1 / 未测宿主 12`。**顺带量到清单本身不是判据**：只改 `ui/hosts.json` 声明的 `revision` 而产物不动 → 门毫无反应（`warning 0`），消费端校的是产物里的 `revision` 对文档实算哈希，hosts 那个数只是给人看的。**流程账**：一条"工作树绿"的证明不了提交树，本批两次靠 worktree 才抓住（另见 [[project-gate-worktree-target-pollution]]） |
 | 2026-10-25 | 本批**没买到的部分**：① web 与微信两个生产端仍缺（`hosts.json` 里无条目 = untested，不写成通过）；② 无头宿主没有字体图集，字形顶点为 0，所以 `draw_order` 只覆盖图块层（30 个图块），文字层次序仍是空白；③ 预览器与运行时的四条真实分歧本批只量化未修——`grow`（预览不实现）、`align_self`（同上）、网格列距（预览按内框等分列宽，运行时按自然尺寸 + spacing）、**流向子项不推进**（本批新量，见上一行）；`box_grid` 原先是靠把条目尺寸调到 66.6 让两边恰好相等才进矩阵的，属于绕开不是修好；④ 因此 pc 的版面证据此刻只覆盖 20 个非流向键，流向层是"断言正尺寸"而不是"两边一致"。修 `preview.rs` 另开批，补完后把 11 个键逐键纳回对账 | 三宿主一致性的"字形层"要等 web/微信批一起补；"流向层"等预览补齐后重刷一次产物即可纳回，`hosts.json` 的 note 里写明了这批键与实测值 |
+| 2026-10-27 | **M80 收口（docs/76）**：交互树默认开（空间导航 + 8 px 拖拽）、`Mask`/`CanvasGroup`、文本排版（对齐/换行/溢出/富文本）、Toggle/Slider/Progress/Scrollbar 四个运行时控件与 `ui.*` 取值面、编辑器多选/对齐/分布/12 锚点预设/数值布局行/6 px 吸附；v1 导出扩到 11 种节点 | 读数：`cargo test -q -p rustlua-ui-spec` 63、`-p rustlua-ui` 166、`-p rustlua-editor-ui-studio` 66、`-p editor --lib` 39、`engine --lib -- ui_` 46；`m76_ui_matrix --print-only` → `entities=31 layout_compared=20 layout_unreconciled=11 layout_max_delta=0.0000 draw_rank_max_error=0.0006`；滚动基线 `20.035656ms/帧`（debug）。**没买到**：web/微信证据、交互序列门、流向层 11 键对账、spec 侧富文本/虚拟列表/输入字段——见 docs/76 §7 |
+| 2026-10-28 | **M80-07（docs/76 §3.6、§5）**：spec 补 `rich_text` / `scrollbar` / `list{virtualized}` / `value_changed`·`drag`，状态过渡 `transition=时长:曲线` 接进运行时（复用 `ui_states`，未新造内核），click 改抬起触发；UI Studio「导出为 UI 预设」与 Scrollbar 创建模板；证据生产端从一份 example 抽成 `rustlua-ui-host-evidence`（pc/Web/微信共用），新增 `rustlua-ui-host-harness`（wasm-bindgen）与 `scripts/verify/ui-host-evidence.{ps1,mjs}`，三宿主写同一份 `ui/hosts.json` | 读数：`rustlua-ui-spec` 67、`rustlua-ui` 171、`rustlua-editor-ui-studio` 50、`rustlua-ui-scene-export` 21、`rustlua-ui-host-evidence` 8、`engine --lib -- ui_` 50（并行装 codec 表的竞态已修，见下）、`editor --lib` 39；`m76_ui_matrix` → `revision=2927121506108137 entities=45 layout_compared=33 layout_unreconciled=12 layout_max_delta=0.0000 draw_rank_max_error=0.0006`；web/微信 harness 的 `layout_rects`/`draw_order` 子树与 pc 逐位相同（原始顶点 pc 264 / wasm 612，文本回落内建图集）；`ui_asset_gate` → `3 份 .ui.json · error 0 · warning 0 · 未测宿主 6`（矩阵 3 槽全测，余下是 blacksmith/mcp_smoke）。**买到的新认知**：并行测试会撞 `ensure_installed` 的"检查后再装表"窗口，完整表被报成装表失败——已加进程内互斥；清单里 `artifact` 按**工程根**解析（`review.rs` 口径），写证据的脚本必须存工程相对路径，否则门永远判 untested |
 
 后续每批落地在本表追加一行：日期、提交、门读数（命令 + 结果），不写"已完成"四个字了事。

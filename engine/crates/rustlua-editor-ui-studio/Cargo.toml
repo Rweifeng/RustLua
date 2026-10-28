@@ -13,4 +13,5 @@ serde_json = "1"
 rustlua-assets-import.workspace = true
 rustlua-scene.workspace = true
 rustlua-ui.workspace = true
+rustlua-ui-scene-export.workspace = true
 rustlua-ui-spec.workspace = true

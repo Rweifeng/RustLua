@@ -998,21 +998,31 @@ mod tests {
                 "AnimationPlayer",
                 // 第 57 轮：统一之后的**唯一**相机组件（旧名 `Camera2D`/`Camera3D` 已从注册表删除）。
                 "Camera",
+                // M80-02：Mask / CanvasGroup 注册 schema 后自动进入通用编辑器。
+                "CanvasGroup",
                 "Collider",
                 // P3-R03-4：`Environment` 注册 schema 后自动进入通用编辑器。
                 "Environment",
                 "Image",
                 "Light",
+                "Mask",
                 "MeshRenderer",
                 "ParticleEmitter",
                 // 无载荷标记组件：注册 schema 后自动进入组件列表（没有字段行可画）。
                 "Persistent",
+                // M80-04：运行时值控件。
+                "Progress",
                 "Quad",
                 "RenderMode",
                 // M76-02：`ScrollView` 只有轴向一个字段，注册 schema 即进入通用编辑器。
                 "ScrollView",
+                // M80-04：运行时值控件。
+                "Scrollbar",
+                "Slider",
                 "Sprite",
                 "Text",
+                // M80-04：运行时值控件。
+                "Toggle",
                 // 唯一的变换组件（旧名 `Transform3D` 已从注册表删除）。
                 "Transform",
                 "UiLayout",

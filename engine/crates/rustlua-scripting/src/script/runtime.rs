@@ -13,6 +13,9 @@ use crate::script::api;
 use crate::script::call_entity_event_hook;
 use crate::script::call_entity_hook;
 use crate::script::call_optional;
+use crate::script::domain::ecs::entity::EntityId;
+use crate::script::domain::ecs::world::World;
+use crate::script::domain::lua_api::Handle;
 use crate::script::error::{LuaBridgeError, ScriptDebugger, bridge_error_parts};
 use crate::script::guard::{
     BudgetSlot, ContainOutcome, EntityHook, ScriptErrorPolicy, ScriptGuard,
@@ -22,9 +25,6 @@ use crate::script::require::{
     file_fingerprint, install_encoded_require_searcher, read_project_script,
 };
 use mlua::{Function, Lua, Table};
-use rustlua_ecs::entity::EntityId;
-use rustlua_ecs::world::World;
-use rustlua_lua_api::Handle;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -62,7 +62,7 @@ impl LuaRuntime {
     /// 而不是"这个宿主忘了装配"。仓库内 222 处调用点已全部改走注册表；这个构造器只剩
     /// "测基础运行时"与"确实不要领域模块的嵌入方"两个用途（见 `tests/installers.rs`）。
     pub fn new() -> Result<Self, LuaBridgeError> {
-        Self::with_installers(Rc::new(rustlua_lua_api::Registry::new()))
+        Self::with_installers(Rc::new(crate::script::domain::lua_api::Registry::new()))
     }
 
     /// 建一个**带外部绑定**的运行时：`installers` 里是领域 crate 提供的 Lua 模块。
@@ -71,45 +71,45 @@ impl LuaRuntime {
     /// 逐个注册，而是由组合根（`engine`）把安装器塞进来。`Registry` 用 `Rc` 持有是因为
     /// 热重载会重建 VM（见 `LuaRuntime::load_candidate`），每个新 VM 都要装同一套。
     pub fn with_installers(
-        installers: Rc<rustlua_lua_api::Registry>,
+        installers: Rc<crate::script::domain::lua_api::Registry>,
     ) -> Result<Self, LuaBridgeError> {
         let lua = Lua::new();
         let state = Rc::new(RefCell::new(ScriptState {
             // 存档域的能力单元在这里起名（`docs/62` P1 ⑤）：`Handle` 的名字只用于重入报错，
             // 而 `ScriptState::default()` 给的是无名的 `<unnamed>`——装配点补上真名。
-            save: rustlua_gameplay::save_store::SaveStore::handle(),
-            world_data: rustlua_gameplay::world_data_state::WorldDataState::handle(),
+            save: crate::script::domain::gameplay::save_store::SaveStore::handle(),
+            world_data: crate::script::domain::gameplay::world_data_state::WorldDataState::handle(),
             // 游戏时钟同样是能力单元（P1 ⑤-5）：`clock.*` 绑定与宿主的 `step_clock`
             // 读写同一台时钟，脚本层不再保管它的类型与推进规则。
-            game_clock: rustlua_gameplay::clock_lua::handle(),
+            game_clock: crate::script::domain::gameplay::clock_lua::handle(),
             // 背包域的能力单元（P1 ⑤-6）：`item`/`inv`/`container`/`shop` 四张表与
             // 存档面板读写同一份定义、格子与商店目录。
-            inventory: rustlua_gameplay::inventory_state::InventoryState::handle(),
+            inventory: crate::script::domain::gameplay::inventory_state::InventoryState::handle(),
             // 世界的能力单元（P1 ⑤-7）：ECS 世界本身在这里起名。宿主仍经
             // `with_world`/`with_world_mut` 访问，绑定侧经 `ScriptState::world()` 借用。
             world: Handle::new(World::new(), "world"),
             // 相机域的能力单元（P1 ⑤-8）：选中项、2D 控制器与两份每帧快照在这里起名，
             // `camera`/`camera3d`/`camera2d` 三张表由 `rustlua_camera::camera_lua` 装。
-            camera: rustlua_camera::camera_state::CameraState::handle(),
+            camera: crate::script::domain::camera::camera_state::CameraState::handle(),
             // 物理域的能力单元（P1 ⑤-9）：两个模拟世界、分阶段回写队列与调试请求在这里起名，
             // `physics`/`physics3d` 两张表由 `rustlua_physics::physics_lua` 装。
-            physics: rustlua_physics::physics_state::PhysicsState::handle(),
+            physics: crate::script::domain::physics::physics_state::PhysicsState::handle(),
             // 渲染域的脚本可见状态（P1 ⑤-10）：本帧主光的选择。
-            renderable: rustlua_render::renderable_lua::RenderableState::handle(),
+            renderable: crate::script::domain::render::renderable_lua::RenderableState::handle(),
             // 动画域能力单元（P1 ⑤-10）：帧事件的一次性队列。
-            animation: rustlua_animation::animation_lua::AnimationState::handle(),
+            animation: crate::script::domain::animation::animation_lua::AnimationState::handle(),
             // UI 域能力单元（P1 ⑤-12）：动态文本/条/面板/图/网格/拖拽/视口。
-            ui_state: rustlua_ui::ui_state::UiState::handle(),
+            ui_state: crate::script::domain::ui::ui_state::UiState::handle(),
             // 实体账本能力单元（P1 ⑤-13）：名字/持久 id/血量/标签/场景声明表。
-            entity_state: rustlua_ecs::entity_state::EntityState::handle(),
+            entity_state: crate::script::domain::ecs::entity_state::EntityState::handle(),
             // 工程根同样是能力单元：`data.*` 绑定读它，`set_project_root` 换工程时
             // 所有已装好的 VM 立即看见新根（P1 ⑤-4c）。
-            project_root: rustlua_lua_api::ProjectRoot::handle(),
+            project_root: crate::script::domain::lua_api::ProjectRoot::handle(),
             ..ScriptState::default()
         }));
         {
             let ui = state.borrow().ui_state.clone();
-            ui.with_mut(|ui| ui.set_reference(rustlua_ui::ui::UI_REFERENCE_SIZE));
+            ui.with_mut(|ui| ui.set_reference(crate::script::domain::ui::ui::UI_REFERENCE_SIZE));
         }
         api::register_all(&lua, Rc::clone(&state), &installers)
             .map_err(|error| LuaBridgeError::Init(error.to_string()))?;
@@ -402,7 +402,7 @@ impl LuaRuntime {
             return;
         }
         let mut requests: Vec<(EntityId, String)> = Vec::new();
-        world.for_each::<rustlua_ecs::entity_script::EntityScript>(|id, script| {
+        world.for_each::<crate::script::domain::ecs::entity_script::EntityScript>(|id, script| {
             if script.enabled {
                 requests.push((id, script.file.clone()));
             }
@@ -488,25 +488,27 @@ impl LuaRuntime {
     ) -> Result<(Lua, crate::script::error::ScriptFingerprint), LuaBridgeError> {
         let source = read_project_script(path)?;
         let lua_source = if is_vgraph(path) {
-            let graph = rustlua_visual_script::Graph::from_json(&source).map_err(|error| {
-                LuaBridgeError::Load {
+            let graph = crate::script::domain::visual_script::Graph::from_json(&source).map_err(
+                |error| LuaBridgeError::Load {
                     path: path.to_path_buf(),
                     reason: format!("vgraph: {error}"),
-                }
+                },
+            )?;
+            let generated = crate::script::domain::visual_script::compile_traced(
+                &graph,
+                &path.display().to_string(),
+            )
+            .map_err(|errors| LuaBridgeError::Load {
+                path: path.to_path_buf(),
+                reason: format!(
+                    "vgraph: {}",
+                    errors
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ),
             })?;
-            let generated =
-                rustlua_visual_script::compile_traced(&graph, &path.display().to_string())
-                    .map_err(|errors| LuaBridgeError::Load {
-                        path: path.to_path_buf(),
-                        reason: format!(
-                            "vgraph: {}",
-                            errors
-                                .iter()
-                                .map(ToString::to_string)
-                                .collect::<Vec<_>>()
-                                .join("; ")
-                        ),
-                    })?;
             graph_runtime_source(&generated)
         } else {
             source.clone()

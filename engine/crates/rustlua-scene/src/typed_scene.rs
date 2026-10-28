@@ -57,6 +57,17 @@ pub enum ComponentId {
     Image,
     UiEvents,
     ButtonStates,
+    /// M80-02：矩形裁剪容器（对齐 Unity `RectMask2D`）。
+    Mask,
+    /// M80-02：子树透明度与交互开关（对齐 Unity `CanvasGroup`）。
+    CanvasGroup,
+    /// M80-04：开关 / 滑条 / 进度条 / 滚动条（都是实体上的值组件）。
+    Toggle,
+    Slider,
+    Progress,
+    Scrollbar,
+    /// M76-02：滚动容器（UI Studio 的 `list` 节点导出的就是它）。
+    ScrollView,
     WorldText,
     Sprite,
     /// docs/54 §4.3：一等 Quad（几何 + 材质，贴图可选）。
@@ -97,6 +108,13 @@ impl ComponentId {
         Self::Image,
         Self::UiEvents,
         Self::ButtonStates,
+        Self::Mask,
+        Self::CanvasGroup,
+        Self::Toggle,
+        Self::Slider,
+        Self::Progress,
+        Self::Scrollbar,
+        Self::ScrollView,
         Self::WorldText,
         Self::Sprite,
         Self::Quad,
@@ -126,6 +144,13 @@ impl ComponentId {
             Self::Image => "Image",
             Self::UiEvents => "UiEvents",
             Self::ButtonStates => "ButtonStates",
+            Self::Mask => "Mask",
+            Self::CanvasGroup => "CanvasGroup",
+            Self::Toggle => "Toggle",
+            Self::Slider => "Slider",
+            Self::Progress => "Progress",
+            Self::Scrollbar => "Scrollbar",
+            Self::ScrollView => "ScrollView",
             Self::WorldText => "WorldText",
             Self::Sprite => "Sprite",
             Self::Quad => "Quad",
@@ -224,6 +249,19 @@ fn component_id_for_opaque(name: &str) -> Option<ComponentId> {
         "Image" => ComponentId::Image,
         "UiEvents" => ComponentId::UiEvents,
         "ButtonStates" => ComponentId::ButtonStates,
+        // M80-02：通用裁剪与画布组（编辑器/场景编译必须认得，否则组件的 schema
+        // 存在但场景编译把它当未知名字留在原文层，运行时与编辑器各看各的）。
+        "Mask" => ComponentId::Mask,
+        "CanvasGroup" => ComponentId::CanvasGroup,
+        // M80-04：值控件的文法在 `rustlua-ui`，本层只认名字。不认它们的话，
+        // 场景编译会把组件留在原文层，typed 覆盖门与运行时各看各的。
+        "Toggle" => ComponentId::Toggle,
+        "Slider" => ComponentId::Slider,
+        "Progress" => ComponentId::Progress,
+        "Scrollbar" => ComponentId::Scrollbar,
+        // M76-02：滚动容器。漏认它，UI Studio 导出（`list` → `ScrollView`）的组件会被
+        // typed 编译留在原文层，覆盖门在第一个导出场景入库时判红。
+        "ScrollView" => ComponentId::ScrollView,
         // WP4：世界空间文字。类型与文法都搬到了 `rustlua-ui`（P1 ④），本层只认名字。
         "WorldText" => ComponentId::WorldText,
         _ => return None,
@@ -611,6 +649,17 @@ mod tests {
             ComponentId::UiEvents,
         ),
         ("ButtonStates", "normal=base.png", ComponentId::ButtonStates),
+        ("Mask", "padding=4,4,4,4", ComponentId::Mask),
+        (
+            "CanvasGroup",
+            "alpha=0.5;interactable=true;blocks_raycasts=false",
+            ComponentId::CanvasGroup,
+        ),
+        ("Toggle", "on=false;group=radio", ComponentId::Toggle),
+        ("Slider", "min=0;max=1;value=0.5", ComponentId::Slider),
+        ("Progress", "value=0.5", ComponentId::Progress),
+        ("Scrollbar", "value=0.3;size=0.25", ComponentId::Scrollbar),
+        ("ScrollView", "horizontal=false", ComponentId::ScrollView),
         (
             "Sprite",
             "texture=assets/textures/player.png;size=32x32;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0",
@@ -812,7 +861,7 @@ mod tests {
         assert!(TypedScene::compile_v2(&scene).is_err());
     }
 
-    /// 覆盖门：源场景里出现过的 17 个组件名必须全部编译成对应的 `ComponentId`，
+    /// 覆盖门：源场景里出现过的 26 个组件名必须全部编译成对应的 `ComponentId`，
     /// 且载荷确实是解析结果（不只是键存在）。
     #[test]
     fn covers_every_component_name_used_in_source_scenes() {

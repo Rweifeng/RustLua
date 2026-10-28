@@ -527,10 +527,18 @@ mod tests {
     use rustlua_infra::logging::LogSink;
 
     fn test_app() -> EditorApp {
+        // 每次调用一个独立根目录：若同一进程内多个测试共用，写盘测试（如
+        // external_editor 用例的 scripts/player.lua）会泄漏给读盘测试，结果随执行顺序翻转。
+        static NEXT_DIR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "rustlua-command-router-{}-{}",
+            std::process::id(),
+            NEXT_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
         let mut app = EditorApp::new(
             ProjectInfo {
-                root: std::env::temp_dir()
-                    .join(format!("rustlua-command-router-{}", std::process::id())),
+                root,
                 version: "test".to_owned(),
                 directories: Vec::new(),
             },

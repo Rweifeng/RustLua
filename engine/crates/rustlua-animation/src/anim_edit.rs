@@ -126,7 +126,7 @@ impl AnimEditSession {
         self.undo.len()
     }
 
-    /// 跨面板全局 Undo 的**编辑签名**：`(累计编辑次数, undo+redo 深度)`。计数只在 [`Self::commit`]
+    /// 跨面板全局 Undo 的**编辑签名**：`(累计编辑次数, undo+redo 深度)`。计数只在 `Self::commit`
     /// 真正压栈时变大；[`Self::revert_to_saved`] 把两条栈一起清掉，深度项负责把归属从账本摘走。
     /// 消费方见 editor bin 的 `actions/undo_ledger.rs`。
     #[must_use]

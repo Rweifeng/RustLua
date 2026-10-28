@@ -43,6 +43,8 @@ pub(crate) fn component_display_name(name: &str) -> &str {
         "Visibility" => "可见性",
         "ParticleEmitter" => "粒子发射器",
         "ScrollView" => "滚动视图",
+        "Mask" => "矩形遮罩",
+        "CanvasGroup" => "画布组",
         _ => name,
     }
 }

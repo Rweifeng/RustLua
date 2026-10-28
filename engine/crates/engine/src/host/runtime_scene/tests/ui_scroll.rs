@@ -77,6 +77,19 @@ fn press_at(x: f64, y: f64) -> InputSnapshot {
     input
 }
 
+/// click 由**抬起**派发（M80-07）：按下 + 抬起两步，命中同一节点才成一次点击。
+fn click(runtime: &mut RuntimeScene, x: f64, y: f64) {
+    runtime
+        .run_script_steps(1, 1.0 / 60.0, &press_at(x, y))
+        .unwrap();
+    let mut input = InputSnapshot::default();
+    input.cursor_moved(x, y);
+    input.mouse_event(rustlua_input::input::MouseButton::Left, true);
+    input.finish_frame();
+    input.mouse_event(rustlua_input::input::MouseButton::Left, false);
+    runtime.run_script_steps(1, 1.0 / 60.0, &input).unwrap();
+}
+
 #[test]
 fn wheel_scrolls_content_and_clips_hit_rects() {
     let mut runtime = scroll_runtime();
@@ -139,9 +152,7 @@ fn wheel_scrolls_content_and_clips_hit_rects() {
         "function on_item_click(name) clicked = name end\nfunction update() return tostring(clicked or 'nil') end",
     );
     runtime.script.execute_project_script(&script).unwrap();
-    runtime
-        .run_script_steps(1, 1.0 / 60.0, &press_at(60.0, 60.0))
-        .unwrap();
+    click(&mut runtime, 60.0, 60.0);
     assert_eq!(
         runtime.script.call_update().unwrap(),
         "Item3",
@@ -151,18 +162,28 @@ fn wheel_scrolls_content_and_clips_hit_rects() {
 }
 
 #[test]
-fn scroll_requires_interaction_enabled() {
+fn scroll_works_by_default_and_opt_out_restores_legacy() {
     let mut runtime = scroll_runtime();
     runtime
         .run_script_steps(1, 1.0 / 60.0, &wheel_at(60.0, 60.0))
         .unwrap();
-
-    assert_eq!(
-        runtime.ui_scroll_offset("View"),
-        None,
-        "交互路由关闭时滚轮不得改偏移（旧路径逐字节不变）"
+    assert_close(
+        runtime.ui_scroll_offset("View").unwrap_or(0.0),
+        40.0,
+        "默认开启：滚轮应滚动 ScrollView",
     );
-    let rects = runtime.ui_rects_by_name([1280.0, 720.0]);
+
+    let mut legacy = scroll_runtime();
+    legacy.set_ui_interaction_enabled(false);
+    legacy
+        .run_script_steps(1, 1.0 / 60.0, &wheel_at(60.0, 60.0))
+        .unwrap();
+    assert_eq!(
+        legacy.ui_scroll_offset("View"),
+        None,
+        "显式回滚后滚轮不得改偏移（旧路径逐字节不变）"
+    );
+    let rects = legacy.ui_rects_by_name([1280.0, 720.0]);
     assert_close(rects["Item2"].y, 90.0, "未滚动时布局保持原位");
 }
 

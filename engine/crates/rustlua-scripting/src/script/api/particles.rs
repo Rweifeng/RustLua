@@ -8,11 +8,11 @@
 // WP11-USE:BEGIN
 use crate::script::LuaStateBorrow;
 use crate::script::ScriptState;
+use crate::script::domain::ecs::particle::{ParticleEmitter, ParticleMode};
+use crate::script::domain::ecs::transform::Vec2;
 use crate::script::error::api_error;
 use mlua::Lua;
 use mlua::Result as LuaResult;
-use rustlua_ecs::particle::{ParticleEmitter, ParticleMode};
-use rustlua_ecs::transform::Vec2;
 use std::cell::RefCell;
 use std::rc::Rc;
 // WP11-USE:END

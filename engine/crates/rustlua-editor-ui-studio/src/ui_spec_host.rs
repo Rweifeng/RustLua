@@ -116,6 +116,7 @@ fn capability_diagnostic(diagnostic: &Diagnostic) -> bool {
             | "spec.clipping_unsupported"
             | "spec.virtual_list_unsupported"
             | "spec.rich_text_unsupported"
+            | "spec.transition_unsupported"
     )
 }
 
@@ -1582,6 +1583,7 @@ mod tests {
         assert_eq!(
             title.kind,
             rustlua_ui_spec::UiNodeKind::Text {
+                rich_text: false,
                 text: "Boutique".to_owned()
             }
         );
@@ -1621,6 +1623,7 @@ mod tests {
         assert_eq!(
             title.kind,
             rustlua_ui_spec::UiNodeKind::Text {
+                rich_text: false,
                 text: "Shop".to_owned()
             },
             "未选中的文本替换不能落盘"

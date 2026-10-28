@@ -31,7 +31,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     // 本模块只把三个能力单元的句柄交出去，不再认识数据表格式。
     {
         let state = state.borrow();
-        rustlua_gameplay::world_data_lua::install(
+        crate::script::domain::gameplay::world_data_lua::install(
             lua,
             &map,
             &state.world_data,

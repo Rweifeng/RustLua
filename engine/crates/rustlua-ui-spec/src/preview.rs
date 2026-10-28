@@ -20,6 +20,7 @@ const BUTTON: Color = Color([62, 130, 84, 255]);
 const IMAGE: Color = Color([96, 72, 140, 255]);
 const INPUT: Color = Color([70, 96, 130, 255]);
 const SCROLL: Color = Color([72, 86, 108, 255]);
+const MASK: Color = Color([92, 110, 130, 96]);
 const ACCENT: Color = Color([232, 172, 72, 255]);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -169,8 +170,12 @@ pub fn layout_rects(spec: &UiSpec) -> Vec<LayoutRect> {
     ) {
         let clip = match (inherited_clip, &node.kind) {
             (Some(parent_clip), UiNodeKind::ScrollView { .. }) => parent_clip.intersect(rect),
+            (Some(parent_clip), UiNodeKind::Mask { padding }) => {
+                parent_clip.intersect(mask_rect(rect, *padding))
+            }
             (Some(parent_clip), _) => Some(parent_clip),
             (None, UiNodeKind::ScrollView { .. }) => Some(rect),
+            (None, UiNodeKind::Mask { padding }) => Some(mask_rect(rect, *padding)),
             (None, _) => None,
         };
         out.push(LayoutRect {
@@ -199,6 +204,17 @@ pub fn layout_rects(spec: &UiSpec) -> Vec<LayoutRect> {
         &mut out,
     );
     out
+}
+
+/// `Mask` 的可视裁剪区：按 `padding`（左、上、右、下）内缩，与运行时同一口径。
+fn mask_rect(rect: Rect, padding: Option<[f32; 4]>) -> Rect {
+    let pad = padding.unwrap_or([0.0; 4]);
+    Rect {
+        x: rect.x + pad[0],
+        y: rect.y + pad[1],
+        w: (rect.w - pad[0] - pad[2]).max(0.0),
+        h: (rect.h - pad[1] - pad[3]).max(0.0),
+    }
 }
 
 /// Renders a wireframe PNG. `scale` multiplies the fitted design resolution
@@ -246,6 +262,7 @@ pub fn render_rgba(
         &spec.root,
         resolve_rect(&spec.root.layout, canvas),
         None,
+        1.0,
         fit,
         offset_x,
         offset_y,
@@ -261,6 +278,7 @@ fn draw_node(
     node: &UiNode,
     rect: Rect,
     inherited_clip: Option<Rect>,
+    inherited_alpha: f32,
     fit: f32,
     offset_x: f32,
     offset_y: f32,
@@ -270,11 +288,22 @@ fn draw_node(
 ) {
     let clip = match (inherited_clip, &node.kind) {
         (Some(parent_clip), UiNodeKind::ScrollView { .. }) => parent_clip.intersect(rect),
+        (Some(parent_clip), UiNodeKind::Mask { padding }) => {
+            parent_clip.intersect(mask_rect(rect, *padding))
+        }
         (Some(parent_clip), _) => Some(parent_clip),
         (None, UiNodeKind::ScrollView { .. }) => Some(rect),
+        (None, UiNodeKind::Mask { padding }) => Some(mask_rect(rect, *padding)),
         (None, _) => None,
     };
-    let color = color_for(&node.kind);
+    // `CanvasGroup.alpha` 沿父链相乘：预览里同一份 alpha 缩放进每个色的 alpha 通道，
+    // 与运行时 `ui_group_alpha` 的合成顺序一致。
+    let alpha = inherited_alpha
+        * match &node.kind {
+            UiNodeKind::CanvasGroup { alpha, .. } => alpha.clamp(0.0, 1.0),
+            _ => 1.0,
+        };
+    let color = with_alpha(color_for(&node.kind), alpha);
     fill_logical(
         pixels, width, height, rect, clip, color, fit, offset_x, offset_y,
     );
@@ -283,14 +312,32 @@ fn draw_node(
         UiNodeKind::Panel { .. } | UiNodeKind::Container { .. } | UiNodeKind::Image { .. }
     ) {
         stroke_logical(
-            pixels, width, height, rect, clip, ACCENT, fit, offset_x, offset_y,
+            pixels,
+            width,
+            height,
+            rect,
+            clip,
+            with_alpha(ACCENT, alpha),
+            fit,
+            offset_x,
+            offset_y,
         );
     }
     for (child, child_rect) in node.children.iter().zip(resolve_children(node, rect)) {
         draw_node(
-            child, child_rect, clip, fit, offset_x, offset_y, width, height, pixels,
+            child, child_rect, clip, alpha, fit, offset_x, offset_y, width, height, pixels,
         );
     }
+}
+
+fn with_alpha(color: Color, alpha: f32) -> Color {
+    let scale = alpha.clamp(0.0, 1.0);
+    Color([
+        color.0[0],
+        color.0[1],
+        color.0[2],
+        (f32::from(color.0[3]) * scale).round() as u8,
+    ])
 }
 
 fn color_for(kind: &UiNodeKind) -> Color {
@@ -300,9 +347,13 @@ fn color_for(kind: &UiNodeKind) -> Color {
         UiNodeKind::Text { .. } | UiNodeKind::Tooltip { .. } => TEXT,
         UiNodeKind::Button { .. } | UiNodeKind::Toggle { .. } => BUTTON,
         UiNodeKind::Image { .. } => IMAGE,
-        UiNodeKind::Slider { .. } | UiNodeKind::Progress { .. } => ACCENT,
+        UiNodeKind::Slider { .. } | UiNodeKind::Progress { .. } | UiNodeKind::Scrollbar { .. } => {
+            ACCENT
+        }
         UiNodeKind::Input { .. } => INPUT,
         UiNodeKind::ScrollView { .. } | UiNodeKind::List { .. } => SCROLL,
+        UiNodeKind::Mask { .. } => MASK,
+        UiNodeKind::CanvasGroup { .. } => CONTAINER,
         UiNodeKind::Grid { .. } | UiNodeKind::Tabs { .. } => CONTAINER,
         UiNodeKind::Modal => Color([30, 30, 34, 200]),
     }
@@ -880,6 +931,72 @@ mod tests {
         let out = rects.iter().find(|rect| rect.key == "out").unwrap();
         assert_eq!(out.rect, [80.0, 0.0, 40.0, 40.0], "矩形本身不被改写");
         assert_eq!(out.clip, Some([0.0, 0.0, 100.0, 50.0]), "子节点继承裁剪");
+    }
+
+    #[test]
+    fn mask_insets_the_clip_rect_for_the_subtree() {
+        let spec: UiSpec = serde_json::from_value(serde_json::json!({
+            "spec_version": 1,
+            "document": {"name": "mask", "canvas": {"reference": [400, 300]}},
+            "root": {"key": "root", "type": "panel",
+                     "layout": {"anchor": "top_left", "size": [400, 300]},
+                     "children": [{
+                         "key": "clip", "type": "mask", "padding": [10, 20, 30, 40],
+                         "layout": {"anchor": "top_left", "size": [200, 150]},
+                         "children": [{
+                             "key": "inner", "type": "panel",
+                             "layout": {"anchor": "top_left", "position": [20, 20],
+                                        "size": [100, 100]}
+                         }]
+                     }]}
+        }))
+        .unwrap();
+        let rows = layout_rects(&spec);
+        let clip = rows.iter().find(|row| row.key == "clip").unwrap();
+        assert_eq!(
+            clip.clip,
+            Some([10.0, 20.0, 160.0, 90.0]),
+            "左/上内缩 10/20，右/下内缩 30/40"
+        );
+        let inner = rows.iter().find(|row| row.key == "inner").unwrap();
+        assert_eq!(inner.rect, [20.0, 20.0, 100.0, 100.0], "矩形本身不被改写");
+        assert_eq!(inner.clip, clip.clip, "子孙继承遮罩的裁剪矩形");
+    }
+
+    #[test]
+    fn canvas_group_alpha_hides_its_subtree() {
+        let build = |alpha: f32| -> UiSpec {
+            serde_json::from_value(serde_json::json!({
+                "spec_version": 1,
+                "document": {"name": "group"},
+                "root": {"key": "root", "type": "panel",
+                         "layout": {"anchor": "full_rect"},
+                         "children": [{
+                             "key": "group", "type": "canvas_group", "alpha": alpha,
+                             "layout": {"anchor": "top_left", "size": [100, 100]},
+                             "children": [{
+                                 "key": "btn", "type": "button", "text": "B",
+                                 "layout": {"anchor": "top_left", "size": [50, 50]}
+                             }]
+                         }]}
+            }))
+            .unwrap()
+        };
+        let pixel = |spec: &UiSpec| {
+            let (_, _, pixels) = render_rgba(spec, 320, 180, 1.0).unwrap();
+            let index = (5 * 320 + 5) * 4;
+            [pixels[index], pixels[index + 1], pixels[index + 2]]
+        };
+        assert_eq!(
+            pixel(&build(1.0)),
+            [BUTTON.0[0], BUTTON.0[1], BUTTON.0[2]],
+            "alpha=1：子按钮正常绘制"
+        );
+        assert_eq!(
+            pixel(&build(0.0)),
+            [PANEL.0[0], PANEL.0[1], PANEL.0[2]],
+            "alpha=0：整棵子树透明，露出根面板"
+        );
     }
 
     #[test]

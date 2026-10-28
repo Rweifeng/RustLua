@@ -57,8 +57,9 @@ $engineRoot = Join-Path $repoRoot "engine"
 $gameRoot   = Join-Path $repoRoot "examples\game_jhyt"
 $exampleDir = Join-Path $engineRoot "crates\game\examples"
 
-# ── 清单（verify.ps1 $examples 的只读镜像快照，2026-10-06 同步自 scripts/verify/verify.ps1
-#    行 797–915。唯一事实来源仍是 verify.ps1；此处漂移 = 静态告警。）─────────────
+# ── 清单（verify.ps1 $examples 的只读镜像快照。唯一事实来源仍是 verify.ps1；此处漂移 = 静态告警。
+#    定位用锚点而不是行号——2026-10-06 那份注释写的是「行 797–915」，2026-10-27 实测清单已在
+#    `$examples = @(`（现 1441 行）之后：verify.ps1 只长不减，行号必然腐烂，锚点不会。）──────
 $examples = @(
     "jhyt_smoke",
     "jhyt_m17",

@@ -908,6 +908,13 @@ const TEXT_FIELDS: &[FieldSchema] = &[
     FieldSchema::new("color", FieldKind::Vec3, false),
     // 可选自定义字体（项目相对路径，如 assets/fonts/x.ttf）；空 = 项目默认字体。
     FieldSchema::new("font", FieldKind::Text, false).with_escaped(),
+    // M80-03 排版字段：编码器只在非默认时写出，因此全部 optional。
+    FieldSchema::new("align", FieldKind::Enum, false).with_choices(&["left", "center", "right"]),
+    FieldSchema::new("valign", FieldKind::Enum, false).with_choices(&["top", "middle", "bottom"]),
+    FieldSchema::new("overflow", FieldKind::Enum, false)
+        .with_choices(&["overflow", "wrap", "truncate", "ellipsis"]),
+    FieldSchema::new("voverflow", FieldKind::Enum, false).with_choices(&["overflow", "truncate"]),
+    FieldSchema::new("rich_text", FieldKind::Bool, false),
 ];
 
 /// **纹理引用**的共用规则（docs/55 §P0 第 4 条"字段级语义校验"的铺开）。
@@ -1254,6 +1261,68 @@ const BUTTON_STATES_FIELDS: &[FieldSchema] = &[
 const SCROLL_VIEW_FIELDS: &[FieldSchema] =
     &[FieldSchema::new("horizontal", FieldKind::Bool, false)];
 
+/// M80-02：矩形遮罩。`padding` 是四元组文本（left,top,right,bottom），语法由
+/// `rustlua_ui::ui_mask::Mask` 负责；schema 只认键存在（与其他向量字段同一口径）。
+const MASK_FIELDS: &[FieldSchema] = &[FieldSchema::new("padding", FieldKind::Text, false)];
+
+/// M80-02：`CanvasGroup` 三字段全部可选（缺省 1 / true / true）。
+const CANVAS_GROUP_FIELDS: &[FieldSchema] = &[
+    FieldSchema::new("alpha", FieldKind::Number, false).with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("interactable", FieldKind::Bool, false),
+    FieldSchema::new("blocks_raycasts", FieldKind::Bool, false),
+];
+
+/// M80-04：`Toggle` 三字段全部可选（缺省 `on=true`、无组、无勾选目标）。
+const TOGGLE_FIELDS: &[FieldSchema] = &[
+    FieldSchema::new("on", FieldKind::Bool, false),
+    FieldSchema::new("group", FieldKind::Text, false),
+    FieldSchema::new("checkmark", FieldKind::Text, false),
+];
+
+/// M80-04：`Slider` 的组件串。`min`/`max`/`value` 由解析器从默认值起头，
+/// 跨字段约束（`max > min`、`value` 落在区间内）只有解析器能判，schema 不重复表达。
+const SLIDER_FIELDS: &[FieldSchema] = &[
+    FieldSchema::new("min", FieldKind::Number, false),
+    FieldSchema::new("max", FieldKind::Number, false),
+    FieldSchema::new("value", FieldKind::Number, false),
+    FieldSchema::new("whole_numbers", FieldKind::Bool, false),
+    FieldSchema::new("direction", FieldKind::Enum, false).with_choices(&[
+        "left_to_right",
+        "right_to_left",
+        "bottom_to_top",
+        "top_to_bottom",
+    ]),
+    FieldSchema::new("fill", FieldKind::Text, false),
+    FieldSchema::new("handle", FieldKind::Text, false),
+];
+
+/// M80-04：只读进度条（无 `whole_numbers` / `handle`）。
+const PROGRESS_FIELDS: &[FieldSchema] = &[
+    FieldSchema::new("min", FieldKind::Number, false),
+    FieldSchema::new("max", FieldKind::Number, false),
+    FieldSchema::new("value", FieldKind::Number, false),
+    FieldSchema::new("direction", FieldKind::Enum, false).with_choices(&[
+        "left_to_right",
+        "right_to_left",
+        "bottom_to_top",
+        "top_to_bottom",
+    ]),
+    FieldSchema::new("fill", FieldKind::Text, false),
+];
+
+/// M80-04：`Scrollbar` 的 `value`/`size` 是 0..=1 的比例；范围由解析器判定。
+const SCROLLBAR_FIELDS: &[FieldSchema] = &[
+    FieldSchema::new("value", FieldKind::Number, false),
+    FieldSchema::new("size", FieldKind::Number, false),
+    FieldSchema::new("direction", FieldKind::Enum, false).with_choices(&[
+        "left_to_right",
+        "right_to_left",
+        "bottom_to_top",
+        "top_to_bottom",
+    ]),
+    FieldSchema::new("handle", FieldKind::Text, false),
+];
+
 // ---------------------------------------------------------------------------
 // 列表/重复字段模型（第 38 轮）：`Animation` / `UiEvents` / `UiBindings` / `UiAnimation`
 // ---------------------------------------------------------------------------
@@ -1484,6 +1553,14 @@ pub fn builtin_registry() -> BTreeMap<&'static str, ComponentSchema> {
         ComponentSchema::new("ButtonStates", 1, BUTTON_STATES_FIELDS),
         // M76-02：实体 UI 的滚动容器（运行时按子节点包围盒算内容尺寸）。
         ComponentSchema::new("ScrollView", 1, SCROLL_VIEW_FIELDS),
+        // M80-02：通用矩形遮罩与 CanvasGroup。
+        ComponentSchema::new("Mask", 1, MASK_FIELDS),
+        ComponentSchema::new("CanvasGroup", 1, CANVAS_GROUP_FIELDS),
+        // M80-04：运行时值控件（宿主按值改写子实体布局并路由输入）。
+        ComponentSchema::new("Toggle", 1, TOGGLE_FIELDS),
+        ComponentSchema::new("Slider", 1, SLIDER_FIELDS),
+        ComponentSchema::new("Progress", 1, PROGRESS_FIELDS),
+        ComponentSchema::new("Scrollbar", 1, SCROLLBAR_FIELDS),
         // 第 38 轮：列表/重复字段模型落地后补上的 3 个；第 40 轮补上 `UiAnimation`
         // （先把它的格式搬进引擎 `ui_animation.rs`，schema 才有对拍对象，见 §3.33/§3.35）。
         ComponentSchema::new("Animation", 1, ANIMATION_FIELDS).with_list(ANIMATION_LIST),
@@ -2609,6 +2686,7 @@ mod tests {
             font_size: 16.0,
             color: [1.0, 0.5, 0.2],
             font: "assets/fonts/a;b=数字.ttf".to_owned(),
+            ..Default::default()
         };
         let payload = text.to_component_str();
         assert!(

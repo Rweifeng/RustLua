@@ -61,7 +61,13 @@
 | `verify-webgl-eh.ps1` | wasm 异常处理（EH）探针门 |
 | `verify-wechat-minigame.ps1` | 微信小游戏发布包静态布局/配额 + 容器内容闭包（`assetc closure`，`-CdnDir` 可核对远端组）+ 无头运行验证 |
 | `verify-wasm-lua.ps1` | wasm Lua 运行期验证（no-modules 桥 + gpu2d 宿主画布探针） |
+| `check-tree-quiet.ps1` | 树稳定性探针（`verify.ps1` 预检第一步）：源文件在最近 `QuietSeconds`（默认 60）秒内被写过就退 **3 = blocked**——半保存态会让 25–45 分钟的读数假红；扫不到任何文件退 1（配错的守卫不放行）；CI 与 `-QuietSeconds 0` 显式跳过；`-SelfTest` 三例反证打印 `tree_quiet_selftest_ok cases=3` |
 | `check-docs.ps1` | 文档一致性门（编号/H1/索引/链接/历史路径/BOM/解析） |
+| `check-doc-claims.mjs` | 人写摘要数字 vs 机器事实：README/docs 的「N 个模块表 / M 个 Lua 函数 / K 个运行时组件」必须等于 Lua API 快照、`ComponentId::ALL` 与 `sample_project` 门数（`doc_claims_ok tables=… funcs=… components=… gates=… claims=…`；`--self-test` 的反证会红） |
+| `check-flaky-skips.mjs` | `RUSTLUA_SKIP_CI_FLAKY` 跳过账本门：新增跳过未登记 / 登记过期（reader 里已无该 env 或用例名）/ 字段缺失都判红（`flaky_skip_gate_ok`，`--self-test` 打印 `flaky_skip_gate_selftest_ok`） |
+| `flaky-skips.json` | 上一条门的账本数据：谁在跳、跳哪条、为什么、什么条件恢复、影响面 |
+| `check-decoupling.ps1` | 分层解耦门：wasm 音频、scene 层、`lua_api` 同级依赖、engine↔GPU 的越边引用计数必须全为 0（`check_decoupling_ok wasm_audio=0 scene_layer=0 lua_api_peers=0 engine_gpu_normal=0 probe_engine_normal=0`） |
+| `check-project-version.ps1` | 引擎与两个示例工程版本一致 + `header.rs` 模板不写死版本 + `build-info.txt` 指纹对账（`project_version_ok` / `build_info_ok`；`-SelfTest` 打印 `project_version_gate_selftest_ok`） |
 | `check-silent-traces.ps1` | 静默失败"留痕"回归门 |
 | `check-vendor-patches.ps1` | vendor 补丁基线自动校验 |
 | `check-toolchain-lock.ps1` | 工具链/安全工具精确版本门（`rust-toolchain.toml` / workflows / `tools.json`） |

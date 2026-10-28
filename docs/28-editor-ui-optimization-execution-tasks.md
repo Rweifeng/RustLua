@@ -125,7 +125,7 @@ E20 + E22
 
 **依赖**：E01、E02。
 
-**重点文件**：[hierarchy.rs](../engine/crates/editor/src/panels/hierarchy.rs)、[scene_view/mod.rs](../engine/crates/editor/src/panels/scene_view/mod.rs)、[inspector.rs](../engine/crates/editor/src/panels/inspector.rs)。
+**重点文件**：[hierarchy.rs](../engine/crates/editor/src/panels/hierarchy.rs)、[scene_view/mod.rs](../engine/crates/editor/src/panels/scene_view/mod.rs)、[inspector/mod.rs](../engine/crates/editor/src/panels/inspector/mod.rs)。
 
 **验收标准**：任何入口选择对象后，三个面板在同一帧内显示一致；多选集合不会因面板切换、Undo/Redo 或 Play/Stop 被无故清空。
 
@@ -232,7 +232,7 @@ E20 + E22
 
 **依赖**：E07。
 
-**重点文件**：[scene_view/mod.rs](../engine/crates/editor/src/panels/scene_view/mod.rs)、[inspector.rs](../engine/crates/editor/src/panels/inspector.rs)、[history.rs](../engine/crates/rustlua-editor-core/src/history.rs)。
+**重点文件**：[scene_view/mod.rs](../engine/crates/editor/src/panels/scene_view/mod.rs)、[inspector/mod.rs](../engine/crates/editor/src/panels/inspector/mod.rs)、[history.rs](../engine/crates/rustlua-editor-core/src/history.rs)。
 
 **验收标准**：拖动过程中磁盘文件不持续变化；一次拖动对应一条历史记录；Inspector 输入提交后可恢复且不会产生空操作。
 
@@ -376,7 +376,7 @@ E20 + E22
 
 **依赖**：E03、E07、E08。
 
-**重点文件**：[inspector.rs](../engine/crates/editor/src/panels/inspector.rs)。
+**重点文件**：[inspector/mod.rs](../engine/crates/editor/src/panels/inspector/mod.rs)。
 
 **验收标准**：多选修改只影响共有字段且一次操作一条 History；Mixed Value 显示准确；Transform 修改不会造成坐标系或单位混乱。
 

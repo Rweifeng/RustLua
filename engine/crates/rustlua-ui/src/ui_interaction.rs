@@ -142,6 +142,9 @@ pub struct UiInteractionNode {
     pub focusable: bool,
     /// Overlay/decorative nodes opt out of pointer hit testing.
     pub pointer_events: bool,
+    /// `CanvasGroup.blocks_raycasts`: false makes the whole subtree transparent
+    /// to pointer hit testing (Unity raycast-pass-through).
+    pub blocks_raycasts: bool,
     pub states: Option<ButtonStateSet>,
     pub clips_content: bool,
     pub scroll: Option<UiScroll>,
@@ -156,6 +159,7 @@ impl UiInteractionNode {
             enabled: true,
             focusable: false,
             pointer_events: true,
+            blocks_raycasts: true,
             states: None,
             clips_content: false,
             scroll: None,
@@ -193,6 +197,12 @@ impl UiInteractionNode {
     }
 
     #[must_use]
+    pub fn blocks_raycasts(mut self, blocks: bool) -> Self {
+        self.blocks_raycasts = blocks;
+        self
+    }
+
+    #[must_use]
     pub fn scroll(mut self, scroll: UiScroll) -> Self {
         self.scroll = Some(scroll);
         self.clips_content = true;
@@ -220,6 +230,10 @@ pub struct UiDispatch {
 pub enum UiNavKey {
     Tab,
     ShiftTab,
+    Left,
+    Right,
+    Up,
+    Down,
     Enter,
     Escape,
 }
@@ -302,6 +316,34 @@ struct NodeState {
     visual: ButtonVisualState,
 }
 
+fn rect_center(rect: UiRect) -> [f32; 2] {
+    [rect.x + rect.w * 0.5, rect.y + rect.h * 0.5]
+}
+
+/// Distance along the navigation axis plus a lateral penalty. Candidates that
+/// share a row/column with the source get a large bonus so focus does not jump
+/// diagonally to a nearer node in the wrong lane.
+fn navigation_score(from: UiRect, to: UiRect, key: UiNavKey) -> Option<f32> {
+    let origin = rect_center(from);
+    let target = rect_center(to);
+    let (primary, lateral) = match key {
+        UiNavKey::Left => (origin[0] - target[0], target[1] - origin[1]),
+        UiNavKey::Right => (target[0] - origin[0], target[1] - origin[1]),
+        UiNavKey::Up => (origin[1] - target[1], target[0] - origin[0]),
+        UiNavKey::Down => (target[1] - origin[1], target[0] - origin[0]),
+        _ => return None,
+    };
+    if primary <= 0.0 {
+        return None;
+    }
+    let aligned = match key {
+        UiNavKey::Left | UiNavKey::Right => to.y < from.y + from.h && from.y < to.y + to.h,
+        _ => to.x < from.x + from.w && from.x < to.x + to.w,
+    };
+    let distance = primary + lateral.abs() * 2.0;
+    Some(if aligned { distance } else { distance + 500.0 })
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ScrollDrag {
     scroll: usize,
@@ -320,6 +362,9 @@ pub struct UiInteraction {
     pressed: Option<usize>,
     focused: Option<usize>,
     drag: Option<ScrollDrag>,
+    /// Pointer-down anchor for generic drag detection (not just scroll gestures).
+    press_start: Option<[f32; 2]>,
+    press_dragging: bool,
     drag_threshold: f32,
 }
 
@@ -340,6 +385,8 @@ impl UiInteraction {
             pressed: None,
             focused: None,
             drag: None,
+            press_start: None,
+            press_dragging: false,
             drag_threshold: 8.0,
         }
     }
@@ -414,6 +461,14 @@ impl UiInteraction {
         self.by_key.get(key).copied()
     }
 
+    /// 某个键的状态覆盖集（底色过渡要知道时长与曲线）。
+    #[must_use]
+    pub fn states_of(&self, key: &str) -> Option<&ButtonStateSet> {
+        self.index_of(key)
+            .and_then(|index| self.nodes.get(index))
+            .and_then(|entry| entry.node.states.as_ref())
+    }
+
     #[must_use]
     pub fn visual_state(&self, index: usize) -> Option<ButtonVisualState> {
         self.nodes.get(index).map(|state| state.visual)
@@ -424,6 +479,18 @@ impl UiInteraction {
         self.focused
             .and_then(|index| self.nodes.get(index))
             .map(|state| state.node.key.as_str())
+    }
+
+    /// Keys from the root down to `index`, inclusive.
+    ///
+    /// 控件的图形子节点（滑块、勾选图）通常自己也带 `UiEvents`；命中它们时宿主
+    /// 要沿父链找到最近的控件节点——这与 Unity 的指针事件冒泡是同一套语义。
+    #[must_use]
+    pub fn path_keys(&self, index: usize) -> Vec<&str> {
+        self.path_to(index)
+            .into_iter()
+            .map(|slot| self.nodes[slot].node.key.as_str())
+            .collect()
     }
 
     #[must_use]
@@ -479,13 +546,30 @@ impl UiInteraction {
         true
     }
 
+    /// True when any ancestor (or the node itself) opts the subtree out of
+    /// pointer raycasts via `CanvasGroup.blocks_raycasts`.
+    fn raycasts_blocked(&self, index: usize) -> bool {
+        let mut current = Some(index);
+        while let Some(index) = current {
+            let state = &self.nodes[index];
+            if !state.node.blocks_raycasts {
+                return true;
+            }
+            current = state.parent;
+        }
+        false
+    }
+
     /// Deepest node at `point`, honouring paint order, clips, pointer opt-outs
     /// and disabled subtrees.
     #[must_use]
     pub fn hit_test(&self, point: [f32; 2]) -> Option<usize> {
         for index in (0..self.nodes.len()).rev() {
             let state = &self.nodes[index];
-            if !state.node.pointer_events || !self.effective_enabled(index) {
+            if !state.node.pointer_events
+                || !self.effective_enabled(index)
+                || self.raycasts_blocked(index)
+            {
                 continue;
             }
             if state.clip.is_some_and(|clip| !clip.contains(point)) {
@@ -623,6 +707,17 @@ impl UiInteraction {
     pub fn pointer_move(&mut self, point: [f32; 2], out: &mut Vec<UiOutcome>) {
         let hit = self.hit_test(point);
         self.set_hovered(hit, out);
+        // Generic drag: once the pointer travels past the threshold while held,
+        // the pressed target receives `Drag` on every move (Unity `OnDrag`).
+        if let (Some(pressed), Some(start)) = (self.pressed, self.press_start) {
+            let travel = (point[0] - start[0]).hypot(point[1] - start[1]);
+            if !self.press_dragging && travel >= self.drag_threshold {
+                self.press_dragging = true;
+            }
+            if self.press_dragging {
+                self.dispatch(pressed, UiEventType::Drag, out);
+            }
+        }
         if let Some(drag) = self.drag
             && self.pressed.is_some()
         {
@@ -676,10 +771,14 @@ impl UiInteraction {
         let Some(index) = hit else {
             self.pressed = None;
             self.drag = None;
+            self.press_start = None;
+            self.press_dragging = false;
             self.refresh_states(out);
             return;
         };
         self.pressed = Some(index);
+        self.press_start = Some(point);
+        self.press_dragging = false;
         self.drag = self.scroll_ancestor(index).and_then(|scroll| {
             self.nodes[scroll]
                 .node
@@ -704,8 +803,10 @@ impl UiInteraction {
             self.drag = None;
             return;
         };
-        let dragging = self.drag.is_some_and(|drag| drag.dragging);
+        let dragging = self.drag.is_some_and(|drag| drag.dragging) || self.press_dragging;
         self.drag = None;
+        self.press_start = None;
+        self.press_dragging = false;
         let hit = self.hit_test(point);
         self.set_hovered(hit, out);
         self.dispatch(pressed, UiEventType::PointerUp, out);
@@ -773,6 +874,10 @@ impl UiInteraction {
                 self.set_focus(Some(next), out);
                 self.refresh_states(out);
             }
+            UiNavKey::Left | UiNavKey::Right | UiNavKey::Up | UiNavKey::Down => {
+                self.focus_direction(key, out);
+                self.refresh_states(out);
+            }
             UiNavKey::Enter => {
                 if let Some(focused) = self.focused {
                     self.dispatch(focused, UiEventType::Click, out);
@@ -783,6 +888,92 @@ impl UiInteraction {
                 self.set_focus(None, out);
                 self.refresh_states(out);
             }
+        }
+    }
+
+    /// Geometry-based directional focus (Unity `Selectable` auto navigation):
+    /// pick the nearest focusable node in the pressed direction, strongly
+    /// preferring candidates that overlap on the perpendicular axis, then
+    /// scroll the chosen node into its nearest scroll viewport.
+    fn focus_direction(&mut self, key: UiNavKey, out: &mut Vec<UiOutcome>) {
+        let candidates: Vec<usize> = (0..self.nodes.len())
+            .filter(|&index| self.nodes[index].node.focusable && self.effective_enabled(index))
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        // Nothing focused yet: direction input selects the first focusable node
+        // in hierarchy order, matching Tab's entry point.
+        let Some(current) = self.focused.filter(|focused| candidates.contains(focused)) else {
+            let next = candidates[0];
+            self.set_focus(Some(next), out);
+            self.scroll_into_view(next, out);
+            return;
+        };
+        let from = self
+            .effective_rect(current)
+            .unwrap_or(self.nodes[current].node.rect);
+        let mut best: Option<(f32, usize)> = None;
+        for &index in &candidates {
+            if index == current {
+                continue;
+            }
+            let to = self
+                .effective_rect(index)
+                .unwrap_or(self.nodes[index].node.rect);
+            if let Some(score) = navigation_score(from, to, key)
+                && best.is_none_or(|(best_score, _)| score < best_score)
+            {
+                best = Some((score, index));
+            }
+        }
+        if let Some((_, next)) = best {
+            self.set_focus(Some(next), out);
+            self.scroll_into_view(next, out);
+        }
+    }
+
+    /// Minimal-scroll the node into every scroll viewport on its ancestor chain.
+    fn scroll_into_view(&mut self, index: usize, out: &mut Vec<UiOutcome>) {
+        let mut ancestor = self.nodes.get(index).and_then(|state| state.parent);
+        while let Some(parent) = ancestor {
+            if let Some(scroll) = self.nodes[parent].node.scroll {
+                let target = self
+                    .effective_rect(index)
+                    .unwrap_or(self.nodes[index].node.rect);
+                let viewport = self
+                    .effective_rect(parent)
+                    .unwrap_or(self.nodes[parent].node.rect);
+                let (viewport_start, viewport_end, target_start, target_end) = if scroll.horizontal
+                {
+                    (
+                        viewport.x,
+                        viewport.x + viewport.w,
+                        target.x,
+                        target.x + target.w,
+                    )
+                } else {
+                    (
+                        viewport.y,
+                        viewport.y + viewport.h,
+                        target.y,
+                        target.y + target.h,
+                    )
+                };
+                let current = scroll.offset;
+                let max = scroll.max_offset(self.nodes[parent].node.rect);
+                let mut offset = current;
+                if target_start < viewport_start {
+                    offset -= viewport_start - target_start;
+                } else if target_end > viewport_end {
+                    offset += target_end - viewport_end;
+                }
+                let offset = offset.clamp(0.0, max);
+                if (offset - current).abs() > 0.01 {
+                    self.scroll_to(parent, offset, out);
+                }
+            }
+            ancestor = self.nodes[parent].parent;
         }
     }
 
@@ -827,6 +1018,8 @@ impl UiInteraction {
         self.hovered = None;
         self.pressed = None;
         self.drag = None;
+        self.press_start = None;
+        self.press_dragging = false;
         if full {
             self.focused = None;
             for state in &mut self.nodes {
@@ -1133,5 +1326,110 @@ mod tests {
             })
         )));
         assert!(ui.scroll_offset("view").unwrap() > 0.0);
+    }
+
+    #[test]
+    fn directional_navigation_prefers_the_same_row() {
+        let mut ui = UiInteraction::new();
+        let root = ui
+            .push_node(None, hit("root", UiRect::new(0.0, 0.0, 600.0, 400.0)))
+            .unwrap();
+        ui.push_node(
+            Some(root),
+            hit("left", UiRect::new(10.0, 10.0, 80.0, 40.0)).focusable(true),
+        )
+        .unwrap();
+        ui.push_node(
+            Some(root),
+            hit("right", UiRect::new(200.0, 10.0, 80.0, 40.0)).focusable(true),
+        )
+        .unwrap();
+        // Closer to `left` by center distance, but off-row: the aligned candidate
+        // must win despite being farther away.
+        ui.push_node(
+            Some(root),
+            hit("diag", UiRect::new(80.0, 60.0, 80.0, 60.0)).focusable(true),
+        )
+        .unwrap();
+
+        let mut out = Vec::new();
+        ui.key(UiNavKey::Right, &mut out);
+        assert_eq!(
+            ui.focused_key(),
+            Some("left"),
+            "无焦点时方向键落到首个可聚焦节点"
+        );
+        ui.key(UiNavKey::Right, &mut out);
+        assert_eq!(ui.focused_key(), Some("right"), "横向移动应优先同一行");
+        assert!(out.iter().any(|outcome| matches!(
+            outcome,
+            UiOutcome::FocusChanged { to: Some(to), .. } if to == "right"
+        )));
+    }
+
+    #[test]
+    fn directional_navigation_scrolls_the_focused_row_into_view() {
+        let mut ui = UiInteraction::new();
+        let view = ui
+            .push_node(
+                None,
+                UiInteractionNode::new("view", UiRect::new(0.0, 0.0, 100.0, 100.0))
+                    .scroll(UiScroll::vertical(300.0).with_viewport(100.0)),
+            )
+            .unwrap();
+        for (key, y) in [("row0", 0.0), ("row1", 100.0), ("row2", 200.0)] {
+            ui.push_node(
+                Some(view),
+                hit(key, UiRect::new(0.0, y, 100.0, 100.0)).focusable(true),
+            )
+            .unwrap();
+        }
+
+        let mut out = Vec::new();
+        ui.key(UiNavKey::Down, &mut out);
+        ui.key(UiNavKey::Down, &mut out);
+        ui.key(UiNavKey::Down, &mut out);
+        assert_eq!(ui.focused_key(), Some("row2"));
+        assert_eq!(
+            ui.scroll_offset("view"),
+            Some(200.0),
+            "方向键把焦点行滚进视口（最小位移）"
+        );
+    }
+
+    #[test]
+    fn dragging_the_pressed_target_dispatches_drag_and_skips_click() {
+        let mut ui = UiInteraction::new();
+        ui.push_node(
+            None,
+            hit("button", UiRect::new(0.0, 0.0, 100.0, 50.0)).focusable(true),
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        ui.pointer_down([30.0, 20.0], &mut out);
+        out.clear();
+        ui.pointer_move([30.0, 45.0], &mut out);
+        assert!(
+            out.iter().any(|outcome| matches!(
+                outcome,
+                UiOutcome::Dispatch(UiDispatch {
+                    event: UiEventType::Drag,
+                    ..
+                })
+            )),
+            "按下后移动超过阈值必须派发 drag"
+        );
+        out.clear();
+        ui.pointer_up([30.0, 45.0], &mut out);
+        assert!(
+            !out.iter().any(|outcome| matches!(
+                outcome,
+                UiOutcome::Dispatch(UiDispatch {
+                    event: UiEventType::Click,
+                    ..
+                })
+            )),
+            "拖拽后抬起不得再补发 click"
+        );
     }
 }

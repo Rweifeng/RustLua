@@ -1,0 +1,18 @@
+[package]
+name = "rustlua-ui-scene-export"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+# 为什么单独一个 crate：导出件是**三宿主证据**的共同输入。编辑器侧（studio/editor）用它
+# 把 `.ui.json` 落成 `.scene`；wasm 侧的证据 harness 也要在同一份代码上导出同一份场景，
+# 否则"Web/微信跑的是不是同一份导出"就无从证明。studio 依赖 assets-import（含 rodio/mlua），
+# 编译不进 wasm；把这一块纯映射拆出来，studio 再以 `ui_scene_export` 别名转出，调用面不变。
+[dependencies]
+serde_json = "1"
+
+rustlua-scene.workspace = true
+rustlua-ui.workspace = true
+rustlua-ui-spec.workspace = true

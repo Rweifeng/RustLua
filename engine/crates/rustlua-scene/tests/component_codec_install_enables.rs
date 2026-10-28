@@ -30,8 +30,8 @@ fn installing_the_render_and_ui_tables_enables_sprite_and_text() {
     assert!(component_codec::is_installed());
     assert_eq!(
         component_codec::global().len(),
-        14,
-        "渲染层 6 个 + UI 层 8 个 = 14"
+        21,
+        "渲染层 6 个 + UI 层 15 个 = 21"
     );
 
     let scene = scene_with(&[

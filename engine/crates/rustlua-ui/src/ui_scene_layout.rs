@@ -2,10 +2,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::ui_canvas_group::CanvasGroup;
 use super::ui_layout::{
     ChildLayout, ContainerKind, ContainerStyle, LayoutAxis, LayoutItem, UiRect, UiRectLayout,
     layout_container_with_report,
 };
+use super::ui_mask::Mask;
 
 /// 宿主每帧判断"运行期 spawn 的布局节点有没有变"要靠它比较，因此 `PartialEq`
 /// 是这条链要求的能力（`UiRectLayout`/`ContainerStyle` 都已可比较）。
@@ -19,13 +21,19 @@ pub struct UiSceneNode {
     /// Measured visual size used by containers when the node has no stretch
     /// layout. Non-layout entities keep their measured size at the parent origin.
     pub preferred_size: [f32; 2],
+    /// Rectangular clip authored on this entity (M80-02). A mask-only node has no
+    /// visible content of its own, so it fills its parent unless a `UiLayout`
+    /// says otherwise — the same rule containers use.
+    pub mask: Option<Mask>,
+    /// Opacity / interaction switches inherited by the whole subtree (M80-02).
+    pub canvas_group: Option<CanvasGroup>,
 }
 
 /// 决定一个实体是否参与场景 UI 布局的组件名。
 ///
 /// 这张表只有一份：场景快照与运行期 prefab spawn 都读它，否则"场景里的 UI 会画、
 /// 同一份数据 spawn 出来不画"就成了第二处真源。
-pub const UI_LAYOUT_COMPONENTS: [&str; 7] = [
+pub const UI_LAYOUT_COMPONENTS: [&str; 13] = [
     "UiLayout",
     "Container",
     "LayoutItem",
@@ -33,6 +41,12 @@ pub const UI_LAYOUT_COMPONENTS: [&str; 7] = [
     "Image",
     "UiEvents",
     "ButtonStates",
+    "Mask",
+    "CanvasGroup",
+    "Toggle",
+    "Slider",
+    "Progress",
+    "Scrollbar",
 ];
 
 /// 一份实体文档里参与 UI 布局所需的最小信息。
@@ -70,7 +84,17 @@ pub fn preferred_size_for(
     components
         .get("Text")
         .and_then(|raw| super::ui::UiText::from_component_str(raw).ok())
-        .and_then(|text| measure_text(&text.text, text.effective_scale()))
+        .and_then(|text| {
+            // 富文本标签不是字形：用去标签后的纯文本度量，否则标签宽度会把
+            // 容器的首选尺寸撑大（与渲染后的可见文字不一致）。
+            let plain = super::ui_rich_text::parse_rich_text(&text.text).plain;
+            let source = if text.rich_text {
+                plain.as_str()
+            } else {
+                text.text.as_str()
+            };
+            measure_text(source, text.effective_scale())
+        })
         .unwrap_or([64.0, 64.0])
 }
 
@@ -144,6 +168,14 @@ pub fn build_ui_scene_nodes_with_intrinsic<'a>(
             .components
             .get("LayoutItem")
             .and_then(|raw| LayoutItem::from_component_str(raw).ok());
+        let mask = source
+            .components
+            .get("Mask")
+            .and_then(|raw| Mask::from_component_str(raw).ok());
+        let canvas_group = source
+            .components
+            .get("CanvasGroup")
+            .and_then(|raw| CanvasGroup::from_component_str(raw).ok());
         let preferred_size = preferred_size_for(source.components, layout.as_ref(), measure_text);
         nodes.insert(
             source.key,
@@ -153,6 +185,8 @@ pub fn build_ui_scene_nodes_with_intrinsic<'a>(
                 container,
                 layout_item,
                 preferred_size,
+                mask,
+                canvas_group,
             },
         );
     }
@@ -545,9 +579,10 @@ fn resolve_node(
         .as_ref()
         .map(|layout| layout.resolve([parent_rect.w, parent_rect.h]))
         .unwrap_or_else(|| {
-            // 无 UiLayout 的容器填满父矩形（根容器=画布）；普通元素保持固有尺寸，
-            // 偏移只加一次（父矩形可能非零）。
-            if node.container.is_some() {
+            // 无 UiLayout 的容器与遮罩填满父矩形（根=画布）；普通元素保持固有尺寸，
+            // 偏移只加一次（父矩形可能非零）。遮罩自身不画东西，只定义裁剪区域，
+            // 让它保持 64×64 占位尺寸会让"给一个面板加遮罩"意外缩小整块区域。
+            if node.container.is_some() || node.mask.is_some() {
                 UiRect::new(0.0, 0.0, parent_rect.w, parent_rect.h)
             } else {
                 UiRect::new(0.0, 0.0, node.preferred_size[0], node.preferred_size[1])
@@ -591,6 +626,8 @@ mod tests {
             container: None,
             layout_item: None,
             preferred_size: size,
+            mask: None,
+            canvas_group: None,
         }
     }
 
@@ -667,6 +704,8 @@ mod tests {
             container: Some(style),
             layout_item: None,
             preferred_size: [64.0, 64.0],
+            mask: None,
+            canvas_group: None,
         }
     }
 
@@ -890,6 +929,26 @@ mod tests {
         assert_eq!(resolved.len(), 4);
         // 容器 2、3 与叶子 4 各测量一次；容器 3 在摆放容器 2 时二次取值命中缓存。
         assert_eq!(stats, MeasureStats { hits: 1, misses: 3 });
+    }
+
+    /// M80-02：`Mask`/`CanvasGroup` 跟着节点一起解析；只有遮罩、没有 `UiLayout`
+    /// 的节点填满父矩形（否则加遮罩会意外把区域缩成 64×64 占位）。
+    #[test]
+    fn mask_only_node_fills_parent_and_group_is_parsed() {
+        let mut components = BTreeMap::new();
+        components.insert("Mask".to_owned(), "padding=5,5,5,5".to_owned());
+        components.insert("CanvasGroup".to_owned(), "alpha=0.5".to_owned());
+        let nodes = build_ui_scene_nodes([UiSceneNodeSource {
+            key: 7,
+            parent: None,
+            components: &components,
+        }]);
+        assert_eq!(nodes[&7].mask, Some(Mask { padding: [5.0; 4] }));
+        assert_eq!(nodes[&7].canvas_group.unwrap().alpha, 0.5);
+
+        let (resolved, diagnostics) = resolve_scene_ui_layout(&nodes, [320.0, 240.0]);
+        assert!(diagnostics.is_empty());
+        assert_eq!(resolved[&7].rect, UiRect::new(0.0, 0.0, 320.0, 240.0));
     }
 
     /// 文本走宿主度量；图片取作者矩形且不触发文本度量；两者都缺才用占位尺寸。

@@ -1,0 +1,23 @@
+[package]
+name = "rustlua-ui-host-harness"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+# Web / 微信的 UI 证据 harness：把同一份 `.ui.json` 在 **wasm32 宿主**上导出场景、
+# 解算版面、提交顶点，并把读数交回 JS（scripts/verify/ui-host-evidence.mjs）。
+# 读数实现不在这儿——它调 `rustlua-ui-host-evidence`，与 pc 例子同一份判定。
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde_json = "1"
+
+rustlua-ui-host-evidence.workspace = true
+# 工程配置读取走 `vfs`（Web/微信上工程是打包资源表，`std::fs` 恒失败）。宿主把
+# `project.toml` 递进来，读数才与 pc 用同一份 `text_render_mode` 等配置。
+rustlua-infra.workspace = true
+# wasm-bindgen 在原生构建里只是空属性，编译进来不影响门（workspace 的 native check 会跑它）。
+wasm-bindgen = "0.2"

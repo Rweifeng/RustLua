@@ -92,7 +92,7 @@ impl SceneDocument {
         is_prefab_document(&self.scene, self.path.as_deref())
     }
 
-    /// 把本文档转换成**将要落盘的那份 Prefab 资产**（与 [`Self::save_to`] 走同一条转换）。
+    /// 把本文档转换成**将要落盘的那份 Prefab 资产**（与 `Self::save_to` 走同一条转换）。
     ///
     /// 存在的理由：in-context 编辑（editor bin 的 `actions::prefab_stage`）返回场景时，
     /// 需要先拿到「新源」再用它重建场景里的全部实例。这一步必须与 `save` 共用

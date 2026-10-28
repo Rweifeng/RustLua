@@ -159,7 +159,9 @@ pub(crate) fn paint(
     let rows = rustlua_ui_spec::layout_rects(spec);
     let index: BTreeMap<String, LayoutRect> =
         rows.into_iter().map(|row| (row.key.clone(), row)).collect();
-    draw_node(&painter, spec, &spec.root, &index, view, textures, None);
+    draw_node(
+        &painter, spec, &spec.root, &index, view, textures, None, 1.0,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -171,6 +173,7 @@ fn draw_node(
     view: CanvasView,
     textures: &mut impl FnMut(&str) -> Option<egui::TextureHandle>,
     inherited_clip: Option<egui::Rect>,
+    inherited_alpha: f32,
 ) {
     let Some(row) = index.get(&node.key) else {
         return;
@@ -188,7 +191,13 @@ fn draw_node(
         node.style.as_deref().and_then(|name| spec.styles.get(name)),
         &spec.tokens,
     );
-    let opacity = style.number("opacity").unwrap_or(1.0).clamp(0.0, 1.0);
+    // `CanvasGroup.alpha` 沿父链相乘（与运行时同一口径）；节点自己的 `opacity` 只作用本节点。
+    let group_alpha = match &node.kind {
+        UiNodeKind::CanvasGroup { alpha, .. } => alpha.clamp(0.0, 1.0),
+        _ => 1.0,
+    };
+    let child_alpha = inherited_alpha * group_alpha;
+    let opacity = style.number("opacity").unwrap_or(1.0).clamp(0.0, 1.0) * child_alpha;
     let radius = style.number("radius").unwrap_or(0.0) * view.design_scale();
     if let Some(bg) = style.color("bg").or_else(|| style.color("background")) {
         painter.rect_filled(rect, radius, with_alpha(bg, opacity));
@@ -202,6 +211,7 @@ fn draw_node(
             rect,
             view,
             textures,
+            opacity,
         );
     }
     if let (Some(width), Some(color)) = (style.number("border_width"), style.color("border_color"))
@@ -217,7 +227,7 @@ fn draw_node(
         );
     }
     let text = match &node.kind {
-        UiNodeKind::Text { text } => Some(text.as_str()),
+        UiNodeKind::Text { text, .. } => Some(text.as_str()),
         UiNodeKind::Button { text, .. } => text.as_deref(),
         _ => None,
     };
@@ -261,7 +271,16 @@ fn draw_node(
         );
     }
     for child in &node.children {
-        draw_node(&painter, spec, child, index, view, textures, clip);
+        draw_node(
+            &painter,
+            spec,
+            child,
+            index,
+            view,
+            textures,
+            clip,
+            child_alpha,
+        );
     }
 }
 
@@ -281,6 +300,7 @@ fn node_nine_slice(node: &UiNode) -> Option<[f32; 4]> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_image(
     painter: &egui::Painter,
     spec: &UiSpec,
@@ -289,6 +309,7 @@ fn paint_image(
     rect: egui::Rect,
     view: CanvasView,
     textures: &mut impl FnMut(&str) -> Option<egui::TextureHandle>,
+    opacity: f32,
 ) {
     let Some(path) = asset_path(spec, src) else {
         return;
@@ -296,12 +317,13 @@ fn paint_image(
     let Some(texture) = textures(path) else {
         return;
     };
+    let tint = with_alpha(egui::Color32::WHITE, opacity);
     let Some(insets) = nine_slice else {
         painter.image(
             texture.id(),
             rect,
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-            egui::Color32::WHITE,
+            tint,
         );
         return;
     };
@@ -346,12 +368,7 @@ fn paint_image(
                 egui::pos2(x[column], y[row]),
                 egui::vec2(*width, *height),
             );
-            painter.image(
-                texture.id(),
-                dest,
-                colors[row * 3 + column],
-                egui::Color32::WHITE,
-            );
+            painter.image(texture.id(), dest, colors[row * 3 + column], tint);
         }
     }
 }

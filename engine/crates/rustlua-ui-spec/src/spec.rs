@@ -102,6 +102,30 @@ pub struct UiStyle {
     pub base: BTreeMap<String, Value>,
     #[serde(default)]
     pub states: BTreeMap<StyleState, BTreeMap<String, Value>>,
+    /// 状态之间的过渡（时长 + 曲线）。缺省 = 瞬时切换（Unity `Selectable` 不勾
+    /// Interaction 时的行为）。导出成 `ButtonStates` 的 `transition=秒:曲线`，
+    /// 运行时用动画内核的 `UiEasing` 采样，不另造曲线。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<StyleTransition>,
+}
+
+/// 状态过渡曲线，与运行时 `rustlua_ui::ui_animation::UiEasing` 同一组词。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum StyleEasing {
+    #[default]
+    Linear,
+    SmoothStep,
+    Step,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+pub struct StyleTransition {
+    /// 秒。0 = 瞬时。
+    #[serde(default)]
+    pub duration: f32,
+    #[serde(default)]
+    pub easing: StyleEasing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -208,14 +232,17 @@ fn kind_field_names(kind: &UiNodeKind) -> &'static [&'static str] {
             "align",
             "columns",
         ],
-        UiNodeKind::Text { .. } => &["text"],
+        UiNodeKind::Text { .. } => &["text", "rich_text"],
         UiNodeKind::Image { .. } => &["src", "nine_slice"],
         UiNodeKind::Button { .. } => &["text", "src"],
         UiNodeKind::Toggle { .. } => &["text", "checked"],
         UiNodeKind::Slider { .. } => &["min", "max", "value"],
         UiNodeKind::Progress { .. } => &["value"],
+        UiNodeKind::Scrollbar { .. } => &["value", "size", "direction", "handle"],
         UiNodeKind::Input { .. } => &["placeholder"],
         UiNodeKind::ScrollView { .. } => &["horizontal"],
+        UiNodeKind::Mask { .. } => &["padding"],
+        UiNodeKind::CanvasGroup { .. } => &["alpha", "interactable", "blocks_raycasts"],
         UiNodeKind::List { .. } => &["virtualized"],
         UiNodeKind::Grid { .. } => &["columns"],
         UiNodeKind::Tabs { .. } => &["selected"],
@@ -247,6 +274,10 @@ pub enum UiNodeKind {
     },
     Text {
         text: String,
+        /// `<b>/<color>/<br/>/<icon=…>` 内联标记。运行时按同一套解析出 span，
+        /// 未识别的标签原样保留并计入诊断。
+        #[serde(default)]
+        rich_text: bool,
     },
     Image {
         src: String,
@@ -277,6 +308,18 @@ pub enum UiNodeKind {
         #[serde(default)]
         value: f32,
     },
+    /// 滚动条（对齐 Unity `Scrollbar`）：`size` 是滑块占轨道的比例，`handle` 指向
+    /// 一个子节点键，运行时把它的矩形改写成「长度 = 轨道 × size、位置 = value × 剩余行程」。
+    Scrollbar {
+        #[serde(default)]
+        value: f32,
+        #[serde(default = "default_scrollbar_size")]
+        size: f32,
+        #[serde(default)]
+        direction: ScrollbarDirection,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        handle: Option<String>,
+    },
     Input {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         placeholder: Option<String>,
@@ -284,6 +327,20 @@ pub enum UiNodeKind {
     ScrollView {
         #[serde(default)]
         horizontal: bool,
+    },
+    /// 通用遮罩：按自身矩形（扣掉 `padding`）裁剪子孙，与 `ScrollView` 同一套裁剪路径。
+    Mask {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        padding: Option<[f32; 4]>,
+    },
+    /// 整组透明度与交互：`alpha` 沿父链相乘，`interactable`/`blocks_raycasts` 直通运行时。
+    CanvasGroup {
+        #[serde(default = "default_one")]
+        alpha: f32,
+        #[serde(default = "default_true")]
+        interactable: bool,
+        #[serde(default = "default_true")]
+        blocks_raycasts: bool,
     },
     List {
         #[serde(default)]
@@ -316,8 +373,11 @@ impl UiNodeKind {
             Self::Toggle { .. } => "toggle",
             Self::Slider { .. } => "slider",
             Self::Progress { .. } => "progress",
+            Self::Scrollbar { .. } => "scrollbar",
             Self::Input { .. } => "input",
             Self::ScrollView { .. } => "scroll_view",
+            Self::Mask { .. } => "mask",
+            Self::CanvasGroup { .. } => "canvas_group",
             Self::List { .. } => "list",
             Self::Grid { .. } => "grid",
             Self::Tabs { .. } => "tabs",
@@ -344,8 +404,41 @@ fn default_one() -> f32 {
     1.0
 }
 
+fn default_scrollbar_size() -> f32 {
+    0.2
+}
+
+fn default_true() -> bool {
+    true
+}
+
 fn default_grid_columns() -> u32 {
     2
+}
+
+/// 滚动条/滑块的行程方向，与运行时 `rustlua_ui::ui_control_direction::ControlDirection`
+/// 同一组取值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollbarDirection {
+    #[default]
+    LeftToRight,
+    RightToLeft,
+    TopToBottom,
+    BottomToTop,
+}
+
+impl ScrollbarDirection {
+    /// 与运行时 `ControlDirection::as_str` 同一组拼写，导出直接透传。
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LeftToRight => "left_to_right",
+            Self::RightToLeft => "right_to_left",
+            Self::TopToBottom => "top_to_bottom",
+            Self::BottomToTop => "bottom_to_top",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -443,6 +536,60 @@ pub enum AnchorPreset {
     StretchHorizontal,
     StretchVertical,
     FullRect,
+}
+
+impl AnchorPreset {
+    /// 九宫格 3×3 加横/纵/全拉伸，面板按这个顺序铺按钮。
+    pub const ALL: [Self; 12] = [
+        Self::TopLeft,
+        Self::TopCenter,
+        Self::TopRight,
+        Self::CenterLeft,
+        Self::Center,
+        Self::CenterRight,
+        Self::BottomLeft,
+        Self::BottomCenter,
+        Self::BottomRight,
+        Self::StretchHorizontal,
+        Self::StretchVertical,
+        Self::FullRect,
+    ];
+
+    /// 与 JSON 里的取值同一套拼写（`snake_case`），检查器输入框也认这个。
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TopLeft => "top_left",
+            Self::TopCenter => "top_center",
+            Self::TopRight => "top_right",
+            Self::CenterLeft => "center_left",
+            Self::Center => "center",
+            Self::CenterRight => "center_right",
+            Self::BottomLeft => "bottom_left",
+            Self::BottomCenter => "bottom_center",
+            Self::BottomRight => "bottom_right",
+            Self::StretchHorizontal => "stretch_horizontal",
+            Self::StretchVertical => "stretch_vertical",
+            Self::FullRect => "full_rect",
+        }
+    }
+
+    /// 锚点在父矩形上的比例（拉伸预设取中点，与预览器 `anchor_fraction` 同口径）。
+    #[must_use]
+    pub const fn fraction(self) -> [f32; 2] {
+        match self {
+            Self::TopLeft => [0.0, 0.0],
+            Self::TopCenter => [0.5, 0.0],
+            Self::TopRight => [1.0, 0.0],
+            Self::CenterLeft => [0.0, 0.5],
+            Self::Center => [0.5, 0.5],
+            Self::CenterRight => [1.0, 0.5],
+            Self::BottomLeft => [0.0, 1.0],
+            Self::BottomCenter => [0.5, 1.0],
+            Self::BottomRight => [1.0, 1.0],
+            Self::StretchHorizontal | Self::StretchVertical | Self::FullRect => [0.5, 0.5],
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

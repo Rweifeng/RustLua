@@ -1,6 +1,6 @@
 # Lua 模块 `ui`
 
-> 运行期 API 面基线里本模块有 52 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
+> 运行期 API 面基线里本模块有 56 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
 > **函数清单与标题里的签名**不要手改；在每个小节里把
 > `TODO(文档桩)` 换成真实说明即可，再生成会保留已补的内容。
 
@@ -333,6 +333,20 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 - 失败：
 - 示例：
 
+## `ui.progress(id: i64, value: Option<f32>)`
+
+> 绑定：`engine/crates/rustlua-ui/src/ui_controls_lua.rs:97`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+读写 `Progress` 组件的进度值；进度条是**只读展示型控件**，指针与键盘不会改它。
+脚本写值后，宿主在下一帧按新值重写填充条矩形。
+
+- 参数：`id`：`entity.find` 拿到的实体句柄；`value`：可选，新进度值（越界夹到
+  `min..=max`，默认 `0..=1`）。
+- 返回：当前值（number）；实体没有 `Progress` 时读返回 `nil`。
+- 失败：`id` 非法或实体已销毁；给没有 `Progress` 的实体写值；`value` 不是有限数。
+- 示例：`local bar = entity.find("HealthBar")`、
+  `ui.progress(bar, 0.5)` → `0.5`、`ui.progress(bar)` → `0.5`
+
 ## `ui.rich_text(text: String)`
 
 > 绑定：`engine/crates/rustlua-ui/src/lua_advanced.rs:292`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
@@ -468,6 +482,19 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 - 失败：
 - 示例：
 
+## `ui.scrollbar(id: i64, value: Option<f32>)`
+
+> 绑定：`engine/crates/rustlua-ui/src/ui_controls_lua.rs:117`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+读写 `ScrollBar` 组件的 0..=1 滚动位置；滑块长度由组件的 `size` 决定。
+宿主按 `value × 剩余行程` 重写手柄矩形——拖拽、键盘与脚本写值共用同一个值。
+
+- 参数：`id`：`entity.find` 拿到的实体句柄；`value`：可选，新位置（越界夹到 `0..=1`）。
+- 返回：当前值（number）；实体没有 `Scrollbar` 时读返回 `nil`。
+- 失败：`id` 非法或实体已销毁；给没有 `Scrollbar` 的实体写值；`value` 不是有限数。
+- 示例：`local bar = entity.find("ListScroll")`、
+  `ui.scrollbar(bar, 0.3)`、`ui.scrollbar(bar)`
+
 ## `ui.show(id: String)`
 
 > 绑定：`engine/crates/rustlua-ui/src/ui_lua.rs:137`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
@@ -478,6 +505,19 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 - 返回：
 - 失败：
 - 示例：
+
+## `ui.slider(id: i64, value: Option<f32>)`
+
+> 绑定：`engine/crates/rustlua-ui/src/ui_controls_lua.rs:77`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+读写 `Slider` 组件值；写入先夹到 `min..=max`，`whole_numbers` 为真时再吸附到最近整数。
+宿主按新值重写填充条与滑块矩形，与鼠标拖拽、方向键改值走同一套换算。
+
+- 参数：`id`：`entity.find` 拿到的实体句柄；`value`：可选，新值。
+- 返回：当前值（number）；实体没有 `Slider` 时读返回 `nil`。
+- 失败：`id` 非法或实体已销毁；给没有 `Slider` 的实体写值；`value` 不是有限数。
+- 示例：`local volume = entity.find("Volume")`、
+  `ui.slider(volume, 0.25)`、`ui.slider(volume)`
 
 ## `ui.text(id: String, text: String)`
 
@@ -531,6 +571,19 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 - 示例：`ui.text_input{ id="name", op="open", text="角色" }`、
   `ui.text_input{ id="name", op="edit", action="insert", value="名" }`、
   `local p = ui.text_input{ op="policy", host="wechat", bridge=false }`
+
+## `ui.toggle(id: i64, value: Option<bool>)`
+
+> 绑定：`engine/crates/rustlua-ui/src/ui_controls_lua.rs:52`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+读写 `Toggle` 组件状态；写入走单选组语义，`group` 非空且置 `true` 时会关掉同组其他开关。
+每个真正变化的实体各发一次 `value_changed`。
+
+- 参数：`id`：`entity.find` 拿到的实体句柄；`value`：可选，新状态。
+- 返回：写/读之后的状态（boolean）；实体没有 `Toggle` 时读返回 `nil`。
+- 失败：`id` 非法或实体已销毁；给没有 `Toggle` 的实体写值。
+- 示例：`local sound = entity.find("Sound")`、
+  `ui.toggle(sound, false)` → `false`、`ui.toggle(sound)` → `false`
 
 ## `ui.tooltip(id: String, x: f32, y: f32, text: String, width: f32, height: f32)`
 

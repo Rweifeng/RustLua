@@ -54,6 +54,128 @@ pub fn ui_text_effective_scale(font_size: f32) -> f32 {
     font_size / UI_TEXT_BASE_PX
 }
 
+/// Horizontal text alignment (`Text.align`)，与 Unity `TextAnchor` 的水平分量一致。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TextAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
+impl TextAlign {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Center => "center",
+            Self::Right => "right",
+        }
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "left" => Some(Self::Left),
+            "center" => Some(Self::Center),
+            "right" => Some(Self::Right),
+            _ => None,
+        }
+    }
+}
+
+/// Vertical text alignment (`Text.valign`)。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TextVAlign {
+    #[default]
+    Top,
+    Middle,
+    Bottom,
+}
+
+impl TextVAlign {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::Middle => "middle",
+            Self::Bottom => "bottom",
+        }
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "top" => Some(Self::Top),
+            "middle" => Some(Self::Middle),
+            "bottom" => Some(Self::Bottom),
+            _ => None,
+        }
+    }
+}
+
+/// 水平溢出策略（Unity `horizontalOverflow` + 省略号）。
+///
+/// 默认 `Wrap` 与 Unity 一致：有布局矩形时按宽换行；点尺寸（宽高都为 0）实体
+/// 没有可换行的盒，行为与旧版相同。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TextOverflow {
+    /// 超出矩形继续画（Unity `Overflow`，旧版行为）。
+    Overflow,
+    #[default]
+    Wrap,
+    /// 截断到矩形宽度。
+    Truncate,
+    /// 截断并追加省略号。
+    Ellipsis,
+}
+
+impl TextOverflow {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Overflow => "overflow",
+            Self::Wrap => "wrap",
+            Self::Truncate => "truncate",
+            Self::Ellipsis => "ellipsis",
+        }
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "overflow" => Some(Self::Overflow),
+            "wrap" => Some(Self::Wrap),
+            "truncate" => Some(Self::Truncate),
+            "ellipsis" => Some(Self::Ellipsis),
+            _ => None,
+        }
+    }
+}
+
+/// 垂直溢出策略（Unity `verticalOverflow`）。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TextVOverflow {
+    #[default]
+    Overflow,
+    Truncate,
+}
+
+impl TextVOverflow {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Overflow => "overflow",
+            Self::Truncate => "truncate",
+        }
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "overflow" => Some(Self::Overflow),
+            "truncate" => Some(Self::Truncate),
+            _ => None,
+        }
+    }
+}
+
 /// Screen-space text label (`Text` component).
 #[derive(Clone, Debug, PartialEq)]
 pub struct UiText {
@@ -64,10 +186,21 @@ pub struct UiText {
     pub color: [f32; 3],
     /// 自定义字体：项目相对路径（如 `assets/fonts/MyFont.ttf`）；空 = 项目默认字体。
     pub font: String,
+    /// 水平对齐（M80-03）。只有带真实宽度的 `UiLayout` 矩形才有意义。
+    pub align: TextAlign,
+    /// 垂直对齐（M80-03）。
+    pub valign: TextVAlign,
+    /// 水平溢出：换行 / 截断 / 省略号 / 溢出。
+    pub overflow: TextOverflow,
+    /// 垂直溢出：超出行高部分是否丢弃。
+    pub voverflow: TextVOverflow,
+    /// 富文本标签（`<b>` / `<color=#rrggbb>` / `<br/>`），默认开（与 Unity 一致）。
+    pub rich_text: bool,
 }
 
 impl Default for UiText {
-    /// 新建 `Text` 组件的默认值：空文本 + 基准字号 + 白色 + 项目默认字体。
+    /// 新建 `Text` 组件的默认值：空文本 + 基准字号 + 白色 + 项目默认字体 +
+    /// 左/上对齐 + 按宽度换行 + 富文本开（Unity 的 Text 默认值）。
     ///
     /// 编辑器「添加组件 ▸ Text」直接用这个类型的编码，编辑器里不再手写这份默认值。
     fn default() -> Self {
@@ -76,6 +209,11 @@ impl Default for UiText {
             font_size: UI_TEXT_BASE_PX,
             color: [1.0, 1.0, 1.0],
             font: String::new(),
+            align: TextAlign::Left,
+            valign: TextVAlign::Top,
+            overflow: TextOverflow::Wrap,
+            voverflow: TextVOverflow::Overflow,
+            rich_text: true,
         }
     }
 }
@@ -210,6 +348,16 @@ fn parse_number(raw: &str) -> Result<f32, UiComponentError> {
         return Err(UiComponentError::InvalidValue(raw.to_owned()));
     }
     Ok(value)
+}
+
+/// Strict boolean parsing (`true`/`false`/`1`/`0`); typos must not silently
+/// become `false`, matching `WorldText.centered`.
+fn parse_bool(raw: &str) -> Result<bool, UiComponentError> {
+    match raw.trim() {
+        "true" | "1" => Ok(true),
+        "false" | "0" => Ok(false),
+        _ => Err(UiComponentError::InvalidValue(raw.to_owned())),
+    }
 }
 
 /// Parses an `r,g,b` color triple (each in `0..=1`).
@@ -391,12 +539,15 @@ pub fn nine_slice_cells(
 }
 
 impl UiText {
-    /// Parses `text=<esc>;font_size=..;color=r,g,b[;font=<esc>]`.
+    /// Parses `text=<esc>;font_size=..;color=r,g,b[;font=<esc>]` plus the
+    /// optional M80-03 layout fields `align`, `valign`, `overflow`, `voverflow`
+    /// and `rich_text`.
     pub fn from_component_str(value: &str) -> Result<Self, UiComponentError> {
         let mut text = String::new();
         let mut font_size = None;
         let mut color = [1.0, 1.0, 1.0];
         let mut font = String::new();
+        let mut parsed = Self::default();
         let mut seen = [false; 2]; // text, font_size
         for field in split_fields(value) {
             let (key, raw) = field
@@ -417,6 +568,23 @@ impl UiText {
                 }
                 "color" => color = parse_rgb(raw)?,
                 "font" => font = unescape_text(raw),
+                "align" => {
+                    parsed.align = TextAlign::parse(raw.trim())
+                        .ok_or_else(|| UiComponentError::InvalidValue(raw.to_owned()))?;
+                }
+                "valign" => {
+                    parsed.valign = TextVAlign::parse(raw.trim())
+                        .ok_or_else(|| UiComponentError::InvalidValue(raw.to_owned()))?;
+                }
+                "overflow" => {
+                    parsed.overflow = TextOverflow::parse(raw.trim())
+                        .ok_or_else(|| UiComponentError::InvalidValue(raw.to_owned()))?;
+                }
+                "voverflow" => {
+                    parsed.voverflow = TextVOverflow::parse(raw.trim())
+                        .ok_or_else(|| UiComponentError::InvalidValue(raw.to_owned()))?;
+                }
+                "rich_text" => parsed.rich_text = parse_bool(raw)?,
                 _ => return Err(UiComponentError::MalformedField(field.to_owned())),
             }
         }
@@ -428,14 +596,16 @@ impl UiText {
         }
         Ok(Self {
             text,
-            font_size: font_size.unwrap_or_default(),
+            font_size: font_size.unwrap_or(UI_TEXT_BASE_PX),
             color,
             font,
+            ..parsed
         })
     }
 
-    /// Encodes the canonical visual-only component string. `font` only emitted
-    /// when non-empty so scenes without a custom font round-trip byte-identically.
+    /// Encodes the canonical visual-only component string. Optional fields are
+    /// only emitted when they differ from the defaults, so existing scenes
+    /// (which predate M80-03) round-trip byte-identically.
     #[must_use]
     pub fn to_component_str(&self) -> String {
         let font = if self.font.is_empty() {
@@ -443,8 +613,33 @@ impl UiText {
         } else {
             format!(";font={}", escape_text(&self.font))
         };
+        let align = if self.align == TextAlign::Left {
+            String::new()
+        } else {
+            format!(";align={}", self.align.as_str())
+        };
+        let valign = if self.valign == TextVAlign::Top {
+            String::new()
+        } else {
+            format!(";valign={}", self.valign.as_str())
+        };
+        let overflow = if self.overflow == TextOverflow::Wrap {
+            String::new()
+        } else {
+            format!(";overflow={}", self.overflow.as_str())
+        };
+        let voverflow = if self.voverflow == TextVOverflow::Overflow {
+            String::new()
+        } else {
+            format!(";voverflow={}", self.voverflow.as_str())
+        };
+        let rich_text = if self.rich_text {
+            String::new()
+        } else {
+            ";rich_text=false".to_owned()
+        };
         format!(
-            "text={};font_size={:.2};color={:.3},{:.3},{:.3}{font}",
+            "text={};font_size={:.2};color={:.3},{:.3},{:.3}{align}{valign}{overflow}{voverflow}{rich_text}{font}",
             escape_text(&self.text),
             self.font_size,
             self.color[0],
@@ -457,6 +652,28 @@ impl UiText {
     #[must_use]
     pub fn effective_scale(&self) -> f32 {
         ui_text_effective_scale(self.font_size)
+    }
+
+    /// 渲染盒尺寸：有真实矩形（宽或高 ≥ 1 px）时文本才按矩形对齐/换行；
+    /// 点尺寸实体保持"按 pivot 居中"的旧路径。
+    #[must_use]
+    pub fn box_size(&self, rect_size: [f32; 2]) -> Option<[f32; 2]> {
+        let usable = rect_size
+            .iter()
+            .all(|value| value.is_finite() && *value >= 0.0)
+            && (rect_size[0] >= 1.0 || rect_size[1] >= 1.0);
+        usable.then_some(rect_size)
+    }
+
+    /// 文本包围框/命中框是否就是布局矩形本身（对齐/截断把字形推离左上角，
+    /// 逐字形 bbox 不再覆盖可点区域）。
+    #[must_use]
+    pub fn fills_layout_box(&self) -> bool {
+        self.align != TextAlign::Left
+            || self.valign != TextVAlign::Top
+            || self.overflow == TextOverflow::Truncate
+            || self.overflow == TextOverflow::Ellipsis
+            || self.voverflow == TextVOverflow::Truncate
     }
 }
 
@@ -542,6 +759,7 @@ mod tests {
             font_size: 24.0,
             color: [1.0, 0.5, 0.0],
             font: String::new(),
+            ..UiText::default()
         };
         let encoded = ui.to_component_str();
         let decoded = UiText::from_component_str(&encoded).expect("valid text");
@@ -559,6 +777,7 @@ mod tests {
             font_size: 14.0,
             color: [1.0, 1.0, 1.0],
             font: String::new(),
+            ..UiText::default()
         };
         let encoded = ui.to_component_str();
         assert!(!encoded.contains("font="), "{encoded}");
@@ -578,6 +797,7 @@ mod tests {
             font_size: 14.0,
             color: [1.0, 1.0, 1.0],
             font: "assets/fonts/a;b=数字.ttf".to_owned(),
+            ..UiText::default()
         };
         let encoded = ui.to_component_str();
         assert!(
@@ -610,6 +830,84 @@ mod tests {
             UiText::from_component_str("text=Hi;font_size=0").unwrap_err(),
             UiComponentError::InvalidValue("0".to_owned())
         );
+    }
+
+    #[test]
+    fn text_style_fields_round_trip_and_omit_defaults() {
+        let default = UiText {
+            text: "Hi".to_owned(),
+            font_size: 14.0,
+            ..UiText::default()
+        };
+        let encoded = default.to_component_str();
+        for key in ["align=", "valign=", "overflow=", "voverflow=", "rich_text="] {
+            assert!(
+                !encoded.contains(key),
+                "{key} 不应出现在默认编码中：{encoded}"
+            );
+        }
+        let decoded = UiText::from_component_str(&encoded).expect("valid");
+        assert_eq!(decoded, default);
+
+        let styled = UiText {
+            text: "Hi".to_owned(),
+            font_size: 14.0,
+            align: TextAlign::Center,
+            valign: TextVAlign::Bottom,
+            overflow: TextOverflow::Ellipsis,
+            voverflow: TextVOverflow::Truncate,
+            rich_text: false,
+            ..UiText::default()
+        };
+        let encoded = styled.to_component_str();
+        assert!(encoded.contains("align=center"), "{encoded}");
+        assert!(encoded.contains("valign=bottom"), "{encoded}");
+        assert!(encoded.contains("overflow=ellipsis"), "{encoded}");
+        assert!(encoded.contains("voverflow=truncate"), "{encoded}");
+        assert!(encoded.contains("rich_text=false"), "{encoded}");
+        let decoded = UiText::from_component_str(&encoded).expect("valid");
+        assert_eq!(decoded, styled);
+    }
+
+    #[test]
+    fn text_rejects_invalid_style_enum_values() {
+        for field in [
+            "align=middle",
+            "valign=center",
+            "overflow=clip",
+            "voverflow=ellipsis",
+            "rich_text=maybe",
+        ] {
+            let spec = format!("text=Hi;font_size=14;{field}");
+            assert!(
+                UiText::from_component_str(&spec).is_err(),
+                "{field} 应被拒绝"
+            );
+        }
+    }
+
+    #[test]
+    fn text_box_and_layout_fill_follows_style() {
+        let default = UiText {
+            text: "Hi".to_owned(),
+            font_size: 14.0,
+            ..UiText::default()
+        };
+        assert_eq!(default.box_size([200.0, 60.0]), Some([200.0, 60.0]));
+        assert!(!default.fills_layout_box());
+        assert_eq!(default.box_size([0.0, 0.0]), None);
+        assert_eq!(default.box_size([0.5, 0.0]), None);
+
+        let centered = UiText {
+            align: TextAlign::Center,
+            ..default.clone()
+        };
+        assert!(centered.fills_layout_box());
+        let ellipsis = UiText {
+            overflow: TextOverflow::Ellipsis,
+            ..default
+        };
+        assert!(ellipsis.fills_layout_box());
     }
 
     #[test]
@@ -782,6 +1080,7 @@ mod tests {
             font_size: 14.0,
             color: [1.0, 1.0, 1.0],
             font: String::new(),
+            ..UiText::default()
         };
         let mut scene = rustlua_scene::scene::Scene::new("ui");
         scene

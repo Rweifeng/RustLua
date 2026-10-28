@@ -99,6 +99,8 @@ const PATCH_ROOT_FIELDS: &[&str] = &[
     "src",
     "checked",
     "value",
+    "rich_text",
+    "handle",
     "placeholder",
     "nine_slice",
     "direction",
@@ -285,6 +287,28 @@ fn validate_style(
         ));
     }
     validate_style_map(&style.base, &format!("{path}.base"), context, diagnostics);
+    if let Some(transition) = &style.transition {
+        if !context.caps.transitions {
+            diagnostics.push(
+                Diagnostic::error(
+                    "spec.transition_unsupported",
+                    format!("{path}.transition"),
+                    "运行时尚未插值状态过渡（hover/pressed 仍是瞬时切换）",
+                )
+                .with_fix("先接进轨道运行时，或删除 transition"),
+            );
+        }
+        if !transition.duration.is_finite() || !(0.0..=10.0).contains(&transition.duration) {
+            diagnostics.push(
+                Diagnostic::error(
+                    "spec.transition_duration",
+                    format!("{path}.transition.duration"),
+                    format!("过渡时长必须在 0..=10 秒，实际 {}", transition.duration),
+                )
+                .with_fix("Unity 的默认交互过渡是 0.1–0.3 秒"),
+            );
+        }
+    }
     for (state, values) in &style.states {
         if !context.caps.supports_state(*state) {
             diagnostics.push(
@@ -697,6 +721,41 @@ fn validate_node_kind(
                 );
             }
         }
+        UiNodeKind::Scrollbar {
+            value,
+            size,
+            handle,
+            ..
+        } => {
+            for (field, raw) in [("value", value), ("size", size)] {
+                if !raw.is_finite() || !(0.0..=1.0).contains(raw) {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "spec.scrollbar_range",
+                            format!("{path}.{field}"),
+                            format!("Scrollbar {field} 必须在 0..=1，实际 {raw}"),
+                        )
+                        .with_key(&node.key)
+                        .with_fix("运行时按轨道比例钳到 0..=1"),
+                    );
+                }
+            }
+            // `handle` 指的是子节点键：运行时按名字找那块滑块并改写它的矩形。
+            // 引用不存在等于写了一个永不移动的滑块，比不写更难发现。
+            if let Some(handle) = handle
+                && !node.children.iter().any(|child| &child.key == handle)
+            {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "spec.scrollbar_handle_missing",
+                        format!("{path}.handle"),
+                        format!("Scrollbar 滑块子节点不存在：{handle}"),
+                    )
+                    .with_key(&node.key)
+                    .with_fix("把 handle 指向该 Scrollbar 的一个子节点 key，或删掉 handle"),
+                );
+            }
+        }
         UiNodeKind::Grid { columns } => {
             if *columns == 0 {
                 diagnostics.push(
@@ -725,8 +784,52 @@ fn validate_node_kind(
                 );
             }
         }
-        UiNodeKind::Text { .. }
-        | UiNodeKind::Toggle { .. }
+        UiNodeKind::Mask { padding } => {
+            if !context.caps.clipping {
+                diagnostics.push(
+                    Diagnostic::error("spec.clipping_unsupported", path, "运行时尚未支持裁剪/滚动")
+                        .with_key(&node.key),
+                );
+            }
+            if let Some(padding) = padding
+                && padding.iter().any(|value| !value.is_finite())
+            {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "spec.mask_padding",
+                        format!("{path}.padding"),
+                        "Mask padding 含非有限数",
+                    )
+                    .with_key(&node.key),
+                );
+            }
+        }
+        UiNodeKind::CanvasGroup { alpha, .. } => {
+            if !alpha.is_finite() || !(0.0..=1.0).contains(alpha) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "spec.canvas_group_alpha",
+                        path,
+                        format!("CanvasGroup alpha {alpha} 不在 0..=1"),
+                    )
+                    .with_key(&node.key),
+                );
+            }
+        }
+        UiNodeKind::Text { rich_text, .. } => {
+            if *rich_text && !context.caps.rich_text {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "spec.rich_text_unsupported",
+                        path,
+                        "运行时尚未解析富文本标记",
+                    )
+                    .with_key(&node.key)
+                    .with_fix("先接进文本排版，或去掉 rich_text"),
+                );
+            }
+        }
+        UiNodeKind::Toggle { .. }
         | UiNodeKind::Input { .. }
         | UiNodeKind::Tabs { .. }
         | UiNodeKind::Modal
@@ -1382,7 +1485,7 @@ fn state_name(state: StyleState) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spec::{CanvasSpec, DocumentKind, UiDocumentMeta};
+    use crate::spec::{CanvasSpec, DocumentKind, StyleEasing, StyleTransition, UiDocumentMeta};
 
     fn minimal_spec() -> UiSpec {
         UiSpec {
@@ -1405,6 +1508,7 @@ mod tests {
                         .into_iter()
                         .collect(),
                     states: BTreeMap::new(),
+                    transition: None,
                 },
             )]
             .into_iter()
@@ -1419,6 +1523,7 @@ mod tests {
                     key: "title".to_owned(),
                     kind: UiNodeKind::Text {
                         text: "Shop".to_owned(),
+                        rich_text: false,
                     },
                     layout: UiLayoutSpec::default(),
                     style: None,
@@ -1458,11 +1563,8 @@ mod tests {
     fn unsupported_node_is_rejected_until_runtime_catches_up() {
         let mut spec = minimal_spec();
         spec.root.children.push(UiNode {
-            key: "toggle".to_owned(),
-            kind: UiNodeKind::Toggle {
-                text: None,
-                checked: false,
-            },
+            key: "tabs".to_owned(),
+            kind: UiNodeKind::Tabs { selected: 0 },
             layout: UiLayoutSpec::default(),
             style: None,
             events: BTreeMap::new(),
@@ -1476,6 +1578,30 @@ mod tests {
             !codes(&planned).contains(&"spec.node_unsupported"),
             "{planned:#?}"
         );
+    }
+
+    #[test]
+    fn list_is_core_but_virtualizing_is_still_gated() {
+        let mut spec = minimal_spec();
+        spec.root.children.push(UiNode {
+            key: "rows".to_owned(),
+            kind: UiNodeKind::List { virtualized: false },
+            layout: UiLayoutSpec::default(),
+            style: None,
+            events: BTreeMap::new(),
+            children: Vec::new(),
+            extra: BTreeMap::new(),
+        });
+        let core = validate_spec(&spec, &Capabilities::core());
+        assert!(
+            !codes(&core).contains(&"spec.node_unsupported"),
+            "list 的普通形态已能导出成滚动容器：{core:#?}"
+        );
+        spec.root.children.last_mut().unwrap().kind = UiNodeKind::List { virtualized: true };
+        let core = validate_spec(&spec, &Capabilities::core());
+        assert!(codes(&core).contains(&"spec.virtual_list_unsupported"));
+        let planned = validate_spec(&spec, &Capabilities::planned());
+        assert!(!codes(&planned).contains(&"spec.virtual_list_unsupported"));
     }
 
     #[test]
@@ -1506,11 +1632,78 @@ mod tests {
         let mut spec = minimal_spec();
         spec.root
             .events
+            .insert("double_click".to_owned(), "shop.double".to_owned());
+        // `value_changed`/`drag` 自 M80-07 起是 core 能力，这里换一个两侧都没有的事件名。
+        for caps in [Capabilities::core(), Capabilities::planned()] {
+            let diagnostics = validate_spec(&spec, &caps);
+            assert!(codes(&diagnostics).contains(&"spec.event_unsupported"));
+        }
+    }
+
+    #[test]
+    fn control_events_and_rich_text_are_core_authored() {
+        let mut spec = minimal_spec();
+        spec.root
+            .events
             .insert("value_changed".to_owned(), "shop.changed".to_owned());
+        spec.root
+            .events
+            .insert("drag".to_owned(), "shop.drag".to_owned());
+        spec.root.children[0].kind = UiNodeKind::Text {
+            text: "<b>Shop</b>".to_owned(),
+            rich_text: true,
+        };
         let diagnostics = validate_spec(&spec, &Capabilities::core());
-        assert!(codes(&diagnostics).contains(&"spec.event_unsupported"));
-        let planned = validate_spec(&spec, &Capabilities::planned());
-        assert!(!codes(&planned).contains(&"spec.event_unsupported"));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn scrollbar_handle_must_name_a_child() {
+        let mut spec = minimal_spec();
+        spec.root.children.push(UiNode {
+            key: "bar".to_owned(),
+            kind: UiNodeKind::Scrollbar {
+                value: 0.25,
+                size: 0.3,
+                direction: crate::spec::ScrollbarDirection::TopToBottom,
+                handle: Some("missing".to_owned()),
+            },
+            layout: UiLayoutSpec::default(),
+            style: None,
+            events: BTreeMap::new(),
+            children: Vec::new(),
+            extra: BTreeMap::new(),
+        });
+        let diagnostics = validate_spec(&spec, &Capabilities::core());
+        assert!(codes(&diagnostics).contains(&"spec.scrollbar_handle_missing"));
+        let codes = codes(&diagnostics);
+        assert!(!codes.contains(&"spec.node_unsupported"));
+    }
+
+    #[test]
+    fn transition_is_gated_by_capabilities() {
+        let mut spec = minimal_spec();
+        spec.styles.get_mut("card").unwrap().transition = Some(StyleTransition {
+            duration: 0.15,
+            easing: StyleEasing::SmoothStep,
+        });
+        // M80-07 起底色过渡是 core 能力：`ButtonStates.transition` 由运行时驱动消费。
+        let core = validate_spec(&spec, &Capabilities::core());
+        assert!(
+            !codes(&core).contains(&"spec.transition_unsupported"),
+            "{core:?}"
+        );
+        let mut no_transitions = Capabilities::core();
+        no_transitions.transitions = false;
+        let gated = validate_spec(&spec, &no_transitions);
+        assert!(codes(&gated).contains(&"spec.transition_unsupported"));
+        let mut with_bad_duration = spec.clone();
+        with_bad_duration.styles.get_mut("card").unwrap().transition = Some(StyleTransition {
+            duration: -1.0,
+            easing: StyleEasing::Linear,
+        });
+        let diagnostics = validate_spec(&with_bad_duration, &Capabilities::core());
+        assert!(codes(&diagnostics).contains(&"spec.transition_duration"));
     }
 
     #[test]
@@ -1651,6 +1844,7 @@ mod tests {
                         key: "title".to_owned(),
                         kind: UiNodeKind::Text {
                             text: "duplicate".to_owned(),
+                            rich_text: false,
                         },
                         layout: UiLayoutSpec::default(),
                         style: None,

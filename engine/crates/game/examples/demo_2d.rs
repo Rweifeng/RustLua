@@ -66,6 +66,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             spacing: 1.0,
             line_spacing: 5.0,
             color: [0.85, 0.95, 1.0, 1.0],
+            ..Default::default()
         },
         &font_atlas,
     )?;

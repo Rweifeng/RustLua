@@ -1,0 +1,1077 @@
+{
+  "canvas": [
+    1280,
+    720
+  ],
+  "checks": [
+    "layout_rects",
+    "draw_order"
+  ],
+  "command": "powershell -NoProfile -File scripts/verify/ui-host-evidence.ps1 -Target wechat",
+  "document": "ui/matrix.ui.json",
+  "draw_order": {
+    "blocks": 44,
+    "max_vertex_error": 0.0006250143051147461,
+    "monotonic_preorder": true,
+    "placed": 44,
+    "rows": [
+      {
+        "expected_ndc": [
+          -1,
+          1
+        ],
+        "first_vertex": 0,
+        "key": "a_top_left",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.0703125,
+          1
+        ],
+        "first_vertex": 6,
+        "key": "a_top_center",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          0.859375,
+          1
+        ],
+        "first_vertex": 12,
+        "key": "a_top_right",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -1,
+          0.03333336114883423
+        ],
+        "first_vertex": 18,
+        "key": "a_center_left",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.0703125,
+          0.03333336114883423
+        ],
+        "first_vertex": 24,
+        "key": "a_center",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          0.859375,
+          0.03333336114883423
+        ],
+        "first_vertex": 30,
+        "key": "a_center_right",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -1,
+          -0.9333332777023315
+        ],
+        "first_vertex": 36,
+        "key": "a_bottom_left",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.0703125,
+          -0.9333332777023315
+        ],
+        "first_vertex": 42,
+        "key": "a_bottom_center",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          0.859375,
+          -0.9333332777023315
+        ],
+        "first_vertex": 48,
+        "key": "a_bottom_right",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.9750000238418579,
+          0.8666666746139526
+        ],
+        "first_vertex": 54,
+        "key": "insets",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.546875,
+          0.5833333730697632
+        ],
+        "first_vertex": 60,
+        "key": "inside_box_absolute",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.59375,
+          0.9555555582046509
+        ],
+        "first_vertex": 66,
+        "key": "sliding",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -1,
+          -1.144444465637207
+        ],
+        "first_vertex": 72,
+        "key": "band_h",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.59375,
+          0.6666666269302368
+        ],
+        "first_vertex": 78,
+        "key": "box_v",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.578125,
+          0.644444465637207
+        ],
+        "first_vertex": 84,
+        "key": "v_row_1",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.578125,
+          0.5555555820465088
+        ],
+        "first_vertex": 90,
+        "key": "v_row_2",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.1875,
+          0.6666666269302368
+        ],
+        "first_vertex": 96,
+        "key": "box_h",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.17500001192092896,
+          0.6144444346427917
+        ],
+        "first_vertex": 102,
+        "key": "h_half",
+        "vertex_abs_error": 0.000555574893951416
+      },
+      {
+        "expected_ndc": [
+          0.1312500238418579,
+          0.6027777791023254
+        ],
+        "first_vertex": 108,
+        "key": "h_fixed",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.59375,
+          0.1944444179534912
+        ],
+        "first_vertex": 114,
+        "key": "box_grid",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.5843750238418579,
+          0.17777776718139648
+        ],
+        "first_vertex": 120,
+        "key": "g_1",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.4740625023841858,
+          0.17777776718139648
+        ],
+        "first_vertex": 126,
+        "key": "g_2",
+        "vertex_abs_error": 0.0006250143051147461
+      },
+      {
+        "expected_ndc": [
+          -0.36374998092651367,
+          0.17777776718139648
+        ],
+        "first_vertex": 132,
+        "key": "g_3",
+        "vertex_abs_error": 0.00031250715255737305
+      },
+      {
+        "expected_ndc": [
+          -0.5843750238418579,
+          0.08333331346511841
+        ],
+        "first_vertex": 138,
+        "key": "g_4",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.1875,
+          0.3888888955116272
+        ],
+        "first_vertex": 144,
+        "key": "box_wrap",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.1781250238418579,
+          0.37222224473953247
+        ],
+        "first_vertex": 150,
+        "key": "w_1",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          0.01874995231628418,
+          0.37222224473953247
+        ],
+        "first_vertex": 156,
+        "key": "w_2",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.1781250238418579,
+          0.24444442987442017
+        ],
+        "first_vertex": 162,
+        "key": "w_3",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          0.28125,
+          0.6666666269302368
+        ],
+        "first_vertex": 168,
+        "key": "state_button",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          0.28125,
+          0.48888885974884033
+        ],
+        "first_vertex": 174,
+        "key": "chk_sound",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          0.28125,
+          0.36666667461395264
+        ],
+        "first_vertex": 180,
+        "key": "vol_slider",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          0.28125,
+          0.2666666507720947
+        ],
+        "first_vertex": 186,
+        "key": "hp_progress",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          0.6875,
+          0.36666667461395264
+        ],
+        "first_vertex": 192,
+        "key": "scroll_bar",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          0.6875,
+          0.2916666865348816
+        ],
+        "first_vertex": 198,
+        "key": "scroll_knob",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.9375,
+          -0.3333333730697632
+        ],
+        "first_vertex": 204,
+        "key": "mask_panel",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.925000011920929,
+          -0.35555553436279297
+        ],
+        "first_vertex": 210,
+        "key": "mask_icon",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.5,
+          -0.3333333730697632
+        ],
+        "first_vertex": 216,
+        "key": "faded_group",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.46875,
+          -0.3888888359069824
+        ],
+        "first_vertex": 222,
+        "key": "faded_icon",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          -0.0625,
+          -0.3333333730697632
+        ],
+        "first_vertex": 228,
+        "key": "rich_label",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          0.34375,
+          -0.3333333730697632
+        ],
+        "first_vertex": 234,
+        "key": "list_box",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          0.3531249761581421,
+          -0.3500000238418579
+        ],
+        "first_vertex": 240,
+        "key": "list_item_1",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          0.3531249761581421,
+          -0.4444444179534912
+        ],
+        "first_vertex": 246,
+        "key": "list_item_2",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          0.7124999761581421,
+          -0.7999999523162842
+        ],
+        "first_vertex": 252,
+        "key": "ok_button",
+        "vertex_abs_error": 0
+      },
+      {
+        "expected_ndc": [
+          0.4249999523162842,
+          -0.7999999523162842
+        ],
+        "first_vertex": 258,
+        "key": "quit_button",
+        "vertex_abs_error": 0
+      }
+    ],
+    "tolerance": 0.0007812500116415322
+  },
+  "entities": 45,
+  "host": "wechat",
+  "layout_rects": {
+    "collapsed_in_host": [],
+    "compared": 33,
+    "max_abs_delta": 0,
+    "missing_in_host": [],
+    "rows": [
+      {
+        "abs_delta": 0,
+        "host": [
+          0,
+          0,
+          1280,
+          720
+        ],
+        "key": "matrix_root",
+        "preview": [
+          0,
+          0,
+          1280,
+          720
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          0,
+          0,
+          90,
+          24
+        ],
+        "key": "a_top_left",
+        "preview": [
+          0,
+          0,
+          90,
+          24
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          595,
+          0,
+          90,
+          24
+        ],
+        "key": "a_top_center",
+        "preview": [
+          595,
+          0,
+          90,
+          24
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          1190,
+          0,
+          90,
+          24
+        ],
+        "key": "a_top_right",
+        "preview": [
+          1190,
+          0,
+          90,
+          24
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          0,
+          348,
+          90,
+          24
+        ],
+        "key": "a_center_left",
+        "preview": [
+          0,
+          348,
+          90,
+          24
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          595,
+          348,
+          90,
+          24
+        ],
+        "key": "a_center",
+        "preview": [
+          595,
+          348,
+          90,
+          24
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          1190,
+          348,
+          90,
+          24
+        ],
+        "key": "a_center_right",
+        "preview": [
+          1190,
+          348,
+          90,
+          24
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          0,
+          696,
+          90,
+          24
+        ],
+        "key": "a_bottom_left",
+        "preview": [
+          0,
+          696,
+          90,
+          24
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          595,
+          696,
+          90,
+          24
+        ],
+        "key": "a_bottom_center",
+        "preview": [
+          595,
+          696,
+          90,
+          24
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          1190,
+          696,
+          90,
+          24
+        ],
+        "key": "a_bottom_right",
+        "preview": [
+          1190,
+          696,
+          90,
+          24
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          16,
+          48,
+          264,
+          32
+        ],
+        "key": "insets",
+        "preview": [
+          16,
+          48,
+          264,
+          32
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          290,
+          150,
+          160,
+          80
+        ],
+        "key": "inside_box_absolute",
+        "preview": [
+          290,
+          150,
+          160,
+          80
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          260,
+          16,
+          320,
+          72
+        ],
+        "key": "sliding",
+        "preview": [
+          260,
+          16,
+          320,
+          72
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          0,
+          772,
+          1280,
+          16
+        ],
+        "key": "band_h",
+        "preview": [
+          0,
+          772,
+          1280,
+          16
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          260,
+          120,
+          220,
+          140
+        ],
+        "key": "box_v",
+        "preview": [
+          260,
+          120,
+          220,
+          140
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          520,
+          120,
+          260,
+          70
+        ],
+        "key": "box_h",
+        "preview": [
+          520,
+          120,
+          260,
+          70
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          260,
+          290,
+          220,
+          100
+        ],
+        "key": "box_grid",
+        "preview": [
+          260,
+          290,
+          220,
+          100
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          520,
+          220,
+          260,
+          170
+        ],
+        "key": "box_wrap",
+        "preview": [
+          520,
+          220,
+          260,
+          170
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          820,
+          120,
+          180,
+          48
+        ],
+        "key": "state_button",
+        "preview": [
+          820,
+          120,
+          180,
+          48
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          820,
+          184,
+          180,
+          28
+        ],
+        "key": "chk_sound",
+        "preview": [
+          820,
+          184,
+          180,
+          28
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          820,
+          228,
+          220,
+          20
+        ],
+        "key": "vol_slider",
+        "preview": [
+          820,
+          228,
+          220,
+          20
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          820,
+          264,
+          220,
+          10
+        ],
+        "key": "hp_progress",
+        "preview": [
+          820,
+          264,
+          220,
+          10
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          1080,
+          228,
+          16,
+          180
+        ],
+        "key": "scroll_bar",
+        "preview": [
+          1080,
+          228,
+          16,
+          180
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          40,
+          480,
+          240,
+          120
+        ],
+        "key": "mask_panel",
+        "preview": [
+          40,
+          480,
+          240,
+          120
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          48,
+          488,
+          224,
+          104
+        ],
+        "key": "mask_icon",
+        "preview": [
+          48,
+          488,
+          224,
+          104
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          320,
+          480,
+          240,
+          120
+        ],
+        "key": "faded_group",
+        "preview": [
+          320,
+          480,
+          240,
+          120
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          340,
+          500,
+          80,
+          80
+        ],
+        "key": "faded_icon",
+        "preview": [
+          340,
+          500,
+          80,
+          80
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          600,
+          480,
+          220,
+          28
+        ],
+        "key": "rich_label",
+        "preview": [
+          600,
+          480,
+          220,
+          28
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          860,
+          480,
+          220,
+          120
+        ],
+        "key": "list_box",
+        "preview": [
+          860,
+          480,
+          220,
+          120
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          866,
+          486,
+          208,
+          28
+        ],
+        "key": "list_item_1",
+        "preview": [
+          866,
+          486,
+          208,
+          28
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          866,
+          520,
+          208,
+          28
+        ],
+        "key": "list_item_2",
+        "preview": [
+          866,
+          520,
+          208,
+          28
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          1096,
+          648,
+          160,
+          48
+        ],
+        "key": "ok_button",
+        "preview": [
+          1096,
+          648,
+          160,
+          48
+        ]
+      },
+      {
+        "abs_delta": 0,
+        "host": [
+          912,
+          648,
+          160,
+          48
+        ],
+        "key": "quit_button",
+        "preview": [
+          912,
+          648,
+          160,
+          48
+        ]
+      }
+    ],
+    "tolerance": 0.5099999904632568,
+    "unreconciled_rows": [
+      {
+        "host": [
+          270,
+          128,
+          180,
+          26
+        ],
+        "key": "v_row_1"
+      },
+      {
+        "host": [
+          270,
+          160,
+          180,
+          40
+        ],
+        "key": "v_row_2"
+      },
+      {
+        "host": [
+          528,
+          138.8000030517578,
+          97.5999984741211,
+          32.400001525878906
+        ],
+        "key": "h_half"
+      },
+      {
+        "host": [
+          724,
+          143,
+          48,
+          24
+        ],
+        "key": "h_fixed"
+      },
+      {
+        "host": [
+          266,
+          296,
+          66.5999984741211,
+          30
+        ],
+        "key": "g_1"
+      },
+      {
+        "host": [
+          336.6000061035156,
+          296,
+          66.5999984741211,
+          30
+        ],
+        "key": "g_2"
+      },
+      {
+        "host": [
+          407.20001220703125,
+          296,
+          66.5999984741211,
+          30
+        ],
+        "key": "g_3"
+      },
+      {
+        "host": [
+          266,
+          330,
+          66.5999984741211,
+          30
+        ],
+        "key": "g_4"
+      },
+      {
+        "host": [
+          526,
+          226,
+          120,
+          40
+        ],
+        "key": "w_1"
+      },
+      {
+        "host": [
+          652,
+          226,
+          120,
+          40
+        ],
+        "key": "w_2"
+      },
+      {
+        "host": [
+          526,
+          272,
+          120,
+          40
+        ],
+        "key": "w_3"
+      },
+      {
+        "host": [
+          1080,
+          255,
+          16,
+          72
+        ],
+        "key": "scroll_knob"
+      }
+    ],
+    "unreconciled_rows_count": 12
+  },
+  "paths": [
+    "__white__",
+    "assets/textures/red-1x1.png",
+    "__builtin_text_atlas__"
+  ],
+  "report_version": "m76-ui-host-evidence-v1",
+  "revision": 2927121506108137,
+  "sdf_vertices": 0,
+  "segments": 6,
+  "vertices": 612
+}

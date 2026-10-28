@@ -5,8 +5,8 @@
 
 // WP11-USE:BEGIN
 use crate::script::LuaRuntime;
-use rustlua_ecs::transform::Transform;
-use rustlua_ecs::transform::Transform3D;
+use crate::script::domain::ecs::transform::Transform;
+use crate::script::domain::ecs::transform::Transform3D;
 // WP11-USE:END
 
 impl LuaRuntime {
@@ -151,7 +151,7 @@ impl LuaRuntime {
     pub fn step_particles_with_parallelism(
         &mut self,
         delta_seconds: f32,
-        parallelism: rustlua_infra::par::Parallelism,
+        parallelism: crate::script::domain::infra::par::Parallelism,
     ) {
         self.state
             .borrow_mut()

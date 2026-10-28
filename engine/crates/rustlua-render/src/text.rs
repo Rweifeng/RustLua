@@ -78,6 +78,72 @@ impl TextAtlas {
     }
 }
 
+/// Horizontal alignment inside [`TextStyle::box_size`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TextAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
+impl TextAlign {
+    /// Offset of a `line_width` line inside a `box_width` box.
+    #[must_use]
+    pub fn offset(self, box_width: f32, line_width: f32) -> f32 {
+        match self {
+            Self::Left => 0.0,
+            Self::Center => (box_width - line_width) * 0.5,
+            Self::Right => box_width - line_width,
+        }
+    }
+}
+
+/// Vertical alignment inside [`TextStyle::box_size`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TextVAlign {
+    #[default]
+    Top,
+    Middle,
+    Bottom,
+}
+
+impl TextVAlign {
+    /// Offset of a `content_height` block inside a `box_height` box.
+    #[must_use]
+    pub fn offset(self, box_height: f32, content_height: f32) -> f32 {
+        match self {
+            Self::Top => 0.0,
+            Self::Middle => (box_height - content_height) * 0.5,
+            Self::Bottom => box_height - content_height,
+        }
+    }
+}
+
+/// Horizontal overflow rule (Unity `Text.horizontalOverflow` + ellipsis).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TextOverflow {
+    /// Draw past the box (legacy behaviour; Unity's `Overflow`).
+    #[default]
+    Overflow,
+    /// Greedy word wrap at spaces; breaks inside a word when it is wider than the box.
+    Wrap,
+    /// Cut the line at the box edge.
+    Truncate,
+    /// Cut the line and append the backend's ellipsis when characters were dropped.
+    Ellipsis,
+}
+
+/// Vertical overflow rule (Unity `Text.verticalOverflow`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TextVOverflow {
+    /// Draw every line past the box.
+    #[default]
+    Overflow,
+    /// Drop lines that do not fit inside the box.
+    Truncate,
+}
+
 /// Layout parameters for a text string.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextStyle {
@@ -85,6 +151,17 @@ pub struct TextStyle {
     pub spacing: f32,
     pub line_spacing: f32,
     pub color: [f32; 4],
+    /// Typesetting box `[width, height]` in pixels. `None` keeps the legacy
+    /// auto-sized layout (no wrap and no alignment box).
+    pub box_size: Option<[f32; 2]>,
+    pub align: TextAlign,
+    pub valign: TextVAlign,
+    pub overflow: TextOverflow,
+    pub voverflow: TextVOverflow,
+    /// Parse `<b>`, `<color=#rrggbb[aa]>`, `</color>`, `<br/>` and `<icon=..>`
+    /// tags. Off by default so low-level callers (dynamic UI, world text) get
+    /// literal text; the scene `Text` component opts in.
+    pub rich_text: bool,
 }
 
 impl Default for TextStyle {
@@ -94,8 +171,296 @@ impl Default for TextStyle {
             spacing: 1.0,
             line_spacing: 2.0,
             color: [1.0; 4],
+            box_size: None,
+            align: TextAlign::Left,
+            valign: TextVAlign::Top,
+            overflow: TextOverflow::Overflow,
+            voverflow: TextVOverflow::Overflow,
+            rich_text: false,
         }
     }
+}
+
+impl TextStyle {
+    /// Rejects non-finite / non-positive metrics, including a malformed box.
+    fn is_valid(&self) -> bool {
+        self.scale.is_finite()
+            && self.scale > 0.0
+            && self.spacing.is_finite()
+            && self.spacing >= 0.0
+            && self.line_spacing.is_finite()
+            && self.line_spacing >= 0.0
+            && self.color.iter().all(|value| value.is_finite())
+            && self.box_size.is_none_or(|box_size| {
+                box_size
+                    .iter()
+                    .all(|value| value.is_finite() && *value >= 0.0)
+            })
+    }
+
+    fn box_width(&self) -> Option<f32> {
+        self.box_size
+            .map(|box_size| box_size[0])
+            .filter(|width| *width > 0.0)
+    }
+
+    fn box_height(&self) -> Option<f32> {
+        self.box_size
+            .map(|box_size| box_size[1])
+            .filter(|height| *height > 0.0)
+    }
+}
+
+/// One character after rich-text tag removal, carrying its resolved colour.
+#[derive(Clone, Debug, PartialEq)]
+struct StyledChar {
+    ch: char,
+    color: [f32; 4],
+    bold: bool,
+}
+
+/// Synthetic bold offset in em (the renderer has one font face; a second shifted
+/// copy thickens the stroke the same way most bitmap fonts fake bold).
+const BOLD_SHIFT_EM: f32 = 0.06;
+
+/// Parses the restricted rich-text subset shared with `ui.rich_text`:
+/// `<b>`, `<color=#rrggbb[aa]>`, `</color>`, `<br/>`, `<icon=..>`. Unknown tags
+/// stay literal so authored `<` text never disappears. `<icon>` is zero-width
+/// (icons are not rendered yet), matching `parse_rich_text().plain`.
+fn styled_chars(text: &str, style: &TextStyle) -> Vec<StyledChar> {
+    let plain = |source: &str, out: &mut Vec<StyledChar>| {
+        out.extend(source.chars().map(|ch| StyledChar {
+            ch,
+            color: style.color,
+            bold: false,
+        }));
+    };
+    if !style.rich_text {
+        let mut out = Vec::with_capacity(text.len());
+        plain(text, &mut out);
+        return out;
+    }
+    fn push(out: &mut Vec<StyledChar>, source: &str, color: [f32; 4], bold: bool) {
+        out.extend(source.chars().map(|ch| StyledChar { ch, color, bold }));
+    }
+    let mut out = Vec::with_capacity(text.len());
+    let mut color = style.color;
+    let mut color_stack: Vec<[f32; 4]> = Vec::new();
+    let mut bold = false;
+    let mut rest = text;
+    while let Some(open) = rest.find('<') {
+        push(&mut out, &rest[..open], color, bold);
+        rest = &rest[open..];
+        let Some(close) = rest.find('>') else {
+            push(&mut out, rest, color, bold);
+            rest = "";
+            break;
+        };
+        let tag = &rest[1..close];
+        let lowered = tag.trim().to_ascii_lowercase();
+        let consumed = close + 1;
+        if lowered == "b" {
+            bold = true;
+        } else if lowered == "/b" {
+            bold = false;
+        } else if lowered == "br" || lowered == "br/" {
+            out.push(StyledChar {
+                ch: '\n',
+                color,
+                bold,
+            });
+        } else if let Some(raw) = lowered.strip_prefix("color=") {
+            color_stack.push(color);
+            color = parse_tag_color(raw.trim()).unwrap_or(color);
+        } else if lowered == "/color" {
+            color = color_stack.pop().unwrap_or(style.color);
+        } else if lowered.starts_with("icon=") {
+            // 图标是零宽标签：与 `ui_rich_text::parse_rich_text().plain` 同口径。
+        } else {
+            push(&mut out, &rest[..consumed], color, bold);
+        }
+        rest = &rest[consumed..];
+    }
+    push(&mut out, rest, color, bold);
+    out
+}
+
+fn parse_tag_color(raw: &str) -> Option<[f32; 4]> {
+    let hex = raw.strip_prefix('#')?;
+    if !matches!(hex.len(), 6 | 8) || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return None;
+    }
+    let value = u32::from_str_radix(hex, 16).ok()?;
+    let channel = |shift: u32| ((value >> shift) & 0xff) as f32 / 255.0;
+    Some([
+        channel(if hex.len() == 8 { 24 } else { 16 }),
+        channel(if hex.len() == 8 { 16 } else { 8 }),
+        channel(if hex.len() == 8 { 8 } else { 0 }),
+        if hex.len() == 8 { channel(0) } else { 1.0 },
+    ])
+}
+
+/// Applies alignment/overflow and returns visual lines of styled characters.
+fn layout_lines(
+    text: &str,
+    style: &TextStyle,
+    advance: &mut dyn FnMut(char) -> f32,
+    ellipsis: &str,
+) -> Vec<Vec<StyledChar>> {
+    let mut paragraphs: Vec<Vec<StyledChar>> = vec![Vec::new()];
+    for character in styled_chars(text, style) {
+        if character.ch == '\n' {
+            paragraphs.push(Vec::new());
+        } else if let Some(paragraph) = paragraphs.last_mut() {
+            paragraph.push(character);
+        }
+    }
+    let mut lines = Vec::new();
+    for paragraph in paragraphs {
+        match style.overflow {
+            TextOverflow::Wrap => match style.box_width() {
+                Some(width) => wrap_paragraph(paragraph, width, advance, &mut lines),
+                None => lines.push(paragraph),
+            },
+            TextOverflow::Truncate | TextOverflow::Ellipsis => match style.box_width() {
+                Some(width) => lines.push(truncate_paragraph(
+                    paragraph,
+                    width,
+                    style.overflow,
+                    advance,
+                    ellipsis,
+                )),
+                None => lines.push(paragraph),
+            },
+            TextOverflow::Overflow => lines.push(paragraph),
+        }
+    }
+    lines
+}
+
+fn wrap_paragraph(
+    mut rest: Vec<StyledChar>,
+    width: f32,
+    advance: &mut dyn FnMut(char) -> f32,
+    lines: &mut Vec<Vec<StyledChar>>,
+) {
+    while !rest.is_empty() {
+        let mut line_width = 0.0;
+        let mut end = 0;
+        let mut last_space = None;
+        while end < rest.len() {
+            let next = advance(rest[end].ch);
+            if end > 0 && line_width + next > width {
+                break;
+            }
+            if rest[end].ch == ' ' {
+                last_space = Some(end);
+            }
+            line_width += next;
+            end += 1;
+        }
+        if end == rest.len() {
+            lines.push(rest);
+            break;
+        }
+        let cut = last_space.filter(|space| *space > 0).unwrap_or(end);
+        let mut line: Vec<StyledChar> = rest.drain(..cut).collect();
+        while line.last().is_some_and(|character| character.ch == ' ') {
+            line.pop();
+        }
+        if rest.first().is_some_and(|character| character.ch == ' ') {
+            rest.remove(0);
+        }
+        if line.is_empty() {
+            // 零 advance 字体保护：至少推进一个字符，避免死循环。
+            if let Some(character) = rest.first().cloned() {
+                line.push(character);
+                rest.remove(0);
+            } else {
+                break;
+            }
+        }
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        lines.push(Vec::new());
+    }
+}
+
+fn truncate_paragraph(
+    mut characters: Vec<StyledChar>,
+    width: f32,
+    overflow: TextOverflow,
+    advance: &mut dyn FnMut(char) -> f32,
+    ellipsis: &str,
+) -> Vec<StyledChar> {
+    let total: f32 = characters
+        .iter()
+        .map(|character| advance(character.ch))
+        .sum();
+    if total <= width {
+        return characters;
+    }
+    let ellipsis_chars: Vec<char> = if overflow == TextOverflow::Ellipsis {
+        ellipsis.chars().collect()
+    } else {
+        Vec::new()
+    };
+    let ellipsis_width: f32 = ellipsis_chars
+        .iter()
+        .map(|character| advance(*character))
+        .sum();
+    let budget = (width - ellipsis_width).max(0.0);
+    let mut line_width = 0.0;
+    let mut keep = 0;
+    for character in &characters {
+        let next = advance(character.ch);
+        if line_width + next > budget {
+            break;
+        }
+        line_width += next;
+        keep += 1;
+    }
+    let style = characters.last().cloned().unwrap_or(StyledChar {
+        ch: ' ',
+        color: [1.0; 4],
+        bold: false,
+    });
+    characters.truncate(keep);
+    if !ellipsis_chars.is_empty() && ellipsis_width <= width {
+        characters.extend(ellipsis_chars.into_iter().map(|ch| StyledChar {
+            ch,
+            color: style.color,
+            bold: style.bold,
+        }));
+    }
+    characters
+}
+
+/// Number of lines that fit the box when `voverflow=truncate`.
+fn visible_lines(
+    style: &TextStyle,
+    line_count: usize,
+    line_height: f32,
+    first_line_height: f32,
+) -> usize {
+    if style.voverflow != TextVOverflow::Truncate {
+        return line_count;
+    }
+    let Some(height) = style.box_height() else {
+        return line_count;
+    };
+    if line_height <= 0.0 || height < first_line_height {
+        return 0;
+    }
+    let fit = (1.0 + ((height - first_line_height) / line_height).floor()).max(0.0) as usize;
+    fit.min(line_count)
+}
+
+fn line_width(line: &[StyledChar], advance: &mut dyn FnMut(char) -> f32) -> f32 {
+    line.iter()
+        .map(|character| advance(character.ch))
+        .sum::<f32>()
 }
 
 /// One text vertex in screen-pixel coordinates.
@@ -277,16 +642,7 @@ impl TextLayout {
         style: TextStyle,
         atlas: &TextAtlas,
     ) -> Result<TextMesh, TextError> {
-        if !origin[0].is_finite()
-            || !origin[1].is_finite()
-            || !style.scale.is_finite()
-            || style.scale <= 0.0
-            || !style.spacing.is_finite()
-            || style.spacing < 0.0
-            || !style.line_spacing.is_finite()
-            || style.line_spacing < 0.0
-            || style.color.iter().any(|v| !v.is_finite())
-        {
+        if !origin[0].is_finite() || !origin[1].is_finite() || !style.is_valid() {
             return Err(if origin[0].is_finite() && origin[1].is_finite() {
                 TextError::InvalidStyle
             } else {
@@ -294,57 +650,74 @@ impl TextLayout {
             });
         }
         let advance = 6.0 * style.scale + style.spacing;
+        let mut advance_fn = |_: char| advance;
+        let lines = layout_lines(text, &style, &mut advance_fn, "...");
         let line_height = 8.0 * style.scale + style.line_spacing;
-        let mut x = origin[0];
-        let mut y = origin[1];
-        let mut max_x = x;
+        let first_line_height = 7.0 * style.scale;
+        let visible = visible_lines(&style, lines.len(), line_height, first_line_height);
+        let lines = &lines[..visible];
+        let content_width = lines
+            .iter()
+            .map(|line| line_width(line, &mut advance_fn))
+            .fold(0.0_f32, f32::max);
+        let content_height = if visible == 0 {
+            0.0
+        } else {
+            first_line_height + (visible as f32 - 1.0) * line_height
+        };
+        let box_top = origin[1]
+            + style
+                .valign
+                .offset(style.box_height().unwrap_or(content_height), content_height);
+        let bold_shift = BOLD_SHIFT_EM * 8.0 * style.scale;
+        let w = 5.0 * style.scale;
+        let h = 7.0 * style.scale;
         let mut glyph_count = 0;
-        let mut line_count = 1;
         let mut vertices = Vec::with_capacity(text.chars().count() * 6);
-        for character in text.chars() {
-            if character == '\n' {
-                max_x = max_x.max(x);
-                x = origin[0];
-                y += line_height;
-                line_count += 1;
-                continue;
+        for (line_index, line) in lines.iter().enumerate() {
+            let line_offset = style.align.offset(
+                style.box_width().unwrap_or(content_width),
+                line_width(line, &mut advance_fn),
+            );
+            let mut x = origin[0] + line_offset;
+            let y = box_top + line_index as f32 * line_height;
+            for character in line {
+                let (uv_min, uv_max) = atlas.uv(character.ch);
+                let shifts = [0.0_f32, bold_shift];
+                let shift_count = if character.bold { 2 } else { 1 };
+                for shift in &shifts[..shift_count] {
+                    let x0 = x + shift;
+                    let x1 = x0 + w;
+                    let y1 = y + h;
+                    let quad = [
+                        [x0, y, uv_min[0], uv_min[1]],
+                        [x1, y, uv_max[0], uv_min[1]],
+                        [x1, y1, uv_max[0], uv_max[1]],
+                        [x0, y1, uv_min[0], uv_max[1]],
+                    ];
+                    let make = |v: [f32; 4]| TextVertex {
+                        position: [v[0], v[1]],
+                        uv: [v[2], v[3]],
+                        color: character.color,
+                    };
+                    vertices.extend_from_slice(&[
+                        make(quad[0]),
+                        make(quad[1]),
+                        make(quad[2]),
+                        make(quad[0]),
+                        make(quad[2]),
+                        make(quad[3]),
+                    ]);
+                }
+                x += advance;
+                glyph_count += 1;
             }
-            let (uv_min, uv_max) = atlas.uv(character);
-            let w = 5.0 * style.scale;
-            let h = 7.0 * style.scale;
-            let x1 = x + w;
-            let y1 = y + h;
-            let quad = [
-                [x, y, uv_min[0], uv_min[1]],
-                [x1, y, uv_max[0], uv_min[1]],
-                [x1, y1, uv_max[0], uv_max[1]],
-                [x, y1, uv_min[0], uv_max[1]],
-            ];
-            let make = |v: [f32; 4]| TextVertex {
-                position: [v[0], v[1]],
-                uv: [v[2], v[3]],
-                color: style.color,
-            };
-            vertices.extend_from_slice(&[
-                make(quad[0]),
-                make(quad[1]),
-                make(quad[2]),
-                make(quad[0]),
-                make(quad[2]),
-                make(quad[3]),
-            ]);
-            x += advance;
-            max_x = max_x.max(x);
-            glyph_count += 1;
         }
         Ok(TextMesh {
             vertices,
             glyph_count,
-            line_count,
-            size: [
-                (max_x - origin[0]).max(0.0),
-                (y - origin[1] + 7.0 * style.scale).max(0.0),
-            ],
+            line_count: visible.max(1),
+            size: [content_width, content_height],
             bitmap: true,
         })
     }
@@ -355,67 +728,90 @@ impl TextLayout {
         style: TextStyle,
         font: &mut FontVectorAtlas,
     ) -> Result<Vec<VectorTextVertex>, TextError> {
-        if !origin.iter().all(|v| v.is_finite())
-            || !style.scale.is_finite()
-            || style.scale <= 0.0
-            || !style.spacing.is_finite()
-            || style.spacing < 0.0
-            || !style.line_spacing.is_finite()
-            || style.line_spacing < 0.0
-            || style.color.iter().any(|v| !v.is_finite())
-        {
+        if !origin.iter().all(|v| v.is_finite()) || !style.is_valid() {
             return Err(TextError::InvalidStyle);
         }
         let base_px = EM_PX * style.scale;
+        let s = base_px;
+        let line_height = EM_PX * style.scale * LINE_HEIGHT_EM + style.line_spacing;
+        let lines = {
+            let mut advance = |ch: char| font.advance_em(ch) * s + style.spacing;
+            layout_lines(text, &style, &mut advance, "…")
+        };
         let ascent = font.ascent_em();
-        let mut x = origin[0];
-        let mut y = origin[1] + ascent * base_px;
+        let visible = visible_lines(
+            &style,
+            lines.len(),
+            line_height,
+            ascent * base_px + font.descent_em().abs() * base_px,
+        );
+        let lines = &lines[..visible];
+        let first_line_height = ascent * base_px + font.descent_em().abs() * base_px;
+        let content_height = if visible == 0 {
+            0.0
+        } else {
+            first_line_height + (visible as f32 - 1.0) * line_height
+        };
+        let box_top = origin[1]
+            + style
+                .valign
+                .offset(style.box_height().unwrap_or(content_height), content_height);
+        let bold_shift = BOLD_SHIFT_EM * base_px;
         let mut out = Vec::new();
-        let s = EM_PX * style.scale;
-        for ch in text.chars() {
-            if ch == '\n' {
-                x = origin[0];
-                y += EM_PX * style.scale * LINE_HEIGHT_EM + style.line_spacing;
-                continue;
+        for (line_index, line) in lines.iter().enumerate() {
+            let content_width = line
+                .iter()
+                .map(|character| font.advance_em(character.ch) * s + style.spacing)
+                .sum::<f32>();
+            let line_offset = style
+                .align
+                .offset(style.box_width().unwrap_or(content_width), content_width);
+            let mut x = origin[0] + line_offset;
+            let baseline = box_top + ascent * base_px + line_index as f32 * line_height;
+            for character in line {
+                if character.ch == ' ' {
+                    // 空格没有轮廓、`glyph()` 把它记成 missing，但它的 hmtx 仍要推进，
+                    // 否则整句空格零宽（"Rust Lua" 画成 "RustLua"），与 SDF 档不一致。
+                    x += font.advance_em(' ') * s + style.spacing;
+                    continue;
+                }
+                let Some(glyph) = font.glyph(character.ch).cloned() else {
+                    x += style.spacing;
+                    continue;
+                };
+                // bounds 是 y 向下的 [left, top, right, bottom]（相对笔位，em 单位）。
+                let [min_x, min_y, max_x, max_y] = glyph.bounds;
+                // 墨迹窄于一个像素的笔画（Noto Sans SC 子集里的 `i` 在 13 px 下只有
+                // 0.86 px）会被 1x 光栅化整个丢掉——片元着色器的 AA 只在四边形内部
+                // 生效，救不了一个采样点都没落进来的情况。按墨迹中心补到 1 px 见方；
+                // 常规字形（≥1 px）逐字节不变，因此锚点/包围盒对齐不受影响。
+                let ink_w = ((max_x - min_x) * s).max(0.0);
+                let ink_h = ((max_y - min_y) * s).max(0.0);
+                let cx = x + (min_x + max_x) * 0.5 * s;
+                let cy = baseline + (min_y + max_y) * 0.5 * s;
+                let w = ink_w.max(1.001);
+                let h = ink_h.max(1.001);
+                let shifts = [0.0_f32, bold_shift];
+                let shift_count = if character.bold { 2 } else { 1 };
+                for shift in &shifts[..shift_count] {
+                    let x0 = cx - w * 0.5 + shift;
+                    let y0 = cy - h * 0.5;
+                    let x1 = cx + w * 0.5 + shift;
+                    let y1 = cy + h * 0.5;
+                    let corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+                    for &p in &[
+                        corners[0], corners[1], corners[2], corners[0], corners[2], corners[3],
+                    ] {
+                        out.push(VectorTextVertex {
+                            position: p,
+                            local: [(p[0] - x - shift) / s, (p[1] - baseline) / s],
+                            glyph_id: glyph.id,
+                            color: character.color,
+                        });
+                    }
+                }
+                x += glyph.advance * s + style.spacing;
             }
-            if ch == ' ' {
-                // 空格没有轮廓、`glyph()` 把它记成 missing，但它的 hmtx 仍要推进，
-                // 否则整句空格零宽（"Rust Lua" 画成 "RustLua"），与 SDF 档不一致。
-                x += font.advance_em(' ') * s + style.spacing;
-                continue;
-            }
-            let Some(glyph) = font.glyph(ch).cloned() else {
-                x += style.spacing;
-                continue;
-            };
-            // bounds 是 y 向下的 [left, top, right, bottom]（相对笔位，em 单位）。
-            let [min_x, min_y, max_x, max_y] = glyph.bounds;
-            // 墨迹窄于一个像素的笔画（Noto Sans SC 子集里的 `i` 在 13 px 下只有
-            // 0.86 px）会被 1x 光栅化整个丢掉——片元着色器的 AA 只在四边形内部
-            // 生效，救不了一个采样点都没落进来的情况。按墨迹中心补到 1 px 见方；
-            // 常规字形（≥1 px）逐字节不变，因此锚点/包围盒对齐不受影响。
-            let ink_w = ((max_x - min_x) * s).max(0.0);
-            let ink_h = ((max_y - min_y) * s).max(0.0);
-            let cx = x + (min_x + max_x) * 0.5 * s;
-            let cy = y + (min_y + max_y) * 0.5 * s;
-            let w = ink_w.max(1.001);
-            let h = ink_h.max(1.001);
-            let x0 = cx - w * 0.5;
-            let y0 = cy - h * 0.5;
-            let x1 = cx + w * 0.5;
-            let y1 = cy + h * 0.5;
-            let corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
-            for &p in &[
-                corners[0], corners[1], corners[2], corners[0], corners[2], corners[3],
-            ] {
-                out.push(VectorTextVertex {
-                    position: p,
-                    local: [(p[0] - x) / s, (p[1] - y) / s],
-                    glyph_id: glyph.id,
-                    color: style.color,
-                });
-            }
-            x += glyph.advance * s + style.spacing;
         }
         Ok(out)
     }
@@ -428,16 +824,7 @@ impl TextLayout {
         style: TextStyle,
         font: &mut FontAtlas,
     ) -> Result<TextMesh, TextError> {
-        if !origin[0].is_finite()
-            || !origin[1].is_finite()
-            || !style.scale.is_finite()
-            || style.scale <= 0.0
-            || !style.spacing.is_finite()
-            || style.spacing < 0.0
-            || !style.line_spacing.is_finite()
-            || style.line_spacing < 0.0
-            || style.color.iter().any(|v| !v.is_finite())
-        {
+        if !origin[0].is_finite() || !origin[1].is_finite() || !style.is_valid() {
             return Err(if origin[0].is_finite() && origin[1].is_finite() {
                 TextError::InvalidStyle
             } else {
@@ -454,86 +841,110 @@ impl TextLayout {
         let pixel = font.is_pixel_font();
         let tex_scale = base_px / raster_scale;
         let line_height = EM_PX * style.scale * LINE_HEIGHT_EM + style.line_spacing;
-        let mut x = origin[0];
-        let mut y = origin[1] + ascent * base_px;
-        let mut max_x = x;
+        let lines = {
+            let mut advance = |character: char| font.advance(character) * tex_scale + style.spacing;
+            layout_lines(text, &style, &mut advance, "…")
+        };
+        let first_line_height = ascent * base_px - descent * base_px;
+        let visible = visible_lines(&style, lines.len(), line_height, first_line_height);
+        let lines = &lines[..visible];
+        let content_width = lines
+            .iter()
+            .map(|line| {
+                line.iter()
+                    .map(|character| font.advance(character.ch) * tex_scale + style.spacing)
+                    .sum::<f32>()
+            })
+            .fold(0.0_f32, f32::max);
+        let content_height = if visible == 0 {
+            0.0
+        } else {
+            first_line_height + (visible as f32 - 1.0) * line_height
+        };
+        let box_top = origin[1]
+            + style
+                .valign
+                .offset(style.box_height().unwrap_or(content_height), content_height);
+        let bold_shift = BOLD_SHIFT_EM * base_px;
         let mut glyph_count = 0;
-        let mut line_count = 1;
         let mut vertices = Vec::with_capacity(text.chars().count() * 6);
-        for character in text.chars() {
-            if character == '\n' {
-                max_x = max_x.max(x);
-                x = origin[0];
-                y += line_height;
-                line_count += 1;
-                continue;
+        for (line_index, line) in lines.iter().enumerate() {
+            let line_width = line
+                .iter()
+                .map(|character| font.advance(character.ch) * tex_scale + style.spacing)
+                .sum::<f32>();
+            let line_offset = style
+                .align
+                .offset(style.box_width().unwrap_or(content_width), line_width);
+            let baseline = box_top + ascent * base_px + line_index as f32 * line_height;
+            let mut x = origin[0] + line_offset;
+            for character in line {
+                if character.ch == ' ' {
+                    // 空格没有字形/轮廓：只推进，不绘制（避免渲染成占位方框）。
+                    x += font.advance(' ') * tex_scale + style.spacing;
+                    continue;
+                }
+                let metrics = font.try_glyph_metrics(character.ch)?;
+                // 字形在整张图集中的 UV = 单元 UV + 单元内偏移在图集中的比例。
+                // 四边形尺寸 = 字形显示尺寸。
+                let rect = metrics.cell_rect;
+                let atlas_w = font.width() as f32;
+                let atlas_h = font.height() as f32;
+                let u0 = metrics.uv[0] + rect[0] / atlas_w;
+                let v0 = metrics.uv[1] + rect[1] / atlas_h;
+                let u1 = metrics.uv[0] + rect[2] / atlas_w;
+                let v1 = metrics.uv[1] + rect[3] / atlas_h;
+                let mut glyph_w = (rect[2] - rect[0]) * tex_scale;
+                let mut glyph_h = (rect[3] - rect[1]) * tex_scale;
+                let mut x0 = x + metrics.bounds[0] * tex_scale;
+                let mut y0 = baseline + metrics.bounds[1] * tex_scale;
+                if pixel {
+                    // 整数吸附：点阵的一个 texel 必须正好盖住整数个设备像素。次像素
+                    // 定位下 Nearest 采样会把边界 texel 采到两次（或零次），字形边缘
+                    // 出现"抖一格"，判据见 `jhyt_m72_pixel_font` 的 1:1 覆盖计数。
+                    x0 = x0.round();
+                    y0 = y0.round();
+                    glyph_w = glyph_w.round();
+                    glyph_h = glyph_h.round();
+                }
+                let shifts: &[f32] = if character.bold {
+                    &[0.0, bold_shift]
+                } else {
+                    &[0.0]
+                };
+                for shift in shifts {
+                    let sx0 = x0 + shift;
+                    let x1 = sx0 + glyph_w;
+                    let y1 = y0 + glyph_h;
+                    let quad = [
+                        [sx0, y0, u0, v0],
+                        [x1, y0, u1, v0],
+                        [x1, y1, u1, v1],
+                        [sx0, y1, u0, v1],
+                    ];
+                    let make = |v: [f32; 4]| TextVertex {
+                        position: [v[0], v[1]],
+                        uv: [v[2], v[3]],
+                        color: character.color,
+                    };
+                    vertices.extend_from_slice(&[
+                        make(quad[0]),
+                        make(quad[1]),
+                        make(quad[2]),
+                        make(quad[0]),
+                        make(quad[2]),
+                        make(quad[3]),
+                    ]);
+                }
+                x += metrics.advance * tex_scale + style.spacing;
+                glyph_count += 1;
             }
-            if character == ' ' {
-                // 空格没有字形/轮廓：只推进，不绘制（避免渲染成占位方框）。
-                x += font.advance(' ') * tex_scale + style.spacing;
-                max_x = max_x.max(x);
-                continue;
-            }
-            let metrics = font.try_glyph_metrics(character)?;
-            // 字形在整张图集中的 UV = 单元 UV + 单元内偏移在图集中的比例。
-            // 四边形尺寸 = 字形显示尺寸。
-            let rect = metrics.cell_rect;
-            let atlas_w = font.width() as f32;
-            let atlas_h = font.height() as f32;
-            let u0 = metrics.uv[0] + rect[0] / atlas_w;
-            let v0 = metrics.uv[1] + rect[1] / atlas_h;
-            let u1 = metrics.uv[0] + rect[2] / atlas_w;
-            let v1 = metrics.uv[1] + rect[3] / atlas_h;
-            let mut glyph_w = (rect[2] - rect[0]) * tex_scale;
-            let mut glyph_h = (rect[3] - rect[1]) * tex_scale;
-            let mut x0 = x + metrics.bounds[0] * tex_scale;
-            let mut y0 = y + metrics.bounds[1] * tex_scale;
-            if pixel {
-                // 整数吸附：点阵的一个 texel 必须正好盖住整数个设备像素。次像素
-                // 定位下 Nearest 采样会把边界 texel 采到两次（或零次），字形边缘
-                // 出现"抖一格"，判据见 `jhyt_m72_pixel_font` 的 1:1 覆盖计数。
-                x0 = x0.round();
-                y0 = y0.round();
-                glyph_w = glyph_w.round();
-                glyph_h = glyph_h.round();
-            }
-            let x1 = x0 + glyph_w;
-            let y1 = y0 + glyph_h;
-            let quad = [
-                [x0, y0, u0, v0],
-                [x1, y0, u1, v0],
-                [x1, y1, u1, v1],
-                [x0, y1, u0, v1],
-            ];
-            let make = |v: [f32; 4]| TextVertex {
-                position: [v[0], v[1]],
-                uv: [v[2], v[3]],
-                color: style.color,
-            };
-            vertices.extend_from_slice(&[
-                make(quad[0]),
-                make(quad[1]),
-                make(quad[2]),
-                make(quad[0]),
-                make(quad[2]),
-                make(quad[3]),
-            ]);
-            x += metrics.advance * tex_scale + style.spacing;
-            max_x = max_x.max(x);
-            glyph_count += 1;
         }
         Ok(TextMesh {
             vertices,
             glyph_count,
-            line_count,
-            size: [
-                (max_x - origin[0]).max(0.0),
-                // em 盒高度 = ascent + |descent|（`descent_em()` 为负值，故用减法）。
-                // M30 修：此前是 `+ descent * base_px`，等于把 descender 从盒子里减掉
-                //（Noto Sans SC 下 0.8em 而非 1.2em），编辑器文字包围框与
-                // `measure_ui_text` 的高度因此都比实际字形矮一截。
-                (y - descent * base_px - origin[1]).max(0.0),
-            ],
+            line_count: visible.max(1),
+            size: [content_width, content_height],
             // 像素字体的字形是 1 bit/texel 的点阵，必须走阈值档（`sdf=2`）+ Nearest
             // 采样；若仍按 MSDF（`sdf=1`）做 smoothstep，点阵会被插值成灰边。
             bitmap: pixel,
@@ -890,5 +1301,186 @@ mod tests {
             TextLayout::build_bitmap("A", [0.0, 0.0], style, &atlas),
             Err(TextError::InvalidStyle)
         );
+        let bad_box = TextStyle {
+            box_size: Some([-1.0, 10.0]),
+            ..TextStyle::default()
+        };
+        assert_eq!(
+            TextLayout::build_bitmap("A", [0.0, 0.0], bad_box, &atlas),
+            Err(TextError::InvalidStyle)
+        );
+    }
+
+    /// 位图档：按盒宽贪心换行（空格处断行）、水平/垂直对齐、以及行高一致性。
+    #[test]
+    fn bitmap_wrap_and_alignment_use_the_box() {
+        let atlas = TextAtlas::built_in();
+        let wrapped = TextStyle {
+            spacing: 0.0,
+            line_spacing: 0.0,
+            box_size: Some([12.0, 100.0]),
+            overflow: TextOverflow::Wrap,
+            ..Default::default()
+        };
+        let mesh = TextLayout::build_bitmap("AB CD", [0.0, 0.0], wrapped, &atlas).unwrap();
+        assert_eq!(mesh.line_count, 2);
+        assert_eq!(mesh.glyph_count, 4);
+        assert_eq!(mesh.size, [12.0, 15.0]);
+        let second_line_top = mesh
+            .vertices
+            .iter()
+            .map(|vertex| vertex.position[1])
+            .filter(|y| *y >= 8.0)
+            .fold(f32::INFINITY, f32::min);
+        assert_eq!(
+            second_line_top, 8.0,
+            "第二行应落在 8px 行高之后（首行 7px 字模 + 1px 行距）"
+        );
+
+        let centered = TextStyle {
+            spacing: 0.0,
+            line_spacing: 0.0,
+            box_size: Some([24.0, 16.0]),
+            align: TextAlign::Center,
+            valign: TextVAlign::Middle,
+            ..Default::default()
+        };
+        let mesh = TextLayout::build_bitmap("AB", [10.0, 20.0], centered, &atlas).unwrap();
+        let bounds = mesh.pixel_bounds();
+        assert!((bounds[0] - 16.0).abs() < 1e-6, "bounds={bounds:?}");
+        assert!((bounds[1] - 24.5).abs() < 1e-6, "bounds={bounds:?}");
+    }
+
+    /// 截断与省略号：省略号必须计入宽度预算，且不能被截成半截。
+    #[test]
+    fn truncate_and_ellipsis_reserve_the_suffix() {
+        let atlas = TextAtlas::built_in();
+        let truncated = TextStyle {
+            spacing: 0.0,
+            box_size: Some([24.0, 100.0]),
+            overflow: TextOverflow::Truncate,
+            ..Default::default()
+        };
+        let mesh = TextLayout::build_bitmap("ABCDEF", [0.0, 0.0], truncated, &atlas).unwrap();
+        assert_eq!(mesh.glyph_count, 4);
+        assert_eq!(mesh.size[0], 24.0);
+
+        let ellipsis = TextStyle {
+            overflow: TextOverflow::Ellipsis,
+            ..truncated
+        };
+        let mesh = TextLayout::build_bitmap("ABCDEF", [0.0, 0.0], ellipsis, &atlas).unwrap();
+        assert_eq!(mesh.glyph_count, 4, "一个字符 + 三个省略点");
+        assert_eq!(mesh.size[0], 24.0);
+    }
+
+    /// 垂直溢出截断：放不下的整行丢弃，不画半行。
+    #[test]
+    fn vertical_truncate_drops_whole_lines() {
+        let atlas = TextAtlas::built_in();
+        let style = TextStyle {
+            spacing: 0.0,
+            line_spacing: 0.0,
+            box_size: Some([100.0, 15.0]),
+            voverflow: TextVOverflow::Truncate,
+            ..Default::default()
+        };
+        let mesh = TextLayout::build_bitmap("A\nB\nC", [0.0, 0.0], style, &atlas).unwrap();
+        assert_eq!(mesh.glyph_count, 2);
+        assert_eq!(mesh.line_count, 2);
+    }
+
+    /// 富文本：颜色按标签分段，`<b>` 用同字形的加粗副本（字形数不变）。
+    #[test]
+    fn rich_text_colors_and_synthetic_bold() {
+        let atlas = TextAtlas::built_in();
+        let style = TextStyle {
+            spacing: 0.0,
+            rich_text: true,
+            ..Default::default()
+        };
+        let mesh = TextLayout::build_bitmap(
+            "A<color=#ff0000>BC</color><b>D</b>",
+            [0.0, 0.0],
+            style,
+            &atlas,
+        )
+        .unwrap();
+        assert_eq!(mesh.glyph_count, 4);
+        assert_eq!(mesh.vertices.len(), 6 * 5, "A/B/C 各一块，D 有加粗副本");
+        let red = [1.0, 0.0, 0.0, 1.0];
+        assert_eq!(mesh.vertices[6].color, red, "B 必须是标签颜色");
+        assert_eq!(mesh.vertices[12].color, red, "C 必须是标签颜色");
+        assert_ne!(mesh.vertices[0].color, red, "A 在标签外保持基础色");
+        // 未知标签按字面量保留，不能被吞掉。
+        let literal = TextLayout::build_bitmap("a<script>x", [0.0, 0.0], style, &atlas).unwrap();
+        assert_eq!(literal.glyph_count, "a<script>x".chars().count());
+    }
+
+    /// SDF 路径的换行/对齐必须与位图档同口径；度量与渲染共用同一份排版。
+    #[test]
+    fn sdf_wrap_matches_the_measured_block() {
+        let font_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../editor/fonts/NotoSansSC-VF.ttf");
+        let bytes = std::fs::read(&font_path).unwrap();
+        let mut font = crate::font::FontAtlas::load(&bytes).unwrap();
+        let style = TextStyle {
+            scale: 1.0,
+            box_size: Some([60.0, 200.0]),
+            overflow: TextOverflow::Wrap,
+            align: TextAlign::Center,
+            rich_text: true,
+            ..Default::default()
+        };
+        let mesh = TextLayout::build("Hello world", [100.0, 0.0], style, &mut font).unwrap();
+        assert!(mesh.line_count >= 2, "60px 盒宽装不下整句");
+        assert_eq!(mesh.line_count, 2);
+        assert!(mesh.size[0] <= 60.0, "换行后每行都不超过盒宽");
+        let bounds = mesh.pixel_bounds();
+        assert!(
+            bounds[0] > 100.0 && bounds[2] <= 160.0,
+            "居中后的字形必须落在盒内：{bounds:?}"
+        );
+        // 富文本标签不占宽度。
+        let plain =
+            TextLayout::build("Hello", [0.0, 0.0], TextStyle::default(), &mut font).unwrap();
+        let tagged = TextLayout::build(
+            "<b>Hello</b>",
+            [0.0, 0.0],
+            TextStyle {
+                rich_text: true,
+                ..Default::default()
+            },
+            &mut font,
+        )
+        .unwrap();
+        assert!((plain.size[0] - tagged.size[0]).abs() < 1e-4);
+    }
+
+    /// 矢量档同样吃盒宽/对齐：居中的字形不能从盒左边缘起笔。
+    #[test]
+    fn vector_alignment_respects_the_box() {
+        let font_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../editor/fonts/NotoSansSC-VF.ttf");
+        let bytes = std::fs::read(&font_path).unwrap();
+        let mut vector = crate::font::FontVectorAtlas::load(&bytes).unwrap();
+        let style = TextStyle {
+            scale: 2.0,
+            box_size: Some([400.0, 80.0]),
+            align: TextAlign::Center,
+            valign: TextVAlign::Middle,
+            ..Default::default()
+        };
+        let run = TextLayout::build_vector("Hi", [50.0, 10.0], style, &mut vector).unwrap();
+        let min_x = run
+            .iter()
+            .map(|vertex| vertex.position[0])
+            .fold(f32::INFINITY, f32::min);
+        let min_y = run
+            .iter()
+            .map(|vertex| vertex.position[1])
+            .fold(f32::INFINITY, f32::min);
+        assert!(min_x > 200.0, "居中后应越过盒中线：min_x={min_x}");
+        assert!(min_y > 10.0, "垂直居中后应下移：min_y={min_y}");
     }
 }

@@ -12,9 +12,16 @@ use rustlua_component_codec::ComponentCodec;
 
 use crate::ui::UiImage;
 use crate::ui::UiText;
+use crate::ui_canvas_group::CanvasGroup;
 use crate::ui_events::UiEvents;
 use crate::ui_layout::{ContainerStyle, LayoutItem, UiRectLayout};
+use crate::ui_mask::Mask;
+use crate::ui_progress::Progress;
+use crate::ui_scroll_view::ScrollView;
+use crate::ui_scrollbar::ScrollBar;
+use crate::ui_slider::Slider;
 use crate::ui_states::ButtonStateSet;
+use crate::ui_toggle::Toggle;
 use crate::world_text::WorldText;
 
 /// `UiLayout`：屏幕空间矩形（锚点/偏移/尺寸/层）。
@@ -73,6 +80,45 @@ fn validate_button_states(value: &str) -> Result<(), String> {
     ButtonStateSet::from_component_str(value).map(|_| ())
 }
 
+/// `Mask`：矩形裁剪容器（padding）。
+fn validate_mask(value: &str) -> Result<(), String> {
+    Mask::from_component_str(value).map(|_| ())
+}
+
+/// `CanvasGroup`：alpha 继承 + 交互/射线开关。
+fn validate_canvas_group(value: &str) -> Result<(), String> {
+    CanvasGroup::from_component_str(value).map(|_| ())
+}
+
+/// `Toggle`：开关状态 + 单选组 + 勾选图形目标。
+fn validate_toggle(value: &str) -> Result<(), String> {
+    Toggle::from_component_str(value).map(|_| ())
+}
+
+/// `Slider`：取值范围 + 填充/滑块目标。
+fn validate_slider(value: &str) -> Result<(), String> {
+    Slider::from_component_str(value).map(|_| ())
+}
+
+/// `Progress`：只读进度条。
+fn validate_progress(value: &str) -> Result<(), String> {
+    Progress::from_component_str(value).map(|_| ())
+}
+
+/// `Scrollbar`：滚动位置 + 滑块占比。
+fn validate_scrollbar(value: &str) -> Result<(), String> {
+    ScrollBar::from_component_str(value).map(|_| ())
+}
+
+/// `ScrollView`：滚动容器（轴向）。
+///
+/// M76-02 就有这个运行期组件，但一直没进 codec 表：UI Studio 导出的 `list` 节点会写出
+/// `ScrollView`，typed 场景编译把它当未知名字留在原文层——覆盖门（每个源组件都要有
+/// typed 归属）在第一个导出场景入库时就会判红。
+fn validate_scroll_view(value: &str) -> Result<(), String> {
+    ScrollView::from_component_str(value).map(|_| ())
+}
+
 /// `WorldText`：世界空间文字（文字字段 + 像素偏移 + 居中）。
 ///
 /// 它从 `rustlua-scene` 搬来（P1 ④）：类型内嵌 [`UiText`]，文法本来就在本 crate。
@@ -99,13 +145,20 @@ static IMAGE: ComponentCodec =
     ComponentCodec::new("Image", validate_image).with_assets(image_assets);
 static EVENTS: ComponentCodec = ComponentCodec::new("UiEvents", validate_events);
 static BUTTON_STATES: ComponentCodec = ComponentCodec::new("ButtonStates", validate_button_states);
+static MASK: ComponentCodec = ComponentCodec::new("Mask", validate_mask);
+static CANVAS_GROUP: ComponentCodec = ComponentCodec::new("CanvasGroup", validate_canvas_group);
+static TOGGLE: ComponentCodec = ComponentCodec::new("Toggle", validate_toggle);
+static SLIDER: ComponentCodec = ComponentCodec::new("Slider", validate_slider);
+static PROGRESS: ComponentCodec = ComponentCodec::new("Progress", validate_progress);
+static SCROLLBAR: ComponentCodec = ComponentCodec::new("Scrollbar", validate_scrollbar);
+static SCROLL_VIEW: ComponentCodec = ComponentCodec::new("ScrollView", validate_scroll_view);
 static WORLD_TEXT: ComponentCodec =
     ComponentCodec::new("WorldText", validate_world_text).with_assets(world_text_assets);
 
-/// 本 crate 负责的八个组件 codec。组合根把它们与 `rustlua_render::scene_codecs()` 一起装表。
+/// 本 crate 负责的十五个组件 codec。组合根把它们与 `rustlua_render::scene_codecs()` 一起装表。
 #[must_use]
 pub fn scene_codecs() -> &'static [&'static ComponentCodec] {
-    static CODECS: [&ComponentCodec; 8] = [
+    static CODECS: [&ComponentCodec; 15] = [
         &LAYOUT,
         &CONTAINER,
         &LAYOUT_ITEM,
@@ -113,6 +166,13 @@ pub fn scene_codecs() -> &'static [&'static ComponentCodec] {
         &IMAGE,
         &EVENTS,
         &BUTTON_STATES,
+        &MASK,
+        &CANVAS_GROUP,
+        &TOGGLE,
+        &SLIDER,
+        &PROGRESS,
+        &SCROLLBAR,
+        &SCROLL_VIEW,
         &WORLD_TEXT,
     ];
     &CODECS
@@ -135,6 +195,13 @@ mod tests {
                 "Image",
                 "UiEvents",
                 "ButtonStates",
+                "Mask",
+                "CanvasGroup",
+                "Toggle",
+                "Slider",
+                "Progress",
+                "Scrollbar",
+                "ScrollView",
                 "WorldText"
             ]
         );
@@ -169,6 +236,40 @@ mod tests {
                 .is_ok()
         );
         assert!(BUTTON_STATES.validate("bogus=a.png").is_err());
+        assert!(MASK.validate("padding=4,8,12,16").is_ok());
+        assert!(MASK.validate("padding=4,8").is_err());
+        assert!(
+            CANVAS_GROUP
+                .validate("alpha=0.5;interactable=false;blocks_raycasts=true")
+                .is_ok()
+        );
+        assert!(CANVAS_GROUP.validate("alpha=2").is_err());
+        assert!(
+            TOGGLE
+                .validate("on=false;group=Sound;checkmark=Checkmark")
+                .is_ok()
+        );
+        assert!(TOGGLE.validate("on=yes").is_err());
+        assert!(
+            SLIDER
+                .validate("min=0;max=10;value=5;whole_numbers=true;fill=Fill;handle=Knob")
+                .is_ok()
+        );
+        assert!(SLIDER.validate("min=5;max=1;value=2").is_err());
+        assert!(
+            PROGRESS
+                .validate("min=0;max=100;value=50;fill=Fill")
+                .is_ok()
+        );
+        assert!(PROGRESS.validate("max=0").is_err());
+        assert!(
+            SCROLLBAR
+                .validate("value=0.5;size=0.2;direction=bottom_to_top;handle=Handle")
+                .is_ok()
+        );
+        assert!(SCROLLBAR.validate("size=2").is_err());
+        assert!(SCROLL_VIEW.validate("horizontal=false").is_ok());
+        assert!(SCROLL_VIEW.validate("horizontal=sometimes").is_err());
         assert!(
             WORLD_TEXT
                 .validate("text=HP;font_size=16;offset=0,-24")

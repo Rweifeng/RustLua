@@ -1117,6 +1117,7 @@ fn build_overlay(snapshot: PerformanceSnapshot, width: u32, height: u32) -> Over
             spacing: 1.0,
             line_spacing: 2.0,
             color,
+            ..Default::default()
         };
         if let Ok(mesh) =
             rustlua_render::text::TextLayout::build_bitmap(text, [x, y], style, &atlas)

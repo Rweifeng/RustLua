@@ -6,7 +6,9 @@
 //! 共用同一份实现。
 
 pub mod review;
-pub mod ui_scene_export;
+/// Spec → `.scene` 的确定性导出搬到了 [`rustlua_ui_scene_export`]（wasm 侧证据 harness 也要用
+/// 同一份导出）。这里以原路径转出，`editor::ui_scene_export` 的调用面不变。
+pub use rustlua_ui_scene_export as ui_scene_export;
 pub mod ui_spec_host;
 pub mod ui_studio;
 

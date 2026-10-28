@@ -80,6 +80,12 @@ fn ui_test_scene_renders_ui_and_dispatches_clicks() {
     runtime
         .run_script_steps(1, 1.0 / 60.0, &input)
         .expect("script step");
+    // click 由抬起派发（M80-07）：按下之后还要抬起。
+    input.finish_frame();
+    input.mouse_event(MouseButton::Left, false);
+    runtime
+        .run_script_steps(1, 1.0 / 60.0, &input)
+        .expect("script step");
     let result = runtime.script.call_update().unwrap();
     assert!(
         result.contains("StartButton"),

@@ -201,9 +201,66 @@ fn load_runtime_scene_uses_project_startup_scene() {
     Scene::new("custom-startup")
         .save(scenes.join("custom.scene"))
         .unwrap();
-    let scene = load_runtime_scene(Some(&root));
+    let (scene, report) =
+        load_runtime_scene(Some(&root)).expect("declared startup scene must load");
     assert_eq!(scene.name, "custom-startup");
+    assert_eq!(report.requested.as_deref(), Some("scenes/custom.scene"));
+    assert!(matches!(report.source, StartupSceneSource::Project { .. }));
     std::fs::remove_dir_all(root).ok();
+}
+
+/// 声明了启动场景但文件不在：必须**返回错误**，不能再悄悄换成合成场景。
+#[test]
+fn declared_startup_scene_failure_is_an_error_not_a_synthetic_scene() {
+    let root = std::env::temp_dir().join(format!(
+        "rustlua-startup-missing-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("project.toml"),
+        "[project]\nname = \"test\"\nstartup_scene = \"scenes/missing.scene\"\n",
+    )
+    .unwrap();
+    let error = load_runtime_scene(Some(&root)).expect_err("missing startup scene must fail");
+    let message = error.to_string();
+    assert!(
+        message.contains("scenes/missing.scene") || message.contains("missing.scene"),
+        "错误必须点名启动场景路径：{message}"
+    );
+    std::fs::remove_dir_all(root).ok();
+}
+
+/// 没有声明启动场景：仍是独立运行时的诊断场景（合法模式），报告里说清楚来源。
+#[test]
+fn undeclared_startup_scene_reports_standalone() {
+    let root = std::env::temp_dir().join(format!(
+        "rustlua-startup-undeclared-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("project.toml"), "[project]\nname = \"test\"\n").unwrap();
+    let (scene, report) = load_runtime_scene(Some(&root)).expect("standalone mode is legal");
+    assert_eq!(scene.name, "runtime-main");
+    assert_eq!(report.source, StartupSceneSource::Standalone);
+    assert_eq!(report.requested, None);
+    std::fs::remove_dir_all(root).ok();
+}
+
+/// 没有工程根：同样是独立运行时，不探测当前目录的工程文件。
+#[test]
+fn no_project_root_reports_standalone() {
+    let (scene, report) = load_runtime_scene(None).expect("standalone mode is legal");
+    assert_eq!(scene.name, "runtime-main");
+    assert_eq!(report.source, StartupSceneSource::Standalone);
 }
 
 #[test]

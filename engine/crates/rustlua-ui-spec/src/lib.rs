@@ -34,7 +34,7 @@ pub use slice::{
 };
 pub use spec::{
     Align, AnchorPreset, BindingMode, CanvasScaleMode, CanvasSpec, ContainerDirection,
-    DocumentKind, Justify, StyleState, UiBindingSpec, UiDocumentMeta, UiLayoutSpec, UiNode,
-    UiNodeKind, UiSpec, UiStyle,
+    DocumentKind, Justify, ScrollbarDirection, StyleEasing, StyleState, StyleTransition,
+    UiBindingSpec, UiDocumentMeta, UiLayoutSpec, UiNode, UiNodeKind, UiSpec, UiStyle,
 };
 pub use validate::{Diagnostic, Severity, validate_patch, validate_spec};

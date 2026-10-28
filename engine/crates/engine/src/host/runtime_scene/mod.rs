@@ -55,6 +55,7 @@ mod tests;
 mod text;
 mod tilemap;
 mod ui_bindings;
+mod ui_controls;
 mod ui_input;
 mod ui_scroll;
 
@@ -160,6 +161,9 @@ pub struct RuntimeScene {
     pub(crate) render_ui_overlay: bool,
     /// 项目根目录（纹理路径解析用，与渲染器 `project_root.join(path)` 一致）。
     pub(crate) project_root: Option<PathBuf>,
+    /// 启动场景的来源（只在 `new`/`new_with_layout` 路径上有值；`from_scene*` 是显式文档）。
+    /// 见 [`StartupSceneReport`]：宿主用它区分"独立运行时"与"真的加载了工程的启动场景"。
+    pub(crate) startup_scene: Option<StartupSceneReport>,
     /// P3-R03-4：场景 `Environment` 组件的加载结果（没有声明时为 `None`）。
     pub(crate) environment: Option<environment::RuntimeSceneEnvironment>,
     /// 九宫格 UV 计算用的纹理像素尺寸缓存（惰性、按 path）。
@@ -205,7 +209,7 @@ pub struct RuntimeScene {
     pub(crate) text_render_mode: TextRenderMode,
     pub(crate) ui_scene_nodes: BTreeMap<u64, UiSceneNode>,
     pub(crate) ui_layout_rects: BTreeMap<u64, ResolvedUiNode>,
-    /// M76-02：交互路由开关（默认关，见 `ui_input` 模块文档）。
+    /// 交互路由开关（M80-01 起默认开；关闭后回到旧点击路径，见 `ui_input` 模块文档）。
     pub(crate) ui_interaction_enabled: bool,
     pub(crate) ui_keyboard_nav: bool,
     /// 跨帧交互状态：命中树（hover/pressed/focus/scroll 的唯一定义处）。
@@ -216,8 +220,14 @@ pub struct RuntimeScene {
     pub(crate) ui_bindings: BTreeMap<String, rustlua_ui::ui_events::UiEvents>,
     /// 交互 key → 实体名（key 在重名时带槽位后缀，派发仍用原名）。
     pub(crate) ui_key_names: BTreeMap<String, String>,
+    /// 交互 key → 槽位（控件路由按槽位找 `Toggle`/`Slider`/`Scrollbar` 组件）。
+    pub(crate) ui_key_slots: BTreeMap<String, u64>,
+    /// M80-04：正在拖拽的滑块/滚动条（交互 key）；左键抬起即清空。
+    pub(crate) ui_control_drag: Option<String>,
     /// 实体名 → 当前视觉状态（渲染侧按名字取状态贴图）。
     pub(crate) ui_visual_states: BTreeMap<String, rustlua_ui::ui_states::ButtonVisualState>,
+    /// 实体名 → 进行中的状态底色过渡（M80-07）。没有配 `transition` 的节点不进这张表。
+    pub(crate) ui_state_transitions: rustlua_ui::ui_states::UiStateTransitions,
     /// 实体名 → 滚动偏移（`ScrollView`；由交互树写入，布局解算时消费）。
     pub(crate) ui_scroll_offsets: BTreeMap<String, f32>,
     /// 槽位 → 滚动范围（内容尺寸来自布局树子节点包围盒）。
@@ -229,6 +239,8 @@ pub struct RuntimeScene {
     /// 交互树按 `UiScroll` 自己平移子节点，喂进去的矩形必须是**扣回位移**的内容空间值；
     /// 绘制/旧点击路径则要屏幕空间值。两者相差的就是这张表。
     pub(crate) ui_scroll_shifts: BTreeMap<u64, [f32; 2]>,
+    /// 槽位 → `CanvasGroup` 沿父链相乘后的最终 alpha（只存 ≠ 1 的条目）。
+    pub(crate) ui_group_alpha: BTreeMap<u64, f32>,
     pub(crate) ui_focused: Option<String>,
     /// M76-02：`UiBindings` 的跨帧 resolve 状态（只发变化过的目标）。
     pub(crate) ui_binding_runtime: rustlua_ui::ui_binding::BindingRuntime,
@@ -650,9 +662,38 @@ fn build_ui_scene_nodes(scene: &Scene, honor_editor_hidden: bool) -> BTreeMap<u6
     )
 }
 
-fn startup_scene_path(project_root: &Path) -> String {
-    project_font::read_key(project_root, "startup_scene")
-        .unwrap_or_else(|| "scenes/main.scene".to_owned())
+/// 启动场景的来源。刻意分开"没声明"和"声明了但加载失败"：
+/// 前者是引擎自带的诊断场景（独立运行时模式），后者是**真错误**，不能再悄悄换一张场景。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StartupSceneSource {
+    /// 没有工程根，或 `project.toml` 没有 `startup_scene` 键：引擎自带诊断场景。
+    Standalone,
+    /// `project.toml` 声明并成功加载的启动场景。
+    Project { path: PathBuf },
+}
+
+/// 启动场景的加载结果（宿主/测试可读，不再只有"一个 Scene"）。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StartupSceneReport {
+    pub source: StartupSceneSource,
+    /// `project.toml` 里声明的相对路径（未声明时 `None`）。
+    pub requested: Option<String>,
+}
+
+/// 引擎自带的诊断场景：独立运行时（没有工程根）与"工程未声明启动场景"时使用。
+fn standalone_scene() -> Scene {
+    let mut scene = Scene::new("runtime-main");
+    let _ = scene.add_entity(SceneEntityId(1), "SpriteRoot", None);
+    let entity = scene.entities.get_mut(&SceneEntityId(1)).unwrap();
+    entity.components.insert(
+        "Transform".into(),
+        "position=640,360,0;rotation=0,0,0,1;scale=1,1,1".into(),
+    );
+    entity.components.insert(
+        "Sprite".into(),
+        "texture=assets/textures/red-1x1.png".into(),
+    );
+    scene
 }
 
 /// project.toml 的 `text_render_mode` 键；无效/缺省回退 `auto`。
@@ -663,52 +704,80 @@ fn project_text_render_mode(project_root: Option<&Path>) -> TextRenderMode {
         .unwrap_or(TextRenderMode::Auto)
 }
 
-fn load_runtime_scene(project_root: Option<&Path>) -> Scene {
-    project_root
-        .and_then(|root| {
-            let scene_path = startup_scene_path(root);
-            // 启动场景是第一个上下文点；之后的切换由脚本层 `scene.load` 打点。
-            rustlua_infra::vfs::note_load_context(&scene_path);
-            let full = root.join(scene_path);
-            // 先走文件系统（桌面工程/发布包解包目录的常规路径，语义一个字都不改）。
-            Scene::load(&full)
-                .or_else(|error| {
-                    // 没有 `std::fs` 的宿主（web / 微信小游戏）：场景字节在宿主的资源表里，
-                    // 经 `vfs` provider 取。**这不是"第二条解析实现"**——同样落在
-                    // `Scene::from_packed_bytes` → `from_text`，所以两条路读出来的场景一致。
-                    // 失败时保留**第一次**的错误（它才是"文件到底在不在"的答案）。
-                    match rustlua_infra::vfs::read(&full) {
-                        Ok(bytes) => Scene::from_packed_bytes(&full, &bytes),
-                        Err(_) => Err(error),
-                    }
-                })
-                .ok()
-        })
-        // Standalone engine mode uses this engine-owned diagnostic scene and never
-        // probes the current directory for game files.
-        .unwrap_or_else(|| {
-            let mut scene = Scene::new("runtime-main");
-            let _ = scene.add_entity(SceneEntityId(1), "SpriteRoot", None);
-            scene
-                .entities
-                .get_mut(&SceneEntityId(1))
-                .unwrap()
-                .components
-                .insert(
-                    "Transform".into(),
-                    "position=640,360,0;rotation=0,0,0,1;scale=1,1,1".into(),
-                );
-            scene
-                .entities
-                .get_mut(&SceneEntityId(1))
-                .unwrap()
-                .components
-                .insert(
-                    "Sprite".into(),
-                    "texture=assets/textures/red-1x1.png".into(),
-                );
-            scene
-        })
+/// 读取项目声明的启动场景。
+///
+/// 三种结果必须分开：
+/// - 没有工程根 → 引擎诊断场景（独立运行时，合法模式）；
+/// - 工程**没有声明** `startup_scene` → 引擎诊断场景（同样是合法模式，记一条 info）；
+/// - 工程**声明了**但加载失败 → `Err`。以前这里 `.ok()` 后落进合成场景：文件丢了、语法坏了，
+///   宿主照样起画面，只是内容不是工程的——这是最典型的静默回退。
+fn load_runtime_scene(project_root: Option<&Path>) -> anyhow::Result<(Scene, StartupSceneReport)> {
+    let Some(root) = project_root else {
+        return Ok((
+            standalone_scene(),
+            StartupSceneReport {
+                source: StartupSceneSource::Standalone,
+                requested: None,
+            },
+        ));
+    };
+    let Some(relative) = project_font::read_key(root, "startup_scene") else {
+        tracing::info!(
+            target: "scene",
+            root = %root.display(),
+            "[scene] project.toml has no startup_scene; using the engine diagnostic scene"
+        );
+        return Ok((
+            standalone_scene(),
+            StartupSceneReport {
+                source: StartupSceneSource::Standalone,
+                requested: None,
+            },
+        ));
+    };
+    // 启动场景是第一个上下文点；之后的切换由脚本层 `scene.load` 打点。
+    rustlua_infra::vfs::note_load_context(&relative);
+    let full = root.join(&relative);
+    // 先走文件系统（桌面工程/发布包解包目录的常规路径，语义一个字都不改）。
+    let loaded = Scene::load(&full).or_else(|error| {
+        // 没有 `std::fs` 的宿主（web / 微信小游戏）：场景字节在宿主的资源表里，
+        // 经 `vfs` provider 取。**这不是"第二条解析实现"**——同样落在
+        // `Scene::from_packed_bytes` → `from_text`，所以两条路读出来的场景一致。
+        // 失败时保留**第一次**的错误（它才是"文件到底在不在"的答案）。
+        match rustlua_infra::vfs::read(&full) {
+            Ok(bytes) => Scene::from_packed_bytes(&full, &bytes),
+            Err(_) => Err(error),
+        }
+    });
+    match loaded {
+        Ok(scene) => {
+            tracing::info!(
+                target: "scene",
+                path = %full.display(),
+                entities = scene.entities.len(),
+                "[scene] startup scene loaded"
+            );
+            Ok((
+                scene,
+                StartupSceneReport {
+                    source: StartupSceneSource::Project { path: full },
+                    requested: Some(relative),
+                },
+            ))
+        }
+        Err(error) => {
+            tracing::error!(
+                target: "scene",
+                path = %full.display(),
+                error = %error,
+                "[scene] declared startup scene failed to load; refusing synthetic-scene fallback"
+            );
+            Err(anyhow::anyhow!(
+                "project.toml 声明的启动场景 {} 加载失败：{error}",
+                full.display()
+            ))
+        }
+    }
 }
 
 /// UI 合批：合并相邻且同纹理、同 sdf 的 draw。

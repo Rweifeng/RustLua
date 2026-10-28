@@ -13,7 +13,7 @@
 
 use mlua::Value;
 
-use rustlua_ecs::entity::EntityId;
+use crate::script::domain::ecs::entity::EntityId;
 
 pub(super) fn format_lua_value(value: Value) -> String {
     match value {
@@ -50,7 +50,7 @@ pub(super) fn entity_to_lua(entity: EntityId) -> i64 {
 // 绑定下沉到领域 crate 后仍要用它，而领域 crate 不能反向依赖脚本层。
 // `json_to_lua_value` 的最后一个调用点随 ⑤-4c 的 `data.*` / `map.state` 绑定搬去了
 // `rustlua-gameplay`，这里只再导出脚本层仍在用的那一个。
-pub(super) use rustlua_lua_api::values::lua_value_to_json;
+pub(super) use crate::script::domain::lua_api::values::lua_value_to_json;
 
 #[cfg(test)]
 mod tests {

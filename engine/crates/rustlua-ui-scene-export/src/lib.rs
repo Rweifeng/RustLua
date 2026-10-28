@@ -13,13 +13,22 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rustlua_scene::scene::{Scene, SceneEntityId};
 use rustlua_ui::ui::{UI_TEXT_BASE_PX, UiImage, UiText};
+use rustlua_ui::ui_canvas_group::CanvasGroup;
+use rustlua_ui::ui_control_direction::ControlDirection;
 use rustlua_ui::ui_events::UiEventType;
 use rustlua_ui::ui_layout::{
     ChildAlign, ContainerKind, ContainerStyle, Justify, LayoutItem, UiRectLayout,
 };
+use rustlua_ui::ui_mask::Mask;
+use rustlua_ui::ui_progress::Progress;
+use rustlua_ui::ui_scroll_view::ScrollView;
+use rustlua_ui::ui_scrollbar::ScrollBar;
+use rustlua_ui::ui_slider::Slider;
+use rustlua_ui::ui_states::{ButtonStateSet, ButtonVisualState, UiStateTransition};
+use rustlua_ui::ui_toggle::Toggle;
 use rustlua_ui_spec::{
-    Align, AnchorPreset, ContainerDirection, Justify as SpecJustify, UiLayoutSpec, UiNode,
-    UiNodeKind, UiSpec,
+    Align, AnchorPreset, ContainerDirection, Justify as SpecJustify, ScrollbarDirection,
+    StyleEasing, StyleState, StyleTransition, UiLayoutSpec, UiNode, UiNodeKind, UiSpec,
 };
 use serde_json::Value;
 
@@ -90,6 +99,14 @@ fn validate_components(scene: &Scene, errors: &mut Vec<String>) {
                 "UiEvents" => rustlua_ui::ui_events::UiEvents::parse(raw)
                     .map(|_| ())
                     .map_err(|error| error.to_string()),
+                "ScrollView" => ScrollView::from_component_str(raw).map(|_| ()),
+                "Mask" => Mask::from_component_str(raw).map(|_| ()),
+                "CanvasGroup" => CanvasGroup::from_component_str(raw).map(|_| ()),
+                "Toggle" => Toggle::from_component_str(raw).map(|_| ()),
+                "Slider" => Slider::from_component_str(raw).map(|_| ()),
+                "Progress" => Progress::from_component_str(raw).map(|_| ()),
+                "Scrollbar" => ScrollBar::from_component_str(raw).map(|_| ()),
+                "ButtonStates" => ButtonStateSet::from_component_str(raw).map(|_| ()),
                 other => {
                     errors.push(format!("{}: 导出器发出了未知组件 {other}", entity.name));
                     continue;
@@ -130,12 +147,13 @@ fn parent_flows(kind: Option<&UiNodeKind>) -> bool {
 }
 
 /// 此刻**不能**拿预览器对账的键集：流向容器（`v_box`/`h_box`/`grid`/`wrap`）的子项，
-/// 以及它们的整棵子树。
+/// 以及它们的整棵子树；再加上 `Scrollbar` 的 `handle` 子项。
 ///
-/// 原因不在本桥：入库这版的预览器还不推进流向子项（同一容器的子项全叠在容器中心），运行时会
-/// 推进（docs/75 §14 记的第 4 条分歧）。子项自己的 `offsets`/锚点都以**它的父矩形**为参考，父
-/// 被叠到中心，整棵子树都跟着漂——所以排除必须传递下去，只排一层照样红（`corner` 实测 90 对
-/// 165）。预览补齐推进之后，把这份键集纳回对账才算买到了那一层。
+/// 预览器从 `fb2ba167` 起会推进流向，但网格列宽与流内 `percent` 的测量口径仍与运行时不同，
+/// 这些键的矩形在两边还没有可比性（docs/75 §14 列的分歧）。子项的锚点以**它的父矩形**为参考，
+/// 父矩形一旦偏差整棵子树都跟着漂——所以排除必须传递下去，只排一层照样红。滑块子项是同一类
+/// 分歧的另一头：宿主按 `value`/`size` 改写它的矩形，预览器只算作者布局那一份。预览补齐口径之后，
+/// 把这份键集纳回对账才算买到了那一层。
 pub fn preview_unreconciled_keys(spec: &UiSpec) -> BTreeSet<String> {
     let mut keys = BTreeSet::new();
     collect_unreconciled(&spec.root, &mut keys);
@@ -149,6 +167,16 @@ fn collect_unreconciled(node: &UiNode, keys: &mut BTreeSet<String>) {
         } else {
             collect_unreconciled(child, keys);
         }
+    }
+    // 滚动条的滑块子项：宿主按 `value`/`size` 把它的矩形改写成「长度 = 轨道 × size、
+    // 位置 = 行程」(`apply_control_layout`)，预览器只算作者布局那一份。同一类口径分歧，
+    // 与流向子项一起等预览补齐再纳回。
+    if let UiNodeKind::Scrollbar {
+        handle: Some(handle),
+        ..
+    } = &node.kind
+    {
+        keys.insert(handle.clone());
     }
 }
 
@@ -666,7 +694,49 @@ fn emit_visuals(
                 components.insert("Image".to_owned(), tinted_block);
             }
         }
-        UiNodeKind::Text { text } => {
+        UiNodeKind::ScrollView { horizontal } => {
+            components.insert(
+                "ScrollView".to_owned(),
+                ScrollView {
+                    horizontal: *horizontal,
+                }
+                .to_component_str(),
+            );
+            if has_bg {
+                components.insert("Image".to_owned(), tinted_block);
+            }
+        }
+        UiNodeKind::Mask { padding } => {
+            components.insert(
+                "Mask".to_owned(),
+                Mask {
+                    padding: padding.unwrap_or([0.0; 4]),
+                }
+                .to_component_str(),
+            );
+            if has_bg {
+                components.insert("Image".to_owned(), tinted_block);
+            }
+        }
+        UiNodeKind::CanvasGroup {
+            alpha,
+            interactable,
+            blocks_raycasts,
+        } => {
+            components.insert(
+                "CanvasGroup".to_owned(),
+                CanvasGroup {
+                    alpha: *alpha,
+                    interactable: *interactable,
+                    blocks_raycasts: *blocks_raycasts,
+                }
+                .to_component_str(),
+            );
+            if has_bg {
+                components.insert("Image".to_owned(), tinted_block);
+            }
+        }
+        UiNodeKind::Text { text, rich_text } => {
             if text.is_empty() {
                 errors.push(format!("{path}: text 节点缺少文字载荷"));
             }
@@ -682,6 +752,8 @@ fn emit_visuals(
                     font_size,
                     color: [text_color[0], text_color[1], text_color[2]],
                     font,
+                    rich_text: *rich_text,
+                    ..UiText::default()
                 }
                 .to_component_str(),
             );
@@ -721,17 +793,176 @@ fn emit_visuals(
                         font_size,
                         color: [text_color[0], text_color[1], text_color[2]],
                         font,
+                        ..UiText::default()
                     }
                     .to_component_str(),
                 );
             }
         }
+        UiNodeKind::Toggle { text, checked } => {
+            components.insert(
+                "Toggle".to_owned(),
+                Toggle {
+                    is_on: *checked,
+                    ..Toggle::default()
+                }
+                .to_component_str(),
+            );
+            if has_bg {
+                components.insert("Image".to_owned(), tinted_block);
+            }
+            if let Some(text) = text.as_ref().filter(|text| !text.is_empty()) {
+                components.insert(
+                    "Text".to_owned(),
+                    UiText {
+                        text: text.clone(),
+                        font_size,
+                        color: [text_color[0], text_color[1], text_color[2]],
+                        font,
+                        ..UiText::default()
+                    }
+                    .to_component_str(),
+                );
+            }
+        }
+        UiNodeKind::Slider { min, max, value } => {
+            components.insert(
+                "Slider".to_owned(),
+                Slider {
+                    min: *min,
+                    max: *max,
+                    value: *value,
+                    ..Slider::default()
+                }
+                .to_component_str(),
+            );
+            if has_bg {
+                components.insert("Image".to_owned(), tinted_block);
+            }
+        }
+        UiNodeKind::Progress { value } => {
+            components.insert(
+                "Progress".to_owned(),
+                Progress {
+                    value: *value,
+                    ..Progress::default()
+                }
+                .to_component_str(),
+            );
+            if has_bg {
+                components.insert("Image".to_owned(), tinted_block);
+            }
+        }
+        UiNodeKind::List { virtualized: true } => {
+            // 虚拟列表的运行时内核只在 Lua 侧存在，场景导出这条路径没有可落成的组件：
+            // 宁可报错，也不能把 `virtualized` 悄悄降级成普通滚动容器。
+            errors.push(format!(
+                "{path}: 虚拟列表（list.virtualized）运行时还没有场景侧实现，暂不能导出"
+            ));
+        }
+        UiNodeKind::List { virtualized: false } => {
+            // 列表的运行时形状就是可滚动容器：条目按各自的布局摆在内容空间里，
+            // 滚动范围与裁剪由 `ScrollView` 那条既有路径负责。
+            components.insert(
+                "ScrollView".to_owned(),
+                ScrollView { horizontal: false }.to_component_str(),
+            );
+            if has_bg {
+                components.insert("Image".to_owned(), tinted_block);
+            }
+        }
+        UiNodeKind::Scrollbar {
+            value,
+            size,
+            direction,
+            handle,
+        } => {
+            components.insert(
+                "Scrollbar".to_owned(),
+                ScrollBar {
+                    value: *value,
+                    size: *size,
+                    direction: match direction {
+                        ScrollbarDirection::LeftToRight => ControlDirection::LeftToRight,
+                        ScrollbarDirection::RightToLeft => ControlDirection::RightToLeft,
+                        ScrollbarDirection::TopToBottom => ControlDirection::TopToBottom,
+                        ScrollbarDirection::BottomToTop => ControlDirection::BottomToTop,
+                    },
+                    handle: handle.clone().unwrap_or_default(),
+                }
+                .to_component_str(),
+            );
+            if has_bg {
+                components.insert("Image".to_owned(), tinted_block);
+            }
+        }
         other => {
             errors.push(format!(
-                "{path}: v1 导出只支持 panel/container/text/image/button，不支持 {}",
+                "{path}: v1 导出只支持 panel/container/text/image/button/toggle/slider/progress/scrollbar/scroll_view/list/mask/canvas_group，不支持 {}",
                 other.type_name()
             ));
         }
+    }
+    emit_state_tints(node, view, tint, opacity, path, components, errors);
+}
+
+/// 状态底色与过渡（M80-07）落成运行时的 `ButtonStates` 组件。
+///
+/// 只有交互树真会算 hover/pressed 的节点才发这份覆盖：按钮、开关，或本来就带
+/// `UiEvents` 的节点。给纯装饰面板发 `ButtonStates` 会把它变成命中目标（交互树里
+/// `button_states.is_some()` 即参与命中），等于凭空多出一块挡点击的死区。
+fn emit_state_tints(
+    node: &UiNode,
+    view: &StyleView,
+    base_tint: [f32; 4],
+    base_opacity: f32,
+    path: &str,
+    components: &mut BTreeMap<String, String>,
+    errors: &mut Vec<String>,
+) {
+    if view.states.is_empty() {
+        if view.transition.is_some() {
+            errors.push(format!(
+                "{path}.style: 写了 transition 却没有 states，运行时没有可过渡的状态切换"
+            ));
+        }
+        return;
+    }
+    let interactive = matches!(
+        node.kind,
+        UiNodeKind::Button { .. } | UiNodeKind::Toggle { .. }
+    ) || !node.events.is_empty();
+    if !interactive {
+        errors.push(format!(
+            "{path}.style: 状态样式只有可交互节点（button/toggle 或带 events）能落成 ButtonStates"
+        ));
+        return;
+    }
+    let mut set = ButtonStateSet::default();
+    for state in view.states.keys() {
+        let mut color = view.state_color(*state, path, errors).unwrap_or(base_tint);
+        color[3] *= view.state_opacity(*state).unwrap_or(base_opacity);
+        set.tints.insert(visual_state(*state), color);
+    }
+    if let Some(transition) = view.transition {
+        set.transition = UiStateTransition {
+            duration: transition.duration,
+            easing: match transition.easing {
+                StyleEasing::Linear => rustlua_ui::ui_animation::UiEasing::Linear,
+                StyleEasing::SmoothStep => rustlua_ui::ui_animation::UiEasing::SmoothStep,
+                StyleEasing::Step => rustlua_ui::ui_animation::UiEasing::Step,
+            },
+        };
+    }
+    components.insert("ButtonStates".to_owned(), set.to_component_str());
+}
+
+fn visual_state(state: StyleState) -> ButtonVisualState {
+    match state {
+        StyleState::Hover => ButtonVisualState::Hover,
+        StyleState::Pressed => ButtonVisualState::Pressed,
+        StyleState::Disabled => ButtonVisualState::Disabled,
+        StyleState::Focused => ButtonVisualState::Focused,
     }
 }
 
@@ -837,29 +1068,37 @@ const SUPPORTED_STYLE_KEYS: [&str; 7] = [
     "opacity",
 ];
 
+/// 状态覆盖里能落成的键：底色与透明度进 `ButtonStates.tint.<state>`。
+/// 文本色/字号的状态覆盖运行时没有消费方（字形趟只读 `UiText`），写了必须报错。
+const SUPPORTED_STATE_KEYS: [&str; 3] = ["background", "bg", "opacity"];
+
 struct StyleView {
     values: BTreeMap<String, Value>,
+    /// 状态覆盖（M80-07）：`hover` / `pressed` / `disabled` / `focused` 各一份样式键表。
+    states: BTreeMap<StyleState, BTreeMap<String, Value>>,
+    /// 状态之间的过渡；`None` 与"时长 0"同义（立刻切换）。
+    transition: Option<StyleTransition>,
     tokens: BTreeMap<String, Value>,
 }
 
 impl StyleView {
     fn for_node(spec: &UiSpec, node: &UiNode, path: &str, errors: &mut Vec<String>) -> Self {
         let mut values = BTreeMap::new();
+        let mut states = BTreeMap::new();
+        let mut transition = None;
         if let Some(style) = &node.style {
             let Some(definition) = spec.styles.get(style) else {
                 errors.push(format!("{path}.style 引用了不存在的样式：{style}"));
                 return Self {
                     values,
+                    states,
+                    transition,
                     tokens: spec.tokens.clone(),
                 };
             };
-            if !definition.states.is_empty() {
-                errors.push(format!(
-                    "{path}.style {style}: v1 导出不支持状态样式（{} 个状态会丢）",
-                    definition.states.len()
-                ));
-            }
             values = definition.base.clone();
+            states = definition.states.clone();
+            transition = definition.transition;
             for key in values.keys() {
                 if !SUPPORTED_STYLE_KEYS.contains(&key.as_str()) {
                     errors.push(format!(
@@ -867,9 +1106,21 @@ impl StyleView {
                     ));
                 }
             }
+            for (state, overrides) in &states {
+                for key in overrides.keys() {
+                    if !SUPPORTED_STATE_KEYS.contains(&key.as_str()) {
+                        errors.push(format!(
+                            "{path}.style {style}.states.{}: v1 只落底色与透明度，样式键 {key:?} 没有运行时消费方",
+                            visual_state(*state).as_str()
+                        ));
+                    }
+                }
+            }
         }
         Self {
             values,
+            states,
+            transition,
             tokens: spec.tokens.clone(),
         }
     }
@@ -877,11 +1128,46 @@ impl StyleView {
     fn get(&self, key: &str) -> Option<&Value> {
         self.values.get(key)
     }
+
+    /// 某个状态写过的底色（`bg` 优先于 `background`）；解析不成颜色时报错并返回 `None`。
+    fn state_color(
+        &self,
+        state: StyleState,
+        path: &str,
+        errors: &mut Vec<String>,
+    ) -> Option<[f32; 4]> {
+        let overrides = self.states.get(&state)?;
+        let name = visual_state(state).as_str();
+        for key in ["bg", "background"] {
+            let Some(value) = overrides.get(key) else {
+                continue;
+            };
+            return match parse_rgba(value, &self.tokens) {
+                Some(color) => Some(color),
+                None => {
+                    errors.push(format!(
+                        "{path}.style.states.{name}.{key}: 解析不成颜色（{value}），v1 不退回白色也不静默丢弃"
+                    ));
+                    None
+                }
+            };
+        }
+        None
+    }
+
+    fn state_opacity(&self, state: StyleState) -> Option<f32> {
+        self.states
+            .get(&state)?
+            .get("opacity")
+            .and_then(Value::as_f64)
+            .map(|value| value as f32)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustlua_ui::ui_states::UiStateTint;
     use rustlua_ui_spec::{DocumentKind, UiDocumentMeta, UiStyle};
 
     fn node(raw: Value) -> UiNode {
@@ -1116,9 +1402,9 @@ mod tests {
 
     /// 逐键对齐预览器的矩形。
     ///
-    /// 流向子项**及其子树**不参与对账（[`preview_unreconciled_keys`]：HEAD 的预览器还不推进
-    /// 它们，同容器的子项全叠在容器中心，子的参考父矩形也跟着错），它们只断言运行时**解出了
-    /// 正尺寸**——"0×0 塌掉"才是这座桥真正会犯的错。
+    /// 流向子项**及其子树**不参与对账（[`preview_unreconciled_keys`]：预览与运行时的网格/流内
+    /// 百分比口径还没对齐，子的参考父矩形也跟着错），它们只断言运行时**解出了正尺寸**——
+    /// "0×0 塌掉"才是这座桥真正会犯的错。
     /// 内框口径由 `padded_flow_container_uses_inner_rect_for_children` 直接钉运行时的数字。
     fn assert_rects_match_preview(spec: &UiSpec, scene: &Scene) {
         let resolved = host_rects(scene);
@@ -1228,12 +1514,213 @@ mod tests {
         assert!(export_ui_scene(&spec_of(centered), "s").is_ok());
     }
 
-    /// v2 节点（toggle）必须报错而不是退化导出。
+    /// 运行时还不支持的节点（grid/tabs/modal）与虚拟列表必须报错而不是退化导出；
+    /// 非虚拟的 `list` 落成 `ScrollView`，属于可导出形状。
     #[test]
     fn unsupported_kind_is_an_error() {
-        let spec = spec_of(serde_json::json!({"key": "t", "type": "toggle", "checked": true}));
+        let spec = spec_of(serde_json::json!({"key": "g", "type": "grid"}));
         let errors = export_ui_scene(&spec, "s").unwrap_err();
-        assert!(errors.iter().any(|e| e.contains("toggle")), "{errors:?}");
+        assert!(errors.iter().any(|e| e.contains("grid")), "{errors:?}");
+
+        let virtual_list =
+            spec_of(serde_json::json!({"key": "l", "type": "list", "virtualized": true}));
+        let errors = export_ui_scene(&virtual_list, "s").unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("虚拟列表")),
+            "虚拟列表不得降级成普通滚动容器：{errors:?}"
+        );
+
+        let plain_list = spec_of(serde_json::json!({"key": "l", "type": "list"}));
+        let scene = export_ui_scene(&plain_list, "s").unwrap();
+        let entity = scene.entities.values().next().unwrap();
+        assert_eq!(entity.components["ScrollView"], "horizontal=false");
+    }
+
+    /// `scrollbar` 落成运行时组件，`value/size/direction/handle` 原样过去。
+    #[test]
+    fn scrollbar_exports_runtime_component() {
+        let spec = spec_of(serde_json::json!({
+            "key": "root", "type": "panel", "layout": {"anchor": "full_rect"},
+            "children": [{
+                "key": "bar", "type": "scrollbar",
+                "layout": {"anchor": "top_right", "size": [12.0, 160.0]},
+                "value": 0.25, "size": 0.4, "direction": "top_to_bottom", "handle": "knob",
+                "children": [{"key": "knob", "type": "image", "src": "ui/knob.png",
+                              "layout": {"anchor": "top_left", "size": [12.0, 64.0]}}]
+            }]
+        }));
+        let scene = export_ui_scene(&spec, "s").unwrap();
+        let bar = scene
+            .entities
+            .values()
+            .find(|entity| entity.name == "bar")
+            .unwrap();
+        assert_eq!(
+            bar.components["Scrollbar"],
+            "value=0.25;size=0.4;direction=top_to_bottom;handle=knob"
+        );
+    }
+
+    /// 状态底色与过渡落成 `ButtonStates`（M80-07）：`tint.<state>` + `transition=时长:曲线`。
+    #[test]
+    fn style_states_export_button_state_tints() {
+        let spec: UiSpec = serde_json::from_value(serde_json::json!({
+            "spec_version": 1,
+            "document": {"kind": "widget", "name": "s"},
+            "tokens": {"color.pressed": "#30303c"},
+            "styles": {
+                "card": {
+                    "base": {"bg": "#101014"},
+                    "states": {
+                        "hover": {"bg": "#202028"},
+                        "pressed": {"bg": "@color.pressed", "opacity": 0.5}
+                    },
+                    "transition": {"duration": 0.15, "easing": "smooth_step"}
+                }
+            },
+            "root": {
+                "key": "btn", "type": "button", "text": "Buy", "style": "card",
+                "events": {"click": "shop.buy"},
+                "layout": {"anchor": "top_left", "size": [160.0, 48.0]}
+            }
+        }))
+        .unwrap();
+        let scene = export_ui_scene(&spec, "s").unwrap();
+        let raw = &scene.entities.values().next().unwrap().components["ButtonStates"];
+        let states = ButtonStateSet::from_component_str(raw).unwrap();
+        let byte = |value: u8| f32::from(value) / 255.0;
+        assert_eq!(
+            states.tint(ButtonVisualState::Hover),
+            UiStateTint::absolute([byte(0x20), byte(0x20), byte(0x28), 1.0])
+        );
+        // `pressed` 的颜色走 token 解析，透明度单独乘进去（0.5）。
+        assert_eq!(
+            states.tint(ButtonVisualState::Pressed),
+            UiStateTint::absolute([byte(0x30), byte(0x30), byte(0x3c), 0.5])
+        );
+        // 没写 `tint.normal` 的状态回退到作者底色（仿射单位元）。
+        assert_eq!(states.tint(ButtonVisualState::Focused), UiStateTint::NORMAL);
+        assert_eq!(states.transition.duration, 0.15);
+        assert_eq!(
+            states.transition.easing,
+            rustlua_ui::ui_animation::UiEasing::SmoothStep
+        );
+    }
+
+    /// 状态样式的三条"写了会骗人"的路径必须报错：非交互节点、只有 transition、状态键没有落点。
+    #[test]
+    fn state_styles_that_the_runtime_cannot_consume_are_errors() {
+        let decorative = spec_of(serde_json::json!({
+            "key": "root", "type": "panel", "style": "card",
+            "layout": {"anchor": "full_rect"}
+        }));
+        let mut spec = decorative;
+        spec.styles.insert(
+            "card".to_owned(),
+            UiStyle {
+                base: [("bg".to_owned(), Value::String("#101014".to_owned()))]
+                    .into_iter()
+                    .collect(),
+                states: [(
+                    StyleState::Hover,
+                    [("bg".to_owned(), Value::String("#202028".to_owned()))]
+                        .into_iter()
+                        .collect(),
+                )]
+                .into_iter()
+                .collect(),
+                transition: None,
+            },
+        );
+        let errors = export_ui_scene(&spec, "s").unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("只有可交互节点")),
+            "装饰面板的状态样式不得凭空变成命中目标：{errors:?}"
+        );
+
+        spec.root.style = Some("ghost".to_owned());
+        spec.styles.insert(
+            "ghost".to_owned(),
+            UiStyle {
+                base: BTreeMap::new(),
+                states: BTreeMap::new(),
+                transition: Some(StyleTransition {
+                    duration: 0.2,
+                    easing: StyleEasing::Linear,
+                }),
+            },
+        );
+        let errors = export_ui_scene(&spec, "s").unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("却没有 states")),
+            "{errors:?}"
+        );
+
+        spec.styles.insert(
+            "ghost".to_owned(),
+            UiStyle {
+                base: BTreeMap::new(),
+                states: [(
+                    StyleState::Hover,
+                    [("font_size".to_owned(), Value::from(18))]
+                        .into_iter()
+                        .collect(),
+                )]
+                .into_iter()
+                .collect(),
+                transition: None,
+            },
+        );
+        let errors = export_ui_scene(&spec, "s").unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("states.hover") && e.contains("没有运行时消费方")),
+            "{errors:?}"
+        );
+    }
+
+    /// Toggle/Slider/Progress 落成运行时组件，属性原样过去（宿主能直接读回）。
+    #[test]
+    fn interactive_controls_export_runtime_components() {
+        let spec = spec_of(serde_json::json!({
+            "key": "root", "type": "panel",
+            "layout": {"anchor": "full_rect"},
+            "children": [
+                {"key": "t", "type": "toggle", "text": "Sound", "checked": true,
+                 "layout": {"anchor": "top_left", "size": [120.0, 30.0]}},
+                {"key": "s", "type": "slider", "min": 0.0, "max": 10.0, "value": 3.0,
+                 "layout": {"anchor": "top_left", "size": [160.0, 20.0], "position": [0.0, 40.0]}},
+                {"key": "p", "type": "progress", "value": 0.5,
+                 "layout": {"anchor": "top_left", "size": [160.0, 8.0], "position": [0.0, 70.0]}}
+            ]
+        }));
+        let scene = export_ui_scene(&spec, "controls").unwrap();
+        let components = |name: &str| {
+            scene
+                .entities
+                .values()
+                .find(|entity| entity.name == name)
+                .unwrap()
+                .components
+                .clone()
+        };
+        assert_eq!(
+            components("t").get("Toggle").map(String::as_str),
+            Some("on=true")
+        );
+        assert!(
+            components("t").contains_key("Text"),
+            "toggle 的文字标签要作为 Text 一起导出"
+        );
+        assert_eq!(
+            components("s").get("Slider").map(String::as_str),
+            Some("min=0;max=10;value=3")
+        );
+        assert_eq!(
+            components("p").get("Progress").map(String::as_str),
+            Some("min=0;max=1;value=0.5")
+        );
     }
 
     /// key 重复直接拒绝（`ui_rects_by_name` 按名取值，重名即二义）。
@@ -1250,7 +1737,8 @@ mod tests {
         assert!(errors.iter().any(|e| e.contains("重复")), "{errors:?}");
     }
 
-    /// 状态样式必须报错（按钮态是 ButtonStates 的映射，v1 不做盖层近似）。
+    /// 状态样式自 M80-07 起能落成 `ButtonStates`：没写底色的状态回退到基样式底色，
+    /// 而不是像 v1 早期那样整份报错。
     #[test]
     fn state_styles_are_rejected() {
         let mut spec = spec_of(serde_json::json!({
@@ -1259,14 +1747,21 @@ mod tests {
         spec.styles.insert(
             "card".to_owned(),
             UiStyle {
+                transition: None,
                 base: BTreeMap::new(),
                 states: [(rustlua_ui_spec::StyleState::Hover, BTreeMap::new())]
                     .into_iter()
                     .collect(),
             },
         );
-        let errors = export_ui_scene(&spec, "s").unwrap_err();
-        assert!(errors.iter().any(|e| e.contains("状态样式")), "{errors:?}");
+        let scene = export_ui_scene(&spec, "s").unwrap();
+        let raw = &scene.entities.values().next().unwrap().components["ButtonStates"];
+        let states = ButtonStateSet::from_component_str(raw).unwrap();
+        // 基样式没写 `bg` ⇒ 底色是没染过的白（与 `Image` 那条 `__white__` 同口径）。
+        assert_eq!(
+            states.tint(rustlua_ui::ui_states::ButtonVisualState::Hover),
+            UiStateTint::absolute([1.0, 1.0, 1.0, 1.0])
+        );
     }
 
     /// `.scene` 侧没有落点的样式键（`radius`/`border_*`/`text_align`…）必须报错：
@@ -1279,6 +1774,7 @@ mod tests {
         spec.styles.insert(
             "card".to_owned(),
             UiStyle {
+                transition: None,
                 base: [("radius".to_owned(), serde_json::json!(14.0))]
                     .into_iter()
                     .collect(),
@@ -1308,6 +1804,7 @@ mod tests {
         spec.styles.insert(
             "card".to_owned(),
             UiStyle {
+                transition: None,
                 base: [(
                     "bg".to_owned(),
                     serde_json::json!([20.0, 30.0, 40.0, 255.0]),
@@ -1359,6 +1856,7 @@ mod tests {
         spec.styles.insert(
             "card".to_owned(),
             UiStyle {
+                transition: None,
                 base: [("bg".to_owned(), Value::String("@color.surface".to_owned()))]
                     .into_iter()
                     .collect(),

@@ -9,3 +9,71 @@ entity	2	Hud
 component	2	Text	text=entity Text / Image are drawn above every runtime ui.* element;font_size=12;color=0.720,0.800,0.920
 component	2	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	2	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=700.00,46.00,700.00,46.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# 附：M80-04 值控件（Toggle / Slider / Progress / Scrollbar）。
+# 它们是**场景实体**（不是 Lua 动态 ui.*），宿主每帧按组件值改写子实体矩形：
+#   勾选图 = 控件矩形 / 关 = 零尺寸；填充条贴最小值边；滑块沿剩余行程滑动；
+#   滚动条滑块长度 = 轨道 × size。放在舞台底部一排，留出 demo 的读数面板。
+# 子实体（填充/手柄/勾选）的 UiLayout 只是**初始值的静态快照**（给编辑器与静态检查看），
+# 运行期一律由控件布局按当前值重写；所以这里的数字和组件里的初始值是对应的。
+entity	10	UiControlToggle
+component	10	Image	texture=__white__;color=0.130,0.160,0.220
+component	10	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	10	Toggle	on=true;checkmark=UiControlToggleCheck
+component	10	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=304.00,596.00,468.00,624.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	11	UiControlToggleCheck	10
+component	11	Image	texture=__white__;color=0.320,0.620,1.000
+component	11	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=6.00,6.00,26.00,26.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	12	UiControlSlider
+component	12	Image	texture=__white__;color=0.130,0.160,0.220
+component	12	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	12	Slider	min=0;max=1;value=0.25;fill=UiControlSliderFill;handle=UiControlSliderHandle
+component	12	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=484.00,596.00,704.00,624.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	13	UiControlSliderFill	12
+component	13	Image	texture=__white__;color=0.210,0.480,0.850
+component	13	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	13	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=484.00,596.00,539.00,624.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	14	UiControlSliderHandle	12
+component	14	Image	texture=__white__;color=0.930,0.960,1.000
+component	14	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	14	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=0.00,2.00,18.00,26.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	15	UiControlProgress
+component	15	Image	texture=__white__;color=0.130,0.160,0.220
+component	15	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	15	Progress	min=0;max=1;value=0.5;fill=UiControlProgressFill
+component	15	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=720.00,600.00,880.00,614.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	16	UiControlProgressFill	15
+component	16	Image	texture=__white__;color=0.340,0.800,0.500
+component	16	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	16	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=720.00,600.00,800.00,614.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	17	UiControlScrollbar
+component	17	Image	texture=__white__;color=0.130,0.160,0.220
+component	17	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	17	Scrollbar	value=0.3;size=0.25;handle=UiControlScrollbarHandle
+component	17	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=720.00,624.00,880.00,638.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	18	UiControlScrollbarHandle	17
+component	18	Image	texture=__white__;color=0.720,0.800,0.920
+component	18	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	18	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=756.00,624.00,796.00,638.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# M76-02：滚动容器（UI Studio 的 `list` 节点导出的就是 `ScrollView`）。
+# 视口只有 48px 高、内容 120px：滚轮悬停时宿主算内容包围盒、按轴向平移子孙并裁剪到视口。
+entity	19	UiControlScrollView
+component	19	Image	texture=__white__;color=0.100,0.120,0.170
+component	19	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	19	ScrollView	horizontal=false
+component	19	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=304.00,540.00,468.00,588.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	20	UiControlScrollViewContent	19
+component	20	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	20	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=304.00,540.00,468.00,660.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	21	UiControlScrollViewRowA	20
+component	21	Image	texture=__white__;color=0.240,0.360,0.520
+component	21	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	21	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=308.00,544.00,464.00,572.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	22	UiControlScrollViewRowB	20
+component	22	Image	texture=__white__;color=0.300,0.460,0.640
+component	22	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	22	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=308.00,576.00,464.00,604.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	23	UiControlScrollViewRowC	20
+component	23	Image	texture=__white__;color=0.380,0.560,0.760
+component	23	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	23	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=308.00,608.00,464.00,636.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000

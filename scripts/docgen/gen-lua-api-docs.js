@@ -283,6 +283,7 @@ const OWNING_BINDING_FILES = [
   'engine/crates/rustlua-ui/src/lua_advanced.rs',
   'engine/crates/rustlua-ui/src/lua_nav.rs',
   'engine/crates/rustlua-ui/src/prefab_lua.rs',
+  'engine/crates/rustlua-ui/src/ui_controls_lua.rs',
   'engine/crates/rustlua-ui/src/ui_lua.rs',
   'engine/crates/rustlua-ui/src/ui_panel_lua.rs',
   'engine/crates/rustlua-ui/src/world_text_lua.rs',

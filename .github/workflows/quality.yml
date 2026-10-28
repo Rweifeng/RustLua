@@ -1,9 +1,10 @@
 name: Rust quality gate
 
 # docs/60 §7.2：原 19 步全串行在单个 job 里（任何一步失败都要等前面所有编译跑完
-# 才看得到）。现在拆成 4 个并行 job：lint 快速失败，build-test / gates /
-# web-evidence 各自独立跑；web 证据 job 补装 zig，让 wasm 门在 CI 上真正执行
-# 而不是常态性以 3 跳过。所有门一个不少，只改调度。
+# 才看得到）。现在拆成 lint / security / build-test / release-closure / gates /
+# web-evidence / coverage 七个互不依赖的 job（无 needs，见下方 jobs: 前注释）；
+# web 证据 job 补装 zig，让 wasm 门在 CI 上真正执行而不是常态性以 3 跳过。
+# 所有门一个不少，只改调度。
 
 on:
   push:
@@ -36,6 +37,9 @@ env:
   # 同一批 CI 崩溃在 coverage 插桩下仍出现；测试线程默认 2MB 栈，给足余量排除栈边界。
   RUST_MIN_STACK: "67108864"
 
+# 各 job 之间没有 needs 依赖：lint 只负责"最快给出失败信号"，它的红不该把其余 job 变成
+# skipped（skipped 既不是红也不是绿，等于这一批门没跑却看起来没出事）。每个 job 自己装
+# 工具链、自己构建，因此任何一个失败都能给出本域的独立结论。
 jobs:
   # 快速失败门：格式 / clippy / diff 检查都不需要产物构建，先红先停。
   lint:
@@ -87,6 +91,15 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: node scripts/docgen/gen-lua-api-docs.js --check
 
+      # 文档声明数字门：README/docs 摘要里人写的模块表/函数/组件数必须等于机器事实。
+      # `gen-lua-api-docs.js --check` 只守文档桩清单，守不住摘要数字（历史上 README 的
+      # 283 与快照的 309 并存过）。`--self-test` 用内存 fixture 反证它会红。
+      - name: Documentation claims
+        working-directory: ${{ github.workspace }}
+        run: |
+          node scripts/verify/check-doc-claims.mjs
+          node scripts/verify/check-doc-claims.mjs --self-test
+
       # 优化项 11：本地 pre-commit 门（git-hooks/pre-commit）自身也要进门。它只能靠每人记得
       # 跑一次安装脚本，装没装从 CI 看不出来；更要紧的是 hook 内的判定逻辑回归了不会有信号——
       # 比如暂存区过滤规则写错让门变成"永远跳过"，那正是"跑过了但其实没测"的最坏形态。
@@ -103,7 +116,6 @@ jobs:
   # 与 release.yml 的 security 步骤共用同一入口 check-security.ps1，避免"本地一套、CI 一套"。
   # 依赖先 cargo check：fork-sync 报告要读 registry/src 里的上游源码，只 fetch 不够。
   security:
-    needs: lint
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -184,7 +196,6 @@ jobs:
   # 环境问题冒充代码问题（本轮就踩到过：9/14 的旧 runner 不含 `player_data_roots`，
   # 测试红而代码无辜）。
   build-test:
-    needs: lint
     runs-on: windows-latest
     defaults:
       run:
@@ -241,7 +252,6 @@ jobs:
   # 单根正例 + 三个反例（改坏容器 / 删容器 / 塞计划外容器）+ 黄金表落地 + **平台形态**
   # （真拆根、真改名、多根闭包）与其缺件反例。零 wasm、零浏览器、零 GPU。
   release-closure:
-    needs: lint
     runs-on: windows-latest
     defaults:
       run:
@@ -276,7 +286,6 @@ jobs:
 
   # 项目门 + 发布链路自测：消费 build-test 之外不需要 release 产物的检查项。
   gates:
-    needs: lint
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -350,7 +359,6 @@ jobs:
   # （此前 GitHub runner 无 zig，常态以 3 显式跳过）。跳过绝不等于通过的哲学不变：
   # 真失败（页面能跑却没画面、引导失败、桥断言不过）仍判红。
   web-evidence:
-    needs: lint
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -443,7 +451,6 @@ jobs:
   # paths 承担（engine/** + metrics/**）；基线未就位时退 3（BLOCKED），绝不冒充通过。
   # 上传 coverage.json / lcov.info / html 作离线复核证据。
   coverage:
-    needs: lint
     runs-on: windows-latest
     steps:
       - name: Checkout

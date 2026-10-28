@@ -6,37 +6,37 @@
 // WP11-USE:BEGIN
 use crate::script::LuaRuntime;
 use crate::script::ScriptState;
+use crate::script::domain::animation::anim_asset::AnimClip;
+use crate::script::domain::animation::animation::AnimationStateMachine;
+use crate::script::domain::animation::animation_player::AnimationPlayer;
+use crate::script::domain::animation::animation3d::Animation3D;
+use crate::script::domain::animation::animation3d::Animation3dDescriptor;
+use crate::script::domain::ecs::entity::EntityId;
+use crate::script::domain::ecs::entity_state::PersistedEntity;
+use crate::script::domain::ecs::particle::ParticleEmitter;
+use crate::script::domain::ecs::particle::SceneParticleEmitter;
+use crate::script::domain::ecs::tilemap::Tilemap;
+use crate::script::domain::ecs::transform::Transform;
+use crate::script::domain::ecs::transform::Transform3D;
+use crate::script::domain::infra::ids::AssetId;
+use crate::script::domain::math::math3d::Vec3;
+use crate::script::domain::physics::physics::ColliderDesc;
+use crate::script::domain::physics::physics3d::ColliderDesc3d;
+use crate::script::domain::physics::tilemap_lua::solid_cell_colliders;
+use crate::script::domain::render::atlas::resolve_atlas_reference;
+use crate::script::domain::render::light::Light;
+use crate::script::domain::render::mesh3d::MeshRenderer;
+use crate::script::domain::render::sprite::SpriteAsset;
+use crate::script::domain::render::sprite::SpriteComponent;
+use crate::script::domain::scene::scene::Scene;
+use crate::script::domain::ui::ui_events::UiClickTarget;
+use crate::script::domain::ui::ui_events::UiEventType;
+use crate::script::domain::ui::ui_events::UiEvents;
+use crate::script::domain::ui::ui_layout::UiRectLayout;
+use crate::script::domain::ui::ui_states::ButtonStateSet;
 use crate::script::error::LuaBridgeError;
 use crate::script::guard::{BudgetSlot, ScriptErrorPolicy};
 use mlua::Value;
-use rustlua_animation::anim_asset::AnimClip;
-use rustlua_animation::animation::AnimationStateMachine;
-use rustlua_animation::animation_player::AnimationPlayer;
-use rustlua_animation::animation3d::Animation3D;
-use rustlua_animation::animation3d::Animation3dDescriptor;
-use rustlua_ecs::entity::EntityId;
-use rustlua_ecs::entity_state::PersistedEntity;
-use rustlua_ecs::particle::ParticleEmitter;
-use rustlua_ecs::particle::SceneParticleEmitter;
-use rustlua_ecs::tilemap::Tilemap;
-use rustlua_ecs::transform::Transform;
-use rustlua_ecs::transform::Transform3D;
-use rustlua_infra::ids::AssetId;
-use rustlua_math::math3d::Vec3;
-use rustlua_physics::physics::ColliderDesc;
-use rustlua_physics::physics3d::ColliderDesc3d;
-use rustlua_physics::tilemap_lua::solid_cell_colliders;
-use rustlua_render::atlas::resolve_atlas_reference;
-use rustlua_render::light::Light;
-use rustlua_render::mesh3d::MeshRenderer;
-use rustlua_render::sprite::SpriteAsset;
-use rustlua_render::sprite::SpriteComponent;
-use rustlua_scene::scene::Scene;
-use rustlua_ui::ui_events::UiClickTarget;
-use rustlua_ui::ui_events::UiEventType;
-use rustlua_ui::ui_events::UiEvents;
-use rustlua_ui::ui_layout::UiRectLayout;
-use rustlua_ui::ui_states::ButtonStateSet;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -83,34 +83,46 @@ impl LuaRuntime {
             .clear();
         // 坏 parent 边（悬空/自环）同样在这里点名：运行时会把它们当成"没有父"，静默下去就成了
         // "子树莫名其妙少了一层位移"。
-        state.scene_parent_issues = rustlua_scene::scene_space::parent_link_issues(scene)
-            .into_iter()
-            .map(|issue| match issue {
-                rustlua_scene::scene_space::ParentLinkIssue::Dangling { entity, parent } => {
-                    let name = scene
-                        .entities
-                        .get(&entity)
-                        .filter(|node| !node.name.is_empty())
-                        .map_or_else(|| format!("entity {}", entity.0), |node| node.name.clone());
-                    format!("{name} → 不存在的父 {}", parent.0)
-                }
-                rustlua_scene::scene_space::ParentLinkIssue::SelfParent(entity) => {
-                    let name = scene
-                        .entities
-                        .get(&entity)
-                        .filter(|node| !node.name.is_empty())
-                        .map_or_else(|| format!("entity {}", entity.0), |node| node.name.clone());
-                    format!("{name} 的父指向自己")
-                }
-            })
-            .collect();
+        state.scene_parent_issues =
+            crate::script::domain::scene::scene_space::parent_link_issues(scene)
+                .into_iter()
+                .map(|issue| match issue {
+                    crate::script::domain::scene::scene_space::ParentLinkIssue::Dangling {
+                        entity,
+                        parent,
+                    } => {
+                        let name = scene
+                            .entities
+                            .get(&entity)
+                            .filter(|node| !node.name.is_empty())
+                            .map_or_else(
+                                || format!("entity {}", entity.0),
+                                |node| node.name.clone(),
+                            );
+                        format!("{name} → 不存在的父 {}", parent.0)
+                    }
+                    crate::script::domain::scene::scene_space::ParentLinkIssue::SelfParent(
+                        entity,
+                    ) => {
+                        let name = scene
+                            .entities
+                            .get(&entity)
+                            .filter(|node| !node.name.is_empty())
+                            .map_or_else(
+                                || format!("entity {}", entity.0),
+                                |node| node.name.clone(),
+                            );
+                        format!("{name} 的父指向自己")
+                    }
+                })
+                .collect();
         // docs/54 §4.3：一个实体只能有一种可绘制表达。冲突在这里点名（与"两份局部真源"同一套
         // 做法：数据问题要在载入时可见，而不是等到画面上出现两遍或只出现一遍）。
         state.scene_renderable_conflicts = scene
             .entities
             .values()
             .filter_map(|entity| {
-                let renderable = rustlua_render::renderable::Renderable::classify(
+                let renderable = crate::script::domain::render::renderable::Renderable::classify(
                     entity.components.keys().map(String::as_str),
                 );
                 renderable.describe().map(|message| {
@@ -221,7 +233,7 @@ impl LuaRuntime {
             state
                 .world_mut()
                 .map_err(world_borrow)?
-                .insert(child, rustlua_ecs::hierarchy::Parent(parent))
+                .insert(child, crate::script::domain::ecs::hierarchy::Parent(parent))
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         drop(state);
@@ -368,15 +380,15 @@ impl LuaRuntime {
         let raw_transform = components.get("Transform").cloned();
         if let Some(value) = raw_transform.as_deref() {
             let local =
-                rustlua_ecs::spatial_transform::LocalTransform::from_unified_component_str(value)
+                crate::script::domain::ecs::spatial_transform::LocalTransform::from_unified_component_str(value)
                     .map_err(|reason| {
                     LuaBridgeError::Api(format!(
                         "entity {name:?} has an invalid Transform: {reason}"
                     ))
                 })?;
-            let space = rustlua_ecs::spatial_transform::entity_space(components);
+            let space = crate::script::domain::ecs::spatial_transform::entity_space(components);
             match space {
-                rustlua_ecs::spatial_transform::SpatialKind::TwoD => {
+                crate::script::domain::ecs::spatial_transform::SpatialKind::TwoD => {
                     let flat = local.to_2d();
                     state
                         .world_mut()
@@ -384,7 +396,7 @@ impl LuaRuntime {
                         .insert(id, flat)
                         .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
                 }
-                rustlua_ecs::spatial_transform::SpatialKind::ThreeD => {
+                crate::script::domain::ecs::spatial_transform::SpatialKind::ThreeD => {
                     state
                         .world_mut()
                         .map_err(world_borrow)?
@@ -454,9 +466,10 @@ impl LuaRuntime {
         // `Sprite`，因为"这个实体是一个矩形"要在运行时可查、可改（`quad.get/set`），而且
         // Quad 不参与帧动画——那是 `Sprite` 的纹理区域才有的语义。
         if let Some(value) = components.get("Quad") {
-            let quad = rustlua_render::quad::Quad::from_component_str(value).map_err(|error| {
-                LuaBridgeError::Api(format!("entity {name:?} has an invalid Quad: {error}"))
-            })?;
+            let quad = crate::script::domain::render::quad::Quad::from_component_str(value)
+                .map_err(|error| {
+                    LuaBridgeError::Api(format!("entity {name:?} has an invalid Quad: {error}"))
+                })?;
             state
                 .world_mut()
                 .map_err(world_borrow)?
@@ -480,10 +493,10 @@ impl LuaRuntime {
         // 消费方按投影分支取值（`as_orthographic` / `as_perspective`）——这正是"运行时也只
         // 有一个相机组件"的落地：世界存储、选帧遍历与 Lua 的 `camera.*` 都只看这一个类型。
         if let Some(value) = components.get("Camera") {
-            let camera =
-                rustlua_camera::camera::Camera::from_component_str(value).map_err(|error| {
-                    LuaBridgeError::Api(format!("entity {name:?} has an invalid Camera: {error}"))
-                })?;
+            let camera = crate::script::domain::camera::camera::Camera::from_component_str(value)
+                .map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has an invalid Camera: {error}"))
+            })?;
             state
                 .world_mut()
                 .map_err(world_borrow)?
@@ -533,7 +546,7 @@ impl LuaRuntime {
                     ))
                 })?;
             let clip_path = root.join(player.clip_path());
-            let text = rustlua_infra::vfs::read_resource(&clip_path)
+            let text = crate::script::domain::infra::vfs::read_resource(&clip_path)
                 .and_then(|bytes| {
                     String::from_utf8(bytes).map_err(|error| {
                         std::io::Error::new(std::io::ErrorKind::InvalidData, error)
@@ -617,12 +630,13 @@ impl LuaRuntime {
         // docs/54 §4.2：可见层遮罩（`RenderView::visibility` 的实体侧）。缺组件 = 全可见，
         // 因此既有场景一字不改。
         if let Some(value) = components.get("Visibility") {
-            let visibility = rustlua_render::visibility::Visibility::from_component_str(value)
-                .map_err(|error| {
-                    LuaBridgeError::Api(format!(
-                        "entity {name:?} has an invalid Visibility: {error}"
-                    ))
-                })?;
+            let visibility =
+                crate::script::domain::render::visibility::Visibility::from_component_str(value)
+                    .map_err(|error| {
+                        LuaBridgeError::Api(format!(
+                            "entity {name:?} has an invalid Visibility: {error}"
+                        ))
+                    })?;
             state
                 .world_mut()
                 .map_err(world_borrow)?
@@ -631,11 +645,16 @@ impl LuaRuntime {
         }
         // docs/54 §4.1：每实体脚本。这里只把组件写进世界；真正的加载与 `on_spawn(id)`
         // 在场景实例化的末尾统一做一次（见 `sync_entity_scripts`），因为脚本需要工程根。
-        if let Some(value) = components.get(rustlua_ecs::entity_script::SCRIPT_COMPONENT) {
-            let script = rustlua_ecs::entity_script::EntityScript::from_component_str(value)
-                .map_err(|error| {
-                    LuaBridgeError::Api(format!("entity {name:?} has an invalid Script: {error}"))
-                })?;
+        if let Some(value) =
+            components.get(crate::script::domain::ecs::entity_script::SCRIPT_COMPONENT)
+        {
+            let script =
+                crate::script::domain::ecs::entity_script::EntityScript::from_component_str(value)
+                    .map_err(|error| {
+                        LuaBridgeError::Api(format!(
+                            "entity {name:?} has an invalid Script: {error}"
+                        ))
+                    })?;
             state
                 .world_mut()
                 .map_err(world_borrow)?
@@ -645,13 +664,13 @@ impl LuaRuntime {
         // docs/54 §4.3：显式 2D 显示模式（world/overlay/screen）。运行时不插入 = 跟随全局开关，
         // 因此既有场景一字不改；声明了的实体在提取时被路由到对应通道。
         if let Some(value) = components.get("RenderMode") {
-            let mode = rustlua_render::render_mode::RenderMode::from_component_str(value).map_err(
-                |error| {
+            let mode =
+                crate::script::domain::render::render_mode::RenderMode::from_component_str(value)
+                    .map_err(|error| {
                     LuaBridgeError::Api(format!(
                         "entity {name:?} has an invalid RenderMode: {error}"
                     ))
-                },
-            )?;
+                })?;
             state
                 .world_mut()
                 .map_err(world_borrow)?
@@ -660,9 +679,11 @@ impl LuaRuntime {
         }
         // UI scene components (screen-space overlays).
         if let Some(value) = components.get("Text") {
-            let text = rustlua_ui::ui::UiText::from_component_str(value).map_err(|error| {
-                LuaBridgeError::Api(format!("entity {name:?} has an invalid Text: {error}"))
-            })?;
+            let text = crate::script::domain::ui::ui::UiText::from_component_str(value).map_err(
+                |error| {
+                    LuaBridgeError::Api(format!("entity {name:?} has an invalid Text: {error}"))
+                },
+            )?;
             state
                 .world_mut()
                 .map_err(world_borrow)?
@@ -670,9 +691,11 @@ impl LuaRuntime {
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         if let Some(value) = components.get("Image") {
-            let image = rustlua_ui::ui::UiImage::from_component_str(value).map_err(|error| {
-                LuaBridgeError::Api(format!("entity {name:?} has an invalid Image: {error}"))
-            })?;
+            let image = crate::script::domain::ui::ui::UiImage::from_component_str(value).map_err(
+                |error| {
+                    LuaBridgeError::Api(format!("entity {name:?} has an invalid Image: {error}"))
+                },
+            )?;
             state
                 .world_mut()
                 .map_err(world_borrow)?
@@ -681,8 +704,8 @@ impl LuaRuntime {
         }
         // WP4：世界空间文字（锚在世界位置，与屏幕 `Text` 是两套组件）。
         if let Some(value) = components.get("WorldText") {
-            let text =
-                rustlua_ui::world_text::WorldText::from_component_str(value).map_err(|error| {
+            let text = crate::script::domain::ui::world_text::WorldText::from_component_str(value)
+                .map_err(|error| {
                     LuaBridgeError::Api(format!(
                         "entity {name:?} has an invalid WorldText: {error}"
                     ))
@@ -707,9 +730,10 @@ impl LuaRuntime {
         // 绑定因此只能由脚本手写。运行期由宿主每步 resolve，目标按名字落到
         // `Text` / `Image` / 动态进度条上。
         if let Some(raw) = components.get("UiBindings") {
-            let bindings = rustlua_ui::ui_binding::UiBindings::parse(raw).map_err(|error| {
-                LuaBridgeError::Api(format!("entity {name:?} has invalid UiBindings: {error}"))
-            })?;
+            let bindings =
+                crate::script::domain::ui::ui_binding::UiBindings::parse(raw).map_err(|error| {
+                    LuaBridgeError::Api(format!("entity {name:?} has invalid UiBindings: {error}"))
+                })?;
             state
                 .world_mut()
                 .map_err(world_borrow)?
@@ -718,11 +742,13 @@ impl LuaRuntime {
         }
         // M76-02：滚动容器进世界；内容尺寸由布局树计算，组件只携带轴向。
         if let Some(raw) = components.get("ScrollView") {
-            let scroll = rustlua_ui::ui_scroll_view::ScrollView::from_component_str(raw).map_err(
-                |error| {
-                    LuaBridgeError::Api(format!("entity {name:?} has invalid ScrollView: {error}"))
-                },
-            )?;
+            let scroll =
+                crate::script::domain::ui::ui_scroll_view::ScrollView::from_component_str(raw)
+                    .map_err(|error| {
+                        LuaBridgeError::Api(format!(
+                            "entity {name:?} has invalid ScrollView: {error}"
+                        ))
+                    })?;
             state
                 .world_mut()
                 .map_err(world_borrow)?
@@ -739,6 +765,82 @@ impl LuaRuntime {
                 .world_mut()
                 .map_err(world_borrow)?
                 .insert(id, states)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        // M80-02：通用矩形遮罩进世界；布局解算按它裁剪子孙（绘制与命中共用）。
+        if let Some(raw) = components.get("Mask") {
+            let mask = crate::script::domain::ui::ui_mask::Mask::from_component_str(raw).map_err(
+                |error| LuaBridgeError::Api(format!("entity {name:?} has invalid Mask: {error}")),
+            )?;
+            state
+                .world_mut()
+                .map_err(world_borrow)?
+                .insert(id, mask)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        // M80-02：CanvasGroup（alpha 继承 + interactable/blocks_raycasts）。
+        if let Some(raw) = components.get("CanvasGroup") {
+            let group =
+                crate::script::domain::ui::ui_canvas_group::CanvasGroup::from_component_str(raw)
+                    .map_err(|error| {
+                        LuaBridgeError::Api(format!(
+                            "entity {name:?} has invalid CanvasGroup: {error}"
+                        ))
+                    })?;
+            state
+                .world_mut()
+                .map_err(world_borrow)?
+                .insert(id, group)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        // M80-04：值控件进世界。宿主按当前值改写子实体布局并路由指针/键盘。
+        if let Some(raw) = components.get("Toggle") {
+            let toggle = crate::script::domain::ui::ui_toggle::Toggle::from_component_str(raw)
+                .map_err(|error| {
+                    LuaBridgeError::Api(format!("entity {name:?} has invalid Toggle: {error}"))
+                })?;
+            state
+                .world_mut()
+                .map_err(world_borrow)?
+                .insert(id, toggle)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        if let Some(raw) = components.get("Slider") {
+            let slider = crate::script::domain::ui::ui_slider::Slider::from_component_str(raw)
+                .map_err(|error| {
+                    LuaBridgeError::Api(format!("entity {name:?} has invalid Slider: {error}"))
+                })?;
+            state
+                .world_mut()
+                .map_err(world_borrow)?
+                .insert(id, slider)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        if let Some(raw) = components.get("Progress") {
+            let progress = crate::script::domain::ui::ui_progress::Progress::from_component_str(
+                raw,
+            )
+            .map_err(|error| {
+                LuaBridgeError::Api(format!("entity {name:?} has invalid Progress: {error}"))
+            })?;
+            state
+                .world_mut()
+                .map_err(world_borrow)?
+                .insert(id, progress)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        if let Some(raw) = components.get("Scrollbar") {
+            let scrollbar =
+                crate::script::domain::ui::ui_scrollbar::ScrollBar::from_component_str(raw)
+                    .map_err(|error| {
+                        LuaBridgeError::Api(format!(
+                            "entity {name:?} has invalid Scrollbar: {error}"
+                        ))
+                    })?;
+            state
+                .world_mut()
+                .map_err(world_borrow)?
+                .insert(id, scrollbar)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         // E16：可选 `UiLayout` 组件——四边 Anchor+Offset 布局，存在时优先于
@@ -883,7 +985,7 @@ impl LuaRuntime {
     /// 解析口径不会分叉；parent 边同样第二趟落 `Parent` 组件（子可能先于父 spawn）。
     pub fn instantiate_prefab(
         &mut self,
-        prefab: &rustlua_scene::prefab::Prefab,
+        prefab: &crate::script::domain::scene::prefab::Prefab,
     ) -> Result<PrefabSpawn, LuaBridgeError> {
         let mut state = self.state.borrow_mut();
         Self::instantiate_prefab_state(&mut state, prefab)
@@ -891,7 +993,7 @@ impl LuaRuntime {
 
     pub(crate) fn instantiate_prefab_state(
         state: &mut ScriptState,
-        prefab: &rustlua_scene::prefab::Prefab,
+        prefab: &crate::script::domain::scene::prefab::Prefab,
     ) -> Result<PrefabSpawn, LuaBridgeError> {
         let mut map = BTreeMap::new();
         let mut handles = Vec::with_capacity(prefab.entities.len());
@@ -922,7 +1024,7 @@ impl LuaRuntime {
             state
                 .world_mut()
                 .map_err(world_borrow)?
-                .insert(child, rustlua_ecs::hierarchy::Parent(parent))
+                .insert(child, crate::script::domain::ecs::hierarchy::Parent(parent))
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         let root = map[&prefab.root];
@@ -980,19 +1082,22 @@ impl LuaRuntime {
     /// 与宿主的按槽位查找对得上。
     fn prefab_instance_nodes(
         spawn: &PrefabSpawn,
-    ) -> BTreeMap<u64, rustlua_ui::ui_scene_layout::UiSceneNode> {
-        rustlua_ui::ui_scene_layout::build_ui_scene_nodes_with_intrinsic(
+    ) -> BTreeMap<u64, crate::script::domain::ui::ui_scene_layout::UiSceneNode> {
+        crate::script::domain::ui::ui_scene_layout::build_ui_scene_nodes_with_intrinsic(
             spawn
                 .sources
                 .values()
                 .filter(|source| !spawn.hidden_by_ancestor(source.key))
-                .map(|source| rustlua_ui::ui_scene_layout::UiSceneNodeSource {
-                    key: source.key,
-                    parent: source.parent,
-                    components: &source.components,
-                }),
+                .map(
+                    |source| crate::script::domain::ui::ui_scene_layout::UiSceneNodeSource {
+                        key: source.key,
+                        parent: source.parent,
+                        components: &source.components,
+                    },
+                ),
             &mut |text, scale| {
-                rustlua_render::text::measure_builtin_text(text, scale).map(|(size, _)| size)
+                crate::script::domain::render::text::measure_builtin_text(text, scale)
+                    .map(|(size, _)| size)
             },
         )
     }
@@ -1000,7 +1105,7 @@ impl LuaRuntime {
     fn apply_prefab_instance_nodes(
         state: &mut ScriptState,
         keys: &[u64],
-        nodes: BTreeMap<u64, rustlua_ui::ui_scene_layout::UiSceneNode>,
+        nodes: BTreeMap<u64, crate::script::domain::ui::ui_scene_layout::UiSceneNode>,
     ) {
         for key in keys {
             state.prefab_ui_nodes.remove(key);

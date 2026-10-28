@@ -10,8 +10,8 @@
 use crate::script::LuaRuntime;
 use crate::script::LuaStateBorrow;
 use crate::script::ScriptState;
+use crate::script::domain::ui::prefab_lua::PrefabHost;
 use crate::script::values::entity_to_lua;
-use rustlua_ui::prefab_lua::PrefabHost;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -41,11 +41,11 @@ impl PrefabHost for PrefabOps {
                 .ok_or_else(|| "prefab.spawn 需要已加载工程（project_root 未设置）".to_owned())?
         };
         let file = root.join(path);
-        let bytes = rustlua_infra::vfs::read(&file)
+        let bytes = crate::script::domain::infra::vfs::read(&file)
             .map_err(|error| format!("prefab.spawn {path}: {error}"))?;
         let text = String::from_utf8(bytes)
             .map_err(|error| format!("prefab.spawn {path}: 不是 UTF-8 文本: {error}"))?;
-        let prefab = rustlua_scene::prefab::Prefab::from_text(&text)
+        let prefab = crate::script::domain::scene::prefab::Prefab::from_text(&text)
             .map_err(|error| format!("prefab.spawn {path}: {error}"))?;
         // `from_text` 末尾已经 `validate()`（版本、root 存在、parent 边成树），这里不重复校验。
         let mut state = self
@@ -118,7 +118,7 @@ impl PrefabHost for PrefabOps {
             .world_mut()
             .map(|mut world| {
                 world
-                    .get_mut::<rustlua_ui::ui::UiText>(id)
+                    .get_mut::<crate::script::domain::ui::ui::UiText>(id)
                     .ok()
                     .flatten()
                     .map(|component| component.text = text.to_owned())

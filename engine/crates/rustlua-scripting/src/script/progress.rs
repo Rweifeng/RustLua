@@ -160,7 +160,8 @@ mod tests {
     #[test]
     fn runaway_script_trips_the_budget_with_a_location() {
         let runtime =
-            LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).expect("runtime");
+            LuaRuntime::with_installers(crate::script::domain::gameplay::input_lua::registry())
+                .expect("runtime");
         runtime.set_instruction_budget(100_000).expect("budget");
         let error = runtime
             .lua
@@ -190,7 +191,8 @@ mod tests {
     #[test]
     fn normal_script_leaves_progress_without_error() {
         let runtime =
-            LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).expect("runtime");
+            LuaRuntime::with_installers(crate::script::domain::gameplay::input_lua::registry())
+                .expect("runtime");
         runtime.set_instruction_budget(10_000_000).expect("budget");
         let source = "local sum = 0\nfor i = 1, 500000 do sum = sum + i end\nreturn sum";
         runtime.lua.load(source).exec().expect("正常脚本不该被拦");
@@ -204,7 +206,8 @@ mod tests {
     #[test]
     fn zero_budget_disables_the_guard() {
         let runtime =
-            LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry()).expect("runtime");
+            LuaRuntime::with_installers(crate::script::domain::gameplay::input_lua::registry())
+                .expect("runtime");
         runtime.set_instruction_budget(0).expect("budget");
         assert_eq!(runtime.instruction_budget(), 0);
     }

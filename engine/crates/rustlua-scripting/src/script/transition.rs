@@ -6,12 +6,12 @@
 // WP11-USE:BEGIN
 use crate::script::LuaRuntime;
 use crate::script::call_optional;
+use crate::script::domain::ecs::entity_state::PersistedEntity;
+use crate::script::domain::ecs::hierarchy::Parent;
+use crate::script::domain::ecs::particle::ParticleSystem;
+use crate::script::domain::ecs::world::World;
+use crate::script::domain::scene::scene::Scene;
 use crate::script::error::LuaBridgeError;
-use rustlua_ecs::entity_state::PersistedEntity;
-use rustlua_ecs::hierarchy::Parent;
-use rustlua_ecs::particle::ParticleSystem;
-use rustlua_ecs::world::World;
-use rustlua_scene::scene::Scene;
 use std::path::PathBuf;
 // WP11-USE:END
 
@@ -37,12 +37,12 @@ impl LuaRuntime {
         let relative = format!("scenes/{name}.scene");
         let path = root.join(&relative);
         // 加载集观测（`docs/67` §5）：场景切换是"上下文"的唯一分界，`vfs` 按它归组。
-        rustlua_infra::vfs::note_load_context(&relative);
+        crate::script::domain::infra::vfs::note_load_context(&relative);
         // 经 `vfs::read` 取字节（**不是** `Scene::load`）：后者的 `fs::read` 在 wasm 上
         // 读不到任何工程文件——第 45 轮 jhyt webgl 产物上，标题确认触发的切换就死在
         // 这一步（日志只有 `scene file not found` 与一张空白页）。这里与 `Scene::load`
         // 的行为逐字节一致：原始字节 + `from_packed_bytes` 解码，桌面路径仍是文件系统。
-        let bytes = rustlua_infra::vfs::read(&path).map_err(|error| {
+        let bytes = crate::script::domain::infra::vfs::read(&path).map_err(|error| {
             LuaBridgeError::Api(format!("scene {name} failed to load: {error}"))
         })?;
         let scene = Scene::from_packed_bytes(&path, &bytes).map_err(|error| {
@@ -111,7 +111,8 @@ impl LuaRuntime {
             let entities = state.entity_state.clone();
             let persisted: Vec<PersistedEntity> =
                 entities.with(|entities| entities.persistent.values().cloned().collect());
-            let mut links: Vec<(rustlua_ecs::entity::EntityId, Option<String>)> = Vec::new();
+            let mut links: Vec<(crate::script::domain::ecs::entity::EntityId, Option<String>)> =
+                Vec::new();
             for entity in persisted {
                 if entities.with(|entities| entities.names.contains_key(&entity.name)) {
                     continue;

@@ -25,7 +25,7 @@ pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) ->
         // 全角标点又不同），也不能用 `string.len` 数字节；之前 HUD 用的是
         // "CJK 记 2、其余记 1"的启发式裁剪，遇到宽拉丁字母/长数字仍会溢出。
         lua.create_function(move |lua, (text, size): (String, Option<f32>)| {
-            let size_px = size.unwrap_or(rustlua_render::text::EM_PX);
+            let size_px = size.unwrap_or(crate::script::domain::render::text::EM_PX);
             if !size_px.is_finite() || size_px <= 0.0 {
                 return Err(api_error("ui.measure_text size must be positive"));
             }
@@ -40,11 +40,11 @@ pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) ->
                     "ui.measure_text: project font unavailable (check project.toml `font`)",
                 ));
             };
-            let measured = rustlua_render::text::measure_text(
+            let measured = crate::script::domain::render::text::measure_text(
                 &probe,
                 &text,
                 size_px,
-                rustlua_render::text::TextStyle::default().spacing,
+                crate::script::domain::render::text::TextStyle::default().spacing,
             );
             let result = lua.create_table()?;
             result.set("width", measured.width)?;

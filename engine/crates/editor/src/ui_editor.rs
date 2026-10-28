@@ -441,6 +441,14 @@ fn layout_diagnostics(
             .components
             .get("LayoutItem")
             .and_then(|raw| rustlua_ui::ui_layout::LayoutItem::from_component_str(raw).ok());
+        let mask = entity
+            .components
+            .get("Mask")
+            .and_then(|raw| rustlua_ui::ui_mask::Mask::from_component_str(raw).ok());
+        let canvas_group = entity
+            .components
+            .get("CanvasGroup")
+            .and_then(|raw| rustlua_ui::ui_canvas_group::CanvasGroup::from_component_str(raw).ok());
         let preferred_size = rustlua_ui::ui_scene_layout::preferred_size_for(
             &entity.components,
             layout.as_ref(),
@@ -456,6 +464,8 @@ fn layout_diagnostics(
                 container,
                 layout_item,
                 preferred_size,
+                mask,
+                canvas_group,
             },
         );
     }

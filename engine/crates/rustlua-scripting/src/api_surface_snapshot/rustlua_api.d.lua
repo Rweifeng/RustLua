@@ -1322,7 +1322,7 @@ function transform3d.set(...) end
 ---@return any
 function transform3d.world(id) end
 
---- ui：运行期 API 面基线里的 52 个函数
+--- ui：运行期 API 面基线里的 56 个函数
 ui = {}
 
 ---@param id string
@@ -1499,6 +1499,12 @@ function ui.panel(id, x, y, width, height, r, g, b, a) end
 ---@return any
 function ui.panel_get(id) end
 
+--- 读写 `Progress` 组件的进度值；进度条是**只读展示型控件**，指针与键盘不会改它。
+---@param id integer
+---@param value number?
+---@return any
+function ui.progress(id, value) end
+
 --- 解析受限富文本。只认 `<b>`、`<color=#rrggbb>`、`<icon=name>`、`<br/>` 四种标签；
 ---@param text string
 ---@return any
@@ -1559,9 +1565,21 @@ function ui.scroll_to_visible(id, item_top, item_height) end
 ---@return any
 function ui.scroll_visible(id) end
 
+--- 读写 `ScrollBar` 组件的 0..=1 滚动位置；滑块长度由组件的 `size` 决定。
+---@param id integer
+---@param value number?
+---@return any
+function ui.scrollbar(id, value) end
+
 ---@param id string
 ---@return any
 function ui.show(id) end
+
+--- 读写 `Slider` 组件值；写入先夹到 `min..=max`，`whole_numbers` 为真时再吸附到最近整数。
+---@param id integer
+---@param value number?
+---@return any
+function ui.slider(id, value) end
 
 ---@param id string
 ---@param text string
@@ -1585,6 +1603,12 @@ function ui.text_get(id) end
 ---@param command table
 ---@return any
 function ui.text_input(command) end
+
+--- 读写 `Toggle` 组件状态；写入走单选组语义，`group` 非空且置 `true` 时会关掉同组其他开关。
+---@param id integer
+---@param value boolean?
+---@return any
+function ui.toggle(id, value) end
 
 ---@param id string
 ---@param x number

@@ -140,7 +140,10 @@ $workspaceRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 if ([string]::IsNullOrWhiteSpace($BundleRoot)) {
     # 不写死游戏工程：自动发现本机唯一的合格 webgl 产物（诊断由 bundle-discovery 打印）。
     $BundleRoot = Resolve-GameBundle -Platform "webgl"
-    if (-not $BundleRoot) { exit 3 }
+    if (-not $BundleRoot) {
+        Write-Host "webgl_bundle_blocked reason=no_bundle（本机没有合格 webgl 产物；先跑 scripts\build\package.ps1 -Platform webgl。exit 3 = 环境缺失，不是代码红）" -ForegroundColor Yellow
+        exit 3
+    }
 }
 if (-not (Test-Path -LiteralPath $BundleRoot)) {
     throw "WebGL bundle was not found: $BundleRoot (先跑 scripts\build\package.ps1 -Platform webgl)"

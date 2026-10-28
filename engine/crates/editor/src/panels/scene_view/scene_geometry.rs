@@ -476,19 +476,29 @@ pub(crate) fn ui_entity_2d_box(
     let resolved = override_layout.unwrap_or_else(|| layout.resolve(viewport));
     let mut resolved = resolved;
     if entity.components.contains_key("Text") {
-        let bounds = measured_text_bounds
-            .or_else(|| {
-                let raw = entity.components.get("Text")?;
-                let text = rustlua_ui::ui::UiText::from_component_str(raw).ok()?;
-                Some(measure_text_without_runtime(&text.text, text.effective_scale()).1)
-            })
-            .unwrap_or([0.0; 4]);
-        // Runtime rendering uses the layout rect only as the text origin; the
-        // glyph bbox supplies visible width, height and ascent offset.
-        resolved.x += bounds[0];
-        resolved.y += bounds[1];
-        resolved.w = (bounds[2] - bounds[0]).max(0.0);
-        resolved.h = (bounds[3] - bounds[1]).max(0.0);
+        let text = entity
+            .components
+            .get("Text")
+            .and_then(|raw| rustlua_ui::ui::UiText::from_component_str(raw).ok());
+        // 对齐/截断的文本（M80-03）覆盖整个布局矩形，包围框不应再缩到字形上；
+        // 其余文本仍用逐字形 bbox 贴合可见文字。
+        let fill_layout = text.as_ref().is_some_and(|text| {
+            text.fills_layout_box() && text.box_size([resolved.w, resolved.h]).is_some()
+        });
+        if !fill_layout {
+            let bounds = measured_text_bounds
+                .or_else(|| {
+                    let text = text.as_ref()?;
+                    Some(measure_text_without_runtime(&text.text, text.effective_scale()).1)
+                })
+                .unwrap_or([0.0; 4]);
+            // Runtime rendering uses the layout rect only as the text origin; the
+            // glyph bbox supplies visible width, height and ascent offset.
+            resolved.x += bounds[0];
+            resolved.y += bounds[1];
+            resolved.w = (bounds[2] - bounds[0]).max(0.0);
+            resolved.h = (bounds[3] - bounds[1]).max(0.0);
+        }
     }
     let (center, size) = box_of([resolved.x, resolved.y], [resolved.w, resolved.h]);
     Some((center, size, UiEntityInfo { layout }))
@@ -512,6 +522,13 @@ pub(crate) fn scene_ui_nodes(
                 .components
                 .get("LayoutItem")
                 .and_then(|raw| rustlua_ui::ui_layout::LayoutItem::from_component_str(raw).ok());
+            let mask = entity
+                .components
+                .get("Mask")
+                .and_then(|raw| rustlua_ui::ui_mask::Mask::from_component_str(raw).ok());
+            let canvas_group = entity.components.get("CanvasGroup").and_then(|raw| {
+                rustlua_ui::ui_canvas_group::CanvasGroup::from_component_str(raw).ok()
+            });
             let preferred_size = rustlua_ui::ui_scene_layout::preferred_size_for(
                 &entity.components,
                 layout.as_ref(),
@@ -527,6 +544,8 @@ pub(crate) fn scene_ui_nodes(
                     container,
                     layout_item,
                     preferred_size,
+                    mask,
+                    canvas_group,
                 },
             )
         })

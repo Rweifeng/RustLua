@@ -14,6 +14,8 @@ use std::{
 // 不需要为拆分而把它们放宽成 `pub(super)`。反过来若把 `ScriptState` 移进 `state.rs`，
 // 兄弟子模块就访问不到，得逐字段加属性——所以宁可让这个结构体待在最显眼的地方。
 mod api;
+/// 领域依赖的唯一登记处（生产代码只经 `domain::` 取领域类型）。
+pub mod domain;
 mod error;
 mod guard;
 mod prefab_host;
@@ -39,26 +41,26 @@ pub use values::entity_lua_id;
 pub use vgraph_trace::VgraphTraceEvent;
 
 // WP11-USE:BEGIN
-use error::ScriptFingerprint;
-use rustlua_animation::animation::AnimationFrameEvent;
-use rustlua_animation::animation_player::AnimationPlayerEvent;
-use rustlua_camera::camera::{Camera2D, Camera3D};
-use rustlua_ecs::{
+use domain::animation::animation::AnimationFrameEvent;
+use domain::animation::animation_player::AnimationPlayerEvent;
+use domain::camera::camera::{Camera2D, Camera3D};
+use domain::ecs::{
     entity::EntityId,
     particle::{Particle, ParticleEmitter, ParticleMode, ParticleSystem},
     world::World,
 };
-use rustlua_gameplay::gameplay::GameClock;
-use rustlua_gameplay::save_store::SaveStore;
-use rustlua_lua_api::{Handle, ProjectRoot};
-use rustlua_math::math2d::Vec2;
+use domain::gameplay::gameplay::GameClock;
+use domain::gameplay::save_store::SaveStore;
+use domain::lua_api::{Handle, ProjectRoot};
+use domain::math::math2d::Vec2;
 #[allow(unused_imports)] // 经 `script::tests` 的 `use super::*` 链供 `tests/camera.rs` 使用
-use rustlua_math::math3d::Vec3;
-use rustlua_scene::scene::SceneEntityId;
-use rustlua_ui::ui::{DynamicUiImage, UiGrid, UiPanel};
+use domain::math::math3d::Vec3;
+use domain::scene::scene::SceneEntityId;
+use domain::ui::ui::{DynamicUiImage, UiGrid, UiPanel};
+use error::ScriptFingerprint;
 use values::{format_lua_value, lua_value_to_json};
 // `ui` 的运行期元素类型跟着状态单元搬去了 UI 域（P1 ⑤-12），路径保持不变以便宿主继续用。
-pub use rustlua_ui::ui_state::{UiBar, UiDrag, UiText};
+pub use domain::{UiBar, UiDrag, UiText};
 // WP11-USE:END
 
 /// 运行期 API 面的**事实源探针**：遍历 `_G`，剔除 Lua 标准库，导出「模块表 → 函数名（排序）」。
@@ -99,15 +101,15 @@ end)()
 
 #[cfg(test)]
 fn entity_name_rebuilds() -> u32 {
-    rustlua_ecs::entity_state::entity_name_rebuilds()
+    crate::script::domain::ecs::entity_state::entity_name_rebuilds()
 }
 
 // 只在测试里用到（经 `script::tests` 的 `use super::*` 链）：用 `cfg(test)` 收口，
 // 免得给生产构建留一个 `#[allow(unused_imports)]` 的口子。
 #[cfg(test)]
-use rustlua_ecs::tilemap::Tilemap;
+use crate::script::domain::ecs::tilemap::Tilemap;
 #[cfg(test)]
-use rustlua_ecs::transform::Transform;
+use crate::script::domain::ecs::transform::Transform;
 
 /// 运行期 spawn 的 UI 预设布局节点表 + **修订号**。
 ///
@@ -121,7 +123,7 @@ use rustlua_ecs::transform::Transform;
 /// 却会让画面与命中框停在旧版上——两者代价不对称，所以宁多勿漏。
 #[derive(Debug, Default)]
 struct PrefabUiNodes {
-    nodes: BTreeMap<u64, rustlua_ui::ui_scene_layout::UiSceneNode>,
+    nodes: BTreeMap<u64, crate::script::domain::ui::ui_scene_layout::UiSceneNode>,
     revision: u64,
 }
 
@@ -136,7 +138,10 @@ impl PrefabUiNodes {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    fn extend(&mut self, nodes: BTreeMap<u64, rustlua_ui::ui_scene_layout::UiSceneNode>) {
+    fn extend(
+        &mut self,
+        nodes: BTreeMap<u64, crate::script::domain::ui::ui_scene_layout::UiSceneNode>,
+    ) {
         self.nodes.extend(nodes);
         self.revision = self.revision.wrapping_add(1);
     }
@@ -146,7 +151,7 @@ impl PrefabUiNodes {
     }
 
     /// 给宿主的整表快照（宿主只在修订号变了之后才来取，所以这里 clone 一次是应该付的）。
-    fn snapshot(&self) -> BTreeMap<u64, rustlua_ui::ui_scene_layout::UiSceneNode> {
+    fn snapshot(&self) -> BTreeMap<u64, crate::script::domain::ui::ui_scene_layout::UiSceneNode> {
         self.nodes.clone()
     }
 }
@@ -176,7 +181,7 @@ pub(crate) struct ScriptState {
     project_root: Handle<ProjectRoot>,
     /// 懒加载的字体度量探针（`ui.measure_text` 用）：只读覆盖与 advance、
     /// 不光栅化字形、不占渲染图集内存。`None` = 从未尝试加载。
-    font_probe: Option<Option<rustlua_render::font::FontProbe>>,
+    font_probe: Option<Option<crate::script::domain::render::font::FontProbe>>,
     /// 玩家设置根目录（P3）：发布包 → 用户数据目录（`%APPDATA%\<app>`），
     /// 开发工程 → 项目根（编辑器与验收样例直接检查工程内的 `settings.toml`）。
     /// 未设置时退回 `project_root`。
@@ -185,10 +190,10 @@ pub(crate) struct ScriptState {
     /// ——这个指标此前只有单测在写，真实运行恒为 `0.000`（P4 接线，见 `docs/37` 5-6）。
     last_update_micros: u64,
     /// 世界数据域的能力单元（P1 ⑤-4c：状态与绑定都归 `rustlua-gameplay`）。
-    world_data: Handle<rustlua_gameplay::world_data_state::WorldDataState>,
+    world_data: Handle<crate::script::domain::gameplay::world_data_state::WorldDataState>,
     /// 相机域的能力单元（P1 ⑤-8：选中项 / 2D 控制器 / 两份每帧快照与三张 Lua 表都归
     /// `rustlua-camera`，绑定见 `rustlua_camera::camera_lua`）。
-    camera: Handle<rustlua_camera::camera_state::CameraState>,
+    camera: Handle<crate::script::domain::camera::camera_state::CameraState>,
     particles: ParticleSystem,
     /// P3-R07-2：`mode=gpu` 的 burst 先进这条队列，宿主在同一帧里把它们交给渲染器
     /// （`RuntimeScene::dispatch_gpu_particle_bursts`）。
@@ -201,9 +206,9 @@ pub(crate) struct ScriptState {
     /// 累计有多少次 `mode=gpu` 的 burst 因为队列已满而直接落在 CPU 上（诊断用）。
     gpu_burst_overflow: usize,
     /// 动画域能力单元（P1 ⑤-10）：帧事件队列归动画域（rustlua-animation）。
-    animation: Handle<rustlua_animation::animation_lua::AnimationState>,
+    animation: Handle<crate::script::domain::animation::animation_lua::AnimationState>,
     /// 渲染域的脚本可见状态（P1 ⑤-10：本帧主光的选择归 `rustlua-render`）。
-    renderable: Handle<rustlua_render::renderable_lua::RenderableState>,
+    renderable: Handle<crate::script::domain::render::renderable_lua::RenderableState>,
     /// 游戏时钟的能力单元（P1 ⑤-5：时钟类型与推进规则归 `rustlua-gameplay`，
     /// 绑定见 `rustlua_gameplay::clock_lua`，宿主推进见 [`LuaRuntime::step_clock`]）。
     game_clock: Handle<GameClock>,
@@ -228,18 +233,18 @@ pub(crate) struct ScriptState {
     scene_renderable_conflicts: Vec<String>,
     // ---- docs/60 §4.1：按领域拆分的子状态 ----
     /// 实体账本的能力单元（P1 ⑤-13：名字/持久 id/血量/标签/场景声明表归 `rustlua-ecs`）。
-    entity_state: Handle<rustlua_ecs::entity_state::EntityState>,
+    entity_state: Handle<crate::script::domain::ecs::entity_state::EntityState>,
     /// UI 域的能力单元（P1 ⑤-12：动态文本/条/面板/图/网格/拖拽/视口都归 `rustlua-ui`）。
-    ui_state: Handle<rustlua_ui::ui_state::UiState>,
+    ui_state: Handle<crate::script::domain::ui::ui_state::UiState>,
     /// 物理模拟域的能力单元（P1 ⑤-9：两个世界、分阶段回写队列与调试请求都归
     /// `rustlua-physics`，绑定见 `rustlua_physics::physics_lua`）。
-    physics: Handle<rustlua_physics::physics_state::PhysicsState>,
+    physics: Handle<crate::script::domain::physics::physics_state::PhysicsState>,
     /// 物品/背包/商店域的能力单元（P1 ⑤-6：数据与槽位规则归 `rustlua-gameplay`）。
-    inventory: Handle<rustlua_gameplay::inventory_state::InventoryState>,
+    inventory: Handle<crate::script::domain::gameplay::inventory_state::InventoryState>,
     /// 存档域的能力单元（P1 ⑤：数据/路径/槽位归 `rustlua-gameplay`）。
     save: Handle<SaveStore>,
     /// UI 导航的能力单元（P1 ⑤-3：焦点环/滚动位置归 `rustlua-ui`）。
-    nav: Handle<rustlua_ui::lua_nav::NavState>,
+    nav: Handle<crate::script::domain::ui::lua_nav::NavState>,
 }
 
 impl ScriptState {
@@ -272,7 +277,9 @@ impl ScriptState {
     /// 懒加载字体度量探针（`ui.measure_text`）：要工程根才能找到 `project.toml`
     /// 里的字体配置，故第一次调用才读盘；失败结果也会缓存（`Some(None)`），
     /// 避免每帧重复尝试读一个不存在的字体。切工程（`set_project_root`）会清缓存。
-    fn font_probe(&mut self) -> Result<Option<rustlua_render::font::FontProbe>, LuaBridgeError> {
+    fn font_probe(
+        &mut self,
+    ) -> Result<Option<crate::script::domain::render::font::FontProbe>, LuaBridgeError> {
         if let Some(cached) = &self.font_probe {
             return Ok(cached.clone());
         }
@@ -284,7 +291,7 @@ impl ScriptState {
         // 调用成本。第一帧卡顿的归因全靠这个读数：把它记成一条日志（wasm 侧经 `wasm_log` 进
         // 控制台），就不必再靠"首帧总耗时"反推到底是字体、脚本还是渲染。
         let started = web_time::Instant::now();
-        let probe = rustlua_render::font::project_font::load_probe(&root).ok();
+        let probe = crate::script::domain::render::font::project_font::load_probe(&root).ok();
         tracing::info!(
             target: "render",
             elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
@@ -355,7 +362,7 @@ pub struct LuaRuntime {
     ///
     /// 用 `Rc` 持有：热重载会重建 VM，每个新 VM 都要装同一套安装器；安装器本身捕获的
     /// 是 `rustlua-lua-api` 的 `Handle`（宿主能力单元），所以注册表可以被多个 VM 共享。
-    installers: Rc<rustlua_lua_api::Registry>,
+    installers: Rc<crate::script::domain::lua_api::Registry>,
     /// E03-4b：`.vgraph` 当前执行节点探针；热重载重建 VM 后回调仍写同一份。
     vgraph_trace: vgraph_trace::SharedVgraphTrace,
 }
@@ -377,7 +384,7 @@ pub fn probe_startup_stage(stage: u8) -> Result<(), String> {
             let _ = ScriptState::default();
         }
         2 => {
-            let _ = rustlua_lua_api::Registry::new();
+            let _ = crate::script::domain::lua_api::Registry::new();
         }
         _ => return Err("unknown stage".to_owned()),
     }
@@ -398,7 +405,7 @@ impl LuaRuntime {
     /// 的 7 处调用一字未改），重入由 [`Handle::with`] 的命名 panic 兜底。
     pub fn camera2d_controller<R>(
         &self,
-        visit: impl FnOnce(&rustlua_camera::camera::Camera2dController) -> R,
+        visit: impl FnOnce(&crate::script::domain::camera::camera::Camera2dController) -> R,
     ) -> R {
         let camera = self.state.borrow().camera.clone();
         camera.with(|state| visit(state.controller()))
@@ -406,7 +413,7 @@ impl LuaRuntime {
     /// 改 2D 相机控制器（Lua `camera2d.*` 与宿主每帧推进共用）。
     pub fn camera2d_controller_mut<R>(
         &mut self,
-        visit: impl FnOnce(&mut rustlua_camera::camera::Camera2dController) -> R,
+        visit: impl FnOnce(&mut crate::script::domain::camera::camera::Camera2dController) -> R,
     ) -> R {
         let camera = self.state.borrow().camera.clone();
         camera.with_mut(|state| visit(state.controller_mut()))
@@ -476,7 +483,7 @@ impl LuaRuntime {
     /// M76-02：`UiBindings` 的视图模型只读视图（`ui.view_model_set` 写入）。
     pub fn with_ui_view_model<R>(
         &self,
-        f: impl FnOnce(&BTreeMap<String, rustlua_ui::ui_binding::BindingValue>) -> R,
+        f: impl FnOnce(&BTreeMap<String, crate::script::domain::ui::ui_binding::BindingValue>) -> R,
     ) -> R {
         let ui = self.state.borrow().ui_state.clone();
         ui.with(|ui| f(ui.view_model()))
@@ -485,7 +492,7 @@ impl LuaRuntime {
     /// 双向绑定的写回入口：只改视图模型，目标（文字/可见性/进度）由宿主下一步 resolve。
     pub fn with_ui_view_model_mut<R>(
         &mut self,
-        f: impl FnOnce(&mut BTreeMap<String, rustlua_ui::ui_binding::BindingValue>) -> R,
+        f: impl FnOnce(&mut BTreeMap<String, crate::script::domain::ui::ui_binding::BindingValue>) -> R,
     ) -> R {
         let ui = self.state.borrow().ui_state.clone();
         ui.with_mut(|ui| f(ui.view_model_mut()))
@@ -530,7 +537,9 @@ impl LuaRuntime {
     /// （原来这里写着"空表 = 不付额外拷贝成本"——**那句话是错的**：宿主是**先**调本方法拿到克隆、
     /// **再**比较是否为空，所以空表也要先复制一次；宿主侧已改成先比修订号。）
     #[must_use]
-    pub fn prefab_ui_nodes(&self) -> BTreeMap<u64, rustlua_ui::ui_scene_layout::UiSceneNode> {
+    pub fn prefab_ui_nodes(
+        &self,
+    ) -> BTreeMap<u64, crate::script::domain::ui::ui_scene_layout::UiSceneNode> {
         self.state.borrow().prefab_ui_nodes.snapshot()
     }
 
@@ -767,7 +776,9 @@ impl LuaRuntime {
         animation.with_mut(|state| state.push_player_events(events));
     }
     /// 物理世界里当前所有 2D 碰撞体的姿态与形状，供宿主做 collider 调试绘制。
-    pub fn collider_debug_shapes(&self) -> Vec<rustlua_physics::physics::ColliderDebugShape> {
+    pub fn collider_debug_shapes(
+        &self,
+    ) -> Vec<crate::script::domain::physics::physics::ColliderDebugShape> {
         let physics = self.state.borrow().physics.clone();
         physics.with(|physics| physics.debug_shapes())
     }
@@ -780,7 +791,7 @@ impl LuaRuntime {
     /// 物理世界里当前所有 3D 碰撞体的姿态与形状，供宿主做 3D collider 调试绘制。
     pub fn collider_debug_shapes_3d(
         &self,
-    ) -> Vec<rustlua_physics::physics3d::ColliderDebugShape3d> {
+    ) -> Vec<crate::script::domain::physics::physics3d::ColliderDebugShape3d> {
         let physics = self.state.borrow().physics.clone();
         physics.with(|physics| physics.debug_shapes_3d())
     }
@@ -1060,7 +1071,8 @@ pub(crate) fn scene_file_path(state: &ScriptState, name: &str) -> Option<PathBuf
 /// `[map] scene file not found; load ignored name=manor`，画面停在 95.9% 单色的
 /// 空白页，玩法系统一次都不跑）。桌面无 provider 时回落文件系统，行为不变。
 pub(crate) fn scene_file_exists(state: &ScriptState, name: &str) -> bool {
-    scene_file_path(state, name).is_some_and(|path| rustlua_infra::vfs::is_file(&path))
+    scene_file_path(state, name)
+        .is_some_and(|path| crate::script::domain::infra::vfs::is_file(&path))
 }
 
 /// Queues a scene load when the scene file exists; mirrors `scene.load` so
@@ -1089,7 +1101,7 @@ fn request_scene_load(state: &ScriptState, name: &str) -> bool {
 fn reentrant_borrow(error: impl std::fmt::Display) -> mlua::Error {
     // 文案由契约层统一（`rustlua-lua-api`）：绑定下沉之后，"被借住的单元"不止这一个中枢，
     // 两处各写一句会让同一次重入在日志里长得不一样。
-    rustlua_lua_api::reentrant_borrow("script state", error)
+    crate::script::domain::lua_api::reentrant_borrow("script state", error)
 }
 
 /// P2-③：Lua API 闭包的借用样板收敛（`Rc<RefCell<ScriptState>>` 的扩展方法）。

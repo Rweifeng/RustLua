@@ -21,7 +21,7 @@ Rust 写的游戏引擎 + Lua 玩法脚本运行时，配套一个可视化编�
 |---|---|
 | `engine/` | Rust workspace：`crates/engine`（运行时）、`editor`、`game`（桌面运行器）、`assetc`（打包/校验）、`game_web`（WebGL 宿主） |
 | `examples/game_jhyt` | 完整游戏工程《江湖有田》：横版 1280×720、8 个场景动线（门面/山庄/村庄/山道/洞窟/演武场/两处室内），种田/采集/制作/战斗/任务/商店/7 日目标 |
-| `examples/game_api` | 引擎 API 活文档：每个 Lua API 都有一处**可运行**演示，覆盖度由 `host::sample_project` 的 11 条门守 |
+| `examples/game_api` | 引擎 API 活文档：每个 Lua API 都有一处**可运行**演示，覆盖度由 `host::sample_project` 的 12 条门守 |
 | `plugins/` | 平台运行时：`webgl/`（共用 `web-runtime.js` + 契约页）、`wechat-minigame/`（适配层与分包路由） |
 | `scripts/` | 质量门与发布脚本，按功能分层：`verify/verify.ps1`（总门）、`verify/check-docs.ps1`（文档门）、`verify/check-security.ps1`（供应链门）、`build/package.ps1`（发布）、`build/package-engine.ps1`（绿色版）、`release/`（SBOM/签名/notes/工具版本）、`metrics/`（覆盖率/cfg/趋势/编译/体积测量）、`test/test-bundle.ps1`（本地试玩产物）；完整索引见 [scripts/README.md](scripts/README.md) |
 | `tasks/` | 任务生命周期：`plan/`（在途工作包，含 P2 发布与安全工程）、`done/`（已归档） |
@@ -134,8 +134,9 @@ advisory DB，默认不进全量门；用 `verify.ps1 -Security` 或 CI 的 `sec
   保存路径检测到**外部改动就拒绝写入**（不是提示，是真不写），显式出口是「强制保存」；
   补丁历史原型把 1000 次字段编辑的保留内存从约 398 MB 降到 216 KB（比值 0.054%，且撤销/重做等价）。
 - **示例工程 `game_api` 重建**（[docs/59](docs/59-示例工程game_api与API覆盖率门.md)）：
-  **42 个模块表 / 283 个 Lua 函数**（这个数由 `scripts/docgen/gen-lua-api-docs.js --check` 与覆盖率门自动守，
-  不靠人记；1.3 版核对时把 README 里过期的 40/270 改正）/ 21 个运行时组件全部有演示；引擎新增一个
+  **42 个模块表 / 313 个 Lua 函数**（这个数由 `scripts/docgen/gen-lua-api-docs.js --check`、
+  `scripts/verify/check-doc-claims.mjs` 与覆盖率门自动守，不靠人记；1.3 版核对时把 README 里过期的
+  40/270 改正，2026-10-27 又把 283 校正为 313）/ 30 个运行时组件全部有演示；引擎新增一个
   Lua 函数，示例工程不补演示就会被覆盖率门判红。
 - **组件统一**（第 57 轮）：场景/Prefab 里变换与相机各只有**一个**组件名——`Transform`
   （载荷 `position/rotation/scale`）与 `Camera`（判别字段 `projection=orthographic|perspective`）。

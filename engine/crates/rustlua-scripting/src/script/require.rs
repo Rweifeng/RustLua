@@ -15,9 +15,11 @@ pub(super) fn file_fingerprint(
     source: &str,
 ) -> Result<ScriptFingerprint, LuaBridgeError> {
     use std::hash::{Hash, Hasher};
-    let meta = rustlua_infra::vfs::metadata(path).map_err(|error| LuaBridgeError::Load {
-        path: path.to_path_buf(),
-        reason: error.to_string(),
+    let meta = crate::script::domain::infra::vfs::metadata(path).map_err(|error| {
+        LuaBridgeError::Load {
+            path: path.to_path_buf(),
+            reason: error.to_string(),
+        }
     })?;
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     source.hash(&mut hasher);
@@ -34,13 +36,16 @@ pub(super) fn file_fingerprint(
 /// 上读取+执行 main.lua（`execute_project_script` 的 `load_candidate` 会新建 Lua
 /// 状态、丢弃已注入的宿主补丁，web 流程不可用）。
 pub fn read_project_script(path: &Path) -> Result<String, LuaBridgeError> {
-    let bytes = rustlua_infra::vfs::read(path).map_err(|error| LuaBridgeError::Load {
-        path: path.to_path_buf(),
-        reason: error.to_string(),
-    })?;
-    let decoded = rustlua_infra::pack::decode(&bytes).map_err(|error| LuaBridgeError::Load {
-        path: path.to_path_buf(),
-        reason: error,
+    let bytes =
+        crate::script::domain::infra::vfs::read(path).map_err(|error| LuaBridgeError::Load {
+            path: path.to_path_buf(),
+            reason: error.to_string(),
+        })?;
+    let decoded = crate::script::domain::infra::pack::decode(&bytes).map_err(|error| {
+        LuaBridgeError::Load {
+            path: path.to_path_buf(),
+            reason: error,
+        }
     })?;
     Ok(String::from_utf8_lossy(&decoded).into_owned())
 }
@@ -51,11 +56,13 @@ pub(super) fn install_encoded_require_searcher(lua: &Lua, script_dir: PathBuf) -
     let searcher = lua.create_function(move |lua, module: String| {
         let relative = module.replace('.', std::path::MAIN_SEPARATOR_STR);
         let file_path = script_dir.join(format!("{relative}.lua"));
-        if !rustlua_infra::vfs::is_file(&file_path) {
+        if !crate::script::domain::infra::vfs::is_file(&file_path) {
             return Ok(Value::Nil);
         }
-        let bytes = rustlua_infra::vfs::read(&file_path).map_err(mlua::Error::external)?;
-        let decoded = rustlua_infra::pack::decode(&bytes).map_err(mlua::Error::external)?;
+        let bytes =
+            crate::script::domain::infra::vfs::read(&file_path).map_err(mlua::Error::external)?;
+        let decoded =
+            crate::script::domain::infra::pack::decode(&bytes).map_err(mlua::Error::external)?;
         let source = String::from_utf8_lossy(&decoded).into_owned();
         let chunk_name = format!("scripts/{module}.lua");
         let chunk = lua.load(&source).set_name(chunk_name).into_function()?;

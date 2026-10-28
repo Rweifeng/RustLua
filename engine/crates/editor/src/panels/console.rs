@@ -1,4 +1,4 @@
-//! 行4 控制台：实时日志（LogSink）+ 编辑器提示 + Play 预览诊断。
+//! 行4 控制台：实时日志（LogSink）+ 编辑器提示 + Play 预览诊断 + 运行时脚本诊断。
 
 use crate::{ConsoleLogLevelFilter, ConsoleTab, EditorApp};
 use eframe::egui;
@@ -32,6 +32,8 @@ enum ConsoleSource {
     Notice,
     /// Game View / UI 预览诊断。
     Preview,
+    /// 运行态脚本的结构化诊断（`RuntimeScene::script_diagnostics`）。
+    Script,
 }
 
 /// 一行控制台内容：来源 + 源行号 + 该源行内的子行号（源行含换行时按物理行拆开）。
@@ -57,6 +59,7 @@ struct ConsoleRowKey {
     sink_generation: u64,
     notice_len: usize,
     preview_len: usize,
+    script_len: usize,
 }
 
 /// 缓存的行索引。文本本身仍留在各自的有界缓冲里，这里只持有 (来源, 序号)。
@@ -80,6 +83,7 @@ struct ConsoleSources {
     sink: Vec<String>,
     notices: Vec<String>,
     preview: Vec<(String, ConsoleLogLevel)>,
+    script: Vec<String>,
 }
 
 impl ConsoleSources {
@@ -88,6 +92,7 @@ impl ConsoleSources {
             ConsoleSource::Sink => self.sink.get(index).map(String::as_str),
             ConsoleSource::Notice => self.notices.get(index).map(String::as_str),
             ConsoleSource::Preview => self.preview.get(index).map(|(line, _)| line.as_str()),
+            ConsoleSource::Script => self.script.get(index).map(String::as_str),
         }
     }
 
@@ -105,6 +110,8 @@ impl ConsoleSources {
                 .preview
                 .get(index)
                 .map_or(ConsoleLogLevel::Info, |(_, level)| *level),
+            // 只被容错档放行的错误才会留在这里，所以这一路的每一条都是错误。
+            ConsoleSource::Script => ConsoleLogLevel::Error,
         }
     }
 }
@@ -235,6 +242,7 @@ impl EditorApp {
             sink: self.log_sink.snapshot(),
             notices: self.console_notices.clone(),
             preview: preview_diagnostics,
+            script: self.script_console_lines(),
         };
         let key = ConsoleRowKey {
             tab: Some(tab),
@@ -243,6 +251,7 @@ impl EditorApp {
             sink_generation: self.log_sink.generation(),
             notice_len: sources.notices.len(),
             preview_len: sources.preview.len(),
+            script_len: sources.script.len(),
         };
         let row_count =
             self.rebuild_console_rows_if_needed(&key, &sources, tab, &filter, level_filter);
@@ -279,6 +288,32 @@ impl EditorApp {
             self.profiler.bump("console_diagnostic_jump");
             self.jump_to_diagnostic(&location);
         }
+    }
+
+    /// 运行态脚本诊断 → 控制台文本。
+    ///
+    /// 引擎侧 `RuntimeScene::script_diagnostics()` 自称「Console 面板的数据源」，但此前
+    /// 编辑器没有任何消费方：容错档放行的 Lua 错误只退化成去重后的日志行，行号与重复
+    /// 次数在归并时丢掉，点击也就无从跳转。这里补上那条边——不新增机制，只接线。
+    /// 编辑场景的 2D 运行时（`scene_runtime`）不跑 `main.lua`，所以只有 Play 预览有货。
+    ///
+    /// 面板上的「清空」抹不掉这些行：它们是运行态记录，错误此刻仍然存在；要归零得重开
+    /// Play。把"清掉视图"当成"错误已解决"是更糟的假象。
+    fn script_console_lines(&self) -> Vec<String> {
+        self.preview
+            .as_ref()
+            .into_iter()
+            .flat_map(|session| session.runtime().script_diagnostics())
+            .map(|diagnostic| {
+                script_diagnostic_line(
+                    &diagnostic.path.to_string_lossy(),
+                    &diagnostic.phase,
+                    &diagnostic.message,
+                    diagnostic.line,
+                    diagnostic.occurrences,
+                )
+            })
+            .collect()
     }
 
     /// 当索引键变化时重建控制台行索引（过滤 + 级别 + 分类 + 物理行拆分）。
@@ -363,6 +398,7 @@ fn build_console_rows(
         (ConsoleSource::Sink, sources.sink.len()),
         (ConsoleSource::Notice, sources.notices.len()),
         (ConsoleSource::Preview, sources.preview.len()),
+        (ConsoleSource::Script, sources.script.len()),
     ] {
         for index in 0..count {
             let Some(line) = sources.line(source, index) else {
@@ -379,6 +415,9 @@ fn build_console_rows(
                 (ConsoleTab::Lua, ConsoleSource::Notice) => false,
                 (ConsoleTab::Editor, ConsoleSource::Preview) => true,
                 (ConsoleTab::Lua, ConsoleSource::Preview) => false,
+                // 脚本错误两边都出：Play 里一行 Lua 写错时，用户停在哪个分类
+                // 都该看见它，而不是先猜要去切标签页。
+                (_, ConsoleSource::Script) => true,
             };
             if !included || !level_filter.matches(sources.level(source, index)) {
                 continue;
@@ -417,6 +456,30 @@ fn console_row_text(sources: &ConsoleSources, tab: ConsoleTab, row: ConsoleRowRe
 
 fn text_matches_filter(line: &str, filter: &str) -> bool {
     filter.is_empty() || line.to_lowercase().contains(filter)
+}
+
+/// 一条脚本诊断的展示文本。
+///
+/// `文件:行` 必须排在**第一个**空白分隔的 token：`parse_location` 取它遇到的首个像路径的
+/// token，把行号埋在半句报错文本后面等于没有跳转。重复次数放在末尾，只在该错误第二次
+/// 出现后才显示——每帧复发的同一个错误，归并成一行才读得下去。
+fn script_diagnostic_line(
+    path: &str,
+    phase: &str,
+    message: &str,
+    line: Option<u32>,
+    occurrences: u32,
+) -> String {
+    let path = path.replace('\\', "/");
+    let repeats = if occurrences > 1 {
+        format!(" (×{occurrences})")
+    } else {
+        String::new()
+    };
+    match line {
+        Some(line) => format!("{path}:{line} [{phase}] {message}{repeats}"),
+        None => format!("{path} [{phase}] {message}{repeats}"),
+    }
 }
 
 /// 绘制一行日志；返回该行响应（`rect.height()` 供布局探针，`interact` 供点击跳转）。
@@ -458,42 +521,53 @@ mod tests {
             ],
             notices: vec!["Scene View 回读完成".to_owned()],
             preview: vec![("layout overflow".to_owned(), ConsoleLogLevel::Warning)],
+            script: vec![
+                "scripts/player.lua:12 [runtime] attempt to index a nil value (×3)".to_owned(),
+            ],
         };
 
-        // 编辑器分类 + 全部级别：sink 的非 Lua 行（首行多行拆 2 物理行）+ notice + 预览诊断。
+        // 编辑器分类 + 全部级别：sink 的非 Lua 行（首行多行拆 2 物理行）+ notice + 预览诊断 + 脚本诊断。
         let editor =
             build_console_rows(&sources, ConsoleTab::Editor, "", ConsoleLogLevelFilter::All);
         assert_eq!(
             editor.len(),
-            5,
-            "editor tab: 3 sink physical + 1 notice + 1 preview"
+            6,
+            "editor tab: 3 sink physical + 1 notice + 1 preview + 1 script"
         );
         assert_eq!(editor[0], ConsoleRowRef::new(ConsoleSource::Sink, 0, 0));
         assert_eq!(editor[1], ConsoleRowRef::new(ConsoleSource::Sink, 0, 1));
         assert_eq!(editor[2], ConsoleRowRef::new(ConsoleSource::Sink, 2, 0));
         assert_eq!(editor[3], ConsoleRowRef::new(ConsoleSource::Notice, 0, 0));
         assert_eq!(editor[4], ConsoleRowRef::new(ConsoleSource::Preview, 0, 0));
+        assert_eq!(editor[5], ConsoleRowRef::new(ConsoleSource::Script, 0, 0));
         // 多行源行的第二行文本按子行解析。
         assert_eq!(
             console_row_text(&sources, ConsoleTab::Editor, editor[1]),
             Some("second line")
         );
 
-        // Lua 分类：只有 Lua target 的 sink 行（提示与预览诊断只进编辑器分类）。
+        // Lua 分类：Lua target 的 sink 行 + 脚本诊断（提示与预览诊断只进编辑器分类）。
         let lua = build_console_rows(&sources, ConsoleTab::Lua, "", ConsoleLogLevelFilter::All);
-        assert_eq!(lua.len(), 1, "lua tab: 1 sink");
+        assert_eq!(lua.len(), 2, "lua tab: 1 sink + 1 script");
         assert_eq!(lua[0], ConsoleRowRef::new(ConsoleSource::Sink, 1, 0));
+        assert_eq!(lua[1], ConsoleRowRef::new(ConsoleSource::Script, 0, 0));
         // Lua sink 行显示时裁掉 tracing 前缀。
         assert_eq!(
             console_row_text(&sources, ConsoleTab::Lua, lua[0]),
             Some("low health")
         );
 
-        // 级别过滤：Lua 分类只看 Error → 只剩那条 ERROR sink 行。
+        // 级别过滤：Lua 分类只看 Error → ERROR sink 行 + 脚本诊断（该路恒定按错误定级）。
         let errors =
             build_console_rows(&sources, ConsoleTab::Lua, "", ConsoleLogLevelFilter::Error);
-        assert_eq!(errors.len(), 1);
+        assert_eq!(errors.len(), 2);
         assert_eq!(errors[0].source, ConsoleSource::Sink);
+        assert_eq!(errors[1].source, ConsoleSource::Script);
+        assert_eq!(
+            sources.level(ConsoleSource::Script, 0),
+            ConsoleLogLevel::Error,
+            "脚本诊断只有被容错档放行的错误才会走到这里，一律是错误级"
+        );
 
         // 过滤词命中 Lua 消息体（而不是整条 tracing 前缀）。
         let filtered = build_console_rows(
@@ -516,6 +590,7 @@ mod tests {
             sink_generation: 1,
             notice_len: 0,
             preview_len: 0,
+            script_len: 0,
         };
         assert_eq!(
             base,
@@ -543,6 +618,10 @@ mod tests {
             },
             ConsoleRowKey {
                 notice_len: 1,
+                ..base.clone()
+            },
+            ConsoleRowKey {
+                script_len: 1,
                 ..base.clone()
             },
         ] {
@@ -640,5 +719,40 @@ mod tests {
         let callback_failure =
             "2026-08-21T15:35:23.670753Z  WARN script: on_day_start callback failed error=boom";
         assert_eq!(lua_log_message(callback_failure), callback_failure);
+    }
+
+    /// 脚本诊断行：`文件:行` 必须是首个可解析 token，否则点击只会落到文件而不是报错那一行。
+    #[test]
+    fn script_diagnostic_lines_carry_a_jumpable_location() {
+        use std::path::Path;
+
+        let line = script_diagnostic_line(
+            r"scripts\player.lua",
+            "runtime",
+            "attempt to index a nil value",
+            Some(12),
+            3,
+        );
+        assert_eq!(
+            line,
+            "scripts/player.lua:12 [runtime] attempt to index a nil value (×3)"
+        );
+        let location = editor::parse_location(&line).expect("控制台行必须解析出跳转位置");
+        assert_eq!(
+            location.path.as_deref(),
+            Some(Path::new("scripts/player.lua"))
+        );
+        assert_eq!(location.line, Some(12));
+
+        // 加载期报错没有行号：文件本身仍是跳转目标；只出现一次时不加 ×1 噪声。
+        let once = script_diagnostic_line("scripts/main.lua", "load", "syntax error", None, 1);
+        assert_eq!(once, "scripts/main.lua [load] syntax error");
+        assert_eq!(
+            editor::parse_location(&once)
+                .expect("文件仍是跳转目标")
+                .path
+                .as_deref(),
+            Some(Path::new("scripts/main.lua"))
+        );
     }
 }

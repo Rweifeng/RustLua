@@ -75,6 +75,7 @@ local TEXT_IDS = {
     "ui_rich_line_2", "ui_rich_line_3", "ui_rich_line_4", "ui_rich_line_5",
     "ui_input_line_2", "ui_input_line_3",
     "ui_nav_line_2", "ui_nav_line_3", "ui_nav_line_4", "ui_nav_line_5",
+    "ui_control_line_2", "ui_control_line_3",
 }
 
 local GRID_COLUMNS, GRID_ROWS, GRID_CELL, GRID_GAP = 4, 3, 44, 10
@@ -124,6 +125,14 @@ local vlist_state = { start = 0, finish = 0, bound = 0, onscreen = 0, first_key 
 local rich_state = { plain = "Hi", lines = 1, spans = 1, unsupported = 0, bold = "-", color = "-", icon = "-" }
 local input_state = { cursor = 0, text = "-", composition = "-", committed = "-", backend = "-", selection = "-" }
 local nav_state = { depth = 1, current = "shop", modal = "-", accepts = true, back_kind = "-", hp = "-", name = "-", nested = "-" }
+
+-- M80-04：值控件是**场景实体**（不是动态 ui.*）。宿主按组件值改写子实体矩形，
+-- Lua 这一侧只读写组件值；场景在 `api_ui.scene` 底部放了一排真实控件。
+local CONTROL_TOGGLE = "UiControlToggle"
+local CONTROL_SLIDER = "UiControlSlider"
+local CONTROL_PROGRESS = "UiControlProgress"
+local CONTROL_SCROLLBAR = "UiControlScrollbar"
+local control_state = { toggle = "-", slider = "-", progress = "-", scrollbar = "-", missing = "-" }
 
 -- ---------------------------------------------------------------------------
 -- 小工具
@@ -376,6 +385,40 @@ local function nav_sync()
     ui.text_at("ui_nav_line_3", 332, 186, string.format("last back=%s", nav_state.back_kind), 1.0, 12)
     ui.text_at("ui_nav_line_4", 332, 206, string.format("player.hp=%s", nav_state.hp), 1.0, 12)
     ui.text_at("ui_nav_line_5", 332, 226, string.format("shop.items=%s", nav_state.nested), 1.0, 12)
+end
+
+--- 值控件读数：`ui.<kind>(id)` 不传值就是读；实体没有对应组件时读返回 nil。
+local function control_sync()
+    local function num(value)
+        return type(value) == "number" and string.format("%.2f", value) or "-"
+    end
+    local toggle = entity.find(CONTROL_TOGGLE)
+    local slider = entity.find(CONTROL_SLIDER)
+    local progress = entity.find(CONTROL_PROGRESS)
+    local scrollbar = entity.find(CONTROL_SCROLLBAR)
+    control_state.toggle = tostring(ui.toggle(toggle))
+    control_state.slider = num(ui.slider(slider))
+    control_state.progress = num(ui.progress(progress))
+    control_state.scrollbar = num(ui.scrollbar(scrollbar))
+    -- 没有 Toggle 的实体读作 nil：这是"静默"的一半；写的那一半会报错（见 check）。
+    control_state.missing = string.format("Toolbar slider=%s", tostring(ui.slider(entity.find("Toolbar"))))
+    ui.text_at(
+        ADV_INFO_ID,
+        332,
+        146,
+        string.format("toggle=%s slider=%s", control_state.toggle, control_state.slider),
+        1.0,
+        12
+    )
+    ui.text_at(
+        "ui_control_line_2",
+        332,
+        166,
+        string.format("progress=%s scrollbar=%s", control_state.progress, control_state.scrollbar),
+        1.0,
+        12
+    )
+    ui.text_at("ui_control_line_3", 332, 186, control_state.missing, 1.0, 12)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1225,6 +1268,70 @@ local steps = {
             ui.view_model_set("player.hp", 42)
             ui.view_model_set("player.name", "Rei")
             nav_sync()
+        end,
+    },
+    {
+        id = "value_controls",
+        title = "Toggle / Slider / Progress / Scrollbar",
+        claim = "值控件是场景实体：Lua 读写组件值，宿主按值改写子实体矩形（勾选/填充/滑块/手柄）",
+        api = { "ui.toggle", "ui.slider", "ui.progress", "ui.scrollbar" },
+        code = "ui.slider(id); ui.slider(id, 0.25); ui.toggle(id, false); ui.progress(id); ui.scrollbar(id)",
+        enter = function()
+            reset_own()
+            local toggle = entity.find(CONTROL_TOGGLE)
+            local slider = entity.find(CONTROL_SLIDER)
+            local progress = entity.find(CONTROL_PROGRESS)
+            local scrollbar = entity.find(CONTROL_SCROLLBAR)
+            -- F5 / 上一步都可能改过值：先摆回场景的初始值，读数才可重复。
+            ui.toggle(toggle, true)
+            ui.slider(slider, 0.25)
+            ui.progress(progress, 0.5)
+            ui.scrollbar(scrollbar, 0.3)
+            ui.panel(ADV_PANEL_ID, 320, 130, 280, 130, 0.085, 0.105, 0.145, 1.0)
+            control_sync()
+        end,
+        run = function()
+            control_sync()
+            lab.note("舞台底部一排：点 Toggle / 拖 Slider / 拖 Scrollbar，值写进组件、下一帧改写子实体矩形")
+        end,
+        read = function()
+            return {
+                { label = "toggle", value = control_state.toggle },
+                { label = "slider", value = control_state.slider },
+                { label = "progress", value = control_state.progress },
+                { label = "scrollbar", value = control_state.scrollbar },
+                { label = "no component", value = control_state.missing },
+            }
+        end,
+        check = function(t)
+            local toggle = entity.find(CONTROL_TOGGLE)
+            local slider = entity.find(CONTROL_SLIDER)
+            local progress = entity.find(CONTROL_PROGRESS)
+            local scrollbar = entity.find(CONTROL_SCROLLBAR)
+            -- 读：不传值返回组件现值（enter 已摆回场景初始值）。
+            t:eq(ui.toggle(toggle), true, "toggle reads the authored on state")
+            t:near(ui.slider(slider), 0.25, 1e-6, "slider reads the authored value")
+            t:near(ui.progress(progress), 0.5, 1e-6, "progress reads the authored value")
+            t:near(ui.scrollbar(scrollbar), 0.3, 1e-6, "scrollbar reads the authored value")
+            -- 写：返回**写完之后**的值，读路径与写路径同一份存储。
+            t:eq(ui.toggle(toggle, false), false, "writing toggle returns the new state")
+            t:eq(ui.toggle(toggle), false, "the read path agrees with the write")
+            t:eq(ui.toggle(toggle, true), true, "toggle can be switched back on")
+            -- 夹取：越界值被夹到 [min,max]，返回值就是夹取后的真值（不是入参）。
+            t:near(ui.slider(slider, 5.0), 1.0, 1e-6, "slider clamps above max")
+            t:near(ui.slider(slider, -1.0), 0.0, 1e-6, "slider clamps below min")
+            t:near(ui.progress(progress, 1.5), 1.0, 1e-6, "progress clamps above max")
+            t:near(ui.scrollbar(scrollbar, -0.5), 0.0, 1e-6, "scrollbar clamps to zero")
+            -- 没有组件的实体：读是 nil（静默），写要报错——"什么都没发生"是脚本最难查的错。
+            local plain = entity.find("Toolbar")
+            t:eq(ui.slider(plain), nil, "an entity without Slider reads nil")
+            t:ok(not pcall(ui.slider, plain, 0.5), "writing a value to an entity without Slider raises")
+            -- 恢复 enter 的读数，F5 之后 check 仍然成立。
+            ui.toggle(toggle, true)
+            ui.slider(slider, 0.25)
+            ui.progress(progress, 0.5)
+            ui.scrollbar(scrollbar, 0.3)
+            control_sync()
         end,
     },
 }

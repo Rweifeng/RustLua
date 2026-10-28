@@ -5,11 +5,15 @@
 
 use crate::EditorApp;
 use editor::ui_studio::{
-    AssetCandidate, InspectorEdit, InspectorSection, PreviewResolution, UiStudio,
+    AlignMode, AssetCandidate, DistributeAxis, InspectorEdit, InspectorSection, PreviewResolution,
+    SnapGuides, UiStudio,
 };
 use eframe::egui;
-use rustlua_ui_spec::{ResizeHandle, SliceRegion};
-use std::collections::BTreeMap;
+use rustlua_ui_spec::{AnchorPreset, ResizeHandle, SliceRegion, UiNodeKind};
+use std::collections::{BTreeMap, BTreeSet};
+
+/// 拖动吸附阈值（设计像素）：比这个更近才吸到参考线。
+const SNAP_THRESHOLD: f32 = 6.0;
 
 /// 画布拖动：移动整块、拖某个手柄，或在空白处平移画布。
 /// `total` 是跨帧累计的屏幕位移；`start` 是按下时的设计矩形（幽灵框与提交都用它）。
@@ -26,6 +30,8 @@ pub(crate) struct CanvasDrag {
     pub(crate) total: egui::Vec2,
     pub(crate) start: [f32; 4],
     pub(crate) key: String,
+    /// 本帧吸上的参考线（画布叠层用来画十字线）。
+    pub(crate) guides: SnapGuides,
 }
 
 /// 面板级缓存：画布的缩放/平移与图片纹理。文档或 revision 变了就清纹理。
@@ -54,6 +60,8 @@ pub(crate) struct UiStudioPanel {
     pub(crate) canvas_drag: Option<CanvasDrag>,
     /// 包裹容器的新 key 输入框。
     pub(crate) wrap_key: String,
+    /// 「添加子节点」下拉框选中的控件类型（下标进 [`addable_kinds`]）。
+    pub(crate) add_child_kind: usize,
     /// 候选图选区（详情面板按它显示来源；点击格子切换）。
     pub(crate) asset_selected: Option<String>,
     /// 审阅时填写的许可，切换候选时按已有边车回填。
@@ -85,6 +93,7 @@ impl Default for UiStudioPanel {
             hierarchy_drag: None,
             canvas_drag: None,
             wrap_key: String::new(),
+            add_child_kind: 0,
             asset_selected: None,
             asset_license: String::new(),
             asset_textures: BTreeMap::new(),
@@ -182,6 +191,8 @@ fn draw_overlays(
     studio: &UiStudio,
     view: crate::ui_canvas::CanvasView,
     ghost: Option<([f32; 4], &str)>,
+    move_delta: Option<[f32; 2]>,
+    guides: Option<SnapGuides>,
 ) {
     let painter = ui.painter_at(view.viewport);
     let to_screen = |design| view.design_to_screen(design);
@@ -233,6 +244,55 @@ fn draw_overlays(
     };
     let rect = to_screen(design_rect);
     let accent = egui::Color32::from_rgb(96, 200, 255);
+    // 多选：非主选中的框画细轮廓；整组拖动时跟着同样的位移预览。
+    let secondary = egui::Color32::from_rgb(64, 148, 196);
+    for (frame_key, frame) in studio.selection_frames() {
+        if frame_key == key {
+            continue;
+        }
+        let preview = match move_delta {
+            Some(delta) => [frame[0] + delta[0], frame[1] + delta[1], frame[2], frame[3]],
+            None => frame,
+        };
+        let screen = to_screen(preview);
+        painter.rect_stroke(
+            screen,
+            0.0,
+            egui::Stroke::new(1.0_f32, secondary),
+            egui::StrokeKind::Outside,
+        );
+        painter.text(
+            screen.left_top() + egui::vec2(2.0, -2.0),
+            egui::Align2::LEFT_BOTTOM,
+            frame_key,
+            egui::FontId::monospace(9.0),
+            secondary,
+        );
+    }
+    // 吸附参考线：整条画布高度/宽度，拖动时给出“对齐到哪”的确定读数。
+    if let Some(guides) = guides {
+        let stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(255, 96, 208));
+        if let Some(x) = guides.x {
+            let x = to_screen([x, 0.0, 0.0, 0.0]).min.x;
+            painter.line_segment(
+                [
+                    egui::pos2(x, view.viewport.top()),
+                    egui::pos2(x, view.viewport.bottom()),
+                ],
+                stroke,
+            );
+        }
+        if let Some(y) = guides.y {
+            let y = to_screen([0.0, y, 0.0, 0.0]).min.y;
+            painter.line_segment(
+                [
+                    egui::pos2(view.viewport.left(), y),
+                    egui::pos2(view.viewport.right(), y),
+                ],
+                stroke,
+            );
+        }
+    }
     // 间距标尺：选中框到父框四边的设计像素距离（拖动中不画，父级距离已过期）。
     if ghost.is_none()
         && let Some(parent) = rows
@@ -459,6 +519,9 @@ fn draw_canvas(
         ui.ctx().set_cursor_icon(icon);
     }
 
+    // Ctrl / Shift 是加选，与 Unity 的层级/场景视图一致。
+    let additive =
+        ui.input(|input| input.modifiers.command || input.modifiers.ctrl || input.modifiers.shift);
     if response.drag_started_by(egui::PointerButton::Primary)
         && let Some(pointer) = response.interact_pointer_pos()
     {
@@ -475,6 +538,7 @@ fn draw_canvas(
                         total: egui::Vec2::ZERO,
                         start: *rect,
                         key: key.clone(),
+                        guides: SnapGuides::default(),
                     });
                 }
             }
@@ -485,28 +549,41 @@ fn draw_canvas(
                         total: egui::Vec2::ZERO,
                         start: *rect,
                         key: key.clone(),
+                        guides: SnapGuides::default(),
                     });
                 }
             }
             _ => match hit {
                 Some(key) => {
-                    studio.select(&key);
-                    if let Some((key, rect, _)) = studio.selection_frame() {
+                    if additive {
+                        studio.toggle_select(&key);
+                    } else if !studio.selected_keys().contains(&key) {
+                        studio.select(&key);
+                    }
+                    // 点中的节点在多选里（或刚被选中）就整组拖动。
+                    if studio.selected_keys().contains(&key)
+                        && let Some(rect) = node_rect(&rows, &key)
+                    {
                         *drag = Some(CanvasDrag {
                             mode: CanvasDragMode::Move,
                             total: egui::Vec2::ZERO,
                             start: rect,
                             key,
+                            guides: SnapGuides::default(),
                         });
                     }
                 }
-                // 空白处左键拖动 = 平移画布。
+                // 空白处左键拖动 = 平移画布（带修饰键时保留选择）。
                 None => {
+                    if !additive {
+                        studio.clear_selection();
+                    }
                     *drag = Some(CanvasDrag {
                         mode: CanvasDragMode::Pan,
                         total: egui::Vec2::ZERO,
                         start: [0.0; 4],
                         key: String::new(),
+                        guides: SnapGuides::default(),
                     });
                 }
             },
@@ -528,8 +605,13 @@ fn draw_canvas(
         && state.mode != CanvasDragMode::Pan
     {
         let scale = view.design_scale().max(1e-4);
-        let delta = [state.total.x / scale, state.total.y / scale];
+        let raw = [state.total.x / scale, state.total.y / scale];
         if state.total.length() > 1.0 {
+            // 松手时按与幽灵框同一套吸附规则提交，避免“看到吸上了、落盘却差 3px”。
+            let delta = match state.mode {
+                CanvasDragMode::Move => studio.snap_delta(raw, SNAP_THRESHOLD).0,
+                _ => raw,
+            };
             let outcome = match state.mode {
                 CanvasDragMode::Move => studio.move_selection_by(delta),
                 CanvasDragMode::Resize(handle) => studio.resize_selection(handle, delta),
@@ -541,9 +623,18 @@ fn draw_canvas(
     }
     if response.clicked()
         && let Some(pointer) = response.interact_pointer_pos()
-        && let Some(hit) = crate::ui_canvas::pick_node(&rows, view.screen_to_design(pointer))
     {
-        studio.select(&hit.key);
+        match crate::ui_canvas::pick_node(&rows, view.screen_to_design(pointer)) {
+            Some(hit) => {
+                if additive {
+                    studio.toggle_select(&hit.key);
+                } else {
+                    studio.select(&hit.key);
+                }
+            }
+            None if !additive => studio.clear_selection(),
+            None => {}
+        }
     }
 
     if let Some(spec) = studio.spec() {
@@ -568,9 +659,21 @@ fn draw_canvas(
         };
         crate::ui_canvas::paint(ui, spec, view, &mut load);
     }
+    let mut guides = None;
+    let mut move_delta = None;
     let ghost = drag.as_ref().map(|state| {
         let scale = view.design_scale().max(1e-4);
-        let delta = [state.total.x / scale, state.total.y / scale];
+        let raw = [state.total.x / scale, state.total.y / scale];
+        let (delta, snapped) = match state.mode {
+            CanvasDragMode::Move => studio.snap_delta(raw, SNAP_THRESHOLD),
+            _ => (raw, SnapGuides::default()),
+        };
+        if state.mode == CanvasDragMode::Move {
+            move_delta = Some(delta);
+            if snapped != SnapGuides::default() {
+                guides = Some(snapped);
+            }
+        }
         let rect = match state.mode {
             CanvasDragMode::Move => [
                 state.start[0] + delta[0],
@@ -585,7 +688,209 @@ fn draw_canvas(
         };
         (rect, state.key.as_str())
     });
-    draw_overlays(ui, studio, view, ghost);
+    draw_overlays(ui, studio, view, ghost, move_delta, guides);
+}
+
+/// 层级行里找某个节点的当前设计矩形（面板只读用途，不重新解析布局）。
+fn node_rect(rows: &[rustlua_ui_spec::LayoutRect], key: &str) -> Option<[f32; 4]> {
+    rows.iter().find(|row| row.key == key).map(|row| row.rect)
+}
+
+/// 锚点预设短标签，顺序与 [`AnchorPreset::ALL`] 一致（九宫格 + 横/纵/全拉伸）。
+const ANCHOR_PRESET_LABELS: [&str; 12] = [
+    "左上", "上中", "右上", "左中", "居中", "右中", "左下", "下中", "右下", "横拉", "纵拉", "全铺",
+];
+
+/// 锚点预设面板：换锚点但保持当前矩形（与 Unity 的 Anchor Presets 同语义）。
+fn draw_anchor_presets(ui: &mut egui::Ui, studio: &UiStudio, key: &str, status: &mut String) {
+    let current = studio
+        .inspector_rows()
+        .into_iter()
+        .find(|row| row.field == "anchor")
+        .map(|row| row.value);
+    ui.label("锚点预设（保持当前矩形）");
+    egui::Grid::new(("ui_studio_anchor_presets", key))
+        .num_columns(3)
+        .spacing([2.0, 2.0])
+        .show(ui, |ui| {
+            for (index, preset) in AnchorPreset::ALL.iter().enumerate() {
+                let selected = current.as_deref() == Some(preset.as_str());
+                if ui
+                    .add(
+                        egui::Button::new(ANCHOR_PRESET_LABELS[index])
+                            .min_size(egui::vec2(34.0, 18.0))
+                            .selected(selected),
+                    )
+                    .on_hover_text(preset.as_str())
+                    .clicked()
+                {
+                    let outcome = studio
+                        .apply_anchor_preset(key, *preset)
+                        .map_err(|error| error.to_string());
+                    report_proposal(outcome, "锚点", status);
+                }
+                if (index + 1) % 3 == 0 {
+                    ui.end_row();
+                }
+            }
+        });
+}
+
+/// 可添加的控件类型（顺序即下拉框顺序）；新节点布局由模型按类型给默认值。
+fn addable_kinds() -> Vec<(UiNodeKind, &'static str)> {
+    vec![
+        (UiNodeKind::Panel { src: None }, "panel"),
+        (
+            UiNodeKind::Container {
+                direction: Default::default(),
+                padding: None,
+                spacing: None,
+                justify: Default::default(),
+                align: Default::default(),
+                columns: None,
+            },
+            "container",
+        ),
+        (
+            UiNodeKind::Text {
+                text: "文本".to_owned(),
+                rich_text: false,
+            },
+            "text",
+        ),
+        (
+            UiNodeKind::Image {
+                src: String::new(),
+                nine_slice: None,
+            },
+            "image",
+        ),
+        (
+            UiNodeKind::Button {
+                text: Some("按钮".to_owned()),
+                src: None,
+            },
+            "button",
+        ),
+        (
+            UiNodeKind::Toggle {
+                text: Some("开关".to_owned()),
+                checked: false,
+            },
+            "toggle",
+        ),
+        (
+            UiNodeKind::Slider {
+                min: 0.0,
+                max: 1.0,
+                value: 0.5,
+            },
+            "slider",
+        ),
+        (UiNodeKind::Progress { value: 0.5 }, "progress"),
+        (
+            UiNodeKind::Scrollbar {
+                value: 0.0,
+                size: 0.4,
+                direction: Default::default(),
+                handle: None,
+            },
+            "scrollbar",
+        ),
+        (UiNodeKind::Input { placeholder: None }, "input"),
+        (UiNodeKind::ScrollView { horizontal: false }, "scroll_view"),
+        (UiNodeKind::Mask { padding: None }, "mask"),
+        (
+            UiNodeKind::CanvasGroup {
+                alpha: 1.0,
+                interactable: true,
+                blocks_raycasts: true,
+            },
+            "canvas_group",
+        ),
+        (UiNodeKind::List { virtualized: false }, "list"),
+        (UiNodeKind::Grid { columns: 2 }, "grid"),
+        (UiNodeKind::Tabs { selected: 0 }, "tabs"),
+        (UiNodeKind::Modal, "modal"),
+        (
+            UiNodeKind::Tooltip {
+                text: "提示".to_owned(),
+            },
+            "tooltip",
+        ),
+        (UiNodeKind::Spacer, "spacer"),
+        (UiNodeKind::SafeArea, "safe_area"),
+    ]
+}
+
+/// 多选对齐/分布 + 添加子节点：与 Unity 的 Align/Distribute 和 Hierarchy 菜单同语义。
+fn draw_edit_ops(
+    ui: &mut egui::Ui,
+    studio: &UiStudio,
+    add_child_kind: &mut usize,
+    status: &mut String,
+) {
+    let count = studio.selection_count();
+    ui.horizontal_wrapped(|ui| {
+        ui.label(format!("对齐（已选 {count}）"));
+        for mode in AlignMode::ALL {
+            if ui
+                .add_enabled(count >= 2, egui::Button::new(mode.label()))
+                .clicked()
+            {
+                let outcome = studio
+                    .align_selection(mode)
+                    .map_err(|error| error.to_string());
+                report_proposal(outcome, mode.label(), status);
+            }
+        }
+        ui.separator();
+        for (axis, label) in [
+            (DistributeAxis::Horizontal, "水平分布"),
+            (DistributeAxis::Vertical, "垂直分布"),
+        ] {
+            if ui
+                .add_enabled(count >= 3, egui::Button::new(label))
+                .clicked()
+            {
+                let outcome = studio
+                    .distribute_selection(axis)
+                    .map_err(|error| error.to_string());
+                report_proposal(outcome, label, status);
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("添加子节点");
+        let kinds = addable_kinds();
+        let index = (*add_child_kind).min(kinds.len() - 1);
+        egui::ComboBox::from_id_salt("ui_studio_add_child_kind")
+            .selected_text(kinds[index].1)
+            .show_ui(ui, |ui| {
+                for (candidate, (_, label)) in kinds.iter().enumerate() {
+                    ui.selectable_value(add_child_kind, candidate, *label);
+                }
+            });
+        let parent = studio
+            .selection()
+            .filter(|key| studio.accepts_children(key))
+            .map(str::to_owned);
+        if ui
+            .add_enabled(parent.is_some(), egui::Button::new("添加到选中"))
+            .clicked()
+            && let Some(parent) = parent
+        {
+            match studio.add_node(&parent, kinds[index].0.clone()) {
+                Ok((proposal, key)) => {
+                    *status = format!(
+                        "已生成添加提案：{parent} → {key}（{}）",
+                        proposal.proposal_id
+                    );
+                }
+                Err(error) => *status = error.to_string(),
+            }
+        }
+    });
 }
 
 /// 屏幕点落在哪个手柄上；四角优先，其次是距边 6px 的带状区域。
@@ -1143,6 +1448,12 @@ fn hierarchy_drop(
     Some((parent, Some(index)))
 }
 
+/// 预设落盘的默认路径（「导出为 UI 预设」）：工程内相对路径，与手写文档同一扩展名。
+/// 目标已存在时 `export_prefab` 会直接拒绝——导出只负责新建，不覆盖别人正在编辑的文档。
+fn prefab_document_path(key: &str) -> String {
+    format!("ui/prefabs/{key}.ui.json")
+}
+
 fn report_proposal(
     outcome: Result<rustlua_ui_spec::UiProposal, String>,
     action: &str,
@@ -1265,6 +1576,7 @@ impl EditorApp {
             hierarchy_drag,
             canvas_drag,
             wrap_key,
+            add_child_kind,
             asset_selected,
             asset_license,
             asset_textures,
@@ -1295,6 +1607,10 @@ impl EditorApp {
         );
         ui.separator();
         let rows = studio.hierarchy();
+        let selected_keys: BTreeSet<String> = studio.selected_keys().into_iter().collect();
+        let additive = ui.input(|input| {
+            input.modifiers.command || input.modifiers.ctrl || input.modifiers.shift
+        });
         let mut row_rects: Vec<(String, egui::Rect)> = Vec::new();
         let mut inspector_apply: Option<(editor::ui_studio::InspectorRow, String)> = None;
         ui.horizontal_top(|ui| {
@@ -1312,7 +1628,7 @@ impl EditorApp {
                                     row.key,
                                     crate::util::widget_display_name(row.kind)
                                 );
-                                let selected = studio.selection() == Some(row.key.as_str());
+                                let selected = selected_keys.contains(&row.key);
                                 // 可拖动：松手时按落点决定“成为子节点”还是“插到兄弟前/后”。
                                 let response = ui
                                     .add(
@@ -1320,9 +1636,13 @@ impl EditorApp {
                                             .selected(selected)
                                             .sense(egui::Sense::click_and_drag()),
                                     )
-                                    .on_hover_text("拖动改父级/排序；点击选中");
+                                    .on_hover_text("拖动改父级/排序；点击选中，Ctrl/Shift 加选");
                                 if response.clicked() {
-                                    studio.select(&row.key);
+                                    if additive {
+                                        studio.toggle_select(&row.key);
+                                    } else {
+                                        studio.select(&row.key);
+                                    }
                                 }
                                 if response.drag_started() {
                                     *hierarchy_drag = Some(row.key.clone());
@@ -1346,6 +1666,12 @@ impl EditorApp {
                     }
                 });
                 studio.set_section(section);
+                if studio.selection_count() > 1 {
+                    ui.weak(format!(
+                        "多选 {} 个：检查器编辑主选中，对齐/分布用下方按钮",
+                        studio.selection_count()
+                    ));
+                }
                 let inspector = studio.inspector_rows();
                 if inspector.is_empty() {
                     ui.weak(studio.section_placeholder());
@@ -1360,8 +1686,10 @@ impl EditorApp {
                                     ui.weak(&row.value);
                                     ui.label("");
                                 } else {
+                                    // 缓存键带 revision：接受提案后输入框自动回填新值。
                                     let id = format!(
-                                        "{}/{}",
+                                        "{}/{}/{}",
+                                        studio.revision(),
                                         studio.selection().unwrap_or(""),
                                         row.field
                                     );
@@ -1379,6 +1707,11 @@ impl EditorApp {
                                 ui.end_row();
                             }
                         });
+                }
+                if section == InspectorSection::Layout
+                    && let Some(key) = studio.selection().map(str::to_owned)
+                {
+                    draw_anchor_presets(ui, studio, &key, status);
                 }
             });
         });
@@ -1415,17 +1748,11 @@ impl EditorApp {
         {
             match row.edit {
                 InspectorEdit::None => {}
-                InspectorEdit::Layout => {
-                    let outcome = serde_json::from_str::<rustlua_ui_spec::UiLayoutSpec>(&text)
-                        .map_err(|error| format!("布局 JSON 不合法：{error}"))
-                        .and_then(|layout| {
-                            let value =
-                                serde_json::to_value(layout).map_err(|error| error.to_string())?;
-                            studio
-                                .set_field(&key, "/layout", value)
-                                .map_err(|error| error.to_string())
-                        });
-                    report_proposal(outcome, "布局", status);
+                InspectorEdit::LayoutField(field) => {
+                    let outcome = studio
+                        .set_layout_field(&key, field, &text)
+                        .map_err(|error| error.to_string());
+                    report_proposal(outcome, field.label(), status);
                 }
                 InspectorEdit::Style => {
                     let style = text.trim().to_owned();
@@ -1465,6 +1792,22 @@ impl EditorApp {
                 let outcome = studio.remove_node(&key).map_err(|error| error.to_string());
                 report_proposal(outcome, "删除", status);
             }
+            if ui
+                .add_enabled(selected.is_some(), egui::Button::new("导出为 UI 预设"))
+                .on_hover_text("把选中的子树落成 ui/prefabs/<节点>.ui.json")
+                .clicked()
+                && let Some(key) = selected.clone()
+            {
+                match studio.export_prefab(&key, &prefab_document_path(&key)) {
+                    Ok(accepted) => {
+                        *status = format!(
+                            "已导出预设：{}（版本 {}）",
+                            accepted.document, accepted.revision
+                        );
+                    }
+                    Err(error) => *status = error.to_string(),
+                }
+            }
             ui.add(
                 egui::TextEdit::singleline(wrap_key)
                     .desired_width(110.0)
@@ -1484,6 +1827,7 @@ impl EditorApp {
                 report_proposal(outcome, "包裹", status);
             }
         });
+        draw_edit_ops(ui, studio, add_child_kind, status);
 
         ui.separator();
         draw_token_section(ui, studio, token_name, token_value, status);

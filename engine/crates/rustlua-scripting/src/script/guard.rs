@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use rustlua_ecs::entity::EntityId;
+use crate::script::domain::ecs::entity::EntityId;
 
 /// 连续错误达到该值即停用该回调。60 步 ≈ 1 秒 @60Hz。
 ///

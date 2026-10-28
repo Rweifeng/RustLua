@@ -21,7 +21,7 @@ Lua 与 wasm-bindgen 的错误传播在对应上游版本里没有可用实现�
 
 升级/覆盖任何 fork 目录后跑
 `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check-vendor-patches.ps1`，
-**29 条断言全过**才算补丁在位（该门已进 `verify.ps1` 总门，`-MvpOnly` 也跑）。下表是断言的人读版本；
+**30 条断言全过**才算补丁在位（该门已进 `verify.ps1` 总门，`-MvpOnly` 也跑）。下表是断言的人读版本；
 **改补丁必须两边同步**——新增补丁点要在脚本里加断言，脚本断言漂移要在表里改描述。
 
 | crate | 文件 | 改动内容 | 对应断言 |
@@ -52,7 +52,7 @@ Lua 与 wasm-bindgen 的错误传播在对应上游版本里没有可用实现�
 ## 升级步骤（每次跟进上游时照此过一遍）
 
 0. **升级前先跑基线**：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check-vendor-patches.ps1`
-   应全绿（29 条），留作"升级前补丁在位"的证据。
+   应全绿（30 条），留作"升级前补丁在位"的证据。
 1. 从 crates.io / 上游 tag 取新版本，覆盖对应目录（保留我们自己的文件：
    `mlua-sys/wasm-shim-c`、`src/wasm_shim.rs`、`lua-src/src/lib.rs` 的 wasm32 分支、
    `wasm-bindgen-macro` 的 `extern "C"` 导出改动）。

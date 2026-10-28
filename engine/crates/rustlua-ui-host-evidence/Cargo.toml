@@ -1,0 +1,19 @@
+[package]
+name = "rustlua-ui-host-evidence"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+# 三宿主证据的**唯一读数实现**：pc 的 `m76_ui_matrix` 例子与 wasm 侧的
+# `rustlua-ui-host-harness` 都调这里。读数（版面矩形、提交顶点下标）必须来自
+# 同一个函数，否则"三宿主跑的是同一条判定"只是一句口号。
+[dependencies]
+serde_json = "1"
+
+engine.workspace = true
+rustlua-scene.workspace = true
+rustlua-ui.workspace = true
+rustlua-ui-scene-export.workspace = true
+rustlua-ui-spec.workspace = true

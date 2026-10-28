@@ -172,6 +172,39 @@ Add-Check "版本耦合: wasm-bindgen 三处一致(macro=$wbmV support=$wbmV loc
 Add-Check "wasm-bindgen-cli: 随仓源码存在(未打 patch, 供离线构建)" `
     (Test-Path -LiteralPath (Join-Path $vendorRoot "wasm-bindgen-cli\cli")) "missing vendor\wasm-bindgen-cli\cli"
 
+# ── H. 文档自称的断言数必须与本次实际通过数一致（meta-check，不计入 $passed）────
+# 2026-10-27 实测：门实际 30 条，而 vendor/README.md、docs/34、docs/60 都写 29——各自都能
+# "通过"，因为没有任何门读它们。这里把"人写的数字"绑到本次真实计数上（docs/60 的写法不同，
+# 用 Pattern 指定各自的声明句式）。
+$declaredAssertionFiles = @(
+    @{ Path = (Join-Path $vendorRoot "README.md"); What = "engine/vendor/README.md"; Pattern = '(\d+)\s*条断言全过' },
+    @{ Path = (Join-Path $projectRoot "docs\34-质量门与发布清单.md"); What = "docs/34"; Pattern = '(\d+)\s*条断言全过' },
+    @{ Path = (Join-Path $projectRoot "docs\60-全面复盘与优化项清单.md"); What = "docs/60"; Pattern = 'vendor patches:\s*(\d+)\s*passed' }
+)
+foreach ($claim in $declaredAssertionFiles) {
+    if (-not (Test-Path -LiteralPath $claim.Path)) {
+        $failed += ("[FAIL] " + $claim.What + " 缺失，无法核对断言数")
+        Write-Host ("[FAIL] " + $claim.What + " 缺失，无法核对断言数") -ForegroundColor Red
+        continue
+    }
+    # 显式 UTF-8：Windows PowerShell 5.1 的 Get-Content -Raw 默认按 ANSI 解码，
+    # 无 BOM 的 UTF-8 文档会变成乱码，正则永远匹配不到中文声明。
+    $raw = Get-Content -LiteralPath $claim.Path -Raw -Encoding UTF8
+    $match = [regex]::Match($raw, $claim.Pattern)
+    if (-not $match.Success) {
+        $failed += ("[FAIL] " + $claim.What + " 找不到断言数声明（" + $claim.Pattern + "）")
+        Write-Host ("[FAIL] " + $claim.What + " 找不到断言数声明（" + $claim.Pattern + "）") -ForegroundColor Red
+        continue
+    }
+    $declared = [int]$match.Groups[1].Value
+    if ($declared -ne $passed) {
+        $failed += ("[FAIL] " + $claim.What + " 写 $declared 条，实际 $passed 条")
+        Write-Host ("[FAIL] " + $claim.What + " 写 $declared 条，实际 $passed 条") -ForegroundColor Red
+    } else {
+        Write-Host ("[PASS] " + $claim.What + " 断言数与实际一致 ($passed)")
+    }
+}
+
 # ── 汇总 ─────────────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host ("vendor patches: " + $passed + " passed, " + $failed.Count + " failed")

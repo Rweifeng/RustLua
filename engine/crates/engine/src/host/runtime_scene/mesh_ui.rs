@@ -40,6 +40,15 @@ pub(super) struct UiHitData {
     pub tree_rect: ([f32; 2], [f32; 2]),
     pub events: Option<UiEvents>,
     pub button_states: Option<ButtonStateSet>,
+    /// M80-02: rectangular clip container. Included even without events so the
+    /// interaction tree can clip its subtree's hit testing.
+    pub mask: Option<rustlua_ui::ui_mask::Mask>,
+    /// M80-02: subtree alpha / raycast switches.
+    pub canvas_group: Option<rustlua_ui::ui_canvas_group::CanvasGroup>,
+    /// M80-04: value control (`Toggle`/`Slider`/`Scrollbar`). Controls join the
+    /// interaction tree even without `UiEvents` so they can receive pointer and
+    /// keyboard input; `Progress` is read-only and deliberately absent.
+    pub control: bool,
 }
 
 impl RuntimeScene {
@@ -61,6 +70,9 @@ impl RuntimeScene {
             Option<UiEvents>,
             Option<ButtonStateSet>,
             Option<rustlua_ui::ui_scroll_view::ScrollView>,
+            Option<rustlua_ui::ui_mask::Mask>,
+            Option<rustlua_ui::ui_canvas_group::CanvasGroup>,
+            bool,
         );
         let mut ids = self.script.with_world(|world| {
             let mut ids = world.entities_with::<UiEvents>();
@@ -71,6 +83,34 @@ impl RuntimeScene {
             }
             // M76-02：滚动容器即使没有事件也要进树——滚轮要先命中它。
             for id in world.entities_with::<rustlua_ui::ui_scroll_view::ScrollView>() {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            // M80-02：纯裁剪/分组节点即使没有事件也要进树——它们不改自己的命中，
+            // 但要作用在子孙上（裁剪命中、禁用、射线穿透）。
+            for id in world.entities_with::<rustlua_ui::ui_mask::Mask>() {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            for id in world.entities_with::<rustlua_ui::ui_canvas_group::CanvasGroup>() {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            // M80-04：值控件即使没有事件也要进树——指针/键盘要能改它们。
+            for id in world.entities_with::<rustlua_ui::ui_toggle::Toggle>() {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            for id in world.entities_with::<rustlua_ui::ui_slider::Slider>() {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            for id in world.entities_with::<rustlua_ui::ui_scrollbar::ScrollBar>() {
                 if !ids.contains(&id) {
                     ids.push(id);
                 }
@@ -93,9 +133,45 @@ impl RuntimeScene {
                         .ok()
                         .flatten()
                         .copied();
+                    let mask = world
+                        .get::<rustlua_ui::ui_mask::Mask>(id)
+                        .ok()
+                        .flatten()
+                        .copied();
+                    let group = world
+                        .get::<rustlua_ui::ui_canvas_group::CanvasGroup>(id)
+                        .ok()
+                        .flatten()
+                        .copied();
+                    // M80-04：值控件（Progress 只读，不进树）。
+                    let control = world
+                        .get::<rustlua_ui::ui_toggle::Toggle>(id)
+                        .ok()
+                        .flatten()
+                        .is_some()
+                        || world
+                            .get::<rustlua_ui::ui_slider::Slider>(id)
+                            .ok()
+                            .flatten()
+                            .is_some()
+                        || world
+                            .get::<rustlua_ui::ui_scrollbar::ScrollBar>(id)
+                            .ok()
+                            .flatten()
+                            .is_some();
                     (
                         id,
-                        (image, text, sprite.zip(transform), events, states, scroll),
+                        (
+                            image,
+                            text,
+                            sprite.zip(transform),
+                            events,
+                            states,
+                            scroll,
+                            mask,
+                            group,
+                            control,
+                        ),
                     )
                 })
                 .collect()
@@ -104,7 +180,20 @@ impl RuntimeScene {
         entities
             .into_iter()
             .filter_map(
-                |(id, (image, text, sprite, events, button_states, _scroll))| {
+                |(
+                    id,
+                    (
+                        image,
+                        text,
+                        sprite,
+                        events,
+                        button_states,
+                        _scroll,
+                        mask,
+                        canvas_group,
+                        control,
+                    ),
+                )| {
                     let name = self.script.entity_name(id)?;
                     let slot = id.index() as u64;
                     // M76-02：`image.visible=false` 的绑定目标既不可见也不可点（与绘制同源）。
@@ -154,6 +243,9 @@ impl RuntimeScene {
                         tree_rect,
                         events,
                         button_states,
+                        mask,
+                        canvas_group,
+                        control,
                     })
                 },
             )
@@ -191,7 +283,16 @@ impl RuntimeScene {
         layout_rect: &UiRect,
         text: &UiText,
     ) -> Option<([f32; 2], [f32; 2])> {
-        let (_, glyph_bounds) = self.measure_scene_ui_text(text);
+        let box_size = text.box_size([layout_rect.w, layout_rect.h]);
+        // 对齐/截断后的字形会离开左上角，逐字形 bbox 不再覆盖整个可点区域；
+        // 这种情况下与 Unity 一样用布局矩形本身做命中框。
+        if box_size.is_some() && text.fills_layout_box() {
+            return Some((
+                [layout_rect.x, layout_rect.y],
+                [layout_rect.w, layout_rect.h],
+            ));
+        }
+        let (_, glyph_bounds) = self.measure_scene_ui_text_in(text, box_size);
         let origin = [layout_rect.x, layout_rect.y];
         let glyph_origin = [origin[0] + glyph_bounds[0], origin[1] + glyph_bounds[1]];
         let glyph_size = [
@@ -223,6 +324,31 @@ impl RuntimeScene {
         states.texture(state).unwrap_or(base).to_owned()
     }
 
+    /// 状态底色（M80-07）：过渡进行中读驱动算出的当前显示色，否则立刻取目标状态的色。
+    ///
+    /// 与 [`Self::state_texture`] 同样按实体名查——贴图覆盖是"换一张图"，底色覆盖是
+    /// "改这块四边形的颜色"，两者共用 `ButtonStates` 组件，没有过渡配置时逐字节不变。
+    fn state_color(
+        &self,
+        id: EntityId,
+        base: [f32; 4],
+        states: Option<&ButtonStateSet>,
+    ) -> [f32; 4] {
+        let Some(states) = states else {
+            return base;
+        };
+        let Some(name) = self.script.entity_name(id) else {
+            return base;
+        };
+        if let Some(tint) = self.ui_state_transitions.tint_of(&name) {
+            return tint.resolve(base);
+        }
+        let Some(state) = self.ui_visual_states.get(&name).copied() else {
+            return base;
+        };
+        states.tint(state).resolve(base)
+    }
+
     fn scene_ui_layout_rect(&self, id: EntityId, _viewport: [f32; 2]) -> Option<UiRect> {
         self.ui_layout_rects
             .get(&(id.index() as u64))
@@ -234,14 +360,18 @@ impl RuntimeScene {
         let (mut resolved, _) = resolve_scene_ui_layout(&self.ui_scene_nodes, viewport);
         // The resolver also gives non-layout roots a preferred-size rect at the
         // origin. That default is for hierarchy traversal; only authored layouts
-        // or container placements may override it.
+        // or container placements may override it. Masks and groups are kept
+        // because they carry clipping / raycast semantics for their subtree even
+        // when they draw nothing themselves.
         resolved.retain(|id, resolved| {
             resolved.container_controlled
-                || self
-                    .ui_scene_nodes
-                    .get(id)
-                    .is_some_and(|node| node.layout.is_some())
+                || self.ui_scene_nodes.get(id).is_some_and(|node| {
+                    node.layout.is_some() || node.mask.is_some() || node.canvas_group.is_some()
+                })
         });
+        // M80-04：控件按当前值改写填充/滑块/勾选子节点矩形。必须在滚动平移之前：
+        // 改写结果是**内容空间**的，滚动位移要再叠在它上面。
+        self.apply_control_layout(&mut resolved);
         // M76-02：滚动偏移在布局之后应用，命中/绘制/交互树都读同一份结果。
         self.apply_scroll_layout(&mut resolved);
         self.ui_layout_rects = resolved;
@@ -539,6 +669,7 @@ impl RuntimeScene {
                     None,
                     width,
                     height,
+                    1.0,
                 ) {
                     Ok(ok) => ok,
                     Err(error) => {
@@ -552,19 +683,19 @@ impl RuntimeScene {
                     }
                 };
             if !use_vector || !vector_ok {
-                let (mesh, is_sdf) = match self.layout_text(&text, position, scale, [1.0, 1.0, 1.0])
-                {
-                    Ok(result) => result,
-                    Err(error) => {
-                        tracing::warn!(
-                            target: "render",
-                            text = %text,
-                            error = %error,
-                            "[runtime] overlay text layout failed, skipping"
-                        );
-                        continue;
-                    }
-                };
+                let (mesh, is_sdf) =
+                    match self.layout_text(&text, position, scale, [1.0, 1.0, 1.0], 1.0) {
+                        Ok(result) => result,
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "render",
+                                text = %text,
+                                error = %error,
+                                "[runtime] overlay text layout failed, skipping"
+                            );
+                            continue;
+                        }
+                    };
                 let is_bitmap = mesh.bitmap;
                 let text_vertices = text_to_ndc(mesh, is_sdf, width, height);
                 let font_key = if is_sdf {
@@ -647,12 +778,18 @@ impl RuntimeScene {
             }
             if let Some(rect) = self.scene_ui_layout_rect(id, viewport) {
                 let texture = self.state_texture(id, &image.texture, states.as_ref());
+                let tinted = self.state_color(id, image.color, states.as_ref());
+                let group_alpha = self
+                    .ui_group_alpha
+                    .get(&(id.index() as u64))
+                    .copied()
+                    .unwrap_or(1.0);
                 let image = DynamicUiImage {
                     texture,
                     position: [rect.x, rect.y],
                     size: [rect.w, rect.h],
-                    color: [image.color[0], image.color[1], image.color[2]],
-                    alpha: image.color[3],
+                    color: [tinted[0], tinted[1], tinted[2]],
+                    alpha: tinted[3] * group_alpha,
                     space: rustlua_ui::ui::UiLayoutSpace::Screen,
                     anchor: [0.0, 0.0],
                     nine_slice: image.nine_slice,
@@ -727,6 +864,12 @@ impl RuntimeScene {
                 // M76-02：滚动视口裁剪。字形按整块取舍（部分重叠的字形整块丢弃），
                 // 矢量文字路径没有逐字形裁剪，裁剪区内退回 SDF/点阵路径。
                 let clip = self.ui_clip_rects.get(&(id.index() as u64)).copied();
+                // M80-02：`CanvasGroup.alpha` 沿父链乘积在本帧布局趟算好，绘制只读。
+                let group_alpha = self
+                    .ui_group_alpha
+                    .get(&(id.index() as u64))
+                    .copied()
+                    .unwrap_or(1.0);
                 // 点锚点（w=h=0）的 Text：按 pivot 在该点居中文字。
                 // 否则文字从 pivot 点开始左对齐向下排，偏出按钮中心。
                 let pivot = self
@@ -736,6 +879,9 @@ impl RuntimeScene {
                     .map(|l| l.pivot)
                     .unwrap_or([0.5, 0.5]);
                 let mut position = [rect.x, rect.y];
+                // M80-03：有真实矩形时按矩形排版（对齐/换行/截断）；点尺寸实体传
+                // `None`，沿用「按 pivot 居中」的旧路径。
+                let box_size = text.box_size([rect.w, rect.h]);
                 // 先判断渲染路径，measure 必须与渲染走同一路径，否则字体度量不一致。
                 let use_vector = clip.is_none()
                     && self.should_render_vector(
@@ -744,63 +890,11 @@ impl RuntimeScene {
                         text.text.chars().count(),
                     );
                 if rect.w < 1.0 && rect.h < 1.0 {
-                    // 收集实际渲染顶点的包围盒（origin=[0,0] 时）。
-                    let mut bbox: Option<(f32, f32, f32, f32)> = None;
-                    if use_vector
-                        && let Some(handle) = self.ensure_vector_font(if text.font.is_empty() {
-                            ""
-                        } else {
-                            text.font.as_str()
-                        })
-                        && let Ok(mut atlas) = handle.lock()
-                    {
-                        let style = rustlua_render::text::TextStyle {
-                            scale: text.effective_scale(),
-                            color: [1.0, 1.0, 1.0, 1.0],
-                            ..Default::default()
-                        };
-                        if let Ok(verts) = rustlua_render::text::TextLayout::build_vector(
-                            &text.text,
-                            [0.0, 0.0],
-                            style,
-                            &mut atlas,
-                        ) {
-                            bbox = Some(verts.iter().fold(
-                                (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
-                                |(a, b, c, d), v| {
-                                    (
-                                        a.min(v.position[0]),
-                                        b.max(v.position[0]),
-                                        c.min(v.position[1]),
-                                        d.max(v.position[1]),
-                                    )
-                                },
-                            ));
-                        }
-                    }
-                    if bbox.is_none()
-                        && let Ok((measure, _)) = self.layout_text(
-                            &text.text,
-                            [0.0, 0.0],
-                            text.effective_scale(),
-                            text.color,
-                        )
-                    {
-                        bbox = Some(measure.vertices.iter().fold(
-                            (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
-                            |(a, b, c, d), v| {
-                                (
-                                    a.min(v.position[0]),
-                                    b.max(v.position[0]),
-                                    c.min(v.position[1]),
-                                    d.max(v.position[1]),
-                                )
-                            },
-                        ));
-                    }
-                    if let Some((min_x, max_x, min_y, max_y)) = bbox {
-                        position[0] = rect.x - min_x * (1.0 - pivot[0]) - max_x * pivot[0];
-                        position[1] = rect.y - min_y * (1.0 - pivot[1]) - max_y * pivot[1];
+                    // 点锚点：按实际渲染路径度量的字形包围盒把文字中心放到 pivot 上。
+                    let bounds = self.measure_scene_ui_text_in(&text, None).1;
+                    if bounds[2] > bounds[0] || bounds[3] > bounds[1] {
+                        position[0] = rect.x - bounds[0] * (1.0 - pivot[0]) - bounds[2] * pivot[0];
+                        position[1] = rect.y - bounds[1] * (1.0 - pivot[1]) - bounds[3] * pivot[1];
                     }
                 }
                 // `layout_text` already emits absolute screen-space vertices;
@@ -812,17 +906,16 @@ impl RuntimeScene {
                 // 与 `push_ui_text`/世界文字同一牙齿：use_vector=false 时不能生成矢量档
                 // 顶点，否则像素字体会被点阵与轮廓两条通道各画一遍。
                 let vector_ok = use_vector
-                    && match self.push_vector_text_run(
+                    && match self.push_vector_text_run_ui(
                         vector_vertices,
                         vector_glyphs,
                         vector_segments,
-                        &text.text,
+                        &text,
                         position,
-                        text.effective_scale(),
-                        text.color,
-                        Some(&text.font),
+                        box_size,
                         width,
                         height,
+                        group_alpha,
                     ) {
                         Ok(ok) => ok,
                         Err(error) => {
@@ -838,19 +931,20 @@ impl RuntimeScene {
                 if vector_ok {
                     continue;
                 }
-                let (mut mesh, is_sdf, font_key) = match self.layout_scene_text(&text, position) {
-                    Ok(result) => result,
-                    Err(error) => {
-                        tracing::warn!(
-                            target: "render",
-                            text = %text.text,
-                            entity = ?id,
-                            error = %error,
-                            "[runtime] scene UI text layout failed, skipping"
-                        );
-                        continue;
-                    }
-                };
+                let (mut mesh, is_sdf, font_key) =
+                    match self.layout_scene_text(&text, position, group_alpha, box_size) {
+                        Ok(result) => result,
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "render",
+                                text = %text.text,
+                                entity = ?id,
+                                error = %error,
+                                "[runtime] scene UI text layout failed, skipping"
+                            );
+                            continue;
+                        }
+                    };
                 if let Some(clip) = clip
                     && mesh.vertices.len() % 6 == 0
                 {

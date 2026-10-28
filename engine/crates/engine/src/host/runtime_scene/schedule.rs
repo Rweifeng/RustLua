@@ -111,11 +111,15 @@ impl RuntimeScene {
                     return Err(SystemError::new("pending step input is missing"));
                 };
                 // M76-02：交互路由是开关。关闭时保持旧路径（按下即 click、只分发
-                // click、所有重叠目标都派发）逐字节不变。
+                // click、所有重叠目标都派发）逐字节不变；开启时 click 由抬起触发。
                 if scene.ui_interaction_enabled {
                     let data = scene.ui_hit_data();
                     scene.sync_ui_interaction(&data);
-                    for dispatch in scene.route_ui_input(&input, delta_seconds) {
+                    // M80-04：控件先消费指针/键盘（拖拽改值、方向键改值），交互树按
+                    // 返回的 capture 让出这些轴，避免"拖滑块同时移动焦点"。
+                    let (capture, mut dispatches) = scene.route_ui_controls(&input, delta_seconds);
+                    dispatches.extend(scene.route_ui_input(&input, delta_seconds, capture));
+                    for dispatch in dispatches {
                         scene
                             .script
                             .process_ui_event(&dispatch.name, dispatch.event, &dispatch.functions)

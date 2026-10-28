@@ -122,6 +122,12 @@ impl FontVectorAtlas {
         self.font.ascent_unscaled() / self.font.units_per_em().unwrap_or(1000.0)
     }
 
+    /// Descent in em (negative), matching [`FontAtlas::descent_em`] so vertical
+    /// alignment and block height agree between the vector and SDF paths.
+    pub fn descent_em(&self) -> f32 {
+        self.font.descent_unscaled() / self.font.units_per_em().unwrap_or(1000.0)
+    }
+
     pub fn glyph(&mut self, character: char) -> Option<&VectorGlyph> {
         if self.missing.contains(&character) {
             return None;

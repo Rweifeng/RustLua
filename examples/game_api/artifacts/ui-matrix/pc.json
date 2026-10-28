@@ -10,10 +10,10 @@
   "command": "cargo run -q -p editor --example m76_ui_matrix -- --project {project} --document ui/matrix.ui.json",
   "document": "ui/matrix.ui.json",
   "draw_order": {
-    "blocks": 30,
+    "blocks": 44,
     "max_vertex_error": 0.0006250143051147461,
     "monotonic_preorder": true,
-    "placed": 30,
+    "placed": 44,
     "rows": [
       {
         "expected_ndc": [
@@ -269,10 +269,136 @@
       },
       {
         "expected_ndc": [
+          0.28125,
+          0.6666666269302368
+        ],
+        "first_vertex": 168,
+        "key": "state_button",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          0.28125,
+          0.48888885974884033
+        ],
+        "first_vertex": 174,
+        "key": "chk_sound",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          0.28125,
+          0.36666667461395264
+        ],
+        "first_vertex": 180,
+        "key": "vol_slider",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          0.28125,
+          0.2666666507720947
+        ],
+        "first_vertex": 186,
+        "key": "hp_progress",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          0.6875,
+          0.36666667461395264
+        ],
+        "first_vertex": 192,
+        "key": "scroll_bar",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          0.6875,
+          0.2916666865348816
+        ],
+        "first_vertex": 198,
+        "key": "scroll_knob",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.9375,
+          -0.3333333730697632
+        ],
+        "first_vertex": 204,
+        "key": "mask_panel",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.925000011920929,
+          -0.35555553436279297
+        ],
+        "first_vertex": 210,
+        "key": "mask_icon",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.5,
+          -0.3333333730697632
+        ],
+        "first_vertex": 216,
+        "key": "faded_group",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.46875,
+          -0.3888888359069824
+        ],
+        "first_vertex": 222,
+        "key": "faded_icon",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          -0.0625,
+          -0.3333333730697632
+        ],
+        "first_vertex": 228,
+        "key": "rich_label",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          0.34375,
+          -0.3333333730697632
+        ],
+        "first_vertex": 234,
+        "key": "list_box",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          0.3531249761581421,
+          -0.3500000238418579
+        ],
+        "first_vertex": 240,
+        "key": "list_item_1",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
+          0.3531249761581421,
+          -0.4444444179534912
+        ],
+        "first_vertex": 246,
+        "key": "list_item_2",
+        "vertex_abs_error": 0.0
+      },
+      {
+        "expected_ndc": [
           0.7124999761581421,
           -0.7999999523162842
         ],
-        "first_vertex": 168,
+        "first_vertex": 252,
         "key": "ok_button",
         "vertex_abs_error": 0.0
       },
@@ -281,18 +407,18 @@
           0.4249999523162842,
           -0.7999999523162842
         ],
-        "first_vertex": 174,
+        "first_vertex": 258,
         "key": "quit_button",
         "vertex_abs_error": 0.0
       }
     ],
     "tolerance": 0.0007812500116415322
   },
-  "entities": 31,
+  "entities": 45,
   "host": "pc",
   "layout_rects": {
     "collapsed_in_host": [],
-    "compared": 20,
+    "compared": 33,
     "max_abs_delta": 0.0,
     "missing_in_host": [],
     "rows": [
@@ -587,6 +713,214 @@
       {
         "abs_delta": 0.0,
         "host": [
+          820.0,
+          120.0,
+          180.0,
+          48.0
+        ],
+        "key": "state_button",
+        "preview": [
+          820.0,
+          120.0,
+          180.0,
+          48.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          820.0,
+          184.0,
+          180.0,
+          28.0
+        ],
+        "key": "chk_sound",
+        "preview": [
+          820.0,
+          184.0,
+          180.0,
+          28.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          820.0,
+          228.0,
+          220.0,
+          20.0
+        ],
+        "key": "vol_slider",
+        "preview": [
+          820.0,
+          228.0,
+          220.0,
+          20.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          820.0,
+          264.0,
+          220.0,
+          10.0
+        ],
+        "key": "hp_progress",
+        "preview": [
+          820.0,
+          264.0,
+          220.0,
+          10.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          1080.0,
+          228.0,
+          16.0,
+          180.0
+        ],
+        "key": "scroll_bar",
+        "preview": [
+          1080.0,
+          228.0,
+          16.0,
+          180.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          40.0,
+          480.0,
+          240.0,
+          120.0
+        ],
+        "key": "mask_panel",
+        "preview": [
+          40.0,
+          480.0,
+          240.0,
+          120.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          48.0,
+          488.0,
+          224.0,
+          104.0
+        ],
+        "key": "mask_icon",
+        "preview": [
+          48.0,
+          488.0,
+          224.0,
+          104.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          320.0,
+          480.0,
+          240.0,
+          120.0
+        ],
+        "key": "faded_group",
+        "preview": [
+          320.0,
+          480.0,
+          240.0,
+          120.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          340.0,
+          500.0,
+          80.0,
+          80.0
+        ],
+        "key": "faded_icon",
+        "preview": [
+          340.0,
+          500.0,
+          80.0,
+          80.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          600.0,
+          480.0,
+          220.0,
+          28.0
+        ],
+        "key": "rich_label",
+        "preview": [
+          600.0,
+          480.0,
+          220.0,
+          28.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          860.0,
+          480.0,
+          220.0,
+          120.0
+        ],
+        "key": "list_box",
+        "preview": [
+          860.0,
+          480.0,
+          220.0,
+          120.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          866.0,
+          486.0,
+          208.0,
+          28.0
+        ],
+        "key": "list_item_1",
+        "preview": [
+          866.0,
+          486.0,
+          208.0,
+          28.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
+          866.0,
+          520.0,
+          208.0,
+          28.0
+        ],
+        "key": "list_item_2",
+        "preview": [
+          866.0,
+          520.0,
+          208.0,
+          28.0
+        ]
+      },
+      {
+        "abs_delta": 0.0,
+        "host": [
           1096.0,
           648.0,
           160.0,
@@ -717,16 +1051,26 @@
           40.0
         ],
         "key": "w_3"
+      },
+      {
+        "host": [
+          1080.0,
+          255.0,
+          16.0,
+          72.0
+        ],
+        "key": "scroll_knob"
       }
     ],
-    "unreconciled_rows_count": 11
+    "unreconciled_rows_count": 12
   },
   "paths": [
-    "__white__"
+    "__white__",
+    "assets/textures/red-1x1.png"
   ],
   "report_version": "m76-ui-host-evidence-v1",
-  "revision": 5733351176405973,
+  "revision": 2927121506108137,
   "sdf_vertices": 0,
-  "segments": 1,
-  "vertices": 180
+  "segments": 5,
+  "vertices": 264
 }

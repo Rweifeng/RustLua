@@ -35,10 +35,11 @@ use super::{
     ParticlePlacementReport,
     PhysicsStageOrder,
     RuntimeScene,
-    TextRenderMode,
-    build_ui_scene_nodes,
     // `mod.rs` 的 `use camera::{...}` 是私有导入，但私有导入对定义模块的所有后代可见，
     // 所以子模块按 `super::名字` 取用即可，不必再放宽 camera.rs 里那三条。
+    StartupSceneReport,
+    TextRenderMode,
+    build_ui_scene_nodes,
     declared_camera_2d_in,
     environment,
     load_runtime_scene,
@@ -48,8 +49,10 @@ use super::{
 
 impl RuntimeScene {
     pub fn new(project_root: Option<&Path>) -> anyhow::Result<Self> {
-        let scene = load_runtime_scene(project_root);
-        Self::init(project_root, scene, true, false)
+        let (scene, startup_scene) = load_runtime_scene(project_root)?;
+        let mut runtime = Self::init(project_root, scene, true, false)?;
+        runtime.startup_scene = Some(startup_scene);
+        Ok(runtime)
     }
 
     /// P3：显式声明"这是发布包"（`game --pack`）。决定存档与玩家设置写到哪里——
@@ -57,8 +60,10 @@ impl RuntimeScene {
     /// 不显式声明时 `user_dir::is_release_pack` 仍能凭 `<exe>/pack` 内 `project.toml` 的
     /// `release = true` 认出双击启动的发布包。
     pub fn new_with_layout(project_root: Option<&Path>, packaged: bool) -> anyhow::Result<Self> {
-        let scene = load_runtime_scene(project_root);
-        Self::init(project_root, scene, true, packaged)
+        let (scene, startup_scene) = load_runtime_scene(project_root)?;
+        let mut runtime = Self::init(project_root, scene, true, packaged)?;
+        runtime.startup_scene = Some(startup_scene);
+        Ok(runtime)
     }
 
     /// 实例化一个具体场景（编辑器"运行当前场景"用），而非工程的启动场景。
@@ -574,6 +579,15 @@ impl RuntimeScene {
         out
     }
 
+    /// 启动场景的来源与请求路径（`new`/`new_with_layout` 路径才有；显式文档为 `None`）。
+    ///
+    /// 宿主据此区分"独立运行时的诊断场景"和"工程的启动场景真的加载了"；声明了却加载失败
+    /// 的工程根本走不到这里——`new` 会返回错误。
+    #[must_use]
+    pub fn startup_scene_report(&self) -> Option<&StartupSceneReport> {
+        self.startup_scene.as_ref()
+    }
+
     /// 覆盖 project.toml 的文本渲染模式（编辑器保存设置后重建运行时可注入）。
     pub fn set_text_render_mode(&mut self, mode: TextRenderMode) {
         self.text_render_mode = mode;
@@ -600,7 +614,11 @@ impl RuntimeScene {
         // 校验组件载荷——预制体套用、`validate_component_payload` 的调用方都在下游。装晚了
         // 就会拿到"缺 codec"的硬错误（`Sprite`/`UiLayout` 那类组件被判非法，实体组件静默缺项），
         // 这正是 `jhyt_m59_ui_prefab` 黄金对账抓到的那次回归。幂等，重复调用无害。
-        crate::host::scene_codecs::install();
+        // 装表失败必须**中止启动**：继续跑会让缺 codec 的表现层组件在实例化时被静默丢弃
+        // （`Sprite`/`UiLayout` 等），画面上什么都不缺、只是对象消失——这正是要消灭的静默回退。
+        crate::host::scene_codecs::ensure_installed().map_err(|error| {
+            anyhow::anyhow!("表现层组件 codec 装表失败（组件会被静默丢弃）：{error}")
+        })?;
         // docs/54 §4.1：`parent` 的默认语义由**场景自身**声明，而不是由宿主猜。未声明 ⇒ 组织
         // 关系（v2 历史语义），`spatial=local` ⇒ 父子参与空间组合（迁移后的场景）。宿主仍可用
         // `set_spatial_inheritance` 覆盖这次判断（回滚档）。
@@ -720,6 +738,7 @@ impl RuntimeScene {
             ui_reference: UI_REFERENCE_SIZE,
             render_ui_overlay: true,
             project_root: project_root.map(|root| root.to_path_buf()),
+            startup_scene: None,
             environment,
             texture_dims: HashMap::new(),
             texture_paths: Vec::new(),
@@ -743,17 +762,21 @@ impl RuntimeScene {
             text_render_mode,
             ui_scene_nodes,
             ui_layout_rects: BTreeMap::new(),
-            ui_interaction_enabled: false,
-            ui_keyboard_nav: false,
+            ui_interaction_enabled: true,
+            ui_keyboard_nav: true,
             ui_interaction: rustlua_ui::ui_interaction::UiInteraction::new(),
             ui_interaction_signature: None,
             ui_bindings: BTreeMap::new(),
             ui_key_names: BTreeMap::new(),
+            ui_key_slots: BTreeMap::new(),
+            ui_control_drag: None,
             ui_visual_states: BTreeMap::new(),
+            ui_state_transitions: rustlua_ui::ui_states::UiStateTransitions::default(),
             ui_scroll_offsets: BTreeMap::new(),
             ui_scroll_ranges: BTreeMap::new(),
             ui_clip_rects: BTreeMap::new(),
             ui_scroll_shifts: BTreeMap::new(),
+            ui_group_alpha: BTreeMap::new(),
             ui_focused: None,
             ui_binding_runtime: rustlua_ui::ui_binding::BindingRuntime::default(),
             ui_binding_hidden_images: BTreeSet::new(),

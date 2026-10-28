@@ -15,7 +15,9 @@
   "tokens": {
     "color.block": "#31404f",
     "color.flow": "#3f5566",
-    "color.text": "#e6edf3"
+    "color.text": "#e6edf3",
+    "color.hover": "#4a6a8c",
+    "color.pressed": "#1c2833"
   },
   "styles": {
     "anchor_dot": {
@@ -34,6 +36,26 @@
         "font_size": 16
       },
       "states": {}
+    },
+    "state_card": {
+      "base": {
+        "bg": "@color.block",
+        "color": "@color.text",
+        "font_size": 16
+      },
+      "states": {
+        "hover": {
+          "bg": "@color.hover"
+        },
+        "pressed": {
+          "bg": "@color.pressed",
+          "opacity": 0.6
+        }
+      },
+      "transition": {
+        "duration": 0.15,
+        "easing": "smooth_step"
+      }
     }
   },
   "root": {
@@ -449,6 +471,271 @@
               "size": [
                 120.0,
                 40.0
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "key": "state_button",
+        "type": "button",
+        "text": "HOVER",
+        "style": "state_card",
+        "events": {
+          "click": "on_matrix_state"
+        },
+        "layout": {
+          "anchor": "top_left",
+          "position": [
+            820.0,
+            120.0
+          ],
+          "size": [
+            180.0,
+            48.0
+          ]
+        }
+      },
+      {
+        "key": "chk_sound",
+        "type": "toggle",
+        "text": "Sound",
+        "checked": true,
+        "style": "flow_row",
+        "events": {
+          "value_changed": "on_matrix_sound"
+        },
+        "layout": {
+          "anchor": "top_left",
+          "position": [
+            820.0,
+            184.0
+          ],
+          "size": [
+            180.0,
+            28.0
+          ]
+        }
+      },
+      {
+        "key": "vol_slider",
+        "type": "slider",
+        "min": 0.0,
+        "max": 1.0,
+        "value": 0.4,
+        "style": "flow_row",
+        "events": {
+          "value_changed": "on_matrix_volume",
+          "drag": "on_matrix_drag"
+        },
+        "layout": {
+          "anchor": "top_left",
+          "position": [
+            820.0,
+            228.0
+          ],
+          "size": [
+            220.0,
+            20.0
+          ]
+        }
+      },
+      {
+        "key": "hp_progress",
+        "type": "progress",
+        "value": 0.7,
+        "style": "flow_row",
+        "layout": {
+          "anchor": "top_left",
+          "position": [
+            820.0,
+            264.0
+          ],
+          "size": [
+            220.0,
+            10.0
+          ]
+        }
+      },
+      {
+        "key": "scroll_bar",
+        "type": "scrollbar",
+        "value": 0.25,
+        "size": 0.4,
+        "direction": "top_to_bottom",
+        "handle": "scroll_knob",
+        "style": "anchor_dot",
+        "layout": {
+          "anchor": "top_left",
+          "position": [
+            1080.0,
+            228.0
+          ],
+          "size": [
+            16.0,
+            180.0
+          ]
+        },
+        "children": [
+          {
+            "key": "scroll_knob",
+            "type": "panel",
+            "style": "flow_row",
+            "layout": {
+              "anchor": "top_left",
+              "position": [
+                0.0,
+                0.0
+              ],
+              "size": [
+                16.0,
+                72.0
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "key": "mask_panel",
+        "type": "mask",
+        "padding": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "style": "anchor_dot",
+        "layout": {
+          "anchor": "top_left",
+          "position": [
+            40.0,
+            480.0
+          ],
+          "size": [
+            240.0,
+            120.0
+          ]
+        },
+        "children": [
+          {
+            "key": "mask_icon",
+            "type": "image",
+            "src": "assets/textures/red-1x1.png",
+            "layout": {
+              "anchor": "top_left",
+              "position": [
+                8.0,
+                8.0
+              ],
+              "size": [
+                224.0,
+                104.0
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "key": "faded_group",
+        "type": "canvas_group",
+        "alpha": 0.5,
+        "interactable": true,
+        "blocks_raycasts": true,
+        "style": "anchor_dot",
+        "layout": {
+          "anchor": "top_left",
+          "position": [
+            320.0,
+            480.0
+          ],
+          "size": [
+            240.0,
+            120.0
+          ]
+        },
+        "children": [
+          {
+            "key": "faded_icon",
+            "type": "image",
+            "src": "assets/textures/red-1x1.png",
+            "layout": {
+              "anchor": "top_left",
+              "position": [
+                20.0,
+                20.0
+              ],
+              "size": [
+                80.0,
+                80.0
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "key": "rich_label",
+        "type": "text",
+        "rich_text": true,
+        "text": "<b>bold</b> <color=#ff8800>tint</color>",
+        "style": "anchor_dot",
+        "layout": {
+          "anchor": "top_left",
+          "position": [
+            600.0,
+            480.0
+          ],
+          "size": [
+            220.0,
+            28.0
+          ]
+        }
+      },
+      {
+        "key": "list_box",
+        "type": "list",
+        "virtualized": false,
+        "style": "anchor_dot",
+        "layout": {
+          "anchor": "top_left",
+          "position": [
+            860.0,
+            480.0
+          ],
+          "size": [
+            220.0,
+            120.0
+          ]
+        },
+        "children": [
+          {
+            "key": "list_item_1",
+            "type": "panel",
+            "style": "flow_row",
+            "layout": {
+              "anchor": "top_left",
+              "position": [
+                6.0,
+                6.0
+              ],
+              "size": [
+                208.0,
+                28.0
+              ]
+            }
+          },
+          {
+            "key": "list_item_2",
+            "type": "panel",
+            "style": "flow_row",
+            "layout": {
+              "anchor": "top_left",
+              "position": [
+                6.0,
+                40.0
+              ],
+              "size": [
+                208.0,
+                28.0
               ]
             }
           }

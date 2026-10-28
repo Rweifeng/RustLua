@@ -3,15 +3,16 @@
 # 这个演示想证明什么：
 #   ① 屏幕空间 UI 的几何只由 `UiLayout`（四边 Anchor + Offset）与 `Container`（自动布局）给出；
 #      Transform 一律留在原点——`scene_migration` 的父子语义门要求"子实体世界位置 == 局部位置"。
-#   ② 按钮 = `Image + Text + UiEvents`（docs/30 §8）：点击由引擎 `process_ui_clicks` 命中
+#   ② 按钮 = `Image + Text + UiEvents`（docs/30 §8）：点击由运行时交互树按绘制序命中
 #      `UiEvents event=click` 的实体，再调用**工程级全局** `on_click(实体名)`
-#      （scripts/main.lua → router → scripts/demo_ui_events.lua）。
+#      （scripts/main.lua → router → scripts/demo_ui_events.lua）。交互路由默认开启
+#      （M80-01），hover/pressed/pointer_* 走同一棵树。
 #   ③ `Container` 的五种 kind 各出现一次：vbox（左侧按钮列）/ hbox（图例行）/ grid（2×2 图标）/
 #      center（居中徽标）/ margin（内缩卡片）。容器按子实体 Image 的 UiLayout 尺寸摆放它们。
 #   ④ `Image.nine_slice`（九宫格）：右侧 InfoPanel 用 button_green.png 的纹理像素边框，
 #      渲染时拆成 3×3 共 9 格（不是单四边形拉伸）。
-#   ⑤ `ButtonStates` 的五个视觉状态贴图覆盖：**只有编辑器 UI Designer 消费**——运行时渲染读的是
-#      `Image.texture`，ButtonStates 既没有运行时消费方，也不会在鼠标悬停时切换。
+#   ⑤ `ButtonStates` 的五个视觉状态贴图覆盖：运行时按交互树的 hover/pressed/focused/disabled
+#      状态切换 `Image.texture`（M76-02），编辑器 UI Designer 里也能预览同一份数据。
 #   ⑥ 本文件**刻意不写** `UiBindings` / `UiAnimation`：这两个组件只注册了 schema，
 #      运行时 `typed_scene::compile_component` 没有它们的分支，写进场景会让
 #      "组件必须被 typed 覆盖"的编译门判红。演示里"绑定的计数文本"由
@@ -56,6 +57,9 @@ component	4	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=740.00,36.00,74
 #    以它为父，容器按 padding=16,16,16,16、spacing=12、align=center 逐个摆放。
 #    容器自身矩形：(60,120)-(340,560)；每个按钮 240×48 → 首个孩子落在 (80,136)，每个下移 60。
 entity	5	ButtonColumn
+# ⑤-1 CanvasGroup：整列按钮的透明度与交互开关（这里全用默认值，加它是为了让示例场景
+#     覆盖该组件；把 alpha 改成 0.5 即可看到整列变半透明，interactable=false 则整列点不动）。
+component	5	CanvasGroup	alpha=1;interactable=true;blocks_raycasts=true
 component	5	Container	kind=vbox;padding=16.0000,16.0000,16.0000,16.0000;spacing=12.000000;columns=0;stretch=false;fill=false;align=center
 component	5	Image	texture=__white__;color=0.088,0.108,0.155
 component	5	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
@@ -101,8 +105,8 @@ component	11	Text	text=Close panel;font_size=14;color=0.980,0.980,0.980
 component	11	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	11	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=12.00,17.00,12.00,17.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
 # ⑩ PointerButton：一条组件串里声明 4 种指针事件（pointer_enter/exit/down/up，多条用 `|` 分隔）。
-#    **运行时只分发 click**（`process_ui_clicks` → `UiEvents::click_functions`），其余四种事件是
-#    解析/校验/编辑器层面的事实；`arg.<名>=值` 是给编辑器与工具的声明式参数（引擎不会把它传给 Lua）。
+#    运行时交互树按 capture → target → bubble 分发这些事件（M80-01），click 仍是按下即触发；
+#    `arg.<名>=值` 是给编辑器与工具的声明式参数（引擎不会把它传给 Lua）。
 #    function 一律写工程里真实存在的全局函数名（scripts/main.lua 暴露 on_click / on_drag），
 #    否则编辑器会报 "function ... was not found"。
 entity	12	PointerButton	5
@@ -172,6 +176,9 @@ component	24	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=380.00,196.00,
 # ⑮ Container kind=grid：columns=2 的 2×2 网格（容器 380..640 × 220..416，
 #    列宽/行高取该列/行里最大子尺寸；每个格子 100×80）。
 entity	25	IconGrid
+# ⑮-1 Mask：矩形裁剪容器（padding=0 ⇒ 裁剪区就是网格自身矩形；四个图标本来就装在里面，
+#      因此画面不变。把 padding 改成 30,30,30,30 可看到图标被边缘裁掉）。
+component	25	Mask	padding=0,0,0,0
 component	25	Container	kind=grid;padding=8.0000,8.0000,8.0000,8.0000;spacing=8.000000;columns=2;stretch=false;fill=false;align=center
 component	25	Image	texture=__white__;color=0.090,0.110,0.160
 component	25	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000

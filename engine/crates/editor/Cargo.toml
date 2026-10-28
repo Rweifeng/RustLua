@@ -57,3 +57,5 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 
 [dev-dependencies]
 pollster = "0.4"
+# `m76_ui_matrix` 例子的读数实现与 wasm harness 共用（证据只能有一份判定）。
+rustlua-ui-host-evidence.workspace = true

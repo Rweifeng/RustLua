@@ -2,8 +2,9 @@
 
 use std::collections::BTreeMap;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum UiEasing {
+    #[default]
     Linear,
     Step,
     SmoothStep,

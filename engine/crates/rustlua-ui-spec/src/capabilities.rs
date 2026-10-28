@@ -4,9 +4,10 @@ use std::collections::BTreeSet;
 
 /// 运行时能力矩阵：AI 只能生成这里声明支持的东西。
 ///
-/// `core()` 与当前运行时逐位对齐（M76-02 落地的指针/焦点事件、四个状态覆盖、
-/// 绑定与裁剪已打开；转场、富文本、虚拟列表尚未接进运行时，保持关闭）。未打开的位
-/// 会被校验器拒绝，避免“编辑器能编、运行时不动”。
+/// `core()` 与当前运行时逐位对齐（M76-02 的指针/焦点事件、M80-02 的裁剪、M80-04 的
+/// 值控件、M80-07 的 `value_changed`/`drag`、富文本与状态底色过渡已接进运行时；场景侧
+/// 虚拟列表窗口化尚未落地，保持关闭）。未打开的位会被校验器拒绝，避免
+/// “编辑器能编、运行时不动”。
 ///
 /// 可序列化：Provider 请求与录制回放都携带同一份能力矩阵，避免模型侧与校验侧
 /// 对“现在支持什么”各说各话。
@@ -32,6 +33,13 @@ impl Capabilities {
                 "image",
                 "button",
                 "scroll_view",
+                "list",
+                "mask",
+                "canvas_group",
+                "toggle",
+                "slider",
+                "progress",
+                "scrollbar",
             ]
             .into_iter()
             .map(str::to_owned)
@@ -44,6 +52,8 @@ impl Capabilities {
                 "click",
                 "focus",
                 "submit",
+                "value_changed",
+                "drag",
             ]
             .into_iter()
             .map(str::to_owned)
@@ -57,9 +67,9 @@ impl Capabilities {
             .into_iter()
             .collect(),
             bindings: true,
-            transitions: false,
+            transitions: true,
             clipping: true,
-            rich_text: false,
+            rich_text: true,
             virtual_list: false,
         }
     }
@@ -77,6 +87,7 @@ impl Capabilities {
                 "slider",
                 "progress",
                 "input",
+                "scrollbar",
                 "scroll_view",
                 "list",
                 "grid",
@@ -85,6 +96,8 @@ impl Capabilities {
                 "tooltip",
                 "spacer",
                 "safe_area",
+                "mask",
+                "canvas_group",
             ]
             .into_iter()
             .map(str::to_owned)
@@ -147,17 +160,32 @@ mod tests {
         let caps = Capabilities::core();
         assert!(caps.supports_node("button"));
         assert!(caps.supports_node("scroll_view"));
-        assert!(!caps.supports_node("toggle"));
+        assert!(caps.supports_node("mask"));
+        assert!(caps.supports_node("canvas_group"));
+        assert!(caps.supports_node("toggle"));
+        assert!(caps.supports_node("slider"));
+        assert!(caps.supports_node("progress"));
+        assert!(
+            caps.supports_node("scrollbar"),
+            "M80-04 起运行时消费 Scrollbar"
+        );
+        assert!(caps.supports_node("list"));
+        assert!(!caps.supports_node("grid"), "网格容器仍未接进场景导出");
+        assert!(!caps.supports_node("tabs"), "选项卡仍未接进运行时");
         assert!(caps.supports_event("click"));
         assert!(caps.supports_event("pointer_enter"));
         assert!(caps.supports_event("submit"));
-        assert!(!caps.supports_event("value_changed"));
+        assert!(caps.supports_event("value_changed"));
+        assert!(caps.supports_event("drag"));
         assert!(caps.supports_state(StyleState::Hover));
         assert!(caps.supports_state(StyleState::Focused));
         assert!(caps.bindings);
         assert!(caps.clipping);
-        assert!(!caps.transitions);
-        assert!(!caps.rich_text);
+        assert!(
+            caps.transitions,
+            "M80-07 起 ButtonStates 的底色覆盖与过渡时长/曲线由运行时消费"
+        );
+        assert!(caps.rich_text, "M80-03 起文本排版消费 rich_text 标记");
         assert!(!caps.virtual_list);
     }
 
@@ -174,6 +202,7 @@ mod tests {
             "slider",
             "progress",
             "input",
+            "scrollbar",
             "scroll_view",
             "list",
             "grid",
@@ -182,6 +211,8 @@ mod tests {
             "tooltip",
             "spacer",
             "safe_area",
+            "mask",
+            "canvas_group",
         ] {
             assert!(caps.supports_node(node), "missing {node}");
         }

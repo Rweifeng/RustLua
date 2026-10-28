@@ -65,7 +65,13 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     ("header.rs", 0),
     ("hierarchy.rs", 0),
     ("input_bindings.rs", 0),
-    ("inspector.rs", 0),
+    ("inspector/mod.rs", 0),
+    // P1 结构收口：`inspector.rs` 拆成目录（绘制 `mod.rs` / UI 子编辑器 `ui_editors.rs` /
+    // Prefab 侧 `prefab.rs` / 纯文本辅助 `helpers.rs`）。拆分**不缩小**覆盖面——每个生产
+    // 文件单独登记；`inspector/tests/` 按既有约定自动跳过（与 `scene_view/tests/` 一致）。
+    ("inspector/prefab.rs", 0),
+    ("inspector/helpers.rs", 0),
+    ("inspector/ui_editors.rs", 0),
     ("material.rs", 0),
     ("keymap.rs", 0),
     ("mod.rs", 0),

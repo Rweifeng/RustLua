@@ -31,6 +31,9 @@ members = [
     "crates/rustlua-scripting",
     "crates/rustlua-visual-script",
     "crates/rustlua-ui",
+    "crates/rustlua-ui-host-evidence",
+    "crates/rustlua-ui-host-harness",
+    "crates/rustlua-ui-scene-export",
     "crates/rustlua-ui-spec",
 ]
 
@@ -68,6 +71,8 @@ rustlua-gpu = { path = "crates/rustlua-gpu" }
 rustlua-frame-abi = { path = "crates/rustlua-frame-abi" }
 rustlua-ui = { path = "crates/rustlua-ui" }
 rustlua-ui-spec = { path = "crates/rustlua-ui-spec" }
+rustlua-ui-scene-export = { path = "crates/rustlua-ui-scene-export" }
+rustlua-ui-host-evidence = { path = "crates/rustlua-ui-host-evidence" }
 rustlua-physics = { path = "crates/rustlua-physics" }
 rustlua-assets = { path = "crates/rustlua-assets" }
 rustlua-assets-import = { path = "crates/rustlua-assets-import" }

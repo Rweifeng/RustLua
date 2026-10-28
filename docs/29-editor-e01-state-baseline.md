@@ -28,7 +28,7 @@
 | 选择/状态结构 | `rustlua-editor-core/src/scene_tree_state.rs`、`inspector_state.rs`、`resource_browser_state.rs` | 三类选择与资源浏览 |
 | 库 crate 边界 | `engine/crates/editor/src/lib.rs` | editor::* 公开面 |
 | Scene View | `engine/crates/editor/src/panels/scene_view.rs`（关键交互段） | 拖拽/框选/图块/3D gizmo 提交点 |
-| Inspector | `engine/crates/editor/src/panels/inspector.rs`（关键函数） | apply_inspector / rename / reparent / delete / prefab 相关 |
+| Inspector | `engine/crates/editor/src/panels/inspector/`（关键函数） | apply_inspector / rename / reparent / delete / prefab 相关 |
 
 ---
 
@@ -305,7 +305,7 @@ if !self.hierarchy_filter.trim().is_empty()
 - 修复归属：E10（`matches(node) || has_matching_descendant(node)`，匹配后代时保留祖先并自动展开）。
 
 ### P11：删除后 selection repair 分散且不完整（E03/E04）
-- 位置：`delete_selected_entity`（[inspector.rs](../engine/crates/editor/src/panels/inspector.rs#L1261-L1291)）删除成功后才对 tree.selected 做一次回退检查；`scene_state.selected` 内残留已删 id 无统一清理；undo 恢复已删实体时选择也不回补。
+- 位置：`delete_selected_entity`（[actions/components.rs](../engine/crates/editor/src/actions/components.rs#L920)）删除成功后才对 tree.selected 做一次回退检查；`scene_state.selected` 内残留已删 id 无统一清理；undo 恢复已删实体时选择也不回补。
 - 影响：删除某实体后，多选集合/资源选择/Inspector 高亮可能仍引用已删 id；再框选或加选时行为异常。
 - 修复归属：E03（统一 SelectionModel + 引用清理 + SelectionChanged）+ E04。
 
