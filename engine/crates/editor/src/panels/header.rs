@@ -40,7 +40,11 @@ impl EditorApp {
                         self.show_resources_panel = !self.show_resources_panel;
                     }
                     ui.separator();
-                    ui.label(format!("状态：{}", self.status));
+                    // 状态可能很长（场景 I/O 失败会带上完整路径）：菜单栏只有一行，标签
+                    // 必须按剩余宽度截断，否则右对齐布局会把超出部分画到左边菜单按钮上。
+                    // 截断时 egui 会自动把完整文本放进悬停提示（`Label::truncate` 的默认行为）。
+                    let status = format!("状态：{}", self.status);
+                    ui.add(egui::Label::new(status.as_str()).truncate());
                 });
             });
         });
@@ -539,6 +543,100 @@ mod tests {
 
         let _ = fs::remove_dir_all(root);
     }
+
+    /// 无头画一帧菜单栏，返回这一帧里所有文本（content / 绘制矩形 / 是否被截断）。
+    fn header_text(output: &egui::FullOutput) -> Vec<(String, egui::Rect, bool)> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some((
+                    text.galley.text().to_string(),
+                    text.visual_bounding_rect(),
+                    text.galley.elided,
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn draw_header_frame(
+        app: &mut EditorApp,
+        context: &egui::Context,
+        width: f32,
+    ) -> egui::FullOutput {
+        context.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 120.0),
+                )),
+                ..Default::default()
+            },
+            |context| app.draw_header_panel(context),
+        )
+    }
+
+    /// 菜单栏只有一行：状态很长时（场景 I/O 失败会带上完整路径）必须按剩余宽度截断。
+    /// 回归对象是 `ui.label` 的右对齐溢出——长文本会一直画到左边的菜单按钮上。
+    #[test]
+    fn long_status_is_truncated_instead_of_painting_over_the_menus() {
+        let project = open_project(sample_project_root()).expect("样板工程");
+        let mut app = EditorApp::new(project, None, LogSink::new(16));
+        app.status = r"打开失败：场景文档错误：scene I/O failed for \\?\D:\GitHub\RustLua\engine\target\no-assets-project\scenes\main.scene: 系统找不到指定的路径。(os error 3)".to_owned();
+
+        let context = egui::Context::default();
+        crate::util::configure_cjk_fallback(&context);
+        let width = 720.0;
+        let rendered = header_text(&draw_header_frame(&mut app, &context, width));
+        let menu_right = crate::menu::MENU_BAR
+            .iter()
+            .map(|(title, _)| {
+                rendered
+                    .iter()
+                    .find(|(text, _, _)| text == title)
+                    .unwrap_or_else(|| panic!("菜单栏没有画出「{title}」"))
+                    .1
+                    .right()
+            })
+            .fold(f32::MIN, f32::max);
+        let (status, status_rect, elided) = rendered
+            .iter()
+            .find(|(text, _, _)| text.starts_with("状态："))
+            .expect("菜单栏没有画出状态标签");
+        assert!(
+            status.contains("系统找不到指定的路径"),
+            "截断只影响绘制，标签仍要保留完整文本（悬停提示取的就是它）"
+        );
+        assert!(elided, "超宽状态必须走截断，否则会溢出到菜单按钮上");
+        assert!(
+            status_rect.left() >= menu_right,
+            "状态标签左边界 {:.1} 压到了菜单（菜单文本右边界 {:.1}）",
+            status_rect.left(),
+            menu_right
+        );
+        assert!(
+            status_rect.right() <= width,
+            "状态标签超出窗口右边界：{:.1} > {width}",
+            status_rect.right()
+        );
+
+        // 短状态不该被截：截断只在放不下时生效，否则状态栏会白丢信息。
+        app.status = "就绪".to_owned();
+        let rendered = header_text(&draw_header_frame(&mut app, &context, width));
+        let (_, status_rect, elided) = rendered
+            .iter()
+            .find(|(text, _, _)| text == "状态：就绪")
+            .expect("短状态应完整画出");
+        assert!(!elided, "短状态被误截断");
+        assert!(
+            status_rect.left() >= menu_right,
+            "短状态标签左边界 {:.1} 也压到了菜单（菜单文本右边界 {:.1}）",
+            status_rect.left(),
+            menu_right
+        );
+    }
+
     #[test]
     fn app_startup_scans_recovery_and_recover_candidate_restores_scene() {
         let root = copy_sample_project("recover-menu");
