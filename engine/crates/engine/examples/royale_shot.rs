@@ -18,8 +18,8 @@ use rustlua_gpu::{OffscreenRequest, OffscreenTarget, RenderOutcome, Renderer};
 use rustlua_input::input::InputSnapshot;
 use rustlua_scene::scene::Scene;
 
-const WIDTH: u32 = 1280;
-const HEIGHT: u32 = 720;
+const WIDTH: u32 = 720;
+const HEIGHT: u32 = 1280;
 const STEPS: u32 = 900;
 
 fn main() -> Result<(), String> {
