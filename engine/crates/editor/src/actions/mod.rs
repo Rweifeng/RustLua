@@ -130,8 +130,6 @@ pub(crate) enum PendingChange {
     OpenResource { relative_path: PathBuf },
     /// 新建空白场景（尚未保存）。
     CreateScene { name: String },
-    /// E19: create an isolated Widget document.
-    CreateWidget { name: String },
     /// 恢复一条崩溃恢复快照。
     Recover {
         candidate: editor::RecoveryCandidate,
@@ -150,7 +148,6 @@ impl PendingChange {
                 format!("打开 {}", relative_path.display())
             }
             Self::CreateScene { name } => format!("新建场景 {name}"),
-            Self::CreateWidget { name } => format!("新建控件 {name}"),
             Self::Recover { .. } => "恢复崩溃快照".to_owned(),
             Self::SwitchProject { path } => format!("切换到项目：{}", path),
             Self::QuitEditor => "关闭编辑器".to_owned(),

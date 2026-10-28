@@ -1,4 +1,4 @@
-//! docs/55 阶段 2「拆分 2D/3D/Widget 工具控制器」。
+//! docs/55 阶段 2「拆分 2D/3D 工具控制器」。
 //!
 //! 计划要求把 Scene View 的工具语义按视图模式拆开。这里落地的不是"三个各自持有状态的
 //! 状态机"（那会让"当前工具"又变成多份事实源，正是计划 §4.1 要消除的东西），而是
@@ -8,9 +8,8 @@
 //! * 本模块只回答"**这个模式允许哪些工具、不允许的那些要落到哪个工具上**"。
 //!
 //! 为什么必须有这张表：`TilePaint` 只在 2D 画布上有意义（3D 分支里是 `SceneTool::TilePaint => {}`，
-//! 即"选了但什么都不做"），而工具面板过去在 3D/Widget 模式下照样把它显示成可点——用户点完
-//! 什么反馈都没有。同一类问题还包括：Widget 模式拖拽改的是 UiLayout offsets 而不是 Transform，
-//! 因此"旋转/缩放"在 Widget 模式下没有落点。
+//! 即"选了但什么都不做"），而工具面板过去在 3D 模式下照样把它显示成可点——用户点完
+//! 什么反馈都没有。
 //!
 //! 这张表同时被三处消费，所以"声明"和"行为"不会漂移：
 //!
@@ -28,8 +27,6 @@ pub enum ToolMode {
     TwoD,
     /// 3D 画布：变换走 `Transform3D`（XZ 平面 + 高度 Y），无 Tile 画笔。
     ThreeD,
-    /// Widget 文档：拖拽改 `UiLayout` 的 offsets（锚点 + 偏移），不做旋转/缩放。
-    Widget,
     /// Prefab 编辑：与 2D 画布同一套工具（Prefab 文档本身就是 2D/3D 场景的子集）。
     Prefab,
 }
@@ -53,8 +50,6 @@ impl ToolMode {
                 SceneTool::Rotate,
                 SceneTool::Scale,
             ],
-            // Widget：只有选择与移动（移动 = 改 anchors/offsets）。
-            Self::Widget => &[SceneTool::Select, SceneTool::Move],
         }
     }
 
@@ -84,7 +79,6 @@ impl ToolMode {
         match self {
             Self::TwoD => "2D 视图",
             Self::ThreeD => "3D 视图",
-            Self::Widget => "控件视图",
             Self::Prefab => "预制体视图",
         }
     }
@@ -92,11 +86,10 @@ impl ToolMode {
     /// 某个工具在这个模式下的**语义说明**（工具面板的 tooltip）。
     ///
     /// 这解决的是"同一个按钮在不同模式里做的不是一件事"的沟通问题：
-    /// 例如 Move 在 2D/3D 改 Transform，在 Widget 改 anchor/offset。
+    /// 例如 Move 在 2D 改 Transform，在 3D 改位置轴。
     pub fn tool_hint(self, tool: SceneTool) -> &'static str {
         match (self, tool) {
             (_, SceneTool::Select) => "选择（Q）",
-            (Self::Widget, SceneTool::Move) => "移动锚点与偏移（W）",
             (Self::ThreeD, SceneTool::Move) => "移动（W，沿 X/Y/Z 轴）",
             (_, SceneTool::Move) => "移动（W）",
             (_, SceneTool::Rotate) => "旋转（E）",
@@ -118,17 +111,6 @@ mod tests {
             !ToolMode::ThreeD.allows(SceneTool::TilePaint),
             "3D 画布没有 tile 绘制落点，不允许选中它"
         );
-        assert!(!ToolMode::Widget.allows(SceneTool::TilePaint));
-    }
-
-    #[test]
-    fn widget_mode_only_has_select_and_move() {
-        assert_eq!(
-            ToolMode::Widget.tools(),
-            &[SceneTool::Select, SceneTool::Move]
-        );
-        assert!(!ToolMode::Widget.allows(SceneTool::Rotate));
-        assert!(!ToolMode::Widget.allows(SceneTool::Scale));
     }
 
     #[test]
@@ -143,25 +125,11 @@ mod tests {
             ToolMode::ThreeD.resolve(SceneTool::TilePaint),
             (SceneTool::Select, true)
         );
-        assert_eq!(
-            ToolMode::Widget.resolve(SceneTool::Rotate),
-            (SceneTool::Select, true)
-        );
     }
 
     #[test]
     fn every_mode_has_a_distinct_hint_for_move() {
-        assert_ne!(
-            ToolMode::Widget.tool_hint(SceneTool::Move),
-            ToolMode::TwoD.tool_hint(SceneTool::Move),
-            "Widget 模式下的移动改的是锚点/偏移，提示必须区分开"
-        );
-        for mode in [
-            ToolMode::TwoD,
-            ToolMode::ThreeD,
-            ToolMode::Widget,
-            ToolMode::Prefab,
-        ] {
+        for mode in [ToolMode::TwoD, ToolMode::ThreeD, ToolMode::Prefab] {
             for tool in mode.tools() {
                 assert!(!mode.tool_hint(*tool).is_empty(), "{mode:?} {tool:?}");
             }

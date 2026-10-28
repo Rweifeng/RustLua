@@ -10,7 +10,6 @@ use std::{
 };
 
 const PREFAB_DOCUMENT_KIND: &str = "prefab";
-const WIDGET_DOCUMENT_KIND: &str = "widget";
 const DOC_KIND_META_KEY: &str = "editor.document.kind";
 const PREFAB_ASSET_ID_META_KEY: &str = "editor.prefab.asset_id";
 
@@ -52,17 +51,6 @@ impl SceneDocument {
         Self::new(name)
     }
 
-    /// E19: an unsaved Widget document. It becomes dirty immediately, so the
-    /// regular document-switch protection also covers Widget editing.
-    pub fn new_widget(name: impl Into<String>) -> Self {
-        let mut document = Self::new(name);
-        document.scene.metadata.insert(
-            DOC_KIND_META_KEY.to_owned(),
-            WIDGET_DOCUMENT_KIND.to_owned(),
-        );
-        document
-    }
-
     /// 从磁盘打开场景；只有成功解析和校验后才创建文档。
     ///
     /// **第 55 轮起不再有"打开时自动迁移"**：旧的组件名/旧写法兼容已从引擎删除
@@ -75,14 +63,7 @@ impl SceneDocument {
             let prefab = Prefab::load(&path).map_err(DocumentError::Prefab)?;
             scene_from_prefab(&prefab)
         } else {
-            let mut scene = Scene::load(&path).map_err(DocumentError::Scene)?;
-            if extension == Some("widget") {
-                scene.metadata.insert(
-                    DOC_KIND_META_KEY.to_owned(),
-                    WIDGET_DOCUMENT_KIND.to_owned(),
-                );
-            }
-            scene
+            Scene::load(&path).map_err(DocumentError::Scene)?
         };
         // 场景里的元数据键是编辑器自己的约定，打开时补齐（不是内容迁移）。
         Ok(Self {
@@ -128,17 +109,6 @@ impl SceneDocument {
         }
         let path = self.path.clone().ok_or(DocumentError::MissingPath)?;
         prefab_from_scene(&self.scene, &path)
-    }
-
-    pub fn is_widget_document(&self) -> bool {
-        self.scene
-            .metadata
-            .get(DOC_KIND_META_KEY)
-            .map(String::as_str)
-            == Some(WIDGET_DOCUMENT_KIND)
-            || self.path.as_deref().is_some_and(|path| {
-                path.extension().and_then(|value| value.to_str()) == Some("widget")
-            })
     }
 
     /// 保存到当前路径；未命名的新场景必须使用 `save_as`。
@@ -189,13 +159,6 @@ impl SceneDocument {
         if is_prefab_document(&self.scene, Some(path)) {
             let prefab = prefab_from_scene(&self.scene, path)?;
             prefab.save(path).map_err(DocumentError::Prefab)?;
-        } else if path.extension().and_then(|value| value.to_str()) == Some("widget") {
-            let mut source = self.scene.clone();
-            source.metadata.insert(
-                DOC_KIND_META_KEY.to_owned(),
-                WIDGET_DOCUMENT_KIND.to_owned(),
-            );
-            atomic_write_scene(path, &source)?;
         } else {
             atomic_write_scene(path, &self.scene)?;
         }

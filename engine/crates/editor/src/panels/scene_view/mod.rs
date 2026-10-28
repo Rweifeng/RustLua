@@ -15,7 +15,6 @@ use crate::panels::tilemap_tools::{
 use crate::play_sync::{game_screen_texture, panel_scene_document};
 use crate::preview_session::PreviewSession;
 use crate::scene_interaction::{InteractionEvent, ToolPhase};
-use crate::scene_resize;
 use crate::util::icon_toggle;
 use crate::util::strip_verbatim_prefix;
 use crate::{

@@ -37,7 +37,7 @@ const WRITE_NEEDLES: &[&str] = &[
 ///   typed action；剩下的辅助函数（`insert_default_component`、`prefab_instance_source` 等）
 ///   是**纯函数/只读**，不写文档。
 /// - `hierarchy.rs`：**已清零**（第 28 轮）——创建/删除/重命名/换父/粘贴/复制/隐藏锁定标记
-///   落盘/场景与 Widget 新建都搬到了 `crate::hierarchy_ops`（面板只发 typed action）；
+///   落盘/场景新建都搬到了 `crate::hierarchy_ops`（面板只发 typed action）；
 /// - `panels/scene_view/`：**已清零**（第 29 轮）——Tile 绘制落盘与拖放生成实体（prefab/model/sprite）
 ///   搬到了 `crate::scene_ops`；拖拽/Gizmo 的提交层更早已在 `crate::scene_drag`。
 ///   第 41 轮把该文件拆成 `panels/scene_view/`，守卫随之按相对路径递归扫描

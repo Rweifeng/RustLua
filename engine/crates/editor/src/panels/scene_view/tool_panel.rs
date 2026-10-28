@@ -9,8 +9,8 @@ impl EditorApp {
     /// 因此这里不再有 5 处 `self.scene_tool = …` 的散落赋值。
     ///
     /// docs/55 阶段 2：按钮集合与 tooltip 由当前视图模式的**能力表**
-    /// （`crate::scene_tools::ToolMode`）给出——3D/Widget 模式下不再显示一个"点了没反应"的
-    /// Tile 画笔，Move 的提示在 Widget 模式里也说明了它改的是锚点/偏移。
+    /// （`crate::scene_tools::ToolMode`）给出——3D 模式下不再显示一个"点了没反应"的
+    /// Tile 画笔。
     pub(crate) fn draw_scene_tool_panel(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         let width = 430.0;
         // 画布矩形在窄叶子下可能溢出本标签的裁剪框（见 `dock::show` 里钉宽的那段）：

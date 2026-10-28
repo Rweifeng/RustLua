@@ -140,27 +140,6 @@ impl EditorApp {
         self.status = format!("已创建场景 {name}（未保存）");
     }
 
-    /// E19: create a Widget document with a Canvas root and enter Widget Mode.
-    pub(crate) fn perform_create_widget(&mut self, name: String) {
-        let mut document = editor::SceneDocument::new_widget(name.clone());
-        let scene = &mut document.scene;
-        scene
-            .add_entity(SceneEntityId(1), "画布", None)
-            .expect("a new scene can accept the Canvas root");
-        if let Some(entity) = scene.entities.get_mut(&SceneEntityId(1)) {
-            entity
-                .metadata
-                .insert("ui.root".to_owned(), "true".to_owned());
-        }
-        self.set_current_scene_document(document);
-        self.history.clear();
-        self.autosave.reset();
-        self.scene_view_mode = crate::SceneViewMode::Widget;
-        self.on_document_changed(crate::actions::DocumentChange::Created);
-        self.scene_view_fit_pending = true;
-        self.status = format!("已创建控件文档 {name}（未保存）");
-    }
-
     /// 创建一个带 Transform3D 组件的 3D 实体（M9-03）。
     pub(crate) fn add_3d_entity(&mut self, parent: Option<SceneEntityId>) {
         if self.is_playing() {

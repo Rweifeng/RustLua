@@ -180,24 +180,7 @@ pub(crate) fn design_frame_crop(
     ]
 }
 
-/// 5b：面板逻辑坐标 → 设计分辨率像素（`design_rect_to_panel` 的逆）。
-/// 用于拖放创建时把落点映射回设计空间，计算 UiLayout offsets。
-pub(crate) fn panel_to_design_pos(
-    panel: egui::Rect,
-    pan: egui::Vec2,
-    zoom: f32,
-    ppp: f32,
-    center: egui::Vec2,
-    design: (u32, u32),
-    pointer: egui::Pos2,
-) -> egui::Pos2 {
-    let world = scene_view_panel_to_world(panel, pan, zoom, ppp, pointer);
-    let dw = design.0 as f32;
-    let dh = design.1 as f32;
-    egui::pos2(world.x - center.x + dw * 0.5, center.y + dh * 0.5 - world.y)
-}
-
-/// 设计分辨率坐标 → 面板逻辑坐标（[`panel_to_design_pos`] 的逆）。
+/// 设计分辨率坐标 → 面板逻辑坐标。
 ///
 /// 2D 的拖拽逻辑全部工作在**设计空间**（Transform 的 authored 值），而绘制要落在面板上，
 /// 所以圆心这类"由逻辑算出的设计点"必须走同一条映射的反向，不能另写一遍 `pan + world*zoom`

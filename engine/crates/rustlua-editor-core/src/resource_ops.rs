@@ -149,7 +149,7 @@ pub fn rewrite_project_references(
 ///
 /// 这就是 [`rewrite_project_references`] 会改写的那一批。审计（断链检查）必须复用
 /// 同一份遍历口径：两边看到的文件集合不同，就会出现"扫描说没断链、改指却漏改那份"
-/// 这类无法自证的差别。（`schema_audit::project_documents` 还包含 widget 文档，口径不同。）
+/// 这类无法自证的差别。
 #[must_use]
 pub fn project_scene_documents(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();

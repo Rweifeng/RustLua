@@ -29,48 +29,16 @@ impl EditorApp {
             self.scene_view_fit_pending = false;
             self.fit_scene_view_to_design(rect);
         }
-        // 拖放：把资源浏览器中的纹理拖到场景创建精灵；Widget 模式下拖放控件到落点位置。
-        // M27-01：载荷类型统一成 `DropPayload` 后，"落在哪 ⇒ 做什么"由 `dnd::plan` 一处判定，
-        // 面板只负责把自己的落点参数（控件创建位置）交出去。
+        // 拖放：把资源浏览器中的纹理拖到场景创建精灵。
+        // M27-01：载荷类型统一成 `DropPayload` 后，"落在哪 ⇒ 做什么"由 `dnd::plan` 一处判定。
         let (_, dropped) = ui.dnd_drop_zone::<crate::dnd::DropPayload, egui::Response>(
             egui::Frame::default(),
             |ui| ui.allocate_rect(rect, egui::Sense::hover()),
         );
         if let Some(payload) = dropped {
             let source = crate::dnd::DragSource::Internal((*payload).clone());
-            match crate::dnd::plan(&source, crate::dnd::DropZone::SceneCanvas) {
-                crate::dnd::DropAction::CreateWidget(kind) => {
-                    // 5b：Widget 模式下按落点位置创建；否则回退到中心。
-                    let drop_pos = ui.input(|i| i.pointer.interact_pos());
-                    if self.scene_view_mode == crate::SceneViewMode::Widget {
-                        if let Some(pointer) = drop_pos {
-                            let ppp = ui.ctx().pixels_per_point();
-                            let design = self.preview_resolution;
-                            let center = egui::vec2(
-                                self.game_camera_2d_center.x,
-                                self.game_camera_2d_center.y,
-                            );
-                            let design_pos = panel_to_design_pos(
-                                rect,
-                                self.scene_state.pan,
-                                self.scene_zoom,
-                                ppp,
-                                center,
-                                design,
-                                pointer,
-                            );
-                            self.create_widget_at(kind, design_pos);
-                        } else {
-                            self.create_widget_at_center(kind);
-                        }
-                    } else {
-                        self.create_widget_at_center(kind);
-                    }
-                }
-                action => {
-                    self.status = self.commit_spawn_drop(&action, None);
-                }
-            }
+            let action = crate::dnd::plan(&source, crate::dnd::DropZone::SceneCanvas);
+            self.status = self.commit_spawn_drop(&action, None);
         }
         // 系统文件直接拖进窗口：落在画布上就是"导入 + 建实体"（可生成的那批）。
         if let Some((action, drop)) =
@@ -242,33 +210,6 @@ impl EditorApp {
         }
         for entity in entities.iter() {
             let box_rect = egui::Rect::from_center_size(entity.center, entity.size);
-            if self.scene_view_mode == crate::SceneViewMode::Widget
-                && let Some(ref ui_entity) = entity.ui
-            {
-                let anchor = design_rect_to_panel(
-                    rect,
-                    self.scene_state.pan,
-                    self.scene_zoom,
-                    scale,
-                    self.game_camera_center_egui(),
-                    self.preview_resolution,
-                    [
-                        (ui_entity.layout.anchors[0] + ui_entity.layout.anchors[2])
-                            * 0.5
-                            * self.preview_resolution.0 as f32,
-                        (ui_entity.layout.anchors[1] + ui_entity.layout.anchors[3])
-                            * 0.5
-                            * self.preview_resolution.1 as f32,
-                    ],
-                    [0.0, 0.0],
-                )
-                .center();
-                painter.line_segment(
-                    [anchor, entity.center],
-                    egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(90, 210, 230)),
-                );
-                painter.circle_filled(anchor, 4.0, egui::Color32::from_rgb(90, 210, 230));
-            }
             let selected = self.selection.contains(entity.id);
             // 场景已实时渲染（含实际 UI 覆盖层），实体只画选中轮廓 + 名称。
             if selected {
@@ -318,169 +259,6 @@ impl EditorApp {
                     self.selection.set_single(entity.id, source);
                 }
                 self.sync_inspector(entity.id);
-            }
-        }
-
-        // Phase 5a：Widget 模式下为选中的 UI 实体绘制缩放手柄。
-        if self.scene_view_mode == SceneViewMode::Widget {
-            for entity in entities.iter() {
-                if self.selection.contains(entity.id) && entity.ui.is_some() {
-                    let box_rect = egui::Rect::from_center_size(entity.center, entity.size);
-                    scene_resize::draw_resize_handles(&painter, box_rect);
-                }
-            }
-            // Phase 5c：为选中的 UI 实体绘制锚点手柄（锚点矩形 = anchors * parent_size）。
-            for entity in entities.iter() {
-                if self.selection.contains(entity.id)
-                    && let Some(ref ui_entity) = entity.ui
-                {
-                    let parent_w = self.preview_resolution.0 as f32;
-                    let parent_h = self.preview_resolution.1 as f32;
-                    // 使用预览 anchors（如果有）或文档 anchors。
-                    let anchors = self
-                        .scene_state
-                        .preview_anchors
-                        .get(&entity.id)
-                        .copied()
-                        .unwrap_or(ui_entity.layout.anchors);
-                    let anchor_origin = [anchors[0] * parent_w, anchors[1] * parent_h];
-                    let anchor_size = [
-                        (anchors[2] - anchors[0]) * parent_w,
-                        (anchors[3] - anchors[1]) * parent_h,
-                    ];
-                    let anchor_rect = design_rect_to_panel(
-                        rect,
-                        self.scene_state.pan,
-                        self.scene_zoom,
-                        scale,
-                        self.game_camera_center_egui(),
-                        self.preview_resolution,
-                        anchor_origin,
-                        anchor_size,
-                    );
-                    scene_resize::draw_anchor_handles(&painter, anchor_rect);
-                }
-            }
-            // Phase 5d：为选中的 Container 实体绘制 padding 可视化。
-            if let Some(scene) = panel_scene_document(&self.play_session, &self.document) {
-                for entity in entities.iter() {
-                    if !self.selection.contains(entity.id) {
-                        continue;
-                    }
-                    let Some(scene_entity) = scene.scene.entities.get(&entity.id) else {
-                        continue;
-                    };
-                    let Some(container_raw) = scene_entity.components.get("Container") else {
-                        continue;
-                    };
-                    let Ok(style) =
-                        rustlua_ui::ui_layout::ContainerStyle::from_component_str(container_raw)
-                    else {
-                        continue;
-                    };
-                    // 使用预览 padding（如果有）或文档 padding。
-                    let padding = self
-                        .scene_state
-                        .preview_padding
-                        .get(&entity.id)
-                        .copied()
-                        .unwrap_or(style.padding);
-                    // outer_rect = 实体边界（面板坐标）
-                    let outer_rect = egui::Rect::from_center_size(entity.center, entity.size);
-                    // design_to_panel_scale: 设计像素 → 面板像素
-                    let design_w = self.preview_resolution.0 as f32;
-                    let panel_w = outer_rect.width();
-                    let design_to_panel_scale = panel_w / design_w.max(1.0);
-                    scene_resize::draw_padding_overlay(
-                        &painter,
-                        outer_rect,
-                        padding,
-                        design_to_panel_scale,
-                    );
-                }
-            }
-            // E05-4：布局调试 overlay——所有 UI 元素的 bounds、容器 padding/gap、
-            // 溢出角标（来自 `layout_diagnostics` 的 Layout 诊断），与选中无关。
-            if self.show_layout_debug {
-                let overflow: std::collections::BTreeSet<u64> = self
-                    .preview_diagnostics
-                    .diagnostics()
-                    .iter()
-                    .filter(|diagnostic| {
-                        diagnostic.kind
-                            == rustlua_infra::preview_diagnostics::PreviewErrorKind::Layout
-                    })
-                    .filter_map(|diagnostic| diagnostic.entity)
-                    .collect();
-                for entity in entities.iter() {
-                    if entity.ui.is_none() {
-                        continue;
-                    }
-                    let bounds = egui::Rect::from_center_size(entity.center, entity.size);
-                    painter.rect_stroke(
-                        bounds,
-                        0.0,
-                        egui::Stroke::new(
-                            1.0_f32,
-                            egui::Color32::from_rgba_unmultiplied(90, 210, 230, 150),
-                        ),
-                        egui::StrokeKind::Inside,
-                    );
-                    if overflow.contains(&entity.id.0) {
-                        painter.text(
-                            bounds.left_top(),
-                            egui::Align2::LEFT_BOTTOM,
-                            "溢出",
-                            egui::FontId::monospace(11.0),
-                            egui::Color32::from_rgb(240, 90, 80),
-                        );
-                    }
-                }
-                if let Some(scene) = panel_scene_document(&self.play_session, &self.document) {
-                    let design_w = self.preview_resolution.0 as f32;
-                    for entity in entities.iter() {
-                        let Some(scene_entity) = scene.scene.entities.get(&entity.id) else {
-                            continue;
-                        };
-                        let Some(container_raw) = scene_entity.components.get("Container") else {
-                            continue;
-                        };
-                        let Ok(style) = rustlua_ui::ui_layout::ContainerStyle::from_component_str(
-                            container_raw,
-                        ) else {
-                            continue;
-                        };
-                        let outer_rect = egui::Rect::from_center_size(entity.center, entity.size);
-                        let design_to_panel = outer_rect.width() / design_w.max(1.0);
-                        scene_resize::draw_padding_overlay(
-                            &painter,
-                            outer_rect,
-                            style.padding,
-                            design_to_panel,
-                        );
-                        let child_rects: Vec<egui::Rect> = scene_entity
-                            .children
-                            .iter()
-                            .filter_map(|child| entities.iter().find(|value| value.id == *child))
-                            .map(|child| egui::Rect::from_center_size(child.center, child.size))
-                            .collect();
-                        if let Some((first, second)) = child_rects.first().zip(child_rects.get(1))
-                            && let Some(band) = container_gap_band(
-                                style.kind,
-                                *first,
-                                *second,
-                                design_to_panel,
-                                style.spacing,
-                            )
-                        {
-                            painter.rect_filled(
-                                band,
-                                0.0,
-                                egui::Color32::from_rgba_unmultiplied(240, 170, 60, 60),
-                            );
-                        }
-                    }
-                }
             }
         }
 
@@ -537,66 +315,8 @@ impl EditorApp {
         if response.drag_started_by(egui::PointerButton::Primary)
             && let Some(pos) = drag_start_pos(ui, pointer)
         {
-            // Phase 5c：Widget 模式下先检测锚点手柄命中（Alt 按住时优先）。
-            let anchor_hit =
-                if self.scene_view_mode == SceneViewMode::Widget && ui.input(|i| i.modifiers.alt) {
-                    self.selected_ui_anchor_rect(pos, &entities)
-                        .and_then(|rect| scene_resize::hit_test_anchor_handle(rect, pos))
-                } else {
-                    None
-                };
-            // Phase 5d：其次检测 padding 手柄命中（Container 实体选中时）。
-            let padding_hit =
-                if anchor_hit.is_none() && self.scene_view_mode == SceneViewMode::Widget {
-                    self.selected_container_padding_hit(pos, &entities)
-                } else {
-                    None
-                };
-            // Phase 5a：其次检测缩放手柄命中——手柄优先级高于实体选中。
-            let resize_hit = if anchor_hit.is_none()
-                && padding_hit.is_none()
-                && self.scene_view_mode == SceneViewMode::Widget
-            {
-                self.selected_ui_entity_rect(pos, &entities)
-                    .and_then(|rect| scene_resize::hit_test_handle(rect, pos))
-            } else {
-                None
-            };
-            if let Some(handle) = anchor_hit {
-                // 锚点拖动：走正常拖动管线，但标记为 anchor 模式。
-                let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
-                self.scene_pointer_down(pos, &entities, additive);
-                self.scene_state.anchor_handle = Some(handle);
-            } else if let Some(handle) = padding_hit {
-                // Padding 拖动：走正常拖动管线，标记为 padding 模式。
-                let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
-                self.scene_pointer_down(pos, &entities, additive);
-                self.scene_state.padding_handle = Some(handle);
-                // 存储初始 padding 和外框供拖动计算使用。
-                if let Some(primary) = self.selection.primary()
-                    && let Some(scene) = panel_scene_document(&self.play_session, &self.document)
-                    && let Some(scene_entity) = scene.scene.entities.get(&primary)
-                    && let Some(container_raw) = scene_entity.components.get("Container")
-                    && let Ok(style) =
-                        rustlua_ui::ui_layout::ContainerStyle::from_component_str(container_raw)
-                    && let Some(entity) = entities.iter().find(|e| e.id == primary)
-                {
-                    let outer_rect = egui::Rect::from_center_size(entity.center, entity.size);
-                    self.scene_state.padding_drag_initial = Some((style.padding, outer_rect));
-                }
-            } else if let Some(handle) = resize_hit {
-                // 走正常拖动管线（建 SceneDrag、推进状态机），但标记为 resize 模式。
-                let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
-                self.scene_pointer_down(pos, &entities, additive);
-                self.scene_state.resize_handle = Some(handle);
-            } else {
-                self.scene_state.resize_handle = None;
-                self.scene_state.anchor_handle = None;
-                self.scene_state.padding_handle = None;
-                self.scene_state.padding_drag_initial = None;
-                let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
-                self.scene_pointer_down(pos, &entities, additive);
-            }
+            let additive = ui.input(|input| input.modifiers.command || input.modifiers.ctrl);
+            self.scene_pointer_down(pos, &entities, additive);
         }
         if response.dragged_by(egui::PointerButton::Primary)
             && let Some(current) = pointer
@@ -625,12 +345,6 @@ impl EditorApp {
                 self.selection.add(id, SelectionSource::SceneView2D);
             }
         }
-        // Phase 5a：拖动 / 缩放过程中绘制对齐辅助线。
-        if self.scene_state.drag.is_some()
-            && let Some(current_pointer) = pointer
-        {
-            self.draw_alignment_guides(&painter, rect, current_pointer, scale, &entities);
-        }
         // M27-02（缺项 3）：旋转工具在 2D 里画成**圆环 + 朝向把手**。此前"横着拖就转"在画面上
         // 没有任何对应物，用户不知道该往哪儿拖；环心取的是这一趟**真实的转轴**，所以轴心模式
         // （Pivot/Center）一改，环就跟着挪。
@@ -650,62 +364,6 @@ impl EditorApp {
     // docs/55 阶段 2 的验收条款之一是"绘制与交互可独立测试"。把"指针按下/拖动/释放"
     // 抽成方法后，交互决策可以在**没有 egui 帧、没有 GPU** 的情况下直接调用与断言；
     // 绘制函数只负责把输入喂进来、并把相位画出来。
-
-    /// Phase 5a：计算并绘制对齐辅助线（拖动 / 缩放过程中）。
-    pub(crate) fn draw_alignment_guides(
-        &self,
-        painter: &egui::Painter,
-        _canvas_rect: egui::Rect,
-        pointer: egui::Pos2,
-        scale: f32,
-        entities: &[SceneBoxedEntity],
-    ) {
-        let Some(drag) = self.scene_state.drag.as_ref() else {
-            return;
-        };
-        let delta = pointer - drag.start;
-        let ratio = (self.scene_zoom / scale.max(1.0e-3)).max(1.0e-3);
-
-        // 计算被拖实体的当前面板包围框。
-        let mut dragged_rect = None;
-        for entity in entities.iter() {
-            if !drag.ids.contains(&entity.id) {
-                continue;
-            }
-            let base = egui::Rect::from_center_size(entity.center, entity.size);
-            if let (Some(ui_init), Some(handle)) = (
-                drag.ui_initial.get(&entity.id),
-                self.scene_state.resize_handle,
-            ) {
-                let design_delta =
-                    scene_resize::panel_delta_to_design_delta(delta, self.scene_zoom, scale);
-                let new_offsets =
-                    scene_resize::compute_resize_offsets(ui_init.offsets, design_delta, handle);
-                let dx = (new_offsets[0] - ui_init.offsets[0]) / ratio;
-                let dy = (new_offsets[1] - ui_init.offsets[1]) / ratio;
-                let dw = (new_offsets[2] - ui_init.offsets[2]) / ratio - dx;
-                let dh = (new_offsets[3] - ui_init.offsets[3]) / ratio - dy;
-                dragged_rect = Some(egui::Rect::from_min_size(
-                    egui::pos2(base.left() + dx, base.top() + dy),
-                    egui::vec2(base.width() + dw, base.height() + dh),
-                ));
-            } else {
-                dragged_rect = Some(base.translate(delta));
-            }
-            break;
-        }
-
-        let Some(dragged) = dragged_rect else { return };
-
-        let others: Vec<(SceneEntityId, egui::Rect)> = entities
-            .iter()
-            .filter(|e| !drag.ids.contains(&e.id))
-            .map(|e| (e.id, egui::Rect::from_center_size(e.center, e.size)))
-            .collect();
-
-        let guides = scene_resize::compute_snap_guides(dragged, &others);
-        scene_resize::draw_snap_guides(painter, &guides);
-    }
 
     /// 在 2D Scene 视图绘制设计分辨率包围框（仿 Unity Camera Preview）：以游戏 2D
     /// 相机中心为世界中心、设计分辨率为尺寸的半透明矩形，按编辑器 pan/zoom 映射到
@@ -770,62 +428,5 @@ impl EditorApp {
             egui::Sense::hover(),
         )
         .on_hover_text(hud.details());
-    }
-}
-
-/// E05-4：主轴上相邻两个子矩形之间的间距带（面板坐标），供布局调试 overlay 使用。
-fn container_gap_band(
-    kind: rustlua_ui::ui_layout::ContainerKind,
-    first: egui::Rect,
-    second: egui::Rect,
-    design_to_panel: f32,
-    spacing: f32,
-) -> Option<egui::Rect> {
-    use rustlua_ui::ui_layout::ContainerKind;
-    let limit = spacing.max(0.0) * design_to_panel.max(0.0);
-    if limit <= 0.0 {
-        return None;
-    }
-    let (start, end) = match kind {
-        ContainerKind::HBox | ContainerKind::Wrap => (first.max.x, second.min.x),
-        ContainerKind::VBox => (first.max.y, second.min.y),
-        ContainerKind::Grid | ContainerKind::Margin | ContainerKind::Center => return None,
-    };
-    if end - start <= 0.5 {
-        return None;
-    }
-    let end = end.min(start + limit);
-    match kind {
-        ContainerKind::HBox | ContainerKind::Wrap => Some(egui::Rect::from_min_max(
-            egui::pos2(start, first.min.y.max(second.min.y)),
-            egui::pos2(end, first.max.y.min(second.max.y)),
-        )),
-        ContainerKind::VBox => Some(egui::Rect::from_min_max(
-            egui::pos2(first.min.x.max(second.min.x), start),
-            egui::pos2(first.max.x.min(second.max.x), end),
-        )),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::container_gap_band;
-    use eframe::egui;
-    use rustlua_ui::ui_layout::ContainerKind;
-
-    #[test]
-    fn gap_band_uses_main_axis_and_respects_spacing() {
-        let first = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 50.0));
-        let second = egui::Rect::from_min_size(egui::pos2(110.0, 0.0), egui::vec2(100.0, 50.0));
-        let band =
-            container_gap_band(ContainerKind::HBox, first, second, 1.0, 8.0).expect("hbox gap");
-        assert_eq!((band.min.x, band.max.x), (100.0, 108.0));
-        let below = egui::Rect::from_min_size(egui::pos2(0.0, 60.0), egui::vec2(100.0, 50.0));
-        let band =
-            container_gap_band(ContainerKind::VBox, first, below, 1.0, 20.0).expect("vbox gap");
-        assert_eq!((band.min.y, band.max.y), (50.0, 60.0));
-        assert!(container_gap_band(ContainerKind::Grid, first, second, 1.0, 8.0).is_none());
-        assert!(container_gap_band(ContainerKind::HBox, first, second, 1.0, 0.0).is_none());
     }
 }

@@ -53,7 +53,7 @@ const ZOOM_MAX: f32 = 8.0;
 
 /// 工作台标签 / 视图模式 / 工具 / 密度的合法取值。
 const KNOWN_TABS: &[&str] = &["scene", "game"];
-const KNOWN_VIEW_MODES: &[&str] = &["2d", "3d", "prefab", "widget"];
+const KNOWN_VIEW_MODES: &[&str] = &["2d", "3d", "prefab"];
 const KNOWN_TOOLS: &[&str] = &["select", "move", "rotate", "scale"];
 const KNOWN_DENSITIES: &[&str] = &["compact", "comfortable"];
 /// Gizmo 变换空间（docs/55 P1 的 Local/World）。

@@ -18,17 +18,11 @@ use rustlua_scene::scene::SceneEntityId;
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-/// 工具栏「控件」调色板：数组顺序就是按钮顺序，元素既是显示文案也是控件类型
-/// （`create_widget_at` 与 `DropPayload::Widget` 共用同一份字符串）。
-pub(crate) const WIDGET_PALETTE: &[&str] = &["Text", "Image", "Button", "Panel", "Container"];
-
 /// 面板之间内部拖放的唯一载荷类型。
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum DropPayload {
     /// 工程内资产：项目相对路径，`/` 分隔（与资源浏览器行、组件字符串里的写法一致）。
     Asset(String),
-    /// 工具栏的控件类型（`Text`/`Image`/`Button`/`Panel`/`Container`）。
-    Widget(&'static str),
     /// 层级里的实体（重排/挂父）。
     Entity(SceneEntityId),
 }
@@ -44,7 +38,7 @@ pub(crate) enum DragSource {
 /// 放置目标区（四个，对应 M27-01 的落点矩阵）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum DropZone {
-    /// Scene 画布（2D 与 Widget 模式都算，具体建什么由面板按模式决定）。
+    /// Scene 画布（2D 与 Prefab 模式都算，具体建什么由面板按模式决定）。
     #[default]
     SceneCanvas,
     /// 层级面板的一行。
@@ -63,8 +57,6 @@ pub(crate) enum DropAction {
     SpawnAssets(Vec<String>),
     /// 同上，但挂到某个父节点下（层级行的语义）。
     SpawnAssetsAsChild(Vec<String>),
-    /// Widget 画布上按落点创建控件。
-    CreateWidget(&'static str),
     /// 复制进 `assets/` 并刷新资源库。
     Import(Vec<PathBuf>),
     /// 先复制入库，再为可生成的那批建实体。
@@ -93,9 +85,6 @@ impl DropAction {
         match self {
             Self::SpawnAssets(paths) => spawn_caption(paths.len(), false),
             Self::SpawnAssetsAsChild(paths) => spawn_caption(paths.len(), true),
-            Self::CreateWidget(kind) => {
-                format!("创建{}控件", crate::util::widget_display_name(kind))
-            }
             Self::Import(files) => format!("导入 {} 个文件", files.len()),
             Self::ImportAndSpawn(files) => import_spawn_caption(files, false),
             Self::ImportAndSpawnAsChild(files) => import_spawn_caption(files, true),
@@ -207,19 +196,6 @@ pub(crate) fn plan(source: &DragSource, zone: DropZone) -> DropAction {
         // 是移动？是重命名？两者都要重写引用）。按"无副作用 + 说明"处理。
         (DragSource::Internal(DropPayload::Asset(_)), DropZone::ResourceBrowser) => {
             reject("资产已在资源库中，拖到场景或属性面板才有动作")
-        }
-
-        (DragSource::Internal(DropPayload::Widget(kind)), DropZone::SceneCanvas) => {
-            DropAction::CreateWidget(kind)
-        }
-        (DragSource::Internal(DropPayload::Widget(_)), DropZone::Hierarchy) => {
-            reject("控件只能拖到控件模式的画布上")
-        }
-        (DragSource::Internal(DropPayload::Widget(_)), DropZone::ResourceBrowser) => {
-            reject("控件不是资产，无法导入资源库")
-        }
-        (DragSource::Internal(DropPayload::Widget(_)), DropZone::InspectorField) => {
-            reject("控件不能填进资源引用字段")
         }
 
         (DragSource::Internal(DropPayload::Entity(_)), DropZone::Hierarchy) => DropAction::Reparent,
@@ -598,7 +574,7 @@ impl EditorApp {
 
     /// "建实体 / 入库"这一族动作的共用提交路径（画布与层级只差一个父节点）。
     ///
-    /// `parent` 只被 `*AsChild` 变体使用。`CreateWidget`、`Reparent`、`SetAssetRef*`
+    /// `parent` 只被 `*AsChild` 变体使用。`Reparent`、`SetAssetRef*`
     /// 需要各自区域才有的上下文（落点坐标、被拖实体、目标字段），由面板自己处理；
     /// 它们落到这里说明调用点配错了动作，直接报出来而不是静默跳过。
     pub(crate) fn commit_spawn_drop(
@@ -693,23 +669,6 @@ mod tests {
             (1, 1),
             "材质与外部的只能入库家族一样，不算实体来源"
         );
-    }
-
-    /// 控件 × 四个落点：只有画布可收。
-    #[test]
-    fn a_widget_only_lands_on_the_canvas() {
-        let source = DragSource::Internal(DropPayload::Widget("Text"));
-        assert_eq!(
-            plan(&source, DropZone::SceneCanvas),
-            DropAction::CreateWidget("Text")
-        );
-        for zone in [
-            DropZone::Hierarchy,
-            DropZone::ResourceBrowser,
-            DropZone::InspectorField,
-        ] {
-            assert!(plan(&source, zone).is_reject(), "{zone:?} 应该拒绝控件");
-        }
     }
 
     /// 实体 × 四个落点：只有层级可收（重排）。
@@ -866,7 +825,6 @@ mod tests {
         let cases = [
             DropAction::SpawnAssets(vec!["a.png".to_owned()]),
             DropAction::SpawnAssetsAsChild(vec!["a.png".to_owned(), "b.png".to_owned()]),
-            DropAction::CreateWidget("Button"),
             DropAction::Import(vec![path("a.png")]),
             DropAction::ImportAndSpawn(vec![path("a.png"), path("b.mp3")]),
             DropAction::ImportAndSpawnAsChild(vec![path("a.png")]),
@@ -888,13 +846,12 @@ mod tests {
         );
     }
 
-    /// 矩阵完整性：4 个来源 × 4 个落点不能有"漏格"（这里靠逐条测试覆盖，加一条
+    /// 矩阵完整性：3 个来源 × 4 个落点不能有"漏格"（这里靠逐条测试覆盖，加一条
     /// 汇总断言防未来新增变体时静默漏判）。
     #[test]
     fn the_matrix_covers_every_source_and_zone() {
         let sources = [
             asset("assets/a.png"),
-            DragSource::Internal(DropPayload::Widget("Text")),
             DragSource::Internal(DropPayload::Entity(SceneEntityId(1))),
             DragSource::External(vec![path("C:/tmp/a.png")]),
         ];
@@ -915,7 +872,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(legal, 9, "落点矩阵的合法格数量变了，请同步本文与 docs");
+        assert_eq!(legal, 8, "落点矩阵的合法格数量变了，请同步本文与 docs");
     }
 
     /// 目录展开：深度上限、跳过链接、总量截断都要能在临时目录里真实复现。

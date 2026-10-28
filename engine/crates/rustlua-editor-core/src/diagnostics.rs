@@ -23,12 +23,12 @@ impl DiagnosticLocation {
         self.path.is_none() && self.line.is_none() && self.entity.is_none()
     }
 
-    /// Whether this location can open a document (scene/prefab/widget files).
+    /// Whether this location can open a document (scene/prefab files).
     pub fn is_document_path(&self) -> bool {
         self.path.as_ref().is_some_and(|path| {
             matches!(
                 path.extension().and_then(|value| value.to_str()),
-                Some("scene") | Some("prefab") | Some("widget")
+                Some("scene") | Some("prefab")
             )
         })
     }
@@ -132,7 +132,6 @@ fn looks_like_path(token: &str) -> bool {
         Some("lua")
             | Some("scene")
             | Some("prefab")
-            | Some("widget")
             | Some("toml")
             | Some("rs")
             | Some("png")

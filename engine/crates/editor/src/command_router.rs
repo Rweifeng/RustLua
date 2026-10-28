@@ -430,7 +430,7 @@ impl EditorApp {
     ///
     /// Four behaviours, in priority order:
     /// 1. a referenced entity that exists in the open scene - select it (Inspector follows);
-    /// 2. a scene/prefab/widget path that exists in the project - open it through the 常规
+    /// 2. a scene/prefab path that exists in the project - open it through the 常规
     ///    未保存保护网关（dirty 时挂起确认，不静默丢弃编辑）。
     /// 3. a script/text file that exists on disk - hand `file:line` to the user's external
     ///    editor (no in-editor text view, docs/55 §2.2) and narrow the console filter to it;

@@ -84,7 +84,7 @@ editor [--project <项目路径>] [--check] [--help]
 - **Tile 画笔**：`▦` 工具下左键/拖拽画、右键/拖拽擦；可画视觉层或碰撞层（画笔 0..6）。同一工具的第二行还提供 **矩形填充 / 区域复制 / 区域粘贴**（见第 14.5 节）。
 - **领域覆盖层**（工具栏 `出口/地点`，M19-03）：只读显示当前地图的出口格、出生格与 NPC 地点格，悬停看详情（见第 14.4 节）。
 - **拖放**（Play 期间全部禁用，见第 9 节）：从资源面板拖 **纹理** → 新建 Sprite 实体（按纹理像素尺寸）、
-  `.prefab` → 实例化预制体、`.glb`/`.gltf` → 新建 3D 实体（Transform3D + MeshRenderer）、控件条目 → 按落点位置创建 Widget；
+  `.prefab` → 实例化预制体、`.glb`/`.gltf` → 新建 3D 实体（Transform3D + MeshRenderer）；
   从 Windows 资源管理器直接把文件/文件夹拖进画布 = 先导入再建实体。落点反馈：绿框说明松手会做什么，红框表示拒绝且不写任何东西。详见第 16 节。
 
 ### 3D 视图
@@ -423,16 +423,16 @@ editor [--project <项目路径>] [--check] [--help]
 
 ## 16. 拖放（M27-01）
 
-四块落点共用一套判定：载荷只有三种（**资产引用** / **控件** / **场景实体**），"落在哪 ⇒ 做什么"
+四块落点共用一套判定：载荷只有两种（**资产引用** / **场景实体**），"落在哪 ⇒ 做什么"
 由 `engine/crates/editor/src/dnd.rs` 的一张矩阵给出，反馈文案（含拒绝原因）与动作出自同一处，
 所以不会出现"框是绿的、松手什么也没发生"。
 
-| 落点 | 资产（纹理/预制体/模型） | 控件 | 场景实体 | 外部文件（资源管理器） |
-| --- | --- | --- | --- | --- |
-| Scene 画布 | 建实体 / 实例化 prefab | Widget 模式下按落点创建 | 拒绝（改父级请在层级里放） | 导入 + 建实体；纯音频/字体只导入 |
-| Hierarchy 行 | 建成该行的**子节点** | 拒绝 | **重排**（Before/After/Child 三条带，过父子合法性校验） | 导入 + 建成该行的子节点 |
-| 资源面板 | 拒绝（资产已在库中，移动/复制语义未实现） | 拒绝 | 拒绝 | 只导入 |
-| Inspector 资源引用行 | 直接成为该字段的值 | 拒绝 | 拒绝 | 单文件：先导入再设值；多文件：拒绝 |
+| 落点 | 资产（纹理/预制体/模型） | 场景实体 | 外部文件（资源管理器） |
+| --- | --- | --- | --- |
+| Scene 画布 | 建实体 / 实例化 prefab | 拒绝（改父级请在层级里放） | 导入 + 建实体；纯音频/字体只导入 |
+| Hierarchy 行 | 建成该行的**子节点** | **重排**（Before/After/Child 三条带，过父子合法性校验） | 导入 + 建成该行的子节点 |
+| 资源面板 | 拒绝（资产已在库中，移动/复制语义未实现） | 拒绝 | 只导入 |
+| Inspector 资源引用行 | 直接成为该字段的值 | 拒绝 | 单文件：先导入再设值；多文件：拒绝 |
 
 - **从 Windows 资源管理器拖入**：可拖单个文件、多个文件（一次拖入按**一个批次**处理，只产生**一条
   Undo**；任一文件读不进则整批不写）或文件夹（递归有限深度，**符号链接一律跳过**）。落点是画布时
@@ -461,8 +461,6 @@ editor [--project <项目路径>] [--check] [--help]
 | 内部资产 → Inspector 资源引用行 | 直接成为该字段的值 | `引用 player.png` | `an_asset_plan_per_zone`；结算层 `schema_inspector::tests::a_reference_field_drop_yields_a_value_or_a_reason`（行 hover 区的真实帧路径未覆盖，见下） |
 | 内部 prefab → Scene / Hierarchy / Inspector | 实例化整棵子树 / 作为子节点实例化 / 成为字段值 | 与资产三格同文案 | `dnd::tests::a_prefab_plan_per_zone`；实例化语义 `panels::scene_view::tests::sample_project_prefab_drop_instantiates_prefab_metadata` |
 | 内部 prefab → 资源面板 | 拒绝（自家资产拖回家） | 同资产那一格 | `a_prefab_plan_per_zone` |
-| 控件 → Scene（仅 Widget 模式） | 按落点创建控件实体 | `创建 Text 控件` | `dnd::tests::a_widget_only_lands_on_the_canvas`（真实帧未覆盖，见下） |
-| 控件 → Hierarchy / 资源面板 / Inspector | 三格全拒绝 | `控件只能拖到 Widget 模式的画布上` / `控件不是资产，无法导入资源库` / `控件不能填进资源引用字段` | 同上 |
 | 场景实体 → Hierarchy 行 | 重排：Before/After/Child 三条带、过环校验、keep-world 反解局部值、整批一条 Undo | `移动到此处` | `dnd/an_entity_on_a_row_reparents_with_one_undo`（正例）+ `dnd/a_cycle_is_refused_and_says_why`（往自己后代上放：`不能把实体移动到其后代节点下`，父级与 Undo 都不动） |
 | 场景实体 → Scene 画布 | 拒绝 | `改变父子关系请在层级面板里放` | `dnd/an_entity_on_the_canvas_changes_nothing_and_says_why` |
 | 场景实体 → 资源面板 / Inspector | 拒绝 | `场景实体不是资产，无法导入资源库` / `把实体填进资源引用字段没有意义，请选择资产` | `dnd::tests::an_entity_only_reparents_in_the_hierarchy` |
@@ -478,9 +476,7 @@ editor [--project <项目路径>] [--check] [--help]
 
 本轮为这张表补的三格真实帧证据：**实体→层级行的重排（含环校验）**、**外部批次→层级行**，并把
 prefab 从"资产"里单拆成一行（`a_prefab_plan_per_zone`）；`--gui-smoke` 的 `dnd/*` 断言由 8 条增至
-11 条，用例总数 41。仍未被真实帧覆盖的两格与原因：**控件→画布**（Widget 模式需要文档里有瓦片地图
-上下文，`GuiSmoke` 用的是四精灵场景，落点由 `dnd::plan` 与控件生成函数各自钉住）、
-**Inspector 行的 hover 区**（`inspector_field_drop` 用的是 `dnd_drop_zone` 的等价物，行矩形要靠
+11 条，用例总数 41。仍未被真实帧覆盖的一格与原因：**Inspector 行的 hover 区**（`inspector_field_drop` 用的是 `dnd_drop_zone` 的等价物，行矩形要靠
 schema 字段 id 反查；结算层已有逐动作单测，接线部分列进 M27-03 未完成项）。
 
 ## 17. Gizmo 与框选（M27-02）

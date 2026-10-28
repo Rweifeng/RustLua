@@ -86,9 +86,6 @@ impl EditorApp {
             if !filter.is_empty() && !filter.matches_name(&e.name.to_lowercase()) {
                 continue;
             }
-            if self.scene_view_mode == crate::SceneViewMode::Widget && !is_widget_entity(scene, e) {
-                continue;
-            }
             // H11：父实体隐藏时整棵子树一并隐藏；子实体自身标记不变。
             let mut hidden_by_ancestor = false;
             let mut visibility_cursor = Some(e.id);
@@ -268,35 +265,6 @@ pub(crate) fn entities_in_selection_rect(
             (left_to_right && contained || !left_to_right && intersects).then_some(entity.id)
         })
         .collect()
-}
-
-pub(crate) fn is_widget_entity(scene: &editor::SceneDocument, entity: &SceneEntity) -> bool {
-    if entity
-        .components
-        .keys()
-        .any(|name| matches!(name.as_str(), "Image" | "Text" | "UiEvents"))
-        || entity
-            .metadata
-            .get("ui.root")
-            .is_some_and(|value| value == "true")
-    {
-        return true;
-    }
-    let mut parent = entity.parent;
-    while let Some(parent_id) = parent {
-        let Some(parent_entity) = scene.scene.entities.get(&parent_id) else {
-            break;
-        };
-        if parent_entity
-            .metadata
-            .get("ui.root")
-            .is_some_and(|value| value == "true")
-        {
-            return true;
-        }
-        parent = parent_entity.parent;
-    }
-    false
 }
 
 /// 旋转的**世界空间增量**：世界模式绕世界 Y；局部模式绕实体**自己的 Y**

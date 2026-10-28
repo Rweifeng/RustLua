@@ -24,7 +24,6 @@ mod publish;
 mod runtime_perf;
 mod scene_drag;
 mod scene_ops;
-mod scene_resize;
 mod shader_watch;
 /// 性能面板的 span 时间线：把 `SpanTrace` 的记录画成"泳道 = 深度、横轴 = 时间"的条形。
 mod trace_timeline;
@@ -684,8 +683,6 @@ struct EditorApp {
     show_scene_guides: bool,
     show_safe_area: bool,
     show_pixel_grid: bool,
-    /// E05-4：Widget 模式布局调试 overlay（bounds/padding/gap/overflow）。
-    show_layout_debug: bool,
     /// 3D 场景视图的实体标记（投影后的菱形 + 名字）开关。关掉只是不画，
     /// 点选与 Gizmo 仍吃同一份实体列表，所以清场目验/截图不会丢交互。
     show_entity_labels: bool,
@@ -787,7 +784,7 @@ struct EditorApp {
     game_view_zoom: crate::panels::game_view::GameViewZoom,
     /// Game 视图在 1:1 模式下的平移量（点）。纯视图态，不持久化。
     game_view_pan: egui::Vec2,
-    /// `preview_diagnostics` 的 Layout 诊断按哪个分辨率解算（E05-4 overlay 角标）。
+    /// `preview_diagnostics` 的 Layout 诊断按哪个分辨率解算。
     layout_diagnostics_resolution: (u32, u32),
     /// 可用的预览分辨率列表（可增删）。
     preview_resolutions: Vec<(u32, u32)>,
@@ -916,7 +913,7 @@ struct EditorApp {
     /// E22/E23: structured UI editing buffers loaded from the selected entity.
     events_editor: UiEvents,
     bindings_editor: BindingSet,
-    /// E20: five-state button texture configuration for the selected widget.
+    /// E20: five-state button texture configuration for the selected UI entity.
     button_states_editor: ButtonStateSet,
     /// E26: animation editing data plus an isolated preview playback state.
     ui_animation_editor: UiAnimationClip,
@@ -1134,7 +1131,6 @@ impl EditorApp {
         match self.scene_view_mode {
             SceneViewMode::View2D => crate::scene_tools::ToolMode::TwoD,
             SceneViewMode::View3D => crate::scene_tools::ToolMode::ThreeD,
-            SceneViewMode::Widget => crate::scene_tools::ToolMode::Widget,
             SceneViewMode::Prefab => crate::scene_tools::ToolMode::Prefab,
         }
     }
@@ -1155,7 +1151,6 @@ impl EditorApp {
 enum SceneViewMode {
     #[default]
     View2D,
-    Widget,
     Prefab,
     View3D,
 }
@@ -1259,8 +1254,6 @@ struct SceneEditorState {
     /// UI 组件拖拽预览（实体 id → UiLayout 四边 offset 预览值）。布局与视觉
     /// 组件分离，拖拽时单独预览，提交时写回 `UiLayout`。
     preview_ui: std::collections::BTreeMap<SceneEntityId, [f32; 4]>,
-    /// Phase 5c：锚点拖拽预览（实体 id → anchors 四元组预览值）。
-    preview_anchors: std::collections::BTreeMap<SceneEntityId, [f32; 4]>,
     /// 3D 实体变换预览（画布俯视 XZ 投影；M9-03/M10-07）。
     preview3d_transform: std::collections::BTreeMap<SceneEntityId, Transform3D>,
     /// 3D 平移/旋转/缩放 Gizmo 拖拽（M9-03/M10-07）。
@@ -1273,16 +1266,6 @@ struct SceneEditorState {
     /// M19-03 矩形工具拖拽起点/当前格（TilePaint 的矩形填充与区域复制共用）。
     tile_rect_anchor: Option<(usize, usize)>,
     tile_rect_current: Option<(usize, usize)>,
-    /// Phase 5a：当前激活的缩放手柄（Widget 模式下选中 UI 实体时）。
-    resize_handle: Option<crate::scene_resize::ResizeHandle>,
-    /// Phase 5c：当前激活的锚点手柄（Widget 模式下按住 Alt 时显示）。
-    anchor_handle: Option<crate::scene_resize::AnchorHandle>,
-    /// Phase 5d：Container padding 拖拽预览（实体 id → padding 四元组预览值）。
-    preview_padding: std::collections::BTreeMap<SceneEntityId, [f32; 4]>,
-    /// Phase 5d：当前激活的 padding 手柄（Widget 模式下选中 Container 实体时）。
-    padding_handle: Option<crate::scene_resize::PaddingHandle>,
-    /// Phase 5d：padding 拖拽开始时的初始 padding 和实体外框（面板坐标）。
-    padding_drag_initial: Option<([f32; 4], egui::Rect)>,
 }
 
 struct SceneDrag {
@@ -1301,8 +1284,6 @@ struct UiDragInitial {
     /// `UiLayout` 四边 offset（authored 坐标）。UI 元素绘制在设计分辨率
     /// 包围框内，拖动增量换算为 zoom/ppp（见 draw_scene_view）。
     offsets: [f32; 4],
-    /// Phase 5c：`UiLayout` 四元组 anchors（归一化 0..1）。
-    anchors: [f32; 4],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1440,7 +1421,6 @@ impl EditorApp {
             show_scene_guides: false,
             show_safe_area: false,
             show_pixel_grid: false,
-            show_layout_debug: false,
             show_entity_labels: true,
             show_collision_overlay: false,
             show_performance_panel: false,
@@ -1928,7 +1908,6 @@ impl EditorApp {
         self.scene_view_mode = match self.layout.scene_view_mode.as_str() {
             "3d" => SceneViewMode::View3D,
             "prefab" => SceneViewMode::Prefab,
-            "widget" => SceneViewMode::Widget,
             _ => SceneViewMode::View2D,
         };
         self.set_scene_tool(match self.layout.scene_tool.as_str() {
@@ -2089,7 +2068,6 @@ impl EditorApp {
             SceneViewMode::View2D => "2d",
             SceneViewMode::View3D => "3d",
             SceneViewMode::Prefab => "prefab",
-            SceneViewMode::Widget => "widget",
         }
         .to_owned();
         self.layout.scene_tool = match self.scene_tool() {
@@ -2143,7 +2121,6 @@ impl EditorApp {
             SceneViewMode::View2D => "2d",
             SceneViewMode::View3D => "3d",
             SceneViewMode::Prefab => "prefab",
-            SceneViewMode::Widget => "widget",
         };
         current.scene_view_mode = view_mode.to_owned();
         current.scene_tool = match self.scene_tool() {

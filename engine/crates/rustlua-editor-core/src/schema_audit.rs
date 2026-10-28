@@ -100,7 +100,7 @@ const COMPONENT_RENAMES: &[(&str, &str)] = &[
     ("Camera3D", "Camera"),
 ];
 
-/// Validate every component of every scene/prefab/widget document under `root`.
+/// Validate every component of every scene/prefab document under `root`.
 pub fn audit_project(root: &Path) -> Result<SchemaAudit, std::io::Error> {
     let registry = builtin_registry();
     let mut audit = SchemaAudit::default();
@@ -150,7 +150,7 @@ fn relative(root: &Path, path: &Path) -> PathBuf {
         .map_or_else(|_| path.to_path_buf(), PathBuf::from)
 }
 
-/// Scene/prefab/widget documents under `root` (bounded recursion, symlink-free).
+/// Scene/prefab documents under `root` (bounded recursion, symlink-free).
 fn project_documents(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -187,7 +187,7 @@ fn project_documents(root: &Path) -> Vec<PathBuf> {
                 continue;
             }
             let extension = path.extension().and_then(|value| value.to_str());
-            if matches!(extension, Some("scene") | Some("prefab") | Some("widget")) {
+            if matches!(extension, Some("scene") | Some("prefab")) {
                 out.push(path);
             }
         }

@@ -1656,7 +1656,7 @@ impl EditorApp {
         format!("main{stamp}")
     }
 
-    // `perform_create_scene` / `perform_create_widget` / `add_3d_entity` **已搬到 shell**
+    // `perform_create_scene` / `add_3d_entity` **已搬到 shell**
     // （`crate::hierarchy_ops`，第 28 轮）：它们都会替换/写入当前文档。
 
     /// 把选中实体保存为预制体（assets/prefabs/<name>.prefab）。

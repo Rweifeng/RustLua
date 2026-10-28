@@ -118,7 +118,6 @@ impl EditorApp {
                 self.perform_open_scene_resource(relative_path);
             }
             PendingChange::CreateScene { name } => self.perform_create_scene(name),
-            PendingChange::CreateWidget { name } => self.perform_create_widget(name),
             PendingChange::Recover { candidate } => self.perform_recover_candidate(candidate),
             PendingChange::SwitchProject { path } => {
                 self.import_path = path;

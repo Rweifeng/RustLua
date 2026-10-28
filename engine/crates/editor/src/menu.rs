@@ -101,7 +101,7 @@ pub(crate) enum MenuRow {
     WorkspaceTabs,
     /// 窗口 ▸ 面板：六个工作台面板逐项开关（复选框，状态来自 `show_*`）。
     PanelToggles,
-    /// 窗口 ▸ 视图模式：2D / 3D / Widget / Prefab（互斥选择）。
+    /// 窗口 ▸ 视图模式：2D / 3D / Prefab（互斥选择）。
     ViewModes,
     /// 窗口 ▸ 布局与面板宽度提示（只读信息行）。
     LayoutInfo,
@@ -506,7 +506,6 @@ impl EditorApp {
                     for (label, mode) in [
                         ("2D", crate::SceneViewMode::View2D),
                         ("3D", crate::SceneViewMode::View3D),
-                        ("控件", crate::SceneViewMode::Widget),
                         ("预制体", crate::SceneViewMode::Prefab),
                     ] {
                         if ui

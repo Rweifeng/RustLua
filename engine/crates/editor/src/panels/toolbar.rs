@@ -247,56 +247,6 @@ impl EditorApp {
                             self.scene_view_fit_pending = true;
                         }
                     }
-                    if icon_toggle(
-                        ui,
-                        self.scene_view_mode == SceneViewMode::Widget,
-                        "UI",
-                        "控件模式（界面画布）",
-                    )
-                    .clicked()
-                    {
-                        self.scene_view_mode = if self.scene_view_mode == SceneViewMode::Widget {
-                            SceneViewMode::View2D
-                        } else {
-                            SceneViewMode::Widget
-                        };
-                        self.revalidate_scene_tool_for_view_mode();
-                        self.scene_view_fit_pending = true;
-                    }
-                    if self.scene_view_mode == SceneViewMode::Widget {
-                        // Unity 式分层：调色板收进「控件」下拉，不再整排常驻工具栏。
-                        ui.menu_button("控件", |ui| {
-                            if ui.button("新建控件").clicked() {
-                                self.request_document_change(
-                                    crate::actions::PendingChange::CreateWidget {
-                                        name: "新建控件".to_owned(),
-                                    },
-                                );
-                                ui.close();
-                            }
-                            ui.separator();
-                            // 5b：统一走 create_widget_at_center，与拖放创建共用同一路径。
-                            // M27-01：拖拽载荷换成 `DropPayload::Widget`——与资源/实体的拖放同一类型，
-                            // 落点矩阵（`dnd::plan`）才能对四种来源用同一张表。
-                            for kind in crate::dnd::WIDGET_PALETTE {
-                                let source = ui.dnd_drag_source(
-                                    egui::Id::new(("widget_palette", kind)),
-                                    crate::dnd::DropPayload::Widget(kind),
-                                    |ui| ui.button(crate::util::widget_display_name(kind)),
-                                );
-                                if source.inner.clicked() {
-                                    self.create_widget_at_center(kind);
-                                    ui.close();
-                                }
-                                if source.response.drag_started() {
-                                    // 拖拽起步就收起下拉，浮层不再挡住画布落点。
-                                    ui.close();
-                                }
-                            }
-                        })
-                        .response
-                        .on_hover_text("点击创建 / 拖到画布");
-                    }
                     ui.separator();
                     // Unity 式分层：常驻只留高频项（吸附开关），步长收进「▾」弹层（Unity Snap Settings 同构）。
                     ui.checkbox(&mut self.snap_enabled, "吸附");
@@ -350,31 +300,25 @@ impl EditorApp {
                             ui.close();
                         }
                     });
-                    // Sprite 排序是 2D 精灵专属，Widget 画布上没有作用对象，直接不出现。
-                    if self.scene_view_mode != SceneViewMode::Widget {
-                        ui.menu_button("排序", |ui| {
-                            if ui.button("精灵排序层级 -1").clicked() {
-                                self.nudge_selected_sprite_order(-1);
-                                ui.close();
-                            }
-                            if ui.button("精灵排序层级 +1").clicked() {
-                                self.nudge_selected_sprite_order(1);
-                                ui.close();
-                            }
-                            if ui.button("按 Y 重排精灵排序").clicked() {
-                                self.sort_selected_sprites_by_y(true);
-                                ui.close();
-                            }
-                        });
-                    }
+                    // Sprite 排序是 2D 精灵专属。
+                    ui.menu_button("排序", |ui| {
+                        if ui.button("精灵排序层级 -1").clicked() {
+                            self.nudge_selected_sprite_order(-1);
+                            ui.close();
+                        }
+                        if ui.button("精灵排序层级 +1").clicked() {
+                            self.nudge_selected_sprite_order(1);
+                            ui.close();
+                        }
+                        if ui.button("按 Y 重排精灵排序").clicked() {
+                            self.sort_selected_sprites_by_y(true);
+                            ui.close();
+                        }
+                    });
                     ui.menu_button("覆盖层", |ui| {
                         ui.checkbox(&mut self.show_scene_guides, "辅助线");
                         ui.checkbox(&mut self.show_safe_area, "安全区");
                         ui.checkbox(&mut self.show_pixel_grid, "像素网格");
-                        ui.checkbox(&mut self.show_layout_debug, "布局调试")
-                            .on_hover_text(
-                                "控件模式下画出所有界面元素的布局边界、容器内边距与间距，溢出元素标红",
-                            );
                         ui.checkbox(&mut self.show_entity_labels, "标记与名字")
                             .on_hover_text(
                                 "3D 场景视图里每个实体的菱形标记与名称；关闭后场景不再被文字遮挡（点选与 Gizmo 照常可用）",

@@ -53,7 +53,6 @@ impl EditorApp {
                             entity.id,
                             UiDragInitial {
                                 offsets: ui.layout.offsets,
-                                anchors: ui.layout.anchors,
                             },
                         )
                     })
@@ -91,8 +90,6 @@ impl EditorApp {
         let delta = pos - drag.start;
         let mut preview = std::collections::BTreeMap::new();
         let mut preview_ui = std::collections::BTreeMap::new();
-        let mut preview_anchors = std::collections::BTreeMap::new();
-        let mut preview_padding = std::collections::BTreeMap::new();
         let pivot = scene_drag_pivot(self.gizmo_pivot, self.selection.primary(), &drag.initial);
         // 转角与轨道**共用同一个数**：吸附生效时两者一起跳，不会出现"框在转、人没转到那个角度"。
         // 单位是**度**的步长（`snap_angle_step`），不是位置的 `snap_step`——把 0.5 个世界单位
@@ -101,64 +98,19 @@ impl EditorApp {
         let angle =
             crate::gizmo::snap_angle(raw_angle, self.snap_enabled.then_some(self.snap_angle_step));
         let factor = crate::gizmo::scale_factor(delta, egui::vec2(1.0, 0.0));
-        // Phase 5d：padding 模式——单独处理，不依赖 ui_initial。
-        if let Some(handle) = self.scene_state.padding_handle {
-            if let Some((initial_padding, outer_rect)) = self.scene_state.padding_drag_initial
-                && let Some(primary) = self.selection.primary()
-            {
-                let design_w = self.preview_resolution.0 as f32;
-                let panel_w = outer_rect.width();
-                let design_to_panel_scale = panel_w / design_w.max(1.0);
-                let new_padding = scene_resize::compute_padding_values(
-                    initial_padding,
-                    delta,
-                    design_to_panel_scale,
-                    handle,
-                );
-                preview_padding.insert(primary, new_padding);
-            }
-            self.scene_state.preview_padding = preview_padding;
-            self.apply_drag_preview_to_runtime();
-            return;
-        }
         for id in &drag.ids {
-            // UI 组件拖拽：只预览 UiLayout offsets/anchors，不写 Transform。
+            // UI 组件拖拽：只预览 UiLayout offsets，不写 Transform。
             if let Some(ui) = drag.ui_initial.get(id) {
-                if let Some(handle) = self.scene_state.anchor_handle {
-                    // Phase 5c：anchor 模式——按手柄修改 anchors。
-                    let parent_panel_size = egui::vec2(
-                        self.preview_resolution.0 as f32 * self.scene_zoom / scale,
-                        self.preview_resolution.1 as f32 * self.scene_zoom / scale,
-                    );
-                    let new_anchors = scene_resize::compute_anchor_values(
-                        ui.anchors,
-                        delta,
-                        parent_panel_size,
-                        handle,
-                    );
-                    preview_anchors.insert(*id, new_anchors);
-                    // anchor 模式下 offsets 保持不变。
-                    preview_ui.insert(*id, ui.offsets);
-                } else {
-                    let per_axis = egui::vec2(self.scene_zoom / scale, self.scene_zoom / scale);
-                    let design_delta =
-                        scene_resize::panel_delta_to_design_delta(delta, self.scene_zoom, scale);
-                    let new_offsets = if let Some(handle) = self.scene_state.resize_handle {
-                        // Phase 5a：resize 模式——按手柄只改对应边的 offset。
-                        scene_resize::compute_resize_offsets(ui.offsets, design_delta, handle)
-                    } else {
-                        // 正常平移模式——四边同移。
-                        [
-                            ui.offsets[0] + delta.x / per_axis.x,
-                            ui.offsets[1] + delta.y / per_axis.y,
-                            ui.offsets[2] + delta.x / per_axis.x,
-                            ui.offsets[3] + delta.y / per_axis.y,
-                        ]
-                    };
-                    preview_ui.insert(*id, new_offsets);
-                    // 非 anchor 模式下 anchors 保持不变。
-                    preview_anchors.insert(*id, ui.anchors);
-                }
+                let per_axis = egui::vec2(self.scene_zoom / scale, self.scene_zoom / scale);
+                preview_ui.insert(
+                    *id,
+                    [
+                        ui.offsets[0] + delta.x / per_axis.x,
+                        ui.offsets[1] + delta.y / per_axis.y,
+                        ui.offsets[2] + delta.x / per_axis.x,
+                        ui.offsets[3] + delta.y / per_axis.y,
+                    ],
+                );
                 continue;
             }
             let initial = drag.initial[id];
@@ -178,7 +130,6 @@ impl EditorApp {
         }
         self.scene_state.preview = preview;
         self.scene_state.preview_ui = preview_ui;
-        self.scene_state.preview_anchors = preview_anchors;
         // 拖动中只把预览写入运行时 ECS，避免每帧重建 Lua/ECS；松手时由
         // finish_scene_drag 事务化写入文档，生成单条 Undo + 单次保存。
         self.apply_drag_preview_to_runtime();
@@ -188,10 +139,6 @@ impl EditorApp {
     pub(crate) fn scene_pointer_up(&mut self, pos: egui::Pos2) -> ToolPhase {
         self.finish_scene_drag();
         self.scene_state.drag = None;
-        self.scene_state.resize_handle = None;
-        self.scene_state.anchor_handle = None;
-        self.scene_state.padding_handle = None;
-        self.scene_state.padding_drag_initial = None;
         self.interaction.handle(InteractionEvent::PointerUp {
             pos: [pos.x, pos.y],
         });
@@ -310,93 +257,5 @@ impl EditorApp {
             egui::FontId::proportional(13.0),
             egui::Color32::from_rgb(240, 220, 120),
         );
-    }
-
-    /// Phase 5a：返回当前唯一选中 UI 实体的面板包围框（仅 Widget 模式、单选时有意义）。
-    pub(crate) fn selected_ui_entity_rect(
-        &self,
-        pointer: egui::Pos2,
-        entities: &[SceneBoxedEntity],
-    ) -> Option<egui::Rect> {
-        if self.scene_view_mode != SceneViewMode::Widget {
-            return None;
-        }
-        let primary = self.selection.primary()?;
-        let entity = entities.iter().find(|e| e.id == primary)?;
-        entity.ui.as_ref()?;
-        let rect = egui::Rect::from_center_size(entity.center, entity.size);
-        // 指针必须在包围框附近（留出手柄大小的余量）。
-        let margin = scene_resize::HANDLE_HALF_SIZE + 4.0;
-        let expanded = rect.expand(margin);
-        expanded.contains(pointer).then_some(rect)
-    }
-
-    /// Phase 5c：返回主选 UI 实体的锚点矩形（面板坐标），用于锚点手柄命中测试。
-    pub(crate) fn selected_ui_anchor_rect(
-        &self,
-        _pointer: egui::Pos2,
-        entities: &[SceneBoxedEntity],
-    ) -> Option<egui::Rect> {
-        if self.scene_view_mode != SceneViewMode::Widget {
-            return None;
-        }
-        let primary = self.selection.primary()?;
-        let entity = entities.iter().find(|e| e.id == primary)?;
-        let ui_entity = entity.ui.as_ref()?;
-        // 需要面板矩形来调用 design_rect_to_panel。
-        let panel_rect = self.scene_canvas_rect;
-        if panel_rect.is_negative() {
-            return None;
-        }
-        let parent_w = self.preview_resolution.0 as f32;
-        let parent_h = self.preview_resolution.1 as f32;
-        let anchor_origin = [
-            ui_entity.layout.anchors[0] * parent_w,
-            ui_entity.layout.anchors[1] * parent_h,
-        ];
-        let anchor_size = [
-            (ui_entity.layout.anchors[2] - ui_entity.layout.anchors[0]) * parent_w,
-            (ui_entity.layout.anchors[3] - ui_entity.layout.anchors[1]) * parent_h,
-        ];
-        Some(design_rect_to_panel(
-            panel_rect,
-            self.scene_state.pan,
-            self.scene_zoom,
-            self.scene_canvas_rect.width().max(1.0) / panel_rect.width().max(1.0),
-            self.game_camera_center_egui(),
-            self.preview_resolution,
-            anchor_origin,
-            anchor_size,
-        ))
-    }
-
-    /// Phase 5d：命中测试选中 Container 实体的 padding 手柄。
-    /// 返回 (手柄, 外框矩形, 当前 padding, 设计→面板缩放)。
-    pub(crate) fn selected_container_padding_hit(
-        &self,
-        pointer: egui::Pos2,
-        entities: &[SceneBoxedEntity],
-    ) -> Option<scene_resize::PaddingHandle> {
-        if self.scene_view_mode != SceneViewMode::Widget {
-            return None;
-        }
-        let primary = self.selection.primary()?;
-        let entity = entities.iter().find(|e| e.id == primary)?;
-        let scene = panel_scene_document(&self.play_session, &self.document)?;
-        let scene_entity = scene.scene.entities.get(&primary)?;
-        let container_raw = scene_entity.components.get("Container")?;
-        let style =
-            rustlua_ui::ui_layout::ContainerStyle::from_component_str(container_raw).ok()?;
-        let padding = self
-            .scene_state
-            .preview_padding
-            .get(&primary)
-            .copied()
-            .unwrap_or(style.padding);
-        let outer_rect = egui::Rect::from_center_size(entity.center, entity.size);
-        let design_w = self.preview_resolution.0 as f32;
-        let panel_w = outer_rect.width();
-        let design_to_panel_scale = panel_w / design_w.max(1.0);
-        scene_resize::hit_test_padding_handle(outer_rect, padding, design_to_panel_scale, pointer)
     }
 }

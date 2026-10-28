@@ -80,7 +80,7 @@ impl EditorApp {
         let width = (rect.width() * scale) as u32;
         let height = (rect.height() * scale) as u32;
         // M27-01：3D 视图同样是放置区（把 .glb / 预制体拖进透视口是游戏编辑器的常态动作）。
-        // 这里的落点只有"建实体"一种语义：控件属于 Widget 模式，重排属于层级。
+        // 这里的落点只有"建实体"一种语义：重排属于层级。
         let (_, dropped) = ui
             .dnd_drop_zone::<crate::dnd::DropPayload, _>(egui::Frame::default(), |ui| {
                 ui.allocate_rect(rect, egui::Sense::hover())
