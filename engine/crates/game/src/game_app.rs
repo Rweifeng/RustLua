@@ -17,7 +17,7 @@ use rustlua_infra::window::{AppLifecycle, has_renderable_size};
 use rustlua_input::input::{InputSnapshot, MouseButton};
 use winit::{
     application::ApplicationHandler,
-    dpi::PhysicalSize,
+    dpi::{PhysicalPosition, PhysicalSize},
     event::{ElementState, Ime, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow},
     keyboard::ModifiersState,
@@ -811,7 +811,7 @@ impl ApplicationHandler for GameApp {
         // 窗口尺寸由工程声明（`project.toml` 的 `window_width`/`window_height`），缺省
         // 1280×720 横屏。**为什么不能写死**：竖版工程（`game_jhyt` 的 720×1280）里
         // Lua 动态 UI 是屏幕像素空间、不随参考分辨率缩放，窗口比例不对就会整块画到屏幕外。
-        let (window_width, window_height) = match self.project_root.as_deref() {
+        let design_size = match self.project_root.as_deref() {
             Some(root) => {
                 let (size, diagnostics) = rustlua_infra::project_config::window_size(root);
                 for diagnostic in diagnostics {
@@ -821,21 +821,41 @@ impl ApplicationHandler for GameApp {
             }
             None => rustlua_infra::project_config::DEFAULT_WINDOW_SIZE,
         };
-        let scale_factor = event_loop
-            .primary_monitor()
+        let primary_monitor = event_loop.primary_monitor();
+        let scale_factor = primary_monitor
+            .as_ref()
             .map(|monitor| monitor.scale_factor())
             .unwrap_or(1.0);
-        let attributes = Window::default_attributes()
+        // 设计分辨率装不下屏幕可用区（1080p 桌面上的 720×1280）时按同一比例缩小，
+        // 并把窗口摆到可用区中央——winit 不指定落点时系统级联会把缩小后的窗口摆到
+        // 屏幕外（实测外框 557×1000 落在 y=205）。运行期逻辑屏幕空间仍是设计分辨率、
+        // 渲染器 contain 到窗口，所以布局不受影响。见 `crate::window_fit`。
+        let monitor_position = primary_monitor
+            .as_ref()
+            .map(|monitor| (monitor.position().x, monitor.position().y));
+        let monitor_size = primary_monitor
+            .as_ref()
+            .map(|monitor| (monitor.size().width, monitor.size().height));
+        let initial = crate::window_fit::initial_window(
+            design_size,
+            crate::window_fit::screen_area(monitor_position, monitor_size),
+            scale_factor,
+        );
+        let (window_width, window_height) = initial.inner_size;
+        let mut attributes = Window::default_attributes()
             .with_title(&self.window_title)
             .with_window_icon(Some(window_icon(
                 self.project_root.as_deref(),
                 scale_factor,
             )))
             .with_inner_size(PhysicalSize::new(window_width, window_height));
+        if let Some((x, y)) = initial.position {
+            attributes = attributes.with_position(PhysicalPosition::new(x, y));
+        }
         // B 阶段（contain 等比适配）：运行期逻辑屏幕空间 = 设计分辨率，与窗口物理尺寸解耦。
         // 窗口可自由缩放/最大化，渲染器按 `contain_rect` 把设计盒等比居中到窗口（黑边），
         // 详见 `redraw` 与 `CursorMoved` 的适配注释。
-        self.design_size = (window_width, window_height);
+        self.design_size = design_size;
         // 任务栏图标：winit 的 `with_window_icon` 只设 `ICON_SMALL`，大图标得自己补。
         #[cfg(windows)]
         let attributes = {
@@ -845,10 +865,21 @@ impl ApplicationHandler for GameApp {
                 scale_factor,
             )))
         };
-        tracing::info!(
-            target: "game",
-            "[window] requested size: {window_width}x{window_height}"
-        );
+        if initial.inner_size == design_size {
+            tracing::info!(
+                target: "game",
+                "[window] requested size: {window_width}x{window_height} position={:?}",
+                initial.position
+            );
+        } else {
+            tracing::info!(
+                target: "game",
+                "[window] requested size: {window_width}x{window_height} position={:?} (design {}x{} scaled to fit monitor, scale_factor={scale_factor})",
+                initial.position,
+                design_size.0,
+                design_size.1
+            );
+        }
         let window = Arc::new(event_loop.create_window(attributes).expect("create window"));
         tracing::info!(target: "game", "[window] created: {:?}", window.id());
         // 在 `Renderer::new` 阻塞主线程之前把启动图放到屏幕上（同步画完）。

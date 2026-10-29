@@ -7,6 +7,7 @@ mod bundle_boot;
 mod cli;
 mod game_app;
 mod splash;
+mod window_fit;
 
 use std::path::{Path, PathBuf};
 
