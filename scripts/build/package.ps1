@@ -106,7 +106,10 @@ $gameRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $projectToml = Join-Path $gameRoot "project.toml"
 if (-not (Test-Path $projectToml)) { throw "Game project.toml was not found: $projectToml" }
 if ([string]::IsNullOrWhiteSpace($PublishName)) {
-    $nameLine = Get-Content -LiteralPath $projectToml | Where-Object { $_ -match '^\s*name\s*=\s*"(.+)"\s*$' } | Select-Object -First 1
+    # 必须显式 -Encoding UTF8：Windows PowerShell 5.1 默认按 ANSI 解码，project.toml 里的
+    # 中文注释会让整行匹配失配——`font` 行（纯 ASCII）也一样读不到，于是静默回退到默认
+    # 字体名，发布包与工程声明不一致。
+    $nameLine = Get-Content -LiteralPath $projectToml -Encoding UTF8 | Where-Object { $_ -match '^\s*name\s*=\s*"(.+)"\s*$' } | Select-Object -First 1
     if ($nameLine -and $nameLine -match '^\s*name\s*=\s*"(.+)"\s*$') { $PublishName = $Matches[1] }
     if ([string]::IsNullOrWhiteSpace($PublishName)) { $PublishName = Split-Path -Leaf $gameRoot }
 }
@@ -203,7 +206,7 @@ if (-not [string]::IsNullOrWhiteSpace($CdnPackDir) -and $Platform -ne "wechat-mi
 
 # 字体解析必须早于 index.html 生成与运行器复制：index.html 需要真实字体路径，
 # 且小游戏平台只随包分发 pack/ 里的子集字体（不复制完整字体）。
-$fontLine = Get-Content -LiteralPath $projectToml | Where-Object { $_ -match '^\s*font\s*=\s*"(.+)"\s*$' } | Select-Object -First 1
+$fontLine = Get-Content -LiteralPath $projectToml -Encoding UTF8 | Where-Object { $_ -match '^\s*font\s*=\s*"(.+)"\s*$' } | Select-Object -First 1
 $fontRelative = if ($fontLine -and $fontLine -match '^\s*font\s*=\s*"(.+)"\s*$') { $Matches[1] } else { "assets/fonts/NotoSansSC-VF.ttf" }
 $fontSource = Join-Path $gameRoot ($fontRelative -replace '/', '\\')
 if (-not (Test-Path $fontSource)) { throw "Game font resource was not found: $fontSource" }
