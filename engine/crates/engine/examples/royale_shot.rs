@@ -32,8 +32,12 @@ fn main() -> Result<(), String> {
         .nth(2)
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join("artifacts").join("royale-3d.png"));
-    let steps = std::env::args()
-        .nth(3)
+    // 第三个参数：步数，或 `menu`——只走一帧开始界面（战斗帧停在 0），用来给
+    // 标题页出图（背景铺满 + 按钮九宫格）。
+    let arg3 = std::env::args().nth(3);
+    let menu_mode = arg3.as_deref() == Some("menu");
+    let steps = arg3
+        .as_deref()
         .and_then(|value| value.parse::<u32>().ok())
         .unwrap_or(STEPS);
 
@@ -41,14 +45,27 @@ fn main() -> Result<(), String> {
         .map_err(|error| format!("加载 battle.scene：{error}"))?;
     let mut runtime =
         RuntimeScene::from_scene(Some(&root), scene).map_err(|error| format!("实例化：{error}"))?;
-    runtime
-        .with_script(|script| script.eval_json("__royale_autoplay(true) or true"))
-        .map_err(|error| format!("开启 AI 自走：{error}"))?;
+    if !menu_mode {
+        runtime
+            .with_script(|script| script.eval_json("__royale_autoplay(true) or true"))
+            .map_err(|error| format!("开启 AI 自走：{error}"))?;
+    }
     let input = InputSnapshot::default();
-    for step in 0..steps {
+    // 受击血条用 `camera3d.world_to_screen` 投影：它读的是**帧首 `vertices()` 回填**的
+    // 相机快照，离屏路径不跑这一步就永远拿不到。相机是静态的，开跑前回填一次即可。
+    runtime
+        .vertices(WIDTH, HEIGHT)
+        .map_err(|error| format!("相机回填：{error}"))?;
+    if menu_mode {
         runtime
             .run_script_steps(1, 1.0 / 60.0, &input)
-            .unwrap_or_else(|error| panic!("第 {step} 步失败：{error}"));
+            .map_err(|error| format!("开始界面帧：{error}"))?;
+    } else {
+        for step in 0..steps {
+            runtime
+                .run_script_steps(1, 1.0 / 60.0, &input)
+                .unwrap_or_else(|error| panic!("第 {step} 步失败：{error}"));
+        }
     }
 
     let stats = runtime
@@ -114,6 +131,49 @@ fn main() -> Result<(), String> {
         .save(&output)
         .map_err(|error| format!("保存 PNG：{error}"))?;
 
+    if menu_mode {
+        // 开始界面没有战斗内容，只看"背景是否铺满"：整屏应几乎全是画面，
+        // 且四边都摸到边（背景没盖住时，窗口上下会露出清屏色的横带，
+        // 那时左上角本身就是清屏色，bounds 直接从中间开始）。
+        let total = u64::from(WIDTH) * u64::from(HEIGHT);
+        let (x0, y0, x1, y1) = stats_pixels.bounds;
+        if stats_pixels.non_background * 100 < total * 85 {
+            return Err(format!(
+                "开始界面背景没铺满：只有 {} / {} 个非背景像素",
+                stats_pixels.non_background, total
+            ));
+        }
+        if x0 > 4 || y0 > 4 || x1 + 4 < WIDTH || y1 + 4 < HEIGHT {
+            return Err(format!(
+                "开始界面四边有露出：bounds={:?}",
+                stats_pixels.bounds
+            ));
+        }
+        let corner = |x: u32, y: u32| {
+            let index = ((y * WIDTH + x) * 4) as usize;
+            [
+                pixels[index],
+                pixels[index + 1],
+                pixels[index + 2],
+                pixels[index + 3],
+            ]
+        };
+        println!(
+            "menu ok: png={} frame={} nonbg={}/{} bounds={:?} corners={:?}/{:?}/{:?}/{:?} ui_draws={}",
+            output.display(),
+            stats["frame"],
+            stats_pixels.non_background,
+            total,
+            stats_pixels.bounds,
+            corner(2, 2),
+            corner(WIDTH - 3, 2),
+            corner(2, HEIGHT - 3),
+            corner(WIDTH - 3, HEIGHT - 3),
+            metrics.draw_calls,
+        );
+        return Ok(());
+    }
+
     if stats_pixels.non_background < 20_000 {
         return Err(format!(
             "3D 画面几乎空白：只有 {} 个非背景像素",
@@ -135,12 +195,15 @@ fn main() -> Result<(), String> {
         }
     }
     println!(
-        "shot ok: png={} adapter={:?}/{} frame={} units={} drawables={} instances={} triangles={} draw_calls={} nonbg={} green={} blue={} red={} bounds={:?}",
+        "shot ok: png={} adapter={:?}/{} frame={} units={} damaged={} bars={} tower_bars={} drawables={} instances={} triangles={} draw_calls={} nonbg={} green={} blue={} red={} bounds={:?}",
         output.display(),
         info.backend,
         info.name,
         stats["frame"],
         stats["units"],
+        stats["damaged_towers"],
+        stats["hp_bars"],
+        stats["hp_bars_towers"],
         extracted.drawables.len(),
         metrics.instances,
         metrics.triangles,

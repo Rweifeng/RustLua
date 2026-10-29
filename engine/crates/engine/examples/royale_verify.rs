@@ -12,6 +12,8 @@
 //!    重置后再用真实 `InputSnapshot` 注入鼠标按下/抬起：先点第 4 张手牌，再点屏幕下方
 //!    （己方半场）——要求选中槽位生效、`camera3d.pick_plane` 把点击落到点击处附近
 //!    （而不是固定出生点）、手牌轮转、圣水扣费。
+//! 4. **移动速度**：裸 VM 里逐卡部署并走 60 帧，实测速度必须等于 `B.CARDS[*].speed`
+//!    （毫单位/秒），且 8 张卡彼此不同。
 //!
 //! 运行：
 //!
@@ -32,7 +34,7 @@ use rustlua_input::input::{InputSnapshot, MouseButton};
 use rustlua_net::{Desync, Session, SessionConfig, TcpTransport};
 use rustlua_scene::scene::Scene;
 
-const SCENE_STEPS: u32 = 900;
+const SCENE_STEPS: u32 = 1_800;
 const NET_FRAMES: u32 = 600;
 const NET_DELAY: u32 = 2;
 const SCREEN_W: u32 = 720;
@@ -98,6 +100,135 @@ fn main() {
         ui.elixir_after,
         ui.spawned_before,
         ui.spawned_after,
+    );
+
+    let speed = run_speed_probe(&root);
+    assert_speed_report(&speed);
+    let readings: Vec<String> = speed
+        .cards
+        .iter()
+        .map(|(name, want, got)| format!("{name}={want:.3}/{got:.3}"))
+        .collect();
+    println!("speed ok: {}", readings.join(" "));
+
+    let played = run_match(&root);
+    assert_match(&played);
+    println!(
+        "match ok: frames={} spawned={} crowns={}-{} winner={} cards={}",
+        played.frames,
+        played.spawned,
+        played.crowns[0],
+        played.crowns[1],
+        played.winner,
+        played.cards.join(","),
+    );
+}
+
+struct MatchReport {
+    frames: u32,
+    spawned: i64,
+    crowns: [i64; 2],
+    winner: i64,
+    cards: Vec<String>,
+}
+
+/// 整局 AI 对局（双方都用 `ai.lua`）跑到结束：锁住「一局真能打出胜负」与
+/// 「8 张牌里至少推进核心会被打出来」，顺带覆盖中局的寻路/重算路径（曾在这里崩过）。
+fn run_match(root: &Path) -> MatchReport {
+    let lua = Lua::new();
+    let nav = rustlua_gameplay::nav_lua::state();
+    rustlua_gameplay::nav_lua::install(&lua, &nav).expect("安装 nav");
+    let battle: Table = lua
+        .load(
+            std::fs::read_to_string(root.join("scripts").join("battle.lua"))
+                .expect("读取 battle.lua"),
+        )
+        .set_name("battle.lua")
+        .eval()
+        .expect("加载 battle.lua");
+    {
+        let package: Table = lua.globals().get("package").expect("package");
+        let loaded: Table = package.get("loaded").expect("package.loaded");
+        loaded.set("battle", battle.clone()).expect("注册 battle");
+    }
+    let ai: Table = lua
+        .load(std::fs::read_to_string(root.join("scripts").join("ai.lua")).expect("读取 ai.lua"))
+        .set_name("ai.lua")
+        .eval()
+        .expect("加载 ai.lua");
+    let new_battle: Function = battle.get("new").expect("battle.new");
+    let step_battle: Function = battle.get("step").expect("battle.step");
+    let ai_new: Function = ai.get("new").expect("ai.new");
+    let ai_decide: Function = ai.get("decide").expect("ai.decide");
+
+    let state: Table = new_battle.call(()).expect("battle.new()");
+    let memories = [
+        ai_new.call::<Table>(()).expect("ai.new()"),
+        ai_new.call::<Table>(()).expect("ai.new()"),
+    ];
+    let mut cards = std::collections::BTreeSet::new();
+    let mut frames = 0;
+    loop {
+        let mut decided = Vec::with_capacity(2);
+        for side in 1..=2i64 {
+            let input: mlua::Value = ai_decide
+                .call((state.clone(), side, memories[(side - 1) as usize].clone()))
+                .expect("ai.decide");
+            decided.push(input);
+        }
+        let inputs: Table = lua.create_table().expect("inputs");
+        for (index, input) in decided.into_iter().enumerate() {
+            inputs.set(index + 1, input).expect("inputs[i]");
+        }
+        step_battle
+            .call::<()>((state.clone(), inputs))
+            .expect("battle.step");
+        frames += 1;
+        let units: Table = state.get("units").expect("units");
+        let count: i64 = units.len().expect("units.len");
+        for index in 1..=count {
+            let unit: Table = units.get(index).expect("unit");
+            let card: String = unit.get("card").expect("unit.card");
+            cards.insert(card);
+        }
+        let finished: bool = state.get("finished").expect("finished");
+        if finished || frames >= 20_000 {
+            break;
+        }
+    }
+    let crowns: Table = state.get("crowns").expect("crowns");
+    MatchReport {
+        frames,
+        spawned: state.get("spawned").expect("spawned"),
+        crowns: [
+            crowns.get(1).expect("crowns[1]"),
+            crowns.get(2).expect("crowns[2]"),
+        ],
+        winner: state.get("winner").expect("winner"),
+        cards: cards.into_iter().collect(),
+    }
+}
+
+fn assert_match(report: &MatchReport) {
+    assert!(
+        report.frames <= 20_000,
+        "整局跑满 20000 帧还没结束，AI 的推进/防守没能收尾"
+    );
+    let total: i64 = report.crowns.iter().sum();
+    assert!(
+        total >= 1,
+        "整局 {} 帧、{} 次出兵却 0-0 收尾：推进没有形成有效伤害",
+        report.frames,
+        report.spawned
+    );
+    assert!(
+        report.spawned >= 30,
+        "整局只出兵 {} 次，AI 出牌节奏不对",
+        report.spawned
+    );
+    assert!(
+        report.cards.iter().any(|card| card == "giant"),
+        "巨人一次都没被打出来：手牌轮转又把它饿死了"
     );
 }
 
@@ -613,5 +744,108 @@ fn action_payload(player: u8, tick: u32) -> [u8; 2] {
         [slot, lane]
     } else {
         [0, 1]
+    }
+}
+
+struct SpeedReport {
+    /// (卡名, 属性速度, 实测速度)，单位都是世界单位/秒；按 `CARD_NAMES` 的固定顺序。
+    cards: Vec<(String, f64, f64)>,
+}
+
+const CARD_NAMES: [&str; 8] = [
+    "knight",
+    "archer",
+    "giant",
+    "musketeer",
+    "mini",
+    "valkyrie",
+    "hog",
+    "bomber",
+];
+
+/// 每张卡各开一局干净战斗，按车道出生点部署后走 60 帧，累加逐帧位移：
+/// 60 帧正好 1 秒，走过的世界距离就是实测速度。
+fn run_speed_probe(root: &Path) -> SpeedReport {
+    let lua = Lua::new();
+    let nav = rustlua_gameplay::nav_lua::state();
+    rustlua_gameplay::nav_lua::install(&lua, &nav).expect("安装 nav");
+    let source =
+        std::fs::read_to_string(root.join("scripts").join("battle.lua")).expect("读取 battle.lua");
+    let battle: Table = lua
+        .load(&source)
+        .set_name("battle.lua")
+        .eval()
+        .expect("加载 battle.lua");
+    let new_battle: Function = battle.get("new").expect("battle.new");
+    let step_battle: Function = battle.get("step").expect("battle.step");
+    let deploy: Function = battle.get("deploy").expect("battle.deploy");
+    let snapshot: Function = battle.get("snapshot").expect("battle.snapshot");
+    let cards: Table = battle.get("CARDS").expect("battle.CARDS");
+
+    let mut report = Vec::with_capacity(CARD_NAMES.len());
+    for card in CARD_NAMES {
+        let def: Table = cards
+            .get(card)
+            .unwrap_or_else(|_| panic!("缺少卡牌 {card}"));
+        let attr: f64 = def.get("speed").expect("speed");
+        let state: Table = new_battle.call(()).expect("battle.new()");
+        let elixir: Table = state.get("elixir").expect("elixir");
+        elixir.set(1, 1_000_000).expect("圣水拉满");
+        let hands: Table = state.get("hands").expect("hands");
+        let hand: Table = hands.get(1).expect("手牌");
+        hand.set(1, card).expect("指定手牌");
+        let ok: bool = deploy
+            .call((state.clone(), 1, 1, 1))
+            .expect("battle.deploy");
+        assert!(ok, "部署 {card} 失败");
+
+        let mut prev = unit_position(&snapshot, &state);
+        let mut walked = 0.0;
+        for _ in 0..60 {
+            step_battle
+                .call::<()>((state.clone(), mlua::Value::Nil))
+                .expect("battle.step");
+            let now = unit_position(&snapshot, &state);
+            walked += ((now.0 - prev.0).powi(2) + (now.1 - prev.1).powi(2)).sqrt();
+            prev = now;
+        }
+        report.push((card.to_owned(), attr / 1000.0, walked));
+    }
+    SpeedReport { cards: report }
+}
+
+fn unit_position(snapshot: &Function, state: &Table) -> (f64, f64) {
+    let snap: Table = snapshot.call(state.clone()).expect("battle.snapshot");
+    let units: Table = snap.get("units").expect("units");
+    let unit: Table = units.get(1).expect("场上应有刚部署的单位");
+    (
+        unit.get("x").expect("unit.x"),
+        unit.get("z").expect("unit.z"),
+    )
+}
+
+fn assert_speed_report(report: &SpeedReport) {
+    assert_eq!(
+        report.cards.len(),
+        CARD_NAMES.len(),
+        "速度探针没覆盖全部卡牌"
+    );
+    for (name, want, got) in &report.cards {
+        assert!(
+            (got - want).abs() <= want * 0.05,
+            "{name} 实测速度 {got:.3} 单位/秒 与属性 {want:.3} 不符（容差 5%）"
+        );
+    }
+    for i in 0..report.cards.len() {
+        for j in (i + 1)..report.cards.len() {
+            let (a, b) = (&report.cards[i], &report.cards[j]);
+            assert!(
+                (a.1 - b.1).abs() > 0.01,
+                "{} 与 {} 的速度属性相同（{:.3} 单位/秒）",
+                a.0,
+                b.0,
+                a.1
+            );
+        }
     }
 }
