@@ -23,6 +23,23 @@ fn msdf_alpha(sampled: vec4<f32>, screen_px_range: f32) -> f32 {
     return clamp((d - 0.5) * screen_px_range + 0.5, 0.0, 1.0);
 }
 
+// 与 `vector_text.wgsl` 同一套：sRGB 目标在线性空间做 ALPHA_BLENDING，覆盖率要过一遍
+// sRGB 传输曲线，混合结果才回到原生 UI 在 gamma 空间里的观感（否则浅色字边缘发虚）。
+fn srgb_to_linear(c: f32) -> f32 {
+    let v = clamp(c, 0.0, 1.0);
+    return select(v / 12.92, pow((v + 0.055) / 1.055, 2.4), v > 0.04045);
+}
+fn gamma_coverage(coverage: f32, rgb: vec3<f32>) -> f32 {
+    let a = clamp(coverage, 0.0, 1.0);
+    let luma = clamp(dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+    // 与 `vector_text.wgsl` 同一套：按常见 HUD 对比度假设背景（亮字深底、暗字浅底），
+    // 反解出线性混合要用的覆盖率，使字缘亮度与原生 gamma 空间混合一致。
+    let bg_s = mix(0.72, 0.16, smoothstep(0.25, 0.75, luma));
+    let bg_l = srgb_to_linear(bg_s);
+    let want = srgb_to_linear(bg_s + (luma - bg_s) * a);
+    return clamp((want - bg_l) / max(luma - bg_l, 1.0e-4), 0.0, 1.0);
+}
+
 @fragment fn fs_main(@location(0) uv: vec2<f32>, @location(1) color: vec4<f32>, @location(2) sdf: u32) -> @location(0) vec4<f32> {
     let sampled = textureSample(tex, samp, uv);
     if sdf == 1u {
@@ -62,7 +79,7 @@ fn msdf_alpha(sampled: vec4<f32>, screen_px_range: f32) -> f32 {
             + msdf_alpha(textureSampleLevel(tex, samp, uv + vec2<f32>(half_px.x, half_px.y), 0.0), screen_px_range)
         );
         // 直通 alpha：管线 ALPHA_BLENDING 已按 alpha 预乘源色，不能再乘 a。
-        return vec4<f32>(color.rgb, a);
+        return vec4<f32>(color.rgb, gamma_coverage(a, color.rgb));
     }
     if sdf == 2u {
         // Bitmap 路径：小字号下 Nearest 采样取 MSDF 中值，硬阈值化得到清晰字形边缘。

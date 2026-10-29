@@ -46,3 +46,38 @@ cargo run -p game_runner --example text_demo --release
 - Lua 侧 `world_text.attach(id, 组件串)` / `world_text.detach(id)` 供运行期创建的实体使用
   （`entity.spawn` 只插 Transform）；
 - 打包字符收集（`core/char_collect.rs`）同时扫描 `WorldText`，否则发布包会缺字。
+
+## 抗锯齿与 gamma（清晰度修复）
+
+小字号（11~14px）下"字糊"是两个独立原因叠加，两条字形路径分工不同：
+
+1. **抗锯齿斜坡太宽**（`vector_text.wgsl`）。旧版用 `smoothstep(-aa, aa, sd)`、`aa≈2`
+   物理像素；11px 字号笔画本身才 1 像素，边缘是均匀灰、笔画永远到不了满亮度（实测峰值
+   238/255）。现在用 **1 物理像素宽**的线性斜坡：
+   `coverage = clamp(sd / px + 0.5, 0, 1)`，`px = fwidth(local)` 就是 1 物理像素在 em
+   空间的长度，与原生光栅器的面积覆盖同一口径。
+2. **混合空间不对**（两条路径都有）。渲染目标是 sRGB 格式，管线用 `ALPHA_BLENDING`，
+   硬件在**线性**空间混合；原生 GDI/DirectWrite 在 gamma 空间按覆盖率插值。同一 alpha
+   下线性混合的浅色字边缘明显更亮——就是肉眼看到的"光晕"。`gamma_coverage` 反解出线性
+   混合要用的覆盖率：已知前景亮度 `luma`、假设背景（亮字按 0.16 深底、暗字按 0.72 浅底，
+   按 `luma` smoothstep 过渡），求 alpha 使线性混合后的 sRGB 编码值等于
+   `bg + (fg - bg) * coverage`。
+
+原生 hinting 会把笔画吸附到整像素，覆盖率恒为 1；未 hinting 的轮廓做不到，所以
+`vector_text.wgsl` 再按 `STEM_DARKEN = 0.25` 物理像素做一次膨胀补重量（42px 标题上不到
+半个像素，字号越大影响越小）。
+
+SDF 路径（`textured.wgsl`，WebGL 与 `text_render_mode = "sdf"` 共用）只加 `gamma_coverage`：
+它的 4 点象限超采样本来就是为"细笔画整条落在采样点之间而消失"加的，再叠同样的膨胀会
+让笔画发胖发浑（同尺寸实测：加 0.25 后实心像素 126、中间灰却到 234，而同尺寸 vector 只有
+94，肉眼看是一团胖字），所以那条路径保持原斜坡与超采样。
+
+离屏验收（`royale_text_probe` 按物理像素渲染整帧，同尺寸同一段 `AUTOPLAY`）：
+
+```powershell
+# 541×961 物理像素、vector 路径；第四个参数可换 sdf / auto
+cargo run -q -p engine --example royale_text_probe -- E:/Qoder/ClashRoyale E:/Qoder/ClashRoyale/artifacts/text-crisp-541.png 541 961 vector
+```
+
+字盒 58×8 px 内（亮度 >200 记实心、60–200 记中间灰）：旧版峰值 238 / 实心 88 / 中间灰
+157 → 新版 255 / 126 / 94；FreeType 把同一字体按 12px 光栅作参考是 255 / 119 / 126。
