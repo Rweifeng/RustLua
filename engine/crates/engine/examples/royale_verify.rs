@@ -114,13 +114,15 @@ fn main() {
     let played = run_match(&root);
     assert_match(&played);
     println!(
-        "match ok: frames={} spawned={} crowns={}-{} winner={} cards={}",
+        "match ok: frames={} spawned={} crowns={}-{} winner={} cards={} penetration={:.1}/{:.1}mm",
         played.frames,
         played.spawned,
         played.crowns[0],
         played.crowns[1],
         played.winner,
         played.cards.join(","),
+        played.worst_unit_mm,
+        played.worst_tower_mm,
     );
 }
 
@@ -130,6 +132,19 @@ struct MatchReport {
     crowns: [i64; 2],
     winner: i64,
     cards: Vec<String>,
+    /// 整局逐帧测到的最大穿透量（毫单位，都按"半径和 − 圆心距"算；0 表示从没重叠）。
+    worst_unit_mm: f64,
+    worst_tower_mm: f64,
+    /// 最差那次单位重叠的帧号与双方（用于失败时定位）。
+    worst_unit_where: Option<(u32, AliveUnit, AliveUnit)>,
+}
+
+#[derive(Clone)]
+struct AliveUnit {
+    x: i64,
+    z: i64,
+    radius: i64,
+    card: String,
 }
 
 /// 整局 AI 对局（双方都用 `ai.lua`）跑到结束：锁住「一局真能打出胜负」与
@@ -167,6 +182,9 @@ fn run_match(root: &Path) -> MatchReport {
         ai_new.call::<Table>(()).expect("ai.new()"),
     ];
     let mut cards = std::collections::BTreeSet::new();
+    let mut worst_unit_mm = 0.0f64;
+    let mut worst_tower_mm = 0.0f64;
+    let mut worst_unit_where: Option<(u32, AliveUnit, AliveUnit)> = None;
     let mut frames = 0;
     loop {
         let mut decided = Vec::with_capacity(2);
@@ -186,10 +204,52 @@ fn run_match(root: &Path) -> MatchReport {
         frames += 1;
         let units: Table = state.get("units").expect("units");
         let count: i64 = units.len().expect("units.len");
+        let mut alive: Vec<AliveUnit> = Vec::with_capacity(count as usize);
         for index in 1..=count {
             let unit: Table = units.get(index).expect("unit");
             let card: String = unit.get("card").expect("unit.card");
-            cards.insert(card);
+            cards.insert(card.clone());
+            let hp: i64 = unit.get("hp").expect("unit.hp");
+            if hp > 0 {
+                alive.push(AliveUnit {
+                    x: unit.get("x").expect("unit.x"),
+                    z: unit.get("z").expect("unit.z"),
+                    radius: unit.get("radius").expect("unit.radius"),
+                    card,
+                });
+            }
+        }
+        // 穿透量 = 半径和 − 圆心距；碰撞生效时应恒 <= 0。
+        for i in 0..alive.len() {
+            for j in (i + 1)..alive.len() {
+                let (a, b) = (&alive[i], &alive[j]);
+                let dx = (a.x - b.x) as f64;
+                let dz = (a.z - b.z) as f64;
+                let gap = (dx * dx + dz * dz).sqrt();
+                let pen = (a.radius + b.radius) as f64 - gap;
+                if pen > worst_unit_mm {
+                    worst_unit_mm = pen;
+                    worst_unit_where = Some((frames, a.clone(), b.clone()));
+                }
+            }
+        }
+        let towers: Table = state.get("towers").expect("towers");
+        let tower_count: i64 = towers.len().expect("towers.len");
+        for index in 1..=tower_count {
+            let tower: Table = towers.get(index).expect("tower");
+            let hp: i64 = tower.get("hp").expect("tower.hp");
+            if hp <= 0 {
+                continue;
+            }
+            let tx: i64 = tower.get("x").expect("tower.x");
+            let tz: i64 = tower.get("z").expect("tower.z");
+            let radius: i64 = tower.get("radius").expect("tower.radius");
+            for unit in &alive {
+                let dx = (unit.x - tx) as f64;
+                let dz = (unit.z - tz) as f64;
+                let gap = (dx * dx + dz * dz).sqrt();
+                worst_tower_mm = worst_tower_mm.max((unit.radius + radius) as f64 - gap);
+            }
         }
         let finished: bool = state.get("finished").expect("finished");
         if finished || frames >= 20_000 {
@@ -206,6 +266,9 @@ fn run_match(root: &Path) -> MatchReport {
         ],
         winner: state.get("winner").expect("winner"),
         cards: cards.into_iter().collect(),
+        worst_unit_mm,
+        worst_tower_mm,
+        worst_unit_where,
     }
 }
 
@@ -229,6 +292,29 @@ fn assert_match(report: &MatchReport) {
     assert!(
         report.cards.iter().any(|card| card == "giant"),
         "巨人一次都没被打出来：手牌轮转又把它饿死了"
+    );
+    // 推挤量算出来是整数毫，位移按两轴取整分配，单帧残余 ≤3 毫都属整数量化误差；
+    // 真正的穿透（比如旧版两轴各退一半形成的 20+ 毫稳定挤压）会远超这个量级。
+    let worst = match &report.worst_unit_where {
+        Some((frame, a, b)) => format!(
+            "第 {frame} 帧 {} ({},{},r={}) 与 {} ({},{},r={})",
+            a.card, a.x, a.z, a.radius, b.card, b.x, b.z, b.radius
+        ),
+        None => "整局没有任何单位重叠".to_owned(),
+    };
+    assert!(
+        report.worst_unit_mm <= 3.0,
+        "整局里单位相互穿透了 {:.1} 毫（{} 帧、{} 次出兵）：{worst}",
+        report.worst_unit_mm,
+        report.frames,
+        report.spawned
+    );
+    assert!(
+        report.worst_tower_mm <= 3.0,
+        "整局里有单位穿进塔身 {:.1} 毫（{} 帧、{} 次出兵）",
+        report.worst_tower_mm,
+        report.frames,
+        report.spawned
     );
 }
 
