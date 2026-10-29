@@ -359,9 +359,11 @@ fn run_scene(root: &Path) -> SceneReport {
         .expect("读取 __royale_stats()");
     let mesh = runtime.vertices(SCREEN_W, SCREEN_H).expect("HUD 顶点");
     let ui_draws = mesh.draws.len();
-    // 工程字体是矢量图集：HUD 文字走 `vector_glyphs` 通道，不占 `draws`。只数 draw
-    // 会把"文字真的画出来了"错当成"只剩面板"，所以两条通道都数。
-    let hud_glyphs = mesh.vector_glyphs.len();
+    // HUD 文字按工程档位走两条通道：矢量档进 `vector_glyphs`，hinting 档进
+    // `vertices`（sdf=3，每字形 6 顶点）。两条都不占普通 draw，只数 draw 会把
+    // "文字真的画出来了"错当成"只剩面板"，所以按档位数各自通道再加总。
+    let hinted_glyphs = mesh.vertices.iter().filter(|v| v.sdf == 3).count() / 6;
+    let hud_glyphs = mesh.vector_glyphs.len() + hinted_glyphs;
     let frame = runtime.scene_3d(viewport).expect("3D 视图");
     SceneReport {
         stats,
@@ -409,7 +411,7 @@ fn assert_scene_report(first: &SceneReport, second: &SceneReport) {
         );
         assert!(
             report.hud_glyphs > 0,
-            "HUD 文字走了 0 个矢量字形——工程字体没加载或文字没布局"
+            "HUD 文字既没走矢量字形也没走 hinting 覆盖率字形——工程字体没加载或文字没布局"
         );
         let fov_degrees = report.camera_fov.to_degrees();
         assert!(

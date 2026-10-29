@@ -5,6 +5,7 @@ pub mod fit;
 pub mod font;
 pub mod font_subset;
 pub mod frame;
+pub mod hinted;
 pub mod layer;
 pub mod light;
 pub mod lod;

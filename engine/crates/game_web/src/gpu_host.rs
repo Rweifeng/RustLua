@@ -701,6 +701,8 @@ impl GpuHost {
                 // only the raster target. Passing the fitted pixel size here scales Canvas UI twice.
                 let (design_w, design_h) = crate::fit::design_size();
                 sim.set_viewport(design_w, design_h);
+                // hinting 的 ppem 按物理像素：后备缓冲是 contain 放大后的尺寸。
+                sim.set_render_scale(fit_w as f32 / design_w.max(1) as f32);
             }
         }
         // CSS：把画布摆到游戏画布内容盒的正中，尺寸按同一个比例换回 CSS 像素。

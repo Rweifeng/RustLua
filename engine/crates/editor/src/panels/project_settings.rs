@@ -35,8 +35,12 @@ const STRING_KEYS: &[&str] = &[
 ];
 
 /// `text_render_mode` 的可选值与中文展示名。
-const TEXT_RENDER_MODES: &[(&str, &str)] =
-    &[("auto", "自动"), ("vector", "矢量轮廓"), ("sdf", "距离场")];
+const TEXT_RENDER_MODES: &[(&str, &str)] = &[
+    ("auto", "自动"),
+    ("vector", "矢量轮廓"),
+    ("sdf", "距离场"),
+    ("hinted", "整像素 hinting"),
+];
 
 /// 项目设置面板的缓冲状态（挂在 `EditorApp` 上；关闭窗口时仅在打开时重新读取，
 /// 避免项目切换后残留旧内容）。
@@ -817,6 +821,14 @@ mod tests {
             Path::new("/tmp/demo"),
         );
         assert_eq!(ui.text_render_mode, "vector");
+
+        let mut ui = ProjectSettingsUi::default();
+        parse_into(
+            &mut ui,
+            "[project]\ntext_render_mode = \"Hinted\"\n",
+            Path::new("/tmp/demo"),
+        );
+        assert_eq!(ui.text_render_mode, "hinted");
 
         ui.text_render_mode = "sdf";
         let content = upsert_project_toml(

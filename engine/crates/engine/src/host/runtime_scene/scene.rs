@@ -17,7 +17,7 @@ use rustlua_ecs::transform::{Transform, Transform3D, Vec2};
 use rustlua_infra::par::Parallelism;
 use rustlua_physics::physics::PhysicsAuthority;
 use rustlua_render::font::FontAtlas;
-use rustlua_render::frame::{OverlayVertex, SceneDraw, VectorFontHandle};
+use rustlua_render::frame::{HintedAtlasMap, OverlayVertex, SceneDraw, VectorFontHandle};
 use rustlua_render::layer::RenderLayer;
 use rustlua_render::sprite_batch::SpriteBatch;
 use rustlua_scene::scene::{Scene, SceneEntityId};
@@ -591,6 +591,45 @@ impl RuntimeScene {
     /// 覆盖 project.toml 的文本渲染模式（编辑器保存设置后重建运行时可注入）。
     pub fn set_text_render_mode(&mut self, mode: TextRenderMode) {
         self.text_render_mode = mode;
+        self.publish_text_hint_scale();
+    }
+
+    /// 把"是否 hinted 档 + 当前物理比例"同步给脚本侧：`ui.measure_text` 据此把字号
+    /// 量化到整数物理 ppem（与 `build_hinted` 同口径），否则居中/裁剪按更窄的宽度算。
+    fn publish_text_hint_scale(&mut self) {
+        let scale = (self.text_render_mode == TextRenderMode::Hinted).then_some(self.render_scale);
+        self.script.set_text_hint_scale(scale);
+    }
+
+    /// 声明设计分辨率 → 实际附件的等比 contain 比例（宿主每帧按当前 surface 算）。
+    ///
+    /// hinted 文字按**物理**像素排版：ppem = round(设计字号 × 本比例)，字形网格
+    /// 才与屏幕像素对齐。比例取非有限/非正值时退回 1.0（退化即"不做物理缩放"，
+    /// 与 `contain_rect` 的退化口径一致，不让坏数传染成消失的字）。
+    pub fn set_render_scale(&mut self, scale: f32) {
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        if (self.render_scale - scale).abs() < 1e-6 {
+            return;
+        }
+        self.render_scale = scale;
+        // ppem 会整体变化：旧图集的键（字体+ppem）不再被命中，留着只占内存。
+        // 版本账一并清空——新图集必须重新上报像素，否则渲染器拿空像素当"未变化"。
+        if let Ok(mut map) = self.hinted_atlases.lock() {
+            map.clear();
+        }
+        self.hinted_versions.clear();
+        self.frame_hinted_keys.clear();
+        // 度量口径跟着物理比例一起变：`ui.measure_text` 的量化字号 = round(字号×比例)。
+        self.publish_text_hint_scale();
+    }
+
+    /// 注入共享的 hinting 覆盖率图集缓存（编辑器跨运行时重建复用）。
+    pub fn set_hinted_atlases(&mut self, hinted_atlases: HintedAtlasMap) {
+        self.hinted_atlases = hinted_atlases;
     }
 
     /// 注入共享字体图集（编辑器在运行时重建时复用，避免每帧重新生成 MSDF 字形）。
@@ -637,6 +676,11 @@ impl RuntimeScene {
         if let Some(root) = project_root {
             script.set_project_root(root.to_path_buf());
         }
+        // 文本档位要在**跑工程脚本之前**定下来：`ui.measure_text` 在脚本加载期就可能被
+        // 调用（菜单布局），hinted 档必须一开始就按量化字号度量，否则首帧按更窄的宽度
+        // 居中、实画的行向右溢。初始 render_scale 是 1.0（宿主拿到 surface 后才改）。
+        let text_render_mode = project_text_render_mode(project_root);
+        script.set_text_hint_scale((text_render_mode == TextRenderMode::Hinted).then_some(1.0));
         let instantiated = if run_script {
             script.instantiate_scene(&scene)?
         } else {
@@ -686,7 +730,6 @@ impl RuntimeScene {
                 tracing::info!(target: "script", path = %script_path.display(), "[script] game project has no scripts/main.lua; script runtime idle");
             }
         }
-        let text_render_mode = project_text_render_mode(project_root);
         // docs/54 §8-①：场景声明了自己的 `Camera2D`（正交相机）就用它当**初始**相机；
         // 没声明则保持历史默认（中心 = 设计分辨率中心、zoom = 1）。之后 Lua `camera2d.*`
         // 与相机控制器照旧移动它——声明的相机是起点，不是第二份姿态真源。
@@ -759,6 +802,12 @@ impl RuntimeScene {
             frame_font_keys: Vec::new(),
             missing_fonts: HashSet::new(),
             missing_vector_fonts: HashSet::new(),
+            missing_hinted_fonts: HashSet::new(),
+            render_scale: 1.0,
+            hinted_atlases: Arc::new(Mutex::new(HashMap::new())),
+            hinted_font_bytes: HashMap::new(),
+            hinted_versions: HashMap::new(),
+            frame_hinted_keys: Vec::new(),
             text_render_mode,
             ui_scene_nodes,
             ui_layout_rects: BTreeMap::new(),

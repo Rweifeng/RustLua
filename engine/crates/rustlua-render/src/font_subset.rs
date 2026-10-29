@@ -134,12 +134,22 @@ pub fn subset_ttf(source: &[u8], chars: &str) -> Result<Vec<u8>, String> {
     // 字体 ⇒ 浏览器 @font-face 与微信模拟器 gamePage 全拿不到像素字）。渲染链不读 glyph 名，
     // 重建为 format 3.0（32 字节、无名字表，保留源表的度量头）。
     let post_out = rebuild_post_static(post_raw);
-    write_ttf(&[
+    // hinting 指令表原样保留：fpgm/prep 是 ppem 无关的字体级字节码，cvt 是 fUnits 值表，
+    // gasp 决定灰度/平滑策略。丢任一张，swash 的 `hint(true)` 就只能退化成未 hinting 轮廓，
+    // 子集字体看起来仍然"能渲染"，只是 hinting 档的锐利度在发布包里悄悄消失。
+    let mut tables: Vec<(Vec<u8>, Vec<u8>)> = vec![
         (
             b"OS/2".to_vec(),
             os2_raw.map(|b| b.to_vec()).unwrap_or_default(),
         ),
         (b"cmap".to_vec(), cmap_bytes),
+    ];
+    for tag in [b"cvt ", b"fpgm", b"gasp"] {
+        if let Some(raw) = raw_table(source, tag) {
+            tables.push((tag.to_vec(), raw.to_vec()));
+        }
+    }
+    tables.extend([
         (b"glyf".to_vec(), new_glyf),
         (b"head".to_vec(), head),
         (b"hhea".to_vec(), hhea),
@@ -148,7 +158,11 @@ pub fn subset_ttf(source: &[u8], chars: &str) -> Result<Vec<u8>, String> {
         (b"maxp".to_vec(), maxp),
         (b"name".to_vec(), name_raw.to_vec()),
         (b"post".to_vec(), post_out),
-    ])
+    ]);
+    if let Some(raw) = raw_table(source, b"prep") {
+        tables.push((b"prep".to_vec(), raw.to_vec()));
+    }
+    write_ttf(&tables)
 }
 
 /// 把 post 重建为 format 3.0（无 glyph 名）。源表缺失或短于 32 字节时给零值头。
@@ -494,6 +508,30 @@ mod tests {
             face.glyph_index(not_included).is_none(),
             "未收集的字符不应在子集 cmap 中"
         );
+    }
+
+    /// hinting 档的发布字体必须带着指令表过子集：`fpgm`/`prep`/`cvt `/`gasp` 任一丢失，
+    /// swash 的 `hint(true)` 都只能退化回未 hinting 轮廓——字形照样渲染、日志一个字没有，
+    /// 发布包的锐利度就这样静默消失（`HintedAtlas::is_hinted` 与运行时回退判据相同）。
+    ///
+    /// 字体路径取自 `RUSTLUA_HINTED_TEST_FONT`（仓库不带 24MB 商用字体），未设置时让路。
+    #[test]
+    fn subset_keeps_hinting_tables_and_stays_hinted() {
+        let Some(path) = std::env::var_os("RUSTLUA_HINTED_TEST_FONT") else {
+            return;
+        };
+        let source = std::fs::read(&path).expect("读取 hinting 测试字体");
+        let subset = subset_ttf(&source, "开始游戏AB01").expect("子集化 hinting 字体");
+        assert!(subset.len() < source.len(), "子集应小于原字体");
+        for tag in [b"fpgm", b"prep", b"cvt ", b"gasp"] {
+            assert!(
+                raw_table(&subset, tag).is_some(),
+                "子集必须保留 {} 表",
+                String::from_utf8_lossy(tag)
+            );
+        }
+        let atlas = crate::hinted::HintedAtlas::load(&subset, 12).expect("子集加载 hinting 图集");
+        assert!(atlas.is_hinted(), "子集字体必须仍被判为带 hinting");
     }
 
     /// msyh（TTC 集合，face 0）也能子集化，体积显著缩小且字形保留。

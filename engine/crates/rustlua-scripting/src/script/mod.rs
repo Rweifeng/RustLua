@@ -182,6 +182,10 @@ pub(crate) struct ScriptState {
     /// 懒加载的字体度量探针（`ui.measure_text` 用）：只读覆盖与 advance、
     /// 不光栅化字形、不占渲染图集内存。`None` = 从未尝试加载。
     font_probe: Option<Option<crate::script::domain::render::font::FontProbe>>,
+    /// hinted 档的设计→物理比例（宿主在 `text_render_mode = "hinted"` 时写入）。
+    /// `ui.measure_text` 用它把字号量化到整数物理 ppem——渲染侧 `build_hinted` 就这么
+    /// 排的，不量化会让度量比实画窄 3~4%。非 hinted 档为 `None`（设计像素口径）。
+    text_hint_scale: Option<f32>,
     /// 玩家设置根目录（P3）：发布包 → 用户数据目录（`%APPDATA%\<app>`），
     /// 开发工程 → 项目根（编辑器与验收样例直接检查工程内的 `settings.toml`）。
     /// 未设置时退回 `project_root`。
@@ -418,6 +422,16 @@ impl LuaRuntime {
         let camera = self.state.borrow().camera.clone();
         camera.with_mut(|state| visit(state.controller_mut()))
     }
+    /// 声明文字是否按整数物理像素排版（hinted 档）以及设计→物理比例。
+    ///
+    /// `ui.measure_text` 是唯一需要它的绑定：渲染侧 `build_hinted` 把字号量化成
+    /// `round(字号 × 比例)` 的 ppem，度量若仍按原字号累加推进，调用方的居中/裁剪就按
+    /// 更窄的宽度算，实画的行向右溢。非 hinted 档传 `None`。
+    pub fn set_text_hint_scale(&mut self, scale: Option<f32>) {
+        let scale = scale.filter(|scale| scale.is_finite() && *scale > 0.0);
+        self.state.borrow_mut().text_hint_scale = scale;
+    }
+
     /// Stores the current viewport so Lua `ui.grid_hit` can resolve screen
     /// coordinates. The host calls this before rendering each frame.
     pub fn set_ui_viewport(&mut self, width: u32, height: u32) {

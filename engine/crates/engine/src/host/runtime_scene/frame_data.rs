@@ -30,7 +30,7 @@ use rustlua_render::sprite_batch::{SpriteBatchItem, SpriteDrawBatch};
 use rustlua_scene::scene::SceneEntityId;
 use std::collections::HashSet;
 
-use super::{FrameView3d, RuntimeScene, merge_adjacent_draws, texture_id_of};
+use super::{FrameView3d, RuntimeScene, TextRenderMode, merge_adjacent_draws, texture_id_of};
 use crate::host::runtime_scene::tilemap::sort_world_ranges;
 
 impl RuntimeScene {
@@ -443,6 +443,7 @@ impl RuntimeScene {
         self.render_mode_routed = (0, 0, 0);
         // 每帧先清空：布局阶段（push_scene_ui 等）再把本帧用到的自定义字体 key 记入。
         self.frame_font_keys.clear();
+        self.frame_hinted_keys.clear();
         // Tile maps draw first (layer 0), sprite entities on top (layer 1+).
         //
         // WP6 顶点单趟化：瓦片与精灵的顶点**直接以 NDC 追加进同一个最终缓冲**，不再先各自
@@ -950,6 +951,12 @@ impl RuntimeScene {
         self.push_collider_debug_3d(&mut vertices, &mut draws, viewport);
         // 世界空间文字：投影锚点后走同一套字形管线；绘制在精灵之上、屏幕 UI 之下。
         // 不受 `render_ui_overlay` 开关影响——它是世界内容，不是屏幕 UI。
+        // hinting 覆盖率图集必须在**任何**文字网格构建之前长到本帧的最终尺寸：图集增长
+        // 只重缩放已缓存字形的 UV、不回改已写进顶点缓冲的 UV。三条文字通道（世界 /
+        // Lua 动态 UI / 场景实体 Text）一次预热完，后一趟就不会把前一趟的 UV 弄坏。
+        if self.text_render_mode == TextRenderMode::Hinted {
+            self.prewarm_frame_hinted_glyphs();
+        }
         self.push_world_text(
             &mut vertices,
             &mut world_sprites,
@@ -1033,7 +1040,8 @@ impl RuntimeScene {
         } else {
             None
         };
-        let custom_font_atlases = self.snapshot_custom_fonts(!vertices.is_empty());
+        let mut custom_font_atlases = self.snapshot_custom_fonts(!vertices.is_empty());
+        custom_font_atlases.extend(self.snapshot_hinted_fonts(!vertices.is_empty()));
         // WP6 世界通道的**跨产出者**排序：瓦片层、精灵、世界文字是三个各自有序的产出者
         // （瓦片与世界文字都在世界平面 z=0，精灵带自己的 z）。不写深度时顺序就是一切，
         // 因此在交给渲染器之前按"先层、再 z 从远到近、最后原有先后"整体重排一次，
@@ -1111,6 +1119,61 @@ impl RuntimeScene {
                     width: atlas.width(),
                     height: atlas.height(),
                     // 未被绘制的帧不复制像素：既不浪费内存，也不推进"已上报"版本。
+                    pixels: if changed && will_draw {
+                        atlas.pixels().to_vec()
+                    } else {
+                        Vec::new()
+                    },
+                    version,
+                },
+            });
+        }
+        out
+    }
+
+    /// 本帧用到（且自上次上报后版本变化）的 hinting 覆盖率图集。语义与
+    /// [`Self::snapshot_custom_fonts`] 相同：key 是 `font://hinted/<ppem>/<asset>`，
+    /// 渲染器按同一个“自定义字体”上传通道收（Rgba8Unorm + Nearest 绑定）。
+    fn snapshot_hinted_fonts(&mut self, will_draw: bool) -> Vec<CustomFontAtlasPixels> {
+        let mut seen: HashSet<String> = HashSet::new();
+        let keys: Vec<String> = std::mem::take(&mut self.frame_hinted_keys)
+            .into_iter()
+            .filter(|key| seen.insert(key.clone()))
+            .collect();
+        let mut out = Vec::new();
+        for key in keys {
+            let handle = match self.hinted_atlases.lock() {
+                Ok(map) => map.get(&key).cloned(),
+                Err(error) => {
+                    tracing::warn!(
+                        target: "render",
+                        key = %key,
+                        %error,
+                        "[runtime] hinted atlas lock poisoned; atlas dropped from the snapshot"
+                    );
+                    continue;
+                }
+            };
+            let Some(handle) = handle else {
+                tracing::debug!(
+                    target: "render",
+                    key = %key,
+                    "[render] hinted atlas not registered yet; skipping this frame"
+                );
+                continue;
+            };
+            let atlas = handle.lock().expect("hinted atlas lock");
+            let version = atlas.version();
+            let changed = self.hinted_versions.get(&key).copied() != Some(version);
+            if will_draw {
+                self.hinted_versions.insert(key.clone(), version);
+            }
+            out.push(CustomFontAtlasPixels {
+                key,
+                pixels: FontAtlasPixels {
+                    width: atlas.width(),
+                    height: atlas.height(),
+                    // 未被绘制的帧不复制像素，也不推进“已上报”版本（同自定义字体）。
                     pixels: if changed && will_draw {
                         atlas.pixels().to_vec()
                     } else {

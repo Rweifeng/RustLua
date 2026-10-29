@@ -81,3 +81,71 @@ cargo run -q -p engine --example royale_text_probe -- E:/Qoder/ClashRoyale E:/Qo
 
 字盒 58×8 px 内（亮度 >200 记实心、60–200 记中间灰）：旧版峰值 238 / 实心 88 / 中间灰
 157 → 新版 255 / 126 / 94；FreeType 把同一字体按 12px 光栅作参考是 255 / 119 / 126。
+
+## 整物理 ppem 的 TrueType hinting 档（`text_render_mode = "hinted"`）
+
+`vector` 档的 `STEM_DARKEN` 膨胀只是"补重量"的权宜：笔画宽度仍按比例缩放，11px 下
+中灰像素占大头。原生 GDI/DirectWrite 锐利的真正来源是字体自带的 TrueType 指令
+（`fpgm`/`prep`/`cvt `）：它们在**整数 ppem** 上把笔画宽度、笔位吸附到像素网格，
+覆盖率因此能整块取 1。这一档就是把这套字节码原样跑一遍，产出 8-bit 覆盖率图集。
+
+- **数据**：`rustlua_render::hinted::HintedAtlas`，`swash::scale::Render` 带
+  `hint(true)` 光栅化，图集每字形一张覆盖率掩膜（RGBA 四通道同值）。
+- **排版**：`TextLayout::build_hinted(text, origin, style, atlas, to_physical)`。
+  `origin`/`style`/返回的 `size` 都是**设计像素**；内部按 `to_physical`（设计盒 →
+  实际附件的 contain 比例）换算到物理像素排版，em = 图集 ppem，字形四边形与基线落在
+  整物理像素上，最后顶点再除回设计像素。调用方必须令
+  `ppem = round(设计字号 × to_physical)`——任何非整数缩放都会重新引入模糊。
+- **宿主契约**：桌面 `game_app` 每帧按窗口尺寸算 `contain_rect` 的宽度比、
+  `game_web` 按后备缓冲/`fit_now` 的 contain 盒、编辑器/离屏宿主默认 1.0，统一经
+  `RuntimeScene::set_render_scale` 声明。比例变化会清空旧 ppem 的图集与上报版本。
+- **度量同口径**：hinted 档的 `ui.measure_text` 经 `set_text_hint_scale` 拿到设计→物理
+  比例，把字号量化成 `round(字号 × 比例)` 的整数 ppem 再除回设计像素
+  （`rustlua_render::text::measure_text_with_hint_scale`），宽度与 `build_hinted` 的
+  `mesh.size[0]` 同口径（单测按 0.05px 容差对账）。不量化时实画推进按 ppem 算、度量按
+  设计字号算，差 3~4%：
+  调用方按更窄的宽度居中，整行向右溢（实测打包窗口里菜单底部提示被右边缘裁掉）。
+  高度仍是设计字号的近似——探针（ab_glyph）与光栅器（swash）读的 ascent/descent 表
+  不同，行盒高度以绘制为准。切换档位/比例时宿主立刻重新声明；脚本加载期（`main.lua`
+  顶层就调 `ui.measure_text`）也已按当时的 `render_scale` 生效。
+- **图集命名与上传**：纹理路径 `font://hinted/<ppem>/<asset>`（`asset` 为空写
+  `__default__`）。它落在 `font://` 命名空间里，渲染器复用自定义字体上传通道
+  （`Rgba8Unorm` + Nearest 绑定），shader 按顶点 `sdf=3` 走"覆盖率直采"分支
+  （`textured.wgsl`：`gamma_coverage(sampled.r) * color.a`，不再阈值化）。
+- **预热顺序**：`prewarm_frame_hinted_glyphs` 在本帧**任何**文字网格构建之前把世界
+  文字 / Lua 动态 UI / 场景实体 Text 三条通道的字形一次性光栅化。图集增长只重缩放已
+  缓存字形的 UV、不回改已写进顶点缓冲的 UV，后一趟撑大图集就会让前一趟的 UV 失效。
+- **回退**：字体读不到、或没有 `fpgm`/`prep`/`cvt `（如 Noto Sans SC VF）、或
+  `world_sprite_depth` 打开（世界深度通道只接 SDF）、或像素字体（`is_pixel_font`）
+  时，该段文字回退矢量 → SDF/点阵档，只告警一次。
+- **字体要求**：需要一份**带 TrueType 指令**的可商用字体。Sarasa UI SC（SIL OFL 1.1）
+  是目前验证过的选择；`subset_ttf` 必须在子集化时保留 `fpgm`/`prep`/`cvt `/`gasp`，
+  否则发布包里的字体等于没 hinting。
+
+11 物理像素下同一句中文（统一 alpha 度量，峰值 255）：
+
+| 路径 | 实心像素占比 | 墨量 Σcoverage |
+| --- | --- | --- |
+| 引擎 hinted（Sarasa） | 44% | 288.8 |
+| 引擎 vector（`STEM_DARKEN=0.25`） | 36% | 417.1（+44%） |
+| 引擎 vector（`STEM_DARKEN=0`） | 22% | 270.2 |
+| swash 未 hinting | 19% | 271.4 |
+
+hinting 用接近未 hinting 的墨量拿到 44% 实心像素；0.25px 膨胀只能买到 36%，代价是
+多 44% 的墨。14/18/24px 下膨胀的墨量代价分别是 +41%/+33%/+27%。
+
+离屏复现（探针本体与参考光栅逐像素对账见 `engine/examples/text_path_probe.rs`）：
+
+```powershell
+cargo run -q -p engine --example text_path_probe -- E:/Qoder/fontprobe/fonts/SarasaUiSC-Regular.ttf 11 hinted out.png
+```
+
+运行时集成测试（需要一份带指令表的字体；含 `ui.measure_text` 跟 ppem 量化的
+端到端门，以及 `rustlua-render` 里宽度与 `build_hinted` 对账的单测）：
+
+```powershell
+$env:RUSTLUA_HINTED_TEST_FONT = "E:/Qoder/fontprobe/fonts/SarasaUiSC-Regular.ttf"
+cargo test -p engine --lib host::runtime_scene::tests::custom_fonts
+cargo test -p rustlua-render --lib hint_quantized_measure_matches_build_hinted_size
+Remove-Item Env:RUSTLUA_HINTED_TEST_FONT
+```

@@ -258,6 +258,13 @@ impl RustScene {
             .map_err(|error| format!("RuntimeScene::vertices: {error:#}"))
     }
 
+    /// 声明设计分辨率 → 后备缓冲的 contain 比例（hinting 按物理像素取 ppem）。
+    /// 与 [`Self::set_viewport`] 同一口径：逻辑视口保持设计分辨率，这个比例只
+    /// 描述渲染器把设计盒等比摆进附件时放大了多少。
+    pub fn set_render_scale(&mut self, scale: f32) {
+        self.scene.set_render_scale(scale);
+    }
+
     /// P3-R07-2：把本帧 Lua 排队的 `mode='gpu'` burst 交给渲染器派发，并推进 GPU 池一次。
     ///
     /// 浏览器侧（WebGL2 无 compute）里它**不会**真的建出 GPU 系统：渲染器

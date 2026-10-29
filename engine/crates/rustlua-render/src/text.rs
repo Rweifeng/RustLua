@@ -3,6 +3,7 @@
 use crate::font::FontAtlas;
 use crate::font::FontAtlasError;
 use crate::font::FontVectorAtlas;
+use crate::hinted::HintedAtlas;
 
 /// Glyph size inside the built-in atlas: 5x7 pixels at the top-left of an
 /// 8x8 cell. The rest of the cell is transparent padding.
@@ -506,6 +507,9 @@ pub struct TextMesh {
     /// 渲染侧会以 Nearest 采样 + MSDF 阈值化（`sdf=2`）处理，
     /// 与小字号 SDF 路径（`sdf=1`，Linear + smoothstep）区分。
     pub bitmap: bool,
+    /// `true` 表示顶点 UV 指向**8-bit 覆盖率图集**（[`crate::hinted::HintedAtlas`]）：
+    /// 渲染侧按 `sdf=3` 直接把采样值当覆盖率（Nearest 采样、不再二值化）。
+    pub coverage: bool,
 }
 
 impl Default for TextMesh {
@@ -516,6 +520,7 @@ impl Default for TextMesh {
             line_count: 1,
             size: [0.0, 0.0],
             bitmap: false,
+            coverage: false,
         }
     }
 }
@@ -595,6 +600,30 @@ pub fn measure_text(
     size_px: f32,
     spacing: f32,
 ) -> MeasuredText {
+    measure_text_with_hint_scale(font, text, size_px, spacing, None)
+}
+
+/// hinted 档（`text_render_mode = "hinted"`）的同口径度量。
+///
+/// `hint_scale` 是设计像素 → 物理像素的比例（宿主每帧的 `render_scale`）。给定时字号
+/// 先量化到整数物理 ppem（`round(size_px × scale)`，与 `RuntimeScene::hinted_ppem`
+/// 同一钳位口径）再除回设计像素，行高也在物理像素上取整——这正是
+/// [`TextLayout::build_hinted`] 的排版单位。`None` 与 [`measure_text`] 完全等价。
+///
+/// 不量化就与实画宽度差 3~4%：18px 在 scale≈0.75 的窗口里按 ppem=14 画（设计宽度
+/// 等效 18.67px/em），调用方却按 18px 居中，整行向右溢（实测菜单底部提示被右边缘裁掉）。
+///
+/// **宽度**与 `build_hinted` 的 `mesh.size[0]` 同口径（同一 ppem 下的 hmtx 推进）。
+/// **高度**仍是设计字号的近似：探针（ab_glyph）与光栅器（swash）读的 ascent/descent
+/// 表不同，字形行盒高度以绘制为准，本函数的 height 只作排版预算用。
+#[must_use]
+pub fn measure_text_with_hint_scale(
+    font: &crate::font::FontProbe,
+    text: &str,
+    size_px: f32,
+    spacing: f32,
+    hint_scale: Option<f32>,
+) -> MeasuredText {
     let size = if size_px.is_finite() && size_px > 0.0 {
         size_px
     } else {
@@ -605,7 +634,15 @@ pub fn measure_text(
     } else {
         0.0
     };
-    let line_height = size * LINE_HEIGHT_EM + spacing;
+    let hint_scale = hint_scale.filter(|scale| scale.is_finite() && *scale > 0.0);
+    let ppem = hint_scale.map(|scale| (size * scale).round().clamp(1.0, 255.0));
+    let (size, line_height) = match (ppem, hint_scale) {
+        (Some(ppem), Some(scale)) => (
+            ppem / scale,
+            (ppem * LINE_HEIGHT_EM + spacing * scale).round().max(1.0) / scale,
+        ),
+        _ => (size, size * LINE_HEIGHT_EM + spacing),
+    };
     let mut width: f32 = 0.0;
     let mut line_width: f32 = 0.0;
     let mut lines = 1usize;
@@ -731,6 +768,148 @@ impl TextLayout {
             line_count: visible.max(1),
             size: [content_width, content_height],
             bitmap: true,
+            coverage: false,
+        })
+    }
+
+    /// 整物理像素 + TrueType hinting 的位图排版（覆盖率图集，`sdf=3`）。
+    ///
+    /// 与 [`TextLayout::build`] / [`TextLayout::build_vector`] 的区别是**坐标单位**：
+    /// `origin` / `style` / 返回的 `size` 都是设计像素，内部按 `to_physical`
+    /// （设计→实际附件的 contain 比例）换算到物理像素排版；em 大小由图集的整数
+    /// ppem 决定（不是 `EM_PX * style.scale`）。字形四边形落在整数物理像素上、
+    /// 位图按 1 texel = 1 px 采样；任何非整数缩放都会重新引入模糊，所以调用方
+    /// 必须令 ppem = `round(设计字号 × to_physical)`。
+    pub fn build_hinted(
+        text: &str,
+        origin: [f32; 2],
+        style: TextStyle,
+        atlas: &mut HintedAtlas,
+        to_physical: f32,
+    ) -> Result<TextMesh, TextError> {
+        if !origin.iter().all(|value| value.is_finite())
+            || !style.is_valid()
+            || !to_physical.is_finite()
+            || to_physical <= 0.0
+        {
+            return Err(TextError::InvalidStyle);
+        }
+        // 物理像素空间里的排版参数：字距、行距、对齐盒一起放大（对齐/换行/行数
+        // 截断这些规则本身与单位无关，交给同一套 helper 处理）。
+        let style_p = TextStyle {
+            spacing: style.spacing * to_physical,
+            line_spacing: style.line_spacing * to_physical,
+            box_size: style
+                .box_size
+                .map(|size| [size[0] * to_physical, size[1] * to_physical]),
+            ..style
+        };
+        let origin = [origin[0] * to_physical, origin[1] * to_physical];
+        let em = f32::from(atlas.ppem());
+        let ascent = atlas.ascent_px();
+        let first_line_height = ascent - atlas.descent_px();
+        // 行高取整：行基线必须落在整数像素上，否则整行字形都带半像素相位。
+        let line_height = (em * LINE_HEIGHT_EM + style_p.line_spacing)
+            .round()
+            .max(1.0);
+        let lines = {
+            let mut advance = |ch: char| atlas.advance(ch) + style_p.spacing;
+            layout_lines(text, &style_p, &mut advance, "…")
+        };
+        let visible = visible_lines(&style_p, lines.len(), line_height, first_line_height);
+        let lines = &lines[..visible];
+        // 行宽先算完再排版：排版要可变借用图集（光栅化缺字），闭包持有不可变
+        // 借用会在循环里冲突。
+        let line_widths: Vec<f32> = lines
+            .iter()
+            .map(|line| {
+                line.iter()
+                    .map(|character| atlas.advance(character.ch) + style_p.spacing)
+                    .sum::<f32>()
+            })
+            .collect();
+        let content_width = line_widths.iter().copied().fold(0.0_f32, f32::max);
+        let content_height = if visible == 0 {
+            0.0
+        } else {
+            first_line_height + (visible as f32 - 1.0) * line_height
+        };
+        let box_top = origin[1]
+            + style_p.valign.offset(
+                style_p.box_height().unwrap_or(content_height),
+                content_height,
+            );
+        // 合成粗体在物理空间里固定右移 1 px：半像素位移会把 hinting 的整像素
+        // 对齐又打散，字号越大这份加粗越不显眼。
+        let bold_shift = 1.0;
+        let mut glyph_count = 0;
+        let mut vertices = Vec::with_capacity(text.chars().count() * 6);
+        for (line_index, line) in lines.iter().enumerate() {
+            let line_offset = style_p
+                .align
+                .offset(
+                    style_p.box_width().unwrap_or(content_width),
+                    line_widths[line_index],
+                )
+                .round();
+            let baseline = (box_top + ascent).round() + line_index as f32 * line_height;
+            // 笔位只在**放置**时吸附到整像素：字形位图已被字体指令对齐到像素网格，
+            // 笔位若带 0.5px 相位整行又会被重采样成灰边；但推进量保持未取整，
+            // 逐字取整的累积误差会让长句整体漂移（吸附是逐字形、不是逐次累加）。
+            let mut pen = origin[0] + line_offset;
+            for character in line {
+                if character.ch == ' ' {
+                    pen += atlas.advance(' ') + style_p.spacing;
+                    continue;
+                }
+                let Some(glyph) = atlas.glyph(character.ch) else {
+                    pen += style_p.spacing;
+                    continue;
+                };
+                let x = pen.round();
+                let [left, top, right, bottom] = glyph.bounds;
+                if right > left && bottom > top {
+                    let [u_min, v_min, u_max, v_max] = glyph.uv;
+                    let corners = [
+                        [x + left, baseline + top],
+                        [x + right, baseline + top],
+                        [x + right, baseline + bottom],
+                        [x + left, baseline + bottom],
+                    ];
+                    let uvs = [
+                        [u_min, v_min],
+                        [u_max, v_min],
+                        [u_max, v_max],
+                        [u_min, v_max],
+                    ];
+                    let shifts = [0.0_f32, bold_shift];
+                    let shift_count = if character.bold { 2 } else { 1 };
+                    for shift in &shifts[..shift_count] {
+                        for index in [0usize, 1, 2, 0, 2, 3] {
+                            vertices.push(TextVertex {
+                                position: [corners[index][0] + shift, corners[index][1]],
+                                uv: uvs[index],
+                                color: character.color,
+                            });
+                        }
+                    }
+                    glyph_count += 1;
+                }
+                pen += glyph.advance + style_p.spacing;
+            }
+        }
+        // 顶点交回设计像素空间：NDC 换算与其它排版路径同一口径。
+        for vertex in &mut vertices {
+            vertex.position[0] /= to_physical;
+            vertex.position[1] /= to_physical;
+        }
+        Ok(TextMesh {
+            vertices,
+            glyph_count,
+            line_count: visible.max(1),
+            size: [content_width / to_physical, content_height / to_physical],
+            bitmap: true,
+            coverage: true,
         })
     }
 
@@ -983,6 +1162,7 @@ impl TextLayout {
             // 像素字体的字形是 1 bit/texel 的点阵，必须走阈值档（`sdf=2`）+ Nearest
             // 采样；若仍按 MSDF（`sdf=1`）做 smoothstep，点阵会被插值成灰边。
             bitmap: pixel,
+            coverage: false,
         })
     }
 }
@@ -1358,6 +1538,63 @@ mod tests {
                 assert_eq!(measured.lines, mesh.line_count);
             }
         }
+    }
+
+    /// hinted 档的宽度必须与 [`TextLayout::build_hinted`] **同口径**：`ui.measure_text`
+    /// 走 [`measure_text_with_hint_scale`]，字号量化到整数物理 ppem 后，宽度要等于布局
+    /// 输出的 `mesh.size[0]`。不量化时 18px @ scale≈0.75 会少算 3~4%，调用方按更窄的
+    /// 宽度居中，实画的行向右溢（实测菜单底部提示被右边缘裁掉）。
+    ///
+    /// 高度不在这条断言里：探针（ab_glyph）与光栅器（swash）的 ascent/descent 来源不同。
+    ///
+    /// 需要真字体：`RUSTLUA_HINTED_TEST_FONT=<带指令表的 ttf 路径>`，未设置时让路。
+    #[test]
+    fn hint_quantized_measure_matches_build_hinted_size() {
+        let Some(path) = std::env::var_os("RUSTLUA_HINTED_TEST_FONT") else {
+            return;
+        };
+        let bytes = std::fs::read(&path).expect("读取 hinting 测试字体");
+        let probe = crate::font::FontProbe::load(&bytes).unwrap();
+        let spacing = TextStyle::default().spacing;
+        // 0.751 = ClashRoyale PC 窗口客户区 541 / 设计宽 720。
+        for scale in [0.751_f32, 1.0, 1.5] {
+            for size_px in [12.0_f32, 18.0, 24.0] {
+                let ppem = (size_px * scale).round().clamp(1.0, 255.0);
+                let mut atlas = crate::hinted::HintedAtlas::load(&bytes, ppem as u16).unwrap();
+                let style = TextStyle {
+                    scale: size_px / EM_PX,
+                    ..Default::default()
+                };
+                for text in ["1-4 CARD · TAP YOUR HALF", "开始游戏", "Wood 9999"] {
+                    let mesh = TextLayout::build_hinted(text, [0.0, 0.0], style, &mut atlas, scale)
+                        .unwrap();
+                    let measured =
+                        measure_text_with_hint_scale(&probe, text, size_px, spacing, Some(scale));
+                    assert!(
+                        (measured.width - mesh.size[0]).abs() < 0.05,
+                        "width {text:?}@{size_px}×{scale}: measured={} mesh={}",
+                        measured.width,
+                        mesh.size[0]
+                    );
+                    assert!(
+                        measured.height > 0.0,
+                        "height {text:?}@{size_px}×{scale} 应是正的行盒高度",
+                    );
+                }
+            }
+        }
+        // 未给 hint_scale 时与旧度量逐位相同；给了就必须真按物理 ppem 变宽。
+        let plain = measure_text(&probe, "开始游戏", 18.0, spacing);
+        let unquantized = measure_text_with_hint_scale(&probe, "开始游戏", 18.0, spacing, None);
+        assert_eq!(plain.width, unquantized.width);
+        let quantized =
+            measure_text_with_hint_scale(&probe, "开始游戏", 18.0, spacing, Some(0.751));
+        assert!(
+            quantized.width > plain.width,
+            "0.751 下 18px 量化到 ppem=14，量出的宽度必须变大：{} vs {}",
+            quantized.width,
+            plain.width
+        );
     }
 
     /// 缺字检测：字体里没有的字符（emoji）必须被报出来；常用中文/标点不得误报。

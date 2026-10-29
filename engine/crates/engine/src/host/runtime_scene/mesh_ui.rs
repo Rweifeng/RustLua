@@ -13,6 +13,7 @@ use rustlua_render::frame::{
 };
 use rustlua_render::layer::RenderLayer;
 use rustlua_render::sprite::Sprite;
+use rustlua_render::text::TextMesh;
 use rustlua_ui::ui::{
     DynamicUiImage, UiImage, UiText, nine_slice_cells, resolve_ui_rect, ui_text_effective_scale,
 };
@@ -653,6 +654,36 @@ impl RuntimeScene {
             return Ok(());
         }
         for (position, text, scale) in visible {
+            let use_hinted = self.should_render_hinted(None);
+            if use_hinted {
+                let style = rustlua_render::text::TextStyle {
+                    scale,
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    ..Default::default()
+                };
+                match self.push_hinted_text_run_styled(
+                    vertices,
+                    draws,
+                    &text,
+                    position,
+                    style,
+                    None,
+                    width,
+                    height,
+                    RenderLayer::ScreenUI,
+                ) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            target: "render",
+                            text = %text,
+                            error = %error,
+                            "[runtime] overlay hinted text layout failed, falling back"
+                        );
+                    }
+                }
+            }
             let use_vector = self.should_render_vector(None, scale, text.chars().count());
             // 路径判定为 false 时**不能**调用 push_vector_text_run：顶点只要进了
             // vector_vertices 就会被矢量通道画出来，于是像素字体在同一帧里被点阵档
@@ -897,6 +928,44 @@ impl RuntimeScene {
                         position[1] = rect.y - bounds[1] * (1.0 - pivot[1]) - bounds[3] * pivot[1];
                     }
                 }
+                // hinting 覆盖率档（显式 `text_render_mode = "hinted"`）：与矢量档同一
+                // 牙齿——不走这条档就不能生成它的顶点，否则同一帧两条通道各画一遍。
+                if self.should_render_hinted(Some(text.font.as_str())) {
+                    match self.layout_hinted_text(
+                        &text.text,
+                        position,
+                        super::text::ui_text_style(&text, box_size, group_alpha),
+                        Some(text.font.as_str()),
+                    ) {
+                        Ok(Some((mut mesh, key))) => {
+                            if let Some(clip) = clip {
+                                clip_text_mesh(&mut mesh, clip);
+                            }
+                            if !mesh.vertices.is_empty() {
+                                self.emit_hinted_text(
+                                    vertices,
+                                    draws,
+                                    mesh,
+                                    &key,
+                                    width,
+                                    height,
+                                    RenderLayer::ScreenUI,
+                                );
+                                continue;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            tracing::warn!(
+                                target: "render",
+                                text = %text.text,
+                                entity = ?id,
+                                error = %error,
+                                "[runtime] hinted text layout failed, falling back"
+                            );
+                        }
+                    }
+                }
                 // `layout_text` already emits absolute screen-space vertices;
                 // adding the layout origin again would displace scene text by
                 // its full top-left position (the visible "text ran away" bug).
@@ -945,35 +1014,8 @@ impl RuntimeScene {
                             continue;
                         }
                     };
-                if let Some(clip) = clip
-                    && mesh.vertices.len() % 6 == 0
-                {
-                    mesh.vertices = mesh
-                        .vertices
-                        .chunks_exact(6)
-                        .filter(|glyph| {
-                            let (min_x, max_x, min_y, max_y) = glyph.iter().fold(
-                                (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
-                                |(min_x, max_x, min_y, max_y), vertex| {
-                                    (
-                                        min_x.min(vertex.position[0]),
-                                        max_x.max(vertex.position[0]),
-                                        min_y.min(vertex.position[1]),
-                                        max_y.max(vertex.position[1]),
-                                    )
-                                },
-                            );
-                            clip.intersect(ClipRect::new(
-                                min_x,
-                                min_y,
-                                max_x - min_x,
-                                max_y - min_y,
-                            ))
-                            .is_some()
-                        })
-                        .flatten()
-                        .copied()
-                        .collect();
+                if let Some(clip) = clip {
+                    clip_text_mesh(&mut mesh, clip);
                     if mesh.vertices.is_empty() {
                         continue;
                     }
@@ -1215,4 +1257,35 @@ impl RuntimeScene {
         });
         Ok(())
     }
+}
+
+/// 滚动视口的整块取舍：字形按 6 顶点一块，块与裁剪矩形不相交则整块丢弃。
+///
+/// SDF 与 hinting 覆盖率两条档共用（两者的网格都是每字形 6 顶点）；矢量档没有
+/// 逐字形裁剪，调用方在那里改走本函数能处理的档。
+fn clip_text_mesh(mesh: &mut TextMesh, clip: ClipRect) {
+    if !mesh.vertices.len().is_multiple_of(6) {
+        return;
+    }
+    mesh.vertices = mesh
+        .vertices
+        .chunks_exact(6)
+        .filter(|glyph| {
+            let (min_x, max_x, min_y, max_y) = glyph.iter().fold(
+                (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
+                |(min_x, max_x, min_y, max_y), vertex| {
+                    (
+                        min_x.min(vertex.position[0]),
+                        max_x.max(vertex.position[0]),
+                        min_y.min(vertex.position[1]),
+                        max_y.max(vertex.position[1]),
+                    )
+                },
+            );
+            clip.intersect(ClipRect::new(min_x, min_y, max_x - min_x, max_y - min_y))
+                .is_some()
+        })
+        .flatten()
+        .copied()
+        .collect();
 }

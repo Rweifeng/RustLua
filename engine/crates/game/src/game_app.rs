@@ -634,6 +634,21 @@ impl GameApp {
         // 场景/UI 顶点按设计分辨率烘焙成 NDC，渲染器再按声明视口 `contain_rect` 到
         // surface（等比居中 + 黑边）。窗口任意尺寸/最大化都保持 16:9 完整画面。
         let (design_w, design_h) = self.design_size;
+        // hinting 覆盖率图集按**物理**像素取 ppem：窗口把设计盒 contain 放大多少，
+        // 字号就按这个比例换成整数字形尺寸（顶点与逻辑视口仍是设计像素）。
+        let window_size = self
+            .window
+            .as_ref()
+            .map(|window| {
+                let size = window.inner_size();
+                (size.width, size.height)
+            })
+            .unwrap_or((design_w, design_h));
+        let (_, _, fit_width, _) =
+            rustlua_render::fit::contain_rect((design_w as f32, design_h as f32), window_size);
+        if let Some(scene) = self.runtime_scene.as_mut() {
+            scene.set_render_scale(fit_width as f32 / design_w.max(1) as f32);
+        }
         let mesh_result: Result<SceneMesh, String> = match self.runtime_scene.as_mut() {
             Some(scene) => scene
                 .vertices(design_w, design_h)

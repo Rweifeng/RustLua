@@ -34,9 +34,9 @@ use rustlua_ui::ui_scene_layout::{ResolvedUiNode, UiSceneNode, UiSceneNodeSource
 
 use crate::host::gamepad::{GamepadBackend, GamepadDeadzone, GamepadPoller};
 use rustlua_render::frame::{
-    FONT_ATLAS_TEXTURE_PATH, FontAtlasMap, OverlayVertex, SceneDraw, VectorAtlasMap,
-    VectorGlyphSnapshot, VectorSegmentSnapshot, VectorTextVertex as FrameVectorTextVertex,
-    WorldSpriteVertex, font_texture_path,
+    FONT_ATLAS_TEXTURE_PATH, FontAtlasMap, HintedAtlasMap, OverlayVertex, SceneDraw,
+    VectorAtlasMap, VectorGlyphSnapshot, VectorSegmentSnapshot,
+    VectorTextVertex as FrameVectorTextVertex, WorldSpriteVertex, font_texture_path,
 };
 
 mod camera;
@@ -61,7 +61,7 @@ mod ui_scroll;
 
 use camera::declared_camera_2d_in;
 pub use fonts::{
-    load_custom_font_atlas, load_custom_vector_atlas, load_project_font_atlas,
+    SharedFontBytes, load_custom_font_atlas, load_custom_vector_atlas, load_project_font_atlas,
     load_project_vector_atlas,
 };
 // 编辑器 Play 期间的层级同步要用它列出脚本运行期生成的实体（见 `RuntimeScene::runtime_spawned_entities`）。
@@ -206,6 +206,23 @@ pub struct RuntimeScene {
     /// 已 warn 过的加载失败字体路径（避免文本每帧 layout 时重复刷屏）。
     pub(crate) missing_fonts: HashSet<String>,
     pub(crate) missing_vector_fonts: HashSet<String>,
+    /// 不能走 hinting 档的字体（读不到 / 不带 TrueType 指令表）。同一字体失败一次即记住，
+    /// 后续帧直接回退 SDF，不再重复读盘或重复告警。
+    pub(crate) missing_hinted_fonts: HashSet<String>,
+    /// 设计分辨率 → 实际附件 的等比 contain 比例（宿主声明）。hinting 只在
+    /// 1 texel = 1 物理像素时锐利，所以 ppem 要按**物理**像素取整；默认 1.0
+    /// 表示"设计像素 = 物理像素"（离屏/编辑器/探针的常见形态）。
+    pub(crate) render_scale: f32,
+    /// hinting 覆盖率图集缓存（key = `font://hinted/<ppem>/<asset>`）。编辑器注入
+    /// 同一实例供场景视图/预览跨运行时重建复用。
+    pub(crate) hinted_atlases: HintedAtlasMap,
+    /// 字体字节缓存（key = 字体资源路径，空串 = 默认字体）。同一字体在多个 ppem
+    /// 下各建一张图集，字节只留一份；`None` 表示已知读不到，不再每次重试。
+    pub(crate) hinted_font_bytes: HashMap<String, Option<SharedFontBytes>>,
+    /// 每张 hinting 图集"上次上报版本"（语义同 `custom_font_versions`）。
+    pub(crate) hinted_versions: HashMap<String, u64>,
+    /// 本帧布局用到、待上报渲染器的 hinting 图集 key。
+    pub(crate) frame_hinted_keys: Vec<String>,
     pub(crate) text_render_mode: TextRenderMode,
     pub(crate) ui_scene_nodes: BTreeMap<u64, UiSceneNode>,
     pub(crate) ui_layout_rects: BTreeMap<u64, ResolvedUiNode>,
@@ -506,6 +523,11 @@ pub enum TextRenderMode {
     Vector,
     /// 全部文本用 MSDF/内置位图。
     Sdf,
+    /// 全部文本用整数 ppem 的 hinting 覆盖率图集（`sdf=3`）：小字号下笔画被
+    /// 字体自带的网格适配吸附到整像素，锐利度与原生 GDI/DirectWrite 一致。
+    /// 字体没有 TrueType 指令表时仍可用（退化为未 hinting 的准确 AA），但大字号
+    /// 会明显不如矢量档平滑——调用方按项目字号档位选择。
+    Hinted,
 }
 
 impl TextRenderMode {
@@ -513,6 +535,7 @@ impl TextRenderMode {
         match raw.trim().to_ascii_lowercase().as_str() {
             "vector" | "outline" => Self::Vector,
             "sdf" | "msdf" => Self::Sdf,
+            "hinted" | "hinting" | "ttf" => Self::Hinted,
             _ => Self::Auto,
         }
     }
@@ -826,8 +849,15 @@ fn text_to_ndc_with_offset(
     width: u32,
     height: u32,
 ) -> Vec<OverlayVertex> {
-    // 混合渲染：bitmap 模式 sdf=2（Nearest + 阈值化），MSDF 模式 sdf=1（Linear + smoothstep）。
-    let sdf_value: u32 = if mesh.bitmap { 2 } else { u32::from(is_sdf) };
+    // 混合渲染：覆盖率图集（hinting）sdf=3（Nearest + 直接用覆盖率），bitmap 模式
+    // sdf=2（Nearest + 阈值化），MSDF 模式 sdf=1（Linear + smoothstep）。
+    let sdf_value: u32 = if mesh.coverage {
+        3
+    } else if mesh.bitmap {
+        2
+    } else {
+        u32::from(is_sdf)
+    };
     mesh.vertices
         .into_iter()
         .map(|vertex| OverlayVertex {

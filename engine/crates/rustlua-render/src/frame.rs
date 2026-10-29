@@ -189,6 +189,21 @@ pub fn is_font_texture_path(path: &str) -> bool {
     path.starts_with(FONT_TEXTURE_PREFIX)
 }
 
+/// 整物理 ppem 覆盖率图集的纹理路径（同样落在 `font://` 命名空间里，于是渲染器
+/// 按自定义字体上传，复用 `Rgba8Unorm` + Nearest 绑定）。`asset` 为空表示默认字体。
+///
+/// ppem 必须进路径：不同 ppem 是不同的图集，同一帧里 11px 与 14px 的文字不能共用
+/// 一张纹理。
+#[must_use]
+pub fn hinted_texture_path(asset: &str, ppem: u16) -> String {
+    let asset = if asset.trim().is_empty() {
+        "__default__"
+    } else {
+        asset
+    };
+    format!("{FONT_TEXTURE_PREFIX}hinted/{ppem}/{asset}")
+}
+
 /// Strips the namespace, returning the font asset path.
 #[must_use]
 pub fn font_asset_from_texture_path(path: &str) -> &str {
@@ -249,6 +264,13 @@ pub type FontAtlasMap = Arc<Mutex<HashMap<String, FontHandle>>>;
 /// A handle to one vector-outline font atlas, shared across `RuntimeScene`
 /// rebuilds so outlines are parsed/extracted once.
 pub type VectorFontHandle = Arc<Mutex<crate::font::FontVectorAtlas>>;
+
+/// A handle to one integer-ppem hinted coverage atlas.
+pub type HintedFontHandle = Arc<Mutex<crate::hinted::HintedAtlas>>;
+
+/// Shared cache of hinted coverage atlases, keyed by
+/// [`hinted_texture_path`]（字体 + ppem）。同一字体在不同 ppem 下各一张。
+pub type HintedAtlasMap = Arc<Mutex<HashMap<String, HintedFontHandle>>>;
 
 /// Editor-injected shared cache of per-Text vector outline atlases, keyed by
 /// the namespaced font id (`font://...`).

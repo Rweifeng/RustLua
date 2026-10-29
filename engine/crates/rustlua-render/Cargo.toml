@@ -11,6 +11,9 @@ thiserror.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 ab_glyph = "0.2"
 bymsdfgen-core = "0.1"
+# 整物理 ppem 的 TrueType hinting（执行 fpgm/prep/cvt 字节码）：ab_glyph 只做
+# 轮廓解析、不执行指令，笔画在 11px 下无法吸附到像素网格。
+swash = "0.2"
 ttf-parser = "0.25"
 bytemuck.workspace = true
 rustlua-math = { path = "../rustlua-math" }

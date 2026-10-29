@@ -8,6 +8,7 @@
 
 use rustlua_render::font::{FontAtlas, FontVectorAtlas, project_font};
 use rustlua_render::frame::FontHandle;
+use rustlua_render::hinted::HintedAtlas;
 use std::{
     path::Path,
     sync::{Arc, Mutex},
@@ -211,4 +212,39 @@ pub fn load_custom_font_atlas(project_root: Option<&Path>, font_asset: &str) -> 
     };
     tracing::info!(target: "render", path = %font_asset, "[render] custom font atlas ready");
     Some(Arc::new(Mutex::new(atlas)))
+}
+
+/// 一套字体字节（主字体 + 项目后备字体），在多个 ppem 的 hinting 图集之间共享。
+///
+/// 为什么按 (字体, ppem) 建多张图集却只留一份字节：hinting 只在整数 ppem 下有效，
+/// 字号种类越多图集越多；24MB 的 CJK 字体若每张图集各拷一份，拖一次窗口尺寸就能
+/// 把内存吃光。图集本身只装用到的字形（11px 下一字约 0.6KB），代价可以忽略。
+#[derive(Clone)]
+pub struct SharedFontBytes {
+    primary: Arc<Vec<u8>>,
+    fallback: Option<Arc<Vec<u8>>>,
+}
+
+impl SharedFontBytes {
+    /// 读默认字体（`font_asset` 为空）或工程内字体；附项目后备字体。
+    pub fn load(project_root: Option<&Path>, font_asset: &str) -> Option<Self> {
+        let root = project_root?;
+        let primary_path = if font_asset.trim().is_empty() {
+            root.join(project_font::primary_path(root))
+        } else {
+            root.join(font_asset)
+        };
+        let primary = read_project_bytes(&primary_path)?;
+        let fallback =
+            project_font::fallback_path(root).and_then(|font| read_project_bytes(&root.join(font)));
+        Some(Self {
+            primary: Arc::new(primary),
+            fallback: fallback.map(Arc::new),
+        })
+    }
+
+    /// 该 ppem 下的 hinting 覆盖率图集（未命中任何字形时才真正光栅化）。
+    pub fn hinted(&self, ppem: u16) -> Option<HintedAtlas> {
+        HintedAtlas::from_shared(self.primary.clone(), self.fallback.clone(), ppem).ok()
+    }
 }

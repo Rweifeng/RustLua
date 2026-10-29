@@ -29,22 +29,26 @@ pub(super) fn register(lua: &Lua, ui: Table, state: Rc<RefCell<ScriptState>>) ->
             if !size_px.is_finite() || size_px <= 0.0 {
                 return Err(api_error("ui.measure_text size must be positive"));
             }
-            let probe = {
+            let (probe, hint_scale) = {
                 let mut state = s.lua_borrow_mut()?;
-                state
+                let probe = state
                     .font_probe()
-                    .map_err(|error| api_error(error.to_string()))?
+                    .map_err(|error| api_error(error.to_string()))?;
+                (probe, state.text_hint_scale)
             };
             let Some(probe) = probe else {
                 return Err(api_error(
                     "ui.measure_text: project font unavailable (check project.toml `font`)",
                 ));
             };
-            let measured = crate::script::domain::render::text::measure_text(
+            // hinted 档按整数物理像素排版，度量必须用同一个量化后的字号（见
+            // `measure_text_with_hint_scale`）；其余档位 `hint_scale` 为 `None`，口径不变。
+            let measured = crate::script::domain::render::text::measure_text_with_hint_scale(
                 &probe,
                 &text,
                 size_px,
                 crate::script::domain::render::text::TextStyle::default().spacing,
+                hint_scale,
             );
             let result = lua.create_table()?;
             result.set("width", measured.width)?;

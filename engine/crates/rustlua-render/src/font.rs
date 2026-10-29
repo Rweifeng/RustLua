@@ -813,7 +813,7 @@ fn load_font_with_weight(bytes: &[u8], weight: f32, error_prefix: &str) -> Resul
 /// Shelf 打包器：把不同尺寸的字形矩形密排进图集。字形只增不删（缓存后永驻），
 /// 无需释放；空间不足由调用方增长画布（增长向右下扩展，已有位置不变）。
 #[derive(Clone, Debug)]
-struct Packer {
+pub(crate) struct Packer {
     width: u32,
     height: u32,
     /// 打开的 shelf：(y, shelf_height, 已用 x)。
@@ -822,7 +822,7 @@ struct Packer {
 }
 
 impl Packer {
-    fn new(width: u32, height: u32) -> Self {
+    pub(crate) fn new(width: u32, height: u32) -> Self {
         Packer {
             width,
             height,
@@ -831,13 +831,13 @@ impl Packer {
         }
     }
 
-    fn set_size(&mut self, width: u32, height: u32) {
+    pub(crate) fn set_size(&mut self, width: u32, height: u32) {
         self.width = width;
         self.height = height;
     }
 
     /// 放置 `w×h` 矩形，返回左上角坐标；放不下返回 `None`。
-    fn pack(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
+    pub(crate) fn pack(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
         for (y, shelf_h, used_x) in &mut self.shelves {
             if *shelf_h >= h && *used_x + w <= self.width {
                 let at = (*used_x, *y);

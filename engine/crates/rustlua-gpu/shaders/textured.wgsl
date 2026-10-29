@@ -81,6 +81,11 @@ fn gamma_coverage(coverage: f32, rgb: vec3<f32>) -> f32 {
         // 直通 alpha：管线 ALPHA_BLENDING 已按 alpha 预乘源色，不能再乘 a。
         return vec4<f32>(color.rgb, gamma_coverage(a, color.rgb));
     }
+    if sdf == 3u {
+        // Hinting 覆盖率档：8-bit 掩膜按 1 texel = 1 px 采样，采样值本身就是覆盖率
+        // （字形指令已把笔画吸附到整像素），不再阈值化；gamma 处理与其它两档同一套。
+        return vec4<f32>(color.rgb, gamma_coverage(sampled.r, color.rgb) * color.a);
+    }
     if sdf == 2u {
         // Bitmap 路径：小字号下 Nearest 采样取 MSDF 中值，硬阈值化得到清晰字形边缘。
         // 避免 Linear 滤波在小尺寸下把距离场平均成模糊一片。

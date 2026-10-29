@@ -515,6 +515,9 @@ fn fit_scene_viewport(
                 (design_w as f32, design_h as f32),
                 (surface_width, surface_height),
             );
+            // hinting 的 ppem 按**物理**像素取整：设计盒被 contain 放大多少，字号就
+            // 该按这个比例换成整数字形尺寸（逻辑视口与顶点仍是设计像素）。
+            sim.set_render_scale(width as f32 / design_w.max(1) as f32);
             format!("declared={design_w}x{design_h} rect={width}x{height}+{x}+{y}")
         }
         // 核心自己退化成了内建档（场景没起来）：没有逻辑视口可收，读数留空。
