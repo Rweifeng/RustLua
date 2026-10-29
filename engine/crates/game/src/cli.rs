@@ -389,10 +389,10 @@ mod tests {
         std::fs::create_dir_all(root.join("assets")).unwrap();
         let config = root.join("project.toml");
         std::fs::write(&config, "name = \"IconTest\"\n").unwrap();
-        let default_splash = crate::splash::startup_image(None).unwrap();
+        let default_splash = crate::splash::startup_image(None, (1280, 720)).unwrap();
         let default_icon = crate::splash::icon_image(None);
         assert_eq!(
-            crate::splash::startup_image(Some(&root)).unwrap(),
+            crate::splash::startup_image(Some(&root), (1280, 720)).unwrap(),
             default_splash
         );
         assert_eq!(crate::splash::icon_image(Some(&root)), default_icon);
@@ -417,7 +417,7 @@ mod tests {
                 .any(|issue| issue.contains("icon_image 解码失败"))
         );
         assert_eq!(
-            crate::splash::startup_image(Some(&root)).unwrap(),
+            crate::splash::startup_image(Some(&root), (1280, 720)).unwrap(),
             default_splash
         );
         assert_eq!(crate::splash::icon_image(Some(&root)), default_icon);
@@ -432,7 +432,10 @@ mod tests {
                 std::fs::write(root.join("assets/start.png"), &data).unwrap();
                 assert!(verify_project(&root).is_empty());
                 assert_eq!(crate::splash::icon_image(Some(&root)), expected);
-                assert_eq!(crate::splash::startup_image(Some(&root)).unwrap(), expected);
+                assert_eq!(
+                    crate::splash::startup_image(Some(&root), (1280, 720)).unwrap(),
+                    expected
+                );
             }
         }
         for path in ["../escape.png", "/absolute.png", "C:\\absolute.png"] {

@@ -801,13 +801,6 @@ impl ApplicationHandler for GameApp {
         // 实测要 ~2.5 s（`Instance::new` 就占 ~1.9 s），而解码只花几十毫秒 ⇒ 同一张
         // `RgbaImage` 先后喂给 GDI 早期启动图与 GPU 纹理上传，不重复解码、也绝不出现
         // "窗口已出现但一片空白"的那 2.5 s。见 `crate::boot_splash`。
-        let boot_image = match crate::splash::startup_image(self.project_root.as_deref()) {
-            Ok(image) => Some(image),
-            Err(error) => {
-                tracing::warn!(target: "game", "{error}; 继续无启动图流程");
-                None
-            }
-        };
         // 窗口尺寸由工程声明（`project.toml` 的 `window_width`/`window_height`），缺省
         // 1280×720 横屏。**为什么不能写死**：竖版工程（`game_jhyt` 的 720×1280）里
         // Lua 动态 UI 是屏幕像素空间、不随参考分辨率缩放，窗口比例不对就会整块画到屏幕外。
@@ -821,6 +814,16 @@ impl ApplicationHandler for GameApp {
             }
             None => rustlua_infra::project_config::DEFAULT_WINDOW_SIZE,
         };
+        // 内置启动图按设计尺寸的方向选横/竖版，所以解码排在尺寸解析之后；两者都在
+        // `create_window` 之前完成，窗口不会先空一帧。
+        let boot_image =
+            match crate::splash::startup_image(self.project_root.as_deref(), design_size) {
+                Ok(image) => Some(image),
+                Err(error) => {
+                    tracing::warn!(target: "game", "{error}; 继续无启动图流程");
+                    None
+                }
+            };
         let primary_monitor = event_loop.primary_monitor();
         let scale_factor = primary_monitor
             .as_ref()

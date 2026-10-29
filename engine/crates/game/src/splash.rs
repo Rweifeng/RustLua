@@ -6,6 +6,19 @@ use rustlua_gpu::{RenderOutcome, Renderer};
 
 const TEXTURE_KEY: &str = "native-splash://startup-image";
 
+// 内置启动图按窗口方向二选一：横图 1280×720、竖图 720×1280。竖版工程（720×1280）
+// 用横图时只占窗口中间一条、上下露出清屏色，看起来像"闪屏没做适配"。
+const EMBEDDED_LANDSCAPE: &[u8] = include_bytes!("../../../assets/engine_splash.png");
+const EMBEDDED_PORTRAIT: &[u8] = include_bytes!("../../../assets/engine_splash_portrait.png");
+
+fn embedded_splash(design_size: (u32, u32)) -> &'static [u8] {
+    if design_size.1 > design_size.0 {
+        EMBEDDED_PORTRAIT
+    } else {
+        EMBEDDED_LANDSCAPE
+    }
+}
+
 fn relative_path(key: &str, value: &str) -> Result<PathBuf, String> {
     // Normalize Windows separators even when tests run on another host OS.
     let normalized = value.replace('\\', "/");
@@ -47,7 +60,12 @@ fn load_configured(root: &Path, key: &str) -> Result<Option<image::RgbaImage>, S
         .map_err(|error| format!("{key} 解码失败 {}: {error}", path.display()))
 }
 
-pub fn startup_image(root: Option<&Path>) -> Result<image::RgbaImage, String> {
+/// 工程配了 `splash_image` 就用工程的图（不区分方向，尺寸由工程负责）；否则按
+/// `design_size` 的方向取内置横图/竖图——方形或写错的尺寸按横图走。
+pub fn startup_image(
+    root: Option<&Path>,
+    design_size: (u32, u32),
+) -> Result<image::RgbaImage, String> {
     if let Some(root) = root {
         match load(root) {
             Ok(Some(image)) => return Ok(image),
@@ -55,7 +73,7 @@ pub fn startup_image(root: Option<&Path>) -> Result<image::RgbaImage, String> {
             Err(error) => tracing::warn!(target: "game", "{error}; 使用内置启动图"),
         }
     }
-    image::load_from_memory(include_bytes!("../../../assets/engine_splash.png"))
+    image::load_from_memory(embedded_splash(design_size))
         .map(|image| image.to_rgba8())
         .map_err(|error| format!("内置启动图解码失败: {error}"))
 }
@@ -210,11 +228,24 @@ mod tests {
 
     #[test]
     fn embedded_images_load_without_project() {
-        let splash = startup_image(None).unwrap();
+        let splash = startup_image(None, (1280, 720)).unwrap();
         let icon = icon_image(None);
         assert!(splash.width() > 0 && splash.height() > 0);
         assert!(icon.width() > 0 && icon.height() > 0);
         // Default images use exactly the same presentation gate as overrides.
         assert_eq!(Stage::default(), Stage::AwaitingPresent);
+    }
+
+    #[test]
+    fn embedded_splash_matches_the_design_orientation() {
+        let dimensions = |design| {
+            let image = startup_image(None, design).unwrap();
+            (image.width(), image.height())
+        };
+        assert_eq!(dimensions((1280, 720)), (1280, 720));
+        assert_eq!(dimensions((720, 1280)), (720, 1280));
+        // 方形/退化输入按横图走，不 panic、不留空图。
+        assert_eq!(dimensions((600, 600)), (1280, 720));
+        assert_eq!(dimensions((0, 0)), (1280, 720));
     }
 }
