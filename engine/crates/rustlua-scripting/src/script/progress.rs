@@ -19,7 +19,7 @@
 
 use std::cell::{Cell, RefCell};
 
-use mlua::{Debug, HookTriggers, Lua, VmState};
+use mlua::{Debug, DebugEvent, HookTriggers, Lua, VmState};
 
 use super::{LuaBridgeError, LuaRuntime};
 
@@ -100,35 +100,47 @@ pub(crate) fn budget() -> u64 {
 /// 给一个 Lua 状态装钩子（`set_global_hook` 覆盖全状态，协程也算）。
 ///
 /// 重复安装是允许的：后一次覆盖前一次，预算随之更新。
+///
+/// **一个状态只有一个全局钩子**，所以调试器的行事件与指令预算共用这一个：调试启用时
+/// 追加 `every_line`，未启用时保持"只按 `HOOK_STEP` 计数"的零额外成本路径。
+/// 计数只在 `Count` 事件上累加——行事件不消耗指令计数，否则预算会被放大成按行计费。
 pub(crate) fn install(lua: &Lua, budget: u64) -> mlua::Result<()> {
     BUDGET.with(|slot| slot.set(budget));
     arm();
-    lua.set_global_hook(
-        HookTriggers::new().every_nth_instruction(HOOK_STEP),
-        |_lua: &Lua, debug: &Debug| {
-            let total = PROGRESS.with(|progress| {
-                let mut progress = progress.borrow_mut();
-                progress.instructions += u64::from(HOOK_STEP);
-                let source = debug.source();
-                progress.source = source
-                    .short_src
-                    .as_deref()
-                    .or(source.source.as_deref())
-                    .unwrap_or("<unknown>")
-                    .to_owned();
-                progress.line = debug.current_line().map_or(0, |line| line as i32);
-                progress.instructions
-            });
-            let budget = BUDGET.with(Cell::get);
-            if budget > 0 && total > budget {
-                return Err(mlua::Error::RuntimeError(format!(
-                    "脚本超过指令预算 {budget}（最后心跳 {}）",
-                    script_progress().unwrap_or_default()
-                )));
-            }
-            Ok(VmState::Continue)
-        },
-    )
+    let mut triggers = HookTriggers::new().every_nth_instruction(HOOK_STEP);
+    if super::debug::is_active() {
+        triggers = triggers.every_line();
+    }
+    lua.set_global_hook(triggers, |lua: &Lua, debug: &Debug| {
+        if debug.event() == DebugEvent::Line {
+            super::debug::on_line(lua, debug)?;
+            return Ok(VmState::Continue);
+        }
+        if debug.event() != DebugEvent::Count {
+            return Ok(VmState::Continue);
+        }
+        let total = PROGRESS.with(|progress| {
+            let mut progress = progress.borrow_mut();
+            progress.instructions += u64::from(HOOK_STEP);
+            let source = debug.source();
+            progress.source = source
+                .short_src
+                .as_deref()
+                .or(source.source.as_deref())
+                .unwrap_or("<unknown>")
+                .to_owned();
+            progress.line = debug.current_line().map_or(0, |line| line as i32);
+            progress.instructions
+        });
+        let budget = BUDGET.with(Cell::get);
+        if budget > 0 && total > budget {
+            return Err(mlua::Error::RuntimeError(format!(
+                "脚本超过指令预算 {budget}（最后心跳 {}）",
+                script_progress().unwrap_or_default()
+            )));
+        }
+        Ok(VmState::Continue)
+    })
 }
 
 impl LuaRuntime {

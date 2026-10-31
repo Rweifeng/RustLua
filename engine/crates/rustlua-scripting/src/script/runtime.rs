@@ -24,12 +24,34 @@ use crate::script::progress;
 use crate::script::require::{
     file_fingerprint, install_encoded_require_searcher, read_project_script,
 };
-use mlua::{Function, Lua, Table};
+use mlua::{Function, Lua, LuaOptions, StdLib, Table, Value};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 // WP11-USE:END
+
+/// 建一个可供调试的 VM：带 `debug` 库，但**立刻把 `debug` 从 `_G` 摘掉**。
+///
+/// 为什么不用 `Lua::new()`：它以 `StdLib::ALL_SAFE` 建状态，`debug` 库不在其中，
+/// 调试器就读不到局部变量与调用栈。`debug` 被 mlua 标成 unsafe（它能改 upvalue、
+/// 关钩子等），所以只能用 `unsafe_new_with` 装载；装载后：
+/// - 表本身存进本状态的 registry（[`super::debug::DEBUG_REGISTRY_KEY`]），供钩子读取；
+/// - `_G.debug` 立即置 nil —— **脚本能看到的 API 面与改造前完全一致**，也堵掉
+///   `debug.sethook` 绕过指令预算这条路。
+///
+/// # Safety
+///
+/// `unsafe_new_with` 的安全前提是"宿主信任装入的模块"：这里装入的 `debug` 不对脚本开放，
+/// 只由本 crate 的钩子在暂停点读取，属于宿主自身的诊断代码。
+fn new_vm() -> Lua {
+    let lua = unsafe { Lua::unsafe_new_with(StdLib::ALL, LuaOptions::default()) };
+    if let Ok(debug) = lua.globals().get::<Table>("debug") {
+        let _ = lua.set_named_registry_value(super::debug::DEBUG_REGISTRY_KEY, debug);
+        let _ = lua.globals().set("debug", Value::Nil);
+    }
+    lua
+}
 
 fn is_vgraph(path: &Path) -> bool {
     path.extension()
@@ -73,7 +95,7 @@ impl LuaRuntime {
     pub fn with_installers(
         installers: Rc<crate::script::domain::lua_api::Registry>,
     ) -> Result<Self, LuaBridgeError> {
-        let lua = Lua::new();
+        let lua = new_vm();
         let state = Rc::new(RefCell::new(ScriptState {
             // 存档域的能力单元在这里起名（`docs/62` P1 ⑤）：`Handle` 的名字只用于重入报错，
             // 而 `ScriptState::default()` 给的是无名的 `<unnamed>`——装配点补上真名。
@@ -539,7 +561,7 @@ impl LuaRuntime {
     }
 
     fn load_candidate(&self, path: &Path, source: &str) -> Result<Lua, LuaBridgeError> {
-        let candidate = Lua::new();
+        let candidate = new_vm();
         api::register_all(&candidate, Rc::clone(&self.state), &self.installers)
             .map_err(|error| LuaBridgeError::Init(error.to_string()))?;
         // 候选状态是**新造的 Lua 状态**，不带 `LuaRuntime::with_installers(rustlua_gameplay::input_lua::registry())` 装过的那套钩子——而

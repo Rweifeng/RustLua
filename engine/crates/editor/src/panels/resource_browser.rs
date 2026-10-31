@@ -596,10 +596,9 @@ impl EditorApp {
                 if response.double_clicked() && entry.kind == ResourceKind::Texture {
                     open.texture = Some(path_string.clone());
                 }
-                // P0：双击 `.lua`（及其它文本资源）交给外部编辑器——编辑器内没有文本视图，
-                // 但"双击没反应"比"打开了别的程序"更难解释。
+                // ①：双击 `.lua` 在编辑器内的只读查看器里打开；要编辑再从窗口按钮转外部编辑器。
                 if response.double_clicked() && entry.kind == ResourceKind::LuaScript {
-                    self.open_resource_externally(&entry.path);
+                    self.open_lua_source(&entry.path, None);
                 }
                 // 行尾控件右对齐。右缘取**可见裁剪框**而不是 available 宽度：dock 的
                 // ScrollArea 会把内容宽度撑到最长那一行（1193 项资源里总有超长文件名），
@@ -661,7 +660,7 @@ impl EditorApp {
                     open.ui_studio = Some(path_string.clone());
                 }
                 if response.double_clicked() && entry.kind == ResourceKind::LuaScript {
-                    self.open_resource_externally(&entry.path);
+                    self.open_lua_source(&entry.path, None);
                 }
                 response.context_menu(|ui| {
                     self.draw_resource_context_menu(ui, entry);

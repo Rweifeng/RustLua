@@ -107,6 +107,8 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     // 树控件原语（缩进/行标签/拖放落点）：纯绘制与几何，不碰任何文档。
     ("tree.rs", 0),
     // M76-04：UI Studio 只经 Spec 宿主提案写 `.ui.json`，不碰场景文档。
+    // ①：Lua 只读查看器只读盘与显示，不写文档、不写盘。
+    ("lua_source_view.rs", 0),
     ("ui_studio.rs", 0),
     // M80：内嵌在属性面板里的 UI 节点检查器同样只生成提案，不写文档。
     ("ui_studio_inspector.rs", 0),

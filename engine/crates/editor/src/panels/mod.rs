@@ -21,6 +21,8 @@ pub(crate) mod inspector;
 pub(crate) mod keymap;
 /// P3-E02：Inspector 里的 `.material` 编辑段（只发 typed action）。
 pub(crate) mod material;
+/// 只读 Lua 源码查看器：控制台报错行 / 资源面板双击 `.lua` 的落点（不编辑、不写盘）。
+pub(crate) mod lua_source_view;
 /// 资源面板选中 `.glb`/`.gltf` 时，属性面板里的旋转/缩放预览（CPU 软光栅，只读）。
 pub(crate) mod model_preview;
 /// 性能分析面板（独立弹窗）：Play 运行时帧率/draw/setpass/内存/资源缓存 + 编辑器帧/面板耗时。

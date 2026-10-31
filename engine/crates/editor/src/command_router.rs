@@ -481,14 +481,21 @@ impl EditorApp {
                 .map(|value| value.to_string_lossy().into_owned())
                 .unwrap_or_else(|| path.to_string_lossy().into_owned());
             self.console_filter = name;
-            // P0（脚本迭代闭环）：脚本类文件在编辑器里**没有视图**，"定位到它"唯一有意义的
-            // 实现就是把 `file:line` 交给用户自己的编辑器（不内置文本编辑器，见 docs/55 §2.2）。
             // 顺带把控制台过滤收窄到该文件——多条报错堆在一起时，这一步才是能读的那一条。
             let absolute = if path.is_absolute() {
                 path.clone()
             } else {
                 self.project.root.join(path)
             };
+            // 脚本迭代闭环（①）：`.lua` 先在**编辑器内**的只读查看器里定位到行；需要改再
+            // 从窗口按钮转外部编辑器。不内置可写文本编辑器（docs/55 §2.2），但"看"不该
+            // 依赖用户另外装一套工具。
+            if crate::panels::lua_source_view::is_lua_source(&absolute) && absolute.is_file() {
+                self.open_lua_source(&absolute, location.line);
+                self.status = format!("已在编辑器内定位：{}", location.describe());
+                return CommandResult::Applied;
+            }
+            // 其它文本资源（`.wgsl`/`.rs`/…）仍然交给用户自己的编辑器。
             if crate::external_editor::is_text_source(&absolute) && absolute.is_file() {
                 return match crate::external_editor::open_in_external_editor(
                     &absolute,
@@ -1364,22 +1371,18 @@ mod tests {
         assert_eq!(app.jump_to_diagnostic(&empty), editor::CommandResult::NoOp);
     }
 
-    /// P0（脚本迭代闭环）：脚本文件**在盘上**时，点击诊断行就是把它连同行号交给外部编辑器
-    /// （编辑器内不做文本视图），同时把控制台过滤收窄到该文件。
-    ///
-    /// 走 dry-run：只验证"命令已交给外部编辑器这一层"，不在验收门里真的起进程。
+    /// ①（脚本迭代闭环）：脚本文件**在盘上**时，点击诊断行就在编辑器内的只读查看器里
+    /// 定位到那一行，同时把控制台过滤收窄到该文件；不再先把进程交给外部编辑器。
     #[test]
-    fn diagnostic_jump_hands_an_existing_script_to_the_external_editor() {
+    fn diagnostic_jump_opens_an_existing_script_in_the_read_only_viewer() {
         let mut app = test_app();
         app.project_loaded = true;
-        app.external_editor_dry_run = true;
         let root = app.project.root.clone();
         std::fs::create_dir_all(root.join("scripts")).expect("scripts dir");
-        std::fs::write(
-            root.join("scripts/player.lua"),
-            "function on_spawn(id) end\n",
-        )
-        .expect("write script");
+        let source = (1..=20)
+            .map(|line| format!("local value_{line} = {line}\n"))
+            .collect::<String>();
+        std::fs::write(root.join("scripts/player.lua"), source).expect("write script");
 
         let location = editor::parse_location("ERROR script: load failed scripts/player.lua:12")
             .expect("file");
@@ -1387,10 +1390,20 @@ mod tests {
             app.jump_to_diagnostic(&location),
             editor::CommandResult::Applied
         );
-        assert!(app.status.contains("player.lua"), "{}", app.status);
+        assert!(app.lua_source_view.show, "跳转必须打开只读查看器");
+        assert_eq!(
+            app.lua_source_view.relative.as_deref(),
+            Some("scripts/player.lua")
+        );
+        assert_eq!(app.lua_source_view.lines.len(), 20);
+        assert_eq!(
+            app.lua_source_view.target_line,
+            Some(12),
+            "查看器要停在诊断行上"
+        );
         assert!(
-            app.status.contains("12"),
-            "状态栏要带上行号：{}",
+            app.status.contains("编辑器内定位") && app.status.contains("12"),
+            "状态栏要说明落在哪一行：{}",
             app.status
         );
         assert_eq!(app.console_filter, "player.lua", "同时收窄控制台过滤");

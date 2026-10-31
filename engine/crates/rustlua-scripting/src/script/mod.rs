@@ -14,6 +14,8 @@ use std::{
 // 不需要为拆分而把它们放宽成 `pub(super)`。反过来若把 `ScriptState` 移进 `state.rs`，
 // 兄弟子模块就访问不到，得逐字段加属性——所以宁可让这个结构体待在最显眼的地方。
 mod api;
+/// 无头调试核心：行级断点、单步、暂停快照（与 `progress` 共用一个全局钩子）。
+pub mod debug;
 /// 领域依赖的唯一登记处（生产代码只经 `domain::` 取领域类型）。
 pub mod domain;
 mod error;
@@ -30,6 +32,9 @@ mod vgraph_trace;
 
 // 跨 crate 的公开面（`editor` / `game_web` / `host` 用到）：消费方沿用的 `rustlua_scripting::script::*`
 // 由 engine 的 core.rs 门面再导出，路径与拆分前一字不变。
+pub use debug::{
+    Breakpoint, DebugAction, LocalVariable, PauseReason, PauseSnapshot, SourceLocation, StackFrame,
+};
 pub use error::{LuaBridgeError, ScriptDebugger, ScriptDiagnostic};
 pub use guard::{
     BudgetSlot, CallbackBudget, ContainOutcome, DEFAULT_CALLBACK_ERROR_LIMIT, EntityHook,

@@ -457,6 +457,8 @@ struct EditorApp {
     /// 贴图预览窗（资源面板双击贴图）：全尺寸解码 + 逐像素开关，只读、不写盘。
     texture_preview: crate::panels::texture_preview::TexturePreviewState,
     /// 模型预览（选中 `.glb`/`.gltf` 时属性面板里的旋转/缩放）：软光栅，只读、不写盘。
+    /// 只读 Lua 源码查看器（控制台报错行 / 资源面板双击 `.lua`）：只显示与定位，不编辑。
+    lua_source_view: crate::panels::lua_source_view::LuaSourceViewState,
     model_preview: crate::panels::model_preview::ModelPreviewState,
     /// 断链检查窗（资源 ▸ 断链检查…）：一次扫描的结果行，改指动作只发命令。
     broken_refs: crate::panels::broken_refs::BrokenRefsPanelState,
@@ -1233,6 +1235,7 @@ impl EditorApp {
             #[cfg(feature = "ai-bridge")]
             assistant,
             show_domain_data_panel: false,
+            lua_source_view: crate::panels::lua_source_view::LuaSourceViewState::new(),
             domain_report: None,
             persist_registry: None,
             show_domain_overlay: true,
@@ -2953,3 +2956,5 @@ mod layout_tests;
 
 #[cfg(test)]
 mod migration_tests;
+        // 只读 Lua 源码查看器（控制台报错行 / 资源面板双击 `.lua` 打开）。
+        self.draw_lua_source_view(context);
