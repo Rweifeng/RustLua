@@ -12,16 +12,18 @@
 //!
 //! 文件：
 //!
-//! * `editor.json` —— 非密钥设置。顶层是对象，当前写 `version` 与 `assistant`，
-//!   未知顶层键（以及 `assistant` 内的未知键）原样保留，新版本写的设置不会被旧版本抹掉；
+//! * `editor.json` —— 非密钥设置。顶层是对象，按段分放 `version`、`assistant`、`appearance`
+//!   （主题）、`shortcuts`（改键）、`plugins`（插件开关）、`panels`（插件面板可见性），
+//!   未知顶层键（以及各段内的未知键）原样保留，新版本写的设置不会被旧版本抹掉；
 //! * `assistant.key` —— API Key 密文。Windows 用 DPAPI（`CryptProtectData`）绑定当前
 //!   用户账户：拷到别的账户/机器解不开。非 Windows 平台退回 0600 权限的明文文件。
 //!
 //! **密钥不变量**：`editor.json` 永远不含 Key；Key 只进 `assistant.key`。解密失败
 //! （密文损坏、换了 Windows 账户）返回原因给调用方提示，而不是静默当作"没填"。
 
-use crate::AssistantLayout;
+use crate::{AppearanceSettings, AssistantLayout, ShortcutBindings};
 use std::{
+    collections::BTreeMap,
     env, fs, io,
     path::{Path, PathBuf},
 };
@@ -91,6 +93,65 @@ impl UserConfigStore {
 
     /// 写非密钥设置（tmp + rename 原子写，保留未知键）。
     pub fn save_assistant(&self, settings: &AssistantLayout) -> io::Result<()> {
+        self.save_section(
+            "assistant",
+            &[
+                ("provider", serde_json::json!(settings.provider)),
+                ("base_url", serde_json::json!(settings.base_url)),
+                ("model", serde_json::json!(settings.model)),
+                ("max_tokens", serde_json::json!(settings.max_tokens)),
+            ],
+        )
+    }
+
+    /// 读外观偏好（`appearance.theme`）。文件缺失/损坏/没有该段都返回 `None`，
+    /// 调用方保留默认深色。
+    #[must_use]
+    pub fn load_appearance(&self) -> Option<AppearanceSettings> {
+        let text = fs::read_to_string(self.config_path()).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+        parse_appearance(value.get("appearance")?)
+    }
+
+    /// 写外观偏好（与助手设置同一个 `editor.json`，未知键原样保留）。
+    pub fn save_appearance(&self, settings: &AppearanceSettings) -> io::Result<()> {
+        self.save_section(
+            "appearance",
+            &[("theme", serde_json::json!(settings.theme))],
+        )
+    }
+
+    /// 读编辑器快捷键改键（`shortcuts` 段：动作 id → 键位文本）。
+    ///
+    /// 没有该段返回 `None`（全部动作用默认键）；坏文本整条丢弃（该动作回落默认），
+    /// 本版本不认识的 id 保留在表里，下次保存原样写回。
+    #[must_use]
+    pub fn load_shortcuts(&self) -> Option<ShortcutBindings> {
+        let text = fs::read_to_string(self.config_path()).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+        let object = value.get("shortcuts")?.as_object()?;
+        let entries = object
+            .iter()
+            .filter_map(|(id, text)| Some((id.clone(), text.as_str()?.to_owned())))
+            .collect::<BTreeMap<_, _>>();
+        Some(ShortcutBindings::from_entries(entries))
+    }
+
+    /// 写编辑器快捷键改键（与助手/外观同一个 `editor.json`，段内外的未知键都保留）。
+    ///
+    /// 写的是**整张表**（含本版本不认识的 id）：调用方加载后再保存，未来版本的动作
+    /// 键位不会因为旧版本只写自己认识的 id 而丢失。
+    pub fn save_shortcuts(&self, bindings: &ShortcutBindings) -> io::Result<()> {
+        let entries = bindings
+            .entries()
+            .iter()
+            .map(|(id, text)| (id.as_str(), serde_json::json!(text)))
+            .collect::<Vec<_>>();
+        self.save_section("shortcuts", &entries)
+    }
+
+    /// 读改写 `editor.json` 的一个对象段：保留段内外所有未知键与未知顶层键。
+    fn save_section(&self, section: &str, entries: &[(&str, serde_json::Value)]) -> io::Result<()> {
         let path = self.config_path();
         let mut value = fs::read_to_string(&path)
             .ok()
@@ -101,23 +162,75 @@ impl UserConfigStore {
             .as_object_mut()
             .expect("value was normalized to an object");
         object.insert("version".to_owned(), serde_json::json!(CONFIG_VERSION));
-        let mut assistant = object
-            .get("assistant")
+        let mut stored = object
+            .get(section)
             .and_then(serde_json::Value::as_object)
             .cloned()
             .unwrap_or_default();
-        for (key, incoming) in [
-            ("provider", serde_json::json!(settings.provider)),
-            ("base_url", serde_json::json!(settings.base_url)),
-            ("model", serde_json::json!(settings.model)),
-            ("max_tokens", serde_json::json!(settings.max_tokens)),
-        ] {
-            assistant.insert(key.to_owned(), incoming);
+        for (key, incoming) in entries {
+            stored.insert((*key).to_owned(), incoming.clone());
         }
-        object.insert("assistant".to_owned(), serde_json::Value::Object(assistant));
+        object.insert(section.to_owned(), serde_json::Value::Object(stored));
         let text = serde_json::to_string_pretty(&value)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         write_atomic(&path, text.as_bytes(), false)
+    }
+
+    /// 读插件开关（`plugins` 段：插件 id → 是否启用）。
+    ///
+    /// 没有该段返回 `None`（全部按内置默认启用）；不是布尔值的条目整条丢弃（该插件回落
+    /// 默认）；本版本不认识的 id 留着不动——插件改名/下线后这里只会多一条无用记录，
+    /// 不会让读它的版本丢设置。
+    #[must_use]
+    pub fn load_plugin_states(&self) -> Option<BTreeMap<String, bool>> {
+        let text = fs::read_to_string(self.config_path()).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+        let object = value.get("plugins")?.as_object()?;
+        let entries = object
+            .iter()
+            .filter_map(|(id, state)| Some((id.clone(), state.as_bool()?)))
+            .collect::<BTreeMap<_, _>>();
+        Some(entries)
+    }
+
+    /// 写插件开关（与助手/外观/快捷键同一个 `editor.json`，段内外未知键都保留）。
+    ///
+    /// 写的是**整张表**：启停一个插件会把注册表里所有插件的当前状态一起落盘，
+    /// 这样"这个机器上用户关掉过哪些"不会因为只写变化那一条而和内存脱节。
+    pub fn save_plugin_states(&self, states: &BTreeMap<String, bool>) -> io::Result<()> {
+        let entries = states
+            .iter()
+            .map(|(id, state)| (id.as_str(), serde_json::json!(state)))
+            .collect::<Vec<_>>();
+        self.save_section("plugins", &entries)
+    }
+
+    /// 读插件面板的可见性（`panels` 段：面板 id → 是否可见）。
+    ///
+    /// 没有该段返回 `None`（全部按默认关闭）；不是布尔值的条目整条丢弃；本版本不认识的
+    /// id 留着不动（插件下线后这里只会多一条无用记录）。
+    #[must_use]
+    pub fn load_panel_states(&self) -> Option<BTreeMap<String, bool>> {
+        let text = fs::read_to_string(self.config_path()).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+        let object = value.get("panels")?.as_object()?;
+        let entries = object
+            .iter()
+            .filter_map(|(id, state)| Some((id.clone(), state.as_bool()?)))
+            .collect::<BTreeMap<_, _>>();
+        Some(entries)
+    }
+
+    /// 写插件面板的可见性（与其它段同一个 `editor.json`，未知键都保留）。
+    ///
+    /// 写的是**整张已知表**（含 `false`）：只写"可见的那些"会让用户关掉的面板在文件里
+    /// 仍是 `true`，下次启动又自己弹出来。
+    pub fn save_panel_states(&self, states: &BTreeMap<String, bool>) -> io::Result<()> {
+        let entries = states
+            .iter()
+            .map(|(id, state)| (id.as_str(), serde_json::json!(state)))
+            .collect::<Vec<_>>();
+        self.save_section("panels", &entries)
     }
 
     /// 读并解密 API Key。文件不存在 → `Ok(None)`；密文解不开 → `Err(原因)`。
@@ -174,6 +287,16 @@ fn parse_assistant(value: &serde_json::Value) -> Option<AssistantLayout> {
     }
     if let Some(max_tokens) = object.get("max_tokens").and_then(serde_json::Value::as_u64) {
         stored.max_tokens = u32::try_from(max_tokens).unwrap_or(4096);
+    }
+    Some(stored)
+}
+
+fn parse_appearance(value: &serde_json::Value) -> Option<AppearanceSettings> {
+    let object = value.as_object()?;
+    let mut stored = AppearanceSettings::default();
+    if let Some(theme) = object.get("theme").and_then(|v| v.as_str()) {
+        // 未知主题名按 `set_theme` 的规则回落深色，不把坏值带进进程。
+        stored.set_theme(theme);
     }
     Some(stored)
 }
@@ -370,6 +493,127 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    /// 改键与其它用户级设置同住 `editor.json`：写 shortcuts 不抹掉 assistant/appearance
+    /// 与未知键；坏键位读回时整条丢弃，未来版本的动作 id 原样保留。
+    #[test]
+    fn shortcut_bindings_round_trip_alongside_other_sections() {
+        let root = temp_root("shortcuts");
+        let store = UserConfigStore::at(&root);
+        fs::write(
+            store.config_path(),
+            r#"{"version":1,"appearance":{"theme":"light"},"shortcuts":{"future_action":"Alt+F9","broken":"Ctrl+"}}"#,
+        )
+        .unwrap();
+
+        let mut bindings = store.load_shortcuts().expect("应读到 shortcuts 段");
+        assert_eq!(bindings.get("future_action"), Some("Alt+F9"));
+        assert_eq!(bindings.get("broken"), None, "坏键位整条丢弃");
+
+        assert!(bindings.set("undo", "ctrl+shift+u").unwrap());
+        store.save_shortcuts(&bindings).unwrap();
+
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(store.config_path()).unwrap()).unwrap();
+        assert_eq!(value["shortcuts"]["undo"], "Ctrl+Shift+U", "落盘是规范写法");
+        assert_eq!(
+            value["shortcuts"]["future_action"], "Alt+F9",
+            "不认识的动作 id 必须原样写回"
+        );
+        assert_eq!(value["appearance"]["theme"], "light", "其它段不能被抹掉");
+
+        let reloaded = store.load_shortcuts().unwrap();
+        assert_eq!(reloaded.get("undo"), Some("Ctrl+Shift+U"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 插件开关往返：非布尔值整条丢弃、别的段不被抹掉、不认识的 id 原样留着。
+    ///
+    /// 这条之所以要紧：插件启停是**用户级**的（换工程也该保持禁用），而 `editor.json`
+    /// 里同时住着主题、改键与服务商设置——任何一段把另一段抹掉都是丢用户设置。
+    #[test]
+    fn plugin_states_round_trip_alongside_other_sections() {
+        let root = temp_root("plugin-states");
+        let store = UserConfigStore::at(&root);
+        fs::write(
+            store.config_path(),
+            r#"{"version":1,"appearance":{"theme":"light"},"plugins":{"gone_plugin":true,"broken":"yes"}}"#,
+        )
+        .unwrap();
+
+        let states = store.load_plugin_states().expect("应读到 plugins 段");
+        assert_eq!(states.get("gone_plugin"), Some(&true));
+        assert_eq!(
+            states.get("broken"),
+            None,
+            "不是布尔值的条目整条丢弃（该插件回落默认）"
+        );
+
+        let mut next = states.clone();
+        next.insert("project_stats".to_owned(), false);
+        next.insert("core".to_owned(), true);
+        store.save_plugin_states(&next).unwrap();
+
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(store.config_path()).unwrap()).unwrap();
+        assert_eq!(value["plugins"]["project_stats"], false, "落盘是布尔");
+        assert_eq!(value["plugins"]["core"], true);
+        assert_eq!(
+            value["plugins"]["gone_plugin"], true,
+            "本版本不认识的插件 id 必须原样留着"
+        );
+        assert_eq!(value["appearance"]["theme"], "light", "其它段不能被抹掉");
+
+        let reloaded = store.load_plugin_states().unwrap();
+        assert_eq!(reloaded.get("project_stats"), Some(&false));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 插件面板可见性往返：非布尔值整条丢弃、别的段不被抹掉、不认识的 id 原样留着。
+    ///
+    /// 与插件开关同一条纪律：这一段和主题/改键住在同一个文件里，任何一段把另一段抹掉
+    /// 都是丢用户设置。
+    #[test]
+    fn panel_states_round_trip_alongside_other_sections() {
+        let root = temp_root("panel-states");
+        let store = UserConfigStore::at(&root);
+        fs::write(
+            store.config_path(),
+            r#"{"version":1,"plugins":{"core":true},"panels":{"gone.panel":true,"broken":"yes"}}"#,
+        )
+        .unwrap();
+
+        let states = store.load_panel_states().expect("应读到 panels 段");
+        assert_eq!(states.get("gone.panel"), Some(&true));
+        assert_eq!(
+            states.get("broken"),
+            None,
+            "不是布尔值的条目整条丢弃（该面板回落默认关闭）"
+        );
+
+        let mut next = states.clone();
+        next.insert("project_stats.panel".to_owned(), true);
+        next.insert("closed.panel".to_owned(), false);
+        store.save_panel_states(&next).unwrap();
+
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(store.config_path()).unwrap()).unwrap();
+        assert_eq!(value["panels"]["project_stats.panel"], true, "落盘是布尔");
+        assert_eq!(
+            value["panels"]["closed.panel"], false,
+            "关掉的面板也要落盘：只写可见的那些会让它下次又弹出来"
+        );
+        assert_eq!(
+            value["panels"]["gone.panel"], true,
+            "本版本不认识的面板 id 必须原样留着"
+        );
+        assert_eq!(value["plugins"]["core"], true, "别的段不能被抹掉");
+
+        let reloaded = store.load_panel_states().unwrap();
+        assert_eq!(reloaded.get("project_stats.panel"), Some(&true));
+        assert_eq!(reloaded.get("closed.panel"), Some(&false));
+        let _ = fs::remove_dir_all(root);
+    }
+
     /// 文件缺失/损坏/没有 assistant 段都返回 None，而不是 panic。
     #[test]
     fn missing_or_corrupt_config_falls_back_to_none() {
@@ -437,6 +681,46 @@ mod tests {
         fs::write(store.api_key_path(), b"not a dpapi blob").unwrap();
         let error = store.load_api_key().expect_err("损坏的密文必须报错");
         assert!(error.contains("API Key"), "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 外观偏好与助手设置同住 `editor.json`：写 appearance 不能抹掉 assistant 与未知键；
+    /// 文件里的非法主题名按深色读回。
+    #[test]
+    fn appearance_round_trips_alongside_assistant() {
+        let root = temp_root("appearance");
+        let store = UserConfigStore::at(&root);
+        fs::write(
+            store.config_path(),
+            r#"{"future_pref":7,"assistant":{"provider":"ollama"}}"#,
+        )
+        .unwrap();
+
+        let mut settings = AppearanceSettings::default();
+        assert_eq!(settings.normalized_theme(), "dark", "默认深色");
+        assert!(settings.set_theme("light"));
+        assert!(!settings.set_theme("light"), "重复设置不算变化");
+        store.save_appearance(&settings).unwrap();
+
+        assert_eq!(store.load_appearance().unwrap().theme, "light");
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(store.config_path()).unwrap()).unwrap();
+        assert_eq!(
+            value["assistant"]["provider"], "ollama",
+            "写外观不能抹掉助手设置"
+        );
+        assert_eq!(value["future_pref"], 7, "未知顶层键被抹掉了");
+
+        fs::write(
+            store.config_path(),
+            r#"{"appearance":{"theme":"solarized","custom":1}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            store.load_appearance().unwrap().theme,
+            "dark",
+            "未知主题名必须回落到深色"
+        );
         let _ = fs::remove_dir_all(root);
     }
 }

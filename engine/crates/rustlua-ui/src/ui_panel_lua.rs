@@ -50,13 +50,15 @@ fn finite_color4(color: [f32; 4]) -> bool {
 pub fn install(lua: &Lua, table: Table, state: &Handle<UiState>) -> LuaResult<()> {
     let ui = table;
 
-    /// 解析 "left,right,top,bottom" 九宫格边距（像素，单位是作者空间像素）；空/非法返回 None。
-    fn parse_nine_slice(value: &str) -> Option<[f32; 4]> {
+    /// 解析九宫格边距：4 个数 `"left,right,top,bottom"`（源与目标同一组，纹理像素），
+    /// 或 8 个数 `"l,r,t,b,dl,dr,dt,db"`（前 4 个切源图，后 4 个是目标像素边距）。
+    /// 空/非法返回 None。
+    fn parse_nine_slice(value: &str) -> Option<([f32; 4], Option<[f32; 4]>)> {
         let parts: Vec<&str> = value.split(',').map(str::trim).collect();
-        if parts.len() != 4 {
+        if parts.len() != 4 && parts.len() != 8 {
             return None;
         }
-        let mut out = [0.0_f32; 4];
+        let mut out = [0.0_f32; 8];
         for (i, part) in parts.iter().enumerate() {
             let v: f32 = part.parse().ok()?;
             if !v.is_finite() || v < 0.0 {
@@ -64,10 +66,18 @@ pub fn install(lua: &Lua, table: Table, state: &Handle<UiState>) -> LuaResult<()
             }
             out[i] = v;
         }
-        if out.iter().all(|v| *v <= 0.0) {
+        let src = [out[0], out[1], out[2], out[3]];
+        if src.iter().all(|v| *v <= 0.0) {
             return None;
         }
-        Some(out)
+        if parts.len() == 4 {
+            return Some((src, None));
+        }
+        let dest = [out[4], out[5], out[6], out[7]];
+        if dest.iter().all(|v| *v <= 0.0) {
+            return Some((src, None));
+        }
+        Some((src, Some(dest)))
     }
 
     let s = Bindings::new(state);
@@ -180,7 +190,13 @@ pub fn install(lua: &Lua, table: Table, state: &Handle<UiState>) -> LuaResult<()
                 }
                 // docs/48 ui 换肤：可选第 10 参 `slice`（"left,right,top,bottom" 像素边距）
                 // → 九宫格渲染（DynamicUiImage.nine_slice）；空/非法回退普通四边形（向后兼容）。
-                let nine_slice = slice.as_deref().and_then(parse_nine_slice);
+                // 给 8 个数时后 4 个是目标空间边距（`nine_slice_dest`），源图与显示尺寸
+                // 差一个数量级时用它，否则边框不是被压扁就是吃满整块。
+                let (nine_slice, nine_slice_dest) =
+                    match slice.as_deref().and_then(parse_nine_slice) {
+                        Some((src, dest)) => (Some(src), dest),
+                        None => (None, None),
+                    };
                 s.ui_mut()?.images.insert(
                     id,
                     DynamicUiImage {
@@ -194,6 +210,7 @@ pub fn install(lua: &Lua, table: Table, state: &Handle<UiState>) -> LuaResult<()
                         space: crate::ui::UiLayoutSpace::Screen,
                         anchor: [0.0, 0.0],
                         nine_slice,
+                        nine_slice_dest,
                     },
                 );
                 Ok(())
@@ -466,6 +483,10 @@ pub fn install(lua: &Lua, table: Table, state: &Handle<UiState>) -> LuaResult<()
             ui.panels.remove(&id);
             ui.images.remove(&id);
             ui.grids.remove(&id);
+            // `bars` 也要清：它没有 visible 字段，渲染时又排在最后（压在其它 UI 之上），
+            // 漏清就永远是画面上那根不消失的条（HonorArena 回菜单后血条/冷却条残留）。
+            // 普通动态文本不在这里删——那是既有契约（文本用 `ui.hide` 隐藏，示例自检钉着）。
+            ui.bars.remove(&id);
             ui.texts.remove(&format!("{id}:tooltip"));
             ui.texts.remove(&format!("{id}:title"));
             Ok(())
@@ -532,4 +553,71 @@ pub fn install(lua: &Lua, table: Table, state: &Handle<UiState>) -> LuaResult<()
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn installed() -> (Lua, Table, Handle<UiState>) {
+        let lua = Lua::new();
+        let ui = lua.create_table().unwrap();
+        let state = UiState::handle();
+        crate::ui_lua::install(&lua, ui.clone(), &state).unwrap();
+        install(&lua, ui.clone(), &state).unwrap();
+        lua.globals().set("ui", &ui).unwrap();
+        (lua, ui, state)
+    }
+
+    /// `ui.clear(id)` 必须连 `ui.bar` 建的那根条一起清掉：bar 没有 visible 字段、
+    /// 渲染时又压在最后，漏清就是"回菜单后血条/冷却条永远糊在画面上"。
+    #[test]
+    fn clear_removes_bar_and_panel_with_the_same_id() {
+        let (lua, _ui, state) = installed();
+        lua.load(
+            r#"
+            ui.bar("hud_hp", 0, 0, 100, 8, 0.5, 1, 0, 0)
+            ui.panel("hud_hp", 0, 0, 10, 10, 1, 1, 1, 1)
+            "#,
+        )
+        .exec()
+        .unwrap();
+        state.with(|ui| {
+            assert!(ui.bars().contains_key("hud_hp"));
+            assert!(ui.panels().contains_key("hud_hp"));
+        });
+
+        lua.load(r#"ui.clear("hud_hp")"#).exec().unwrap();
+        state.with(|ui| {
+            assert!(!ui.bars().contains_key("hud_hp"), "bar 残留");
+            assert!(!ui.panels().contains_key("hud_hp"), "panel 残留");
+        });
+    }
+
+    /// 第 10 参 4 个数是老口径（源=目标边距）；8 个数时后 4 个才是目标边距。
+    /// 皮肤原图 1024×432 画进 696×58 的条必须能分开给，否则边框会被压扁。
+    #[test]
+    fn image_slice_accepts_separate_dest_borders() {
+        let (lua, _ui, state) = installed();
+        lua.load(
+            r#"
+            ui.image("same", 0, 0, 696, 58, "skin.png", 1, 1, 1, "150,150,115,115")
+            ui.image("split", 0, 0, 696, 58, "skin.png", 1, 1, 1, "150,150,115,115,102,102,15,15")
+            ui.image("bad", 0, 0, 696, 58, "skin.png", 1, 1, 1, "1,2,3")
+            "#,
+        )
+        .exec()
+        .unwrap();
+        state.with(|ui| {
+            let same = ui.images().get("same").expect("same 图");
+            assert_eq!(same.nine_slice, Some([150.0, 150.0, 115.0, 115.0]));
+            assert_eq!(same.nine_slice_dest, None);
+            let split = ui.images().get("split").expect("split 图");
+            assert_eq!(split.nine_slice, Some([150.0, 150.0, 115.0, 115.0]));
+            assert_eq!(split.nine_slice_dest, Some([102.0, 102.0, 15.0, 15.0]));
+            let bad = ui.images().get("bad").expect("bad 图");
+            assert_eq!(bad.nine_slice, None, "3 个数必须退回普通四边形");
+            assert_eq!(bad.nine_slice_dest, None);
+        });
+    }
 }

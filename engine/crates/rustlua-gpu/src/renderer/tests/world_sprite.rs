@@ -247,6 +247,7 @@ fn world_sprites_and_meshes_occlude_each_other_in_one_view() {
         camera,
         view: RenderView::main_3d(camera, viewport, DEFAULT_3D_CLEAR),
         light: Light::default(),
+        point_lights: Vec::new(),
         drawables: vec![rustlua_render::frame::Scene3dDrawable {
             entity: rustlua_scene::scene::SceneEntityId(1),
             name: "Ground".to_owned(),

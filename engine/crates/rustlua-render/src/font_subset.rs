@@ -1,8 +1,14 @@
 //! TrueType 字体子集化：打包时把项目字体裁剪到用到的字符，大幅缩小发布体积
 //! （替代原 `scripts/subset-font.py` 的 fontTools 步骤）。
 //!
-//! 仅支持 TrueType（glyf）非 CFF 字体；复合字形保留结构并补丁组件 ID；可变字体
-//! 的 gvar/fvar 被丢弃（取默认实例轮廓，渲染为静态字重）。
+//! 仅支持 TrueType（glyf）非 CFF 字体；复合字形保留结构并补丁组件 ID。
+//!
+//! **可变轴必须保留**（`fvar`/`avar`/`gvar`，gvar 的字形索引按新字形 ID 重排）：
+//! CJK 可变字体的默认实例常是 Thin（Noto Sans SC 的 wght 轴默认 100），运行时靠
+//! `font_weight`（默认 400）调 `set_variation("wght")` 拉回可读字重。子集若丢掉轴，
+//! `set_variation` 静默失败，开发树与发布包一起退回 Thin——笔画细到亚像素，同一行
+//! 文字里粗一截细一截。`HVAR` 不再保留：advance 的变体量由 gvar 的幻影点给出
+//! （ttf-parser 在缺 HVAR 时走这条），保留轴就够了。
 
 use std::collections::{HashMap, HashSet};
 
@@ -162,7 +168,99 @@ pub fn subset_ttf(source: &[u8], chars: &str) -> Result<Vec<u8>, String> {
     if let Some(raw) = raw_table(source, b"prep") {
         tables.push((b"prep".to_vec(), raw.to_vec()));
     }
+    // 可变轴：fvar（轴定义）与 avar（轴向重映射）逐字节保留；gvar 依赖字形 ID，
+    // 按新序号重排（见模块文档：丢掉轴＝整包退回默认 Thin 实例）。
+    for tag in [b"fvar", b"avar"] {
+        if let Some(raw) = raw_table(source, tag) {
+            tables.push((tag.to_vec(), raw.to_vec()));
+        }
+    }
+    if let Some(gvar) = rebuild_gvar(source, &ids) {
+        tables.push((b"gvar".to_vec(), gvar));
+    }
     write_ttf(&tables)
+}
+
+/// 按新字形 ID 重排 gvar。只重写偏移表与 `glyphCount`：字形内的变体数据（元组头、
+/// 打包点号、增量）逐字节搬运——子集保留了字形的点数与顺序，点号仍然有效。
+/// 源字体没有 `fvar`/`gvar` 时返回 `None`（静态字体不出这张表）。
+/// 表布局：header(20B) + offsets[] + sharedTuples + variationData[]。
+fn rebuild_gvar(source: &[u8], old_gid_for_new: &[u16]) -> Option<Vec<u8>> {
+    let raw = raw_table(source, b"gvar")?;
+    raw_table(source, b"fvar")?;
+    let axis_count = read_u16(raw, 4);
+    let shared_tuple_count = read_u16(raw, 6);
+    let shared_tuples_offset = read_u32(raw, 8) as usize;
+    let source_glyphs = read_u16(raw, 12);
+    let long_offsets = read_u16(raw, 14) & 1 != 0;
+    let data_array_offset = read_u32(raw, 16) as usize;
+    let source_entry = if long_offsets { 4 } else { 2 };
+    if raw.len() < 20 + (source_glyphs as usize + 1) * source_entry {
+        return None;
+    }
+    let glyph_offset = |gid: u16| -> u32 {
+        if long_offsets {
+            read_u32(raw, 20 + gid as usize * 4)
+        } else {
+            read_u16(raw, 20 + gid as usize * 2) as u32
+        }
+    };
+    let tuple_bytes = shared_tuple_count as usize * axis_count as usize * 2;
+    let shared_tuples =
+        raw.get(shared_tuples_offset..shared_tuples_offset.checked_add(tuple_bytes)?)?;
+
+    let mut blobs: Vec<&[u8]> = Vec::with_capacity(old_gid_for_new.len());
+    for &old in old_gid_for_new {
+        if old >= source_glyphs {
+            return None;
+        }
+        let start = glyph_offset(old) as usize;
+        let end = glyph_offset(old + 1) as usize;
+        if end < start {
+            return None;
+        }
+        blobs.push(
+            raw.get(data_array_offset.checked_add(start)?..data_array_offset.checked_add(end)?)?,
+        );
+    }
+
+    let new_count = blobs.len();
+    let mut rel_offsets: Vec<u32> = Vec::with_capacity(new_count + 1);
+    let mut cursor = 0u32;
+    for blob in &blobs {
+        rel_offsets.push(cursor);
+        cursor = cursor.checked_add(blob.len() as u32)?;
+    }
+    rel_offsets.push(cursor);
+
+    let long = long_offsets || cursor > u32::from(u16::MAX);
+    let entry = if long { 4 } else { 2 };
+    let shared_tuples_at = 20 + (new_count + 1) * entry;
+    let shared_tuples_at = shared_tuples_at.next_multiple_of(4);
+    let data_array_at = shared_tuples_at + shared_tuples.len();
+
+    let mut out = Vec::with_capacity(data_array_at + cursor as usize);
+    push_u16(&mut out, 1); // majorVersion
+    push_u16(&mut out, 0); // minorVersion
+    push_u16(&mut out, axis_count);
+    push_u16(&mut out, shared_tuple_count);
+    push_u32(&mut out, shared_tuples_at as u32);
+    push_u16(&mut out, new_count as u16);
+    push_u16(&mut out, u16::from(long));
+    push_u32(&mut out, data_array_at as u32);
+    for offset in &rel_offsets {
+        if long {
+            push_u32(&mut out, *offset);
+        } else {
+            push_u16(&mut out, *offset as u16);
+        }
+    }
+    out.resize(shared_tuples_at, 0);
+    out.extend_from_slice(shared_tuples);
+    for blob in blobs {
+        out.extend_from_slice(blob);
+    }
+    Some(out)
 }
 
 /// 把 post 重建为 format 3.0（无 glyph 名）。源表缺失或短于 32 字节时给零值头。
@@ -507,6 +605,99 @@ mod tests {
         assert!(
             face.glyph_index(not_included).is_none(),
             "未收集的字符不应在子集 cmap 中"
+        );
+    }
+
+    struct PointSink<'a>(&'a mut Vec<(f32, f32)>);
+
+    impl ttf_parser::OutlineBuilder for PointSink<'_> {
+        fn move_to(&mut self, x: f32, y: f32) {
+            self.0.push((x, y));
+        }
+        fn line_to(&mut self, x: f32, y: f32) {
+            self.0.push((x, y));
+        }
+        fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+            self.0.push((x1, y1));
+            self.0.push((x, y));
+        }
+        fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+            self.0.push((x1, y1));
+            self.0.push((x2, y2));
+            self.0.push((x, y));
+        }
+        fn close(&mut self) {}
+    }
+
+    fn placed_outline(bytes: &[u8], ch: char, weight: Option<f32>) -> Vec<(f32, f32)> {
+        let mut face = ttf_parser::Face::parse(bytes, 0).expect("字体可解析");
+        if let Some(weight) = weight {
+            face.set_variation(ttf_parser::Tag::from_bytes(b"wght"), weight)
+                .expect("字体应带 wght 可变轴");
+        }
+        let gid = face.glyph_index(ch).expect("字形存在");
+        let mut points = Vec::new();
+        face.outline_glyph(gid, &mut PointSink(&mut points));
+        points
+    }
+
+    fn advance_at(bytes: &[u8], ch: char, weight: Option<f32>) -> u16 {
+        let mut face = ttf_parser::Face::parse(bytes, 0).expect("字体可解析");
+        if let Some(weight) = weight {
+            face.set_variation(ttf_parser::Tag::from_bytes(b"wght"), weight)
+                .expect("字体应带 wght 可变轴");
+        }
+        face.glyph_hor_advance(face.glyph_index(ch).expect("字形存在"))
+            .expect("advance")
+    }
+
+    /// 子集必须保留可变轴（fvar/avar/gvar）。丢掉轴的后果是静默的：运行时的
+    /// `set_variation("wght", 400)` 变成 no-op，整个工程退回默认实例——CJK 可变字体
+    /// 的默认实例常常是 Thin，笔画细到亚像素，同一行文字里粗一截细一截。
+    #[test]
+    fn subset_keeps_variable_weight_axis() {
+        let source = test_font();
+        let subset = subset_ttf(&source, "AB0").expect("subset");
+        assert!(
+            ttf_parser::Face::parse(&subset, 0)
+                .expect("子集可解析")
+                .is_variable(),
+            "子集必须保留 wght 轴"
+        );
+        for ch in ['A', 'B', '0'] {
+            assert_eq!(
+                placed_outline(&subset, ch, Some(400.0)),
+                placed_outline(&source, ch, Some(400.0)),
+                "{ch:?} 在 wght=400 的轮廓应与源字体逐点一致"
+            );
+            assert_eq!(
+                advance_at(&subset, ch, Some(400.0)),
+                advance_at(&source, ch, Some(400.0)),
+                "{ch:?} 在 wght=400 的 advance 应与源字体一致（HVAR 由幻影点接替）"
+            );
+        }
+        assert_ne!(
+            placed_outline(&subset, 'A', None),
+            placed_outline(&subset, 'A', Some(400.0)),
+            "默认实例与 wght=400 必须不同，否则字重根本没生效"
+        );
+    }
+
+    /// 端到端：子集字体经 `FontAtlas` 加载时，`font_weight` 必须真的改变字形。
+    #[test]
+    fn subset_font_honors_configured_weight() {
+        let source = test_font();
+        let subset = subset_ttf(&source, "AB0").expect("subset");
+        let mut thin = crate::font::FontAtlas::load_with_fallback_and_weight(&subset, None, 100.0)
+            .expect("Thin 图集");
+        let mut regular =
+            crate::font::FontAtlas::load_with_fallback_and_weight(&subset, None, 400.0)
+                .expect("Regular 图集");
+        let thin_metrics = thin.try_glyph_metrics('A').expect("A 度量");
+        let regular_metrics = regular.try_glyph_metrics('A').expect("A 度量");
+        assert_ne!(
+            thin_metrics.advance, regular_metrics.advance,
+            "子集字体也必须按 font_weight 取到不同字重的度量"
         );
     }
 

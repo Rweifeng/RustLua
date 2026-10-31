@@ -1,6 +1,14 @@
 struct Camera { view_projection: mat4x4<f32>, position: vec4<f32> };
 struct ShadowCamera { view_projection: mat4x4<f32> };
-struct Light { direction: vec4<f32>, color_intensity: vec4<f32> };
+struct PointLight { position_range: vec4<f32>, color_intensity: vec4<f32> };
+// 方向光 48B + 8 盏点光（CPU 侧 `light_uniform_bytes` 同布局）。
+struct Light {
+    direction: vec4<f32>,
+    color_intensity: vec4<f32>,
+    // x = 点光数量（0..=8），其余保留。
+    params: vec4<f32>,
+    points: array<PointLight, 8>,
+};
 struct Material {
     base_color: vec4<f32>,
     surface: vec4<f32>,
@@ -225,6 +233,32 @@ fn sample_environment_specular(normal: vec3<f32>, view: vec3<f32>, roughness: f3
         direct = (diffuse + specular) * n_dot_l;
     }
 
+    // 点光源：同一套 BRDF，衰减用"range 内平方反比 × 平滑截断"。
+    // 点光不投影（阴影贴图只有方向光那一张），因此单独累计、不乘 radiance/shadow。
+    var point_direct = vec3<f32>(0.0);
+    let point_count = min(u32(light.params.x), 8u);
+    for (var i = 0u; i < point_count; i = i + 1u) {
+        let point = light.points[i];
+        let to_light = point.position_range.xyz - world_position;
+        let distance = length(to_light);
+        if (distance < 1e-4) {
+            continue;
+        }
+        let point_l = to_light / distance;
+        let point_n_dot_l = max(dot(n, point_l), 0.0);
+        if (point_n_dot_l <= 0.0 || n_dot_v <= 0.0) {
+            continue;
+        }
+        let point_h = safe_normalize(point_l + v);
+        let point_fresnel = fresnel_schlick(max(dot(v, point_h), 0.0), f0);
+        let point_specular = distribution_ggx(max(dot(n, point_h), 0.0), alpha) * visibility_smith_correlated(n_dot_v, point_n_dot_l, alpha) * point_fresnel;
+        let point_kd = (vec3<f32>(1.0) - point_fresnel) * (1.0 - metallic);
+        let point_diffuse = point_kd * base_rgb / PI;
+        let falloff = clamp(1.0 - distance / max(point.position_range.w, 1e-4), 0.0, 1.0);
+        let attenuation = falloff * falloff / (distance * distance + 1e-4);
+        point_direct = point_direct + (point_diffuse + point_specular) * point_n_dot_l * attenuation * point.color_intensity.rgb * point.color_intensity.w;
+    }
+
     let shadow_ndc = shadow_position.xyz / shadow_position.w;
     let shadow_uv = vec2<f32>(shadow_ndc.x * 0.5 + 0.5, 1.0 - (shadow_ndc.y * 0.5 + 0.5));
     let shadow_depth = shadow_ndc.z - 0.002;
@@ -255,5 +289,5 @@ fn sample_environment_specular(normal: vec3<f32>, view: vec3<f32>, roughness: f3
     indirect = indirect + sample_environment_specular(n, v, roughness) * env_brdf_approx(f0, roughness, n_dot_v) * environment.params.x * occlusion;
 //#endif
     let emissive = material.emissive.rgb * textureSample(emissive_map, albedo_sampler, uv).rgb;
-    return vec4<f32>(direct * radiance * shadow_visibility + indirect + emissive, base_alpha);
+    return vec4<f32>(direct * radiance * shadow_visibility + point_direct + indirect + emissive, base_alpha);
 }

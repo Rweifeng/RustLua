@@ -249,6 +249,15 @@ impl EditorApp {
                     app.status = error;
                 }
             }),
+            EditorCommand::MoveComponent {
+                entity,
+                component,
+                delta,
+            } => self.document_edit(|app| {
+                if let Err(error) = app.move_component(entity, &component, delta) {
+                    app.status = error;
+                }
+            }),
             EditorCommand::AddCollider3d { entity } => self.document_edit(|app| {
                 if let Err(error) = app.add_collider3d_component(entity) {
                     app.status = error;
@@ -868,6 +877,81 @@ mod tests {
             !app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
                 .components
                 .contains_key("Transform3D")
+        );
+    }
+
+    /// Inspector 组件上移/下移：顺序写在 `editor.component_order` 元数据里（组件表不动），
+    /// 组件条与字段区共用这一顺序，一次移动 = 一条可撤销历史，越界是无变化。
+    #[test]
+    fn moving_components_reorders_display_and_undoes() {
+        let mut app = test_app();
+        app.project_loaded = true;
+        let entity = SceneEntityId(1);
+        for component in ["Transform", "Camera", "Sprite"] {
+            assert_eq!(
+                app.dispatch(EditorCommand::AddComponent {
+                    entity,
+                    component: component.to_owned(),
+                }),
+                CommandResult::Applied
+            );
+        }
+        let order = |app: &EditorApp| {
+            let scene = app.document.current_scene.as_ref().unwrap();
+            editor::display_components(&scene.scene.entities[&SceneEntityId(1)])
+        };
+        assert_eq!(order(&app), vec!["Camera", "Sprite", "Transform"]);
+        // 下移 Camera：与 Sprite 换位。
+        assert_eq!(
+            app.dispatch(EditorCommand::MoveComponent {
+                entity,
+                component: "Camera".to_owned(),
+                delta: 1,
+            }),
+            CommandResult::Applied
+        );
+        assert_eq!(order(&app), vec!["Sprite", "Camera", "Transform"]);
+        {
+            let stored = &app.document.current_scene.as_ref().unwrap().scene.entities[&entity];
+            assert_eq!(
+                stored.metadata[editor::COMPONENT_ORDER_META],
+                "Sprite,Camera,Transform",
+                "展示顺序写在元数据里"
+            );
+            assert_eq!(
+                stored.components.keys().cloned().collect::<Vec<_>>(),
+                vec!["Camera", "Sprite", "Transform"],
+                "组件表本身（BTreeMap）不被排序改动"
+            );
+            let rows = editor::rows_for_selection(&[stored]);
+            let mut seen: Vec<&str> = Vec::new();
+            for row in &rows {
+                if seen.last() != Some(&row.component) {
+                    seen.push(row.component);
+                }
+            }
+            assert_eq!(
+                seen,
+                vec!["Sprite", "Camera", "Transform"],
+                "schema 字段区与组件条同序"
+            );
+        }
+        // 一次移动 = 一条 Undo；撤销回到默认（字典序）顺序，元数据随快照一起消失。
+        assert_eq!(app.dispatch(EditorCommand::Undo), CommandResult::Applied);
+        assert_eq!(order(&app), vec!["Camera", "Sprite", "Transform"]);
+        assert!(
+            !app.document.current_scene.as_ref().unwrap().scene.entities[&entity]
+                .metadata
+                .contains_key(editor::COMPONENT_ORDER_META)
+        );
+        // 已在顶部再上移：无变化，不写历史也不算失败。
+        assert_eq!(
+            app.dispatch(EditorCommand::MoveComponent {
+                entity,
+                component: "Camera".to_owned(),
+                delta: -1,
+            }),
+            CommandResult::NoOp
         );
     }
 

@@ -5,8 +5,11 @@
 //! （`ui.measure_text(...).missing_count > 0` 就是这条判据）。
 //!
 //! `--source` 指全量字体（`engine/crates/editor/fonts/` 那一类），目标取 `project.toml` 的
-//! `font =`。两者必须是不同文件：子集不可逆（`subset_ttf` 会丢掉 `gvar/fvar` 与全部未用字形），
-//! 拿子集再子集一次就把源字体毁了，所以这里直接拒。
+//! `font =`。两者必须是不同文件：子集不可逆（未用字形被丢光；可变字体虽然保留
+//! `fvar`/`avar`/`gvar`，但也只剩这一份裁过的字形），拿子集再子集一次就永远回不到全量。
+//!
+//! 源字体是可变字体时**不要**先手工实例化：`font_weight` 在运行时经 `set_variation`
+//! 生效，轴被丢就会静默退回默认实例（Noto Sans SC 默认是 Thin，小字号笔画细而发虚）。
 //!
 //! 用法：`cargo run -q -p engine --example subset_project_font -- <project-root> --source <full.ttf>`
 use std::{fs, path::PathBuf};

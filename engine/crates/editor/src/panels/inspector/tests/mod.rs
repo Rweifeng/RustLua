@@ -323,8 +323,13 @@ fn build_prefab_from_instance_root_strips_prefab_metadata() {
         .metadata
         .insert("designer.note".to_owned(), "boss".to_owned());
 
-    let rebuilt =
-        build_prefab_from_instance_root(&instance_scene, instance.instance_root, &prefab).unwrap();
+    let (rebuilt, _) = build_prefab_from_instance_root(
+        &instance_scene,
+        instance.instance_root,
+        &prefab,
+        "assets/prefabs/enemy.prefab",
+    )
+    .unwrap();
     assert!(
         !rebuilt.entities[&rebuilt.root]
             .metadata

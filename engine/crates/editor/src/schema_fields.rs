@@ -276,18 +276,56 @@ fn map_property_error(error: PropertyError) -> SchemaFieldError {
     }
 }
 
+/// 实体元数据里记录组件展示顺序的键：逗号分隔的组件名（`editor.*` 前缀，不参与序列化语义）。
+pub const COMPONENT_ORDER_META: &str = "editor.component_order";
+
+/// 按元数据记录的展示顺序重排组件名；没登记过的组件保持原有相对顺序并排在后面。
+///
+/// 用 `sort_by_key` 的稳定性保证"未登记"的一组不会因为排序而漂移；元数据里的陈旧名字
+/// （组件已被移除）自然被忽略。
+pub fn sort_component_names<T: AsRef<str>>(entity: &SceneEntity, components: &mut [T]) {
+    let Some(raw) = entity.metadata.get(COMPONENT_ORDER_META) else {
+        return;
+    };
+    let order: Vec<&str> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .collect();
+    if order.is_empty() {
+        return;
+    }
+    components.sort_by_key(|component| {
+        order
+            .iter()
+            .position(|name| *name == component.as_ref())
+            .unwrap_or(order.len())
+    });
+}
+
+/// 实体的组件展示顺序（元数据在前，其余按字典序），供 Inspector 组件条与字段区共用。
+#[must_use]
+pub fn display_components(entity: &SceneEntity) -> Vec<String> {
+    let mut components: Vec<String> = entity.components.keys().cloned().collect();
+    sort_component_names(entity, &mut components);
+    components
+}
+
 /// 该实体上由通用编辑器接管的组件名。
 ///
-/// 顺序取自注册表（`BTreeMap` → 按组件名字典序），因此与实体上的插入顺序无关，稳定可测。
+/// 默认顺序取自注册表（`BTreeMap` → 按组件名字典序），因此与实体上的插入顺序无关，
+/// 稳定可测；`editor.component_order` 存在时按用户排定的顺序。
 #[must_use]
 pub fn driven_components(entity: &SceneEntity) -> Vec<&'static str> {
-    builtin_registry()
+    let mut components: Vec<&'static str> = builtin_registry()
         .keys()
         .copied()
         .filter(|component| {
             entity.components.contains_key(*component) && is_schema_driven(component)
         })
-        .collect()
+        .collect();
+    sort_component_names(entity, &mut components);
+    components
 }
 
 /// 一个实体的全部通用字段行（按组件、再按 schema 字段声明顺序）。
@@ -1637,6 +1675,34 @@ mod tests {
         );
         assert!(rows_for_component(&entity, "Container").is_none());
         assert!(rows_for_component(&entity, "Nope").is_none());
+    }
+
+    /// `editor.component_order` 只改**展示顺序**：未登记的组件保持字典序排在后面，
+    /// 元数据里已不存在的组件名（被移除后留下的陈旧条目）被忽略。
+    #[test]
+    fn component_order_metadata_only_reorders_components_that_exist() {
+        let mut entity = entity_with(&[
+            (
+                "ParticleEmitter",
+                "count=8;speed=20;life=1;size=2;color=1,1,1,1",
+            ),
+            ("Transform", "position=1,2,0;rotation=0,0,0,1;scale=1,1,1"),
+            ("Camera", "projection=orthographic;center=0,0;zoom=1"),
+        ]);
+        entity.metadata.insert(
+            COMPONENT_ORDER_META.to_owned(),
+            "Transform, Gone, ParticleEmitter".to_owned(),
+        );
+        assert_eq!(
+            driven_components(&entity),
+            vec!["Transform", "ParticleEmitter", "Camera"],
+            "登记的按元数据顺序，未登记的保持字典序殿后"
+        );
+        assert_eq!(
+            display_components(&entity),
+            vec!["Transform", "ParticleEmitter", "Camera"],
+            "组件条与字段区共用同一顺序"
+        );
     }
 
     /// P3-R07-1：`mode`/`seed` 由**通用** schema 面板接管——`mode` 画下拉（enum + `cpu|gpu`），

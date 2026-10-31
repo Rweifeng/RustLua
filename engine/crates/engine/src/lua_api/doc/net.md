@@ -1,6 +1,6 @@
 # Lua 模块 `net`
 
-> 运行期 API 面基线里本模块有 9 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
+> 运行期 API 面基线里本模块有 10 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
 > **函数清单与标题里的签名**不要手改；在每个小节里把
 > `TODO(文档桩)` 换成真实说明即可，再生成会保留已补的内容。
 
@@ -61,6 +61,34 @@ net.connect(net.default_server(), net.default_room())
 - 失败：地址无法解析、TCP 3 秒内连不上、浏览器拒绝建 WebSocket、房间名非法时返回 `false`，
   状态置为 `error`。
 - 示例：`assert(net.connect("tcp://127.0.0.1:8787", "royale"))`
+
+### 可靠有序 UDP（`connect_udp`）
+
+同一间房间的两人帧同步走中继服务器上的 **UDP 中继**：客户端与中继之间是可靠有序的
+UDP（`udp://`，内部做序号、累积 ACK + 64 位位图、150ms 重传），中继把两端的包互转。
+和 TCP 版不同，这里**不需要握手/配对消息**：调用即在线，`net.status().players` 直接是 2，
+`net.send` 被包成带 `player`/`frame` 的 `Message::Input`，`net.recv` 只还给你 payload。
+
+```lua
+assert(net.connect_udp("udp://127.0.0.1:8788", "arena", 0))  -- player = 0/1
+```
+
+`player` 取 0 或 1，两端必须写不同的值（中继按它对消息贴标签）；本地帧号从 0 起，每条 `net.send` 加一。
+`net.status()` 此时 `transport == "udp"`，并带 `udp` 统计子表（`sent`/`received`/`retransmits`/…）。
+
+## `net.connect_udp(server: String, room: String, player: u8)`
+
+> 绑定：`engine/crates/rustlua-gameplay/src/net_lua.rs:670`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+连接 UDP 中继并加入房间（本端身份由 `player` 指定）。桌面专属；浏览器构建返回 `false`。
+
+- 参数：
+  - `server`：`udp://host:port`（缺省前缀按 `udp://` 处理）。
+  - `room`：房间码；同一码的两个客户端会被配成对手。
+  - `player`：本端玩家号，`0` 或 `1`。
+- 返回：`true` 表示已加入；`false` 表示失败（见 `net.status().error`）。
+- 失败：浏览器/微信构建、房间名非法（须为 1–32 个 ASCII 字符）、地址无法解析时返回 `false`。
+- 示例：`assert(net.connect_udp("udp://127.0.0.1:8788", "arena", 0))`
 
 ## `net.default_room()`
 

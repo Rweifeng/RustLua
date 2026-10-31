@@ -149,3 +149,20 @@ cargo test -p engine --lib host::runtime_scene::tests::custom_fonts
 cargo test -p rustlua-render --lib hint_quantized_measure_matches_build_hinted_size
 Remove-Item Env:RUSTLUA_HINTED_TEST_FONT
 ```
+
+## 可变字体子集：轴必须保留
+
+`project.toml` 的 `font_weight`（默认 400）是在**加载时**调 `set_variation("wght")` 生效的。
+CJK 可变字体（Noto Sans SC 的 wght 轴 min/default 都是 100）默认实例是 **Thin**：16~20px
+下笔画只有亚像素宽，同一行文字里有的笔画落满一列、有的被两列平分，看上去"粗细不匀"；
+42px 以上才接近设计意图。所以轴一旦在发布链上丢掉，症状是"开发树能用、包里的字变细"，
+而且 `set_variation` 在无 `fvar` 的字体上是静默 no-op，日志一个字都没有。
+
+`subset_ttf` 因此**保留可变轴**：`fvar`（轴定义）与 `avar`（轴向重映射）逐字节搬运，
+`gvar` 按新字形 ID 重排——只重写偏移表与 `glyphCount`，字形内的变体数据（元组头、打包
+点号、增量）逐字节保留，因为子集不改字形的点数与顺序。`HVAR` 不保留：缺 HVAR 时
+ttf-parser 改用 gvar 的幻影点算 advance；单测拿子集与源字体在 `wght=400` 上逐字对账
+轮廓与 advance（`AB0` 三字，源字体走 HVAR）。
+
+验收：`cargo test -p rustlua-render --lib font_subset`（子集在 `wght=400` 的轮廓/advance
+与源字体逐点一致；`FontAtlas` 按 `font_weight` 取到不同字重的度量）。

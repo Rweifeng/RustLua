@@ -241,6 +241,7 @@ fn mesh_identity_cache_is_hit_on_the_second_frame() {
         camera,
         view: RenderView::main_3d(camera, viewport, DEFAULT_3D_CLEAR),
         light: Light::default(),
+        point_lights: Vec::new(),
         drawables: vec![rustlua_render::frame::Scene3dDrawable {
             entity: rustlua_scene::scene::SceneEntityId(1),
             name: "Ground".to_owned(),

@@ -808,6 +808,67 @@ impl EditorApp {
         }
     }
 
+    /// 把 `entity` 上的组件在 Inspector 里的展示顺序移动 `delta` 位（-1 上移 / +1 下移）。
+    ///
+    /// 顺序存在 `editor.component_order` 元数据里而不是组件表本身：组件表是 `BTreeMap`，
+    /// 顺序对运行时无意义；元数据天然被场景文件持久化、被 history 快照覆盖（可撤销），
+    /// 也不需要给每种组件加"排序键"字段。越界视为无变化，不写历史。
+    pub(crate) fn move_component(
+        &mut self,
+        entity: SceneEntityId,
+        name: &str,
+        delta: i32,
+    ) -> Result<(), String> {
+        if self.is_playing() {
+            return Err("播放模式下不能编辑场景，请先点击停止".to_owned());
+        }
+        let Some(scene) = self.document.current_scene.as_ref() else {
+            return Ok(());
+        };
+        let Some(target_entity) = scene.scene.entities.get(&entity) else {
+            return Ok(());
+        };
+        if !target_entity.components.contains_key(name) {
+            return Err(format!(
+                "实体上没有{}组件",
+                crate::util::component_display_name(name)
+            ));
+        }
+        let mut components = editor::display_components(target_entity);
+        let Some(position) = components.iter().position(|component| component == name) else {
+            return Ok(());
+        };
+        let destination = position as i32 + delta;
+        if destination < 0 || destination as usize >= components.len() {
+            return Ok(());
+        }
+        components.swap(position, destination as usize);
+        let serialized = components.join(",");
+        let label = format!(
+            "{}组件{}",
+            if delta < 0 { "上移" } else { "下移" },
+            crate::util::component_display_name(name)
+        );
+        let Some(scene) = self.document.current_scene.as_mut() else {
+            return Ok(());
+        };
+        let result = self
+            .history
+            .execute(scene, label, CommandKind::Property, move |scene| {
+                if let Some(entity) = scene.scene.entities.get_mut(&entity) {
+                    entity
+                        .metadata
+                        .insert(editor::COMPONENT_ORDER_META.to_owned(), serialized.clone());
+                    scene.mark_dirty();
+                }
+                Ok::<(), InspectorError>(())
+            });
+        match result {
+            Ok(_) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
     /// 用 Inspector 的名称缓冲重命名**当前选中**实体（菜单「重命名」入口）。
     pub(crate) fn rename_selected(&mut self) {
         if self.is_playing() {

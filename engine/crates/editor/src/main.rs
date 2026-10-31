@@ -26,6 +26,7 @@ mod runtime_perf;
 mod scene_drag;
 mod scene_ops;
 mod shader_watch;
+mod shortcuts;
 /// 性能面板的 span 时间线：把 `SpanTrace` 的记录画成"泳道 = 深度、横轴 = 时间"的条形。
 mod trace_timeline;
 /// UI Studio 画布：按 spec 画真实内容（样式/文字/图片）与坐标、命中测试。
@@ -196,7 +197,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         options,
         Box::new(move |creation_context| {
             configure_cjk_fallback(&creation_context.egui_ctx);
-            // 编辑器皮肤默认深色：固定使用 egui 深色主题，不随系统深浅色切换。
+            // 首帧前的兜底主题；用户级偏好（窗口 ▸ 主题）在 `draw_frame` 帧首应用。
             creation_context.egui_ctx.set_theme(egui::Theme::Dark);
             let gpu = creation_context
                 .wgpu_render_state
@@ -214,6 +215,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             app.evidence_failed_flag = evidence_failed_for_app;
             app.set_render_state(creation_context.wgpu_render_state.clone());
             app.initialize_ui_extensions();
+            // 外观偏好与 AI 服务商设置都属于用户：先于工程布局、也先于首帧。
+            app.load_user_appearance();
+            app.load_user_shortcuts();
             // 用户级设置（`~/.rustlua`）先于工程布局加载：服务商属于用户，工程布局
             // 只作为旧版本的迁移来源。
             #[cfg(feature = "ai-bridge")]
@@ -283,6 +287,14 @@ struct EditorApp {
     pending_resource_locate: Option<PathBuf>,
     /// 资源右键"重命名…"的进行中状态：`(原路径, 输入缓冲)`（第 44 轮 P1）。
     resource_rename: Option<(PathBuf, String)>,
+    /// 资源面板「新建文件夹」的进行中状态：`(父目录, 输入缓冲)`。
+    resource_new_folder: Option<(PathBuf, String)>,
+    /// 资源依赖查看结果（只读）：右键「查看依赖…」时算一次，面板呈现。
+    resource_dependency: Option<crate::actions::ResourceDependencyReport>,
+    /// P2 命令面板：开关、查询词与高亮项（条目来自菜单树）。
+    command_palette_open: bool,
+    command_palette_query: String,
+    command_palette_index: usize,
     resources_filter: String,
     /// 编辑器侧提示（如 Scene View 回读状态），显示在“编辑器日志”分类。
     console_notices: Vec<String>,
@@ -444,6 +456,8 @@ struct EditorApp {
     bundles: crate::panels::bundles::BundlePanelState,
     /// 贴图预览窗（资源面板双击贴图）：全尺寸解码 + 逐像素开关，只读、不写盘。
     texture_preview: crate::panels::texture_preview::TexturePreviewState,
+    /// 模型预览（选中 `.glb`/`.gltf` 时属性面板里的旋转/缩放）：软光栅，只读、不写盘。
+    model_preview: crate::panels::model_preview::ModelPreviewState,
     /// 断链检查窗（资源 ▸ 断链检查…）：一次扫描的结果行，改指动作只发命令。
     broken_refs: crate::panels::broken_refs::BrokenRefsPanelState,
     /// 跨面板全局 Undo 的账本：只记"下一个该问哪个面板"，撤的动作仍归各面板自己。
@@ -537,6 +551,14 @@ struct EditorApp {
     editor_camera: EditorCamera,
     /// 3D 场景视图的离屏渲染器（渲染编辑场景 + 编辑器相机）。
     scene_renderer: Option<Renderer>,
+    /// 上一次渲染器创建失败的原因（`None` = 没有待报告的失败）。
+    ///
+    /// `Renderer::new_offscreen` 会编译整条管线，失败通常是**持久**的（显存不够、驱动拒绝
+    /// 建管线、覆盖 shader 坏了）。以前这里 `.ok()` 直接吞掉，于是视图只剩空白、Console 一句
+    /// 话没有，而且因为 `scene_renderer` 永远是 `None`，**每一帧都会重跑一次昂贵的失败尝试**。
+    scene_renderer_error: Option<String>,
+    /// 下一次允许重试创建渲染器的时刻（失败后按 `SCENE_RENDERER_RETRY` 退避）。
+    scene_renderer_retry_at: Option<Instant>,
     /// 3D 场景视图的离屏纹理 + 视图。
     scene_texture: Option<(wgpu::Texture, wgpu::TextureView)>,
     /// 3D 场景视图显示用的 egui 纹理（有窗口时为原生 GPU 纹理，否则为回读上传）。
@@ -589,6 +611,17 @@ struct EditorApp {
     shader_error_shown: Option<String>,
     /// 持久化布局（docs/55 P1）：面板宽度/可见性、工作台标签、视图模式与缩放。
     layout: editor::EditorLayout,
+    /// 外观偏好（主题）——**用户级**，与工程布局分开存。
+    appearance: editor::AppearanceSettings,
+    /// 已经设进 `egui::Context` 的主题名；与 `appearance.theme` 不同才重新 `set_theme`。
+    appearance_applied: Option<String>,
+    /// 编辑器快捷键改键（**用户级**，`editor.json` 的 `shortcuts` 段）：动作 id → 键位文本。
+    /// 缺省的动作用 `shortcuts::EditorShortcut::default_spec`（见 `crate::shortcuts`）。
+    shortcuts: editor::ShortcutBindings,
+    /// 快捷键窗口是否打开（帮助 ▸ 快捷键…）。
+    show_shortcuts: bool,
+    /// 正在等待用户按新键的动作（快捷键窗口的捕获态；`None` = 没在捕获）。
+    shortcut_capture: Option<crate::shortcuts::EditorShortcut>,
     /// 布局加载结果（缺失/损坏时的原因，用于状态栏提示与"重置布局"）。
     layout_load: editor::LayoutLoad,
     /// Editor Profiler（docs/55 P0）：帧/面板/命令耗时、计数器与 gauge。
@@ -1094,6 +1127,11 @@ impl EditorApp {
             selected_resource: None,
             pending_resource_locate: None,
             resource_rename: None,
+            resource_new_folder: None,
+            resource_dependency: None,
+            command_palette_open: false,
+            command_palette_query: String::new(),
+            command_palette_index: 0,
             resources_filter: String::new(),
             console_notices: Vec::new(),
             console_rows_cache: Default::default(),
@@ -1173,6 +1211,7 @@ impl EditorApp {
             atlas: crate::panels::atlas::AtlasPanelState::new(),
             bundles: crate::panels::bundles::BundlePanelState::new(),
             texture_preview: crate::panels::texture_preview::TexturePreviewState::new(),
+            model_preview: crate::panels::model_preview::ModelPreviewState::new(),
             broken_refs: crate::panels::broken_refs::BrokenRefsPanelState::new(),
             undo_ledger: crate::actions::undo_ledger::UndoLedger::default(),
             show_resources_panel: true,
@@ -1228,6 +1267,8 @@ impl EditorApp {
             game_camera_2d_center: DEFAULT_2D_CAMERA_CENTER,
             editor_camera: EditorCamera::default(),
             scene_renderer: None,
+            scene_renderer_error: None,
+            scene_renderer_retry_at: None,
             scene_texture: None,
             scene_preview_tex: None,
             scene_runtime: None,
@@ -1252,6 +1293,11 @@ impl EditorApp {
             shader_watch_external: false,
             shader_error_shown: None,
             layout,
+            appearance: editor::AppearanceSettings::default(),
+            appearance_applied: None,
+            shortcuts: editor::ShortcutBindings::new(),
+            show_shortcuts: false,
+            shortcut_capture: None,
             layout_load: editor::LayoutLoad::Missing,
             profiler: editor::EditorProfiler::new(editor::DEFAULT_FRAME_BUDGET_MS),
             last_trace_report: None,
@@ -2000,6 +2046,217 @@ impl EditorApp {
         self.assistant_config_dirty_since = None;
     }
 
+    /// 用户级设置的落点：优先用启动时注入的那份（便携版与测试会指到别处），
+    /// 否则回到默认用户目录。
+    ///
+    /// **所有**用户级读写都得走这里：直接调 `UserConfigStore::default_store()` 的地方
+    /// 会绕过注入，于是门在测试里写进开发机真实的 `~/.rustlua/editor.json`。
+    pub(crate) fn user_config_store(&self) -> Option<editor::UserConfigStore> {
+        self.user_config
+            .clone()
+            .or_else(editor::UserConfigStore::default_store)
+    }
+
+    /// 读用户级外观偏好（`~/.rustlua/editor.json`）；读不到就保留默认深色。
+    ///
+    /// 与布局分开：主题属于这台机器的这个用户，换工程/不带 `--project` 启动都该保留。
+    pub(crate) fn load_user_appearance(&mut self) {
+        let Some(store) = self.user_config_store() else {
+            return;
+        };
+        if let Some(stored) = store.load_appearance() {
+            self.appearance = stored;
+        }
+    }
+
+    /// 只改内存里的主题偏好（并安排下一帧应用），不碰磁盘——测试与菜单共用。
+    pub(crate) fn apply_appearance_theme(&mut self, theme: &str) -> bool {
+        if !self.appearance.set_theme(theme) {
+            return false;
+        }
+        self.appearance_applied = None;
+        true
+    }
+
+    /// 窗口 ▸ 主题：切换用户级主题并立刻落盘。
+    pub(crate) fn set_appearance_theme(&mut self, theme: &str) {
+        let label = match theme {
+            "light" => "浅色",
+            "system" => "跟随系统",
+            _ => "深色",
+        };
+        if !self.apply_appearance_theme(theme) {
+            self.status = format!("主题已是{label}");
+            return;
+        }
+        match self.user_config_store() {
+            Some(store) => match store.save_appearance(&self.appearance) {
+                Ok(()) => {
+                    self.profiler.bump("appearance_saved");
+                    self.status = format!("主题已切换为{label}");
+                }
+                Err(error) => {
+                    self.profiler.bump("appearance_save_failed");
+                    self.status = format!("主题已切换为{label}，但保存失败：{error}");
+                }
+            },
+            // 没有主目录时如实说明：本次进程有效，下次启动回到默认。
+            None => {
+                self.status = format!("主题已切换为{label}（找不到用户主目录，下次启动不保留）");
+            }
+        }
+    }
+
+    /// 把外观偏好设进 egui；只在偏好变化后调用一次，不是每帧重复设置。
+    fn apply_appearance(&mut self, context: &egui::Context) {
+        let theme = self.appearance.normalized_theme();
+        if self.appearance_applied.as_deref() == Some(theme) {
+            return;
+        }
+        context.set_theme(match theme {
+            "light" => egui::ThemePreference::Light,
+            "system" => egui::ThemePreference::System,
+            _ => egui::ThemePreference::Dark,
+        });
+        self.appearance_applied = Some(theme.to_owned());
+    }
+
+    /// 读用户级快捷键改键（`~/.rustlua/editor.json` 的 `shortcuts` 段）；读不到就全用默认键。
+    pub(crate) fn load_user_shortcuts(&mut self) {
+        let Some(store) = self.user_config_store() else {
+            return;
+        };
+        if let Some(stored) = store.load_shortcuts() {
+            self.shortcuts = stored;
+        }
+    }
+
+    /// 本帧是否按下了某动作的**生效**键位。
+    ///
+    /// 只看键位，不看焦点/工作台：各调用点保留原本的 `project_loaded` /
+    /// `wants_keyboard_input` / 工作台门槛（这些语义不属于键位，不能一起改）。
+    pub(crate) fn shortcut_pressed(
+        &self,
+        context: &egui::Context,
+        action: crate::shortcuts::EditorShortcut,
+    ) -> bool {
+        let spec = crate::shortcuts::binding(&self.shortcuts, action);
+        context.input(|input| crate::shortcuts::pressed(input, &spec))
+    }
+
+    /// 菜单提示文本：改键后显示生效键位（没有对应动作时 `None`，调用方用静态默认）。
+    pub(crate) fn menu_shortcut_label(&self, action: crate::menu::MenuAction) -> Option<String> {
+        let shortcut = crate::shortcuts::for_menu_action(action)?;
+        Some(crate::shortcuts::binding(&self.shortcuts, shortcut).display())
+    }
+
+    /// 快捷键窗口的捕获态：本帧按下的第一个键就是新键位（Esc 取消）。
+    ///
+    /// 与游戏输入重绑定（`capture_input_binding`）同一纪律——必须在所有编辑器快捷键
+    /// 分发**之前**运行，否则捕获会顺手触发被改键的那条命令。
+    pub(crate) fn capture_shortcut(&mut self, context: &egui::Context) {
+        let Some(action) = self.shortcut_capture else {
+            return;
+        };
+        let Some((key, modifiers)) = context.input(|input| {
+            input.events.iter().find_map(|event| match event {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } => Some((*key, *modifiers)),
+                _ => None,
+            })
+        }) else {
+            return;
+        };
+        if key == egui::Key::Escape && !modifiers.any() {
+            self.shortcut_capture = None;
+            self.status = format!("已取消修改「{}」", action.label());
+            return;
+        }
+        let spec = editor::ShortcutSpec {
+            ctrl: modifiers.command,
+            shift: modifiers.shift,
+            alt: modifiers.alt,
+            key: key.name().to_owned(),
+        };
+        self.shortcut_capture = None;
+        self.set_shortcut(action, &spec);
+    }
+
+    /// 改一条键位：非法键位、与别的动作冲突都拒绝并说明原因；成功后立刻落盘。
+    pub(crate) fn set_shortcut(
+        &mut self,
+        action: crate::shortcuts::EditorShortcut,
+        spec: &editor::ShortcutSpec,
+    ) {
+        match self.apply_shortcut(action, spec) {
+            Ok(true) => {
+                self.persist_shortcuts(format!("已把「{}」改为 {}", action.label(), spec.display()))
+            }
+            Ok(false) => self.status = format!("「{}」已是 {}", action.label(), spec.display()),
+            Err(reason) => self.status = format!("未改键：{reason}"),
+        }
+    }
+
+    /// 校验并写进内存表（不落盘）：`Ok(true)` = 有变化，`Err` = 拒绝原因。
+    pub(crate) fn apply_shortcut(
+        &mut self,
+        action: crate::shortcuts::EditorShortcut,
+        spec: &editor::ShortcutSpec,
+    ) -> Result<bool, String> {
+        if let Some(problem) = crate::shortcuts::binding_problem(spec) {
+            return Err(problem.to_owned());
+        }
+        if let Some(other) = crate::shortcuts::conflicting_action(&self.shortcuts, action, spec) {
+            return Err(format!("{} 已被「{}」占用", spec.display(), other.label()));
+        }
+        self.shortcuts
+            .set(action.id(), &spec.display())
+            .map_err(|error| error.to_string())
+    }
+
+    /// 恢复一条动作的默认键位。
+    pub(crate) fn reset_shortcut(&mut self, action: crate::shortcuts::EditorShortcut) {
+        if !self.shortcuts.remove(action.id()) {
+            self.status = format!("「{}」已是默认键位", action.label());
+            return;
+        }
+        self.persist_shortcuts(format!("「{}」已恢复默认键位", action.label()));
+    }
+
+    /// 恢复全部默认键位（用户表清空；文件里未来版本的未知 id 由 `save_section` 保留）。
+    pub(crate) fn reset_all_shortcuts(&mut self) {
+        if self.shortcuts.is_empty() {
+            self.status = "全部快捷键都已是默认键位".to_owned();
+            return;
+        }
+        self.shortcuts.clear();
+        self.persist_shortcuts("全部快捷键已恢复默认键位".to_owned());
+    }
+
+    /// 落盘改键表（失败只提示，进程内仍然生效）。
+    fn persist_shortcuts(&mut self, done: String) {
+        match self.user_config_store() {
+            Some(store) => match store.save_shortcuts(&self.shortcuts) {
+                Ok(()) => {
+                    self.profiler.bump("shortcuts_saved");
+                    self.status = done;
+                }
+                Err(error) => {
+                    self.profiler.bump("shortcuts_save_failed");
+                    self.status = format!("{done}，但保存失败：{error}");
+                }
+            },
+            None => {
+                self.status = format!("{done}（找不到用户主目录，下次启动不保留）");
+            }
+        }
+    }
+
     /// 保存布局（原子写；失败只提示，不中断编辑）。
     pub(crate) fn persist_layout(&mut self) {
         if !self.project_loaded {
@@ -2441,6 +2698,8 @@ impl EditorApp {
     }
 
     pub(crate) fn draw_frame(&mut self, context: &egui::Context) {
+        // 外观偏好（主题）只在本帧偏好变化时设一次；菜单切换后下一帧生效。
+        self.apply_appearance(context);
         // M79 P1-2：全局 Undo 的"最近提交在谁那里"每帧刷一次。放在帧首是因为上一帧所有
         // 面板的绘制（含材质/动画/图会话的提交）都已经结束，本帧的 Ctrl+Z 于是能看到
         // 真实的先后；签名没变时这里只做几次整数比较（口径见 `actions/undo_ledger.rs`）。
@@ -2519,29 +2778,36 @@ impl EditorApp {
         // 键盘事件（见 `EditorApp::capture_input_binding`），使捕获不会顺手触发
         // Ctrl+Z / Ctrl+S / Delete / Q/W/E/R 等命令。
         self.capture_input_binding(context);
+        // 快捷键改键捕获：同样必须早于下面的分发（否则捕获会顺手触发被改键的命令）。
+        self.capture_shortcut(context);
         // 快捷键统一走 typed 命令入口（docs/55 §4.1 规则 1：视图只发 action，
         // 提交边界由 dispatch 统一编排）。Ctrl+Z 仍先做事务网关。
+        // 键位本身来自 `crate::shortcuts`（用户可改，见 帮助 ▸ 快捷键…）。
         if self.project_loaded
-            && context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z))
+            && self.shortcut_pressed(context, crate::shortcuts::EditorShortcut::Undo)
         {
             self.dispatch(editor::EditorCommand::Undo);
         }
         if self.project_loaded
-            && context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Y))
+            && self.shortcut_pressed(context, crate::shortcuts::EditorShortcut::Redo)
         {
             self.dispatch(editor::EditorCommand::Redo);
         }
         if self.project_loaded
-            && context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S))
+            && self.shortcut_pressed(context, crate::shortcuts::EditorShortcut::Save)
         {
             self.dispatch(editor::EditorCommand::Save);
         }
         // Ctrl+Shift+L：保存布局（docs/55 P1：可保存布局；重置在菜单里）。
         if self.project_loaded
-            && context
-                .input(|i| i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::L))
+            && self.shortcut_pressed(context, crate::shortcuts::EditorShortcut::SaveLayout)
         {
             self.persist_layout();
+        }
+        // P2：命令面板。默认 Ctrl+Shift+P（与 VS Code 同键位）；打开后输入框自己抢焦点，
+        // 因此不需要 project_loaded 前置（未开工程时条目按各自的 Gate 灰置并说明原因）。
+        if self.shortcut_pressed(context, crate::shortcuts::EditorShortcut::Palette) {
+            self.toggle_command_palette();
         }
         // H04：Ctrl+D 原地复制 / Ctrl+C 复制 / Ctrl+V 粘贴为子节点（Unity 语义）。
         // 与 Ctrl+S 同级：仅场景工作台、无文本焦点、无活动事务时生效；Play 锁
@@ -2551,34 +2817,42 @@ impl EditorApp {
             && !context.wants_keyboard_input()
             && !self.is_edit_transaction_active()
         {
-            if context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::D)) {
+            if self.shortcut_pressed(context, crate::shortcuts::EditorShortcut::Duplicate) {
                 self.dispatch(editor::EditorCommand::DuplicateSelection);
-            } else if context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::C)) {
+            } else if self.shortcut_pressed(context, crate::shortcuts::EditorShortcut::Copy) {
                 self.copy_selected_entity();
-            } else if context.input(|i| i.modifiers.command && i.key_pressed(egui::Key::V)) {
+            } else if self.shortcut_pressed(context, crate::shortcuts::EditorShortcut::Paste) {
                 let parent = self.selection.primary();
                 self.paste_entity(parent);
             }
         }
         if self.project_loaded
+            && self.workspace_tab == WorkspaceTab::Scene
             && !context.wants_keyboard_input()
-            && context.input(|i| i.key_pressed(egui::Key::Delete))
+            && self.shortcut_pressed(context, crate::shortcuts::EditorShortcut::SelectAll)
+        {
+            self.select_all_entities();
+        }
+        if self.project_loaded
+            && !context.wants_keyboard_input()
+            && self.shortcut_pressed(context, crate::shortcuts::EditorShortcut::Delete)
         {
             self.handle_delete_shortcut();
         }
         if self.workspace_tab == WorkspaceTab::Scene && !context.wants_keyboard_input() {
-            let mut requested = None;
-            context.input(|input| {
-                if input.key_pressed(egui::Key::Q) {
-                    requested = Some(SceneTool::Select);
-                } else if input.key_pressed(egui::Key::W) {
-                    requested = Some(SceneTool::Move);
-                } else if input.key_pressed(egui::Key::E) {
-                    requested = Some(SceneTool::Rotate);
-                } else if input.key_pressed(egui::Key::R) {
-                    requested = Some(SceneTool::Scale);
-                }
-            });
+            let requested = if self
+                .shortcut_pressed(context, crate::shortcuts::EditorShortcut::ToolSelect)
+            {
+                Some(SceneTool::Select)
+            } else if self.shortcut_pressed(context, crate::shortcuts::EditorShortcut::ToolMove) {
+                Some(SceneTool::Move)
+            } else if self.shortcut_pressed(context, crate::shortcuts::EditorShortcut::ToolRotate) {
+                Some(SceneTool::Rotate)
+            } else if self.shortcut_pressed(context, crate::shortcuts::EditorShortcut::ToolScale) {
+                Some(SceneTool::Scale)
+            } else {
+                None
+            };
             // 走状态机：切换工具会自动取消进行中的拖拽/框选（E11 既有语义）。
             if let Some(tool) = requested {
                 self.set_scene_tool(tool);
@@ -2632,6 +2906,11 @@ impl EditorApp {
         // 性能面板（独立弹窗）：升级后的 Scene 视图不再往画布上叠性能文字。
         self.draw_performance_panel(context);
         self.draw_about_window(context);
+        // P2：命令面板。画在普通面板之后、确认窗之前——它只发菜单动作，
+        // 有弹窗挡着时不会抢输入。
+        self.draw_command_palette(context);
+        // 帮助 ▸ 快捷键…：查看/改键。与命令面板同级——只改用户配置，不碰文档。
+        self.draw_shortcut_settings(context);
         // E06：最后绘制「未保存的更改」确认窗，置于其余窗口之上；仅在 dirty 且
         // 有挂起的离开操作时显示，此时其它面板保持原样、文档不被改动。
         self.draw_pending_change_window(context);
@@ -2648,6 +2927,8 @@ impl EditorApp {
         }
         // Play 且本帧没人步进过预览（Game 页签没显示）：补一次空输入步进，游戏不因切页停摆。
         self.keep_preview_running_without_game_view(context);
+        // Scene View 渲染器创建失败退避期间：约一次到点重绘，空闲时也能自愈。
+        self.schedule_scene_renderer_retry(context);
         // 运行时性能：在预览本帧的步进/渲染都完成后取快照；Play 停止时由 tracker 清空。
         self.sample_runtime_performance();
         // E06-2：trace 捕获中时把本帧调度报告桥接进去（签名去重）。

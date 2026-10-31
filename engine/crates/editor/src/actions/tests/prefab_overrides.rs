@@ -180,7 +180,7 @@ fn nodes_the_source_cannot_answer_for_are_notes_not_rows() {
     scene
         .add_entity(SceneEntityId(900), "HandWelded", Some(root))
         .unwrap();
-    // 再挂一个带**别的**预制体来源的节点（嵌套后置）：ForeignPrefabNode，且子树不展开。
+    // 再挂一个带**别的**预制体来源的节点（嵌套实例）：ForeignPrefabNode，且子树不展开。
     scene
         .add_entity(SceneEntityId(901), "Nested", Some(root))
         .unwrap();

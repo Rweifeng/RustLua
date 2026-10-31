@@ -26,13 +26,13 @@ pub use profiler::{
 };
 
 pub use schema_fields::{
-    ChoiceSource, FieldEdit, FieldUnit, HANDWRITTEN_PANEL_COMPONENTS, SORTING_LAYERS,
-    SchemaComponentAction, SchemaComponentNote, SchemaComponentToggle, SchemaFieldError,
-    SchemaFieldRow, component_actions, component_notes, component_toggles, driven_components,
-    edit_component_field, edit_component_payload, field_choice_source, field_unit,
-    filter_field_rows, is_builtin_asset_reference, is_schema_driven, mark_missing_assets,
-    mirror_fields, picker_candidates, preview_field_edit, rows_for_component, rows_for_entity,
-    rows_for_selection,
+    COMPONENT_ORDER_META, ChoiceSource, FieldEdit, FieldUnit, HANDWRITTEN_PANEL_COMPONENTS,
+    SORTING_LAYERS, SchemaComponentAction, SchemaComponentNote, SchemaComponentToggle,
+    SchemaFieldError, SchemaFieldRow, component_actions, component_notes, component_toggles,
+    display_components, driven_components, edit_component_field, edit_component_payload,
+    field_choice_source, field_unit, filter_field_rows, is_builtin_asset_reference,
+    is_schema_driven, mark_missing_assets, mirror_fields, picker_candidates, preview_field_edit,
+    rows_for_component, rows_for_entity, rows_for_selection, sort_component_names,
 };
 
 /// 测试用唯一令牌（原因与 `rustlua-editor-core::test_token` 相同）。

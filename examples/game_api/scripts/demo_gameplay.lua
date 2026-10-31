@@ -872,6 +872,74 @@ local steps = {
             end
         end,
     },
+    {
+        id = "net_rollback",
+        title = "Net / Rollback",
+        claim = "rollback 账本只保管快照与输入：预测命中就接受，远端真值不同就从 from 帧重模拟",
+        api = { "rollback.reset", "rollback.next_frame", "rollback.save_snapshot", "rollback.record_local",
+            "rollback.accept", "rollback.inputs", "rollback.commit", "rollback.rollback_to", "rollback.stats",
+            "net.status", "net.now", "net.default_server", "net.default_room", "net.auto_start" },
+        code = "rollback.reset(2,1,4); rollback.accept(0,1,'R1') -> resimulate; rollback.rollback_to(1)",
+        enter = function()
+            rollback.reset(2, 1, 4)
+            lab.note("n sim 3 frames / r late remote input / c tcp / u udp / s send / v recv / x close")
+        end,
+        run = function()
+            local stats = rollback.stats()
+            local status = net.status()
+            lab.note(string.format(
+                "frame=%d resimulations=%d stale=%d | net=%s player=%s",
+                rollback.next_frame(),
+                stats.resimulations,
+                stats.stale_inputs,
+                dash(status.state),
+                dash(status.player)
+            ))
+        end,
+        read = function()
+            local stats = rollback.stats()
+            local status = net.status()
+            return {
+                { label = "frame", value = tostring(rollback.next_frame()) },
+                { label = "resimulations", value = tostring(stats.resimulations) },
+                { label = "predicted", value = tostring(stats.predicted_inputs) },
+                { label = "net", value = dash(status.state) },
+                { label = "transport", value = dash(status.transport) },
+                { label = "server", value = dash(net.default_server()) },
+                { label = "room", value = dash(net.default_room()) },
+                { label = "now_ms", value = string.format("%.0f", net.now()) },
+            }
+        end,
+        check = function(t)
+            rollback.reset(2, 1, 4)
+            local frame = rollback.next_frame()
+            t:eq(frame, 0, "a fresh ledger starts at frame 0")
+            rollback.save_snapshot(frame, "snap0")
+            rollback.record_local(frame, "L0")
+            t:eq(rollback.accept(0, frame, "R0"), "accepted", "an unseen remote input is accepted")
+            local inputs = rollback.inputs(frame)
+            t:eq(#inputs, 2, "inputs() returns every player")
+            t:eq(inputs[1].payload, "R0", "remote input comes first (player order)")
+            t:eq(inputs[2].payload, "L0", "local input is the second entry")
+            rollback.commit(frame)
+            rollback.save_snapshot(1, "snap1")
+            rollback.record_local(1, "L1")
+            t:eq(rollback.inputs(1)[1].payload, "R0", "a missing remote input is predicted from the last frame")
+            rollback.commit(1)
+            local kind, from = rollback.accept(0, 1, "R1")
+            t:eq(kind, "resimulate", "a different remote input triggers resimulation")
+            t:eq(from, 1, "resimulation starts at the first mismatching frame")
+            t:eq(rollback.rollback_to(from), "snap1", "rollback_to returns the pre-frame snapshot")
+            t:eq(rollback.next_frame(), 1, "the cursor rewinds to from")
+            t:eq(rollback.stats().resimulations, 1, "stats counts the resimulation")
+            local status = net.status()
+            t:ok(type(status.state) == "string", "net.status reports a state string")
+            t:ok(type(net.now()) == "number", "net.now is a monotonic millisecond clock")
+            t:ok(type(net.default_server()) == "string", "net.default_server has a default")
+            t:ok(type(net.default_room()) == "string", "net.default_room has a default")
+            t:ok(type(net.auto_start()) == "boolean", "net.auto_start reports the auto-join flag")
+        end,
+    },
 }
 
 -- ── 日循环钩子：day.sleep() 与自然跨午夜都会走到这里 ─────────────────────────
@@ -1094,6 +1162,32 @@ function M.update()
         elseif input.just_pressed("j") then
             local queued = map.go(MAP_HERE)
             action = "map.go(self) queued=" .. tostring(queued)
+        end
+    elseif id == "net_rollback" then
+        if input.just_pressed("n") then
+            local frame = rollback.next_frame()
+            rollback.save_snapshot(frame, "snap" .. tostring(frame))
+            rollback.record_local(frame, "L" .. tostring(frame))
+            rollback.commit(frame)
+            action = string.format("3 frames predicted -> cursor %d", rollback.next_frame())
+        elseif input.just_pressed("r") then
+            local kind, from = rollback.accept(0, rollback.next_frame() - 1, "R-mismatch")
+            action = string.format("rollback.accept -> %s from=%s", tostring(kind), dash(from))
+        elseif input.just_pressed("c") then
+            local ok = net.connect(net.default_server(), net.default_room())
+            action = string.format("net.connect(%s, %s) -> %s", net.default_server(), net.default_room(), tostring(ok))
+        elseif input.just_pressed("u") then
+            local ok = net.connect_udp("udp://127.0.0.1:8788", net.default_room(), 1)
+            action = "net.connect_udp(udp://127.0.0.1:8788) -> " .. tostring(ok)
+        elseif input.just_pressed("s") then
+            local sent = net.send("move:1")
+            action = "net.send(move:1) -> " .. tostring(sent)
+        elseif input.just_pressed("v") then
+            local message = net.recv()
+            action = "net.recv() -> " .. dash(message)
+        elseif input.just_pressed("x") then
+            net.close()
+            action = string.format("net.close() -> %s", tostring(net.status().state))
         end
     end
 

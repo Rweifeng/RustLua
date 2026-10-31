@@ -39,6 +39,17 @@ impl EditorApp {
             if ui.button("刷新").clicked() {
                 refresh_resources = true;
             }
+            // 新目录建在"当前选中资源所在的目录"下（没选中时落在 `assets/`）。
+            // `assets/` 缺失时禁用：资源面板只扫 assets/scenes/scripts/ui，建在根上会看不见。
+            let folder_enabled = self.resources.missing_assets_directory().is_none();
+            if ui
+                .add_enabled(folder_enabled, egui::Button::new("新建文件夹"))
+                .on_disabled_hover_text("assets/ 不存在：先点下面的「创建 assets 目录」")
+                .on_hover_text("在所选资源所在目录下新建文件夹")
+                .clicked()
+            {
+                self.resource_new_folder = Some((self.resource_folder_target(), String::new()));
+            }
             ui.label(format!("{} 项", self.resources.visible_entries().len()));
         });
         ui.text_edit_singleline(&mut self.resources_filter);
@@ -71,6 +82,8 @@ impl EditorApp {
         // P1：重命名（引用保持）。改名走 shell 的 `perform_resource_move`：
         // 搬文件 + 改写工程里所有引用（当前文档走内存 + Undo）。
         self.draw_resource_rename_row(ui);
+        self.draw_resource_new_folder_row(ui);
+        self.draw_resource_dependency_view(ui);
         if let Some(error) = self.resources.last_error() {
             ui.colored_label(egui::Color32::RED, format!("错误：{error}"));
         }
@@ -272,9 +285,10 @@ impl EditorApp {
             } else {
                 header
             };
-            header.show(ui, |ui| {
+            let response = header.show(ui, |ui| {
                 self.draw_resource_tree(ui, child, &child_prefix, depth + 1, context, open);
             });
+            self.handle_folder_drop(ui, &response.header_response, &child_prefix);
         }
         for entry in &node.files {
             self.draw_resource_entry(ui, entry, context, open);
@@ -292,6 +306,19 @@ impl EditorApp {
             .unwrap_or_default();
         if ui.button("重命名…").clicked() {
             self.resource_rename = Some((entry.path.clone(), file_name));
+            ui.close();
+        }
+        // 副本是独立资产：原引用仍指向原文件，所以不需要改写任何文档。
+        if ui.button("创建副本").clicked() {
+            self.status = match self.duplicate_resource(&entry.path) {
+                Ok(status) => status,
+                Err(error) => error,
+            };
+            ui.close();
+        }
+        // 依赖查看（只读）：入边要读全工程文本型文档，因此只在点开时算一次。
+        if ui.button("查看依赖…").clicked() {
+            self.show_resource_dependencies(&entry.path);
             ui.close();
         }
         // P0：脚本/文本类资源在编辑器里没有视图，右键唯一该给的是"交给我自己的编辑器"。
@@ -367,6 +394,143 @@ impl EditorApp {
             self.resource_rename = None;
         } else if self.resource_rename.is_some() {
             self.resource_rename = Some((path, buffer));
+        }
+    }
+
+    /// 新建文件夹输入行：父目录在点按钮时定下（选中资源所在目录 / `assets/`），
+    /// 确认后交给 shell 的 `create_resource_folder`——面板不自己碰磁盘。
+    fn draw_resource_new_folder_row(&mut self, ui: &mut egui::Ui) {
+        let Some((parent, buffer)) = self.resource_new_folder.clone() else {
+            return;
+        };
+        let mut buffer = buffer;
+        let mut confirm = false;
+        let mut cancel = false;
+        ui.horizontal(|ui| {
+            ui.small("新建文件夹");
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut buffer)
+                    .desired_width((ui.available_width() - 96.0).max(60.0))
+                    .hint_text("文件夹名"),
+            );
+            if response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                confirm = true;
+            }
+            if ui.small_button("确定").clicked() {
+                confirm = true;
+            }
+            if ui.small_button("取消").clicked() {
+                cancel = true;
+            }
+        });
+        if confirm {
+            match self.create_resource_folder(&parent, buffer.trim()) {
+                Ok(status) => {
+                    self.status = status;
+                    self.resource_new_folder = None;
+                }
+                // 失败时保留输入行，让作者改个名字再试（并给出拒绝原因）。
+                Err(error) => {
+                    self.status = error;
+                    self.resource_new_folder = Some((parent, buffer));
+                }
+            }
+        } else if cancel {
+            self.resource_new_folder = None;
+        } else if self.resource_new_folder.is_some() {
+            self.resource_new_folder = Some((parent, buffer));
+        }
+    }
+
+    /// 「新建文件夹」的父目录：所选资源所在目录；没选中时用 `assets/`。
+    fn resource_folder_target(&self) -> PathBuf {
+        self.selected_resource
+            .as_ref()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| PathBuf::from("assets"))
+    }
+
+    /// 目录头是**内部资产的移动落点**：松手就把文件搬进该目录，引用由
+    /// `perform_resource_move` 统一改写（含当前文档内存改写 + Undo）。
+    /// 外部文件不走这里——它们的归属目录由资源家族决定（整块面板才是落点）。
+    ///
+    /// 用 `dnd_release_payload`（`take`）而不是只读 hover：面板底部还有一个整块的落点区，
+    /// 这里不把载荷取走的话，它会在同一帧里把这个内部拖放判成"拒绝"并覆盖状态栏。
+    fn handle_folder_drop(&mut self, ui: &egui::Ui, header: &egui::Response, folder: &str) {
+        if let Some(payload) = header.dnd_release_payload::<crate::dnd::DropPayload>() {
+            let crate::dnd::DropPayload::Asset(source) = &*payload else {
+                return;
+            };
+            let source = PathBuf::from(source.replace('\\', "/"));
+            let Some(file_name) = source.file_name().map(PathBuf::from) else {
+                return;
+            };
+            let destination = PathBuf::from(folder).join(file_name);
+            self.status = match self.perform_resource_move(&source, &destination) {
+                Ok(status) => status,
+                Err(error) => error,
+            };
+            return;
+        }
+        // 还没松手：把"松手会移动到哪个目录"标出来。
+        if header
+            .dnd_hover_payload::<crate::dnd::DropPayload>()
+            .is_some_and(|payload| matches!(&*payload, crate::dnd::DropPayload::Asset(_)))
+        {
+            ui.painter().rect_filled(
+                header.rect,
+                2.0,
+                egui::Color32::from_rgba_unmultiplied(96, 200, 128, 48),
+            );
+        }
+    }
+
+    /// 依赖查看区（只读）：出边（本资源引用谁）与入边（谁引用本资源）。
+    ///
+    /// 条目可点击 → 复用「定位」请求：展开祖先目录、选中并滚到那一行。
+    fn draw_resource_dependency_view(&mut self, ui: &mut egui::Ui) {
+        let Some(report) = self.resource_dependency.clone() else {
+            return;
+        };
+        let mut locate: Option<PathBuf> = None;
+        let mut close = false;
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.strong(format!("依赖：{}", report.target));
+                if ui.small_button("关闭").clicked() {
+                    close = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label(format!("引用 {} 项", report.outgoing.len()));
+                ui.separator();
+                ui.label(format!("被引用 {} 处", report.incoming.len()));
+            });
+            for (title, items) in [
+                ("引用（出边）", &report.outgoing),
+                ("被引用（入边）", &report.incoming),
+            ] {
+                egui::CollapsingHeader::new(title)
+                    .id_salt(("resource_dependency", title))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        if items.is_empty() {
+                            ui.weak("（无）");
+                        }
+                        for item in items {
+                            if ui.link(item.as_str()).clicked() {
+                                locate = Some(PathBuf::from(item));
+                            }
+                        }
+                    });
+            }
+        });
+        if close {
+            self.resource_dependency = None;
+        }
+        if locate.is_some() {
+            self.pending_resource_locate = locate;
         }
     }
 
@@ -1295,8 +1459,125 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    /// 属性面板「定位」按钮的 shell 侧契约：字段里的引用 → 资源索引里的条目 + 一次定位请求。
-    ///
+    /// 资源 CRUD 的两条新入口：新建目录（只建目录、不碰文档）与创建副本
+    /// （副本是独立资产，原引用仍指向原文件，因此不改写任何引用）。
+    #[test]
+    fn creating_folders_and_duplicating_assets_stays_inside_the_project() {
+        let root = temp_project_root("crud");
+        fs::create_dir_all(root.join("assets/textures")).unwrap();
+        fs::write(root.join("assets/textures/player.png"), b"png").unwrap();
+        let mut browser = editor::ResourceBrowserState::new();
+        browser.refresh(&root).unwrap();
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.resources = browser;
+
+        // 非法目录名与越界父目录都不落盘。
+        assert!(
+            app.create_resource_folder(std::path::Path::new("assets"), "..")
+                .is_err()
+        );
+        assert!(
+            app.create_resource_folder(std::path::Path::new("assets"), "a/b")
+                .is_err()
+        );
+        assert!(
+            app.create_resource_folder(std::path::Path::new("C:/windows"), "x")
+                .is_err()
+        );
+        assert!(!root.join("assets/x").exists());
+
+        let status = app
+            .create_resource_folder(std::path::Path::new("assets/textures"), "icons")
+            .expect("合法目录名必须建得出来");
+        assert!(status.contains("已创建目录"), "{status}");
+        assert!(root.join("assets/textures/icons").is_dir());
+        assert_eq!(
+            app.selected_resource,
+            Some(PathBuf::from("assets/textures/icons"))
+        );
+        // 重名：拒绝，且不动已有目录。
+        assert!(
+            app.create_resource_folder(std::path::Path::new("assets/textures"), "icons")
+                .is_err()
+        );
+
+        // 副本不覆盖：依次 `_copy`、`_copy2`，原文件保持原样。
+        app.duplicate_resource(std::path::Path::new("assets/textures/player.png"))
+            .expect("副本");
+        app.duplicate_resource(std::path::Path::new("assets/textures/player.png"))
+            .expect("第二份副本");
+        assert!(root.join("assets/textures/player.png").exists());
+        assert!(root.join("assets/textures/player_copy.png").exists());
+        assert!(root.join("assets/textures/player_copy2.png").exists());
+        assert_eq!(
+            app.selected_resource,
+            Some(PathBuf::from("assets/textures/player_copy2.png"))
+        );
+        assert!(
+            app.duplicate_resource(std::path::Path::new("assets/nope.png"))
+                .is_err()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 依赖视图：出边与入边都来自**同一台**扫描器（`extract_refs`），入边覆盖磁盘文档、
+    /// 当前打开文档（内存版）与脚本。资产 ID 由路径派生，所以两边都能从文本直接扫出来。
+    #[test]
+    fn dependency_view_reports_both_directions() {
+        let root = temp_project_root("deps");
+        fs::create_dir_all(root.join("assets/textures")).unwrap();
+        fs::write(root.join("assets/textures/player.png"), b"png").unwrap();
+        fs::write(root.join("scripts/util.lua"), "return {}\n").unwrap();
+        fs::write(
+            root.join("scripts/main.lua"),
+            "local util = require(\"util\")\nreturn util\n",
+        )
+        .unwrap();
+        let mut other = rustlua_scene::scene::Scene::new("other");
+        let id = rustlua_scene::scene::SceneEntityId(1);
+        other.add_entity(id, "Hero", None).unwrap();
+        other.entities.get_mut(&id).unwrap().components.insert(
+            "Sprite".to_owned(),
+            "texture=assets/textures/player.png;size=1x1;tint=1,1,1,1;sorting_layer=default"
+                .to_owned(),
+        );
+        other.save(root.join("scenes/other.scene")).unwrap();
+        let mut browser = editor::ResourceBrowserState::new();
+        browser.refresh(&root).unwrap();
+        let project = open_project(&root).unwrap();
+        let mut app = EditorApp::new(project, None, LogSink::new(64));
+        app.resources = browser;
+
+        // 贴图：入边是引用它的场景，出边为空。
+        app.show_resource_dependencies(std::path::Path::new("assets/textures/player.png"));
+        let report = app.resource_dependency.clone().expect("依赖结果");
+        assert_eq!(report.target, "assets/textures/player.png");
+        assert!(report.outgoing.is_empty(), "{:?}", report.outgoing);
+        assert!(
+            report
+                .incoming
+                .iter()
+                .any(|item| item == "scenes/other.scene"),
+            "{:?}",
+            report.incoming
+        );
+
+        // 脚本：入边是 `require("util")` 它的脚本。
+        app.show_resource_dependencies(std::path::Path::new("scripts/util.lua"));
+        let report = app.resource_dependency.clone().expect("依赖结果");
+        assert!(
+            report
+                .incoming
+                .iter()
+                .any(|item| item == "scripts/main.lua"),
+            "{:?}",
+            report.incoming
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 属性面板「定位」按钮的 shell 侧契约：字段里的引用 → 资源索引里的条目 + 一次定位请求。    ///
     /// 四条断言各挡一种走偏：反斜杠没归一（Windows 上写的引用照样要点得动）、
     /// `#区域名` 没剥（图集引用应定位到图集那一行）、过滤词挡住那一行却没收窄
     /// （请求登记了但面板画不出那行）、引用找不到照样登记（面板白跳一趟）。

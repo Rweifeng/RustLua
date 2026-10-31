@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""test-trend-db.py —— trend_db 自测（P4-04，6 条）。
+"""test-trend-db.py —— trend_db 自测（P4-04，8 条）。
 
 用例：
   1. 同域注入 +8%（超 p95 5% 阈值）-> check 判 2
@@ -9,8 +9,10 @@
   4. 坏 schema -> ingest 退 1
   5. git_dirty 的 baseline 更新 -> ingest 拒绝（退 1）
   6. trailing median 对离群点稳健：1 个离群点被中位数吸收 -> 不判红
+  7. editor_perf 表格文本适配：动态场景数、profile 分隔、p50/p95/p99/max 全解析
+  8. editor_perf 摘要场景数与实际行数不符（截断）-> ingest 退 1
 
-输出：trend_db_selftest_ok cases=6（全过）或 trend_db_selftest_failed + 非零退出。
+输出：trend_db_selftest_ok cases=8（全过）或 trend_db_selftest_failed + 非零退出。
 """
 
 import json
@@ -25,6 +27,17 @@ import shutil
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TREND = os.path.join(ROOT, "scripts", "metrics", "trend_db.py")
 POLICY = os.path.join(ROOT, "metrics", "policy.json")
+
+EDITOR_SAMPLE = """=== RustLua editor performance baseline (docs/55 ER-01) ===
+profile=debug os=windows
+note: absolute values only compare on identical hardware and profile
+
+demo_a                             n=5     last=    1.000 p50=    2.000 p95=   12.345 p99=    3.000 max=    4.000 ms  ok
+    - rows=10000
+demo_b                             n=5     last=    1.000 p50=    2.000 p95=    5.000 p99=    3.000 max=    4.000 ms  ok
+
+scenarios=2 failed=0 result=ok
+"""
 
 
 def run_trend(*args):
@@ -160,14 +173,48 @@ def main():
             failed += 1
         else:
             print("[PASS] t6 trailing median 稳健")
+
+        # ── 用例 7：editor_perf 表格文本适配 ────────────────────────────
+        db7 = os.path.join(tmp, "t7.sqlite")
+        p7 = os.path.join(tmp, "editor-baseline.txt")
+        with open(p7, "w", encoding="utf-8") as f:
+            f.write(EDITOR_SAMPLE)
+        res = run_trend("ingest", "--input", p7, "--db", db7)
+        if res.returncode != 0:
+            print("[FAIL] t7 ingest: {}".format(res.stdout + res.stderr))
+            failed += 1
+        else:
+            q = run_trend("query", "--sql",
+                          "select workload, metric, value, unit from samples order by workload, metric",
+                          "--db", db7)
+            rows = [json.loads(line) for line in q.stdout.strip().splitlines() if line.strip()]
+            p95 = [r for r in rows if r["workload"] == "editor|debug|demo_a" and r["metric"] == "p95_us"]
+            if (q.returncode != 0 or len(rows) != 8 or not p95
+                    or abs(p95[0]["value"] - 12345.0) > 1e-6 or p95[0]["unit"] != "us"):
+                print("[FAIL] t7 rows={} p95={} stderr={}".format(len(rows), p95, q.stderr))
+                failed += 1
+            else:
+                print("[PASS] t7 editor_perf 表格文本适配")
+
+        # ── 用例 8：摘要场景数与实际行数不符（截断）退 1 ────────────────
+        db8 = os.path.join(tmp, "t8.sqlite")
+        p8 = os.path.join(tmp, "editor-baseline-truncated.txt")
+        with open(p8, "w", encoding="utf-8") as f:
+            f.write(EDITOR_SAMPLE.replace("scenarios=2", "scenarios=3"))
+        res = run_trend("ingest", "--input", p8, "--db", db8)
+        if res.returncode != 1 or "场景计数不符" not in (res.stdout + res.stderr):
+            print("[FAIL] t8 截断报告应退 1: {}".format(res.stdout + res.stderr))
+            failed += 1
+        else:
+            print("[PASS] t8 截断报告退 1")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
     print("")
     if failed > 0:
-        print("trend_db_selftest_failed cases=6 failures={}".format(failed))
+        print("trend_db_selftest_failed cases=8 failures={}".format(failed))
         return 1
-    print("trend_db_selftest_ok cases=6")
+    print("trend_db_selftest_ok cases=8")
     return 0
 
 

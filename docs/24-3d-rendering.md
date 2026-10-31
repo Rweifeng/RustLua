@@ -59,7 +59,13 @@
   `host::renderer::tests::shadow_camera_sits_on_the_light_side_of_the_documented_direction`
   与像素门 `engine/crates/engine/examples/wp0_lighting_golden.rs` 同时钉住。
 - 默认 `direction=0.4,-0.8,0.5`、`color=1,1,1`、`intensity=1`。
-- 未设置活动灯时回退到首个 `Light` 实体。
+- 未设置活动灯时回退到首个**方向光** `Light` 实体（点光源不会被选成这一盏）。
+- **点光源**：同一组件加 `type=point;position=x,y,z;range=<r>`（`range > 0`），最多 **8 盏**参与同一帧着色，
+  **不投射阴影**（阴影贴图只有方向光那一张）；`position` 是世界坐标，不跟实体 `Transform` 走。
+  超出 8 盏的部分按实体顺序丢弃（帧同步两端必须看到同一份列表，所以不按距离裁剪）。
+  PBR 与默认（非 PBR）着色路径都参与；方向光强度为 0 时即可做"纯点光"场景。
+  像素门：`engine/crates/engine/examples/wp0_point_light_golden.rs`（两盏异色点光 + range 截断，
+  同时覆盖两条着色路径）。
 
 ### Animation3D
 

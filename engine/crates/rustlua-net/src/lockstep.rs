@@ -105,6 +105,16 @@ impl<T: Transport> Session<T> {
         self.config
     }
 
+    /// 取出传输层（对端统计/诊断用）。会话本身不保留任何与之绑定的状态。
+    pub fn into_transport(self) -> T {
+        self.transport
+    }
+
+    /// 只读访问传输层（诊断/统计）。
+    pub fn transport(&self) -> &T {
+        &self.transport
+    }
+
     /// 下一帧要提交的输入序号（不是被模拟的帧号：两者相差 `delay`）。
     pub fn next_submit_frame(&self) -> u32 {
         self.next_submit

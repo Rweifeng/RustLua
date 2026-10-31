@@ -123,6 +123,8 @@ impl EditorApp {
                     self.thumbnail_worker.clear();
                     // 贴图预览窗同理：路径按旧项目根解析，跨项目必须整窗作废。
                     self.texture_preview.clear();
+                    // 模型预览的几何体与纹理也按旧项目根解析，同一口径整份作废。
+                    self.model_preview.clear();
                     // 断链清单是"某一次扫描的快照"，换工程后逐条都不再指向前工程的东西。
                     self.broken_refs.clear();
                     // 全局 Undo 账本记的是"上一份工程里谁最后改过"，换工程后整本作废：

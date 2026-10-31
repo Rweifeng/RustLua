@@ -17,8 +17,8 @@
 
 适配器（输入原始产物 -> metrics-run-v1）：
   wp0_3d_stress / wp0_scene_frame / wp0_ecs_storage / ecs_stress / sprite_stress /
-  tilemap_stress（通用 perf JSON）、jhyt_m19_soak、editor_perf（31 场景文本）、
-  coverage-v1 / compile-v1 / binary-v1 / package-v1。
+  tilemap_stress（通用 perf JSON）、jhyt_m19_soak、editor_perf（`--perf-baseline`
+  表格文本，场景数随报告动态变化）、coverage-v1 / compile-v1 / binary-v1 / package-v1。
 """
 
 import argparse
@@ -158,32 +158,84 @@ def adapt_m19_soak(path, project_root, env_fp):
     return build_run(path, "perf", "jhyt_m19_soak", samples, commit, dirty, env_fp, {"task": data.get("task")})
 
 
-def adapt_editor_perf(path, project_root, env_fp):
-    """editor --perf-baseline 的 31 场景文本：每行 `场景名 <数值>(us|ms)`。
+EDITOR_SCENARIO_RE = re.compile(
+    r"^(?P<name>\S+)\s+n=(?P<n>\d+)\s+last=\s*(?P<last>[\d.]+)\s+"
+    r"p50=\s*(?P<p50>[\d.]+)\s+p95=\s*(?P<p95>[\d.]+)\s+"
+    r"p99=\s*(?P<p99>[\d.]+)\s+max=\s*(?P<max>[\d.]+)\s+ms\s+(?P<status>ok|FAILED)$"
+)
+EDITOR_PROFILE_RE = re.compile(r"^profile=(\w+)")
+EDITOR_SUMMARY_RE = re.compile(r"^scenarios=(\d+)\s+failed=(\d+)\s+result=(\w+)$")
 
-    真实输出格式以 editor 实际打印为准；解析失败标 source.kind=unparsed 并退 1。
+
+def adapt_editor_perf(path, project_root, env_fp):
+    """editor --perf-baseline 的表格文本。
+
+    真实格式（`perf_baseline.rs::to_text`）：
+        profile=debug os=windows
+        <场景名>  n=5  last=... p50=... p95=... p99=... max=... ms  ok
+        scenarios=35 failed=0 result=ok
+
+    场景数随报告动态变化（1.2 版的适配器只认 `场景名 数值(us|ms)`，实际一行都解析不出来）。
+    workload 里带 profile：debug 与 release 差 7~8 倍，混在同一条序列里会把同比做废。
+    摘要里的 scenarios= 必须与实际解析出的场景数一致；不一致说明报告被截断或格式漂移，直接退 1。
     """
     commit, dirty = git_state(project_root)
     samples = []
     unparsed = 0
+    profile = "unknown"
+    declared = None
+    names = set()
     with open(path, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            line = line.strip()
+        for raw in f:
+            line = raw.strip()
             if not line or line.startswith("#"):
                 continue
-            m = re.match(r"^(\S+)\s+([\d.]+)\s*(us|ms)?$", line)
+            pm = EDITOR_PROFILE_RE.match(line)
+            if pm:
+                profile = pm.group(1)
+                continue
+            sm = EDITOR_SUMMARY_RE.match(line)
+            if sm:
+                declared = (int(sm.group(1)), int(sm.group(2)), sm.group(3))
+                continue
+            if line.startswith("===") or line.startswith("note:") or line.startswith("- "):
+                continue
+            m = EDITOR_SCENARIO_RE.match(line)
             if not m:
                 unparsed += 1
                 continue
-            name, val, unit = m.group(1), float(m.group(2)), (m.group(3) or "us")
-            if unit == "ms":
-                val = val * 1000.0
-                unit = "us"
-            samples.append({"workload": "editor|{}".format(name), "metric": "p95_us", "value": val, "unit": unit})
+            name = m.group("name")
+            names.add(name)
+            workload = "editor|{}|{}".format(profile, name)
+            for metric in ("p50", "p95", "p99", "max"):
+                samples.append({
+                    "workload": workload,
+                    "metric": "{}_us".format(metric),
+                    "value": float(m.group(metric)) * 1000.0,
+                    "unit": "us",
+                })
+            if m.group("status") != "ok":
+                samples.append({"workload": workload, "metric": "failed", "value": 1.0, "unit": "count"})
     if not samples:
-        raise RuntimeError("editor_perf 无有效行（或全部 unparsed）")
-    return build_run(path, "perf", "editor_perf", samples, commit, dirty, env_fp,
-                     {"source": {"kind": "unparsed" if unparsed else "parsed", "unparsed_lines": unparsed}})
+        raise RuntimeError("editor_perf 无有效场景行（报告格式漂移或文件被截断）: {}".format(path))
+    if declared is None:
+        raise RuntimeError("editor_perf 缺少 scenarios=/failed=/result= 摘要行: {}".format(path))
+    if declared[0] != len(names):
+        raise RuntimeError(
+            "editor_perf 场景计数不符：摘要 scenarios={} 实际解析={}（报告被截断或格式漂移）".format(
+                declared[0], len(names)
+            )
+        )
+    return build_run(
+        path, "perf", "editor_perf", samples, commit, dirty, env_fp,
+        {
+            "profile": profile,
+            "scenario_count": len(names),
+            "failed": declared[1],
+            "result": declared[2],
+            "source": {"kind": "unparsed" if unparsed else "parsed", "unparsed_lines": unparsed},
+        },
+    )
 
 
 def adapt_coverage(path, project_root, env_fp):
@@ -294,6 +346,9 @@ def adapt_any(path, project_root):
         data = _json_file(path)
         if data.get("schema") == SCHEMA:
             return data
+    # 表格文本按表头嗅探（editor_perf 不是 JSON，先进这里）。
+    if head.lstrip("\ufeff").lstrip().startswith("=== RustLua editor performance baseline"):
+        return adapt_editor_perf(path, project_root, env_fp)
     # 按内容嗅探
     try:
         data = _json_file(path)
@@ -319,7 +374,7 @@ def adapt_any(path, project_root):
     if data.get("schema") == "package-v1":
         return adapt_package(path, project_root, env_fp)
     if isinstance(data, list) or (isinstance(data, dict) and "lines" in data):
-        raise RuntimeError("无法确定适配器（疑似 editor_perf 文本，需扩展）: {}".format(path))
+        raise RuntimeError("无法确定适配器（列表/行文本缺少可识别表头）: {}".format(path))
     raise RuntimeError("无法确定适配器: {}".format(path))
 
 
@@ -570,7 +625,7 @@ def main(argv=None):
         con = connect(args.db)
         if os.path.isdir(args.input):
             files = [os.path.join(args.input, f) for f in sorted(os.listdir(args.input))
-                     if f.endswith((".json", ".jsonl"))]
+                     if f.endswith((".json", ".jsonl", ".txt"))]
         else:
             files = [args.input]
         inserted = skipped = 0

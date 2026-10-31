@@ -4,13 +4,14 @@
 //! 面板/菜单/命令都由宿主绘制，插件拿不到 `&mut EditorApp`。
 
 use crate::EditorApp;
+use crate::menu::{MenuGate, PaletteAction, PaletteItem};
 use eframe::egui;
 use rustlua_editor_api::{
     Capability, CommandDescriptor, EditorPlugin, HostSnapshot, ImporterDescriptor,
     InspectorSectionDescriptor, MenuItemDescriptor, PanelDescriptor, PluginAction, PluginContext,
     PluginError, PluginHost, PluginManifest, VisualScriptNodeDescriptor,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// 插件动作节点：真实的 [`rustlua_visual_script::NodeSpec`]，进同一张查找表。
 const LOG_NODE: rustlua_visual_script::NodeSpec = rustlua_visual_script::NodeSpec {
@@ -191,6 +192,7 @@ impl EditorApp {
         if !self.plugin_registry.names().is_empty() {
             return;
         }
+        let stored = self.loaded_plugin_states();
         for plugin in builtin_plugins() {
             let id = match self.plugin_registry.register(plugin) {
                 Ok(id) => id,
@@ -201,6 +203,20 @@ impl EditorApp {
                     continue;
                 }
             };
+            if stored.get(&id).is_some_and(|enabled| !enabled) {
+                // 用户在这台机器上关掉过它：登记成禁用然后**不 load**——`on_load` 会往全局
+                // 可视化脚本节点表里塞东西，加载过的插件即使随后禁用也撤不回来。
+                if let Err(error) = self.plugin_registry.set_enabled(&id, false) {
+                    let message = format!("插件 {id} 按用户设置禁用失败：{error}");
+                    self.plugin_status.push(message.clone());
+                    tracing::error!(target: "editor", "[plugin] {message}");
+                    continue;
+                }
+                let message = format!("插件 {id} 已按用户设置禁用");
+                self.plugin_status.push(message.clone());
+                tracing::info!(target: "editor", "[plugin] {message}");
+                continue;
+            }
             match self.plugin_registry.load(&id) {
                 Ok(()) => {
                     let message = format!("插件 {id} 已加载（API v1）");
@@ -212,6 +228,12 @@ impl EditorApp {
                     self.plugin_status.push(message.clone());
                     tracing::error!(target: "editor", "[plugin] {message}");
                 }
+            }
+        }
+        // 恢复上次开着哪些插件面板（用户级偏好；只恢复记为"可见"的）。
+        for (panel, visible) in self.loaded_panel_states() {
+            if visible {
+                self.plugin_panel_visible.insert(panel, true);
             }
         }
     }
@@ -274,6 +296,54 @@ impl EditorApp {
             .entry(panel_id.to_owned())
             .or_insert(false);
         *visible = !*visible;
+        self.persist_panel_states();
+    }
+
+    /// 已加载插件在命令面板里的候选条目。
+    ///
+    /// - **菜单条目**按插件自己声明的菜单分组出现（`插件 / 项目统计`），与菜单栏同口径。
+    /// - **没被菜单条目引用的命令**单独出现（`插件 / 项目统计 / 刷新项目统计`）；
+    ///   已被引用的不重复出现（否则同一条命令在面板里会出现两次）。
+    ///
+    /// 禁用/卸载的插件不在注册表的"已加载"集合里，因此条目立刻消失——和菜单栏、
+    /// 面板一样只认这一份运行时事实。
+    pub(crate) fn plugin_palette_items(&self) -> Vec<PaletteItem> {
+        let names: BTreeMap<String, String> = self
+            .plugin_registry
+            .statuses()
+            .into_iter()
+            .map(|status| (status.id, status.name))
+            .collect();
+        let mut referenced: BTreeSet<String> = BTreeSet::new();
+        let mut items = Vec::new();
+        for (_, menu) in self.plugin_registry.menu_items() {
+            if let Some(command) = &menu.command {
+                referenced.insert(command.clone());
+            }
+            items.push(PaletteItem {
+                path: format!("{} / {}", menu.menu, menu.title),
+                shortcut: None,
+                action: match &menu.command {
+                    Some(command) => PaletteAction::PluginCommand(command.clone()),
+                    // 与菜单栏同口径：没挂命令的菜单条目就是开关它自己的面板。
+                    None => PaletteAction::PluginPanel(menu.id.clone()),
+                },
+                gate: MenuGate::Always,
+            });
+        }
+        for (plugin_id, command) in self.plugin_registry.commands() {
+            if referenced.contains(&command.id) {
+                continue;
+            }
+            let name = names.get(plugin_id).map_or(plugin_id, String::as_str);
+            items.push(PaletteItem {
+                path: format!("插件 / {name} / {}", command.title),
+                shortcut: command.shortcut.clone(),
+                action: PaletteAction::PluginCommand(command.id.clone()),
+                gate: MenuGate::Always,
+            });
+        }
+        items
     }
 
     /// 把已加载插件的菜单条目追加到菜单栏；禁用后条目立即消失。
@@ -317,6 +387,7 @@ impl EditorApp {
             if !open {
                 continue;
             }
+            let was_open = open;
             let mut host = self.new_plugin_host();
             let mut failure = None;
             egui::Window::new(title)
@@ -330,6 +401,10 @@ impl EditorApp {
                     }
                 });
             self.plugin_panel_visible.insert(id.clone(), open);
+            if open != was_open {
+                // 用户点了窗口的关闭按钮：可见性变了，落盘（下次启动仍是这个状态）。
+                self.persist_panel_states();
+            }
             let actions = std::mem::take(&mut host.actions);
             self.apply_plugin_actions(actions);
             if let Some(failure) = failure {
@@ -340,14 +415,77 @@ impl EditorApp {
         }
     }
 
+    /// 启停插件的落盘位置：优先用测试/启动时注入的那份，否则回到默认用户目录。
+    fn plugin_config_store(&self) -> Option<editor::UserConfigStore> {
+        self.user_config_store()
+    }
+
+    /// 启动时读回用户级插件开关；没有主目录或没有该段就是空表（全部按内置默认）。
+    fn loaded_plugin_states(&self) -> std::collections::BTreeMap<String, bool> {
+        self.plugin_config_store()
+            .and_then(|store| store.load_plugin_states())
+            .unwrap_or_default()
+    }
+
+    /// 启动时读回用户级插件面板可见性；只有记为"可见"的才恢复（默认是关的）。
+    fn loaded_panel_states(&self) -> std::collections::BTreeMap<String, bool> {
+        self.plugin_config_store()
+            .and_then(|store| store.load_panel_states())
+            .unwrap_or_default()
+    }
+
+    /// 把插件面板的可见性写回用户级设置（`editor.json` 的 `panels` 段）。
+    ///
+    /// 写的是**整张已知表**（含 `false`）：只写"可见的那些"会让关掉的面板在文件里
+    /// 仍是 `true`，下次启动又自己弹出来。
+    fn persist_panel_states(&self) -> Option<std::io::Result<()>> {
+        let store = self.plugin_config_store()?;
+        let states = self
+            .plugin_panel_visible
+            .iter()
+            .map(|(panel, visible)| (panel.clone(), *visible))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        Some(store.save_panel_states(&states))
+    }
+
+    /// 把注册表里所有插件的当前启停状态写回用户级设置。
+    ///
+    /// 返回 `None` = 没有可用的用户目录（本次进程有效，下次启动回到默认）；写失败也照样
+    /// 让内存生效，只是如实告诉用户下次不保留——启停是即时生效的 UI 动作，不该被磁盘挡住。
+    fn persist_plugin_states(&self) -> Option<std::io::Result<()>> {
+        let store = self.plugin_config_store()?;
+        let states = self
+            .plugin_registry
+            .names()
+            .into_iter()
+            .map(|id| {
+                let enabled = self.plugin_registry.is_enabled(&id);
+                (id, enabled)
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        Some(store.save_plugin_states(&states))
+    }
+
     /// 启用/禁用插件（诊断页按钮与测试共用）；错误进状态栏与插件日志。
+    ///
+    /// 成功时把**全部**插件的当前状态一起落盘（用户级设置，换工程也保留），所以禁用一次
+    /// 之后重启仍是禁用的——这条正是"扩展生态"能用的前提。
     pub(crate) fn set_plugin_enabled(&mut self, id: &str, enabled: bool) {
         match self.plugin_registry.set_enabled(id, enabled) {
             Ok(()) => {
                 let action = if enabled { "启用" } else { "禁用" };
                 let message = format!("插件 {id} 已{action}");
                 self.plugin_status.push(message.clone());
-                self.status = message;
+                self.status = match self.persist_plugin_states() {
+                    Some(Ok(())) => message,
+                    Some(Err(error)) => {
+                        let notice = format!("插件状态保存失败：{error}");
+                        self.plugin_status.push(notice.clone());
+                        tracing::warn!(target: "editor", "[plugin] {notice}");
+                        format!("{message}（本次有效，但保存失败，下次启动不保留：{error}）")
+                    }
+                    None => format!("{message}（找不到用户主目录，下次启动不保留）"),
+                };
             }
             Err(error) => {
                 let message = format!("插件 {id} 启停失败：{error}");
@@ -433,6 +571,26 @@ impl EditorApp {
                             self.reload_plugin(&status.id);
                         }
                     });
+                    // 插件自己的命令：在这里能直接跑（与菜单栏、命令面板同一条执行入口），
+                    // 免得"插件装了却找不到入口"。
+                    let commands: Vec<(String, String)> = self
+                        .plugin_registry
+                        .commands()
+                        .into_iter()
+                        .filter(|(plugin_id, _)| *plugin_id == status.id)
+                        .map(|(_, command)| (command.id.clone(), command.title.clone()))
+                        .collect();
+                    if !commands.is_empty() {
+                        ui.weak("命令");
+                        for (command_id, title) in &commands {
+                            ui.horizontal(|ui| {
+                                ui.label(title);
+                                if ui.button("运行").clicked() {
+                                    self.run_plugin_command(command_id);
+                                }
+                            });
+                        }
+                    }
                     ui.separator();
                 }
                 ui.strong("最近插件日志");
@@ -490,7 +648,20 @@ mod tests {
     use rustlua_ecs::spatial_transform::SceneEntityId;
     use rustlua_infra::logging::LogSink;
 
+    /// 默认的门落在**临时用户主目录**上。
+    ///
+    /// 插件开关与面板可见性都会写用户级设置；用真实 `~/.rustlua` 的话，门会改掉开发机
+    /// （或 CI）的用户设置，而且下一次运行把它读回来还能让别的门判红。
     fn test_app() -> EditorApp {
+        let home = crate::util::temp_user_home("plugins");
+        test_app_with_user_config(Some(&home))
+    }
+
+    /// 同上，但先把**用户级设置目录**指到临时位置（插件开关就落在那里）。
+    ///
+    /// 顺序要紧：`user_config` 必须在 `initialize_ui_extensions` 之前设好，否则启动时
+    /// 读不到已禁用的插件（真实启动也是这个顺序：`load_user_*` 都早于首帧）。
+    fn test_app_with_user_config(user_home: Option<&std::path::Path>) -> EditorApp {
         let mut app = EditorApp::new(
             ProjectInfo {
                 root: std::env::temp_dir().join(format!("rustlua-plugins-{}", std::process::id())),
@@ -500,6 +671,9 @@ mod tests {
             None,
             LogSink::new(32),
         );
+        if let Some(user_home) = user_home {
+            app.user_config = Some(editor::UserConfigStore::at(user_home));
+        }
         let mut document = SceneDocument::new_scene("main");
         document
             .scene
@@ -509,6 +683,11 @@ mod tests {
         app.project_loaded = true;
         app.initialize_ui_extensions();
         app
+    }
+
+    /// 一次独立的"用户主目录"（插件开关的落点）；每次调用都新建，避免测试之间串味。
+    fn temp_user_home(tag: &str) -> std::path::PathBuf {
+        crate::util::temp_user_home(tag)
     }
 
     fn revision(app: &EditorApp) -> u64 {
@@ -531,12 +710,60 @@ mod tests {
     }
 
     fn frame_input() -> egui::RawInput {
+        frame_input_with(Vec::new())
+    }
+
+    fn frame_input_with(events: Vec<egui::Event>) -> egui::RawInput {
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
                 egui::vec2(1280.0, 720.0),
             )),
+            events,
             ..egui::RawInput::default()
+        }
+    }
+
+    /// 画面上所有文字及其左上角坐标。
+    fn text_positions(output: &egui::FullOutput) -> Vec<(String, egui::Pos2)> {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some((text.galley.text().to_string(), text.pos)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// 找到与 `label` 同一行的「运行」按钮文字位置。
+    ///
+    /// 诊断页里每个命令一行、行尾一个「运行」按钮；按行（y）配对才不会点到别的命令。
+    fn run_button_position(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
+        let texts = text_positions(output);
+        let label_pos = texts
+            .iter()
+            .find(|(text, _)| text == label)
+            .map(|(_, pos)| *pos)
+            .unwrap_or_else(|| panic!("诊断页里没有「{label}」这一行：{texts:?}"));
+        texts
+            .iter()
+            .filter(|(text, _)| text == "运行")
+            .min_by(|(_, a), (_, b)| {
+                (a.y - label_pos.y)
+                    .abs()
+                    .total_cmp(&(b.y - label_pos.y).abs())
+            })
+            .map(|(_, pos)| *pos)
+            .unwrap_or_else(|| panic!("诊断页里没有「运行」按钮：{texts:?}"))
+    }
+
+    fn pointer_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
         }
     }
 
@@ -686,7 +913,10 @@ mod tests {
 
     #[test]
     fn diagnostics_lists_plugins_and_controls_enable_and_reload() {
-        let mut app = test_app();
+        // 启停现在会写用户级设置：这条门必须落在临时目录上，不然它会把开发机（或 CI）
+        // 上真实的 `~/.rustlua/editor.json` 里的插件开关改掉。
+        let home = temp_user_home("diagnostics");
+        let mut app = test_app_with_user_config(Some(&home));
         app.show_plugin_diagnostics = true;
         let context = egui::Context::default();
         let draw = |app: &mut EditorApp| {
@@ -721,6 +951,7 @@ mod tests {
             "status={:?}",
             app.plugin_status
         );
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]
@@ -826,5 +1057,245 @@ mod tests {
 
         app.run_plugin_command("project_stats.refresh");
         assert!(app.status.starts_with("项目统计："), "其他插件仍可用");
+    }
+
+    /// **禁用一个插件必须活过一次重启**（用户级 `~/.rustlua/editor.json` 的 `plugins` 段）。
+    ///
+    /// 扩展生态能不能真用就看这条：每次启动都回到"全部启用"的话，用户关掉的那个插件
+    /// 每次开机都会跑一遍 `on_load`——它往**全局**可视化脚本节点表里塞节点，进程内
+    /// `set_enabled(false)` 撤不回来；菜单、面板、命令也全都回来了。
+    ///
+    /// 顺带钉住另一半：重新启用同样落盘，第三次启动又是可用的；且没被关的 `core`
+    /// 一直按当前整张表写回，不会因为它没被点过就从文件里消失。
+    ///
+    /// 插件条目必须进命令面板：菜单条目按它声明的菜单分组，独立的命令单独出现，
+    /// 已被菜单引用的命令**不重复**出现；禁用插件后立刻消失。
+    ///
+    /// 扩展生态能不能真用就看这条：插件的命令只能从插件诊断页点到的话，等于没有。
+    #[test]
+    fn plugin_entries_join_the_command_palette() {
+        let mut app = test_app();
+        let candidates = app.palette_candidates();
+        let paths: Vec<&str> = candidates.iter().map(|item| item.path.as_str()).collect();
+        assert!(
+            paths.contains(&"插件 / 项目统计"),
+            "插件菜单条目应在面板里：{paths:?}"
+        );
+        assert!(
+            paths.contains(&"插件 / 项目统计 / 刷新项目统计"),
+            "没被菜单引用的命令应单独出现：{paths:?}"
+        );
+        assert!(
+            !paths.contains(&"插件 / 项目统计 / 显示/隐藏项目统计面板"),
+            "已被菜单引用的命令不重复出现：{paths:?}"
+        );
+
+        // 过滤与内置条目同一套（多词 AND）。
+        let hits: Vec<&str> = crate::menu::filter_palette_items(&candidates, "插件 刷新")
+            .iter()
+            .map(|item| item.path.as_str())
+            .collect();
+        assert_eq!(hits, vec!["插件 / 项目统计 / 刷新项目统计"], "{hits:?}");
+
+        // 执行目标写明是插件命令（不是内置菜单动作）。
+        let command = candidates
+            .iter()
+            .find(|item| item.path == "插件 / 项目统计 / 刷新项目统计")
+            .expect("候选里有这条");
+        assert_eq!(
+            command.action,
+            PaletteAction::PluginCommand("project_stats.refresh".to_owned())
+        );
+
+        // 禁用后条目立刻消失（注册表只报已加载插件）。
+        app.plugin_registry
+            .set_enabled("project_stats", false)
+            .unwrap();
+        let paths: Vec<String> = app
+            .palette_candidates()
+            .into_iter()
+            .map(|item| item.path)
+            .collect();
+        assert!(
+            !paths.iter().any(|path| path.starts_with("插件 /")),
+            "禁用后插件条目必须消失：{paths:?}"
+        );
+    }
+
+    /// **禁用一个插件必须活过一次重启**（用户级 `~/.rustlua/editor.json` 的 `plugins` 段）。
+    ///
+    /// 扩展生态能不能真用就看这条：每次启动都回到"全部启用"的话，用户关掉的那个插件
+    /// 每次开机都会跑一遍 `on_load`——它往**全局**可视化脚本节点表里塞节点，进程内
+    /// `set_enabled(false)` 撤不回来；菜单、面板、命令也全都回来了。
+    #[test]
+    fn disabled_plugin_stays_disabled_across_a_restart() {
+        let home = temp_user_home("restart");
+        let config = editor::UserConfigStore::at(&home).config_path();
+        {
+            let mut app = test_app_with_user_config(Some(&home));
+            app.set_plugin_enabled("project_stats", false);
+            assert!(
+                app.status.starts_with("插件 project_stats 已禁用"),
+                "状态栏要如实说明：{}",
+                app.status
+            );
+            assert!(!app.plugin_registry.is_enabled("project_stats"));
+            assert!(!app.plugin_registry.is_loaded("project_stats"));
+        }
+        let text = std::fs::read_to_string(&config).expect("启停应写进用户级设置");
+        assert!(
+            text.contains("\"project_stats\": false"),
+            "禁用没落盘：{text}"
+        );
+        assert!(
+            text.contains("\"core\": true"),
+            "整张表都要写，没被点过的插件不能从文件里消失：{text}"
+        );
+
+        // 第二个进程、同一份用户目录：注册表里仍是禁用，而且根本没 load 过。
+        let mut again = test_app_with_user_config(Some(&home));
+        assert!(
+            !again.plugin_registry.is_enabled("project_stats"),
+            "重启后必须仍然禁用：{:?}",
+            again.plugin_status
+        );
+        assert!(
+            !again.plugin_registry.is_loaded("project_stats"),
+            "禁用的插件不该被加载（on_load 会往全局节点表塞东西）"
+        );
+        assert!(
+            again
+                .plugin_status
+                .iter()
+                .any(|message| message.contains("已按用户设置禁用")),
+            "启动日志要说清是被用户设置关的，别让人以为插件坏了：{:?}",
+            again.plugin_status
+        );
+        assert!(
+            again.plugin_registry.menu_items().is_empty(),
+            "禁用后菜单条目不该回来"
+        );
+        assert!(
+            !again.plugin_registry.has_command("project_stats.refresh"),
+            "禁用后命令也不该能被调用"
+        );
+
+        // 重新启用：立刻可用，并且也写回文件；第三次启动仍是启用。
+        again.set_plugin_enabled("project_stats", true);
+        assert!(again.plugin_registry.is_loaded("project_stats"));
+        let text = std::fs::read_to_string(&config).expect("editor.json 仍在");
+        assert!(
+            text.contains("\"project_stats\": true"),
+            "启用没落盘：{text}"
+        );
+        let third = test_app_with_user_config(Some(&home));
+        assert!(third.plugin_registry.is_enabled("project_stats"));
+        assert!(third.plugin_registry.is_loaded("project_stats"));
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// 诊断页的「运行」按钮必须**真的能执行**插件命令。
+    ///
+    /// `rustlua-editor-api` 与 docs/73 都写着诊断页能"运行"插件命令，所以这条门盯的是
+    /// 那个按钮，而不是 `run_plugin_command` 这个函数存不存在——直接调函数只能证明函数
+    /// 在，证明不了按钮接到了它。这里做的是**真点击**：把「运行」按钮的文字位置换算成
+    /// 指针事件（按下 + 抬起），走 egui 自己的命中判定。
+    #[test]
+    fn plugin_commands_can_be_run_from_the_diagnostics_page() {
+        let home = temp_user_home("diagnostics-run");
+        let mut app = test_app_with_user_config(Some(&home));
+        app.show_plugin_diagnostics = true;
+        let context = egui::Context::default();
+        let draw = |app: &mut EditorApp| {
+            let _ = context.run(frame_input(), |context| {
+                app.draw_plugin_diagnostics(context);
+            });
+            context.run(frame_input(), |context| {
+                app.draw_plugin_diagnostics(context);
+            })
+        };
+
+        let output = draw(&mut app);
+        let texts = text_positions(&output);
+        assert!(
+            texts.iter().any(|(text, _)| text == "刷新项目统计"),
+            "诊断页应列出插件的命令：{texts:?}"
+        );
+        assert!(
+            texts.iter().any(|(text, _)| text == "运行"),
+            "诊断页应有「运行」按钮：{texts:?}"
+        );
+
+        // 点「刷新项目统计」那一行的「运行」。
+        let position = run_button_position(&output, "刷新项目统计") + egui::vec2(3.0, 3.0);
+        let _ = context.run(
+            frame_input_with(vec![pointer_button(position, true)]),
+            |context| {
+                app.draw_plugin_diagnostics(context);
+            },
+        );
+        let _ = context.run(
+            frame_input_with(vec![pointer_button(position, false)]),
+            |context| {
+                app.draw_plugin_diagnostics(context);
+            },
+        );
+        assert!(
+            app.status.starts_with("项目统计："),
+            "诊断页的「运行」应真的执行插件命令：status={:?}",
+            app.status
+        );
+
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// **插件面板的可见性必须活过一次重启**（用户级 `editor.json` 的 `panels` 段）。
+    ///
+    /// 插件开关已经是用户级的了，面板可见性却只活在内存里：重启后自己开的插件面板
+    /// 全没了，用户得每次重新点一遍——扩展生态的"我装的东西"就记不住。
+    #[test]
+    fn plugin_panel_visibility_survives_a_restart() {
+        let home = temp_user_home("panel-visibility");
+        let config = editor::UserConfigStore::at(&home).config_path();
+        {
+            let mut app = test_app_with_user_config(Some(&home));
+            assert_eq!(app.plugin_panel_visible.get("project_stats.panel"), None);
+            app.toggle_plugin_panel("project_stats.panel");
+            assert_eq!(
+                app.plugin_panel_visible.get("project_stats.panel"),
+                Some(&true)
+            );
+        }
+        let text = std::fs::read_to_string(&config).expect("面板可见性应写进用户级设置");
+        assert!(
+            text.contains("\"project_stats.panel\": true"),
+            "可见性没落盘：{text}"
+        );
+
+        // 第二个进程、同一份用户目录：面板仍然是开着的。
+        let again = test_app_with_user_config(Some(&home));
+        assert_eq!(
+            again.plugin_panel_visible.get("project_stats.panel"),
+            Some(&true),
+            "重启后面板应仍然可见：{:?}",
+            again.plugin_panel_visible
+        );
+
+        // 关掉同样要落盘：不然关掉的面板下次启动又自己弹出来。
+        let mut third = test_app_with_user_config(Some(&home));
+        third.toggle_plugin_panel("project_stats.panel");
+        let text = std::fs::read_to_string(&config).expect("editor.json 仍在");
+        assert!(
+            text.contains("\"project_stats.panel\": false"),
+            "关闭没落盘：{text}"
+        );
+        let fourth = test_app_with_user_config(Some(&home));
+        assert_eq!(
+            fourth.plugin_panel_visible.get("project_stats.panel"),
+            None,
+            "关掉的面板不该在下次启动时自己回来：{:?}",
+            fourth.plugin_panel_visible
+        );
+        let _ = std::fs::remove_dir_all(home);
     }
 }

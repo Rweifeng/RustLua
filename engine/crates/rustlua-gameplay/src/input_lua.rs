@@ -168,5 +168,11 @@ pub fn registry_with_handles() -> (Rc<Registry>, Handles) {
     let net = crate::net_lua::state();
     registry.add("net", move |lua| crate::net_lua::install(lua, &net));
 
+    // 回滚账本同寿命：热重载不该丢掉已确认输入与预测窗口。
+    let rollback = crate::rollback_lua::state();
+    registry.add("rollback", move |lua| {
+        crate::rollback_lua::install(lua, &rollback)
+    });
+
     (Rc::new(registry), Handles { audio, input })
 }

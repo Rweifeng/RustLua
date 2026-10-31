@@ -15,7 +15,8 @@ use rustlua_render::layer::RenderLayer;
 use rustlua_render::sprite::Sprite;
 use rustlua_render::text::TextMesh;
 use rustlua_ui::ui::{
-    DynamicUiImage, UiImage, UiText, nine_slice_cells, resolve_ui_rect, ui_text_effective_scale,
+    DynamicUiImage, UiImage, UiText, nine_slice_cells_with_dest, resolve_ui_rect,
+    ui_text_effective_scale,
 };
 use rustlua_ui::ui_events::{UiClickTarget, UiEvents};
 use rustlua_ui::ui_interaction::UiRect as ClipRect;
@@ -571,6 +572,7 @@ impl RuntimeScene {
                         space: rustlua_ui::ui::UiLayoutSpace::Screen,
                         anchor: [0.0, 0.0],
                         nine_slice: None,
+                        nine_slice_dest: None,
                     };
                     self.push_image_quad(vertices, draws, width, height, &image, None)?;
                 }
@@ -824,6 +826,7 @@ impl RuntimeScene {
                     space: rustlua_ui::ui::UiLayoutSpace::Screen,
                     anchor: [0.0, 0.0],
                     nine_slice: image.nine_slice,
+                    nine_slice_dest: None,
                 };
                 let clip = self.ui_clip_rects.get(&(id.index() as u64)).copied();
                 self.push_image_quad(vertices, draws, width, height, &image, clip)?;
@@ -1080,13 +1083,27 @@ impl RuntimeScene {
             } else {
                 1.0
             };
-            let slice = [
-                slice[0] * scale_x,
-                slice[1] * scale_x,
-                slice[2] * scale_y,
-                slice[3] * scale_y,
-            ];
-            let cells = nine_slice_cells(size[0], size[1], tw as f32, th as f32, slice);
+            let scaled = |slice: [f32; 4]| {
+                [
+                    slice[0] * scale_x,
+                    slice[1] * scale_x,
+                    slice[2] * scale_y,
+                    slice[3] * scale_y,
+                ]
+            };
+            // 显式目标边距（`slice` 第 10 参给 8 个数时）：源边距保持纹理像素，
+            // 目标边距按作者给的像素走。皮肤原图 1024×432、显示只有几十像素高时，
+            // 只有这样才能既让源边距切在纹理的边框上、又让边框在目标里占合理宽度。
+            let (src_slice, dst_slice) = match image.nine_slice_dest {
+                Some(dest) => (slice, scaled(dest)),
+                None => {
+                    let both = scaled(slice);
+                    (both, both)
+                }
+            };
+            let cells = nine_slice_cells_with_dest(
+                size[0], size[1], tw as f32, th as f32, src_slice, dst_slice,
+            );
             let start = vertices.len() as u32;
             for cell in cells {
                 let cw = cell.dest[2] - cell.dest[0];

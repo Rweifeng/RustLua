@@ -6,6 +6,8 @@ pub(crate) mod atlas;
 /// P1-3b：断链检查窗（全工程引用审计 + 同名唯一命中的一键改指）。
 pub(crate) mod broken_refs;
 pub(crate) mod bundles;
+/// P2：命令面板（Ctrl+Shift+P），条目来自菜单树。
+pub(crate) mod command_palette;
 pub(crate) mod console;
 pub(crate) mod domain_data;
 pub(crate) mod game_view;
@@ -19,6 +21,8 @@ pub(crate) mod inspector;
 pub(crate) mod keymap;
 /// P3-E02：Inspector 里的 `.material` 编辑段（只发 typed action）。
 pub(crate) mod material;
+/// 资源面板选中 `.glb`/`.gltf` 时，属性面板里的旋转/缩放预览（CPU 软光栅，只读）。
+pub(crate) mod model_preview;
 /// 性能分析面板（独立弹窗）：Play 运行时帧率/draw/setpass/内存/资源缓存 + 编辑器帧/面板耗时。
 pub(crate) mod performance;
 pub(crate) mod progress;
@@ -29,6 +33,8 @@ pub(crate) mod runtime_debug;
 pub(crate) mod scene_view;
 /// schema 驱动的通用组件字段编辑器（docs/55 阶段 2：新增组件不改巨型 match）。
 pub(crate) mod schema_inspector;
+/// 帮助 ▸ 快捷键…：查看与改键（用户级，不碰文档与历史）。
+pub(crate) mod shortcut_settings;
 /// P1：贴图双击预览窗（全尺寸解码 + 逐像素开关，只读）。
 pub(crate) mod texture_preview;
 pub(crate) mod tilemap_tools;

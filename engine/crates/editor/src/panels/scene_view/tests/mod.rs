@@ -142,6 +142,7 @@ mod gizmo;
 mod interaction;
 mod projection;
 mod render;
+mod renderer_failure;
 mod sample_project;
 mod tilemap;
 mod ui_source_layout;

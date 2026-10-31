@@ -47,7 +47,8 @@ pub(crate) enum InstanceOverrideNote {
         entity: SceneEntityId,
         label: String,
     },
-    /// 子树里混进了**另一张**预制体的节点（嵌套预制体后置，docs/25 §23），本列表不展开它。
+    /// 子树里挂着**另一张**预制体的实例（嵌套节点，docs/25 §23）：这个节点由它自己的内层
+    /// 源负责，本列表不展开它的子树——否则同一个字段会有两份互相冲突的"源取值"。
     ForeignPrefabNode {
         entity: SceneEntityId,
         label: String,

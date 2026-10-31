@@ -1,10 +1,14 @@
 //! `net` 表的 Lua 绑定：一条到中继服务器的长连接 + 二进制消息队列。
 //!
-//! 桌面走裸 TCP（`tcp://host:port`，4 字节小端长度前缀），浏览器走 WebSocket
-//! （`ws://host:port/ws`）。两边共用同一套 Lua 面，脚本不需要知道本平台是哪种传输。
+//! 三条传输共用同一套 Lua 面（`connect`/`send`/`recv`/`status`），脚本只按地址前缀选路：
+//! - 桌面裸 TCP（`tcp://host:port`，4 字节小端长度前缀）；
+//! - 浏览器 WebSocket（`ws://host:port/ws`）；
+//! - 桌面 UDP 中继（`net.connect_udp("udp://host:port", room, player)`，自带可靠有序
+//!   与重传，见 [`rustlua_net::UdpTransport`]）。UDP 没有配对控制文本，连接成功即
+//!   `online`；`net.send` 的字节被包进 `Message::Input` 传输，`net.recv` 原样还原。
 //!
 //! 服务器负责配对：房间满 2 人时下发纯文本 `you:<player>:<players>`，之后二进制消息原样互转。
-//! 绑定只做三件事：把控制文本翻译成 [`State`]、把二进制帧推进队列、把 `net.send` 写出去。
+//! 绑定只做三件事：把控制文本翻译成 `State`、把二进制帧推进队列、把 `net.send` 写出去。
 //!
 //! 状态机（`net.status().state`）：
 //! `idle` → `connecting` → `waiting`（已连上、等对手）→ `online`（已配对）
@@ -12,6 +16,8 @@
 
 use mlua::{Lua, Result as LuaResult};
 use rustlua_lua_api::Handle;
+#[cfg(not(target_arch = "wasm32"))]
+use rustlua_net::Transport as _;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -103,8 +109,15 @@ pub struct NetState {
     shared: Rc<RefCell<Shared>>,
     server: Option<String>,
     room: Option<String>,
+    transport: &'static str,
     #[cfg(not(target_arch = "wasm32"))]
     native: Option<native::Conn>,
+    #[cfg(not(target_arch = "wasm32"))]
+    udp: Option<rustlua_net::UdpTransport>,
+    #[cfg(not(target_arch = "wasm32"))]
+    udp_player: u8,
+    #[cfg(not(target_arch = "wasm32"))]
+    udp_frame: u32,
     #[cfg(target_arch = "wasm32")]
     web: Option<web::Conn>,
 }
@@ -115,8 +128,15 @@ impl Default for NetState {
             shared: Rc::new(RefCell::new(Shared::default())),
             server: None,
             room: None,
+            transport: "none",
             #[cfg(not(target_arch = "wasm32"))]
             native: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            udp: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            udp_player: 0,
+            #[cfg(not(target_arch = "wasm32"))]
+            udp_frame: 0,
             #[cfg(target_arch = "wasm32")]
             web: None,
         }
@@ -142,14 +162,59 @@ impl NetState {
         self.server = Some(server.to_owned());
         self.room = Some(room.to_owned());
         #[cfg(not(target_arch = "wasm32"))]
-        let result = self.connect_native(server, room);
+        let result = {
+            self.transport = "tcp";
+            self.connect_native(server, room)
+        };
         #[cfg(target_arch = "wasm32")]
-        let result = self.connect_web(server, room);
+        let result = {
+            self.transport = "ws";
+            self.connect_web(server, room)
+        };
         if let Err(error) = result {
             self.fail(&error);
             return Err(error);
         }
         Ok(())
+    }
+
+    /// UDP 中继（仅桌面）：自带可靠有序与重传，没有配对控制文本，
+    /// 加入房间成功即可收发；`player` 是本机在帧同步里的编号。
+    #[cfg(not(target_arch = "wasm32"))]
+    fn connect_udp(&mut self, server: &str, room: &str, player: u8) -> Result<(), String> {
+        self.close();
+        if !valid_room(room) {
+            return Err(format!(
+                "room must be 1-32 chars of [A-Za-z0-9_-] (got {room:?})"
+            ));
+        }
+        let address = server
+            .trim()
+            .strip_prefix("udp://")
+            .unwrap_or(server.trim())
+            .to_owned();
+        let transport = rustlua_net::UdpTransport::connect(address.as_str(), room, player)
+            .map_err(|error| format!("cannot join udp room {room:?} at {address}: {error}"))?;
+        {
+            let mut shared = self.shared.borrow_mut();
+            shared.state = State::Online;
+            shared.player = Some(player);
+            shared.players = Some(2);
+            shared.error = None;
+            shared.queue.clear();
+        }
+        self.server = Some(server.to_owned());
+        self.room = Some(room.to_owned());
+        self.transport = "udp";
+        self.udp = Some(transport);
+        self.udp_player = player;
+        self.udp_frame = 0;
+        Ok(())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn connect_udp(&mut self, _server: &str, _room: &str, _player: u8) -> Result<(), String> {
+        Err("udp is only available on desktop builds".to_owned())
     }
 
     fn fail(&mut self, message: &str) {
@@ -163,6 +228,10 @@ impl NetState {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(conn) = self.native.take() {
             conn.shutdown();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.udp = None;
         }
         #[cfg(target_arch = "wasm32")]
         if let Some(conn) = self.web.take() {
@@ -181,6 +250,21 @@ impl NetState {
     fn pump(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
         {
+            // UDP 的 `poll` 同时收包、按序交付与超时重传；每帧调一次即可。
+            if let Some(udp) = &mut self.udp {
+                let polled = udp.poll();
+                match polled {
+                    Ok(messages) => {
+                        let mut shared = self.shared.borrow_mut();
+                        for (_, message) in messages {
+                            if let rustlua_net::Message::Input { payload, .. } = message {
+                                shared.queue.push_back(payload);
+                            }
+                        }
+                    }
+                    Err(error) => self.fail(&error.to_string()),
+                }
+            }
             let mut events = Vec::new();
             if let Some(conn) = &self.native {
                 while let Ok(event) = conn.events.try_recv() {
@@ -215,6 +299,31 @@ impl NetState {
     fn send(&mut self, bytes: &[u8]) -> bool {
         if self.shared.borrow().state != State::Online {
             return false;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.udp.is_some() {
+            use rustlua_net::Transport as _;
+            let message = rustlua_net::Message::Input {
+                player: self.udp_player,
+                frame: self.udp_frame,
+                payload: bytes.to_vec(),
+            };
+            let result = self
+                .udp
+                .as_mut()
+                .expect("checked above")
+                .send(None, &message)
+                .map_err(|error| error.to_string());
+            return match result {
+                Ok(()) => {
+                    self.udp_frame = self.udp_frame.wrapping_add(1);
+                    true
+                }
+                Err(error) => {
+                    self.fail(&error);
+                    false
+                }
+            };
         }
         #[cfg(not(target_arch = "wasm32"))]
         let result = match &mut self.native {
@@ -559,10 +668,23 @@ pub fn install(lua: &Lua, state: &Handle<NetState>) -> LuaResult<()> {
 
     let s = state.clone();
     net.set(
+        "connect_udp",
+        lua.create_function(move |_, (server, room, player): (String, String, u8)| {
+            Ok(s.borrow_mut()?.connect_udp(&server, &room, player).is_ok())
+        })?,
+    )?;
+
+    let s = state.clone();
+    net.set(
         "status",
         lua.create_function(move |lua, ()| {
             let mut state = s.borrow_mut()?;
             let (status, player, players, error, pending) = state.status();
+            let transport = state.transport;
+            #[cfg(target_arch = "wasm32")]
+            let stats = None;
+            #[cfg(not(target_arch = "wasm32"))]
+            let stats = state.udp.as_ref().map(|udp| udp.stats());
             let table = lua.create_table()?;
             table.set("state", status.name())?;
             table.set("player", player)?;
@@ -571,6 +693,17 @@ pub fn install(lua: &Lua, state: &Handle<NetState>) -> LuaResult<()> {
             table.set("pending", pending)?;
             table.set("server", state.server.clone())?;
             table.set("room", state.room.clone())?;
+            table.set("transport", transport)?;
+            if let Some(stats) = stats {
+                let udp = lua.create_table()?;
+                udp.set("sent", stats.sent)?;
+                udp.set("received", stats.received)?;
+                udp.set("duplicate", stats.duplicate)?;
+                udp.set("malformed", stats.malformed)?;
+                udp.set("retransmits", stats.retransmits)?;
+                udp.set("delivered", stats.delivered)?;
+                table.set("udp", udp)?;
+            }
             Ok(table)
         })?,
     )?;
@@ -754,5 +887,94 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
         relay.join().expect("relay thread");
+    }
+
+    /// 本机起一个假 UDP 中继：验证 `net.connect_udp` 的 join、收发与透传口径。
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn udp_round_trip_against_a_scripted_relay() {
+        use std::net::UdpSocket;
+        use std::time::{Duration, Instant};
+
+        let relay = UdpSocket::bind("127.0.0.1:0").expect("bind");
+        relay
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        let address = relay.local_addr().expect("addr");
+        let handle = std::thread::spawn(move || {
+            let mut buffer = [0u8; 2048];
+            let (_, peer) = relay.recv_from(&mut buffer).expect("join");
+            assert_eq!(&buffer[0..4], b"RLU1");
+            assert_eq!(buffer[4], 1, "first datagram must be the join");
+            let len = u16::from_le_bytes([buffer[21], buffer[22]]) as usize;
+            assert_eq!(&buffer[23..23 + len], b"\x05arena\x00");
+
+            // 回一条 `Message::Input{player:1, payload:"hello"}`。
+            let payload = rustlua_net::Message::Input {
+                player: 1,
+                frame: 0,
+                payload: b"hello".to_vec(),
+            }
+            .encode();
+            let mut datagram = vec![0u8; 23];
+            datagram[0..4].copy_from_slice(b"RLU1");
+            datagram[4] = 2;
+            datagram[5..9].copy_from_slice(&1u32.to_le_bytes());
+            datagram[9..13].copy_from_slice(&0u32.to_le_bytes());
+            datagram[13..21].copy_from_slice(&0u64.to_le_bytes());
+            datagram[21..23].copy_from_slice(&(payload.len() as u16).to_le_bytes());
+            datagram.extend_from_slice(&payload);
+            relay.send_to(&datagram, peer).expect("reply");
+
+            // 客户端发来的 `net.send("move")` 应被包成 Input 且负载逐字节一致。
+            // 期间可能先收到纯 ACK（头 23 字节、负载为空），跳过——它和那条数据报谁先到
+            // 取决于线程调度，所以判「空负载」而不是判顺序。
+            loop {
+                let (size, _) = relay.recv_from(&mut buffer).expect("data");
+                assert!(size >= 23, "short datagram: {size}");
+                assert_eq!(buffer[4], 2, "expected a data datagram");
+                let len = u16::from_le_bytes([buffer[21], buffer[22]]) as usize;
+                assert_eq!(size, 23 + len, "payload length must match header");
+                if len == 0 {
+                    continue;
+                }
+                let message =
+                    rustlua_net::Message::decode(&buffer[23..23 + len]).expect("decode client");
+                match message {
+                    rustlua_net::Message::Input {
+                        player,
+                        frame,
+                        payload,
+                    } => {
+                        assert_eq!(player, 0);
+                        assert_eq!(frame, 0);
+                        assert_eq!(payload, b"move");
+                    }
+                    other => panic!("unexpected client message: {other:?}"),
+                }
+                break;
+            }
+        });
+
+        let mut state = NetState::default();
+        state
+            .connect_udp(&format!("udp://{address}"), "arena", 0)
+            .expect("connect_udp");
+        let (status, player, players, _, _) = state.status();
+        assert_eq!(status, State::Online);
+        assert_eq!(player, Some(0));
+        assert_eq!(players, Some(2));
+        assert!(state.send(b"move"));
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(bytes) = state.recv() {
+                assert_eq!(bytes, b"hello");
+                break;
+            }
+            assert!(Instant::now() < deadline, "never received the relay reply");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        handle.join().expect("relay thread");
     }
 }

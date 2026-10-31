@@ -3,6 +3,39 @@
 
 use super::*;
 
+/// `name.ext` → 同目录下不冲突的 `name_copy.ext`、`name_copy2.ext`……
+fn unique_duplicate_path(source: &std::path::Path) -> std::path::PathBuf {
+    let parent = source
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    let stem = source
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "copy".to_owned());
+    let extension = source
+        .extension()
+        .map(|ext| ext.to_string_lossy().into_owned());
+    for index in 1..1000u32 {
+        let suffix = if index == 1 {
+            "_copy".to_owned()
+        } else {
+            format!("_copy{index}")
+        };
+        let mut name = format!("{stem}{suffix}");
+        if let Some(extension) = &extension {
+            name.push('.');
+            name.push_str(extension);
+        }
+        let candidate = parent.join(name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    // 极端情况（1000 个同 stem 副本）用进程号兜底，绝不覆盖已有文件。
+    parent.join(format!("{stem}_copy_{}", std::process::id()))
+}
+
 impl EditorApp {
     /// 对齐选中实体：网格吸附 / 水平 / 垂直。
     pub(crate) fn align_selected(&mut self, mode: AlignMode) {
@@ -78,6 +111,66 @@ impl EditorApp {
                 Ok::<(), ()>(())
             });
         self.status = "已完成对齐".to_owned();
+    }
+
+    /// 在 `parent`（工程内相对路径，如 `assets/textures`）下新建目录 `name`。
+    ///
+    /// 只建目录、不写任何文档：目录名本身不是被引用的资产，工程里的引用都指向文件。
+    pub(crate) fn create_resource_folder(
+        &mut self,
+        parent: &std::path::Path,
+        name: &str,
+    ) -> Result<String, String> {
+        if self.is_playing() {
+            return Err("播放模式下不能编辑资源，请先点击停止".to_owned());
+        }
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("文件夹名不能为空".to_owned());
+        }
+        if name.contains(['/', '\\']) || name == "." || name == ".." {
+            return Err(format!("文件夹名不能包含路径分隔符：{name}"));
+        }
+        let root = self.project.root.clone();
+        let parent_relative = editor::normalize_relative(parent)
+            .ok_or_else(|| format!("目录必须是工程内相对路径：{}", parent.display()))?;
+        let target_relative = parent_relative.join(name);
+        if root.join(&target_relative).exists() {
+            return Err(format!(
+                "已存在同名文件或目录：{}",
+                target_relative.display()
+            ));
+        }
+        std::fs::create_dir_all(root.join(&target_relative))
+            .map_err(|error| format!("创建目录失败：{error}"))?;
+        self.selected_resource = Some(target_relative.clone());
+        self.refresh_resources();
+        Ok(format!("已创建目录 {}", target_relative.display()))
+    }
+
+    /// 复制一份资源：副本是**独立资产**，原有引用仍指向原文件，因此不需要改写任何文档。
+    pub(crate) fn duplicate_resource(&mut self, from: &std::path::Path) -> Result<String, String> {
+        if self.is_playing() {
+            return Err("播放模式下不能编辑资源，请先点击停止".to_owned());
+        }
+        let root = self.project.root.clone();
+        let from_relative = editor::normalize_relative(from)
+            .ok_or_else(|| format!("资源路径必须是工程内相对路径：{}", from.display()))?;
+        let from_absolute = root.join(&from_relative);
+        if !from_absolute.is_file() {
+            return Err(format!("资源不存在：{}", from_relative.display()));
+        }
+        let target = unique_duplicate_path(&from_absolute);
+        std::fs::copy(&from_absolute, &target).map_err(|error| format!("复制资源失败：{error}"))?;
+        // 副本名相对路径直接由源相对路径换文件名得出：`target` 是 `root.join(…)` 的
+        // 绝对路径（可能带 `\\?\` 前缀），再走 `normalize_relative` 会被判成越界。
+        let target_relative = target
+            .file_name()
+            .map(|name| from_relative.with_file_name(name))
+            .ok_or_else(|| format!("无法确定副本文件名：{}", target.display()))?;
+        self.selected_resource = Some(target_relative.clone());
+        self.refresh_resources();
+        Ok(format!("已创建副本 {}", target_relative.display()))
     }
 
     /// **资源重命名/移动 + 引用保持**（第 44 轮，docs/55 P1 的 Project Browser 一条）。
@@ -165,6 +258,10 @@ impl EditorApp {
         // 预览窗指着刚被搬走的那张图：当场作废，否则窗里会留着一张"工程里已经不存在"的图。
         if self.texture_preview.relative.as_deref() == Some(from_text.as_str()) {
             self.texture_preview.invalidate();
+        }
+        // 模型预览同理：旧路径已经不存在，几何体与纹理都不该继续挂着。
+        if self.model_preview.relative.as_deref() == Some(from_text.as_str()) {
+            self.model_preview.clear();
         }
         self.refresh_resources();
         self.selected_resource = Some(to_relative.clone());

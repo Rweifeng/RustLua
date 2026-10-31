@@ -37,7 +37,7 @@ update() 里的 Lua 错误
 scene.set_script_error_policy(ScriptErrorPolicy::Contain);
 ```
 
-默认必须是 `Strict`：26 个无头样例、soak 与性能基线全都 `unwrap()` `run_script_steps` 的返回值，
+默认必须是 `Strict`：78 个无头样例、soak 与性能基线全都 `unwrap()` `run_script_steps` 的返回值，
 它们靠这条路径把"脚本报错"变成判红。容错能力**不改变**这些门的强度。
 
 ## 3. 容错档的细则
@@ -80,7 +80,7 @@ scene.set_script_error_policy(ScriptErrorPolicy::Contain);
 |---|---|---|
 | `game.exe`（`game_app.rs`） | `Contain` | `run_simulation_steps` 里保留的 `fail()` 只处理**引擎侧**失败（场景/输入/资源） |
 | 编辑器 Play（`preview_session.rs`） | `Contain` | 容错后 Play 不再因为脚本错误停步；诊断进 Game 视图 overlay |
-| 26 项无头样例 / soak / 性能基线 | `Strict` | 不设置策略即为默认档，`unwrap()` 语义不变 |
+| 78 项无头样例 / soak / 性能基线 | `Strict` | 不设置策略即为默认档，`unwrap()` 语义不变 |
 | Web 宿主（`game_web`） | `Strict` | 桥的返回值就是 JS 侧握手信号；容错会让"启动 OK 但游戏坏了"通过握手断言 |
 
 ## 5. 边界（诚实的部分）

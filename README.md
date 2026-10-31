@@ -12,7 +12,8 @@ Rust 写的游戏引擎 + Lua 玩法脚本运行时，配套一个可视化编�
   `.github/workflows/release.yml` 构建、签名（有证书时）、生成 SBOM 与 `SHA256SUMS.txt` 并上传 Release；
   tag 不干净/版本不一致即阻断，见 [docs/69](docs/69-发布与供应链安全.md)。
 - **验证**：`scripts/verify/verify.ps1` 是唯一总门——文档门、工具链锁定、cargo 三件套、
-  `game --check`/`editor --check`、编辑器性能基线与 GUI smoke（`-Mvp` 追加 26 项 headless 样例与干净目录发布自测）；
+  `game --check`/`editor --check`、编辑器性能基线（含 p95 毫秒预算门）与 GUI smoke
+  （`-Mvp` 追加 78 项 headless 样例与干净目录发布自测）；
   `-Security` 追加 `cargo-audit`/`cargo-deny`/fork 同步/SBOM 供应链门（工具或网络缺失是 BLOCKED，不是通过）。
 
 ## 仓库布局
@@ -90,7 +91,7 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 
 门全绿的含义与逐项通过标准见 [docs/34-质量门与发布清单.md](docs/34-质量门与发布清单.md)；
 `verify.ps1` 会依次跑文档门、工具链锁定、cargo 门、`game --check`/`editor --check`、编辑器性能基线与
-GUI smoke、26 项 headless 验收样例和发布隔离自测。供应链门（audit/deny/SBOM/fork）因需要外部工具与
+p95 毫秒预算门、GUI smoke、78 项 headless 验收样例和发布隔离自测。供应链门（audit/deny/SBOM/fork）因需要外部工具与
 advisory DB，默认不进全量门；用 `verify.ps1 -Security` 或 CI 的 `security` job 跑，缺工具/网络失败时
 明确打印 BLOCKED 并以 3 退出，绝不写成通过。
 
@@ -134,9 +135,10 @@ advisory DB，默认不进全量门；用 `verify.ps1 -Security` 或 CI 的 `sec
   保存路径检测到**外部改动就拒绝写入**（不是提示，是真不写），显式出口是「强制保存」；
   补丁历史原型把 1000 次字段编辑的保留内存从约 398 MB 降到 216 KB（比值 0.054%，且撤销/重做等价）。
 - **示例工程 `game_api` 重建**（[docs/59](docs/59-示例工程game_api与API覆盖率门.md)）：
-  **43 个模块表 / 319 个 Lua 函数**（这个数由 `scripts/docgen/gen-lua-api-docs.js --check`、
+  **45 个模块表 / 338 个 Lua 函数**（这个数由 `scripts/docgen/gen-lua-api-docs.js --check`、
   `scripts/verify/check-doc-claims.mjs` 与覆盖率门自动守，不靠人记；1.3 版核对时把 README 里过期的
-  40/270 改正，2026-10-27 又把 283 校正为 313，2026-10-28 随 `nav` 模块校正为 319）/ 30 个运行时组件全部有演示；引擎新增一个
+  40/270 改正，2026-10-27 又把 283 校正为 313，2026-10-28 随 `nav` 模块校正为 319，
+  2026-10-29 随 `net.now()` 校正为 328）/ 30 个运行时组件全部有演示；引擎新增一个
   Lua 函数，示例工程不补演示就会被覆盖率门判红。
 - **组件统一**（第 57 轮）：场景/Prefab 里变换与相机各只有**一个**组件名——`Transform`
   （载荷 `position/rotation/scale`）与 `Camera`（判别字段 `projection=orthographic|perspective`）。

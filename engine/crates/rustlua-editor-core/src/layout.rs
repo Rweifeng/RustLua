@@ -94,6 +94,50 @@ impl Default for AssistantLayout {
     }
 }
 
+/// 编辑器外观偏好（**用户级**，存 `<用户主目录>/.rustlua/editor.json` 的 `appearance`）。
+///
+/// 与工程的布局分开：换工程不该把主题重置。未知取值按 `dark` 处理——旧版本/手改
+/// 文件给出无法识别的主题名时，宁可回到默认深色，也不要让编辑器看起来"没皮肤"。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppearanceSettings {
+    /// `dark` / `light` / `system`。
+    pub theme: String,
+}
+
+impl Default for AppearanceSettings {
+    fn default() -> Self {
+        Self {
+            theme: "dark".to_owned(),
+        }
+    }
+}
+
+impl AppearanceSettings {
+    /// 规范化主题名：只认识三个合法值，其余一律回落到 `dark`。
+    #[must_use]
+    pub fn normalized_theme(&self) -> &'static str {
+        match self.theme.as_str() {
+            "light" => "light",
+            "system" => "system",
+            _ => "dark",
+        }
+    }
+
+    /// 设置主题（同时规范化非法值），返回是否真的变了。
+    pub fn set_theme(&mut self, theme: &str) -> bool {
+        let next = match theme {
+            "light" => "light",
+            "system" => "system",
+            _ => "dark",
+        };
+        if self.theme == next {
+            return false;
+        }
+        self.theme = next.to_owned();
+        true
+    }
+}
+
 /// One persisted layout.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EditorLayout {

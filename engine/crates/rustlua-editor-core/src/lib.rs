@@ -35,17 +35,20 @@ pub mod scene_tree_state;
 pub mod schema_audit;
 pub mod selection;
 pub mod services;
+pub mod shortcuts;
 pub mod user_config;
 
 pub use user_config::UserConfigStore;
+
+pub use shortcuts::{ShortcutBindings, ShortcutSpec};
 
 pub use play_control::{
     FramePlan, MAX_CATCH_UP_STEPS, PlayControlError, PlayController, PlayState, STEPS_PER_SECOND,
 };
 
 pub use layout::{
-    AssistantLayout, EditorLayout, LAYOUT_VERSION, LayoutLoad, PANEL_ASSISTANT, PANEL_CONSOLE,
-    PANEL_GAME_VIEW, PANEL_GRAPH, PANEL_HIERARCHY, PANEL_INSPECTOR, PANEL_RESOURCE,
+    AppearanceSettings, AssistantLayout, EditorLayout, LAYOUT_VERSION, LayoutLoad, PANEL_ASSISTANT,
+    PANEL_CONSOLE, PANEL_GAME_VIEW, PANEL_GRAPH, PANEL_HIERARCHY, PANEL_INSPECTOR, PANEL_RESOURCE,
     PANEL_SCENE_VIEW, PANEL_TIMELINE, PANEL_UI_STUDIO, layout_path, load_layout, reset_layout,
     save_layout,
 };

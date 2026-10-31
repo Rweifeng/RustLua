@@ -317,6 +317,7 @@
         "auto_start",
         "close",
         "connect",
+        "connect_udp",
         "default_room",
         "default_server",
         "now",
@@ -380,6 +381,20 @@
         "set"
       ],
       "name": "quad"
+    },
+    {
+      "funcs": [
+        "accept",
+        "commit",
+        "inputs",
+        "next_frame",
+        "record_local",
+        "reset",
+        "rollback_to",
+        "save_snapshot",
+        "stats"
+      ],
+      "name": "rollback"
     },
     {
       "funcs": [

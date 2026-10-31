@@ -321,20 +321,28 @@ impl EditorApp {
                 return;
             }
         };
-        let new_prefab =
-            match build_prefab_from_instance_root(&scene.scene, selected, &existing_prefab) {
-                Ok(prefab) => prefab,
-                Err(error) => {
-                    self.status = format!("生成源预制体失败：{error}");
-                    return;
-                }
-            };
+        let (new_prefab, envelope_ids) = match build_prefab_from_instance_root(
+            &scene.scene,
+            selected,
+            &existing_prefab,
+            &prefab_source,
+        ) {
+            Ok(prefab) => prefab,
+            Err(error) => {
+                self.status = format!("生成源预制体失败：{error}");
+                return;
+            }
+        };
         let new_selected_root = std::rc::Rc::new(std::cell::Cell::new(None));
         let selected_result = new_selected_root.clone();
         let prefab_source_for_apply = prefab_source.clone();
         let Some(scene) = self.document.current_scene.as_mut() else {
             return;
         };
+        // 刚拖进外层分支的嵌套节点在这一步才第一次拿到外层位置编号。先把它们盖回场景节点，
+        // 否则紧接着按新源重建实例会因为对不上号而拒掉整次写回——"拖一张预制体进外层实例，
+        // 再保存预制体源"这条作者流程就走不通。
+        stamp_envelope_ids(&mut scene.scene, &prefab_source, &envelope_ids);
         let result = Self::write_prefab_and_rebuild_instances(
             &mut self.history,
             scene,

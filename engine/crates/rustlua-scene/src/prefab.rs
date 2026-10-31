@@ -14,6 +14,14 @@ pub const CURRENT_PREFAB_VERSION: u32 = 1;
 /// 实体元数据键：该实体是哪个 Prefab 源的实例（编辑器与运行时共用这个约定）。
 pub const PREFAB_SOURCE_META_KEY: &str = "prefab.source";
 
+/// 实体元数据键：嵌套实例的节点在**外层**预制体文件里对应哪个实体。
+///
+/// 只在"这个节点属于另一张预制体"时存在。为什么需要它：外层文件里每个实体都有自己的编号，
+/// 而嵌套节点自己的 `prefab.source` / `prefab.source_id` 指的是**内层**文件，
+/// 单靠那两个键回答不了"外层把我记成了几号"。外层重建实例时正是按这个编号把场景节点
+/// 对回外层文件的实体（见 `editor::actions::prefab_rebuild`）。
+pub const PREFAB_OUTER_ID_META_KEY: &str = "prefab.outer_id";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Prefab {
     pub version: u32,
@@ -63,6 +71,19 @@ impl Prefab {
         let entity_ids: std::collections::BTreeSet<_> = entities.keys().copied().collect();
         for entity in entities.values_mut() {
             entity.children.retain(|id| entity_ids.contains(id));
+        }
+        // **文件根永远属于这张预制体自己**：嵌套标记只能落在后代上。
+        // 从"一个内层实例的根"创建预制体时，那份标记若留在文件根上，实例化后这个节点
+        // 同时是两张预制体的根，`prefab_root_ids` 按来源找不到它，源改动就同步不到场景。
+        if let Some(root_entity) = entities.get_mut(&root) {
+            for key in [
+                PREFAB_SOURCE_META_KEY,
+                "prefab.source_id",
+                "prefab.root",
+                PREFAB_OUTER_ID_META_KEY,
+            ] {
+                root_entity.metadata.remove(key);
+            }
         }
         let _ = root_entity;
         Ok(Self {
@@ -135,8 +156,10 @@ impl Prefab {
     ///
     /// 非空就表示它是一份**嵌套 Prefab**：根节点自己带 `prefab.source`（本 Prefab 的根是另一个
     /// Prefab 的实例），或者树里某个后代是别的 Prefab 的实例。
-    /// 编辑器目前**不支持嵌套**，所以这条信息是"该拒绝什么、该警告什么"的事实源
-    /// （见 `editor::prefab_graph` 的扫描器）。
+    /// 嵌套节点在本文件里存的是**内层实例当时的取值快照**加它自己的内层标记
+    /// （`prefab.source` / `prefab.source_id` / `prefab.root`），所以实例化与重建都不需要
+    /// 再展开内层文件；这条信息因此是"该给什么徽标、该拒什么环"的事实源
+    /// （见 `rustlua_editor_core::prefab_graph` 的扫描器）。
     #[must_use]
     pub fn nested_sources(&self) -> Vec<String> {
         let mut sources: Vec<String> = self
@@ -644,5 +667,96 @@ mod tests {
             Prefab::from_text(text),
             Err(PrefabError::UnsupportedVersion(2))
         ));
+    }
+
+    /// **嵌套 Prefab 的保真底线**：外层文件必须原样记住"哪些节点属于内层、属于哪张内层"。
+    ///
+    /// 内层标记（`prefab.source` / `prefab.source_id` / `prefab.root`）是嵌套实例唯一的身份证；
+    /// 它们在 `from_scene` → `to_text` → `from_text` → `instantiate` 整条路上一个都不能丢，
+    /// 否则实例化出来的内层子树会退化成普通节点，编辑器再也认不出它属于谁。
+    #[test]
+    fn nested_markers_survive_save_load_and_instantiate() {
+        let mut inner = Scene::new("inner");
+        inner.add_entity(SceneEntityId(1), "Bar", None).unwrap();
+        let inner_prefab = Prefab::from_scene(
+            &inner,
+            SceneEntityId(1),
+            AssetId::from_seed("bar.prefab"),
+            "Bar",
+        )
+        .unwrap();
+
+        // 场景：Root(1) 下挂一个普通节点(2) 与一个内层实例(3)。
+        let mut scene = Scene::new("outer");
+        scene.add_entity(SceneEntityId(1), "Root", None).unwrap();
+        scene
+            .add_entity(SceneEntityId(2), "Plain", Some(SceneEntityId(1)))
+            .unwrap();
+        let instance = inner_prefab
+            .instantiate(&mut scene, Some(SceneEntityId(1)), &BTreeMap::new())
+            .unwrap();
+        for (source_id, entity_id) in &instance.source_to_instance {
+            let entity = scene.entities.get_mut(entity_id).unwrap();
+            entity.metadata.insert(
+                PREFAB_SOURCE_META_KEY.to_owned(),
+                "assets/bar.prefab".to_owned(),
+            );
+            entity
+                .metadata
+                .insert("prefab.source_id".to_owned(), source_id.0.to_string());
+            entity.metadata.insert(
+                "prefab.root".to_owned(),
+                (entity_id == &instance.instance_root).to_string(),
+            );
+        }
+
+        let outer = Prefab::from_scene(
+            &scene,
+            SceneEntityId(1),
+            AssetId::from_seed("root.prefab"),
+            "Root",
+        )
+        .unwrap();
+        assert_eq!(
+            outer.nested_sources(),
+            vec!["assets/bar.prefab".to_owned()],
+            "外层必须知道自己嵌了谁"
+        );
+        let dir = temp_prefab_dir("nested-roundtrip");
+        outer.save(dir.join("root.prefab")).unwrap();
+        let loaded = Prefab::load(dir.join("root.prefab")).unwrap();
+        assert_eq!(loaded, outer, "文本往返必须逐字保真");
+
+        let mut target = Scene::new("target");
+        let copy = loaded
+            .instantiate(&mut target, None, &BTreeMap::new())
+            .unwrap();
+        let inner_nodes: Vec<_> = target
+            .entities
+            .values()
+            .filter(|entity| entity.metadata.contains_key(PREFAB_SOURCE_META_KEY))
+            .cloned()
+            .collect();
+        assert_eq!(inner_nodes.len(), 1, "内层节点要带着标记：{target:?}");
+        let metadata = &inner_nodes[0].metadata;
+        assert_eq!(metadata[PREFAB_SOURCE_META_KEY], "assets/bar.prefab");
+        assert_eq!(metadata["prefab.source_id"], "1", "指向内层文件的实体编号");
+        assert_eq!(metadata["prefab.root"], "true");
+        assert!(
+            target.entities[&copy.instance_root]
+                .children
+                .contains(&inner_nodes[0].id),
+            "内层实例的根仍然是外层根的子节点"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn temp_prefab_dir(label: &str) -> PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("rustlua-prefab-{label}-{n}-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("创建临时目录");
+        dir
     }
 }

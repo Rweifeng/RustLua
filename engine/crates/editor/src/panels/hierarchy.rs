@@ -2,7 +2,7 @@
 
 use crate::EditorApp;
 use crate::util::{display_path, strip_verbatim_prefix};
-use editor::{ReparentPosition, SelectionSource};
+use editor::{ReparentPosition, SelectionSource, prefab_graph};
 use eframe::egui;
 use rustlua_assets::resource_db::AssetId;
 use rustlua_ecs::transform::Transform3D;
@@ -1604,21 +1604,24 @@ impl EditorApp {
         let Some(scene) = self.current_scene() else {
             return;
         };
-        // **嵌套 Prefab 尚不支持**（第 47 轮）：从"已经是 Prefab 实例"的实体（或包含实例的
-        // 子树）创建预制体 会写出一份**嵌套源**——根/后代带着 `prefab.source`，此后
-        // `reapply_prefab` / 写回源都会把它当成另一个 Prefab 的实例来重建。
-        // 与其悄悄生成这种数据，不如拒绝并让作者先 Unpack（编辑器里有这个动作）。
-        if let Some(nested) = subtree_prefab_source(&scene.scene, selected) {
-            self.status =
-                format!("所选实体里包含预制体实例（{nested}）：嵌套预制体尚不支持，请先解包再创建");
-            return;
-        }
+        // **嵌套 Prefab 支持**（docs/55 P1）：从"已经是 Prefab 实例"的子树创建预制体 会写出一份
+        // 嵌套源——内层节点在文件里带着自己的 `prefab.source` / `prefab.source_id` /
+        // `prefab.root` 与一份取值快照，实例化与写回都按这套标记对号（见
+        // `actions::prefab_rebuild`）。要挡的只剩两种真坏数据：**自指/环**（新预制体的路径
+        // 出现在它自己引用的闭包里）与**超深链**。
         let name = scene
             .scene
             .entities
             .get(&selected)
             .map(|entity| entity.name.clone())
             .unwrap_or_else(|| "Prefab".to_owned());
+        let relative = format!("assets/prefabs/{name}.prefab");
+        if let Some(problem) =
+            nesting_problem_at_creation(&self.project.root, &scene.scene, selected, &relative)
+        {
+            self.status = problem;
+            return;
+        }
         let prefab = Prefab::from_scene(
             &scene.scene,
             selected,
@@ -1645,12 +1648,61 @@ impl EditorApp {
     }
 }
 
-/// 子树里出现的第一个 `prefab.source`（含根自己）：非 `None` 说明这份子树里已经有
-/// Prefab 实例，从它创建预制体 会产生**嵌套**（编辑器目前不支持）。
-fn subtree_prefab_source(
+/// 创建**嵌套**预制体时要拒绝的两类坏数据，返回给用户的一句话；`None` = 可以创建。
+///
+/// 事实源是磁盘上那些内层文件各自的引用闭包（`rustlua_editor_core::prefab_graph` 的扫描器）：
+///
+/// * 子树里直接挂着"正在创建的这张"（`assets/prefabs/名字.prefab`）→ 新文件一上来就引用自己；
+/// * 内层链绕回这张新文件、或内层链本身成环 → 两份文件互相引用，谁是事实源没有答案；
+/// * 内层链超过扫描深度上限 → 再往下没人验证过，写回时可能踩到未展开的层级。
+fn nesting_problem_at_creation(
+    project_root: &std::path::Path,
     scene: &rustlua_scene::scene::Scene,
     root: SceneEntityId,
+    new_relative: &str,
 ) -> Option<String> {
+    let sources = subtree_prefab_sources(scene, root);
+    if sources.is_empty() {
+        return None;
+    }
+    if sources.iter().any(|source| source == new_relative) {
+        return Some(format!(
+            "所选实体里已经挂着这张预制体自己的实例（{new_relative}）：嵌套会指向自己，请先解包再创建"
+        ));
+    }
+    let root = strip_verbatim_prefix(project_root).to_path_buf();
+    let links = |name: &str| {
+        Prefab::load(root.join(name))
+            .map(|prefab| prefab.nested_sources())
+            .unwrap_or_default()
+    };
+    for source in &sources {
+        let report = prefab_graph::scan_prefab_nesting(source, links);
+        if let Some(cycle) = report.cycles.first() {
+            return Some(format!(
+                "内层预制体 {source} 的引用成环（{}），嵌套后无法确定谁是事实源，请先解开",
+                cycle.join(" → ")
+            ));
+        }
+        if report.transitive.iter().any(|item| item == new_relative) {
+            return Some(format!(
+                "内层预制体 {source} 已经引用了正在创建的这张（{new_relative}）：嵌套会成环，请先换个名字"
+            ));
+        }
+        if !report.truncated_at.is_empty() {
+            return Some(format!(
+                "内层预制体 {source} 的嵌套链超过 {} 层（{}），请先减少层级",
+                prefab_graph::MAX_NESTING_DEPTH,
+                report.truncated_at.join("、")
+            ));
+        }
+    }
+    None
+}
+
+/// 子树里出现的**全部** `prefab.source`（含根自己；去重、排序）。
+fn subtree_prefab_sources(scene: &rustlua_scene::scene::Scene, root: SceneEntityId) -> Vec<String> {
+    let mut out = Vec::new();
     let mut stack = vec![root];
     while let Some(id) = stack.pop() {
         let Some(entity) = scene.entities.get(&id) else {
@@ -1661,11 +1713,13 @@ fn subtree_prefab_source(
             .get("prefab.source")
             .filter(|source| !source.trim().is_empty())
         {
-            return Some(source.clone());
+            out.push(source.clone());
         }
         stack.extend(entity.children.iter().copied());
     }
-    None
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// 扫描项目 `scenes/` 目录下的场景文件（相对路径，按名称排序）。
@@ -1699,13 +1753,12 @@ mod tests {
     use rustlua_infra::logging::LogSink;
     use rustlua_scene::scene::SceneEntityId;
 
-    /// 新建场景的默认名：`main` 可用就用它；`scenes/main.scene` 已存在则 `main2`…
-    /// 菜单里没有名字输入框，名字必须由这里保证"不覆盖已有场景"。
-    /// **嵌套 Prefab 的创建边界**（第 47 轮）：从 Prefab 实例（或含实例的子树）创建预制体
-    /// 必须被拒绝——那会写出一份嵌套源，之后的 reapply/写回都会把它当成两份实例；
-    /// 平实体照常创建成功。
+    /// **嵌套 Prefab 的创建边界**：从"含 Prefab 实例"的子树创建预制体 现在要**成功**，
+    /// 并把内层身份逐字记进文件（内层来源、内层编号、内层实例根），否则实例化后
+    /// 那一支会退化成普通节点、编辑器再也认不出它属于谁。
+    /// 仍然拒绝的只剩"新预制体引用自己"这一类坏数据；平实体照旧。
     #[test]
-    fn creating_a_prefab_from_a_prefab_instance_is_refused() {
+    fn creating_a_nested_prefab_records_the_inner_identity_and_refuses_self_reference() {
         let root = std::env::temp_dir().join(format!(
             "rustlua-create-prefab-{}-{}",
             std::process::id(),
@@ -1731,7 +1784,62 @@ mod tests {
             .tree
             .create_entity(scene, "Child", Some(instance_root))
             .unwrap();
-        // 子树里带 `prefab.source` = 这一支是 Prefab 实例（含后代的情况）。
+        // 子树里带全套内层标记 = 这一支是 sword.prefab 的实例（真实数据三个键都在）。
+        {
+            let markers = [
+                ("prefab.source", "assets/prefabs/sword.prefab"),
+                ("prefab.source_id", "1"),
+                ("prefab.root", "true"),
+            ];
+            let entity = app
+                .document
+                .current_scene
+                .as_mut()
+                .unwrap()
+                .scene
+                .entities
+                .get_mut(&child)
+                .unwrap();
+            for (key, value) in markers {
+                entity.metadata.insert(key.to_owned(), value.to_owned());
+            }
+        }
+        app.selection
+            .set_single(instance_root, editor::SelectionSource::Hierarchy);
+
+        app.create_prefab_from_selected();
+        let written = root.join("assets/prefabs/Hero.prefab");
+        // 注：创建成功会触发后台资源刷新，`status` 会被刷新的提示覆盖，所以断言产物。
+        let prefab = rustlua_scene::prefab::Prefab::load(&written).unwrap_or_else(|error| {
+            panic!("嵌套预制体应创建成功（status={}）：{error}", app.status)
+        });
+        assert_eq!(
+            prefab.nested_sources(),
+            vec!["assets/prefabs/sword.prefab".to_owned()],
+            "外层必须知道自己嵌了谁"
+        );
+        let marked: Vec<_> = prefab
+            .entities
+            .values()
+            .filter(|entity| entity.metadata.contains_key("prefab.source"))
+            .cloned()
+            .collect();
+        assert_eq!(marked.len(), 1, "内层标记只该落在那个子节点上：{prefab:?}");
+        assert_eq!(
+            marked[0].metadata["prefab.source"],
+            "assets/prefabs/sword.prefab"
+        );
+        assert_eq!(
+            marked[0].metadata["prefab.source_id"], "1",
+            "内层文件里的实体编号要逐字保住"
+        );
+        assert_eq!(
+            marked[0].metadata["prefab.root"], "true",
+            "内层实例根标记也要保住"
+        );
+
+        // **自指**：子树里挂的正是"要创建的这张"——新文件一上手就引用自己，必须拒绝且不落盘。
+        std::fs::remove_file(&written).unwrap();
         app.document
             .current_scene
             .as_mut()
@@ -1743,47 +1851,34 @@ mod tests {
             .metadata
             .insert(
                 "prefab.source".to_owned(),
-                "assets/prefabs/hero.prefab".to_owned(),
+                "assets/prefabs/Hero.prefab".to_owned(),
             );
-        app.selection
-            .set_single(instance_root, editor::SelectionSource::Hierarchy);
-
         app.create_prefab_from_selected();
         assert!(
-            app.status.contains("嵌套预制体尚不支持"),
-            "必须明确拒绝并说明原因：{}",
+            app.status.contains("嵌套会指向自己"),
+            "必须明确拒绝自指并说明原因：{}",
             app.status
         );
-        assert!(
-            !root.join("assets/prefabs/Hero.prefab").exists(),
-            "被拒绝时不得写出嵌套源"
-        );
+        assert!(!written.exists(), "被拒绝时不得写出文件");
 
-        // 平实体（去掉实例标记）照常创建。
-        app.document
+        // 平实体（去掉全部标记）照常创建，且不带任何嵌套引用。
+        let entity = app
+            .document
             .current_scene
             .as_mut()
             .unwrap()
             .scene
             .entities
             .get_mut(&child)
-            .unwrap()
-            .metadata
-            .remove("prefab.source");
+            .unwrap();
+        entity.metadata.retain(|key, _| !key.starts_with("prefab."));
         app.create_prefab_from_selected();
-        // 注：创建成功会触发后台资源刷新，`status` 会被刷新的提示覆盖，所以这里断言产物。
+        let flat = rustlua_scene::prefab::Prefab::load(&written).expect("平实体应照常创建");
         assert!(
-            root.join("assets/prefabs/Hero.prefab").exists(),
-            "平实体照常创建（status={}）",
-            app.status
-        );
-        let prefab =
-            rustlua_scene::prefab::Prefab::load(root.join("assets/prefabs/Hero.prefab")).unwrap();
-        assert!(
-            prefab.nested_sources().is_empty(),
+            flat.nested_sources().is_empty(),
             "平 Prefab 不该带任何嵌套引用"
         );
-        assert!(!prefab.entities.is_empty());
+        assert!(!flat.entities.is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 

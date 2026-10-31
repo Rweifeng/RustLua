@@ -22,7 +22,7 @@ use rustlua_render::frame::{
     Scene3dDrawable, SceneDraw, SceneMesh, WHITE_TEXTURE_PATH, WorldSpriteVertex,
 };
 use rustlua_render::layer::RenderLayer;
-use rustlua_render::light::Light;
+use rustlua_render::light::{Light, LightKind, MAX_POINT_LIGHTS, PointLight};
 use rustlua_render::mesh3d::MeshRenderer;
 use rustlua_render::quad::Quad;
 use rustlua_render::sprite::{Sprite, SpriteAsset, SpriteSorting};
@@ -212,12 +212,14 @@ impl RuntimeScene {
             }
         };
         let light = self.active_light();
+        let point_lights = self.active_point_lights();
         Some(Scene3d {
             camera,
             // 拆分批 7：视图在提取处成帧，渲染器（含"宿主未声明 FrameViews"的历史回退）与
             // 宿主声明的主视图因此消费同一份视口派生矩阵。
             view,
             light,
+            point_lights,
             drawables,
         })
     }
@@ -363,7 +365,10 @@ impl RuntimeScene {
     }
 
     /// Resolves the active light: Lua's `light.set_active` selection, else the
-    /// first entity with a `Light` component, else a default directional light.
+    /// first directional `Light` entity, else the default directional light.
+    ///
+    /// 点光源只在 `point_direct` 里参与着色，**不能**被选成这一盏：它没有阴影，
+    /// 而且 `direction` 对它没有意义（写成默认值就是"多一盏斜射的太阳"）。
     fn active_light(&self) -> Light {
         let selected = self.script.active_light();
         self.script
@@ -371,6 +376,9 @@ impl RuntimeScene {
                 let mut selected_light = None;
                 let mut fallback = None;
                 world.for_each::<Light>(|id, light| {
+                    if light.kind != LightKind::Directional {
+                        return;
+                    }
                     if fallback.is_none() {
                         fallback = Some(*light);
                     }
@@ -381,6 +389,25 @@ impl RuntimeScene {
                 selected_light.or(fallback)
             })
             .unwrap_or_default()
+    }
+
+    /// 本帧参与着色的点光源：按实体顺序取前 [`MAX_POINT_LIGHTS`] 盏 `type=point` 的 `Light`。
+    ///
+    /// 顺序取"先加的实体"而不是按距离裁剪：帧同步里两端必须看到同一份光照列表，
+    /// 距离排序会引入相机/浮点差异；超过上限的场景由内容侧保证（道具光效远少于 8 盏）。
+    fn active_point_lights(&self) -> Vec<PointLight> {
+        self.script.with_world(|world| {
+            let mut lights = Vec::new();
+            world.for_each::<Light>(|_, light| {
+                if lights.len() >= MAX_POINT_LIGHTS {
+                    return;
+                }
+                if let Some(point) = PointLight::from_light(light) {
+                    lights.push(point);
+                }
+            });
+            lights
+        })
     }
 
     pub fn vertices(&mut self, width: u32, height: u32) -> anyhow::Result<SceneMesh> {

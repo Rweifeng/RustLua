@@ -301,7 +301,7 @@ impl PluginContext {
             .insert(section_id.into(), Box::new(draw));
     }
 
-    /// 为已声明的命令挂执行回调。菜单条目点击与诊断页“运行”都会走这里。
+    /// 为已声明的命令挂执行回调。菜单条目点击、命令面板与诊断页“运行”都走这里。
     pub fn command_handler(
         &mut self,
         command_id: impl Into<String>,

@@ -8,7 +8,7 @@ use std::{
 
 use crate::font::FontAtlas;
 use crate::layer::RenderLayer;
-use crate::light::Light;
+use crate::light::{Light, PointLight};
 use crate::sprite_batch::SpriteDrawBatch;
 use bytemuck::{Pod, Zeroable};
 use rustlua_camera::camera::{Camera3D, RenderView};
@@ -320,6 +320,9 @@ pub struct Scene3d {
     pub camera: Camera3D,
     /// 本帧的视图契约：矩阵按视口烘焙（`baked()` 为 `None` = 这台相机退化）。
     pub view: RenderView,
+    /// 方向光（平行光）：投影阴影的那一盏。
     pub light: Light,
+    /// 本帧参与着色的点光源（最多 [`crate::light::MAX_POINT_LIGHTS`] 盏，不投影）。
+    pub point_lights: Vec<PointLight>,
     pub drawables: Vec<Scene3dDrawable>,
 }

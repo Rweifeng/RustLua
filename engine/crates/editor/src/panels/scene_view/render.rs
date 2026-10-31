@@ -2,12 +2,25 @@
 
 use super::*;
 
+/// 渲染器创建失败后的重试间隔。
+///
+/// 失败一般是**持久**的（显存不够、驱动拒绝建管线、覆盖 shader 坏了），而
+/// `Renderer::new_offscreen` 每次都要把整条管线重编一遍。以前没有退避，视图每帧都撞一次
+/// 同样的失败——Scene View 就从"空白"变成"空白且卡"。
+pub(super) const SCENE_RENDERER_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Scene View 浮层里属于"渲染器初始化失败"的那句前缀（清浮层时只认自己这句）。
+pub(super) const RENDERER_FAILURE_PREFIX: &str = "渲染器初始化失败（视图暂停）：";
+
 impl EditorApp {
     /// 项目根变化时销毁携带旧 root 的 GPU 渲染器。Renderer 会把相对纹理路径
     /// 解析成 `root + path`；跨项目复用旧实例会让 Scene View 加载上一个项目的
     /// 同名资源（Play 预览每次新建 renderer，因此不受影响）。
     pub(crate) fn reset_scene_render_resources(&mut self) {
         self.scene_renderer = None;
+        // 渲染器的失败状态跟着渲染器一起清：留着退避时刻，切到另一个项目后要白等 2 秒才重试。
+        self.scene_renderer_error = None;
+        self.scene_renderer_retry_at = None;
         self.scene_texture = None;
         // 离屏纹理没了，2D/3D 注册的原生 egui 纹理 ID 与「纹理里画的是什么」的渲染
         // 缓存必须一起失效：项目切换后新旧文档 revision 都可能是 0，缓存误命中就会
@@ -24,6 +37,9 @@ impl EditorApp {
     }
 
     /// 确保离屏渲染器**实例**存在；不建视图纹理（Game 视图的编辑预览只要渲染器）。
+    ///
+    /// 创建失败时：记原因、报一次 Console、按 `SCENE_RENDERER_RETRY` 退避，而不是每帧重跑
+    /// 一次昂贵的管线编译（见 [`Self::note_scene_renderer_failure`]）。
     pub(crate) fn ensure_scene_renderer_instance(&mut self) {
         if self.scene_renderer.is_some() {
             return;
@@ -31,16 +47,86 @@ impl EditorApp {
         let Some((device, queue)) = &self.gpu else {
             return;
         };
+        let now = std::time::Instant::now();
+        if !self.scene_renderer_retry_due(now) {
+            return;
+        }
         let root = strip_verbatim_prefix(&self.project.root);
-        self.scene_renderer =
-            Renderer::new_offscreen(device.clone(), queue.clone(), Some(root), false, false).ok();
-        // P3-R05-4：新建的渲染器立刻接上覆盖目录，Scene View 与 Play 读同一份源。
-        // 目录为空/不存在时 `rebuilt = 0`（与内置源逐字节相同，一次重编都不做）。
-        self.attach_scene_shader_overrides();
-        // 运行时可能先于渲染器建立（2D 视图先建运行时）；渲染器一就绪就把场景环境
-        // 上传一次，避免 Scene 3D 首帧缺环境。
-        self.apply_scene_environment_settings();
-        self.sync_particle_compute();
+        match Renderer::new_offscreen(device.clone(), queue.clone(), Some(root), false, false) {
+            Ok(renderer) => {
+                self.scene_renderer = Some(renderer);
+                // P3-R05-4：新建的渲染器立刻接上覆盖目录，Scene View 与 Play 读同一份源。
+                // 目录为空/不存在时 `rebuilt = 0`（与内置源逐字节相同，一次重编都不做）。
+                self.attach_scene_shader_overrides();
+                // 运行时可能先于渲染器建立（2D 视图先建运行时）；渲染器一就绪就把场景环境
+                // 上传一次，避免 Scene 3D 首帧缺环境。
+                self.apply_scene_environment_settings();
+                self.sync_particle_compute();
+                if self.recover_scene_renderer() {
+                    self.profiler.bump("scene_renderer_recovered");
+                    self.push_console_notice("Scene View 渲染器已恢复。".to_owned());
+                    self.status = "Scene View 渲染器已恢复".to_owned();
+                }
+            }
+            Err(error) => {
+                let message = error.to_string();
+                self.profiler.bump("scene_renderer_init_failures");
+                self.scene_renderer_retry_at = Some(now + SCENE_RENDERER_RETRY);
+                // 视图缓存要作废：浮层那句诊断必须重新画上去，而缓存命中会跳过重渲染。
+                self.scene_view_cache_2d = SceneViewCache2d::default();
+                self.scene_view_cache_3d = SceneViewCache3d::default();
+                if self.note_scene_renderer_failure(&message) {
+                    self.push_console_notice(format!(
+                        "Scene View：{RENDERER_FAILURE_PREFIX}{message}"
+                    ));
+                    self.status = "Scene View 渲染器初始化失败".to_owned();
+                }
+                // 不走 `set_scene_view_diagnostic`：它自己会再推一行 `[scene view] …`，同一条
+                // 失败会在 Console 出现两次。这里只要 Scene View 的浮层文本。
+                self.preview_diagnostic = Some(format!("{RENDERER_FAILURE_PREFIX}{message}"));
+            }
+        }
+    }
+
+    /// 现在是否允许再试一次创建渲染器（没失败过、或退避时间已到）。
+    pub(crate) fn scene_renderer_retry_due(&self, now: std::time::Instant) -> bool {
+        self.scene_renderer_retry_at.is_none_or(|due| now >= due)
+    }
+
+    /// 退避期间约一次到点重绘。
+    ///
+    /// 编辑器空闲时不会自发产生新帧：不约这一句，"驱动恢复了 / 显存腾出来了"要等作者动一下
+    /// 鼠标才重试，视图会一直空白着。最多每 2 秒一帧，比每帧撞一次管线便宜得多。
+    pub(crate) fn schedule_scene_renderer_retry(&self, context: &egui::Context) {
+        let Some(due) = self.scene_renderer_retry_at else {
+            return;
+        };
+        context.request_repaint_after(due.saturating_duration_since(std::time::Instant::now()));
+    }
+
+    /// 记录一次渲染器创建失败，返回**是否该播报**（同一原因只播一次）。
+    pub(crate) fn note_scene_renderer_failure(&mut self, message: &str) -> bool {
+        self.scene_renderer_error
+            .replace(message.to_owned())
+            .as_deref()
+            .is_none_or(|previous| previous != message)
+    }
+
+    /// 创建成功：清掉失败状态与退避，返回**之前是否真有失败**。
+    ///
+    /// "有没有失败"以 `scene_renderer_error` 为准（它是失败的事实源），退避时刻只是它的副产物。
+    pub(crate) fn recover_scene_renderer(&mut self) -> bool {
+        self.scene_renderer_retry_at = None;
+        let had_failure = self.scene_renderer_error.take().is_some();
+        if had_failure
+            && self
+                .preview_diagnostic
+                .as_deref()
+                .is_some_and(|text| text.starts_with(RENDERER_FAILURE_PREFIX))
+        {
+            self.preview_diagnostic = None;
+        }
+        had_failure
     }
 
     /// 确保 3D 场景视图的离屏渲染器存在；按视图尺寸重建纹理（M10-04）。
@@ -154,16 +240,14 @@ impl EditorApp {
         if drawables.is_empty() {
             return None;
         }
-        let light = Light {
-            direction: Vec3::new(0.4, -0.8, 0.5),
-            color: [1.0, 1.0, 1.0],
-            intensity: 1.0,
-        };
+        let light = Light::default();
         Some(Scene3d {
             camera,
             // 编辑器这条回退路径自己拼 drawable，但视图仍按同一处规则成帧：宽高比来自视口。
             view: RenderView::main_3d(camera, viewport, DEFAULT_3D_CLEAR),
             light,
+            // 预览回退路径没有实体身份表，点光源走不到这里（主路径 `scene_3d_with_camera` 会提）。
+            point_lights: Vec::new(),
             drawables,
         })
     }

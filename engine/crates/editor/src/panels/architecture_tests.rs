@@ -57,6 +57,8 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     // 扫描与改写都在 shell（`crate::actions::broken_refs`），面板不碰文档。
     ("broken_refs.rs", 0),
     ("bundles.rs", 0),
+    // P2：命令面板只把菜单动作原样交给 `run_menu_action`，自己不碰文档与历史。
+    ("command_palette.rs", 0),
     ("console.rs", 0),
     ("domain_data.rs", 0),
     ("game_view.rs", 0),
@@ -73,6 +75,8 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     ("inspector/helpers.rs", 0),
     ("inspector/ui_editors.rs", 0),
     ("material.rs", 0),
+    // 模型预览只解析 glb 并画本窗的图，旋转/缩放是观察参数，不碰文档。
+    ("model_preview.rs", 0),
     ("keymap.rs", 0),
     ("mod.rs", 0),
     ("performance.rs", 0),
@@ -81,6 +85,8 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     ("publish.rs", 0),
     ("resource_browser.rs", 0),
     ("runtime_debug.rs", 0),
+    // P2：快捷键窗只调 `EditorApp` 的改键入口（用户配置），不碰文档与历史。
+    ("shortcut_settings.rs", 0),
     ("scene_view/mod.rs", 0),
     ("scene_view/draw.rs", 0),
     ("scene_view/pointer.rs", 0),

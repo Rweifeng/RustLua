@@ -258,6 +258,12 @@ impl EditorApp {
                                 ui.label("缩略图加载中…");
                             }
                         }
+                        // 模型（.glb/.gltf）：就地预览，可旋转/缩放看形状（软光栅，只读）。
+                        if entry.kind == rustlua_assets::resource_kind::ResourceKind::Model {
+                            ui.separator();
+                            let rel = entry.path_string();
+                            self.draw_model_preview(ui, &rel);
+                        }
                         // 场景/Prefab：提示双击打开
                         if matches!(entry.kind, rustlua_assets::resource_kind::ResourceKind::Scene | rustlua_assets::resource_kind::ResourceKind::Prefab) {
                             ui.separator();
@@ -666,9 +672,29 @@ impl EditorApp {
                 let has = |name: &str| components.iter().any(|component| component == name);
                 if !components.is_empty() {
                     ui.label("组件：");
-                    for key in &components {
+                    // 顺序来自 `editor.component_order` 元数据（↑/↓ 写入），组件条与
+                    // 「schema 驱动字段区」共用同一个排序，所以两处永远不会错位。
+                    // 手写面板（Container / Collider3d 等）仍按固定位置画在字段区之后，
+                    // 排序不移动它们——它们正在按 docs/55 迁往 schema 驱动。
+                    let count = components.len();
+                    let mut pending_move: Option<(String, i32)> = None;
+                    for (index, key) in components.iter().enumerate() {
                         ui.horizontal(|ui| {
                             ui.label(component_display_name(key));
+                            if ui
+                                .add_enabled(index > 0, egui::Button::new("↑").small())
+                                .on_hover_text("上移组件")
+                                .clicked()
+                            {
+                                pending_move = Some((key.clone(), -1));
+                            }
+                            if ui
+                                .add_enabled(index + 1 < count, egui::Button::new("↓").small())
+                                .on_hover_text("下移组件")
+                                .clicked()
+                            {
+                                pending_move = Some((key.clone(), 1));
+                            }
                             if ui.small_button("移除").clicked() {
                                 let key = key.clone();
                                 if let Err(error) = self.remove_component(selected, &key) {
@@ -676,6 +702,11 @@ impl EditorApp {
                                 }
                             }
                         });
+                    }
+                    if let Some((key, delta)) = pending_move
+                        && let Err(error) = self.move_component(selected, &key, delta)
+                    {
+                        self.status = error;
                     }
                 }
                 ui.separator();
@@ -1367,7 +1398,7 @@ impl EditorApp {
             .unwrap_or_else(|| "assets/textures/player.png".to_owned())
     }
 
-    /// 选中实体的组件键列表（Inspector 组件管理用）。
+    /// 选中实体的组件键列表（Inspector 组件管理用），按 `editor.component_order` 排序。
     fn current_components(&self) -> Vec<String> {
         self.current_scene()
             .and_then(|s| {
@@ -1375,7 +1406,7 @@ impl EditorApp {
                     s.scene
                         .entities
                         .get(&id)
-                        .map(|e| e.components.keys().cloned().collect())
+                        .map(editor::display_components)
                         .unwrap_or_default()
                 })
             })

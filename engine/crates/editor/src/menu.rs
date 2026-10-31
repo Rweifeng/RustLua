@@ -51,6 +51,11 @@ impl MenuGate {
     }
 }
 
+/// 菜单/命令面板共用的"为什么不可用"（面板把同一条原因显示成悬停提示）。
+pub(crate) fn gate_reason(gate: MenuGate) -> &'static str {
+    gate.reason()
+}
+
 /// 一个菜单条目：标签 + 动作 + 快捷键提示 + 可用条件。
 ///
 /// `shortcut` 只用于**显示**（真实快捷键在 main.rs 的输入处理里）；两者的对应关系由
@@ -105,6 +110,84 @@ pub(crate) enum MenuRow {
     ViewModes,
     /// 窗口 ▸ 布局与面板宽度提示（只读信息行）。
     LayoutInfo,
+}
+
+/// 命令面板条目的动作：内置菜单动作，或插件声明的命令 / 面板。
+///
+/// 插件条目走的是**同一条**执行通道（[`EditorApp::run_plugin_command`] /
+/// [`EditorApp::toggle_plugin_panel`]），命令面板不新增第二条命令通道。
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum PaletteAction {
+    /// 内置菜单动作。
+    Menu(MenuAction),
+    /// 插件命令（命令 id 跨插件唯一，宿主注册表拒绝撞名）。
+    PluginCommand(String),
+    /// 插件面板：菜单条目没挂命令时，直接开关它自己的面板。
+    PluginPanel(String),
+}
+
+/// 命令面板条目：菜单树的叶子摊平而来（动态分组行不参与——它们的条目由运行时数据决定，
+/// 例如"组件"下的条目就是 `COMPONENT_REGISTRY`，面板里另有入口），
+/// 再加上**已加载**插件声明的条目（见 [`EditorApp::palette_candidates`]）。
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PaletteItem {
+    /// 面包屑，如 `编辑 / 撤消`（搜索与展示都用它）。
+    pub(crate) path: String,
+    pub(crate) shortcut: Option<String>,
+    pub(crate) action: PaletteAction,
+    pub(crate) gate: MenuGate,
+}
+
+/// 把菜单树摊平成命令面板候选集。
+pub(crate) fn palette_items() -> Vec<PaletteItem> {
+    fn walk(rows: &'static [MenuRow], trail: &str, out: &mut Vec<PaletteItem>) {
+        for row in rows {
+            match row {
+                MenuRow::Item(item) => out.push(PaletteItem {
+                    path: format!("{trail}{}", item.label),
+                    shortcut: item.shortcut.map(str::to_owned),
+                    action: PaletteAction::Menu(item.action),
+                    gate: item.gate,
+                }),
+                MenuRow::SubMenu { label, rows } => {
+                    walk(rows, &format!("{trail}{label} / "), out);
+                }
+                MenuRow::Separator
+                | MenuRow::RecentProjects
+                | MenuRow::ComponentRegistry
+                | MenuRow::WorkspaceTabs
+                | MenuRow::PanelToggles
+                | MenuRow::ViewModes
+                | MenuRow::LayoutInfo => {}
+            }
+        }
+    }
+    let mut items = Vec::new();
+    for (title, rows) in MENU_BAR {
+        walk(rows, &format!("{title} / "), &mut items);
+    }
+    items
+}
+
+/// 命令面板的过滤：多词 AND，大小写不敏感，匹配面包屑（含顶级菜单名）。
+pub(crate) fn filter_palette_items<'a>(
+    items: &'a [PaletteItem],
+    query: &str,
+) -> Vec<&'a PaletteItem> {
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .map(|term| term.to_lowercase())
+        .collect();
+    if terms.is_empty() {
+        return items.iter().collect();
+    }
+    items
+        .iter()
+        .filter(|item| {
+            let haystack = item.path.to_lowercase();
+            terms.iter().all(|term| haystack.contains(term))
+        })
+        .collect()
 }
 
 /// 菜单条目的动作。渲染层不写文档，只把它交给 [`EditorApp::run_menu_action`]。
@@ -182,10 +265,16 @@ pub(crate) enum MenuAction {
     ToggleSafeArea,
     ToggleCollisionOverlay,
     ToggleSnap,
+    /// 窗口 ▸ 主题：深色 / 浅色 / 跟随系统（用户级偏好，存 `~/.rustlua/editor.json`）。
+    SetThemeDark,
+    SetThemeLight,
+    SetThemeSystem,
     SaveLayout,
     ResetLayout,
     // 帮助
     OpenManual,
+    /// 帮助 ▸ 快捷键…：编辑器快捷键的查看与改键（用户级，存 `editor.json`）。
+    Shortcuts,
     About,
 }
 
@@ -368,6 +457,15 @@ const WINDOW_MENU: &[MenuRow] = &[
     )),
     MenuRow::Item(MenuItem::new("网格吸附", MenuAction::ToggleSnap)),
     MenuRow::Separator,
+    MenuRow::SubMenu {
+        label: "主题",
+        rows: &[
+            MenuRow::Item(MenuItem::new("深色", MenuAction::SetThemeDark)),
+            MenuRow::Item(MenuItem::new("浅色", MenuAction::SetThemeLight)),
+            MenuRow::Item(MenuItem::new("跟随系统", MenuAction::SetThemeSystem)),
+        ],
+    },
+    MenuRow::Separator,
     MenuRow::Item(MenuItem::new("保存布局", MenuAction::SaveLayout).shortcut("Ctrl+Shift+L")),
     MenuRow::Item(MenuItem::new("重置为默认布局", MenuAction::ResetLayout)),
     MenuRow::LayoutInfo,
@@ -375,6 +473,7 @@ const WINDOW_MENU: &[MenuRow] = &[
 
 const HELP_MENU: &[MenuRow] = &[
     MenuRow::Item(MenuItem::new("使用手册", MenuAction::OpenManual)),
+    MenuRow::Item(MenuItem::new("快捷键…", MenuAction::Shortcuts)),
     MenuRow::Item(MenuItem::new("版本说明", MenuAction::About)),
 ];
 
@@ -390,6 +489,16 @@ pub(crate) const MENU_BAR: &[(&str, &[MenuRow])] = &[
 ];
 
 impl EditorApp {
+    /// 命令面板的候选集：内置菜单叶子 + **已加载**插件声明的条目。
+    ///
+    /// 插件条目由 [`EditorApp::plugin_palette_items`] 提供；插件被禁用/卸载后
+    /// 注册表不再报它，面板里立刻消失——和菜单栏是同一份运行时事实。
+    pub(crate) fn palette_candidates(&self) -> Vec<PaletteItem> {
+        let mut items = palette_items();
+        items.extend(self.plugin_palette_items());
+        items
+    }
+
     /// 渲染整条菜单栏（由 `draw_header_panel` 调用）。
     pub(crate) fn draw_menu_bar(&mut self, ui: &mut egui::Ui) {
         for (title, rows) in MENU_BAR {
@@ -413,8 +522,15 @@ impl EditorApp {
                 }
                 MenuRow::Item(item) => {
                     let enabled = self.menu_gate_open(item.gate);
+                    // 快捷键提示取**生效**键位（帮助 ▸ 快捷键… 改过键后菜单跟着变），
+                    // 没有动态来源时用静态默认（文档里的同一份）。
                     let label = match item.shortcut {
-                        Some(shortcut) => format!("{}    {shortcut}", item.label),
+                        Some(default) => format!(
+                            "{}    {}",
+                            item.label,
+                            self.menu_shortcut_label(item.action)
+                                .unwrap_or_else(|| default.to_owned())
+                        ),
                         None => item.label.to_owned(),
                     };
                     let response = ui.add_enabled(enabled, egui::Button::new(label));
@@ -733,10 +849,14 @@ impl EditorApp {
                 self.show_collision_overlay = !self.show_collision_overlay;
             }
             MenuAction::ToggleSnap => self.snap_enabled = !self.snap_enabled,
+            MenuAction::SetThemeDark => self.set_appearance_theme("dark"),
+            MenuAction::SetThemeLight => self.set_appearance_theme("light"),
+            MenuAction::SetThemeSystem => self.set_appearance_theme("system"),
             MenuAction::SaveLayout => self.persist_layout(),
             MenuAction::ResetLayout => self.reset_layout_to_default(),
             // ---- 帮助 ----
             MenuAction::OpenManual => self.open_help(),
+            MenuAction::Shortcuts => self.show_shortcuts = true,
             MenuAction::About => self.show_about = true,
         }
     }
@@ -774,7 +894,7 @@ impl EditorApp {
     }
 
     /// 全选当前场景实体（选择是单一事实源，因此这也是一条命令语义的操作）。
-    fn select_all_entities(&mut self) {
+    pub(crate) fn select_all_entities(&mut self) {
         let Some(document) = self.current_scene() else {
             return;
         };
@@ -812,6 +932,42 @@ mod tests {
             vec!["文件", "编辑", "资源", "游戏对象", "组件", "窗口", "帮助"],
             "顶级菜单顺序必须与 Unity 对齐"
         );
+    }
+
+    /// 命令面板 = 菜单树的拍平视图：叶子一个不少、动态行（最近工程 / 组件注册表 /
+    /// 面板开关…）不出现；过滤是多词 AND 且大小写不敏感；Gate 原样带过来。
+    #[test]
+    fn command_palette_flattens_menu_leaves_and_filters_by_all_terms() {
+        let items = palette_items();
+        let mut leaf_count = 0;
+        for (_, rows) in MENU_BAR {
+            walk(rows, &mut |row| {
+                if matches!(row, MenuRow::Item(_)) {
+                    leaf_count += 1;
+                }
+            });
+        }
+        assert_eq!(items.len(), leaf_count, "每个菜单叶子都应出现在命令面板里");
+        assert_eq!(filter_palette_items(&items, "").len(), items.len());
+
+        let save: Vec<&str> = filter_palette_items(&items, "文件 保存")
+            .iter()
+            .map(|item| item.path.as_str())
+            .collect();
+        assert!(save.contains(&"文件 / 保存场景"), "{save:?}");
+        assert!(
+            filter_palette_items(&items, "文件 保存")
+                .iter()
+                .all(|item| item.path.starts_with("文件 / ") && item.path.contains("保存")),
+            "多个词必须全部命中同一条目"
+        );
+        assert!(filter_palette_items(&items, "不存在的命令").is_empty());
+
+        let save = filter_palette_items(&items, "保存场景")
+            .into_iter()
+            .find(|item| item.path == "文件 / 保存场景")
+            .expect("保存场景在面板里");
+        assert_eq!(save.gate, MenuGate::ProjectLoaded, "可用条件原样带过来");
     }
 
     /// 「新建场景」必须是**一条菜单项**、不要名字输入框（与 Unity 的 File ▸ New Scene 一致）：
@@ -939,6 +1095,45 @@ mod tests {
             ("保存布局", "Ctrl+Shift+L"),
         ];
         assert_eq!(shortcuts, expected.to_vec());
+    }
+
+    /// 菜单提示既不能与文档脱节，也不能与**生效**键位脱节：静态提示就是快捷键表的
+    /// 默认键，改键后菜单显示用户的新键位（`menu_shortcut_label`）。
+    #[test]
+    fn menu_shortcut_hints_track_the_effective_bindings() {
+        for (_, rows) in MENU_BAR {
+            walk(rows, &mut |row| {
+                let MenuRow::Item(item) = row else {
+                    return;
+                };
+                let Some(hint) = item.shortcut else {
+                    return;
+                };
+                let shortcut = crate::shortcuts::for_menu_action(item.action)
+                    .unwrap_or_else(|| panic!("「{}」有快捷键提示却没有对应的动作", item.label));
+                assert_eq!(
+                    hint,
+                    shortcut.default_spec(),
+                    "「{}」的菜单提示与快捷键表默认键不一致",
+                    item.label
+                );
+            });
+        }
+
+        let mut app = menu_test_app();
+        assert_eq!(
+            app.menu_shortcut_label(MenuAction::SaveScene).as_deref(),
+            Some("Ctrl+S")
+        );
+        app.shortcuts
+            .set(crate::shortcuts::EditorShortcut::Save.id(), "Ctrl+Shift+S")
+            .unwrap();
+        assert_eq!(
+            app.menu_shortcut_label(MenuAction::SaveScene).as_deref(),
+            Some("Ctrl+Shift+S"),
+            "改键后菜单必须显示生效键位"
+        );
+        assert_eq!(app.menu_shortcut_label(MenuAction::About), None);
     }
 
     /// 每个动作都必须能被执行到：逐个调用不 panic（用无项目/无选中的 App 跑一遍）。
@@ -1145,12 +1340,39 @@ mod tests {
         assert_eq!(sorted.len(), names.len(), "组件菜单不能有重复项");
     }
 
+    /// "窗口 ▸ 主题"必须落盘到**注入的那份**用户设置，而不是真实的主目录。
+    ///
+    /// 这条要紧在菜单树里有一条"跟随系统"：任何"把所有菜单动作跑一遍"的门都会触发它，
+    /// 落盘落错地方就等于把开发机的主题偏好改掉（门之间还会互相串味）。
+    #[test]
+    fn theme_menu_action_writes_to_the_injected_user_store() {
+        let mut app = menu_test_app();
+        let store = app.user_config_store().expect("注入的落点");
+        let root = store.root().to_path_buf();
+        assert!(
+            root.starts_with(std::env::temp_dir()),
+            "落点必须在临时目录里：{root:?}"
+        );
+
+        app.run_menu_action(MenuAction::SetThemeLight);
+        let text = std::fs::read_to_string(store.config_path()).expect("主题应写进注入的那份设置");
+        let value: serde_json::Value = serde_json::from_str(&text).expect("写出的应是 JSON");
+        assert_eq!(value["appearance"]["theme"], "light", "写错了地方：{text}");
+    }
+
     fn menu_test_app() -> EditorApp {
         let project = editor::ProjectInfo {
             root: std::env::temp_dir().join(format!("rustlua-menu-{}", crate::util::test_token())),
             version: "test".to_owned(),
             directories: Vec::new(),
         };
-        EditorApp::new(project, None, rustlua_infra::logging::LogSink::new(64))
+        let mut app = EditorApp::new(project, None, rustlua_infra::logging::LogSink::new(64));
+        // 主题与改键是用户级设置，会落盘：门绝不能写真实的 `~/.rustlua/editor.json`
+        //（`every_menu_action_is_executable_without_panicking` 会把整棵菜单走一遍，
+        // 里面就有"窗口 ▸ 主题 ▸ 跟随系统"）。
+        app.user_config = Some(editor::UserConfigStore::at(crate::util::temp_user_home(
+            "menu",
+        )));
+        app
     }
 }

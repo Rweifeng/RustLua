@@ -310,7 +310,8 @@ impl Renderer {
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(32),
+                            // 方向光 48B + 8 盏点光 × 32B = 304B（见 `light_uniform_bytes`）。
+                            min_binding_size: wgpu::BufferSize::new(super::LIGHT_UNIFORM_BYTES),
                         },
                         count: None,
                     },
@@ -639,9 +640,10 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let light_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("rustlua-directional-light-buffer"),
-            // 与 `Light::default()` 一致：`direction` 是**光传播方向**，所以天空里的太阳 y 分量为负。
-            contents: bytemuck::cast_slice(&[[0.4_f32, -0.8, 0.5, 0.0], [1.0_f32, 1.0, 1.0, 1.0]]),
+            label: Some("rustlua-light-buffer"),
+            // 与 `Light::default()` 一致：`direction` 是**光传播方向**，所以天空里的太阳 y 分量为负；
+            // 点光数组先全部补零，由 `write_light_uniforms` 每帧重写。
+            contents: &super::light_uniform_bytes(rustlua_render::light::Light::default(), &[]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let shadow_camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

@@ -252,6 +252,10 @@ pub struct DynamicUiImage {
     pub space: UiLayoutSpace,
     pub anchor: [f32; 2],
     pub nine_slice: Option<[f32; 4]>,
+    /// 目标空间边距（像素）。`None` 沿用旧口径：`nine_slice` 同时当源与目标边距。
+    /// `Some` 时 `nine_slice` 只切源图，这里决定四边在目标里占多宽——皮肤原图
+    /// 与显示尺寸差得多时需要它，否则边框不是被压扁就是吃满整块。
+    pub nine_slice_dest: Option<[f32; 4]>,
 }
 
 /// Runtime-only screen-space panel created by Lua (`ui.panel`).
@@ -457,10 +461,37 @@ pub fn nine_slice_cells(
     texture_height: f32,
     slice: [f32; 4],
 ) -> Vec<NineSliceCell> {
+    nine_slice_cells_with_dest(
+        dest_width,
+        dest_height,
+        texture_width,
+        texture_height,
+        slice,
+        slice,
+    )
+}
+
+/// 源/目标边距分开给的九宫格。`src_slice` 是**纹理像素**（切源图用），
+/// `dest_slice` 是**目标像素**（排版用）。
+///
+/// 一张 1024×432 的皮肤画进 696×58 的条时，两者不能是同一组数：边距按目标
+/// 尺寸取（比如上下各 12），源边距仍是纹理像素（比如上下各 90）——否则角部
+/// 会被压成另一个比例，或者整条被边框吃满、中间一点不剩。`nine_slice_cells`
+/// 是两者相等时的简写（像素风皮肤 1:1 放大时正好要这口径）。
+#[must_use]
+pub fn nine_slice_cells_with_dest(
+    dest_width: f32,
+    dest_height: f32,
+    texture_width: f32,
+    texture_height: f32,
+    src_slice: [f32; 4],
+    dest_slice: [f32; 4],
+) -> Vec<NineSliceCell> {
     if dest_width <= 0.0 || dest_height <= 0.0 || texture_width <= 0.0 || texture_height <= 0.0 {
         return Vec::new();
     }
-    let (l, r, t, b) = (slice[0], slice[1], slice[2], slice[3]);
+    let (l, r, t, b) = (src_slice[0], src_slice[1], src_slice[2], src_slice[3]);
+    let (dl, dr, dt, db) = (dest_slice[0], dest_slice[1], dest_slice[2], dest_slice[3]);
 
     // --- Source columns/rows in texture pixels ------------------------------
     let sl = l.clamp(0.0, texture_width);
@@ -489,25 +520,25 @@ pub fn nine_slice_cells(
     ];
 
     // --- Destination columns/rows in dest units -----------------------------
-    let dst_col_f = if l + r > dest_width && l + r > 0.0 {
-        dest_width / (l + r)
+    let dst_col_f = if dl + dr > dest_width && dl + dr > 0.0 {
+        dest_width / (dl + dr)
     } else {
         1.0
     };
-    let dst_row_f = if t + b > dest_height && t + b > 0.0 {
-        dest_height / (t + b)
+    let dst_row_f = if dt + db > dest_height && dt + db > 0.0 {
+        dest_height / (dt + db)
     } else {
         1.0
     };
     let dst_cols = [
-        l * dst_col_f,
-        (dest_width - l * dst_col_f - r * dst_col_f).max(0.0),
-        r * dst_col_f,
+        dl * dst_col_f,
+        (dest_width - dl * dst_col_f - dr * dst_col_f).max(0.0),
+        dr * dst_col_f,
     ];
     let dst_rows = [
-        t * dst_row_f,
-        (dest_height - t * dst_row_f - b * dst_row_f).max(0.0),
-        b * dst_row_f,
+        dt * dst_row_f,
+        (dest_height - dt * dst_row_f - db * dst_row_f).max(0.0),
+        db * dst_row_f,
     ];
 
     // --- Emit the 3×3 grid, row-major with cumulative offsets --------------
@@ -1070,6 +1101,42 @@ mod tests {
     fn nine_slice_degenerate_inputs_return_empty() {
         assert!(nine_slice_cells(0.0, 10.0, 10.0, 10.0, [1.0; 4]).is_empty());
         assert!(nine_slice_cells(10.0, 10.0, 0.0, 10.0, [1.0; 4]).is_empty());
+    }
+
+    #[test]
+    fn nine_slice_src_and_dest_borders_are_independent() {
+        // 皮肤整张 1024×432 画进 200×50 的条：源边距仍是纹理像素（左 120、上下 90），
+        // 目标边距按显示尺寸给（左 40、上下 10）。角部按各自的比例取，互不牵连。
+        let cells = nine_slice_cells_with_dest(
+            200.0,
+            50.0,
+            1024.0,
+            432.0,
+            [120.0, 120.0, 90.0, 90.0],
+            [40.0, 40.0, 10.0, 10.0],
+        );
+        assert_eq!(cells.len(), 9);
+        assert_eq!(cells[0].dest, [0.0, 0.0, 40.0, 10.0]);
+        assert_eq!(cells[0].src, [0.0, 0.0, 120.0 / 1024.0, 90.0 / 432.0]);
+        // 中间格：目标 200-80=120 宽、50-20=30 高；源 1024-240=784、432-180=252。
+        assert_eq!(cells[4].dest, [40.0, 10.0, 160.0, 40.0]);
+        assert_eq!(
+            cells[4].src,
+            [120.0 / 1024.0, 90.0 / 432.0, 904.0 / 1024.0, 342.0 / 432.0]
+        );
+        // 旧简写与显式给同一组数逐格一致（向后兼容）。
+        let shorthand = nine_slice_cells(200.0, 50.0, 1024.0, 432.0, [40.0, 40.0, 10.0, 10.0]);
+        assert_eq!(
+            nine_slice_cells_with_dest(
+                200.0,
+                50.0,
+                1024.0,
+                432.0,
+                [40.0, 40.0, 10.0, 10.0],
+                [40.0, 40.0, 10.0, 10.0]
+            ),
+            shorthand
+        );
     }
 
     #[test]

@@ -3,6 +3,8 @@
 //! 从 `main.rs` 的 `mod layout_tests` 原样搬出（P1 结构收口）；模块路径仍是
 //! `crate::layout_tests::*`，测试名不变。
 
+use crate::menu::MenuAction;
+use crate::shortcuts::EditorShortcut;
 use crate::{EditorApp, SceneTool, SceneViewMode, WorkspaceTab};
 use eframe::egui;
 use rustlua_infra::logging::LogSink;
@@ -589,4 +591,141 @@ fn central_panel_does_not_overlap_inspector_at_any_width() {
             central_rect.width()
         );
     }
+}
+
+/// 主题偏好是**用户级**设置：切换只改内存并安排下一帧应用；重复设置不算变化；
+/// 非法主题名回落深色。这里直接看 egui 的 `visuals.dark_mode`，不靠截图。
+#[test]
+fn appearance_theme_switches_and_reaches_the_egui_visuals() {
+    let root = temp_root("appearance");
+    let mut app = EditorApp::new(
+        editor::ProjectInfo {
+            root,
+            version: "test".to_owned(),
+            directories: Vec::new(),
+        },
+        None,
+        LogSink::new(64),
+    );
+    assert_eq!(app.appearance.normalized_theme(), "dark", "默认深色");
+    let ctx = egui::Context::default();
+    app.apply_appearance(&ctx);
+    assert!(ctx.style().visuals.dark_mode, "默认应是深色 visuals");
+
+    assert!(app.apply_appearance_theme("light"));
+    assert_eq!(app.appearance_applied, None, "切换后要等下一帧再应用");
+    app.apply_appearance(&ctx);
+    assert!(!ctx.style().visuals.dark_mode, "浅色主题必须落到 egui");
+    assert_eq!(app.appearance_applied.as_deref(), Some("light"));
+
+    assert!(!app.apply_appearance_theme("light"), "重复设置不算变化");
+
+    // 非法主题名按 `dark` 处理（哪怕当前是浅色）。
+    assert!(app.apply_appearance_theme("solarized"));
+    assert_eq!(app.appearance.normalized_theme(), "dark");
+    app.apply_appearance(&ctx);
+    assert!(ctx.style().visuals.dark_mode);
+}
+
+/// 改键：冲突与非法键位被拒（说明原因），成功后生效键位与菜单提示一起变；
+/// 捕获态按 Esc 取消、按冲突键位被拒绝——两条都不落盘、不改表。
+#[test]
+fn shortcut_rebinding_rejects_conflicts_and_updates_menu_hints() {
+    let root = temp_root("shortcuts");
+    let mut app = EditorApp::new(
+        editor::ProjectInfo {
+            root,
+            version: "test".to_owned(),
+            directories: Vec::new(),
+        },
+        None,
+        LogSink::new(64),
+    );
+    assert_eq!(
+        app.menu_shortcut_label(MenuAction::SaveScene).as_deref(),
+        Some("Ctrl+S"),
+        "没改键时菜单显示默认键位"
+    );
+
+    // 冲突：Ctrl+Shift+P 是命令面板的默认键。
+    let conflict = editor::ShortcutSpec::parse("Ctrl+Shift+P").unwrap();
+    let error = app
+        .apply_shortcut(EditorShortcut::Save, &conflict)
+        .expect_err("与命令面板冲突必须拒绝");
+    assert!(error.contains("命令面板"), "{error}");
+    assert_eq!(
+        app.shortcuts.get(EditorShortcut::Save.id()),
+        None,
+        "拒绝时表不变"
+    );
+
+    // 非法：裸字母会被当成打字输入。
+    let bare = editor::ShortcutSpec::parse("S").unwrap();
+    let error = app
+        .apply_shortcut(EditorShortcut::Save, &bare)
+        .expect_err("裸字母必须拒绝");
+    assert!(error.contains("Ctrl"), "{error}");
+
+    // 成功：表与菜单提示同时变。
+    let custom = editor::ShortcutSpec::parse("Ctrl+Shift+S").unwrap();
+    assert!(app.apply_shortcut(EditorShortcut::Save, &custom).unwrap());
+    assert_eq!(
+        app.shortcuts.get(EditorShortcut::Save.id()),
+        Some("Ctrl+Shift+S")
+    );
+    assert_eq!(
+        app.menu_shortcut_label(MenuAction::SaveScene).as_deref(),
+        Some("Ctrl+Shift+S"),
+        "改键后菜单不能还写着默认键位"
+    );
+    assert!(
+        !app.apply_shortcut(EditorShortcut::Save, &custom).unwrap(),
+        "重复设置不算变化"
+    );
+
+    // 捕获态：Esc 取消，不改键。
+    let ctx = egui::Context::default();
+    let press = |ctx: &egui::Context, key: egui::Key, modifiers: egui::Modifiers| {
+        ctx.begin_pass(egui::RawInput {
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            ..Default::default()
+        });
+    };
+    app.shortcut_capture = Some(EditorShortcut::Save);
+    press(&ctx, egui::Key::Escape, egui::Modifiers::default());
+    app.capture_shortcut(&ctx);
+    let _ = ctx.end_pass();
+    assert_eq!(app.shortcut_capture, None);
+    assert_eq!(
+        app.shortcuts.get(EditorShortcut::Save.id()),
+        Some("Ctrl+Shift+S"),
+        "取消捕获不能改键"
+    );
+
+    // 捕获态：按一个已被占用的组合 → 退出捕获、保留原因、表不变。
+    app.shortcut_capture = Some(EditorShortcut::Save);
+    press(
+        &ctx,
+        egui::Key::P,
+        egui::Modifiers {
+            ctrl: true,
+            shift: true,
+            command: true,
+            ..Default::default()
+        },
+    );
+    app.capture_shortcut(&ctx);
+    let _ = ctx.end_pass();
+    assert_eq!(app.shortcut_capture, None);
+    assert!(app.status.contains("占用"), "{}", app.status);
+    assert_eq!(
+        app.shortcuts.get(EditorShortcut::Save.id()),
+        Some("Ctrl+Shift+S")
+    );
 }

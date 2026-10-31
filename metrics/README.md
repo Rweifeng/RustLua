@@ -179,6 +179,12 @@ python scripts/metrics/trend_db.py report --domain all --since 90d
 python scripts/metrics/trend_db.py check --policy metrics/policy.json
 python scripts/test/test-trend-db.py
 
+# 编辑器性能基线（ER-01）：不变量 + 毫秒预算 + 趋势入库
+cargo run -q --manifest-path engine/Cargo.toml -p editor -- --perf-baseline --perf-report baselines/editor-baseline.txt
+powershell -NoProfile -File scripts/verify/check-editor-perf.ps1 -Report baselines/editor-baseline.txt
+powershell -NoProfile -File scripts/verify/check-editor-perf.ps1 -SelfTest
+python scripts/metrics/trend_db.py ingest --input baselines/editor-baseline.txt
+
 # 编译时间（P4-05）
 powershell -NoProfile -File scripts/metrics/measure-build.ps1 -Mode check -Cold -Yes -Out artifacts/metrics/compile-check.json
 node scripts/metrics/parse-cargo-timings.mjs --check
@@ -220,6 +226,11 @@ powershell -NoProfile -File scripts/verify/check-docs.ps1
 | 分配字节 / 分配次数 | 编译 wall time / 增量时间 |
 | exe / wasm / 包体字节（原始 + gzip + brotli） | editor --perf-baseline 场景时间 |
 | 覆盖率百分比（含测试代码口径） | — |
+
+> `editor --perf-baseline` 的场景时间有**两层**门：`verify.ps1` 里的
+> `check-editor-perf.ps1` 用 `metrics/editor-perf-budgets.json` 的绝对 p95 上限拦数量级回归
+> （跨机可用，阈值取实测的 3~5 倍）；趋势库则只在**同指纹**内比 5%/10%（`p95_us`/`p99_us`），
+> workload 形如 `editor|<profile>|<场景名>`，debug 与 release 不混在一条序列里。
 
 ## 10. 口径声明
 

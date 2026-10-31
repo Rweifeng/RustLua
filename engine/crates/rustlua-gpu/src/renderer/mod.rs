@@ -15,7 +15,7 @@ use rustlua_camera::camera::{Camera3D, FrameViews, Viewport};
 use rustlua_math::math3d::{Mat4, Vec3};
 use rustlua_render::async_loader::AsyncLoader;
 use rustlua_render::layer::RenderLayer;
-use rustlua_render::light::Light;
+use rustlua_render::light::{Light, MAX_POINT_LIGHTS, PointLight};
 use rustlua_render::post_process::{PostProcess, Tonemap};
 use rustlua_render::render_plan::{RenderPass, RenderPlan};
 use rustlua_render::render_settings::{
@@ -839,6 +839,31 @@ pub struct Renderer {
     tonemap_params: wgpu::Buffer,
 }
 
+/// 光照 uniform 的浮点字数：方向光 12（direction / color_intensity / params）+ 点光 8×8。
+const LIGHT_UNIFORM_WORDS: usize = 12 + 8 * 8;
+/// 对应字节数。`construct.rs` 的绑定尺寸与着色器结构必须同时等于它。
+pub(super) const LIGHT_UNIFORM_BYTES: u64 = (LIGHT_UNIFORM_WORDS * 4) as u64;
+
+/// 打包一帧的光照 uniform。
+///
+/// 布局（与 `mesh3d_pbr.wgsl` 的 `Light` 一一对应）：
+/// `direction` / `color_intensity` / `params = [count, 0, 0, 0]`，
+/// 随后 8 组 `[position.xyz, range]` + `[color.rgb, intensity]`，未用的槽位补零。
+fn light_uniform_bytes(light: Light, points: &[PointLight]) -> Vec<u8> {
+    let (direction, color_intensity) = light.uniform();
+    let mut words = [0.0_f32; LIGHT_UNIFORM_WORDS];
+    words[0..4].copy_from_slice(&direction);
+    words[4..8].copy_from_slice(&color_intensity);
+    words[8] = points.len().min(MAX_POINT_LIGHTS) as f32;
+    for (index, point) in points.iter().take(MAX_POINT_LIGHTS).enumerate() {
+        let (position_range, tint) = point.uniform();
+        let base = 12 + index * 8;
+        words[base..base + 4].copy_from_slice(&position_range);
+        words[base + 4..base + 8].copy_from_slice(&tint);
+    }
+    bytemuck::cast_slice(&words).to_vec()
+}
+
 impl Renderer {
     /// Rewrites the camera, light, and light-space uniform buffers from the
     /// active scene's camera and directional light.
@@ -874,11 +899,10 @@ impl Renderer {
 
     /// 光照与阴影 uniform（与相机矩阵分开写，缺相机时也要更新）。
     fn write_light_uniforms(&mut self, scene: &Scene3d) {
-        let (direction, color_intensity) = scene.light.uniform();
         self.queue.write_buffer(
             &self.light_buffer,
             0,
-            bytemuck::cast_slice(&[direction, color_intensity]),
+            &light_uniform_bytes(scene.light, &scene.point_lights),
         );
         let light_matrix = light_view_projection(scene.light);
         self.queue.write_buffer(

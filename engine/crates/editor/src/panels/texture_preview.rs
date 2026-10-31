@@ -515,7 +515,7 @@ fn settings_text(settings: TextureImportSettings) -> String {
 }
 
 /// 体积读数：预览信息里的字节数按 KiB/MiB 说人话（1024 进制）。
-fn byte_text(bytes: u64) -> String {
+pub(crate) fn byte_text(bytes: u64) -> String {
     if bytes >= 1024 * 1024 {
         format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
     } else if bytes >= 1024 {

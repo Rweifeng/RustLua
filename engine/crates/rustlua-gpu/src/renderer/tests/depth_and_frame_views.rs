@@ -14,6 +14,7 @@ fn shadow_camera_sits_on_the_light_side_of_the_documented_direction() {
         direction: Vec3::new(0.4, -0.8, 0.5),
         color: [1.0, 1.0, 1.0],
         intensity: 1.0,
+        ..Light::default()
     };
     let matrix = light_view_projection(sun);
     let depth = |point: Vec3| -> f32 {

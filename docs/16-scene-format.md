@@ -52,7 +52,8 @@ cargo run -p game --example scene_format_demo --release
   可选 `pose=transform`（姿态改用实体的 `Transform3D`）与 `enabled=false`（见下）
 - `Light`：`direction=x,y,z;color=r,g,b;intensity=<i>`（方向光）。`direction` 是**光传播方向**：
   天空里的太阳自上而下照，因此写作 `direction=0.4,-0.8,0.5`（**y 为负**）；写成 y 为正等于
-  "光往上照"，朝上的表面拿不到漫反射（只剩 0.15 环境光）。详见 [docs/24](24-3d-rendering.md#light)。
+  "光往上照"，朝上的表面拿不到漫反射（只剩 0.15 环境光）。点光源追加 `type=point;position=x,y,z;range=<r>`
+  （最多 8 盏、不投影，详见 [docs/24](24-3d-rendering.md#light)）。
 
 ## 2D 相机与粒子（实体组件，docs/54 §8-①）
 

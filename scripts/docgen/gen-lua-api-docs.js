@@ -275,6 +275,7 @@ const OWNING_BINDING_FILES = [
   'engine/crates/rustlua-gameplay/src/inventory_lua.rs',
   'engine/crates/rustlua-gameplay/src/nav_lua.rs',
   'engine/crates/rustlua-gameplay/src/net_lua.rs',
+  'engine/crates/rustlua-gameplay/src/rollback_lua.rs',
   'engine/crates/rustlua-gameplay/src/save_lua.rs',
   'engine/crates/rustlua-gameplay/src/world_data_lua.rs',
   'engine/crates/rustlua-input/src/lua.rs',

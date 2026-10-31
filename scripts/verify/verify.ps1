@@ -1038,6 +1038,27 @@ try {
             if ($editorBaselineText -notmatch "failed=0") {
                 throw "editor performance baseline report lists failed scenarios"
             }
+            # 上面的检查只证明场景自报的不变量通过，**不约束耗时**。这里把每个场景的 p95 与
+            # `metrics/editor-perf-budgets.json` 的硬上限比较：超预算、报告里出现没有预算的场景、
+            # 预算里的场景从报告消失，三者都判红（新增/删除慢场景不能悄悄绕过门）。
+            # 同机同比仍由趋势库（`trend_db.py check`）负责，两层互补。
+            $editorPerfGate = Join-Path $projectRoot "scripts/verify/check-editor-perf.ps1"
+            $editorPerfBudget = Join-Path $projectRoot "metrics/editor-perf-budgets.json"
+            if (-not (Test-Path -LiteralPath $editorPerfGate)) {
+                throw "editor performance budget gate missing: $editorPerfGate"
+            }
+            $budgetSelfTest = & powershell -NoProfile -ExecutionPolicy Bypass -File $editorPerfGate -SelfTest
+            $budgetSelfExit = $LASTEXITCODE
+            $budgetSelfTest | ForEach-Object { Write-Host $_ }
+            if ($budgetSelfExit -ne 0) {
+                throw "editor performance budget gate self-test failed (exit code $budgetSelfExit)"
+            }
+            $budgetOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File $editorPerfGate -Report $editorBaselinePath -Budget $editorPerfBudget
+            $budgetExit = $LASTEXITCODE
+            $budgetOutput | ForEach-Object { Write-Host $_ }
+            if ($budgetExit -ne 0) {
+                throw "editor performance budget gate failed (exit code $budgetExit); report: $editorBaselinePath"
+            }
         }
         finally {
             Pop-Location
@@ -1935,6 +1956,7 @@ if ($Benchmarks) {
         $animGoldenPath = Join-Path $baselineRoot "wp0-anim-golden.json"
         $materialGoldenPath = Join-Path $baselineRoot "wp0-material-golden.json"
         $lightingGoldenPath = Join-Path $baselineRoot "wp0-lighting-golden.json"
+        $pointLightGoldenPath = Join-Path $baselineRoot "wp0-point-light-golden.json"
         $editorPreviewPath = Join-Path $baselineRoot "wp0-editor-preview-golden.json"
         $gpuParticlesGoldenPath = Join-Path $baselineRoot "wp0-gpu-particles-golden.json"
         $gpuParticles50kPath = Join-Path $baselineRoot "wp0-gpu-particles-50k.json"
@@ -2022,6 +2044,12 @@ if ($Benchmarks) {
         Invoke-Checked cargo @(
             "run", "--quiet", "--release", "-p", "engine", "--example", "wp0_lighting_golden", "--",
             "--output", $lightingGoldenPath
+        )
+        # 多点光源：两盏异色点光 + range 截断，PBR 与默认着色路径各一次。方向光强度为 0，
+        # 所以读回的颜色只可能来自点光——打包偏移、count 字段、数组槽位任何一处错位都会红。
+        Invoke-Checked cargo @(
+            "run", "--quiet", "--release", "-p", "engine", "--example", "wp0_point_light_golden", "--",
+            "--output", $pointLightGoldenPath
         )
         Invoke-Checked cargo @(
             "run", "--quiet", "--release", "-p", "engine", "--example", "wp0_ecs_storage", "--",
@@ -2501,6 +2529,30 @@ if ($Benchmarks) {
         [math]::Abs($shadowBbox[1] - -0.8) -gt 0.35 -or [math]::Abs($shadowBbox[3] - 1.2) -gt 0.35) {
         throw "lighting golden: 阴影世界足迹不对：[$(($shadowBbox) -join ',')]，期望≈(-0.7,-0.8,1.3,1.2)（遮挡物 2×2 + 光照偏移 (0.30,0.20)）"
     }
+    # 多点光源：两盏异色点光分别照亮各自正下方的地面，range 截断后同一点必须变暗；
+    # 默认（非 PBR）着色路径也必须同样上色。四条都断在像素上。
+    $pointLight = Get-Content -LiteralPath $pointLightGoldenPath -Raw | ConvertFrom-Json
+    if ($pointLight.report_version -ne "wp0-point-light-golden-v1") {
+        throw "point light golden report version invalid: $($pointLight.report_version)"
+    }
+    if ($pointLight.luminance.red_lit -le ($pointLight.luminance.red_dark + 15)) {
+        throw "point light golden: 红灯正下方没有变亮（count/偏移/衰减）：$($pointLight.luminance.red_lit) vs $($pointLight.luminance.red_dark)"
+    }
+    if ($pointLight.luminance.green_lit -le ($pointLight.luminance.green_dark + 15)) {
+        throw "point light golden: 绿灯正下方没有变亮（数组第 1 槽没读到）：$($pointLight.luminance.green_lit) vs $($pointLight.luminance.green_dark)"
+    }
+    if ($pointLight.samples.red_lit[0] -le ($pointLight.samples.red_lit[1] + 20)) {
+        throw "point light golden: 红灯位置没有偏红：[$($pointLight.samples.red_lit -join ',')]"
+    }
+    if ($pointLight.samples.green_lit[1] -le ($pointLight.samples.green_lit[0] + 20)) {
+        throw "point light golden: 绿灯位置没有偏绿：[$($pointLight.samples.green_lit -join ',')]"
+    }
+    if ($pointLight.samples.legacy_red_lit[0] -le ($pointLight.samples.legacy_red_lit[1] + 20)) {
+        throw "point light golden: 默认着色路径（mesh3d.wgsl）没吃到点光：[$($pointLight.samples.legacy_red_lit -join ',')]"
+    }
+    Write-Host ("point_light_golden_ok red={0} green={1} dark={2} legacy_red={3}" -f `
+        $pointLight.luminance.red_lit, $pointLight.luminance.green_lit,
+        $pointLight.luminance.red_dark, $pointLight.samples.legacy_red_lit) -ForegroundColor Green
     # docs/54 §8-⑨：编辑器路径。文档 → 撤销/重做 → 空间语义 → 预览一帧，四段都要有牙：
     # 世界保持的编辑、撤销回原样、重做回同一结果、预览真的画出了像素、两次预览逐字节相同。
     $editorPreview = Get-Content -LiteralPath $editorPreviewPath -Raw | ConvertFrom-Json

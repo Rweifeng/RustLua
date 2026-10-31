@@ -114,9 +114,19 @@ const BUDGET: &[(&str, &[&str])] = &[
     ),
     // `audio_lua`：audio 绑定的组合根接线（设置端口 + 注册表）。端口要用 `infra::vfs` 读
     // `settings.toml`（wasm 无文件系统），注册表与能力单元来自 `lua-api`。
+    // `net`：`net_lua` 的 UDP 传输与 `rollback_lua` 的预测回滚账本——两者都是纯网络层
+    // （std + thiserror），不会把任何渲染/场景依赖带进玩法域。
     (
         "rustlua-gameplay",
-        &["audio", "ecs", "infra", "input", "lua-api", "navigation"],
+        &[
+            "audio",
+            "ecs",
+            "infra",
+            "input",
+            "lua-api",
+            "navigation",
+            "net",
+        ],
     ),
     // ── 聚合层：预算只减不增 ────────────────────────────────────────────────
     // `rustlua-scripting`：P1 已削掉 assets（`AssetId` 下沉到 infra::ids）、audio 与 input

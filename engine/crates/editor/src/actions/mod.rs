@@ -169,6 +169,7 @@ pub(crate) enum PendingDecision {
 /// P1-3b：断链审计（扫全工程引用字段）与「同名唯一命中」一键改指。
 mod broken_refs;
 mod components;
+mod dependency_ops;
 mod document_gate;
 mod document_io;
 mod entities;
@@ -188,10 +189,12 @@ mod transaction;
 pub(crate) mod undo_ledger;
 
 // 跨模块命令入口：其余模块一律经 `crate::actions::` 引用这些名字。
+pub(crate) use dependency_ops::ResourceDependencyReport;
 #[cfg(test)]
 pub(crate) use layout_ops::{distribute_targets, sorted_sprite_order_updates};
 pub(crate) use prefab_rebuild::{
     apply_prefab_instance_metadata, build_prefab_from_instance_root, collect_prefab_rebuild_state,
+    stamp_envelope_ids,
 };
 // `EditorApp` 的字段要按路径写出这个类型（阶段本身只在 shell 里被读写）。
 pub(crate) use prefab_stage::PrefabStage;

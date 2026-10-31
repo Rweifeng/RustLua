@@ -85,6 +85,12 @@ pub enum EditorCommand {
         entity: SceneEntityId,
         component: String,
     },
+    /// 调整组件在 Inspector 里的展示顺序：`delta` 为 -1（上移）/ +1（下移），一次提交 = 一条 Undo。
+    MoveComponent {
+        entity: SceneEntityId,
+        component: String,
+        delta: i32,
+    },
     /// 用 Inspector 当前的 Collider3d 字段缓冲为实体写入 Collider3d 组件。
     AddCollider3d {
         entity: SceneEntityId,
@@ -466,6 +472,7 @@ impl WorkspaceController {
             | EditorCommand::SelectEntity { .. }
             | EditorCommand::AddComponent { .. }
             | EditorCommand::RemoveComponent { .. }
+            | EditorCommand::MoveComponent { .. }
             | EditorCommand::AddCollider3d { .. }
             | EditorCommand::RemoveCollider3d { .. }
             | EditorCommand::RenameSelection { .. }

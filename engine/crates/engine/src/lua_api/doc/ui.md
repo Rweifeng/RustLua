@@ -19,7 +19,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.circle(id: String, cx: f32, cy: f32, radius: f32, r: f32, g: f32, b: f32, a: f32)`
 
-> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:137`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:147`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -30,7 +30,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.clear(id: String)`
 
-> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:462`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:479`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -41,7 +41,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.drag_active()`
 
-> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:512`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:533`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -52,7 +52,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.drag_begin(id: String, index: i64)`
 
-> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:475`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:496`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -63,7 +63,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.drag_cancel()`
 
-> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:526`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:547`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -74,7 +74,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.drag_end(id: String, index: i64)`
 
-> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:493`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:514`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -173,7 +173,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.grid(id: String, x: f32, y: f32, columns: i64, rows: i64, cell_size: f32, gap: f32)`
 
-> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:233`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:250`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -184,7 +184,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.grid_cell(id: String, index: i64, texture: Option<String>, r: f32, g: f32, b: f32, a: f32)`
 
-> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:280`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:297`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -195,7 +195,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.grid_clear(id: String)`
 
-> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:312`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:329`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -206,7 +206,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.grid_hit(id: String, x: f32, y: f32)`
 
-> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:327`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:344`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -228,18 +228,39 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.image(id: String, x: f32, y: f32, width: f32, height: f32, texture: String, r: f32, g: f32, b: f32, slice: Option<String>)`
 
-> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:162`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:172`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
-TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
+按 id 新增/覆盖一张屏幕空间的动态贴图，用来画会随状态变化的图标、条、框与卡面。同一 id 重复调用
+改的是同一张图；不同图片之间按 id 字典序绘制，整层动态图片画在 `ui.panel` 之上。
 
 - 参数：
-- 返回：
-- 失败：
+  - `id`：图片 id，全局唯一。
+  - `x, y, width, height`：左上角与尺寸，设计像素，必须有限且为正。
+  - `texture`：工程内贴图路径，如 `assets/textures/ui/top_bar.png`。
+  - `r, g, b`：0–1 的乘法着色（白色 `1, 1, 1` 保持原色）。
+  - `slice`：可选九宫格边距字符串，两种写法：
+    - 4 个数 `"l,r,t,b"`：纹理像素边距，同时用作目标边框（旧口径，适合贴图尺寸与显示尺寸
+      接近的像素风皮肤）。
+    - 8 个数 `"l,r,t,b,dl,dr,dt,db"`：前 4 个是纹理像素（切在贴图边框内沿），后 4 个是目标
+      设计像素（边框在屏上的宽度）。贴图远大于显示尺寸时必须用这种写法——例如 1024×432 的
+      皮肤只显示 34–58 px 高，源边距直接当目标边距会把整条吃成金边。
+    - 目标尺寸必须大于目标边框之和（`width > dl+dr`、`height > dt+db`），否则中间格被压成 0，
+      只剩两条边。传 `nil`、空串或非法字符串则退化为普通拉伸四边形，不报错。
+- 返回：无。
+- 失败：`x/y/width/height` 非有限或非正时报 Lua 错误
+  `ui.image rect must be finite and positive`。
 - 示例：
+  ```lua
+  -- 顶部状态条：1024×432 皮肤，贴图边框 140/140/120/120，屏上边框 95/95/16/16
+  ui.image("top_bar", 12, 10, 696, 58, "assets/textures/ui/top_bar.png", 1, 1, 1,
+           "140,140,120,120,95,95,16,16")
+  -- 卡面按原比例普通拉伸
+  ui.image("card0", 16, 1000, 128, 248, "assets/textures/cards/knight.png", 1, 1, 1)
+  ```
 
 ## `ui.image_get(id: String)`
 
-> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:204`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:221`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -261,7 +282,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.modal(id: String, x: f32, y: f32, width: f32, height: f32, title: String)`
 
-> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:399`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:416`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -272,7 +293,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.modal_hide(id: String)`
 
-> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:448`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:465`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -283,7 +304,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.modal_show(id: String)`
 
-> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:434`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:451`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -313,7 +334,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.panel(id: String, x: f32, y: f32, width: f32, height: f32, r: f32, g: f32, b: f32, a: f32)`
 
-> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:98`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:108`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -324,7 +345,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.panel_get(id: String)`
 
-> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:74`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:84`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -587,7 +608,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.tooltip(id: String, x: f32, y: f32, text: String, width: f32, height: f32)`
 
-> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:350`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:367`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 
@@ -598,7 +619,7 @@ TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它�
 
 ## `ui.tooltip_hide(id: String)`
 
-> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:385`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+> 绑定：`engine/crates/rustlua-ui/src/ui_panel_lua.rs:402`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
 
 TODO(文档桩)：一句话说明这个函数做什么、什么时候该用它。
 

@@ -186,20 +186,9 @@ impl SpawnSpec {
                 let instance = prefab
                     .instantiate(&mut scene.scene, parent, &overrides)
                     .map_err(|error| error.to_string())?;
-                for (source_id, entity_id) in &instance.source_to_instance {
-                    if let Some(entity) = scene.scene.entities.get_mut(entity_id) {
-                        entity
-                            .metadata
-                            .insert("prefab.source".to_owned(), path.to_owned());
-                        entity
-                            .metadata
-                            .insert("prefab.source_id".to_owned(), source_id.0.to_string());
-                        entity.metadata.insert(
-                            "prefab.root".to_owned(),
-                            (entity.id == instance.instance_root).to_string(),
-                        );
-                    }
-                }
+                // 盖章只有一处实现（`actions::prefab_rebuild`）：这里原来自己抄了一遍
+                // `prefab.source`/`source_id`/`root`，嵌套节点会被它把内层标记洗成外层来源。
+                crate::actions::apply_prefab_instance_metadata(&mut scene.scene, path, &instance);
                 scene.mark_dirty();
                 Ok(instance.instance_root)
             }

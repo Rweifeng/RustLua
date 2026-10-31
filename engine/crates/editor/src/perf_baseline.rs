@@ -1794,6 +1794,108 @@ pub(crate) fn run_baseline() -> BaselineReport {
         ));
     }
 
+    // 无头启动：项目校验 + `EditorApp` 构造 + 布局加载。窗口、GPU 设备与首帧不在本场景内
+    // （那几段由 GUI smoke 与 `--gui-evidence` 负责），这里钉的是每次启动都绕不开的那部分。
+    {
+        let root = temp_root("startup");
+        fs::write(
+            root.join("project.toml"),
+            "[project]\nname = \"editor-baseline\"\n",
+        )
+        .expect("startup fixture project.toml must be writable");
+        fs::create_dir_all(root.join("scripts")).expect("startup fixture scripts dir");
+        let iterations = 5usize;
+        let mut samples = Vec::with_capacity(iterations);
+        let mut ok = true;
+        for _ in 0..iterations {
+            let started = Instant::now();
+            let project = editor::open_project(&root).expect("startup fixture project must open");
+            let mut app = EditorApp::new(project, None, LogSink::new(512));
+            app.load_layout_for_project();
+            samples.push(started.elapsed().as_secs_f32() * 1000.0);
+            ok &= app.document.current_scene.is_none() && app.status.contains("尚未创建场景");
+            std::hint::black_box(&app);
+        }
+        let _ = fs::remove_dir_all(&root);
+        scenarios.push(summarize(
+            "startup_headless_project_load",
+            &samples,
+            vec![
+                "scope=headless：open_project（project.toml + scripts/ 校验）+ EditorApp 构造 + 布局加载"
+                    .to_owned(),
+                "excludes=window/GPU/first_frame（真窗口启动不在本场景）".to_owned(),
+                format!("iterations={iterations} projects_without_scene={}", if ok { iterations } else { 0 }),
+                "判据：空工程打开后不得凭空出现场景，状态栏必须是「尚未创建场景」".to_owned(),
+            ],
+            ok,
+        ));
+    }
+
+    // Play/Scene 每帧重绘的 CPU 侧（渲染器之前）：`vertices` + `scene_3d` 提取。
+    // Play 期间这两个**每帧都跑**（镜像姿态逐帧在变，视图缓存必然失效），是编辑器里唯一
+    // 与实体数成正比的逐帧成本；GPU 提交不在本场景（`--perf-baseline` 全程无头）。
+    {
+        use engine::host::RuntimeScene;
+        use rustlua_camera::camera::{Camera3D, Viewport};
+        use rustlua_math::math3d::Vec3;
+
+        const WIDTH: u32 = 1280;
+        const HEIGHT: u32 = 720;
+        let fixture = build_scene_fixture(FixtureSize::Medium.spec());
+        let entity_count = fixture.document.scene.entities.len();
+        let mut scene = fixture.document.scene.clone();
+        for entity in scene.entities.values_mut() {
+            entity.components.insert(
+                "MeshRenderer".to_owned(),
+                "mesh=assets/models/baseline.glb".to_owned(),
+            );
+        }
+        let root = temp_root("play-redraw");
+        let mut runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), scene)
+            .expect("play redraw fixture runtime");
+        let viewport = Viewport::new(WIDTH as f32, HEIGHT as f32).expect("baseline viewport");
+        let mut camera = Camera3D {
+            position: Vec3::new(0.0, 4.0, 12.0),
+            target: Vec3::ZERO,
+            up: Vec3::Y,
+            fov_y: std::f32::consts::FRAC_PI_3,
+            near: 0.1,
+            far: 500.0,
+            pose_from_transform: false,
+            enabled: true,
+        };
+        let iterations = 20usize;
+        let mut samples = Vec::with_capacity(iterations);
+        let mut drawables = 0usize;
+        for index in 0..iterations {
+            // 相机每帧挪一点：LOD 距离档与可见遮罩判定都要跟着重算，否则测的是缓存帧。
+            camera.position.x = index as f32 * 0.01;
+            let started = Instant::now();
+            let _ = runtime
+                .vertices(WIDTH, HEIGHT)
+                .expect("baseline 2D vertices must build");
+            let scene3d = runtime
+                .scene_3d_with_camera(viewport, Some(camera))
+                .expect("baseline 3D scene must extract");
+            drawables = scene3d.drawables.len();
+            samples.push(started.elapsed().as_secs_f32() * 1000.0);
+        }
+        let _ = fs::remove_dir_all(&root);
+        scenarios.push(summarize(
+            "play_scene_redraw_frame_1k",
+            &samples,
+            vec![
+                format!("entities={entity_count} drawables={drawables} viewport={WIDTH}x{HEIGHT}"),
+                "scope=CPU 提取（vertices + scene_3d），不含 GPU 提交/回读".to_owned(),
+                "Play 每帧都走这条（镜像姿态逐帧变化 ⇒ Scene 视图缓存必然失效）".to_owned(),
+                format!("iterations={iterations}"),
+            ],
+            // 提取必须覆盖全部实体：漏了说明可见性遮罩或组件映射在夹具上不成立，
+            // 那样的读数没有意义，必须判红而不是报一个漂亮的毫秒数。
+            drawables == entity_count,
+        ));
+    }
+
     BaselineReport { scenarios }
 }
 

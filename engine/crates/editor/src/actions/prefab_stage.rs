@@ -4,7 +4,7 @@
 //! 它自己的撤销栈）整份暂存在 [`PrefabStage`] 里；退出时原样放回，并在**一条 Undo** 里
 //! 用新源重建场景中的全部同源实例。
 //!
-//! 三条口径决定了这里为什么长成这样：
+//! 四条口径决定了这里为什么长成这样：
 //!
 //! 1. **「打开源预制体」早就有了，但它会替换当前文档**。于是想临时改一下预制体，就得先
 //!    回答「场景要不要保存」这个问题（E06 脏文档闸门），改完还得自己找到那份场景重新打开。
@@ -21,13 +21,18 @@
 //! 3. **退出必须原子**。先用新源把每个实例的重建**预演**一遍，全部可行才落盘并返回；
 //!    否则会出现「预制体文件已经改了、场景实例还没跟上」的半状态（在阶段里删掉某个实例
 //!    仍引用的子节点，正是这条路径）。预演失败时留在阶段里，用户改得回来。
+//! 4. **嵌套节点不是这张源的直接实例**。外层文件里的内层实例是一份"取值快照 + 内层标记"，
+//!    按内层新源重建它会把 `prefab.outer_id` 洗掉，外层下次写回就对不上号。所以
+//!    [`prefab_root_ids`] 只认直接实例：改内层源同步的是场景里直接实例化的那些，嵌在外层里的
+//!    那一份仍由外层自己的写回路径负责（进入阶段时状态栏把这点说清楚）。
 
 use super::prefab_rebuild::{
     PrefabWriteRequest, collect_prefab_rebuild_state, collect_prefab_rebuild_state_with_baseline,
-    prefab_root_ids,
+    enclosing_prefab_source, prefab_root_ids,
 };
 use super::*;
 use crate::SceneViewMode;
+use editor::prefab_graph;
 
 /// 一次 in-context 编辑的暂存态：要回的那份场景，以及回到它身边时得一并还原的东西。
 ///
@@ -85,8 +90,8 @@ impl EditorApp {
     /// 进入 in-context：把当前文档换成 `entity` 的源预制体，场景文档整份暂存。
     ///
     /// 拒绝路径按"最具体"的顺序给原因（播放中 → 已在阶段里 → 当前文档本身就是预制体 →
-    /// 不是根实例 → 源加载失败 → 嵌套 → 退出时会失败的结构），每条都能被断言，
-    /// 而不是只在状态栏留一句"没成功"。
+    /// 不是根实例 → 源加载失败 → 嵌套引用成环或超深 → 退出时会失败的结构），每条都能被断言，
+    /// 而不是只在状态栏留一句"没成功"。**带嵌套引用本身不是拒绝理由**（见下面的说明）。
     pub(crate) fn enter_prefab_stage(&mut self, entity: SceneEntityId) -> CommandResult {
         if self.is_playing() {
             self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();
@@ -122,12 +127,36 @@ impl EditorApp {
             }
         };
         let nested = prefab.nested_sources();
+        // 进入阶段编辑的是**这份文件本身**，而嵌套节点在文件里存的就是它自己的内层标记
+        // 加一份取值快照（不展开内层文件），所以阶段里的增删改与"平"预制体走同一条路：
+        // 退出时按同一份新源重建全部实例即可。这里只挡两类真会坏数据的情况——
+        // **环**（A 嵌 B、B 又嵌回 A：两份文件互相引用，写回时谁也不是事实源）
+        // 与**超深链**（扫描器到深度上限就停，剩下的层级没人验证过）。
         if !nested.is_empty() {
-            self.status = format!(
-                "源预制体里还引用了别的预制体（{}），in-context 编辑暂不支持嵌套预制体",
-                nested.join("、")
-            );
-            return CommandResult::Rejected(self.status.clone());
+            let project_root = strip_verbatim_prefix(&self.project.root).clone();
+            let links = |name: &str| {
+                Prefab::load(project_root.join(name))
+                    .map(|prefab| prefab.nested_sources())
+                    .unwrap_or_default()
+            };
+            for source in &nested {
+                let report = prefab_graph::scan_prefab_nesting(source, links);
+                if let Some(cycle) = report.cycles.first() {
+                    self.status = format!(
+                        "预制体引用形成环（{}），嵌套编辑无法确定谁是事实源，请先解开：{source}",
+                        cycle.join(" → ")
+                    );
+                    return CommandResult::Rejected(self.status.clone());
+                }
+                if !report.truncated_at.is_empty() {
+                    self.status = format!(
+                        "嵌套链超过 {} 层（{}），请先减少层级再编辑：{source}",
+                        prefab_graph::MAX_NESTING_DEPTH,
+                        report.truncated_at.join("、")
+                    );
+                    return CommandResult::Rejected(self.status.clone());
+                }
+            }
         }
         // 进入前**预演**一次重建：子树里混进非同源节点（手工往实例下挂过别的预制体）时
         // 退出必然失败。与其让人进去再出来时报错，不如现在就说清楚。
@@ -142,6 +171,9 @@ impl EditorApp {
             return CommandResult::Rejected(self.status.clone());
         }
         let instances = prefab_root_ids(&scene.scene, &prefab_source).len();
+        // 从**嵌套节点**进入时（点的是外层快照里那一支），改动只同步直接实例；那支的取值
+        // 由外层文件持有。把这一点在进入时就写进状态栏，比让人退出后发现"场景没变"更好懂。
+        let nested_owner = enclosing_prefab_source(&scene.scene, entity);
         let previous_view_mode = self.scene_view_mode;
 
         // E07：若正处于活动事务（拖动还没提交），先把这一步收进场景历史成为一条，
@@ -191,8 +223,17 @@ impl EditorApp {
         self.selection
             .set_single(stage_root, editor::SelectionSource::Command);
         self.sync_inspector(stage_root);
-        self.status =
-            format!("正在编辑预制体：{prefab_source}（返回时会同步场景里的 {instances} 个实例）");
+        self.status = match &nested_owner {
+            Some(owner) => format!(
+                "正在编辑嵌套的内层预制体：{prefab_source}（同步场景里 {instances} 个直接实例；\
+                 嵌在 {owner} 里的那一份由外层文件持有，返回时不自动更新）"
+            ),
+            None => {
+                format!(
+                    "正在编辑预制体：{prefab_source}（返回时会同步场景里的 {instances} 个实例）"
+                )
+            }
+        };
         CommandResult::Applied
     }
 

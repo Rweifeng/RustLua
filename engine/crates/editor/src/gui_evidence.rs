@@ -30,6 +30,7 @@
 use crate::EditorApp;
 use eframe::egui;
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -37,6 +38,106 @@ use std::{
 
 /// 每一步开始时的"收敛帧"数：DPI 与窗口尺寸都要重发几帧才会同时落地（见 `tick`）。
 const SETTLE_FRAMES: usize = 6;
+
+/// soak 每个阶段（Play / 非 Play）最多留多少帧读数。
+///
+/// 8 小时 × 60fps 是 170 万个 f32；超限后**隔一个丢一个**（分布形状不变，代价是样本数减半），
+/// 于是分位数仍然覆盖整段会话，而不是只剩最后 N 帧。
+const SOAK_FRAME_CAP: usize = 20_000;
+
+/// 追加一个帧读数，并在超过上限时丢弃一半（保留每隔一个）。
+fn push_frame_sample(samples: &mut Vec<f32>, value: f32) {
+    samples.push(value);
+    if samples.len() <= SOAK_FRAME_CAP {
+        return;
+    }
+    let mut keep = true;
+    samples.retain(|_| {
+        keep = !keep;
+        keep
+    });
+}
+
+/// soak 的 Play / Stop / 空闲三段节奏，本帧要做的动作（纯函数，便于单测）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlayCycleStep {
+    /// 正在 Play，间隔未到。
+    Running,
+    /// Play 间隔到点：按 Play 边界做差，再 Stop。
+    StopPlay,
+    /// 空闲间隔未到：什么都不做，只收非 Play 帧的读数。
+    HoldIdle,
+    /// 该进 Play 了。
+    StartPlay,
+}
+
+/// 决定本帧动作。`idle_seconds = 0` 时空闲段只有一帧（下一帧就到点），节奏与引入
+/// 空闲段之前的归档一致——Play 占空比不变，只是 idle 那一行取不到样本。
+fn play_cycle_step(
+    playing_since: Option<Instant>,
+    idle_since: Option<Instant>,
+    now: Instant,
+    play_seconds: Duration,
+    idle_seconds: Duration,
+) -> PlayCycleStep {
+    if let Some(since) = playing_since {
+        return if now.duration_since(since) >= play_seconds {
+            PlayCycleStep::StopPlay
+        } else {
+            PlayCycleStep::Running
+        };
+    }
+    match idle_since {
+        Some(since) if now.duration_since(since) < idle_seconds => PlayCycleStep::HoldIdle,
+        _ => PlayCycleStep::StartPlay,
+    }
+}
+
+/// 面板累计读数（`total_ms` 与**真实记录条数**）。
+///
+/// 只在 Play 边界上各取一次（`report()` 会克隆 counters/gauges/panels，逐帧调它就是在改被测对象）。
+/// 取 `records` 而不是 `samples`：后者是保留窗口的占用量，在容量（240）处封顶，做差得到的是
+/// "占用量变化"而不是"这一段做了多少次"，除出来的每帧平均值能差好几倍。
+fn panel_totals(app: &EditorApp) -> BTreeMap<String, (f64, u64)> {
+    app.profiler
+        .report()
+        .panels
+        .into_iter()
+        .map(|panel| (panel.name, (panel.total_ms, panel.records)))
+        .collect()
+}
+
+/// 把一段 Play 的差量（`end - start`）并进累计表。
+///
+/// 读数倒退说明用户在 Play 中途按了性能面板的「清空采样」（`EditorProfiler::clear_samples`
+/// 把 `total_ms`、样本环与记录条数一起归零）。这时**从 0 起算**才是这一段真实花掉的时间；
+/// 直接做差会得到负值，写进报告就是假数据。
+fn accumulate_panel_totals(
+    totals: &mut BTreeMap<String, (f64, u64)>,
+    start: &BTreeMap<String, (f64, u64)>,
+    end: &BTreeMap<String, (f64, u64)>,
+) {
+    for (name, (total_ms, samples)) in end {
+        let (base_ms, base_samples) = start.get(name).copied().unwrap_or((0.0, 0));
+        let (total_ms, samples) = (*total_ms, *samples);
+        let entry = totals.entry(name.clone()).or_insert((0.0, 0));
+        entry.0 += if total_ms < base_ms {
+            total_ms
+        } else {
+            total_ms - base_ms
+        };
+        entry.1 += if samples < base_samples {
+            samples
+        } else {
+            samples - base_samples
+        };
+    }
+}
+
+/// 帧读数的分位数摘要（空桶返回 `None`，报告里显式写"没取到样本"而不是 0）。
+fn frame_summary(samples: &[f32]) -> Option<editor::Percentiles> {
+    editor::percentiles_ms(samples)
+}
 
 /// 截图那一刻的**逻辑尺寸**（点）。
 fn measured_screen_pts(context: &egui::Context) -> (f32, f32) {
@@ -713,11 +814,23 @@ pub(crate) struct GuiSoak {
     out_dir: PathBuf,
     duration: Duration,
     play_seconds: Duration,
+    /// 每段 Stop 之后停多久再进下一次 Play（`0` = 与旧归档同构，idle 那一行取不到样本）。
+    idle_seconds: Duration,
     step_seconds: Duration,
     started: Instant,
     last_sample: Instant,
     playing_since: Option<Instant>,
+    /// 本次 Stop 的时刻（空闲间隔用它算）。
+    idle_since: Option<Instant>,
     samples: Vec<SoakSample>,
+    /// Play 阶段的逐帧耗时（读的是上一帧，见 `EditorProfiler::last_frame_ms`）。
+    play_frame_ms: Vec<f32>,
+    /// 非 Play 阶段（编辑/空闲）的逐帧耗时——**对照用**：Play 的毫秒里本来就有多少属于编辑器帧。
+    idle_frame_ms: Vec<f32>,
+    /// 进入 Play 时的面板累计读数（停止时做差，才拿得到"Play 期间"各面板花了多少）。
+    panels_at_play_start: Option<BTreeMap<String, (f64, u64)>>,
+    /// 历次 Play 阶段的面板耗时合计（`total_ms`）与真实记录条数。
+    play_panel_totals: BTreeMap<String, (f64, u64)>,
     frames: u64,
     play_cycles: u64,
     finished: bool,
@@ -769,6 +882,13 @@ impl GuiSoak {
             .and_then(|raw| raw.parse::<u64>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(2);
+        // 空闲段默认 0 秒：Stop 之后下一帧就重新 Play，与 docs/55 阶段 0 那两档归档的
+        // Play 占空比逐字一致。要"Play vs 非 Play"的对照读数才显式设这一档。
+        let idle_seconds = std::env::var("RUSTLUA_EDITOR_SOAK_IDLE_SECONDS")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(0);
         let step_seconds = std::env::var("RUSTLUA_EDITOR_SOAK_STEP_SECONDS")
             .ok()
             .and_then(|raw| raw.parse::<u64>().ok())
@@ -806,11 +926,17 @@ impl GuiSoak {
             out_dir,
             duration: Duration::from_secs(seconds),
             play_seconds: Duration::from_secs(play_seconds),
+            idle_seconds: Duration::from_secs(idle_seconds),
             step_seconds: Duration::from_secs(step_seconds),
             started: Instant::now(),
             last_sample: Instant::now(),
             playing_since: None,
+            idle_since: None,
             samples: Vec::new(),
+            play_frame_ms: Vec::new(),
+            idle_frame_ms: Vec::new(),
+            panels_at_play_start: None,
+            play_panel_totals: BTreeMap::new(),
             frames: 0,
             play_cycles: 0,
             finished: false,
@@ -872,20 +998,52 @@ impl GuiSoak {
             self.prepared = true;
             self.last_sample = now;
         }
-        // Play / Stop 循环。
-        match self.playing_since {
-            Some(since) if now.duration_since(since) >= self.play_seconds => {
-                app.stop();
-                self.playing_since = None;
-                self.play_cycles += 1;
-            }
-            None => {
+        // Play / Stop / 空闲三段循环。
+        let transition = match play_cycle_step(
+            self.playing_since,
+            self.idle_since,
+            now,
+            self.play_seconds,
+            self.idle_seconds,
+        ) {
+            PlayCycleStep::Running | PlayCycleStep::HoldIdle => false,
+            PlayCycleStep::StartPlay => {
                 app.play();
                 if app.is_playing() {
                     self.playing_since = Some(now);
+                    self.idle_since = None;
+                    self.panels_at_play_start = Some(panel_totals(app));
+                    true
+                } else {
+                    // Play 起不来（例如坏场景）：下一帧照旧再试，节奏与引入空闲段之前一致。
+                    false
                 }
             }
-            Some(_) => {}
+            PlayCycleStep::StopPlay => {
+                // 先按"进 Play 时的读数"做差，把这一段 Play 的面板耗时并进累计表，再 Stop
+                // （`app.stop()` 自己会收尾若干帧，放在后面会把那部分算到 Play 头上）。
+                let end = panel_totals(app);
+                if let Some(start) = self.panels_at_play_start.take() {
+                    accumulate_panel_totals(&mut self.play_panel_totals, &start, &end);
+                }
+                app.stop();
+                self.playing_since = None;
+                self.idle_since = Some(now);
+                self.play_cycles += 1;
+                true
+            }
+        };
+        // 逐帧耗时按阶段归桶（读的是上一帧：本帧的 `end_frame` 还没跑）。
+        // Play 与非 Play 必须分开——混在一起的 p95 分不清"Play 慢"还是"编辑器本来就慢"。
+        // 切换帧跳过：那一帧的读数属于**上一个**阶段，塞进新阶段就是串味的样本
+        // （`idle_seconds=0` 时每个 idle 样本都是这种，整行会成假数据）。
+        if !transition {
+            let frame_ms = app.profiler.last_frame_ms();
+            if app.is_playing() {
+                push_frame_sample(&mut self.play_frame_ms, frame_ms);
+            } else {
+                push_frame_sample(&mut self.idle_frame_ms, frame_ms);
+            }
         }
         self.run_churn_round(app, now);
         // 采样：内存 + 会话级计数（历史深度、日志行数、实体数）。
@@ -1035,14 +1193,18 @@ impl GuiSoak {
         let mut text = String::new();
         text.push_str("=== RustLua editor soak (docs/55 阶段 0 / §3.2 长会话) ===\n");
         text.push_str(&format!(
-            "profile={} os={} requested_seconds={} samples={} frames={} play_cycles={} complete={}\n\n",
+            "profile={} os={} requested_seconds={} samples={} frames={} play_cycles={} complete={}\n\
+             cadence: play_seconds={} idle_seconds={} step_seconds={}\n\n",
             if cfg!(debug_assertions) { "debug" } else { "release" },
             std::env::consts::OS,
             self.duration.as_secs(),
             self.samples.len(),
             self.frames,
             self.play_cycles,
-            complete
+            complete,
+            self.play_seconds.as_secs(),
+            self.idle_seconds.as_secs(),
+            self.step_seconds.as_secs()
         ));
         if let Some(load) = &self.churn {
             text.push_str(&format!(
@@ -1127,6 +1289,57 @@ impl GuiSoak {
                 text.push_str(&format!("  - {note}\n"));
             }
         }
+        // 帧耗时按阶段分开报：`profile.to_text()` 里的帧分位数是**整段会话**的，
+        // Play 与编辑混在一起，读不出"Play 到底多花了多少"。
+        text.push_str(
+            "\nframe_ms（逐帧读数按阶段归桶；idle 是 Play 之外的空闲/编辑帧，用作对照）\n\
+             phase\tsamples\tp50_ms\tp95_ms\tp99_ms\tmax_ms\n",
+        );
+        for (label, samples) in [("play", &self.play_frame_ms), ("idle", &self.idle_frame_ms)] {
+            match frame_summary(samples) {
+                Some(percentiles) => text.push_str(&format!(
+                    "{label}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\n",
+                    samples.len(),
+                    percentiles.p50,
+                    percentiles.p95,
+                    percentiles.p99,
+                    percentiles.max
+                )),
+                None => text.push_str(&format!("{label}\t0\t-\t-\t-\t-\n")),
+            }
+        }
+        text.push_str(
+            "note: 帧读数的 p95 是**近 20000 帧**窗口的分位数（超限隔帧抽样），不是全期均值；\n\
+             note: idle 行取不到样本 = 没设 `RUSTLUA_EDITOR_SOAK_IDLE_SECONDS`（Stop 之后下一帧就 Play）。\n\
+             \x20     切换帧的读数属于上一个阶段，已跳过，所以那种档下 idle 只能空着。\n",
+        );
+        text.push_str(
+            "\nplay_panel_totals（Play 边界上做差得到的该阶段面板耗时；按 total_ms 降序，最多 10 条）\n\
+             panel\ttotal_ms\trecords\tavg_ms\n",
+        );
+        let mut play_panels: Vec<_> = self
+            .play_panel_totals
+            .iter()
+            .map(|(name, (total_ms, records))| (name.clone(), *total_ms, *records))
+            .collect();
+        play_panels.sort_by(|a, b| b.1.total_cmp(&a.1));
+        if play_panels.is_empty() {
+            text.push_str("（还没跑完一个 Play 阶段）\n");
+        }
+        for (name, total_ms, records) in play_panels.iter().take(10) {
+            text.push_str(&format!(
+                "{name}\t{total_ms:.1}\t{records}\t{}\n",
+                if *records == 0 {
+                    "-".to_owned()
+                } else {
+                    format!("{:.2}", total_ms / *records as f64)
+                }
+            ));
+        }
+        text.push_str(
+            "note: records 是该阶段面板**真实绘制次数**（不是保留窗口占用量，后者在 240 处封顶），\n\
+             \x20     avg_ms = total_ms / records = 每次绘制的均值。\n",
+        );
         text.push_str(&profile.to_text());
         text.push_str(&format!(
             "\nresult={}\n",
@@ -1179,6 +1392,28 @@ impl GuiSoak {
             "head_mean_mib": head,
             "tail_mean_mib": tail,
             "growth_mib": growth,
+            "frame_ms": {
+                "play": frame_summary(&self.play_frame_ms).map(|percentiles| serde_json::json!({
+                    "samples": self.play_frame_ms.len(),
+                    "p50_ms": percentiles.p50,
+                    "p95_ms": percentiles.p95,
+                    "p99_ms": percentiles.p99,
+                    "max_ms": percentiles.max,
+                })),
+                "idle": frame_summary(&self.idle_frame_ms).map(|percentiles| serde_json::json!({
+                    "samples": self.idle_frame_ms.len(),
+                    "p50_ms": percentiles.p50,
+                    "p95_ms": percentiles.p95,
+                    "p99_ms": percentiles.p99,
+                    "max_ms": percentiles.max,
+                })),
+            },
+            "play_panel_totals": play_panels.iter().map(|(name, total_ms, records)| serde_json::json!({
+                "panel": name,
+                "total_ms": total_ms,
+                "records": records,
+                "avg_ms": if *records == 0 { None } else { Some(total_ms / *records as f64) },
+            })).collect::<Vec<_>>(),
             "failed": self.failed,
             "samples": samples,
         }))
@@ -1451,6 +1686,144 @@ mod tests {
     }
 
     #[test]
+    fn frame_samples_stay_bounded_and_keep_the_newest() {
+        let mut samples = Vec::new();
+        for index in 0..SOAK_FRAME_CAP {
+            push_frame_sample(&mut samples, index as f32);
+        }
+        assert_eq!(samples.len(), SOAK_FRAME_CAP, "未超限时一个都不丢");
+        assert_eq!(samples.first().copied(), Some(0.0));
+
+        // 第 CAP+1 个：隔一个丢一个，长度减半（分布形状不变），而不是只留最后 N 帧。
+        push_frame_sample(&mut samples, SOAK_FRAME_CAP as f32);
+        assert_eq!(samples.len(), SOAK_FRAME_CAP / 2);
+        assert_eq!(samples.first().copied(), Some(1.0), "会话开头仍在窗口里");
+
+        let last = SOAK_FRAME_CAP * 3;
+        let mut max_len = samples.len();
+        for index in (SOAK_FRAME_CAP + 1)..last {
+            push_frame_sample(&mut samples, index as f32);
+            max_len = max_len.max(samples.len());
+        }
+        assert!(
+            max_len <= SOAK_FRAME_CAP + 1,
+            "必须有界，实际峰值 {max_len}"
+        );
+        assert!(samples.len() >= SOAK_FRAME_CAP / 2, "窗口不会缩成几帧");
+        assert_eq!(
+            samples.last().copied(),
+            Some((last - 1) as f32),
+            "最新一帧必须留在窗口里，否则报告只覆盖到会话中段"
+        );
+    }
+
+    #[test]
+    fn play_cycle_cadence_holds_the_idle_phase() {
+        let t0 = Instant::now();
+        let play = Duration::from_secs(10);
+        let idle = Duration::from_secs(5);
+        assert_eq!(
+            play_cycle_step(None, None, t0, play, idle),
+            PlayCycleStep::StartPlay,
+            "soak 第一步就该进 Play"
+        );
+        assert_eq!(
+            play_cycle_step(Some(t0), None, t0 + Duration::from_secs(9), play, idle),
+            PlayCycleStep::Running
+        );
+        assert_eq!(
+            play_cycle_step(Some(t0), None, t0 + play, play, idle),
+            PlayCycleStep::StopPlay
+        );
+        let stopped = t0 + play;
+        assert_eq!(
+            play_cycle_step(
+                None,
+                Some(stopped),
+                stopped + Duration::from_secs(4),
+                play,
+                idle
+            ),
+            PlayCycleStep::HoldIdle,
+            "空闲间隔未到：停在 Stop，这一帧才归到 idle 桶"
+        );
+        assert_eq!(
+            play_cycle_step(None, Some(stopped), stopped + idle, play, idle),
+            PlayCycleStep::StartPlay
+        );
+    }
+
+    #[test]
+    fn zero_idle_seconds_replays_the_next_frame_like_old_archives() {
+        // 既有归档的节奏是 Stop 之后**下一帧**就 Play（没有空闲段）；默认值必须保持这个
+        // 占空比，否则内存台阶与 docs/55 阶段 0 那两档不可比。
+        let t0 = Instant::now();
+        let play = Duration::from_secs(2);
+        assert_eq!(
+            play_cycle_step(None, None, t0, play, Duration::ZERO),
+            PlayCycleStep::StartPlay
+        );
+        let stopped = t0 + play;
+        assert_eq!(
+            play_cycle_step(
+                None,
+                Some(stopped),
+                stopped + Duration::from_millis(16),
+                play,
+                Duration::ZERO
+            ),
+            PlayCycleStep::StartPlay
+        );
+    }
+
+    fn totals_map(entries: &[(&str, (f64, u64))]) -> BTreeMap<String, (f64, u64)> {
+        entries
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), *value))
+            .collect()
+    }
+
+    #[test]
+    fn play_panel_totals_are_a_boundary_diff_summed_over_cycles() {
+        let mut totals = BTreeMap::new();
+        let start = totals_map(&[("Scene View", (100.0, 40)), ("Console", (10.0, 40))]);
+        let end = totals_map(&[
+            ("Scene View", (180.0, 60)),
+            ("Console", (16.0, 60)),
+            ("Inspector", (5.0, 20)),
+        ]);
+        accumulate_panel_totals(&mut totals, &start, &end);
+        assert_eq!(totals["Scene View"], (80.0, 20));
+        assert_eq!(totals["Console"], (6.0, 20));
+        assert_eq!(
+            totals["Inspector"],
+            (5.0, 20),
+            "Play 期间新出现的面板从 0 起算"
+        );
+
+        // 第二段 Play 在同一张表上累加：多轮 Play 的报告要能加总。
+        let next_start = totals_map(&[("Scene View", (180.0, 60))]);
+        let next_end = totals_map(&[("Scene View", (200.0, 70))]);
+        accumulate_panel_totals(&mut totals, &next_start, &next_end);
+        assert_eq!(totals["Scene View"], (100.0, 30));
+    }
+
+    #[test]
+    fn play_panel_totals_survive_a_mid_play_sample_clear() {
+        // 性能面板的「清空采样」把 total_ms 与样本数一起归零，于是 end 读数**小于** start。
+        // 直接做差会写出负耗时（看起来像"这个面板没耗时"），必须从 0 起算。
+        let mut totals = BTreeMap::new();
+        let start = totals_map(&[("Scene View", (900.0, 500))]);
+        let end = totals_map(&[("Scene View", (40.0, 25))]);
+        accumulate_panel_totals(&mut totals, &start, &end);
+        assert_eq!(
+            totals["Scene View"],
+            (40.0, 25),
+            "清空后从 0 起算：既不出现负值，也不回绕成巨大值"
+        );
+    }
+
+    #[test]
     fn memory_windows_splits_by_time_and_reports_troughs() {
         // 一条"锯齿但谷值不抬升"的序列：均值会上下跳，谷值必须平稳。
         // 锯齿周期（8 个采样）**短于**窗口长度（80/8 = 10 个采样），保证每个窗口都能看到谷与峰。
@@ -1598,11 +1971,17 @@ mod tests {
             out_dir: temp_root("soak-report"),
             duration: Duration::from_secs(3_600),
             play_seconds: Duration::from_secs(2),
+            idle_seconds: Duration::ZERO,
             step_seconds: Duration::from_secs(1),
             started: Instant::now(),
             last_sample: Instant::now(),
             playing_since: None,
+            idle_since: None,
             samples: Vec::new(),
+            play_frame_ms: Vec::new(),
+            idle_frame_ms: Vec::new(),
+            panels_at_play_start: None,
+            play_panel_totals: BTreeMap::new(),
             frames: 0,
             play_cycles: 0,
             finished: false,
@@ -1687,6 +2066,14 @@ mod tests {
         assert!(
             text.contains("churn_rounds\n"),
             "采样表缺 churn_rounds 列：{text}"
+        );
+        assert!(
+            text.contains("cadence: play_seconds=2 idle_seconds=0 step_seconds=1"),
+            "报告头部没写 Play/Stop 节奏：读者无法解释 idle 行为什么空：{text}"
+        );
+        assert!(
+            text.contains("play\t0\t-\t-\t-\t-\n"),
+            "帧耗时分阶段表缺失或空桶没显式写成 -：{text}"
         );
         let json = fs::read_to_string(soak.out_dir.join("soak.json")).expect("读 soak.json");
         assert!(

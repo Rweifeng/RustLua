@@ -63,8 +63,8 @@ return {
         title = "Gameplay",
         label = "Clock / Calendar / Shop / Map",
         summary = "一天的循环、背包与装备、商店、分地图状态",
-        modules = { "clock", "calendar", "day", "item", "inv", "container", "shop", "map", "interact", "tag" },
-        steps = 12,
+        modules = { "clock", "calendar", "day", "item", "inv", "container", "shop", "map", "interact", "tag", "net", "rollback" },
+        steps = 13,
     },
     {
         scene = "api_input",

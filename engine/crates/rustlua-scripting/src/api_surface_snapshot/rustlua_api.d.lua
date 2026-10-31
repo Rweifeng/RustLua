@@ -1,7 +1,7 @@
 ---@meta
 -- 生成物，请勿手改：`node scripts/docgen/gen-lua-api-docs.js`（与 `doc/*.md` 文档桩同源、同一次运行）。
 -- 事实源：同目录 `lua_api_surface.json`——运行期 `_G` 探针导出的 API 面基线，由快照门钉住。
--- 参数名与类型来自绑定源码的签名推断；推断不到的（未定位到绑定点、或签名形状解析不出）发成 `---@param ... any`，本文件 3 个；另有 59 个真的不收参数。两种声明不合并（合并 = 假诊断）。
+-- 参数名与类型来自绑定源码的签名推断；推断不到的（未定位到绑定点、或签名形状解析不出）发成 `---@param ... any`，本文件 3 个；另有 61 个真的不收参数。两种声明不合并（合并 = 假诊断）。
 -- 返回类型在绑定源码里没有事实可依据，一律 `any`：不拿"没有信息"冒充"返回 nil"，否则
 -- `local h = audio.play(x)` 会被 LuaLS 判成拿到 nil。
 -- 装进工程：编辑器菜单「项目 → 导出 Lua 类型提示（LuaLS）」会把这份写到工程根 `.cache/`，
@@ -914,7 +914,7 @@ function nav.grid_info(id) end
 function nav.set_blocked(id, x, y, blocked) end
 
 --- 一条到中继服务器（`ClashRoyale/server/server.mjs`）的长连接。桌面走裸 TCP
---- net：运行期 API 面基线里的 9 个函数
+--- net：运行期 API 面基线里的 10 个函数
 net = {}
 
 --- 这个进程/页面是否被要求"启动就联机"。桌面读环境变量 `RUSTLUA_NET_AUTO`，
@@ -930,6 +930,13 @@ function net.close() end
 ---@param room string
 ---@return any
 function net.connect(server, room) end
+
+--- 连接 UDP 中继并加入房间（本端身份由 `player` 指定）。桌面专属；浏览器构建返回 `false`。
+---@param server string
+---@param room string
+---@param player integer
+---@return any
+function net.connect_udp(server, room, player) end
 
 --- 默认房间码：桌面取 `RUSTLUA_NET_ROOM`，浏览器取查询参数 `?room=`，都没有时是 `royale`。
 ---@return any
@@ -1137,6 +1144,59 @@ function quad.get(id) end
 ---@param component string
 ---@return any
 function quad.set(id, component) end
+
+--- 预测与回滚账本。它**不碰模拟**：快照是脚本自己序列化的字节串（整张世界表、场景状态都行），
+--- rollback：运行期 API 面基线里的 9 个函数
+rollback = {}
+
+--- 收下一条**远端**输入，并返回账本的判定。
+---@param player integer
+---@param frame integer
+---@param payload string
+---@return any
+function rollback.accept(player, frame, payload) end
+
+--- 确认这一帧已模拟完并推进 `next_frame`，同时淘汰窗口外的快照。
+---@param frame integer
+---@return any
+function rollback.commit(frame) end
+
+--- 取这一帧所有玩家要用的输入：已确认的用真值，远端还没到的沿用**上一帧的输入作为预测**。
+---@param frame integer
+---@return any
+function rollback.inputs(frame) end
+
+--- 当前应该模拟的帧号（`0` 起；回滚后会把光标退回到 `from`）。
+---@return any
+function rollback.next_frame() end
+
+--- 登记本地玩家这一帧的输入（会和 `inputs()` 里本地那一项一致）。
+---@param frame integer
+---@param payload string
+---@return any
+function rollback.record_local(frame, payload) end
+
+--- 建/重设账本。热重载保留账本对象，但显式 `reset` 会清空——开新局时调用。
+---@param players integer
+---@param local_ integer
+---@param window integer
+---@return any
+function rollback.reset(players, local_, window) end
+
+--- 取出 `from` 帧**模拟前**的快照字节，并把 `next_frame` 退到 `from`；调用方负责把世界恢复成这份快照再重跑。
+---@param from integer
+---@return any
+function rollback.rollback_to(from) end
+
+--- 保存这一帧**模拟前**的世界快照，供将来回滚；窗口外的旧快照会被自动淘汰。
+---@param frame integer
+---@param bytes string
+---@return any
+function rollback.save_snapshot(frame, bytes) end
+
+--- 回滚账本的累计统计（给 HUD/诊断用，也可在无头对拍里断言）。
+---@return any
+function rollback.stats() end
 
 --- save：运行期 API 面基线里的 9 个函数
 save = {}
@@ -1533,6 +1593,7 @@ function ui.grid_hit(id, x, y) end
 ---@return any
 function ui.hide(id) end
 
+--- 按 id 新增/覆盖一张屏幕空间的动态贴图，用来画会随状态变化的图标、条、框与卡面。同一 id 重复调用
 ---@param id string
 ---@param x number
 ---@param y number

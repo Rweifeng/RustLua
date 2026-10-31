@@ -205,6 +205,16 @@ pub(crate) fn test_token() -> u128 {
     (u128::from(std::process::id()) << 96) ^ (counter << 64) ^ (nanos & 0xFFFF_FFFF_FFFF_FFFF)
 }
 
+/// 一次性的"用户主目录"（用户级设置的落点）。
+///
+/// **门绝不能写真实的 `~/.rustlua/editor.json`**：那会改掉开发机（或 CI）的用户设置；
+/// 更糟的是下一次运行会把它**读回来**，让原本无关的门判红（插件面板可见性就是这么
+/// 串味的）。只算路径、不建目录——真要落盘时 `write_atomic` 自己会建。
+#[cfg(test)]
+pub(crate) fn temp_user_home(tag: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("rustlua-user-home-{tag}-{}", test_token()))
+}
+
 /// 去除 Windows 逐字路径前缀 `\\?\`（会破坏 Lua require 的 searchpath 解析）。
 pub(crate) fn strip_verbatim_prefix(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();

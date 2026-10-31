@@ -1,5 +1,13 @@
 struct Camera { view_projection: mat4x4<f32> };
-struct Light { direction: vec4<f32>, color_intensity: vec4<f32> };
+struct PointLight { position_range: vec4<f32>, color_intensity: vec4<f32> };
+// 方向光 48B + 8 盏点光（CPU 侧 `light_uniform_bytes` 同布局）。
+struct Light {
+    direction: vec4<f32>,
+    color_intensity: vec4<f32>,
+    // x = 点光数量（0..=8），其余保留。
+    params: vec4<f32>,
+    points: array<PointLight, 8>,
+};
 struct Material { base_color: vec4<f32>, surface: vec4<f32> };
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(1) var<uniform> light: Light;
@@ -16,7 +24,7 @@ struct Material { base_color: vec4<f32>, surface: vec4<f32> };
 //#endif
 @group(1) @binding(3) var albedo: texture_2d<f32>;
 @group(1) @binding(4) var albedo_sampler: sampler;
-struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) normal: vec3<f32>, @location(1) shadow_position: vec4<f32>, @location(2) uv: vec2<f32> };
+struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) normal: vec3<f32>, @location(1) shadow_position: vec4<f32>, @location(2) uv: vec2<f32>, @location(3) world_position: vec3<f32> };
 @vertex fn vs_main(@builtin(instance_index) instance_index: u32, @location(0) position: vec3<f32>, @location(1) normal: vec3<f32>, @location(2) uv: vec2<f32>, @location(3) joint_indices: vec4<u32>, @location(4) bone_weights: vec4<f32>) -> VertexOutput {
     var out: VertexOutput;
     var local_position = vec4<f32>(position, 1.0);
@@ -45,9 +53,10 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) norma
     out.normal = local_normal.xyz;
     out.shadow_position = shadow_camera.view_projection * world_position;
     out.uv = uv;
+    out.world_position = world_position.xyz;
     return out;
 }
-@fragment fn fs_main(@location(0) normal: vec3<f32>, @location(1) shadow_position: vec4<f32>, @location(2) uv: vec2<f32>) -> @location(0) vec4<f32> {
+@fragment fn fs_main(@location(0) normal: vec3<f32>, @location(1) shadow_position: vec4<f32>, @location(2) uv: vec2<f32>, @location(3) world_position: vec3<f32>) -> @location(0) vec4<f32> {
     let albedo_color = textureSample(albedo, albedo_sampler, uv);
     let base_rgb = material.base_color.rgb * albedo_color.rgb;
     let base_alpha = material.base_color.a * albedo_color.a;
@@ -62,5 +71,26 @@ struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) norma
     let shadow_depth = shadow_ndc.z - 0.002;
     let shadow_visibility = select(1.0, textureSampleCompare(shadow_map, shadow_sampler, shadow_uv, shadow_depth), shadow_uv.x >= 0.0 && shadow_uv.x <= 1.0 && shadow_uv.y >= 0.0 && shadow_uv.y <= 1.0 && shadow_ndc.z >= 0.0 && shadow_ndc.z <= 1.0);
     let brightness = (0.15 + (diffuse * (1.0 - metallic) + specular * mix(0.04, 1.0, metallic)) * shadow_visibility) * light.color_intensity.w;
-    return vec4<f32>(base_rgb * light.color_intensity.rgb * brightness, base_alpha);
+    // 点光源：同一套 Lambert/近似镜面，衰减用"range 内平方反比 × 平滑截断"；不投影。
+    var point_lit = vec3<f32>(0.0);
+    let point_count = min(u32(light.params.x), 8u);
+    for (var i = 0u; i < point_count; i = i + 1u) {
+        let point = light.points[i];
+        let to_light = point.position_range.xyz - world_position;
+        let distance = length(to_light);
+        if (distance < 1e-4) {
+            continue;
+        }
+        let point_l = to_light / distance;
+        let point_n_dot_l = max(dot(n, point_l), 0.0);
+        if (point_n_dot_l <= 0.0) {
+            continue;
+        }
+        let point_specular = pow(max(dot(reflect(-point_l, n), vec3<f32>(0.0, 0.0, 1.0)), 0.0), 2.0 / (roughness * roughness));
+        let point_lambert = point_n_dot_l * (1.0 - metallic) + point_specular * mix(0.04, 1.0, metallic);
+        let falloff = clamp(1.0 - distance / max(point.position_range.w, 1e-4), 0.0, 1.0);
+        let attenuation = falloff * falloff / (distance * distance + 1e-4);
+        point_lit = point_lit + base_rgb * point.color_intensity.rgb * point.color_intensity.w * point_lambert * attenuation;
+    }
+    return vec4<f32>(base_rgb * light.color_intensity.rgb * brightness + point_lit, base_alpha);
 }

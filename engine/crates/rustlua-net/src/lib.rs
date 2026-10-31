@@ -4,19 +4,26 @@
 //! - [`Session`] 只放行**收齐所有玩家**的帧，输入按玩家号排序后交给模拟层；
 //! - 校验和由模拟层按帧上报，对端不一致时在首个分歧帧报 [`Desync`]；
 //! - [`LoopbackNet`] 提供确定性延迟/抖动用于测试与本地双端；
-//! - [`TcpTransport`] 是真实 socket 的传输，读写线程让 `poll` 不阻塞。
+//! - [`TcpTransport`] 是真实 socket 的传输，读写线程让 `poll` 不阻塞；
+//! - [`UdpTransport`] 是中继式 UDP 传输，自带可靠有序层与重传（见模块文档）；
+//! - [`Rollback`] 是预测回滚的输入/快照账本：迟到输入触发"从哪一帧重模拟"，
+//!   快照本身由模拟层提供（本 crate 只保管字节）。
 //!
-//! 刻意不做的事：预测回滚、插值、可靠 UDP。这些应由具体游戏在模拟层之上实现，
-//! 本 crate 只保证"帧与输入的次序"这一层契约。
+//! 刻意不做的事：插值、可靠 UDP 之外的拥塞控制、NAT 穿透、匹配/中继服务端。
+//! 这些属于具体游戏或服务端，本 crate 只保证"帧、输入与回滚区间"这一层契约。
 
 mod lockstep;
 mod loopback;
+mod rollback;
 mod tcp;
+mod udp;
 mod wire;
 
 pub use lockstep::{Desync, FrameInputs, Session, SessionConfig};
 pub use loopback::{LoopbackNet, LoopbackTransport};
+pub use rollback::{Rollback, RollbackConfig, RollbackStep};
 pub use tcp::TcpTransport;
+pub use udp::{MAX_DATAGRAM, UdpStats, UdpTransport};
 pub use wire::{Message, PlayerId};
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]

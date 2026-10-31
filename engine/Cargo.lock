@@ -3450,6 +3450,7 @@ dependencies = [
  "rustlua-input",
  "rustlua-lua-api",
  "rustlua-navigation",
+ "rustlua-net",
  "serde_json",
  "thiserror 2.0.20",
  "tracing",

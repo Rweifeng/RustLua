@@ -26,6 +26,12 @@ pub const DEFAULT_SAMPLE_CAPACITY: usize = 240;
 struct SampleRing {
     capacity: usize,
     samples: VecDeque<f32>,
+    /// 累计**写入过**多少个样本（淘汰不影响它）。
+    ///
+    /// 窗口占用量 `samples.len()` 在上限处封顶，所以它只能回答"最近这 240 帧长什么样"；
+    /// 想在两个采样点之间做差算出"这一段里每帧平均花多少"必须用真实条数，
+    /// 否则差值是占用量的变化（最多 240，甚至为 0），平均数会离谱好几倍。
+    records: u64,
 }
 
 impl SampleRing {
@@ -34,6 +40,7 @@ impl SampleRing {
         Self {
             capacity,
             samples: VecDeque::with_capacity(capacity),
+            records: 0,
         }
     }
 
@@ -42,14 +49,20 @@ impl SampleRing {
             self.samples.pop_front();
         }
         self.samples.push_back(value);
+        self.records = self.records.saturating_add(1);
     }
 
     fn clear(&mut self) {
         self.samples.clear();
+        self.records = 0;
     }
 
     fn len(&self) -> usize {
         self.samples.len()
+    }
+
+    fn records(&self) -> u64 {
+        self.records
     }
 
     fn last(&self) -> Option<f32> {
@@ -109,7 +122,11 @@ pub fn percentiles_ms(samples: &[f32]) -> Option<Percentiles> {
 #[derive(Clone, Debug, Default)]
 pub struct TimingSummary {
     pub name: String,
+    /// 保留窗口里的样本条数（上限 = 采样容量，到顶后淘汰旧的，**不随总条数增长**）。
     pub samples: usize,
+    /// 这条序列累计写入过多少条（`clear_samples()` 归零）。做阶段差量、算每帧平均值要用它，
+    /// 不能用 `samples`（那个在容量处封顶）。
+    pub records: u64,
     pub last_ms: f32,
     pub p50_ms: f32,
     pub p95_ms: f32,
@@ -427,6 +444,14 @@ impl EditorProfiler {
         self.frames.len()
     }
 
+    /// 上一帧的耗时（毫秒）；一帧都还没记过时返回 0。
+    ///
+    /// 给 soak 这类"每帧都要取一次"的读者用：`report()` 会克隆全部 counters/gauges/panels，
+    /// 逐帧调它本身就足以改变被测对象的耗时。
+    pub fn last_frame_ms(&self) -> f32 {
+        self.frames.last().unwrap_or(0.0)
+    }
+
     pub fn over_budget_frames(&self) -> u64 {
         self.over_budget_frames
     }
@@ -476,6 +501,7 @@ impl EditorProfiler {
             .map(|(name, (ring, total))| TimingSummary {
                 name: name.clone(),
                 samples: ring.len(),
+                records: ring.records(),
                 last_ms: ring.last().unwrap_or(0.0),
                 p50_ms: ring.percentile(50.0).unwrap_or(0.0),
                 p95_ms: ring.percentile(95.0).unwrap_or(0.0),
@@ -594,6 +620,73 @@ mod tests {
         assert_eq!(profiler.frame_samples(), 0);
         assert!(profiler.report().panels[0].samples == 0);
         assert_eq!(profiler.counter("scan"), 1);
+    }
+
+    /// soak 的逐帧归桶读的是 `last_frame_ms()`（**上一帧**的耗时）。这一条钉住它的口径：
+    /// 一帧都没记过时给 0（不然空闲桶会拿到一个凭空的读数），并且与 `report()` 里
+    /// 那行 `frame_last_ms` 是同一个数。
+    #[test]
+    fn last_frame_ms_tracks_the_most_recent_frame() {
+        let mut profiler = EditorProfiler::new(DEFAULT_FRAME_BUDGET_MS);
+        assert_eq!(profiler.last_frame_ms(), 0.0, "还没跑过一帧时不能凭空给数");
+        let start = Instant::now();
+        profiler.begin_frame(start);
+        profiler.end_frame(start + Duration::from_millis(7));
+        assert!(profiler.last_frame_ms() > 0.0);
+        assert_eq!(profiler.last_frame_ms(), profiler.report().frame_last_ms);
+        profiler.begin_frame(start + Duration::from_millis(10));
+        profiler.end_frame(start + Duration::from_millis(40));
+        assert!(
+            profiler.last_frame_ms() > 25.0,
+            "读到的是**最近**那一帧，不是窗口里的旧值：{}",
+            profiler.last_frame_ms()
+        );
+        profiler.clear_samples();
+        assert_eq!(
+            profiler.last_frame_ms(),
+            0.0,
+            "清空采样后回到 0，与 report 一致"
+        );
+    }
+
+    /// `records` 与 `samples` 的分工：前者是真实写入条数（做阶段差量、算每帧平均值用它），
+    /// 后者是保留窗口占用量，到容量就封顶——两者一旦混用，每帧平均值会差好几倍。
+    #[test]
+    fn panel_records_keep_counting_after_the_window_saturates() {
+        let mut profiler = EditorProfiler::new(DEFAULT_FRAME_BUDGET_MS);
+        for _ in 0..(DEFAULT_SAMPLE_CAPACITY + 60) {
+            profiler.record_panel("workspace", Duration::from_millis(2));
+        }
+        let report = profiler.report();
+        let summary = report
+            .panels
+            .iter()
+            .find(|panel| panel.name == "workspace")
+            .expect("记录过 workspace");
+        assert_eq!(
+            summary.samples, DEFAULT_SAMPLE_CAPACITY,
+            "窗口占用量在容量处封顶"
+        );
+        assert_eq!(
+            summary.records,
+            (DEFAULT_SAMPLE_CAPACITY + 60) as u64,
+            "真实条数继续增长"
+        );
+        assert_eq!(
+            summary.total_ms,
+            (DEFAULT_SAMPLE_CAPACITY + 60) as f64 * 2.0
+        );
+        profiler.clear_samples();
+        let summary = profiler
+            .report()
+            .panels
+            .into_iter()
+            .find(|panel| panel.name == "workspace")
+            .expect("清空后条目仍在");
+        assert_eq!(
+            (summary.samples, summary.records, summary.total_ms),
+            (0, 0, 0.0)
+        );
     }
 
     /// E06-2：Fine 档记录帧根 span、面板与命令；导出 JSON 能被解析。

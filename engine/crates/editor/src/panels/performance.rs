@@ -1146,6 +1146,10 @@ fn counter_label(name: &str) -> String {
         "shader_watch_hits" => "着色器文件事件命中",
         "shader_reloads" => "着色器重载成功",
         "shader_reload_failures" => "着色器重载失败",
+        "scene_renderer_init_failures" => "Scene 渲染器创建失败",
+        "scene_renderer_recovered" => "Scene 渲染器恢复",
+        "shortcuts_saved" => "快捷键改键落盘",
+        "shortcuts_save_failed" => "快捷键改键落盘失败",
         other => other,
     }
     .to_owned()
@@ -2164,6 +2168,7 @@ mod tests {
             .map(|index| TimingSummary {
                 name: format!("panel{index:02}"),
                 samples: 1,
+                records: 1,
                 last_ms: index as f32,
                 p50_ms: index as f32,
                 p95_ms: index as f32,
@@ -2175,6 +2180,7 @@ mod tests {
             .map(|index| TimingSummary {
                 name: format!("cmd{index:02}"),
                 samples: 1,
+                records: 1,
                 last_ms: index as f32,
                 p50_ms: index as f32,
                 p95_ms: index as f32,
