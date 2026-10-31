@@ -561,12 +561,15 @@ mod tests {
         let pause = &pauses[0];
         assert_eq!(pause.reason, PauseReason::Breakpoint);
         assert_eq!(pause.location.line, 3);
+        assert_eq!(normalize_path(&pause.location.path), normalize_path(&path));
         assert_eq!(
-            normalize_path(&pause.location.path),
-            normalize_path(&path)
+            pause.local("a").map(|local| local.value.as_str()),
+            Some("1")
         );
-        assert_eq!(pause.local("a").map(|local| local.value.as_str()), Some("1"));
-        assert_eq!(pause.local("b").map(|local| local.value.as_str()), Some("2"));
+        assert_eq!(
+            pause.local("b").map(|local| local.value.as_str()),
+            Some("2")
+        );
         assert_eq!(
             pause.frames.first().map(|frame| frame.location.line),
             Some(3),
@@ -662,17 +665,18 @@ mod tests {
         let pause = &pauses[0];
         assert_eq!(pause.function(), "inner");
         assert_eq!(pause.frames[0].location.line, 2);
-        assert!(pause.frames.len() >= 3, "应有 inner/outer/update 至少三帧：{:?}", pause.frames);
+        assert!(
+            pause.frames.len() >= 3,
+            "应有 inner/outer/update 至少三帧：{:?}",
+            pause.frames
+        );
         let outer = &pause.frames[1];
+        assert_eq!(normalize_path(&outer.location.path), normalize_path(&path));
+        assert_eq!(outer.location.line, 6, "外层帧要落在调用 inner 的那一行");
         assert_eq!(
-            normalize_path(&outer.location.path),
-            normalize_path(&path)
+            pause.local("x").map(|local| local.value.as_str()),
+            Some("41")
         );
-        assert_eq!(
-            outer.location.line, 6,
-            "外层帧要落在调用 inner 的那一行"
-        );
-        assert_eq!(pause.local("x").map(|local| local.value.as_str()), Some("41"));
         let _ = std::fs::remove_file(path);
         runtime.clear_debugger().unwrap();
     }

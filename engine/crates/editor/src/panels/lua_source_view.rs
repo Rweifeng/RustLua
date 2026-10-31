@@ -128,12 +128,10 @@ impl EditorApp {
         } else {
             self.project.root.join(path)
         };
-        let relative = absolute
-            .strip_prefix(&self.project.root)
-            .map_or_else(
-                |_| absolute.to_string_lossy().replace('\\', "/"),
-                |value| value.to_string_lossy().replace('\\', "/"),
-            );
+        let relative = absolute.strip_prefix(&self.project.root).map_or_else(
+            |_| absolute.to_string_lossy().replace('\\', "/"),
+            |value| value.to_string_lossy().replace('\\', "/"),
+        );
         self.lua_source_view.load(&absolute, relative, line);
     }
 
@@ -142,11 +140,10 @@ impl EditorApp {
         if !self.lua_source_view.show {
             return;
         }
-        let title = self
-            .lua_source_view
-            .relative
-            .clone()
-            .map_or_else(|| "Lua 源码".to_owned(), |path| format!("Lua 源码 — {path}"));
+        let title = self.lua_source_view.relative.clone().map_or_else(
+            || "Lua 源码".to_owned(),
+            |path| format!("Lua 源码 — {path}"),
+        );
         let mut open = self.lua_source_view.show;
         egui::Window::new(title)
             .id(egui::Id::new("lua_source_view"))
@@ -224,8 +221,7 @@ impl EditorApp {
         area.show_rows(ui, row_height, line_count, |ui, range| {
             for index in range {
                 let number = index as u32 + 1;
-                let mut frame =
-                    egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 0));
+                let mut frame = egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 0));
                 if Some(number) == target {
                     frame = frame.fill(TARGET_LINE_FILL);
                 }
@@ -257,7 +253,7 @@ impl EditorApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{clamp_target, is_lua_source, split_source, LuaSourceViewState};
+    use super::{LuaSourceViewState, clamp_target, is_lua_source, split_source};
     use std::path::{Path, PathBuf};
 
     fn temp_file(tag: &str, contents: &[u8]) -> PathBuf {
@@ -275,7 +271,10 @@ mod tests {
 
     #[test]
     fn split_source_normalizes_newlines_and_strips_bom() {
-        assert_eq!(split_source("local a = 1\r\nlocal b = 2\n"), ["local a = 1", "local b = 2"]);
+        assert_eq!(
+            split_source("local a = 1\r\nlocal b = 2\n"),
+            ["local a = 1", "local b = 2"]
+        );
         assert_eq!(split_source("\u{feff}first\rsecond"), ["first", "second"]);
         assert_eq!(split_source("only line"), ["only line"]);
         // 末尾单个换行不算多一行；空文件是零行。
@@ -296,7 +295,10 @@ mod tests {
     fn only_plain_lua_files_open_the_viewer() {
         assert!(is_lua_source(Path::new("scripts/main.lua")));
         assert!(is_lua_source(Path::new("scripts/MAIN.LUA")));
-        assert!(!is_lua_source(Path::new("scripts/main.luae")), "加密脚本没有明文视图");
+        assert!(
+            !is_lua_source(Path::new("scripts/main.luae")),
+            "加密脚本没有明文视图"
+        );
         assert!(!is_lua_source(Path::new("scripts/main.txt")));
     }
 
@@ -321,7 +323,12 @@ mod tests {
         assert!(state.show, "打不开也要开窗说清楚原因");
         assert!(state.lines.is_empty());
         assert_eq!(state.target_line, None);
-        assert!(state.error.as_deref().is_some_and(|error| error.contains("失败")));
+        assert!(
+            state
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("失败"))
+        );
     }
 
     #[test]
