@@ -60,12 +60,18 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     // P2：命令面板只把菜单动作原样交给 `run_menu_action`，自己不碰文档与历史。
     ("command_palette.rs", 0),
     ("console.rs", 0),
+    // 运行期错误现场窗只读快照列表；一键复现改的是 Play 状态（`replay_crash` 在 shell 里）。
+    ("crash_report.rs", 0),
     ("domain_data.rs", 0),
     ("game_view.rs", 0),
     // P3-E03-2：画布只改 `GraphDocument`，不写场景文档。
     ("graph.rs", 0),
     ("header.rs", 0),
     ("hierarchy.rs", 0),
+    // 层级徽标只读索引（记录 + 与源 diff），不写文档。
+    ("hierarchy_badges.rs", 0),
+    // 导入设置面板只写 `resources.meta`（作者意图的入库文件），不碰场景文档。
+    ("import_settings.rs", 0),
     ("input_bindings.rs", 0),
     ("inspector/mod.rs", 0),
     // P1 结构收口：`inspector.rs` 拆成目录（绘制 `mod.rs` / UI 子编辑器 `ui_editors.rs` /
@@ -80,7 +86,11 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     ("keymap.rs", 0),
     ("mod.rs", 0),
     ("performance.rs", 0),
+    // 预制体结构差异窗只读比较结果；点条目只改选区（`locate_structural_change` 在 shell 里）。
+    ("prefab_structure_view.rs", 0),
     ("progress.rs", 0),
+    // ③：全工程搜索窗只读索引、只发定位动作（`activate_search_hit` 在 shell 里走 E06 闸门）。
+    ("project_search.rs", 0),
     ("project_settings.rs", 0),
     ("publish.rs", 0),
     ("resource_browser.rs", 0),
@@ -103,12 +113,12 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     ("timeline.rs", 0),
     // P1-3a：贴图预览窗只解码与显示，状态是窗内缓存（不是文档）。
     ("texture_preview.rs", 0),
+    // ①：Lua 只读查看器只读盘与显示，不写文档、不写盘。
+    ("lua_source_view.rs", 0),
     ("toolbar.rs", 0),
     // 树控件原语（缩进/行标签/拖放落点）：纯绘制与几何，不碰任何文档。
     ("tree.rs", 0),
     // M76-04：UI Studio 只经 Spec 宿主提案写 `.ui.json`，不碰场景文档。
-    // ①：Lua 只读查看器只读盘与显示，不写文档、不写盘。
-    ("lua_source_view.rs", 0),
     ("ui_studio.rs", 0),
     // M80：内嵌在属性面板里的 UI 节点检查器同样只生成提案，不写文档。
     ("ui_studio_inspector.rs", 0),

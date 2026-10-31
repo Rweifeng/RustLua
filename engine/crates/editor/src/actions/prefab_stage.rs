@@ -126,6 +126,10 @@ impl EditorApp {
                 return CommandResult::Rejected(self.status.clone());
             }
         };
+        if let Some(reason) = super::prefab_variant::variant_write_back_refusal(&prefab) {
+            self.status = reason;
+            return CommandResult::Rejected(self.status.clone());
+        }
         let nested = prefab.nested_sources();
         // 进入阶段编辑的是**这份文件本身**，而嵌套节点在文件里存的就是它自己的内层标记
         // 加一份取值快照（不展开内层文件），所以阶段里的增删改与"平"预制体走同一条路：
@@ -251,7 +255,7 @@ impl EditorApp {
         }
         // 1) 拿到"将要落盘的那份新源"——与 Ctrl+S 走同一条转换（`prefab_asset`），
         //    否则「保存并返回」与直接保存会写出两份形状不同的资产。
-        let prefab = match self
+        let mut prefab = match self
             .document
             .current_scene
             .as_ref()
@@ -270,6 +274,15 @@ impl EditorApp {
                 return CommandResult::Rejected(self.status.clone());
             }
         };
+        // 与 Ctrl+S 同一条口径：退出即写回，嵌套覆盖记录按阶段里的当前取值重算。
+        if let Err(error) =
+            super::prefab_nested_sync::prepare_nested_lineage(&mut prefab, &self.project.root)
+        {
+            self.restore_prefab_stage_context(&stage);
+            self.prefab_stage = Some(stage);
+            self.status = error;
+            return CommandResult::Rejected(self.status.clone());
+        }
         let path = strip_verbatim_prefix(&self.project.root).join(stage.source.as_str());
         // 2) 预演：覆盖按**进入时的基线**算、结构按**新源**校验，把退出时一定会失败的形状
         //    （阶段里删掉了实例仍引用的子节点）挡在落盘之前。

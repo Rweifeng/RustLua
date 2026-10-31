@@ -86,6 +86,7 @@ fn addable_kinds() -> Vec<(UiNodeKind, &'static str)> {
             "canvas_group",
         ),
         (UiNodeKind::List { virtualized: false }, "list"),
+        (UiNodeKind::List { virtualized: true }, "virtual_list"),
         (UiNodeKind::Grid { columns: 2 }, "grid"),
         (UiNodeKind::Tabs { selected: 0 }, "tabs"),
         (UiNodeKind::Modal, "modal"),

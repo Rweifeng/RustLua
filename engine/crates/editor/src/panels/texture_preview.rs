@@ -378,7 +378,7 @@ impl EditorApp {
         };
         self.texture_preview.import_settings = disk;
         self.texture_preview.import_saved = disk;
-        let reloaded = self.refresh_texture_samplers();
+        let reloaded = self.refresh_import_settings();
         let note = if disk.is_default() {
             "默认档已从 resources.meta 移除（那文件只登记非默认）".to_owned()
         } else {
@@ -391,13 +391,14 @@ impl EditorApp {
     /// 让 Scene View 与 Play 预览两个渲染器重读那份元数据段；谁不在就跳过谁。
     ///
     /// 不在场时返回 0 是**真话**（没有已上传的贴图要换），不是失败——headless 测试走的就是这条。
-    fn refresh_texture_samplers(&mut self) -> usize {
+    /// 模型缩放也靠这一趟生效：运行期读的那份元数据是缓存的，不重读就还用旧档。
+    pub(crate) fn refresh_import_settings(&mut self) -> usize {
         let mut reloaded = 0;
         if let Some(renderer) = self.scene_renderer.as_mut() {
-            reloaded += renderer.reload_texture_settings();
+            reloaded += renderer.reload_import_settings();
         }
         if let Some(preview) = self.preview.as_mut() {
-            reloaded += preview.reload_texture_settings();
+            reloaded += preview.reload_import_settings();
         }
         reloaded
     }
@@ -745,10 +746,12 @@ mod tests {
         // 键必须是工程相对路径：绝对路径换一台机器就失效，UUID 会随导入器升版漂移。
         let meta = ResourceMeta::open(&root).unwrap();
         assert_eq!(
-            meta.entries().next().unwrap().0,
+            meta.texture_entries().next().unwrap().0,
             "assets/textures/a.png",
             "键的口径跑掉了：{:?}",
-            meta.entries().map(|(key, _)| key).collect::<Vec<_>>()
+            meta.texture_entries()
+                .map(|(key, _)| key)
+                .collect::<Vec<_>>()
         );
         let message = app.texture_preview.import_message.clone().unwrap();
         assert!(message.contains("已写入"), "{message}");

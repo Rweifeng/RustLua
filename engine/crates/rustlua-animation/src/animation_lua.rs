@@ -398,6 +398,23 @@ pub fn install(lua: &Lua, state: &Handle<AnimationState>, world: &Handle<World>)
     )?;
     let s = Bindings::new(world, state);
     animation3d.set(
+        "crossfade",
+        lua.create_function(move |_, (id, name, seconds): (i64, String, f64)| {
+            let id = entity_from_lua(id)?;
+            let state = &s;
+            require_alive(state, id)?;
+            let mut world = state.world_mut()?;
+            let animation = world
+                .get_mut::<Animation3D>(id)
+                .map_err(world_error)?
+                .ok_or_else(|| api_error("entity has no animation3d"))?;
+            animation
+                .crossfade_to(&name, seconds as f32)
+                .map_err(|error| api_error(error.to_string()))
+        })?,
+    )?;
+    let s = Bindings::new(world, state);
+    animation3d.set(
         "list",
         lua.create_function(move |lua, id: i64| {
             let id = entity_from_lua(id)?;
@@ -469,7 +486,8 @@ pub fn install(lua: &Lua, state: &Handle<AnimationState>, world: &Handle<World>)
 mod tests {
     use super::*;
 
-    /// 两张表合计 19 个函数，一个不少（14 个旧绑定 + 5 个 `AnimationPlayer`）。
+    /// 两张表合计 20 个函数，一个不少（14 个旧绑定 + 5 个 `AnimationPlayer` + 1 个
+    /// `animation3d.crossfade`）。
     #[test]
     fn every_animation_function_is_installed() {
         let lua = Lua::new();
@@ -481,7 +499,7 @@ mod tests {
             let table: mlua::Table = lua.globals().get(table).unwrap();
             total += table.pairs::<mlua::Value, mlua::Value>().count();
         }
-        assert_eq!(total, 19, "animation + animation3d 合计 19 个函数");
+        assert_eq!(total, 20, "animation + animation3d 合计 20 个函数");
     }
 
     /// 宿主塞进来的帧事件，脚本取一次就空（一次性队列的语义）。

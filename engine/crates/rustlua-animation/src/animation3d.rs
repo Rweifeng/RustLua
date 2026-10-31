@@ -28,6 +28,15 @@ pub struct AnimClip3D {
     pub duration: f32,
 }
 
+/// In-flight crossfade: the clip being faded out, its own time axis, and progress.
+#[derive(Clone, Debug, PartialEq)]
+struct Fade3D {
+    from: usize,
+    from_time: f32,
+    elapsed: f32,
+    duration: f32,
+}
+
 /// A skinned-animation component.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Animation3D {
@@ -43,6 +52,7 @@ pub struct Animation3D {
     clips: Vec<AnimClip3D>,
     current: usize,
     time: f32,
+    fade: Option<Fade3D>,
     paused: bool,
     looped: bool,
 }
@@ -236,6 +246,7 @@ impl Animation3D {
             clips,
             current,
             time: 0.0,
+            fade: None,
             paused: false,
             looped,
         })
@@ -251,7 +262,8 @@ impl Animation3D {
         Self::from_gltf(&asset, &descriptor.clip, descriptor.looped)
     }
 
-    /// Switches the active clip, restarting time. Returns `true` on a change.
+    /// Switches the active clip, restarting time and cancelling any crossfade.
+    /// Returns `true` on a change.
     pub fn set_clip(&mut self, name: &str) -> Result<bool, Animation3dError> {
         if self.current_clip().name == name {
             return Ok(false);
@@ -263,7 +275,43 @@ impl Animation3D {
             .ok_or_else(|| Animation3dError::UnknownClip(name.to_owned()))?;
         self.current = index;
         self.time = 0.0;
+        self.fade = None;
         Ok(true)
+    }
+
+    /// Switches the active clip with a crossfade: the new clip starts at time 0
+    /// while the outgoing clip (at its current time) fades out over `seconds`.
+    /// A non-positive `seconds` degrades to an instant [`Self::set_clip`].
+    /// Returns `true` on a change; re-selecting the active clip is a no-op.
+    pub fn crossfade_to(&mut self, name: &str, seconds: f32) -> Result<bool, Animation3dError> {
+        if self.current_clip().name == name {
+            return Ok(false);
+        }
+        let index = self
+            .clips
+            .iter()
+            .position(|clip| clip.name == name)
+            .ok_or_else(|| Animation3dError::UnknownClip(name.to_owned()))?;
+        // NaN 也走这条：`!(seconds > 0.0)` 比 `seconds <= 0.0` 多挡住 NaN。
+        self.fade = if seconds > 0.0 {
+            Some(Fade3D {
+                from: self.current,
+                from_time: self.time,
+                elapsed: 0.0,
+                duration: seconds,
+            })
+        } else {
+            None
+        };
+        self.current = index;
+        self.time = 0.0;
+        Ok(true)
+    }
+
+    /// Whether a crossfade is still in flight (the outgoing clip is still blended in).
+    #[must_use]
+    pub fn is_fading(&self) -> bool {
+        self.fade.is_some()
     }
 
     pub fn set_paused(&mut self, paused: bool) {
@@ -290,17 +338,25 @@ impl Animation3D {
     }
 
     /// Advances the active clip by `dt` seconds; looped clips wrap, non-looping
-    /// clips clamp at their duration. Paused animations do not advance.
+    /// clips clamp at their duration. An in-flight crossfade advances the outgoing
+    /// clip on its own time axis and is dropped once `dt` has run out. Paused
+    /// animations do not advance.
     pub fn advance(&mut self, delta_seconds: f32) {
         if self.paused || !delta_seconds.is_finite() || delta_seconds < 0.0 {
             return;
         }
         let duration = self.current_clip().duration;
-        self.time += delta_seconds;
-        if self.looped && duration > 0.0 {
-            self.time %= duration;
-        } else {
-            self.time = self.time.min(duration.max(0.0));
+        self.time = advance_time(self.time, delta_seconds, duration, self.looped);
+        let mut fade_finished = false;
+        if let Some(fade) = &mut self.fade {
+            fade.elapsed += delta_seconds;
+            let from_duration = self.clips[fade.from].duration;
+            fade.from_time =
+                advance_time(fade.from_time, delta_seconds, from_duration, self.looped);
+            fade_finished = fade.elapsed >= fade.duration;
+        }
+        if fade_finished {
+            self.fade = None;
         }
     }
 
@@ -381,10 +437,38 @@ impl Animation3D {
     }
 
     fn local_matrix(&self, node: usize, time: f32) -> Mat4 {
+        let (mut translation, mut rotation, mut scale) = self.local_trs(self.current, node, time);
+        if let Some(fade) = &self.fade {
+            let amount = (fade.elapsed / fade.duration).clamp(0.0, 1.0);
+            let (from_translation, from_rotation, from_scale) =
+                self.local_trs(fade.from, node, fade.from_time);
+            translation = from_translation.lerp(translation, amount);
+            scale = from_scale.lerp(scale, amount);
+            rotation = nlerp_quat(from_rotation, rotation, amount);
+        }
+        let length = rotation.x * rotation.x
+            + rotation.y * rotation.y
+            + rotation.z * rotation.z
+            + rotation.w * rotation.w;
+        if length > 0.0 {
+            let inv = 1.0 / length.sqrt();
+            rotation = Quat {
+                x: rotation.x * inv,
+                y: rotation.y * inv,
+                z: rotation.z * inv,
+                w: rotation.w * inv,
+            };
+        }
+        Mat4::translation(translation) * Mat4::from_quat(rotation) * Mat4::scale(scale)
+    }
+
+    /// Samples one clip's local translation/rotation/scale for `node` at `time`;
+    /// channels the clip does not drive fall back to the bind pose.
+    fn local_trs(&self, clip: usize, node: usize, time: f32) -> (Vec3, Quat, Vec3) {
         let mut translation = self.bind_translation[node];
         let mut rotation = self.bind_rotation[node];
         let mut scale = self.bind_scale[node];
-        for channel in &self.clips[self.current].channels {
+        for channel in &self.clips[clip].channels {
             if channel.node != node {
                 continue;
             }
@@ -406,20 +490,40 @@ impl Animation3D {
                 }
             }
         }
-        let length = rotation.x * rotation.x
-            + rotation.y * rotation.y
-            + rotation.z * rotation.z
-            + rotation.w * rotation.w;
-        if length > 0.0 {
-            let inv = 1.0 / length.sqrt();
-            rotation = Quat {
-                x: rotation.x * inv,
-                y: rotation.y * inv,
-                z: rotation.z * inv,
-                w: rotation.w * inv,
-            };
+        (translation, rotation, scale)
+    }
+}
+
+/// Advances one clip's clock: looped clips wrap, others clamp at their duration.
+fn advance_time(time: f32, delta: f32, duration: f32, looped: bool) -> f32 {
+    let next = time + delta;
+    if looped && duration > 0.0 {
+        next % duration
+    } else {
+        next.min(duration.max(0.0))
+    }
+}
+
+/// Normalized linear interpolation between two rotations; flips the sign when the
+/// quaternions point to opposite hemispheres so the blend takes the short arc.
+fn nlerp_quat(from: Quat, to: Quat, amount: f32) -> Quat {
+    let dot = from.x * to.x + from.y * to.y + from.z * to.z + from.w * to.w;
+    let to = if dot < 0.0 {
+        Quat {
+            x: -to.x,
+            y: -to.y,
+            z: -to.z,
+            w: -to.w,
         }
-        Mat4::translation(translation) * Mat4::from_quat(rotation) * Mat4::scale(scale)
+    } else {
+        to
+    };
+    let a = 1.0 - amount;
+    Quat {
+        x: from.x * a + to.x * amount,
+        y: from.y * a + to.y * amount,
+        z: from.z * a + to.z * amount,
+        w: from.w * a + to.w * amount,
     }
 }
 
@@ -518,6 +622,106 @@ mod tests {
         ));
         // Only one clip in the quad, so re-selecting it is a no-op.
         assert_eq!(animation.current_name(), "Bend");
+    }
+
+    /// A second clip for the quad that only slides Joint1 sideways, which makes
+    /// "blended pose" distinguishable from both endpoints.
+    fn slide_clip() -> AnimClip3D {
+        AnimClip3D {
+            name: "Slide".to_owned(),
+            channels: vec![Channel3D {
+                node: 1,
+                path: GltfChannelPath::Translation,
+                times: vec![0.0, 1.0],
+                values: vec![[0.5, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0]],
+                step: false,
+            }],
+            duration: 1.0,
+        }
+    }
+
+    fn palette_close(actual: &[Mat4], expected: &[Mat4]) -> bool {
+        actual.len() == expected.len()
+            && actual.iter().zip(expected).all(|(a, b)| {
+                a.columns
+                    .iter()
+                    .zip(&b.columns)
+                    .all(|(ca, cb)| ca.iter().zip(cb).all(|(x, y)| (x - y).abs() < 1e-5))
+            })
+    }
+
+    #[test]
+    fn crossfade_blends_old_pose_into_new_clip() {
+        let Some(mut animation) = quad_animation() else {
+            return;
+        };
+        animation.set_looped(false);
+        animation.advance(0.5);
+        let bend = animation.joint_matrices();
+        animation.clips.push(slide_clip());
+        let mut reference = animation.clone();
+        reference.set_clip("Slide").unwrap();
+        let slide = reference.joint_matrices();
+
+        assert!(animation.crossfade_to("Slide", 1.0).unwrap());
+        assert!(animation.is_fading());
+        assert_eq!(animation.current_name(), "Slide");
+        // 淡入起点仍是旧 clip 的当前姿态（新 clip 从 0 秒开始）。
+        assert!(palette_close(&animation.joint_matrices(), &bend));
+
+        animation.advance(0.5);
+        let middle = animation.joint_matrices();
+        assert!(
+            !palette_close(&middle, &bend),
+            "halfway is not the old pose"
+        );
+        assert!(
+            !palette_close(&middle, &slide),
+            "halfway is not the new pose"
+        );
+
+        animation.advance(0.5);
+        assert!(!animation.is_fading());
+        assert_eq!(animation.joint_matrices(), slide);
+    }
+
+    #[test]
+    fn crossfade_same_clip_is_noop_and_non_positive_is_instant() {
+        let Some(mut animation) = quad_animation() else {
+            return;
+        };
+        animation.advance(0.4);
+        assert!(!animation.crossfade_to("Bend", 0.5).unwrap());
+        assert!(!animation.is_fading());
+        assert!(matches!(
+            animation.crossfade_to("Missing", 0.5),
+            Err(Animation3dError::UnknownClip(_))
+        ));
+
+        animation.clips.push(slide_clip());
+        assert!(animation.crossfade_to("Slide", 0.0).unwrap());
+        assert!(!animation.is_fading(), "0s degrades to an instant switch");
+        assert_eq!(animation.current_name(), "Slide");
+        assert_eq!(animation.time(), 0.0);
+
+        // `set_clip` 是"硬切"：它同样会撤掉进行中的淡入。
+        assert!(animation.crossfade_to("Bend", 0.5).unwrap());
+        assert!(animation.is_fading());
+        animation.set_clip("Slide").unwrap();
+        assert!(!animation.is_fading());
+    }
+
+    #[test]
+    fn paused_freezes_an_in_flight_crossfade() {
+        let Some(mut animation) = quad_animation() else {
+            return;
+        };
+        animation.clips.push(slide_clip());
+        animation.crossfade_to("Slide", 1.0).unwrap();
+        animation.advance(0.25);
+        animation.set_paused(true);
+        animation.advance(5.0);
+        assert!(animation.is_fading(), "paused fade must not complete");
     }
 
     #[test]

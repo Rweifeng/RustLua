@@ -729,3 +729,97 @@ fn shortcut_rebinding_rejects_conflicts_and_updates_menu_hints() {
         Some("Ctrl+Shift+S")
     );
 }
+
+/// 设备模拟验收门①（app 级）：切机型预设后设计分辨率 = 机型设计分辨率、竖屏锁定
+/// 随预设自动开合；退出模拟还原进入前的自定义分辨率，不把工程停在"最后一台机型"上。
+#[test]
+fn device_preset_drives_design_resolution_and_restores_custom() {
+    let mut app = EditorApp::new(
+        editor::ProjectInfo {
+            root: temp_root("device-preset"),
+            version: "test".to_owned(),
+            directories: Vec::new(),
+        },
+        None,
+        LogSink::new(64),
+    );
+    app.preview_resolution = (1920, 1080);
+
+    // 进入 iPhone 15（竖屏 393×852 @3x）：设计分辨率随机型、竖屏锁定自动开。
+    app.apply_device_preset(Some(0));
+    assert_eq!(
+        app.preview_resolution,
+        (393, 852),
+        "设计分辨率 = 机型设计分辨率"
+    );
+    assert!(app.device_sim.lock_portrait, "竖屏预设自动开竖屏锁定");
+    assert_eq!(
+        app.device_sim.dpi(),
+        crate::device_sim::DEVICE_PRESETS[0].dpi,
+        "显示缩放档 = 机型 DPI"
+    );
+    assert_eq!(
+        app.display_canvas_config().safe_area,
+        crate::device_sim::DEVICE_PRESETS[0].safe_area,
+        "安全区四边 = 机型内缩"
+    );
+
+    // 换台（iPad mini 横屏）：锁随预设转关，分辨率随机型。
+    app.apply_device_preset(Some(5));
+    assert_eq!(app.preview_resolution, (1133, 744));
+    assert!(!app.device_sim.lock_portrait, "横屏预设不带竖屏锁定");
+
+    // 退出模拟：还原进入前那档分辨率（1920×1080），锁复位。
+    app.apply_device_preset(None);
+    assert_eq!(app.preview_resolution, (1920, 1080), "退出还原自定义分辨率");
+    assert!(!app.device_sim.lock_portrait);
+    assert!(app.device_sim.preset.is_none());
+
+    // 换台（Some→Some）不覆盖退出记忆：进 iPhone → 直接换 Pixel 8 → 退出仍回原档。
+    app.apply_device_preset(Some(0));
+    app.apply_device_preset(Some(2));
+    assert_eq!(app.preview_resolution, (412, 915));
+    app.apply_device_preset(None);
+    assert_eq!(app.preview_resolution, (1920, 1080));
+}
+
+/// 手动选分辨率：显式选择退出机型模拟；竖屏锁定中选横屏会被翻回竖屏。
+#[test]
+fn custom_resolution_exits_device_sim_and_respects_portrait_lock() {
+    let mut app = EditorApp::new(
+        editor::ProjectInfo {
+            root: temp_root("device-custom-resolution"),
+            version: "test".to_owned(),
+            directories: Vec::new(),
+        },
+        None,
+        LogSink::new(64),
+    );
+
+    // 模拟中手动选分辨率：HUD 不能再声称机型，安全区回落场景配置。
+    app.apply_device_preset(Some(0));
+    app.set_custom_resolution((1280, 720));
+    assert!(app.device_sim.preset.is_none(), "手动选分辨率退出机型模拟");
+    assert!(
+        !app.device_sim.lock_portrait,
+        "退出模拟同时取消预设带入的锁定"
+    );
+    assert_eq!(app.preview_resolution, (1280, 720));
+    assert_eq!(app.device_sim.dpi(), 1.0, "显示缩放档回到 1x");
+
+    // 自定义模式下手动开竖屏锁定：选横屏被翻成竖屏，选竖屏原样通过。
+    app.set_lock_portrait(true);
+    app.set_custom_resolution((1280, 720));
+    assert_eq!(
+        app.preview_resolution,
+        (720, 1280),
+        "锁定中横屏分辨率翻回竖屏"
+    );
+    app.set_custom_resolution((1080, 1920));
+    assert_eq!(app.preview_resolution, (1080, 1920), "已是竖屏不再翻转");
+
+    // 解锁后横屏原样保留。
+    app.set_lock_portrait(false);
+    app.set_custom_resolution((1920, 1080));
+    assert_eq!(app.preview_resolution, (1920, 1080));
+}

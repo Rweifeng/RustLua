@@ -16,7 +16,10 @@ use rustlua_input::input::InputSnapshot;
 use rustlua_render::font::FontAtlas;
 use rustlua_render::frame::{FontAtlasMap, VectorAtlasMap, VectorFontHandle};
 use rustlua_scene::scene::Scene;
+use rustlua_scripting::script::{Breakpoint, CrashSnapshot, DebugAction, PauseSnapshot};
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 /// 游戏预览的重绘节流：~60fps，保证持续运行而不忙转。
@@ -31,6 +34,43 @@ const PREVIEW_MAX_CATCH_UP_STEPS: u32 = 8;
 /// 窗口结束时记录真实显示帧率（上传次数即显示帧率依据）。仅日志证据，不持有会话状态。
 static PERF_WINDOW: std::sync::Mutex<Option<(u32, u32, std::time::Instant)>> =
     std::sync::Mutex::new(None);
+
+/// 错误现场落盘目录（工程相对）。
+const CRASH_DIR: &str = ".cache/crash";
+/// 落盘保留的现场文件数上限：按文件名（时间戳在前）只留最新的这些。
+/// 不断增长的目录比丢旧现场更麻烦——一局里同一个错误可能连报几十次。
+const MAX_CRASH_FILES: usize = 40;
+
+/// 一条已经落盘的错误现场：给面板用，写失败时仍保留快照本身。
+#[derive(Clone)]
+pub(crate) struct CrashReport {
+    pub(crate) snapshot: CrashSnapshot,
+    /// 落盘路径；写失败时为 `None`（原因在 `write_error`）。
+    pub(crate) file: Option<PathBuf>,
+    pub(crate) write_error: Option<String>,
+}
+
+impl CrashReport {
+    /// 面板/状态栏用的一行摘要。
+    pub(crate) fn summary(&self) -> String {
+        let callback = self.snapshot.callback.as_deref().unwrap_or("<未知回调>");
+        let location = self
+            .snapshot
+            .location
+            .as_ref()
+            .map(|location| format!("{}:{}", location.path.display(), location.line))
+            .unwrap_or_else(|| "<无位置>".to_owned());
+        let fatal = if self.snapshot.fatal {
+            "致命"
+        } else {
+            "已容错"
+        };
+        format!(
+            "[{fatal}] {callback} @ {location}：{}",
+            self.snapshot.headline()
+        )
+    }
+}
 
 /// 一次 `update` 后的状态，供视图决定 overlay 与 repaint 调度。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -108,6 +148,16 @@ pub(crate) struct PreviewSession {
     perf: PreviewPerfMeter,
     /// P3-R03：创建会话时环境应用的结果（性能面板显示档位/回退原因）。
     environment_apply: Option<EnvironmentApplyReport>,
+    /// 工程根（落盘 `.cache/crash/` 用）。
+    project_root: PathBuf,
+    /// 已消费到的快照序号。快照队列是线程级的，Stop 后仍在；会话开始时对齐一次，
+    /// 保证每组 Play 只上报**自己**触发的错误现场。
+    crash_seen: u64,
+    /// 本帧新抓到、还没被编辑器取走的现场（落盘已完成）。
+    pending_crashes: Vec<CrashReport>,
+    /// 一键复现：命中断点时由 VM 回调填进来（`Rc` 让回调与宿主共享）。
+    /// VM 回调里不能借编辑器状态，所以"停住 Play"由宿主在帧边界做。
+    replay_hit: Rc<RefCell<Option<PauseSnapshot>>>,
 }
 
 enum PreviewTexture {
@@ -227,6 +277,8 @@ impl PreviewSession {
             view_formats: &[],
         });
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // 快照序号是线程级的（Stop 不清队列）：本会话开始前留下的旧现场不属于这次 Play。
+        let crash_seen_at_start = runtime.crash_sequence();
         let mut session = Self {
             runtime,
             renderer,
@@ -250,6 +302,10 @@ impl PreviewSession {
             script_notice_left: 0,
             perf: PreviewPerfMeter::default(),
             environment_apply,
+            project_root: project_root.to_path_buf(),
+            crash_seen: crash_seen_at_start,
+            pending_crashes: Vec::new(),
+            replay_hit: Rc::new(RefCell::new(None)),
         };
         session.sync_native_texture(device);
         Ok(session)
@@ -426,6 +482,74 @@ impl PreviewSession {
         &self.runtime
     }
 
+    /// 取走本帧新抓到的错误现场（已落盘）。
+    pub(crate) fn take_crash_reports(&mut self) -> Vec<CrashReport> {
+        std::mem::take(&mut self.pending_crashes)
+    }
+
+    /// 取走一键复现命中的暂停现场（没有命中就返回 `None`）。
+    pub(crate) fn take_replay_hit(&mut self) -> Option<PauseSnapshot> {
+        self.replay_hit.borrow_mut().take()
+    }
+
+    /// 为一键复现装断点：重跑时在出错行之前停住。
+    ///
+    /// 调试回调运行在 Lua 执行流里（同步、不能借编辑器状态），所以它只把暂停现场放进
+    /// `replay_hit` 并 `Continue`；真正的"冻结 Play"由宿主在帧边界完成（见
+    /// `panels::crash_report::EditorApp::poll_crash_events`）。断点保留：再次继续/单步命中时
+    /// 仍会给出新的暂停现场，行为与常规调试器一致。
+    pub(crate) fn arm_crash_replay(&mut self, path: &Path, line: u32) -> Result<(), String> {
+        let hit = Rc::clone(&self.replay_hit);
+        let breakpoint = Breakpoint::new(path.to_path_buf(), line);
+        self.runtime.with_script(move |runtime| {
+            runtime
+                .set_debug_handler(move |snapshot| {
+                    *hit.borrow_mut() = Some(snapshot);
+                    DebugAction::Continue
+                })
+                .map_err(|error| error.to_string())?;
+            runtime
+                .set_debug_breakpoints([breakpoint])
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    /// 消费运行时里新增的错误现场：落盘到 `.cache/crash/`，再交给编辑器展示。
+    ///
+    /// 每个未捕获错误一条（引擎侧一条错误恰好推进一次序号）；被脚本自己 `pcall`
+    /// 吞掉的错误到不了这里——那是脚本的选择，不是宿主该弹的"致命错误"。
+    fn poll_crash_snapshots(&mut self) {
+        let sequence = self.runtime.crash_sequence();
+        if sequence <= self.crash_seen {
+            return;
+        }
+        let fresh: Vec<CrashSnapshot> = self
+            .runtime
+            .crash_snapshots()
+            .into_iter()
+            .filter(|snapshot| snapshot.sequence > self.crash_seen)
+            .collect();
+        self.crash_seen = sequence;
+        for snapshot in fresh {
+            let report = persist_crash(&self.project_root, &snapshot);
+            match (&report.file, &report.write_error) {
+                (Some(file), _) => tracing::info!(
+                    target: "editor",
+                    path = %file.display(),
+                    fatal = snapshot.fatal,
+                    "[crash] {}",
+                    report.summary()
+                ),
+                (None, Some(error)) => tracing::warn!(
+                    target: "editor",
+                    "[crash] 现场落盘失败：{error}（快照仍在内存里）"
+                ),
+                (None, None) => {}
+            }
+            self.pending_crashes.push(report);
+        }
+    }
+
     /// 暂停 BGM（编辑器暂停时调用）。
     pub(crate) fn pause_music(&self) {
         self.runtime.pause_music();
@@ -450,8 +574,8 @@ impl PreviewSession {
     /// 这条是「贴图预览窗改滤镜 → Play 画面立刻变糊/变锐」的通路。渲染器读的是工程根下
     /// 那份**入库**的 `resources.meta`，而预览会话在建会话时只读一次盘，所以写完必须显式
     /// 通知它，否则症状是"设置存下了、下一帧还是老样子"。
-    pub(crate) fn reload_texture_settings(&mut self) -> usize {
-        self.renderer.reload_texture_settings()
+    pub(crate) fn reload_import_settings(&mut self) -> usize {
+        self.renderer.reload_import_settings()
     }
 
     /// 本帧运行时性能快照（Play 预览的实时读数）。
@@ -570,6 +694,9 @@ impl PreviewSession {
 
         let tick_started = std::time::Instant::now();
         let result = self.update_due(elapsed, ctx, input);
+        // 错误现场在**帧体之后**统一收敛：步进失败（`PreviewTick::Failed`）的那条错误
+        // 也要落盘与弹窗，不能因为提前返回就漏掉。
+        self.poll_crash_snapshots();
         // 热重载提示在**帧体之后**才走倒计时：本帧刚挂上的那条必须完整显示，
         // 而不是刚写进 overlay 就先被自己扣掉一格。
         self.tick_script_notice();
@@ -915,6 +1042,71 @@ impl PreviewSession {
     #[cfg(test)]
     pub(crate) fn force_elapsed(&mut self, elapsed: std::time::Duration) {
         self.last_tick = Some(std::time::Instant::now() - elapsed);
+    }
+}
+
+/// 把一条现场写成 `<root>/.cache/crash/crash-<毫秒>-<序号>.json`，并清理过旧文件。
+///
+/// 文件名以时间戳开头：字典序即时间序，清理时不必读文件内容。写失败**不**丢快照——
+/// 弹窗与面板照样能看到现场，只是状态里多一条写盘原因。
+fn persist_crash(root: &Path, snapshot: &CrashSnapshot) -> CrashReport {
+    let dir = root.join(CRASH_DIR);
+    let file = dir.join(format!(
+        "crash-{:013}-{:04}.json",
+        snapshot.captured_at_ms, snapshot.sequence
+    ));
+    let written = std::fs::create_dir_all(&dir)
+        .and_then(|()| {
+            serde_json::to_vec_pretty(&snapshot.to_json()).map_err(std::io::Error::other)
+        })
+        .and_then(|bytes| std::fs::write(&file, bytes));
+    match written {
+        Ok(()) => {
+            prune_crash_dir(&dir);
+            CrashReport {
+                snapshot: snapshot.clone(),
+                file: Some(file),
+                write_error: None,
+            }
+        }
+        Err(error) => CrashReport {
+            snapshot: snapshot.clone(),
+            file: None,
+            write_error: Some(format!("写 {} 失败：{error}", file.display())),
+        },
+    }
+}
+
+/// 目录里只保留最新的 [`MAX_CRASH_FILES`] 个现场。
+///
+/// 只动本函数写出的名字（`crash-*.json`）：用户往 `.cache/crash/` 里放别的文件不该被删。
+fn prune_crash_dir(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("crash-") && name.ends_with(".json"))
+        })
+        .collect();
+    if files.len() <= MAX_CRASH_FILES {
+        return;
+    }
+    files.sort();
+    let excess = files.len() - MAX_CRASH_FILES;
+    for path in files.into_iter().take(excess) {
+        if let Err(error) = std::fs::remove_file(&path) {
+            tracing::debug!(
+                target: "editor",
+                path = %path.display(),
+                %error,
+                "[crash] 清理旧现场失败"
+            );
+        }
     }
 }
 
@@ -1302,5 +1494,93 @@ mod tests {
         assert!(session.downscales(), "0.6 倍需要降采样");
         session.set_display_size(Some(&device), (640, 360));
         assert!(!session.downscales(), "回到 1:1 应退出降采样");
+    }
+
+    fn temp_root(tag: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "rustlua-crash-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn snapshot(sequence: u64, captured_at_ms: u64) -> CrashSnapshot {
+        CrashSnapshot {
+            sequence,
+            captured_at_ms,
+            callback: Some("update()".to_owned()),
+            fatal: true,
+            message: "boom\nstack traceback:\n\t...".to_owned(),
+            location: None,
+            frames: Vec::new(),
+            locals: Vec::new(),
+            progress: None,
+            entities: rustlua_scripting::script::EntitySummary::default(),
+        }
+    }
+
+    /// 现场必须落进工程的 `.cache/crash/`，JSON 带契约字段；写失败也不丢快照。
+    #[test]
+    fn crash_reports_are_written_to_the_project_cache() {
+        let root = temp_root("persist");
+        let report = persist_crash(&root, &snapshot(7, 1_700_000_000_123));
+        let file = report.file.as_ref().expect("现场应落盘");
+        assert!(file.starts_with(root.join(".cache").join("crash")));
+        let text = std::fs::read_to_string(file).unwrap();
+        assert!(
+            text.contains("\"schema\": 1"),
+            "落盘形态是文档里的 JSON 契约"
+        );
+        assert!(text.contains("update()"));
+        assert_eq!(report.snapshot.sequence, 7);
+        assert!(report.write_error.is_none());
+
+        // 落盘失败（父路径是个文件）时：报错但不 panic，快照仍拿得出来。
+        let blocked = root.join("blocked");
+        std::fs::write(&blocked, b"not a directory").unwrap();
+        let failed = persist_crash(&blocked, &snapshot(8, 1));
+        assert!(failed.file.is_none());
+        assert!(failed.write_error.is_some());
+        assert_eq!(failed.snapshot.sequence, 8);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 只保留最新 [`MAX_CRASH_FILES`] 个，且不碰目录里用户自己的文件。
+    #[test]
+    fn prune_keeps_newest_crash_files_only() {
+        let dir = temp_root("prune");
+        for index in 0..(MAX_CRASH_FILES + 5) {
+            let path = dir.join(format!("crash-{index:013}-0001.json"));
+            std::fs::write(path, b"{}").unwrap();
+        }
+        let foreign = dir.join("notes.txt");
+        std::fs::write(&foreign, b"keep me").unwrap();
+        prune_crash_dir(&dir);
+        let count = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("crash-"))
+            })
+            .count();
+        assert_eq!(count, MAX_CRASH_FILES);
+        assert!(
+            !dir.join(format!("crash-{:013}-0001.json", 0)).exists(),
+            "最旧的被清掉"
+        );
+        assert!(
+            dir.join(format!("crash-{:013}-0001.json", MAX_CRASH_FILES + 4))
+                .exists()
+        );
+        assert!(foreign.exists(), "非本函数写出的文件不得被删");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

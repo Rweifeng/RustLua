@@ -39,6 +39,12 @@ pub(crate) enum MenuGate {
     ProjectLoaded,
     /// 需要当前选中至少一个实体。
     HasSelection,
+    /// 需要当前打开的是 Prefab 变体文档（有 `prefab.variant_base` 谱系）。
+    VariantDocument,
+    /// 需要当前主选是嵌套预制体实例根（可「从内层同步」）。
+    NestedInstance,
+    /// 需要当前打开的是有谱系的预制体文档（变体，或直接挂着嵌套实例）。
+    PrefabDocument,
 }
 
 impl MenuGate {
@@ -47,6 +53,9 @@ impl MenuGate {
             Self::Always => "",
             Self::ProjectLoaded => "需要先打开一个项目",
             Self::HasSelection => "需要先在层级 / 场景视图中选中实体",
+            Self::VariantDocument => "需要先打开一个预制体变体文档",
+            Self::NestedInstance => "需要先选中一个嵌套预制体实例根",
+            Self::PrefabDocument => "需要先打开一个预制体文档（变体或含嵌套实例）",
         }
     }
 }
@@ -217,6 +226,8 @@ pub(crate) enum MenuAction {
     SelectAll,
     DeselectAll,
     RenameEntity,
+    /// 编辑 ▸ 全工程搜索…：一次索引覆盖文档字段 / 元数据 / 资源路径 / Lua 文本（`Ctrl+Shift+F`）。
+    OpenProjectSearch,
     // 编辑 ▸ 运行控制（与工具栏同一批 typed 命令；Unity 把它们放在 Edit 菜单）
     PlayStart,
     PlayStop,
@@ -225,6 +236,12 @@ pub(crate) enum MenuAction {
     // 资源
     RefreshResources,
     CreatePrefab,
+    /// 资源 ▸ 从基础同步变体：把当前变体文档重烘到基础的新快照上（保留字段覆盖）。
+    SyncPrefabVariant,
+    /// 资源 ▸ 从内层预制体同步：把嵌套实例重烘到内层的新快照上（保留字段覆盖）。
+    SyncNestedPrefab,
+    /// 资源 ▸ 查看结构差异…：只读列出变体/嵌套的结构差异，不合并、不写盘。
+    OpenPrefabStructureDiff,
     CollectFontChars,
     /// 资源 ▸ 图集 ▸ 配置与预览：`atlas.json` 编辑 + 打页预览（不写产物）。
     OpenAtlasPanel,
@@ -260,11 +277,18 @@ pub(crate) enum MenuAction {
     TogglePerformancePanel,
     /// P3-E04-4：插件诊断窗口（列表/错误/启停/重载）。
     TogglePluginDiagnostics,
+    /// 运行期错误现场（栈 + 局部变量 + 实体摘要，可一键复现）。
+    ToggleCrashReport,
     TogglePixelGrid,
     ToggleSceneGuides,
     ToggleSafeArea,
     ToggleCollisionOverlay,
     ToggleSnap,
+    /// 窗口 ▸ 设备模拟：循环切到下一台机型（末台后回到"自定义"）。
+    CycleDevicePreset,
+    ToggleTouchSim,
+    ToggleJoystick,
+    ToggleLockPortrait,
     /// 窗口 ▸ 主题：深色 / 浅色 / 跟随系统（用户级偏好，存 `~/.rustlua/editor.json`）。
     SetThemeDark,
     SetThemeLight,
@@ -351,6 +375,13 @@ const EDIT_MENU: &[MenuRow] = &[
             .gate(MenuGate::ProjectLoaded),
     ),
     MenuRow::Item(MenuItem::new("取消选择", MenuAction::DeselectAll).gate(MenuGate::HasSelection)),
+    // 「这个音频谁在用」不该靠肉眼翻 30 份文档：搜索窗是工程级的，Inspector 的过滤词只管当前实体。
+    MenuRow::Separator,
+    MenuRow::Item(
+        MenuItem::new("全工程搜索…", MenuAction::OpenProjectSearch)
+            .shortcut("Ctrl+Shift+F")
+            .gate(MenuGate::ProjectLoaded),
+    ),
     // Unity 把 Play / Pause / Step 放在 Edit 菜单里（工具栏只是入口之一）。
     MenuRow::Separator,
     MenuRow::Item(MenuItem::new("播放", MenuAction::PlayStart).gate(MenuGate::ProjectLoaded)),
@@ -369,6 +400,18 @@ const ASSETS_MENU: &[MenuRow] = &[
     MenuRow::Item(
         MenuItem::new("创建预制体（从选中实体）", MenuAction::CreatePrefab)
             .gate(MenuGate::HasSelection),
+    ),
+    MenuRow::Item(
+        MenuItem::new("从基础同步变体", MenuAction::SyncPrefabVariant)
+            .gate(MenuGate::VariantDocument),
+    ),
+    MenuRow::Item(
+        MenuItem::new("从内层预制体同步", MenuAction::SyncNestedPrefab)
+            .gate(MenuGate::NestedInstance),
+    ),
+    MenuRow::Item(
+        MenuItem::new("查看结构差异…", MenuAction::OpenPrefabStructureDiff)
+            .gate(MenuGate::PrefabDocument),
     ),
     MenuRow::Item(
         MenuItem::new("收集字体字符", MenuAction::CollectFontChars).gate(MenuGate::ProjectLoaded),
@@ -444,6 +487,7 @@ const WINDOW_MENU: &[MenuRow] = &[
         "插件诊断",
         MenuAction::TogglePluginDiagnostics,
     )),
+    MenuRow::Item(MenuItem::new("崩溃现场", MenuAction::ToggleCrashReport)),
     MenuRow::Separator,
     MenuRow::WorkspaceTabs,
     MenuRow::ViewModes,
@@ -451,6 +495,18 @@ const WINDOW_MENU: &[MenuRow] = &[
     MenuRow::Item(MenuItem::new("像素网格", MenuAction::TogglePixelGrid)),
     MenuRow::Item(MenuItem::new("场景参考线", MenuAction::ToggleSceneGuides)),
     MenuRow::Item(MenuItem::new("安全区", MenuAction::ToggleSafeArea)),
+    MenuRow::SubMenu {
+        label: "设备模拟",
+        rows: &[
+            MenuRow::Item(MenuItem::new(
+                "下一台机型（循环）",
+                MenuAction::CycleDevicePreset,
+            )),
+            MenuRow::Item(MenuItem::new("触摸模拟", MenuAction::ToggleTouchSim)),
+            MenuRow::Item(MenuItem::new("虚拟摇杆", MenuAction::ToggleJoystick)),
+            MenuRow::Item(MenuItem::new("竖屏锁定", MenuAction::ToggleLockPortrait)),
+        ],
+    },
     MenuRow::Item(MenuItem::new(
         "碰撞区域(调试)",
         MenuAction::ToggleCollisionOverlay,
@@ -716,6 +772,17 @@ impl EditorApp {
             MenuGate::Always => true,
             MenuGate::ProjectLoaded => self.project_loaded,
             MenuGate::HasSelection => self.selection.primary().is_some(),
+            MenuGate::VariantDocument => self
+                .current_scene()
+                .is_some_and(|document| document.is_prefab_variant()),
+            MenuGate::NestedInstance => self.nested_sync_available(),
+            MenuGate::PrefabDocument => self
+                .current_scene()
+                .and_then(|document| document.prefab_asset().ok())
+                .is_some_and(|prefab| {
+                    prefab.variant_base().is_some()
+                        || !crate::actions::direct_nested_roots(&prefab).is_empty()
+                }),
         }
     }
 
@@ -761,6 +828,7 @@ impl EditorApp {
             MenuAction::SelectAll => self.select_all_entities(),
             MenuAction::DeselectAll => self.selection.clear(SelectionSource::Command),
             MenuAction::RenameEntity => self.rename_selected(),
+            MenuAction::OpenProjectSearch => self.open_project_search(),
             // 运行控制：与工具栏同一批 typed 命令（状态机在 `PlayController` 里）。
             MenuAction::PlayStart => {
                 self.dispatch(editor::EditorCommand::StartPlay);
@@ -785,7 +853,21 @@ impl EditorApp {
                 self.refresh_resources();
             }
             MenuAction::CreatePrefab => self.create_prefab_from_selected(),
+            MenuAction::SyncPrefabVariant => match self.sync_prefab_variant_from_base() {
+                Ok(()) => {}
+                Err(error) => self.status = error,
+            },
+            MenuAction::SyncNestedPrefab => {
+                let Some(selected) = self.selection.primary() else {
+                    self.status = "请先选中一个嵌套预制体实例根".to_owned();
+                    return;
+                };
+                if let Err(error) = self.sync_nested_prefab_from_inner(selected) {
+                    self.status = error;
+                }
+            }
             MenuAction::CollectFontChars => self.collect_font_chars(),
+            MenuAction::OpenPrefabStructureDiff => self.open_prefab_structure_diff(),
             MenuAction::OpenAtlasPanel => self.open_atlas_panel(),
             MenuAction::OpenBundlePanel => self.open_bundle_panel(),
             MenuAction::OpenBrokenRefsPanel => self.open_broken_refs_panel(),
@@ -842,9 +924,28 @@ impl EditorApp {
             MenuAction::TogglePluginDiagnostics => {
                 self.show_plugin_diagnostics = !self.show_plugin_diagnostics;
             }
+            MenuAction::ToggleCrashReport => self.crash_panel.show = !self.crash_panel.show,
             MenuAction::TogglePixelGrid => self.show_pixel_grid = !self.show_pixel_grid,
             MenuAction::ToggleSceneGuides => self.show_scene_guides = !self.show_scene_guides,
             MenuAction::ToggleSafeArea => self.show_safe_area = !self.show_safe_area,
+            MenuAction::CycleDevicePreset => {
+                let next = match self.device_sim.preset {
+                    Some(index) if index + 1 < crate::device_sim::DEVICE_PRESETS.len() => {
+                        Some(index + 1)
+                    }
+                    _ => None,
+                };
+                self.apply_device_preset(next);
+            }
+            MenuAction::ToggleTouchSim => {
+                self.device_sim.touch_sim = !self.device_sim.touch_sim;
+            }
+            MenuAction::ToggleJoystick => {
+                self.device_sim.joystick = !self.device_sim.joystick;
+            }
+            MenuAction::ToggleLockPortrait => {
+                self.set_lock_portrait(!self.device_sim.lock_portrait);
+            }
             MenuAction::ToggleCollisionOverlay => {
                 self.show_collision_overlay = !self.show_collision_overlay;
             }
@@ -1092,6 +1193,7 @@ mod tests {
             ("复制实体", "Ctrl+D"),
             ("删除实体", "Delete"),
             ("全选", "Ctrl+A"),
+            ("全工程搜索…", "Ctrl+Shift+F"),
             ("保存布局", "Ctrl+Shift+L"),
         ];
         assert_eq!(shortcuts, expected.to_vec());

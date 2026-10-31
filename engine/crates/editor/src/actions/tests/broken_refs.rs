@@ -208,6 +208,99 @@ fn an_unreadable_document_is_named_not_silently_dropped() {
     );
 }
 
+/// `.prefab` 必须走 `Prefab` 解析器，元数据引用（嵌套来源 / 变体基础 / 嵌套签名键）
+/// 也要进清单。
+///
+/// 用场景解析器读 `.prefab` 会每份都"读不动"，清单永远看不见预制体；而元数据引用
+/// 同样会被资源移动改写（`rewrite_prefab_references`），漏扫就是"改指漏了它、
+/// 扫描还说没断链"。
+#[test]
+fn prefab_documents_are_parsed_and_their_metadata_links_are_audited() {
+    use rustlua_assets::resource_db::AssetId;
+    use rustlua_scene::prefab::{
+        PREFAB_NESTED_STAMP_META_PREFIX, PREFAB_SOURCE_META_KEY, PREFAB_VARIANT_BASE_META_KEY,
+        Prefab,
+    };
+
+    const INNER: &str = "assets/missing/inner.prefab";
+    const BASE: &str = "assets/missing/base.prefab";
+    const STAMPED: &str = "assets/missing/stamped.prefab";
+
+    let (mut app, root) = indexed_fixture("scan-prefab-links");
+    let mut scene = Scene::new("Outer");
+    scene.add_entity(SceneEntityId(1), "Root", None).unwrap();
+    scene
+        .add_entity(SceneEntityId(2), "Inner", Some(SceneEntityId(1)))
+        .unwrap();
+    let inner = scene.entities.get_mut(&SceneEntityId(2)).unwrap();
+    let (component, payload) = sprite(BROKEN);
+    inner.components.insert(component.to_owned(), payload);
+    inner
+        .metadata
+        .insert(PREFAB_SOURCE_META_KEY.to_owned(), INNER.to_owned());
+    let mut prefab = Prefab::from_scene(
+        &scene,
+        SceneEntityId(1),
+        AssetId::from_seed("outer"),
+        "Outer",
+    )
+    .unwrap();
+    prefab
+        .metadata
+        .insert(PREFAB_VARIANT_BASE_META_KEY.to_owned(), BASE.to_owned());
+    prefab
+        .metadata
+        .insert("prefab.variant_base_stamp".to_owned(), "1:2".to_owned());
+    prefab.metadata.insert(
+        format!("{PREFAB_NESTED_STAMP_META_PREFIX}{STAMPED}"),
+        "3:4".to_owned(),
+    );
+    fs::create_dir_all(root.join("assets/prefabs")).unwrap();
+    prefab
+        .save(root.join("assets/prefabs/outer.prefab"))
+        .unwrap();
+    app.resources.refresh(&root).expect("资源索引应可建立");
+
+    assert_eq!(
+        app.dispatch(EditorCommand::ScanBrokenReferences),
+        CommandResult::Applied
+    );
+    assert!(
+        app.broken_refs.unreadable.is_empty(),
+        "预制体必须被解析器读懂：{:?}",
+        app.broken_refs.unreadable
+    );
+    assert_eq!(
+        app.broken_refs.scanned_documents, 3,
+        "两份场景 + 一份预制体"
+    );
+    let values: Vec<&str> = app
+        .broken_refs
+        .rows
+        .iter()
+        .map(|row| row.value.as_str())
+        .collect();
+    assert_eq!(
+        values,
+        vec![BASE, INNER, BROKEN, STAMPED],
+        "预制体里的组件与三类元数据引用都要在清单里"
+    );
+    let consumer = |value: &str| {
+        app.broken_refs
+            .rows
+            .iter()
+            .find(|row| row.value == value)
+            .unwrap_or_else(|| panic!("清单里没有 {value}"))
+            .consumers[0]
+            .clone()
+    };
+    assert!(consumer(BROKEN).contains("Sprite.texture"));
+    assert!(consumer(INNER).contains("assets/prefabs/outer.prefab ▸ E#2 ▸ prefab.source"));
+    assert!(consumer(BASE).contains("prefab.variant_base"));
+    assert!(consumer(STAMPED).contains("prefab.nested_stamp"));
+    let _ = root;
+}
+
 #[test]
 fn repair_rewrites_other_documents_on_disk_and_keeps_the_open_document_unsaved() {
     let (mut app, root) = indexed_fixture("repair-split");

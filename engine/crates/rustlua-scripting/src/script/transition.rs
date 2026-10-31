@@ -5,7 +5,6 @@
 
 // WP11-USE:BEGIN
 use crate::script::LuaRuntime;
-use crate::script::call_optional;
 use crate::script::domain::ecs::entity_state::PersistedEntity;
 use crate::script::domain::ecs::hierarchy::Parent;
 use crate::script::domain::ecs::particle::ParticleSystem;
@@ -148,13 +147,14 @@ impl LuaRuntime {
                     .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
             }
         }
-        call_optional(&self.lua, "on_create").map_err(|error| LuaBridgeError::Runtime {
-            path: self
-                .current_path
-                .clone()
-                .unwrap_or_else(|| PathBuf::from("<project script>")),
-            reason: error.to_string(),
-        })?;
+        self.call_optional(&self.lua, "on_create", true)
+            .map_err(|error| LuaBridgeError::Runtime {
+                path: self
+                    .current_path
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from("<project script>")),
+                reason: error.to_string(),
+            })?;
         tracing::info!(target: "scene", name = %name, entities = instantiated, "[scene] switched");
         Ok(())
     }

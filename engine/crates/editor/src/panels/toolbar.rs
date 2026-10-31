@@ -163,6 +163,8 @@ impl EditorApp {
                                     )
                                     .changed()
                                 {
+                                    // 手动选择 = 退出机型模拟，再按竖屏锁定收敛方向。
+                                    self.set_custom_resolution((*w, *h));
                                     self.adding_preview_resolution = false;
                                     self.scene_view_fit_pending = true;
                                 }
@@ -184,7 +186,7 @@ impl EditorApp {
                                         let size =
                                             resolution_for_aspect(self.preview_resolution, ratio);
                                         if size != self.preview_resolution {
-                                            self.preview_resolution = size;
+                                            self.set_custom_resolution(size);
                                             self.adding_preview_resolution = false;
                                             self.scene_view_fit_pending = true;
                                         }
@@ -201,7 +203,57 @@ impl EditorApp {
                             }
                         });
                     ui.separator();
-                    // Game 视图缩放：`适应` 可能低于 100%（此时文字只是变小、不再糊成一片），
+                    // 设备模拟：按机型预设一次性给设计分辨率 + 显示缩放档(DPI) + 安全区
+                    // （刘海/底部条）+ 竖屏锁定。三端（PC/Web/微信）验收多分辨率不再靠
+                    // 人肉改窗口再截图：切预设 = 切真机。
+                    let device_text = match self.device_sim.active() {
+                        Some(preset) => format!(
+                            "{} · {}×{}",
+                            preset.name, preset.resolution.0, preset.resolution.1
+                        ),
+                        None => "自定义".to_owned(),
+                    };
+                    egui::ComboBox::from_id_salt("device_preset")
+                        .selected_text(device_text)
+                        .width(170.0)
+                        .show_ui(ui, |ui| {
+                            for (index, preset) in crate::device_sim::DEVICE_PRESETS
+                                .iter()
+                                .enumerate()
+                            {
+                                if ui
+                                    .selectable_label(
+                                        self.device_sim.preset == Some(index),
+                                        format!(
+                                            "{}（{}×{}）",
+                                            preset.name, preset.resolution.0, preset.resolution.1
+                                        ),
+                                    )
+                                    .clicked()
+                                {
+                                    self.apply_device_preset(Some(index));
+                                    self.scene_view_fit_pending = true;
+                                    ui.close();
+                                }
+                            }
+                            ui.separator();
+                            if ui
+                                .selectable_label(
+                                    self.device_sim.preset.is_none(),
+                                    "自定义（不模拟）",
+                                )
+                                .clicked()
+                            {
+                                self.apply_device_preset(None);
+                                self.scene_view_fit_pending = true;
+                                ui.close();
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "设备模拟：机型设计分辨率 / 显示缩放档(DPI) / 安全区（刘海·底部条）/ 竖屏锁定",
+                        );
+                    ui.separator();
                     // 想看字就切 `1:1`（1 设计像素 = 1 物理像素，超出部分裁剪 + 中键拖动）。
                     egui::ComboBox::from_id_salt("game_view_zoom")
                         .selected_text(self.game_view_zoom.label())
@@ -375,7 +427,7 @@ impl EditorApp {
                         self.preview_resolutions
                             .push(self.custom_preview_resolution);
                     }
-                    self.preview_resolution = self.custom_preview_resolution;
+                    self.set_custom_resolution(self.custom_preview_resolution);
                     self.scene_view_fit_pending = true;
                     self.adding_preview_resolution = false;
                 }

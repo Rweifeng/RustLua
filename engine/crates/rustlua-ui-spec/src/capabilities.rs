@@ -6,8 +6,8 @@ use std::collections::BTreeSet;
 ///
 /// `core()` 与当前运行时逐位对齐（M76-02 的指针/焦点事件、M80-02 的裁剪、M80-04 的
 /// 值控件、M80-07 的 `value_changed`/`drag`、富文本与状态底色过渡已接进运行时；场景侧
-/// 虚拟列表窗口化尚未落地，保持关闭）。未打开的位会被校验器拒绝，避免
-/// “编辑器能编、运行时不动”。
+/// 虚拟列表窗口化已由 M76-07 收口——导出写出 `UiVirtualList`，宿主按窗口材料化行实体）。
+/// 未打开的位会被校验器拒绝，避免“编辑器能编、运行时不动”。
 ///
 /// 可序列化：Provider 请求与录制回放都携带同一份能力矩阵，避免模型侧与校验侧
 /// 对“现在支持什么”各说各话。
@@ -70,7 +70,7 @@ impl Capabilities {
             transitions: true,
             clipping: true,
             rich_text: true,
-            virtual_list: false,
+            virtual_list: true,
         }
     }
 
@@ -186,7 +186,10 @@ mod tests {
             "M80-07 起 ButtonStates 的底色覆盖与过渡时长/曲线由运行时消费"
         );
         assert!(caps.rich_text, "M80-03 起文本排版消费 rich_text 标记");
-        assert!(!caps.virtual_list);
+        assert!(
+            caps.virtual_list,
+            "M76-07 起场景侧虚拟列表按窗口材料化行实体"
+        );
     }
 
     #[test]

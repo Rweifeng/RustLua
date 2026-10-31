@@ -33,6 +33,7 @@ pub(crate) enum EditorShortcut {
     Paste,
     Delete,
     SelectAll,
+    Search,
     ToolSelect,
     ToolMove,
     ToolRotate,
@@ -41,7 +42,7 @@ pub(crate) enum EditorShortcut {
 
 impl EditorShortcut {
     /// 显示与校验顺序（也是快捷键窗口的行顺序）。
-    pub(crate) const ALL: [Self; 14] = [
+    pub(crate) const ALL: [Self; 15] = [
         Self::Undo,
         Self::Redo,
         Self::Save,
@@ -52,6 +53,7 @@ impl EditorShortcut {
         Self::Paste,
         Self::Delete,
         Self::SelectAll,
+        Self::Search,
         Self::ToolSelect,
         Self::ToolMove,
         Self::ToolRotate,
@@ -70,6 +72,7 @@ impl EditorShortcut {
             Self::Paste => "paste_entity",
             Self::Delete => "delete_entity",
             Self::SelectAll => "select_all",
+            Self::Search => "project_search",
             Self::ToolSelect => "tool_select",
             Self::ToolMove => "tool_move",
             Self::ToolRotate => "tool_rotate",
@@ -89,6 +92,7 @@ impl EditorShortcut {
             Self::Paste => "粘贴为子节点",
             Self::Delete => "删除实体",
             Self::SelectAll => "全选实体",
+            Self::Search => "全工程搜索",
             Self::ToolSelect => "工具：选择",
             Self::ToolMove => "工具：移动",
             Self::ToolRotate => "工具：旋转",
@@ -109,6 +113,7 @@ impl EditorShortcut {
             Self::Paste => "Ctrl+V",
             Self::Delete => "Delete",
             Self::SelectAll => "Ctrl+A",
+            Self::Search => "Ctrl+Shift+F",
             Self::ToolSelect => "Q",
             Self::ToolMove => "W",
             Self::ToolRotate => "E",
@@ -127,6 +132,7 @@ pub(crate) const fn for_menu_action(action: MenuAction) -> Option<EditorShortcut
         MenuAction::DeleteSelection => EditorShortcut::Delete,
         MenuAction::SelectAll => EditorShortcut::SelectAll,
         MenuAction::SaveLayout => EditorShortcut::SaveLayout,
+        MenuAction::OpenProjectSearch => EditorShortcut::Search,
         _ => return None,
     })
 }
@@ -153,6 +159,20 @@ pub(crate) fn conflicting_action(
         .iter()
         .copied()
         .find(|other| *other != action && binding(bindings, *other).same_as(spec))
+}
+
+/// 某条键位是否已被**内置动作的生效键位**占用。
+///
+/// 插件命令不能用同一个组合抢内置动作（内置优先）；返回占用的动作，供诊断页说明
+/// 插件那条快捷键为什么不生效。
+pub(crate) fn builtin_owner(
+    bindings: &ShortcutBindings,
+    spec: &ShortcutSpec,
+) -> Option<EditorShortcut> {
+    EditorShortcut::ALL
+        .iter()
+        .copied()
+        .find(|action| binding(bindings, *action).same_as(spec))
 }
 
 /// 本帧是否按下了该键位（修饰键精确匹配：多按了 Shift 不算）。
@@ -246,6 +266,7 @@ mod tests {
                 "paste_entity",
                 "delete_entity",
                 "select_all",
+                "project_search",
                 "tool_select",
                 "tool_move",
                 "tool_rotate",

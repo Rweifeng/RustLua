@@ -77,3 +77,16 @@ entity	23	UiControlScrollViewRowC	20
 component	23	Image	texture=__white__;color=0.380,0.560,0.760
 component	23	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
 component	23	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=308.00,608.00,464.00,636.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+# M76-07：虚拟列表（`list{virtualized}` 的运行时形状）——64 行数据、行高 24、视口 48px。
+# 宿主每帧只材料化窗口内的行实体（含 overscan），滚出回收；行模板是本实体唯一的直接子实体。
+entity	24	UiControlVirtualList
+component	24	Image	texture=__white__;color=0.100,0.120,0.170
+component	24	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	24	ScrollView	horizontal=false
+component	24	UiVirtualList	count=64;item_height=24;spacing=0;overscan=2
+component	24	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=720.00,540.00,880.00,588.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000
+entity	25	UiControlVirtualListRowTemplate	24
+component	25	Image	texture=__white__;color=0.240,0.360,0.520
+component	25	Text	text=Row {n};font_size=10;color=0.960,0.970,1.000
+component	25	Transform	position=0.000000000,0.000000000,0.000000000;rotation=0.000000000,0.000000000,0.000000000,1.000000000;scale=1.000000000,1.000000000,1.000000000
+component	25	UiLayout	anchors=0.0000,0.0000,0.0000,0.0000;offsets=720.00,540.00,880.00,564.00;min_size=0.00,0.00;max_size=0.00,0.00;pivot=0.0000,0.0000

@@ -20,6 +20,7 @@
     },
     {
       "funcs": [
+        "crossfade",
         "get",
         "list",
         "paused",
@@ -303,12 +304,17 @@
     },
     {
       "funcs": [
+        "clear_dynamic",
         "create_grid",
         "destroy_grid",
         "find_path",
         "find_world_path",
+        "flow_vector",
         "grid_info",
-        "set_blocked"
+        "set_blocked",
+        "set_dynamic_blocked",
+        "set_flow_goal",
+        "update_flow"
       ],
       "name": "nav"
     },

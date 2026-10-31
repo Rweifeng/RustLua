@@ -144,6 +144,29 @@ impl EditorApp {
         canvas_config_from_scene(&document.scene)
     }
 
+    /// 实际生效的 Canvas 配置（设备模拟下覆盖场景配置）：
+    ///
+    /// * 未启用设备模拟 → 场景 UI Root 的 Canvas 配置原样（既有口径）；
+    /// * 启用机型预设 → 设计分辨率 = 机型设计分辨率、安全区 = 机型内缩
+    ///   （刘海/底部条/手势条，按设计分辨率钳制）。真机上安全区是**设备上报值**，
+    ///   引擎/场景不该再叠一层，因此机型生效时直接替换场景的 `safe_area`。
+    ///
+    /// Game/Scene 预览的安全区覆盖层与 HUD 读数都以此为准，避免两处各读各的。
+    pub(crate) fn display_canvas_config(&self) -> CanvasConfig {
+        let scene_config = self.scene_canvas_config();
+        let Some(preset) = self.device_sim.active() else {
+            return scene_config;
+        };
+        let design = preset.resolution;
+        CanvasConfig {
+            reference: [design.0 as f32, design.1 as f32],
+            scale_mode: scene_config.scale_mode,
+            safe_area: self
+                .device_sim
+                .effective_safe_area(scene_config.safe_area, design),
+        }
+    }
+
     pub(crate) fn apply_canvas_config(&mut self) {
         if self.is_playing() {
             self.status = "播放模式下不能编辑场景，请先点击停止".to_owned();

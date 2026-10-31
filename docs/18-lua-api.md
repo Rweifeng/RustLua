@@ -25,7 +25,7 @@
 
 | 模块 | API | 说明 |
 |---|---|---|
-| `animation3d` | `get/set/list/paused/set_paused/time` | 查询/切换当前剪辑；`get(id)` 返回当前剪辑名，`set(id,name)` 切换并重播，`list(id)` 列出全部剪辑；宿主每帧推进时间 |
+| `animation3d` | `get/set/crossfade/list/paused/set_paused/time` | 查询/切换当前剪辑；`get(id)` 返回当前剪辑名，`set(id,name)` 切换并重播（硬切），`crossfade(id,name,seconds)` 交叉淡入（新剪辑从 0 秒起播、旧剪辑淡出，`seconds ≤ 0` 退化为硬切），`list(id)` 列出全部剪辑；宿主每帧推进时间 |
 
 `Animation3D` 场景组件格式：`mesh=<path>;clip=<name>;looped=true|false`，剪辑来自同一 glTF 资产的 animations。
 

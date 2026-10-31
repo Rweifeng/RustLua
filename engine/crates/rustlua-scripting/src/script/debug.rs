@@ -315,16 +315,40 @@ pub(crate) fn on_line(lua: &Lua, debug: &Debug) -> mlua::Result<VmState> {
 
 /// 物化暂停现场：调用栈（按 Lua 帧过滤）+ 当前帧局部变量。
 fn capture_snapshot(lua: &Lua, reason: PauseReason, location: &SourceLocation) -> PauseSnapshot {
-    let Ok(debug_table) = lua.named_registry_value::<Table>(DEBUG_REGISTRY_KEY) else {
-        return PauseSnapshot {
-            reason,
+    let captured = capture_stack_and_locals(lua);
+    let mut frames = captured.frames;
+    if frames.is_empty() {
+        frames.push(StackFrame {
+            function: "<unknown>".to_owned(),
             location: location.clone(),
-            frames: vec![StackFrame {
-                function: "<unknown>".to_owned(),
-                location: location.clone(),
-            }],
-            locals: Vec::new(),
-        };
+        });
+    }
+    PauseSnapshot {
+        reason,
+        location: location.clone(),
+        frames,
+        locals: captured.locals,
+    }
+}
+
+/// 栈解析结果：断点快照与运行期错误现场（[`super::crash`]）共用同一份。
+///
+/// 差别只在**输入时机**：断点是在钩子里（栈完整），错误是在 `xpcall` 的 message handler
+/// 里（栈尚未展开）。两边都从 `debug.getinfo(1)` 往上走、都过滤 C 帧，因此同一份代码
+/// 能给出同一口径的帧与局部变量。
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CapturedStack {
+    /// 调用栈，当前帧在前。
+    pub(crate) frames: Vec<StackFrame>,
+    /// 最内层 Lua 帧（`frames[0]`）的局部变量。
+    pub(crate) locals: Vec<LocalVariable>,
+}
+
+/// 读当前调用栈与最内层 Lua 帧的局部变量。**不**返回值时也保证不报错：任何一步读取失败
+/// 都退化成"少一点信息"，因为它的调用方之一（message handler）不能自己再抛错。
+pub(crate) fn capture_stack_and_locals(lua: &Lua) -> CapturedStack {
+    let Ok(debug_table) = lua.named_registry_value::<Table>(DEBUG_REGISTRY_KEY) else {
+        return CapturedStack::default();
     };
     let getinfo: Option<Function> = debug_table.get("getinfo").ok();
     let getlocal: Option<Function> = debug_table.get("getlocal").ok();
@@ -362,13 +386,6 @@ fn capture_snapshot(lua: &Lua, reason: PauseReason, location: &SourceLocation) -
             });
         }
     }
-    if frames.is_empty() {
-        frames.push(StackFrame {
-            function: "<unknown>".to_owned(),
-            location: location.clone(),
-        });
-    }
-
     let mut locals = Vec::new();
     if let (Some(getlocal), Some(level)) = (getlocal, top_level) {
         for index in 1..=128 {
@@ -393,12 +410,7 @@ fn capture_snapshot(lua: &Lua, reason: PauseReason, location: &SourceLocation) -
         }
     }
 
-    PauseSnapshot {
-        reason,
-        location: location.clone(),
-        frames,
-        locals,
-    }
+    CapturedStack { frames, locals }
 }
 
 /// 当前栈上 Lua 帧的层数（当前帧算 1）。

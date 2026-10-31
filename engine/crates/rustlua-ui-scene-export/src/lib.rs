@@ -26,6 +26,7 @@ use rustlua_ui::ui_scrollbar::ScrollBar;
 use rustlua_ui::ui_slider::Slider;
 use rustlua_ui::ui_states::{ButtonStateSet, ButtonVisualState, UiStateTransition};
 use rustlua_ui::ui_toggle::Toggle;
+use rustlua_ui::ui_virtual_list::{UiVirtualList, VirtualListConfig};
 use rustlua_ui_spec::{
     Align, AnchorPreset, ContainerDirection, Justify as SpecJustify, ScrollbarDirection,
     StyleEasing, StyleState, StyleTransition, UiLayoutSpec, UiNode, UiNodeKind, UiSpec,
@@ -100,6 +101,7 @@ fn validate_components(scene: &Scene, errors: &mut Vec<String>) {
                     .map(|_| ())
                     .map_err(|error| error.to_string()),
                 "ScrollView" => ScrollView::from_component_str(raw).map(|_| ()),
+                "UiVirtualList" => UiVirtualList::from_component_str(raw).map(|_| ()),
                 "Mask" => Mask::from_component_str(raw).map(|_| ()),
                 "CanvasGroup" => CanvasGroup::from_component_str(raw).map(|_| ()),
                 "Toggle" => Toggle::from_component_str(raw).map(|_| ()),
@@ -239,6 +241,13 @@ fn walk(
     // 否则 `percent` 尺寸在带内边距的容器里会两边算出不同的烘焙值。
     let flows = parent_flows(Some(&node.kind));
     let inner_rect = inner_size(&node.kind, own_rect);
+    // M76-07：虚拟列表的行模板在子项 walk **之前**校验（嵌套/多子项要报错就报在
+    // 污染导出之前）；行高从模板作者布局推导，导出件与预览器读同一份参考矩形。
+    let virtual_template_height = if matches!(&node.kind, UiNodeKind::List { virtualized: true }) {
+        virtual_list_template_height(&node.children, path, own_rect, errors)
+    } else {
+        None
+    };
     for (index, child) in node.children.iter().enumerate() {
         let reference = if flows && child.layout.offsets.is_none() {
             inner_rect
@@ -257,6 +266,60 @@ fn walk(
             errors,
         );
     }
+    if let Some(item_height) = virtual_template_height {
+        let virtual_list = UiVirtualList {
+            count: 0,
+            config: VirtualListConfig {
+                item_height,
+                spacing: 0.0,
+                overscan: 2,
+            },
+        };
+        if let Some(entity) = scene.entities.get_mut(&id) {
+            entity
+                .components
+                .insert("UiVirtualList".to_owned(), virtual_list.to_component_str());
+        }
+    }
+}
+
+/// 虚拟列表的行模板约束（v1 单实体模板）与行高推导。
+///
+/// 恰好一个子节点 = 行模板；模板不得再嵌套子节点（v1 运行时只克隆模板实体自身的
+/// `Image`/`Text`，嵌套结构会变成永远不被材料化的死数据，因此报错而不是静默丢弃）。
+/// 行高按模板的作者布局推导：`offsets` 高 > `size` 高 > `percent` 高 × 列表参考矩形。
+fn virtual_list_template_height(
+    children: &[UiNode],
+    path: &str,
+    own_rect: [f32; 2],
+    errors: &mut Vec<String>,
+) -> Option<f32> {
+    if children.len() != 1 {
+        errors.push(format!(
+            "{path}: 虚拟列表必须恰好有一个子节点作为行模板，当前 {} 个子节点",
+            children.len()
+        ));
+        return None;
+    }
+    let template = &children[0];
+    if !template.children.is_empty() {
+        errors.push(format!(
+            "{path}.children[0]: 虚拟列表行模板暂不支持嵌套子节点（v1 单实体模板）"
+        ));
+        return None;
+    }
+    let layout = &template.layout;
+    let height = layout
+        .offsets
+        .map(|offsets| (offsets[3] - offsets[1]).max(0.0))
+        .or_else(|| layout.size.map(|size| size[1].max(0.0)))
+        .or_else(|| {
+            layout
+                .percent
+                .map(|percent| (percent[1] * own_rect[1]).max(0.0))
+        })
+        .unwrap_or(SPEC_DEFAULT_H);
+    Some(height)
 }
 
 /// 流向容器的内框；没有流向的节点（面板、文本、`center`/`margin` 容器）不扣内边距，
@@ -854,11 +917,17 @@ fn emit_visuals(
             }
         }
         UiNodeKind::List { virtualized: true } => {
-            // 虚拟列表的运行时内核只在 Lua 侧存在，场景导出这条路径没有可落成的组件：
-            // 宁可报错，也不能把 `virtualized` 悄悄降级成普通滚动容器。
-            errors.push(format!(
-                "{path}: 虚拟列表（list.virtualized）运行时还没有场景侧实现，暂不能导出"
-            ));
+            // 虚拟列表的运行时形状同样是可滚动容器：`UiVirtualList` 组件（行高/间距/过扫 +
+            // 数据行总数）由 `walk` 在行模板校验后补写，这里先落 `ScrollView` 与背景。
+            // 行模板子节点照常导出为场景实体；宿主把列表的直接子实体当作模板源，
+            // 每帧只把窗口内的行实体材料化（见 runtime_scene/ui_virtual_list.rs）。
+            components.insert(
+                "ScrollView".to_owned(),
+                ScrollView { horizontal: false }.to_component_str(),
+            );
+            if has_bg {
+                components.insert("Image".to_owned(), tinted_block);
+            }
         }
         UiNodeKind::List { virtualized: false } => {
             // 列表的运行时形状就是可滚动容器：条目按各自的布局摆在内容空间里，
@@ -1514,26 +1583,52 @@ mod tests {
         assert!(export_ui_scene(&spec_of(centered), "s").is_ok());
     }
 
-    /// 运行时还不支持的节点（grid/tabs/modal）与虚拟列表必须报错而不是退化导出；
-    /// 非虚拟的 `list` 落成 `ScrollView`，属于可导出形状。
+    /// 运行时还不支持的节点（grid/tabs/modal）必须报错而不是退化导出；
+    /// 非虚拟的 `list` 落成 `ScrollView`、虚拟的 `list` 落成 `ScrollView + UiVirtualList`
+    /// （M76-07 起真实现，见 `runtime_scene/ui_virtual_list.rs`），都属于可导出形状。
     #[test]
     fn unsupported_kind_is_an_error() {
         let spec = spec_of(serde_json::json!({"key": "g", "type": "grid"}));
         let errors = export_ui_scene(&spec, "s").unwrap_err();
         assert!(errors.iter().any(|e| e.contains("grid")), "{errors:?}");
 
-        let virtual_list =
-            spec_of(serde_json::json!({"key": "l", "type": "list", "virtualized": true}));
-        let errors = export_ui_scene(&virtual_list, "s").unwrap_err();
+        let virtual_list = spec_of(serde_json::json!({
+            "key": "l", "type": "list", "virtualized": true,
+            "layout": {"anchor": "top_left", "size": [200.0, 400.0]},
+            "children": [{
+                "key": "row", "type": "text", "text": "Row {n}",
+                "layout": {"anchor": "top_left", "size": [200.0, 20.0]}
+            }]
+        }));
+        let scene = export_ui_scene(&virtual_list, "s").unwrap();
+        let list_entity = scene.entities.values().find(|e| e.name == "l").unwrap();
+        assert_eq!(list_entity.components["ScrollView"], "horizontal=false");
+        let virtual_component = &list_entity.components["UiVirtualList"];
         assert!(
-            errors.iter().any(|e| e.contains("虚拟列表")),
-            "虚拟列表不得降级成普通滚动容器：{errors:?}"
+            virtual_component.contains("item_height=20")
+                && virtual_component.contains("overscan=2"),
+            "行高要从模板作者布局推导：{virtual_component}"
+        );
+        let row_entity = scene.entities.values().find(|e| e.name == "row").unwrap();
+        assert!(
+            row_entity.components["Text"].contains("text=Row {n}"),
+            "行模板文本原样导出（`{{n}}` 占位符留给运行时替换）：{}",
+            row_entity.components["Text"]
+        );
+
+        // 模板约束依旧生效：缺模板/嵌套模板报错，不得静默降级。
+        let bare = spec_of(serde_json::json!({"key": "l", "type": "list", "virtualized": true}));
+        let errors = export_ui_scene(&bare, "s").unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("恰好有一个")),
+            "缺模板必须报错：{errors:?}"
         );
 
         let plain_list = spec_of(serde_json::json!({"key": "l", "type": "list"}));
         let scene = export_ui_scene(&plain_list, "s").unwrap();
         let entity = scene.entities.values().next().unwrap();
         assert_eq!(entity.components["ScrollView"], "horizontal=false");
+        assert!(!entity.components.contains_key("UiVirtualList"));
     }
 
     /// `scrollbar` 落成运行时组件，`value/size/direction/handle` 原样过去。

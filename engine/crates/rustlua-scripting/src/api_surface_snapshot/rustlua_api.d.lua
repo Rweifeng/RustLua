@@ -68,9 +68,16 @@ function animation.stop(id) end
 ---@return any
 function animation.time(id) end
 
---- animation3d：运行期 API 面基线里的 6 个函数
+--- animation3d：运行期 API 面基线里的 7 个函数
 animation3d = {}
 
+---@param id integer
+---@param name string
+---@param seconds number
+---@return any
+function animation3d.crossfade(id, name, seconds) end
+
+--- 切换骨骼剪辑并做**交叉淡入**：目标剪辑从 0 秒起播，旧剪辑在它自己的时间轴上继续走并在
 ---@param id integer
 ---@return any
 function animation3d.get(id) end
@@ -862,8 +869,13 @@ function mesh.get(id) end
 ---@return any
 function mesh.set(id, path) end
 
---- nav：运行期 API 面基线里的 6 个函数
+--- nav：运行期 API 面基线里的 11 个函数
 nav = {}
+
+--- 清空整张网格的**动态**阻挡层；`set_blocked` 写入的静态墙原样保留。
+---@param id integer
+---@return any
+function nav.clear_dynamic(id) end
 
 --- 创建（或按名字替换）一张全可走的矩形导航网格，返回 1 基网格 id。
 ---@param name string
@@ -900,6 +912,13 @@ function nav.find_path(id, sx, sy, gx, gy, diagonal) end
 ---@return any
 function nav.find_world_path(id, sx, sz, gx, gz, diagonal) end
 
+--- 查询某个世界位置朝流场目标前进的**单位方向**。只有该格可走、能到达目标、且流场
+---@param id integer
+---@param x number
+---@param z number
+---@return any
+function nav.flow_vector(id, x, z) end
+
 --- 读取网格尺寸与原点，供脚本做坐标换算或自检。
 ---@param id integer
 ---@return any
@@ -912,6 +931,27 @@ function nav.grid_info(id) end
 ---@param blocked boolean
 ---@return any
 function nav.set_blocked(id, x, y, blocked) end
+
+--- 在**动态覆盖层**标记单格阻挡，与静态层相互独立。单位、召唤物、临时路障这类会消失的
+---@param id integer
+---@param x integer
+---@param y integer
+---@param blocked boolean
+---@return any
+function nav.set_dynamic_blocked(id, x, y, blocked) end
+
+--- 设置流场目标（世界坐标，换算到所在格）。两个参数都省略表示**清空目标**并停掉流场；
+---@param id integer
+---@param gx number?
+---@param gz number?
+---@return any
+function nav.set_flow_goal(id, gx, gz) end
+
+--- 按预算推进一步流场构建，返回当前状态：`"idle"`（没设目标）、`"building"`（还在建）、
+---@param id integer
+---@param budget integer?
+---@return any
+function nav.update_flow(id, budget) end
 
 --- 一条到中继服务器（`ClashRoyale/server/server.mjs`）的长连接。桌面走裸 TCP
 --- net：运行期 API 面基线里的 10 个函数

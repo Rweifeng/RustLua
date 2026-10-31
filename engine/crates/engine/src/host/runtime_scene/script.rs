@@ -3,7 +3,9 @@
 //! 全部是 `pub` 方法，没有一处需要放宽可见性：`RuntimeScene` 只持有 `LuaRuntime` 的所有权，
 //! 错误策略/诊断计数这些状态仍在那台运行时里。
 
-use rustlua_scripting::script::{LuaRuntime, ReloadStatus, ScriptDiagnostic, ScriptErrorPolicy};
+use rustlua_scripting::script::{
+    CrashSnapshot, EntitySummary, LuaRuntime, ReloadStatus, ScriptDiagnostic, ScriptErrorPolicy,
+};
 
 use super::RuntimeScene;
 
@@ -60,6 +62,40 @@ impl RuntimeScene {
     #[must_use]
     pub fn script_diagnostics(&self) -> Vec<ScriptDiagnostic> {
         self.script.diagnostics()
+    }
+
+    /// 运行期未捕获错误的现场快照（最新的在后）。
+    ///
+    /// 快照在错误**现场**抓（栈 + 局部变量 + 实体摘要），因此只能在守卫的消息处理
+    /// 函数里生成——一旦栈展开，这两个信息来源就没了。这里只做转发，不改变
+    /// [`ScriptErrorPolicy`] 的任何语义：严格档照样 `Err`，容错档照样继续跑。
+    #[must_use]
+    pub fn crash_snapshots(&self) -> Vec<CrashSnapshot> {
+        self.script.crash_snapshots()
+    }
+
+    /// 最近一条错误现场（无错误时为 `None`）。
+    #[must_use]
+    pub fn latest_crash(&self) -> Option<CrashSnapshot> {
+        self.script.latest_crash()
+    }
+
+    /// 快照序号游标：宿主记住上一次处理到的序号，据此只处理新增的那些
+    /// （序号只增不减，`clear` 之前不会重复）。
+    #[must_use]
+    pub fn crash_sequence(&self) -> u64 {
+        self.script.crash_sequence()
+    }
+
+    /// 当时的实体状态摘要（场景实体数 + 运行期实体数 + 带脚本的实体清单）。
+    #[must_use]
+    pub fn entity_summary(&self) -> EntitySummary {
+        self.script.entity_summary()
+    }
+
+    /// 清空快照队列（测试/验收用）。
+    pub fn clear_crash_snapshots(&self) {
+        self.script.clear_crash_snapshots();
     }
 
     /// docs/54 §4.1：热重载**脚本层的全部内容**——工程级脚本 + 每实体脚本。

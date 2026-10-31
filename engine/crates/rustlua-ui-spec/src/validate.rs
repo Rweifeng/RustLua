@@ -1581,7 +1581,7 @@ mod tests {
     }
 
     #[test]
-    fn list_is_core_but_virtualizing_is_still_gated() {
+    fn list_and_virtualizing_are_both_core() {
         let mut spec = minimal_spec();
         spec.root.children.push(UiNode {
             key: "rows".to_owned(),
@@ -1599,7 +1599,10 @@ mod tests {
         );
         spec.root.children.last_mut().unwrap().kind = UiNodeKind::List { virtualized: true };
         let core = validate_spec(&spec, &Capabilities::core());
-        assert!(codes(&core).contains(&"spec.virtual_list_unsupported"));
+        assert!(
+            !codes(&core).contains(&"spec.virtual_list_unsupported"),
+            "M76-07 起虚拟形态也是 core 能力：{core:#?}"
+        );
         let planned = validate_spec(&spec, &Capabilities::planned());
         assert!(!codes(&planned).contains(&"spec.virtual_list_unsupported"));
     }

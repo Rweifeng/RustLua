@@ -58,6 +58,7 @@ mod ui_bindings;
 mod ui_controls;
 mod ui_input;
 mod ui_scroll;
+mod ui_virtual_list;
 
 use camera::declared_camera_2d_in;
 pub use fonts::{
@@ -258,6 +259,17 @@ pub struct RuntimeScene {
     pub(crate) ui_scroll_shifts: BTreeMap<u64, [f32; 2]>,
     /// 槽位 → `CanvasGroup` 沿父链相乘后的最终 alpha（只存 ≠ 1 的条目）。
     pub(crate) ui_group_alpha: BTreeMap<u64, f32>,
+    /// M76-07：虚拟列表运行态。列表实体名 → 行下标 → 行实体句柄（窗口内行池，
+    /// 与数据行总数解耦）。见 `ui_virtual_list` 模块文档。
+    pub(crate) ui_virtual_rows: BTreeMap<String, BTreeMap<usize, EntityId>>,
+    /// 虚拟行实体占用的槽位（`sync_prefab_ui_nodes` 摘旧预设键时不得误删这些行节点）。
+    pub(crate) ui_virtual_row_slots: BTreeSet<u64>,
+    /// 行模板实体占用的槽位（绘制/装配趟跳过模板本身，模板不画、只当克隆源）。
+    pub(crate) ui_virtual_template_slots: BTreeSet<u64>,
+    /// 列表名 → 上次材料化的数据签名（count/行高/间距/过扫）；签名变了整池重建。
+    pub(crate) ui_virtual_signatures: BTreeMap<String, (usize, f32, f32, usize)>,
+    /// 本帧虚拟列表的材料化统计（验收门读数）。
+    pub(crate) ui_virtual_frame: ui_virtual_list::VirtualListFrame,
     pub(crate) ui_focused: Option<String>,
     /// M76-02：`UiBindings` 的跨帧 resolve 状态（只发变化过的目标）。
     pub(crate) ui_binding_runtime: rustlua_ui::ui_binding::BindingRuntime,
@@ -671,7 +683,13 @@ fn build_ui_scene_nodes(scene: &Scene, honor_editor_hidden: bool) -> BTreeMap<u6
         }
         id_to_key.insert(entity.id.0, id_to_key.len() as u64);
     }
-    rustlua_ui::ui_scene_layout::build_ui_scene_nodes_with_intrinsic(
+    let virtual_lists: BTreeSet<SceneEntityId> = scene
+        .entities
+        .values()
+        .filter(|entity| entity.components.contains_key("UiVirtualList"))
+        .map(|entity| entity.id)
+        .collect();
+    let mut nodes = rustlua_ui::ui_scene_layout::build_ui_scene_nodes_with_intrinsic(
         scene.entities.values().filter_map(|entity| {
             Some(UiSceneNodeSource {
                 key: *id_to_key.get(&entity.id.0)?,
@@ -682,7 +700,21 @@ fn build_ui_scene_nodes(scene: &Scene, honor_editor_hidden: bool) -> BTreeMap<u6
         &mut |text, scale| {
             rustlua_render::text::measure_builtin_text(text, scale).map(|(size, _)| size)
         },
-    )
+    );
+    // M76-07：虚拟列表的直接子实体 = 行模板，不参与布局/绘制（运行时每帧按窗口克隆它）。
+    // 键空间已经按全部实体对齐（含模板子实体，否则后续实体槽位全错位），这里只摘节点。
+    let template_keys: BTreeSet<u64> = scene
+        .entities
+        .values()
+        .filter(|entity| {
+            entity
+                .parent
+                .is_some_and(|parent| virtual_lists.contains(&parent))
+        })
+        .filter_map(|entity| id_to_key.get(&entity.id.0).copied())
+        .collect();
+    nodes.retain(|key, _| !template_keys.contains(key));
+    nodes
 }
 
 /// 启动场景的来源。刻意分开"没声明"和"声明了但加载失败"：

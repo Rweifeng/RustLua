@@ -1,6 +1,6 @@
 # Lua 模块 `nav`
 
-> 运行期 API 面基线里本模块有 6 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
+> 运行期 API 面基线里本模块有 11 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
 > **函数清单与标题里的签名**不要手改；在每个小节里把
 > `TODO(文档桩)` 换成真实说明即可，再生成会保留已补的内容。
 
@@ -8,7 +8,7 @@
 
 # Lua 模块 `nav`
 
-> 运行期 API 面基线里本模块有 6 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
+> 运行期 API 面基线里本模块有 11 个函数。本页由 `scripts/docgen/gen-lua-api-docs.js` 生成：
 > **函数清单与标题里的签名**不要手改；在每个小节里把
 > `TODO(文档桩)` 换成真实说明即可，再生成会保留已补的内容。
 
@@ -20,6 +20,12 @@
 可以直接喂给 `transform3d.set`。本模块只算路径，不移动实体——移动节奏由游戏脚本
 或 `rustlua_navigation::NavAgent` 决定。
 
+网格有两层阻挡：`set_blocked` 写**静态**层（关卡墙、塔基），
+`set_dynamic_blocked` 写**动态覆盖层**（运行时障碍），`clear_dynamic` 整层清掉而不会
+误删静态墙。**流场**（`set_flow_goal` → `update_flow` → `flow_vector`）面向"一大群单位
+追同一个目标"：BFS 积分场跨帧按预算推进，网格任何可走性变化都会让已建好的场自动失效、
+下一次 `update_flow` 重建，脚本不用自己记账。
+
 ```lua
 local grid = nav.create_grid("arena", 18, 30, 1.0, -9.0, -15.0)
 nav.set_blocked(grid, 8, 4, true)                       -- 塔基不可走
@@ -27,7 +33,22 @@ local waypoints = nav.find_world_path(grid, -7.5, 12.5, 0.5, -12.5, true)
 for _, point in ipairs(waypoints) do
     -- transform3d.set(unit, point.x, 0, point.z, ...)
 end
+
+nav.set_flow_goal(grid, 0.5, -12.5)                     -- 全体单位追这个点
+assert(nav.update_flow(grid) == "ready")                -- 场建好（大图会先返回 "building"）
+nav.set_dynamic_blocked(grid, 4, 9, true)               -- 临时障碍：下一次 update 自动重建
 ```
+
+## `nav.clear_dynamic(id: i64)`
+
+> 绑定：`engine/crates/rustlua-gameplay/src/nav_lua.rs:270`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+清空整张网格的**动态**阻挡层；`set_blocked` 写入的静态墙原样保留。
+
+- 参数：`id`：网格 id。
+- 返回：无。
+- 失败：id 未知时报 `unknown navigation grid id`。
+- 示例：`nav.clear_dynamic(arena)`
 
 ## `nav.create_grid(name: String, width: i64, height: i64, cell_size: f64, origin_x: f64, origin_z: f64)`
 
@@ -84,6 +105,18 @@ end
 - 失败：同 `find_path`；非有限世界坐标报 `world point must be finite`。
 - 示例：`local points = nav.find_world_path(arena, -7.5, 12.5, 0.5, -12.5, true)`
 
+## `nav.flow_vector(id: i64, x: f64, z: f64)`
+
+> 绑定：`engine/crates/rustlua-gameplay/src/nav_lua.rs:329`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+查询某个世界位置朝流场目标前进的**单位方向**。只有该格可走、能到达目标、且流场
+已 `"ready"` 时才返回；站在目标格上、点在界外或场还没建好时返回 `nil`。
+
+- 参数：`id`；世界坐标 `x, z`。
+- 返回：`{ x=方向x, z=方向z }`（单位向量；对角步两分量约 ±0.7071），或 `nil`。
+- 失败：id 未知时报 `unknown navigation grid id`。
+- 示例：`local d = nav.flow_vector(arena, -7.5, 12.5); if d then transform3d.set(u, x + d.x * spd, 0, z + d.z * spd, ...) end`
+
 ## `nav.grid_info(id: i64)`
 
 > 绑定：`engine/crates/rustlua-gameplay/src/nav_lua.rs:149`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
@@ -106,3 +139,41 @@ end
 - 返回：无。
 - 失败：id 未知或格坐标越界（错误串含 `out of bounds`）。
 - 示例：`nav.set_blocked(arena, 8, 4, true)`
+
+## `nav.set_dynamic_blocked(id: i64, x: i64, y: i64, blocked: bool)`
+
+> 绑定：`engine/crates/rustlua-gameplay/src/nav_lua.rs:259`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+在**动态覆盖层**标记单格阻挡，与静态层相互独立。单位、召唤物、临时路障这类会消失的
+障碍用它；之后 `clear_dynamic` 不会连带删掉关卡墙。
+
+- 参数：`id`；格坐标 `x, y`；`blocked = true` 阻挡、`false` 撤掉。
+- 返回：无。
+- 失败：id 未知或格坐标越界（错误串含 `out of bounds`）。
+- 示例：`nav.set_dynamic_blocked(arena, 4, 9, true)`
+
+## `nav.set_flow_goal(id: i64, gx: Option<f64>, gz: Option<f64>)`
+
+> 绑定：`engine/crates/rustlua-gameplay/src/nav_lua.rs:281`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+设置流场目标（世界坐标，换算到所在格）。两个参数都省略表示**清空目标**并停掉流场；
+只给一个坐标会报错。
+
+- 参数：`id`；目标世界坐标 `gx, gz`；两个都不传 = 清空。
+- 返回：无。
+- 失败：只给 `gx`/`gz` 之一、坐标非有限或落在界外时抛 Lua 错误（越界错误串含 `out of bounds`）。
+- 示例：`nav.set_flow_goal(arena, 0.5, -12.5)`
+
+## `nav.update_flow(id: i64, budget: Option<i64>)`
+
+> 绑定：`engine/crates/rustlua-gameplay/src/nav_lua.rs:309`（直写）；签名由 `scripts/docgen/gen-lua-api-docs.js` 从绑定源码推断，需人工核对。
+
+按预算推进一步流场构建，返回当前状态：`"idle"`（没设目标）、`"building"`（还在建）、
+`"ready"`（可查询）、`"unreachable"`（目标格被阻挡或在界外）。建成后的场带缓存；
+网格可走性一变（静态或动态层），下一次调用会自动从头重建——不重建就查询，
+`flow_vector` 会返回 `nil` 而不是给旧方向。
+
+- 参数：`id`；`budget`：本次最多展开的格数，可选，默认 4096（够一张 64×64 的图一次建完）。
+- 返回：`"idle" | "building" | "ready" | "unreachable"`。
+- 失败：`budget` 为负或 id 未知时抛 Lua 错误。
+- 示例：`while nav.update_flow(arena) == "building" do end`

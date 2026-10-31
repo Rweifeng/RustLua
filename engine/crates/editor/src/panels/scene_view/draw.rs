@@ -100,7 +100,7 @@ impl EditorApp {
                 scale,
                 self.game_camera_center_egui(),
                 self.preview_resolution,
-                &self.scene_canvas_config(),
+                &self.display_canvas_config(),
             )
         {
             painter.rect_stroke(
@@ -413,7 +413,7 @@ impl EditorApp {
             ),
             scale: self.scene_zoom,
             crop: design_frame_crop(rect, frame, self.scene_zoom, ppp),
-            safe: self.scene_canvas_config().safe_area,
+            safe: self.display_canvas_config().safe_area,
         };
         let hud_rect = painter.text(
             base,

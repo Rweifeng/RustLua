@@ -1064,6 +1064,8 @@ mod tests {
                 // 唯一的变换组件（旧名 `Transform3D` 已从注册表删除）。
                 "Transform",
                 "UiLayout",
+                // M76-07 虚拟列表：并发 WIP 注册的组件，schema 驱动自动进入通用编辑器。
+                "UiVirtualList",
                 "Visibility",
                 "WorldText"
             ]

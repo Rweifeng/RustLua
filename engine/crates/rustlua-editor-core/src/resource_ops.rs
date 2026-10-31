@@ -5,8 +5,14 @@
 //! 1. **只替换整段取值**：`texture=assets/a.png` 里的 `assets/a.png` 会被替换，
 //!    但 `assets/a.png` 出现在更长路径里（`assets/a.png.backup`）或只作为子串出现时**不动**。
 //!    子串替换是这类功能最经典的静默数据损坏。
-//! 2. **解析成功才写回**：加载不了的场景文件一律不覆盖（docs/55 §8："数据损坏直接阻断"）。
+//! 2. **解析成功才写回**：加载不了的场景/Prefab 文件一律不覆盖（docs/55 §8："数据损坏直接阻断"）。
+//!
+//! 引用有三个承载位置，缺一个就会留下悬空谱系：组件串、实体/文档元数据（`prefab.source`、
+//! `prefab.variant_base`），以及把路径写进**键名**的嵌套签名（`prefab.nested_stamp.<内层路径>`）。
+//! `.prefab` 文件走 `Prefab::load`/`save`（场景解析器读不了 `prefab_version=`）。
 
+use rustlua_scene::prefab::{PREFAB_NESTED_STAMP_META_PREFIX, Prefab};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// 组件串里的路径写法（正斜杠）；Windows 上手工写的反斜杠先归一化再比较。
@@ -78,22 +84,212 @@ fn rewrite_segment(segment: &str, from: &str, to: &str) -> Option<String> {
     None
 }
 
-/// 改写一份场景里所有组件的引用；返回**被改动的组件数**。
+/// 元数据**值**里的引用：既可能是裸路径（`prefab.source`），也可能是整条覆盖快照
+/// （`component:Sprite` 级覆盖存的是组件串）。两种口径都试，仍然只认整段相等。
+fn rewrite_metadata_value(value: &str, from: &str, to: &str) -> Option<String> {
+    if normalize_path(value) == from {
+        return Some(to.to_owned());
+    }
+    rewrite_component_reference(value, from, to)
+}
+
+/// 把 `prefab.nested_stamp.<内层路径>` 键名里的路径跟着改；返回改动的键数。
+fn rewrite_stamp_keys(metadata: &mut BTreeMap<String, String>, from: &str, to: &str) -> usize {
+    let renames: Vec<String> = metadata
+        .keys()
+        .filter(|key| {
+            key.strip_prefix(PREFAB_NESTED_STAMP_META_PREFIX)
+                .is_some_and(|source| normalize_path(source) == from)
+        })
+        .cloned()
+        .collect();
+    for old in &renames {
+        if let Some(value) = metadata.remove(old) {
+            metadata.insert(format!("{PREFAB_NESTED_STAMP_META_PREFIX}{to}"), value);
+        }
+    }
+    renames.len()
+}
+
+/// 改一份元数据表里的引用（值 + 写进键名的嵌套签名）；返回改动数。
+fn rewrite_metadata_references(
+    metadata: &mut BTreeMap<String, String>,
+    from: &str,
+    to: &str,
+) -> usize {
+    let mut changed = rewrite_stamp_keys(metadata, from, to);
+    for value in metadata.values_mut() {
+        if let Some(next) = rewrite_metadata_value(value, from, to) {
+            *value = next;
+            changed += 1;
+        }
+    }
+    changed
+}
+
+/// 改写一份场景（含以场景文档打开的 Prefab）里的全部引用；返回**被改动的引用数**。
+///
+/// 三处都要改：组件串、实体元数据（嵌套实例的内层来源）、文档元数据（变体基础 +
+/// 嵌套签名键）。只改组件串会让移动内层/基础预制体后谱系指向旧路径。
 pub fn rewrite_scene_references(
     scene: &mut rustlua_scene::scene::Scene,
     from: &str,
     to: &str,
 ) -> usize {
+    let from = normalize_path(from);
+    if from.is_empty() {
+        return 0;
+    }
     let mut changed = 0;
     for entity in scene.entities.values_mut() {
         for payload in entity.components.values_mut() {
-            if let Some(next) = rewrite_component_reference(payload, from, to) {
+            if let Some(next) = rewrite_component_reference(payload, &from, to) {
                 *payload = next;
                 changed += 1;
             }
         }
+        changed += rewrite_metadata_references(&mut entity.metadata, &from, to);
     }
+    changed += rewrite_metadata_references(&mut scene.metadata, &from, to);
     changed
+}
+
+/// 改写一份 `Prefab` 文件里的全部引用（组件 + 实体元数据 + 文件级元数据）；返回改动数。
+///
+/// 文件级元数据里有 `prefab.variant_base`（值）与 `prefab.nested_stamp.<内层路径>`（键），
+/// 两者都得跟着移动后的路径走，否则变体/嵌套同步会拿旧路径去找签名。
+pub fn rewrite_prefab_references(prefab: &mut Prefab, from: &str, to: &str) -> usize {
+    let from = normalize_path(from);
+    if from.is_empty() {
+        return 0;
+    }
+    let mut changed = 0;
+    for entity in prefab.entities.values_mut() {
+        for payload in entity.components.values_mut() {
+            if let Some(next) = rewrite_component_reference(payload, &from, to) {
+                *payload = next;
+                changed += 1;
+            }
+        }
+        changed += rewrite_metadata_references(&mut entity.metadata, &from, to);
+    }
+    changed += rewrite_metadata_references(&mut prefab.metadata, &from, to);
+    changed
+}
+
+/// 一条"谁引用了这条路径"的证据（安全删除用）。
+///
+/// 定位串是人读的：`assets/scenes/main.scene ▸ E#3 ▸ Sprite`。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReferenceHit {
+    pub location: String,
+}
+
+/// 组件串里是否**整段**指向 `target`（判据与改写同一条，避免"扫描说没引用、改指却会改"）。
+fn component_references(payload: &str, target: &str) -> bool {
+    rewrite_component_reference(payload, target, target).is_some()
+}
+
+/// 元数据值是否指向 `target`（裸路径或组件串两种形态都试）。
+fn metadata_value_references(value: &str, target: &str) -> bool {
+    rewrite_metadata_value(value, target, target).is_some()
+}
+
+/// 键名里的嵌套签名是否指向 `target`。
+fn stamp_key_references(key: &str, target: &str) -> bool {
+    key.strip_prefix(PREFAB_NESTED_STAMP_META_PREFIX)
+        .is_some_and(|source| normalize_path(source) == target)
+}
+
+/// 收集一份文档里所有指向 `target` 的引用（组件串 / 实体元数据 / 文档元数据 / 嵌套签名键）。
+///
+/// **判据必须与改写同源**：[`rewrite_scene_references`] 会改的地方，这里一条都不能漏——
+/// 否则会出现"删除守卫说没人引用，资源一删就断链"的自相矛盾。
+fn collect_document_references(
+    entities: &std::collections::BTreeMap<
+        rustlua_scene::scene::SceneEntityId,
+        rustlua_scene::scene::SceneEntity,
+    >,
+    document_metadata: &BTreeMap<String, String>,
+    target: &str,
+    document_label: &str,
+) -> Vec<ReferenceHit> {
+    let target = normalize_path(target);
+    if target.is_empty() {
+        return Vec::new();
+    }
+    let mut hits = Vec::new();
+    for entity in entities.values() {
+        for (key, payload) in &entity.components {
+            if component_references(payload, &target) {
+                hits.push(ReferenceHit {
+                    location: format!("{document_label} ▸ E#{} ▸ {key}", entity.id.0),
+                });
+            }
+        }
+        for (key, value) in &entity.metadata {
+            if metadata_value_references(value, &target) {
+                hits.push(ReferenceHit {
+                    location: format!("{document_label} ▸ E#{} ▸ {key}", entity.id.0),
+                });
+            }
+        }
+    }
+    for (key, value) in document_metadata {
+        if metadata_value_references(value, &target) {
+            hits.push(ReferenceHit {
+                location: format!("{document_label} ▸ 文档元数据 ▸ {key}"),
+            });
+        }
+        if stamp_key_references(key, &target) {
+            hits.push(ReferenceHit {
+                location: format!("{document_label} ▸ 嵌套签名 ▸ {key}"),
+            });
+        }
+    }
+    hits
+}
+
+/// 收集一份场景里指向 `target` 的引用。
+#[must_use]
+pub fn collect_scene_references(
+    scene: &rustlua_scene::scene::Scene,
+    target: &str,
+    document_label: &str,
+) -> Vec<ReferenceHit> {
+    collect_document_references(&scene.entities, &scene.metadata, target, document_label)
+}
+
+/// 收集一份 `Prefab` 里指向 `target` 的引用。
+#[must_use]
+pub fn collect_prefab_references(
+    prefab: &Prefab,
+    target: &str,
+    document_label: &str,
+) -> Vec<ReferenceHit> {
+    collect_document_references(&prefab.entities, &prefab.metadata, target, document_label)
+}
+
+/// 收集一份磁盘文档（`.scene`/`.prefab`）里指向 `target` 的引用。
+///
+/// 解析器按扩展名选（`.prefab` 走 [`Prefab::load`]）：用错解析器会让每份预制体都落进
+/// "读不动"，里面的引用一条也看不见。
+pub fn collect_document_references_on_disk(
+    path: &Path,
+    target: &str,
+    document_label: &str,
+) -> Result<Vec<ReferenceHit>, String> {
+    let is_prefab = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("prefab"));
+    if is_prefab {
+        let prefab = Prefab::load(path).map_err(|error| error.to_string())?;
+        Ok(collect_prefab_references(&prefab, target, document_label))
+    } else {
+        let scene = rustlua_scene::scene::Scene::load(path).map_err(|error| error.to_string())?;
+        Ok(collect_scene_references(&scene, target, document_label))
+    }
 }
 
 /// 一次工程级改写的报告。
@@ -101,10 +297,49 @@ pub fn rewrite_scene_references(
 pub struct RewriteReport {
     /// 被改写并写回的文件（项目相对路径，正斜杠）。
     pub rewritten_files: Vec<String>,
-    /// 被改写的组件总数。
-    pub rewritten_components: usize,
+    /// 被改写的引用总数（组件串 / 元数据值 / 嵌套签名键）。
+    pub rewritten_references: usize,
     /// 解析失败/写回失败的文件（**原文件未被覆盖**）。
     pub failures: Vec<String>,
+}
+
+/// 单份文档的改写结果：把"解析失败/写回失败"分开，调用方才能给出准确原因。
+enum FileRewrite {
+    Unchanged,
+    Rewritten(usize),
+    ParseFailed,
+    WriteFailed(String),
+}
+
+fn rewrite_document_file(path: &Path, from: &str, to: &str) -> FileRewrite {
+    let is_prefab = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("prefab"));
+    if is_prefab {
+        let Ok(mut prefab) = Prefab::load(path) else {
+            return FileRewrite::ParseFailed;
+        };
+        let changed = rewrite_prefab_references(&mut prefab, from, to);
+        if changed == 0 {
+            return FileRewrite::Unchanged;
+        }
+        return match prefab.save(path) {
+            Ok(()) => FileRewrite::Rewritten(changed),
+            Err(error) => FileRewrite::WriteFailed(error.to_string()),
+        };
+    }
+    let Ok(mut scene) = rustlua_scene::scene::Scene::load(path) else {
+        return FileRewrite::ParseFailed;
+    };
+    let changed = rewrite_scene_references(&mut scene, from, to);
+    if changed == 0 {
+        return FileRewrite::Unchanged;
+    }
+    match scene.save(path) {
+        Ok(()) => FileRewrite::Rewritten(changed),
+        Err(error) => FileRewrite::WriteFailed(error.to_string()),
+    }
 }
 
 /// 改写工程目录下所有 `.scene`/`.prefab` 里的引用。
@@ -122,25 +357,20 @@ pub fn rewrite_project_references(
         if skip.is_some_and(|skip| paths_match(skip, &path)) {
             continue;
         }
-        let Ok(mut scene) = rustlua_scene::scene::Scene::load(&path) else {
-            report
+        match rewrite_document_file(&path, from, to) {
+            FileRewrite::Unchanged => {}
+            FileRewrite::Rewritten(changed) => {
+                report.rewritten_references += changed;
+                report.rewritten_files.push(relative_display(root, &path));
+            }
+            FileRewrite::ParseFailed => report
                 .failures
-                .push(relative_display(root, &path) + "（解析失败，未改动）");
-            continue;
-        };
-        let changed = rewrite_scene_references(&mut scene, from, to);
-        if changed == 0 {
-            continue;
-        }
-        if let Err(error) = scene.save(&path) {
-            report.failures.push(format!(
+                .push(relative_display(root, &path) + "（解析失败，未改动）"),
+            FileRewrite::WriteFailed(error) => report.failures.push(format!(
                 "{}（写回失败：{error}）",
                 relative_display(root, &path)
-            ));
-            continue;
+            )),
         }
-        report.rewritten_components += changed;
-        report.rewritten_files.push(relative_display(root, &path));
     }
     report
 }
@@ -361,7 +591,7 @@ mod tests {
             None,
         );
         assert_eq!(report.rewritten_files, vec!["scenes/main.scene".to_owned()]);
-        assert_eq!(report.rewritten_components, 1);
+        assert_eq!(report.rewritten_references, 1);
         assert_eq!(
             std::fs::read(root.join("scenes/broken.scene")).unwrap(),
             broken_before,
@@ -385,6 +615,184 @@ mod tests {
                 .unwrap()
                 .entities[&rustlua_scene::scene::SceneEntityId(1)]
                 .components["Sprite"]
+                .contains("assets/textures/new.png")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 以场景文档打开的 Prefab（变体/嵌套）在内存里改写时，元数据也要跟着改。
+    ///
+    /// 编辑器只对当前打开文档调用 `rewrite_scene_references`；漏掉元数据，用户保存后
+    /// 文件里仍是旧路径，谱系与嵌套签名就指向一个不存在的文件。
+    #[test]
+    fn scene_rewrite_covers_entity_and_document_metadata() {
+        let mut scene = Scene::new("variant");
+        scene
+            .add_entity(rustlua_scene::scene::SceneEntityId(1), "Root", None)
+            .unwrap();
+        let root = scene
+            .entities
+            .get_mut(&rustlua_scene::scene::SceneEntityId(1))
+            .unwrap();
+        root.metadata.insert(
+            rustlua_scene::prefab::PREFAB_SOURCE_META_KEY.to_owned(),
+            "assets/prefabs/old.prefab".to_owned(),
+        );
+        // 更长路径只是子串，不允许被顺手改掉（元数据值同样只认整段相等）。
+        root.metadata.insert(
+            "note".to_owned(),
+            "assets/prefabs/old.prefab.backup".to_owned(),
+        );
+        scene.metadata.insert(
+            rustlua_scene::prefab::PREFAB_VARIANT_BASE_META_KEY.to_owned(),
+            "assets/prefabs/old.prefab".to_owned(),
+        );
+        scene.metadata.insert(
+            format!("{PREFAB_NESTED_STAMP_META_PREFIX}assets/prefabs/old.prefab"),
+            "1:2".to_owned(),
+        );
+
+        let changed = rewrite_scene_references(
+            &mut scene,
+            "assets/prefabs/old.prefab",
+            "assets/prefabs/new.prefab",
+        );
+        assert_eq!(changed, 3, "实体元数据值 + 变体基础值 + 嵌套签名键");
+        let root = &scene.entities[&rustlua_scene::scene::SceneEntityId(1)];
+        assert_eq!(
+            root.metadata[rustlua_scene::prefab::PREFAB_SOURCE_META_KEY],
+            "assets/prefabs/new.prefab"
+        );
+        assert_eq!(
+            root.metadata["note"], "assets/prefabs/old.prefab.backup",
+            "子串不是引用"
+        );
+        assert_eq!(
+            scene.metadata[rustlua_scene::prefab::PREFAB_VARIANT_BASE_META_KEY],
+            "assets/prefabs/new.prefab"
+        );
+        assert_eq!(
+            scene.metadata[&format!("{PREFAB_NESTED_STAMP_META_PREFIX}assets/prefabs/new.prefab")],
+            "1:2"
+        );
+        assert!(!scene.metadata.contains_key(&format!(
+            "{PREFAB_NESTED_STAMP_META_PREFIX}assets/prefabs/old.prefab"
+        )));
+    }
+
+    /// `.prefab` 文件走 `Prefab::load`/`save`：组件串、实体/文件元数据**值**、
+    /// 嵌套签名**键名**三处引用都要跟着改，坏文件原样保留。
+    #[test]
+    fn prefab_files_rewrite_components_metadata_values_and_stamp_keys() {
+        use rustlua_assets::resource_db::AssetId;
+        use rustlua_scene::prefab::{PREFAB_SOURCE_META_KEY, Prefab};
+        use rustlua_scene::scene::SceneEntityId;
+
+        let root = std::env::temp_dir().join(format!(
+            "rustlua-resource-ops-prefab-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("assets/prefabs")).unwrap();
+        std::fs::create_dir_all(root.join("assets/textures")).unwrap();
+        std::fs::write(root.join("assets/textures/old.png"), b"png").unwrap();
+
+        // 外层预制体：组件引用纹理；实体元数据指向内层；文件元数据带变体谱系与嵌套签名。
+        let mut scene = Scene::new("Outer");
+        scene.add_entity(SceneEntityId(1), "Outer", None).unwrap();
+        scene
+            .add_entity(SceneEntityId(2), "Inner", Some(SceneEntityId(1)))
+            .unwrap();
+        let inner = scene.entities.get_mut(&SceneEntityId(2)).unwrap();
+        inner.components.insert(
+            "Sprite".to_owned(),
+            "texture=assets/textures/old.png;size=1x1;tint=1,1,1,1;sorting_layer=default"
+                .to_owned(),
+        );
+        inner.metadata.insert(
+            PREFAB_SOURCE_META_KEY.to_owned(),
+            "assets/prefabs/old_inner.prefab".to_owned(),
+        );
+        let mut prefab = Prefab::from_scene(
+            &scene,
+            SceneEntityId(1),
+            AssetId::from_seed("outer"),
+            "Outer",
+        )
+        .unwrap();
+        prefab.metadata.insert(
+            rustlua_scene::prefab::PREFAB_VARIANT_BASE_META_KEY.to_owned(),
+            "assets/prefabs/old_inner.prefab".to_owned(),
+        );
+        prefab.metadata.insert(
+            rustlua_scene::prefab::PREFAB_VARIANT_BASE_STAMP_META_KEY.to_owned(),
+            "9:9".to_owned(),
+        );
+        prefab.metadata.insert(
+            format!("{PREFAB_NESTED_STAMP_META_PREFIX}assets/prefabs/old_inner.prefab"),
+            "1:2".to_owned(),
+        );
+        prefab
+            .save(root.join("assets/prefabs/outer.prefab"))
+            .unwrap();
+        std::fs::write(
+            root.join("assets/prefabs/broken.prefab"),
+            b"prefab_version=9\n",
+        )
+        .unwrap();
+        let broken_before = std::fs::read(root.join("assets/prefabs/broken.prefab")).unwrap();
+
+        // 内层来源移动：实体元数据值 + 变体基础值 + 嵌套签名键，三处各算一处引用。
+        let report = rewrite_project_references(
+            &root,
+            "assets/prefabs/old_inner.prefab",
+            "assets/prefabs/new_inner.prefab",
+            None,
+        );
+        assert_eq!(
+            report.rewritten_files,
+            vec!["assets/prefabs/outer.prefab".to_owned()]
+        );
+        assert_eq!(report.rewritten_references, 3);
+        assert_eq!(
+            std::fs::read(root.join("assets/prefabs/broken.prefab")).unwrap(),
+            broken_before,
+            "解析失败的 Prefab 必须原样保留"
+        );
+        let mut reloaded = Prefab::load(root.join("assets/prefabs/outer.prefab")).unwrap();
+        assert_eq!(
+            reloaded.entities[&SceneEntityId(2)].metadata[PREFAB_SOURCE_META_KEY],
+            "assets/prefabs/new_inner.prefab"
+        );
+        assert_eq!(
+            reloaded.variant_base(),
+            Some("assets/prefabs/new_inner.prefab")
+        );
+        assert_eq!(
+            reloaded.nested_stamp("assets/prefabs/new_inner.prefab"),
+            Some("1:2"),
+            "签名值跟着键名一起搬"
+        );
+        assert!(
+            reloaded
+                .nested_stamp("assets/prefabs/old_inner.prefab")
+                .is_none()
+        );
+
+        // 纹理移动：组件串里的引用单独走组件口径。
+        let report = rewrite_project_references(
+            &root,
+            "assets/textures/old.png",
+            "assets/textures/new.png",
+            None,
+        );
+        assert_eq!(report.rewritten_references, 1);
+        reloaded = Prefab::load(root.join("assets/prefabs/outer.prefab")).unwrap();
+        assert!(
+            reloaded.entities[&SceneEntityId(2)].components["Sprite"]
                 .contains("assets/textures/new.png")
         );
         let _ = std::fs::remove_dir_all(root);

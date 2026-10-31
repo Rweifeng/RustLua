@@ -169,11 +169,15 @@ pub(crate) enum PendingDecision {
 /// P1-3b：断链审计（扫全工程引用字段）与「同名唯一命中」一键改指。
 mod broken_refs;
 mod components;
+// 安全删除：删资源前扫反向依赖，被引用要二次确认。
+pub(crate) mod delete_guard;
 mod dependency_ops;
 mod document_gate;
 mod document_io;
 mod entities;
 mod layout_ops;
+// #9 P3：嵌套预制体的内层 → 外层显式同步（记录 + 签名 + 逐节点重烘）。
+mod prefab_nested_sync;
 mod prefab_ops;
 mod prefab_rebuild;
 // M79 P2：预制体实例**整棵子树**的覆盖聚合与就地还原。`pub(crate)` 是因为 `EditorApp` 的
@@ -181,6 +185,14 @@ mod prefab_rebuild;
 pub(crate) mod prefab_overrides;
 // M79 P1-4：预制体 in-context 编辑（把场景文档整份装进口袋，改完源再放回）。
 mod prefab_stage;
+// 预制体结构差异的**只读**比较器：变体保存 / 嵌套同步的拒绝文案与
+// 「资源 ▸ 查看结构差异…」窗口共用这一份结果（`pub(crate)` 是因为面板状态要写出分区类型）。
+pub(crate) mod prefab_structure_diff;
+mod prefab_variant;
+// 全工程搜索：一次扫描把「文档组件字段 + 元数据 + 资源路径 + Lua 文本」收成一份索引，
+// 搜索面板与断链审计共用同一份事实源（`pub(crate)` 是因为面板状态结构体要写出索引类型）。
+pub(crate) mod project_index;
+mod project_search;
 #[cfg(test)]
 mod tests;
 mod transaction;
@@ -192,6 +204,7 @@ pub(crate) mod undo_ledger;
 pub(crate) use dependency_ops::ResourceDependencyReport;
 #[cfg(test)]
 pub(crate) use layout_ops::{distribute_targets, sorted_sprite_order_updates};
+pub(crate) use prefab_nested_sync::{direct_nested_roots, prepare_nested_lineage};
 pub(crate) use prefab_rebuild::{
     apply_prefab_instance_metadata, build_prefab_from_instance_root, collect_prefab_rebuild_state,
     stamp_envelope_ids,

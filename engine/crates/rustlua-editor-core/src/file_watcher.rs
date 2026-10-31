@@ -44,6 +44,27 @@ impl FileSignature {
             modified: metadata.modified().ok(),
         })
     }
+
+    /// 谱系同步用的文本签名（长度 + mtime 纳秒）。
+    ///
+    /// 编辑器把它原样存进 `.prefab` 的 `prefab.variant_base_stamp` /
+    /// `prefab.nested_stamp.*`，只回答"这份文件在上次同步后有没有被写过"——
+    /// 不做内容哈希（每次保存多读一遍全工程文件不值得）。
+    #[must_use]
+    pub fn stamp(&self) -> String {
+        let modified = self
+            .modified
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        format!("{}:{}", self.len, modified)
+    }
+
+    /// 读取路径当前签名文本；文件不存在/不可读返回 `None`。
+    #[must_use]
+    pub fn stamp_of(path: &Path) -> Option<String> {
+        Self::of(path).map(|signature| signature.stamp())
+    }
 }
 
 /// Files whose signature changed since the previous snapshot.

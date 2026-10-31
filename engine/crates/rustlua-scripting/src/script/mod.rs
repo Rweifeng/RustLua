@@ -14,6 +14,8 @@ use std::{
 // 不需要为拆分而把它们放宽成 `pub(super)`。反过来若把 `ScriptState` 移进 `state.rs`，
 // 兄弟子模块就访问不到，得逐字段加属性——所以宁可让这个结构体待在最显眼的地方。
 mod api;
+/// 运行期未捕获错误的现场快照（栈 + 局部变量 + 实体摘要），与 `debug` 共用栈解析。
+mod crash;
 /// 无头调试核心：行级断点、单步、暂停快照（与 `progress` 共用一个全局钩子）。
 pub mod debug;
 /// 领域依赖的唯一登记处（生产代码只经 `domain::` 取领域类型）。
@@ -32,6 +34,7 @@ mod vgraph_trace;
 
 // 跨 crate 的公开面（`editor` / `game_web` / `host` 用到）：消费方沿用的 `rustlua_scripting::script::*`
 // 由 engine 的 core.rs 门面再导出，路径与拆分前一字不变。
+pub use crash::{CrashSnapshot, EntitySummary, ScriptedEntity};
 pub use debug::{
     Breakpoint, DebugAction, LocalVariable, PauseReason, PauseSnapshot, SourceLocation, StackFrame,
 };
@@ -642,6 +645,24 @@ impl LuaRuntime {
         })
     }
 
+    /// M76-07：宿主为虚拟列表行实体登记名字（`{列表名}.Row{n}`），与 `entity.find` /
+    /// `entity_names_by_slot` / `ui_rects_by_name` 同一张黄金表。
+    ///
+    /// 行实体由宿主直接 spawn（不走 `scene_spawn` 的名字登记），不补这步行就查不到名；
+    /// 同名覆盖改指新句柄（行池回收再材料化、世界槽位被复用时的既有契约，与
+    /// `EntityNames::insert` 语义一致）。
+    pub fn register_entity_name(&self, id: EntityId, name: &str) {
+        let entities = self.state.borrow().entity_state.clone();
+        entities.with_mut(|entities| entities.names.insert(name.to_owned(), id));
+    }
+
+    /// M76-07：行实体回收时摘名。只摘自己那一份（名字仍指向该句柄才删），
+    /// 不误伤同槽位复用后的其他实体。
+    pub fn unregister_entity_name(&self, name: &str, id: EntityId) {
+        let entities = self.state.borrow().entity_state.clone();
+        entities.with_mut(|entities| entities.names.remove_name_if(name, id));
+    }
+
     /// [`Self::entity_names_by_slot`] 的**带代际**版本：给出完整句柄而不是槽位号。
     ///
     /// 编辑器 Play 期间要列运行态实体树，那里"槽位复用"是常态（子弹每秒生成/销毁），
@@ -1005,12 +1026,24 @@ impl LuaRuntime {
     }
 }
 
-fn call_optional(lua: &Lua, name: &str) -> LuaResult<()> {
-    let callback: Value = lua.globals().get(name)?;
-    if let Value::Function(function) = callback {
-        function.call::<()>(())?;
+impl LuaRuntime {
+    /// 调用一个**可选**的全局钩子（`on_create` / `on_destroy`）：没定义就跳过。
+    ///
+    /// 走崩溃守卫调用，因此这些生命周期钩子里漏出的错误也会留下现场；`fatal` 由调用点
+    /// 按语义给——`on_create` 失败会中止这一步（致命），`on_destroy` 失败只记诊断（不致命）。
+    fn call_optional(&self, lua: &Lua, name: &str, fatal: bool) -> LuaResult<()> {
+        let callback: Value = lua.globals().get(name)?;
+        if let Value::Function(function) = callback {
+            match crash::call_guarded(lua, function, ())? {
+                Ok(_) => {}
+                Err(reason) => {
+                    self.finalize_crash(Some(name), fatal);
+                    return Err(mlua::Error::RuntimeError(reason));
+                }
+            }
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// 每实体脚本的钩子：`on_spawn(id)` / `on_update(id, dt)`。没有定义就跳过（脚本可以只实现一个）。
@@ -1035,13 +1068,10 @@ fn call_entity_hook(
         return Ok(());
     };
     let result = match delta_seconds {
-        Some(delta) => function.call::<()>((entity_lua_id(id), delta)),
-        None => function.call::<()>((entity_lua_id(id),)),
+        Some(delta) => crash::call_guarded(lua, function, (entity_lua_id(id), delta)),
+        None => crash::call_guarded(lua, function, (entity_lua_id(id),)),
     };
-    result.map_err(|error| LuaBridgeError::Runtime {
-        path: path.to_path_buf(),
-        reason: format!("{name}: {error}"),
-    })
+    crash::bridge_result(result, path.to_path_buf(), Some(name)).map(|_| ())
 }
 
 /// `on_interact(owner, target)` / `on_collision(owner, other)`：两个实体参数都是 Lua 句柄，
@@ -1063,12 +1093,12 @@ fn call_entity_event_hook(
     let Value::Function(function) = callback else {
         return Ok(());
     };
-    function
-        .call::<()>((entity_lua_id(id), entity_lua_id(other)))
-        .map_err(|error| LuaBridgeError::Runtime {
-            path: path.to_path_buf(),
-            reason: format!("{name}: {error}"),
-        })
+    crash::bridge_result(
+        crash::call_guarded(lua, function, (entity_lua_id(id), entity_lua_id(other))),
+        path.to_path_buf(),
+        Some(name),
+    )
+    .map(|_| ())
 }
 // 相机快照的取用（`camera_view_from` / `camera3d_view_from`）随绑定搬到了
 // `rustlua_camera::camera_lua`（P1 ⑤-8）：那是"没渲染过一帧"这条口径的唯一实现点。

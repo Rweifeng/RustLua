@@ -9,25 +9,35 @@ pub(crate) mod bundles;
 /// P2：命令面板（Ctrl+Shift+P），条目来自菜单树。
 pub(crate) mod command_palette;
 pub(crate) mod console;
+/// 运行期错误现场（栈 + 局部变量 + 实体摘要）：列表 / 详情 / 一键复现。
+pub(crate) mod crash_report;
 pub(crate) mod domain_data;
 pub(crate) mod game_view;
 /// P3-E03-2：可视化脚本（`.vgraph`）画布与编译诊断。
 pub(crate) mod graph;
 pub(crate) mod header;
 pub(crate) mod hierarchy;
+/// 层级行的预制体徽标（嵌套 / 覆盖条数）：只读索引 + 行内绘制。
+pub(crate) mod hierarchy_badges;
+/// 「导入设置」面板（模型缩放 / 音频音量 / 字体字重）：写 `resources.meta`。
+pub(crate) mod import_settings;
 pub(crate) mod input_bindings;
 pub(crate) mod inspector;
 /// egui 键 ⇄ 引擎物理键的唯一转换层（M22/W1）。
 pub(crate) mod keymap;
-/// P3-E02：Inspector 里的 `.material` 编辑段（只发 typed action）。
-pub(crate) mod material;
 /// 只读 Lua 源码查看器：控制台报错行 / 资源面板双击 `.lua` 的落点（不编辑、不写盘）。
 pub(crate) mod lua_source_view;
+/// P3-E02：Inspector 里的 `.material` 编辑段（只发 typed action）。
+pub(crate) mod material;
 /// 资源面板选中 `.glb`/`.gltf` 时，属性面板里的旋转/缩放预览（CPU 软光栅，只读）。
 pub(crate) mod model_preview;
 /// 性能分析面板（独立弹窗）：Play 运行时帧率/draw/setpass/内存/资源缓存 + 编辑器帧/面板耗时。
 pub(crate) mod performance;
+/// 预制体结构差异窗（只读）：变体 ↔ 基础 / 嵌套实例 ↔ 内层源，条目可定位、不写盘。
+pub(crate) mod prefab_structure_view;
 pub(crate) mod progress;
+/// 全工程搜索窗：索引 = 文档字段 + 元数据 + 资源路径 + Lua 文本，双击定位到 Inspector 行 / 脚本行。
+pub(crate) mod project_search;
 pub(crate) mod project_settings;
 pub(crate) mod publish;
 pub(crate) mod resource_browser;

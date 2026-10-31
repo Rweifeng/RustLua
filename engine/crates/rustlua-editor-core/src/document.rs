@@ -92,6 +92,15 @@ impl SceneDocument {
         is_prefab_document(&self.scene, self.path.as_deref())
     }
 
+    /// 当前文档是否是 **Prefab 变体**：预制体文档且带文件级谱系 `prefab.variant_base`。
+    pub fn is_prefab_variant(&self) -> bool {
+        self.is_prefab_document()
+            && self
+                .scene
+                .metadata
+                .contains_key(rustlua_scene::prefab::PREFAB_VARIANT_BASE_META_KEY)
+    }
+
     /// 把本文档转换成**将要落盘的那份 Prefab 资产**（与 `Self::save_to` 走同一条转换）。
     ///
     /// 存在的理由：in-context 编辑（editor bin 的 `actions::prefab_stage`）返回场景时，
@@ -687,6 +696,53 @@ mod tests {
 
         let saved = Prefab::load(&path).unwrap();
         assert_eq!(saved.entities[&SceneEntityId(1)].name, "Boss");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 变体谱系与覆盖记录住在文件级 meta 里：`open → save` 必须原样穿过文档层，
+    /// 同时文档自己的两个键不能混进资产（否则下次打开会多出伪造的谱系字段）。
+    #[test]
+    fn variant_lineage_survives_prefab_document_roundtrip() {
+        let root = temp_root("prefab-variant-doc");
+        let path = root.join("assets/enemy_elite.prefab");
+        let mut source = Scene::new("Enemy");
+        source.add_entity(SceneEntityId(1), "Enemy", None).unwrap();
+        let mut prefab = Prefab::from_scene(
+            &source,
+            SceneEntityId(1),
+            AssetId::from_seed("enemy-elite"),
+            "Enemy",
+        )
+        .unwrap();
+        prefab
+            .set_variant_base(Some("assets/enemy.prefab"))
+            .unwrap();
+        prefab.set_variant_base_stamp(Some("len:42")).unwrap();
+        prefab
+            .set_overrides(&BTreeMap::from([(
+                (SceneEntityId(1), "name".to_owned()),
+                "Elite".to_owned(),
+            )]))
+            .unwrap();
+        prefab.save(&path).unwrap();
+
+        let mut document = SceneDocument::open(&path).unwrap();
+        document.mark_dirty();
+        document.save().unwrap();
+
+        let saved = Prefab::load(&path).unwrap();
+        assert_eq!(saved.variant_base(), Some("assets/enemy.prefab"));
+        assert_eq!(saved.variant_base_stamp(), Some("len:42"));
+        assert_eq!(
+            saved.overrides().unwrap(),
+            BTreeMap::from([((SceneEntityId(1), "name".to_owned()), "Elite".to_owned())])
+        );
+        assert!(
+            !saved.metadata.contains_key(DOC_KIND_META_KEY)
+                && !saved.metadata.contains_key(PREFAB_ASSET_ID_META_KEY),
+            "文档键不得写进资产：{:?}",
+            saved.metadata
+        );
         let _ = fs::remove_dir_all(root);
     }
 

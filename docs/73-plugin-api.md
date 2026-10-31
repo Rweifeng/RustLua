@@ -101,13 +101,33 @@
   （`PluginContext::command_handler`）。插件不需要为"能被搜到"额外做任何事。
 - **不重复**：已被菜单条目引用的命令不再单独出现一条。
 - **只认"已加载"**：禁用/卸载的插件不在注册表的已加载集合里，面板里立刻消失。
-- 插件命令声明的 `shortcut` 会显示在条目右边，但**不会被真的触发**——编辑器只处理内置
-  动作的键位；v1 也没有命令参数与上下文条件。
+- 插件命令声明的 `shortcut` 会显示在条目右边；绑定规则见下一节。v1 没有命令参数与上下文
+  条件。
 
 门：`plugins::tests::plugin_entries_join_the_command_palette`（数据层：条目在、过滤同一套、
 禁用后消失）、`panels::command_palette::tests::plugin_commands_are_searchable_and_runnable_from_the_palette`
 （无头 egui：面板里画出来、`Enter` 真执行、面板开关真打开）、
 `panels::command_palette::tests::disabled_plugin_entries_leave_the_palette`。
+
+## 命令快捷键真绑定（2026-10-31）
+
+插件命令声明的 `shortcut` 现在**真的绑定**：按下即执行，走与菜单栏、命令面板、诊断页
+「运行」同一条入口（`run_plugin_command`），没有第二条命令通道。门槛与取舍：
+
+- **内置动作优先**：与任一内置动作的**生效键位**（含用户改键后的）相同的声明不绑定——
+  插件抢不走 `Ctrl+S` / `Ctrl+Z`。诊断页在该命令旁写明与哪个动作冲突。
+- **只认已加载插件**：禁用/卸载后立刻失效，与菜单、面板、命令面板同一份运行时事实。
+- **文本焦点门槛**：输入框（命令面板搜索、Inspector 过滤框…）有焦点时不触发，与内置
+  快捷键同口径。
+- **坏声明降级为不绑定**：解析不了的文本、`egui` 不认识的键名都不会让编辑器报错；诊断页
+  照实标「无法解析，未绑定」。
+- **同键冲突**：两条插件命令声明同一键位时按注册表顺序只执行第一条（不做仲裁，也不报错）。
+- 分发位置在帧入口、改键捕获之后、Escape 取消事务之前（`main.rs`）。
+
+门：`plugins::tests::plugin_command_shortcuts_are_really_bound`（真按键：命中执行、少按
+修饰键不命中、与 `Ctrl+S` 冲突不执行、禁用后失效、坏声明不 panic 且诊断页写明）、
+`plugins::tests::plugin_shortcuts_do_not_fire_while_a_text_field_has_focus`（无头 egui
+先让 `TextEdit` 持有焦点，再按同一组合）。
 
 ## 诊断页与面板可见性（2026-10-30）
 
@@ -148,7 +168,7 @@ clippy（editor-api 与 editor，`-D warnings`）、`cargo fmt --all -- --check`
 `scripts/verify/check-docs.ps1`。
 
 未完成/未验证：没有开窗 GUI 目视（诊断窗口与面板只有无头 egui 绘制断言）；
-导入器不执行自定义导入；节点无反注册；插件命令的 `shortcut` 只显示未绑定；诊断页的「运行」
+导入器不执行自定义导入；节点无反注册；插件命令没有参数与上下文条件；诊断页的「运行」
 没有确认步骤；插件无外部加载入口；`verify.ps1`、workspace
 全量测试、Web/wasm 与真实 GPU 未跑。P3-E04 的计划与逐条读数见
 [P3 渲染与编辑器能力计划](../tasks/done/P3-渲染与编辑器能力.md)。

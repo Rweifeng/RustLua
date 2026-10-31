@@ -124,9 +124,24 @@ impl EditorApp {
             self.scene_font_atlas = load_project_font_atlas(Some(&root));
         }
         match self.create_preview(&document.scene) {
-            Ok(preview) => {
+            Ok(mut preview) => {
                 let (width, height) = preview.size();
                 tracing::info!(target: "editor", "[preview] created {}x{}", width, height);
+                // 一键复现：本次会话第一帧之前就把断点挂好，否则错误可能在挂断点前先发生。
+                if let Some(target) = self.crash_panel.take_replay_target() {
+                    match preview.arm_crash_replay(&target.path, target.line) {
+                        Ok(()) => tracing::info!(
+                            target: "editor",
+                            path = %target.path.display(),
+                            line = target.line,
+                            "[crash] 复现断点已挂上"
+                        ),
+                        Err(error) => {
+                            tracing::warn!(target: "editor", "[crash] 复现断点安装失败：{error}");
+                            self.status = format!("复现断点没挂上：{error}");
+                        }
+                    }
+                }
                 self.preview = Some(preview);
                 self.play_session = Some(PlaySession::start(&document));
                 if let Err(error) = self.play.mark_running() {
@@ -241,6 +256,8 @@ impl EditorApp {
                 egui::Color32::WHITE,
             );
             self.paint_game_view_hud(ui, &painter, panel, preview_rect, size);
+            // 虚拟摇杆画在预览之上（底座在左下角，杆头跟随拖动）。
+            self.paint_virtual_joystick(&painter, preview_rect);
         }
         if let Some(message) = self.preview.as_ref().and_then(PreviewSession::diagnostic) {
             let metrics = self.preview.as_ref().map(PreviewSession::readback_metrics);
@@ -352,6 +369,39 @@ impl EditorApp {
 
     /// Game 视图左上角徽标：设计分辨率 + 显示缩放（Unity Game 视图风格）。
     /// 面板小于原生分辨率时按比例等比缩小适配，徽标实时反映该缩放比；
+    /// 绘制虚拟摇杆（仅摇杆开关开启时）：半透明底座 + 跟随杆头。
+    /// 底座固定预览区左下角（真机拇指位）；杆头位移来自本帧轮询写入的
+    /// `stick_visual_offset`（全行程 = `VIRTUAL_STICK_RADIUS`）。
+    fn paint_virtual_joystick(&self, painter: &egui::Painter, preview_rect: egui::Rect) {
+        if !self.device_sim.joystick || self.preview.is_none() {
+            return;
+        }
+        let base = virtual_stick_base(preview_rect);
+        let center = base.center();
+        let faint = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 22);
+        let rim = egui::Color32::from_rgba_unmultiplied(255, 255, 255, 60);
+        painter.circle_filled(center, VIRTUAL_STICK_BASE_RADIUS, faint);
+        painter.circle_stroke(
+            center,
+            VIRTUAL_STICK_BASE_RADIUS,
+            egui::Stroke::new(1.5_f32, rim),
+        );
+        let knob = center + self.stick_visual_offset;
+        painter.circle_filled(
+            knob,
+            16.0,
+            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 70),
+        );
+        painter.circle_stroke(
+            knob,
+            16.0,
+            egui::Stroke::new(
+                1.5_f32,
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 120),
+            ),
+        );
+    }
+
     /// 预览/显示/裁剪/安全区等体检读数收进悬停提示，不再常驻三行。
     fn paint_game_view_hud(
         &self,
@@ -374,11 +424,16 @@ impl EditorApp {
             ),
             scale: fit,
             crop: [0.0; 4],
-            safe: self.scene_canvas_config().safe_area,
+            safe: self.display_canvas_config().safe_area,
         };
         let line = match self.game_view_zoom {
             GameViewZoom::Fit => hud.compact_line(),
             GameViewZoom::Actual => format!("{} · 1:1", hud.compact_line()),
+        };
+        // 设备模拟读数：显示缩放档（设备像素 / 设计像素）。HUD 常驻，随机型切换一起变。
+        let line = match self.device_sim.active() {
+            Some(_) => format!("{line} · {:.0}% DPI", self.device_sim.dpi() * 100.0),
+            None => line,
         };
         let color = egui::Color32::from_rgb(205, 218, 232);
         let galley = painter.layout_no_wrap(line, egui::FontId::proportional(11.5), color);
@@ -493,7 +548,17 @@ impl EditorApp {
             // 避免按住的键在下一个 tick 重复触发一次性动作。
             let mut input = std::mem::take(&mut self.preview_input_state);
             input.set_focused(true);
-            self.bridge_preview_input(&mut input, ctx, preview_rect, width, height, pointer_over);
+            // 虚拟摇杆优先消费主指针：摇杆拖动不算点击游戏（返回 true 时左键桥接被抑制）。
+            let stick_grabs_primary =
+                self.poll_virtual_joystick(ctx, &mut input, preview_rect, pointer_over);
+            self.bridge_preview_input(
+                &mut input,
+                ctx,
+                preview_rect,
+                (width, height),
+                pointer_over,
+                stick_grabs_primary,
+            );
             // 本帧的固定步计划来自 Play 状态机（docs/55 ER-10）：
             // 暂停时 0 步（画面冻结，一次性边沿留在缓冲里等下一步），单帧步进跑恰好请求的步数。
             let elapsed = ctx.input(|i| i.stable_dt.max(0.0));
@@ -554,10 +619,75 @@ impl EditorApp {
             // 否则「在被节流帧按下 → 还没轮到逻辑步就失焦」的那一下会在回来时补触发
             // 一次幽灵按键（`set_focused(false)` 只清 held，不清 pressed/released）。
             self.preview_input_state.finish_frame();
+            // 失焦 = 摇杆脱手：方向全部释放，别让摇杆键在窗口切走之后继续按住。
+            self.stick_active = false;
+            self.stick_visual_offset = egui::Vec2::ZERO;
+            let stick_steps = self.stick.release_all();
             if let Some(preview) = &mut self.preview {
-                preview.update(ctx, &InputSnapshot::default());
+                if stick_steps.is_empty() {
+                    preview.update(ctx, &InputSnapshot::default());
+                } else {
+                    let mut released = InputSnapshot::default();
+                    crate::device_sim::apply_stick_steps(&mut released, &stick_steps);
+                    preview.update(ctx, &released);
+                }
             }
         }
+    }
+
+    /// 轮询编辑器侧虚拟摇杆并把它这帧的写入注入输入快照（镜像真机 `virtual_pad.lua`）：
+    ///
+    /// * 摇杆开关关闭 → 无操作；
+    /// * 指针在底座内按下 → 抓取（`stick_grab_pos` 记录按下点，真机"抓取用按下位置"）；
+    /// * 抓取中 → 杆头位移 = (实时光标 − 按下点) / 全行程，逐轴钳制到 [-1,1]，
+    ///   交给 [`crate::device_sim::StickState::update`] 只在方向变化时产出
+    ///   `Press/Release` 写入（按住态由引擎跨帧沿用）；
+    /// * 抬手 → 释放全部方向。
+    ///
+    /// 返回 `true` = 本帧主指针被摇杆占用（鼠标/触摸左键桥接应被抑制，拖动摇杆不算点击游戏）。
+    fn poll_virtual_joystick(
+        &mut self,
+        ctx: &egui::Context,
+        input: &mut InputSnapshot,
+        preview_rect: egui::Rect,
+        pointer_over: bool,
+    ) -> bool {
+        let steps = if !self.device_sim.joystick {
+            // 开关关闭：脱手 + 释放全部（若之前正抓着）。
+            self.stick_active = false;
+            self.stick_visual_offset = egui::Vec2::ZERO;
+            self.stick.release_all()
+        } else {
+            let pointer = ctx.input(|i| i.pointer.hover_pos());
+            let down = ctx.input(|i| i.pointer.primary_down());
+            let base = virtual_stick_base(preview_rect);
+            if self.stick_active {
+                if !down {
+                    // 抬手：释放全部方向并结束抓取。
+                    self.stick_active = false;
+                    self.stick_visual_offset = egui::Vec2::ZERO;
+                    self.stick.update(false, 0.0, 0.0, VIRTUAL_STICK_DEADZONE)
+                } else {
+                    // 抓取中：跟随实时光标（可拖出底座，杆头按半径钳制）。
+                    let offset = pointer.map_or(egui::Vec2::ZERO, |pos| pos - self.stick_grab_pos);
+                    self.stick_visual_offset = clamp_vec2_len_max(offset, VIRTUAL_STICK_RADIUS);
+                    let nx = (offset.x / VIRTUAL_STICK_RADIUS).clamp(-1.0, 1.0);
+                    let ny = (offset.y / VIRTUAL_STICK_RADIUS).clamp(-1.0, 1.0);
+                    self.stick.update(true, nx, ny, VIRTUAL_STICK_DEADZONE)
+                }
+            } else if down && pointer_over && pointer.is_some_and(|pos| base.contains(pos)) {
+                // 新抓取：起点 = 按下位置（真机同语义）。
+                self.stick_active = true;
+                self.stick_grab_pos = pointer.expect("已判 Some");
+                self.stick_visual_offset = egui::Vec2::ZERO;
+                self.stick.update(true, 0.0, 0.0, VIRTUAL_STICK_DEADZONE)
+            } else {
+                Vec::new()
+            }
+        };
+        let grabbed = self.stick_active;
+        crate::device_sim::apply_stick_steps(input, &steps);
+        grabbed
     }
 
     /// 从 egui 输入构建游戏输入快照（M20-08：**全键位**键盘 + 鼠标 + 滚轮）。
@@ -573,10 +703,11 @@ impl EditorApp {
         input: &mut InputSnapshot,
         ctx: &egui::Context,
         preview_rect: egui::Rect,
-        width: u32,
-        height: u32,
+        size: (u32, u32),
         pointer_over: bool,
+        stick_grabs_primary: bool,
     ) {
+        let (width, height) = size;
         ctx.input(|i| {
             // 键盘：**只要窗口有键盘焦点**就桥接（M22 修复：不再要求鼠标悬停在 Game 视图上，
             // 否则「按下 Play 后鼠标停在工具栏」会完全收不到按键）。
@@ -605,7 +736,23 @@ impl EditorApp {
             }
             // 鼠标：只有指针在预览矩形内才桥接（否则点击编辑器其它面板会穿透到游戏）；
             // 指针离开时送松开边沿，避免「按住左键把鼠标移出」留下卡住的点击。
-            input.mouse_event(MouseButton::Left, pointer_over && i.pointer.primary_down());
+            // 摇杆占用主指针时左键整体抑制（拖动摇杆不算点击游戏）。
+            let left_down = pointer_over && i.pointer.primary_down() && !stick_grabs_primary;
+            // 触摸模拟：左键按下 = 一根手指，写进多指槽（Lua `press_position`/
+            // `pointer_count` 走真机语义）；UI 点击仍走左键通道（真机 tap = 点击）。
+            if self.device_sim.touch_sim {
+                let touching = left_down;
+                if pointer_over && let Some(pos) = i.pointer.hover_pos() {
+                    let px = (pos.x - preview_rect.min.x) / preview_rect.width().max(1.0)
+                        * width.max(1) as f32;
+                    let py = (pos.y - preview_rect.min.y) / preview_rect.height().max(1.0)
+                        * height.max(1) as f32;
+                    crate::device_sim::bridge_touch(input, touching, px as f64, py as f64);
+                } else {
+                    crate::device_sim::bridge_touch(input, false, 0.0, 0.0);
+                }
+            }
+            input.mouse_event(MouseButton::Left, left_down);
             input.mouse_event(
                 MouseButton::Right,
                 pointer_over && i.pointer.secondary_down(),
@@ -657,6 +804,36 @@ fn preview_fit_scale(preview_rect: egui::Rect, ppp: f32, native_w: u32) -> f32 {
         return 1.0;
     }
     (preview_rect.width() * ppp) / native_w as f32
+}
+
+/// 虚拟摇杆方向阈值：死区 × 全行程（与真机 `virtual_pad.lua` 的 `STICK_DEADZONE`
+/// 同口径；`device_sim::StickState` 的 golden 测试就用这个值锁行为）。
+const VIRTUAL_STICK_DEADZONE: f32 = 0.25;
+/// 摇杆杆头全行程半径（egui 逻辑像素）。
+const VIRTUAL_STICK_RADIUS: f32 = 44.0;
+/// 摇杆底座（绘制 + 抓取命中）半径（egui 逻辑像素）。
+const VIRTUAL_STICK_BASE_RADIUS: f32 = 40.0;
+
+/// 摇杆底座命中矩形：预览区左下角（真机拇指位）。
+fn virtual_stick_base(preview_rect: egui::Rect) -> egui::Rect {
+    let center = preview_rect.left_bottom() + egui::vec2(64.0, -64.0);
+    egui::Rect::from_center_size(
+        center,
+        egui::vec2(
+            VIRTUAL_STICK_BASE_RADIUS * 2.0,
+            VIRTUAL_STICK_BASE_RADIUS * 2.0,
+        ),
+    )
+}
+
+/// 把向量钳到最大长度（egui 版本间 `Vec2::clamp_length_max` 名字不稳定，手写一处）。
+fn clamp_vec2_len_max(v: egui::Vec2, max: f32) -> egui::Vec2 {
+    let len = v.length();
+    if len > max && len > 0.0 {
+        v * (max / len)
+    } else {
+        v
+    }
 }
 
 /// 这一 tick 是否真的跑过固定步 —— 也就是**是否允许消费本帧的一次性输入边沿**。
@@ -1182,7 +1359,7 @@ mod tests {
         };
         ctx.begin_pass(raw);
         let mut input = InputSnapshot::default();
-        app.bridge_preview_input(&mut input, &ctx, preview_rect, 200, 100, true);
+        app.bridge_preview_input(&mut input, &ctx, preview_rect, (200, 100), true, false);
         let _ = ctx.end_pass();
 
         assert!(
@@ -1265,7 +1442,7 @@ mod tests {
         };
         ctx.begin_pass(raw);
         let mut input = InputSnapshot::default();
-        app.bridge_preview_input(&mut input, &ctx, preview_rect, 200, 100, true);
+        app.bridge_preview_input(&mut input, &ctx, preview_rect, (200, 100), true, false);
         let _ = ctx.end_pass();
 
         assert!(input.is_down(KeyCode::KeyW));
@@ -1333,7 +1510,7 @@ mod tests {
         };
         ctx.begin_pass(raw);
         let mut input = InputSnapshot::default();
-        app.bridge_preview_input(&mut input, &ctx, preview_rect, 200, 100, true);
+        app.bridge_preview_input(&mut input, &ctx, preview_rect, (200, 100), true, false);
         let _ = ctx.end_pass();
 
         // 期望值取自**唯一**的转换表（`keymap::egui_input_key`），而不是测试里
@@ -1421,7 +1598,7 @@ mod tests {
                 .collect(),
             ..Default::default()
         });
-        app.bridge_preview_input(&mut input, &ctx, preview_rect, 200, 100, true);
+        app.bridge_preview_input(&mut input, &ctx, preview_rect, (200, 100), true, false);
         let _ = ctx.end_pass();
         assert!(!input.is_down(KeyCode::KeyJ));
         assert!(
@@ -1468,7 +1645,7 @@ mod tests {
         ctx.begin_pass(raw);
         let mut input = InputSnapshot::default();
         // `pointer_over = false`：鼠标不在 Game 视图内（指针事件也落在别处）。
-        app.bridge_preview_input(&mut input, &ctx, preview_rect, 200, 100, false);
+        app.bridge_preview_input(&mut input, &ctx, preview_rect, (200, 100), false, false);
         let _ = ctx.end_pass();
 
         assert!(
@@ -1554,6 +1731,116 @@ mod tests {
         assert!(
             app.scene_screen_cache_key.is_some(),
             "渲染路径应真的跑过（不是提前返回）"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    /// 端到端：未捕获错误 → 现场落盘 + 致命弹窗 + 冻结 Play；一键复现 → 重跑并在出错行前停住。
+    ///
+    /// 这条走的是真实链路：脚本 `update()` 里抛错 → `xpcall` 守卫抓栈/局部变量 → 容错档
+    /// 计数到上限判致命 → `PreviewSession` 落盘 → 面板弹窗并暂停 Play → 复现重跑挂断点。
+    #[test]
+    fn uncaught_script_error_reports_fatal_snapshot_and_replays_to_the_error_line() {
+        let Some((device, queue)) = test_device() else {
+            return;
+        };
+        let root = temp_root("crash-e2e");
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        // `EditorApp::new` 以 project.toml 是否存在判定 project_loaded；复现要求工程已打开。
+        fs::write(
+            root.join("project.toml"),
+            "[project]\nname = \"crash-e2e\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("scripts").join("main.lua"),
+            "local function boom()\n\
+             \tlocal marker = 'e2e'\n\
+             \terror('e2e-' .. marker)\n\
+             end\n\
+             \n\
+             function update()\n\
+             \tboom()\n\
+             end\n",
+        )
+        .unwrap();
+        let project = ProjectInfo {
+            root: root.clone(),
+            version: "test".into(),
+            directories: Vec::new(),
+        };
+        let mut app = EditorApp::new(project, Some((device, queue)), LogSink::new(64));
+        app.document.new_scene("main");
+        app.play();
+        assert!(app.preview.is_some(), "play 应创建预览会话");
+        // 默认容错上限 60；调到 1 让首次未捕获错误就是"停用回调"的那一次（致命）。
+        app.preview
+            .as_mut()
+            .unwrap()
+            .with_script(|runtime| runtime.set_callback_error_limit(1));
+
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 360.0));
+        let step = |app: &mut EditorApp| {
+            if let Some(preview) = app.preview.as_mut() {
+                preview.force_tick();
+            }
+            ctx.begin_pass(RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            });
+            app.update_preview(&ctx, true, true, screen);
+            let _ = ctx.end_pass();
+            app.poll_crash_events(&ctx);
+        };
+        step(&mut app);
+
+        assert_eq!(app.crash_panel.records.len(), 1, "每个未捕获错误一条现场");
+        let record = app.crash_panel.records[0].clone();
+        assert!(
+            record.snapshot.fatal,
+            "上限 1 的首个错误会停用回调，因此致命"
+        );
+        assert!(record.snapshot.message.contains("e2e-e2e"));
+        assert_eq!(
+            record
+                .snapshot
+                .location
+                .as_ref()
+                .map(|location| location.line),
+            Some(3),
+            "出错行是 error 那一行"
+        );
+        assert_eq!(app.crash_panel.fatal_modal, Some(record.snapshot.sequence));
+        assert_eq!(app.play_state(), PlayState::Paused, "致命错误要冻结 Play");
+        let file = record.file.as_ref().expect("现场必须落盘");
+        assert!(file.starts_with(root.join(".cache").join("crash")));
+        let text = fs::read_to_string(file).unwrap();
+        assert!(text.contains("\"fatal\": true"));
+        assert!(text.contains("\"marker\""), "现场要带局部变量");
+
+        // 一键复现：重跑并在出错行之前停住。
+        app.crash_panel.fatal_modal = None;
+        let target = crate::panels::crash_report::ReplayTarget::from_report(&record).unwrap();
+        app.replay_crash(target);
+        assert_eq!(
+            app.play_state(),
+            PlayState::Playing,
+            "复现会重新开始运行（status: {}）",
+            app.status
+        );
+        step(&mut app);
+        assert_eq!(app.play_state(), PlayState::Paused, "命中断点后 Play 停住");
+        let pause = app.crash_panel.pause.as_ref().expect("断点现场");
+        assert_eq!(pause.location.line, 3, "停在出错行之前");
+        assert_eq!(
+            pause.reason,
+            rustlua_scripting::script::PauseReason::Breakpoint
+        );
+        assert!(
+            pause.locals.iter().any(|local| local.name == "marker"),
+            "断点现场要带那一刻的局部变量：{:?}",
+            pause.locals
         );
         let _ = fs::remove_dir_all(root);
     }

@@ -85,6 +85,9 @@ pub enum AudioError {
 pub struct AudioSystem {
     asset_dir: Option<PathBuf>,
     sounds: HashMap<String, Vec<u8>>,
+    /// 逐音效的音量倍数（导入设置里的"音量"）。键是**音效名**（不带扩展名，
+    /// 与 `play("hit")` 的写法一致）。没登记 = 1.0（原样）。
+    asset_gains: HashMap<String, f32>,
     volume: f32,
     /// 分组音量（M20-02）：主音量之外的 BGM/SFX/UI 各自可调。
     bus_volumes: HashMap<AudioBus, f32>,
@@ -97,6 +100,9 @@ pub struct AudioSystem {
     spatial_model: SpatialModel,
     /// 当前 BGM 的解码字节（供曲尾续播重挂；换曲/停止时更新）。
     music_bytes: Option<Vec<u8>>,
+    /// 当前 BGM 自己的音量倍数（导入设置里的"音量"）。主音量变化时要**连它一起**重算，
+    /// 否则改一次主音量就会把这个文件的音量设置悄悄抹掉。
+    music_gain: f32,
 }
 
 impl fmt::Debug for AudioSystem {
@@ -128,18 +134,45 @@ impl AudioSystem {
         Self {
             asset_dir: None,
             sounds: HashMap::new(),
+            asset_gains: HashMap::new(),
             volume: 1.0,
             bus_volumes: HashMap::new(),
             device: Device::new(),
             listener: None,
             spatial_model: SpatialModel::DEFAULT,
             music_bytes: None,
+            music_gain: 1.0,
         }
     }
 
     /// Sets the directory WAV clips are loaded from (usually `<project>/assets`).
     pub fn set_asset_dir(&mut self, dir: PathBuf) {
         self.asset_dir = Some(dir);
+    }
+
+    /// 逐音效的音量倍数（导入设置里的"音量"）。
+    ///
+    /// 与总线音量**相乘**：总线管"这一类声音多大"（`project.toml` 的分组音量），
+    /// 这里管"这一个文件多大"。两者互不覆盖。
+    pub fn set_asset_gain(&mut self, name: &str, gain: f32) {
+        self.asset_gains.insert(name.to_owned(), gain.max(0.0));
+    }
+
+    /// 一次性灌入逐音效的音量倍数（键 = 音效名，不带扩展名）。
+    ///
+    /// **整表替换**（不是合并）：宿主在载入场景时灌入导入设置那张表，
+    /// 之后 Lua/脚本再单独调 [`Self::set_asset_gain`] 追加的条目会被下一次灌入抹掉。
+    pub fn set_asset_gains(&mut self, gains: HashMap<String, f32>) {
+        self.asset_gains = gains
+            .into_iter()
+            .map(|(name, gain)| (name, gain.max(0.0)))
+            .collect();
+    }
+
+    /// 某个音效的音量倍数；没登记 = 1.0（原样）。
+    #[must_use]
+    pub fn asset_gain(&self, name: &str) -> f32 {
+        self.asset_gains.get(name).copied().unwrap_or(1.0)
     }
 
     /// Sets the master volume in `0..=1`.
@@ -182,6 +215,24 @@ impl AudioSystem {
             return self.volume;
         }
         self.volume * self.bus_volume(bus)
+    }
+
+    /// 这一条声音最终的有效音量 = 主音量 × 分组音量 × 这个文件的音量倍数 × 空间增益。
+    ///
+    /// 四者**相乘**、互不覆盖：总线管"这一类声音多大"，导入设置管"这一个文件多大"，
+    /// 空间增益管"离听者多远"。生产路径与门都走这一个函数，免得各写一遍乘法。
+    #[must_use]
+    fn effective_gain(&self, bus: AudioBus, name: &str, spatial_gain: f32) -> f32 {
+        self.effective_volume(bus) * spatial_gain * self.asset_gain(name)
+    }
+
+    /// 当前 BGM 的有效音量 = 主音量 × BGM 分组音量 × 这首曲子的音量倍数。
+    ///
+    /// 与 [`Self::effective_gain`] 分开是因为 BGM 走常驻 sink：改主音量时要**重算**它，
+    /// 而那一档是"这一首曲子自己的"，不能被主音量改一次就抹掉。
+    #[must_use]
+    fn effective_music_gain(&self) -> f32 {
+        self.effective_volume(AudioBus::Bgm) * self.music_gain
     }
 
     /// 音量设置持久化文本（含版本头）。
@@ -241,7 +292,7 @@ impl AudioSystem {
             return self.play_via_sink(bus, name, false, None);
         }
         let bytes = self.sound_bytes(name)?;
-        let volume = self.effective_volume(bus);
+        let volume = self.effective_gain(bus, name, 1.0);
         self.ensure_device();
         if !self.device.is_open() {
             tracing::debug!(target: "audio", name, bus = bus.key(), "[audio] no device; skipped");
@@ -317,7 +368,7 @@ impl AudioSystem {
         let (left_ear, right_ear, folded) = fold_to_ears(&listener, params.pan);
         self.device.play_spatial(
             bytes,
-            self.effective_volume(bus) * params.gain,
+            self.effective_gain(bus, name, params.gain),
             folded,
             left_ear,
             right_ear,
@@ -350,12 +401,13 @@ impl AudioSystem {
         let bytes = self.sound_bytes(name)?;
         self.ensure_device();
         self.music_bytes = None;
+        self.music_gain = self.asset_gain(name);
         if !self.device.is_open() {
             tracing::debug!(target: "audio", name, "[audio] no device; music skipped");
             return Ok(());
         }
         self.device
-            .play_music(&bytes, self.effective_volume(AudioBus::Bgm))?;
+            .play_music(&bytes, self.effective_music_gain())?;
         self.music_bytes = Some(bytes);
         tracing::info!(target: "audio", name, "[audio] music started (refill loop)");
         Ok(())
@@ -376,7 +428,7 @@ impl AudioSystem {
         // 空间增益在这里乘进音量：`AudioRequest.volume` 的契约就是"已算好的有效音量"，
         // 平台不需要知道空间模型（它也无法知道）。
         let gain = spatial.map_or(1.0, |emission| emission.gain);
-        let volume = self.effective_volume(bus) * gain;
+        let volume = self.effective_gain(bus, name, gain);
         let request = crate::sink::AudioRequest {
             name,
             bus,
@@ -412,8 +464,7 @@ impl AudioSystem {
 
     /// 把当前 BGM 总线音量应用到常驻音乐 sink（分组/主音量变更时调用）。
     fn apply_music_volume(&mut self) {
-        self.device
-            .set_music_volume(self.effective_volume(AudioBus::Bgm));
+        self.device.set_music_volume(self.effective_music_gain());
     }
 
     /// Stops any looping background music.
@@ -423,9 +474,11 @@ impl AudioSystem {
         if crate::sink::is_installed() {
             crate::sink::stop_music();
             self.music_bytes = None;
+            self.music_gain = 1.0;
             return;
         }
         self.music_bytes = None;
+        self.music_gain = 1.0;
         self.device.stop_music();
     }
     /// Pauses the looping background music（编辑器暂停时调用；不释放 sink，恢复时继续）。
@@ -535,6 +588,51 @@ mod tests {
         audio.set_bus_volume(AudioBus::Master, 0.25);
         assert_eq!(audio.volume(), 0.25);
         assert!((audio.effective_volume(AudioBus::Bgm) - 0.1).abs() < 1e-6);
+    }
+
+    /// 导入设置里的"音量"与总线音量**相乘**：总线管"这一类声音多大"，导入设置管
+    /// "这一个文件多大"，两者互不覆盖。
+    #[test]
+    fn the_per_asset_gain_multiplies_with_the_bus_volume() {
+        let mut audio = AudioSystem::new();
+        audio.set_volume(0.5);
+        audio.set_bus_volume(AudioBus::Sfx, 0.4);
+        audio.set_asset_gain("hit", 0.25);
+        // 0.5（主）× 0.4（SFX 分组）× 0.25（这个文件）= 0.05。
+        assert!((audio.effective_gain(AudioBus::Sfx, "hit", 1.0) - 0.05).abs() < 1e-6);
+        // 没登记的文件不受影响。
+        assert!((audio.effective_gain(AudioBus::Sfx, "other", 1.0) - 0.2).abs() < 1e-6);
+        // 空间增益也在同一条乘法链上（衰减 × 距离）。
+        assert!((audio.effective_gain(AudioBus::Sfx, "hit", 0.5) - 0.025).abs() < 1e-6);
+        // 别的分组不受这个文件的音量影响。
+        assert!((audio.effective_gain(AudioBus::Ui, "hit", 1.0) - 0.125).abs() < 1e-6);
+    }
+
+    /// BGM 的音量倍数要**跟着主音量一起重算**：改一次主音量不该把这个文件的音量设置抹掉。
+    #[test]
+    fn the_music_gain_survives_a_master_volume_change() {
+        let mut audio = AudioSystem::new();
+        audio.set_asset_gain("bgm", 0.5);
+        audio.music_gain = audio.asset_gain("bgm");
+        audio.set_volume(0.5);
+        assert!((audio.effective_music_gain() - 0.25).abs() < 1e-6);
+        // 停了曲之后那一档作废：下一首曲子从头算，别把上一首的音量带过去。
+        audio.stop_music();
+        assert_eq!(audio.music_gain, 1.0);
+        assert!((audio.effective_music_gain() - 0.5).abs() < 1e-6);
+    }
+
+    /// 逐音效的音量表可以被整表灌入（宿主从 `resources.meta` 读出来的那一张）。
+    #[test]
+    fn the_asset_gain_table_can_be_injected_at_once() {
+        let mut audio = AudioSystem::new();
+        let mut gains = HashMap::new();
+        gains.insert("hit".to_owned(), 0.5f32);
+        gains.insert("boom".to_owned(), 2.0f32);
+        audio.set_asset_gains(gains);
+        assert!((audio.asset_gain("hit") - 0.5).abs() < 1e-6);
+        assert!((audio.asset_gain("boom") - 2.0).abs() < 1e-6);
+        assert_eq!(audio.asset_gain("unknown"), 1.0);
     }
 
     /// M74-01：没接线就拒绝（而不是按原点瞎衰减）。

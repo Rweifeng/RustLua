@@ -16,7 +16,7 @@
 
 use rustlua_math::math2d::Vec2;
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, VecDeque};
 
 /// Errors produced by [`NavGrid`] and [`NavAgent`].
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
@@ -51,6 +51,12 @@ pub enum NavError {
 }
 
 /// A rectangular walkable/blocked grid.
+///
+/// Two layers feed walkability: the **static** mask (`from_blocked` /
+/// `set_blocked`) and the **dynamic** overlay (`set_dynamic_blocked`), which is
+/// meant for runtime obstacles that come and go (units, dropped items). The
+/// overlay can be cleared without touching the static map, so rebuilding after
+/// a crowd moves never resurrects a wall the level placed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NavGrid {
     width: usize,
@@ -58,6 +64,8 @@ pub struct NavGrid {
     cell_size: f32,
     origin: Vec2,
     blocked: Vec<bool>,
+    dynamic: Vec<bool>,
+    revision: u64,
 }
 
 impl NavGrid {
@@ -88,6 +96,8 @@ impl NavGrid {
             cell_size,
             origin,
             blocked: vec![false; width * height],
+            dynamic: vec![false; width * height],
+            revision: 0,
         })
     }
 
@@ -132,20 +142,79 @@ impl NavGrid {
     }
 
     /// Returns whether a cell is walkable; out-of-bounds cells count as walls.
+    ///
+    /// Both layers count: a cell is walkable only if neither the static mask
+    /// nor the dynamic overlay blocks it.
     pub fn is_walkable(&self, x: usize, y: usize) -> bool {
-        self.index(x, y).is_some_and(|index| !self.blocked[index])
+        self.index(x, y)
+            .is_some_and(|index| !self.blocked[index] && !self.dynamic[index])
     }
 
-    /// Marks a cell as wall (`blocked = true`) or walkable. Endpoints of an
-    /// in-flight path are not re-validated; callers re-path after changing the
-    /// mask (same contract as `tilemap.set_solid`).
+    /// Monotonic counter bumped whenever walkability changes.
+    ///
+    /// [`FlowFieldCache`] compares this against the revision it baked with; any
+    /// difference means the field is stale and must be rebuilt. No-op writes
+    /// (`set_blocked` to the value it already holds) do not bump it, so callers
+    /// can refresh dynamic obstacles every frame without thrashing the field.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Marks a cell as wall (`blocked = true`) or walkable in the **static**
+    /// layer. Endpoints of an in-flight path are not re-validated; callers
+    /// re-path after changing the mask (same contract as `tilemap.set_solid`).
     pub fn set_blocked(&mut self, x: usize, y: usize, blocked: bool) -> Result<(), NavError> {
         let index = self.index(x, y).ok_or(NavError::OutOfBounds {
             x: x as i32,
             y: y as i32,
         })?;
-        self.blocked[index] = blocked;
+        if self.blocked[index] != blocked {
+            self.blocked[index] = blocked;
+            self.revision += 1;
+        }
         Ok(())
+    }
+
+    /// Marks a cell as blocked/unblocked in the **dynamic** overlay.
+    ///
+    /// The overlay is independent of the static mask: clearing it never
+    /// removes a wall the level baked in, and blocking a statically walkable
+    /// cell only affects navigation, not the static map.
+    pub fn set_dynamic_blocked(
+        &mut self,
+        x: usize,
+        y: usize,
+        blocked: bool,
+    ) -> Result<(), NavError> {
+        let index = self.index(x, y).ok_or(NavError::OutOfBounds {
+            x: x as i32,
+            y: y as i32,
+        })?;
+        if self.dynamic[index] != blocked {
+            self.dynamic[index] = blocked;
+            self.revision += 1;
+        }
+        Ok(())
+    }
+
+    /// Drops the whole dynamic overlay. Returns whether anything was cleared.
+    pub fn clear_dynamic(&mut self) -> bool {
+        let changed = self.dynamic.iter().any(|blocked| *blocked);
+        if changed {
+            self.dynamic.fill(false);
+            self.revision += 1;
+        }
+        changed
+    }
+
+    /// Whether the dynamic overlay (not the static mask) blocks a cell.
+    pub fn is_dynamic_blocked(&self, x: usize, y: usize) -> bool {
+        self.index(x, y).is_some_and(|index| self.dynamic[index])
+    }
+
+    /// Whether the static mask blocks a cell.
+    pub fn is_static_blocked(&self, x: usize, y: usize) -> bool {
+        self.index(x, y).is_some_and(|index| self.blocked[index])
     }
 
     /// Converts a world point to the cell containing it.
@@ -200,13 +269,13 @@ impl NavGrid {
             x: goal.0 as i32,
             y: goal.1 as i32,
         })?;
-        if self.blocked[start_index] {
+        if !self.is_walkable(start.0, start.1) {
             return Err(NavError::Blocked {
                 x: start.0,
                 y: start.1,
             });
         }
-        if self.blocked[goal_index] {
+        if !self.is_walkable(goal.0, goal.1) {
             return Err(NavError::Blocked {
                 x: goal.0,
                 y: goal.1,
@@ -464,6 +533,218 @@ impl NavPath {
 
     pub fn goal(&self) -> Option<Vec2> {
         self.points.last().copied()
+    }
+}
+
+/// Fixed 8-neighbour step table shared by flow-field construction and queries.
+const FLOW_DIRS: [(i32, i32); 8] = [
+    (1, 0),
+    (-1, 0),
+    (0, 1),
+    (0, -1),
+    (1, 1),
+    (-1, 1),
+    (1, -1),
+    (-1, -1),
+];
+
+/// Marker for "this cell has no next step" (goal cell or unreachable cell).
+const NO_DIRECTION: u8 = u8::MAX;
+
+/// Progress state of a [`FlowFieldCache`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlowStatus {
+    /// No goal has been set.
+    Idle,
+    /// The field is still building, or was invalidated and is rebuilding.
+    Building,
+    /// Every reachable cell has a step; queries are valid.
+    Ready,
+    /// The goal cell is blocked or outside the grid.
+    Unreachable,
+}
+
+/// Breadth-first integration field toward one goal cell.
+///
+/// Costs are step counts and diagonal steps cost the same as orthogonal ones,
+/// matching [`NavGrid::find_path`]; the same corner rule applies, so a flow
+/// step never cuts a blocked corner. Construction is incremental so a large
+/// map can be baked across several frames with a per-call budget.
+#[derive(Clone, Debug, PartialEq)]
+struct FlowField {
+    width: usize,
+    cost: Vec<u32>,
+    next: Vec<u8>,
+    queue: VecDeque<usize>,
+    done: bool,
+}
+
+impl FlowField {
+    fn new(width: usize, height: usize, goal: (usize, usize)) -> Self {
+        let goal_index = goal.1 * width + goal.0;
+        let mut cost = vec![u32::MAX; width * height];
+        cost[goal_index] = 0;
+        let mut queue = VecDeque::with_capacity(width * height);
+        queue.push_back(goal_index);
+        Self {
+            width,
+            cost,
+            next: vec![NO_DIRECTION; width * height],
+            queue,
+            done: false,
+        }
+    }
+
+    /// Expands at most `budget` cells. Returns whether the field is complete.
+    fn advance(&mut self, grid: &NavGrid, budget: usize) -> bool {
+        for _ in 0..budget {
+            let Some(current) = self.queue.pop_front() else {
+                self.done = true;
+                break;
+            };
+            let x = current % grid.width;
+            let y = current / grid.width;
+            let cost = self.cost[current] + 1;
+            for (nx, ny) in grid.neighbors(x, y, true) {
+                let neighbor = ny * grid.width + nx;
+                if self.cost[neighbor] != u32::MAX {
+                    continue;
+                }
+                self.cost[neighbor] = cost;
+                self.next[neighbor] = direction_index((nx, ny), (x, y));
+                self.queue.push_back(neighbor);
+            }
+        }
+        if self.queue.is_empty() {
+            self.done = true;
+        }
+        self.done
+    }
+}
+
+fn direction_index(from: (usize, usize), to: (usize, usize)) -> u8 {
+    let step = (to.0 as i32 - from.0 as i32, to.1 as i32 - from.1 as i32);
+    FLOW_DIRS
+        .iter()
+        .position(|dir| *dir == step)
+        .map_or(NO_DIRECTION, |index| index as u8)
+}
+
+/// A lazily rebuilt flow field toward one goal.
+///
+/// The cache owns the goal and the baked field; [`Self::update`] is called once
+/// per frame with a cell budget. Any walkability change on the grid (static or
+/// dynamic, see [`NavGrid::revision`]) makes the baked field stale, so the next
+/// `update` restarts it — callers never have to remember to invalidate.
+/// Queries return `None` until the field is [`FlowStatus::Ready`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FlowFieldCache {
+    goal: Option<(usize, usize)>,
+    field: Option<FlowField>,
+    baked_revision: u64,
+    blocked_goal: bool,
+}
+
+impl FlowFieldCache {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The goal cell, if one is set.
+    pub fn goal(&self) -> Option<(usize, usize)> {
+        self.goal
+    }
+
+    /// Sets (or clears, with `None`) the goal. An unchanged goal keeps the
+    /// baked field.
+    pub fn set_goal(&mut self, goal: Option<(usize, usize)>) {
+        if self.goal == goal {
+            return;
+        }
+        self.goal = goal;
+        self.field = None;
+        self.blocked_goal = false;
+    }
+
+    pub fn status(&self) -> FlowStatus {
+        let Some(_) = self.goal else {
+            return FlowStatus::Idle;
+        };
+        if self.blocked_goal {
+            return FlowStatus::Unreachable;
+        }
+        match self.field.as_ref() {
+            None => FlowStatus::Building,
+            Some(field) if field.done => FlowStatus::Ready,
+            Some(_) => FlowStatus::Building,
+        }
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.status() == FlowStatus::Ready
+    }
+
+    /// Advances construction by at most `budget` cells and reports the state.
+    ///
+    /// Safe to call every frame: a completed field is a no-op, and a grid
+    /// change restarts the build without dropping the goal.
+    pub fn update(&mut self, grid: &NavGrid, budget: usize) -> FlowStatus {
+        let Some(goal) = self.goal else {
+            self.field = None;
+            return FlowStatus::Idle;
+        };
+
+        let goal_valid =
+            goal.0 < grid.width && goal.1 < grid.height && grid.is_walkable(goal.0, goal.1);
+        if !goal_valid {
+            self.field = None;
+            self.baked_revision = grid.revision();
+            self.blocked_goal = true;
+            return FlowStatus::Unreachable;
+        }
+
+        if self.blocked_goal || self.baked_revision != grid.revision() || self.field.is_none() {
+            self.blocked_goal = false;
+            self.baked_revision = grid.revision();
+            self.field = Some(FlowField::new(grid.width, grid.height, goal));
+        }
+        if let Some(field) = self.field.as_mut() {
+            field.advance(grid, budget);
+        }
+        self.status()
+    }
+
+    /// Step count from a cell to the goal, or `None` if the field is not ready
+    /// or the cell is unreachable.
+    pub fn cost_at(&self, (x, y): (usize, usize)) -> Option<u32> {
+        let field = self.field.as_ref().filter(|field| field.done)?;
+        let index = y.checked_mul(field.width)?.checked_add(x)?;
+        let cost = *field.cost.get(index)?;
+        (cost != u32::MAX).then_some(cost)
+    }
+
+    /// World-space unit step toward the goal at `point`.
+    ///
+    /// `None` when the field is not ready, the point is outside the grid, the
+    /// cell is the goal itself, or the cell cannot reach the goal.
+    pub fn direction_at(&self, grid: &NavGrid, point: Vec2) -> Option<Vec2> {
+        if !self.is_ready() || self.baked_revision != grid.revision() {
+            return None;
+        }
+        let (x, y) = grid.world_to_cell(point).ok()?;
+        let field = self.field.as_ref()?;
+        let direction = *field.next.get(y * grid.width + x)?;
+        if direction == NO_DIRECTION {
+            return None;
+        }
+        let (dx, dy) = FLOW_DIRS[direction as usize];
+        let scale = if dx != 0 && dy != 0 {
+            std::f32::consts::FRAC_1_SQRT_2
+        } else {
+            1.0
+        };
+        Some(Vec2::new(dx as f32 * scale, dy as f32 * scale))
     }
 }
 
@@ -877,5 +1158,198 @@ mod tests {
             NavAgent::new(Vec2::zero(), 1.0, -0.1),
             Err(NavError::InvalidAgent)
         ));
+    }
+
+    fn walled_7x7() -> NavGrid {
+        let mut blocked = vec![false; 49];
+        for y in 0..5 {
+            blocked[y * 7 + 3] = true;
+        }
+        NavGrid::from_blocked(7, 7, 1.0, Vec2::zero(), blocked).unwrap()
+    }
+
+    #[test]
+    fn dynamic_layer_blocks_without_touching_the_static_mask() {
+        let mut grid = walled_7x7();
+        assert!(!grid.is_walkable(3, 0));
+        assert!(grid.is_walkable(3, 5));
+
+        grid.set_dynamic_blocked(3, 5, true).unwrap();
+        assert!(grid.is_dynamic_blocked(3, 5));
+        assert!(!grid.is_static_blocked(3, 5));
+        assert!(!grid.is_walkable(3, 5));
+        // The lower gap cell is still open, so the path just shifts down.
+        let detour = grid.find_path((0, 5), (6, 5), false).unwrap();
+        assert!(detour.contains(&(3, 6)));
+        // Dynamic walls are walls for endpoint validation too.
+        assert_eq!(
+            grid.find_path((3, 5), (5, 5), false),
+            Err(NavError::Blocked { x: 3, y: 5 })
+        );
+
+        grid.set_dynamic_blocked(3, 6, true).unwrap();
+        assert!(matches!(
+            grid.find_path((0, 5), (6, 5), false),
+            Err(NavError::Unreachable { .. })
+        ));
+
+        assert!(grid.clear_dynamic());
+        assert!(!grid.is_dynamic_blocked(3, 5));
+        assert!(grid.find_path((0, 5), (6, 5), false).is_ok());
+        // Clearing the overlay must not resurrect or erase static walls.
+        assert!(!grid.is_walkable(3, 0));
+        assert!(grid.is_static_blocked(3, 0));
+
+        assert!(matches!(
+            grid.set_dynamic_blocked(9, 9, true),
+            Err(NavError::OutOfBounds { .. })
+        ));
+    }
+
+    #[test]
+    fn revision_only_bumps_on_real_changes() {
+        let mut grid = NavGrid::new(3, 3, 1.0).unwrap();
+        let start = grid.revision();
+        grid.set_blocked(1, 1, false).unwrap();
+        assert_eq!(
+            grid.revision(),
+            start,
+            "writing the current value is a no-op"
+        );
+        grid.set_dynamic_blocked(1, 1, false).unwrap();
+        assert_eq!(grid.revision(), start);
+        assert!(!grid.clear_dynamic());
+        assert_eq!(grid.revision(), start);
+
+        grid.set_blocked(1, 1, true).unwrap();
+        assert_eq!(grid.revision(), start + 1);
+        grid.set_dynamic_blocked(2, 2, true).unwrap();
+        assert_eq!(grid.revision(), start + 2);
+        assert!(grid.clear_dynamic());
+        assert_eq!(grid.revision(), start + 3);
+    }
+
+    fn build_flow(grid: &NavGrid, goal: (usize, usize), budget: usize) -> FlowFieldCache {
+        let mut flow = FlowFieldCache::new();
+        flow.set_goal(Some(goal));
+        let mut guard = 0;
+        while flow.update(grid, budget) == FlowStatus::Building {
+            guard += 1;
+            assert!(guard < 10_000, "flow field never finished");
+        }
+        flow
+    }
+
+    #[test]
+    fn flow_field_steps_downhill_and_routes_around_walls() {
+        let grid = walled_7x7();
+        let flow = build_flow(&grid, (6, 0), 64);
+        assert_eq!(flow.status(), FlowStatus::Ready);
+        assert_eq!(flow.cost_at((6, 0)), Some(0));
+
+        // The wall forces a detour through the gap at y = 5/6.
+        let direct = flow.cost_at((0, 0)).expect("start is reachable");
+        assert!(direct > 6, "detour should cost more than the straight line");
+
+        // Every non-goal cell with a cost must point at a cell one step closer.
+        let field = flow.field.as_ref().unwrap();
+        for y in 0..grid.height {
+            for x in 0..grid.width {
+                let Some(cost) = flow.cost_at((x, y)) else {
+                    continue;
+                };
+                if cost == 0 {
+                    continue;
+                }
+                let direction = field.next[y * grid.width + x];
+                assert_ne!(direction, NO_DIRECTION, "cell ({x}, {y}) has no step");
+                let (dx, dy) = FLOW_DIRS[direction as usize];
+                let next = ((x as i32 + dx) as usize, (y as i32 + dy) as usize);
+                assert_eq!(
+                    flow.cost_at(next),
+                    Some(cost - 1),
+                    "step from ({x}, {y}) must move downhill"
+                );
+                assert!(grid.is_walkable(next.0, next.1));
+            }
+        }
+    }
+
+    #[test]
+    fn flow_build_is_budgeted_and_bit_identical() {
+        let grid = walled_7x7();
+        let all_at_once = build_flow(&grid, (6, 6), 1000);
+        let one_at_a_time = build_flow(&grid, (6, 6), 1);
+
+        let field_a = all_at_once.field.as_ref().unwrap();
+        let field_b = one_at_a_time.field.as_ref().unwrap();
+        assert_eq!(field_a.cost, field_b.cost);
+        assert_eq!(field_a.next, field_b.next);
+        assert_eq!(all_at_once, one_at_a_time);
+
+        // A budget of zero makes progress only when the caller allows it.
+        let mut lazy = FlowFieldCache::new();
+        lazy.set_goal(Some((6, 6)));
+        assert_eq!(lazy.status(), FlowStatus::Building);
+        assert_eq!(lazy.update(&grid, 0), FlowStatus::Building);
+        assert_eq!(lazy.cost_at((0, 0)), None);
+        assert_eq!(lazy.direction_at(&grid, Vec2::new(0.5, 0.5)), None);
+        assert_eq!(lazy.update(&grid, 1000), FlowStatus::Ready);
+    }
+
+    #[test]
+    fn flow_direction_is_a_unit_step_in_world_space() {
+        let grid = walled_7x7();
+        let flow = build_flow(&grid, (0, 0), 1000);
+        let direction = flow.direction_at(&grid, Vec2::new(6.5, 6.5)).unwrap();
+        assert!((direction.length() - 1.0).abs() < 1e-6);
+        assert!(direction.x < 0.0);
+        // Standing on the goal has no step.
+        assert_eq!(flow.direction_at(&grid, Vec2::new(0.5, 0.5)), None);
+        // Outside the grid has no step.
+        assert_eq!(flow.direction_at(&grid, Vec2::new(-5.0, 0.5)), None);
+    }
+
+    #[test]
+    fn flow_field_rebuilds_after_walkability_changes() {
+        let mut grid = walled_7x7();
+        let mut flow = FlowFieldCache::new();
+        flow.set_goal(Some((6, 0)));
+        assert_eq!(flow.update(&grid, 1000), FlowStatus::Ready);
+        let original = flow.cost_at((0, 0)).expect("west side starts reachable");
+        assert!(
+            original > 6,
+            "the detour must cost more than the straight line"
+        );
+
+        // Sealing the gap disconnects the west side from the goal.
+        grid.set_dynamic_blocked(3, 5, true).unwrap();
+        grid.set_dynamic_blocked(3, 6, true).unwrap();
+        // Stale fields must not serve directions before the rebuild.
+        assert_eq!(flow.direction_at(&grid, Vec2::new(0.5, 0.5)), None);
+        assert_eq!(flow.update(&grid, 1000), FlowStatus::Ready);
+        assert_eq!(flow.cost_at((0, 0)), None);
+
+        grid.clear_dynamic();
+        assert_eq!(flow.update(&grid, 1000), FlowStatus::Ready);
+        assert_eq!(flow.cost_at((0, 0)), Some(original));
+    }
+
+    #[test]
+    fn flow_field_reports_a_blocked_or_out_of_bounds_goal() {
+        let grid = walled_7x7();
+        let mut flow = FlowFieldCache::new();
+        flow.set_goal(Some((3, 0)));
+        assert_eq!(flow.update(&grid, 1000), FlowStatus::Unreachable);
+
+        flow.set_goal(Some((9, 9)));
+        assert_eq!(flow.update(&grid, 1000), FlowStatus::Unreachable);
+
+        flow.set_goal(Some((0, 0)));
+        assert_eq!(flow.update(&grid, 1000), FlowStatus::Ready);
+
+        flow.set_goal(None);
+        assert_eq!(flow.status(), FlowStatus::Idle);
+        assert_eq!(flow.update(&grid, 1000), FlowStatus::Idle);
     }
 }

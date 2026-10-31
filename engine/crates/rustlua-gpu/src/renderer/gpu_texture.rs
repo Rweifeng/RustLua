@@ -534,7 +534,7 @@ impl Renderer {
 
     /// 上传一张 2D 贴图并按 `settings` 绑采样器，返回（绑定组，纹理视图）。
     ///
-    /// 视图要留着：改导入设置时**只重建绑定组**，不重传像素（`reload_texture_settings`）。
+    /// 视图要留着：改导入设置时**只重建绑定组**，不重传像素（`reload_import_settings`）。
     pub(super) fn upload_texture_with(
         &self,
         asset: &TextureAsset,
@@ -629,7 +629,7 @@ impl Renderer {
     ///
     /// 读不到/读坏都不升级成错误：渲染器不该因为一份可选的作者设置打不开游戏，
     /// 但必须留一条 warn——静默降级成"全默认"会让人以为设置没生效是引擎的 bug。
-    fn ensure_resource_meta(&mut self) {
+    pub(super) fn ensure_resource_meta(&mut self) {
         if self.resource_meta_loaded {
             return;
         }
@@ -643,7 +643,7 @@ impl Renderer {
                     tracing::info!(
                         target: "render",
                         entries = meta.len(),
-                        "[render] 资源元数据段已加载（逐纹理采样设置）"
+                        "[render] 资源元数据段已加载（导入设置）"
                     );
                 }
                 self.resource_meta = Some(meta);
@@ -652,7 +652,7 @@ impl Renderer {
                 tracing::warn!(
                     target: "render",
                     error = %error,
-                    "[render] 资源元数据段读不了，本进程按默认采样（nearest/clamp）"
+                    "[render] 资源元数据段读不了，本进程按默认导入设置"
                 );
             }
         }
@@ -666,6 +666,20 @@ impl Renderer {
             .map_or_else(TextureImportSettings::default, |meta| {
                 meta.texture_settings(key)
             })
+    }
+
+    /// 这个模型该用多少倍缩放。没登记过 = 1.0（不改大小）。
+    ///
+    /// 这条在**每帧每个 drawable** 上都会问一次，所以没有设置时走一次 `is_empty`
+    /// 就返回，不去查表（大多数工程根本没有模型导入设置）。
+    pub fn model_scale_for(&mut self, key: &str) -> f32 {
+        self.ensure_resource_meta();
+        self.resource_meta.as_ref().map_or(1.0, |meta| {
+            if !meta.has_model_settings() {
+                return 1.0;
+            }
+            meta.model_settings(key).scale
+        })
     }
 
     /// **已上传**槽位当前真正绑着的采样设置（门与面板用它自证"设置落到了 GPU 上"）。
@@ -684,7 +698,10 @@ impl Renderer {
     ///
     /// 换过就要 bump `sampling_epoch`：2D 保序合并按 `(texture, sdf, bitmap)` 缓存绑定组，
     /// 槽位号没变 ⇒ 不含纪元的话会继续用旧绑定组，表现为"改了没反应"。
-    pub fn reload_texture_settings(&mut self) -> usize {
+    ///
+    /// 这一步重读的是**整份** `resources.meta`：模型缩放那一档也在里面（模型缩放是
+    /// 每帧现查的，重读后下一帧就生效，不需要额外的失效动作）。
+    pub fn reload_import_settings(&mut self) -> usize {
         self.resource_meta = None;
         self.resource_meta_loaded = false;
         let keys: Vec<String> = self.texture_paths.keys().cloned().collect();

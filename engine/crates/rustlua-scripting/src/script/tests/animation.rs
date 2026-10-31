@@ -168,6 +168,8 @@ fn lua_3d_animation_queries_and_switches_clips() {
          local list = animation3d.list(h)\n\
          assert(#list == 1 and list[1] == 'Bend')\n\
          assert(not animation3d.set(h, 'Bend'))\n\
+         assert(not animation3d.crossfade(h, 'Bend', 0.2))\n\
+         assert(not pcall(animation3d.crossfade, h, 'Missing', 0.2))\n\
          assert(animation3d.time(h) >= 0)\n\
          assert(not animation3d.paused(h))\n\
          animation3d.set_paused(h, true)\n\

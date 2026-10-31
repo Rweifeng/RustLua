@@ -539,6 +539,24 @@ fn max_model_scale(model: Mat4) -> f32 {
         model.columns[2][0].powi(2) + model.columns[2][1].powi(2) + model.columns[2][2].powi(2);
     sx.max(sy).max(sz).sqrt().max(f32::EPSILON)
 }
+
+/// 把模型矩阵**在自身局部空间**里乘一个统一倍数（导入设置里的"模型缩放"）。
+///
+/// 只缩前 3 列（基向量），平移列原样保留 —— 这正是 `model × diag(s,s,s,1)` 的结果。
+/// 在**画之前**改矩阵（而不是改网格顶点）有三个好处：不重导网格、不动网格缓存，
+/// 阴影通道与主通道共用同一份 draw 列表，所以阴影也跟着变。
+fn scaled_model(model: Mat4, scale: f32) -> Mat4 {
+    if scale == 1.0 {
+        return model;
+    }
+    let mut columns = model.columns;
+    for column in columns.iter_mut().take(3) {
+        column[0] *= scale;
+        column[1] *= scale;
+        column[2] *= scale;
+    }
+    Mat4 { columns }
+}
 /// 3D 相机 uniform 的 CPU 侧布局（与 `mesh3d_pbr.wgsl` 的 `Camera` 对应）：
 /// 16 个 f32 的列主序视图投影 + 4 个 f32 的世界坐标位置（w 留 1）。
 ///
@@ -658,7 +676,7 @@ pub struct Renderer {
     texture_samplers: Vec<wgpu::Sampler>,
     /// 工程根下那份可提交的资源元数据段（`resources.meta`）。`None` = 没登记任何设置。
     resource_meta: Option<rustlua_assets::import_settings::ResourceMeta>,
-    /// 只读一次盘（每次 `Renderer` 生命周期内）；改设置后由 `reload_texture_settings` 强制重读。
+    /// 只读一次盘（每次 `Renderer` 生命周期内）；改设置后由 `reload_import_settings` 强制重读。
     resource_meta_loaded: bool,
     /// 有槽位的绑定组被**就地换掉**过（设置改了）。2D 保序合并的纪元必须含它，
     /// 否则改设置后同一 `(texture, sdf, bitmap)` 键会继续沿用旧绑定组 = 看不到变化。

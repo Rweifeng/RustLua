@@ -321,7 +321,11 @@ impl EditorApp {
                 return;
             }
         };
-        let (new_prefab, envelope_ids) = match build_prefab_from_instance_root(
+        if let Some(reason) = super::prefab_variant::variant_write_back_refusal(&existing_prefab) {
+            self.status = reason;
+            return;
+        }
+        let (mut new_prefab, envelope_ids) = match build_prefab_from_instance_root(
             &scene.scene,
             selected,
             &existing_prefab,
@@ -330,6 +334,18 @@ impl EditorApp {
             Ok(prefab) => prefab,
             Err(error) => {
                 self.status = format!("生成源预制体失败：{error}");
+                return;
+            }
+        };
+        // 写回同时重算嵌套覆盖记录：场景里的当前取值就是作者的选择，与内层 diff 即记录。
+        // 内层在上次同步后动过则拒绝（否则内层新值会被钉成外层覆盖）。
+        let lineage_note = match super::prefab_nested_sync::prepare_nested_lineage(
+            &mut new_prefab,
+            &self.project.root,
+        ) {
+            Ok(report) => report.status_note(),
+            Err(error) => {
+                self.status = error;
                 return;
             }
         };
@@ -366,6 +382,9 @@ impl EditorApp {
                     self.on_document_changed(DocumentChange::PrefabApply);
                 }
                 self.status = format!("已写回预制体源并更新实例：{prefab_source}");
+                if let Some(note) = lineage_note {
+                    self.status = format!("{}（{note}）", self.status);
+                }
             }
             Err(error) => self.status = format!("更新预制体实例失败：{error}"),
         }
@@ -394,6 +413,10 @@ impl EditorApp {
                 return;
             }
         };
+        if let Some(reason) = super::prefab_variant::variant_write_back_refusal(&prefab) {
+            self.status = reason;
+            return;
+        }
         // 只改源预制体 里的目标字段；失败则**不落盘、不改场景**。
         let Some(source_entity) = prefab.entities.get_mut(&source_id) else {
             self.status = format!("源预制体中缺少实体 {}", source_id.0);
@@ -432,6 +455,18 @@ impl EditorApp {
             return;
         }
 
+        // 逐字段改动同样算一次外层写回：嵌套记录按新的快照重算（内层动过则拒绝）。
+        let lineage_note = match super::prefab_nested_sync::prepare_nested_lineage(
+            &mut prefab,
+            &self.project.root,
+        ) {
+            Ok(report) => report.status_note(),
+            Err(error) => {
+                self.status = error;
+                return;
+            }
+        };
+
         let new_selected_root = std::rc::Rc::new(std::cell::Cell::new(None));
         let selected_result = new_selected_root.clone();
         let field_label = field.to_owned();
@@ -461,6 +496,9 @@ impl EditorApp {
                     self.on_document_changed(DocumentChange::PrefabApply);
                 }
                 self.status = format!("已把字段应用到源预制体并更新全部实例：{field_label}");
+                if let Some(note) = lineage_note {
+                    self.status = format!("{}（{note}）", self.status);
+                }
             }
             Err(error) => self.status = format!("应用覆盖失败：{error}"),
         }

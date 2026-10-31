@@ -5,6 +5,7 @@ mod actions;
 mod ai_host;
 mod cli;
 mod command_router;
+mod device_sim;
 mod dnd;
 mod dock;
 /// 外部代码编辑器：诊断的 `file:line` 与脚本文件交给用户自己的编辑器（不内置文本编辑器）。
@@ -460,8 +461,20 @@ struct EditorApp {
     lua_source_view: crate::panels::lua_source_view::LuaSourceViewState,
     /// 模型预览（选中 `.glb`/`.gltf` 时属性面板里的旋转/缩放）：软光栅，只读、不写盘。
     model_preview: crate::panels::model_preview::ModelPreviewState,
+    /// 「导入设置」段（属性面板的资源分支）：模型缩放 / 音频音量 / 字体字重，写 `resources.meta`。
+    import_settings: crate::panels::import_settings::ImportSettingsState,
     /// 断链检查窗（资源 ▸ 断链检查…）：一次扫描的结果行，改指动作只发命令。
     broken_refs: crate::panels::broken_refs::BrokenRefsPanelState,
+    /// 预制体结构差异窗（资源 ▸ 查看结构差异…）：只读比较结果，条目只改选区。
+    prefab_structure: crate::panels::prefab_structure_view::PrefabStructureViewState,
+    /// 层级行的预制体徽标（嵌套 / 覆盖条数）：按文档修订重建的只读索引，不写文档。
+    pub(crate) prefab_badges: crate::panels::hierarchy_badges::BadgeIndex,
+    /// 全工程搜索窗（编辑 ▸ 全工程搜索… / `Ctrl+Shift+F`）：一次重建的索引 + 当前命中，
+    /// 双击定位只走 shell 的动作（见 `crate::actions::project_search`）。
+    project_search: crate::panels::project_search::ProjectSearchState,
+    /// 安全删除的待确认态：第一次点「删除」只扫描反向依赖，被引用时把清单放这里，
+    /// 用户点「强制删除」才真删（见 `crate::actions::delete_guard`）。
+    pending_delete: Option<crate::actions::delete_guard::DeleteGuard>,
     /// 跨面板全局 Undo 的账本：只记"下一个该问哪个面板"，撤的动作仍归各面板自己。
     undo_ledger: crate::actions::undo_ledger::UndoLedger,
     /// 六个工作台面板的显示开关（M27-00 阶段 2 收尾：View 菜单逐项可切）。
@@ -512,6 +525,8 @@ struct EditorApp {
     show_runtime_debug_panel: bool,
     runtime_probe_results: Option<Vec<crate::panels::runtime_debug::RuntimeProbeResult>>,
     runtime_probe_error: Option<String>,
+    /// 运行期错误现场面板：本进程收到的快照、致命弹窗与待挂的复现断点。
+    crash_panel: crate::panels::crash_report::CrashPanelState,
     /// M19-03 Inspector 的 `entity_meta persist_id` 编辑缓冲与目标实体。
     persist_id_buffer: String,
     persist_id_editing: Option<SceneEntityId>,
@@ -545,6 +560,19 @@ struct EditorApp {
     adding_preview_resolution: bool,
     /// 自定义分辨率的输入值。
     custom_preview_resolution: (u32, u32),
+    /// 进入设备模拟前的自定义分辨率（瞬态，不持久化）：退出模拟时还原，
+    /// 保证"自定义（不模拟）"不会把分辨率留在某台机型上。
+    device_sim_exit_resolution: Option<(u32, u32)>,
+    /// 设备模拟（机型预设/触摸/摇杆/竖屏锁定）：纯数据与映射逻辑在 `device_sim` 模块。
+    pub(crate) device_sim: crate::device_sim::DeviceSimState,
+    /// 编辑器侧虚拟摇杆的跨帧方向状态（Game 视图左下角；瞬态，不持久化）。
+    pub(crate) stick: crate::device_sim::StickState,
+    /// 摇杆本帧是否被抓着（瞬态）。
+    pub(crate) stick_active: bool,
+    /// 摇杆抓取时的起点（egui 屏幕坐标；瞬态）。
+    pub(crate) stick_grab_pos: egui::Pos2,
+    /// 摇杆杆头偏移（egui 屏幕坐标；绘制用，瞬态）。
+    pub(crate) stick_visual_offset: egui::Vec2,
     /// 游戏 2D 相机中心（世界坐标）：设计分辨率包围框的世界中心，使包围框与
     /// 游戏取景范围一致（默认 `DEFAULT_2D_CAMERA_CENTER`；编辑器场景视图运行时
     /// 重建时捕获）。
@@ -1215,7 +1243,12 @@ impl EditorApp {
             texture_preview: crate::panels::texture_preview::TexturePreviewState::new(),
             lua_source_view: crate::panels::lua_source_view::LuaSourceViewState::new(),
             model_preview: crate::panels::model_preview::ModelPreviewState::new(),
+            import_settings: crate::panels::import_settings::ImportSettingsState::new(),
             broken_refs: crate::panels::broken_refs::BrokenRefsPanelState::new(),
+            prefab_structure: crate::panels::prefab_structure_view::PrefabStructureViewState::new(),
+            prefab_badges: Default::default(),
+            project_search: crate::panels::project_search::ProjectSearchState::new(),
+            pending_delete: None,
             undo_ledger: crate::actions::undo_ledger::UndoLedger::default(),
             show_resources_panel: true,
             show_lua_console: true,
@@ -1242,6 +1275,7 @@ impl EditorApp {
             show_runtime_debug_panel: false,
             runtime_probe_results: None,
             runtime_probe_error: None,
+            crash_panel: crate::panels::crash_report::CrashPanelState::new(),
             persist_id_buffer: String::new(),
             persist_id_editing: None,
             log_sink,
@@ -1267,6 +1301,12 @@ impl EditorApp {
             ],
             adding_preview_resolution: false,
             custom_preview_resolution: (1280, 720),
+            device_sim_exit_resolution: None,
+            device_sim: Default::default(),
+            stick: Default::default(),
+            stick_active: false,
+            stick_grab_pos: egui::Pos2::ZERO,
+            stick_visual_offset: egui::Vec2::ZERO,
             game_camera_2d_center: DEFAULT_2D_CAMERA_CENTER,
             editor_camera: EditorCamera::default(),
             scene_renderer: None,
@@ -1629,6 +1669,8 @@ impl EditorApp {
 
     fn clear_resource_selection(&mut self) {
         self.selected_resource = None;
+        // 待确认的删除跟着选中项一起失效：换资源后上一份的引用清单就不再相关。
+        self.pending_delete = None;
         if matches!(self.delete_target, DeleteTarget::Resource(_)) {
             self.delete_target = DeleteTarget::None;
         }
@@ -1712,6 +1754,62 @@ impl EditorApp {
         self.game_view_zoom =
             crate::panels::game_view::GameViewZoom::parse(&self.layout.game_view_zoom)
                 .unwrap_or_default();
+        // 设备模拟随布局还原。机型生效时设计分辨率**以机型为准**：存盘时
+        // `preview_resolution` 本来就是机型分辨率（见 `apply_device_preset`），
+        // 但手改布局文件/旧版本可能不一致，加载时强制收敛；未模拟时才做竖屏翻正。
+        self.device_sim
+            .apply_layout(self.layout.device_sim.as_ref());
+        if let Some(preset) = self.device_sim.active() {
+            self.preview_resolution = preset.resolution;
+        } else {
+            self.preview_resolution = self.device_sim.clamp_resolution(self.preview_resolution);
+        }
+    }
+
+    /// 切换到某台机型预设：设计分辨率 + 显示缩放档 + 安全区（含自动开启竖屏锁定）
+    /// 一次性生效。`None` = 退出设备模拟，恢复进入前的自定义分辨率。
+    ///
+    /// 设计分辨率直接写 `preview_resolution`：HUD 读数（Game 视图左上角）与预览渲染
+    /// 都只认这一处，切预设 = 切真机，不需要第二份"设计分辨率"状态。
+    pub(crate) fn apply_device_preset(&mut self, preset: Option<usize>) {
+        if preset.is_some() && self.device_sim.preset.is_none() {
+            // 从"自定义"进入模拟：记住当前分辨率，退出时原样还回去。
+            self.device_sim_exit_resolution = Some(self.preview_resolution);
+        }
+        self.device_sim.preset = preset;
+        if let Some(preset) = self.device_sim.active() {
+            self.device_sim.lock_portrait = preset.portrait;
+            self.preview_resolution = preset.resolution;
+        } else {
+            // 退出模拟：取消预设带入的方向锁定（竖屏锁定是模拟模式的口径），
+            // 并把分辨率还原为进入前那一档（无进入记录时保持现状）。
+            self.device_sim.lock_portrait = false;
+            if let Some(exit) = self.device_sim_exit_resolution.take() {
+                self.preview_resolution = exit;
+            }
+        }
+    }
+
+    /// 竖屏锁定开关（手动在 Game 视图 HUD 里翻）；关闭后分辨率不再被翻回竖屏。
+    pub(crate) fn set_lock_portrait(&mut self, locked: bool) {
+        self.device_sim.lock_portrait = locked;
+        if locked {
+            self.preview_resolution = self.device_sim.clamp_resolution(self.preview_resolution);
+        }
+    }
+
+    /// 手动选设计分辨率（工具栏下拉/比例快捷组/自定义输入）。
+    ///
+    /// 显式选择 = 退出机型模拟（否则 HUD 会同时声称"iPhone 15"和别的分辨率，
+    /// 安全区也还是那台机型的刘海）；随后按竖屏锁定收敛方向——锁定中选横屏会被
+    /// 翻回竖屏，与 `apply_device_preset` 退出时取消锁定的口径一致。
+    pub(crate) fn set_custom_resolution(&mut self, resolution: (u32, u32)) {
+        if self.device_sim.preset.is_some() {
+            self.device_sim.preset = None;
+            self.device_sim.lock_portrait = false;
+            self.device_sim_exit_resolution = None;
+        }
+        self.preview_resolution = self.device_sim.clamp_resolution(resolution);
     }
 
     /// 布局里的中央视图可见性可以自相矛盾（两个都存成 `false`）。这里不做修复、也不报
@@ -1871,6 +1969,18 @@ impl EditorApp {
         self.layout.gizmo_pivot = self.gizmo_pivot.as_str().to_owned();
         self.layout.preview_resolution = self.preview_resolution;
         self.layout.game_view_zoom = self.game_view_zoom.as_str().to_owned();
+        // 设备模拟随布局保存（preset 下标 / 触摸 / 摇杆 / 竖屏锁定）；与默认态一致时
+        // 写 `None`，与自动落盘路径同一口径（空段不占布局文件）。
+        {
+            let live = rustlua_editor_core::layout::DeviceSimLayout {
+                preset: self.device_sim.preset.map(|index| index as u32),
+                touch_sim: self.device_sim.touch_sim,
+                joystick: self.device_sim.joystick,
+                lock_portrait: self.device_sim.lock_portrait,
+            };
+            self.layout.device_sim =
+                (live != rustlua_editor_core::layout::DeviceSimLayout::default()).then_some(live);
+        }
         // 助手设置不在这里：它属于用户而不是工程（见 `enable_user_config` 与
         // `maybe_persist_user_config_on_change`）。
         // 显式保存（菜单「保存布局」）：无视节流直接抓当前树，用户按了就要拿到现状。
@@ -1922,6 +2032,18 @@ impl EditorApp {
         current.gizmo_space = self.gizmo_space.as_str().to_owned();
         current.gizmo_pivot = self.gizmo_pivot.as_str().to_owned();
         current.preview_resolution = self.preview_resolution;
+        // 设备模拟随布局自动落盘（机型/触摸/摇杆/竖屏锁定）；与默认态一致时写 `None`
+        // （与 `assistant` 的 None 语义一致），避免"打开工程即触发一次写盘"。
+        {
+            let live = rustlua_editor_core::layout::DeviceSimLayout {
+                preset: self.device_sim.preset.map(|index| index as u32),
+                touch_sim: self.device_sim.touch_sim,
+                joystick: self.device_sim.joystick,
+                lock_portrait: self.device_sim.lock_portrait,
+            };
+            current.device_sim =
+                (live != rustlua_editor_core::layout::DeviceSimLayout::default()).then_some(live);
+        }
         // dock 树只在结构指纹变化时序列化（每帧算一次哈希，不做 JSON 编码）。
         if let Some(tree) = self.dock_tree_change() {
             current.dock_tree = Some(Box::new(tree));
@@ -1937,6 +2059,7 @@ impl EditorApp {
             || current.gizmo_pivot != saved.gizmo_pivot
             || (current.scene_zoom - saved.scene_zoom).abs() > f32::EPSILON
             || current.preview_resolution != saved.preview_resolution
+            || current.device_sim != saved.device_sim
             || current.dock_tree != saved.dock_tree;
         self.layout = current;
         if !changed {
@@ -2783,6 +2906,9 @@ impl EditorApp {
         self.capture_input_binding(context);
         // 快捷键改键捕获：同样必须早于下面的分发（否则捕获会顺手触发被改键的命令）。
         self.capture_shortcut(context);
+        // ③：搜索窗里"要先换文档"而挂起的定位，在脏闸门裁决后的下一帧补做。
+        // 放在帧入口而不是面板里：窗口被关掉时这条待办也必须落地，否则它会永远悬着。
+        self.tick_pending_search_jump();
         // 快捷键统一走 typed 命令入口（docs/55 §4.1 规则 1：视图只发 action，
         // 提交边界由 dispatch 统一编排）。Ctrl+Z 仍先做事务网关。
         // 键位本身来自 `crate::shortcuts`（用户可改，见 帮助 ▸ 快捷键…）。
@@ -2811,6 +2937,11 @@ impl EditorApp {
         // 因此不需要 project_loaded 前置（未开工程时条目按各自的 Gate 灰置并说明原因）。
         if self.shortcut_pressed(context, crate::shortcuts::EditorShortcut::Palette) {
             self.toggle_command_palette();
+        }
+        // ③：全工程搜索。默认 Ctrl+Shift+F（与 VS Code 的"跨文件查找"同键位）。
+        // 与命令面板一样不要求文本焦点：从 Inspector 的过滤框里按也要能开。
+        if self.shortcut_pressed(context, crate::shortcuts::EditorShortcut::Search) {
+            self.open_project_search();
         }
         // H04：Ctrl+D 原地复制 / Ctrl+C 复制 / Ctrl+V 粘贴为子节点（Unity 语义）。
         // 与 Ctrl+S 同级：仅场景工作台、无文本焦点、无活动事务时生效；Play 锁
@@ -2861,6 +2992,9 @@ impl EditorApp {
                 self.set_scene_tool(tool);
             }
         }
+        // docs/73：插件命令声明的 `shortcut` 真绑定。文本焦点门槛与"内置键位优先"
+        // 都在方法里判，这里与上面的内置快捷键同级、同样排在改键捕获之后。
+        self.run_pressed_plugin_shortcut(context);
         // E08：Escape 取消活动事务（拖动/Inspector 编辑的取消语义，见
         // cancel_edit_on_escape）。置于 Delete 之后，非键入状态生效。确实执行了
         // 取消时，顺带清掉 Scene View 拖拽残留（drag/gizmo_drag/preview），防止
@@ -2903,6 +3037,10 @@ impl EditorApp {
         self.draw_lua_source_view(context);
         // P1：断链检查窗（资源 ▸ 断链检查…；扫描与改指都由 shell 执行）。
         self.draw_broken_refs_panel(context);
+        // 预制体结构差异窗（资源 ▸ 查看结构差异…；只读比较，条目只改选区）。
+        self.draw_prefab_structure_panel(context);
+        // ③：全工程搜索窗（编辑 ▸ 全工程搜索… / Ctrl+Shift+F；索引与定位都在 shell）。
+        self.draw_project_search_panel(context);
         self.draw_project_settings_panel(context);
         // M19-03：领域数据面板（Lua 校验 / PersistId 注册表）与运行时调试面板
         // （只读探针）都是可开关的独立窗口。
@@ -2916,6 +3054,9 @@ impl EditorApp {
         self.draw_command_palette(context);
         // 帮助 ▸ 快捷键…：查看/改键。与命令面板同级——只改用户配置，不碰文档。
         self.draw_shortcut_settings(context);
+        // 运行期错误现场（列表/详情/一键复现）。致命弹窗是模态，画在常规窗口之后、
+        // 未保存确认窗之前——作者仍需先处理致命错误，但离开文档的确认仍有更高优先。
+        self.draw_crash_panel(context);
         // E06：最后绘制「未保存的更改」确认窗，置于其余窗口之上；仅在 dirty 且
         // 有挂起的离开操作时显示，此时其它面板保持原样、文档不被改动。
         self.draw_pending_change_window(context);
@@ -2932,6 +3073,9 @@ impl EditorApp {
         }
         // Play 且本帧没人步进过预览（Game 页签没显示）：补一次空输入步进，游戏不因切页停摆。
         self.keep_preview_running_without_game_view(context);
+        // 运行期错误现场：本帧所有步进都结束之后统一收敛（落盘＋致命弹窗＋复现命中）。
+        // 放在这里而不是 Game 视图里，切到 Scene 页签时补步进抓到的错误也不会漏。
+        self.poll_crash_events(context);
         // Scene View 渲染器创建失败退避期间：约一次到点重绘，空闲时也能自愈。
         self.schedule_scene_renderer_retry(context);
         // 运行时性能：在预览本帧的步进/渲染都完成后取快照；Play 停止时由 tracker 清空。

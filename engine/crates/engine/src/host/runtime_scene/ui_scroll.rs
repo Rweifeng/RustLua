@@ -19,6 +19,7 @@ use rustlua_ui::ui_interaction::UiScroll;
 use rustlua_ui::ui_mask::Mask;
 use rustlua_ui::ui_scene_layout::ResolvedUiNode;
 use rustlua_ui::ui_scroll_view::ScrollView;
+use rustlua_ui::ui_virtual_list::UiVirtualList;
 
 use super::RuntimeScene;
 
@@ -29,7 +30,7 @@ impl RuntimeScene {
     /// 在 `ensure_scene_ui_layout` 完成解析后调用：算滚动范围、平移子孙、生成裁剪矩形与
     /// `CanvasGroup` 的累计 alpha。
     pub(super) fn apply_scroll_layout(&mut self, resolved: &mut BTreeMap<u64, ResolvedUiNode>) {
-        let (scrolls, masks, groups) = self.script.with_world(|world| {
+        let (scrolls, masks, groups, virtuals) = self.script.with_world(|world| {
             let mut scrolls = BTreeMap::new();
             world.for_each::<ScrollView>(|id, scroll| {
                 scrolls.insert(id.index() as u64, scroll.horizontal);
@@ -42,7 +43,11 @@ impl RuntimeScene {
             world.for_each::<CanvasGroup>(|id, group| {
                 groups.insert(id.index() as u64, *group);
             });
-            (scrolls, masks, groups)
+            let mut virtuals = BTreeMap::new();
+            world.for_each::<UiVirtualList>(|id, list| {
+                virtuals.insert(id.index() as u64, list.total_height());
+            });
+            (scrolls, masks, groups, virtuals)
         });
         if scrolls.is_empty() && masks.is_empty() && groups.is_empty() {
             self.ui_scroll_ranges.clear();
@@ -69,16 +74,23 @@ impl RuntimeScene {
                 continue;
             };
             let mut content = 0.0_f32;
-            for (&child_slot, rect) in &base {
-                if child_slot == slot || !self.is_layout_descendant(child_slot, slot) {
-                    continue;
+            if let Some(total_height) = virtuals.get(&slot) {
+                // M76-07：虚拟列表的内容尺寸 = 数据行总高。**不能**按"当前已材料化行"
+                // 的子孙包围盒算——那会随窗口漂移，滚到中部时窗口行都在视口里、包围盒
+                // 只有一屏高，滚动范围被夹死，再也滚不到底。
+                content = *total_height;
+            } else {
+                for (&child_slot, rect) in &base {
+                    if child_slot == slot || !self.is_layout_descendant(child_slot, slot) {
+                        continue;
+                    }
+                    let extent = if horizontal {
+                        rect.x + rect.w - viewport.x
+                    } else {
+                        rect.y + rect.h - viewport.y
+                    };
+                    content = content.max(extent);
                 }
-                let extent = if horizontal {
-                    rect.x + rect.w - viewport.x
-                } else {
-                    rect.y + rect.h - viewport.y
-                };
-                content = content.max(extent);
             }
             let range = if horizontal {
                 UiScroll::horizontal(content).with_viewport(viewport.w)

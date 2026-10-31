@@ -127,8 +127,17 @@ impl EditorApp {
                     self.lua_source_view.clear();
                     // 模型预览的几何体与纹理也按旧项目根解析，同一口径整份作废。
                     self.model_preview.clear();
+                    // 导入设置的草稿也是按旧工程根解析出来的档位，换工程后整份作废。
+                    self.import_settings.clear();
                     // 断链清单是"某一次扫描的快照"，换工程后逐条都不再指向前工程的东西。
                     self.broken_refs.clear();
+                    // 结构差异窗的条目来自上一份工程的文件比较，换工程后整份作废。
+                    self.prefab_structure.clear();
+                    // 层级徽标的覆盖计数按旧工程根去找源预制体，换工程后整份作废。
+                    self.prefab_badges.clear();
+                    // 搜索索引同样是"某一次重建的快照"：路径按旧工程根解析，整份作废
+                    // （下次开窗会按新工程重新建索引）。
+                    self.project_search.clear();
                     // 全局 Undo 账本记的是"上一份工程里谁最后改过"，换工程后整本作废：
                     // 各归属的栈深会直接跳到另一份工程的数，不摘就会把新工程的第一次撤销
                     // 派给一个已经不存在的面板。

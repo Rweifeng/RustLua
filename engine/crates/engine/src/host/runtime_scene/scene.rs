@@ -5,6 +5,7 @@
 //! 线框方法被**留在 `mod.rs` 的每帧主路径**调用，方向是子→父，故标 `pub(super)`（§3.1.4）。
 //! 结构体本身仍定义在 `mod.rs`——搬走它会逼着约 40 个字段逐个放宽可见性。
 
+use super::ui_virtual_list::VirtualListFrame;
 use crate::host::gamepad::GamepadPoller;
 use rustlua_assets::asset_handle::{AssetHandle, AssetRecord, AssetStore};
 use rustlua_camera::camera::{Camera2D, OrthoTerms, Viewport};
@@ -689,7 +690,10 @@ impl RuntimeScene {
         tracing::info!(target: "scene", "[scene] loaded name={} entities={}", scene.name, scene.entities.len());
         tracing::info!(target: "ecs", "[ecs] world initialized entities={instantiated}");
         if run_script && let Some(root) = project_root {
-            audio.with_mut(|audio| audio.set_asset_dir(root.join("assets").join("audio")));
+            audio.with_mut(|audio| {
+                audio.set_asset_dir(root.join("assets").join("audio"));
+                audio.set_asset_gains(audio_asset_gains(root));
+            });
             // P3 用户数据目录：发布包（`<exe>/pack` + `release.toml`，或 `--pack`）
             // 把存档与玩家设置写到用户目录（`%APPDATA%\<app>`），不写程序目录；
             // 开发工程保持工程内 `.cache/save.sav` 与工程根 `settings.toml`。
@@ -826,6 +830,11 @@ impl RuntimeScene {
             ui_clip_rects: BTreeMap::new(),
             ui_scroll_shifts: BTreeMap::new(),
             ui_group_alpha: BTreeMap::new(),
+            ui_virtual_rows: BTreeMap::new(),
+            ui_virtual_row_slots: BTreeSet::new(),
+            ui_virtual_template_slots: BTreeSet::new(),
+            ui_virtual_signatures: BTreeMap::new(),
+            ui_virtual_frame: VirtualListFrame::default(),
             ui_focused: None,
             ui_binding_runtime: rustlua_ui::ui_binding::BindingRuntime::default(),
             ui_binding_hidden_images: BTreeSet::new(),
@@ -878,6 +887,31 @@ impl RuntimeScene {
 /// 期望值，避免断言与生产各写一份编码。
 pub(crate) fn encode_handle(handle: EntityId) -> u64 {
     (u64::from(handle.index()) << 32) | u64::from(handle.generation())
+}
+
+/// 逐音效的音量（导入设置里的"音量"）：键是**音效名**（不带扩展名，与 `play("hit")` 同口径）。
+///
+/// 键从工程相对路径取文件名主干：`assets/audio/hit.ogg` → `hit`。这样导入设置里的
+/// 路径口径与 `play()` 的名字口径只在**这一处**换算，别处不再各换算一次。
+/// `resources.meta` 读不动时返回空表（= 全部原样），不因为一份设置文件拖垮整场音频。
+pub(crate) fn audio_asset_gains(root: &Path) -> HashMap<String, f32> {
+    let meta = match rustlua_assets::import_settings::ResourceMeta::open(root) {
+        Ok(meta) => meta,
+        Err(error) => {
+            tracing::warn!(
+                target: "audio",
+                error = %error,
+                "[audio] 资源元数据读不动；音量沿用原样"
+            );
+            return HashMap::new();
+        }
+    };
+    meta.audio_entries()
+        .filter_map(|(path, settings)| {
+            let stem = Path::new(path).file_stem()?.to_str()?.to_owned();
+            Some((stem, settings.gain))
+        })
+        .collect()
 }
 
 /// 一条运行期生成实体的快照（见 [`RuntimeScene::runtime_spawned_entities`]）。

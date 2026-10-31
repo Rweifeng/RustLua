@@ -73,6 +73,9 @@
 
 - 剪辑来自同一 glTF 资产的 `animations`；支持 `translation/rotation/scale` 通道（`STEP` 保持、其余线性插值）。
 - 骨骼蒙皮：每帧渲染器推进剪辑时间，产出关节调色板（最多 `MAX_BONES = 128`）上传 GPU。
+- 切换剪辑：`set_clip` 硬切（时间归零）；`crossfade_to(name, seconds)` 交叉淡入——新剪辑从 0 秒起播，
+  旧剪辑在**自己的时间轴**上继续推进并淡出，姿态按平移/缩放线性插值、旋转走最短弧的 nlerp。
+  淡入期间的调色板由两条剪辑的局部 TRS 混合后再求全局矩阵，不做矩阵插值。
 - Lua 侧见 `animation3d` 模块（[18-lua-api.md](18-lua-api.md)）。
 
 ### Environment

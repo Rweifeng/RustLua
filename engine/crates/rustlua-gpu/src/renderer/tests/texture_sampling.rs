@@ -66,7 +66,10 @@ fn temp_root(tag: &str) -> PathBuf {
 /// （`set_texture_settings(.., default)` 的语义就是删行）再保存——`save()` 在空表时是**删文件**。
 fn write_meta(root: &Path, entries: &[(&str, TextureImportSettings)]) {
     let mut meta = ResourceMeta::open(root).expect("打开元数据段");
-    let existing: Vec<String> = meta.entries().map(|(key, _)| key.to_owned()).collect();
+    let existing: Vec<String> = meta
+        .texture_entries()
+        .map(|(key, _)| key.to_owned())
+        .collect();
     for key in existing {
         meta.set_texture_settings(Path::new(&key), TextureImportSettings::default())
             .expect("清空旧条目");
@@ -288,7 +291,7 @@ fn the_undocumented_texture_path_keeps_todays_pixels() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// 运行中改设置 → `reload_texture_settings` 就地换绑定组，**不重传像素**也要立刻见效。
+/// 运行中改设置 → `reload_import_settings` 就地换绑定组，**不重传像素**也要立刻见效。
 ///
 /// 这条是编辑器路径：面板改滤镜后不重启预览、不清缓存，下一帧就该是糊的。
 /// 它同时是 `sampling_epoch` 的门——2D 保序合并按 `(texture, sdf, bitmap)` 缓存绑定组，
@@ -317,7 +320,7 @@ fn reload_swaps_the_sampler_without_reuploading() {
         )],
     );
     assert_eq!(
-        renderer.reload_texture_settings(),
+        renderer.reload_import_settings(),
         1,
         "一张已上传的贴图变了就该报 1，报 0 说明重读盘没生效"
     );
@@ -348,11 +351,7 @@ fn reload_swaps_the_sampler_without_reuploading() {
 
     // 改回默认也要能立刻回去（面板上"取消勾选"是同一条路）。
     write_meta(&root, &[]);
-    assert_eq!(
-        renderer.reload_texture_settings(),
-        1,
-        "回到默认也是一次改变"
-    );
+    assert_eq!(renderer.reload_import_settings(), 1, "回到默认也是一次改变");
     let back = pixel(&paint(&mut renderer, LINEAR_KEY, 1.0), [0.5, 0.5], 1.0);
     assert_eq!(
         back, CENTER_NEAREST,

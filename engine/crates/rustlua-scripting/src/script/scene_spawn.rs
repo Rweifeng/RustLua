@@ -6,6 +6,7 @@
 // WP11-USE:BEGIN
 use crate::script::LuaRuntime;
 use crate::script::ScriptState;
+use crate::script::crash;
 use crate::script::domain::animation::anim_asset::AnimClip;
 use crate::script::domain::animation::animation::AnimationStateMachine;
 use crate::script::domain::animation::animation_player::AnimationPlayer;
@@ -279,6 +280,7 @@ impl LuaRuntime {
             for function_name in &target.functions {
                 if let Err(error) = self.call_ui_callback(function_name, target.name.as_str()) {
                     if self.guard.borrow().policy() == ScriptErrorPolicy::Strict {
+                        self.finalize_crash(Some(&BudgetSlot::UiClicks.key()), true);
                         return Err(error);
                     }
                     self.contain_script_error(BudgetSlot::UiClicks, &error);
@@ -315,6 +317,7 @@ impl LuaRuntime {
         for function_name in functions {
             if let Err(error) = self.call_ui_callback(function_name, target_name) {
                 if self.guard.borrow().policy() == ScriptErrorPolicy::Strict {
+                    self.finalize_crash(Some(&BudgetSlot::UiClicks.key()), true);
                     return Err(error);
                 }
                 self.contain_script_error(BudgetSlot::UiClicks, &error);
@@ -352,12 +355,11 @@ impl LuaRuntime {
                     reason: error.to_string(),
                 })?;
         if let Value::Function(function) = callback {
-            function
-                .call::<()>((target_name,))
-                .map_err(|error| LuaBridgeError::Runtime {
-                    path,
-                    reason: format!("ui click {function_name}: {error}"),
-                })?;
+            crash::bridge_result(
+                crash::call_guarded(&self.lua, function, (target_name,)),
+                path,
+                Some(&format!("ui click {function_name}")),
+            )?;
         }
         Ok(())
     }
@@ -841,6 +843,23 @@ impl LuaRuntime {
                 .world_mut()
                 .map_err(world_borrow)?
                 .insert(id, scrollbar)
+                .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
+        }
+        // M76-07：`UiVirtualList` 进世界。此前它只在导出场景里作为组件串存在，
+        // 宿主 `world.for_each::<UiVirtualList>` 一个都找不到 ⇒ 虚拟列表场景侧运行时
+        // 无数据可读。这里把配置（含数据行总数）落成运行组件，宿主每帧据此材料化窗口行。
+        if let Some(raw) = components.get("UiVirtualList") {
+            let virtual_list =
+                crate::script::domain::ui::ui_virtual_list::UiVirtualList::from_component_str(raw)
+                    .map_err(|error| {
+                        LuaBridgeError::Api(format!(
+                            "entity {name:?} has invalid UiVirtualList: {error}"
+                        ))
+                    })?;
+            state
+                .world_mut()
+                .map_err(world_borrow)?
+                .insert(id, virtual_list)
                 .map_err(|error| LuaBridgeError::Api(error.to_string()))?;
         }
         // E16：可选 `UiLayout` 组件——四边 Anchor+Offset 布局，存在时优先于

@@ -25,6 +25,7 @@ mod gpu_pass_timings;
 mod hdr;
 mod ibl;
 mod material_preview;
+mod model_scale;
 mod offscreen_and_tetris;
 mod overlay_batching;
 mod particle_dispatch;

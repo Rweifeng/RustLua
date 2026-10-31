@@ -41,6 +41,29 @@ fn read_project_bytes(path: &Path) -> Option<Vec<u8>> {
     rustlua_infra::vfs::read_resource(path).ok()
 }
 
+/// 这个字体的**字重**：导入设置里的字重覆盖优先于工程级 `font_weight`。
+///
+/// 覆盖没登记（`None`）时沿用工程级字重——"没登记"与"登记成 400"是两件事，
+/// 所以覆盖用 `Option<u16>` 而不是"默认 400"。`resources.meta` 读不动时也沿用工程级：
+/// 读不动 ≠ 设置成 0。
+pub(super) fn font_weight_for(root: &Path, relative_font: &str) -> f32 {
+    let project_weight = project_font::weight(root);
+    match rustlua_assets::import_settings::ResourceMeta::open(root) {
+        Ok(meta) => match meta.font_settings(relative_font).weight {
+            Some(weight) => f32::from(weight),
+            None => project_weight,
+        },
+        Err(error) => {
+            tracing::warn!(
+                target: "render",
+                error = %error,
+                "[render] 资源元数据读不动；字重沿用工程级"
+            );
+            project_weight
+        }
+    }
+}
+
 /// 预热分批粒度：够小到每批耗时/内存读数有分辨力，够大到日志条数可控（1558 字 ⇒ 7 条）。
 const PREWARM_CHUNK_CHARS: usize = 256;
 
@@ -78,7 +101,7 @@ pub fn load_project_font_atlas(project_root: Option<&Path>) -> Option<Arc<Mutex<
             project_file_exists(&path).then_some(path)
         })
         .and_then(|path| read_project_bytes(&path));
-    let font_weight = project_font::weight(root);
+    let font_weight = font_weight_for(root, &project_font::primary_path(root));
     let decode_ms = started.elapsed().as_secs_f64() * 1000.0;
     let build_started = web_time::Instant::now();
     let mut atlas = match FontAtlas::load_with_fallback_and_weight(
@@ -193,7 +216,7 @@ pub fn load_custom_font_atlas(project_root: Option<&Path>, font_asset: &str) -> 
             project_file_exists(&path).then_some(path)
         })
         .and_then(|path| read_project_bytes(&path));
-    let font_weight = project_font::weight(root);
+    let font_weight = font_weight_for(root, font_asset);
     let atlas = match FontAtlas::load_with_fallback_and_weight(
         &bytes,
         fallback_bytes.as_deref(),

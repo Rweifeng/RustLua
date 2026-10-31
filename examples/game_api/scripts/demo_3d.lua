@@ -63,6 +63,7 @@ local nav_info = nil
 local nav_cells, nav_world = nil, nil
 local nav_destroyed = false
 local nav_runner = nil
+local nav_flow_state, nav_flow_step = nil, nil
 
 --- `entity.find` + 存活校验：缺实体时返回 nil，调用方据此跳过而不是让 API 报错。
 local function live(name)
@@ -107,6 +108,13 @@ local function build_nav()
     nav_cells = nav.find_path(nav_id, 0, 0, NAV_SIZE - 1, NAV_SIZE - 1, false)
     -- 世界路径的端点就是两端的格心：(-11,-11) 与 (11,11)。
     nav_world = nav.find_world_path(nav_id, -11.0, -11.0, 11.0, 11.0, false)
+    -- 动态障碍是独立覆盖层：清掉它不会动上面那堵静态墙。
+    nav.set_dynamic_blocked(nav_id, 3, 3, true)
+    nav.clear_dynamic(nav_id)
+    -- 流场：目标就是上面的终点格心，预算足够一次建完（12x12 远小于默认 4096）。
+    nav.set_flow_goal(nav_id, 11.0, 11.0)
+    nav_flow_state = nav.update_flow(nav_id, 4096)
+    nav_flow_step = nav.flow_vector(nav_id, -11.0, -11.0)
     local temp = nav.create_grid(NAV_NAME .. "Temp", 2, 2, 1.0, 0.0, 0.0)
     nav_destroyed = nav.destroy_grid(temp)
 end
@@ -365,6 +373,64 @@ local steps = {
         end,
     },
     {
+        id = "clip_crossfade",
+        title = "Crossfade",
+        claim = "crossfade 让新剪辑从 0 秒起播、旧剪辑在自身时间轴上淡出；秒数 ≤ 0 退化为硬切",
+        api = { "animation3d.crossfade", "animation3d.get", "animation3d.time" },
+        code = "animation3d.crossfade(w, clips[2], 0.4)",
+        enter = function()
+            reset_world()
+            load_clips()
+            local warrior = live(WARRIOR)
+            if not warrior then
+                return
+            end
+            animation3d.set_paused(warrior, false)
+            if #clips > 1 then
+                animation3d.set(warrior, clips[1])
+                animation3d.crossfade(warrior, clips[2], 0.4)
+            end
+        end,
+        run = function()
+            local warrior = live(WARRIOR)
+            if warrior then
+                lab.note(
+                    string.format(
+                        "crossfade %s -> %s t=%.2fs",
+                        #clips > 0 and clips[1] or "-",
+                        tostring(animation3d.get(warrior)),
+                        animation3d.time(warrior)
+                    )
+                )
+            end
+        end,
+        read = function()
+            local warrior = live(WARRIOR)
+            if not warrior then
+                return { warrior = "missing" }
+            end
+            return {
+                from = #clips > 0 and clips[1] or "-",
+                clip = tostring(animation3d.get(warrior)),
+                time = string.format("%.2f", animation3d.time(warrior)),
+            }
+        end,
+        check = function(t)
+            local warrior = live(WARRIOR)
+            if not warrior then
+                t:ok(false, "SkeletonWarrior is required")
+                return
+            end
+            if #clips < 2 then
+                t:ok(false, "crossfade needs at least two clips")
+                return
+            end
+            -- 切换是即时的：淡入只影响姿态混合，当前剪辑名立刻就是目标。
+            t:eq(animation3d.get(warrior), clips[2], "crossfade switches the active clip immediately")
+            t:ok(animation3d.time(warrior) >= 0, "the incoming clip clock is readable")
+        end,
+    },
+    {
         id = "clip_pause",
         title = "Pause clip",
         claim = "set_paused 冻结骨骼时间，paused() 直接读回开关；P 键切换后 time 不再前进",
@@ -599,7 +665,7 @@ local steps = {
     {
         id = "nav_world_path",
         title = "Nav grid",
-        claim = "nav 在 XZ 平面上做 4 向 A*；find_world_path 的点直接就是 transform3d 的 x/z",
+        claim = "nav 在 XZ 平面上做 4 向 A*；find_world_path 的点直接就是 transform3d 的 x/z；流场与动态障碍共用同一张网格",
         api = {
             "nav.create_grid",
             "nav.grid_info",
@@ -607,11 +673,16 @@ local steps = {
             "nav.find_path",
             "nav.find_world_path",
             "nav.destroy_grid",
+            "nav.set_dynamic_blocked",
+            "nav.clear_dynamic",
+            "nav.set_flow_goal",
+            "nav.update_flow",
+            "nav.flow_vector",
             "entity.spawn",
             "transform3d.attach",
             "transform3d.set",
         },
-        code = "nav.create_grid('Lab3dNav',12,12,2,-12,-12); nav.find_world_path(id,-11,-11,11,11)",
+        code = "nav.create_grid('Lab3dNav',12,12,2,-12,-12); nav.set_flow_goal(id,11,11); nav.flow_vector(id,-11,-11)",
         enter = function()
             reset_world()
             build_nav()
@@ -645,6 +716,8 @@ local steps = {
                 { "grid", nav_info and string.format("%dx%d @ %.0f", nav_info.width, nav_info.height, nav_info.cell_size) or "-" },
                 { "cells", nav_cells and #nav_cells or "nil" },
                 { "world pts", nav_world and #nav_world or "nil" },
+                { "flow", nav_flow_state or "-" },
+                { "flow step", nav_flow_step and string.format("%.2f,%.2f", nav_flow_step.x, nav_flow_step.z) or "-" },
                 { "destroyed", tostring(nav_destroyed) },
                 { "runner", runner and string.format("%.1f,%.1f", runner.x, runner.z) or "-" },
             }
@@ -681,6 +754,13 @@ local steps = {
                 t:near(nav_world[#nav_world].x, 11.0, 1e-6, "world path ends at the goal cell centre")
                 t:near(nav_world[#nav_world].z, 11.0, 1e-6, "world path ends at the goal cell centre")
                 t:ok(#nav_world < #nav_cells, "string pull keeps fewer waypoints than cells")
+            end
+            t:eq(nav_flow_state, "ready", "flow field bakes to ready within one budget")
+            t:ok(nav_flow_step ~= nil, "flow_vector answers at the start cell")
+            if nav_flow_step then
+                local len = nav_flow_step.x * nav_flow_step.x + nav_flow_step.z * nav_flow_step.z
+                t:near(len, 1.0, 1e-5, "flow step is a unit vector")
+                t:ok(nav_flow_step.x > 0, "flow points toward the goal side (+x)")
             end
         end,
     },

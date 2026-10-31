@@ -1261,6 +1261,15 @@ const BUTTON_STATES_FIELDS: &[FieldSchema] = &[
 const SCROLL_VIEW_FIELDS: &[FieldSchema] =
     &[FieldSchema::new("horizontal", FieldKind::Bool, false)];
 
+/// M76-07：虚拟列表运行时组件。`count` 是数据行总数（运行期可变），
+/// 行高/间距/过扫与 `VirtualListConfig` 同义；全部字段可选。
+const UI_VIRTUAL_LIST_FIELDS: &[FieldSchema] = &[
+    FieldSchema::new("count", FieldKind::Int, false).with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("item_height", FieldKind::Number, false).with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("spacing", FieldKind::Number, false).with_rules(&[FieldRule::NonNegative]),
+    FieldSchema::new("overscan", FieldKind::Int, false).with_rules(&[FieldRule::NonNegative]),
+];
+
 /// M80-02：矩形遮罩。`padding` 是四元组文本（left,top,right,bottom），语法由
 /// `rustlua_ui::ui_mask::Mask` 负责；schema 只认键存在（与其他向量字段同一口径）。
 const MASK_FIELDS: &[FieldSchema] = &[FieldSchema::new("padding", FieldKind::Text, false)];
@@ -1553,6 +1562,8 @@ pub fn builtin_registry() -> BTreeMap<&'static str, ComponentSchema> {
         ComponentSchema::new("ButtonStates", 1, BUTTON_STATES_FIELDS),
         // M76-02：实体 UI 的滚动容器（运行时按子节点包围盒算内容尺寸）。
         ComponentSchema::new("ScrollView", 1, SCROLL_VIEW_FIELDS),
+        // M76-07：虚拟列表运行时组件（导出 `list{virtualized=true}` 写出）。
+        ComponentSchema::new("UiVirtualList", 1, UI_VIRTUAL_LIST_FIELDS),
         // M80-02：通用矩形遮罩与 CanvasGroup。
         ComponentSchema::new("Mask", 1, MASK_FIELDS),
         ComponentSchema::new("CanvasGroup", 1, CANVAS_GROUP_FIELDS),

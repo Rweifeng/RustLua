@@ -141,8 +141,8 @@ History，但缺独立 UI 工作区与样式层。**选 A 的运行时 + B 的�
 canvas_group / toggle / slider / progress / scrollbar）、**9 个事件**（pointer_enter /
 pointer_exit / pointer_down / pointer_up / click / focus / submit / value_changed / drag）、
 **4 种状态样式**（hover / pressed / disabled / focused），`bindings`、`clipping`、`transitions`、
-`rich_text` 为真；只有**虚拟列表**仍为假（`list{virtualized=true}` 可写，但运行时窗口化未落地，
-导出端显式报错）。
+`rich_text`、`virtual_list` 均为真（虚拟列表窗口化于 2026-10-31 收口，见
+[docs/76](76-UI子系统五星期收口.md) §3.7）。
 `Capabilities::planned()` 是目标态。**校验器以传入的能力为准**：AI 产出目标态字段时会被稳定拒绝，
 而不是"看起来能跑"。缺口清单见 [docs/76](76-UI子系统五星期收口.md) §7。
 
@@ -372,8 +372,8 @@ M76-07 把四个内核（虚拟列表 / 受限富文本 / 文本输入 / 导航�
   组件克隆、纹理重定向查表与字形预热。现在实体矩形放大 1 px 后与裁剪矩形不相交就不进候选集，
   1000 行 / 100 px 视口 / 20 px 行高下峰值装配从 1000 图降到 **7 图 / 7 文**，顶点输出逐字节不变。
   刻意**不计进** `view_filtered`：那个口径是"被可见性遮罩拦下"，由 `tests/camera_physics.rs` 钉住。
-  没接 `spec` 的 `list{virtualized}`——所以 §3.3 的能力矩阵仍然成立：内核在运行期可用，
-  但 AI 产出的"虚拟列表"字段在 M1 落地前照旧被稳定拒绝。
+  当时没接 `spec` 的 `list{virtualized}`；该缺口已于 2026-10-31 收口（导出 `UiVirtualList` +
+  宿主行池窗口化，见 docs/76 §3.7）。
 - **`api_ui` 的高级内核演示**（`examples/game_api/scripts/demo_ui.lua`，8 步 → 12 步）：
   每步的 `check` 断言的是引擎返回值，不是脚本自己的模型。取数口径写在门里，例如虚拟列表
   总高 `item_height × total = 960`、`overscan=1` 时窗口 `[0,7)`、滚到底只走 `max_offset = 840`、

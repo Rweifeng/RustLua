@@ -124,6 +124,27 @@ impl EditorApp {
                 .record_command("save_scene_blocked", started.elapsed());
             return false;
         }
+        // 变体文档：保存前把「相对基础的真实差异」重算成覆盖记录。基础在同步后又动过时
+        // 拒绝保存（否则基础的新值会被 diff 成变体自己的覆盖，把上游改动钉死）。
+        if let Err(error) = super::prefab_variant::prepare_variant_for_save(doc, &self.project.root)
+        {
+            self.status = error;
+            self.set_scene_view_diagnostic(self.status.clone());
+            self.profiler
+                .record_command("save_variant_blocked", started.elapsed());
+            return false;
+        }
+        // 预制体文档：保存前按内层当前内容重算嵌套覆盖记录。内层在上次同步后动过时拒绝
+        // 保存（与变体同一条理由：内层新值不能被记成外层自己的覆盖）。
+        if let Err(error) =
+            super::prefab_nested_sync::prepare_nested_for_document_save(doc, &self.project.root)
+        {
+            self.status = error;
+            self.set_scene_view_diagnostic(self.status.clone());
+            self.profiler
+                .record_command("save_nested_blocked", started.elapsed());
+            return false;
+        }
         let is_prefab_document = doc.is_prefab_document();
         let r = if doc.path.is_some() {
             self.recovery.save_document(doc).map_err(|e| e.to_string())

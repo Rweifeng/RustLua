@@ -359,6 +359,10 @@ impl RuntimeScene {
 
     pub(super) fn ensure_scene_ui_layout(&mut self, viewport: [f32; 2]) {
         self.sync_prefab_ui_nodes();
+        // M76-07：虚拟列表行池 reconcile 的固定插入点是 sync 之后、解算之前——
+        // 行实体要在本帧布局解算**前**进世界与 `ui_scene_nodes`，解算按窗口行出矩形，
+        // 绘制/命中/交互树读到的都是"本帧窗口"的行。
+        self.reconcile_virtual_lists(viewport);
         let (mut resolved, _) = resolve_scene_ui_layout(&self.ui_scene_nodes, viewport);
         // The resolver also gives non-layout roots a preferred-size rect at the
         // origin. That default is for hierarchy traversal; only authored layouts
@@ -399,6 +403,12 @@ impl RuntimeScene {
         }
         let spawned = self.script.prefab_ui_nodes();
         for key in self.applied_prefab_ui_nodes.keys() {
+            // M76-07：行实体与预设 spawn 共用世界槽位空间。预设实体销毁后、槽位被虚拟行
+            // 复用时，旧预设键对应的正是**活着的行实体**——摘键会误删行节点。行槽位有专属
+            // 登记（`ui_virtual_row_slots`），跳过它们，行的生死由 reconcile 自己管理。
+            if self.ui_virtual_row_slots.contains(key) {
+                continue;
+            }
             self.ui_scene_nodes.remove(key);
         }
         for (key, node) in &spawned {
@@ -770,6 +780,14 @@ impl RuntimeScene {
         let images = self.script.with_world(|world| {
             let mut images = Vec::new();
             world.for_each::<UiImage>(|id, image| {
+                // M76-07：行模板实体不画（只当克隆源）；模板无布局节点，跳过还能免去
+                // 每帧的贴图查表与状态查名。
+                if self
+                    .ui_virtual_template_slots
+                    .contains(&(id.index() as u64))
+                {
+                    return;
+                }
                 if away.contains(&(id.index() as u64)) {
                     return;
                 }
@@ -849,6 +867,13 @@ impl RuntimeScene {
         let texts = self.script.with_world(|world| {
             let mut texts = Vec::new();
             world.for_each::<UiText>(|id, text| {
+                // M76-07：行模板文字不预热（只当克隆源）；否则每帧多栅格化一条模板字形。
+                if self
+                    .ui_virtual_template_slots
+                    .contains(&(id.index() as u64))
+                {
+                    return;
+                }
                 if away.contains(&(id.index() as u64)) {
                     return;
                 }

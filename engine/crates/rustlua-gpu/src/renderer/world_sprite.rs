@@ -16,7 +16,7 @@ use rustlua_render::mesh3d::MaterialAlphaMode;
 use super::{
     DepthPass, FrameDraw, GpuMaterial, RenderFrameMetrics, Renderer, StaticGroup,
     apply_declared_viewport, max_model_scale, record_dropped_draw, record_set_pass,
-    record_vertex_draw,
+    record_vertex_draw, scaled_model,
 };
 use rustlua_render::frame::WorldSpriteVertex;
 
@@ -269,6 +269,9 @@ impl Renderer {
             }
         }
         for drawable in &scene.drawables {
+            // 导入设置里的"模型缩放"在这一步乘进模型矩阵（**在剔除之前**）：
+            // 剔除球用同一份矩阵算，缩放后的模型才不会被按旧尺寸剔掉。
+            let scale = self.model_scale_for(&drawable.mesh_path);
             let Some(cached) = self.cached_mesh(drawable.mesh_handle, &drawable.mesh_path) else {
                 // 这里**刻意只记 debug、不计入 `dropped_draws`**：网格不在缓存绝大多数是
                 // **异步预热的头几帧**（下一帧就有），把它算成"丢了 draw"会让正常帧也报非零，
@@ -282,12 +285,12 @@ impl Renderer {
                 continue;
             };
             for (prim_index, primitive) in cached.primitives.iter().enumerate() {
+                let model = scaled_model(drawable.model, scale);
                 if let Some(frustum) = frustum {
-                    let world_center = drawable
-                        .model
+                    let world_center = model
                         .transform_point(primitive.bounds.0)
                         .unwrap_or(primitive.bounds.0);
-                    let world_radius = primitive.bounds.1 * max_model_scale(drawable.model);
+                    let world_radius = primitive.bounds.1 * max_model_scale(model);
                     if !frustum.contains_sphere(world_center, world_radius) {
                         continue;
                     }
@@ -315,20 +318,20 @@ impl Renderer {
                             models: Vec::new(),
                         })
                         .models
-                        .push(drawable.model);
+                        .push(model);
                 } else if material.alpha_mode == MaterialAlphaMode::Blend {
                     blend_draws.push(FrameDraw {
                         geometry: primitive.geometry.clone(),
                         material,
                         palette: drawable.palette.clone(),
-                        models: vec![drawable.model],
+                        models: vec![model],
                     });
                 } else {
                     draws.push(FrameDraw {
                         geometry: primitive.geometry.clone(),
                         material,
                         palette: drawable.palette.clone(),
-                        models: vec![drawable.model],
+                        models: vec![model],
                     });
                 }
             }

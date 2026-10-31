@@ -2,7 +2,7 @@
 
 > **已被 [docs/74 game_api 2.0](74-game_api演示工程2.0.md) 取代（2026-10-24）。**
 > 本文记录的是 1.0 形态（40/270 函数、21 个组件、一个模块一组按键），现状已改为分步 Lab
-> （42/301、23 个组件；**2026-10-29 复核为 45/338、30 个组件**）。**仍然有效**的部分：覆盖率门的判定语义、fixture 场景约束、
+> （42/301、23 个组件；**2026-10-29 复核为 45/338、30 个组件**；2026-10-31 导航模块补齐动态障碍与流场后为 45/343、3D 动画补交叉淡入后为 45/344，组件 31 个）。**仍然有效**的部分：覆盖率门的判定语义、fixture 场景约束、
 > 共享取景框与渲染顺序约束——2.0 原样保留并继续引用。
 
 本文件记录 `examples/game_api` **按当前 API 完全推倒重建**的结果：它演示什么、怎么组织、
@@ -15,7 +15,7 @@
 ## 1. 一句话状态
 
 `examples/game_api` 从"一个能力一个场景的展示工程"改成 **"每个 Lua API 都有一处可运行演示"的
-活文档**：45 个模块表 / 338 个 Lua 函数、30 个运行时组件（2026-10-29 复核；本文 1.0 交付时为 43/319），全部有演示；演示能否跑起来由
+活文档**：45 个模块表 / 344 个 Lua 函数、31 个运行时组件（2026-10-31 复核；本文 1.0 交付时为 43/319），全部有演示；演示能否跑起来由
 `host::sample_project` 的 12 条门在 `cargo test -p engine` 里自动验证。
 
 旧的玩法型场景（`arena` / `production` / `menu` / `game3d` / `ui_layout` / `tilemap` /
@@ -92,7 +92,7 @@ examples/game_api/
 | `sample_project_runs_every_scene_headless` | 场景文件从 `scenes/` **目录读**（不再手抄名单）：逐个加载 + 实例化 + 步进 3 步，任何 Lua 报错直接判红 |
 | `sample_project_scripts_all_compile` | `scripts/**/*.lua` 全部能编译（只编译不执行，秒级） |
 | `sample_project_demos_cover_every_lua_api` | **API 覆盖率**：运行期导出 `_G` 里的模块表与函数名（40 表 / 270 个），逐个要求在演示脚本里找到真实调用点 |
-| `sample_project_scenes_cover_every_runtime_component` | **组件覆盖率**：`ComponentId::ALL`（30 个运行时组件）每个都要在某个场景里出现 |
+| `sample_project_scenes_cover_every_runtime_component` | **组件覆盖率**：`ComponentId::ALL`（31 个运行时组件）每个都要在某个场景里出现 |
 | `sample_project_index_menu_lists_every_scene` | `demos.lua` ↔ `scenes/*.scene` ↔ 入口菜单卡片三方一致 |
 | `sample_project_index_click_opens_the_demo` | 逐个走"点击卡片 → `scene.load` → 过渡 → 新场景的演示模块 `on_create` + 一帧 `update`" |
 | `sample_project_index_cards_are_clickable` | 卡片矩形的真实解算结果（`scene_entity_ui_layout_rects`，与渲染同源）+ 在中心点按左键真的能切场景 |

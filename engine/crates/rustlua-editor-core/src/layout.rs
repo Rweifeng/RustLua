@@ -167,6 +167,8 @@ pub struct EditorLayout {
     ///
     /// 只读：新版本不再把助手设置写进工程布局（它们属于用户，见 [`crate::user_config`]）。
     pub assistant: Option<AssistantLayout>,
+    /// 设备模拟设置（机型预设 / 触摸 / 摇杆 / 竖屏锁定）。`None` = 未启用设备模拟。
+    pub device_sim: Option<DeviceSimLayout>,
 }
 
 impl Default for EditorLayout {
@@ -202,6 +204,29 @@ impl Default for EditorLayout {
             density: "compact".to_owned(),
             dock_tree: None,
             assistant: None,
+            device_sim: None,
+        }
+    }
+}
+
+/// 设备模拟的持久化形状（机型预设 + 三个开关）。`preset` 为下标，
+/// `None` 表示自定义（不模拟）；下标越界由加载端钳制（见
+/// `editor::device_sim::DeviceSimState::apply_layout`）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeviceSimLayout {
+    pub preset: Option<u32>,
+    pub touch_sim: bool,
+    pub joystick: bool,
+    pub lock_portrait: bool,
+}
+
+impl Default for DeviceSimLayout {
+    fn default() -> Self {
+        Self {
+            preset: None,
+            touch_sim: true,
+            joystick: true,
+            lock_portrait: false,
         }
     }
 }
@@ -286,6 +311,13 @@ impl EditorLayout {
                 assistant.max_tokens = 4096;
             }
         }
+        if let Some(device_sim) = self.device_sim.as_mut() {
+            // 下标钳制到"能存进 u32 的小值"；具体预设表长度由编辑器加载端判断
+            // （本 crate 不认识机型表，见 `DeviceSimState::apply_layout`）。
+            if device_sim.preset.is_some_and(|index| index > 0xFF) {
+                device_sim.preset = None;
+            }
+        }
     }
 
     /// 校验（`clamp` 已保证合法，这里给出显式报告供测试/诊断使用）。
@@ -330,6 +362,12 @@ impl EditorLayout {
                 "base_url": assistant.base_url,
                 "model": assistant.model,
                 "max_tokens": assistant.max_tokens,
+            })),
+            "device_sim": self.device_sim.as_ref().map(|device_sim| serde_json::json!({
+                "preset": device_sim.preset,
+                "touch_sim": device_sim.touch_sim,
+                "joystick": device_sim.joystick,
+                "lock_portrait": device_sim.lock_portrait,
             })),
         })
     }
@@ -413,6 +451,22 @@ impl EditorLayout {
                 stored.max_tokens = u32::try_from(max_tokens).unwrap_or(4096);
             }
             layout.assistant = Some(stored);
+        }
+        if let Some(device_sim) = value.get("device_sim").and_then(|v| v.as_object()) {
+            let mut stored = DeviceSimLayout::default();
+            if let Some(preset) = device_sim.get("preset").and_then(serde_json::Value::as_u64) {
+                stored.preset = Some(u32::try_from(preset).unwrap_or(0));
+            }
+            if let Some(touch_sim) = device_sim.get("touch_sim").and_then(|v| v.as_bool()) {
+                stored.touch_sim = touch_sim;
+            }
+            if let Some(joystick) = device_sim.get("joystick").and_then(|v| v.as_bool()) {
+                stored.joystick = joystick;
+            }
+            if let Some(lock_portrait) = device_sim.get("lock_portrait").and_then(|v| v.as_bool()) {
+                stored.lock_portrait = lock_portrait;
+            }
+            layout.device_sim = Some(stored);
         }
         layout.clamp();
         layout
@@ -621,6 +675,46 @@ mod tests {
             .expect("object")
             .remove("game_view_zoom");
         assert_eq!(EditorLayout::from_json(&value).game_view_zoom, "fit");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 设备模拟设置随布局往返；越界机型下标收敛为 None，缺字段的老文件回落默认。
+    #[test]
+    fn device_sim_persists_and_converges() {
+        let root = temp_root("device-sim");
+        let device_sim = DeviceSimLayout {
+            preset: Some(0),
+            touch_sim: false,
+            joystick: true,
+            lock_portrait: true,
+        };
+        let layout = EditorLayout {
+            device_sim: Some(device_sim.clone()),
+            ..EditorLayout::default()
+        };
+        save_layout(&root, &layout).expect("save");
+        match load_layout(&root) {
+            LayoutLoad::Loaded(loaded) => assert_eq!(loaded.device_sim, Some(device_sim.clone())),
+            other => panic!("加载失败：{other:?}"),
+        }
+        // 手改/降级值收敛：机型下标超出可存范围回 None（表长度由编辑器端钳制）。
+        let mut broken = layout.clone();
+        broken.device_sim = Some(DeviceSimLayout {
+            preset: Some(u32::MAX),
+            ..device_sim
+        });
+        broken.clamp();
+        assert_eq!(
+            broken.device_sim,
+            Some(DeviceSimLayout {
+                preset: None,
+                ..device_sim
+            })
+        );
+        // 没有设备模拟段的老文件 → None（未启用）。
+        let mut value = layout.to_json();
+        value.as_object_mut().expect("object").remove("device_sim");
+        assert_eq!(EditorLayout::from_json(&value).device_sim, None);
         let _ = std::fs::remove_dir_all(root);
     }
 

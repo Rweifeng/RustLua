@@ -11,11 +11,17 @@
 //!    内置哨兵（`__white__` 等）跳过。资源索引为空时直接不出结果——"索引还没建好"
 //!    不是"全工程都是断链"。
 //! 3. **改指只认同名唯一命中**，其余情况把原因留给用户看，不猜路径。
+//!
+//! 扫描读的是 [`crate::actions::project_index::ProjectIndex`]——与全工程搜索同一份索引实现，
+//! 所以"谁引用了这条路径"和"这条路径存不存在"两边永远给同一个答案。
 
 use crate::EditorApp;
+use crate::actions::project_index::{IndexedMetadata, ProjectIndex};
 use crate::panels::broken_refs::{BrokenHit, BrokenReference};
-use editor::{CommandResult, mark_missing_assets, rows_for_entity};
-use rustlua_scene::scene::{SceneEntity, SceneEntityId};
+use editor::CommandResult;
+use rustlua_scene::prefab::{
+    PREFAB_NESTED_STAMP_META_PREFIX, PREFAB_SOURCE_META_KEY, PREFAB_VARIANT_BASE_META_KEY,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 impl EditorApp {
@@ -41,48 +47,44 @@ impl EditorApp {
             self.status = "资源索引还没建立，先刷新资源再检查断链".to_owned();
             return CommandResult::NoOp;
         }
-        let root = self.project.root.clone();
-        let open_document = self
-            .document
-            .current_scene
-            .as_ref()
-            .and_then(|document| document.path.clone());
+        // 与全工程搜索**同一份索引实现**（`ProjectIndex`）：文档集合、`.prefab` 走哪个解析器、
+        // `rows_for_entity` 的路径规则判据都只有一份，不会出现"搜索说这个资源没人用、
+        // 断链检查却列出它"这类自相矛盾。
+        let index = ProjectIndex::scan(
+            &self.project.root,
+            self.document.current_scene.as_ref(),
+            assets.iter().cloned().collect(),
+        );
         let mut hits: BTreeMap<String, BrokenHit> = BTreeMap::new();
-        let mut scanned = 0_usize;
-        let mut unreadable: Vec<String> = Vec::new();
-        // 1) 磁盘上的文档（跳过当前打开的那一份：下面用内存版，避免同一处断链数两遍）。
-        for path in editor::project_scene_documents(&root) {
-            if open_document
-                .as_ref()
-                .is_some_and(|open| editor::paths_match(open, &path))
+        // 1) 组件字段：判据与 Inspector 的 ⚠ 同源（`mark_missing_assets` 那四条）。
+        for field in index.fields.iter().filter(|field| field.path_rule) {
+            let value = field.value.trim().replace('\\', "/");
+            if value.is_empty()
+                || assets.contains(&value)
+                || editor::is_builtin_asset_reference(&value)
             {
                 continue;
             }
-            match rustlua_scene::scene::Scene::load(&path) {
-                Ok(scene) => {
-                    scanned += 1;
-                    let label = relative_text(&root, &path);
-                    collect_scene_hits(&scene.entities, &label, &assets, &mut hits);
-                }
-                Err(error) => {
-                    unreadable.push(format!("{}（{error}）", relative_text(&root, &path)))
-                }
+            hits.entry(value).or_default().push(format!(
+                "{} ▸ E#{} ▸ {}",
+                field.document, field.entity.0, field.path
+            ));
+        }
+        // 2) 谱系元数据：没有 Inspector 行，但改指同样会改写它们（口径见模块头第 2 条）。
+        for metadata in &index.metadata {
+            let Some((value, consumer)) = metadata_reference(metadata) else {
+                continue;
+            };
+            if !assets.contains(&value) {
+                hits.entry(value).or_default().push(consumer);
             }
         }
-        // 2) 当前编辑文档：取内存里的实体表，未保存的编辑也在清单里。
-        let open_label = open_document
-            .as_ref()
-            .map(|path| relative_text(&root, path))
-            .unwrap_or_else(|| "未命名场景".to_owned());
-        if let Some(scene) = self.document.current_scene.as_ref() {
-            scanned += 1;
-            collect_scene_hits(&scene.scene.entities, &open_label, &assets, &mut hits);
-        }
+        let scanned = index.scanned_documents;
         let rows = broken_rows(hits, &assets);
         let found = rows.len();
         self.broken_refs.rows = rows;
         self.broken_refs.scanned_documents = scanned;
-        self.broken_refs.unreadable = unreadable;
+        self.broken_refs.unreadable = index.unreadable.clone();
         self.broken_refs.scanned = true;
         self.broken_refs.message = if scanned == 0 {
             "工程里没有可扫描的场景/Prefab 文档。".to_owned()
@@ -155,10 +157,10 @@ impl EditorApp {
         // 清单是"这一次扫描"的结果：改完把这一行摘掉，不自动重扫（重扫的代价不该由一次点击付）。
         self.broken_refs.rows.retain(|row| row.value != from_text);
         self.broken_refs.message = format!(
-            "已把 {from_text} 改指到 {to_text}（改写 {} 个文档 / {} 处组件引用）\
+            "已把 {from_text} 改指到 {to_text}（改写 {} 个文档 / {} 处引用）\
              ；清单是上次扫描的结果，需要最新状态请再点一次「扫描全工程」。",
             report.rewritten_files.len(),
-            report.rewritten_components
+            report.rewritten_references
         );
         if !report.failures.is_empty() {
             self.broken_refs.message.push_str(&format!(
@@ -173,38 +175,42 @@ impl EditorApp {
     }
 }
 
-/// `root` 下的路径 → 工程内相对路径文本（正斜杠）。
-fn relative_text(root: &std::path::Path, path: &std::path::Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
-}
-
-/// 扫一份文档的实体表：把"带路径规则、非空、索引里查不到、也不是内置哨兵"的字段
-/// 按**路径值**聚合进 `hits`。
+/// 一条**谱系元数据**引用 → `(被指的路径, 消费者标签)`。
 ///
-/// 实体表本来就是 `BTreeMap`（按 ID 有序），所以同一份文档两次扫描得到的消费者
-/// 样本顺序一致——清单可复现，测试才能逐条断言。
-fn collect_scene_hits(
-    entities: &BTreeMap<SceneEntityId, SceneEntity>,
-    document_label: &str,
-    assets: &BTreeSet<String>,
-    hits: &mut BTreeMap<String, BrokenHit>,
-) {
-    for entity in entities.values() {
-        let mut rows = rows_for_entity(entity);
-        mark_missing_assets(&mut rows, assets);
-        for row in rows {
-            if !row.missing_asset {
-                continue;
-            }
-            let value = row.text.trim().replace('\\', "/");
-            hits.entry(value).or_default().push(format!(
-                "{document_label} ▸ E#{} ▸ {}",
-                entity.id.0, row.path
-            ));
+/// 这些引用不挂在组件字段上（没有 Inspector 行），但资源移动/改指同样会改写它们
+/// （见 `rustlua_editor_core::resource_ops`）。审计必须同口径看得见，否则会出现
+/// "改指漏了它、扫描还说没断链"——模块头第 1 条要防的正是这种自相矛盾。
+///
+/// 三种来源的"引用藏在哪"不同：实体元数据看 `prefab.source` 的**值**、变体基础看
+/// 文档元数据 `prefab.variant_base` 的**值**，而嵌套签名把来源写在**键**的后半段。
+///
+/// 只认**工程内路径**（与 `ProjectPath` 字段同口径：`assets/` 开头）；普通元数据文本
+/// （名字、签名、覆盖值）不参与断链判断。
+fn metadata_reference(metadata: &IndexedMetadata) -> Option<(String, String)> {
+    let document = metadata.document.as_str();
+    let (value, consumer) = match metadata.entity {
+        Some(entity) if metadata.key == PREFAB_SOURCE_META_KEY => (
+            metadata.value.clone(),
+            format!("{document} ▸ E#{} ▸ prefab.source", entity.0),
+        ),
+        None if metadata.key == PREFAB_VARIANT_BASE_META_KEY => (
+            metadata.value.clone(),
+            format!("{document} ▸ 谱系 ▸ prefab.variant_base"),
+        ),
+        None => {
+            let source = metadata.key.strip_prefix(PREFAB_NESTED_STAMP_META_PREFIX)?;
+            (
+                source.to_owned(),
+                format!("{document} ▸ 谱系 ▸ prefab.nested_stamp"),
+            )
         }
+        Some(_) => return None,
+    };
+    let value = value.trim().replace('\\', "/");
+    if value.starts_with("assets/") {
+        Some((value, consumer))
+    } else {
+        None
     }
 }
 
@@ -252,15 +258,6 @@ fn file_name_of(path: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn relative_text_uses_forward_slashes() {
-        let root = std::path::Path::new("C:/proj");
-        assert_eq!(
-            relative_text(root, std::path::Path::new("C:/proj/assets/a.png")),
-            "assets/a.png"
-        );
-    }
 
     #[test]
     fn candidates_match_the_file_name_only() {

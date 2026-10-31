@@ -12,7 +12,7 @@ use crate::script::ScriptState;
 use crate::script::api;
 use crate::script::call_entity_event_hook;
 use crate::script::call_entity_hook;
-use crate::script::call_optional;
+use crate::script::crash;
 use crate::script::domain::ecs::entity::EntityId;
 use crate::script::domain::ecs::world::World;
 use crate::script::domain::lua_api::Handle;
@@ -24,7 +24,7 @@ use crate::script::progress;
 use crate::script::require::{
     file_fingerprint, install_encoded_require_searcher, read_project_script,
 };
-use mlua::{Function, Lua, LuaOptions, StdLib, Table, Value};
+use mlua::{FromLua, Function, Lua, LuaOptions, StdLib, Table, Value};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -49,6 +49,15 @@ fn new_vm() -> Lua {
     if let Ok(debug) = lua.globals().get::<Table>("debug") {
         let _ = lua.set_named_registry_value(super::debug::DEBUG_REGISTRY_KEY, debug);
         let _ = lua.globals().set("debug", Value::Nil);
+    }
+    // 栈还在时才能抓现场：守卫（xpcall + Rust message handler）必须在脚本执行前装好，
+    // 否则加载期错误与第一次 `update` 错误都没有快照。
+    if let Err(error) = super::crash::install(&lua) {
+        tracing::error!(
+            target: "script",
+            %error,
+            "[crash] 崩溃守卫安装失败：运行期错误将没有现场快照"
+        );
     }
     lua
 }
@@ -167,7 +176,7 @@ impl LuaRuntime {
                 return Err(error);
             }
         };
-        if let Err(error) = call_optional(&candidate, "on_create") {
+        if let Err(error) = self.call_optional(&candidate, "on_create", true) {
             let error = LuaBridgeError::Runtime {
                 path: path.to_path_buf(),
                 reason: error.to_string(),
@@ -207,7 +216,7 @@ impl LuaRuntime {
         let candidate = self.load_candidate(&path, &source)?;
         // P1-②：原子热重载——先在**新状态**上跑 `on_create`；失败则旧 VM 原封不动
         // （顶层状态与模块缓存都还在），只有新状态建立成功才销毁旧状态并交换。
-        if let Err(error) = call_optional(&candidate, "on_create") {
+        if let Err(error) = self.call_optional(&candidate, "on_create", true) {
             let error = LuaBridgeError::Runtime {
                 path: path.clone(),
                 reason: error.to_string(),
@@ -215,7 +224,7 @@ impl LuaRuntime {
             self.record_bridge_error(&error);
             return Err(error);
         }
-        if let Err(error) = call_optional(&self.lua, "on_destroy") {
+        if let Err(error) = self.call_optional(&self.lua, "on_destroy", false) {
             // 新状态已建立：旧状态的清理失败只记诊断，交换照常完成——绝不能把
             // "旧已毁、新未立"的半撕裂状态留给下一帧。
             self.record_bridge_error(&LuaBridgeError::Runtime {
@@ -238,7 +247,7 @@ impl LuaRuntime {
         let source = read_project_script(&path)?;
         let candidate = self.load_candidate(&path, &source)?;
         // P1-②：与 `reload_if_changed` 同样的原子顺序（先立新、后破旧）。
-        if let Err(error) = call_optional(&candidate, "on_create") {
+        if let Err(error) = self.call_optional(&candidate, "on_create", true) {
             let error = LuaBridgeError::Runtime {
                 path: path.clone(),
                 reason: error.to_string(),
@@ -246,7 +255,7 @@ impl LuaRuntime {
             self.record_bridge_error(&error);
             return Err(error);
         }
-        if let Err(error) = call_optional(&self.lua, "on_destroy") {
+        if let Err(error) = self.call_optional(&self.lua, "on_destroy", false) {
             self.record_bridge_error(&LuaBridgeError::Runtime {
                 path: path.clone(),
                 reason: format!("reload: old on_destroy failed: {error}"),
@@ -629,9 +638,17 @@ impl LuaRuntime {
         // 时代的权宜：后果是 Web 上性能读数里 Lua `update` 的成本**永远是 0**，
         // 于是"每帧逻辑贵在哪"没法回答（本轮的前提就是修掉它）。
         let started = web_time::Instant::now();
-        let result = update.call(()).map_err(|error| LuaBridgeError::Runtime {
-            path,
-            reason: error.to_string(),
+        // 走崩溃守卫：错误在栈展开**之前**由 message handler 抓成现场（[`crash`]）。
+        let result = crash::bridge_result(
+            crash::call_guarded(&self.lua, update, ()),
+            path.clone(),
+            None,
+        )
+        .and_then(|value| {
+            String::from_lua(value, &self.lua).map_err(|error| LuaBridgeError::Runtime {
+                path: path.clone(),
+                reason: error.to_string(),
+            })
         });
         // 失败也要记账：否则"Lua 抛错的那一帧"在性能面板上看起来是零成本。
         self.state.borrow_mut().last_update_micros =
@@ -656,6 +673,8 @@ impl LuaRuntime {
         error: LuaBridgeError,
     ) -> Result<String, LuaBridgeError> {
         if self.guard.borrow().policy() == ScriptErrorPolicy::Strict {
+            // 严格档把错误交给宿主 = 这一步中止，现场按致命落盘（编辑器据此弹窗）。
+            self.finalize_crash(Some(&slot.key()), true);
             return Err(error);
         }
         self.contain_script_error(slot, &error);
@@ -692,6 +711,9 @@ impl LuaRuntime {
             ),
             ContainOutcome::Continue => {}
         }
+        // 容错不等于静默：每条未捕获错误都留一份现场；只有"停用"那一次标成致命
+        // （编辑器 Play 只在致命时弹窗，平时只落盘）。
+        self.finalize_crash(Some(&slot.key()), outcome == ContainOutcome::Disabled);
     }
 
     /// 每实体钩子的容错入口：`Ok(())` = 已容错（调用方继续下一个实体），
@@ -703,6 +725,7 @@ impl LuaRuntime {
         error: LuaBridgeError,
     ) -> Result<(), LuaBridgeError> {
         if self.guard.borrow().policy() == ScriptErrorPolicy::Strict {
+            self.finalize_crash(Some(&BudgetSlot::Entity(id, hook).key()), true);
             return Err(error);
         }
         self.contain_script_error(BudgetSlot::Entity(id, hook), &error);

@@ -163,6 +163,9 @@ struct EvidenceStep {
     ui_studio: bool,
     /// 采集前是否聚焦 Game 标签且**不进入 Play**（编辑期游戏画面预览的真窗口证据）。
     game: bool,
+    /// 采集前是否启用某台机型预设（`DEVICE_PRESETS` 下标；设备模拟真机证据）。
+    /// 窗口尺寸同步设为该机型设计分辨率，Game 视图按机型 letterbox。
+    device: Option<usize>,
 }
 
 /// 一次采集的记录。
@@ -188,6 +191,14 @@ struct CaptureRecord {
     lit_ratio: f32,
     mean_luma: f32,
     working_set_mib: f64,
+    /// 设备模拟读数（验收门①）：机型名（`None` = 非设备步）。
+    device: Option<String>,
+    /// 实测设计分辨率（`preview_resolution`，切预设后 = 机型设计分辨率）。
+    device_design: (u32, u32),
+    /// 实测显示缩放档（设备像素 / 设计像素）。
+    device_dpi: f32,
+    /// 实测安全区四边内缩 [左,上,右,下]（机型上报口径，已按设计分辨率钳制）。
+    device_safe: [f32; 4],
     file: Option<String>,
     error: Option<String>,
 }
@@ -213,6 +224,14 @@ pub(crate) struct GuiEvidence {
     prepare_frames: u32,
     /// 准备阶段打开的场景（报告里点名，保证截图内容可追溯）。
     opened_scene: Option<String>,
+    /// 准备完成时的布局文件快照（`<项目>/.cache/editor/layout.json`）。设备模拟步会
+    /// 改 `preview_resolution`/`device_sim` 并触发自动落盘，收尾时把文件原样还回去，
+    /// 保证证据运行不给工程留下"最后一台机型"的布局残留。
+    layout_snapshot: Option<Vec<u8>>,
+    layout_snapshot_path: Option<PathBuf>,
+    /// 准备完成时的设备模拟状态（收尾时一并还原）。
+    saved_device_sim: crate::device_sim::DeviceSimState,
+    saved_preview_resolution: (u32, u32),
 }
 
 impl GuiEvidence {
@@ -240,6 +259,10 @@ impl GuiEvidence {
             prepare_seconds: 0.0,
             prepare_frames: 0,
             opened_scene: None,
+            layout_snapshot: None,
+            layout_snapshot_path: None,
+            saved_device_sim: crate::device_sim::DeviceSimState::default(),
+            saved_preview_resolution: (1280, 720),
         })
     }
 
@@ -331,6 +354,13 @@ impl GuiEvidence {
                 lit_ratio: 0.0,
                 mean_luma: 0.0,
                 working_set_mib: working_set_mib(),
+                device: step
+                    .device
+                    .and_then(|index| crate::device_sim::DEVICE_PRESETS.get(index))
+                    .map(|preset| preset.name.to_owned()),
+                device_design: app.preview_resolution,
+                device_dpi: app.device_sim.dpi(),
+                device_safe: app.display_canvas_config().safe_area,
                 file: None,
                 error: Some("截图事件在超时帧数内没有回传".to_owned()),
             });
@@ -365,6 +395,7 @@ impl GuiEvidence {
         let idle = app.document.current_scene.is_some() && !app.progress.running;
         if waited_enough && idle {
             self.prepared = true;
+            self.snapshot_layout(app);
             self.started = Instant::now();
             tracing::info!(
                 target: "editor",
@@ -374,6 +405,7 @@ impl GuiEvidence {
             );
         } else if elapsed > 180.0 {
             self.prepared = true;
+            self.snapshot_layout(app);
             self.started = Instant::now();
             tracing::warn!(
                 target: "editor",
@@ -381,6 +413,30 @@ impl GuiEvidence {
             );
         }
         context.request_repaint();
+    }
+
+    /// 准备完成时抓一次工程布局快照（文件字节 + 设备模拟状态），收尾时原样还原。
+    /// 设备模拟步会改 `preview_resolution`/`device_sim` 并触发自动落盘，没有这份
+    /// 快照的话，证据跑完工程布局会停在最后一台机型上。
+    fn snapshot_layout(&mut self, app: &mut EditorApp) {
+        self.saved_device_sim = app.device_sim;
+        self.saved_preview_resolution = app.preview_resolution;
+        let root = crate::util::strip_verbatim_prefix(&app.project.root);
+        let path = editor::layout_path(&root);
+        self.layout_snapshot = std::fs::read(&path).ok();
+        self.layout_snapshot_path = Some(path);
+    }
+
+    /// 收尾：把设备模拟状态与布局文件还原为准备时的样子（防止证据运行污染工程）。
+    fn restore_layout(&mut self, app: &mut EditorApp) {
+        app.device_sim = self.saved_device_sim;
+        app.preview_resolution = self.saved_preview_resolution;
+        if let (Some(bytes), Some(path)) = (
+            self.layout_snapshot.take(),
+            self.layout_snapshot_path.take(),
+        ) {
+            let _ = std::fs::write(&path, bytes);
+        }
     }
 
     fn apply_step(&mut self, app: &mut EditorApp, context: &egui::Context, step: &EvidenceStep) {
@@ -391,6 +447,11 @@ impl GuiEvidence {
         } else {
             crate::SceneViewMode::View2D
         };
+        // 设备模拟步：切到指定机型（设计分辨率/DPI/安全区/竖屏锁定一起生效）。
+        // `game: true` 会在下面聚焦 Game 标签；窗口已按机型设计分辨率设置。
+        if let Some(index) = step.device {
+            app.apply_device_preset(Some(index));
+        }
         // 2D/3D 步展示的是 Scene 页签：布局可能停在 Game/AI 页签（上一次证据或用户拖拽
         // 会把它持久化），不先聚焦就会拍到别的标签。Play/助手/UI Studio/Game 步各有
         // 自己的目标页签，不在这里抢焦点。
@@ -496,6 +557,7 @@ impl GuiEvidence {
                 assistant: false,
                 ui_studio: false,
                 game: false,
+                device: None,
             });
             let (width, height) = (image.width() as u32, image.height() as u32);
             // 截图那一刻的**实测** DPI 与点尺寸：报告里的标签必须来自这里，而不是脚本的请求值。
@@ -516,6 +578,16 @@ impl GuiEvidence {
             }
             let mean_luma = (luma_sum / total as f64) as f32;
             let lit_ratio = lit as f32 / total as f32;
+            // 设备模拟读数（验收门①）：截图那一刻从 app 实测，报告/清单直接可断言。
+            // 设计分辨率 = `preview_resolution`（切预设后即机型分辨率）；显示缩放档 =
+            // `device_sim.dpi()`；安全区四边 = `display_canvas_config().safe_area`。
+            let device = step
+                .device
+                .and_then(|index| crate::device_sim::DEVICE_PRESETS.get(index))
+                .map(|preset| preset.name.to_owned());
+            let device_design = app.preview_resolution;
+            let device_dpi = app.device_sim.dpi();
+            let device_safe = app.display_canvas_config().safe_area;
             let file_name = format!("{:02}-{}.png", self.index + 1, label);
             let path = self.out_dir.join(&file_name);
             let error = match rustlua_render::texture::save_png_rgba8(&path, width, height, &rgba) {
@@ -537,6 +609,10 @@ impl GuiEvidence {
                 lit_ratio,
                 mean_luma,
                 working_set_mib: working_set_mib(),
+                device,
+                device_design,
+                device_dpi,
+                device_safe,
                 file: error.as_ref().map_or(Some(file_name), |_| None),
                 error,
             });
@@ -549,6 +625,8 @@ impl GuiEvidence {
             app.stop();
         }
         self.write_manifest(app);
+        // 设备模拟状态与布局文件还原（见 `snapshot_layout`），随后关窗。
+        self.restore_layout(app);
         self.finished = true;
     }
 
@@ -584,8 +662,20 @@ impl GuiEvidence {
             let settled = (record.measured_pixels_per_point - record.requested_pixels_per_point)
                 .abs()
                 <= 0.01;
+            let device_text = record.device.as_ref().map_or_else(String::new, |name| {
+                format!(
+                    " device={name} design={}x{} dpi={} safe=[{},{},{},{}]",
+                    record.device_design.0,
+                    record.device_design.1,
+                    record.device_dpi,
+                    record.device_safe[0],
+                    record.device_safe[1],
+                    record.device_safe[2],
+                    record.device_safe[3],
+                )
+            });
             text.push_str(&format!(
-                "{:<28} req_ppi={:<4} act_ppi={:<4} req={:.0}x{:.0} screen={:.0}x{:.0} play={:<5} 3d={:<5} assistant={:<5} studio={:<5} game={:<5} image={}x{} lit={:.3} luma={:.3} ws={:.1}MiB {}\n",
+                "{:<28} req_ppi={:<4} act_ppi={:<4} req={:.0}x{:.0} screen={:.0}x{:.0} play={:<5} 3d={:<5} assistant={:<5} studio={:<5} game={:<5} image={}x{} lit={:.3} luma={:.3} ws={:.1}MiB{}{}\n",
                 record.label,
                 record.requested_pixels_per_point,
                 record.measured_pixels_per_point,
@@ -603,6 +693,7 @@ impl GuiEvidence {
                 record.lit_ratio,
                 record.mean_luma,
                 record.working_set_mib,
+                device_text,
                 record.file.clone().unwrap_or_else(|| format!(
                     "FAILED{}: {}",
                     if settled { "" } else { "(DPI 未收敛)" },
@@ -660,6 +751,10 @@ impl GuiEvidence {
                     "lit_ratio": record.lit_ratio,
                     "mean_luma": record.mean_luma,
                     "working_set_mib": record.working_set_mib,
+                    "device": record.device,
+                    "device_design": [record.device_design.0, record.device_design.1],
+                    "device_dpi": record.device_dpi,
+                    "device_safe": record.device_safe,
                     "file": record.file,
                     "error": record.error,
                 })
@@ -679,7 +774,8 @@ impl GuiEvidence {
 }
 
 /// 采集脚本：3 档 DPI × 3 档窗口尺寸（含 2D 与 3D），外加一次 Play 下的内嵌预览、
-/// 一次**未 Play 的 Game 标签**（编辑期游戏画面预览）、助手面板与 UI Studio。
+/// 一次**未 Play 的 Game 标签**（编辑期游戏画面预览）、助手面板与 UI Studio，
+/// 以及 6 台机型预设的设备模拟验收步（见 [`crate::device_sim::DEVICE_PRESETS`]）。
 fn evidence_steps() -> Vec<EvidenceStep> {
     let mut steps = Vec::new();
     for pixels_per_point in [1.0_f32, 1.5, 2.0] {
@@ -693,6 +789,7 @@ fn evidence_steps() -> Vec<EvidenceStep> {
                 assistant: false,
                 ui_studio: false,
                 game: false,
+                device: None,
             });
         }
     }
@@ -705,6 +802,7 @@ fn evidence_steps() -> Vec<EvidenceStep> {
         assistant: false,
         ui_studio: false,
         game: false,
+        device: None,
     });
     steps.push(EvidenceStep {
         label: "dpi1.5-1280x720-play".to_owned(),
@@ -715,6 +813,7 @@ fn evidence_steps() -> Vec<EvidenceStep> {
         assistant: false,
         ui_studio: false,
         game: false,
+        device: None,
     });
     // M75-03 验收门 3：同一份真实窗口证据里必须有一张**助手面板**截图。
     // 放在最后：切到助手标签后不再回到属性，不影响前面各步的默认观感。
@@ -727,6 +826,7 @@ fn evidence_steps() -> Vec<EvidenceStep> {
         assistant: true,
         ui_studio: false,
         game: false,
+        device: None,
     });
     // M76-04 验收门：UI Studio 的面板/画布必须在**真实窗口**里留下一张 PNG。
     // 放在助手之后：切到 UI Studio 标签会关掉助手标签的观感，前面各步不受影响。
@@ -739,6 +839,7 @@ fn evidence_steps() -> Vec<EvidenceStep> {
         assistant: false,
         ui_studio: true,
         game: false,
+        device: None,
     });
     // 编辑期游戏画面预览：Game 标签在**不 Play** 时也必须画出当前场景。追加在末尾，
     // 前面各步的截图序号（归档文档里按序号引用）保持不变。
@@ -751,7 +852,25 @@ fn evidence_steps() -> Vec<EvidenceStep> {
         assistant: false,
         ui_studio: false,
         game: true,
+        device: None,
     });
+    // 设备模拟验收门①：每台机型预设留一张真实窗口截图（Game 标签、不 Play）。
+    // 窗口尺寸 = 机型设计分辨率（Game 视图按机型 letterbox + 安全区覆盖层），
+    // 报告里带三项读数（design/dpi/safe），验收不用人肉改窗口。
+    for (index, preset) in crate::device_sim::DEVICE_PRESETS.iter().enumerate() {
+        let (width, height) = preset.resolution;
+        steps.push(EvidenceStep {
+            label: format!("device-{}-{width}x{height}", preset.name),
+            pixels_per_point: 1.0,
+            inner_size: egui::vec2(width as f32, height as f32),
+            view_3d: false,
+            play: false,
+            assistant: false,
+            ui_studio: false,
+            game: true,
+            device: Some(index),
+        });
+    }
     steps
 }
 
@@ -1683,6 +1802,44 @@ mod tests {
             .map(|step| (step.inner_size.x as i32, step.inner_size.y as i32))
             .collect();
         assert!(sizes.len() >= 3, "至少覆盖三种窗口尺寸：{sizes:?}");
+    }
+
+    /// 设备模拟验收门①：证据脚本必须覆盖全部 6 台机型预设，每步聚焦 Game 标签、
+    /// 不进入 Play、窗口尺寸 = 机型设计分辨率。
+    #[test]
+    fn evidence_script_covers_all_device_presets() {
+        let steps = evidence_steps();
+        let device_steps: Vec<&EvidenceStep> =
+            steps.iter().filter(|step| step.device.is_some()).collect();
+        assert_eq!(
+            device_steps.len(),
+            crate::device_sim::DEVICE_PRESETS.len(),
+            "每台机型预设都要有一张真窗口截图"
+        );
+        for (index, step) in device_steps.iter().enumerate() {
+            let preset = &crate::device_sim::DEVICE_PRESETS[index];
+            assert_eq!(step.device, Some(index), "设备步按下标顺序与预设表对齐");
+            assert!(step.game, "{} 步必须聚焦 Game 标签", preset.name);
+            assert!(!step.play, "{} 步是编辑期画面，不应进入 Play", preset.name);
+            assert!(!step.view_3d && !step.assistant && !step.ui_studio);
+            assert_eq!(
+                step.inner_size,
+                egui::vec2(preset.resolution.0 as f32, preset.resolution.1 as f32),
+                "{} 步的窗口尺寸必须等于机型设计分辨率",
+                preset.name
+            );
+            assert!(
+                step.label.starts_with("device-"),
+                "标签可读且带 device 前缀：{}",
+                step.label
+            );
+        }
+        // 设备步放在脚本末尾：前面各步的截图序号（归档文档按序号引用）保持不变。
+        let last_plain = steps
+            .iter()
+            .rposition(|step| step.device.is_none())
+            .expect("前面有非设备步");
+        assert_eq!(last_plain + 1, steps.len() - device_steps.len());
     }
 
     #[test]

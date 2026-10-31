@@ -68,6 +68,8 @@ pub enum ComponentId {
     Scrollbar,
     /// M76-02：滚动容器（UI Studio 的 `list` 节点导出的就是它）。
     ScrollView,
+    /// M76-07：虚拟列表运行时组件（`list{virtualized=true}` 导出写出）。
+    UiVirtualList,
     WorldText,
     Sprite,
     /// docs/54 §4.3：一等 Quad（几何 + 材质，贴图可选）。
@@ -115,6 +117,7 @@ impl ComponentId {
         Self::Progress,
         Self::Scrollbar,
         Self::ScrollView,
+        Self::UiVirtualList,
         Self::WorldText,
         Self::Sprite,
         Self::Quad,
@@ -151,6 +154,7 @@ impl ComponentId {
             Self::Progress => "Progress",
             Self::Scrollbar => "Scrollbar",
             Self::ScrollView => "ScrollView",
+            Self::UiVirtualList => "UiVirtualList",
             Self::WorldText => "WorldText",
             Self::Sprite => "Sprite",
             Self::Quad => "Quad",
@@ -262,6 +266,9 @@ fn component_id_for_opaque(name: &str) -> Option<ComponentId> {
         // M76-02：滚动容器。漏认它，UI Studio 导出（`list` → `ScrollView`）的组件会被
         // typed 编译留在原文层，覆盖门在第一个导出场景入库时判红。
         "ScrollView" => ComponentId::ScrollView,
+        // M76-07：虚拟列表运行时组件（`list{virtualized=true}` 导出写出）。同 `ScrollView`，
+        // 漏认会把导出件留在原文层，typed 覆盖门与运行时各看各的。
+        "UiVirtualList" => ComponentId::UiVirtualList,
         // WP4：世界空间文字。类型与文法都搬到了 `rustlua-ui`（P1 ④），本层只认名字。
         "WorldText" => ComponentId::WorldText,
         _ => return None,
@@ -660,6 +667,11 @@ mod tests {
         ("Progress", "value=0.5", ComponentId::Progress),
         ("Scrollbar", "value=0.3;size=0.25", ComponentId::Scrollbar),
         ("ScrollView", "horizontal=false", ComponentId::ScrollView),
+        (
+            "UiVirtualList",
+            "count=5000;item_height=24;spacing=0;overscan=2",
+            ComponentId::UiVirtualList,
+        ),
         (
             "Sprite",
             "texture=assets/textures/player.png;size=32x32;pivot=0.500,0.500;tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0",

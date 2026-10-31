@@ -22,6 +22,7 @@ use crate::ui_scrollbar::ScrollBar;
 use crate::ui_slider::Slider;
 use crate::ui_states::ButtonStateSet;
 use crate::ui_toggle::Toggle;
+use crate::ui_virtual_list::UiVirtualList;
 use crate::world_text::WorldText;
 
 /// `UiLayout`：屏幕空间矩形（锚点/偏移/尺寸/层）。
@@ -119,6 +120,14 @@ fn validate_scroll_view(value: &str) -> Result<(), String> {
     ScrollView::from_component_str(value).map(|_| ())
 }
 
+/// `UiVirtualList`：虚拟列表运行时组件（行高/间距/过扫 + 数据行总数）。
+///
+/// 与 `ScrollView` 同期补齐的原因相同：`list{virtualized=true}` 从 M76-07 起导出会写出
+/// 这个组件，漏认 codec 会让 typed 编译把它留在原文层，覆盖门在第一个导出场景入库时判红。
+fn validate_ui_virtual_list(value: &str) -> Result<(), String> {
+    UiVirtualList::from_component_str(value).map(|_| ())
+}
+
 /// `WorldText`：世界空间文字（文字字段 + 像素偏移 + 居中）。
 ///
 /// 它从 `rustlua-scene` 搬来（P1 ④）：类型内嵌 [`UiText`]，文法本来就在本 crate。
@@ -152,13 +161,15 @@ static SLIDER: ComponentCodec = ComponentCodec::new("Slider", validate_slider);
 static PROGRESS: ComponentCodec = ComponentCodec::new("Progress", validate_progress);
 static SCROLLBAR: ComponentCodec = ComponentCodec::new("Scrollbar", validate_scrollbar);
 static SCROLL_VIEW: ComponentCodec = ComponentCodec::new("ScrollView", validate_scroll_view);
+static UI_VIRTUAL_LIST: ComponentCodec =
+    ComponentCodec::new("UiVirtualList", validate_ui_virtual_list);
 static WORLD_TEXT: ComponentCodec =
     ComponentCodec::new("WorldText", validate_world_text).with_assets(world_text_assets);
 
-/// 本 crate 负责的十五个组件 codec。组合根把它们与 `rustlua_render::scene_codecs()` 一起装表。
+/// 本 crate 负责的十六个组件 codec。组合根把它们与 `rustlua_render::scene_codecs()` 一起装表。
 #[must_use]
 pub fn scene_codecs() -> &'static [&'static ComponentCodec] {
-    static CODECS: [&ComponentCodec; 15] = [
+    static CODECS: [&ComponentCodec; 16] = [
         &LAYOUT,
         &CONTAINER,
         &LAYOUT_ITEM,
@@ -173,6 +184,7 @@ pub fn scene_codecs() -> &'static [&'static ComponentCodec] {
         &PROGRESS,
         &SCROLLBAR,
         &SCROLL_VIEW,
+        &UI_VIRTUAL_LIST,
         &WORLD_TEXT,
     ];
     &CODECS
@@ -202,6 +214,7 @@ mod tests {
                 "Progress",
                 "Scrollbar",
                 "ScrollView",
+                "UiVirtualList",
                 "WorldText"
             ]
         );
@@ -270,6 +283,12 @@ mod tests {
         assert!(SCROLLBAR.validate("size=2").is_err());
         assert!(SCROLL_VIEW.validate("horizontal=false").is_ok());
         assert!(SCROLL_VIEW.validate("horizontal=sometimes").is_err());
+        assert!(
+            UI_VIRTUAL_LIST
+                .validate("count=5000;item_height=24;spacing=0;overscan=2")
+                .is_ok()
+        );
+        assert!(UI_VIRTUAL_LIST.validate("count=-1").is_err());
         assert!(
             WORLD_TEXT
                 .validate("text=HP;font_size=16;offset=0,-24")

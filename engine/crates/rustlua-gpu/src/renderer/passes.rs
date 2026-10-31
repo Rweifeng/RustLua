@@ -1052,7 +1052,7 @@ impl Renderer {
     /// 纪元不变 ⇒ 键相同 ⇒ 内容相同。
     ///
     /// 第四项 `sampling_epoch` 是 M79 P1-3c 加的：改导入设置会**就地换掉某个槽位的绑定组**
-    /// 而不动 `textures.len()`（`reload_texture_settings`），前三项全都看不见它。少了它，
+    /// 而不动 `textures.len()`（`reload_import_settings`），前三项全都看不见它。少了它，
     /// "把这张图改成线性"要等下一批纹理进来才生效——表现为改了没反应。
     ///
     /// 注意这里**故意**不含 `texture_identity_hits/misses`：那两个是诊断计数，命中与否不改变结果。

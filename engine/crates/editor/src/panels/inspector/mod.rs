@@ -264,6 +264,9 @@ impl EditorApp {
                             let rel = entry.path_string();
                             self.draw_model_preview(ui, &rel);
                         }
+                        // 导入设置（模型缩放 / 音频音量 / 字体字重）：写 `resources.meta`。
+                        let rel = entry.path_string();
+                        self.draw_import_settings(ui, entry.kind, &rel);
                         // 场景/Prefab：提示双击打开
                         if matches!(entry.kind, rustlua_assets::resource_kind::ResourceKind::Scene | rustlua_assets::resource_kind::ResourceKind::Prefab) {
                             ui.separator();

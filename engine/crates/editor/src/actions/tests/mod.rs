@@ -3,7 +3,9 @@
 //!
 //! 按主题分家：`document_gate` / `transactions` / `layout` / `refresh` / `prefab_stage`
 //! （P1-4 in-context 预制体编辑）/ `prefab_overrides`（P2 整实例覆盖视图与逐项还原）/
-//! `broken_refs`（P1-3b 断链审计）；本文件只放
+//! `broken_refs`（P1-3b 断链审计）/ `delete_guard`（安全删除的反向依赖守卫）/
+//! `project_search`（③ 全工程搜索的命中集合与跳转目标）/ `hierarchy_badges`
+//! （层级行的嵌套/覆盖徽标与 Inspector 同源）；本文件只放
 //! 各主题共用的导入与辅助函数（临时工程、样例工程拷贝、Scene 视图缓存探针）。
 
 use super::*;
@@ -174,9 +176,15 @@ fn test_context() -> egui::Context {
 }
 
 mod broken_refs;
+mod delete_guard;
 mod document_gate;
+mod hierarchy_badges;
 mod layout;
+mod prefab_nested_sync;
 mod prefab_overrides;
 mod prefab_stage;
+mod prefab_structure_diff;
+mod prefab_variant;
+mod project_search;
 mod refresh;
 mod transactions;

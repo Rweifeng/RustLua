@@ -47,10 +47,10 @@ pub use play_control::{
 };
 
 pub use layout::{
-    AppearanceSettings, AssistantLayout, EditorLayout, LAYOUT_VERSION, LayoutLoad, PANEL_ASSISTANT,
-    PANEL_CONSOLE, PANEL_GAME_VIEW, PANEL_GRAPH, PANEL_HIERARCHY, PANEL_INSPECTOR, PANEL_RESOURCE,
-    PANEL_SCENE_VIEW, PANEL_TIMELINE, PANEL_UI_STUDIO, layout_path, load_layout, reset_layout,
-    save_layout,
+    AppearanceSettings, AssistantLayout, DeviceSimLayout, EditorLayout, LAYOUT_VERSION, LayoutLoad,
+    PANEL_ASSISTANT, PANEL_CONSOLE, PANEL_GAME_VIEW, PANEL_GRAPH, PANEL_HIERARCHY, PANEL_INSPECTOR,
+    PANEL_RESOURCE, PANEL_SCENE_VIEW, PANEL_TIMELINE, PANEL_UI_STUDIO, layout_path, load_layout,
+    reset_layout, save_layout,
 };
 
 pub use file_watcher::{
@@ -60,9 +60,10 @@ pub use file_watcher::{
 pub use schema_audit::{SchemaAudit, SchemaFinding, audit_project};
 
 pub use resource_ops::{
-    RewriteReport, normalize_relative, paths_match, project_scene_documents,
-    rewrite_component_reference, rewrite_project_references, rewrite_scene_references,
-    strip_verbatim_prefix,
+    ReferenceHit, RewriteReport, collect_document_references_on_disk, collect_prefab_references,
+    collect_scene_references, normalize_relative, paths_match, project_scene_documents,
+    rewrite_component_reference, rewrite_prefab_references, rewrite_project_references,
+    rewrite_scene_references, strip_verbatim_prefix,
 };
 
 pub use prefab_graph::{MAX_NESTING_DEPTH, PrefabNesting, scan_prefab_nesting};

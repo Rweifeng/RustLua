@@ -266,9 +266,9 @@ impl EditorApp {
         self.refresh_resources();
         self.selected_resource = Some(to_relative.clone());
         let mut status = format!(
-            "已重命名资源：{from_text} → {to_text}（改写 {} 个文档 / {} 处组件引用）",
+            "已重命名资源：{from_text} → {to_text}（改写 {} 个文档 / {} 处引用）",
             report.rewritten_files.len(),
-            report.rewritten_components
+            report.rewritten_references
         );
         if open_document_components > 0 {
             status.push_str(&format!(

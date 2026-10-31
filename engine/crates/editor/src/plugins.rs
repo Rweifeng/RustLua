@@ -171,6 +171,17 @@ pub(crate) fn builtin_plugins() -> Vec<Box<dyn EditorPlugin>> {
     vec![Box::new(CoreEditorPlugin), Box::new(ProjectStatsPlugin)]
 }
 
+/// 插件命令声明里 `shortcut` 的绑定状态（分发只认 `Bound`）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PluginShortcutState {
+    /// 已绑定：按下就执行。
+    Bound,
+    /// 声明文本解析不了，或主键 egui 不认识。
+    Unparsable,
+    /// 与内置动作的生效键位相同（内置优先，插件这条不触发）；附带占用它的动作名。
+    BuiltinConflict(String),
+}
+
 /// 宿主实现：只收集动作，帧末由编辑器统一应用。
 pub(crate) struct EditorPluginHost {
     snapshot: HostSnapshot,
@@ -288,6 +299,58 @@ impl EditorApp {
             self.plugin_status.push(message.clone());
             self.status = message;
         }
+    }
+
+    /// 插件命令声明的 `shortcut` 此刻的**真实**状态。
+    ///
+    /// 分发只认 [`PluginShortcutState::Bound`]；另外两种在诊断页照实显示——声明了却按不动的
+    /// 键位不该静默失效。
+    pub(crate) fn plugin_shortcut_state(&self, text: &str) -> PluginShortcutState {
+        let Ok(spec) = editor::ShortcutSpec::parse(text) else {
+            return PluginShortcutState::Unparsable;
+        };
+        if egui::Key::from_name(&spec.key).is_none() {
+            return PluginShortcutState::Unparsable;
+        }
+        match crate::shortcuts::builtin_owner(&self.shortcuts, &spec) {
+            Some(owner) => PluginShortcutState::BuiltinConflict(owner.label().to_owned()),
+            None => PluginShortcutState::Bound,
+        }
+    }
+
+    /// 执行本帧按下的插件命令快捷键；`true` = 真的执行了一条。
+    ///
+    /// 与菜单栏、命令面板、诊断页的「运行」走同一个 [`Self::run_plugin_command`]，
+    /// 没有第二条命令通道。门槛与取舍：
+    ///
+    /// * 文本焦点在输入框里时不触发（与内置快捷键同一门槛）；
+    /// * 只认**已加载**插件（禁用/卸载后立刻失效）；
+    /// * 与内置动作生效键位相同的声明不绑定——内置优先，插件抢不走 Ctrl+S；
+    /// * 解析不了的文本与 egui 不认识的键名不绑定，也不 panic；
+    /// * 两条插件命令声明同一键位时按注册表顺序只执行第一条。
+    pub(crate) fn run_pressed_plugin_shortcut(&mut self, context: &egui::Context) -> bool {
+        if context.wants_keyboard_input() {
+            return false;
+        }
+        let Some(command_id) = context.input(|input| self.pressed_plugin_command(input)) else {
+            return false;
+        };
+        self.run_plugin_command(&command_id);
+        true
+    }
+
+    fn pressed_plugin_command(&self, input: &egui::InputState) -> Option<String> {
+        self.plugin_registry
+            .commands()
+            .into_iter()
+            .find_map(|(_, command)| {
+                let text = command.shortcut.as_deref()?;
+                if self.plugin_shortcut_state(text) != PluginShortcutState::Bound {
+                    return None;
+                }
+                let spec = editor::ShortcutSpec::parse(text).ok()?;
+                crate::shortcuts::pressed(input, &spec).then(|| command.id.clone())
+            })
     }
 
     pub(crate) fn toggle_plugin_panel(&mut self, panel_id: &str) {
@@ -573,18 +636,37 @@ impl EditorApp {
                     });
                     // 插件自己的命令：在这里能直接跑（与菜单栏、命令面板同一条执行入口），
                     // 免得"插件装了却找不到入口"。
-                    let commands: Vec<(String, String)> = self
+                    let commands: Vec<(String, String, Option<String>)> = self
                         .plugin_registry
                         .commands()
                         .into_iter()
                         .filter(|(plugin_id, _)| *plugin_id == status.id)
-                        .map(|(_, command)| (command.id.clone(), command.title.clone()))
+                        .map(|(_, command)| {
+                            (
+                                command.id.clone(),
+                                command.title.clone(),
+                                command.shortcut.clone(),
+                            )
+                        })
                         .collect();
                     if !commands.is_empty() {
                         ui.weak("命令");
-                        for (command_id, title) in &commands {
+                        for (command_id, title, shortcut) in &commands {
                             ui.horizontal(|ui| {
                                 ui.label(title);
+                                // 快捷键照实显示状态：声明了却按不动时，这里要说明为什么。
+                                if let Some(text) = shortcut {
+                                    let note = match self.plugin_shortcut_state(text) {
+                                        PluginShortcutState::Bound => text.clone(),
+                                        PluginShortcutState::Unparsable => {
+                                            format!("{text}（无法解析，未绑定）")
+                                        }
+                                        PluginShortcutState::BuiltinConflict(owner) => {
+                                            format!("{text}（与内置「{owner}」冲突，未绑定）")
+                                        }
+                                    };
+                                    ui.weak(note);
+                                }
                                 if ui.button("运行").clicked() {
                                     self.run_plugin_command(command_id);
                                 }
@@ -909,6 +991,182 @@ mod tests {
             .unwrap();
         assert_eq!(app.plugin_registry.asset_importers().len(), 1);
         assert_eq!(app.plugin_registry.visual_script_nodes().len(), 1);
+    }
+
+    /// 声明了 `shortcut` 的插件命令（快捷键真绑定门的被测件）。
+    struct ShortcutPlugin {
+        shortcut: &'static str,
+    }
+
+    impl EditorPlugin for ShortcutPlugin {
+        fn manifest(&self) -> PluginManifest {
+            PluginManifest::new("shortcut_demo", "快捷键示例", "1.0.0")
+                .with_capability(Capability::Command)
+        }
+
+        fn register(&mut self, context: &mut PluginContext) {
+            let mut command = CommandDescriptor::new("shortcut_demo.report", "报告状态");
+            command.shortcut = Some(self.shortcut.to_owned());
+            context.command(command);
+            context.command_handler("shortcut_demo.report", |host| {
+                host.submit(PluginAction::SetStatus("插件快捷键命中".to_owned()));
+            });
+        }
+    }
+
+    fn shortcut_app(shortcut: &'static str) -> EditorApp {
+        let mut app = test_app();
+        app.plugin_registry
+            .register(Box::new(ShortcutPlugin { shortcut }))
+            .unwrap();
+        app.plugin_registry.load("shortcut_demo").unwrap();
+        app
+    }
+
+    fn key_event(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    fn ctrl_alt() -> egui::Modifiers {
+        egui::Modifiers {
+            ctrl: true,
+            alt: true,
+            command: true,
+            ..egui::Modifiers::default()
+        }
+    }
+
+    /// 真按一次：`RawInput` 里塞一条按键事件，走 `run_pressed_plugin_shortcut`。
+    fn press_plugin_shortcut(
+        app: &mut EditorApp,
+        key: egui::Key,
+        modifiers: egui::Modifiers,
+    ) -> bool {
+        let context = egui::Context::default();
+        let mut fired = false;
+        let _ = context.run(
+            frame_input_with(vec![key_event(key, modifiers)]),
+            |context| {
+                fired = app.run_pressed_plugin_shortcut(context);
+            },
+        );
+        fired
+    }
+
+    /// **插件命令声明的 `shortcut` 真的能按**（docs/73）：走与菜单/命令面板/诊断页
+    /// 同一条命令入口；内置动作优先；禁用插件即失效；坏声明不 panic 且诊断页说明原因。
+    ///
+    /// 修复前这条声明只显示不触发——"面板里写着 Ctrl+…却按不动"是最典型的假入口。
+    #[test]
+    fn plugin_command_shortcuts_are_really_bound() {
+        // 1) 声明的键位触发命令（状态栏由插件动作写入）。
+        let mut app = shortcut_app("Ctrl+Alt+9");
+        assert_eq!(
+            app.plugin_shortcut_state("Ctrl+Alt+9"),
+            PluginShortcutState::Bound
+        );
+        assert!(press_plugin_shortcut(&mut app, egui::Key::Num9, ctrl_alt()));
+        assert_eq!(app.status, "插件快捷键命中");
+
+        // 2) 修饰键不精确匹配不触发（少按 Alt）。
+        app.status = "未触发".to_owned();
+        assert!(!press_plugin_shortcut(
+            &mut app,
+            egui::Key::Num9,
+            egui::Modifiers {
+                ctrl: true,
+                command: true,
+                ..egui::Modifiers::default()
+            }
+        ));
+        assert_eq!(app.status, "未触发");
+
+        // 3) 与内置动作（保存场景 Ctrl+S）冲突：内置优先，插件那条不执行。
+        let mut app = shortcut_app("Ctrl+S");
+        assert_eq!(
+            app.plugin_shortcut_state("Ctrl+S"),
+            PluginShortcutState::BuiltinConflict("保存场景".to_owned())
+        );
+        assert!(!press_plugin_shortcut(
+            &mut app,
+            egui::Key::S,
+            egui::Modifiers {
+                ctrl: true,
+                command: true,
+                ..egui::Modifiers::default()
+            }
+        ));
+        assert_ne!(app.status, "插件快捷键命中");
+
+        // 4) 禁用插件后快捷键立刻失效（只认已加载插件）。
+        let mut app = shortcut_app("Ctrl+Alt+9");
+        app.plugin_registry
+            .set_enabled("shortcut_demo", false)
+            .unwrap();
+        assert!(!press_plugin_shortcut(
+            &mut app,
+            egui::Key::Num9,
+            ctrl_alt()
+        ));
+
+        // 5) 坏声明：不绑定、不 panic；诊断页照实写明原因。
+        let mut app = shortcut_app("Ctrl+");
+        assert_eq!(
+            app.plugin_shortcut_state("Ctrl+"),
+            PluginShortcutState::Unparsable
+        );
+        assert!(!press_plugin_shortcut(
+            &mut app,
+            egui::Key::Num9,
+            ctrl_alt()
+        ));
+        app.show_plugin_diagnostics = true;
+        let context = egui::Context::default();
+        let _ = context.run(frame_input(), |context| {
+            app.draw_plugin_diagnostics(context);
+        });
+        let output = context.run(frame_input(), |context| {
+            app.draw_plugin_diagnostics(context);
+        });
+        let text = collect_text(&output);
+        assert!(text.contains("无法解析，未绑定"), "text={text:?}");
+    }
+
+    /// 输入框有焦点时，插件快捷键不得抢走按键（与内置快捷键同一门槛）。
+    #[test]
+    fn plugin_shortcuts_do_not_fire_while_a_text_field_has_focus() {
+        let mut app = shortcut_app("Ctrl+Alt+9");
+        let context = egui::Context::default();
+        let mut text = String::new();
+        let _ = context.run(frame_input(), |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                ui.add(egui::TextEdit::singleline(&mut text))
+                    .request_focus();
+            });
+        });
+        assert!(
+            context.wants_keyboard_input(),
+            "前置：输入框应当持有键盘焦点"
+        );
+        let mut fired = true;
+        let _ = context.run(
+            frame_input_with(vec![key_event(egui::Key::Num9, ctrl_alt())]),
+            |context| {
+                // 每帧都得画出文本框，焦点才会一直留在它身上。
+                egui::CentralPanel::default().show(context, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut text));
+                });
+                fired = app.run_pressed_plugin_shortcut(context);
+            },
+        );
+        assert!(!fired, "输入框聚焦时快捷键不得触发插件命令");
+        assert_ne!(app.status, "插件快捷键命中");
     }
 
     #[test]

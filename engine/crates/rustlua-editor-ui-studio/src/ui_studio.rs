@@ -389,38 +389,60 @@ fn with_creation_template(
     key: &str,
     taken: &mut BTreeSet<String>,
 ) -> (UiNodeKind, Vec<UiNode>) {
-    let UiNodeKind::Scrollbar {
-        value,
-        size,
-        handle,
-        ..
-    } = kind
-    else {
-        return (kind, Vec::new());
-    };
-    let handle_key = free_key(taken, &format!("{key}_handle"));
-    // 滑块用 panel 而不是 image：`Image.src` 为空会被校验判红，刚建出来的控件不该带错。
-    let knob = UiNode {
-        key: handle_key.clone(),
-        kind: UiNodeKind::Panel { src: None },
-        layout: UiLayoutSpec {
-            size: Some([12.0, 48.0]),
-            ..UiLayoutSpec::default()
-        },
-        style: None,
-        events: BTreeMap::new(),
-        children: Vec::new(),
-        extra: BTreeMap::new(),
-    };
-    (
+    match kind {
         UiNodeKind::Scrollbar {
             value,
             size,
-            direction: ScrollbarDirection::TopToBottom,
-            handle: handle.or(Some(handle_key)),
-        },
-        vec![knob],
-    )
+            handle,
+            ..
+        } => {
+            let handle_key = free_key(taken, &format!("{key}_handle"));
+            // 滑块用 panel 而不是 image：`Image.src` 为空会被校验判红，刚建出来的控件不该带错。
+            let knob = UiNode {
+                key: handle_key.clone(),
+                kind: UiNodeKind::Panel { src: None },
+                layout: UiLayoutSpec {
+                    size: Some([12.0, 48.0]),
+                    ..UiLayoutSpec::default()
+                },
+                style: None,
+                events: BTreeMap::new(),
+                children: Vec::new(),
+                extra: BTreeMap::new(),
+            };
+            (
+                UiNodeKind::Scrollbar {
+                    value,
+                    size,
+                    direction: ScrollbarDirection::TopToBottom,
+                    handle: handle.or(Some(handle_key)),
+                },
+                vec![knob],
+            )
+        }
+        // M76-07：虚拟列表要求恰好一个直接子实体作行模板（v1 单实体模板），没有模板的
+        // 列表在导出时直接报错。建节点时补一个文本行模板，建出来就能过校验；行高 24 与
+        // `default_layout_for` 的列表 240×160 同口径（视口约 6 行）。
+        list @ UiNodeKind::List { virtualized: true } => {
+            let row = UiNode {
+                key: free_key(taken, &format!("{key}_row")),
+                kind: UiNodeKind::Text {
+                    text: "Row {n}".to_owned(),
+                    rich_text: false,
+                },
+                layout: UiLayoutSpec {
+                    size: Some([240.0, 24.0]),
+                    ..UiLayoutSpec::default()
+                },
+                style: None,
+                events: BTreeMap::new(),
+                children: Vec::new(),
+                extra: BTreeMap::new(),
+            };
+            (list, vec![row])
+        }
+        other => (other, Vec::new()),
+    }
 }
 
 /// 新控件的初始布局：参照 Unity 新建 UI 元素的口径——面板/遮罩/组铺满父级，
@@ -2596,6 +2618,59 @@ mod tests {
             .map(|diagnostic| diagnostic.message.clone())
             .collect();
         assert!(errors.is_empty(), "模板建出的形状过不了校验：{errors:?}",);
+    }
+
+    /// 虚拟列表创建模板（M76-07）：必须带一个行模板子节点，建出来就过校验与导出。
+    #[test]
+    fn virtual_list_creation_template_builds_its_row_template() {
+        let (_root, mut studio) = open_alignment_studio("virtual-list-template");
+        studio.select("root");
+        let (proposal, key) = studio
+            .add_node("root", UiNodeKind::List { virtualized: true })
+            .unwrap();
+        studio.accept(&proposal.proposal_id).unwrap();
+
+        let spec = studio.spec().unwrap();
+        let list = spec.find_node(&key).unwrap();
+        assert_eq!(list.layout.size, Some([240.0, 160.0]));
+        assert_eq!(list.children.len(), 1, "虚拟列表必须带一个行模板");
+        let row = &list.children[0];
+        assert_eq!(row.key, format!("{key}_row"));
+        assert_eq!(row.layout.size, Some([240.0, 24.0]));
+        assert!(
+            matches!(&row.kind, UiNodeKind::Text { text, .. } if text == "Row {n}"),
+            "行模板文本用 {{n}} 占位符：{:?}",
+            row.kind
+        );
+
+        let errors: Vec<String> = validate_spec(spec, &Capabilities::core())
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == Severity::Error)
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect();
+        assert!(errors.is_empty(), "模板建出的形状过不了校验：{errors:?}");
+
+        let scene = rustlua_ui_scene_export::export_ui_scene(spec, "virtual_list").expect("导出");
+        let list_entity = scene
+            .entities
+            .values()
+            .find(|entity| entity.name == key)
+            .unwrap();
+        assert!(
+            list_entity.components["UiVirtualList"].contains("item_height=24"),
+            "行高要从行模板推导：{}",
+            list_entity.components["UiVirtualList"]
+        );
+        let row_entity = scene
+            .entities
+            .values()
+            .find(|entity| entity.name == row.key)
+            .unwrap();
+        assert!(
+            row_entity.components["Text"].contains("text=Row {n}"),
+            "行模板文本原样导出，{{n}} 留给运行时：{}",
+            row_entity.components["Text"]
+        );
     }
 
     /// 「导出为 UI 预设」：只带走这棵子树和它真正引用的样式/令牌/资产/绑定。

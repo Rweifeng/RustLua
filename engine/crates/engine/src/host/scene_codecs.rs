@@ -13,7 +13,7 @@
 //! 跑场景校验的 examples/tests。不编译场景的进程（纯运行时帧循环）不调也行：
 //! 它读的是 ECS 里的类型化组件，不是字符串。
 
-/// 期望装进全局表的 codec（渲染层 6 个 + UI 层 15 个 = 21 个）。
+/// 期望装进全局表的 codec（渲染层 6 个 + UI 层 16 个 = 22 个）。
 fn expected() -> Vec<&'static rustlua_component_codec::ComponentCodec> {
     let mut all: Vec<&'static rustlua_component_codec::ComponentCodec> =
         rustlua_render::scene_codec::scene_codecs().to_vec();
@@ -80,7 +80,7 @@ pub fn ensure_installed() -> Result<InstallReport, InstallError> {
     }
 }
 
-/// 装一次表现层组件 codec 表（渲染层 6 个 + UI 层 15 个 = 21 个）。
+/// 装一次表现层组件 codec 表（渲染层 6 个 + UI 层 16 个 = 22 个）。
 ///
 /// 幂等：已经装过（或别的入口先装了）就返回 `false`，不报错。**不要**用它来检测"是不是我装的"
 /// ——需要那个语义时用 `rustlua_scene::component_codec::is_installed()`。
@@ -111,9 +111,9 @@ mod tests {
         assert!(rustlua_scene::component_codec::is_installed());
         assert_eq!(
             rustlua_scene::component_codec::global().len(),
-            21,
-            "渲染层 6 个 + UI 层 15 个 = 21（M80-04 新增 Toggle/Slider/Progress/Scrollbar；\
-             ScrollView 为 UI Studio 导出链补齐）"
+            22,
+            "渲染层 6 个 + UI 层 16 个 = 22（M80-04 新增 Toggle/Slider/Progress/Scrollbar；\
+             ScrollView 为 UI Studio 导出链补齐；M76-07 新增 UiVirtualList）"
         );
     }
 
@@ -121,9 +121,9 @@ mod tests {
     #[test]
     fn ensure_installed_reports_a_complete_table() {
         let report = ensure_installed().expect("完整表必须通过");
-        assert_eq!(report.codecs, 21);
+        assert_eq!(report.codecs, 22);
         let names: Vec<&'static str> = expected().iter().map(|codec| codec.name()).collect();
-        assert_eq!(names.len(), 21);
+        assert_eq!(names.len(), 22);
         for name in [
             "Sprite",
             "Text",

@@ -499,6 +499,8 @@ impl EditorApp {
             ui.small(format!("匹配 {} 项", self.hierarchy_match_count()));
         }
         ui.separator();
+        // 预制体徽标（嵌套 / 覆盖）与行模型同一次修订触发：编辑一次算一次，命中缓存时不碰磁盘。
+        self.ensure_prefab_badges();
         // 扁平化 + 虚拟滚动：只绘制视口内的行（10k 实体保持可交互）。
         // 行模型按 (修订, 实体数, 过滤词, 折叠集合) 缓存，绘制不再递归、不再克隆文档。
         let rows = self.hierarchy_rows();
@@ -1261,6 +1263,8 @@ impl EditorApp {
         let selected = self.selection.contains(id);
         let hidden = self.scene_state.hidden.contains(&id);
         let locked = self.scene_state.locked.contains(&id);
+        // 徽标是索引里的一小份拥有值：闭包里要 `&mut self`，不能带着借用进去。
+        let row_badges = self.prefab_badges.get(id).cloned();
         // 行高固定（由当前样式推导，见 `hierarchy_row_height`）：虚拟滚动依赖统一行高，
         // 同时保证内容不会比行更高（否则相邻行重叠 / 文字被裁）。
         ui.set_min_height(row_height);
@@ -1390,6 +1394,10 @@ impl EditorApp {
                         name_response.context_menu(|ui| {
                             self.draw_entity_context_menu(ui, id);
                         });
+                    }
+                    // 名字右侧：嵌套 / 覆盖徽标（只读，悬停说明来源与条数）。
+                    if let Some(badges) = &row_badges {
+                        super::hierarchy_badges::draw_badges(ui, badges);
                     }
                 });
                 // 布局探针：记录本行**自然**内容高度，供"内容不得高于行高"的门槛断言。
@@ -1629,7 +1637,15 @@ impl EditorApp {
             name.clone(),
         );
         match prefab {
-            Ok(prefab) => {
+            Ok(mut prefab) => {
+                // 新建预制体也是一次"外层写回"：子树里已挂的内层实例在此建立同步基线，
+                // 之后再同步内层时才有记录可依。
+                if let Err(error) =
+                    crate::actions::prepare_nested_lineage(&mut prefab, &self.project.root)
+                {
+                    self.status = error;
+                    return;
+                }
                 let root = strip_verbatim_prefix(&self.project.root);
                 let dir = root.join("assets").join("prefabs");
                 if std::fs::create_dir_all(&dir).is_err() {

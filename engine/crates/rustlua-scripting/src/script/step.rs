@@ -5,6 +5,7 @@
 
 // WP11-USE:BEGIN
 use crate::script::LuaRuntime;
+use crate::script::crash;
 use crate::script::domain::ecs::transform::Transform;
 use crate::script::domain::ecs::transform::Transform3D;
 // WP11-USE:END
@@ -173,9 +174,18 @@ impl LuaRuntime {
         // so daily settlement (crops/weather) is not skipped (M16-08).
         if after > before
             && let Ok(function) = self.lua.globals().get::<mlua::Function>("on_day_start")
-            && let Err(error) = function.call::<()>(())
         {
-            tracing::warn!(target: "script", error = %error, "on_day_start callback failed");
+            // 这条钩子的错误历来只记日志（不中断时钟）：现场照抓，但标成非致命。
+            match crash::call_guarded(&self.lua, function, ()) {
+                Ok(Ok(_)) => {}
+                Ok(Err(reason)) => {
+                    self.finalize_crash(Some("on_day_start"), false);
+                    tracing::warn!(target: "script", %reason, "on_day_start callback failed");
+                }
+                Err(error) => {
+                    tracing::warn!(target: "script", %error, "on_day_start callback failed");
+                }
+            }
         }
     }
 }

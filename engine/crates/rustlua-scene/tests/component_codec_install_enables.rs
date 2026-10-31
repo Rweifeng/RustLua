@@ -30,8 +30,8 @@ fn installing_the_render_and_ui_tables_enables_sprite_and_text() {
     assert!(component_codec::is_installed());
     assert_eq!(
         component_codec::global().len(),
-        21,
-        "渲染层 6 个 + UI 层 15 个 = 21"
+        22,
+        "渲染层 6 个 + UI 层 16 个（M76-07 新增 UiVirtualList）= 22"
     );
 
     let scene = scene_with(&[

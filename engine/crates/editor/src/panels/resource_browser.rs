@@ -53,6 +53,7 @@ impl EditorApp {
             ui.label(format!("{} 项", self.resources.visible_entries().len()));
         });
         ui.text_edit_singleline(&mut self.resources_filter);
+        self.draw_pending_delete_row(ui);
         // 扫描层把 `assets/` 视为可选：缺目录不再让工程打不开（scenes/scripts/ui 照
         // 扫），但"没有资源目录"仍是要处理的状态——给一行警告和一个就地修复的按钮。
         let missing_assets = self
@@ -297,7 +298,7 @@ impl EditorApp {
 
     /// 绘制单个资源条目：纹理/模型/预制体可拖放到场景，其余为文件名标签。
     /// 只展示资源名（不显示「类型 Registered」状态行）。
-    /// 资源右键菜单：目前只有"重命名…"（引用保持）。
+    /// 资源右键菜单：重命名 / 创建副本 / 创建变体 / 查看结构差异 / 依赖与引用查询。
     fn draw_resource_context_menu(&mut self, ui: &mut egui::Ui, entry: &ResourceEntry) {
         let file_name = entry
             .path
@@ -316,9 +317,33 @@ impl EditorApp {
             };
             ui.close();
         }
+        // 变体 = 快照 + 谱系：文件本身就是完整预制体，运行时不需要解析基础。
+        if entry.kind == rustlua_assets::resource_kind::ResourceKind::Prefab
+            && ui.button("创建变体").clicked()
+        {
+            self.status = match self.create_prefab_variant(&entry.path) {
+                Ok(status) => status,
+                Err(error) => error,
+            };
+            ui.close();
+        }
+        // 结构差异（只读）：变体 ↔ 基础、嵌套实例 ↔ 内层源。文件没打开时也能看，
+        // 只是条目不能定位（定位要靠当前文档的实体编号）。
+        if entry.kind == rustlua_assets::resource_kind::ResourceKind::Prefab
+            && ui.button("查看结构差异…").clicked()
+        {
+            self.open_prefab_structure_diff_for(&entry.path);
+            ui.close();
+        }
         // 依赖查看（只读）：入边要读全工程文本型文档，因此只在点开时算一次。
         if ui.button("查看依赖…").clicked() {
             self.show_resource_dependencies(&entry.path);
+            ui.close();
+        }
+        // ③：反查入口——"这个音频谁在用"走全工程搜索，查询词就是这条资源的工程内路径。
+        // 与「查看依赖」的差别：依赖只看这份文档的入边，搜索连 Lua 里写死的字符串一起查。
+        if ui.button("查找引用…").clicked() {
+            self.open_project_search_for(entry.path_string());
             ui.close();
         }
         // P0：脚本/文本类资源在编辑器里没有视图，右键唯一该给的是"交给我自己的编辑器"。
@@ -870,40 +895,46 @@ impl EditorApp {
         self.status = format!("资源刷新完成：{} 项", self.resources.entries().len());
     }
 
-    pub(crate) fn delete_selected_resource(&mut self) {
-        if self.is_playing() {
-            self.status = "播放模式下不能删除资源，请先点击停止".to_owned();
-            return;
-        }
-        let Some(relative_path) = self.selected_resource.clone() else {
-            self.status = "请先在资源面板选中资源".to_owned();
+    /// 安全删除的确认行：资源还被引用时，第一按 Delete 不删，只把引用清单摆出来。
+    ///
+    /// 为什么摆在资源面板里而不是状态栏：状态栏一行放不下"哪几处在用"，而这正是用户
+    /// 判断"要不要连断链一起删"的唯一依据。
+    fn draw_pending_delete_row(&mut self, ui: &mut egui::Ui) {
+        let Some(guard) = self.pending_delete.clone() else {
             return;
         };
-        let absolute_path = self.project.root.join(&relative_path);
-        if self
-            .document
-            .current_scene
-            .as_ref()
-            .and_then(|document| document.path.as_ref())
-            .is_some_and(|path| {
-                strip_verbatim_prefix(path) == strip_verbatim_prefix(&absolute_path)
-            })
-        {
-            self.status = format!("当前打开的文档不能直接删除：{}", relative_path.display());
-            return;
-        }
-        match fs::remove_file(&absolute_path) {
-            Ok(()) => {
-                self.thumbnails
-                    .remove(&relative_path.to_string_lossy().replace('\\', "/"));
-                self.clear_resource_selection();
-                self.refresh_resources();
-                self.status = format!("已删除资源：{}", relative_path.display());
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            let mut title = format!("「{}」还有 {} 处引用", guard.path, guard.reference_count());
+            if !guard.unreadable.is_empty() {
+                title.push_str(&format!("，另 {} 份文档读不动", guard.unreadable.len()));
             }
-            Err(error) => {
-                self.status = format!("删除资源失败：{}：{error}", relative_path.display());
+            title.push('：');
+            ui.label(title);
+            for reference in guard.references.iter().take(6) {
+                ui.small(reference);
             }
-        }
+            if guard.reference_count() > 6 {
+                ui.small(format!("…还有 {} 处", guard.reference_count() - 6));
+            }
+            for unreadable in guard.unreadable.iter().take(3) {
+                ui.colored_label(
+                    egui::Color32::from_rgb(220, 160, 40),
+                    format!("读不动：{unreadable}"),
+                );
+            }
+            ui.horizontal(|ui| {
+                if ui
+                    .button("强制删除（留断链）")
+                    .on_hover_text("删除文件，并把上面这些引用留成断链（用断链检查窗收尾）")
+                    .clicked()
+                {
+                    self.force_delete_pending_resource();
+                }
+                if ui.button("取消").clicked() {
+                    self.cancel_pending_delete();
+                }
+            });
+        });
     }
 }
 
