@@ -123,6 +123,33 @@ function Install-WasmBindgenCli([string]$WantVersion) {
         }
         catch { $detail.Add("diagnostics_failed=$($_.Exception.Message)") }
         finally { $ErrorActionPreference = $savedEapDetail }
+        # 先补一次 --force：`cargo install` 遇到"同一版本已登记"会直接 Ignored 并退 0；若那份
+        # 登记旁边的 exe 是坏的或根本没落地，就会长期停在"装了但版本不对"这一句上（CI 上就是
+        # 这个签名）。--force 会真的重装一遍，把这种半成品状态修好。
+        $forceOut = @()
+        $forceExit = 0
+        # cargo 的正常进度/thin 警告都走 stderr；PS 5.1 在 EAP=Stop 下会把 stderr 变成终止性
+        # 错误（本文件第 80 行的 install 段为此显式降级），这里同样必须降级。
+        $savedEapForce = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        Push-Location $engineRoot
+        try {
+            $forceOut = @(cargo install wasm-bindgen-cli --version $WantVersion --root $toolsRoot --locked --force 2>&1 |
+                ForEach-Object { "$_" })
+            $forceExit = $LASTEXITCODE
+            $forceOut | ForEach-Object { Write-Host $_ }
+        }
+        finally { Pop-Location; $ErrorActionPreference = $savedEapForce }
+        $detail.Add("force_exit=$forceExit")
+        if ($forceExit -ne 0) {
+            $forceTail = (@($forceOut | Select-Object -Last 5) -join ' | ') -replace "[\r\n]+", ' '
+            $detail.Add("force_tail='$forceTail'")
+        }
+        if (Test-WasmBindgenCli $toolsExe $WantVersion) {
+            Write-Host "wasm-bindgen ready: $toolsExe ($WantVersion, reinstalled with --force)" -ForegroundColor Yellow
+            return $toolsExe
+        }
+
         # 兜底：cargo 有时把可执行文件落到别处（`CARGO_INSTALL_ROOT`/`CARGO_HOME` 环境、
         # 或 `--root` 被上层配置顶掉）。只要**某个候选**的版本对得上，就搬到 `.tools` 里继续，
         # 不影响"版本必须精确匹配 crate 版本"这条不变量（错的版本照样判红）。
@@ -142,7 +169,8 @@ function Install-WasmBindgenCli([string]$WantVersion) {
         if (Test-WasmBindgenCli $toolsExe $WantVersion) {
             Write-Host "wasm-bindgen ready: $toolsExe ($WantVersion, rescued)" -ForegroundColor Green
             return $toolsExe
-        }                throw "wasm-bindgen-cli installed but version check failed: $toolsExe $($detail -join '; ')"
+        }
+        throw "wasm-bindgen-cli installed but version check failed: $toolsExe $($detail -join '; ')"
     }
     Write-Host "wasm-bindgen ready: $toolsExe ($WantVersion)" -ForegroundColor Green
     return $toolsExe
