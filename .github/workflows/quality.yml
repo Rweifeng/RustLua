@@ -391,6 +391,19 @@ jobs:
             Write-Host "::group::web evidence failure tail (last 40 lines of $log)"
             Get-Content -LiteralPath $log -Tail 40 | ForEach-Object { Write-Host $_ }
             Write-Host "::endgroup::"
+            # 再挑几条"像原因"的行发成 **annotation**：`::error::` 会挂到 check run 的
+            # annotations 上，那是**不下载 artifact、不用认证**也能读到的位置（job 日志要
+            # auth，artifact 要下载）。排查 CI 的人第一眼就能看到判红的那一句，而不是一个
+            # 光秃秃的 exit 1。长度截断到 300 字符，避免把整段日志塞进 annotation。
+            $hints = @(Get-Content -LiteralPath $log -Tail 80 |
+                Where-Object { $_ -match 'FAIL|failed|error|Error|throw|Exception|失败|异常' } |
+                Select-Object -Last 5)
+            if ($hints.Count -eq 0) { $hints = @(Get-Content -LiteralPath $log -Tail 3) }
+            foreach ($hint in $hints) {
+              $clean = ($hint -replace '[\r\n]+', ' ').Trim()
+              if ($clean.Length -gt 300) { $clean = $clean.Substring(0, 300) + '...' }
+              if ($clean) { Write-Host "::error::web evidence: $clean" }
+            }
             Write-Host "web evidence failed (exit $code); full log: $log"
             exit $code
           }
