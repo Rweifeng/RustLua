@@ -681,8 +681,10 @@ pub fn install(lua: &Lua, state: &Handle<NetState>) -> LuaResult<()> {
             let mut state = s.borrow_mut()?;
             let (status, player, players, error, pending) = state.status();
             let transport = state.transport;
+            // wasm 分支必须写全类型：桌面分支靠 `udp.stats()` 反推 `Option<UdpStats>`，
+            // 只写 `None` 时 wasm32 上推不出 `_`（E0282），WebGL/微信产物会直接编不过。
             #[cfg(target_arch = "wasm32")]
-            let stats = None;
+            let stats: Option<rustlua_net::UdpStats> = None;
             #[cfg(not(target_arch = "wasm32"))]
             let stats = state.udp.as_ref().map(|udp| udp.stats());
             let table = lua.create_table()?;

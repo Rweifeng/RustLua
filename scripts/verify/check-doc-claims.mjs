@@ -117,6 +117,18 @@ const COMPONENT_CLAIM_FILES = [
   'docs/demos/README.md',
 ];
 
+// `tasks/plan/` 的"空/非空"断言与目录事实。为什么需要：README 曾写"`tasks/plan/` 当前为空"，
+// 而目录里实际躺着 M78-00（2026-11-02 核对时发现）。这类"状态断言"既不在文档门（只查链接/编号）
+// 的射程里，也不在 API 计数门的射程里——没人读它就永远错着。这里把它变成一条可复核的声明。
+export function planDirStatus(repoRoot) {
+  const dir = path.join(repoRoot, 'tasks', 'plan');
+  if (!fs.existsSync(dir)) return { files: 0, exists: false };
+  const files = fs
+    .readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.md'));
+  return { files: files.length, exists: true };
+}
+
 export function audit({ repoRoot }) {
   const errors = [];
   let counts;
@@ -177,7 +189,18 @@ export function audit({ repoRoot }) {
       }
     }
   }
-  return { errors, stats: { tables, funcs, components, gates, claims: checked } };
+  // `tasks/plan/` 状态：README 里的"为空"必须与目录一致。只查"为空"这一种断言——
+  // "有几个"这种会变的数字，本仓库的口径是根本不该写进 README（见其「当前状态」的规矩）。
+  const plan = planDirStatus(repoRoot);
+  for (const match of readText(repoRoot, 'README.md').matchAll(/tasks[\\/]plan[^\n]{0,16}?为空/g)) {
+    checked += 1;
+    if (plan.files > 0) {
+      errors.push(
+        `tasks/plan 状态：README 写"${match[0]}"，但 tasks/plan/ 里有 ${plan.files} 个文件`,
+      );
+    }
+  }
+  return { errors, stats: { tables, funcs, components, gates, planFiles: plan.files, claims: checked } };
 }
 
 function writeFixture(root, snapshot, readme, doc74) {
@@ -236,7 +259,24 @@ function selfTest() {
     fs.rmSync(dir, { recursive: true, force: true });
   }
   if (failed > 0) process.exit(1);
-  console.log(`doc_claims_selftest_ok cases=${cases.length}`);
+
+  // tasks/plan 状态断言：目录非空而 README 写"为空"必须判红。
+  // 正向（目录为空 + 同样的句子）由上面各例隐式覆盖：它们既没有该句、也没有 tasks/plan 目录。
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'doc-claims-plan-'));
+    writeFixture(dir, snapshot, `${goodReadme}\`tasks/plan/\` 当前为空。\n`, goodDoc);
+    fs.mkdirSync(path.join(dir, 'tasks', 'plan'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'tasks', 'plan', 'M78-00-x.md'), '# x\n');
+    const { errors } = audit({ repoRoot: dir });
+    if (errors.length === 0) {
+      failed += 1;
+      console.error('自测失败：tasks/plan 非空但 README 声称"为空"未判红');
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+    if (failed > 0) process.exit(1);
+  }
+
+  console.log(`doc_claims_selftest_ok cases=${cases.length + 1}`);
 }
 
 if (process.argv.includes('--self-test')) {
@@ -247,6 +287,6 @@ if (process.argv.includes('--self-test')) {
   for (const error of errors) console.error('doc_claims: ' + error);
   if (errors.length > 0) process.exit(1);
   console.log(
-    `doc_claims_ok tables=${stats.tables} funcs=${stats.funcs} components=${stats.components} gates=${stats.gates} claims=${stats.claims}`,
+    `doc_claims_ok tables=${stats.tables} funcs=${stats.funcs} components=${stats.components} gates=${stats.gates} plan_files=${stats.planFiles} claims=${stats.claims}`,
   );
 }

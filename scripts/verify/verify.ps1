@@ -55,10 +55,15 @@ param(
 # 的一句中文注释让 `game --check` 判红，这条红在本地 HEAD 里活了 5 个提交才被发现
 # （见 `docs/changelog/发布-CI与质量门.md`「场景注释不再冒充依赖」）。`-Quick` 把这一类红的发现成本降到几十秒（热缓存）。
 #
-# 跑什么：文档门、vendor 补丁门、cargo metadata、fmt、Lua API 文档桩、Web API 覆盖清单、
-#         git diff --check、两个判据自测、`game --check`、`editor --check`（两个工程）。
+# 跑什么：文档门、vendor 补丁门、cargo metadata、fmt、**wasm32 平台编译（game_web）**、
+#         Lua API 文档桩、Web API 覆盖清单、git diff --check、两个判据自测、
+#         `game --check`、`editor --check`（两个工程）。
 # 不跑什么（每一步都会在结尾逐个打印出来）：clippy、rustdoc、对外 Rust 符号面门（依赖 rustdoc
-#         产物）、pre-commit hook 回归、全量测试、构建、空间迁移报告、编辑器性能基线、GUI smoke。
+#         产物）、pre-commit hook 回归、全量测试、原生构建、空间迁移报告、编辑器性能基线、GUI smoke。
+# 为什么 wasm 编译进 -Quick：它是唯一能回答「WebGL/微信还编不编得过」的读数，热缓存下约 10 s
+#         （2026-11-02 实测 10.5 s）。此前它只存在于 opt-in 的 -WasmLua/-Web 与 CI matrix 里，
+#         结果是 `rustlua-gameplay/src/net_lua.rs` 的 E0282 在 HEAD 上活了两天没人发现——
+#         本机 -Quick 全绿、平台链却是断的。跳过清单里没有它，因为它不是"重活"。
 #
 # 本仓库口径是「跳过绝不等于通过」：`-Quick` 的绿灯只能读作「数据级与格式门通过」，
 # 不能读作总门通过——所以它不打印 Quality gate passed，只打印 Quick gate passed (PARTIAL)。
@@ -690,6 +695,40 @@ try {
     if (-not $SkipClippy) {
         Write-Step "Clippy"
         Invoke-Checked cargo @("clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings")
+    }
+
+    # wasm 平台编译（P0 回归门，2026-11-02）：`game_web` 是 WebGL 与微信小游戏两条发布链的
+    # 共同入口，而这条命令此前只出现在 opt-in 的 `-WasmLua`/`-Web` 与 CI matrix 里。代价是
+    # `rustlua-gameplay/src/net_lua.rs` 的 `#[cfg(target_arch = "wasm32")] let stats = None;`
+    # 推不出类型（E0282），HEAD 上 WebGL/微信产物**根本编不出来**，本机 -Quick 却全绿。
+    # 热缓存实测约 10 s，因此不登记进 -Quick 跳过清单：它不是重活，而"这棵树红不红"必须
+    # 包含平台分支。缺 wasm32 目标时打印原因跳过（跳过不等于通过），不判红。
+    # 口径说明：这里用的是仓库默认工具链（与 CI matrix 的 wasm cell 同一口径，1.97.1）；
+    # 发布链另有自己的 wasm 工具链（package.ps1 固定 1.88.0，见其 WP10 的 EH 口径），
+    # 两者不互相替代——这一步只回答"代码还编不编得过"，产物由 package.ps1/verify-webgl-bundle 证明。
+    Write-Step "WASM platform compile (game_web -> wasm32-unknown-unknown)"
+    $installedRustTargets = @()
+    if (Get-Command rustup -ErrorAction SilentlyContinue) {
+        $installedRustTargets = @(& rustup target list --installed 2>$null)
+    }
+    if ($installedRustTargets -contains "wasm32-unknown-unknown") {
+        # 包集与 CI 的 wasm cell **逐字对齐**（2026-11-02）：此前这里只查 `-p game_web`，
+        # 而 matrix.yml 的 blocking cell 查的是 `-p game_web -p gpu-web-probe`，另有
+        # `-p game_web --no-default-features` 一格。两条命令的漂移由
+        # `check-platform-parity.ps1` 当场判红，所以这里改包集必须同步改 matrix.yml。
+        Invoke-Checked cargo @("check", "-p", "game_web", "-p", "gpu-web-probe", "--target", "wasm32-unknown-unknown", "--locked")
+        Invoke-Checked cargo @("check", "-p", "game_web", "--no-default-features", "--target", "wasm32-unknown-unknown", "--locked")
+    } else {
+        Write-Host "  [SKIP] 未安装 wasm32-unknown-unknown 目标：WebGL/微信平台编译未运行（不是通过；先 rustup target add wasm32-unknown-unknown）" -ForegroundColor Yellow
+    }
+
+    # 本地门与 CI cell 的命令集漂移检查（P4-03）：HEAD `7d951c84` 上 CI 的 4 个 wasm cell 全红、
+    # 而本地门只查了 `-p game_web` 的那一段——"两边各写一条命令"才是根因。这份脚本只比命令文本
+    # （忽略空白与 `--locked`），毫秒级，因此放在 -Quick 里也不占成本。
+    Write-Step "Platform cell parity (matrix.yml vs verify.ps1)"
+    & (Join-Path $PSScriptRoot "check-platform-parity.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Platform cell parity failed (exit $LASTEXITCODE)：本地门与 CI 的 wasm 命令集不一致"
     }
 
     # -Quick 跳过：`cargo doc --workspace` 是编译重活，而紧跟的对外符号面门**依赖它刚生成的产物**
