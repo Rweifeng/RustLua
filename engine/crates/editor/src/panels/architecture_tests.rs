@@ -85,7 +85,14 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     ("model_preview.rs", 0),
     ("keymap.rs", 0),
     ("mod.rs", 0),
-    ("performance.rs", 0),
+    // P4-②：`performance.rs` 拆成目录（数据 `model.rs` / 排版 `sections.rs` / 趋势 `trends.rs` /
+    // 窗口 `panel.rs`）。拆分**不缩小**覆盖面——每个生产文件单独登记；`performance/tests/`
+    // 与 `scene_view/tests/` 一样在"只下探一层"的扫描之外（测试按惯例排除）。
+    ("performance/mod.rs", 0),
+    ("performance/model.rs", 0),
+    ("performance/panel.rs", 0),
+    ("performance/sections.rs", 0),
+    ("performance/trends.rs", 0),
     // 预制体结构差异窗只读比较结果；点条目只改选区（`locate_structural_change` 在 shell 里）。
     ("prefab_structure_view.rs", 0),
     ("progress.rs", 0),
@@ -107,7 +114,12 @@ const PINNED_WRITES: &[(&str, usize)] = &[
     ("scene_view/tilemap.rs", 0),
     ("scene_view/render.rs", 0),
     ("scene_view/projection.rs", 0),
-    ("schema_inspector.rs", 0),
+    // P4-②：`schema_inspector.rs` 拆成目录（控件选择 `fields.rs` / 字段行绘制 `panel.rs`）。
+    // 拆分**不缩小**覆盖面——两个生产文件单独登记；`schema_inspector/tests/` 同
+    // `scene_view/tests/`、`performance/tests/`，在"只下探一层"的扫描之外。
+    ("schema_inspector/mod.rs", 0),
+    ("schema_inspector/fields.rs", 0),
+    ("schema_inspector/panel.rs", 0),
     ("tilemap_tools.rs", 0),
     // P3-E01-3：时间线只读预览，播放头状态不进场景文档。
     ("timeline.rs", 0),

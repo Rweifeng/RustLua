@@ -29,7 +29,7 @@ pub const HANDWRITTEN_PANEL_COMPONENTS: &[&str] = &[
     // 注意：`Light`(20) / `MeshRenderer`(21) / `Image`(22) / `WorldText`(23) / `Camera`(24) /
     // `Text`(25) / `UiLayout`(31) / `Sprite`(34) / `Transform`(36) **都不在**
     // 这张表里——它们的手写面板与整套缓冲管线已删除，改由通用编辑器按 schema 生成字段行
-    // （见 `panels/schema_inspector.rs` 的 `field_widget`）。
+    // （见 `panels/schema_inspector/fields.rs` 的 `field_widget`）。
     // 这就是"组件迁移到 schema"的样板：删面板 + 删缓冲管线、从本表移除即可。
     "Collider3d",
     "Tilemap",

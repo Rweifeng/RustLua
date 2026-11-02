@@ -1,4 +1,9 @@
-//! P3-E05-4：28 个 UI 源场景/预制体的布局回归。
+//! P3-E05-4：UI 源场景/预制体的布局回归。
+//!
+//! 台账口径（2026-11-02 起）：**13 个** UI 源场景/预制体。原先的 28 个里有 15 个属于
+//! `examples/game_jhyt/`，《江湖有田》在本仓库最后一次提交里整体迁出（`7d951c84`），
+//! 相应文件已不存在；数量断言与基线同步收成 13，避免"基线里留着已删文件"这种永远不会
+//! 再被验证的条目。
 //!
 //! 报告 = 每个文件 × 3 个分辨率的 UI 实体矩形（三位小数）+ 诊断。基线文件
 //! `tests/fixtures/ui_source_layout.golden.txt` 是 2026-10-23（E05-1..3 之后）
@@ -160,8 +165,8 @@ fn ui_source_scene_layout_matches_golden() {
     let reports = layout_reports(&root);
     assert_eq!(
         reports.len(),
-        28 * RESOLUTIONS.len(),
-        "UI 源场景/预制体数量变了（规划口径 28 个）：{}",
+        13 * RESOLUTIONS.len(),
+        "UI 源场景/预制体数量变了（2026-11-02 家底 13 个；新增/删除样例工程时同步改这里并重生成基线）：{}",
         reports
             .iter()
             .map(|report| report.split('|').next().unwrap())
