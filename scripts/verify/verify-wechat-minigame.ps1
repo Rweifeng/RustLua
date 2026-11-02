@@ -43,7 +43,7 @@ $ErrorActionPreference = "Stop"
 try { [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false) } catch { }
 $workspaceRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 if ([string]::IsNullOrWhiteSpace($BundleRoot)) {
-    $BundleRoot = Join-Path $workspaceRoot "examples\game_jhyt\builds\wechat-minigame"
+    $BundleRoot = Join-Path $workspaceRoot "examples\game_api\builds\wechat-minigame"
 }
 if (-not (Test-Path -LiteralPath $BundleRoot)) { throw "发布目录不存在: $BundleRoot" }
 $root = (Resolve-Path -LiteralPath $BundleRoot).Path

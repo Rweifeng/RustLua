@@ -390,16 +390,13 @@ mod tests {
     }
 
     /// 仓库自带示例工程必须**零字段级漂移**：这是"真实/旧内容不会被 schema 误判"的回归门
-    /// （也就是 `editor --check` 在 verify.ps1 里断言的那条）。checkout 里没有示例工程时跳过。
+    /// （也就是 `editor --check` 在 verify.ps1 里断言的那条）。
     #[test]
     fn workspace_example_project_has_no_schema_drift() {
         let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../examples/game_jhyt")
-            .canonicalize();
-        let Ok(example) = example else {
-            eprintln!("跳过：checkout 内没有 examples/game_jhyt");
-            return;
-        };
+            .join("../../../examples/game_api")
+            .canonicalize()
+            .expect("样板工程 examples/game_api 必须存在：它是仓库里唯一的示例工程");
         let audit = audit_project(&example).expect("audit runs");
         assert!(
             audit.documents > 0,

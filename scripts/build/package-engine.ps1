@@ -96,7 +96,7 @@ try {
     # 样例工程：跨机验收需要"打开就能跑"的东西。排除构建产物与本地缓存
     # （builds/ 是发布产物、.cache/ 是资源库与导入缓存、.temp/ 是崩溃恢复快照）。
     if (-not $SkipSamples) {
-        $samples = @("game_api", "game_jhyt")
+        $samples = @("game_api")
         $excluded = @("builds", ".cache", ".temp", "target")
         foreach ($sample in $samples) {
             $source = Join-Path $workspaceRoot "examples\$sample"
@@ -154,13 +154,13 @@ endlocal
 '@
     $gameBat = @'
 @echo off
-rem Runs the bundled game_jhyt sample with game.exe (development layout: reads
+rem Runs the bundled game_api sample with game.exe (development layout: reads
 rem scenes\scripts\assets live, so a .cache\ folder appears in the project - expected).
 rem For a real release package (game.exe + read-only pack\) use scripts\build\package.ps1 from the repo.
 rem See 运行说明.txt for the full (Chinese) guide.
 setlocal
 cd /d "%~dp0"
-start "" "%~dp0game.exe" --project "%~dp0samples\game_jhyt"
+start "" "%~dp0game.exe" --project "%~dp0samples\game_api"
 endlocal
 '@
     [System.IO.File]::WriteAllText((Join-Path $staging "启动编辑器.bat"), (ConvertTo-Crlf $editorBat), $asciiBat)
@@ -221,7 +221,7 @@ RustLua 引擎编辑器 · 绿色版运行说明
      也可以自己指定：editor.exe --project <你的工程目录>
   2) 双击「便携模式启动.bat」——同上，但把玩家数据/日志写进包内 userdata\，
      整个文件夹拷走即走（真正的"绿色"；默认形态玩家数据在 %APPDATA%\examples）。
-  3) 双击「运行样板游戏.bat」——用包内 game.exe 跑 samples\game_jhyt。
+  3) 双击「运行样板游戏.bat」——用包内 game.exe 跑 samples\game_api。
      注意这是**开发态**运行（实时读 scenes\scripts\assets，会在工程目录下建 .cache\），
      目的是验证运行时能起来；samples\game_api 是交互式 API 演示，按 Q 退出。
   4) 命令行自检（不需要显卡、不需要开窗口）：

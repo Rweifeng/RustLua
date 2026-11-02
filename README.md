@@ -1,8 +1,8 @@
 # RustLua
 
 Rust 写的游戏引擎 + Lua 玩法脚本运行时，配套一个可视化编辑器、一个资源打包器（assetc）、
-一个 Windows 桌面游戏运行器，以及两个示例工程：完整玩法样板《江湖有田》（`examples/game_jhyt`）
-与引擎 API 活文档（`examples/game_api`）。
+一个 Windows 桌面游戏运行器，以及引擎 API 活文档（`examples/game_api`）。
+《江湖有田》完整玩法工程已整体迁出仓库，现在位于 `E:\Qoder\game_jhyt`。
 
 - **引擎**：Rust 负责渲染（wgpu）、ECS、物理（rapier）、输入、音频、字体与资源；玩法规则全部用 Lua。
 - **编辑**：`editor` 提供场景/层级/Inspector、Tilemap 与 2D Animation 编辑、Play 预览、资源面板与发布；
@@ -13,7 +13,7 @@ Rust 写的游戏引擎 + Lua 玩法脚本运行时，配套一个可视化编�
   tag 不干净/版本不一致即阻断，见 [docs/69](docs/69-发布与供应链安全.md)。
 - **验证**：`scripts/verify/verify.ps1` 是唯一总门——文档门、工具链锁定、cargo 三件套、
   `game --check`/`editor --check`、编辑器性能基线（含 p95 毫秒预算门）与 GUI smoke
-  （`-Mvp` 追加 78 项 headless 样例与干净目录发布自测）；
+  （`-Mvp` 只追加干净目录发布自测；jhyt 的 81 个 headless 样例已随工程迁出删除）；
   `-Security` 追加 `cargo-audit`/`cargo-deny`/fork 同步/SBOM 供应链门（工具或网络缺失是 BLOCKED，不是通过）。
 
 ## 仓库布局
@@ -21,8 +21,7 @@ Rust 写的游戏引擎 + Lua 玩法脚本运行时，配套一个可视化编�
 | 目录 | 内容 |
 |---|---|
 | `engine/` | Rust workspace：`crates/engine`（运行时）、`editor`、`game`（桌面运行器）、`assetc`（打包/校验）、`game_web`（WebGL 宿主） |
-| `examples/game_jhyt` | 完整游戏工程《江湖有田》：横版 1280×720、8 个场景动线（门面/山庄/村庄/山道/洞窟/演武场/两处室内），种田/采集/制作/战斗/任务/商店/7 日目标 |
-| `examples/game_api` | 引擎 API 活文档：每个 Lua API 都有一处**可运行**演示，覆盖度由 `host::sample_project` 的 12 条门守 |
+| `examples/game_api` | 仓库唯一的样板工程（引擎 API 活文档）：每个 Lua API 都有一处**可运行**演示，覆盖度由 `host::sample_project` 的 12 条门守 |
 | `plugins/` | 平台运行时：`webgl/`（共用 `web-runtime.js` + 契约页）、`wechat-minigame/`（适配层与分包路由） |
 | `scripts/` | 质量门与发布脚本，按功能分层：`verify/verify.ps1`（总门）、`verify/check-docs.ps1`（文档门）、`verify/check-security.ps1`（供应链门）、`build/package.ps1`（发布）、`build/package-engine.ps1`（绿色版）、`release/`（SBOM/签名/notes/工具版本）、`metrics/`（覆盖率/cfg/趋势/编译/体积测量）、`test/test-bundle.ps1`（本地试玩产物）；完整索引见 [scripts/README.md](scripts/README.md) |
 | `tasks/` | 任务生命周期：`plan/`（在途工作包，含 P2 发布与安全工程）、`done/`（已归档） |
@@ -39,12 +38,12 @@ cd engine
 cargo build --workspace
 
 # 跑 Demo（编辑器 / 桌面运行器）
-cargo run -p editor -- --project ..\examples\game_jhyt
-cargo run -p game   -- --project ..\examples\game_jhyt
+cargo run -p editor -- --project ..\examples\game_api
+cargo run -p game   -- --project ..\examples\game_api
 
 # 只做数据与工程校验（无需 GPU，适合 CI）
-cargo run -p game   -- --project ..\examples\game_jhyt --check
-cargo run -p editor -- --project ..\examples\game_jhyt --check
+cargo run -p game   -- --project ..\examples\game_api --check
+cargo run -p editor -- --project ..\examples\game_api --check
 ```
 
 ## 平台与发布
@@ -53,7 +52,7 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 
 | 平台 | 命令 | 现状 |
 |---|---|---|
-| PC | `scripts\build\package.ps1 -ProjectRoot examples/game_jhyt` | **已验收**（M31）：干净目录可运行、`pack/` 只读、存档与设置写用户数据目录 |
+| PC | `scripts\build\package.ps1 -ProjectRoot examples/game_api` | 干净目录可运行、`pack/` 只读、存档与设置写用户数据目录（`-SelfTest` 每次复核） |
 | WebGL | 加 `-Platform webgl` | **产物层 + 完整剧本门**：缺失宿主 API 全局 = 0、启动路径不再因缺失全局停下（2026-09-19 无头 Edge 复测）；2026-10-02 起 `verify-webgl-bundle.ps1 -DriveJhyt` 在真实浏览器里跑完整玩法链路（新游戏→移动→背包/任务开合→山庄↔云泽村真实切图→回山庄，M1–M6 里程碑落定）并挂进 `verify.ps1` 总门 |
 | 微信小游戏 | 加 `-Platform wechat-minigame`（默认主包 + 单分包） | **已真机验收**（2026-09-27，Android）：启动进山庄、虚拟摇杆移动、按钮交互全通；产物层切分、配额、白名单与 harness 用例（含摇杆链路）全绿 |
 | 编辑器绿色版 | `scripts\build\package-engine.ps1 -Zip` | 免安装包：release 三件套 + 字体 + 样例工程 + 双击即用的 bat |
@@ -69,7 +68,7 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 | 目的 | 命令 |
 |---|---|
 | 总门（含 MVP 回归与发布自测） | `scripts\verify\verify.ps1`（快速路径 `-MvpOnly`；`-SkipBuild -SkipClippy` 复用已有构建） |
-| **快速读数：这棵树现在红不红** | `scripts\verify\verify.ps1 -Quick`（文档门 + vendor 门 + fmt + `git diff --check` + `game --check` + `editor --check` 两工程；跳过 clippy/rustdoc/测试/构建/基准/GUI smoke，**跳过的每一步都在结尾逐个打印**——绿灯只读作「数据级与格式门通过」） |
+| **快速读数：这棵树现在红不红** | `scripts\verify\verify.ps1 -Quick`（文档门 + vendor 门 + fmt + `git diff --check` + `game --check` + `editor --check`（样板工程）；跳过 clippy/rustdoc/测试/构建/基准/GUI smoke，**跳过的每一步都在结尾逐个打印**——绿灯只读作「数据级与格式门通过」） |
 | 提交前门禁（**只对本次提交负责**） | `git-hooks/pre-commit`（装：`scripts\repo\install-git-hooks.ps1`；体检：`scripts\repo\install-git-hooks.ps1 -Status`）。CI 的 lint job 看的是**这个提交**，所以门禁也只看提交内容：`rustlua.scope` 默认 `commit`（提交之外的失败只点名、按 `PARTIAL` 报告），`= worktree` 恢复"整棵树任何一处失败都拦"的旧口径。细则见 [docs/34](docs/34-质量门与发布清单.md) §3.5 |
 | 格式 / 静态检查 / 测试 | `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings`、`cargo test --workspace --all-features` |
 | 文档一致性（编号/索引/链接/历史路径/编码） | `scripts\verify\check-docs.ps1` |
@@ -81,9 +80,9 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 | SBOM 生成/校验 | `node scripts\release\gen-sbom.mjs --output artifacts/reports/rustlua.cdx.json`；`--check` 复核 |
 | Windows 签名自测（无需真实证书） | `scripts\release\sign-windows.ps1 -SelfTest` |
 | 编辑器整帧 smoke（合成输入的 DPI/resize/拖放/停靠/多选/弹窗） | `cargo run -p editor -- --gui-smoke`（`--gui-report <文件>` 落报告） |
-| 干净目录发布自测 | `scripts\build\package.ps1 -ProjectRoot examples/game_jhyt -SelfTest` |
+| 干净目录发布自测 | `scripts\build\package.ps1 -ProjectRoot examples/game_api -SelfTest` |
 | WebGL 产物层启动验收 | `scripts\verify\verify-webgl-bundle.ps1` |
-| 微信小游戏产物层验收 | `scripts\verify\verify-wechat-minigame.ps1`（默认取 `examples/game_jhyt/builds/wechat-minigame`，`-BundleRoot` 可指定） |
+| 微信小游戏产物层验收 | `scripts\verify\verify-wechat-minigame.ps1`（默认取 `examples/game_api/builds/wechat-minigame`，`-BundleRoot` 可指定） |
 | 本地试玩某个 web 平台产物（自动发现 + 验收 + 起服务） | `scripts\test\test-bundle.ps1`（`-Platform wechat-minigame` 切平台） |
 | 覆盖率棘轮（P4-01；缺 cargo-llvm-cov / 基线退 3） | `scripts\verify\check-coverage.ps1 -RequireTool`；`verify.ps1 -Coverage` 可并入总门 |
 | 度量总检查（cfg 条件编译覆盖 + 尺寸采集 + 趋势库回归，P4-02/04/06/07） | `scripts\verify\check-metrics.ps1`；`verify.ps1 -Metrics`（缺历史样本退 3） |
@@ -91,7 +90,7 @@ cargo run -p editor -- --project ..\examples\game_jhyt --check
 
 门全绿的含义与逐项通过标准见 [docs/34-质量门与发布清单.md](docs/34-质量门与发布清单.md)；
 `verify.ps1` 会依次跑文档门、工具链锁定、cargo 门、`game --check`/`editor --check`、编辑器性能基线与
-p95 毫秒预算门、GUI smoke、78 项 headless 验收样例和发布隔离自测。供应链门（audit/deny/SBOM/fork）因需要外部工具与
+p95 毫秒预算门、GUI smoke、发布隔离自测（`-Mvp`；jhyt 的 81 项 headless 样例已随工程迁出删除）。供应链门（audit/deny/SBOM/fork）因需要外部工具与
 advisory DB，默认不进全量门；用 `verify.ps1 -Security` 或 CI 的 `security` job 跑，缺工具/网络失败时
 明确打印 BLOCKED 并以 3 退出，绝不写成通过。
 
@@ -103,9 +102,8 @@ advisory DB，默认不进全量门；用 `verify.ps1 -Security` 或 CI 的 `sec
 - Lua API 参考：[docs/18-lua-api.md](docs/18-lua-api.md)；编辑器指南：[docs/25-editor-guide.md](docs/25-editor-guide.md)
 - 发布包与用户数据目录：[docs/50-发布包与用户数据目录.md](docs/50-发布包与用户数据目录.md)
 - 性能与测试度量（覆盖率/cfg/矩阵/趋势/编译/体积，schema 与命令）：[docs/70-性能与测试度量.md](docs/70-性能与测试度量.md)
-- 游戏工程总览：[examples/game_jhyt/docs/29-江湖有田-项目执行总览.md](examples/game_jhyt/docs/29-江湖有田-项目执行总览.md)
 - 引擎改进台账：[docs/37-引擎与游戏工程复核及优化完善计划.md](docs/37-引擎与游戏工程复核及优化完善计划.md) 与
-  [tasks/done/RustLua-game_jhyt-执行计划.md](tasks/done/RustLua-game_jhyt-执行计划.md)；
+  [tasks/done/RustLua-game_jhyt-执行计划.md](tasks/done/RustLua-game_jhyt-执行计划.md)（历史档案；jhyt 工程本身已迁出仓库）；
   引擎全面重构见 [docs/40](docs/40-引擎全面重构计划.md) 与 [docs/54](docs/54-2D3D统一优化方案与现状对比.md)
 
 ## 当前状态
@@ -122,14 +120,10 @@ advisory DB，默认不进全量门；用 `verify.ps1 -Security` 或 CI 的 `sec
   （`%APPDATA%\<应用名>`，`RUSTLUA_USER_DIR` 可覆盖）、日志写 `<用户数据目录>/logs/`；
   `package.ps1 -SelfTest` 断言隔离目录内无玩家数据。窗口尺寸改由工程声明
   （`project.toml` 的 `window_width/height`），不再写死。
-- **游戏工程横版回归（「横屏方案A」，2026-09-27）**：`game_jhyt` 从 M32 的 **720×1280** 竖屏
-  转回 **1280×720** 横版，8 个场景重生。设计尺寸的来源（`scripts/ui/layout.lua`、场景
-  `meta ui_reference_*`、`project.toml`、场景生成器）由 `ui/layout_check.lua` 在启动期、
-  `game --check`、`editor --check` 三条路径上守，漂移当场报错；**平台层另有三处必须同改**
-  （微信适配层的 `VIEW_WIDTH/VIEW_HEIGHT`、`plugins/wechat-minigame/game.json` 的
-  `deviceOrientation`、`game_web` 的 canvas 尺寸），适配层的 `reportViewAgreement` 是唯一能在
-  无头环境里发现该错配的自检。相机跟随玩家、取景被场景 `bounds` 锁在地图内；换图后由内置系统
-  `scene_camera_sync` 重绑新场景的 bounds（此前场景声明的相机只在启动场景生效）。
+- **样板工程只保留 `game_api`**（2026-11）：《江湖有田》连同其 81 个 `jhyt_*` headless 回归、
+  专用 Python 门与 MVP 清单整体迁出仓库（现在在 `E:\Qoder\game_jhyt`），本仓库的
+  `verify.ps1` 默认工程、打包、CI 与文档一律指向 `examples/game_api`。引擎侧被 jhyt 证明过的
+  能力（相机 bounds 换图重绑 `scene_camera_sync`、设计尺寸三方校验等）仍由 crate 内测试守着。
 - **编辑器重构阶段 0-3 收口**（[docs/55](docs/55-编辑器商业引擎对标重构计划.md) /
   [docs/58](docs/58-编辑器重构阶段0-3收口与验收.md)）：整帧 GUI smoke 自动化（29 用例）已进总门；
   保存路径检测到**外部改动就拒绝写入**（不是提示，是真不写），显式出口是「强制保存」；

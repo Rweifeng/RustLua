@@ -1591,11 +1591,7 @@ fn find_external_drop_source(root: &Path) -> Option<PathBuf> {
         let mut cursor = start.parent().map(PathBuf::from);
         for _ in 0..4 {
             let Some(dir) = cursor else { break };
-            for candidate in [
-                dir.join("examples/game_api/assets"),
-                dir.join("examples/game_jhyt/assets"),
-                dir.join("assets"),
-            ] {
+            for candidate in [dir.join("examples/game_api/assets"), dir.join("assets")] {
                 if let Some(found) = first_drop_source_in(&candidate, root, 3) {
                     return Some(found);
                 }

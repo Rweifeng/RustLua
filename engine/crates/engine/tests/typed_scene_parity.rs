@@ -36,10 +36,7 @@ fn compiles_every_project_scene_and_matches_serialized_extraction() {
     // 表现层组件的 codec 由组合根装表（P1 ④）：本门要编译真实场景文本，必须先装。
     engine::host::scene_codecs::install();
 
-    let roots = [
-        rustlua_infra::games_dir().join("examples/game_api/scenes"),
-        rustlua_infra::games_dir().join("examples/game_jhyt/scenes"),
-    ];
+    let roots = [rustlua_infra::games_dir().join("examples/game_api/scenes")];
     let mut scene_count = 0;
     for root in roots {
         let entries = std::fs::read_dir(&root)

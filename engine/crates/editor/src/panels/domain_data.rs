@@ -1798,56 +1798,6 @@ mod tests {
         assert_eq!(split_module_prefix("[a] b]").0, "a");
     }
 
-    /// 真实工程冒烟：`examples/game_jhyt` 提供统一校验入口时，编辑器域面板路径
-    /// 必须能加载并取出只读视图（地图/出口/地点/NPC/商店/TILE）。
-    ///
-    /// 刻意**不断言问题条数为 0**：该工程由并行会话持续修改，域数据可能临时带有
-    /// 问题（这属于面板要显示的内容）；本测试只锁定「入口可加载 + 视图可用 +
-    /// 错误定位可用」，不锁定内容数值。
-    #[test]
-    fn real_game_project_loads_unified_entry_and_reads_view() {
-        let root = rustlua_infra::games_dir()
-            .join("examples")
-            .join("game_jhyt");
-        if !root.join(UNIFIED_ENTRY_RELATIVE).is_file() {
-            // 仓库状态不含统一入口时跳过（该能力由 M20-01 提供）。
-            return;
-        }
-        let report = collect_domain_report(&root);
-        assert_eq!(report.source, DomainValidationSource::UnifiedEntry);
-        assert!(
-            report.bootstrap_error.is_none(),
-            "统一校验入口应可加载：{:?}",
-            report.bootstrap_error
-        );
-        assert!(
-            report.view_error.is_none(),
-            "只读视图应可读取：{:?}",
-            report.view_error
-        );
-        assert!(!report.view.maps.is_empty(), "应至少读出一张地图");
-        assert!(!report.view.places.is_empty(), "应至少读出一个地点");
-        assert!(!report.view.npcs.is_empty(), "应至少读出一条 NPC 记录");
-        assert!(report.view.tile.is_some(), "data.maps.TILE 应可读出");
-        assert!(
-            report
-                .view
-                .maps
-                .iter()
-                .flat_map(|map| map.exits.iter())
-                .any(|exit| exit.cell.is_some() && exit.to_cell.is_some()),
-            "应至少有一个出口同时带 cell 与 to_cell"
-        );
-        // 场景名即地图 id：当前工程的场景文件应能在 data.maps 中找到。
-        let (scene_sources, scan_errors) = scan_scene_persist_ids(&root);
-        assert!(scan_errors.is_empty(), "场景不应解析失败：{scan_errors:?}");
-        let registry = build_persist_registry(&scene_sources, &report.view, &scan_errors);
-        assert!(
-            !registry.entries.is_empty(),
-            "至少应汇总出 data.npcs.persist_id 定义"
-        );
-    }
-
     #[test]
     fn discovery_maps_files_to_modules_and_skips_main_lua() {
         let root = fixture_project("discover");

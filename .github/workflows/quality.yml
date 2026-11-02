@@ -31,9 +31,6 @@ on:
       - ".github/workflows/release.yml"
 
 env:
-  # 2026-10-21：CI windows-latest 上 title_scene_stick_navigation 在 Lua 脚本步后
-  # 0xC0000005（本地同二进制单线程通过）；显式隔离这一条，避免整个 engine 测试二进制失败。
-  RUSTLUA_SKIP_CI_FLAKY: "1"
   # 同一批 CI 崩溃在 coverage 插桩下仍出现；测试线程默认 2MB 栈，给足余量排除栈边界。
   RUST_MIN_STACK: "67108864"
 
@@ -300,16 +297,13 @@ jobs:
           workspaces: engine
 
       - name: Game project check
-        run: cargo run --quiet --manifest-path engine/Cargo.toml -p game -- --project "${{ github.workspace }}\examples\game_jhyt" --check
+        run: cargo run --quiet --manifest-path engine/Cargo.toml -p game -- --project "${{ github.workspace }}\examples\game_api" --check
 
       - name: Editor project check
-        run: cargo run --quiet --manifest-path engine/Cargo.toml -p editor -- --project "${{ github.workspace }}\examples\game_jhyt" --check
-
-      # M78 §26.3-31：第二个真实工程（3D 重的 game_api）必须进 CI——只审一个工程正是
-      # "必填字段漂移看不见"的根因；本地总门已去掉对 game_api 的软跳，CI 覆盖要齐。
-      - name: Editor project check (game_api)
         run: cargo run --quiet --manifest-path engine/Cargo.toml -p editor -- --project "${{ github.workspace }}\examples\game_api" --check
 
+      # 仓库里只剩一个样板工程（game_api）；《江湖有田》已迁出到 E:\Qoder\game_jhyt，
+      # 它的 81 个 jhyt_* headless 回归不再属于本仓库的 CI。
       - name: Game headless regression suite
         run: pwsh -NoProfile -File scripts/verify/verify.ps1 -MvpOnly
 

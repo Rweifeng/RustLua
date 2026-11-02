@@ -828,7 +828,7 @@ mod tests {
     fn shipped_example_scenes_render_the_same_under_both_parent_semantics() {
         let mut checked_scenes = 0usize;
         let mut checked_entities = 0usize;
-        for project in ["game_api", "game_jhyt"] {
+        for project in ["game_api"] {
             let root = rustlua_infra::paths::games_dir()
                 .join("examples")
                 .join(project);
@@ -901,7 +901,7 @@ mod tests {
         use crate::scene_space::ParentLinkIssue;
         let legacy_names = ["Transform3D", "Camera2D", "Camera3D"];
         let mut checked_files = 0usize;
-        for project in ["game_api", "game_jhyt"] {
+        for project in ["game_api"] {
             let root = rustlua_infra::paths::games_dir()
                 .join("examples")
                 .join(project);

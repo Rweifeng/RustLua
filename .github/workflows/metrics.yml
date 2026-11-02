@@ -52,18 +52,18 @@ jobs:
       - name: Package PC / WebGL / WeChat
         shell: pwsh
         run: |
-          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build/package.ps1 -ProjectRoot examples/game_jhyt
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build/package.ps1 -ProjectRoot examples/game_api
           if ($LASTEXITCODE -ne 0) { throw "package PC failed (exit $LASTEXITCODE)" }
-          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build/package.ps1 -ProjectRoot examples/game_jhyt -Platform webgl
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build/package.ps1 -ProjectRoot examples/game_api -Platform webgl
           if ($LASTEXITCODE -ne 0) { throw "package WebGL failed (exit $LASTEXITCODE)" }
-          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build/package.ps1 -ProjectRoot examples/game_jhyt -Platform wechat-minigame
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build/package.ps1 -ProjectRoot examples/game_api -Platform wechat-minigame
           if ($LASTEXITCODE -ne 0) { throw "package WeChat failed (exit $LASTEXITCODE)" }
 
       - name: Measure packages and ingest trend
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts/metrics | Out-Null
-          node scripts/metrics/measure-artifacts.mjs --kind package --project examples/game_jhyt --out artifacts/metrics/packages.json
+          node scripts/metrics/measure-artifacts.mjs --kind package --project examples/game_api --out artifacts/metrics/packages.json
           if ($LASTEXITCODE -ne 0) { throw "package size collection failed (exit $LASTEXITCODE)" }
           python scripts/metrics/trend_db.py ingest --input artifacts/metrics --history metrics/history
           if ($LASTEXITCODE -ne 0) { throw "trend ingest failed (exit $LASTEXITCODE)" }

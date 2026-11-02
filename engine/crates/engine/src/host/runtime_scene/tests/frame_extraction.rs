@@ -54,42 +54,10 @@ fn sprite_scene(name: &str) -> Scene {
 /// 最小世界：连提 8 次，每次都必须与第一次**逐通道相同**。
 #[test]
 fn repeated_extraction_without_steps_is_stable() {
-    let root = rustlua_infra::games_dir()
-        .join("examples")
-        .join("game_jhyt");
+    let root = rustlua_infra::games_dir().join("examples").join("game_api");
     let mut runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), sprite_scene("stable"))
         .expect("runtime scene");
     let first = extract(&mut runtime);
-    for round in 1..8 {
-        let next = extract(&mut runtime);
-        assert_eq!(
-            next, first,
-            "第 {round} 次提取与第 1 次不同：不跑逻辑步时，同一份世界必须提出同一份网格"
-        );
-    }
-}
-
-/// 工程真场景（有实体的那个）：同一问，用产物里那份场景文件。
-///
-/// 找不到工程就跳过——这条断言的价值在"用真数据跑"，不是"必须有真数据"。
-#[test]
-fn project_scene_repeated_extraction_is_stable() {
-    let root = rustlua_infra::games_dir()
-        .join("examples")
-        .join("game_jhyt");
-    let path = root.join("scenes").join("village.scene");
-    if !path.is_file() {
-        return;
-    }
-    let scene = Scene::load(&path).expect("load village scene");
-    let mut runtime =
-        RuntimeScene::from_scene_edit(Some(root.as_path()), scene).expect("runtime scene");
-    let first = extract(&mut runtime);
-    // 场景本身要有东西可画，否则"稳定"是平凡成立的、什么也证明不了。
-    assert!(
-        first.draws > 0 && first.vertices > 0,
-        "village 场景应当提出非空网格，实际 {first:?}"
-    );
     for round in 1..8 {
         let next = extract(&mut runtime);
         assert_eq!(

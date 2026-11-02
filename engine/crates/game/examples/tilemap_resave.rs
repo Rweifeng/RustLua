@@ -11,7 +11,7 @@
 //! Usage:
 //!   cargo run -p game --example tilemap_resave --release -- [<project-root>...]
 //!
-//! 不带参数时只处理 `game_jhyt`（M72 的八张场景）。工具是**幂等**的：新编码再跑一遍
+//! 不带参数时只处理样板工程 `game_api`。工具是**幂等**的：新编码再跑一遍
 //! 得到同一份字节，所以可以安全地重复执行。
 
 use rustlua_ecs::tilemap::{TILES_FORMAT_ATLAS, Tilemap};
@@ -31,11 +31,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .map(|arg| Ok(PathBuf::from(arg).canonicalize()?))
             .collect::<Result<_, Box<dyn std::error::Error>>>()?
     } else {
-        vec![
-            rustlua_infra::games_dir()
-                .join("examples")
-                .join("game_jhyt"),
-        ]
+        vec![rustlua_infra::games_dir().join("examples").join("game_api")]
     };
     let mut files = 0usize;
     let mut rewritten = 0usize;

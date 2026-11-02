@@ -35,7 +35,7 @@ function Resolve-Launcher([string]$candidate) {
 }
 
 if ([string]::IsNullOrWhiteSpace($Launcher)) {
-    $Launcher = Join-Path $repo "examples\game_jhyt\builds\wechat-minigame\launcher"
+    $Launcher = Join-Path $repo "examples\game_api\builds\wechat-minigame\launcher"
 }
 $launcherRoot = Resolve-Launcher $Launcher
 if (-not $launcherRoot) {

@@ -1,10 +1,10 @@
-//! M74-02 P0 度量闸门：帧调度分档实测（`jhyt_*` 与 50k sprite 压测）。
+//! M74-02 P0 度量闸门：帧调度分档实测（样板工程首屏与 50k sprite 压测）。
 //!
 //! 为什么要有这个例子：`--frame-profile` 是给**交互宿主**用的（跑一局游戏、退出时落盘），
 //! 而闸门判据必须能在这台机器上重复跑、留读数。本例子用同一个计时口径
-//! （[`engine::host::FrameProfile`]）在无窗口条件下跑四个目标：
+//! （[`engine::host::FrameProfile`]）在无窗口条件下跑三个目标：
 //!
-//! - `jhyt_title` / `jhyt_manor`：真实工程（`examples/game_jhyt`）的标题屏与山庄，
+//! - `api_index`：样板工程（`examples/game_api`）启动后的第一屏，
 //!   走 `RuntimeScene::new` → 真实脚本、真实场景。
 //! - `sprite_10000` / `sprite_50000`：任务里点名的 50k 精灵压测（10k 档作对照，
 //!   避免把结论压在单点读数上）。
@@ -20,7 +20,7 @@
 //! ```powershell
 //! cd engine
 //! cargo run --release -p engine --example m74_ecs_frame_profile -- --frames 300 `
-//!   --project ..\examples\game_jhyt --output ..\metrics\baselines\m74-frame-profile.json
+//!   --project ..\examples\game_api --output ..\metrics\baselines\m74-frame-profile.json
 //! ```
 
 use std::{
@@ -43,8 +43,6 @@ const WARMUP_FRAMES: usize = 20;
 /// 50k 是任务点名的压测规模；10k 档作对照。
 const SPRITE_STAIRS: [usize; 2] = [10_000, 50_000];
 const DT: f32 = 1.0 / 60.0;
-/// 进山庄的最多尝试帧数（`on_click('BtnStart')` 之后由 `scene_transition` 系统落地）。
-const ENTER_MANOR_FRAMES: usize = 10;
 
 struct Config {
     project: Option<PathBuf>,
@@ -63,20 +61,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let examples = rustlua_infra::games_dir().join("examples");
     let mut targets = Vec::new();
 
-    let mut jhyt = RuntimeScene::new(Some(project.as_path()))
+    let mut sample = RuntimeScene::new(Some(project.as_path()))
         .map_err(|error| format!("RuntimeScene::new({}): {error:#}", project.display()))?;
-    // 标题屏：真实工程启动后的第一屏（Lua `update` 与 UI 都在跑）。
+    // 样板工程启动后的第一屏（Lua `update` 与 UI 都在跑）。
     targets.push(
-        measure("jhyt_title", &mut jhyt, config.frames)
-            .map_err(|error| format!("jhyt_title: {error}"))?,
+        measure("api_index", &mut sample, config.frames)
+            .map_err(|error| format!("api_index: {error}"))?,
     );
-    enter_manor(&mut jhyt)?;
-    // 山庄：玩法主场景（主角、NPC、地块、粒子与 UI 都在这一屏里）。
-    targets.push(
-        measure("jhyt_manor", &mut jhyt, config.frames)
-            .map_err(|error| format!("jhyt_manor: {error}"))?,
-    );
-    drop(jhyt);
+    drop(sample);
 
     let game_api = examples.join("game_api");
     for sprites in SPRITE_STAIRS {
@@ -164,11 +156,10 @@ fn parse_config() -> Config {
 }
 
 fn resolve_project(config: &Config) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let project = config.project.clone().unwrap_or_else(|| {
-        rustlua_infra::games_dir()
-            .join("examples")
-            .join("game_jhyt")
-    });
+    let project = config
+        .project
+        .clone()
+        .unwrap_or_else(|| rustlua_infra::games_dir().join("examples").join("game_api"));
     let project = project
         .canonicalize()
         .map_err(|error| format!("游戏工程不存在 {}: {error}", project.display()))?;
@@ -229,29 +220,7 @@ fn run_frame(
     Ok(started.elapsed())
 }
 
-/// 从标题屏进入山庄（与宿主/Lua 的真实路径一致：`BtnStart` → 固定步里的 `scene_transition`）。
-fn enter_manor(runtime: &mut RuntimeScene) -> Result<(), Box<dyn std::error::Error>> {
-    runtime
-        .with_script(|script| script.execute_console("on_click('BtnStart')"))
-        .map_err(|error| error.to_string())?;
-    let input = InputSnapshot::default();
-    let viewport = viewport()?;
-    for _ in 0..ENTER_MANOR_FRAMES {
-        run_frame(runtime, &input, viewport)?;
-        let scene = runtime
-            .with_script(|script| script.execute_console("return scene.reload()"))
-            .map_err(|error| error.to_string())?;
-        if scene.trim() == "manor" {
-            return Ok(());
-        }
-    }
-    Err(format!(
-        "{} 帧内没有进入 manor（BtnStart 的场景切换没落地？）",
-        ENTER_MANOR_FRAMES
-    )
-    .into())
-}
-
+/// 视口：与运行时同一组设计分辨率。
 fn viewport() -> Result<Viewport, Box<dyn std::error::Error>> {
     Ok(Viewport::new(VIEWPORT.0 as f32, VIEWPORT.1 as f32)?)
 }

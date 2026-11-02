@@ -111,7 +111,6 @@
 | `test-compare-baseline.ps1` | `verify/compare-baseline.ps1` 的红线回归 |
 | `test-release-atomic.ps1` | 原子发布交换与回滚的独立回归 |
 | `test-git-hooks.ps1` | pre-commit 门自身的回归（临时 git 仓库真实提交） |
-| `qa_full.ps1` | 《江湖有田》阶段 5 全量 QA（headless） |
 | `web-fixed-step-test.js` | Web 运行时固定时间步回归 |
 | `wasm-bridge-fallback-test.js` | wasm-bridge 通道组合的定点回归 |
 | `wechat-asset-routing-test.js` | 微信适配层资源路由单元测试 |

@@ -38,7 +38,7 @@ use std::{
 const REPORT_VERSION: &str = "wp0-v4";
 const VIEWPORT: (u32, u32) = (1280, 720);
 const FRAME_WARMUP: usize = 3;
-const PROJECTS: [&str; 2] = ["game_api", "game_jhyt"];
+const PROJECTS: [&str; 1] = ["game_api"];
 const SPRITE_STAIRS: [usize; 3] = [1_000, 10_000, 50_000];
 /// Tilemap 阶梯（边长，单位格）：32×32 = 1,024 格、100×100 = 10,000 格。
 const TILEMAP_STAIRS: [usize; 2] = [32, 100];

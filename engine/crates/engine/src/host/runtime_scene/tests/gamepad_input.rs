@@ -1,7 +1,7 @@
 //! 原 `mod sdf_tests` 里 `gamepad_input` 这一域（WP12 阶段 1 纯搬运；源行段 5805–6173）。
 //!
-//! - `title_scene_gamepad_navigation_works_through_runtime_scene`
-//! - `title_scene_stick_navigation_works_through_runtime_scene`
+//! 标题工程的真实 `main.scene` 手柄导航用例随《江湖有田》迁出仓库而删除（见 E:\Qoder\game_jhyt）。
+//!
 //! - `held_gamepad_stick_reaches_script_with_fresh_input_snapshot_per_frame`
 //! - `virtual_pad_key_injection_survives_fresh_input_snapshot_per_frame`
 //! - `zero_step_frame_does_not_drop_gamepad_edges`
@@ -9,118 +9,6 @@
 
 use super::*;
 use rustlua_scene::scene::Scene;
-
-/// 标题场景（`main.scene`）的手柄导航在**真实 RuntimeScene 路径**上可用。
-///
-/// 编辑器 Play 预览走的就是这条路径（每帧全新键鼠快照 + `run_script_steps` 合并手柄），
-/// 而 M20-08 的验收示例是直接驱动 `LuaRuntime`，覆盖不到 `input_apply` 这一步。
-#[test]
-fn title_scene_gamepad_navigation_works_through_runtime_scene() {
-    use crate::host::gamepad::{GamepadFrame, SlotBackend, button};
-
-    let root = rustlua_infra::games_dir()
-        .join("examples")
-        .join("game_jhyt");
-    let scene_path = root.join("scenes/main.scene");
-    if !scene_path.is_file() {
-        return;
-    }
-    let scene = Scene::load(&scene_path).expect("load main.scene");
-    let mut runtime =
-        RuntimeScene::from_scene(Some(&root), scene).expect("runtime from main.scene");
-
-    let idle = GamepadFrame::idle();
-    let mut dpad_down = GamepadFrame::idle();
-    dpad_down.buttons[button::DPAD_DOWN] = true;
-    // ① 空闲帧（建立设备基线）→ ② 起按住 DPad 下。
-    runtime.set_gamepad_backend(Box::new(SlotBackend::new(vec![
-        [Some(idle), None, None, None],
-        [Some(dpad_down), None, None, None],
-    ])));
-
-    let probe = |runtime: &mut RuntimeScene| -> String {
-        runtime
-            .script
-            .execute_console("return tostring(require('ui.title_menu').selected_id())")
-            .expect("probe title menu")
-            .trim()
-            .to_owned()
-    };
-
-    runtime
-        .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
-        .expect("idle step");
-    let before = probe(&mut runtime);
-    assert_ne!(before, "nil", "标题菜单应在 main.scene 上初始化");
-    for _ in 0..3 {
-        runtime
-            .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
-            .expect("dpad step");
-    }
-    let after = probe(&mut runtime);
-    println!("title selected: before={before} after={after}");
-    assert_ne!(after, before, "DPad 下应改变标题菜单选中项");
-}
-
-/// 标题场景（`main.scene`）的**摇杆**菜单导航在真实 RuntimeScene 路径上可用。
-///
-/// 项目 `settings.toml` 把左摇杆绑给了 `move_*`（实机测试用），`ui_*` 未列在 `map` 里
-/// → `load_settings` 用默认绑定补齐（含 `padaxis:1±`），因此摇杆仍能选菜单。这条路径
-/// 依赖 **`ui_*` 的轴绑定 + 轴边沿**（M22/W3），与 M20-08 的「Lua 直接读 `pad_axis`」不同。
-#[test]
-fn title_scene_stick_navigation_works_through_runtime_scene() {
-    use crate::host::gamepad::{GamepadFrame, SlotBackend};
-
-    // CI windows-latest 上这条用例在 `run_script_steps` 后触发 0xC0000005（本地同二进制
-    // 单线程通过；相邻的 gamepad 用例也通过）。先用显式开关隔离，避免它把整个 engine
-    // 测试二进制带走；本地/专门排查时取消该环境变量即可复跑。
-    if std::env::var_os("RUSTLUA_SKIP_CI_FLAKY").is_some() {
-        eprintln!(
-            "skip title_scene_stick_navigation_works_through_runtime_scene (RUSTLUA_SKIP_CI_FLAKY)"
-        );
-        return;
-    }
-
-    let root = rustlua_infra::games_dir()
-        .join("examples")
-        .join("game_jhyt");
-    let scene_path = root.join("scenes/main.scene");
-    if !scene_path.is_file() {
-        return;
-    }
-    let scene = Scene::load(&scene_path).expect("load main.scene");
-    let mut runtime =
-        RuntimeScene::from_scene(Some(&root), scene).expect("runtime from main.scene");
-
-    let mut stick_down = GamepadFrame::idle();
-    stick_down.axes[crate::host::gamepad::axis::LEFT_Y] = -0.9;
-    runtime.set_gamepad_backend(Box::new(SlotBackend::new(vec![
-        [Some(GamepadFrame::idle()), None, None, None],
-        [Some(stick_down), None, None, None],
-    ])));
-
-    let probe = |runtime: &mut RuntimeScene| -> String {
-        runtime
-            .script
-            .execute_console("return tostring(require('ui.title_menu').selected_id())")
-            .expect("probe title menu")
-            .trim()
-            .to_owned()
-    };
-
-    runtime
-        .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
-        .expect("idle step");
-    let before = probe(&mut runtime);
-    for _ in 0..3 {
-        runtime
-            .run_script_steps(1, 1.0 / 60.0, &InputSnapshot::default())
-            .expect("stick step");
-    }
-    let after = probe(&mut runtime);
-    println!("title selected (stick): before={before} after={after}");
-    assert_ne!(after, before, "摇杆下推应改变标题菜单选中项");
-}
 
 /// 编辑器 Play 预览每帧重建输入快照（`bridge_preview_input` 只桥接键鼠），
 /// 而独立 game 宿主跨帧复用同一快照。设备在被按住期间持续上报同一轴值时，

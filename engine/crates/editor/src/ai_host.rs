@@ -1396,10 +1396,6 @@ mod tests {
         rustlua_infra::games_dir().join("examples")
     }
 
-    fn ends_with_game_api(path: &str) -> bool {
-        path.replace('\\', "/").ends_with("examples/game_api")
-    }
-
     #[test]
     fn open_project_rejects_a_directory_that_is_not_a_project() {
         let (mut app, _root) = test_app("open-project-bad");
@@ -1423,49 +1419,6 @@ mod tests {
             error.message()
         );
         assert!(!app.progress.running);
-    }
-
-    #[test]
-    fn open_project_queues_the_background_import_for_another_project() {
-        let mut app = sample_app("game_jhyt");
-        // 相对当前工程根、带 `..` 的写法是这条连接器的实际调用形状。
-        let value = allow_t3(&mut app, json!({"path": "../game_api"})).expect("应排队成功");
-        assert_eq!(value["result"], "queued");
-        assert!(
-            value["target_root"]
-                .as_str()
-                .is_some_and(ends_with_game_api),
-            "读数要如实说出目标：{value}"
-        );
-        assert!(
-            ends_with_game_api(&app.import_path),
-            "后台导入的目标错位：{}",
-            app.import_path
-        );
-        assert!(app.progress.running, "必须真的把后台导入排上");
-        assert!(
-            app.project.root.to_string_lossy().contains("game_jhyt"),
-            "导入是异步的，此刻工程根还不能已经换掉（换了就是读数说谎）"
-        );
-    }
-
-    #[test]
-    fn open_project_parks_behind_the_unsaved_document_gate() {
-        let mut app = sample_app("game_jhyt");
-        app.document.current_scene.as_mut().expect("测试场景").dirty = true;
-        let error =
-            allow_t3(&mut app, json!({"path": "../game_api"})).expect_err("脏文档时不能谎报已切换");
-        assert!(error.message().contains("挂起"), "{}", error.message());
-        assert!(
-            matches!(
-                app.pending_document_change,
-                Some(crate::actions::PendingChange::SwitchProject { .. })
-            ),
-            "切工程应停在确认网关里等人裁决"
-        );
-        assert!(!app.progress.running, "未确认前不得启动后台导入");
-        app.cancel_pending_change();
-        assert!(app.pending_document_change.is_none());
     }
 
     #[test]

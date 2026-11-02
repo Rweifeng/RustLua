@@ -5,10 +5,11 @@ param(
     [switch]$SkipBuild,
     [switch]$Release,
     [switch]$KeepLog,
-    # MVP 退出门（M19-04）：在常规质量门之后追加 headless 游戏回归、浸泡/性能
-    # 基线与干净发行目录自测（package.ps1 -SelfTest）。
+    # MVP 退出门：历史上是《江湖有田》的 headless 回归 + 干净发行目录自测。
+    # jhyt 工程已整体迁出仓库（E:\Qoder\game_jhyt），81 个 jhyt_* 示例与清单已删除；
+    # 现在这一段只跑默认样板工程（examples/game_api）的 package.ps1 -SelfTest。
     [switch]$Mvp,
-    # 仅跑 MVP 追加部分（跳过 fmt/clippy/test/build 常规门）。
+    # 仅跑 MVP 这一段（跳过 fmt/clippy/test/build 常规门）。
     [switch]$MvpOnly,
     # WP0：运行固定 ECS/2D/3D 阶梯基准并写入本地 baselines/（RUSTLUA_BASELINES_DIR 可改位置）。
     [switch]$Benchmarks,
@@ -104,10 +105,10 @@ $engineRoot = Join-Path $projectRoot "engine"
 $baselinesRoot = if ($env:RUSTLUA_BASELINES_DIR) { $env:RUSTLUA_BASELINES_DIR } else { Join-Path $projectRoot "baselines" }
 New-Item -ItemType Directory -Force -Path $baselinesRoot | Out-Null
 $gameRoot = Join-Path $projectRoot "examples"
-# 工程校验与干净目录自测的默认目标工程：examples 重组后样板工程在子目录里
-# （`examples/game_jhyt`），根目录已没有 project.toml——此前写死 `examples` 会让
+# 工程校验与干净目录自测的默认目标工程：仓库里唯一的样板工程是 `examples/game_api`
+# （《江湖有田》已迁出仓库）。根目录没有 project.toml——写死 `examples` 会让
 # 「Game project check」必然失败。
-$defaultGameProject = Join-Path $gameRoot "game_jhyt"
+$defaultGameProject = Join-Path $gameRoot "game_api"
 $logRoot = Join-Path $projectRoot "artifacts\logs\quality"
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $logPath = Join-Path $logRoot "verify-$timestamp.log"
@@ -456,7 +457,7 @@ else {
     throw "check-toolchain-lock.ps1 missing: $toolchainLockScript"
 }
 
-# 版本一致性门（P0-02）：引擎 workspace 版本与两个示例工程的 project.toml 版本必须一致，
+# 版本一致性门（P0-02）：引擎 workspace 版本与样板工程 `examples/game_api` 的 project.toml 版本必须一致，
 # 且编辑器新建工程模板不再写死字面量版本（历史漂移：header.rs 写死 0.1.0 而引擎已 0.1.1）。
 # 纯文件检查、约 1 秒，与文档门同段：`-MvpOnly` 也跑，版本漂移不该被快速路径跳过。
 Write-Step "Project version consistency"
@@ -562,8 +563,7 @@ try {
         # **M72-02 的跨宿主哈希契约已退休**（B8）：它从 `web-runtime.js` 里抽**两份抄本**
         # （JS 解算 + 内嵌 Lua 垫片）互相对拍并与金标比。那两份抄本随旧世界一起消失，而它守的
         # 那份关切（"地表别换个样子"）**已经在 Rust 侧**：同一组金标数字由
-        # `engine/crates/rustlua-ecs/src/tilemap.rs`（crate 内测试）与
-        # `engine/crates/game/examples/jhyt_m72_tile_variant_determinism.rs` 钉着（已核对到位）。
+        # `engine/crates/rustlua-ecs/src/tilemap.rs`（crate 内测试）钉着（jhyt 迁移示例已随工程迁出删除）。
         # 门脚本 `scripts/check-tile-hash-parity.mjs` 一并删除。
         # M73-00：两条**不需要 wasm 产物**的运行时回归门。它们是"改坏了看不出来、而且要
         # 等一次完整微信打包才能发现"的那类规则的唯一快速判据，因此和上面几条同层：每次质量门都跑。
@@ -647,73 +647,6 @@ try {
         Write-Host "  [SKIP] 没有微信小游戏产物：发布包验收未运行（不是通过；先跑 scripts\build\package.ps1 -Platform wechat-minigame）" -ForegroundColor Yellow
     }
 
-    # M72-05 装饰散布的**确定性**门。事实源在 Python（`tools/decor_kit.py` 的 `scatter()`），所以这条
-    # 只能在 Python 侧跑——Rust 侧的 `jhyt_m72_scatter_decor` 钉的是数量、层带、渲染与物理，读的是
-    # 盘上结果，"换种子会不会跟着变"它管不着。三段各判一件事：同种子两次逐字节相同（真确定）、
-    # 换种子内容必须变（否则散布根本没读 seed，上面那个"相同"是空的）、盘上装饰段 == 现算段
-    # （有人手改了装饰、或改了地表却没重撒，红在这里而不是等目验发现）。
-    # 路径一律给绝对值：这份工具的输入按 `__file__` 定位，在哪个 cwd 下跑都是同一份结果（曾经不是——
-    # places.lua 走的是相对 cwd 的默认路径，换目录跑就静默少一份留白输入，见 gen_manor_scene 的注释）。
-    # 缺 python 时按本仓库口径打印原因后跳过，绝不把"跳过"写成通过。
-    Write-Step "Decor scatter determinism (python)"
-    # `Get-Command python` 会被 WindowsApps 占位符骗过：找得到，执行却返回 9009。
-    # 探一次真能跑的解释器，优先 python，回退本机惯例的 py。
-    $pythonExe = $null
-    foreach ($candidate in @("python", "py")) {
-        if (-not (Get-Command $candidate -ErrorAction SilentlyContinue)) { continue }
-        & $candidate -c "import sys" *> $null
-        if ($LASTEXITCODE -eq 0) { $pythonExe = $candidate; break }
-    }
-    if ($pythonExe) {
-        # Windows 控制台默认代码页是 GBK，工具输出的中文在编码不匹配时抛 UnicodeEncodeError——
-        # 那是门自己的环境问题，不是散布判红。
-        $env:PYTHONIOENCODING = "utf-8"
-        # 碎屑库自己的门：26 张 PNG（13 形状 × 本体+镜像；旧说法 24 张是 M72-05 那一档）条目齐全、尺寸 == 目录、每个不透明像素都在 `terrain_ramp.json`
-        # 覆盖的色族里、alpha 只有 0/255。Rust 那条只比尺寸与明度档，"手改过一张图的像素"只有这里看得见。
-        Invoke-Checked $pythonExe @(
-            (Join-Path $projectRoot "examples/game_jhyt/tools/gen_decor_art.py"), "--check"
-        )
-        # 逐图三条门，一张图一轮跑齐：散布确定性 → 建筑占地 solid 对拍 → 逐图量化读数。
-        #
-        # ① `set_scatter_decor.py --check`：盘上装饰段 == 按当前地表现算的装饰段（M72-05 只有
-        #    manor 一条（204 件），village 326 件、mountain_path 245 件、combat_arena 340 件、
-        #    cold_spring_cave 57 件、interior_forge 43 件、interior_herb 41 件；洞穴那张件数少是它的可走地面只有
-        #    144 格，两张室内图更少是 `decor_kit.SCENE_DECOR` 把八件户外条目摘掉后可撒的地表本来就窄
-        #    （散布按可走格数 × 档位概率出），而 `decor_kit.CATALOG` 是所有图共用的形状库——
-        #    改了库没重撒，红在这里而不是等目验发现）。
-        # ② `building_kit.py --check`：M72-11 铺量——"每格 solid 都要有可视依据"这条规则的**实现**，
-        #    而 `jhyt_m72_building_footprint` 是它的第二份独立实现（Rust 不 import Python）。
-        #    现算的应实心格集必须 == 盘上 `solid` 串（缺 0 悬空 0）。为什么每张图都要——`solid`
-        #    同时是物理（每个实心格一个静态 cuboid），手改一格、或改了建筑贴图却没重跑
-        #    `--apply`，都只有这条能在目验之前抓住。
-        # ③ `scene_readings.py --gate`：plan §验收方式 要求**逐图**量化（同屏可见瓦种类 ≥24、
-        #    每屏装饰 median ≥40），而 `jhyt_m72_manor_terrain` 按设计只管 manor 那张图集、
-        #    `jhyt_m72_scatter_decor` 只管 manor 那份散布。这条是"任意一张图都能判"的那一份，
-        #    判据常量与那两扇门同名同值。分档表 `MIN_DECOR_OBJECTS` 里没有的场景直接红
-        #    （室内/洞穴要按 plan §风险 另定分档，工具不替它猜；寒泉洞、铁匠铺与药庐那三条都是
-        #    **按实测登记 = 40**（洞穴 57/57/57、铁匠铺 43/43/43、药庐 41/41/41），没有为它们降过
-        #    门槛；`main` 仍是旧 6×1 档、还没接进这张循环）。
-        foreach ($decorScene in @("manor", "village", "mountain_path", "combat_arena", "cold_spring_cave", "interior_forge", "interior_herb")) {
-            Invoke-Checked $pythonExe @(
-                (Join-Path $projectRoot "examples/game_jhyt/tools/set_scatter_decor.py"),
-                (Join-Path $projectRoot "examples/game_jhyt/scenes/$decorScene.scene"),
-                "--check"
-            )
-            Invoke-Checked $pythonExe @(
-                (Join-Path $projectRoot "examples/game_jhyt/tools/building_kit.py"),
-                (Join-Path $projectRoot "examples/game_jhyt/scenes/$decorScene.scene"),
-                "--check"
-            )
-            Invoke-Checked $pythonExe @(
-                (Join-Path $projectRoot "examples/game_jhyt/tools/scene_readings.py"),
-                (Join-Path $projectRoot "examples/game_jhyt/scenes/$decorScene.scene"),
-                "--gate"
-            )
-        }
-    } else {
-        Write-Host "  [SKIP] 未找到可用的 python/py：装饰库色表门、装饰散布确定性门、建筑占地 solid 对拍门与逐图量化读数门未运行（不是通过）" -ForegroundColor Yellow
-    }
-
     # M75-01：AI 能力层的 tool 面快照门。tool 名/参数/风险档一改，外部 MCP 客户端拿到的
     # 契约就漂移；口径与 `lua_api_surface.json` 相同：先红，显式
     # `AI_TOOL_SURFACE_BLESS=1 cargo test -p rustlua-editor-ai surface::tests` 刷基线再提交。
@@ -754,24 +687,6 @@ try {
         "--document", "ui/matrix.ui.json", "--output", $pcUiEvidencePath
     )
 
-    # M72-10b：UI 资源契约（Python 只读量具）。九宫格半句查 8 份 prefab 的 54 行
-    # `_9s`：必须带 nine_slice、等于 manifest、且 UiLayout 宽高装得下边距；
-    # 图标半句查 93 张 32×32 的硬边/6bit/非纯色/非噪点。审美精修仍是外部委托，
-    # 这里只挡机器能判的退化；`--self-test` 带四种反面对照。
-    Write-Step "UI asset contract (python)"
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        $env:PYTHONIOENCODING = "utf-8"
-        Invoke-Checked python @(
-            (Join-Path $projectRoot "examples/game_jhyt/tools/ui_asset_census.py"),
-            "--self-test"
-        )
-        Invoke-Checked python @(
-            (Join-Path $projectRoot "examples/game_jhyt/tools/ui_asset_census.py"),
-            "--gate"
-        )
-    } else {
-        Write-Host "  [SKIP] 未找到 python：九宫格契约门与图标技术门未运行（不是通过）" -ForegroundColor Yellow
-    }
     if (-not $SkipClippy) {
         Write-Step "Clippy"
         Invoke-Checked cargo @("clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings")
@@ -856,30 +771,6 @@ try {
         Write-Step "Workspace tests"
         Invoke-Checked cargo @("test", "--workspace", "--all-features")
 
-        # M74-03：compute 接缝 + GPU 粒子两档对拍（10k × 120 步）。
-        # 0=通过；3=本机没有 compute（例如 CI runner / 只有 WebGL2 的环境）——**显式跳过，
-        # 不是通过**；设 RUSTLUA_REQUIRE_GPU=1 时把跳过升级为红（发布门用）。
-        Write-Step "Compute / GPU particles"
-        Push-Location $engineRoot
-        try {
-            & cargo run --quiet -p game --example jhyt_m95_gpu_particles
-            $computeExit = $LASTEXITCODE
-        }
-        finally {
-            Pop-Location
-        }
-        if ($computeExit -eq 3) {
-            if ($env:RUSTLUA_REQUIRE_GPU -eq "1") {
-                throw "compute gate skipped (exit 3) 但 RUSTLUA_REQUIRE_GPU=1：这台机器必须提供 compute"
-            }
-            Write-Host "compute_gate_skipped reason=no_compute exit=3（CPU 粒子仍是默认与回滚档；不是通过）" -ForegroundColor Yellow
-        }
-        elseif ($computeExit -ne 0) {
-            throw "compute gate FAILED (jhyt_m95_gpu_particles exit $computeExit)"
-        }
-        else {
-            Write-Host "compute_gate_ok (capacity=10000 steps=120 max_position_error<1e-4)" -ForegroundColor Green
-        }
     }
 
     if (-not $SkipBuild) {
@@ -953,26 +844,6 @@ try {
         }
         if ($editorCheckText -notmatch "schema_errors=0") {
             throw "editor project check reports component schema drift (schema_errors != 0)"
-        }
-        # Second real project (2D + 3D + UI + prefabs): auditing ONE project is how "required
-        # field is wrong" drift stayed invisible. example game_api is the 3D-heavy one.
-        # M78 §26.3-31：不许软跳——第二个工程不在时**必须红**。历史教训：`if (Test-Path …)`
-        # 软跳让 game_api 目录缺失时整段静默不执行，第二个工程从此无人审计。
-        $secondProject = Join-Path $gameRoot "game_api"
-        $secondToml = Join-Path $secondProject "project.toml"
-        if (-not (Test-Path -LiteralPath $secondToml)) {
-            throw "second project missing: $secondToml (game_api 必须存在并被 editor --check 审计；目录缺失不再静默跳过)"
-        }
-        $secondCheck = Invoke-Captured cargo @("run", "--quiet", "--manifest-path", "engine/Cargo.toml", "-p", "editor", "--", "--project", $secondProject, "--check")
-        $secondOutput = $secondCheck.Output
-        $secondExit = $secondCheck.ExitCode
-        $secondOutput | ForEach-Object { Write-Host $_ }
-        if ($secondExit -ne 0) {
-            throw "editor project check failed for game_api (exit code $secondExit)"
-        }
-        $secondText = $secondOutput -join "`n"
-        if ($secondText -notmatch "schema_errors=0") {
-            throw "editor project check reports component schema drift on game_api (schema_errors != 0)"
         }
     }
     finally {
@@ -1455,487 +1326,13 @@ finally {
 }
 
 if ($Mvp -or $MvpOnly) {
-    # MVP 退出门（M19-04）：核心剧本/浸泡 headless 回归 + 干净发行目录自测。
-    # 清单是**唯一事实来源**：清单里的样例缺失即失败（此前是打印 skip 后 continue，
-    # 会让"少跑几个样例"看起来仍然绿灯，等于把质量门变成摆设）。
-    Write-Step "MVP headless regression suite"
-    $examples = @(
-        "jhyt_smoke",
-        "jhyt_m17",
-        "jhyt_m17_npc",
-        "jhyt_m17_dialogue",
-        "jhyt_m17_shop",
-        "jhyt_m18_combat",
-        "jhyt_m18_stats",
-        "jhyt_m18_build",
-        "jhyt_m19_slice",
-        "jhyt_m19_soak",
-        "jhyt_m19_ui",
-        "jhyt_m20_audio",
-        "jhyt_m20_gamepad",
-        "jhyt_m21_appearance",
-        "jhyt_m22_input",
-        "jhyt_m22_save_isolation",
-        "jhyt_m23_data_validation",
-        "jhyt_m24_numeric_alignment",
-        # 阶段1（改造计划 M36–M43）：四季作物矩阵与生产闭环门。此前以单样例方式回归，
-        # 1.0 集成时补登进 MVP 清单（与磁盘 jhyt_*.rs 一一对应，缺一即门红）。
-        "jhyt_m36_regrow",
-        "jhyt_m36_economy_sim",
-        "jhyt_m37_tool_upgrade",
-        "jhyt_m38_fertilizer_quality",
-        "jhyt_m39_sprinkler",
-        "jhyt_m40_fruit_tree",
-        "jhyt_m41_greenhouse",
-        "jhyt_m42_shipping_box",
-        "jhyt_m43_mastery",
-        "jhyt_m25_combat_feedback",
-        "jhyt_m26_hud_feedback",
-        "jhyt_m27_goals",
-        "jhyt_m28_loop",
-        "jhyt_m29_season_weather",
-        "jhyt_m30_cjk_text",
-        # `jhyt_m31_pc_release` 不在这里：它验收的是**打好的 PC 发布包**（`builds/pc`），
-        # 干净树上必然没有那个目录，留在 MVP 清单里等于让这道门恒红（红因是"没打包"，
-        # 不是"发布包坏了"）。它改登记在下面的 `$releaseExamples`，由"产物在就跑、不在就
-        # 明说 [SKIP] 不是通过"的那一段执行——与本文件里微信小游戏发布包那段同一口径。
-        # M32 相机收口：相机跟随玩家 + 取景由场景 bounds 锁在地图内（含换图后重绑 bounds）。
-        "jhyt_m32_camera",
-        # M34-00 存档负向门：map.state/快照版本门会红、provider 报错整批回滚、
-        # 100 次磁盘往返逐字段不漂移（soak 的成功路径门只断言"没炸"，踩不到失败分支）。
-        "jhyt_m34_save_gates",
-        # M34-01 档位接线门：五档关系/五档声望的结构负例、店主阵营声望逐档折扣
-        # （含 19/20/39/40/59/60/79/80/100 与负声望）、结局交付的声望门槛、
-        # 对话的关系档位分支（真实送礼到档才出现）、档位随存档往返派生。
-        "jhyt_m34_relationship_tier",
-        # M34-02 节气门：112 天逐日扫描（21 个事件日/91 个空日/循环不错位）、四类消费方
-        # 各走真实玩法路径（会期内才听得见的茶叶单子、清明采集 ×2、端午行情 +20%、
-        # 夏至门派声望、中秋好感与莲子、重阳一次性点按日再刷、冬至只封数据点名的出口
-        # 且回村方向可用 + HUD 中文），节气不入存档（读档后随 day 一起回来）+ 十条负例。
-        "jhyt_m34_festival",
-        # M34-03 中毒门：docs/33 §10 状态表与 data/combat.lua 的 status 表逐格比对（按 60Hz
-        # 固定步换算）、毒蝎真实追击咬中（账本 + hit 日志带状态 + HUD 图标第一次被驱动）、
-        # 精确到步（第 120 步第一口/600 步正好 5 口 15 点/到期图标收掉/换图不清/读档必清/
-        # DOT 不给硬直与无敌帧/再咬只刷新不重置跳表）、DOT 致死走同一套战败流程、
-        # 分片与快挂时钟同 5 跳 + 源码扫真实时间、十条数据负例。
-        "jhyt_m34_status",
-        # M34-04 招式扩充门：docs/33 §6.1 追风步/守心诀两行与 data/skills.lua 逐格比对（秒×60=固定步）、
-        # 真实按键 H 走满 3 格 + 扣 15 内力 + 15 步无敌吃掉一整刀、贴墙夹到可走格（一格不通不收钱不进冷却）、
-        # Z 格挡正/背/不格挡三档对照（10→3 / 10→10 / 10→10，日志 damage/absorbed）、每 60 步扣一笔与
-        # 内力不足自动落防、倒地即落防且 capture 不含 guard、30/120Hz 同一节奏、底座分派负例、
-        # 十一条数据负例、HUD 两个新原因的中文词条与动作表 dash/guard 两行。
-        "jhyt_m34_skills",
-        # M34-05 茶棚门：膳房拒收茶饮配方（no_station/no_building/station_level 三种理由各钉一格，
-        # 含 HUD 中文词条）、23:50 开工 20 分钟跨到次日 00:10（未到点收不到、到了点一次收走，
-        # 茶叶 2 → 茶汤 1 实数）、社交乘子 ×1 → ×1.1（茶棚 2 级）→ ×1.2（当日饮茶）与
-        # 8→8/6/10 三档具体分数、第二杯 tea_today 不扣物、同日礼物限次不被乘子绕开、
-        # 存读档后茶汤库存/tea_day 锚点/茶棚历史最高等级三者一致、拆了茶棚门不重新锁上、
-        # 七条数据负例走 validate_data（与 game --check 同一批校验器）。
-        "jhyt_m34_teahouse",
-        # M35 遮挡门：运行期 sprite.set 真的写排序层（漏写 = 运行期声明全失效）、
-        # 只把三个 actor 探针的 Y 倒过来绘制序必须整体反转（证明排的是 Y 不是 id/纹理巧合）、
-        # 方向钉死为"y 越小越靠画面下方 = 越近 = 最后画"（世界 +y 朝上，写反了两边门都会绿）、
-        # 场上主角与每个 NPC 的 order 恒等于 -floor(y/2)、夹在 -999 不溢进相邻层、
-        # 特效在 foreground 层永远画在所有角色之后。
-        "jhyt_m35_depth_sort",
-        # M59 已退役（M71）：JSON 预设层整体退役（`assets/ui/prefabs/dialogue.ui.json` 删除、
-        # `ui.prefab` 的 JSON render/clear 不再被任何玩法调用），对话面板对账由
-        # `jhyt_m71_dialogue_prefab`（黄金表 34 行，A 态 = 开场对话 gu_changfeng_teach）接管；
-        # 锚点表与引擎 UiLayoutPreset::ALL 的对账由 m71 门 submission_order 实测背书。
-        # M61 引擎桥（`.prefab` 作 UI 预设的运行时载体）：`prefab.spawn` 走 VFS 读预设并把
-        # `Text`/`Image`/`UiEvents`/`UiLayout` 落进**活世界**，宿主本帧真正用于绘制的那份矩形
-        # 逐值等于预设（含父链偏移）、无 `UiLayout` 的 UI 实体不参与解算也不会被画、命中框与
-        # 绘制框同源（矩形内派发一次、矩形外零次）、`prefab.set_text` 写的就是渲染读的那份组件
-        # （三条误用各自报错点名）、`prefab.despawn` 只摘**自己那一批**（别批实例与矩形逐值不动，
-        # 本批矩形归零），以及换场景后运行期实例的登记表必须是空的（`scene.load` 重建整个 ECS
-        # 世界，旧 handle 留着会让 `prefab.despawn` 拿死句柄去新世界删实体而报错，M20-09c 实测），
-        # 且门面场景自己的按钮在 spawn/despawn 前后都照常派发（并表/摘表不许污染场景那份快照）。
-        "jhyt_m61_prefab_runtime",
-        # M62 预设实例的运行期写入面：`prefab.set_rect` 写四边之后，宿主本帧真正用于绘制的那份
-        # 矩形跟着变（子节点整棵子树位移、没参与本次写入的节点一动不如一静）、预设里 authored 的
-        # anchors 一个字不动（stretch 通栏不许被降级成左上角定宽）、世界的 UiRectLayout 与画面同一个
-        # 数、命中框就是新矩形（新位置点得到、旧位置点不到）；`prefab.set_visible` 是子树语义且画与
-        # 命中同一次失效（藏行根 ⇒ 行里的图与字一起消失且点不到），显隐相对父（藏父时单独显示子不
-        # 生效），显示回来不必重设矩形、不必重写字；重建只动本实例的键（同屏第二个预设实例不受牵连）；
-        # 两个函数各自的误用（无 UiLayout / 无节点 / 无句柄）全部点名报错，不许静默 no-op。
-        "jhyt_m62_prefab_write",
-        # M63 门面（title_menu）版面搬进一份 `.prefab` 的搬运门：一张表同时钉两层——`shown` 层读的是
-        # 宿主本帧真正用于绘制的矩形（`ui_rects_by_name`：名字换自那张全局实体名表，场景实体与 spawn
-        # 实例因此同源）加上 `ui.*_get` 的动态层读数，迁移前后逐字节相等才谈得上“一像素没动”，而同一块
-        # 东西在实体层与动态层**各画一遍**（M22 修过的重影老毛病）当场红；`authored` 层钉的是“预设里写的
-        # 就是 `.scene` 里原来写的”（anchors/offsets 串、字与字号与色、贴图与九宫格、绑的回调名），矩形
-        # 对上了而九宫格边距丢了也会在这里红；另守标签两层的位置账（场景那份不可见、动态那份才是玩家看到
-        # 的，x 实测差 2px，超 4px 判为两边不是同一坐标口径）与载体归属账（每块只允许一层把它画出来）；
-        # ④ 另出一笔层序账：段序表把本帧**全部**提交段按先后钉死（实体层内按预设行序 = 槽位升序，
-        # 层与层之间再按"骨架在下、动态在上"分档），所以搬运除了
-        # "每块矩形对不对"还要钉"谁画在谁上面"。2026-10-07 的绘制序修正把这张表整张重刷了一次
-        # （实体图段移到最前，脚本画的高亮/四角/分隔/印章从此浮在背景之上）——这是本批**有意**改画面
-        # 的那一笔，八张 `support/*_golden.tsv` 一个字节没动；同世界重 spawn 的 LIFO 回收槽
-        # 形状也一并写出（这是 M63b 实测到的、脚本侧必须"一个世界只 spawn 一次"的根因）。
-        "jhyt_m63_title_prefab"
-        # M65 商店面板（systems/shop.lua）版面搬进一份 `.prefab` 的搬运门，面板五屏的第一屏。
-        # ① 逐 id 黄金表两个状态（A=刚打开、B=42 行库存且选中末行 ⇒ 窗口在末段），每块一条
-        # `shown`/`hidden` 行，读数与载体无关（矩形/贴图/九宫格/字/字号/颜色），迁移前后逐字节
-        # 相等；同一块在实体层与动态层各画一遍（重影）当场红。② 整屏同层：一屏里的块只许全在
-        # 动态层或全在实体层，半搬是最坏形状（实体层的图整体画在动态层**之下**，搬进来的那块
-        # 会垫到别人底下，而 ① 的矩形读数对层序全瞎）。③ 覆盖账：谁盖住谁，
-        # 每块一行 `cover` 也进同一份黄金表（只打印的账改红了不拦人，而层序正是搬运最容易改掉的一维）；
-        # 排序按"层档 → 档内序"，层档是引擎不变式（push_scene_ui_images 在 push_ui_* 之前），
-        # submission_order 在这类面板屏只报段序读数、不当背书（整屏同层时"白图在贴图之前"只是槽位序
-        # 的产物，拿它当规则就会因别人挪一行预设而假红），
-        # 本次实测 A 态有 8 块被整屏不透明的 skin_bg 盖住（含选中行高亮），B 态高亮落在 y=1534
-        # （面板只到 680），两条既有画面事实照抄进预设、改不改由用户另行裁定。④ 文字着色：动态层
-        # 写死白，所以预设里每条 Text 必须是白（① 的表管不到颜色这一维）。⑤ 跨屏相交必须为空集
-        # 才允许整屏搬（实测 0 个 ⇒ 搬进预设不会把别人的块压到底下）。
-        "jhyt_m65_shop_prefab"
-        # M66 暂停菜单（ui/pause_menu.lua）三页共用骨架 → 一份 `.prefab` 三页容器互斥的搬运门。
-        # 首跑门红教训：动态层 BTreeMap 按 id 字典序（skin_bg 排在全部同级 image 之后、slot 之前），
-        # 预设槽位须复刻该字典序；cover 段行序跨载体不同源（同为层档+档内序，档内动态层=id 字典序、
-        # 实体层=槽位号）→ compare_golden 一律排序后逐行按内容比对。
-        "jhyt_m66_pause_prefab"
-        # M67 背包面板（ui/inventory_ui.lua）全迁一份 `.prefab` 的搬运门。capture 三坑：shown_rows
-        # 按 body≠"hidden" 数行（state 对 hidden 也插条目）；补 query_num 编译 E0425；PowerShell `*>`
-        # 重定向 stdout 炸 NativeCommandError。关键字典序修正：bp:sel_slot 第 5 字符是 'e' → 在 skin_bg
-        # 前被盖；bp:slot1..10 的 'l'>'k' → 在 skin_bg 后不被盖。
-        "jhyt_m67_inventory_prefab"
-        # M68 任务日志（ui/quest_ui.lua）全迁一份 `.prefab` 的搬运门（提速后第一屏，一次通过）。
-        # bullet 二选一：同一矩形叠 Todo/Done 两张 12×12 图 + set_visible 互斥；门 PROBES 用双实体名。
-        "jhyt_m68_quest_prefab"
-        # M69 出货箱（systems/shipping.lua）全迁一份 `.prefab` 的搬运门。顺手修两个既有 bug：
-        # ① inventory_items() 用 ipairs(data) 遍历恒空（slots 稀疏表）→ pairs(data.slots or {})；
-        # ② row 循环缺 else 隐藏分支（行数变少留上一帧字）→ 预设化后行不足即 set_visible false。
-        # 入口是 open_ui 不是 open；无 key_hint 面板、有 close 按钮与条件滚动箭头。
-        "jhyt_m69_shipping_prefab"
-        # M70 常驻 HUD（ui/hud.lua）静态骨架全量搬进 `hud.prefab`（45 实体、部分预设混合载体）的
-        # 搬运门：黄金表 138 行（此前这里写的 136 是抄来的、没人量过）；compare_golden 排序集合比对；
-        # 坑 = 黄金表首行 UTF-8 BOM 沉底错位。
-        # M72-09 换九宫格切图后本门加了两处口径：① 的 Panel 读数多 `texture,nine_slice` 两列
-        # （否则"画面真的换了贴图"在黄金表里不可见），③ 的不透明判定改成"贴图在表里 **且**
-        # Image 染色 alpha ≥ 0.99"（色与图相乘），另加一档实测「导轨档」= 面板底必须提交在金轨之前
-        # （slot2/3 对调是黄金表量不到的行序变化，背书只在这档上）。
-        "jhyt_m70_hud_prefab"
-        # M71 对话面板（world/dialogue.lua）全迁一份 `.prefab` 的搬运门（JSON 预设层退役的
-        # 接管门）：黄金表 34 行（A 态 = 开场对话 gu_changfeng_teach，顾长风 4 选项、marker1
-        # 选中、立绘 calm）；capture 一次过；verify 一次绿；部分预设混合载体（立绘本体留
-        # 动态层，贴图随 NPC/mood 变化、引擎无运行期换贴图 API）② 豁免。
-        "jhyt_m71_dialogue_prefab"
-        # M72 对标星露谷第 2 轮（P0 引擎地基，`tasks/done/M72-00-*.md`）。
-        # M72-01 图集寻址与 `.scene` 编码迁移门：12×8 图集逐格 UV 落在正确的 (col,row) 子矩形、
-        # 索引 0 不产出 quad（quad 数被钉死 = 非空格数）；反面对照内建两处——纯数据侧把
-        # `atlas_rows` 改回 1 后条目 13 的 V 必须越出 0..1（证明 UV 断言对"多行"不是瞎的），
-        # 运行时侧 `tilemap.set_atlas(id,12,1)` 必须报错点名越界的那一格；旧编码（fmt=0）仍解出
-        # 6×1 与整幅拉伸 V 且只认 1..=6，重存后带 `tiles_format=1` 与逗号编码；发布数据侧
-        # 关掉视口剔除后"渲染格数 == 逐格数出的非空格数"（920）。
-        "jhyt_m72_tileset_atlas"
-        # M72-02 确定性变体门：8×4/kind1/variant_count=4/seed=0x12345678 的 32 格变体序号逐格等于
-        # 金标（与 `rustlua-ecs` 的单测、`preview_scene.py`、web 的 JS+Lua 镜像同一串位）；100 帧
-        # 条目序列与 UV 序列逐元素全等；恒等档 id 就是条目、切变体后落进自己那块；反面对照内建
-        # 两处——门自带一份**不做雪崩收尾**的 FNV 参考实现并断言它的第一行正是 `3,2,1,0,3,2,1,0`
-        # 的周期点阵（少了收尾就是在"确定地画一张马赛克"），以及 §⑥ 把 web 宿主的 Lua 解算镜像
-        # 原样喂进真 VM 重解 32 格（镜像里种子 +1 必须换表，否则同值是空的）。
-        "jhyt_m72_tile_variant_determinism"
-        # M72-02 4-bit autotile 门：8×8 草嵌 4×4 土的 64 格邻居掩码逐格对手写位序表（bit0=y-1、
-        # bit1=x+1、bit2=y+1、bit3=x-1，按 index 命名）；内芯 0b1111 必须取块内最后一格（满块瓦），
-        # 条目布局 `1+kinds*span+(kind-1)*16+mask` 两块互不越界；地图四角当暴露边界；挖一格空洞
-        # 只让两个邻居各少一位、填回逐格复原；一路到渲染的 64 格 UV 等于算术结果。反面对照：
-        # 抹掉 bit0 后土块顶行必须 4/4 全变且底行 0 格（plan 点名的"红在顶排交界格"），抹掉 bit2
-        # 顶行必须 0 格，互换两个列位顶行必须恰好 2 格错位；§⑧ 再用 web 的 Lua 垫片重解整张图
-        # （全草图的 36 个内部格必须读到 0b1111+条目 18，证明它真在读邻居）。
-        "jhyt_m72_autotile_mask"
-        # M72-02 per-tile tint 门：tint 表幂等（同色复用一个 id）、未染色格 `tint_at` 读回白、
-        # 稀疏载荷 `tints=<cellIndex>:<tintId>` + `tints_rgb` 序列化往返逐格同色；overlay 与
-        # 世界深度**两条通道**各 6 个顶点都带上那格的颜色；alpha 原样进第 4 分量；`clear_tint`
-        # 当帧回白且其他格颜色不动、组件侧 `tilemap.tint` 与顶点色同一份。反面对照：把渲染侧
-        # 的 tint 改回硬编码白，"非白格数 = 染色格数"这条正好红（实测 0）；只改世界通道那一处时
-        # §② 仍绿、§③ 红 —— 两个赋值点各自被看着。
-        "jhyt_m72_tile_tint"
-        # M72-03 像素中文字模门：① 工程子集与全量上游字体同判 12px 点阵（`raster_scale=12`），
-        # Noto 判不出来，且图集与矢量缓存两处判定一致（`should_render_vector` 读的就是后者）；
-        # ② 真跑一帧 jhyt 场景：UI 字形四边形全落 sdf=2 阈值档、矢量通道顶点数必须 0（这条就是
-        # 抓住"无条件 push_vector_text_run"那次的牙齿——修前实测漏出 510 个轮廓顶点，同一句字
-        # 会被点阵与轮廓各画一遍）、所用图集 texel 逐像素直方图灰阶=0 且 alpha 恒 255；
-        # 反面对照同口径跑 Noto/MSDF：四字各 3600+ 灰阶 texel、全亮 texel 只有 1；
-        # ③ 12px 排版逐 texel 采样次数恒为 1、四边角全整数；反面对照按实测重定为 14px 档
-        # （tex_scale=7/6）——那里分数偏移才真会让边角脱离整数、160 个 texel 被采两次；
-        # ④ 工程用到的 1605 字逐字非空点阵，缺字按"全量也没有=改文案 / 全量有=重跑子集"分开
-        # 点名，反面对照 🙂 判为缺字且占位方框仍有 39 个亮 texel；
-        # ⑤ 1605 字一次预热仍留在 1024² 内，点阵汉字单元 11×11 texel vs 同字 MSDF 75×87（54 倍面积）。
-        "jhyt_m72_pixel_font"
-        # M72-04 manor 地表图集与色阶门：① 地表层声明 12×9/tile_kinds=6/autotile 开、格子值只有
-        # 1..6（`max_tile_id` 在自动瓦片档就是 kind 种数 6，图集容量 108 只在布局里起作用），
-        # 关掉视口剔除后 mesh 的条目多重集 == 逐格 `tilemap.atlas_index` 的多重集，去重 5→59 种；
-        # ② 一屏可见瓦种类 ≥24 按**外观等价类（图集条目 × 顶点色档）**两个口径读——实机相机 64 种
-        # （纯条目 31）、数据侧所有 20×12 窗口最小 25，逐窗口扫而不是只信开机那一帧；
-        # ③ 交界 0 格取到满块瓦，天然地貌（草/土/水）之间同外观连排直边 ≤5 格；
-        # ④ 色阶门：每个在用料族实测 ≥3 档明度且深→浅单调，四季图先做同位置色置换还原再同判
-        # （顺带证明四季变体是"换色不重画"）；⑤ 每个不透明像素等于色阶表、尾部 6 个空槽全透明；
-        # ⑥ 白/shaded/sunlit 三档都真的落在满块格上（§② 的多样性确实靠染色打散重复）。
-        # 反面对照内建三处——合成"草地嵌 8×8 规则土块"必须报出 >5 格直边（旧图几何读法），
-        # 草族整族压成单档必须让色阶门红，从门内色表删掉 #6F8F52 必须点名它。
-        "jhyt_m72_manor_terrain"
-        # M72-05 装饰散布门：manor 从前只有 15 个非幽灵 sprite（"画面几乎没有东西"）。① 结构契约：
-        # 175 件 `role=decor` 各恰好 Sprite+Transform、**无 Collider**、层名 world、order 只取碎屑 -30
-        # /中景 12 两档，声明尺寸 == 门内手抄目录 == PNG 实测（三方），12 种形状一种都没白画；
-        # ② 每屏对象：640×360 世界单位窗口以 8px 滑过全图取中位数 ≥40（判 median 不判 min——药田
-        # 200 格按玩法契约必须留白，最坏那一屏 89% 是空的）；③ 关掉视口剔除后 mesh 的装饰 quad
-        # == 文件件数，开剔除后 == 门按 `sprite_may_be_visible` 同判据数出的件数，且两数必须不同
-        # （相同即"剔除没生效、第二条断言是空的"）；④ 层带：碎屑压在所有 world sprite 之前、中景
-        # 压在树/竹之下；⑤ 每件装饰在**运行期刚体位置**查一次 physics.overlap，取到装饰贴图 = 0。
-        # 反面对照四处——目录副本改 1px 即红、装饰改进 actor 带即红（走同一个 band_violations）、
-        # 散布换种子必须变（Python 侧 `set_scatter_decor.py --check`）、⑤ 的正向对照拿带 collider 的
-        # 实体真取到命中且含其自身（否则那个 0 可能只是查询在空转）。
-        "jhyt_m72_scatter_decor"
-        # M72-06 前景遮挡与全局光投影门：manor 以前"画面是平的"——没有一层能压住玩家，也没有一个
-        # 光向。① 光向事实源 `data/lighting.lua` 自身干净、登记在册且它的校验真的会跑；② 四条负向
-        # 对照注入后各自点名（`dir_y=1` 朝天投影 / `tint.a=1` 地上一个洞 / `occluder=10` 刀光被树冠
-        # 埋掉 / `min_cover_ratio=0.9` 前景层白加），每条进入前先断言基线干净，免得"还原没还原上"
-        # 被下一条的假绿掩盖；③ 拆层结构契约：11 件遮断物（M72-07 把屋顶拆法推广到柴房与五座
-        # 可建造建筑后；一茎多株的树按前缀配对，所以件数不等于 `LAYER_SPLITS` 的 8 行）与表
-        # 一一配对、无 Collider、
-        # 层与 order 同源于 lighting、接缝等式成立、两张分块按行拼回去**逐字节 == 整图**（生成器之外
-        # 的第二份独立实现，带"上下对调必须不等"的对照）；④ 覆盖率按**可达**口径扫——可行走位图取自
-        # 运行期 `tilemap.is_solid`，920 格逐格 r=4 探针证明 `solid` 真是按格生成的静态碰撞体
-        # （359/359 实心格恰好命中 GroundMap、561 空格 0 命中；这两个数从 M72-06 的 360/560 变成
-        # 现在这样，是 M72-07 重算占地 + 挖开南门门洞 + 池塘改不规则岸线的净结果），
-        # 最深 0.604 必须落在 lighting 的
-        # [0.05,0.65] 内，且最深点 teleport 之后 8 帧仍待得住（门按几何判的可达，物理也必须允许）；
-        # ⑤ 用运行期 `sprite.set` 把 canopy 改回 world 层，绘制下标必须翻到玩家之前；⑥ 16 件投影贴片
-        # 逐件独立复算落点（接触点 + 半偏移，容差 0.001），尺寸 `2r+1` 让"角度等于 sun"成为恒等式
-        # ⇒ 最大偏离恰好 0.000000°；"够格而未挂影"必须 0 件；抬层对照证明先后是层带决定的；
-        # ⑦ 8 朝向 × 4 帧 = 32 帧的脚下椭圆质心恒在身体中心同一侧（先烘进帧再镜像会把 w/sw/nw
-        # 翻到左边，正是 C-1 修掉的那处）；⑧ Y 排序容差 = `depth.lua` 的 `STEP`：Δy=1 不许翻桶、
-        # Δy=2 必须恰好翻一桶。跨宿主那条读的是假 ctx 的 `drawImage` 序列
-        # （`--check-foreground-order`，复现命令与三段读数在 `tasks/done/M72-06` D 段）。
-        "jhyt_m72_foreground_occlusion"
-        # M72-07 多格建筑占地与碰撞门（M72-11 起逐图跑，五张图在 `SCENES` 里）：manor 以前"撞空气"
-        # ——solid 是按 sprite 的矩形画框标出来的，而建筑贴图四角全透明。① 门**独立复算**一遍
-        # `building_kit` 的判据（故意不共享代码）再和盘上 solid 串逐格比：地表天然实心（墙/水）
-        # + 有可视依据的 sprite 格 ⇒ 应实心格 == 盘上格，五张图逐格相同、缺 0 悬空 0——
-        # 山庄 187+179⇒359、村里 198+142⇒328、山道 343+71⇒400、演武场 180+62⇒239、
-        # 寒泉洞 83+13⇒96（洞穴那张 sprite 依据只有 13 格：洞壁与暗河都由瓦自己画成实心）。
-        # 顺手量出"按 quad 框与按不透明像素会算出不同占地的建筑"= 山庄 2 栋（BuildTeaShed /
-        # ManorHouse）、村里 2 栋（VillageShrine / VillageTeaStall）、山道 1 栋（BrokenBridge）、
-        # 寒泉洞 1 栋（CaveShrine）、演武场 0 栋——这条读数从 M72-07 的 0 栋变来，是因为本包给
-        # "压进一格"加了 1/4 格门槛（`MIN_CELL_OVERLAP`，摊位/山石那类贴图描边 1px 压进相邻格
-        # 不算实心），差的是那一小条而不是"贴图没画满"；它只用来挑反面对照 A 的落点，不参与判据。
-        # ② 拆层不变量：山庄/村里各 7 栋、山道 4 栋、演武场 5 栋、寒泉洞 1 栋（石龛）拆层件在场、
-        # 每栋本体∪屋顶 ≥4 格，且"整图算出来的格集 == 本体∪屋顶"逐格相同（拆层只许换画面）。
-        # ③ 门洞：山庄南门 (16,1)(16,2)、村里南门 (19,1)(19,2) 与山门 (10,20)、山道山门
-        # (19,1)(19,2)、演武场南门 (9,1)(9,2) 必须**因为规则**被挖掉（在视觉框内 + 盘上确实空）、
-        # 每列最低那格贴图实测不透明占比 0.16 ≤ 0.35、4 邻域 BFS 从出生点走得到
-        # （可达 550 / 589 / 520 / 681 格）。反面对照的起点会**往洞外挪一格**：村的出生点
-        # (19,2) 本身就站在南门洞里，从它起算会让"填洞"变成"把出生点砌进墙里"（可达集缩到 0 的
-        # 假信号）——从 (19,3) 起算，填洞后少的正好是那 3 个洞格本身，证明门是叶子不是桥。
-        # 寒泉洞 `openings` 是空表（本图唯一的建筑是石龛，洞口那一格落在厅口地面上、不是任何
-        # sprite 的通道）：这一节在它身上只剩一条可达读数（144 格），门为此点名"三条判据与填洞
-        # 对照在本图没有主体"，**不把空跑打印成通过**。
-        # ④ 够格的标准不是名单而是 `lighting.lua` 的两个数（总高 × reach ≥ ¼ 瓦）：山庄 9 栋、
-        # 村里 5 栋、山道 3 栋、演武场 2 栋各有且仅有一件 `<Name>Shadow`，平地基的 BuildFoundation、
-        # 村里三栋 64px 矮屋（铁匠铺/茶棚/土地庙）与山道那座断桥必须没有；寒泉洞**够格 0 件**
-        # （洞内最高一件就是石龛，整图 64px ⇒ reach 7.68 < 8），走同一条判据报"CaveShrine 无投影"
-        # 后以 0 件通过——不是为暗场景另开的豁免。
-        # ⑤ 运行期对拍：引擎读回的 `tilemap.is_solid` 位图逐格 == 盘上 solid 串（四张 40×23、
-        # 寒泉洞 20×12；每格一个静态 cuboid），每张图都从门面 `scene.load` 真切进去再对拍。
-        # 反面对照三条且都走同一个函数——道具按 quad 框标实心 ⇒ 悬空 5 / 4 / 3 / 5 / 1 格
-        # （山庄东南竹梢、村里石桥是唯一的过河通道、山道松冠、演武场竹丛、寒泉洞火把的火焰那一格：
-        # 洞里没有前景遮断道具，所以这条落在"画在人身高的东西不算占地"）、
-        # 摘掉拆层屋顶件 ⇒ 缺碰撞 74 / 42 / 4 / 10 / 2 格（屋檐会被人走进屋里）、
-        # 把洞填实 ⇒ 出口当场断。
-        "jhyt_m72_building_footprint"
-        # M72-08 作物阶段图与农田三态门：以前 29 种作物**共用一张三列阶段图**（灵芝和稻谷
-        # 长得一模一样，还只有 3 档）。① 资产：`assets/art/crops/` 阶段图 122 张（判据 ≥116），
-        # 图集实测 8×29 == 场景 CropGrid 声明，122 个阶段槽按**字节摘要**两两不同且无一空槽，
-        # 29×3 抖动槽也都必须有内容；反面对照把稻谷第 2 档配成灵芝第 2 档，同一个函数必须报红。
-        # ② 三态分两半。**贴图侧**（后加的，因为只判瓦值时贴图库被并发写回旧版 6 列而门全绿）：
-        # FarmGrid/FarmMoist 的场景 atlas_cols == `farm_soil.lua` 的列数 == 盘上 PNG 宽÷32，
-        # 两列土面**字节不同**（把干涸配成犁地必须红），湿痕那一列有内容但不许满不透明（≥10%
-        # 即判"第三张全幅土面会抹掉垄沟"）。**运行期**：未垦三层全空 → 翻土 soil=1 且无湿痕/tint 白
-        # → 浇水 moist=1 **且 tint 非白**（湿润是叠痕×顶点色，不是第三列）→ 日结算 soil=2 干涸
-        # + 湿痕回 0 + **tint 必须回白**（不撤色下一轮串色）→ 档位按已浇满天数走：第二天仍第 1 档、
-        # 第三天降到第 2 档。
-        # ③ 阶段推进：稻谷 4 档/4 天、灵芝 5 档/7 天各自走全程，序列单调不减、终点恰为最后一档，
-        # 且成熟日 `watered_days == growth_days`（数值零改动锚点）；同档序号两种作物瓦值必须不同；
-        # 29 种寻址三方对拍（门内手抄表 == crop_art.lua == crops.lua 的 stages）。
-        # ④ 收成动画：收一格稻谷后逐帧采样 CropGrid，读到 抖1→抖2→抖3→落回真值 共 4 次换格，
-        # 相邻间隔 5–7 帧（=100ms ±1 帧），同期 `harvest_sparkle` 在场；净收获个数 == crops.lua yield。
-        "jhyt_m72_crop_stages"
-        # 阶段2（docs/33 §4.3–4.8、§7.3、§8.3，1.0–1.8）：九个内容系统门。
-        # M44 畜牧：6 动物/三类畜舍、未建舍拒养、喂抚好感、吃饱按周期产蛋毛奶肉、
-        # 好感≥8 出灵蛋、入箱结算、存档往返。
-        "jhyt_m44_animal",
-        # M45 钓鱼：4 水域/23 鱼种/3 阶竿、抛竿体力时间消耗、竿阶门槛、季节/时段/天气闸、
-        # 鱼入镖局货箱、存档往返。
-        "jhyt_m45_fishing",
-        # M46 矿脉：30 层/电梯层 5,10,15,20,25,30、逐层下潜解锁+体力扣减、挖矿入包+见底拒绝、
-        # 电梯直达、矿石入箱、存档往返。
-        "jhyt_m46_mine",
-        # M47 料理：膳房建/升级、真实 crafting 链路做菜（扣料→计时→收取）、吃菜体力/内力/Buff
-        # 按日过期、菜入箱结算、存档往返。
-        "jhyt_m47_cooking",
-        # M48 NPC 扩编与好感事件：16 NPC/全员 birthday、送礼三档 +40/+20/-10、生日 ×3、
-        # 43 条门槛 2/5/8 好感事件（once 发奖）、存档往返。
-        "jhyt_m48_npc",
-        # M49 节日补足 8 个（每季 2）：112 天逐日 24 事件日、清明 gather×2、端午 sell_bonus+20
-        # 真实卖出溢价、冬至 exit_closed 回归、除夕纯标签、跨天派生不入档。
-        "jhyt_m49_festival",
-        # M50 任务板 3 层：day1 日常 3 单/季初单、接单→备齐→交单发奖、跨天换榜旧单不残留、
-        # weekly@day7 / quarterly@day29 锚点、存档往返。
-        "jhyt_m50_questboard",
-        # M51 图鉴 6 类：crop24/fish23/ore12/herb11/dish16/enemy9、显式 notify 解锁、
-        # 50%/100% 里程碑奖励各一次、未知 id 拒绝、存档往返。
-        "jhyt_m51_codex",
-        # M52 成就 30：30 条注册/初始无解锁、出货/金钱/熟练度/好感/图鉴/时间/节日/战斗
-        # 八类谓词触发解锁+发奖、隐藏成就未解锁显示 ???、幂等不重复发奖、存档往返。
-        "jhyt_m52_achievement",
-        # 阶段3（docs/33 §2.1/§4.10/§5.5/§7.4/§8.4，1.9–2.3）：五个创新系统门。
-        # M53 经脉修炼：12 经脉/前置链合法、冲穴耗内力+材料按成功率掷骰（失败耗内不涨进度）、
-        # attack/defense 经 stats 常驻、体力/内力上限经 state、on_day_start 内力恢复+重挂、存档往返。
-        "jhyt_m53_meridian",
-        # M54 医馆经营与疫情：建馆/升级/接诊（处方药材→诊费+声望）、药材不足拒绝不写 last_action、
-        # 夏疫触发与诊费乘子上浮、治疫/囤药/闭馆三决策、存档往返。
-        "jhyt_m54_clinic",
-        # M55 节气历法：24 节气（每季 6）逐日命中/无撞日、季内日与 8 节日窗口对照、修饰查询面、
-        # 纯派生（capture/restore/reset 空实现、不入档）。
-        "jhyt_m55_solarterm",
-        # M56 黑市抉择循环：深夜窗口营业、买卖违禁/稀有货、风险掷骰东窗事发、三选抉择、
-        # 黑市声望档位解锁/跌落、存档往返。
-        "jhyt_m56_blackmarket",
-        # M57 茶会社交：2 心门槛邀人、备茶消耗、双话题按阵营/NPC 系数结算好感与声望、
-        # 7 日冷却、存档往返。
-        "jhyt_m57_teaparty",
-        # M58 多结局：5 条结局（归田/入仕/神医/武林/隐世）查询面判定。
-        # 各结局门槛边界（19/20、59/60、549/550XP、111/112天）+ 幂等 + 存档往返 + strict 门绿。
-        "jhyt_m58_ending",
-        # M60 新手引导重做：16 步序/条件合法、新档第 0 步仍为 till（不抢占）、
-        # 真实 farm.act+day.sleep 推进首次种植五步闭环到萝卜成熟收获、strict 门绿。
-        "jhyt_m60_tutorial",
-        # M74-01 3D 空间音频：距离衰减四档（min 内不衰减/线性/边界归零）、四类非法输入被拒
-        # （非有限值/模型反了/零朝向/朝向退化）、声像折回两耳坐标（rodio 自带 1/dist² 不外溢）、
-        # 宿主契约（没听者时 play_at 拒绝、模型非法保持原值、sink 路径把 gain 乘进音量）。
-        # 纯 `rustlua_audio` 驱动：headless 无音频设备也全程可跑（只算数值，不出声）。
-        "jhyt_m93_spatial_audio"
-    )
-    $exampleDir = Join-Path $engineRoot "crates\game\examples"
-
-    # 0) 「已知跑不了、留作历史记录」的门——和「漏登记」是两件事，必须分开登记。
-    #    加进这张表的前提：文件头写清了「为什么跑不了」与「谁接管了这份覆盖」，
-    #    否则正确的动作是修好它或者删掉它，而不是登记进来（登记 = 永久失去这份回归）。
-    #    `jhyt_m59_ui_prefab`：M71 把 JSON 预设层整体退役（`assets/ui/prefabs/*.ui.json` 删除、
-    #    `ui/prefab.lua` 的 NAMES 清空），本门依赖的 `ui.prefab` render/audit 已不存在；
-    #    对话面板的对账由 `jhyt_m71_dialogue_prefab`（运行期 `.prefab`，黄金表 34 行）接管。
-    #    文件头有退役声明，文件保留以便追溯 M59 当时的口径。它仍在盘上、仍参与编译门，
-    #    只是不进 MVP 执行清单。
-    $retiredExamples = @(
-        "jhyt_m59_ui_prefab"
-    )
-    # 「验收的是打包产物」的门——和「退役」也是两件事：它们**仍然有效、仍然必须过**，
-    # 只是前提是磁盘上有发布包。放这里而不是 `$examples`，是因为 MVP 清单的隐含契约是
-    # 「干净树上全部可跑」；把需要产物的门混进去，红因会永远是"没打包"，久了就没人看它。
-    # 执行口径见下面第 3 段：产物在 → 真跑并判红；产物不在 → 明打 [SKIP]（不是通过），
-    # 并指路 `scripts\build\package.ps1 -Platform pc`。与本文件微信发布包那段同一口径。
-    $releaseExamples = @(
-        # PC 发布包四类契约：存档/玩家设置写用户目录（`%APPDATA%\<app>`）、升级不覆盖玩家设置、
-        # 设备后端与 Lua 面板读同一个根、发布目录卫生（无 .cache/存档/.staging-* 残留）。
-        @{ Name = "jhyt_m31_pc_release"; Artifact = "builds\pc"; Hint = "scripts\build\package.ps1 -Platform pc" }
-    )
-    foreach ($example in $retiredExamples) {
-        if (-not (Test-Path -LiteralPath (Join-Path $exampleDir ($example + ".rs")))) {
-            throw ("retired example list names $example but the file is gone; drop the entry (it no longer records anything)")
-        }
-        if ($examples -contains $example) {
-            throw ("$example is both retired and in the MVP list; pick one (a retired gate must not run)")
-        }
-    }
-    foreach ($entry in $releaseExamples) {
-        $example = $entry.Name
-        if (-not (Test-Path -LiteralPath (Join-Path $exampleDir ($example + ".rs")))) {
-            throw ("release example list names $example but the file is gone; drop the entry (a missing gate is a lost gate)")
-        }
-        if (($examples -contains $example) -or ($retiredExamples -contains $example)) {
-            throw ("$example is in the MVP/retired list as well as the release list; pick one")
-        }
-    }
-
-    # 「由总门其它段执行」的门——第四件事：它们**真的在跑、仍然必须过**，只是不在 MVP 这一段。
-    # 登记进来的唯一理由是退出码语义与 `Invoke-Checked`（任何非零即红）冲突：
-    # `jhyt_m95_gpu_particles` 在没有 compute 的机器上按仓内约定退 **3**（环境受限，不是通过），
-    # 由本文件的 "Compute / GPU particles" 步骤带 exit-3 分支执行，`RUSTLUA_REQUIRE_GPU=1`
-    # 时把跳过升级为红。登记进 `$examples` 会让所有无 GPU 机器与 CI runner 恒红，
-    # 而恒红的门等于没有门。
-    # 防漂移：这张表里的每一项必须在脚本里有一处**真实调用点**（`--example <名字>`）。
-    # 只登记不调用 = 把回归藏进第四张表，那正是本段要防的「静默少跑」。
-    $gatedElsewhereExamples = @(
-        "jhyt_m95_gpu_particles"
-    )
-    $verifySource = Get-Content -LiteralPath $PSCommandPath -Raw
-    foreach ($example in $gatedElsewhereExamples) {
-        if (-not (Test-Path -LiteralPath (Join-Path $exampleDir ($example + ".rs")))) {
-            throw ("elsewhere-gated example list names $example but the file is gone; drop the entry (a missing gate is a lost gate)")
-        }
-        if (($examples -contains $example) -or ($retiredExamples -contains $example) -or ($releaseExamples.Name -contains $example)) {
-            throw ("$example appears in more than one example list; pick one")
-        }
-        if ($verifySource -notmatch [regex]::Escape("--example $example")) {
-            throw ("$example 登记为「其它段执行」，但 verify.ps1 里没有 --example $example 的调用点：没有任何门真的在跑它")
-        }
-    }
-
-    # 1) 先全量校验清单，缺失/多余都直接失败（缺失 = 回归消失，多余 = 清单漏登记）。
-    $missing = @()
-    foreach ($example in $examples) {
-        $source = Join-Path $exampleDir ($example + ".rs")
-        if (-not (Test-Path -LiteralPath $source)) {
-            $missing += $example
-        }
-    }
-    if ($missing.Count -gt 0) {
-        throw ("MVP example list is missing $($missing.Count) file(s): " + ($missing -join ", ") + " (expected under $exampleDir)")
-    }
-    $onDisk = @(Get-ChildItem -LiteralPath $exampleDir -Filter "jhyt_*.rs" -File | ForEach-Object { $_.BaseName })
-    $unlisted = @($onDisk | Where-Object { $examples -notcontains $_ -and $retiredExamples -notcontains $_ -and $gatedElsewhereExamples -notcontains $_ -and @($releaseExamples | ForEach-Object { $_.Name }) -notcontains $_ })
-    if ($unlisted.Count -gt 0) {
-        throw ("jhyt_* example(s) exist but are not in the MVP list: " + ($unlisted -join ", ") + " (add them to verify.ps1 or delete them)")
-    }
-
-    # 2) 逐项执行，并断言"执行数量 == 清单数量"。
-    $executed = 0
-    Push-Location $engineRoot
-    try {
-        foreach ($example in $examples) {
-            Invoke-Checked cargo @("run", "--quiet", "-p", "game", "--example", $example)
-            $executed++
-        }
-    }
-    finally {
-        Pop-Location
-    }
-    if ($executed -ne $examples.Count) {
-        throw "MVP gate ran $executed example(s) but the manifest lists $($examples.Count); a silent skip is never acceptable."
-    }
-    Write-Host "MVP headless regression: executed=$executed expected=$($examples.Count)" -ForegroundColor Green
-
-    # 3) 打包产物门：产物在就真跑（失败即红），不在就明说 [SKIP]——不是通过。
-    Push-Location $engineRoot
-    try {
-        foreach ($entry in $releaseExamples) {
-            $artifactPath = Join-Path $defaultGameProject $entry.Artifact
-            if (-not (Test-Path -LiteralPath $artifactPath)) {
-                $message = "[SKIP] $($entry.Name): 没有发布产物 $($entry.Artifact)（不是通过；先跑 $($entry.Hint)）"
-                Write-Host "  $message" -ForegroundColor Yellow
-                Add-Content -Path $logPath -Value $message -Encoding UTF8
-                continue
-            }
-            Invoke-Checked cargo @("run", "--quiet", "-p", "game", "--example", $entry.Name)
-        }
-    }
-    finally {
-        Pop-Location
-    }
-
-    Write-Step "Clean release directory self test"
+    # 《江湖有田》整套 headless 回归随工程迁出仓库（现在在 E:\Qoder\game_jhyt）而退役：
+    # 81 个 jhyt_* 示例、发布产物门与旧 MVP 清单都已从本仓库删除，样板工程只剩 examples/game_api。
+    # 开关保留是为了不破坏既有调用方；这一段现在只跑 game_api 的干净目录发布自测。
+    Write-Step "Clean release directory self test (game_api)"
     Invoke-PackageSelfTest -ProjectRootPath $defaultGameProject
 
-    Write-Host "`nMVP gate passed. Log: $logPath" -ForegroundColor Green
+    Write-Host "`nMVP gate passed (jhyt regression retired). Log: $logPath" -ForegroundColor Green
 }
 
 if ($Benchmarks) {
@@ -2152,13 +1549,13 @@ if ($Benchmarks) {
         $goldenReport.semantic.center_non_background_pixels -le 100) {
         throw "3D semantic golden invalid"
     }
-    # wp0-v4：场景/帧报告契约。场景数**必须等于两个示例工程 scenes/ 里的场景文件数**
+    # wp0-v4：场景/帧报告契约。场景数**必须等于样板工程 scenes/ 里的场景文件数**
     # （此前写死一个下界，示例工程重建后它既挡不住"扫漏了场景"，也会在场景增减时误报）；
     # 帧阶梯必须三档且每档都有非零时间、非零分配——分配为 0 只可能意味着计数没生效，
     # 而不是"优化到位"。
     $sceneFrameReport = Get-Content -LiteralPath $sceneFramePath -Raw | ConvertFrom-Json
     $sceneFileCount = @(
-        Get-ChildItem -Path (Join-Path $gameRoot "game_api/scenes"), (Join-Path $gameRoot "game_jhyt/scenes") `
+        Get-ChildItem -Path (Join-Path $gameRoot "game_api/scenes") `
             -Filter *.scene -File -ErrorAction SilentlyContinue
     ).Count
     if ($sceneFileCount -le 0) {
@@ -2171,9 +1568,8 @@ if ($Benchmarks) {
         throw "wp0-v4 scene/frame report schema invalid: scenes=$($sceneFrameReport.scene_load.scenes) expected=$sceneFileCount"
     }
     foreach ($entry in $sceneFrameReport.scene_load.entries) {
-        # M63b 起 `game_jhyt/main.scene` 是**故意留空**的门面（17 个 UI 实体整批搬进
-        # `assets/prefabs/title_menu.prefab`，由 `scripts/ui/title_menu.lua` 进门面时实例化），
-        # 所以"每条 entry 都要有 typed 组件"在它是必然为假。判据改成从场景文本自己推：
+        # 空门面场景（UI 全走 prefab 实例化）是合法的：所以"每条 entry 都要有 typed 组件"
+        # 在它上面必然为假。判据改成从场景文本自己推：
         # **声明了实体的场景**必须有非零 typed 计数与非零 typed 编译耗时，空场景只查"载入没报错"。
         # 这样"场景有实体但 typed 编译没计数"这类真事故仍然 RED，而不是把整条门下界成 0。
         $scenePath = Join-Path $gameRoot (Join-Path $entry.project "scenes\$($entry.scene).scene")

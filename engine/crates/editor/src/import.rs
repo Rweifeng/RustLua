@@ -521,43 +521,6 @@ mod import_tests {
     use super::*;
     use rustlua_infra::logging::LogSink;
 
-    #[test]
-    fn project_import_resets_scene_render_resources() {
-        // 旧项目样例：sourcehan_test 已随示例重组删除，改用 game_api 样例工程。
-        let old_project =
-            open_project(rustlua_infra::games_dir().join("examples").join("game_api"))
-                .expect("open old project");
-        let new_project = open_project(rustlua_infra::games_dir().join("examples/game_jhyt"))
-            .expect("open new project");
-        let mut app = EditorApp::new(old_project, None, LogSink::new(64));
-        app.scene_screen_cache_key = Some((12, (1280, 720)));
-
-        let document = ProjectDocument::open(new_project.clone());
-        let recovery = RecoveryManager::new(new_project.root.join(".temp"));
-        let recovery_scan = recovery.scan().unwrap_or_default();
-        let resources = ResourceBrowserState::new();
-        app.progress.kind = ProgressKind::ImportProject;
-        app.progress.done = true;
-        app.progress.success = true;
-        app.progress.show = true;
-        app.progress.result = Some(Box::new(ImportOutcome {
-            project: new_project,
-            document,
-            recovery,
-            recovery_scan,
-            resources,
-        }));
-
-        app.apply_progress_result();
-        assert!(
-            app.scene_renderer.is_none(),
-            "renderer root must be rebuilt"
-        );
-        assert!(app.scene_texture.is_none());
-        assert!(app.scene_screen_texture.is_none());
-        assert_eq!(app.scene_screen_cache_key, None);
-    }
-
     /// 资源导入成功应自动关闭进度面板（与项目导入成功行为一致）；失败保留窗口。
     #[test]
     fn resource_import_success_auto_closes_progress_panel() {

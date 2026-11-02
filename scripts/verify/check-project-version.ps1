@@ -1,11 +1,10 @@
 ﻿# check-project-version.ps1 — 引擎与示例工程版本一致性门（P0-02 修复的机器契约）
 #
 # 背景（M78 §24 / §26.3-29）：版本号曾三处各说各话——`engine/Cargo.toml` = 0.1.1、
-# `examples/game_jhyt/project.toml` = 0.1.1、`examples/game_api/project.toml` = 0.1.0，
-# 且再生源 `editor/src/panels/header.rs` 把 `version = "0.1.0"` 写死（编辑器新建项目
-# 生成 project.toml 时版本永远停在旧值）。本门把"三处一致 + 模板不写死 + 发布产物
-# 指纹（build-info.txt）一致"变成机器契约：纯文件检查、秒级，`-MvpOnly` 也跑
-# （版本漂移不该被快速路径跳过）。
+# `examples/game_api/project.toml` = 0.1.0，且再生源 `editor/src/panels/header.rs` 把
+# `version = "0.1.0"` 写死（编辑器新建项目生成 project.toml 时版本永远停在旧值）。
+# 本门把"引擎与样板工程一致 + 模板不写死 + 发布产物指纹（build-info.txt）一致"
+# 变成机器契约：纯文件检查、秒级，`-MvpOnly` 也跑（版本漂移不该被快速路径跳过）。
 #
 # build-info.txt（`examples/**/builds/*/build-info.txt`，第 5 行 `engine version: x.y.z`）
 # 是本地产物指纹：它在就比对，缺失是常态（builds/ 不入库）——显式 SKIP 不算红，
@@ -18,7 +17,6 @@
 [CmdletBinding()]
 param(
     [string]$EngineToml,
-    [string]$JhytToml,
     [string]$ApiToml,
     [string]$HeaderRs,
     [string[]]$BuildInfoFiles,
@@ -31,7 +29,6 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 if (-not $EngineToml) { $EngineToml = Join-Path $repoRoot "engine/Cargo.toml" }
-if (-not $JhytToml)   { $JhytToml   = Join-Path $repoRoot "examples/game_jhyt/project.toml" }
 if (-not $ApiToml)    { $ApiToml    = Join-Path $repoRoot "examples/game_api/project.toml" }
 if (-not $HeaderRs)   { $HeaderRs   = Join-Path $repoRoot "engine/crates/editor/src/panels/header.rs" }
 if (-not $BuildInfoFiles -or $BuildInfoFiles.Count -eq 0) {
@@ -75,22 +72,19 @@ function Get-BuildInfoVersions([string[]]$Files) {
     return $out
 }
 
-function Test-VersionConsistency([string]$EngineToml, [string]$JhytToml, [string]$ApiToml, [string]$HeaderRs, [string[]]$BuildInfoFiles) {
+function Test-VersionConsistency([string]$EngineToml, [string]$ApiToml, [string]$HeaderRs, [string[]]$BuildInfoFiles) {
     $engineV = Get-SectionVersion $EngineToml "workspace.package"
-    $jhytV   = Get-SectionVersion $JhytToml "project"
     $apiV    = Get-SectionVersion $ApiToml "project"
 
-    if (-not $engineV -or -not $jhytV -or -not $apiV) {
-        Write-Host "[RED] project version gate: 版本解析失败（engine=$engineV jhyt=$jhytV api=$apiV）" -ForegroundColor Red
+    if (-not $engineV -or -not $apiV) {
+        Write-Host "[RED] project version gate: 版本解析失败（engine=$engineV api=$apiV）" -ForegroundColor Red
         Write-Host "       engine=$EngineToml" -ForegroundColor Red
-        Write-Host "       jhyt=$JhytToml" -ForegroundColor Red
         Write-Host "       api=$ApiToml" -ForegroundColor Red
         return 1
     }
-    if ($engineV -ne $jhytV -or $engineV -ne $apiV) {
-        Write-Host "[RED] project version mismatch: engine=$engineV jhyt=$jhytV api=$apiV" -ForegroundColor Red
+    if ($engineV -ne $apiV) {
+        Write-Host "[RED] project version mismatch: engine=$engineV api=$apiV" -ForegroundColor Red
         Write-Host "       engine 事实源: $EngineToml ([workspace.package])" -ForegroundColor Red
-        Write-Host "       jhyt   工程  : $JhytToml ([project])" -ForegroundColor Red
         Write-Host "       api    工程  : $ApiToml ([project])" -ForegroundColor Red
         return 1
     }
@@ -118,7 +112,7 @@ function Test-VersionConsistency([string]$EngineToml, [string]$JhytToml, [string
         Write-Host "[SKIP] build-info.txt 不存在（本地产物未构建，跳过比对）: $($b.Path)" -ForegroundColor Yellow
     }
     Write-Host "build_info_ok files=$($bi.Count) ok=$($bi.Count - $biMissing.Count) missing=$($biMissing.Count)" -ForegroundColor Green
-    Write-Host "project_version_ok engine=$engineV jhyt=$jhytV api=$apiV header_dynamic=true" -ForegroundColor Green
+    Write-Host "project_version_ok engine=$engineV api=$apiV header_dynamic=true" -ForegroundColor Green
     return 0
 }
 
@@ -127,40 +121,38 @@ if ($SelfTest) {
     New-Item -ItemType Directory -Path $tmp | Out-Null
     try {
         $e = Join-Path $tmp "engine.toml"
-        $j = Join-Path $tmp "jhyt.toml"
         $a = Join-Path $tmp "api.toml"
         $h = Join-Path $tmp "header.rs"
         $b = Join-Path $tmp "build-info.txt"
         [IO.File]::WriteAllText($e, "[workspace.package]`nversion = ""0.1.1""`n")
-        [IO.File]::WriteAllText($j, "[project]`nversion = ""0.1.1""`n")
         [IO.File]::WriteAllText($a, "[project]`nversion = ""0.1.1""`n")
         [IO.File]::WriteAllText($h, "// scaffold: version = rustlua_infra::version()`n")
         [IO.File]::WriteAllText($b, "RustLua game engine release package`nengine version: 0.1.1`n")
 
-        $ok = Test-VersionConsistency $e $j $a $h @($b)
-        if ($ok -ne 0) { throw "正例应当通过（三处一致 + header 动态 + build-info 一致）" }
+        $ok = Test-VersionConsistency $e $a $h @($b)
+        if ($ok -ne 0) { throw "正例应当通过（引擎与样板工程一致 + header 动态 + build-info 一致）" }
 
-        [IO.File]::WriteAllText($j, "[project]`nversion = ""0.1.0""`n")
-        $mismatch = Test-VersionConsistency $e $j $a $h @($b)
-        if ($mismatch -eq 0) { throw "反例 A 应当判红（jhyt 版本不一致）" }
+        [IO.File]::WriteAllText($a, "[project]`nversion = ""0.1.0""`n")
+        $mismatch = Test-VersionConsistency $e $a $h @($b)
+        if ($mismatch -eq 0) { throw "反例 A 应当判红（样板工程版本不一致）" }
 
-        [IO.File]::WriteAllText($j, "[project]`nversion = ""0.1.1""`n")
+        [IO.File]::WriteAllText($a, "[project]`nversion = ""0.1.1""`n")
         [IO.File]::WriteAllText($h, "writeln!(file, ""version = \""0.1.0\"""")`n")
-        $literal = Test-VersionConsistency $e $j $a $h @($b)
+        $literal = Test-VersionConsistency $e $a $h @($b)
         if ($literal -eq 0) { throw "反例 B 应当判红（header 写死字面量）" }
 
         # 恢复干净的 header（动态取版本），后续反例只针对 build-info，避免先因 header 红而误判。
         [IO.File]::WriteAllText($h, "// scaffold: version = rustlua_infra::version()`n")
         [IO.File]::WriteAllText($b, "RustLua game engine release package`nengine version: 0.1.0`n")
-        $biMismatch = Test-VersionConsistency $e $j $a $h @($b)
+        $biMismatch = Test-VersionConsistency $e $a $h @($b)
         if ($biMismatch -eq 0) { throw "反例 C 应当判红（build-info 版本不一致）" }
 
         [IO.File]::WriteAllText($b, "RustLua game engine release package`nplatform: pc`n")
-        $biParse = Test-VersionConsistency $e $j $a $h @($b)
+        $biParse = Test-VersionConsistency $e $a $h @($b)
         if ($biParse -eq 0) { throw "反例 D 应当判红（build-info 无 engine version 行）" }
 
         [IO.File]::WriteAllText($b, "RustLua game engine release package`nengine version: 0.1.1`n")
-        $missingOk = Test-VersionConsistency $e $j $a $h @((Join-Path $tmp "no-build-info.txt"))
+        $missingOk = Test-VersionConsistency $e $a $h @((Join-Path $tmp "no-build-info.txt"))
         if ($missingOk -ne 0) { throw "缺失 build-info 应当 SKIP 不红" }
 
         Write-Host "project_version_gate_selftest_ok cases=4 (1 green + 3 red) build_info_missing_is_skip ok" -ForegroundColor Green
@@ -170,4 +162,4 @@ if ($SelfTest) {
     exit 0
 }
 
-exit (Test-VersionConsistency $EngineToml $JhytToml $ApiToml $HeaderRs $BuildInfoFiles)
+exit (Test-VersionConsistency $EngineToml $ApiToml $HeaderRs $BuildInfoFiles)

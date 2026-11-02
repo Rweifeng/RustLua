@@ -4,7 +4,6 @@
 
 use super::*;
 use rustlua_audio::spatial::Listener;
-use rustlua_camera::camera::CameraBounds;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -121,91 +120,6 @@ fn two_d_listener_follows_camera2d_center() {
         runtime.audio_listener().map(|listener| listener.position),
         Some([300.0, 80.0, 0.0]),
         "2D 相机平移后听者必须跟到新中心"
-    );
-}
-
-/// **回归**：换图后必须重读新场景声明的 `Camera`，否则场景声明的 bounds 只在启动场景生效。
-///
-/// 怎么坏的：`process_scene_transition` 重建整个世界（`World::new()` 后重新实例化），
-/// 换图后那台 `Camera` 是**新的一份**；宿主原先只在 `init`（启动场景）读过一次，
-/// 于是 `self.camera.bounds` 永远停在开工那张图的值上——每张地图各声明一份 bounds 的
-/// 工程（`examples/game_jhyt`）里，之后所有地图的相机都不受约束，而且**没有任何报错**。
-///
-/// 断言四件事：① 启动场景（门面，无相机）用历史默认、无 bounds；② 换到声明了相机的
-/// 场景后 bounds 变成新场景那一份；③ **center 不被重置**（姿态的权威仍是每帧的
-/// `camera2d.*`，重置回作者中心会在换图那一帧闪一下）；④ **zoom 跟新场景走**（门面
-/// 无声明 ⇒ 起步 1；进入声明 zoom=2 的地图后必须是 2——zoom 没有每帧属主，场景声明
-/// 是唯一真源，换图不读它则门面形态的工程永远停在 1）。
-#[test]
-fn scene_declared_camera_bounds_refresh_after_scene_switch() {
-    let root = rustlua_infra::games_dir()
-        .join("examples")
-        .join("game_jhyt");
-    if !root.join("scenes/manor.scene").is_file() {
-        eprintln!("跳过：checkout 内没有 examples/game_jhyt");
-        return;
-    }
-    let mut runtime = RuntimeScene::new(Some(&root)).expect("runtime for game_jhyt");
-    let idle = InputSnapshot::default();
-    runtime.run_script_steps(1, 1.0 / 60.0, &idle).unwrap();
-    assert_eq!(runtime.script.scene_name().as_deref(), Some("main"));
-    assert_eq!(
-        runtime.camera_2d().bounds,
-        None,
-        "门面 main.scene 没有声明相机 ⇒ 不该有 bounds"
-    );
-    assert_eq!(
-        runtime.camera_2d().zoom,
-        1.0,
-        "门面 main.scene 没有声明相机 ⇒ zoom 保持历史默认 1"
-    );
-
-    // 进入山庄：bounds 换成地面瓦片图的矩形（40×23 格 × 32 = 1280×736）。
-    runtime
-        .with_script(|script| script.execute_console("on_click('BtnStart')"))
-        .unwrap();
-    runtime.run_script_steps(1, 1.0 / 60.0, &idle).unwrap();
-    assert_eq!(runtime.script.scene_name().as_deref(), Some("manor"));
-    let manor = runtime.camera_2d();
-    let expected =
-        CameraBounds::new(Vec2::new(0.0, 0.0), Vec2::new(1280.0, 736.0)).expect("manor bounds");
-    assert_eq!(
-        manor.bounds,
-        Some(expected),
-        "换图后应读入新场景声明的 bounds"
-    );
-    assert_eq!(
-        manor.zoom, 2.0,
-        "换图后应读入新场景声明的 zoom（门面没声明，只能在这里生效）"
-    );
-    // ③ 姿态不被重置：`enter_playable_map` 先落点再 follow，下一帧相机中心 = 玩家坐标
-    // （624,112，#28 起山庄出生点是格 (19,3)）。若 bounds 同步顺手把 center 重置成场景作者
-    // 值，这里会变成 (640,368)——
-    // 注意 y 最终仍会被夹到 bounds 内（地图 736 ≥ 视口高），所以只断言 x 未被重置。
-    runtime.vertices(720, 1280).expect("render viewport");
-    runtime.run_script_steps(1, 1.0 / 60.0, &idle).unwrap();
-    let followed = runtime.camera_2d();
-    assert!(
-        (followed.center.x - 624.0).abs() < 1.0,
-        "换图后 center.x 应由跟随决定（624），实际 {}",
-        followed.center.x
-    );
-
-    // 换到室内（20×12 = 640×384）：bounds 必须跟着地图换，而不是留在山庄那份。
-    runtime
-        .with_script(|script| script.execute_console("map[\"goto\"]('interior_herb')"))
-        .unwrap();
-    runtime.run_script_steps(1, 1.0 / 60.0, &idle).unwrap();
-    assert_eq!(
-        runtime.script.scene_name().as_deref(),
-        Some("interior_herb")
-    );
-    let small =
-        CameraBounds::new(Vec2::new(0.0, 0.0), Vec2::new(640.0, 384.0)).expect("interior bounds");
-    assert_eq!(
-        runtime.camera_2d().bounds,
-        Some(small),
-        "换到更小的地图后 bounds 应同步缩小"
     );
 }
 

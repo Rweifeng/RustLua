@@ -99,8 +99,8 @@ $cargoTargetRoot = if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
 $nativeTargetRoot = Join-Path $cargoTargetRoot "release"
 $wasmTargetRoot = Join-Path $cargoTargetRoot "wasm32-unknown-unknown\release"
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
-    # examples 重组后样板工程在子目录里（根目录已无 project.toml）。
-    $ProjectRoot = Join-Path $workspaceRoot "examples\game_jhyt"
+    # 仓库里唯一的样板工程（jhyt 已迁出仓库，见 E:\Qoder\game_jhyt）。
+    $ProjectRoot = Join-Path $workspaceRoot "examples\game_api"
 }
 $gameRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $projectToml = Join-Path $gameRoot "project.toml"

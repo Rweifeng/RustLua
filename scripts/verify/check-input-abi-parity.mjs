@@ -119,9 +119,11 @@ check(`引擎键名表抽得出来（${engineKeyNames.length} 项）`, engineKey
 const engineKeySet = new Set(engineKeyNames);
 
 const projectMaps = [];
-for (const entry of readdirSync(examplesRoot)) {
+const projectTomls = readdirSync(examplesRoot).filter((entry) =>
+  existsSync(join(examplesRoot, entry, 'project.toml')),
+);
+for (const entry of projectTomls) {
   const toml = join(examplesRoot, entry, 'project.toml');
-  if (!existsSync(toml)) continue;
   const text = readFileSync(toml, 'utf8');
   // 只认 `[input]` 段里的 `map = "..."`（TOML 基本串：把 \n 还原成真换行）。
   const section = text.slice(text.indexOf('[input]'));
@@ -143,8 +145,13 @@ for (const entry of readdirSync(examplesRoot)) {
   projectMaps.push({ name: entry, keys: keyTokens });
 }
 const allProjectKeys = [...new Set(projectMaps.flatMap((project) => project.keys))].sort();
-check(`工程 project.toml 的 [input] 抽得出来（${projectMaps.length} 个工程 / ${allProjectKeys.length} 个键）`,
-  projectMaps.length > 0 && allProjectKeys.length > 0);
+// 样板工程 `game_api` 不声明工程级 `[input].map`（它的键都在演示脚本里直接查 `input`），
+// 因此“有工程声明 map”不是必须条件；但工程清单本身不能为空，否则是扫描路径写错了。
+check(`工程 project.toml 可枚举（${projectTomls.length} 个工程 / ${projectMaps.length} 个声明 [input].map）`,
+  projectTomls.length > 0);
+if (projectMaps.length === 0) {
+  console.log('  skip 工程级输入绑定：当前样板工程不声明 [input].map（jhyt 已迁出仓库）');
+}
 const unknownProjectKeys = allProjectKeys.filter((name) => !engineKeySet.has(name));
 check(`工程绑定的键名引擎全认识（${allProjectKeys.length} 个）`,
   unknownProjectKeys.length === 0,

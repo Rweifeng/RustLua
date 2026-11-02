@@ -121,7 +121,7 @@ jobs:
         shell: pwsh
         run: |
           pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build/package.ps1 `
-            -ProjectRoot examples/game_jhyt -Platform pc -SkipBuild
+            -ProjectRoot examples/game_api -Platform pc -SkipBuild
           if ($LASTEXITCODE -ne 0) { throw "package PC failed (exit $LASTEXITCODE)" }
 
       - name: Sign Windows binaries (if certificate configured)
@@ -134,7 +134,7 @@ jobs:
           $pfx = Join-Path $env:RUNNER_TEMP "rustlua-signing.pfx"
           try {
             [System.IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
-            $pcRoot = Join-Path $env:GITHUB_WORKSPACE "examples/game_jhyt/builds/pc"
+            $pcRoot = Join-Path $env:GITHUB_WORKSPACE "examples/game_api/builds/pc"
             $engineRoot = Join-Path $env:GITHUB_WORKSPACE ("artifacts/packages/RustLua-Engine-{0}-win64" -f $env:VERSION)
             # `pwsh -File` 不绑定数组参数；用逗号拼成一个字符串，脚本内部再拆。
             pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/release/sign-windows.ps1 `
@@ -155,7 +155,7 @@ jobs:
       - name: Build release archives
         shell: pwsh
         run: |
-          $pcRoot = Join-Path $env:GITHUB_WORKSPACE "examples/game_jhyt/builds/pc"
+          $pcRoot = Join-Path $env:GITHUB_WORKSPACE "examples/game_api/builds/pc"
           $engineRoot = Join-Path $env:GITHUB_WORKSPACE ("artifacts/packages/RustLua-Engine-{0}-win64" -f $env:VERSION)
           $out = Join-Path $env:GITHUB_WORKSPACE "artifacts/packages"
           New-Item -ItemType Directory -Force -Path $out | Out-Null

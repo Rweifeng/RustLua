@@ -626,22 +626,6 @@ mod tests {
     }
 
     #[test]
-    fn audio_importer_validates_mp3_streams() {
-        let root = root("audio-mp3");
-        let Some(bytes) = fixture("../../../examples/game_jhyt/assets/audio/sfx_hit.mp3") else {
-            return;
-        };
-        let mp3 = write_source(&root, "sfx_hit.mp3", &bytes);
-        let importer = builtin().get(ResourceKind::Audio).unwrap();
-        importer
-            .validate(&mp3, &std::fs::read(&mp3).unwrap())
-            .unwrap();
-        let bad = write_source(&root, "bad.mp3", b"not audio");
-        assert!(importer.validate(&bad, b"not audio").is_err());
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
     fn font_importer_validates_ttf_and_rejects_bad_bytes() {
         let root = root("font");
         let Some(bytes) = fixture("../../../examples/assets/fonts/NotoSansSC-VF.ttf") else {

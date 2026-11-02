@@ -381,7 +381,7 @@ function Resolve-GameBundle {
     }
 
     $hint = if ($report.Candidates.Count -eq 0) {
-        "先发布一个，例如：powershell -NoProfile -File scripts\build\package.ps1 -ProjectRoot examples\game_jhyt -Platform $Platform"
+        "先发布一个，例如：powershell -NoProfile -File scripts\build\package.ps1 -ProjectRoot examples\game_api -Platform $Platform"
     }
     else {
         "本机存在 {0} 个可用产物，自动选择会有歧义。" -f $report.Candidates.Count

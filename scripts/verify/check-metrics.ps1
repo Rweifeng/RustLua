@@ -40,7 +40,7 @@ if ($DoCollect) {
     $measure = Join-Path $projectRoot "scripts\metrics\measure-artifacts.mjs"
     $inputs = @(
         @{ f = "binaries.json"; args = @("--kind", "binary") },
-        @{ f = "packages.json"; args = @("--kind", "package", "--project", "examples/game_jhyt") }
+        @{ f = "packages.json"; args = @("--kind", "package", "--project", "examples/game_api") }
     )
     foreach ($in in $inputs) {
         $p = Join-Path $projectRoot "artifacts\metrics\$($in.f)"

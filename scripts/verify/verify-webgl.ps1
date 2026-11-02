@@ -46,7 +46,7 @@ trap {
 $workspaceRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $engineRoot = Join-Path $workspaceRoot "engine"
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
-    $ProjectRoot = Join-Path $workspaceRoot "examples\game_jhyt"
+    $ProjectRoot = Join-Path $workspaceRoot "examples\game_api"
 }
 $gameRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
 $projectToml = Join-Path $gameRoot "project.toml"
