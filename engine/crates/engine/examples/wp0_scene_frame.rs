@@ -116,6 +116,13 @@ fn main() {
         .iter()
         .map(|count| measure_animation_frame(&examples, *count, config.cycles))
         .collect::<Vec<_>>();
+    // 控制组（docs/54 §4.4 的配对基线）：同样的实体数、同样的布局，只是不挂 `Animation`。
+    // 动画门判的是"动画路径自己多花的那部分"，必须减掉这份固定成本——见
+    // `animation_scene_with` 的注释。
+    let animation_control_stairs = ANIMATION_STAIRS
+        .iter()
+        .map(|count| measure_animation_control_frame(&examples, *count, config.cycles))
+        .collect::<Vec<_>>();
     let hierarchy_stairs = HIERARCHY_STAIRS
         .iter()
         .map(|count| measure_hierarchy_frame(&examples, *count, config.cycles))
@@ -128,6 +135,7 @@ fn main() {
         &particle_stairs,
         &tilemap_edit_stairs,
         &animation_stairs,
+        &animation_control_stairs,
         &hierarchy_stairs,
         &sprite_culling_ab,
         &config,
@@ -147,6 +155,17 @@ fn main() {
         .filter_map(|entry| animation_alloc_p50(entry))
         .max()
         .unwrap_or(0);
+    // 动画路径的**净**分配（动画阶梯 − 控制组阶梯）：这才是 docs/54 §4.4 要判的数。
+    let worst_animation_extra = animation_stairs
+        .iter()
+        .zip(animation_control_stairs.iter())
+        .filter_map(|(animated, control)| {
+            let animated = animation_alloc_p50(animated)?;
+            let control = animation_alloc_p50(control)?;
+            Some(animated.saturating_sub(control))
+        })
+        .max()
+        .unwrap_or(0);
     let worst_spatial_share = hierarchy_stairs
         .iter()
         .flat_map(|entry| json_number_fields(entry, "spatial_share_pct"))
@@ -160,7 +179,7 @@ fn main() {
         .min()
         .unwrap_or(0);
     println!(
-        "wp0_scene_frame_ok report_version={REPORT_VERSION} scenes={scenes} stairs={} depth_stairs={} animation_stairs={} animation_alloc_p50_max={worst_animation_alloc} hierarchy_stairs={} hierarchy_spatial_share_pct_max={worst_spatial_share:.2} hierarchy_static_skips_min={static_skips_min}",
+        "wp0_scene_frame_ok report_version={REPORT_VERSION} scenes={scenes} stairs={} depth_stairs={} animation_stairs={} animation_alloc_p50_max={worst_animation_alloc} animation_extra_alloc_p50_max={worst_animation_extra} hierarchy_stairs={} hierarchy_spatial_share_pct_max={worst_spatial_share:.2} hierarchy_static_skips_min={static_skips_min}",
         frame_stairs.len(),
         depth_stairs.len(),
         animation_stairs.len(),
@@ -429,9 +448,31 @@ fn sprite_scene(sprites: usize) -> Scene {
 /// 关注点：**每帧每实体的分配次数**。静态精灵阶梯看不到动画路径（状态机推进 + 轨道采样），
 /// 而那里最容易退化成"每次调用重建一份轨道"（批 H 引入、批 N 修掉的那次回归正是如此）。
 fn measure_animation_frame(examples: &std::path::Path, count: usize, cycles: usize) -> String {
+    measure_animation_frame_with(examples, count, cycles, true)
+}
+
+/// 控制组：与动画阶梯同实体数、同布局、同贴图，**只少一个 `Animation` 组件**。
+///
+/// 它给出的数字是"这批实体在完全不做动画时的整帧分配"，也就是动画门必须先减掉的固定
+/// 成本。两个阶梯用同一个函数测，所以相减之后的差值只归动画路径。
+fn measure_animation_control_frame(
+    examples: &std::path::Path,
+    count: usize,
+    cycles: usize,
+) -> String {
+    measure_animation_frame_with(examples, count, cycles, false)
+}
+
+fn measure_animation_frame_with(
+    examples: &std::path::Path,
+    count: usize,
+    cycles: usize,
+    animated: bool,
+) -> String {
     let root = examples.join("game_api");
-    let mut runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), animation_scene(count))
-        .expect("runtime scene for the animation stair");
+    let mut runtime =
+        RuntimeScene::from_scene_edit(Some(root.as_path()), animation_scene_with(count, animated))
+            .expect("runtime scene for the animation stair");
     let input = InputSnapshot::default();
     for _ in 0..FRAME_WARMUP {
         run_frame(&mut runtime, &input);
@@ -706,8 +747,16 @@ fn median_f64(values: &[u64], divisor: usize) -> f64 {
     median_u64(values) as f64 / divisor as f64
 }
 
-/// 合成 `count` 个**动画**精灵实体（同一片段，因此身份表里只有一条片段）。
-fn animation_scene(count: usize) -> Scene {
+/// 合成 `count` 个**动画**精灵实体（同一片段，因此身份表里只有一条片段）；`animated=false`
+/// 时是动画门的控制组——同实体数、同布局、同贴图，只少挂一个 `Animation` 组件。
+///
+/// 为什么需要控制组：整帧分配里有一大截是"实体数的固定成本"（每实体一份脚本侧登记 +
+/// 提取侧的批次项），静态精灵阶梯同样付（1,000 精灵 = 2,341 次/帧，其中脚本步就占
+/// 1,225 次）。**动画门要判的是"动画路径自己多花了多少"**，拿整帧绝对数去比 200 会把
+/// 这份固定成本算到动画头上——那条判据因此永远不可能通过（2026-11 实测 5,000 实体
+/// 11,069 次/帧，其中 10,7xx 是控制组也有的）。控制组把这笔成本减掉，剩下来的才是
+/// 动画路径的账。
+fn animation_scene_with(count: usize, animated: bool) -> Scene {
     let mut scene = Scene::new(format!("wp0-animation-{count}"));
     for index in 0..count {
         let id = SceneEntityId(index as u64 + 1);
@@ -727,10 +776,12 @@ fn animation_scene(count: usize) -> Scene {
              tint=1.000,1.000,1.000,1.000;sorting_layer=default;order=0"
                 .into(),
         );
-        entity.components.insert(
-            "Animation".into(),
-            "default=idle;clip:idle:assets/textures/hero-idle.png:4:4:true".into(),
-        );
+        if animated {
+            entity.components.insert(
+                "Animation".into(),
+                "default=idle;clip:idle:assets/textures/hero-idle.png:4:4:true".into(),
+            );
+        }
     }
     scene
 }
@@ -954,6 +1005,7 @@ fn format_report(
     particle_stairs: &[String],
     tilemap_edit_stairs: &[String],
     animation_stairs: &[String],
+    animation_control_stairs: &[String],
     hierarchy_stairs: &[String],
     sprite_culling_ab: &str,
     config: &Config,
@@ -992,6 +1044,10 @@ fn format_report(
     json.push_str(&format!(
         "  \"animation_stairs\": [\n    {}\n  ],\n",
         animation_stairs.join(",\n    ")
+    ));
+    json.push_str(&format!(
+        "  \"animation_control_stairs\": [\n    {}\n  ],\n",
+        animation_control_stairs.join(",\n    ")
     ));
     json.push_str(&format!(
         "  \"hierarchy_stairs\": [\n    {}\n  ],\n",

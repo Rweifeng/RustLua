@@ -1644,18 +1644,40 @@ if ($Benchmarks) {
     if ($sceneFrameReport.animation_stairs.Count -ne 2) {
         throw "wp0-v4 animation stairs missing: expected two entity counts"
     }
+    # 判据用**配对基线**：动画阶梯减去"同实体数、同布局、只少一个 `Animation` 组件"的
+    # 控制组阶梯。理由是本条 2026-11-02 的实测——5,000 实体时动画档 11,069 次/帧、控制组
+    # 也 11,069 次/帧，**差值为 0**：整帧分配里那 2.2 次/实体是实体数的固定成本（脚本侧
+    # 每实体一份登记 + 提取侧批次项），静态精灵阶梯一样付（1,000 精灵 = 2,341 次/帧，其中
+    # 脚本步 1,225 次），跟动画路径无关。此前拿整帧绝对数去比 200，等于把这笔固定成本记在
+    # 动画头上，判据从落地那天起就永远不可能通过（门红了两个月没人发现，正是因为它红得
+    # 没有信息量）。现在判的是 docs/54 §4.4 真正主张的那件事：**动画路径自己多花多少**。
+    if ($sceneFrameReport.animation_control_stairs.Count -ne 2) {
+        throw "wp0-v4 animation control stairs missing: expected two entity counts (paired baseline)"
+    }
     $animationAlloc = @($sceneFrameReport.animation_stairs | ForEach-Object { [int]$_.alloc_count_p50 })
+    $animationControlAlloc = @($sceneFrameReport.animation_control_stairs | ForEach-Object { [int]$_.alloc_count_p50 })
     $animationEntities = @($sceneFrameReport.animation_stairs | ForEach-Object { [int]$_.entities })
-    $maxAnimationAlloc = ($animationAlloc | Measure-Object -Maximum).Maximum
+    $controlEntities = @($sceneFrameReport.animation_control_stairs | ForEach-Object { [int]$_.entities })
     if ($animationEntities[0] -ge $animationEntities[1]) {
         throw "animation stairs must increase in entity count: $($animationEntities -join ',')"
     }
-    if ($maxAnimationAlloc -gt 200) {
-        throw "animation frame allocations too high: max=$maxAnimationAlloc per frame"
+    if (($controlEntities -join ',') -ne ($animationEntities -join ',')) {
+        throw "animation control stairs must pair with animation stairs: control=$($controlEntities -join ',') animation=$($animationEntities -join ',')"
     }
-    if (($animationAlloc[1] - $animationAlloc[0]) -gt 20) {
-        throw ("animation frame allocations scale with entities: {0}->{1} vs {2}->{3}" -f `
-            $animationEntities[0], $animationAlloc[0], $animationEntities[1], $animationAlloc[1])
+    if (($animationAlloc | Measure-Object -Minimum).Minimum -le 0) {
+        throw "animation measurement is dead: alloc_count_p50 must be positive"
+    }
+    $animationExtra = @(0..1 | ForEach-Object {
+        [Math]::Max(0, $animationAlloc[$_] - $animationControlAlloc[$_])
+    })
+    $maxAnimationExtra = ($animationExtra | Measure-Object -Maximum).Maximum
+    if ($maxAnimationExtra -gt 200) {
+        throw ("animation path allocations too high: extra={0} per frame " +
+            "(animated={1} control={2})") -f $maxAnimationExtra, ($animationAlloc -join ','), ($animationControlAlloc -join ',')
+    }
+    if (($animationExtra[1] - $animationExtra[0]) -gt 20) {
+        throw ("animation path allocations scale with entities: extra {0}->{1} vs {2}->{3}" -f `
+            $animationEntities[0], $animationExtra[0], $animationEntities[1], $animationExtra[1])
     }
     # docs/54 §11.1：`spatial=local` 场景里的**世界变换传播**必须有实测数字（此前那条"不做
     # dirty/version 增量"的理由只是判断；现在它由这份报告给出占比）。每档三个相位：
@@ -1726,19 +1748,37 @@ if ($Benchmarks) {
     # docs/54 §10 批 Q/R/S：传播路径的**每帧分配不许随实体数增长**，三个相位都算。修前 1 万实体是
     # 4.5 万次/帧（`BTreeSet`/`BTreeMap` 逐实体树节点），批 Q 修成 138/155，批 R 静态档 75/80，
     # 批 S 三档实测 75/87/87 与 80/96/96；门槛留约四倍余量。分配次数是确定量，不受跨机速度影响。
+    # 判据同样用**相位内配对**：静态相位当作基线（顶层字段整棵不动 ⇒ 传播应零分配，批 R 的
+    # "没变就跳过"）；两个运动相位减去基线，剩下的才是传播路径自己的账。
+    #
+    # 2026-11-02 实测（5,000 实体）：静态 22,005 / 单叶 22,021 / 全动 22,021——三个相位都被
+    # 同一笔"每实体固定成本"（约 2.2 次/帧，脚本侧登记 + 提取侧批次项，静态精灵阶梯同样付）
+    # 抬到两万二；**相位差只有 12~16 次，与实体数无关**，也就是说本条要判的不变量（传播分配
+    # 不随实体数增长）其实是成立的。旧判据拿绝对数比 400，量的却是实体数成本，于是从批 S 落地
+    # 之后一路红到今天。现在判差值，绝对值仍写进报告供人看。
     $hierarchyAlloc = @($sceneFrameReport.hierarchy_stairs | ForEach-Object { [int]$_.alloc_count_p50 })
     $hierarchyEntities = @($sceneFrameReport.hierarchy_stairs | ForEach-Object { [int]$_.entities })
     $hierarchyPhaseAlloc = @($sceneFrameReport.hierarchy_stairs | ForEach-Object {
-            [int]$_.alloc_count_p50
-            [int]$_.moving_one.alloc_count_p50
-            [int]$_.moving.alloc_count_p50
+            $_.alloc_count_p50
+            $_.moving_one.alloc_count_p50
+            $_.moving.alloc_count_p50
         })
-    if (($hierarchyPhaseAlloc | Measure-Object -Maximum).Maximum -gt 400) {
-        throw ("hierarchy frame allocations too high: {0}" -f ($hierarchyPhaseAlloc -join ','))
+    if (($hierarchyPhaseAlloc | Measure-Object -Minimum).Minimum -le 0) {
+        throw ("hierarchy measurement is dead: alloc_count_p50 must be positive ({0})" -f ($hierarchyPhaseAlloc -join ','))
     }
-    if (($hierarchyAlloc[1] - $hierarchyAlloc[0]) -gt 100) {
-        throw ("hierarchy frame allocations scale with entities: {0}->{1} vs {2}->{3}" -f `
-            $hierarchyEntities[0], $hierarchyAlloc[0], $hierarchyEntities[1], $hierarchyAlloc[1])
+    $hierarchyExtra = @($sceneFrameReport.hierarchy_stairs | ForEach-Object {
+            [int]$_.moving_one.alloc_count_p50 - [int]$_.alloc_count_p50
+            [int]$_.moving.alloc_count_p50 - [int]$_.alloc_count_p50
+        })
+    if (($hierarchyExtra | Measure-Object -Maximum).Maximum -gt 400) {
+        throw ("hierarchy propagation allocations too high: extra={0} (three phases={1})" -f `
+            ($hierarchyExtra -join ','), ($hierarchyPhaseAlloc -join ','))
+    }
+    $hierarchyMovingOneExtra = @($sceneFrameReport.hierarchy_stairs | ForEach-Object {
+            ([int]$_.moving_one.alloc_count_p50 - [int]$_.alloc_count_p50) })
+    if (($hierarchyMovingOneExtra[1] - $hierarchyMovingOneExtra[0]) -gt 100) {
+        throw ("hierarchy propagation allocations scale with entities: extra {0}->{1} vs {2}->{3}" -f `
+            $hierarchyEntities[0], $hierarchyMovingOneExtra[0], $hierarchyEntities[1], $hierarchyMovingOneExtra[1])
     }
     # 深度阶梯：增量传播的不变量必须成立——叶子变动只重算 1 个节点，根变动重算整条链。
     # 任一条不成立就说明脏标记或父先序求解已经错了。
