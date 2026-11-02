@@ -117,6 +117,19 @@ const COMPONENT_CLAIM_FILES = [
   'docs/demos/README.md',
 ];
 
+// 文档里写的"代码常量"必须等于源码里的常量。为什么需要：这类声明既不在文档门（只查链接/
+// 编号）的射程里，也不在 API 计数门的射程里——`docs/64` 曾是整篇"按计划写"的文档，实现
+// （ADR-0023）早已落地而文档停在计划态，正是"实现超前于文档"的典型。留一条可复核的锚点后，
+// 改常量不改文档（或反过来）都会立刻判红，而不是等下一个接手者发现。
+const CODE_CONSTANTS = [
+  {
+    label: '脚本连续错误上限 DEFAULT_CALLBACK_ERROR_LIMIT',
+    doc: 'docs/64-Lua脚本错误处置策略.md',
+    docPattern: /DEFAULT_CALLBACK_ERROR_LIMIT\s*=\s*(\d+)/g,
+    source: 'engine/crates/rustlua-scripting/src/script/guard.rs',
+    sourcePattern: /DEFAULT_CALLBACK_ERROR_LIMIT\s*:\s*u\d+\s*=\s*(\d+)/,
+  },
+];
 // `tasks/plan/` 的"空/非空"断言与目录事实。为什么需要：README 曾写"`tasks/plan/` 当前为空"，
 // 而目录里实际躺着 M78-00（2026-11-02 核对时发现）。这类"状态断言"既不在文档门（只查链接/编号）
 // 的射程里，也不在 API 计数门的射程里——没人读它就永远错着。这里把它变成一条可复核的声明。
@@ -189,7 +202,26 @@ export function audit({ repoRoot }) {
       }
     }
   }
-  // `tasks/plan/` 状态：README 里的"为空"必须与目录一致。只查"为空"这一种断言——
+  for (const claim of CODE_CONSTANTS) {
+    const docText = readText(repoRoot, claim.doc);
+    const docValues = [...docText.matchAll(claim.docPattern)].map((m) => m[1]);
+    if (docValues.length === 0) {
+      errors.push(`${claim.label}：${claim.doc} 里找不到可核对的声明（模式 ${claim.docPattern}）`);
+      continue;
+    }
+    const sourceText = readText(repoRoot, claim.source);
+    const sourceMatch = claim.sourcePattern.exec(sourceText);
+    if (!sourceMatch) {
+      errors.push(`${claim.label}：${claim.source} 里找不到常量定义（模式 ${claim.sourcePattern}）`);
+      continue;
+    }
+    for (const value of docValues) {
+      checked += 1;
+      if (Number(value) !== Number(sourceMatch[1])) {
+        errors.push(`${claim.label}：${claim.doc} 写 ${value}，${claim.source} 是 ${sourceMatch[1]}`);
+      }
+    }
+  }  // `tasks/plan/` 状态：README 里的"为空"必须与目录一致。只查"为空"这一种断言——
   // "有几个"这种会变的数字，本仓库的口径是根本不该写进 README（见其「当前状态」的规矩）。
   const plan = planDirStatus(repoRoot);
   for (const match of readText(repoRoot, 'README.md').matchAll(/tasks[\\/]plan[^\n]{0,16}?为空/g)) {
@@ -200,7 +232,7 @@ export function audit({ repoRoot }) {
       );
     }
   }
-  return { errors, stats: { tables, funcs, components, gates, planFiles: plan.files, claims: checked } };
+  return { errors, stats: { tables, funcs, components, gates, constants: CODE_CONSTANTS.length, planFiles: plan.files, claims: checked } };
 }
 
 function writeFixture(root, snapshot, readme, doc74) {
@@ -215,6 +247,8 @@ function writeFixture(root, snapshot, readme, doc74) {
     'docs/README.md': '- 演示工程 2.0：2 个模块表 / 3 个函数\n',
     'docs/60-全面复盘与优化项清单.md': '| Lua API | 2 个模块表 / 3 个函数 |\n',
     'docs/62-成熟引擎差距分析.md': '| 脚本 | **2 模块表 / 3 绑定函数** |\n| API 规模 | 2 模块 / 3 函数 |\n',
+    'docs/64-Lua脚本错误处置策略.md': '上限 DEFAULT_CALLBACK_ERROR_LIMIT = 60。\n',
+    'engine/crates/rustlua-scripting/src/script/guard.rs': 'pub const DEFAULT_CALLBACK_ERROR_LIMIT: u32 = 60;\n',
   };
   for (const [rel, text] of Object.entries(files)) {
     const abs = path.join(root, rel);
@@ -276,7 +310,24 @@ function selfTest() {
     if (failed > 0) process.exit(1);
   }
 
-  console.log(`doc_claims_selftest_ok cases=${cases.length + 1}`);
+  // 代码常量锚点：文档写的常量与源码不一致必须判红（docs/64 的"实现超前于文档"就是这类漂移）。
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'doc-claims-const-'));
+    writeFixture(dir, snapshot, goodReadme, goodDoc);
+    fs.writeFileSync(
+      path.join(dir, 'docs/64-Lua脚本错误处置策略.md'),
+      '上限 `DEFAULT_CALLBACK_ERROR_LIMIT = 99`。\n',
+    );
+    const { errors } = audit({ repoRoot: dir });
+    if (errors.length === 0) {
+      failed += 1;
+      console.error('自测失败：docs/64 的常量与源码不一致未判红');
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+    if (failed > 0) process.exit(1);
+  }
+
+  console.log(`doc_claims_selftest_ok cases=${cases.length + 2}`);
 }
 
 if (process.argv.includes('--self-test')) {
@@ -287,6 +338,6 @@ if (process.argv.includes('--self-test')) {
   for (const error of errors) console.error('doc_claims: ' + error);
   if (errors.length > 0) process.exit(1);
   console.log(
-    `doc_claims_ok tables=${stats.tables} funcs=${stats.funcs} components=${stats.components} gates=${stats.gates} plan_files=${stats.planFiles} claims=${stats.claims}`,
+    `doc_claims_ok tables=${stats.tables} funcs=${stats.funcs} components=${stats.components} gates=${stats.gates} plan_files=${stats.planFiles} code_consts=${stats.constants} claims=${stats.claims}`,
   );
 }
