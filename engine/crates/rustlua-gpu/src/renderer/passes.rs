@@ -539,17 +539,23 @@ impl Renderer {
         {
             self.material_arena_used = 0;
             self.instance_arena_used = 0;
-            frame_draws
+            self.material_bind_created = 0;
+            self.material_bind_reused = 0;
+            let binds = frame_draws
                 .iter()
-                .map(|draw| {
+                .enumerate()
+                .map(|(index, draw)| {
                     self.material_bind_group(
+                        index,
                         draw.material,
                         &draw.palette,
                         &draw.models,
                         want_normals,
                     )
                 })
-                .unzip()
+                .unzip();
+            self.note_material_bind_frame(frame_draws.len() as u64);
+            binds
         } else {
             (Vec::new(), Vec::new())
         };

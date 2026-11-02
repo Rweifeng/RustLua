@@ -95,6 +95,11 @@ struct Stats {
 struct Config {
     output: Option<PathBuf>,
     cycles: usize,
+    /// `--profile`：把每轮拆成 2D 顶点 / 3D 提取 / 渲染三段并写进 JSON。
+    /// 为什么需要它：`cpu_frame_us` 只回答"整帧多慢"，不回答"慢在提取还是慢在渲染"；
+    /// 没有这个拆分，"下一步做 BVH/遮挡剔除"就只能靠猜（docs/53 的口径是每帧分配，
+    /// 不是每帧耗时归因）。默认关闭，保持既有报告格式逐字不变。
+    profile: bool,
 }
 
 fn main() {
@@ -102,7 +107,7 @@ fn main() {
     let root = games_dir().join("examples").join("game_api");
     let mut reports = Vec::new();
     for mesh_count in [100usize, 1_000, 10_000] {
-        reports.push(run_stair(&root, mesh_count, config.cycles));
+        reports.push(run_stair(&root, mesh_count, config.cycles, config.profile));
     }
     let json = format_report(&reports, config.cycles);
     if let Some(path) = config.output {
@@ -119,6 +124,7 @@ fn main() {
 fn parse_config() -> Config {
     let mut output = None;
     let mut cycles = 30;
+    let mut profile = false;
     let mut args = env::args().skip(1);
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -134,18 +140,23 @@ fn parse_config() -> Config {
                     .parse()
                     .expect("--cycles must be an integer")
             }
+            "--profile" => profile = true,
             "--help" | "-h" => {
-                println!("Usage: wp0_3d_stress [--cycles N] [--output PATH]");
+                println!("Usage: wp0_3d_stress [--cycles N] [--output PATH] [--profile]");
                 std::process::exit(0);
             }
             _ => panic!("unknown argument: {flag}"),
         }
     }
     assert!(cycles > 0, "--cycles must be greater than zero");
-    Config { output, cycles }
+    Config {
+        output,
+        cycles,
+        profile,
+    }
 }
 
-fn run_stair(root: &Path, mesh_count: usize, cycles: usize) -> String {
+fn run_stair(root: &Path, mesh_count: usize, cycles: usize, profile: bool) -> String {
     let mut runtime =
         RuntimeScene::from_scene_edit(Some(root), build_scene(mesh_count)).expect("runtime scene");
     let fixture = OffscreenTarget::acquire(
@@ -161,13 +172,29 @@ fn run_stair(root: &Path, mesh_count: usize, cycles: usize) -> String {
     let mut samples = Vec::with_capacity(cycles);
     let mut gpu_samples = Vec::with_capacity(cycles);
     let mut last = DefaultMetrics::default();
+    let mut phases = PhaseTotals::default();
     for _ in 0..3 {
-        render_once(&mut runtime, &mut renderer, view, &mut last);
+        let _ = render_once(
+            &mut runtime,
+            &mut renderer,
+            view,
+            &mut last,
+            &mut phases,
+            profile,
+        );
     }
+    phases = PhaseTotals::default();
     reset_allocations();
     for _ in 0..cycles {
         let started = Instant::now();
-        render_once(&mut runtime, &mut renderer, view, &mut last);
+        let _ = render_once(
+            &mut runtime,
+            &mut renderer,
+            view,
+            &mut last,
+            &mut phases,
+            profile,
+        );
         samples.push(started.elapsed());
         if let Some(gpu_us) = last.gpu_frame_us {
             gpu_samples.push(Duration::from_micros(gpu_us));
@@ -191,8 +218,22 @@ fn run_stair(root: &Path, mesh_count: usize, cycles: usize) -> String {
     } else {
         renderer.gpu_timestamp_reason().unwrap_or("pending")
     };
+    let profile_json = if profile {
+        let n = cycles as u128;
+        format!(
+            "{{\"vertices_us\":{},\"extract_us\":{},\"render_us\":{},\"render_share_pct\":{}}}",
+            phases.vertices_us / n,
+            phases.extract_us / n,
+            phases.render_us / n,
+            // 渲染段占三段之和的百分比：决定"下一步该优化提取还是优化渲染"的那把尺子。
+            (100 * phases.render_us
+                / (phases.vertices_us + phases.extract_us + phases.render_us).max(1))
+        )
+    } else {
+        "null".to_owned()
+    };
     format!(
-        "{{\"mesh_count\":{mesh_count},\"samples\":{},\"render\":{{\"cpu_frame_us\":{},\"gpu_frame_us\":{gpu_json},\"gpu_timestamp_supported\":{},\"gpu_timestamp_reason\":\"{gpu_reason}\",\"draw_calls\":{},\"instances\":{},\"triangles\":{}}},\"cpu_alloc_count\":{},\"cpu_alloc_bytes\":{},\"cpu_live_bytes\":{},\"cpu_peak_bytes\":{},\"known_renderer_bytes\":{{\"vertex_buffer_capacity\":{},\"vertex_bytes_peak\":{}}}}}",
+        "{{\"mesh_count\":{mesh_count},\"samples\":{},\"render\":{{\"cpu_frame_us\":{},\"gpu_frame_us\":{gpu_json},\"gpu_timestamp_supported\":{},\"gpu_timestamp_reason\":\"{gpu_reason}\",\"draw_calls\":{},\"instances\":{},\"triangles\":{}}},\"cpu_alloc_count\":{},\"cpu_alloc_bytes\":{},\"cpu_live_bytes\":{},\"cpu_peak_bytes\":{},\"known_renderer_bytes\":{{\"vertex_buffer_capacity\":{},\"vertex_bytes_peak\":{}}},\"profile\":{profile_json}}}",
         stats_json(stats),
         last.cpu_frame_us,
         renderer.gpu_timestamp_supported(),
@@ -216,25 +257,53 @@ struct DefaultMetrics {
     instances: u64,
     triangles: u64,
 }
+
+/// `--profile` 的分段累计（微秒）。三段的分界就是宿主每帧真正做的三件事：
+/// 2D 顶点提取、3D 提取（`scene_3d` 把 ECS 摊平成 drawable）、以及一次 `render_into_texture`
+/// （剔除 + 合批 + 写实例缓冲 + 录制 + 提交）。
+#[derive(Default, Clone, Copy)]
+struct PhaseTotals {
+    vertices_us: u128,
+    extract_us: u128,
+    render_us: u128,
+}
+
 fn render_once(
     runtime: &mut RuntimeScene,
     renderer: &mut Renderer,
     view: &wgpu::TextureView,
     last: &mut DefaultMetrics,
-) {
+    phases: &mut PhaseTotals,
+    profile: bool,
+) -> PhaseTotals {
+    let started_vertices = profile.then(Instant::now);
     let mesh = runtime.vertices(640, 360).expect("2D extraction");
+    let vertices_us = started_vertices.map_or(0, |t| t.elapsed().as_micros());
+    let started_extract = profile.then(Instant::now);
     let scene =
         runtime.scene_3d(rustlua_camera::camera::Viewport::new(640.0, 360.0).expect("viewport"));
+    let extract_us = started_extract.map_or(0, |t| t.elapsed().as_micros());
+    let started_render = profile.then(Instant::now);
     assert!(matches!(
         renderer.render_into_texture(&mesh, scene.as_ref(), view, 640, 360),
         RenderOutcome::Presented
     ));
+    let render_us = started_render.map_or(0, |t| t.elapsed().as_micros());
     let metrics = renderer.last_frame_metrics();
     last.cpu_frame_us = metrics.cpu_frame_us;
     last.gpu_frame_us = metrics.gpu_frame_us;
     last.draw_calls = metrics.draw_calls;
     last.instances = metrics.instances;
     last.triangles = metrics.triangles;
+    let frame = PhaseTotals {
+        vertices_us,
+        extract_us,
+        render_us,
+    };
+    phases.vertices_us += frame.vertices_us;
+    phases.extract_us += frame.extract_us;
+    phases.render_us += frame.render_us;
+    frame
 }
 
 fn build_scene(mesh_count: usize) -> Scene {

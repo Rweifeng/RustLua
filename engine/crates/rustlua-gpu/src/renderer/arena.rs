@@ -28,6 +28,40 @@ pub(super) struct NormalMatrixSlice {
     pub size: u64,
 }
 
+/// 3D 材质绑定组的缓存键。
+///
+/// 绑定组**只编码**"哪块缓冲的哪一段 + 哪几个贴图视图"，不编码里面的字节；而帧级环形缓冲
+/// 每帧从头按同一顺序分配，稳态下（draw 序列与实例数不变）偏移与尺寸逐帧相同，材质/调色板
+/// 字节的变化靠 `write_buffer` 原地更新即可。所以只要这个键相等，复用绑定组在语义上完全等价，
+/// 差别只是省掉一次 `create_bind_group`（每条 draw 一次，是本帧最大的一笔绑定组开销）。
+///
+/// 两个 `*_epoch` 由 arena 扩容时自增：缓冲句柄换了，旧绑定组指向旧缓冲，必须重建。
+/// 贴图用**槽位号**而不是视图指针：`albedo_textures` 只追加、不替换，槽位号的视图一生不变。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct MaterialBindKey {
+    material_epoch: u64,
+    material_offset: u64,
+    material_size: u64,
+    /// 0 = 静态网格用共享的 `identity_palette`；1 = 骨骼动画，走 material arena 里的那一段。
+    palette_kind: u8,
+    palette_offset: u64,
+    palette_size: u64,
+    instance_epoch: u64,
+    instance_offset: u64,
+    instance_size: u64,
+    albedo: Option<u32>,
+    metallic_roughness: Option<u32>,
+    emissive: Option<u32>,
+    normal: Option<u32>,
+    occlusion: Option<u32>,
+}
+
+/// 缓存条目：键相等即复用 `bind`。
+pub(super) struct CachedMaterialBind {
+    pub key: MaterialBindKey,
+    pub bind: wgpu::BindGroup,
+}
+
 impl Renderer {
     /// 本设备上"存储缓冲"用法位：没有存储缓冲的设备（WebGL2）返回空位集。
     ///
@@ -56,6 +90,8 @@ impl Renderer {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
+            // 缓冲句柄换了：所有引用旧缓冲的材质绑定组必须重建（缓存键里的代次对不上）。
+            self.material_arena_epoch += 1;
             offset = 0;
         }
         self.queue
@@ -81,6 +117,8 @@ impl Renderer {
                     | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
+            // 与 material arena 同一条纪律：句柄换了，缓存键的代次必须跟上。
+            self.instance_arena_epoch += 1;
             offset = 0;
         }
         self.queue
@@ -95,6 +133,7 @@ impl Renderer {
     /// 缓冲里按偏移引用，每次调用不再新建任何 GPU buffer。
     pub(super) fn material_bind_group(
         &mut self,
+        index: usize,
         material: GpuMaterial,
         palette: &[Mat4],
         models: &[Mat4],
@@ -174,6 +213,37 @@ impl Renderer {
         } else {
             None
         };
+        // P4-①：稳态复用。环形缓冲每帧按同一顺序分配 ⇒ 键相同就意味着"绑定组语义完全等价"，
+        // 直接返回上一帧那个（wgpu 资源是 Arc，clone 只加一次引用计数）。
+        let key = MaterialBindKey {
+            material_epoch: self.material_arena_epoch,
+            material_offset,
+            material_size,
+            palette_kind: if material.skinned && !palette.is_empty() {
+                1
+            } else {
+                0
+            },
+            palette_offset,
+            palette_size,
+            instance_epoch: self.instance_arena_epoch,
+            instance_offset,
+            instance_size,
+            albedo: material.albedo,
+            metallic_roughness: material.metallic_roughness,
+            emissive: material.emissive_texture,
+            normal: material.normal_texture,
+            occlusion: material.occlusion_texture,
+        };
+        let reused = self
+            .material_bind_cache
+            .get(index)
+            .filter(|cached| cached.key == key)
+            .map(|cached| cached.bind.clone());
+        if let Some(bind) = reused {
+            self.material_bind_reused += 1;
+            return (bind, normal_slice);
+        }
         let albedo = material
             .albedo
             .and_then(|index| self.albedo_textures.get(index as usize))
@@ -253,7 +323,46 @@ impl Renderer {
             layout: &self._material_bind_group_layout,
             entries: &entries,
         });
+        self.material_bind_created += 1;
+        // 按序位缓存：同一帧的 draw 序列稳定 ⇒ 下一帧同序位大概率命中。draw 数变少时多出来的
+        // 旧条目留在尾部不参与匹配（它们的偏移下一帧未必还在用），不主动清，免得反复重建。
+        let entry = CachedMaterialBind {
+            key,
+            bind: bind_group.clone(),
+        };
+        if index < self.material_bind_cache.len() {
+            self.material_bind_cache[index] = entry;
+        } else {
+            debug_assert_eq!(
+                index,
+                self.material_bind_cache.len(),
+                "material_bind_group 必须按 draw 序位调用"
+            );
+            self.material_bind_cache.push(entry);
+        }
         (bind_group, normal_slice)
+    }
+
+    /// 打一行**每台渲染器只打一次**的缓存读数：第 5 个有 3D draw 的帧，或首次全命中时。
+    ///
+    /// 为什么要固定打一行而不是只在全命中时打：绑定组复用省的是 CPU 侧创建开销，画面上看不出来。
+    /// 只打"全命中"的话，真机上一帧都没命中的场景在日志里**和缓存不存在时长得一模一样**——
+    /// 那等于没有观测。这一行把 `draws/created/reused` 三个数摆出来，命中率是几一眼可见。
+    pub(super) fn note_material_bind_frame(&mut self, draws: u64) {
+        self.material_bind_frames += 1;
+        let warm = self.material_bind_created == 0;
+        if self.material_bind_reported || (self.material_bind_frames < 5 && !warm) {
+            return;
+        }
+        self.material_bind_reported = true;
+        tracing::info!(
+            target: "render",
+            draws,
+            created = self.material_bind_created,
+            reused = self.material_bind_reused,
+            warm,
+            "[render] material bind cache stats"
+        );
     }
 }
 

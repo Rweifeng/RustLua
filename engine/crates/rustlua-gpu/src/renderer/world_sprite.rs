@@ -250,7 +250,11 @@ impl Renderer {
         } else {
             None
         };
-        let mut groups: HashMap<(String, usize, Option<String>), StaticGroup> = HashMap::new();
+        // 键借用 `scene` 里的路径，**每帧不再为每个 drawable 克隆两个 `String`**：
+        // 10,000 个静态网格的 WP0 阶梯里，这一处曾是每帧 2 万次堆分配（docs/53 的
+        // "每帧分配"口径），而键只需要在本次调用内有效。`scene` 的生存期覆盖整个函数，
+        // `self` 只被 `&self` 读取（网格缓存/缩放查询），因此借用键不会和 `&mut self` 冲突。
+        let mut groups: HashMap<(&str, usize, Option<&str>), StaticGroup> = HashMap::new();
         let mut draws: Vec<FrameDraw> = Vec::new();
         // P3-R02-4：半透明单独排队，最后按到相机的距离**从远到近**画；不参与实例合批
         // （合批会打乱逐实例的透明顺序）。
@@ -308,9 +312,9 @@ impl Renderer {
                 {
                     groups
                         .entry((
-                            drawable.mesh_path.clone(),
+                            drawable.mesh_path.as_str(),
                             prim_index,
-                            drawable.material.clone(),
+                            drawable.material.as_deref(),
                         ))
                         .or_insert_with(|| StaticGroup {
                             geometry: primitive.geometry.clone(),

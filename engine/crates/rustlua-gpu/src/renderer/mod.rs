@@ -751,6 +751,16 @@ pub struct Renderer {
     /// P0-①：per-instance 模型矩阵的帧级环形缓冲，同上，STORAGE 用法。
     instance_arena: wgpu::Buffer,
     instance_arena_used: u64,
+    /// P4-①：3D 材质绑定组缓存（按本帧 draw 序位）。稳态帧零 `create_bind_group`；
+    /// 详见 `arena::MaterialBindKey` 的注释。arena 扩容时靠代次让旧条目失配。
+    material_bind_cache: Vec<arena::CachedMaterialBind>,
+    material_arena_epoch: u64,
+    instance_arena_epoch: u64,
+    /// 本帧新建/复用次数与"打过了吗"（诊断用；见 `note_material_bind_frame`）。
+    material_bind_created: u64,
+    material_bind_reused: u64,
+    material_bind_frames: u64,
+    material_bind_reported: bool,
     uniform_align: u64,
     storage_align: u64,
     /// GPU geometry + file materials cached by mesh path.

@@ -24,6 +24,7 @@ mod depth_and_frame_views;
 mod gpu_pass_timings;
 mod hdr;
 mod ibl;
+mod material_bind_cache;
 mod material_preview;
 mod model_scale;
 mod offscreen_and_tetris;
