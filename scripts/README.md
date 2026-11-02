@@ -20,7 +20,7 @@
 
 | 脚本 | 作用 |
 |---|---|
-| `package.ps1` | 组装自包含发布包（PC / WebGL / 微信小游戏），`-SelfTest` 做目录隔离自测 |
+| `package.ps1` | 组装自包含发布包（PC / WebGL / 微信小游戏），`-SelfTest` 做目录隔离自测；**入口只留参数与编排**，各阶段在 [package/](package/) 下 |
 | `package-engine.ps1` | 引擎绿色版/发布包组装 |
 | `release-atomic.ps1` | 发布目录的临时 staging、原子替换与失败回滚（被 `package.ps1`、`test-release-atomic.ps1` 点源） |
 | `package-branding.ps1` | 把启动品牌图（icon/splash）落到发布根的 `branding/` |
@@ -168,8 +168,9 @@
 ## 调用关系
 
 - `verify/verify.ps1` 是唯一总门，CI 的 `quality.yml`、`test/test.ps1` 都从它进入。
-- `build/package.ps1` 点源 `build/release-atomic.ps1`、`build/zig-toolchain.ps1`、`build/wasm-bindgen.ps1`、
-  `build/minify-toolchain.ps1` 与 `lib/project-image-key.ps1`。
+- `build/package.ps1` 点源 `build/package/*.ps1`（00-context … 90-selftest 共 15 个阶段文件，顺序即语义；
+  入口只留 `param()` 与编排），这些阶段再点源 `build/release-atomic.ps1`、`build/zig-toolchain.ps1`、
+  `build/wasm-bindgen.ps1`、`build/minify-toolchain.ps1` 与 `lib/project-image-key.ps1`。
 - `test/test-bundle.ps1` 点源 `lib/bundle-discovery.ps1`，并调用 `verify/verify-*.ps1` 与 `dev/` 下的服务器。
 - `lib/` 下的公共件不直接作为门入口；改它们等于同时改构建与验收两侧的口径。
 

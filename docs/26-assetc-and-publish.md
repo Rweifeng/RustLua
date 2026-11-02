@@ -117,6 +117,32 @@ RustLua <flags> [12B nonce] <payload>
 
 ## 4. 发布流程（`scripts/build/package.ps1`）
 
+**脚本结构（2026-11-02 按功能拆分）**：入口现在只剩 `param()` 与阶段编排，各阶段落在
+[scripts/build/package/](../scripts/build/package/) 下、按文件名顺序被 **dot-source**——跑在入口的脚本作用域里，
+所以阶段之间共享变量、`$ErrorActionPreference`、`throw`/`return` 行为都与拆分前一致（**阶段文件不是函数**，
+别按函数调；原因是主体共享约 200 个跨阶段变量，改成函数要么传巨型参数表、要么全改 `$script:` 前缀，
+两者都会让「逐字节等价」失去可验证性）。
+
+| 阶段文件 | 负责 |
+|---|---|
+| `00-context.ps1` | 工作区/输出根/cargo target 解析、发布名归一化、微信 appid、资源形态开关 |
+| `10-helpers.ps1` | wasm 优化与降级、JS 压缩、体积断言、清单校验等工具函数 |
+| `20-staging.ps1` | 锁检查、残留 staging 清理、staging 目录命名 |
+| `30-build.ps1` | Release 构建（`-SkipBuild` 时复用既有产物） |
+| `40-assets.ps1` | `assetc package`、容器形态（`-BundleMode`）、微信音频声明 |
+| `50-runner.ps1` | 运行器与文档、品牌图、`wasm-opt`、no-modules 胶水补丁 |
+| `60-settings.ps1` | 打包 `project.toml`、`release = true` 标记与回读 |
+| `70-first-screen.ps1` | 调试残留拦截、首屏清单、代码包改名映射 |
+| `72-subpackage.ps1` | 微信分包形态：首屏资源切到 `mainpack/` |
+| `74-pack-export.ps1` | 资源包导出与瘦身、CDN 镜像 |
+| `76-code-rename.ps1` | 代码包后缀合规（按白名单改名，必须最后做） |
+| `80-validate.ps1` | 平台产物校验（骨架/体积/白名单/CommonJS/ECMA） |
+| `82-manifest.ps1` | `deps.txt` / `build-info.txt` / 说明文件、多分包根 |
+| `84-swap.ps1` | 原子交换（staging → 发布根）与体积汇报 |
+| `90-selftest.ps1` | `-SelfTest` 目录隔离自测与收尾清理 |
+
+验收口径：三平台（pc/webgl/wechat-minigame）各打一次包，产物**逐文件 SHA256 与拆分前一致**，
+只有 `build-info.txt` 的 `build_time` 行不同；`==>` 阶段标记序列也逐条一致（编辑器进度解析依赖它）。
 编辑器「发布」动作后台启动 [scripts/build/package.ps1](../scripts/build/package.ps1)（不弹终端窗，进度解析 `==>` 阶段标记）。脚本执行：
 
 1. Release 构建（`cargo build --workspace --release`；web 平台改为 `cargo build -p game_web --release --target wasm32-unknown-unknown` + `wasm-bindgen`）。
