@@ -85,8 +85,11 @@ scene.set_script_error_policy(ScriptErrorPolicy::Contain);
 
 ## 5. 边界（诚实的部分）
 
-- **不提供 Lua 沙箱**：`Lua::new()` 仍是全套 `io`/`os`/`package`，没有内存上限与指令预算。
-  本策略只回答"回调报错之后怎么办"。
+- **不提供 Lua 沙箱**：VM 仍是全套 `io`/`os`/`package`（只把 `debug` 表移进 registry 供调试器与
+  崩溃守卫自用、在 `_G` 上置 nil），没有内存上限、没有权限/资源配额。**指令预算已有**：默认 10 亿条
+  （`rustlua-scripting/src/script/progress.rs` 的 `DEFAULT_INSTRUCTION_BUDGET`，按入口清零，全局钩子
+  把协程也算在内），但它拦的是"不会停"（`while true do end` 会变成带 `<源>:<行>` 的 Lua 错误），
+  **不是"不许干"**。本策略只回答"回调报错之后怎么办"。
 - **停用不等于修复**：被停用的回调不再执行，依赖它的玩法会**静默降级**（例如敌人不再移动）。
   目前的信号是日志（error 级、前缀 `[lua-guard]`）与 `script_disabled_callbacks()`；编辑器 Play
   另外把它显示在 Game 视图的诊断行上，并在致命时弹「崩溃现场」模态（快照落 `.cache/crash/`，

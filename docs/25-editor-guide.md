@@ -1609,7 +1609,7 @@ egui 自绘 flame chart」。导出 Chrome Trace 早就有，但要**看一眼�
 
 - `crates/editor/src/trace_timeline.rs`——**纯几何 + 落笔**。进纳秒、出像素，不读任何面板状态，
   所以"哪条 span 落在哪个像素、哪条不是真实宽度、刻度为什么这么密"都能不开窗口钉住。
-- `panels/performance.rs::draw_trace_timeline`——只做面板才有的三件事：把**当帧**的
+- `panels/performance/panel.rs::draw_trace_timeline`——只做面板才有的三件事：把**当帧**的
   `ui.available_width()` 交给布局、把鼠标点从"相对分配矩形"换成"相对泳道原点"（差一个
   `TICK_LABEL_HEIGHT = 12`）、没悬停时写概况行。
 
@@ -1662,7 +1662,7 @@ cargo test -q -p editor --bin editor trace -- --test-threads=1
 | D：面板调 `bar_at` 而不是 `hover_at`（忘了减刻度行高） | 第一次跑（子集）是**14 全绿**——见下面那段；`touch` 后单跑 `cargo test -q -p editor --bin editor hovering_a_timeline_bar -- --test-threads=1` 拿到 **0 passed / 1 failed**：`悬停没把那条区间的说明打出来：[… "时间线：2 条 · 窗口 8.00 ms · 2 条泳道（悬停看单条）"]`。临时打的 `DBG` 给出证据：条形是 `frame [0,0,984,12]` / `lua [246,15,369,12]`、分配矩形 `[[8,8]-[992,47]]`、指针 `Some([303.2, 40.0])` ⇒ 相对点 `[295.2, 32]` 落在两条之外（lua 只到 27），而 `hover_at` 减掉 12 后是 20，正落在 lua 上 |
 
 D 这条第一次跑出来是 **14 全绿**，红的不是门而是**没重编**：`cp` 还原 + 紧跟一次编辑之后，
-`cargo` 沿用了上一个二进制。加 `touch crates/editor/src/panels/performance.rs` 重跑才拿到上面那条红。
+`cargo` 沿用了上一个二进制。加 `touch crates/editor/src/panels/performance/panel.rs` 重跑才拿到上面那条红。
 反面对照只有在"改完的二进制确实是它"时才算证据——看红点之前先看它有没有重编。
 
 ### 27.5 代价与没做的部分

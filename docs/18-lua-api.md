@@ -482,8 +482,10 @@ Rapier 的 CCD 是**刚体**属性而不是碰撞体属性，因此一个刚体�
 - 非法、负数、代际为零或已销毁的 Entity ID 返回 Lua 运行时错误；
 - Transform、生命值、物理查询拒绝非法浮点数和负数参数；
 - API 错误转换为 Lua 错误，不通过 panic 终止宿主；
-- API 运行在主线程共享状态中，后续可替换为 ECS Command 队列以支持安全跨系统修改；
-- 当前 `scene/asset/ui/save` 是可测试的内存状态适配层，真实持久化和渲染绑定留给后续 M4/M5 任务。
+- API 运行在主线程共享状态中，**直接改宿主世界**（`Handle<World>` 等），不经 ECS Command 队列；
+  `rustlua-ecs` 的 `CommandQueue`/`EventQueue` 目前只在 `ecs_stress` 示例与 crate 内测试里使用，
+  运行时主循环没有接线；
+- `scene/asset/ui/save` 从 M4/M5 起已接真实持久化与渲染绑定，不再是"内存状态适配层"。
 
 ## 脚本组织
 
@@ -492,6 +494,9 @@ Rapier 的 CCD 是**刚体**属性而不是碰撞体属性，因此一个刚体�
 - 热重载会重建 Lua VM，模块随脚本一并重新加载（闭包/协程/全局状态不跨重载迁移，见 [19-lua-hot-reload.md](19-lua-hot-reload.md)）。
 
 ## 验收
+
+> **下面是 M4 时期的历史读数**（`engine_core`/`game_runner` 这两个 crate 名早已不存在，
+> 计数也已过期）。当前验收一律以 `scripts\verify\verify.ps1` 及其日志为准，本节不再维护读数。
 
 ```text
 cargo clippy -p engine_core --all-targets --all-features -- -D warnings
