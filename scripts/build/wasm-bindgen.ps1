@@ -92,7 +92,57 @@ function Install-WasmBindgenCli([string]$WantVersion) {
     finally { $ErrorActionPreference = $savedEap }
     if ($exit -ne 0) { throw "wasm-bindgen-cli $WantVersion install failed (exit $exit)." }
     if (-not (Test-WasmBindgenCli $toolsExe $WantVersion)) {
-        throw "wasm-bindgen-cli installed but version check failed: $toolsExe"
+        # 判红时把"为什么判不出来"一起带走：CI 上这一步 2026-11-02 只留下"version check
+        # failed"，日志要认证才能读、annotation 还被截断，等于没有信息。这里把 cargo/rustc
+        # 版本、可执行文件本身、`--version` 的原始输出与退出码、bin 目录清单全部塞进消息里，
+        # 下一次红就能一眼定位（是装成了别的版本、exe 根本跑不起来、还是根本没落地）。
+        $detail = New-Object System.Collections.Generic.List[string]
+        $savedEapDetail = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $cargoVersion = (& cargo --version 2>&1 | Out-String).Trim()
+            $rustcVersion = (& rustc --version 2>&1 | Out-String).Trim()
+            $detail.Add("want=$WantVersion")
+            $detail.Add("cargo=$cargoVersion")
+            $detail.Add("rustc=$rustcVersion")
+            $detail.Add("exe=$toolsExe exists=$(Test-Path -LiteralPath $toolsExe -PathType Leaf)")
+            if (Test-Path -LiteralPath $toolsExe -PathType Leaf) {
+                $info = Get-Item -LiteralPath $toolsExe
+                $detail.Add("exe_size=$($info.Length)")
+                $detail.Add("exe_mtime=$($info.LastWriteTime.ToString('s'))")
+                $rawVersion = (& $toolsExe --version 2>&1 | Out-String).Trim()
+                $detail.Add("exe_version_exit=$LASTEXITCODE")
+                $detail.Add("exe_version_raw='$rawVersion'")
+            }
+            $binDir = Join-Path $toolsRoot "bin"
+            if (Test-Path -LiteralPath $binDir) {
+                $binList = @(Get-ChildItem -LiteralPath $binDir | ForEach-Object { "$($_.Name)=$($_.Length)" }) -join ','
+                $detail.Add("bin=[$binList]")
+            }
+            $detail.Add("parsed_version='$(Get-WasmBindgenCliVersion $toolsExe)'")
+        }
+        catch { $detail.Add("diagnostics_failed=$($_.Exception.Message)") }
+        finally { $ErrorActionPreference = $savedEapDetail }
+        # 兜底：cargo 有时把可执行文件落到别处（`CARGO_INSTALL_ROOT`/`CARGO_HOME` 环境、
+        # 或 `--root` 被上层配置顶掉）。只要**某个候选**的版本对得上，就搬到 `.tools` 里继续，
+        # 不影响"版本必须精确匹配 crate 版本"这条不变量（错的版本照样判红）。
+        $retryCandidates = @(
+            (Join-Path $env:USERPROFILE ".cargo\bin\wasm-bindgen.exe"),
+            (Join-Path $env:CARGO_HOME "bin\wasm-bindgen.exe")
+        ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) }
+        foreach ($candidate in $retryCandidates) {
+            if (Test-WasmBindgenCli $candidate $WantVersion) {
+                Write-Host "==> wasm-bindgen 被 cargo 装到了别处，搬进 .tools：$candidate" -ForegroundColor Yellow
+                New-Item -ItemType Directory -Force -Path (Split-Path $toolsExe) | Out-Null
+                Copy-Item -LiteralPath $candidate -Destination $toolsExe -Force
+                $detail.Add("rescued_from=$candidate")
+                break
+            }
+        }
+        if (Test-WasmBindgenCli $toolsExe $WantVersion) {
+            Write-Host "wasm-bindgen ready: $toolsExe ($WantVersion, rescued)" -ForegroundColor Green
+            return $toolsExe
+        }                throw "wasm-bindgen-cli installed but version check failed: $toolsExe $($detail -join '; ')"
     }
     Write-Host "wasm-bindgen ready: $toolsExe ($WantVersion)" -ForegroundColor Green
     return $toolsExe
