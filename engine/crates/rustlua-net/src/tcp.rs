@@ -136,14 +136,22 @@ mod tests {
     }
 
     /// 在真实 socket 上跑满 `frames` 帧；返回本端放行的每一帧输入。
+    ///
+    /// 放行帧数 = `frames + WARMUP`：`prime` 先塞了 `WARMUP` 帧预热，这些帧也会被放行。
+    /// **循环必须等到这 `frames + WARMUP` 帧都进日志**——2026-11-02 的 CI 红就是这里：
+    /// 旧实现在 `log.len() >= frames` 时立刻退出，剩下两帧能不能在 200 ms 排空里被
+    /// `try_advance` 取到全看调度，于是同一份代码一会儿 80 一会儿 82（
+    /// `client advanced every frame: left 80, right 82`）。
     fn run_side<T: Transport>(transport: T, local: PlayerId, frames: u32) -> Vec<FrameInputs> {
+        const WARMUP: u32 = 2;
         let config = SessionConfig::new(2, local, 2).expect("config");
         let mut session = Session::new(config, transport);
-        session.prime(Vec::new(), 2).expect("prime");
+        session.prime(Vec::new(), WARMUP).expect("prime");
+        let expected = frames as usize + WARMUP as usize;
         let mut log = Vec::new();
         let mut submitted = 0;
         let deadline = Instant::now() + Duration::from_secs(10);
-        while log.len() < frames as usize {
+        while log.len() < expected {
             while submitted < frames {
                 session.submit(payload(local, submitted)).expect("submit");
                 submitted += 1;
@@ -157,15 +165,22 @@ mod tests {
             }
             assert!(
                 Instant::now() < deadline,
-                "tcp session stalled at {} / {frames} frames",
+                "tcp session stalled at {} / {expected} frames",
                 log.len()
             );
             thread::sleep(Duration::from_millis(1));
         }
-        // 把最后几帧的校验和也交换完，再断言没有 desync。
+        // 把最后几帧的校验和也交换完，再断言没有 desync。排空阶段同样要收帧：
+        // 只 `poll` 不 `try_advance` 会让"已到但没取"的帧永远留在队列里。
         let drain = Instant::now() + Duration::from_millis(200);
         while Instant::now() < drain {
             session.poll().expect("drain");
+            while let Some(frame) = session.try_advance() {
+                session
+                    .record_checksum(frame.frame, frame.checksum())
+                    .expect("checksum");
+                log.push(frame);
+            }
             thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(

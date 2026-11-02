@@ -404,6 +404,27 @@ mod tests {
         fs::File::create(path).unwrap().write_all(contents).unwrap();
     }
 
+    /// 改内容，并把 mtime 显式拨到比改动前更晚的一刻。
+    ///
+    /// 只写内容**不保证签名变化**：文件系统时间戳有粒度（也会在同一时间片内复用），
+    /// 紧接着的第二次写回可能拿到和第一次相同的 mtime；去重按 mtime 签名比较，
+    /// 于是"内容变了要自动重试"的用例在负载高的 runner 上偶发红（本地通常秒过）。
+    /// `File::set_modified` 给出确定性的更晚 mtime——比 `sleep(1.1s)` 快，也不依赖时钟粒度。
+    fn rewrite_with_newer_mtime(root: &Path, relative: &str, contents: &[u8]) {
+        let path = root.join(relative);
+        let previous = fs::metadata(&path).and_then(|meta| meta.modified()).ok();
+        file(root, relative, contents);
+        let newer = previous.map_or_else(SystemTime::now, |previous| {
+            previous + std::time::Duration::from_secs(2)
+        });
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("rewritten file must be openable")
+            .set_modified(newer)
+            .expect("set_modified must succeed for a file we just wrote");
+    }
+
     fn unique_suffix() -> u128 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -683,7 +704,7 @@ mod tests {
         // 文件内容变化 → 签名变化 → 自动重新排队（与 staled_files 那条门一致）。
         let pending = browser.pending_imports().to_vec();
         browser.record_import_attempts(&pending);
-        file(&root, "assets/player.png", b"png3");
+        rewrite_with_newer_mtime(&root, "assets/player.png", b"png3");
         browser.refresh(&root).unwrap();
         assert_eq!(
             browser.pending_imports().len(),
@@ -758,7 +779,7 @@ mod tests {
             worker_state = next;
         }
         // 内容变化后签名不同 → 自动重新排队（语义不被破坏）。
-        file(&root, "assets/player.png", b"png3");
+        rewrite_with_newer_mtime(&root, "assets/player.png", b"png3");
         let mut changed = ResourceBrowserState::new();
         changed.refresh(&root).unwrap();
         changed.adopt_from(&worker_state);
@@ -816,10 +837,9 @@ mod tests {
         let pending = browser.pending_imports().to_vec();
         browser.record_import_attempts(&pending);
         // 修改文件内容 → mtime 变化 → reconcile 转 Stale → 应重新待导入。
-        // CI 的 NTFS mtime 粒度/复用会让紧接着的写回拿到同一时间戳；显式跨过一个时间片，
-        // 否则 pending 仍为 0，测试在 runner 上偶发红（本地通常秒过）。
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-        file(&root, "assets/player.png", b"png2");
+        // 用 `set_modified` 显式拨后 mtime：文件系统时间戳粒度/复用会让紧接着的写回
+        // 拿到同一时间戳，靠 `sleep(1.1s)` 既不快也不够可靠。
+        rewrite_with_newer_mtime(&root, "assets/player.png", b"png2");
         browser.refresh(&root).unwrap();
         assert_eq!(browser.pending_imports().len(), 1);
         let _ = fs::remove_dir_all(root);

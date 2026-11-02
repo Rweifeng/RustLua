@@ -896,6 +896,11 @@ mod tests {
     ///
     /// 前两条把"数据真的迁干净了"变成每次 `cargo test` 都重新证明的事实：任何新场景只要写回旧名
     /// 或旧形态，这条立刻判红。覆盖 `scenes/**` 与 `**/*.prefab`（构建产物目录除外）。
+    ///
+    /// **Prefab 真的被审计**：`Scene::load` 读不了 `.prefab`（它只认场景序列化格式），
+    /// 早先的实现靠 `let Ok(scene) = Scene::load(..) else { continue }` 把它们静默跳过，
+    /// 于是文档说"覆盖 prefab"、实际只覆盖了场景。现在 prefab 走 `Prefab::load` +
+    /// `instantiate` 转成场景再跑同一套断言（实例化是逐键拷贝，旧组件名不会被吞掉）。
     #[test]
     fn shipped_data_uses_only_unified_components() {
         use crate::scene_space::ParentLinkIssue;
@@ -906,8 +911,26 @@ mod tests {
                 .join("examples")
                 .join(project);
             for file in project_data_files(&root) {
-                let Ok(scene) = Scene::load(&file) else {
-                    continue;
+                let scene = match file.extension().and_then(|ext| ext.to_str()) {
+                    Some("prefab") => {
+                        let Ok(prefab) = crate::prefab::Prefab::load(&file) else {
+                            continue;
+                        };
+                        let mut scene = Scene::new(prefab.name.clone());
+                        if prefab
+                            .instantiate(&mut scene, None, &std::collections::BTreeMap::new())
+                            .is_err()
+                        {
+                            continue;
+                        }
+                        scene
+                    }
+                    _ => {
+                        let Ok(scene) = Scene::load(&file) else {
+                            continue;
+                        };
+                        scene
+                    }
                 };
                 checked_files += 1;
                 for entity in scene.entities.values() {
@@ -955,8 +978,9 @@ mod tests {
             }
         }
         assert!(
-            checked_files >= 20,
-            "审计应覆盖随仓库发布的场景与 Prefab，实际只读到 {checked_files} 份"
+            checked_files >= 19,
+            "审计应覆盖随仓库发布的场景与 Prefab（2026-11-02 家底：16 个场景 + 3 个 Prefab = 19 份），\
+             实际只读到 {checked_files} 份；新增/删除样例数据时同步改这里的下限"
         );
     }
 
