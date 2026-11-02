@@ -691,8 +691,9 @@ impl GameApp {
                         sdf: false,
                         bitmap: false,
                         vector: false,
-                        // 性能浮层是世界之上的叠加内容：屏幕空间、不参与深度。
-                        render_layer: rustlua_render::layer::RenderLayer::Overlay2D,
+                        // 性能浮层是屏幕空间、不参与深度的**最高层**：HUD/UI 走 ScreenUI，
+                        // 这里必须排在它之后，否则会被 HUD 盖住（docs/54 的层序）。
+                        render_layer: rustlua_render::layer::RenderLayer::ScreenUI,
                     });
                 }
                 if uses_atlas {
@@ -1029,6 +1030,7 @@ impl ApplicationHandler for GameApp {
                 // 输入，因此继续按逻辑键判定：它不该受改键表影响，也不该因为键盘
                 // 布局而变化。Esc 不再退出进程，只作为玩法输入交给上层。
                 if event.state == ElementState::Pressed
+                    && !event.repeat
                     && matches!(
                         &event.logical_key,
                         winit::keyboard::Key::Named(winit::keyboard::NamedKey::F3)
@@ -1145,16 +1147,39 @@ fn build_overlay(snapshot: PerformanceSnapshot, width: u32, height: u32) -> Over
 
     // 文本行：`(标签, 数值文本, 量条比例, 数值颜色)`。
     let frame_ms_color = if snapshot.frame_ms > 20.0 {
-        [1.0, 0.42, 0.38, 1.0]
+        [1.0, 0.36, 0.32, 1.0]
+    } else if snapshot.frame_ms > 12.0 {
+        [1.0, 0.78, 0.30, 1.0]
     } else {
-        [0.92, 0.96, 0.92, 1.0]
+        [0.90, 0.97, 0.90, 1.0]
+    };
+    let fps_color = if snapshot.fps < 30.0 {
+        [1.0, 0.36, 0.32, 1.0]
+    } else if snapshot.fps < 55.0 {
+        [1.0, 0.78, 0.30, 1.0]
+    } else {
+        [0.42, 1.0, 0.55, 1.0]
+    };
+    let update_color = if snapshot.update_ms > 16.7 {
+        [1.0, 0.36, 0.32, 1.0]
+    } else if snapshot.update_ms > 8.0 {
+        [1.0, 0.78, 0.30, 1.0]
+    } else {
+        [0.90, 0.97, 0.90, 1.0]
+    };
+    let lua_color = if snapshot.lua_ms > 8.0 {
+        [1.0, 0.36, 0.32, 1.0]
+    } else if snapshot.lua_ms > 4.0 {
+        [1.0, 0.78, 0.30, 1.0]
+    } else {
+        [0.90, 0.97, 0.90, 1.0]
     };
     let rows = [
         (
             "FPS",
             format!("{:.1}", snapshot.fps),
             (snapshot.fps / 120.0).clamp(0.0, 1.0),
-            [0.45, 1.0, 0.55, 1.0],
+            fps_color,
         ),
         (
             "FRAME ms",
@@ -1166,38 +1191,66 @@ fn build_overlay(snapshot: PerformanceSnapshot, width: u32, height: u32) -> Over
             "UPDATE ms",
             format!("{:.2}", snapshot.update_ms),
             (snapshot.update_ms / 16.7).clamp(0.0, 1.0),
-            frame_ms_color,
+            update_color,
         ),
         (
             "LUA ms",
             format!("{:.2}", snapshot.lua_ms),
             (snapshot.lua_ms / 8.0).clamp(0.0, 1.0),
-            frame_ms_color,
+            lua_color,
         ),
         (
             "FRAMES",
             format!("{}", snapshot.frames),
             ((snapshot.frames % 600) as f32) / 600.0,
-            [0.75, 0.78, 0.72, 1.0],
+            [0.78, 0.84, 0.80, 1.0],
         ),
     ];
 
-    // 像素布局：面板 8px 内边距 + 5x7 字模放大 2 倍（10x14px），每行 22px。
-    const PAD_X: f32 = 8.0;
-    const PAD_Y: f32 = 6.0;
-    const ROW_H: f32 = 22.0;
+    // 像素布局：标题 1 行 + 5 个指标行（标签/数值在上，量条在下），行高 34。
+    const PAD_X: f32 = 10.0;
+    const PAD_Y: f32 = 8.0;
+    const ROW_H: f32 = 34.0;
     const SCALE: f32 = 2.0;
-    let panel_w = 232.0;
+    const PANEL_W: f32 = 300.0;
     let panel_h = PAD_Y * 2.0 + 20.0 + rows.len() as f32 * ROW_H;
+    let panel_x1 = -1.0 + PANEL_W / width * 2.0;
+    let panel_y1 = 1.0 - panel_h / height * 2.0;
 
-    // 面板底 + 文字。
-    let panel = rect_vertices_colored(
+    // 面板底：近黑、几乎不透明；外圈 1.5px 青绿描边，和地图/HUD 明确分开。
+    let mut panel = Vec::new();
+    panel.extend(rect_vertices_colored(
         -1.0,
         1.0,
-        -1.0 + panel_w / width * 2.0,
-        1.0 - panel_h / height * 2.0,
-        [0.02, 0.03, 0.05, 0.72],
-    );
+        panel_x1,
+        panel_y1,
+        [0.012, 0.022, 0.030, 0.94],
+    ));
+    let bx = 1.5 / width * 2.0;
+    let by = 1.5 / height * 2.0;
+    let border = [0.20, 0.72, 0.52, 1.0];
+    panel.extend(rect_vertices_colored(-1.0, 1.0, panel_x1, 1.0 - by, border));
+    panel.extend(rect_vertices_colored(
+        -1.0,
+        panel_y1 + by,
+        panel_x1,
+        panel_y1,
+        border,
+    ));
+    panel.extend(rect_vertices_colored(
+        -1.0,
+        panel_y1,
+        -1.0 + bx,
+        1.0,
+        border,
+    ));
+    panel.extend(rect_vertices_colored(
+        panel_x1 - bx,
+        panel_y1,
+        panel_x1,
+        1.0,
+        border,
+    ));
     let panel_start = 0;
     let panel_count = panel.len() as u32;
     vertices.extend_from_slice(&panel);
@@ -1241,46 +1294,41 @@ fn build_overlay(snapshot: PerformanceSnapshot, width: u32, height: u32) -> Over
         &mut text_vertices,
     );
 
-    // 量条：面板内每行底部一条 6px 高的槽 + 当前值填充。
-    // 注意：这里算出来的是**像素**坐标，必须换算成 NDC 再交给 `rect_vertices_colored`
-    // （否则量条会被画到屏幕外，只剩面板底和文字）。
+    // 每行：标签在左、数值右对齐，量条横跨整行底部；标签/数值/条用不同颜色，
+    // 深色底板保证在草地/水域上也读得清。
     let to_ndc_x = |px: f32| px / width * 2.0 - 1.0;
     let to_ndc_y = |py: f32| 1.0 - py / height * 2.0;
     let bars_start = vertices.len() as u32;
-    let bar_x0 = PAD_X + 74.0;
-    let bar_x1 = panel_w - PAD_X;
-    for (index, (_, value, ratio, _)) in rows.iter().enumerate() {
-        let row_y = PAD_Y + 20.0 + index as f32 * ROW_H;
-        let bar_y = row_y + 4.0;
+    let bar_x0 = PAD_X;
+    let bar_x1 = PANEL_W - PAD_X;
+    for (index, (label, value, ratio, value_color)) in rows.iter().enumerate() {
+        let row_y = PAD_Y + 26.0 + index as f32 * ROW_H;
+        let bar_y = row_y + 18.0;
         vertices.extend(rect_vertices_colored(
             to_ndc_x(bar_x0),
-            to_ndc_y(row_y),
+            to_ndc_y(bar_y),
             to_ndc_x(bar_x1),
-            to_ndc_y(bar_y + 6.0),
-            [0.16, 0.18, 0.20, 0.85],
+            to_ndc_y(bar_y + 7.0),
+            [0.10, 0.14, 0.16, 0.95],
         ));
         let filled = bar_x0 + (bar_x1 - bar_x0) * ratio;
-        let bar_color = if index == 0 {
-            [0.25, 0.85, 0.45, 0.95]
-        } else {
-            [0.85, 0.70, 0.30, 0.95]
-        };
         vertices.extend(rect_vertices_colored(
             to_ndc_x(bar_x0),
-            to_ndc_y(row_y),
+            to_ndc_y(bar_y),
             to_ndc_x(filled),
-            to_ndc_y(bar_y + 6.0),
-            bar_color,
+            to_ndc_y(bar_y + 7.0),
+            [value_color[0], value_color[1], value_color[2], 0.95],
         ));
-        // 标签在左、数值在右侧量条上方（标签列宽 9 字符，右对齐数值）。
-        let label = format!("{:<9} {}", rows[index].0, value);
         push_text(
-            &label,
+            label,
             PAD_X,
-            row_y - 3.0,
-            [0.88, 0.92, 0.88, 1.0],
+            row_y,
+            [0.64, 0.78, 0.74, 1.0],
             &mut text_vertices,
         );
+        // 5x7 字模放大 2 倍后每个字符约 12px，右对齐到面板内边距。
+        let value_x = (PANEL_W - PAD_X - value.chars().count() as f32 * 12.0).max(PAD_X + 110.0);
+        push_text(value, value_x, row_y, *value_color, &mut text_vertices);
     }
     let bars_count = vertices.len() as u32 - bars_start;
     ranges.push(OverlayRange {

@@ -150,6 +150,26 @@ function Install-WasmBindgenCli([string]$WantVersion) {
             return $toolsExe
         }
 
+        # 版本检查失败**之后**的诊断要包含"能不能跑"这一项：force 装完仍然对不上，最可能是
+        # exe 根本起不来（缺 DLL / 被杀软截断），而不是版本号错。这里先探一次，把退出码与
+        # 原始输出带进 detail。
+        $probeExit = $null
+        $probeOut = ''
+        $savedEapProbe = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            if (Test-Path -LiteralPath $toolsExe -PathType Leaf) {
+                $probeOut = (& $toolsExe --version 2>&1 | Out-String).Trim()
+                $probeExit = $LASTEXITCODE
+            }
+        }
+        catch { $probeOut = "threw=$($_.Exception.Message)" }
+        finally { $ErrorActionPreference = $savedEapProbe }
+        $detail.Add("probe_exit=$probeExit")
+        if ($probeOut.Length -gt 120) { $probeOut = $probeOut.Substring(0, 120) + '...' }
+        $detail.Add("probe_out='$probeOut'")
+
+
         # 兜底：cargo 有时把可执行文件落到别处（`CARGO_INSTALL_ROOT`/`CARGO_HOME` 环境、
         # 或 `--root` 被上层配置顶掉）。只要**某个候选**的版本对得上，就搬到 `.tools` 里继续，
         # 不影响"版本必须精确匹配 crate 版本"这条不变量（错的版本照样判红）。
@@ -170,7 +190,13 @@ function Install-WasmBindgenCli([string]$WantVersion) {
             Write-Host "wasm-bindgen ready: $toolsExe ($WantVersion, rescued)" -ForegroundColor Green
             return $toolsExe
         }
-        throw "wasm-bindgen-cli installed but version check failed: $toolsExe $($detail -join '; ')"
+        # PowerShell 把 ErrorRecord 显示成 "FullyQualifiedErrorId : 前20字...尾20字"，中间全被
+        # 吃掉——CI annotation 上就只剩 "wasm-bindgen-cl...'; force_exit=0"，等于白写。改用
+        # workflow 命令 `::error::` 发一行：GitHub 把这一行**原样**收进 annotation，不受
+        # PowerShell 的错误格式化截断影响。本地跑时它只是一行普通输出。
+        $flat = (($detail -join '; ') -replace "[\r\n]+", ' ')
+        if ($flat.Length -gt 1500) { $flat = $flat.Substring(0, 1500) + '...' }
+        Write-Host "::error::wasm_bindgen_version_check_failed $flat"        throw "wasm-bindgen-cli installed but version check failed: $toolsExe $($detail -join '; ')"
     }
     Write-Host "wasm-bindgen ready: $toolsExe ($WantVersion)" -ForegroundColor Green
     return $toolsExe
