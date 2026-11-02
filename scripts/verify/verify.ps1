@@ -701,8 +701,10 @@ try {
     # 共同入口，而这条命令此前只出现在 opt-in 的 `-WasmLua`/`-Web` 与 CI matrix 里。代价是
     # `rustlua-gameplay/src/net_lua.rs` 的 `#[cfg(target_arch = "wasm32")] let stats = None;`
     # 推不出类型（E0282），HEAD 上 WebGL/微信产物**根本编不出来**，本机 -Quick 却全绿。
-    # 热缓存实测约 10 s，因此不登记进 -Quick 跳过清单：它不是重活，而"这棵树红不红"必须
-    # 包含平台分支。缺 wasm32 目标时打印原因跳过（跳过不等于通过），不判红。
+    # 热缓存实测（2026-11-02）：两条命令 1.3 s + 0.5 s（无改动时近乎空跑），改过
+    # game_web/gameplay 之后约 10 s；整个 `-Quick` 端到端 233 s。因此不登记进 -Quick 跳过
+    # 清单：它不是重活，而"这棵树红不红"必须包含平台分支。
+    # 缺 wasm32 目标时打印原因跳过（跳过不等于通过），不判红。
     # 口径说明：这里用的是仓库默认工具链（与 CI matrix 的 wasm cell 同一口径，1.97.1）；
     # 发布链另有自己的 wasm 工具链（package.ps1 固定 1.88.0，见其 WP10 的 EH 口径），
     # 两者不互相替代——这一步只回答"代码还编不编得过"，产物由 package.ps1/verify-webgl-bundle 证明。
