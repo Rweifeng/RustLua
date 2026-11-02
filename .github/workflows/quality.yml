@@ -384,7 +384,23 @@ jobs:
           $log = "${{ github.workspace }}\artifacts\logs\quality\web-evidence.log"
           pwsh -NoProfile -File scripts/verify/verify.ps1 -Web 2>&1 | Tee-Object -FilePath $log
           $code = $LASTEXITCODE
-          if ($code -ne 0) { Write-Host "web evidence failed (exit $code); full log: $log"; exit $code }
+          # 判红之前先把"为什么红"摊在 job 日志里：这份日志此前只写文件、不上传，红了就只能
+          # 看到一个退出码（2026-11-02 排查 CI 时踩到——三次红都无从判断是哪一层）。
+          if ($code -ne 0) {
+            Write-Host "::group::web evidence failure tail (last 40 lines of $log)"
+            Get-Content -LiteralPath $log -Tail 40 | ForEach-Object { Write-Host $_ }
+            Write-Host "::endgroup::"
+            Write-Host "web evidence failed (exit $code); full log: $log"
+            exit $code
+          }
+
+      - name: Upload web evidence log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-evidence-log
+          path: artifacts/logs/quality/web-evidence.log
+          if-no-files-found: warn
 
       # wasm Lua 运行期验证门：no-modules 桥（game_web 的 Lua 桥导出）+ gpu2d 宿主画布探针的
       # Node 验证。**直接**调 wrapper（不经 verify.ps1），避免把整套常规门再跑
