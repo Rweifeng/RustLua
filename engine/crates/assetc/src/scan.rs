@@ -46,6 +46,23 @@ pub(crate) fn project_font_declarations(project: &Path) -> Vec<String> {
         .collect()
 }
 
+/// 工程**运行期实际会读**的主字体路径：`font` 键为空/缺失时回退到
+/// [`rustlua_render::font::project_font::primary_path`] 的缺省值
+/// （`assets/fonts/NotoSansSC-VF.ttf`）。文件不存在时返回 `None`。
+///
+/// 为什么需要它：`project_font_declarations` 只认 `project.toml` 里写出来的键，而运行期把
+/// "没写 font" 当成"用缺省字体"。两者口径不一致时，发布链会先按 `--keep assets/fonts/`
+/// 留下字体、再按 `--drop-undeclared-fonts` 把它删掉，随后又被
+/// `WeChat package requires the subset font inside pack/` 拦下（2026-11-02 实测）——
+/// 而 WebGL 更隐蔽：包能发出来，只是**没有字体、文字全是占位符**。
+pub(crate) fn effective_primary_font(project: &Path) -> Option<String> {
+    // 声明优先；没声明时回落到运行期缺省路径——默认值只认 `project_font::primary_path`
+    // 这一处，避免 assetc 与运行时各写一份默认名。
+    let path = project_font_key(project)
+        .unwrap_or_else(|| rustlua_render::font::project_font::primary_path(project));
+    project.join(&path).is_file().then_some(path)
+}
+
 /// 验证项目目录存在 `project.toml`。
 pub fn ensure_project(project: &Path) -> anyhow::Result<()> {
     let manifest = project.join("project.toml");

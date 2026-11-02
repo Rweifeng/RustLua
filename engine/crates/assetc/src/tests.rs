@@ -450,6 +450,41 @@ fn package_drops_undeclared_fonts_when_requested() {
     cleanup(&root);
 }
 
+/// 缺省字体也算"声明过"：`font` 键写空时运行期读的是缺省路径，发布链必须与运行期同口径。
+/// 2026-11-02 实测反例：`--drop-undeclared-fonts` 把缺省字体删掉后，微信打包被
+/// `WeChat package requires the subset font inside pack/` 拦下；WebGL 更隐蔽——包能发出来，
+/// 只是没有字体、文字全成占位符。
+#[test]
+fn package_keeps_default_font_when_font_key_is_empty() {
+    let root = temp_project("package-font-default");
+    let mut toml = fs::read_to_string(root.join("project.toml")).unwrap();
+    toml.push_str("font = \"\"\n");
+    fs::write(root.join("project.toml"), toml).unwrap();
+    fs::create_dir_all(root.join("assets/fonts")).unwrap();
+    fs::write(
+        root.join("assets/fonts/NotoSansSC-VF.ttf"),
+        b"not-a-real-ttf",
+    )
+    .unwrap();
+    fs::write(root.join("assets/fonts/unused.ttf"), b"dead").unwrap();
+    let out =
+        std::env::temp_dir().join(format!("rustlua-assetc-defaultout-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&out);
+    package(&root, &out, false, false, true).unwrap();
+    assert!(
+        out.join("assets/fonts/NotoSansSC-VF.ttf").is_file(),
+        "缺省主字体是运行期真的会读的文件，不能按未声明剔除"
+    );
+    assert!(
+        !out.join("assets/fonts/unused.ttf").exists(),
+        "真正没被声明的字体仍要剔除（配额门的本意）"
+    );
+    let manifest_text = fs::read_to_string(out.join("manifest.txt")).unwrap();
+    assert!(manifest_text.contains("NotoSansSC-VF.ttf"));
+    fs::remove_dir_all(&out).ok();
+    cleanup(&root);
+}
+
 #[test]
 fn package_dependency_index_records_static_edges_and_opaque_sources() {
     let root = temp_project("package-dependency-index");

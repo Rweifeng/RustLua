@@ -355,17 +355,38 @@ fn check_plan_against_dir(
     // `keep` 条目（微信字体/音频这类宿主按真实路径读的文件）：必须留在目录里，
     // 且不得再出现在任何容器索引里。两条都查，因为两种失效方向都会真机出事：
     // 只在容器里 → `wx.loadFont` 读不到真实路径；两边都有 → 白占配额且两份会漂移。
-    let (keep_root, keep_dir) = if multi_root {
+    //
+    // 落在哪个根**不由计划声明**（它就是一条真实路径）：单根形态在 `pack/`，分包形态可能在
+    // `pack-sub/`。2026-11-02 实测：`examples/game_api` 的 `assets/audio/*.ogg` 都在
+    // `pack-sub/assets/audio/` 里，而这里只查 `pack/`，于是一份完整产物被报成
+    // "keep 条目不在目录里"——微信产物验收卡在这一条上。逐个内容根找，找到即算在。
+    let mut keep_roots: Vec<(String, PathBuf)> = vec![if multi_root {
         ("pack".to_owned(), base.join("pack"))
     } else {
         single.clone()
-    };
+    }];
+    if multi_root {
+        for unit in ["main", "sub"] {
+            if let Some((name, dir)) = root_for(unit)?
+                && !keep_roots.iter().any(|(existing, _)| existing == &name)
+            {
+                keep_roots.push((name, dir));
+            }
+        }
+    }
+    let keep_root_label = keep_roots
+        .iter()
+        .map(|(name, _)| format!("{name}/"))
+        .collect::<Vec<_>>()
+        .join("、");
     // `None` = 这份计划是还没有 keep 元数据的旧版本打的：没有契约可查（不是"声明了零条"）。
     report.keep_contract = plan.keep.is_some();
     for relative in plan.keep.iter().flatten() {
         report.keep_checked += 1;
-        let file = keep_dir.join(relative);
-        if !file.is_file() {
+        let found = keep_roots
+            .iter()
+            .any(|(_, dir)| dir.join(relative).is_file());
+        if !found {
             // 瘦首包（`-AssetPack remote`）把 `pack/` 裁成骨架，字体/音频随资源包导出到
             // `assets/pack/…`，适配层启动时先下载再按真实路径喂给 `wx.loadFont`。
             // 所以"不在发布根里"本身不等于坏，**只要它在资源包里**；两处都没有才是真缺件。
@@ -380,7 +401,7 @@ fn check_plan_against_dir(
                     }
                 };
                 report.problems.push(format!(
-                    "keep 条目不在目录里：{relative}（应在 {keep_root}/，宿主按真实路径读它）{hint}"
+                    "keep 条目不在目录里：{relative}（应在 {keep_root_label}之一，宿主按真实路径读它）{hint}"
                 ));
             }
         }
@@ -817,6 +838,64 @@ mod tests {
         // 反例：把留在目录里的那份删掉 → 宿主会读不到（容器里也没有），必须点名。
         let victim = base.join("pack").join(&kept[0]);
         std::fs::remove_file(&victim).unwrap();
+        let report = check_release_closure(&base, None).expect("计划表可解析");
+        assert!(
+            report
+                .problems
+                .iter()
+                .any(|problem| problem.contains("keep 条目不在目录里")),
+            "{:?}",
+            report.problems
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 分包形态下 keep 条目可能落在 `pack-sub/`（微信 launcher），不是 `pack/`。
+    /// 2026-11-02 实测：`examples/game_api` 的 `assets/audio/*.ogg` 全在 `pack-sub/assets/audio/`，
+    /// 只查 `pack/` 会把一份完整产物判红，微信产物验收因此卡在 `assetc closure`。
+    #[test]
+    fn keep_entries_are_found_in_the_subpackage_root() {
+        let base = temp_dir("keep-subpackage");
+        let plan = release_with_keep(&base);
+        let kept = plan.keep.clone().unwrap_or_default();
+        let victim = kept.first().expect("至少一条 keep").clone();
+        // 切到多根形态：一个组搬进 pack-sub/，keep 文件也搬过去。
+        std::fs::create_dir_all(base.join("pack-sub/bundles")).unwrap();
+        std::fs::create_dir_all(
+            base.join("pack-sub")
+                .join(Path::new(&victim).parent().unwrap()),
+        )
+        .unwrap();
+        std::fs::rename(
+            base.join("pack").join(&victim),
+            base.join("pack-sub").join(&victim),
+        )
+        .unwrap();
+        let mut moved = plan.clone();
+        moved.groups[0].unit = "sub".to_owned();
+        let bundle = moved.groups[0].bundle.clone();
+        std::fs::rename(
+            base.join("pack").join(&bundle),
+            base.join("pack-sub").join(&bundle),
+        )
+        .unwrap();
+        let moved = moved.sealed();
+        std::fs::write(
+            base.join("pack/bundle_plan.json"),
+            serde_json::to_vec(&moved).unwrap(),
+        )
+        .unwrap();
+        let report = check_release_closure(&base, None).expect("计划表可解析");
+        assert!(
+            !report
+                .problems
+                .iter()
+                .any(|problem| problem.contains("keep 条目不在目录里")),
+            "keep 文件在 pack-sub/ 里也必须算在目录里：{:?}",
+            report.problems
+        );
+        // 反例：两处都没有才是真缺件。
+        std::fs::remove_file(base.join("pack-sub").join(&victim)).unwrap();
         let report = check_release_closure(&base, None).expect("计划表可解析");
         assert!(
             report

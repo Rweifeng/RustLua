@@ -66,7 +66,7 @@ pub struct EntitySummary {
     pub scene_entities: usize,
     /// 运行时 ECS 世界里的实体总数。
     pub runtime_entities: usize,
-    /// 带 `EntityScript` 的实体（最多 [`MAX_SCRIPTED_ENTITIES`] 条）。
+    /// 带 `EntityScript` 的实体（条数有上限，上限是同文件的私有常量 `MAX_SCRIPTED_ENTITIES`）。
     pub scripted: Vec<ScriptedEntity>,
 }
 

@@ -197,7 +197,7 @@ pub use scan::{collect_data_files, collect_files, ensure_project, import, scan};
 /// 跨模块共用的**内部**项：保持拆分前"同文件里直接可见"的调用形状，只有可见性从私有变成
 /// `pub(crate)`，没有对外新增任何符号面。
 pub(crate) use deps::write_dependency_index;
-pub(crate) use scan::{project_font_declarations, project_font_key};
+pub(crate) use scan::{effective_primary_font, project_font_declarations};
 
 #[cfg(test)]
 mod tests;

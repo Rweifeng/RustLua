@@ -335,7 +335,9 @@ pub fn package(
     fs::write(out.join("chars.txt"), &chars)?;
     // 发布子集化：把主字体裁剪到用到的字符，缩小体积（原 `subset-font.py` 的 Rust 版）。
     // 子集化失败（如 CFF 字体）时保留完整字体。
-    if let Some(font_path) = project_font_key(project) {
+    // 用 effective（而不是只看 `font` 键）：`font = ""` 的工程运行期照样读缺省字体，
+    // 不子集化就会把 17.7 MB 全量字体原样发出去（WebGL 首屏实测卡几十秒的同一个坑）。
+    if let Some(font_path) = effective_primary_font(project) {
         let src = project.join(&font_path);
         let dst = out.join(&font_path);
         if src.is_file()
@@ -347,7 +349,15 @@ pub fn package(
         }
     }
     if drop_undeclared_fonts {
-        let declared = project_font_declarations(project);
+        let mut declared = project_font_declarations(project);
+        // `font` 键没写（或写空）的工程，运行期读的是缺省主字体（`primary_path` 的回落），
+        // 它必须算"声明过"——否则这里刚删掉、`package.ps1` 末尾又要求它在包里，
+        // 微信打包直接红；WebGL 更隐蔽：包能发，只是没有字体、文字全成占位符。
+        if let Some(primary) = effective_primary_font(project)
+            && !declared.iter().any(|path| path == &primary)
+        {
+            declared.push(primary);
+        }
         let fonts_dir = out.join("assets").join("fonts");
         if fonts_dir.is_dir() {
             for entry in fs::read_dir(&fonts_dir)? {

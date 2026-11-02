@@ -48,6 +48,10 @@
   // pack/ 是资源根：分包形态（-AssetPack subpackage）下它是 game.json 里声明的分包；
   // 其余形态下它只是主包里的普通目录。是不是分包一律以 game.json 的声明为准（见 hasPackSubpackage）。
   var PACK_PREFIX = 'pack/';
+  // `project.toml` 没写 `font`（或写了空串）时运行期读的缺省主字体，与
+  // `rustlua_render::font::project_font::primary_path` 的回落**同一个值**。
+  // 适配层必须同口径：只认写出来的键会让"没声明字体"的工程一个字形都注册不上。
+  var DEFAULT_FONT_PATH = 'assets/fonts/NotoSansSC-VF.ttf';
   // 兜底常量：真正的分包名以首屏清单的 layout.subpackage_root 为准（见 packSubpackageName），
   // 这里只用于"清单没给出名字"时的诊断文案与默认值。
   var PACK_SUBPACKAGE = 'pack-sub';
@@ -3860,7 +3864,13 @@ var WECHAT_PUBLISH_NAME = 'jianghu_youtian';
           if (match) { relative = match[1]; break; }
         }
       }
-      if (!relative) { warn('wechat-adapter: pack/project.toml 未声明 font，跳过自定义字体'); return null; }
+      if (!relative) {
+        // 没写 `font` 不等于"不要字体"：引擎侧 `primary_path` 会回落缺省主字体，
+        // 这里也回落，否则引擎要字形、适配层不注册 ⇒ 中文全成占位符。
+        // 文件真的不在包里时，下面的 `available` 分支照旧降级为系统字体并留警告。
+        relative = DEFAULT_FONT_PATH;
+        warn('wechat-adapter: pack/project.toml 未声明 font，按缺省主字体处理: ' + relative);
+      }
       var fontPath = PACK_PREFIX + relative.replace(/^\.?\//, '');
       // 字体注册由适配层负责（wx.loadFont + wrapContext 里的 ctx.font 族名替换）。留个标记给
       // web-runtime.js：它那条浏览器路（FontFace + document.fonts.add）在小游戏里必然撞上宿主
