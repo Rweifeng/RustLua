@@ -51,9 +51,37 @@ function Get-WasmBindgenCrateVersion {
     return $null
 }
 
+# 把"这条路径到底有没有那个可执行文件"收敛成一处，并且**不只靠一条判据**：
+#   1) `Get-Item -Force`（拿 FileSystemInfo，判 PSIsContainer）；
+#   2) 还拿不到就枚举父目录按名字精确匹配（`Get-ChildItem -File`）。
+# 为什么要两条：CI（windows-latest）2026-11-02 实测过"目录里明明有 wasm-bindgen.exe
+# （6,119,936 字节，Get-ChildItem 列得出来），`Test-Path -PathType Leaf` 却返回 False"，
+# 于是版本检查永远拿不到 exe，web-evidence 连红十几轮。枚举父目录这条路在同样的现场是好的，
+# 所以它当兜底；两条都拿不到才承认"真的没有"。
+function Resolve-WasmBindgenExePath([string]$Exe) {
+    if ([string]::IsNullOrWhiteSpace($Exe)) { return $null }
+    try {
+        $item = Get-Item -LiteralPath $Exe -Force -ErrorAction Stop
+        if ($null -ne $item -and -not $item.PSIsContainer) { return $item.FullName }
+    }
+    catch { }
+    $dir = Split-Path -Parent $Exe
+    $leaf = Split-Path -Leaf $Exe
+    if (-not $dir -or -not $leaf) { return $null }
+    try {
+        $hit = @(Get-ChildItem -LiteralPath $dir -File -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -eq $leaf })
+        if ($hit.Count -ge 1) { return $hit[0].FullName }
+    }
+    catch { }
+    return $null
+}
+
 function Get-WasmBindgenCliVersion([string]$Exe) {
     if ([string]::IsNullOrWhiteSpace($Exe)) { return $null }
-    if (-not (Test-Path -LiteralPath $Exe -PathType Leaf)) { return $null }
+    $resolvedExe = Resolve-WasmBindgenExePath $Exe
+    if (-not $resolvedExe) { return $null }
+    $Exe = $resolvedExe
     # 原生工具的正常输出也可能落 stderr；PS 5.1 在 EAP=Stop 下会把它变成终止性错误，
     # 所以逐次调用都临时降级（同 package.ps1 调 cargo 的既有模式）。
     $savedEap = $ErrorActionPreference
@@ -106,6 +134,9 @@ function Install-WasmBindgenCli([string]$WantVersion) {
             $detail.Add("cargo=$cargoVersion")
             $detail.Add("rustc=$rustcVersion")
             $detail.Add("exe=$toolsExe exists=$(Test-Path -LiteralPath $toolsExe -PathType Leaf)")
+            $itemProbe = $null
+            try { $itemProbe = Get-Item -LiteralPath $toolsExe -Force -ErrorAction Stop } catch { }
+            $detail.Add("item_ok=$($null -ne $itemProbe)")
             if (Test-Path -LiteralPath $toolsExe -PathType Leaf) {
                 $info = Get-Item -LiteralPath $toolsExe
                 $detail.Add("exe_size=$($info.Length)")
@@ -196,7 +227,8 @@ function Install-WasmBindgenCli([string]$WantVersion) {
         # PowerShell 的错误格式化截断影响。本地跑时它只是一行普通输出。
         $flat = (($detail -join '; ') -replace "[\r\n]+", ' ')
         if ($flat.Length -gt 1500) { $flat = $flat.Substring(0, 1500) + '...' }
-        Write-Host "::error::wasm_bindgen_version_check_failed $flat"        throw "wasm-bindgen-cli installed but version check failed: $toolsExe $($detail -join '; ')"
+        Write-Host "::error::wasm_bindgen_version_check_failed $flat"
+        throw "wasm-bindgen-cli installed but version check failed: $toolsExe $($detail -join '; ')"
     }
     Write-Host "wasm-bindgen ready: $toolsExe ($WantVersion)" -ForegroundColor Green
     return $toolsExe
