@@ -130,3 +130,68 @@ jobs:
           name: canary-publish-logs
           path: artifacts/logs/canary/**
           if-no-files-found: warn
+  # 第二条：整段 Web 证据（`verify.ps1 -Web`），用来在 40 分钟内回答"除发布外的那几个阶段
+  # 在干净 runner 上过不过"。发布那一格已经证明能过（2026-11-03：25 分钟、exit 0），
+  # 剩下的未知是 gpu-probe / render-probe / api-contract / eh 这些**在 CI 上从没真正跑过**
+  # 的阶段（此前每次都死在发布之前）。
+  full:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine -> target
+
+      - name: Cache minify tools (binaryen 133 / terser 5 / wasm-bindgen-cli)
+        uses: actions/cache@v4
+        with:
+          path: |
+            engine/.tools/binaryen
+            engine/.tools/terser
+            engine/.tools/wasm-bindgen
+          key: minify-tools-binaryen-version_133-terser5-wasm-bindgen-02129-v2
+
+      - name: Install zig (vendored Lua C sources need it)
+        run: choco install zig -y
+
+      - name: Web platform evidence (verify.ps1 -Web)
+        shell: pwsh
+        run: |
+          $log = Join-Path $PWD "artifacts\logs\canary\web-evidence.log"
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $log) | Out-Null
+          pwsh -NoProfile -File scripts/verify/verify.ps1 -Web *>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          $phase = Get-ChildItem "artifacts\logs\webgl\phases-*.log" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime | Select-Object -Last 1
+          if ($phase) {
+            Write-Host "canary_phase_log=$($phase.Name)"
+            foreach ($row in (Get-Content -LiteralPath $phase.FullName -Tail 30)) {
+              Write-Host "::warning::canary phase: $row"
+            }
+          }
+          Write-Host "canary_web_evidence_exit=$code"
+          if ($code -ne 0) {
+            foreach ($row in (Get-Content -LiteralPath $log -Tail 30)) {
+              $line = ("{0}" -f $row).TrimEnd()
+              if ($line) { Write-Host "::error::canary web: $line" }
+            }
+            exit $code
+          }
+
+      - name: Upload web evidence logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-web-evidence-logs
+          path: |
+            artifacts/logs/canary/**
+            artifacts/logs/webgl/**
+          if-no-files-found: warn
