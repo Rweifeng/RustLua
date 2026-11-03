@@ -89,6 +89,18 @@ function Get-RemoteText {
     finally { $ErrorActionPreference = $savedEap }
 }
 
+# SHA256 的**与宿主无关**实现：不碰 cmdlet 自动加载（见 Get-FileHash 调用处的说明）。
+function Get-FileSha256Hex([string]$Path) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $fs = [IO.File]::OpenRead($Path)
+        try {
+            return ([BitConverter]::ToString($sha.ComputeHash($fs)) -replace '-', '').ToLowerInvariant()
+        }
+        finally { $fs.Dispose() }
+    }
+    finally { $sha.Dispose() }
+}
 function Invoke-RemoteFile {
     param([string]$Url, [string]$OutFile, [hashtable]$Headers)
     $savedEap = $ErrorActionPreference
@@ -206,7 +218,11 @@ function Resolve-WasmOpt {
     }
 
     Write-Host "==> Verifying binaryen sha256" -ForegroundColor Cyan
-    $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    # **不依赖 Get-FileHash**：它是"用到才自动加载"的 cmdlet，而本脚本会在 package.ps1 的子进程里跑；
+    # CI 上那个子进程曾因 PSModulePath 与 $PSHOME 不配套而拿不到它（2026-11-03 实测
+    # `Optimize-WasmBin : The term 'Get-FileHash' is not recognized`）。直接用 .NET 算：
+    # 任何宿主、任何模块状态都能跑。
+    $actual = Get-FileSha256Hex $archive
     if ($actual -ne $BinaryenExpectedSha256) {
         Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
         throw ("binaryen sha256 mismatch（期望 {0}，实际 {1}）：已删除下载文件，不使用未校验的二进制。" -f $BinaryenExpectedSha256, $actual)

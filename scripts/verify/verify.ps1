@@ -1150,7 +1150,16 @@ try {
                 $bootstrapBody = @(
                     'param([string]$PackageScript, [string]$ProjectRoot, [string]$StatusFile)',
                     '$ErrorActionPreference = "Continue"',
-                    '& powershell -NoProfile -ExecutionPolicy Bypass -File $PackageScript -ProjectRoot $ProjectRoot -Platform webgl',
+                    '# 用**和父进程同一个宿主**：CI 的步骤跑在 pwsh 7 上。以前这里固定写 powershell(5.1)，',
+                    '# 子进程会继承 7 的 PSModulePath、却按 5.1 的 $PSHOME 找模块 ⇒ 模块自动加载失败，',
+                    '# `Get-FileHash` 这类"用到才加载"的命令直接 CommandNotFoundException（2026-11-03 实测），',
+                    '# 发布就死在一个与打包逻辑无关的地方。优先 pwsh；没有就退回 powershell，并把',
+                    '# $PSHOME\Modules 拼回 PSModulePath——两条都要，缺一条都可能再踩回去。',
+                    '$hostExe = (Get-Command pwsh -ErrorAction SilentlyContinue | Select-Object -First 1).Source',
+                    'if (-not $hostExe) { $hostExe = (Get-Command pwsh -ErrorAction SilentlyContinue | Select-Object -First 1).Path }',
+                    'if (-not $hostExe) { $hostExe = "powershell" }',
+                    '$env:PSModulePath = (Join-Path $PSHOME "Modules") + ";" + $env:PSModulePath',
+                    '& $hostExe -NoProfile -ExecutionPolicy Bypass -File $PackageScript -ProjectRoot $ProjectRoot -Platform webgl',
                     '$code = $LASTEXITCODE',
                     'Set-Content -LiteralPath $StatusFile -Value ("exit=" + $code) -Encoding ASCII',
                     'exit $code'
