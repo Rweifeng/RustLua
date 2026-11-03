@@ -1,0 +1,130 @@
+# 临时诊断工作流：只跑**发布**这一段（`package.ps1 -Platform webgl`），回答一个问题。
+#
+# 为什么需要它：`quality.yml` 上一个 ref 只留"一个在跑 + 一个排队"，一次 40–150 分钟。
+# 2026-11-03 排查 web-evidence 红点时，队首那份要跑满 150 分钟才轮到下一份，改一行就得等
+# 三四小时才拿到读数。本工作流**故意单开一个 concurrency group**，只做发布会话，
+# 20 分钟左右给结论：发布这一步在干净 runner 上到底过不过。
+#
+# 用完即删：它不是门的一部分（不进入 required checks，不替代 `verify.ps1 -Web`）。
+# 触发方式：`workflow_dispatch`，或往 `artifacts/canary/trigger.txt` 推一次。
+name: Web evidence canary (publish only)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "artifacts/canary/**"
+
+concurrency:
+  group: canary-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    # 发布本身有 75 分钟上限（verify.ps1 的口径）；这里给 90 分钟，留出安装与缓存的时间。
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine -> target
+
+      - name: Cache minify tools (binaryen 133 / terser 5 / wasm-bindgen-cli)
+        uses: actions/cache@v4
+        with:
+          path: |
+            engine/.tools/binaryen
+            engine/.tools/terser
+            engine/.tools/wasm-bindgen
+          key: minify-tools-binaryen-version_133-terser5-wasm-bindgen-02129-v2
+
+      - name: Install zig (vendored Lua C sources need it)
+        run: choco install zig -y
+
+      # 与 `verify.ps1 -Web` 里的发布段同一个形状：自己起进程、有界等待、退出码只认状态文件。
+      # 这里不复用它是因为要**独立于那份脚本**验证发布本身，避免"诊断工具和被诊断对象一起错"。
+      - name: Publish WebGL bundle (bounded)
+        shell: pwsh
+        run: |
+          $root = Join-Path $PWD "artifacts\logs\canary"
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          $log = Join-Path $root "publish.log"
+          $status = Join-Path $root "publish.status"
+          $bootstrap = Join-Path $root "bootstrap.ps1"
+          @(
+            'param([string]$PackageScript, [string]$ProjectRoot, [string]$StatusFile)',
+            '$ErrorActionPreference = "Continue"',
+            '$hostExe = (Get-Command pwsh -ErrorAction SilentlyContinue | Select-Object -First 1).Source',
+            'if (-not $hostExe) { $hostExe = "powershell" }',
+            '& $hostExe -NoProfile -ExecutionPolicy Bypass -File $PackageScript -ProjectRoot $ProjectRoot -Platform webgl',
+            '$code = $LASTEXITCODE',
+            'Set-Content -LiteralPath $StatusFile -Value ("exit=" + $code) -Encoding ASCII',
+            'exit $code'
+          ) -join "`n" | Set-Content -LiteralPath $bootstrap -Encoding UTF8
+          $proc = Start-Process pwsh -PassThru -NoNewWindow -ArgumentList @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $bootstrap,
+            "-PackageScript", (Join-Path $PWD "scripts\build\package.ps1"),
+            "-ProjectRoot", (Join-Path $PWD "examples\game_api"), "-StatusFile", $status
+          ) -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+          $start = Get-Date
+          $limitMin = 75
+          $lastMark = 0
+          while (-not $proc.HasExited) {
+            Start-Sleep -Seconds 10
+            $elapsedMin = [int]((Get-Date) - $start).TotalMinutes
+            if ($elapsedMin -ge ($lastMark + 5)) {
+              $lastMark = $elapsedMin
+              $tail = ""
+              if (Test-Path -LiteralPath $log) { $tail = ((Get-Content -LiteralPath $log -Tail 1) -join " ").Trim() }
+              Write-Host "::warning::canary publish running elapsed=${elapsedMin}m tail=$tail"
+            }
+            if ($elapsedMin -ge $limitMin) {
+              taskkill /T /F /PID $proc.Id 2>&1 | Out-Null
+              Write-Host "::error::canary publish exceeded ${limitMin}m (killed)"
+              exit 1
+            }
+          }
+          $code = 1
+          if (Test-Path -LiteralPath $status) {
+            $raw = (Get-Content -LiteralPath $status -Raw).Trim() -replace '^exit=', ''
+            [int]$parsed = 1
+            if ([int]::TryParse($raw, [ref]$parsed)) { $code = $parsed }
+          }
+          Write-Host "canary_publish_done exit=$code elapsed=$([int]((Get-Date) - $start).TotalMinutes)m"
+          if ($code -ne 0) {
+            foreach ($f in @($log, "$log.err")) {
+              if (-not (Test-Path -LiteralPath $f)) { continue }
+              foreach ($row in (Get-Content -LiteralPath $f -Tail 25)) {
+                $line = ("{0}" -f $row).TrimEnd()
+                if ($line) { Write-Host "::error::canary tail: $line" }
+              }
+            }
+            exit 1
+          }
+
+      - name: Report bundle size
+        shell: pwsh
+        run: |
+          $bundle = Join-Path $PWD "examples\game_api\builds\webgl\pkg\game_web_bg.wasm"
+          if (Test-Path -LiteralPath $bundle) {
+            Write-Host ("canary_bundle_ok wasm={0:N1} KB" -f ((Get-Item -LiteralPath $bundle).Length / 1KB))
+          } else {
+            Write-Host "::error::canary_bundle_missing"
+            exit 1
+          }
+
+      - name: Upload publish logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-publish-logs
+          path: artifacts/logs/canary/**
+          if-no-files-found: warn
