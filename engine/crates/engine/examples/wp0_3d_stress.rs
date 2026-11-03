@@ -100,10 +100,19 @@ struct Config {
     /// 没有这个拆分，"下一步做 BVH/遮挡剔除"就只能靠猜（docs/53 的口径是每帧分配，
     /// 不是每帧耗时归因）。默认关闭，保持既有报告格式逐字不变。
     profile: bool,
+    /// `--cull-headroom`：只用引擎自己的视锥判据数一遍"有多少实例根本看不见"，
+    /// 不跑渲染、不写报告。它回答的是"剔除这个方向值不值得动手"，见 `cull_headroom`。
+    cull_headroom: bool,
 }
 
 fn main() {
     let config = parse_config();
+    if config.cull_headroom {
+        for mesh_count in [100usize, 1_000, 10_000] {
+            println!("{}", cull_headroom(mesh_count));
+        }
+        return;
+    }
     let root = games_dir().join("examples").join("game_api");
     let mut reports = Vec::new();
     for mesh_count in [100usize, 1_000, 10_000] {
@@ -125,6 +134,7 @@ fn parse_config() -> Config {
     let mut output = None;
     let mut cycles = 30;
     let mut profile = false;
+    let mut cull_headroom = false;
     let mut args = env::args().skip(1);
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -141,8 +151,11 @@ fn parse_config() -> Config {
                     .expect("--cycles must be an integer")
             }
             "--profile" => profile = true,
+            "--cull-headroom" => cull_headroom = true,
             "--help" | "-h" => {
-                println!("Usage: wp0_3d_stress [--cycles N] [--output PATH] [--profile]");
+                println!(
+                    "Usage: wp0_3d_stress [--cycles N] [--output PATH] [--profile] [--cull-headroom]"
+                );
                 std::process::exit(0);
             }
             _ => panic!("unknown argument: {flag}"),
@@ -153,6 +166,7 @@ fn parse_config() -> Config {
         output,
         cycles,
         profile,
+        cull_headroom,
     }
 }
 
@@ -306,6 +320,14 @@ fn render_once(
     frame
 }
 
+/// 第 `index` 个实例在场景里的 `(x, z)`（`y` 恒为 0）。`build_scene` 与剔除余量读数共用这一处，
+/// 免得"量的布局"和"画的布局"各算一遍、哪天改了公式就悄悄错位。
+fn instance_position(index: usize, mesh_count: usize) -> (f32, f32) {
+    let x = (index % 100) as f32 * 0.18 - 9.0;
+    let z = (index / 100) as f32 * 0.18 - (mesh_count as f32 / 100.0) * 0.09;
+    (x, z)
+}
+
 fn build_scene(mesh_count: usize) -> Scene {
     let mut scene = Scene::new(format!("wp0-3d-{mesh_count}"));
     scene.add_entity(SceneEntityId(1), "Camera", None).unwrap();
@@ -331,8 +353,7 @@ fn build_scene(mesh_count: usize) -> Scene {
     for index in 0..mesh_count {
         let id = SceneEntityId(index as u64 + 3);
         scene.add_entity(id, format!("Mesh{index}"), None).unwrap();
-        let x = (index % 100) as f32 * 0.18 - 9.0;
-        let z = (index / 100) as f32 * 0.18 - (mesh_count as f32 / 100.0) * 0.09;
+        let (x, z) = instance_position(index, mesh_count);
         let entity = scene.entities.get_mut(&id).unwrap();
         entity.components.insert(
             "Transform".into(),
@@ -344,6 +365,77 @@ fn build_scene(mesh_count: usize) -> Scene {
         );
     }
     scene
+}
+
+/// 视锥剔除的**理论上限**：用引擎自己的 `Camera3D::frustum` + `contains_sphere` 数一遍，
+/// 有多少实例根本不在视锥里。这是 docs/53 那条"下一步做 BVH/遮挡剔除"要回答的第一个问题——
+/// 如果当前基准里 100% 的实例都在视锥内，那么无论剔除写得多好，**读数都不会动**，
+/// 先补场景比先写结构重要。
+/// 视锥剔除的**理论上限**：用引擎自己的 `Camera3D::frustum` + `contains_sphere` 数一遍，
+/// 有多少实例根本不在视锥里。这是 docs/53 那条"下一步做 BVH/遮挡剔除"要回答的第一个问题——
+/// 如果当前基准里 100% 的实例都在视锥内，那么无论剔除写得多好，**读数都不会动**，
+/// 先补场景比先写结构重要。
+///
+/// 实例的包围球半径取变换 scale 的外接球（`0.08*sqrt(3)`，单位网格的最坏假设）；视口用基准的 640×360。
+/// 同时给一个**阳性对照**（相机朝反方向看）：它必须报 `outside_pct=100.0`，否则说明这个读数
+/// 自己就是坏的（永远返回"全在里面"的读数比没有读数更糟）。
+fn cull_headroom(mesh_count: usize) -> String {
+    let viewport = rustlua_camera::camera::Viewport::new(640.0, 360.0).expect("viewport");
+    let radius = 0.08_f32 * 3.0_f32.sqrt();
+    let fixture = cull_headroom_for(
+        mesh_count,
+        viewport,
+        "fixture",
+        rustlua_math::math3d::Vec3::new(0.0, 0.0, 20.0),
+        rustlua_math::math3d::Vec3::ZERO,
+        radius,
+    );
+    // 对照：同一位置、朝 +Z 看（背离整个 100×100 网格）⇒ 理论上一个都看不见。
+    let control = cull_headroom_for(
+        mesh_count,
+        viewport,
+        "control_looking_away",
+        rustlua_math::math3d::Vec3::new(0.0, 0.0, 20.0),
+        rustlua_math::math3d::Vec3::new(0.0, 0.0, 40.0),
+        radius,
+    );
+    format!("{fixture}\n{control}")
+}
+
+fn cull_headroom_for(
+    mesh_count: usize,
+    viewport: rustlua_camera::camera::Viewport,
+    label: &str,
+    position: rustlua_math::math3d::Vec3,
+    target: rustlua_math::math3d::Vec3,
+    radius: f32,
+) -> String {
+    let camera = rustlua_camera::camera::Camera3D::perspective(
+        position,
+        target,
+        60.0_f32.to_radians(),
+        0.1,
+        100.0,
+    )
+    .expect("benchmark camera");
+    let frustum = camera.frustum(viewport).expect("benchmark frustum");
+    let mut inside = 0usize;
+    for index in 0..mesh_count {
+        let (x, z) = instance_position(index, mesh_count);
+        if frustum.contains_sphere(rustlua_math::math3d::Vec3::new(x, 0.0, z), radius) {
+            inside += 1;
+        }
+    }
+    let outside = mesh_count - inside;
+    let outside_pct = if mesh_count == 0 {
+        0.0
+    } else {
+        outside as f64 * 100.0 / mesh_count as f64
+    };
+    format!(
+        "wp0_3d_cull_headroom camera={label} mesh_count={mesh_count} total={mesh_count} \
+         inside={inside} outside={outside} outside_pct={outside_pct:.1} radius={radius:.3}"
+    )
 }
 
 fn reset_allocations() {
