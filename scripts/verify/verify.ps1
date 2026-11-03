@@ -1022,6 +1022,18 @@ try {
         # 子进程 + **独立日志文件**：这两个脚本内部会起 node 静态服务器与无头浏览器（长命孙进程），
         # 把它们的 stdout 接进本进程的管道会让质量门永远等不到 EOF（本轮实际踩到）。因此让子进程
         # 自己写文件、只取退出码，再把要点抄进质量日志。
+        # 进度标记：CI 上发成 `::warning::` annotation（job 日志要认证才能读，annotation 不要），
+        # 本机只打一行普通输出。用途是把"卡住"和"在编译"区分开——2026-11-03 实测这一步在 CI 上
+        # 一个多小时没有任何输出，只能干等。
+        $emitProgress = {
+            param([string]$Message)
+            $line = "web evidence: $Message"
+            Write-Host $line
+            if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host "::warning::$line" }
+        }
+        $publishLimitMin = 75
+        if ($env:RUSTLUA_PUBLISH_TIMEOUT_MIN -match '^\d+$') { $publishLimitMin = [int]$env:RUSTLUA_PUBLISH_TIMEOUT_MIN }
+
         $runWebEvidence = {
             param([string]$Script, [string]$Label, [string[]]$ExtraArgs = @())
             $logFile = Join-Path $webEvidenceRoot ("gate-" + $Label + "-$timestamp.log")
@@ -1032,11 +1044,13 @@ try {
             $timeoutSeconds = 600
             $startedAt = Get-Date
             $argumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $Script, "-StatusFile", $statusFile) + $ExtraArgs
+            & $emitProgress ("{0}_start timeout={1}s" -f $Label, $timeoutSeconds)
             $process = Start-Process -FilePath "powershell" `
                 -ArgumentList $argumentList `
                 -PassThru -RedirectStandardOutput $logFile -RedirectStandardError "$logFile.err"
             if (-not $process.WaitForExit($timeoutSeconds * 1000)) {
                 Write-Host "web evidence '$Label' timed out after ${timeoutSeconds}s; killing it" -ForegroundColor Yellow
+                & $emitProgress ("{0}_timeout after={1}s" -f $Label, $timeoutSeconds)
                 Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
                 # 无头浏览器/静态服务器可能是**孙进程**：父进程被杀后仍会占着端口与文件句柄。
                 # 只杀**本脚本那一类**进程（本轮的浏览器 + 只跑 `serve-static.js` 的 node），绝不按
@@ -1079,6 +1093,7 @@ try {
             else {
                 Write-Host "web evidence '$Label' wrote no status file (treated as failure)" -ForegroundColor Yellow
             }
+            & $emitProgress ("{0}_done exit={1} elapsed={2}s" -f $Label, $exitCode, [int]((Get-Date) - $startedAt).TotalSeconds)
             return [pscustomobject]@{ ExitCode = $exitCode; StartedAt = $startedAt }
         }
         Push-Location $projectRoot
@@ -1120,13 +1135,69 @@ try {
                 Get-ChildItem -Path (Join-Path $projectRoot "examples") -Recurse -Directory -ErrorAction SilentlyContinue |
                     Where-Object { $_.Parent -and $_.Parent.Name -eq "webgl" }
             )
+            # CI 上"卡住"和"在编译"必须分得出来（2026-11-03 实测：这一步在 CI 上跑了一个多小时，
+            # 中间一行输出都没有，而 job 日志要认证才能读）。$emitProgress 在上一段定义好了：
+            # 每 10 分钟发一条进度，CI 上是 `::warning::` annotation（不需要认证）。
             if (-not $existingBundle -and $webglBuilds.Count -eq 0) {
                 Write-Step "Publish WebGL bundle (no published artifact found)"
-                Invoke-Checked powershell @(
-                    "-NoProfile", "-ExecutionPolicy", "Bypass",
-                    "-File", (Join-Path $projectRoot "scripts\build\package.ps1"),
-                    "-ProjectRoot", $defaultGameProject, "-Platform", "webgl"
-                )
+                $publishLog = Join-Path $webEvidenceRoot ("publish-webgl-$timestamp.log")
+                $publishStatus = "$publishLog.status"
+                $bootstrap = Join-Path $webEvidenceRoot ("publish-webgl-$timestamp.ps1")
+                # 退出码**只认子进程自己写的状态文件**：PS 5.1 上 `Start-Process -PassThru
+                # -RedirectStandardOutput` 的 `.ExitCode` 是 $null，`[int]$null` 静默变 0，
+                # "失败"会被读成"通过"（`$runWebEvidence` 的注释里记着同一条）。`package.ps1`
+                # 自己不写状态文件，所以外面套一层 bootstrap 代写。
+                $bootstrapBody = @(
+                    'param([string]$PackageScript, [string]$ProjectRoot, [string]$StatusFile)',
+                    '$ErrorActionPreference = "Continue"',
+                    '& powershell -NoProfile -ExecutionPolicy Bypass -File $PackageScript -ProjectRoot $ProjectRoot -Platform webgl',
+                    '$code = $LASTEXITCODE',
+                    'Set-Content -LiteralPath $StatusFile -Value ("exit=" + $code) -Encoding ASCII',
+                    'exit $code'
+                ) -join "`n"
+                [IO.File]::WriteAllText($bootstrap, $bootstrapBody, [Text.UTF8Encoding]::new($true))
+                & $emitProgress "publish_start platform=webgl timeout=${publishLimitMin}m log=$publishLog"
+                $publishStart = Get-Date
+                $publishProc = Start-Process powershell -PassThru -NoNewWindow -ArgumentList @(
+                    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $bootstrap,
+                    "-PackageScript", (Join-Path $projectRoot "scripts\build\package.ps1"),
+                    "-ProjectRoot", $defaultGameProject, "-StatusFile", $publishStatus
+                ) -RedirectStandardOutput $publishLog -RedirectStandardError "$publishLog.err"
+                $lastMark = 0
+                while (-not $publishProc.HasExited) {
+                    Start-Sleep -Seconds 10
+                    $elapsedMin = [int]((Get-Date) - $publishStart).TotalMinutes
+                    if ($elapsedMin -ge ($lastMark + 10)) {
+                        $lastMark = $elapsedMin
+                        $tailLine = ""
+                        if (Test-Path -LiteralPath $publishLog) {
+                            $tailLine = ((Get-Content -LiteralPath $publishLog -Tail 1) -join " ").Trim()
+                        }
+                        & $emitProgress "publish_running elapsed=${elapsedMin}m tail=$tailLine"
+                    }
+                    if ($elapsedMin -ge $publishLimitMin) {
+                        # 杀**进程树**：publish 会起 cargo/rustc/zig，只杀父进程会留下孙进程继续烧 CPU。
+                        & taskkill /T /F /PID $publishProc.Id 2>&1 | Out-Null
+                        throw "WebGL publish 超过 ${publishLimitMin} 分钟未完成（判为挂死，已杀进程树）。日志：$publishLog"
+                    }
+                }
+                $publishExit = 1
+                if (Test-Path -LiteralPath $publishStatus) {
+                    $rawStatus = (Get-Content -LiteralPath $publishStatus -Raw).Trim()
+                    $parsedStatus = 0
+                    if ([int]::TryParse(($rawStatus -replace '^exit=', ''), [ref]$parsedStatus)) {
+                        $publishExit = $parsedStatus
+                    }
+                }
+                $publishElapsed = [int]((Get-Date) - $publishStart).TotalMinutes
+                & $emitProgress "publish_done exit=$publishExit elapsed=${publishElapsed}m"
+                if ($publishExit -ne 0) {
+                    $tail = "(no log)"
+                    if (Test-Path -LiteralPath $publishLog) {
+                        $tail = (Get-Content -LiteralPath $publishLog -Tail 20) -join "`n"
+                    }
+                    throw "WebGL publish failed (exit $publishExit, ${publishElapsed}m)。日志尾部：`n$tail"
+                }
             }
             $bundleRun = & $runWebEvidence $bundleScript "bundle"
             $bundleExit = $bundleRun.ExitCode
