@@ -81,11 +81,24 @@ struct Config {
     cycles: usize,
     /// 每精灵顶点生成的并行度（WP8）。`off` = 强制串行（回滚档）。
     sprite_parallelism: Parallelism,
+    /// 只跑 2D 空间索引的 A/B（P1-①），不生成整份报告。
+    spatial_index_ab: bool,
 }
 
 fn main() {
     let config = parse_config();
     let examples = games_dir().join("examples");
+    // 空间索引 A/B 是**单独一次**短跑（几秒），不生成整份报告：它要回答的是"这个默认关着的
+    // 能力值不值得默认开"，而不是往报告里再加一段阶梯。
+    if config.spatial_index_ab {
+        for sprites in SPRITE_CULLING_AB_SPRITES {
+            println!(
+                "{}",
+                measure_spatial_index_ab(&examples, sprites, config.cycles)
+            );
+        }
+        return;
+    }
     let scene_entries = measure_scenes(&examples, config.cycles);
     let frame_stairs = SPRITE_STAIRS
         .iter()
@@ -191,6 +204,7 @@ fn parse_config() -> Config {
     let mut output = None;
     let mut cycles = 30usize;
     let mut sprite_parallelism = Parallelism::detected();
+    let mut spatial_index_ab = false;
     let mut args = env::args().skip(1);
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -217,8 +231,13 @@ fn parse_config() -> Config {
                     .parse()
                     .expect("--cycles must be an integer");
             }
+            "--spatial-index-ab" => {
+                spatial_index_ab = true;
+            }
             "--help" | "-h" => {
-                println!("Usage: wp0_scene_frame [--cycles N] [--output PATH]");
+                println!(
+                    "Usage: wp0_scene_frame [--cycles N] [--output PATH] [--spatial-index-ab]"
+                );
                 std::process::exit(0);
             }
             _ => panic!("unknown argument: {flag}"),
@@ -229,6 +248,7 @@ fn parse_config() -> Config {
         output,
         cycles,
         sprite_parallelism,
+        spatial_index_ab,
     }
 }
 
@@ -991,6 +1011,68 @@ fn measure_sprite_culling_ab(examples: &std::path::Path, sprites: usize, cycles:
         culled_samples.len(),
         stats_json(&summarize(full_samples)),
         stats_json(&summarize(culled_samples))
+    )
+}
+
+/// 2D 空间索引（`SpatialGrid2D`，P1-①）的**同进程分块交替 A/B**：回答"这个默认关着的能力值不值得默认开"。
+///
+/// 它默认**关着**（`RuntimeScene::spatial_index` 初值 `false`），只有 Lua `set_spatial_index(true)`
+/// 才打开——"默认关"等于在真实游戏里不存在。要判它该不该默认开，必须先把收益量出来：
+///
+/// - 跨运行噪声 ±15–25%（docs/53 §3.5），所以同一进程里交替采样；但**不能逐帧翻**：
+///   `set_spatial_index(false)` 会清掉网格缓存（`spatial_grid = None`），逐帧翻等于每帧重建，
+///   量到的是"每帧重建的成本"，而不是"静态场景跨帧复用"的真实形态。因此按**块**交替：
+///   一块里只翻一次，块内第一帧重建、其余帧复用。
+/// - 两侧顶点数必须相等：空间索引只做**候选预筛**，漏了谁就是回归，不是优化。
+fn measure_spatial_index_ab(examples: &std::path::Path, sprites: usize, cycles: usize) -> String {
+    let root = examples.join("game_api");
+    let mut runtime = RuntimeScene::from_scene_edit(Some(root.as_path()), sprite_scene(sprites))
+        .expect("runtime scene for the spatial index A/B");
+    let input = InputSnapshot::default();
+    // 剔除一律开着：`frame_data.rs` 里空间索引只在 `spatial_index && sprite_culling` 且非 3D 时
+    // 生效；关掉剔除会让两侧都走同一条路径，A/B 就变成空转。
+    runtime.set_sprite_culling(true);
+    for _ in 0..FRAME_WARMUP {
+        run_frame(&mut runtime, &input);
+    }
+    let blocks = 3usize;
+    let block_frames = (cycles / blocks).max(3);
+    let mut plain_samples = Vec::new();
+    let mut indexed_samples = Vec::new();
+    let mut plain_vertices = 0usize;
+    let mut indexed_vertices = 0usize;
+    for _ in 0..blocks {
+        runtime.set_spatial_index(false);
+        for _ in 0..block_frames {
+            let sample = run_frame(&mut runtime, &input);
+            plain_vertices = sample.vertices;
+            plain_samples.push(sample.elapsed);
+        }
+        runtime.set_spatial_index(true);
+        for _ in 0..block_frames {
+            let sample = run_frame(&mut runtime, &input);
+            indexed_vertices = sample.vertices;
+            indexed_samples.push(sample.elapsed);
+        }
+    }
+    let plain = summarize(plain_samples);
+    let indexed = summarize(indexed_samples);
+    let delta_pct = if plain.p50_us == 0 {
+        0.0
+    } else {
+        (plain.p50_us as f64 - indexed.p50_us as f64) * 100.0 / plain.p50_us as f64
+    };
+    format!(
+        "wp0_spatial_index_ab sprites={sprites} samples={} block_frames={block_frames} \
+         plain_p50_us={} plain_p95_us={} indexed_p50_us={} indexed_p95_us={} \
+         delta_pct={delta_pct:.1} plain_vertices={plain_vertices} \
+         indexed_vertices={indexed_vertices} vertices_equal={}",
+        plain.count,
+        plain.p50_us,
+        plain.p95_us,
+        indexed.p50_us,
+        indexed.p95_us,
+        plain_vertices == indexed_vertices
     )
 }
 
