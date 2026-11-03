@@ -40,6 +40,10 @@ WebGL 与微信小游戏都构建 `engine/crates/game_web`：
 - 均固定使用 Rust 1.88.0；
 - 均由 Zig 编译 vendored Lua C 源；
 - `wasm-bindgen` CLI 版本从 `Cargo.lock` 精确解析；
+  - 解析走 `scripts/build/wasm-bindgen.ps1`，**存在性判定是双判据**：先 `Get-Item -Force`，拿不到再枚举父目录；
+    不要退回单用 `Test-Path -PathType Leaf`——CI（windows-latest）2026-11-02 实测过"目录里
+    明明有 6,119,936 字节的 `wasm-bindgen.exe`，`Test-Path -PathType Leaf` 却返回 False"，
+    于是版本检查永远拿不到 exe，web-evidence 连红十几轮（诊断与修法见 commits 83a1a231…98b25a99）。
 - WASM 构建统一使用 `opt-level=z`、fat LTO、单 codegen unit，并经 `wasm-opt -Oz` 优化；
 - `gpu2d` 是同一 crate 上的可选 feature。
 
