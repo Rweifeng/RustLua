@@ -395,10 +395,23 @@ jobs:
             # annotations 上，那是**不下载 artifact、不用认证**也能读到的位置（job 日志要
             # auth，artifact 要下载）。排查 CI 的人第一眼就能看到判红的那一句，而不是一个
             # 光秃秃的 exit 1。长度截断到 300 字符，避免把整段日志塞进 annotation。
-            $hints = @(Get-Content -LiteralPath $log -Tail 80 |
-                Where-Object { $_ -match 'FAIL|failed|error|Error|throw|Exception|失败|异常' } |
-                Select-Object -Last 5)
+            # 末尾 10 行**原样**发一份：PowerShell 的错误在日志里是"命令 + CategoryInfo +
+            # FullyQualifiedErrorId"多行组成，只挑"含 error 的行"会把命令名那行筛掉
+            # （2026-11-03 就是这样只看到 CommandNotFoundException 而不知道是哪个命令）。
+            $tail = @(Get-Content -LiteralPath $log -Tail 10)
+            $picked = @(Get-Content -LiteralPath $log -Tail 120 |
+                Where-Object { $_ -match 'FAIL|failed|error|Error|throw|Exception|CommandNotFound|not recognized|无法将|失败|异常|String\) \[\]' } |
+                Select-Object -Last 8)
+            $hints = @($picked + $tail | Where-Object { $_ -and $_.Trim() } | Select-Object -Unique | Select-Object -Last 12)
             if ($hints.Count -eq 0) { $hints = @(Get-Content -LiteralPath $log -Tail 3) }
+            # `CommandNotFoundException` 的真正答案在 `(命令名:String) []` 里，单独挖出来。
+            $notFound = @(Get-Content -LiteralPath $log -Tail 200 |
+                Where-Object { $_ -match '\(([^()]+):String\)' } |
+                ForEach-Object { $Matches[1] } |
+                Select-Object -Unique)
+            foreach ($cmdName in $notFound) {
+              Write-Host "::error::web evidence: missing command => $cmdName"
+            }
             foreach ($hint in $hints) {
               $clean = ($hint -replace '[\r\n]+', ' ').Trim()
               if ($clean.Length -gt 300) { $clean = $clean.Substring(0, 300) + '...' }
