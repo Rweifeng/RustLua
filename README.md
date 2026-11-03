@@ -54,7 +54,7 @@ cargo run -p editor -- --project ..\examples\game_api --check
 |---|---|---|
 | PC | `scripts\build\package.ps1 -ProjectRoot examples/game_api` | 干净目录可运行、`pack/` 只读、存档与设置写用户数据目录（`-SelfTest` 每次复核） |
 | WebGL | 加 `-Platform webgl` | **产物层 + 浏览器契约门（2026-11-02 复测）**：`verify-webgl-bundle.ps1` 在无头 Edge 里起 `game_api` 的发布包，`boot=ok`、`missing_host_api=0`、`draws=3 tris=2582`；`verify-webgl.ps1` 的浏览器契约检查 `webgl2=true`（ANGLE 软件光栅）、manifest 105 项、缺件 404。**边界**：页面自报 `legacy JS world skipped`，那段"完整玩法剧本"门自 B8 起**没有写者**；旧的 `-DriveJhyt` 证据随 jhyt 迁出仓库失效——README 不再据此宣称"浏览器内跑完整玩法" |
-| 微信小游戏 | 加 `-Platform wechat-minigame`（默认主包 + 单分包） | **真机验收是历史证据**（2026-09-27、Android：进山庄 / 摇杆 / 按钮全通）；**2026-11-02 复测产物层与 harness**：`wechat_minigame_package_ok`（主包 16.6% / 分包 41.9% / 合计 45.3%）、`l3_api_contract=ok`、`eh_probe=accepted`、字体 `NotoSansSC-VF.ttf` 真加载；harness 明确 `runtime=env-limited:no-webgl2`（假宿主拿不到 WebGL2 ⇒ `frames=0`，**帧与像素未证**，不是通过） |
+| 微信小游戏 | 加 `-Platform wechat-minigame`（默认主包 + 单分包） | **真机验收是历史证据**（2026-09-27、Android：进山庄 / 摇杆 / 按钮全通）；**产物层每天可复核**：2026-11-03 复测 `wechat_minigame_package_ok`（主包 16.6% / 分包 42.0% / 合计 45.3%，9,280 KB）、`l3_api_contract=ok`、`eh_probe=accepted`、`subpackage_case=ok,delay,delay-move,never,fail-once,no-game-json`、字体 `NotoSansSC-VF.ttf` 真加载（2026-11-02 同口径读数为主包 16.6% / 分包 41.9% / 合计 45.3%，可复现）；harness 明确 `runtime=env-limited:no-webgl2`（假宿主拿不到 WebGL2 ⇒ `frames=0`，**帧与像素未证**，不是通过） |
 | 编辑器绿色版 | `scripts\build\package-engine.ps1 -Zip` | 免安装包：release 三件套 + 字体 + 样例工程 + 双击即用的 bat |
 | GitHub Release（PC + 引擎包） | `scripts\repo\tag-release.ps1 -Push`（先跑默认 dry-run 复核；或 Actions 手动 `dry_run`） | tag 触发 `release.yml`：构建 → 安全门/SBOM → 可选 Authenticode 签名 → zip + `SHA256SUMS.txt` + notes；WebGL/微信仍手工，见 [docs/69](docs/69-发布与供应链安全.md) |
 
