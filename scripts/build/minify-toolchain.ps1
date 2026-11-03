@@ -29,7 +29,7 @@ param(
 
 $workspaceRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $engineRoot = Join-Path $workspaceRoot "engine"
-$toolsRoot = Join-Path $engineRoot ".tools"
+$minifyToolsRoot = Join-Path $engineRoot ".tools"
 
 # binaryen 固定版本：与 docs/52 的 EH 口径绑定，不是"新版本更好"。
 $BinaryenVersion = "version_133"
@@ -50,13 +50,13 @@ $BinaryenApiReleaseUrl = "https://api.github.com/repos/WebAssembly/binaryen/rele
 # 同一个通道，只信它就等于"用来源证明自己"；换资产必须先换摘要，否则校验会响亮失败。
 $BinaryenExpectedSha256 = "17a2cbeac6b5693c5fbafab3838d3c65fd9c1eb38b05f5baec6c657e8c84995b"
 # 资产解出来自带的顶层目录名就是 `binaryen-version_133/`（不是 `version_133/`），缓存路径按它拼。
-$BinaryenExtractRoot = Join-Path $toolsRoot "binaryen"
+$BinaryenExtractRoot = Join-Path $minifyToolsRoot "binaryen"
 $BinaryenCacheDir = Join-Path $BinaryenExtractRoot "binaryen-$BinaryenVersion"
 $WasmOptExe = Join-Path $BinaryenCacheDir "bin\wasm-opt.exe"
 
 # terser 主版本固定（5.x）：压缩行为稳定，且 package.ps1 用的是 `<in> -o <out>` 的 v5 CLI 面。
 $TerserSpec = "terser@5"
-$TerserCacheDir = Join-Path $toolsRoot "terser"
+$TerserCacheDir = Join-Path $minifyToolsRoot "terser"
 $TerserCmd = Join-Path $TerserCacheDir "node_modules\.bin\terser.cmd"
 
 # 参数名不能叫 $Args——那是 PowerShell 的自动变量，声明成参数会让 splat 拿到空表，
@@ -168,8 +168,8 @@ function Resolve-WasmOpt {
     if (-not $tarExe) {
         throw "tar 未找到（Windows 10 1803+ 自带 bsdtar）：无法解压 binaryen。请手动放置 binaryen $BinaryenVersion 后设 `$env:WASM_OPT=<path>\wasm-opt.exe"
     }
-    New-Item -ItemType Directory -Force -Path $toolsRoot | Out-Null
-    $archive = Join-Path $toolsRoot $BinaryenArchiveName
+    New-Item -ItemType Directory -Force -Path $minifyToolsRoot | Out-Null
+    $archive = Join-Path $minifyToolsRoot $BinaryenArchiveName
     Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
     Write-Host "==> Downloading binaryen $BinaryenVersion (wasm-opt -Oz; 微信主包 4 MB 上限需要)" -ForegroundColor Cyan
 

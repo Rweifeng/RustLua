@@ -33,8 +33,17 @@ param(
 $workspaceRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $engineRoot = Join-Path $workspaceRoot "engine"
 $cargoLock = Join-Path $engineRoot "Cargo.lock"
-$toolsRoot = Join-Path $engineRoot ".tools\wasm-bindgen"
-$toolsExe = Join-Path $toolsRoot "bin\wasm-bindgen.exe"
+$wasmBindgenRoot = Join-Path $engineRoot ".tools\wasm-bindgen"
+# **变量名必须带前缀，不能叫 $toolsRoot**（2026-11-03 定案，别改回去）：
+# 本脚本被 `package\00-context.ps1` 用 `. ` 点源进**同一个作用域**，同批点源的
+# `minify-toolchain.ps1` 里也有一个 `$toolsRoot`（= `engine\.tools`）且在它后面点源——
+# PowerShell 点源共享作用域，于是本脚本函数体里读到的 `$toolsRoot` 变成了 `.tools`，
+# 而 `$toolsExe` 是**加载时**按 `.tools\wasm-bindgen\bin` 算好的：两半各用各的值。
+# 现场后果：`cargo install --root engine\.tools` 把 exe 装到 `.tools\bin\`，随后的
+# `Test-WasmBindgenCli $toolsExe` 却去 `.tools\wasm-bindgen\bin\` 找 ⇒ 每次发布都重装
+# （5+ 分钟）然后仍判失败，CI 的 web-evidence 红了一整天，而本机因为那份 exe 早就在正确
+# 路径上所以完全复现不出来。以前那条"$toolsExe 字符串与预期的差异迄今未定位"的注释就是它。
+$toolsExe = Join-Path $wasmBindgenRoot "bin\wasm-bindgen.exe"
 $vendorCliExe = Join-Path $engineRoot "vendor\wasm-bindgen-cli\cli\target\release\wasm-bindgen.exe"
 
 function Get-WasmBindgenCrateVersion {
@@ -75,13 +84,13 @@ function Resolve-WasmBindgenExePath([string]$Exe) {
         }
         catch { }
     }
-    # 第三条：直接在 $toolsRoot 下递归找同名文件。**不走 Split-Path**——CI 上出现过
-    # "Get-ChildItem $toolsRoot\bin 列得出文件，但按同一个 $toolsRoot 拼出来的 $Exe 直接
+    # 第三条：直接在 $wasmBindgenRoot 下递归找同名文件。**不走 Split-Path**——CI 上出现过
+    # "Get-ChildItem $wasmBindgenRoot\bin 列得出文件，但按同一个 $wasmBindgenRoot 拼出来的 $Exe 直接
     # 查不到"的现场（$toolsExe 字符串本身与预期的差异迄今未定位），这条路只依赖
-    # $toolsRoot 这一个字符串，而它是**已经证明能列出文件**的那个。
-    if ($leaf -and $toolsRoot -and (Test-Path -LiteralPath $toolsRoot)) {
+    # $wasmBindgenRoot 这一个字符串，而它是**已经证明能列出文件**的那个。
+    if ($leaf -and $wasmBindgenRoot -and (Test-Path -LiteralPath $wasmBindgenRoot)) {
         try {
-            $deep = @(Get-ChildItem -LiteralPath $toolsRoot -Recurse -File -Force -Filter $leaf -ErrorAction SilentlyContinue |
+            $deep = @(Get-ChildItem -LiteralPath $wasmBindgenRoot -Recurse -File -Force -Filter $leaf -ErrorAction SilentlyContinue |
                 Where-Object { $_.Name -eq $leaf })
             if ($deep.Count -ge 1) { return $deep[0].FullName }
         }
@@ -144,7 +153,7 @@ function Get-RealWasmBindgenPath([string]$Candidate, [string]$WantVersion) {
 }
 
 function Install-WasmBindgenCli([string]$WantVersion) {
-    New-Item -ItemType Directory -Force -Path $toolsRoot | Out-Null
+    New-Item -ItemType Directory -Force -Path $wasmBindgenRoot | Out-Null
     Write-Host "==> Installing wasm-bindgen-cli $WantVersion into engine\.tools (cargo install --root)" -ForegroundColor Cyan
     $savedEap = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
@@ -152,7 +161,7 @@ function Install-WasmBindgenCli([string]$WantVersion) {
     try {
         Push-Location $engineRoot
         try {
-            cargo install wasm-bindgen-cli --version $WantVersion --root $toolsRoot --locked 2>&1 |
+            cargo install wasm-bindgen-cli --version $WantVersion --root $wasmBindgenRoot --locked 2>&1 |
                 ForEach-Object { Write-Host $_ }
             $exit = $LASTEXITCODE
         }
@@ -178,7 +187,7 @@ function Install-WasmBindgenCli([string]$WantVersion) {
             $itemProbe = $null
             try { $itemProbe = Get-Item -LiteralPath $toolsExe -Force -ErrorAction Stop } catch { }
             $detail.Add("item_ok=$($null -ne $itemProbe)")
-            $binDirProbe = Join-Path $toolsRoot "bin"
+            $binDirProbe = Join-Path $wasmBindgenRoot "bin"
             $detail.Add("exe_len=$($toolsExe.Length)")
             $detail.Add("parent_repr=[$(Split-Path -Parent $toolsExe)]")
             $detail.Add("bin_dir_repr=[$binDirProbe]")
@@ -190,7 +199,7 @@ function Install-WasmBindgenCli([string]$WantVersion) {
             }
             catch { $detail.Add("parent_entries=err") }
             try {
-                $deepHit = @(Get-ChildItem -LiteralPath $toolsRoot -Recurse -File -Force -Filter "wasm-bindgen.exe" -ErrorAction SilentlyContinue)
+                $deepHit = @(Get-ChildItem -LiteralPath $wasmBindgenRoot -Recurse -File -Force -Filter "wasm-bindgen.exe" -ErrorAction SilentlyContinue)
                 $detail.Add("deep_hits=$($deepHit.Count)")
             }
             catch { $detail.Add("deep_hits=err") }
@@ -202,7 +211,7 @@ function Install-WasmBindgenCli([string]$WantVersion) {
                 $detail.Add("exe_version_exit=$LASTEXITCODE")
                 $detail.Add("exe_version_raw='$rawVersion'")
             }
-            $binDir = Join-Path $toolsRoot "bin"
+            $binDir = Join-Path $wasmBindgenRoot "bin"
             if (Test-Path -LiteralPath $binDir) {
                 $binList = @(Get-ChildItem -LiteralPath $binDir | ForEach-Object { "$($_.Name)=$($_.Length)" }) -join ','
                 $detail.Add("bin=[$binList]")
@@ -222,7 +231,7 @@ function Install-WasmBindgenCli([string]$WantVersion) {
         $ErrorActionPreference = "Continue"
         Push-Location $engineRoot
         try {
-            $forceOut = @(cargo install wasm-bindgen-cli --version $WantVersion --root $toolsRoot --locked --force 2>&1 |
+            $forceOut = @(cargo install wasm-bindgen-cli --version $WantVersion --root $wasmBindgenRoot --locked --force 2>&1 |
                 ForEach-Object { "$_" })
             $forceExit = $LASTEXITCODE
             $forceOut | ForEach-Object { Write-Host $_ }
