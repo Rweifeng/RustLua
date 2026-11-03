@@ -135,11 +135,15 @@ const CODE_CONSTANTS = [
 // 的射程里，也不在 API 计数门的射程里——没人读它就永远错着。这里把它变成一条可复核的声明。
 export function planDirStatus(repoRoot) {
   const dir = path.join(repoRoot, 'tasks', 'plan');
-  if (!fs.existsSync(dir)) return { files: 0, exists: false };
+  if (!fs.existsSync(dir)) return { files: 0, exists: false, milestones: [] };
   const files = fs
     .readdirSync(dir, { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith('.md'));
-  return { files: files.length, exists: true };
+  // 里程碑号（`M78`）而不是文件名：README 的断言是"只剩 M78"，同一个号可能有多份文件。
+  const milestones = [
+    ...new Set(files.map((entry) => (entry.name.match(/^(M\d+)/) || [])[1]).filter(Boolean)),
+  ].sort();
+  return { files: files.length, exists: true, milestones };
 }
 
 export function audit({ repoRoot }) {
@@ -224,7 +228,8 @@ export function audit({ repoRoot }) {
   }  // `tasks/plan/` 状态：README 里的"为空"必须与目录一致。只查"为空"这一种断言——
   // "有几个"这种会变的数字，本仓库的口径是根本不该写进 README（见其「当前状态」的规矩）。
   const plan = planDirStatus(repoRoot);
-  for (const match of readText(repoRoot, 'README.md').matchAll(/tasks[\\/]plan[^\n]{0,16}?为空/g)) {
+  const readmeText = readText(repoRoot, 'README.md');
+  for (const match of readmeText.matchAll(/tasks[\\/]plan[^\n]{0,16}?为空/g)) {
     checked += 1;
     if (plan.files > 0) {
       errors.push(
@@ -232,7 +237,33 @@ export function audit({ repoRoot }) {
       );
     }
   }
-  return { errors, stats: { tables, funcs, components, gates, constants: CODE_CONSTANTS.length, planFiles: plan.files, claims: checked } };
+  // 第二种状态断言："当前只剩 M78"。它比"为空"更容易写错——把 plan 里的文件归档进 done/
+  // 而忘了改 README（文档滞后），或者往 plan/ 塞了新批次却没在 README 登记（文档落后于目录，
+  // 等于新包"暗地里"开工）。两边都核对：README 声称的里程碑集合必须等于目录里真实的集合。
+  const claimedMilestones = new Set();
+  for (const match of readmeText.matchAll(/plan\/`?\s*(?:当前)?只剩\s*((?:M\d+[\s、,，]*)+)/g)) {
+    for (const id of match[1].match(/M\d+/g) || []) claimedMilestones.add(id);
+  }
+  if (claimedMilestones.size > 0) {
+    checked += 1;
+    const claimed = [...claimedMilestones].sort();
+    const actual = plan.milestones;
+    const missingOnDisk = claimed.filter((id) => !actual.includes(id));
+    const missingInReadme = actual.filter((id) => !claimed.includes(id));
+    if (missingOnDisk.length > 0 || missingInReadme.length > 0) {
+      const parts = [];
+      if (missingOnDisk.length > 0) {
+        parts.push(`README 写了 ${missingOnDisk.join('、')}，目录里没有这些`);
+      }
+      if (missingInReadme.length > 0) {
+        parts.push(`目录里有 ${missingInReadme.join('、')}，README 没登记`);
+      }
+      errors.push(
+        `tasks/plan 状态：README 声称"只剩 ${claimed.join('、')}"，目录实际是 ${actual.length > 0 ? actual.join('、') : '（空）'}——${parts.join('；')}`,
+      );
+    }
+  }
+  return { errors, stats: { tables, funcs, components, gates, constants: CODE_CONSTANTS.length, planFiles: plan.files, planMilestones: plan.milestones.join(",") || "-", claims: checked } };
 }
 
 function writeFixture(root, snapshot, readme, doc74) {
@@ -310,6 +341,25 @@ function selfTest() {
     if (failed > 0) process.exit(1);
   }
 
+  // tasks/plan 里程碑断言：README 说"只剩 M78"而目录是 M79（或相反）必须判红。
+  // 两个方向都测：①README 落后（文件已归档却没改 README）；②README 超前（新批次已放进去没登记）。
+  for (const [name, readmeClaim, dirFiles] of [
+    ['README 落后（写 M78，目录是 M79）', '`plan/` 当前只剩 M78。\n', ['M79-00-x.md']],
+    ['README 超前（写 M79，目录是 M78）', '`plan/` 当前只剩 M79。\n', ['M78-00-x.md']],
+  ]) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'doc-claims-milestone-'));
+    writeFixture(dir, snapshot, `${goodReadme}${readmeClaim}`, goodDoc);
+    fs.mkdirSync(path.join(dir, 'tasks', 'plan'), { recursive: true });
+    for (const file of dirFiles) fs.writeFileSync(path.join(dir, 'tasks', 'plan', file), '# x\n');
+    const { errors } = audit({ repoRoot: dir });
+    const caught = errors.some((error) => error.includes('tasks/plan 状态'));
+    if (!caught) {
+      failed += 1;
+      console.error(`自测失败：${name} 未判红 ${errors.join(' | ')}`);
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  if (failed > 0) process.exit(1);
   // 代码常量锚点：文档写的常量与源码不一致必须判红（docs/64 的"实现超前于文档"就是这类漂移）。
   {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'doc-claims-const-'));
@@ -327,7 +377,7 @@ function selfTest() {
     if (failed > 0) process.exit(1);
   }
 
-  console.log(`doc_claims_selftest_ok cases=${cases.length + 2}`);
+  console.log(`doc_claims_selftest_ok cases=${cases.length + 4}`);
 }
 
 if (process.argv.includes('--self-test')) {
