@@ -13,7 +13,9 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - "artifacts/canary/**"
+      # 触发路径就是本文件自己：`artifacts/` 在 .gitignore 里（推不上去），
+      # 改这个工作流即触发一次，不用额外加触发器文件。
+      - ".github/workflows/web-evidence-canary.yml"
 
 concurrency:
   group: canary-${{ github.sha }}
