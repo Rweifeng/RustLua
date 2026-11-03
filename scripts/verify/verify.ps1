@@ -1193,8 +1193,18 @@ try {
                 & $emitProgress "publish_done exit=$publishExit elapsed=${publishElapsed}m"
                 if ($publishExit -ne 0) {
                     $tail = "(no log)"
+                    $tailRows = @()
                     if (Test-Path -LiteralPath $publishLog) {
-                        $tail = (Get-Content -LiteralPath $publishLog -Tail 20) -join "`n"
+                        $tailRows = @(Get-Content -LiteralPath $publishLog -Tail 25)
+                        $tail = $tailRows -join "`n"
+                    }
+                    # 失败时把发布日志的尾 25 行**逐行发成 annotation**：CI 的 ::error:: 截断只保留很短一段，
+                    # 而真正的原因（例如 binaryen 下载失败的原句）常常正好被截掉。这里一行一条，保证读得到。
+                    if ($env:GITHUB_ACTIONS -eq 'true') {
+                        foreach ($row in $tailRows) {
+                            $line = ("{0}" -f $row).TrimEnd()
+                            if ($line) { Write-Host "::error::web evidence: publish log: $line" }
+                        }
                     }
                     throw "WebGL publish failed (exit $publishExit, ${publishElapsed}m)。日志尾部：`n$tail"
                 }

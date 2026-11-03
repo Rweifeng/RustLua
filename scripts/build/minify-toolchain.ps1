@@ -93,13 +93,32 @@ function Invoke-RemoteFile {
     param([string]$Url, [string]$OutFile, [hashtable]$Headers)
     $savedEap = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
+    $startedAt = Get-Date
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        if ($Headers) { Invoke-WebRequest -Uri $Url -Headers $Headers -OutFile $OutFile -UseBasicParsing }
-        else { Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing }
-        return (Test-Path -LiteralPath $OutFile -PathType Leaf)
+        # **有超时**：binaryen 是 106 MB 的资产，GitHub Releases 的 CDN 在 CI 与本机都出现过
+        # "一直不动"（2026-11-03 本机实测下载耗时 29.6 分钟；CI 上更久）。PS 5.1 的
+        # `Invoke-WebRequest` 默认**没有**读超时，卡住就是无声无息地等，质量门里表现为
+        # "发布这一步几小时没输出"。给 15 分钟上限：正常带宽足够，卡住就快速失败并说清是哪条通道。
+        $timeoutSec = 900
+        if ($env:RUSTLUA_DOWNLOAD_TIMEOUT_SEC -match '^(\d+)$') { $timeoutSec = [int]$Matches[1] }
+        if ($Headers) { Invoke-WebRequest -Uri $Url -Headers $Headers -OutFile $OutFile -UseBasicParsing -TimeoutSec $timeoutSec }
+        else { Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing -TimeoutSec $timeoutSec }
+        $ok = Test-Path -LiteralPath $OutFile -PathType Leaf
+        if ($ok) {
+            $bytes = (Get-Item -LiteralPath $OutFile).Length
+            $secs = [int]((Get-Date) - $startedAt).TotalSeconds
+            Write-Host ("    downloaded {0:N0} bytes in {1}s" -f $bytes, $secs) -ForegroundColor DarkGray
+        }
+        return $ok
     }
-    catch { return $false }
+    catch {
+        # **不再吞掉原因**：以前这里 `return $false`，于是"下载失败"和"超时"在日志里长得一样，
+        # 只能靠猜。把异常原文打出来，并说明尝试了多久。
+        $secs = [int]((Get-Date) - $startedAt).TotalSeconds
+        Write-Host ("    download failed after {0}s: {1}" -f $secs, $_.Exception.Message) -ForegroundColor Yellow
+        return $false
+    }
     finally { $ErrorActionPreference = $savedEap }
 }
 

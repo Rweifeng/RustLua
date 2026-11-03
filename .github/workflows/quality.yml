@@ -386,6 +386,18 @@ jobs:
         with:
           workspaces: engine
 
+      # binaryen（106 MB）与 terser 是发布期工具，锁版本、落在 `engine\.tools\` 下（gitignore）。
+      # 不加缓存的话**每次** push 都要从 GitHub Releases 的 CDN 重新拉 106 MB：2026-11-03 实测本机
+      # 单次下载 29.6 分钟，CI 上这一步长期看起来像"卡住"（最老一次跑了 3.5 小时）。按锁定版本做 key，
+      # 只有缓存未命中的那一次要付下载成本。
+      - name: Cache minify tools (binaryen 133 / terser 5)
+        uses: actions/cache@v4
+        with:
+          path: |
+            engine/.tools/binaryen
+            engine/.tools/terser
+          key: minify-tools-binaryen-version_133-terser5-v1
+
       - name: Install zig (makes wasm gates execute instead of skipping)
         # 尽力而为：装不上（choco 源没有对应版本）就让 wasm 门按既有语义以 3 显式跳过，
         # 不能让 CI 比拆分前更脆。
