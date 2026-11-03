@@ -41,6 +41,14 @@
         # 报"管道元素中的 '&' 后面的表达式生成无效的对象"（实测 2026-10-03）——
         # 而这条错误离真正的原因隔了几百行，看起来像产物坏了。跳过构建不代表可以跳过工具解析。
         if (-not $wasmBindgenCli) { $wasmBindgenCli = Resolve-WasmBindgenCli -Provision }
+        # 解析发生在构建分支里，真正用它在几百行之后；中间发生的事（清目录、扫描器拿走新装的
+        # exe）会让这条路径失效，而报错是 `& : ... is not recognized`，看起来像产物问题。
+        # 用之前再确认一次：不在了就重新解析（此时会走临时副本那条路）。
+        if ($wasmBindgenCli -and -not (Test-Path -LiteralPath $wasmBindgenCli -PathType Leaf)) {
+            Write-Host "==> wasm-bindgen CLI 路径已失效（$wasmBindgenCli），重新解析" -ForegroundColor Yellow
+            $wasmBindgenCli = $null
+        }
+        if (-not $wasmBindgenCli) { $wasmBindgenCli = Resolve-WasmBindgenCli -Provision }
         if (-not $wasmBindgenCli) { throw "wasm-bindgen CLI（版本需与 Cargo.lock 的 wasm-bindgen 一致）解析失败。" }
         if ($Platform -eq "webgl") {
             # 浏览器：`--target web` 的 **ES Module** 胶水，由 index.html 的 `<script type=module>` 加载。

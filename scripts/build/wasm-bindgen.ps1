@@ -90,11 +90,23 @@ function Resolve-WasmBindgenExePath([string]$Exe) {
     return $null
 }
 
-function Get-WasmBindgenCliVersion([string]$Exe) {
+function Get-WasmBindgenCliVersion([string]$Exe, [switch]$Exact) {
     if ([string]::IsNullOrWhiteSpace($Exe)) { return $null }
-    $resolvedExe = Resolve-WasmBindgenExePath $Exe
-    if (-not $resolvedExe) { return $null }
-    $Exe = $resolvedExe
+    # $Exact：只认**这条路径本身**（不走"枚举父目录/在 .tools 下递归找"的兜底）。
+    # 兜底路径的存在是为了兼容"Test-Path 说没有、目录里其实有"的现场，但它有个副作用——
+    # 对一个**不存在**的路径也可能返回别的文件，于是"这个路径能不能跑"这个问题就被答错了。
+    # 任何"我要确认这条路径真实可用"的场合都必须用 -Exact（2026-11-03 本机踩到：
+    # 临时副本根本没落地，却因为兜底找到了 .tools 里那份而被判为通过）。
+    if ($Exact) {
+        $item = $null
+        try { $item = Get-Item -LiteralPath $Exe -Force -ErrorAction Stop } catch { return $null }
+        if ($null -eq $item -or $item.PSIsContainer) { return $null }
+    }
+    else {
+        $resolvedExe = Resolve-WasmBindgenExePath $Exe
+        if (-not $resolvedExe) { return $null }
+        $Exe = $resolvedExe
+    }
     # 原生工具的正常输出也可能落 stderr；PS 5.1 在 EAP=Stop 下会把它变成终止性错误，
     # 所以逐次调用都临时降级（同 package.ps1 调 cargo 的既有模式）。
     $savedEap = $ErrorActionPreference
@@ -110,9 +122,25 @@ function Get-WasmBindgenCliVersion([string]$Exe) {
     finally { $ErrorActionPreference = $savedEap }
 }
 
-function Test-WasmBindgenCli([string]$Exe, [string]$WantVersion) {
+function Test-WasmBindgenCli([string]$Exe, [string]$WantVersion, [switch]$Exact) {
     if ([string]::IsNullOrWhiteSpace($Exe)) { return $false }
+    if ($Exact) { return (Get-WasmBindgenCliVersion $Exe -Exact) -eq $WantVersion }
     return (Get-WasmBindgenCliVersion $Exe) -eq $WantVersion
+}
+
+# 把"候选路径"归一成**真实存在的那个路径**：候选可能是拼出来的、可能在 CI 上是个
+# Test-Path 认不出的怪路径，而兜底解析拿到的 FullName 才是能 `&` 的那个。归一不了就返回 $null。
+function Get-RealWasmBindgenPath([string]$Candidate, [string]$WantVersion) {
+    if ([string]::IsNullOrWhiteSpace($Candidate)) { return $null }
+    if (-not (Test-WasmBindgenCli $Candidate $WantVersion)) { return $null }
+    $real = Resolve-WasmBindgenExePath $Candidate
+    if (-not $real) { return $null }
+    if ((Test-WasmBindgenCli $real $WantVersion -Exact)) { return $real }
+    # 归一后的路径仍可能"Test-Path 认不出"（Windows 上文件名含不可见字符之类），
+    # 只要它能跑出正确版本就仍然采用——但此时**不再**做临时副本（副本会复制到一个
+    # 同样认不出的名字下，等于自找麻烦）。
+    if ((Test-WasmBindgenCli $real $WantVersion)) { return $real }
+    return $null
 }
 
 function Install-WasmBindgenCli([string]$WantVersion) {
@@ -263,6 +291,25 @@ function Install-WasmBindgenCli([string]$WantVersion) {
     return $toolsExe
 }
 
+# 把"验证过的那份 exe"复制到进程外的临时目录再交出去。为什么：CI（windows-latest）2026-11-03
+# 实测到"解析时能跑、几十分钟后真正 `& $cli` 时却报 `The term '...wasm-bindgen.exe' is not
+# recognized`"——文件在运行中途消失了（仓库内 .tools 会被清、被扫描器拿走都可能）。临时目录里的
+# 副本与仓库生命周期无关，最坏情况也只是"复制过去的那一秒被拦"，而且复制后会**再验一次版本**，
+# 验不过就退回原路径（不改变既有语义）。
+function Get-WasmBindgenTempCopy([string]$Source, [string]$WantVersion) {
+    if ([string]::IsNullOrWhiteSpace($Source)) { return $null }
+    try {
+        $dir = Join-Path ([IO.Path]::GetTempPath()) ("rustlua-wasm-bindgen\" + $WantVersion)
+        $dst = Join-Path $dir "wasm-bindgen.exe"
+        # **一律 -Exact**：这里问的是"这份副本本身在不在、能不能跑"，兜底会骗人。
+        if (Test-WasmBindgenCli $dst $WantVersion -Exact) { return $dst }
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        Copy-Item -LiteralPath $Source -Destination $dst -Force -ErrorAction Stop
+        if (Test-WasmBindgenCli $dst $WantVersion -Exact) { return $dst }
+    }
+    catch { }
+    return $null
+}
 function Resolve-WasmBindgenCli {
     param([switch]$Provision)
 
@@ -279,7 +326,13 @@ function Resolve-WasmBindgenCli {
     if ($onPath) { $candidates += $onPath.Source }
 
     foreach ($cand in $candidates) {
-        if (Test-WasmBindgenCli $cand $want) { return $cand }
+        # 先归一成真实路径，再决定要不要复制：直接返回候选字符串会在 CI 上返回一个
+        # Test-Path / `&` 都不认的路径（2026-11-03 的 CommandNotFoundException）。
+        $real = Get-RealWasmBindgenPath $cand $want
+        if (-not $real) { continue }
+        $copy = Get-WasmBindgenTempCopy $real $want
+        if ($copy) { return $copy }
+        return $real
     }
 
     # 把"为什么全被否掉"说出来：版本错位是唯一常见原因，沉默会让人以为只是没装。
@@ -297,7 +350,14 @@ function Resolve-WasmBindgenCli {
         return $null
     }
     Write-Host "==> no wasm-bindgen matches crate version $want (saw: $seenText); installing the pinned version" -ForegroundColor Yellow
-    return Install-WasmBindgenCli $want
+    $installed = Install-WasmBindgenCli $want
+    $real = Get-RealWasmBindgenPath $installed $want
+    if ($real) {
+        $copy = Get-WasmBindgenTempCopy $real $want
+        if ($copy) { return $copy }
+        return $real
+    }
+    return $installed
 }
 
 # 只有作为脚本直接运行时才走 CLI；被 `. scripts\build\wasm-bindgen.ps1` 点源时只导出函数，
