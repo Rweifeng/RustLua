@@ -374,41 +374,6 @@ jobs:
         continue-on-error: true
         run: choco install zig -y
 
-      # 让"缺哪个外部工具"在 10 秒内可见：下面那个步骤要跑 30–40 分钟（cargo wasm release
-      # 构建 + 三个宿主的后处理），工具缺失却只在最后一步才炸，等于每轮排查都要等一整轮 CI。
-      # 这里用**只解析、不下载/不安装**的方式把每个工具点一遍，打印在场/缺席；只有 PATH 上的
-      # 基础设施（node/npm/tar/cargo）缺席才判红——装了它们才有"按需安装"的可能。
-      - name: Toolchain probe (fail fast, no downloads)
-        shell: pwsh
-        run: |
-          # 只回答"这台 runner 上哪些工具已经在位"。**不判红**：zig/wasm-bindgen/wasm-opt/terser
-          # 缺席是正常的（publish 步骤会按需下载/安装），这一段的用处是让"缺什么"在 10 秒内
-          # 可见，而不是等 30–40 分钟的 wasm 构建跑完才在最后一步炸。真正不可缺的只有 PATH 上的
-          # 基础设施（node/npm/tar/cargo），缺了它们连装工具都做不到，那种情况当场判红。
-          $problems = @()
-          foreach ($exe in @('node', 'npm', 'tar', 'cargo')) {
-            if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) { $problems += "missing command: $exe" }
-          }
-          $probes = @(
-            @{ Name = 'zig';          Script = 'scripts/build/zig-toolchain.ps1';    Args = @('-NoDownload', '-PrintPath') },
-            @{ Name = 'wasm-bindgen'; Script = 'scripts/build/wasm-bindgen.ps1';     Args = @('-NoInstall', '-PrintPath') },
-            @{ Name = 'wasm-opt';     Script = 'scripts/build/minify-toolchain.ps1'; Args = @('-NoInstall', '-PrintWasmOpt') },
-            @{ Name = 'terser';       Script = 'scripts/build/minify-toolchain.ps1'; Args = @('-NoInstall', '-PrintTerser') }
-          )
-          foreach ($probe in $probes) {
-            $out = & pwsh -NoProfile -File $probe.Script @($probe.Args) 2>&1
-            $code = $LASTEXITCODE
-            if ($code -eq 0) {
-              Write-Host "toolchain_probe $($probe.Name)=present path=$(($out | Select-Object -Last 1))"
-            } else {
-              Write-Host "toolchain_probe $($probe.Name)=absent exit=$code (publish 步骤会按需安装)"
-            }
-          }
-          if ($problems.Count -gt 0) {
-            foreach ($problem in $problems) { Write-Host "::error::toolchain probe: $problem" }
-            throw "toolchain probe failed: $($problems -join '; ')"
-          }
-
       # docs/54 §8-⑨：Web 平台的可重复证据（浏览器契约层 + 已发布产物的启动层）。runner 上没有
       # 浏览器/已发布产物时这两层会**显式**打印跳过原因并以 2/3 退出（不是伪造通过）；真失败
       # （页面能跑却没画面、引导失败）仍是退出码 1，会让这一步判红。
