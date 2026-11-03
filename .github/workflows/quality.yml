@@ -393,10 +393,14 @@ jobs:
       - name: Cache minify tools (binaryen 133 / terser 5)
         uses: actions/cache@v4
         with:
+          # wasm-bindgen-cli 也一起缓存：CI 每次 `cargo install` 要 4 分钟，且它一旦被装到错位置
+          # 就会"重装 + 仍找不到"地空转（见 260f77f2 的 `$toolsRoot` 撞名）。
+          # 注意：`path: |` 是字面块标量，**注释必须写在它上面**，写进块里会被当成一个路径。
           path: |
             engine/.tools/binaryen
             engine/.tools/terser
-          key: minify-tools-binaryen-version_133-terser5-v1
+            engine/.tools/wasm-bindgen
+          key: minify-tools-binaryen-version_133-terser5-wasm-bindgen-02129-v2
 
       - name: Install zig (makes wasm gates execute instead of skipping)
         # 尽力而为：装不上（choco 源没有对应版本）就让 wasm 门按既有语义以 3 显式跳过，

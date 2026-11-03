@@ -1194,6 +1194,12 @@ try {
                 if ($publishExit -ne 0) {
                     $tail = "(no log)"
                     $tailRows = @()
+                    # package.ps1 的 `throw` 落在 **stderr**：只倒 stdout 会看到"最后一个正常步骤"，
+                    # 2026-11-03 就这样连着两轮只看到 "Installing wasm-bindgen.exe" 而看不到原因。
+                    $errRows = @()
+                    if (Test-Path -LiteralPath "$publishLog.err") {
+                        $errRows = @(Get-Content -LiteralPath "$publishLog.err" -Tail 25)
+                    }
                     if (Test-Path -LiteralPath $publishLog) {
                         $tailRows = @(Get-Content -LiteralPath $publishLog -Tail 25)
                         $tail = $tailRows -join "`n"
@@ -1201,12 +1207,17 @@ try {
                     # 失败时把发布日志的尾 25 行**逐行发成 annotation**：CI 的 ::error:: 截断只保留很短一段，
                     # 而真正的原因（例如 binaryen 下载失败的原句）常常正好被截掉。这里一行一条，保证读得到。
                     if ($env:GITHUB_ACTIONS -eq 'true') {
+                        foreach ($row in $errRows) {
+                            $line = ("{0}" -f $row).TrimEnd()
+                            if ($line) { Write-Host "::error::web evidence: publish stderr: $line" }
+                        }
                         foreach ($row in $tailRows) {
                             $line = ("{0}" -f $row).TrimEnd()
                             if ($line) { Write-Host "::error::web evidence: publish log: $line" }
                         }
                     }
-                    throw "WebGL publish failed (exit $publishExit, ${publishElapsed}m)。日志尾部：`n$tail"
+                    $errTail = $errRows -join "`n"
+                    throw "WebGL publish failed (exit $publishExit, ${publishElapsed}m)。stdout 尾部：`n$tail`nstderr 尾部：`n$errTail"
                 }
             }
             $bundleRun = & $runWebEvidence $bundleScript "bundle"
