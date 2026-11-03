@@ -1025,14 +1025,33 @@ try {
         # 进度标记：CI 上发成 `::warning::` annotation（job 日志要认证才能读，annotation 不要），
         # 本机只打一行普通输出。用途是把"卡住"和"在编译"区分开——2026-11-03 实测这一步在 CI 上
         # 一个多小时没有任何输出，只能干等。
+        # **阶段流水账**：每一步都记一行到文件。CI 的 annotation 只在**步骤结束时**才刷新，
+        # 于是"步骤被 job 的 timeout 掐掉"这种收场**一条注解都读不到**（2026-11-03 实测：
+        # web-evidence 跑满 150 分钟被 cancel，annotations=0）。所以留一份文件，失败时把它
+        # 的尾巴一起倒出来——它不受 annotation 刷新时机影响。
+        $webPhaseLog = Join-Path $webEvidenceRoot "phases-$timestamp.log"
         $emitProgress = {
             param([string]$Message)
             $line = "web evidence: $Message"
             Write-Host $line
+            try { Add-Content -LiteralPath $webPhaseLog -Value ("{0} {1}" -f (Get-Date -Format "HH:mm:ss"), $Message) -Encoding UTF8 } catch { }
             if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host "::warning::$line" }
         }
         $publishLimitMin = 75
         if ($env:RUSTLUA_PUBLISH_TIMEOUT_MIN -match '^\d+$') { $publishLimitMin = [int]$env:RUSTLUA_PUBLISH_TIMEOUT_MIN }
+        # **整段证据的总预算**：单个阶段有界不代表整段有界——6 个阶段各烧满 10 分钟 + 发布 75 分钟
+        # 正好能把 150 分钟的 job 撑爆，而"被掐掉"比"判红"更糟：连注解都没有。默认 100 分钟，
+        # $env:RUSTLUA_WEB_EVIDENCE_TIMEOUT_MIN 可覆盖；超预算时**带着流水账判红**。
+        $webEvidenceLimitMin = 100
+        if ($env:RUSTLUA_WEB_EVIDENCE_TIMEOUT_MIN -match '^\d+$') { $webEvidenceLimitMin = [int]$env:RUSTLUA_WEB_EVIDENCE_TIMEOUT_MIN }
+        $webEvidenceStart = Get-Date
+        # 阶段子进程用**和本进程同一个宿主**：CI 的步骤跑在 pwsh 7 上，若这里固定写 powershell(5.1)，
+        # 子进程会继承 7 的 `PSModulePath` 却按 5.1 的 `$PSHOME` 找模块 ⇒ 用到才自动加载的命令
+        # 直接 CommandNotFoundException（2026-11-03 在发布子进程里实测过同一条）。本机只有 5.1，
+        # 父与子同宿主，故退回 powershell。
+        $childHostExe = (Get-Command pwsh -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+        if (-not $childHostExe) { $childHostExe = (Get-Command pwsh -ErrorAction SilentlyContinue | Select-Object -First 1).Path }
+        if (-not $childHostExe) { $childHostExe = "powershell" }
 
         $runWebEvidence = {
             param([string]$Script, [string]$Label, [string[]]$ExtraArgs = @())
@@ -1041,11 +1060,22 @@ try {
             # **有界等待**，不用 `-Wait`：`-Wait` 会等到整个进程树结束，而无头浏览器偶尔不自行退出，
             # 于是质量门会一直挂在那里（本轮实际踩到）。这里自己轮询 + 超时即杀，并把它当失败
             # ——宁可判红，也不要"卡住"。
-            $timeoutSeconds = 600
+            # 单个阶段的上限：**除浏览器外都是 420 秒**。这些阶段（bundle / gpu-probe / render-probe /
+            # bundle-jhyt / api-contract / eh）本机都是秒级到一分钟，600 秒纯粹是"给挂死留的余量"；
+            # 6 个阶段各 5-10 分钟合起来就能把整段预算吃掉（实测 150 分钟被掐）。浏览器保留 600 秒。
+            $timeoutSeconds = 420
+            if ($Label -eq 'browser') { $timeoutSeconds = 600 }
+            # 总预算到点就判红（见上面 $webEvidenceLimitMin 的说明），并带上流水账尾巴。
+            $spentMin = [int]((Get-Date) - $webEvidenceStart).TotalMinutes
+            if ($spentMin -ge $webEvidenceLimitMin) {
+                $phaseTail = "(no phases)"
+                if (Test-Path -LiteralPath $webPhaseLog) { $phaseTail = ((Get-Content -LiteralPath $webPhaseLog -Tail 20) -join "`n") }
+                throw "web evidence 总预算 ${webEvidenceLimitMin} 分钟用尽（停在阶段 '$Label' 之前）。阶段流水账：`n$phaseTail"
+            }
             $startedAt = Get-Date
             $argumentList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $Script, "-StatusFile", $statusFile) + $ExtraArgs
             & $emitProgress ("{0}_start timeout={1}s" -f $Label, $timeoutSeconds)
-            $process = Start-Process -FilePath "powershell" `
+            $process = Start-Process -FilePath $childHostExe `
                 -ArgumentList $argumentList `
                 -PassThru -RedirectStandardOutput $logFile -RedirectStandardError "$logFile.err"
             if (-not $process.WaitForExit($timeoutSeconds * 1000)) {
