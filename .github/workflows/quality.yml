@@ -19,6 +19,10 @@ concurrency:
 on:
   push:
     paths:
+      # 仓库根的 README 也进集合：它的"45 个模块表 / 344 个 Lua 函数"、"`-Platform`"这些断言
+      # 由 doc-claims 门核对，而 README-only 的提交原先**不触发任何 CI**——2026-11-03 实测：
+      # 纯 README 提交连 run 都没建，等于那条断言在没人看的时候可以随便错。
+      - "README.md"
       - "engine/**"
       - "examples/**"
       - "scripts/**"
@@ -30,6 +34,7 @@ on:
       - ".github/workflows/release.yml"
   pull_request:
     paths:
+      - "README.md"
       - "engine/**"
       - "examples/**"
       - "scripts/**"
