@@ -263,7 +263,35 @@ export function audit({ repoRoot }) {
       );
     }
   }
-  return { errors, stats: { tables, funcs, components, gates, constants: CODE_CONSTANTS.length, planFiles: plan.files, planMilestones: plan.milestones.join(",") || "-", claims: checked } };
+  // README 里写的 `-Platform <值>` 必须与 `package.ps1` 的 [ValidateSet] 一致。平台名是
+  // "人写摘要 vs 机器事实"里最容易悄悄漂移的一类：参数重命名一次，README 里的发布命令就全成了
+  // 错的，而没有任何门会红（本项即为目标里"让 README 的声明重新可复核"那条）。
+  const packageScript = 'scripts/build/package.ps1';
+  if (fs.existsSync(path.join(repoRoot, packageScript))) {
+    const scriptText = readText(repoRoot, packageScript);
+    const validateSet = scriptText.match(/\[ValidateSet\(([^)]*)\)\]/);
+    if (!validateSet) {
+      errors.push(`平台集合：${packageScript} 里找不到 [ValidateSet(...)]`);
+    } else {
+      const allowed = [...validateSet[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+      for (const name of [...new Set([...readmeText.matchAll(/-Platform\s+([A-Za-z][A-Za-z0-9-]*)/g)].map((match) => match[1]))]) {
+        checked += 1;
+        if (!allowed.includes(name)) {
+          errors.push(
+            `平台名：README 写 \`-Platform ${name}\`，${packageScript} 的 [ValidateSet] 里只有 ${allowed.join(' / ')}`,
+          );
+        }
+      }
+      // 反向只核"三平台"里非默认的两个：README 明确声称产 PC / WebGL / 微信小游戏三种产物，
+      // 少了谁的 -Platform 值都说明这句声明已经不成立。
+      for (const required of ['webgl', 'wechat-minigame']) {
+        checked += 1;
+        if (!readmeText.includes(`-Platform ${required}`)) {
+          errors.push(`平台名：README 声称三平台产物，但没出现 \`-Platform ${required}\``);
+        }
+      }
+    }
+  }  return { errors, stats: { tables, funcs, components, gates, constants: CODE_CONSTANTS.length, planFiles: plan.files, planMilestones: plan.milestones.join(",") || "-", claims: checked } };
 }
 
 function writeFixture(root, snapshot, readme, doc74) {
@@ -377,7 +405,23 @@ function selfTest() {
     if (failed > 0) process.exit(1);
   }
 
-  console.log(`doc_claims_selftest_ok cases=${cases.length + 4}`);
+  // README 的 `-Platform <值>` 与 package.ps1 的 [ValidateSet] 不一致必须判红。
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'doc-claims-platform-'));
+    writeFixture(dir, snapshot, `${goodReadme}发布：\`-Platform wechat-minigame\` 与 \`-Platform webgl\`。\n`, goodDoc);
+    const pkgDir = path.join(dir, 'scripts', 'build');
+    fs.mkdirSync(pkgDir, { recursive: true });
+    // 只留 pc/webgl 两档：README 里那个 wechat-minigame 就该被判红。
+    fs.writeFileSync(path.join(pkgDir, 'package.ps1'), '[ValidateSet("pc", "webgl")]\n[string]$Platform = "pc",\n');
+    const { errors } = audit({ repoRoot: dir });
+    if (!errors.some((error) => error.includes('wechat-minigame'))) {
+      failed += 1;
+      console.error(`自测失败：README 的 -Platform 值与 package.ps1 不一致未判红 ${errors.join(' | ')}`);
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  if (failed > 0) process.exit(1);
+  console.log(`doc_claims_selftest_ok cases=${cases.length + 5}`);
 }
 
 if (process.argv.includes('--self-test')) {
