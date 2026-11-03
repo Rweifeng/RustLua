@@ -67,13 +67,26 @@ function Resolve-WasmBindgenExePath([string]$Exe) {
     catch { }
     $dir = Split-Path -Parent $Exe
     $leaf = Split-Path -Leaf $Exe
-    if (-not $dir -or -not $leaf) { return $null }
-    try {
-        $hit = @(Get-ChildItem -LiteralPath $dir -File -Force -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -eq $leaf })
-        if ($hit.Count -ge 1) { return $hit[0].FullName }
+    if ($dir -and $leaf) {
+        try {
+            $hit = @(Get-ChildItem -LiteralPath $dir -File -Force -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -eq $leaf })
+            if ($hit.Count -ge 1) { return $hit[0].FullName }
+        }
+        catch { }
     }
-    catch { }
+    # 第三条：直接在 $toolsRoot 下递归找同名文件。**不走 Split-Path**——CI 上出现过
+    # "Get-ChildItem $toolsRoot\bin 列得出文件，但按同一个 $toolsRoot 拼出来的 $Exe 直接
+    # 查不到"的现场（$toolsExe 字符串本身与预期的差异迄今未定位），这条路只依赖
+    # $toolsRoot 这一个字符串，而它是**已经证明能列出文件**的那个。
+    if ($leaf -and $toolsRoot -and (Test-Path -LiteralPath $toolsRoot)) {
+        try {
+            $deep = @(Get-ChildItem -LiteralPath $toolsRoot -Recurse -File -Force -Filter $leaf -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -eq $leaf })
+            if ($deep.Count -ge 1) { return $deep[0].FullName }
+        }
+        catch { }
+    }
     return $null
 }
 
@@ -137,6 +150,22 @@ function Install-WasmBindgenCli([string]$WantVersion) {
             $itemProbe = $null
             try { $itemProbe = Get-Item -LiteralPath $toolsExe -Force -ErrorAction Stop } catch { }
             $detail.Add("item_ok=$($null -ne $itemProbe)")
+            $binDirProbe = Join-Path $toolsRoot "bin"
+            $detail.Add("exe_len=$($toolsExe.Length)")
+            $detail.Add("parent_repr=[$(Split-Path -Parent $toolsExe)]")
+            $detail.Add("bin_dir_repr=[$binDirProbe]")
+            $detail.Add("dir_same=$((Split-Path -Parent $toolsExe) -eq $binDirProbe)")
+            try {
+                $parentEntries = @(Get-ChildItem -LiteralPath (Split-Path -Parent $toolsExe) -File -Force -ErrorAction SilentlyContinue |
+                    ForEach-Object { "len=$($_.Length)" })
+                $detail.Add("parent_entries=$($parentEntries.Count)")
+            }
+            catch { $detail.Add("parent_entries=err") }
+            try {
+                $deepHit = @(Get-ChildItem -LiteralPath $toolsRoot -Recurse -File -Force -Filter "wasm-bindgen.exe" -ErrorAction SilentlyContinue)
+                $detail.Add("deep_hits=$($deepHit.Count)")
+            }
+            catch { $detail.Add("deep_hits=err") }
             if (Test-Path -LiteralPath $toolsExe -PathType Leaf) {
                 $info = Get-Item -LiteralPath $toolsExe
                 $detail.Add("exe_size=$($info.Length)")
