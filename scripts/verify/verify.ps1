@@ -1060,11 +1060,12 @@ try {
             # **有界等待**，不用 `-Wait`：`-Wait` 会等到整个进程树结束，而无头浏览器偶尔不自行退出，
             # 于是质量门会一直挂在那里（本轮实际踩到）。这里自己轮询 + 超时即杀，并把它当失败
             # ——宁可判红，也不要"卡住"。
-            # 单个阶段的上限：**除浏览器外都是 420 秒**。这些阶段（bundle / gpu-probe / render-probe /
-            # bundle-jhyt / api-contract / eh）本机都是秒级到一分钟，600 秒纯粹是"给挂死留的余量"；
-            # 6 个阶段各 5-10 分钟合起来就能把整段预算吃掉（实测 150 分钟被掐）。浏览器保留 600 秒。
-            $timeoutSeconds = 420
-            if ($Label -eq 'browser') { $timeoutSeconds = 600 }
+            # 单个阶段的上限：900 秒（15 分钟）。**不要往下调**——这些阶段里有 `gpu-probe` /
+            # `render-probe` 那种要在 CI 上冷编 wasm32 probe 的，本机秒级不代表 CI 秒级；
+            # 真正的"整段有界"由下面的总预算（默认 100 分钟）负责，它到点会带着阶段流水账判红，
+            # 既能给出文件名，也不会把"慢"误判成"红"。2026-11-03 的教训是"6×600 秒 + 发布 75 分钟
+            # 正好撑爆 150 分钟的 job 并被无声掐掉"，解法是总预算 + 流水账，不是把单阶段掐到很短。
+            $timeoutSeconds = 900
             # 总预算到点就判红（见上面 $webEvidenceLimitMin 的说明），并带上流水账尾巴。
             $spentMin = [int]((Get-Date) - $webEvidenceStart).TotalMinutes
             if ($spentMin -ge $webEvidenceLimitMin) {
