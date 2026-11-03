@@ -6,6 +6,16 @@ name: Rust quality gate
 # web 证据 job 补装 zig，让 wasm 门在 CI 上真正执行而不是常态性以 3 跳过。
 # 所有门一个不少，只改调度。
 
+# 同一个 ref 上的质量门**串行**执行。2026-11-03 实测教训：连着推 5 个 commit 各自触发一套
+# 40–150 分钟的作业，5 份冷缓存的 wasm release 构建并行抢 runner，最老那个卡到 138 分钟。
+# 现在同一 group 里只跑一个：第一份跑完会把 rust-cache 存下来，后面的都是热缓存。
+# 语义要写清楚（别误读）：GitHub 对同一 group 只保留**一个在跑 + 一个在排队**，继续推会
+# 顶掉排队中的那个——所以"最新那个 push 一定有完整读数，中间的可被取代"，而不是"每个 push
+# 都各跑一遍"。故意不用 cancel-in-progress: true：那会把在**跑**的那份也杀掉，读数更少。
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: false
+
 on:
   push:
     paths:
@@ -353,6 +363,9 @@ jobs:
   # （此前 GitHub runner 无 zig，常态以 3 显式跳过）。跳过绝不等于通过的哲学不变：
   # 真失败（页面能跑却没画面、引导失败、桥断言不过）仍判红。
   web-evidence:
+    # 有界：这一步要在冷缓存下做一次 wasm release 构建（fat LTO / 单 CGU）+ 三个宿主的后处理。
+    # 热缓存约 20–30 分钟；给它 150 分钟余量，超时按"挂死"处理并判红，而不是让 job 吃满 6 小时上限。
+    timeout-minutes: 150
     runs-on: windows-latest
     steps:
       - name: Checkout
