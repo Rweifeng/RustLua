@@ -61,7 +61,10 @@ function Exit-With([int]$Code) { exit $Code }
 # 探针会以 "mlua-sys: cannot locate zig" 失败，看起来像探针坏了。与 verify-wasm-lua 同一口径：
 # $env:ZIG → engine\.tools\zig → PATH，缺了就按需装。
 . (Join-Path $PSScriptRoot "..\build\zig-toolchain.ps1")
-$zig = Resolve-ZigToolchain
+# 2026-11-04：`-Install` 不能省。CI 上 `choco install zig` 给的是 0.17.0，而仓库固定 0.16.0；
+# 版本不符会让 vendored Lua 的 wasm 多出裸 `env` 导入模组（浏览器 Failed to resolve module specifier "env"）。
+# 显式 `-Install` 才会按需装仓库固定的那份（见 zig-toolchain.ps1 里 Resolve-ZigToolchain 的顺序说明）。
+$zig = Resolve-ZigToolchain -Install
 if (-not $zig) {
     Write-Log "gpu_probe_skipped reason=no_zig (vendored Lua 的 wasm C 编译需要 zig)" Yellow
     Exit-With 3

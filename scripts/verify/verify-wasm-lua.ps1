@@ -139,7 +139,10 @@ finally {
     Pop-Location
 }
 
-$zig = Resolve-ZigToolchain
+# 2026-11-04：`-Install` 不能省。CI 上 `choco install zig` 给的是 0.17.0，而仓库固定 0.16.0；
+# 版本不符会让 vendored Lua 的 wasm 多出裸 `env` 导入模组（浏览器 Failed to resolve module specifier "env"）。
+# 显式 `-Install` 才会按需装仓库固定的那份（见 zig-toolchain.ps1 里 Resolve-ZigToolchain 的顺序说明）。
+$zig = Resolve-ZigToolchain -Install
 if (-not $zig) {
     Write-Log "wasm_lua_skipped reason=no_zig (vendored Lua 的 wasm C 编译需要 zig；跑 scripts\build\zig-toolchain.ps1 装，或设 `$env:ZIG=<path>\zig.exe / 放进 PATH)" Yellow
     Exit-With 3

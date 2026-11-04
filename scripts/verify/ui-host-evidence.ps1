@@ -66,7 +66,10 @@ if ($installed -notcontains "wasm32-unknown-unknown") {
     Write-Host "ui_host_evidence_skipped reason=no_wasm32_target" -ForegroundColor Yellow
     Exit-With 3
 }
-$zig = Resolve-ZigToolchain
+# 2026-11-04：`-Install` 不能省。CI 上 `choco install zig` 给的是 0.17.0，而仓库固定 0.16.0；
+# 版本不符会让 vendored Lua 的 wasm 多出裸 `env` 导入模组（浏览器 Failed to resolve module specifier "env"）。
+# 显式 `-Install` 才会按需装仓库固定的那份（见 zig-toolchain.ps1 里 Resolve-ZigToolchain 的顺序说明）。
+$zig = Resolve-ZigToolchain -Install
 if (-not $zig) {
     Write-Host "ui_host_evidence_skipped reason=no_zig (跑 scripts\build\zig-toolchain.ps1 装，或设 `$env:ZIG)" -ForegroundColor Yellow
     Exit-With 3

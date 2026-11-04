@@ -1107,7 +1107,18 @@ try {
                     if ([int]::TryParse($raw2, [ref]$p2)) { $childExit = $p2 }
                 }
                 if ($childExit -ne 0) {
-                    foreach ($row in ($lines | Select-Object -Last 40)) {
+                    # **stderr 优先**：这套子脚本里真正的死因（编译错误、panic）几乎都在 stderr。
+                    # 2026-11-04 的 gpu-probe 就是：stdout 只有一行 `==> cargo build ...`，而
+                    # `mlua-sys: cannot locate zig` 的 panic 全在 stderr 里，于是注解只给出了
+                    # "它开始构建了"，看不出为什么没构建完。
+                    $errFile = "$logFile.err"
+                    if (Test-Path -LiteralPath $errFile) {
+                        foreach ($row in (Get-Content -LiteralPath $errFile -Tail 10)) {
+                            $line2 = ("{0}" -f $row).TrimEnd()
+                            if ($line2) { Write-Host "::error::web evidence $Label stderr: $line2" }
+                        }
+                    }
+                    foreach ($row in ($lines | Select-Object -Last 3)) {
                         $line2 = ("{0}" -f $row).TrimEnd()
                         if ($line2) { Write-Host "::error::web evidence $Label log: $line2" }
                     }

@@ -401,7 +401,7 @@ jobs:
             engine/.tools/terser
             engine/.tools/wasm-bindgen
             engine/.tools/zig
-          key: minify-tools-binaryen-version_133-terser5-wasm-bindgen-02129-v2
+          key: minify-tools-binaryen-version_133-terser5-wasm-bindgen-02129-zig0160-v3
 
       - name: Install zig (makes wasm gates execute instead of skipping)
         # 尽力而为：装不上（choco 源没有对应版本）就让 wasm 门按既有语义以 3 显式跳过，
