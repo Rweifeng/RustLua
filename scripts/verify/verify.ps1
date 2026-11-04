@@ -1096,6 +1096,23 @@ try {
             }
             $lines = if (Test-Path -LiteralPath $logFile) { Get-Content -LiteralPath $logFile } else { @() }
             $lines | Select-Object -Last 12 | ForEach-Object { Write-Host $_ }
+            # 失败时把子脚本日志的尾 40 行**逐行发成注解**：CI 上 job 日志要认证才能读，
+            # 而"失败原因在子脚本的 stdout 里、只抄了 12 行"已经害过好几轮（2026-11-04：
+            # bundle 阶段 0 个候选，否决理由就在被截掉的那几行里）。
+            if ($env:GITHUB_ACTIONS -eq 'true') {
+                $childExit = 1
+                if (Test-Path -LiteralPath $statusFile) {
+                    $raw2 = (Get-Content -LiteralPath $statusFile -Raw).Trim() -replace '^exit=', ''
+                    [int]$p2 = 1
+                    if ([int]::TryParse($raw2, [ref]$p2)) { $childExit = $p2 }
+                }
+                if ($childExit -ne 0) {
+                    foreach ($row in ($lines | Select-Object -Last 40)) {
+                        $line2 = ("{0}" -f $row).TrimEnd()
+                        if ($line2) { Write-Host "::error::web evidence $Label log: $line2" }
+                    }
+                }
+            }
             $lines | ForEach-Object { Add-Content -Path $logPath -Value $_ -Encoding UTF8 }
             if (Test-Path -LiteralPath "$logFile.err") {
                 $errLines = Get-Content -LiteralPath "$logFile.err" -ErrorAction SilentlyContinue
@@ -1231,6 +1248,23 @@ try {
                 }
                 $publishElapsed = [int]((Get-Date) - $publishStart).TotalMinutes
                 & $emitProgress "publish_done exit=$publishExit elapsed=${publishElapsed}m"
+                # 发布说自己成功之后，**当场**把产物再发现一次并报出候选/否决原因。
+                # 2026-11-04 实测：CI 上 `publish_done exit=0` 紧接着 bundle 阶段报"先发布一个"
+                # （0 个候选），而同一份代码在本机干净 worktree 里发布 7 分钟就产出齐备产物、候选=1。
+                # 差异只能在 CI 的产物布局上，光看退出码看不出来——所以把 `Find-GameBundle` 的
+                # 扫描根与否决理由直接发成注解，下一次跑就能指名是哪个文件缺了。
+                if ($publishExit -eq 0) {
+                    try {
+                        $postReport = Find-GameBundle -Platform "webgl" -WorkspaceRoot $projectRoot
+                        & $emitProgress ("publish_bundle_candidates=" + @($postReport.Candidates).Count)
+                        foreach ($root2 in @($postReport.ScanRoots)) { & $emitProgress ("publish_bundle_scan_root=" + $root2) }
+                        foreach ($rej in @($postReport.Rejected)) { & $emitProgress ("publish_bundle_rejected: " + $rej) }
+                        foreach ($cand in @($postReport.Candidates)) { & $emitProgress ("publish_bundle_candidate=" + $cand.Path) }
+                    }
+                    catch {
+                        & $emitProgress ("publish_bundle_report_failed: " + $_.Exception.Message)
+                    }
+                }
                 if ($publishExit -ne 0) {
                     $tail = "(no log)"
                     $tailRows = @()
