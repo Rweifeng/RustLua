@@ -400,6 +400,7 @@ jobs:
             engine/.tools/binaryen
             engine/.tools/terser
             engine/.tools/wasm-bindgen
+            engine/.tools/zig
           key: minify-tools-binaryen-version_133-terser5-wasm-bindgen-02129-v2
 
       - name: Install zig (makes wasm gates execute instead of skipping)

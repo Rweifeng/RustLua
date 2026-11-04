@@ -106,13 +106,33 @@ function Resolve-ZigToolchain {
         if ($v) { return $ZigCachedExe }
     }
 
-    # 3. PATH 上的 zig：版本可能不等于固定版本，`zig cc` 通常仍可用，放行但提醒。
+    # 3. PATH 上的 zig：**只有版本等于固定版本才采纳**。
+    #
+    # 2026-11-04 实测（这条以前是"放行但提醒"，代价很贵）：CI 用 `choco install zig` 拿到 0.17.0，
+    # 而仓库固定 0.16.0。0.17 编出来的 vendored Lua 在 wasm 里留下了 **裸 `env` 模块导入**
+    # （本机 0.16 编出来的 wasm 只有 `./game_web_bg.js` 一个导入模组），于是浏览器加载页面时：
+    #   cdp: [exception] TypeError: Failed to resolve module specifier "env".
+    #   cdp: timeout waiting for scene (last boot=pending)
+    #   [RED] webgl_bundle_no_frame_owner
+    # 而**发布本身 exit=0**——退出码看不出来，因为 C→wasm 的未解析符号是合法的 wasm 导入。
+    # 这就是典型的"平台编译在本地绿、在 CI 哑"的一类：工具链版本漂移。
+    #
+    # 所以顺序改成：版本不符 + 允许下载 ⇒ 直接取固定版本；下载失败才退回 PATH 上那份
+    # （并显式警告），由调用方（package.ps1）决定要不要因此判红。
     $cmd = Get-Command zig -ErrorAction SilentlyContinue
     if ($cmd) {
         $v = Get-ZigVersionOf $cmd.Source
+        if ($v -eq $ZigVersion) { return $cmd.Source }
         if ($v) {
-            if ($v -ne $ZigVersion) {
-                Write-Host "==> zig on PATH is $v (this repo pins $ZigVersion); continuing, pin via -Install if the shim build misbehaves" -ForegroundColor Yellow
+            Write-Host "==> zig on PATH is $v but this repo pins $ZigVersion; a mismatched zig changes the wasm import modules (see comment above)" -ForegroundColor Yellow
+            if ($Install) {
+                try {
+                    return Install-ZigToolchain
+                }
+                catch {
+                    Write-Host "==> pinned zig $ZigVersion could not be provisioned ($($_.Exception.Message)); falling back to PATH zig $v" -ForegroundColor Yellow
+                    return $cmd.Source
+                }
             }
             return $cmd.Source
         }

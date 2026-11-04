@@ -1301,6 +1301,43 @@ try {
                             $scriptTags = ([regex]::Matches($idxText, '<script[^>]*src="([^"]+)"') | ForEach-Object { $_.Groups[1].Value }) -join ","
                             & $emitProgress ("publish_index_scripts=" + $scriptTags)
                         }
+                        # zig 版本 + wasm 导入模组：2026-11-04 的真因就在这两行的关系上——
+                        # CI 用 choco 的 zig 0.17（仓库固定 0.16）编 vendored Lua，产物多出裸 `env`
+                        # 导入模组，浏览器加载即 `Failed to resolve module specifier "env"`，
+                        # 而发布 exit=0。把这两个读数钉住，以后同类漂移一眼可见。
+                        try {
+                            $zigTool = Join-Path $projectRoot "scripts/build/zig-toolchain.ps1"
+                            if (Test-Path -LiteralPath $zigTool) {
+                                $zigExe = & powershell -NoProfile -File $zigTool -NoDownload -PrintPath 2>$null | Select-Object -Last 1
+                                if ($zigExe -and (Test-Path -LiteralPath $zigExe)) {
+                                    $zigVer = (& $zigExe version 2>$null | Select-Object -First 1)
+                                    & $emitProgress ("publish_zig=" + $zigExe + " version=" + $zigVer)
+                                }
+                                else {
+                                    & $emitProgress "publish_zig=unresolved"
+                                }
+                            }
+                            $wasmProd = Join-Path (Join-Path $projectRoot "examples/game_api/builds/webgl/pkg") "game_web_bg.wasm"
+                            if (Test-Path -LiteralPath $wasmProd) {
+                                $probeJs = Join-Path $projectRoot "artifacts/logs/webgl/wasm-imports.mjs"
+                                $probeSrc = @(
+                                    'import fs from "node:fs";'
+                                    'const bytes = fs.readFileSync(process.argv[2]);'
+                                    'const mod = new WebAssembly.Module(bytes);'
+                                    'const seen = new Map();'
+                                    'for (const imp of WebAssembly.Module.imports(mod)) { seen.set(imp.module, (seen.get(imp.module) ?? 0) + 1); }'
+                                    'const parts = [];'
+                                    'for (const [k, v] of seen) { parts.push(k + "=" + v); }'
+                                    'console.log(parts.join(","));'
+                                ) -join $([char]10)
+                                [IO.File]::WriteAllText($probeJs, $probeSrc, (New-Object System.Text.UTF8Encoding($false)))
+                                $mods = & node $probeJs $wasmProd 2>&1 | Select-Object -First 1
+                                & $emitProgress ("publish_wasm_import_modules=" + $mods)
+                            }
+                        }
+                        catch {
+                            & $emitProgress ("publish_zig_report_failed: " + $_.Exception.Message)
+                        }
                         $bindgen = Get-Command wasm-bindgen -ErrorAction SilentlyContinue
                         if ($bindgen) { & $emitProgress ("publish_wasm_bindgen=" + (& $bindgen.Source --version 2>&1 | Select-Object -First 1)) }
                         $toolsBindgen = Join-Path (Join-Path $projectRoot "engine/.tools/wasm-bindgen/bin") "wasm-bindgen.exe"
