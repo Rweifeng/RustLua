@@ -1264,6 +1264,53 @@ try {
                     catch {
                         & $emitProgress ("publish_bundle_report_failed: " + $_.Exception.Message)
                     }
+                    # 胶水指纹：2026-11-04 CI 上 bundle 阶段报 `Failed to resolve module specifier "env"`
+                    # （页面 boot=pending，随后 timeout waiting for scene），而同一份代码在本机干净
+                    # worktree 里 bundle 阶段是绿的。`--target web` 的 ESM 胶水**不该**出现裸 `"env"`
+                    # 说明符（那是 bundler/nodejs 目标的形状），所以先把胶水的身份钉下来：
+                    # 大小、sha256、wasm-bindgen 版本、以及胶水里是否真的出现 `"env"`。
+                    try {
+                        $gluePath = Join-Path (Join-Path $projectRoot "examples/game_api/builds/webgl/pkg") "game_web.js"
+                        if (Test-Path -LiteralPath $gluePath) {
+                            $glueItem = Get-Item -LiteralPath $gluePath
+                            $glueHash = (Get-FileHash -LiteralPath $gluePath -Algorithm SHA256).Hash
+                            & $emitProgress ("publish_glue size=" + $glueItem.Length + " sha256=" + $glueHash.Substring(0, 16))
+                            $glueText = [IO.File]::ReadAllText($gluePath)
+                            $envHits = @([regex]::Matches($glueText, '["'']env["'']')).Count
+                            & $emitProgress ("publish_glue_env_specifier_hits=" + $envHits)
+                            $moduleHits = @([regex]::Matches($glueText, '(?m)^\s*import\s')).Count
+                            & $emitProgress ("publish_glue_import_lines=" + $moduleHits)
+                            $firstLine = ([string](($glueText -split "`n")[0])).Trim()
+                            & $emitProgress ("publish_glue_first_line=" + $firstLine.Substring(0, [Math]::Min(120, $firstLine.Length)))
+                        }
+                        else {
+                            & $emitProgress "publish_glue_missing: $gluePath"
+                        }
+                        # 产物目录清单 + index.html 指纹：胶水一样而页面不一样，说明问题在页面/加载方式；
+                        # 胶水本身不一样，说明 CI 的发布产出与本地不同源（工具链/目标/版本）。
+                        $pkgDir = Join-Path (Join-Path $projectRoot "examples/game_api/builds/webgl") "pkg"
+                        if (Test-Path -LiteralPath $pkgDir) {
+                            $listing = (Get-ChildItem -LiteralPath $pkgDir -File | Sort-Object Name | ForEach-Object { "{0}={1}" -f $_.Name, $_.Length }) -join ","
+                            & $emitProgress ("publish_pkg_listing=" + $listing)
+                        }
+                        $indexPath = Join-Path (Join-Path $projectRoot "examples/game_api/builds/webgl") "index.html"
+                        if (Test-Path -LiteralPath $indexPath) {
+                            $idxHash = (Get-FileHash -LiteralPath $indexPath -Algorithm SHA256).Hash
+                            & $emitProgress ("publish_index size=" + (Get-Item -LiteralPath $indexPath).Length + " sha256=" + $idxHash.Substring(0, 16))
+                            $idxText = [IO.File]::ReadAllText($indexPath)
+                            $scriptTags = ([regex]::Matches($idxText, '<script[^>]*src="([^"]+)"') | ForEach-Object { $_.Groups[1].Value }) -join ","
+                            & $emitProgress ("publish_index_scripts=" + $scriptTags)
+                        }
+                        $bindgen = Get-Command wasm-bindgen -ErrorAction SilentlyContinue
+                        if ($bindgen) { & $emitProgress ("publish_wasm_bindgen=" + (& $bindgen.Source --version 2>&1 | Select-Object -First 1)) }
+                        $toolsBindgen = Join-Path (Join-Path $projectRoot "engine/.tools/wasm-bindgen/bin") "wasm-bindgen.exe"
+                        if (Test-Path -LiteralPath $toolsBindgen) {
+                            & $emitProgress ("publish_wasm_bindgen_tool=" + (& $toolsBindgen --version 2>&1 | Select-Object -First 1))
+                        }
+                    }
+                    catch {
+                        & $emitProgress ("publish_glue_report_failed: " + $_.Exception.Message)
+                    }
                 }
                 if ($publishExit -ne 0) {
                     $tail = "(no log)"
