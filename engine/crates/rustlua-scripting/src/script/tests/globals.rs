@@ -26,6 +26,13 @@ fn event_bus_subscribes_emits_and_unsubscribes() {
          event.on('Inner', function() nested = nested + 1 end)\n\
          event.emit('Outer')\n\
          assert(nested == 2)\n\
+         local once_calls = 0\n\
+         local once\n\
+         once = function() once_calls = once_calls + 1; event.off('Once', once) end\n\
+         event.on('Once', once)\n\
+         event.emit('Once')\n\
+         event.emit('Once')\n\
+         assert(once_calls == 1)\n\
          return 'ok' end\n\
          function update() return 'ok' end",
     );

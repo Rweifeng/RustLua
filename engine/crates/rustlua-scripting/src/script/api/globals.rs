@@ -118,14 +118,18 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     // VM and re-runs `on_create`, which re-subscribes on the new VM.
 
     let event = lua.create_table()?;
-    let subscribers: Rc<RefCell<BTreeMap<String, Vec<Function>>>> =
+    // Rc 快照：emit 时只克隆一个引用计数，不复制整条监听者 Vec。
+    // 监听者在回调里 on/off 时，`Rc::make_mut` 会为写操作做写时复制，
+    // 正在遍历的快照仍然有效（语义与旧的 Vec::clone 相同）。
+    let subscribers: Rc<RefCell<BTreeMap<String, Rc<Vec<Function>>>>> =
         Rc::new(RefCell::new(BTreeMap::new()));
 
     let subs = Rc::clone(&subscribers);
     event.set(
         "subscribe",
         lua.create_function(move |_, (name, callback): (String, Function)| {
-            subs.borrow_mut().entry(name).or_default().push(callback);
+            let mut map = subs.borrow_mut();
+            Rc::make_mut(map.entry(name).or_default()).push(callback);
             Ok(())
         })?,
     )?;
@@ -133,7 +137,8 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
     event.set(
         "on",
         lua.create_function(move |_, (name, callback): (String, Function)| {
-            subs.borrow_mut().entry(name).or_default().push(callback);
+            let mut map = subs.borrow_mut();
+            Rc::make_mut(map.entry(name).or_default()).push(callback);
             Ok(())
         })?,
     )?;
@@ -143,11 +148,12 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
         "emit",
         lua.create_function(move |_, (name, data): (String, Option<Value>)| {
             let data = data.unwrap_or(Value::Nil);
-            // Snapshot the listener list first so a callback may itself emit,
-            // subscribe, or unsubscribe without tripping the shared borrow.
-            let callbacks = subs.borrow().get(&name).cloned().unwrap_or_default();
-            for callback in callbacks {
-                callback.call::<Value>((data.clone(),))?;
+            // 先克隆 Rc 快照，再释放订阅表借用：回调里可以安全地继续 emit/on/off。
+            let callbacks = subs.borrow().get(&name).cloned();
+            if let Some(callbacks) = callbacks {
+                for callback in callbacks.iter() {
+                    callback.call::<Value>((data.clone(),))?;
+                }
             }
             Ok(())
         })?,
@@ -164,7 +170,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             };
             if let Some(listeners) = map.get_mut(&name) {
                 let target = callback.to_pointer();
-                listeners.retain(|listener| listener.to_pointer() != target);
+                Rc::make_mut(listeners).retain(|listener| listener.to_pointer() != target);
             }
             Ok(())
         })?,
@@ -180,7 +186,7 @@ pub(super) fn register(lua: &Lua, state: Rc<RefCell<ScriptState>>) -> LuaResult<
             };
             if let Some(listeners) = map.get_mut(&name) {
                 let target = callback.to_pointer();
-                listeners.retain(|listener| listener.to_pointer() != target);
+                Rc::make_mut(listeners).retain(|listener| listener.to_pointer() != target);
             }
             Ok(())
         })?,

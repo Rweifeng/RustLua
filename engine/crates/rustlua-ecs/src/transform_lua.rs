@@ -46,6 +46,16 @@ fn world_error(error: WorldError) -> mlua::Error {
     api_error(error.to_string())
 }
 
+/// 句柄失效统一报成脚本侧熟悉的 `invalid entity id: …`，而不是 `WorldError` 的英文内部串。
+///
+/// 热路径（`transform.get` / `set` / `move`）不再先单独 `require_alive` 再借一次世界：
+/// `World::get` / `get_mut` 自己会做存活校验，多一次 `RefCell` 借用与 `is_alive` 只是白付。
+fn entity_error(id: EntityId, error: WorldError) -> mlua::Error {
+    match error {
+        WorldError::InvalidEntity(_) => api_error(format!("invalid entity id: {id}")),
+    }
+}
+
 /// Lua 侧实体 id → 实体句柄（错误串与脚本层逐字相同）。
 fn entity_from_lua(value: i64) -> LuaResult<EntityId> {
     if value < 0 {
@@ -62,6 +72,74 @@ fn require_alive(state: &Bindings, entity: EntityId) -> LuaResult<()> {
         Err(api_error(format!("invalid entity id: {entity}")))
     }
 }
+
+/// 读局部位置的标量快路径：2D 优先，缺 2D 时退回 3D。
+///
+/// 不建 table、不做 6 次 `table.set`——这是 `transform.position` 比 `transform.get`
+/// 便宜的全部原因。错误语义与 `transform.get` 保持一致。
+fn local_xy(world: &World, id: EntityId) -> LuaResult<(f32, f32)> {
+    if let Some(value) = world
+        .get::<Transform>(id)
+        .map_err(|error| entity_error(id, error))?
+    {
+        return Ok((value.position.x, value.position.y));
+    }
+    let value = world
+        .get::<Transform3D>(id)
+        .map_err(|error| entity_error(id, error))?
+        .ok_or_else(|| api_error("entity has no transform (2d or 3d)"))?;
+    Ok((value.position.x, value.position.y))
+}
+
+/// 读世界位置的标量快路径：2D 优先，缺 2D 时退回 3D。
+fn world_xy(world: &World, id: EntityId) -> LuaResult<(f32, f32)> {
+    if let Some(value) =
+        crate::hierarchy::world_transform_2d(world, id).map_err(|error| entity_error(id, error))?
+    {
+        return Ok((value.position.x, value.position.y));
+    }
+    match crate::hierarchy::world_transform_3d(world, id)
+        .map_err(|error| entity_error(id, error))?
+    {
+        Some(value) => Ok((value.position.x, value.position.y)),
+        None => Err(api_error("entity has no transform")),
+    }
+}
+
+/// 3D 局部位置：只认 `Transform3D`，不拿 2D 的 XY 冒充 Z=0。
+fn local_xyz(world: &World, id: EntityId) -> LuaResult<(f32, f32, f32)> {
+    let value = world
+        .get::<Transform3D>(id)
+        .map_err(|error| entity_error(id, error))?
+        .ok_or_else(|| api_error("entity has no transform3d"))?;
+    Ok((value.position.x, value.position.y, value.position.z))
+}
+
+/// 3D 世界位置：与 `transform3d.world` 同源，允许本帧尚未传播（lazy 组合）。
+///
+/// 两个快路径先走：已有 `GlobalTransform` 直接取；没有父节点时局部值就是世界值。
+/// 只有真正需要沿父链现算时才进 `world_transform_3d_lazy`（它会为祖先链分配临时 Vec）。
+fn world_xyz(world: &World, id: EntityId) -> LuaResult<(f32, f32, f32)> {
+    if let Some(global) = world
+        .get::<crate::hierarchy::GlobalTransform>(id)
+        .map_err(|error| entity_error(id, error))?
+        && let Some(space) = global.space()
+    {
+        return Ok((space.position.x, space.position.y, space.position.z));
+    }
+    if world
+        .get::<crate::hierarchy::Parent>(id)
+        .map_err(|error| entity_error(id, error))?
+        .is_none()
+    {
+        return local_xyz(world, id);
+    }
+    let value = crate::hierarchy::world_transform_3d_lazy(world, id)
+        .map_err(|error| entity_error(id, error))?
+        .ok_or_else(|| api_error("entity has no transform3d"))?;
+    Ok((value.position.x, value.position.y, value.position.z))
+}
+
 /// `transform3d.set(id, x, y, z, [rx, ry, rz, rw, [sx, sy, sz]])` argument tuple.
 type Transform3dSetArgs = (
     i64,
@@ -84,10 +162,12 @@ pub fn install(lua: &Lua, world: &Handle<World>) -> LuaResult<()> {
         "get",
         lua.create_function(move |lua, id: i64| {
             let id = entity_from_lua(id)?;
-            let state = &s;
-            require_alive(state, id)?;
-            let t = lua.create_table()?;
-            if let Some(value) = state.world()?.get::<Transform>(id).map_err(world_error)? {
+            let world = s.world()?;
+            if let Some(value) = world
+                .get::<Transform>(id)
+                .map_err(|error| entity_error(id, error))?
+            {
+                let t = lua.create_table_with_capacity(0, 6)?;
                 t.set("space", "2d")?;
                 t.set("x", value.position.x)?;
                 t.set("y", value.position.y)?;
@@ -96,11 +176,11 @@ pub fn install(lua: &Lua, world: &Handle<World>) -> LuaResult<()> {
                 t.set("scale_y", value.scale.y)?;
                 return Ok(t);
             }
-            let world = state.world()?;
             let value = world
                 .get::<Transform3D>(id)
-                .map_err(world_error)?
+                .map_err(|error| entity_error(id, error))?
                 .ok_or_else(|| api_error("entity has no transform (2d or 3d)"))?;
+            let t = lua.create_table_with_capacity(0, 10)?;
             t.set("space", "3d")?;
             t.set("x", value.position.x)?;
             t.set("y", value.position.y)?;
@@ -115,19 +195,36 @@ pub fn install(lua: &Lua, world: &Handle<World>) -> LuaResult<()> {
             Ok(t)
         })?,
     )?;
+    // 标量快路径：热循环里只取位置时不必付 6 字段表的钱。
+    let s = Bindings::new(world);
+    transform.set(
+        "position",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let world = s.world()?;
+            local_xy(&world, id)
+        })?,
+    )?;
+    let s = Bindings::new(world);
+    transform.set(
+        "world_position",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let world = s.world()?;
+            world_xy(&world, id)
+        })?,
+    )?;
     let s = Bindings::new(world);
     transform.set(
         "world",
         lua.create_function(move |lua, id: i64| {
             let id = entity_from_lua(id)?;
-            let state = &s;
-            require_alive(state, id)?;
-            let world = state.world()?;
+            let world = s.world()?;
             // WP2：世界变换（开启空间继承时是父链组合的结果，否则等于局部值）。
-            let t = lua.create_table()?;
-            if let Some(transform) =
-                crate::hierarchy::world_transform_2d(&world, id).map_err(world_error)?
+            if let Some(transform) = crate::hierarchy::world_transform_2d(&world, id)
+                .map_err(|error| entity_error(id, error))?
             {
+                let t = lua.create_table_with_capacity(0, 6)?;
                 t.set("space", "2d")?;
                 t.set("x", transform.position.x)?;
                 t.set("y", transform.position.y)?;
@@ -136,9 +233,10 @@ pub fn install(lua: &Lua, world: &Handle<World>) -> LuaResult<()> {
                 t.set("scale_y", transform.scale.y)?;
                 return Ok(t);
             }
-            if let Some(transform) =
-                crate::hierarchy::world_transform_3d(&world, id).map_err(world_error)?
+            if let Some(transform) = crate::hierarchy::world_transform_3d(&world, id)
+                .map_err(|error| entity_error(id, error))?
             {
+                let t = lua.create_table_with_capacity(0, 10)?;
                 t.set("space", "3d")?;
                 t.set("x", transform.position.x)?;
                 t.set("y", transform.position.y)?;
@@ -160,20 +258,17 @@ pub fn install(lua: &Lua, world: &Handle<World>) -> LuaResult<()> {
         "space",
         lua.create_function(move |_, id: i64| {
             let id = entity_from_lua(id)?;
-            let state = &s;
-            require_alive(state, id)?;
-            if state
-                .world()?
+            let world = s.world()?;
+            if world
                 .get::<Transform>(id)
-                .map_err(world_error)?
+                .map_err(|error| entity_error(id, error))?
                 .is_some()
             {
                 return Ok(Some("2d"));
             }
-            if state
-                .world()?
+            if world
                 .get::<Transform3D>(id)
-                .map_err(world_error)?
+                .map_err(|error| entity_error(id, error))?
                 .is_some()
             {
                 return Ok(Some("3d"));
@@ -272,25 +367,26 @@ pub fn install(lua: &Lua, world: &Handle<World>) -> LuaResult<()> {
                 Option<f32>,
             )| {
                 let id = entity_from_lua(id)?;
-                let state = &s;
-                require_alive(state, id)?;
-                if let Some(t) = state.world_mut()?.get_mut::<Transform>(id).map_err(world_error)? {
-                t.position = Vec2::new(x, y);
-                if let Some(v) = rotation {
-                    t.rotation = v;
-                }
-                if let Some(v) = scale_x {
-                    t.scale.x = v;
-                }
-                if let Some(v) = scale_y {
-                    t.scale.y = v;
-                }
+                let mut world = s.world_mut()?;
+                if let Some(t) = world
+                    .get_mut::<Transform>(id)
+                    .map_err(|error| entity_error(id, error))?
+                {
+                    t.position = Vec2::new(x, y);
+                    if let Some(v) = rotation {
+                        t.rotation = v;
+                    }
+                    if let Some(v) = scale_x {
+                        t.scale.x = v;
+                    }
+                    if let Some(v) = scale_y {
+                        t.scale.y = v;
+                    }
                     return Ok(());
                 }
-                let mut world = state.world_mut()?;
                 let t = world
                     .get_mut::<Transform3D>(id)
-                    .map_err(world_error)?
+                    .map_err(|error| entity_error(id, error))?
                     .ok_or_else(|| api_error("entity has no transform (2d or 3d)"))?;
                 if rotation.is_some() {
                     return Err(api_error(
@@ -314,21 +410,18 @@ pub fn install(lua: &Lua, world: &Handle<World>) -> LuaResult<()> {
         "move",
         lua.create_function(move |_, (id, dx, dy): (i64, f32, f32)| {
             let id = entity_from_lua(id)?;
-            let state = &s;
-            require_alive(state, id)?;
-            if let Some(t) = state
-                .world_mut()?
+            let mut world = s.world_mut()?;
+            if let Some(t) = world
                 .get_mut::<Transform>(id)
-                .map_err(world_error)?
+                .map_err(|error| entity_error(id, error))?
             {
                 t.position.x += dx;
                 t.position.y += dy;
                 return Ok(());
             }
-            let mut world = state.world_mut()?;
             let t = world
                 .get_mut::<Transform3D>(id)
-                .map_err(world_error)?
+                .map_err(|error| entity_error(id, error))?
                 .ok_or_else(|| api_error("entity has no transform (2d or 3d)"))?;
             t.position.x += dx;
             t.position.y += dy;
@@ -357,14 +450,12 @@ pub fn install(lua: &Lua, world: &Handle<World>) -> LuaResult<()> {
         "get",
         lua.create_function(move |lua, id: i64| {
             let id = entity_from_lua(id)?;
-            let state = &s;
-            require_alive(state, id)?;
-            let world = state.world()?;
+            let world = s.world()?;
             let value = world
                 .get::<Transform3D>(id)
-                .map_err(world_error)?
+                .map_err(|error| entity_error(id, error))?
                 .ok_or_else(|| api_error("entity has no transform3d"))?;
-            let t = lua.create_table()?;
+            let t = lua.create_table_with_capacity(0, 10)?;
             t.set("x", value.position.x)?;
             t.set("y", value.position.y)?;
             t.set("z", value.position.z)?;
@@ -380,19 +471,39 @@ pub fn install(lua: &Lua, world: &Handle<World>) -> LuaResult<()> {
     )?;
     let s = Bindings::new(world);
     transform3d.set(
+        "position",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let world = s.world()?;
+            local_xyz(&world, id)
+        })?,
+    )?;
+    let s = Bindings::new(world);
+    transform3d.set(
+        "world_position",
+        lua.create_function(move |_, id: i64| {
+            let id = entity_from_lua(id)?;
+            let world = s.world()?;
+            world_xyz(&world, id)
+        })?,
+    )?;
+    let s = Bindings::new(world);
+    transform3d.set(
         "set",
         lua.create_function(
             move |_, (id, x, y, z, rx, ry, rz, rw, sx, sy, sz): Transform3dSetArgs| {
                 let id = entity_from_lua(id)?;
-                let state = &s;
-                require_alive(state, id)?;
+                let mut world = s.world_mut()?;
+                // 保持旧顺序：先判句柄，再判数值，最后才查组件。
+                if !world.is_alive(id) {
+                    return Err(entity_error(id, WorldError::InvalidEntity(id)));
+                }
                 if !x.is_finite() || !y.is_finite() || !z.is_finite() {
                     return Err(api_error("transform3d.set position must be finite"));
                 }
-                let mut world = state.world_mut()?;
                 let t = world
                     .get_mut::<Transform3D>(id)
-                    .map_err(world_error)?
+                    .map_err(|error| entity_error(id, error))?
                     .ok_or_else(|| api_error("entity has no transform3d"))?;
                 t.position = Vec3::new(x, y, z);
                 if let (Some(rx), Some(ry), Some(rz), Some(rw)) = (rx, ry, rz, rw) {
@@ -421,12 +532,10 @@ pub fn install(lua: &Lua, world: &Handle<World>) -> LuaResult<()> {
         "move",
         lua.create_function(move |_, (id, dx, dy, dz): (i64, f32, f32, f32)| {
             let id = entity_from_lua(id)?;
-            let state = &s;
-            require_alive(state, id)?;
-            let mut world = state.world_mut()?;
+            let mut world = s.world_mut()?;
             let t = world
                 .get_mut::<Transform3D>(id)
-                .map_err(world_error)?
+                .map_err(|error| entity_error(id, error))?
                 .ok_or_else(|| api_error("entity has no transform3d"))?;
             t.position.x += dx;
             t.position.y += dy;
@@ -441,13 +550,11 @@ pub fn install(lua: &Lua, world: &Handle<World>) -> LuaResult<()> {
         "world",
         lua.create_function(move |lua, id: i64| {
             let id = entity_from_lua(id)?;
-            let state = &s;
-            require_alive(state, id)?;
-            let world_borrow = state.world()?;
+            let world_borrow = s.world()?;
             let world = crate::hierarchy::world_transform_3d_lazy(&world_borrow, id)
-                .map_err(world_error)?
+                .map_err(|error| entity_error(id, error))?
                 .ok_or_else(|| api_error("entity has no transform3d"))?;
-            let table = lua.create_table()?;
+            let table = lua.create_table_with_capacity(0, 10)?;
             table.set("x", world.position.x)?;
             table.set("y", world.position.y)?;
             table.set("z", world.position.z)?;
@@ -478,7 +585,7 @@ mod tests {
         (lua, world)
     }
 
-    /// 11 个函数一个不少（两张表的**清单**，少一个脚本就会静默拿到 nil）。
+    /// 15 个函数一个不少（两张表的**清单**，少一个脚本就会静默拿到 nil）。
     #[test]
     fn every_transform_function_is_installed() {
         let (lua, _world) = harness();
@@ -487,7 +594,7 @@ mod tests {
             let table: mlua::Table = lua.globals().get(table).unwrap();
             total += table.pairs::<mlua::Value, mlua::Value>().count();
         }
-        assert_eq!(total, 11, "transform + transform3d 合计 11 个函数");
+        assert_eq!(total, 15, "transform + transform3d 合计 15 个函数");
     }
 
     /// 写进去的位置，下一次读出来必须一致（组件就在同一个 `World` 里）。
@@ -511,6 +618,52 @@ mod tests {
         // 同一份数据，宿主侧读到的也一致。
         let position = world.with(|world| world.get::<Transform>(id).unwrap().unwrap().position);
         assert_eq!((position.x, position.y), (12.0, -3.0));
+    }
+
+    /// 标量位置 API：不建每实体 table，2D/3D 与局部/世界都读同一个组件事实。
+    #[test]
+    fn scalar_positions_match_get() {
+        let (lua, world) = harness();
+        let (flat, deep, child) = world.with_mut(|world| {
+            let flat = world.spawn();
+            world.insert(flat, Transform::default()).unwrap();
+            let deep = world.spawn();
+            world.insert(deep, Transform3D::default()).unwrap();
+            world.get_mut::<Transform>(flat).unwrap().unwrap().position = Vec2::new(4.0, 5.0);
+            world
+                .get_mut::<Transform3D>(deep)
+                .unwrap()
+                .unwrap()
+                .position = Vec3::new(6.0, 7.0, 8.0);
+            let child = world.spawn();
+            world.insert(child, Transform3D::default()).unwrap();
+            world
+                .get_mut::<Transform3D>(child)
+                .unwrap()
+                .unwrap()
+                .position = Vec3::new(1.0, 2.0, 3.0);
+            world.insert(child, crate::hierarchy::Parent(deep)).unwrap();
+            (flat, deep, child)
+        });
+        let flat = flat.to_lua_i64();
+        let deep = deep.to_lua_i64();
+        let child = child.to_lua_i64();
+        let (x, y, wx, wy, dx, dy, dz, cx, cy, cz) = lua
+            .load(format!(
+                r#"
+                local x, y = transform.position({flat})
+                local wx, wy = transform.world_position({flat})
+                local dx, dy, dz = transform3d.position({deep})
+                local cx, cy, cz = transform3d.world_position({child})
+                return x, y, wx, wy, dx, dy, dz, cx, cy, cz
+                "#
+            ))
+            .eval()
+            .unwrap();
+        assert_eq!(
+            (x, y, wx, wy, dx, dy, dz, cx, cy, cz),
+            (4.0, 5.0, 4.0, 5.0, 6.0, 7.0, 8.0, 7.0, 9.0, 11.0)
+        );
     }
 
     /// 不平移的实体：错误串必须点名"没有变换"，而不是笼统的 nil。

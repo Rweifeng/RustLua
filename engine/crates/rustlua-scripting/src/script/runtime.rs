@@ -603,6 +603,16 @@ impl LuaRuntime {
             })?;
         Ok(candidate)
     }
+
+    /// 清零指令预算的周期计数。
+    ///
+    /// 正常游戏帧循环由 [`LuaRuntime::call_update`] 等入口自己清零，不需要宿主调用。
+    /// 长批量宿主（基准、离线工具、编辑器批量重放）在**一次入口**里跑超过默认 10 亿条
+    /// 指令时，应在批次开始前显式重置；否则会被判成死循环。它只清计数、不关预算。
+    pub fn reset_instruction_budget(&self) {
+        progress::arm();
+    }
+
     /// 调用工程级 `update()`。
     ///
     /// **错误处置**：`Strict`（默认）把 Lua 错误原样上报给宿主；`Contain` 把错误记进
@@ -610,7 +620,7 @@ impl LuaRuntime {
     /// 连续报错达到上限的回调会被**停用**——此后不再进 Lua，日志也不会被同一个错误淹没。
     pub fn call_update(&self) -> Result<String, LuaBridgeError> {
         // 每个 `update` 回调一个周期：预算是"这一段不许无限跑"，不是"这一局不许跑够 N 条"。
-        progress::arm();
+        self.reset_instruction_budget();
         let path = self
             .current_path
             .clone()

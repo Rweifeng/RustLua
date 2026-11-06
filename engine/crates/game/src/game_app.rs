@@ -3,7 +3,8 @@
 //! winit events to engine input.
 
 use std::{
-    path::PathBuf,
+    fs,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -29,6 +30,8 @@ use engine::host::{
     apply_scene_environment,
 };
 use rustlua_gpu::{RenderOutcome, Renderer};
+
+use crate::memory::{self, MemoryStats};
 
 pub struct GameApp {
     window: Option<Arc<Window>>,
@@ -97,6 +100,9 @@ pub struct GameApp {
     /// 场景/UI 顶点、2D 相机与声明视口全按它烘焙，渲染器再 `contain_rect` 到窗口
     /// （黑边居中）。区别于窗口物理尺寸（`renderer.config` / `inner_size`）。
     design_size: (u32, u32),
+    /// M-screenshot：F2 的下一帧额外渲染一次离屏 PNG（不在逐帧路径）。F11 已被游戏
+    /// 的「验证标记」占用，所以宿主截图改用 F2。
+    capture_requested: bool,
 }
 
 impl GameApp {
@@ -159,6 +165,7 @@ impl GameApp {
             scripts_dir,
             script_note_shown: None,
             design_size: rustlua_infra::project_config::DEFAULT_WINDOW_SIZE,
+            capture_requested: false,
         }
     }
 
@@ -170,6 +177,36 @@ impl GameApp {
     pub fn with_shader_dir(mut self, dir: Option<PathBuf>) -> Self {
         self.shader_dir = dir;
         self
+    }
+
+    /// F2 截图的落点：工程/发布根下的 `screenshots/`，文件名用毫秒时间戳。
+    fn screenshot_path(&self) -> PathBuf {
+        let root = self
+            .project_root
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("."));
+        let dir = root.join("screenshots");
+        let _ = fs::create_dir_all(&dir);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        dir.join(format!("myrmex-{stamp}.png"))
+    }
+
+    /// 脚本请求的固定文件名（只取 basename，必须 .png）：`screenshots/<name>`。
+    fn named_capture_path(&self, name: &str) -> Option<PathBuf> {
+        let file = Path::new(name).file_name()?.to_string_lossy().into_owned();
+        if !file.ends_with(".png") {
+            return None;
+        }
+        let root = self
+            .project_root
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("."));
+        let dir = root.join("screenshots");
+        let _ = fs::create_dir_all(&dir);
+        Some(dir.join(file))
     }
 
     fn initialize_runtime(&mut self, event_loop: &ActiveEventLoop) {
@@ -618,6 +655,35 @@ impl GameApp {
         if self.lifecycle != AppLifecycle::Running {
             return;
         }
+        // F2 / 脚本请求的落点都只读 self；必须在 `renderer.as_mut()` 借用之前算好。
+        let lua_capture = self
+            .runtime_scene
+            .as_mut()
+            .and_then(RuntimeScene::take_capture_request);
+        let capture_frame = self
+            .runtime_scene
+            .as_mut()
+            .map(RuntimeScene::take_capture_frame)
+            .unwrap_or(0);
+        let capture_ui = self
+            .runtime_scene
+            .as_mut()
+            .map(RuntimeScene::take_capture_ui)
+            .unwrap_or(true);
+        let capture_path = if let Some(name) = lua_capture {
+            match self.named_capture_path(&name) {
+                Some(path) => Some(path),
+                None => {
+                    tracing::warn!(target: "game", "[capture] rejected script path {name:?}");
+                    None
+                }
+            }
+        } else if self.capture_requested {
+            Some(self.screenshot_path())
+        } else {
+            None
+        };
+        self.capture_requested = false;
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
@@ -677,7 +743,7 @@ impl GameApp {
             }
         };
         if self.overlay_enabled {
-            let overlay = build_overlay(snapshot, design_w, design_h);
+            let overlay = build_overlay(snapshot, memory::sample(), design_w, design_h);
             if !overlay.ranges.is_empty() {
                 let base = mesh.vertices.len() as u32;
                 let atlas_texture = mesh.paths.len() as u32 + 1;
@@ -731,7 +797,47 @@ impl GameApp {
                 renderer.set_world_sprite_camera(view_projection);
             }
         }
-        match renderer.render(&mesh, scene3d.as_ref()) {
+        let outcome = renderer.render(&mesh, scene3d.as_ref());
+        if let Some(path) = capture_path {
+            let capture_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("capture.png")
+                .to_owned();
+            let captured_ok = match renderer.capture_surface_png(
+                &mesh,
+                scene3d.as_ref(),
+                &path,
+                capture_frame,
+                capture_ui,
+            ) {
+                Ok(()) => {
+                    tracing::info!(target: "game", "[capture] saved {}", path.display());
+                    // 固定入口：外部工具/后续缩略图只认 `latest.png`，时间戳文件保留历史。
+                    let latest = path.with_file_name("latest.png");
+                    if let Err(error) = fs::copy(&path, &latest) {
+                        tracing::warn!(target: "game", "[capture] latest copy failed: {error}");
+                    }
+                    true
+                }
+                Err(error) => {
+                    tracing::warn!(target: "game", "[capture] {} failed: {error}", path.display());
+                    // 存档缩略图只认文件；失败也落一张占位图，避免 UI 显示空白。
+                    if let Err(placeholder) = rustlua_gpu::write_capture_placeholder(&path) {
+                        tracing::warn!(
+                            target: "game",
+                            "[capture] placeholder {} failed: {placeholder}",
+                            path.display()
+                        );
+                    }
+                    false
+                }
+            };
+            if let Some(scene) = self.runtime_scene.as_mut() {
+                scene.set_capture_result(captured_ok, &capture_name);
+            }
+        }
+        match outcome {
             RenderOutcome::Presented => {}
             RenderOutcome::Retry | RenderOutcome::Skipped => {}
             RenderOutcome::Fatal => self.fail(event_loop, "renderer reported a fatal outcome"),
@@ -1033,11 +1139,31 @@ impl ApplicationHandler for GameApp {
                     && !event.repeat
                     && matches!(
                         &event.logical_key,
+                        winit::keyboard::Key::Named(winit::keyboard::NamedKey::F2)
+                    )
+                {
+                    self.capture_requested = true;
+                    tracing::info!(target: "game", "[capture] F2 requested");
+                }
+                if event.state == ElementState::Pressed
+                    && !event.repeat
+                    && matches!(
+                        &event.logical_key,
                         winit::keyboard::Key::Named(winit::keyboard::NamedKey::F3)
                     )
                 {
                     self.overlay_enabled = !self.overlay_enabled;
                     tracing::info!(target: "game", "[perf] overlay {}", if self.overlay_enabled { "enabled" } else { "disabled" });
+                    if self.overlay_enabled {
+                        match memory::sample() {
+                            Some(m) => tracing::info!(target: "game",
+                                "[perf] memory mem_mb={:.1} peak_mb={:.1} priv_mb={:.1}",
+                                m.working_set_mb, m.peak_working_set_mb, m.private_mb),
+                            None => {
+                                tracing::info!(target: "game", "[perf] memory unavailable on this platform")
+                            }
+                        }
+                    }
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -1135,11 +1261,20 @@ struct OverlayRange {
 /// * `FRAME ms`：上一帧总耗时（上限 33.3ms ≈ 30fps，超过 20ms 变红）；
 /// * `UPDATE ms`：`run_simulation_steps` 的固定步更新耗时（上限 16.7ms = 60fps）；
 /// * `LUA ms`：本帧 Lua `update()` 累计耗时（上限 8ms）；
+/// * `MEM MB`：进程当前工作集 / 常驻内存（参考 1024MB，超过 768/1024 变黄/红）；
+/// * `PEAK MB`：进程峰值工作集（参考 1536MB）；
+/// * `PRIV MB`：私有提交（Windows `PagefileUsage`，Linux `RssAnon`）；
 /// * `FRAMES`：累计帧数（无参考上限，量条按 60 帧窗口的余数显示，仅作心跳）。
 ///
-/// 文字用引擎内置 5x7 位图字模（`TextAtlas::built_in` + `TextLayout::build_bitmap`），
-/// 因此 overlay 不依赖项目字体，也不会受项目字体加载状态影响。
-fn build_overlay(snapshot: PerformanceSnapshot, width: u32, height: u32) -> OverlayGeometry {
+/// 内存三行走 `crate::memory::sample()`；平台不支持或读取失败时显示 `--`，
+/// 不影响其余指标与日志。文字仍用引擎内置 5x7 位图字模（`TextAtlas::built_in` +
+/// `TextLayout::build_bitmap`），不依赖项目字体。
+fn build_overlay(
+    snapshot: PerformanceSnapshot,
+    memory: Option<MemoryStats>,
+    width: u32,
+    height: u32,
+) -> OverlayGeometry {
     let width = width.max(1) as f32;
     let height = height.max(1) as f32;
     let mut vertices = Vec::new();
@@ -1174,6 +1309,18 @@ fn build_overlay(snapshot: PerformanceSnapshot, width: u32, height: u32) -> Over
     } else {
         [0.90, 0.97, 0.90, 1.0]
     };
+    let mem_text = memory.map_or_else(|| "--".to_owned(), |m| format!("{:.1}", m.working_set_mb));
+    let peak_text = memory.map_or_else(
+        || "--".to_owned(),
+        |m| format!("{:.1}", m.peak_working_set_mb),
+    );
+    let priv_text = memory.map_or_else(|| "--".to_owned(), |m| format!("{:.1}", m.private_mb));
+    let mem_ratio = memory.map_or(0.0, |m| (m.working_set_mb / 1024.0).clamp(0.0, 1.0));
+    let peak_ratio = memory.map_or(0.0, |m| (m.peak_working_set_mb / 1536.0).clamp(0.0, 1.0));
+    let priv_ratio = memory.map_or(0.0, |m| (m.private_mb / 1024.0).clamp(0.0, 1.0));
+    let mem_color = memory_mb_color(memory.map_or(0.0, |m| m.working_set_mb));
+    let peak_color = memory_mb_color(memory.map_or(0.0, |m| m.peak_working_set_mb));
+    let priv_color = memory_mb_color(memory.map_or(0.0, |m| m.private_mb));
     let rows = [
         (
             "FPS",
@@ -1199,6 +1346,9 @@ fn build_overlay(snapshot: PerformanceSnapshot, width: u32, height: u32) -> Over
             (snapshot.lua_ms / 8.0).clamp(0.0, 1.0),
             lua_color,
         ),
+        ("MEM MB", mem_text, mem_ratio, mem_color),
+        ("PEAK MB", peak_text, peak_ratio, peak_color),
+        ("PRIV MB", priv_text, priv_ratio, priv_color),
         (
             "FRAMES",
             format!("{}", snapshot.frames),
@@ -1207,7 +1357,7 @@ fn build_overlay(snapshot: PerformanceSnapshot, width: u32, height: u32) -> Over
         ),
     ];
 
-    // 像素布局：标题 1 行 + 5 个指标行（标签/数值在上，量条在下），行高 34。
+    // 像素布局：标题 1 行 + 8 个指标行（标签/数值在上，量条在下），行高 34。
     const PAD_X: f32 = 10.0;
     const PAD_Y: f32 = 8.0;
     const ROW_H: f32 = 34.0;
@@ -1348,6 +1498,17 @@ fn build_overlay(snapshot: PerformanceSnapshot, width: u32, height: u32) -> Over
     });
 
     OverlayGeometry { vertices, ranges }
+}
+
+/// 内存读数颜色：768MB 以下白，768–1024 黄，超过 1024 红。
+fn memory_mb_color(mb: f32) -> [f32; 4] {
+    if mb > 1024.0 {
+        [1.0, 0.36, 0.32, 1.0]
+    } else if mb > 768.0 {
+        [1.0, 0.78, 0.30, 1.0]
+    } else {
+        [0.90, 0.97, 0.90, 1.0]
+    }
 }
 
 /// 6 顶点纯色矩形（NDC）。
@@ -1602,7 +1763,7 @@ mod tests {
     /// （`ranges` 里恰好一段 `atlas = true`），面板/量条走白色纹理。
     #[test]
     fn debug_overlay_draws_labeled_text_and_bars() {
-        let overlay = build_overlay(snapshot(60.0, 8.0, 0.5, 0.2), 1280, 720);
+        let overlay = build_overlay(snapshot(60.0, 8.0, 0.5, 0.2), None, 1280, 720);
         assert_eq!(overlay.ranges.len(), 3, "面板 / 量条 / 文字三段");
         assert!(!overlay.ranges[0].atlas, "面板底走白色纹理");
         assert!(!overlay.ranges[1].atlas, "量条走白色纹理");
@@ -1670,8 +1831,8 @@ mod tests {
     /// 量条填充随数值单调变化：frame_ms 越大，填充越宽（同一面板布局下比较总宽度）。
     #[test]
     fn debug_overlay_bars_follow_metrics() {
-        let light = build_overlay(snapshot(120.0, 0.5, 0.1, 0.05), 640, 360);
-        let heavy = build_overlay(snapshot(30.0, 30.0, 15.0, 7.0), 640, 360);
+        let light = build_overlay(snapshot(120.0, 0.5, 0.1, 0.05), None, 640, 360);
+        let heavy = build_overlay(snapshot(30.0, 30.0, 15.0, 7.0), None, 640, 360);
         let width = |overlay: &OverlayGeometry| -> f32 {
             overlay.vertices[..overlay.ranges[1].count as usize]
                 .iter()
@@ -1680,6 +1841,26 @@ mod tests {
         };
         // 同一套顶点顺序下，填充越宽 → 所有 x 之和越大。
         assert!(width(&heavy) > width(&light), "指标变差时量条填充应更宽");
+    }
+
+    /// 内存行必须真的进入文本：有读数时比 `--` 多出数字，且 360px 高的小窗也不越界。
+    #[test]
+    fn debug_overlay_includes_memory_rows() {
+        let memory = MemoryStats {
+            working_set_mb: 256.0,
+            peak_working_set_mb: 384.0,
+            private_mb: 200.0,
+        };
+        let with = build_overlay(snapshot(60.0, 8.0, 0.5, 0.2), Some(memory), 640, 360);
+        let without = build_overlay(snapshot(60.0, 8.0, 0.5, 0.2), None, 640, 360);
+        assert!(
+            with.vertices.len() > without.vertices.len(),
+            "内存读数应比 -- 占位符多出数字顶点"
+        );
+        for vertex in &with.vertices {
+            assert!((-1.0..=1.0).contains(&vertex.position[0]));
+            assert!((-1.0..=1.0).contains(&vertex.position[1]));
+        }
     }
 
     /// P3-R05-4 的默认形态门：没有 `--shader-dir`/`RUSTLUA_SHADER_DIR` 时运行时**一次

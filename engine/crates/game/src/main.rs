@@ -6,6 +6,7 @@ mod boot_splash;
 mod bundle_boot;
 mod cli;
 mod game_app;
+mod memory;
 mod splash;
 mod window_fit;
 
